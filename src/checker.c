@@ -408,6 +408,8 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"str_eq",    TYPE_BOOL, 2, 0},
             {"arg_count", TYPE_I64, 0, 0},
             {"arg",       TYPE_STR, 1, 0},
+            {"exit",      TYPE_VOID, 1, 0},
+            {"eprintln",  TYPE_VOID, 1, 0},
         };
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {

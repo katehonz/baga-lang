@@ -800,6 +800,8 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "vec_len") == 1 { cname = "baga_vec_len" }
             if str_eq(bn, "arg_count") == 1 { cname = "baga_arg_count" }
             if str_eq(bn, "arg") == 1 { cname = "baga_arg" }
+            if str_eq(bn, "exit") == 1 { cname = "baga_exit" }
+            if str_eq(bn, "eprintln") == 1 { cname = "baga_eprintln" }
         }
         let mut result = ""
         if str_eq(cname, "") == 0 {
@@ -1294,6 +1296,266 @@ fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
 }
 
 // ============================================================
+//  Checker (минимален: типове на аргументи + vec смесване)
+// ============================================================
+
+fn typekind_of_typename(name: str) -> i64 {
+    if str_eq(name, "i64") == 1 { return 0 }
+    if str_eq(name, "i32") == 1 { return 0 }
+    if str_eq(name, "str") == 1 { return 1 }
+    if str_eq(name, "f64") == 1 { return 2 }
+    if str_eq(name, "bool") == 1 { return 3 }
+    if str_eq(name, "Vec") == 1 { return 4 }
+    0 - 1
+}
+
+fn typekind_name(k: i64) -> str {
+    if k == 0 { return "i64" }
+    if k == 1 { return "str" }
+    if k == 2 { return "f64" }
+    if k == 3 { return "bool" }
+    if k == 4 { return "Vec" }
+    "?"
+}
+
+fn is_user_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 { return 1 }
+        }
+        f = next_sibling(ns, f)
+    }
+    0
+}
+
+fn fn_param_count(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 {
+                let mut cnt: i64 = 0
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 12 { cnt = cnt + 1 }
+                    c = next_sibling(ns, c)
+                }
+                return cnt
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    0
+}
+
+fn fn_param_typekind(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str, pidx: i64) -> i64 {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 {
+                let mut cnt: i64 = 0
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 12 {
+                        if cnt == pidx {
+                            let ptext = node_text(nt, c)
+                            let mut ci: i64 = 0
+                            let pn = len(ptext)
+                            while ci < pn {
+                                if char_at(ptext, ci) == 58 { break }
+                                ci = ci + 1
+                            }
+                            let mut ptype = ""
+                            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
+                            return typekind_of_typename(ptype)
+                        }
+                        cnt = cnt + 1
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    0 - 1
+}
+
+fn fn_ret_typekind(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 16 { return typekind_of_typename(node_text(nt, c)) }
+                    c = next_sibling(ns, c)
+                }
+                return 0 - 1
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    0 - 1
+}
+
+fn expr_typekind(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let k = node_kind(nk, idx)
+    if k == 0 { return 0 }
+    if k == 1 { return 1 }
+    if k == 19 { return 2 }
+    if k == 20 { return 3 }
+    if k == 22 { return 5 }
+    if k == 4 {
+        let cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let bn = node_text(nt, cal)
+            if is_user_fn(nk, nt, fc, ns, prog, bn) == 1 {
+                return fn_ret_typekind(nk, nt, fc, ns, prog, bn)
+            }
+            if str_eq(bn, "len") == 1 { return 0 }
+            if str_eq(bn, "vec_len") == 1 { return 0 }
+            if str_eq(bn, "ord") == 1 { return 0 }
+            if str_eq(bn, "char_at") == 1 { return 0 }
+            if str_eq(bn, "arg_count") == 1 { return 0 }
+            if str_eq(bn, "concat") == 1 { return 1 }
+            if str_eq(bn, "substr") == 1 { return 1 }
+            if str_eq(bn, "chr") == 1 { return 1 }
+            if str_eq(bn, "arg") == 1 { return 1 }
+            if str_eq(bn, "vec_get_str") == 1 { return 1 }
+            if str_eq(bn, "str_eq") == 1 { return 3 }
+        }
+        return 0 - 1
+    }
+    if k == 2 {
+        let ev = enum_variant_cname(nk, nt, fc, ns, prog, node_text(nt, idx))
+        if str_eq(ev, "") == 0 { return 0 }
+    }
+    0 - 1
+}
+
+fn check_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
+    let cal = first_child(fc, idx)
+    if node_kind(nk, cal) != 2 { return }
+    let fname = node_text(nt, cal)
+    if is_user_fn(nk, nt, fc, ns, prog, fname) == 0 { return }
+    let mut nargs: i64 = 0
+    let mut a = next_sibling(ns, cal)
+    while a >= 0 {
+        nargs = nargs + 1
+        a = next_sibling(ns, a)
+    }
+    let pcount = fn_param_count(nk, nt, fc, ns, prog, fname)
+    if nargs != pcount {
+        eprintln(concat(concat(concat(concat(concat("'", fname), "' очаква "), int_to_str(pcount)), " аргумента, получих "), int_to_str(nargs)))
+        exit(1)
+    }
+    let mut ai: i64 = 0
+    let mut arg = next_sibling(ns, cal)
+    while arg >= 0 {
+        let at = expr_typekind(nk, nt, fc, ns, prog, arg)
+        let pt = fn_param_typekind(nk, nt, fc, ns, prog, fname, ai)
+        if at >= 0 {
+            if pt >= 0 {
+                if at != pt {
+                    eprintln(concat(concat(concat(concat(concat(concat(concat("'", fname), "': аргумент #"), int_to_str(ai + 1)), " е от тип "), typekind_name(at)), ", но параметърът е "), typekind_name(pt)))
+                    exit(1)
+                }
+            }
+        }
+        ai = ai + 1
+        arg = next_sibling(ns, arg)
+    }
+}
+
+fn vec_has_i64_push(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            let mut c = first_child(fc, f)
+            while c >= 0 {
+                if node_kind(nk, c) == 5 {
+                    let mut s = first_child(fc, c)
+                    while s >= 0 {
+                        if node_kind(nk, s) == 10 {
+                            let e = first_child(fc, s)
+                            if node_kind(nk, e) == 4 {
+                                let cal = first_child(fc, e)
+                                if node_kind(nk, cal) == 2 {
+                                    let bn = node_text(nt, cal)
+                                    let a1 = next_sibling(ns, cal)
+                                    if a1 >= 0 {
+                                        if node_kind(nk, a1) == 2 {
+                                            if str_eq(node_text(nt, a1), name) == 1 {
+                                                if str_eq(bn, "vec_push") == 1 {
+                                                    let elem = next_sibling(ns, a1)
+                                                    if elem >= 0 {
+                                                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 0 { return 1 }
+                                                    }
+                                                }
+                                                if str_eq(bn, "vec_set") == 1 {
+                                                    let ai2 = next_sibling(ns, a1)
+                                                    let elem = next_sibling(ns, ai2)
+                                                    if elem >= 0 {
+                                                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 0 { return 1 }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        s = next_sibling(ns, s)
+                    }
+                }
+                c = next_sibling(ns, c)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    0
+}
+
+fn check_vec_push(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
+    let cal = first_child(fc, idx)
+    if node_kind(nk, cal) != 2 { return }
+    let bn = node_text(nt, cal)
+    let is_push: i64 = 0
+    if str_eq(bn, "vec_push") == 1 { is_push = 1 }
+    if str_eq(bn, "vec_set") == 1 { is_push = 1 }
+    if str_eq(bn, "vec_push_str") == 1 { is_push = 1 }
+    if str_eq(bn, "vec_set_str") == 1 { is_push = 1 }
+    if is_push == 0 { return }
+    let a1 = next_sibling(ns, cal)
+    if a1 < 0 { return }
+    if node_kind(nk, a1) != 2 { return }
+    let vname = node_text(nt, a1)
+    if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 {
+        if vec_has_i64_push(nk, nt, fc, ns, prog, vname) == 1 {
+            eprintln("vec_push: елемент от тип str, но векторът е Vec<i64>")
+            exit(1)
+        }
+    }
+}
+
+fn check_node(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
+    if idx < 0 { return }
+    if node_kind(nk, idx) == 4 {
+        check_call(nk, nt, fc, ns, prog, idx)
+        check_vec_push(nk, nt, fc, ns, prog, idx)
+    }
+    let mut c = first_child(fc, idx)
+    while c >= 0 {
+        check_node(nk, nt, fc, ns, prog, c)
+        c = next_sibling(ns, c)
+    }
+}
+
+fn check_program(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    check_node(nk, nt, fc, ns, prog, prog)
+}
+
+// ============================================================
 //  Main
 // ============================================================
 
@@ -1353,6 +1615,9 @@ fn main() {
         }
     }
 
+    // checker: отхвърля невалидни програми (аргументи + vec смесване)
+    check_program(nk, nt, fc, ns, prog)
+
     // emit C code
     write("/* Генериран от Бага self-hosted компилатор */\n")
     write("#include <stdio.h>\n")
@@ -1392,7 +1657,9 @@ fn main() {
     write("static int baga_argc = 0;\n")
     write("static char **baga_argv = 0;\n")
     write("static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n")
-    write("static const char *baga_arg(int64_t i) { return (i + 1 < baga_argc) ? baga_argv[i + 1] : \"\"; }\n\n")
+    write("static const char *baga_arg(int64_t i) { return (i + 1 < baga_argc) ? baga_argv[i + 1] : \"\"; }\n")
+    write("static void baga_exit(int64_t c) { exit((int)c); }\n")
+    write("static void baga_eprintln(const char *s) { fprintf(stderr, \"%s\\n\", s); }\n\n")
 
     // enum declarations
     let mut en = first_child(fc, prog)

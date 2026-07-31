@@ -752,6 +752,35 @@ static LLVMValueRef build_baga_arg(void) {
     return fn;
 }
 
+/* static void baga_exit(int64_t c) { exit((int)c); } */
+static LLVMValueRef build_baga_exit(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_exit",
+        LLVMFunctionType(lg.void_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef c32 = LLVMBuildTrunc(lg.builder, LLVMGetParam(fn, 0), lg.i32_ty, "c");
+    LLVMValueRef args[] = { c32 };
+    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.exit_fn)),
+                   lg.exit_fn, args, 1, "");
+    LLVMBuildUnreachable(lg.builder);
+    return fn;
+}
+
+/* static void baga_eprintln(const char *s) { fprintf(stderr, "%s\n", s); } */
+static LLVMValueRef build_baga_eprintln(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_eprintln",
+        LLVMFunctionType(lg.void_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, "%s\n", "fmt");
+    LLVMValueRef err = LLVMBuildLoad2(lg.builder, lg.ptr_ty, lg.stderr_global, "err");
+    LLVMValueRef args[] = { err, fmt, LLVMGetParam(fn, 0) };
+    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.fprintf_fn)),
+                   lg.fprintf_fn, args, 3, "");
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
 /* lazy dispatcher: връща helper-а, генерирайки тялото му при първа употреба */
 static LLVMValueRef baga_rt(const char *name) {
     LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, name);
@@ -776,6 +805,8 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_vec_len") == 0)     fn = build_baga_vec_len();
     else if (strcmp(name, "baga_arg_count") == 0)   fn = build_baga_arg_count();
     else if (strcmp(name, "baga_arg") == 0)         fn = build_baga_arg();
+    else if (strcmp(name, "baga_exit") == 0)        fn = build_baga_exit();
+    else if (strcmp(name, "baga_eprintln") == 0)    fn = build_baga_eprintln();
     else {
         char buf[128];
         snprintf(buf, sizeof buf, "runtime helper '%s'", name);
@@ -1118,6 +1149,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 {"vec_len",     "baga_vec_len"},
                 {"arg_count",   "baga_arg_count"},
                 {"arg",         "baga_arg"},
+                {"exit",        "baga_exit"},
+                {"eprintln",    "baga_eprintln"},
             };
             LLVMValueRef fn = NULL;
             /* типизирани вектори: helper по елементния тип на вектора */

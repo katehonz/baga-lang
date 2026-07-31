@@ -311,6 +311,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"vec_len",     "baga_vec_len"},
                     {"arg_count",   "baga_arg_count"},
                     {"arg",         "baga_arg"},
+                    {"exit",        "baga_exit"},
+                    {"eprintln",    "baga_eprintln"},
                 };
                 for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                     if (strcmp(bn, bmap[bi].baga) == 0) {
@@ -1039,6 +1041,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static char **baga_argv = 0;\n");
     fprintf(out, "static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n");
     fprintf(out, "static const char *baga_arg(int64_t i) { return (i + 1 < baga_argc) ? baga_argv[i + 1] : \"\"; }\n");
+    fprintf(out, "static void baga_exit(int64_t c) { exit((int)c); }\n");
+    fprintf(out, "static void baga_eprintln(const char *s) { fprintf(stderr, \"%%s\\n\", s); }\n");
     fprintf(out, "static int64_t baga_cur_args[16];\n");
     fprintf(out, "static int baga_cur_nargs = 0;\n");
     fprintf(out, "static void baga_spec_fail(const char *spec, const char *kind, int64_t idx, const char *expr) {\n");
