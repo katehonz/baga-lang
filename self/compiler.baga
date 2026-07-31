@@ -192,6 +192,15 @@ fn parse_expr(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
 fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
     let k = vec_get(tk, vec_get(pos, 0))
     let t = vec_get_str(tt, vec_get(pos, 0))
+    if is_single(tk, tt, vec_get(pos, 0), "-") == 1 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let operand = parse_primary(tk, tt, pos, nk, nt, fc, ns)
+        let neg = ast_kind(nk, nt, fc, ns, 3, "-")
+        let zero = ast_kind(nk, nt, fc, ns, 0, "0")
+        ast_child(fc, ns, neg, zero)
+        ast_child(fc, ns, neg, operand)
+        return neg
+    }
     if k == 100 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         return ast_kind(nk, nt, fc, ns, 0, t)
@@ -358,8 +367,36 @@ fn parse_cmp(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> 
     left
 }
 
+fn parse_and(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    let mut left = parse_cmp(tk, tt, pos, nk, nt, fc, ns)
+    while vec_get(pos, 0) < vec_len(tk) {
+        if vec_get(tk, vec_get(pos, 0)) != 208 { break }
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let right = parse_cmp(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 3, "&&")
+        ast_child(fc, ns, node, left)
+        ast_child(fc, ns, node, right)
+        left = node
+    }
+    left
+}
+
+fn parse_or(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    let mut left = parse_and(tk, tt, pos, nk, nt, fc, ns)
+    while vec_get(pos, 0) < vec_len(tk) {
+        if vec_get(tk, vec_get(pos, 0)) != 209 { break }
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let right = parse_and(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 3, "||")
+        ast_child(fc, ns, node, left)
+        ast_child(fc, ns, node, right)
+        left = node
+    }
+    left
+}
+
 fn parse_expr(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
-    parse_cmp(tk, tt, pos, nk, nt, fc, ns)
+    parse_or(tk, tt, pos, nk, nt, fc, ns)
 }
 
 fn parse_block(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
@@ -539,6 +576,89 @@ fn parse_enum(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         let vn = ast_kind(nk, nt, fc, ns, 29, vname)
         ast_child(fc, ns, node, vn)
         if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    }
+    if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    node
+}
+
+fn is_section_keyword(s: str) -> i64 {
+    if str_eq(s, "input") == 1 { return 1 }
+    if str_eq(s, "output") == 1 { return 1 }
+    if str_eq(s, "requires") == 1 { return 1 }
+    if str_eq(s, "ensures") == 1 { return 1 }
+    if str_eq(s, "guarantees") == 1 { return 1 }
+    0
+}
+
+fn tokens_text(tt: Vec, start: i64, end: i64) -> str {
+    let mut r = ""
+    let mut i = start
+    while i < end {
+        if str_eq(r, "") == 0 { r = concat(r, " ") }
+        r = concat(r, vec_get_str(tt, i))
+        i = i + 1
+    }
+    r
+}
+
+fn at_section(tk: Vec, tt: Vec, pos: Vec) -> i64 {
+    let p = vec_get(pos, 0)
+    if vec_get(tk, p) == 0 {
+        if p + 1 < vec_len(tk) {
+            if is_section_keyword(vec_get_str(tt, p)) == 1 {
+                if is_single(tk, tt, p + 1, ":") == 1 { return 1 }
+            }
+        }
+    }
+    0
+}
+
+fn parse_spec(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let name = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let node = ast_kind(nk, nt, fc, ns, 30, name)
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        let sec = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), ":") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        if str_eq(sec, "output") == 1 {
+            let otype = parse_type_name(tk, tt, pos)
+            let onode = ast_kind(nk, nt, fc, ns, 16, otype)
+            ast_child(fc, ns, node, onode)
+        } else {
+            if str_eq(sec, "requires") == 1 {
+                while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+                    if at_section(tk, tt, pos) == 1 { break }
+                    let st = vec_get(pos, 0)
+                    let expr = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+                    let enode = ast_kind(nk, nt, fc, ns, 31, tokens_text(tt, st, vec_get(pos, 0)))
+                    ast_child(fc, ns, enode, expr)
+                    ast_child(fc, ns, node, enode)
+                    if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) } else { break }
+                }
+            } else {
+                if str_eq(sec, "ensures") == 1 {
+                    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+                        if at_section(tk, tt, pos) == 1 { break }
+                        let st = vec_get(pos, 0)
+                        let expr = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+                        let enode = ast_kind(nk, nt, fc, ns, 32, tokens_text(tt, st, vec_get(pos, 0)))
+                        ast_child(fc, ns, enode, expr)
+                        ast_child(fc, ns, node, enode)
+                        if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) } else { break }
+                    }
+                } else {
+                    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+                        if at_section(tk, tt, pos) == 1 { break }
+                        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+                        vec_set(pos, 0, vec_get(pos, 0) + 1)
+                    }
+                }
+            }
+        }
     }
     if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
     node
@@ -1210,7 +1330,7 @@ fn c_type(t: str) -> str {
     mangle(t)
 }
 
-fn emit_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) {
+fn emit_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
     let name = node_text(nt, idx)
     let mut child = first_child(fc, idx)
 
@@ -1237,6 +1357,13 @@ fn emit_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) {
     }
 
     if str_eq(params, "") == 1 { params = "void" }
+    let spc = find_spec(nk, nt, fc, ns, prog, name)
+    if spc >= 0 {
+        let d1 = concat(rettype, " ")
+        let d2 = concat(mangle(name), "_impl")
+        let d3 = concat("(", concat(params, ");\n"))
+        write(concat(concat(d1, d2), d3))
+    }
     write(concat(concat(concat(concat(rettype, " "), mangle(name)), concat("(", params)), ");\n"))
 }
 
@@ -1245,6 +1372,7 @@ fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
     let mut child = first_child(fc, idx)
 
     let mut params = ""
+    let mut argnames = ""
     let mut rettype = "void"
     let mut body: i64 = 0 - 1
     while child >= 0 {
@@ -1262,14 +1390,21 @@ fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
             if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
             if str_eq(params, "") == 0 { params = concat(params, ", ") }
             params = concat(params, concat(c_type(ptype), concat(" ", mangle(pname))))
+            if str_eq(argnames, "") == 0 { argnames = concat(argnames, ", ") }
+            argnames = concat(argnames, mangle(pname))
         }
         if ck == 16 { rettype = c_type(node_text(nt, child)) }
         if ck == 5 { body = child }
         child = next_sibling(ns, child)
     }
 
+    let spc = find_spec(nk, nt, fc, ns, prog, name)
+    let fn_m = mangle(name)
+    let mut impl_m = fn_m
+    if spc >= 0 { impl_m = concat(fn_m, "_impl") }
+
     if str_eq(params, "") == 1 { params = "void" }
-    write(concat(concat(concat(concat(rettype, " "), mangle(name)), concat("(", params)), ") {\n"))
+    write(concat(concat(concat(concat(rettype, " "), impl_m), concat("(", params)), ") {\n"))
 
     // emit body statements
     if body >= 0 {
@@ -1293,6 +1428,53 @@ fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
     }
 
     write("}\n\n")
+
+    // wrapper с requires/ensures проверки (ако fn има spec)
+    if spc >= 0 {
+        let spec_name = node_text(nt, spc)
+        let wh1 = concat(rettype, " ")
+        let wh2 = concat("(", concat(params, ") {\n"))
+        write(concat(concat(wh1, fn_m), wh2))
+        let mut ri: i64 = 0
+        let mut c = first_child(fc, spc)
+        while c >= 0 {
+            if node_kind(nk, c) == 31 {
+                let expr = first_child(fc, c)
+                ri = ri + 1
+                let s1 = concat("    if (!(", emit_expr(nk, nt, fc, ns, prog, expr))
+                let s2 = concat(s1, ")) baga_spec_fail(\"")
+                let s3 = concat(s2, c_escape(spec_name))
+                let s4 = concat(s3, "\", \"requires\", ")
+                let s5 = concat(s4, int_to_str(ri))
+                let s6 = concat(s5, ", \"")
+                let s7 = concat(s6, c_escape(node_text(nt, c)))
+                write(concat(s7, "\");\n"))
+            }
+            c = next_sibling(ns, c)
+        }
+        let ic1 = concat("    ", concat(rettype, " b_output = "))
+        let ic2 = concat("(", concat(argnames, ");\n"))
+        write(concat(concat(ic1, impl_m), ic2))
+        let mut ei: i64 = 0
+        c = first_child(fc, spc)
+        while c >= 0 {
+            if node_kind(nk, c) == 32 {
+                let expr = first_child(fc, c)
+                ei = ei + 1
+                let s1 = concat("    if (!(", emit_expr(nk, nt, fc, ns, prog, expr))
+                let s2 = concat(s1, ")) baga_spec_fail(\"")
+                let s3 = concat(s2, c_escape(spec_name))
+                let s4 = concat(s3, "\", \"ensures\", ")
+                let s5 = concat(s4, int_to_str(ei))
+                let s6 = concat(s5, ", \"")
+                let s7 = concat(s6, c_escape(node_text(nt, c)))
+                write(concat(s7, "\");\n"))
+            }
+            c = next_sibling(ns, c)
+        }
+        write("    return b_output;\n")
+        write("}\n\n")
+    }
 }
 
 // ============================================================
@@ -1551,7 +1733,54 @@ fn check_node(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
     }
 }
 
+fn find_spec(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, fn_name: str) -> i64 {
+    let mut s = first_child(fc, prog)
+    while s >= 0 {
+        if node_kind(nk, s) == 30 {
+            if str_eq(node_text(nt, s), fn_name) == 1 {
+                let mut c = first_child(fc, s)
+                while c >= 0 {
+                    let ck = node_kind(nk, c)
+                    if ck == 31 { return s }
+                    if ck == 32 { return s }
+                    c = next_sibling(ns, c)
+                }
+            }
+        }
+        s = next_sibling(ns, s)
+    }
+    0 - 1
+}
+
+fn check_specs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut s = first_child(fc, prog)
+    while s >= 0 {
+        if node_kind(nk, s) == 30 {
+            let spec_name = node_text(nt, s)
+            let mut out_tk = 0 - 1
+            let mut c = first_child(fc, s)
+            while c >= 0 {
+                if node_kind(nk, c) == 16 { out_tk = typekind_of_typename(node_text(nt, c)) }
+                c = next_sibling(ns, c)
+            }
+            if out_tk >= 0 {
+                if is_user_fn(nk, nt, fc, ns, prog, spec_name) == 1 {
+                    let fn_ret = fn_ret_typekind(nk, nt, fc, ns, prog, spec_name)
+                    if fn_ret >= 0 {
+                        if out_tk != fn_ret {
+                            eprintln(concat(concat(concat(concat(concat("spec '", spec_name), "': output е "), typekind_name(out_tk)), ", но функцията връща "), typekind_name(fn_ret)))
+                            exit(1)
+                        }
+                    }
+                }
+            }
+        }
+        s = next_sibling(ns, s)
+    }
+}
+
 fn check_program(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    check_specs(nk, nt, fc, ns, prog)
     check_node(nk, nt, fc, ns, prog, prog)
 }
 
@@ -1593,17 +1822,8 @@ fn main() {
                         ast_child(fc, ns, prog, en)
                     } else {
                         if str_eq(vec_get_str(tt, vec_get(pos, 0)), "spec") == 1 {
-                            vec_set(pos, 0, vec_get(pos, 0) + 1)
-                            vec_set(pos, 0, vec_get(pos, 0) + 1)
-                            if is_single(tk, tt, vec_get(pos, 0), "{") == 1 {
-                                let mut depth: i64 = 0
-                                while vec_get(tk, vec_get(pos, 0)) != 999 {
-                                    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { depth = depth + 1 }
-                                    if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { depth = depth - 1 }
-                                    vec_set(pos, 0, vec_get(pos, 0) + 1)
-                                    if depth == 0 { break }
-                                }
-                            }
+                            let sp = parse_spec(tk, tt, pos, nk, nt, fc, ns)
+                            ast_child(fc, ns, prog, sp)
                         } else {
                             vec_set(pos, 0, vec_get(pos, 0) + 1)
                         }
@@ -1659,7 +1879,14 @@ fn main() {
     write("static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n")
     write("static const char *baga_arg(int64_t i) { return (i + 1 < baga_argc) ? baga_argv[i + 1] : \"\"; }\n")
     write("static void baga_exit(int64_t c) { exit((int)c); }\n")
-    write("static void baga_eprintln(const char *s) { fprintf(stderr, \"%s\\n\", s); }\n\n")
+    write("static void baga_eprintln(const char *s) { fprintf(stderr, \"%s\\n\", s); }\n")
+    write("static void baga_spec_fail(const char *spec, const char *kind, int64_t idx, const char *expr) {\n")
+    write("    if (strcmp(kind, \"requires\") == 0)\n")
+    write("        fprintf(stderr, \"spec '%s': requires #%lld нарушено: %s\\n\", spec, (long long)idx, expr);\n")
+    write("    else\n")
+    write("        fprintf(stderr, \"spec '%s': ensures #%lld нарушена: %s\\n\", spec, (long long)idx, expr);\n")
+    write("    exit(1);\n")
+    write("}\n\n")
 
     // enum declarations
     let mut en = first_child(fc, prog)
@@ -1707,7 +1934,7 @@ fn main() {
     let mut f = first_child(fc, prog)
     while f >= 0 {
         if node_kind(nk, f) == 11 {
-            emit_fn(nk, nt, fc, ns, f)
+            emit_fn(nk, nt, fc, ns, prog, f)
         }
         f = next_sibling(ns, f)
     }
