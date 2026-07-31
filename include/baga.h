@@ -146,6 +146,8 @@ typedef enum {
     NODE_ASSIGN,
     NODE_RANGE,       /* a..b */
     NODE_STRUCT_LIT,  /* Point { x: 1, y: 2 } */
+    NODE_TRY,         /* e? — effect propagation */
+    NODE_CATCH,       /* e catch !E => handler */
 
     /* statements */
     NODE_LET,
@@ -250,6 +252,12 @@ struct Node {
             int n_lit_fields;
         };
 
+        /* NODE_TRY */
+        struct { Node *try_expr; };
+
+        /* NODE_CATCH */
+        struct { Node *catch_expr; char *catch_effect; Node *catch_handler; };
+
         /* NODE_LET */
         struct { char *let_name; int is_mut; Node *let_type; Node *let_init; };
 
@@ -342,6 +350,9 @@ struct Type {
     Type *ret;
     Type **params;
     int nparams;
+    /* effects (on any type) */
+    char **effects;
+    int n_effects;
 };
 
 /* Type helpers */
@@ -349,6 +360,12 @@ Type *type_new(TypeKind kind);
 Type *type_fn(Type *ret, Type **params, int nparams);
 const char *type_str(Type *t);
 int type_eq(Type *a, Type *b);
+
+/* Effect helpers */
+void type_add_effect(Type *t, const char *effect);
+int  type_has_effect(Type *t, const char *effect);
+void type_remove_effect(Type *t, const char *effect);
+void type_merge_effects(Type *dst, Type *src);
 
 /* ============================================================
  *  Lexer

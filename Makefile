@@ -32,5 +32,7 @@ test: $(BIN)
 	./$(BIN) examples/tochka.baga
 	@echo "=== match ==="
 	./$(BIN) examples/match.baga
+	@echo "=== effects ==="
+	./$(BIN) examples/effects.baga
 	@echo ""
 	@echo "Всички тестове минаха. ⚔️"

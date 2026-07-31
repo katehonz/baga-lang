@@ -66,6 +66,14 @@ void node_free(Node *n) {
             for (int i = 0; i < n->lit_values.len; i++) node_free(n->lit_values.data[i]);
             vec_free(n->lit_values);
             break;
+        case NODE_TRY:
+            node_free(n->try_expr);
+            break;
+        case NODE_CATCH:
+            node_free(n->catch_expr);
+            free(n->catch_effect);
+            node_free(n->catch_handler);
+            break;
         case NODE_LET:
             free(n->let_name);
             node_free(n->let_type);
@@ -489,7 +497,24 @@ static Node *parse_postfix(Parser *p) {
         /* ? — effect propagation */
         if (check(p, TOK_QUESTION)) {
             advance(p);
-            /* desugar: e? → for now treat as identity (Phase 4) */
+            Node *try = node_alloc(NODE_TRY, pos);
+            try->try_expr = e;
+            e = try;
+            continue;
+        }
+
+        /* catch !Effect => handler */
+        if (check(p, TOK_CATCH)) {
+            advance(p);
+            expect(p, TOK_BANG);
+            Token *eff = expect(p, TOK_IDENT);
+            expect(p, TOK_FAT_ARROW);
+            Node *handler = parse_unary(p);
+            Node *cat = node_alloc(NODE_CATCH, pos);
+            cat->catch_expr = e;
+            cat->catch_effect = eff->text ? strdup(eff->text) : strdup("");
+            cat->catch_handler = handler;
+            e = cat;
             continue;
         }
 
@@ -1030,6 +1055,15 @@ void print_ast(Node *n, int indent) {
                 fprintf(stderr, ".%s =\n", n->lit_fields[i]);
                 print_ast(n->lit_values.data[i], indent + 2);
             }
+            break;
+        case NODE_TRY:
+            fprintf(stderr, "TRY (?)\n");
+            print_ast(n->try_expr, indent + 1);
+            break;
+        case NODE_CATCH:
+            fprintf(stderr, "CATCH !%s\n", n->catch_effect);
+            print_ast(n->catch_expr, indent + 1);
+            print_ast(n->catch_handler, indent + 1);
             break;
         case NODE_TYPE:
             fprintf(stderr, "TYPE %s\n", n->type_name);

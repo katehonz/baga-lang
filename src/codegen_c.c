@@ -332,6 +332,17 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
         }
 
+        case NODE_CATCH: {
+            /* Phase 1: effects are compile-time only; emit the expression */
+            emit_expr(cg, n->catch_expr);
+            break;
+        }
+
+        case NODE_TRY:
+            /* e? — effects checked at compile time, emit e */
+            emit_expr(cg, n->try_expr);
+            break;
+
         case NODE_MATCH: {
             /* GCC statement expression */
             int tmp = cg->tmp_counter++;

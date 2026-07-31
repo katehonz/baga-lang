@@ -4,37 +4,11 @@
  *  Type helpers
  * ============================================================ */
 
-static Type type_singletons[6];
-static int  singletons_init = 0;
-
-static void init_singletons(void) {
-    if (singletons_init) return;
-    memset(type_singletons, 0, sizeof(type_singletons));
-    type_singletons[0].kind = TYPE_VOID;
-    type_singletons[1].kind = TYPE_BOOL;
-    type_singletons[2].kind = TYPE_I64;
-    type_singletons[3].kind = TYPE_F64;
-    type_singletons[4].kind = TYPE_STR;
-    type_singletons[5].kind = TYPE_ERROR;
-    singletons_init = 1;
-}
-
 Type *type_new(TypeKind kind) {
-    init_singletons();
-    switch (kind) {
-        case TYPE_VOID:  return &type_singletons[0];
-        case TYPE_BOOL:  return &type_singletons[1];
-        case TYPE_I64:   return &type_singletons[2];
-        case TYPE_F64:   return &type_singletons[3];
-        case TYPE_STR:   return &type_singletons[4];
-        case TYPE_ERROR: return &type_singletons[5];
-        default: {
-            Type *t = calloc(1, sizeof(Type));
-            if (!t) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
-            t->kind = kind;
-            return t;
-        }
-    }
+    Type *t = calloc(1, sizeof(Type));
+    if (!t) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    t->kind = kind;
+    return t;
 }
 
 Type *type_fn(Type *ret, Type **params, int nparams) {
@@ -73,6 +47,45 @@ int type_eq(Type *a, Type *b) {
     return 1;
 }
 
+/* ============================================================
+ *  Effect helpers
+ * ============================================================ */
+
+void type_add_effect(Type *t, const char *effect) {
+    if (!t || !effect) return;
+    if (type_has_effect(t, effect)) return;
+    t->effects = realloc(t->effects, sizeof(char *) * (size_t)(t->n_effects + 1));
+    if (!t->effects) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    t->effects[t->n_effects++] = strdup(effect);
+}
+
+int type_has_effect(Type *t, const char *effect) {
+    if (!t || !effect) return 0;
+    for (int i = 0; i < t->n_effects; i++) {
+        if (strcmp(t->effects[i], effect) == 0) return 1;
+    }
+    return 0;
+}
+
+void type_remove_effect(Type *t, const char *effect) {
+    if (!t || !effect) return;
+    for (int i = 0; i < t->n_effects; i++) {
+        if (strcmp(t->effects[i], effect) == 0) {
+            free(t->effects[i]);
+            for (int j = i; j < t->n_effects - 1; j++)
+                t->effects[j] = t->effects[j + 1];
+            t->n_effects--;
+            return;
+        }
+    }
+}
+
+void type_merge_effects(Type *dst, Type *src) {
+    if (!dst || !src) return;
+    for (int i = 0; i < src->n_effects; i++)
+        type_add_effect(dst, src->effects[i]);
+}
+
 /* Map a type AST node to a Type */
 static Type *resolve_type_node(Node *ty) {
     if (!ty) return type_new(TYPE_VOID);
@@ -99,8 +112,12 @@ static Type *resolve_type_node(Node *ty) {
             t->elem = resolve_type_node(ty->inner_type);
             return t;
         }
-        case NODE_TYPE_EFFECT:
-            return resolve_type_node(ty->inner_type);
+        case NODE_TYPE_EFFECT: {
+            Type *base = resolve_type_node(ty->inner_type);
+            for (int i = 0; i < ty->n_effects; i++)
+                type_add_effect(base, ty->effect_names[i]);
+            return base;
+        }
         default:
             return type_new(TYPE_ERROR);
     }
@@ -146,6 +163,7 @@ typedef struct {
     Checker *chk;
     const char *cur_fn;
     Type *cur_ret;   /* expected return type of current function */
+    Type *cur_effects; /* accumulated effects in current function body */
 } CheckCtx;
 
 static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
@@ -269,7 +287,14 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                 check_error(ctx, n->pos, "'%s' очаква %d аргумента, получих %d",
                             name, ft->nparams, n->args.len);
             }
-            return ft->ret ? ft->ret : type_new(TYPE_VOID);
+            Type *ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
+            /* propagate effects from function's return type */
+            Type *result = type_new(ret->kind);
+            type_merge_effects(result, ret);
+            /* accumulate at function level */
+            if (ctx->cur_effects)
+                type_merge_effects(ctx->cur_effects, ret);
+            return result;
         }
 
         check_error(ctx, n->pos, "непозната функция '%s'", name);
@@ -425,6 +450,33 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             break;
         }
 
+        case NODE_TRY: {
+            /* e? — infer e, propagate its effects to enclosing function */
+            Type *et = infer(ctx, n->try_expr);
+            t = type_new(et->kind);
+            type_merge_effects(t, et);
+            /* also accumulate at function level for checking */
+            if (ctx->cur_effects)
+                type_merge_effects(ctx->cur_effects, et);
+            break;
+        }
+
+        case NODE_CATCH: {
+            /* e catch !E => handler — remove effect E from e's type */
+            Type *et = infer(ctx, n->catch_expr);
+            infer(ctx, n->catch_handler);
+            t = type_new(et->kind);
+            /* copy all effects except the caught one */
+            for (int i = 0; i < et->n_effects; i++) {
+                if (strcmp(et->effects[i], n->catch_effect) != 0)
+                    type_add_effect(t, et->effects[i]);
+            }
+            /* remove caught effect from function-level accumulator */
+            if (ctx->cur_effects)
+                type_remove_effect(ctx->cur_effects, n->catch_effect);
+            break;
+        }
+
         case NODE_LET: {
             Type *init_t = n->let_init ? infer(ctx, n->let_init) : type_new(TYPE_I64);
             Type *decl_t = n->let_type ? resolve_type_node(n->let_type) : init_t;
@@ -509,6 +561,7 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 static void check_fn(CheckCtx *ctx, Node *fn) {
     ctx->cur_fn = fn->fn_name;
     ctx->cur_ret = fn->ret_type ? resolve_type_node(fn->ret_type) : type_new(TYPE_VOID);
+    ctx->cur_effects = type_new(TYPE_VOID); /* accumulator for body effects */
 
     push_scope(ctx);
 
@@ -522,14 +575,26 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
 
     /* check body */
     if (fn->fn_body) {
-        /* infer statements in the body block, but don't push another scope */
         for (int i = 0; i < fn->fn_body->stmts.len; i++)
             infer(ctx, fn->fn_body->stmts.data[i]);
+    }
+
+    /* effect checking: unhandled effects in body vs declared effects */
+    if (ctx->cur_effects) {
+        for (int i = 0; i < ctx->cur_effects->n_effects; i++) {
+            const char *eff = ctx->cur_effects->effects[i];
+            if (!type_has_effect(ctx->cur_ret, eff)) {
+                check_error(ctx, fn->pos,
+                    "необработен ефект !%s във '%s' — декларирай го в return типа или го хвани с catch",
+                    eff, fn->fn_name);
+            }
+        }
     }
 
     pop_scope(ctx);
     ctx->cur_fn = NULL;
     ctx->cur_ret = NULL;
+    ctx->cur_effects = NULL;
 }
 
 /* ============================================================
@@ -537,8 +602,6 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
  * ============================================================ */
 
 void check_program(Checker *c, Node *program) {
-    init_singletons();
-
     CheckCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.chk = c;
