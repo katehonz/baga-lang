@@ -342,6 +342,7 @@ typedef enum {
     TYPE_REF,
     TYPE_STRUCT,
     TYPE_FN,
+    TYPE_VEC,      /* dynamic array (baga_Vec *) */
     TYPE_ERROR,    /* sentinel for error recovery */
 } TypeKind;
 

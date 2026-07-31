@@ -33,6 +33,7 @@ const char *type_str(Type *t) {
         case TYPE_REF:   return "&T";
         case TYPE_STRUCT: return t->name ? t->name : "struct";
         case TYPE_FN:    return "fn";
+        case TYPE_VEC:   return "Vec";
     }
     return "?";
 }
@@ -302,6 +303,14 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"read_file", TYPE_STR, 1, 1},
             {"chr",       TYPE_STR, 1, 0},
             {"ord",       TYPE_I64, 1, 0},
+            {"vec_new",     TYPE_VEC, 0, 0},
+            {"vec_push",    TYPE_VOID, 2, 0},
+            {"vec_push_str",TYPE_VOID, 2, 0},
+            {"vec_get",     TYPE_I64, 2, 0},
+            {"vec_get_str", TYPE_STR, 2, 0},
+            {"vec_set",     TYPE_VOID, 3, 0},
+            {"vec_set_str", TYPE_VOID, 3, 0},
+            {"vec_len",     TYPE_I64, 1, 0},
         };
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {

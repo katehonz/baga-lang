@@ -1,0 +1,16 @@
+fn main() {
+    let v = vec_new()
+    vec_push(v, 10)
+    vec_push(v, 20)
+    vec_push(v, 30)
+    print(vec_len(v))
+    print(vec_get(v, 0))
+    print(vec_get(v, 1))
+    print(vec_get(v, 2))
+
+    let sv = vec_new()
+    vec_push_str(sv, "здравей")
+    vec_push_str(sv, "свят")
+    print(vec_get_str(sv, 0))
+    print(vec_get_str(sv, 1))
+}

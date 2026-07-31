@@ -264,6 +264,14 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"read_file", "baga_read_file"},
                     {"chr",       "baga_chr"},
                     {"ord",       "baga_ord"},
+                    {"vec_new",     "baga_vec_new"},
+                    {"vec_push",    "baga_vec_push_i64"},
+                    {"vec_push_str","baga_vec_push_str"},
+                    {"vec_get",     "baga_vec_get_i64"},
+                    {"vec_get_str", "baga_vec_get_str"},
+                    {"vec_set",     "baga_vec_set_i64"},
+                    {"vec_set_str", "baga_vec_set_str"},
+                    {"vec_len",     "baga_vec_len"},
                 };
                 for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                     if (strcmp(bn, bmap[bi].baga) == 0) {
@@ -476,6 +484,9 @@ static void emit_stmt(Codegen *cg, Node *n) {
                     case TYPE_STRUCT:
                         if (it->name) { char *sm = mangle_name(it->name); fprintf(f, "%s", sm); free(sm); }
                         else fprintf(f, "int64_t");
+                        break;
+                    case TYPE_VEC:
+                        fprintf(f, "baga_Vec *");
                         break;
                     default:        fprintf(f, "int64_t"); break;
                 }
@@ -731,6 +742,23 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
     fprintf(out, "static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* dynamic array */\n");
+    fprintf(out, "typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;\n");
+    fprintf(out, "static baga_Vec *baga_vec_new(void) {\n");
+    fprintf(out, "    baga_Vec *v = malloc(sizeof(baga_Vec));\n");
+    fprintf(out, "    v->cap = 8; v->len = 0; v->data = malloc(8 * sizeof(void *)); return v;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_vec_grow(baga_Vec *v) {\n");
+    fprintf(out, "    if (v->len == v->cap) { v->cap *= 2; v->data = realloc(v->data, (size_t)v->cap * sizeof(void *)); }\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_vec_push_i64(baga_Vec *v, int64_t x) { baga_vec_grow(v); v->data[v->len++] = (void *)(intptr_t)x; }\n");
+    fprintf(out, "static int64_t baga_vec_get_i64(baga_Vec *v, int64_t i) { return (int64_t)(intptr_t)v->data[i]; }\n");
+    fprintf(out, "static void baga_vec_set_i64(baga_Vec *v, int64_t i, int64_t x) { v->data[i] = (void *)(intptr_t)x; }\n");
+    fprintf(out, "static void baga_vec_push_str(baga_Vec *v, const char *s) { baga_vec_grow(v); v->data[v->len++] = (void *)s; }\n");
+    fprintf(out, "static const char *baga_vec_get_str(baga_Vec *v, int64_t i) { return (const char *)v->data[i]; }\n");
+    fprintf(out, "static void baga_vec_set_str(baga_Vec *v, int64_t i, const char *s) { v->data[i] = (void *)s; }\n");
+    fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
     fprintf(out, "\n");
 
     /* enums first */
