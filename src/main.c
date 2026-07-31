@@ -165,6 +165,17 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    /* check */
+    Checker checker;
+    memset(&checker, 0, sizeof(checker));
+    check_program(&checker, program);
+
+    if (checker.n_errors > 0) {
+        for (int i = 0; i < checker.n_errors; i++)
+            fprintf(stderr, "%s: %s\n", input_path, checker.errors[i]);
+        return 1;
+    }
+
 #ifdef BAGA_LLVM
     if (emit_llvm) {
         codegen_llvm(program, NULL);
@@ -176,17 +187,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 #endif
-
-    /* check */
-    Checker checker;
-    memset(&checker, 0, sizeof(checker));
-    check_program(&checker, program);
-
-    if (checker.n_errors > 0) {
-        for (int i = 0; i < checker.n_errors; i++)
-            fprintf(stderr, "%s: %s\n", input_path, checker.errors[i]);
-        return 1;
-    }
 
     /* codegen */
     if (emit_c) {

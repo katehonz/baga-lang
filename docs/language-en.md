@@ -721,8 +721,8 @@ spec факториел {
 
 `guarantees:` remains free-text documentation (status UNVERIFIED in
 `--proofs`); `ensures:` is executed (status RUNTIME-CHECKED). `ensures` on a
-function without a return type is a compile-time error. The LLVM backend does
-not support `ensures` yet.
+function without a return type is a compile-time error. The LLVM backend also
+executes `ensures` (and `requires`) — the same wrapper pattern as the C backend.
 
 ### 14.4 Preconditions (`requires:`)
 

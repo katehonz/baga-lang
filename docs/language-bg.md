@@ -723,8 +723,8 @@ spec факториел {
 
 `guarantees:` остава документация в свободен текст (статус UNVERIFIED в
 `--proofs`); `ensures:` се изпълнява (статус RUNTIME-CHECKED). `ensures` върху
-функция без върнат тип е грешка при компилация. LLVM backend-ът все още не
-поддържа `ensures`.
+функция без върнат тип е грешка при компилация. LLVM backend-ът също изпълнява
+`ensures` (и `requires`) — същият wrapper pattern като C backend-а.
 
 ### 14.4 Предусловия (`requires:`)
 

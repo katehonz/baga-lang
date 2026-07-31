@@ -6,7 +6,7 @@ SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/pr
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
-.PHONY: all clean test llvm
+.PHONY: all clean test test-llvm llvm
 
 all: $(BIN)
 
@@ -33,7 +33,10 @@ src/%.llvm.o: src/%.c include/baga.h
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(BIN)
+	rm -f $(OBJS) $(BIN) $(LLVM_OBJS) $(LLVM_BIN)
+
+test-llvm: $(BIN) $(LLVM_BIN)
+	@./tests/llvm_oracle.sh
 
 test: $(BIN)
 	@echo "=== здравей ==="
@@ -66,5 +69,7 @@ test: $(BIN)
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
 		&& echo "OK: --test-specs намери контрапример" \
 		|| { echo "FAIL: --test-specs не намери контрапример"; exit 1; }
+	@echo "=== LLVM оракул (C vs lli-14) ==="
+	@if [ -f ./$(LLVM_BIN) ]; then $(MAKE) -s test-llvm; else echo "(baga-llvm липсва — пропускам LLVM оракула)"; fi
 	@echo ""
 	@echo "Всички тестове минаха. ⚔️"

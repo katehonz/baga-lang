@@ -258,6 +258,36 @@ typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;
 
 ---
 
+### LLVM Backend (`src/codegen_llvm.c`)
+
+Алтернативен backend, който генерира LLVM IR директно от AST-то
+(`make llvm` → `baga-llvm --emit-llvm файл.baga`; изисква LLVM 14).
+
+Поддържа числовото ядро на езика:
+- Типове: `i64`, `i32`, `f64`, `bool`, `str` (само литерали + print), `void`
+- Изрази: литерали, ident, binary (int + f64 с промоция i64→f64 като в C
+  backend-а), unary (`-`, `!`), повиквания
+- Оператори: let, присвояване (`=`, `+=` …), return, if/else, while,
+  for (`0..n`) с break/continue, match върху i64, enum варианти
+- `print`/`println`/`write` — изходът е байт за байт същият като C backend-а
+  (`%lld`, `%g`, `true`/`false`, `%s`)
+- Contracts: wrapper pattern като C backend-а — requires преди и ensures след
+  повикването; нарушение → същото съобщение на stderr + exit(1)
+  (редът `  вход:` е само за C/`--test-specs`)
+
+Принцип „никакви тихи стойности": всеки конструкт извън този списък
+(struct, Vec, масиви, str builtins, ефекти `?`/`catch`, референции) е
+compile-time грешка, а не мълчаливо грешен код:
+
+```
+baga: LLVM backend: неподдържан конструкт '<какво>'
+```
+
+Оракълът `tests/llvm_oracle.sh` (викан от `make test`) сравнява изхода и
+exit кода на C backend-а и LLVM backend-а (през `lli-14`) за всички примери.
+
+---
+
 ## Self-Hosted Компилатор (`self/compiler.baga`)
 
 ### Архитектура

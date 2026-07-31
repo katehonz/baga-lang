@@ -255,6 +255,36 @@ Not formal proofs — structured documentation for human or AI verification.
 
 ---
 
+### LLVM Backend (`src/codegen_llvm.c`)
+
+Alternative backend that generates LLVM IR directly from the AST
+(`make llvm` → `baga-llvm --emit-llvm file.baga`; requires LLVM 14).
+
+Supports the numeric core of the language:
+- Types: `i64`, `i32`, `f64`, `bool`, `str` (literals + print only), `void`
+- Expressions: literals, idents, binary ops (int + f64 with i64→f64 promotion
+  as in the C backend), unary (`-`, `!`), calls
+- Statements: let, assignment (`=`, `+=` …), return, if/else, while,
+  for (`0..n`) with break/continue, match on i64, enum variants
+- `print`/`println`/`write` — output is byte-identical to the C backend
+  (`%lld`, `%g`, `true`/`false`, `%s`)
+- Contracts: same wrapper pattern as the C backend — requires before and
+  ensures after the call; a violation prints the same message to stderr and
+  exits 1 (the `  вход:` line is C/`--test-specs` only)
+
+"No silent values" principle: any construct outside this list (structs, Vec,
+arrays, str builtins, effects `?`/`catch`, references) is a compile-time
+error, not silently wrong code:
+
+```
+baga: LLVM backend: неподдържан конструкт '<what>'
+```
+
+The oracle `tests/llvm_oracle.sh` (run by `make test`) diffs the output and
+exit codes of the C backend vs the LLVM backend (via `lli-14`) for all examples.
+
+---
+
 ## Self-Hosted Compiler (`self/compiler.baga`)
 
 ### Architecture
