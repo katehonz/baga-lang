@@ -64,6 +64,7 @@ static void emit_type(Codegen *cg, Node *ty) {
             else if (strcmp(ty->type_name, "bool") == 0) fprintf(f, "int");
             else if (strcmp(ty->type_name, "str") == 0)  fprintf(f, "const char *");
             else if (strcmp(ty->type_name, "void") == 0) fprintf(f, "void");
+            else if (strcmp(ty->type_name, "Vec") == 0)  fprintf(f, "baga_Vec *");
             else {
                 /* struct or unknown → use mangled name */
                 emit_mangled(f, ty->type_name);
@@ -136,18 +137,21 @@ static int is_print_call(Node *n) {
     Node *callee = n->callee;
     if (callee->kind != NODE_IDENT) return 0;
     return strcmp(callee->name, "print") == 0 ||
-           strcmp(callee->name, "println") == 0;
+           strcmp(callee->name, "println") == 0 ||
+           strcmp(callee->name, "write") == 0;
 }
 
 static void emit_print(Codegen *cg, Node *n) {
     FILE *f = cg->out;
+    int is_write = (n->callee->kind == NODE_IDENT && strcmp(n->callee->name, "write") == 0);
+
     if (n->args.len == 0) {
         emit_indent(cg);
         fprintf(f, "printf(\"\\n\");\n");
         return;
     }
 
-    /* print each argument on its own line, dispatching on inferred type */
+    /* print each argument, dispatching on inferred type */
     for (int i = 0; i < n->args.len; i++) {
         Node *arg = n->args.data[i];
         Type *at = arg->type;
@@ -157,11 +161,17 @@ static void emit_print(Codegen *cg, Node *n) {
 
         if (ak == TYPE_STR || arg->kind == NODE_STR_LIT) {
             if (arg->kind == NODE_STR_LIT) {
-                fprintf(f, "printf(\"%%s\\n\", ");
+                if (is_write)
+                    fprintf(f, "baga_write(");
+                else
+                    fprintf(f, "printf(\"%%s\\n\", ");
                 emit_c_string(f, arg->str_val);
                 fprintf(f, ");\n");
             } else {
-                fprintf(f, "baga_print_str(");
+                if (is_write)
+                    fprintf(f, "baga_write(");
+                else
+                    fprintf(f, "baga_print_str(");
                 emit_expr(cg, arg);
                 fprintf(f, ");\n");
             }
@@ -231,11 +241,25 @@ static void emit_expr(Codegen *cg, Node *n) {
         }
 
         case NODE_BINARY:
-            fprintf(f, "(");
-            emit_expr(cg, n->left);
-            fprintf(f, " %s ", binop_c(n->bin_op));
-            emit_expr(cg, n->right);
-            fprintf(f, ")");
+            /* string comparison: == and != use strcmp */
+            if ((n->bin_op == OP_EQ || n->bin_op == OP_NEQ) &&
+                n->left->type && n->right->type &&
+                n->left->type->kind == TYPE_STR && n->right->type->kind == TYPE_STR) {
+                if (n->bin_op == OP_EQ)
+                    fprintf(f, "(strcmp(");
+                else
+                    fprintf(f, "(strcmp(");
+                emit_expr(cg, n->left);
+                fprintf(f, ", ");
+                emit_expr(cg, n->right);
+                fprintf(f, ") %s 0)", n->bin_op == OP_EQ ? "==" : "!=");
+            } else {
+                fprintf(f, "(");
+                emit_expr(cg, n->left);
+                fprintf(f, " %s ", binop_c(n->bin_op));
+                emit_expr(cg, n->right);
+                fprintf(f, ")");
+            }
             break;
 
         case NODE_UNARY:
@@ -736,6 +760,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_print_i64(int64_t v) { printf(\"%%lld\\n\", (long long)v); }\n");
     fprintf(out, "static void baga_print_f64(double v)  { printf(\"%%g\\n\", v); }\n");
     fprintf(out, "static void baga_print_str(const char *s) { printf(\"%%s\\n\", s); }\n");
+    fprintf(out, "static void baga_write(const char *s) { printf(\"%%s\", s); }\n");
     fprintf(out, "static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n");
     fprintf(out, "static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n");
     fprintf(out, "static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n");
@@ -801,7 +826,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     /* function definitions */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
-        if (item->kind == NODE_FN)
+        if (item->kind == NODE_FN && item->fn_body)
             emit_fn(cg, item);
     }
 

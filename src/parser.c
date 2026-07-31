@@ -795,6 +795,16 @@ static Node *parse_fn(Parser *p) {
         ret_type = parse_type_with_effects(p, ret_type);
     }
 
+    /* forward declaration: fn name(...) -> T  (no body) */
+    if (!check(p, TOK_LBRACE)) {
+        Node *fn = node_alloc(NODE_FN, pos);
+        fn->fn_name = name;
+        fn->params = params;
+        fn->ret_type = ret_type;
+        fn->fn_body = NULL;
+        return fn;
+    }
+
     Node *body = parse_block(p);
 
     Node *fn = node_alloc(NODE_FN, pos);

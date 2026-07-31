@@ -98,6 +98,7 @@ static Type *resolve_type_node(Node *ty) {
             if (strcmp(ty->type_name, "bool") == 0) return type_new(TYPE_BOOL);
             if (strcmp(ty->type_name, "str") == 0)  return type_new(TYPE_STR);
             if (strcmp(ty->type_name, "void") == 0) return type_new(TYPE_VOID);
+            if (strcmp(ty->type_name, "Vec") == 0)  return type_new(TYPE_VEC);
             {
                 Type *t = type_new(TYPE_STRUCT);
                 t->name = strdup(ty->type_name);
@@ -289,7 +290,8 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
     if (n->callee->kind == NODE_IDENT) {
         const char *name = n->callee->name;
 
-        if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
+        if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0 ||
+            strcmp(name, "write") == 0) {
             n->callee->type = type_new(TYPE_VOID);
             return type_new(TYPE_VOID);
         }
