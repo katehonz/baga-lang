@@ -696,6 +696,60 @@ The compiler rejects a program when a spec disagrees with its function:
 Guarantees themselves are not yet formally proven; `--proofs` reports them with
 the status `UNVERIFIED — requires formal proof or testing`.
 
+### 14.3 Executable guarantees (`ensures:`)
+
+The `ensures:` section holds boolean Baga expressions, separated by commas.
+The names of the input parameters and `output` — the returned value — are
+visible inside them. The compiler type-checks each expression (it must be
+`bool`) and compiles it into a runtime check that runs after every call of the
+function — including recursive ones. On violation the program stops:
+
+```
+spec 'удвой': ensures #1 нарушена: output == 2 * x
+```
+
+```baga
+spec факториел {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output > 0,
+        n <= 1 || output >= n
+}
+```
+
+`guarantees:` remains free-text documentation (status UNVERIFIED in
+`--proofs`); `ensures:` is executed (status RUNTIME-CHECKED). `ensures` on a
+function without a return type is a compile-time error. The LLVM backend does
+not support `ensures` yet.
+
+### 14.4 Preconditions (`requires:`)
+
+The `requires:` section holds boolean expressions over the input parameters,
+separated by commas. They are type-checked at compile time and executed
+**before** the function body on every call. On violation the program stops:
+
+```
+spec 'корен': requires #1 нарушено: x >= 0
+```
+
+```baga
+spec корен {
+    input:
+        x: i64
+    output: i64
+    requires:
+        x >= 0
+    ensures:
+        output >= 0
+}
+```
+
+`requires` is also allowed on functions without a return type (unlike
+`ensures`, which requires `output`). `output` is not visible inside requires
+expressions.
+
 ---
 
 ## 15. Proof Extraction
@@ -984,6 +1038,9 @@ Bulgarian; English glosses follow.
 | `spec '<name>': input има N параметъра, но функцията има M` | Spec/function arity mismatch. |
 | `spec '<name>': параметър '<p>' е A в spec-а, но B във функцията` | Spec/function parameter type mismatch. |
 | `spec '<name>': output е A, но функцията връща B` | Spec/function return type mismatch. |
+| `spec '<name>': ensures изисква функция с върнат тип` | `ensures` on a void function. |
+| `spec '<name>': ensures #N е A, очаквах bool` | The ensures expression is not boolean. |
+| `spec '<name>': requires #N е A, очаквах bool` | The requires expression is not boolean. |
 
 ### 17.6 Program structure
 

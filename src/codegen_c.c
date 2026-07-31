@@ -624,10 +624,33 @@ static void emit_stmt(Codegen *cg, Node *n) {
     }
 }
 
+/* ---- spec ensures ---- */
+
+/* Намира spec с ensures или requires за дадена функция (NULL ако няма). */
+static Node *find_ensures_spec(Codegen *cg, const char *fn_name) {
+    if (!cg->program) return NULL;
+    for (int i = 0; i < cg->program->items.len; i++) {
+        Node *it = cg->program->items.data[i];
+        if (it->kind == NODE_SPEC && strcmp(it->spec_name, fn_name) == 0 &&
+            (it->spec_ensures.len > 0 || it->spec_requires.len > 0))
+            return it;
+    }
+    return NULL;
+}
+
 /* ---- function emission ---- */
 
 static void emit_fn(Codegen *cg, Node *fn) {
     FILE *f = cg->out;
+
+    Node *ensures_spec = (fn->fn_body)
+                       ? find_ensures_spec(cg, fn->fn_name) : NULL;
+    char impl_name_buf[512];
+    if (ensures_spec) {
+        /* оригиналното тяло става static impl функция */
+        snprintf(impl_name_buf, sizeof impl_name_buf, "__impl_%s", fn->fn_name);
+        fprintf(f, "static ");
+    }
 
     /* return type */
     if (fn->ret_type) {
@@ -638,7 +661,7 @@ static void emit_fn(Codegen *cg, Node *fn) {
     fprintf(f, " ");
 
     /* name */
-    char *m = mangle_name(fn->fn_name);
+    char *m = mangle_name(ensures_spec ? impl_name_buf : fn->fn_name);
     fprintf(f, "%s", m);
     free(m);
 
@@ -684,6 +707,99 @@ static void emit_fn(Codegen *cg, Node *fn) {
         fprintf(f, "{}");
     }
     fprintf(f, "\n\n");
+
+    if (!ensures_spec) return;
+
+    /* wrapper: публичното име, проверява requires преди и ensures след повикването */
+    if (fn->ret_type) {
+        emit_type(cg, fn->ret_type);
+    } else {
+        fprintf(f, "void");
+    }
+    fprintf(f, " ");
+    char *wm = mangle_name(fn->fn_name);
+    fprintf(f, "%s", wm);
+    free(wm);
+    fprintf(f, "(");
+    if (ensures_spec->spec_inputs.len == 0) {
+        fprintf(f, "void");
+    } else {
+        for (int i = 0; i < ensures_spec->spec_inputs.len; i++) {
+            if (i > 0) fprintf(f, ", ");
+            Node *sp = ensures_spec->spec_inputs.data[i];
+            emit_type(cg, sp->param_type);
+            fprintf(f, " ");
+            char *pm = mangle_name(sp->param_name);
+            fprintf(f, "%s", pm);
+            free(pm);
+        }
+    }
+    fprintf(f, ") {\n");
+    cg->indent++;
+
+    /* провери предусловията преди повикването */
+    for (int j = 0; j < ensures_spec->spec_requires.len; j++) {
+        Node *rq = ensures_spec->spec_requires.data[j];
+        emit_indent(cg);
+        fprintf(f, "if (!(");
+        emit_expr(cg, rq->ensure_expr);
+        fprintf(f, ")) baga_spec_fail(");
+        emit_c_string(f, ensures_spec->spec_name);
+        fprintf(f, ", \"requires\", %d, ", j + 1);
+        emit_c_string(f, rq->ensure_text);
+        fprintf(f, ");\n");
+    }
+
+    if (fn->ret_type) {
+        /* повикай impl и запази резултата като b_output */
+        emit_indent(cg);
+        emit_type(cg, fn->ret_type);
+        fprintf(f, " b_output = ");
+        char *im = mangle_name(impl_name_buf);
+        fprintf(f, "%s(", im);
+        free(im);
+        for (int i = 0; i < ensures_spec->spec_inputs.len; i++) {
+            if (i > 0) fprintf(f, ", ");
+            char *pm = mangle_name(ensures_spec->spec_inputs.data[i]->param_name);
+            fprintf(f, "%s", pm);
+            free(pm);
+        }
+        fprintf(f, ");\n");
+
+        /* провери всяка ensures гаранция */
+        for (int j = 0; j < ensures_spec->spec_ensures.len; j++) {
+            Node *en = ensures_spec->spec_ensures.data[j];
+            emit_indent(cg);
+            fprintf(f, "if (!(");
+            emit_expr(cg, en->ensure_expr);
+            fprintf(f, ")) baga_spec_fail(");
+            emit_c_string(f, ensures_spec->spec_name);
+            fprintf(f, ", \"ensures\", %d, ", j + 1);
+            emit_c_string(f, en->ensure_text);
+            fprintf(f, ");\n");
+        }
+
+        emit_indent(cg);
+        fprintf(f, "return b_output;\n");
+    } else {
+        /* void функция: само повикай impl след предусловията */
+        emit_indent(cg);
+        char *im = mangle_name(impl_name_buf);
+        fprintf(f, "%s(", im);
+        free(im);
+        for (int i = 0; i < ensures_spec->spec_inputs.len; i++) {
+            if (i > 0) fprintf(f, ", ");
+            char *pm = mangle_name(ensures_spec->spec_inputs.data[i]->param_name);
+            fprintf(f, "%s", pm);
+            free(pm);
+        }
+        fprintf(f, ");\n");
+        emit_indent(cg);
+        fprintf(f, "return;\n");
+    }
+    cg->indent--;
+    emit_indent(cg);
+    fprintf(f, "}\n\n");
 }
 
 /* ---- struct emission ---- */
@@ -779,6 +895,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
     fprintf(out, "static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
+    fprintf(out, "static void baga_spec_fail(const char *spec, const char *kind, int64_t idx, const char *expr) {\n");
+    fprintf(out, "    if (strcmp(kind, \"requires\") == 0)\n");
+    fprintf(out, "        fprintf(stderr, \"spec '%%s': requires #%%lld нарушено: %%s\\n\", spec, (long long)idx, expr);\n");
+    fprintf(out, "    else\n");
+    fprintf(out, "        fprintf(stderr, \"spec '%%s': ensures #%%lld нарушена: %%s\\n\", spec, (long long)idx, expr);\n");
+    fprintf(out, "    exit(1);\n");
+    fprintf(out, "}\n");
     fprintf(out, "\n");
     fprintf(out, "/* dynamic array */\n");
     fprintf(out, "typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;\n");

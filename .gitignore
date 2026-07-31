@@ -3,3 +3,5 @@ baga
 /tmp/
 baga-llvm
 *.llvm.o
+blog/
+idea/

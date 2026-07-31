@@ -1,0 +1,16 @@
+// Функцията нарушава собствения си spec — ensures хваща грешката по време на изпълнение
+spec удвой {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output == 2 * x
+}
+
+fn удвой(x: i64) -> i64 {
+    return x + x + 1
+}
+
+fn main() {
+    print(удвой(5))
+}

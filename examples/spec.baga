@@ -6,6 +6,8 @@ spec сортирай {
     guarantees:
         - output is sorted
         - output has same elements as input
+    ensures:
+        output >= arr
 }
 
 // Impl описва КАК го прави

@@ -130,6 +130,14 @@ void node_free(Node *n) {
             node_free(n->spec_output);
             for (int i = 0; i < n->n_guarantees; i++) free(n->spec_guarantees[i]);
             free(n->spec_guarantees);
+            for (int i = 0; i < n->spec_ensures.len; i++) node_free(n->spec_ensures.data[i]);
+            vec_free(n->spec_ensures);
+            for (int i = 0; i < n->spec_requires.len; i++) node_free(n->spec_requires.data[i]);
+            vec_free(n->spec_requires);
+            break;
+        case NODE_ENSURE:
+            free(n->ensure_text);
+            node_free(n->ensure_expr);
             break;
         case NODE_ENUM:
             free(n->enum_name);
@@ -853,6 +861,8 @@ static Node *parse_spec(Parser *p) {
     NodeVec inputs = {0};
     Node *output = NULL;
     VEC(char *) guarantees = {0};
+    NodeVec ensures = {0};
+    NodeVec requires = {0};
 
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
         if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "input") == 0) {
@@ -860,7 +870,9 @@ static Node *parse_spec(Parser *p) {
             expect(p, TOK_COLON);
             while (check(p, TOK_IDENT) &&
                    strcmp(cur(p)->text, "output") != 0 &&
-                   strcmp(cur(p)->text, "guarantees") != 0) {
+                   strcmp(cur(p)->text, "guarantees") != 0 &&
+                   strcmp(cur(p)->text, "requires") != 0 &&
+                   strcmp(cur(p)->text, "ensures") != 0) {
                 SrcPos ppos = cur(p)->pos;
                 char *pname = expect_ident(p);
                 expect(p, TOK_COLON);
@@ -881,7 +893,10 @@ static Node *parse_spec(Parser *p) {
             while (match(p, TOK_MINUS)) {
                 char buf[256] = {0};
                 int bi = 0;
-                while (!check(p, TOK_MINUS) && !check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                while (!check(p, TOK_MINUS) && !check(p, TOK_RBRACE) && !check(p, TOK_EOF) &&
+                       !(check(p, TOK_IDENT) && cur(p)->text &&
+                         (strcmp(cur(p)->text, "requires") == 0 ||
+                          strcmp(cur(p)->text, "ensures") == 0))) {
                     Token *t = advance(p);
                     if (t->text && bi < 250) {
                         if (bi > 0) buf[bi++] = ' ';
@@ -891,6 +906,54 @@ static Node *parse_spec(Parser *p) {
                 }
                 buf[bi] = '\0';
                 vec_push(guarantees, strdup(buf));
+            }
+        } else if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "ensures") == 0) {
+            advance(p);
+            expect(p, TOK_COLON);
+            while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                int tstart = p->pos;
+                SrcPos epos = cur(p)->pos;
+                Node *expr = parse_expr(p);
+                /* възстанови текста на израза от токените за съобщенията */
+                char buf[512] = {0};
+                int bi = 0;
+                for (int ti = tstart; ti < p->pos; ti++) {
+                    Token *t = &p->tokens[ti];
+                    if (!t->text) continue;
+                    int tl = (int)strlen(t->text);
+                    if (bi > 0 && bi < 500) buf[bi++] = ' ';
+                    if (bi + tl < 500) { memcpy(buf + bi, t->text, (size_t)tl); bi += tl; }
+                }
+                buf[bi] = '\0';
+                Node *en = node_alloc(NODE_ENSURE, epos);
+                en->ensure_text = strdup(buf);
+                en->ensure_expr = expr;
+                vec_push(ensures, en);
+                if (!match(p, TOK_COMMA)) break;
+            }
+        } else if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "requires") == 0) {
+            advance(p);
+            expect(p, TOK_COLON);
+            while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                int tstart = p->pos;
+                SrcPos epos = cur(p)->pos;
+                Node *expr = parse_expr(p);
+                /* възстанови текста на израза от токените за съобщенията */
+                char buf[512] = {0};
+                int bi = 0;
+                for (int ti = tstart; ti < p->pos; ti++) {
+                    Token *t = &p->tokens[ti];
+                    if (!t->text) continue;
+                    int tl = (int)strlen(t->text);
+                    if (bi > 0 && bi < 500) buf[bi++] = ' ';
+                    if (bi + tl < 500) { memcpy(buf + bi, t->text, (size_t)tl); bi += tl; }
+                }
+                buf[bi] = '\0';
+                Node *en = node_alloc(NODE_ENSURE, epos);
+                en->ensure_text = strdup(buf);
+                en->ensure_expr = expr;
+                vec_push(requires, en);
+                if (!match(p, TOK_COMMA)) break;
             }
         } else {
             advance(p);
@@ -904,6 +967,8 @@ static Node *parse_spec(Parser *p) {
     s->spec_output = output;
     s->spec_guarantees = guarantees.data;
     s->n_guarantees = guarantees.len;
+    s->spec_ensures = ensures;
+    s->spec_requires = requires;
     return s;
 }
 
@@ -1147,6 +1212,10 @@ void print_ast(Node *n, int indent) {
             break;
         case NODE_SPEC:
             fprintf(stderr, "SPEC \"%s\"\n", n->spec_name);
+            for (int i = 0; i < n->spec_ensures.len; i++)
+                fprintf(stderr, "  ensures: %s\n", n->spec_ensures.data[i]->ensure_text);
+            for (int i = 0; i < n->spec_requires.len; i++)
+                fprintf(stderr, "  requires: %s\n", n->spec_requires.data[i]->ensure_text);
             break;
         case NODE_ENUM:
             fprintf(stderr, "ENUM %s", n->enum_name);

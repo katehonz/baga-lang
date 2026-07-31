@@ -1,0 +1,20 @@
+// requires се проверява ПРЕДИ тялото — нарушението спира програмата веднага
+spec корен {
+    input:
+        x: i64
+    output: i64
+    requires:
+        x >= 0
+    ensures:
+        output >= 0
+}
+
+fn корен(x: i64) -> i64 {
+    if x < 0 { return -1 }
+    return x
+}
+
+fn main() {
+    print(корен(9))
+    print(корен(-5))
+}

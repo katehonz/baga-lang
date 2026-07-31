@@ -768,6 +768,54 @@ void check_program(Checker *c, Node *program) {
                     item->spec_name, type_str(spec_ret), type_str(fn_ret));
             }
         }
+
+        /* check ensures expressions (type-check in scope: inputs + output) */
+        if (item->spec_ensures.len > 0) {
+            Type *fn_ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
+            if (fn_ret->kind == TYPE_VOID) {
+                check_error(&ctx, item->pos,
+                    "spec '%s': ensures изисква функция с върнат тип",
+                    item->spec_name);
+            } else {
+                push_scope(&ctx);
+                for (int j = 0; j < item->spec_inputs.len; j++) {
+                    Node *sp = item->spec_inputs.data[j];
+                    env_define(&ctx, sp->param_name,
+                               resolve_type_node(sp->param_type), sp->pos);
+                }
+                env_define(&ctx, "output", fn_ret, item->pos);
+                for (int j = 0; j < item->spec_ensures.len; j++) {
+                    Node *en = item->spec_ensures.data[j];
+                    Type *et = infer(&ctx, en->ensure_expr);
+                    if (et->kind != TYPE_BOOL && et->kind != TYPE_ERROR) {
+                        check_error(&ctx, en->pos,
+                            "spec '%s': ensures #%d е %s, очаквах bool",
+                            item->spec_name, j + 1, type_str(et));
+                    }
+                }
+                pop_scope(&ctx);
+            }
+        }
+
+        /* check requires expressions (scope: inputs only, no output) */
+        if (item->spec_requires.len > 0) {
+            push_scope(&ctx);
+            for (int j = 0; j < item->spec_inputs.len; j++) {
+                Node *sp = item->spec_inputs.data[j];
+                env_define(&ctx, sp->param_name,
+                           resolve_type_node(sp->param_type), sp->pos);
+            }
+            for (int j = 0; j < item->spec_requires.len; j++) {
+                Node *rq = item->spec_requires.data[j];
+                Type *rt = infer(&ctx, rq->ensure_expr);
+                if (rt->kind != TYPE_BOOL && rt->kind != TYPE_ERROR) {
+                    check_error(&ctx, rq->pos,
+                        "spec '%s': requires #%d е %s, очаквах bool",
+                        item->spec_name, j + 1, type_str(rt));
+                }
+            }
+            pop_scope(&ctx);
+        }
     }
 
     /* pass 3: check function bodies */

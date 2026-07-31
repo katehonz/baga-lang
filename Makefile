@@ -52,5 +52,14 @@ test: $(BIN)
 	./$(BIN) examples/effects.baga
 	@echo "=== spec ==="
 	./$(BIN) examples/spec.baga
+	@./$(BIN) examples/spec_ensures.baga > /dev/null
+	@echo "=== spec_ensures_fail (очакваме runtime грешка) ==="
+	@./$(BIN) examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
+		&& echo "OK: ensures гаранцията е хваната" \
+		|| { echo "FAIL: ensures не е хваната"; exit 1; }
+	@echo "=== spec_requires_fail (очакваме runtime грешка) ==="
+	@./$(BIN) examples/spec_requires_fail.baga 2>&1 | grep -q "requires #1 нарушено" \
+		&& echo "OK: requires предусловието е хванато" \
+		|| { echo "FAIL: requires не е хванато"; exit 1; }
 	@echo ""
 	@echo "Всички тестове минаха. ⚔️"

@@ -170,6 +170,7 @@ typedef enum {
     NODE_FIELD_DECL,
     NODE_SPEC,
     NODE_ENUM,
+    NODE_ENSURE,      /* ensures елемент: текст + булев израз */
 
     /* type expressions */
     NODE_TYPE,        /* simple named type: i32, f64, str, bool */
@@ -309,6 +310,8 @@ struct Node {
             Node *spec_output;     /* type node */
             char **spec_guarantees;
             int n_guarantees;
+            NodeVec spec_ensures;  /* NODE_ENSURE */
+            NodeVec spec_requires; /* NODE_ENSURE — предусловия */
         };
 
         /* NODE_ENUM */
@@ -317,6 +320,9 @@ struct Node {
             char **enum_variants;
             int n_variants;
         };
+
+        /* NODE_ENSURE */
+        struct { char *ensure_text; Node *ensure_expr; };
 
         /* NODE_TYPE, NODE_TYPE_REF, NODE_TYPE_ARRAY, NODE_TYPE_EFFECT */
         struct {

@@ -157,7 +157,14 @@ void print_proofs(Node *program) {
             for (int j = 0; j < spec->n_guarantees; j++) {
                 printf("    guarantee: %s\n", spec->spec_guarantees[j]);
             }
-            printf("    status: UNVERIFIED — requires formal proof or testing\n\n");
+            for (int j = 0; j < spec->spec_requires.len; j++)
+                printf("    requires: %s\n", spec->spec_requires.data[j]->ensure_text);
+            for (int j = 0; j < spec->spec_ensures.len; j++)
+                printf("    ensures: %s\n", spec->spec_ensures.data[j]->ensure_text);
+            if (spec->spec_ensures.len > 0 || spec->spec_requires.len > 0)
+                printf("    status: RUNTIME-CHECKED\n\n");
+            else
+                printf("    status: UNVERIFIED — requires formal proof or testing\n\n");
         }
     }
 }

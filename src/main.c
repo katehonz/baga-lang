@@ -1,6 +1,7 @@
 #include "baga.h"
 #include <errno.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 static char *read_file(const char *path, int *out_len) {
     FILE *f = fopen(path, "rb");
@@ -141,6 +142,16 @@ int main(int argc, char **argv) {
                 for (int j = 0; j < item->n_guarantees; j++)
                     printf("        - %s\n", item->spec_guarantees[j]);
             }
+            if (item->spec_requires.len > 0) {
+                printf("    requires:\n");
+                for (int j = 0; j < item->spec_requires.len; j++)
+                    printf("        %s\n", item->spec_requires.data[j]->ensure_text);
+            }
+            if (item->spec_ensures.len > 0) {
+                printf("    ensures:\n");
+                for (int j = 0; j < item->spec_ensures.len; j++)
+                    printf("        %s\n", item->spec_ensures.data[j]->ensure_text);
+            }
             printf("}\n\n");
         }
         return 0;
@@ -211,7 +222,10 @@ int main(int argc, char **argv) {
         remove(c_path);
         remove(bin_path);
 
-        return ret;
+        /* propagate the program's exit code */
+        if (ret == -1) return 1;
+        if (WIFEXITED(ret)) return WEXITSTATUS(ret);
+        return 1;
     }
 
     /* cleanup */
