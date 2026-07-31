@@ -1,0 +1,234 @@
+// lexer.baga — токенизатор на Бага, написан на Бага
+// Фаза 2: Self-hosting, стъпка 1
+
+fn is_digit(c: i64) -> i64 {
+    if c >= 48 {
+        if c <= 57 {
+            return 1
+        }
+    }
+    0
+}
+
+fn is_alpha(c: i64) -> i64 {
+    if c >= 97 {
+        if c <= 122 { return 1 }
+    }
+    if c >= 65 {
+        if c <= 90 { return 1 }
+    }
+    if c == 95 { return 1 }
+    if c >= 128 { return 1 }
+    0
+}
+
+fn is_alnum(c: i64) -> i64 {
+    if is_alpha(c) == 1 { return 1 }
+    if is_digit(c) == 1 { return 1 }
+    0
+}
+
+fn kw_kind(s: str) -> i64 {
+    if str_eq(s, "fn") { return 1 }
+    if str_eq(s, "let") { return 2 }
+    if str_eq(s, "mut") { return 3 }
+    if str_eq(s, "if") { return 4 }
+    if str_eq(s, "else") { return 5 }
+    if str_eq(s, "while") { return 6 }
+    if str_eq(s, "for") { return 7 }
+    if str_eq(s, "in") { return 8 }
+    if str_eq(s, "return") { return 9 }
+    if str_eq(s, "match") { return 10 }
+    if str_eq(s, "struct") { return 11 }
+    if str_eq(s, "enum") { return 12 }
+    if str_eq(s, "spec") { return 13 }
+    if str_eq(s, "true") { return 14 }
+    if str_eq(s, "false") { return 15 }
+    if str_eq(s, "catch") { return 16 }
+    if str_eq(s, "break") { return 17 }
+    if str_eq(s, "continue") { return 18 }
+    0
+}
+
+fn kw_name(k: i64) -> str {
+    match k {
+        1 => "fn",
+        2 => "let",
+        3 => "mut",
+        4 => "if",
+        5 => "else",
+        6 => "while",
+        7 => "for",
+        8 => "in",
+        9 => "return",
+        10 => "match",
+        11 => "struct",
+        12 => "enum",
+        13 => "spec",
+        14 => "true",
+        15 => "false",
+        16 => "catch",
+        17 => "break",
+        18 => "continue",
+        _ => "ident",
+    }
+}
+
+fn tokenize(src: str) {
+    let kinds = vec_new()
+    let texts = vec_new()
+    let mut pos: i64 = 0
+    let n = len(src)
+
+    while pos < n {
+        let c = char_at(src, pos)
+
+        // whitespace
+        if c == 32 { pos = pos + 1; continue }
+        if c == 10 { pos = pos + 1; continue }
+        if c == 13 { pos = pos + 1; continue }
+        if c == 9  { pos = pos + 1; continue }
+
+        // line comment
+        if c == 47 {
+            if pos + 1 < n {
+                if char_at(src, pos + 1) == 47 {
+                    while pos < n {
+                        if char_at(src, pos) == 10 { break }
+                        pos = pos + 1
+                    }
+                    continue
+                }
+            }
+        }
+
+        // identifier / keyword
+        if is_alpha(c) == 1 {
+            let start = pos
+            while pos < n {
+                if is_alnum(char_at(src, pos)) == 1 { pos = pos + 1 }
+                else { break }
+            }
+            let text = substr(src, start, pos)
+            let kw = kw_kind(text)
+            if kw > 0 {
+                vec_push(kinds, kw)
+                vec_push_str(texts, text)
+            } else {
+                vec_push(kinds, 0)
+                vec_push_str(texts, text)
+            }
+            continue
+        }
+
+        // number
+        if is_digit(c) == 1 {
+            let start = pos
+            while pos < n {
+                if is_digit(char_at(src, pos)) == 1 { pos = pos + 1 }
+                else { break }
+            }
+            vec_push(kinds, 100)
+            vec_push_str(texts, substr(src, start, pos))
+            continue
+        }
+
+        // string literal
+        if c == 34 {
+            pos = pos + 1
+            let start = pos
+            while pos < n {
+                let sc = char_at(src, pos)
+                if sc == 34 { break }
+                if sc == 92 { pos = pos + 1 }
+                pos = pos + 1
+            }
+            vec_push(kinds, 101)
+            vec_push_str(texts, substr(src, start, pos))
+            if pos < n { pos = pos + 1 }
+            continue
+        }
+
+        // two-char operators
+        if pos + 1 < n {
+            let c2 = char_at(src, pos + 1)
+            let mut handled: i64 = 0
+
+            if c == 45 {
+                if c2 == 62 { vec_push(kinds, 200); vec_push_str(texts, "->"); pos = pos + 2; handled = 1 }
+            }
+            if c == 61 {
+                if c2 == 61 { vec_push(kinds, 201); vec_push_str(texts, "=="); pos = pos + 2; handled = 1 }
+                if c2 == 62 { vec_push(kinds, 202); vec_push_str(texts, "=>"); pos = pos + 2; handled = 1 }
+            }
+            if c == 33 {
+                if c2 == 61 { vec_push(kinds, 203); vec_push_str(texts, "!="); pos = pos + 2; handled = 1 }
+            }
+            if c == 60 {
+                if c2 == 61 { vec_push(kinds, 204); vec_push_str(texts, "<="); pos = pos + 2; handled = 1 }
+                if c2 == 60 { vec_push(kinds, 205); vec_push_str(texts, "<<"); pos = pos + 2; handled = 1 }
+            }
+            if c == 62 {
+                if c2 == 61 { vec_push(kinds, 206); vec_push_str(texts, ">="); pos = pos + 2; handled = 1 }
+                if c2 == 62 { vec_push(kinds, 207); vec_push_str(texts, ">>"); pos = pos + 2; handled = 1 }
+            }
+            if c == 38 {
+                if c2 == 38 { vec_push(kinds, 208); vec_push_str(texts, "&&"); pos = pos + 2; handled = 1 }
+            }
+            if c == 124 {
+                if c2 == 124 { vec_push(kinds, 209); vec_push_str(texts, "||"); pos = pos + 2; handled = 1 }
+            }
+            if c == 46 {
+                if c2 == 46 { vec_push(kinds, 210); vec_push_str(texts, ".."); pos = pos + 2; handled = 1 }
+            }
+            if c == 43 {
+                if c2 == 61 { vec_push(kinds, 211); vec_push_str(texts, "+="); pos = pos + 2; handled = 1 }
+            }
+            if c == 45 {
+                if c2 == 61 { vec_push(kinds, 212); vec_push_str(texts, "-="); pos = pos + 2; handled = 1 }
+            }
+
+            if handled == 1 { continue }
+        }
+
+        // single-char tokens
+        vec_push(kinds, 300)
+        vec_push_str(texts, chr(c))
+        pos = pos + 1
+    }
+
+    // print tokens
+    let count = vec_len(kinds)
+    let mut i: i64 = 0
+    while i < count {
+        let k = vec_get(kinds, i)
+        let t = vec_get_str(texts, i)
+        if k == 0 {
+            print(concat("IDENT ", t))
+        } else {
+            if k < 100 {
+                print(concat(kw_name(k), concat(" ", t)))
+            } else {
+                if k == 100 {
+                    print(concat("INT ", t))
+                } else {
+                    if k == 101 {
+                        print(concat("STR ", t))
+                    } else {
+                        if k >= 200 {
+                            print(concat("OP ", t))
+                        } else {
+                            print(concat("TOK ", t))
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+fn main() {
+    let src = read_file("examples/zdravei.baga") catch !IO => ""
+    tokenize(src)
+}

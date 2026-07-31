@@ -264,6 +264,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"read_file", "baga_read_file"},
                     {"chr",       "baga_chr"},
                     {"ord",       "baga_ord"},
+                    {"str_eq",    "baga_str_eq"},
                     {"vec_new",     "baga_vec_new"},
                     {"vec_push",    "baga_vec_push_i64"},
                     {"vec_push_str","baga_vec_push_str"},
@@ -576,6 +577,16 @@ static void emit_stmt(Codegen *cg, Node *n) {
             }
             break;
 
+        case NODE_BREAK:
+            emit_indent(cg);
+            fprintf(f, "break;\n");
+            break;
+
+        case NODE_CONTINUE:
+            emit_indent(cg);
+            fprintf(f, "continue;\n");
+            break;
+
         case NODE_BLOCK:
             emit_indent(cg);
             emit_block(cg, n);
@@ -742,6 +753,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
     fprintf(out, "static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n");
+    fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
     fprintf(out, "\n");
     fprintf(out, "/* dynamic array */\n");
     fprintf(out, "typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;\n");

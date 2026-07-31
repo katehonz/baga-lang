@@ -303,6 +303,7 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"read_file", TYPE_STR, 1, 1},
             {"chr",       TYPE_STR, 1, 0},
             {"ord",       TYPE_I64, 1, 0},
+            {"str_eq",    TYPE_BOOL, 2, 0},
             {"vec_new",     TYPE_VEC, 0, 0},
             {"vec_push",    TYPE_VOID, 2, 0},
             {"vec_push_str",TYPE_VOID, 2, 0},
@@ -597,6 +598,11 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
         case NODE_EXPR_STMT:
             t = infer(ctx, n->expr);
+            break;
+
+        case NODE_BREAK:
+        case NODE_CONTINUE:
+            t = type_new(TYPE_VOID);
             break;
 
         default:

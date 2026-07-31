@@ -714,6 +714,20 @@ static Node *parse_stmt(Parser *p) {
         return n;
     }
 
+    /* break */
+    if (check(p, TOK_BREAK)) {
+        advance(p);
+        match(p, TOK_SEMICOLON);
+        return node_alloc(NODE_BREAK, pos);
+    }
+
+    /* continue */
+    if (check(p, TOK_CONTINUE)) {
+        advance(p);
+        match(p, TOK_SEMICOLON);
+        return node_alloc(NODE_CONTINUE, pos);
+    }
+
     /* while */
     if (check(p, TOK_WHILE)) {
         advance(p);
@@ -1011,6 +1025,12 @@ void print_ast(Node *n, int indent) {
             if (n->arm_pattern) print_ast(n->arm_pattern, indent + 1);
             else { indent_print(indent + 1); fprintf(stderr, "_\n"); }
             print_ast(n->arm_body, indent + 1);
+            break;
+        case NODE_BREAK:
+            fprintf(stderr, "BREAK\n");
+            break;
+        case NODE_CONTINUE:
+            fprintf(stderr, "CONTINUE\n");
             break;
         case NODE_IF:
             fprintf(stderr, "IF\n");

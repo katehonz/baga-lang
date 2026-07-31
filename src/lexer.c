@@ -52,6 +52,8 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_TRUE]      = "true",
     [TOK_FALSE]     = "false",
     [TOK_CATCH]     = "catch",
+    [TOK_BREAK]    = "break",
+    [TOK_CONTINUE] = "continue",
     [TOK_LPAREN]    = "(",
     [TOK_RPAREN]    = ")",
     [TOK_LBRACE]    = "{",
@@ -233,6 +235,8 @@ static TokenKind keyword_kind(const char *s) {
         {"true",   TOK_TRUE},
         {"false",  TOK_FALSE},
         {"catch",  TOK_CATCH},
+        {"break",  TOK_BREAK},
+        {"continue", TOK_CONTINUE},
     };
     for (int i = 0; i < (int)(sizeof(kw) / sizeof(kw[0])); i++) {
         if (strcmp(s, kw[i].word) == 0)

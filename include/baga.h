@@ -71,6 +71,8 @@ typedef enum {
     TOK_TRUE,
     TOK_FALSE,
     TOK_CATCH,
+    TOK_BREAK,
+    TOK_CONTINUE,
 
     /* punctuation */
     TOK_LPAREN,     /* ( */
@@ -157,6 +159,8 @@ typedef enum {
     NODE_FOR,
     NODE_MATCH,
     NODE_MATCH_ARM,
+    NODE_BREAK,
+    NODE_CONTINUE,
     NODE_EXPR_STMT,
 
     /* declarations */
