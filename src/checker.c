@@ -160,6 +160,21 @@ typedef struct {
     } structs[FNS_MAX];
     int n_structs;
 
+    /* enum registry */
+    struct {
+        char *name;
+        Node *decl;
+    } enums[FNS_MAX];
+    int n_enums;
+
+    /* enum variant → value mapping */
+    struct {
+        char *variant;
+        char *enum_name;
+        int value;
+    } variants[FNS_MAX * 4];
+    int n_variants;
+
     Checker *chk;
     const char *cur_fn;
     Type *cur_ret;   /* expected return type of current function */
@@ -335,6 +350,14 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             /* check function registry */
             Type *ft = find_fn(ctx, n->name);
             if (ft) { t = ft; break; }
+            /* check enum variants */
+            for (int vi = 0; vi < ctx->n_variants; vi++) {
+                if (strcmp(ctx->variants[vi].variant, n->name) == 0) {
+                    t = type_new(TYPE_I64);
+                    break;
+                }
+            }
+            if (t) break;
             /* builtins */
             if (strcmp(n->name, "print") == 0 || strcmp(n->name, "println") == 0) {
                 t = type_new(TYPE_VOID);
@@ -642,6 +665,25 @@ void check_program(Checker *c, Node *program) {
             Type *st = type_new(TYPE_STRUCT);
             st->name = strdup(item->struct_name);
             item->type = st;
+
+        } else if (item->kind == NODE_ENUM) {
+            if (ctx.n_enums < FNS_MAX) {
+                ctx.enums[ctx.n_enums].name = item->enum_name;
+                ctx.enums[ctx.n_enums].decl = item;
+                ctx.n_enums++;
+            }
+            /* register variants */
+            for (int j = 0; j < item->n_variants; j++) {
+                if (ctx.n_variants < FNS_MAX * 4) {
+                    ctx.variants[ctx.n_variants].variant = item->enum_variants[j];
+                    ctx.variants[ctx.n_variants].enum_name = item->enum_name;
+                    ctx.variants[ctx.n_variants].value = j;
+                    ctx.n_variants++;
+                }
+            }
+            Type *et = type_new(TYPE_I64);
+            et->name = strdup(item->enum_name);
+            item->type = et;
         }
     }
 

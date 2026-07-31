@@ -204,9 +204,29 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_IDENT: {
-            char *m = mangle_name(n->name);
-            fprintf(f, "%s", m);
-            free(m);
+            /* check if it's an enum variant */
+            int found_variant = 0;
+            if (cg->program) {
+                for (int i = 0; i < cg->program->items.len && !found_variant; i++) {
+                    Node *item = cg->program->items.data[i];
+                    if (item->kind != NODE_ENUM) continue;
+                    for (int j = 0; j < item->n_variants; j++) {
+                        if (strcmp(item->enum_variants[j], n->name) == 0) {
+                            char *em = mangle_name(item->enum_name);
+                            char *vm = mangle_name(item->enum_variants[j]);
+                            fprintf(f, "%s_%s", em, vm);
+                            free(em); free(vm);
+                            found_variant = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!found_variant) {
+                char *m = mangle_name(n->name);
+                fprintf(f, "%s", m);
+                free(m);
+            }
             break;
         }
 
@@ -346,7 +366,17 @@ static void emit_expr(Codegen *cg, Node *n) {
         case NODE_MATCH: {
             /* GCC statement expression */
             int tmp = cg->tmp_counter++;
-            fprintf(f, "({ int64_t _mr%d = 0; int64_t _mv%d = ", tmp, tmp);
+            /* determine result C type from inferred type */
+            const char *ctype = "int64_t";
+            if (n->type) {
+                switch (n->type->kind) {
+                    case TYPE_STR:  ctype = "const char *"; break;
+                    case TYPE_F64:  ctype = "double"; break;
+                    case TYPE_BOOL: ctype = "int"; break;
+                    default:        ctype = "int64_t"; break;
+                }
+            }
+            fprintf(f, "({ %s _mr%d = 0; int64_t _mv%d = ", ctype, tmp, tmp);
             emit_expr(cg, n->match_expr);
             fprintf(f, "; ");
             for (int i = 0; i < n->match_arms.len; i++) {
@@ -560,7 +590,25 @@ static void emit_fn(Codegen *cg, Node *fn) {
 
     /* body */
     if (fn->fn_body) {
-        emit_block(cg, fn->fn_body);
+        int has_ret = fn->ret_type != NULL;
+        fprintf(f, "{\n");
+        cg->indent++;
+        NodeVec *stmts = &fn->fn_body->stmts;
+        for (int i = 0; i < stmts->len; i++) {
+            Node *s = stmts->data[i];
+            /* implicit return: last expr stmt in non-void fn */
+            if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
+                emit_indent(cg);
+                fprintf(f, "return ");
+                emit_expr(cg, s->expr);
+                fprintf(f, ";\n");
+            } else {
+                emit_stmt(cg, s);
+            }
+        }
+        cg->indent--;
+        emit_indent(cg);
+        fprintf(f, "}");
     } else {
         fprintf(f, "{}");
     }
@@ -628,6 +676,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     cg->out = out;
     cg->indent = 0;
     cg->tmp_counter = 0;
+    cg->program = program;
 
     /* header */
     fprintf(out, "/* Генериран от компилатора на Бага. Фаза 1. */\n");
@@ -642,7 +691,22 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_print_str(const char *s) { printf(\"%%s\\n\", s); }\n");
     fprintf(out, "\n");
 
-    /* structs first */
+    /* enums first */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *item = program->items.data[i];
+        if (item->kind != NODE_ENUM) continue;
+        char *em = mangle_name(item->enum_name);
+        fprintf(out, "typedef enum {\n");
+        for (int j = 0; j < item->n_variants; j++) {
+            char *vm = mangle_name(item->enum_variants[j]);
+            fprintf(out, "    %s_%s = %d,\n", em, vm, j);
+            free(vm);
+        }
+        fprintf(out, "} %s;\n\n", em);
+        free(em);
+    }
+
+    /* structs */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
         if (item->kind == NODE_STRUCT)

@@ -131,6 +131,11 @@ void node_free(Node *n) {
             for (int i = 0; i < n->n_guarantees; i++) free(n->spec_guarantees[i]);
             free(n->spec_guarantees);
             break;
+        case NODE_ENUM:
+            free(n->enum_name);
+            for (int i = 0; i < n->n_variants; i++) free(n->enum_variants[i]);
+            free(n->enum_variants);
+            break;
         case NODE_TYPE:
         case NODE_TYPE_EFFECT:
             free(n->type_name);
@@ -878,9 +883,26 @@ static Node *parse_spec(Parser *p) {
     return s;
 }
 
-/* ============================================================
- *  Program
- * ============================================================ */
+static Node *parse_enum(Parser *p) {
+    SrcPos pos = cur(p)->pos;
+    expect(p, TOK_ENUM);
+    char *name = expect_ident(p);
+    expect(p, TOK_LBRACE);
+
+    VEC(char *) variants = {0};
+    while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+        char *vname = expect_ident(p);
+        vec_push(variants, vname);
+        if (!check(p, TOK_RBRACE)) match(p, TOK_COMMA);
+    }
+    expect(p, TOK_RBRACE);
+
+    Node *e = node_alloc(NODE_ENUM, pos);
+    e->enum_name = name;
+    e->enum_variants = variants.data;
+    e->n_variants = variants.len;
+    return e;
+}
 
 Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename) {
     p->tokens = tokens;
@@ -900,6 +922,8 @@ Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename)
             vec_push(prog->items, parse_struct(p));
         } else if (check(p, TOK_SPEC)) {
             vec_push(prog->items, parse_spec(p));
+        } else if (check(p, TOK_ENUM)) {
+            vec_push(prog->items, parse_enum(p));
         } else {
             parser_error(p, "очаквах декларация (fn, struct, spec), получих '%s'",
                          token_kind_str(peek_kind(p)));
@@ -1093,6 +1117,12 @@ void print_ast(Node *n, int indent) {
             break;
         case NODE_SPEC:
             fprintf(stderr, "SPEC \"%s\"\n", n->spec_name);
+            break;
+        case NODE_ENUM:
+            fprintf(stderr, "ENUM %s", n->enum_name);
+            for (int i = 0; i < n->n_variants; i++)
+                fprintf(stderr, " %s", n->enum_variants[i]);
+            fprintf(stderr, "\n");
             break;
         default:
             fprintf(stderr, "NODE(%d)\n", n->kind);

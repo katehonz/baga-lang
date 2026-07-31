@@ -67,6 +67,7 @@ typedef enum {
     TOK_STRUCT,
     TOK_IMPL,
     TOK_SPEC,
+    TOK_ENUM,
     TOK_TRUE,
     TOK_FALSE,
     TOK_CATCH,
@@ -164,6 +165,7 @@ typedef enum {
     NODE_STRUCT,
     NODE_FIELD_DECL,
     NODE_SPEC,
+    NODE_ENUM,
 
     /* type expressions */
     NODE_TYPE,        /* simple named type: i32, f64, str, bool */
@@ -305,6 +307,13 @@ struct Node {
             int n_guarantees;
         };
 
+        /* NODE_ENUM */
+        struct {
+            char *enum_name;
+            char **enum_variants;
+            int n_variants;
+        };
+
         /* NODE_TYPE, NODE_TYPE_REF, NODE_TYPE_ARRAY, NODE_TYPE_EFFECT */
         struct {
             char *type_name;          /* for NODE_TYPE */
@@ -419,6 +428,7 @@ typedef struct {
     FILE *out;
     int   indent;
     int   tmp_counter;
+    Node *program;   /* for enum variant lookup */
 } Codegen;
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);
