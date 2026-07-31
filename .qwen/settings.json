@@ -29,7 +29,9 @@
       "Bash(vec_set)",
       "Bash(ast_child)",
       "Bash(0)",
-      "Bash(write)"
+      "Bash(write)",
+      "Bash(gcc *)",
+      "Bash(/tmp/baga_self)"
     ]
   },
   "$version": 4
