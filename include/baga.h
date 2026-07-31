@@ -1,0 +1,394 @@
+#ifndef BAGA_H
+#define BAGA_H
+
+#define _POSIX_C_SOURCE 200809L
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+
+/* ============================================================
+ *  Util
+ * ============================================================ */
+
+#define BAGA_MAX_ERRORS 64
+
+typedef struct {
+    int line;
+    int col;
+} SrcPos;
+
+/* Growable array — usage:
+ *   VEC(int) v = {0};
+ *   vec_push(v, 42);
+ *   vec_free(v);
+ */
+#define VEC(T) struct { T *data; int len; int cap; }
+
+#define vec_push(v, item) do { \
+    if ((v).len == (v).cap) { \
+        (v).cap = (v).cap ? (v).cap * 2 : 8; \
+        (v).data = realloc((v).data, (size_t)(v).cap * sizeof(*(v).data)); \
+        if (!(v).data) { fprintf(stderr, "baga: out of memory\n"); exit(1); } \
+    } \
+    (v).data[(v).len++] = (item); \
+} while (0)
+
+#define vec_free(v) do { free((v).data); (v).data = NULL; (v).len = (v).cap = 0; } while (0)
+
+/* ============================================================
+ *  Tokens
+ * ============================================================ */
+
+typedef enum {
+    TOK_EOF = 0,
+    TOK_ERROR,
+
+    /* literals */
+    TOK_IDENT,
+    TOK_INT_LIT,
+    TOK_FLOAT_LIT,
+    TOK_STR_LIT,
+    TOK_CHAR_LIT,
+
+    /* keywords */
+    TOK_FN,
+    TOK_LET,
+    TOK_MUT,
+    TOK_IF,
+    TOK_ELSE,
+    TOK_WHILE,
+    TOK_FOR,
+    TOK_IN,
+    TOK_RETURN,
+    TOK_MATCH,
+    TOK_STRUCT,
+    TOK_IMPL,
+    TOK_SPEC,
+    TOK_TRUE,
+    TOK_FALSE,
+    TOK_CATCH,
+
+    /* punctuation */
+    TOK_LPAREN,     /* ( */
+    TOK_RPAREN,     /* ) */
+    TOK_LBRACE,     /* { */
+    TOK_RBRACE,     /* } */
+    TOK_LBRACKET,   /* [ */
+    TOK_RBRACKET,   /* ] */
+    TOK_COMMA,      /* , */
+    TOK_COLON,      /* : */
+    TOK_DOT,        /* . */
+    TOK_SEMICOLON,  /* ; */
+    TOK_ARROW,      /* -> */
+    TOK_BANG,       /* ! */
+    TOK_QUESTION,   /* ? */
+    TOK_AMP,        /* & */
+    TOK_PIPE,       /* | */
+    TOK_UNDERSCORE, /* _ */
+    TOK_DOTDOT,     /* .. */
+
+    /* operators */
+    TOK_PLUS,       /* + */
+    TOK_MINUS,      /* - */
+    TOK_STAR,       /* * */
+    TOK_SLASH,      /* / */
+    TOK_PERCENT,    /* % */
+    TOK_EQ,         /* == */
+    TOK_NEQ,        /* != */
+    TOK_LT,         /* < */
+    TOK_GT,         /* > */
+    TOK_LE,         /* <= */
+    TOK_GE,         /* >= */
+    TOK_ASSIGN,     /* = */
+    TOK_PLUS_ASSIGN,  /* += */
+    TOK_MINUS_ASSIGN, /* -= */
+    TOK_STAR_ASSIGN,  /* *= */
+    TOK_SLASH_ASSIGN, /* /= */
+    TOK_AND,        /* && */
+    TOK_OR,         /* || */
+    TOK_NOT,        /* !  (same as BANG, context disambiguates) */
+    TOK_LSHIFT,     /* << */
+    TOK_RSHIFT,     /* >> */
+
+    TOK_COUNT
+} TokenKind;
+
+typedef struct {
+    TokenKind kind;
+    SrcPos    pos;
+    char     *text;       /* lexeme (heap-allocated) */
+    int64_t   int_val;    /* for TOK_INT_LIT */
+    double    float_val;  /* for TOK_FLOAT_LIT */
+} Token;
+
+/* ============================================================
+ *  AST
+ * ============================================================ */
+
+typedef enum {
+    /* expressions */
+    NODE_INT_LIT,
+    NODE_FLOAT_LIT,
+    NODE_STR_LIT,
+    NODE_BOOL_LIT,
+    NODE_IDENT,
+    NODE_BINARY,
+    NODE_UNARY,
+    NODE_CALL,
+    NODE_IF,
+    NODE_BLOCK,
+    NODE_INDEX,
+    NODE_FIELD,
+    NODE_ASSIGN,
+    NODE_RANGE,       /* a..b */
+
+    /* statements */
+    NODE_LET,
+    NODE_RETURN,
+    NODE_WHILE,
+    NODE_FOR,
+    NODE_EXPR_STMT,
+
+    /* declarations */
+    NODE_FN,
+    NODE_PARAM,
+    NODE_STRUCT,
+    NODE_FIELD_DECL,
+    NODE_SPEC,
+
+    /* type expressions */
+    NODE_TYPE,        /* simple named type: i32, f64, str, bool */
+    NODE_TYPE_REF,    /* &T */
+    NODE_TYPE_ARRAY,  /* [T] */
+    NODE_TYPE_EFFECT, /* T !E1 !E2 */
+
+    /* top level */
+    NODE_PROGRAM,
+} NodeKind;
+
+typedef enum {
+    OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD,
+    OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LE, OP_GE,
+    OP_AND, OP_OR,
+    OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR,
+    OP_LSHIFT, OP_RSHIFT,
+} BinOp;
+
+typedef enum {
+    UOP_NEG,
+    UOP_NOT,
+    UOP_REF,    /* &x */
+    UOP_DEREF,  /* *x */
+} UnOp;
+
+typedef struct Node Node;
+
+/* Dynamic array of Node pointers */
+typedef VEC(Node *) NodeVec;
+
+struct Node {
+    NodeKind kind;
+    SrcPos   pos;
+
+    union {
+        /* NODE_INT_LIT */
+        int64_t int_val;
+
+        /* NODE_FLOAT_LIT */
+        double float_val;
+
+        /* NODE_STR_LIT */
+        char *str_val;
+
+        /* NODE_BOOL_LIT */
+        int bool_val;
+
+        /* NODE_IDENT */
+        char *name;
+
+        /* NODE_BINARY */
+        struct { BinOp bin_op; Node *left; Node *right; };
+
+        /* NODE_UNARY */
+        struct { UnOp un_op; Node *operand; };
+
+        /* NODE_CALL */
+        struct { Node *callee; NodeVec args; };
+
+        /* NODE_IF (expression or statement) */
+        struct { Node *cond; Node *then_br; Node *else_br; };
+
+        /* NODE_BLOCK */
+        struct { NodeVec stmts; };
+
+        /* NODE_INDEX */
+        struct { Node *obj; Node *index; };
+
+        /* NODE_FIELD */
+        struct { Node *field_obj; char *field_name; };
+
+        /* NODE_ASSIGN */
+        struct { Node *assign_target; Node *assign_val; };
+
+        /* NODE_RANGE */
+        struct { Node *range_lo; Node *range_hi; };
+
+        /* NODE_LET */
+        struct { char *let_name; int is_mut; Node *let_type; Node *let_init; };
+
+        /* NODE_RETURN */
+        struct { Node *ret_val; };
+
+        /* NODE_WHILE */
+        struct { Node *while_cond; Node *while_body; };
+
+        /* NODE_FOR */
+        struct { char *for_var; Node *for_iter; Node *for_body; };
+
+        /* NODE_EXPR_STMT */
+        struct { Node *expr; };
+
+        /* NODE_FN */
+        struct {
+            char *fn_name;
+            NodeVec params;     /* NODE_PARAM */
+            Node *ret_type;     /* NULL → void */
+            Node *fn_body;      /* NODE_BLOCK */
+        };
+
+        /* NODE_PARAM */
+        struct { char *param_name; Node *param_type; };
+
+        /* NODE_STRUCT */
+        struct { char *struct_name; NodeVec fields; /* NODE_FIELD_DECL */ };
+
+        /* NODE_FIELD_DECL */
+        struct { char *fld_name; Node *fld_type; };
+
+        /* NODE_SPEC */
+        struct {
+            char *spec_name;
+            NodeVec spec_inputs;   /* NODE_PARAM */
+            Node *spec_output;     /* type node */
+            char **spec_guarantees;
+            int n_guarantees;
+        };
+
+        /* NODE_TYPE, NODE_TYPE_REF, NODE_TYPE_ARRAY, NODE_TYPE_EFFECT */
+        struct {
+            char *type_name;          /* for NODE_TYPE */
+            Node *inner_type;         /* for REF / ARRAY */
+            char **effect_names;      /* for NODE_TYPE_EFFECT */
+            int n_effects;
+        };
+
+        /* NODE_PROGRAM */
+        struct { NodeVec items; };
+    };
+};
+
+/* ============================================================
+ *  Type system (resolved types, post-checker)
+ * ============================================================ */
+
+typedef enum {
+    TYPE_VOID,
+    TYPE_BOOL,
+    TYPE_I32,
+    TYPE_I64,
+    TYPE_F64,
+    TYPE_STR,
+    TYPE_ARRAY,
+    TYPE_REF,
+    TYPE_STRUCT,
+    TYPE_FN,
+    TYPE_ERROR,    /* sentinel for error recovery */
+} TypeKind;
+
+typedef struct Type Type;
+
+struct Type {
+    TypeKind kind;
+    /* TYPE_ARRAY */
+    Type *elem;
+    /* TYPE_REF */
+    Type *pointee;
+    /* TYPE_STRUCT */
+    char *name;
+};
+
+/* ============================================================
+ *  Lexer
+ * ============================================================ */
+
+typedef struct {
+    const char *src;
+    int         len;
+    int         pos;
+    int         line;
+    int         col;
+    const char *filename;
+} Lexer;
+
+void  lexer_init(Lexer *l, const char *src, int len, const char *filename);
+Token lexer_next(Lexer *l);
+const char *token_kind_str(TokenKind k);
+
+/* ============================================================
+ *  Parser
+ * ============================================================ */
+
+typedef struct {
+    Token  *tokens;
+    int     len;
+    int     pos;
+    const char *filename;
+    /* error reporting */
+    char   errors[BAGA_MAX_ERRORS][256];
+    int    n_errors;
+} Parser;
+
+Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename);
+
+/* ============================================================
+ *  Checker
+ * ============================================================ */
+
+typedef struct {
+    char errors[BAGA_MAX_ERRORS][256];
+    int  n_errors;
+} Checker;
+
+void check_program(Checker *c, Node *program);
+
+/* ============================================================
+ *  Codegen (C transpiler)
+ * ============================================================ */
+
+typedef struct {
+    FILE *out;
+    int   indent;
+    int   tmp_counter;
+} Codegen;
+
+void codegen_c(Codegen *cg, Node *program, FILE *out);
+
+/* ============================================================
+ *  AST helpers
+ * ============================================================ */
+
+Node *node_alloc(NodeKind kind, SrcPos pos);
+void  node_free(Node *n);
+void  print_ast(Node *n, int indent);
+
+/* ============================================================
+ *  Error reporting
+ * ============================================================ */
+
+void baga_error(const char *filename, SrcPos pos, const char *fmt, ...);
+void baga_info(const char *fmt, ...);
+
+#endif /* BAGA_H */

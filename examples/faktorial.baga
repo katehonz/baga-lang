@@ -1,0 +1,11 @@
+fn факториел(n: i64) -> i64 {
+    if n <= 1 {
+        return 1
+    }
+    return n * факториел(n - 1)
+}
+
+fn main() {
+    let x = факториел(10)
+    print(x)
+}

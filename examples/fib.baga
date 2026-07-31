@@ -1,0 +1,27 @@
+fn фибоначи(n: i64) -> i64 {
+    let mut a: i64 = 0
+    let mut b: i64 = 1
+    let mut i: i64 = 0
+    while i < n {
+        let temp = b
+        b = a + b
+        a = temp
+        i = i + 1
+    }
+    return a
+}
+
+fn main() {
+    // Фибоначи до 15
+    for i in 0..15 {
+        let f = фибоначи(i)
+        print(f)
+    }
+
+    // Сума от 1 до 100
+    let mut сума: i64 = 0
+    for i in 1..101 {
+        сума = сума + i
+    }
+    print(сума)
+}
