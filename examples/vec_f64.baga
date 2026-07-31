@@ -1,0 +1,11 @@
+// Vec<f64> — вектор с елементи с плаваща запетая
+fn main() {
+    let v = vec_new()
+    vec_push(v, 1.5)
+    vec_push(v, 2.5)
+    vec_push(v, 3.5)
+    print(vec_len(v))
+    print(vec_get(v, 0))
+    print(vec_get(v, 1))
+    print(vec_get(v, 2))
+}

@@ -285,9 +285,12 @@ static void emit_expr(Codegen *cg, Node *n) {
                 if (strcmp(bn, "vec_push") == 0 || strcmp(bn, "vec_get") == 0 ||
                     strcmp(bn, "vec_set") == 0) {
                     Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
-                    int is_str = vt && vt->kind == TYPE_VEC && vt->elem &&
-                                 vt->elem->kind == TYPE_STR;
-                    fprintf(f, "baga_%s_%s(", bn, is_str ? "str" : "i64");
+                    const char *suf = "i64";
+                    if (vt && vt->kind == TYPE_VEC && vt->elem) {
+                        if (vt->elem->kind == TYPE_STR) suf = "str";
+                        else if (vt->elem->kind == TYPE_F64) suf = "f64";
+                    }
+                    fprintf(f, "baga_%s_%s(", bn, suf);
                     for (int i = 0; i < n->args.len; i++) {
                         if (i > 0) fprintf(f, ", ");
                         emit_expr(cg, n->args.data[i]);
@@ -1074,6 +1077,9 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_vec_push_str(baga_Vec *v, const char *s) { baga_vec_grow(v); v->data[v->len++] = (void *)s; }\n");
     fprintf(out, "static const char *baga_vec_get_str(baga_Vec *v, int64_t i) { return (const char *)v->data[i]; }\n");
     fprintf(out, "static void baga_vec_set_str(baga_Vec *v, int64_t i, const char *s) { v->data[i] = (void *)s; }\n");
+    fprintf(out, "static void baga_vec_push_f64(baga_Vec *v, double x) { union { double d; void *p; } u; u.d = x; baga_vec_grow(v); v->data[v->len++] = u.p; }\n");
+    fprintf(out, "static double baga_vec_get_f64(baga_Vec *v, int64_t i) { union { double d; void *p; } u; u.p = v->data[i]; return u.d; }\n");
+    fprintf(out, "static void baga_vec_set_f64(baga_Vec *v, int64_t i, double x) { union { double d; void *p; } u; u.d = x; v->data[i] = u.p; }\n");
     fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
     fprintf(out, "\n");
 

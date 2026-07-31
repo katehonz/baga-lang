@@ -194,12 +194,13 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
             if (strcmp(ty->type_name, "Vec") == 0) {
                 Type *t = type_new(TYPE_VEC);
                 if (ty->inner_type) {
-                    /* Vec<T>: елементите са ограничени до i64 (i32 → i64) и str */
+                    /* Vec<T>: елементите са ограничени до i64 (i32 → i64), str и f64 */
                     Type *el = resolve_type_node(ctx, ty->inner_type);
                     if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
-                    if (el->kind != TYPE_I64 && el->kind != TYPE_STR) {
+                    if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
+                        el->kind != TYPE_F64) {
                         check_error(ctx, ty->pos,
-                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64 и str)",
+                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str и f64)",
                             type_str(el));
                     } else {
                         t->elem = el;
@@ -360,9 +361,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             }
             Type *xt = is_str_alias ? type_new(TYPE_STR) : n->args.data[xidx]->type;
             if (xt->kind == TYPE_I32) xt = type_new(TYPE_I64);
-            if (!is_str_alias && xt->kind != TYPE_I64 && xt->kind != TYPE_STR) {
+            if (!is_str_alias && xt->kind != TYPE_I64 && xt->kind != TYPE_STR &&
+                xt->kind != TYPE_F64) {
                 check_error(ctx, n->pos,
-                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64 и str)",
+                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str и f64)",
                     name, type_str(xt));
                 return type_new(TYPE_ERROR);
             }

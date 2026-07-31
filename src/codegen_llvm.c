@@ -598,6 +598,47 @@ static LLVMValueRef build_baga_vec_len(void) {
     return fn;
 }
 
+/* f64 елементи: double ↔ i64 ↔ ptr (bitcast/inttoptr/ptrtoint) */
+static LLVMValueRef build_baga_vec_push_f64(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.double_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_push_f64",
+        LLVMFunctionType(lg.void_ty, p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef slot = vec_push_slot(LLVMGetParam(fn, 0));
+    LLVMValueRef xi = LLVMBuildBitCast(lg.builder, LLVMGetParam(fn, 1), lg.i64_ty, "xi");
+    LLVMValueRef pv = LLVMBuildIntToPtr(lg.builder, xi, lg.ptr_ty, "pv");
+    LLVMBuildStore(lg.builder, pv, slot);
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+static LLVMValueRef build_baga_vec_get_f64(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_get_f64",
+        LLVMFunctionType(lg.double_ty, p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef e = vec_load_at(LLVMGetParam(fn, 0), LLVMGetParam(fn, 1));
+    LLVMValueRef ei = LLVMBuildPtrToInt(lg.builder, e, lg.i64_ty, "ei");
+    LLVMBuildRet(lg.builder, LLVMBuildBitCast(lg.builder, ei, lg.double_ty, "r"));
+    return fn;
+}
+
+static LLVMValueRef build_baga_vec_set_f64(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.i64_ty, lg.double_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_set_f64",
+        LLVMFunctionType(lg.void_ty, p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef v = LLVMGetParam(fn, 0);
+    LLVMValueRef i = LLVMGetParam(fn, 1);
+    LLVMValueRef data = vec_load_data(v);
+    LLVMValueRef slot = LLVMBuildGEP2(lg.builder, lg.ptr_ty, data, &i, 1, "slot");
+    LLVMValueRef xi = LLVMBuildBitCast(lg.builder, LLVMGetParam(fn, 2), lg.i64_ty, "xi");
+    LLVMValueRef pv = LLVMBuildIntToPtr(lg.builder, xi, lg.ptr_ty, "pv");
+    LLVMBuildStore(lg.builder, pv, slot);
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
 /* static const char *baga_read_file(const char *path) {
  *     FILE *f = fopen(path, "rb"); if (!f) return "";
  *     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
@@ -802,6 +843,9 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_vec_get_str") == 0) fn = build_baga_vec_get_str();
     else if (strcmp(name, "baga_vec_set_i64") == 0) fn = build_baga_vec_set_i64();
     else if (strcmp(name, "baga_vec_set_str") == 0) fn = build_baga_vec_set_str();
+    else if (strcmp(name, "baga_vec_push_f64") == 0) fn = build_baga_vec_push_f64();
+    else if (strcmp(name, "baga_vec_get_f64") == 0) fn = build_baga_vec_get_f64();
+    else if (strcmp(name, "baga_vec_set_f64") == 0) fn = build_baga_vec_set_f64();
     else if (strcmp(name, "baga_vec_len") == 0)     fn = build_baga_vec_len();
     else if (strcmp(name, "baga_arg_count") == 0)   fn = build_baga_arg_count();
     else if (strcmp(name, "baga_arg") == 0)         fn = build_baga_arg();
@@ -1158,11 +1202,14 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 strcmp(n->callee->name, "vec_get") == 0 ||
                 strcmp(n->callee->name, "vec_set") == 0) {
                 Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
-                int is_str = vt && vt->kind == TYPE_VEC && vt->elem &&
-                             vt->elem->kind == TYPE_STR;
+                const char *suf = "i64";
+                if (vt && vt->kind == TYPE_VEC && vt->elem) {
+                    if (vt->elem->kind == TYPE_STR) suf = "str";
+                    else if (vt->elem->kind == TYPE_F64) suf = "f64";
+                }
                 char rt_name[64];
                 snprintf(rt_name, sizeof rt_name, "baga_%s_%s",
-                         n->callee->name, is_str ? "str" : "i64");
+                         n->callee->name, suf);
                 fn = baga_rt(rt_name);
             }
             for (int bi = 0; !fn && bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {

@@ -909,6 +909,7 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
                     let elem = next_sibling(ns, a1)
                     if elem >= 0 {
                         if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_push_str" }
+                        if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_push_f64" }
                     }
                 }
             }
@@ -917,6 +918,7 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
                 cname = "baga_vec_get_i64"
                 if a1 >= 0 {
                     if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_get_str" }
+                    if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_get_f64" }
                 }
             }
             if str_eq(bn, "vec_get_str") == 1 { cname = "baga_vec_get_str" }
@@ -927,6 +929,7 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
                     let elem = next_sibling(ns, ai)
                     if elem >= 0 {
                         if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_set_str" }
+                        if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_set_f64" }
                     }
                 }
             }
@@ -1039,6 +1042,12 @@ fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
         let cal = first_child(fc, idx)
         if node_kind(nk, cal) == 2 {
             let bn = node_text(nt, cal)
+            if str_eq(bn, "vec_get") == 1 {
+                let a1 = next_sibling(ns, cal)
+                if a1 >= 0 {
+                    if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { return 1 }
+                }
+            }
             let rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
             if str_eq(rt, "double") == 1 { return 1 }
         }
@@ -1058,6 +1067,56 @@ fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
                                 if str_eq(node_text(nt, s), vname) == 1 {
                                     let init = first_child(fc, s)
                                     return expr_is_float(nk, nt, fc, ns, prog, init)
+                                }
+                            }
+                            s = next_sibling(ns, s)
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+            f = next_sibling(ns, f)
+        }
+    }
+    0
+}
+
+// Като expr_is_float, но НЕ разрешава vec_get (няма vec_is_f64). Ползва се от
+// vec_is_f64 за класификация на push-елемент, за да не се получи безкрайна
+// взаимна рекурсия expr_is_float ↔ vec_is_f64 при vec_push(v, ... vec_get(v) ...).
+fn expr_is_float_shallow(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let k = node_kind(nk, idx)
+    if k == 19 { return 1 }
+    if k == 3 {
+        let left = first_child(fc, idx)
+        let right = next_sibling(ns, left)
+        if expr_is_float_shallow(nk, nt, fc, ns, prog, left) == 1 { return 1 }
+        if expr_is_float_shallow(nk, nt, fc, ns, prog, right) == 1 { return 1 }
+        return 0
+    }
+    if k == 4 {
+        let cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let bn = node_text(nt, cal)
+            let rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "double") == 1 { return 1 }
+        }
+        return 0
+    }
+    if k == 2 {
+        let vname = node_text(nt, idx)
+        let mut f = first_child(fc, prog)
+        while f >= 0 {
+            if node_kind(nk, f) == 11 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 5 {
+                        let mut s = first_child(fc, c)
+                        while s >= 0 {
+                            if node_kind(nk, s) == 6 {
+                                if str_eq(node_text(nt, s), vname) == 1 {
+                                    let init = first_child(fc, s)
+                                    return expr_is_float_shallow(nk, nt, fc, ns, prog, init)
                                 }
                             }
                             s = next_sibling(ns, s)
@@ -1159,6 +1218,57 @@ fn vec_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vnode: i64) -> i64 
                                                     let elem = next_sibling(ns, ai)
                                                     if elem >= 0 {
                                                         if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        s = next_sibling(ns, s)
+                    }
+                }
+                c = next_sibling(ns, c)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    0
+}
+
+fn vec_is_f64(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vnode: i64) -> i64 {
+    if node_kind(nk, vnode) != 2 { return 0 }
+    let vname = node_text(nt, vnode)
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            let mut c = first_child(fc, f)
+            while c >= 0 {
+                if node_kind(nk, c) == 5 {
+                    let mut s = first_child(fc, c)
+                    while s >= 0 {
+                        if node_kind(nk, s) == 10 {
+                            let e = first_child(fc, s)
+                            if node_kind(nk, e) == 4 {
+                                let cal = first_child(fc, e)
+                                if node_kind(nk, cal) == 2 {
+                                    let bn = node_text(nt, cal)
+                                    let a1 = next_sibling(ns, cal)
+                                    if a1 >= 0 {
+                                        if node_kind(nk, a1) == 2 {
+                                            if str_eq(node_text(nt, a1), vname) == 1 {
+                                                if str_eq(bn, "vec_push") == 1 {
+                                                    let elem = next_sibling(ns, a1)
+                                                    if elem >= 0 {
+                                                        if expr_is_float_shallow(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
+                                                    }
+                                                }
+                                                if str_eq(bn, "vec_set") == 1 {
+                                                    let ai = next_sibling(ns, a1)
+                                                    let elem = next_sibling(ns, ai)
+                                                    if elem >= 0 {
+                                                        if expr_is_float_shallow(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
                                                     }
                                                 }
                                             }
@@ -1663,7 +1773,7 @@ fn check_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
     }
 }
 
-fn vec_has_i64_push(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+fn vec_first_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
     let mut f = first_child(fc, prog)
     while f >= 0 {
         if node_kind(nk, f) == 11 {
@@ -1682,17 +1792,23 @@ fn vec_has_i64_push(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) ->
                                     if a1 >= 0 {
                                         if node_kind(nk, a1) == 2 {
                                             if str_eq(node_text(nt, a1), name) == 1 {
+                                                if str_eq(bn, "vec_push_str") == 1 { return 1 }
+                                                if str_eq(bn, "vec_set_str") == 1 { return 1 }
                                                 if str_eq(bn, "vec_push") == 1 {
                                                     let elem = next_sibling(ns, a1)
                                                     if elem >= 0 {
-                                                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 0 { return 1 }
+                                                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
+                                                        if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { return 2 }
+                                                        return 0
                                                     }
                                                 }
                                                 if str_eq(bn, "vec_set") == 1 {
                                                     let ai2 = next_sibling(ns, a1)
                                                     let elem = next_sibling(ns, ai2)
                                                     if elem >= 0 {
-                                                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 0 { return 1 }
+                                                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
+                                                        if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { return 2 }
+                                                        return 0
                                                     }
                                                 }
                                             }
@@ -1709,7 +1825,7 @@ fn vec_has_i64_push(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) ->
         }
         f = next_sibling(ns, f)
     }
-    0
+    0 - 1
 }
 
 fn check_vec_push(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
@@ -1726,9 +1842,29 @@ fn check_vec_push(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
     if a1 < 0 { return }
     if node_kind(nk, a1) != 2 { return }
     let vname = node_text(nt, a1)
-    if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 {
-        if vec_has_i64_push(nk, nt, fc, ns, prog, vname) == 1 {
-            eprintln("vec_push: елемент от тип str, но векторът е Vec<i64>")
+    // тип на текущия елемент: 0=i64, 1=str, 2=f64
+    let mut cur: i64 = 0
+    if str_eq(bn, "vec_push_str") == 1 { cur = 1 }
+    if str_eq(bn, "vec_set_str") == 1 { cur = 1 }
+    if str_eq(bn, "vec_push") == 1 {
+        let elem = next_sibling(ns, a1)
+        if elem >= 0 {
+            if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { cur = 1 }
+            if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { cur = 2 }
+        }
+    }
+    if str_eq(bn, "vec_set") == 1 {
+        let ai = next_sibling(ns, a1)
+        let elem = next_sibling(ns, ai)
+        if elem >= 0 {
+            if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { cur = 1 }
+            if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { cur = 2 }
+        }
+    }
+    let first = vec_first_type(nk, nt, fc, ns, prog, vname)
+    if first >= 0 {
+        if cur != first {
+            eprintln(concat(concat(concat(concat("vec_push: елемент от тип ", typekind_name(cur)), ", но векторът е Vec<"), typekind_name(first)), ">"))
             exit(1)
         }
     }
@@ -2078,6 +2214,9 @@ fn main() {
     write("static void baga_vec_push_str(baga_Vec *v, const char *s) { baga_vec_grow(v); v->data[v->len++] = (void *)s; }\n")
     write("static const char *baga_vec_get_str(baga_Vec *v, int64_t i) { return (const char *)v->data[i]; }\n")
     write("static void baga_vec_set_str(baga_Vec *v, int64_t i, const char *s) { v->data[i] = (void *)s; }\n")
+    write("static void baga_vec_push_f64(baga_Vec *v, double x) { union { double d; void *p; } u; u.d = x; baga_vec_grow(v); v->data[v->len++] = u.p; }\n")
+    write("static double baga_vec_get_f64(baga_Vec *v, int64_t i) { union { double d; void *p; } u; u.p = v->data[i]; return u.d; }\n")
+    write("static void baga_vec_set_f64(baga_Vec *v, int64_t i, double x) { union { double d; void *p; } u; u.d = x; v->data[i] = u.p; }\n")
     write("static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n")
     write("static int baga_argc = 0;\n")
     write("static char **baga_argv = 0;\n")

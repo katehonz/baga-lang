@@ -548,7 +548,7 @@ either declare `!IO` in its own return type or handle it with `catch` (see
 ### 12.4 Vectors (dynamic arrays)
 
 A `Vec` is a heap-allocated, growable array. Each vector carries an element
-type — `Vec<i64>` or `Vec<str>` — which is fixed by the first
+type — `Vec<i64>`, `Vec<str>`, or `Vec<f64>` — which is fixed by the first
 `vec_push`/`vec_set`. Mixing element types in one vector is a compile-time
 error.
 
@@ -556,9 +556,9 @@ error.
 |-----------|-------------|
 | `vec_new() -> Vec` | Create an empty vector with an unknown element type. |
 | `vec_len(v: Vec) -> i64` | Number of elements. |
-| `vec_push(v: Vec, x: i64 \| str)` | Append an element; the first push fixes the element type. |
-| `vec_get(v: Vec, i: i64) -> i64 \| str` | Read the element at index `i` (the vector's element type). |
-| `vec_set(v: Vec, i: i64, x: i64 \| str)` | Overwrite the element at index `i`. |
+| `vec_push(v: Vec, x: i64 \| str \| f64)` | Append an element; the first push fixes the element type. |
+| `vec_get(v: Vec, i: i64) -> i64 \| str \| f64` | Read the element at index `i` (the vector's element type). |
+| `vec_set(v: Vec, i: i64, x: i64 \| str \| f64)` | Overwrite the element at index `i`. |
 | `vec_push_str(v: Vec, s: str)` | Alias of `vec_push` for strings (legacy code). |
 | `vec_get_str(v: Vec, i: i64) -> str` | Alias of `vec_get` for strings (legacy code). |
 | `vec_set_str(v: Vec, i: i64, s: str)` | Alias of `vec_set` for strings (legacy code). |
@@ -574,6 +574,10 @@ fn main() {
     let sv = vec_new()
     vec_push(sv, "здравей")  // Vec<str>
     print(vec_get(sv, 0))    // здравей
+
+    let fv = vec_new()
+    vec_push(fv, 1.5)        // Vec<f64>
+    print(vec_get(fv, 0))    // 1.5
 }
 ```
 
@@ -585,7 +589,7 @@ vec_push(v, 10)
 vec_push(v, "грешка")   // ERROR: vec_push: елемент от тип str, но векторът е Vec<i64>
 ```
 
-Supported element types: `i64` (and `i32`, accepted as `i64`) and `str`.
+Supported element types: `i64` (and `i32`, accepted as `i64`), `str`, and `f64`.
 The element type is a property of the type at the binding site.
 
 `Vec<T>` is a valid type anywhere a type can be written — parameters,
@@ -1081,8 +1085,8 @@ Bulgarian; English glosses follow.
 | `непознат struct '<name>'` | Struct literal for an undeclared struct. |
 | `връщам A, но функцията очаква B` | Returned type does not match the declared return type. |
 | `vec_push: елемент от тип A, но векторът е Vec<B>` | Mixing element types in one `Vec` (also `vec_set`). |
-| `vec_push: неподдържан елементен тип A за Vec (поддържат се i64 и str)` | Element type other than `i64`/`str` (also `vec_set`). |
-| `Vec<T>: неподдържан елементен тип A (поддържат се i64 и str)` | `Vec<A>` annotation with an element other than `i64`/`str`. |
+| `vec_push: неподдържан елементен тип A за Vec (поддържат се i64, str и f64)` | Element type other than `i64`/`str`/`f64` (also `vec_set`). |
+| `Vec<T>: неподдържан елементен тип A (поддържат се i64, str и f64)` | `Vec<A>` annotation with an element other than `i64`/`str`/`f64`. |
 
 ### 17.4 Effect errors
 
@@ -1151,9 +1155,9 @@ resulting binary, and cleans up the temporary files.
 | `arg` | `(i: i64) -> str` | the i-th argument (0-based, excluding the name); `""` out of bounds |
 | `vec_new` | `() -> Vec` | — |
 | `vec_len` | `(v: Vec) -> i64` | — |
-| `vec_push` | `(v: Vec, x: i64 \| str) -> void` | first push fixes the element type |
-| `vec_get` | `(v: Vec, i: i64) -> i64 \| str` | returns the element type |
-| `vec_set` | `(v: Vec, i: i64, x: i64 \| str) -> void` | — |
+| `vec_push` | `(v: Vec, x: i64 \| str \| f64) -> void` | first push fixes the element type |
+| `vec_get` | `(v: Vec, i: i64) -> i64 \| str \| f64` | returns the element type |
+| `vec_set` | `(v: Vec, i: i64, x: i64 \| str \| f64) -> void` | — |
 | `vec_push_str` | `(v: Vec, s: str) -> void` | — |
 | `vec_get_str` | `(v: Vec, i: i64) -> str` | — |
 | `vec_set_str` | `(v: Vec, i: i64, s: str) -> void` | — |
