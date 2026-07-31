@@ -204,6 +204,32 @@ fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec)
     if k == 15 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 20, "0") }
     if k == 0 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if str_eq(t, "match") == 1 {
+            let scrut = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+            let mnode = ast_kind(nk, nt, fc, ns, 26, "")
+            ast_child(fc, ns, mnode, scrut)
+            if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+            while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+                if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+                let pat = parse_primary(tk, tt, pos, nk, nt, fc, ns)
+                let mut is_wild: i64 = 0
+                if node_kind(nk, pat) == 2 {
+                    if str_eq(node_text(nt, pat), "_") == 1 { is_wild = 1 }
+                }
+                if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+                if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+                let body = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+                let mut atext = ""
+                if is_wild == 1 { atext = "_" }
+                let arm = ast_kind(nk, nt, fc, ns, 27, atext)
+                if is_wild == 0 { ast_child(fc, ns, arm, pat) }
+                ast_child(fc, ns, arm, body)
+                ast_child(fc, ns, mnode, arm)
+                if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+            }
+            if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+            return mnode
+        }
         let mut base = ast_kind(nk, nt, fc, ns, 2, t)
         if is_single(tk, tt, vec_get(pos, 0), "(") == 1 {
             vec_set(pos, 0, vec_get(pos, 0) + 1)
@@ -597,6 +623,42 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
     if k == 23 {
         let obj = first_child(fc, idx)
         return concat(concat(emit_expr(nk, nt, fc, ns, prog, obj), "."), mangle(t))
+    }
+    // MATCH: GCC statement expression ({ T _mrN=0; int64_t _mvN=e; if..else..; _mrN; })
+    if k == 26 {
+        let mexpr = first_child(fc, idx)
+        let arm1 = next_sibling(ns, mexpr)
+        let mut ctype = "int64_t"
+        if arm1 >= 0 {
+            let mut b1 = first_child(fc, arm1)
+            if str_eq(node_text(nt, arm1), "_") == 0 { b1 = next_sibling(ns, b1) }
+            if b1 >= 0 {
+                if expr_is_str(nk, nt, fc, ns, prog, b1) == 1 { ctype = "const char *" }
+                else {
+                    if expr_is_float(nk, nt, fc, ns, prog, b1) == 1 { ctype = "double" }
+                    else { if expr_is_bool(nk, nt, fc, ns, prog, b1) == 1 { ctype = "int" } }
+                }
+            }
+        }
+        let suf = int_to_str(idx)
+        let mut r = concat(concat(concat(concat(concat("({ ", ctype), concat(" _mr", suf)), concat(" = 0; int64_t _mv", suf)), " = "), concat(emit_expr(nk, nt, fc, ns, prog, mexpr), "; "))
+        let mut arm = arm1
+        let mut first_arm: i64 = 1
+        while arm >= 0 {
+            let mut abody = first_child(fc, arm)
+            if str_eq(node_text(nt, arm), "_") == 1 {
+                r = concat(r, "else { ")
+            } else {
+                let pat = abody
+                abody = next_sibling(ns, pat)
+                if first_arm == 0 { r = concat(r, "else ") }
+                r = concat(concat(concat(concat(concat(r, "if (_mv"), suf), " == "), emit_expr(nk, nt, fc, ns, prog, pat)), ") { ")
+            }
+            r = concat(concat(concat(concat(r, "_mr"), suf), " = "), concat(emit_expr(nk, nt, fc, ns, prog, abody), "; } "))
+            first_arm = 0
+            arm = next_sibling(ns, arm)
+        }
+        return concat(concat(concat(r, "_mr"), suf), "; })")
     }
     // STR
     if k == 1 { return concat(concat("\"", c_escape(t)), "\"") }
