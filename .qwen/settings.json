@@ -42,7 +42,12 @@
       "Bash(/tmp/bfib)",
       "Bash(/tmp/baga2)",
       "Bash(timeout *)",
-      "Bash(wc *)"
+      "Bash(wc *)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(od *)",
+      "Bash(xxd)",
+      "Bash(/tmp/final)"
     ]
   },
   "$version": 4

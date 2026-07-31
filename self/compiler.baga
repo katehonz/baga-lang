@@ -116,15 +116,26 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
         }
         if c == 34 {
             pos = pos + 1
-            let start = pos
+            let mut sval = ""
             while pos < n {
                 let sc = char_at(src, pos)
                 if sc == 34 { break }
-                if sc == 92 { pos = pos + 1 }
+                if sc == 92 {
+                    pos = pos + 1
+                    let ec = char_at(src, pos)
+                    let mut eh: i64 = 0
+                    if ec == 110 { sval = concat(sval, chr(10)); eh = 1 }
+                    if ec == 116 { sval = concat(sval, chr(9)); eh = 1 }
+                    if ec == 92 { sval = concat(sval, chr(92)); eh = 1 }
+                    if ec == 34 { sval = concat(sval, chr(34)); eh = 1 }
+                    if eh == 0 { sval = concat(sval, chr(ec)) }
+                } else {
+                    sval = concat(sval, chr(sc))
+                }
                 pos = pos + 1
             }
             vec_push(tk, 101)
-            vec_push_str(tt, substr(src, start, pos))
+            vec_push_str(tt, sval)
             if pos < n { pos = pos + 1 }
             continue
         }
@@ -472,13 +483,14 @@ fn c_escape(s: str) -> str {
     let mut result = ""
     let mut i: i64 = 0
     let n = len(s)
+    let bs = chr(92)
     while i < n {
         let c = char_at(s, i)
         let mut handled: i64 = 0
-        if c == 34 { result = concat(result, "\\\""); handled = 1 }
-        if c == 92 { result = concat(result, "\\\\"); handled = 1 }
-        if c == 10 { result = concat(result, "\\n"); handled = 1 }
-        if c == 9 { result = concat(result, "\\t"); handled = 1 }
+        if c == 34 { result = concat(result, concat(bs, chr(34))); handled = 1 }
+        if c == 92 { result = concat(result, concat(bs, bs)); handled = 1 }
+        if c == 10 { result = concat(result, concat(bs, "x0a")); handled = 1 }
+        if c == 9 { result = concat(result, concat(bs, "x09")); handled = 1 }
         if handled == 0 { result = concat(result, chr(c)) }
         i = i + 1
     }
@@ -826,8 +838,20 @@ fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
     if body >= 0 {
         let mut s = first_child(fc, body)
         while s >= 0 {
+            let next_s = next_sibling(ns, s)
+            // implicit return: last expr stmt in non-void fn
+            if next_s < 0 {
+                if str_eq(rettype, "void") == 0 {
+                    if node_kind(nk, s) == 10 {
+                        let e = first_child(fc, s)
+                        write(concat("    return ", concat(emit_expr(nk, nt, fc, ns, e), ";\n")))
+                        s = next_s
+                        continue
+                    }
+                }
+            }
             emit_stmt(nk, nt, fc, ns, prog, s, 1)
-            s = next_sibling(ns, s)
+            s = next_s
         }
     }
 
@@ -854,7 +878,10 @@ fn main() {
     let pos = vec_new()
     vec_push(pos, 0)
 
+    let mut iterations: i64 = 0
     while vec_get(tk, vec_get(pos, 0)) != 999 {
+        iterations = iterations + 1
+        if iterations > 100000 { break }
         if vec_get(tk, vec_get(pos, 0)) == 1 {
             let f = parse_fn(tk, tt, pos, nk, nt, fc, ns)
             ast_child(fc, ns, prog, f)
