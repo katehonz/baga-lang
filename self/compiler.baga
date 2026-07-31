@@ -501,6 +501,24 @@ fn parse_struct(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) 
     node
 }
 
+fn parse_enum(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let name = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let node = ast_kind(nk, nt, fc, ns, 28, name)
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        let vname = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let vn = ast_kind(nk, nt, fc, ns, 29, vname)
+        ast_child(fc, ns, node, vn)
+        if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    }
+    if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    node
+}
+
 fn parse_fn(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
     vec_set(pos, 0, vec_get(pos, 0) + 1)
     let name = vec_get_str(tt, vec_get(pos, 0))
@@ -595,6 +613,23 @@ fn c_escape(s: str) -> str {
     result
 }
 
+fn enum_variant_cname(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
+    let mut e = first_child(fc, prog)
+    while e >= 0 {
+        if node_kind(nk, e) == 28 {
+            let mut v = first_child(fc, e)
+            while v >= 0 {
+                if str_eq(node_text(nt, v), name) == 1 {
+                    return concat(concat(mangle(node_text(nt, e)), "_"), mangle(name))
+                }
+                v = next_sibling(ns, v)
+            }
+        }
+        e = next_sibling(ns, e)
+    }
+    ""
+}
+
 fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
     let k = node_kind(nk, idx)
     let t = node_text(nt, idx)
@@ -662,8 +697,12 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
     }
     // STR
     if k == 1 { return concat(concat("\"", c_escape(t)), "\"") }
-    // IDENT
-    if k == 2 { return mangle(t) }
+    // IDENT (enum вариант → константа, иначе mangle)
+    if k == 2 {
+        let ev = enum_variant_cname(nk, nt, fc, ns, prog, t)
+        if str_eq(ev, "") == 0 { return ev }
+        return mangle(t)
+    }
     // BINARY
     if k == 3 {
         let left = first_child(fc, idx)
@@ -1245,7 +1284,12 @@ fn main() {
                     let s = parse_struct(tk, tt, pos, nk, nt, fc, ns)
                     ast_child(fc, ns, prog, s)
                 } else {
-                    vec_set(pos, 0, vec_get(pos, 0) + 1)
+                    if str_eq(vec_get_str(tt, vec_get(pos, 0)), "enum") == 1 {
+                        let en = parse_enum(tk, tt, pos, nk, nt, fc, ns)
+                        ast_child(fc, ns, prog, en)
+                    } else {
+                        vec_set(pos, 0, vec_get(pos, 0) + 1)
+                    }
                 }
             } else {
                 vec_set(pos, 0, vec_get(pos, 0) + 1)
@@ -1293,6 +1337,23 @@ fn main() {
     write("static char **baga_argv = 0;\n")
     write("static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n")
     write("static const char *baga_arg(int64_t i) { return (i + 1 < baga_argc) ? baga_argv[i + 1] : \"\"; }\n\n")
+
+    // enum declarations
+    let mut en = first_child(fc, prog)
+    while en >= 0 {
+        if node_kind(nk, en) == 28 {
+            write("typedef enum {\n")
+            let mut v = first_child(fc, en)
+            let mut vi: i64 = 0
+            while v >= 0 {
+                write(concat(concat(concat(concat("    ", mangle(node_text(nt, en))), "_"), concat(mangle(node_text(nt, v)), " = ")), concat(int_to_str(vi), ",\n")))
+                vi = vi + 1
+                v = next_sibling(ns, v)
+            }
+            write(concat(concat("} ", mangle(node_text(nt, en))), ";\n\n"))
+        }
+        en = next_sibling(ns, en)
+    }
 
     // struct declarations
     let mut st = first_child(fc, prog)
