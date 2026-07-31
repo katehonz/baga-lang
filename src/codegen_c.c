@@ -280,6 +280,20 @@ static void emit_expr(Codegen *cg, Node *n) {
             /* string/io builtins → C helpers */
             if (n->callee->kind == NODE_IDENT) {
                 const char *bn = n->callee->name;
+                /* типизирани вектори: helper по елементния тип на вектора */
+                if (strcmp(bn, "vec_push") == 0 || strcmp(bn, "vec_get") == 0 ||
+                    strcmp(bn, "vec_set") == 0) {
+                    Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+                    int is_str = vt && vt->kind == TYPE_VEC && vt->elem &&
+                                 vt->elem->kind == TYPE_STR;
+                    fprintf(f, "baga_%s_%s(", bn, is_str ? "str" : "i64");
+                    for (int i = 0; i < n->args.len; i++) {
+                        if (i > 0) fprintf(f, ", ");
+                        emit_expr(cg, n->args.data[i]);
+                    }
+                    fprintf(f, ")");
+                    goto call_done;
+                }
                 struct { const char *baga; const char *c; } bmap[] = {
                     {"len",       "baga_len"},
                     {"char_at",   "baga_char_at"},
@@ -290,11 +304,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"ord",       "baga_ord"},
                     {"str_eq",    "baga_str_eq"},
                     {"vec_new",     "baga_vec_new"},
-                    {"vec_push",    "baga_vec_push_i64"},
                     {"vec_push_str","baga_vec_push_str"},
-                    {"vec_get",     "baga_vec_get_i64"},
                     {"vec_get_str", "baga_vec_get_str"},
-                    {"vec_set",     "baga_vec_set_i64"},
                     {"vec_set_str", "baga_vec_set_str"},
                     {"vec_len",     "baga_vec_len"},
                 };

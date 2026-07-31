@@ -33,7 +33,12 @@ const char *type_str(Type *t) {
         case TYPE_REF:   return "&T";
         case TYPE_STRUCT: return t->name ? t->name : "struct";
         case TYPE_FN:    return "fn";
-        case TYPE_VEC:   return "Vec";
+        case TYPE_VEC: {
+            if (!t->elem) return "Vec";
+            static char buf[64];
+            snprintf(buf, sizeof buf, "Vec<%s>", type_str(t->elem));
+            return buf;
+        }
     }
     return "?";
 }
@@ -44,6 +49,12 @@ int type_eq(Type *a, Type *b) {
     if (a->kind != b->kind) return 0;
     if (a->kind == TYPE_STRUCT) {
         return a->name && b->name && strcmp(a->name, b->name) == 0;
+    }
+    if (a->kind == TYPE_VEC) {
+        /* Vec срещу Vec: различни само ако и двата знаят elem и той се различава;
+         * Vec без elem (наследен код) съвпада с всеки Vec<T> */
+        if (a->elem && b->elem && a->elem->kind != b->elem->kind) return 0;
+        return 1;
     }
     return 1;
 }
@@ -85,44 +96,6 @@ void type_merge_effects(Type *dst, Type *src) {
     if (!dst || !src) return;
     for (int i = 0; i < src->n_effects; i++)
         type_add_effect(dst, src->effects[i]);
-}
-
-/* Map a type AST node to a Type */
-static Type *resolve_type_node(Node *ty) {
-    if (!ty) return type_new(TYPE_VOID);
-    switch (ty->kind) {
-        case NODE_TYPE:
-            if (strcmp(ty->type_name, "i32") == 0)  return type_new(TYPE_I32);
-            if (strcmp(ty->type_name, "i64") == 0)  return type_new(TYPE_I64);
-            if (strcmp(ty->type_name, "f64") == 0)  return type_new(TYPE_F64);
-            if (strcmp(ty->type_name, "bool") == 0) return type_new(TYPE_BOOL);
-            if (strcmp(ty->type_name, "str") == 0)  return type_new(TYPE_STR);
-            if (strcmp(ty->type_name, "void") == 0) return type_new(TYPE_VOID);
-            if (strcmp(ty->type_name, "Vec") == 0)  return type_new(TYPE_VEC);
-            {
-                Type *t = type_new(TYPE_STRUCT);
-                t->name = strdup(ty->type_name);
-                return t;
-            }
-        case NODE_TYPE_REF: {
-            Type *t = type_new(TYPE_REF);
-            t->pointee = resolve_type_node(ty->inner_type);
-            return t;
-        }
-        case NODE_TYPE_ARRAY: {
-            Type *t = type_new(TYPE_ARRAY);
-            t->elem = resolve_type_node(ty->inner_type);
-            return t;
-        }
-        case NODE_TYPE_EFFECT: {
-            Type *base = resolve_type_node(ty->inner_type);
-            for (int i = 0; i < ty->n_effects; i++)
-                type_add_effect(base, ty->effect_names[i]);
-            return base;
-        }
-        default:
-            return type_new(TYPE_ERROR);
-    }
 }
 
 /* ============================================================
@@ -191,6 +164,63 @@ static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(e + off, 256 - (size_t)off, fmt, ap);
     va_end(ap);
+    /* същата грешка на същата позиция от два прохода — пазим само веднъж */
+    if (ctx->chk->n_errors >= 2 &&
+        strcmp(ctx->chk->errors[ctx->chk->n_errors - 2], e) == 0)
+        ctx->chk->n_errors--;
+}
+
+/* Map a type AST node to a Type */
+static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
+    if (!ty) return type_new(TYPE_VOID);
+    switch (ty->kind) {
+        case NODE_TYPE:
+            if (strcmp(ty->type_name, "i32") == 0)  return type_new(TYPE_I32);
+            if (strcmp(ty->type_name, "i64") == 0)  return type_new(TYPE_I64);
+            if (strcmp(ty->type_name, "f64") == 0)  return type_new(TYPE_F64);
+            if (strcmp(ty->type_name, "bool") == 0) return type_new(TYPE_BOOL);
+            if (strcmp(ty->type_name, "str") == 0)  return type_new(TYPE_STR);
+            if (strcmp(ty->type_name, "void") == 0) return type_new(TYPE_VOID);
+            if (strcmp(ty->type_name, "Vec") == 0) {
+                Type *t = type_new(TYPE_VEC);
+                if (ty->inner_type) {
+                    /* Vec<T>: елементите са ограничени до i64 (i32 → i64) и str */
+                    Type *el = resolve_type_node(ctx, ty->inner_type);
+                    if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
+                    if (el->kind != TYPE_I64 && el->kind != TYPE_STR) {
+                        check_error(ctx, ty->pos,
+                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64 и str)",
+                            type_str(el));
+                    } else {
+                        t->elem = el;
+                    }
+                }
+                return t;
+            }
+            {
+                Type *t = type_new(TYPE_STRUCT);
+                t->name = strdup(ty->type_name);
+                return t;
+            }
+        case NODE_TYPE_REF: {
+            Type *t = type_new(TYPE_REF);
+            t->pointee = resolve_type_node(ctx, ty->inner_type);
+            return t;
+        }
+        case NODE_TYPE_ARRAY: {
+            Type *t = type_new(TYPE_ARRAY);
+            t->elem = resolve_type_node(ctx, ty->inner_type);
+            return t;
+        }
+        case NODE_TYPE_EFFECT: {
+            Type *base = resolve_type_node(ctx, ty->inner_type);
+            for (int i = 0; i < ty->n_effects; i++)
+                type_add_effect(base, ty->effect_names[i]);
+            return base;
+        }
+        default:
+            return type_new(TYPE_ERROR);
+    }
 }
 
 static void push_scope(CheckCtx *ctx) {
@@ -296,6 +326,66 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             return type_new(TYPE_VOID);
         }
 
+        /* типизирани вектори: Vec<T> — елементният тип се фиксира при
+         * първия push/set чрез мутация на Type->elem (env пази същия
+         * указател, така че фиксирането се разпространява до свързването) */
+        if (strcmp(name, "vec_new") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            return type_new(TYPE_VEC);      /* elem = NULL: неизвестен */
+        }
+        if (strcmp(name, "vec_push") == 0 || strcmp(name, "vec_set") == 0 ||
+            strcmp(name, "vec_push_str") == 0 || strcmp(name, "vec_set_str") == 0) {
+            int is_str_alias = (strstr(name, "_str") != NULL);
+            int xidx = (strstr(name, "set") != NULL) ? 2 : 1;   /* индекс на елемента */
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != xidx + 1) {
+                check_error(ctx, n->pos, "'%s' очаква %d аргумента, получих %d",
+                            name, xidx + 1, n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            Type *vt = n->args.data[0]->type;
+            if (!vt || vt->kind != TYPE_VEC) {
+                check_error(ctx, n->pos, "'%s' върху не-вектор (%s)", name, type_str(vt));
+                return type_new(TYPE_ERROR);
+            }
+            Type *xt = is_str_alias ? type_new(TYPE_STR) : n->args.data[xidx]->type;
+            if (xt->kind == TYPE_I32) xt = type_new(TYPE_I64);
+            if (!is_str_alias && xt->kind != TYPE_I64 && xt->kind != TYPE_STR) {
+                check_error(ctx, n->pos,
+                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64 и str)",
+                    name, type_str(xt));
+                return type_new(TYPE_ERROR);
+            }
+            if (!vt->elem) {
+                vt->elem = xt;
+            } else if (vt->elem->kind != xt->kind) {
+                check_error(ctx, n->pos, "%s: елемент от тип %s, но векторът е %s",
+                            name, type_str(xt), type_str(vt));
+            }
+            return type_new(TYPE_VOID);
+        }
+        if (strcmp(name, "vec_get") == 0 || strcmp(name, "vec_get_str") == 0) {
+            int is_str_alias = (strstr(name, "_str") != NULL);
+            n->callee->type = type_new(TYPE_VOID);
+            Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+            if (is_str_alias) {
+                if (vt && vt->kind == TYPE_VEC && !vt->elem) vt->elem = type_new(TYPE_STR);
+                return type_new(TYPE_STR);
+            }
+            if (vt && vt->kind == TYPE_VEC) {
+                /* Vec с неизвестен елемент: vec_get исторически е само за i64,
+                 * фиксираме i64 (стар код с Vec параметри не се чупи) */
+                if (!vt->elem) vt->elem = type_new(TYPE_I64);
+                return vt->elem;
+            }
+            check_error(ctx, n->pos, "'%s' върху не-вектор (%s)", name, type_str(vt));
+            return type_new(TYPE_ERROR);
+        }
+        if (strcmp(name, "vec_len") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            return type_new(TYPE_I64);
+        }
+
         /* string / io builtins */
         struct { const char *name; TypeKind ret; int nparams; int has_io; } builtins[] = {
             {"len",       TYPE_I64, 1, 0},
@@ -306,14 +396,6 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"chr",       TYPE_STR, 1, 0},
             {"ord",       TYPE_I64, 1, 0},
             {"str_eq",    TYPE_BOOL, 2, 0},
-            {"vec_new",     TYPE_VEC, 0, 0},
-            {"vec_push",    TYPE_VOID, 2, 0},
-            {"vec_push_str",TYPE_VOID, 2, 0},
-            {"vec_get",     TYPE_I64, 2, 0},
-            {"vec_get_str", TYPE_STR, 2, 0},
-            {"vec_set",     TYPE_VOID, 3, 0},
-            {"vec_set_str", TYPE_VOID, 3, 0},
-            {"vec_len",     TYPE_I64, 1, 0},
         };
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {
@@ -460,7 +542,7 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                         for (int fi = 0; fi < sdecl->fields.len; fi++) {
                             Node *fld = sdecl->fields.data[fi];
                             if (strcmp(fld->fld_name, n->field_name) == 0) {
-                                t = resolve_type_node(fld->fld_type);
+                                t = resolve_type_node(ctx, fld->fld_type);
                                 break;
                             }
                         }
@@ -536,7 +618,7 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
         case NODE_LET: {
             Type *init_t = n->let_init ? infer(ctx, n->let_init) : type_new(TYPE_I64);
-            Type *decl_t = n->let_type ? resolve_type_node(n->let_type) : init_t;
+            Type *decl_t = n->let_type ? resolve_type_node(ctx, n->let_type) : init_t;
             env_define(ctx, n->let_name, decl_t, n->pos);
             t = type_new(TYPE_VOID);
             break;
@@ -622,7 +704,7 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
 static void check_fn(CheckCtx *ctx, Node *fn) {
     ctx->cur_fn = fn->fn_name;
-    ctx->cur_ret = fn->ret_type ? resolve_type_node(fn->ret_type) : type_new(TYPE_VOID);
+    ctx->cur_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type) : type_new(TYPE_VOID);
     ctx->cur_effects = type_new(TYPE_VOID); /* accumulator for body effects */
 
     push_scope(ctx);
@@ -630,7 +712,7 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
     /* define params */
     for (int i = 0; i < fn->params.len; i++) {
         Node *p = fn->params.data[i];
-        Type *pt = resolve_type_node(p->param_type);
+        Type *pt = resolve_type_node(ctx, p->param_type);
         p->type = pt;
         env_define(ctx, p->param_name, pt, p->pos);
     }
@@ -676,13 +758,13 @@ void check_program(Checker *c, Node *program) {
 
         if (item->kind == NODE_FN) {
             /* build function type */
-            Type *ret = item->ret_type ? resolve_type_node(item->ret_type) : type_new(TYPE_VOID);
+            Type *ret = item->ret_type ? resolve_type_node(&ctx, item->ret_type) : type_new(TYPE_VOID);
             int np = item->params.len;
             Type **params = NULL;
             if (np > 0) {
                 params = malloc(sizeof(Type *) * (size_t)np);
                 for (int j = 0; j < np; j++)
-                    params[j] = resolve_type_node(item->params.data[j]->param_type);
+                    params[j] = resolve_type_node(&ctx, item->params.data[j]->param_type);
             }
             Type *ft = type_fn(ret, params, np);
             ft->name = strdup(item->fn_name);
@@ -748,7 +830,7 @@ void check_program(Checker *c, Node *program) {
             /* check each input type */
             for (int j = 0; j < item->spec_inputs.len; j++) {
                 Node *sp = item->spec_inputs.data[j];
-                Type *spec_t = resolve_type_node(sp->param_type);
+                Type *spec_t = resolve_type_node(&ctx, sp->param_type);
                 if (!type_eq(spec_t, ft->params[j])) {
                     check_error(&ctx, sp->pos,
                         "spec '%s': параметър '%s' е %s в spec-а, но %s във функцията",
@@ -760,7 +842,7 @@ void check_program(Checker *c, Node *program) {
 
         /* check output type */
         if (item->spec_output) {
-            Type *spec_ret = resolve_type_node(item->spec_output);
+            Type *spec_ret = resolve_type_node(&ctx, item->spec_output);
             Type *fn_ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
             if (!type_eq(spec_ret, fn_ret)) {
                 check_error(&ctx, item->pos,
@@ -781,7 +863,7 @@ void check_program(Checker *c, Node *program) {
                 for (int j = 0; j < item->spec_inputs.len; j++) {
                     Node *sp = item->spec_inputs.data[j];
                     env_define(&ctx, sp->param_name,
-                               resolve_type_node(sp->param_type), sp->pos);
+                               resolve_type_node(&ctx, sp->param_type), sp->pos);
                 }
                 env_define(&ctx, "output", fn_ret, item->pos);
                 for (int j = 0; j < item->spec_ensures.len; j++) {
@@ -803,7 +885,7 @@ void check_program(Checker *c, Node *program) {
             for (int j = 0; j < item->spec_inputs.len; j++) {
                 Node *sp = item->spec_inputs.data[j];
                 env_define(&ctx, sp->param_name,
-                           resolve_type_node(sp->param_type), sp->pos);
+                           resolve_type_node(&ctx, sp->param_type), sp->pos);
             }
             for (int j = 0; j < item->spec_requires.len; j++) {
                 Node *rq = item->spec_requires.data[j];

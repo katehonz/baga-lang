@@ -263,28 +263,37 @@ typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;
 Алтернативен backend, който генерира LLVM IR директно от AST-то
 (`make llvm` → `baga-llvm --emit-llvm файл.baga`; изисква LLVM 14).
 
-Поддържа числовото ядро на езика:
-- Типове: `i64`, `i32`, `f64`, `bool`, `str` (само литерали + print), `void`
+Поддържа целия езиков набор от примерите:
+- Типове: `i64`, `i32`, `f64`, `bool`, `str`, `void`, `Vec`, потребителски
+  struct-ове (by value, както в C backend-а)
 - Изрази: литерали, ident, binary (int + f64 с промоция i64→f64 като в C
   backend-а), unary (`-`, `!`), повиквания
 - Оператори: let, присвояване (`=`, `+=` …), return, if/else, while,
   for (`0..n`) с break/continue, match върху i64, enum варианти
 - `print`/`println`/`write` — изходът е байт за байт същият като C backend-а
   (`%lld`, `%g`, `true`/`false`, `%s`)
+- Str/io builtin-и: `len`, `char_at`, `substr`, `concat`, `str_eq`, `chr`,
+  `ord`, `read_file` — lazy IR функции (`baga_rt`), огледало на C preamble-а
+- Vec builtin-и: `vec_new`, `vec_push`, `vec_get`, `vec_set`, `vec_push_str`,
+  `vec_get_str`, `vec_set_str`, `vec_len` — `baga_Vec` като named struct в IR,
+  със същия `(void*)(intptr_t)x` трик като C (`inttoptr`/`ptrtoint`)
+- Ефекти: `?` и `catch` са compile-time тагове — pass-through, както в codegen_c
 - Contracts: wrapper pattern като C backend-а — requires преди и ensures след
   повикването; нарушение → същото съобщение на stderr + exit(1)
   (редът `  вход:` е само за C/`--test-specs`)
 
 Принцип „никакви тихи стойности": всеки конструкт извън този списък
-(struct, Vec, масиви, str builtins, ефекти `?`/`catch`, референции) е
-compile-time грешка, а не мълчаливо грешен код:
+(масиви `[T]`, референции `&`/`*`, match върху не-i64, str `==` в binary
+израз, присвояване на поле/индекс) е compile-time грешка, а не мълчаливо
+грешен код:
 
 ```
 baga: LLVM backend: неподдържан конструкт '<какво>'
 ```
 
 Оракълът `tests/llvm_oracle.sh` (викан от `make test`) сравнява изхода и
-exit кода на C backend-а и LLVM backend-а (през `lli-14`) за всички примери.
+exit кода на C backend-а и LLVM backend-а (през `lli-14`) за всички примери
+— 14/14 OK.
 
 ---
 

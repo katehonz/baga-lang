@@ -9,8 +9,8 @@ fn main() {
     print(vec_get(v, 2))
 
     let sv = vec_new()
-    vec_push_str(sv, "здравей")
-    vec_push_str(sv, "свят")
-    print(vec_get_str(sv, 0))
+    vec_push(sv, "здравей")
+    vec_push(sv, "свят")
+    print(vec_get(sv, 0))
     print(vec_get_str(sv, 1))
 }

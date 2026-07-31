@@ -1,0 +1,31 @@
+// Vec<T> — типизирани вектори в анотации: параметри, връщани типове, spec.
+// Елементът идва от анотацията, не само от първия vec_push.
+fn сума(v: Vec<i64>) -> i64 {
+    let mut s: i64 = 0
+    for i in 0..vec_len(v) {
+        s += vec_get(v, i)     // i64 — от анотацията Vec<i64>
+    }
+    return s
+}
+
+fn първи(sv: Vec<str>) -> str {
+    return vec_get(sv, 0)      // str — от анотацията Vec<str>
+}
+
+spec сума {
+    input:
+        v: Vec<i64>
+    output: i64
+    ensures:
+        output >= 0 || output < 0   // винаги вярно; демо
+}
+
+fn main() {
+    let v = vec_new()
+    vec_push(v, 10)
+    vec_push(v, 20)
+    print(сума(v))
+    let sv = vec_new()
+    vec_push(sv, "здравей")
+    print(първи(sv))
+}

@@ -265,6 +265,12 @@ static Node *parse_type(Parser *p) {
     Token *t = expect(p, TOK_IDENT);
     Node *ty = node_alloc(NODE_TYPE, pos);
     ty->type_name = t->text ? strdup(t->text) : strdup("i32");
+
+    /* Vec<T> — вектор с анотиран елементен тип */
+    if (strcmp(ty->type_name, "Vec") == 0 && match(p, TOK_LT)) {
+        ty->inner_type = parse_type(p);
+        expect(p, TOK_GT);
+    }
     return ty;
 }
 

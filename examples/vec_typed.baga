@@ -1,0 +1,7 @@
+// Смесване на типове в един Vec — checker-ът трябва да откаже
+fn main() {
+    let v = vec_new()
+    vec_push(v, 10)
+    vec_push(v, "не тук")
+    print(vec_get(v, 0))
+}

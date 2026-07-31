@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 FAIL=0
 for f in examples/*.baga; do
     [ "$f" = "examples/spec_bad.baga" ] && continue   # очаквана compile грешка
+    [ "$f" = "examples/vec_typed.baga" ] && continue  # очаквана compile грешка
     ./baga "$f" > /tmp/baga_c_out.txt 2>&1; rc_c=$?
     if ! ./baga-llvm --emit-llvm "$f" > /tmp/baga.ll 2>/tmp/baga_ll_err.txt; then
         if grep -q "неподдържан конструкт" /tmp/baga_ll_err.txt; then

@@ -260,28 +260,36 @@ Not formal proofs — structured documentation for human or AI verification.
 Alternative backend that generates LLVM IR directly from the AST
 (`make llvm` → `baga-llvm --emit-llvm file.baga`; requires LLVM 14).
 
-Supports the numeric core of the language:
-- Types: `i64`, `i32`, `f64`, `bool`, `str` (literals + print only), `void`
+Supports the full language set covered by the examples:
+- Types: `i64`, `i32`, `f64`, `bool`, `str`, `void`, `Vec`, user-defined
+  structs (by value, as in the C backend)
 - Expressions: literals, idents, binary ops (int + f64 with i64→f64 promotion
   as in the C backend), unary (`-`, `!`), calls
 - Statements: let, assignment (`=`, `+=` …), return, if/else, while,
   for (`0..n`) with break/continue, match on i64, enum variants
 - `print`/`println`/`write` — output is byte-identical to the C backend
   (`%lld`, `%g`, `true`/`false`, `%s`)
+- Str/io builtins: `len`, `char_at`, `substr`, `concat`, `str_eq`, `chr`,
+  `ord`, `read_file` — lazy IR functions (`baga_rt`) mirroring the C preamble
+- Vec builtins: `vec_new`, `vec_push`, `vec_get`, `vec_set`, `vec_push_str`,
+  `vec_get_str`, `vec_set_str`, `vec_len` — `baga_Vec` as a named struct in IR,
+  with the same `(void*)(intptr_t)x` trick as C (`inttoptr`/`ptrtoint`)
+- Effects: `?` and `catch` are compile-time tags — pass-through, as in codegen_c
 - Contracts: same wrapper pattern as the C backend — requires before and
   ensures after the call; a violation prints the same message to stderr and
   exits 1 (the `  вход:` line is C/`--test-specs` only)
 
-"No silent values" principle: any construct outside this list (structs, Vec,
-arrays, str builtins, effects `?`/`catch`, references) is a compile-time
-error, not silently wrong code:
+"No silent values" principle: any construct outside this list (arrays `[T]`,
+references `&`/`*`, match on non-i64, str `==` in a binary expression,
+assignment to a field/index) is a compile-time error, not silently wrong code:
 
 ```
 baga: LLVM backend: неподдържан конструкт '<what>'
 ```
 
 The oracle `tests/llvm_oracle.sh` (run by `make test`) diffs the output and
-exit codes of the C backend vs the LLVM backend (via `lli-14`) for all examples.
+exit codes of the C backend vs the LLVM backend (via `lli-14`) for all
+examples — 14/14 OK.
 
 ---
 

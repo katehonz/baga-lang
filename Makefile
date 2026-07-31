@@ -64,6 +64,12 @@ test: $(BIN)
 	@./$(BIN) examples/spec_requires_fail.baga 2>&1 | grep -q "requires #1 нарушено" \
 		&& echo "OK: requires предусловието е хванато" \
 		|| { echo "FAIL: requires не е хванато"; exit 1; }
+	@echo "=== vec_typed (очакваме compile грешка) ==="
+	@./$(BIN) examples/vec_typed.baga 2>&1 | grep -q "елемент от тип str, но векторът е Vec<i64>" \
+		&& echo "OK: Vec<T> хвана смесването" \
+		|| { echo "FAIL: Vec<T> не хвана смесването"; exit 1; }
+	@echo "=== vec_ann (Vec<T> анотации) ==="
+	./$(BIN) examples/vec_ann.baga
 	@echo "=== --test-specs (property-based) ==="
 	@./$(BIN) --test-specs examples/spec_ensures.baga
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
