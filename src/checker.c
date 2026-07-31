@@ -59,6 +59,16 @@ int type_eq(Type *a, Type *b) {
     return 1;
 }
 
+/* дали аргумент от тип `arg` може да се подаде на параметър от тип `param` */
+static int type_assignable(Type *arg, Type *param) {
+    if (!arg || !param) return 1;
+    if (arg->kind == TYPE_ERROR || param->kind == TYPE_ERROR) return 1;
+    /* цялочислено семейство: i32/i64 са съвместими (int литералите са i64) */
+    if ((arg->kind == TYPE_I32 || arg->kind == TYPE_I64) &&
+        (param->kind == TYPE_I32 || param->kind == TYPE_I64)) return 1;
+    return type_eq(arg, param);
+}
+
 /* ============================================================
  *  Effect helpers
  * ============================================================ */
@@ -417,6 +427,17 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             if (n->args.len != ft->nparams) {
                 check_error(ctx, n->pos, "'%s' очаква %d аргумента, получих %d",
                             name, ft->nparams, n->args.len);
+            }
+            /* check arg types (до min(args, nparams) — без фалшиви грешки
+             * при вече грешна бройка) */
+            int check_n = n->args.len < ft->nparams ? n->args.len : ft->nparams;
+            for (int i = 0; i < check_n; i++) {
+                Type *at = n->args.data[i]->type;
+                if (!type_assignable(at, ft->params[i])) {
+                    check_error(ctx, n->pos,
+                        "'%s': аргумент #%d е от тип %s, но параметърът е %s",
+                        name, i + 1, type_str(at), type_str(ft->params[i]));
+                }
             }
             Type *ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
             /* propagate effects from function's return type */

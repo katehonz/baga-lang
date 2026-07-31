@@ -68,6 +68,10 @@ test: $(BIN)
 	@./$(BIN) examples/vec_typed.baga 2>&1 | grep -q "елемент от тип str, но векторът е Vec<i64>" \
 		&& echo "OK: Vec<T> хвана смесването" \
 		|| { echo "FAIL: Vec<T> не хвана смесването"; exit 1; }
+	@echo "=== arg_type_bad (очакваме compile грешка) ==="
+	@./$(BIN) examples/arg_type_bad.baga 2>&1 | grep -q "аргумент #1 е от тип str, но параметърът е i64" \
+		&& echo "OK: проверката на аргументите хвана грешния тип" \
+		|| { echo "FAIL: проверката на аргументите не хвана грешния тип"; exit 1; }
 	@echo "=== vec_ann (Vec<T> анотации) ==="
 	./$(BIN) examples/vec_ann.baga
 	@echo "=== --test-specs (property-based) ==="

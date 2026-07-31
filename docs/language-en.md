@@ -286,6 +286,8 @@ fn add(a: i64, b: i64) -> i64 {
 ```
 
 - Parameters always carry an explicit type: `name: type`.
+- At call sites the checker matches argument count **and types** against the
+  parameters; a mismatch is a compile-time error (`i32`/`i64` are compatible).
 - The return type follows `->`. Omit it for procedures that return nothing
   (`void`).
 - Effects, if any, follow the return type: `-> str !IO !NotFound`.
@@ -1070,6 +1072,7 @@ Bulgarian; English glosses follow.
 | `недефинирана променлива '<name>'` | Use of an undefined variable. |
 | `непозната функция '<name>'` | Call to an unknown function. |
 | `'<name>' очаква N аргумента, получих M` | Wrong argument count. |
+| `'<name>': аргумент #N е от тип A, но параметърът е B` | Argument of incompatible type passed to a user function (`i32`/`i64` are compatible). |
 | `аритметична операция върху не-числови типове (A, B)` | `+ - * / %` applied to non-numeric operands. |
 | `очаквах bool в условие, получих A` | `if` condition is not a boolean. |
 | `очаквах bool в условие на while, получих A` | `while` condition is not a boolean. |
