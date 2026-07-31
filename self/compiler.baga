@@ -324,7 +324,26 @@ fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         ast_child(fc, ns, node, body)
         return node
     }
+    // break
+    if k == 17 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        return ast_kind(nk, nt, fc, ns, 14, "")
+    }
+    // continue
+    if k == 18 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        return ast_kind(nk, nt, fc, ns, 15, "")
+    }
     let e = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+    // skip catch !E => handler (compile-time only)
+    if vec_get(tk, vec_get(pos, 0)) == 16 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let handler = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+    }
     let node = ast_kind(nk, nt, fc, ns, 10, "")
     ast_child(fc, ns, node, e)
     node
@@ -435,13 +454,40 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) -> str {
     // CALL
     if k == 4 {
         let callee = first_child(fc, idx)
-        let mut result = concat(emit_expr(nk, nt, fc, ns, callee), "(")
+        // check for builtin
+        let mut cname = ""
+        if node_kind(nk, callee) == 2 {
+            let bn = node_text(nt, callee)
+            if str_eq(bn, "len") == 1 { cname = "baga_len" }
+            if str_eq(bn, "char_at") == 1 { cname = "baga_char_at" }
+            if str_eq(bn, "substr") == 1 { cname = "baga_substr" }
+            if str_eq(bn, "concat") == 1 { cname = "baga_concat" }
+            if str_eq(bn, "str_eq") == 1 { cname = "baga_str_eq" }
+            if str_eq(bn, "chr") == 1 { cname = "baga_chr" }
+            if str_eq(bn, "ord") == 1 { cname = "baga_ord" }
+            if str_eq(bn, "read_file") == 1 { cname = "baga_read_file" }
+            if str_eq(bn, "write") == 1 { cname = "baga_write" }
+            if str_eq(bn, "vec_new") == 1 { cname = "baga_vec_new" }
+            if str_eq(bn, "vec_push") == 1 { cname = "baga_vec_push_i64" }
+            if str_eq(bn, "vec_push_str") == 1 { cname = "baga_vec_push_str" }
+            if str_eq(bn, "vec_get") == 1 { cname = "baga_vec_get_i64" }
+            if str_eq(bn, "vec_get_str") == 1 { cname = "baga_vec_get_str" }
+            if str_eq(bn, "vec_set") == 1 { cname = "baga_vec_set_i64" }
+            if str_eq(bn, "vec_set_str") == 1 { cname = "baga_vec_set_str" }
+            if str_eq(bn, "vec_len") == 1 { cname = "baga_vec_len" }
+        }
+        let mut result = ""
+        if str_eq(cname, "") == 0 {
+            result = concat(cname, "(")
+        } else {
+            result = concat(emit_expr(nk, nt, fc, ns, callee), "(")
+        }
         let mut arg = next_sibling(ns, callee)
-        let mut first: i64 = 1
+        let mut first_arg: i64 = 1
         while arg >= 0 {
-            if first == 0 { result = concat(result, ", ") }
+            if first_arg == 0 { result = concat(result, ", ") }
             result = concat(result, emit_expr(nk, nt, fc, ns, arg))
-            first = 0
+            first_arg = 0
             arg = next_sibling(ns, arg)
         }
         return concat(result, ")")
@@ -467,7 +513,25 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
     // LET
     if k == 6 {
         let init = first_child(fc, idx)
-        write(concat(concat(concat(concat(ind, "int64_t "), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, init), ";\n")))
+        // detect string type: init is STR literal or string-returning call
+        let mut is_str: i64 = 0
+        if node_kind(nk, init) == 1 { is_str = 1 }
+        if node_kind(nk, init) == 4 {
+            let cal = first_child(fc, init)
+            if node_kind(nk, cal) == 2 {
+                let bn = node_text(nt, cal)
+                if str_eq(bn, "concat") == 1 { is_str = 1 }
+                if str_eq(bn, "substr") == 1 { is_str = 1 }
+                if str_eq(bn, "chr") == 1 { is_str = 1 }
+                if str_eq(bn, "read_file") == 1 { is_str = 1 }
+                if str_eq(bn, "vec_get_str") == 1 { is_str = 1 }
+            }
+        }
+        if is_str == 1 {
+            write(concat(concat(concat(concat(ind, "const char * "), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, init), ";\n")))
+        } else {
+            write(concat(concat(concat(concat(ind, "int64_t "), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, init), ";\n")))
+        }
         return
     }
     // RETURN
@@ -522,14 +586,14 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
         if node_kind(nk, e) == 4 {
             let callee = first_child(fc, e)
             if node_kind(nk, callee) == 2 {
-                let cname = node_text(nt, callee)
-                if str_eq(cname, "print") == 1 {
+                let cname2 = node_text(nt, callee)
+                if str_eq(cname2, "print") == 1 {
                     let arg = next_sibling(ns, callee)
                     if arg >= 0 {
                         if node_kind(nk, arg) == 1 {
                             write(concat(concat(ind, "printf(\"%s\\n\", "), concat(emit_expr(nk, nt, fc, ns, arg), ");\n")))
                         } else {
-                            write(concat(concat(ind, "printf(\"%lld\\n\", (long long)("), concat(emit_expr(nk, nt, fc, ns, arg), ")));\n")))
+                            write(concat(concat(ind, "printf(\"%lld\\n\", (long long)("), concat(emit_expr(nk, nt, fc, ns, arg), "));\n")))
                         }
                     } else {
                         write(concat(ind, "printf(\"\\n\");\n"))
@@ -539,6 +603,16 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
             }
         }
         write(concat(concat(ind, emit_expr(nk, nt, fc, ns, e)), ";\n"))
+        return
+    }
+    // BREAK
+    if k == 14 {
+        write(concat(ind, "break;\n"))
+        return
+    }
+    // CONTINUE
+    if k == 15 {
+        write(concat(ind, "continue;\n"))
         return
     }
 }
@@ -649,6 +723,36 @@ fn main() {
     write("#include <stdlib.h>\n")
     write("#include <stdint.h>\n")
     write("#include <string.h>\n\n")
+    // runtime helpers
+    write("static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n")
+    write("static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n")
+    write("static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n")
+    write("    int64_t n = b - a; if (n < 0) n = 0;\n")
+    write("    char *r = malloc((size_t)n + 1); memcpy(r, s + a, (size_t)n); r[n] = 0; return r; }\n")
+    write("static const char *baga_concat(const char *a, const char *b) {\n")
+    write("    size_t la = strlen(a), lb = strlen(b);\n")
+    write("    char *r = malloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r; }\n")
+    write("static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n")
+    write("static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n")
+    write("static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n")
+    write("static const char *baga_read_file(const char *path) {\n")
+    write("    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n")
+    write("    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n")
+    write("    char *buf = malloc((size_t)sz + 1); fread(buf, 1, (size_t)sz, f); buf[sz] = 0; fclose(f); return buf; }\n")
+    write("static void baga_write(const char *s) { printf(\"%s\", s); }\n")
+    write("typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;\n")
+    write("static baga_Vec *baga_vec_new(void) {\n")
+    write("    baga_Vec *v = malloc(sizeof(baga_Vec));\n")
+    write("    v->cap = 8; v->len = 0; v->data = malloc(8 * sizeof(void *)); return v; }\n")
+    write("static void baga_vec_grow(baga_Vec *v) {\n")
+    write("    if (v->len == v->cap) { v->cap *= 2; v->data = realloc(v->data, (size_t)v->cap * sizeof(void *)); } }\n")
+    write("static void baga_vec_push_i64(baga_Vec *v, int64_t x) { baga_vec_grow(v); v->data[v->len++] = (void *)(intptr_t)x; }\n")
+    write("static int64_t baga_vec_get_i64(baga_Vec *v, int64_t i) { return (int64_t)(intptr_t)v->data[i]; }\n")
+    write("static void baga_vec_set_i64(baga_Vec *v, int64_t i, int64_t x) { v->data[i] = (void *)(intptr_t)x; }\n")
+    write("static void baga_vec_push_str(baga_Vec *v, const char *s) { baga_vec_grow(v); v->data[v->len++] = (void *)s; }\n")
+    write("static const char *baga_vec_get_str(baga_Vec *v, int64_t i) { return (const char *)v->data[i]; }\n")
+    write("static void baga_vec_set_str(baga_Vec *v, int64_t i, const char *s) { v->data[i] = (void *)s; }\n")
+    write("static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n\n")
 
     // forward declarations
     let mut f = first_child(fc, prog)

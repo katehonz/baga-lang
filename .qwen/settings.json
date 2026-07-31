@@ -31,7 +31,8 @@
       "Bash(0)",
       "Bash(write)",
       "Bash(gcc *)",
-      "Bash(/tmp/baga_self)"
+      "Bash(/tmp/baga_self)",
+      "Bash(/tmp/baga_fakt)"
     ]
   },
   "$version": 4
