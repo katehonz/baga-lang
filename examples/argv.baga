@@ -1,0 +1,6 @@
+// Програмни аргументи: arg_count() и arg(i)
+// Без аргументи → 0 и празен ред; с `a b` → 2 и `a`.
+fn main() {
+    print(arg_count())
+    print(arg(0))
+}

@@ -6,7 +6,7 @@ SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/pr
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
-.PHONY: all clean test test-llvm llvm
+.PHONY: all clean test test-llvm llvm self
 
 all: $(BIN)
 
@@ -37,6 +37,23 @@ clean:
 
 test-llvm: $(BIN) $(LLVM_BIN)
 	@./tests/llvm_oracle.sh
+
+# Self-hosting bootstrap: инвариантът е fixed point — self компилаторът
+# възпроизвежда себе си (baga2 == baga3 като компилатори). baga (C bootstrap)
+# и baga2 (self) са различни компилатора с различен codegen, затова сравняваме
+# изхода на baga2 (baga_self3.c) с изхода на baga3 (baga_self4.c).
+self: $(BIN)
+	@echo "=== self-hosting bootstrap ==="
+	@./$(BIN) --emit-c self/compiler.baga > /tmp/baga_self2.c
+	@gcc $(CFLAGS) -o /tmp/baga2 /tmp/baga_self2.c $(LDFLAGS)
+	@/tmp/baga2 self/compiler.baga > /tmp/baga_self3.c
+	@gcc $(CFLAGS) -o /tmp/baga3 /tmp/baga_self3.c $(LDFLAGS)
+	@/tmp/baga3 self/compiler.baga > /tmp/baga_self4.c
+	@if diff -q /tmp/baga_self3.c /tmp/baga_self4.c > /dev/null; then \
+		echo "OK: baga2 == baga3 (fixed point — self компилаторът се възпроизвежда) ⚔️"; \
+	else \
+		echo "FAIL: baga2 != baga3"; diff /tmp/baga_self3.c /tmp/baga_self4.c | head -20; exit 1; \
+	fi
 
 test: $(BIN)
 	@echo "=== здравей ==="

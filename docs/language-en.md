@@ -1146,6 +1146,8 @@ resulting binary, and cleans up the temporary files.
 | `chr` | `(c: i64) -> str` | — |
 | `ord` | `(s: str) -> i64` | — |
 | `read_file` | `(path: str) -> str` | `!IO` |
+| `arg_count` | `() -> i64` | number of program arguments (excluding the program name) |
+| `arg` | `(i: i64) -> str` | the i-th argument (0-based, excluding the name); `""` out of bounds |
 | `vec_new` | `() -> Vec` | — |
 | `vec_len` | `(v: Vec) -> i64` | — |
 | `vec_push` | `(v: Vec, x: i64 \| str) -> void` | first push fixes the element type |

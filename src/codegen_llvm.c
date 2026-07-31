@@ -690,6 +690,68 @@ static int struct_field_index(Node *decl, const char *fname) {
     return -1;
 }
 
+/* ---- Програмни аргументи (argv) ----
+ * main(argc, argv) записва стойностите в IR глобални; baga_arg_count/
+ * baga_arg ги четат. baga_arg е с bounds check — извън границите връща "". */
+static LLVMValueRef argv_argc_global(void) {
+    LLVMValueRef g = LLVMGetNamedGlobal(lg.mod, "baga_argc");
+    if (g) return g;
+    g = LLVMAddGlobal(lg.mod, lg.i32_ty, "baga_argc");
+    LLVMSetInitializer(g, LLVMConstInt(lg.i32_ty, 0, 0));
+    return g;
+}
+static LLVMValueRef argv_argv_global(void) {
+    LLVMValueRef g = LLVMGetNamedGlobal(lg.mod, "baga_argv");
+    if (g) return g;
+    LLVMTypeRef pp = LLVMPointerType(lg.ptr_ty, 0);   /* char **argv */
+    g = LLVMAddGlobal(lg.mod, pp, "baga_argv");
+    LLVMSetInitializer(g, LLVMConstNull(pp));
+    return g;
+}
+
+/* static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; } */
+static LLVMValueRef build_baga_arg_count(void) {
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_arg_count",
+        LLVMFunctionType(lg.i64_ty, NULL, 0, 0));
+    h_begin(fn);
+    LLVMValueRef ac = LLVMBuildLoad2(lg.builder, lg.i32_ty, argv_argc_global(), "ac");
+    LLVMValueRef gt = LLVMBuildICmp(lg.builder, LLVMIntSGT, ac,
+        LLVMConstInt(lg.i32_ty, 0, 0), "gt");
+    LLVMValueRef sub = LLVMBuildSub(lg.builder, ac,
+        LLVMConstInt(lg.i32_ty, 1, 0), "sub");
+    LLVMValueRef n = LLVMBuildSelect(lg.builder, gt, sub,
+        LLVMConstInt(lg.i32_ty, 0, 0), "n");
+    LLVMBuildRet(lg.builder, LLVMBuildSExt(lg.builder, n, lg.i64_ty, "r"));
+    return fn;
+}
+
+/* static const char *baga_arg(int64_t i)
+ * { return (i + 1 < baga_argc) ? baga_argv[i + 1] : ""; } */
+static LLVMValueRef build_baga_arg(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_arg",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef idx = LLVMBuildAdd(lg.builder, LLVMGetParam(fn, 0),
+        LLVMConstInt(lg.i64_ty, 1, 0), "idx");
+    LLVMValueRef ac = LLVMBuildLoad2(lg.builder, lg.i32_ty, argv_argc_global(), "ac");
+    LLVMValueRef ac64 = LLVMBuildSExt(lg.builder, ac, lg.i64_ty, "ac64");
+    LLVMValueRef ok = LLVMBuildICmp(lg.builder, LLVMIntSLT, idx, ac64, "ok");
+    LLVMBasicBlockRef in_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "inb");
+    LLVMBasicBlockRef out_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "outb");
+    LLVMBuildCondBr(lg.builder, ok, in_bb, out_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, in_bb);
+    LLVMValueRef av = LLVMBuildLoad2(lg.builder, LLVMPointerType(lg.ptr_ty, 0),
+        argv_argv_global(), "av");
+    LLVMValueRef slot = LLVMBuildGEP2(lg.builder, lg.ptr_ty, av, &idx, 1, "slot");
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, lg.ptr_ty, slot, "s"));
+
+    LLVMPositionBuilderAtEnd(lg.builder, out_bb);
+    LLVMBuildRet(lg.builder, LLVMBuildGlobalStringPtr(lg.builder, "", "empty"));
+    return fn;
+}
+
 /* lazy dispatcher: връща helper-а, генерирайки тялото му при първа употреба */
 static LLVMValueRef baga_rt(const char *name) {
     LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, name);
@@ -712,6 +774,8 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_vec_set_i64") == 0) fn = build_baga_vec_set_i64();
     else if (strcmp(name, "baga_vec_set_str") == 0) fn = build_baga_vec_set_str();
     else if (strcmp(name, "baga_vec_len") == 0)     fn = build_baga_vec_len();
+    else if (strcmp(name, "baga_arg_count") == 0)   fn = build_baga_arg_count();
+    else if (strcmp(name, "baga_arg") == 0)         fn = build_baga_arg();
     else {
         char buf[128];
         snprintf(buf, sizeof buf, "runtime helper '%s'", name);
@@ -1056,6 +1120,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 {"vec_get_str", "baga_vec_get_str"},
                 {"vec_set_str", "baga_vec_set_str"},
                 {"vec_len",     "baga_vec_len"},
+                {"arg_count",   "baga_arg_count"},
+                {"arg",         "baga_arg"},
             };
             LLVMValueRef fn = NULL;
             /* типизирани вектори: helper по елементния тип на вектора */
@@ -1677,10 +1743,13 @@ void codegen_llvm(Node *program, const char *output_path) {
         free(main_m);
 
         if (baga_main) {
-            LLVMTypeRef c_main_ty = LLVMFunctionType(lg.i32_ty, NULL, 0, 0);
+            LLVMTypeRef mp[] = { lg.i32_ty, LLVMPointerType(lg.ptr_ty, 0) };
+            LLVMTypeRef c_main_ty = LLVMFunctionType(lg.i32_ty, mp, 2, 0);
             LLVMValueRef c_main = LLVMAddFunction(lg.mod, "main", c_main_ty);
             LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(lg.ctx, c_main, "entry");
             LLVMPositionBuilderAtEnd(lg.builder, entry);
+            LLVMBuildStore(lg.builder, LLVMGetParam(c_main, 0), argv_argc_global());
+            LLVMBuildStore(lg.builder, LLVMGetParam(c_main, 1), argv_argv_global());
             LLVMBuildCall2(lg.builder,
                 LLVMGetElementType(LLVMTypeOf(baga_main)),
                 baga_main, NULL, 0, "");

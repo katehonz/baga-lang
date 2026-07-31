@@ -308,6 +308,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"vec_get_str", "baga_vec_get_str"},
                     {"vec_set_str", "baga_vec_set_str"},
                     {"vec_len",     "baga_vec_len"},
+                    {"arg_count",   "baga_arg_count"},
+                    {"arg",         "baga_arg"},
                 };
                 for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                     if (strcmp(bn, bmap[bi].baga) == 0) {
@@ -941,7 +943,8 @@ static void emit_test_driver(Codegen *cg, Node *program) {
         n_tested++;
     }
 
-    fprintf(f, "int main(void) {\n");
+    fprintf(f, "int main(int argc, char **argv) {\n");
+    fprintf(f, "    baga_argc = argc; baga_argv = argv;\n");
     if (n_tested == 0) {
         fprintf(f, "    printf(\"няма spec-ове за тестване\\n\");\n");
         fprintf(f, "    return 0;\n}\n");
@@ -1031,6 +1034,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
     fprintf(out, "static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
+    fprintf(out, "static int baga_argc = 0;\n");
+    fprintf(out, "static char **baga_argv = 0;\n");
+    fprintf(out, "static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n");
+    fprintf(out, "static const char *baga_arg(int64_t i) { return (i + 1 < baga_argc) ? baga_argv[i + 1] : \"\"; }\n");
     fprintf(out, "static int64_t baga_cur_args[16];\n");
     fprintf(out, "static int baga_cur_nargs = 0;\n");
     fprintf(out, "static void baga_spec_fail(const char *spec, const char *kind, int64_t idx, const char *expr) {\n");
@@ -1101,7 +1108,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         emit_test_driver(cg, program);
     } else {
         /* C main → calls baga main */
-        fprintf(out, "int main(void) {\n");
+        fprintf(out, "int main(int argc, char **argv) {\n");
+        fprintf(out, "    baga_argc = argc; baga_argv = argv;\n");
         fprintf(out, "    b_main();\n");
         fprintf(out, "    return 0;\n");
         fprintf(out, "}\n");

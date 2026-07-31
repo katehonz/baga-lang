@@ -136,15 +136,19 @@ fn име(ц: i64) -> str {
 
 ## Self-Hosting
 
-Baga compiles itself:
+Baga compiles itself — reproducibly, via `make self`:
 
 ```
 C bootstrap → compiler.baga → C → gcc → baga2
 baga2       → compiler.baga → C → gcc → baga3
-baga2 == baga3 ✓
+baga3       → compiler.baga → C
+baga2 == baga3 ✓   (fixed point: the self compiler reproduces itself)
 ```
 
-The self-hosted compiler is ~960 lines of Baga.
+The self-hosted compiler is ~960 lines of Baga. It reads its input file from
+`arg(0)` and emits C on stdout. `make self` checks the fixed point: the C that
+`baga2` generates for `compiler.baga` is byte-identical to what `baga3`
+generates — i.e. `baga2` and `baga3` are the same compiler.
 
 ## Project Structure
 

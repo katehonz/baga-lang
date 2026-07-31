@@ -537,6 +537,8 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) -> str {
             if str_eq(bn, "vec_set") == 1 { cname = "baga_vec_set_i64" }
             if str_eq(bn, "vec_set_str") == 1 { cname = "baga_vec_set_str" }
             if str_eq(bn, "vec_len") == 1 { cname = "baga_vec_len" }
+            if str_eq(bn, "arg_count") == 1 { cname = "baga_arg_count" }
+            if str_eq(bn, "arg") == 1 { cname = "baga_arg" }
         }
         let mut result = ""
         if str_eq(cname, "") == 0 {
@@ -586,6 +588,7 @@ fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
             if str_eq(bn, "substr") == 1 { return 1 }
             if str_eq(bn, "chr") == 1 { return 1 }
             if str_eq(bn, "read_file") == 1 { return 1 }
+            if str_eq(bn, "arg") == 1 { return 1 }
             if str_eq(bn, "vec_get_str") == 1 { return 1 }
             let rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
             if str_eq(rt, "const char *") == 1 { return 1 }
@@ -648,6 +651,7 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
                 if str_eq(bn, "substr") == 1 { ctype = "const char *" }
                 if str_eq(bn, "chr") == 1 { ctype = "const char *" }
                 if str_eq(bn, "read_file") == 1 { ctype = "const char *" }
+                if str_eq(bn, "arg") == 1 { ctype = "const char *" }
                 if str_eq(bn, "vec_get_str") == 1 { ctype = "const char *" }
                 if str_eq(bn, "vec_new") == 1 { ctype = "baga_Vec *" }
                 // user function: look up return type
@@ -863,7 +867,7 @@ fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
 // ============================================================
 
 fn main() {
-    let src = read_file("examples/zdravei.baga") catch !IO => ""
+    let src = read_file(arg(0)) catch !IO => ""
 
     let tk = vec_new()
     let tt = vec_new()
@@ -925,7 +929,11 @@ fn main() {
     write("static void baga_vec_push_str(baga_Vec *v, const char *s) { baga_vec_grow(v); v->data[v->len++] = (void *)s; }\n")
     write("static const char *baga_vec_get_str(baga_Vec *v, int64_t i) { return (const char *)v->data[i]; }\n")
     write("static void baga_vec_set_str(baga_Vec *v, int64_t i, const char *s) { v->data[i] = (void *)s; }\n")
-    write("static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n\n")
+    write("static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n")
+    write("static int baga_argc = 0;\n")
+    write("static char **baga_argv = 0;\n")
+    write("static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n")
+    write("static const char *baga_arg(int64_t i) { return (i + 1 < baga_argc) ? baga_argv[i + 1] : \"\"; }\n\n")
 
     // forward declarations
     let mut f = first_child(fc, prog)
@@ -956,7 +964,8 @@ fn main() {
     }
 
     // C main
-    write("int main(void) {\n")
+    write("int main(int argc, char **argv) {\n")
+    write("    baga_argc = argc; baga_argv = argv;\n")
     write("    b_main();\n")
     write("    return 0;\n")
     write("}\n")
