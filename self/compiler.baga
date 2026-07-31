@@ -369,7 +369,10 @@ fn parse_fn(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i
     if is_single(tk, tt, vec_get(pos, 0), ")") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
     if vec_get(tk, vec_get(pos, 0)) == 200 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let rettype = vec_get_str(tt, vec_get(pos, 0))
         vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let tnode = ast_kind(nk, nt, fc, ns, 16, rettype)
+        ast_child(fc, ns, node, tnode)
     }
     let body = parse_block(tk, tt, pos, nk, nt, fc, ns)
     ast_child(fc, ns, node, body)
@@ -495,7 +498,69 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) -> str {
     "0"
 }
 
-fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
+fn fn_ret_c_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, fname: str) -> str {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), fname) == 1 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 16 { return c_type(node_text(nt, c)) }
+                    c = next_sibling(ns, c)
+                }
+                return "int64_t"
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    "int64_t"
+}
+
+fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let k = node_kind(nk, idx)
+    if k == 1 { return 1 }
+    if k == 4 {
+        let cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let bn = node_text(nt, cal)
+            if str_eq(bn, "concat") == 1 { return 1 }
+            if str_eq(bn, "substr") == 1 { return 1 }
+            if str_eq(bn, "chr") == 1 { return 1 }
+            if str_eq(bn, "read_file") == 1 { return 1 }
+            if str_eq(bn, "vec_get_str") == 1 { return 1 }
+            let rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "const char *") == 1 { return 1 }
+        }
+    }
+    if k == 2 {
+        let vname = node_text(nt, idx)
+        let mut f = first_child(fc, prog)
+        while f >= 0 {
+            if node_kind(nk, f) == 11 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 5 {
+                        let mut s = first_child(fc, c)
+                        while s >= 0 {
+                            if node_kind(nk, s) == 6 {
+                                if str_eq(node_text(nt, s), vname) == 1 {
+                                    let init = first_child(fc, s)
+                                    return expr_is_str(nk, nt, fc, ns, prog, init)
+                                }
+                            }
+                            s = next_sibling(ns, s)
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+            f = next_sibling(ns, f)
+        }
+    }
+    0
+}
+
+fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64) {
     let k = node_kind(nk, idx)
     let ind = indent_str(depth)
 
@@ -504,7 +569,7 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
         write(concat(ind, "{\n"))
         let mut child = first_child(fc, idx)
         while child >= 0 {
-            emit_stmt(nk, nt, fc, ns, child, depth + 1)
+            emit_stmt(nk, nt, fc, ns, prog, child, depth + 1)
             child = next_sibling(ns, child)
         }
         write(concat(ind, "}\n"))
@@ -513,25 +578,26 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
     // LET
     if k == 6 {
         let init = first_child(fc, idx)
-        // detect string type: init is STR literal or string-returning call
-        let mut is_str: i64 = 0
-        if node_kind(nk, init) == 1 { is_str = 1 }
+        // detect type from init expression
+        let mut ctype = "int64_t"
+        if node_kind(nk, init) == 1 { ctype = "const char *" }
         if node_kind(nk, init) == 4 {
             let cal = first_child(fc, init)
             if node_kind(nk, cal) == 2 {
                 let bn = node_text(nt, cal)
-                if str_eq(bn, "concat") == 1 { is_str = 1 }
-                if str_eq(bn, "substr") == 1 { is_str = 1 }
-                if str_eq(bn, "chr") == 1 { is_str = 1 }
-                if str_eq(bn, "read_file") == 1 { is_str = 1 }
-                if str_eq(bn, "vec_get_str") == 1 { is_str = 1 }
+                if str_eq(bn, "concat") == 1 { ctype = "const char *" }
+                if str_eq(bn, "substr") == 1 { ctype = "const char *" }
+                if str_eq(bn, "chr") == 1 { ctype = "const char *" }
+                if str_eq(bn, "read_file") == 1 { ctype = "const char *" }
+                if str_eq(bn, "vec_get_str") == 1 { ctype = "const char *" }
+                if str_eq(bn, "vec_new") == 1 { ctype = "baga_Vec *" }
+                // user function: look up return type
+                let rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+                if str_eq(rt, "const char *") == 1 { ctype = "const char *" }
+                if str_eq(rt, "baga_Vec *") == 1 { ctype = "baga_Vec *" }
             }
         }
-        if is_str == 1 {
-            write(concat(concat(concat(concat(ind, "const char * "), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, init), ";\n")))
-        } else {
-            write(concat(concat(concat(concat(ind, "int64_t "), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, init), ";\n")))
-        }
+        write(concat(concat(concat(concat(ind, concat(ctype, " ")), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, init), ";\n")))
         return
     }
     // RETURN
@@ -552,14 +618,14 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
         write(concat(concat(ind, "if ("), concat(emit_expr(nk, nt, fc, ns, cond), ") {\n")))
         let mut s = first_child(fc, then_br)
         while s >= 0 {
-            emit_stmt(nk, nt, fc, ns, s, depth + 1)
+            emit_stmt(nk, nt, fc, ns, prog, s, depth + 1)
             s = next_sibling(ns, s)
         }
         if else_br >= 0 {
             write(concat(ind, "} else {\n"))
             let mut s2 = first_child(fc, else_br)
             while s2 >= 0 {
-                emit_stmt(nk, nt, fc, ns, s2, depth + 1)
+                emit_stmt(nk, nt, fc, ns, prog, s2, depth + 1)
                 s2 = next_sibling(ns, s2)
             }
         }
@@ -573,7 +639,7 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
         write(concat(concat(ind, "while ("), concat(emit_expr(nk, nt, fc, ns, cond), ") {\n")))
         let mut s = first_child(fc, body)
         while s >= 0 {
-            emit_stmt(nk, nt, fc, ns, s, depth + 1)
+            emit_stmt(nk, nt, fc, ns, prog, s, depth + 1)
             s = next_sibling(ns, s)
         }
         write(concat(ind, "}\n"))
@@ -590,7 +656,7 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
                 if str_eq(cname2, "print") == 1 {
                     let arg = next_sibling(ns, callee)
                     if arg >= 0 {
-                        if node_kind(nk, arg) == 1 {
+                        if expr_is_str(nk, nt, fc, ns, prog, arg) == 1 {
                             write(concat(concat(ind, "printf(\"%s\\n\", "), concat(emit_expr(nk, nt, fc, ns, arg), ");\n")))
                         } else {
                             write(concat(concat(ind, "printf(\"%lld\\n\", (long long)("), concat(emit_expr(nk, nt, fc, ns, arg), "));\n")))
@@ -617,19 +683,25 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64, depth: i64) {
     }
 }
 
+fn c_type(t: str) -> str {
+    if str_eq(t, "i64") == 1 { return "int64_t" }
+    if str_eq(t, "str") == 1 { return "const char *" }
+    if str_eq(t, "Vec") == 1 { return "baga_Vec *" }
+    if str_eq(t, "f64") == 1 { return "double" }
+    if str_eq(t, "bool") == 1 { return "int" }
+    "int64_t"
+}
+
 fn emit_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) {
     let name = node_text(nt, idx)
     let mut child = first_child(fc, idx)
 
-    // collect params and find body
     let mut params = ""
-    let mut body: i64 = 0 - 1
+    let mut rettype = "int64_t"
     while child >= 0 {
         let ck = node_kind(nk, child)
         if ck == 12 {
-            // PARAM: text is "name:type"
             let ptext = node_text(nt, child)
-            // find : separator
             let mut ci: i64 = 0
             let pn = len(ptext)
             while ci < pn {
@@ -637,23 +709,25 @@ fn emit_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) {
                 ci = ci + 1
             }
             let pname = substr(ptext, 0, ci)
+            let mut ptype = "i64"
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
             if str_eq(params, "") == 0 { params = concat(params, ", ") }
-            params = concat(params, concat("int64_t ", mangle(pname)))
+            params = concat(params, concat(c_type(ptype), concat(" ", mangle(pname))))
         }
-        if ck == 5 { body = child }
+        if ck == 16 { rettype = c_type(node_text(nt, child)) }
         child = next_sibling(ns, child)
     }
 
-    // forward declaration
     if str_eq(params, "") == 1 { params = "void" }
-    write(concat(concat(concat("int64_t ", mangle(name)), concat("(", params)), ");\n"))
+    write(concat(concat(concat(concat(rettype, " "), mangle(name)), concat("(", params)), ");\n"))
 }
 
-fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) {
+fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
     let name = node_text(nt, idx)
     let mut child = first_child(fc, idx)
 
     let mut params = ""
+    let mut rettype = "int64_t"
     let mut body: i64 = 0 - 1
     while child >= 0 {
         let ck = node_kind(nk, child)
@@ -666,21 +740,24 @@ fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) {
                 ci = ci + 1
             }
             let pname = substr(ptext, 0, ci)
+            let mut ptype = "i64"
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
             if str_eq(params, "") == 0 { params = concat(params, ", ") }
-            params = concat(params, concat("int64_t ", mangle(pname)))
+            params = concat(params, concat(c_type(ptype), concat(" ", mangle(pname))))
         }
+        if ck == 16 { rettype = c_type(node_text(nt, child)) }
         if ck == 5 { body = child }
         child = next_sibling(ns, child)
     }
 
     if str_eq(params, "") == 1 { params = "void" }
-    write(concat(concat(concat("int64_t ", mangle(name)), concat("(", params)), ") {\n"))
+    write(concat(concat(concat(concat(rettype, " "), mangle(name)), concat("(", params)), ") {\n"))
 
     // emit body statements
     if body >= 0 {
         let mut s = first_child(fc, body)
         while s >= 0 {
-            emit_stmt(nk, nt, fc, ns, s, 1)
+            emit_stmt(nk, nt, fc, ns, prog, s, 1)
             s = next_sibling(ns, s)
         }
     }
@@ -768,7 +845,7 @@ fn main() {
     let mut f2 = first_child(fc, prog)
     while f2 >= 0 {
         if node_kind(nk, f2) == 11 {
-            emit_fn_def(nk, nt, fc, ns, f2)
+            emit_fn_def(nk, nt, fc, ns, prog, f2)
         }
         f2 = next_sibling(ns, f2)
     }

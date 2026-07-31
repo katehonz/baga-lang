@@ -32,7 +32,13 @@
       "Bash(write)",
       "Bash(gcc *)",
       "Bash(/tmp/baga_self)",
-      "Bash(/tmp/baga_fakt)"
+      "Bash(/tmp/baga_fakt)",
+      "Bash(return *)",
+      "Bash(\"!\")",
+      "Bash(/tmp/baga_str)",
+      "Bash(/tmp/bf)",
+      "Bash(/tmp/bs)",
+      "Bash(/tmp/bstr)"
     ]
   },
   "$version": 4
