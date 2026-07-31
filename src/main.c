@@ -45,12 +45,14 @@ int main(int argc, char **argv) {
     int dump_ast = 0;
     int dump_tokens = 0;
     int dump_specs = 0;
+    int dump_proofs = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--emit-c") == 0) { emit_c = 1; }
         else if (strcmp(argv[i], "--ast") == 0) { dump_ast = 1; }
         else if (strcmp(argv[i], "--tokens") == 0) { dump_tokens = 1; }
         else if (strcmp(argv[i], "--specs") == 0) { dump_specs = 1; }
+        else if (strcmp(argv[i], "--proofs") == 0) { dump_proofs = 1; }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
             return 0;
@@ -139,6 +141,11 @@ int main(int argc, char **argv) {
             }
             printf("}\n\n");
         }
+        return 0;
+    }
+
+    if (dump_proofs) {
+        print_proofs(program);
         return 0;
     }
 

@@ -2,7 +2,7 @@ CC      ?= gcc
 CFLAGS  := -O2 -Wall -Wextra -std=c11 -Iinclude
 LDFLAGS := -lm
 
-SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c
+SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 

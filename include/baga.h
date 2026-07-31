@@ -438,6 +438,9 @@ typedef struct {
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);
 
+/* Proof extraction */
+void print_proofs(Node *program);
+
 /* ============================================================
  *  AST helpers
  * ============================================================ */
