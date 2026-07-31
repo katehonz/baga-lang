@@ -68,6 +68,7 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_PIPE]      = "|",
     [TOK_UNDERSCORE]= "_",
     [TOK_DOTDOT]    = "..",
+    [TOK_FAT_ARROW] = "=>",
     [TOK_PLUS]      = "+",
     [TOK_MINUS]     = "-",
     [TOK_STAR]      = "*",
@@ -451,6 +452,7 @@ Token lexer_next(Lexer *l) {
     if (c == '*' && c2 == '=') { lex_advance(l); lex_advance(l); return make_token(l, TOK_STAR_ASSIGN, start, strdup("*=")); }
     if (c == '/' && c2 == '=') { lex_advance(l); lex_advance(l); return make_token(l, TOK_SLASH_ASSIGN, start, strdup("/=")); }
     if (c == '.' && c2 == '.') { lex_advance(l); lex_advance(l); return make_token(l, TOK_DOTDOT, start, strdup("..")); }
+    if (c == '=' && c2 == '>') { lex_advance(l); lex_advance(l); return make_token(l, TOK_FAT_ARROW, start, strdup("=>")); }
 
     /* single-char tokens */
     lex_advance(l);

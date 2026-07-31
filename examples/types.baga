@@ -1,0 +1,24 @@
+fn кръг_лице(r: f64) -> f64 {
+    return 3.14159265 * r * r
+}
+
+fn main() {
+    // Float inference
+    let r: f64 = 5.0
+    let площ = кръг_лице(r)
+    print(площ)
+
+    // Bool inference
+    let вярно = true
+    print(вярно)
+
+    // Int + float promotion
+    let x = 10
+    let y = 3.5
+    let z = x + y
+    print(z)
+
+    // Comparison → bool
+    let по_голямо = x > 5
+    print(по_голямо)
+}

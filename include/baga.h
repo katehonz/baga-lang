@@ -89,6 +89,7 @@ typedef enum {
     TOK_PIPE,       /* | */
     TOK_UNDERSCORE, /* _ */
     TOK_DOTDOT,     /* .. */
+    TOK_FAT_ARROW,  /* => */
 
     /* operators */
     TOK_PLUS,       /* + */
@@ -144,12 +145,15 @@ typedef enum {
     NODE_FIELD,
     NODE_ASSIGN,
     NODE_RANGE,       /* a..b */
+    NODE_STRUCT_LIT,  /* Point { x: 1, y: 2 } */
 
     /* statements */
     NODE_LET,
     NODE_RETURN,
     NODE_WHILE,
     NODE_FOR,
+    NODE_MATCH,
+    NODE_MATCH_ARM,
     NODE_EXPR_STMT,
 
     /* declarations */
@@ -185,6 +189,7 @@ typedef enum {
 } UnOp;
 
 typedef struct Node Node;
+typedef struct Type Type;
 
 /* Dynamic array of Node pointers */
 typedef VEC(Node *) NodeVec;
@@ -192,6 +197,7 @@ typedef VEC(Node *) NodeVec;
 struct Node {
     NodeKind kind;
     SrcPos   pos;
+    Type    *type;      /* inferred type (set by checker) */
 
     union {
         /* NODE_INT_LIT */
@@ -236,6 +242,14 @@ struct Node {
         /* NODE_RANGE */
         struct { Node *range_lo; Node *range_hi; };
 
+        /* NODE_STRUCT_LIT */
+        struct {
+            char *lit_name;
+            char **lit_fields;
+            NodeVec lit_values;
+            int n_lit_fields;
+        };
+
         /* NODE_LET */
         struct { char *let_name; int is_mut; Node *let_type; Node *let_init; };
 
@@ -247,6 +261,12 @@ struct Node {
 
         /* NODE_FOR */
         struct { char *for_var; Node *for_iter; Node *for_body; };
+
+        /* NODE_MATCH */
+        struct { Node *match_expr; NodeVec match_arms; };
+
+        /* NODE_MATCH_ARM */
+        struct { Node *arm_pattern; Node *arm_body; };
 
         /* NODE_EXPR_STMT */
         struct { Node *expr; };
@@ -316,9 +336,19 @@ struct Type {
     Type *elem;
     /* TYPE_REF */
     Type *pointee;
-    /* TYPE_STRUCT */
+    /* TYPE_STRUCT / TYPE_FN */
     char *name;
+    /* TYPE_FN */
+    Type *ret;
+    Type **params;
+    int nparams;
 };
+
+/* Type helpers */
+Type *type_new(TypeKind kind);
+Type *type_fn(Type *ret, Type **params, int nparams);
+const char *type_str(Type *t);
+int type_eq(Type *a, Type *b);
 
 /* ============================================================
  *  Lexer

@@ -1,34 +1,152 @@
 #include "baga.h"
 
 /* ============================================================
- *  Phase 1 checker: scope tracking + basic validation
- *
- *  Full type inference and effect checking come in Phase 4.
- *  For now: catch undefined variables, duplicate definitions,
- *  and structural errors.
+ *  Type helpers
  * ============================================================ */
 
-#define SCOPE_MAX 64
-#define SCOPE_VARS 256
+static Type type_singletons[6];
+static int  singletons_init = 0;
+
+static void init_singletons(void) {
+    if (singletons_init) return;
+    memset(type_singletons, 0, sizeof(type_singletons));
+    type_singletons[0].kind = TYPE_VOID;
+    type_singletons[1].kind = TYPE_BOOL;
+    type_singletons[2].kind = TYPE_I64;
+    type_singletons[3].kind = TYPE_F64;
+    type_singletons[4].kind = TYPE_STR;
+    type_singletons[5].kind = TYPE_ERROR;
+    singletons_init = 1;
+}
+
+Type *type_new(TypeKind kind) {
+    init_singletons();
+    switch (kind) {
+        case TYPE_VOID:  return &type_singletons[0];
+        case TYPE_BOOL:  return &type_singletons[1];
+        case TYPE_I64:   return &type_singletons[2];
+        case TYPE_F64:   return &type_singletons[3];
+        case TYPE_STR:   return &type_singletons[4];
+        case TYPE_ERROR: return &type_singletons[5];
+        default: {
+            Type *t = calloc(1, sizeof(Type));
+            if (!t) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+            t->kind = kind;
+            return t;
+        }
+    }
+}
+
+Type *type_fn(Type *ret, Type **params, int nparams) {
+    Type *t = type_new(TYPE_FN);
+    t->ret = ret;
+    t->params = params;
+    t->nparams = nparams;
+    return t;
+}
+
+const char *type_str(Type *t) {
+    if (!t) return "void";
+    switch (t->kind) {
+        case TYPE_VOID:  return "void";
+        case TYPE_BOOL:  return "bool";
+        case TYPE_I32:   return "i32";
+        case TYPE_I64:   return "i64";
+        case TYPE_F64:   return "f64";
+        case TYPE_STR:   return "str";
+        case TYPE_ERROR: return "<грешка>";
+        case TYPE_ARRAY: return "[T]";
+        case TYPE_REF:   return "&T";
+        case TYPE_STRUCT: return t->name ? t->name : "struct";
+        case TYPE_FN:    return "fn";
+    }
+    return "?";
+}
+
+int type_eq(Type *a, Type *b) {
+    if (!a || !b) return a == b;
+    if (a->kind == TYPE_ERROR || b->kind == TYPE_ERROR) return 1;
+    if (a->kind != b->kind) return 0;
+    if (a->kind == TYPE_STRUCT) {
+        return a->name && b->name && strcmp(a->name, b->name) == 0;
+    }
+    return 1;
+}
+
+/* Map a type AST node to a Type */
+static Type *resolve_type_node(Node *ty) {
+    if (!ty) return type_new(TYPE_VOID);
+    switch (ty->kind) {
+        case NODE_TYPE:
+            if (strcmp(ty->type_name, "i32") == 0)  return type_new(TYPE_I32);
+            if (strcmp(ty->type_name, "i64") == 0)  return type_new(TYPE_I64);
+            if (strcmp(ty->type_name, "f64") == 0)  return type_new(TYPE_F64);
+            if (strcmp(ty->type_name, "bool") == 0) return type_new(TYPE_BOOL);
+            if (strcmp(ty->type_name, "str") == 0)  return type_new(TYPE_STR);
+            if (strcmp(ty->type_name, "void") == 0) return type_new(TYPE_VOID);
+            {
+                Type *t = type_new(TYPE_STRUCT);
+                t->name = strdup(ty->type_name);
+                return t;
+            }
+        case NODE_TYPE_REF: {
+            Type *t = type_new(TYPE_REF);
+            t->pointee = resolve_type_node(ty->inner_type);
+            return t;
+        }
+        case NODE_TYPE_ARRAY: {
+            Type *t = type_new(TYPE_ARRAY);
+            t->elem = resolve_type_node(ty->inner_type);
+            return t;
+        }
+        case NODE_TYPE_EFFECT:
+            return resolve_type_node(ty->inner_type);
+        default:
+            return type_new(TYPE_ERROR);
+    }
+}
+
+/* ============================================================
+ *  Type environment
+ * ============================================================ */
+
+#define ENV_MAX 64
+#define ENV_VARS 256
+#define FNS_MAX  256
 
 typedef struct {
     char *name;
-    NodeKind decl_kind;  /* NODE_FN, NODE_LET, NODE_PARAM, NODE_STRUCT */
-} ScopeEntry;
+    Type *type;
+} EnvEntry;
 
 typedef struct {
-    ScopeEntry entries[SCOPE_VARS];
+    EnvEntry entries[ENV_VARS];
     int count;
-} Scope;
+} EnvScope;
 
 typedef struct {
-    Scope  scopes[SCOPE_MAX];
-    int    depth;
-    Checker *chk;
-    const char *cur_fn;  /* name of enclosing function */
-} CheckCtx;
+    EnvScope scopes[ENV_MAX];
+    int depth;
 
-static void check_node(CheckCtx *ctx, Node *n);
+    /* function registry */
+    struct {
+        char *name;
+        Type *fn_type;   /* TYPE_FN */
+        Node *decl;      /* NODE_FN */
+    } fns[FNS_MAX];
+    int n_fns;
+
+    /* struct registry */
+    struct {
+        char *name;
+        Node *decl;
+    } structs[FNS_MAX];
+    int n_structs;
+
+    Checker *chk;
+    const char *cur_fn;
+    Type *cur_ret;   /* expected return type of current function */
+} CheckCtx;
 
 static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
     if (ctx->chk->n_errors >= BAGA_MAX_ERRORS) return;
@@ -41,7 +159,7 @@ static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
 }
 
 static void push_scope(CheckCtx *ctx) {
-    if (ctx->depth < SCOPE_MAX) {
+    if (ctx->depth < ENV_MAX) {
         ctx->scopes[ctx->depth].count = 0;
         ctx->depth++;
     }
@@ -51,180 +169,367 @@ static void pop_scope(CheckCtx *ctx) {
     if (ctx->depth > 0) ctx->depth--;
 }
 
-static void define(CheckCtx *ctx, const char *name, NodeKind kind, SrcPos pos) {
+static void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) {
     if (ctx->depth <= 0) return;
-    Scope *s = &ctx->scopes[ctx->depth - 1];
-    /* check duplicate in current scope */
+    EnvScope *s = &ctx->scopes[ctx->depth - 1];
     for (int i = 0; i < s->count; i++) {
         if (strcmp(s->entries[i].name, name) == 0) {
             check_error(ctx, pos, "повторно дефиниране на '%s'", name);
             return;
         }
     }
-    if (s->count < SCOPE_VARS) {
+    if (s->count < ENV_VARS) {
         s->entries[s->count].name = (char *)name;
-        s->entries[s->count].decl_kind = kind;
+        s->entries[s->count].type = type;
         s->count++;
     }
 }
 
-static ScopeEntry *lookup(CheckCtx *ctx, const char *name) {
+static Type *env_lookup(CheckCtx *ctx, const char *name) {
     for (int d = ctx->depth - 1; d >= 0; d--) {
-        Scope *s = &ctx->scopes[d];
+        EnvScope *s = &ctx->scopes[d];
         for (int i = s->count - 1; i >= 0; i--) {
             if (strcmp(s->entries[i].name, name) == 0)
-                return &s->entries[i];
+                return s->entries[i].type;
         }
     }
     return NULL;
 }
 
+static Type *find_fn(CheckCtx *ctx, const char *name) {
+    for (int i = 0; i < ctx->n_fns; i++) {
+        if (strcmp(ctx->fns[i].name, name) == 0)
+            return ctx->fns[i].fn_type;
+    }
+    return NULL;
+}
+
 /* ============================================================
- *  Expression checking
+ *  Type inference
  * ============================================================ */
 
-static void check_expr(CheckCtx *ctx, Node *n) {
-    if (!n) return;
+static Type *infer(CheckCtx *ctx, Node *n);
+
+static int is_numeric(Type *t) {
+    return t && (t->kind == TYPE_I32 || t->kind == TYPE_I64 || t->kind == TYPE_F64);
+}
+
+static Type *numeric_promote(Type *a, Type *b) {
+    if (a->kind == TYPE_F64 || b->kind == TYPE_F64) return type_new(TYPE_F64);
+    if (a->kind == TYPE_I64 || b->kind == TYPE_I64) return type_new(TYPE_I64);
+    return type_new(TYPE_I32);
+}
+
+static Type *infer_binary(CheckCtx *ctx, Node *n) {
+    Type *lt = infer(ctx, n->left);
+    Type *rt = infer(ctx, n->right);
+
+    switch (n->bin_op) {
+        case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_MOD:
+            if (!is_numeric(lt) || !is_numeric(rt)) {
+                check_error(ctx, n->pos, "аритметична операция върху не-числови типове (%s, %s)",
+                            type_str(lt), type_str(rt));
+                return type_new(TYPE_ERROR);
+            }
+            return numeric_promote(lt, rt);
+
+        case OP_EQ: case OP_NEQ: case OP_LT: case OP_GT: case OP_LE: case OP_GE:
+            return type_new(TYPE_BOOL);
+
+        case OP_AND: case OP_OR:
+            return type_new(TYPE_BOOL);
+
+        case OP_BIT_AND: case OP_BIT_OR: case OP_BIT_XOR:
+        case OP_LSHIFT: case OP_RSHIFT:
+            return type_new(TYPE_I64);
+    }
+    return type_new(TYPE_ERROR);
+}
+
+static Type *infer_call(CheckCtx *ctx, Node *n) {
+    /* infer arg types */
+    for (int i = 0; i < n->args.len; i++)
+        infer(ctx, n->args.data[i]);
+
+    /* builtins */
+    if (n->callee->kind == NODE_IDENT) {
+        const char *name = n->callee->name;
+
+        if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            return type_new(TYPE_VOID);
+        }
+
+        /* user function */
+        Type *ft = find_fn(ctx, name);
+        if (ft && ft->kind == TYPE_FN) {
+            n->callee->type = ft;
+            /* check arg count */
+            if (n->args.len != ft->nparams) {
+                check_error(ctx, n->pos, "'%s' очаква %d аргумента, получих %d",
+                            name, ft->nparams, n->args.len);
+            }
+            return ft->ret ? ft->ret : type_new(TYPE_VOID);
+        }
+
+        check_error(ctx, n->pos, "непозната функция '%s'", name);
+        return type_new(TYPE_ERROR);
+    }
+
+    infer(ctx, n->callee);
+    return type_new(TYPE_ERROR);
+}
+
+static Type *infer(CheckCtx *ctx, Node *n) {
+    if (!n) return type_new(TYPE_VOID);
+    if (n->type) return n->type;  /* already inferred */
+
+    Type *t = NULL;
 
     switch (n->kind) {
         case NODE_INT_LIT:
-        case NODE_FLOAT_LIT:
-        case NODE_STR_LIT:
-        case NODE_BOOL_LIT:
+            t = type_new(TYPE_I64);
             break;
 
-        case NODE_IDENT:
-            if (!lookup(ctx, n->name)) {
-                /* allow builtins */
-                if (strcmp(n->name, "print") != 0 &&
-                    strcmp(n->name, "println") != 0 &&
-                    strcmp(n->name, "len") != 0) {
-                    check_error(ctx, n->pos, "недефинирана променлива '%s'", n->name);
-                }
-            }
+        case NODE_FLOAT_LIT:
+            t = type_new(TYPE_F64);
             break;
+
+        case NODE_STR_LIT:
+            t = type_new(TYPE_STR);
+            break;
+
+        case NODE_BOOL_LIT:
+            t = type_new(TYPE_BOOL);
+            break;
+
+        case NODE_IDENT: {
+            /* check local env first */
+            Type *vt = env_lookup(ctx, n->name);
+            if (vt) { t = vt; break; }
+            /* check function registry */
+            Type *ft = find_fn(ctx, n->name);
+            if (ft) { t = ft; break; }
+            /* builtins */
+            if (strcmp(n->name, "print") == 0 || strcmp(n->name, "println") == 0) {
+                t = type_new(TYPE_VOID);
+                break;
+            }
+            check_error(ctx, n->pos, "недефинирана променлива '%s'", n->name);
+            t = type_new(TYPE_ERROR);
+            break;
+        }
 
         case NODE_BINARY:
-            check_expr(ctx, n->left);
-            check_expr(ctx, n->right);
+            t = infer_binary(ctx, n);
             break;
 
         case NODE_UNARY:
-            check_expr(ctx, n->operand);
+            t = infer(ctx, n->operand);
+            if (n->un_op == UOP_NOT) t = type_new(TYPE_BOOL);
+            if (n->un_op == UOP_REF) {
+                Type *ref = type_new(TYPE_REF);
+                ref->pointee = t;
+                t = ref;
+            }
+            if (n->un_op == UOP_DEREF) {
+                t = (t && t->kind == TYPE_REF && t->pointee) ? t->pointee : type_new(TYPE_ERROR);
+            }
             break;
 
         case NODE_CALL:
-            check_expr(ctx, n->callee);
-            for (int i = 0; i < n->args.len; i++)
-                check_expr(ctx, n->args.data[i]);
+            t = infer_call(ctx, n);
             break;
 
-        case NODE_IF:
-            check_expr(ctx, n->cond);
-            check_node(ctx, n->then_br);
-            if (n->else_br) check_node(ctx, n->else_br);
+        case NODE_IF: {
+            Type *ct = infer(ctx, n->cond);
+            if (ct->kind != TYPE_BOOL && ct->kind != TYPE_ERROR) {
+                check_error(ctx, n->cond->pos, "очаквах bool в условие, получих %s", type_str(ct));
+            }
+            Type *tt = infer(ctx, n->then_br);
+            Type *et = n->else_br ? infer(ctx, n->else_br) : type_new(TYPE_VOID);
+            t = type_eq(tt, et) ? tt : tt;
             break;
+        }
 
-        case NODE_BLOCK:
+        case NODE_BLOCK: {
             push_scope(ctx);
-            for (int i = 0; i < n->stmts.len; i++)
-                check_node(ctx, n->stmts.data[i]);
+            t = type_new(TYPE_VOID);
+            for (int i = 0; i < n->stmts.len; i++) {
+                t = infer(ctx, n->stmts.data[i]);
+            }
             pop_scope(ctx);
             break;
+        }
 
         case NODE_INDEX:
-            check_expr(ctx, n->obj);
-            check_expr(ctx, n->index);
+            infer(ctx, n->obj);
+            infer(ctx, n->index);
+            t = type_new(TYPE_I64); /* TODO: array elem type */
             break;
 
-        case NODE_FIELD:
-            check_expr(ctx, n->field_obj);
+        case NODE_FIELD: {
+            Type *ot = infer(ctx, n->field_obj);
+            /* resolve field type from struct definition */
+            if (ot && ot->kind == TYPE_STRUCT && ot->name) {
+                for (int si = 0; si < ctx->n_structs; si++) {
+                    if (strcmp(ctx->structs[si].name, ot->name) == 0) {
+                        Node *sdecl = ctx->structs[si].decl;
+                        for (int fi = 0; fi < sdecl->fields.len; fi++) {
+                            Node *fld = sdecl->fields.data[fi];
+                            if (strcmp(fld->fld_name, n->field_name) == 0) {
+                                t = resolve_type_node(fld->fld_type);
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if (!t) {
+                check_error(ctx, n->pos, "непознато поле '.%s'", n->field_name);
+                t = type_new(TYPE_ERROR);
+            }
             break;
+        }
 
         case NODE_ASSIGN:
-            check_expr(ctx, n->assign_target);
-            check_expr(ctx, n->assign_val);
+            infer(ctx, n->assign_target);
+            t = infer(ctx, n->assign_val);
             break;
 
         case NODE_RANGE:
-            check_expr(ctx, n->range_lo);
-            check_expr(ctx, n->range_hi);
+            infer(ctx, n->range_lo);
+            infer(ctx, n->range_hi);
+            t = type_new(TYPE_I64);
             break;
 
-        default:
-            break;
-    }
-}
-
-/* ============================================================
- *  Statement / declaration checking
- * ============================================================ */
-
-static void check_node(CheckCtx *ctx, Node *n) {
-    if (!n) return;
-
-    switch (n->kind) {
-        case NODE_LET:
-            check_expr(ctx, n->let_init);
-            define(ctx, n->let_name, NODE_LET, n->pos);
-            break;
-
-        case NODE_RETURN:
-            if (!ctx->cur_fn) {
-                check_error(ctx, n->pos, "'return' извън функция");
+        case NODE_STRUCT_LIT: {
+            /* verify struct exists */
+            int found = 0;
+            for (int si = 0; si < ctx->n_structs; si++) {
+                if (strcmp(ctx->structs[si].name, n->lit_name) == 0) {
+                    found = 1;
+                    break;
+                }
             }
-            check_expr(ctx, n->ret_val);
+            if (!found) {
+                check_error(ctx, n->pos, "непознат struct '%s'", n->lit_name);
+            }
+            /* infer field value types */
+            for (int i = 0; i < n->lit_values.len; i++)
+                infer(ctx, n->lit_values.data[i]);
+            Type *st = type_new(TYPE_STRUCT);
+            st->name = strdup(n->lit_name);
+            t = st;
             break;
+        }
 
-        case NODE_WHILE:
-            check_expr(ctx, n->while_cond);
-            check_node(ctx, n->while_body);
+        case NODE_LET: {
+            Type *init_t = n->let_init ? infer(ctx, n->let_init) : type_new(TYPE_I64);
+            Type *decl_t = n->let_type ? resolve_type_node(n->let_type) : init_t;
+            env_define(ctx, n->let_name, decl_t, n->pos);
+            t = type_new(TYPE_VOID);
             break;
+        }
 
-        case NODE_FOR:
-            check_expr(ctx, n->for_iter);
+        case NODE_RETURN: {
+            Type *rt = n->ret_val ? infer(ctx, n->ret_val) : type_new(TYPE_VOID);
+            if (ctx->cur_ret && !type_eq(rt, ctx->cur_ret)) {
+                check_error(ctx, n->pos, "връщам %s, но функцията очаква %s",
+                            type_str(rt), type_str(ctx->cur_ret));
+            }
+            t = type_new(TYPE_VOID);
+            break;
+        }
+
+        case NODE_WHILE: {
+            Type *ct = infer(ctx, n->while_cond);
+            if (ct->kind != TYPE_BOOL && ct->kind != TYPE_ERROR) {
+                check_error(ctx, n->while_cond->pos, "очаквах bool в условие на while, получих %s",
+                            type_str(ct));
+            }
+            infer(ctx, n->while_body);
+            t = type_new(TYPE_VOID);
+            break;
+        }
+
+        case NODE_FOR: {
+            infer(ctx, n->for_iter);
             push_scope(ctx);
-            define(ctx, n->for_var, NODE_LET, n->pos);
-            check_node(ctx, n->for_body);
+            env_define(ctx, n->for_var, type_new(TYPE_I64), n->pos);
+            infer(ctx, n->for_body);
             pop_scope(ctx);
+            t = type_new(TYPE_VOID);
+            break;
+        }
+
+        case NODE_MATCH: {
+            infer(ctx, n->match_expr);
+            t = type_new(TYPE_VOID);
+            for (int i = 0; i < n->match_arms.len; i++) {
+                Node *arm = n->match_arms.data[i];
+                if (arm->arm_pattern) infer(ctx, arm->arm_pattern);
+                /* infer arm body; extract type from return if wrapped */
+                Type *bt = infer(ctx, arm->arm_body);
+                if (bt->kind == TYPE_VOID && arm->arm_body &&
+                    arm->arm_body->kind == NODE_BLOCK &&
+                    arm->arm_body->stmts.len > 0) {
+                    Node *last = arm->arm_body->stmts.data[arm->arm_body->stmts.len - 1];
+                    if (last->kind == NODE_RETURN && last->ret_val && last->ret_val->type)
+                        bt = last->ret_val->type;
+                }
+                if (i == 0) t = bt;
+            }
+            break;
+        }
+
+        case NODE_MATCH_ARM:
+            if (n->arm_pattern) infer(ctx, n->arm_pattern);
+            t = infer(ctx, n->arm_body);
             break;
 
         case NODE_EXPR_STMT:
-            check_expr(ctx, n->expr);
-            break;
-
-        case NODE_BLOCK:
-            check_expr(ctx, n);
-            break;
-
-        case NODE_IF:
-            check_expr(ctx, n);
+            t = infer(ctx, n->expr);
             break;
 
         default:
+            t = type_new(TYPE_VOID);
             break;
     }
+
+    n->type = t;
+    return t;
 }
+
+/* ============================================================
+ *  Function checking
+ * ============================================================ */
 
 static void check_fn(CheckCtx *ctx, Node *fn) {
     ctx->cur_fn = fn->fn_name;
+    ctx->cur_ret = fn->ret_type ? resolve_type_node(fn->ret_type) : type_new(TYPE_VOID);
+
     push_scope(ctx);
 
     /* define params */
     for (int i = 0; i < fn->params.len; i++) {
         Node *p = fn->params.data[i];
-        define(ctx, p->param_name, NODE_PARAM, p->pos);
+        Type *pt = resolve_type_node(p->param_type);
+        p->type = pt;
+        env_define(ctx, p->param_name, pt, p->pos);
     }
 
     /* check body */
     if (fn->fn_body) {
-        /* body is a block — check its statements in current scope */
+        /* infer statements in the body block, but don't push another scope */
         for (int i = 0; i < fn->fn_body->stmts.len; i++)
-            check_node(ctx, fn->fn_body->stmts.data[i]);
+            infer(ctx, fn->fn_body->stmts.data[i]);
     }
 
     pop_scope(ctx);
     ctx->cur_fn = NULL;
+    ctx->cur_ret = NULL;
 }
 
 /* ============================================================
@@ -232,34 +537,60 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
  * ============================================================ */
 
 void check_program(Checker *c, Node *program) {
+    init_singletons();
+
     CheckCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.chk = c;
-    ctx.depth = 0;
 
-    /* global scope */
     push_scope(&ctx);
 
-    /* first pass: register all top-level names */
+    /* pass 1: register all top-level names */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
+
         if (item->kind == NODE_FN) {
-            define(&ctx, item->fn_name, NODE_FN, item->pos);
+            /* build function type */
+            Type *ret = item->ret_type ? resolve_type_node(item->ret_type) : type_new(TYPE_VOID);
+            int np = item->params.len;
+            Type **params = NULL;
+            if (np > 0) {
+                params = malloc(sizeof(Type *) * (size_t)np);
+                for (int j = 0; j < np; j++)
+                    params[j] = resolve_type_node(item->params.data[j]->param_type);
+            }
+            Type *ft = type_fn(ret, params, np);
+            ft->name = strdup(item->fn_name);
+
+            if (ctx.n_fns < FNS_MAX) {
+                ctx.fns[ctx.n_fns].name = item->fn_name;
+                ctx.fns[ctx.n_fns].fn_type = ft;
+                ctx.fns[ctx.n_fns].decl = item;
+                ctx.n_fns++;
+            }
+            item->type = ft;
+
         } else if (item->kind == NODE_STRUCT) {
-            define(&ctx, item->struct_name, NODE_STRUCT, item->pos);
+            if (ctx.n_structs < FNS_MAX) {
+                ctx.structs[ctx.n_structs].name = item->struct_name;
+                ctx.structs[ctx.n_structs].decl = item;
+                ctx.n_structs++;
+            }
+            Type *st = type_new(TYPE_STRUCT);
+            st->name = strdup(item->struct_name);
+            item->type = st;
         }
     }
 
-    /* second pass: check bodies */
+    /* pass 2: check function bodies */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
-        if (item->kind == NODE_FN) {
+        if (item->kind == NODE_FN)
             check_fn(&ctx, item);
-        }
     }
 
     /* check that main exists */
-    if (!lookup(&ctx, "main")) {
+    if (!find_fn(&ctx, "main")) {
         SrcPos pos = { 1, 1 };
         check_error(&ctx, pos, "липсва функция 'main'");
     }

@@ -147,23 +147,39 @@ static void emit_print(Codegen *cg, Node *n) {
         return;
     }
 
-    Node *arg = n->args.data[0];
+    /* print each argument on its own line, dispatching on inferred type */
+    for (int i = 0; i < n->args.len; i++) {
+        Node *arg = n->args.data[i];
+        Type *at = arg->type;
+        TypeKind ak = at ? at->kind : TYPE_I64;
 
-    /* string literal → printf("%s\n", ...) */
-    if (arg->kind == NODE_STR_LIT) {
         emit_indent(cg);
-        fprintf(f, "printf(\"%%s\\n\", ");
-        emit_c_string(f, arg->str_val);
-        fprintf(f, ");\n");
-        return;
-    }
 
-    /* otherwise: use a generic print helper.
-     * Phase 1: assume int64 for non-string. */
-    emit_indent(cg);
-    fprintf(f, "baga_print_i64((int64_t)(");
-    emit_expr(cg, arg);
-    fprintf(f, "));\n");
+        if (ak == TYPE_STR || arg->kind == NODE_STR_LIT) {
+            if (arg->kind == NODE_STR_LIT) {
+                fprintf(f, "printf(\"%%s\\n\", ");
+                emit_c_string(f, arg->str_val);
+                fprintf(f, ");\n");
+            } else {
+                fprintf(f, "baga_print_str(");
+                emit_expr(cg, arg);
+                fprintf(f, ");\n");
+            }
+        } else if (ak == TYPE_F64) {
+            fprintf(f, "baga_print_f64(");
+            emit_expr(cg, arg);
+            fprintf(f, ");\n");
+        } else if (ak == TYPE_BOOL) {
+            fprintf(f, "printf(\"%%s\\n\", (");
+            emit_expr(cg, arg);
+            fprintf(f, ") ? \"true\" : \"false\");\n");
+        } else {
+            /* default: integer */
+            fprintf(f, "baga_print_i64((int64_t)(");
+            emit_expr(cg, arg);
+            fprintf(f, "));\n");
+        }
+    }
 }
 
 static void emit_expr(Codegen *cg, Node *n) {
@@ -282,10 +298,13 @@ static void emit_expr(Codegen *cg, Node *n) {
             fprintf(f, "]");
             break;
 
-        case NODE_FIELD:
+        case NODE_FIELD: {
             emit_expr(cg, n->field_obj);
-            fprintf(f, ".%s", n->field_name);
+            char *fm = mangle_name(n->field_name);
+            fprintf(f, ".%s", fm);
+            free(fm);
             break;
+        }
 
         case NODE_ASSIGN:
             emit_expr(cg, n->assign_target);
@@ -297,6 +316,58 @@ static void emit_expr(Codegen *cg, Node *n) {
             /* Phase 1: ranges only in for loops, handled there */
             fprintf(f, "0");
             break;
+
+        case NODE_STRUCT_LIT: {
+            char *sm = mangle_name(n->lit_name);
+            fprintf(f, "(%s){ ", sm);
+            for (int i = 0; i < n->n_lit_fields; i++) {
+                if (i > 0) fprintf(f, ", ");
+                char *fm = mangle_name(n->lit_fields[i]);
+                fprintf(f, ".%s = ", fm);
+                emit_expr(cg, n->lit_values.data[i]);
+                free(fm);
+            }
+            fprintf(f, " }");
+            free(sm);
+            break;
+        }
+
+        case NODE_MATCH: {
+            /* GCC statement expression */
+            int tmp = cg->tmp_counter++;
+            fprintf(f, "({ int64_t _mr%d = 0; int64_t _mv%d = ", tmp, tmp);
+            emit_expr(cg, n->match_expr);
+            fprintf(f, "; ");
+            for (int i = 0; i < n->match_arms.len; i++) {
+                Node *arm = n->match_arms.data[i];
+                if (arm->arm_pattern) {
+                    if (i > 0) fprintf(f, "else ");
+                    fprintf(f, "if (_mv%d == ", tmp);
+                    emit_expr(cg, arm->arm_pattern);
+                    fprintf(f, ") { ");
+                } else {
+                    /* wildcard → else */
+                    fprintf(f, "else { ");
+                }
+                /* emit arm body */
+                if (arm->arm_body && arm->arm_body->kind == NODE_BLOCK) {
+                    for (int j = 0; j < arm->arm_body->stmts.len; j++) {
+                        Node *s = arm->arm_body->stmts.data[j];
+                        if (s->kind == NODE_RETURN && s->ret_val) {
+                            fprintf(f, "_mr%d = ", tmp);
+                            emit_expr(cg, s->ret_val);
+                            fprintf(f, "; ");
+                        } else if (s->kind == NODE_EXPR_STMT) {
+                            emit_expr(cg, s->expr);
+                            fprintf(f, "; ");
+                        }
+                    }
+                }
+                fprintf(f, "} ");
+            }
+            fprintf(f, "_mr%d; })", tmp);
+            break;
+        }
 
         default:
             fprintf(f, "0 /* unhandled expr %d */", n->kind);
@@ -326,20 +397,24 @@ static void emit_stmt(Codegen *cg, Node *n) {
     switch (n->kind) {
         case NODE_LET:
             emit_indent(cg);
+            /* use inferred type from checker, fall back to explicit annotation */
             if (n->let_type) {
                 emit_type(cg, n->let_type);
-            } else {
-                /* infer from init */
-                if (n->let_init) {
-                    switch (n->let_init->kind) {
-                        case NODE_FLOAT_LIT: fprintf(f, "double"); break;
-                        case NODE_STR_LIT:   fprintf(f, "const char *"); break;
-                        case NODE_BOOL_LIT:  fprintf(f, "int"); break;
-                        default:             fprintf(f, "int64_t"); break;
-                    }
-                } else {
-                    fprintf(f, "int64_t");
+            } else if (n->let_init && n->let_init->type) {
+                Type *it = n->let_init->type;
+                switch (it->kind) {
+                    case TYPE_F64:  fprintf(f, "double"); break;
+                    case TYPE_STR:  fprintf(f, "const char *"); break;
+                    case TYPE_BOOL: fprintf(f, "int"); break;
+                    case TYPE_I32:  fprintf(f, "int32_t"); break;
+                    case TYPE_STRUCT:
+                        if (it->name) { char *sm = mangle_name(it->name); fprintf(f, "%s", sm); free(sm); }
+                        else fprintf(f, "int64_t");
+                        break;
+                    default:        fprintf(f, "int64_t"); break;
                 }
+            } else {
+                fprintf(f, "int64_t");
             }
             fprintf(f, " ");
             {

@@ -20,11 +20,17 @@ clean:
 	rm -f $(OBJS) $(BIN)
 
 test: $(BIN)
-	@echo "=== Тест: здравей ==="
+	@echo "=== здравей ==="
 	./$(BIN) examples/zdravei.baga
-	@echo ""
-	@echo "=== Тест: факториел ==="
+	@echo "=== факториел ==="
 	./$(BIN) examples/faktorial.baga
+	@echo "=== фибоначи ==="
+	./$(BIN) examples/fib.baga
+	@echo "=== типове ==="
+	./$(BIN) examples/types.baga
+	@echo "=== struct ==="
+	./$(BIN) examples/tochka.baga
+	@echo "=== match ==="
+	./$(BIN) examples/match.baga
 	@echo ""
-	@echo "=== Тест: генериран C код ==="
-	./$(BIN) --emit-c examples/zdravei.baga
+	@echo "Всички тестове минаха. ⚔️"

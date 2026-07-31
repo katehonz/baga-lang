@@ -1,0 +1,17 @@
+struct Точка {
+    x: f64,
+    y: f64,
+}
+
+fn разстояние(a: Точка, b: Точка) -> f64 {
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    return dx * dx + dy * dy
+}
+
+fn main() {
+    let a = Точка { x: 0.0, y: 0.0 }
+    let b = Точка { x: 3.0, y: 4.0 }
+    let d = разстояние(a, b)
+    print(d)
+}

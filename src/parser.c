@@ -59,6 +59,13 @@ void node_free(Node *n) {
             node_free(n->range_lo);
             node_free(n->range_hi);
             break;
+        case NODE_STRUCT_LIT:
+            free(n->lit_name);
+            for (int i = 0; i < n->n_lit_fields; i++) free(n->lit_fields[i]);
+            free(n->lit_fields);
+            for (int i = 0; i < n->lit_values.len; i++) node_free(n->lit_values.data[i]);
+            vec_free(n->lit_values);
+            break;
         case NODE_LET:
             free(n->let_name);
             node_free(n->let_type);
@@ -75,6 +82,15 @@ void node_free(Node *n) {
             free(n->for_var);
             node_free(n->for_iter);
             node_free(n->for_body);
+            break;
+        case NODE_MATCH:
+            node_free(n->match_expr);
+            for (int i = 0; i < n->match_arms.len; i++) node_free(n->match_arms.data[i]);
+            vec_free(n->match_arms);
+            break;
+        case NODE_MATCH_ARM:
+            node_free(n->arm_pattern);
+            node_free(n->arm_body);
             break;
         case NODE_EXPR_STMT:
             node_free(n->expr);
@@ -289,11 +305,41 @@ static Node *parse_primary(Parser *p) {
         return n;
     }
 
-    /* identifier */
+    /* identifier (or struct literal: Ident { field: val, ... }) */
     if (check(p, TOK_IDENT)) {
         Token *t = advance(p);
+        char *name = strdup(t->text ? t->text : "");
+
+        /* lookahead: { IDENT : → struct literal */
+        if (check(p, TOK_LBRACE) &&
+            p->pos + 2 < p->len &&
+            p->tokens[p->pos + 1].kind == TOK_IDENT &&
+            p->tokens[p->pos + 2].kind == TOK_COLON) {
+
+            advance(p); /* consume '{' */
+            Node *lit = node_alloc(NODE_STRUCT_LIT, pos);
+            lit->lit_name = name;
+            lit->lit_fields = NULL;
+            lit->n_lit_fields = 0;
+            lit->lit_values.len = 0; lit->lit_values.cap = 0; lit->lit_values.data = NULL;
+
+            VEC(char *) fields = {0};
+            while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+                char *fname = expect_ident(p);
+                expect(p, TOK_COLON);
+                Node *fval = parse_expr(p);
+                vec_push(fields, fname);
+                vec_push(lit->lit_values, fval);
+                if (!check(p, TOK_RBRACE)) match(p, TOK_COMMA);
+            }
+            expect(p, TOK_RBRACE);
+            lit->lit_fields = fields.data;
+            lit->n_lit_fields = fields.len;
+            return lit;
+        }
+
         Node *n = node_alloc(NODE_IDENT, pos);
-        n->name = strdup(t->text ? t->text : "");
+        n->name = name;
         return n;
     }
 
@@ -328,6 +374,48 @@ static Node *parse_primary(Parser *p) {
                 n->else_br = parse_block(p);
             }
         }
+        return n;
+    }
+
+    /* match expression */
+    if (check(p, TOK_MATCH)) {
+        advance(p);
+        Node *n = node_alloc(NODE_MATCH, pos);
+        n->match_expr = parse_expr(p);
+        expect(p, TOK_LBRACE);
+        n->match_arms.len = 0; n->match_arms.cap = 0; n->match_arms.data = NULL;
+
+        while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+            SrcPos apos = cur(p)->pos;
+            Node *arm = node_alloc(NODE_MATCH_ARM, apos);
+
+            /* pattern: _ | literal | identifier */
+            if (check(p, TOK_UNDERSCORE)) {
+                advance(p);
+                arm->arm_pattern = NULL;  /* wildcard */
+            } else {
+                arm->arm_pattern = parse_unary(p);
+            }
+
+            /* => */
+            expect(p, TOK_FAT_ARROW);
+
+            /* body: block or expression */
+            if (check(p, TOK_LBRACE)) {
+                arm->arm_body = parse_block(p);
+            } else {
+                SrcPos bpos = cur(p)->pos;
+                Node *e = parse_expr(p);
+                Node *wrap = node_alloc(NODE_BLOCK, bpos);
+                Node *ret = node_alloc(NODE_RETURN, bpos);
+                ret->ret_val = e;
+                vec_push(wrap->stmts, ret);
+                arm->arm_body = wrap;
+            }
+            match(p, TOK_COMMA);
+            vec_push(n->match_arms, arm);
+        }
+        expect(p, TOK_RBRACE);
         return n;
     }
 
@@ -864,6 +952,18 @@ void print_ast(Node *n, int indent) {
             print_ast(n->for_iter, indent + 1);
             print_ast(n->for_body, indent + 1);
             break;
+        case NODE_MATCH:
+            fprintf(stderr, "MATCH\n");
+            print_ast(n->match_expr, indent + 1);
+            for (int i = 0; i < n->match_arms.len; i++)
+                print_ast(n->match_arms.data[i], indent + 1);
+            break;
+        case NODE_MATCH_ARM:
+            fprintf(stderr, "ARM\n");
+            if (n->arm_pattern) print_ast(n->arm_pattern, indent + 1);
+            else { indent_print(indent + 1); fprintf(stderr, "_\n"); }
+            print_ast(n->arm_body, indent + 1);
+            break;
         case NODE_IF:
             fprintf(stderr, "IF\n");
             print_ast(n->cond, indent + 1);
@@ -922,6 +1022,14 @@ void print_ast(Node *n, int indent) {
             fprintf(stderr, "RANGE\n");
             print_ast(n->range_lo, indent + 1);
             print_ast(n->range_hi, indent + 1);
+            break;
+        case NODE_STRUCT_LIT:
+            fprintf(stderr, "STRUCT_LIT %s\n", n->lit_name);
+            for (int i = 0; i < n->n_lit_fields; i++) {
+                indent_print(indent + 1);
+                fprintf(stderr, ".%s =\n", n->lit_fields[i]);
+                print_ast(n->lit_values.data[i], indent + 2);
+            }
             break;
         case NODE_TYPE:
             fprintf(stderr, "TYPE %s\n", n->type_name);
