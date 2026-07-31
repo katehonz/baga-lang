@@ -63,9 +63,13 @@ fn kw_kind(s: str) -> i64 {
     if str_eq(s, "if") { return 4 }
     if str_eq(s, "else") { return 5 }
     if str_eq(s, "while") { return 6 }
+    if str_eq(s, "for") { return 7 }
+    if str_eq(s, "in") { return 8 }
     if str_eq(s, "return") { return 9 }
     if str_eq(s, "true") { return 14 }
     if str_eq(s, "false") { return 15 }
+    if str_eq(s, "break") { return 17 }
+    if str_eq(s, "continue") { return 18 }
     0
 }
 
@@ -133,6 +137,7 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
             if c == 62 { if c2 == 61 { vec_push(tk, 206); vec_push_str(tt, ">="); pos = pos + 2; h = 1 } }
             if c == 38 { if c2 == 38 { vec_push(tk, 208); vec_push_str(tt, "&&"); pos = pos + 2; h = 1 } }
             if c == 124 { if c2 == 124 { vec_push(tk, 209); vec_push_str(tt, "||"); pos = pos + 2; h = 1 } }
+            if c == 46 { if c2 == 46 { vec_push(tk, 210); vec_push_str(tt, ".."); pos = pos + 2; h = 1 } }
             if h == 1 { continue }
         }
         vec_push(tk, 300)
@@ -334,7 +339,35 @@ fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         return ast_kind(nk, nt, fc, ns, 15, "")
     }
+    // for i in lo..hi { body }
+    if k == 7 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let var = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        // skip in
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let lo = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+        // skip ..
+        if vec_get(tk, vec_get(pos, 0)) == 210 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let hi = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+        let body = parse_block(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 18, var)
+        ast_child(fc, ns, node, lo)
+        ast_child(fc, ns, node, hi)
+        ast_child(fc, ns, node, body)
+        return node
+    }
     let e = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+    // assignment: IDENT = expr
+    if node_kind(nk, e) == 2 {
+        if is_single(tk, tt, vec_get(pos, 0), "=") == 1 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            let val = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+            let anode = ast_kind(nk, nt, fc, ns, 17, node_text(nt, e))
+            ast_child(fc, ns, anode, val)
+            return anode
+        }
+    }
     // skip catch !E => handler (compile-time only)
     if vec_get(tk, vec_get(pos, 0)) == 16 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
@@ -679,6 +712,28 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
     // CONTINUE
     if k == 15 {
         write(concat(ind, "continue;\n"))
+        return
+    }
+    // ASSIGN
+    if k == 17 {
+        let val = first_child(fc, idx)
+        write(concat(concat(concat(ind, mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, val), ";\n")))
+        return
+    }
+    // FOR
+    if k == 18 {
+        let lo = first_child(fc, idx)
+        let hi = next_sibling(ns, lo)
+        let body = next_sibling(ns, hi)
+        let v = mangle(node_text(nt, idx))
+        write(concat(concat(concat(concat(ind, "for (int64_t "), v), " = "), concat(emit_expr(nk, nt, fc, ns, lo), "; ")))
+        write(concat(concat(concat(v, " < "), emit_expr(nk, nt, fc, ns, hi)), concat("; ", concat(v, "++) {\n"))))
+        let mut s = first_child(fc, body)
+        while s >= 0 {
+            emit_stmt(nk, nt, fc, ns, prog, s, depth + 1)
+            s = next_sibling(ns, s)
+        }
+        write(concat(ind, "}\n"))
         return
     }
 }

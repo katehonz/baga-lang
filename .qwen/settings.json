@@ -38,7 +38,8 @@
       "Bash(/tmp/baga_str)",
       "Bash(/tmp/bf)",
       "Bash(/tmp/bs)",
-      "Bash(/tmp/bstr)"
+      "Bash(/tmp/bstr)",
+      "Bash(/tmp/bfib)"
     ]
   },
   "$version": 4
