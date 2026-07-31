@@ -441,6 +441,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out);
 /* Proof extraction */
 void print_proofs(Node *program);
 
+/* LLVM codegen (optional, requires -DBAGA_LLVM) */
+#ifdef BAGA_LLVM
+void codegen_llvm(Node *program, const char *output_path);
+#endif
+
 /* ============================================================
  *  AST helpers
  * ============================================================ */

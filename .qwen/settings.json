@@ -47,7 +47,13 @@
       "Bash(ls *)",
       "Bash(od *)",
       "Bash(xxd)",
-      "Bash(/tmp/final)"
+      "Bash(/tmp/final)",
+      "Bash(llvm-config *)",
+      "Bash(which *)",
+      "Bash(dpkg *)",
+      "Bash(rustc *)",
+      "Bash(llvm-config-14 *)",
+      "Bash(./baga-llvm *)"
     ]
   },
   "$version": 4

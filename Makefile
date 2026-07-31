@@ -6,7 +6,7 @@ SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/pr
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
-.PHONY: all clean test
+.PHONY: all clean test llvm
 
 all: $(BIN)
 
@@ -15,6 +15,22 @@ $(BIN): $(OBJS)
 
 src/%.o: src/%.c include/baga.h
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# LLVM build (optional)
+LLVM_CONFIG ?= llvm-config-14
+LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null) -DBAGA_LLVM
+LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --libs core analysis target 2>/dev/null) $(LDFLAGS)
+LLVM_SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c src/codegen_llvm.c
+LLVM_OBJS := $(LLVM_SRCS:.c=.llvm.o)
+LLVM_BIN := baga-llvm
+
+llvm: $(LLVM_BIN)
+
+$(LLVM_BIN): $(LLVM_OBJS)
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LLVM_LDFLAGS)
+
+src/%.llvm.o: src/%.c include/baga.h
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c -o $@ $<
 
 clean:
 	rm -f $(OBJS) $(BIN)

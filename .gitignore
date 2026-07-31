@@ -1,3 +1,5 @@
 *.o
 baga
 /tmp/
+baga-llvm
+*.llvm.o
