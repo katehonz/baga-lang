@@ -44,11 +44,13 @@ int main(int argc, char **argv) {
     int emit_c = 0;
     int dump_ast = 0;
     int dump_tokens = 0;
+    int dump_specs = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--emit-c") == 0) { emit_c = 1; }
         else if (strcmp(argv[i], "--ast") == 0) { dump_ast = 1; }
         else if (strcmp(argv[i], "--tokens") == 0) { dump_tokens = 1; }
+        else if (strcmp(argv[i], "--specs") == 0) { dump_specs = 1; }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
             return 0;
@@ -111,6 +113,33 @@ int main(int argc, char **argv) {
 
     if (dump_ast) {
         print_ast(program, 0);
+    }
+
+    if (dump_specs) {
+        for (int i = 0; i < program->items.len; i++) {
+            Node *item = program->items.data[i];
+            if (item->kind != NODE_SPEC) continue;
+            printf("spec %s {\n", item->spec_name);
+            if (item->spec_inputs.len > 0) {
+                printf("    input:\n");
+                for (int j = 0; j < item->spec_inputs.len; j++) {
+                    Node *p = item->spec_inputs.data[j];
+                    printf("        %s: %s\n", p->param_name,
+                           p->param_type && p->param_type->type_name ? p->param_type->type_name : "?");
+                }
+            }
+            if (item->spec_output) {
+                printf("    output: %s\n",
+                       item->spec_output->type_name ? item->spec_output->type_name : "?");
+            }
+            if (item->n_guarantees > 0) {
+                printf("    guarantees:\n");
+                for (int j = 0; j < item->n_guarantees; j++)
+                    printf("        - %s\n", item->spec_guarantees[j]);
+            }
+            printf("}\n\n");
+        }
+        return 0;
     }
 
     /* check */

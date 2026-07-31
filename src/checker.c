@@ -645,7 +645,51 @@ void check_program(Checker *c, Node *program) {
         }
     }
 
-    /* pass 2: check function bodies */
+    /* pass 2: verify specs against functions */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *item = program->items.data[i];
+        if (item->kind != NODE_SPEC) continue;
+
+        /* find the function this spec describes */
+        Type *ft = find_fn(&ctx, item->spec_name);
+        if (!ft) {
+            check_error(&ctx, item->pos,
+                "spec '%s' описва функция, която не съществува", item->spec_name);
+            continue;
+        }
+
+        /* check input count */
+        if (item->spec_inputs.len != ft->nparams) {
+            check_error(&ctx, item->pos,
+                "spec '%s': input има %d параметъра, но функцията има %d",
+                item->spec_name, item->spec_inputs.len, ft->nparams);
+        } else {
+            /* check each input type */
+            for (int j = 0; j < item->spec_inputs.len; j++) {
+                Node *sp = item->spec_inputs.data[j];
+                Type *spec_t = resolve_type_node(sp->param_type);
+                if (!type_eq(spec_t, ft->params[j])) {
+                    check_error(&ctx, sp->pos,
+                        "spec '%s': параметър '%s' е %s в spec-а, но %s във функцията",
+                        item->spec_name, sp->param_name,
+                        type_str(spec_t), type_str(ft->params[j]));
+                }
+            }
+        }
+
+        /* check output type */
+        if (item->spec_output) {
+            Type *spec_ret = resolve_type_node(item->spec_output);
+            Type *fn_ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
+            if (!type_eq(spec_ret, fn_ret)) {
+                check_error(&ctx, item->pos,
+                    "spec '%s': output е %s, но функцията връща %s",
+                    item->spec_name, type_str(spec_ret), type_str(fn_ret));
+            }
+        }
+    }
+
+    /* pass 3: check function bodies */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
         if (item->kind == NODE_FN)

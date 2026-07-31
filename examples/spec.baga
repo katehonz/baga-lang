@@ -1,0 +1,19 @@
+// Spec описва КАКВО прави функцията
+spec сортирай {
+    input:
+        arr: i64
+    output: i64
+    guarantees:
+        - output is sorted
+        - output has same elements as input
+}
+
+// Impl описва КАК го прави
+fn сортирай(arr: i64) -> i64 {
+    return arr
+}
+
+fn main() {
+    let x = сортирай(42)
+    print(x)
+}

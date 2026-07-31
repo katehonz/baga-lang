@@ -816,8 +816,8 @@ static Node *parse_spec(Parser *p) {
     SrcPos pos = cur(p)->pos;
     expect(p, TOK_SPEC);
 
-    Token *name_tok = expect(p, TOK_STR_LIT);
-    char *name = name_tok->text ? strdup(name_tok->text) : strdup("");
+    /* spec name = function name (identifier) */
+    char *name = expect_ident(p);
 
     expect(p, TOK_LBRACE);
 
@@ -829,8 +829,9 @@ static Node *parse_spec(Parser *p) {
         if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "input") == 0) {
             advance(p);
             expect(p, TOK_COLON);
-            /* parse params until output or guarantees */
-            while (check(p, TOK_IDENT)) {
+            while (check(p, TOK_IDENT) &&
+                   strcmp(cur(p)->text, "output") != 0 &&
+                   strcmp(cur(p)->text, "guarantees") != 0) {
                 SrcPos ppos = cur(p)->pos;
                 char *pname = expect_ident(p);
                 expect(p, TOK_COLON);
@@ -849,8 +850,6 @@ static Node *parse_spec(Parser *p) {
             advance(p);
             expect(p, TOK_COLON);
             while (match(p, TOK_MINUS)) {
-                /* read guarantee as raw text until newline */
-                /* for now, collect tokens until next '-' or '}' */
                 char buf[256] = {0};
                 int bi = 0;
                 while (!check(p, TOK_MINUS) && !check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
@@ -865,7 +864,7 @@ static Node *parse_spec(Parser *p) {
                 vec_push(guarantees, strdup(buf));
             }
         } else {
-            advance(p); /* skip unknown */
+            advance(p);
         }
     }
     expect(p, TOK_RBRACE);

@@ -1,0 +1,16 @@
+// Грешен spec: output е f64, но функцията връща i64
+spec грешна {
+    input:
+        x: i64
+    output: f64
+    guarantees:
+        - something
+}
+
+fn грешна(x: i64) -> i64 {
+    return x
+}
+
+fn main() {
+    print(грешна(1))
+}
