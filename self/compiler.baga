@@ -286,6 +286,9 @@ fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec)
             ast_child(fc, ns, fnode, base)
             base = fnode
         }
+        while is_single(tk, tt, vec_get(pos, 0), "?") == 1 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+        }
         return base
     }
     if is_single(tk, tt, vec_get(pos, 0), "(") == 1 {
@@ -384,8 +387,8 @@ fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         }
         if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
         let init = parse_expr(tk, tt, pos, nk, nt, fc, ns)
-        // skip catch !E => handler (compile-time only)
-        if vec_get(tk, vec_get(pos, 0)) == 16 {
+        // skip catch !E => handler (compile-time only), възможно верижно
+        while vec_get(tk, vec_get(pos, 0)) == 16 {
             vec_set(pos, 0, vec_get(pos, 0) + 1)
             vec_set(pos, 0, vec_get(pos, 0) + 1)
             vec_set(pos, 0, vec_get(pos, 0) + 1)
@@ -488,8 +491,8 @@ fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
             return anode
         }
     }
-    // skip catch !E => handler (compile-time only)
-    if vec_get(tk, vec_get(pos, 0)) == 16 {
+    // skip catch !E => handler (compile-time only), възможно верижно
+    while vec_get(tk, vec_get(pos, 0)) == 16 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         vec_set(pos, 0, vec_get(pos, 0) + 1)
@@ -578,6 +581,10 @@ fn parse_fn(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i
         let rettype = parse_type_name(tk, tt, pos)
         let tnode = ast_kind(nk, nt, fc, ns, 16, rettype)
         ast_child(fc, ns, node, tnode)
+        while is_single(tk, tt, vec_get(pos, 0), "!") == 1 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+        }
     }
     // forward declaration: no body if next token is not {
     if is_single(tk, tt, vec_get(pos, 0), "{") == 0 {
