@@ -39,7 +39,10 @@
       "Bash(/tmp/bf)",
       "Bash(/tmp/bs)",
       "Bash(/tmp/bstr)",
-      "Bash(/tmp/bfib)"
+      "Bash(/tmp/bfib)",
+      "Bash(/tmp/baga2)",
+      "Bash(timeout *)",
+      "Bash(wc *)"
     ]
   },
   "$version": 4
