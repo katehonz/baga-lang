@@ -293,6 +293,28 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             return type_new(TYPE_VOID);
         }
 
+        /* string / io builtins */
+        struct { const char *name; TypeKind ret; int nparams; int has_io; } builtins[] = {
+            {"len",       TYPE_I64, 1, 0},
+            {"char_at",   TYPE_I64, 2, 0},
+            {"substr",    TYPE_STR, 3, 0},
+            {"concat",    TYPE_STR, 2, 0},
+            {"read_file", TYPE_STR, 1, 1},
+            {"chr",       TYPE_STR, 1, 0},
+            {"ord",       TYPE_I64, 1, 0},
+        };
+        for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
+            if (strcmp(name, builtins[bi].name) == 0) {
+                n->callee->type = type_new(TYPE_VOID);
+                Type *ret = type_new(builtins[bi].ret);
+                if (builtins[bi].has_io) {
+                    type_add_effect(ret, "IO");
+                    if (ctx->cur_effects) type_add_effect(ctx->cur_effects, "IO");
+                }
+                return ret;
+            }
+        }
+
         /* user function */
         Type *ft = find_fn(ctx, name);
         if (ft && ft->kind == TYPE_FN) {

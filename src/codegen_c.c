@@ -253,6 +253,30 @@ static void emit_expr(Codegen *cg, Node *n) {
                 emit_print(cg, n);
                 return;
             }
+            /* string/io builtins → C helpers */
+            if (n->callee->kind == NODE_IDENT) {
+                const char *bn = n->callee->name;
+                struct { const char *baga; const char *c; } bmap[] = {
+                    {"len",       "baga_len"},
+                    {"char_at",   "baga_char_at"},
+                    {"substr",    "baga_substr"},
+                    {"concat",    "baga_concat"},
+                    {"read_file", "baga_read_file"},
+                    {"chr",       "baga_chr"},
+                    {"ord",       "baga_ord"},
+                };
+                for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
+                    if (strcmp(bn, bmap[bi].baga) == 0) {
+                        fprintf(f, "%s(", bmap[bi].c);
+                        for (int i = 0; i < n->args.len; i++) {
+                            if (i > 0) fprintf(f, ", ");
+                            emit_expr(cg, n->args.data[i]);
+                        }
+                        fprintf(f, ")");
+                        goto call_done;
+                    }
+                }
+            }
             {
                 char *m = NULL;
                 if (n->callee->kind == NODE_IDENT) {
@@ -269,6 +293,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, ")");
                 free(m);
             }
+            call_done:
             break;
 
         case NODE_IF: {
@@ -689,6 +714,23 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_print_i64(int64_t v) { printf(\"%%lld\\n\", (long long)v); }\n");
     fprintf(out, "static void baga_print_f64(double v)  { printf(\"%%g\\n\", v); }\n");
     fprintf(out, "static void baga_print_str(const char *s) { printf(\"%%s\\n\", s); }\n");
+    fprintf(out, "static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n");
+    fprintf(out, "static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n");
+    fprintf(out, "static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n");
+    fprintf(out, "    int64_t n = b - a; if (n < 0) n = 0;\n");
+    fprintf(out, "    char *r = malloc((size_t)n + 1); memcpy(r, s + a, (size_t)n); r[n] = 0; return r;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static const char *baga_concat(const char *a, const char *b) {\n");
+    fprintf(out, "    size_t la = strlen(a), lb = strlen(b);\n");
+    fprintf(out, "    char *r = malloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static const char *baga_read_file(const char *path) {\n");
+    fprintf(out, "    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n");
+    fprintf(out, "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n");
+    fprintf(out, "    char *buf = malloc((size_t)sz + 1); fread(buf, 1, (size_t)sz, f); buf[sz] = 0; fclose(f); return buf;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
+    fprintf(out, "static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n");
     fprintf(out, "\n");
 
     /* enums first */
