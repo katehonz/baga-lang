@@ -61,5 +61,10 @@ test: $(BIN)
 	@./$(BIN) examples/spec_requires_fail.baga 2>&1 | grep -q "requires #1 нарушено" \
 		&& echo "OK: requires предусловието е хванато" \
 		|| { echo "FAIL: requires не е хванато"; exit 1; }
+	@echo "=== --test-specs (property-based) ==="
+	@./$(BIN) --test-specs examples/spec_ensures.baga
+	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
+		&& echo "OK: --test-specs намери контрапример" \
+		|| { echo "FAIL: --test-specs не намери контрапример"; exit 1; }
 	@echo ""
 	@echo "Всички тестове минаха. ⚔️"

@@ -178,6 +178,7 @@ baga/
 | `--tokens` | Print tokens (debug) |
 | `--specs` | Print spec documentation |
 | `--proofs` | Extract proof sketches |
+| `--test-specs` | Property-based test of spec contracts (random inputs, deterministic seed) |
 
 ## Documentation
 

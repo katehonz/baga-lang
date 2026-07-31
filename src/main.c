@@ -32,6 +32,7 @@ static void usage(void) {
         "\n"
         "Опции:\n"
         "  --emit-c    Генерирай C код на stdout, не компилирай\n"
+        "  --test-specs  Property-based тестване на ensures/requires договорите\n"
         "  --ast       Изпечатвай AST (debug)\n"
         "  --tokens    Изпечатвай токени (debug)\n"
         "  --help      Тази помощ\n"
@@ -48,6 +49,7 @@ int main(int argc, char **argv) {
     int dump_specs = 0;
     int dump_proofs = 0;
     int emit_llvm = 0;
+    int test_specs = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--emit-c") == 0) { emit_c = 1; }
@@ -56,6 +58,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--specs") == 0) { dump_specs = 1; }
         else if (strcmp(argv[i], "--proofs") == 0) { dump_proofs = 1; }
         else if (strcmp(argv[i], "--emit-llvm") == 0) { emit_llvm = 1; }
+        else if (strcmp(argv[i], "--test-specs") == 0) { test_specs = 1; }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
             return 0;
@@ -188,6 +191,7 @@ int main(int argc, char **argv) {
     /* codegen */
     if (emit_c) {
         Codegen cg;
+        cg.test_specs = test_specs;
         codegen_c(&cg, program, stdout);
     } else {
         /* generate C to temp file, compile, run */
@@ -202,6 +206,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         Codegen cg;
+        cg.test_specs = test_specs;
         codegen_c(&cg, program, cf);
         fclose(cf);
 

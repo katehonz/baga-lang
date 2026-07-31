@@ -750,6 +750,25 @@ spec корен {
 `ensures`, which requires `output`). `output` is not visible inside requires
 expressions.
 
+### 14.5 Property-based testing (`--test-specs`)
+
+`baga --test-specs file.baga` does not run `main`; it generates a test driver
+that calls every function with `ensures`/`requires` 100 times with
+deterministic random inputs (fixed seed — reproducible runs). `requires`
+filters invalid inputs (the driver keeps generating until it finds a valid
+one); an `ensures` violation is a counterexample and stops the program with
+the input:
+
+```
+spec 'удвой': ensures #1 нарушена: output == 2 * x
+  вход: -347
+```
+
+Only functions whose inputs are all of type `i64` and/or `bool` are supported;
+the rest are skipped with a message. The contract's domain is part of the
+contract — for example `факториел` restricts `n <= 20`, because `i64`
+overflows beyond that.
+
 ---
 
 ## 15. Proof Extraction
@@ -1067,6 +1086,7 @@ resulting binary, and cleans up the temporary files.
 | `--tokens` | Print the token stream (debug). |
 | `--specs` | Print spec documentation extracted from the source. |
 | `--proofs` | Print extracted proof sketches. |
+| `--test-specs` | Property-based test of spec contracts (random inputs, deterministic seed). |
 | `--help`, `-h` | Show usage. |
 
 ---

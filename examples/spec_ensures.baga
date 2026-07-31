@@ -1,10 +1,11 @@
 // Spec с изпълними гаранции (ensures)
+// requires ограничава домейна: i64 прелива при n > 20 — домейнът е част от договора
 spec факториел {
     input:
         n: i64
     output: i64
     requires:
-        n >= 0
+        n >= 0 && n <= 20
     ensures:
         output > 0,
         n <= 1 || output >= n

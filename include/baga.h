@@ -440,6 +440,7 @@ typedef struct {
     int   indent;
     int   tmp_counter;
     Node *program;   /* for enum variant lookup */
+    int   test_specs;   /* --test-specs: генерирай тестов драйвър вместо main */
 } Codegen;
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);

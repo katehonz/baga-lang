@@ -638,6 +638,53 @@ static Node *find_ensures_spec(Codegen *cg, const char *fn_name) {
     return NULL;
 }
 
+/* ---- --test-specs ---- */
+
+/* true, ако всички input типове на spec-а са i64/bool */
+static int spec_inputs_testable(Node *spec) {
+    for (int i = 0; i < spec->spec_inputs.len; i++) {
+        Node *pt = spec->spec_inputs.data[i]->param_type;
+        if (pt->kind != NODE_TYPE || !pt->type_name) return 0;
+        if (strcmp(pt->type_name, "i64") != 0 && strcmp(pt->type_name, "bool") != 0)
+            return 0;
+    }
+    return 1;
+}
+
+/* emit-ва requires предикат: static int b__req_<mangled>(params) { return (r1) && (r2); } */
+static void emit_requires_predicate(Codegen *cg, Node *spec) {
+    FILE *f = cg->out;
+    fprintf(f, "static int b__req_");
+    char *m = mangle_name(spec->spec_name);
+    fprintf(f, "%s", m + 2); /* mangle_name дава b_<име>; искаме b__req_<име> */
+    free(m);
+    fprintf(f, "(");
+    if (spec->spec_inputs.len == 0) {
+        fprintf(f, "void");
+    } else {
+        for (int i = 0; i < spec->spec_inputs.len; i++) {
+            if (i > 0) fprintf(f, ", ");
+            Node *sp = spec->spec_inputs.data[i];
+            emit_type(cg, sp->param_type);
+            fprintf(f, " ");
+            char *pm = mangle_name(sp->param_name);
+            fprintf(f, "%s", pm);
+            free(pm);
+        }
+    }
+    fprintf(f, ") {\n    return ");
+    if (spec->spec_requires.len == 0) {
+        fprintf(f, "1");
+    }
+    for (int j = 0; j < spec->spec_requires.len; j++) {
+        if (j > 0) fprintf(f, " && ");
+        fprintf(f, "(");
+        emit_expr(cg, spec->spec_requires.data[j]->ensure_expr);
+        fprintf(f, ")");
+    }
+    fprintf(f, ";\n}\n\n");
+}
+
 /* ---- function emission ---- */
 
 static void emit_fn(Codegen *cg, Node *fn) {
@@ -859,6 +906,84 @@ static void emit_forward_decls(Codegen *cg, Node *program) {
  *  Public API
  * ============================================================ */
 
+#define BAGA_TEST_COUNT 100
+#define BAGA_TEST_TRIES 1000000 /* горна граница опити за валиден вход на тест */
+
+static void emit_test_driver(Codegen *cg, Node *program) {
+    FILE *f = cg->out;
+
+    /* детерминистичен PRNG (xorshift64) */
+    fprintf(f, "static uint64_t baga_seed = 0x243F6A8885A308D3ULL;\n");
+    fprintf(f, "static int64_t baga_rand_i64(int64_t lo, int64_t hi) {\n");
+    fprintf(f, "    baga_seed ^= baga_seed << 13; baga_seed ^= baga_seed >> 7; baga_seed ^= baga_seed << 17;\n");
+    fprintf(f, "    return lo + (int64_t)(baga_seed %% (uint64_t)(hi - lo + 1));\n");
+    fprintf(f, "}\n\n");
+
+    /* requires предикати + брой тестируеми */
+    int n_tested = 0;
+    for (int i = 0; i < program->items.len; i++) {
+        Node *it = program->items.data[i];
+        if (it->kind != NODE_SPEC) continue;
+        if (it->spec_ensures.len == 0 && it->spec_requires.len == 0) continue;
+        if (!spec_inputs_testable(it)) continue;
+        emit_requires_predicate(cg, it);
+        n_tested++;
+    }
+
+    fprintf(f, "int main(void) {\n");
+    if (n_tested == 0) {
+        fprintf(f, "    printf(\"няма spec-ове за тестване\\n\");\n");
+        fprintf(f, "    return 0;\n}\n");
+        return;
+    }
+
+    for (int i = 0; i < program->items.len; i++) {
+        Node *it = program->items.data[i];
+        if (it->kind != NODE_SPEC) continue;
+        if (it->spec_ensures.len == 0 && it->spec_requires.len == 0) continue;
+        if (!spec_inputs_testable(it)) {
+            fprintf(f, "    printf(");
+            emit_c_string(f, it->spec_name);
+            fprintf(f, " \": пропусната (неподдържан тип за --test-specs)\\n\");\n");
+            continue;
+        }
+        int np = it->spec_inputs.len;
+        char *fm = mangle_name(it->spec_name);
+        fprintf(f, "    { int passed = 0, skipped = 0;\n");
+        fprintf(f, "      for (int t = 0; t < %d; t++) {\n", BAGA_TEST_COUNT);
+        fprintf(f, "          int64_t args[%d];\n", np > 0 ? np : 1);
+        fprintf(f, "          int ok = 0;\n");
+        fprintf(f, "          for (long tr = 0; tr < %d && !ok; tr++) {\n", BAGA_TEST_TRIES);
+        for (int j = 0; j < np; j++) {
+            Node *pt = it->spec_inputs.data[j]->param_type;
+            if (strcmp(pt->type_name, "bool") == 0)
+                fprintf(f, "              args[%d] = baga_rand_i64(0, 1);\n", j);
+            else
+                fprintf(f, "              args[%d] = baga_rand_i64(-1000, 1000);\n", j);
+        }
+        fprintf(f, "              ok = b__req_%s(", fm + 2);
+        for (int j = 0; j < np; j++) fprintf(f, "%sargs[%d]", j ? ", " : "", j);
+        fprintf(f, ");\n");
+        fprintf(f, "              if (!ok) skipped++;\n");
+        fprintf(f, "          }\n");
+        fprintf(f, "          if (!ok) continue;\n");
+        fprintf(f, "          baga_cur_nargs = %d;\n", np);
+        for (int j = 0; j < np; j++)
+            fprintf(f, "          baga_cur_args[%d] = args[%d];\n", j, j);
+        fprintf(f, "          (void)%s(", fm);
+        for (int j = 0; j < np; j++) fprintf(f, "%sargs[%d]", j ? ", " : "", j);
+        fprintf(f, ");\n");
+        fprintf(f, "          passed++;\n      }\n");
+        fprintf(f, "      printf(");
+        emit_c_string(f, it->spec_name);
+        fprintf(f, " \": %%d/%d теста минаха (%%d пропуснати от requires)\\n\", passed, skipped);\n", BAGA_TEST_COUNT);
+        fprintf(f, "    }\n");
+        free(fm);
+    }
+    fprintf(f, "    printf(\"Всички spec тестове минаха. ⚔️\\n\");\n");
+    fprintf(f, "    return 0;\n}\n");
+}
+
 void codegen_c(Codegen *cg, Node *program, FILE *out) {
     cg->out = out;
     cg->indent = 0;
@@ -895,11 +1020,19 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
     fprintf(out, "static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
+    fprintf(out, "static int64_t baga_cur_args[16];\n");
+    fprintf(out, "static int baga_cur_nargs = 0;\n");
     fprintf(out, "static void baga_spec_fail(const char *spec, const char *kind, int64_t idx, const char *expr) {\n");
     fprintf(out, "    if (strcmp(kind, \"requires\") == 0)\n");
     fprintf(out, "        fprintf(stderr, \"spec '%%s': requires #%%lld нарушено: %%s\\n\", spec, (long long)idx, expr);\n");
     fprintf(out, "    else\n");
     fprintf(out, "        fprintf(stderr, \"spec '%%s': ensures #%%lld нарушена: %%s\\n\", spec, (long long)idx, expr);\n");
+    fprintf(out, "    if (baga_cur_nargs > 0) {\n");
+    fprintf(out, "        fprintf(stderr, \"  вход: \");\n");
+    fprintf(out, "        for (int i = 0; i < baga_cur_nargs; i++)\n");
+    fprintf(out, "            fprintf(stderr, \"%%s%%lld\", i ? \", \" : \"\", (long long)baga_cur_args[i]);\n");
+    fprintf(out, "        fprintf(stderr, \"\\n\");\n");
+    fprintf(out, "    }\n");
     fprintf(out, "    exit(1);\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
@@ -953,9 +1086,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
             emit_fn(cg, item);
     }
 
-    /* C main → calls baga main */
-    fprintf(out, "int main(void) {\n");
-    fprintf(out, "    b_main();\n");
-    fprintf(out, "    return 0;\n");
-    fprintf(out, "}\n");
+    if (cg->test_specs) {
+        emit_test_driver(cg, program);
+    } else {
+        /* C main → calls baga main */
+        fprintf(out, "int main(void) {\n");
+        fprintf(out, "    b_main();\n");
+        fprintf(out, "    return 0;\n");
+        fprintf(out, "}\n");
+    }
 }
