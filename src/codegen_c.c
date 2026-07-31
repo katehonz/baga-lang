@@ -202,7 +202,8 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_FLOAT_LIT:
-            fprintf(f, "%g", n->float_val);
+            /* %.17g round-trip-ва IEEE double без загуба на точност */
+            fprintf(f, "%.17g", n->float_val);
             break;
 
         case NODE_STR_LIT:

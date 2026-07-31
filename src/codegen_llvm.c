@@ -1004,13 +1004,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         case NODE_INT_LIT:
             return LLVMConstInt(lg.i64_ty, (unsigned long long)n->int_val, 1);
 
-        case NODE_FLOAT_LIT: {
-            /* codegen_c печата литерала с "%g" в C кода — същата стойност
-             * (round-trip през %g), иначе изходът се разминава в последната цифра */
-            char buf[64];
-            snprintf(buf, sizeof buf, "%g", n->float_val);
-            return LLVMConstReal(lg.double_ty, strtod(buf, NULL));
-        }
+        case NODE_FLOAT_LIT:
+            /* пълна точност — codegen_c също emit-ва с %.17g (round-trip) */
+            return LLVMConstReal(lg.double_ty, n->float_val);
 
         case NODE_BOOL_LIT:
             return LLVMConstInt(lg.i1_ty, n->bool_val, 0);

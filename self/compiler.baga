@@ -110,7 +110,19 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
             while pos < n {
                 if is_digit(char_at(src, pos)) == 1 { pos = pos + 1 } else { break }
             }
-            vec_push(tk, 100)
+            let mut is_float: i64 = 0
+            if pos + 1 < n {
+                if char_at(src, pos) == 46 {
+                    if is_digit(char_at(src, pos + 1)) == 1 {
+                        is_float = 1
+                        pos = pos + 1
+                        while pos < n {
+                            if is_digit(char_at(src, pos)) == 1 { pos = pos + 1 } else { break }
+                        }
+                    }
+                }
+            }
+            if is_float == 1 { vec_push(tk, 102) } else { vec_push(tk, 100) }
             vec_push_str(tt, substr(src, start, pos))
             continue
         }
@@ -180,12 +192,16 @@ fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec)
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         return ast_kind(nk, nt, fc, ns, 0, t)
     }
+    if k == 102 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        return ast_kind(nk, nt, fc, ns, 19, t)
+    }
     if k == 101 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         return ast_kind(nk, nt, fc, ns, 1, t)
     }
-    if k == 14 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 0, "1") }
-    if k == 15 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 0, "0") }
+    if k == 14 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 20, "1") }
+    if k == 15 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 20, "0") }
     if k == 0 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         let id = ast_kind(nk, nt, fc, ns, 2, t)
@@ -503,6 +519,10 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) -> str {
 
     // INT
     if k == 0 { return concat(t, "LL") }
+    // FLOAT (суров текст — валиден C double литерал)
+    if k == 19 { return t }
+    // BOOL (1/0 като C int)
+    if k == 20 { return t }
     // STR
     if k == 1 { return concat(concat("\"", c_escape(t)), "\"") }
     // IDENT
@@ -622,6 +642,106 @@ fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
     0
 }
 
+fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let k = node_kind(nk, idx)
+    if k == 19 { return 1 }
+    if k == 3 {
+        let left = first_child(fc, idx)
+        let right = next_sibling(ns, left)
+        if expr_is_float(nk, nt, fc, ns, prog, left) == 1 { return 1 }
+        if expr_is_float(nk, nt, fc, ns, prog, right) == 1 { return 1 }
+        return 0
+    }
+    if k == 4 {
+        let cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let bn = node_text(nt, cal)
+            let rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "double") == 1 { return 1 }
+        }
+        return 0
+    }
+    if k == 2 {
+        let vname = node_text(nt, idx)
+        let mut f = first_child(fc, prog)
+        while f >= 0 {
+            if node_kind(nk, f) == 11 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 5 {
+                        let mut s = first_child(fc, c)
+                        while s >= 0 {
+                            if node_kind(nk, s) == 6 {
+                                if str_eq(node_text(nt, s), vname) == 1 {
+                                    let init = first_child(fc, s)
+                                    return expr_is_float(nk, nt, fc, ns, prog, init)
+                                }
+                            }
+                            s = next_sibling(ns, s)
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+            f = next_sibling(ns, f)
+        }
+    }
+    0
+}
+
+fn expr_is_bool(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let k = node_kind(nk, idx)
+    if k == 20 { return 1 }
+    if k == 3 {
+        let op = node_text(nt, idx)
+        if str_eq(op, "==") == 1 { return 1 }
+        if str_eq(op, "!=") == 1 { return 1 }
+        if str_eq(op, "<") == 1 { return 1 }
+        if str_eq(op, ">") == 1 { return 1 }
+        if str_eq(op, "<=") == 1 { return 1 }
+        if str_eq(op, ">=") == 1 { return 1 }
+        if str_eq(op, "&&") == 1 { return 1 }
+        if str_eq(op, "||") == 1 { return 1 }
+        return 0
+    }
+    if k == 4 {
+        let cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let bn = node_text(nt, cal)
+            if str_eq(bn, "str_eq") == 1 { return 1 }
+            let rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "int") == 1 { return 1 }
+        }
+        return 0
+    }
+    if k == 2 {
+        let vname = node_text(nt, idx)
+        let mut f = first_child(fc, prog)
+        while f >= 0 {
+            if node_kind(nk, f) == 11 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 5 {
+                        let mut s = first_child(fc, c)
+                        while s >= 0 {
+                            if node_kind(nk, s) == 6 {
+                                if str_eq(node_text(nt, s), vname) == 1 {
+                                    let init = first_child(fc, s)
+                                    return expr_is_bool(nk, nt, fc, ns, prog, init)
+                                }
+                            }
+                            s = next_sibling(ns, s)
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+            f = next_sibling(ns, f)
+        }
+    }
+    0
+}
+
 fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64) {
     let k = node_kind(nk, idx)
     let ind = indent_str(depth)
@@ -660,6 +780,7 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
                 if str_eq(rt, "baga_Vec *") == 1 { ctype = "baga_Vec *" }
             }
         }
+        if expr_is_float(nk, nt, fc, ns, prog, init) == 1 { ctype = "double" }
         write(concat(concat(concat(concat(ind, concat(ctype, " ")), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, init), ";\n")))
         return
     }
@@ -722,7 +843,15 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
                         if expr_is_str(nk, nt, fc, ns, prog, arg) == 1 {
                             write(concat(concat(ind, "printf(\"%s\\n\", "), concat(emit_expr(nk, nt, fc, ns, arg), ");\n")))
                         } else {
-                            write(concat(concat(ind, "printf(\"%lld\\n\", (long long)("), concat(emit_expr(nk, nt, fc, ns, arg), "));\n")))
+                            if expr_is_float(nk, nt, fc, ns, prog, arg) == 1 {
+                                write(concat(concat(ind, "printf(\"%g\\n\", "), concat(emit_expr(nk, nt, fc, ns, arg), ");\n")))
+                            } else {
+                                if expr_is_bool(nk, nt, fc, ns, prog, arg) == 1 {
+                                    write(concat(concat(ind, "printf(\"%s\\n\", ("), concat(emit_expr(nk, nt, fc, ns, arg), ") ? \"true\" : \"false\");\n")))
+                                } else {
+                                    write(concat(concat(ind, "printf(\"%lld\\n\", (long long)("), concat(emit_expr(nk, nt, fc, ns, arg), "));\n")))
+                                }
+                            }
                         }
                     } else {
                         write(concat(ind, "printf(\"\\n\");\n"))

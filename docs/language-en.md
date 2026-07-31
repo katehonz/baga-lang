@@ -220,7 +220,8 @@ explicitly or let the compiler infer them from initializers.
 ### 4.1 Inference and numeric promotion
 
 - An integer literal infers to `i64`.
-- A float literal infers to `f64`.
+- A float literal infers to `f64`. Literals are emitted at full precision
+  (`%.17g`, an IEEE 754 double round-trip) — no lost digits.
 - A string literal infers to `str`.
 - `true` / `false` infer to `bool`.
 
