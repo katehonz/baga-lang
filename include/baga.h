@@ -275,7 +275,7 @@ struct Node {
         struct { Node *ret_val; };
 
         /* NODE_WHILE */
-        struct { Node *while_cond; Node *while_body; };
+        struct { Node *while_cond; Node *while_body; NodeVec while_invariants; };
 
         /* NODE_FOR */
         struct { char *for_var; Node *for_iter; Node *for_body; };

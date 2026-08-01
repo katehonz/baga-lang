@@ -1,0 +1,25 @@
+spec count_bad {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 0
+}
+
+// The invariant i > 0 is FALSE at loop entry (i starts at 0), so it cannot be
+// proven. The soundness gate must then refuse to use it after the loop: the
+// honest answer is "не мога да реша" (UNKNOWN) — never "доказано". A verifier
+// that proved this from a false invariant would be unsound.
+fn count_bad(n: i64) -> i64 {
+    let mut i: i64 = 0
+    while i < n invariant i > 0 {
+        i = i + 1
+    }
+    return i
+}
+
+fn main() {
+    print(count_bad(5))
+}

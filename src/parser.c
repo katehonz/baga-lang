@@ -85,6 +85,8 @@ void node_free(Node *n) {
         case NODE_WHILE:
             node_free(n->while_cond);
             node_free(n->while_body);
+            for (int i = 0; i < n->while_invariants.len; i++) node_free(n->while_invariants.data[i]);
+            vec_free(n->while_invariants);
             break;
         case NODE_FOR:
             free(n->for_var);
@@ -751,11 +753,18 @@ static Node *parse_stmt(Parser *p) {
         return node_alloc(NODE_CONTINUE, pos);
     }
 
-    /* while */
+    /* while (with optional `invariant e1, e2, ...` clause for --verify) */
     if (check(p, TOK_WHILE)) {
         advance(p);
         Node *n = node_alloc(NODE_WHILE, pos);
+        n->while_invariants.len = 0; n->while_invariants.cap = 0; n->while_invariants.data = NULL;
         n->while_cond = parse_expr(p);
+        if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "invariant") == 0) {
+            advance(p);
+            vec_push(n->while_invariants, parse_expr(p));
+            while (match(p, TOK_COMMA))
+                vec_push(n->while_invariants, parse_expr(p));
+        }
         n->while_body = parse_block(p);
         return n;
     }
@@ -1107,6 +1116,10 @@ void print_ast(Node *n, int indent) {
         case NODE_WHILE:
             fprintf(stderr, "WHILE\n");
             print_ast(n->while_cond, indent + 1);
+            for (int i = 0; i < n->while_invariants.len; i++) {
+                fprintf(stderr, "%*sINVARIANT\n", indent + 1, "");
+                print_ast(n->while_invariants.data[i], indent + 2);
+            }
             print_ast(n->while_body, indent + 1);
             break;
         case NODE_FOR:

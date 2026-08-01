@@ -607,37 +607,178 @@ static void states_push(States *ss, State s) {
     ss->s[ss->n++] = s;
 }
 
-typedef struct { ConsList path; Sym ret; } Obligation;
+typedef struct { ConsList path; Sym ret; int bad; } Obligation;
 typedef struct { Obligation *o; int n, cap; } Obligations;
-static void obl_push(Obligations *ob, ConsList path, Sym ret) {
+static void obl_push(Obligations *ob, ConsList path, Sym ret, int bad) {
     if (ob->n == ob->cap) { ob->cap = ob->cap ? ob->cap * 2 : 4; ob->o = realloc(ob->o, (size_t)ob->cap * sizeof(Obligation)); }
-    ob->o[ob->n].path = path; ob->o[ob->n].ret = ret; ob->n++;
+    ob->o[ob->n].path = path; ob->o[ob->n].ret = ret; ob->o[ob->n].bad = bad; ob->n++;
 }
 
-/* Detect constructs M0 cannot handle anywhere in the body. */
-static int has_unsupported(Node *n) {
+/* Detect constructs the verifier cannot handle. `flat` treats a while loop as
+ * an opaque boundary (its body is checked separately, with its invariant). */
+static int has_unsupported_rec(Node *n, int flat) {
     if (!n) return 0;
     switch (n->kind) {
-    case NODE_WHILE: case NODE_FOR: case NODE_MATCH:
+    case NODE_FOR: case NODE_MATCH:
     case NODE_TRY: case NODE_CATCH:
     case NODE_BREAK: case NODE_CONTINUE:
     case NODE_CALL: case NODE_INDEX: case NODE_FIELD:
     case NODE_STRUCT_LIT: case NODE_RANGE:
         return 1;
+    case NODE_WHILE:
+        if (flat) return 1;
+        if (n->while_invariants.len == 0) return 1;   /* M1: loops need invariants */
+        if (has_unsupported_rec(n->while_cond, 1)) return 1;
+        for (int i = 0; i < n->while_invariants.len; i++)
+            if (has_unsupported_rec(n->while_invariants.data[i], 1)) return 1;
+        return has_unsupported_rec(n->while_body, 0);
     default: break;
     }
-    /* recurse into children generically via the big switch */
     switch (n->kind) {
-    case NODE_BINARY: return has_unsupported(n->left) || has_unsupported(n->right);
-    case NODE_UNARY: return has_unsupported(n->operand);
-    case NODE_IF: return has_unsupported(n->cond) || has_unsupported(n->then_br) || has_unsupported(n->else_br);
-    case NODE_BLOCK: for (int i = 0; i < n->stmts.len; i++) if (has_unsupported(n->stmts.data[i])) return 1; return 0;
-    case NODE_LET: return has_unsupported(n->let_init);
-    case NODE_ASSIGN: return has_unsupported(n->assign_target) || has_unsupported(n->assign_val);
-    case NODE_RETURN: return has_unsupported(n->ret_val);
-    case NODE_EXPR_STMT: return has_unsupported(n->expr);
+    case NODE_BINARY: return has_unsupported_rec(n->left, flat) || has_unsupported_rec(n->right, flat);
+    case NODE_UNARY: return has_unsupported_rec(n->operand, flat);
+    case NODE_IF: return has_unsupported_rec(n->cond, flat) || has_unsupported_rec(n->then_br, flat) || has_unsupported_rec(n->else_br, flat);
+    case NODE_BLOCK: for (int i = 0; i < n->stmts.len; i++) if (has_unsupported_rec(n->stmts.data[i], flat)) return 1; return 0;
+    case NODE_LET: return has_unsupported_rec(n->let_init, flat);
+    case NODE_ASSIGN: return has_unsupported_rec(n->assign_target, flat) || has_unsupported_rec(n->assign_val, flat);
+    case NODE_RETURN: return has_unsupported_rec(n->ret_val, flat);
+    case NODE_EXPR_STMT: return has_unsupported_rec(n->expr, flat);
     default: return 0;
     }
+}
+
+static int has_unsupported(Node *n) { return has_unsupported_rec(n, 0); }
+
+static State clone_state_with(State *cur, Formula *add);
+static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid);
+
+/* Prove one invariant holds in every body-final state, given the head state
+ * (invariant ∧ condition on entry). UNSAT per DNF branch ⇒ holds. */
+static int check_preservation(State *head, Node *inv, States *body_final) {
+    Formula hf;
+    if (!bool_to_dnf(inv, &head->env, 0, &hf)) return 0;
+    int holds = 1;
+    for (int k = 0; k < body_final->n && holds; k++) {
+        State *bf = &body_final->s[k];
+        if (bf->bad) { holds = 0; break; }
+        Formula bf_inv;
+        if (!bool_to_dnf(inv, &bf->env, 0, &bf_inv)) { holds = 0; break; }
+        for (int b = 0; b < bf_inv.n && holds; b++) {
+            ConsList sys; cl_init(&sys);
+            for (int x = 0; x < bf->path.n; x++) { Constraint *c = &bf->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            for (int x = 0; x < bf_inv.br[b].n; x++) {
+                Constraint *c = &bf_inv.br[b].c[x];
+                Lin lhs = lin_neg(&c->lhs);
+                COp op = (c->op == C_LT) ? C_LE : C_LT;
+                cl_push(&sys, mk_cons(lhs, op, c->rhs));
+            }
+            if (fm_sat(&sys)) holds = 0;   /* SAT ⇒ a body outcome breaks the invariant */
+        }
+        f_free(&bf_inv);
+    }
+    f_free(&hf);
+    return holds;
+}
+
+/* Symbolic execution of a while loop with invariants (Hoare):
+ *   init        — invariant holds on entry (from the current path);
+ *   preservation— invariant ∧ cond, after one body iteration, ⇒ invariant;
+ *   post-loop   — invariant ∧ ¬cond continues the fall-through path, but ONLY
+ *                 if init and preservation are both PROVEN (soundness gate —
+ *                 otherwise any downstream proof depending on it is UNKNOWN).
+ * Returns 1 iff the invariant is trustworthy (init ∧ preservation proven). */
+static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvoid) {
+    (void)is_nonvoid;   /* the loop body is never a return context */
+    int trusted = 1;
+    States out; out.s = NULL; out.n = 0; out.cap = 0;
+    for (int i = 0; i < states->n; i++) {
+        State *cur = &states->s[i];
+
+        /* init: each invariant must follow from the current path */
+        for (int j = 0; j < st->while_invariants.len && trusted; j++) {
+            Formula invf;
+            if (!bool_to_dnf(st->while_invariants.data[j], &cur->env, 0, &invf)) { trusted = 0; break; }
+            for (int b = 0; b < invf.n && trusted; b++) {
+                ConsList sys; cl_init(&sys);
+                for (int x = 0; x < cur->path.n; x++) { Constraint *c = &cur->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                for (int x = 0; x < invf.br[b].n; x++) {
+                    Constraint *c = &invf.br[b].c[x];
+                    Lin lhs = lin_neg(&c->lhs);
+                    COp op = (c->op == C_LT) ? C_LE : C_LT;
+                    cl_push(&sys, mk_cons(lhs, op, c->rhs));
+                }
+                if (fm_sat(&sys)) trusted = 0;
+            }
+            f_free(&invf);
+        }
+
+        /* preservation: invariant ∧ cond, run one body iteration, re-check */
+        Formula cf;
+        if (!bool_to_dnf(st->cond, &cur->env, 0, &cf)) { trusted = 0; }
+        States head_ss; head_ss.s = NULL; head_ss.n = 0; head_ss.cap = 0;
+        if (trusted) {
+            for (int b = 0; b < cf.n; b++) {
+                Formula one; f_init(&one);
+                ConsList cl; cl_init(&cl);
+                for (int x = 0; x < cf.br[b].n; x++) { Constraint *c = &cf.br[b].c[x]; cl_push(&cl, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                f_push_branch(&one, cl);
+                State h = clone_state_with(cur, &one);
+                f_free(&one);
+                for (int j = 0; j < st->while_invariants.len; j++) {
+                    Formula invf;
+                    if (!bool_to_dnf(st->while_invariants.data[j], &h.env, 0, &invf)) { trusted = 0; break; }
+                    for (int bb = 0; bb < invf.n; bb++)
+                        for (int x = 0; x < invf.br[bb].n; x++) { Constraint *c = &invf.br[bb].c[x]; cl_push(&h.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                    f_free(&invf);
+                }
+                states_push(&head_ss, h);
+            }
+            /* the loop body is not a return context: its last statement is NOT
+             * an implicit return, so pass is_nonvoid=0 */
+            symexec_block(st->while_body, &head_ss, ob, 0);
+            for (int j = 0; j < st->while_invariants.len && trusted; j++)
+                if (!check_preservation(cur, st->while_invariants.data[j], &head_ss)) trusted = 0;
+        }
+        for (int k = 0; k < head_ss.n; k++) state_free(&head_ss.s[k]);
+        free(head_ss.s);
+        f_free(&cf);
+
+        /* post-loop continuation: invariant ∧ ¬cond (only sound when trusted) */
+        Formula nf;
+        if (!bool_to_dnf(st->cond, &cur->env, 1, &nf)) {
+            cur->bad = 1;
+            states_push(&out, *cur);
+            continue;
+        }
+        States post_ss; post_ss.s = NULL; post_ss.n = 0; post_ss.cap = 0;
+        for (int b = 0; b < nf.n; b++) {
+            Formula one; f_init(&one);
+            ConsList cl; cl_init(&cl);
+            for (int x = 0; x < nf.br[b].n; x++) { Constraint *c = &nf.br[b].c[x]; cl_push(&cl, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            f_push_branch(&one, cl);
+            State t = clone_state_with(cur, &one);
+            f_free(&one);
+            if (trusted) {
+                for (int j = 0; j < st->while_invariants.len; j++) {
+                    Formula invf;
+                    if (!bool_to_dnf(st->while_invariants.data[j], &t.env, 0, &invf)) { t.bad = 1; break; }
+                    for (int bb = 0; bb < invf.n; bb++)
+                        for (int x = 0; x < invf.br[bb].n; x++) { Constraint *c = &invf.br[bb].c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                    f_free(&invf);
+                }
+            } else {
+                t.bad = 1;   /* invariant not proven ⇒ downstream may not rely on it */
+            }
+            states_push(&post_ss, t);
+        }
+        for (int k = 0; k < post_ss.n; k++) states_push(&out, post_ss.s[k]);
+        free(post_ss.s);
+        f_free(&nf);
+        env_free(&cur->env); cl_free(&cur->path);
+    }
+    free(states->s);
+    *states = out;
+    return trusted;
 }
 
 /* Symbolically execute a statement list over a set of states; returning states
@@ -672,7 +813,7 @@ static void bind_sym(SEnv *env, const char *name, Sym v) {
 static void drain_returns(States *states, Obligations *ob, Node *val_expr) {
     for (int i = 0; i < states->n; i++) {
         Sym r = se_from_ast(val_expr, &states->s[i].env);
-        obl_push(ob, states->s[i].path, r);
+        obl_push(ob, states->s[i].path, r, states->s[i].bad);
         env_free(&states->s[i].env);
     }
     states->n = 0;
@@ -722,7 +863,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                     f_free(&one);
                     states_push(&then_ss, t);
                 }
-                symexec_block(st->then_br, &then_ss, ob, is_nonvoid);
+                symexec_block(st->then_br, &then_ss, ob, 0);   /* branch ≠ return context */
                 for (int k = 0; k < then_ss.n; k++) states_push(&out, then_ss.s[k]);
                 free(then_ss.s);
                 /* else branch (or fall-through when there is none) */
@@ -736,7 +877,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                     f_free(&one);
                     states_push(&else_ss, t);
                 }
-                if (st->else_br) symexec_block(st->else_br, &else_ss, ob, is_nonvoid);
+                if (st->else_br) symexec_block(st->else_br, &else_ss, ob, 0);   /* branch ≠ return context */
                 for (int k = 0; k < else_ss.n; k++) states_push(&out, else_ss.s[k]);
                 free(else_ss.s);
                 f_free(&cf); f_free(&nf);
@@ -744,6 +885,8 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             }
             free(states->s);
             *states = out;
+        } else if (st->kind == NODE_WHILE) {
+            symexec_while(st, states, ob, is_nonvoid);
         } else {
             for (int i = 0; i < states->n; i++) states->s[i].bad = 1;
         }
@@ -786,7 +929,7 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
     VRes worst = R_PROVEN;
     for (int o = 0; o < ob->n; o++) {
         Obligation *obl = &ob->o[o];
-        if (obl->ret.nonlinear) { if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        if (obl->bad || obl->ret.nonlinear) { if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
         /* env with output := return */
         SEnv env2; env_init(&env2);
         env_bind(&env2, "output", lin_clone(&obl->ret.lin), 0);

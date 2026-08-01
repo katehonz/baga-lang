@@ -1,0 +1,27 @@
+spec add_repeated {
+    input:
+        k: i64
+        m: i64
+    output: i64
+    requires:
+        k >= 0
+        m >= 0
+    ensures:
+        output >= 0
+}
+
+// Add k to s, m times. The invariant s >= 0 is linear and inductive under
+// k >= 0, so the post-loop ensures follows from the invariant alone.
+fn add_repeated(k: i64, m: i64) -> i64 {
+    let mut i: i64 = 0
+    let mut s: i64 = 0
+    while i < m invariant s >= 0, i >= 0 {
+        s = s + k
+        i = i + 1
+    }
+    return s
+}
+
+fn main() {
+    print(add_repeated(3, 4))
+}

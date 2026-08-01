@@ -159,8 +159,8 @@ test: $(BIN)
 	@grep -q "jwt_test: all passed" /tmp/baga_jwt_out.txt \
 		&& echo "OK: JWT HS256 sign/verify (golden vector)" \
 		|| { echo "FAIL: jwt_test"; cat /tmp/baga_jwt_out.txt; exit 1; }
-	@echo "=== verify (статична верификация, M0) ==="
-	@for f in abs_val max2 clamp; do \
+	@echo "=== verify (статична верификация, M0+M1) ==="
+	@for f in abs_val max2 clamp sum; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 			&& echo "OK: $$f доказано (completeness)" \
@@ -174,6 +174,10 @@ test: $(BIN)
 	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: nonlinear — честно НЕ МОГА ДА РЕША" \
 		|| { echo "FAIL: nonlinear"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/bad_loop.baga > /tmp/baga_verify_out.txt; \
+	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: bad_loop — грешен инвариант не води до фалшиво доказателство (soundness)" \
+		|| { echo "FAIL: bad_loop"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/recursive.baga > /tmp/baga_verify_out.txt; \
 	grep -q "ПРОПУСНАТО" /tmp/baga_verify_out.txt \
 		&& echo "OK: recursive — честно пропуснато" \

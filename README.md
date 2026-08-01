@@ -211,7 +211,7 @@ baga/
 | `--specs` | Print spec documentation |
 | `--proofs` | Extract proof sketches |
 | `--test-specs` | Property-based test of spec contracts (random inputs, deterministic seed) |
-| `--verify` | Static verification of `requires`/`ensures` (sound; linear i64, no loops/recursion — see below) |
+| `--verify` | Static verification of `requires`/`ensures` (sound; linear i64, loops via invariants, no recursion — see below) |
 
 ## Documentation
 
@@ -232,19 +232,32 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`, milestone M0) | 🟡 linear i64 fragment |
+| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops | 🟡 in progress |
 
-### Static verification (`--verify`, milestone M0)
+### Static verification (`--verify`)
 
 `--verify` proves or refutes `requires`/`ensures` **statically** for pure,
-non-recursive, loop-free functions over `i64` with **linear** arithmetic. It is
-**sound by construction**: the only path to "ДОКАЗАНО" (proven) is showing the
-negated obligation is unsatisfiable even over the rationals (Fourier–Motzkin),
-which implies unsatisfiable over the integers. A refuted contract carries a
-concrete counterexample; anything undecidable in the fragment is reported
-"НЕ МОГА ДА РЕША" (unknown) — never falsely proven. Loops, recursion, arrays,
-and non-linear terms are skipped honestly. This is the first step of a deeper
-verification staircase (loops via invariants, arrays, non-linear), not the top.
+non-recursive functions over `i64` with **linear** arithmetic. It is **sound by
+construction**: the only path to "ДОКАЗАНО" (proven) is showing the negated
+obligation is unsatisfiable even over the rationals (Fourier–Motzkin), which
+implies unsatisfiable over the integers. A refuted contract carries a concrete
+counterexample; anything undecidable in the fragment is reported "НЕ МОГА ДА
+РЕША" (unknown) — never falsely proven.
+
+- **M0** — straight-line code and `if`/`else`.
+- **M1** — `while` loops with user-supplied invariants, verified by the Hoare
+  rule (init + preservation). The post-loop invariant is trusted **only** if
+  both checks are proven (a soundness gate — an unproven invariant yields
+  UNKNOWN downstream, never a false proof):
+  ```baga
+  while i < m invariant s >= 0, i >= 0 {
+      s = s + k
+      i = i + 1
+  }
+  ```
+
+Recursion, arrays, and non-linear terms are still skipped honestly. Remaining
+staircase: arrays (bounds + element invariants), then non-linear reasoning.
 
 ## Philosophy
 
