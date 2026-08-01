@@ -470,6 +470,26 @@ void print_proofs(Node *program);
  * or UNKNOWN. */
 int verify_program(Node *program);
 
+/* Collectible verification results (for proof extraction integration) */
+typedef struct {
+    int res;             /* 0=PROVEN, 1=REFUTED, 2=UNKNOWN, 3=SKIPPED */
+    const char *ens_text;/* ensures clause text (borrowed) */
+    const char *skip_reason; /* if SKIPPED (borrowed or NULL) */
+    char **wit_names;    /* counterexample variable names (owned, may be NULL) */
+    long long *wit_vals; /* counterexample values */
+    int wn;              /* number of witness bindings */
+} EnsVerifyRes;
+
+typedef struct {
+    EnsVerifyRes *ens;   /* per-ensures results */
+    int n_ens;
+    int skipped;         /* 1 if the whole function was skipped */
+    const char *skip_reason;
+} FnVerifyRes;
+
+int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out);
+void fn_verify_res_free(FnVerifyRes *r);
+
 /* LLVM codegen (optional, requires -DBAGA_LLVM) */
 #ifdef BAGA_LLVM
 void codegen_llvm(Node *program, const char *output_path);

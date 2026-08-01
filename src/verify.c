@@ -1563,9 +1563,10 @@ static int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st) {
     return !sat;
 }
 
-static int verify_fn(Node *prog, Node *fn) {
+int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
+    memset(out, 0, sizeof *out);
     Node *spec = find_spec(prog, fn->fn_name);
-    if (!spec) return 0;
+    if (!spec) return -1;
 
     /* fragment gates */
     const char *skip = NULL;
@@ -1581,10 +1582,18 @@ static int verify_fn(Node *prog, Node *fn) {
     }
     if (!skip && has_unsupported(fn->fn_body)) skip = "цикли/рекурсия/повиквания";
 
-    printf("verify %s:\n", fn->fn_name);
+    int ne = spec->spec_ensures.len;
+    out->ens = calloc(ne > 0 ? ne : 1, sizeof(EnsVerifyRes));
+    out->n_ens = ne;
+
     if (skip) {
-        for (int j = 0; j < spec->spec_ensures.len; j++)
-            printf("  ensures #%d (%s): ПРОПУСНАТО (%s)\n", j + 1, spec->spec_ensures.data[j]->ensure_text, skip);
+        out->skipped = 1;
+        out->skip_reason = skip;
+        for (int j = 0; j < ne; j++) {
+            out->ens[j].res = 3;
+            out->ens[j].ens_text = spec->spec_ensures.data[j]->ensure_text;
+            out->ens[j].skip_reason = skip;
+        }
         return 0;
     }
 
@@ -1595,19 +1604,14 @@ static int verify_fn(Node *prog, Node *fn) {
     for (int i = 0; i < fn->params.len; i++) {
         Node *p = fn->params.data[i];
         env_bind(&init.env, p->param_name, lin_var(p->param_name), 0);
-        /* a Vec parameter has a symbolic length the caller may constrain via
-         * requires (e.g. vec_len(v) >= 1) */
         Node *pt = unwrap_type(p->param_type);
         if (pt && pt->kind == NODE_TYPE_ARRAY) {
             char buf[300]; snprintf(buf, sizeof buf, "__len_%s", p->param_name);
             vlen_set(&init.vlen, p->param_name, lin_var(buf), 0);
         }
     }
-    /* M3: element axioms from requires (v[*] >= c, ...) */
     for (int r = 0; r < spec->spec_requires.len; r++)
         extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.ax);
-    /* requires also seed the initial path, so loop-invariant init checks and
-     * branch conditions can rely on them (element axioms are vacuous here) */
     for (int r = 0; r < spec->spec_requires.len; r++) {
         Formula rf;
         if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.vlen, 0, &rf)) {
@@ -1622,35 +1626,116 @@ static int verify_fn(Node *prog, Node *fn) {
     for (int i = 0; i < states.n; i++) state_free(&states.s[i]);
     free(states.s);
 
-    int any_refuted = 0;
-    for (int j = 0; j < spec->spec_ensures.len; j++) {
+    for (int j = 0; j < ne; j++) {
         IBind *wit = NULL; int wn = 0;
         VRes r = verify_ensures(spec, spec->spec_ensures.data[j]->ensure_expr, &ob, &wit, &wn);
-        printf("  ensures #%d (%s): %s\n", j + 1, spec->spec_ensures.data[j]->ensure_text, res_word(r));
-        if (r == R_REFUTED) {
-            any_refuted = 1;
-            printf("    контрапример:");
-            for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
-            printf("\n");
+        out->ens[j].res = (int)r;
+        out->ens[j].ens_text = spec->spec_ensures.data[j]->ensure_text;
+        out->ens[j].wn = wn;
+        if (wn > 0 && wit) {
+            out->ens[j].wit_names = malloc(wn * sizeof(char *));
+            out->ens[j].wit_vals = malloc(wn * sizeof(long long));
+            for (int k = 0; k < wn; k++) {
+                out->ens[j].wit_names[k] = wit[k].name;
+                out->ens[j].wit_vals[k] = (long long)wit[k].val;
+            }
+            free(wit);
         }
-        if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
     }
-    /* bounds obligations (M2): report each vec access check */
+    /* bounds obligations (M2) — check but don't store in EnsVerifyRes */
     for (int i = 0; i < ob.n; i++) {
         if (ob.o[i].kind != 1) continue;
         IBind *wit = NULL; int wn = 0;
-        VRes r = verify_bound_obl(&ob.o[i], &wit, &wn);
-        printf("  граница (%s): %s\n", ob.o[i].label ? ob.o[i].label : "достъп до вектор", res_word(r));
-        if (r == R_REFUTED) {
-            any_refuted = 1;
-            printf("    контрапример:");
-            for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
-            printf("\n");
-        }
+        verify_bound_obl(&ob.o[i], &wit, &wn);
         if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
     }
     for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); cl_free(&ob.o[i].bound); cl_free(&ob.o[i].read_cons); lin_free(&ob.o[i].ret.lin); vlen_free(&ob.o[i].vlen); free(ob.o[i].label); }
     free(ob.o);
+    return 0;
+}
+
+void fn_verify_res_free(FnVerifyRes *r) {
+    if (!r->ens) return;
+    for (int j = 0; j < r->n_ens; j++) {
+        if (r->ens[j].wit_names) {
+            for (int k = 0; k < r->ens[j].wn; k++) free(r->ens[j].wit_names[k]);
+            free(r->ens[j].wit_names);
+        }
+        free(r->ens[j].wit_vals);
+    }
+    free(r->ens);
+    r->ens = NULL;
+    r->n_ens = 0;
+}
+
+static int verify_fn(Node *prog, Node *fn) {
+    Node *spec = find_spec(prog, fn->fn_name);
+    if (!spec) return 0;
+
+    FnVerifyRes res;
+    verify_fn_collect(prog, fn, &res);
+
+    printf("verify %s:\n", fn->fn_name);
+    int any_refuted = 0;
+    for (int j = 0; j < res.n_ens; j++) {
+        EnsVerifyRes *e = &res.ens[j];
+        if (e->res == 3) {
+            printf("  ensures #%d (%s): ПРОПУСНАТО (%s)\n", j + 1, e->ens_text, e->skip_reason);
+        } else {
+            printf("  ensures #%d (%s): %s\n", j + 1, e->ens_text, res_word((VRes)e->res));
+            if (e->res == 1) {
+                any_refuted = 1;
+                printf("    контрапример:");
+                for (int k = 0; k < e->wn; k++) printf(" %s = %lld", e->wit_names[k], e->wit_vals[k]);
+                printf("\n");
+            }
+        }
+    }
+    /* re-run bounds for printing (cheap; keeps output identical) */
+    if (!res.skipped) {
+        Obligations ob2; ob2.o = NULL; ob2.n = 0; ob2.cap = 0;
+        State init2; env_init(&init2.env); vlen_init(&init2.vlen); ax_init(&init2.ax);
+        cl_init(&init2.path); cl_init(&init2.read_cons); reads_init(&init2.reads); init2.bad = 0;
+        for (int i = 0; i < fn->params.len; i++) {
+            Node *p = fn->params.data[i];
+            env_bind(&init2.env, p->param_name, lin_var(p->param_name), 0);
+            Node *pt = unwrap_type(p->param_type);
+            if (pt && pt->kind == NODE_TYPE_ARRAY) {
+                char buf[300]; snprintf(buf, sizeof buf, "__len_%s", p->param_name);
+                vlen_set(&init2.vlen, p->param_name, lin_var(buf), 0);
+            }
+        }
+        for (int r = 0; r < spec->spec_requires.len; r++)
+            extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init2.env, &init2.ax);
+        for (int r = 0; r < spec->spec_requires.len; r++) {
+            Formula rf;
+            if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init2.env, &init2.vlen, 0, &rf)) {
+                if (rf.n == 1) for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&init2.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                f_free(&rf);
+            }
+        }
+        States st2; st2.s = NULL; st2.n = 0; st2.cap = 0;
+        states_push(&st2, init2);
+        symexec_stmts(&fn->fn_body->stmts, &st2, &ob2, (fn->ret_type != NULL), spec);
+        for (int i = 0; i < st2.n; i++) state_free(&st2.s[i]);
+        free(st2.s);
+        for (int i = 0; i < ob2.n; i++) {
+            if (ob2.o[i].kind != 1) continue;
+            IBind *wit = NULL; int wn = 0;
+            VRes r = verify_bound_obl(&ob2.o[i], &wit, &wn);
+            printf("  граница (%s): %s\n", ob2.o[i].label ? ob2.o[i].label : "достъп до вектор", res_word(r));
+            if (r == R_REFUTED) {
+                any_refuted = 1;
+                printf("    контрапример:");
+                for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+                printf("\n");
+            }
+            if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
+        }
+        for (int i = 0; i < ob2.n; i++) { cl_free(&ob2.o[i].path); cl_free(&ob2.o[i].bound); cl_free(&ob2.o[i].read_cons); lin_free(&ob2.o[i].ret.lin); vlen_free(&ob2.o[i].vlen); free(ob2.o[i].label); }
+        free(ob2.o);
+    }
+    fn_verify_res_free(&res);
     return any_refuted;
 }
 

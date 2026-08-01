@@ -223,7 +223,8 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants | 🟡 in progress |
+| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants | ✅ |
+| 8 | Non-linear reasoning + recursion + proof-extraction integration | 🔜 |
 
 ### Static verification (`--verify`)
 
@@ -267,8 +268,10 @@ Recursion and non-linear terms are still skipped honestly. `vec_slice` and
 `vec_concat` are now language builtins (returning a fresh `Vec`), and the
 verifier propagates element invariants through them — a slice inherits the
 source's invariants; a concat inherits the invariants **both** operands share.
-Remaining staircase: relational invariants (`sorted`), then non-linear
-reasoning.
+A `sorted(v)` relational axiom is also supported: `requires sorted(v)` asserts
+that `v` is non-decreasing, and `vec_push(v, e)` preserves it when `e >= last`
+is provable. Remaining staircase: non-linear reasoning, recursion, and feeding
+verified invariants into proof extraction (`--proofs`).
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

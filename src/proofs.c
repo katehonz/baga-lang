@@ -151,20 +151,51 @@ void print_proofs(Node *program) {
             printf("    %s is pure (no declared effects)\n\n", name);
         }
 
-        /* 4. Spec guarantees */
+        /* 4. Spec contracts — verified statically when possible */
         if (spec) {
-            printf("  spec \"%s\":\n", spec->spec_name);
-            for (int j = 0; j < spec->n_guarantees; j++) {
-                printf("    guarantee: %s\n", spec->spec_guarantees[j]);
+            for (int j = 0; j < spec->n_guarantees; j++)
+                printf("  guarantee %s_g%d:\n    %s\n\n", name, j + 1, spec->spec_guarantees[j]);
+
+            if (spec->spec_ensures.len > 0) {
+                FnVerifyRes vr;
+                int ok = verify_fn_collect(program, item, &vr);
+                if (ok == 0) {
+                    for (int j = 0; j < vr.n_ens; j++) {
+                        EnsVerifyRes *e = &vr.ens[j];
+                        printf("  theorem %s_ensures_%d:\n", name, j + 1);
+                        if (spec->spec_requires.len > 0) {
+                            printf("    requires:");
+                            for (int r = 0; r < spec->spec_requires.len; r++)
+                                printf(" %s%s", spec->spec_requires.data[r]->ensure_text,
+                                       r < spec->spec_requires.len - 1 ? "," : "");
+                            printf("\n");
+                        }
+                        printf("    ensures: %s\n", e->ens_text);
+                        switch (e->res) {
+                        case 0: printf("    status: ДОКАЗАНО (статично, Fourier–Motzkin)\n"); break;
+                        case 1:
+                            printf("    status: ОБРОЧЕНО\n");
+                            printf("    контрапример:");
+                            for (int k = 0; k < e->wn; k++)
+                                printf(" %s = %lld", e->wit_names[k], e->wit_vals[k]);
+                            printf("\n");
+                            break;
+                        case 2: printf("    status: НЕ МОГА ДА РЕША\n"); break;
+                        case 3: printf("    status: ПРОПУСНАТО (%s)\n", e->skip_reason ? e->skip_reason : "извън фрагмента"); break;
+                        }
+                        printf("\n");
+                    }
+                    fn_verify_res_free(&vr);
+                } else {
+                    for (int j = 0; j < spec->spec_ensures.len; j++) {
+                        printf("  theorem %s_ensures_%d:\n", name, j + 1);
+                        printf("    ensures: %s\n", spec->spec_ensures.data[j]->ensure_text);
+                        printf("    status: RUNTIME-CHECKED\n\n");
+                    }
+                }
+            } else if (spec->n_guarantees == 0) {
+                printf("  spec \"%s\": UNVERIFIED — no formal contracts\n\n", spec->spec_name);
             }
-            for (int j = 0; j < spec->spec_requires.len; j++)
-                printf("    requires: %s\n", spec->spec_requires.data[j]->ensure_text);
-            for (int j = 0; j < spec->spec_ensures.len; j++)
-                printf("    ensures: %s\n", spec->spec_ensures.data[j]->ensure_text);
-            if (spec->spec_ensures.len > 0 || spec->spec_requires.len > 0)
-                printf("    status: RUNTIME-CHECKED\n\n");
-            else
-                printf("    status: UNVERIFIED — requires formal proof or testing\n\n");
         }
     }
 }
