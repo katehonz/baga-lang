@@ -338,6 +338,13 @@ static int cmp_to_formula(Node *e, SEnv *env, VLenMap *vlen, int negated, Formul
     return 1;
 }
 
+/* Verifier-only relational predicate sorted(v): not a scalar constraint.
+ * Positive occurrence → vacuous TRUE; negated → not convertible (UNKNOWN). */
+static int is_sorted_call(Node *e) {
+    return e && e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
+           strcmp(e->callee->name, "sorted") == 0;
+}
+
 static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out) {
     if (!e) return 0;
     if (e->kind == NODE_BOOL_LIT) {
@@ -347,6 +354,11 @@ static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *
         if (v) { ConsList cl; cl_init(&cl); f_push_branch(out, cl); }   /* TRUE: one empty branch */
         /* FALSE: zero branches */
         return 1;
+    }
+    /* sorted(v) is stored as an ElemAxiom (is_sorted), not a path constraint */
+    if (is_sorted_call(e)) {
+        if (negated) return 0;   /* ¬sorted is outside the scalar fragment */
+        f_init(out); ConsList cl; cl_init(&cl); f_push_branch(out, cl); return 1;
     }
     if (e->kind == NODE_UNARY && e->un_op == UOP_NOT)
         return bool_to_dnf(e->operand, env, vlen, !negated, out);
@@ -752,25 +764,27 @@ static int find_bound_witness(Obligation *obl, IBind **witness, int *wn) {
 /* M3 element invariant: forall i in [0, len(vec)): vec[i] <cmp> rhs.
  * cmp is one of EC_LT/EC_LE/EC_GT/EC_GE; rhs is a linear form over scalars. */
 typedef enum { EC_LT, EC_LE, EC_GT, EC_GE } ElemCmp;
-typedef struct { char *vec; ElemCmp cmp; Lin rhs; } ElemAxiom;
+/* is_sorted: a relational axiom "sorted(vec)" (forall i: vec[i] <= vec[i+1]);
+ * cmp/rhs are unused in that case. */
+typedef struct { char *vec; ElemCmp cmp; Lin rhs; int is_sorted; } ElemAxiom;
 typedef struct { ElemAxiom *a; int n, cap; } AxiomList;
 
 static void ax_init(AxiomList *l) { l->a = NULL; l->n = 0; l->cap = 0; }
 static void ax_free(AxiomList *l) { for (int i = 0; i < l->n; i++) { free(l->a[i].vec); lin_free(&l->a[i].rhs); } free(l->a); l->a = NULL; l->n = l->cap = 0; }
-static void ax_push(AxiomList *l, const char *vec, ElemCmp cmp, Lin rhs) {
+static void ax_push(AxiomList *l, const char *vec, ElemCmp cmp, Lin rhs, int is_sorted) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->a = realloc(l->a, (size_t)l->cap * sizeof(ElemAxiom)); }
-    l->a[l->n].vec = strdup(vec); l->a[l->n].cmp = cmp; l->a[l->n].rhs = rhs; l->n++;
+    l->a[l->n].vec = strdup(vec); l->a[l->n].cmp = cmp; l->a[l->n].rhs = rhs; l->a[l->n].is_sorted = is_sorted; l->n++;
 }
 static void ax_clone_into(AxiomList *dst, AxiomList *src) {
     ax_init(dst);
-    for (int i = 0; i < src->n; i++) ax_push(dst, src->a[i].vec, src->a[i].cmp, lin_clone(&src->a[i].rhs));
+    for (int i = 0; i < src->n; i++) ax_push(dst, src->a[i].vec, src->a[i].cmp, lin_clone(&src->a[i].rhs), src->a[i].is_sorted);
 }
 
 /* Copy the axioms of vector `from` (in `src`) into `dst`, re-anchored on `to`. */
 static void ax_copy_renamed(AxiomList *dst, AxiomList *src, const char *from, const char *to) {
     for (int i = 0; i < src->n; i++)
         if (strcmp(src->a[i].vec, from) == 0)
-            ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs));
+            ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs), src->a[i].is_sorted);
 }
 
 /* vec_concat result: keep only the axioms BOTH operands share (same cmp+rhs),
@@ -779,10 +793,13 @@ static int lin_equal(Lin *a, Lin *b);
 static void ax_intersect_two(AxiomList *dst, AxiomList *src, const char *v, const char *w, const char *to) {
     for (int i = 0; i < src->n; i++) {
         if (strcmp(src->a[i].vec, v) != 0) continue;
+        /* sorted(v) ∧ sorted(w) does not imply sorted(v ++ w) — never transfer */
+        if (src->a[i].is_sorted) continue;
         for (int j = 0; j < src->n; j++)
-            if (strcmp(src->a[j].vec, w) == 0 && src->a[j].cmp == src->a[i].cmp &&
+            if (strcmp(src->a[j].vec, w) == 0 && !src->a[j].is_sorted &&
+                src->a[j].cmp == src->a[i].cmp &&
                 lin_equal(&src->a[i].rhs, &src->a[j].rhs)) {
-                ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs));
+                ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs), 0);
                 break;
             }
     }
@@ -920,7 +937,7 @@ static int check_preservation(State *head, Node *inv, States *body_final) {
  *                 if init and preservation are both PROVEN (soundness gate —
  *                 otherwise any downstream proof depending on it is UNKNOWN).
  * Returns 1 iff the invariant is trustworthy (init ∧ preservation proven). */
-static void extract_elem_axiom(Node *e, AxiomList *ax);
+static void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax);
 static int has_elem_ref(Node *e);
 static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvoid, Node *spec) {
     (void)is_nonvoid;   /* the loop body is never a return context */
@@ -1024,7 +1041,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
      * while_invariants stores the raw expression nodes (not NODE_ENSURE). */
     for (int i = 0; i < states->n; i++)
         for (int j = 0; j < st->while_invariants.len; j++)
-            extract_elem_axiom(st->while_invariants.data[j], &states->s[i].ax);
+            extract_elem_axiom(st->while_invariants.data[j], &states->s[i].env, &states->s[i].ax);
     return trusted;
 }
 
@@ -1033,6 +1050,27 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
  * handled; nested vec calls inside larger expressions are not tracked. */
 static Constraint axiom_instantiate(ElemAxiom *a, const char *read_var);
 static int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st);
+/* Does the state prove all elements of `vec` are <= `val`? True if there is an
+ * element axiom vec[*] <= R (or < R) with path |- R <= val. Sufficient condition
+ * used to preserve a sorted axiom across vec_push(vec, val). */
+static int state_proves_all_le(State *st, const char *vec, Sym *val) {
+    if (val->nonlinear) return 0;
+    for (int i = 0; i < st->ax.n; i++) {
+        if (st->ax.a[i].is_sorted) continue;
+        if (strcmp(st->ax.a[i].vec, vec) != 0) continue;
+        if (st->ax.a[i].cmp == EC_LE || st->ax.a[i].cmp == EC_LT) {
+            /* need path |- R <= val, i.e. path ∧ (val < R) UNSAT */
+            ConsList sys; cl_init(&sys);
+            for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            Lin d = lin_sub(&val->lin, &st->ax.a[i].rhs);   /* val - R < 0 */
+            cl_push(&sys, mk_cons(d, C_LT, rat_zero()));
+            int sat = fm_sat(&sys);   /* frees sys */
+            if (!sat) return 1;
+        }
+    }
+    return 0;
+}
+
 static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
     if (!e) return;
     if (e->kind != NODE_CALL || e->callee->kind != NODE_IDENT) return;
@@ -1052,11 +1090,16 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
             AxiomList kept; ax_init(&kept);
             for (int i = 0; i < st->ax.n; i++) {
                 if (strcmp(st->ax.a[i].vec, vname) == 0) {
-                    if (axiom_holds_for_value(&st->ax.a[i], &val, st))
-                        ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+                    int survives;
+                    if (st->ax.a[i].is_sorted)
+                        survives = state_proves_all_le(st, vname, &val);   /* sorted: need all old <= val */
+                    else
+                        survives = axiom_holds_for_value(&st->ax.a[i], &val, st);
+                    if (survives)
+                        ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
                     /* else: dropped (sound — we no longer know it holds) */
                 } else {
-                    ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+                    ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
                 }
             }
             lin_free(&val.lin);
@@ -1075,6 +1118,8 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
         char rv[64]; snprintf(rv, sizeof rv, "__r%d", st->reads.n);
         reads_push(&st->reads, e, rv);
         for (int i = 0; i < st->ax.n; i++) {
+            /* sorted is relational — no scalar fact about a single read */
+            if (st->ax.a[i].is_sorted) continue;
             if (strcmp(st->ax.a[i].vec, vname) == 0) {
                 cl_push(&st->read_cons, axiom_instantiate(&st->ax.a[i], rv));
             }
@@ -1126,14 +1171,16 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
         for (int i = 0; i < st->ax.n; i++) {
             if (strcmp(st->ax.a[i].vec, vname) == 0) {
                 int survives = 0;
-                if (e->args.len >= 3) {
+                /* sorted: a mid-vector write can break order; drop (sound).
+                 * Element axioms: keep iff the new value still satisfies P. */
+                if (!st->ax.a[i].is_sorted && e->args.len >= 3) {
                     Sym val = se_from_ast(e->args.data[2], &st->env, &st->vlen, &st->reads);
                     survives = axiom_holds_for_value(&st->ax.a[i], &val, st);
                     lin_free(&val.lin);
                 }
-                if (survives) ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+                if (survives) ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
             } else {
-                ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+                ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
             }
         }
         ax_free(&st->ax);
@@ -1434,14 +1481,25 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
 static int has_elem_ref(Node *e) {
     if (!e) return 0;
     if (e->kind == NODE_ELEM_REF) return 1;
+    if (is_sorted_call(e)) return 1;   /* relational axiom, not a scalar inv */
     if (e->kind == NODE_BINARY) return has_elem_ref(e->left) || has_elem_ref(e->right);
     if (e->kind == NODE_UNARY) return has_elem_ref(e->operand);
     return 0;
 }
 
-/* Recognize `v[*] <cmp> <linear>` (or mirrored) and add it as an axiom. */
-static void extract_elem_axiom(Node *e, AxiomList *ax) {
-    if (!e || e->kind != NODE_BINARY) return;
+/* Recognize `v[*] <cmp> <linear>` (or mirrored) and add it as an axiom.
+ * Also recognizes the relational predicate `sorted(v)`. */
+static void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax) {
+    if (!e) return;
+    /* sorted(v) — relational axiom */
+    if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
+        strcmp(e->callee->name, "sorted") == 0 && e->args.len == 1 &&
+        e->args.data[0]->kind == NODE_IDENT) {
+        Lin dummy; lin_init(&dummy);
+        ax_push(ax, e->args.data[0]->name, EC_LE, dummy, 1);
+        return;
+    }
+    if (e->kind != NODE_BINARY) return;
     BinOp op = e->bin_op;
     if (op != OP_LT && op != OP_LE && op != OP_GT && op != OP_GE) return;
     Node *l = e->left, *r = e->right;
@@ -1449,7 +1507,7 @@ static void extract_elem_axiom(Node *e, AxiomList *ax) {
     if (l->kind == NODE_ELEM_REF) { eref = l; other = r; elem_on_left = 1; }
     else if (r->kind == NODE_ELEM_REF) { eref = r; other = l; elem_on_left = 0; }
     if (!eref || eref->elem_obj->kind != NODE_IDENT) return;
-    Sym s = se_from_ast(other, NULL, NULL, NULL);
+    Sym s = se_from_ast(other, env, NULL, NULL);
     if (s.nonlinear) { lin_free(&s.lin); return; }
     ElemCmp cmp;
     if (elem_on_left) {
@@ -1459,11 +1517,12 @@ static void extract_elem_axiom(Node *e, AxiomList *ax) {
         switch (op) { case OP_LT: cmp = EC_GT; break; case OP_LE: cmp = EC_GE; break;
                       case OP_GT: cmp = EC_LT; break; default: cmp = EC_LE; break; }
     }
-    ax_push(ax, eref->elem_obj->name, cmp, s.lin);
+    ax_push(ax, eref->elem_obj->name, cmp, s.lin, 0);
 }
 
 /* Instantiate an axiom at a concrete read: produce the constraint
- * `read_var <cmp> rhs` (the element value satisfies the predicate). */
+ * `read_var <cmp> rhs` (the element value satisfies the predicate).
+ * Caller must not pass is_sorted axioms (they yield no scalar fact). */
 static Constraint axiom_instantiate(ElemAxiom *a, const char *read_var) {
     Lin lhs = lin_var(read_var);
     COp op;
@@ -1482,8 +1541,10 @@ static Constraint axiom_instantiate(ElemAxiom *a, const char *read_var) {
 }
 
 /* Check that a pushed value `val` satisfies the axiom (val <cmp> rhs) under the
- * current path. Returns 1 if proven (so the axiom survives the push). */
+ * current path. Returns 1 if proven (so the axiom survives the push).
+ * is_sorted axioms are not scalar — caller must use state_proves_all_le. */
 static int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st) {
+    if (a->is_sorted) return 0;
     if (val->nonlinear) return 0;
     /* obligation: path => val <cmp> rhs; negate -> path ∧ ¬(val <cmp> rhs) UNSAT */
     ConsList sys; cl_init(&sys);
@@ -1544,7 +1605,7 @@ static int verify_fn(Node *prog, Node *fn) {
     }
     /* M3: element axioms from requires (v[*] >= c, ...) */
     for (int r = 0; r < spec->spec_requires.len; r++)
-        extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init.ax);
+        extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.ax);
     /* requires also seed the initial path, so loop-invariant init checks and
      * branch conditions can rely on them (element axioms are vacuous here) */
     for (int r = 0; r < spec->spec_requires.len; r++) {

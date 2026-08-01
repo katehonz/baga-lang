@@ -508,6 +508,15 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             }
         }
 
+        /* sorted(v) — relational annotation predicate (verifier-only) */
+        if (strcmp(name, "sorted") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+            if (!vt || vt->kind != TYPE_VEC)
+                check_error(ctx, n->pos, "'sorted' очаква вектор");
+            return type_new(TYPE_BOOL);
+        }
+
         check_error(ctx, n->pos, "непозната функция '%s'", name);
         return type_new(TYPE_ERROR);
     }

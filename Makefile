@@ -204,6 +204,16 @@ test: $(BIN)
 	grep -q "граница.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: elem_slice_bad — out-of-bounds достъп е оброчен (M3 bounds)" \
 		|| { echo "FAIL: elem_slice_bad — очаквах граница ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@for f in sorted_param sorted_push; do \
+		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
+		grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+			&& echo "OK: $$f — sorted + element axiom (relational M3+)" \
+			|| { echo "FAIL: $$f — очаквах ensures ДОКАЗАНО"; cat /tmp/baga_verify_out.txt; exit 1; }; \
+	done
+	@./$(BIN) --verify examples/verify/sorted_not_le.baga > /tmp/baga_verify_out.txt; true; \
+	grep -qE "ensures #1.*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt && ! grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: sorted_not_le — sorted ≠ v[*]<=0 (soundness)" \
+		|| { echo "FAIL: sorted_not_le — sorted не трябва да доказва output<=0"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@for f in abs_val max2 clamp; do \
 		./$(BIN) --test-specs examples/verify/$$f.baga > /dev/null 2>&1 \
 			&& echo "OK: $$f — оракулът (--test-specs) съгласен с ДОКАЗАНО" \

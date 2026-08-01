@@ -818,6 +818,18 @@ static void emit_requires_predicate(Codegen *cg, Node *spec) {
 
 /* ---- function emission ---- */
 
+/* v[*] element invariants and sorted(v) are verifier-only annotations — they
+ * are not emitted as runtime contract checks. */
+static int is_verifier_only_annotation(Node *e) {
+    if (!e) return 0;
+    if (e->kind == NODE_ELEM_REF) return 1;
+    if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
+        strcmp(e->callee->name, "sorted") == 0) return 1;
+    if (e->kind == NODE_BINARY) return is_verifier_only_annotation(e->left) || is_verifier_only_annotation(e->right);
+    if (e->kind == NODE_UNARY) return is_verifier_only_annotation(e->operand);
+    return 0;
+}
+
 static void emit_fn(Codegen *cg, Node *fn) {
     FILE *f = cg->out;
 
@@ -918,6 +930,7 @@ static void emit_fn(Codegen *cg, Node *fn) {
     /* провери предусловията преди повикването */
     for (int j = 0; j < ensures_spec->spec_requires.len; j++) {
         Node *rq = ensures_spec->spec_requires.data[j];
+        if (is_verifier_only_annotation(rq->ensure_expr)) continue;   /* v[*] / sorted(v) */
         emit_indent(cg);
         fprintf(f, "if (!(");
         emit_expr(cg, rq->ensure_expr);
@@ -947,6 +960,7 @@ static void emit_fn(Codegen *cg, Node *fn) {
         /* провери всяка ensures гаранция */
         for (int j = 0; j < ensures_spec->spec_ensures.len; j++) {
             Node *en = ensures_spec->spec_ensures.data[j];
+            if (is_verifier_only_annotation(en->ensure_expr)) continue;   /* v[*] / sorted(v) */
             emit_indent(cg);
             fprintf(f, "if (!(");
             emit_expr(cg, en->ensure_expr);

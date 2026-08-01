@@ -2315,6 +2315,8 @@ static void emit_spec_fail_llvm(const char *spec_name, int is_requires,
 static int expr_has_elem_ref_llvm(Node *e) {
     if (!e) return 0;
     if (e->kind == NODE_ELEM_REF) return 1;
+    if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
+        strcmp(e->callee->name, "sorted") == 0) return 1;
     if (e->kind == NODE_BINARY) return expr_has_elem_ref_llvm(e->left) || expr_has_elem_ref_llvm(e->right);
     if (e->kind == NODE_UNARY) return expr_has_elem_ref_llvm(e->operand);
     return 0;
