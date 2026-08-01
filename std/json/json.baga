@@ -1,0 +1,440 @@
+// json.baga — JSON parser + serializer. Pure Baga, no effects.
+//
+// Representation: parallel Vec pools (the self/compiler.baga pattern).
+// A node is an i64 index; the pools below stay aligned (one push per pool
+// per node). Tags: -1 error, 0 null, 1 false, 2 true, 3 number, 4 string,
+// 5 array, 6 object.
+//   nums[n]          — f64 value for numbers (0.0 otherwise)
+//   strs[n]          — raw text for numbers, decoded value for strings
+//   kfrom[n]/klen[n] — slice of kids[] for arrays (element nodes) and
+//                      objects (key node, value node, ... — keys are strings)
+// Parser invariant: after every jp_value call, the parsed subtree's root is
+// the LAST node in the pools (children are created before their parent).
+
+struct JsonDoc {
+    root: i64,
+    tags: Vec<i64>,
+    nums: Vec<f64>,
+    strs: Vec<str>,
+    kids: Vec<i64>,
+    kfrom: Vec<i64>,
+    klen: Vec<i64>
+}
+
+struct JsonParser {
+    src: str,
+    pos: i64,
+    tags: Vec<i64>,
+    nums: Vec<f64>,
+    strs: Vec<str>,
+    kids: Vec<i64>,
+    kfrom: Vec<i64>,
+    klen: Vec<i64>
+}
+
+// ---------- tokenizer / parser ----------
+
+// Return a copy of the parser positioned at `newpos`. Used instead of
+// field assignment (p.pos = x), which the LLVM backend does not support.
+fn jp_at(p: JsonParser, newpos: i64) -> JsonParser {
+    return JsonParser {
+        src: p.src, pos: newpos,
+        tags: p.tags, nums: p.nums, strs: p.strs,
+        kids: p.kids, kfrom: p.kfrom, klen: p.klen
+    }
+}
+
+// Skip JSON whitespace.
+fn jp_ws(p: JsonParser) -> JsonParser {
+    let mut running = true
+    while running {
+        if p.pos >= len(p.src) {
+            running = false
+        } else {
+            let c = char_at(p.src, p.pos)
+            if c == 32 || c == 9 || c == 10 || c == 13 {
+                p = jp_at(p, p.pos + 1)
+            } else {
+                running = false
+            }
+        }
+    }
+    return p
+}
+
+// Push a leaf node (no children).
+fn jp_leaf(p: JsonParser, tag: i64, num: f64, txt: str) -> JsonParser {
+    vec_push(p.tags, tag)
+    vec_push(p.nums, num)
+    vec_push(p.strs, txt)
+    vec_push(p.kfrom, 0)
+    vec_push(p.klen, 0)
+    return p
+}
+
+// Push a container node whose children were already parsed into `elems`.
+fn jp_container(p: JsonParser, tag: i64, elems: Vec<i64>) -> JsonParser {
+    let from = vec_len(p.kids)
+    for i in 0..vec_len(elems) {
+        vec_push(p.kids, vec_get(elems, i))
+    }
+    vec_push(p.tags, tag)
+    vec_push(p.nums, 0.0)
+    vec_push(p.strs, "")
+    vec_push(p.kfrom, from)
+    vec_push(p.klen, vec_len(elems))
+    return p
+}
+
+// Literal: true / false / null.
+fn jp_lit(p: JsonParser, word: str, tag: i64) -> JsonParser {
+    if substr(p.src, p.pos, p.pos + len(word)) == word {
+        p = jp_at(p, p.pos + len(word))
+        return jp_leaf(p, tag, 0.0, "")
+    }
+    return jp_leaf(p, -1, 0.0, "")
+}
+
+fn hex4(s: str) -> i64 {
+    let mut v: i64 = 0
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        let mut d: i64 = 0
+        if c >= 48 && c <= 57 { d = c - 48 }
+        if c >= 97 && c <= 102 { d = c - 87 }
+        if c >= 65 && c <= 70 { d = c - 55 }
+        v = v * 16 + d
+    }
+    return v
+}
+
+// Encode a BMP code point as UTF-8 (1-3 bytes).
+fn utf8_encode(cp: i64) -> str {
+    if cp < 128 { return chr(cp) }
+    if cp < 2048 {
+        return concat(chr(192 + cp / 64), chr(128 + cp % 64))
+    }
+    return concat(chr(224 + cp / 4096), concat(chr(128 + (cp / 64) % 64), chr(128 + cp % 64)))
+}
+
+// String node. p.pos is at the opening quote. Unterminated strings still
+// produce a string node with what was scanned (lenient).
+fn jp_string_node(p: JsonParser) -> JsonParser {
+    p = jp_at(p, p.pos + 1)
+    let mut out = ""
+    let mut running = true
+    while running {
+        if p.pos >= len(p.src) {
+            running = false
+        } else {
+            let c = char_at(p.src, p.pos)
+            if c == 34 {
+                p = jp_at(p, p.pos + 1)
+                running = false
+            } else {
+                if c == 92 {
+                    let e = char_at(p.src, p.pos + 1)
+                    if e == 110 { out = concat(out, chr(10)) }
+                    if e == 116 { out = concat(out, chr(9)) }
+                    if e == 114 { out = concat(out, chr(13)) }
+                    if e == 34 { out = concat(out, chr(34)) }
+                    if e == 92 { out = concat(out, chr(92)) }
+                    if e == 47 { out = concat(out, chr(47)) }
+                    if e == 98 { out = concat(out, chr(8)) }
+                    if e == 102 { out = concat(out, chr(12)) }
+                    if e == 117 {
+                        let cp = hex4(substr(p.src, p.pos + 2, p.pos + 6))
+                        out = concat(out, utf8_encode(cp))
+                        p = jp_at(p, p.pos + 4)
+                    }
+                    p = jp_at(p, p.pos + 2)
+                } else {
+                    out = concat(out, substr(p.src, p.pos, p.pos + 1))
+                    p = jp_at(p, p.pos + 1)
+                }
+            }
+        }
+    }
+    return jp_leaf(p, 4, 0.0, out)
+}
+
+// Parse an f64: optional '-', integer part, optional fraction, optional
+// exponent (e/E with optional sign).
+fn json_atof(s: str) -> f64 {
+    let mut i: i64 = 0
+    let mut sign = 1.0
+    if len(s) > 0 && char_at(s, 0) == 45 {
+        sign = 0.0 - 1.0
+        i = 1
+    }
+    let mut v = 0.0
+    let mut scanning = true
+    while i < len(s) && scanning {
+        let c = char_at(s, i)
+        if c >= 48 && c <= 57 {
+            v = v * 10.0 + (c - 48) * 1.0
+            i = i + 1
+        } else {
+            scanning = false
+        }
+    }
+    if i < len(s) && char_at(s, i) == 46 {
+        i = i + 1
+        let mut div = 10.0
+        scanning = true
+        while i < len(s) && scanning {
+            let c = char_at(s, i)
+            if c >= 48 && c <= 57 {
+                v = v + (c - 48) * 1.0 / div
+                div = div * 10.0
+                i = i + 1
+            } else {
+                scanning = false
+            }
+        }
+    }
+    if i < len(s) && (char_at(s, i) == 101 || char_at(s, i) == 69) {
+        i = i + 1
+        let mut esign: i64 = 1
+        if i < len(s) && char_at(s, i) == 45 {
+            esign = -1
+            i = i + 1
+        }
+        if i < len(s) && char_at(s, i) == 43 { i = i + 1 }
+        let mut exp: i64 = 0
+        scanning = true
+        while i < len(s) && scanning {
+            let c = char_at(s, i)
+            if c >= 48 && c <= 57 {
+                exp = exp * 10 + (c - 48)
+                i = i + 1
+            } else {
+                scanning = false
+            }
+        }
+        let mut scale = 1.0
+        for k in 0..exp {
+            scale = scale * 10.0
+        }
+        if esign < 0 {
+            v = v / scale
+        } else {
+            v = v * scale
+        }
+    }
+    return sign * v
+}
+
+// Number node: keeps the raw text (lossless serialization) plus the value.
+fn jp_number(p: JsonParser) -> JsonParser {
+    let start = p.pos
+    let mut running = true
+    while running {
+        if p.pos >= len(p.src) {
+            running = false
+        } else {
+            let c = char_at(p.src, p.pos)
+            if (c >= 48 && c <= 57) || c == 45 || c == 43 || c == 46 || c == 101 || c == 69 {
+                p = jp_at(p, p.pos + 1)
+            } else {
+                running = false
+            }
+        }
+    }
+    let raw = substr(p.src, start, p.pos)
+    if len(raw) == 0 { return jp_leaf(p, -1, 0.0, "") }
+    return jp_leaf(p, 3, json_atof(raw), raw)
+}
+
+fn jp_value(p: JsonParser) -> JsonParser {
+    p = jp_ws(p)
+    if p.pos >= len(p.src) { return jp_leaf(p, -1, 0.0, "") }
+    let c = char_at(p.src, p.pos)
+    if c == 123 { return jp_object(p) }        // {
+    if c == 91 { return jp_array(p) }          // [
+    if c == 34 { return jp_string_node(p) }    // "
+    if c == 116 { return jp_lit(p, "true", 2) }
+    if c == 102 { return jp_lit(p, "false", 1) }
+    if c == 110 { return jp_lit(p, "null", 0) }
+    return jp_number(p)
+}
+
+fn jp_array(p: JsonParser) -> JsonParser {
+    p = jp_at(p, p.pos + 1)   // consume [
+    let elems = vec_new()
+    p = jp_ws(p)
+    if p.pos < len(p.src) && char_at(p.src, p.pos) == 93 {   // ]
+        p = jp_at(p, p.pos + 1)
+        return jp_container(p, 5, elems)
+    }
+    let mut running = true
+    while running {
+        p = jp_value(p)
+        vec_push(elems, vec_len(p.tags) - 1)
+        p = jp_ws(p)
+        if p.pos < len(p.src) && char_at(p.src, p.pos) == 44 {   // ,
+            p = jp_at(p, p.pos + 1)
+        } else {
+            running = false
+        }
+    }
+    p = jp_ws(p)
+    if p.pos < len(p.src) && char_at(p.src, p.pos) == 93 { p = jp_at(p, p.pos + 1) }
+    return jp_container(p, 5, elems)
+}
+
+fn jp_object(p: JsonParser) -> JsonParser {
+    p = jp_at(p, p.pos + 1)   // consume {
+    let elems = vec_new()
+    p = jp_ws(p)
+    if p.pos < len(p.src) && char_at(p.src, p.pos) == 125 {   // }
+        p = jp_at(p, p.pos + 1)
+        return jp_container(p, 6, elems)
+    }
+    let mut running = true
+    while running {
+        p = jp_ws(p)
+        if p.pos < len(p.src) && char_at(p.src, p.pos) == 34 {
+            p = jp_string_node(p)                 // key → last node
+            let key_node = vec_len(p.tags) - 1
+            p = jp_ws(p)
+            if p.pos < len(p.src) && char_at(p.src, p.pos) == 58 {   // :
+                p = jp_at(p, p.pos + 1)
+            }
+            p = jp_value(p)                       // value → last node
+            vec_push(elems, key_node)
+            vec_push(elems, vec_len(p.tags) - 1)
+        }
+        p = jp_ws(p)
+        if p.pos < len(p.src) && char_at(p.src, p.pos) == 44 {
+            p = jp_at(p, p.pos + 1)
+        } else {
+            running = false
+        }
+    }
+    p = jp_ws(p)
+    if p.pos < len(p.src) && char_at(p.src, p.pos) == 125 { p = jp_at(p, p.pos + 1) }
+    return jp_container(p, 6, elems)
+}
+
+// Parse a document. On error, the root's tag is -1.
+fn json_parse(s: str) -> JsonDoc {
+    let p = JsonParser {
+        src: s, pos: 0,
+        tags: vec_new(), nums: vec_new(), strs: vec_new(),
+        kids: vec_new(), kfrom: vec_new(), klen: vec_new()
+    }
+    p = jp_ws(p)
+    p = jp_value(p)
+    let d = JsonDoc {
+        root: vec_len(p.tags) - 1,
+        tags: p.tags, nums: p.nums, strs: p.strs,
+        kids: p.kids, kfrom: p.kfrom, klen: p.klen
+    }
+    return d
+}
+
+// ---------- accessors ----------
+
+fn json_root(d: JsonDoc) -> i64 { return d.root }
+
+fn json_tag(d: JsonDoc, n: i64) -> i64 { return vec_get(d.tags, n) }
+
+fn json_num(d: JsonDoc, n: i64) -> f64 { return vec_get(d.nums, n) }
+
+fn json_str(d: JsonDoc, n: i64) -> str { return vec_get(d.strs, n) }
+
+// Array element count, or object pair count. 0 for leaves.
+fn json_count(d: JsonDoc, n: i64) -> i64 {
+    let k = vec_get(d.klen, n)
+    if vec_get(d.tags, n) == 6 { return k / 2 }
+    return k
+}
+
+// Array element node at index i.
+fn json_at(d: JsonDoc, n: i64, i: i64) -> i64 {
+    return vec_get(d.kids, vec_get(d.kfrom, n) + i)
+}
+
+// Object key at pair index i.
+fn json_key(d: JsonDoc, n: i64, i: i64) -> str {
+    let kn = vec_get(d.kids, vec_get(d.kfrom, n) + i * 2)
+    return vec_get(d.strs, kn)
+}
+
+// Object value node at pair index i.
+fn json_val(d: JsonDoc, n: i64, i: i64) -> i64 {
+    return vec_get(d.kids, vec_get(d.kfrom, n) + i * 2 + 1)
+}
+
+// Object value node for `key`, or -1. Linear scan; first match wins.
+fn json_get(d: JsonDoc, n: i64, key: str) -> i64 {
+    if n < 0 { return -1 }
+    if vec_get(d.tags, n) != 6 { return -1 }
+    let cnt = json_count(d, n)
+    for i in 0..cnt {
+        if json_key(d, n, i) == key { return json_val(d, n, i) }
+    }
+    return -1
+}
+
+// ---------- serializer ----------
+
+fn json_escape(s: str) -> str {
+    let mut out = "\""
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        if c == 34 {
+            out = concat(out, "\\\"")
+        } else {
+            if c == 92 {
+                out = concat(out, "\\\\")
+            } else {
+                if c == 10 {
+                    out = concat(out, "\\n")
+                } else {
+                    if c == 9 {
+                        out = concat(out, "\\t")
+                    } else {
+                        if c == 13 {
+                            out = concat(out, "\\r")
+                        } else {
+                            out = concat(out, substr(s, i, i + 1))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return concat(out, "\"")
+}
+
+fn json_serialize(d: JsonDoc, n: i64) -> str {
+    let tag = vec_get(d.tags, n)
+    if tag == 0 { return "null" }
+    if tag == 1 { return "false" }
+    if tag == 2 { return "true" }
+    if tag == 3 { return vec_get(d.strs, n) }       // raw number text
+    if tag == 4 { return json_escape(vec_get(d.strs, n)) }
+    if tag == 5 {
+        let mut out = "["
+        let cnt = vec_get(d.klen, n)
+        for i in 0..cnt {
+            if i > 0 { out = concat(out, ",") }
+            out = concat(out, json_serialize(d, json_at(d, n, i)))
+        }
+        return concat(out, "]")
+    }
+    if tag == 6 {
+        let mut out = "{"
+        let cnt = json_count(d, n)
+        for i in 0..cnt {
+            if i > 0 { out = concat(out, ",") }
+            out = concat(out, json_escape(json_key(d, n, i)))
+            out = concat(out, ":")
+            out = concat(out, json_serialize(d, json_val(d, n, i)))
+        }
+        return concat(out, "}")
+    }
+    return "null"   // error node serializes as null
+}
