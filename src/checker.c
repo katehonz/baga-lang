@@ -350,6 +350,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             }
             Type *ret = ft_user->ret ? ft_user->ret : type_new(TYPE_VOID);
             Type *result = type_new(ret->kind);
+            /* Vec<T>: keep the element type so e.g. a fn returning Vec<str>
+             * can feed a Vec<str> parameter (the fresh Type has elem NULL,
+             * which a later vec_get would otherwise fix to i64) */
+            result->elem = ret->elem;
             type_merge_effects(result, ret);
             if (ctx->cur_effects)
                 type_merge_effects(ctx->cur_effects, ret);
