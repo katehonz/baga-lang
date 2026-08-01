@@ -1,0 +1,26 @@
+spec clamp {
+    input:
+        x: i64
+        lo: i64
+        hi: i64
+    output: i64
+    requires:
+        lo <= hi
+    ensures:
+        output >= lo,
+        output <= hi
+}
+
+fn clamp(x: i64, lo: i64, hi: i64) -> i64 {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+fn main() {
+    print(clamp(15, 0, 10))
+}

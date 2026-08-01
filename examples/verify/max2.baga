@@ -1,0 +1,20 @@
+spec max2 {
+    input:
+        a: i64
+        b: i64
+    output: i64
+    ensures:
+        output >= a,
+        output >= b
+}
+
+fn max2(a: i64, b: i64) -> i64 {
+    if a >= b {
+        return a
+    }
+    return b
+}
+
+fn main() {
+    print(max2(3, 7))
+}

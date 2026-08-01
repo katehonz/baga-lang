@@ -1,0 +1,15 @@
+spec bad_abs {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+fn bad_abs(x: i64) -> i64 {
+    return x
+}
+
+fn main() {
+    print(bad_abs(0 - 5))
+}

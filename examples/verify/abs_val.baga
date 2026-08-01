@@ -1,0 +1,18 @@
+spec abs_val {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+fn abs_val(x: i64) -> i64 {
+    if x < 0 {
+        return 0 - x
+    }
+    return x
+}
+
+fn main() {
+    print(abs_val(0 - 5))
+}

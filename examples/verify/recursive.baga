@@ -1,0 +1,22 @@
+spec fact {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0 && n <= 20
+    ensures:
+        output > 0
+}
+
+// Recursion is outside the M0 fragment: the verifier skips it honestly rather
+// than pretending to prove the ensures.
+fn fact(n: i64) -> i64 {
+    if n <= 1 {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+
+fn main() {
+    print(fact(5))
+}

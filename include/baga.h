@@ -452,6 +452,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out);
 /* Proof extraction */
 void print_proofs(Node *program);
 
+/* Static spec verification (--verify): proves/refutes requires/ensures for
+ * pure, non-recursive, loop-free, linear i64 functions. Returns 0 when no
+ * contract is refuted, 1 when at least one is. Sound: never reports PROVEN
+ * unless the obligation truly holds; otherwise REFUTED (with a counterexample)
+ * or UNKNOWN. */
+int verify_program(Node *program);
+
 /* LLVM codegen (optional, requires -DBAGA_LLVM) */
 #ifdef BAGA_LLVM
 void codegen_llvm(Node *program, const char *output_path);

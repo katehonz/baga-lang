@@ -37,6 +37,7 @@ static void usage(void) {
         "Опции:\n"
         "  --emit-c    Генерирай C код на stdout, не компилирай\n"
         "  --test-specs  Property-based тестване на ensures/requires договорите\n"
+        "  --verify    Статична верификация на requires/ensures (linear i64, без цикли)\n"
         "  --ast       Изпечатвай AST (debug)\n"
         "  --tokens    Изпечатвай токени (debug)\n"
         "  --help      Тази помощ\n"
@@ -144,6 +145,7 @@ int main(int argc, char **argv) {
     int emit_llvm = 0;
     int emit_cranelift = 0;
     int test_specs = 0;
+    int verify = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--emit-c") == 0) { emit_c = 1; }
@@ -154,6 +156,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--emit-llvm") == 0) { emit_llvm = 1; }
         else if (strcmp(argv[i], "--emit-cranelift") == 0) { emit_cranelift = 1; }
         else if (strcmp(argv[i], "--test-specs") == 0) { test_specs = 1; }
+        else if (strcmp(argv[i], "--verify") == 0) { verify = 1; }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
             return 0;
@@ -264,6 +267,10 @@ int main(int argc, char **argv) {
         for (int i = 0; i < checker.n_errors; i++)
             fprintf(stderr, "%s: %s\n", input_path, checker.errors[i]);
         return 1;
+    }
+
+    if (verify) {
+        return verify_program(program);
     }
 
 #ifdef BAGA_LLVM

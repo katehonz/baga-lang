@@ -1,0 +1,913 @@
+/* verify.c — static spec verification (depth pillar I, milestone M0).
+ *
+ * Proves/refutes `requires`/`ensures` contracts for pure, non-recursive,
+ * loop-free, LINEAR i64 functions. Sound by construction: the only path to
+ * PROVEN is "the negated obligation is unsatisfiable even over the rationals",
+ * which implies unsatisfiable over the integers. Anything we cannot decide is
+ * reported UNKNOWN, never PROVEN. A REFUTED result always carries a concrete
+ * integral counterexample re-checked by direct interpretation.
+ *
+ * Pipeline: symexec the body (state = env of symbolic linear forms + a path
+ * condition) -> at each return, build the obligation  requires ∧ path ⇒
+ * ensures[output := return]  -> negate -> linear constraints -> Fourier–Motzkin.
+ *
+ * Zero dependencies; exact rational arithmetic with overflow bail-out.
+ */
+
+#include "baga.h"
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+/* ============================ rationals ============================ */
+
+typedef struct { int64_t num, den; int overflow; } Rat;
+
+static int64_t v_gcd(int64_t a, int64_t b) {
+    if (a < 0) a = -a;
+    if (b < 0) b = -b;
+    while (b) { int64_t t = a % b; a = b; b = t; }
+    return a ? a : 1;
+}
+
+static Rat rat_bad(void) { Rat r; r.num = 0; r.den = 1; r.overflow = 1; return r; }
+
+static Rat rat_mk(int64_t n, int64_t d) {
+    if (d == 0) return rat_bad();
+    if (d < 0) { n = -n; d = -d; }
+    int64_t g = v_gcd(n < 0 ? -n : n, d);
+    Rat r; r.num = n / g; r.den = d / g; r.overflow = 0;
+    return r;
+}
+static Rat rat_int(int64_t n) { Rat r; r.num = n; r.den = 1; r.overflow = 0; return r; }
+static Rat rat_zero(void) { return rat_int(0); }
+
+static Rat rat_neg(Rat a) { if (a.overflow) return rat_bad(); Rat r = a; r.num = -r.num; return r; }
+
+static Rat rat_add(Rat a, Rat b) {
+    if (a.overflow || b.overflow || a.den == 0 || b.den == 0) return rat_bad();
+    int64_t g = v_gcd(a.den, b.den);
+    int64_t l1 = a.den / g, l2 = b.den / g;
+    int64_t an = a.num < 0 ? -a.num : a.num;
+    int64_t bn = b.num < 0 ? -b.num : b.num;
+    if (l2 != 0 && an > INT64_MAX / l2) return rat_bad();
+    if (l1 != 0 && bn > INT64_MAX / l1) return rat_bad();
+    if (l2 != 0 && a.den > INT64_MAX / l2) return rat_bad();
+    return rat_mk(a.num * l2 + b.num * l1, a.den * l2);
+}
+static Rat rat_sub(Rat a, Rat b) { return rat_add(a, rat_neg(b)); }
+static Rat rat_mul(Rat a, Rat b) {
+    if (a.overflow || b.overflow || a.den == 0 || b.den == 0) return rat_bad();
+    int64_t an = a.num < 0 ? -a.num : a.num;
+    int64_t bn = b.num < 0 ? -b.num : b.num;
+    if (bn != 0 && an > INT64_MAX / bn) return rat_bad();
+    if (b.den != 0 && a.den > INT64_MAX / b.den) return rat_bad();
+    return rat_mk(a.num * b.num, a.den * b.den);
+}
+/* -1 if a<b, 0 if equal, 1 if a>b */
+static int rat_cmp(Rat a, Rat b) {
+    if (a.overflow || b.overflow || a.den == 0 || b.den == 0) return 0;
+    __int128 l = (__int128)a.num * b.den;
+    __int128 r = (__int128)b.num * a.den;
+    if (l < r) return -1;
+    if (l > r) return 1;
+    return 0;
+}
+static int rat_is_neg(Rat a) { return a.num < 0; }
+
+/* ============================ linear forms ============================ */
+
+typedef struct { char *var; Rat coeff; } Term;
+typedef struct { Rat c; Term *terms; int n, cap; int overflow; } Lin;
+
+static void lin_init(Lin *l) { l->c = rat_zero(); l->terms = NULL; l->n = 0; l->cap = 0; l->overflow = 0; }
+static void lin_push_raw(Lin *l, const char *var, Rat coeff) {
+    if (coeff.overflow) { l->overflow = 1; return; }
+    if (coeff.num == 0) return;
+    for (int i = 0; i < l->n; i++) {
+        if (strcmp(l->terms[i].var, var) == 0) {
+            l->terms[i].coeff = rat_add(l->terms[i].coeff, coeff);
+            if (l->terms[i].coeff.overflow) l->overflow = 1;
+            if (l->terms[i].coeff.num == 0) {
+                free(l->terms[i].var);
+                l->terms[i] = l->terms[l->n - 1];
+                l->n--;
+            }
+            return;
+        }
+    }
+    if (l->n == l->cap) {
+        l->cap = l->cap ? l->cap * 2 : 4;
+        l->terms = realloc(l->terms, (size_t)l->cap * sizeof(Term));
+    }
+    l->terms[l->n].var = strdup(var);
+    l->terms[l->n].coeff = coeff;
+    l->n++;
+}
+static Lin lin_const(Rat c) { Lin l; lin_init(&l); l.c = c; if (c.overflow) l.overflow = 1; return l; }
+static Lin lin_var(const char *v) { Lin l; lin_init(&l); lin_push_raw(&l, v, rat_int(1)); return l; }
+static void lin_free(Lin *l) { for (int i = 0; i < l->n; i++) free(l->terms[i].var); free(l->terms); l->terms = NULL; l->n = l->cap = 0; }
+
+static Lin lin_add(Lin *a, Lin *b) {
+    Lin r; lin_init(&r);
+    if (a->overflow || b->overflow || a->c.overflow || b->c.overflow) { r.overflow = 1; return r; }
+    r.c = rat_add(a->c, b->c);
+    if (r.c.overflow) { r.overflow = 1; return r; }
+    for (int i = 0; i < a->n; i++) lin_push_raw(&r, a->terms[i].var, a->terms[i].coeff);
+    for (int i = 0; i < b->n; i++) lin_push_raw(&r, b->terms[i].var, b->terms[i].coeff);
+    return r;
+}
+static Lin lin_sub(Lin *a, Lin *b) {
+    Lin r; lin_init(&r);
+    if (a->overflow || b->overflow || a->c.overflow || b->c.overflow) { r.overflow = 1; return r; }
+    r.c = rat_sub(a->c, b->c);
+    if (r.c.overflow) { r.overflow = 1; return r; }
+    for (int i = 0; i < a->n; i++) lin_push_raw(&r, a->terms[i].var, a->terms[i].coeff);
+    for (int i = 0; i < b->n; i++) lin_push_raw(&r, b->terms[i].var, rat_neg(b->terms[i].coeff));
+    return r;
+}
+static Lin lin_scale(Lin *a, Rat k) {
+    Lin r; lin_init(&r);
+    if (a->overflow || k.overflow || a->c.overflow) { r.overflow = 1; return r; }
+    r.c = rat_mul(a->c, k);
+    if (r.c.overflow) { r.overflow = 1; return r; }
+    for (int i = 0; i < a->n; i++) lin_push_raw(&r, a->terms[i].var, rat_mul(a->terms[i].coeff, k));
+    return r;
+}
+static Lin lin_neg(Lin *a) { return lin_scale(a, rat_int(-1)); }
+static int lin_is_const(Lin *a) { return a->n == 0; }
+static Rat lin_coeff(Lin *l, const char *var) {
+    for (int i = 0; i < l->n; i++) if (strcmp(l->terms[i].var, var) == 0) return l->terms[i].coeff;
+    return rat_zero();
+}
+static Lin lin_clone(Lin *a) {
+    Lin r; lin_init(&r); r.c = a->c; r.overflow = a->overflow;
+    for (int i = 0; i < a->n; i++) lin_push_raw(&r, a->terms[i].var, a->terms[i].coeff);
+    return r;
+}
+
+/* ============================ symbolic env ============================ */
+
+typedef struct { char *name; Lin lin; int nonlinear; } Binding;
+typedef struct { Binding *b; int n, cap; } SEnv;
+
+static void env_init(SEnv *e) { e->b = NULL; e->n = 0; e->cap = 0; }
+static void env_free(SEnv *e) { for (int i = 0; i < e->n; i++) { free(e->b[i].name); lin_free(&e->b[i].lin); } free(e->b); e->b = NULL; e->n = e->cap = 0; }
+static Binding *env_find(SEnv *e, const char *name) {
+    for (int i = 0; i < e->n; i++) if (strcmp(e->b[i].name, name) == 0) return &e->b[i];
+    return NULL;
+}
+static void env_bind(SEnv *e, const char *name, Lin lin, int nonlinear) {
+    if (nonlinear || lin.overflow) { lin_free(&lin); lin_init(&lin); nonlinear = 1; }
+    Binding *b = env_find(e, name);
+    if (b) { lin_free(&b->lin); b->lin = lin; b->nonlinear = nonlinear; return; }
+    if (e->n == e->cap) { e->cap = e->cap ? e->cap * 2 : 8; e->b = realloc(e->b, (size_t)e->cap * sizeof(Binding)); }
+    e->b[e->n].name = strdup(name); e->b[e->n].lin = lin; e->b[e->n].nonlinear = nonlinear; e->n++;
+}
+static void env_clone_into(SEnv *dst, SEnv *src) {
+    env_init(dst);
+    for (int i = 0; i < src->n; i++) env_bind(dst, src->b[i].name, lin_clone(&src->b[i].lin), src->b[i].nonlinear);
+}
+
+/* SymExpr: a linear form, or nonlinear=true when it cannot be represented. */
+typedef struct { Lin lin; int nonlinear; } Sym;
+
+static Sym sym_nonlin(void) { Sym s; lin_init(&s.lin); s.nonlinear = 1; return s; }
+static Sym sym_lin(Lin l) { Sym s; s.lin = l; s.nonlinear = l.overflow; return s; }
+
+static Sym se_from_ast(Node *e, SEnv *env) {
+    if (!e) return sym_nonlin();
+    switch (e->kind) {
+    case NODE_INT_LIT: return sym_lin(lin_const(rat_int(e->int_val)));
+    case NODE_IDENT: {
+        Binding *b = env_find(env, e->name);
+        if (b) {
+            if (b->nonlinear) return sym_nonlin();
+            return sym_lin(lin_clone(&b->lin));
+        }
+        return sym_lin(lin_var(e->name));   /* unbound: a fresh symbolic input */
+    }
+    case NODE_UNARY:
+        if (e->un_op == UOP_NEG) { Sym v = se_from_ast(e->operand, env); if (v.nonlinear) return v; return sym_lin(lin_neg(&v.lin)); }
+        return sym_nonlin();
+    case NODE_BINARY: {
+        Sym l = se_from_ast(e->left, env);
+        Sym r = se_from_ast(e->right, env);
+        if (e->bin_op == OP_ADD) { if (l.nonlinear || r.nonlinear) return sym_nonlin(); return sym_lin(lin_add(&l.lin, &r.lin)); }
+        if (e->bin_op == OP_SUB) { if (l.nonlinear || r.nonlinear) return sym_nonlin(); return sym_lin(lin_sub(&l.lin, &r.lin)); }
+        if (e->bin_op == OP_MUL) {
+            int lc = lin_is_const(&l.lin), rc = lin_is_const(&r.lin);
+            if (!l.nonlinear && !r.nonlinear && lc && rc) return sym_lin(lin_const(rat_mul(l.lin.c, r.lin.c)));
+            if (!l.nonlinear && !r.nonlinear && lc) return sym_lin(lin_scale(&r.lin, l.lin.c));
+            if (!l.nonlinear && !r.nonlinear && rc) return sym_lin(lin_scale(&l.lin, r.lin.c));
+            return sym_nonlin();
+        }
+        if (e->bin_op == OP_DIV || e->bin_op == OP_MOD) {
+            if (!l.nonlinear && !r.nonlinear && lin_is_const(&l.lin) && lin_is_const(&r.lin) && r.lin.c.num != 0) {
+                if (e->bin_op == OP_DIV) {
+                    if (r.lin.c.den != 1 || r.lin.c.num == 0) return sym_nonlin();
+                    int64_t a = l.lin.c.num, b = r.lin.c.num;
+                    return sym_lin(lin_const(rat_int(a / b)));   /* C trunc semantics */
+                } else {
+                    if (r.lin.c.den != 1 || r.lin.c.num == 0) return sym_nonlin();
+                    return sym_lin(lin_const(rat_int(l.lin.c.num % r.lin.c.num)));
+                }
+            }
+            return sym_nonlin();
+        }
+        return sym_nonlin();
+    }
+    default: return sym_nonlin();
+    }
+}
+
+/* ============================ constraints + DNF ============================ */
+
+typedef enum { C_LT, C_LE } COp;
+typedef struct { Lin lhs; COp op; Rat rhs; } Constraint;
+
+typedef struct { Constraint *c; int n, cap; } ConsList;
+static void cl_init(ConsList *l) { l->c = NULL; l->n = 0; l->cap = 0; }
+static void cl_push(ConsList *l, Constraint c) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 8; l->c = realloc(l->c, (size_t)l->cap * sizeof(Constraint)); }
+    l->c[l->n++] = c;
+}
+static void cl_free(ConsList *l) { for (int i = 0; i < l->n; i++) lin_free(&l->c[i].lhs); free(l->c); l->c = NULL; l->n = l->cap = 0; }
+
+typedef struct { ConsList *br; int n, cap; } Formula;   /* DNF: OR of branches */
+static void f_init(Formula *f) { f->br = NULL; f->n = 0; f->cap = 0; }
+static void f_push_branch(Formula *f, ConsList cl) {
+    if (f->n == f->cap) { f->cap = f->cap ? f->cap * 2 : 4; f->br = realloc(f->br, (size_t)f->cap * sizeof(ConsList)); }
+    f->br[f->n++] = cl;
+}
+static void f_free(Formula *f) { for (int i = 0; i < f->n; i++) cl_free(&f->br[i]); free(f->br); f->br = NULL; f->n = f->cap = 0; }
+
+static Constraint mk_cons(Lin lhs, COp op, Rat rhs) { Constraint c; c.lhs = lhs; c.op = op; c.rhs = rhs; return c; }
+
+/* comparison (lhs cmp rhs), optionally negated, -> constraint  expr {<,<=} 0.
+ * Positive forms:  a<b -> a-b<0   a<=b -> a-b<=0   a>b -> b-a<0   a>=b -> b-a<=0.
+ * Negation applies De Morgan: NOT(expr op 0) == (-expr) (flipped op) 0. */
+static int atom_to_cons(Lin lhs, BinOp cmp, Lin rhs, int negated, Constraint *out) {
+    Lin d;
+    COp op;
+    switch (cmp) {
+    case OP_LT: d = lin_sub(&lhs, &rhs); op = C_LT; break;
+    case OP_LE: d = lin_sub(&lhs, &rhs); op = C_LE; break;
+    case OP_GT: d = lin_sub(&rhs, &lhs); op = C_LT; break;
+    case OP_GE: d = lin_sub(&rhs, &lhs); op = C_LE; break;
+    default: return 0;
+    }
+    if (d.overflow) { lin_free(&d); return 0; }
+    if (negated) {
+        Lin nd = lin_neg(&d);
+        lin_free(&d);
+        d = nd;
+        op = (op == C_LT) ? C_LE : C_LT;
+    }
+    *out = mk_cons(d, op, rat_zero());
+    return 1;
+}
+
+static int is_cmp(BinOp op) { return op == OP_LT || op == OP_LE || op == OP_GT || op == OP_GE; }
+
+/* Build the DNF of a boolean AST (optionally negated). Returns 0 if the AST is
+ * outside the convertible fragment (caller treats as UNKNOWN). */
+static int bool_to_dnf(Node *e, SEnv *env, int negated, Formula *out);
+
+static int cmp_to_formula(Node *e, SEnv *env, int negated, Formula *out) {
+    /* se_from_ast resolves identifiers through env, so `output` (and any
+     * let-bound local) is substituted by its symbolic value before the
+     * comparison is turned into a constraint. */
+    Sym l = se_from_ast(e->left, env);
+    Sym r = se_from_ast(e->right, env);
+    if (l.nonlinear || r.nonlinear) { if (!l.nonlinear) lin_free(&l.lin); if (!r.nonlinear) lin_free(&r.lin); return 0; }
+    Constraint c;
+    if (!atom_to_cons(l.lin, e->bin_op, r.lin, negated, &c)) { lin_free(&l.lin); lin_free(&r.lin); return 0; }
+    lin_free(&l.lin); lin_free(&r.lin);
+    ConsList cl; cl_init(&cl); cl_push(&cl, c);
+    f_init(out); f_push_branch(out, cl);
+    return 1;
+}
+
+static int bool_to_dnf(Node *e, SEnv *env, int negated, Formula *out) {
+    if (!e) return 0;
+    if (e->kind == NODE_BOOL_LIT) {
+        int v = e->bool_val;
+        if (negated) v = !v;
+        f_init(out);
+        if (v) { ConsList cl; cl_init(&cl); f_push_branch(out, cl); }   /* TRUE: one empty branch */
+        /* FALSE: zero branches */
+        return 1;
+    }
+    if (e->kind == NODE_UNARY && e->un_op == UOP_NOT)
+        return bool_to_dnf(e->operand, env, !negated, out);
+    if (e->kind == NODE_BINARY && is_cmp(e->bin_op))
+        return cmp_to_formula(e, env, negated, out);
+    if (e->kind == NODE_BINARY && e->bin_op == OP_EQ && !negated) {
+        /* a==b -> (a<=b)&&(a>=b) */
+        Node l = *e, r = *e;
+        l.bin_op = OP_LE; r.bin_op = OP_GE;
+        Formula a, b;
+        if (!bool_to_dnf(&l, env, 0, &a)) return 0;
+        if (!bool_to_dnf(&r, env, 0, &b)) { f_free(&a); return 0; }
+        /* cartesian product */
+        f_init(out);
+        for (int i = 0; i < a.n; i++) for (int j = 0; j < b.n; j++) {
+            ConsList cl; cl_init(&cl);
+            for (int x = 0; x < a.br[i].n; x++) { Constraint c = a.br[i].c[x]; cl_push(&cl, mk_cons(lin_clone(&c.lhs), c.op, c.rhs)); }
+            for (int x = 0; x < b.br[j].n; x++) { Constraint c = b.br[j].c[x]; cl_push(&cl, mk_cons(lin_clone(&c.lhs), c.op, c.rhs)); }
+            f_push_branch(out, cl);
+        }
+        f_free(&a); f_free(&b);
+        return 1;
+    }
+    if (e->kind == NODE_BINARY && (e->bin_op == OP_AND || e->bin_op == OP_OR)) {
+        Formula L, R;
+        if (!bool_to_dnf(e->left, env, negated, &L)) return 0;
+        if (!bool_to_dnf(e->right, env, negated, &R)) { f_free(&L); return 0; }
+        int disj = (e->bin_op == OP_OR) ^ negated;   /* OR, or AND-under-negation => union */
+        f_init(out);
+        if (disj) {
+            for (int i = 0; i < L.n; i++) f_push_branch(out, L.br[i]);
+            for (int i = 0; i < R.n; i++) f_push_branch(out, R.br[i]);
+            free(L.br); free(R.br);   /* branches moved */
+        } else {
+            for (int i = 0; i < L.n; i++) for (int j = 0; j < R.n; j++) {
+                ConsList cl; cl_init(&cl);
+                for (int x = 0; x < L.br[i].n; x++) { Constraint c = L.br[i].c[x]; cl_push(&cl, mk_cons(lin_clone(&c.lhs), c.op, c.rhs)); }
+                for (int x = 0; x < R.br[j].n; x++) { Constraint c = R.br[j].c[x]; cl_push(&cl, mk_cons(lin_clone(&c.lhs), c.op, c.rhs)); }
+                f_push_branch(out, cl);
+            }
+            f_free(&L); f_free(&R);
+        }
+        return 1;
+    }
+    return 0;   /* not convertible -> UNKNOWN */
+}
+
+/* ============================ Fourier–Motzkin ============================ */
+
+/* Is a constant constraint contradictory?  0<c needs c>0; 0<=c needs c>=0. */
+static int cons_contradictory(Constraint *c) {
+    if (c->lhs.n != 0) return 0;
+    int s = rat_cmp(c->lhs.c, c->rhs);   /* sign of (0 - rhs)? lhs is const c0: constraint c0 {op} rhs */
+    /* value of lhs is c->lhs.c; constraint holds iff c0 op rhs */
+    if (c->op == C_LT) return !(s < 0);
+    return !(s <= 0);
+}
+
+typedef struct { Lin rest; Rat bound; int strict; int is_lower; } Bound;
+
+/* Classify constraint wrt variable v. Returns 0 if v absent (neutral). */
+static int split_on(Constraint *c, const char *v, Bound *out) {
+    Rat a = lin_coeff(&c->lhs, v);
+    if (a.num == 0) return 0;
+    /* build rest = lhs without v */
+    Lin rest; lin_init(&rest); rest.c = c->lhs.c; rest.overflow = c->lhs.overflow;
+    for (int i = 0; i < c->lhs.n; i++)
+        if (strcmp(c->lhs.terms[i].var, v) != 0)
+            lin_push_raw(&rest, c->lhs.terms[i].var, c->lhs.terms[i].coeff);
+    /* a*v + rest op rhs  ->  v op' (rhs-rest)/a */
+    Lin neg_rest = lin_neg(&rest);
+    Lin numer = lin_add(&neg_rest, &(Lin){ .c = c->rhs });   /* rhs - rest */
+    lin_free(&neg_rest);
+    Rat inv = rat_mk(a.den, a.num);   /* 1/a */
+    Lin bound = lin_scale(&numer, inv);
+    lin_free(&rest); lin_free(&numer);
+    out->rest = bound;
+    out->bound = rat_zero();
+    /* a*v + rest {op} rhs  ->  v {op'} bound, where bound=(rhs-rest)/a.
+     * a>0: v <= bound (upper) or v < bound (upper).
+     * a<0: dividing by negative reverses direction: v >= bound (lower) or
+     *      v > bound (lower). Strictness is preserved either way (x<c == -x>-c),
+     *      so strict == (op==LT) regardless of the sign of a. */
+    out->is_lower = rat_is_neg(a);
+    out->strict = (c->op == C_LT);
+    return 1;
+}
+
+/* Combine lower (lo->strict ? L<v : L<=v) and upper (up->strict ? v<U : v<=U)
+ * into a constraint on L-U. The result is strict iff EITHER bound is strict:
+ *   L<v<=U  => L<U ;  L<=v<U => L<U ;  L<v<U => L<U ;  L<=v<=U => L<=U.
+ * (L<v with v=U is impossible, so a strict lower bound also forces L<U.) */
+static Constraint combine(Bound *lo, Bound *up) {
+    Lin d = lin_sub(&lo->rest, &up->rest);
+    COp op = (lo->strict || up->strict) ? C_LT : C_LE;
+    return mk_cons(d, op, rat_zero());
+}
+
+static int fm_sat(ConsList *sys) {
+    /* gather variable names */
+    char **vars = NULL; int nv = 0, vcap = 0;
+    for (int i = 0; i < sys->n; i++) for (int j = 0; j < sys->c[i].lhs.n; j++) {
+        const char *vn = sys->c[i].lhs.terms[j].var;
+        int found = 0;
+        for (int k = 0; k < nv; k++) if (strcmp(vars[k], vn) == 0) { found = 1; break; }
+        if (!found) { if (nv == vcap) { vcap = vcap ? vcap * 2 : 8; vars = realloc(vars, (size_t)vcap * sizeof(char *)); } vars[nv++] = strdup(vn); }
+    }
+    int result = 1;   /* SAT until contradiction */
+    /* a constant contradictory constraint (e.g. 0 < 0) makes it UNSAT outright */
+    for (int i = 0; i < sys->n; i++) if (cons_contradictory(&sys->c[i])) { result = 0; break; }
+    for (int vi = 0; vi < nv && result; vi++) {
+        const char *v = vars[vi];
+        Bound *low = NULL; int nl = 0, lcap = 0;
+        Bound *up = NULL; int nu = 0, ucap = 0;
+        ConsList neutral; cl_init(&neutral);
+        for (int i = 0; i < sys->n; i++) {
+            Bound b;
+            if (!split_on(&sys->c[i], v, &b)) {
+                cl_push(&neutral, mk_cons(lin_clone(&sys->c[i].lhs), sys->c[i].op, sys->c[i].rhs));
+            } else if (b.is_lower) {
+                if (nl == lcap) { lcap = lcap ? lcap * 2 : 8; low = realloc(low, (size_t)lcap * sizeof(Bound)); }
+                low[nl++] = b;
+            } else {
+                if (nu == ucap) { ucap = ucap ? ucap * 2 : 8; up = realloc(up, (size_t)ucap * sizeof(Bound)); }
+                up[nu++] = b;
+            }
+        }
+        ConsList next; cl_init(&next);
+        for (int i = 0; i < neutral.n; i++) cl_push(&next, mk_cons(lin_clone(&neutral.c[i].lhs), neutral.c[i].op, neutral.c[i].rhs));
+        cl_free(&neutral);
+        for (int a = 0; a < nl && result; a++) for (int b = 0; b < nu && result; b++) {
+            Constraint nc = combine(&low[a], &up[b]);
+            if (cons_contradictory(&nc)) { lin_free(&nc.lhs); result = 0; }
+            else cl_push(&next, nc);
+        }
+        for (int i = 0; i < nl; i++) lin_free(&low[i].rest);
+        for (int i = 0; i < nu; i++) lin_free(&up[i].rest);
+        free(low); free(up);
+        cl_free(sys);
+        *sys = next;
+    }
+    if (result) for (int i = 0; i < sys->n; i++) if (cons_contradictory(&sys->c[i])) { result = 0; break; }
+    for (int i = 0; i < nv; i++) free(vars[i]);
+    free(vars);
+    cl_free(sys);
+    return result;
+}
+
+/* ============================ counterexample search ============================ */
+
+typedef struct { char *name; int64_t val; } IBind;
+typedef struct { IBind *b; int n; } IEnv;
+
+static int64_t ienv_get(IEnv *e, const char *name, int *ok) {
+    for (int i = 0; i < e->n; i++) if (strcmp(e->b[i].name, name) == 0) { *ok = 1; return e->b[i].val; }
+    *ok = 0; return 0;
+}
+
+static int eval_bool(Node *e, IEnv *env);
+
+static int64_t eval_i64(Node *e, IEnv *env, int *ok) {
+    *ok = 1;
+    if (!e) { *ok = 0; return 0; }
+    switch (e->kind) {
+    case NODE_INT_LIT: return e->int_val;
+    case NODE_IDENT: return ienv_get(env, e->name, ok);
+    case NODE_UNARY:
+        if (e->un_op == UOP_NEG) { int o; int64_t v = eval_i64(e->operand, env, &o); *ok = o; return -*ok ? 0 : -v; }
+        if (e->un_op == UOP_NOT) { int o; int64_t v = eval_bool(e->operand, env); *ok = 1; (void)o; return !v; }
+        *ok = 0; return 0;
+    case NODE_BINARY: {
+        int lo, ro;
+        int64_t l = eval_i64(e->left, env, &lo);
+        int64_t r = eval_i64(e->right, env, &ro);
+        if (!lo || !ro) { *ok = 0; return 0; }
+        switch (e->bin_op) {
+        case OP_ADD: return l + r;
+        case OP_SUB: return l - r;
+        case OP_MUL: return l * r;
+        case OP_DIV: if (r == 0) { *ok = 0; return 0; } return l / r;
+        case OP_MOD: if (r == 0) { *ok = 0; return 0; } return l % r;
+        default: *ok = 0; return 0;
+        }
+    }
+    default: *ok = 0; return 0;
+    }
+}
+
+static int eval_bool(Node *e, IEnv *env) {
+    if (!e) return 0;
+    if (e->kind == NODE_BOOL_LIT) return e->bool_val;
+    if (e->kind == NODE_UNARY && e->un_op == UOP_NOT) return !eval_bool(e->operand, env);
+    if (e->kind == NODE_BINARY) {
+        if (is_cmp(e->bin_op) || e->bin_op == OP_EQ || e->bin_op == OP_NEQ) {
+            int lo, ro;
+            int64_t l = eval_i64(e->left, env, &lo);
+            int64_t r = eval_i64(e->right, env, &ro);
+            if (!lo || !ro) return 0;
+            switch (e->bin_op) {
+            case OP_LT: return l < r;
+            case OP_LE: return l <= r;
+            case OP_GT: return l > r;
+            case OP_GE: return l >= r;
+            case OP_EQ: return l == r;
+            case OP_NEQ: return l != r;
+            default: return 0;
+            }
+        }
+        if (e->bin_op == OP_AND) return eval_bool(e->left, env) && eval_bool(e->right, env);
+        if (e->bin_op == OP_OR) return eval_bool(e->left, env) || eval_bool(e->right, env);
+    }
+    return 0;
+}
+
+/* Collect the free variables of a constraint system (for witness search). */
+static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
+    for (int i = 0; i < cl->n; i++) for (int j = 0; j < cl->c[i].lhs.n; j++) {
+        const char *vn = cl->c[i].lhs.terms[j].var;
+        int found = 0;
+        for (int k = 0; k < *nv; k++) if (strcmp((*vars)[k], vn) == 0) { found = 1; break; }
+        if (!found) { if (*nv == *cap) { *cap = *cap ? *cap * 2 : 8; *vars = realloc(*vars, (size_t)*cap * sizeof(char *)); } (*vars)[(*nv)++] = strdup(vn); }
+    }
+}
+
+/* Try to find an integral witness satisfying all `ante` and violating `ens`.
+ * Returns 1 and fills witness (caller frees names) on success. */
+static int find_counterexample(ConsList *ante, Formula *nef, Node *ensures_ast,
+                               SEnv *output_env, IBind **witness, int *wn) {
+    char **vars = NULL; int nv = 0, cap = 0;
+    collect_vars_cl(ante, &vars, &nv, &cap);
+    for (int b = 0; b < nef->n; b++) collect_vars_cl(&nef->br[b], &vars, &nv, &cap);
+    /* output is derived, not free — drop it */
+    for (int i = 0; i < nv; i++) if (strcmp(vars[i], "output") == 0) { free(vars[i]); vars[i] = vars[nv - 1]; nv--; i--; }
+
+    static const int64_t cand[] = { 0, 1, -1, 2, -2, 3, -3, 5, -5, 10, -10, 20, -20, 100, -100 };
+    int ncand = (int)(sizeof(cand) / sizeof(cand[0]));
+
+    int total = 1;
+    for (int i = 0; i < nv; i++) { if (total > 200000 / ncand) { total = 200001; break; } total *= ncand; }
+    if (nv == 0) total = 1;
+
+    IBind *assign = calloc(nv ? nv : 1, sizeof(IBind));
+    int found = 0;
+    for (int idx = 0; idx < total && !found; idx++) {
+        int t = idx;
+        for (int i = 0; i < nv; i++) { assign[i].name = vars[i]; assign[i].val = cand[t % ncand]; t /= ncand; }
+        IEnv ie; ie.b = assign; ie.n = nv;
+        /* evaluate antecedent constraints via their linear forms */
+        int ante_ok = 1;
+        for (int i = 0; i < ante->n && ante_ok; i++) {
+            Constraint *c = &ante->c[i];
+            Rat rv = c->lhs.c;
+            for (int j = 0; j < c->lhs.n; j++) {
+                int ok2; int64_t vv = ienv_get(&ie, c->lhs.terms[j].var, &ok2);
+                if (!ok2) { ante_ok = 0; break; }
+                rv = rat_add(rv, rat_mul(c->lhs.terms[j].coeff, rat_int(vv)));
+            }
+            if (rv.overflow) { ante_ok = 0; break; }
+            int s = rat_cmp(rv, c->rhs);
+            ante_ok = (c->op == C_LT) ? (s < 0) : (s <= 0);
+        }
+        if (!ante_ok) continue;
+        /* evaluate ensures with output bound */
+        IBind *a2 = calloc(nv + 1, sizeof(IBind));
+        for (int i = 0; i < nv; i++) a2[i] = assign[i];
+        Binding *ob = env_find(output_env, "output");
+        int out_ok = 1;
+        int64_t outv = 0;
+        if (ob && !ob->nonlinear) {
+            Rat rv = ob->lin.c;
+            for (int j = 0; j < ob->lin.n; j++) {
+                int ok3; int64_t vv = ienv_get(&ie, ob->lin.terms[j].var, &ok3);
+                if (!ok3) { out_ok = 0; break; }
+                rv = rat_add(rv, rat_mul(ob->lin.terms[j].coeff, rat_int(vv)));
+            }
+            if (rv.overflow || rv.den != 1) out_ok = 0; else outv = rv.num;
+        } else out_ok = 0;
+        if (out_ok) {
+            a2[nv].name = "output"; a2[nv].val = outv;
+            IEnv ie3; ie3.b = a2; ie3.n = nv + 1;
+            int ev = eval_bool(ensures_ast, &ie3);
+            if (!ev) {
+                *witness = calloc(nv ? nv : 1, sizeof(IBind));
+                for (int i = 0; i < nv; i++) { (*witness)[i].name = strdup(vars[i]); (*witness)[i].val = assign[i].val; }
+                *wn = nv;
+                found = 1;
+            }
+        }
+        free(a2);
+    }
+    free(assign);
+    for (int i = 0; i < nv; i++) free(vars[i]);
+    free(vars);
+    return found;
+}
+
+/* ============================ symbolic execution ============================ */
+
+typedef struct { SEnv env; ConsList path; int bad; } State;
+
+static void state_free(State *s) { env_free(&s->env); cl_free(&s->path); }
+
+typedef struct { State *s; int n, cap; } States;
+static void states_push(States *ss, State s) {
+    if (ss->n == ss->cap) { ss->cap = ss->cap ? ss->cap * 2 : 4; ss->s = realloc(ss->s, (size_t)ss->cap * sizeof(State)); }
+    ss->s[ss->n++] = s;
+}
+
+typedef struct { ConsList path; Sym ret; } Obligation;
+typedef struct { Obligation *o; int n, cap; } Obligations;
+static void obl_push(Obligations *ob, ConsList path, Sym ret) {
+    if (ob->n == ob->cap) { ob->cap = ob->cap ? ob->cap * 2 : 4; ob->o = realloc(ob->o, (size_t)ob->cap * sizeof(Obligation)); }
+    ob->o[ob->n].path = path; ob->o[ob->n].ret = ret; ob->n++;
+}
+
+/* Detect constructs M0 cannot handle anywhere in the body. */
+static int has_unsupported(Node *n) {
+    if (!n) return 0;
+    switch (n->kind) {
+    case NODE_WHILE: case NODE_FOR: case NODE_MATCH:
+    case NODE_TRY: case NODE_CATCH:
+    case NODE_BREAK: case NODE_CONTINUE:
+    case NODE_CALL: case NODE_INDEX: case NODE_FIELD:
+    case NODE_STRUCT_LIT: case NODE_RANGE:
+        return 1;
+    default: break;
+    }
+    /* recurse into children generically via the big switch */
+    switch (n->kind) {
+    case NODE_BINARY: return has_unsupported(n->left) || has_unsupported(n->right);
+    case NODE_UNARY: return has_unsupported(n->operand);
+    case NODE_IF: return has_unsupported(n->cond) || has_unsupported(n->then_br) || has_unsupported(n->else_br);
+    case NODE_BLOCK: for (int i = 0; i < n->stmts.len; i++) if (has_unsupported(n->stmts.data[i])) return 1; return 0;
+    case NODE_LET: return has_unsupported(n->let_init);
+    case NODE_ASSIGN: return has_unsupported(n->assign_target) || has_unsupported(n->assign_val);
+    case NODE_RETURN: return has_unsupported(n->ret_val);
+    case NODE_EXPR_STMT: return has_unsupported(n->expr);
+    default: return 0;
+    }
+}
+
+/* Symbolically execute a statement list over a set of states; returning states
+ * are drained into `ob`; `states` holds the fall-through states at the end. */
+static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvoid);
+
+static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid) {
+    if (!blk) return;
+    if (blk->kind == NODE_BLOCK) { symexec_stmts(&blk->stmts, states, ob, is_nonvoid); return; }
+    /* single-statement branch */
+    NodeVec one; one.data = &blk; one.len = 1; one.cap = 1;
+    symexec_stmts(&one, states, ob, is_nonvoid);
+}
+
+static State clone_state_with(State *cur, Formula *add) {
+    State t;
+    env_clone_into(&t.env, &cur->env);
+    cl_init(&t.path);
+    for (int x = 0; x < cur->path.n; x++) { Constraint *c = &cur->path.c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    if (add) for (int b = 0; b < add->n; b++) for (int x = 0; x < add->br[b].n; x++) {
+        Constraint *c = &add->br[b].c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs));
+    }
+    t.bad = cur->bad;
+    return t;
+}
+
+static void bind_sym(SEnv *env, const char *name, Sym v) {
+    if (v.nonlinear) { Lin empty; lin_init(&empty); env_bind(env, name, empty, 1); }
+    else env_bind(env, name, v.lin, 0);
+}
+
+static void drain_returns(States *states, Obligations *ob, Node *val_expr) {
+    for (int i = 0; i < states->n; i++) {
+        Sym r = se_from_ast(val_expr, &states->s[i].env);
+        obl_push(ob, states->s[i].path, r);
+        env_free(&states->s[i].env);
+    }
+    states->n = 0;
+}
+
+static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvoid) {
+    for (int si = 0; si < stmts->len; si++) {
+        Node *st = stmts->data[si];
+        int last = (si == stmts->len - 1);
+        if (st->kind == NODE_LET) {
+            for (int i = 0; i < states->n; i++)
+                bind_sym(&states->s[i].env, st->let_name, se_from_ast(st->let_init, &states->s[i].env));
+        } else if (st->kind == NODE_ASSIGN) {
+            if (st->assign_target->kind != NODE_IDENT) { for (int i = 0; i < states->n; i++) states->s[i].bad = 1; continue; }
+            for (int i = 0; i < states->n; i++)
+                bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env));
+        } else if (st->kind == NODE_RETURN) {
+            drain_returns(states, ob, st->ret_val);
+            return;
+        } else if (st->kind == NODE_EXPR_STMT && last && is_nonvoid) {
+            drain_returns(states, ob, st->expr);
+            return;
+        } else if (st->kind == NODE_EXPR_STMT) {
+            /* non-final expression statement: no side effects possible in M0 */
+        } else if (st->kind == NODE_IF) {
+            States out; out.s = NULL; out.n = 0; out.cap = 0;
+            for (int i = 0; i < states->n; i++) {
+                State *cur = &states->s[i];
+                Formula cf, nf;
+                int cok = bool_to_dnf(st->cond, &cur->env, 0, &cf);
+                int nok = bool_to_dnf(st->cond, &cur->env, 1, &nf);
+                if (!cok || !nok) {
+                    if (cok) f_free(&cf);
+                    if (nok) f_free(&nf);
+                    cur->bad = 1;
+                    states_push(&out, *cur);
+                    continue;
+                }
+                /* then branch: fork per cond DNF branch */
+                States then_ss; then_ss.s = NULL; then_ss.n = 0; then_ss.cap = 0;
+                for (int b = 0; b < cf.n; b++) {
+                    Formula one; f_init(&one);
+                    ConsList cl; cl_init(&cl);
+                    for (int x = 0; x < cf.br[b].n; x++) { Constraint *c = &cf.br[b].c[x]; cl_push(&cl, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                    f_push_branch(&one, cl);
+                    State t = clone_state_with(cur, &one);
+                    f_free(&one);
+                    states_push(&then_ss, t);
+                }
+                symexec_block(st->then_br, &then_ss, ob, is_nonvoid);
+                for (int k = 0; k < then_ss.n; k++) states_push(&out, then_ss.s[k]);
+                free(then_ss.s);
+                /* else branch (or fall-through when there is none) */
+                States else_ss; else_ss.s = NULL; else_ss.n = 0; else_ss.cap = 0;
+                for (int b = 0; b < nf.n; b++) {
+                    Formula one; f_init(&one);
+                    ConsList cl; cl_init(&cl);
+                    for (int x = 0; x < nf.br[b].n; x++) { Constraint *c = &nf.br[b].c[x]; cl_push(&cl, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                    f_push_branch(&one, cl);
+                    State t = clone_state_with(cur, &one);
+                    f_free(&one);
+                    states_push(&else_ss, t);
+                }
+                if (st->else_br) symexec_block(st->else_br, &else_ss, ob, is_nonvoid);
+                for (int k = 0; k < else_ss.n; k++) states_push(&out, else_ss.s[k]);
+                free(else_ss.s);
+                f_free(&cf); f_free(&nf);
+                env_free(&cur->env); cl_free(&cur->path);
+            }
+            free(states->s);
+            *states = out;
+        } else {
+            for (int i = 0; i < states->n; i++) states->s[i].bad = 1;
+        }
+    }
+}
+
+/* ============================ top-level verification ============================ */
+
+static Node *find_spec(Node *prog, const char *name) {
+    for (int i = 0; i < prog->items.len; i++) {
+        Node *it = prog->items.data[i];
+        if (it->kind == NODE_SPEC && strcmp(it->spec_name, name) == 0 &&
+            (it->spec_ensures.len > 0 || it->spec_requires.len > 0))
+            return it;
+    }
+    return NULL;
+}
+
+static Node *unwrap_type(Node *t) {
+    while (t && t->kind == NODE_TYPE_EFFECT) t = t->inner_type;
+    return t;
+}
+static int type_is_i64(Node *t) {
+    t = unwrap_type(t);
+    return t && t->kind == NODE_TYPE && t->type_name && strcmp(t->type_name, "i64") == 0;
+}
+static int ret_has_effects(Node *t) {
+    return t && t->kind == NODE_TYPE_EFFECT && t->n_effects > 0;
+}
+
+typedef enum { R_PROVEN, R_REFUTED, R_UNKNOWN } VRes;
+
+static const char *res_word(VRes r) {
+    switch (r) { case R_PROVEN: return "ДОКАЗАНО"; case R_REFUTED: return "ОБРОЧЕНО"; default: return "НЕ МОГА ДА РЕША"; }
+}
+
+/* Verify one ensures clause over all obligations of a function. */
+static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
+                           IBind **wit, int *wn) {
+    VRes worst = R_PROVEN;
+    for (int o = 0; o < ob->n; o++) {
+        Obligation *obl = &ob->o[o];
+        if (obl->ret.nonlinear) { if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        /* env with output := return */
+        SEnv env2; env_init(&env2);
+        env_bind(&env2, "output", lin_clone(&obl->ret.lin), 0);
+        /* requires as antecedent constraints */
+        ConsList ante; cl_init(&ante);
+        int ante_ok = 1;
+        for (int r = 0; r < spec->spec_requires.len && ante_ok; r++) {
+            Formula rf;
+            if (!bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &env2, 0, &rf)) { ante_ok = 0; break; }
+            if (rf.n != 1) ante_ok = 0;   /* disjunctive requires: M0 skips */
+            else for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&ante, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            f_free(&rf);
+        }
+        for (int x = 0; x < obl->path.n && ante_ok; x++) { Constraint *c = &obl->path.c[x]; cl_push(&ante, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        if (!ante_ok) { cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+
+        /* ensures as DNF, and its negation as DNF (De Morgan handled inside
+         * bool_to_dnf, so a disjunctive ensures becomes a conjunction when
+         * negated). The obligation  ante ⇒ ensures  is checked per negated
+         * branch:  UNSAT(ante ∧ ¬ensures_branch)  ⇒ that branch always holds. */
+        Formula ef, nef;
+        if (!bool_to_dnf(ens_expr, &env2, 0, &ef)) { cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        if (!bool_to_dnf(ens_expr, &env2, 1, &nef)) { f_free(&ef); cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+
+        VRes clause_res = R_PROVEN;
+        for (int b = 0; b < nef.n && clause_res != R_REFUTED; b++) {
+            ConsList sys; cl_init(&sys);
+            for (int x = 0; x < ante.n; x++) { Constraint *c = &ante.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            for (int x = 0; x < nef.br[b].n; x++) {
+                Constraint *c = &nef.br[b].c[x];
+                cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs));
+            }
+            int sat = fm_sat(&sys);   /* frees sys */
+            if (!sat) {
+                /* PROVEN for this branch */
+            } else {
+                IBind *w = NULL; int wnn = 0;
+                /* rebuild antecedent for witness search */
+                ConsList ante2; cl_init(&ante2);
+                for (int x = 0; x < ante.n; x++) { Constraint *c = &ante.c[x]; cl_push(&ante2, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                if (find_counterexample(&ante2, &nef, ens_expr, &env2, &w, &wnn)) {
+                    clause_res = R_REFUTED;
+                    if (!*wit) { *wit = w; *wn = wnn; }
+                    else { for (int i = 0; i < wnn; i++) free(w[i].name); free(w); }
+                } else {
+                    if (clause_res == R_PROVEN) clause_res = R_UNKNOWN;
+                }
+                cl_free(&ante2);
+            }
+        }
+        f_free(&ef);
+        f_free(&nef);
+        cl_free(&ante);
+        env_free(&env2);
+        if (clause_res == R_REFUTED) worst = R_REFUTED;
+        else if (clause_res == R_UNKNOWN && worst == R_PROVEN) worst = R_UNKNOWN;
+    }
+    return worst;
+}
+
+/* Verify one function. Returns 1 if any ensures was REFUTED. */
+static int verify_fn(Node *prog, Node *fn) {
+    Node *spec = find_spec(prog, fn->fn_name);
+    if (!spec) return 0;
+
+    /* fragment gates */
+    const char *skip = NULL;
+    if (ret_has_effects(fn->ret_type)) skip = "ефекти";
+    else if (fn->ret_type && !type_is_i64(fn->ret_type) && unwrap_type(fn->ret_type)->kind != NODE_TYPE) skip = "не-i64 резултат";
+    else if (fn->ret_type && unwrap_type(fn->ret_type)->kind == NODE_TYPE &&
+             strcmp(unwrap_type(fn->ret_type)->type_name, "i64") != 0) skip = "не-i64 резултат";
+    if (!skip) for (int i = 0; i < fn->params.len; i++) {
+        Node *pt = fn->params.data[i]->param_type;
+        if (!type_is_i64(pt)) { skip = "не-i64 параметър"; break; }
+    }
+    if (!skip && has_unsupported(fn->fn_body)) skip = "цикли/рекурсия/повиквания";
+
+    printf("verify %s:\n", fn->fn_name);
+    if (skip) {
+        for (int j = 0; j < spec->spec_ensures.len; j++)
+            printf("  ensures #%d (%s): ПРОПУСНАТО (%s)\n", j + 1, spec->spec_ensures.data[j]->ensure_text, skip);
+        return 0;
+    }
+
+    /* symexec */
+    Obligations ob; ob.o = NULL; ob.n = 0; ob.cap = 0;
+    State init; env_init(&init.env); cl_init(&init.path); init.bad = 0;
+    for (int i = 0; i < fn->params.len; i++)
+        env_bind(&init.env, fn->params.data[i]->param_name, lin_var(fn->params.data[i]->param_name), 0);
+    States states; states.s = NULL; states.n = 0; states.cap = 0;
+    states_push(&states, init);
+    int is_nonvoid = (fn->ret_type != NULL);
+    symexec_stmts(&fn->fn_body->stmts, &states, &ob, is_nonvoid);
+    for (int i = 0; i < states.n; i++) state_free(&states.s[i]);
+    free(states.s);
+
+    int any_refuted = 0;
+    for (int j = 0; j < spec->spec_ensures.len; j++) {
+        IBind *wit = NULL; int wn = 0;
+        VRes r = verify_ensures(spec, spec->spec_ensures.data[j]->ensure_expr, &ob, &wit, &wn);
+        printf("  ensures #%d (%s): %s\n", j + 1, spec->spec_ensures.data[j]->ensure_text, res_word(r));
+        if (r == R_REFUTED) {
+            any_refuted = 1;
+            printf("    контрапример:");
+            for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+            printf("\n");
+        }
+        if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
+    }
+    for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); lin_free(&ob.o[i].ret.lin); }
+    free(ob.o);
+    return any_refuted;
+}
+
+int verify_program(Node *prog) {
+    int any_refuted = 0;
+    for (int i = 0; i < prog->items.len; i++) {
+        Node *it = prog->items.data[i];
+        if (it->kind != NODE_FN || !it->fn_body) continue;
+        if (!find_spec(prog, it->fn_name)) continue;
+        any_refuted |= verify_fn(prog, it);
+    }
+    return any_refuted ? 1 : 0;
+}

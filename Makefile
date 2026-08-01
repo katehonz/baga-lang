@@ -2,7 +2,7 @@ CC      ?= gcc
 CFLAGS  := -O2 -Wall -Wextra -std=c11 -Iinclude
 LDFLAGS := -lm
 
-SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c
+SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c src/verify.c
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
@@ -20,7 +20,7 @@ src/%.o: src/%.c include/baga.h
 LLVM_CONFIG ?= llvm-config-14
 LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null) -DBAGA_LLVM
 LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --libs core analysis target 2>/dev/null) $(LDFLAGS)
-LLVM_SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c src/codegen_llvm.c
+LLVM_SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c src/verify.c src/codegen_llvm.c
 LLVM_OBJS := $(LLVM_SRCS:.c=.llvm.o)
 LLVM_BIN := baga-llvm
 
@@ -45,7 +45,7 @@ $(CRANELIFT_LIB): $(CRANELIFT_DIR)/src/lib.rs $(CRANELIFT_DIR)/Cargo.toml
 $(CRANELIFT_BIN): $(CRANELIFT_LIB) include/baga.h src/codegen_cranelift.c $(CRANELIFT_DIR)/baga_clif_rt.h
 	$(CC) $(CFLAGS) -DBAGA_CRANELIFT -I$(CRANELIFT_DIR) -o $@ \
 	    src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c \
-	    src/proofs.c src/codegen_cranelift.c $(CRANELIFT_LIB) -lpthread -ldl -lm
+	    src/proofs.c src/verify.c src/codegen_cranelift.c $(CRANELIFT_LIB) -lpthread -ldl -lm
 
 test-cranelift: $(BIN) $(CRANELIFT_BIN)
 	@./tests/cranelift_oracle.sh
@@ -159,6 +159,30 @@ test: $(BIN)
 	@grep -q "jwt_test: all passed" /tmp/baga_jwt_out.txt \
 		&& echo "OK: JWT HS256 sign/verify (golden vector)" \
 		|| { echo "FAIL: jwt_test"; cat /tmp/baga_jwt_out.txt; exit 1; }
+	@echo "=== verify (статична верификация, M0) ==="
+	@for f in abs_val max2 clamp; do \
+		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
+		grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+			&& echo "OK: $$f доказано (completeness)" \
+			|| { echo "FAIL: $$f — очаквах ДОКАЗАНО"; cat /tmp/baga_verify_out.txt; exit 1; }; \
+	done
+	@./$(BIN) --verify examples/verify/bad_abs.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "контрапример" /tmp/baga_verify_out.txt \
+		&& echo "OK: bad_abs оброчено с контрапример (soundness)" \
+		|| { echo "FAIL: bad_abs — очаквах ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/nonlinear.baga > /tmp/baga_verify_out.txt; \
+	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: nonlinear — честно НЕ МОГА ДА РЕША" \
+		|| { echo "FAIL: nonlinear"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/recursive.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ПРОПУСНАТО" /tmp/baga_verify_out.txt \
+		&& echo "OK: recursive — честно пропуснато" \
+		|| { echo "FAIL: recursive"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@for f in abs_val max2 clamp; do \
+		./$(BIN) --test-specs examples/verify/$$f.baga > /dev/null 2>&1 \
+			&& echo "OK: $$f — оракулът (--test-specs) съгласен с ДОКАЗАНО" \
+			|| { echo "FAIL: $$f — оракулът не е съгласен"; exit 1; }; \
+	done
 	@echo "=== LLVM оракул (C vs lli-14) ==="
 	@if [ -f ./$(LLVM_BIN) ]; then $(MAKE) -s test-llvm; else echo "(baga-llvm липсва — пропускам LLVM оракула)"; fi
 	@echo "=== Cranelift оракул (C vs in-process JIT) ==="

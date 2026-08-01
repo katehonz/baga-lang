@@ -1,0 +1,19 @@
+spec square_nonneg {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// The body is in the fragment (no loops/calls), but the return value x*x is
+// non-linear, which the M0 decision procedure cannot reason about: the honest
+// answer is "не мога да реша" (UNKNOWN), never "доказано".
+fn square_nonneg(x: i64) -> i64 {
+    let y = x * x
+    return y
+}
+
+fn main() {
+    print(square_nonneg(0 - 3))
+}
