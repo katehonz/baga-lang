@@ -2,8 +2,6 @@
 baga
 /tmp/
 baga-llvm
-baga-cranelift
-cranelift/target/
 *.llvm.o
 blog/
 idea/

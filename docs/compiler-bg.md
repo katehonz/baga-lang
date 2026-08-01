@@ -297,46 +297,6 @@ exit кода на C backend-а и LLVM backend-а (през `lli-14`) за вс
 
 ---
 
-### Cranelift Backend (`src/codegen_cranelift.c` + `cranelift/`)
-
-In-process JIT backend през Rust FFI (`make cranelift` → `baga-cranelift`;
-изисква `cargo`/`rustc`). За разлика от LLVM (който генерира IR текст и вика
-външен `lli`), тук кодът се JIT-ва **в процеса** — основата за бъдещ REPL.
-
-**Архитектура.** C генерира сериализиран стеков bytecode от AST-то
-(`codegen_cranelift.c`, огледален на `codegen_llvm.c`); Rust staticlib
-(`cranelift/src/lib.rs`, `cranelift-jit` 0.134) го интерпретира в Cranelift IR
-и го JIT-ва. Избрано е пред „C генерира `.clif` текст → Rust парсва", защото
-`cranelift-reader::parse_functions` изхвърля таблицата с външни имена и JIT-ът
-не може да резолвне libc символите на парснати функции (емпирично потвърдено).
-
-- **Bytecode** (`cranelift/baga_clif_rt.h`, keep-in-sync C↔Rust): стекова машина
-  — `ICONST/FCONST/BCONST/SCONST`, `LOAD/STORE/ALLOCA`, `BINOP`, `AND/OR/NOT/NEG`,
-  `PROMOTE` (i64→f64), `CALL fn_id nargs`, `RET/RET_VOID`, `BR/BR_FALSE/LABEL`,
-  `DROP`. `fn_id < RT_COUNT` е runtime helper, иначе потребителска функция.
-- **Runtime helpers** са native Rust `extern "C"` функции (`baga_rt_print_*`,
-  `baga_rt_arg*`, `baga_rt_spec_fail`), които JIT-ът импортира по име; викат libc
-  `printf`/`fprintf` с БАЙТ-същите формати като `codegen_c.c` (`%lld`, `%g`,
-  `true`/`false`, `%s`).
-- **`--emit-cranelift`** печата human-readable disassembly на bytecode-а (debug).
-
-Поддържа същото ядро като примерите: `i64/f64/bool/str`, аритметика с f64
-промоция, `let`/присвояване, `if/while/for` с `break`/`continue`, `match` върху
-i64 (вкл. връщащ `str`), enum варианти, функции с рекурсия, `print`/`write`,
-`arg`/`arg_count`, ефекти (`?`/`catch` — pass-through, compile-time тагове) и
-**contracts** (wrapper с `requires` преди и `ensures` след повикването; нарушение
-→ същото съобщение на stderr + exit 1).
-
-Принцип „никакви тихи стойности": struct/field, `Vec`, масиви `[T]`, str
-builtins (len/concat/…), `read_file`, референции `&`/`*` → compile-time грешка
-`baga: Cranelift backend: неподдържан конструкт '<какво>'`.
-
-Оракълът `tests/cranelift_oracle.sh` (викан от `make test`) сравнява изхода и
-exit кода на C backend-а и Cranelift JIT за всички примери — 12 OK + 5 SKIP
-(strings, tochka, vec, vec_ann, vec_f64 — честен отказ).
-
----
-
 ## Self-Hosted Компилатор (`self/compiler.baga`)
 
 ### Архитектура
@@ -592,7 +552,7 @@ SRCS    := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src
 ## Бъдещи направления
 
 - Инкрементална компилация (пропускане на непроменени модули)
-- Същински backend (LLVM/Cranelift) за нативна генерация без C посредник
+- Собствен JIT backend (отделен проект) за REPL; LLVM backend-ът вече покрива нативната генерация
 - Runtime обработчици на ефекти (алгебрични ефекти)
 - Формална верификация на доказателства (интеграция с Lean/Coq)
 - Генерични типове и системa от трейтове

@@ -6,7 +6,7 @@ SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/pr
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
-.PHONY: all clean test test-llvm llvm cranelift test-cranelift self
+.PHONY: all clean test test-llvm llvm self
 
 all: $(BIN)
 
@@ -32,26 +32,8 @@ $(LLVM_BIN): $(LLVM_OBJS)
 src/%.llvm.o: src/%.c include/baga.h
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c -o $@ $<
 
-# Cranelift build (optional): Rust staticlib (cargo) + C emitter, линкнати заедно.
-CRANELIFT_DIR := cranelift
-CRANELIFT_LIB := $(CRANELIFT_DIR)/target/release/libbaga_cranelift.a
-CRANELIFT_BIN := baga-cranelift
-
-cranelift: $(CRANELIFT_BIN)
-
-$(CRANELIFT_LIB): $(CRANELIFT_DIR)/src/lib.rs $(CRANELIFT_DIR)/Cargo.toml
-	cargo build --release --manifest-path $(CRANELIFT_DIR)/Cargo.toml
-
-$(CRANELIFT_BIN): $(CRANELIFT_LIB) include/baga.h src/codegen_cranelift.c $(CRANELIFT_DIR)/baga_clif_rt.h
-	$(CC) $(CFLAGS) -DBAGA_CRANELIFT -I$(CRANELIFT_DIR) -o $@ \
-	    src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c \
-	    src/proofs.c src/verify.c src/codegen_cranelift.c $(CRANELIFT_LIB) -lpthread -ldl -lm
-
-test-cranelift: $(BIN) $(CRANELIFT_BIN)
-	@./tests/cranelift_oracle.sh
-
 clean:
-	rm -f $(OBJS) $(BIN) $(LLVM_OBJS) $(LLVM_BIN) $(CRANELIFT_BIN)
+	rm -f $(OBJS) $(BIN) $(LLVM_OBJS) $(LLVM_BIN)
 
 test-llvm: $(BIN) $(LLVM_BIN)
 	@./tests/llvm_oracle.sh
@@ -213,7 +195,5 @@ test: $(BIN)
 	done
 	@echo "=== LLVM оракул (C vs lli-14) ==="
 	@if [ -f ./$(LLVM_BIN) ]; then $(MAKE) -s test-llvm; else echo "(baga-llvm липсва — пропускам LLVM оракула)"; fi
-	@echo "=== Cranelift оракул (C vs in-process JIT) ==="
-	@if [ -f ./$(CRANELIFT_BIN) ]; then $(MAKE) -s test-cranelift; else echo "(baga-cranelift липсва — пропускам Cranelift оракула)"; fi
 	@echo ""
 	@echo "Всички тестове минаха. ⚔️"

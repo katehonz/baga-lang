@@ -143,7 +143,6 @@ int main(int argc, char **argv) {
     int dump_specs = 0;
     int dump_proofs = 0;
     int emit_llvm = 0;
-    int emit_cranelift = 0;
     int test_specs = 0;
     int verify = 0;
 
@@ -154,7 +153,6 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--specs") == 0) { dump_specs = 1; }
         else if (strcmp(argv[i], "--proofs") == 0) { dump_proofs = 1; }
         else if (strcmp(argv[i], "--emit-llvm") == 0) { emit_llvm = 1; }
-        else if (strcmp(argv[i], "--emit-cranelift") == 0) { emit_cranelift = 1; }
         else if (strcmp(argv[i], "--test-specs") == 0) { test_specs = 1; }
         else if (strcmp(argv[i], "--verify") == 0) { verify = 1; }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -281,23 +279,6 @@ int main(int argc, char **argv) {
 #else
     if (emit_llvm) {
         fprintf(stderr, "baga: LLVM backend не е компилиран. Използвай: make llvm\n");
-        return 1;
-    }
-#endif
-
-#ifdef BAGA_CRANELIFT
-    if (emit_cranelift) {
-        codegen_cranelift(program, 1, argc, argv);
-        return 0;
-    }
-    if (!emit_c) {
-        /* default за baga-cranelift: JIT изпълнение in-process */
-        codegen_cranelift(program, 0, argc, argv);
-        /* codegen_cranelift не се връща (exit) */
-    }
-#else
-    if (emit_cranelift) {
-        fprintf(stderr, "baga: Cranelift backend не е компилиран. Използвай: make cranelift\n");
         return 1;
     }
 #endif

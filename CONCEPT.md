@@ -92,7 +92,7 @@ Rust отговори на „как да нямаме segfault". Добър о�
 
 - Компилатор на C. Нула зависимости. `gcc` е на всяка машина от 1987.
 - Self-hosting като ритуал. `baga → baga2 → baga3`. Ако `baga2 == baga3` — работи.
-- C transpiler първо. После Cranelift за REPL. После LLVM за release.
+- C transpiler първо. После LLVM за release. (Собствен JIT за REPL — по-късно.)
 
 Не е нужно да измисляш нова математика.
 Трябва да измислиш правилната рекомбинация за правилния момент.
@@ -156,8 +156,8 @@ impl Точка {
 - `baga → baga2 → baga3`, проверка `baga2 == baga3`
 
 ### Фаза 3: Backends
-- Cranelift — JIT, REPL
 - LLVM — оптимизации, release builds
+- (Собствен JIT за REPL — по-късно, отделен проект)
 
 ### Фаза 4: Ефектова система
 - Effect inference, effect polymorphism

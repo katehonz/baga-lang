@@ -471,11 +471,6 @@ int verify_program(Node *program);
 void codegen_llvm(Node *program, const char *output_path);
 #endif
 
-/* Cranelift JIT codegen (optional, requires -DBAGA_CRANELIFT + Rust staticlib) */
-#ifdef BAGA_CRANELIFT
-void codegen_cranelift(Node *program, int emit_only, int argc, char **argv);
-#endif
-
 /* ============================================================
  *  AST helpers
  * ============================================================ */
