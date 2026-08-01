@@ -209,6 +209,7 @@ static LLVMValueRef to_bool(LLVMValueRef v) {
  * текущият insert block на builder-а се запазва и възстановява. */
 
 static LLVMValueRef baga_rt(const char *name);
+static int extern_ret_is_str_llvm(Node *ef);
 
 static LLVMValueRef rt_libc(const char *name, LLVMTypeRef ret,
                             LLVMTypeRef *params, int nparams) {
@@ -1236,11 +1237,30 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 free(name);
                 return v;
             }
-            /* str == str е чрез strcmp в C backend-а — извън обхвата тук */
+            /* str == str / str != str — чрез baga_str_eq (като codegen_c: strcmp) */
             if ((n->bin_op == OP_EQ || n->bin_op == OP_NEQ) &&
                 n->left->type && n->right->type &&
-                n->left->type->kind == TYPE_STR && n->right->type->kind == TYPE_STR)
-                llvm_unsupported("сравнение на низове");
+                n->left->type->kind == TYPE_STR && n->right->type->kind == TYPE_STR) {
+                LLVMValueRef l = emit_expr_llvm(n->left);
+                LLVMValueRef r = emit_expr_llvm(n->right);
+                if (!l || !r) llvm_unsupported("print в сравнение на низове");
+                LLVMValueRef sc = baga_rt("baga_str_eq");
+                LLVMValueRef args[] = { l, r };
+                char *nm = tmp_name();
+                LLVMValueRef eq = h_call(sc, args, 2, nm);
+                free(nm);
+                /* baga_str_eq връща i64 0/1 → bool i1 */
+                char *nm2 = tmp_name();
+                LLVMValueRef v = LLVMBuildICmp(lg.builder, LLVMIntNE, eq,
+                    LLVMConstInt(lg.i64_ty, 0, 0), nm2);
+                free(nm2);
+                if (n->bin_op == OP_NEQ) {
+                    char *nm3 = tmp_name();
+                    v = LLVMBuildNot(lg.builder, v, nm3);
+                    free(nm3);
+                }
+                return v;
+            }
             LLVMValueRef left = emit_expr_llvm(n->left);
             LLVMValueRef right = emit_expr_llvm(n->right);
             if (!left || !right) llvm_unsupported("print в аритметичен израз");
@@ -1286,7 +1306,20 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         }
 
         case NODE_CALL: {
-            if (is_print_call_llvm(n)) {
+            /* extern fn → raw libc symbol, before the print/builtin dispatch
+             * (an extern named `write` must not become baga_write) */
+            Node *ef = NULL;
+            if (n->callee->kind == NODE_IDENT) {
+                for (int i = 0; lg.program && i < lg.program->items.len; i++) {
+                    Node *it = lg.program->items.data[i];
+                    if (it->kind == NODE_FN && it->is_extern &&
+                        strcmp(it->fn_name, n->callee->name) == 0) {
+                        ef = it;
+                        break;
+                    }
+                }
+            }
+            if (!ef && is_print_call_llvm(n)) {
                 emit_print_llvm(n);
                 return NULL; /* print е void */
             }
@@ -1317,10 +1350,12 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 {"eprintln",    "baga_eprintln"},
             };
             LLVMValueRef fn = NULL;
+            if (ef) fn = LLVMGetNamedFunction(lg.mod, ef->fn_name);
             /* типизирани вектори: helper по елементния тип на вектора */
-            if (strcmp(n->callee->name, "vec_push") == 0 ||
-                strcmp(n->callee->name, "vec_get") == 0 ||
-                strcmp(n->callee->name, "vec_set") == 0) {
+            if (!ef &&
+                (strcmp(n->callee->name, "vec_push") == 0 ||
+                 strcmp(n->callee->name, "vec_get") == 0 ||
+                 strcmp(n->callee->name, "vec_set") == 0)) {
                 Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
                 const char *suf = "i64";
                 if (vt && vt->kind == TYPE_VEC && vt->elem) {
@@ -1332,7 +1367,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                          n->callee->name, suf);
                 fn = baga_rt(rt_name);
             }
-            for (int bi = 0; !fn && bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
+            for (int bi = 0; !ef && !fn && bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                 if (strcmp(n->callee->name, bmap[bi].baga) == 0) {
                     fn = baga_rt(bmap[bi].rt);
                     break;
@@ -1360,6 +1395,12 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             char *name = is_void ? NULL : tmp_name();
             LLVMValueRef result = LLVMBuildCall2(lg.builder, fn_ty, fn, args,
                                                  (unsigned)nargs, is_void ? "" : name);
+            if (ef && extern_ret_is_str_llvm(ef)) {
+                /* str return: NULL → "" (като codegen_c — getenv е тотална) */
+                LLVMValueRef empty = LLVMBuildGlobalStringPtr(lg.builder, "", "empty");
+                LLVMValueRef isnull = LLVMBuildIsNull(lg.builder, result, "isnull");
+                result = LLVMBuildSelect(lg.builder, isnull, empty, result, "nn");
+            }
             free(name);
             free(args);
             return result;
@@ -1642,6 +1683,14 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
 
 /* ---- spec ensures/requires (огледало на codegen_c) ---- */
 
+/* Does this extern fn return str? (Effects on the return type are unwrapped.)
+ * Mirror на extern_ret_is_str в codegen_c. */
+static int extern_ret_is_str_llvm(Node *ef) {
+    Node *t = ef->ret_type;
+    while (t && t->kind == NODE_TYPE_EFFECT) t = t->inner_type;
+    return t && t->kind == NODE_TYPE && strcmp(t->type_name, "str") == 0;
+}
+
 /* Намира spec с ensures или requires за дадена функция (NULL ако няма). */
 static Node *find_ensures_spec_llvm(const char *fn_name) {
     if (!lg.program) return NULL;
@@ -1721,6 +1770,11 @@ static char *impl_name_of(const char *fn_name) {
  * Функция със spec получава impl (тялото) + wrapper (публичното име). */
 static void predeclare_fn_llvm(Node *fn) {
     LLVMTypeRef fn_ty = fn_type_of(fn, NULL, NULL);
+    if (fn->is_extern) {
+        /* extern fn: declare with the raw C name (no b_ mangling) */
+        LLVMAddFunction(lg.mod, fn->fn_name, fn_ty);
+        return;
+    }
     Node *spec = fn->fn_body ? find_ensures_spec_llvm(fn->fn_name) : NULL;
     if (spec) {
         char *im = impl_name_of(fn->fn_name);
@@ -1866,13 +1920,6 @@ void codegen_llvm(Node *program, const char *output_path) {
     lg.builder = LLVMCreateBuilderInContext(lg.ctx);
     lg.tmp_counter = 0;
     lg.program = program;
-
-    /* extern fn: отказваме честно до LLVM паритета (вж. llvm_oracle SKIP) */
-    for (int i = 0; i < program->items.len; i++) {
-        Node *item = program->items.data[i];
-        if (item->kind == NODE_FN && item->is_extern)
-            llvm_unsupported("extern fn");
-    }
 
     lg.i64_ty = LLVMInt64TypeInContext(lg.ctx);
     lg.i32_ty = LLVMInt32TypeInContext(lg.ctx);
