@@ -1,0 +1,5 @@
+import "import_cycle_a.baga"
+
+fn main() {
+    print(2)
+}

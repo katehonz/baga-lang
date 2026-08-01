@@ -1,0 +1,8 @@
+// import_lib.baga — shared helpers for the import acceptance test.
+fn square(x: i64) -> i64 {
+    return x * x
+}
+
+fn triple(x: i64) -> i64 {
+    return x * 3
+}

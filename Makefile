@@ -114,6 +114,14 @@ test: $(BIN)
 	@printf "2\n7\n5\n16\n16\n24\n9\n4\n16777215\n" | diff - /tmp/baga_bitwise_out.txt > /dev/null \
 		&& echo "OK: побитови оператори" \
 		|| { echo "FAIL: побитови оператори"; exit 1; }
+	@echo "=== import ==="
+	@./$(BIN) tests/import_main.baga > /tmp/baga_import_out.txt
+	@printf "49\n21\n" | diff - /tmp/baga_import_out.txt > /dev/null \
+		&& echo "OK: import + include guard" \
+		|| { echo "FAIL: import"; exit 1; }
+	@./$(BIN) tests/import_cycle_a.baga 2>&1 | grep -q "цикличен import" \
+		&& echo "OK: import цикълът е хванат" \
+		|| { echo "FAIL: import цикълът не е хванат"; exit 1; }
 	@echo "=== --test-specs (property-based) ==="
 	@./$(BIN) --test-specs examples/spec_ensures.baga
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \

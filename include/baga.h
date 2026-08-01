@@ -73,6 +73,7 @@ typedef enum {
     TOK_CATCH,
     TOK_BREAK,
     TOK_CONTINUE,
+    TOK_IMPORT,
 
     /* punctuation */
     TOK_LPAREN,     /* ( */
