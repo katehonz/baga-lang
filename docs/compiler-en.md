@@ -293,6 +293,46 @@ examples — 14/14 OK.
 
 ---
 
+### Cranelift Backend (`src/codegen_cranelift.c` + `cranelift/`)
+
+An in-process JIT backend via Rust FFI (`make cranelift` → `baga-cranelift`;
+requires `cargo`/`rustc`). Unlike LLVM (which emits IR text and shells out to
+`lli`), this JITs code **in process** — the foundation for a future REPL.
+
+**Architecture.** C emits a serialized stack bytecode from the AST
+(`codegen_cranelift.c`, mirroring `codegen_llvm.c`); a Rust staticlib
+(`cranelift/src/lib.rs`, `cranelift-jit` 0.134) interprets it into Cranelift IR
+and JITs it. Chosen over "C emits `.clif` text → Rust parses" because
+`cranelift-reader::parse_functions` discards the external-name table, so the JIT
+cannot resolve libc symbols for parsed functions (empirically confirmed).
+
+- **Bytecode** (`cranelift/baga_clif_rt.h`, keep-in-sync C↔Rust): a stack machine
+  — `ICONST/FCONST/BCONST/SCONST`, `LOAD/STORE/ALLOCA`, `BINOP`, `AND/OR/NOT/NEG`,
+  `PROMOTE` (i64→f64), `CALL fn_id nargs`, `RET/RET_VOID`, `BR/BR_FALSE/LABEL`,
+  `DROP`. `fn_id < RT_COUNT` is a runtime helper, otherwise a user function.
+- **Runtime helpers** are native Rust `extern "C"` functions (`baga_rt_print_*`,
+  `baga_rt_arg*`, `baga_rt_spec_fail`) imported by name by the JIT; they call libc
+  `printf`/`fprintf` with the SAME byte-exact formats as `codegen_c.c` (`%lld`,
+  `%g`, `true`/`false`, `%s`).
+- **`--emit-cranelift`** prints a human-readable disassembly of the bytecode.
+
+Supports the same core as the examples: `i64/f64/bool/str`, arithmetic with f64
+promotion, `let`/assignment, `if/while/for` with `break`/`continue`, `match` on
+i64 (incl. returning `str`), enum variants, functions with recursion,
+`print`/`write`, `arg`/`arg_count`, effects (`?`/`catch` — pass-through,
+compile-time tags) and **contracts** (a wrapper with `requires` before and
+`ensures` after the call; violation → same stderr message + exit 1).
+
+The "no silent values" principle: struct/field, `Vec`, arrays `[T]`, str
+builtins (len/concat/…), `read_file`, references `&`/`*` → compile-time error
+`baga: Cranelift backend: неподдържан конструкт '<what>'`.
+
+The oracle `tests/cranelift_oracle.sh` (run by `make test`) diffs the output and
+exit codes of the C backend vs the Cranelift JIT for all examples — 12 OK + 5
+SKIP (strings, tochka, vec, vec_ann, vec_f64 — honest refusal).
+
+---
+
 ## Self-Hosted Compiler (`self/compiler.baga`)
 
 ### Architecture

@@ -18,7 +18,8 @@ make
 # Здравей, багатуре. Боят започва.
 ```
 
-Zero dependencies. Only `gcc` and `make`.
+Zero dependencies for the core compiler — only `gcc` and `make`. The LLVM and
+Cranelift backends are optional (see [Backends](#backends)).
 
 ## The Three Pillars
 
@@ -150,6 +151,28 @@ The self-hosted compiler is ~960 lines of Baga. It reads its input file from
 `baga2` generates for `compiler.baga` is byte-identical to what `baga3`
 generates — i.e. `baga2` and `baga3` are the same compiler.
 
+## Backends
+
+Three backends, one AST. The C transpiler is the default and needs nothing
+beyond `gcc`; the other two are optional and are validated byte-for-byte against
+it by oracles in `make test`.
+
+| Backend | Build | Run | Needs | Oracle |
+|---|---|---|---|---|
+| C transpiler (default) | `make` | `./baga file.baga` | `gcc`, `make` | — (reference) |
+| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli-14` | LLVM 14 | 17/17 OK |
+| Cranelift JIT | `make cranelift` | `./baga-cranelift file.baga` (in-process) | `cargo`, `rustc` | 12 OK + 5 SKIP |
+
+- **C transpiler** — emits C, compiles with `gcc`, runs. Full language coverage.
+- **LLVM** — emits LLVM IR directly from the AST (`src/codegen_llvm.c`). Full
+  coverage; `tests/llvm_oracle.sh` diffs it against the C backend via `lli-14`.
+- **Cranelift** — C emits a compact stack bytecode (`src/codegen_cranelift.c`),
+  a Rust staticlib (`cranelift/`) interprets it into Cranelift IR and JITs it
+  **in process** — the foundation for a REPL. Covers the numeric/core subset
+  (recursion, control flow, `match`, enums, contracts, effects-as-tags);
+  struct/`Vec`/str-builtins honestly refuse. `--emit-cranelift` disassembles the
+  bytecode. `tests/cranelift_oracle.sh` diffs against the C backend.
+
 ## Project Structure
 
 ```
@@ -161,7 +184,10 @@ baga/
 │   ├── parser.c            # Recursive descent parser
 │   ├── checker.c           # Type checking + effect checking
 │   ├── codegen_c.c         # C code generator
+│   ├── codegen_llvm.c      # LLVM IR backend (optional, `make llvm`)
+│   ├── codegen_cranelift.c # Cranelift bytecode emitter (optional, `make cranelift`)
 │   └── proofs.c            # Proof extraction
+├── cranelift/              # Rust staticlib: Cranelift JIT (FFI bridge)
 ├── self/
 │   ├── lexer.baga          # Self-hosted lexer
 │   ├── parser.baga         # Self-hosted parser
@@ -178,6 +204,8 @@ baga/
 |---|---|
 | (none) | Compile and run |
 | `--emit-c` | Generate C code to stdout |
+| `--emit-llvm` | Generate LLVM IR to stdout (`baga-llvm`, `make llvm`) |
+| `--emit-cranelift` | Disassemble the Cranelift bytecode (debug; `baga-cranelift`, `make cranelift`) |
 | `--ast` | Print AST (debug) |
 | `--tokens` | Print tokens (debug) |
 | `--specs` | Print spec documentation |
@@ -199,16 +227,17 @@ baga/
 |---|---|---|
 | 1 | C bootstrap compiler | ✅ |
 | 2 | Self-hosting (baga2 == baga3) | ✅ |
+| 3 | Cranelift / LLVM backends | ✅ |
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification | ✅ |
 | 6 | Proof extraction | ✅ |
-| 3 | Cranelift / LLVM backends | ⏳ |
 
 ## Philosophy
 
 Baga is a *bagatur* — a Bulgarian warrior. It fights alone. It depends on no one.
 
 - Compiler in C. Zero dependencies. `gcc` has been on every machine since 1987.
+- Optional backends (LLVM, Cranelift) are additive — the core stays dependency-free.
 - Self-hosting as a rite of passage.
 - Cyrillic identifiers. Because language is identity.
 
