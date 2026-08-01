@@ -254,9 +254,9 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
 - **M3** — **element invariants**: a `v[*] >= c` annotation (in `requires` or a
   loop `invariant`) means "every element of `v` satisfies the predicate". It is
   stored as a quantified axiom and **instantiated** at each concrete `vec_get`
-  index, so an `ensures` about a read element follows. `vec_push(v, e)`
-  preserves the axiom when `e` provably satisfies the predicate (otherwise the
-  axiom is dropped — sound). Example:
+  index, so an `ensures` about a read element follows. `vec_push(v, e)` and
+  `vec_set(v, k, e)` preserve the axiom when `e` provably satisfies the
+  predicate (otherwise the axiom is dropped — sound). Example:
   ```baga
   requires: v[*] >= 0, vec_len(v) >= 1
   ensures:  output >= 0
@@ -264,8 +264,8 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   ```
 
 Recursion and non-linear terms are still skipped honestly. Remaining staircase:
-element invariants through `vec_set`/`slice`/`concat`, relational invariants
-(`sorted`), then non-linear reasoning.
+`vec_slice`/`vec_concat` element-invariant propagation (these ops are not yet
+language builtins), relational invariants (`sorted`), then non-linear reasoning.
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

@@ -1,0 +1,15 @@
+spec set_nonneg {
+    input:
+        v: [i64]
+    output: i64
+    requires:
+        v[*] >= 0,
+        vec_len(v) >= 1
+    ensures:
+        output >= 0
+}
+fn set_nonneg(v: [i64]) -> i64 {
+    vec_set(v, 0, 5)
+    return vec_get(v, 0)
+}
+fn main() { let v = vec_new(); vec_push(v, 1); print(set_nonneg(v)) }

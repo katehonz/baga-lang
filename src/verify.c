@@ -1079,13 +1079,25 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
     }
 
     if (strcmp(nm, "vec_set") == 0 && e->args.len >= 1 && e->args.data[0]->kind == NODE_IDENT) {
-        /* M3: setting an element may break element invariants — drop the axioms
-         * for this vector (sound over-approximation; M3 does not model set). */
+        /* M3+: vec_set(v, k, val) preserves an axiom on v when the new value
+         * provably satisfies the predicate (the set element then still obeys
+         * it, and the others are untouched); otherwise the axiom is dropped
+         * (sound over-approximation). */
         const char *vname = e->args.data[0]->name;
         AxiomList kept; ax_init(&kept);
-        for (int i = 0; i < st->ax.n; i++)
-            if (strcmp(st->ax.a[i].vec, vname) != 0)
+        for (int i = 0; i < st->ax.n; i++) {
+            if (strcmp(st->ax.a[i].vec, vname) == 0) {
+                int survives = 0;
+                if (e->args.len >= 3) {
+                    Sym val = se_from_ast(e->args.data[2], &st->env, &st->vlen, &st->reads);
+                    survives = axiom_holds_for_value(&st->ax.a[i], &val, st);
+                    lin_free(&val.lin);
+                }
+                if (survives) ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+            } else {
                 ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+            }
+        }
         ax_free(&st->ax);
         st->ax = kept;
         return;

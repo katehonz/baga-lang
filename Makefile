@@ -188,16 +188,18 @@ test: $(BIN)
 	grep -q "ПРОПУСНАТО" /tmp/baga_verify_out.txt \
 		&& echo "OK: recursive — честно пропуснато" \
 		|| { echo "FAIL: recursive"; cat /tmp/baga_verify_out.txt; exit 1; }
-	@for f in elem_param elem_push; do \
+	@for f in elem_param elem_push elem_set; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 			&& echo "OK: $$f — елементен инвариант доказан (M3)" \
 			|| { echo "FAIL: $$f — очаквах ensures ДОКАЗАНО"; cat /tmp/baga_verify_out.txt; exit 1; }; \
 	done
-	@./$(BIN) --verify examples/verify/elem_bad.baga > /tmp/baga_verify_out.txt; \
-	grep -q "ensures #1.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
-		&& echo "OK: elem_bad — нарушен елементен инвариант е оброчен (M3 soundness)" \
-		|| { echo "FAIL: elem_bad — очаквах ensures ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@for f in elem_bad elem_set_bad; do \
+		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
+		grep -q "ensures #1.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+			&& echo "OK: $$f — нарушен елементен инвариант е оброчен (M3 soundness)" \
+			|| { echo "FAIL: $$f — очаквах ensures ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }; \
+	done
 	@for f in abs_val max2 clamp; do \
 		./$(BIN) --test-specs examples/verify/$$f.baga > /dev/null 2>&1 \
 			&& echo "OK: $$f — оракулът (--test-specs) съгласен с ДОКАЗАНО" \
