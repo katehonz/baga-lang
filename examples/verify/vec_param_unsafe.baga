@@ -1,0 +1,20 @@
+spec head_unguarded {
+    input:
+        v: [i64]
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// No requires on vec_len(v): the length is unconstrained, so the access v[0]
+// cannot be proven in range (it is unsafe for an empty vector). The honest
+// answer is "не мога да реша" (UNKNOWN) — never "доказано".
+fn head_unguarded(v: [i64]) -> i64 {
+    return vec_get(v, 0)
+}
+
+fn main() {
+    let v = vec_new()
+    vec_push(v, 42)
+    print(head_unguarded(v))
+}

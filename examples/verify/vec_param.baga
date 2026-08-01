@@ -1,0 +1,22 @@
+spec head {
+    input:
+        v: [i64]
+    output: i64
+    requires:
+        vec_len(v) >= 1
+    ensures:
+        output >= 0
+}
+
+// [i64] is sugar for Vec<i64>. The requires constrains the (symbolic) length,
+// so the index 0 is provably in range. The ensures about the element VALUE is
+// honestly UNKNOWN (M2 tracks lengths, not element contents).
+fn head(v: [i64]) -> i64 {
+    return vec_get(v, 0)
+}
+
+fn main() {
+    let v = vec_new()
+    vec_push(v, 42)
+    print(head(v))
+}

@@ -178,7 +178,7 @@ test: $(BIN)
 	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: bad_loop — грешен инвариант не води до фалшиво доказателство (soundness)" \
 		|| { echo "FAIL: bad_loop"; cat /tmp/baga_verify_out.txt; exit 1; }
-	@for f in vec_safe vec_guard; do \
+	@for f in vec_safe vec_guard vec_param; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "граница.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 			&& echo "OK: $$f — достъпът до вектор е доказано в границите (M2)" \
@@ -188,6 +188,10 @@ test: $(BIN)
 	grep -q "граница.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: vec_oob — извън-границите достъп е оброчен (M2 soundness)" \
 		|| { echo "FAIL: vec_oob — очаквах граница ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/vec_param_unsafe.baga > /tmp/baga_verify_out.txt; \
+	grep -q "граница.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "граница.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: vec_param_unsafe — неохраняван достъп не се доказва (M2 soundness)" \
+		|| { echo "FAIL: vec_param_unsafe"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/recursive.baga > /tmp/baga_verify_out.txt; \
 	grep -q "ПРОПУСНАТО" /tmp/baga_verify_out.txt \
 		&& echo "OK: recursive — честно пропуснато" \

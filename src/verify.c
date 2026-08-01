@@ -796,7 +796,7 @@ static int has_unsupported_rec(Node *n, int flat) {
 static int has_unsupported(Node *n) { return has_unsupported_rec(n, 0); }
 
 static State clone_state_with(State *cur, Formula *add);
-static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid);
+static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid, Node *spec);
 
 /* Prove one invariant holds in every body-final state, given the head state
  * (invariant ∧ condition on entry). UNSAT per DNF branch ⇒ holds. */
@@ -833,7 +833,7 @@ static int check_preservation(State *head, Node *inv, States *body_final) {
  *                 if init and preservation are both PROVEN (soundness gate —
  *                 otherwise any downstream proof depending on it is UNKNOWN).
  * Returns 1 iff the invariant is trustworthy (init ∧ preservation proven). */
-static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvoid) {
+static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvoid, Node *spec) {
     (void)is_nonvoid;   /* the loop body is never a return context */
     int trusted = 1;
     States out; out.s = NULL; out.n = 0; out.cap = 0;
@@ -881,7 +881,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
             }
             /* the loop body is not a return context: its last statement is NOT
              * an implicit return, so pass is_nonvoid=0 */
-            symexec_block(st->while_body, &head_ss, ob, 0);
+            symexec_block(st->while_body, &head_ss, ob, 0, spec);
             for (int j = 0; j < st->while_invariants.len && trusted; j++)
                 if (!check_preservation(cur, st->while_invariants.data[j], &head_ss)) trusted = 0;
         }
@@ -930,7 +930,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
 /* Track Vec lengths and emit bounds obligations for vec accesses in an
  * expression statement. Only the top-level call and a let-init call are
  * handled; nested vec calls inside larger expressions are not tracked. */
-static void scan_vec_expr(Node *e, State *st, Obligations *ob) {
+static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
     if (!e) return;
     if (e->kind != NODE_CALL || e->callee->kind != NODE_IDENT) return;
     const char *nm = e->callee->name;
@@ -953,9 +953,18 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob) {
         if (ve && !ve->unknown) { lenlin = lin_clone(&ve->len); have_len = 1; }
         else if (ve && ve->unknown) { char buf[300]; snprintf(buf, sizeof buf, "__len_%s", vname); lenlin = lin_var(buf); have_len = 1; }
         int unknown = idx.nonlinear;
-        /* path = current state path; bound = ¬(0 <= idx < len), kept separate
-         * so the SAT proof can use it while the witness search ignores it */
+        /* path = requires ∧ current state path; bound = ¬(0 <= idx < len),
+         * kept separate so the SAT proof can use it while the witness search
+         * ignores it */
         ConsList opath; cl_init(&opath);
+        if (spec) for (int r = 0; r < spec->spec_requires.len; r++) {
+            Formula rf;
+            if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &st->env, &st->vlen, 0, &rf)) {
+                if (rf.n == 1)
+                    for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                f_free(&rf);
+            }
+        }
         for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
         ConsList obound; cl_init(&obound);
         if (!idx.nonlinear) {
@@ -980,14 +989,14 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob) {
 
 /* Symbolically execute a statement list over a set of states; returning states
  * are drained into `ob`; `states` holds the fall-through states at the end. */
-static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvoid);
+static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvoid, Node *spec);
 
-static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid) {
+static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid, Node *spec) {
     if (!blk) return;
-    if (blk->kind == NODE_BLOCK) { symexec_stmts(&blk->stmts, states, ob, is_nonvoid); return; }
+    if (blk->kind == NODE_BLOCK) { symexec_stmts(&blk->stmts, states, ob, is_nonvoid, spec); return; }
     /* single-statement branch */
     NodeVec one; one.data = &blk; one.len = 1; one.cap = 1;
-    symexec_stmts(&one, states, ob, is_nonvoid);
+    symexec_stmts(&one, states, ob, is_nonvoid, spec);
 }
 
 static State clone_state_with(State *cur, Formula *add) {
@@ -1019,7 +1028,7 @@ static void drain_returns(States *states, Obligations *ob, Node *val_expr) {
     states->n = 0;
 }
 
-static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvoid) {
+static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvoid, Node *spec) {
     for (int si = 0; si < stmts->len; si++) {
         Node *st = stmts->data[si];
         int last = (si == stmts->len - 1);
@@ -1030,23 +1039,23 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                 if (st->let_init && st->let_init->kind == NODE_CALL && st->let_init->callee->kind == NODE_IDENT &&
                     strcmp(st->let_init->callee->name, "vec_new") == 0)
                     vlen_set(&states->s[i].vlen, st->let_name, lin_const(rat_int(0)), 0);
-                scan_vec_expr(st->let_init, &states->s[i], ob);
+                scan_vec_expr(st->let_init, &states->s[i], ob, spec);
             }
         } else if (st->kind == NODE_ASSIGN) {
             if (st->assign_target->kind != NODE_IDENT) { for (int i = 0; i < states->n; i++) states->s[i].bad = 1; continue; }
             for (int i = 0; i < states->n; i++)
                 bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env, &states->s[i].vlen));
         } else if (st->kind == NODE_RETURN) {
-            for (int i = 0; i < states->n; i++) scan_vec_expr(st->ret_val, &states->s[i], ob);
+            for (int i = 0; i < states->n; i++) scan_vec_expr(st->ret_val, &states->s[i], ob, spec);
             drain_returns(states, ob, st->ret_val);
             return;
         } else if (st->kind == NODE_EXPR_STMT && last && is_nonvoid) {
-            for (int i = 0; i < states->n; i++) scan_vec_expr(st->expr, &states->s[i], ob);
+            for (int i = 0; i < states->n; i++) scan_vec_expr(st->expr, &states->s[i], ob, spec);
             drain_returns(states, ob, st->expr);
             return;
         } else if (st->kind == NODE_EXPR_STMT) {
             /* expression statement: track vec mutations / emit bounds checks */
-            for (int i = 0; i < states->n; i++) scan_vec_expr(st->expr, &states->s[i], ob);
+            for (int i = 0; i < states->n; i++) scan_vec_expr(st->expr, &states->s[i], ob, spec);
         } else if (st->kind == NODE_IF) {
             States out; out.s = NULL; out.n = 0; out.cap = 0;
             for (int i = 0; i < states->n; i++) {
@@ -1072,7 +1081,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                     f_free(&one);
                     states_push(&then_ss, t);
                 }
-                symexec_block(st->then_br, &then_ss, ob, 0);   /* branch ≠ return context */
+                symexec_block(st->then_br, &then_ss, ob, 0, spec);   /* branch ≠ return context */
                 for (int k = 0; k < then_ss.n; k++) states_push(&out, then_ss.s[k]);
                 free(then_ss.s);
                 /* else branch (or fall-through when there is none) */
@@ -1086,7 +1095,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                     f_free(&one);
                     states_push(&else_ss, t);
                 }
-                if (st->else_br) symexec_block(st->else_br, &else_ss, ob, 0);   /* branch ≠ return context */
+                if (st->else_br) symexec_block(st->else_br, &else_ss, ob, 0, spec);   /* branch ≠ return context */
                 for (int k = 0; k < else_ss.n; k++) states_push(&out, else_ss.s[k]);
                 free(else_ss.s);
                 f_free(&cf); f_free(&nf);
@@ -1095,7 +1104,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             free(states->s);
             *states = out;
         } else if (st->kind == NODE_WHILE) {
-            symexec_while(st, states, ob, is_nonvoid);
+            symexec_while(st, states, ob, is_nonvoid, spec);
         } else {
             for (int i = 0; i < states->n; i++) states->s[i].bad = 1;
         }
@@ -1269,7 +1278,7 @@ static int verify_fn(Node *prog, Node *fn) {
     States states; states.s = NULL; states.n = 0; states.cap = 0;
     states_push(&states, init);
     int is_nonvoid = (fn->ret_type != NULL);
-    symexec_stmts(&fn->fn_body->stmts, &states, &ob, is_nonvoid);
+    symexec_stmts(&fn->fn_body->stmts, &states, &ob, is_nonvoid, spec);
     for (int i = 0; i < states.n; i++) state_free(&states.s[i]);
     free(states.s);
 

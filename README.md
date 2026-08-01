@@ -257,14 +257,17 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   ```
 - **M2** — **array bounds safety**: every `vec_get`/`vec_set` index is checked
   against the symbolically tracked vector length (`vec_new` → 0, `vec_push`
-  → +1). Proves accesses in range, or refutes with a counterexample. Lengths
-  flow through loops via the invariant mechanism. Element *values* are not
-  tracked (an `ensures` about a returned element is honestly UNKNOWN), and
-  `Vec` *parameters* are not yet supported (`[T]` is a distinct type from
-  `Vec<T>` in the checker — a language gap).
+  → +1, `Vec` parameters → a symbolic length constrained by `requires
+  vec_len(v) ...`). Proves accesses in range, or refutes with a counterexample.
+  Lengths flow through loops via the invariant mechanism. Element *values* are
+  not tracked (an `ensures` about a returned element is honestly UNKNOWN).
 
 Recursion and non-linear terms are still skipped honestly. Remaining staircase:
-`Vec` parameters / element invariants, then non-linear reasoning.
+element invariants (`forall i. v[i] >= 0`), then non-linear reasoning.
+
+> **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
+> `baga_Vec`), not a raw C pointer — so vector parameters can be written
+> `v: [i64]` and used with the `vec_*` builtins uniformly.
 
 ## Philosophy
 

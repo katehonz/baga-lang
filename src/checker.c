@@ -219,8 +219,22 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
             return t;
         }
         case NODE_TYPE_ARRAY: {
-            Type *t = type_new(TYPE_ARRAY);
-            t->elem = resolve_type_node(ctx, ty->inner_type);
+            /* [T] is sugar for Vec<T>: the growable baga_Vec, not a raw C
+             * pointer. This lets Vec parameters be written as [i64] and used
+             * with the vec_* builtins uniformly. */
+            Type *t = type_new(TYPE_VEC);
+            if (ty->inner_type) {
+                Type *el = resolve_type_node(ctx, ty->inner_type);
+                if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
+                if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
+                    el->kind != TYPE_F64) {
+                    check_error(ctx, ty->pos,
+                        "[T]: неподдържан елементен тип %s (поддържат се i64, str и f64)",
+                        type_str(el));
+                } else {
+                    t->elem = el;
+                }
+            }
             return t;
         }
         case NODE_TYPE_EFFECT: {
