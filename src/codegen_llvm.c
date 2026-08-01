@@ -63,6 +63,7 @@ static void llvm_unsupported_node(Node *n) {
 
 static LLVMTypeRef llvm_type(Node *ty);
 static LLVMTypeRef baga_vec_ptr_ty(void);
+static LLVMTypeRef baga_bytes_ty(void);
 static LLVMTypeRef user_struct_ty(const char *name);
 
 static LLVMTypeRef llvm_type_resolved(Type *ty) {
@@ -78,6 +79,7 @@ static LLVMTypeRef llvm_type_resolved(Type *ty) {
             if (!ty->name) llvm_unsupported("анонимна структура");
             return user_struct_ty(ty->name);
         case TYPE_VEC:    return baga_vec_ptr_ty();
+        case TYPE_BYTES:  return baga_bytes_ty();
         case TYPE_ARRAY:  llvm_unsupported("масиви"); break;
         case TYPE_REF:    llvm_unsupported("референции"); break;
         default:          llvm_unsupported("неизвестен тип"); break;
@@ -432,7 +434,7 @@ static LLVMValueRef build_baga_i64_to_str(void) {
     LLVMValueRef neg = entry_alloca(lg.i64_ty, "neg");
     LLVMValueRef cnt = entry_alloca(lg.i64_ty, "cnt");
     LLVMValueRef isneg = LLVMBuildICmp(lg.builder, LLVMIntSLT, x, i0, "isneg");
-    LLVMBuildStore(lg.builder, isneg, neg);
+    LLVMBuildStore(lg.builder, LLVMBuildZExt(lg.builder, isneg, lg.i64_ty, "isneg64"), neg);
     LLVMValueRef negv = LLVMBuildSub(lg.builder, i0, x, "negv");
     LLVMValueRef v0 = LLVMBuildSelect(lg.builder, isneg, negv, x, "v0");
     LLVMBuildStore(lg.builder, v0, v);
@@ -463,8 +465,9 @@ static LLVMValueRef build_baga_i64_to_str(void) {
     LLVMBuildCondBr(lg.builder, cont, lb, rb);
     LLVMPositionBuilderAtEnd(lg.builder, rb);
     LLVMValueRef c = LLVMBuildLoad2(lg.builder, lg.i64_ty, cnt, "c");
-    LLVMValueRef isng = LLVMBuildLoad2(lg.builder, LLVMInt1TypeInContext(lg.ctx), neg, "isng");
-    LLVMValueRef isng64 = LLVMBuildZExt(lg.builder, isng, lg.i64_ty, "isng64");
+    LLVMValueRef isng64 = LLVMBuildLoad2(lg.builder, lg.i64_ty, neg, "isng64");
+    LLVMValueRef isng = LLVMBuildICmp(lg.builder, LLVMIntNE, isng64,
+        LLVMConstInt(lg.i64_ty, 0, 0), "isng");
     LLVMValueRef tlen = LLVMBuildAdd(lg.builder, c, isng64, "tlen");   /* +1 if negative */
     LLVMValueRef rlen = LLVMBuildAdd(lg.builder, tlen, i1, "rlen");
     LLVMValueRef res = h_call(rt_malloc(), (LLVMValueRef[]){ rlen }, 1, "res");
@@ -517,6 +520,17 @@ static LLVMTypeRef baga_vec_ty(void) {
 
 static LLVMTypeRef baga_vec_ptr_ty(void) {
     return LLVMPointerType(baga_vec_ty(), 0);
+}
+
+/* baga_bytes = { i8* data, i64 len } — binary-safe buffer, passed by value
+ * (must match the C struct layout exactly for output parity). */
+static LLVMTypeRef baga_bytes_ty(void) {
+    LLVMTypeRef t = LLVMGetTypeByName(lg.mod, "baga_bytes");
+    if (t) return t;
+    t = LLVMStructCreateNamed(lg.ctx, "baga_bytes");
+    LLVMTypeRef elems[] = { lg.ptr_ty, lg.i64_ty };
+    LLVMStructSetBody(t, elems, 2, 0);
+    return t;
 }
 
 /* GEP към поле на baga_Vec (0=data, 1=len, 2=cap) + load */
@@ -855,6 +869,323 @@ static LLVMValueRef build_baga_vec_set_f64(void) {
     return fn;
 }
 
+/* ---- bytes: baga_bytes = { i8* data, i64 len }, passed by value ---- */
+
+/* store a by-value bytes param into a fresh alloca so its fields are GEP-able */
+static LLVMValueRef bytes_param_alloca(LLVMValueRef v) {
+    LLVMValueRef a = entry_alloca(baga_bytes_ty(), "ba");
+    LLVMBuildStore(lg.builder, v, a);
+    return a;
+}
+static LLVMValueRef bytes_load_data(LLVMValueRef a) {
+    return LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        LLVMBuildStructGEP2(lg.builder, baga_bytes_ty(), a, 0, "bd"), "bdata");
+}
+static LLVMValueRef bytes_load_len(LLVMValueRef a) {
+    return LLVMBuildLoad2(lg.builder, lg.i64_ty,
+        LLVMBuildStructGEP2(lg.builder, baga_bytes_ty(), a, 1, "bl"), "blen");
+}
+/* assemble a baga_bytes value from data ptr + len */
+static LLVMValueRef bytes_make(LLVMValueRef data, LLVMValueRef len) {
+    LLVMValueRef u = LLVMGetUndef(baga_bytes_ty());
+    u = LLVMBuildInsertValue(lg.builder, u, data, 0, "b0");
+    u = LLVMBuildInsertValue(lg.builder, u, len, 1, "b1");
+    return u;
+}
+/* malloc(max(n,1)) — matches the C helper's non-empty allocation */
+static LLVMValueRef bytes_malloc_n(LLVMValueRef n) {
+    LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
+    LLVMValueRef cmp = LLVMBuildICmp(lg.builder, LLVMIntSGT, n, one, "nn");
+    LLVMValueRef sz = LLVMBuildSelect(lg.builder, cmp, n, one, "sz");
+    LLVMValueRef ma[] = { sz };
+    return h_call(rt_malloc(), ma, 1, "bdata");
+}
+
+static LLVMValueRef build_baga_bytes_len(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_len",
+        LLVMFunctionType(lg.i64_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMBuildRet(lg.builder, bytes_load_len(a));
+    return fn;
+}
+
+static LLVMValueRef build_baga_bytes_at(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty(), lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_at",
+        LLVMFunctionType(lg.i64_ty, p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef i = LLVMGetParam(fn, 1);
+    LLVMValueRef data = bytes_load_data(a);
+    LLVMValueRef slot = LLVMBuildGEP2(lg.builder, lg.i8_ty, data, &i, 1, "bs");
+    LLVMValueRef byte = LLVMBuildLoad2(lg.builder, lg.i8_ty, slot, "byte");
+    LLVMBuildRet(lg.builder, LLVMBuildZExt(lg.builder, byte, lg.i64_ty, "bv"));
+    return fn;
+}
+
+static LLVMValueRef build_baga_bytes_slice(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty(), lg.i64_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_slice",
+        LLVMFunctionType(baga_bytes_ty(), p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef lo = LLVMGetParam(fn, 1);
+    LLVMValueRef hi = LLVMGetParam(fn, 2);
+    LLVMValueRef blen = bytes_load_len(a);
+    LLVMValueRef z = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef c1 = LLVMBuildICmp(lg.builder, LLVMIntSLT, lo, z, "lo0");
+    lo = LLVMBuildSelect(lg.builder, c1, z, lo, "lo");
+    LLVMValueRef c2 = LLVMBuildICmp(lg.builder, LLVMIntSGT, hi, blen, "hi0");
+    hi = LLVMBuildSelect(lg.builder, c2, blen, hi, "hi");
+    LLVMValueRef c3 = LLVMBuildICmp(lg.builder, LLVMIntSLT, hi, lo, "hc");
+    hi = LLVMBuildSelect(lg.builder, c3, lo, hi, "hi");
+    LLVMValueRef n = LLVMBuildSub(lg.builder, hi, lo, "sn");
+    LLVMValueRef data = bytes_load_data(a);
+    LLVMValueRef src = LLVMBuildGEP2(lg.builder, lg.i8_ty, data, &lo, 1, "src");
+    LLVMValueRef dst = bytes_malloc_n(n);
+    LLVMValueRef mc[] = { dst, src, n };
+    h_call(rt_memcpy(), mc, 3, "");
+    LLVMBuildRet(lg.builder, bytes_make(dst, n));
+    return fn;
+}
+
+static LLVMValueRef build_baga_bytes_concat(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty(), baga_bytes_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_concat",
+        LLVMFunctionType(baga_bytes_ty(), p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef b = bytes_param_alloca(LLVMGetParam(fn, 1));
+    LLVMValueRef al = bytes_load_len(a);
+    LLVMValueRef bl = bytes_load_len(b);
+    LLVMValueRef n = LLVMBuildAdd(lg.builder, al, bl, "cn");
+    LLVMValueRef dst = bytes_malloc_n(n);
+    LLVMValueRef ad = bytes_load_data(a);
+    LLVMValueRef bd = bytes_load_data(b);
+    LLVMValueRef m1[] = { dst, ad, al };
+    h_call(rt_memcpy(), m1, 3, "");
+    LLVMValueRef off = LLVMBuildGEP2(lg.builder, lg.i8_ty, dst, &al, 1, "off");
+    LLVMValueRef m2[] = { off, bd, bl };
+    h_call(rt_memcpy(), m2, 3, "");
+    LLVMBuildRet(lg.builder, bytes_make(dst, n));
+    return fn;
+}
+
+static LLVMValueRef build_baga_bytes_from_str(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_from_str",
+        LLVMFunctionType(baga_bytes_ty(), p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef s = LLVMGetParam(fn, 0);
+    LLVMValueRef la[] = { s };
+    LLVMValueRef n = h_call(rt_strlen(), la, 1, "n");
+    LLVMValueRef dst = bytes_malloc_n(n);
+    LLVMValueRef mc[] = { dst, s, n };
+    h_call(rt_memcpy(), mc, 3, "");
+    LLVMBuildRet(lg.builder, bytes_make(dst, n));
+    return fn;
+}
+
+static LLVMValueRef build_baga_bytes_to_str(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_to_str",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef n = bytes_load_len(a);
+    LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
+    LLVMValueRef sz = LLVMBuildAdd(lg.builder, n, one, "sz");
+    LLVMValueRef ma[] = { sz };
+    LLVMValueRef r = h_call(rt_malloc(), ma, 1, "r");
+    LLVMValueRef data = bytes_load_data(a);
+    LLVMValueRef mc[] = { r, data, n };
+    h_call(rt_memcpy(), mc, 3, "");
+    LLVMValueRef ep = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &n, 1, "ep");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 0, 0), ep);
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+
+static LLVMValueRef build_baga_hex_val(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_hex_val",
+        LLVMFunctionType(lg.i64_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef c = LLVMGetParam(fn, 0);
+    LLVMValueRef neg1 = LLVMConstInt(lg.i64_ty, (uint64_t)-1, 1);
+    LLVMValueRef r = entry_alloca(lg.i64_ty, "hv");
+    LLVMBuildStore(lg.builder, neg1, r);
+    LLVMValueRef c0 = LLVMConstInt(lg.i64_ty, 48, 0), c9 = LLVMConstInt(lg.i64_ty, 57, 0);
+    LLVMValueRef ca = LLVMConstInt(lg.i64_ty, 97, 0), cf = LLVMConstInt(lg.i64_ty, 102, 0);
+    LLVMValueRef cA = LLVMConstInt(lg.i64_ty, 65, 0), cF = LLVMConstInt(lg.i64_ty, 70, 0);
+    LLVMValueRef ten = LLVMConstInt(lg.i64_ty, 10, 0);
+    LLVMValueRef d1 = LLVMBuildSub(lg.builder, c, c0, "d1");
+    LLVMValueRef in1a = LLVMBuildICmp(lg.builder, LLVMIntSGE, c, c0, "i1a");
+    LLVMValueRef in1b = LLVMBuildICmp(lg.builder, LLVMIntSLE, c, c9, "i1b");
+    LLVMValueRef in1 = LLVMBuildAnd(lg.builder, in1a, in1b, "i1");
+    LLVMBasicBlockRef b1 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "d");
+    LLVMBasicBlockRef b2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "af");
+    LLVMBuildCondBr(lg.builder, in1, b1, b2);
+    LLVMPositionBuilderAtEnd(lg.builder, b1);
+    LLVMBuildStore(lg.builder, d1, r);
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, lg.i64_ty, r, "rv"));
+    LLVMPositionBuilderAtEnd(lg.builder, b2);
+    LLVMValueRef in2a = LLVMBuildICmp(lg.builder, LLVMIntSGE, c, ca, "i2a");
+    LLVMValueRef in2b = LLVMBuildICmp(lg.builder, LLVMIntSLE, c, cf, "i2b");
+    LLVMValueRef in2 = LLVMBuildAnd(lg.builder, in2a, in2b, "i2");
+    LLVMBasicBlockRef b3 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "lo");
+    LLVMBasicBlockRef b4 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "AF");
+    LLVMBuildCondBr(lg.builder, in2, b3, b4);
+    LLVMPositionBuilderAtEnd(lg.builder, b3);
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, LLVMBuildSub(lg.builder, c, ca, "d2"), ten, "v2"), r);
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, lg.i64_ty, r, "rv2"));
+    LLVMPositionBuilderAtEnd(lg.builder, b4);
+    LLVMValueRef in3a = LLVMBuildICmp(lg.builder, LLVMIntSGE, c, cA, "i3a");
+    LLVMValueRef in3b = LLVMBuildICmp(lg.builder, LLVMIntSLE, c, cF, "i3b");
+    LLVMValueRef in3 = LLVMBuildAnd(lg.builder, in3a, in3b, "i3");
+    LLVMBasicBlockRef b5 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "up");
+    LLVMBasicBlockRef b6 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "no");
+    LLVMBuildCondBr(lg.builder, in3, b5, b6);
+    LLVMPositionBuilderAtEnd(lg.builder, b5);
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, LLVMBuildSub(lg.builder, c, cA, "d3"), ten, "v3"), r);
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, lg.i64_ty, r, "rv3"));
+    LLVMPositionBuilderAtEnd(lg.builder, b6);
+    LLVMBuildRet(lg.builder, neg1);
+    return fn;
+}
+
+static LLVMValueRef bytes_hex_global(void) {
+    LLVMValueRef g = LLVMGetNamedGlobal(lg.mod, "baga_hexchars");
+    if (g) return g;
+    g = LLVMAddGlobal(lg.mod, LLVMArrayType(lg.i8_ty, 16), "baga_hexchars");
+    LLVMSetInitializer(g, LLVMConstStringInContext(lg.ctx, "0123456789abcdef", 16, 1));
+    LLVMSetGlobalConstant(g, 1);
+    return g;
+}
+
+static LLVMValueRef build_baga_hex_encode(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_hex_encode",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef n = bytes_load_len(a);
+    LLVMValueRef two = LLVMConstInt(lg.i64_ty, 2, 0);
+    LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
+    LLVMValueRef four = LLVMConstInt(lg.i64_ty, 4, 0);
+    LLVMValueRef fifteen = LLVMConstInt(lg.i64_ty, 15, 0);
+    LLVMValueRef sz = LLVMBuildAdd(lg.builder, LLVMBuildMul(lg.builder, n, two, "s0"), one, "sz");
+    LLVMValueRef ma[] = { sz };
+    LLVMValueRef r = h_call(rt_malloc(), ma, 1, "r");
+    LLVMValueRef hxg = bytes_hex_global();
+    LLVMValueRef zidx = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef hxarr = LLVMBuildGEP2(lg.builder, LLVMArrayType(lg.i8_ty, 16), hxg,
+        (LLVMValueRef[]){ zidx, zidx }, 2, "hxa");
+    LLVMValueRef hx = LLVMBuildBitCast(lg.builder, hxarr, lg.ptr_ty, "hx");
+    LLVMValueRef data = bytes_load_data(a);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, n, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef bp = LLVMBuildGEP2(lg.builder, lg.i8_ty, data, &i, 1, "bp");
+    LLVMValueRef byte = LLVMBuildZExt(lg.builder, LLVMBuildLoad2(lg.builder, lg.i8_ty, bp, "b"), lg.i64_ty, "bv");
+    LLVMValueRef hi = LLVMBuildLShr(lg.builder, byte, four, "hi");
+    LLVMValueRef lo = LLVMBuildAnd(lg.builder, byte, fifteen, "lo");
+    LLVMValueRef i2 = LLVMBuildMul(lg.builder, i, two, "i2");
+    LLVMValueRef hch = LLVMBuildLoad2(lg.builder, lg.i8_ty, LLVMBuildGEP2(lg.builder, lg.i8_ty, hx, &hi, 1, "hp"), "hch");
+    LLVMBuildStore(lg.builder, hch, LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &i2, 1, "r0"));
+    LLVMValueRef i21 = LLVMBuildAdd(lg.builder, i2, one, "i21");
+    LLVMValueRef lch = LLVMBuildLoad2(lg.builder, lg.i8_ty, LLVMBuildGEP2(lg.builder, lg.i8_ty, hx, &lo, 1, "lp"), "lch");
+    LLVMBuildStore(lg.builder, lch, LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &i21, 1, "r1"));
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i, one, "in"), iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMValueRef endi = LLVMBuildMul(lg.builder, n, two, "endi");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 0, 0), LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &endi, 1, "rp"));
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+
+static LLVMValueRef build_baga_hex_decode(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_hex_decode",
+        LLVMFunctionType(baga_bytes_ty(), p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef s = LLVMGetParam(fn, 0);
+    LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
+    LLVMValueRef two = LLVMConstInt(lg.i64_ty, 2, 0);
+    LLVMValueRef sixteen = LLVMConstInt(lg.i64_ty, 16, 0);
+    LLVMValueRef zero = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef neg1 = LLVMConstInt(lg.i64_ty, (uint64_t)-1, 1);
+    LLVMValueRef sla[] = { s };
+    LLVMValueRef n = h_call(rt_strlen(), sla, 1, "n");
+    LLVMValueRef cap = LLVMBuildAdd(lg.builder, LLVMBuildUDiv(lg.builder, n, two, "c0"), one, "cap");
+    LLVMValueRef ma[] = { cap };
+    LLVMValueRef buf = h_call(rt_malloc(), ma, 1, "buf");
+    LLVMValueRef len = entry_alloca(lg.i64_ty, "len");
+    LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, zero, len);
+    LLVMBuildStore(lg.builder, zero, iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef i1 = LLVMBuildAdd(lg.builder, i, one, "i1");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i1, n, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef cp0 = LLVMBuildGEP2(lg.builder, lg.i8_ty, s, &i, 1, "cp0");
+    LLVMValueRef c0 = LLVMBuildZExt(lg.builder, LLVMBuildLoad2(lg.builder, lg.i8_ty, cp0, "c0v"), lg.i64_ty, "c0");
+    LLVMValueRef cp1 = LLVMBuildGEP2(lg.builder, lg.i8_ty, s, &i1, 1, "cp1");
+    LLVMValueRef c1 = LLVMBuildZExt(lg.builder, LLVMBuildLoad2(lg.builder, lg.i8_ty, cp1, "c1v"), lg.i64_ty, "c1");
+    LLVMValueRef h0 = h_call(baga_rt("baga_hex_val"), &c0, 1, "h0");
+    LLVMValueRef h1 = h_call(baga_rt("baga_hex_val"), &c1, 1, "h1");
+    LLVMValueRef bad0 = LLVMBuildICmp(lg.builder, LLVMIntSLT, h0, zero, "bad0");
+    LLVMValueRef bad1 = LLVMBuildICmp(lg.builder, LLVMIntSLT, h1, zero, "bad1");
+    LLVMValueRef bad = LLVMBuildOr(lg.builder, bad0, bad1, "bad");
+    LLVMBasicBlockRef skip = LLVMAppendBasicBlockInContext(lg.ctx, fn, "skip");
+    LLVMBasicBlockRef take = LLVMAppendBasicBlockInContext(lg.ctx, fn, "take");
+    LLVMBuildCondBr(lg.builder, bad, skip, take);
+    LLVMPositionBuilderAtEnd(lg.builder, skip);
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i, one, "si"), iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, take);
+    LLVMValueRef byte = LLVMBuildAdd(lg.builder, LLVMBuildMul(lg.builder, h0, sixteen, "m"), h1, "byte");
+    LLVMValueRef l = LLVMBuildLoad2(lg.builder, lg.i64_ty, len, "l");
+    LLVMValueRef b8 = LLVMBuildTrunc(lg.builder, byte, lg.i8_ty, "b8");
+    LLVMBuildStore(lg.builder, b8, LLVMBuildGEP2(lg.builder, lg.i8_ty, buf, &l, 1, "sl"));
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, l, one, "l1"), len);
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i, two, "ti"), iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMValueRef fl = LLVMBuildLoad2(lg.builder, lg.i64_ty, len, "fl");
+    LLVMBuildRet(lg.builder, bytes_make(buf, fl));
+    (void)neg1;
+    return fn;
+}
+
+static LLVMValueRef build_baga_bytes_from_hex(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_from_hex",
+        LLVMFunctionType(baga_bytes_ty(), p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef s = LLVMGetParam(fn, 0);
+    LLVMValueRef r = h_call(baga_rt("baga_hex_decode"), &s, 1, "r");
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+
 /* static const char *baga_read_file(const char *path) {
  *     FILE *f = fopen(path, "rb"); if (!f) return "";
  *     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
@@ -1063,6 +1394,16 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_vec_get_f64") == 0) fn = build_baga_vec_get_f64();
     else if (strcmp(name, "baga_vec_set_f64") == 0) fn = build_baga_vec_set_f64();
     else if (strcmp(name, "baga_vec_len") == 0)     fn = build_baga_vec_len();
+    else if (strcmp(name, "baga_bytes_len") == 0)   fn = build_baga_bytes_len();
+    else if (strcmp(name, "baga_bytes_at") == 0)    fn = build_baga_bytes_at();
+    else if (strcmp(name, "baga_bytes_slice") == 0) fn = build_baga_bytes_slice();
+    else if (strcmp(name, "baga_bytes_concat") == 0) fn = build_baga_bytes_concat();
+    else if (strcmp(name, "baga_bytes_from_str") == 0) fn = build_baga_bytes_from_str();
+    else if (strcmp(name, "baga_bytes_to_str") == 0) fn = build_baga_bytes_to_str();
+    else if (strcmp(name, "baga_hex_val") == 0)     fn = build_baga_hex_val();
+    else if (strcmp(name, "baga_hex_encode") == 0)  fn = build_baga_hex_encode();
+    else if (strcmp(name, "baga_hex_decode") == 0)  fn = build_baga_hex_decode();
+    else if (strcmp(name, "baga_bytes_from_hex") == 0) fn = build_baga_bytes_from_hex();
     else if (strcmp(name, "baga_arena_new") == 0)   fn = build_baga_arena_new();
     else if (strcmp(name, "baga_arena_alloc") == 0) fn = build_baga_arena_alloc();
     else if (strcmp(name, "baga_arena_reset") == 0) fn = build_baga_arena_reset();
@@ -1307,6 +1648,12 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         case NODE_BOOL_LIT:
             return LLVMConstInt(lg.i1_ty, n->bool_val, 0);
 
+        case NODE_BYTES_LIT: {
+            LLVMValueRef s = LLVMBuildGlobalStringPtr(lg.builder, n->str_val, "hexlit");
+            LLVMValueRef a[] = { s };
+            return h_call(baga_rt("baga_bytes_from_hex"), a, 1, "blit");
+        }
+
         case NODE_STR_LIT:
             return LLVMBuildGlobalStringPtr(lg.builder, n->str_val, "str");
 
@@ -1444,6 +1791,14 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 {"vec_get_str", "baga_vec_get_str"},
                 {"vec_set_str", "baga_vec_set_str"},
                 {"vec_len",     "baga_vec_len"},
+                {"bytes_len",   "baga_bytes_len"},
+                {"bytes_at",    "baga_bytes_at"},
+                {"bytes_slice", "baga_bytes_slice"},
+                {"bytes_concat","baga_bytes_concat"},
+                {"bytes_of_str","baga_bytes_from_str"},
+                {"str_of_bytes","baga_bytes_to_str"},
+                {"hex_encode",  "baga_hex_encode"},
+                {"hex_decode",  "baga_hex_decode"},
                 {"arena_new",   "baga_arena_new"},
                 {"arena_alloc", "baga_arena_alloc"},
                 {"arena_reset", "baga_arena_reset"},
@@ -2038,49 +2393,7 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
 
 /* ---- Public API ---- */
 
-/* M1: the LLVM backend does not implement the bytes type yet (the C backend
- * does). Detect bytes usage up front and refuse honestly so the oracle SKIPs. */
-static int is_bytes_builtin_name(const char *nm) {
-    return strcmp(nm, "bytes_len") == 0 || strcmp(nm, "bytes_at") == 0 ||
-           strcmp(nm, "bytes_slice") == 0 || strcmp(nm, "bytes_concat") == 0 ||
-           strcmp(nm, "bytes_of_str") == 0 || strcmp(nm, "str_of_bytes") == 0 ||
-           strcmp(nm, "hex_encode") == 0 || strcmp(nm, "hex_decode") == 0;
-}
-
-static int program_uses_bytes(Node *n) {
-    if (!n) return 0;
-    if (n->kind == NODE_BYTES_LIT) return 1;
-    if (n->kind == NODE_TYPE && n->type_name && strcmp(n->type_name, "bytes") == 0) return 1;
-    if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT &&
-        is_bytes_builtin_name(n->callee->name)) return 1;
-    if (n->kind == NODE_PROGRAM) {
-        for (int i = 0; i < n->items.len; i++) if (program_uses_bytes(n->items.data[i])) return 1;
-        return 0;
-    }
-    if (n->kind == NODE_FN) {
-        if (program_uses_bytes(n->ret_type)) return 1;
-        for (int i = 0; i < n->params.len; i++)
-            if (program_uses_bytes(((Node *)n->params.data[i])->param_type)) return 1;
-        return program_uses_bytes(n->fn_body);
-    }
-    if (n->kind == NODE_BLOCK) {
-        for (int i = 0; i < n->stmts.len; i++) if (program_uses_bytes(n->stmts.data[i])) return 1;
-        return 0;
-    }
-    if (n->kind == NODE_LET) return program_uses_bytes(n->let_type) || program_uses_bytes(n->let_init);
-    if (n->kind == NODE_RETURN) return program_uses_bytes(n->ret_val);
-    if (n->kind == NODE_BINARY) return program_uses_bytes(n->left) || program_uses_bytes(n->right);
-    if (n->kind == NODE_UNARY) return program_uses_bytes(n->operand);
-    if (n->kind == NODE_CALL) { for (int i = 0; i < n->args.len; i++) if (program_uses_bytes(n->args.data[i])) return 1; return 0; }
-    if (n->kind == NODE_IF) return program_uses_bytes(n->cond) || program_uses_bytes(n->then_br) || program_uses_bytes(n->else_br);
-    if (n->kind == NODE_EXPR_STMT) return program_uses_bytes(n->expr);
-    if (n->kind == NODE_WHILE) return program_uses_bytes(n->while_cond) || program_uses_bytes(n->while_body);
-    return 0;
-}
-
 void codegen_llvm(Node *program, const char *output_path) {
-    if (program_uses_bytes(program))
-        llvm_unsupported("bytes типът (LLVM backend, M1)");
     lg.ctx = LLVMContextCreate();
     lg.mod = LLVMModuleCreateWithNameInContext("baga_module", lg.ctx);
     lg.builder = LLVMCreateBuilderInContext(lg.ctx);

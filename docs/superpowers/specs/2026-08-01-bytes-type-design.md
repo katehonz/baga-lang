@@ -61,10 +61,12 @@ reads `x"..."` as a bytes-literal token (distinct from the identifier `x`).
 - **C codegen (`src/codegen_c.c`)**: emit the `baga_bytes` struct + 8 runtime
   helpers + a `baga_bytes_from_hex` for literals; map the builtins; emit
   `NODE_BYTES_LIT`.
-- **LLVM codegen (`src/codegen_llvm.c`)**: **not implemented in M1** — a
-  pre-scan (`program_uses_bytes`) refuses any program using bytes with
-  "неподдържан конструкт", so the oracle SKIPs it honestly. Full LLVM parity is
-  a follow-up.
+- **LLVM codegen (`src/codegen_llvm.c`)**: **implemented** — a `baga_bytes`
+  struct type (`{i8*, i64}`, by value) plus IR-built helpers for all 8 builtins
+  and the hex literal (`baga_bytes_from_hex`). C and LLVM produce identical
+  output on `examples/bytes.baga`, so the LLVM oracle now passes it (no SKIP).
+- **Cranelift codegen (`cranelift/`)**: **not yet** — it refuses bytes (oracle
+  SKIPs honestly). Full Cranelift parity is the remaining follow-up.
 - **Self-compiler (`self/compiler.baga`)**: mirrored and working. Its inlined
   tokenizer reads `x"..."` (kind 103), the parser builds a BYTES_LIT node
   (kind 34), `emit_expr` emits `baga_bytes_from_hex(...)`, the LET heuristic
@@ -80,14 +82,16 @@ reads `x"..."` as a bytes-literal token (distinct from the identifier `x`).
   `bytes_of_str`/`str_of_bytes`/`hex_encode`/`hex_decode` conversions (uses
   `${}` interpolation, no std import, so the self-compiler handles it too).
   Exact-output diff in `make test`.
-- `make self` green; LLVM/Cranelift oracles SKIP `bytes.baga` (honest refusal).
+- `make self` green; LLVM oracle passes `bytes.baga` (C/LLVM identical);
+  Cranelift oracle SKIPs it (honest refusal, pending parity).
 
 ## 6. Honesty / risk
 
-The LLVM backend lacks bytes (documented refusal, oracle SKIPs) — full parity is
-a follow-up. The self-compiler's bytes typing is **heuristic** (LET infers
-`baga_bytes` from a bytes literal or a known bytes-returning builtin; an exotic
-bytes expression could be mistyped as `i64`). `str_of_bytes` produces a string
-that may contain NUL — downstream `strlen`-based C ops would truncate it; that
-is inherent (use `bytes` ops for binary). The builtin names avoid collisions
-with the existing `Vec`-based user functions of the same intent (see §3 note).
+The Cranelift backend still lacks bytes (documented refusal, oracle SKIPs) —
+full three-backend parity is the remaining follow-up. The self-compiler's bytes
+typing is **heuristic** (LET infers `baga_bytes` from a bytes literal or a known
+bytes-returning builtin; an exotic bytes expression could be mistyped as `i64`).
+`str_of_bytes` produces a string that may contain NUL — downstream `strlen`-based
+C ops would truncate it; that is inherent (use `bytes` ops for binary). The
+builtin names avoid collisions with the existing `Vec`-based user functions of
+the same intent (see §3 note).
