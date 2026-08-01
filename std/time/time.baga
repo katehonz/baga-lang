@@ -1,0 +1,26 @@
+// time.baga — wall clock and monotonic clock via clock_gettime. !Time.
+// struct timespec on LP64 Linux: { i64 tv_sec; i64 tv_nsec; } — 16 bytes,
+// read back with mem_i64 (os.baga).
+
+import "../os/os.baga"
+import "../str/str.baga"
+
+extern fn clock_gettime(clk: i64, ts: str) -> i64 !Time
+
+// clk: 0 = CLOCK_REALTIME, 1 = CLOCK_MONOTONIC. Result in milliseconds.
+fn clock_ms(clk: i64) -> i64 !Time {
+    let ts = str_repeat(" ", 16)
+    let rc = clock_gettime(clk, ts)?
+    if rc != 0 { return -1 }
+    let sec = mem_i64(ts, 0)
+    let nsec = mem_i64(ts, 8)
+    return sec * 1000 + nsec / 1000000
+}
+
+fn time_now_ms() -> i64 !Time {
+    return clock_ms(0)?
+}
+
+fn monotonic_ms() -> i64 !Time {
+    return clock_ms(1)?
+}

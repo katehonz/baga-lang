@@ -1,0 +1,59 @@
+// io.baga — buffered reader/writer over fd externs (os.baga). !IO.
+// Reader buffers one byte at a time (simple, correct); Writer accumulates
+// in a string buffer until flush.
+
+import "../os/os.baga"
+import "../str/str.baga"
+
+struct Reader {
+    fd: i64
+}
+
+struct Writer {
+    fd: i64,
+    buf: str
+}
+
+fn reader_new(fd: i64) -> Reader {
+    return Reader { fd: fd }
+}
+
+// Read one line without the trailing "\n". "" at EOF (also "" for an
+// empty line — use read_n when the distinction matters).
+fn read_line(r: Reader) -> str !IO {
+    let mut line = ""
+    let mut running = true
+    while running {
+        let ch = fd_read(r.fd, 1)?
+        if len(ch) == 0 {
+            running = false
+        } else {
+            if ch == "\n" {
+                running = false
+            } else {
+                line = concat(line, ch)
+            }
+        }
+    }
+    return line
+}
+
+// Read exactly up to n bytes (fewer at EOF).
+fn read_n(r: Reader, n: i64) -> str !IO {
+    return fd_read(r.fd, n)?
+}
+
+fn writer_new(fd: i64) -> Writer {
+    return Writer { fd: fd, buf: "" }
+}
+
+// Append to the buffer; returns the updated Writer (structs are by value).
+fn write_str(w: Writer, s: str) -> Writer {
+    return Writer { fd: w.fd, buf: concat(w.buf, s) }
+}
+
+// Flush the buffer to the fd and return a cleared Writer.
+fn flush(w: Writer) -> Writer !IO {
+    fd_write(w.fd, w.buf)?
+    return Writer { fd: w.fd, buf: "" }
+}
