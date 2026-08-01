@@ -65,6 +65,11 @@ const B_LT_F: u8 = 18;
 const B_GT_F: u8 = 19;
 const B_LE_F: u8 = 20;
 const B_GE_F: u8 = 21;
+const B_BAND_I: u8 = 22;
+const B_BOR_I: u8 = 23;
+const B_BXOR_I: u8 = 24;
+const B_SHL_I: u8 = 25;
+const B_SHR_I: u8 = 26;
 
 // ---- keep in sync: типови кодове ----
 const TY_VOID: u8 = 0;
@@ -662,6 +667,11 @@ fn emit_binop(
         B_GT_F => (bcx.ins().fcmp(FloatCC::GreaterThan, ra, rb), types::I8),
         B_LE_F => (bcx.ins().fcmp(FloatCC::LessThanOrEqual, ra, rb), types::I8),
         B_GE_F => (bcx.ins().fcmp(FloatCC::GreaterThanOrEqual, ra, rb), types::I8),
+        B_BAND_I => (bcx.ins().band(ra, rb), ta),
+        B_BOR_I => (bcx.ins().bor(ra, rb), ta),
+        B_BXOR_I => (bcx.ins().bxor(ra, rb), ta),
+        B_SHL_I => (bcx.ins().ishl(ra, rb), ta),
+        B_SHR_I => (bcx.ins().sshr(ra, rb), ta),
         _ => panic!("непознат binop {}", bop),
     }
 }

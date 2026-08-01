@@ -37,6 +37,7 @@ enum {
     B_ADD_F = 5, B_SUB_F = 6, B_MUL_F = 7, B_DIV_F = 8, B_MOD_F = 9,
     B_EQ_I  = 10, B_NEQ_I = 11, B_LT_I = 12, B_GT_I = 13, B_LE_I = 14, B_GE_I = 15,
     B_EQ_F  = 16, B_NEQ_F = 17, B_LT_F = 18, B_GT_F = 19, B_LE_F = 20, B_GE_F = 21,
+    B_BAND_I = 22, B_BOR_I = 23, B_BXOR_I = 24, B_SHL_I = 25, B_SHR_I = 26,
 };
 
 /* ---- типови кодове (u8) — keep in sync ---- */

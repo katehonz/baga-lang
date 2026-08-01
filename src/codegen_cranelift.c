@@ -196,6 +196,11 @@ static int binop_code(BinOp op, int is_f) {
         case OP_GT:  return is_f ? B_GT_F  : B_GT_I;
         case OP_LE:  return is_f ? B_LE_F  : B_LE_I;
         case OP_GE:  return is_f ? B_GE_F  : B_GE_I;
+        case OP_BIT_AND:  if (is_f) cr_unsupported("побитово & върху f64"); return B_BAND_I;
+        case OP_BIT_OR:   if (is_f) cr_unsupported("побитово | върху f64"); return B_BOR_I;
+        case OP_BIT_XOR:  if (is_f) cr_unsupported("побитово ^ върху f64"); return B_BXOR_I;
+        case OP_LSHIFT:   if (is_f) cr_unsupported("<< върху f64"); return B_SHL_I;
+        case OP_RSHIFT:   if (is_f) cr_unsupported(">> върху f64"); return B_SHR_I;
         default: cr_unsupported("binop"); return 0;
     }
 }

@@ -581,10 +581,14 @@ static int binop_precedence(TokenKind k) {
     switch (k) {
         case TOK_OR:      return 1;
         case TOK_AND:     return 2;
-        case TOK_EQ: case TOK_NEQ: return 3;
-        case TOK_LT: case TOK_GT: case TOK_LE: case TOK_GE: return 4;
-        case TOK_PLUS: case TOK_MINUS: return 5;
-        case TOK_STAR: case TOK_SLASH: case TOK_PERCENT: return 6;
+        case TOK_PIPE:    return 3;    /* |  */
+        case TOK_CARET:   return 4;    /* ^  */
+        case TOK_AMP:     return 5;    /* &  */
+        case TOK_EQ: case TOK_NEQ: return 6;
+        case TOK_LT: case TOK_GT: case TOK_LE: case TOK_GE: return 7;
+        case TOK_LSHIFT: case TOK_RSHIFT: return 8;
+        case TOK_PLUS: case TOK_MINUS: return 9;
+        case TOK_STAR: case TOK_SLASH: case TOK_PERCENT: return 10;
         default: return -1;
     }
 }
@@ -604,6 +608,11 @@ static BinOp token_to_binop(TokenKind k) {
         case TOK_GE:      return OP_GE;
         case TOK_AND:     return OP_AND;
         case TOK_OR:      return OP_OR;
+        case TOK_AMP:     return OP_BIT_AND;
+        case TOK_PIPE:    return OP_BIT_OR;
+        case TOK_CARET:   return OP_BIT_XOR;
+        case TOK_LSHIFT:  return OP_LSHIFT;
+        case TOK_RSHIFT:  return OP_RSHIFT;
         default:          return OP_ADD;
     }
 }
@@ -1046,6 +1055,9 @@ static const char *binop_str(BinOp op) {
         case OP_LT: return "<"; case OP_GT: return ">";
         case OP_LE: return "<="; case OP_GE: return ">=";
         case OP_AND: return "&&"; case OP_OR: return "||";
+        case OP_BIT_AND: return "&"; case OP_BIT_OR: return "|";
+        case OP_BIT_XOR: return "^"; case OP_LSHIFT: return "<<";
+        case OP_RSHIFT: return ">>";
         default: return "?";
     }
 }

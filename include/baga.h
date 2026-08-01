@@ -116,6 +116,7 @@ typedef enum {
     TOK_NOT,        /* !  (same as BANG, context disambiguates) */
     TOK_LSHIFT,     /* << */
     TOK_RSHIFT,     /* >> */
+    TOK_CARET,      /* ^ */
 
     TOK_COUNT
 } TokenKind;

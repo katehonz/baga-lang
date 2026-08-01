@@ -93,6 +93,7 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_NOT]       = "!",
     [TOK_LSHIFT]    = "<<",
     [TOK_RSHIFT]    = ">>",
+    [TOK_CARET]     = "^",
 };
 
 const char *token_kind_str(TokenKind k) {
@@ -477,6 +478,7 @@ Token lexer_next(Lexer *l) {
         case '?': return make_token(l, TOK_QUESTION, start, strdup("?"));
         case '&': return make_token(l, TOK_AMP, start, strdup("&"));
         case '|': return make_token(l, TOK_PIPE, start, strdup("|"));
+        case '^': return make_token(l, TOK_CARET, start, strdup("^"));
         case '+': return make_token(l, TOK_PLUS, start, strdup("+"));
         case '-': return make_token(l, TOK_MINUS, start, strdup("-"));
         case '*': return make_token(l, TOK_STAR, start, strdup("*"));
