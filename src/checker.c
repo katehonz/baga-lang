@@ -354,6 +354,9 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
              * can feed a Vec<str> parameter (the fresh Type has elem NULL,
              * which a later vec_get would otherwise fix to i64) */
             result->elem = ret->elem;
+            /* struct: keep the name so a returned struct matches the declared
+             * return type / struct parameters (type_eq compares by name) */
+            result->name = ret->name;
             type_merge_effects(result, ret);
             if (ctx->cur_effects)
                 type_merge_effects(ctx->cur_effects, ret);
