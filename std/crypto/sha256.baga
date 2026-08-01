@@ -1,0 +1,197 @@
+// sha256.baga — SHA-256 (FIPS 180-4). Pure Baga, no effects.
+// u32 arithmetic is emulated with i64 masked to 32 bits (u32()); bitwise
+// NOT is (-1) ^ x. All intermediate sums stay below 2^36 (fits i64).
+
+import "../bytes/bytes.baga"
+
+fn u32(x: i64) -> i64 {
+    return x & 4294967295
+}
+
+fn rotr(x: i64, n: i64) -> i64 {
+    return u32((x >> n) | u32(x << (32 - n)))
+}
+
+// Round constants K (first 32 bits of the fractional parts of the cube
+// roots of the first 64 primes).
+fn sha256_k() -> Vec<i64> {
+    let k = vec_new()
+    vec_push(k, 1116352408)
+    vec_push(k, 1899447441)
+    vec_push(k, 3049323471)
+    vec_push(k, 3921009573)
+    vec_push(k, 961987163)
+    vec_push(k, 1508970993)
+    vec_push(k, 2453635748)
+    vec_push(k, 2870763221)
+    vec_push(k, 3624381080)
+    vec_push(k, 310598401)
+    vec_push(k, 607225278)
+    vec_push(k, 1426881987)
+    vec_push(k, 1925078388)
+    vec_push(k, 2162078206)
+    vec_push(k, 2614888103)
+    vec_push(k, 3248222580)
+    vec_push(k, 3835390401)
+    vec_push(k, 4022224774)
+    vec_push(k, 264347078)
+    vec_push(k, 604807628)
+    vec_push(k, 770255983)
+    vec_push(k, 1249150122)
+    vec_push(k, 1555081692)
+    vec_push(k, 1996064986)
+    vec_push(k, 2554220882)
+    vec_push(k, 2821834349)
+    vec_push(k, 2952996808)
+    vec_push(k, 3210313671)
+    vec_push(k, 3336571891)
+    vec_push(k, 3584528711)
+    vec_push(k, 113926993)
+    vec_push(k, 338241895)
+    vec_push(k, 666307205)
+    vec_push(k, 773529912)
+    vec_push(k, 1294757372)
+    vec_push(k, 1396182291)
+    vec_push(k, 1695183700)
+    vec_push(k, 1986661051)
+    vec_push(k, 2177026350)
+    vec_push(k, 2456956037)
+    vec_push(k, 2730485921)
+    vec_push(k, 2820302411)
+    vec_push(k, 3259730800)
+    vec_push(k, 3345764771)
+    vec_push(k, 3516065817)
+    vec_push(k, 3600352804)
+    vec_push(k, 4094571909)
+    vec_push(k, 275423344)
+    vec_push(k, 430227734)
+    vec_push(k, 506948616)
+    vec_push(k, 659060556)
+    vec_push(k, 883997877)
+    vec_push(k, 958139571)
+    vec_push(k, 1322822218)
+    vec_push(k, 1537002063)
+    vec_push(k, 1747873779)
+    vec_push(k, 1955562222)
+    vec_push(k, 2024104815)
+    vec_push(k, 2227730452)
+    vec_push(k, 2361852424)
+    vec_push(k, 2428436474)
+    vec_push(k, 2756734187)
+    vec_push(k, 3204031479)
+    vec_push(k, 3329325298)
+    return k
+}
+
+// Append the 4 big-endian bytes of a u32 word to `out`.
+fn push_word(out: Vec<i64>, w: i64) {
+    vec_push(out, (w >> 24) & 255)
+    vec_push(out, (w >> 16) & 255)
+    vec_push(out, (w >> 8) & 255)
+    vec_push(out, w & 255)
+}
+
+// SHA-256 over a byte vector (values 0..255). Returns the 32-byte digest.
+fn sha256_bytes(data: Vec<i64>) -> Vec<i64> {
+    // ---- padding: 0x80, zeros to 56 mod 64, 64-bit big-endian length ----
+    let msg = vec_new()
+    let n = vec_len(data)
+    for i in 0..n {
+        vec_push(msg, vec_get(data, i) & 255)
+    }
+    let bitlen = n * 8
+    vec_push(msg, 128)
+    while (vec_len(msg) % 64) != 56 {
+        vec_push(msg, 0)
+    }
+    for i in 0..8 {
+        vec_push(msg, (bitlen >> ((7 - i) * 8)) & 255)
+    }
+
+    // ---- initial hash state ----
+    let mut h0: i64 = 1779033703
+    let mut h1: i64 = 3144134277
+    let mut h2: i64 = 1013904242
+    let mut h3: i64 = 2773480762
+    let mut h4: i64 = 1359893119
+    let mut h5: i64 = 2600822924
+    let mut h6: i64 = 528734635
+    let mut h7: i64 = 1541459225
+
+    let k = sha256_k()
+    let total = vec_len(msg)
+    let mut block: i64 = 0
+    while block < total {
+        // ---- message schedule ----
+        let w = vec_new()
+        for t in 0..16 {
+            let o = block + t * 4
+            let word = (vec_get(msg, o) << 24) | (vec_get(msg, o + 1) << 16) | (vec_get(msg, o + 2) << 8) | vec_get(msg, o + 3)
+            vec_push(w, u32(word))
+        }
+        for t in 16..64 {
+            let x = vec_get(w, t - 15)
+            let s0 = u32(rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3))
+            let y = vec_get(w, t - 2)
+            let s1 = u32(rotr(y, 17) ^ rotr(y, 19) ^ (y >> 10))
+            vec_push(w, u32(vec_get(w, t - 16) + s0 + vec_get(w, t - 7) + s1))
+        }
+
+        // ---- compression: 64 rounds ----
+        let mut a = h0
+        let mut b = h1
+        let mut c = h2
+        let mut dd = h3
+        let mut e = h4
+        let mut f = h5
+        let mut g = h6
+        let mut hh = h7
+        for t in 0..64 {
+            let s1 = u32(rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25))
+            let ch = u32((e & f) ^ (u32((-1) ^ e) & g))
+            let t1 = u32(hh + s1 + ch + vec_get(k, t) + vec_get(w, t))
+            let s0 = u32(rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22))
+            let maj = u32((a & b) ^ (a & c) ^ (b & c))
+            let t2 = u32(s0 + maj)
+            hh = g
+            g = f
+            f = e
+            e = u32(dd + t1)
+            dd = c
+            c = b
+            b = a
+            a = u32(t1 + t2)
+        }
+        h0 = u32(h0 + a)
+        h1 = u32(h1 + b)
+        h2 = u32(h2 + c)
+        h3 = u32(h3 + dd)
+        h4 = u32(h4 + e)
+        h5 = u32(h5 + f)
+        h6 = u32(h6 + g)
+        h7 = u32(h7 + hh)
+        block = block + 64
+    }
+
+    // ---- digest: 8 words, big-endian ----
+    let out = vec_new()
+    push_word(out, h0)
+    push_word(out, h1)
+    push_word(out, h2)
+    push_word(out, h3)
+    push_word(out, h4)
+    push_word(out, h5)
+    push_word(out, h6)
+    push_word(out, h7)
+    return out
+}
+
+// SHA-256 over a string (its raw bytes). Returns the 32-byte digest.
+fn sha256(msg: str) -> Vec<i64> {
+    return sha256_bytes(bytes_from_str(msg))
+}
+
+// Lowercase hex digest of a string.
+fn sha256_hex(msg: str) -> str {
+    return bytes_to_hex(sha256(msg))
+}
