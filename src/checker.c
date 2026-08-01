@@ -626,6 +626,9 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             /* e? — infer e, propagate its effects to enclosing function */
             Type *et = infer(ctx, n->try_expr);
             t = type_new(et->kind);
+            /* keep Vec elem / struct name, like a plain call result does */
+            t->elem = et->elem;
+            t->name = et->name;
             type_merge_effects(t, et);
             /* also accumulate at function level for checking */
             if (ctx->cur_effects)
@@ -638,6 +641,9 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             Type *et = infer(ctx, n->catch_expr);
             infer(ctx, n->catch_handler);
             t = type_new(et->kind);
+            /* keep Vec elem / struct name, like a plain call result does */
+            t->elem = et->elem;
+            t->name = et->name;
             /* copy all effects except the caught one */
             for (int i = 0; i < et->n_effects; i++) {
                 if (strcmp(et->effects[i], n->catch_effect) != 0)
