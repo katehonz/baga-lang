@@ -257,6 +257,21 @@ static void h_begin(LLVMValueRef fn) {
     LLVMPositionBuilderAtEnd(lg.builder, entry);
 }
 
+/* alloca винаги в entry block-а на текущата функция: alloca на текущата
+ * insert точка в тяло на цикъл заделя нов стек на всяка итерация и
+ * препълва стека при дълги цикли (sha256 върху 100KB низ). */
+static LLVMValueRef entry_alloca(LLVMTypeRef ty, const char *name) {
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
+    LLVMBuilderRef eb = LLVMCreateBuilderInContext(lg.ctx);
+    LLVMValueRef first = LLVMGetFirstInstruction(entry);
+    if (first) LLVMPositionBuilderBefore(eb, first);
+    else LLVMPositionBuilderAtEnd(eb, entry);
+    LLVMValueRef a = LLVMBuildAlloca(eb, ty, name);
+    LLVMDisposeBuilder(eb);
+    return a;
+}
+
 /* static int64_t baga_len(const char *s) { return (int64_t)strlen(s); } */
 static LLVMValueRef build_baga_len(void) {
     LLVMTypeRef p[] = { lg.ptr_ty };
@@ -1148,7 +1163,7 @@ static LLVMValueRef emit_match_llvm(Node *n) {
     LLVMTypeRef res_ty = n->type ? llvm_type_resolved(n->type) : lg.i64_ty;
     LLVMValueRef res_alloca = NULL;
     if (res_ty != lg.void_ty) {
-        res_alloca = LLVMBuildAlloca(lg.builder, res_ty, "match_res");
+        res_alloca = entry_alloca(res_ty, "match_res");
         /* codegen_c инициализира _mr = 0 */
         LLVMBuildStore(lg.builder, LLVMConstNull(res_ty), res_alloca);
     }
@@ -1450,7 +1465,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             if (!base) {
                 LLVMValueRef ov = emit_expr_llvm(obj);
                 if (!ov) llvm_unsupported("print като struct обект");
-                base = LLVMBuildAlloca(lg.builder, sty, "ftmp");
+                base = entry_alloca(sty, "ftmp");
                 LLVMBuildStore(lg.builder, coerce(ov, sty), base);
             }
             LLVMValueRef gep = LLVMBuildStructGEP2(lg.builder, sty, base,
@@ -1471,7 +1486,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 llvm_unsupported(buf);
             }
             LLVMTypeRef sty = user_struct_ty(n->lit_name);
-            LLVMValueRef tmp = LLVMBuildAlloca(lg.builder, sty, "slit");
+            LLVMValueRef tmp = entry_alloca(sty, "slit");
             LLVMBuildStore(lg.builder, LLVMConstNull(sty), tmp);
             for (int i = 0; i < n->n_lit_fields; i++) {
                 int idx = struct_field_index(decl, n->lit_fields[i]);
@@ -1529,7 +1544,7 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             else if (n->let_init && n->let_init->type) ty = llvm_type_resolved(n->let_init->type);
             else ty = lg.i64_ty;
             char *m = llvm_mangle(n->let_name);
-            LLVMValueRef alloca = LLVMBuildAlloca(lg.builder, ty, m);
+            LLVMValueRef alloca = entry_alloca(ty, m);
             free(m);
             if (n->let_init) {
                 LLVMValueRef val = emit_expr_llvm(n->let_init);
@@ -1609,7 +1624,7 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
 
             LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
             char *m = llvm_mangle(n->for_var);
-            LLVMValueRef var = LLVMBuildAlloca(lg.builder, lg.i64_ty, m);
+            LLVMValueRef var = entry_alloca(lg.i64_ty, m);
             free(m);
             LLVMBuildStore(lg.builder, lo, var);
 
