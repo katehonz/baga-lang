@@ -154,6 +154,7 @@ typedef enum {
     NODE_STRUCT_LIT,  /* Point { x: 1, y: 2 } */
     NODE_TRY,         /* e? — effect propagation */
     NODE_CATCH,       /* e catch !E => handler */
+    NODE_TO_STR,      /* interpolation: convert inner expr to str (type-directed) */
 
     /* statements */
     NODE_LET,
@@ -267,6 +268,9 @@ struct Node {
 
         /* NODE_CATCH */
         struct { Node *catch_expr; char *catch_effect; Node *catch_handler; };
+
+        /* NODE_TO_STR */
+        struct { Node *to_str_expr; };
 
         /* NODE_LET */
         struct { char *let_name; int is_mut; Node *let_type; Node *let_init; };

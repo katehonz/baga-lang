@@ -122,6 +122,11 @@ test: $(BIN)
 	@./$(BIN) tests/import_cycle_a.baga 2>&1 | grep -q "цикличен import" \
 		&& echo "OK: import цикълът е хванат" \
 		|| { echo "FAIL: import цикълът не е хванат"; exit 1; }
+	@echo "=== string interpolation ==="
+	@./$(BIN) examples/interp.baga > /tmp/baga_interp_out.txt
+	@printf 'name=baga n=42 ok=true expr=84\ndollar=$$ braces={ } neg=-7\n' | diff - /tmp/baga_interp_out.txt > /dev/null \
+		&& echo 'OK: $${expr} интерполация (str/i64/bool/call)' \
+		|| { echo "FAIL: интерполация"; cat /tmp/baga_interp_out.txt; exit 1; }
 	@echo "=== extern fn (FFI) ==="
 	@rm -f /tmp/baga_extern_write.txt
 	@./$(BIN) examples/extern_write.baga | grep -q "written"

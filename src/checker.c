@@ -669,6 +669,19 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             break;
         }
 
+        case NODE_TO_STR: {
+            /* interpolation: convert inner expr to str (str/i64/bool) */
+            Type *et = infer(ctx, n->to_str_expr);
+            if (et->kind != TYPE_STR && et->kind != TYPE_I64 &&
+                et->kind != TYPE_I32 && et->kind != TYPE_BOOL && et->kind != TYPE_ERROR) {
+                check_error(ctx, n->pos, "неподдържан тип за интерполация: %s (str/i64/bool)", type_str(et));
+            }
+            t = type_new(TYPE_STR);
+            type_merge_effects(t, et);
+            if (ctx->cur_effects) type_merge_effects(ctx->cur_effects, et);
+            break;
+        }
+
         case NODE_LET: {
             Type *init_t = n->let_init ? infer(ctx, n->let_init) : type_new(TYPE_I64);
             Type *decl_t = n->let_type ? resolve_type_node(ctx, n->let_type) : init_t;

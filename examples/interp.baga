@@ -1,0 +1,11 @@
+fn double(x: i64) -> i64 { return x * 2 }
+
+fn main() {
+    let name = "baga"
+    let n = 42
+    let ok = true
+    // ${expr} interpolates str / i64 / bool; $$ is a literal dollar;
+    // a lone { or } is ordinary text (C-code strings are unaffected).
+    print("name=${name} n=${n} ok=${ok} expr=${double(n)}")
+    print("dollar=$$ braces={ } neg=${0 - 7}")
+}

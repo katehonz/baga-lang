@@ -414,6 +414,94 @@ static LLVMValueRef build_baga_ord(void) {
     return fn;
 }
 
+/* static const char *baga_i64_to_str(int64_t x) — decimal, '-' for negatives.
+ * Mirrors the C runtime helper so interpolation is C/LLVM-parity. */
+static LLVMValueRef build_baga_i64_to_str(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_i64_to_str",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef x = LLVMGetParam(fn, 0);
+    LLVMValueRef i0 = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef i1 = LLVMConstInt(lg.i64_ty, 1, 0);
+    LLVMValueRef i10 = LLVMConstInt(lg.i64_ty, 10, 0);
+    LLVMValueRef i48 = LLVMConstInt(lg.i64_ty, 48, 0);
+    LLVMValueRef i24 = LLVMConstInt(lg.i64_ty, 24, 0);
+    LLVMValueRef tmp = h_call(rt_malloc(), (LLVMValueRef[]){ i24 }, 1, "tmp");
+    LLVMValueRef v = entry_alloca(lg.i64_ty, "v");
+    LLVMValueRef neg = entry_alloca(lg.i64_ty, "neg");
+    LLVMValueRef cnt = entry_alloca(lg.i64_ty, "cnt");
+    LLVMValueRef isneg = LLVMBuildICmp(lg.builder, LLVMIntSLT, x, i0, "isneg");
+    LLVMBuildStore(lg.builder, isneg, neg);
+    LLVMValueRef negv = LLVMBuildSub(lg.builder, i0, x, "negv");
+    LLVMValueRef v0 = LLVMBuildSelect(lg.builder, isneg, negv, x, "v0");
+    LLVMBuildStore(lg.builder, v0, v);
+    LLVMBuildStore(lg.builder, i0, cnt);
+    LLVMValueRef isz = LLVMBuildICmp(lg.builder, LLVMIntEQ, v0, i0, "isz");
+    LLVMBasicBlockRef zb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "zero");
+    LLVMBasicBlockRef lb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "loop");
+    LLVMBasicBlockRef lb2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "loop2");
+    LLVMBuildCondBr(lg.builder, isz, zb, lb);
+    LLVMPositionBuilderAtEnd(lg.builder, zb);
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 48, 0),
+        LLVMBuildGEP2(lg.builder, lg.i8_ty, tmp, &i0, 1, "zp"));
+    LLVMBuildStore(lg.builder, i1, cnt);
+    LLVMBuildBr(lg.builder, lb2);
+    LLVMPositionBuilderAtEnd(lg.builder, lb);
+    LLVMValueRef cv = LLVMBuildLoad2(lg.builder, lg.i64_ty, v, "cv");
+    LLVMValueRef rem = LLVMBuildBinOp(lg.builder, LLVMSRem, cv, i10, "rem");
+    LLVMValueRef dch = LLVMBuildTrunc(lg.builder, LLVMBuildAdd(lg.builder, rem, i48, "d"), lg.i8_ty, "dch");
+    LLVMValueRef ci = LLVMBuildLoad2(lg.builder, lg.i64_ty, cnt, "ci");
+    LLVMBuildStore(lg.builder, dch, LLVMBuildGEP2(lg.builder, lg.i8_ty, tmp, &ci, 1, "dp"));
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, ci, i1, "ci1"), cnt);
+    LLVMBuildStore(lg.builder, LLVMBuildBinOp(lg.builder, LLVMSDiv, cv, i10, "q"), v);
+    LLVMBuildBr(lg.builder, lb2);
+    LLVMPositionBuilderAtEnd(lg.builder, lb2);
+    LLVMValueRef cv2 = LLVMBuildLoad2(lg.builder, lg.i64_ty, v, "cv2");
+    LLVMValueRef cont = LLVMBuildICmp(lg.builder, LLVMIntSGT, cv2, i0, "cont");
+    LLVMBasicBlockRef rb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "rev");
+    LLVMBuildCondBr(lg.builder, cont, lb, rb);
+    LLVMPositionBuilderAtEnd(lg.builder, rb);
+    LLVMValueRef c = LLVMBuildLoad2(lg.builder, lg.i64_ty, cnt, "c");
+    LLVMValueRef isng = LLVMBuildLoad2(lg.builder, LLVMInt1TypeInContext(lg.ctx), neg, "isng");
+    LLVMValueRef isng64 = LLVMBuildZExt(lg.builder, isng, lg.i64_ty, "isng64");
+    LLVMValueRef tlen = LLVMBuildAdd(lg.builder, c, isng64, "tlen");   /* +1 if negative */
+    LLVMValueRef rlen = LLVMBuildAdd(lg.builder, tlen, i1, "rlen");
+    LLVMValueRef res = h_call(rt_malloc(), (LLVMValueRef[]){ rlen }, 1, "res");
+    LLVMValueRef rp = entry_alloca(lg.i64_ty, "rp");
+    LLVMBuildStore(lg.builder, i0, rp);
+    LLVMBasicBlockRef mb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "minus");
+    LLVMBasicBlockRef rvb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "revloop");
+    LLVMBuildCondBr(lg.builder, isng, mb, rvb);
+    LLVMPositionBuilderAtEnd(lg.builder, mb);
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 45, 0),
+        LLVMBuildGEP2(lg.builder, lg.i8_ty, res, &i0, 1, "mp"));
+    LLVMBuildStore(lg.builder, i1, rp);
+    LLVMBuildBr(lg.builder, rvb);
+    LLVMPositionBuilderAtEnd(lg.builder, rvb);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef rpv = LLVMBuildLoad2(lg.builder, lg.i64_ty, rp, "rpv");
+    LLVMValueRef idx = LLVMBuildSub(lg.builder, LLVMBuildSub(lg.builder, tlen, i1, "t1"), rpv, "idx");
+    LLVMValueRef done_c = LLVMBuildICmp(lg.builder, LLVMIntSGE, rpv, tlen, "donec");
+    LLVMBuildCondBr(lg.builder, done_c, done, body);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef ch2 = LLVMBuildLoad2(lg.builder, lg.i8_ty,
+        LLVMBuildGEP2(lg.builder, lg.i8_ty, tmp, &idx, 1, "sp"), "ch2");
+    LLVMBuildStore(lg.builder, ch2, LLVMBuildGEP2(lg.builder, lg.i8_ty, res, &rpv, 1, "dtp"));
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, rpv, i1, "rp1"), rp);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMValueRef rpv2 = LLVMBuildLoad2(lg.builder, lg.i64_ty, rp, "rpv2");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 0, 0),
+        LLVMBuildGEP2(lg.builder, lg.i8_ty, res, &rpv2, 1, "np"));
+    LLVMBuildRet(lg.builder, res);
+    return fn;
+}
+
 /* ---- Vec: baga_Vec = { void **data, int64_t len, int64_t cap } ----
  * В IR: { i8*, i64, i64 } с елемент i8* (void*); i64 стойности се
  * пакетират с inttoptr/ptrtoint — точно като (void*)(intptr_t)x в C. */
@@ -983,6 +1071,7 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_arg") == 0)         fn = build_baga_arg();
     else if (strcmp(name, "baga_exit") == 0)        fn = build_baga_exit();
     else if (strcmp(name, "baga_eprintln") == 0)    fn = build_baga_eprintln();
+    else if (strcmp(name, "baga_i64_to_str") == 0)  fn = build_baga_i64_to_str();
     else {
         char buf[128];
         snprintf(buf, sizeof buf, "runtime helper '%s'", name);
@@ -1510,6 +1599,26 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         }
         case NODE_TRY:      return emit_expr_llvm(n->try_expr);
         case NODE_CATCH:    return emit_expr_llvm(n->catch_expr);
+        case NODE_TO_STR: {
+            /* interpolation: convert inner expr to a string by its type */
+            Type *et = n->to_str_expr ? n->to_str_expr->type : NULL;
+            TypeKind ek = et ? et->kind : TYPE_STR;
+            LLVMValueRef v = emit_expr_llvm(n->to_str_expr);
+            if (ek == TYPE_STR) return v;
+            if (ek == TYPE_BOOL) {
+                char tn[32], fn2[32];
+                snprintf(tn, sizeof tn, ".str.true.%d", lg.tmp_counter++);
+                snprintf(fn2, sizeof fn2, ".str.false.%d", lg.tmp_counter++);
+                LLVMValueRef t = LLVMConstStringInContext(lg.ctx, "true", 4, 0);
+                LLVMValueRef fl = LLVMConstStringInContext(lg.ctx, "false", 5, 0);
+                LLVMValueRef tg = LLVMAddGlobal(lg.mod, LLVMTypeOf(t), tn);
+                LLVMValueRef fg = LLVMAddGlobal(lg.mod, LLVMTypeOf(fl), fn2);
+                LLVMSetInitializer(tg, t); LLVMSetGlobalConstant(tg, 1);
+                LLVMSetInitializer(fg, fl); LLVMSetGlobalConstant(fg, 1);
+                return LLVMBuildSelect(lg.builder, v, tg, fg, "bs");
+            }
+            return h_call(baga_rt("baga_i64_to_str"), &v, 1, "i2s");
+        }
         case NODE_RANGE:    llvm_unsupported("диапазон (a..b) извън for"); break;
         default:            llvm_unsupported_node(n); break;
     }

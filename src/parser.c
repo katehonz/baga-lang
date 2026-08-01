@@ -74,6 +74,9 @@ void node_free(Node *n) {
             free(n->catch_effect);
             node_free(n->catch_handler);
             break;
+        case NODE_TO_STR:
+            node_free(n->to_str_expr);
+            break;
         case NODE_LET:
             free(n->let_name);
             node_free(n->let_type);
@@ -285,6 +288,94 @@ static Node *parse_block(Parser *p);
 static Node *parse_stmt(Parser *p);
 static Node *parse_unary(Parser *p);
 
+/* ---- string interpolation (G1): "a{x}b" → concat("a", concat(«x», "b")) ---- */
+
+static Node *build_concat_chain(Node **parts, int nparts, SrcPos pos) {
+    if (nparts == 1) return parts[0];
+    /* build concat(a, concat(b, ...)) calls (right-associated) */
+    Node *acc = parts[nparts - 1];
+    for (int i = nparts - 2; i >= 0; i--) {
+        Node *call = node_alloc(NODE_CALL, pos);
+        call->callee = node_alloc(NODE_IDENT, pos);
+        call->callee->name = strdup("concat");
+        call->args.len = 0; call->args.cap = 0; call->args.data = NULL;
+        vec_push(call->args, parts[i]);
+        vec_push(call->args, acc);
+        acc = call;
+    }
+    return acc;
+}
+
+/* Parse a string literal's (escape-processed) content; if it contains
+ * interpolation, return the desugared concat chain, else a plain NODE_STR_LIT.
+ * `${expr}` interpolates; `$$` is a literal `$`. (`{` alone is ordinary text,
+ * so C-code strings full of braces are unaffected.) */
+static Node *parse_interp_string(Parser *p, const char *s, SrcPos pos) {
+    int n = (int)strlen(s);
+    int has_interp = 0;
+    for (int i = 0; i < n; i++) if (s[i] == '$') { has_interp = 1; break; }
+    if (!has_interp) {
+        Node *lit = node_alloc(NODE_STR_LIT, pos);
+        lit->str_val = strdup(s);
+        return lit;
+    }
+    Node *parts[256]; int nparts = 0;
+    char *litbuf = malloc((size_t)n + 1); int litlen = 0;
+    int i = 0;
+    while (i < n) {
+        char c = s[i];
+        if (c == '$' && i + 1 < n && s[i + 1] == '$') { litbuf[litlen++] = '$'; i += 2; continue; }
+        if (c == '$' && i + 1 < n && s[i + 1] == '{') {
+            if (litlen > 0) {
+                litbuf[litlen] = '\0';
+                Node *lit = node_alloc(NODE_STR_LIT, pos); lit->str_val = strdup(litbuf);
+                parts[nparts++] = lit; litlen = 0;
+            }
+            int j = i + 2, depth = 1;
+            while (j < n && depth > 0) {
+                if (s[j] == '{') depth++;
+                else if (s[j] == '}') { depth--; if (depth == 0) break; }
+                j++;
+            }
+            if (depth != 0) { parser_error(p, "незатворена интерполация '${' в низ"); free(litbuf); return NULL; }
+            char *exprstr = malloc((size_t)(j - i));
+            memcpy(exprstr, s + i + 2, (size_t)(j - i - 2));
+            exprstr[j - i - 2] = '\0';
+            /* lex + parse the interpolation expression in a sub-parser */
+            Lexer lex; lexer_init(&lex, exprstr, (int)strlen(exprstr), p->filename);
+            Token *subtoks = NULL; int nsub = 0, capsub = 0;
+            for (;;) {
+                Token t = lexer_next(&lex);
+                if (t.kind == TOK_ERROR) { parser_error(p, "грешка в интерполация: %s", t.text ? t.text : "?"); free(exprstr); free(litbuf); free(subtoks); return NULL; }
+                if (nsub == capsub) { capsub = capsub ? capsub * 2 : 16; subtoks = realloc(subtoks, (size_t)capsub * sizeof(Token)); }
+                subtoks[nsub++] = t;
+                if (t.kind == TOK_EOF) break;
+            }
+            Parser sub; sub.tokens = subtoks; sub.len = nsub; sub.pos = 0; sub.filename = p->filename; sub.n_errors = 0;
+            Node *e = parse_expr(&sub);
+            int bad = (!e || sub.n_errors > 0 || peek_kind(&sub) != TOK_EOF);
+            if (bad) parser_error(p, "невалиден израз в интерполация: %s", exprstr);
+            for (int ti = 0; ti < nsub; ti++) free(subtoks[ti].text);
+            free(subtoks);
+            free(exprstr);
+            if (bad) { free(litbuf); return NULL; }
+            Node *ts = node_alloc(NODE_TO_STR, pos); ts->to_str_expr = e;
+            parts[nparts++] = ts;
+            i = j + 1;
+            continue;
+        }
+        litbuf[litlen++] = c; i++;
+    }
+    if (litlen > 0) {
+        litbuf[litlen] = '\0';
+        Node *lit = node_alloc(NODE_STR_LIT, pos); lit->str_val = strdup(litbuf);
+        parts[nparts++] = lit;
+    }
+    free(litbuf);
+    if (nparts == 0) { Node *lit = node_alloc(NODE_STR_LIT, pos); lit->str_val = strdup(""); return lit; }
+    return build_concat_chain(parts, nparts, pos);
+}
+
 static Node *parse_primary(Parser *p) {
     SrcPos pos = cur(p)->pos;
 
@@ -304,12 +395,10 @@ static Node *parse_primary(Parser *p) {
         return n;
     }
 
-    /* string literal */
+    /* string literal (with interpolation desugaring) */
     if (check(p, TOK_STR_LIT)) {
         Token *t = advance(p);
-        Node *n = node_alloc(NODE_STR_LIT, pos);
-        n->str_val = strdup(t->text ? t->text : "");
-        return n;
+        return parse_interp_string(p, t->text ? t->text : "", pos);
     }
 
     /* char literal → int */
@@ -1220,6 +1309,10 @@ void print_ast(Node *n, int indent) {
             fprintf(stderr, "CATCH !%s\n", n->catch_effect);
             print_ast(n->catch_expr, indent + 1);
             print_ast(n->catch_handler, indent + 1);
+            break;
+        case NODE_TO_STR:
+            fprintf(stderr, "TO_STR\n");
+            print_ast(n->to_str_expr, indent + 1);
             break;
         case NODE_TYPE:
             fprintf(stderr, "TYPE %s\n", n->type_name);

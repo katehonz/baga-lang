@@ -498,6 +498,24 @@ static void emit_expr(Codegen *cg, Node *n) {
             emit_expr(cg, n->try_expr);
             break;
 
+        case NODE_TO_STR: {
+            /* interpolation: convert inner expr to a C string by its type */
+            Type *et = n->to_str_expr ? n->to_str_expr->type : NULL;
+            TypeKind ek = et ? et->kind : TYPE_STR;
+            if (ek == TYPE_STR) {
+                emit_expr(cg, n->to_str_expr);
+            } else if (ek == TYPE_BOOL) {
+                fprintf(f, "((");
+                emit_expr(cg, n->to_str_expr);
+                fprintf(f, ") ? \"true\" : \"false\")");
+            } else {   /* i64 / i32 */
+                fprintf(f, "baga_i64_to_str(");
+                emit_expr(cg, n->to_str_expr);
+                fprintf(f, ")");
+            }
+            break;
+        }
+
         case NODE_MATCH: {
             /* GCC statement expression */
             int tmp = cg->tmp_counter++;
@@ -1117,6 +1135,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
     fprintf(out, "static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n");
+    fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = malloc(24); snprintf(r, 24, \"%%lld\", (long long)x); return r; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
     fprintf(out, "static int baga_argc = 0;\n");
     fprintf(out, "static char **baga_argv = 0;\n");
