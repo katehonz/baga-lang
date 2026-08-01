@@ -366,6 +366,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"vec_get_str", "baga_vec_get_str"},
                     {"vec_set_str", "baga_vec_set_str"},
                     {"vec_len",     "baga_vec_len"},
+                    {"arena_new",   "baga_arena_new"},
+                    {"arena_alloc", "baga_arena_alloc"},
+                    {"arena_reset", "baga_arena_reset"},
+                    {"arena_free",  "baga_arena_free"},
                     {"arg_count",   "baga_arg_count"},
                     {"arg",         "baga_arg"},
                     {"exit",        "baga_exit"},
@@ -1155,6 +1159,29 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static double baga_vec_get_f64(baga_Vec *v, int64_t i) { union { double d; void *p; } u; u.p = v->data[i]; return u.d; }\n");
     fprintf(out, "static void baga_vec_set_f64(baga_Vec *v, int64_t i, double x) { union { double d; void *p; } u; u.d = x; v->data[i] = u.p; }\n");
     fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
+    fprintf(out, "\n/* arena allocator: bump allocation, free-all-at-once */\n");
+    fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; } baga_Arena;\n");
+    fprintf(out, "static int64_t baga_arena_new(void) {\n");
+    fprintf(out, "    baga_Arena *a = malloc(sizeof(baga_Arena));\n");
+    fprintf(out, "    a->cap = 65536; a->used = 0; a->base = malloc((size_t)a->cap);\n");
+    fprintf(out, "    return (int64_t)(intptr_t)a;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_arena_alloc(int64_t h, int64_t size) {\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    if (a->used + size > a->cap) {\n");
+    fprintf(out, "        int64_t nc = (a->used + size) * 2;\n");
+    fprintf(out, "        a->base = realloc(a->base, (size_t)nc); a->cap = nc;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    char *p = a->base + a->used; a->used += size;\n");
+    fprintf(out, "    return (int64_t)(intptr_t)p;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_arena_reset(int64_t h) {\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h; a->used = 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_arena_free(int64_t h) {\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    free(a->base); free(a);\n");
+    fprintf(out, "}\n");
     fprintf(out, "\n");
 
     /* enums first */

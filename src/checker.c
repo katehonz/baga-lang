@@ -437,6 +437,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"arg",       TYPE_STR, 1, 0},
             {"exit",      TYPE_VOID, 1, 0},
             {"eprintln",  TYPE_VOID, 1, 0},
+            {"arena_new",   TYPE_I64, 0, 0},
+            {"arena_alloc", TYPE_I64, 2, 0},
+            {"arena_reset", TYPE_VOID, 1, 0},
+            {"arena_free",  TYPE_VOID, 1, 0},
         };
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {

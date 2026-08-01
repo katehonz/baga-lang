@@ -139,6 +139,11 @@ test: $(BIN)
 	@./$(BIN) /tmp/baga_bad_extern_void.baga 2>&1 | grep -q "неподдържан тип на параметър" \
 		&& echo "OK: void параметър на extern fn е отхвърлен" \
 		|| { echo "FAIL: void параметър на extern fn не е отхвърлен"; exit 1; }
+	@echo "=== arena ==="
+	@./$(BIN) examples/arena.baga > /tmp/baga_arena_out.txt
+	@printf "true\ntrue\narena ok\n" | diff - /tmp/baga_arena_out.txt > /dev/null \
+		&& echo "OK: arena алокатор" \
+		|| { echo "FAIL: arena"; exit 1; }
 	@echo "=== --test-specs (property-based) ==="
 	@./$(BIN) --test-specs examples/spec_ensures.baga
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \

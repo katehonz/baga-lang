@@ -1,0 +1,13 @@
+fn main() {
+    let a = arena_new()
+    let p1 = arena_alloc(a, 100)
+    let p2 = arena_alloc(a, 200)
+    print(p2 - p1 >= 100)      // true — bump allocation moves forward
+    arena_reset(a)
+    let p3 = arena_alloc(a, 50)
+    print(p3 == p1)            // true — reset rewinds to the base
+    let b = arena_new()
+    arena_free(b)
+    arena_free(a)
+    print("arena ok")
+}
