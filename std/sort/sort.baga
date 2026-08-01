@@ -1,0 +1,50 @@
+// sort.baga — quicksort and binary search for Vec<i64>. Pure Baga.
+
+fn qs_partition(v: Vec<i64>, lo: i64, hi: i64) -> i64 {
+    let pivot = vec_get(v, hi)
+    let mut i = lo
+    for j in lo..hi {
+        if vec_get(v, j) <= pivot {
+            let tmp = vec_get(v, i)
+            vec_set(v, i, vec_get(v, j))
+            vec_set(v, j, tmp)
+            i = i + 1
+        }
+    }
+    let tmp = vec_get(v, i)
+    vec_set(v, i, vec_get(v, hi))
+    vec_set(v, hi, tmp)
+    return i
+}
+
+fn qs_sort(v: Vec<i64>, lo: i64, hi: i64) {
+    if lo < hi {
+        let p = qs_partition(v, lo, hi)
+        qs_sort(v, lo, p - 1)
+        qs_sort(v, p + 1, hi)
+    }
+}
+
+// In-place quicksort, ascending.
+fn sort_i64(v: Vec<i64>) {
+    if vec_len(v) > 1 {
+        qs_sort(v, 0, vec_len(v) - 1)
+    }
+}
+
+// Index of x in a sorted vector, or -1.
+fn binary_search_i64(v: Vec<i64>, x: i64) -> i64 {
+    let mut lo: i64 = 0
+    let mut hi = vec_len(v) - 1
+    while lo <= hi {
+        let mid = (lo + hi) / 2
+        let m = vec_get(v, mid)
+        if m == x { return mid }
+        if m < x {
+            lo = mid + 1
+        } else {
+            hi = mid - 1
+        }
+    }
+    return -1
+}

@@ -1,0 +1,120 @@
+// bytes.baga — byte buffers as Vec<i64> holding values 0..255. Pure Baga.
+// Hex and Base64 codecs (RFC 4648, standard alphabet, with padding).
+
+fn bytes_from_str(s: str) -> Vec<i64> {
+    let out = vec_new()
+    for i in 0..len(s) {
+        vec_push(out, char_at(s, i))
+    }
+    return out
+}
+
+fn bytes_eq(a: Vec<i64>, b: Vec<i64>) -> bool {
+    if vec_len(a) != vec_len(b) { return false }
+    for i in 0..vec_len(a) {
+        if vec_get(a, i) != vec_get(b, i) { return false }
+    }
+    return true
+}
+
+fn hex_digit(v: i64) -> str {
+    if v < 10 { return chr(48 + v) }
+    return chr(87 + v)   // 'a' + (v - 10)
+}
+
+fn bytes_to_hex(b: Vec<i64>) -> str {
+    let mut out = ""
+    for i in 0..vec_len(b) {
+        let v = vec_get(b, i) & 255
+        out = concat(out, hex_digit((v >> 4) & 15))
+        out = concat(out, hex_digit(v & 15))
+    }
+    return out
+}
+
+fn hex_val(c: i64) -> i64 {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    return -1
+}
+
+// Decodes pairs of hex digits; a trailing half-pair is ignored.
+fn bytes_from_hex(h: str) -> Vec<i64> {
+    let out = vec_new()
+    let mut i: i64 = 0
+    while i + 1 < len(h) {
+        vec_push(out, hex_val(char_at(h, i)) * 16 + hex_val(char_at(h, i + 1)))
+        i = i + 2
+    }
+    return out
+}
+
+fn b64_char(alpha: str, idx: i64) -> str {
+    return substr(alpha, idx, idx + 1)
+}
+
+fn base64_encode(b: Vec<i64>) -> str {
+    let alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    let mut out = ""
+    let n = vec_len(b)
+    let mut i: i64 = 0
+    while i + 3 <= n {
+        let v = vec_get(b, i) * 65536 + vec_get(b, i + 1) * 256 + vec_get(b, i + 2)
+        out = concat(out, b64_char(alpha, (v >> 18) & 63))
+        out = concat(out, b64_char(alpha, (v >> 12) & 63))
+        out = concat(out, b64_char(alpha, (v >> 6) & 63))
+        out = concat(out, b64_char(alpha, v & 63))
+        i = i + 3
+    }
+    let rem = n - i
+    if rem == 1 {
+        let v = vec_get(b, i) * 65536
+        out = concat(out, b64_char(alpha, (v >> 18) & 63))
+        out = concat(out, b64_char(alpha, (v >> 12) & 63))
+        out = concat(out, "==")
+    }
+    if rem == 2 {
+        let v = vec_get(b, i) * 65536 + vec_get(b, i + 1) * 256
+        out = concat(out, b64_char(alpha, (v >> 18) & 63))
+        out = concat(out, b64_char(alpha, (v >> 12) & 63))
+        out = concat(out, b64_char(alpha, (v >> 6) & 63))
+        out = concat(out, "=")
+    }
+    return out
+}
+
+fn b64_val(c: i64) -> i64 {
+    if c >= 65 && c <= 90 { return c - 65 }
+    if c >= 97 && c <= 122 { return c - 71 }
+    if c >= 48 && c <= 57 { return c + 4 }
+    if c == 43 { return 62 }
+    if c == 47 { return 63 }
+    return 0   // padding and anything else decodes as 0 and is dropped
+}
+
+// Input length must be a multiple of 4 (padded output of base64_encode).
+fn base64_decode(s: str) -> Vec<i64> {
+    let out = vec_new()
+    let n = len(s)
+    let mut i: i64 = 0
+    while i + 4 <= n {
+        let c2 = char_at(s, i + 2)
+        let c3 = char_at(s, i + 3)
+        let v = b64_val(char_at(s, i)) * 262144 + b64_val(char_at(s, i + 1)) * 4096 + b64_val(c2) * 64 + b64_val(c3)
+        if c2 == 61 {
+            vec_push(out, (v >> 16) & 255)
+        } else {
+            if c3 == 61 {
+                vec_push(out, (v >> 16) & 255)
+                vec_push(out, (v >> 8) & 255)
+            } else {
+                vec_push(out, (v >> 16) & 255)
+                vec_push(out, (v >> 8) & 255)
+                vec_push(out, v & 255)
+            }
+        }
+        i = i + 4
+    }
+    return out
+}
