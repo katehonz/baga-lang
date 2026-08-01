@@ -1,0 +1,24 @@
+// extern_write.baga — first real FFI: write a file through libc externs.
+extern fn open(path: str, flags: i64, mode: i64) -> i64 !IO
+extern fn write(fd: i64, buf: str, count: i64) -> i64 !IO
+extern fn close(fd: i64) -> i64 !IO
+
+fn main() -> i64 !IO {
+    let fd = open("/tmp/baga_extern_write.txt", 577, 420)?
+    if fd < 0 {
+        eprintln("open failed")
+        exit(1)
+    }
+    let data = "baga ffi works"
+    // statement-position extern call: must emit libc write, not baga_write
+    write(fd, "baga ffi ", 9)
+    let rest = "works"
+    let w = write(fd, rest, len(rest))?
+    if w != len(rest) {
+        eprintln("short write")
+        exit(1)
+    }
+    close(fd)
+    print("written")
+    return 0
+}

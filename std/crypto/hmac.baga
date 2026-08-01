@@ -1,0 +1,34 @@
+// hmac.baga — HMAC-SHA256 (RFC 2104) over sha256.baga. Pure Baga.
+
+import "sha256.baga"
+import "../bytes/bytes.baga"
+
+// HMAC-SHA256 with a string key and message. Returns the 32-byte MAC.
+fn hmac_sha256(key: str, msg: str) -> Vec<i64> {
+    let mut k = bytes_from_str(key)
+    if vec_len(k) > 64 {
+        k = sha256_bytes(k)
+    }
+    while vec_len(k) < 64 {
+        vec_push(k, 0)
+    }
+    let inner = vec_new()
+    let outer = vec_new()
+    for i in 0..64 {
+        vec_push(inner, vec_get(k, i) ^ 54)   // 0x36 = ipad
+        vec_push(outer, vec_get(k, i) ^ 92)   // 0x5c = opad
+    }
+    let m = bytes_from_str(msg)
+    for i in 0..vec_len(m) {
+        vec_push(inner, vec_get(m, i))
+    }
+    let ihash = sha256_bytes(inner)
+    for i in 0..32 {
+        vec_push(outer, vec_get(ihash, i))
+    }
+    return sha256_bytes(outer)
+}
+
+fn hmac_sha256_hex(key: str, msg: str) -> str {
+    return bytes_to_hex(hmac_sha256(key, msg))
+}

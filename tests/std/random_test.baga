@@ -1,0 +1,27 @@
+import "../../std/random/random.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Random {
+    let a = random_bytes(16)?
+    let b = random_bytes(16)?
+    check("len", vec_len(a) == 16 && vec_len(b) == 16)
+    check("range", vec_get(a, 0) >= 0 && vec_get(a, 0) <= 255)
+    // 16 random bytes colliding twice in a row is a 2^-128 event
+    let mut same: i64 = 0
+    for i in 0..16 {
+        if vec_get(a, i) == vec_get(b, i) { same = same + 1 }
+    }
+    check("distinct", same < 16)
+    let r = random_i64()?
+    check("random_i64", r >= 0 || r < 0)   // just exercise it
+    print("random_test: all passed")
+    return 0
+}

@@ -1,0 +1,136 @@
+// tcp.baga — TCP/IPv4 over libc sockets. !Net (plus !IO for fd operations).
+//
+// sockaddr_in is 16 bytes staged in an arena. The natural staging tools
+// would be bzero/bcopy, but their glibc prototypes (strings.h, pulled in
+// by the <string.h> the C backend always emits) conflict with the
+// int64_t/const char * prototypes baga generates for extern fns — a hard
+// C compile error. Instead the bytes bounce through an anonymous memfd:
+// pwrite writes each byte from a chr() string (chr(n) is a malloc'd
+// string whose first byte is n — this is how we write byte value 0,
+// which cannot travel through baga strings/concat), then one pread
+// copies the finished struct into the arena buffer.
+
+import "../os/os.baga"
+import "../str/str.baga"
+
+extern fn socket(domain: i64, typ: i64, proto: i64) -> i64 !Net
+extern fn setsockopt(fd: i64, level: i64, opt: i64, val: i64, len: i64) -> i64 !Net
+extern fn bind(fd: i64, addr: i64, addrlen: i64) -> i64 !Net
+extern fn listen(fd: i64, backlog: i64) -> i64 !Net
+extern fn accept(fd: i64, addr: i64, addrlen: i64) -> i64 !Net
+extern fn connect(fd: i64, addr: i64, addrlen: i64) -> i64 !Net
+extern fn memfd_create(name: str, flags: i64) -> i64 !Net
+extern fn pwrite(fd: i64, buf: str, count: i64, off: i64) -> i64 !Net
+extern fn pread(fd: i64, buf: i64, count: i64, off: i64) -> i64 !Net
+extern fn syscall(nr: i64, a1: i64, a2: i64, a3: i64) -> i64 !Net
+
+// Write one byte to the staging memfd at offset `off`.
+fn poke8(mfd: i64, off: i64, v: i64) -> i64 !Net {
+    return pwrite(mfd, chr(v & 255), 1, off)?
+}
+
+// Build a sockaddr_in in `sa` (16 arena bytes): AF_INET, port, 4 ip octets.
+// Returns 0 on success, -1 on error.
+fn make_sockaddr(sa: i64, port: i64, o1: i64, o2: i64, o3: i64, o4: i64) -> i64 !Net {
+    let mfd = memfd_create("baga_sa", 0)?
+    if mfd < 0 { return -1 }
+    poke8(mfd, 0, 2)?                  // AF_INET (little-endian u16: 02 00)
+    poke8(mfd, 1, 0)?
+    poke8(mfd, 2, (port >> 8) & 255)?  // port, big-endian
+    poke8(mfd, 3, port & 255)?
+    poke8(mfd, 4, o1)?
+    poke8(mfd, 5, o2)?
+    poke8(mfd, 6, o3)?
+    poke8(mfd, 7, o4)?
+    let mut i: i64 = 0
+    while i < 8 {                      // sin_zero
+        poke8(mfd, 8 + i, 0)?
+        i = i + 1
+    }
+    let n = pread(mfd, sa, 16, 0)?
+    syscall(3, mfd, 0, 0)?             // close(mfd) — SYS_close on x86-64
+    if n != 16 { return -1 }
+    return 0
+}
+
+// Set SO_REUSEADDR so quick test restarts can rebind.
+fn set_reuseaddr(a: i64, s: i64) -> i64 !Net {
+    let opt = arena_alloc(a, 4)
+    let mfd = memfd_create("baga_opt", 0)?
+    if mfd < 0 { return -1 }
+    poke8(mfd, 0, 1)?
+    poke8(mfd, 1, 0)?
+    poke8(mfd, 2, 0)?
+    poke8(mfd, 3, 0)?
+    let n = pread(mfd, opt, 4, 0)?
+    syscall(3, mfd, 0, 0)?             // close(mfd)
+    if n != 4 { return -1 }
+    return setsockopt(s, 1, 2, opt, 4)?
+}
+
+// Listen on 0.0.0.0:port. Returns the listener fd, or -1.
+fn tcp_listen(port: i64) -> i64 !Net {
+    let a = arena_new()
+    let sa = arena_alloc(a, 16)
+    if make_sockaddr(sa, port, 0, 0, 0, 0)? != 0 {
+        arena_free(a)
+        return -1
+    }
+    let s = socket(2, 1, 0)?
+    if s < 0 {
+        arena_free(a)
+        return -1
+    }
+    set_reuseaddr(a, s)?
+    let rb = bind(s, sa, 16)?
+    if rb != 0 {
+        arena_free(a)
+        return -1
+    }
+    let rl = listen(s, 128)?
+    arena_free(a)
+    if rl != 0 { return -1 }
+    return s
+}
+
+// Accept one connection (blocking). Returns the connection fd, or -1.
+fn tcp_accept(listener: i64) -> i64 !Net {
+    return accept(listener, 0, 0)?
+}
+
+// Connect to host ("a.b.c.d" dotted IPv4):port. Returns the fd, or -1.
+fn tcp_connect(host: str, port: i64) -> i64 !Net {
+    let parts = str_split(host, ".")
+    if vec_len(parts) != 4 { return -1 }
+    let a = arena_new()
+    let sa = arena_alloc(a, 16)
+    if make_sockaddr(sa, port,
+        parse_int(vec_get(parts, 0)) & 255,
+        parse_int(vec_get(parts, 1)) & 255,
+        parse_int(vec_get(parts, 2)) & 255,
+        parse_int(vec_get(parts, 3)) & 255) != 0 {
+        arena_free(a)
+        return -1
+    }
+    let s = socket(2, 1, 0)?
+    if s < 0 {
+        arena_free(a)
+        return -1
+    }
+    let rc = connect(s, sa, 16)?
+    arena_free(a)
+    if rc != 0 { return -1 }
+    return s
+}
+
+fn tcp_read(fd: i64, n: i64) -> str !Net !IO {
+    return fd_read(fd, n)?
+}
+
+fn tcp_write(fd: i64, data: str) -> i64 !Net !IO {
+    return fd_write(fd, data)?
+}
+
+fn tcp_close(fd: i64) -> i64 !IO {
+    return close(fd)
+}

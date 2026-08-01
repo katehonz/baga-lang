@@ -1,0 +1,34 @@
+import "../../std/io/io.baga"
+import "../../std/os/os.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !IO {
+    // write three lines through a buffered Writer (O_WRONLY|O_CREAT|O_TRUNC = 577)
+    let fd = open("/tmp/baga_io_test.txt", 577, 420)?
+    let w = writer_new(fd)
+    let w2 = write_str(w, "alpha\n")
+    let w3 = write_str(w2, "beta\n")
+    let w4 = write_str(w3, "gamma\n")
+    let w5 = flush(w4)?
+    close(w5.fd)
+
+    // read them back line by line
+    let rfd = open("/tmp/baga_io_test.txt", 0, 0)?
+    let r = reader_new(rfd)
+    check("line1", read_line(r)? == "alpha")
+    check("line2", read_line(r)? == "beta")
+    check("read_n", read_n(r, 3)? == "gam")
+    check("read_n_rest", read_n(r, 10)? == "ma\n")
+    check("eof", read_line(r)? == "")
+    close(rfd)
+    print("io_test: all passed")
+    return 0
+}

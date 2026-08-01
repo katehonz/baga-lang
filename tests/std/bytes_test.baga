@@ -1,0 +1,39 @@
+import "../../std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let b = bytes_from_str("Hi")
+    check("from_str_len", vec_len(b) == 2)
+    check("from_str_0", vec_get(b, 0) == 72)
+    check("from_str_1", vec_get(b, 1) == 105)
+
+    check("to_hex", bytes_to_hex(b) == "4869")
+    check("to_hex_zero", bytes_to_hex(bytes_from_hex("00ff10")) == "00ff10")
+    let hf = bytes_from_hex("deadbeef")
+    check("from_hex_len", vec_len(hf) == 4)
+    check("from_hex_0", vec_get(hf, 0) == 222)
+    check("from_hex_3", vec_get(hf, 3) == 239)
+
+    check("b64_empty", base64_encode(vec_new()) == "")
+    check("b64_f", base64_encode(bytes_from_str("f")) == "Zg==")
+    check("b64_fo", base64_encode(bytes_from_str("fo")) == "Zm8=")
+    check("b64_foo", base64_encode(bytes_from_str("foo")) == "Zm9v")
+    check("b64_foobar", base64_encode(bytes_from_str("foobar")) == "Zm9vYmFy")
+    check("b64_dec_f", bytes_eq(base64_decode("Zg=="), bytes_from_str("f")))
+    check("b64_dec_fo", bytes_eq(base64_decode("Zm8="), bytes_from_str("fo")))
+    check("b64_dec_foobar", bytes_eq(base64_decode("Zm9vYmFy"), bytes_from_str("foobar")))
+    check("b64_roundtrip", bytes_eq(base64_decode(base64_encode(bytes_from_str("baga std"))), bytes_from_str("baga std")))
+
+    check("eq", bytes_eq(bytes_from_str("ab"), bytes_from_str("ab")))
+    check("eq_neg", !bytes_eq(bytes_from_str("ab"), bytes_from_str("ac")))
+    check("eq_len", !bytes_eq(bytes_from_str("ab"), bytes_from_str("abc")))
+    print("bytes_test: all passed")
+}

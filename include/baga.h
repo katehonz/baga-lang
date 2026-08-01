@@ -73,6 +73,8 @@ typedef enum {
     TOK_CATCH,
     TOK_BREAK,
     TOK_CONTINUE,
+    TOK_IMPORT,
+    TOK_EXTERN,
 
     /* punctuation */
     TOK_LPAREN,     /* ( */
@@ -116,6 +118,7 @@ typedef enum {
     TOK_NOT,        /* !  (same as BANG, context disambiguates) */
     TOK_LSHIFT,     /* << */
     TOK_RSHIFT,     /* >> */
+    TOK_CARET,      /* ^ */
 
     TOK_COUNT
 } TokenKind;
@@ -292,6 +295,7 @@ struct Node {
             NodeVec params;     /* NODE_PARAM */
             Node *ret_type;     /* NULL → void */
             Node *fn_body;      /* NODE_BLOCK */
+            int is_extern;      /* extern fn — no body, links against libc */
         };
 
         /* NODE_PARAM */

@@ -1,3 +1,7 @@
+/* glibc declares realpath() under _XOPEN_SOURCE (>= 500); _POSIX_C_SOURCE
+ * alone (from baga.h) is not enough. Must precede all system includes. */
+#define _XOPEN_SOURCE 700
+
 #include "baga.h"
 #include <errno.h>
 #include <unistd.h>
@@ -41,6 +45,95 @@ static void usage(void) {
     );
 }
 
+/* named type for the string vectors used by import expansion — each
+ * VEC(T) expansion is a distinct anonymous type, so repeated VEC(char *)
+ * declarations would be incompatible */
+typedef VEC(char *) StrVec;
+typedef VEC(Token) TokenVec;
+
+/* import expansion: recursively collect tokens, resolving import "path"
+ * directives at the top of each file. The include guard is keyed on the
+ * canonical path, so importing the same file twice includes it once.
+ * Cycles are an error. */
+static void collect_tokens(const char *path, TokenVec *out,
+                           StrVec *included, StrVec *stack) {
+    char *canon = realpath(path, NULL);
+    if (!canon) {
+        fprintf(stderr, "baga: не мога да отворя '%s': %s\n", path, strerror(errno));
+        exit(1);
+    }
+    for (int i = 0; i < stack->len; i++) {
+        if (strcmp(stack->data[i], canon) == 0) {
+            fprintf(stderr, "baga: цикличен import: '%s'\n", path);
+            exit(1);
+        }
+    }
+    for (int i = 0; i < included->len; i++) {
+        if (strcmp(included->data[i], canon) == 0) {
+            free(canon);
+            return;   /* already included — include guard */
+        }
+    }
+    vec_push(*stack, canon);
+
+    int src_len = 0;
+    char *src = read_file(path, &src_len);
+    Lexer lexer;
+    lexer_init(&lexer, src, src_len, path);
+    VEC(Token) ftoks = {0};
+    for (;;) {
+        Token t = lexer_next(&lexer);
+        vec_push(ftoks, t);
+        if (t.kind == TOK_EOF) break;
+        if (t.kind == TOK_ERROR) {
+            baga_error(path, t.pos, "%s", t.text);
+            exit(1);
+        }
+    }
+
+    /* directory of the importing file, for relative resolution */
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = '\0';
+    else snprintf(dir, sizeof dir, ".");
+
+    int seen_code = 0;
+    for (int i = 0; i < ftoks.len; i++) {
+        Token *t = &ftoks.data[i];
+        if (t->kind == TOK_EOF) break;
+        if (t->kind == TOK_IMPORT) {
+            if (seen_code) {
+                baga_error(path, t->pos, "import трябва да е в началото на файла");
+                exit(1);
+            }
+            if (i + 1 >= ftoks.len || ftoks.data[i + 1].kind != TOK_STR_LIT) {
+                baga_error(path, t->pos, "очаквах низ след import");
+                exit(1);
+            }
+            const char *rel = ftoks.data[i + 1].text;
+            char joined[1024];
+            char resolved[1024];
+            snprintf(joined, sizeof joined, "%s/%s", dir, rel);
+            if (realpath(joined, resolved) == NULL &&
+                realpath(rel, resolved) == NULL) {
+                baga_error(path, t->pos, "не мога да намеря import '%s'", rel);
+                exit(1);
+            }
+            collect_tokens(resolved, out, included, stack);
+            i++;   /* consume the path string token */
+            continue;
+        }
+        seen_code = 1;
+        vec_push(*out, *t);   /* move the token into the combined stream */
+    }
+
+    vec_push(*included, canon);   /* canon stays owned by the guard set */
+    stack->len--;
+    vec_free(ftoks);              /* token structs' text moved or leaked-by-design */
+    free(src);
+}
+
 int main(int argc, char **argv) {
     const char *input_path = NULL;
     int emit_c = 0;
@@ -80,24 +173,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* read source */
-    int src_len = 0;
-    char *src = read_file(input_path, &src_len);
+    /* read source(s) — import expansion happens here */
+    TokenVec tokens = {0};
+    StrVec included = {0};
+    StrVec stack = {0};
+    collect_tokens(input_path, &tokens, &included, &stack);
 
-    /* lex */
-    Lexer lexer;
-    lexer_init(&lexer, src, src_len, input_path);
-
-    VEC(Token) tokens = {0};
-    for (;;) {
-        Token t = lexer_next(&lexer);
-        vec_push(tokens, t);
-        if (t.kind == TOK_EOF) break;
-        if (t.kind == TOK_ERROR) {
-            baga_error(input_path, t.pos, "%s", t.text);
-            return 1;
-        }
-    }
+    Token eof;
+    memset(&eof, 0, sizeof eof);
+    eof.kind = TOK_EOF;
+    eof.pos.line = 1;
+    eof.pos.col = 1;
+    eof.text = strdup("");
+    vec_push(tokens, eof);
 
     if (dump_tokens) {
         for (int i = 0; i < tokens.len; i++) {
@@ -257,7 +345,9 @@ int main(int argc, char **argv) {
     for (int i = 0; i < tokens.len; i++)
         free(tokens.data[i].text);
     vec_free(tokens);
-    free(src);
+    for (int i = 0; i < included.len; i++) free(included.data[i]);
+    vec_free(included);
+    vec_free(stack);
 
     return 0;
 }

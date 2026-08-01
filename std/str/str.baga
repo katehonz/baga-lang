@@ -1,0 +1,142 @@
+// str.baga — string utilities. Pure Baga, no effects.
+// Built on the len/char_at/substr/concat/chr/ord/str_eq builtins.
+
+fn str_starts_with(s: str, prefix: str) -> bool {
+    if len(prefix) > len(s) { return false }
+    return substr(s, 0, len(prefix)) == prefix
+}
+
+fn str_ends_with(s: str, suffix: str) -> bool {
+    if len(suffix) > len(s) { return false }
+    return substr(s, len(s) - len(suffix), len(s)) == suffix
+}
+
+// Index of the first occurrence of needle, or -1.
+fn str_find(s: str, needle: str) -> i64 {
+    let n = len(needle)
+    if n == 0 { return 0 }
+    let mut i: i64 = 0
+    while i + n <= len(s) {
+        if substr(s, i, i + n) == needle { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// Split on a single-character delimiter. Empty fields are preserved.
+fn str_split(s: str, delim: str) -> Vec<str> {
+    let out = vec_new()
+    let d = char_at(delim, 0)
+    let mut start: i64 = 0
+    for i in 0..len(s) {
+        if char_at(s, i) == d {
+            vec_push(out, substr(s, start, i))
+            start = i + 1
+        }
+    }
+    vec_push(out, substr(s, start, len(s)))
+    return out
+}
+
+fn str_join(parts: Vec<str>, sep: str) -> str {
+    let mut out = ""
+    for i in 0..vec_len(parts) {
+        if i > 0 { out = concat(out, sep) }
+        out = concat(out, vec_get(parts, i))
+    }
+    return out
+}
+
+// Replace every occurrence of `from` with `to`.
+fn str_replace(s: str, from: str, to: str) -> str {
+    let n = len(from)
+    if n == 0 { return s }
+    let mut out = ""
+    let mut i: i64 = 0
+    while i + n <= len(s) {
+        if substr(s, i, i + n) == from {
+            out = concat(out, to)
+            i = i + n
+        } else {
+            out = concat(out, substr(s, i, i + 1))
+            i = i + 1
+        }
+    }
+    if i < len(s) { out = concat(out, substr(s, i, len(s))) }
+    return out
+}
+
+// Trim ASCII whitespace (space, tab, LF, CR) from both ends.
+fn str_trim(s: str) -> str {
+    let mut a: i64 = 0
+    let mut b = len(s)
+    let mut moving = true
+    while a < b && moving {
+        let c = char_at(s, a)
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            a = a + 1
+        } else {
+            moving = false
+        }
+    }
+    moving = true
+    while b > a && moving {
+        let c = char_at(s, b - 1)
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            b = b - 1
+        } else {
+            moving = false
+        }
+    }
+    return substr(s, a, b)
+}
+
+// Repeat a string n times (binary doubling — O(log n) concats).
+// The result is heap-allocated and may be overwritten in place by libc
+// externs that take a `str` buffer (os/net/io rely on this).
+fn str_repeat(s: str, n: i64) -> str {
+    let mut out = ""
+    let mut cur = s
+    let mut left = n
+    while left > 0 {
+        if left % 2 == 1 { out = concat(out, cur) }
+        cur = concat(cur, cur)
+        left = left / 2
+    }
+    return out
+}
+
+// Parse a base-10 integer; stops at the first non-digit. Leading `-` allowed.
+fn parse_int(s: str) -> i64 {
+    let mut i: i64 = 0
+    let mut sign: i64 = 1
+    if len(s) > 0 && char_at(s, 0) == 45 {
+        sign = -1
+        i = 1
+    }
+    let mut v: i64 = 0
+    while i < len(s) {
+        let c = char_at(s, i)
+        if c < 48 || c > 57 { return sign * v }
+        v = v * 10 + (c - 48)
+        i = i + 1
+    }
+    return sign * v
+}
+
+fn int_to_str(n: i64) -> str {
+    if n == 0 { return "0" }
+    let mut neg = false
+    let mut v = n
+    if v < 0 {
+        neg = true
+        v = 0 - v
+    }
+    let mut out = ""
+    while v > 0 {
+        out = concat(chr(48 + (v % 10)), out)
+        v = v / 10
+    }
+    if neg { out = concat("-", out) }
+    return out
+}

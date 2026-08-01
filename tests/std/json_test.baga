@@ -1,0 +1,67 @@
+import "../../std/json/json.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let d = json_parse("{\"name\":\"baga\",\"version\":1,\"langs\":[\"bg\",\"en\"],\"ok\":true,\"nothing\":null,\"pi\":3.5}")
+    let r = json_root(d)
+    check("root_obj", json_tag(d, r) == 6)
+    check("count", json_count(d, r) == 6)
+
+    let name = json_get(d, r, "name")
+    check("name_tag", json_tag(d, name) == 4)
+    check("name_val", json_str(d, name) == "baga")
+
+    let ver = json_get(d, r, "version")
+    check("version_tag", json_tag(d, ver) == 3)
+    check("version_num", json_num(d, ver) == 1.0)
+
+    let pi = json_get(d, r, "pi")
+    check("pi_num", json_num(d, pi) == 3.5)
+
+    let langs = json_get(d, r, "langs")
+    check("langs_tag", json_tag(d, langs) == 5)
+    check("langs_count", json_count(d, langs) == 2)
+    check("langs_0", json_str(d, json_at(d, langs, 0)) == "bg")
+    check("langs_1", json_str(d, json_at(d, langs, 1)) == "en")
+
+    let ok = json_get(d, r, "ok")
+    check("ok_tag", json_tag(d, ok) == 2)
+    let nothing = json_get(d, r, "nothing")
+    check("null_tag", json_tag(d, nothing) == 0)
+    check("missing", json_get(d, r, "nope") == -1)
+
+    // escapes: "a\nb\t\"q\""
+    let e = json_parse("{\"s\":\"a\\nb\\t\\\"q\\\"\"}")
+    let es = json_get(e, json_root(e), "s")
+    check("escape", json_str(e, es) == "a\nb\t\"q\"")
+
+    // \u escape → UTF-8 (U+00E9 = é)
+    let u = json_parse("\"\\u00e9\"")
+    check("unicode", json_str(u, json_root(u)) == "é")
+
+    // round-trip: parse → serialize → parse → serialize is stable
+    let src = "{\"a\":[1,2.5,true,null,\"x\"],\"b\":{\"c\":\"d\"}}"
+    let d1 = json_parse(src)
+    let s1 = json_serialize(d1, json_root(d1))
+    let d2 = json_parse(s1)
+    let s2 = json_serialize(d2, json_root(d2))
+    check("roundtrip", s1 == s2)
+    check("serialize", s1 == src)
+    let ea = json_parse("[]")
+    check("serialize_empty", json_serialize(ea, json_root(ea)) == "[]")
+    let eo = json_parse("{}")
+    check("serialize_empty_obj", json_serialize(eo, json_root(eo)) == "{}")
+
+    // error handling: unparseable input → root tag -1
+    let bad = json_parse("?")
+    check("error_tag", json_tag(bad, json_root(bad)) == -1)
+    print("json_test: all passed")
+}

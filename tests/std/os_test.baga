@@ -1,0 +1,37 @@
+import "../../std/os/os.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !IO {
+    check("write_file", write_file("/tmp/baga_os_test.txt", "line1\nline2\n") == 0)
+    let back = read_file("/tmp/baga_os_test.txt")
+    check("read_back", back == "line1\nline2\n")
+
+    // fd layer: O_RDONLY = 0
+    let fd = open("/tmp/baga_os_test.txt", 0, 0)?
+    check("open_ok", fd >= 0)
+    check("fd_read", fd_read(fd, 5) == "line1")
+    check("fd_read_rest", fd_read(fd, 100) == "\nline2\n")
+    check("fd_read_eof", fd_read(fd, 10) == "")
+    close(fd)
+
+    check("fd_write_stdout", fd_write(1, "") == 0)
+
+    // env: PATH virtually always set; a made-up name is not
+    check("env_set", len(env("PATH")) > 0)
+    check("env_unset", env("BAGA_DEFINITELY_NOT_SET_42") == "")
+
+    // mem_i64: little-endian load
+    let b = chr(1)
+    let s = concat(b, "aaaaaaa")
+    check("mem_i64", mem_i64(s, 0) == 7016996765293437185)
+    print("os_test: all passed")
+    return 0
+}

@@ -1,0 +1,7 @@
+import "import_lib.baga"
+import "import_lib.baga"   // include guard: second import is a no-op
+
+fn main() {
+    print(square(7))
+    print(triple(7))
+}

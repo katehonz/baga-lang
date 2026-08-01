@@ -1,0 +1,25 @@
+import "../../std/time/time.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Time {
+    let now = time_now_ms()?
+    check("now_positive", now > 1700000000000)   // after 2023-11-14
+    let m1 = monotonic_ms()?
+    let mut spin: i64 = 0
+    for i in 0..1000000 {
+        spin = spin + i
+    }
+    let m2 = monotonic_ms()?
+    check("monotonic_advances", m2 >= m1)
+    check("spin", spin >= 0)
+    print("time_test: all passed")
+    return 0
+}

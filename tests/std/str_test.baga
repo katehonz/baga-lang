@@ -1,0 +1,44 @@
+import "../../std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("starts_with", str_starts_with("hello world", "hello"))
+    check("starts_with_neg", !str_starts_with("hello", "hello world"))
+    check("ends_with", str_ends_with("hello world", "world"))
+    check("ends_with_neg", !str_ends_with("hi", "ohi"))
+    check("find", str_find("hello world", "world") == 6)
+    check("find_missing", str_find("hello", "zzz") == -1)
+    check("find_empty", str_find("abc", "") == 0)
+
+    let parts = str_split("a,b,,c", ",")
+    check("split_len", vec_len(parts) == 4)
+    check("split_0", vec_get(parts, 0) == "a")
+    check("split_2", vec_get(parts, 2) == "")
+    check("split_3", vec_get(parts, 3) == "c")
+
+    check("join", str_join(parts, "|") == "a|b||c")
+    check("replace", str_replace("a-b-c", "-", "+") == "a+b+c")
+    check("replace_longer", str_replace("hello", "ll", "LLL") == "heLLLo")
+    check("replace_none", str_replace("abc", "z", "q") == "abc")
+    check("trim", str_trim("  hi \n\t") == "hi")
+    check("trim_all", str_trim("   ") == "")
+    check("repeat", str_repeat("ab", 3) == "ababab")
+    check("repeat_zero", str_repeat("x", 0) == "")
+    check("repeat_len", len(str_repeat(" ", 4096)) == 4096)
+    check("parse_int", parse_int("12345") == 12345)
+    check("parse_int_neg", parse_int("-42") == -42)
+    check("parse_int_trailing", parse_int("12x") == 12)
+    check("int_to_str", int_to_str(12345) == "12345")
+    check("int_to_str_neg", int_to_str(-42) == "-42")
+    check("int_to_str_zero", int_to_str(0) == "0")
+    check("roundtrip", parse_int(int_to_str(98765)) == 98765)
+    print("str_test: all passed")
+}

@@ -1,0 +1,27 @@
+// random.baga — getrandom(2) wrappers. !Random.
+
+import "../str/str.baga"
+
+extern fn getrandom(buf: str, n: i64, flags: i64) -> i64 !Random
+
+// n random bytes as Vec<i64> (values 0..255).
+fn random_bytes(n: i64) -> Vec<i64> !Random {
+    let buf = str_repeat(" ", n)
+    let got = getrandom(buf, n, 0)?
+    let out = vec_new()
+    for i in 0..got {
+        vec_push(out, char_at(buf, i))
+    }
+    return out
+}
+
+fn random_i64() -> i64 !Random {
+    let buf = str_repeat(" ", 8)
+    let got = getrandom(buf, 8, 0)?
+    if got != 8 { return 0 }
+    let mut v: i64 = 0
+    for i in 0..8 {
+        v = v | (char_at(buf, i) << (i * 8))
+    }
+    return v
+}

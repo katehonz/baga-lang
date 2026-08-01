@@ -209,6 +209,7 @@ static LLVMValueRef to_bool(LLVMValueRef v) {
  * текущият insert block на builder-а се запазва и възстановява. */
 
 static LLVMValueRef baga_rt(const char *name);
+static int extern_ret_is_str_llvm(Node *ef);
 
 static LLVMValueRef rt_libc(const char *name, LLVMTypeRef ret,
                             LLVMTypeRef *params, int nparams) {
@@ -225,6 +226,10 @@ static LLVMValueRef rt_malloc(void) {
 static LLVMValueRef rt_realloc(void) {
     LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty };
     return rt_libc("realloc", lg.ptr_ty, p, 2);
+}
+static LLVMValueRef rt_free(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    return rt_libc("free", lg.void_ty, p, 1);
 }
 static LLVMValueRef rt_memcpy(void) {
     LLVMTypeRef p[] = { lg.ptr_ty, lg.ptr_ty, lg.i64_ty };
@@ -250,6 +255,21 @@ static LLVMValueRef h_call(LLVMValueRef fn, LLVMValueRef *args, int nargs,
 static void h_begin(LLVMValueRef fn) {
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(lg.ctx, fn, "entry");
     LLVMPositionBuilderAtEnd(lg.builder, entry);
+}
+
+/* alloca винаги в entry block-а на текущата функция: alloca на текущата
+ * insert точка в тяло на цикъл заделя нов стек на всяка итерация и
+ * препълва стека при дълги цикли (sha256 върху 100KB низ). */
+static LLVMValueRef entry_alloca(LLVMTypeRef ty, const char *name) {
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
+    LLVMBuilderRef eb = LLVMCreateBuilderInContext(lg.ctx);
+    LLVMValueRef first = LLVMGetFirstInstruction(entry);
+    if (first) LLVMPositionBuilderBefore(eb, first);
+    else LLVMPositionBuilderAtEnd(eb, entry);
+    LLVMValueRef a = LLVMBuildAlloca(eb, ty, name);
+    LLVMDisposeBuilder(eb);
+    return a;
 }
 
 /* static int64_t baga_len(const char *s) { return (int64_t)strlen(s); } */
@@ -598,6 +618,114 @@ static LLVMValueRef build_baga_vec_len(void) {
     return fn;
 }
 
+/* ---- arena (mirror на baga_arena_* в codegen_c) ---- */
+static LLVMTypeRef baga_arena_ty(void) {
+    LLVMTypeRef t = LLVMGetTypeByName(lg.mod, "baga_Arena");
+    if (t) return t;
+    t = LLVMStructCreateNamed(lg.ctx, "baga_Arena");
+    LLVMTypeRef elems[] = { lg.ptr_ty, lg.i64_ty, lg.i64_ty };
+    LLVMStructSetBody(t, elems, 3, 0);
+    return t;
+}
+static LLVMTypeRef baga_arena_ptr_ty(void) {
+    return LLVMPointerType(baga_arena_ty(), 0);
+}
+static LLVMValueRef arena_field_ptr(LLVMValueRef a, unsigned idx, const char *nm) {
+    return LLVMBuildStructGEP2(lg.builder, baga_arena_ty(), a, idx, nm);
+}
+
+/* static int64_t baga_arena_new(void) — handle = pointer към baga_Arena */
+static LLVMValueRef build_baga_arena_new(void) {
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_arena_new",
+        LLVMFunctionType(lg.i64_ty, NULL, 0, 0));
+    h_begin(fn);
+    LLVMValueRef sz = LLVMSizeOf(baga_arena_ty());
+    LLVMValueRef ma[] = { sz };
+    LLVMValueRef raw = h_call(rt_malloc(), ma, 1, "raw");
+    LLVMValueRef a = LLVMBuildBitCast(lg.builder, raw, baga_arena_ptr_ty(), "a");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 65536, 0),
+                   arena_field_ptr(a, 2, "capp"));
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0),
+                   arena_field_ptr(a, 1, "usedp"));
+    LLVMValueRef da[] = { LLVMConstInt(lg.i64_ty, 65536, 0) };
+    LLVMValueRef draw = h_call(rt_malloc(), da, 1, "draw");
+    LLVMBuildStore(lg.builder, draw, arena_field_ptr(a, 0, "basep"));
+    LLVMValueRef h = LLVMBuildPtrToInt(lg.builder, a, lg.i64_ty, "h");
+    LLVMBuildRet(lg.builder, h);
+    return fn;
+}
+
+/* static int64_t baga_arena_alloc(int64_t h, int64_t size) — bump + grow */
+static LLVMValueRef build_baga_arena_alloc(void) {
+    LLVMTypeRef p[] = { lg.i64_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_arena_alloc",
+        LLVMFunctionType(lg.i64_ty, p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef a = LLVMBuildIntToPtr(lg.builder, LLVMGetParam(fn, 0),
+        baga_arena_ptr_ty(), "a");
+    LLVMValueRef size = LLVMGetParam(fn, 1);
+    LLVMValueRef usedp = arena_field_ptr(a, 1, "usedp");
+    LLVMValueRef capp = arena_field_ptr(a, 2, "capp");
+    LLVMValueRef used = LLVMBuildLoad2(lg.builder, lg.i64_ty, usedp, "used");
+    LLVMValueRef cap = LLVMBuildLoad2(lg.builder, lg.i64_ty, capp, "cap");
+    LLVMValueRef need = LLVMBuildAdd(lg.builder, used, size, "need");
+    LLVMValueRef full = LLVMBuildICmp(lg.builder, LLVMIntSGT, need, cap, "full");
+    LLVMBasicBlockRef grow_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "grow");
+    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildCondBr(lg.builder, full, grow_bb, done_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, grow_bb);
+    LLVMValueRef nc = LLVMBuildMul(lg.builder, need,
+        LLVMConstInt(lg.i64_ty, 2, 0), "nc");
+    LLVMBuildStore(lg.builder, nc, capp);
+    LLVMValueRef base0 = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        arena_field_ptr(a, 0, "basep"), "base0");
+    LLVMValueRef ra[] = { base0, nc };
+    LLVMValueRef nd = h_call(rt_realloc(), ra, 2, "nd");
+    LLVMBuildStore(lg.builder, nd, arena_field_ptr(a, 0, "basep"));
+    LLVMBuildBr(lg.builder, done_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, done_bb);
+    LLVMValueRef base = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        arena_field_ptr(a, 0, "basep"), "base");
+    LLVMValueRef ptr = LLVMBuildGEP2(lg.builder, lg.i8_ty, base, &used, 1, "p");
+    LLVMBuildStore(lg.builder, need, usedp);
+    LLVMValueRef r = LLVMBuildPtrToInt(lg.builder, ptr, lg.i64_ty, "r");
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+
+/* static void baga_arena_reset(int64_t h) — used = 0 */
+static LLVMValueRef build_baga_arena_reset(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_arena_reset",
+        LLVMFunctionType(lg.void_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef a = LLVMBuildIntToPtr(lg.builder, LLVMGetParam(fn, 0),
+        baga_arena_ptr_ty(), "a");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0),
+                   arena_field_ptr(a, 1, "usedp"));
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+/* static void baga_arena_free(int64_t h) — free(base); free(a) */
+static LLVMValueRef build_baga_arena_free(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_arena_free",
+        LLVMFunctionType(lg.void_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef a = LLVMBuildIntToPtr(lg.builder, LLVMGetParam(fn, 0),
+        baga_arena_ptr_ty(), "a");
+    LLVMValueRef base = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        arena_field_ptr(a, 0, "basep"), "base");
+    LLVMValueRef fa[] = { base };
+    h_call(rt_free(), fa, 1, "");
+    LLVMValueRef raw = LLVMBuildBitCast(lg.builder, a, lg.ptr_ty, "raw");
+    LLVMValueRef fb[] = { raw };
+    h_call(rt_free(), fb, 1, "");
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
 /* f64 елементи: double ↔ i64 ↔ ptr (bitcast/inttoptr/ptrtoint) */
 static LLVMValueRef build_baga_vec_push_f64(void) {
     LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.double_ty };
@@ -847,6 +975,10 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_vec_get_f64") == 0) fn = build_baga_vec_get_f64();
     else if (strcmp(name, "baga_vec_set_f64") == 0) fn = build_baga_vec_set_f64();
     else if (strcmp(name, "baga_vec_len") == 0)     fn = build_baga_vec_len();
+    else if (strcmp(name, "baga_arena_new") == 0)   fn = build_baga_arena_new();
+    else if (strcmp(name, "baga_arena_alloc") == 0) fn = build_baga_arena_alloc();
+    else if (strcmp(name, "baga_arena_reset") == 0) fn = build_baga_arena_reset();
+    else if (strcmp(name, "baga_arena_free") == 0)  fn = build_baga_arena_free();
     else if (strcmp(name, "baga_arg_count") == 0)   fn = build_baga_arg_count();
     else if (strcmp(name, "baga_arg") == 0)         fn = build_baga_arg();
     else if (strcmp(name, "baga_exit") == 0)        fn = build_baga_exit();
@@ -1031,7 +1163,7 @@ static LLVMValueRef emit_match_llvm(Node *n) {
     LLVMTypeRef res_ty = n->type ? llvm_type_resolved(n->type) : lg.i64_ty;
     LLVMValueRef res_alloca = NULL;
     if (res_ty != lg.void_ty) {
-        res_alloca = LLVMBuildAlloca(lg.builder, res_ty, "match_res");
+        res_alloca = entry_alloca(res_ty, "match_res");
         /* codegen_c инициализира _mr = 0 */
         LLVMBuildStore(lg.builder, LLVMConstNull(res_ty), res_alloca);
     }
@@ -1120,11 +1252,30 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 free(name);
                 return v;
             }
-            /* str == str е чрез strcmp в C backend-а — извън обхвата тук */
+            /* str == str / str != str — чрез baga_str_eq (като codegen_c: strcmp) */
             if ((n->bin_op == OP_EQ || n->bin_op == OP_NEQ) &&
                 n->left->type && n->right->type &&
-                n->left->type->kind == TYPE_STR && n->right->type->kind == TYPE_STR)
-                llvm_unsupported("сравнение на низове");
+                n->left->type->kind == TYPE_STR && n->right->type->kind == TYPE_STR) {
+                LLVMValueRef l = emit_expr_llvm(n->left);
+                LLVMValueRef r = emit_expr_llvm(n->right);
+                if (!l || !r) llvm_unsupported("print в сравнение на низове");
+                LLVMValueRef sc = baga_rt("baga_str_eq");
+                LLVMValueRef args[] = { l, r };
+                char *nm = tmp_name();
+                LLVMValueRef eq = h_call(sc, args, 2, nm);
+                free(nm);
+                /* baga_str_eq връща i64 0/1 → bool i1 */
+                char *nm2 = tmp_name();
+                LLVMValueRef v = LLVMBuildICmp(lg.builder, LLVMIntNE, eq,
+                    LLVMConstInt(lg.i64_ty, 0, 0), nm2);
+                free(nm2);
+                if (n->bin_op == OP_NEQ) {
+                    char *nm3 = tmp_name();
+                    v = LLVMBuildNot(lg.builder, v, nm3);
+                    free(nm3);
+                }
+                return v;
+            }
             LLVMValueRef left = emit_expr_llvm(n->left);
             LLVMValueRef right = emit_expr_llvm(n->right);
             if (!left || !right) llvm_unsupported("print в аритметичен израз");
@@ -1170,7 +1321,20 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         }
 
         case NODE_CALL: {
-            if (is_print_call_llvm(n)) {
+            /* extern fn → raw libc symbol, before the print/builtin dispatch
+             * (an extern named `write` must not become baga_write) */
+            Node *ef = NULL;
+            if (n->callee->kind == NODE_IDENT) {
+                for (int i = 0; lg.program && i < lg.program->items.len; i++) {
+                    Node *it = lg.program->items.data[i];
+                    if (it->kind == NODE_FN && it->is_extern &&
+                        strcmp(it->fn_name, n->callee->name) == 0) {
+                        ef = it;
+                        break;
+                    }
+                }
+            }
+            if (!ef && is_print_call_llvm(n)) {
                 emit_print_llvm(n);
                 return NULL; /* print е void */
             }
@@ -1191,16 +1355,22 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 {"vec_get_str", "baga_vec_get_str"},
                 {"vec_set_str", "baga_vec_set_str"},
                 {"vec_len",     "baga_vec_len"},
+                {"arena_new",   "baga_arena_new"},
+                {"arena_alloc", "baga_arena_alloc"},
+                {"arena_reset", "baga_arena_reset"},
+                {"arena_free",  "baga_arena_free"},
                 {"arg_count",   "baga_arg_count"},
                 {"arg",         "baga_arg"},
                 {"exit",        "baga_exit"},
                 {"eprintln",    "baga_eprintln"},
             };
             LLVMValueRef fn = NULL;
+            if (ef) fn = LLVMGetNamedFunction(lg.mod, ef->fn_name);
             /* типизирани вектори: helper по елементния тип на вектора */
-            if (strcmp(n->callee->name, "vec_push") == 0 ||
-                strcmp(n->callee->name, "vec_get") == 0 ||
-                strcmp(n->callee->name, "vec_set") == 0) {
+            if (!ef &&
+                (strcmp(n->callee->name, "vec_push") == 0 ||
+                 strcmp(n->callee->name, "vec_get") == 0 ||
+                 strcmp(n->callee->name, "vec_set") == 0)) {
                 Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
                 const char *suf = "i64";
                 if (vt && vt->kind == TYPE_VEC && vt->elem) {
@@ -1212,7 +1382,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                          n->callee->name, suf);
                 fn = baga_rt(rt_name);
             }
-            for (int bi = 0; !fn && bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
+            for (int bi = 0; !ef && !fn && bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                 if (strcmp(n->callee->name, bmap[bi].baga) == 0) {
                     fn = baga_rt(bmap[bi].rt);
                     break;
@@ -1240,6 +1410,12 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             char *name = is_void ? NULL : tmp_name();
             LLVMValueRef result = LLVMBuildCall2(lg.builder, fn_ty, fn, args,
                                                  (unsigned)nargs, is_void ? "" : name);
+            if (ef && extern_ret_is_str_llvm(ef)) {
+                /* str return: NULL → "" (като codegen_c — getenv е тотална) */
+                LLVMValueRef empty = LLVMBuildGlobalStringPtr(lg.builder, "", "empty");
+                LLVMValueRef isnull = LLVMBuildIsNull(lg.builder, result, "isnull");
+                result = LLVMBuildSelect(lg.builder, isnull, empty, result, "nn");
+            }
             free(name);
             free(args);
             return result;
@@ -1289,7 +1465,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             if (!base) {
                 LLVMValueRef ov = emit_expr_llvm(obj);
                 if (!ov) llvm_unsupported("print като struct обект");
-                base = LLVMBuildAlloca(lg.builder, sty, "ftmp");
+                base = entry_alloca(sty, "ftmp");
                 LLVMBuildStore(lg.builder, coerce(ov, sty), base);
             }
             LLVMValueRef gep = LLVMBuildStructGEP2(lg.builder, sty, base,
@@ -1310,7 +1486,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 llvm_unsupported(buf);
             }
             LLVMTypeRef sty = user_struct_ty(n->lit_name);
-            LLVMValueRef tmp = LLVMBuildAlloca(lg.builder, sty, "slit");
+            LLVMValueRef tmp = entry_alloca(sty, "slit");
             LLVMBuildStore(lg.builder, LLVMConstNull(sty), tmp);
             for (int i = 0; i < n->n_lit_fields; i++) {
                 int idx = struct_field_index(decl, n->lit_fields[i]);
@@ -1368,7 +1544,7 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             else if (n->let_init && n->let_init->type) ty = llvm_type_resolved(n->let_init->type);
             else ty = lg.i64_ty;
             char *m = llvm_mangle(n->let_name);
-            LLVMValueRef alloca = LLVMBuildAlloca(lg.builder, ty, m);
+            LLVMValueRef alloca = entry_alloca(ty, m);
             free(m);
             if (n->let_init) {
                 LLVMValueRef val = emit_expr_llvm(n->let_init);
@@ -1448,7 +1624,7 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
 
             LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
             char *m = llvm_mangle(n->for_var);
-            LLVMValueRef var = LLVMBuildAlloca(lg.builder, lg.i64_ty, m);
+            LLVMValueRef var = entry_alloca(lg.i64_ty, m);
             free(m);
             LLVMBuildStore(lg.builder, lo, var);
 
@@ -1521,6 +1697,14 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
 }
 
 /* ---- spec ensures/requires (огледало на codegen_c) ---- */
+
+/* Does this extern fn return str? (Effects on the return type are unwrapped.)
+ * Mirror на extern_ret_is_str в codegen_c. */
+static int extern_ret_is_str_llvm(Node *ef) {
+    Node *t = ef->ret_type;
+    while (t && t->kind == NODE_TYPE_EFFECT) t = t->inner_type;
+    return t && t->kind == NODE_TYPE && strcmp(t->type_name, "str") == 0;
+}
 
 /* Намира spec с ensures или requires за дадена функция (NULL ако няма). */
 static Node *find_ensures_spec_llvm(const char *fn_name) {
@@ -1601,6 +1785,11 @@ static char *impl_name_of(const char *fn_name) {
  * Функция със spec получава impl (тялото) + wrapper (публичното име). */
 static void predeclare_fn_llvm(Node *fn) {
     LLVMTypeRef fn_ty = fn_type_of(fn, NULL, NULL);
+    if (fn->is_extern) {
+        /* extern fn: declare with the raw C name (no b_ mangling) */
+        LLVMAddFunction(lg.mod, fn->fn_name, fn_ty);
+        return;
+    }
     Node *spec = fn->fn_body ? find_ensures_spec_llvm(fn->fn_name) : NULL;
     if (spec) {
         char *im = impl_name_of(fn->fn_name);

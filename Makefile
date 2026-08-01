@@ -109,6 +109,41 @@ test: $(BIN)
 		|| { echo "FAIL: проверката на аргументите не хвана грешния тип"; exit 1; }
 	@echo "=== vec_ann (Vec<T> анотации) ==="
 	./$(BIN) examples/vec_ann.baga
+	@echo "=== bitwise ==="
+	@./$(BIN) examples/bitwise.baga > /tmp/baga_bitwise_out.txt
+	@printf "2\n7\n5\n16\n16\n24\n9\n4\n16777215\n" | diff - /tmp/baga_bitwise_out.txt > /dev/null \
+		&& echo "OK: побитови оператори" \
+		|| { echo "FAIL: побитови оператори"; exit 1; }
+	@echo "=== import ==="
+	@./$(BIN) tests/import_main.baga > /tmp/baga_import_out.txt
+	@printf "49\n21\n" | diff - /tmp/baga_import_out.txt > /dev/null \
+		&& echo "OK: import + include guard" \
+		|| { echo "FAIL: import"; exit 1; }
+	@./$(BIN) tests/import_cycle_a.baga 2>&1 | grep -q "цикличен import" \
+		&& echo "OK: import цикълът е хванат" \
+		|| { echo "FAIL: import цикълът не е хванат"; exit 1; }
+	@echo "=== extern fn (FFI) ==="
+	@rm -f /tmp/baga_extern_write.txt
+	@./$(BIN) examples/extern_write.baga | grep -q "written"
+	@test "$$(cat /tmp/baga_extern_write.txt)" = "baga ffi works" \
+		&& echo "OK: extern fn записва файл" \
+		|| { echo "FAIL: extern fn"; exit 1; }
+	@printf 'extern fn bad(v: Vec<i64>) -> i64\nfn main() { print(1) }\n' > /tmp/baga_bad_extern.baga
+	@./$(BIN) /tmp/baga_bad_extern.baga 2>&1 | grep -q "неподдържан тип на параметър" \
+		&& echo "OK: extern fn типовото ограничение е хванато" \
+		|| { echo "FAIL: extern fn типовото ограничение"; exit 1; }
+	@./$(BIN) --emit-c examples/extern_write.baga | grep -v "static void baga_write" | grep -q "baga_write" \
+		&& { echo "FAIL: extern write в statement позиция отива към builtin"; exit 1; } \
+		|| echo "OK: extern write в statement позиция вика libc"
+	@printf 'extern fn bad(v: void) -> i64\nfn main() { print(1) }\n' > /tmp/baga_bad_extern_void.baga
+	@./$(BIN) /tmp/baga_bad_extern_void.baga 2>&1 | grep -q "неподдържан тип на параметър" \
+		&& echo "OK: void параметър на extern fn е отхвърлен" \
+		|| { echo "FAIL: void параметър на extern fn не е отхвърлен"; exit 1; }
+	@echo "=== arena ==="
+	@./$(BIN) examples/arena.baga > /tmp/baga_arena_out.txt
+	@printf "true\ntrue\narena ok\n" | diff - /tmp/baga_arena_out.txt > /dev/null \
+		&& echo "OK: arena алокатор" \
+		|| { echo "FAIL: arena"; exit 1; }
 	@echo "=== --test-specs (property-based) ==="
 	@./$(BIN) --test-specs examples/spec_ensures.baga
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \

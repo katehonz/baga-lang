@@ -1,0 +1,32 @@
+import "../../std/crypto/sha256.baga"
+import "../../std/crypto/ct.baga"
+import "../../std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("abc", sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    check("empty", sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    check("56_bytes", sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+
+    // 1,000,000 × 'a' (optional but cheap with str_repeat doubling)
+    let big = str_repeat("a", 1000000)
+    check("million_a", sha256_hex(big) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
+
+    // digest shape + ct_eq over raw bytes
+    let d = sha256("abc")
+    check("digest_len", vec_len(d) == 32)
+    check("ct_eq", ct_eq_bytes(d, sha256("abc")))
+    check("ct_eq_neg", !ct_eq_bytes(d, sha256("abd")))
+    check("ct_eq_str", ct_eq("hello", "hello"))
+    check("ct_eq_str_neg", !ct_eq("hello", "hellp"))
+    check("ct_eq_str_len", !ct_eq("hello", "hell"))
+    print("sha256_test: all passed")
+}

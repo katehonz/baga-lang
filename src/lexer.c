@@ -54,6 +54,8 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_CATCH]     = "catch",
     [TOK_BREAK]    = "break",
     [TOK_CONTINUE] = "continue",
+    [TOK_IMPORT]   = "import",
+    [TOK_EXTERN]   = "extern",
     [TOK_LPAREN]    = "(",
     [TOK_RPAREN]    = ")",
     [TOK_LBRACE]    = "{",
@@ -93,6 +95,7 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_NOT]       = "!",
     [TOK_LSHIFT]    = "<<",
     [TOK_RSHIFT]    = ">>",
+    [TOK_CARET]     = "^",
 };
 
 const char *token_kind_str(TokenKind k) {
@@ -237,6 +240,8 @@ static TokenKind keyword_kind(const char *s) {
         {"catch",  TOK_CATCH},
         {"break",  TOK_BREAK},
         {"continue", TOK_CONTINUE},
+        {"import", TOK_IMPORT},
+        {"extern", TOK_EXTERN},
     };
     for (int i = 0; i < (int)(sizeof(kw) / sizeof(kw[0])); i++) {
         if (strcmp(s, kw[i].word) == 0)
@@ -477,6 +482,7 @@ Token lexer_next(Lexer *l) {
         case '?': return make_token(l, TOK_QUESTION, start, strdup("?"));
         case '&': return make_token(l, TOK_AMP, start, strdup("&"));
         case '|': return make_token(l, TOK_PIPE, start, strdup("|"));
+        case '^': return make_token(l, TOK_CARET, start, strdup("^"));
         case '+': return make_token(l, TOK_PLUS, start, strdup("+"));
         case '-': return make_token(l, TOK_MINUS, start, strdup("-"));
         case '*': return make_token(l, TOK_STAR, start, strdup("*"));

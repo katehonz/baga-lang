@@ -1,0 +1,20 @@
+// ct.baga — constant-time equality for MAC/signature comparison.
+// Comparison time depends on length only, never on content. Pure Baga.
+
+fn ct_eq(a: str, b: str) -> bool {
+    if len(a) != len(b) { return false }
+    let mut diff: i64 = 0
+    for i in 0..len(a) {
+        diff = diff | (char_at(a, i) ^ char_at(b, i))
+    }
+    return diff == 0
+}
+
+fn ct_eq_bytes(a: Vec<i64>, b: Vec<i64>) -> bool {
+    if vec_len(a) != vec_len(b) { return false }
+    let mut diff: i64 = 0
+    for i in 0..vec_len(a) {
+        diff = diff | (vec_get(a, i) ^ vec_get(b, i))
+    }
+    return diff == 0
+}

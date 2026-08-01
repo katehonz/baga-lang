@@ -196,6 +196,11 @@ static int binop_code(BinOp op, int is_f) {
         case OP_GT:  return is_f ? B_GT_F  : B_GT_I;
         case OP_LE:  return is_f ? B_LE_F  : B_LE_I;
         case OP_GE:  return is_f ? B_GE_F  : B_GE_I;
+        case OP_BIT_AND:  if (is_f) cr_unsupported("побитово & върху f64"); return B_BAND_I;
+        case OP_BIT_OR:   if (is_f) cr_unsupported("побитово | върху f64"); return B_BOR_I;
+        case OP_BIT_XOR:  if (is_f) cr_unsupported("побитово ^ върху f64"); return B_BXOR_I;
+        case OP_LSHIFT:   if (is_f) cr_unsupported("<< върху f64"); return B_SHL_I;
+        case OP_RSHIFT:   if (is_f) cr_unsupported(">> върху f64"); return B_SHR_I;
         default: cr_unsupported("binop"); return 0;
     }
 }
@@ -724,6 +729,13 @@ void codegen_cranelift(Node *program, int emit_only, int argc, char **argv) {
     memset(&cg, 0, sizeof cg);
     cg.program = program;
     (void)argc;   /* програмата се пуска без аргументи (вж. baga_jit_run_main) */
+
+    /* extern fn: FFI е извън Cranelift подмножеството — честен отказ */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *it = program->items.data[i];
+        if (it->kind == NODE_FN && it->is_extern)
+            cr_unsupported("extern fn");
+    }
 
     /* 1. таблица на функциите */
     for (int i = 0; i < program->items.len; i++) {
