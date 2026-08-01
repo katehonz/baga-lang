@@ -1,0 +1,19 @@
+spec bad {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// The vector has length 1 but index 5 is accessed: the bounds check is
+// refuted (the access is provably out of range).
+fn bad(n: i64) -> i64 {
+    let v = vec_new()
+    vec_push(v, 10)
+    return vec_get(v, 5)
+}
+
+fn main() {
+    print(bad(1))
+}

@@ -232,7 +232,7 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops | 🟡 in progress |
+| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds | 🟡 in progress |
 
 ### Static verification (`--verify`)
 
@@ -255,9 +255,16 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
       i = i + 1
   }
   ```
+- **M2** — **array bounds safety**: every `vec_get`/`vec_set` index is checked
+  against the symbolically tracked vector length (`vec_new` → 0, `vec_push`
+  → +1). Proves accesses in range, or refutes with a counterexample. Lengths
+  flow through loops via the invariant mechanism. Element *values* are not
+  tracked (an `ensures` about a returned element is honestly UNKNOWN), and
+  `Vec` *parameters* are not yet supported (`[T]` is a distinct type from
+  `Vec<T>` in the checker — a language gap).
 
-Recursion, arrays, and non-linear terms are still skipped honestly. Remaining
-staircase: arrays (bounds + element invariants), then non-linear reasoning.
+Recursion and non-linear terms are still skipped honestly. Remaining staircase:
+`Vec` parameters / element invariants, then non-linear reasoning.
 
 ## Philosophy
 

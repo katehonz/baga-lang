@@ -1,0 +1,28 @@
+spec guarded {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// The loop pushes n elements, so after it the vector length is n. Under the
+// guard n > 0, the index n-1 satisfies 0 <= n-1 < n, so the access is provably
+// in range — combining the loop invariant (length tracking through vec_push)
+// with the branch condition.
+fn guarded(n: i64) -> i64 {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n invariant i >= 0, i <= n {
+        vec_push(v, i)
+        i = i + 1
+    }
+    if n > 0 {
+        return vec_get(v, n - 1)
+    }
+    return 0
+}
+
+fn main() {
+    print(guarded(3))
+}

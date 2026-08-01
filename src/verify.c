@@ -176,7 +176,29 @@ typedef struct { Lin lin; int nonlinear; } Sym;
 static Sym sym_nonlin(void) { Sym s; lin_init(&s.lin); s.nonlinear = 1; return s; }
 static Sym sym_lin(Lin l) { Sym s; s.lin = l; s.nonlinear = l.overflow; return s; }
 
-static Sym se_from_ast(Node *e, SEnv *env) {
+/* Symbolic length of a Vec variable (M2 bounds tracking). */
+typedef struct { char *name; Lin len; int unknown; } VLenEntry;
+typedef struct { VLenEntry *e; int n, cap; } VLenMap;
+
+static void vlen_init(VLenMap *m) { m->e = NULL; m->n = 0; m->cap = 0; }
+static void vlen_free(VLenMap *m) { for (int i = 0; i < m->n; i++) { free(m->e[i].name); lin_free(&m->e[i].len); } free(m->e); m->e = NULL; m->n = m->cap = 0; }
+static VLenEntry *vlen_find(VLenMap *m, const char *name) {
+    for (int i = 0; i < m->n; i++) if (strcmp(m->e[i].name, name) == 0) return &m->e[i];
+    return NULL;
+}
+static void vlen_set(VLenMap *m, const char *name, Lin len, int unknown) {
+    if (unknown) { lin_free(&len); lin_init(&len); }
+    VLenEntry *e = vlen_find(m, name);
+    if (e) { lin_free(&e->len); e->len = len; e->unknown = unknown; return; }
+    if (m->n == m->cap) { m->cap = m->cap ? m->cap * 2 : 4; m->e = realloc(m->e, (size_t)m->cap * sizeof(VLenEntry)); }
+    m->e[m->n].name = strdup(name); m->e[m->n].len = len; m->e[m->n].unknown = unknown; m->n++;
+}
+static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
+    vlen_init(dst);
+    for (int i = 0; i < src->n; i++) vlen_set(dst, src->e[i].name, lin_clone(&src->e[i].len), src->e[i].unknown);
+}
+
+static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen) {
     if (!e) return sym_nonlin();
     switch (e->kind) {
     case NODE_INT_LIT: return sym_lin(lin_const(rat_int(e->int_val)));
@@ -189,11 +211,24 @@ static Sym se_from_ast(Node *e, SEnv *env) {
         return sym_lin(lin_var(e->name));   /* unbound: a fresh symbolic input */
     }
     case NODE_UNARY:
-        if (e->un_op == UOP_NEG) { Sym v = se_from_ast(e->operand, env); if (v.nonlinear) return v; return sym_lin(lin_neg(&v.lin)); }
+        if (e->un_op == UOP_NEG) { Sym v = se_from_ast(e->operand, env, vlen); if (v.nonlinear) return v; return sym_lin(lin_neg(&v.lin)); }
+        return sym_nonlin();
+    case NODE_CALL:
+        /* vec_len(v) resolves to the tracked symbolic length of v (a concrete
+         * linear form for locally-built vectors, a fresh symbolic variable for
+         * Vec parameters, so requires like vec_len(v) >= 1 stay linear) */
+        if (e->callee && e->callee->kind == NODE_IDENT && strcmp(e->callee->name, "vec_len") == 0 && e->args.len == 1 &&
+            e->args.data[0]->kind == NODE_IDENT) {
+            VLenEntry *ve = vlen_find(vlen, e->args.data[0]->name);
+            if (ve) {
+                if (!ve->unknown) return sym_lin(lin_clone(&ve->len));
+                { char buf[300]; snprintf(buf, sizeof buf, "__len_%s", e->args.data[0]->name); return sym_lin(lin_var(buf)); }
+            }
+        }
         return sym_nonlin();
     case NODE_BINARY: {
-        Sym l = se_from_ast(e->left, env);
-        Sym r = se_from_ast(e->right, env);
+        Sym l = se_from_ast(e->left, env, vlen);
+        Sym r = se_from_ast(e->right, env, vlen);
         if (e->bin_op == OP_ADD) { if (l.nonlinear || r.nonlinear) return sym_nonlin(); return sym_lin(lin_add(&l.lin, &r.lin)); }
         if (e->bin_op == OP_SUB) { if (l.nonlinear || r.nonlinear) return sym_nonlin(); return sym_lin(lin_sub(&l.lin, &r.lin)); }
         if (e->bin_op == OP_MUL) {
@@ -273,14 +308,14 @@ static int is_cmp(BinOp op) { return op == OP_LT || op == OP_LE || op == OP_GT |
 
 /* Build the DNF of a boolean AST (optionally negated). Returns 0 if the AST is
  * outside the convertible fragment (caller treats as UNKNOWN). */
-static int bool_to_dnf(Node *e, SEnv *env, int negated, Formula *out);
+static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out);
 
-static int cmp_to_formula(Node *e, SEnv *env, int negated, Formula *out) {
-    /* se_from_ast resolves identifiers through env, so `output` (and any
-     * let-bound local) is substituted by its symbolic value before the
-     * comparison is turned into a constraint. */
-    Sym l = se_from_ast(e->left, env);
-    Sym r = se_from_ast(e->right, env);
+static int cmp_to_formula(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out) {
+    /* se_from_ast resolves identifiers through env (and vec_len through vlen),
+     * so `output`, let-bound locals, and vector lengths are substituted by
+     * their symbolic values before the comparison becomes a constraint. */
+    Sym l = se_from_ast(e->left, env, vlen);
+    Sym r = se_from_ast(e->right, env, vlen);
     if (l.nonlinear || r.nonlinear) { if (!l.nonlinear) lin_free(&l.lin); if (!r.nonlinear) lin_free(&r.lin); return 0; }
     Constraint c;
     if (!atom_to_cons(l.lin, e->bin_op, r.lin, negated, &c)) { lin_free(&l.lin); lin_free(&r.lin); return 0; }
@@ -290,7 +325,7 @@ static int cmp_to_formula(Node *e, SEnv *env, int negated, Formula *out) {
     return 1;
 }
 
-static int bool_to_dnf(Node *e, SEnv *env, int negated, Formula *out) {
+static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out) {
     if (!e) return 0;
     if (e->kind == NODE_BOOL_LIT) {
         int v = e->bool_val;
@@ -301,16 +336,16 @@ static int bool_to_dnf(Node *e, SEnv *env, int negated, Formula *out) {
         return 1;
     }
     if (e->kind == NODE_UNARY && e->un_op == UOP_NOT)
-        return bool_to_dnf(e->operand, env, !negated, out);
+        return bool_to_dnf(e->operand, env, vlen, !negated, out);
     if (e->kind == NODE_BINARY && is_cmp(e->bin_op))
-        return cmp_to_formula(e, env, negated, out);
+        return cmp_to_formula(e, env, vlen, negated, out);
     if (e->kind == NODE_BINARY && e->bin_op == OP_EQ && !negated) {
         /* a==b -> (a<=b)&&(a>=b) */
         Node l = *e, r = *e;
         l.bin_op = OP_LE; r.bin_op = OP_GE;
         Formula a, b;
-        if (!bool_to_dnf(&l, env, 0, &a)) return 0;
-        if (!bool_to_dnf(&r, env, 0, &b)) { f_free(&a); return 0; }
+        if (!bool_to_dnf(&l, env, vlen, 0, &a)) return 0;
+        if (!bool_to_dnf(&r, env, vlen, 0, &b)) { f_free(&a); return 0; }
         /* cartesian product */
         f_init(out);
         for (int i = 0; i < a.n; i++) for (int j = 0; j < b.n; j++) {
@@ -324,8 +359,8 @@ static int bool_to_dnf(Node *e, SEnv *env, int negated, Formula *out) {
     }
     if (e->kind == NODE_BINARY && (e->bin_op == OP_AND || e->bin_op == OP_OR)) {
         Formula L, R;
-        if (!bool_to_dnf(e->left, env, negated, &L)) return 0;
-        if (!bool_to_dnf(e->right, env, negated, &R)) { f_free(&L); return 0; }
+        if (!bool_to_dnf(e->left, env, vlen, negated, &L)) return 0;
+        if (!bool_to_dnf(e->right, env, vlen, negated, &R)) { f_free(&L); return 0; }
         int disj = (e->bin_op == OP_OR) ^ negated;   /* OR, or AND-under-negation => union */
         f_init(out);
         if (disj) {
@@ -595,11 +630,115 @@ static int find_counterexample(ConsList *ante, Formula *nef, Node *ensures_ast,
     return found;
 }
 
+/* kind: 0 = ensures (postcondition), 1 = bounds (vec access in range).
+ * vlen snapshots the vector lengths at the obligation point, so requires and
+ * ensures mentioning vec_len resolve against the right state.
+ * For bounds obligations: path = state path (requires ∧ branch path);
+ * bound = the negated in-range condition (¬(0 <= idx < len)). */
+typedef struct { ConsList path; ConsList bound; Sym ret; VLenMap vlen; int bad; int kind; char *label; } Obligation;
+typedef struct { Obligation *o; int n, cap; } Obligations;
+static void obl_push(Obligations *ob, ConsList path, ConsList bound, Sym ret, VLenMap *vlen, int bad, int kind, const char *label) {
+    if (ob->n == ob->cap) { ob->cap = ob->cap ? ob->cap * 2 : 4; ob->o = realloc(ob->o, (size_t)ob->cap * sizeof(Obligation)); }
+    ob->o[ob->n].path = path; ob->o[ob->n].bound = bound; ob->o[ob->n].ret = ret;
+    if (vlen) vlen_clone_into(&ob->o[ob->n].vlen, vlen); else vlen_init(&ob->o[ob->n].vlen);
+    ob->o[ob->n].bad = bad;
+    ob->o[ob->n].kind = kind; ob->o[ob->n].label = label ? strdup(label) : NULL; ob->n++;
+}
+
+/* Witness search for a bounds obligation: an assignment satisfying the
+ * antecedent (obl->path = requires ∧ path ∧ ¬bound) where the access index
+ * (obl->ret) really is out of range. Re-checked by direct evaluation, so a
+ * reported counterexample is genuine. */
+static int find_bound_witness(Obligation *obl, IBind **witness, int *wn) {
+    char **vars = NULL; int nv = 0, cap = 0;
+    collect_vars_cl(&obl->path, &vars, &nv, &cap);
+    /* also search the symbolic __len_ vars (Vec parameters) */
+    for (int i = 0; i < obl->vlen.n; i++)
+        for (int j = 0; j < obl->vlen.e[i].len.n; j++) {
+            const char *vn = obl->vlen.e[i].len.terms[j].var;
+            int found = 0;
+            for (int k = 0; k < nv; k++) if (strcmp(vars[k], vn) == 0) { found = 1; break; }
+            if (!found) { if (nv == cap) { cap = cap ? cap * 2 : 8; vars = realloc(vars, (size_t)cap * sizeof(char *)); } vars[nv++] = strdup(vn); }
+        }
+    static const int64_t cand[] = { 0, 1, -1, 2, -2, 3, -3, 5, -5, 10, -10, 20, -20, 100, -100 };
+    int ncand = (int)(sizeof(cand) / sizeof(cand[0]));
+    int total = 1;
+    for (int i = 0; i < nv; i++) { if (total > 200000 / ncand) { total = 200001; break; } total *= ncand; }
+    if (nv == 0) total = 1;
+    IBind *assign = calloc(nv ? nv : 1, sizeof(IBind));
+    int found = 0;
+    for (int idx = 0; idx < total && !found; idx++) {
+        int t = idx;
+        for (int i = 0; i < nv; i++) { assign[i].name = vars[i]; assign[i].val = cand[t % ncand]; t /= ncand; }
+        IEnv ie; ie.b = assign; ie.n = nv;
+        int ante_ok = 1;
+        for (int i = 0; i < obl->path.n && ante_ok; i++) {
+            Constraint *c = &obl->path.c[i];
+            Rat rv = c->lhs.c;
+            for (int j = 0; j < c->lhs.n; j++) {
+                int ok2; int64_t vv = ienv_get(&ie, c->lhs.terms[j].var, &ok2);
+                if (!ok2) { ante_ok = 0; break; }
+                rv = rat_add(rv, rat_mul(c->lhs.terms[j].coeff, rat_int(vv)));
+            }
+            if (rv.overflow) { ante_ok = 0; break; }
+            int s = rat_cmp(rv, c->rhs);
+            ante_ok = (c->op == C_LT) ? (s < 0) : (s <= 0);
+        }
+        if (!ante_ok) continue;
+        /* evaluate the index linear form directly */
+        int idxok; int64_t idxv = 0;
+        Rat ir = obl->ret.lin.c;
+        for (int j = 0; j < obl->ret.lin.n; j++) {
+            int ok3; int64_t vv = ienv_get(&ie, obl->ret.lin.terms[j].var, &ok3);
+            if (!ok3) { idxok = 0; goto bound_done; }
+            ir = rat_add(ir, rat_mul(obl->ret.lin.terms[j].coeff, rat_int(vv)));
+        }
+        idxok = (!ir.overflow && ir.den == 1);
+        idxv = ir.num;
+        bound_done:
+        if (!idxok) continue;
+        int oob = (idxv < 0);
+        if (!oob) {
+            /* evaluate the accessed vector's length (find the vlen entry whose
+             * length vars appear in the antecedent — that's the accessed vec) */
+            for (int e = 0; e < obl->vlen.n && !oob; e++) {
+                Lin *L = &obl->vlen.e[e].len;
+                int relevant = (L->n == 0);   /* a concrete (constant) length always applies */
+                for (int j = 0; j < L->n && !relevant; j++)
+                    for (int x = 0; x < obl->path.n; x++) {
+                        Constraint *c = &obl->path.c[x];
+                        for (int y = 0; y < c->lhs.n; y++)
+                            if (strcmp(c->lhs.terms[y].var, L->terms[j].var) == 0) { relevant = 1; break; }
+                        if (relevant) break;
+                    }
+                if (!relevant) continue;
+                Rat lr = L->c; int lok = 1;
+                for (int j = 0; j < L->n; j++) {
+                    int ok4; int64_t vv = ienv_get(&ie, L->terms[j].var, &ok4);
+                    if (!ok4) { lok = 0; break; }
+                    lr = rat_add(lr, rat_mul(L->terms[j].coeff, rat_int(vv)));
+                }
+                if (lok && !lr.overflow && lr.den == 1) oob = (idxv >= lr.num);
+            }
+        }
+        if (oob) {
+            *witness = calloc(nv ? nv : 1, sizeof(IBind));
+            for (int i = 0; i < nv; i++) { (*witness)[i].name = strdup(vars[i]); (*witness)[i].val = assign[i].val; }
+            *wn = nv;
+            found = 1;
+        }
+    }
+    free(assign);
+    for (int i = 0; i < nv; i++) free(vars[i]);
+    free(vars);
+    return found;
+}
+
 /* ============================ symbolic execution ============================ */
 
-typedef struct { SEnv env; ConsList path; int bad; } State;
+typedef struct { SEnv env; VLenMap vlen; ConsList path; int bad; } State;
 
-static void state_free(State *s) { env_free(&s->env); cl_free(&s->path); }
+static void state_free(State *s) { env_free(&s->env); vlen_free(&s->vlen); cl_free(&s->path); }
 
 typedef struct { State *s; int n, cap; } States;
 static void states_push(States *ss, State s) {
@@ -607,24 +746,31 @@ static void states_push(States *ss, State s) {
     ss->s[ss->n++] = s;
 }
 
-typedef struct { ConsList path; Sym ret; int bad; } Obligation;
-typedef struct { Obligation *o; int n, cap; } Obligations;
-static void obl_push(Obligations *ob, ConsList path, Sym ret, int bad) {
-    if (ob->n == ob->cap) { ob->cap = ob->cap ? ob->cap * 2 : 4; ob->o = realloc(ob->o, (size_t)ob->cap * sizeof(Obligation)); }
-    ob->o[ob->n].path = path; ob->o[ob->n].ret = ret; ob->o[ob->n].bad = bad; ob->n++;
-}
-
 /* Detect constructs the verifier cannot handle. `flat` treats a while loop as
  * an opaque boundary (its body is checked separately, with its invariant). */
+static int is_vec_builtin_call(Node *n) {
+    if (n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    const char *nm = n->callee->name;
+    return strcmp(nm, "vec_new") == 0 || strcmp(nm, "vec_push") == 0 ||
+           strcmp(nm, "vec_get") == 0 || strcmp(nm, "vec_set") == 0 ||
+           strcmp(nm, "vec_len") == 0;
+}
+
 static int has_unsupported_rec(Node *n, int flat) {
     if (!n) return 0;
     switch (n->kind) {
     case NODE_FOR: case NODE_MATCH:
     case NODE_TRY: case NODE_CATCH:
     case NODE_BREAK: case NODE_CONTINUE:
-    case NODE_CALL: case NODE_INDEX: case NODE_FIELD:
+    case NODE_INDEX: case NODE_FIELD:
     case NODE_STRUCT_LIT: case NODE_RANGE:
         return 1;
+    case NODE_CALL:
+        if (is_vec_builtin_call(n)) {
+            for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat)) return 1;
+            return 0;
+        }
+        return 1;   /* any other call: recursion / extern / user fn */
     case NODE_WHILE:
         if (flat) return 1;
         if (n->while_invariants.len == 0) return 1;   /* M1: loops need invariants */
@@ -656,13 +802,13 @@ static void symexec_block(Node *blk, States *states, Obligations *ob, int is_non
  * (invariant ∧ condition on entry). UNSAT per DNF branch ⇒ holds. */
 static int check_preservation(State *head, Node *inv, States *body_final) {
     Formula hf;
-    if (!bool_to_dnf(inv, &head->env, 0, &hf)) return 0;
+    if (!bool_to_dnf(inv, &head->env, &head->vlen, 0, &hf)) return 0;
     int holds = 1;
     for (int k = 0; k < body_final->n && holds; k++) {
         State *bf = &body_final->s[k];
         if (bf->bad) { holds = 0; break; }
         Formula bf_inv;
-        if (!bool_to_dnf(inv, &bf->env, 0, &bf_inv)) { holds = 0; break; }
+        if (!bool_to_dnf(inv, &bf->env, &bf->vlen, 0, &bf_inv)) { holds = 0; break; }
         for (int b = 0; b < bf_inv.n && holds; b++) {
             ConsList sys; cl_init(&sys);
             for (int x = 0; x < bf->path.n; x++) { Constraint *c = &bf->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
@@ -697,7 +843,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
         /* init: each invariant must follow from the current path */
         for (int j = 0; j < st->while_invariants.len && trusted; j++) {
             Formula invf;
-            if (!bool_to_dnf(st->while_invariants.data[j], &cur->env, 0, &invf)) { trusted = 0; break; }
+            if (!bool_to_dnf(st->while_invariants.data[j], &cur->env, &cur->vlen, 0, &invf)) { trusted = 0; break; }
             for (int b = 0; b < invf.n && trusted; b++) {
                 ConsList sys; cl_init(&sys);
                 for (int x = 0; x < cur->path.n; x++) { Constraint *c = &cur->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
@@ -714,7 +860,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
 
         /* preservation: invariant ∧ cond, run one body iteration, re-check */
         Formula cf;
-        if (!bool_to_dnf(st->cond, &cur->env, 0, &cf)) { trusted = 0; }
+        if (!bool_to_dnf(st->cond, &cur->env, &cur->vlen, 0, &cf)) { trusted = 0; }
         States head_ss; head_ss.s = NULL; head_ss.n = 0; head_ss.cap = 0;
         if (trusted) {
             for (int b = 0; b < cf.n; b++) {
@@ -726,7 +872,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
                 f_free(&one);
                 for (int j = 0; j < st->while_invariants.len; j++) {
                     Formula invf;
-                    if (!bool_to_dnf(st->while_invariants.data[j], &h.env, 0, &invf)) { trusted = 0; break; }
+                    if (!bool_to_dnf(st->while_invariants.data[j], &h.env, &h.vlen, 0, &invf)) { trusted = 0; break; }
                     for (int bb = 0; bb < invf.n; bb++)
                         for (int x = 0; x < invf.br[bb].n; x++) { Constraint *c = &invf.br[bb].c[x]; cl_push(&h.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                     f_free(&invf);
@@ -745,7 +891,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
 
         /* post-loop continuation: invariant ∧ ¬cond (only sound when trusted) */
         Formula nf;
-        if (!bool_to_dnf(st->cond, &cur->env, 1, &nf)) {
+        if (!bool_to_dnf(st->cond, &cur->env, &cur->vlen, 1, &nf)) {
             cur->bad = 1;
             states_push(&out, *cur);
             continue;
@@ -761,7 +907,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
             if (trusted) {
                 for (int j = 0; j < st->while_invariants.len; j++) {
                     Formula invf;
-                    if (!bool_to_dnf(st->while_invariants.data[j], &t.env, 0, &invf)) { t.bad = 1; break; }
+                    if (!bool_to_dnf(st->while_invariants.data[j], &t.env, &t.vlen, 0, &invf)) { t.bad = 1; break; }
                     for (int bb = 0; bb < invf.n; bb++)
                         for (int x = 0; x < invf.br[bb].n; x++) { Constraint *c = &invf.br[bb].c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                     f_free(&invf);
@@ -781,6 +927,57 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
     return trusted;
 }
 
+/* Track Vec lengths and emit bounds obligations for vec accesses in an
+ * expression statement. Only the top-level call and a let-init call are
+ * handled; nested vec calls inside larger expressions are not tracked. */
+static void scan_vec_expr(Node *e, State *st, Obligations *ob) {
+    if (!e) return;
+    if (e->kind != NODE_CALL || e->callee->kind != NODE_IDENT) return;
+    const char *nm = e->callee->name;
+
+    if (strcmp(nm, "vec_new") == 0) return;   /* length handled at the let binding */
+
+    if (strcmp(nm, "vec_push") == 0 && e->args.len >= 1 && e->args.data[0]->kind == NODE_IDENT) {
+        VLenEntry *ve = vlen_find(&st->vlen, e->args.data[0]->name);
+        if (ve && !ve->unknown) vlen_set(&st->vlen, e->args.data[0]->name, lin_add(&ve->len, &(Lin){ .c = rat_int(1) }), 0);
+        else vlen_set(&st->vlen, e->args.data[0]->name, (Lin){0}, 1);
+        return;
+    }
+
+    if ((strcmp(nm, "vec_get") == 0 || strcmp(nm, "vec_set") == 0) && e->args.len >= 2 &&
+        e->args.data[0]->kind == NODE_IDENT) {
+        const char *vname = e->args.data[0]->name;
+        VLenEntry *ve = vlen_find(&st->vlen, vname);
+        Sym idx = se_from_ast(e->args.data[1], &st->env, &st->vlen);
+        Lin lenlin; int have_len = 0;
+        if (ve && !ve->unknown) { lenlin = lin_clone(&ve->len); have_len = 1; }
+        else if (ve && ve->unknown) { char buf[300]; snprintf(buf, sizeof buf, "__len_%s", vname); lenlin = lin_var(buf); have_len = 1; }
+        int unknown = idx.nonlinear;
+        /* path = current state path; bound = ¬(0 <= idx < len), kept separate
+         * so the SAT proof can use it while the witness search ignores it */
+        ConsList opath; cl_init(&opath);
+        for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        ConsList obound; cl_init(&obound);
+        if (!idx.nonlinear) {
+            /* store the POSITIVE in-range bounds (idx >= 0, idx < len); the
+             * verifier negates them into a DISJUNCTION (idx<0 OR idx>=len) */
+            cl_push(&obound, mk_cons(lin_clone(&idx.lin), C_LE, rat_zero()));   /* 0 <= idx */
+            if (have_len) {
+                Lin d = lin_sub(&idx.lin, &lenlin);                          /* idx - len < 0 */
+                cl_push(&obound, mk_cons(d, C_LT, rat_zero()));
+            }
+        }
+        if (have_len) lin_free(&lenlin);
+        char label[160];
+        snprintf(label, sizeof label, "достъп до %s[..] е извън границите", vname);
+        Sym retsym;
+        if (idx.nonlinear) { retsym = sym_nonlin(); } else { retsym = sym_lin(lin_clone(&idx.lin)); }
+        obl_push(ob, opath, obound, retsym, &st->vlen, unknown, 1, label);
+        lin_free(&idx.lin);
+        return;
+    }
+}
+
 /* Symbolically execute a statement list over a set of states; returning states
  * are drained into `ob`; `states` holds the fall-through states at the end. */
 static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvoid);
@@ -796,6 +993,7 @@ static void symexec_block(Node *blk, States *states, Obligations *ob, int is_non
 static State clone_state_with(State *cur, Formula *add) {
     State t;
     env_clone_into(&t.env, &cur->env);
+    vlen_clone_into(&t.vlen, &cur->vlen);
     cl_init(&t.path);
     for (int x = 0; x < cur->path.n; x++) { Constraint *c = &cur->path.c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
     if (add) for (int b = 0; b < add->n; b++) for (int x = 0; x < add->br[b].n; x++) {
@@ -812,9 +1010,11 @@ static void bind_sym(SEnv *env, const char *name, Sym v) {
 
 static void drain_returns(States *states, Obligations *ob, Node *val_expr) {
     for (int i = 0; i < states->n; i++) {
-        Sym r = se_from_ast(val_expr, &states->s[i].env);
-        obl_push(ob, states->s[i].path, r, states->s[i].bad);
+        Sym r = se_from_ast(val_expr, &states->s[i].env, &states->s[i].vlen);
+        ConsList nobound; cl_init(&nobound);
+        obl_push(ob, states->s[i].path, nobound, r, &states->s[i].vlen, states->s[i].bad, 0, NULL);
         env_free(&states->s[i].env);
+        vlen_free(&states->s[i].vlen);
     }
     states->n = 0;
 }
@@ -824,27 +1024,36 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
         Node *st = stmts->data[si];
         int last = (si == stmts->len - 1);
         if (st->kind == NODE_LET) {
-            for (int i = 0; i < states->n; i++)
-                bind_sym(&states->s[i].env, st->let_name, se_from_ast(st->let_init, &states->s[i].env));
+            for (int i = 0; i < states->n; i++) {
+                bind_sym(&states->s[i].env, st->let_name, se_from_ast(st->let_init, &states->s[i].env, &states->s[i].vlen));
+                /* a fresh vec_new() has length 0 */
+                if (st->let_init && st->let_init->kind == NODE_CALL && st->let_init->callee->kind == NODE_IDENT &&
+                    strcmp(st->let_init->callee->name, "vec_new") == 0)
+                    vlen_set(&states->s[i].vlen, st->let_name, lin_const(rat_int(0)), 0);
+                scan_vec_expr(st->let_init, &states->s[i], ob);
+            }
         } else if (st->kind == NODE_ASSIGN) {
             if (st->assign_target->kind != NODE_IDENT) { for (int i = 0; i < states->n; i++) states->s[i].bad = 1; continue; }
             for (int i = 0; i < states->n; i++)
-                bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env));
+                bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env, &states->s[i].vlen));
         } else if (st->kind == NODE_RETURN) {
+            for (int i = 0; i < states->n; i++) scan_vec_expr(st->ret_val, &states->s[i], ob);
             drain_returns(states, ob, st->ret_val);
             return;
         } else if (st->kind == NODE_EXPR_STMT && last && is_nonvoid) {
+            for (int i = 0; i < states->n; i++) scan_vec_expr(st->expr, &states->s[i], ob);
             drain_returns(states, ob, st->expr);
             return;
         } else if (st->kind == NODE_EXPR_STMT) {
-            /* non-final expression statement: no side effects possible in M0 */
+            /* expression statement: track vec mutations / emit bounds checks */
+            for (int i = 0; i < states->n; i++) scan_vec_expr(st->expr, &states->s[i], ob);
         } else if (st->kind == NODE_IF) {
             States out; out.s = NULL; out.n = 0; out.cap = 0;
             for (int i = 0; i < states->n; i++) {
                 State *cur = &states->s[i];
                 Formula cf, nf;
-                int cok = bool_to_dnf(st->cond, &cur->env, 0, &cf);
-                int nok = bool_to_dnf(st->cond, &cur->env, 1, &nf);
+                int cok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, 0, &cf);
+                int nok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, 1, &nf);
                 if (!cok || !nok) {
                     if (cok) f_free(&cf);
                     if (nok) f_free(&nf);
@@ -923,13 +1132,40 @@ static const char *res_word(VRes r) {
     switch (r) { case R_PROVEN: return "ДОКАЗАНО"; case R_REFUTED: return "ОБРОЧЕНО"; default: return "НЕ МОГА ДА РЕША"; }
 }
 
+/* Verify a single bounds obligation. */
+static VRes verify_bound_obl(Obligation *obl, IBind **wit, int *wn) {
+    if (obl->bad) return R_UNKNOWN;
+    /* The access is safe iff path ⇒ (idx>=0 ∧ idx<len). Negated, that is
+     * path ∧ (idx<0 ∨ idx>=len) — a DISJUNCTION. It is UNSAT (safe) iff every
+     * branch  path ∧ ¬bound_i  is UNSAT. */
+    int all_proven = 1;
+    for (int b = 0; b < obl->bound.n; b++) {
+        ConsList sys; cl_init(&sys);
+        for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        Constraint *bc = &obl->bound.c[b];
+        /* negate  lhs {op} 0  →  (-lhs) {flipped op} 0 */
+        COp negop = (bc->op == C_LT) ? C_LE : C_LT;
+        cl_push(&sys, mk_cons(lin_neg(&bc->lhs), negop, bc->rhs));
+        int bsat = fm_sat(&sys);   /* fm_sat frees sys */
+        if (bsat) all_proven = 0;   /* this violation branch is feasible */
+    }
+    if (obl->bound.n == 0) all_proven = 0;
+    if (all_proven) return R_PROVEN;
+    IBind *w = NULL; int wnn = 0;
+    if (find_bound_witness(obl, &w, &wnn)) { *wit = w; *wn = wnn; return R_REFUTED; }
+    return R_UNKNOWN;
+}
+
 /* Verify one ensures clause over all obligations of a function. */
 static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
                            IBind **wit, int *wn) {
     VRes worst = R_PROVEN;
     for (int o = 0; o < ob->n; o++) {
         Obligation *obl = &ob->o[o];
-        if (obl->bad || obl->ret.nonlinear) { if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        if (obl->bad) { if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        if (obl->kind == 1) continue;   /* bounds obligations: handled by verify_bound_obl */
+
+        if (obl->ret.nonlinear) { if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
         /* env with output := return */
         SEnv env2; env_init(&env2);
         env_bind(&env2, "output", lin_clone(&obl->ret.lin), 0);
@@ -938,7 +1174,7 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
         int ante_ok = 1;
         for (int r = 0; r < spec->spec_requires.len && ante_ok; r++) {
             Formula rf;
-            if (!bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &env2, 0, &rf)) { ante_ok = 0; break; }
+            if (!bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &env2, &obl->vlen, 0, &rf)) { ante_ok = 0; break; }
             if (rf.n != 1) ante_ok = 0;   /* disjunctive requires: M0 skips */
             else for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&ante, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
             f_free(&rf);
@@ -951,8 +1187,8 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
          * negated). The obligation  ante ⇒ ensures  is checked per negated
          * branch:  UNSAT(ante ∧ ¬ensures_branch)  ⇒ that branch always holds. */
         Formula ef, nef;
-        if (!bool_to_dnf(ens_expr, &env2, 0, &ef)) { cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
-        if (!bool_to_dnf(ens_expr, &env2, 1, &nef)) { f_free(&ef); cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        if (!bool_to_dnf(ens_expr, &env2, &obl->vlen, 0, &ef)) { cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        if (!bool_to_dnf(ens_expr, &env2, &obl->vlen, 1, &nef)) { f_free(&ef); cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
 
         VRes clause_res = R_PROVEN;
         for (int b = 0; b < nef.n && clause_res != R_REFUTED; b++) {
@@ -1002,8 +1238,10 @@ static int verify_fn(Node *prog, Node *fn) {
     else if (fn->ret_type && unwrap_type(fn->ret_type)->kind == NODE_TYPE &&
              strcmp(unwrap_type(fn->ret_type)->type_name, "i64") != 0) skip = "не-i64 резултат";
     if (!skip) for (int i = 0; i < fn->params.len; i++) {
-        Node *pt = fn->params.data[i]->param_type;
-        if (!type_is_i64(pt)) { skip = "не-i64 параметър"; break; }
+        Node *pt = unwrap_type(fn->params.data[i]->param_type);
+        int ok = type_is_i64(fn->params.data[i]->param_type) ||
+                 (pt && pt->kind == NODE_TYPE_ARRAY);
+        if (!ok) { skip = "не-i64/Vec параметър"; break; }
     }
     if (!skip && has_unsupported(fn->fn_body)) skip = "цикли/рекурсия/повиквания";
 
@@ -1016,9 +1254,18 @@ static int verify_fn(Node *prog, Node *fn) {
 
     /* symexec */
     Obligations ob; ob.o = NULL; ob.n = 0; ob.cap = 0;
-    State init; env_init(&init.env); cl_init(&init.path); init.bad = 0;
-    for (int i = 0; i < fn->params.len; i++)
-        env_bind(&init.env, fn->params.data[i]->param_name, lin_var(fn->params.data[i]->param_name), 0);
+    State init; env_init(&init.env); vlen_init(&init.vlen); cl_init(&init.path); init.bad = 0;
+    for (int i = 0; i < fn->params.len; i++) {
+        Node *p = fn->params.data[i];
+        env_bind(&init.env, p->param_name, lin_var(p->param_name), 0);
+        /* a Vec parameter has a symbolic length the caller may constrain via
+         * requires (e.g. vec_len(v) >= 1) */
+        Node *pt = unwrap_type(p->param_type);
+        if (pt && pt->kind == NODE_TYPE_ARRAY) {
+            char buf[300]; snprintf(buf, sizeof buf, "__len_%s", p->param_name);
+            vlen_set(&init.vlen, p->param_name, lin_var(buf), 0);
+        }
+    }
     States states; states.s = NULL; states.n = 0; states.cap = 0;
     states_push(&states, init);
     int is_nonvoid = (fn->ret_type != NULL);
@@ -1039,7 +1286,21 @@ static int verify_fn(Node *prog, Node *fn) {
         }
         if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
     }
-    for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); lin_free(&ob.o[i].ret.lin); }
+    /* bounds obligations (M2): report each vec access check */
+    for (int i = 0; i < ob.n; i++) {
+        if (ob.o[i].kind != 1) continue;
+        IBind *wit = NULL; int wn = 0;
+        VRes r = verify_bound_obl(&ob.o[i], &wit, &wn);
+        printf("  граница (%s): %s\n", ob.o[i].label ? ob.o[i].label : "достъп до вектор", res_word(r));
+        if (r == R_REFUTED) {
+            any_refuted = 1;
+            printf("    контрапример:");
+            for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+            printf("\n");
+        }
+        if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
+    }
+    for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); cl_free(&ob.o[i].bound); lin_free(&ob.o[i].ret.lin); vlen_free(&ob.o[i].vlen); free(ob.o[i].label); }
     free(ob.o);
     return any_refuted;
 }
