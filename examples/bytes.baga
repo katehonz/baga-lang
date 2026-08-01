@@ -1,0 +1,17 @@
+// The binary-safe bytes type (G5): hex literals, length/index/slice/concat,
+// and str<->bytes / hex conversions. The C backend supports it fully; the
+// LLVM backend refuses it honestly in M1 (oracle SKIPs). Uses ${} interpolation
+// (no std import) so the self-compiled compiler handles it too.
+fn main() {
+    let b = x"deadbeef"
+    let cafe = x"cafe"
+    let tail = x"00ff"
+    print("len=${bytes_len(b)}")
+    print("at0=${bytes_at(b, 0)}")
+    print("hex=${hex_encode(b)}")
+    let bs = bytes_of_str("hi")
+    print("roundtrip=${str_of_bytes(bs)}")
+    print("dec_hex=${hex_encode(cafe)}")
+    print("cat_hex=${hex_encode(bytes_concat(b, tail))}")
+    print("slice_hex=${hex_encode(bytes_slice(b, 1, 3))}")
+}

@@ -19,6 +19,9 @@ void node_free(Node *n) {
         case NODE_STR_LIT:
             free(n->str_val);
             break;
+        case NODE_BYTES_LIT:
+            free(n->str_val);
+            break;
         case NODE_IDENT:
             free(n->name);
             break;
@@ -399,6 +402,14 @@ static Node *parse_primary(Parser *p) {
     if (check(p, TOK_STR_LIT)) {
         Token *t = advance(p);
         return parse_interp_string(p, t->text ? t->text : "", pos);
+    }
+
+    /* bytes literal x"deadbeef" */
+    if (check(p, TOK_BYTES_LIT)) {
+        Token *t = advance(p);
+        Node *n = node_alloc(NODE_BYTES_LIT, pos);
+        n->str_val = strdup(t->text ? t->text : "");
+        return n;
     }
 
     /* char literal → int */
@@ -1267,6 +1278,9 @@ void print_ast(Node *n, int indent) {
             break;
         case NODE_STR_LIT:
             fprintf(stderr, "STR \"%s\"\n", n->str_val);
+            break;
+        case NODE_BYTES_LIT:
+            fprintf(stderr, "BYTES x\"%s\"\n", n->str_val);
             break;
         case NODE_BOOL_LIT:
             fprintf(stderr, "BOOL %s\n", n->bool_val ? "true" : "false");

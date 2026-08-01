@@ -2038,7 +2038,49 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
 
 /* ---- Public API ---- */
 
+/* M1: the LLVM backend does not implement the bytes type yet (the C backend
+ * does). Detect bytes usage up front and refuse honestly so the oracle SKIPs. */
+static int is_bytes_builtin_name(const char *nm) {
+    return strcmp(nm, "bytes_len") == 0 || strcmp(nm, "bytes_at") == 0 ||
+           strcmp(nm, "bytes_slice") == 0 || strcmp(nm, "bytes_concat") == 0 ||
+           strcmp(nm, "bytes_of_str") == 0 || strcmp(nm, "str_of_bytes") == 0 ||
+           strcmp(nm, "hex_encode") == 0 || strcmp(nm, "hex_decode") == 0;
+}
+
+static int program_uses_bytes(Node *n) {
+    if (!n) return 0;
+    if (n->kind == NODE_BYTES_LIT) return 1;
+    if (n->kind == NODE_TYPE && n->type_name && strcmp(n->type_name, "bytes") == 0) return 1;
+    if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT &&
+        is_bytes_builtin_name(n->callee->name)) return 1;
+    if (n->kind == NODE_PROGRAM) {
+        for (int i = 0; i < n->items.len; i++) if (program_uses_bytes(n->items.data[i])) return 1;
+        return 0;
+    }
+    if (n->kind == NODE_FN) {
+        if (program_uses_bytes(n->ret_type)) return 1;
+        for (int i = 0; i < n->params.len; i++)
+            if (program_uses_bytes(((Node *)n->params.data[i])->param_type)) return 1;
+        return program_uses_bytes(n->fn_body);
+    }
+    if (n->kind == NODE_BLOCK) {
+        for (int i = 0; i < n->stmts.len; i++) if (program_uses_bytes(n->stmts.data[i])) return 1;
+        return 0;
+    }
+    if (n->kind == NODE_LET) return program_uses_bytes(n->let_type) || program_uses_bytes(n->let_init);
+    if (n->kind == NODE_RETURN) return program_uses_bytes(n->ret_val);
+    if (n->kind == NODE_BINARY) return program_uses_bytes(n->left) || program_uses_bytes(n->right);
+    if (n->kind == NODE_UNARY) return program_uses_bytes(n->operand);
+    if (n->kind == NODE_CALL) { for (int i = 0; i < n->args.len; i++) if (program_uses_bytes(n->args.data[i])) return 1; return 0; }
+    if (n->kind == NODE_IF) return program_uses_bytes(n->cond) || program_uses_bytes(n->then_br) || program_uses_bytes(n->else_br);
+    if (n->kind == NODE_EXPR_STMT) return program_uses_bytes(n->expr);
+    if (n->kind == NODE_WHILE) return program_uses_bytes(n->while_cond) || program_uses_bytes(n->while_body);
+    return 0;
+}
+
 void codegen_llvm(Node *program, const char *output_path) {
+    if (program_uses_bytes(program))
+        llvm_unsupported("bytes типът (LLVM backend, M1)");
     lg.ctx = LLVMContextCreate();
     lg.mod = LLVMModuleCreateWithNameInContext("baga_module", lg.ctx);
     lg.builder = LLVMCreateBuilderInContext(lg.ctx);

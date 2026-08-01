@@ -101,6 +101,7 @@ static void emit_type(Codegen *cg, Node *ty) {
             else if (strcmp(ty->type_name, "f64") == 0) fprintf(f, "double");
             else if (strcmp(ty->type_name, "bool") == 0) fprintf(f, "int");
             else if (strcmp(ty->type_name, "str") == 0)  fprintf(f, "const char *");
+            else if (strcmp(ty->type_name, "bytes") == 0) fprintf(f, "baga_bytes");
             else if (strcmp(ty->type_name, "void") == 0) fprintf(f, "void");
             else if (strcmp(ty->type_name, "Vec") == 0)  fprintf(f, "baga_Vec *");
             else {
@@ -248,6 +249,12 @@ static void emit_expr(Codegen *cg, Node *n) {
             emit_c_string(f, n->str_val);
             break;
 
+        case NODE_BYTES_LIT:
+            fprintf(f, "baga_bytes_from_hex(");
+            emit_c_string(f, n->str_val);
+            fprintf(f, ")");
+            break;
+
         case NODE_BOOL_LIT:
             fprintf(f, "%d", n->bool_val);
             break;
@@ -374,6 +381,14 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"arg",         "baga_arg"},
                     {"exit",        "baga_exit"},
                     {"eprintln",    "baga_eprintln"},
+                    {"bytes_len",   "baga_bytes_len"},
+                    {"bytes_at",    "baga_bytes_at"},
+                    {"bytes_slice", "baga_bytes_slice"},
+                    {"bytes_concat","baga_bytes_concat"},
+                    {"bytes_of_str","baga_bytes_from_str"},
+                    {"str_of_bytes","baga_bytes_to_str"},
+                    {"hex_encode",  "baga_hex_encode"},
+                    {"hex_decode",  "baga_hex_decode"},
                 };
                 for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                     if (strcmp(bn, bmap[bi].baga) == 0) {
@@ -607,6 +622,9 @@ static void emit_stmt(Codegen *cg, Node *n) {
                         break;
                     case TYPE_VEC:
                         fprintf(f, "baga_Vec *");
+                        break;
+                    case TYPE_BYTES:
+                        fprintf(f, "baga_bytes");
                         break;
                     default:        fprintf(f, "int64_t"); break;
                 }
@@ -1158,6 +1176,44 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    }\n");
     fprintf(out, "    exit(1);\n");
     fprintf(out, "}\n");
+    fprintf(out, "\n");
+    fprintf(out, "/* binary-safe byte buffer */\n");
+    fprintf(out, "typedef struct { unsigned char *data; int64_t len; } baga_bytes;\n");
+    fprintf(out, "static int64_t baga_bytes_len(baga_bytes b) { return b.len; }\n");
+    fprintf(out, "static int64_t baga_bytes_at(baga_bytes b, int64_t i) { return (int64_t)b.data[i]; }\n");
+    fprintf(out, "static baga_bytes baga_bytes_slice(baga_bytes b, int64_t a, int64_t c) {\n");
+    fprintf(out, "    if (a < 0) a = 0; if (c > b.len) c = b.len; if (c < a) c = a;\n");
+    fprintf(out, "    baga_bytes r; r.len = c - a; r.data = malloc((size_t)(r.len ? r.len : 1));\n");
+    fprintf(out, "    memcpy(r.data, b.data + a, (size_t)r.len); return r; }\n");
+    fprintf(out, "static baga_bytes baga_bytes_concat(baga_bytes a, baga_bytes b) {\n");
+    fprintf(out, "    baga_bytes r; r.len = a.len + b.len; r.data = malloc((size_t)(r.len ? r.len : 1));\n");
+    fprintf(out, "    memcpy(r.data, a.data, (size_t)a.len); memcpy(r.data + a.len, b.data, (size_t)b.len); return r; }\n");
+    fprintf(out, "static baga_bytes baga_bytes_from_str(const char *s) {\n");
+    fprintf(out, "    int64_t n = (int64_t)strlen(s); baga_bytes r; r.len = n; r.data = malloc((size_t)(n ? n : 1));\n");
+    fprintf(out, "    memcpy(r.data, s, (size_t)n); return r; }\n");
+    fprintf(out, "static baga_bytes baga_bytes_lit(const unsigned char *d, int64_t n) {\n");
+    fprintf(out, "    baga_bytes r; r.len = n; r.data = malloc((size_t)(n ? n : 1));\n");
+    fprintf(out, "    memcpy(r.data, d, (size_t)n); return r; }\n");
+    fprintf(out, "static const char *baga_bytes_to_str(baga_bytes b) {\n");
+    fprintf(out, "    char *r = malloc((size_t)b.len + 1); memcpy(r, b.data, (size_t)b.len); r[b.len] = 0; return r; }\n");
+    fprintf(out, "static int baga_hex_val(int c) {\n");
+    fprintf(out, "    if (c >= '0' && c <= '9') return c - '0';\n");
+    fprintf(out, "    if (c >= 'a' && c <= 'f') return c - 'a' + 10;\n");
+    fprintf(out, "    if (c >= 'A' && c <= 'F') return c - 'A' + 10;\n");
+    fprintf(out, "    return -1; }\n");
+    fprintf(out, "static const char *baga_hex_encode(baga_bytes b) {\n");
+    fprintf(out, "    static const char *hx = \"0123456789abcdef\";\n");
+    fprintf(out, "    char *r = malloc((size_t)b.len * 2 + 1);\n");
+    fprintf(out, "    for (int64_t i = 0; i < b.len; i++) { r[i*2] = hx[b.data[i] >> 4]; r[i*2+1] = hx[b.data[i] & 15]; }\n");
+    fprintf(out, "    r[b.len * 2] = 0; return r; }\n");
+    fprintf(out, "static baga_bytes baga_hex_decode(const char *s) {\n");
+    fprintf(out, "    int64_t n = (int64_t)strlen(s); unsigned char *buf = malloc((size_t)(n / 2 + 1)); int64_t len = 0;\n");
+    fprintf(out, "    for (int64_t i = 0; i + 1 < n; ) {\n");
+    fprintf(out, "        int hi = baga_hex_val(s[i]); int lo = baga_hex_val(s[i+1]);\n");
+    fprintf(out, "        if (hi < 0 || lo < 0) { i++; continue; }\n");
+    fprintf(out, "        buf[len++] = (unsigned char)(hi * 16 + lo); i += 2; }\n");
+    fprintf(out, "    baga_bytes r; r.data = buf; r.len = len; return r; }\n");
+    fprintf(out, "static baga_bytes baga_bytes_from_hex(const char *s) { return baga_hex_decode(s); }\n");
     fprintf(out, "\n");
     fprintf(out, "/* dynamic array */\n");
     fprintf(out, "typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;\n");

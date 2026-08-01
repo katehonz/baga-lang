@@ -52,6 +52,7 @@ typedef enum {
     TOK_FLOAT_LIT,
     TOK_STR_LIT,
     TOK_CHAR_LIT,
+    TOK_BYTES_LIT,   /* x"deadbeef" hex bytes literal */
 
     /* keywords */
     TOK_FN,
@@ -140,6 +141,7 @@ typedef enum {
     NODE_INT_LIT,
     NODE_FLOAT_LIT,
     NODE_STR_LIT,
+    NODE_BYTES_LIT,  /* x"deadbeef" — str_val holds the raw hex text */
     NODE_BOOL_LIT,
     NODE_IDENT,
     NODE_BINARY,
@@ -361,6 +363,7 @@ typedef enum {
     TYPE_STRUCT,
     TYPE_FN,
     TYPE_VEC,      /* dynamic array (baga_Vec *) */
+    TYPE_BYTES,    /* binary-safe byte buffer (baga_bytes, by value) */
     TYPE_ERROR,    /* sentinel for error recovery */
 } TypeKind;
 

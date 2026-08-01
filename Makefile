@@ -127,6 +127,11 @@ test: $(BIN)
 	@printf 'name=baga n=42 ok=true expr=84\ndollar=$$ braces={ } neg=-7\n' | diff - /tmp/baga_interp_out.txt > /dev/null \
 		&& echo 'OK: $${expr} интерполация (str/i64/bool/call)' \
 		|| { echo "FAIL: интерполация"; cat /tmp/baga_interp_out.txt; exit 1; }
+	@echo "=== bytes type ==="
+	@./$(BIN) examples/bytes.baga > /tmp/baga_bytes_out.txt
+	@printf 'len=4\nat0=222\nhex=deadbeef\nroundtrip=hi\ndec_hex=cafe\ncat_hex=deadbeef00ff\nslice_hex=adbe\n' | diff - /tmp/baga_bytes_out.txt > /dev/null \
+		&& echo "OK: bytes тип (hex литерал, len/at/slice/concat, str/hex конверсии)" \
+		|| { echo "FAIL: bytes"; cat /tmp/baga_bytes_out.txt; exit 1; }
 	@echo "=== extern fn (FFI) ==="
 	@rm -f /tmp/baga_extern_write.txt
 	@./$(BIN) examples/extern_write.baga | grep -q "written"

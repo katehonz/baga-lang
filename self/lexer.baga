@@ -110,6 +110,16 @@ fn tokenize(src: str) {
                 else { break }
             }
             let text = substr(src, start, pos)
+            // x"deadbeef" — hex bytes literal (kind 103)
+            if str_eq(text, "x") == 1 && pos < n && char_at(src, pos) == 34 {
+                pos = pos + 1
+                let hs = pos
+                while pos < n && char_at(src, pos) != 34 { pos = pos + 1 }
+                vec_push(kinds, 103)
+                vec_push_str(texts, substr(src, hs, pos))
+                if pos < n { pos = pos + 1 }
+                continue
+            }
             let kw = kw_kind(text)
             if kw > 0 {
                 vec_push(kinds, kw)

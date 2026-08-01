@@ -28,6 +28,7 @@ const char *type_str(Type *t) {
         case TYPE_I64:   return "i64";
         case TYPE_F64:   return "f64";
         case TYPE_STR:   return "str";
+        case TYPE_BYTES: return "bytes";
         case TYPE_ERROR: return "<грешка>";
         case TYPE_ARRAY: return "[T]";
         case TYPE_REF:   return "&T";
@@ -190,6 +191,7 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
             if (strcmp(ty->type_name, "f64") == 0)  return type_new(TYPE_F64);
             if (strcmp(ty->type_name, "bool") == 0) return type_new(TYPE_BOOL);
             if (strcmp(ty->type_name, "str") == 0)  return type_new(TYPE_STR);
+            if (strcmp(ty->type_name, "bytes") == 0) return type_new(TYPE_BYTES);
             if (strcmp(ty->type_name, "void") == 0) return type_new(TYPE_VOID);
             if (strcmp(ty->type_name, "Vec") == 0) {
                 Type *t = type_new(TYPE_VEC);
@@ -462,6 +464,14 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"arena_alloc", TYPE_I64, 2, 0},
             {"arena_reset", TYPE_VOID, 1, 0},
             {"arena_free",  TYPE_VOID, 1, 0},
+            {"bytes_len",   TYPE_I64, 1, 0},
+            {"bytes_at",    TYPE_I64, 2, 0},
+            {"bytes_slice", TYPE_BYTES, 3, 0},
+            {"bytes_concat", TYPE_BYTES, 2, 0},
+            {"bytes_of_str", TYPE_BYTES, 1, 0},
+            {"str_of_bytes", TYPE_STR, 1, 0},
+            {"hex_encode",  TYPE_STR, 1, 0},
+            {"hex_decode",  TYPE_BYTES, 1, 0},
         };
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {
@@ -500,6 +510,10 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
         case NODE_STR_LIT:
             t = type_new(TYPE_STR);
+            break;
+
+        case NODE_BYTES_LIT:
+            t = type_new(TYPE_BYTES);
             break;
 
         case NODE_BOOL_LIT:

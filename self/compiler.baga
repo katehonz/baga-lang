@@ -111,6 +111,16 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
                 if is_alnum(char_at(src, pos)) == 1 { pos = pos + 1 } else { break }
             }
             let text = substr(src, start, pos)
+            // x"deadbeef" — hex bytes literal (kind 103)
+            if str_eq(text, "x") == 1 && pos < n && char_at(src, pos) == 34 {
+                pos = pos + 1
+                let hs = pos
+                while pos < n && char_at(src, pos) != 34 { pos = pos + 1 }
+                vec_push(tk, 103)
+                vec_push_str(tt, substr(src, hs, pos))
+                if pos < n { pos = pos + 1 }
+                continue
+            }
             let kw = kw_kind(text)
             if kw > 0 { vec_push(tk, kw) } else { vec_push(tk, 0) }
             vec_push_str(tt, text)
@@ -253,7 +263,7 @@ fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec)
                     let epos = vec_new()
                     vec_push(epos, 0)
                     let enode = parse_expr(etk, ett, epos, nk, nt, fc, ns)
-                    let ts = ast_kind(nk, nt, fc, ns, 28, "")
+                    let ts = ast_kind(nk, nt, fc, ns, 33, "")
                     ast_child(fc, ns, ts, enode)
                     vec_push(parts, ts)
                     i = j + 1
@@ -278,6 +288,10 @@ fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec)
             pi = pi - 1
         }
         return acc
+    }
+    if k == 103 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        return ast_kind(nk, nt, fc, ns, 34, t)
     }
     if k == 14 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 20, "1") }
     if k == 15 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 20, "0") }
@@ -938,7 +952,7 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
         return concat(concat(concat(r, "_mr"), suf), "; })")
     }
     // TO_STR (интерполация): конверсия според типа (heuristic)
-    if k == 28 {
+    if k == 33 {
         let e = first_child(fc, idx)
         if expr_is_str(nk, nt, fc, ns, prog, e) == 1 {
             return emit_expr(nk, nt, fc, ns, prog, e)
@@ -950,6 +964,8 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
     }
     // STR
     if k == 1 { return concat(concat("\"", c_escape(t)), "\"") }
+    // BYTES LIT (x"deadbeef")
+    if k == 34 { return concat("baga_bytes_from_hex(", concat(concat("\"", c_escape(t)), "\")")) }
     // IDENT (enum вариант → константа, иначе mangle)
     if k == 2 {
         let ev = enum_variant_cname(nk, nt, fc, ns, prog, t)
@@ -977,6 +993,14 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "str_eq") == 1 { cname = "baga_str_eq" }
             if str_eq(bn, "chr") == 1 { cname = "baga_chr" }
             if str_eq(bn, "ord") == 1 { cname = "baga_ord" }
+            if str_eq(bn, "bytes_len") == 1 { cname = "baga_bytes_len" }
+            if str_eq(bn, "bytes_at") == 1 { cname = "baga_bytes_at" }
+            if str_eq(bn, "bytes_slice") == 1 { cname = "baga_bytes_slice" }
+            if str_eq(bn, "bytes_concat") == 1 { cname = "baga_bytes_concat" }
+            if str_eq(bn, "bytes_of_str") == 1 { cname = "baga_bytes_from_str" }
+            if str_eq(bn, "str_of_bytes") == 1 { cname = "baga_bytes_to_str" }
+            if str_eq(bn, "hex_encode") == 1 { cname = "baga_hex_encode" }
+            if str_eq(bn, "hex_decode") == 1 { cname = "baga_hex_decode" }
             if str_eq(bn, "read_file") == 1 { cname = "baga_read_file" }
             if str_eq(bn, "write") == 1 { cname = "baga_write" }
             if str_eq(bn, "vec_new") == 1 { cname = "baga_vec_new" }
@@ -1067,6 +1091,8 @@ fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
             if str_eq(bn, "read_file") == 1 { return 1 }
             if str_eq(bn, "arg") == 1 { return 1 }
             if str_eq(bn, "vec_get_str") == 1 { return 1 }
+            if str_eq(bn, "hex_encode") == 1 { return 1 }
+            if str_eq(bn, "str_of_bytes") == 1 { return 1 }
             if str_eq(bn, "vec_get") == 1 {
                 let va1 = next_sibling(ns, cal)
                 if va1 >= 0 {
@@ -1386,6 +1412,7 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
         // detect type from init expression
         let mut ctype = "int64_t"
         if node_kind(nk, init) == 1 { ctype = "const char *" }
+        if node_kind(nk, init) == 34 { ctype = "baga_bytes" }
         if node_kind(nk, init) == 22 { ctype = mangle(node_text(nt, init)) }
         if node_kind(nk, init) == 4 {
             let cal = first_child(fc, init)
@@ -1398,10 +1425,15 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
                 if str_eq(bn, "arg") == 1 { ctype = "const char *" }
                 if str_eq(bn, "vec_get_str") == 1 { ctype = "const char *" }
                 if str_eq(bn, "vec_new") == 1 { ctype = "baga_Vec *" }
+                if str_eq(bn, "bytes_of_str") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "bytes_slice") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "bytes_concat") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "hex_decode") == 1 { ctype = "baga_bytes" }
                 // user function: look up return type
                 let rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
                 if str_eq(rt, "const char *") == 1 { ctype = "const char *" }
                 if str_eq(rt, "baga_Vec *") == 1 { ctype = "baga_Vec *" }
+                if str_eq(rt, "baga_bytes") == 1 { ctype = "baga_bytes" }
             }
         }
         if expr_is_float(nk, nt, fc, ns, prog, init) == 1 { ctype = "double" }
@@ -1524,6 +1556,7 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
 fn c_type(t: str) -> str {
     if str_eq(t, "i64") == 1 { return "int64_t" }
     if str_eq(t, "str") == 1 { return "const char *" }
+    if str_eq(t, "bytes") == 1 { return "baga_bytes" }
     if str_eq(t, "Vec") == 1 { return "baga_Vec *" }
     if str_eq(t, "f64") == 1 { return "double" }
     if str_eq(t, "bool") == 1 { return "int" }
@@ -2275,6 +2308,39 @@ fn main() {
     write("static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n")
     write("static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n")
     write("static const char *baga_i64_to_str(int64_t x) { char *r = malloc(24); snprintf(r, 24, \"%lld\", (long long)x); return r; }\n")
+    write("typedef struct { unsigned char *data; int64_t len; } baga_bytes;\n")
+    write("static int64_t baga_bytes_len(baga_bytes b) { return b.len; }\n")
+    write("static int64_t baga_bytes_at(baga_bytes b, int64_t i) { return (int64_t)b.data[i]; }\n")
+    write("static baga_bytes baga_bytes_slice(baga_bytes b, int64_t a, int64_t c) {\n")
+    write("    if (a < 0) a = 0; if (c > b.len) c = b.len; if (c < a) c = a;\n")
+    write("    baga_bytes r; r.len = c - a; r.data = malloc((size_t)(r.len ? r.len : 1));\n")
+    write("    memcpy(r.data, b.data + a, (size_t)r.len); return r; }\n")
+    write("static baga_bytes baga_bytes_concat(baga_bytes a, baga_bytes b) {\n")
+    write("    baga_bytes r; r.len = a.len + b.len; r.data = malloc((size_t)(r.len ? r.len : 1));\n")
+    write("    memcpy(r.data, a.data, (size_t)a.len); memcpy(r.data + a.len, b.data, (size_t)b.len); return r; }\n")
+    write("static baga_bytes baga_bytes_from_str(const char *s) {\n")
+    write("    int64_t n = (int64_t)strlen(s); baga_bytes r; r.len = n; r.data = malloc((size_t)(n ? n : 1));\n")
+    write("    memcpy(r.data, s, (size_t)n); return r; }\n")
+    write("static const char *baga_bytes_to_str(baga_bytes b) {\n")
+    write("    char *r = malloc((size_t)b.len + 1); memcpy(r, b.data, (size_t)b.len); r[b.len] = 0; return r; }\n")
+    write("static int baga_hex_val(int c) {\n")
+    write("    if (c >= '0' && c <= '9') return c - '0';\n")
+    write("    if (c >= 'a' && c <= 'f') return c - 'a' + 10;\n")
+    write("    if (c >= 'A' && c <= 'F') return c - 'A' + 10;\n")
+    write("    return -1; }\n")
+    write("static const char *baga_hex_encode(baga_bytes b) {\n")
+    write("    static const char *hx = \"0123456789abcdef\";\n")
+    write("    char *r = malloc((size_t)b.len * 2 + 1);\n")
+    write("    for (int64_t i = 0; i < b.len; i++) { r[i*2] = hx[b.data[i] >> 4]; r[i*2+1] = hx[b.data[i] & 15]; }\n")
+    write("    r[b.len * 2] = 0; return r; }\n")
+    write("static baga_bytes baga_hex_decode(const char *s) {\n")
+    write("    int64_t n = (int64_t)strlen(s); unsigned char *buf = malloc((size_t)(n / 2 + 1)); int64_t len = 0;\n")
+    write("    for (int64_t i = 0; i + 1 < n; ) {\n")
+    write("        int hi = baga_hex_val(s[i]); int lo = baga_hex_val(s[i+1]);\n")
+    write("        if (hi < 0 || lo < 0) { i++; continue; }\n")
+    write("        buf[len++] = (unsigned char)(hi * 16 + lo); i += 2; }\n")
+    write("    baga_bytes r; r.data = buf; r.len = len; return r; }\n")
+    write("static baga_bytes baga_bytes_from_hex(const char *s) { return baga_hex_decode(s); }\n")
     write("static const char *baga_read_file(const char *path) {\n")
     write("    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n")
     write("    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n")

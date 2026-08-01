@@ -35,6 +35,7 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_FLOAT_LIT] = "дробно число",
     [TOK_STR_LIT]   = "низ",
     [TOK_CHAR_LIT]  = "символ",
+    [TOK_BYTES_LIT] = "bytes литерал",
     [TOK_FN]        = "fn",
     [TOK_LET]       = "let",
     [TOK_MUT]       = "mut",
@@ -420,6 +421,20 @@ Token lexer_next(Lexer *l) {
         while (l->pos < l->len && is_ident_char((unsigned char)lex_peek(l)))
             lex_advance(l);
         char *text = lex_slice(l, start_pos, l->pos);
+
+        /* x"deadbeef" — hex bytes literal (only when `x` is immediately
+         * followed by a quote; otherwise `x` is a plain identifier) */
+        if (strcmp(text, "x") == 0 && l->pos < l->len && lex_peek(l) == '"') {
+            free(text);
+            lex_advance(l);   /* opening quote */
+            int hstart = l->pos;
+            while (l->pos < l->len && lex_peek(l) != '"')
+                lex_advance(l);
+            char *hex = lex_slice(l, hstart, l->pos);
+            if (l->pos >= l->len) { free(hex); return make_error(l, start, "незатворен bytes литерал"); }
+            lex_advance(l);   /* closing quote */
+            return make_token(l, TOK_BYTES_LIT, start, hex);
+        }
 
         /* standalone underscore is special */
         if (strcmp(text, "_") == 0) {
