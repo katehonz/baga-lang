@@ -1,0 +1,49 @@
+// server.baga — demo HTTP server built on http.baga.
+// Run:  ./baga app-product/httpdbaga/server.baga   (listens on :8080)
+//       PORT=9000 ./baga app-product/httpdbaga/server.baga
+// One connection at a time, Connection: close. Ctrl-C to stop.
+//
+// Routes:
+//   GET  /health -> 200 {"status":"ok"}
+//   GET  /       -> 200 JSON echo of {method, path}
+//   POST /echo   -> 200 JSON echo of the request body
+//   *            -> 404 {"error":"not found"}
+
+import "http.baga"
+import "../../std/os/os.baga"
+
+fn handle(fd: i64) -> i64 !IO !Net {
+    let req = http_read_request(fd)?
+    let method = http_method(req)
+    let path = http_path(req)
+    if method == "GET" && path == "/health" {
+        return http_respond(fd, http_json_response(200, "{\"status\":\"ok\"}"))?
+    }
+    if method == "GET" && path == "/" {
+        let mut body = "{\"method\":\""
+        body = concat(body, method)
+        body = concat(body, "\",\"path\":\"")
+        body = concat(body, path)
+        body = concat(body, "\"}")
+        return http_respond(fd, http_json_response(200, body))?
+    }
+    if method == "POST" && path == "/echo" {
+        return http_respond(fd, http_json_response(200, http_body(req)))?
+    }
+    return http_respond(fd, http_json_response(404, "{\"error\":\"not found\"}"))?
+}
+
+fn main() -> i64 !Net !IO {
+    let mut port: i64 = 8080
+    if env("PORT") != "" {
+        port = parse_int(env("PORT"))
+    }
+    let listener = tcp_listen(port)?
+    print(concat("httpdbaga listening on :", int_to_str(port)))
+    while true {
+        let fd = tcp_accept(listener)?
+        handle(fd)?
+        tcp_close(fd)?
+    }
+    return 0
+}

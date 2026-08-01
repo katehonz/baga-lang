@@ -149,6 +149,11 @@ test: $(BIN)
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
 		&& echo "OK: --test-specs намери контрапример" \
 		|| { echo "FAIL: --test-specs не намери контрапример"; exit 1; }
+	@echo "=== http (app-product/httpdbaga) ==="
+	@./$(BIN) tests/http_test.baga > /tmp/baga_http_out.txt
+	@grep -q "http_test: all passed" /tmp/baga_http_out.txt \
+		&& echo "OK: HTTP parser + responder (loopback)" \
+		|| { echo "FAIL: http_test"; cat /tmp/baga_http_out.txt; exit 1; }
 	@echo "=== LLVM оракул (C vs lli-14) ==="
 	@if [ -f ./$(LLVM_BIN) ]; then $(MAKE) -s test-llvm; else echo "(baga-llvm липсва — пропускам LLVM оракула)"; fi
 	@echo "=== Cranelift оракул (C vs in-process JIT) ==="

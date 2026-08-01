@@ -1,0 +1,78 @@
+// http_test.baga — loopback test for app-product/httpdbaga/http.baga.
+// Listen + connect + accept in one process (pattern from tcp_test.baga):
+// the server side parses a raw HTTP request and echoes the parsed fields
+// as JSON; the client side reads the serialized response bytes.
+
+import "../app-product/httpdbaga/http.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// Parse the request off the fd, echo the parsed fields back as JSON.
+fn serve_one(fd: i64) -> i64 !IO !Net {
+    let req = http_read_request(fd)?
+    let probe = http_header(req, "x-probe")
+    let mut body = "{\"method\":\""
+    body = concat(body, http_method(req))
+    body = concat(body, "\",\"path\":\"")
+    body = concat(body, http_path(req))
+    body = concat(body, "\",\"probe\":\"")
+    body = concat(body, probe)
+    body = concat(body, "\",\"bodylen\":")
+    body = concat(body, int_to_str(len(http_body(req))))
+    body = concat(body, "}")
+    let resp = http_json_response(200, body)
+    return http_respond(fd, resp)?
+}
+
+fn main() -> i64 !Net !IO {
+    let port = 18432
+    let listener = tcp_listen(port)?
+
+    // --- case 1: GET, request-line + case-insensitive header ---
+    let c1 = tcp_connect("127.0.0.1", port)?
+    let s1 = tcp_accept(listener)?
+    tcp_write(c1, "GET /hello HTTP/1.1\r\nHost: demo\r\nX-Probe: baga\r\n\r\n")?
+    serve_one(s1)?
+    let resp1 = tcp_read(c1, 4096)?
+    check("get_method", str_find(resp1, "\"method\":\"GET\"") >= 0)
+    check("get_path", str_find(resp1, "\"path\":\"/hello\"") >= 0)
+    check("header_ci", str_find(resp1, "\"probe\":\"baga\"") >= 0)
+    check("status_line", str_starts_with(resp1, "HTTP/1.1 200 OK"))
+    check("json_content_type", str_find(resp1, "Content-Type: application/json") >= 0)
+    check("content_length", str_find(resp1, "Content-Length: ") >= 0)
+    check("connection_close", str_find(resp1, "Connection: close") >= 0)
+    tcp_close(c1)?
+    tcp_close(s1)?
+
+    // --- case 2: POST with a Content-Length body ---
+    let c2 = tcp_connect("127.0.0.1", port)?
+    let s2 = tcp_accept(listener)?
+    tcp_write(c2, "POST /submit HTTP/1.1\r\nContent-Length: 11\r\n\r\nhello world")?
+    serve_one(s2)?
+    let resp2 = tcp_read(c2, 4096)?
+    check("post_method", str_find(resp2, "\"method\":\"POST\"") >= 0)
+    check("post_bodylen", str_find(resp2, "\"bodylen\":11") >= 0)
+    tcp_close(c2)?
+    tcp_close(s2)?
+
+    // --- case 3: absent header parses to "" ---
+    let c3 = tcp_connect("127.0.0.1", port)?
+    let s3 = tcp_accept(listener)?
+    tcp_write(c3, "GET / HTTP/1.1\r\n\r\n")?
+    serve_one(s3)?
+    let resp3 = tcp_read(c3, 4096)?
+    check("absent_header_empty", str_find(resp3, "\"probe\":\"\"") >= 0)
+    tcp_close(c3)?
+    tcp_close(s3)?
+
+    tcp_close(listener)?
+    print("http_test: all passed")
+    return 0
+}

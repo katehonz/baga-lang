@@ -1,0 +1,151 @@
+// http.baga — minimal HTTP/1.1 request parser + response serializer.
+// Built only on std/ (net, io, str). One request per connection
+// (Connection: close); no keep-alive, no chunked encoding, no TLS.
+//
+// Effects: http_read_request / http_respond carry !IO !Net (socket fd);
+// the struct builders and http_header are pure.
+
+import "../../std/net/tcp.baga"
+import "../../std/io/io.baga"
+import "../../std/str/str.baga"
+
+struct Request {
+    method: str,
+    path: str,
+    version: str,
+    hkeys: Vec<str>,
+    hvals: Vec<str>,
+    body: str
+}
+
+struct Response {
+    status: i64,
+    hkeys: Vec<str>,
+    hvals: Vec<str>,
+    body: str
+}
+
+// ---------- request parsing ----------
+
+// Parse one HTTP request off the fd. On EOF or a malformed request line
+// the returned Request has method == "" (the caller maps that to 400/close).
+fn http_read_request(fd: i64) -> Request !IO !Net {
+    let r = reader_new(fd)
+    let ks = vec_new()
+    let vs = vec_new()
+    let reqline = str_trim(read_line(r)?)
+    let parts = str_split(reqline, " ")
+    let mut method = ""
+    let mut path = ""
+    let mut version = ""
+    if vec_len(parts) >= 3 {
+        method = vec_get(parts, 0)
+        path = vec_get(parts, 1)
+        version = vec_get(parts, 2)
+    }
+    let mut running = true
+    while running {
+        let line = str_trim(read_line(r)?)
+        if line == "" {
+            running = false
+        } else {
+            let c = str_find(line, ":")
+            if c > 0 {
+                vec_push(ks, substr(line, 0, c))
+                vec_push(vs, str_trim(substr(line, c + 1, len(line))))
+            }
+        }
+    }
+    let clen = http_header_raw(ks, vs, "content-length")
+    let mut body = ""
+    if clen != "" {
+        body = read_n(r, parse_int(clen))?
+    }
+    return Request { method: method, path: path, version: version, hkeys: ks, hvals: vs, body: body }
+}
+
+fn http_method(req: Request) -> str {
+    return req.method
+}
+
+fn http_path(req: Request) -> str {
+    return req.path
+}
+
+fn http_body(req: Request) -> str {
+    return req.body
+}
+
+// Case-insensitive header lookup; "" when absent.
+fn http_header(req: Request, name: str) -> str {
+    return http_header_raw(req.hkeys, req.hvals, name)
+}
+
+// ---------- response building (pure) ----------
+
+fn http_response(status: i64, body: str) -> Response {
+    return Response { status: status, hkeys: vec_new(), hvals: vec_new(), body: body }
+}
+
+// Functional update: returns a new Response carrying the added header.
+fn http_set_header(resp: Response, k: str, v: str) -> Response {
+    vec_push(resp.hkeys, k)
+    vec_push(resp.hvals, v)
+    return Response { status: resp.status, hkeys: resp.hkeys, hvals: resp.hvals, body: resp.body }
+}
+
+fn http_json_response(status: i64, body: str) -> Response {
+    return http_set_header(http_response(status, body), "Content-Type", "application/json")
+}
+
+// ---------- response serialization ----------
+
+fn http_respond(fd: i64, resp: Response) -> i64 !IO !Net {
+    let mut out = concat(concat(concat("HTTP/1.1 ", int_to_str(resp.status)), " "), reason_phrase(resp.status))
+    out = concat(out, "\r\n")
+    for i in 0..vec_len(resp.hkeys) {
+        out = concat(out, concat(concat(vec_get(resp.hkeys, i), ": "), concat(vec_get(resp.hvals, i), "\r\n")))
+    }
+    out = concat(out, concat("Content-Length: ", concat(int_to_str(len(resp.body)), "\r\n")))
+    out = concat(out, "Connection: close\r\n")
+    out = concat(out, "\r\n")
+    out = concat(out, resp.body)
+    return tcp_write(fd, out)?
+}
+
+// ---------- internals ----------
+
+// ASCII lowercase fold for case-insensitive header matching.
+fn to_lower(s: str) -> str {
+    let mut out = ""
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        if c >= 65 && c <= 90 {
+            out = concat(out, chr(c + 32))
+        } else {
+            out = concat(out, chr(c))
+        }
+    }
+    return out
+}
+
+// Shared lookup over parallel key/value Vecs; `name` is already lowercased
+// by the caller convention — we fold both sides here to be safe.
+fn http_header_raw(ks: Vec<str>, vs: Vec<str>, name: str) -> str {
+    let want = to_lower(name)
+    for i in 0..vec_len(ks) {
+        if to_lower(vec_get(ks, i)) == want {
+            return vec_get(vs, i)
+        }
+    }
+    return ""
+}
+
+fn reason_phrase(status: i64) -> str {
+    if status == 200 { return "OK" }
+    if status == 400 { return "Bad Request" }
+    if status == 404 { return "Not Found" }
+    if status == 405 { return "Method Not Allowed" }
+    if status == 500 { return "Internal Server Error" }
+    return "Status"
+}
