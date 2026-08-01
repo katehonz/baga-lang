@@ -800,17 +800,17 @@ void check_program(Checker *c, Node *program) {
             item->type = ft;
 
             if (item->is_extern) {
-                /* extern fn: params/return restricted to i64, f64, str, void */
+                /* extern fn: params restricted to i64, f64, str (void is only
+                 * meaningful as a return type — a void param breaks gcc) */
                 for (int j = 0; j < item->params.len; j++) {
                     Node *pt = item->params.data[j]->param_type;
                     while (pt && pt->kind == NODE_TYPE_EFFECT) pt = pt->inner_type;
                     if (!pt || pt->kind != NODE_TYPE ||
                         (strcmp(pt->type_name, "i64") != 0 &&
                          strcmp(pt->type_name, "f64") != 0 &&
-                         strcmp(pt->type_name, "str") != 0 &&
-                         strcmp(pt->type_name, "void") != 0))
+                         strcmp(pt->type_name, "str") != 0))
                         check_error(&ctx, item->pos,
-                            "extern fn '%s': неподдържан тип на параметър (само i64, f64, str, void)",
+                            "extern fn '%s': неподдържан тип на параметър (само i64, f64, str)",
                             item->fn_name);
                 }
                 Node *rt = item->ret_type;

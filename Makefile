@@ -132,6 +132,13 @@ test: $(BIN)
 	@./$(BIN) /tmp/baga_bad_extern.baga 2>&1 | grep -q "неподдържан тип на параметър" \
 		&& echo "OK: extern fn типовото ограничение е хванато" \
 		|| { echo "FAIL: extern fn типовото ограничение"; exit 1; }
+	@./$(BIN) --emit-c examples/extern_write.baga | grep -v "static void baga_write" | grep -q "baga_write" \
+		&& { echo "FAIL: extern write в statement позиция отива към builtin"; exit 1; } \
+		|| echo "OK: extern write в statement позиция вика libc"
+	@printf 'extern fn bad(v: void) -> i64\nfn main() { print(1) }\n' > /tmp/baga_bad_extern_void.baga
+	@./$(BIN) /tmp/baga_bad_extern_void.baga 2>&1 | grep -q "неподдържан тип на параметър" \
+		&& echo "OK: void параметър на extern fn е отхвърлен" \
+		|| { echo "FAIL: void параметър на extern fn не е отхвърлен"; exit 1; }
 	@echo "=== --test-specs (property-based) ==="
 	@./$(BIN) --test-specs examples/spec_ensures.baga
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \

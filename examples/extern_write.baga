@@ -10,8 +10,11 @@ fn main() -> i64 !IO {
         exit(1)
     }
     let data = "baga ffi works"
-    let w = write(fd, data, len(data))?
-    if w != len(data) {
+    // statement-position extern call: must emit libc write, not baga_write
+    write(fd, "baga ffi ", 9)
+    let rest = "works"
+    let w = write(fd, rest, len(rest))?
+    if w != len(rest) {
         eprintln("short write")
         exit(1)
     }

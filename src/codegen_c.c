@@ -665,7 +665,11 @@ static void emit_stmt(Codegen *cg, Node *n) {
             break;
 
         case NODE_EXPR_STMT:
-            if (is_print_call(n->expr)) {
+            /* extern fn (incl. one named write/print/println) must bypass the
+             * print-builtin dispatch and go through emit_expr's extern path */
+            if (is_print_call(n->expr) &&
+                !(n->expr->callee->kind == NODE_IDENT &&
+                  find_extern_fn(cg, n->expr->callee->name))) {
                 emit_print(cg, n->expr);
             } else {
                 emit_indent(cg);
