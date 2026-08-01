@@ -263,9 +263,12 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   fn first(v: [i64]) -> i64 { return vec_get(v, 0) }   // proven
   ```
 
-Recursion and non-linear terms are still skipped honestly. Remaining staircase:
-`vec_slice`/`vec_concat` element-invariant propagation (these ops are not yet
-language builtins), relational invariants (`sorted`), then non-linear reasoning.
+Recursion and non-linear terms are still skipped honestly. `vec_slice` and
+`vec_concat` are now language builtins (returning a fresh `Vec`), and the
+verifier propagates element invariants through them — a slice inherits the
+source's invariants; a concat inherits the invariants **both** operands share.
+Remaining staircase: relational invariants (`sorted`), then non-linear
+reasoning.
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

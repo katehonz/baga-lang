@@ -445,6 +445,29 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             n->callee->type = type_new(TYPE_VOID);
             return type_new(TYPE_I64);
         }
+        if (strcmp(name, "vec_slice") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+            if (!vt || vt->kind != TYPE_VEC) {
+                check_error(ctx, n->pos, "'vec_slice' върху не-вектор (%s)", type_str(vt));
+                return type_new(TYPE_ERROR);
+            }
+            Type *r = type_new(TYPE_VEC);
+            r->elem = vt->elem;
+            return r;
+        }
+        if (strcmp(name, "vec_concat") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+            Type *wt = n->args.len > 1 ? n->args.data[1]->type : NULL;
+            if (!vt || vt->kind != TYPE_VEC || !wt || wt->kind != TYPE_VEC) {
+                check_error(ctx, n->pos, "'vec_concat' очаква два вектора");
+                return type_new(TYPE_ERROR);
+            }
+            Type *r = type_new(TYPE_VEC);
+            r->elem = vt->elem ? vt->elem : wt->elem;
+            return r;
+        }
 
         /* string / io builtins */
         struct { const char *name; TypeKind ret; int nparams; int has_io; } builtins[] = {

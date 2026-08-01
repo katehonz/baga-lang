@@ -1,0 +1,15 @@
+spec slice_nonneg {
+    input:
+        v: [i64]
+    output: i64
+    requires:
+        v[*] >= 0,
+        vec_len(v) >= 2
+    ensures:
+        output >= 0
+}
+fn slice_nonneg(v: [i64]) -> i64 {
+    let s = vec_slice(v, 0, 1)
+    return vec_get(s, 0)
+}
+fn main() { let v = vec_new(); vec_push(v, 1); vec_push(v, 2); print(slice_nonneg(v)) }

@@ -766,6 +766,43 @@ static void ax_clone_into(AxiomList *dst, AxiomList *src) {
     for (int i = 0; i < src->n; i++) ax_push(dst, src->a[i].vec, src->a[i].cmp, lin_clone(&src->a[i].rhs));
 }
 
+/* Copy the axioms of vector `from` (in `src`) into `dst`, re-anchored on `to`. */
+static void ax_copy_renamed(AxiomList *dst, AxiomList *src, const char *from, const char *to) {
+    for (int i = 0; i < src->n; i++)
+        if (strcmp(src->a[i].vec, from) == 0)
+            ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs));
+}
+
+/* vec_concat result: keep only the axioms BOTH operands share (same cmp+rhs),
+ * re-anchored on `to` — those hold for every element of v ++ w. */
+static int lin_equal(Lin *a, Lin *b);
+static void ax_intersect_two(AxiomList *dst, AxiomList *src, const char *v, const char *w, const char *to) {
+    for (int i = 0; i < src->n; i++) {
+        if (strcmp(src->a[i].vec, v) != 0) continue;
+        for (int j = 0; j < src->n; j++)
+            if (strcmp(src->a[j].vec, w) == 0 && src->a[j].cmp == src->a[i].cmp &&
+                lin_equal(&src->a[i].rhs, &src->a[j].rhs)) {
+                ax_push(dst, to, src->a[i].cmp, lin_clone(&src->a[i].rhs));
+                break;
+            }
+    }
+}
+
+/* Structural equality of two linear forms (same constant + same terms). */
+static int lin_equal(Lin *a, Lin *b) {
+    if (a->n != b->n) return 0;
+    if (a->c.num != b->c.num || a->c.den != b->c.den) return 0;
+    for (int i = 0; i < a->n; i++) {
+        int found = 0;
+        for (int j = 0; j < b->n; j++)
+            if (strcmp(a->terms[i].var, b->terms[j].var) == 0 &&
+                a->terms[i].coeff.num == b->terms[j].coeff.num &&
+                a->terms[i].coeff.den == b->terms[j].coeff.den) { found = 1; break; }
+        if (!found) return 0;
+    }
+    return 1;
+}
+
 /* M3: a vec_get call resolves to a fresh symbolic read variable, so its value
  * can carry instantiated element-axiom constraints. Keyed by the call node. */
 static void reads_init(ReadsList *l) { l->r = NULL; l->n = 0; l->cap = 0; }
@@ -800,7 +837,8 @@ static int is_vec_builtin_call(Node *n) {
     const char *nm = n->callee->name;
     return strcmp(nm, "vec_new") == 0 || strcmp(nm, "vec_push") == 0 ||
            strcmp(nm, "vec_get") == 0 || strcmp(nm, "vec_set") == 0 ||
-           strcmp(nm, "vec_len") == 0;
+           strcmp(nm, "vec_len") == 0 || strcmp(nm, "vec_slice") == 0 ||
+           strcmp(nm, "vec_concat") == 0;
 }
 
 static int has_unsupported_rec(Node *n, int flat) {
@@ -1163,6 +1201,34 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                     strcmp(st->let_init->callee->name, "vec_new") == 0)
                     vlen_set(&states->s[i].vlen, st->let_name, lin_const(rat_int(0)), 0);
                 scan_vec_expr(st->let_init, &states->s[i], ob, spec);
+                /* M3+: a slice result inherits the source's invariants; a
+                 * concat result inherits the invariants BOTH operands share. */
+                if (st->let_init && st->let_init->kind == NODE_CALL && st->let_init->callee->kind == NODE_IDENT &&
+                    st->let_init->args.len >= 1 && st->let_init->args.data[0]->kind == NODE_IDENT) {
+                    const char *cn = st->let_init->callee->name;
+                    const char *src = st->let_init->args.data[0]->name;
+                    if (strcmp(cn, "vec_slice") == 0) {
+                        ax_copy_renamed(&states->s[i].ax, &states->s[i].ax, src, st->let_name);
+                        /* result length = b - a (the slice bounds) */
+                        if (st->let_init->args.len >= 3) {
+                            Sym a = se_from_ast(st->let_init->args.data[1], &states->s[i].env, &states->s[i].vlen, &states->s[i].reads);
+                            Sym b = se_from_ast(st->let_init->args.data[2], &states->s[i].env, &states->s[i].vlen, &states->s[i].reads);
+                            if (!a.nonlinear && !b.nonlinear) {
+                                Lin bl = lin_sub(&b.lin, &a.lin);
+                                vlen_set(&states->s[i].vlen, st->let_name, bl, 0);
+                            }
+                            lin_free(&a.lin); lin_free(&b.lin);
+                        }
+                    } else if (strcmp(cn, "vec_concat") == 0 && st->let_init->args.len >= 2 &&
+                             st->let_init->args.data[1]->kind == NODE_IDENT) {
+                        ax_intersect_two(&states->s[i].ax, &states->s[i].ax, src, st->let_init->args.data[1]->name, st->let_name);
+                        /* result length = len(v) + len(w) */
+                        VLenEntry *lv = vlen_find(&states->s[i].vlen, src);
+                        VLenEntry *lw = vlen_find(&states->s[i].vlen, st->let_init->args.data[1]->name);
+                        if (lv && lw && !lv->unknown && !lw->unknown)
+                            vlen_set(&states->s[i].vlen, st->let_name, lin_add(&lv->len, &lw->len), 0);
+                    }
+                }
             }
         } else if (st->kind == NODE_ASSIGN) {
             if (st->assign_target->kind != NODE_IDENT) { for (int i = 0; i < states->n; i++) states->s[i].bad = 1; continue; }

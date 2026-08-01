@@ -114,9 +114,8 @@ static void emit_type(Codegen *cg, Node *ty) {
             fprintf(f, " *");
             break;
         case NODE_TYPE_ARRAY:
-            /* Phase 1: arrays as pointers */
-            emit_type(cg, ty->inner_type);
-            fprintf(f, " *");
+            /* [T] == Vec<T>: the growable baga_Vec, not a raw pointer */
+            fprintf(f, "baga_Vec *");
             break;
         case NODE_TYPE_EFFECT:
             /* effects don't affect C codegen */
@@ -345,6 +344,21 @@ static void emit_expr(Codegen *cg, Node *n) {
                 /* типизирани вектори: helper по елементния тип на вектора */
                 if (strcmp(bn, "vec_push") == 0 || strcmp(bn, "vec_get") == 0 ||
                     strcmp(bn, "vec_set") == 0) {
+                    Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+                    const char *suf = "i64";
+                    if (vt && vt->kind == TYPE_VEC && vt->elem) {
+                        if (vt->elem->kind == TYPE_STR) suf = "str";
+                        else if (vt->elem->kind == TYPE_F64) suf = "f64";
+                    }
+                    fprintf(f, "baga_%s_%s(", bn, suf);
+                    for (int i = 0; i < n->args.len; i++) {
+                        if (i > 0) fprintf(f, ", ");
+                        emit_expr(cg, n->args.data[i]);
+                    }
+                    fprintf(f, ")");
+                    goto call_done;
+                }
+                if (strcmp(bn, "vec_slice") == 0 || strcmp(bn, "vec_concat") == 0) {
                     Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
                     const char *suf = "i64";
                     if (vt && vt->kind == TYPE_VEC && vt->elem) {
@@ -1234,6 +1248,36 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static double baga_vec_get_f64(baga_Vec *v, int64_t i) { union { double d; void *p; } u; u.p = v->data[i]; return u.d; }\n");
     fprintf(out, "static void baga_vec_set_f64(baga_Vec *v, int64_t i, double x) { union { double d; void *p; } u; u.d = x; v->data[i] = u.p; }\n");
     fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_slice_i64(baga_Vec *v, int64_t a, int64_t b) {\n");
+    fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = a; i < b; i++) baga_vec_push_i64(r, (int64_t)(intptr_t)v->data[i]);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_slice_str(baga_Vec *v, int64_t a, int64_t b) {\n");
+    fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = a; i < b; i++) baga_vec_push_str(r, (const char *)v->data[i]);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_slice_f64(baga_Vec *v, int64_t a, int64_t b) {\n");
+    fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = a; i < b; i++) { union { double d; void *p; } u; u.p = v->data[i]; baga_vec_push_f64(r, u.d); }\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_concat_i64(baga_Vec *v, baga_Vec *w) {\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_i64(r, (int64_t)(intptr_t)v->data[i]);\n");
+    fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_i64(r, (int64_t)(intptr_t)w->data[i]);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_concat_str(baga_Vec *v, baga_Vec *w) {\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_str(r, (const char *)v->data[i]);\n");
+    fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_str(r, (const char *)w->data[i]);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_concat_f64(baga_Vec *v, baga_Vec *w) {\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = 0; i < v->len; i++) { union { double d; void *p; } u; u.p = v->data[i]; baga_vec_push_f64(r, u.d); }\n");
+    fprintf(out, "    for (int64_t i = 0; i < w->len; i++) { union { double d; void *p; } u; u.p = w->data[i]; baga_vec_push_f64(r, u.d); }\n");
+    fprintf(out, "    return r; }\n");
     fprintf(out, "\n/* arena allocator: bump allocation, free-all-at-once */\n");
     fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; } baga_Arena;\n");
     fprintf(out, "static int64_t baga_arena_new(void) {\n");

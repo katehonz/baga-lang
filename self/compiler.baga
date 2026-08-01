@@ -1036,6 +1036,20 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             }
             if str_eq(bn, "vec_set_str") == 1 { cname = "baga_vec_set_str" }
             if str_eq(bn, "vec_len") == 1 { cname = "baga_vec_len" }
+            if str_eq(bn, "vec_slice") == 1 {
+                cname = "baga_vec_slice_i64"
+                if a1 >= 0 {
+                    if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_slice_str" }
+                    if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_slice_f64" }
+                }
+            }
+            if str_eq(bn, "vec_concat") == 1 {
+                cname = "baga_vec_concat_i64"
+                if a1 >= 0 {
+                    if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_concat_str" }
+                    if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_concat_f64" }
+                }
+            }
             if str_eq(bn, "arg_count") == 1 { cname = "baga_arg_count" }
             if str_eq(bn, "arg") == 1 { cname = "baga_arg" }
             if str_eq(bn, "exit") == 1 { cname = "baga_exit" }
@@ -2362,6 +2376,36 @@ fn main() {
     write("static double baga_vec_get_f64(baga_Vec *v, int64_t i) { union { double d; void *p; } u; u.p = v->data[i]; return u.d; }\n")
     write("static void baga_vec_set_f64(baga_Vec *v, int64_t i, double x) { union { double d; void *p; } u; u.d = x; v->data[i] = u.p; }\n")
     write("static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n")
+    write("static baga_Vec *baga_vec_slice_i64(baga_Vec *v, int64_t a, int64_t b) {\n")
+    write("    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n")
+    write("    baga_Vec *r = baga_vec_new();\n")
+    write("    for (int64_t i = a; i < b; i++) baga_vec_push_i64(r, (int64_t)(intptr_t)v->data[i]);\n")
+    write("    return r; }\n")
+    write("static baga_Vec *baga_vec_slice_str(baga_Vec *v, int64_t a, int64_t b) {\n")
+    write("    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n")
+    write("    baga_Vec *r = baga_vec_new();\n")
+    write("    for (int64_t i = a; i < b; i++) baga_vec_push_str(r, (const char *)v->data[i]);\n")
+    write("    return r; }\n")
+    write("static baga_Vec *baga_vec_slice_f64(baga_Vec *v, int64_t a, int64_t b) {\n")
+    write("    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n")
+    write("    baga_Vec *r = baga_vec_new();\n")
+    write("    for (int64_t i = a; i < b; i++) { union { double d; void *p; } u; u.p = v->data[i]; baga_vec_push_f64(r, u.d); }\n")
+    write("    return r; }\n")
+    write("static baga_Vec *baga_vec_concat_i64(baga_Vec *v, baga_Vec *w) {\n")
+    write("    baga_Vec *r = baga_vec_new();\n")
+    write("    for (int64_t i = 0; i < v->len; i++) baga_vec_push_i64(r, (int64_t)(intptr_t)v->data[i]);\n")
+    write("    for (int64_t i = 0; i < w->len; i++) baga_vec_push_i64(r, (int64_t)(intptr_t)w->data[i]);\n")
+    write("    return r; }\n")
+    write("static baga_Vec *baga_vec_concat_str(baga_Vec *v, baga_Vec *w) {\n")
+    write("    baga_Vec *r = baga_vec_new();\n")
+    write("    for (int64_t i = 0; i < v->len; i++) baga_vec_push_str(r, (const char *)v->data[i]);\n")
+    write("    for (int64_t i = 0; i < w->len; i++) baga_vec_push_str(r, (const char *)w->data[i]);\n")
+    write("    return r; }\n")
+    write("static baga_Vec *baga_vec_concat_f64(baga_Vec *v, baga_Vec *w) {\n")
+    write("    baga_Vec *r = baga_vec_new();\n")
+    write("    for (int64_t i = 0; i < v->len; i++) { union { double d; void *p; } u; u.p = v->data[i]; baga_vec_push_f64(r, u.d); }\n")
+    write("    for (int64_t i = 0; i < w->len; i++) { union { double d; void *p; } u; u.p = w->data[i]; baga_vec_push_f64(r, u.d); }\n")
+    write("    return r; }\n")
     write("static int baga_argc = 0;\n")
     write("static char **baga_argv = 0;\n")
     write("static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n")

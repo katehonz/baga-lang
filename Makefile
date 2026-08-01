@@ -188,7 +188,7 @@ test: $(BIN)
 	grep -q "ПРОПУСНАТО" /tmp/baga_verify_out.txt \
 		&& echo "OK: recursive — честно пропуснато" \
 		|| { echo "FAIL: recursive"; cat /tmp/baga_verify_out.txt; exit 1; }
-	@for f in elem_param elem_push elem_set; do \
+	@for f in elem_param elem_push elem_set elem_slice elem_concat; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 			&& echo "OK: $$f — елементен инвариант доказан (M3)" \
@@ -200,6 +200,10 @@ test: $(BIN)
 			&& echo "OK: $$f — нарушен елементен инвариант е оброчен (M3 soundness)" \
 			|| { echo "FAIL: $$f — очаквах ensures ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }; \
 	done
+	@./$(BIN) --verify examples/verify/elem_slice_bad.baga > /tmp/baga_verify_out.txt; \
+	grep -q "граница.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: elem_slice_bad — out-of-bounds достъп е оброчен (M3 bounds)" \
+		|| { echo "FAIL: elem_slice_bad — очаквах граница ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@for f in abs_val max2 clamp; do \
 		./$(BIN) --test-specs examples/verify/$$f.baga > /dev/null 2>&1 \
 			&& echo "OK: $$f — оракулът (--test-specs) съгласен с ДОКАЗАНО" \

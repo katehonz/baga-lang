@@ -101,7 +101,7 @@ static LLVMTypeRef llvm_type(Node *ty) {
     }
     if (ty->kind == NODE_TYPE_EFFECT) return llvm_type(ty->inner_type);
     if (ty->kind == NODE_TYPE_REF) llvm_unsupported("референции (&T)");
-    if (ty->kind == NODE_TYPE_ARRAY) llvm_unsupported("масиви ([T])");
+    if (ty->kind == NODE_TYPE_ARRAY) return baga_vec_ptr_ty();   /* [T] == Vec<T> */
     llvm_unsupported_node(ty);
     return NULL; /* unreachable */
 }
@@ -717,6 +717,100 @@ static LLVMValueRef build_baga_vec_len(void) {
         LLVMFunctionType(lg.i64_ty, p, 1, 0));
     h_begin(fn);
     LLVMBuildRet(lg.builder, vec_load_len(LLVMGetParam(fn, 0)));
+    return fn;
+}
+
+/* clamp slice bounds: a=max(a,0); b=min(b,len); b=max(b,a) */
+static void slice_clamp(LLVMValueRef v, LLVMValueRef *a, LLVMValueRef *b) {
+    LLVMValueRef z = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef len = vec_load_len(v);
+    LLVMValueRef a0 = LLVMBuildICmp(lg.builder, LLVMIntSLT, *a, z, "a0");
+    *a = LLVMBuildSelect(lg.builder, a0, z, *a, "a");
+    LLVMValueRef b1 = LLVMBuildICmp(lg.builder, LLVMIntSGT, *b, len, "b1");
+    *b = LLVMBuildSelect(lg.builder, b1, len, *b, "b");
+    LLVMValueRef b2 = LLVMBuildICmp(lg.builder, LLVMIntSLT, *b, *a, "b2");
+    *b = LLVMBuildSelect(lg.builder, b2, *a, *b, "b");
+}
+
+/* loop pushing src[a..b) elements into r via push_rt (i64/str/f64) */
+static void slice_loop(LLVMValueRef fn, LLVMValueRef src, LLVMValueRef r,
+                       LLVMValueRef a, LLVMValueRef b, const char *push_rt) {
+    LLVMValueRef iv = LLVMBuildAlloca(lg.builder, lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, a, iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, b, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef e = vec_load_at(src, i);
+    if (strcmp(push_rt, "baga_vec_push_i64") == 0)
+        e = LLVMBuildPtrToInt(lg.builder, e, lg.i64_ty, "e");
+    LLVMValueRef pa[] = { r, e };
+    h_call(baga_rt(push_rt), pa, 2, "");
+    LLVMValueRef inext = LLVMBuildAdd(lg.builder, i, LLVMConstInt(lg.i64_ty, 1, 0), "in");
+    LLVMBuildStore(lg.builder, inext, iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+}
+
+static LLVMValueRef build_baga_vec_slice(const char *suf, const char *push_rt) {
+    char nm[64]; snprintf(nm, sizeof nm, "baga_vec_slice_%s", suf);
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.i64_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, nm,
+        LLVMFunctionType(baga_vec_ptr_ty(), p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef v = LLVMGetParam(fn, 0);
+    LLVMValueRef a = LLVMGetParam(fn, 1);
+    LLVMValueRef b = LLVMGetParam(fn, 2);
+    slice_clamp(v, &a, &b);
+    LLVMValueRef r = h_call(baga_rt("baga_vec_new"), NULL, 0, "r");
+    slice_loop(fn, v, r, a, b, push_rt);
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+
+/* loop pushing all of v's elements into r */
+static void concat_loop(LLVMValueRef fn, LLVMValueRef src, LLVMValueRef r, const char *push_rt) {
+    LLVMValueRef len = vec_load_len(src);
+    LLVMValueRef z = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef iv = LLVMBuildAlloca(lg.builder, lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, z, iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, len, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef e = vec_load_at(src, i);
+    if (strcmp(push_rt, "baga_vec_push_i64") == 0)
+        e = LLVMBuildPtrToInt(lg.builder, e, lg.i64_ty, "e");
+    LLVMValueRef pa[] = { r, e };
+    h_call(baga_rt(push_rt), pa, 2, "");
+    LLVMValueRef inext = LLVMBuildAdd(lg.builder, i, LLVMConstInt(lg.i64_ty, 1, 0), "in");
+    LLVMBuildStore(lg.builder, inext, iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+}
+
+static LLVMValueRef build_baga_vec_concat(const char *suf, const char *push_rt) {
+    char nm[64]; snprintf(nm, sizeof nm, "baga_vec_concat_%s", suf);
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), baga_vec_ptr_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, nm,
+        LLVMFunctionType(baga_vec_ptr_ty(), p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef v = LLVMGetParam(fn, 0);
+    LLVMValueRef w = LLVMGetParam(fn, 1);
+    LLVMValueRef r = h_call(baga_rt("baga_vec_new"), NULL, 0, "r");
+    concat_loop(fn, v, r, push_rt);
+    concat_loop(fn, w, r, push_rt);
+    LLVMBuildRet(lg.builder, r);
     return fn;
 }
 
@@ -1394,6 +1488,12 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_vec_get_f64") == 0) fn = build_baga_vec_get_f64();
     else if (strcmp(name, "baga_vec_set_f64") == 0) fn = build_baga_vec_set_f64();
     else if (strcmp(name, "baga_vec_len") == 0)     fn = build_baga_vec_len();
+    else if (strcmp(name, "baga_vec_slice_i64") == 0) fn = build_baga_vec_slice("i64", "baga_vec_push_i64");
+    else if (strcmp(name, "baga_vec_slice_str") == 0) fn = build_baga_vec_slice("str", "baga_vec_push_str");
+    else if (strcmp(name, "baga_vec_slice_f64") == 0) fn = build_baga_vec_slice("f64", "baga_vec_push_f64");
+    else if (strcmp(name, "baga_vec_concat_i64") == 0) fn = build_baga_vec_concat("i64", "baga_vec_push_i64");
+    else if (strcmp(name, "baga_vec_concat_str") == 0) fn = build_baga_vec_concat("str", "baga_vec_push_str");
+    else if (strcmp(name, "baga_vec_concat_f64") == 0) fn = build_baga_vec_concat("f64", "baga_vec_push_f64");
     else if (strcmp(name, "baga_bytes_len") == 0)   fn = build_baga_bytes_len();
     else if (strcmp(name, "baga_bytes_at") == 0)    fn = build_baga_bytes_at();
     else if (strcmp(name, "baga_bytes_slice") == 0) fn = build_baga_bytes_slice();
@@ -1814,7 +1914,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             if (!ef &&
                 (strcmp(n->callee->name, "vec_push") == 0 ||
                  strcmp(n->callee->name, "vec_get") == 0 ||
-                 strcmp(n->callee->name, "vec_set") == 0)) {
+                 strcmp(n->callee->name, "vec_set") == 0 ||
+                 strcmp(n->callee->name, "vec_slice") == 0 ||
+                 strcmp(n->callee->name, "vec_concat") == 0)) {
                 Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
                 const char *suf = "i64";
                 if (vt && vt->kind == TYPE_VEC && vt->elem) {
@@ -2209,8 +2311,18 @@ static void emit_spec_fail_llvm(const char *spec_name, int is_requires,
 }
 
 /* Една contract проверка: condbr → fail блок с emit_spec_fail_llvm. */
+/* v[*] element invariants are verifier-only annotations — no runtime check. */
+static int expr_has_elem_ref_llvm(Node *e) {
+    if (!e) return 0;
+    if (e->kind == NODE_ELEM_REF) return 1;
+    if (e->kind == NODE_BINARY) return expr_has_elem_ref_llvm(e->left) || expr_has_elem_ref_llvm(e->right);
+    if (e->kind == NODE_UNARY) return expr_has_elem_ref_llvm(e->operand);
+    return 0;
+}
+
 static void emit_spec_check_llvm(LLVMValueRef fn, Node *spec, Node *ensure,
                                  int is_requires, int idx) {
+    if (expr_has_elem_ref_llvm(ensure->ensure_expr)) return;   /* verifier-only */
     LLVMValueRef cond = to_bool(emit_expr_llvm(ensure->ensure_expr));
     LLVMBasicBlockRef fail_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "spec_fail");
     LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "spec_ok");
