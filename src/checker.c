@@ -331,6 +331,31 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
     if (n->callee->kind == NODE_IDENT) {
         const char *name = n->callee->name;
 
+        /* user-defined (incl. extern) functions shadow builtins */
+        Type *ft_user = find_fn(ctx, name);
+        if (ft_user && ft_user->kind == TYPE_FN) {
+            n->callee->type = ft_user;
+            if (n->args.len != ft_user->nparams) {
+                check_error(ctx, n->pos, "'%s' очаква %d аргумента, получих %d",
+                            name, ft_user->nparams, n->args.len);
+            }
+            int check_n = n->args.len < ft_user->nparams ? n->args.len : ft_user->nparams;
+            for (int i = 0; i < check_n; i++) {
+                Type *at = n->args.data[i]->type;
+                if (!type_assignable(at, ft_user->params[i])) {
+                    check_error(ctx, n->pos,
+                        "'%s': аргумент #%d е от тип %s, но параметърът е %s",
+                        name, i + 1, type_str(at), type_str(ft_user->params[i]));
+                }
+            }
+            Type *ret = ft_user->ret ? ft_user->ret : type_new(TYPE_VOID);
+            Type *result = type_new(ret->kind);
+            type_merge_effects(result, ret);
+            if (ctx->cur_effects)
+                type_merge_effects(ctx->cur_effects, ret);
+            return result;
+        }
+
         if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0 ||
             strcmp(name, "write") == 0) {
             n->callee->type = type_new(TYPE_VOID);
@@ -423,36 +448,6 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                 }
                 return ret;
             }
-        }
-
-        /* user function */
-        Type *ft = find_fn(ctx, name);
-        if (ft && ft->kind == TYPE_FN) {
-            n->callee->type = ft;
-            /* check arg count */
-            if (n->args.len != ft->nparams) {
-                check_error(ctx, n->pos, "'%s' очаква %d аргумента, получих %d",
-                            name, ft->nparams, n->args.len);
-            }
-            /* check arg types (до min(args, nparams) — без фалшиви грешки
-             * при вече грешна бройка) */
-            int check_n = n->args.len < ft->nparams ? n->args.len : ft->nparams;
-            for (int i = 0; i < check_n; i++) {
-                Type *at = n->args.data[i]->type;
-                if (!type_assignable(at, ft->params[i])) {
-                    check_error(ctx, n->pos,
-                        "'%s': аргумент #%d е от тип %s, но параметърът е %s",
-                        name, i + 1, type_str(at), type_str(ft->params[i]));
-                }
-            }
-            Type *ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
-            /* propagate effects from function's return type */
-            Type *result = type_new(ret->kind);
-            type_merge_effects(result, ret);
-            /* accumulate at function level */
-            if (ctx->cur_effects)
-                type_merge_effects(ctx->cur_effects, ret);
-            return result;
         }
 
         check_error(ctx, n->pos, "непозната функция '%s'", name);
@@ -803,6 +798,32 @@ void check_program(Checker *c, Node *program) {
                 ctx.n_fns++;
             }
             item->type = ft;
+
+            if (item->is_extern) {
+                /* extern fn: params/return restricted to i64, f64, str, void */
+                for (int j = 0; j < item->params.len; j++) {
+                    Node *pt = item->params.data[j]->param_type;
+                    while (pt && pt->kind == NODE_TYPE_EFFECT) pt = pt->inner_type;
+                    if (!pt || pt->kind != NODE_TYPE ||
+                        (strcmp(pt->type_name, "i64") != 0 &&
+                         strcmp(pt->type_name, "f64") != 0 &&
+                         strcmp(pt->type_name, "str") != 0 &&
+                         strcmp(pt->type_name, "void") != 0))
+                        check_error(&ctx, item->pos,
+                            "extern fn '%s': неподдържан тип на параметър (само i64, f64, str, void)",
+                            item->fn_name);
+                }
+                Node *rt = item->ret_type;
+                while (rt && rt->kind == NODE_TYPE_EFFECT) rt = rt->inner_type;
+                if (rt && (rt->kind != NODE_TYPE ||
+                    (strcmp(rt->type_name, "i64") != 0 &&
+                     strcmp(rt->type_name, "f64") != 0 &&
+                     strcmp(rt->type_name, "str") != 0 &&
+                     strcmp(rt->type_name, "void") != 0)))
+                    check_error(&ctx, item->pos,
+                        "extern fn '%s': неподдържан връщан тип (само i64, f64, str, void)",
+                        item->fn_name);
+            }
 
         } else if (item->kind == NODE_STRUCT) {
             if (ctx.n_structs < FNS_MAX) {

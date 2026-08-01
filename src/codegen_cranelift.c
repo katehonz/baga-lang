@@ -730,6 +730,13 @@ void codegen_cranelift(Node *program, int emit_only, int argc, char **argv) {
     cg.program = program;
     (void)argc;   /* програмата се пуска без аргументи (вж. baga_jit_run_main) */
 
+    /* extern fn: FFI е извън Cranelift подмножеството — честен отказ */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *it = program->items.data[i];
+        if (it->kind == NODE_FN && it->is_extern)
+            cr_unsupported("extern fn");
+    }
+
     /* 1. таблица на функциите */
     for (int i = 0; i < program->items.len; i++) {
         Node *it = program->items.data[i];

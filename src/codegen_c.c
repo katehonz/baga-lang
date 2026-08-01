@@ -43,6 +43,44 @@ static char *mangle_name(const char *name) {
     return buf;
 }
 
+/* ---- extern fn (FFI) ---- */
+
+/* Find an `extern fn` declaration by baga name, or NULL. */
+static Node *find_extern_fn(Codegen *cg, const char *name) {
+    if (!cg->program) return NULL;
+    for (int i = 0; i < cg->program->items.len; i++) {
+        Node *it = cg->program->items.data[i];
+        if (it->kind == NODE_FN && it->is_extern &&
+            strcmp(it->fn_name, name) == 0)
+            return it;
+    }
+    return NULL;
+}
+
+/* Does this extern fn return str? (Effects on the return type are unwrapped.) */
+static int extern_ret_is_str(Node *ef) {
+    Node *t = ef->ret_type;
+    while (t && t->kind == NODE_TYPE_EFFECT) t = t->inner_type;
+    return t && t->kind == NODE_TYPE && strcmp(t->type_name, "str") == 0;
+}
+
+/* C type for an extern prototype. str params are `const char *`, but a str
+ * return is `char *` so the prototype is compatible with libc declarations
+ * from the headers we emit (e.g. `char *getenv(const char *)` in stdlib.h). */
+static void emit_extern_type(FILE *f, Node *ty, int is_ret) {
+    while (ty && ty->kind == NODE_TYPE_EFFECT) ty = ty->inner_type;
+    if (!ty) { fprintf(f, "void"); return; }
+    if (ty->kind == NODE_TYPE) {
+        if (strcmp(ty->type_name, "i64") == 0)       fprintf(f, "int64_t");
+        else if (strcmp(ty->type_name, "f64") == 0)  fprintf(f, "double");
+        else if (strcmp(ty->type_name, "str") == 0)  fprintf(f, is_ret ? "char *" : "const char *");
+        else if (strcmp(ty->type_name, "void") == 0) fprintf(f, "void");
+        else                                         fprintf(f, "int64_t");
+    } else {
+        fprintf(f, "int64_t");
+    }
+}
+
 /* ---- indentation ---- */
 
 static void emit_indent(Codegen *cg) {
@@ -273,6 +311,22 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_CALL:
+            /* extern fn → direct libc call, no mangling, before builtin dispatch */
+            if (n->callee->kind == NODE_IDENT) {
+                Node *ef = find_extern_fn(cg, n->callee->name);
+                if (ef) {
+                    int str_ret = extern_ret_is_str(ef);
+                    if (str_ret) fprintf(f, "({ const char *_er = %s(", ef->fn_name);
+                    else         fprintf(f, "%s(", ef->fn_name);
+                    for (int i = 0; i < n->args.len; i++) {
+                        if (i > 0) fprintf(f, ", ");
+                        emit_expr(cg, n->args.data[i]);
+                    }
+                    if (str_ret) fprintf(f, "); _er ? _er : \"\"; })");
+                    else         fprintf(f, ")");
+                    break;
+                }
+            }
             if (is_print_call(n)) {
                 /* handled at statement level */
                 emit_print(cg, n);
@@ -895,6 +949,22 @@ static void emit_forward_decls(Codegen *cg, Node *program) {
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
         if (item->kind != NODE_FN) continue;
+
+        if (item->is_extern) {
+            /* extern fn: prototype with the raw C name and C ABI types */
+            emit_extern_type(f, item->ret_type, 1);
+            fprintf(f, " %s(", item->fn_name);
+            if (item->params.len == 0) {
+                fprintf(f, "void");
+            } else {
+                for (int j = 0; j < item->params.len; j++) {
+                    if (j > 0) fprintf(f, ", ");
+                    emit_extern_type(f, item->params.data[j]->param_type, 0);
+                }
+            }
+            fprintf(f, ");\n");
+            continue;
+        }
 
         if (item->ret_type) emit_type(cg, item->ret_type);
         else fprintf(f, "void");

@@ -1747,6 +1747,13 @@ void codegen_llvm(Node *program, const char *output_path) {
     lg.tmp_counter = 0;
     lg.program = program;
 
+    /* extern fn: отказваме честно до LLVM паритета (вж. llvm_oracle SKIP) */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *item = program->items.data[i];
+        if (item->kind == NODE_FN && item->is_extern)
+            llvm_unsupported("extern fn");
+    }
+
     lg.i64_ty = LLVMInt64TypeInContext(lg.ctx);
     lg.i32_ty = LLVMInt32TypeInContext(lg.ctx);
     lg.i1_ty = LLVMInt1TypeInContext(lg.ctx);

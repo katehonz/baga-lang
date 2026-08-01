@@ -1022,6 +1022,13 @@ Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename)
     while (!check(p, TOK_EOF)) {
         if (check(p, TOK_FN)) {
             vec_push(prog->items, parse_fn(p));
+        } else if (check(p, TOK_EXTERN)) {
+            advance(p);
+            Node *fn = parse_fn(p);
+            fn->is_extern = 1;
+            if (fn->fn_body)
+                parser_error(p, "extern fn '%s' не може да има тяло", fn->fn_name);
+            vec_push(prog->items, fn);
         } else if (check(p, TOK_STRUCT)) {
             vec_push(prog->items, parse_struct(p));
         } else if (check(p, TOK_SPEC)) {

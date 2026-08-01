@@ -122,6 +122,16 @@ test: $(BIN)
 	@./$(BIN) tests/import_cycle_a.baga 2>&1 | grep -q "цикличен import" \
 		&& echo "OK: import цикълът е хванат" \
 		|| { echo "FAIL: import цикълът не е хванат"; exit 1; }
+	@echo "=== extern fn (FFI) ==="
+	@rm -f /tmp/baga_extern_write.txt
+	@./$(BIN) examples/extern_write.baga | grep -q "written"
+	@test "$$(cat /tmp/baga_extern_write.txt)" = "baga ffi works" \
+		&& echo "OK: extern fn записва файл" \
+		|| { echo "FAIL: extern fn"; exit 1; }
+	@printf 'extern fn bad(v: Vec<i64>) -> i64\nfn main() { print(1) }\n' > /tmp/baga_bad_extern.baga
+	@./$(BIN) /tmp/baga_bad_extern.baga 2>&1 | grep -q "неподдържан тип на параметър" \
+		&& echo "OK: extern fn типовото ограничение е хванато" \
+		|| { echo "FAIL: extern fn типовото ограничение"; exit 1; }
 	@echo "=== --test-specs (property-based) ==="
 	@./$(BIN) --test-specs examples/spec_ensures.baga
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
