@@ -1,0 +1,52 @@
+// jwt_test.baga — golden-vector + tamper tests for app-product/jwtbaga/jwt.baga.
+// Pure (no sockets). The reference token below was generated independently
+// with Python hmac/hashlib/base64 (key "baga-secret", payload {"sub":"bagatur","n":7}).
+
+import "../app-product/jwtbaga/jwt.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // --- base64url alphabet + null-byte round-trip ---
+    let special = vec_new()
+    vec_push(special, 251)
+    vec_push(special, 255)
+    vec_push(special, 191)
+    check("b64url_alphabet", base64url_encode(special) == "-_-_")
+    let nb = vec_new()
+    vec_push(nb, 65)
+    vec_push(nb, 0)
+    vec_push(nb, 66)
+    check("b64url_roundtrip_null", bytes_eq(base64url_decode(base64url_encode(nb)), nb))
+
+    // --- golden vector ---
+    let key = "baga-secret"
+    let payload = "{\"sub\":\"bagatur\",\"n\":7}"
+    let token = jwt_encode(key, payload)
+    let expect = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiYWdhdHVyIiwibiI6N30.otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"
+    check("golden_encode", token == expect)
+    check("verify_ok", jwt_verify(key, concat("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.", "eyJzdWIiOiJiYWdhdHVyIiwibiI6N30"), "otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"))
+
+    // --- tamper: flip one payload char, keep the signature ---
+    let tampered = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiYWdhdHVyIiwibiI6OH0.otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"
+    check("verify_tampered_false", !jwt_verify(key, concat(vec_get(str_split(tampered, "."), 0), concat(".", vec_get(str_split(tampered, "."), 1))), vec_get(str_split(tampered, "."), 2)))
+    check("decode_tampered_empty", jwt_decode(key, tampered) == "")
+
+    // --- wrong key ---
+    check("wrong_key_false", !jwt_verify("other", concat("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.", "eyJzdWIiOiJiYWdhdHVyIiwibiI6N30"), "otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"))
+
+    // --- decode + claim extraction ---
+    check("decode_ok", jwt_decode(key, token) == payload)
+    check("claim_sub", jwt_claim(token, "sub") == "\"bagatur\"")
+    check("claim_n", jwt_claim(token, "n") == "7")
+    check("claim_missing", jwt_claim(token, "nope") == "")
+
+    print("jwt_test: all passed")
+}

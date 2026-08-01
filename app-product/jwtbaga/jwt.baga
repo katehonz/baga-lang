@@ -1,0 +1,128 @@
+// jwt.baga — JWT (RFC 7519) HS256 signer + verifier. Pure Baga.
+// Built on std/ crypto (hmac_sha256, ct_eq_bytes), bytes (base64), json, str.
+//
+// HS256 only. alg:none is never produced and never accepted. Signatures are
+// arbitrary 32-byte values that may contain 0x00; because a baga str cannot
+// hold a null byte (chr(0) == ""), decoded signatures live as Vec<i64> and are
+// compared with ct_eq_bytes — never coerced to str.
+
+import "../../std/crypto/hmac.baga"
+import "../../std/crypto/ct.baga"
+import "../../std/bytes/bytes.baga"
+import "../../std/json/json.baga"
+import "../../std/str/str.baga"
+
+// ---------- base64url (RFC 4648 section 5): "-" and "_", no padding ----------
+
+fn base64url_encode(b: Vec<i64>) -> str {
+    let s = base64_encode(b)
+    let mut out = ""
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        if c == 43 {            // '+' -> '-'
+            out = concat(out, "-")
+        } else {
+            if c == 47 {        // '/' -> '_'
+                out = concat(out, "_")
+            } else {
+                if c == 61 {    // drop '=' padding
+                    out = out
+                } else {
+                    out = concat(out, chr(c))
+                }
+            }
+        }
+    }
+    return out
+}
+
+// Tolerates the missing padding: maps "-"->"+", "_"->"/", re-pads to a
+// multiple of 4, then defers to std base64_decode.
+fn base64url_decode(s: str) -> Vec<i64> {
+    let mut t = ""
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        if c == 45 {            // '-' -> '+'
+            t = concat(t, "+")
+        } else {
+            if c == 95 {        // '_' -> '/'
+                t = concat(t, "/")
+            } else {
+                t = concat(t, chr(c))
+            }
+        }
+    }
+    while len(t) % 4 != 0 {
+        t = concat(t, "=")
+    }
+    return base64_decode(t)
+}
+
+// ---------- low-level sign / verify ----------
+
+// base64url(HMAC-SHA256(key, msg)).
+fn jwt_sign(key: str, msg: str) -> str {
+    return base64url_encode(hmac_sha256(key, msg))
+}
+
+// Constant-time: decode the presented signature to bytes and compare against a
+// freshly computed MAC.
+fn jwt_verify(key: str, msg: str, sig_b64url: str) -> bool {
+    let expected = hmac_sha256(key, msg)
+    let got = base64url_decode(sig_b64url)
+    return ct_eq_bytes(expected, got)
+}
+
+// ---------- token encode / decode ----------
+
+// header.payload.signature over a caller-supplied JSON payload string.
+fn jwt_encode(key: str, payload_json: str) -> str {
+    let h = base64url_encode(bytes_from_str("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"))
+    let p = base64url_encode(bytes_from_str(payload_json))
+    let signing = concat(concat(h, "."), p)
+    let sig = jwt_sign(key, signing)
+    return concat(concat(signing, "."), sig)
+}
+
+// The payload JSON on a valid token; "" on any failure (bad shape, bad sig).
+fn jwt_decode(key: str, token: str) -> str {
+    let parts = str_split(token, ".")
+    if vec_len(parts) != 3 {
+        return ""
+    }
+    let signing = concat(concat(vec_get(parts, 0), "."), vec_get(parts, 1))
+    if !jwt_verify(key, signing, vec_get(parts, 2)) {
+        return ""
+    }
+    return bytes_to_str(base64url_decode(vec_get(parts, 1)))
+}
+
+// Raw JSON text of a claim (string claims keep their quotes, numbers are bare);
+// "" when absent or the payload does not parse. Does NOT check the signature —
+// it is a read helper; verify with jwt_decode/jwt_verify first.
+fn jwt_claim(token: str, name: str) -> str {
+    let parts = str_split(token, ".")
+    if vec_len(parts) != 3 {
+        return ""
+    }
+    let payload = bytes_to_str(base64url_decode(vec_get(parts, 1)))
+    let d = json_parse(payload)
+    let node = json_get(d, json_root(d), name)
+    if node < 0 {
+        return ""
+    }
+    return json_serialize(d, node)
+}
+
+// ---------- internals ----------
+
+// JSON payload text never contains a null byte, so this is safe for payloads.
+// It is NOT safe for signatures — see the file header. (Language gap: there is
+// no binary-safe str; logged in gaps.md.)
+fn bytes_to_str(b: Vec<i64>) -> str {
+    let mut out = ""
+    for i in 0..vec_len(b) {
+        out = concat(out, chr(vec_get(b, i)))
+    }
+    return out
+}

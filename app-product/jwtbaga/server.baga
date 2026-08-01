@@ -1,0 +1,102 @@
+// server.baga — demo JWT auth server. First consumer of httpdbaga/http.baga.
+// Run:  ./baga app-product/jwtbaga/server.baga            (listens on :8080)
+//       PORT=9000 JWT_SECRET=s3cret ./baga app-product/jwtbaga/server.baga
+//
+// Routes:
+//   GET /token?sub=NAME          -> 200 {"token":"<jwt>"}  (payload {"sub":NAME})
+//   GET /verify    (Bearer tok)  -> 200 {"valid":true,"sub":"..."} | 401 {"valid":false}
+//   GET /protected (Bearer tok)  -> 200 {"secret":"...","sub":"..."} | 401
+
+import "../httpdbaga/http.baga"
+import "jwt.baga"
+import "../../std/os/os.baga"
+import "../../std/str/str.baga"
+
+// "/token?sub=x" + "sub" -> "x"; "" when the param is absent.
+fn query_param(path: str, name: str) -> str {
+    let q = str_find(path, "?")
+    if q < 0 {
+        return ""
+    }
+    let query = substr(path, q + 1, len(path))
+    let pairs = str_split(query, "&")
+    let want = concat(name, "=")
+    for i in 0..vec_len(pairs) {
+        let p = vec_get(pairs, i)
+        if str_starts_with(p, want) {
+            return substr(p, len(want), len(p))
+        }
+    }
+    return ""
+}
+
+// "Bearer abc" -> "abc"; "" when the header is not a Bearer token.
+fn bearer(auth: str) -> str {
+    if str_starts_with(auth, "Bearer ") {
+        return substr(auth, 7, len(auth))
+    }
+    return ""
+}
+
+// "\"x\"" -> "x" (jwt_claim returns string claims quoted).
+fn unquote(s: str) -> str {
+    if len(s) >= 2 && char_at(s, 0) == 34 {
+        return substr(s, 1, len(s) - 1)
+    }
+    return s
+}
+
+fn handle(fd: i64, secret: str) -> i64 !IO !Net {
+    let req = http_read_request(fd)?
+    let method = http_method(req)
+    let path = http_path(req)
+
+    if method == "GET" && str_starts_with(path, "/token") {
+        let sub = query_param(path, "sub")
+        let payload = concat(concat("{\"sub\":", json_escape(sub)), "}")
+        let token = jwt_encode(secret, payload)
+        let body = concat(concat("{\"token\":\"", token), "\"}")
+        return http_respond(fd, http_json_response(200, body))?
+    }
+
+    if method == "GET" && path == "/verify" {
+        let token = bearer(http_header(req, "Authorization"))
+        if token != "" && jwt_decode(secret, token) != "" {
+            let sub = unquote(jwt_claim(token, "sub"))
+            let body = concat(concat("{\"valid\":true,\"sub\":\"", sub), "\"}")
+            return http_respond(fd, http_json_response(200, body))?
+        }
+        return http_respond(fd, http_json_response(401, "{\"valid\":false}"))?
+    }
+
+    if method == "GET" && path == "/protected" {
+        let token = bearer(http_header(req, "Authorization"))
+        if token != "" && jwt_decode(secret, token) != "" {
+            let sub = unquote(jwt_claim(token, "sub"))
+            let body = concat(concat("{\"secret\":\"the cake is a lie\",\"sub\":\"", sub), "\"}")
+            return http_respond(fd, http_json_response(200, body))?
+        }
+        return http_respond(fd, http_json_response(401, "{\"error\":\"unauthorized\"}"))?
+    }
+
+    return http_respond(fd, http_json_response(404, "{\"error\":\"not found\"}"))?
+}
+
+fn main() -> i64 !Net !IO {
+    let mut port: i64 = 8080
+    if env("PORT") != "" {
+        port = parse_int(env("PORT"))
+    }
+    let mut secret = "baga-secret"
+    if env("JWT_SECRET") != "" {
+        secret = env("JWT_SECRET")
+    }
+    let listener = tcp_listen(port)?
+    print(concat("jwtbaga listening on :", int_to_str(port)))
+    while true {
+        let fd = tcp_accept(listener)?
+        handle(fd, secret)?
+        tcp_close(fd)?
+    }
+    return 0
+}

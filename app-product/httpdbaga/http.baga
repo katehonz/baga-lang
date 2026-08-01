@@ -144,6 +144,7 @@ fn http_header_raw(ks: Vec<str>, vs: Vec<str>, name: str) -> str {
 fn reason_phrase(status: i64) -> str {
     if status == 200 { return "OK" }
     if status == 400 { return "Bad Request" }
+    if status == 401 { return "Unauthorized" }
     if status == 404 { return "Not Found" }
     if status == 405 { return "Method Not Allowed" }
     if status == 500 { return "Internal Server Error" }

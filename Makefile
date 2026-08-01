@@ -154,6 +154,11 @@ test: $(BIN)
 	@grep -q "http_test: all passed" /tmp/baga_http_out.txt \
 		&& echo "OK: HTTP parser + responder (loopback)" \
 		|| { echo "FAIL: http_test"; cat /tmp/baga_http_out.txt; exit 1; }
+	@echo "=== jwt (app-product/jwtbaga) ==="
+	@./$(BIN) tests/jwt_test.baga > /tmp/baga_jwt_out.txt
+	@grep -q "jwt_test: all passed" /tmp/baga_jwt_out.txt \
+		&& echo "OK: JWT HS256 sign/verify (golden vector)" \
+		|| { echo "FAIL: jwt_test"; cat /tmp/baga_jwt_out.txt; exit 1; }
 	@echo "=== LLVM оракул (C vs lli-14) ==="
 	@if [ -f ./$(LLVM_BIN) ]; then $(MAKE) -s test-llvm; else echo "(baga-llvm липсва — пропускам LLVM оракула)"; fi
 	@echo "=== Cranelift оракул (C vs in-process JIT) ==="
