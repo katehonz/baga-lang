@@ -1,0 +1,18 @@
+spec first {
+    input:
+        v: [i64]
+    output: i64
+    requires:
+        vec_len(v) >= 1,
+        v[*] >= 0
+    ensures:
+        output >= 0
+}
+fn first(v: [i64]) -> i64 {
+    return vec_get(v, 0)
+}
+fn main() {
+    let v = vec_new()
+    vec_push(v, 5)
+    print(first(v))
+}

@@ -593,6 +593,12 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             t = type_new(TYPE_I64); /* TODO: array elem type */
             break;
 
+        case NODE_ELEM_REF:
+            /* v[*] — the element value (i64 for Vec<i64>/[i64]); annotation-only */
+            infer(ctx, n->elem_obj);
+            t = type_new(TYPE_I64);
+            break;
+
         case NODE_FIELD: {
             Type *ot = infer(ctx, n->field_obj);
             /* resolve field type from struct definition */

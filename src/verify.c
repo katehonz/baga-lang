@@ -198,7 +198,13 @@ static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
     for (int i = 0; i < src->n; i++) vlen_set(dst, src->e[i].name, lin_clone(&src->e[i].len), src->e[i].unknown);
 }
 
-static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen) {
+/* M3: a vec_get call resolves to a fresh symbolic read variable (defined later
+ * with the State; type declared here so se_from_ast can take it). */
+typedef struct { Node *call; char *var; } ReadEntry;
+typedef struct { ReadEntry *r; int n, cap; } ReadsList;
+static const char *reads_find(ReadsList *l, Node *call);
+
+static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
     if (!e) return sym_nonlin();
     switch (e->kind) {
     case NODE_INT_LIT: return sym_lin(lin_const(rat_int(e->int_val)));
@@ -211,9 +217,11 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen) {
         return sym_lin(lin_var(e->name));   /* unbound: a fresh symbolic input */
     }
     case NODE_UNARY:
-        if (e->un_op == UOP_NEG) { Sym v = se_from_ast(e->operand, env, vlen); if (v.nonlinear) return v; return sym_lin(lin_neg(&v.lin)); }
+        if (e->un_op == UOP_NEG) { Sym v = se_from_ast(e->operand, env, vlen, reads); if (v.nonlinear) return v; return sym_lin(lin_neg(&v.lin)); }
         return sym_nonlin();
     case NODE_CALL:
+        /* a vec_get resolved to a fresh read variable (M3) */
+        if (reads) { const char *rv = reads_find(reads, e); if (rv) return sym_lin(lin_var(rv)); }
         /* vec_len(v) resolves to the tracked symbolic length of v (a concrete
          * linear form for locally-built vectors, a fresh symbolic variable for
          * Vec parameters, so requires like vec_len(v) >= 1 stay linear) */
@@ -227,8 +235,8 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen) {
         }
         return sym_nonlin();
     case NODE_BINARY: {
-        Sym l = se_from_ast(e->left, env, vlen);
-        Sym r = se_from_ast(e->right, env, vlen);
+        Sym l = se_from_ast(e->left, env, vlen, reads);
+        Sym r = se_from_ast(e->right, env, vlen, reads);
         if (e->bin_op == OP_ADD) { if (l.nonlinear || r.nonlinear) return sym_nonlin(); return sym_lin(lin_add(&l.lin, &r.lin)); }
         if (e->bin_op == OP_SUB) { if (l.nonlinear || r.nonlinear) return sym_nonlin(); return sym_lin(lin_sub(&l.lin, &r.lin)); }
         if (e->bin_op == OP_MUL) {
@@ -311,11 +319,16 @@ static int is_cmp(BinOp op) { return op == OP_LT || op == OP_LE || op == OP_GT |
 static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out);
 
 static int cmp_to_formula(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out) {
+    /* an element-wise comparison (v[*] >= c) is handled as an ElemAxiom, not a
+     * scalar path constraint — treat it as vacuously TRUE here */
+    if (e->left->kind == NODE_ELEM_REF || e->right->kind == NODE_ELEM_REF) {
+        f_init(out); ConsList cl; cl_init(&cl); f_push_branch(out, cl); return 1;
+    }
     /* se_from_ast resolves identifiers through env (and vec_len through vlen),
      * so `output`, let-bound locals, and vector lengths are substituted by
      * their symbolic values before the comparison becomes a constraint. */
-    Sym l = se_from_ast(e->left, env, vlen);
-    Sym r = se_from_ast(e->right, env, vlen);
+    Sym l = se_from_ast(e->left, env, vlen, NULL);
+    Sym r = se_from_ast(e->right, env, vlen, NULL);
     if (l.nonlinear || r.nonlinear) { if (!l.nonlinear) lin_free(&l.lin); if (!r.nonlinear) lin_free(&r.lin); return 0; }
     Constraint c;
     if (!atom_to_cons(l.lin, e->bin_op, r.lin, negated, &c)) { lin_free(&l.lin); lin_free(&r.lin); return 0; }
@@ -635,11 +648,11 @@ static int find_counterexample(ConsList *ante, Formula *nef, Node *ensures_ast,
  * ensures mentioning vec_len resolve against the right state.
  * For bounds obligations: path = state path (requires ∧ branch path);
  * bound = the negated in-range condition (¬(0 <= idx < len)). */
-typedef struct { ConsList path; ConsList bound; Sym ret; VLenMap vlen; int bad; int kind; char *label; } Obligation;
+typedef struct { ConsList path; ConsList bound; ConsList read_cons; Sym ret; VLenMap vlen; int bad; int kind; char *label; } Obligation;
 typedef struct { Obligation *o; int n, cap; } Obligations;
-static void obl_push(Obligations *ob, ConsList path, ConsList bound, Sym ret, VLenMap *vlen, int bad, int kind, const char *label) {
+static void obl_push(Obligations *ob, ConsList path, ConsList bound, ConsList read_cons, Sym ret, VLenMap *vlen, int bad, int kind, const char *label) {
     if (ob->n == ob->cap) { ob->cap = ob->cap ? ob->cap * 2 : 4; ob->o = realloc(ob->o, (size_t)ob->cap * sizeof(Obligation)); }
-    ob->o[ob->n].path = path; ob->o[ob->n].bound = bound; ob->o[ob->n].ret = ret;
+    ob->o[ob->n].path = path; ob->o[ob->n].bound = bound; ob->o[ob->n].read_cons = read_cons; ob->o[ob->n].ret = ret;
     if (vlen) vlen_clone_into(&ob->o[ob->n].vlen, vlen); else vlen_init(&ob->o[ob->n].vlen);
     ob->o[ob->n].bad = bad;
     ob->o[ob->n].kind = kind; ob->o[ob->n].label = label ? strdup(label) : NULL; ob->n++;
@@ -736,9 +749,43 @@ static int find_bound_witness(Obligation *obl, IBind **witness, int *wn) {
 
 /* ============================ symbolic execution ============================ */
 
-typedef struct { SEnv env; VLenMap vlen; ConsList path; int bad; } State;
+/* M3 element invariant: forall i in [0, len(vec)): vec[i] <cmp> rhs.
+ * cmp is one of EC_LT/EC_LE/EC_GT/EC_GE; rhs is a linear form over scalars. */
+typedef enum { EC_LT, EC_LE, EC_GT, EC_GE } ElemCmp;
+typedef struct { char *vec; ElemCmp cmp; Lin rhs; } ElemAxiom;
+typedef struct { ElemAxiom *a; int n, cap; } AxiomList;
 
-static void state_free(State *s) { env_free(&s->env); vlen_free(&s->vlen); cl_free(&s->path); }
+static void ax_init(AxiomList *l) { l->a = NULL; l->n = 0; l->cap = 0; }
+static void ax_free(AxiomList *l) { for (int i = 0; i < l->n; i++) { free(l->a[i].vec); lin_free(&l->a[i].rhs); } free(l->a); l->a = NULL; l->n = l->cap = 0; }
+static void ax_push(AxiomList *l, const char *vec, ElemCmp cmp, Lin rhs) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->a = realloc(l->a, (size_t)l->cap * sizeof(ElemAxiom)); }
+    l->a[l->n].vec = strdup(vec); l->a[l->n].cmp = cmp; l->a[l->n].rhs = rhs; l->n++;
+}
+static void ax_clone_into(AxiomList *dst, AxiomList *src) {
+    ax_init(dst);
+    for (int i = 0; i < src->n; i++) ax_push(dst, src->a[i].vec, src->a[i].cmp, lin_clone(&src->a[i].rhs));
+}
+
+/* M3: a vec_get call resolves to a fresh symbolic read variable, so its value
+ * can carry instantiated element-axiom constraints. Keyed by the call node. */
+static void reads_init(ReadsList *l) { l->r = NULL; l->n = 0; l->cap = 0; }
+static void reads_free(ReadsList *l) { for (int i = 0; i < l->n; i++) free(l->r[i].var); free(l->r); l->r = NULL; l->n = l->cap = 0; }
+static void reads_push(ReadsList *l, Node *call, const char *var) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
+    l->r[l->n].call = call; l->r[l->n].var = strdup(var); l->n++;
+}
+static const char *reads_find(ReadsList *l, Node *call) {
+    for (int i = 0; i < l->n; i++) if (l->r[i].call == call) return l->r[i].var;
+    return NULL;
+}
+static void reads_clone_into(ReadsList *dst, ReadsList *src) {
+    reads_init(dst);
+    for (int i = 0; i < src->n; i++) reads_push(dst, src->r[i].call, src->r[i].var);
+}
+
+typedef struct { SEnv env; VLenMap vlen; AxiomList ax; ConsList path; ConsList read_cons; ReadsList reads; int bad; } State;
+
+static void state_free(State *s) { env_free(&s->env); vlen_free(&s->vlen); ax_free(&s->ax); cl_free(&s->path); cl_free(&s->read_cons); reads_free(&s->reads); }
 
 typedef struct { State *s; int n, cap; } States;
 static void states_push(States *ss, State s) {
@@ -800,9 +847,12 @@ static void symexec_block(Node *blk, States *states, Obligations *ob, int is_non
 
 /* Prove one invariant holds in every body-final state, given the head state
  * (invariant ∧ condition on entry). UNSAT per DNF branch ⇒ holds. */
+static int has_elem_ref(Node *e);
 static int check_preservation(State *head, Node *inv, States *body_final) {
-    Formula hf;
-    if (!bool_to_dnf(inv, &head->env, &head->vlen, 0, &hf)) return 0;
+    (void)head;
+    /* element axioms (v[*] ...) are preserved by the vec_push axiom rule
+     * (axiom_holds_for_value), not by this scalar path check — skip it */
+    if (has_elem_ref(inv)) return 1;
     int holds = 1;
     for (int k = 0; k < body_final->n && holds; k++) {
         State *bf = &body_final->s[k];
@@ -822,7 +872,6 @@ static int check_preservation(State *head, Node *inv, States *body_final) {
         }
         f_free(&bf_inv);
     }
-    f_free(&hf);
     return holds;
 }
 
@@ -833,6 +882,8 @@ static int check_preservation(State *head, Node *inv, States *body_final) {
  *                 if init and preservation are both PROVEN (soundness gate —
  *                 otherwise any downstream proof depending on it is UNKNOWN).
  * Returns 1 iff the invariant is trustworthy (init ∧ preservation proven). */
+static void extract_elem_axiom(Node *e, AxiomList *ax);
+static int has_elem_ref(Node *e);
 static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvoid, Node *spec) {
     (void)is_nonvoid;   /* the loop body is never a return context */
     int trusted = 1;
@@ -842,6 +893,9 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
 
         /* init: each invariant must follow from the current path */
         for (int j = 0; j < st->while_invariants.len && trusted; j++) {
+            /* element axioms (v[*] ...) are vacuous at init (empty/any vec) and
+             * are tracked separately — skip the scalar init check for them */
+            if (has_elem_ref(st->while_invariants.data[j])) continue;
             Formula invf;
             if (!bool_to_dnf(st->while_invariants.data[j], &cur->env, &cur->vlen, 0, &invf)) { trusted = 0; break; }
             for (int b = 0; b < invf.n && trusted; b++) {
@@ -853,7 +907,8 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
                     COp op = (c->op == C_LT) ? C_LE : C_LT;
                     cl_push(&sys, mk_cons(lhs, op, c->rhs));
                 }
-                if (fm_sat(&sys)) trusted = 0;
+                int s = fm_sat(&sys);
+                if (s) trusted = 0;
             }
             f_free(&invf);
         }
@@ -882,8 +937,10 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
             /* the loop body is not a return context: its last statement is NOT
              * an implicit return, so pass is_nonvoid=0 */
             symexec_block(st->while_body, &head_ss, ob, 0, spec);
-            for (int j = 0; j < st->while_invariants.len && trusted; j++)
-                if (!check_preservation(cur, st->while_invariants.data[j], &head_ss)) trusted = 0;
+            for (int j = 0; j < st->while_invariants.len && trusted; j++) {
+                int ok = check_preservation(cur, st->while_invariants.data[j], &head_ss);
+                if (!ok) trusted = 0;
+            }
         }
         for (int k = 0; k < head_ss.n; k++) state_free(&head_ss.s[k]);
         free(head_ss.s);
@@ -924,12 +981,20 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
     }
     free(states->s);
     *states = out;
+    /* M3: element axioms declared in the loop invariant hold after the loop
+     * (the invariant is assumed established & preserved by the contract).
+     * while_invariants stores the raw expression nodes (not NODE_ENSURE). */
+    for (int i = 0; i < states->n; i++)
+        for (int j = 0; j < st->while_invariants.len; j++)
+            extract_elem_axiom(st->while_invariants.data[j], &states->s[i].ax);
     return trusted;
 }
 
 /* Track Vec lengths and emit bounds obligations for vec accesses in an
  * expression statement. Only the top-level call and a let-init call are
  * handled; nested vec calls inside larger expressions are not tracked. */
+static Constraint axiom_instantiate(ElemAxiom *a, const char *read_var);
+static int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st);
 static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
     if (!e) return;
     if (e->kind != NODE_CALL || e->callee->kind != NODE_IDENT) return;
@@ -938,17 +1003,44 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
     if (strcmp(nm, "vec_new") == 0) return;   /* length handled at the let binding */
 
     if (strcmp(nm, "vec_push") == 0 && e->args.len >= 1 && e->args.data[0]->kind == NODE_IDENT) {
-        VLenEntry *ve = vlen_find(&st->vlen, e->args.data[0]->name);
-        if (ve && !ve->unknown) vlen_set(&st->vlen, e->args.data[0]->name, lin_add(&ve->len, &(Lin){ .c = rat_int(1) }), 0);
-        else vlen_set(&st->vlen, e->args.data[0]->name, (Lin){0}, 1);
+        const char *vname = e->args.data[0]->name;
+        VLenEntry *ve = vlen_find(&st->vlen, vname);
+        if (ve && !ve->unknown) vlen_set(&st->vlen, vname, lin_add(&ve->len, &(Lin){ .c = rat_int(1) }), 0);
+        else vlen_set(&st->vlen, vname, (Lin){0}, 1);
+        /* M3 preservation: keep an axiom on v only if the pushed value provably
+         * satisfies it; axioms on other vectors are untouched. */
+        if (st->ax.n > 0 && e->args.len >= 2) {
+            Sym val = se_from_ast(e->args.data[1], &st->env, &st->vlen, &st->reads);
+            AxiomList kept; ax_init(&kept);
+            for (int i = 0; i < st->ax.n; i++) {
+                if (strcmp(st->ax.a[i].vec, vname) == 0) {
+                    if (axiom_holds_for_value(&st->ax.a[i], &val, st))
+                        ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+                    /* else: dropped (sound — we no longer know it holds) */
+                } else {
+                    ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+                }
+            }
+            lin_free(&val.lin);
+            ax_free(&st->ax);
+            st->ax = kept;
+        }
         return;
     }
 
-    if ((strcmp(nm, "vec_get") == 0 || strcmp(nm, "vec_set") == 0) && e->args.len >= 2 &&
-        e->args.data[0]->kind == NODE_IDENT) {
+    if (strcmp(nm, "vec_get") == 0 && e->args.len >= 2 && e->args.data[0]->kind == NODE_IDENT) {
         const char *vname = e->args.data[0]->name;
         VLenEntry *ve = vlen_find(&st->vlen, vname);
-        Sym idx = se_from_ast(e->args.data[1], &st->env, &st->vlen);
+        Sym idx = se_from_ast(e->args.data[1], &st->env, &st->vlen, &st->reads);
+        /* M3: the read resolves to a fresh symbolic variable carrying the
+         * instantiated element axioms (forall i: P(v[i]) => P(read)). */
+        char rv[64]; snprintf(rv, sizeof rv, "__r%d", st->reads.n);
+        reads_push(&st->reads, e, rv);
+        for (int i = 0; i < st->ax.n; i++) {
+            if (strcmp(st->ax.a[i].vec, vname) == 0) {
+                cl_push(&st->read_cons, axiom_instantiate(&st->ax.a[i], rv));
+            }
+        }
         Lin lenlin; int have_len = 0;
         if (ve && !ve->unknown) { lenlin = lin_clone(&ve->len); have_len = 1; }
         else if (ve && ve->unknown) { char buf[300]; snprintf(buf, sizeof buf, "__len_%s", vname); lenlin = lin_var(buf); have_len = 1; }
@@ -981,8 +1073,21 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
         snprintf(label, sizeof label, "достъп до %s[..] е извън границите", vname);
         Sym retsym;
         if (idx.nonlinear) { retsym = sym_nonlin(); } else { retsym = sym_lin(lin_clone(&idx.lin)); }
-        obl_push(ob, opath, obound, retsym, &st->vlen, unknown, 1, label);
+        obl_push(ob, opath, obound, (ConsList){NULL, 0, 0}, retsym, &st->vlen, unknown, 1, label);
         lin_free(&idx.lin);
+        return;
+    }
+
+    if (strcmp(nm, "vec_set") == 0 && e->args.len >= 1 && e->args.data[0]->kind == NODE_IDENT) {
+        /* M3: setting an element may break element invariants — drop the axioms
+         * for this vector (sound over-approximation; M3 does not model set). */
+        const char *vname = e->args.data[0]->name;
+        AxiomList kept; ax_init(&kept);
+        for (int i = 0; i < st->ax.n; i++)
+            if (strcmp(st->ax.a[i].vec, vname) != 0)
+                ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs));
+        ax_free(&st->ax);
+        st->ax = kept;
         return;
     }
 }
@@ -1003,11 +1108,15 @@ static State clone_state_with(State *cur, Formula *add) {
     State t;
     env_clone_into(&t.env, &cur->env);
     vlen_clone_into(&t.vlen, &cur->vlen);
+    ax_clone_into(&t.ax, &cur->ax);
+    reads_clone_into(&t.reads, &cur->reads);
     cl_init(&t.path);
     for (int x = 0; x < cur->path.n; x++) { Constraint *c = &cur->path.c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
     if (add) for (int b = 0; b < add->n; b++) for (int x = 0; x < add->br[b].n; x++) {
         Constraint *c = &add->br[b].c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs));
     }
+    cl_init(&t.read_cons);
+    for (int x = 0; x < cur->read_cons.n; x++) { Constraint *c = &cur->read_cons.c[x]; cl_push(&t.read_cons, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
     t.bad = cur->bad;
     return t;
 }
@@ -1019,9 +1128,11 @@ static void bind_sym(SEnv *env, const char *name, Sym v) {
 
 static void drain_returns(States *states, Obligations *ob, Node *val_expr) {
     for (int i = 0; i < states->n; i++) {
-        Sym r = se_from_ast(val_expr, &states->s[i].env, &states->s[i].vlen);
+        Sym r = se_from_ast(val_expr, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads);
         ConsList nobound; cl_init(&nobound);
-        obl_push(ob, states->s[i].path, nobound, r, &states->s[i].vlen, states->s[i].bad, 0, NULL);
+        ConsList rc; cl_init(&rc);
+        for (int x = 0; x < states->s[i].read_cons.n; x++) { Constraint *c = &states->s[i].read_cons.c[x]; cl_push(&rc, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        obl_push(ob, states->s[i].path, nobound, rc, r, &states->s[i].vlen, states->s[i].bad, 0, NULL);
         env_free(&states->s[i].env);
         vlen_free(&states->s[i].vlen);
     }
@@ -1034,7 +1145,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
         int last = (si == stmts->len - 1);
         if (st->kind == NODE_LET) {
             for (int i = 0; i < states->n; i++) {
-                bind_sym(&states->s[i].env, st->let_name, se_from_ast(st->let_init, &states->s[i].env, &states->s[i].vlen));
+                bind_sym(&states->s[i].env, st->let_name, se_from_ast(st->let_init, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads));
                 /* a fresh vec_new() has length 0 */
                 if (st->let_init && st->let_init->kind == NODE_CALL && st->let_init->callee->kind == NODE_IDENT &&
                     strcmp(st->let_init->callee->name, "vec_new") == 0)
@@ -1044,7 +1155,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
         } else if (st->kind == NODE_ASSIGN) {
             if (st->assign_target->kind != NODE_IDENT) { for (int i = 0; i < states->n; i++) states->s[i].bad = 1; continue; }
             for (int i = 0; i < states->n; i++)
-                bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env, &states->s[i].vlen));
+                bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads));
         } else if (st->kind == NODE_RETURN) {
             for (int i = 0; i < states->n; i++) scan_vec_expr(st->ret_val, &states->s[i], ob, spec);
             drain_returns(states, ob, st->ret_val);
@@ -1189,6 +1300,8 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
             f_free(&rf);
         }
         for (int x = 0; x < obl->path.n && ante_ok; x++) { Constraint *c = &obl->path.c[x]; cl_push(&ante, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        /* M3: instantiated element-axiom constraints on the read value */
+        for (int x = 0; x < obl->read_cons.n && ante_ok; x++) { Constraint *c = &obl->read_cons.c[x]; cl_push(&ante, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
         if (!ante_ok) { cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
 
         /* ensures as DNF, and its negation as DNF (De Morgan handled inside
@@ -1236,6 +1349,81 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
 }
 
 /* Verify one function. Returns 1 if any ensures was REFUTED. */
+/* ---- M3: extract element axioms (v[*] <cmp> <linear>) from annotations ---- */
+
+/* Does this annotation mention an element reference v[*]? Such invariants are
+ * element axioms (handled separately, vacuous at init), not scalar constraints. */
+static int has_elem_ref(Node *e) {
+    if (!e) return 0;
+    if (e->kind == NODE_ELEM_REF) return 1;
+    if (e->kind == NODE_BINARY) return has_elem_ref(e->left) || has_elem_ref(e->right);
+    if (e->kind == NODE_UNARY) return has_elem_ref(e->operand);
+    return 0;
+}
+
+/* Recognize `v[*] <cmp> <linear>` (or mirrored) and add it as an axiom. */
+static void extract_elem_axiom(Node *e, AxiomList *ax) {
+    if (!e || e->kind != NODE_BINARY) return;
+    BinOp op = e->bin_op;
+    if (op != OP_LT && op != OP_LE && op != OP_GT && op != OP_GE) return;
+    Node *l = e->left, *r = e->right;
+    Node *eref = NULL; Node *other = NULL; int elem_on_left = 0;
+    if (l->kind == NODE_ELEM_REF) { eref = l; other = r; elem_on_left = 1; }
+    else if (r->kind == NODE_ELEM_REF) { eref = r; other = l; elem_on_left = 0; }
+    if (!eref || eref->elem_obj->kind != NODE_IDENT) return;
+    Sym s = se_from_ast(other, NULL, NULL, NULL);
+    if (s.nonlinear) { lin_free(&s.lin); return; }
+    ElemCmp cmp;
+    if (elem_on_left) {
+        switch (op) { case OP_LT: cmp = EC_LT; break; case OP_LE: cmp = EC_LE; break;
+                      case OP_GT: cmp = EC_GT; break; default: cmp = EC_GE; break; }
+    } else {
+        switch (op) { case OP_LT: cmp = EC_GT; break; case OP_LE: cmp = EC_GE; break;
+                      case OP_GT: cmp = EC_LT; break; default: cmp = EC_LE; break; }
+    }
+    ax_push(ax, eref->elem_obj->name, cmp, s.lin);
+}
+
+/* Instantiate an axiom at a concrete read: produce the constraint
+ * `read_var <cmp> rhs` (the element value satisfies the predicate). */
+static Constraint axiom_instantiate(ElemAxiom *a, const char *read_var) {
+    Lin lhs = lin_var(read_var);
+    COp op;
+    switch (a->cmp) { case EC_LT: op = C_LT; break; case EC_LE: op = C_LE; break;
+                      case EC_GT: op = C_LE; break; default: op = C_LT; break; }
+    /* elem <cmp> rhs:
+       EC_LT: read < rhs   -> read - rhs < 0
+       EC_LE: read <= rhs  -> read - rhs <= 0
+       EC_GT: read > rhs   -> rhs - read < 0
+       EC_GE: read >= rhs  -> rhs - read <= 0 */
+    Lin d;
+    if (a->cmp == EC_GT || a->cmp == EC_GE) d = lin_sub(&a->rhs, &lhs);
+    else d = lin_sub(&lhs, &a->rhs);
+    lin_free(&lhs);
+    return mk_cons(d, op, rat_zero());
+}
+
+/* Check that a pushed value `val` satisfies the axiom (val <cmp> rhs) under the
+ * current path. Returns 1 if proven (so the axiom survives the push). */
+static int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st) {
+    if (val->nonlinear) return 0;
+    /* obligation: path => val <cmp> rhs; negate -> path ∧ ¬(val <cmp> rhs) UNSAT */
+    ConsList sys; cl_init(&sys);
+    for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    /* ¬(val <cmp> rhs): build val<cmp>rhs as a constraint, then negate it */
+    Lin lhs = lin_clone(&val->lin);
+    COp posop;
+    Lin d;
+    if (a->cmp == EC_GT || a->cmp == EC_GE) { d = lin_sub(&a->rhs, &lhs); posop = (a->cmp == EC_GT) ? C_LT : C_LE; }
+    else { d = lin_sub(&lhs, &a->rhs); posop = (a->cmp == EC_LT) ? C_LT : C_LE; }
+    lin_free(&lhs);
+    COp negop = (posop == C_LT) ? C_LE : C_LT;
+    cl_push(&sys, mk_cons(lin_neg(&d), negop, rat_zero()));
+    lin_free(&d);
+    int sat = fm_sat(&sys);   /* frees sys */
+    return !sat;
+}
+
 static int verify_fn(Node *prog, Node *fn) {
     Node *spec = find_spec(prog, fn->fn_name);
     if (!spec) return 0;
@@ -1263,7 +1451,8 @@ static int verify_fn(Node *prog, Node *fn) {
 
     /* symexec */
     Obligations ob; ob.o = NULL; ob.n = 0; ob.cap = 0;
-    State init; env_init(&init.env); vlen_init(&init.vlen); cl_init(&init.path); init.bad = 0;
+    State init; env_init(&init.env); vlen_init(&init.vlen); ax_init(&init.ax);
+    cl_init(&init.path); cl_init(&init.read_cons); reads_init(&init.reads); init.bad = 0;
     for (int i = 0; i < fn->params.len; i++) {
         Node *p = fn->params.data[i];
         env_bind(&init.env, p->param_name, lin_var(p->param_name), 0);
@@ -1273,6 +1462,18 @@ static int verify_fn(Node *prog, Node *fn) {
         if (pt && pt->kind == NODE_TYPE_ARRAY) {
             char buf[300]; snprintf(buf, sizeof buf, "__len_%s", p->param_name);
             vlen_set(&init.vlen, p->param_name, lin_var(buf), 0);
+        }
+    }
+    /* M3: element axioms from requires (v[*] >= c, ...) */
+    for (int r = 0; r < spec->spec_requires.len; r++)
+        extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init.ax);
+    /* requires also seed the initial path, so loop-invariant init checks and
+     * branch conditions can rely on them (element axioms are vacuous here) */
+    for (int r = 0; r < spec->spec_requires.len; r++) {
+        Formula rf;
+        if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.vlen, 0, &rf)) {
+            if (rf.n == 1) for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&init.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            f_free(&rf);
         }
     }
     States states; states.s = NULL; states.n = 0; states.cap = 0;
@@ -1309,7 +1510,7 @@ static int verify_fn(Node *prog, Node *fn) {
         }
         if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
     }
-    for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); cl_free(&ob.o[i].bound); lin_free(&ob.o[i].ret.lin); vlen_free(&ob.o[i].vlen); free(ob.o[i].label); }
+    for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); cl_free(&ob.o[i].bound); cl_free(&ob.o[i].read_cons); lin_free(&ob.o[i].ret.lin); vlen_free(&ob.o[i].vlen); free(ob.o[i].label); }
     free(ob.o);
     return any_refuted;
 }

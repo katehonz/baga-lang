@@ -1,0 +1,20 @@
+spec build_read {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 0
+}
+fn build_read(n: i64) -> i64 {
+    let v = vec_new()
+    vec_push(v, 0)
+    let mut i: i64 = 0
+    while i < n invariant i >= 0, i <= n, v[*] >= 0 {
+        vec_push(v, i + 1)
+        i = i + 1
+    }
+    return vec_get(v, 0)
+}
+fn main() { print(build_read(3)) }

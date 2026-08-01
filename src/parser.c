@@ -50,6 +50,9 @@ void node_free(Node *n) {
             node_free(n->obj);
             node_free(n->index);
             break;
+        case NODE_ELEM_REF:
+            node_free(n->elem_obj);
+            break;
         case NODE_FIELD:
             node_free(n->field_obj);
             free(n->field_name);
@@ -586,6 +589,15 @@ static Node *parse_postfix(Parser *p) {
         /* index */
         if (check(p, TOK_LBRACKET)) {
             advance(p);
+            /* v[*] — element-wise reference (annotation-only, M3) */
+            if (check(p, TOK_STAR)) {
+                advance(p);
+                expect(p, TOK_RBRACKET);
+                Node *er = node_alloc(NODE_ELEM_REF, pos);
+                er->elem_obj = e;
+                e = er;
+                continue;
+            }
             Node *idx = node_alloc(NODE_INDEX, pos);
             idx->obj = e;
             idx->index = parse_expr(p);
@@ -1297,6 +1309,10 @@ void print_ast(Node *n, int indent) {
             fprintf(stderr, "INDEX\n");
             print_ast(n->obj, indent + 1);
             print_ast(n->index, indent + 1);
+            break;
+        case NODE_ELEM_REF:
+            fprintf(stderr, "ELEM_REF [*]\n");
+            print_ast(n->elem_obj, indent + 1);
             break;
         case NODE_FIELD:
             fprintf(stderr, "FIELD .%s\n", n->field_name);

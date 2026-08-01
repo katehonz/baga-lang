@@ -150,6 +150,7 @@ typedef enum {
     NODE_IF,
     NODE_BLOCK,
     NODE_INDEX,
+    NODE_ELEM_REF,    /* v[*] — "every element of v" (annotation-only, M3) */
     NODE_FIELD,
     NODE_ASSIGN,
     NODE_RANGE,       /* a..b */
@@ -247,6 +248,9 @@ struct Node {
 
         /* NODE_INDEX */
         struct { Node *obj; Node *index; };
+
+        /* NODE_ELEM_REF (v[*]) */
+        struct { Node *elem_obj; };
 
         /* NODE_FIELD */
         struct { Node *field_obj; char *field_name; };

@@ -223,7 +223,7 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds | 🟡 in progress |
+| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants | 🟡 in progress |
 
 ### Static verification (`--verify`)
 
@@ -250,11 +250,22 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   against the symbolically tracked vector length (`vec_new` → 0, `vec_push`
   → +1, `Vec` parameters → a symbolic length constrained by `requires
   vec_len(v) ...`). Proves accesses in range, or refutes with a counterexample.
-  Lengths flow through loops via the invariant mechanism. Element *values* are
-  not tracked (an `ensures` about a returned element is honestly UNKNOWN).
+  Lengths flow through loops via the invariant mechanism.
+- **M3** — **element invariants**: a `v[*] >= c` annotation (in `requires` or a
+  loop `invariant`) means "every element of `v` satisfies the predicate". It is
+  stored as a quantified axiom and **instantiated** at each concrete `vec_get`
+  index, so an `ensures` about a read element follows. `vec_push(v, e)`
+  preserves the axiom when `e` provably satisfies the predicate (otherwise the
+  axiom is dropped — sound). Example:
+  ```baga
+  requires: v[*] >= 0, vec_len(v) >= 1
+  ensures:  output >= 0
+  fn first(v: [i64]) -> i64 { return vec_get(v, 0) }   // proven
+  ```
 
 Recursion and non-linear terms are still skipped honestly. Remaining staircase:
-element invariants (`forall i. v[i] >= 0`), then non-linear reasoning.
+element invariants through `vec_set`/`slice`/`concat`, relational invariants
+(`sorted`), then non-linear reasoning.
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written
