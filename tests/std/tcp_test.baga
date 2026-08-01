@@ -1,0 +1,36 @@
+import "../../std/net/tcp.baga"
+import "../../std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Net !IO {
+    let port = 18431
+    let listener = tcp_listen(port)?
+    check("listen", listener >= 0)
+
+    let client = tcp_connect("127.0.0.1", port)?
+    check("connect", client >= 0)
+
+    let server = tcp_accept(listener)?
+    check("accept", server >= 0)
+
+    // echo: client → server → client
+    check("write", tcp_write(client, "ping")? == 0)
+    let got = tcp_read(server, 64)?
+    check("server_got", got == "ping")
+    check("reply", tcp_write(server, concat("pong:", got))? == 0)
+    check("client_got", tcp_read(client, 64)? == "pong:ping")
+
+    tcp_close(client)?
+    tcp_close(server)?
+    tcp_close(listener)?
+    print("tcp_test: all passed")
+    return 0
+}
