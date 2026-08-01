@@ -53,21 +53,26 @@ inner type): `str`→identity, `i64`→`baga_i64_to_str`, `bool`→`? "true":"fa
   conversion; new runtime helper `baga_i64_to_str` (no import needed).
 - **LLVM codegen (`src/codegen_llvm.c`)**: `NODE_TO_STR` likewise, with a
   hand-built IR `baga_i64_to_str` (decimal, sign-aware) for C/LLVM parity.
-- **Self-compiler (`self/compiler.baga`)**: **not yet mirrored** (follow-up).
-  The fixed point holds because compiler.baga uses no interpolation; but a
-  program compiled by the self-compiled compiler does not get interpolation
-  until the mirror lands. Documented as a known limitation, not a soundness
-  issue.
+- **Self-compiler (`self/compiler.baga`)**: mirrored. Its `parse_primary`
+  string case scans the raw literal for `${...}`, tokenizes each expression
+  with the self-lexer, parses it with `parse_expr`, and builds the same
+  `concat`/TO_STR (node kind 28) chain; `emit_expr` converts TO_STR by a
+  type heuristic (`expr_is_str` → as-is, `expr_is_bool` → `?"true":"false"`,
+  else `baga_i64_to_str`), and the runtime gains `baga_i64_to_str`. Because
+  the desugaring is identical, `baga2 == baga3` stays byte-identical and a
+  self-compiled compiler handles interpolation just like the bootstrap.
 
 ## 5. Testing
 
 - `examples/interp.baga`: interpolate str/i64/bool, a call `${double(n)}`,
   `$$` literal, lone braces as text; exact-output diff in `make test`.
-- `make self` stays green (fixed point) — the acceptance gate.
+- `make self` stays green (fixed point) — and `baga2` (self-compiled) produces
+  output identical to the bootstrap on `interp.baga` (str/i64/bool/call).
 
 ## 6. Honesty / risk
 
-The self-compiler mirror is deferred: it needs the same `${...}` desugaring in
-`self/compiler.baga` (parse-time, to keep baga2==baga3 byte-identical). Until
-then interpolation is a bootstrap/LLVM feature. This is a completeness gap, not
-a correctness one.
+The self-compiler's TO_STR conversion is **heuristic** (no full type checker):
+it classifies by `expr_is_str`/`expr_is_bool` and defaults to i64. This matches
+the bootstrap's type-directed result for the common cases (str/i64/bool vars,
+calls, literals); an exotic expression misclassified as i64 would render via
+`baga_i64_to_str`. Not a soundness issue — the verifier is unaffected.

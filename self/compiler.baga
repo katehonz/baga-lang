@@ -34,6 +34,17 @@ fn next_sibling(ns: Vec, idx: i64) -> i64 { vec_get(ns, idx) }
 fn node_kind(nk: Vec, idx: i64) -> i64 { vec_get(nk, idx) }
 fn node_text(nt: Vec, idx: i64) -> str { vec_get_str(nt, idx) }
 
+// index of the first occurrence of byte ch in s at or after position from, or -1
+fn bfind(s: str, ch: i64, from: i64) -> i64 {
+    let n = len(s)
+    let mut i = from
+    while i < n {
+        if char_at(s, i) == ch { return i }
+        i = i + 1
+    }
+    0 - 1
+}
+
 // ============================================================
 //  Tokenizer
 // ============================================================
@@ -211,7 +222,62 @@ fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec)
     }
     if k == 101 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
-        return ast_kind(nk, nt, fc, ns, 1, t)
+        // string interpolation: ${expr} -> concat chain with TO_STR (kind 28)
+        if bfind(t, 36, 0) < 0 {
+            return ast_kind(nk, nt, fc, ns, 1, t)
+        }
+        let parts = vec_new()
+        let mut lit = ""
+        let n = len(t)
+        let mut i: i64 = 0
+        while i < n {
+            let c = char_at(t, i)
+            if c == 36 && i + 1 < n && char_at(t, i + 1) == 36 {
+                lit = concat(lit, chr(36))
+                i = i + 2
+            } else {
+                if c == 36 && i + 1 < n && char_at(t, i + 1) == 123 {
+                    if len(lit) > 0 { vec_push(parts, ast_kind(nk, nt, fc, ns, 1, lit)); lit = "" }
+                    let mut j = i + 2
+                    let mut depth: i64 = 1
+                    while j < n && depth > 0 {
+                        let cj = char_at(t, j)
+                        if cj == 123 { depth = depth + 1 } else { if cj == 125 { depth = depth - 1 } }
+                        if depth == 0 { break }
+                        j = j + 1
+                    }
+                    let expr_s = substr(t, i + 2, j)
+                    let etk = vec_new()
+                    let ett = vec_new()
+                    tokenize(expr_s, etk, ett)
+                    let epos = vec_new()
+                    vec_push(epos, 0)
+                    let enode = parse_expr(etk, ett, epos, nk, nt, fc, ns)
+                    let ts = ast_kind(nk, nt, fc, ns, 28, "")
+                    ast_child(fc, ns, ts, enode)
+                    vec_push(parts, ts)
+                    i = j + 1
+                } else {
+                    lit = concat(lit, chr(c))
+                    i = i + 1
+                }
+            }
+        }
+        if len(lit) > 0 { vec_push(parts, ast_kind(nk, nt, fc, ns, 1, lit)) }
+        let np = vec_len(parts)
+        if np == 0 { return ast_kind(nk, nt, fc, ns, 1, "") }
+        let mut acc = vec_get(parts, np - 1)
+        let mut pi = np - 2
+        while pi >= 0 {
+            let call = ast_kind(nk, nt, fc, ns, 4, "")
+            let callee = ast_kind(nk, nt, fc, ns, 2, "concat")
+            ast_child(fc, ns, call, callee)
+            ast_child(fc, ns, call, vec_get(parts, pi))
+            ast_child(fc, ns, call, acc)
+            acc = call
+            pi = pi - 1
+        }
+        return acc
     }
     if k == 14 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 20, "1") }
     if k == 15 { vec_set(pos, 0, vec_get(pos, 0) + 1); return ast_kind(nk, nt, fc, ns, 20, "0") }
@@ -870,6 +936,17 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             arm = next_sibling(ns, arm)
         }
         return concat(concat(concat(r, "_mr"), suf), "; })")
+    }
+    // TO_STR (интерполация): конверсия според типа (heuristic)
+    if k == 28 {
+        let e = first_child(fc, idx)
+        if expr_is_str(nk, nt, fc, ns, prog, e) == 1 {
+            return emit_expr(nk, nt, fc, ns, prog, e)
+        }
+        if expr_is_bool(nk, nt, fc, ns, prog, e) == 1 {
+            return concat(concat(concat("((", emit_expr(nk, nt, fc, ns, prog, e)), ") ? \"true\" : \"false\")"), "")
+        }
+        return concat("baga_i64_to_str(", concat(emit_expr(nk, nt, fc, ns, prog, e), ")"))
     }
     // STR
     if k == 1 { return concat(concat("\"", c_escape(t)), "\"") }
@@ -2197,6 +2274,7 @@ fn main() {
     write("static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n")
     write("static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n")
     write("static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n")
+    write("static const char *baga_i64_to_str(int64_t x) { char *r = malloc(24); snprintf(r, 24, \"%lld\", (long long)x); return r; }\n")
     write("static const char *baga_read_file(const char *path) {\n")
     write("    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n")
     write("    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n")
