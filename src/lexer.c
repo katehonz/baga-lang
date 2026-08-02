@@ -265,6 +265,36 @@ static Token lex_string(Lexer *l, SrcPos start) {
         }
         char c = lex_advance(l);
         if (c == '"') break;
+        if (c == '$' && l->pos < l->len && l->src[l->pos] == '{') {
+            /* ${...} интерполация: копирай до затварящата }, включително вложени низове */
+            buf[len++] = c;
+            c = lex_advance(l); /* '{' */
+            buf[len++] = c;
+            int depth = 1;
+            while (depth > 0 && l->pos < l->len) {
+                c = lex_advance(l);
+                if (len + 1 >= cap) { cap *= 2; buf = realloc(buf, (size_t)cap); }
+                buf[len++] = c;
+                if (c == '{') depth++;
+                else if (c == '}') depth--;
+                else if (c == '"') {
+                    /* вложен низ — прескочи до затварящата кавичка */
+                    while (l->pos < l->len) {
+                        c = lex_advance(l);
+                        if (len + 1 >= cap) { cap *= 2; buf = realloc(buf, (size_t)cap); }
+                        buf[len++] = c;
+                        if (c == '\\') {
+                            if (l->pos < l->len) {
+                                c = lex_advance(l);
+                                if (len + 1 >= cap) { cap *= 2; buf = realloc(buf, (size_t)cap); }
+                                buf[len++] = c;
+                            }
+                        } else if (c == '"') break;
+                    }
+                }
+            }
+            continue;
+        }
         if (c == '\\') {
             if (l->pos >= l->len) { free(buf); return make_error(l, start, "незатворен низ"); }
             char e = lex_advance(l);

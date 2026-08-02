@@ -15,7 +15,7 @@ fn random_bytes(n: i64) -> Vec<i64> !Random {
         let got = getrandom(buf, want, 0)?
         if got <= 0 { return out }
         for i in 0..got {
-            vec_push(out, char_at(buf, i))
+            vec_push(out, byte_at(buf, i))
         }
     }
     return out
@@ -27,7 +27,7 @@ fn random_i64() -> i64 !Random {
     if got != 8 { return 0 }
     let mut v: i64 = 0
     for i in 0..8 {
-        v = v | (char_at(buf, i) << (i * 8))
+        v = v | (byte_at(buf, i) << (i * 8))
     }
     return v
 }

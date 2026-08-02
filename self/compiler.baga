@@ -157,13 +157,13 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
                     pos = pos + 1
                     let mut ec = char_at(src, pos)
                     let mut eh: i64 = 0
-                    if ec == 110 { sval = concat(sval, chr(10)); eh = 1 }
-                    if ec == 116 { sval = concat(sval, chr(9)); eh = 1 }
-                    if ec == 92 { sval = concat(sval, chr(92)); eh = 1 }
-                    if ec == 34 { sval = concat(sval, chr(34)); eh = 1 }
-                    if eh == 0 { sval = concat(sval, chr(ec)) }
+                    if ec == 110 { sval = concat(sval, byte_chr(10)); eh = 1 }
+                    if ec == 116 { sval = concat(sval, byte_chr(9)); eh = 1 }
+                    if ec == 92 { sval = concat(sval, byte_chr(92)); eh = 1 }
+                    if ec == 34 { sval = concat(sval, byte_chr(34)); eh = 1 }
+                    if eh == 0 { sval = concat(sval, byte_chr(ec)) }
                 } else {
-                    sval = concat(sval, chr(sc))
+                    sval = concat(sval, byte_chr(sc))
                 }
                 pos = pos + 1
             }
@@ -192,7 +192,7 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
             if h == 1 { continue }
         }
         vec_push(tk, 300)
-        vec_push_str(tt, chr(c))
+        vec_push_str(tt, byte_chr(c))
         pos = pos + 1
     }
     vec_push(tk, 999)
@@ -245,7 +245,7 @@ fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec)
         while i < n {
             let mut c = char_at(t, i)
             if c == 36 && i + 1 < n && char_at(t, i + 1) == 36 {
-                lit = concat(lit, chr(36))
+                lit = concat(lit, byte_chr(36))
                 i = i + 2
             } else {
                 if c == 36 && i + 1 < n && char_at(t, i + 1) == 123 {
@@ -270,7 +270,7 @@ fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec)
                     vec_push(parts, ts)
                     i = j + 1
                 } else {
-                    lit = concat(lit, chr(c))
+                    lit = concat(lit, byte_chr(c))
                     i = i + 1
                 }
             }
@@ -881,7 +881,7 @@ fn int_to_str(n: i64) -> str {
     let mut v = n
     while v > 0 {
         let mut d = v - (v / 10) * 10
-        result = concat(chr(48 + d), result)
+        result = concat(byte_chr(48 + d), result)
         v = v / 10
     }
     result
@@ -893,9 +893,9 @@ fn mangle(name: str) -> str {
     let mut n = len(name)
     while i < n {
         let mut c = char_at(name, i)
-        if c >= 97 { if c <= 122 { result = concat(result, chr(c)); i = i + 1; continue } }
-        if c >= 65 { if c <= 90 { result = concat(result, chr(c)); i = i + 1; continue } }
-        if c >= 48 { if c <= 57 { result = concat(result, chr(c)); i = i + 1; continue } }
+        if c >= 97 { if c <= 122 { result = concat(result, byte_chr(c)); i = i + 1; continue } }
+        if c >= 65 { if c <= 90 { result = concat(result, byte_chr(c)); i = i + 1; continue } }
+        if c >= 48 { if c <= 57 { result = concat(result, byte_chr(c)); i = i + 1; continue } }
         if c == 95 { result = concat(result, "_"); i = i + 1; continue }
         result = concat(result, concat("_", int_to_str(c)))
         i = i + 1
@@ -917,15 +917,15 @@ fn c_escape(s: str) -> str {
     let mut result = ""
     let mut i: i64 = 0
     let mut n = len(s)
-    let mut bs = chr(92)
+    let mut bs = byte_chr(92)
     while i < n {
         let mut c = char_at(s, i)
         let mut handled: i64 = 0
-        if c == 34 { result = concat(result, concat(bs, chr(34))); handled = 1 }
+        if c == 34 { result = concat(result, concat(bs, byte_chr(34))); handled = 1 }
         if c == 92 { result = concat(result, concat(bs, bs)); handled = 1 }
         if c == 10 { result = concat(result, concat(bs, "x0a")); handled = 1 }
         if c == 9 { result = concat(result, concat(bs, "x09")); handled = 1 }
-        if handled == 0 { result = concat(result, chr(c)) }
+        if handled == 0 { result = concat(result, byte_chr(c)) }
         i = i + 1
     }
     result
@@ -1050,6 +1050,8 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             let mut a1 = next_sibling(ns, callee)
             if str_eq(bn, "len") == 1 { cname = "baga_len" }
             if str_eq(bn, "char_at") == 1 { cname = "baga_char_at" }
+            if str_eq(bn, "byte_at") == 1 { cname = "baga_byte_at" }
+            if str_eq(bn, "byte_chr") == 1 { cname = "baga_byte_chr" }
             if str_eq(bn, "substr") == 1 { cname = "baga_substr" }
             if str_eq(bn, "concat") == 1 { cname = "baga_concat" }
             if str_eq(bn, "str_eq") == 1 { cname = "baga_str_eq" }
@@ -2430,6 +2432,8 @@ fn main() {
     // runtime helpers
     write("static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n")
     write("static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n")
+    write("static int64_t baga_byte_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n")
+    write("static const char *baga_byte_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n")
     write("static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n")
     write("    int64_t n = b - a; if (n < 0) n = 0;\n")
     write("    char *r = malloc((size_t)n + 1); memcpy(r, s + a, (size_t)n); r[n] = 0; return r; }\n")
@@ -2437,8 +2441,19 @@ fn main() {
     write("    size_t la = strlen(a), lb = strlen(b);\n")
     write("    char *r = malloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r; }\n")
     write("static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n")
-    write("static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n")
-    write("static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n")
+    write("static const char *baga_chr(int64_t c) {\n")
+    write("    char *r = malloc(5);\n")
+    write("    if (c < 0x80) { r[0] = (char)c; r[1] = 0; }\n")
+    write("    else if (c < 0x800) { r[0] = (char)(0xC0|(c>>6)); r[1] = (char)(0x80|(c&0x3F)); r[2] = 0; }\n")
+    write("    else if (c < 0x10000) { r[0] = (char)(0xE0|(c>>12)); r[1] = (char)(0x80|((c>>6)&0x3F)); r[2] = (char)(0x80|(c&0x3F)); r[3] = 0; }\n")
+    write("    else { r[0] = (char)(0xF0|(c>>18)); r[1] = (char)(0x80|((c>>12)&0x3F)); r[2] = (char)(0x80|((c>>6)&0x3F)); r[3] = (char)(0x80|(c&0x3F)); r[4] = 0; }\n")
+    write("    return r; }\n")
+    write("static int64_t baga_ord(const char *s) {\n")
+    write("    unsigned char c = (unsigned char)s[0]; if (!c) return 0;\n")
+    write("    if (c < 0x80) return c;\n")
+    write("    if ((c&0xE0)==0xC0) return ((int64_t)(c&0x1F)<<6)|((int64_t)(unsigned char)s[1]&0x3F);\n")
+    write("    if ((c&0xF0)==0xE0) return ((int64_t)(c&0x0F)<<12)|(((int64_t)(unsigned char)s[1]&0x3F)<<6)|((int64_t)(unsigned char)s[2]&0x3F);\n")
+    write("    return ((int64_t)(c&0x07)<<18)|(((int64_t)(unsigned char)s[1]&0x3F)<<12)|(((int64_t)(unsigned char)s[2]&0x3F)<<6)|((int64_t)(unsigned char)s[3]&0x3F); }\n")
     write("static const char *baga_i64_to_str(int64_t x) { char *r = malloc(24); snprintf(r, 24, \"%lld\", (long long)x); return r; }\n")
     write("typedef struct { unsigned char *data; int64_t len; } baga_bytes;\n")
     write("static int64_t baga_bytes_len(baga_bytes b) { return b.len; }\n")

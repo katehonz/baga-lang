@@ -598,6 +598,8 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
         struct { const char *name; TypeKind ret; int nparams; int has_io; int has_par; } builtins[] = {
             {"len",       TYPE_I64, 1, 0, 0},
             {"char_at",   TYPE_I64, 2, 0, 0},
+            {"byte_at",   TYPE_I64, 2, 0, 0},
+            {"byte_chr",  TYPE_STR, 1, 0, 0},
             {"substr",    TYPE_STR, 3, 0, 0},
             {"concat",    TYPE_STR, 2, 0, 0},
             {"read_file", TYPE_STR, 1, 1, 0},
@@ -953,6 +955,16 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     "не може да се присвои void стойност на '%s'", n->let_name);
             }
             Type *decl_t = n->let_type ? resolve_type_node(ctx, n->let_type) : init_t;
+            if (n->let_type && n->let_init &&
+                decl_t->kind != TYPE_ERROR && init_t->kind != TYPE_ERROR &&
+                !type_eq(decl_t, init_t)) {
+                /* i64 → f64 е позволено (разширяване); f64 → i64 е грешка */
+                if (!(decl_t->kind == TYPE_F64 && init_t->kind == TYPE_I64)) {
+                    check_error(ctx, n->pos,
+                        "несъвместими типове: '%s' е %s, но инициализаторът е %s",
+                        n->let_name, type_str(decl_t), type_str(init_t));
+                }
+            }
             env_define_mut(ctx, n->let_name, decl_t, n->is_mut, n->pos);
             t = type_new(TYPE_VOID);
             break;

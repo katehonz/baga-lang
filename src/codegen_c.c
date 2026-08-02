@@ -417,6 +417,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                 struct { const char *baga; const char *c; } bmap[] = {
                     {"len",       "baga_len"},
                     {"char_at",   "baga_char_at"},
+                    {"byte_at",   "baga_byte_at"},
+                    {"byte_chr",  "baga_byte_chr"},
                     {"substr",    "baga_substr"},
                     {"concat",    "baga_concat"},
                     {"read_file", "baga_read_file"},
@@ -1248,7 +1250,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    fprintf(stderr, \"baga: деление на нула\\n\");\n");
     fprintf(out, "    exit(1);\n");
     fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n");
+    fprintf(out, "static int64_t baga_char_at(const char *s, int64_t i) {\n");
+    fprintf(out, "    int64_t n = (int64_t)strlen(s);\n");
+    fprintf(out, "    if (i < 0 || i >= n) baga_bounds_fail(\"char_at\", i, n);\n");
+    fprintf(out, "    return (int64_t)(unsigned char)s[i];\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_byte_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n");
+    fprintf(out, "static const char *baga_byte_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
     fprintf(out, "static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n");
     fprintf(out, "    int64_t n = (int64_t)strlen(s);\n");
     fprintf(out, "    if (a < 0 || a > n) baga_bounds_fail(\"substr\", a, n);\n");
@@ -1265,8 +1273,21 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n");
     fprintf(out, "    char *buf = malloc((size_t)sz + 1); fread(buf, 1, (size_t)sz, f); buf[sz] = 0; fclose(f); return buf;\n");
     fprintf(out, "}\n");
-    fprintf(out, "static const char *baga_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
-    fprintf(out, "static int64_t baga_ord(const char *s) { return s[0] ? (int64_t)(unsigned char)s[0] : 0; }\n");
+    fprintf(out, "static const char *baga_chr(int64_t c) {\n");
+    fprintf(out, "    char *r = malloc(5);\n");
+    fprintf(out, "    if (c < 0x80) { r[0] = (char)c; r[1] = 0; }\n");
+    fprintf(out, "    else if (c < 0x800) { r[0] = (char)(0xC0|(c>>6)); r[1] = (char)(0x80|(c&0x3F)); r[2] = 0; }\n");
+    fprintf(out, "    else if (c < 0x10000) { r[0] = (char)(0xE0|(c>>12)); r[1] = (char)(0x80|((c>>6)&0x3F)); r[2] = (char)(0x80|(c&0x3F)); r[3] = 0; }\n");
+    fprintf(out, "    else { r[0] = (char)(0xF0|(c>>18)); r[1] = (char)(0x80|((c>>12)&0x3F)); r[2] = (char)(0x80|((c>>6)&0x3F)); r[3] = (char)(0x80|(c&0x3F)); r[4] = 0; }\n");
+    fprintf(out, "    return r;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_ord(const char *s) {\n");
+    fprintf(out, "    unsigned char c = (unsigned char)s[0]; if (!c) return 0;\n");
+    fprintf(out, "    if (c < 0x80) return c;\n");
+    fprintf(out, "    if ((c&0xE0)==0xC0) return ((int64_t)(c&0x1F)<<6)|((int64_t)(unsigned char)s[1]&0x3F);\n");
+    fprintf(out, "    if ((c&0xF0)==0xE0) return ((int64_t)(c&0x0F)<<12)|(((int64_t)(unsigned char)s[1]&0x3F)<<6)|((int64_t)(unsigned char)s[2]&0x3F);\n");
+    fprintf(out, "    return ((int64_t)(c&0x07)<<18)|(((int64_t)(unsigned char)s[1]&0x3F)<<12)|(((int64_t)(unsigned char)s[2]&0x3F)<<6)|((int64_t)(unsigned char)s[3]&0x3F);\n");
+    fprintf(out, "}\n");
     fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = malloc(24); snprintf(r, 24, \"%%lld\", (long long)x); return r; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
     fprintf(out, "static int baga_argc = 0;\n");

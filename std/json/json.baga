@@ -108,16 +108,9 @@ fn hex4(s: str) -> i64 {
     return v
 }
 
-// Encode a code point as UTF-8 (1-4 bytes).
+// Encode a code point as UTF-8 (1-4 bytes) — chr() вече прави това.
 fn utf8_encode(cp: i64) -> str {
-    if cp < 128 { return chr(cp) }
-    if cp < 2048 {
-        return concat(chr(192 + cp / 64), chr(128 + cp % 64))
-    }
-    if cp < 65536 {
-        return concat(chr(224 + cp / 4096), concat(chr(128 + (cp / 64) % 64), chr(128 + cp % 64)))
-    }
-    return concat(chr(240 + cp / 262144), concat(chr(128 + (cp / 4096) % 64), concat(chr(128 + (cp / 64) % 64), chr(128 + cp % 64))))
+    return chr(cp)
 }
 
 // String node. p.pos is at the opening quote. Unterminated strings still

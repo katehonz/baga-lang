@@ -72,7 +72,7 @@ fn write_file(path: str, data: str) -> i64 !IO {
 fn mem_i64(s: str, off: i64) -> i64 {
     let mut v: i64 = 0
     for i in 0..8 {
-        v = v | (char_at(s, off + i) << (i * 8))
+        v = v | (byte_at(s, off + i) << (i * 8))
     }
     return v
 }
