@@ -1,19 +1,21 @@
-spec square_nonneg {
+spec product_sign {
     input:
         x: i64
+        y: i64
     output: i64
     ensures:
         output >= 0
 }
 
-// The body is in the fragment (no loops/calls), but the return value x*x is
-// non-linear, which the M0 decision procedure cannot reason about: the honest
-// answer is "не мога да реша" (UNKNOWN), never "доказано".
-fn square_nonneg(x: i64) -> i64 {
-    let y = x * x
-    return y
+// M8b: x * y за независими x и y без знакова информация — твърдението е
+// невярно и се ОБОРВА с истински контрапример (x = -1, y = 1 → произведение
+// -1). Продуктовите променливи се изчисляват конкретно от факторите при
+// witness search, затова контрапримерът е реализируем, не абстрактен.
+// (Обратно: x * x >= 0 се ДОКАЗВА — виж square.baga.)
+fn product_sign(x: i64, y: i64) -> i64 {
+    return x * y
 }
 
 fn main() {
-    print(square_nonneg(0 - 3))
+    print(product_sign(3, 4))
 }

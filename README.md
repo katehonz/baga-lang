@@ -224,8 +224,8 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion + M6 termination + M7 integer-exact | ✅ |
-| 8 | Non-linear reasoning | 🔜 |
+| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion + M6 termination + M7 integer-exact + M8 products | ✅ |
+| 8 | General non-linear reasoning | 🔜 |
 
 ### Static verification (`--verify`)
 
@@ -309,14 +309,29 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   nothing false is ever proven, and anything ℤ-satisfiable stays
   ℚ-satisfiable (counterexamples survive).
 
-Non-linear terms are still skipped honestly. `vec_slice` and
+- **M8** — **products of linear forms + no false alarms**. A non-constant
+  product `x * y` becomes a fresh symbolic variable with the factors
+  remembered; the verifier injects only provable facts: `x*x >= 0` always,
+  `fa >= 1 ∧ fb >= 1 ⇒ fa*fb >= 1`, `fa >= 0 ∧ fb >= 0 ⇒ fa*fb >= 0`. That is
+  enough to prove **factorial, fully** (`fact_full.baga`: `output >= 1` via
+  `n >= 1, r >= 1 ⇒ n*r >= 1`, plus `decreases` termination). In the witness
+  search product values are **derived concretely from their factors**, so a
+  refutation like `x*y >= 0` at `x = -1, y = 1` is real, not abstract.
+  Equally important: a **conclusiveness gate** on every refutation — the
+  pinned inputs (and reads/lengths) must make the claim unsatisfiable for
+  *every* value of the abstract call/product vars; otherwise the verdict is
+  UNKNOWN. Before M8, `caller(n) = g(n)` could be "refuted" for a true
+  contract via an unrealizable abstract value — a false alarm. Never again.
+
+Non-linear terms beyond products of linear forms (general polynomials,
+division by variables) are still skipped honestly. `vec_slice` and
 `vec_concat` are now language builtins (returning a fresh `Vec`), and the
 verifier propagates element invariants through them — a slice inherits the
 source's invariants; a concat inherits the invariants **both** operands share.
 A `sorted(v)` relational axiom is also supported: `requires sorted(v)` asserts
 that `v` is non-decreasing, and `vec_push(v, e)` preserves it when `e >= last`
-is provable. Remaining staircase: non-linear reasoning, and feeding verified
-invariants into proof extraction (`--proofs`).
+is provable. Remaining staircase: general non-linear reasoning, and feeding
+verified invariants into proof extraction (`--proofs`).
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

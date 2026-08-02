@@ -199,10 +199,19 @@ static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
 }
 
 /* M3: a vec_get call resolves to a fresh symbolic read variable (defined later
- * with the State; type declared here so se_from_ast can take it). */
-typedef struct { Node *call; char *var; } ReadEntry;
+ * with the State; type declared here so se_from_ast can take it).
+ * M8b: a non-constant product x*y also resolves to a fresh symbolic variable
+ * __pK, with the two factor linear forms kept (is_prod) so the verifier can
+ * later inject TRUE facts (x*x >= 0; fa >= 1 ∧ fb >= 1 ⇒ p >= 1; ...) and the
+ * witness search can derive the product's value concretely. */
+typedef struct { Node *call; char *var; Lin fa, fb; int is_prod; } ReadEntry;
 typedef struct { ReadEntry *r; int n, cap; } ReadsList;
+typedef struct { char *var; Lin fa, fb; } ProdEntry;
+typedef struct { ProdEntry *p; int n, cap; } ProdList;
 static const char *reads_find(ReadsList *l, Node *call);
+static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb);
+static void prods_clone_into(ProdList *dst, ReadsList *src);
+static int g_prod_ctr = 0;
 
 static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
     if (!e) return sym_nonlin();
@@ -244,6 +253,14 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
             if (!l.nonlinear && !r.nonlinear && lc && rc) return sym_lin(lin_const(rat_mul(l.lin.c, r.lin.c)));
             if (!l.nonlinear && !r.nonlinear && lc) return sym_lin(lin_scale(&r.lin, l.lin.c));
             if (!l.nonlinear && !r.nonlinear && rc) return sym_lin(lin_scale(&l.lin, r.lin.c));
+            /* M8b: non-constant product of two linear forms — a fresh symbolic
+             * var with the factors remembered (only where a ReadsList is
+             * threaded; elsewhere honestly nonlinear). */
+            if (!l.nonlinear && !r.nonlinear && !l.lin.overflow && !r.lin.overflow && reads) {
+                char pv[64]; snprintf(pv, sizeof pv, "__p%d", g_prod_ctr++);
+                reads_push_prod(reads, pv, l.lin, r.lin);   /* moves both lins */
+                return sym_lin(lin_var(pv));
+            }
             return sym_nonlin();
         }
         if (e->bin_op == OP_DIV || e->bin_op == OP_MOD) {
@@ -601,6 +618,60 @@ static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
     }
 }
 
+/* M8: pin every non-abstract var (__c/__p excluded) to its candidate value in
+ * sys; then derive every product var whose factors are fully pinned and pin
+ * it too (a product of concretes is concrete — x=1, y=-1 ⇒ x*y=-1, so a
+ * genuine violation like x*y >= 0 IS conclusively refuted). Two passes so
+ * products depending on earlier derived products resolve as well. */
+static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int nv, ProdList *prods) {
+    int pcap = nv + (prods ? prods->n : 0) + 1;
+    IBind *pins = calloc((size_t)pcap, sizeof(IBind));
+    int np = 0;
+    for (int i = 0; i < nv; i++) {
+        if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0) continue;
+        pins[np].name = vars[i]; pins[np].val = assign[i].val; np++;
+        Lin l = lin_var(vars[i]);
+        l.c = rat_sub(l.c, rat_int(assign[i].val));
+        cl_push(sys, mk_cons(l, C_LE, rat_zero()));
+        Lin l2 = lin_var(vars[i]);
+        Lin nl2 = lin_neg(&l2);
+        nl2.c = rat_add(nl2.c, rat_int(assign[i].val));
+        cl_push(sys, mk_cons(nl2, C_LE, rat_zero()));
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        for (int pi = 0; prods && pi < prods->n; pi++) {
+            int have = 0;
+            for (int k = 0; k < np; k++) if (strcmp(pins[k].name, prods->p[pi].var) == 0) { have = 1; break; }
+            if (have) continue;
+            IEnv pe; pe.b = pins; pe.n = np;
+            int64_t fv[2] = {0, 0};
+            Lin *fs[2] = { &prods->p[pi].fa, &prods->p[pi].fb };
+            int ok = 1;
+            for (int q = 0; q < 2 && ok; q++) {
+                Rat rv = fs[q]->c;
+                for (int j = 0; j < fs[q]->n; j++) {
+                    int ok2; int64_t vv = ienv_get(&pe, fs[q]->terms[j].var, &ok2);
+                    if (!ok2) { ok = 0; break; }
+                    rv = rat_add(rv, rat_mul(fs[q]->terms[j].coeff, rat_int(vv)));
+                }
+                if (ok && (rv.overflow || rv.den != 1)) ok = 0;
+                if (ok) fv[q] = rv.num;
+            }
+            int64_t pvv;
+            if (!ok || __builtin_mul_overflow(fv[0], fv[1], &pvv)) continue;
+            pins[np].name = prods->p[pi].var; pins[np].val = pvv; np++;
+            Lin l = lin_var(prods->p[pi].var);
+            l.c = rat_sub(l.c, rat_int(pvv));
+            cl_push(sys, mk_cons(l, C_LE, rat_zero()));
+            Lin l2 = lin_var(prods->p[pi].var);
+            Lin nl2 = lin_neg(&l2);
+            nl2.c = rat_add(nl2.c, rat_int(pvv));
+            cl_push(sys, mk_cons(nl2, C_LE, rat_zero()));
+        }
+    }
+    free(pins);
+}
+
 /* Try to find an integral witness satisfying all `ante` and violating `ens`.
  * Returns 1 and fills witness (caller frees names) on success.
  * M8 conclusiveness: a witness is accepted only if the violation does not
@@ -615,10 +686,20 @@ static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
  * constraint is a true fact), so "all completions violate" ⇒ concrete run
  * violates. */
 static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *ensures_ast,
-                               SEnv *output_env, IBind **witness, int *wn) {
+                               SEnv *output_env, ProdList *prods, IBind **witness, int *wn) {
     char **vars = NULL; int nv = 0, cap = 0;
     collect_vars_cl(ante, &vars, &nv, &cap);
     for (int b = 0; b < nef->n; b++) collect_vars_cl(&nef->br[b], &vars, &nv, &cap);
+    /* M8b: the product factors' vars must be enumerable to derive products */
+    if (prods) for (int pi = 0; pi < prods->n; pi++) {
+        Lin *fs[2] = { &prods->p[pi].fa, &prods->p[pi].fb };
+        for (int q = 0; q < 2; q++) for (int j = 0; j < fs[q]->n; j++) {
+            const char *vn = fs[q]->terms[j].var;
+            int found = 0;
+            for (int k = 0; k < nv; k++) if (strcmp(vars[k], vn) == 0) { found = 1; break; }
+            if (!found) { if (nv == cap) { cap = cap ? cap * 2 : 8; vars = realloc(vars, (size_t)cap * sizeof(char *)); } vars[nv++] = strdup(vn); }
+        }
+    }
     /* output is derived, not free — drop it */
     for (int i = 0; i < nv; i++) if (strcmp(vars[i], "output") == 0) { free(vars[i]); vars[i] = vars[nv - 1]; nv--; i--; }
 
@@ -634,6 +715,31 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
     for (int idx = 0; idx < total && !found; idx++) {
         int t = idx;
         for (int i = 0; i < nv; i++) { assign[i].name = vars[i]; assign[i].val = cand[t % ncand]; t /= ncand; }
+        /* M8b: product vars are derived, not free — evaluate both factors
+         * under the candidate and set the product concretely. A candidate
+         * whose product cannot be derived (missing var / overflow) is skipped. */
+        int prod_ok = 1;
+        for (int pi = 0; prods && pi < prods->n && prod_ok; pi++) {
+            IEnv ie0; ie0.b = assign; ie0.n = nv;
+            int64_t fv[2] = {0, 0};
+            Lin *fs[2] = { &prods->p[pi].fa, &prods->p[pi].fb };
+            for (int q = 0; q < 2 && prod_ok; q++) {
+                Rat rv = fs[q]->c;
+                for (int j = 0; j < fs[q]->n; j++) {
+                    int ok2; int64_t vv = ienv_get(&ie0, fs[q]->terms[j].var, &ok2);
+                    if (!ok2) { prod_ok = 0; break; }
+                    rv = rat_add(rv, rat_mul(fs[q]->terms[j].coeff, rat_int(vv)));
+                }
+                if (prod_ok && (rv.overflow || rv.den != 1)) prod_ok = 0;
+                if (prod_ok) fv[q] = rv.num;
+            }
+            if (!prod_ok) break;
+            int64_t pvv;
+            if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) { prod_ok = 0; break; }
+            for (int i = 0; i < nv; i++)
+                if (strcmp(vars[i], prods->p[pi].var) == 0) { assign[i].val = pvv; break; }
+        }
+        if (!prod_ok) continue;
         IEnv ie; ie.b = assign; ie.n = nv;
         /* evaluate antecedent constraints via their linear forms */
         int ante_ok = 1;
@@ -675,16 +781,7 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
                 for (int b2 = 0; b2 < ef->n && conclusive; b2++) {
                     ConsList sys; cl_init(&sys);
                     for (int x = 0; x < ante->n; x++) { Constraint *c = &ante->c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
-                    for (int i = 0; i < nv; i++) {
-                        if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0) continue;
-                        Lin l = lin_var(vars[i]);
-                        l.c = rat_sub(l.c, rat_int(assign[i].val));
-                        cl_push(&sys, mk_cons(l, C_LE, rat_zero()));
-                        Lin l2 = lin_var(vars[i]);
-                        Lin nl2 = lin_neg(&l2);
-                        nl2.c = rat_add(nl2.c, rat_int(assign[i].val));
-                        cl_push(&sys, mk_cons(nl2, C_LE, rat_zero()));
-                    }
+                    push_pins_and_derived(&sys, vars, assign, nv, prods);
                     for (int x = 0; x < ef->br[b2].n; x++) { Constraint *c = &ef->br[b2].c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                     if (fm_sat(&sys)) conclusive = 0;   /* frees sys */
                 }
@@ -712,12 +809,14 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
  * ensures mentioning vec_len resolve against the right state.
  * For bounds obligations: path = state path (requires ∧ branch path);
  * bound = the negated in-range condition (¬(0 <= idx < len)). */
-typedef struct { ConsList path; ConsList bound; ConsList read_cons; Sym ret; VLenMap vlen; int bad; int kind; char *label; } Obligation;
+typedef struct { ConsList path; ConsList bound; ConsList read_cons; Sym ret; VLenMap vlen; ProdList prods; int bad; int kind; char *label; } Obligation;
 typedef struct { Obligation *o; int n, cap; } Obligations;
-static void obl_push(Obligations *ob, ConsList path, ConsList bound, ConsList read_cons, Sym ret, VLenMap *vlen, int bad, int kind, const char *label) {
+static void obl_push(Obligations *ob, ConsList path, ConsList bound, ConsList read_cons, Sym ret, VLenMap *vlen, ReadsList *reads, int bad, int kind, const char *label) {
     if (ob->n == ob->cap) { ob->cap = ob->cap ? ob->cap * 2 : 4; ob->o = realloc(ob->o, (size_t)ob->cap * sizeof(Obligation)); }
     ob->o[ob->n].path = path; ob->o[ob->n].bound = bound; ob->o[ob->n].read_cons = read_cons; ob->o[ob->n].ret = ret;
     if (vlen) vlen_clone_into(&ob->o[ob->n].vlen, vlen); else vlen_init(&ob->o[ob->n].vlen);
+    if (reads) prods_clone_into(&ob->o[ob->n].prods, reads);
+    else { ob->o[ob->n].prods.p = NULL; ob->o[ob->n].prods.n = 0; ob->o[ob->n].prods.cap = 0; }
     ob->o[ob->n].bad = bad;
     ob->o[ob->n].kind = kind; ob->o[ob->n].label = label ? strdup(label) : NULL; ob->n++;
 }
@@ -810,16 +909,7 @@ static int find_bound_witness(Obligation *obl, IBind **witness, int *wn) {
             if (needs_concl) {
                 ConsList sys; cl_init(&sys);
                 for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
-                for (int i = 0; i < nv; i++) {
-                    if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0) continue;
-                    Lin l = lin_var(vars[i]);
-                    l.c = rat_sub(l.c, rat_int(assign[i].val));
-                    cl_push(&sys, mk_cons(l, C_LE, rat_zero()));
-                    Lin l2 = lin_var(vars[i]);
-                    Lin nl2 = lin_neg(&l2);
-                    nl2.c = rat_add(nl2.c, rat_int(assign[i].val));
-                    cl_push(&sys, mk_cons(nl2, C_LE, rat_zero()));
-                }
+                push_pins_and_derived(&sys, vars, assign, nv, &obl->prods);
                 for (int x = 0; x < obl->bound.n; x++) { Constraint *c = &obl->bound.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                 if (fm_sat(&sys)) continue;   /* не е conclusive — търси друг */
             }
@@ -903,18 +993,52 @@ static int lin_equal(Lin *a, Lin *b) {
 /* M3: a vec_get call resolves to a fresh symbolic read variable, so its value
  * can carry instantiated element-axiom constraints. Keyed by the call node. */
 static void reads_init(ReadsList *l) { l->r = NULL; l->n = 0; l->cap = 0; }
-static void reads_free(ReadsList *l) { for (int i = 0; i < l->n; i++) free(l->r[i].var); free(l->r); l->r = NULL; l->n = l->cap = 0; }
+static void reads_free(ReadsList *l) {
+    for (int i = 0; i < l->n; i++) { free(l->r[i].var); lin_free(&l->r[i].fa); lin_free(&l->r[i].fb); }
+    free(l->r); l->r = NULL; l->n = l->cap = 0;
+}
 static void reads_push(ReadsList *l, Node *call, const char *var) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
-    l->r[l->n].call = call; l->r[l->n].var = strdup(var); l->n++;
+    l->r[l->n].call = call; l->r[l->n].var = strdup(var);
+    lin_init(&l->r[l->n].fa); lin_init(&l->r[l->n].fb); l->r[l->n].is_prod = 0;
+    l->n++;
+}
+/* M8b: register a product var with its factor linear forms (moves fa/fb). */
+static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
+    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
+    l->r[l->n].fa = fa; l->r[l->n].fb = fb; l->r[l->n].is_prod = 1;
+    l->n++;
 }
 static const char *reads_find(ReadsList *l, Node *call) {
-    for (int i = 0; i < l->n; i++) if (l->r[i].call == call) return l->r[i].var;
+    for (int i = 0; i < l->n; i++) if (!l->r[i].is_prod && l->r[i].call == call) return l->r[i].var;
     return NULL;
 }
 static void reads_clone_into(ReadsList *dst, ReadsList *src) {
     reads_init(dst);
-    for (int i = 0; i < src->n; i++) reads_push(dst, src->r[i].call, src->r[i].var);
+    for (int i = 0; i < src->n; i++) {
+        if (src->r[i].is_prod)
+            reads_push_prod(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
+        else
+            reads_push(dst, src->r[i].call, src->r[i].var);
+    }
+}
+
+/* Snapshot the product entries of a reads list (for obligation witnesses). */
+static void prods_clone_into(ProdList *dst, ReadsList *src) {
+    dst->p = NULL; dst->n = 0; dst->cap = 0;
+    for (int i = 0; i < src->n; i++) {
+        if (!src->r[i].is_prod) continue;
+        if (dst->n == dst->cap) { dst->cap = dst->cap ? dst->cap * 2 : 4; dst->p = realloc(dst->p, (size_t)dst->cap * sizeof(ProdEntry)); }
+        dst->p[dst->n].var = strdup(src->r[i].var);
+        dst->p[dst->n].fa = lin_clone(&src->r[i].fa);
+        dst->p[dst->n].fb = lin_clone(&src->r[i].fb);
+        dst->n++;
+    }
+}
+static void prods_free(ProdList *l) {
+    for (int i = 0; i < l->n; i++) { free(l->p[i].var); lin_free(&l->p[i].fa); lin_free(&l->p[i].fb); }
+    free(l->p); l->p = NULL; l->n = l->cap = 0;
 }
 
 typedef struct { SEnv env; VLenMap vlen; AxiomList ax; ConsList path; ConsList read_cons; ReadsList reads; int bad; } State;
@@ -1283,7 +1407,7 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
         snprintf(label, sizeof label, "достъп до %s[..] е извън границите", vname);
         Sym retsym;
         if (idx.nonlinear) { retsym = sym_nonlin(); } else { retsym = sym_lin(lin_clone(&idx.lin)); }
-        obl_push(ob, opath, obound, (ConsList){NULL, 0, 0}, retsym, &st->vlen, unknown, 1, label);
+        obl_push(ob, opath, obound, (ConsList){NULL, 0, 0}, retsym, &st->vlen, &st->reads, unknown, 1, label);
         lin_free(&idx.lin);
         return;
     }
@@ -1336,6 +1460,55 @@ static int is_user_call(Node *e) {
            callee_sig_supported(find_fn(g_prog, e->callee->name));
 }
 
+/* M8b: structural equality of linear forms (terms are merged canonically,
+ * so a zero difference means equal). */
+static int lin_eq(Lin *a, Lin *b) {
+    Lin d = lin_sub(a, b);
+    int eq = !d.overflow && d.n == 0 && d.c.num == 0;
+    lin_free(&d);
+    return eq;
+}
+
+/* Does the state's path prove fa >= K? */
+static int path_proves_ge(State *st, Lin *fa, int64_t K) {
+    Lin t = lin_neg(fa);
+    t.c = rat_add(t.c, rat_int(K));   /* K - fa <= 0  ⟺  fa >= K */
+    ConsList cons; cl_init(&cons);
+    cl_push(&cons, mk_cons(t, C_LE, rat_zero()));
+    int r = cl_implied_by(&st->path, &cons);
+    cl_free(&cons);
+    return r;
+}
+
+/* Push the fact pv >= K onto the path. */
+static void path_push_ge(ConsList *path, const char *pv, int64_t K) {
+    Lin v = lin_var(pv);
+    Lin t = lin_neg(&v);            /* -pv */
+    lin_free(&v);
+    t.c = rat_add(t.c, rat_int(K)); /* K - pv <= 0  ⟺  pv >= K */
+    cl_push(path, mk_cons(t, C_LE, rat_zero()));
+}
+
+/* M8b: inject TRUE facts about symbolic product vars into the path:
+ *   x*x >= 0                       (squares — always, no side conditions)
+ *   fa >= 1 ∧ fb >= 1  ⇒  fa*fb >= 1
+ *   fa >= 0 ∧ fb >= 0  ⇒  fa*fb >= 0
+ * Only added when the side conditions are PROVEN under the path — sound;
+ * absence merely means UNKNOWN downstream. Enough for factorial-style
+ * postconditions (n >= 1, r >= 1 ⇒ n * r >= 1). */
+static void inject_prod_axioms(State *st) {
+    for (int i = 0; i < st->reads.n; i++) {
+        ReadEntry *e = &st->reads.r[i];
+        if (!e->is_prod) continue;
+        if (lin_eq(&e->fa, &e->fb)) { path_push_ge(&st->path, e->var, 0); continue; }
+        if (path_proves_ge(st, &e->fa, 1) && path_proves_ge(st, &e->fb, 1)) {
+            path_push_ge(&st->path, e->var, 1);
+        } else if (path_proves_ge(st, &e->fa, 0) && path_proves_ge(st, &e->fb, 0)) {
+            path_push_ge(&st->path, e->var, 0);
+        }
+    }
+}
+
 /* M5: assume-guarantee for a user call in statement position.
  *  - Discharges the callee's requires against the caller path (conjunctive
  *    clauses only); each becomes a kind-2 obligation reported by verify_fn.
@@ -1365,6 +1538,7 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
     if (!ok) { st->bad = 1; env_free(&env2); return sym_lin(lin_var(rv)); }
 
     int all_req_proven = 1;
+    inject_prod_axioms(st);   /* M8b: фактите за продукти влизат в opath */
     for (int r = 0; r < cspec->spec_requires.len; r++) {
         char label[300];
         snprintf(label, sizeof label, "requires на '%s' при извикване", callee);
@@ -1376,7 +1550,7 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
             /* disjunctive/unsupported requires — honest UNKNOWN, nothing assumed */
             if (rok) f_free(&rf);
             ConsList empty; cl_init(&empty);
-            obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 1, 2, label);
+            obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 1, 2, label);
             all_req_proven = 0;
             continue;
         }
@@ -1384,7 +1558,7 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
         for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&pos, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
         f_free(&rf);
         if (!cl_implied_by(&opath, &pos)) all_req_proven = 0;
-        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 0, 2, label);
+        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 0, 2, label);
     }
 
     /* M6: at a self-recursive call with a decreases measure, discharge
@@ -1398,14 +1572,14 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
         char label[300];
         if (d_cur.nonlinear || d_new.nonlinear) {
             snprintf(label, sizeof label, "терминация: decreases на '%s' не е линеен при извикването", callee);
-            obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 1, 2, label);
+            obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 1, 2, label);
             g_term_failed = 1;
         } else {
             snprintf(label, sizeof label, "терминация: decreases на '%s' намалява при рекурсивното извикване", callee);
             cl_push(&pos, mk_cons(lin_neg(&d_new.lin), C_LE, rat_zero()));              /* D' >= 0 */
             cl_push(&pos, mk_cons(lin_sub(&d_new.lin, &d_cur.lin), C_LT, rat_zero())); /* D' < D */
             if (!cl_implied_by(&opath, &pos)) g_term_failed = 1;
-            obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 0, 2, label);
+            obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 0, 2, label);
         }
         lin_free(&d_cur.lin);
         lin_free(&d_new.lin);
@@ -1439,14 +1613,14 @@ static void push_term_entry_obl(Node *fn, Node *spec, State *init, Obligations *
     Sym d = se_from_ast(spec->spec_decreases, &init->env, &init->vlen, NULL);
     if (d.nonlinear) {
         snprintf(label, sizeof label, "терминация: decreases на '%s' не е линеен", fn->fn_name);
-        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &init->vlen, 1, 2, label);
+        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &init->vlen, &init->reads, 1, 2, label);
         g_term_failed = 1;
     } else {
         /* D >= 0  ⟺  -D <= 0 */
         snprintf(label, sizeof label, "терминация: decreases на '%s' >= 0 при входа", fn->fn_name);
         cl_push(&pos, mk_cons(lin_neg(&d.lin), C_LE, rat_zero()));
         if (!cl_implied_by(&opath, &pos)) g_term_failed = 1;
-        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &init->vlen, 0, 2, label);
+        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &init->vlen, &init->reads, 0, 2, label);
     }
     lin_free(&d.lin);
 }
@@ -1488,10 +1662,11 @@ static void bind_sym(SEnv *env, const char *name, Sym v) {
 static void drain_returns(States *states, Obligations *ob, Node *val_expr) {
     for (int i = 0; i < states->n; i++) {
         Sym r = se_from_ast(val_expr, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads);
+        inject_prod_axioms(&states->s[i]);   /* M8b: преди snapshot на path */
         ConsList nobound; cl_init(&nobound);
         ConsList rc; cl_init(&rc);
         for (int x = 0; x < states->s[i].read_cons.n; x++) { Constraint *c = &states->s[i].read_cons.c[x]; cl_push(&rc, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
-        obl_push(ob, states->s[i].path, nobound, rc, r, &states->s[i].vlen, states->s[i].bad, 0, NULL);
+        obl_push(ob, states->s[i].path, nobound, rc, r, &states->s[i].vlen, &states->s[i].reads, states->s[i].bad, 0, NULL);
         env_free(&states->s[i].env);
         vlen_free(&states->s[i].vlen);
     }
@@ -1789,21 +1964,13 @@ static int find_callreq_witness(Obligation *obl, IBind **witness, int *wn) {
             if (!holds) viol = 1;
         }
         if (viol) {
-            /* M8 conclusiveness (както при ensures): pin всички освен __c/__p;
-             * requires трябва да е невъзможно при тези входове, иначе
-             * нарушението зависи от абстрактна стойност → фалшива тревога. */
+            /* M8 conclusiveness (както при ensures): pin всички освен __c/__p
+             * (+ derived продукти); requires трябва да е невъзможно при тези
+             * входове, иначе нарушението зависи от абстрактна стойност →
+             * фалшива тревога. */
             ConsList sys; cl_init(&sys);
             for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
-            for (int i = 0; i < nv; i++) {
-                if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0) continue;
-                Lin l = lin_var(vars[i]);
-                l.c = rat_sub(l.c, rat_int(assign[i].val));
-                cl_push(&sys, mk_cons(l, C_LE, rat_zero()));
-                Lin l2 = lin_var(vars[i]);
-                Lin nl2 = lin_neg(&l2);
-                nl2.c = rat_add(nl2.c, rat_int(assign[i].val));
-                cl_push(&sys, mk_cons(nl2, C_LE, rat_zero()));
-            }
+            push_pins_and_derived(&sys, vars, assign, nv, &obl->prods);
             for (int x = 0; x < obl->bound.n; x++) { Constraint *c = &obl->bound.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
             if (fm_sat(&sys)) continue;   /* не е conclusive — търси друг witness */
             IBind *w = calloc(nv ? nv : 1, sizeof(IBind));
@@ -1894,7 +2061,7 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
                 /* rebuild antecedent for witness search */
                 ConsList ante2; cl_init(&ante2);
                 for (int x = 0; x < ante.n; x++) { Constraint *c = &ante.c[x]; cl_push(&ante2, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
-                if (find_counterexample(&ante2, &nef, &ef, ens_expr, &env2, &w, &wnn)) {
+                if (find_counterexample(&ante2, &nef, &ef, ens_expr, &env2, &obl->prods, &w, &wnn)) {
                     clause_res = R_REFUTED;
                     if (!*wit) { *wit = w; *wn = wnn; }
                     else { for (int i = 0; i < wnn; i++) free(w[i].name); free(w); }
@@ -2010,6 +2177,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     g_caller_name = fn->fn_name;
     g_partial = 0;
     g_call_ctr = 0;
+    g_prod_ctr = 0;
     g_term = 0;
     g_term_failed = 0;
     Node *spec = find_spec(prog, fn->fn_name);
@@ -2098,7 +2266,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
         verify_bound_obl(&ob.o[i], &wit, &wn);
         if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
     }
-    for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); cl_free(&ob.o[i].bound); cl_free(&ob.o[i].read_cons); lin_free(&ob.o[i].ret.lin); vlen_free(&ob.o[i].vlen); free(ob.o[i].label); }
+    for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); cl_free(&ob.o[i].bound); cl_free(&ob.o[i].read_cons); lin_free(&ob.o[i].ret.lin); vlen_free(&ob.o[i].vlen); prods_free(&ob.o[i].prods); free(ob.o[i].label); }
     free(ob.o);
     return 0;
 }
@@ -2271,7 +2439,7 @@ static int verify_fn(Node *prog, Node *fn) {
             if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
         }
         if (g_json) printf("]}");
-        for (int i = 0; i < ob2.n; i++) { cl_free(&ob2.o[i].path); cl_free(&ob2.o[i].bound); cl_free(&ob2.o[i].read_cons); lin_free(&ob2.o[i].ret.lin); vlen_free(&ob2.o[i].vlen); free(ob2.o[i].label); }
+        for (int i = 0; i < ob2.n; i++) { cl_free(&ob2.o[i].path); cl_free(&ob2.o[i].bound); cl_free(&ob2.o[i].read_cons); lin_free(&ob2.o[i].ret.lin); vlen_free(&ob2.o[i].vlen); prods_free(&ob2.o[i].prods); free(ob2.o[i].label); }
         free(ob2.o);
     } else if (g_json) {
         printf(", \"calls\": [], \"bounds\": []}");

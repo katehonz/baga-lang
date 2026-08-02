@@ -1,0 +1,24 @@
+// M8b soundness: грешно твърдение за продукт се ОБОРВА с истински
+// контрапример. fact(0) = 1 < 2 — базовият случай е конкретен (без
+// абстрактни променливи), затова оборването е conclusive: n = 0.
+spec fact {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 2
+    decreases:
+        n
+}
+
+fn fact(n: i64) -> i64 {
+    if n <= 0 { return 1 }
+    let r = fact(n - 1)
+    return n * r
+}
+
+fn main() {
+    print(fact(10))
+}

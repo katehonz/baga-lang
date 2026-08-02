@@ -1,0 +1,26 @@
+// M8b: факториел — напълно доказан (ensures + терминация).
+// Стъпката return n * r е нелинейна; продуктовата аксиома я прави линейна
+// задача: n >= 1 (от n > 0 чрез tightening) и r >= 1 (индукционна хипотеза)
+// ⇒ n * r >= 1. Witness search-ът изчислява продуктовите променливи
+// конкретно от факторите — не са свободни, фалшива тревога е невъзможна.
+spec fact {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 1
+    decreases:
+        n
+}
+
+fn fact(n: i64) -> i64 {
+    if n <= 0 { return 1 }
+    let r = fact(n - 1)
+    return n * r
+}
+
+fn main() {
+    print(fact(10))
+}

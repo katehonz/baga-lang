@@ -163,8 +163,8 @@ test: $(BIN)
 		&& echo "OK: bad_abs оброчено с контрапример (soundness)" \
 		|| { echo "FAIL: bad_abs — очаквах ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/nonlinear.baga > /tmp/baga_verify_out.txt; \
-	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
-		&& echo "OK: nonlinear — честно НЕ МОГА ДА РЕША" \
+	grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "контрапример" /tmp/baga_verify_out.txt \
+		&& echo "OK: nonlinear — x*y>=0 е оброчено с реализируем контрапример (M8b)" \
 		|| { echo "FAIL: nonlinear"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/bad_loop.baga > /tmp/baga_verify_out.txt; \
 	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
@@ -223,6 +223,19 @@ test: $(BIN)
 	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: spurious — няма фалшиво оборване през абстрактни стойности (M8 soundness)" \
 		|| { echo "FAIL: spurious — очаквах UNKNOWN без ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/fact_full.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && grep -q "терминация: доказана" /tmp/baga_verify_out.txt \
+		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: fact_full — факториел напълно доказан през продуктова аксиома (M8b)" \
+		|| { echo "FAIL: fact_full"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/square.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: square — x * x >= 0 без предусловия (M8b)" \
+		|| { echo "FAIL: square"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/fact_bad.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
+		&& echo "OK: fact_bad — грешно твърдение за продукт е оброчено conclusively (M8b soundness)" \
+		|| { echo "FAIL: fact_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@for f in elem_param elem_push elem_set elem_slice elem_concat; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
