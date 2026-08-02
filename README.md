@@ -91,6 +91,32 @@ proofs for факториел:
 
 Not formal proof objects. Readable sketches; contracts that pass `--verify` are backed by linear-arithmetic certificates (or honest UNKNOWN).
 
+## Relation to Spec-Driven Development
+
+The industry has converged on the same diagnosis Baga starts from. Microsoft
+now promotes **Spec-Driven Development (SDD)** as the foundation of
+AI-native engineering — specs as the *shared source of truth* for humans and
+AI, *align first* instead of *prompt first and fix later* — and ships
+**GitHub Spec Kit**, an open-source workflow around it
+(Constitution → Specify → Clarify → Plan → Tasks → Implement → Validate).
+See [Spec-Driven Development: the foundation of AI-native engineering](https://developer.microsoft.com/blog/spec-driven-development-ai-native-engineering/)
+(Apoorv Gupta, Principal Software Engineer at Microsoft).
+
+Baga shares the philosophy and pushes it one level deeper — from **process**
+into the **language**:
+
+| | Microsoft SDD / Spec Kit | Baga |
+|---|---|---|
+| Spec as source of truth | Yes — documents and tooling | Yes — `spec` is a language construct |
+| AI generates code from spec | Core focus | Possible, but not the only path |
+| Conformance check | Validate step (tests, review) | **Compile-time** static verification |
+| Effects / side-effects | Not modeled | First-class in types (`!IO`, `!Overflow`, …) |
+| Soundness | AI + human review | Sound fragment with linear-arithmetic certificates |
+
+SDD fixes the workflow around AI agents; Baga makes the spec something the
+*compiler* checks and extracts readable proofs from. In SDD terms, Baga is
+the **spec-as-source, machine-checked** end of the spectrum.
+
 ## Examples
 
 ```baga

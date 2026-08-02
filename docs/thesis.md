@@ -47,7 +47,26 @@ pillars follow: specifications as first-class citizens; effects as dimensions
 of the type; and readable *proof sketches*, with static certificates where `--verify` decides. The verifier is
 the engine that makes the first two pillars mean something.
 
-### 1.2 The thesis
+### 1.2 Industry context: Spec-Driven Development
+
+The premise is no longer a fringe position. Microsoft has publicly adopted
+**Spec-Driven Development (SDD)** as the foundation of AI-native engineering —
+structured specs as the *shared source of truth* for humans and AI, "align
+first" instead of "prompt first, fix later" — together with **GitHub Spec
+Kit**, an open-source workflow (Constitution → Specify → Clarify → Plan →
+Tasks → Implement → Validate) built around it
+([developer.microsoft.com/blog/spec-driven-development-ai-native-engineering](https://developer.microsoft.com/blog/spec-driven-development-ai-native-engineering/),
+Apoorv Gupta, Principal Software Engineer at Microsoft). SDD attacks the same problem this monograph does — loss of
+intent when AI writes the code — but at the level of **process and tooling**:
+the spec is a document, and conformance is checked by tests and human review
+in a Validate step. Baga's first pillar makes the stronger move: the spec is
+a **language construct**, and conformance is a **compile-time judgement** —
+PROVEN with a certificate, REFUTED with a witness, UNKNOWN at the fragment's
+edge. Where SDD asks teams to keep code anchored to a spec, Baga makes the
+anchor mechanical. This monograph is, in that sense, an existence proof for
+the machine-checked end of the SDD spectrum.
+
+### 1.3 The thesis
 
 > A practically useful verifier does not need a general SMT solver. It needs a
 > **small, auditable decision core** (linear arithmetic over ℚ, tightened to
@@ -61,7 +80,7 @@ The contribution is therefore not a new algorithm but a **recombination** and
 a **design ethic**: soundness first, auditability second, completeness only as
 far as those allow.
 
-### 1.3 The unifying thread
+### 1.4 The unifying thread
 
 One core recurs in every chapter: **Fourier–Motzkin elimination with a
 conclusiveness gate**. It decides the linear path conditions (M0–M7); it is

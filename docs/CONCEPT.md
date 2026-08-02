@@ -82,6 +82,27 @@ Rust отговори на „как да нямаме segfault". Добър о�
 Но въпросът от 2026 не е „как да нямаме segfault".
 Въпросът е **„как да вярваме на код, който не сме писали"**.
 
+## Spec-Driven Development в индустрията
+
+Индустрията стигна до същата диагноза. Microsoft вече официално промотира
+**Spec-Driven Development (SDD)** като основа на AI-native инженерството —
+спецификациите като *споделен източник на истина* за хора и AI, „align first"
+вместо „prompt first, fix later" — и поддържа **GitHub Spec Kit**, open-source
+workflow около идеята (Constitution → Specify → Clarify → Plan → Tasks →
+Implement → Validate). Вж.
+[Spec-Driven Development: the foundation of AI-native engineering](https://developer.microsoft.com/blog/spec-driven-development-ai-native-engineering/)
+(Apoorv Gupta, Principal Software Engineer в Microsoft).
+
+Това е същата философия като първия стълб на Бага — но решена на ниво
+**процес и AI tooling**. Бага я пренася на ниво **език и верификатор**:
+спецификацията не е документ, а нещо, което компилаторът *проверява* по време
+на компилация и от което извлича четими скици и сертификати. SDD оправя
+workflow-а около AI агентите; Бага прави spec-а machine-checkable.
+
+В спектъра на SDD (spec-first → spec-anchored → spec-as-source) Бага е
+краят **spec-as-source** — спецификацията е източникът, от който произтича и
+срещу който се съди кодът.
+
 ## Принципи
 
 - **Нула зависимости** в ядрото: C + `gcc` + `make`. LLVM е опционален backend.
