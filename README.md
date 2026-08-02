@@ -233,7 +233,7 @@ baga/
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
 | 7 | **Static** spec verification (`--verify`): M0–M8 + **M9** product sign table + const division | ✅ |
-| 8 | General non-linear reasoning | ✅ M9–M12 (var div/mod, AM-GM, self-div, …) |
+| 8 | General non-linear reasoning | ✅ M9–M13 (var div/mod, AM-GM, products in if-guards, bitwise laws) |
 | 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
 | 10 | LLVM backend `!Par` parity (`libbaga_par.so` + lli `-load`) | ✅ |
 
@@ -363,8 +363,20 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   Examples: `var_div.baga`, `amgm.baga`. Without `m >= 1`, non-negativity of
   `n/m` is correctly **refuted** (e.g. m = -1).
 
+- **M13** — **products in conditionals + sound bitwise fragment**.
+  `bool_to_dnf` threads `ReadsList`, so a guard like `n * n >= 1` becomes a
+  path constraint over a fresh product var (with the same axioms as M8–M12),
+  not an honest UNKNOWN. After every `if`/`while` fork the product axioms are
+  re-injected so both branches inherit them. Bitwise ops stay **outside full
+  bitvector theory** but admit proven identities:
+  `n|0 = n`, `n&0 = 0`, `n^0 = n`, `n^n = 0`, `n&-1 = n`;
+  `n&1 ∈ {0,1}` over two's complement (explicitly **not** C `% 2` on negatives);
+  `n<<k = n·2^k` and `n>>k` as trunc-div by `2^k` under `n >= 0`.
+  Examples: `nonlinear_if.baga`, `bitwise_laws.baga`.
+  Scientific note: `docs/thesis-m13-nonlinear-fragment.md`.
+
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
-supported. Remaining: richer polynomials, variable divisors, feeding verified
+supported. Remaining: richer polynomials, full BV, feeding verified
 invariants into `--proofs`.
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable

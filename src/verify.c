@@ -206,16 +206,23 @@ static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
  * witness search can derive the product's value concretely.
  * M9: integer division by a non-zero constant (is_div): dividend in fa,
  * divisor constant in fb; inject sign of quotient; witness derives trunc div.
- * M9b: n % k for nonzero const k (is_mod): bounds 0..|k|-1 when n has a sign. */
-typedef struct { Node *call; char *var; Lin fa, fb; int is_prod; int is_div; int is_mod; } ReadEntry;
+ * M9b: n % k for nonzero const k (is_mod): bounds 0..|k|-1 when n has a sign.
+ * M13: n & 1 (is_bitand1): residue in {0,1} over two's complement — NOT C % 2
+ * for negative n (where % truncates toward zero). */
+typedef struct {
+    Node *call; char *var; Lin fa, fb;
+    int is_prod; int is_div; int is_mod; int is_bitand1;
+} ReadEntry;
 typedef struct { ReadEntry *r; int n, cap; } ReadsList;
-typedef struct { char *var; Lin fa, fb; int is_div; int is_mod; } ProdEntry;
+typedef struct { char *var; Lin fa, fb; int is_div; int is_mod; int is_bitand1; } ProdEntry;
 typedef struct { ProdEntry *p; int n, cap; } ProdList;
 static const char *reads_find(ReadsList *l, Node *call);
 static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb);
+static void reads_push_bitand1(ReadsList *l, const char *var, Lin fa);
 static void prods_clone_into(ProdList *dst, ReadsList *src);
+static int lin_eq(Lin *a, Lin *b);   /* defined later; used by M13 XOR identity */
 static int g_prod_ctr = 0;
 
 static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
@@ -300,6 +307,66 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
             }
             return sym_nonlin();
         }
+        /* M13: bitwise / shifts with sound special cases (no full BV theory) */
+        if (e->bin_op == OP_BIT_OR || e->bin_op == OP_BIT_AND || e->bin_op == OP_BIT_XOR) {
+            if (l.nonlinear || r.nonlinear) return sym_nonlin();
+            /* n | 0 = n; n & 0 = 0; n ^ 0 = n; n ^ n = 0; n & -1 = n */
+            if (e->bin_op == OP_BIT_OR && lin_is_const(&r.lin) && r.lin.c.num == 0 && r.lin.c.den == 1)
+                { lin_free(&r.lin); return sym_lin(l.lin); }
+            if (e->bin_op == OP_BIT_OR && lin_is_const(&l.lin) && l.lin.c.num == 0 && l.lin.c.den == 1)
+                { lin_free(&l.lin); return sym_lin(r.lin); }
+            if (e->bin_op == OP_BIT_AND && lin_is_const(&r.lin) && r.lin.c.num == 0 && r.lin.c.den == 1)
+                { lin_free(&l.lin); lin_free(&r.lin); return sym_lin(lin_const(rat_int(0))); }
+            if (e->bin_op == OP_BIT_AND && lin_is_const(&l.lin) && l.lin.c.num == 0 && l.lin.c.den == 1)
+                { lin_free(&l.lin); lin_free(&r.lin); return sym_lin(lin_const(rat_int(0))); }
+            if (e->bin_op == OP_BIT_AND && lin_is_const(&r.lin) && r.lin.c.num == -1 && r.lin.c.den == 1)
+                { lin_free(&r.lin); return sym_lin(l.lin); }
+            if (e->bin_op == OP_BIT_AND && lin_is_const(&l.lin) && l.lin.c.num == -1 && l.lin.c.den == 1)
+                { lin_free(&l.lin); return sym_lin(r.lin); }
+            if (e->bin_op == OP_BIT_XOR && lin_is_const(&r.lin) && r.lin.c.num == 0 && r.lin.c.den == 1)
+                { lin_free(&r.lin); return sym_lin(l.lin); }
+            if (e->bin_op == OP_BIT_XOR && lin_is_const(&l.lin) && l.lin.c.num == 0 && l.lin.c.den == 1)
+                { lin_free(&l.lin); return sym_lin(r.lin); }
+            if (e->bin_op == OP_BIT_XOR && lin_eq(&l.lin, &r.lin))
+                { lin_free(&l.lin); lin_free(&r.lin); return sym_lin(lin_const(rat_int(0))); }
+            /* n & 1 → bit residue in {0,1} (two's complement). Not C % 2. */
+            if (e->bin_op == OP_BIT_AND && reads &&
+                ((lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num == 1) ||
+                 (lin_is_const(&l.lin) && l.lin.c.den == 1 && l.lin.c.num == 1))) {
+                Lin nlin = (lin_is_const(&r.lin) && r.lin.c.num == 1) ? l.lin : r.lin;
+                char mv[64]; snprintf(mv, sizeof mv, "__b%d", g_prod_ctr++);
+                if (lin_is_const(&r.lin) && r.lin.c.num == 1) lin_free(&r.lin);
+                else lin_free(&l.lin);
+                reads_push_bitand1(reads, mv, nlin);
+                return sym_lin(lin_var(mv));
+            }
+            lin_free(&l.lin); lin_free(&r.lin);
+            return sym_nonlin();
+        }
+        if (e->bin_op == OP_LSHIFT || e->bin_op == OP_RSHIFT) {
+            if (l.nonlinear || r.nonlinear) return sym_nonlin();
+            /* n << k: exact scale by 2^k for k∈[0,62] (overflow treated as wrap-free ℤ).
+             * n >> k: only as trunc div by 2^k when reads available; inject axioms
+             * for nonnegative dividends (matches C >> on n>=0). Negative n → weak. */
+            if (lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num >= 0 && r.lin.c.num <= 62) {
+                int64_t k = r.lin.c.num;
+                int64_t pow2 = 1LL << k;
+                lin_free(&r.lin);
+                if (e->bin_op == OP_LSHIFT) {
+                    return sym_lin(lin_scale(&l.lin, rat_int(pow2)));
+                }
+                if (reads) {
+                    Lin d = lin_const(rat_int(pow2));
+                    char dv[64]; snprintf(dv, sizeof dv, "__d%d", g_prod_ctr++);
+                    reads_push_div(reads, dv, l.lin, d);
+                    return sym_lin(lin_var(dv));
+                }
+                lin_free(&l.lin);
+                return sym_nonlin();
+            }
+            lin_free(&l.lin); lin_free(&r.lin);
+            return sym_nonlin();
+        }
         return sym_nonlin();
     }
     default: return sym_nonlin();
@@ -357,19 +424,17 @@ static int is_cmp(BinOp op) { return op == OP_LT || op == OP_LE || op == OP_GT |
 
 /* Build the DNF of a boolean AST (optionally negated). Returns 0 if the AST is
  * outside the convertible fragment (caller treats as UNKNOWN). */
-static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out);
+static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated, Formula *out);
 
-static int cmp_to_formula(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out) {
+static int cmp_to_formula(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated, Formula *out) {
     /* an element-wise comparison (v[*] >= c) is handled as an ElemAxiom, not a
      * scalar path constraint — treat it as vacuously TRUE here */
     if (e->left->kind == NODE_ELEM_REF || e->right->kind == NODE_ELEM_REF) {
         f_init(out); ConsList cl; cl_init(&cl); f_push_branch(out, cl); return 1;
     }
-    /* se_from_ast resolves identifiers through env (and vec_len through vlen),
-     * so `output`, let-bound locals, and vector lengths are substituted by
-     * their symbolic values before the comparison becomes a constraint. */
-    Sym l = se_from_ast(e->left, env, vlen, NULL);
-    Sym r = se_from_ast(e->right, env, vlen, NULL);
+    /* se_from_ast with reads so products/div in conditions become symbolic (M13). */
+    Sym l = se_from_ast(e->left, env, vlen, reads);
+    Sym r = se_from_ast(e->right, env, vlen, reads);
     if (l.nonlinear || r.nonlinear) { if (!l.nonlinear) lin_free(&l.lin); if (!r.nonlinear) lin_free(&r.lin); return 0; }
     Constraint c;
     if (!atom_to_cons(l.lin, e->bin_op, r.lin, negated, &c)) { lin_free(&l.lin); lin_free(&r.lin); return 0; }
@@ -386,7 +451,7 @@ static int is_sorted_call(Node *e) {
            strcmp(e->callee->name, "sorted") == 0;
 }
 
-static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *out) {
+static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated, Formula *out) {
     if (!e) return 0;
     if (e->kind == NODE_BOOL_LIT) {
         int v = e->bool_val;
@@ -402,17 +467,17 @@ static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *
         f_init(out); ConsList cl; cl_init(&cl); f_push_branch(out, cl); return 1;
     }
     if (e->kind == NODE_UNARY && e->un_op == UOP_NOT)
-        return bool_to_dnf(e->operand, env, vlen, !negated, out);
+        return bool_to_dnf(e->operand, env, vlen, reads, !negated, out);
     if (e->kind == NODE_BINARY && is_cmp(e->bin_op))
-        return cmp_to_formula(e, env, vlen, negated, out);
+        return cmp_to_formula(e, env, vlen, reads, negated, out);
     if (e->kind == NODE_BINARY && e->bin_op == OP_EQ) {
         if (!negated) {
             /* a==b -> (a<=b)&&(a>=b) */
             Node l = *e, r = *e;
             l.bin_op = OP_LE; r.bin_op = OP_GE;
             Formula a, b;
-            if (!bool_to_dnf(&l, env, vlen, 0, &a)) return 0;
-            if (!bool_to_dnf(&r, env, vlen, 0, &b)) { f_free(&a); return 0; }
+            if (!bool_to_dnf(&l, env, vlen, reads, 0, &a)) return 0;
+            if (!bool_to_dnf(&r, env, vlen, reads, 0, &b)) { f_free(&a); return 0; }
             /* cartesian product */
             f_init(out);
             for (int i = 0; i < a.n; i++) for (int j = 0; j < b.n; j++) {
@@ -428,8 +493,8 @@ static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *
         Node lt = *e, gt = *e;
         lt.bin_op = OP_LT; gt.bin_op = OP_GT;
         Formula L, R;
-        if (!bool_to_dnf(&lt, env, vlen, 0, &L)) return 0;
-        if (!bool_to_dnf(&gt, env, vlen, 0, &R)) { f_free(&L); return 0; }
+        if (!bool_to_dnf(&lt, env, vlen, reads, 0, &L)) return 0;
+        if (!bool_to_dnf(&gt, env, vlen, reads, 0, &R)) { f_free(&L); return 0; }
         f_init(out);
         for (int i = 0; i < L.n; i++) f_push_branch(out, L.br[i]);
         for (int i = 0; i < R.n; i++) f_push_branch(out, R.br[i]);
@@ -438,8 +503,8 @@ static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *
     }
     if (e->kind == NODE_BINARY && (e->bin_op == OP_AND || e->bin_op == OP_OR)) {
         Formula L, R;
-        if (!bool_to_dnf(e->left, env, vlen, negated, &L)) return 0;
-        if (!bool_to_dnf(e->right, env, vlen, negated, &R)) { f_free(&L); return 0; }
+        if (!bool_to_dnf(e->left, env, vlen, reads, negated, &L)) return 0;
+        if (!bool_to_dnf(e->right, env, vlen, reads, negated, &R)) { f_free(&L); return 0; }
         int disj = (e->bin_op == OP_OR) ^ negated;   /* OR, or AND-under-negation => union */
         f_init(out);
         if (disj) {
@@ -655,16 +720,18 @@ static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
     }
 }
 
-/* M8/M9: pin every non-abstract var (__c/__p/__d/__m excluded) to its candidate
- * value in sys; then derive every product/div/mod var whose factors are fully
- * pinned and pin it too. Two passes so products of products resolve. */
+/* M8/M9/M13: pin every non-abstract var (__c/__p/__d/__m/__b excluded) to its
+ * candidate value in sys; then derive every product/div/mod/bit var whose
+ * factors are fully pinned and pin it too. Two passes so products of products
+ * resolve. */
 static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int nv, ProdList *prods) {
     int pcap = nv + (prods ? prods->n : 0) + 1;
     IBind *pins = calloc((size_t)pcap, sizeof(IBind));
     int np = 0;
     for (int i = 0; i < nv; i++) {
         if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0 ||
-            strncmp(vars[i], "__d", 3) == 0 || strncmp(vars[i], "__m", 3) == 0) continue;
+            strncmp(vars[i], "__d", 3) == 0 || strncmp(vars[i], "__m", 3) == 0 ||
+            strncmp(vars[i], "__b", 3) == 0) continue;
         pins[np].name = vars[i]; pins[np].val = assign[i].val; np++;
         Lin l = lin_var(vars[i]);
         l.c = rat_sub(l.c, rat_int(assign[i].val));
@@ -683,7 +750,9 @@ static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int
             int64_t fv[2] = {0, 0};
             Lin *fs[2] = { &prods->p[pi].fa, &prods->p[pi].fb };
             int ok = 1;
-            for (int q = 0; q < 2 && ok; q++) {
+            /* bitand1 only needs fa; still evaluate both for the shared path */
+            int nq = prods->p[pi].is_bitand1 ? 1 : 2;
+            for (int q = 0; q < nq && ok; q++) {
                 Rat rv = fs[q]->c;
                 for (int j = 0; j < fs[q]->n; j++) {
                     int ok2; int64_t vv = ienv_get(&pe, fs[q]->terms[j].var, &ok2);
@@ -695,7 +764,9 @@ static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int
             }
             int64_t pvv;
             if (!ok) continue;
-            if (prods->p[pi].is_div) {
+            if (prods->p[pi].is_bitand1) {
+                pvv = fv[0] & 1;   /* two's-complement LSB */
+            } else if (prods->p[pi].is_div) {
                 if (fv[1] == 0) continue;
                 pvv = fv[0] / fv[1];   /* C trunc toward zero */
             } else if (prods->p[pi].is_mod) {
@@ -768,7 +839,8 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
             IEnv ie0; ie0.b = assign; ie0.n = nv;
             int64_t fv[2] = {0, 0};
             Lin *fs[2] = { &prods->p[pi].fa, &prods->p[pi].fb };
-            for (int q = 0; q < 2 && prod_ok; q++) {
+            int nq = prods->p[pi].is_bitand1 ? 1 : 2;
+            for (int q = 0; q < nq && prod_ok; q++) {
                 Rat rv = fs[q]->c;
                 for (int j = 0; j < fs[q]->n; j++) {
                     int ok2; int64_t vv = ienv_get(&ie0, fs[q]->terms[j].var, &ok2);
@@ -780,7 +852,9 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
             }
             if (!prod_ok) break;
             int64_t pvv;
-            if (prods->p[pi].is_div) {
+            if (prods->p[pi].is_bitand1) {
+                pvv = fv[0] & 1;
+            } else if (prods->p[pi].is_div) {
                 if (fv[1] == 0) { prod_ok = 0; break; }
                 pvv = fv[0] / fv[1];
             } else if (prods->p[pi].is_mod) {
@@ -960,7 +1034,8 @@ static int find_bound_witness(Obligation *obl, IBind **witness, int *wn) {
                 if (strncmp(obl->ret.lin.terms[j].var, "__c", 3) == 0 ||
                     strncmp(obl->ret.lin.terms[j].var, "__p", 3) == 0 ||
                     strncmp(obl->ret.lin.terms[j].var, "__d", 3) == 0 ||
-                    strncmp(obl->ret.lin.terms[j].var, "__m", 3) == 0) needs_concl = 1;
+                    strncmp(obl->ret.lin.terms[j].var, "__m", 3) == 0 ||
+                    strncmp(obl->ret.lin.terms[j].var, "__b", 3) == 0) needs_concl = 1;
             if (needs_concl) {
                 ConsList sys; cl_init(&sys);
                 for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
@@ -1056,7 +1131,7 @@ static void reads_push(ReadsList *l, Node *call, const char *var) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = call; l->r[l->n].var = strdup(var);
     lin_init(&l->r[l->n].fa); lin_init(&l->r[l->n].fb);
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0;
     l->n++;
 }
 /* M8b: register a product var with its factor linear forms (moves fa/fb). */
@@ -1064,7 +1139,7 @@ static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 1; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0;
+    l->r[l->n].is_prod = 1; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0;
     l->n++;
 }
 /* M9: register integer division by a constant (moves fa; fb is the const divisor). */
@@ -1072,7 +1147,7 @@ static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 1; l->r[l->n].is_mod = 0;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 1; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0;
     l->n++;
 }
 /* M9b: register integer mod by a constant. */
@@ -1080,11 +1155,21 @@ static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 1;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 1; l->r[l->n].is_bitand1 = 0;
+    l->n++;
+}
+/* M13: n & 1 → fresh bit residue (moves fa). Always 0..1; not C % 2. */
+static void reads_push_bitand1(ReadsList *l, const char *var, Lin fa) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
+    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
+    l->r[l->n].fa = fa; lin_init(&l->r[l->n].fb); l->r[l->n].fb = lin_const(rat_int(2));
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 1;
     l->n++;
 }
 static const char *reads_find(ReadsList *l, Node *call) {
-    for (int i = 0; i < l->n; i++) if (!l->r[i].is_prod && !l->r[i].is_div && !l->r[i].is_mod && l->r[i].call == call) return l->r[i].var;
+    for (int i = 0; i < l->n; i++)
+        if (!l->r[i].is_prod && !l->r[i].is_div && !l->r[i].is_mod && !l->r[i].is_bitand1 &&
+            l->r[i].call == call) return l->r[i].var;
     return NULL;
 }
 static void reads_clone_into(ReadsList *dst, ReadsList *src) {
@@ -1096,22 +1181,25 @@ static void reads_clone_into(ReadsList *dst, ReadsList *src) {
             reads_push_div(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else if (src->r[i].is_mod)
             reads_push_mod(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
+        else if (src->r[i].is_bitand1)
+            reads_push_bitand1(dst, src->r[i].var, lin_clone(&src->r[i].fa));
         else
             reads_push(dst, src->r[i].call, src->r[i].var);
     }
 }
 
-/* Snapshot product/div/mod entries of a reads list (for obligation witnesses). */
+/* Snapshot product/div/mod/bit entries of a reads list (for obligation witnesses). */
 static void prods_clone_into(ProdList *dst, ReadsList *src) {
     dst->p = NULL; dst->n = 0; dst->cap = 0;
     for (int i = 0; i < src->n; i++) {
-        if (!src->r[i].is_prod && !src->r[i].is_div && !src->r[i].is_mod) continue;
+        if (!src->r[i].is_prod && !src->r[i].is_div && !src->r[i].is_mod && !src->r[i].is_bitand1) continue;
         if (dst->n == dst->cap) { dst->cap = dst->cap ? dst->cap * 2 : 4; dst->p = realloc(dst->p, (size_t)dst->cap * sizeof(ProdEntry)); }
         dst->p[dst->n].var = strdup(src->r[i].var);
         dst->p[dst->n].fa = lin_clone(&src->r[i].fa);
         dst->p[dst->n].fb = lin_clone(&src->r[i].fb);
         dst->p[dst->n].is_div = src->r[i].is_div;
         dst->p[dst->n].is_mod = src->r[i].is_mod;
+        dst->p[dst->n].is_bitand1 = src->r[i].is_bitand1;
         dst->n++;
     }
 }
@@ -1228,6 +1316,7 @@ static int has_unsupported_rec(Node *n, int flat, int in_expr) {
 static int has_unsupported(Node *n) { return has_unsupported_rec(n, 0, 0); }
 
 static State clone_state_with(State *cur, Formula *add);
+static void inject_prod_axioms(State *st);
 static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid, Node *spec);
 
 /* Prove one invariant holds in every body-final state, given the head state
@@ -1243,7 +1332,7 @@ static int check_preservation(State *head, Node *inv, States *body_final) {
         State *bf = &body_final->s[k];
         if (bf->bad) { holds = 0; break; }
         Formula bf_inv;
-        if (!bool_to_dnf(inv, &bf->env, &bf->vlen, 0, &bf_inv)) { holds = 0; break; }
+        if (!bool_to_dnf(inv, &bf->env, &bf->vlen, &bf->reads, 0, &bf_inv)) { holds = 0; break; }
         for (int b = 0; b < bf_inv.n && holds; b++) {
             ConsList sys; cl_init(&sys);
             for (int x = 0; x < bf->path.n; x++) { Constraint *c = &bf->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
@@ -1282,7 +1371,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
              * are tracked separately — skip the scalar init check for them */
             if (has_elem_ref(st->while_invariants.data[j])) continue;
             Formula invf;
-            if (!bool_to_dnf(st->while_invariants.data[j], &cur->env, &cur->vlen, 0, &invf)) { trusted = 0; break; }
+            if (!bool_to_dnf(st->while_invariants.data[j], &cur->env, &cur->vlen, &cur->reads, 0, &invf)) { trusted = 0; break; }
             for (int b = 0; b < invf.n && trusted; b++) {
                 ConsList sys; cl_init(&sys);
                 for (int x = 0; x < cur->path.n; x++) { Constraint *c = &cur->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
@@ -1300,7 +1389,9 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
 
         /* preservation: invariant ∧ cond, run one body iteration, re-check */
         Formula cf;
-        if (!bool_to_dnf(st->cond, &cur->env, &cur->vlen, 0, &cf)) { trusted = 0; }
+        if (!bool_to_dnf(st->cond, &cur->env, &cur->vlen, &cur->reads, 0, &cf)) { trusted = 0; }
+        /* M13: inject product/bit axioms from the loop condition */
+        inject_prod_axioms(cur);
         States head_ss; head_ss.s = NULL; head_ss.n = 0; head_ss.cap = 0;
         if (trusted) {
             for (int b = 0; b < cf.n; b++) {
@@ -1312,7 +1403,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
                 f_free(&one);
                 for (int j = 0; j < st->while_invariants.len; j++) {
                     Formula invf;
-                    if (!bool_to_dnf(st->while_invariants.data[j], &h.env, &h.vlen, 0, &invf)) { trusted = 0; break; }
+                    if (!bool_to_dnf(st->while_invariants.data[j], &h.env, &h.vlen, &h.reads, 0, &invf)) { trusted = 0; break; }
                     for (int bb = 0; bb < invf.n; bb++)
                         for (int x = 0; x < invf.br[bb].n; x++) { Constraint *c = &invf.br[bb].c[x]; cl_push(&h.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                     f_free(&invf);
@@ -1333,7 +1424,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
 
         /* post-loop continuation: invariant ∧ ¬cond (only sound when trusted) */
         Formula nf;
-        if (!bool_to_dnf(st->cond, &cur->env, &cur->vlen, 1, &nf)) {
+        if (!bool_to_dnf(st->cond, &cur->env, &cur->vlen, &cur->reads, 1, &nf)) {
             cur->bad = 1;
             states_push(&out, *cur);
             continue;
@@ -1349,7 +1440,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
             if (trusted) {
                 for (int j = 0; j < st->while_invariants.len; j++) {
                     Formula invf;
-                    if (!bool_to_dnf(st->while_invariants.data[j], &t.env, &t.vlen, 0, &invf)) { t.bad = 1; break; }
+                    if (!bool_to_dnf(st->while_invariants.data[j], &t.env, &t.vlen, &t.reads, 0, &invf)) { t.bad = 1; break; }
                     for (int bb = 0; bb < invf.n; bb++)
                         for (int x = 0; x < invf.br[bb].n; x++) { Constraint *c = &invf.br[bb].c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                     f_free(&invf);
@@ -1464,7 +1555,7 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
         ConsList opath; cl_init(&opath);
         if (spec) for (int r = 0; r < spec->spec_requires.len; r++) {
             Formula rf;
-            if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &st->env, &st->vlen, 0, &rf)) {
+            if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &st->env, &st->vlen, &st->reads, 0, &rf)) {
                 if (rf.n == 1)
                     for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                 f_free(&rf);
@@ -1617,6 +1708,12 @@ static void path_push_eq_zero(ConsList *path, Lin *expr) {
 static void inject_prod_axioms(State *st) {
     for (int i = 0; i < st->reads.n; i++) {
         ReadEntry *e = &st->reads.r[i];
+        /* M13: n & 1 ∈ {0,1} over two's complement for every n (not C % 2). */
+        if (e->is_bitand1) {
+            path_push_ge(&st->path, e->var, 0);
+            path_push_le(&st->path, e->var, 1);
+            continue;
+        }
         if (e->is_div) {
             int n_ge0 = path_proves_ge(st, &e->fa, 0);
             int n_le0 = path_proves_le(st, &e->fa, 0);
@@ -1920,7 +2017,7 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
         ConsList opath; cl_init(&opath);
         for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
         Formula rf;
-        int rok = bool_to_dnf(cspec->spec_requires.data[r]->ensure_expr, &env2, &st->vlen, 0, &rf);
+        int rok = bool_to_dnf(cspec->spec_requires.data[r]->ensure_expr, &env2, &st->vlen, &st->reads, 0, &rf);
         if (!rok || rf.n != 1) {
             /* disjunctive/unsupported requires — honest UNKNOWN, nothing assumed */
             if (rok) f_free(&rf);
@@ -1965,7 +2062,7 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
     if (all_req_proven && !has_unsupported(cfn->fn_body)) {
         for (int j = 0; j < cspec->spec_ensures.len; j++) {
             Formula ef;
-            if (bool_to_dnf(cspec->spec_ensures.data[j]->ensure_expr, &env2, &st->vlen, 0, &ef)) {
+            if (bool_to_dnf(cspec->spec_ensures.data[j]->ensure_expr, &env2, &st->vlen, &st->reads, 0, &ef)) {
                 if (ef.n == 1)
                     for (int x = 0; x < ef.br[0].n; x++) { Constraint *c = &ef.br[0].c[x]; cl_push(&st->path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                 f_free(&ef);
@@ -2139,8 +2236,8 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             for (int i = 0; i < states->n; i++) {
                 State *cur = &states->s[i];
                 Formula cf, nf;
-                int cok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, 0, &cf);
-                int nok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, 1, &nf);
+                int cok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, &cur->reads, 0, &cf);
+                int nok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, &cur->reads, 1, &nf);
                 if (!cok || !nok) {
                     if (cok) f_free(&cf);
                     if (nok) f_free(&nf);
@@ -2148,6 +2245,10 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                     states_push(&out, *cur);
                     continue;
                 }
+                /* M13: products/div/mod/bits introduced while reading the
+                 * condition must inject their axioms before the fork so both
+                 * branches inherit e.g. n*n >= 0 under the shared path. */
+                inject_prod_axioms(cur);
                 /* then branch: fork per cond DNF branch */
                 States then_ss; then_ss.s = NULL; then_ss.n = 0; then_ss.cap = 0;
                 for (int b = 0; b < cf.n; b++) {
@@ -2402,7 +2503,7 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
         int ante_ok = 1;
         for (int r = 0; r < spec->spec_requires.len && ante_ok; r++) {
             Formula rf;
-            if (!bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &env2, &obl->vlen, 0, &rf)) { ante_ok = 0; break; }
+            if (!bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &env2, &obl->vlen, NULL, 0, &rf)) { ante_ok = 0; break; }
             if (rf.n != 1) ante_ok = 0;   /* disjunctive requires: M0 skips */
             else for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&ante, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
             f_free(&rf);
@@ -2417,8 +2518,8 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
          * negated). The obligation  ante ⇒ ensures  is checked per negated
          * branch:  UNSAT(ante ∧ ¬ensures_branch)  ⇒ that branch always holds. */
         Formula ef, nef;
-        if (!bool_to_dnf(ens_expr, &env2, &obl->vlen, 0, &ef)) { cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
-        if (!bool_to_dnf(ens_expr, &env2, &obl->vlen, 1, &nef)) { f_free(&ef); cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        if (!bool_to_dnf(ens_expr, &env2, &obl->vlen, NULL, 0, &ef)) { cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
+        if (!bool_to_dnf(ens_expr, &env2, &obl->vlen, NULL, 1, &nef)) { f_free(&ef); cl_free(&ante); env_free(&env2); if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
 
         VRes clause_res = R_PROVEN;
         for (int b = 0; b < nef.n && clause_res != R_REFUTED; b++) {
@@ -2605,7 +2706,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
         extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.ax);
     for (int r = 0; r < spec->spec_requires.len; r++) {
         Formula rf;
-        if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.vlen, 0, &rf)) {
+        if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.vlen, &init.reads, 0, &rf)) {
             if (rf.n == 1) for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&init.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
             f_free(&rf);
         }
@@ -2734,7 +2835,7 @@ static int verify_fn(Node *prog, Node *fn) {
             extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init2.env, &init2.ax);
         for (int r = 0; r < spec->spec_requires.len; r++) {
             Formula rf;
-            if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init2.env, &init2.vlen, 0, &rf)) {
+            if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init2.env, &init2.vlen, &init2.reads, 0, &rf)) {
                 if (rf.n == 1) for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&init2.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
                 f_free(&rf);
             }

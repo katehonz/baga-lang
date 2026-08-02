@@ -333,6 +333,18 @@ test: $(BIN)
 		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 		&& echo "OK: amgm — (x-y)^2 >= 0 (M12)" \
 		|| { echo "FAIL: amgm"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/nonlinear_if.baga > /tmp/baga_verify_out.txt; \
+	grep -q "sq_guard:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "sq_pos_branch" /tmp/baga_verify_out.txt \
+		&& grep -q "sq_guard_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: nonlinear_if — products in if-guards (M13)" \
+		|| { echo "FAIL: nonlinear_if"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/bitwise_laws.baga > /tmp/baga_verify_out.txt; \
+	grep -q "or_zero" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "bit_lsb" /tmp/baga_verify_out.txt \
+		&& grep -q "bit_lsb_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: bitwise_laws — BV identities + n&1 (M13)" \
+		|| { echo "FAIL: bitwise_laws"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) examples/par_select.baga > /tmp/baga_par_sel_out.txt; \
 	printf "30\n2\n" | diff - /tmp/baga_par_sel_out.txt > /dev/null \
 		&& echo "OK: chan_select2_wait/timeout" \

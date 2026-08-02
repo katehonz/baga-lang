@@ -1,0 +1,100 @@
+// M13: sound special cases for bitwise ops — no full bitvector theory.
+// Identities: n|0=n, n&0=0, n^0=n, n^n=0, n&-1=n.
+// n&1 ∈ {0,1} over two's complement (NOT C % 2 for negative n).
+// n<<k = n * 2^k for small const k; n>>k as trunc / 2^k when n>=0.
+
+spec or_zero {
+    input: n: i64
+    output: i64
+    ensures: output >= n, output <= n
+}
+fn or_zero(n: i64) -> i64 {
+    return n | 0
+}
+
+spec and_zero {
+    input: n: i64
+    output: i64
+    ensures: output >= 0, output <= 0
+}
+fn and_zero(n: i64) -> i64 {
+    return n & 0
+}
+
+spec xor_zero {
+    input: n: i64
+    output: i64
+    ensures: output >= n, output <= n
+}
+fn xor_zero(n: i64) -> i64 {
+    return n ^ 0
+}
+
+spec xor_self {
+    input: n: i64
+    output: i64
+    ensures: output >= 0, output <= 0
+}
+fn xor_self(n: i64) -> i64 {
+    return n ^ n
+}
+
+spec and_allones {
+    input: n: i64
+    output: i64
+    ensures: output >= n, output <= n
+}
+fn and_allones(n: i64) -> i64 {
+    return n & (0 - 1)
+}
+
+// LSB: always 0 or 1, independent of sign of n.
+spec bit_lsb {
+    input: n: i64
+    output: i64
+    ensures: output >= 0, output <= 1
+}
+fn bit_lsb(n: i64) -> i64 {
+    return n & 1
+}
+
+// Left shift by const is linear scaling.
+spec shl3 {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output >= n
+}
+fn shl3(n: i64) -> i64 {
+    return n << 3
+}
+
+// Right shift under n >= 0: q = n/8, so 0 <= q <= n.
+spec shr3 {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output >= 0, output <= n
+}
+fn shr3(n: i64) -> i64 {
+    return n >> 3
+}
+
+// Soundness: claiming n&1 >= 1 is false (even n).
+spec bit_lsb_bad {
+    input: n: i64
+    output: i64
+    ensures: output >= 1
+}
+fn bit_lsb_bad(n: i64) -> i64 {
+    return n & 1
+}
+
+fn main() {
+    print(or_zero(42))
+    print(and_zero(7))
+    print(xor_self(9))
+    print(bit_lsb(5))
+    print(shl3(2))
+    print(shr3(24))
+}

@@ -1,0 +1,52 @@
+// M13: products inside if-guards become symbolic vars with product axioms.
+// The condition n*n >= 1 is convertible (not UNKNOWN) and the then-branch
+// inherits n*n >= 0 / sign facts so postconditions remain provable.
+
+// Square is always nonnegative — even when mentioned only in a guard.
+spec sq_guard {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn sq_guard(n: i64) -> i64 {
+    if n * n >= 0 {
+        return n * n
+    } else {
+        // unreachable over ℤ (s = n*n ≥ 0 always); still type-correct
+        return 0 - 1
+    }
+}
+
+// With n >= 1 the product mono axiom gives n*n >= 1, so the else is dead.
+spec sq_pos_branch {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 1
+}
+fn sq_pos_branch(n: i64) -> i64 {
+    if n * n >= 1 {
+        return n * n
+    } else {
+        return 0
+    }
+}
+
+// Soundness: a false ensures through a product guard must be REFUTED.
+spec sq_guard_bad {
+    input: n: i64
+    output: i64
+    ensures: output >= 1
+}
+fn sq_guard_bad(n: i64) -> i64 {
+    if n * n >= 0 {
+        return n * n
+    } else {
+        return 1
+    }
+}
+
+fn main() {
+    print(sq_guard(0 - 3))
+    print(sq_pos_branch(4))
+}
