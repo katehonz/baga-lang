@@ -179,7 +179,9 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
             if c == 61 { if c2 == 61 { vec_push(tk, 201); vec_push_str(tt, "=="); pos = pos + 2; h = 1 } }
             if c == 33 { if c2 == 61 { vec_push(tk, 203); vec_push_str(tt, "!="); pos = pos + 2; h = 1 } }
             if c == 60 { if c2 == 61 { vec_push(tk, 204); vec_push_str(tt, "<="); pos = pos + 2; h = 1 } }
+            if c == 60 { if c2 == 60 { vec_push(tk, 205); vec_push_str(tt, "<<"); pos = pos + 2; h = 1 } }
             if c == 62 { if c2 == 61 { vec_push(tk, 206); vec_push_str(tt, ">="); pos = pos + 2; h = 1 } }
+            if c == 62 { if c2 == 62 { vec_push(tk, 207); vec_push_str(tt, ">>"); pos = pos + 2; h = 1 } }
             if c == 38 { if c2 == 38 { vec_push(tk, 208); vec_push_str(tt, "&&"); pos = pos + 2; h = 1 } }
             if c == 124 { if c2 == 124 { vec_push(tk, 209); vec_push_str(tt, "||"); pos = pos + 2; h = 1 } }
             if c == 46 { if c2 == 46 { vec_push(tk, 210); vec_push_str(tt, ".."); pos = pos + 2; h = 1 } }
@@ -425,17 +427,13 @@ fn parse_add(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> 
     left
 }
 
-fn parse_cmp(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+fn parse_shift(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
     let mut left = parse_add(tk, tt, pos, nk, nt, fc, ns)
     while vec_get(pos, 0) < vec_len(tk) {
         let mut op: str = ""
         let k = vec_get(tk, vec_get(pos, 0))
-        if k == 201 { op = "==" }
-        if k == 203 { op = "!=" }
-        if k == 204 { op = "<=" }
-        if k == 206 { op = ">=" }
-        if is_single(tk, tt, vec_get(pos, 0), "<") == 1 { op = "<" }
-        if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { op = ">" }
+        if k == 205 { op = "<<" }
+        if k == 207 { op = ">>" }
         if str_eq(op, "") == 1 { break }
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         let right = parse_add(tk, tt, pos, nk, nt, fc, ns)
@@ -447,12 +445,76 @@ fn parse_cmp(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> 
     left
 }
 
-fn parse_and(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+fn parse_cmp(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    let mut left = parse_shift(tk, tt, pos, nk, nt, fc, ns)
+    while vec_get(pos, 0) < vec_len(tk) {
+        let mut op: str = ""
+        let k = vec_get(tk, vec_get(pos, 0))
+        if k == 201 { op = "==" }
+        if k == 203 { op = "!=" }
+        if k == 204 { op = "<=" }
+        if k == 206 { op = ">=" }
+        if is_single(tk, tt, vec_get(pos, 0), "<") == 1 { op = "<" }
+        if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { op = ">" }
+        if str_eq(op, "") == 1 { break }
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let right = parse_shift(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 3, op)
+        ast_child(fc, ns, node, left)
+        ast_child(fc, ns, node, right)
+        left = node
+    }
+    left
+}
+
+fn parse_bitand(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
     let mut left = parse_cmp(tk, tt, pos, nk, nt, fc, ns)
+    while vec_get(pos, 0) < vec_len(tk) {
+        if is_single(tk, tt, vec_get(pos, 0), "&") == 0 { break }
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let right = parse_cmp(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 3, "&")
+        ast_child(fc, ns, node, left)
+        ast_child(fc, ns, node, right)
+        left = node
+    }
+    left
+}
+
+fn parse_bitxor(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    let mut left = parse_bitand(tk, tt, pos, nk, nt, fc, ns)
+    while vec_get(pos, 0) < vec_len(tk) {
+        if is_single(tk, tt, vec_get(pos, 0), "^") == 0 { break }
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let right = parse_bitand(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 3, "^")
+        ast_child(fc, ns, node, left)
+        ast_child(fc, ns, node, right)
+        left = node
+    }
+    left
+}
+
+fn parse_bitor(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    let mut left = parse_bitxor(tk, tt, pos, nk, nt, fc, ns)
+    while vec_get(pos, 0) < vec_len(tk) {
+        if is_single(tk, tt, vec_get(pos, 0), "|") == 0 { break }
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let right = parse_bitxor(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 3, "|")
+        ast_child(fc, ns, node, left)
+        ast_child(fc, ns, node, right)
+        left = node
+    }
+    left
+}
+
+fn parse_and(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    let mut left = parse_bitor(tk, tt, pos, nk, nt, fc, ns)
     while vec_get(pos, 0) < vec_len(tk) {
         if vec_get(tk, vec_get(pos, 0)) != 208 { break }
         vec_set(pos, 0, vec_get(pos, 0) + 1)
-        let right = parse_cmp(tk, tt, pos, nk, nt, fc, ns)
+        let right = parse_bitor(tk, tt, pos, nk, nt, fc, ns)
         let node = ast_kind(nk, nt, fc, ns, 3, "&&")
         ast_child(fc, ns, node, left)
         ast_child(fc, ns, node, right)
@@ -1054,6 +1116,12 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "arg") == 1 { cname = "baga_arg" }
             if str_eq(bn, "exit") == 1 { cname = "baga_exit" }
             if str_eq(bn, "eprintln") == 1 { cname = "baga_eprintln" }
+            if str_eq(bn, "arena_new") == 1 { cname = "baga_arena_new" }
+            if str_eq(bn, "arena_alloc") == 1 { cname = "baga_arena_alloc" }
+            if str_eq(bn, "arena_reset") == 1 { cname = "baga_arena_reset" }
+            if str_eq(bn, "arena_free") == 1 { cname = "baga_arena_free" }
+            // extern fn (FFI) — директно име, без builtin диспеч (последен печели)
+            if is_extern_fn(nk, nt, fc, ns, prog, bn) == 1 { cname = bn }
         }
         let mut result = ""
         if str_eq(cname, "") == 0 {
@@ -1574,6 +1642,7 @@ fn c_type(t: str) -> str {
     if str_eq(t, "Vec") == 1 { return "baga_Vec *" }
     if str_eq(t, "f64") == 1 { return "double" }
     if str_eq(t, "bool") == 1 { return "int" }
+    if str_eq(t, "void") == 1 { return "void" }
     if str_eq(t, "") == 1 { return "int64_t" }
     mangle(t)
 }
@@ -1613,6 +1682,34 @@ fn emit_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
         write(concat(concat(d1, d2), d3))
     }
     write(concat(concat(concat(concat(rettype, " "), mangle(name)), concat("(", params)), ");\n"))
+}
+
+// extern fn (FFI): прототип с директното C име и C ABI типове, без mangle
+fn emit_extern_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
+    let name = node_text(nt, idx)
+    let mut child = first_child(fc, idx)
+    let mut params = ""
+    let mut rettype = "int64_t"
+    while child >= 0 {
+        let ck = node_kind(nk, child)
+        if ck == 12 {
+            let ptext = node_text(nt, child)
+            let mut ci: i64 = 0
+            let pn = len(ptext)
+            while ci < pn {
+                if char_at(ptext, ci) == 58 { break }
+                ci = ci + 1
+            }
+            let mut ptype = "i64"
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
+            if str_eq(params, "") == 0 { params = concat(params, ", ") }
+            params = concat(params, c_type(ptype))
+        }
+        if ck == 16 { rettype = c_type(node_text(nt, child)) }
+        child = next_sibling(ns, child)
+    }
+    if str_eq(params, "") == 1 { params = "void" }
+    write(concat(concat(concat(concat(rettype, " "), name), concat("(", params)), ");\n"))
 }
 
 fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
@@ -1752,6 +1849,17 @@ fn is_user_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
     let mut f = first_child(fc, prog)
     while f >= 0 {
         if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 { return 1 }
+        }
+        f = next_sibling(ns, f)
+    }
+    0
+}
+
+fn is_extern_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 35 {
             if str_eq(node_text(nt, f), name) == 1 { return 1 }
         }
         f = next_sibling(ns, f)
@@ -2278,19 +2386,29 @@ fn main() {
             ast_child(fc, ns, prog, f)
         } else {
             if vec_get(tk, vec_get(pos, 0)) == 0 {
-                if str_eq(vec_get_str(tt, vec_get(pos, 0)), "struct") == 1 {
-                    let s = parse_struct(tk, tt, pos, nk, nt, fc, ns)
-                    ast_child(fc, ns, prog, s)
+                if str_eq(vec_get_str(tt, vec_get(pos, 0)), "extern") == 1 {
+                    // extern fn <име>(...) -> T !E — FFI декларация (kind 35)
+                    vec_set(pos, 0, vec_get(pos, 0) + 1)
+                    if vec_get(tk, vec_get(pos, 0)) == 1 {
+                        let ef = parse_fn(tk, tt, pos, nk, nt, fc, ns)
+                        vec_set(nk, ef, 35)
+                        ast_child(fc, ns, prog, ef)
+                    }
                 } else {
-                    if str_eq(vec_get_str(tt, vec_get(pos, 0)), "enum") == 1 {
-                        let en = parse_enum(tk, tt, pos, nk, nt, fc, ns)
-                        ast_child(fc, ns, prog, en)
+                    if str_eq(vec_get_str(tt, vec_get(pos, 0)), "struct") == 1 {
+                        let s = parse_struct(tk, tt, pos, nk, nt, fc, ns)
+                        ast_child(fc, ns, prog, s)
                     } else {
-                        if str_eq(vec_get_str(tt, vec_get(pos, 0)), "spec") == 1 {
-                            let sp = parse_spec(tk, tt, pos, nk, nt, fc, ns)
-                            ast_child(fc, ns, prog, sp)
+                        if str_eq(vec_get_str(tt, vec_get(pos, 0)), "enum") == 1 {
+                            let en = parse_enum(tk, tt, pos, nk, nt, fc, ns)
+                            ast_child(fc, ns, prog, en)
                         } else {
-                            vec_set(pos, 0, vec_get(pos, 0) + 1)
+                            if str_eq(vec_get_str(tt, vec_get(pos, 0)), "spec") == 1 {
+                                let sp = parse_spec(tk, tt, pos, nk, nt, fc, ns)
+                                ast_child(fc, ns, prog, sp)
+                            } else {
+                                vec_set(pos, 0, vec_get(pos, 0) + 1)
+                            }
                         }
                     }
                 }
@@ -2431,6 +2549,29 @@ fn main() {
     write("        fprintf(stderr, \"\\n\");\n")
     write("    }\n")
     write("    exit(1);\n")
+    write("}\n")
+    write("/* arena allocator: bump allocation, free-all-at-once */\n")
+    write("typedef struct { char *base; int64_t used; int64_t cap; } baga_Arena;\n")
+    write("static int64_t baga_arena_new(void) {\n")
+    write("    baga_Arena *a = malloc(sizeof(baga_Arena));\n")
+    write("    a->cap = 65536; a->used = 0; a->base = malloc((size_t)a->cap);\n")
+    write("    return (int64_t)(intptr_t)a;\n")
+    write("}\n")
+    write("static int64_t baga_arena_alloc(int64_t h, int64_t size) {\n")
+    write("    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n")
+    write("    if (a->used + size > a->cap) {\n")
+    write("        int64_t nc = (a->used + size) * 2;\n")
+    write("        a->base = realloc(a->base, (size_t)nc); a->cap = nc;\n")
+    write("    }\n")
+    write("    char *p = a->base + a->used; a->used += size;\n")
+    write("    return (int64_t)(intptr_t)p;\n")
+    write("}\n")
+    write("static void baga_arena_reset(int64_t h) {\n")
+    write("    baga_Arena *a = (baga_Arena *)(intptr_t)h; a->used = 0;\n")
+    write("}\n")
+    write("static void baga_arena_free(int64_t h) {\n")
+    write("    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n")
+    write("    free(a->base); free(a);\n")
     write("}\n\n")
 
     // enum declarations
@@ -2480,6 +2621,9 @@ fn main() {
     while f >= 0 {
         if node_kind(nk, f) == 11 {
             emit_fn(nk, nt, fc, ns, prog, f)
+        }
+        if node_kind(nk, f) == 35 {
+            emit_extern_fn(nk, nt, fc, ns, prog, f)
         }
         f = next_sibling(ns, f)
     }

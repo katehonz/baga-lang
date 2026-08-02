@@ -91,6 +91,10 @@ test: $(BIN)
 		|| { echo "FAIL: проверката на аргументите не хвана грешния тип"; exit 1; }
 	@echo "=== vec_ann (Vec<T> анотации) ==="
 	./$(BIN) examples/vec_ann.baga
+	@echo "=== emit-c cleanup (регресия: double-free при += desugar) ==="
+	@./$(BIN) --emit-c examples/vec_ann.baga > /dev/null \
+		&& echo "OK: --emit-c не гърми върху += desugar" \
+		|| { echo "FAIL: --emit-c"; exit 1; }
 	@echo "=== bitwise ==="
 	@./$(BIN) examples/bitwise.baga > /tmp/baga_bitwise_out.txt
 	@printf "2\n7\n5\n16\n16\n24\n9\n4\n16777215\n" | diff - /tmp/baga_bitwise_out.txt > /dev/null \

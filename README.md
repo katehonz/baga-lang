@@ -149,10 +149,14 @@ baga3       → compiler.baga → C
 baga2 == baga3 ✓   (fixed point: the self compiler reproduces itself)
 ```
 
-The self-hosted compiler is ~960 lines of Baga. It reads its input file from
+The self-hosted compiler is ~2660 lines of Baga. It reads its input file from
 `arg(0)` and emits C on stdout. `make self` checks the fixed point: the C that
 `baga2` generates for `compiler.baga` is byte-identical to what `baga3`
-generates — i.e. `baga2` and `baga3` are the same compiler.
+generates — i.e. `baga2` and `baga3` are the same compiler. The self compiler
+covers the language used by `examples/` — structs, enums, match, effects
+(`catch`/`?`), `Vec<T>`, bytes, string interpolation, specs with runtime
+contracts, bitwise/shift operators, the arena allocator, and `extern fn` FFI —
+and its output is behavior-identical to the C bootstrap on every example.
 
 ## Backends
 

@@ -757,6 +757,140 @@ static Node *parse_binop_rhs(Parser *p, int min_prec, Node *left) {
     return left;
 }
 
+/* Дълбоко копие на дърво от изрази. Използва се при desugar на +=/-=/*=//=:
+ * целта участва два пъти (x = x + val) и двата възела не трябва да делят
+ * heap-памет — node_free освобождава всеки от тях. */
+static Node *clone_expr(Node *e) {
+    if (!e) return NULL;
+    Node *c = node_alloc(e->kind, e->pos);
+    switch (e->kind) {
+        case NODE_INT_LIT:   c->int_val = e->int_val; break;
+        case NODE_FLOAT_LIT: c->float_val = e->float_val; break;
+        case NODE_BOOL_LIT:  c->bool_val = e->bool_val; break;
+        case NODE_STR_LIT:
+        case NODE_BYTES_LIT: c->str_val = strdup(e->str_val ? e->str_val : ""); break;
+        case NODE_IDENT:     c->name = strdup(e->name ? e->name : ""); break;
+        case NODE_BINARY:
+            c->bin_op = e->bin_op;
+            c->left = clone_expr(e->left);
+            c->right = clone_expr(e->right);
+            break;
+        case NODE_UNARY:
+            c->un_op = e->un_op;
+            c->operand = clone_expr(e->operand);
+            break;
+        case NODE_CALL:
+            c->callee = clone_expr(e->callee);
+            c->args.len = 0; c->args.cap = 0; c->args.data = NULL;
+            for (int i = 0; i < e->args.len; i++) vec_push(c->args, clone_expr(e->args.data[i]));
+            break;
+        case NODE_INDEX:
+            c->obj = clone_expr(e->obj);
+            c->index = clone_expr(e->index);
+            break;
+        case NODE_ELEM_REF:
+            c->elem_obj = clone_expr(e->elem_obj);
+            break;
+        case NODE_FIELD:
+            c->field_obj = clone_expr(e->field_obj);
+            c->field_name = strdup(e->field_name ? e->field_name : "");
+            break;
+        case NODE_RANGE:
+            c->range_lo = clone_expr(e->range_lo);
+            c->range_hi = clone_expr(e->range_hi);
+            break;
+        case NODE_TRY:
+            c->try_expr = clone_expr(e->try_expr);
+            break;
+        case NODE_CATCH:
+            c->catch_expr = clone_expr(e->catch_expr);
+            c->catch_effect = strdup(e->catch_effect ? e->catch_effect : "");
+            c->catch_handler = clone_expr(e->catch_handler);
+            break;
+        case NODE_TO_STR:
+            c->to_str_expr = clone_expr(e->to_str_expr);
+            break;
+        case NODE_STRUCT_LIT:
+            c->lit_name = strdup(e->lit_name ? e->lit_name : "");
+            c->n_lit_fields = e->n_lit_fields;
+            c->lit_fields = NULL;
+            if (e->n_lit_fields > 0) {
+                c->lit_fields = malloc(sizeof(char *) * (size_t)e->n_lit_fields);
+                for (int i = 0; i < e->n_lit_fields; i++)
+                    c->lit_fields[i] = strdup(e->lit_fields[i] ? e->lit_fields[i] : "");
+            }
+            c->lit_values.len = 0; c->lit_values.cap = 0; c->lit_values.data = NULL;
+            for (int i = 0; i < e->lit_values.len; i++) vec_push(c->lit_values, clone_expr(e->lit_values.data[i]));
+            break;
+        case NODE_IF:
+            c->cond = clone_expr(e->cond);
+            c->then_br = clone_expr(e->then_br);
+            c->else_br = clone_expr(e->else_br);
+            break;
+        case NODE_MATCH:
+            c->match_expr = clone_expr(e->match_expr);
+            c->match_arms.len = 0; c->match_arms.cap = 0; c->match_arms.data = NULL;
+            for (int i = 0; i < e->match_arms.len; i++) vec_push(c->match_arms, clone_expr(e->match_arms.data[i]));
+            break;
+        case NODE_MATCH_ARM:
+            c->arm_pattern = clone_expr(e->arm_pattern);
+            c->arm_body = clone_expr(e->arm_body);
+            break;
+        case NODE_BLOCK:
+            c->stmts.len = 0; c->stmts.cap = 0; c->stmts.data = NULL;
+            for (int i = 0; i < e->stmts.len; i++) vec_push(c->stmts, clone_expr(e->stmts.data[i]));
+            break;
+        case NODE_LET:
+            c->let_name = strdup(e->let_name ? e->let_name : "");
+            c->is_mut = e->is_mut;
+            c->let_type = clone_expr(e->let_type);
+            c->let_init = clone_expr(e->let_init);
+            break;
+        case NODE_RETURN:
+            c->ret_val = clone_expr(e->ret_val);
+            break;
+        case NODE_WHILE:
+            c->while_cond = clone_expr(e->while_cond);
+            c->while_body = clone_expr(e->while_body);
+            c->while_invariants.len = 0; c->while_invariants.cap = 0; c->while_invariants.data = NULL;
+            for (int i = 0; i < e->while_invariants.len; i++) vec_push(c->while_invariants, clone_expr(e->while_invariants.data[i]));
+            break;
+        case NODE_FOR:
+            c->for_var = strdup(e->for_var ? e->for_var : "");
+            c->for_iter = clone_expr(e->for_iter);
+            c->for_body = clone_expr(e->for_body);
+            break;
+        case NODE_EXPR_STMT:
+            c->expr = clone_expr(e->expr);
+            break;
+        case NODE_ENSURE:
+            c->ensure_text = strdup(e->ensure_text ? e->ensure_text : "");
+            c->ensure_expr = clone_expr(e->ensure_expr);
+            break;
+        case NODE_TYPE:
+            c->type_name = strdup(e->type_name ? e->type_name : "");
+            break;
+        case NODE_TYPE_EFFECT:
+            c->type_name = strdup(e->type_name ? e->type_name : "");
+            c->n_effects = e->n_effects;
+            c->effect_names = NULL;
+            if (e->n_effects > 0) {
+                c->effect_names = malloc(sizeof(char *) * (size_t)e->n_effects);
+                for (int i = 0; i < e->n_effects; i++)
+                    c->effect_names[i] = strdup(e->effect_names[i] ? e->effect_names[i] : "");
+            }
+            break;
+        case NODE_TYPE_REF:
+        case NODE_TYPE_ARRAY:
+            c->inner_type = clone_expr(e->inner_type);
+            break;
+        default:
+            /* NODE_BREAK, NODE_CONTINUE — няма heap данни */
+            break;
+    }
+    return c;
+}
+
 static Node *parse_expr(Parser *p) {
     Node *e = parse_unary(p);
     e = parse_binop_rhs(p, 1, e);
@@ -780,10 +914,7 @@ static Node *parse_expr(Parser *p) {
                 case TOK_SLASH_ASSIGN: bin->bin_op = OP_DIV; break;
                 default:               bin->bin_op = OP_ADD; break;
             }
-            /* shallow copy of target for the left side */
-            Node *target_copy = node_alloc(e->kind, e->pos);
-            *target_copy = *e;
-            bin->left = target_copy;
+            bin->left = clone_expr(e);
             bin->right = val;
             val = bin;
         }
