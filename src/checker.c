@@ -940,6 +940,13 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             t = infer(ctx, n->expr);
             break;
 
+        case NODE_INVARIANT:
+            /* annotation statement (verifier-only): predicates must be bool;
+             * c[*] elem refs are allowed here (annotation context) */
+            for (int i = 0; i < n->inv_exprs.len; i++) infer(ctx, n->inv_exprs.data[i]);
+            t = type_new(TYPE_VOID);
+            break;
+
         case NODE_BREAK:
         case NODE_CONTINUE:
             t = type_new(TYPE_VOID);

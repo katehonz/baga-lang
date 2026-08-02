@@ -1248,6 +1248,19 @@ Spec : C^op → Set
 (`__int128` междинни сметки + консервативен bail-out във `fm_sat`). Бележка:
 `docs/thesis-m15-arith-safety.md`.
 
+### 8.7 Съдържателни инварианти на канали (M16)
+
+M16 затваря concurrency главата: `invariant c[*] >= 1` казва „всеки payload,
+изпратен на `c`, удовлетворява предиката", закотвено върху resolved
+символната променлива на канала (алиасите споделят един инвариант).
+`chan_send` discharge-ва предиката или аксиомата се изпуска (M3 правилото);
+`chan_recv` я instantiate-ва. При `go` spawn caller-ът трябва да докаже, че
+инвариантът му покрива `requires c[*] ...` на worker-а (проверено
+задължение); worker без съответен requires изпуска аксиомата при spawn —
+rely–guarantee в миниатюра, композирано с fork–join детерминизма на M14
+(`chan_inv_par.baga`). Скаларната форма `invariant e` е и `assume`. Бележка:
+`docs/thesis-m16-channel-invariants.md`.
+
 ---
 
 ## Заключение

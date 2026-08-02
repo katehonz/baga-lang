@@ -175,6 +175,7 @@ typedef enum {
     NODE_BREAK,
     NODE_CONTINUE,
     NODE_EXPR_STMT,
+    NODE_INVARIANT,   /* invariant e1, e2 — annotation statement (verifier-only) */
 
     /* declarations */
     NODE_FN,
@@ -304,6 +305,9 @@ struct Node {
 
         /* NODE_EXPR_STMT */
         struct { Node *expr; };
+
+        /* NODE_INVARIANT */
+        struct { NodeVec inv_exprs; };
 
         /* NODE_FN */
         struct {

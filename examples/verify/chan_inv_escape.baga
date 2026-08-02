@@ -1,0 +1,41 @@
+// M16: drop-on-escape — a worker whose spec carries no content requires on
+// the channel may send anything (in the general case), so the caller's
+// invariant on the channel is dropped at spawn and the recv claim is
+// honestly UNKNOWN.
+
+spec worker2 {
+    input:
+        c: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+fn worker2(c: i64) -> i64 {
+    return 0
+}
+
+spec boss2 {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn boss2(n: i64) -> i64 !Par {
+    let c = chan_new(4)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    let h = go(worker2, c)   // no c[*] requires — axiom dropped at spawn
+    let v = chan_recv(c)
+    let j = join(h)
+    return v + j
+}
+
+fn main() -> i64 !Par {
+    print(boss2(41))
+    return 0
+}

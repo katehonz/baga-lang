@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Static verification — M16: channel content invariants (rely–guarantee)
+- New statement-level annotation `invariant <expr>` (contextual keyword):
+  - `invariant c[*] >= 1` — "every payload sent on channel `c` satisfies the
+    predicate", anchored on the channel's resolved symbolic var (aliases work).
+  - scalar form (no `[*]`) acts as `assume` — the path gains the constraint.
+  - `chan_send` discharges the predicate (else the axiom is dropped, M3
+    rule); `chan_recv` instantiates it on the result.
+- Cross-thread: a worker's `requires c[*] ...` is discharged against the
+  caller's axioms at `go` spawn (kind-2 obligation, provable); a worker
+  without matching requires drops them at spawn — honest, never unsound.
+  The same discharge/drop rules apply at plain M5 calls.
+- `go` workers may now declare `Par` effects (channel-using workers were
+  previously outside the fragment; non-`Par` effects still skip).
+- Examples: `examples/verify/chan_inv{,_bad,_par,_escape}.baga`.
+- Note: `docs/thesis-m16-channel-invariants.md`.
+
 ### Static verification — M15: arithmetic safety (the ℤ-vs-i64 bridge)
 - New kind-4 obligations: every `+ - * -x / % <<` in verified code gets a
   verdict — ДОКАЗАНО (cannot overflow on this path), ОБРОЧЕНО with a concrete

@@ -388,6 +388,24 @@ test: $(BIN)
 		&& grep -q "x = -9223372036854775808" /tmp/baga_verify_out.txt \
 		&& echo "OK: abs_val — ensures доказан, но abs(INT64_MIN) преливане е хванато (M15)" \
 		|| { echo "FAIL: abs_val arith"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/chan_inv.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: chan_inv — съдържателен инвариант: send discharge + recv instantiate (M16)" \
+		|| { echo "FAIL: chan_inv"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/chan_inv_bad.baga > /tmp/baga_verify_out.txt; \
+	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ensures.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: chan_inv_bad — недоказуем payload изпуска аксиомата, recv е честно UNKNOWN (M16)" \
+		|| { echo "FAIL: chan_inv_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/chan_inv_par.baga > /tmp/baga_verify_out.txt; \
+	grep -q "boss:" /tmp/baga_verify_out.txt && grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "канален инвариант на 'worker' при извикване.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: chan_inv_par — cross-thread инвариант с discharge при spawn (M16 rely–guarantee)" \
+		|| { echo "FAIL: chan_inv_par"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/chan_inv_escape.baga > /tmp/baga_verify_out.txt; \
+	grep -q "boss2:" /tmp/baga_verify_out.txt && grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& ! grep -q "boss2:" -A1 /tmp/baga_verify_out.txt | grep -q "ДОКАЗАНО" \
+		&& echo "OK: chan_inv_escape — worker без requires изпуска аксиомата при spawn (M16 drop rule)" \
+		|| { echo "FAIL: chan_inv_escape"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --proofs examples/verify/sum.baga > /tmp/baga_proofs_out.txt; \
 	grep -q "lemma add_repeated_invariant_1" /tmp/baga_proofs_out.txt \
 		&& grep -q "invariant: (s >= 0)" /tmp/baga_proofs_out.txt \

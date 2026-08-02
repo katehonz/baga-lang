@@ -1,0 +1,23 @@
+// M16: a payload that cannot be discharged drops the axiom (M3 rule) —
+// the recv claim is then honestly UNKNOWN, never falsely proven.
+
+spec bad_send {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 1
+}
+
+fn bad_send(n: i64) -> i64 !Par {
+    let c = chan_new(4)
+    invariant c[*] >= 1
+    chan_send(c, n)       // n unconstrained — discharge fails, axiom dropped
+    let v = chan_recv(c)
+    return v
+}
+
+fn main() -> i64 !Par {
+    print(bad_send(5))
+    return 0
+}

@@ -2328,6 +2328,10 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             LLVMBuildBr(lg.builder, cont_bb);
             break;
 
+        case NODE_INVARIANT:
+            /* annotation statement — verifier-only, no IR emitted */
+            break;
+
         default:
             llvm_unsupported_node(n);
             break;

@@ -1190,6 +1190,19 @@ hole, `loop_havoc.baga`) and an INT64_MIN-safe rational core (`__int128`
 intermediates + conservative bail-out in `fm_sat`). Note:
 `docs/thesis-m15-arith-safety.md`.
 
+### 8.7 Channel content invariants (M16)
+
+M16 closes the concurrency chapter: `invariant c[*] >= 1` states "every
+payload sent on `c` satisfies the predicate", anchored on the resolved
+symbolic channel var (aliases share one invariant). `chan_send` discharges
+the predicate or the axiom drops (M3 rule); `chan_recv` instantiates it.
+At `go` spawn the caller must prove its invariant covers the worker's
+`requires c[*] ...` (a checked obligation); a worker without matching
+requires drops the axiom at spawn — rely–guarantee in the small, composing
+with M14's fork–join determinism (`chan_inv_par.baga`). The scalar form
+`invariant e` doubles as `assume`. Note:
+`docs/thesis-m16-channel-invariants.md`.
+
 ---
 
 ## References

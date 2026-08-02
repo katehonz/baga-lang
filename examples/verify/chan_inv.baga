@@ -1,0 +1,27 @@
+// M16: channel content invariant — "every payload on c is >= 1".
+// The send discharges the predicate against the invariant; the recv
+// instantiates it, so the ensures is provable.
+
+spec prod_cons {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+        n <= 10
+    ensures:
+        output >= 1
+}
+
+fn prod_cons(n: i64) -> i64 !Par {
+    let c = chan_new(4)
+    invariant c[*] >= 1
+    chan_send(c, n)       // payload n >= 1 — discharged
+    let v = chan_recv(c)  // v >= 1 — instantiated
+    return v
+}
+
+fn main() -> i64 !Par {
+    print(prod_cons(5))
+    return 0
+}

@@ -1422,16 +1422,27 @@ static int is_par_builtin_call(Node *n) {
 }
 
 /* M14 shallow gate for a par builtin call: right arity; for go/go_bg the
- * worker must be a user fn (i64) -> i64, pure (no effects — an effectful
- * worker is outside the fragment). Body verifiability is checked later, at
+ * worker must be a user fn (i64) -> i64 whose only allowed effect is Par
+ * itself (channel-using workers are Par by construction); any other effect
+ * puts it outside the fragment. Body verifiability is checked later, at
  * eval time, before any ensures are assumed (same discipline as M5). */
+static int ret_has_non_par_effects(Node *t);   /* defined below */
+static int worker_sig_supported(Node *cfn) {
+    if (!cfn || !cfn->ret_type) return 0;
+    if (ret_has_non_par_effects(cfn->ret_type)) return 0;
+    if (!type_is_i64(cfn->ret_type)) return 0;
+    for (int i = 0; i < cfn->params.len; i++)
+        if (!type_is_i64(cfn->params.data[i]->param_type)) return 0;
+    return 1;
+}
+
 static int par_call_gate(Node *n) {
     const char *nm = n->callee->name;
     if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0) {
         if (n->args.len != 2) return 0;
         Node *w = n->args.data[0];
         if (!w || w->kind != NODE_IDENT || !g_prog) return 0;
-        return callee_sig_supported(find_fn(g_prog, w->name));
+        return worker_sig_supported(find_fn(g_prog, w->name));
     }
     if (strcmp(nm, "chan_send") == 0) return n->args.len == 2;
     return n->args.len == 1;   /* join/detach/chan_new/chan_recv/chan_close */
@@ -1485,6 +1496,10 @@ static int has_unsupported_rec(Node *n, int flat, int in_expr) {
     case NODE_ASSIGN: return has_unsupported_rec(n->assign_target, 1, 1) || has_unsupported_rec(n->assign_val, 1, 1);
     case NODE_RETURN: return has_unsupported_rec(n->ret_val, flat, 0);
     case NODE_EXPR_STMT: return has_unsupported_rec(n->expr, flat, 0);
+    case NODE_INVARIANT:
+        for (int i = 0; i < n->inv_exprs.len; i++)
+            if (has_unsupported_rec(n->inv_exprs.data[i], 1, 1)) return 1;
+        return 0;
     default: return 0;
     }
 }
@@ -1495,6 +1510,7 @@ static State clone_state_with(State *cur, Formula *add);
 static void inject_prod_axioms(State *st);
 static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid, Node *spec);
 static void scan_arith_expr(Node *e, State *st, Obligations *ob);   /* M15 */
+static int cl_implied_by(ConsList *path, ConsList *cons);
 
 /* Prove one invariant holds in every body-final state, given the head state
  * (invariant ∧ condition on entry). UNSAT per DNF branch ⇒ holds. */
@@ -1716,6 +1732,116 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
  * handled; nested vec calls inside larger expressions are not tracked. */
 static Constraint axiom_instantiate(ElemAxiom *a, const char *read_var);
 static int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st);
+
+/* ======================= M16: content invariants =======================
+ * "Every payload sent on channel c satisfies P" — declared by the
+ * statement-level `invariant c[*] <cmp> <lin>` annotation, anchored on the
+ * channel's RESOLVED symbolic var (ghost handle), so aliases work. Sends
+ * discharge the predicate (or the axiom is dropped, M3 rule); receives
+ * instantiate it. At call/go boundaries the callee's `requires c[*] ...`
+ * is discharged against the caller's axioms; a callee without matching
+ * requires drops them (it may send anything). */
+
+/* Resolve an expression to the symbolic key axioms are anchored on: the bare
+ * symbolic var of its value (channel ghost / param name), else the source
+ * identifier (M3 local-vec convention), else NULL. */
+static const char *resolve_key(Node *act, State *st, char *buf, size_t n) {
+    Sym av = se_from_ast(act, &st->env, &st->vlen, &st->reads);
+    if (!av.nonlinear && av.lin.n == 1 && av.lin.c.num == 0 &&
+        av.lin.terms[0].coeff.num == av.lin.terms[0].coeff.den) {
+        snprintf(buf, n, "%s", av.lin.terms[0].var);
+        lin_free(&av.lin);
+        return buf;
+    }
+    lin_free(&av.lin);
+    if (act->kind == NODE_IDENT) { snprintf(buf, n, "%s", act->name); return buf; }
+    return NULL;
+}
+
+/* Does the caller state hold an axiom on `key` entailing (cmp, rhs)? */
+static int axiom_entailed(State *st, const char *key, ElemCmp cmp, Lin *rhs, int is_sorted) {
+    for (int i = 0; i < st->ax.n; i++) {
+        ElemAxiom *a = &st->ax.a[i];
+        if (strcmp(a->vec, key) != 0) continue;
+        if (is_sorted) { if (a->is_sorted) return 1; continue; }
+        if (a->is_sorted || a->cmp != cmp) continue;
+        if (lin_eq(&a->rhs, rhs)) return 1;
+        /* a.rhs implies rhs in the cmp direction */
+        Lin d;
+        if (cmp == EC_GE || cmp == EC_GT) d = lin_sub(rhs, &a->rhs);       /* rhs - a.rhs <= 0 ⟺ a.rhs >= rhs */
+        else d = lin_sub(&a->rhs, rhs);                                    /* a.rhs - rhs <= 0 ⟺ a.rhs <= rhs */
+        ConsList cons; cl_init(&cons);
+        cl_push(&cons, mk_cons(d, C_LE, rat_zero()));
+        int ok = cl_implied_by(&st->path, &cons);
+        cl_free(&cons);
+        if (ok) return 1;
+    }
+    return 0;
+}
+
+static void ax_drop_key(AxiomList *ax, const char *key) {
+    AxiomList kept; ax_init(&kept);
+    for (int i = 0; i < ax->n; i++)
+        if (strcmp(ax->a[i].vec, key) != 0)
+            ax_push(&kept, ax->a[i].vec, ax->a[i].cmp, lin_clone(&ax->a[i].rhs), ax->a[i].is_sorted);
+    ax_free(ax);
+    *ax = kept;
+}
+
+/* Does this annotation mention an element/content reference on `name`? */
+static int elem_req_mentions(Node *e, const char *name) {
+    if (!e) return 0;
+    if (e->kind == NODE_ELEM_REF)
+        return e->elem_obj->kind == NODE_IDENT && strcmp(e->elem_obj->name, name) == 0;
+    if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
+        strcmp(e->callee->name, "sorted") == 0 && e->args.len == 1)
+        return e->args.data[0]->kind == NODE_IDENT && strcmp(e->args.data[0]->name, name) == 0;
+    if (e->kind == NODE_BINARY) return elem_req_mentions(e->left, name) || elem_req_mentions(e->right, name);
+    if (e->kind == NODE_UNARY) return elem_req_mentions(e->operand, name);
+    return 0;
+}
+
+static void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax);
+
+/* Extract a content axiom from `obj[*] <cmp> <lin>` (either orientation),
+ * anchoring on the object's RESOLVED symbolic var; falls back to the M3
+ * source-name extraction (local vecs). Returns 0 if not extractable. */
+static int extract_axiom_resolved(Node *e, State *st) {
+    if (e && e->kind == NODE_BINARY) {
+        BinOp op = e->bin_op;
+        if (op == OP_LT || op == OP_LE || op == OP_GT || op == OP_GE) {
+            Node *l = e->left, *r = e->right;
+            Node *eref = NULL, *other = NULL;
+            int elem_on_left = 0;
+            if (l->kind == NODE_ELEM_REF) { eref = l; other = r; elem_on_left = 1; }
+            else if (r->kind == NODE_ELEM_REF) { eref = r; other = l; elem_on_left = 0; }
+            if (eref) {
+                char kbuf[64];
+                const char *key = resolve_key(eref->elem_obj, st, kbuf, sizeof kbuf);
+                if (key) {
+                    Sym s = se_from_ast(other, &st->env, &st->vlen, &st->reads);
+                    if (!s.nonlinear) {
+                        ElemCmp cmp;
+                        if (elem_on_left) {
+                            switch (op) { case OP_LT: cmp = EC_LT; break; case OP_LE: cmp = EC_LE; break;
+                                          case OP_GT: cmp = EC_GT; break; default: cmp = EC_GE; break; }
+                        } else {
+                            switch (op) { case OP_LT: cmp = EC_GT; break; case OP_LE: cmp = EC_GE; break;
+                                          case OP_GT: cmp = EC_LT; break; default: cmp = EC_LE; break; }
+                        }
+                        ax_push(&st->ax, key, cmp, s.lin, 0);
+                        return 1;
+                    }
+                    lin_free(&s.lin);
+                }
+            }
+        }
+    }
+    int n0 = st->ax.n;
+    extract_elem_axiom(e, &st->env, &st->ax);
+    return st->ax.n > n0;
+}
+
 /* Does the state prove all elements of `vec` are <= `val`? True if there is an
  * element axiom vec[*] <= R (or < R) with path |- R <= val. Sufficient condition
  * used to preserve a sorted axiom across vec_push(vec, val). */
@@ -2257,6 +2383,31 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
     int all_req_proven = 1;
     inject_prod_axioms(st);   /* M8b: фактите за продукти влизат в opath */
     for (int r = 0; r < cspec->spec_requires.len; r++) {
+        Node *req = cspec->spec_requires.data[r]->ensure_expr;
+        /* M16: element/content requires (v[*] ..., sorted(v)) are discharged
+         * against the caller's axioms on the ACTUAL argument — not vacuously */
+        if (has_elem_ref(req)) {
+            AxiomList tmp; ax_init(&tmp);
+            extract_elem_axiom(req, &env2, &tmp);
+            int ok = 0;
+            if (tmp.n > 0) {
+                for (int j = 0; j < cfn->params.len && j < call->args.len && !ok; j++) {
+                    if (!elem_req_mentions(req, cfn->params.data[j]->param_name)) continue;
+                    char kbuf[64];
+                    const char *key = resolve_key(call->args.data[j], st, kbuf, sizeof kbuf);
+                    if (key) ok = axiom_entailed(st, key, tmp.a[0].cmp, &tmp.a[0].rhs, tmp.a[0].is_sorted);
+                }
+            }
+            ax_free(&tmp);
+            char label[300];
+            snprintf(label, sizeof label, "елементен/канален инвариант на '%s' при извикване", callee);
+            ConsList opath; cl_init(&opath);
+            for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            ConsList empty; cl_init(&empty);
+            obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, !ok, 2, label);
+            if (!ok) all_req_proven = 0;
+            continue;
+        }
         char label[300];
         snprintf(label, sizeof label, "requires на '%s' при извикване", callee);
         ConsList opath; cl_init(&opath);
@@ -2276,6 +2427,24 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
         f_free(&rf);
         if (!cl_implied_by(&opath, &pos)) all_req_proven = 0;
         obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 0, 2, label);
+    }
+
+    /* M16 drop rule: an argument whose callee spec carries no content
+     * requires on it may be sent/pushed unchecked inside the callee — the
+     * caller's axioms on it can no longer be trusted after the call. */
+    if (st->ax.n > 0) {
+        for (int j = 0; j < cfn->params.len && j < call->args.len; j++) {
+            char kbuf[64];
+            const char *key = resolve_key(call->args.data[j], st, kbuf, sizeof kbuf);
+            if (!key) continue;
+            int has_ax = 0;
+            for (int i = 0; i < st->ax.n; i++) if (strcmp(st->ax.a[i].vec, key) == 0) { has_ax = 1; break; }
+            if (!has_ax) continue;
+            int declared = 0;
+            for (int r = 0; r < cspec->spec_requires.len; r++)
+                if (elem_req_mentions(cspec->spec_requires.data[r]->ensure_expr, cfn->params.data[j]->param_name)) { declared = 1; break; }
+            if (!declared) ax_drop_key(&st->ax, key);
+        }
     }
 
     /* M6: at a self-recursive call with a decreases measure, discharge
@@ -2363,6 +2532,11 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             /* spec-less worker: nothing to discharge or assume (honest) */
             Sym a = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
             lin_free(&a.lin);
+            /* M16 drop rule: a spec-less worker may send anything on the
+             * channel argument — the caller's axioms on it are dropped */
+            char kbuf[64];
+            const char *key = resolve_key(call->args.data[1], st, kbuf, sizeof kbuf);
+            if (key) ax_drop_key(&st->ax, key);
             char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
             res = sym_lin(lin_var(rv));
         }
@@ -2429,10 +2603,40 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     }
     if (strcmp(nm, "chan_recv") == 0) {
         char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
-        return sym_lin(lin_var(rv));   /* unconstrained payload */
+        /* M16: a received payload provably satisfies every content axiom
+         * anchored on this channel */
+        char kbuf[64];
+        const char *key = resolve_key(call->args.data[0], st, kbuf, sizeof kbuf);
+        if (key)
+            for (int i = 0; i < st->ax.n; i++) {
+                if (st->ax.a[i].is_sorted || strcmp(st->ax.a[i].vec, key) != 0) continue;
+                cl_push(&st->path, axiom_instantiate(&st->ax.a[i], rv));
+            }
+        return sym_lin(lin_var(rv));   /* otherwise unconstrained payload */
     }
     /* chan_send */
     Sym v = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
+    /* M16: the payload must provably satisfy every content axiom anchored on
+     * this channel; an axiom that cannot be discharged is dropped (M3 rule —
+     * downstream receives then honestly get nothing) */
+    {
+        char kbuf[64];
+        const char *key = resolve_key(call->args.data[0], st, kbuf, sizeof kbuf);
+        if (key && st->ax.n > 0) {
+            AxiomList kept; ax_init(&kept);
+            for (int i = 0; i < st->ax.n; i++) {
+                if (!st->ax.a[i].is_sorted && strcmp(st->ax.a[i].vec, key) == 0) {
+                    if (axiom_holds_for_value(&st->ax.a[i], &v, st))
+                        ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), 0);
+                    /* else: dropped (sound) */
+                } else {
+                    ax_push(&kept, st->ax.a[i].vec, st->ax.a[i].cmp, lin_clone(&st->ax.a[i].rhs), st->ax.a[i].is_sorted);
+                }
+            }
+            ax_free(&st->ax);
+            st->ax = kept;
+        }
+    }
     lin_free(&v.lin);
     char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
     if (e && e->state == 1) {
@@ -2799,6 +3003,27 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             *states = out;
         } else if (st->kind == NODE_WHILE) {
             symexec_while(st, states, ob, is_nonvoid, spec);
+        } else if (st->kind == NODE_INVARIANT) {
+            /* M16: annotation statement — content axioms (c[*] ...) and
+             * scalar assumptions */
+            for (int i = 0; i < states->n; i++) {
+                for (int j = 0; j < st->inv_exprs.len; j++) {
+                    Node *pred = st->inv_exprs.data[j];
+                    if (has_elem_ref(pred)) {
+                        if (!extract_axiom_resolved(pred, &states->s[i])) states->s[i].bad = 1;
+                    } else {
+                        Formula af;
+                        int aok = bool_to_dnf(pred, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads, 0, &af);
+                        if (!aok || af.n != 1) {
+                            if (aok) f_free(&af);
+                            states->s[i].bad = 1;   /* disjunctive/unsupported assume — honest UNKNOWN */
+                        } else {
+                            for (int x = 0; x < af.br[0].n; x++) { Constraint *c = &af.br[0].c[x]; cl_push(&states->s[i].path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                            f_free(&af);
+                        }
+                    }
+                }
+            }
         } else {
             for (int i = 0; i < states->n; i++) states->s[i].bad = 1;
         }

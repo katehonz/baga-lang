@@ -222,6 +222,7 @@ baga/
 - [Thesis note M13](docs/thesis-m13-nonlinear-fragment.md) — research write-up of the nonlinear + bitwise fragment
 - [Thesis note M14](docs/thesis-m14-par-fragment.md) — fork–join determinism + handle protocols (concurrency in `--verify`)
 - [Thesis note M15](docs/thesis-m15-arith-safety.md) — the ℤ-vs-i64 bridge (arithmetic safety) + the loop-havoc soundness fix
+- [Thesis note M16](docs/thesis-m16-channel-invariants.md) — channel content invariants, cross-thread rely–guarantee
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen
@@ -243,6 +244,7 @@ baga/
 | 10 | LLVM backend `!Par` parity (`libbaga_par.so` + lli `-load`) | ✅ |
 | 11 | `!Par` in `--verify`: fork–join determinism + handle protocols (M14) | ✅ |
 | 12 | Arithmetic safety: ℤ-vs-i64 bridge + loop-havoc soundness fix (M15) | ✅ |
+| 13 | Channel content invariants + cross-thread discharge (M16) | ✅ |
 
 ### Static verification (`--verify`)
 
@@ -414,6 +416,18 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   core (`rat_*` now use `__int128`; `fm_sat` bails out conservatively on
   overflow). Examples: `ovf_add.baga`, `ovf_mul.baga`, `div_zero.baga`,
   `loop_havoc.baga`. Scientific note: `docs/thesis-m15-arith-safety.md`.
+
+- **M16** — **channel content invariants (rely–guarantee)**. A new
+  statement-level annotation `invariant c[*] >= 1` declares "every payload
+  sent on `c` satisfies the predicate" (anchored on the resolved symbolic
+  channel var, so aliases work). `chan_send` discharges it (else the axiom
+  drops, M3 rule); `chan_recv` instantiates it. Cross-thread: a worker's
+  `requires c[*] ...` is discharged against the caller's axioms at `go`
+  spawn, and a worker without matching requires drops them — rely–guarantee
+  in the small. `go` workers may now declare `Par` effects. The scalar form
+  `invariant e` doubles as an `assume`. Examples: `chan_inv.baga`,
+  `chan_inv_bad.baga`, `chan_inv_par.baga`, `chan_inv_escape.baga`.
+  Scientific note: `docs/thesis-m16-channel-invariants.md`.
 
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
 supported. `--proofs` surfaces the verifier's established facts: real

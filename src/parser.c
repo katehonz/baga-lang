@@ -114,6 +114,10 @@ void node_free(Node *n) {
         case NODE_EXPR_STMT:
             node_free(n->expr);
             break;
+        case NODE_INVARIANT:
+            for (int i = 0; i < n->inv_exprs.len; i++) node_free(n->inv_exprs.data[i]);
+            vec_free(n->inv_exprs);
+            break;
         case NODE_FN:
             free(n->fn_name);
             for (int i = 0; i < n->params.len; i++) node_free(n->params.data[i]);
@@ -863,6 +867,10 @@ static Node *clone_expr(Node *e) {
         case NODE_EXPR_STMT:
             c->expr = clone_expr(e->expr);
             break;
+        case NODE_INVARIANT:
+            c->inv_exprs.len = 0; c->inv_exprs.cap = 0; c->inv_exprs.data = NULL;
+            for (int i = 0; i < e->inv_exprs.len; i++) vec_push(c->inv_exprs, clone_expr(e->inv_exprs.data[i]));
+            break;
         case NODE_ENSURE:
             c->ensure_text = strdup(e->ensure_text ? e->ensure_text : "");
             c->ensure_expr = clone_expr(e->ensure_expr);
@@ -995,6 +1003,19 @@ static Node *parse_stmt(Parser *p) {
         advance(p);
         match(p, TOK_SEMICOLON);
         return node_alloc(NODE_CONTINUE, pos);
+    }
+
+    /* invariant e1, e2, ... — statement-level annotation for --verify:
+       channel content invariants (c[*] <cmp> <lin>) and scalar assumptions */
+    if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "invariant") == 0) {
+        advance(p);
+        Node *n = node_alloc(NODE_INVARIANT, pos);
+        n->inv_exprs.len = 0; n->inv_exprs.cap = 0; n->inv_exprs.data = NULL;
+        vec_push(n->inv_exprs, parse_expr(p));
+        while (match(p, TOK_COMMA))
+            vec_push(n->inv_exprs, parse_expr(p));
+        match(p, TOK_SEMICOLON);
+        return n;
     }
 
     /* while (with optional `invariant e1, e2, ...` clause for --verify) */
@@ -1413,6 +1434,10 @@ void print_ast(Node *n, int indent) {
         case NODE_EXPR_STMT:
             fprintf(stderr, "EXPR_STMT\n");
             print_ast(n->expr, indent + 1);
+            break;
+        case NODE_INVARIANT:
+            fprintf(stderr, "INVARIANT\n");
+            for (int i = 0; i < n->inv_exprs.len; i++) print_ast(n->inv_exprs.data[i], indent + 1);
             break;
         case NODE_CALL:
             fprintf(stderr, "CALL\n");

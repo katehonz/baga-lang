@@ -802,6 +802,10 @@ static void emit_stmt(Codegen *cg, Node *n) {
             fprintf(f, "\n");
             break;
 
+        case NODE_INVARIANT:
+            /* annotation statement — verifier-only, no code emitted */
+            break;
+
         default:
             emit_indent(cg);
             fprintf(f, "/* unhandled stmt %d */;\n", n->kind);

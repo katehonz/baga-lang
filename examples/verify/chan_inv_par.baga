@@ -1,0 +1,42 @@
+// M16: cross-thread channel invariant (rely–guarantee light).
+// The worker requires c[*] >= 1 on its channel parameter; the spawn site
+// must prove the caller's invariant covers it (discharged); the worker's
+// recv facts then transfer through go/join (M14) and the ensures is proven.
+
+spec worker {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 1
+}
+
+fn worker(c: i64) -> i64 !Par {
+    let v = chan_recv(c)   // v >= 1 from the requires content axiom
+    return v
+}
+
+spec boss {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn boss(n: i64) -> i64 !Par {
+    let c = chan_new(4)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    let h = go(worker, c)
+    return join(h)
+}
+
+fn main() -> i64 !Par {
+    print(boss(41))   // 41
+    return 0
+}
