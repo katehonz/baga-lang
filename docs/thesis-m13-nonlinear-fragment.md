@@ -236,7 +236,7 @@ All claims below are machine-checked by `make test` (exit 0):
 5. **Quantifiers** beyond element axioms (`v[*]`) and `sorted` are absent.
 6. **Concurrency.** `!Par` is runtime-checked, not yet in `--verify`.
 
-These are honest frontiers for a PhD-scale continuation; M13 is the
+These are honest frontiers for further work; M13 is the
 Master’s-scale closure of the “nonlinear condition + bitwise envelope”
 chapter.
 
@@ -278,4 +278,4 @@ make test   # full regression including M0–M13
 
 ---
 
-*Galactic University draft — Baga project. Keep the jokes; keep the theorems tighter.*
+*Baga project — research note (M13). Sound, incomplete; frontiers named.*

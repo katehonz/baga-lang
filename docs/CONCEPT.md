@@ -53,26 +53,22 @@ fn main() {
 Това е effect system с explicit effect polymorphism и effect inference.
 Koka го прави академично. Бага го прави практично.
 
-### 3. Автоматично извлечени доказателства
+### 3. Proof sketches + статични сертификати
 
-Компилаторът извлича четими доказателства от кода. Не ги пишеш. Не доказваш.
+Компилаторът издава **четими скици** (`--proofs`) и **статични вердикти**
+(`--verify`: PROVEN / REFUTED+witness / UNKNOWN) във заявения фрагмент.
+Това не са proof objects в смисъла на Coq/Lean — са структуриран текст плюс
+линеен-аритметичен сертификат, където фрагментът стига.
 
 ```
-extracted proof:
-  theorem sort_preserves_elements:
-    ∀ arr arr'. sort(arr) = arr' → multiset(arr) = multiset(arr')
-
-  theorem sort_produces_sorted:
-    ∀ arr arr'. sort(arr) = arr' → sorted(arr')
-
-  theorem sort_terminates:
-    ∀ arr. terminates(sort(arr))
+proof sketch + verify:
+  theorem sort_preserves_elements: …
+  theorem sort_produces_sorted: …
+  status: PROVEN | REFUTED (counterexample) | UNKNOWN
 ```
 
-Не Coq. Не Lean. Нормален текст, който човек може да прочете и разбере.
-
-Proof extraction (Coq) + literate programming (Knuth) + gradual verification (Dafny).
-Парчетата ги има. Заедно — не.
+Рекомбинация: proof extraction (Coq) + literate programming (Knuth) + gradual
+verification (Dafny) — в zero-dep компилатор с explicit incompleteness.
 
 ## Защо сега
 
@@ -80,22 +76,21 @@ Proof extraction (Coq) + literate programming (Knuth) + gradual verification (Da
 |---|---|
 | Човек пише код | AI пише код, човек верифицира |
 | Грешките са runtime изненади | Грешките трябва да са видими в типа |
-| Доказателствата са за математици | Доказателствата трябва да са автоматични и четими |
+| Доказателствата са за специалисти | Скици + сертификати, четими от човек или AI |
 
 Rust отговори на „как да нямаме segfault". Добър отговор.
 Но въпросът от 2026 не е „как да нямаме segfault".
 Въпросът е **„как да вярваме на код, който не сме писали"**.
 
-## Философия
+## Принципи
 
-Бага е багатур. Бие се сам. Не зависи от никого.
+- **Нула зависимости** в ядрото: C + `gcc` + `make`. LLVM е опционален backend.
+- **Soundness над completeness**: PROVEN изисква сертификат; извън фрагмента — UNKNOWN.
+- **Auditability**: Fourier–Motzkin ядро, четими свидетели, без външен SMT.
+- **Self-hosting**: `baga → baga2 → baga3`; fixed point (`baga2` ≡ `baga3`) е регресия, не ритуал.
+- **Рекомбинация**: не е нужна нова математика — нужна е sound, одитируема комбинация.
 
-- Компилатор на C. Нула зависимости. `gcc` е на всяка машина от 1987.
-- Self-hosting като ритуал. `baga → baga2 → baga3`. Ако `baga2 == baga3` — работи.
-- C transpiler първо. После LLVM за release. (Собствен JIT за REPL — по-късно.)
-
-Не е нужно да измисляш нова математика.
-Трябва да измислиш правилната рекомбинация за правилния момент.
+Името *Бага* е българско; кирилицата в идентификаторите е first-class.
 
 ## Синтаксис
 
@@ -168,6 +163,6 @@ impl Точка {
 - Компилаторът проверява impl срещу spec
 - AI consumer workflow
 
-### Фаза 6: Proof extraction
-- Автоматично извличане на четими доказателства
+### Фаза 6: Proof sketches + static verify
+- Четими скици (`--proofs`) и сертификати във фрагмента (`--verify`)
 - Интеграция със spec системата

@@ -1,7 +1,8 @@
 # A Self-Contained, Sound, Auditable Verifier by Recombination
 
-**Dissertation — binding document (front matter, chapter map, conclusion)**
-*The Baga project, milestones M0–M18*
+**Research monograph — binding document (front matter, chapter map, conclusion)**
+*The Baga project, milestones M0–M18. Claims are tied to artifacts:
+`make test`, `--verify` certificates, and concrete witnesses.*
 
 > The chapters below are the four research notes
 > `thesis-m13-nonlinear-fragment.md`, `thesis-m14-par-fragment.md` +
@@ -18,7 +19,7 @@ Can a useful static verifier be built with **no external solver**, **no
 unsound abstraction**, and **no new proof theory** — by recombining classical
 pieces (Fourier–Motzkin elimination, Farkas' lemma, integer tightening,
 symbolic execution, effect rows, rely–guarantee) in the right way? This
-dissertation answers *yes, up to an explicit and honest frontier*, through
+monograph answers *yes, up to an explicit and honest frontier*, through
 eighteen milestones of the Baga compiler. The verifier reasons over
 mathematical integers with a pure linear-arithmetic core, then extends its
 reach by *sound, incomplete* envelopes — recorded products and bitwise
@@ -43,7 +44,7 @@ The 2026 question, per the project's concept note, is not "how do we avoid
 segfaults" — Rust answered that. It is **"how do we trust code we did not
 write"**, in an era when an AI writes the code and a human verifies it. Three
 pillars follow: specifications as first-class citizens; effects as dimensions
-of the type; and automatically extracted, *readable* proofs. The verifier is
+of the type; and readable *proof sketches*, with static certificates where `--verify` decides. The verifier is
 the engine that makes the first two pillars mean something.
 
 ### 1.2 The thesis
@@ -68,9 +69,9 @@ wrapped by product/bitwise axiom schemas (M8–M13); it discharges fork–join a
 channel obligations by *adding path constraints* rather than new theory
 (M14, M16, M17); it searches exact arithmetic bounds (M15); and its verdicts
 become an effect (M18). The verifier grows by *accreting sound facts onto the
-same core*, never by replacing it. That continuity is the dissertation's
-structural claim, and M18 is its proof: the newest feature reuses the oldest
-machinery unchanged.
+same core*, never by replacing it. That continuity is the monograph's
+structural claim, and M18 is its demonstration: the newest feature reuses the
+oldest machinery unchanged.
 
 ---
 
@@ -143,7 +144,7 @@ without ever shipping a false proof).
 ## 3. What holds the argument together
 
 Three commitments are never broken across all eighteen milestones, and the
-dissertation is weaker wherever any of them is even tempted:
+argument is weaker wherever any of them is even tempted:
 
 1. **Soundness is non-negotiable.** No milestone ships a false PROVEN or a
    false REFUTED. When the fragment ends, the verdict is UNKNOWN — and M15
@@ -160,14 +161,14 @@ dissertation is weaker wherever any of them is even tempted:
    evidence.
 
 The recurring move — *extend reach by accreting sound facts onto a fixed
-core, and report the boundary honestly* — is the method the dissertation
+core, and report the boundary honestly* — is the method this monograph
 demonstrates and the method it recommends.
 
 ---
 
 ## 4. Conclusion
 
-The dissertation set out to show that a verifier can be **useful, sound,
+The work set out to show that a verifier can be **useful, sound,
 auditable, and dependency-free** at once, by recombination rather than
 invention. The four chapters are the evidence:
 
@@ -216,5 +217,5 @@ make && make test && make self && make test-llvm   # the regression oracle
 
 ---
 
-*Galactic University draft — Baga project. One core, one ethic, one judgement.
-The pillars agree. ⚔️*
+*Baga project — research monograph. One decision core, one soundness ethic,
+one typing-and-verification judgement.*

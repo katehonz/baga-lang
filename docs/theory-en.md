@@ -2,9 +2,9 @@
 
 > *Nothing is new. But nothing is timely. Linear logic is from 1987. It took 30 years to become Rust. Effect systems are from 2003. Fourier–Motzkin is from 1826/1936. Maybe now is the time.*
 
-This document presents the formal mathematical foundations underlying the Baga programming language. Baga is built on three pillars — spec-first verification, effects as type dimensions, and automatic proof extraction — each of which draws on deep results from type theory, algebra, real geometry of polyhedra, and program logic. We develop the theory from first principles, connecting Baga's concrete syntax to the abstract mathematics that gives it meaning.
+This document presents the formal mathematical foundations underlying the Baga programming language. Baga is built on three pillars — spec-first verification, effects as type dimensions, and readable proof sketches backed by a static verifier — each of which draws on results from type theory, algebra, polyhedral geometry, and program logic. We develop the theory from first principles, connecting Baga's concrete syntax to the mathematics that gives it meaning.
 
-**Fair warning.** Ordinary undergraduate software-engineering programmes teach syntax, OOP, and HTTP. They do **not** teach join-semilattices of effect rows, Hoare triples with decreases measures, Fourier–Motzkin elimination over ℚ, Farkas certificates, the ℤ/ℚ gap for strict inequalities, or sound axiom envelopes for nonlinear products. This document does. Read it as the mathematical spine of the compiler, not as a tutorial.
+**Scope.** Mathematical spine of the compiler, not a tutorial: join-semilattices of effect rows, Hoare triples with decreases measures, Fourier–Motzkin elimination over ℚ, Farkas certificates, the ℤ/ℚ gap for strict inequalities, and sound axiom envelopes for nonlinear products. Claims are discharged by artifacts (`--verify`, certificates, witnesses).
 
 ---
 
@@ -46,7 +46,11 @@ The typing rules are:
 
 **Theorem (Strong Normalization).** Every well-typed term in STLC terminates.
 
-These two properties — safety and termination — are inherited by Baga's core calculus and extended with effects and specifications.
+**Scope note.** Progress and preservation are the type-safety ideal for Baga's
+typed core. **Strong normalization does not hold for full Baga** — the language
+has `while`, general recursion, and `!IO`. Termination is recovered only where
+stated: pure STLC-style fragments, or recursion with a discharged `decreases`
+measure under `--verify` (full correctness for that function).
 
 ### 1.2 The Curry-Howard Correspondence
 
@@ -1114,9 +1118,15 @@ A reported counterexample evaluates to a true violation after deriving all produ
 | Quantifier-free BV | Decidable, exp | Identity envelope only |
 | Arbitrary semantic properties | Undecidable (Rice) | Fragment gate → UNKNOWN |
 
-### 7.12 What this is *not* taught as in software universities
+### 7.12 Placement among related tools
 
-A typical SE bachelor's degree covers none of: polyhedral path conditions, Farkas lemmas, the ℤ/ℚ gap, well-founded decreases measures, assume–guarantee recursion, or sound incompleteness as a first-class design choice. Those topics live in formal methods / PL theory tracks — if at all. Baga embeds them in a zero-dependency C compiler so that AI-written code faces a judge that knows more mathematics than the average bot prompt.
+The decision core is classical formal-methods material (polyhedral path
+conditions, Farkas certificates, the ℤ/ℚ gap, well-founded `decreases`,
+assume–guarantee recursion, sound incompleteness as design). The engineering
+choice is to embed that material in a **zero-dependency C compiler** with
+readable witnesses, rather than behind an external SMT solver. Completeness
+is deliberately sacrificed for auditability and speed; the fragment gate
+makes the sacrifice explicit.
 
 **Artifact.** `src/verify.c`; examples under `examples/verify/`; research note `docs/thesis-m13-nonlinear-fragment.md`.
 
@@ -1249,7 +1259,7 @@ certificate, the verifier checks it, and `--proofs` emits it as
 (pillar 2) and the verifier (pillar 1) become the same judgement. Note:
 `docs/thesis-m18-overflow-effect.md`; a map of the remaining frontiers
 (liveness, full BV, rich polynomials) — `docs/thesis-open-problems.md`; the
-binding dissertation document — `docs/thesis.md`.
+binding research monograph — `docs/thesis.md`.
 
 ---
 

@@ -29,7 +29,11 @@
 - Examples: `examples/verify/ovf_eff_{safe,refuted,declared,unknown,redundant,skip,propagate,propagate_ok}.baga`.
 - Notes: `docs/thesis-m18-overflow-effect.md` (the culmination),
   `docs/thesis-open-problems.md` (liveness / full BV / rich polynomials),
-  `docs/thesis.md` (binding dissertation document).
+  `docs/thesis.md` (binding research monograph).
+- Doc seriousness pass: research monograph/notes without degree theatre;
+  proof sketches vs LA certificates; CLI/`--verify` recursion claim;
+  self-host LOC (~2660); STLC SN not claimed for full Baga; theory placement
+  among tools instead of curriculum comparisons.
 
 ### Static verification — M17: pair abstraction (`cell2` + channel pair APIs)
 - `cell2(a,b)` / `cell2_0(p)` / `cell2_1(p)` are exact rewrites in the

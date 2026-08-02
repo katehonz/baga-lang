@@ -1,6 +1,6 @@
 # Verifying Structured Concurrency Without a Memory Model
 
-**Working title (PhD-scale research note, slice 1)**
+**Research note (M14)**
 *Fork–join determinism and handle protocols over a Fourier–Motzkin core*
 
 **Artifact:** the Baga compiler (`--verify`), milestone M14
@@ -121,7 +121,7 @@ interval is exact.
 
 1. **No cross-thread content invariants.** "Every value on channel `c` is
    positive" requires relating send and recv sites across threads —
-   rely–guarantee over channel contents. This is the real PhD-scale problem
+   rely–guarantee over channel contents. This is the hard remaining problem
    and is deliberately out of slice 1.
 2. **No liveness.** Deadlock freedom, lock ordering, and termination of
    blocking `recv` are untouched (partial-correctness reading throughout).
@@ -171,5 +171,4 @@ make test                                            # full regression incl. M14
 
 ---
 
-*Galactic University draft — Baga project. Slice 1 of the concurrency chapter:
-the part where the absence of a feature (shared state) is the feature.*
+*Baga project — research note (M14). Structured concurrency without shared state.*

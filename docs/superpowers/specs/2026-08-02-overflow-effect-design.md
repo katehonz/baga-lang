@@ -21,7 +21,7 @@ dimension so that:
 - the effect system and the verifier **become one**: presence/absence of
   `!Overflow` in the type is exactly the verifier's arithmetic-safety verdict.
 
-This is the dissertation's culmination: pillar 2 ("ефекти като измерения на
+This is the arc's culmination: pillar 2 ("ефекти като измерения на
 типа") meets pillar 1 depth (static verification). No new decision procedure —
 M18 reuses the M15 kind-4 obligations and the FM core wholesale.
 

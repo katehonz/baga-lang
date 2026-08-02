@@ -2,7 +2,7 @@
 
 **Version [0.2.0](VERSION)** · [Changelog](CHANGELOG.md)
 
-**A programming language for the age of AI.** Spec-first verification. Effects as type dimensions. Automatically extracted proofs.
+**A programming language for the age of AI.** Spec-first verification. Effects as type dimensions. Readable proof sketches — and a sound static verifier for a stated fragment.
 
 > *"The question is not 'what is new'. The question is 'what has not been glued together yet'."*
 
@@ -10,7 +10,7 @@ Baga (Бага) is a programming language built on three pillars:
 
 1. **Spec-first verification** — specifications are first-class citizens. The compiler checks implementations against specs.
 2. **Effects as type dimensions** — `String !IO !NotFound` is a different type from `String`. Errors are visible in the type system.
-3. **Automatic proof extraction** — the compiler extracts human-readable theorems from code. Not Coq. Not Lean. Readable text.
+3. **Readable proof sketches** — the compiler extracts human-readable *sketches* from code and specs. Not Coq. Not Lean. Not machine-checked proof objects — structured text a human (or AI) can audit.
 
 ## Quick Start
 
@@ -89,7 +89,7 @@ proofs for факториел:
     факториел is pure (no declared effects)
 ```
 
-Not formal proofs. Readable specifications that humans (or AI) can verify.
+Not formal proof objects. Readable sketches; contracts that pass `--verify` are backed by linear-arithmetic certificates (or honest UNKNOWN).
 
 ## Examples
 
@@ -192,7 +192,7 @@ baga/
 ├── self/
 │   ├── lexer.baga          # Self-hosted lexer
 │   ├── parser.baga         # Self-hosted parser
-│   └── compiler.baga       # Self-hosted compiler (~960 lines)
+│   └── compiler.baga       # Self-hosted compiler (~2660 lines)
 ├── examples/               # Example programs
 ├── docs/                   # Documentation (EN + BG)
 ├── Makefile
@@ -212,22 +212,22 @@ baga/
 | `--specs` | Print spec documentation |
 | `--proofs` | Extract proof sketches (static verification status for specs, termination verdicts, loop-invariant lemmas) |
 | `--test-specs` | Property-based test of spec contracts (random inputs, deterministic seed) |
-| `--verify` | Static verification of `requires`/`ensures` (sound; linear i64, loops via invariants, no recursion — see below) |
+| `--verify` | Static verification of `requires`/`ensures` (sound fragment: linear-ish i64, loops via invariants, recursion via assume–guarantee + optional `decreases` — see below) |
 | `--json` | Machine-readable JSON output for `--verify` (verdicts + counterexamples; for AI agents and CI) |
 
 ## Documentation
 
-- **[Dissertation (binding document)](docs/thesis.md)** — the four chapters as one arc: front matter, chapter map, conclusion
+- **[Research monograph (binding document)](docs/thesis.md)** — M0–M18 as one arc: front matter, chapter map, conclusion
 - [Theory & Mathematics (EN)](docs/theory-en.md) — Type theory, effects, Hoare, **Fourier–Motzkin / Farkas / nonlinear envelopes (M0–M18)**
-- [Теория и Математика (BG)](docs/theory-bg.md) — Типове, ефекти, Хоар, **FM / Farkas / нелинейни обвивки (M0–M18)** — не се учи в обикновен SE курс
-- [Thesis note M13](docs/thesis-m13-nonlinear-fragment.md) — research write-up of the nonlinear + bitwise fragment
-- [Thesis note M14](docs/thesis-m14-par-fragment.md) — fork–join determinism + handle protocols (concurrency in `--verify`)
-- [Thesis note M15](docs/thesis-m15-arith-safety.md) — the ℤ-vs-i64 bridge (arithmetic safety) + the loop-havoc soundness fix
-- [Thesis note M16](docs/thesis-m16-channel-invariants.md) — channel content invariants, cross-thread rely–guarantee
-- [Thesis note M17](docs/thesis-m17-pairs.md) — pair abstraction: cell2 rewrites + channel pair APIs
+- [Теория и Математика (BG)](docs/theory-bg.md) — Типове, ефекти, Хоар, **FM / Farkas / нелинейни обвивки (M0–M18)**
+- [Research note M13](docs/thesis-m13-nonlinear-fragment.md) — nonlinear + bitwise fragment
+- [Research note M14](docs/thesis-m14-par-fragment.md) — fork–join determinism + handle protocols (concurrency in `--verify`)
+- [Research note M15](docs/thesis-m15-arith-safety.md) — the ℤ-vs-i64 bridge (arithmetic safety) + the loop-havoc soundness fix
+- [Research note M16](docs/thesis-m16-channel-invariants.md) — channel content invariants, cross-thread rely–guarantee
+- [Research note M17](docs/thesis-m17-pairs.md) — pair abstraction: cell2 rewrites + channel pair APIs
 - [Evaluation](docs/evaluation.md) — Baga `--verify` vs bit-precise model checking (methodology + results, `bench/`)
-- [Thesis note M18](docs/thesis-m18-overflow-effect.md) — **the culmination: `!Overflow` as an effect (the effect system ≡ the verifier)**
-- [Open problems](docs/thesis-open-problems.md) — the honest frontier: liveness, full bitvectors, rich polynomials
+- [Research note M18](docs/thesis-m18-overflow-effect.md) — **culmination: `!Overflow` as an effect (effect system ≡ verifier judgement)**
+- [Open problems](docs/thesis-open-problems.md) — honest frontier: liveness, full bitvectors, rich polynomials
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen
@@ -471,16 +471,15 @@ liveness for channels, full bitvectors, rich polynomials.
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written
 > `v: [i64]` and used with the `vec_*` builtins uniformly.
 
-## Philosophy
+## Design principles
 
-Baga is a *bagatur* — a Bulgarian warrior. It fights alone. It depends on no one.
+- **Zero dependencies** for the core compiler: C + `gcc` + `make`. Optional backends (LLVM) are additive.
+- **Soundness over completeness**: PROVEN requires a certificate; outside the fragment the verdict is UNKNOWN.
+- **Auditability**: Fourier–Motzkin core, readable witnesses, no external solver.
+- **Self-hosting**: `make self` checks the fixed point (`baga2` reproduces `baga3`).
+- **Identity**: Cyrillic identifiers are first-class (the name *Бага* is Bulgarian).
 
-- Compiler in C. Zero dependencies. `gcc` has been on every machine since 1987.
-- Optional backends (LLVM) are additive — the core stays dependency-free.
-- Self-hosting as a rite of passage.
-- Cyrillic identifiers. Because language is identity.
-
-> *Nothing is new. But nothing is timely. Linear logic is from 1987. It took 30 years to become Rust. Effect systems are from 2003. Maybe now is the time.*
+> *Nothing is new. The question is what has not been glued together yet — and whether the glue is sound.*
 
 ## License
 

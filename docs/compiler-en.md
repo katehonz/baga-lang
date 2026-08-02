@@ -9,8 +9,8 @@ native binaries.
 
 The project has two compiler implementations:
 
-1. **C Bootstrap Compiler** (~3500 lines of C) — the full-featured reference implementation
-2. **Self-Hosted Compiler** (~960 lines of Baga) — proves the language can compile itself
+1. **C Bootstrap Compiler** (~13k lines of C across `src/`, incl. `verify.c`) — the full-featured reference implementation
+2. **Self-Hosted Compiler** (~2660 lines of Baga in `self/compiler.baga`, plus lexer/parser) — fixed-point self-compilation (`baga2 == baga3`)
 
 ---
 

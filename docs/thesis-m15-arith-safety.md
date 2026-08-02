@@ -1,6 +1,6 @@
 # Closing the ℤ-vs-i64 Gap: Arithmetic Safety for an Idealized Verifier
 
-**Working title (PhD-scale research note, slice 2)**
+**Research note (M15)**
 *Per-operation overflow obligations, exact bound search over Fourier–Motzkin,
 and two soundness bugs found along the way*
 
@@ -186,5 +186,4 @@ make test                                        # full regression incl. M15
 
 ---
 
-*Galactic University draft — Baga project. The milestone that audits the
-auditor: two soundness bugs found, zero false alarms shipped.*
+*Baga project — research note (M15). ℤ-vs-i64 bridge; two soundness bugs found and fixed.*

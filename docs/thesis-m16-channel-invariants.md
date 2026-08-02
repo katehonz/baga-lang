@@ -1,6 +1,6 @@
 # Channel Content Invariants: Rely–Guarantee Without a Memory Model
 
-**Working title (PhD-scale research note, slice 3)**
+**Research note (M16)**
 *Quantified payload predicates over CSP channels, discharged at spawn*
 
 **Artifact:** the Baga compiler (`--verify`), milestone M16
@@ -176,5 +176,4 @@ make test
 
 ---
 
-*Galactic University draft — Baga project. The concurrency chapter closes
-where it started: the absence of shared state made it short.*
+*Baga project — research note (M16). Channel content invariants via rely–guarantee.*

@@ -1,6 +1,6 @@
 # The Effect System and the Verifier Become One
 
-**Working title (PhD-scale research note, the culmination)**
+**Research note (M18 culmination of the M0–M18 arc)**
 *`!Overflow` as an effect dimension: arithmetic-safety analysis as effect
 inference, declaration as discharge*
 
@@ -26,7 +26,7 @@ declared) becomes its **discharge**. A function that omits `!Overflow`
 *claims* arithmetic safety and the verifier refutes the claim with a concrete
 witness when it is false; a function that declares `!Overflow` *advertises*
 the risk and is discharged — exactly as `!IO` is a permission, not a failure.
-The result is the dissertation's culmination: the effect system (pillar 2,
+The result is the arc's culmination: the effect system (pillar 2,
 "ефекти като измерения на типа") and the verifier (pillar 1, depth) are no
 longer two features that happen to share a compiler — they are the same
 judgement seen from two sides.
@@ -271,5 +271,4 @@ make test && make self && make test-llvm
 
 ---
 
-*Galactic University draft — Baga project. The culmination: the two pillars
-were always the same judgement. The compiler finally agrees. ⚔️*
+*Baga project — research note (M18). Effect system and verifier as one judgement.*

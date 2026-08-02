@@ -9,8 +9,9 @@ Baga (Бага) is a compiled, statically typed language built on three ideas:
    implementations against their specifications.
 2. **Effects as type dimensions** — `str !IO !NotFound` is a *different type*
    from `str`. Errors live in the type system, not in runtime surprises.
-3. **Automatic proof extraction** — the compiler emits human-readable proof
-   sketches from your code.
+3. **Readable proof sketches** — the compiler emits human-readable sketches
+   from code and specs; `--verify` adds certificates (or honest UNKNOWN)
+   inside its fragment.
 
 Baga transpiles to C and compiles with `gcc`. It has zero runtime
 dependencies. Identifiers may be written in Latin or Cyrillic — language is

@@ -1,6 +1,6 @@
 # Open Problems: A Map of the Remaining Darkness
 
-**Dissertation closing chapter**
+**Monograph closing chapter**
 *Three frontiers — liveness, full bitvectors, rich polynomials — and exactly
 which corner of the sound / zero-dependency / complete triangle each one costs*
 
@@ -116,7 +116,7 @@ cost is the ethic: a genuine BV procedure means either an external SMT solver
 (breaking zero-dependency outright) or an in-house SAT/BV core (still
 zero-*external*-dependency, but no longer "a small auditable FM loop"). This
 is the frontier where the zero-dependency corner is genuinely threatened, and
-the dissertation is honest that it may not be closable on the original terms.
+this monograph is honest that it may not be closable on the original terms.
 
 ### 2.4 Feasibility sketch
 
@@ -184,7 +184,7 @@ Again two graded options:
    hard part).
 
 The honest verdict: option 1 is the natural next step and preserves every
-property the dissertation claims; option 2's checker-only variant is
+property the monograph claims; option 2's checker-only variant is
 intriguing (finding is hard, checking is cheap — the same asymmetry that makes
 `--verify` possible at all) but speculative.
 
@@ -207,7 +207,7 @@ None of them is a reason to distrust the finished work. They are the honest
 boundary of a verifier that chose, at every milestone, to be **sound first,
 auditable second, and complete only as far as those two allow**. The audience
 that asks "but can it do liveness / bitvectors / polynomials?" is asking the
-right question; the dissertation's answer is "not yet, and here is exactly
+right question; the monograph's answer is "not yet, and here is exactly
 what it would cost — and here is the one (liveness) that might be had cheaply."
 
 That map of the darkness is itself a contribution. A verifier that knows
@@ -215,5 +215,4 @@ precisely where it stops is worth more than one that guesses.
 
 ---
 
-*Galactic University draft — Baga project. Keep the jokes; keep the theorems
-tighter; and never pretend the darkness is smaller than it is. ⚔️*
+*Baga project — open problems. Liveness, full bitvectors, rich polynomials.*

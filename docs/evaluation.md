@@ -79,4 +79,4 @@ Within its deliberately sound fragment, Baga matches what a bit-precise
 model checker reports — in milliseconds, with readable witnesses, and with
 a concurrency fragment CBMC does not reach. Outside the fragment it says
 UNKNOWN instead of guessing. That trade — *coverage for trust and speed* —
-is the thesis.
+is the technical claim.

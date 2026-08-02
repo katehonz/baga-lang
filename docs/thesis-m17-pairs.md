@@ -1,6 +1,6 @@
 # A Pair Abstraction for a Linear Verifier
 
-**Working title (PhD-scale research note, slice 4)**
+**Research note (M17)**
 *Exact rewrites for `cell2`, status ranges for channel pair APIs,
 and contracts over packed worker arguments*
 
@@ -146,5 +146,4 @@ make test
 
 ---
 
-*Galactic University draft — Baga project. Slice 4: the deferred list is now
-empty.*
+*Baga project — research note (M17). Pair abstraction for composite channel results.*
