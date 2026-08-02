@@ -303,6 +303,16 @@ test: $(BIN)
 		&& grep -q "mod_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: mod_const — n%%k bounds + soundness (M9b)" \
 		|| { echo "FAIL: mod_const"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/poly_depth.baga > /tmp/baga_verify_out.txt; \
+	grep -c "ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -qE '^[4-9]$$|^[1-9][0-9]' \
+		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: poly_depth — square dominance + product mono (M10)" \
+		|| { echo "FAIL: poly_depth"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/div_mod_id.baga > /tmp/baga_verify_out.txt; \
+	grep -q "rebuild:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "rebuild_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: div_mod_id — n = q*k + r (M10)" \
+		|| { echo "FAIL: div_mod_id"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) examples/par_select.baga > /tmp/baga_par_sel_out.txt; \
 	printf "30\n2\n" | diff - /tmp/baga_par_sel_out.txt > /dev/null \
 		&& echo "OK: chan_select2_wait/timeout" \

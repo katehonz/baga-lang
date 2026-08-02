@@ -1,0 +1,29 @@
+// M10: reconstruction identity n = (n/k)*k + (n%k)  (C trunc semantics).
+spec rebuild {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output == n
+}
+fn rebuild(n: i64) -> i64 {
+    let q = n / 5
+    let r = n % 5
+    return q * 5 + r
+}
+
+// wrong rebuild — should refute
+spec rebuild_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output == n + 1
+}
+fn rebuild_bad(n: i64) -> i64 {
+    let q = n / 5
+    let r = n % 5
+    return q * 5 + r
+}
+
+fn main() {
+    print(rebuild(17))
+}

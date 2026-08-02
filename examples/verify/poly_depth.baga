@@ -1,0 +1,49 @@
+// M10: square dominance, x*x - x, product monotonicity.
+
+// Over ℤ, x*x >= x always (x*x - x = x(x-1) ≥ 0 for consecutive integers).
+spec square_ge_x {
+    input: x: i64
+    output: i64
+    ensures: output >= x, output >= 0
+}
+fn square_ge_x(x: i64) -> i64 {
+    return x * x
+}
+
+// x*x - x >= 0 when x >= 1 (also always, via square dominance).
+spec x2_minus_x {
+    input: x: i64
+    output: i64
+    requires: x >= 1
+    ensures: output >= 0
+}
+fn x2_minus_x(x: i64) -> i64 {
+    return x * x - x
+}
+
+// Monotonicity: a>=0, b>=1 ⇒ a*b >= a
+spec prod_ge_a {
+    input: a: i64, b: i64
+    output: i64
+    requires: a >= 0, b >= 1
+    ensures: output >= a
+}
+fn prod_ge_a(a: i64, b: i64) -> i64 {
+    return a * b
+}
+
+// a>=1, b>=0 ⇒ a*b >= b
+spec prod_ge_b {
+    input: a: i64, b: i64
+    output: i64
+    requires: a >= 1, b >= 0
+    ensures: output >= b
+}
+fn prod_ge_b(a: i64, b: i64) -> i64 {
+    return a * b
+}
+
+fn main() {
+    print(x2_minus_x(5))
+    print(square_ge_x(0 - 3))
+}

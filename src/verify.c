@@ -400,22 +400,35 @@ static int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, int negated, Formula *
         return bool_to_dnf(e->operand, env, vlen, !negated, out);
     if (e->kind == NODE_BINARY && is_cmp(e->bin_op))
         return cmp_to_formula(e, env, vlen, negated, out);
-    if (e->kind == NODE_BINARY && e->bin_op == OP_EQ && !negated) {
-        /* a==b -> (a<=b)&&(a>=b) */
-        Node l = *e, r = *e;
-        l.bin_op = OP_LE; r.bin_op = OP_GE;
-        Formula a, b;
-        if (!bool_to_dnf(&l, env, vlen, 0, &a)) return 0;
-        if (!bool_to_dnf(&r, env, vlen, 0, &b)) { f_free(&a); return 0; }
-        /* cartesian product */
-        f_init(out);
-        for (int i = 0; i < a.n; i++) for (int j = 0; j < b.n; j++) {
-            ConsList cl; cl_init(&cl);
-            for (int x = 0; x < a.br[i].n; x++) { Constraint c = a.br[i].c[x]; cl_push(&cl, mk_cons(lin_clone(&c.lhs), c.op, c.rhs)); }
-            for (int x = 0; x < b.br[j].n; x++) { Constraint c = b.br[j].c[x]; cl_push(&cl, mk_cons(lin_clone(&c.lhs), c.op, c.rhs)); }
-            f_push_branch(out, cl);
+    if (e->kind == NODE_BINARY && e->bin_op == OP_EQ) {
+        if (!negated) {
+            /* a==b -> (a<=b)&&(a>=b) */
+            Node l = *e, r = *e;
+            l.bin_op = OP_LE; r.bin_op = OP_GE;
+            Formula a, b;
+            if (!bool_to_dnf(&l, env, vlen, 0, &a)) return 0;
+            if (!bool_to_dnf(&r, env, vlen, 0, &b)) { f_free(&a); return 0; }
+            /* cartesian product */
+            f_init(out);
+            for (int i = 0; i < a.n; i++) for (int j = 0; j < b.n; j++) {
+                ConsList cl; cl_init(&cl);
+                for (int x = 0; x < a.br[i].n; x++) { Constraint c = a.br[i].c[x]; cl_push(&cl, mk_cons(lin_clone(&c.lhs), c.op, c.rhs)); }
+                for (int x = 0; x < b.br[j].n; x++) { Constraint c = b.br[j].c[x]; cl_push(&cl, mk_cons(lin_clone(&c.lhs), c.op, c.rhs)); }
+                f_push_branch(out, cl);
+            }
+            f_free(&a); f_free(&b);
+            return 1;
         }
-        f_free(&a); f_free(&b);
+        /* ¬(a==b) -> (a<b)∨(a>b)  (needed so ensures output==n can be proven) */
+        Node lt = *e, gt = *e;
+        lt.bin_op = OP_LT; gt.bin_op = OP_GT;
+        Formula L, R;
+        if (!bool_to_dnf(&lt, env, vlen, 0, &L)) return 0;
+        if (!bool_to_dnf(&gt, env, vlen, 0, &R)) { f_free(&L); return 0; }
+        f_init(out);
+        for (int i = 0; i < L.n; i++) f_push_branch(out, L.br[i]);
+        for (int i = 0; i < R.n; i++) f_push_branch(out, R.br[i]);
+        free(L.br); free(R.br);
         return 1;
     }
     if (e->kind == NODE_BINARY && (e->bin_op == OP_AND || e->bin_op == OP_OR)) {
@@ -1568,21 +1581,26 @@ static void path_push_le(ConsList *path, const char *pv, int64_t K) {
     cl_push(path, mk_cons(v, C_LE, rat_zero()));
 }
 
-/* M8b + M9: inject TRUE facts about symbolic product/div vars into the path.
- * Products (M8b/M9 sign table — only when side conditions are PROVEN):
- *   x*x >= 0                       (squares)
- *   fa >= 1 ∧ fb >= 1  ⇒  p >= 1
- *   fa <= -1 ∧ fb <= -1 ⇒  p >= 1
- *   fa >= 0 ∧ fb >= 0  ⇒  p >= 0
- *   fa <= 0 ∧ fb <= 0  ⇒  p >= 0
- *   fa >= 0 ∧ fb <= 0  ⇒  p <= 0
- *   fa <= 0 ∧ fb >= 0  ⇒  p <= 0
- *   fa >= 1 ∧ fb <= -1 ⇒  p <= -1
- *   fa <= -1 ∧ fb >= 1 ⇒  p <= -1
- * Division by constant d ≠ 0 (C trunc toward zero):
- *   d > 0 ∧ n >= 0  ⇒  q >= 0;   d > 0 ∧ n <= 0  ⇒  q <= 0
- *   d < 0 ∧ n >= 0  ⇒  q <= 0;   d < 0 ∧ n <= 0  ⇒  q >= 0
- * Absence of an unproven side condition ⇒ UNKNOWN downstream (sound). */
+/* Push pv - fa >= 0  (i.e. pv >= fa) as fa - pv <= 0. */
+static void path_push_ge_lin(ConsList *path, const char *pv, Lin *fa) {
+    Lin p = lin_var(pv);
+    Lin t = lin_sub(fa, &p);   /* fa - pv */
+    lin_free(&p);
+    cl_push(path, mk_cons(t, C_LE, rat_zero()));
+}
+
+/* Push equality lhs == 0 as two inequalities. Moves/frees nothing owned. */
+static void path_push_eq_zero(ConsList *path, Lin *expr) {
+    Lin a = lin_clone(expr);
+    Lin b = lin_neg(expr);
+    cl_push(path, mk_cons(a, C_LE, rat_zero()));
+    cl_push(path, mk_cons(b, C_LE, rat_zero()));
+}
+
+/* M8–M10: inject TRUE facts about product/div/mod vars.
+ * M10: square dominance (x*x >= x and x*x >= -x over ℤ), product
+ * monotonicity (fa>=1,fb>=1 ⇒ p>=fa and p>=fb; fa>=0,fb>=1 ⇒ p>=fa; …),
+ * and div–mod reconstruction (n = k*q + r) when both exist for same n,k. */
 static void inject_prod_axioms(State *st) {
     for (int i = 0; i < st->reads.n; i++) {
         ReadEntry *e = &st->reads.r[i];
@@ -1624,7 +1642,14 @@ static void inject_prod_axioms(State *st) {
             continue;
         }
         if (!e->is_prod) continue;
-        if (lin_eq(&e->fa, &e->fb)) { path_push_ge(&st->path, e->var, 0); continue; }
+        if (lin_eq(&e->fa, &e->fb)) {
+            /* Square s = v*v over ℤ: s >= 0, s >= v, s >= -v
+             * (s - v = v(v-1), s + v = v(v+1) are products of consecutives). */
+            path_push_ge(&st->path, e->var, 0);
+            path_push_ge_lin(&st->path, e->var, &e->fa);
+            { Lin neg = lin_neg(&e->fa); path_push_ge_lin(&st->path, e->var, &neg); lin_free(&neg); }
+            continue;
+        }
         int fa_ge1 = path_proves_ge(st, &e->fa, 1);
         int fb_ge1 = path_proves_ge(st, &e->fb, 1);
         int fa_le_m1 = path_proves_le(st, &e->fa, -1);
@@ -1642,6 +1667,38 @@ static void inject_prod_axioms(State *st) {
         else if (fa_le_m1 && fb_ge1) path_push_le(&st->path, e->var, -1);
         else if (fa_ge0 && fb_le0) path_push_le(&st->path, e->var, 0);
         else if (fa_le0 && fb_ge0) path_push_le(&st->path, e->var, 0);
+
+        /* M10 monotonicity: p = fa*fb
+         * fa>=0, fb>=1 ⇒ p >= fa  (p - fa = fa*(fb-1) ≥ 0)
+         * fa>=1, fb>=0 ⇒ p >= fb */
+        if (fa_ge0 && fb_ge1) path_push_ge_lin(&st->path, e->var, &e->fa);
+        if (fa_ge1 && fb_ge0) path_push_ge_lin(&st->path, e->var, &e->fb);
+    }
+
+    /* M10: n = k*q + r when both div and mod share the same dividend & divisor. */
+    for (int i = 0; i < st->reads.n; i++) {
+        ReadEntry *d = &st->reads.r[i];
+        if (!d->is_div) continue;
+        if (!lin_is_const(&d->fb) || d->fb.c.den != 1 || d->fb.c.num == 0) continue;
+        int64_t k = d->fb.c.num;
+        for (int j = 0; j < st->reads.n; j++) {
+            ReadEntry *m = &st->reads.r[j];
+            if (!m->is_mod) continue;
+            if (!lin_is_const(&m->fb) || m->fb.c.den != 1 || m->fb.c.num != k) continue;
+            if (!lin_eq(&d->fa, &m->fa)) continue;
+            /* n - k*q - r == 0 */
+            Lin n = lin_clone(&d->fa);
+            Lin q = lin_var(d->var);
+            Lin kq = lin_scale(&q, rat_int(k));
+            lin_free(&q);
+            Lin r = lin_var(m->var);
+            Lin t = lin_sub(&n, &kq);
+            lin_free(&n); lin_free(&kq);
+            Lin eq = lin_sub(&t, &r);
+            lin_free(&t); lin_free(&r);
+            path_push_eq_zero(&st->path, &eq);
+            lin_free(&eq);
+        }
     }
 }
 

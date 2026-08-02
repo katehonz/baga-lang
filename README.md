@@ -233,7 +233,7 @@ baga/
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
 | 7 | **Static** spec verification (`--verify`): M0–M8 + **M9** product sign table + const division | ✅ |
-| 8 | General non-linear reasoning | ✅ M9 (sign/div); further polys later |
+| 8 | General non-linear reasoning | ✅ M9–M10 (sign/div/mod, square dom, mono, n=qk+r) |
 | 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
 | 10 | LLVM backend `!Par` parity (`libbaga_par.so` + lli `-load`) | ✅ |
 
@@ -340,9 +340,15 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   with C trunc-toward-zero sign axioms (`n>=0,k>0 ⇒ q>=0`, etc.). Witnesses
   derive `q = n/k` concretely. Examples: `sign_prod.baga`, `div_const.baga`,
   `sum_sq.baga`. **M9b** adds `n % k` for nonzero constant `k` with bounds
-  `0 <= n%k < k` when `n >= 0` (`mod_const.baga`). Still honest-UNKNOWN for
-  division/mod by a variable and general higher-degree reasoning beyond
-  products of linear forms.
+  `0 <= n%k < k` when `n >= 0` (`mod_const.baga`).
+
+- **M10** — **square dominance, product monotonicity, div–mod identity**.
+  For `s = v*v` over ℤ: `s >= 0`, `s >= v`, `s >= -v` (via consecutive
+  products). For `p = fa*fb`: if `fa>=0, fb>=1` then `p >= fa`; if
+  `fa>=1, fb>=0` then `p >= fb`. When both `n/k` and `n%k` appear for the
+  same constant `k`, inject `n = k*q + r`. Also fixed `¬(a==b)` conversion
+  so `ensures output == n` is provable. Examples: `poly_depth.baga`,
+  `div_mod_id.baga`. Still honest-UNKNOWN for division/mod by a variable.
 
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
 supported. Remaining: richer polynomials, variable divisors, feeding verified
