@@ -1,0 +1,29 @@
+{
+  "name": "baga-lang",
+  "displayName": "Baga ⚔️",
+  "description": "Syntax highlighting for the Baga programming language",
+  "version": "0.1.0",
+  "publisher": "baga",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "baga",
+        "aliases": ["Baga", "baga"],
+        "extensions": [".baga"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "baga",
+        "scopeName": "source.baga",
+        "path": "./syntaxes/baga.tmLanguage.json"
+      }
+    ]
+  }
+}

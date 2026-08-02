@@ -1,0 +1,114 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Baga",
+  "scopeName": "source.baga",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#effects" },
+    { "include": "#functions" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.baga",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.baga",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.baga",
+              "match": "\\\\."
+            },
+            {
+              "name": "meta.interpolation.baga",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "patterns": [
+                { "include": "#strings" },
+                { "include": "#numbers" },
+                { "include": "#keywords" },
+                { "include": "#functions" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.baga",
+          "match": "\\b0x[0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.baga",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.baga",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.baga",
+          "match": "\\b(if|else|while|for|in|match|return|break|continue|catch)\\b"
+        },
+        {
+          "name": "keyword.declaration.baga",
+          "match": "\\b(fn|let|mut|struct|impl|enum|spec|import|extern)\\b"
+        },
+        {
+          "name": "keyword.other.spec.baga",
+          "match": "\\b(requires|ensures|invariant|guarantees|input|output)\\b"
+        },
+        {
+          "name": "constant.language.baga",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.baga",
+          "match": "\\b(i64|f64|str|bool|bytes|void|Vec)\\b"
+        }
+      ]
+    },
+    "effects": {
+      "patterns": [
+        {
+          "name": "storage.modifier.effect.baga",
+          "match": "![A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_]*"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.baga",
+          "match": "(?<=fn\\s)[A-Za-zА-Яа-я_][A-Za-zА-Яа-я0-9_]*"
+        },
+        {
+          "name": "support.function.baga",
+          "match": "\\b(print|vec_new|vec_push|vec_get|vec_set|vec_len|vec_slice|vec_concat|arg|argv)\\b"
+        }
+      ]
+    }
+  }
+}

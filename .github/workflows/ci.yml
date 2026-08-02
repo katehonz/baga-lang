@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  core:
+    name: Core compiler (C backend, tests, self-hosting)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      - name: Test suite (examples, specs, verify, --json, FFI, http, jwt)
+        run: make test
+
+      - name: Self-hosting fixed point (baga2 == baga3)
+        run: make self
+
+  llvm:
+    name: LLVM backend (oracle vs C backend)
+    runs-on: ubuntu-22.04   # llvm-14 packages live here
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 14
+        run: sudo apt-get update && sudo apt-get install -y llvm-14
+
+      - name: Build LLVM backend
+        run: make llvm
+
+      - name: Oracle (C vs lli-14, byte-for-byte)
+        run: make test-llvm
