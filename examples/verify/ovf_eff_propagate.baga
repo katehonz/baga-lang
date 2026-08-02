@@ -1,0 +1,25 @@
+// M18: !Overflow се разпространява като всеки ефект. caller_bad вика risky
+// (която носи !Overflow), без да я декларира или хване — checker-ът отказва:
+// „необработен ефект !Overflow".
+
+spec risky {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 1
+}
+
+fn risky(n: i64) -> i64 !Overflow {
+    return n + 1
+}
+
+fn caller_bad(n: i64) -> i64 {
+    return risky(n)   // !Overflow изтича, необработен → compile грешка
+}
+
+fn main() {
+    print(0)
+}

@@ -1,0 +1,28 @@
+// M18: grow havoc-ва s в цикъла, така че s + 1 няма доказуема граница и няма
+// конкретен контрапример (havoc символите са абстрактни — M8 conclusiveness).
+// Аритметиката е честно НЕ МОГА ДА РЕША; без !Overflow верификаторът иска
+// декларация, но НЕ се проваля (UNKNOWN никога не гърми).
+
+spec grow {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 0
+}
+
+fn grow(n: i64) -> i64 {
+    let mut i: i64 = 0
+    let mut s: i64 = 0
+    while i < n invariant i >= 0 {
+        s = s + 1
+        i = i + 1
+    }
+    return s
+}
+
+fn main() {
+    print(grow(3))   // 3
+}

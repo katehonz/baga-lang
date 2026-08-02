@@ -1,0 +1,20 @@
+// M18: inc_bounded е доказано безопасна И декларира !Overflow — излишно, но
+// честно (свръхдекларирането на ефект е винаги позволено). Верификаторът
+// отбелязва, че декларацията е ненужна; типът е здрава свръхапроксимация.
+
+spec inc_bounded {
+    input:
+        n: i64
+    output: i64
+    requires: 0 <= n, n <= 100
+    ensures:
+        output >= 1
+}
+
+fn inc_bounded(n: i64) -> i64 !Overflow {
+    return n + 1
+}
+
+fn main() {
+    print(0)   // main не вика inc_bounded (тя носи !Overflow)
+}

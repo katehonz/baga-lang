@@ -1,0 +1,24 @@
+// M18: caller_ok декларира !Overflow, така че ефектът от risky е обработен —
+// файлът минава --check. (main не вика caller_ok.)
+
+spec risky {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 1
+}
+
+fn risky(n: i64) -> i64 !Overflow {
+    return n + 1
+}
+
+fn caller_ok(n: i64) -> i64 !Overflow {
+    return risky(n)   // декларира !Overflow → OK
+}
+
+fn main() {
+    print(0)
+}

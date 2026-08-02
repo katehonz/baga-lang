@@ -217,13 +217,16 @@ baga/
 
 ## Documentation
 
-- [Theory & Mathematics (EN)](docs/theory-en.md) — Type theory, effects, Hoare, **Fourier–Motzkin / Farkas / nonlinear envelopes (M0–M13)**
-- [Теория и Математика (BG)](docs/theory-bg.md) — Типове, ефекти, Хоар, **FM / Farkas / нелинейни обвивки (M0–M13)** — не се учи в обикновен SE курс
+- **[Dissertation (binding document)](docs/thesis.md)** — the four chapters as one arc: front matter, chapter map, conclusion
+- [Theory & Mathematics (EN)](docs/theory-en.md) — Type theory, effects, Hoare, **Fourier–Motzkin / Farkas / nonlinear envelopes (M0–M18)**
+- [Теория и Математика (BG)](docs/theory-bg.md) — Типове, ефекти, Хоар, **FM / Farkas / нелинейни обвивки (M0–M18)** — не се учи в обикновен SE курс
 - [Thesis note M13](docs/thesis-m13-nonlinear-fragment.md) — research write-up of the nonlinear + bitwise fragment
 - [Thesis note M14](docs/thesis-m14-par-fragment.md) — fork–join determinism + handle protocols (concurrency in `--verify`)
 - [Thesis note M15](docs/thesis-m15-arith-safety.md) — the ℤ-vs-i64 bridge (arithmetic safety) + the loop-havoc soundness fix
 - [Thesis note M16](docs/thesis-m16-channel-invariants.md) — channel content invariants, cross-thread rely–guarantee
 - [Thesis note M17](docs/thesis-m17-pairs.md) — pair abstraction: cell2 rewrites + channel pair APIs
+- [Thesis note M18](docs/thesis-m18-overflow-effect.md) — **the culmination: `!Overflow` as an effect (the effect system ≡ the verifier)**
+- [Open problems](docs/thesis-open-problems.md) — the honest frontier: liveness, full bitvectors, rich polynomials
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen
@@ -247,6 +250,7 @@ baga/
 | 12 | Arithmetic safety: ℤ-vs-i64 bridge + loop-havoc soundness fix (M15) | ✅ |
 | 13 | Channel content invariants + cross-thread discharge (M16) | ✅ |
 | 14 | Pair abstraction: cell2 + channel pair APIs in `--verify` (M17) | ✅ |
+| 15 | **`!Overflow` as an effect — the effect system ≡ the verifier (M18)** | ✅ |
 
 ### Static verification (`--verify`)
 
@@ -442,11 +446,25 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   visible. Examples: `pair_recv2.baga`, `pair_select.baga`, `pair_go.baga`.
   Scientific note: `docs/thesis-m17-pairs.md`.
 
+- **M18** — **`!Overflow` as an effect (the culmination)**. Arithmetic safety
+  becomes a *type-level effect*: the M15 obligations are the effect inference
+  for `!Overflow`, and the effect check is the discharge. A function that
+  omits `!Overflow` claims safety — proven (`ефект !Overflow: безопасна —
+  типът е точен`), refuted with a witness (overflow + undeclared ⇒ nonzero
+  exit), or honestly UNKNOWN. Declaring `!Overflow` discharges it (the overflow
+  is printed as evidence, verification does not fail) — a permission, like
+  `!IO`, not a claim. `--proofs` emits `theorem f_overflow_safe`; `--verify
+  --json` adds an `overflow_effect` field. The effect system and the verifier
+  become one judgement. Examples: `ovf_eff_{safe,refuted,declared,unknown,
+  redundant,skip,propagate}.baga`. Scientific note:
+  `docs/thesis-m18-overflow-effect.md`.
+
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
 supported. `--proofs` surfaces the verifier's established facts: real
-termination verdicts (`decreases` → full correctness vs partial) and
-while-loop invariants as lemmas with their Hoare status. Remaining:
-richer polynomials, full BV, cross-thread channel invariants.
+termination verdicts (`decreases` → full correctness vs partial), while-loop
+invariants as lemmas with their Hoare status, and the M18 `f_overflow_safe`
+theorem. Remaining (the honest frontier — `docs/thesis-open-problems.md`):
+liveness for channels, full bitvectors, rich polynomials.
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

@@ -162,6 +162,31 @@ void print_proofs(Node *program) {
             printf("    %s is pure (no declared effects)\n\n", name);
         }
 
+        /* 3b. M18: overflow-safety theorem — the !Overflow effect discharge */
+        if (have_vr && vr.ovf_analyzed) {
+            printf("  theorem %s_overflow_safe:\n", name);
+            if (vr.ovf_safe) {
+                printf("    ∀ inputs. no arithmetic in %s overflows i64\n", name);
+                if (vr.ovf_declared)
+                    printf("    status: ДОКАЗАНО (M18 — всички аритметични задължения; !Overflow е излишно)\n\n");
+                else
+                    printf("    status: ДОКАЗАНО (M18 — всички аритметични задължения; типът е точен)\n\n");
+            } else if (vr.ovf_declared) {
+                printf("    %s carries !Overflow — overflow is advertised in the type\n", name);
+                if (vr.ovf_witness)
+                    printf("    status: деклариран честно — прелива при %s (идеализиран ℤ модел)\n\n", vr.ovf_witness);
+                else
+                    printf("    status: деклариран честно — безопасността не е доказуема (идеализиран ℤ модел)\n\n");
+            } else if (vr.ovf_res == 1) {
+                printf("    ∀ inputs. no arithmetic in %s overflows i64\n", name);
+                printf("    status: ОБРОЧЕНО — прелива при %s, а !Overflow не е деклариран\n\n",
+                       vr.ovf_witness ? vr.ovf_witness : "(всеки вход)");
+            } else {
+                printf("    ∀ inputs. no arithmetic in %s overflows i64\n", name);
+                printf("    status: НЕ МОГА ДА РЕША — декларирай !Overflow за честен тип\n\n");
+            }
+        }
+
         /* 4. Spec contracts — verified statically when possible */
         if (spec) {
             for (int j = 0; j < spec->n_guarantees; j++)

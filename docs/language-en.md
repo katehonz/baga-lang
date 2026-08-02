@@ -680,6 +680,36 @@ file.baga: 4:1: необработен ефект !IO във 'main' — декл
 
 This is the heart of the system: effects cannot be silently dropped.
 
+### 13.5 `!Overflow` — an effect the verifier infers
+
+`!Overflow` is a special effect dimension: unlike `!IO` (which is *generated*
+by builtins such as `read_file`), no builtin generates `!Overflow` — it is
+**declared** and **propagated** like any effect, and the need for it is
+discovered by the static verifier (`--verify`, M15/M18).
+
+```baga
+fn inc(n: i64) -> i64 !Overflow {   // "may overflow i64"
+    return n + 1
+}
+```
+
+The semantics (M18): the effect is a *permission*, not a claim.
+
+- A function **without** `!Overflow` claims to be overflow-safe. `--verify`
+  checks this: proves it (all arithmetic obligations safe), refutes it with a
+  counterexample (overflow with the effect undeclared — nonzero exit), or
+  honestly reports НЕ МОГА ДА РЕША (UNKNOWN).
+- A function **with** `!Overflow` honestly advertises the risk — the verifier
+  still prints the overflow as evidence, but it is no longer a violation
+  (exit 0); the `ensures` verdicts are in the idealized ℤ model.
+- `!Overflow` propagates through calls: a caller of an `!Overflow` function
+  must declare or catch the effect (the same "unhandled effect !Overflow"
+  error).
+
+`--proofs` emits a `<fn>_overflow_safe` theorem; `--verify --json` adds an
+`overflow_effect` field. For the full theory see
+`docs/thesis-m18-overflow-effect.md`.
+
 ---
 
 ## 14. The Spec System

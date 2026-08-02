@@ -507,6 +507,13 @@ typedef struct {
     char **inv_texts;    /* while-loop invariant renderings (owned) */
     int *inv_proven;     /* per-invariant: init+preservation proven (Hoare) */
     int n_inv;
+    /* M18: !Overflow effect discharge (the M15 arith obligations are the
+     * effect inference; absence of !Overflow is a proof obligation) */
+    int ovf_analyzed;    /* 1 if the function was analyzed (not skipped) */
+    int ovf_declared;    /* 1 if the return type declares Overflow */
+    int ovf_safe;        /* 1 if every kind-4 obligation is proven (or none) */
+    int ovf_res;         /* 0=PROVEN, 1=REFUTED, 2=UNKNOWN, 3=SKIPPED */
+    char *ovf_witness;   /* counterexample string when REFUTED (owned/NULL) */
 } FnVerifyRes;
 
 int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out);

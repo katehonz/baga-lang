@@ -1481,10 +1481,10 @@ static int is_par_builtin_call(Node *n) {
  * itself (channel-using workers are Par by construction); any other effect
  * puts it outside the fragment. Body verifiability is checked later, at
  * eval time, before any ensures are assumed (same discipline as M5). */
-static int ret_has_non_par_effects(Node *t);   /* defined below */
+static int ret_has_unverifiable_effects(Node *t);   /* defined below */
 static int worker_sig_supported(Node *cfn) {
     if (!cfn || !cfn->ret_type) return 0;
-    if (ret_has_non_par_effects(cfn->ret_type)) return 0;
+    if (ret_has_unverifiable_effects(cfn->ret_type)) return 0;
     if (!type_is_i64(cfn->ret_type)) return 0;
     for (int i = 0; i < cfn->params.len; i++)
         if (!type_is_i64(cfn->params.data[i]->param_type)) return 0;
@@ -3154,14 +3154,40 @@ static int ret_has_effects(Node *t) {
     return t && t->kind == NODE_TYPE_EFFECT && t->n_effects > 0;
 }
 
-/* M14: a return type whose every declared effect is Par stays inside the
- * verifiable fragment (concurrency is modeled symbolically); any other
- * effect dimension keeps the function out. */
-static int ret_has_non_par_effects(Node *t) {
+/* M18: does the return type declare an effect with this exact name? */
+static int ret_has_effect_named(Node *t, const char *name) {
     if (!t || t->kind != NODE_TYPE_EFFECT) return 0;
     for (int i = 0; i < t->n_effects; i++)
-        if (strcmp(t->effect_names[i], "Par") != 0) return 1;
+        if (strcmp(t->effect_names[i], name) == 0) return 1;
     return 0;
+}
+
+/* M14/M18: a return type whose every declared effect is Par or Overflow stays
+ * inside the verifiable fragment — concurrency is modeled symbolically (M14)
+ * and overflow is discharged by the M15 arith machinery (M18). Any other
+ * effect dimension keeps the function out (honest skip). */
+static int ret_has_unverifiable_effects(Node *t) {
+    if (!t || t->kind != NODE_TYPE_EFFECT) return 0;
+    for (int i = 0; i < t->n_effects; i++)
+        if (strcmp(t->effect_names[i], "Par") != 0 &&
+            strcmp(t->effect_names[i], "Overflow") != 0) return 1;
+    return 0;
+}
+
+/* M18: render a witness binding list as "n = 5, m = 0" (owned string/NULL). */
+static char *witness_str(IBind *wit, int wn) {
+    if (wn <= 0 || !wit) return NULL;
+    int cap = 1;
+    for (int k = 0; k < wn; k++) cap += (int)strlen(wit[k].name) + 32;
+    char *s = malloc(cap);
+    s[0] = 0;
+    for (int k = 0; k < wn; k++) {
+        char tmp[64];
+        snprintf(tmp, sizeof tmp, "%s%s = %lld", k ? ", " : "",
+                 wit[k].name, (long long)wit[k].val);
+        strcat(s, tmp);
+    }
+    return s;
 }
 
 typedef enum { R_PROVEN, R_REFUTED, R_UNKNOWN } VRes;
@@ -3779,7 +3805,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
 
     /* fragment gates */
     const char *skip = NULL;
-    if (ret_has_non_par_effects(fn->ret_type)) skip = "ефекти (не-Par)";
+    if (ret_has_unverifiable_effects(fn->ret_type)) skip = "ефекти (извън Par/Overflow)";
     else if (fn->ret_type && !type_is_i64(fn->ret_type) && unwrap_type(fn->ret_type)->kind != NODE_TYPE) skip = "не-i64 резултат";
     else if (fn->ret_type && unwrap_type(fn->ret_type)->kind == NODE_TYPE &&
              strcmp(unwrap_type(fn->ret_type)->type_name, "i64") != 0) skip = "не-i64 резултат";
@@ -3798,6 +3824,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     if (skip) {
         out->skipped = 1;
         out->skip_reason = skip;
+        out->ovf_res = 3;   /* M18: skipped ⇒ no overflow-safety claim */
         for (int j = 0; j < ne; j++) {
             out->ens[j].res = 3;
             out->ens[j].ens_text = spec->spec_ensures.data[j]->ensure_text;
@@ -3859,6 +3886,38 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
         verify_bound_obl(&ob.o[i], &wit, &wn);
         if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
     }
+    /* M18: discharge the !Overflow effect. The M15 kind-4 obligations are the
+     * effect inference; declaring !Overflow is a permission that discharges
+     * them (the type honestly advertises the risk); omitting it claims safety,
+     * which the verifier then proves, refutes, or reports UNKNOWN. */
+    out->ovf_analyzed = 1;
+    out->ovf_declared = ret_has_effect_named(fn->ret_type, "Overflow");
+    {
+        int natotal = 0, naproven = 0, any_ref = 0;
+        IBind *first_wit = NULL; int first_wn = 0;
+        for (int i = 0; i < ob.n; i++) {
+            if (ob.o[i].kind != 4) continue;
+            natotal++;
+            IBind *wit = NULL; int wn = 0;
+            VRes r = verify_arith_obl(&ob.o[i], &wit, &wn);
+            if (r == R_PROVEN) naproven++;
+            if (r == R_REFUTED) {
+                any_ref = 1;
+                if (!first_wit) { first_wit = wit; first_wn = wn; wit = NULL; }
+            }
+            if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
+        }
+        out->ovf_safe = (natotal == 0) || (naproven == natotal);
+        if (out->ovf_safe) {
+            out->ovf_res = 0;                          /* safe; declaration (if any) redundant */
+        } else if (any_ref) {
+            out->ovf_res = out->ovf_declared ? 0 : 1;  /* discharged by declaration, else REFUTED */
+            out->ovf_witness = witness_str(first_wit, first_wn);
+        } else {
+            out->ovf_res = out->ovf_declared ? 0 : 2;  /* discharged by declaration, else UNKNOWN */
+        }
+        if (first_wit) { for (int k = 0; k < first_wn; k++) free(first_wit[k].name); free(first_wit); }
+    }
     for (int i = 0; i < ob.n; i++) obl_free(&ob.o[i]);
     free(ob.o);
     /* transfer verified facts (recursion/termination, invariants) to the caller */
@@ -3886,6 +3945,8 @@ void fn_verify_res_free(FnVerifyRes *r) {
     for (int j = 0; j < r->n_inv; j++) free(r->inv_texts[j]);
     free(r->inv_texts); free(r->inv_proven);
     r->inv_texts = NULL; r->inv_proven = NULL; r->n_inv = 0;
+    free(r->ovf_witness);
+    r->ovf_witness = NULL;
 }
 
 static int verify_fn(Node *prog, Node *fn) {
@@ -4113,20 +4174,51 @@ static int verify_fn(Node *prog, Node *fn) {
                     printf("\n");
                 }
             }
-            if (r == R_REFUTED) any_refuted = 1;
+            /* M18: a declared !Overflow discharges the overflow — the REFUTED
+             * line stays as evidence but no longer fails verification. */
+            if (r == R_REFUTED && !res.ovf_declared) any_refuted = 1;
             if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
         }
-        if (g_json) printf("]}");
+        if (g_json) printf("]");   /* close arith array; object closes after overflow_effect */
         if (!g_json && natotal > 0) {
             printf("  (аритметика: %d/%d операции доказано безопасни", naproven, natotal);
             if (naproven < natotal)
                 printf(" — вердиктите за ensures са в идеализирания ℤ модел");
             printf(")\n");
         }
+        /* M18: !Overflow effect discharge (verdict computed in verify_fn_collect) */
+        if (!g_json) {
+            if (res.ovf_safe) {
+                if (res.ovf_declared)
+                    printf("  ефект !Overflow: деклариран, но аритметиката е доказано безопасна\n");
+                else
+                    printf("  ефект !Overflow: безопасна — типът е точен\n");
+            } else if (res.ovf_declared) {
+                if (res.ovf_witness)
+                    printf("  ефект !Overflow: деклариран — прелива при %s; типът е честен\n", res.ovf_witness);
+                else
+                    printf("  ефект !Overflow: деклариран — безопасността не е доказуема; типът е честен\n");
+            } else if (res.ovf_res == 1) {
+                printf("  ефект !Overflow: прелива при %s, а !Overflow не е деклариран\n",
+                       res.ovf_witness ? res.ovf_witness : "(всеки вход)");
+                any_refuted = 1;
+            } else {
+                printf("  ефект !Overflow: безопасността не е доказуема — декларирай !Overflow\n");
+            }
+        } else {
+            printf(", \"overflow_effect\": {\"analyzed\": true, \"declared\": %s, \"safe\": %s, \"result\": \"%s\", \"witness\": ",
+                   res.ovf_declared ? "true" : "false",
+                   res.ovf_safe ? "true" : "false",
+                   res_word_json(res.ovf_res));
+            if (res.ovf_res == 1 && res.ovf_witness) json_str(res.ovf_witness);
+            else printf("null");
+            printf("}}");   /* close overflow_effect object + function object */
+            if (res.ovf_res == 1) any_refuted = 1;
+        }
         for (int i = 0; i < ob2.n; i++) obl_free(&ob2.o[i]);
         free(ob2.o);
     } else if (g_json) {
-        printf(", \"calls\": [], \"protocol\": [], \"bounds\": [], \"arith\": []}");
+        printf(", \"calls\": [], \"protocol\": [], \"bounds\": [], \"arith\": [], \"overflow_effect\": {\"analyzed\": false, \"result\": \"skipped\"}}");
     }
     fn_verify_res_free(&res);
     inv_collect_reset();   /* the reporting re-run above refilled the globals */

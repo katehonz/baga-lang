@@ -1216,6 +1216,41 @@ where the components are visible (`pair_go.baga`). The ok-flag pattern
 (`if cell2_0(r) == 1`) is now the sanctioned answer to the closed+empty
 caveat (`pair_recv2.baga`). Note: `docs/thesis-m17-pairs.md`.
 
+### 8.9 `!Overflow` as an effect — the culmination (M18)
+
+M15 made overflow *visible* (one obligation per operation, the verdict as
+prose) but not *part of the type*. M18 promotes it to an effect: `!Overflow`
+is a type dimension exactly like `!IO`/`!Par`. The key re-reading — **an
+effect is a permission, not a claim**: a function declaring `!Overflow`
+violates nothing; it *advertises* the risk (just as `!IO` does not prove
+"IO-safety" but tracks it). So the M15 obligations are reinterpreted as the
+**effect inference** for `!Overflow`, and the one-way effect check
+(body ⊆ declared, `checker.c`) becomes the **discharge**:
+
+- a function **without** `!Overflow` *claims* safety — the verifier proves it
+  (all kind-4 PROVEN ⇒ `ефект !Overflow: безопасна — типът е точен`), refutes
+  it with a counterexample (overflow, effect undeclared ⇒ nonzero exit), or
+  honestly reports НЕ МОГА ДА РЕША;
+- a function **with** `!Overflow` discharges the obligation — the overflow is
+  printed as *evidence* but is no longer a violation (exit 0); the `ensures`
+  verdicts are idealized-ℤ-only;
+- a **skipped** function (effects outside `{Par, Overflow}`, non-i64,
+  `match`…) makes no claim — "never analyzed" is never "proven safe".
+
+The fragment gate (`ret_has_unverifiable_effects`) admits `{Par, Overflow}`;
+no builtin *generates* `!Overflow` — it arises by declaration and propagates
+through the generic call-effect merge (no checker change). The single
+load-bearing line: a REFUTED arithmetic obligation fails verification **only
+when the function does not declare `!Overflow`**. The M15 bridge theorem is
+now a *type* theorem: absence of `!Overflow` in the signature is the
+certificate, the verifier checks it, and `--proofs` emits it as
+`theorem f_overflow_safe`. Regression-safe: no existing example declares
+`!Overflow`, so all prior exit codes are unchanged. The effect system
+(pillar 2) and the verifier (pillar 1) become the same judgement. Note:
+`docs/thesis-m18-overflow-effect.md`; a map of the remaining frontiers
+(liveness, full BV, rich polynomials) — `docs/thesis-open-problems.md`; the
+binding dissertation document — `docs/thesis.md`.
+
 ---
 
 ## References

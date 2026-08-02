@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Static verification — M18: `!Overflow` as an effect (effect system ≡ verifier)
+- Arithmetic safety (M15) is now a **type-level effect**. `!Overflow` is a
+  permission (like `!IO`), not a claim: the M15 kind-4 obligations are the
+  *effect inference* for `!Overflow`, and the one-way effect check is the
+  *discharge*. The effect system and the verifier become one judgement.
+- A function **without** `!Overflow` claims overflow-safety; `--verify`
+  proves it (`ефект !Overflow: безопасна — типът е точен`), refutes it with a
+  concrete witness when it overflows (undeclared overflow ⇒ nonzero exit), or
+  honestly reports НЕ МОГА ДА РЕША.
+- A function **with** `!Overflow` is discharged: the overflow is still printed
+  as evidence, but it is no longer a contract violation and does not fail
+  verification (`ensures` verdicts are idealized-ℤ-only). Over-declaring
+  `!Overflow` on a provably-safe function is allowed (noted as redundant).
+- `!Overflow` propagates through calls via the generic effect merge — a caller
+  must declare or catch it ("необработен ефект !Overflow"); no checker change
+  was needed.
+- The fragment gate now admits `{Par, Overflow}` (`ret_has_unverifiable_effects`);
+  functions with other effects still skip honestly and make no overflow claim.
+- The M15 exit-flag rule is gated: a REFUTED arithmetic obligation fails
+  verification only when the function does not declare `!Overflow`. No
+  existing example declares `!Overflow`, so all prior exit codes are unchanged.
+- `--verify --json` adds an `overflow_effect` field
+  (`{analyzed, declared, safe, result, witness}`); `--proofs` emits a
+  `theorem <fn>_overflow_safe`.
+- Examples: `examples/verify/ovf_eff_{safe,refuted,declared,unknown,redundant,skip,propagate,propagate_ok}.baga`.
+- Notes: `docs/thesis-m18-overflow-effect.md` (the culmination),
+  `docs/thesis-open-problems.md` (liveness / full BV / rich polynomials),
+  `docs/thesis.md` (binding dissertation document).
+
 ### Static verification — M17: pair abstraction (`cell2` + channel pair APIs)
 - `cell2(a,b)` / `cell2_0(p)` / `cell2_1(p)` are exact rewrites in the
   verifier (`cell2_0(cell2(a,b)) = a`) — allowed anywhere, including inside

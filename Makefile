@@ -420,6 +420,47 @@ test: $(BIN)
 		&& grep -q "requires на 'worker' при извикване.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: pair_go — packed аргумент, requires върху компоненти discharged при spawn (M17)" \
 		|| { echo "FAIL: pair_go"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/ovf_eff_safe.baga > /tmp/baga_verify_out.txt \
+		&& grep -q "ефект !Overflow: безопасна — типът е точен" /tmp/baga_verify_out.txt \
+		&& echo "OK: ovf_eff_safe — доказано безопасна, без !Overflow ⇒ типът е точен (M18)" \
+		|| { echo "FAIL: ovf_eff_safe"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/ovf_eff_refuted.baga > /tmp/baga_verify_out.txt; \
+	test $$? -ne 0 \
+		&& grep -q "прелива при n = 9223372036854775807, а !Overflow не е деклариран" /tmp/baga_verify_out.txt \
+		&& echo "OK: ovf_eff_refuted — недекларирано преливане е нарушение, ненулев exit (M18)" \
+		|| { echo "FAIL: ovf_eff_refuted"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/ovf_eff_declared.baga > /tmp/baga_verify_out.txt \
+		&& grep -q "ефект !Overflow: деклариран — прелива при" /tmp/baga_verify_out.txt \
+		&& ! grep -q "не е деклариран" /tmp/baga_verify_out.txt \
+		&& echo "OK: ovf_eff_declared — декларираното !Overflow discharge-ва преливането, exit 0 (M18)" \
+		|| { echo "FAIL: ovf_eff_declared"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/ovf_eff_unknown.baga > /tmp/baga_verify_out.txt \
+		&& grep -q "ефект !Overflow: безопасността не е доказуема — декларирай !Overflow" /tmp/baga_verify_out.txt \
+		&& echo "OK: ovf_eff_unknown — недоказуема безопасност иска декларация, без провал (M18)" \
+		|| { echo "FAIL: ovf_eff_unknown"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/ovf_eff_redundant.baga > /tmp/baga_verify_out.txt \
+		&& grep -q "деклариран, но аритметиката е доказано безопасна" /tmp/baga_verify_out.txt \
+		&& echo "OK: ovf_eff_redundant — излишно, но честно !Overflow върху безопасна функция (M18)" \
+		|| { echo "FAIL: ovf_eff_redundant"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/ovf_eff_skip.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ПРОПУСНАТО" /tmp/baga_verify_out.txt && ! grep -q "ефект !Overflow" /tmp/baga_verify_out.txt \
+		&& echo "OK: ovf_eff_skip — пропусната функция няма ефект !Overflow ред (M18 честност)" \
+		|| { echo "FAIL: ovf_eff_skip"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) examples/verify/ovf_eff_propagate.baga 2>&1 | grep -q "необработен ефект !Overflow" \
+		&& echo "OK: ovf_eff_propagate — !Overflow се разпространява и checker-ът го изисква (M18)" \
+		|| { echo "FAIL: ovf_eff_propagate"; exit 1; }
+	@./$(BIN) --check examples/verify/ovf_eff_propagate_ok.baga | grep -q "ok:" \
+		&& echo "OK: ovf_eff_propagate_ok — декларираното !Overflow обработва ефекта (M18)" \
+		|| { echo "FAIL: ovf_eff_propagate_ok"; exit 1; }
+	@./$(BIN) --verify --json examples/verify/ovf_eff_refuted.baga | grep -q '"overflow_effect"' \
+		&& ./$(BIN) --verify --json examples/verify/ovf_eff_refuted.baga | grep -q '"result": "refuted"' \
+		&& echo "OK: ovf_eff JSON — overflow_effect полето е машинно четимо (M18)" \
+		|| { echo "FAIL: ovf_eff JSON"; exit 1; }
+	@./$(BIN) --proofs examples/verify/ovf_eff_safe.baga > /tmp/baga_proofs_out.txt; \
+	grep -q "theorem inc_bounded_overflow_safe" /tmp/baga_proofs_out.txt \
+		&& grep -q "ДОКАЗАНО (M18" /tmp/baga_proofs_out.txt \
+		&& echo "OK: proofs — overflow_safe теорема в --proofs (M18)" \
+		|| { echo "FAIL: proofs overflow_safe"; cat /tmp/baga_proofs_out.txt; exit 1; }
 	@./$(BIN) --proofs examples/verify/sum.baga > /tmp/baga_proofs_out.txt; \
 	grep -q "lemma add_repeated_invariant_1" /tmp/baga_proofs_out.txt \
 		&& grep -q "invariant: (s >= 0)" /tmp/baga_proofs_out.txt \

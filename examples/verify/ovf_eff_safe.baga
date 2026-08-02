@@ -1,0 +1,20 @@
+// M18: !Overflow като ефект. inc_bounded е доказано безопасна
+// (0 <= n <= 100 ⇒ n + 1 се побира в i64) и НЕ декларира !Overflow —
+// типът е точен: верификаторът потвърждава, че липсата на !Overflow е теорема.
+
+spec inc_bounded {
+    input:
+        n: i64
+    output: i64
+    requires: 0 <= n, n <= 100
+    ensures:
+        output >= 1
+}
+
+fn inc_bounded(n: i64) -> i64 {
+    return n + 1
+}
+
+fn main() {
+    print(inc_bounded(41))   // 42
+}
