@@ -1,0 +1,21 @@
+// M7: integer-exact reasoning. Над цели числа n > 0 ⟺ n >= 1 — рационалният
+// Fourier–Motzkin сам по себе си не го доказва (n = 0.5 е рационален
+// контрапример), но integer tightening (e < 0 ⟺ e <= -1 над ℤ) затваря
+// празнината: ensures е ДОКАЗАНО.
+spec pos_id {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n > 0
+    ensures:
+        output >= 1
+}
+
+fn pos_id(n: i64) -> i64 {
+    return n
+}
+
+fn main() {
+    print(pos_id(1))
+}

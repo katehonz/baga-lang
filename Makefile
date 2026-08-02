@@ -211,6 +211,14 @@ test: $(BIN)
 	grep -q "терминация.*намалява.*ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "частична коректност" /tmp/baga_verify_out.txt \
 		&& echo "OK: term_bad — ненамаляваща мярка е оброчена, ensures остава частична коректност (M6 soundness)" \
 		|| { echo "FAIL: term_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/int_exact.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: int_exact — n > 0 ⇒ n >= 1 чрез integer tightening (M7)" \
+		|| { echo "FAIL: int_exact"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/int_exact_bad.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "контрапример: n = 1" /tmp/baga_verify_out.txt \
+		&& echo "OK: int_exact_bad — n > 0 ⇏ n >= 2 е оброчен с n = 1 (M7 soundness)" \
+		|| { echo "FAIL: int_exact_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@for f in elem_param elem_push elem_set elem_slice elem_concat; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \

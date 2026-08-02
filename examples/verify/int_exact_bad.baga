@@ -1,0 +1,20 @@
+// M7 soundness: tightening доказва само истински над ℤ твърдения.
+// n > 0 НЕ влече n >= 2 — оборва се с контрапример n = 1 (целочисленият
+// witness search е точен: намереният контрапример се препроверява директно).
+spec pos_id2 {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n > 0
+    ensures:
+        output >= 2
+}
+
+fn pos_id2(n: i64) -> i64 {
+    return n
+}
+
+fn main() {
+    print(pos_id2(1))
+}

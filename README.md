@@ -224,8 +224,8 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion + M6 termination | ✅ |
-| 8 | Non-linear reasoning + integer-exact reasoning (`n > 0 ⇒ n >= 1`) | 🔜 |
+| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion + M6 termination + M7 integer-exact | ✅ |
+| 8 | Non-linear reasoning | 🔜 |
 
 ### Static verification (`--verify`)
 
@@ -233,8 +233,9 @@ baga/
 functions over `i64` with **linear** arithmetic (recursion since M5 — partial
 correctness, see below). It is **sound by
 construction**: the only path to "ДОКАЗАНО" (proven) is showing the negated
-obligation is unsatisfiable even over the rationals (Fourier–Motzkin), which
-implies unsatisfiable over the integers. A refuted contract carries a concrete
+obligation is unsatisfiable over the rationals (Fourier–Motzkin, with integer
+tightening so strict integer inequalities are exact — M7), which implies
+unsatisfiable over the integers. A refuted contract carries a concrete
 counterexample; anything undecidable in the fragment is reported "НЕ МОГА ДА
 РЕША" (unknown) — never falsely proven.
 
@@ -277,10 +278,7 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   the Hoare rule for recursion, so the verdict is **partial correctness**:
   the output marks it honestly (`рекурсия: частична коректност — терминацията
   не се доказва`; JSON `"partial_correctness": true`). Calls nested inside
-  expressions (`n * fact(n-1)`) stay honestly skipped. Note the rational
-  fragment: `n > 0` does not imply `n >= 1` over ℚ, so a guard like
-  `if n < 1 { return 0 }` discharges `f(n - 1)`'s `requires` where
-  `if n <= 0` cannot.
+  expressions (`n * fact(n-1)`) stay honestly skipped.
   ```baga
   spec sum_to {
       input: n: i64
@@ -289,7 +287,7 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
       ensures: 0 <= output
   }
   fn sum_to(n: i64) -> i64 {
-      if n < 1 { return 0 }
+      if n <= 0 { return 0 }
       let r = sum_to(n - 1)   // induction hypothesis: r >= 0
       return n + r
   }
@@ -303,6 +301,13 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   not decrease is refuted with a counterexample (and the function honestly
   falls back to partial correctness). Output: `терминация: доказана чрез
   decreases`; JSON `"termination": "proven"`.
+- **M7** — **integer-exact reasoning**: over ℤ, `lhs < rhs ⟺ lhs <= rhs - 1`
+  when all coefficients are integers, so every integer strict inequality is
+  tightened before Fourier–Motzkin runs. This closes the classic rational gap
+  (`n > 0 ⇒ n >= 1` is now PROVEN) without any branching. Soundness is
+  untouched: the tightened system has exactly the same integer solutions, so
+  nothing false is ever proven, and anything ℤ-satisfiable stays
+  ℚ-satisfiable (counterexamples survive).
 
 Non-linear terms are still skipped honestly. `vec_slice` and
 `vec_concat` are now language builtins (returning a fresh `Vec`), and the
@@ -310,9 +315,8 @@ verifier propagates element invariants through them — a slice inherits the
 source's invariants; a concat inherits the invariants **both** operands share.
 A `sorted(v)` relational axiom is also supported: `requires sorted(v)` asserts
 that `v` is non-decreasing, and `vec_push(v, e)` preserves it when `e >= last`
-is provable. Remaining staircase: non-linear reasoning, integer-exact
-reasoning (the rational fragment cannot prove `n > 0 ⇒ n >= 1`), and feeding
-verified invariants into proof extraction (`--proofs`).
+is provable. Remaining staircase: non-linear reasoning, and feeding verified
+invariants into proof extraction (`--proofs`).
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

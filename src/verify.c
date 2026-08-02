@@ -458,6 +458,24 @@ static Constraint combine(Bound *lo, Bound *up) {
 }
 
 static int fm_sat(ConsList *sys) {
+    /* M7: integer tightening. Over ℤ-valued variables with integer
+     * coefficients,  lhs < rhs  ⟺  lhs <= rhs - 1  exactly. Tightening every
+     * integer strict inequality at entry makes the rational FM exact for the
+     * classic gap (n > 0 ⇒ n >= 1): the tightened system T satisfies
+     * T_ℤ = S_ℤ and T_ℚ ⊆ S_ℚ, so UNSAT_ℚ(T) still implies UNSAT_ℤ(S)
+     * (sound — more things proven, never a false proof), and a ℤ-satisfiable
+     * S keeps T ℚ-satisfiable (no genuine counterexample is ever hidden).
+     * Constraints with rational coefficients are left untouched (honest). */
+    for (int i = 0; i < sys->n; i++) {
+        Constraint *c = &sys->c[i];
+        if (c->op != C_LT || c->lhs.overflow || c->lhs.c.den != 1 || c->rhs.den != 1) continue;
+        int all_int = 1;
+        for (int j = 0; j < c->lhs.n && all_int; j++)
+            if (c->lhs.terms[j].coeff.den != 1) all_int = 0;
+        if (!all_int) continue;
+        c->op = C_LE;
+        c->rhs = rat_sub(c->rhs, rat_int(1));
+    }
     /* gather variable names */
     char **vars = NULL; int nv = 0, vcap = 0;
     for (int i = 0; i < sys->n; i++) for (int j = 0; j < sys->c[i].lhs.n; j++) {

@@ -14,7 +14,7 @@ spec sum_to {
 }
 
 fn sum_to(n: i64) -> i64 {
-    if n < 1 { return 0 }
+    if n <= 0 { return 0 }
     let r = sum_to(n - 1)
     return n + r
 }
