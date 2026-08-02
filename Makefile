@@ -6,7 +6,7 @@ SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/pr
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
-.PHONY: all clean test test-llvm llvm self
+.PHONY: all clean test test-llvm llvm self par-rt
 
 all: $(BIN)
 
@@ -16,6 +16,13 @@ $(BIN): $(OBJS)
 src/%.o: src/%.c include/baga.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# Shared !Par runtime for LLVM/lli (go/join/chan)
+PAR_SO := lib/libbaga_par.so
+par-rt: $(PAR_SO)
+$(PAR_SO): src/baga_par_rt.c
+	@mkdir -p lib
+	$(CC) $(CFLAGS) -fPIC -shared -o $@ $< -pthread
+
 # LLVM build (optional)
 LLVM_CONFIG ?= llvm-config-14
 LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null) -DBAGA_LLVM
@@ -24,7 +31,7 @@ LLVM_SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c s
 LLVM_OBJS := $(LLVM_SRCS:.c=.llvm.o)
 LLVM_BIN := baga-llvm
 
-llvm: $(LLVM_BIN)
+llvm: $(LLVM_BIN) $(PAR_SO)
 
 $(LLVM_BIN): $(LLVM_OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LLVM_LDFLAGS)
@@ -33,9 +40,9 @@ src/%.llvm.o: src/%.c include/baga.h
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(BIN) $(LLVM_OBJS) $(LLVM_BIN)
+	rm -f $(OBJS) $(BIN) $(LLVM_OBJS) $(LLVM_BIN) $(PAR_SO)
 
-test-llvm: $(BIN) $(LLVM_BIN)
+test-llvm: $(BIN) $(LLVM_BIN) $(PAR_SO)
 	@./tests/llvm_oracle.sh
 
 # Self-hosting bootstrap: инвариантът е fixed point — self компилаторът

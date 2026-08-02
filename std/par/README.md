@@ -91,7 +91,8 @@ let v = cell2_1(p)
 - **Not green threads** — each `go` is a real OS thread.
 - **No closures** — pack state with `cell2` / ids.
 - **No memory model** — races on shared `mut` are undefined; prefer channels.
-- **LLVM** — C backend only; oracle SKIPs par examples.
+- **LLVM** — full parity via shared runtime `lib/libbaga_par.so`
+  (`src/baga_par_rt.c`); oracle runs `lli-14 -load lib/libbaga_par.so`.
 
 ## Examples / tests
 

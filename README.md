@@ -167,7 +167,7 @@ it by oracles in `make test`.
 | Backend | Build | Run | Needs | Oracle |
 |---|---|---|---|---|
 | C transpiler (default) | `make` | `./baga file.baga` | `gcc`, `make` | — (reference) |
-| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli-14` | LLVM 14 | 21/21 OK |
+| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli-14 -load lib/libbaga_par.so` | LLVM 14 | oracle (incl. `!Par`) |
 
 - **C transpiler** — emits C, compiles with `gcc`, runs. Full language coverage.
 - **LLVM** — emits LLVM IR directly from the AST (`src/codegen_llvm.c`). Full
@@ -235,6 +235,7 @@ baga/
 | 7 | **Static** spec verification (`--verify`): M0–M8 + **M9** product sign table + const division | ✅ |
 | 8 | General non-linear reasoning | ✅ M9 (sign/div); further polys later |
 | 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
+| 10 | LLVM backend `!Par` parity (`libbaga_par.so` + lli `-load`) | ✅ |
 
 ### Static verification (`--verify`)
 

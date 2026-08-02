@@ -4,3 +4,4 @@ baga
 baga-llvm
 *.llvm.o
 idea/
+lib/

@@ -1876,23 +1876,81 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             }
             if (n->callee->kind != NODE_IDENT)
                 llvm_unsupported("повикване през израз (не име)");
-            /* concurrency (!Par) — C/pthread only for now; honest refuse */
+            /* !Par: external helpers from libbaga_par.so (src/baga_par_rt.c) */
             if (!ef && n->callee->kind == NODE_IDENT) {
                 const char *cn = n->callee->name;
-                if (strcmp(cn, "go") == 0 || strcmp(cn, "go_bg") == 0 ||
-                    strcmp(cn, "pool_map") == 0 || strcmp(cn, "join") == 0 ||
-                    strcmp(cn, "detach") == 0 ||
-                    strncmp(cn, "chan_", 5) == 0 ||
-                    strcmp(cn, "mutex_new") == 0 || strcmp(cn, "mutex_lock") == 0 ||
-                    strcmp(cn, "mutex_unlock") == 0 ||
-                    strcmp(cn, "sleep_ms") == 0 ||
-                    strcmp(cn, "bytes_from_vec") == 0 ||
-                    strcmp(cn, "vec_from_bytes") == 0 ||
-                    strcmp(cn, "cell2") == 0 || strcmp(cn, "cell2_0") == 0 ||
-                    strcmp(cn, "cell2_1") == 0) {
-                    char buf[128];
-                    snprintf(buf, sizeof buf, "!Par/%s (само C backend)", cn);
-                    llvm_unsupported(buf);
+                LLVMTypeRef i64p1[] = { lg.i64_ty };
+                LLVMTypeRef par_fn_ty = LLVMFunctionType(lg.i64_ty, i64p1, 1, 0);
+                LLVMTypeRef par_fn_ptr = LLVMPointerType(par_fn_ty, 0);
+                if ((strcmp(cn, "go") == 0 || strcmp(cn, "go_bg") == 0) &&
+                    n->args.len == 2 && n->args.data[0]->kind == NODE_IDENT) {
+                    char *wm = llvm_mangle(n->args.data[0]->name);
+                    LLVMValueRef worker = LLVMGetNamedFunction(lg.mod, wm);
+                    free(wm);
+                    if (!worker) llvm_unsupported("go: worker не е намерена");
+                    LLVMValueRef fp = LLVMBuildBitCast(lg.builder, worker, par_fn_ptr, "par_fp");
+                    LLVMValueRef arg = emit_expr_llvm(n->args.data[1]);
+                    if (!arg) llvm_unsupported("go: arg");
+                    arg = coerce(arg, lg.i64_ty);
+                    const char *rt = strcmp(cn, "go_bg") == 0 ? "baga_go_bg" : "baga_go";
+                    LLVMTypeRef gp[] = { par_fn_ptr, lg.i64_ty };
+                    LLVMValueRef gfn = rt_libc(rt, lg.i64_ty, gp, 2);
+                    LLVMValueRef ga[] = { fp, arg };
+                    return h_call(gfn, ga, 2, tmp_name());
+                }
+                if (strcmp(cn, "pool_map") == 0 && n->args.len == 3 &&
+                    n->args.data[0]->kind == NODE_IDENT) {
+                    char *wm = llvm_mangle(n->args.data[0]->name);
+                    LLVMValueRef worker = LLVMGetNamedFunction(lg.mod, wm);
+                    free(wm);
+                    if (!worker) llvm_unsupported("pool_map: worker не е намерена");
+                    LLVMValueRef fp = LLVMBuildBitCast(lg.builder, worker, par_fn_ptr, "par_fp");
+                    LLVMValueRef vec = emit_expr_llvm(n->args.data[1]);
+                    LLVMValueRef nw = emit_expr_llvm(n->args.data[2]);
+                    if (!vec || !nw) llvm_unsupported("pool_map args");
+                    nw = coerce(nw, lg.i64_ty);
+                    LLVMTypeRef pp[] = { par_fn_ptr, baga_vec_ptr_ty(), lg.i64_ty };
+                    LLVMValueRef pfn = rt_libc("baga_pool_map", baga_vec_ptr_ty(), pp, 3);
+                    LLVMValueRef pa[] = { fp, vec, nw };
+                    return h_call(pfn, pa, 3, tmp_name());
+                }
+                /* plain external baga_* par helpers (i64 args) */
+                static const struct { const char *baga; const char *c; int n; } pmap[] = {
+                    {"join", "baga_join", 1},
+                    {"detach", "baga_detach", 1},
+                    {"chan_new", "baga_chan_new", 1},
+                    {"chan_send", "baga_chan_send", 2},
+                    {"chan_recv", "baga_chan_recv", 1},
+                    {"chan_recv2", "baga_chan_recv2", 1},
+                    {"chan_try_recv", "baga_chan_try_recv", 1},
+                    {"chan_recv_timeout", "baga_chan_recv_timeout", 2},
+                    {"chan_select2", "baga_chan_select2", 2},
+                    {"chan_select2_wait", "baga_chan_select2_wait", 2},
+                    {"chan_select2_timeout", "baga_chan_select2_timeout", 3},
+                    {"chan_close", "baga_chan_close", 1},
+                    {"chan_len", "baga_chan_len", 1},
+                    {"sleep_ms", "baga_sleep_ms", 1},
+                    {"mutex_new", "baga_mutex_new", 0},
+                    {"mutex_lock", "baga_mutex_lock", 1},
+                    {"mutex_unlock", "baga_mutex_unlock", 1},
+                    {"cell2", "baga_cell2", 2},
+                    {"cell2_0", "baga_cell2_0", 1},
+                    {"cell2_1", "baga_cell2_1", 1},
+                };
+                for (int pi = 0; pi < (int)(sizeof(pmap) / sizeof(pmap[0])); pi++) {
+                    if (strcmp(cn, pmap[pi].baga) != 0) continue;
+                    if (n->args.len != pmap[pi].n)
+                        llvm_unsupported("!Par arnost");
+                    LLVMTypeRef pts[4];
+                    for (int k = 0; k < pmap[pi].n; k++) pts[k] = lg.i64_ty;
+                    LLVMValueRef pfn = rt_libc(pmap[pi].c, lg.i64_ty, pts, pmap[pi].n);
+                    LLVMValueRef pa[4];
+                    for (int k = 0; k < pmap[pi].n; k++) {
+                        LLVMValueRef a = emit_expr_llvm(n->args.data[k]);
+                        if (!a) llvm_unsupported("!Par arg");
+                        pa[k] = coerce(a, lg.i64_ty);
+                    }
+                    return h_call(pfn, pa, pmap[pi].n, tmp_name());
                 }
             }
             /* str/io/vec builtin-и → baga_* IR helpers (като в codegen_c) */
