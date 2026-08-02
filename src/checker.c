@@ -512,6 +512,58 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             return ret;
         }
 
+        /* pool_map(fn, vec, nworkers) -> Vec<i64> !Par — bounded parallel map */
+        if (strcmp(name, "pool_map") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 3) {
+                check_error(ctx, n->pos,
+                    "'pool_map' очаква 3 аргумента (fn, vec, nworkers), получих %d",
+                    n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            Node *fnarg = n->args.data[0];
+            if (fnarg->kind != NODE_IDENT) {
+                check_error(ctx, n->pos, "'pool_map': първият аргумент трябва да е име на функция");
+                return type_new(TYPE_ERROR);
+            }
+            Type *wft = find_fn(ctx, fnarg->name);
+            if (!wft || wft->kind != TYPE_FN) {
+                check_error(ctx, n->pos, "'pool_map': '%s' не е функция", fnarg->name);
+                return type_new(TYPE_ERROR);
+            }
+            if (wft->nparams != 1 || !wft->params[0] || wft->params[0]->kind != TYPE_I64) {
+                check_error(ctx, n->pos,
+                    "'pool_map': worker '%s' трябва да е fn(i64) -> i64", fnarg->name);
+                return type_new(TYPE_ERROR);
+            }
+            if (!wft->ret || wft->ret->kind != TYPE_I64) {
+                check_error(ctx, n->pos,
+                    "'pool_map': worker '%s' трябва да връща i64", fnarg->name);
+                return type_new(TYPE_ERROR);
+            }
+            Type *vt = n->args.data[1]->type;
+            if (!vt || vt->kind != TYPE_VEC) {
+                check_error(ctx, n->pos, "'pool_map': вторият аргумент трябва да е Vec");
+                return type_new(TYPE_ERROR);
+            }
+            if (vt->elem && vt->elem->kind != TYPE_I64 && vt->elem->kind != TYPE_ERROR) {
+                check_error(ctx, n->pos, "'pool_map': Vec елементите трябва да са i64");
+            }
+            Type *nt = n->args.data[2]->type;
+            if (nt && nt->kind != TYPE_I64 && nt->kind != TYPE_ERROR) {
+                check_error(ctx, n->pos, "'pool_map': nworkers е %s, очаквах i64", type_str(nt));
+            }
+            Type *ret = type_new(TYPE_VEC);
+            ret->elem = type_new(TYPE_I64);
+            type_add_effect(ret, "Par");
+            if (wft->ret) type_merge_effects(ret, wft->ret);
+            if (ctx->cur_effects) {
+                type_add_effect(ctx->cur_effects, "Par");
+                if (wft->ret) type_merge_effects(ctx->cur_effects, wft->ret);
+            }
+            return ret;
+        }
+
         /* string / io / par builtins */
         struct { const char *name; TypeKind ret; int nparams; int has_io; int has_par; } builtins[] = {
             {"len",       TYPE_I64, 1, 0, 0},

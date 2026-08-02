@@ -383,7 +383,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     fprintf(f, ")");
                     goto call_done;
                 }
-                /* go / go_bg — first arg is a function identifier → C function pointer */
+                /* go / go_bg / pool_map — first arg is a function identifier */
                 if ((strcmp(bn, "go") == 0 || strcmp(bn, "go_bg") == 0) &&
                     n->args.len == 2 && n->args.data[0]->kind == NODE_IDENT) {
                     char *wm = mangle_name(n->args.data[0]->name);
@@ -391,6 +391,17 @@ static void emit_expr(Codegen *cg, Node *n) {
                             strcmp(bn, "go_bg") == 0 ? "baga_go_bg" : "baga_go", wm);
                     free(wm);
                     emit_expr(cg, n->args.data[1]);
+                    fprintf(f, ")");
+                    goto call_done;
+                }
+                if (strcmp(bn, "pool_map") == 0 && n->args.len == 3 &&
+                    n->args.data[0]->kind == NODE_IDENT) {
+                    char *wm = mangle_name(n->args.data[0]->name);
+                    fprintf(f, "baga_pool_map((baga_par_fn)%s, ", wm);
+                    free(wm);
+                    emit_expr(cg, n->args.data[1]);
+                    fprintf(f, ", ");
+                    emit_expr(cg, n->args.data[2]);
                     fprintf(f, ")");
                     goto call_done;
                 }
@@ -1506,6 +1517,50 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    pthread_mutex_t *m = (pthread_mutex_t *)(intptr_t)h;\n");
     fprintf(out, "    if (!m) return -1;\n");
     fprintf(out, "    return (int64_t)pthread_mutex_unlock(m);\n");
+    fprintf(out, "}\n");
+    /* Bounded worker pool: pool_map(fn, Vec<i64>, nworkers) -> Vec<i64> */
+    fprintf(out, "typedef struct {\n");
+    fprintf(out, "    baga_par_fn fn; baga_Vec *in; int64_t jobs; int64_t results;\n");
+    fprintf(out, "} baga_PoolCtx;\n");
+    fprintf(out, "static int64_t baga_pool_worker(int64_t ctx_h) {\n");
+    fprintf(out, "    baga_PoolCtx *ctx = (baga_PoolCtx *)(intptr_t)ctx_h;\n");
+    fprintf(out, "    for (;;) {\n");
+    fprintf(out, "        int64_t pr = baga_chan_recv2(ctx->jobs);\n");
+    fprintf(out, "        if (baga_cell2_0(pr) == 0) break; /* closed + empty */\n");
+    fprintf(out, "        int64_t idx = baga_cell2_1(pr);\n");
+    fprintf(out, "        int64_t arg = baga_vec_get_i64(ctx->in, idx);\n");
+    fprintf(out, "        int64_t r = ctx->fn(arg);\n");
+    fprintf(out, "        baga_chan_send(ctx->results, baga_cell2(idx, r));\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static baga_Vec *baga_pool_map(baga_par_fn fn, baga_Vec *in, int64_t nw) {\n");
+    fprintf(out, "    int64_t n = baga_vec_len(in);\n");
+    fprintf(out, "    baga_Vec *out = baga_vec_new();\n");
+    fprintf(out, "    if (n <= 0) return out;\n");
+    fprintf(out, "    for (int64_t i = 0; i < n; i++) baga_vec_push_i64(out, 0);\n");
+    fprintf(out, "    if (nw < 1) nw = 1;\n");
+    fprintf(out, "    if (nw > n) nw = n;\n");
+    fprintf(out, "    int64_t jobs = baga_chan_new(n);\n");
+    fprintf(out, "    int64_t results = baga_chan_new(n);\n");
+    fprintf(out, "    baga_PoolCtx *ctx = (baga_PoolCtx *)calloc(1, sizeof(baga_PoolCtx));\n");
+    fprintf(out, "    if (!ctx) { fprintf(stderr, \"baga: pool_map: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    ctx->fn = fn; ctx->in = in; ctx->jobs = jobs; ctx->results = results;\n");
+    fprintf(out, "    int64_t *hs = (int64_t *)malloc((size_t)nw * sizeof(int64_t));\n");
+    fprintf(out, "    if (!hs) { fprintf(stderr, \"baga: pool_map: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    for (int64_t w = 0; w < nw; w++)\n");
+    fprintf(out, "        hs[w] = baga_go(baga_pool_worker, (int64_t)(intptr_t)ctx);\n");
+    fprintf(out, "    for (int64_t i = 0; i < n; i++) baga_chan_send(jobs, i);\n");
+    fprintf(out, "    baga_chan_close(jobs);\n");
+    fprintf(out, "    for (int64_t i = 0; i < n; i++) {\n");
+    fprintf(out, "        int64_t pair = baga_chan_recv(results);\n");
+    fprintf(out, "        int64_t idx = baga_cell2_0(pair);\n");
+    fprintf(out, "        int64_t r = baga_cell2_1(pair);\n");
+    fprintf(out, "        if (idx >= 0 && idx < n) baga_vec_set_i64(out, idx, r);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    for (int64_t w = 0; w < nw; w++) baga_join(hs[w]);\n");
+    fprintf(out, "    free(hs); free(ctx);\n");
+    fprintf(out, "    return out;\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
 

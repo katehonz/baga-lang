@@ -40,8 +40,8 @@ bytes. See `gaps.md` G5.
 
 ```bash
 ./baga --emit-c app-product/jwtbaga/server.baga > /tmp/jwtd.c
-gcc -O2 -Iinclude -o /tmp/jwtd /tmp/jwtd.c -lm
-PORT=8080 JWT_SECRET=s3cret /tmp/jwtd &
+gcc -O2 -Iinclude -o /tmp/jwtd /tmp/jwtd.c -lm -pthread
+PORT=8080 JWT_SECRET=s3cret /tmp/jwtd &   # concurrent (go_bg); BAGA_SYNC=1 for serial
 
 # 1. issue a token
 TOKEN=$(curl -s 'localhost:8080/token?sub=bagatur' | sed 's/.*"token":"//; s/".*//')

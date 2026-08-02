@@ -1,6 +1,7 @@
 // server.baga — demo JWT auth server. First consumer of httpdbaga/http.baga.
 // Run:  ./baga app-product/jwtbaga/server.baga            (listens on :8080)
 //       PORT=9000 JWT_SECRET=s3cret ./baga app-product/jwtbaga/server.baga
+// Concurrent by default: go_bg per connection (set BAGA_SYNC=1 for single-threaded).
 //
 // Routes:
 //   GET /token?sub=NAME          -> 200 {"token":"<jwt>"}  (payload {"sub":NAME})
@@ -26,6 +27,13 @@ fn unquote(s: str) -> str {
         return substr(s, 1, len(s) - 1)
     }
     return s
+}
+
+fn resolve_secret() -> str !IO {
+    if env("JWT_SECRET") != "" {
+        return env("JWT_SECRET")?
+    }
+    return "baga-secret"
 }
 
 fn handle(fd: i64, secret: str) -> i64 !IO !Net {
@@ -63,21 +71,36 @@ fn handle(fd: i64, secret: str) -> i64 !IO !Net {
     return http_respond(fd, http_json_response(404, "{\"error\":\"not found\"}"))?
 }
 
-fn main() -> i64 !Net !IO {
+// go_bg worker: secret re-read from env (or default) so the handle stays fn(i64).
+fn handle_conn(fd: i64) -> i64 !IO !Net {
+    let secret = resolve_secret()?
+    handle(fd, secret)?
+    tcp_close(fd)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par {
     let mut port: i64 = 8080
     if env("PORT") != "" {
         port = parse_int(env("PORT"))
     }
-    let mut secret = "baga-secret"
-    if env("JWT_SECRET") != "" {
-        secret = env("JWT_SECRET")
-    }
+    // warm default / validate env once
+    let _secret = resolve_secret()?
+    let sync = env("BAGA_SYNC")
     let listener = tcp_listen(port)?
-    print(concat("jwtbaga listening on :", int_to_str(port)))
+    if sync == "1" {
+        print(concat("jwtbaga listening on :", concat(int_to_str(port), " (sync)")))
+    } else {
+        print(concat("jwtbaga listening on :", concat(int_to_str(port), " (go_bg per connection)")))
+    }
     while true {
         let fd = tcp_accept(listener)?
-        handle(fd, secret)?
-        tcp_close(fd)?
+        if sync == "1" {
+            handle(fd, _secret)?
+            tcp_close(fd)?
+        } else {
+            go_bg(handle_conn, fd)
+        }
     }
     return 0
 }

@@ -30,6 +30,7 @@ fn main() -> i64 !Par {
 |---------|-----------|-------|
 | `go` | `(fn, arg: i64) -> i64 !Par` | Function **name**; returns join handle. |
 | `go_bg` | `(fn, arg: i64) -> i64 !Par` | Detached thread; returns 0. For accept loops. |
+| `pool_map` | `(fn, vec: Vec<i64>, nworkers: i64) -> Vec<i64> !Par` | Bounded parallel map; order preserved. |
 | `join` | `(h: i64) -> i64 !Par` | Blocks; returns worker result; frees handle. |
 | `detach` | `(h: i64) -> i64 !Par` | Fire-and-forget a previously `go`'d handle. |
 | `chan_new` | `(cap: i64) -> i64 !Par` | Buffered `i64` channel (cap &lt; 1 → 1). |
@@ -65,6 +66,12 @@ let h2 = go(part, b)
 let r = join(h1) + join(h2)
 ```
 
+**Bounded pool (batch jobs, max N threads):**
+
+```baga
+let out = pool_map(square, inputs, 4)  // ≤4 workers, results in input order
+```
+
 **Fan-in with clean EOF:**
 
 ```baga
@@ -82,6 +89,6 @@ let v = cell2_1(p)
 
 ## Examples / tests
 
-- `examples/par.baga`, `examples/par_chan.baga`
+- `examples/par.baga`, `examples/par_chan.baga`, `examples/par_pool.baga`
 - `tests/std/par_test.baga`
-- `app-product/httpdbaga/server.baga` — concurrent by default
+- `app-product/httpdbaga/server.baga`, `app-product/jwtbaga/server.baga` — concurrent by default

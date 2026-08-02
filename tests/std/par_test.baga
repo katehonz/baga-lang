@@ -105,6 +105,28 @@ fn main() -> i64 !Par {
     // sum of 2*i for i in 0..31 = 992
     check("many_join", sum == 992)
 
+    // pool_map: bounded parallel map, order preserved
+    let xs = vec_new()
+    let mut pi: i64 = 1
+    while pi <= 10 {
+        vec_push(xs, pi)
+        pi = pi + 1
+    }
+    let ys = pool_map(double, xs, 3)
+    check("pool_len", vec_len(ys) == 10)
+    check("pool_0", vec_get(ys, 0) == 2)
+    check("pool_9", vec_get(ys, 9) == 20)
+    let mut psum: i64 = 0
+    pi = 0
+    while pi < 10 {
+        psum = psum + vec_get(ys, pi)
+        pi = pi + 1
+    }
+    check("pool_sum", psum == 110)  // 2*(1+...+10) = 110
+
+    let empty = pool_map(double, vec_new(), 4)
+    check("pool_empty", vec_len(empty) == 0)
+
     print("par_test: all passed")
     return 0
 }

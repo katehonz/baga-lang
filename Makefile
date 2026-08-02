@@ -174,6 +174,10 @@ test: $(BIN)
 	@printf "240\n" | diff - /tmp/baga_par_chan_out.txt > /dev/null \
 		&& echo "OK: chan fan-in" \
 		|| { echo "FAIL: par_chan"; cat /tmp/baga_par_chan_out.txt; exit 1; }
+	@./$(BIN) examples/par_pool.baga > /tmp/baga_par_pool_out.txt
+	@printf "385\n" | diff - /tmp/baga_par_pool_out.txt > /dev/null \
+		&& echo "OK: pool_map bounded workers" \
+		|| { echo "FAIL: par_pool"; cat /tmp/baga_par_pool_out.txt; exit 1; }
 	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net/par) ==="
 	@for t in bytes hmac io json os random sha256 sort str tcp time par; do \
 		./$(BIN) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
