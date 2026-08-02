@@ -279,16 +279,21 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
                     return sym_lin(lin_const(rat_int(l.lin.c.num % r.lin.c.num)));
                 }
             }
-            /* M9: dividend linear, divisor non-zero integer constant → fresh __dK */
-            if (e->bin_op == OP_DIV && !l.nonlinear && !r.nonlinear && !l.lin.overflow &&
-                lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num != 0 && reads) {
+            /* M9/M12: dividend linear, divisor linear (const or variable) → fresh */
+            if (e->bin_op == OP_DIV && !l.nonlinear && !r.nonlinear &&
+                !l.lin.overflow && !r.lin.overflow && reads) {
+                /* const 0 divisor stays nonlinear (UB) */
+                if (lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num == 0)
+                    return sym_nonlin();
                 char dv[64]; snprintf(dv, sizeof dv, "__d%d", g_prod_ctr++);
-                reads_push_div(reads, dv, l.lin, r.lin);   /* moves l.lin; r.lin is const copy moved */
+                reads_push_div(reads, dv, l.lin, r.lin);
                 return sym_lin(lin_var(dv));
             }
-            /* M9b: n % k for nonzero integer constant k → fresh __mK */
-            if (e->bin_op == OP_MOD && !l.nonlinear && !r.nonlinear && !l.lin.overflow &&
-                lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num != 0 && reads) {
+            /* M9b/M12: n % d for linear d (const nonzero or variable) */
+            if (e->bin_op == OP_MOD && !l.nonlinear && !r.nonlinear &&
+                !l.lin.overflow && !r.lin.overflow && reads) {
+                if (lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num == 0)
+                    return sym_nonlin();
                 char mv[64]; snprintf(mv, sizeof mv, "__m%d", g_prod_ctr++);
                 reads_push_mod(reads, mv, l.lin, r.lin);
                 return sym_lin(lin_var(mv));
@@ -1589,6 +1594,14 @@ static void path_push_ge_lin(ConsList *path, const char *pv, Lin *fa) {
     cl_push(path, mk_cons(t, C_LE, rat_zero()));
 }
 
+/* Push pv <= fa as pv - fa <= 0. */
+static void path_push_le_lin(ConsList *path, const char *pv, Lin *fa) {
+    Lin p = lin_var(pv);
+    Lin t = lin_sub(&p, fa);
+    lin_free(&p);
+    cl_push(path, mk_cons(t, C_LE, rat_zero()));
+}
+
 /* Push equality lhs == 0 as two inequalities. Moves/frees nothing owned. */
 static void path_push_eq_zero(ConsList *path, Lin *expr) {
     Lin a = lin_clone(expr);
@@ -1597,68 +1610,138 @@ static void path_push_eq_zero(ConsList *path, Lin *expr) {
     cl_push(path, mk_cons(b, C_LE, rat_zero()));
 }
 
-/* M8–M11: inject TRUE facts about product/div/mod vars.
- * M10: square dominance, product mono, n=k*q+r.
- * M11: floor mul k*(n/k)<=n (n>=0,k>0); square complete s-2v+1>=0 and s+2v+1>=0. */
+/* M8–M12: inject TRUE facts about product/div/mod vars.
+ * M12: divisor ±1 identities; self-div/mod (n/n, n%n); variable divisor
+ * when m>=1,n>=0 (sign + remainder bounds + q*m product floor); AM-GM via
+ * (fa-fb)^2 = fa²+fb²-2·fa·fb ≥ 0 when those products exist. */
 static void inject_prod_axioms(State *st) {
     for (int i = 0; i < st->reads.n; i++) {
         ReadEntry *e = &st->reads.r[i];
         if (e->is_div) {
-            if (!lin_is_const(&e->fb) || e->fb.c.den != 1 || e->fb.c.num == 0) continue;
-            int64_t d = e->fb.c.num;
             int n_ge0 = path_proves_ge(st, &e->fa, 0);
             int n_le0 = path_proves_le(st, &e->fa, 0);
-            if (d > 0) {
-                if (n_ge0) path_push_ge(&st->path, e->var, 0);
-                if (n_le0) path_push_le(&st->path, e->var, 0);
-                /* M11: C trunc; n = d*q + r with 0 <= r < d when n>=0
-                 * ⇒ d*q <= n and n - d*q <= d-1. When n<=0: d*q >= n. */
-                if (n_ge0 || n_le0) {
-                    Lin qv = lin_var(e->var);
-                    Lin dq = lin_scale(&qv, rat_int(d));
-                    lin_free(&qv);
-                    if (n_ge0) {
-                        /* d*q - n <= 0 */
-                        Lin t = lin_sub(&dq, &e->fa);
-                        cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
-                        /* n - d*q - (d-1) <= 0  ⟺  remainder <= d-1 */
-                        Lin rem = lin_sub(&e->fa, &dq);
-                        rem.c = rat_sub(rem.c, rat_int(d - 1));
-                        cl_push(&st->path, mk_cons(rem, C_LE, rat_zero()));
-                    }
-                    if (n_le0) {
-                        /* n - d*q <= 0  ⟺  d*q >= n */
-                        Lin t = lin_sub(&e->fa, &dq);
-                        cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
-                    }
-                    lin_free(&dq);
+            int n_ge1 = path_proves_ge(st, &e->fa, 1);
+            int n_le_m1 = path_proves_le(st, &e->fa, -1);
+
+            /* M12: n/n = 1 when n ≠ 0 (C trunc) */
+            if (lin_eq(&e->fa, &e->fb) && (n_ge1 || n_le_m1)) {
+                /* q == 1 */
+                Lin q = lin_var(e->var);
+                q.c = rat_sub(q.c, rat_int(1));
+                path_push_eq_zero(&st->path, &q);
+                lin_free(&q);
+                continue;
+            }
+
+            if (lin_is_const(&e->fb) && e->fb.c.den == 1 && e->fb.c.num != 0) {
+                int64_t d = e->fb.c.num;
+                /* M12: n/1 = n; n/(-1) = -n always */
+                if (d == 1) {
+                    Lin q = lin_var(e->var);
+                    Lin diff = lin_sub(&e->fa, &q);
+                    lin_free(&q);
+                    path_push_eq_zero(&st->path, &diff);
+                    lin_free(&diff);
+                    continue;
                 }
-            } else { /* d < 0 */
-                if (n_ge0) path_push_le(&st->path, e->var, 0);
-                if (n_le0) path_push_ge(&st->path, e->var, 0);
+                if (d == -1) {
+                    /* q + n == 0 */
+                    Lin q = lin_var(e->var);
+                    Lin s = lin_add(&q, &e->fa);
+                    lin_free(&q);
+                    path_push_eq_zero(&st->path, &s);
+                    lin_free(&s);
+                    continue;
+                }
+                if (d > 0) {
+                    if (n_ge0) path_push_ge(&st->path, e->var, 0);
+                    if (n_le0) path_push_le(&st->path, e->var, 0);
+                    /* M11: C trunc; n = d*q + r with 0 <= r < d when n>=0 */
+                    if (n_ge0 || n_le0) {
+                        Lin qv = lin_var(e->var);
+                        Lin dq = lin_scale(&qv, rat_int(d));
+                        lin_free(&qv);
+                        if (n_ge0) {
+                            Lin t = lin_sub(&dq, &e->fa);
+                            cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
+                            Lin rem = lin_sub(&e->fa, &dq);
+                            rem.c = rat_sub(rem.c, rat_int(d - 1));
+                            cl_push(&st->path, mk_cons(rem, C_LE, rat_zero()));
+                        }
+                        if (n_le0) {
+                            Lin t = lin_sub(&e->fa, &dq);
+                            cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
+                        }
+                        lin_free(&dq);
+                    }
+                } else { /* d < 0 const */
+                    if (n_ge0) path_push_le(&st->path, e->var, 0);
+                    if (n_le0) path_push_ge(&st->path, e->var, 0);
+                }
+                continue;
+            }
+
+            /* M12: 0/m = 0 when m ≠ 0 */
+            if (lin_is_const(&e->fa) && e->fa.c.den == 1 && e->fa.c.num == 0) {
+                int m_ge1 = path_proves_ge(st, &e->fb, 1);
+                int m_le_m1 = path_proves_le(st, &e->fb, -1);
+                if (m_ge1 || m_le_m1) {
+                    path_push_ge(&st->path, e->var, 0);
+                    path_push_le(&st->path, e->var, 0);
+                }
+                continue;
+            }
+
+            /* M12: variable divisor m with m >= 1, n >= 0 (C trunc non-neg) */
+            int m_ge1 = path_proves_ge(st, &e->fb, 1);
+            if (n_ge0 && m_ge1) {
+                path_push_ge(&st->path, e->var, 0);      /* q >= 0 */
+                path_push_le_lin(&st->path, e->var, &e->fa); /* q <= n */
             }
             continue;
         }
         if (e->is_mod) {
-            /* C: a%b has sign of a; |a%b| < |b|. For a >= 0, k > 0: 0 <= m < k. */
-            if (!lin_is_const(&e->fb) || e->fb.c.den != 1 || e->fb.c.num == 0) continue;
-            int64_t k = e->fb.c.num;
-            int64_t ak = k < 0 ? -k : k;
             int n_ge0 = path_proves_ge(st, &e->fa, 0);
             int n_le0 = path_proves_le(st, &e->fa, 0);
-            if (n_ge0 && k > 0) {
+            int n_ge1 = path_proves_ge(st, &e->fa, 1);
+            int n_le_m1 = path_proves_le(st, &e->fa, -1);
+
+            /* M12: n%n = 0 when n ≠ 0 */
+            if (lin_eq(&e->fa, &e->fb) && (n_ge1 || n_le_m1)) {
                 path_push_ge(&st->path, e->var, 0);
-                if (ak >= 1) path_push_le(&st->path, e->var, ak - 1);
-            } else if (n_le0 && k > 0) {
-                /* n <= 0, k > 0: 1-k <= m <= 0  (e.g. (-5)%3 = -2) */
                 path_push_le(&st->path, e->var, 0);
-                if (ak >= 1) path_push_ge(&st->path, e->var, 1 - ak);
-            } else if (n_ge0 && k < 0) {
+                continue;
+            }
+
+            if (lin_is_const(&e->fb) && e->fb.c.den == 1 && e->fb.c.num != 0) {
+                int64_t k = e->fb.c.num;
+                int64_t ak = k < 0 ? -k : k;
+                if (n_ge0 && k > 0) {
+                    path_push_ge(&st->path, e->var, 0);
+                    if (ak >= 1) path_push_le(&st->path, e->var, ak - 1);
+                } else if (n_le0 && k > 0) {
+                    path_push_le(&st->path, e->var, 0);
+                    if (ak >= 1) path_push_ge(&st->path, e->var, 1 - ak);
+                } else if (n_ge0 && k < 0) {
+                    path_push_ge(&st->path, e->var, 0);
+                    if (ak >= 1) path_push_le(&st->path, e->var, ak - 1);
+                } else if (n_le0 && k < 0) {
+                    path_push_le(&st->path, e->var, 0);
+                    if (ak >= 1) path_push_ge(&st->path, e->var, 1 - ak);
+                }
+                continue;
+            }
+
+            /* M12: variable m, n>=0, m>=1: 0 <= r and r <= m-1 (r - m <= -1) */
+            int m_ge1 = path_proves_ge(st, &e->fb, 1);
+            if (n_ge0 && m_ge1) {
                 path_push_ge(&st->path, e->var, 0);
-                if (ak >= 1) path_push_le(&st->path, e->var, ak - 1);
-            } else if (n_le0 && k < 0) {
-                path_push_le(&st->path, e->var, 0);
-                if (ak >= 1) path_push_ge(&st->path, e->var, 1 - ak);
+                /* r - m + 1 <= 0  ⟺  r <= m - 1 */
+                Lin r = lin_var(e->var);
+                Lin t = lin_sub(&r, &e->fb);
+                lin_free(&r);
+                t.c = rat_add(t.c, rat_int(1));
+                cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
             }
             continue;
         }
@@ -1718,29 +1801,85 @@ static void inject_prod_axioms(State *st) {
         if (fa_ge1 && fb_ge0) path_push_ge_lin(&st->path, e->var, &e->fb);
     }
 
-    /* M10: n = k*q + r when both div and mod share the same dividend & divisor. */
+    /* M10/M12: n = k*q + r (const k) or n = q*m + r (variable m via product). */
     for (int i = 0; i < st->reads.n; i++) {
         ReadEntry *d = &st->reads.r[i];
         if (!d->is_div) continue;
-        if (!lin_is_const(&d->fb) || d->fb.c.den != 1 || d->fb.c.num == 0) continue;
-        int64_t k = d->fb.c.num;
         for (int j = 0; j < st->reads.n; j++) {
-            ReadEntry *m = &st->reads.r[j];
-            if (!m->is_mod) continue;
-            if (!lin_is_const(&m->fb) || m->fb.c.den != 1 || m->fb.c.num != k) continue;
-            if (!lin_eq(&d->fa, &m->fa)) continue;
-            /* n - k*q - r == 0 */
-            Lin n = lin_clone(&d->fa);
-            Lin q = lin_var(d->var);
-            Lin kq = lin_scale(&q, rat_int(k));
-            lin_free(&q);
-            Lin r = lin_var(m->var);
-            Lin t = lin_sub(&n, &kq);
-            lin_free(&n); lin_free(&kq);
-            Lin eq = lin_sub(&t, &r);
-            lin_free(&t); lin_free(&r);
-            path_push_eq_zero(&st->path, &eq);
-            lin_free(&eq);
+            ReadEntry *md = &st->reads.r[j];
+            if (!md->is_mod) continue;
+            if (!lin_eq(&d->fa, &md->fa) || !lin_eq(&d->fb, &md->fb)) continue;
+
+            if (lin_is_const(&d->fb) && d->fb.c.den == 1 && d->fb.c.num != 0) {
+                int64_t k = d->fb.c.num;
+                Lin n = lin_clone(&d->fa);
+                Lin q = lin_var(d->var);
+                Lin kq = lin_scale(&q, rat_int(k));
+                lin_free(&q);
+                Lin r = lin_var(md->var);
+                Lin t = lin_sub(&n, &kq);
+                lin_free(&n); lin_free(&kq);
+                Lin eq = lin_sub(&t, &r);
+                lin_free(&t); lin_free(&r);
+                path_push_eq_zero(&st->path, &eq);
+                lin_free(&eq);
+            } else {
+                /* variable m: find product p = q * m (or m * q) */
+                for (int pi = 0; pi < st->reads.n; pi++) {
+                    ReadEntry *p = &st->reads.r[pi];
+                    if (!p->is_prod) continue;
+                    /* match factors: {q_var as lin_var, m as d->fb} */
+                    Lin qlin = lin_var(d->var);
+                    int mq = (lin_eq(&p->fa, &qlin) && lin_eq(&p->fb, &d->fb)) ||
+                             (lin_eq(&p->fb, &qlin) && lin_eq(&p->fa, &d->fb));
+                    lin_free(&qlin);
+                    if (!mq) continue;
+                    /* n - p - r == 0 */
+                    Lin n = lin_clone(&d->fa);
+                    Lin pv = lin_var(p->var);
+                    Lin r = lin_var(md->var);
+                    Lin t = lin_sub(&n, &pv);
+                    lin_free(&n); lin_free(&pv);
+                    Lin eq = lin_sub(&t, &r);
+                    lin_free(&t); lin_free(&r);
+                    path_push_eq_zero(&st->path, &eq);
+                    lin_free(&eq);
+                    /* floor: when n>=0,m>=1: p <= n */
+                    if (path_proves_ge(st, &d->fa, 0) && path_proves_ge(st, &d->fb, 1))
+                        path_push_le_lin(&st->path, p->var, &d->fa);
+                }
+            }
+        }
+    }
+
+    /* M12: (fa - fb)^2 >= 0 as sa + sb - 2*p >= 0 when sa=fa², sb=fb², p=fa*fb */
+    for (int i = 0; i < st->reads.n; i++) {
+        ReadEntry *sa = &st->reads.r[i];
+        if (!sa->is_prod || !lin_eq(&sa->fa, &sa->fb)) continue;
+        for (int j = 0; j < st->reads.n; j++) {
+            ReadEntry *sb = &st->reads.r[j];
+            if (!sb->is_prod || !lin_eq(&sb->fa, &sb->fb)) continue;
+            if (lin_eq(&sa->fa, &sb->fa)) continue; /* same square */
+            for (int k = 0; k < st->reads.n; k++) {
+                ReadEntry *p = &st->reads.r[k];
+                if (!p->is_prod || lin_eq(&p->fa, &p->fb)) continue;
+                int match = (lin_eq(&p->fa, &sa->fa) && lin_eq(&p->fb, &sb->fa)) ||
+                            (lin_eq(&p->fa, &sb->fa) && lin_eq(&p->fb, &sa->fa));
+                if (!match) continue;
+                /* sa + sb - 2*p >= 0  ⟺  -sa - sb + 2*p <= 0 */
+                Lin a = lin_var(sa->var);
+                Lin b = lin_var(sb->var);
+                Lin c = lin_var(p->var);
+                Lin sum = lin_add(&a, &b);
+                lin_free(&a); lin_free(&b);
+                Lin two_p = lin_scale(&c, rat_int(2));
+                lin_free(&c);
+                Lin neg_sum = lin_neg(&sum);
+                lin_free(&sum);
+                Lin t = lin_add(&neg_sum, &two_p);
+                lin_free(&neg_sum); lin_free(&two_p);
+                cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
+            }
         }
     }
 }

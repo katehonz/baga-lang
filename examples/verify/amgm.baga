@@ -1,0 +1,26 @@
+// M12: (x-y)^2 = x² + y² - 2xy ≥ 0 over ℤ (AM-GM rearrangement).
+spec diff_sq {
+    input: x: i64, y: i64
+    output: i64
+    ensures: output >= 0
+}
+fn diff_sq(x: i64, y: i64) -> i64 {
+    return x * x + y * y - 2 * (x * y)
+}
+
+// x² + y² >= 2xy same fact via ensures on intermediate
+spec sum_sq_ge_prod {
+    input: x: i64, y: i64
+    output: i64
+    ensures: output >= 0
+}
+fn sum_sq_ge_prod(x: i64, y: i64) -> i64 {
+    let a = x * x
+    let b = y * y
+    let p = x * y
+    return a + b - p - p
+}
+
+fn main() {
+    print(diff_sq(3, 7))
+}

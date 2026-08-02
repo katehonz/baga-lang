@@ -1,0 +1,72 @@
+// M12: variable divisor (when m >= 1, n >= 0) + self-div/mod + /1.
+spec div_self {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output == 1
+}
+fn div_self(n: i64) -> i64 { return n / n }
+
+spec mod_self {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output == 0
+}
+fn mod_self(n: i64) -> i64 { return n % n }
+
+spec div_one {
+    input: n: i64
+    output: i64
+    ensures: output == n
+}
+fn div_one(n: i64) -> i64 { return n / 1 }
+
+spec zero_over {
+    input: m: i64
+    output: i64
+    requires: m >= 1
+    ensures: output == 0
+}
+fn zero_over(m: i64) -> i64 { return 0 / m }
+
+spec div_var {
+    input: n: i64, m: i64
+    output: i64
+    requires: n >= 0, m >= 1
+    ensures: output >= 0, output <= n
+}
+fn div_var(n: i64, m: i64) -> i64 { return n / m }
+
+spec mod_var {
+    input: n: i64, m: i64
+    output: i64
+    requires: n >= 0, m >= 1
+    ensures: output >= 0, output < m
+}
+fn mod_var(n: i64, m: i64) -> i64 { return n % m }
+
+spec rebuild_var {
+    input: n: i64, m: i64
+    output: i64
+    requires: n >= 0, m >= 1
+    ensures: output == n
+}
+fn rebuild_var(n: i64, m: i64) -> i64 {
+    let q = n / m
+    let r = n % m
+    return q * m + r
+}
+
+// without m >= 1 must NOT prove non-negativity
+spec unsafe_div {
+    input: n: i64, m: i64
+    output: i64
+    requires: n >= 0
+    ensures: output >= 0
+}
+fn unsafe_div(n: i64, m: i64) -> i64 { return n / m }
+
+fn main() {
+    print(rebuild_var(17, 5))
+}

@@ -323,6 +323,16 @@ test: $(BIN)
 		&& grep -q "too_strong" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: complete_sq — (x±1)^2 (M11)" \
 		|| { echo "FAIL: complete_sq"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/var_div.baga > /tmp/baga_verify_out.txt; \
+	grep -q "rebuild_var" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "unsafe_div" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: var_div — n/m, n%m, n=qm+r (M12)" \
+		|| { echo "FAIL: var_div"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/amgm.baga > /tmp/baga_verify_out.txt; \
+	grep -c "ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^[2-9]' \
+		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: amgm — (x-y)^2 >= 0 (M12)" \
+		|| { echo "FAIL: amgm"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) examples/par_select.baga > /tmp/baga_par_sel_out.txt; \
 	printf "30\n2\n" | diff - /tmp/baga_par_sel_out.txt > /dev/null \
 		&& echo "OK: chan_select2_wait/timeout" \

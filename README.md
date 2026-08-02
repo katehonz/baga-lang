@@ -233,7 +233,7 @@ baga/
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
 | 7 | **Static** spec verification (`--verify`): M0–M8 + **M9** product sign table + const division | ✅ |
-| 8 | General non-linear reasoning | ✅ M9–M11 (floor mul, complete square, …) |
+| 8 | General non-linear reasoning | ✅ M9–M12 (var div/mod, AM-GM, self-div, …) |
 | 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
 | 10 | LLVM backend `!Par` parity (`libbaga_par.so` + lli `-load`) | ✅ |
 
@@ -354,8 +354,14 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   `n >= 0`, `k > 0`: inject `k*q <= n` and remainder bound `n - k*q <= k-1`
   (so `k*(n/k) <= n` and `2*(n/2) <= n`). For square `s = v*v`: also
   `s - 2v + 1 >= 0` and `s + 2v + 1 >= 0` (i.e. `(v±1)^2`). Examples:
-  `floor_mul.baga`, `complete_sq.baga`. Still honest-UNKNOWN for division/mod
-  by a variable.
+  `floor_mul.baga`, `complete_sq.baga`.
+
+- **M12** — **variable divisors + AM-GM**. When `m >= 1` and `n >= 0`:
+  `n/m >= 0`, `n/m <= n`, `0 <= n%m < m`, and `n = (n/m)*m + (n%m)` via the
+  product `q*m`. Special cases: `n/n = 1`, `n%n = 0` (n≠0), `n/1 = n`,
+  `0/m = 0`. Also `(x-y)² = x²+y²-2xy ≥ 0` when those products appear.
+  Examples: `var_div.baga`, `amgm.baga`. Without `m >= 1`, non-negativity of
+  `n/m` is correctly **refuted** (e.g. m = -1).
 
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
 supported. Remaining: richer polynomials, variable divisors, feeding verified
