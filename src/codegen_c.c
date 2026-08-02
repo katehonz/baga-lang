@@ -1236,6 +1236,20 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <time.h>\n");
     fprintf(out, "#include <pthread.h>\n\n");
 
+    /* arena — всички низови/векторни алокации минават тук (без individual free) */
+    fprintf(out, "typedef struct baga_ABlk { struct baga_ABlk *next; size_t used, cap; char data[]; } baga_ABlk;\n");
+    fprintf(out, "static baga_ABlk *baga_arena_head = NULL;\n");
+    fprintf(out, "static void *baga_alloc(size_t n) {\n");
+    fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
+    fprintf(out, "    if (!b || b->used + n > b->cap) {\n");
+    fprintf(out, "        size_t cap = n > 8192 ? n : 8192;\n");
+    fprintf(out, "        b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
+    fprintf(out, "        b->next = baga_arena_head; b->used = 0; b->cap = cap;\n");
+    fprintf(out, "        baga_arena_head = b;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    void *p = b->data + b->used; b->used += n; return p;\n");
+    fprintf(out, "}\n");
+
     /* runtime helpers */
     fprintf(out, "static void baga_print_i64(int64_t v) { printf(\"%%lld\\n\", (long long)v); }\n");
     fprintf(out, "static void baga_print_f64(double v)  { printf(\"%%g\\n\", v); }\n");
@@ -1256,25 +1270,25 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return (int64_t)(unsigned char)s[i];\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_byte_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n");
-    fprintf(out, "static const char *baga_byte_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
+    fprintf(out, "static const char *baga_byte_chr(int64_t c) { char *r = baga_alloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
     fprintf(out, "static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n");
     fprintf(out, "    int64_t n = (int64_t)strlen(s);\n");
     fprintf(out, "    if (a < 0 || a > n) baga_bounds_fail(\"substr\", a, n);\n");
     fprintf(out, "    if (b < 0 || b > n) baga_bounds_fail(\"substr\", b, n);\n");
     fprintf(out, "    int64_t len = b - a; if (len < 0) len = 0;\n");
-    fprintf(out, "    char *r = malloc((size_t)len + 1); memcpy(r, s + a, (size_t)len); r[len] = 0; return r;\n");
+    fprintf(out, "    char *r = baga_alloc((size_t)len + 1); memcpy(r, s + a, (size_t)len); r[len] = 0; return r;\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_concat(const char *a, const char *b) {\n");
     fprintf(out, "    size_t la = strlen(a), lb = strlen(b);\n");
-    fprintf(out, "    char *r = malloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r;\n");
+    fprintf(out, "    char *r = baga_alloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r;\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_read_file(const char *path) {\n");
     fprintf(out, "    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n");
     fprintf(out, "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n");
-    fprintf(out, "    char *buf = malloc((size_t)sz + 1); fread(buf, 1, (size_t)sz, f); buf[sz] = 0; fclose(f); return buf;\n");
+    fprintf(out, "    char *buf = baga_alloc((size_t)sz + 1); fread(buf, 1, (size_t)sz, f); buf[sz] = 0; fclose(f); return buf;\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_chr(int64_t c) {\n");
-    fprintf(out, "    char *r = malloc(5);\n");
+    fprintf(out, "    char *r = baga_alloc(5);\n");
     fprintf(out, "    if (c < 0x80) { r[0] = (char)c; r[1] = 0; }\n");
     fprintf(out, "    else if (c < 0x800) { r[0] = (char)(0xC0|(c>>6)); r[1] = (char)(0x80|(c&0x3F)); r[2] = 0; }\n");
     fprintf(out, "    else if (c < 0x10000) { r[0] = (char)(0xE0|(c>>12)); r[1] = (char)(0x80|((c>>6)&0x3F)); r[2] = (char)(0x80|(c&0x3F)); r[3] = 0; }\n");
@@ -1288,7 +1302,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if ((c&0xF0)==0xE0) return ((int64_t)(c&0x0F)<<12)|(((int64_t)(unsigned char)s[1]&0x3F)<<6)|((int64_t)(unsigned char)s[2]&0x3F);\n");
     fprintf(out, "    return ((int64_t)(c&0x07)<<18)|(((int64_t)(unsigned char)s[1]&0x3F)<<12)|(((int64_t)(unsigned char)s[2]&0x3F)<<6)|((int64_t)(unsigned char)s[3]&0x3F);\n");
     fprintf(out, "}\n");
-    fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = malloc(24); snprintf(r, 24, \"%%lld\", (long long)x); return r; }\n");
+    fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = baga_alloc(24); snprintf(r, 24, \"%%lld\", (long long)x); return r; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
     fprintf(out, "static int baga_argc = 0;\n");
     fprintf(out, "static char **baga_argv = 0;\n");
@@ -1321,19 +1335,19 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static baga_bytes baga_bytes_slice(baga_bytes b, int64_t a, int64_t c) {\n");
     fprintf(out, "    if (a < 0) a = 0; if (c > b.len) c = b.len; if (c < a) c = a;\n");
-    fprintf(out, "    baga_bytes r; r.len = c - a; r.data = malloc((size_t)(r.len ? r.len : 1));\n");
+    fprintf(out, "    baga_bytes r; r.len = c - a; r.data = baga_alloc((size_t)(r.len ? r.len : 1));\n");
     fprintf(out, "    memcpy(r.data, b.data + a, (size_t)r.len); return r; }\n");
     fprintf(out, "static baga_bytes baga_bytes_concat(baga_bytes a, baga_bytes b) {\n");
-    fprintf(out, "    baga_bytes r; r.len = a.len + b.len; r.data = malloc((size_t)(r.len ? r.len : 1));\n");
+    fprintf(out, "    baga_bytes r; r.len = a.len + b.len; r.data = baga_alloc((size_t)(r.len ? r.len : 1));\n");
     fprintf(out, "    memcpy(r.data, a.data, (size_t)a.len); memcpy(r.data + a.len, b.data, (size_t)b.len); return r; }\n");
     fprintf(out, "static baga_bytes baga_bytes_from_str(const char *s) {\n");
-    fprintf(out, "    int64_t n = (int64_t)strlen(s); baga_bytes r; r.len = n; r.data = malloc((size_t)(n ? n : 1));\n");
+    fprintf(out, "    int64_t n = (int64_t)strlen(s); baga_bytes r; r.len = n; r.data = baga_alloc((size_t)(n ? n : 1));\n");
     fprintf(out, "    memcpy(r.data, s, (size_t)n); return r; }\n");
     fprintf(out, "static baga_bytes baga_bytes_lit(const unsigned char *d, int64_t n) {\n");
-    fprintf(out, "    baga_bytes r; r.len = n; r.data = malloc((size_t)(n ? n : 1));\n");
+    fprintf(out, "    baga_bytes r; r.len = n; r.data = baga_alloc((size_t)(n ? n : 1));\n");
     fprintf(out, "    memcpy(r.data, d, (size_t)n); return r; }\n");
     fprintf(out, "static const char *baga_bytes_to_str(baga_bytes b) {\n");
-    fprintf(out, "    char *r = malloc((size_t)b.len + 1); memcpy(r, b.data, (size_t)b.len); r[b.len] = 0; return r; }\n");
+    fprintf(out, "    char *r = baga_alloc((size_t)b.len + 1); memcpy(r, b.data, (size_t)b.len); r[b.len] = 0; return r; }\n");
     fprintf(out, "static int baga_hex_val(int c) {\n");
     fprintf(out, "    if (c >= '0' && c <= '9') return c - '0';\n");
     fprintf(out, "    if (c >= 'a' && c <= 'f') return c - 'a' + 10;\n");
@@ -1341,11 +1355,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return -1; }\n");
     fprintf(out, "static const char *baga_hex_encode(baga_bytes b) {\n");
     fprintf(out, "    static const char *hx = \"0123456789abcdef\";\n");
-    fprintf(out, "    char *r = malloc((size_t)b.len * 2 + 1);\n");
+    fprintf(out, "    char *r = baga_alloc((size_t)b.len * 2 + 1);\n");
     fprintf(out, "    for (int64_t i = 0; i < b.len; i++) { r[i*2] = hx[b.data[i] >> 4]; r[i*2+1] = hx[b.data[i] & 15]; }\n");
     fprintf(out, "    r[b.len * 2] = 0; return r; }\n");
     fprintf(out, "static baga_bytes baga_hex_decode(const char *s) {\n");
-    fprintf(out, "    int64_t n = (int64_t)strlen(s); unsigned char *buf = malloc((size_t)(n / 2 + 1)); int64_t len = 0;\n");
+    fprintf(out, "    int64_t n = (int64_t)strlen(s); unsigned char *buf = baga_alloc((size_t)(n / 2 + 1)); int64_t len = 0;\n");
     fprintf(out, "    for (int64_t i = 0; i + 1 < n; ) {\n");
     fprintf(out, "        int hi = baga_hex_val(s[i]); int lo = baga_hex_val(s[i+1]);\n");
     fprintf(out, "        if (hi < 0 || lo < 0) { i++; continue; }\n");
@@ -1356,11 +1370,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "/* dynamic array */\n");
     fprintf(out, "typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;\n");
     fprintf(out, "static baga_Vec *baga_vec_new(void) {\n");
-    fprintf(out, "    baga_Vec *v = malloc(sizeof(baga_Vec));\n");
-    fprintf(out, "    v->cap = 8; v->len = 0; v->data = malloc(8 * sizeof(void *)); return v;\n");
+    fprintf(out, "    baga_Vec *v = baga_alloc(sizeof(baga_Vec));\n");
+    fprintf(out, "    v->cap = 8; v->len = 0; v->data = baga_alloc(8 * sizeof(void *)); return v;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_vec_grow(baga_Vec *v) {\n");
-    fprintf(out, "    if (v->len == v->cap) { v->cap *= 2; v->data = realloc(v->data, (size_t)v->cap * sizeof(void *)); }\n");
+    fprintf(out, "    if (v->len == v->cap) { v->cap *= 2;\n");
+    fprintf(out, "        void **nd = (void **)baga_alloc((size_t)v->cap * sizeof(void *));\n");
+    fprintf(out, "        memcpy(nd, v->data, (size_t)v->len * sizeof(void *)); v->data = nd; }\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_vec_push_i64(baga_Vec *v, int64_t x) { baga_vec_grow(v); v->data[v->len++] = (void *)(intptr_t)x; }\n");
     fprintf(out, "static int64_t baga_vec_get_i64(baga_Vec *v, int64_t i) {\n");
@@ -1393,7 +1409,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     /* bridge: native bytes <-> Vec<i64> (crypto migration path) */
     fprintf(out, "static baga_bytes baga_bytes_from_vec(baga_Vec *v) {\n");
     fprintf(out, "    int64_t n = v ? v->len : 0;\n");
-    fprintf(out, "    baga_bytes r; r.len = n; r.data = malloc((size_t)(n ? n : 1));\n");
+    fprintf(out, "    baga_bytes r; r.len = n; r.data = baga_alloc((size_t)(n ? n : 1));\n");
     fprintf(out, "    for (int64_t i = 0; i < n; i++) r.data[i] = (unsigned char)((int64_t)(intptr_t)v->data[i] & 255);\n");
     fprintf(out, "    return r; }\n");
     fprintf(out, "static baga_Vec *baga_vec_from_bytes(baga_bytes b) {\n");
@@ -1730,22 +1746,29 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
     fprintf(out, "    return n;\n");
     fprintf(out, "}\n");
-    /* mutex — opaque i64 handle */
+    /* mutex — opaque i64 handle с double-lock детекция */
+    fprintf(out, "typedef struct { pthread_mutex_t mu; pthread_t owner; int locked; } baga_Mutex;\n");
     fprintf(out, "static int64_t baga_mutex_new(void) {\n");
-    fprintf(out, "    pthread_mutex_t *m = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));\n");
+    fprintf(out, "    baga_Mutex *m = (baga_Mutex *)calloc(1, sizeof(baga_Mutex));\n");
     fprintf(out, "    if (!m) { fprintf(stderr, \"baga: mutex_new: oom\\n\"); exit(1); }\n");
-    fprintf(out, "    pthread_mutex_init(m, NULL);\n");
+    fprintf(out, "    pthread_mutex_init(&m->mu, NULL);\n");
     fprintf(out, "    return (int64_t)(intptr_t)m;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_mutex_lock(int64_t h) {\n");
-    fprintf(out, "    pthread_mutex_t *m = (pthread_mutex_t *)(intptr_t)h;\n");
+    fprintf(out, "    baga_Mutex *m = (baga_Mutex *)(intptr_t)h;\n");
     fprintf(out, "    if (!m) return -1;\n");
-    fprintf(out, "    return (int64_t)pthread_mutex_lock(m);\n");
+    fprintf(out, "    if (m->locked && pthread_equal(m->owner, pthread_self())) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: mutex_lock: double-lock от същата нишка\\n\"); exit(1);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    int rc = pthread_mutex_lock(&m->mu);\n");
+    fprintf(out, "    m->owner = pthread_self(); m->locked = 1;\n");
+    fprintf(out, "    return (int64_t)rc;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_mutex_unlock(int64_t h) {\n");
-    fprintf(out, "    pthread_mutex_t *m = (pthread_mutex_t *)(intptr_t)h;\n");
+    fprintf(out, "    baga_Mutex *m = (baga_Mutex *)(intptr_t)h;\n");
     fprintf(out, "    if (!m) return -1;\n");
-    fprintf(out, "    return (int64_t)pthread_mutex_unlock(m);\n");
+    fprintf(out, "    m->locked = 0;\n");
+    fprintf(out, "    return (int64_t)pthread_mutex_unlock(&m->mu);\n");
     fprintf(out, "}\n");
     /* Bounded worker pool: pool_map(fn, Vec<i64>, nworkers) -> Vec<i64> */
     fprintf(out, "typedef struct {\n");
