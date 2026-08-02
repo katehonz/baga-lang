@@ -155,6 +155,17 @@ test: $(BIN)
 	@grep -q "jwt_test: all passed" /tmp/baga_jwt_out.txt \
 		&& echo "OK: JWT HS256 sign/verify (golden vector)" \
 		|| { echo "FAIL: jwt_test"; cat /tmp/baga_jwt_out.txt; exit 1; }
+	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net) ==="
+	@for t in bytes hmac io json os random sha256 sort str tcp time; do \
+		./$(BIN) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
+			&& grep -q "all passed" /tmp/baga_std_out.txt \
+			&& echo "OK: std/$$t" \
+			|| { echo "FAIL: std/$$t"; cat /tmp/baga_std_out.txt; exit 1; }; \
+	done
+	@./$(BIN) tests/std/sha_big_probe.baga > /tmp/baga_std_probe.txt \
+		&& printf '1310720\ndf0be9d175a152159d1a9c73747a686186eb63b56466d5eed6ad6f540d133aff\n' | diff - /tmp/baga_std_probe.txt > /dev/null \
+		&& echo "OK: std/sha256 върху 1.25 MB вход (oracle: hashlib)" \
+		|| { echo "FAIL: sha_big_probe"; cat /tmp/baga_std_probe.txt; exit 1; }
 	@echo "=== verify (статична верификация, M0+M1) ==="
 	@for f in abs_val max2 clamp sum; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \

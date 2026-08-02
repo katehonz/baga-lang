@@ -108,13 +108,16 @@ fn hex4(s: str) -> i64 {
     return v
 }
 
-// Encode a BMP code point as UTF-8 (1-3 bytes).
+// Encode a code point as UTF-8 (1-4 bytes).
 fn utf8_encode(cp: i64) -> str {
     if cp < 128 { return chr(cp) }
     if cp < 2048 {
         return concat(chr(192 + cp / 64), chr(128 + cp % 64))
     }
-    return concat(chr(224 + cp / 4096), concat(chr(128 + (cp / 64) % 64), chr(128 + cp % 64)))
+    if cp < 65536 {
+        return concat(chr(224 + cp / 4096), concat(chr(128 + (cp / 64) % 64), chr(128 + cp % 64)))
+    }
+    return concat(chr(240 + cp / 262144), concat(chr(128 + (cp / 4096) % 64), concat(chr(128 + (cp / 64) % 64), chr(128 + cp % 64))))
 }
 
 // String node. p.pos is at the opening quote. Unterminated strings still
@@ -144,6 +147,17 @@ fn jp_string_node(p: JsonParser) -> JsonParser {
                     if e == 102 { out = concat(out, chr(12)) }
                     if e == 117 {
                         let cp = hex4(substr(p.src, p.pos + 2, p.pos + 6))
+                        // surrogate pair: \uD800-DBFF следван от \uDC00-DFFF
+                        // → астрална кодова точка (emoji и др. > U+FFFF)
+                        if cp >= 55296 && cp <= 56319 && p.pos + 12 <= len(p.src) {
+                            if substr(p.src, p.pos + 6, p.pos + 8) == "\\u" {
+                                let lo = hex4(substr(p.src, p.pos + 8, p.pos + 12))
+                                if lo >= 56320 && lo <= 57343 {
+                                    cp = 65536 + (cp - 55296) * 1024 + (lo - 56320)
+                                    p = jp_at(p, p.pos + 6)
+                                }
+                            }
+                        }
                         out = concat(out, utf8_encode(cp))
                         p = jp_at(p, p.pos + 4)
                     }
@@ -380,6 +394,11 @@ fn json_get(d: JsonDoc, n: i64, key: str) -> i64 {
 
 // ---------- serializer ----------
 
+fn json_hex_digit(v: i64) -> str {
+    if v < 10 { return chr(48 + v) }
+    return chr(87 + v)
+}
+
 fn json_escape(s: str) -> str {
     let mut out = "\""
     for i in 0..len(s) {
@@ -399,7 +418,14 @@ fn json_escape(s: str) -> str {
                         if c == 13 {
                             out = concat(out, "\\r")
                         } else {
-                            out = concat(out, substr(s, i, i + 1))
+                            if c < 32 {
+                                // останалите контролни знаци → \u00XX (валиден JSON)
+                                out = concat(out, "\\u00")
+                                out = concat(out, json_hex_digit((c >> 4) & 15))
+                                out = concat(out, json_hex_digit(c & 15))
+                            } else {
+                                out = concat(out, substr(s, i, i + 1))
+                            }
                         }
                     }
                 }

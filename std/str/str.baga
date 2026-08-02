@@ -126,15 +126,18 @@ fn parse_int(s: str) -> i64 {
 
 fn int_to_str(n: i64) -> str {
     if n == 0 { return "0" }
+    // Трупаме в отрицателна посока: 0 - i64_min прелива (i64_min няма
+    // положителен двойник), а -i64_min % 10 и / 10 работят коректно.
     let mut neg = false
     let mut v = n
-    if v < 0 {
-        neg = true
+    if v > 0 {
         v = 0 - v
+    } else {
+        neg = true
     }
     let mut out = ""
-    while v > 0 {
-        out = concat(chr(48 + (v % 10)), out)
+    while v < 0 {
+        out = concat(chr(48 + (0 - (v % 10))), out)
         v = v / 10
     }
     if neg { out = concat("-", out) }

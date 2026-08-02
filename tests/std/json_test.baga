@@ -47,6 +47,16 @@ fn main() {
     let u = json_parse("\"\\u00e9\"")
     check("unicode", json_str(u, json_root(u)) == "é")
 
+    // surrogate pair → astral code point (U+1F600 = 😀, 4-byte UTF-8)
+    let em = json_parse("\"\\uD83D\\uDE00\"")
+    check("surrogate_pair", json_str(em, json_root(em)) == "😀")
+    check("surrogate_len", len(json_str(em, json_root(em))) == 4)
+
+    // control chars: parse \u0001 and serialize back as \u00XX (valid JSON)
+    let ctrl = json_parse("\"a\\u0001b\"")
+    check("ctrl_parse", json_str(ctrl, json_root(ctrl)) == concat("a", concat(chr(1), "b")))
+    check("ctrl_serialize", json_serialize(ctrl, json_root(ctrl)) == "\"a\\u0001b\"")
+
     // round-trip: parse → serialize → parse → serialize is stable
     let src = "{\"a\":[1,2.5,true,null,\"x\"],\"b\":{\"c\":\"d\"}}"
     let d1 = json_parse(src)

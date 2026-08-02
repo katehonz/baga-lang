@@ -4,13 +4,19 @@ import "../str/str.baga"
 
 extern fn getrandom(buf: str, n: i64, flags: i64) -> i64 !Random
 
-// n random bytes as Vec<i64> (values 0..255).
+// n random bytes as Vec<i64> (values 0..255). getrandom може да върне
+// по-малко от исканото (сигнал, голямо n) — повтаряме до n; при грешка
+// връщаме събраното дотам.
 fn random_bytes(n: i64) -> Vec<i64> !Random {
-    let buf = str_repeat(" ", n)
-    let got = getrandom(buf, n, 0)?
     let out = vec_new()
-    for i in 0..got {
-        vec_push(out, char_at(buf, i))
+    while vec_len(out) < n {
+        let want = n - vec_len(out)
+        let buf = str_repeat(" ", want)
+        let got = getrandom(buf, want, 0)?
+        if got <= 0 { return out }
+        for i in 0..got {
+            vec_push(out, char_at(buf, i))
+        }
     }
     return out
 }

@@ -39,6 +39,8 @@ fn main() {
     check("int_to_str", int_to_str(12345) == "12345")
     check("int_to_str_neg", int_to_str(-42) == "-42")
     check("int_to_str_zero", int_to_str(0) == "0")
+    check("int_to_str_max", int_to_str(9223372036854775807) == "9223372036854775807")
+    check("int_to_str_min", int_to_str(0 - 9223372036854775807 - 1) == "-9223372036854775808")
     check("roundtrip", parse_int(int_to_str(98765)) == 98765)
     print("str_test: all passed")
 }

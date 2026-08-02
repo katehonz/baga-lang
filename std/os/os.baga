@@ -18,15 +18,14 @@ fn env(name: str) -> str !IO {
 }
 
 // Write all of `data` to fd, looping on partial writes. Returns 0, or -1.
+// Не затваря fd — собственост е на извикващия (преди затваряше при грешка,
+// което водеше до double close през write_file).
 fn fd_write(fd: i64, data: str) -> i64 !IO {
     let total = len(data)
     let mut off: i64 = 0
     while off < total {
         let w = write(fd, substr(data, off, total), total - off)?
-        if w <= 0 {
-            close(fd)
-            return -1
-        }
+        if w <= 0 { return -1 }
         off = off + w
     }
     return 0
