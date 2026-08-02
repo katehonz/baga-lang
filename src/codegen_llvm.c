@@ -2063,16 +2063,11 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             LLVMValueRef v = emit_expr_llvm(n->to_str_expr);
             if (ek == TYPE_STR) return v;
             if (ek == TYPE_BOOL) {
-                char tn[32], fn2[32];
-                snprintf(tn, sizeof tn, ".str.true.%d", lg.tmp_counter++);
-                snprintf(fn2, sizeof fn2, ".str.false.%d", lg.tmp_counter++);
-                LLVMValueRef t = LLVMConstStringInContext(lg.ctx, "true", 4, 0);
-                LLVMValueRef fl = LLVMConstStringInContext(lg.ctx, "false", 5, 0);
-                LLVMValueRef tg = LLVMAddGlobal(lg.mod, LLVMTypeOf(t), tn);
-                LLVMValueRef fg = LLVMAddGlobal(lg.mod, LLVMTypeOf(fl), fn2);
-                LLVMSetInitializer(tg, t); LLVMSetGlobalConstant(tg, 1);
-                LLVMSetInitializer(fg, fl); LLVMSetGlobalConstant(fg, 1);
-                return LLVMBuildSelect(lg.builder, v, tg, fg, "bs");
+                /* низовете трябва да са i8* (като NODE_STR_LIT) — суровите
+                 * глобали са [N x i8]* и select с различни N е невалиден */
+                LLVMValueRef t = LLVMBuildGlobalStringPtr(lg.builder, "true", "tt");
+                LLVMValueRef f = LLVMBuildGlobalStringPtr(lg.builder, "false", "ff");
+                return LLVMBuildSelect(lg.builder, v, t, f, "bs");
             }
             return h_call(baga_rt("baga_i64_to_str"), &v, 1, "i2s");
         }
