@@ -1,0 +1,13 @@
+// M9: sum of squares (each square axiom + linear add).
+spec sum_sq {
+    input: x: i64, y: i64
+    output: i64
+    ensures: output >= 0
+}
+fn sum_sq(x: i64, y: i64) -> i64 {
+    return x * x + y * y
+}
+
+fn main() {
+    print(sum_sq(0 - 3, 4))
+}

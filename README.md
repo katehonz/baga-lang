@@ -232,8 +232,8 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion + M6 termination + M7 integer-exact + M8 products | ✅ |
-| 8 | General non-linear reasoning | 🔜 |
+| 7 | **Static** spec verification (`--verify`): M0–M8 + **M9** product sign table + const division | ✅ |
+| 8 | General non-linear reasoning | ✅ M9 (sign/div); further polys later |
 | 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
 
 ### Static verification (`--verify`)
@@ -332,15 +332,18 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   UNKNOWN. Before M8, `caller(n) = g(n)` could be "refuted" for a true
   contract via an unrealizable abstract value — a false alarm. Never again.
 
-Non-linear terms beyond products of linear forms (general polynomials,
-division by variables) are still skipped honestly. `vec_slice` and
-`vec_concat` are now language builtins (returning a fresh `Vec`), and the
-verifier propagates element invariants through them — a slice inherits the
-source's invariants; a concat inherits the invariants **both** operands share.
-A `sorted(v)` relational axiom is also supported: `requires sorted(v)` asserts
-that `v` is non-decreasing, and `vec_push(v, e)` preserves it when `e >= last`
-is provable. Remaining staircase: general non-linear reasoning, and feeding
-verified invariants into proof extraction (`--proofs`).
+- **M9** — **full product sign table + division by constant** (Phase 8 first
+  slice). Products also get: both non-positive ⇒ `p >= 0`; mixed signs ⇒
+  `p <= 0`; both `<= -1` ⇒ `p >= 1`; mixed `>=1`/`<=-1` ⇒ `p <= -1`. Integer
+  division `n / k` for non-zero integer constant `k` becomes a fresh `__d`
+  with C trunc-toward-zero sign axioms (`n>=0,k>0 ⇒ q>=0`, etc.). Witnesses
+  derive `q = n/k` concretely. Examples: `sign_prod.baga`, `div_const.baga`,
+  `sum_sq.baga`. Still honest-UNKNOWN for division by a variable and general
+  higher-degree reasoning beyond products of linear forms.
+
+`vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
+supported. Remaining: richer polynomials, variable divisors, feeding verified
+invariants into `--proofs`.
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

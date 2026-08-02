@@ -203,13 +203,16 @@ static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
  * M8b: a non-constant product x*y also resolves to a fresh symbolic variable
  * __pK, with the two factor linear forms kept (is_prod) so the verifier can
  * later inject TRUE facts (x*x >= 0; fa >= 1 ∧ fb >= 1 ⇒ p >= 1; ...) and the
- * witness search can derive the product's value concretely. */
-typedef struct { Node *call; char *var; Lin fa, fb; int is_prod; } ReadEntry;
+ * witness search can derive the product's value concretely.
+ * M9: integer division by a non-zero constant (is_div): dividend in fa,
+ * divisor constant in fb; inject sign of quotient; witness derives trunc div. */
+typedef struct { Node *call; char *var; Lin fa, fb; int is_prod; int is_div; } ReadEntry;
 typedef struct { ReadEntry *r; int n, cap; } ReadsList;
-typedef struct { char *var; Lin fa, fb; } ProdEntry;
+typedef struct { char *var; Lin fa, fb; int is_div; } ProdEntry;
 typedef struct { ProdEntry *p; int n, cap; } ProdList;
 static const char *reads_find(ReadsList *l, Node *call);
 static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb);
+static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void prods_clone_into(ProdList *dst, ReadsList *src);
 static int g_prod_ctr = 0;
 
@@ -273,6 +276,13 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
                     if (r.lin.c.den != 1 || r.lin.c.num == 0) return sym_nonlin();
                     return sym_lin(lin_const(rat_int(l.lin.c.num % r.lin.c.num)));
                 }
+            }
+            /* M9: dividend linear, divisor non-zero integer constant → fresh __dK */
+            if (e->bin_op == OP_DIV && !l.nonlinear && !r.nonlinear && !l.lin.overflow &&
+                lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num != 0 && reads) {
+                char dv[64]; snprintf(dv, sizeof dv, "__d%d", g_prod_ctr++);
+                reads_push_div(reads, dv, l.lin, r.lin);   /* moves l.lin; r.lin is const copy moved */
+                return sym_lin(lin_var(dv));
             }
             return sym_nonlin();
         }
@@ -618,17 +628,16 @@ static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
     }
 }
 
-/* M8: pin every non-abstract var (__c/__p excluded) to its candidate value in
- * sys; then derive every product var whose factors are fully pinned and pin
- * it too (a product of concretes is concrete — x=1, y=-1 ⇒ x*y=-1, so a
- * genuine violation like x*y >= 0 IS conclusively refuted). Two passes so
- * products depending on earlier derived products resolve as well. */
+/* M8/M9: pin every non-abstract var (__c/__p/__d excluded) to its candidate
+ * value in sys; then derive every product/div var whose factors are fully
+ * pinned and pin it too. Two passes so products of products resolve. */
 static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int nv, ProdList *prods) {
     int pcap = nv + (prods ? prods->n : 0) + 1;
     IBind *pins = calloc((size_t)pcap, sizeof(IBind));
     int np = 0;
     for (int i = 0; i < nv; i++) {
-        if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0) continue;
+        if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0 ||
+            strncmp(vars[i], "__d", 3) == 0) continue;
         pins[np].name = vars[i]; pins[np].val = assign[i].val; np++;
         Lin l = lin_var(vars[i]);
         l.c = rat_sub(l.c, rat_int(assign[i].val));
@@ -658,7 +667,13 @@ static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int
                 if (ok) fv[q] = rv.num;
             }
             int64_t pvv;
-            if (!ok || __builtin_mul_overflow(fv[0], fv[1], &pvv)) continue;
+            if (!ok) continue;
+            if (prods->p[pi].is_div) {
+                if (fv[1] == 0) continue;
+                pvv = fv[0] / fv[1];   /* C trunc toward zero */
+            } else {
+                if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) continue;
+            }
             pins[np].name = prods->p[pi].var; pins[np].val = pvv; np++;
             Lin l = lin_var(prods->p[pi].var);
             l.c = rat_sub(l.c, rat_int(pvv));
@@ -735,7 +750,12 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
             }
             if (!prod_ok) break;
             int64_t pvv;
-            if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) { prod_ok = 0; break; }
+            if (prods->p[pi].is_div) {
+                if (fv[1] == 0) { prod_ok = 0; break; }
+                pvv = fv[0] / fv[1];
+            } else {
+                if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) { prod_ok = 0; break; }
+            }
             for (int i = 0; i < nv; i++)
                 if (strcmp(vars[i], prods->p[pi].var) == 0) { assign[i].val = pvv; break; }
         }
@@ -905,7 +925,8 @@ static int find_bound_witness(Obligation *obl, IBind **witness, int *wn) {
             int needs_concl = 0;
             for (int j = 0; j < obl->ret.lin.n; j++)
                 if (strncmp(obl->ret.lin.terms[j].var, "__c", 3) == 0 ||
-                    strncmp(obl->ret.lin.terms[j].var, "__p", 3) == 0) needs_concl = 1;
+                    strncmp(obl->ret.lin.terms[j].var, "__p", 3) == 0 ||
+                    strncmp(obl->ret.lin.terms[j].var, "__d", 3) == 0) needs_concl = 1;
             if (needs_concl) {
                 ConsList sys; cl_init(&sys);
                 for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
@@ -1000,14 +1021,24 @@ static void reads_free(ReadsList *l) {
 static void reads_push(ReadsList *l, Node *call, const char *var) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = call; l->r[l->n].var = strdup(var);
-    lin_init(&l->r[l->n].fa); lin_init(&l->r[l->n].fb); l->r[l->n].is_prod = 0;
+    lin_init(&l->r[l->n].fa); lin_init(&l->r[l->n].fb);
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0;
     l->n++;
 }
 /* M8b: register a product var with its factor linear forms (moves fa/fb). */
 static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
-    l->r[l->n].fa = fa; l->r[l->n].fb = fb; l->r[l->n].is_prod = 1;
+    l->r[l->n].fa = fa; l->r[l->n].fb = fb;
+    l->r[l->n].is_prod = 1; l->r[l->n].is_div = 0;
+    l->n++;
+}
+/* M9: register integer division by a constant (moves fa; fb is the const divisor). */
+static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
+    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
+    l->r[l->n].fa = fa; l->r[l->n].fb = fb;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 1;
     l->n++;
 }
 static const char *reads_find(ReadsList *l, Node *call) {
@@ -1019,20 +1050,23 @@ static void reads_clone_into(ReadsList *dst, ReadsList *src) {
     for (int i = 0; i < src->n; i++) {
         if (src->r[i].is_prod)
             reads_push_prod(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
+        else if (src->r[i].is_div)
+            reads_push_div(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else
             reads_push(dst, src->r[i].call, src->r[i].var);
     }
 }
 
-/* Snapshot the product entries of a reads list (for obligation witnesses). */
+/* Snapshot product and div entries of a reads list (for obligation witnesses). */
 static void prods_clone_into(ProdList *dst, ReadsList *src) {
     dst->p = NULL; dst->n = 0; dst->cap = 0;
     for (int i = 0; i < src->n; i++) {
-        if (!src->r[i].is_prod) continue;
+        if (!src->r[i].is_prod && !src->r[i].is_div) continue;
         if (dst->n == dst->cap) { dst->cap = dst->cap ? dst->cap * 2 : 4; dst->p = realloc(dst->p, (size_t)dst->cap * sizeof(ProdEntry)); }
         dst->p[dst->n].var = strdup(src->r[i].var);
         dst->p[dst->n].fa = lin_clone(&src->r[i].fa);
         dst->p[dst->n].fb = lin_clone(&src->r[i].fb);
+        dst->p[dst->n].is_div = src->r[i].is_div;
         dst->n++;
     }
 }
@@ -1480,6 +1514,17 @@ static int path_proves_ge(State *st, Lin *fa, int64_t K) {
     return r;
 }
 
+/* Does the state's path prove fa <= K? */
+static int path_proves_le(State *st, Lin *fa, int64_t K) {
+    Lin t = lin_clone(fa);
+    t.c = rat_sub(t.c, rat_int(K));   /* fa - K <= 0  ⟺  fa <= K */
+    ConsList cons; cl_init(&cons);
+    cl_push(&cons, mk_cons(t, C_LE, rat_zero()));
+    int r = cl_implied_by(&st->path, &cons);
+    cl_free(&cons);
+    return r;
+}
+
 /* Push the fact pv >= K onto the path. */
 static void path_push_ge(ConsList *path, const char *pv, int64_t K) {
     Lin v = lin_var(pv);
@@ -1489,23 +1534,64 @@ static void path_push_ge(ConsList *path, const char *pv, int64_t K) {
     cl_push(path, mk_cons(t, C_LE, rat_zero()));
 }
 
-/* M8b: inject TRUE facts about symbolic product vars into the path:
- *   x*x >= 0                       (squares — always, no side conditions)
- *   fa >= 1 ∧ fb >= 1  ⇒  fa*fb >= 1
- *   fa >= 0 ∧ fb >= 0  ⇒  fa*fb >= 0
- * Only added when the side conditions are PROVEN under the path — sound;
- * absence merely means UNKNOWN downstream. Enough for factorial-style
- * postconditions (n >= 1, r >= 1 ⇒ n * r >= 1). */
+/* Push the fact pv <= K onto the path. */
+static void path_push_le(ConsList *path, const char *pv, int64_t K) {
+    Lin v = lin_var(pv);
+    v.c = rat_sub(v.c, rat_int(K)); /* pv - K <= 0  ⟺  pv <= K */
+    cl_push(path, mk_cons(v, C_LE, rat_zero()));
+}
+
+/* M8b + M9: inject TRUE facts about symbolic product/div vars into the path.
+ * Products (M8b/M9 sign table — only when side conditions are PROVEN):
+ *   x*x >= 0                       (squares)
+ *   fa >= 1 ∧ fb >= 1  ⇒  p >= 1
+ *   fa <= -1 ∧ fb <= -1 ⇒  p >= 1
+ *   fa >= 0 ∧ fb >= 0  ⇒  p >= 0
+ *   fa <= 0 ∧ fb <= 0  ⇒  p >= 0
+ *   fa >= 0 ∧ fb <= 0  ⇒  p <= 0
+ *   fa <= 0 ∧ fb >= 0  ⇒  p <= 0
+ *   fa >= 1 ∧ fb <= -1 ⇒  p <= -1
+ *   fa <= -1 ∧ fb >= 1 ⇒  p <= -1
+ * Division by constant d ≠ 0 (C trunc toward zero):
+ *   d > 0 ∧ n >= 0  ⇒  q >= 0;   d > 0 ∧ n <= 0  ⇒  q <= 0
+ *   d < 0 ∧ n >= 0  ⇒  q <= 0;   d < 0 ∧ n <= 0  ⇒  q >= 0
+ * Absence of an unproven side condition ⇒ UNKNOWN downstream (sound). */
 static void inject_prod_axioms(State *st) {
     for (int i = 0; i < st->reads.n; i++) {
         ReadEntry *e = &st->reads.r[i];
+        if (e->is_div) {
+            if (!lin_is_const(&e->fb) || e->fb.c.den != 1 || e->fb.c.num == 0) continue;
+            int64_t d = e->fb.c.num;
+            int n_ge0 = path_proves_ge(st, &e->fa, 0);
+            int n_le0 = path_proves_le(st, &e->fa, 0);
+            if (d > 0) {
+                if (n_ge0) path_push_ge(&st->path, e->var, 0);
+                if (n_le0) path_push_le(&st->path, e->var, 0);
+            } else { /* d < 0 */
+                if (n_ge0) path_push_le(&st->path, e->var, 0);
+                if (n_le0) path_push_ge(&st->path, e->var, 0);
+            }
+            continue;
+        }
         if (!e->is_prod) continue;
         if (lin_eq(&e->fa, &e->fb)) { path_push_ge(&st->path, e->var, 0); continue; }
-        if (path_proves_ge(st, &e->fa, 1) && path_proves_ge(st, &e->fb, 1)) {
-            path_push_ge(&st->path, e->var, 1);
-        } else if (path_proves_ge(st, &e->fa, 0) && path_proves_ge(st, &e->fb, 0)) {
-            path_push_ge(&st->path, e->var, 0);
-        }
+        int fa_ge1 = path_proves_ge(st, &e->fa, 1);
+        int fb_ge1 = path_proves_ge(st, &e->fb, 1);
+        int fa_le_m1 = path_proves_le(st, &e->fa, -1);
+        int fb_le_m1 = path_proves_le(st, &e->fb, -1);
+        int fa_ge0 = path_proves_ge(st, &e->fa, 0);
+        int fb_ge0 = path_proves_ge(st, &e->fb, 0);
+        int fa_le0 = path_proves_le(st, &e->fa, 0);
+        int fb_le0 = path_proves_le(st, &e->fb, 0);
+        if (fa_ge1 && fb_ge1) path_push_ge(&st->path, e->var, 1);
+        else if (fa_le_m1 && fb_le_m1) path_push_ge(&st->path, e->var, 1);
+        else if (fa_ge0 && fb_ge0) path_push_ge(&st->path, e->var, 0);
+        else if (fa_le0 && fb_le0) path_push_ge(&st->path, e->var, 0);
+
+        if (fa_ge1 && fb_le_m1) path_push_le(&st->path, e->var, -1);
+        else if (fa_le_m1 && fb_ge1) path_push_le(&st->path, e->var, -1);
+        else if (fa_ge0 && fb_le0) path_push_le(&st->path, e->var, 0);
+        else if (fa_le0 && fb_ge0) path_push_le(&st->path, e->var, 0);
     }
 }
 

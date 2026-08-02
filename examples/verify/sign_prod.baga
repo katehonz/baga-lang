@@ -1,0 +1,45 @@
+// M9: full product sign table — both-negative and mixed signs.
+spec both_neg {
+    input: a: i64, b: i64
+    output: i64
+    requires: a <= 0 - 1, b <= 0 - 1
+    ensures: output >= 1
+}
+fn both_neg(a: i64, b: i64) -> i64 {
+    return a * b
+}
+
+spec mixed_sign {
+    input: a: i64, b: i64
+    output: i64
+    requires: a >= 0, b <= 0
+    ensures: output <= 0
+}
+fn mixed_sign(a: i64, b: i64) -> i64 {
+    return a * b
+}
+
+spec mixed_sign2 {
+    input: a: i64, b: i64
+    output: i64
+    requires: a <= 0, b >= 0
+    ensures: output <= 0
+}
+fn mixed_sign2(a: i64, b: i64) -> i64 {
+    return a * b
+}
+
+spec both_nonpos {
+    input: a: i64, b: i64
+    output: i64
+    requires: a <= 0, b <= 0
+    ensures: output >= 0
+}
+fn both_nonpos(a: i64, b: i64) -> i64 {
+    return a * b
+}
+
+fn main() {
+    print(both_neg(0 - 3, 0 - 4))
+    print(mixed_sign(3, 0 - 2))
+}

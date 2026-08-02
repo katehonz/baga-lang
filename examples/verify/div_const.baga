@@ -1,0 +1,35 @@
+// M9: integer division by a non-zero constant (C trunc toward zero).
+spec half_nonneg {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output >= 0
+}
+fn half_nonneg(n: i64) -> i64 {
+    return n / 2
+}
+
+spec half_nonpos {
+    input: n: i64
+    output: i64
+    requires: n <= 0
+    ensures: output <= 0
+}
+fn half_nonpos(n: i64) -> i64 {
+    return n / 2
+}
+
+// wrong claim — should be refuted
+spec half_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output >= 1
+}
+fn half_bad(n: i64) -> i64 {
+    return n / 2
+}
+
+fn main() {
+    print(half_nonneg(7))
+}

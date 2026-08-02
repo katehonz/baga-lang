@@ -277,6 +277,20 @@ test: $(BIN)
 	grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
 		&& echo "OK: fact_bad — грешно твърдение за продукт е оброчено conclusively (M8b soundness)" \
 		|| { echo "FAIL: fact_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/sign_prod.baga > /tmp/baga_verify_out.txt; \
+	grep -c "ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^4$$' \
+		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: sign_prod — пълна знакова таблица за продукти (M9)" \
+		|| { echo "FAIL: sign_prod"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/sum_sq.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: sum_sq — x*x + y*y >= 0 (M9)" \
+		|| { echo "FAIL: sum_sq"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/div_const.baga > /tmp/baga_verify_out.txt; \
+	grep -q "half_nonneg" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "half_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: div_const — n/k знак + soundness (M9)" \
+		|| { echo "FAIL: div_const"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@for f in elem_param elem_push elem_set elem_slice elem_concat; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
