@@ -266,8 +266,8 @@ int main(int argc, char **argv) {
     /* check */
     Checker checker;
     memset(&checker, 0, sizeof(checker));
-    /* --check / --lib: library modules need no main (G2) */
-    checker.allow_no_main = check_only;
+    /* libraries: no main for --check/--lib, --emit-c, --emit-llvm */
+    checker.allow_no_main = check_only || emit_c || emit_llvm;
     check_program(&checker, program);
 
     if (checker.n_errors > 0) {

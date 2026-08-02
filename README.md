@@ -203,7 +203,7 @@ baga/
 |---|---|
 | (none) | Compile and run |
 | `--check` / `--lib` | Parse + typecheck only (no `main` required) — for library modules |
-| `--emit-c` | Generate C code to stdout |
+| `--emit-c` | Generate C to stdout (libraries without `main` OK; no C `main` wrapper) |
 | `--emit-llvm` | Generate LLVM IR to stdout (`baga-llvm`, `make llvm`) |
 | `--ast` | Print AST (debug) |
 | `--tokens` | Print tokens (debug) |

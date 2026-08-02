@@ -445,6 +445,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"chan_recv2",  "baga_chan_recv2"},
                     {"chan_try_recv","baga_chan_try_recv"},
                     {"chan_recv_timeout","baga_chan_recv_timeout"},
+                    {"chan_select2","baga_chan_select2"},
                     {"chan_close",  "baga_chan_close"},
                     {"chan_len",    "baga_chan_len"},
                     {"sleep_ms",    "baga_sleep_ms"},
@@ -1543,6 +1544,36 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {}\n");
     fprintf(out, "    return 0;\n");
     fprintf(out, "}\n");
+    /* non-blocking select over two channels.
+     * cell2(which, value): which=0|1 got value; which=2 neither ready;
+     * which=3 both closed (and empty). Fair: prefers the emptier buffer first,
+     * ties break to c0 then c1. */
+    fprintf(out, "static int64_t baga_chan_select2(int64_t c0, int64_t c1) {\n");
+    fprintf(out, "    baga_Chan *a = (baga_Chan *)(intptr_t)c0;\n");
+    fprintf(out, "    baga_Chan *b = (baga_Chan *)(intptr_t)c1;\n");
+    fprintf(out, "    if (!a && !b) return baga_cell2(3, 0);\n");
+    fprintf(out, "    int64_t la = 0, lb = 0; int ca = 1, cb = 1;\n");
+    fprintf(out, "    if (a) { pthread_mutex_lock(&a->mu); la = a->len; ca = a->closed; pthread_mutex_unlock(&a->mu); }\n");
+    fprintf(out, "    if (b) { pthread_mutex_lock(&b->mu); lb = b->len; cb = b->closed; pthread_mutex_unlock(&b->mu); }\n");
+    fprintf(out, "    if (la == 0 && lb == 0) {\n");
+    fprintf(out, "        if ((!a || ca) && (!b || cb)) return baga_cell2(3, 0);\n");
+    fprintf(out, "        return baga_cell2(2, 0);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    int prefer0 = (la >= lb); /* take from fuller first (less likely to starve) */\n");
+    fprintf(out, "    if (prefer0 && la > 0) {\n");
+    fprintf(out, "        int64_t pr = baga_chan_try_recv(c0);\n");
+    fprintf(out, "        if (baga_cell2_0(pr) == 1) return baga_cell2(0, baga_cell2_1(pr));\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    if (lb > 0) {\n");
+    fprintf(out, "        int64_t pr = baga_chan_try_recv(c1);\n");
+    fprintf(out, "        if (baga_cell2_0(pr) == 1) return baga_cell2(1, baga_cell2_1(pr));\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    if (la > 0) {\n");
+    fprintf(out, "        int64_t pr = baga_chan_try_recv(c0);\n");
+    fprintf(out, "        if (baga_cell2_0(pr) == 1) return baga_cell2(0, baga_cell2_1(pr));\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return baga_cell2(2, 0);\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_chan_close(int64_t ch) {\n");
     fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");
     fprintf(out, "    if (!c) return -1;\n");
@@ -1659,11 +1690,22 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     if (cg->test_specs) {
         emit_test_driver(cg, program);
     } else {
-        /* C main → calls baga main */
-        fprintf(out, "int main(int argc, char **argv) {\n");
-        fprintf(out, "    baga_argc = argc; baga_argv = argv;\n");
-        fprintf(out, "    b_main();\n");
-        fprintf(out, "    return 0;\n");
-        fprintf(out, "}\n");
+        /* C main only when the program defines main (libraries may omit it) */
+        int has_main = 0;
+        for (int i = 0; i < program->items.len; i++) {
+            Node *it = program->items.data[i];
+            if (it->kind == NODE_FN && it->fn_body && it->fn_name &&
+                strcmp(it->fn_name, "main") == 0) {
+                has_main = 1;
+                break;
+            }
+        }
+        if (has_main) {
+            fprintf(out, "int main(int argc, char **argv) {\n");
+            fprintf(out, "    baga_argc = argc; baga_argv = argv;\n");
+            fprintf(out, "    b_main();\n");
+            fprintf(out, "    return 0;\n");
+            fprintf(out, "}\n");
+        }
     }
 }

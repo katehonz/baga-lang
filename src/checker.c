@@ -599,6 +599,7 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"chan_recv2",  TYPE_I64, 1, 0, 1}, /* cell2(ok, value) */
             {"chan_try_recv", TYPE_I64, 1, 0, 1}, /* cell2(status, value) */
             {"chan_recv_timeout", TYPE_I64, 2, 0, 1},
+            {"chan_select2", TYPE_I64, 2, 0, 1}, /* cell2(which, value) */
             {"chan_close",  TYPE_I64, 1, 0, 1},
             {"chan_len",    TYPE_I64, 1, 0, 1},
             {"sleep_ms",    TYPE_I64, 1, 0, 1},

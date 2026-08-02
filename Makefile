@@ -152,9 +152,12 @@ test: $(BIN)
 	@./$(BIN) --lib app-product/jwtbaga/jwt.baga | grep -q "ok:" \
 		&& echo "OK: --lib на jwt.baga" \
 		|| { echo "FAIL: --lib jwt.baga"; exit 1; }
-	@./$(BIN) --emit-c app-product/httpdbaga/http.baga 2>&1 | grep -q "липсва функция 'main'" \
-		&& echo "OK: --emit-c без main все още изисква main (само --check го пропуска)" \
-		|| { echo "FAIL: --emit-c трябва да изисква main"; exit 1; }
+	@./$(BIN) --emit-c app-product/httpdbaga/http.baga 2>/dev/null | grep -q "b_main" \
+		&& { echo "FAIL: --emit-c на lib не трябва да емитва b_main"; exit 1; } \
+		|| echo "OK: --emit-c на библиотека (без main wrapper)"
+	@./$(BIN) app-product/httpdbaga/http.baga 2>&1 | grep -q "липсва функция 'main'" \
+		&& echo "OK: run без main все още изисква main" \
+		|| { echo "FAIL: run без main трябва да гърми"; exit 1; }
 	@echo "=== http (app-product/httpdbaga) ==="
 	@./$(BIN) tests/http_test.baga > /tmp/baga_http_out.txt
 	@grep -q "http_test: all passed" /tmp/baga_http_out.txt \

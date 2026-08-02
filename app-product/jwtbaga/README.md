@@ -28,13 +28,12 @@ fn jwt_verify(key: str, msg: str, sig: str) -> bool   // constant-time
 fn jwt_encode(key: str, payload_json: str) -> str     // header.payload.signature
 fn jwt_decode(key: str, token: str) -> str            // payload JSON; "" if invalid
 fn jwt_claim(token: str, name: str) -> str            // raw claim text; "" if absent
+fn jwt_claim_str(token: str, name: str) -> str        // unquoted string claim (G9)
+fn jwt_claim_int(token: str, name: str) -> i64        // integer claim; 0 if missing (G9)
 ```
 
-**Binary-safety note.** A decoded signature is 32 arbitrary bytes and may
-contain `0x00`. Prefer the first-class `bytes` type (G5) for new binary code;
-this library still uses `Vec<i64>` for the HMAC comparison with `ct_eq_bytes`.
-`jwt_decode` returns the payload as a `str` safely because JSON text has no null
-bytes. See `gaps.md` G5.
+**Binary-safety note.** Signatures use native `bytes` + `hmac_sha256_b` /
+`ct_eq_b` (may contain `0x00`). Payload is JSON text returned as `str`.
 
 ## Run the demo
 

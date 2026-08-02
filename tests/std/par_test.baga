@@ -151,6 +151,26 @@ fn main() -> i64 !Par {
     sleep_ms(1)
     check("sleep_ms", true)
 
+    // chan_select2: non-blocking multi-channel poll
+    let s0 = chan_new(2)
+    let s1 = chan_new(2)
+    let none = chan_select2(s0, s1)
+    check("select_none", cell2_0(none) == 2)
+    chan_send(s1, 99)
+    let one = chan_select2(s0, s1)
+    check("select_1", cell2_0(one) == 1 && cell2_1(one) == 99)
+    chan_send(s0, 11)
+    chan_send(s1, 22)
+    let both = chan_select2(s0, s1)
+    check("select_ready", cell2_0(both) == 0 || cell2_0(both) == 1)
+    chan_close(s0)
+    chan_close(s1)
+    // drain
+    while cell2_0(chan_try_recv(s0)) == 1 { }
+    while cell2_0(chan_try_recv(s1)) == 1 { }
+    let allc = chan_select2(s0, s1)
+    check("select_closed", cell2_0(allc) == 3)
+
     print("par_test: all passed")
     return 0
 }

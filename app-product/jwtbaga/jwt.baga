@@ -1,12 +1,9 @@
 // jwt.baga — JWT (RFC 7519) HS256 signer + verifier. Pure Baga.
-// Built on std/ crypto (hmac_sha256, ct_eq_bytes), bytes (base64url), json, str.
+// Built on std/ crypto (hmac_sha256_b, ct_eq_b), bytes (base64url), json, str.
 //
 // HS256 only. alg:none is never produced and never accepted. Signatures are
-// arbitrary 32-byte values that may contain 0x00; because a baga str cannot
-// hold a null byte (chr(0) == ""), decoded signatures live as Vec<i64> and are
-// compared with ct_eq_bytes — never coerced to str.
-//
-// base64url lives in std/bytes (G6 closed); this library only does JWT.
+// arbitrary 32-byte values that may contain 0x00 — handled as native `bytes`,
+// compared with ct_eq_b, never coerced to str.
 
 import "../../std/crypto/hmac.baga"
 import "../../std/crypto/ct.baga"
@@ -18,23 +15,22 @@ import "../../std/str/str.baga"
 
 // base64url(HMAC-SHA256(key, msg)).
 fn jwt_sign(key: str, msg: str) -> str {
-    return base64url_encode(hmac_sha256(key, msg))
+    return base64url_encode_b(hmac_sha256_b(bytes_of_str(key), bytes_of_str(msg)))
 }
 
-// Constant-time: decode the presented signature to bytes and compare against a
-// freshly computed MAC.
+// Constant-time: decode signature to bytes and compare against a fresh MAC.
 fn jwt_verify(key: str, msg: str, sig_b64url: str) -> bool {
-    let expected = hmac_sha256(key, msg)
-    let got = base64url_decode(sig_b64url)
-    return ct_eq_bytes(expected, got)
+    let expected = hmac_sha256_b(bytes_of_str(key), bytes_of_str(msg))
+    let got = base64url_decode_b(sig_b64url)
+    return ct_eq_b(expected, got)
 }
 
 // ---------- token encode / decode ----------
 
 // header.payload.signature over a caller-supplied JSON payload string.
 fn jwt_encode(key: str, payload_json: str) -> str {
-    let h = base64url_encode(bytes_from_str("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"))
-    let p = base64url_encode(bytes_from_str(payload_json))
+    let h = base64url_encode_b(bytes_of_str("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"))
+    let p = base64url_encode_b(bytes_of_str(payload_json))
     let signing = concat(concat(h, "."), p)
     let sig = jwt_sign(key, signing)
     return concat(concat(signing, "."), sig)
@@ -50,7 +46,8 @@ fn jwt_decode(key: str, token: str) -> str {
     if !jwt_verify(key, signing, vec_get(parts, 2)) {
         return ""
     }
-    return bytes_to_str(base64url_decode(vec_get(parts, 1)))
+    // Payload is JSON text — no embedded NUL, so str_of_bytes is safe.
+    return str_of_bytes(base64url_decode_b(vec_get(parts, 1)))
 }
 
 // Raw JSON text of a claim (string claims keep their quotes, numbers are bare);
@@ -61,7 +58,7 @@ fn jwt_claim(token: str, name: str) -> str {
     if vec_len(parts) != 3 {
         return ""
     }
-    let payload = bytes_to_str(base64url_decode(vec_get(parts, 1)))
+    let payload = str_of_bytes(base64url_decode_b(vec_get(parts, 1)))
     let d = json_parse(payload)
     let node = json_get(d, json_root(d), name)
     if node < 0 {
@@ -70,15 +67,28 @@ fn jwt_claim(token: str, name: str) -> str {
     return json_serialize(d, node)
 }
 
-// ---------- internals ----------
-
-// JSON payload text never contains a null byte, so this is safe for payloads.
-// It is NOT safe for signatures — see the file header. (Language gap: there is
-// no binary-safe str; logged in gaps.md.)
-fn bytes_to_str(b: Vec<i64>) -> str {
-    let mut out = ""
-    for i in 0..vec_len(b) {
-        out = concat(out, chr(vec_get(b, i)))
+// G9: string claim without JSON quotes; "" if missing or not a string.
+fn jwt_claim_str(token: str, name: str) -> str {
+    let raw = jwt_claim(token, name)
+    if len(raw) >= 2 {
+        if char_at(raw, 0) == 34 {
+            if char_at(raw, len(raw) - 1) == 34 {
+                return substr(raw, 1, len(raw) - 1)
+            }
+        }
     }
-    return out
+    return ""
+}
+
+// G9: integer claim; 0 if missing or not an integer (use jwt_claim for raw).
+fn jwt_claim_int(token: str, name: str) -> i64 {
+    let raw = jwt_claim(token, name)
+    if raw == "" {
+        return 0
+    }
+    // reject quoted strings
+    if char_at(raw, 0) == 34 {
+        return 0
+    }
+    return parse_int(raw)
 }

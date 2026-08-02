@@ -165,3 +165,12 @@ fn base64url_decode(s: str) -> Vec<i64> {
     }
     return base64_decode(t)
 }
+
+// Native `bytes` wrappers (G5 bridge for JWT/crypto).
+fn base64url_encode_b(b: bytes) -> str {
+    return base64url_encode(vec_from_bytes(b))
+}
+
+fn base64url_decode_b(s: str) -> bytes {
+    return bytes_from_vec(base64url_decode(s))
+}

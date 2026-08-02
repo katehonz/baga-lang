@@ -30,10 +30,9 @@ only because JSON has no NUL). See `jwt.baga`.
 this; the `Vec<i64>` plumbing is verbose and the `str`/`bytes` boundary is
 invisible in types (a `bytes_to_str` on signature bytes would silently corrupt).
 
-**Verdict.** **Closed** (core type + crypto bridge). First-class `bytes` with
-hex literals and builtins; `bytes_from_vec` / `vec_from_bytes`; crypto now
-exposes `sha256_b` / `hmac_sha256_b` / `ct_eq_b`. jwt still uses `Vec<i64>` for
-MACs (works); full jwt rewrite to `bytes` is optional polish.
+**Verdict.** **Closed** (core type + crypto + jwt). First-class `bytes`;
+crypto `sha256_b` / `hmac_sha256_b` / `ct_eq_b`; jwt signs/verifies via
+native `bytes` (no `Vec` MAC path).
 
 ## G6 — base64url (RFC 4648 §5) absent from std/bytes
 
@@ -96,9 +95,7 @@ back bare (`7`). The caller must know each claim's type.
 
 **Severity.** Low.
 
-**Verdict.** Roadmap candidate (small, this library): add `jwt_claim_str`
-(decoded, unquoted) and `jwt_claim_int` convenience accessors when a second
-consumer wants them. Not done now (YAGNI for one demo).
+**Verdict.** **Closed.** `jwt_claim_str` / `jwt_claim_int` in `jwt.baga`.
 
 ---
 
@@ -110,4 +107,4 @@ consumer wants them. Not done now (YAGNI for one demo).
 | G6 base64url in std/bytes | **closed** | `base64url_encode`/`decode` in `std/bytes`; jwt uses them |
 | G7 query-string parsing | **closed** | `http_query_param` / `http_path_only` in http.baga |
 | G8 incomplete reason table | app-specific | fixed in http.baga (401 added) |
-| G9 typed claim accessors | roadmap (small) / YAGNI-now | add on 2nd consumer |
+| G9 typed claim accessors | **closed** | `jwt_claim_str` / `jwt_claim_int` |

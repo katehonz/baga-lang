@@ -1886,6 +1886,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     strcmp(cn, "mutex_new") == 0 || strcmp(cn, "mutex_lock") == 0 ||
                     strcmp(cn, "mutex_unlock") == 0 ||
                     strcmp(cn, "sleep_ms") == 0 ||
+                    strcmp(cn, "bytes_from_vec") == 0 ||
+                    strcmp(cn, "vec_from_bytes") == 0 ||
                     strcmp(cn, "cell2") == 0 || strcmp(cn, "cell2_0") == 0 ||
                     strcmp(cn, "cell2_1") == 0) {
                     char buf[128];

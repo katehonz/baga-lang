@@ -39,6 +39,7 @@ fn main() -> i64 !Par {
 | `chan_recv2` | `(c: i64) -> i64 !Par` | `cell2(ok, value)` — ok=1 value, ok=0 closed+empty. |
 | `chan_try_recv` | `(c: i64) -> i64 !Par` | Non-blocking: status 1=value, 0=empty, 2=closed. |
 | `chan_recv_timeout` | `(c: i64, ms: i64) -> i64 !Par` | Timed: 1=value, 0=timeout, 2=closed. |
+| `chan_select2` | `(c0, c1: i64) -> i64 !Par` | Non-blocking: which=0\|1 value, 2=none, 3=both closed. |
 | `sleep_ms` | `(ms: i64) -> i64 !Par` | Block this OS thread. |
 | `chan_close` / `chan_len` | `!Par` | |
 | `mutex_new` / `lock` / `unlock` | `!Par` | Opaque `i64` handle. |

@@ -47,6 +47,10 @@ fn main() {
     check("claim_sub", jwt_claim(token, "sub") == "\"bagatur\"")
     check("claim_n", jwt_claim(token, "n") == "7")
     check("claim_missing", jwt_claim(token, "nope") == "")
+    check("claim_str", jwt_claim_str(token, "sub") == "bagatur")
+    check("claim_str_missing", jwt_claim_str(token, "nope") == "")
+    check("claim_int", jwt_claim_int(token, "n") == 7)
+    check("claim_int_str", jwt_claim_int(token, "sub") == 0)
 
     print("jwt_test: all passed")
 }
