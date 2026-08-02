@@ -1,0 +1,39 @@
+// M8 soundness: НЕ се оборва с фалшив контрапример. caller(n) = g(n) = n,
+// така че output <= 2*n е ИСТИНА за всяко n >= 0. Абстракцията обаче знае
+// за r само r >= 0 (assumed ensures) — witness с n = 0, r = 5 би „оборил"
+// твърдението при нереализируема стойност на r. Conclusiveness gate-ът
+// изисква нарушението да важи за ВСИЧКИ стойности на абстрактните
+// променливи при pinned входове — тук не важи, затова честно UNKNOWN,
+// никога фалшиво ОБРОЧЕНО.
+spec g {
+    input:
+        m: i64
+    output: i64
+    requires:
+        m >= 0
+    ensures:
+        0 <= output
+}
+
+fn g(m: i64) -> i64 {
+    return m
+}
+
+spec caller {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output <= 2 * n
+}
+
+fn caller(n: i64) -> i64 {
+    let r = g(n)
+    return r
+}
+
+fn main() {
+    print(caller(3))
+}

@@ -602,8 +602,19 @@ static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
 }
 
 /* Try to find an integral witness satisfying all `ante` and violating `ens`.
- * Returns 1 and fills witness (caller frees names) on success. */
-static int find_counterexample(ConsList *ante, Formula *nef, Node *ensures_ast,
+ * Returns 1 and fills witness (caller frees names) on success.
+ * M8 conclusiveness: a witness is accepted only if the violation does not
+ * depend on the chosen values of call/product fresh vars (__c/__p) — those
+ * are determined by the inputs through the callee, but the verifier knows
+ * only the assumed ensures about them, so a violation seen only at an
+ * unrealizable value would be a false alarm. All other vars (inputs, locals,
+ * __r reads, __len lengths) are pinned to the candidate: read/length values
+ * are genuinely free (realizable by some vector contents). The check:
+ * with the pins, every positive-ensures branch (`ef`) is UNSAT under ante.
+ * Sound: the concrete execution's internal values satisfy ante (every path
+ * constraint is a true fact), so "all completions violate" ⇒ concrete run
+ * violates. */
+static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *ensures_ast,
                                SEnv *output_env, IBind **witness, int *wn) {
     char **vars = NULL; int nv = 0, cap = 0;
     collect_vars_cl(ante, &vars, &nv, &cap);
@@ -659,6 +670,25 @@ static int find_counterexample(ConsList *ante, Formula *nef, Node *ensures_ast,
             IEnv ie3; ie3.b = a2; ie3.n = nv + 1;
             int ev = eval_bool(ensures_ast, &ie3);
             if (!ev) {
+                /* M8: accept only conclusive witnesses (see above) */
+                int conclusive = 1;
+                for (int b2 = 0; b2 < ef->n && conclusive; b2++) {
+                    ConsList sys; cl_init(&sys);
+                    for (int x = 0; x < ante->n; x++) { Constraint *c = &ante->c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                    for (int i = 0; i < nv; i++) {
+                        if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0) continue;
+                        Lin l = lin_var(vars[i]);
+                        l.c = rat_sub(l.c, rat_int(assign[i].val));
+                        cl_push(&sys, mk_cons(l, C_LE, rat_zero()));
+                        Lin l2 = lin_var(vars[i]);
+                        Lin nl2 = lin_neg(&l2);
+                        nl2.c = rat_add(nl2.c, rat_int(assign[i].val));
+                        cl_push(&sys, mk_cons(nl2, C_LE, rat_zero()));
+                    }
+                    for (int x = 0; x < ef->br[b2].n; x++) { Constraint *c = &ef->br[b2].c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                    if (fm_sat(&sys)) conclusive = 0;   /* frees sys */
+                }
+                if (!conclusive) { free(a2); continue; }
                 IBind *w = calloc(nv ? nv : 1, sizeof(IBind));
                 int k = 0;
                 for (int i = 0; i < nv; i++) {
@@ -769,9 +799,37 @@ static int find_bound_witness(Obligation *obl, IBind **witness, int *wn) {
             }
         }
         if (oob) {
-            *witness = calloc(nv ? nv : 1, sizeof(IBind));
-            for (int i = 0; i < nv; i++) { (*witness)[i].name = strdup(vars[i]); (*witness)[i].val = assign[i].val; }
-            *wn = nv;
+            /* M8: ако индексът зависи от __c/__p (абстрактни call/product
+             * резултати), изискваме conclusive нарушение — при pinned
+             * входове/read-ове НИКОЯ стойност на абстрактните променливи не
+             * трябва да връща достъпа в границите, иначе е фалшива тревога. */
+            int needs_concl = 0;
+            for (int j = 0; j < obl->ret.lin.n; j++)
+                if (strncmp(obl->ret.lin.terms[j].var, "__c", 3) == 0 ||
+                    strncmp(obl->ret.lin.terms[j].var, "__p", 3) == 0) needs_concl = 1;
+            if (needs_concl) {
+                ConsList sys; cl_init(&sys);
+                for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                for (int i = 0; i < nv; i++) {
+                    if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0) continue;
+                    Lin l = lin_var(vars[i]);
+                    l.c = rat_sub(l.c, rat_int(assign[i].val));
+                    cl_push(&sys, mk_cons(l, C_LE, rat_zero()));
+                    Lin l2 = lin_var(vars[i]);
+                    Lin nl2 = lin_neg(&l2);
+                    nl2.c = rat_add(nl2.c, rat_int(assign[i].val));
+                    cl_push(&sys, mk_cons(nl2, C_LE, rat_zero()));
+                }
+                for (int x = 0; x < obl->bound.n; x++) { Constraint *c = &obl->bound.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                if (fm_sat(&sys)) continue;   /* не е conclusive — търси друг */
+            }
+            IBind *w = calloc(nv ? nv : 1, sizeof(IBind));
+            int k = 0;
+            for (int i = 0; i < nv; i++) {
+                if (strncmp(vars[i], "__", 2) == 0) continue;   /* internal fresh vars */
+                w[k].name = strdup(vars[i]); w[k].val = assign[i].val; k++;
+            }
+            *witness = w; *wn = k;
             found = 1;
         }
     }
@@ -1731,6 +1789,23 @@ static int find_callreq_witness(Obligation *obl, IBind **witness, int *wn) {
             if (!holds) viol = 1;
         }
         if (viol) {
+            /* M8 conclusiveness (както при ensures): pin всички освен __c/__p;
+             * requires трябва да е невъзможно при тези входове, иначе
+             * нарушението зависи от абстрактна стойност → фалшива тревога. */
+            ConsList sys; cl_init(&sys);
+            for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            for (int i = 0; i < nv; i++) {
+                if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0) continue;
+                Lin l = lin_var(vars[i]);
+                l.c = rat_sub(l.c, rat_int(assign[i].val));
+                cl_push(&sys, mk_cons(l, C_LE, rat_zero()));
+                Lin l2 = lin_var(vars[i]);
+                Lin nl2 = lin_neg(&l2);
+                nl2.c = rat_add(nl2.c, rat_int(assign[i].val));
+                cl_push(&sys, mk_cons(nl2, C_LE, rat_zero()));
+            }
+            for (int x = 0; x < obl->bound.n; x++) { Constraint *c = &obl->bound.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            if (fm_sat(&sys)) continue;   /* не е conclusive — търси друг witness */
             IBind *w = calloc(nv ? nv : 1, sizeof(IBind));
             int k = 0;
             for (int i = 0; i < nv; i++) {
@@ -1819,7 +1894,7 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
                 /* rebuild antecedent for witness search */
                 ConsList ante2; cl_init(&ante2);
                 for (int x = 0; x < ante.n; x++) { Constraint *c = &ante.c[x]; cl_push(&ante2, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
-                if (find_counterexample(&ante2, &nef, ens_expr, &env2, &w, &wnn)) {
+                if (find_counterexample(&ante2, &nef, &ef, ens_expr, &env2, &w, &wnn)) {
                     clause_res = R_REFUTED;
                     if (!*wit) { *wit = w; *wn = wnn; }
                     else { for (int i = 0; i < wnn; i++) free(w[i].name); free(w); }
