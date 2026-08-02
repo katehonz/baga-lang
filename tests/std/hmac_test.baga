@@ -1,4 +1,5 @@
 import "../../std/crypto/hmac.baga"
+import "../../std/crypto/ct.baga"
 import "../../std/str/str.baga"
 
 fn check(name: str, ok: bool) {
@@ -20,5 +21,19 @@ fn main() {
 
     // sanity: different keys differ
     check("keys_differ", hmac_sha256_hex("k1", "msg") != hmac_sha256_hex("k2", "msg"))
+
+    // native bytes API matches str path
+    let mac_v = hmac_sha256("Jefe", "what do ya want for nothing?")
+    let mac_b = hmac_sha256_b(bytes_of_str("Jefe"), bytes_of_str("what do ya want for nothing?"))
+    check("hmac_b_hex", hmac_sha256_b_hex(bytes_of_str("Jefe"), bytes_of_str("what do ya want for nothing?")) == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+    check("hmac_b_eq_vec", ct_eq_b(mac_b, bytes_from_vec(mac_v)))
+    check("ct_eq_b_neg", !ct_eq_b(mac_b, bytes_of_str("nope")))
+
+    // binary-safe: key with embedded NUL
+    let knul = bytes_concat(bytes_of_str("ab"), bytes_concat(x"00", bytes_of_str("cd")))
+    let m1 = hmac_sha256_b(knul, bytes_of_str("msg"))
+    let m2 = hmac_sha256_b(knul, bytes_of_str("msg"))
+    check("hmac_b_nul_key", ct_eq_b(m1, m2) && bytes_len(m1) == 32)
+
     print("hmac_test: all passed")
 }

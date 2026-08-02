@@ -195,3 +195,13 @@ fn sha256(msg: str) -> Vec<i64> {
 fn sha256_hex(msg: str) -> str {
     return bytes_to_hex(sha256(msg))
 }
+
+// Native `bytes` API (G5 follow-up): digest as binary-safe bytes.
+// Internally bridges through Vec until the core hash is rewritten.
+fn sha256_b(data: bytes) -> bytes {
+    return bytes_from_vec(sha256_bytes(vec_from_bytes(data)))
+}
+
+fn sha256_b_hex(data: bytes) -> str {
+    return hex_encode(sha256_b(data))
+}

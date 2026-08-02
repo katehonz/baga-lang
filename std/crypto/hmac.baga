@@ -32,3 +32,33 @@ fn hmac_sha256(key: str, msg: str) -> Vec<i64> {
 fn hmac_sha256_hex(key: str, msg: str) -> str {
     return bytes_to_hex(hmac_sha256(key, msg))
 }
+
+// Native `bytes` key/message → `bytes` MAC (binary-safe; may contain 0x00).
+fn hmac_sha256_b(key: bytes, msg: bytes) -> bytes {
+    let mut k = vec_from_bytes(key)
+    if vec_len(k) > 64 {
+        k = sha256_bytes(k)
+    }
+    while vec_len(k) < 64 {
+        vec_push(k, 0)
+    }
+    let inner = vec_new()
+    let outer = vec_new()
+    for i in 0..64 {
+        vec_push(inner, vec_get(k, i) ^ 54)
+        vec_push(outer, vec_get(k, i) ^ 92)
+    }
+    let m = vec_from_bytes(msg)
+    for i in 0..vec_len(m) {
+        vec_push(inner, vec_get(m, i))
+    }
+    let ihash = sha256_bytes(inner)
+    for i in 0..32 {
+        vec_push(outer, vec_get(ihash, i))
+    }
+    return bytes_from_vec(sha256_bytes(outer))
+}
+
+fn hmac_sha256_b_hex(key: bytes, msg: bytes) -> str {
+    return hex_encode(hmac_sha256_b(key, msg))
+}

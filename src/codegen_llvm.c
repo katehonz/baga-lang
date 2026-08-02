@@ -1876,6 +1876,23 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             }
             if (n->callee->kind != NODE_IDENT)
                 llvm_unsupported("повикване през израз (не име)");
+            /* concurrency (!Par) — C/pthread only for now; honest refuse */
+            if (!ef && n->callee->kind == NODE_IDENT) {
+                const char *cn = n->callee->name;
+                if (strcmp(cn, "go") == 0 || strcmp(cn, "go_bg") == 0 ||
+                    strcmp(cn, "pool_map") == 0 || strcmp(cn, "join") == 0 ||
+                    strcmp(cn, "detach") == 0 ||
+                    strncmp(cn, "chan_", 5) == 0 ||
+                    strcmp(cn, "mutex_new") == 0 || strcmp(cn, "mutex_lock") == 0 ||
+                    strcmp(cn, "mutex_unlock") == 0 ||
+                    strcmp(cn, "sleep_ms") == 0 ||
+                    strcmp(cn, "cell2") == 0 || strcmp(cn, "cell2_0") == 0 ||
+                    strcmp(cn, "cell2_1") == 0) {
+                    char buf[128];
+                    snprintf(buf, sizeof buf, "!Par/%s (само C backend)", cn);
+                    llvm_unsupported(buf);
+                }
+            }
             /* str/io/vec builtin-и → baga_* IR helpers (като в codegen_c) */
             static const struct { const char *baga; const char *rt; } bmap[] = {
                 {"len",         "baga_len"},

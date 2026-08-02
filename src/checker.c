@@ -597,8 +597,11 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"chan_send",   TYPE_I64, 2, 0, 1},
             {"chan_recv",   TYPE_I64, 1, 0, 1},
             {"chan_recv2",  TYPE_I64, 1, 0, 1}, /* cell2(ok, value) */
+            {"chan_try_recv", TYPE_I64, 1, 0, 1}, /* cell2(status, value) */
+            {"chan_recv_timeout", TYPE_I64, 2, 0, 1},
             {"chan_close",  TYPE_I64, 1, 0, 1},
             {"chan_len",    TYPE_I64, 1, 0, 1},
+            {"sleep_ms",    TYPE_I64, 1, 0, 1},
             {"mutex_new",   TYPE_I64, 0, 0, 1},
             {"mutex_lock",  TYPE_I64, 1, 0, 1},
             {"mutex_unlock",TYPE_I64, 1, 0, 1},
@@ -607,6 +610,23 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"cell2_0",     TYPE_I64, 1, 0, 0},
             {"cell2_1",     TYPE_I64, 1, 0, 0},
         };
+        /* bytes_from_vec / vec_from_bytes — typed bridge (not in the flat table) */
+        if (strcmp(name, "bytes_from_vec") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+            if (!vt || vt->kind != TYPE_VEC)
+                check_error(ctx, n->pos, "'bytes_from_vec' очаква Vec");
+            return type_new(TYPE_BYTES);
+        }
+        if (strcmp(name, "vec_from_bytes") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            Type *bt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+            if (!bt || bt->kind != TYPE_BYTES)
+                check_error(ctx, n->pos, "'vec_from_bytes' очаква bytes");
+            Type *r = type_new(TYPE_VEC);
+            r->elem = type_new(TYPE_I64);
+            return r;
+        }
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {
                 n->callee->type = type_new(TYPE_VOID);

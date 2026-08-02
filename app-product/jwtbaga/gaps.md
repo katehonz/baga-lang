@@ -30,10 +30,10 @@ only because JSON has no NUL). See `jwt.baga`.
 this; the `Vec<i64>` plumbing is verbose and the `str`/`bytes` boundary is
 invisible in types (a `bytes_to_str` on signature bytes would silently corrupt).
 
-**Verdict.** **Closed** (core type). First-class `bytes` with hex literals
-`x"..."` and builtins (`bytes_len`/`at`/`slice`/`concat`, `bytes_of_str` /
-`str_of_bytes`, `hex_encode`/`hex_decode`). Migrating std/crypto and jwt off
-`Vec<i64>` remains a follow-up.
+**Verdict.** **Closed** (core type + crypto bridge). First-class `bytes` with
+hex literals and builtins; `bytes_from_vec` / `vec_from_bytes`; crypto now
+exposes `sha256_b` / `hmac_sha256_b` / `ct_eq_b`. jwt still uses `Vec<i64>` for
+MACs (works); full jwt rewrite to `bytes` is optional polish.
 
 ## G6 — base64url (RFC 4648 §5) absent from std/bytes
 

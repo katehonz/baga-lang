@@ -435,14 +435,19 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"str_of_bytes","baga_bytes_to_str"},
                     {"hex_encode",  "baga_hex_encode"},
                     {"hex_decode",  "baga_hex_decode"},
+                    {"bytes_from_vec","baga_bytes_from_vec"},
+                    {"vec_from_bytes","baga_vec_from_bytes"},
                     {"join",        "baga_join"},
                     {"detach",      "baga_detach"},
                     {"chan_new",    "baga_chan_new"},
                     {"chan_send",   "baga_chan_send"},
                     {"chan_recv",   "baga_chan_recv"},
                     {"chan_recv2",  "baga_chan_recv2"},
+                    {"chan_try_recv","baga_chan_try_recv"},
+                    {"chan_recv_timeout","baga_chan_recv_timeout"},
                     {"chan_close",  "baga_chan_close"},
                     {"chan_len",    "baga_chan_len"},
+                    {"sleep_ms",    "baga_sleep_ms"},
                     {"mutex_new",   "baga_mutex_new"},
                     {"mutex_lock",  "baga_mutex_lock"},
                     {"mutex_unlock","baga_mutex_unlock"},
@@ -1209,6 +1214,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <stdint.h>\n");
     fprintf(out, "#include <string.h>\n");
+    fprintf(out, "#include <errno.h>\n");
+    fprintf(out, "#include <time.h>\n");
     fprintf(out, "#include <pthread.h>\n\n");
 
     /* runtime helpers */
@@ -1314,6 +1321,16 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static double baga_vec_get_f64(baga_Vec *v, int64_t i) { union { double d; void *p; } u; u.p = v->data[i]; return u.d; }\n");
     fprintf(out, "static void baga_vec_set_f64(baga_Vec *v, int64_t i, double x) { union { double d; void *p; } u; u.d = x; v->data[i] = u.p; }\n");
     fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
+    /* bridge: native bytes <-> Vec<i64> (crypto migration path) */
+    fprintf(out, "static baga_bytes baga_bytes_from_vec(baga_Vec *v) {\n");
+    fprintf(out, "    int64_t n = v ? v->len : 0;\n");
+    fprintf(out, "    baga_bytes r; r.len = n; r.data = malloc((size_t)(n ? n : 1));\n");
+    fprintf(out, "    for (int64_t i = 0; i < n; i++) r.data[i] = (unsigned char)((int64_t)(intptr_t)v->data[i] & 255);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_from_bytes(baga_bytes b) {\n");
+    fprintf(out, "    baga_Vec *v = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = 0; i < b.len; i++) baga_vec_push_i64(v, (int64_t)b.data[i]);\n");
+    fprintf(out, "    return v; }\n");
     fprintf(out, "static baga_Vec *baga_vec_slice_i64(baga_Vec *v, int64_t a, int64_t b) {\n");
     fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
     fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
@@ -1482,6 +1499,49 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    pthread_cond_signal(&c->not_full);\n");
     fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
     fprintf(out, "    return baga_cell2(1, v);\n");
+    fprintf(out, "}\n");
+    /* non-blocking: cell2(1,v)=ok, cell2(0,0)=empty, cell2(2,0)=closed empty */
+    fprintf(out, "static int64_t baga_chan_try_recv(int64_t ch) {\n");
+    fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");
+    fprintf(out, "    if (!c) return baga_cell2(2, 0);\n");
+    fprintf(out, "    pthread_mutex_lock(&c->mu);\n");
+    fprintf(out, "    if (c->len == 0) {\n");
+    fprintf(out, "        int st = c->closed ? 2 : 0;\n");
+    fprintf(out, "        pthread_mutex_unlock(&c->mu);\n");
+    fprintf(out, "        return baga_cell2(st, 0);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    int64_t v = c->buf[c->head];\n");
+    fprintf(out, "    c->head = (c->head + 1) %% c->cap; c->len--;\n");
+    fprintf(out, "    pthread_cond_signal(&c->not_full);\n");
+    fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
+    fprintf(out, "    return baga_cell2(1, v);\n");
+    fprintf(out, "}\n");
+    /* timed: cell2(1,v)=ok, cell2(0,0)=timeout, cell2(2,0)=closed empty */
+    fprintf(out, "static int64_t baga_chan_recv_timeout(int64_t ch, int64_t ms) {\n");
+    fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");
+    fprintf(out, "    if (!c) return baga_cell2(2, 0);\n");
+    fprintf(out, "    if (ms < 0) ms = 0;\n");
+    fprintf(out, "    struct timespec abs; clock_gettime(CLOCK_REALTIME, &abs);\n");
+    fprintf(out, "    abs.tv_sec += ms / 1000;\n");
+    fprintf(out, "    abs.tv_nsec += (ms %% 1000) * 1000000L;\n");
+    fprintf(out, "    if (abs.tv_nsec >= 1000000000L) { abs.tv_sec++; abs.tv_nsec -= 1000000000L; }\n");
+    fprintf(out, "    pthread_mutex_lock(&c->mu);\n");
+    fprintf(out, "    while (c->len == 0 && !c->closed) {\n");
+    fprintf(out, "        int rc = pthread_cond_timedwait(&c->not_empty, &c->mu, &abs);\n");
+    fprintf(out, "        if (rc == ETIMEDOUT) { pthread_mutex_unlock(&c->mu); return baga_cell2(0, 0); }\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    if (c->len == 0) { pthread_mutex_unlock(&c->mu); return baga_cell2(2, 0); }\n");
+    fprintf(out, "    int64_t v = c->buf[c->head];\n");
+    fprintf(out, "    c->head = (c->head + 1) %% c->cap; c->len--;\n");
+    fprintf(out, "    pthread_cond_signal(&c->not_full);\n");
+    fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
+    fprintf(out, "    return baga_cell2(1, v);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_sleep_ms(int64_t ms) {\n");
+    fprintf(out, "    if (ms <= 0) return 0;\n");
+    fprintf(out, "    struct timespec ts; ts.tv_sec = ms / 1000; ts.tv_nsec = (ms %% 1000) * 1000000L;\n");
+    fprintf(out, "    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {}\n");
+    fprintf(out, "    return 0;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_chan_close(int64_t ch) {\n");
     fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");

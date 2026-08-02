@@ -36,7 +36,10 @@ fn main() -> i64 !Par {
 | `chan_new` | `(cap: i64) -> i64 !Par` | Buffered `i64` channel (cap &lt; 1 → 1). |
 | `chan_send` | `(c: i64, v: i64) -> i64 !Par` | 0 ok, -1 closed. |
 | `chan_recv` | `(c: i64) -> i64 !Par` | Blocks; closed+empty → 0 (ambiguous with payload 0). |
-| `chan_recv2` | `(c: i64) -> i64 !Par` | Returns `cell2(ok, value)` — ok=1 got value, ok=0 EOF. |
+| `chan_recv2` | `(c: i64) -> i64 !Par` | `cell2(ok, value)` — ok=1 value, ok=0 closed+empty. |
+| `chan_try_recv` | `(c: i64) -> i64 !Par` | Non-blocking: status 1=value, 0=empty, 2=closed. |
+| `chan_recv_timeout` | `(c: i64, ms: i64) -> i64 !Par` | Timed: 1=value, 0=timeout, 2=closed. |
+| `sleep_ms` | `(ms: i64) -> i64 !Par` | Block this OS thread. |
 | `chan_close` / `chan_len` | `!Par` | |
 | `mutex_new` / `lock` / `unlock` | `!Par` | Opaque `i64` handle. |
 | `cell2` / `cell2_0` / `cell2_1` | pure | Heap pair for worker context. |

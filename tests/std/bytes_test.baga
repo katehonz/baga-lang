@@ -48,5 +48,15 @@ fn main() {
     check("eq", bytes_eq(bytes_from_str("ab"), bytes_from_str("ab")))
     check("eq_neg", !bytes_eq(bytes_from_str("ab"), bytes_from_str("ac")))
     check("eq_len", !bytes_eq(bytes_from_str("ab"), bytes_from_str("abc")))
+
+    // native bytes <-> Vec bridge (language builtins)
+    let nb = bytes_of_str("Hi")
+    let nv = vec_from_bytes(nb)
+    check("vec_from_bytes_len", vec_len(nv) == 2)
+    check("vec_from_bytes_0", vec_get(nv, 0) == 72)
+    check("bytes_from_vec", hex_encode(bytes_from_vec(nv)) == "4869")
+    let nul = bytes_concat(bytes_of_str("A"), bytes_concat(x"00", bytes_of_str("B")))
+    check("bridge_nul", hex_encode(bytes_from_vec(vec_from_bytes(nul))) == "410042")
+
     print("bytes_test: all passed")
 }

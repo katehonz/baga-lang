@@ -18,3 +18,13 @@ fn ct_eq_bytes(a: Vec<i64>, b: Vec<i64>) -> bool {
     }
     return diff == 0
 }
+
+// Constant-time equality over the native `bytes` type.
+fn ct_eq_b(a: bytes, b: bytes) -> bool {
+    if bytes_len(a) != bytes_len(b) { return false }
+    let mut diff: i64 = 0
+    for i in 0..bytes_len(a) {
+        diff = diff | (bytes_at(a, i) ^ bytes_at(b, i))
+    }
+    return diff == 0
+}
