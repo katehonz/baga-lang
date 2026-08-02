@@ -171,6 +171,17 @@ fn main() -> i64 !Par {
     let allc = chan_select2(s0, s1)
     check("select_closed", cell2_0(allc) == 3)
 
+    // blocking + timed select
+    let w0 = chan_new(1)
+    let w1 = chan_new(1)
+    go_bg(sender, cell2(w1, 42))
+    let wr = chan_select2_wait(w0, w1)
+    check("select_wait", cell2_0(wr) == 1 && cell2_1(wr) == 42)
+    let tr = chan_select2_timeout(w0, w1, 20)
+    check("select_timeout", cell2_0(tr) == 2)
+    chan_close(w0)
+    chan_close(w1)
+
     print("par_test: all passed")
     return 0
 }

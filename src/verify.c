@@ -205,14 +205,16 @@ static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
  * later inject TRUE facts (x*x >= 0; fa >= 1 ∧ fb >= 1 ⇒ p >= 1; ...) and the
  * witness search can derive the product's value concretely.
  * M9: integer division by a non-zero constant (is_div): dividend in fa,
- * divisor constant in fb; inject sign of quotient; witness derives trunc div. */
-typedef struct { Node *call; char *var; Lin fa, fb; int is_prod; int is_div; } ReadEntry;
+ * divisor constant in fb; inject sign of quotient; witness derives trunc div.
+ * M9b: n % k for nonzero const k (is_mod): bounds 0..|k|-1 when n has a sign. */
+typedef struct { Node *call; char *var; Lin fa, fb; int is_prod; int is_div; int is_mod; } ReadEntry;
 typedef struct { ReadEntry *r; int n, cap; } ReadsList;
-typedef struct { char *var; Lin fa, fb; int is_div; } ProdEntry;
+typedef struct { char *var; Lin fa, fb; int is_div; int is_mod; } ProdEntry;
 typedef struct { ProdEntry *p; int n, cap; } ProdList;
 static const char *reads_find(ReadsList *l, Node *call);
 static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb);
+static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void prods_clone_into(ProdList *dst, ReadsList *src);
 static int g_prod_ctr = 0;
 
@@ -283,6 +285,13 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
                 char dv[64]; snprintf(dv, sizeof dv, "__d%d", g_prod_ctr++);
                 reads_push_div(reads, dv, l.lin, r.lin);   /* moves l.lin; r.lin is const copy moved */
                 return sym_lin(lin_var(dv));
+            }
+            /* M9b: n % k for nonzero integer constant k → fresh __mK */
+            if (e->bin_op == OP_MOD && !l.nonlinear && !r.nonlinear && !l.lin.overflow &&
+                lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num != 0 && reads) {
+                char mv[64]; snprintf(mv, sizeof mv, "__m%d", g_prod_ctr++);
+                reads_push_mod(reads, mv, l.lin, r.lin);
+                return sym_lin(lin_var(mv));
             }
             return sym_nonlin();
         }
@@ -628,8 +637,8 @@ static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
     }
 }
 
-/* M8/M9: pin every non-abstract var (__c/__p/__d excluded) to its candidate
- * value in sys; then derive every product/div var whose factors are fully
+/* M8/M9: pin every non-abstract var (__c/__p/__d/__m excluded) to its candidate
+ * value in sys; then derive every product/div/mod var whose factors are fully
  * pinned and pin it too. Two passes so products of products resolve. */
 static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int nv, ProdList *prods) {
     int pcap = nv + (prods ? prods->n : 0) + 1;
@@ -637,7 +646,7 @@ static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int
     int np = 0;
     for (int i = 0; i < nv; i++) {
         if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0 ||
-            strncmp(vars[i], "__d", 3) == 0) continue;
+            strncmp(vars[i], "__d", 3) == 0 || strncmp(vars[i], "__m", 3) == 0) continue;
         pins[np].name = vars[i]; pins[np].val = assign[i].val; np++;
         Lin l = lin_var(vars[i]);
         l.c = rat_sub(l.c, rat_int(assign[i].val));
@@ -671,6 +680,9 @@ static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int
             if (prods->p[pi].is_div) {
                 if (fv[1] == 0) continue;
                 pvv = fv[0] / fv[1];   /* C trunc toward zero */
+            } else if (prods->p[pi].is_mod) {
+                if (fv[1] == 0) continue;
+                pvv = fv[0] % fv[1];
             } else {
                 if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) continue;
             }
@@ -753,6 +765,9 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
             if (prods->p[pi].is_div) {
                 if (fv[1] == 0) { prod_ok = 0; break; }
                 pvv = fv[0] / fv[1];
+            } else if (prods->p[pi].is_mod) {
+                if (fv[1] == 0) { prod_ok = 0; break; }
+                pvv = fv[0] % fv[1];
             } else {
                 if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) { prod_ok = 0; break; }
             }
@@ -926,7 +941,8 @@ static int find_bound_witness(Obligation *obl, IBind **witness, int *wn) {
             for (int j = 0; j < obl->ret.lin.n; j++)
                 if (strncmp(obl->ret.lin.terms[j].var, "__c", 3) == 0 ||
                     strncmp(obl->ret.lin.terms[j].var, "__p", 3) == 0 ||
-                    strncmp(obl->ret.lin.terms[j].var, "__d", 3) == 0) needs_concl = 1;
+                    strncmp(obl->ret.lin.terms[j].var, "__d", 3) == 0 ||
+                    strncmp(obl->ret.lin.terms[j].var, "__m", 3) == 0) needs_concl = 1;
             if (needs_concl) {
                 ConsList sys; cl_init(&sys);
                 for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
@@ -1022,7 +1038,7 @@ static void reads_push(ReadsList *l, Node *call, const char *var) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = call; l->r[l->n].var = strdup(var);
     lin_init(&l->r[l->n].fa); lin_init(&l->r[l->n].fb);
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0;
     l->n++;
 }
 /* M8b: register a product var with its factor linear forms (moves fa/fb). */
@@ -1030,7 +1046,7 @@ static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 1; l->r[l->n].is_div = 0;
+    l->r[l->n].is_prod = 1; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0;
     l->n++;
 }
 /* M9: register integer division by a constant (moves fa; fb is the const divisor). */
@@ -1038,11 +1054,19 @@ static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 1;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 1; l->r[l->n].is_mod = 0;
+    l->n++;
+}
+/* M9b: register integer mod by a constant. */
+static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
+    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
+    l->r[l->n].fa = fa; l->r[l->n].fb = fb;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 1;
     l->n++;
 }
 static const char *reads_find(ReadsList *l, Node *call) {
-    for (int i = 0; i < l->n; i++) if (!l->r[i].is_prod && l->r[i].call == call) return l->r[i].var;
+    for (int i = 0; i < l->n; i++) if (!l->r[i].is_prod && !l->r[i].is_div && !l->r[i].is_mod && l->r[i].call == call) return l->r[i].var;
     return NULL;
 }
 static void reads_clone_into(ReadsList *dst, ReadsList *src) {
@@ -1052,21 +1076,24 @@ static void reads_clone_into(ReadsList *dst, ReadsList *src) {
             reads_push_prod(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else if (src->r[i].is_div)
             reads_push_div(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
+        else if (src->r[i].is_mod)
+            reads_push_mod(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else
             reads_push(dst, src->r[i].call, src->r[i].var);
     }
 }
 
-/* Snapshot product and div entries of a reads list (for obligation witnesses). */
+/* Snapshot product/div/mod entries of a reads list (for obligation witnesses). */
 static void prods_clone_into(ProdList *dst, ReadsList *src) {
     dst->p = NULL; dst->n = 0; dst->cap = 0;
     for (int i = 0; i < src->n; i++) {
-        if (!src->r[i].is_prod && !src->r[i].is_div) continue;
+        if (!src->r[i].is_prod && !src->r[i].is_div && !src->r[i].is_mod) continue;
         if (dst->n == dst->cap) { dst->cap = dst->cap ? dst->cap * 2 : 4; dst->p = realloc(dst->p, (size_t)dst->cap * sizeof(ProdEntry)); }
         dst->p[dst->n].var = strdup(src->r[i].var);
         dst->p[dst->n].fa = lin_clone(&src->r[i].fa);
         dst->p[dst->n].fb = lin_clone(&src->r[i].fb);
         dst->p[dst->n].is_div = src->r[i].is_div;
+        dst->p[dst->n].is_mod = src->r[i].is_mod;
         dst->n++;
     }
 }
@@ -1570,6 +1597,29 @@ static void inject_prod_axioms(State *st) {
             } else { /* d < 0 */
                 if (n_ge0) path_push_le(&st->path, e->var, 0);
                 if (n_le0) path_push_ge(&st->path, e->var, 0);
+            }
+            continue;
+        }
+        if (e->is_mod) {
+            /* C: a%b has sign of a; |a%b| < |b|. For a >= 0, k > 0: 0 <= m < k. */
+            if (!lin_is_const(&e->fb) || e->fb.c.den != 1 || e->fb.c.num == 0) continue;
+            int64_t k = e->fb.c.num;
+            int64_t ak = k < 0 ? -k : k;
+            int n_ge0 = path_proves_ge(st, &e->fa, 0);
+            int n_le0 = path_proves_le(st, &e->fa, 0);
+            if (n_ge0 && k > 0) {
+                path_push_ge(&st->path, e->var, 0);
+                if (ak >= 1) path_push_le(&st->path, e->var, ak - 1);
+            } else if (n_le0 && k > 0) {
+                /* n <= 0, k > 0: 1-k <= m <= 0  (e.g. (-5)%3 = -2) */
+                path_push_le(&st->path, e->var, 0);
+                if (ak >= 1) path_push_ge(&st->path, e->var, 1 - ak);
+            } else if (n_ge0 && k < 0) {
+                path_push_ge(&st->path, e->var, 0);
+                if (ak >= 1) path_push_le(&st->path, e->var, ak - 1);
+            } else if (n_le0 && k < 0) {
+                path_push_le(&st->path, e->var, 0);
+                if (ak >= 1) path_push_ge(&st->path, e->var, 1 - ak);
             }
             continue;
         }

@@ -1,0 +1,25 @@
+// M9b: n % k for positive constant k, n >= 0 → 0 <= result < k
+spec mod3 {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output >= 0, output < 3
+}
+fn mod3(n: i64) -> i64 {
+    return n % 3
+}
+
+// wrong lower bound
+spec mod_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output >= 1
+}
+fn mod_bad(n: i64) -> i64 {
+    return n % 3
+}
+
+fn main() {
+    print(mod3(7))
+}

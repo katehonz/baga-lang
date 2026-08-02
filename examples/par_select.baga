@@ -1,0 +1,23 @@
+// Blocking multi-channel select (cloud fan-in from two producers).
+fn producer(ctx: i64) -> i64 !Par {
+    let c = cell2_0(ctx)
+    let v = cell2_1(ctx)
+    sleep_ms(20)
+    chan_send(c, v)
+    return 0
+}
+
+fn main() -> i64 !Par {
+    let a = chan_new(2)
+    let b = chan_new(2)
+    go_bg(producer, cell2(a, 10))
+    go_bg(producer, cell2(b, 20))
+    let r1 = chan_select2_wait(a, b)
+    let r2 = chan_select2_wait(a, b)
+    let s = cell2_1(r1) + cell2_1(r2)
+    print(s)   // 30
+    // timed select with nothing ready → timeout (which=2)
+    let t = chan_select2_timeout(a, b, 15)
+    print(cell2_0(t))  // 2
+    return s
+}

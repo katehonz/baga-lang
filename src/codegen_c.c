@@ -446,6 +446,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"chan_try_recv","baga_chan_try_recv"},
                     {"chan_recv_timeout","baga_chan_recv_timeout"},
                     {"chan_select2","baga_chan_select2"},
+                    {"chan_select2_wait","baga_chan_select2_wait"},
+                    {"chan_select2_timeout","baga_chan_select2_timeout"},
                     {"chan_close",  "baga_chan_close"},
                     {"chan_len",    "baga_chan_len"},
                     {"sleep_ms",    "baga_sleep_ms"},
@@ -1573,6 +1575,66 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        if (baga_cell2_0(pr) == 1) return baga_cell2(0, baga_cell2_1(pr));\n");
     fprintf(out, "    }\n");
     fprintf(out, "    return baga_cell2(2, 0);\n");
+    fprintf(out, "}\n");
+    /* Blocking select: wait until a value is ready or both channels are closed.
+     * Alternates timed waits on each channel (by pointer order) so either side
+     * can wake the waiter within ~5ms. Returns same codes as chan_select2. */
+    fprintf(out, "static int64_t baga_chan_select2_wait(int64_t c0, int64_t c1) {\n");
+    fprintf(out, "    int flip = 0;\n");
+    fprintf(out, "    for (;;) {\n");
+    fprintf(out, "        int64_t r = baga_chan_select2(c0, c1);\n");
+    fprintf(out, "        int64_t w = baga_cell2_0(r);\n");
+    fprintf(out, "        if (w != 2) return r;\n");
+    fprintf(out, "        baga_Chan *a = (baga_Chan *)(intptr_t)c0;\n");
+    fprintf(out, "        baga_Chan *b = (baga_Chan *)(intptr_t)c1;\n");
+    fprintf(out, "        baga_Chan *wa = NULL, *wb = NULL;\n");
+    fprintf(out, "        if (a && b) {\n");
+    fprintf(out, "            if ((uintptr_t)a < (uintptr_t)b) { wa = a; wb = b; }\n");
+    fprintf(out, "            else { wa = b; wb = a; }\n");
+    fprintf(out, "        } else { wa = a ? a : b; }\n");
+    fprintf(out, "        baga_Chan *wait = (flip && wb) ? wb : wa;\n");
+    fprintf(out, "        flip = !flip;\n");
+    fprintf(out, "        if (!wait) return baga_cell2(3, 0);\n");
+    fprintf(out, "        struct timespec abs; clock_gettime(CLOCK_REALTIME, &abs);\n");
+    fprintf(out, "        abs.tv_nsec += 5000000L; /* 5ms */\n");
+    fprintf(out, "        if (abs.tv_nsec >= 1000000000L) { abs.tv_sec++; abs.tv_nsec -= 1000000000L; }\n");
+    fprintf(out, "        pthread_mutex_lock(&wait->mu);\n");
+    fprintf(out, "        if (wait->len == 0 && !wait->closed)\n");
+    fprintf(out, "            pthread_cond_timedwait(&wait->not_empty, &wait->mu, &abs);\n");
+    fprintf(out, "        pthread_mutex_unlock(&wait->mu);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "}\n");
+    /* Timed select: like select2_wait but give up after ms (return which=2). */
+    fprintf(out, "static int64_t baga_chan_select2_timeout(int64_t c0, int64_t c1, int64_t ms) {\n");
+    fprintf(out, "    if (ms < 0) ms = 0;\n");
+    fprintf(out, "    struct timespec deadline; clock_gettime(CLOCK_REALTIME, &deadline);\n");
+    fprintf(out, "    deadline.tv_sec += ms / 1000;\n");
+    fprintf(out, "    deadline.tv_nsec += (ms %% 1000) * 1000000L;\n");
+    fprintf(out, "    if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }\n");
+    fprintf(out, "    int flip = 0;\n");
+    fprintf(out, "    for (;;) {\n");
+    fprintf(out, "        int64_t r = baga_chan_select2(c0, c1);\n");
+    fprintf(out, "        int64_t w = baga_cell2_0(r);\n");
+    fprintf(out, "        if (w != 2) return r;\n");
+    fprintf(out, "        struct timespec now; clock_gettime(CLOCK_REALTIME, &now);\n");
+    fprintf(out, "        if (now.tv_sec > deadline.tv_sec ||\n");
+    fprintf(out, "            (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec))\n");
+    fprintf(out, "            return baga_cell2(2, 0);\n");
+    fprintf(out, "        baga_Chan *a = (baga_Chan *)(intptr_t)c0;\n");
+    fprintf(out, "        baga_Chan *b = (baga_Chan *)(intptr_t)c1;\n");
+    fprintf(out, "        baga_Chan *wa = NULL, *wb = NULL;\n");
+    fprintf(out, "        if (a && b) {\n");
+    fprintf(out, "            if ((uintptr_t)a < (uintptr_t)b) { wa = a; wb = b; }\n");
+    fprintf(out, "            else { wa = b; wb = a; }\n");
+    fprintf(out, "        } else { wa = a ? a : b; }\n");
+    fprintf(out, "        baga_Chan *wait = (flip && wb) ? wb : wa;\n");
+    fprintf(out, "        flip = !flip;\n");
+    fprintf(out, "        if (!wait) return baga_cell2(3, 0);\n");
+    fprintf(out, "        pthread_mutex_lock(&wait->mu);\n");
+    fprintf(out, "        if (wait->len == 0 && !wait->closed)\n");
+    fprintf(out, "            pthread_cond_timedwait(&wait->not_empty, &wait->mu, &deadline);\n");
+    fprintf(out, "        pthread_mutex_unlock(&wait->mu);\n");
+    fprintf(out, "    }\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_chan_close(int64_t ch) {\n");
     fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");

@@ -291,6 +291,15 @@ test: $(BIN)
 		&& grep -q "half_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: div_const — n/k знак + soundness (M9)" \
 		|| { echo "FAIL: div_const"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/mod_const.baga > /tmp/baga_verify_out.txt; \
+	grep -q "mod3" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "mod_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: mod_const — n%%k bounds + soundness (M9b)" \
+		|| { echo "FAIL: mod_const"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) examples/par_select.baga > /tmp/baga_par_sel_out.txt; \
+	printf "30\n2\n" | diff - /tmp/baga_par_sel_out.txt > /dev/null \
+		&& echo "OK: chan_select2_wait/timeout" \
+		|| { echo "FAIL: par_select"; cat /tmp/baga_par_sel_out.txt; exit 1; }
 	@for f in elem_param elem_push elem_set elem_slice elem_concat; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \

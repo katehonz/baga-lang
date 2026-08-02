@@ -338,8 +338,10 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   division `n / k` for non-zero integer constant `k` becomes a fresh `__d`
   with C trunc-toward-zero sign axioms (`n>=0,k>0 ⇒ q>=0`, etc.). Witnesses
   derive `q = n/k` concretely. Examples: `sign_prod.baga`, `div_const.baga`,
-  `sum_sq.baga`. Still honest-UNKNOWN for division by a variable and general
-  higher-degree reasoning beyond products of linear forms.
+  `sum_sq.baga`. **M9b** adds `n % k` for nonzero constant `k` with bounds
+  `0 <= n%k < k` when `n >= 0` (`mod_const.baga`). Still honest-UNKNOWN for
+  division/mod by a variable and general higher-degree reasoning beyond
+  products of linear forms.
 
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
 supported. Remaining: richer polynomials, variable divisors, feeding verified
