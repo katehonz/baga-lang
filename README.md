@@ -160,7 +160,7 @@ it by oracles in `make test`.
 | Backend | Build | Run | Needs | Oracle |
 |---|---|---|---|---|
 | C transpiler (default) | `make` | `./baga file.baga` | `gcc`, `make` | — (reference) |
-| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli-14` | LLVM 14 | 17/17 OK |
+| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli-14` | LLVM 14 | 21/21 OK |
 
 - **C transpiler** — emits C, compiles with `gcc`, runs. Full language coverage.
 - **LLVM** — emits LLVM IR directly from the AST (`src/codegen_llvm.c`). Full
@@ -203,6 +203,7 @@ baga/
 | `--proofs` | Extract proof sketches |
 | `--test-specs` | Property-based test of spec contracts (random inputs, deterministic seed) |
 | `--verify` | Static verification of `requires`/`ensures` (sound; linear i64, loops via invariants, no recursion — see below) |
+| `--json` | Machine-readable JSON output for `--verify` (verdicts + counterexamples; for AI agents and CI) |
 
 ## Documentation
 
@@ -223,13 +224,14 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants | ✅ |
-| 8 | Non-linear reasoning + recursion + proof-extraction integration | 🔜 |
+| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion | ✅ |
+| 8 | Non-linear reasoning + termination (`decreases`) + integer-exact reasoning | 🔜 |
 
 ### Static verification (`--verify`)
 
-`--verify` proves or refutes `requires`/`ensures` **statically** for pure,
-non-recursive functions over `i64` with **linear** arithmetic. It is **sound by
+`--verify` proves or refutes `requires`/`ensures` **statically** for pure
+functions over `i64` with **linear** arithmetic (recursion since M5 — partial
+correctness, see below). It is **sound by
 construction**: the only path to "ДОКАЗАНО" (proven) is showing the negated
 obligation is unsatisfiable even over the rationals (Fourier–Motzkin), which
 implies unsatisfiable over the integers. A refuted contract carries a concrete
@@ -264,14 +266,46 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   fn first(v: [i64]) -> i64 { return vec_get(v, 0) }   // proven
   ```
 
-Recursion and non-linear terms are still skipped honestly. `vec_slice` and
+- **M5** — **recursion and modular calls (assume–guarantee)**: a call to a
+  user function with a spec, in statement position (`let x = f(args)`,
+  `return f(args)`, or a bare call), is verified by contract: the callee's
+  `requires` are **discharged** against the caller path (a violation is
+  refuted with a counterexample, e.g. `f(n - 1)` where the callee needs
+  `m >= 1`), and only if they are all proven — and the callee's own body is
+  verifiable — the callee's conjunctive `ensures` are **assumed** for the
+  result. For a recursive callee this is exactly the induction hypothesis of
+  the Hoare rule for recursion, so the verdict is **partial correctness**:
+  the output marks it honestly (`рекурсия: частична коректност — терминацията
+  не се доказва`; JSON `"partial_correctness": true`). Calls nested inside
+  expressions (`n * fact(n-1)`) stay honestly skipped. Note the rational
+  fragment: `n > 0` does not imply `n >= 1` over ℚ, so a guard like
+  `if n < 1 { return 0 }` discharges `f(n - 1)`'s `requires` where
+  `if n <= 0` cannot.
+  ```baga
+  spec sum_to {
+      input: n: i64
+      output: i64
+      requires: n >= 0
+      ensures: 0 <= output
+  }
+  fn sum_to(n: i64) -> i64 {
+      if n < 1 { return 0 }
+      let r = sum_to(n - 1)   // induction hypothesis: r >= 0
+      return n + r
+  }
+  // ensures ДОКАЗАНО; requires при извикване ДОКАЗАНО (partial correctness)
+  ```
+
+Non-linear terms are still skipped honestly. `vec_slice` and
 `vec_concat` are now language builtins (returning a fresh `Vec`), and the
 verifier propagates element invariants through them — a slice inherits the
 source's invariants; a concat inherits the invariants **both** operands share.
 A `sorted(v)` relational axiom is also supported: `requires sorted(v)` asserts
 that `v` is non-decreasing, and `vec_push(v, e)` preserves it when `e >= last`
-is provable. Remaining staircase: non-linear reasoning, recursion, and feeding
-verified invariants into proof extraction (`--proofs`).
+is provable. Remaining staircase: non-linear reasoning, integer-exact
+reasoning (the rational fragment cannot prove `n > 0 ⇒ n >= 1`), termination
+(`decreases`), and feeding verified invariants into proof extraction
+(`--proofs`).
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

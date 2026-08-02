@@ -1,0 +1,21 @@
+// M5 soundness: грешен ensures на рекурсивна функция се ОБОРВА.
+// sum_to(0) = 0 < 0 + 1 — контрапример още в базовия случай.
+spec sum_to {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= n + 1
+}
+
+fn sum_to(n: i64) -> i64 {
+    if n < 1 { return 0 }
+    let r = sum_to(n - 1)
+    return n + r
+}
+
+fn main() {
+    print(sum_to(10))
+}

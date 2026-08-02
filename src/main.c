@@ -38,6 +38,7 @@ static void usage(void) {
         "  --emit-c    Генерирай C код на stdout, не компилирай\n"
         "  --test-specs  Property-based тестване на ensures/requires договорите\n"
         "  --verify    Статична верификация на requires/ensures (linear i64, без цикли)\n"
+        "  --json      Машинно-четим JSON изход (с --verify)\n"
         "  --ast       Изпечатвай AST (debug)\n"
         "  --tokens    Изпечатвай токени (debug)\n"
         "  --help      Тази помощ\n"
@@ -155,6 +156,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--emit-llvm") == 0) { emit_llvm = 1; }
         else if (strcmp(argv[i], "--test-specs") == 0) { test_specs = 1; }
         else if (strcmp(argv[i], "--verify") == 0) { verify = 1; }
+        else if (strcmp(argv[i], "--json") == 0) { verify_set_json(1); }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
             return 0;

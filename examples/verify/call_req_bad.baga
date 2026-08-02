@@ -1,0 +1,35 @@
+// M5 soundness: requires на callee се разрядва при извикването.
+// caller вика positive(n - 1) с n >= 0 — при n = 0 аргументът е -1,
+// което нарушава requires на positive. Очакваме ОБРОЧЕНО с контрапример n = 0.
+spec positive {
+    input:
+        m: i64
+    output: i64
+    requires:
+        m >= 1
+    ensures:
+        output >= 1
+}
+
+fn positive(m: i64) -> i64 {
+    return m
+}
+
+spec caller {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 1
+}
+
+fn caller(n: i64) -> i64 {
+    let r = positive(n - 1)
+    return r
+}
+
+fn main() {
+    print(caller(5))
+}

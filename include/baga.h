@@ -470,6 +470,9 @@ void print_proofs(Node *program);
  * or UNKNOWN. */
 int verify_program(Node *program);
 
+/* Enable machine-readable JSON output for --verify (verdicts, counterexamples). */
+void verify_set_json(int on);
+
 /* Collectible verification results (for proof extraction integration) */
 typedef struct {
     int res;             /* 0=PROVEN, 1=REFUTED, 2=UNKNOWN, 3=SKIPPED */

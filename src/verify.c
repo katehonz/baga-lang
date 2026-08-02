@@ -641,9 +641,13 @@ static int find_counterexample(ConsList *ante, Formula *nef, Node *ensures_ast,
             IEnv ie3; ie3.b = a2; ie3.n = nv + 1;
             int ev = eval_bool(ensures_ast, &ie3);
             if (!ev) {
-                *witness = calloc(nv ? nv : 1, sizeof(IBind));
-                for (int i = 0; i < nv; i++) { (*witness)[i].name = strdup(vars[i]); (*witness)[i].val = assign[i].val; }
-                *wn = nv;
+                IBind *w = calloc(nv ? nv : 1, sizeof(IBind));
+                int k = 0;
+                for (int i = 0; i < nv; i++) {
+                    if (strncmp(vars[i], "__", 2) == 0) continue;   /* internal fresh vars */
+                    w[k].name = strdup(vars[i]); w[k].val = assign[i].val; k++;
+                }
+                *witness = w; *wn = k;
                 found = 1;
             }
         }
@@ -847,8 +851,45 @@ static void states_push(States *ss, State s) {
     ss->s[ss->n++] = s;
 }
 
+/* M5: program context for resolving user-function calls during symexec.
+ * Set by verify_fn_collect / verify_program (proofs.c goes through
+ * verify_fn_collect too, so it is always initialized before use). */
+static Node *g_prog = NULL;
+static const char *g_caller_name = NULL;
+static int g_call_ctr = 0;
+static int g_partial = 0;   /* direct self-recursion seen during symexec */
+
+static Node *find_spec(Node *prog, const char *name);   /* defined below */
+static int type_is_i64(Node *t);                        /* defined below */
+static int ret_has_effects(Node *t);                    /* defined below */
+
+static Node *find_fn(Node *prog, const char *name) {
+    if (!prog) return NULL;
+    for (int i = 0; i < prog->items.len; i++) {
+        Node *it = prog->items.data[i];
+        if (it->kind == NODE_FN && it->fn_body && it->fn_name && strcmp(it->fn_name, name) == 0)
+            return it;
+    }
+    return NULL;
+}
+
+/* M5 call gate (shallow): the callee must have a body, an i64 signature and
+ * no effects. Whether its BODY is verifiable is checked separately in
+ * eval_user_call before its ensures may be assumed — this gate alone never
+ * justifies an assumption, so the checks stay local (no call-graph walk). */
+static int callee_sig_supported(Node *cfn) {
+    if (!cfn || !cfn->ret_type) return 0;   /* void callee: no result to bind (M5) */
+    if (ret_has_effects(cfn->ret_type)) return 0;
+    if (!type_is_i64(cfn->ret_type)) return 0;
+    for (int i = 0; i < cfn->params.len; i++)
+        if (!type_is_i64(cfn->params.data[i]->param_type)) return 0;
+    return 1;
+}
+
 /* Detect constructs the verifier cannot handle. `flat` treats a while loop as
- * an opaque boundary (its body is checked separately, with its invariant). */
+ * an opaque boundary (its body is checked separately, with its invariant).
+ * `in_expr` marks expression-nested positions — M5 user calls are supported
+ * only at statement level (let init / return value / expression statement). */
 static int is_vec_builtin_call(Node *n) {
     if (n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
     const char *nm = n->callee->name;
@@ -858,7 +899,7 @@ static int is_vec_builtin_call(Node *n) {
            strcmp(nm, "vec_concat") == 0;
 }
 
-static int has_unsupported_rec(Node *n, int flat) {
+static int has_unsupported_rec(Node *n, int flat, int in_expr) {
     if (!n) return 0;
     switch (n->kind) {
     case NODE_FOR: case NODE_MATCH:
@@ -869,33 +910,41 @@ static int has_unsupported_rec(Node *n, int flat) {
         return 1;
     case NODE_CALL:
         if (is_vec_builtin_call(n)) {
-            for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat)) return 1;
+            for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
             return 0;
         }
-        return 1;   /* any other call: recursion / extern / user fn */
+        /* M5: a user call in statement position is supported when the callee
+         * carries a spec and has an i64 signature (shallow gate). */
+        if (!in_expr && g_prog && n->callee && n->callee->kind == NODE_IDENT &&
+            find_spec(g_prog, n->callee->name) &&
+            callee_sig_supported(find_fn(g_prog, n->callee->name))) {
+            for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
+            return 0;
+        }
+        return 1;   /* any other call: nested / spec-less / extern */
     case NODE_WHILE:
         if (flat) return 1;
         if (n->while_invariants.len == 0) return 1;   /* M1: loops need invariants */
-        if (has_unsupported_rec(n->while_cond, 1)) return 1;
+        if (has_unsupported_rec(n->while_cond, 1, 1)) return 1;
         for (int i = 0; i < n->while_invariants.len; i++)
-            if (has_unsupported_rec(n->while_invariants.data[i], 1)) return 1;
-        return has_unsupported_rec(n->while_body, 0);
+            if (has_unsupported_rec(n->while_invariants.data[i], 1, 1)) return 1;
+        return has_unsupported_rec(n->while_body, 0, 0);
     default: break;
     }
     switch (n->kind) {
-    case NODE_BINARY: return has_unsupported_rec(n->left, flat) || has_unsupported_rec(n->right, flat);
-    case NODE_UNARY: return has_unsupported_rec(n->operand, flat);
-    case NODE_IF: return has_unsupported_rec(n->cond, flat) || has_unsupported_rec(n->then_br, flat) || has_unsupported_rec(n->else_br, flat);
-    case NODE_BLOCK: for (int i = 0; i < n->stmts.len; i++) if (has_unsupported_rec(n->stmts.data[i], flat)) return 1; return 0;
-    case NODE_LET: return has_unsupported_rec(n->let_init, flat);
-    case NODE_ASSIGN: return has_unsupported_rec(n->assign_target, flat) || has_unsupported_rec(n->assign_val, flat);
-    case NODE_RETURN: return has_unsupported_rec(n->ret_val, flat);
-    case NODE_EXPR_STMT: return has_unsupported_rec(n->expr, flat);
+    case NODE_BINARY: return has_unsupported_rec(n->left, 1, 1) || has_unsupported_rec(n->right, 1, 1);
+    case NODE_UNARY: return has_unsupported_rec(n->operand, 1, 1);
+    case NODE_IF: return has_unsupported_rec(n->cond, flat, 1) || has_unsupported_rec(n->then_br, flat, 0) || has_unsupported_rec(n->else_br, flat, 0);
+    case NODE_BLOCK: for (int i = 0; i < n->stmts.len; i++) if (has_unsupported_rec(n->stmts.data[i], flat, 0)) return 1; return 0;
+    case NODE_LET: return has_unsupported_rec(n->let_init, flat, 0);
+    case NODE_ASSIGN: return has_unsupported_rec(n->assign_target, 1, 1) || has_unsupported_rec(n->assign_val, 1, 1);
+    case NODE_RETURN: return has_unsupported_rec(n->ret_val, flat, 0);
+    case NODE_EXPR_STMT: return has_unsupported_rec(n->expr, flat, 0);
     default: return 0;
     }
 }
 
-static int has_unsupported(Node *n) { return has_unsupported_rec(n, 0); }
+static int has_unsupported(Node *n) { return has_unsupported_rec(n, 0, 0); }
 
 static State clone_state_with(State *cur, Formula *add);
 static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid, Node *spec);
@@ -1189,6 +1238,93 @@ static void scan_vec_expr(Node *e, State *st, Obligations *ob, Node *spec) {
     }
 }
 
+/* Does `path` imply every constraint in `cons`? UNSAT(path ∧ ¬c) per c. */
+static int cl_implied_by(ConsList *path, ConsList *cons) {
+    for (int i = 0; i < cons->n; i++) {
+        ConsList sys; cl_init(&sys);
+        for (int x = 0; x < path->n; x++) { Constraint *c = &path->c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        Constraint *cc = &cons->c[i];
+        COp negop = (cc->op == C_LT) ? C_LE : C_LT;
+        cl_push(&sys, mk_cons(lin_neg(&cc->lhs), negop, cc->rhs));
+        int sat = fm_sat(&sys);   /* frees sys */
+        if (sat) return 0;
+    }
+    return 1;
+}
+
+static int is_user_call(Node *e) {
+    return e && e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
+           !is_vec_builtin_call(e) && g_prog && find_spec(g_prog, e->callee->name) &&
+           callee_sig_supported(find_fn(g_prog, e->callee->name));
+}
+
+/* M5: assume-guarantee for a user call in statement position.
+ *  - Discharges the callee's requires against the caller path (conjunctive
+ *    clauses only); each becomes a kind-2 obligation reported by verify_fn.
+ *  - Only if ALL requires are PROVEN and the callee body is itself in the
+ *    verifiable fragment (otherwise its ensures were never proven): assumes
+ *    the callee's conjunctive ensures (output := fresh __cN) into the caller
+ *    path. For a recursive callee this is the induction hypothesis (Hoare
+ *    rule for recursion — partial correctness; termination is NOT proven).
+ * Returns the symbolic result (fresh __cN). On undischargable input the state
+ * is marked bad (UNKNOWN downstream — never a false proof). */
+static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *caller_name) {
+    const char *callee = call->callee->name;
+    Node *cfn = find_fn(g_prog, callee);
+    Node *cspec = find_spec(g_prog, callee);
+    if (caller_name && strcmp(callee, caller_name) == 0) g_partial = 1;
+
+    char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
+
+    SEnv env2; env_init(&env2);
+    int ok = cfn && call->args.len == cfn->params.len;
+    for (int i = 0; ok && i < cfn->params.len; i++) {
+        Sym a = se_from_ast(call->args.data[i], &st->env, &st->vlen, &st->reads);
+        if (a.nonlinear) { lin_free(&a.lin); ok = 0; break; }
+        env_bind(&env2, cfn->params.data[i]->param_name, a.lin, 0);   /* moves a.lin */
+    }
+    env_bind(&env2, "output", lin_var(rv), 0);
+    if (!ok) { st->bad = 1; env_free(&env2); return sym_lin(lin_var(rv)); }
+
+    int all_req_proven = 1;
+    for (int r = 0; r < cspec->spec_requires.len; r++) {
+        char label[300];
+        snprintf(label, sizeof label, "requires на '%s' при извикване", callee);
+        ConsList opath; cl_init(&opath);
+        for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        Formula rf;
+        int rok = bool_to_dnf(cspec->spec_requires.data[r]->ensure_expr, &env2, &st->vlen, 0, &rf);
+        if (!rok || rf.n != 1) {
+            /* disjunctive/unsupported requires — honest UNKNOWN, nothing assumed */
+            if (rok) f_free(&rf);
+            ConsList empty; cl_init(&empty);
+            obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 1, 2, label);
+            all_req_proven = 0;
+            continue;
+        }
+        ConsList pos; cl_init(&pos);
+        for (int x = 0; x < rf.br[0].n; x++) { Constraint *c = &rf.br[0].c[x]; cl_push(&pos, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        f_free(&rf);
+        if (!cl_implied_by(&opath, &pos)) all_req_proven = 0;
+        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 0, 2, label);
+    }
+
+    /* assume ensures only when justified: requires proven AND the callee body
+     * verifiable (a skipped callee's ensures were never proven) */
+    if (all_req_proven && !has_unsupported(cfn->fn_body)) {
+        for (int j = 0; j < cspec->spec_ensures.len; j++) {
+            Formula ef;
+            if (bool_to_dnf(cspec->spec_ensures.data[j]->ensure_expr, &env2, &st->vlen, 0, &ef)) {
+                if (ef.n == 1)
+                    for (int x = 0; x < ef.br[0].n; x++) { Constraint *c = &ef.br[0].c[x]; cl_push(&st->path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                f_free(&ef);
+            }
+        }
+    }
+    env_free(&env2);
+    return sym_lin(lin_var(rv));
+}
+
 /* Symbolically execute a statement list over a set of states; returning states
  * are drained into `ob`; `states` holds the fall-through states at the end. */
 static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvoid, Node *spec);
@@ -1242,6 +1378,11 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
         int last = (si == stmts->len - 1);
         if (st->kind == NODE_LET) {
             for (int i = 0; i < states->n; i++) {
+                if (is_user_call(st->let_init)) {   /* M5: assume-guarantee */
+                    Sym r = eval_user_call(st->let_init, &states->s[i], ob, g_caller_name);
+                    bind_sym(&states->s[i].env, st->let_name, r);
+                    continue;
+                }
                 bind_sym(&states->s[i].env, st->let_name, se_from_ast(st->let_init, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads));
                 /* a fresh vec_new() has length 0 */
                 if (st->let_init && st->let_init->kind == NODE_CALL && st->let_init->callee->kind == NODE_IDENT &&
@@ -1282,16 +1423,41 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             for (int i = 0; i < states->n; i++)
                 bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads));
         } else if (st->kind == NODE_RETURN) {
+            if (is_user_call(st->ret_val)) {   /* M5 */
+                for (int i = 0; i < states->n; i++) {
+                    Sym r = eval_user_call(st->ret_val, &states->s[i], ob, g_caller_name);
+                    env_bind(&states->s[i].env, "__retv", r.lin, r.nonlinear);
+                }
+                Node id; memset(&id, 0, sizeof id); id.kind = NODE_IDENT; id.name = "__retv";
+                drain_returns(states, ob, &id);
+                return;
+            }
             for (int i = 0; i < states->n; i++) scan_vec_expr(st->ret_val, &states->s[i], ob, spec);
             drain_returns(states, ob, st->ret_val);
             return;
         } else if (st->kind == NODE_EXPR_STMT && last && is_nonvoid) {
+            if (is_user_call(st->expr)) {   /* M5 */
+                for (int i = 0; i < states->n; i++) {
+                    Sym r = eval_user_call(st->expr, &states->s[i], ob, g_caller_name);
+                    env_bind(&states->s[i].env, "__retv", r.lin, r.nonlinear);
+                }
+                Node id; memset(&id, 0, sizeof id); id.kind = NODE_IDENT; id.name = "__retv";
+                drain_returns(states, ob, &id);
+                return;
+            }
             for (int i = 0; i < states->n; i++) scan_vec_expr(st->expr, &states->s[i], ob, spec);
             drain_returns(states, ob, st->expr);
             return;
         } else if (st->kind == NODE_EXPR_STMT) {
             /* expression statement: track vec mutations / emit bounds checks */
-            for (int i = 0; i < states->n; i++) scan_vec_expr(st->expr, &states->s[i], ob, spec);
+            for (int i = 0; i < states->n; i++) {
+                if (is_user_call(st->expr)) {   /* M5: check requires, discard result */
+                    Sym r = eval_user_call(st->expr, &states->s[i], ob, g_caller_name);
+                    lin_free(&r.lin);
+                    continue;
+                }
+                scan_vec_expr(st->expr, &states->s[i], ob, spec);
+            }
         } else if (st->kind == NODE_IF) {
             States out; out.s = NULL; out.n = 0; out.cap = 0;
             for (int i = 0; i < states->n; i++) {
@@ -1377,6 +1543,53 @@ static const char *res_word(VRes r) {
     switch (r) { case R_PROVEN: return "ДОКАЗАНО"; case R_REFUTED: return "ОБРОЧЕНО"; default: return "НЕ МОГА ДА РЕША"; }
 }
 
+/* ---- JSON output mode (--verify --json) ----
+ * Machine-readable verdicts so AI agents / CI can consume the judge
+ * without parsing Bulgarian prose. The exit code is unchanged:
+ * 0 = nothing refuted, 1 = at least one refuted. */
+static int g_json = 0;
+static int g_json_first = 1;
+
+void verify_set_json(int on) { g_json = on; }
+
+static const char *res_word_json(int res) {
+    switch (res) {
+    case 0: return "proven";
+    case 1: return "refuted";
+    case 2: return "unknown";
+    default: return "skipped";
+    }
+}
+
+static void json_str(const char *s) {
+    putchar('"');
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '"':  printf("\\\""); break;
+        case '\\': printf("\\\\"); break;
+        case '\n': printf("\\n"); break;
+        case '\r': printf("\\r"); break;
+        case '\t': printf("\\t"); break;
+        default:
+            if (*p < 0x20) printf("\\u%04x", *p);
+            else putchar(*p);
+        }
+    }
+    putchar('"');
+}
+
+static void json_witness(char **names, long long *vals, int wn) {
+    if (wn <= 0 || !names) { printf("null"); return; }
+    printf("[");
+    for (int k = 0; k < wn; k++) {
+        if (k) printf(", ");
+        printf("{\"name\": ");
+        json_str(names[k]);
+        printf(", \"value\": %lld}", vals[k]);
+    }
+    printf("]");
+}
+
 /* Verify a single bounds obligation. */
 static VRes verify_bound_obl(Obligation *obl, IBind **wit, int *wn) {
     if (obl->bad) return R_UNKNOWN;
@@ -1401,6 +1614,91 @@ static VRes verify_bound_obl(Obligation *obl, IBind **wit, int *wn) {
     return R_UNKNOWN;
 }
 
+/* Witness for a refuted call-site requires (M5, kind 2): an assignment that
+ * satisfies the caller path and violates one of the callee's requires
+ * constraints. Re-checked by direct evaluation — a reported counterexample is
+ * genuine. Internal __cN/__rN/__len_ vars are searched but not reported. */
+static int find_callreq_witness(Obligation *obl, IBind **witness, int *wn) {
+    char **vars = NULL; int nv = 0, cap = 0;
+    collect_vars_cl(&obl->path, &vars, &nv, &cap);
+    collect_vars_cl(&obl->bound, &vars, &nv, &cap);
+    static const int64_t cand[] = { 0, 1, -1, 2, -2, 3, -3, 5, -5, 10, -10, 20, -20, 100, -100 };
+    int ncand = (int)(sizeof(cand) / sizeof(cand[0]));
+    int total = 1;
+    for (int i = 0; i < nv; i++) { if (total > 200000 / ncand) { total = 200001; break; } total *= ncand; }
+    if (nv == 0) total = 1;
+    IBind *assign = calloc(nv ? nv : 1, sizeof(IBind));
+    int found = 0;
+    for (int idx = 0; idx < total && !found; idx++) {
+        int t = idx;
+        for (int i = 0; i < nv; i++) { assign[i].name = vars[i]; assign[i].val = cand[t % ncand]; t /= ncand; }
+        IEnv ie; ie.b = assign; ie.n = nv;
+        int ante_ok = 1;
+        for (int i = 0; i < obl->path.n && ante_ok; i++) {
+            Constraint *c = &obl->path.c[i];
+            Rat rv = c->lhs.c;
+            for (int j = 0; j < c->lhs.n; j++) {
+                int ok2; int64_t vv = ienv_get(&ie, c->lhs.terms[j].var, &ok2);
+                if (!ok2) { ante_ok = 0; break; }
+                rv = rat_add(rv, rat_mul(c->lhs.terms[j].coeff, rat_int(vv)));
+            }
+            if (rv.overflow) { ante_ok = 0; break; }
+            int s = rat_cmp(rv, c->rhs);
+            ante_ok = (c->op == C_LT) ? (s < 0) : (s <= 0);
+        }
+        if (!ante_ok) continue;
+        int viol = 0;
+        for (int i = 0; i < obl->bound.n && !viol; i++) {
+            Constraint *c = &obl->bound.c[i];
+            Rat rv = c->lhs.c;
+            int cok = 1;
+            for (int j = 0; j < c->lhs.n; j++) {
+                int ok2; int64_t vv = ienv_get(&ie, c->lhs.terms[j].var, &ok2);
+                if (!ok2) { cok = 0; break; }
+                rv = rat_add(rv, rat_mul(c->lhs.terms[j].coeff, rat_int(vv)));
+            }
+            if (!cok || rv.overflow) continue;
+            int s = rat_cmp(rv, c->rhs);
+            int holds = (c->op == C_LT) ? (s < 0) : (s <= 0);
+            if (!holds) viol = 1;
+        }
+        if (viol) {
+            IBind *w = calloc(nv ? nv : 1, sizeof(IBind));
+            int k = 0;
+            for (int i = 0; i < nv; i++) {
+                if (strncmp(vars[i], "__", 2) == 0) continue;   /* internal fresh vars */
+                w[k].name = strdup(vars[i]); w[k].val = assign[i].val; k++;
+            }
+            *witness = w; *wn = k;
+            found = 1;
+        }
+    }
+    free(assign);
+    for (int i = 0; i < nv; i++) free(vars[i]);
+    free(vars);
+    return found;
+}
+
+/* Verify a single call-site requires obligation (M5, kind 2): the caller path
+ * must imply every (positive) requires constraint of the callee. */
+static VRes verify_call_req(Obligation *obl, IBind **wit, int *wn) {
+    if (obl->bad) return R_UNKNOWN;
+    for (int i = 0; i < obl->bound.n; i++) {
+        ConsList sys; cl_init(&sys);
+        for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        Constraint *bc = &obl->bound.c[i];
+        COp negop = (bc->op == C_LT) ? C_LE : C_LT;
+        cl_push(&sys, mk_cons(lin_neg(&bc->lhs), negop, bc->rhs));
+        int sat = fm_sat(&sys);   /* frees sys */
+        if (sat) {
+            IBind *w = NULL; int wnn = 0;
+            if (find_callreq_witness(obl, &w, &wnn)) { *wit = w; *wn = wnn; return R_REFUTED; }
+            return R_UNKNOWN;
+        }
+    }
+    return R_PROVEN;
+}
+
 /* Verify one ensures clause over all obligations of a function. */
 static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
                            IBind **wit, int *wn) {
@@ -1408,7 +1706,7 @@ static VRes verify_ensures(Node *spec, Node *ens_expr, Obligations *ob,
     for (int o = 0; o < ob->n; o++) {
         Obligation *obl = &ob->o[o];
         if (obl->bad) { if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
-        if (obl->kind == 1) continue;   /* bounds obligations: handled by verify_bound_obl */
+        if (obl->kind != 0) continue;   /* bounds / call-requires: handled separately */
 
         if (obl->ret.nonlinear) { if (worst == R_PROVEN) worst = R_UNKNOWN; continue; }
         /* env with output := return */
@@ -1565,6 +1863,10 @@ static int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st) {
 
 int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     memset(out, 0, sizeof *out);
+    g_prog = prog;              /* M5: resolve user calls during symexec */
+    g_caller_name = fn->fn_name;
+    g_partial = 0;
+    g_call_ctr = 0;
     Node *spec = find_spec(prog, fn->fn_name);
     if (!spec) return -1;
 
@@ -1675,21 +1977,47 @@ static int verify_fn(Node *prog, Node *fn) {
     FnVerifyRes res;
     verify_fn_collect(prog, fn, &res);
 
-    printf("verify %s:\n", fn->fn_name);
     int any_refuted = 0;
-    for (int j = 0; j < res.n_ens; j++) {
-        EnsVerifyRes *e = &res.ens[j];
-        if (e->res == 3) {
-            printf("  ensures #%d (%s): ПРОПУСНАТО (%s)\n", j + 1, e->ens_text, e->skip_reason);
-        } else {
-            printf("  ensures #%d (%s): %s\n", j + 1, e->ens_text, res_word((VRes)e->res));
-            if (e->res == 1) {
-                any_refuted = 1;
-                printf("    контрапример:");
-                for (int k = 0; k < e->wn; k++) printf(" %s = %lld", e->wit_names[k], e->wit_vals[k]);
-                printf("\n");
+    if (g_json) {
+        if (!g_json_first) printf(",\n");
+        g_json_first = 0;
+        printf("    {\"name\": ");
+        json_str(fn->fn_name);
+        printf(", \"skipped\": %s", res.skipped ? "true" : "false");
+        if (res.skipped) { printf(", \"skip_reason\": "); json_str(res.skip_reason); }
+        printf(", \"ensures\": [");
+        for (int j = 0; j < res.n_ens; j++) {
+            EnsVerifyRes *e = &res.ens[j];
+            if (j) printf(", ");
+            printf("{\"index\": %d, \"text\": ", j + 1);
+            json_str(e->ens_text);
+            printf(", \"result\": \"%s\"", res_word_json(e->res));
+            if (e->res == 3) { printf(", \"skip_reason\": "); json_str(e->skip_reason); }
+            printf(", \"counterexample\": ");
+            json_witness(e->wit_names, e->wit_vals, e->res == 1 ? e->wn : 0);
+            printf("}");
+            if (e->res == 1) any_refuted = 1;
+        }
+        printf("]");
+        if (g_partial && !res.skipped) printf(", \"partial_correctness\": true");
+    } else {
+        printf("verify %s:\n", fn->fn_name);
+        for (int j = 0; j < res.n_ens; j++) {
+            EnsVerifyRes *e = &res.ens[j];
+            if (e->res == 3) {
+                printf("  ensures #%d (%s): ПРОПУСНАТО (%s)\n", j + 1, e->ens_text, e->skip_reason);
+            } else {
+                printf("  ensures #%d (%s): %s\n", j + 1, e->ens_text, res_word((VRes)e->res));
+                if (e->res == 1) {
+                    any_refuted = 1;
+                    printf("    контрапример:");
+                    for (int k = 0; k < e->wn; k++) printf(" %s = %lld", e->wit_names[k], e->wit_vals[k]);
+                    printf("\n");
+                }
             }
         }
+        if (g_partial && !res.skipped)
+            printf("  (рекурсия: частична коректност — терминацията не се доказва)\n");
     }
     /* re-run bounds for printing (cheap; keeps output identical) */
     if (!res.skipped) {
@@ -1719,21 +2047,79 @@ static int verify_fn(Node *prog, Node *fn) {
         symexec_stmts(&fn->fn_body->stmts, &st2, &ob2, (fn->ret_type != NULL), spec);
         for (int i = 0; i < st2.n; i++) state_free(&st2.s[i]);
         free(st2.s);
+        /* call-site requires obligations (M5, kind 2) */
+        if (g_json) printf(", \"calls\": [");
+        int ncall = 0;
+        for (int i = 0; i < ob2.n; i++) {
+            if (ob2.o[i].kind != 2) continue;
+            IBind *wit = NULL; int wn = 0;
+            VRes r = verify_call_req(&ob2.o[i], &wit, &wn);
+            if (g_json) {
+                if (ncall) printf(", ");
+                ncall++;
+                printf("{\"label\": ");
+                json_str(ob2.o[i].label ? ob2.o[i].label : "requires при извикване");
+                printf(", \"result\": \"%s\", \"counterexample\": ", res_word_json((int)r));
+                if (r == R_REFUTED && wit) {
+                    char **names = malloc(wn * sizeof(char *));
+                    long long *vals = malloc(wn * sizeof(long long));
+                    for (int k = 0; k < wn; k++) { names[k] = wit[k].name; vals[k] = (long long)wit[k].val; }
+                    json_witness(names, vals, wn);
+                    free(names); free(vals);
+                } else {
+                    json_witness(NULL, NULL, 0);
+                }
+                printf("}");
+            } else {
+                printf("  извикване (%s): %s\n", ob2.o[i].label ? ob2.o[i].label : "requires при извикване", res_word(r));
+                if (r == R_REFUTED) {
+                    printf("    контрапример:");
+                    for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+                    printf("\n");
+                }
+            }
+            if (r == R_REFUTED) any_refuted = 1;
+            if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
+        }
+        if (g_json) printf("]");
+        if (g_json) printf(", \"bounds\": [");
+        int nb = 0;
         for (int i = 0; i < ob2.n; i++) {
             if (ob2.o[i].kind != 1) continue;
             IBind *wit = NULL; int wn = 0;
             VRes r = verify_bound_obl(&ob2.o[i], &wit, &wn);
-            printf("  граница (%s): %s\n", ob2.o[i].label ? ob2.o[i].label : "достъп до вектор", res_word(r));
-            if (r == R_REFUTED) {
-                any_refuted = 1;
-                printf("    контрапример:");
-                for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
-                printf("\n");
+            if (g_json) {
+                if (nb) printf(", ");
+                nb++;
+                printf("{\"label\": ");
+                json_str(ob2.o[i].label ? ob2.o[i].label : "достъп до вектор");
+                printf(", \"result\": \"%s\", \"counterexample\": ", res_word_json((int)r));
+                if (r == R_REFUTED && wit) {
+                    char **names = malloc(wn * sizeof(char *));
+                    long long *vals = malloc(wn * sizeof(long long));
+                    for (int k = 0; k < wn; k++) { names[k] = wit[k].name; vals[k] = (long long)wit[k].val; }
+                    json_witness(names, vals, wn);
+                    free(names); free(vals);
+                } else {
+                    json_witness(NULL, NULL, 0);
+                }
+                printf("}");
+            } else {
+                printf("  граница (%s): %s\n", ob2.o[i].label ? ob2.o[i].label : "достъп до вектор", res_word(r));
+                if (r == R_REFUTED) {
+                    printf("    контрапример:");
+                    for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+                    printf("\n");
+                }
             }
+            if (r == R_REFUTED) any_refuted = 1;
             if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
         }
+        if (g_json) printf("]}");
         for (int i = 0; i < ob2.n; i++) { cl_free(&ob2.o[i].path); cl_free(&ob2.o[i].bound); cl_free(&ob2.o[i].read_cons); lin_free(&ob2.o[i].ret.lin); vlen_free(&ob2.o[i].vlen); free(ob2.o[i].label); }
         free(ob2.o);
+    } else if (g_json) {
+        printf(", \"calls\": [], \"bounds\": []}");
     }
     fn_verify_res_free(&res);
     return any_refuted;
@@ -1741,11 +2127,14 @@ static int verify_fn(Node *prog, Node *fn) {
 
 int verify_program(Node *prog) {
     int any_refuted = 0;
+    g_prog = prog;
+    if (g_json) { g_json_first = 1; printf("{\n  \"functions\": [\n"); }
     for (int i = 0; i < prog->items.len; i++) {
         Node *it = prog->items.data[i];
         if (it->kind != NODE_FN || !it->fn_body) continue;
         if (!find_spec(prog, it->fn_name)) continue;
         any_refuted |= verify_fn(prog, it);
     }
+    if (g_json) printf("\n  ]\n}\n");
     return any_refuted ? 1 : 0;
 }

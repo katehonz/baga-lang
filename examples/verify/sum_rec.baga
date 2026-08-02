@@ -1,0 +1,24 @@
+// M5: рекурсия с assume-guarantee (частична коректност).
+// Индукционната хипотеза носи ensures на рекурсивното повикване:
+//   r = sum_to(n-1), r >= 0  ⇒  n + r >= 0.
+// (Базовият случай е n < 1, за да се разрядва requires на повикването и в
+//  рационалния фрагмент: n >= 1 ⇒ n - 1 >= 0.)
+spec sum_to {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        0 <= output
+}
+
+fn sum_to(n: i64) -> i64 {
+    if n < 1 { return 0 }
+    let r = sum_to(n - 1)
+    return n + r
+}
+
+fn main() {
+    print(sum_to(10))
+}

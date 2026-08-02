@@ -188,6 +188,21 @@ test: $(BIN)
 	grep -q "ПРОПУСНАТО" /tmp/baga_verify_out.txt \
 		&& echo "OK: recursive — честно пропуснато" \
 		|| { echo "FAIL: recursive"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/sum_rec.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: sum_rec — рекурсия доказана с индукционна хипотеза (M5)" \
+		|| { echo "FAIL: sum_rec — очаквах ДОКАЗАНО"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/sum_rec.baga | grep -q "частична коректност" \
+		&& echo "OK: sum_rec — бележка за частична коректност (M5 честност)" \
+		|| { echo "FAIL: sum_rec — липсва бележка за частична коректност"; exit 1; }
+	@./$(BIN) --verify examples/verify/bad_rec.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "контрапример" /tmp/baga_verify_out.txt \
+		&& echo "OK: bad_rec — грешен ensures на рекурсия е оброчен (M5 soundness)" \
+		|| { echo "FAIL: bad_rec — очаквах ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/call_req_bad.baga > /tmp/baga_verify_out.txt; \
+	grep -q "извикване.*ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
+		&& echo "OK: call_req_bad — requires при извикване е оброчен с контрапример (M5 soundness)" \
+		|| { echo "FAIL: call_req_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@for f in elem_param elem_push elem_set elem_slice elem_concat; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
 		grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
@@ -219,6 +234,15 @@ test: $(BIN)
 			&& echo "OK: $$f — оракулът (--test-specs) съгласен с ДОКАЗАНО" \
 			|| { echo "FAIL: $$f — оракулът не е съгласен"; exit 1; }; \
 	done
+	@echo "=== --verify --json (машинен изход) ==="
+	@./$(BIN) --verify --json examples/verify/abs_val.baga > /tmp/baga_verify_json.txt
+	@python3 -c "import json; d=json.load(open('/tmp/baga_verify_json.txt')); f=d['functions'][0]; assert f['name']=='abs_val' and f['ensures'][0]['result']=='proven'" \
+		&& echo "OK: --verify --json валиден JSON, proven" \
+		|| { echo "FAIL: --verify --json"; cat /tmp/baga_verify_json.txt; exit 1; }
+	@./$(BIN) --verify --json examples/verify/bad_abs.baga > /tmp/baga_verify_json_bad.txt; test $$? -eq 1 \
+		&& python3 -c "import json; d=json.load(open('/tmp/baga_verify_json_bad.txt')); e=d['functions'][0]['ensures'][0]; assert e['result']=='refuted' and e['counterexample']" \
+		&& echo "OK: --verify --json refuted + контрапример, exit=1" \
+		|| { echo "FAIL: --verify --json refuted"; cat /tmp/baga_verify_json_bad.txt; exit 1; }
 	@echo "=== LLVM оракул (C vs lli-14) ==="
 	@if [ -f ./$(LLVM_BIN) ]; then $(MAKE) -s test-llvm; else echo "(baga-llvm липсва — пропускам LLVM оракула)"; fi
 	@echo ""
