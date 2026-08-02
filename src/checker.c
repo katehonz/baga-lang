@@ -1042,6 +1042,23 @@ void check_program(Checker *c, Node *program) {
             }
             pop_scope(&ctx);
         }
+
+        /* check decreases expression (M6; scope: inputs only, must be i64) */
+        if (item->spec_decreases) {
+            push_scope(&ctx);
+            for (int j = 0; j < item->spec_inputs.len; j++) {
+                Node *sp = item->spec_inputs.data[j];
+                env_define(&ctx, sp->param_name,
+                           resolve_type_node(&ctx, sp->param_type), sp->pos);
+            }
+            Type *dt = infer(&ctx, item->spec_decreases);
+            if (dt->kind != TYPE_I64 && dt->kind != TYPE_ERROR) {
+                check_error(&ctx, item->spec_decreases->pos,
+                    "spec '%s': decreases е %s, очаквах i64",
+                    item->spec_name, type_str(dt));
+            }
+            pop_scope(&ctx);
+        }
     }
 
     /* pass 3: check function bodies */

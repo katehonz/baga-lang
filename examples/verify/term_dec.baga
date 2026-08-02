@@ -1,0 +1,24 @@
+// M6: decreases — пълна коректност (частична + терминация).
+// Доказва се: при входа n >= 0 (от requires), и при всяко рекурсивно
+// извикване мярката строго намалява: n - 1 >= 0 и n - 1 < n (от n >= 1).
+spec sum_to {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        0 <= output
+    decreases:
+        n
+}
+
+fn sum_to(n: i64) -> i64 {
+    if n < 1 { return 0 }
+    let r = sum_to(n - 1)
+    return n + r
+}
+
+fn main() {
+    print(sum_to(10))
+}

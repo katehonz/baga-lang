@@ -1,0 +1,25 @@
+// M6 soundness: рекурсия, която НЕ намалява мярката, се ОБОРВА.
+// spin(n) вика spin(n) — decreases n не намалява (n < n е невъзможно).
+// ensures остава доказан (частична коректност), но терминацията е оброчена
+// с контрапример (n = 1: мярката не намалява).
+spec spin {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        0 <= output
+    decreases:
+        n
+}
+
+fn spin(n: i64) -> i64 {
+    if n < 1 { return 0 }
+    let r = spin(n)
+    return r
+}
+
+fn main() {
+    print(spin(3))
+}

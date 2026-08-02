@@ -145,6 +145,7 @@ void node_free(Node *n) {
             vec_free(n->spec_ensures);
             for (int i = 0; i < n->spec_requires.len; i++) node_free(n->spec_requires.data[i]);
             vec_free(n->spec_requires);
+            node_free(n->spec_decreases);
             break;
         case NODE_ENSURE:
             free(n->ensure_text);
@@ -999,6 +1000,7 @@ static Node *parse_spec(Parser *p) {
     VEC(char *) guarantees = {0};
     NodeVec ensures = {0};
     NodeVec requires = {0};
+    Node *decreases = NULL;
 
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
         if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "input") == 0) {
@@ -1008,7 +1010,8 @@ static Node *parse_spec(Parser *p) {
                    strcmp(cur(p)->text, "output") != 0 &&
                    strcmp(cur(p)->text, "guarantees") != 0 &&
                    strcmp(cur(p)->text, "requires") != 0 &&
-                   strcmp(cur(p)->text, "ensures") != 0) {
+                   strcmp(cur(p)->text, "ensures") != 0 &&
+                   strcmp(cur(p)->text, "decreases") != 0) {
                 SrcPos ppos = cur(p)->pos;
                 char *pname = expect_ident(p);
                 expect(p, TOK_COLON);
@@ -1032,6 +1035,7 @@ static Node *parse_spec(Parser *p) {
                 while (!check(p, TOK_MINUS) && !check(p, TOK_RBRACE) && !check(p, TOK_EOF) &&
                        !(check(p, TOK_IDENT) && cur(p)->text &&
                          (strcmp(cur(p)->text, "requires") == 0 ||
+                          strcmp(cur(p)->text, "decreases") == 0 ||
                           strcmp(cur(p)->text, "ensures") == 0))) {
                     Token *t = advance(p);
                     if (t->text && bi < 250) {
@@ -1091,6 +1095,17 @@ static Node *parse_spec(Parser *p) {
                 vec_push(requires, en);
                 if (!match(p, TOK_COMMA)) break;
             }
+        } else if (check(p, TOK_IDENT) && cur(p)->text && strcmp(cur(p)->text, "decreases") == 0) {
+            /* M6: decreases: <expr> — терминационна мярка над input параметрите */
+            advance(p);
+            expect(p, TOK_COLON);
+            Node *d = parse_expr(p);
+            if (decreases) {
+                parser_error(p, "spec: decreases е зададен повече от веднъж");
+                node_free(d);
+            } else {
+                decreases = d;
+            }
         } else {
             advance(p);
         }
@@ -1105,6 +1120,7 @@ static Node *parse_spec(Parser *p) {
     s->n_guarantees = guarantees.len;
     s->spec_ensures = ensures;
     s->spec_requires = requires;
+    s->spec_decreases = decreases;
     return s;
 }
 

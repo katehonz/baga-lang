@@ -857,7 +857,9 @@ static void states_push(States *ss, State s) {
 static Node *g_prog = NULL;
 static const char *g_caller_name = NULL;
 static int g_call_ctr = 0;
-static int g_partial = 0;   /* direct self-recursion seen during symexec */
+static int g_partial = 0;        /* direct self-recursion seen during symexec */
+static int g_term = 0;           /* spec carries a decreases measure (M6) */
+static int g_term_failed = 0;    /* some termination obligation is not PROVEN */
 
 static Node *find_spec(Node *prog, const char *name);   /* defined below */
 static int type_is_i64(Node *t);                        /* defined below */
@@ -1309,6 +1311,30 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
         obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 0, 2, label);
     }
 
+    /* M6: at a self-recursive call with a decreases measure, discharge
+     * D[actuals] >= 0 and D[actuals] < D[current] (well-founded descent). */
+    if (caller_name && strcmp(callee, caller_name) == 0 && cspec->spec_decreases) {
+        Sym d_cur = se_from_ast(cspec->spec_decreases, &st->env, &st->vlen, &st->reads);
+        Sym d_new = se_from_ast(cspec->spec_decreases, &env2, &st->vlen, NULL);
+        ConsList opath; cl_init(&opath);
+        for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        ConsList pos; cl_init(&pos);
+        char label[300];
+        if (d_cur.nonlinear || d_new.nonlinear) {
+            snprintf(label, sizeof label, "терминация: decreases на '%s' не е линеен при извикването", callee);
+            obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 1, 2, label);
+            g_term_failed = 1;
+        } else {
+            snprintf(label, sizeof label, "терминация: decreases на '%s' намалява при рекурсивното извикване", callee);
+            cl_push(&pos, mk_cons(lin_neg(&d_new.lin), C_LE, rat_zero()));              /* D' >= 0 */
+            cl_push(&pos, mk_cons(lin_sub(&d_new.lin, &d_cur.lin), C_LT, rat_zero())); /* D' < D */
+            if (!cl_implied_by(&opath, &pos)) g_term_failed = 1;
+            obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, 0, 2, label);
+        }
+        lin_free(&d_cur.lin);
+        lin_free(&d_new.lin);
+    }
+
     /* assume ensures only when justified: requires proven AND the callee body
      * verifiable (a skipped callee's ensures were never proven) */
     if (all_req_proven && !has_unsupported(cfn->fn_body)) {
@@ -1323,6 +1349,30 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
     }
     env_free(&env2);
     return sym_lin(lin_var(rv));
+}
+
+/* M6: entry obligation for a decreases measure — requires ⇒ D >= 0.
+ * Pushed as a kind-2 obligation (same discharge/witness machinery as
+ * call-site requires); used in both the collect run and the print re-run. */
+static void push_term_entry_obl(Node *fn, Node *spec, State *init, Obligations *ob) {
+    if (!spec->spec_decreases) return;
+    ConsList opath; cl_init(&opath);
+    for (int x = 0; x < init->path.n; x++) { Constraint *c = &init->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    ConsList pos; cl_init(&pos);
+    char label[300];
+    Sym d = se_from_ast(spec->spec_decreases, &init->env, &init->vlen, NULL);
+    if (d.nonlinear) {
+        snprintf(label, sizeof label, "терминация: decreases на '%s' не е линеен", fn->fn_name);
+        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &init->vlen, 1, 2, label);
+        g_term_failed = 1;
+    } else {
+        /* D >= 0  ⟺  -D <= 0 */
+        snprintf(label, sizeof label, "терминация: decreases на '%s' >= 0 при входа", fn->fn_name);
+        cl_push(&pos, mk_cons(lin_neg(&d.lin), C_LE, rat_zero()));
+        if (!cl_implied_by(&opath, &pos)) g_term_failed = 1;
+        obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &init->vlen, 0, 2, label);
+    }
+    lin_free(&d.lin);
 }
 
 /* Symbolically execute a statement list over a set of states; returning states
@@ -1867,8 +1917,11 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     g_caller_name = fn->fn_name;
     g_partial = 0;
     g_call_ctr = 0;
+    g_term = 0;
+    g_term_failed = 0;
     Node *spec = find_spec(prog, fn->fn_name);
     if (!spec) return -1;
+    if (spec->spec_decreases) g_term = 1;
 
     /* fragment gates */
     const char *skip = NULL;
@@ -1924,6 +1977,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     States states; states.s = NULL; states.n = 0; states.cap = 0;
     states_push(&states, init);
     int is_nonvoid = (fn->ret_type != NULL);
+    push_term_entry_obl(fn, spec, &states.s[0], &ob);   /* M6: D >= 0 при входа */
     symexec_stmts(&fn->fn_body->stmts, &states, &ob, is_nonvoid, spec);
     for (int i = 0; i < states.n; i++) state_free(&states.s[i]);
     free(states.s);
@@ -1999,7 +2053,10 @@ static int verify_fn(Node *prog, Node *fn) {
             if (e->res == 1) any_refuted = 1;
         }
         printf("]");
-        if (g_partial && !res.skipped) printf(", \"partial_correctness\": true");
+        if (g_partial && !res.skipped) {
+            if (g_term && !g_term_failed) printf(", \"termination\": \"proven\"");
+            else printf(", \"partial_correctness\": true");
+        }
     } else {
         printf("verify %s:\n", fn->fn_name);
         for (int j = 0; j < res.n_ens; j++) {
@@ -2016,8 +2073,12 @@ static int verify_fn(Node *prog, Node *fn) {
                 }
             }
         }
-        if (g_partial && !res.skipped)
-            printf("  (рекурсия: частична коректност — терминацията не се доказва)\n");
+        if (g_partial && !res.skipped) {
+            if (g_term && !g_term_failed)
+                printf("  (терминация: доказана чрез decreases — пълна коректност)\n");
+            else
+                printf("  (рекурсия: частична коректност — терминацията не се доказва)\n");
+        }
     }
     /* re-run bounds for printing (cheap; keeps output identical) */
     if (!res.skipped) {
@@ -2044,6 +2105,7 @@ static int verify_fn(Node *prog, Node *fn) {
         }
         States st2; st2.s = NULL; st2.n = 0; st2.cap = 0;
         states_push(&st2, init2);
+        push_term_entry_obl(fn, spec, &st2.s[0], &ob2);   /* M6: за отчета */
         symexec_stmts(&fn->fn_body->stmts, &st2, &ob2, (fn->ret_type != NULL), spec);
         for (int i = 0; i < st2.n; i++) state_free(&st2.s[i]);
         free(st2.s);

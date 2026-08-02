@@ -224,8 +224,8 @@ baga/
 | 4 | Effect system (!IO, ?, catch) | ✅ |
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
-| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion | ✅ |
-| 8 | Non-linear reasoning + termination (`decreases`) + integer-exact reasoning | 🔜 |
+| 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion + M6 termination | ✅ |
+| 8 | Non-linear reasoning + integer-exact reasoning (`n > 0 ⇒ n >= 1`) | 🔜 |
 
 ### Static verification (`--verify`)
 
@@ -296,6 +296,14 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   // ensures ДОКАЗАНО; requires при извикване ДОКАЗАНО (partial correctness)
   ```
 
+- **M6** — **termination via `decreases`**: a `decreases: <expr>` clause in the
+  spec (i64 over the inputs) upgrades recursion from partial to **full
+  correctness**: the verifier discharges `D >= 0` at entry (from `requires`)
+  and `D' >= 0 ∧ D' < D` at every self-recursive call. A measure that does
+  not decrease is refuted with a counterexample (and the function honestly
+  falls back to partial correctness). Output: `терминация: доказана чрез
+  decreases`; JSON `"termination": "proven"`.
+
 Non-linear terms are still skipped honestly. `vec_slice` and
 `vec_concat` are now language builtins (returning a fresh `Vec`), and the
 verifier propagates element invariants through them — a slice inherits the
@@ -303,9 +311,8 @@ source's invariants; a concat inherits the invariants **both** operands share.
 A `sorted(v)` relational axiom is also supported: `requires sorted(v)` asserts
 that `v` is non-decreasing, and `vec_push(v, e)` preserves it when `e >= last`
 is provable. Remaining staircase: non-linear reasoning, integer-exact
-reasoning (the rational fragment cannot prove `n > 0 ⇒ n >= 1`), termination
-(`decreases`), and feeding verified invariants into proof extraction
-(`--proofs`).
+reasoning (the rational fragment cannot prove `n > 0 ⇒ n >= 1`), and feeding
+verified invariants into proof extraction (`--proofs`).
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

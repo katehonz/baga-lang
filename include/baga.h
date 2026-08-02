@@ -326,6 +326,7 @@ struct Node {
             int n_guarantees;
             NodeVec spec_ensures;  /* NODE_ENSURE */
             NodeVec spec_requires; /* NODE_ENSURE — предусловия */
+            Node *spec_decreases;  /* M6: терминационна мярка (израз над input, NULL ако липсва) */
         };
 
         /* NODE_ENUM */
