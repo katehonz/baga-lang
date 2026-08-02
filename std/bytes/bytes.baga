@@ -118,3 +118,50 @@ fn base64_decode(s: str) -> Vec<i64> {
     }
     return out
 }
+
+// RFC 4648 §5: URL-safe alphabet ("-", "_"), no padding. Built as a
+// transform over the standard alphabet so the encode/decode tables stay
+// single-sourced.
+fn base64url_encode(b: Vec<i64>) -> str {
+    let s = base64_encode(b)
+    let mut out = ""
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        if c == 43 {            // '+' -> '-'
+            out = concat(out, "-")
+        } else {
+            if c == 47 {        // '/' -> '_'
+                out = concat(out, "_")
+            } else {
+                if c == 61 {    // drop '=' padding
+                    out = out
+                } else {
+                    out = concat(out, chr(c))
+                }
+            }
+        }
+    }
+    return out
+}
+
+// Tolerates missing padding: maps "-"->"+", "_"->"/", re-pads to a
+// multiple of 4, then defers to base64_decode.
+fn base64url_decode(s: str) -> Vec<i64> {
+    let mut t = ""
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        if c == 45 {            // '-' -> '+'
+            t = concat(t, "+")
+        } else {
+            if c == 95 {        // '_' -> '/'
+                t = concat(t, "/")
+            } else {
+                t = concat(t, chr(c))
+            }
+        }
+    }
+    while len(t) % 4 != 0 {
+        t = concat(t, "=")
+    }
+    return base64_decode(t)
+}

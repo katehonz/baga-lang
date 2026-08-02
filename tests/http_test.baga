@@ -72,6 +72,20 @@ fn main() -> i64 !Net !IO {
     tcp_close(c3)?
     tcp_close(s3)?
 
+    // --- case 4: query_param / path_only (G7) ---
+    let c4 = tcp_connect("127.0.0.1", port)?
+    let s4 = tcp_accept(listener)?
+    tcp_write(c4, "GET /token?sub=bagatur&n=1 HTTP/1.1\r\n\r\n")?
+    let req4 = http_read_request(s4)?
+    check("path_raw_has_query", str_find(http_path(req4), "?") >= 0)
+    check("path_only", http_path_only(req4) == "/token")
+    check("query_sub", http_query_param(req4, "sub") == "bagatur")
+    check("query_n", http_query_param(req4, "n") == "1")
+    check("query_missing", http_query_param(req4, "nope") == "")
+    http_respond(s4, http_json_response(200, "{}"))?
+    tcp_close(c4)?
+    tcp_close(s4)?
+
     tcp_close(listener)?
     print("http_test: all passed")
     return 0

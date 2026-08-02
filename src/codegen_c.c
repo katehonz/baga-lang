@@ -321,6 +321,16 @@ static void emit_expr(Codegen *cg, Node *n) {
             if (n->callee->kind == NODE_IDENT) {
                 Node *ef = find_extern_fn(cg, n->callee->name);
                 if (ef) {
+                    /* clock_gettime: system prototype from time.h (via pthread.h)
+                     * is (clockid_t, struct timespec *); baga passes (i64, str buffer). */
+                    if (strcmp(ef->fn_name, "clock_gettime") == 0 && n->args.len == 2) {
+                        fprintf(f, "((int64_t)clock_gettime((int)(");
+                        emit_expr(cg, n->args.data[0]);
+                        fprintf(f, "), (struct timespec *)(void *)(");
+                        emit_expr(cg, n->args.data[1]);
+                        fprintf(f, ")))");
+                        break;
+                    }
                     int str_ret = extern_ret_is_str(ef);
                     if (str_ret) fprintf(f, "({ const char *_er = %s(", ef->fn_name);
                     else         fprintf(f, "%s(", ef->fn_name);
@@ -373,6 +383,17 @@ static void emit_expr(Codegen *cg, Node *n) {
                     fprintf(f, ")");
                     goto call_done;
                 }
+                /* go / go_bg — first arg is a function identifier → C function pointer */
+                if ((strcmp(bn, "go") == 0 || strcmp(bn, "go_bg") == 0) &&
+                    n->args.len == 2 && n->args.data[0]->kind == NODE_IDENT) {
+                    char *wm = mangle_name(n->args.data[0]->name);
+                    fprintf(f, "%s((baga_par_fn)%s, ",
+                            strcmp(bn, "go_bg") == 0 ? "baga_go_bg" : "baga_go", wm);
+                    free(wm);
+                    emit_expr(cg, n->args.data[1]);
+                    fprintf(f, ")");
+                    goto call_done;
+                }
                 struct { const char *baga; const char *c; } bmap[] = {
                     {"len",       "baga_len"},
                     {"char_at",   "baga_char_at"},
@@ -403,6 +424,20 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"str_of_bytes","baga_bytes_to_str"},
                     {"hex_encode",  "baga_hex_encode"},
                     {"hex_decode",  "baga_hex_decode"},
+                    {"join",        "baga_join"},
+                    {"detach",      "baga_detach"},
+                    {"chan_new",    "baga_chan_new"},
+                    {"chan_send",   "baga_chan_send"},
+                    {"chan_recv",   "baga_chan_recv"},
+                    {"chan_recv2",  "baga_chan_recv2"},
+                    {"chan_close",  "baga_chan_close"},
+                    {"chan_len",    "baga_chan_len"},
+                    {"mutex_new",   "baga_mutex_new"},
+                    {"mutex_lock",  "baga_mutex_lock"},
+                    {"mutex_unlock","baga_mutex_unlock"},
+                    {"cell2",       "baga_cell2"},
+                    {"cell2_0",     "baga_cell2_0"},
+                    {"cell2_1",     "baga_cell2_1"},
                 };
                 for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                     if (strcmp(bn, bmap[bi].baga) == 0) {
@@ -1023,6 +1058,11 @@ static void emit_forward_decls(Codegen *cg, Node *program) {
         if (item->kind != NODE_FN) continue;
 
         if (item->is_extern) {
+            /* Skip prototypes that clash with system headers pulled in by
+             * #include <pthread.h> (e.g. time.h declares clock_gettime).
+             * The call site still links against libc; types are pointer-compatible. */
+            if (strcmp(item->fn_name, "clock_gettime") == 0)
+                continue;
             /* extern fn: prototype with the raw C name and C ABI types */
             emit_extern_type(f, item->ret_type, 1);
             fprintf(f, " %s(", item->fn_name);
@@ -1157,7 +1197,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <stdio.h>\n");
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <stdint.h>\n");
-    fprintf(out, "#include <string.h>\n\n");
+    fprintf(out, "#include <string.h>\n");
+    fprintf(out, "#include <pthread.h>\n\n");
 
     /* runtime helpers */
     fprintf(out, "static void baga_print_i64(int64_t v) { printf(\"%%lld\\n\", (long long)v); }\n");
@@ -1314,6 +1355,157 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_arena_free(int64_t h) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
     fprintf(out, "    free(a->base); free(a);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "\n");
+    /* ---- concurrency (!Par): OS threads + i64 channels (CSP) ---- */
+    /* heap pair first — used by chan_recv2 and as worker context packing */
+    fprintf(out, "static int64_t baga_cell2(int64_t a, int64_t b) {\n");
+    fprintf(out, "    int64_t *p = (int64_t *)malloc(2 * sizeof(int64_t));\n");
+    fprintf(out, "    if (!p) { fprintf(stderr, \"baga: cell2: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    p[0] = a; p[1] = b; return (int64_t)(intptr_t)p;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_cell2_0(int64_t h) { return ((int64_t *)(intptr_t)h)[0]; }\n");
+    fprintf(out, "static int64_t baga_cell2_1(int64_t h) { return ((int64_t *)(intptr_t)h)[1]; }\n");
+    fprintf(out, "typedef int64_t (*baga_par_fn)(int64_t);\n");
+    fprintf(out, "typedef struct {\n");
+    fprintf(out, "    baga_par_fn fn; int64_t arg; int64_t result; pthread_t th;\n");
+    fprintf(out, "    int joined; int detached;\n");
+    fprintf(out, "} baga_JoinHandle;\n");
+    fprintf(out, "static void *baga_par_trampoline(void *p) {\n");
+    fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)p;\n");
+    fprintf(out, "    h->result = h->fn(h->arg);\n");
+    fprintf(out, "    /* 0=joinable, 1=detach requested, 2=finished (joinable) */\n");
+    fprintf(out, "    int old = __sync_lock_test_and_set(&h->detached, 2);\n");
+    fprintf(out, "    if (old == 1) free(h); /* parent already detached — we free */\n");
+    fprintf(out, "    return NULL;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_go(baga_par_fn fn, int64_t arg) {\n");
+    fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)calloc(1, sizeof(baga_JoinHandle));\n");
+    fprintf(out, "    if (!h) { fprintf(stderr, \"baga: go: out of memory\\n\"); exit(1); }\n");
+    fprintf(out, "    h->fn = fn; h->arg = arg; h->joined = 0; h->detached = 0;\n");
+    fprintf(out, "    if (pthread_create(&h->th, NULL, baga_par_trampoline, h) != 0) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: go: pthread_create failed\\n\"); exit(1);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return (int64_t)(intptr_t)h;\n");
+    fprintf(out, "}\n");
+    /* Fire-and-forget from the start (cloud accept loops). Returns 0; no join. */
+    fprintf(out, "static int64_t baga_go_bg(baga_par_fn fn, int64_t arg) {\n");
+    fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)calloc(1, sizeof(baga_JoinHandle));\n");
+    fprintf(out, "    if (!h) { fprintf(stderr, \"baga: go_bg: out of memory\\n\"); exit(1); }\n");
+    fprintf(out, "    h->fn = fn; h->arg = arg; h->joined = 0; h->detached = 1;\n");
+    fprintf(out, "    pthread_attr_t attr; pthread_attr_init(&attr);\n");
+    fprintf(out, "    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);\n");
+    fprintf(out, "    if (pthread_create(&h->th, &attr, baga_par_trampoline, h) != 0) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: go_bg: pthread_create failed\\n\"); exit(1);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    pthread_attr_destroy(&attr);\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_join(int64_t handle) {\n");
+    fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)(intptr_t)handle;\n");
+    fprintf(out, "    if (!h) return 0;\n");
+    fprintf(out, "    if (h->detached == 1) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: join: handle detached\\n\"); exit(1);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    if (!h->joined) { pthread_join(h->th, NULL); h->joined = 1; }\n");
+    fprintf(out, "    int64_t r = h->result; free(h); return r;\n");
+    fprintf(out, "}\n");
+    /* detach joinable handle: fire-and-forget. Race-safe with trampoline. */
+    fprintf(out, "static int64_t baga_detach(int64_t handle) {\n");
+    fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)(intptr_t)handle;\n");
+    fprintf(out, "    if (!h || h->joined) return -1;\n");
+    fprintf(out, "    int old = __sync_lock_test_and_set(&h->detached, 1);\n");
+    fprintf(out, "    if (old == 2) { free(h); return 0; } /* already finished */\n");
+    fprintf(out, "    if (old == 1) return 0; /* double detach */\n");
+    fprintf(out, "    pthread_detach(h->th);\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "typedef struct {\n");
+    fprintf(out, "    int64_t *buf; int64_t cap, len, head; int closed;\n");
+    fprintf(out, "    pthread_mutex_t mu; pthread_cond_t not_empty, not_full;\n");
+    fprintf(out, "} baga_Chan;\n");
+    fprintf(out, "static int64_t baga_chan_new(int64_t cap) {\n");
+    fprintf(out, "    if (cap < 1) cap = 1; /* M1: min buffer 1 (rendezvous = M2) */\n");
+    fprintf(out, "    baga_Chan *c = (baga_Chan *)calloc(1, sizeof(baga_Chan));\n");
+    fprintf(out, "    if (!c) { fprintf(stderr, \"baga: chan_new: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    c->cap = cap; c->buf = (int64_t *)malloc((size_t)cap * sizeof(int64_t));\n");
+    fprintf(out, "    if (!c->buf) { fprintf(stderr, \"baga: chan_new: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    pthread_mutex_init(&c->mu, NULL);\n");
+    fprintf(out, "    pthread_cond_init(&c->not_empty, NULL);\n");
+    fprintf(out, "    pthread_cond_init(&c->not_full, NULL);\n");
+    fprintf(out, "    return (int64_t)(intptr_t)c;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_chan_send(int64_t ch, int64_t v) {\n");
+    fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");
+    fprintf(out, "    if (!c) return -1;\n");
+    fprintf(out, "    pthread_mutex_lock(&c->mu);\n");
+    fprintf(out, "    while (c->len == c->cap && !c->closed) pthread_cond_wait(&c->not_full, &c->mu);\n");
+    fprintf(out, "    if (c->closed) { pthread_mutex_unlock(&c->mu); return -1; }\n");
+    fprintf(out, "    int64_t i = (c->head + c->len) %% c->cap;\n");
+    fprintf(out, "    c->buf[i] = v; c->len++;\n");
+    fprintf(out, "    pthread_cond_signal(&c->not_empty);\n");
+    fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_chan_recv(int64_t ch) {\n");
+    fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");
+    fprintf(out, "    if (!c) return 0;\n");
+    fprintf(out, "    pthread_mutex_lock(&c->mu);\n");
+    fprintf(out, "    while (c->len == 0 && !c->closed) pthread_cond_wait(&c->not_empty, &c->mu);\n");
+    fprintf(out, "    if (c->len == 0) { /* closed + empty */ pthread_mutex_unlock(&c->mu); return 0; }\n");
+    fprintf(out, "    int64_t v = c->buf[c->head];\n");
+    fprintf(out, "    c->head = (c->head + 1) %% c->cap; c->len--;\n");
+    fprintf(out, "    pthread_cond_signal(&c->not_full);\n");
+    fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
+    fprintf(out, "    return v;\n");
+    fprintf(out, "}\n");
+    /* returns cell2(ok, value): ok=1 got value, ok=0 closed+empty (value=0) */
+    fprintf(out, "static int64_t baga_chan_recv2(int64_t ch) {\n");
+    fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");
+    fprintf(out, "    if (!c) return baga_cell2(0, 0);\n");
+    fprintf(out, "    pthread_mutex_lock(&c->mu);\n");
+    fprintf(out, "    while (c->len == 0 && !c->closed) pthread_cond_wait(&c->not_empty, &c->mu);\n");
+    fprintf(out, "    if (c->len == 0) { pthread_mutex_unlock(&c->mu); return baga_cell2(0, 0); }\n");
+    fprintf(out, "    int64_t v = c->buf[c->head];\n");
+    fprintf(out, "    c->head = (c->head + 1) %% c->cap; c->len--;\n");
+    fprintf(out, "    pthread_cond_signal(&c->not_full);\n");
+    fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
+    fprintf(out, "    return baga_cell2(1, v);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_chan_close(int64_t ch) {\n");
+    fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");
+    fprintf(out, "    if (!c) return -1;\n");
+    fprintf(out, "    pthread_mutex_lock(&c->mu);\n");
+    fprintf(out, "    c->closed = 1;\n");
+    fprintf(out, "    pthread_cond_broadcast(&c->not_empty);\n");
+    fprintf(out, "    pthread_cond_broadcast(&c->not_full);\n");
+    fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_chan_len(int64_t ch) {\n");
+    fprintf(out, "    baga_Chan *c = (baga_Chan *)(intptr_t)ch;\n");
+    fprintf(out, "    if (!c) return 0;\n");
+    fprintf(out, "    pthread_mutex_lock(&c->mu);\n");
+    fprintf(out, "    int64_t n = c->len;\n");
+    fprintf(out, "    pthread_mutex_unlock(&c->mu);\n");
+    fprintf(out, "    return n;\n");
+    fprintf(out, "}\n");
+    /* mutex — opaque i64 handle */
+    fprintf(out, "static int64_t baga_mutex_new(void) {\n");
+    fprintf(out, "    pthread_mutex_t *m = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));\n");
+    fprintf(out, "    if (!m) { fprintf(stderr, \"baga: mutex_new: oom\\n\"); exit(1); }\n");
+    fprintf(out, "    pthread_mutex_init(m, NULL);\n");
+    fprintf(out, "    return (int64_t)(intptr_t)m;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_mutex_lock(int64_t h) {\n");
+    fprintf(out, "    pthread_mutex_t *m = (pthread_mutex_t *)(intptr_t)h;\n");
+    fprintf(out, "    if (!m) return -1;\n");
+    fprintf(out, "    return (int64_t)pthread_mutex_lock(m);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_mutex_unlock(int64_t h) {\n");
+    fprintf(out, "    pthread_mutex_t *m = (pthread_mutex_t *)(intptr_t)h;\n");
+    fprintf(out, "    if (!m) return -1;\n");
+    fprintf(out, "    return (int64_t)pthread_mutex_unlock(m);\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
 

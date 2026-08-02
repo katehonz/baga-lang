@@ -1,0 +1,40 @@
+// par_chan.baga — CSP fan-in: N workers send results on a channel.
+// Cloud-native pattern: parallel map → collect (known N).
+// cell2 packs (chan, arg) for the single-arg go worker ABI.
+
+fn work(x: i64) -> i64 {
+    return x * x + x
+}
+
+fn producer(ctx: i64) -> i64 !Par {
+    let c = cell2_0(ctx)
+    let x = cell2_1(ctx)
+    chan_send(c, work(x))
+    return 0
+}
+
+fn main() -> i64 !Par {
+    let c = chan_new(8)
+    let mut i: i64 = 1
+    let mut handles = vec_new()
+    while i <= 8 {
+        let h = go(producer, cell2(c, i))
+        vec_push(handles, h)
+        i = i + 1
+    }
+    let mut sum: i64 = 0
+    let mut n: i64 = 0
+    while n < 8 {
+        sum = sum + chan_recv(c)
+        n = n + 1
+    }
+    let mut j: i64 = 0
+    while j < vec_len(handles) {
+        join(vec_get(handles, j))
+        j = j + 1
+    }
+    chan_close(c)
+    print(sum)
+    // sum_{i=1..8} (i*i + i) = 204 + 36 = 240
+    return sum
+}

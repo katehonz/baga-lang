@@ -202,12 +202,13 @@ baga/
 | Flag | Description |
 |---|---|
 | (none) | Compile and run |
+| `--check` / `--lib` | Parse + typecheck only (no `main` required) — for library modules |
 | `--emit-c` | Generate C code to stdout |
 | `--emit-llvm` | Generate LLVM IR to stdout (`baga-llvm`, `make llvm`) |
 | `--ast` | Print AST (debug) |
 | `--tokens` | Print tokens (debug) |
 | `--specs` | Print spec documentation |
-| `--proofs` | Extract proof sketches |
+| `--proofs` | Extract proof sketches (includes static verification status for specs) |
 | `--test-specs` | Property-based test of spec contracts (random inputs, deterministic seed) |
 | `--verify` | Static verification of `requires`/`ensures` (sound; linear i64, loops via invariants, no recursion — see below) |
 | `--json` | Machine-readable JSON output for `--verify` (verdicts + counterexamples; for AI agents and CI) |
@@ -233,6 +234,7 @@ baga/
 | 6 | Proof extraction | ✅ |
 | 7 | **Static** spec verification (`--verify`): M0 linear + M1 loops + M2 array bounds + M3 element invariants + M5 recursion + M6 termination + M7 integer-exact + M8 products | ✅ |
 | 8 | General non-linear reasoning | 🔜 |
+| 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
 
 ### Static verification (`--verify`)
 

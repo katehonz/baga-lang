@@ -12,24 +12,6 @@ import "jwt.baga"
 import "../../std/os/os.baga"
 import "../../std/str/str.baga"
 
-// "/token?sub=x" + "sub" -> "x"; "" when the param is absent.
-fn query_param(path: str, name: str) -> str {
-    let q = str_find(path, "?")
-    if q < 0 {
-        return ""
-    }
-    let query = substr(path, q + 1, len(path))
-    let pairs = str_split(query, "&")
-    let want = concat(name, "=")
-    for i in 0..vec_len(pairs) {
-        let p = vec_get(pairs, i)
-        if str_starts_with(p, want) {
-            return substr(p, len(want), len(p))
-        }
-    }
-    return ""
-}
-
 // "Bearer abc" -> "abc"; "" when the header is not a Bearer token.
 fn bearer(auth: str) -> str {
     if str_starts_with(auth, "Bearer ") {
@@ -49,17 +31,16 @@ fn unquote(s: str) -> str {
 fn handle(fd: i64, secret: str) -> i64 !IO !Net {
     let req = http_read_request(fd)?
     let method = http_method(req)
-    let path = http_path(req)
 
-    if method == "GET" && str_starts_with(path, "/token") {
-        let sub = query_param(path, "sub")
+    if method == "GET" && str_starts_with(http_path_only(req), "/token") {
+        let sub = http_query_param(req, "sub")
         let payload = concat(concat("{\"sub\":", json_escape(sub)), "}")
         let token = jwt_encode(secret, payload)
         let body = concat(concat("{\"token\":\"", token), "\"}")
         return http_respond(fd, http_json_response(200, body))?
     }
 
-    if method == "GET" && path == "/verify" {
+    if method == "GET" && http_path_only(req) == "/verify" {
         let token = bearer(http_header(req, "Authorization"))
         if token != "" && jwt_decode(secret, token) != "" {
             let sub = unquote(jwt_claim(token, "sub"))
@@ -69,7 +50,7 @@ fn handle(fd: i64, secret: str) -> i64 !IO !Net {
         return http_respond(fd, http_json_response(401, "{\"valid\":false}"))?
     }
 
-    if method == "GET" && path == "/protected" {
+    if method == "GET" && http_path_only(req) == "/protected" {
         let token = bearer(http_header(req, "Authorization"))
         if token != "" && jwt_decode(secret, token) != "" {
             let sub = unquote(jwt_claim(token, "sub"))

@@ -72,6 +72,41 @@ fn http_path(req: Request) -> str {
     return req.path
 }
 
+// Path without the "?query" suffix (G7). "/a?b=1" → "/a"; "/a" → "/a".
+fn http_path_only(req: Request) -> str {
+    let p = req.path
+    let q = str_find(p, "?")
+    if q < 0 {
+        return p
+    }
+    return substr(p, 0, q)
+}
+
+// Query parameter from the request target. "/token?sub=x" + "sub" → "x";
+// "" when the name is absent. (G7)
+fn http_query_param(req: Request, name: str) -> str {
+    return query_param(req.path, name)
+}
+
+// Same as http_query_param but takes a raw path/target string (for callers
+// that only have the path text).
+fn query_param(path: str, name: str) -> str {
+    let q = str_find(path, "?")
+    if q < 0 {
+        return ""
+    }
+    let query = substr(path, q + 1, len(path))
+    let pairs = str_split(query, "&")
+    let want = concat(name, "=")
+    for i in 0..vec_len(pairs) {
+        let p = vec_get(pairs, i)
+        if str_starts_with(p, want) {
+            return substr(p, len(want), len(p))
+        }
+    }
+    return ""
+}
+
 fn http_body(req: Request) -> str {
     return req.body
 }

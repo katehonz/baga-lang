@@ -29,6 +29,22 @@ fn main() -> i64 !IO {
     check("read_n_rest", read_n(r, 10)? == "ma\n")
     check("eof", read_line(r)? == "")
     close(rfd)
+
+    // CRLF: read_line must strip "\r" so HTTP-style lines compare cleanly (G3)
+    let cfd = open("/tmp/baga_io_crlf.txt", 577, 420)?
+    let cw = writer_new(cfd)
+    let cw2 = write_str(cw, "GET /x HTTP/1.1\r\n")
+    let cw3 = write_str(cw2, "Host: demo\r\n")
+    let cw4 = write_str(cw3, "\r\n")
+    let cw5 = flush(cw4)?
+    close(cw5.fd)
+    let crfd = open("/tmp/baga_io_crlf.txt", 0, 0)?
+    let cr = reader_new(crfd)
+    check("crlf_req", read_line(cr)? == "GET /x HTTP/1.1")
+    check("crlf_host", read_line(cr)? == "Host: demo")
+    check("crlf_blank", read_line(cr)? == "")
+    close(crfd)
+
     print("io_test: all passed")
     return 0
 }

@@ -55,8 +55,8 @@ compile that.
 fast "does this module even typecheck" loop, and errors surface attributed to
 the consumer file, not the module.
 
-**Verdict.** Roadmap candidate (small): a `--check`/`--lib` mode that runs the
-pipeline without requiring `main`, for module-level feedback.
+**Verdict.** **Closed.** `./baga --check lib.baga` (alias `--lib`) runs parse +
+typecheck without requiring `main` and prints `ok: <path>`.
 
 ## G3 — `read_line` keeps the trailing `\r`
 
@@ -74,9 +74,9 @@ terminator as `line == "" || line == "\r"`.
 **Severity.** Low. `str_trim` handles it; but it is a per-protocol tax and a
 trap (an `== ""` check alone silently never terminates the header loop).
 
-**Verdict.** App-specific / lean toward YAGNI for a language change. The right
-fix, if any, is in std/io (a `read_line` option or a documented CRLF note), not
-the language. Logged so jwtbaga and any future protocol code knows.
+**Verdict.** **Closed.** `read_line` strips a trailing `\r` before the `\n`, so
+CRLF and LF yield the same content. HTTP header loops can now use `line == ""`
+for the blank terminator.
 
 ## G4 — error messages localize far from the root cause on unbalanced parens
 
@@ -97,7 +97,7 @@ depth/imbalance hint would help.
 
 | Gap | Verdict | Next step |
 |-----|---------|-----------|
-| G1 n-ary concat / interpolation | **roadmap** | spec interpolation (big win) or variadic concat (small change) |
-| G2 `--check`/lib mode without main | **roadmap (small)** | spec a `--check` flag |
-| G3 `read_line` keeps `\r` | app-specific / YAGNI | document in std/io README |
+| G1 n-ary concat / interpolation | **closed** | string interpolation `${expr}` shipped |
+| G2 `--check`/lib mode without main | **closed** | `./baga --check lib.baga` (alias `--lib`) |
+| G3 `read_line` keeps `\r` | **closed** | `read_line` strips trailing `\r` (CRLF == LF) |
 | G4 error location on imbalance | YAGNI | fold into a future diagnostics pass |

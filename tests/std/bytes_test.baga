@@ -32,6 +32,19 @@ fn main() {
     check("b64_dec_foobar", bytes_eq(base64_decode("Zm9vYmFy"), bytes_from_str("foobar")))
     check("b64_roundtrip", bytes_eq(base64_decode(base64_encode(bytes_from_str("baga std"))), bytes_from_str("baga std")))
 
+    // RFC 4648 §5: URL-safe alphabet, no padding
+    // [251, 255, 191] standard base64 is "+/+/" ; url form is "-_-"
+    let url_src = vec_new()
+    vec_push(url_src, 251)
+    vec_push(url_src, 255)
+    vec_push(url_src, 191)
+    check("b64url_enc", base64url_encode(url_src) == "-_-_")
+    check("b64url_no_pad", base64url_encode(bytes_from_str("f")) == "Zg")
+    check("b64url_dec_f", bytes_eq(base64url_decode("Zg"), bytes_from_str("f")))
+    check("b64url_dec_fo", bytes_eq(base64url_decode("Zm8"), bytes_from_str("fo")))
+    check("b64url_roundtrip", bytes_eq(base64url_decode(base64url_encode(bytes_from_str("baga jwt"))), bytes_from_str("baga jwt")))
+    check("b64url_roundtrip_bin", bytes_eq(base64url_decode(base64url_encode(url_src)), url_src))
+
     check("eq", bytes_eq(bytes_from_str("ab"), bytes_from_str("ab")))
     check("eq_neg", !bytes_eq(bytes_from_str("ab"), bytes_from_str("ac")))
     check("eq_len", !bytes_eq(bytes_from_str("ab"), bytes_from_str("abc")))

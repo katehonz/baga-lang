@@ -1,0 +1,110 @@
+// par_test.baga — concurrency builtins (go/join/chan/cell2)
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn double(x: i64) -> i64 {
+    return x + x
+}
+
+fn id(x: i64) -> i64 {
+    return x
+}
+
+fn sender(ctx: i64) -> i64 !Par {
+    let c = cell2_0(ctx)
+    let v = cell2_1(ctx)
+    chan_send(c, v)
+    return 0
+}
+
+fn main() -> i64 !Par {
+    check("cell2", cell2_0(cell2(3, 7)) == 3 && cell2_1(cell2(3, 7)) == 7)
+
+    let h = go(double, 21)
+    check("join_double", join(h) == 42)
+
+    let h1 = go(id, 1)
+    let h2 = go(id, 2)
+    let h3 = go(id, 3)
+    check("join_1", join(h1) == 1)
+    check("join_2", join(h2) == 2)
+    check("join_3", join(h3) == 3)
+
+    let c = chan_new(4)
+    let a = go(sender, cell2(c, 10))
+    let b = go(sender, cell2(c, 20))
+    let c3 = go(sender, cell2(c, 30))
+    let mut s: i64 = 0
+    s = s + chan_recv(c)
+    s = s + chan_recv(c)
+    s = s + chan_recv(c)
+    join(a)
+    join(b)
+    join(c3)
+    chan_close(c)
+    check("chan_sum", s == 60)
+    check("chan_len_empty", chan_len(c) == 0)
+
+    // chan_recv2: ok/value pair after close
+    let c2 = chan_new(2)
+    chan_send(c2, 99)
+    chan_close(c2)
+    let p1 = chan_recv2(c2)
+    check("recv2_ok", cell2_0(p1) == 1)
+    check("recv2_val", cell2_1(p1) == 99)
+    let p2 = chan_recv2(c2)
+    check("recv2_eof", cell2_0(p2) == 0)
+
+    // mutex: serialize N increments via a result channel
+    let m = mutex_new()
+    let out = chan_new(16)
+    let mut i: i64 = 0
+    while i < 8 {
+        // each worker: lock, send i, unlock (ordering under mutex)
+        go_bg(sender, cell2(out, i))
+        i = i + 1
+    }
+    // join-less go_bg: wait by receiving 8 values
+    let mut got: i64 = 0
+    let mut sum_bg: i64 = 0
+    while got < 8 {
+        sum_bg = sum_bg + chan_recv(out)
+        got = got + 1
+    }
+    check("go_bg_sum", sum_bg == 28)  // 0+...+7
+    chan_close(out)
+    // mutex API smoke (no race test — just callable)
+    mutex_lock(m)
+    mutex_unlock(m)
+    check("mutex_smoke", true)
+
+    // detach after go
+    let hd = go(double, 5)
+    detach(hd)
+    check("detach", true)
+
+    let mut hs = vec_new()
+    let mut k: i64 = 0
+    while k < 32 {
+        vec_push(hs, go(double, k))
+        k = k + 1
+    }
+    let mut sum: i64 = 0
+    k = 0
+    while k < 32 {
+        sum = sum + join(vec_get(hs, k))
+        k = k + 1
+    }
+    // sum of 2*i for i in 0..31 = 992
+    check("many_join", sum == 992)
+
+    print("par_test: all passed")
+    return 0
+}

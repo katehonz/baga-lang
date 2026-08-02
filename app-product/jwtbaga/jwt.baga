@@ -1,62 +1,18 @@
 // jwt.baga — JWT (RFC 7519) HS256 signer + verifier. Pure Baga.
-// Built on std/ crypto (hmac_sha256, ct_eq_bytes), bytes (base64), json, str.
+// Built on std/ crypto (hmac_sha256, ct_eq_bytes), bytes (base64url), json, str.
 //
 // HS256 only. alg:none is never produced and never accepted. Signatures are
 // arbitrary 32-byte values that may contain 0x00; because a baga str cannot
 // hold a null byte (chr(0) == ""), decoded signatures live as Vec<i64> and are
 // compared with ct_eq_bytes — never coerced to str.
+//
+// base64url lives in std/bytes (G6 closed); this library only does JWT.
 
 import "../../std/crypto/hmac.baga"
 import "../../std/crypto/ct.baga"
 import "../../std/bytes/bytes.baga"
 import "../../std/json/json.baga"
 import "../../std/str/str.baga"
-
-// ---------- base64url (RFC 4648 section 5): "-" and "_", no padding ----------
-
-fn base64url_encode(b: Vec<i64>) -> str {
-    let s = base64_encode(b)
-    let mut out = ""
-    for i in 0..len(s) {
-        let c = char_at(s, i)
-        if c == 43 {            // '+' -> '-'
-            out = concat(out, "-")
-        } else {
-            if c == 47 {        // '/' -> '_'
-                out = concat(out, "_")
-            } else {
-                if c == 61 {    // drop '=' padding
-                    out = out
-                } else {
-                    out = concat(out, chr(c))
-                }
-            }
-        }
-    }
-    return out
-}
-
-// Tolerates the missing padding: maps "-"->"+", "_"->"/", re-pads to a
-// multiple of 4, then defers to std base64_decode.
-fn base64url_decode(s: str) -> Vec<i64> {
-    let mut t = ""
-    for i in 0..len(s) {
-        let c = char_at(s, i)
-        if c == 45 {            // '-' -> '+'
-            t = concat(t, "+")
-        } else {
-            if c == 95 {        // '_' -> '/'
-                t = concat(t, "/")
-            } else {
-                t = concat(t, chr(c))
-            }
-        }
-    }
-    while len(t) % 4 != 0 {
-        t = concat(t, "=")
-    }
-    return base64_decode(t)
-}
 
 // ---------- low-level sign / verify ----------
 

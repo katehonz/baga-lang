@@ -8,7 +8,7 @@ then the working directory; every file is included at most once).
 | Module  | Contents                                            | Effects      |
 |---------|-----------------------------------------------------|--------------|
 | str     | split, find, replace, join, trim, repeat, parse_int | pure         |
-| bytes   | byte buffers, hex, base64                           | pure         |
+| bytes   | byte buffers, hex, base64, base64url                | pure         |
 | sort    | quicksort, binary search for Vec<i64>               | pure         |
 | json    | JSON parser + serializer                            | pure         |
 | os      | env, write_file, fd_read/fd_write, mem_i64          | !IO          |
@@ -17,6 +17,7 @@ then the working directory; every file is included at most once).
 | io      | buffered Reader/Writer over fds                     | !IO          |
 | net     | tcp_listen/accept/connect/read/write/close          | !Net (+!IO)  |
 | crypto  | sha256, hmac_sha256, ct_eq                          | pure         |
+| par     | go/join tasks, i64 channels (CSP) — see std/par/    | !Par         |
 
 ## Memory policy
 
@@ -31,5 +32,7 @@ with string literals).
 ## Effects policy
 
 Every std function declares its exact effects: `!IO` for file/fd operations,
-`!Net` for sockets, `!Random` for randomness, `!Time` for clock reads.
-Pure modules have no effects — visible purity in the type.
+`!Net` for sockets, `!Random` for randomness, `!Time` for clock reads,
+`!Par` for tasks/channels (`go`/`join`/`chan_*` are language builtins —
+documented under `std/par/`). Pure modules have no effects — visible purity
+in the type.

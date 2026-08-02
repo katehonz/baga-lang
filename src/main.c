@@ -35,6 +35,7 @@ static void usage(void) {
         "Употреба: baga [опции] <файл.baga>\n"
         "\n"
         "Опции:\n"
+        "  --check     Само parse + typecheck (без main, без codegen) — за библиотеки\n"
         "  --emit-c    Генерирай C код на stdout, не компилирай\n"
         "  --test-specs  Property-based тестване на ensures/requires договорите\n"
         "  --verify    Статична верификация на requires/ensures (linear i64, без цикли)\n"
@@ -146,9 +147,13 @@ int main(int argc, char **argv) {
     int emit_llvm = 0;
     int test_specs = 0;
     int verify = 0;
+    int check_only = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--emit-c") == 0) { emit_c = 1; }
+        else if (strcmp(argv[i], "--check") == 0 || strcmp(argv[i], "--lib") == 0) {
+            check_only = 1;
+        }
         else if (strcmp(argv[i], "--ast") == 0) { dump_ast = 1; }
         else if (strcmp(argv[i], "--tokens") == 0) { dump_tokens = 1; }
         else if (strcmp(argv[i], "--specs") == 0) { dump_specs = 1; }
@@ -261,12 +266,19 @@ int main(int argc, char **argv) {
     /* check */
     Checker checker;
     memset(&checker, 0, sizeof(checker));
+    /* --check / --lib: library modules need no main (G2) */
+    checker.allow_no_main = check_only;
     check_program(&checker, program);
 
     if (checker.n_errors > 0) {
         for (int i = 0; i < checker.n_errors; i++)
             fprintf(stderr, "%s: %s\n", input_path, checker.errors[i]);
         return 1;
+    }
+
+    if (check_only) {
+        printf("ok: %s\n", input_path);
+        return 0;
     }
 
     if (verify) {
@@ -309,7 +321,8 @@ int main(int argc, char **argv) {
 
         /* compile */
         char cmd[1200];
-        snprintf(cmd, sizeof(cmd), "gcc -O2 -o %s %s -lm 2>&1", bin_path, c_path);
+        /* -pthread: std concurrency (go/join/chan); harmless when unused */
+        snprintf(cmd, sizeof(cmd), "gcc -O2 -o %s %s -lm -pthread 2>&1", bin_path, c_path);
         int ret = system(cmd);
         if (ret != 0) {
             fprintf(stderr, "baga: компилацията на C кода се провали\n");

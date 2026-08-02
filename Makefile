@@ -1,6 +1,6 @@
 CC      ?= gcc
 CFLAGS  := -O2 -Wall -Wextra -std=c11 -Iinclude
-LDFLAGS := -lm
+LDFLAGS := -lm -pthread
 
 SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c src/verify.c
 OBJS := $(SRCS:.c=.o)
@@ -145,6 +145,16 @@ test: $(BIN)
 	@./$(BIN) --test-specs examples/spec_ensures_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
 		&& echo "OK: --test-specs намери контрапример" \
 		|| { echo "FAIL: --test-specs не намери контрапример"; exit 1; }
+	@echo "=== --check / --lib (без main, G2) ==="
+	@./$(BIN) --check app-product/httpdbaga/http.baga | grep -q "ok:" \
+		&& echo "OK: --check на библиотека без main" \
+		|| { echo "FAIL: --check http.baga"; exit 1; }
+	@./$(BIN) --lib app-product/jwtbaga/jwt.baga | grep -q "ok:" \
+		&& echo "OK: --lib на jwt.baga" \
+		|| { echo "FAIL: --lib jwt.baga"; exit 1; }
+	@./$(BIN) --emit-c app-product/httpdbaga/http.baga 2>&1 | grep -q "липсва функция 'main'" \
+		&& echo "OK: --emit-c без main все още изисква main (само --check го пропуска)" \
+		|| { echo "FAIL: --emit-c трябва да изисква main"; exit 1; }
 	@echo "=== http (app-product/httpdbaga) ==="
 	@./$(BIN) tests/http_test.baga > /tmp/baga_http_out.txt
 	@grep -q "http_test: all passed" /tmp/baga_http_out.txt \
@@ -155,8 +165,17 @@ test: $(BIN)
 	@grep -q "jwt_test: all passed" /tmp/baga_jwt_out.txt \
 		&& echo "OK: JWT HS256 sign/verify (golden vector)" \
 		|| { echo "FAIL: jwt_test"; cat /tmp/baga_jwt_out.txt; exit 1; }
-	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net) ==="
-	@for t in bytes hmac io json os random sha256 sort str tcp time; do \
+	@echo "=== par (go/join/chan, !Par) ==="
+	@./$(BIN) examples/par.baga > /tmp/baga_par_out.txt
+	@printf "49\n81\n42\n" | diff - /tmp/baga_par_out.txt > /dev/null \
+		&& echo "OK: go/join fan-out" \
+		|| { echo "FAIL: par"; cat /tmp/baga_par_out.txt; exit 1; }
+	@./$(BIN) examples/par_chan.baga > /tmp/baga_par_chan_out.txt
+	@printf "240\n" | diff - /tmp/baga_par_chan_out.txt > /dev/null \
+		&& echo "OK: chan fan-in" \
+		|| { echo "FAIL: par_chan"; cat /tmp/baga_par_chan_out.txt; exit 1; }
+	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net/par) ==="
+	@for t in bytes hmac io json os random sha256 sort str tcp time par; do \
 		./$(BIN) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
 			&& grep -q "all passed" /tmp/baga_std_out.txt \
 			&& echo "OK: std/$$t" \

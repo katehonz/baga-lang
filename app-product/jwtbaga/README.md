@@ -13,15 +13,14 @@ This product is also a probe of the language — see [`gaps.md`](gaps.md).
 
 | File | What |
 |------|------|
-| `jwt.baga` | the library: base64url, sign/verify, encode/decode/claim (all pure) |
+| `jwt.baga` | the library: sign/verify, encode/decode/claim (all pure; base64url from std/bytes) |
 | `server.baga` | demo auth server (issue / verify / protected) |
 | `gaps.md` | language gaps found, with evidence and triage |
 
 ## API (all pure)
 
 ```baga
-fn base64url_encode(b: Vec<i64>) -> str        // RFC 4648 §5, no padding
-fn base64url_decode(s: str) -> Vec<i64>        // tolerant of missing padding
+// base64url_encode / base64url_decode live in std/bytes (G6 closed)
 
 fn jwt_sign(key: str, msg: str) -> str         // base64url(HMAC-SHA256(key,msg))
 fn jwt_verify(key: str, msg: str, sig: str) -> bool   // constant-time
@@ -32,8 +31,8 @@ fn jwt_claim(token: str, name: str) -> str            // raw claim text; "" if a
 ```
 
 **Binary-safety note.** A decoded signature is 32 arbitrary bytes and may
-contain `0x00`, which a Baga `str` cannot hold (`chr(0) == ""`). So signatures
-stay `Vec<i64>` and are compared with `ct_eq_bytes` — never coerced to `str`.
+contain `0x00`. Prefer the first-class `bytes` type (G5) for new binary code;
+this library still uses `Vec<i64>` for the HMAC comparison with `ct_eq_bytes`.
 `jwt_decode` returns the payload as a `str` safely because JSON text has no null
 bytes. See `gaps.md` G5.
 

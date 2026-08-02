@@ -1,11 +1,14 @@
 // server.baga — demo HTTP server built on http.baga.
 // Run:  ./baga app-product/httpdbaga/server.baga   (listens on :8080)
 //       PORT=9000 ./baga app-product/httpdbaga/server.baga
-// One connection at a time, Connection: close. Ctrl-C to stop.
+// Concurrent by default: each connection is handled in go_bg (OS thread).
+// Set BAGA_SYNC=1 for single-threaded (one connection at a time).
+// Connection: close. Ctrl-C to stop.
 //
 // Routes:
 //   GET  /health -> 200 {"status":"ok"}
 //   GET  /       -> 200 JSON echo of {method, path}
+//   GET  /hello?name=X -> 200 {"hello":"X"}   (query_param demo, G7)
 //   POST /echo   -> 200 JSON echo of the request body
 //   *            -> 404 {"error":"not found"}
 
@@ -15,7 +18,7 @@ import "../../std/os/os.baga"
 fn handle(fd: i64) -> i64 !IO !Net {
     let req = http_read_request(fd)?
     let method = http_method(req)
-    let path = http_path(req)
+    let path = http_path_only(req)
     if method == "GET" && path == "/health" {
         return http_respond(fd, http_json_response(200, "{\"status\":\"ok\"}"))?
     }
@@ -27,23 +30,48 @@ fn handle(fd: i64) -> i64 !IO !Net {
         body = concat(body, "\"}")
         return http_respond(fd, http_json_response(200, body))?
     }
+    if method == "GET" && path == "/hello" {
+        let mut name = http_query_param(req, "name")
+        if name == "" {
+            name = "bagatur"
+        }
+        let body = concat(concat("{\"hello\":\"", name), "\"}")
+        return http_respond(fd, http_json_response(200, body))?
+    }
     if method == "POST" && path == "/echo" {
         return http_respond(fd, http_json_response(200, http_body(req)))?
     }
     return http_respond(fd, http_json_response(404, "{\"error\":\"not found\"}"))?
 }
 
-fn main() -> i64 !Net !IO {
+// Worker for go_bg: handle one connection then close the fd.
+fn handle_conn(fd: i64) -> i64 !IO !Net {
+    handle(fd)?
+    tcp_close(fd)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par {
     let mut port: i64 = 8080
     if env("PORT") != "" {
         port = parse_int(env("PORT"))
     }
+    let sync = env("BAGA_SYNC")
     let listener = tcp_listen(port)?
-    print(concat("httpdbaga listening on :", int_to_str(port)))
+    if sync == "1" {
+        print(concat("httpdbaga listening on :", concat(int_to_str(port), " (sync)")))
+    } else {
+        print(concat("httpdbaga listening on :", concat(int_to_str(port), " (go_bg per connection)")))
+    }
     while true {
         let fd = tcp_accept(listener)?
-        handle(fd)?
-        tcp_close(fd)?
+        if sync == "1" {
+            handle(fd)?
+            tcp_close(fd)?
+        } else {
+            // Fire-and-forget OS thread — classic cloud accept loop.
+            go_bg(handle_conn, fd)
+        }
     }
     return 0
 }

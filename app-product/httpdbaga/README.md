@@ -3,7 +3,8 @@
 A minimal HTTP/1.1 request parser + response serializer for Baga, built only on
 `std/` (`net`, `io`, `os`, `str`). One request per connection
 (`Connection: close`); no keep-alive, no chunked encoding, no TLS, no router —
-dispatch is plain `if` chains (see `server.baga`).
+dispatch is plain `if` chains (see `server.baga`). The demo server handles
+connections concurrently via `go_bg` (set `BAGA_SYNC=1` for single-threaded).
 
 This is the first reusable application-layer library under `app-product/` and
 the base `jwtbaga` will sit on. It is also a deliberate probe of the language —
@@ -25,7 +26,10 @@ struct Response { status: i64; hkeys, hvals: Vec<str>; body: str }
 
 fn http_read_request(fd: i64) -> Request !IO !Net   // "" method = malformed/EOF
 fn http_method(r: Request) -> str
-fn http_path(r: Request) -> str
+fn http_path(r: Request) -> str              // raw target, may include ?query
+fn http_path_only(r: Request) -> str         // path without ?query (G7)
+fn http_query_param(r: Request, name: str) -> str  // "" if absent (G7)
+fn query_param(path: str, name: str) -> str  // same, from a raw path string
 fn http_body(r: Request) -> str
 fn http_header(r: Request, name: str) -> str        // case-insensitive, "" if absent
 
@@ -42,11 +46,12 @@ user headers.
 
 ```bash
 ./baga --emit-c app-product/httpdbaga/server.baga > /tmp/httpd.c
-gcc -O2 -Iinclude -o /tmp/httpd /tmp/httpd.c -lm
+gcc -O2 -Iinclude -o /tmp/httpd /tmp/httpd.c -lm -pthread
 PORT=8080 /tmp/httpd &
 
 curl localhost:8080/health                 # {"status":"ok"}
 curl localhost:8080/                        # {"method":"GET","path":"/"}
+curl 'localhost:8080/hello?name=baga'      # {"hello":"baga"}
 curl -X POST -d '{"hi":"baga"}' localhost:8080/echo   # {"hi":"baga"}
 curl -i localhost:8080/nope                 # HTTP/1.1 404 Not Found
 ```

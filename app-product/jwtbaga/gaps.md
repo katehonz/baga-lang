@@ -30,11 +30,10 @@ only because JSON has no NUL). See `jwt.baga`.
 this; the `Vec<i64>` plumbing is verbose and the `str`/`bytes` boundary is
 invisible in types (a `bytes_to_str` on signature bytes would silently corrupt).
 
-**Verdict.** Roadmap candidate. Two directions: (a) a distinct `bytes` type
-(length-prefixed, binary-safe) with explicit conversions, or (b) make `str`
-length-prefixed internally so `chr(0)` is a real byte. (a) is the cleaner, safer
-design; (b) is the smaller change but breaks the C-FFI `char*` contract that
-`extern fn` relies on.
+**Verdict.** **Closed** (core type). First-class `bytes` with hex literals
+`x"..."` and builtins (`bytes_len`/`at`/`slice`/`concat`, `bytes_of_str` /
+`str_of_bytes`, `hex_encode`/`hex_decode`). Migrating std/crypto and jwt off
+`Vec<i64>` remains a follow-up.
 
 ## G6 — base64url (RFC 4648 §5) absent from std/bytes
 
@@ -50,8 +49,8 @@ std base64.
 
 **Severity.** Low-medium. Recurs for any JWT/JWS/URL-token consumer.
 
-**Verdict.** Roadmap candidate (small, std): add `base64url_encode`/
-`base64url_decode` to `std/bytes/bytes.baga`, then delete the copies here.
+**Verdict.** **Closed.** `base64url_encode` / `base64url_decode` live in
+`std/bytes/bytes.baga`; the local copies in `jwt.baga` were deleted.
 
 ## G7 — no query-string parsing; `http_path` includes `?query`
 
@@ -61,12 +60,12 @@ string; there is no std/app helper to read a parameter. (Cross-ref httpdbaga.)
 **Evidence.** `server.baga` `/token?sub=NAME` needed a hand-written
 `query_param(path, name)` (split on `?`, then `&`, then `name=` prefix).
 
-**Workaround.** Local `query_param` helper in `server.baga`.
+**Workaround.** Local `query_param` helper in `server.baga` (was).
 
 **Severity.** Low-medium. Every web app rewrites this.
 
-**Verdict.** Roadmap candidate (small): a `query_param` in httpdbaga (or a
-`std/url`), decided when a second consumer appears.
+**Verdict.** **Closed.** `http_query_param` / `query_param` / `http_path_only`
+live in `httpdbaga/http.baga`; jwt server uses them.
 
 ## G8 — `http.baga` reason-phrase table was incomplete (401)
 
@@ -107,8 +106,8 @@ consumer wants them. Not done now (YAGNI for one demo).
 
 | Gap | Verdict | Next step |
 |-----|---------|-----------|
-| G5 binary-safe str / bytes type | **roadmap (design)** | spec a `bytes` type vs length-prefixed `str` |
-| G6 base64url in std/bytes | **roadmap (small)** | add to std, delete the copy here |
-| G7 query-string parsing | **roadmap (small)** | `query_param` in httpdbaga on 2nd consumer |
+| G5 binary-safe str / bytes type | **closed** | first-class `bytes` + hex literals `x"..."` |
+| G6 base64url in std/bytes | **closed** | `base64url_encode`/`decode` in `std/bytes`; jwt uses them |
+| G7 query-string parsing | **closed** | `http_query_param` / `http_path_only` in http.baga |
 | G8 incomplete reason table | app-specific | fixed in http.baga (401 added) |
 | G9 typed claim accessors | roadmap (small) / YAGNI-now | add on 2nd consumer |

@@ -469,32 +469,91 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             return r;
         }
 
-        /* string / io builtins */
-        struct { const char *name; TypeKind ret; int nparams; int has_io; } builtins[] = {
-            {"len",       TYPE_I64, 1, 0},
-            {"char_at",   TYPE_I64, 2, 0},
-            {"substr",    TYPE_STR, 3, 0},
-            {"concat",    TYPE_STR, 2, 0},
-            {"read_file", TYPE_STR, 1, 1},
-            {"chr",       TYPE_STR, 1, 0},
-            {"ord",       TYPE_I64, 1, 0},
-            {"str_eq",    TYPE_BOOL, 2, 0},
-            {"arg_count", TYPE_I64, 0, 0},
-            {"arg",       TYPE_STR, 1, 0},
-            {"exit",      TYPE_VOID, 1, 0},
-            {"eprintln",  TYPE_VOID, 1, 0},
-            {"arena_new",   TYPE_I64, 0, 0},
-            {"arena_alloc", TYPE_I64, 2, 0},
-            {"arena_reset", TYPE_VOID, 1, 0},
-            {"arena_free",  TYPE_VOID, 1, 0},
-            {"bytes_len",   TYPE_I64, 1, 0},
-            {"bytes_at",    TYPE_I64, 2, 0},
-            {"bytes_slice", TYPE_BYTES, 3, 0},
-            {"bytes_concat", TYPE_BYTES, 2, 0},
-            {"bytes_of_str", TYPE_BYTES, 1, 0},
-            {"str_of_bytes", TYPE_STR, 1, 0},
-            {"hex_encode",  TYPE_STR, 1, 0},
-            {"hex_decode",  TYPE_BYTES, 1, 0},
+        /* go / go_bg(fn, arg) — spawn OS thread; fn is a bare function identifier */
+        if (strcmp(name, "go") == 0 || strcmp(name, "go_bg") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 2) {
+                check_error(ctx, n->pos, "'%s' очаква 2 аргумента (fn, arg), получих %d",
+                            name, n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            Node *fnarg = n->args.data[0];
+            if (fnarg->kind != NODE_IDENT) {
+                check_error(ctx, n->pos, "'%s': първият аргумент трябва да е име на функция", name);
+                return type_new(TYPE_ERROR);
+            }
+            Type *wft = find_fn(ctx, fnarg->name);
+            if (!wft || wft->kind != TYPE_FN) {
+                check_error(ctx, n->pos, "'%s': '%s' не е функция", name, fnarg->name);
+                return type_new(TYPE_ERROR);
+            }
+            if (wft->nparams != 1 || !wft->params[0] || wft->params[0]->kind != TYPE_I64) {
+                check_error(ctx, n->pos,
+                    "'%s': worker '%s' трябва да е fn(i64) -> i64", name, fnarg->name);
+                return type_new(TYPE_ERROR);
+            }
+            if (!wft->ret || wft->ret->kind != TYPE_I64) {
+                check_error(ctx, n->pos,
+                    "'%s': worker '%s' трябва да връща i64", name, fnarg->name);
+                return type_new(TYPE_ERROR);
+            }
+            Type *at = n->args.data[1]->type;
+            if (at && at->kind != TYPE_I64 && at->kind != TYPE_ERROR) {
+                check_error(ctx, n->pos, "'%s': arg е %s, очаквах i64", name, type_str(at));
+            }
+            Type *ret = type_new(TYPE_I64);
+            type_add_effect(ret, "Par");
+            /* worker effects bubble to the spawn site (cloud handlers may do !IO) */
+            if (wft->ret) type_merge_effects(ret, wft->ret);
+            if (ctx->cur_effects) {
+                type_add_effect(ctx->cur_effects, "Par");
+                if (wft->ret) type_merge_effects(ctx->cur_effects, wft->ret);
+            }
+            return ret;
+        }
+
+        /* string / io / par builtins */
+        struct { const char *name; TypeKind ret; int nparams; int has_io; int has_par; } builtins[] = {
+            {"len",       TYPE_I64, 1, 0, 0},
+            {"char_at",   TYPE_I64, 2, 0, 0},
+            {"substr",    TYPE_STR, 3, 0, 0},
+            {"concat",    TYPE_STR, 2, 0, 0},
+            {"read_file", TYPE_STR, 1, 1, 0},
+            {"chr",       TYPE_STR, 1, 0, 0},
+            {"ord",       TYPE_I64, 1, 0, 0},
+            {"str_eq",    TYPE_BOOL, 2, 0, 0},
+            {"arg_count", TYPE_I64, 0, 0, 0},
+            {"arg",       TYPE_STR, 1, 0, 0},
+            {"exit",      TYPE_VOID, 1, 0, 0},
+            {"eprintln",  TYPE_VOID, 1, 0, 0},
+            {"arena_new",   TYPE_I64, 0, 0, 0},
+            {"arena_alloc", TYPE_I64, 2, 0, 0},
+            {"arena_reset", TYPE_VOID, 1, 0, 0},
+            {"arena_free",  TYPE_VOID, 1, 0, 0},
+            {"bytes_len",   TYPE_I64, 1, 0, 0},
+            {"bytes_at",    TYPE_I64, 2, 0, 0},
+            {"bytes_slice", TYPE_BYTES, 3, 0, 0},
+            {"bytes_concat", TYPE_BYTES, 2, 0, 0},
+            {"bytes_of_str", TYPE_BYTES, 1, 0, 0},
+            {"str_of_bytes", TYPE_STR, 1, 0, 0},
+            {"hex_encode",  TYPE_STR, 1, 0, 0},
+            {"hex_decode",  TYPE_BYTES, 1, 0, 0},
+            /* concurrency (!Par) — cloud-native fan-out / CSP channels */
+            {"join",        TYPE_I64, 1, 0, 1},
+            {"detach",      TYPE_I64, 1, 0, 1},
+            {"chan_new",    TYPE_I64, 1, 0, 1},
+            {"chan_send",   TYPE_I64, 2, 0, 1},
+            {"chan_recv",   TYPE_I64, 1, 0, 1},
+            {"chan_recv2",  TYPE_I64, 1, 0, 1}, /* cell2(ok, value) */
+            {"chan_close",  TYPE_I64, 1, 0, 1},
+            {"chan_len",    TYPE_I64, 1, 0, 1},
+            {"mutex_new",   TYPE_I64, 0, 0, 1},
+            {"mutex_lock",  TYPE_I64, 1, 0, 1},
+            {"mutex_unlock",TYPE_I64, 1, 0, 1},
+            /* heap pair — pure context packing for single-arg go workers */
+            {"cell2",       TYPE_I64, 2, 0, 0},
+            {"cell2_0",     TYPE_I64, 1, 0, 0},
+            {"cell2_1",     TYPE_I64, 1, 0, 0},
         };
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {
@@ -503,6 +562,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                 if (builtins[bi].has_io) {
                     type_add_effect(ret, "IO");
                     if (ctx->cur_effects) type_add_effect(ctx->cur_effects, "IO");
+                }
+                if (builtins[bi].has_par) {
+                    type_add_effect(ret, "Par");
+                    if (ctx->cur_effects) type_add_effect(ctx->cur_effects, "Par");
                 }
                 return ret;
             }
@@ -1068,8 +1131,8 @@ void check_program(Checker *c, Node *program) {
             check_fn(&ctx, item);
     }
 
-    /* check that main exists */
-    if (!find_fn(&ctx, "main")) {
+    /* check that main exists (skipped for --check / library mode) */
+    if (!c->allow_no_main && !find_fn(&ctx, "main")) {
         SrcPos pos = { 1, 1 };
         check_error(&ctx, pos, "липсва функция 'main'");
     }

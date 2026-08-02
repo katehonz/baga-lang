@@ -1,0 +1,23 @@
+// par.baga — M1 concurrency: go/join (OS threads) + !Par effect
+// Cloud-native pattern: fan-out pure workers, join results.
+
+fn square(x: i64) -> i64 {
+    return x * x
+}
+
+fn add_one(x: i64) -> i64 {
+    return x + 1
+}
+
+fn main() -> i64 !Par {
+    let h1 = go(square, 7)
+    let h2 = go(square, 9)
+    let h3 = go(add_one, 41)
+    let a = join(h1)
+    let b = join(h2)
+    let c = join(h3)
+    print(a)   // 49
+    print(b)   // 81
+    print(c)   // 42
+    return a + b + c
+}

@@ -18,7 +18,8 @@ fn reader_new(fd: i64) -> Reader {
     return Reader { fd: fd }
 }
 
-// Read one line without the trailing "\n". "" at EOF (also "" for an
+// Read one line without the trailing "\n" and without a trailing "\r"
+// (so CRLF and LF both yield the same content). "" at EOF (also "" for an
 // empty line — use read_n when the distinction matters).
 fn read_line(r: Reader) -> str !IO {
     let mut line = ""
@@ -29,6 +30,12 @@ fn read_line(r: Reader) -> str !IO {
             running = false
         } else {
             if ch == "\n" {
+                // strip trailing CR so HTTP/CRLF protocols don't leave "\r"
+                if len(line) > 0 {
+                    if char_at(line, len(line) - 1) == 13 {
+                        line = substr(line, 0, len(line) - 1)
+                    }
+                }
                 running = false
             } else {
                 line = concat(line, ch)

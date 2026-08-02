@@ -443,6 +443,7 @@ Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename)
 typedef struct {
     char errors[BAGA_MAX_ERRORS][256];
     int  n_errors;
+    int  allow_no_main; /* 1 = library / --check mode: do not require main */
 } Checker;
 
 void check_program(Checker *c, Node *program);
