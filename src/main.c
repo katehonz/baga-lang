@@ -30,7 +30,7 @@ static char *read_file(const char *path, int *out_len) {
 
 static void usage(void) {
     fprintf(stderr,
-        "Бага — компилатор, фаза 1\n"
+        "Бага — компилатор %s\n"
         "\n"
         "Употреба: baga [опции] <файл.baga>\n"
         "\n"
@@ -38,14 +38,20 @@ static void usage(void) {
         "  --check     Само parse + typecheck (без main, без codegen) — за библиотеки\n"
         "  --emit-c    Генерирай C код на stdout, не компилирай\n"
         "  --test-specs  Property-based тестване на ensures/requires договорите\n"
-        "  --verify    Статична верификация на requires/ensures (linear i64, без цикли)\n"
+        "  --verify    Статична верификация на requires/ensures (M0–M13 fragment)\n"
         "  --json      Машинно-четим JSON изход (с --verify)\n"
         "  --ast       Изпечатвай AST (debug)\n"
         "  --tokens    Изпечатвай токени (debug)\n"
-        "  --help      Тази помощ\n"
+        "  --version, -V  Версия на компилатора\n"
+        "  --help, -h  Тази помощ\n"
         "\n"
-        "По подразбиране: генерира C, компилира с gcc, изпълнява.\n"
+        "По подразбиране: генерира C, компилира с gcc, изпълнява.\n",
+        BAGA_VERSION
     );
+}
+
+static void print_version(void) {
+    printf("baga %s\n", BAGA_VERSION);
 }
 
 /* named type for the string vectors used by import expansion — each
@@ -162,6 +168,10 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--test-specs") == 0) { test_specs = 1; }
         else if (strcmp(argv[i], "--verify") == 0) { verify = 1; }
         else if (strcmp(argv[i], "--json") == 0) { verify_set_json(1); }
+        else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
+            print_version();
+            return 0;
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
             return 0;

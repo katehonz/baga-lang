@@ -1,5 +1,7 @@
 # Baga ⚔️
 
+**Version [0.2.0](VERSION)** · [Changelog](CHANGELOG.md)
+
 **A programming language for the age of AI.** Spec-first verification. Effects as type dimensions. Automatically extracted proofs.
 
 > *"The question is not 'what is new'. The question is 'what has not been glued together yet'."*
