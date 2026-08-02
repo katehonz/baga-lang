@@ -221,6 +221,7 @@ baga/
 - [Теория и Математика (BG)](docs/theory-bg.md) — Типове, ефекти, Хоар, **FM / Farkas / нелинейни обвивки (M0–M13)** — не се учи в обикновен SE курс
 - [Thesis note M13](docs/thesis-m13-nonlinear-fragment.md) — research write-up of the nonlinear + bitwise fragment
 - [Thesis note M14](docs/thesis-m14-par-fragment.md) — fork–join determinism + handle protocols (concurrency in `--verify`)
+- [Thesis note M15](docs/thesis-m15-arith-safety.md) — the ℤ-vs-i64 bridge (arithmetic safety) + the loop-havoc soundness fix
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen
@@ -241,6 +242,7 @@ baga/
 | 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
 | 10 | LLVM backend `!Par` parity (`libbaga_par.so` + lli `-load`) | ✅ |
 | 11 | `!Par` in `--verify`: fork–join determinism + handle protocols (M14) | ✅ |
+| 12 | Arithmetic safety: ℤ-vs-i64 bridge + loop-havoc soundness fix (M15) | ✅ |
 
 ### Static verification (`--verify`)
 
@@ -395,6 +397,23 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   `pool_map`, and effectful workers stay honestly outside. Examples:
   `par_join.baga`, `par_join_bad.baga`, `par_detach_bad.baga`,
   `par_chan.baga`. Scientific note: `docs/thesis-m14-par-fragment.md`.
+
+- **M15** — **arithmetic safety: the ℤ-vs-i64 bridge**. The verifier reasons
+  in idealized ℤ but the runtime is i64; M15 emits one obligation per
+  arithmetic operation (`+ - * -x / % <<`) and proves it cannot overflow on
+  its path (exact FM bound search; products via tightest provable |factor|
+  bounds, compared in `__int128`), or refutes it with a concrete
+  large-magnitude witness — `abs(INT64_MIN)`, `n + 1` at `n = INT64_MAX`,
+  `n / m` at `m = 0`. When every arith obligation of a function is PROVEN,
+  the idealized model and the runtime coincide and the ensures verdicts are
+  unconditional; otherwise the output says so explicitly. Same milestone
+  shipped two soundness fixes found by the new analysis: **loop havoc**
+  (variables assigned in a `while` body are havoced before the invariant is
+  assumed — before, stale pre-loop values made invariants vacuous and could
+  falsely PROVE; see `loop_havoc.baga`) and an INT64_MIN-unsafe rational
+  core (`rat_*` now use `__int128`; `fm_sat` bails out conservatively on
+  overflow). Examples: `ovf_add.baga`, `ovf_mul.baga`, `div_zero.baga`,
+  `loop_havoc.baga`. Scientific note: `docs/thesis-m15-arith-safety.md`.
 
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
 supported. `--proofs` surfaces the verifier's established facts: real

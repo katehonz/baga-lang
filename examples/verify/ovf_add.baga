@@ -1,0 +1,36 @@
+// M15: arithmetic safety — the ℤ-vs-i64 bridge.
+// inc_bounded: 0 <= n <= 100 ⇒ n + 1 provably cannot overflow.
+// inc_unbounded: n >= 0 leaves n + 1 open to n = INT64_MAX → REFUTED
+// with the exact witness.
+
+spec inc_bounded {
+    input:
+        n: i64
+    output: i64
+    requires: 0 <= n, n <= 100
+    ensures:
+        output >= 1
+}
+
+fn inc_bounded(n: i64) -> i64 {
+    return n + 1
+}
+
+spec inc_unbounded {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 1
+}
+
+fn inc_unbounded(n: i64) -> i64 {
+    return n + 1
+}
+
+fn main() {
+    print(inc_bounded(41))    // 42
+    print(inc_unbounded(41))  // 42
+}

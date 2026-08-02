@@ -1,0 +1,36 @@
+// M15: product overflow — bounded factors are proven safe via exact FM
+// bound search (|a|,|b| <= 10^9 ⇒ a*b <= 10^18 < 2^63); unbounded factors
+// are REFUTED with large-magnitude witnesses.
+
+spec mul_bounded {
+    input:
+        a: i64
+        b: i64
+    output: i64
+    requires: 0 - 1000000000 <= a, a <= 1000000000, 0 - 1000000000 <= b, b <= 1000000000
+    // no ensures: this spec exists to show the arithmetic-safety verdict —
+    // |a|,|b| <= 10^9 ⇒ a*b fits i64, proven by exact FM bound search
+}
+
+fn mul_bounded(a: i64, b: i64) -> i64 {
+    return a * b
+}
+
+spec mul_unbounded {
+    input:
+        a: i64
+        b: i64
+    output: i64
+    requires: a >= 0, b >= 0
+    ensures:
+        output >= 0
+}
+
+fn mul_unbounded(a: i64, b: i64) -> i64 {
+    return a * b
+}
+
+fn main() {
+    print(mul_bounded(6, 7))     // 42
+    print(mul_unbounded(6, 7))   // 42
+}

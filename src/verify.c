@@ -25,45 +25,46 @@
 typedef struct { int64_t num, den; int overflow; } Rat;
 
 static int64_t v_gcd(int64_t a, int64_t b) {
-    if (a < 0) a = -a;
-    if (b < 0) b = -b;
-    while (b) { int64_t t = a % b; a = b; b = t; }
-    return a ? a : 1;
+    /* INT64_MIN-safe: work in __int128 so |INT64_MIN| is representable */
+    __int128 x = a < 0 ? -(__int128)a : a;
+    __int128 y = b < 0 ? -(__int128)b : b;
+    while (y) { __int128 t = x % y; x = y; y = t; }
+    return x ? (int64_t)x : 1;
 }
 
 static Rat rat_bad(void) { Rat r; r.num = 0; r.den = 1; r.overflow = 1; return r; }
 
 static Rat rat_mk(int64_t n, int64_t d) {
     if (d == 0) return rat_bad();
-    if (d < 0) { n = -n; d = -d; }
-    int64_t g = v_gcd(n < 0 ? -n : n, d);
+    if (d < 0) {
+        if (n == INT64_MIN || d == INT64_MIN) return rat_bad();
+        n = -n; d = -d;
+    }
+    int64_t g = v_gcd(n, d);
     Rat r; r.num = n / g; r.den = d / g; r.overflow = 0;
     return r;
 }
 static Rat rat_int(int64_t n) { Rat r; r.num = n; r.den = 1; r.overflow = 0; return r; }
 static Rat rat_zero(void) { return rat_int(0); }
 
-static Rat rat_neg(Rat a) { if (a.overflow) return rat_bad(); Rat r = a; r.num = -r.num; return r; }
+static Rat rat_neg(Rat a) { if (a.overflow || a.num == INT64_MIN) return rat_bad(); Rat r = a; r.num = -r.num; return r; }
 
 static Rat rat_add(Rat a, Rat b) {
     if (a.overflow || b.overflow || a.den == 0 || b.den == 0) return rat_bad();
     int64_t g = v_gcd(a.den, b.den);
     int64_t l1 = a.den / g, l2 = b.den / g;
-    int64_t an = a.num < 0 ? -a.num : a.num;
-    int64_t bn = b.num < 0 ? -b.num : b.num;
-    if (l2 != 0 && an > INT64_MAX / l2) return rat_bad();
-    if (l1 != 0 && bn > INT64_MAX / l1) return rat_bad();
-    if (l2 != 0 && a.den > INT64_MAX / l2) return rat_bad();
-    return rat_mk(a.num * l2 + b.num * l1, a.den * l2);
+    __int128 n = (__int128)a.num * l2 + (__int128)b.num * l1;
+    __int128 d = (__int128)a.den * l2;
+    if (n > INT64_MAX || n < INT64_MIN || d > INT64_MAX) return rat_bad();
+    return rat_mk((int64_t)n, (int64_t)d);
 }
 static Rat rat_sub(Rat a, Rat b) { return rat_add(a, rat_neg(b)); }
 static Rat rat_mul(Rat a, Rat b) {
     if (a.overflow || b.overflow || a.den == 0 || b.den == 0) return rat_bad();
-    int64_t an = a.num < 0 ? -a.num : a.num;
-    int64_t bn = b.num < 0 ? -b.num : b.num;
-    if (bn != 0 && an > INT64_MAX / bn) return rat_bad();
-    if (b.den != 0 && a.den > INT64_MAX / b.den) return rat_bad();
-    return rat_mk(a.num * b.num, a.den * b.den);
+    __int128 n = (__int128)a.num * b.num;
+    __int128 d = (__int128)a.den * b.den;
+    if (n > INT64_MAX || n < INT64_MIN || d > INT64_MAX) return rat_bad();
+    return rat_mk((int64_t)n, (int64_t)d);
 }
 /* -1 if a<b, 0 if equal, 1 if a>b */
 static int rat_cmp(Rat a, Rat b) {
@@ -577,6 +578,16 @@ static Constraint combine(Bound *lo, Bound *up) {
 }
 
 static int fm_sat(ConsList *sys) {
+    /* Overflow bail-out: exact rational arithmetic is only exact while it
+     * fits int64. An overflowed constraint cannot be trusted — answer SAT
+     * ("cannot decide"), which is the conservative direction for every
+     * verdict: fewer proofs, never a false proof or a false refutation. */
+    for (int i = 0; i < sys->n; i++) {
+        Constraint *c = &sys->c[i];
+        if (c->lhs.overflow || c->lhs.c.overflow || c->rhs.overflow) { cl_free(sys); return 1; }
+        for (int j = 0; j < c->lhs.n; j++)
+            if (c->lhs.terms[j].coeff.overflow) { cl_free(sys); return 1; }
+    }
     /* M7: integer tightening. Over ℤ-valued variables with integer
      * coefficients,  lhs < rhs  ⟺  lhs <= rhs - 1  exactly. Tightening every
      * integer strict inequality at entry makes the rational FM exact for the
@@ -720,10 +731,10 @@ static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
     }
 }
 
-/* M8/M9/M13: pin every non-abstract var (__c/__p/__d/__m/__b excluded) to its
- * candidate value in sys; then derive every product/div/mod/bit var whose
- * factors are fully pinned and pin it too. Two passes so products of products
- * resolve. */
+/* M8/M9/M13: pin every non-abstract var (__c/__p/__d/__m/__b and M15's
+ * __hv/__hvl havoc vars excluded) to its candidate value in sys; then derive
+ * every product/div/mod/bit var whose factors are fully pinned and pin it
+ * too. Two passes so products of products resolve. */
 static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int nv, ProdList *prods) {
     int pcap = nv + (prods ? prods->n : 0) + 1;
     IBind *pins = calloc((size_t)pcap, sizeof(IBind));
@@ -731,7 +742,7 @@ static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int
     for (int i = 0; i < nv; i++) {
         if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0 ||
             strncmp(vars[i], "__d", 3) == 0 || strncmp(vars[i], "__m", 3) == 0 ||
-            strncmp(vars[i], "__b", 3) == 0) continue;
+            strncmp(vars[i], "__b", 3) == 0 || strncmp(vars[i], "__hv", 4) == 0) continue;
         pins[np].name = vars[i]; pins[np].val = assign[i].val; np++;
         Lin l = lin_var(vars[i]);
         l.c = rat_sub(l.c, rat_int(assign[i].val));
@@ -936,8 +947,9 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
  * ensures mentioning vec_len resolve against the right state.
  * For bounds obligations: path = state path (requires ∧ branch path);
  * bound = the negated in-range condition (¬(0 <= idx < len)). */
-typedef struct { ConsList path; ConsList bound; ConsList read_cons; Sym ret; VLenMap vlen; ProdList prods; int bad; int kind; char *label; } Obligation;
+typedef struct { ConsList path; ConsList bound; ConsList read_cons; Sym ret; VLenMap vlen; ProdList prods; int bad; int kind; char *label; int akind; Lin aux1, aux2; } Obligation;
 typedef struct { Obligation *o; int n, cap; } Obligations;
+static void prods_free(ProdList *p);   /* defined below */
 static void obl_push(Obligations *ob, ConsList path, ConsList bound, ConsList read_cons, Sym ret, VLenMap *vlen, ReadsList *reads, int bad, int kind, const char *label) {
     if (ob->n == ob->cap) { ob->cap = ob->cap ? ob->cap * 2 : 4; ob->o = realloc(ob->o, (size_t)ob->cap * sizeof(Obligation)); }
     ob->o[ob->n].path = path; ob->o[ob->n].bound = bound; ob->o[ob->n].read_cons = read_cons; ob->o[ob->n].ret = ret;
@@ -945,7 +957,17 @@ static void obl_push(Obligations *ob, ConsList path, ConsList bound, ConsList re
     if (reads) prods_clone_into(&ob->o[ob->n].prods, reads);
     else { ob->o[ob->n].prods.p = NULL; ob->o[ob->n].prods.n = 0; ob->o[ob->n].prods.cap = 0; }
     ob->o[ob->n].bad = bad;
-    ob->o[ob->n].kind = kind; ob->o[ob->n].label = label ? strdup(label) : NULL; ob->n++;
+    ob->o[ob->n].kind = kind; ob->o[ob->n].label = label ? strdup(label) : NULL;
+    ob->o[ob->n].akind = 0; lin_init(&ob->o[ob->n].aux1); lin_init(&ob->o[ob->n].aux2);
+    ob->n++;
+}
+
+/* M15: obligation free helper (all owned fields). */
+static void obl_free(Obligation *o) {
+    cl_free(&o->path); cl_free(&o->bound); cl_free(&o->read_cons);
+    lin_free(&o->ret.lin); vlen_free(&o->vlen); prods_free(&o->prods);
+    lin_free(&o->aux1); lin_free(&o->aux2);
+    free(o->label);
 }
 
 /* Witness search for a bounds obligation: an assignment satisfying the
@@ -1472,6 +1494,7 @@ static int has_unsupported(Node *n) { return has_unsupported_rec(n, 0, 0); }
 static State clone_state_with(State *cur, Formula *add);
 static void inject_prod_axioms(State *st);
 static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid, Node *spec);
+static void scan_arith_expr(Node *e, State *st, Obligations *ob);   /* M15 */
 
 /* Prove one invariant holds in every body-final state, given the head state
  * (invariant ∧ condition on entry). UNSAT per DNF branch ⇒ holds. */
@@ -1512,12 +1535,74 @@ static int check_preservation(State *head, Node *inv, States *body_final) {
  * Returns 1 iff the invariant is trustworthy (init ∧ preservation proven). */
 static void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax);
 static int has_elem_ref(Node *e);
+
+/* Soundness fix (M15): variables assigned or let-bound inside a loop body
+ * must be HAVOCED before the invariant is assumed — otherwise the head and
+ * post-loop states keep the STALE pre-loop values and the invariant is
+ * vacuous (false proofs; e.g. a loop returning -n "proved" output >= 0).
+ * With havoc the Hoare rule is the real one: init on the entry state;
+ * preservation over fresh values constrained only by invariant ∧ cond;
+ * post-loop invariant ∧ ¬cond over fresh values. */
+static int g_havoc_ctr = 0;
+
+static void collect_assigned_rec(Node *n, const char ***names, int *nn, int *cap) {
+    if (!n) return;
+    const char *vn = NULL;
+    switch (n->kind) {
+    case NODE_EXPR_STMT: collect_assigned_rec(n->expr, names, nn, cap); return;
+    case NODE_ASSIGN:
+        if (n->assign_target->kind == NODE_IDENT) vn = n->assign_target->name;
+        collect_assigned_rec(n->assign_val, names, nn, cap);
+        break;
+    case NODE_LET:
+        vn = n->let_name;   /* body-local let leaks/shadows в плоския env */
+        collect_assigned_rec(n->let_init, names, nn, cap);
+        break;
+    case NODE_IF:
+        collect_assigned_rec(n->then_br, names, nn, cap);
+        collect_assigned_rec(n->else_br, names, nn, cap);
+        return;
+    case NODE_WHILE:
+        collect_assigned_rec(n->while_body, names, nn, cap);
+        return;
+    case NODE_BLOCK:
+        for (int i = 0; i < n->stmts.len; i++) collect_assigned_rec(n->stmts.data[i], names, nn, cap);
+        return;
+    default: return;
+    }
+    if (vn) {
+        int found = 0;
+        for (int k = 0; k < *nn; k++) if (strcmp((*names)[k], vn) == 0) { found = 1; break; }
+        if (!found) {
+            if (*nn == *cap) { *cap = *cap ? *cap * 2 : 8; *names = realloc(*names, (size_t)*cap * sizeof(char *)); }
+            (*names)[(*nn)++] = vn;
+        }
+    }
+}
+
+/* Rebind every name to a fresh abstract symbolic value (__-prefixed, so the
+ * witness machinery treats it as non-reportable); tracked Vec lengths of
+ * reassigned vectors are havoced too. */
+static void havoc_vars(State *st, const char **names, int nn) {
+    for (int i = 0; i < nn; i++) {
+        char hv[64]; snprintf(hv, sizeof hv, "__hv%d", g_havoc_ctr++);
+        env_bind(&st->env, names[i], lin_var(hv), 0);
+        if (vlen_find(&st->vlen, names[i])) {
+            char lb[300]; snprintf(lb, sizeof lb, "__hvl%d", g_havoc_ctr++);
+            vlen_set(&st->vlen, names[i], lin_var(lb), 0);
+        }
+    }
+}
+
 static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvoid, Node *spec) {
     (void)is_nonvoid;   /* the loop body is never a return context */
     int trusted = 1;
     States out; out.s = NULL; out.n = 0; out.cap = 0;
+    const char **havoc = NULL; int nhav = 0, hcap = 0;   /* loop-assigned vars (borrowed AST names) */
+    collect_assigned_rec(st->while_body, &havoc, &nhav, &hcap);
     for (int i = 0; i < states->n; i++) {
         State *cur = &states->s[i];
+        scan_arith_expr(st->cond, cur, ob);   /* M15: loop-guard arithmetic (entry) */
 
         /* init: each invariant must follow from the current path */
         for (int j = 0; j < st->while_invariants.len && trusted; j++) {
@@ -1555,6 +1640,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
                 f_push_branch(&one, cl);
                 State h = clone_state_with(cur, &one);
                 f_free(&one);
+                havoc_vars(&h, havoc, nhav);   /* M15: no stale pre-loop values */
                 for (int j = 0; j < st->while_invariants.len; j++) {
                     Formula invf;
                     if (!bool_to_dnf(st->while_invariants.data[j], &h.env, &h.vlen, &h.reads, 0, &invf)) { trusted = 0; break; }
@@ -1591,6 +1677,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
             f_push_branch(&one, cl);
             State t = clone_state_with(cur, &one);
             f_free(&one);
+            havoc_vars(&t, havoc, nhav);   /* M15: post-loop values are fresh */
             if (trusted) {
                 for (int j = 0; j < st->while_invariants.len; j++) {
                     Formula invf;
@@ -1620,6 +1707,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
     /* record the loop's invariants for --proofs (verified facts, M1) */
     for (int j = 0; j < st->while_invariants.len; j++)
         inv_collect_push(st->while_invariants.data[j], trusted);
+    free((void *)havoc);
     return trusted;
 }
 
@@ -2361,6 +2449,108 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     return sym_lin(lin_var(rv));
 }
 
+/* ======================= M15: arithmetic safety =======================
+ * The verifier reasons in idealized ℤ; the runtime is i64. This bridge
+ * emits one kind-4 obligation per arithmetic operation: prove the result
+ * cannot overflow i64 on this path (and no division by zero / INT64_MIN/-1),
+ * refute it with a concrete witness, or stay honestly UNKNOWN. When every
+ * arith obligation of a function is PROVEN, the idealized model and the
+ * runtime coincide — the ensures verdicts become unconditional. */
+
+#define AK_FIT  1   /* aux1 (linear result form) must fit i64 */
+#define AK_MUL  2   /* aux1 * aux2 (factor forms) must fit i64 */
+#define AK_DIVZ 3   /* aux2 (divisor) != 0; not (aux1 = INT64_MIN && aux2 = -1) */
+
+static void push_arith_obl(State *st, Obligations *ob, int akind, Lin *a1, Lin *a2, const char *label) {
+    ConsList opath; cl_init(&opath);
+    for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    ConsList empty; cl_init(&empty);
+    obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &st->vlen, &st->reads, st->bad, 4, label);
+    Obligation *o = &ob->o[ob->n - 1];
+    o->akind = akind;
+    if (a1) { lin_free(&o->aux1); o->aux1 = *a1; }   /* moves */
+    if (a2) { lin_free(&o->aux2); o->aux2 = *a2; }
+}
+
+/* Recursive scan: every arithmetic node in runtime code gets an obligation.
+ * Nonlinear subvalues are skipped — the value is already honestly opaque
+ * upstream, so no arith claim is made about it either. */
+static void scan_arith_expr(Node *e, State *st, Obligations *ob) {
+    if (!e) return;
+    switch (e->kind) {
+    case NODE_UNARY:
+        scan_arith_expr(e->operand, st, ob);
+        if (e->un_op == UOP_NEG) {
+            Sym v = se_from_ast(e->operand, &st->env, &st->vlen, &st->reads);
+            if (!v.nonlinear) {
+                char eb[512]; size_t off = 0; eb[0] = '\0';
+                expr_render(e, eb, sizeof eb, &off);
+                char lbl[600]; snprintf(lbl, sizeof lbl, "преливане: %s", eb);
+                Lin nl = lin_neg(&v.lin);
+                lin_free(&v.lin);
+                push_arith_obl(st, ob, AK_FIT, &nl, NULL, lbl);
+            } else lin_free(&v.lin);
+        }
+        return;
+    case NODE_CALL:
+        for (int i = 0; i < e->args.len; i++) scan_arith_expr(e->args.data[i], st, ob);
+        return;
+    case NODE_ASSIGN:
+        scan_arith_expr(e->assign_val, st, ob);
+        return;
+    case NODE_BINARY: break;
+    default: return;
+    }
+    scan_arith_expr(e->left, st, ob);
+    scan_arith_expr(e->right, st, ob);
+    BinOp op = e->bin_op;
+    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV &&
+        op != OP_MOD && op != OP_LSHIFT) return;
+    Sym l = se_from_ast(e->left, &st->env, &st->vlen, &st->reads);
+    Sym r = se_from_ast(e->right, &st->env, &st->vlen, &st->reads);
+    if (l.nonlinear || r.nonlinear) { lin_free(&l.lin); lin_free(&r.lin); return; }
+    char eb[512]; size_t off = 0; eb[0] = '\0';
+    expr_render(e, eb, sizeof eb, &off);
+    char lbl[600];
+
+    if (op == OP_DIV || op == OP_MOD) {
+        snprintf(lbl, sizeof lbl, "деление: %s", eb);
+        push_arith_obl(st, ob, AK_DIVZ, &l.lin, &r.lin, lbl);   /* moves both */
+        return;
+    }
+    if (op == OP_MUL && !lin_is_const(&l.lin) && !lin_is_const(&r.lin)) {
+        snprintf(lbl, sizeof lbl, "преливане: %s", eb);
+        push_arith_obl(st, ob, AK_MUL, &l.lin, &r.lin, lbl);    /* moves both */
+        return;
+    }
+    /* linear result forms: a+b, a-b, const*a, n<<k */
+    Lin res; int have = 0;
+    if (op == OP_ADD) { res = lin_add(&l.lin, &r.lin); have = 1; }
+    else if (op == OP_SUB) { res = lin_sub(&l.lin, &r.lin); have = 1; }
+    else if (op == OP_MUL) {   /* exactly one side constant */
+        if (lin_is_const(&l.lin) && lin_is_const(&r.lin)) {
+            res = lin_const(rat_mul(l.lin.c, r.lin.c)); have = 1;
+        } else if (lin_is_const(&l.lin)) { res = lin_scale(&r.lin, l.lin.c); have = 1; }
+        else if (lin_is_const(&r.lin)) { res = lin_scale(&l.lin, r.lin.c); have = 1; }
+    } else if (op == OP_LSHIFT) {
+        if (lin_is_const(&r.lin) && r.lin.c.den == 1 &&
+            r.lin.c.num >= 0 && r.lin.c.num <= 62) {
+            res = lin_scale(&l.lin, rat_int((int64_t)1 << r.lin.c.num)); have = 1;
+        }
+    }
+    lin_free(&l.lin); lin_free(&r.lin);
+    if (!have) return;
+    if (res.overflow) {   /* constant arithmetic overflowed i64 — unconditional */
+        snprintf(lbl, sizeof lbl, "преливане: %s (константно)", eb);
+        Lin poison = lin_const(rat_bad());
+        push_arith_obl(st, ob, AK_FIT, &poison, NULL, lbl);
+        return;
+    }
+    if (lin_is_const(&res)) { lin_free(&res); return; }   /* exact const, fits */
+    snprintf(lbl, sizeof lbl, "преливане: %s", eb);
+    push_arith_obl(st, ob, AK_FIT, &res, NULL, lbl);            /* moves res */
+}
+
 /* M6: entry obligation for a decreases measure — requires ⇒ D >= 0.
  * Pushed as a kind-2 obligation (same discharge/witness machinery as
  * call-site requires); used in both the collect run and the print re-run. */
@@ -2441,6 +2631,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
         int last = (si == stmts->len - 1);
         if (st->kind == NODE_LET) {
             for (int i = 0; i < states->n; i++) {
+                scan_arith_expr(st->let_init, &states->s[i], ob);   /* M15 */
                 if (is_user_call(st->let_init)) {   /* M5: assume-guarantee */
                     Sym r = eval_user_call(st->let_init, &states->s[i], ob, g_caller_name);
                     bind_sym(&states->s[i].env, st->let_name, r);
@@ -2488,9 +2679,12 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             }
         } else if (st->kind == NODE_ASSIGN) {
             if (st->assign_target->kind != NODE_IDENT) { for (int i = 0; i < states->n; i++) states->s[i].bad = 1; continue; }
-            for (int i = 0; i < states->n; i++)
+            for (int i = 0; i < states->n; i++) {
+                scan_arith_expr(st->assign_val, &states->s[i], ob);   /* M15 */
                 bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads));
+            }
         } else if (st->kind == NODE_RETURN) {
+            for (int i = 0; i < states->n; i++) scan_arith_expr(st->ret_val, &states->s[i], ob);   /* M15 */
             if (is_user_call(st->ret_val)) {   /* M5 */
                 for (int i = 0; i < states->n; i++) {
                     Sym r = eval_user_call(st->ret_val, &states->s[i], ob, g_caller_name);
@@ -2513,6 +2707,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             drain_returns(states, ob, st->ret_val);
             return;
         } else if (st->kind == NODE_EXPR_STMT && last && is_nonvoid) {
+            for (int i = 0; i < states->n; i++) scan_arith_expr(st->expr, &states->s[i], ob);   /* M15 */
             if (is_user_call(st->expr)) {   /* M5 */
                 for (int i = 0; i < states->n; i++) {
                     Sym r = eval_user_call(st->expr, &states->s[i], ob, g_caller_name);
@@ -2537,6 +2732,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
         } else if (st->kind == NODE_EXPR_STMT) {
             /* expression statement: track vec mutations / emit bounds checks */
             for (int i = 0; i < states->n; i++) {
+                scan_arith_expr(st->expr, &states->s[i], ob);   /* M15 */
                 if (is_user_call(st->expr)) {   /* M5: check requires, discard result */
                     Sym r = eval_user_call(st->expr, &states->s[i], ob, g_caller_name);
                     lin_free(&r.lin);
@@ -2553,6 +2749,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             States out; out.s = NULL; out.n = 0; out.cap = 0;
             for (int i = 0; i < states->n; i++) {
                 State *cur = &states->s[i];
+                scan_arith_expr(st->cond, cur, ob);   /* M15: guard arithmetic */
                 Formula cf, nf;
                 int cok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, &cur->reads, 0, &cf);
                 int nok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, &cur->reads, 1, &nf);
@@ -2793,6 +2990,270 @@ static int find_callreq_witness(Obligation *obl, IBind **witness, int *wn) {
     return found;
 }
 
+/* ---- M15 verdict machinery ---- */
+
+static void collect_vars_lin(Lin *l, char ***vars, int *nv, int *cap) {
+    for (int j = 0; j < l->n; j++) {
+        const char *vn = l->terms[j].var;
+        int found = 0;
+        for (int k = 0; k < *nv; k++) if (strcmp((*vars)[k], vn) == 0) { found = 1; break; }
+        if (!found) { if (*nv == *cap) { *cap = *cap ? *cap * 2 : 8; *vars = realloc(*vars, (size_t)*cap * sizeof(char *)); } (*vars)[(*nv)++] = strdup(vn); }
+    }
+}
+
+/* path ∧ L >= K feasible?  (K - L <= 0) */
+static int feas_above(ConsList *path, Lin *L, int64_t K) {
+    ConsList sys; cl_init(&sys);
+    for (int x = 0; x < path->n; x++) { Constraint *c = &path->c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    Lin nl = lin_neg(L);
+    nl.c = rat_add(nl.c, rat_int(K));
+    if (nl.c.overflow) { lin_free(&nl); cl_free(&sys); return 1; }   /* conservative */
+    cl_push(&sys, mk_cons(nl, C_LE, rat_zero()));
+    return fm_sat(&sys);
+}
+
+/* path ∧ L <= K feasible?  (L - K <= 0) */
+static int feas_below(ConsList *path, Lin *L, int64_t K) {
+    ConsList sys; cl_init(&sys);
+    for (int x = 0; x < path->n; x++) { Constraint *c = &path->c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    Lin cl2 = lin_clone(L);
+    cl2.c = rat_sub(cl2.c, rat_int(K));
+    if (cl2.c.overflow) { lin_free(&cl2); cl_free(&sys); return 1; }
+    cl_push(&sys, mk_cons(cl2, C_LE, rat_zero()));
+    return fm_sat(&sys);
+}
+
+/* Tightest K in [0, 2^62] with path ⊢ -K <= L <= K (binary search over FM
+ * feasibility), or 2^62+1 ("too big to matter") when even that is unprovable. */
+static int64_t fm_maxabs(ConsList *path, Lin *L) {
+    const int64_t CAP = (int64_t)1 << 62;
+    #define FITS(K) (!feas_above(path, L, (K) + 1) && !feas_below(path, L, -(K) - 1))
+    if (!FITS(CAP)) return CAP + 1;
+    int64_t lo = 0, hi = CAP;   /* P(hi) holds */
+    while (lo < hi) {
+        int64_t mid = lo + (hi - lo) / 2;
+        if (FITS(mid)) hi = mid; else lo = mid + 1;
+    }
+    return lo;
+    #undef FITS
+}
+
+/* Evaluate a linear form under an assignment into __int128 (no overflow).
+ * ok=0 when a variable is missing (e.g. an abstract __c call result) or the
+ * form is non-integral. */
+static int eval_lin128(Lin *l, IBind *env, int nenv, __int128 *out) {
+    if (l->overflow || l->c.overflow || l->c.den != 1) return 0;
+    __int128 v = l->c.num;
+    for (int j = 0; j < l->n; j++) {
+        if (l->terms[j].coeff.overflow || l->terms[j].coeff.den != 1) return 0;
+        int ok = 0; int64_t vv = 0;
+        for (int k = 0; k < nenv; k++)
+            if (strcmp(env[k].name, l->terms[j].var) == 0) { vv = env[k].val; ok = 1; break; }
+        if (!ok) return 0;
+        v += (__int128)l->terms[j].coeff.num * vv;
+    }
+    *out = v;
+    return 1;
+}
+
+/* Pins (free vars at candidate values) + derived product/div/mod/bit values —
+ * the value-level mirror of push_pins_and_derived. __c call results stay
+ * abstract (never present in the output). */
+static IBind *build_eff_env(char **vars, IBind *assign, int nv, ProdList *prods, int *out_n) {
+    int cap = nv + (prods ? prods->n : 0) + 1;
+    IBind *e = calloc((size_t)cap, sizeof(IBind));
+    int ne = 0;
+    for (int i = 0; i < nv; i++) {
+        if (strncmp(vars[i], "__c", 3) == 0 || strncmp(vars[i], "__p", 3) == 0 ||
+            strncmp(vars[i], "__d", 3) == 0 || strncmp(vars[i], "__m", 3) == 0 ||
+            strncmp(vars[i], "__b", 3) == 0 || strncmp(vars[i], "__hv", 4) == 0) continue;
+        e[ne].name = vars[i]; e[ne].val = assign[i].val; ne++;
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        for (int pi = 0; prods && pi < prods->n; pi++) {
+            int have = 0;
+            for (int k = 0; k < ne; k++) if (strcmp(e[k].name, prods->p[pi].var) == 0) { have = 1; break; }
+            if (have) continue;
+            IEnv pe; pe.b = e; pe.n = ne;
+            int64_t fv[2] = {0, 0};
+            Lin *fs[2] = { &prods->p[pi].fa, &prods->p[pi].fb };
+            int ok = 1;
+            int nq = prods->p[pi].is_bitand1 ? 1 : 2;
+            for (int q = 0; q < nq && ok; q++) {
+                Rat rv = fs[q]->c;
+                for (int j = 0; j < fs[q]->n; j++) {
+                    int ok2; int64_t vv = ienv_get(&pe, fs[q]->terms[j].var, &ok2);
+                    if (!ok2) { ok = 0; break; }
+                    rv = rat_add(rv, rat_mul(fs[q]->terms[j].coeff, rat_int(vv)));
+                }
+                if (ok && (rv.overflow || rv.den != 1)) ok = 0;
+                if (ok) fv[q] = rv.num;
+            }
+            if (!ok) continue;
+            int64_t pvv;
+            if (prods->p[pi].is_bitand1) pvv = fv[0] & 1;
+            else if (prods->p[pi].is_div) { if (fv[1] == 0) continue; pvv = fv[0] / fv[1]; }
+            else if (prods->p[pi].is_mod) { if (fv[1] == 0) continue; pvv = fv[0] % fv[1]; }
+            else if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) continue;
+            e[ne].name = prods->p[pi].var; e[ne].val = pvv; ne++;
+        }
+    }
+    *out_n = ne;
+    return e;
+}
+
+/* M15 witness search: an input assignment under which the operation really
+ * overflows (or divides by zero). Candidate grid includes large magnitudes —
+ * overflow witnesses live near 2^63. Conclusiveness mirrors M8: the violation
+ * must not depend on unrealizable abstract values. */
+static int find_arith_witness(Obligation *obl, IBind **witness, int *wn) {
+    char **vars = NULL; int nv = 0, cap = 0;
+    collect_vars_cl(&obl->path, &vars, &nv, &cap);
+    collect_vars_lin(&obl->aux1, &vars, &nv, &cap);
+    collect_vars_lin(&obl->aux2, &vars, &nv, &cap);
+    for (int pi = 0; pi < obl->prods.n; pi++) {
+        collect_vars_lin(&obl->prods.p[pi].fa, &vars, &nv, &cap);
+        collect_vars_lin(&obl->prods.p[pi].fb, &vars, &nv, &cap);
+    }
+    static const int64_t acand[] = {
+        0, 1, -1, 2, -2, 3, -3, 5, -5, 10, -10, 100, -100,
+        1000000, -1000000, 2147483647LL, -2147483648LL,
+        3037000499LL, 3037000500LL, 4294967295LL, 4294967296LL, -4294967296LL,
+        4611686018427387904LL, -4611686018427387904LL,
+        INT64_MAX - 1, INT64_MAX, INT64_MIN + 1, INT64_MIN
+    };
+    int ncand = (int)(sizeof(acand) / sizeof(acand[0]));
+    int total = 1;
+    for (int i = 0; i < nv; i++) { if (total > 400000 / ncand) { total = 400001; break; } total *= ncand; }
+    if (nv == 0) total = 1;
+    IBind *assign = calloc(nv ? nv : 1, sizeof(IBind));
+    int found = 0;
+    for (int idx = 0; idx < total && !found; idx++) {
+        int t = idx;
+        for (int i = 0; i < nv; i++) { assign[i].name = vars[i]; assign[i].val = acand[t % ncand]; t /= ncand; }
+        IEnv ie; ie.b = assign; ie.n = nv;
+        int ante_ok = 1;
+        for (int i = 0; i < obl->path.n && ante_ok; i++) {
+            Constraint *c = &obl->path.c[i];
+            Rat rv = c->lhs.c;
+            for (int j = 0; j < c->lhs.n; j++) {
+                int ok2; int64_t vv = ienv_get(&ie, c->lhs.terms[j].var, &ok2);
+                if (!ok2) { ante_ok = 0; break; }
+                rv = rat_add(rv, rat_mul(c->lhs.terms[j].coeff, rat_int(vv)));
+            }
+            if (rv.overflow) { ante_ok = 0; break; }
+            int s = rat_cmp(rv, c->rhs);
+            ante_ok = (c->op == C_LT) ? (s < 0) : (s <= 0);
+        }
+        if (!ante_ok) continue;
+        int ne = 0;
+        IBind *eff = build_eff_env(vars, assign, nv, &obl->prods, &ne);
+        __int128 a = 0, b = 0;
+        int oka = eval_lin128(&obl->aux1, eff, ne, &a);
+        int okb = eval_lin128(&obl->aux2, eff, ne, &b);
+        int viol = 0, concrete = 0;
+        switch (obl->akind) {
+        case AK_FIT:
+            concrete = oka;
+            viol = oka && (a > INT64_MAX || a < INT64_MIN);
+            break;
+        case AK_MUL:
+            concrete = oka && okb;
+            viol = concrete && (a * b > INT64_MAX || a * b < INT64_MIN);
+            break;
+        case AK_DIVZ:
+            concrete = oka && okb;
+            viol = concrete && (b == 0 || (b == -1 && a == INT64_MIN));
+            break;
+        }
+        free(eff);
+        int conclusive = 0;
+        if (viol && concrete) {
+            /* the violation depends only on pinned/derived values: accept iff
+             * the pinned inputs stay feasible under the path */
+            ConsList sys; cl_init(&sys);
+            for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+            push_pins_and_derived(&sys, vars, assign, nv, &obl->prods);
+            conclusive = fm_sat(&sys);
+        }
+        if (!conclusive) continue;
+        IBind *w = calloc(nv ? nv : 1, sizeof(IBind));
+        int k = 0;
+        for (int i = 0; i < nv; i++) {
+            if (strncmp(vars[i], "__", 2) == 0) continue;
+            w[k].name = strdup(vars[i]); w[k].val = assign[i].val; k++;
+        }
+        *witness = w; *wn = k;
+        found = 1;
+    }
+    free(assign);
+    for (int i = 0; i < nv; i++) free(vars[i]);
+    free(vars);
+    return found;
+}
+
+/* Verify one arithmetic-safety obligation (M15, kind 4). */
+static VRes verify_arith_obl(Obligation *obl, IBind **wit, int *wn) {
+    if (obl->bad) return R_UNKNOWN;
+    if (obl->akind == AK_FIT && obl->aux1.overflow) {
+        /* constant arithmetic overflowed i64 at fold time — unconditional */
+        *wit = calloc(1, sizeof(IBind)); *wn = 0;
+        return R_REFUTED;
+    }
+    int proven = 0;
+    switch (obl->akind) {
+    case AK_FIT: {
+        /* |L| <= 2^62 provable via FM bound search ⇒ fits i64. The extreme
+         * window (2^62, 2^63) is reported UNKNOWN, never falsely proven —
+         * documented limitation of the exact-rational core near int64 max. */
+        int64_t ma = fm_maxabs(&obl->path, &obl->aux1);
+        if (getenv("BAGA_DEBUG_ARITH")) {
+            fprintf(stderr, "FIT maxabs=%lld path.n=%d\n", (long long)ma, obl->path.n);
+            for (int x = 0; x < obl->path.n; x++) {
+                Constraint *c = &obl->path.c[x];
+                fprintf(stderr, "  path[%d] c=%lld op=%d terms:", x, (long long)c->lhs.c.num, c->op);
+                for (int j = 0; j < c->lhs.n; j++) fprintf(stderr, " %s*%lld", c->lhs.terms[j].var, (long long)c->lhs.terms[j].coeff.num);
+                fprintf(stderr, "\n");
+            }
+        }
+        proven = (ma <= ((int64_t)1 << 62));
+        break;
+    }
+    case AK_MUL: {
+        int64_t A = fm_maxabs(&obl->path, &obl->aux1);
+        int64_t B = fm_maxabs(&obl->path, &obl->aux2);
+        __int128 p = (__int128)A * B;
+        proven = (p <= INT64_MAX);
+        break;
+    }
+    case AK_DIVZ: {
+        /* divisor == 0 feasible? */
+        ConsList sys; cl_init(&sys);
+        for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&sys, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        cl_push(&sys, mk_cons(lin_clone(&obl->aux2), C_LE, rat_zero()));
+        cl_push(&sys, mk_cons(lin_neg(&obl->aux2), C_LE, rat_zero()));
+        int zero_feas = fm_sat(&sys);
+        /* divisor == -1 ∧ dividend == INT64_MIN feasible? */
+        ConsList s2; cl_init(&s2);
+        for (int x = 0; x < obl->path.n; x++) { Constraint *c = &obl->path.c[x]; cl_push(&s2, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        Lin dp1 = lin_clone(&obl->aux2); dp1.c = rat_add(dp1.c, rat_int(1));
+        cl_push(&s2, mk_cons(dp1, C_LE, rat_zero()));                 /* d+1 <= 0 */
+        Lin ndp1 = lin_neg(&obl->aux2); ndp1.c = rat_sub(ndp1.c, rat_int(1));
+        cl_push(&s2, mk_cons(ndp1, C_LE, rat_zero()));                /* -d-1 <= 0 */
+        cl_push(&s2, mk_cons(lin_clone(&obl->aux1), C_LE, rat_int(INT64_MIN)));  /* n <= MIN */
+        Lin nn = lin_neg(&obl->aux1); nn.c = rat_sub(nn.c, rat_int(1));
+        cl_push(&s2, mk_cons(nn, C_LE, rat_int(INT64_MAX)));          /* n >= MIN */
+        int min_feas = fm_sat(&s2);
+        proven = !zero_feas && !min_feas;
+        break;
+    }
+    }
+    if (proven) return R_PROVEN;
+    IBind *w = NULL; int wnn = 0;
+    if (find_arith_witness(obl, &w, &wnn)) { *wit = w; *wn = wnn; return R_REFUTED; }
+    return R_UNKNOWN;
+}
+
 /* Verify a single call-site requires obligation (M5, kind 2): the caller path
  * must imply every (positive) requires constraint of the callee. */
 static VRes verify_call_req(Obligation *obl, IBind **wit, int *wn) {
@@ -2982,6 +3443,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     g_partial = 0;
     g_call_ctr = 0;
     g_handle_ctr = 0;
+    g_havoc_ctr = 0;
     g_prod_ctr = 0;
     g_term = 0;
     g_term_failed = 0;
@@ -3072,7 +3534,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
         verify_bound_obl(&ob.o[i], &wit, &wn);
         if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
     }
-    for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); cl_free(&ob.o[i].bound); cl_free(&ob.o[i].read_cons); lin_free(&ob.o[i].ret.lin); vlen_free(&ob.o[i].vlen); prods_free(&ob.o[i].prods); free(ob.o[i].label); }
+    for (int i = 0; i < ob.n; i++) obl_free(&ob.o[i]);
     free(ob.o);
     /* transfer verified facts (recursion/termination, invariants) to the caller */
     out->partial = g_partial;
@@ -3291,11 +3753,55 @@ static int verify_fn(Node *prog, Node *fn) {
             if (r == R_REFUTED) any_refuted = 1;
             if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
         }
+        if (g_json) printf("]");
+        /* arithmetic safety obligations (M15, kind 4) */
+        if (g_json) printf(", \"arith\": [");
+        int na = 0, naproven = 0, natotal = 0;
+        for (int i = 0; i < ob2.n; i++) {
+            if (ob2.o[i].kind != 4) continue;
+            natotal++;
+            IBind *wit = NULL; int wn = 0;
+            VRes r = verify_arith_obl(&ob2.o[i], &wit, &wn);
+            if (r == R_PROVEN) naproven++;
+            if (g_json) {
+                if (na) printf(", ");
+                na++;
+                printf("{\"label\": ");
+                json_str(ob2.o[i].label ? ob2.o[i].label : "аритметика");
+                printf(", \"result\": \"%s\", \"counterexample\": ", res_word_json((int)r));
+                if (r == R_REFUTED && wit) {
+                    char **names = malloc(wn * sizeof(char *));
+                    long long *vals = malloc(wn * sizeof(long long));
+                    for (int k = 0; k < wn; k++) { names[k] = wit[k].name; vals[k] = (long long)wit[k].val; }
+                    json_witness(names, vals, wn);
+                    free(names); free(vals);
+                } else {
+                    json_witness(NULL, NULL, 0);
+                }
+                printf("}");
+            } else if (r != R_PROVEN) {
+                printf("  аритметика (%s): %s\n", ob2.o[i].label ? ob2.o[i].label : "операция", res_word(r));
+                if (r == R_REFUTED) {
+                    printf("    контрапример:");
+                    for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+                    if (wn == 0) printf(" (при всеки вход)");
+                    printf("\n");
+                }
+            }
+            if (r == R_REFUTED) any_refuted = 1;
+            if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
+        }
         if (g_json) printf("]}");
-        for (int i = 0; i < ob2.n; i++) { cl_free(&ob2.o[i].path); cl_free(&ob2.o[i].bound); cl_free(&ob2.o[i].read_cons); lin_free(&ob2.o[i].ret.lin); vlen_free(&ob2.o[i].vlen); prods_free(&ob2.o[i].prods); free(ob2.o[i].label); }
+        if (!g_json && natotal > 0) {
+            printf("  (аритметика: %d/%d операции доказано безопасни", naproven, natotal);
+            if (naproven < natotal)
+                printf(" — вердиктите за ensures са в идеализирания ℤ модел");
+            printf(")\n");
+        }
+        for (int i = 0; i < ob2.n; i++) obl_free(&ob2.o[i]);
         free(ob2.o);
     } else if (g_json) {
-        printf(", \"calls\": [], \"protocol\": [], \"bounds\": []}");
+        printf(", \"calls\": [], \"protocol\": [], \"bounds\": [], \"arith\": []}");
     }
     fn_verify_res_free(&res);
     inv_collect_reset();   /* the reporting re-run above refilled the globals */

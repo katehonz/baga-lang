@@ -202,7 +202,7 @@ test: $(BIN)
 	@echo "=== verify (статична верификация, M0+M1) ==="
 	@for f in abs_val max2 clamp sum; do \
 		./$(BIN) --verify examples/verify/$$f.baga > /tmp/baga_verify_out.txt; \
-		grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 			&& echo "OK: $$f доказано (completeness)" \
 			|| { echo "FAIL: $$f — очаквах ДОКАЗАНО"; cat /tmp/baga_verify_out.txt; exit 1; }; \
 	done
@@ -237,7 +237,7 @@ test: $(BIN)
 		&& echo "OK: recursive — честно пропуснато" \
 		|| { echo "FAIL: recursive"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/sum_rec.baga > /tmp/baga_verify_out.txt; \
-	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: sum_rec — рекурсия доказана с индукционна хипотеза (M5)" \
 		|| { echo "FAIL: sum_rec — очаквах ДОКАЗАНО"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/sum_rec.baga | grep -q "частична коректност" \
@@ -252,7 +252,7 @@ test: $(BIN)
 		&& echo "OK: call_req_bad — requires при извикване е оброчен с контрапример (M5 soundness)" \
 		|| { echo "FAIL: call_req_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/term_dec.baga > /tmp/baga_verify_out.txt; \
-	grep -q "терминация: доказана" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША|частична коректност" /tmp/baga_verify_out.txt \
+	grep -q "терминация: доказана" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША|частична коректност)" /tmp/baga_verify_out.txt \
 		&& echo "OK: term_dec — decreases доказва терминация, пълна коректност (M6)" \
 		|| { echo "FAIL: term_dec"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/term_bad.baga > /tmp/baga_verify_out.txt; \
@@ -260,7 +260,7 @@ test: $(BIN)
 		&& echo "OK: term_bad — ненамаляваща мярка е оброчена, ensures остава частична коректност (M6 soundness)" \
 		|| { echo "FAIL: term_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/int_exact.baga > /tmp/baga_verify_out.txt; \
-	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: int_exact — n > 0 ⇒ n >= 1 чрез integer tightening (M7)" \
 		|| { echo "FAIL: int_exact"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/int_exact_bad.baga > /tmp/baga_verify_out.txt; \
@@ -273,11 +273,11 @@ test: $(BIN)
 		|| { echo "FAIL: spurious — очаквах UNKNOWN без ОБРОЧЕНО"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/fact_full.baga > /tmp/baga_verify_out.txt; \
 	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && grep -q "терминация: доказана" /tmp/baga_verify_out.txt \
-		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: fact_full — факториел напълно доказан през продуктова аксиома (M8b)" \
 		|| { echo "FAIL: fact_full"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/square.baga > /tmp/baga_verify_out.txt; \
-	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: square — x * x >= 0 без предусловия (M8b)" \
 		|| { echo "FAIL: square"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/fact_bad.baga > /tmp/baga_verify_out.txt; \
@@ -286,11 +286,11 @@ test: $(BIN)
 		|| { echo "FAIL: fact_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/sign_prod.baga > /tmp/baga_verify_out.txt; \
 	grep -c "ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^4$$' \
-		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: sign_prod — пълна знакова таблица за продукти (M9)" \
 		|| { echo "FAIL: sign_prod"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/sum_sq.baga > /tmp/baga_verify_out.txt; \
-	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: sum_sq — x*x + y*y >= 0 (M9)" \
 		|| { echo "FAIL: sum_sq"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/div_const.baga > /tmp/baga_verify_out.txt; \
@@ -305,7 +305,7 @@ test: $(BIN)
 		|| { echo "FAIL: mod_const"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/poly_depth.baga > /tmp/baga_verify_out.txt; \
 	grep -c "ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -qE '^[4-9]$$|^[1-9][0-9]' \
-		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: poly_depth — square dominance + product mono (M10)" \
 		|| { echo "FAIL: poly_depth"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/div_mod_id.baga > /tmp/baga_verify_out.txt; \
@@ -330,7 +330,7 @@ test: $(BIN)
 		|| { echo "FAIL: var_div"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/amgm.baga > /tmp/baga_verify_out.txt; \
 	grep -c "ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^[2-9]' \
-		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: amgm — (x-y)^2 >= 0 (M12)" \
 		|| { echo "FAIL: amgm"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/nonlinear_if.baga > /tmp/baga_verify_out.txt; \
@@ -347,7 +347,7 @@ test: $(BIN)
 		|| { echo "FAIL: bitwise_laws"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/par_join.baga > /tmp/baga_verify_out.txt; \
 	grep -q "par_double:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
-		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: par_join — fork-join детерминизъм: spec на worker през go/join (M14)" \
 		|| { echo "FAIL: par_join"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --verify examples/verify/par_join_bad.baga > /tmp/baga_verify_out.txt; \
@@ -363,6 +363,31 @@ test: $(BIN)
 		&& grep -q "recv_claim:" /tmp/baga_verify_out.txt && grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 		&& echo "OK: par_chan — send след close ⇒ -1 доказано; recv payload честно UNKNOWN (M14)" \
 		|| { echo "FAIL: par_chan"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt; \
+	grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
+		&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \
+		&& echo "OK: ovf_add — ограниченото събиране е доказано; неограниченото е оброчено при INT64_MAX (M15)" \
+		|| { echo "FAIL: ovf_add"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/ovf_mul.baga > /tmp/baga_verify_out.txt; \
+	grep -q "mul_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
+		&& grep -q "аритметика (преливане: (a \* b)): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: ovf_mul — FM граници доказват продукт; неограничен продукт е оброчен (M15)" \
+		|| { echo "FAIL: ovf_mul"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/div_zero.baga > /tmp/baga_verify_out.txt; \
+	grep -q "div_safe:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
+		&& grep -q "контрапример: n = 0 m = 0" /tmp/baga_verify_out.txt \
+		&& echo "OK: div_zero — m >= 1 доказва безопасно деление; без нея m = 0 е оброчен (M15)" \
+		|| { echo "FAIL: div_zero"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/loop_havoc.baga > /tmp/baga_verify_out.txt; \
+	grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt && ! grep -q "ensures.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: loop_havoc — няма фалшиво ДОКАЗАНО през стойности от преди цикъла (M15 soundness)" \
+		|| { echo "FAIL: loop_havoc"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/abs_val.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "аритметика.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& grep -q "x = -9223372036854775808" /tmp/baga_verify_out.txt \
+		&& echo "OK: abs_val — ensures доказан, но abs(INT64_MIN) преливане е хванато (M15)" \
+		|| { echo "FAIL: abs_val arith"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --proofs examples/verify/sum.baga > /tmp/baga_proofs_out.txt; \
 	grep -q "lemma add_repeated_invariant_1" /tmp/baga_proofs_out.txt \
 		&& grep -q "invariant: (s >= 0)" /tmp/baga_proofs_out.txt \
@@ -413,8 +438,8 @@ test: $(BIN)
 			|| { echo "FAIL: $$f — оракулът не е съгласен"; exit 1; }; \
 	done
 	@echo "=== --verify --json (машинен изход) ==="
-	@./$(BIN) --verify --json examples/verify/abs_val.baga > /tmp/baga_verify_json.txt
-	@python3 -c "import json; d=json.load(open('/tmp/baga_verify_json.txt')); f=d['functions'][0]; assert f['name']=='abs_val' and f['ensures'][0]['result']=='proven'" \
+	@./$(BIN) --verify --json examples/verify/max2.baga > /tmp/baga_verify_json.txt
+	@python3 -c "import json; d=json.load(open('/tmp/baga_verify_json.txt')); f=d['functions'][0]; assert f['name']=='max2' and f['ensures'][0]['result']=='proven' and f['arith']==[]" \
 		&& echo "OK: --verify --json валиден JSON, proven" \
 		|| { echo "FAIL: --verify --json"; cat /tmp/baga_verify_json.txt; exit 1; }
 	@./$(BIN) --verify --json examples/verify/bad_abs.baga > /tmp/baga_verify_json_bad.txt; test $$? -eq 1 \

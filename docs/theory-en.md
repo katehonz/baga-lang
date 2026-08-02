@@ -1170,9 +1170,25 @@ core suffices. Two sound mechanisms:
   (`par_detach_bad.baga`). Channels track open/closed: `send` on a
   known-closed channel is provably `-1` (`par_chan.baga`).
 
-Honest frontier (M15): pair-returning builtins (`chan_recv2`/`try_recv`/
+Honest frontier (M15+): pair-returning builtins (`chan_recv2`/`try_recv`/
 `select2*`), cross-thread channel *content* invariants (rely–guarantee),
 mutexes (liveness), `pool_map`, effectful workers.
+
+### 8.6 Arithmetic safety — the ℤ-vs-i64 bridge (M15)
+
+The verifier reasons in idealized ℤ; the runtime is i64. M15 emits one
+obligation per arithmetic operation and proves it cannot overflow on its
+path (exact bound search over FM — binary search on feasibility, no new
+theory), or refutes it with a concrete large-magnitude witness
+(`abs(INT64_MIN)`, `n + 1` at `n = INT64_MAX`, `n / m` at `m = 0`). When all
+obligations of a function are PROVEN, the idealized model and the runtime
+coincide and ensures verdicts become unconditional; otherwise the output
+says so. Two soundness fixes shipped with it: **loop havoc** (variables
+assigned in a `while` body are havoced before the invariant is assumed —
+stale pre-loop values previously made invariants vacuous, a false-PROVEN
+hole, `loop_havoc.baga`) and an INT64_MIN-safe rational core (`__int128`
+intermediates + conservative bail-out in `fm_sat`). Note:
+`docs/thesis-m15-arith-safety.md`.
 
 ---
 

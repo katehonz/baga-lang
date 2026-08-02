@@ -1,0 +1,30 @@
+// M15 soundness fix: loop-assigned variables are havoced — the post-loop
+// state must NOT keep the stale pre-loop value. Before the fix this function
+// was falsely ДОКАЗАНО (s stays 0 in the stale env); the runtime contract
+// fires at n = 5 (s = -5). Now the verifier is honest: the invariant says
+// nothing about s, so the ensures is UNKNOWN — and with a correct invariant
+// (s + n >= 0 style) it would have to be preserved, which it is not.
+
+spec sneaky {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 0
+}
+
+fn sneaky(n: i64) -> i64 {
+    let mut i: i64 = 0
+    let mut s: i64 = 0
+    while i < n invariant i >= 0 {
+        s = s - 1
+        i = i + 1
+    }
+    return s
+}
+
+fn main() {
+    print(0)   // sneaky(5) would violate its spec at runtime — do not call
+}

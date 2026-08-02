@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Static verification — M15: arithmetic safety (the ℤ-vs-i64 bridge)
+- New kind-4 obligations: every `+ - * -x / % <<` in verified code gets a
+  verdict — ДОКАЗАНО (cannot overflow on this path), ОБРОЧЕНО with a concrete
+  large-magnitude witness (e.g. `abs(INT64_MIN)`, `n + 1` at `n = INT64_MAX`,
+  `n / m` at `m = 0`), or honestly НЕ МОГА ДА РЕША.
+- Exact bound search over the FM core (binary search on feasibility);
+  products use tightest provable |factor| bounds, compared in `__int128`.
+- When all arith obligations of a function are proven, the idealized-ℤ model
+  and the i64 runtime coincide — the output says so; otherwise it marks the
+  ensures verdicts as idealized-model-only. JSON: `"arith": [...]`.
+- The extreme window (2^62, 2^63) reports UNKNOWN, never a false proof.
+
+### Soundness fixes (found by M15)
+- **M1 loop havoc**: variables assigned/let-bound in a `while` body are now
+  havoced before the invariant is assumed (head + post-loop states). Before,
+  the post-loop state kept stale pre-loop values, making invariants vacuous —
+  a loop returning `-n` was falsely ДОКАЗАНО for `output >= 0`. Now honestly
+  UNKNOWN unless the invariant really covers the variable
+  (`examples/verify/loop_havoc.baga`).
+- **Rational core**: `rat_add/rat_mul/rat_mk/v_gcd/rat_neg` are now
+  INT64_MIN-safe (`__int128` intermediates); `fm_sat` bails out conservatively
+  (SAT = "cannot decide") on overflowed constraints.
+
 ### Static verification — M14: `!Par` enters `--verify`
 - Functions whose only effect is `Par` are now verifiable (other effects
   still skip honestly).

@@ -1,0 +1,34 @@
+// M15: division safety — n / m with m >= 1 cannot divide by zero (proven);
+// without the bound, m = 0 is a concrete counterexample (refuted).
+
+spec div_safe {
+    input:
+        n: i64
+        m: i64
+    output: i64
+    requires: n >= 0, m >= 1
+    ensures:
+        output >= 0
+}
+
+fn div_safe(n: i64, m: i64) -> i64 {
+    return n / m
+}
+
+spec div_unsafe {
+    input:
+        n: i64
+        m: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+fn div_unsafe(n: i64, m: i64) -> i64 {
+    return n / m
+}
+
+fn main() {
+    print(div_safe(84, 2))    // 42
+    print(div_unsafe(84, 2))  // 42
+}
