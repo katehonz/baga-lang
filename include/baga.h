@@ -496,6 +496,13 @@ typedef struct {
     int n_ens;
     int skipped;         /* 1 if the whole function was skipped */
     const char *skip_reason;
+    /* facts established during symexec (for --proofs) */
+    int partial;         /* direct self-recursion seen */
+    int term;            /* spec carries a decreases measure */
+    int term_failed;     /* some termination obligation is not PROVEN */
+    char **inv_texts;    /* while-loop invariant renderings (owned) */
+    int *inv_proven;     /* per-invariant: init+preservation proven (Hoare) */
+    int n_inv;
 } FnVerifyRes;
 
 int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out);

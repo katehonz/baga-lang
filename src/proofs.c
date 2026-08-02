@@ -94,6 +94,12 @@ void print_proofs(Node *program) {
         const char *name = item->fn_name;
         Node *spec = find_spec(program, name);
 
+        /* Run the verifier once up front: its facts (termination, loop
+         * invariants, ensures verdicts) feed the theorems below. */
+        FnVerifyRes vr;
+        int have_vr = 0;
+        if (spec && verify_fn_collect(program, item, &vr) == 0) have_vr = 1;
+
         printf("proofs for %s:\n", name);
 
         /* 1. Signature theorem */
@@ -130,7 +136,12 @@ void print_proofs(Node *program) {
             if (j < item->params.len - 1) printf(", ");
         }
         printf("))\n");
-        if (base) {
+        if (have_vr && vr.partial && !vr.skipped) {
+            if (vr.term && !vr.term_failed)
+                printf("    evidence: recursion with decreases measure — proven statically (full correctness)\n");
+            else
+                printf("    evidence: recursion — partial correctness only; termination not proven\n");
+        } else if (base) {
             printf("    evidence: base case with early return");
             if (rets > 1) printf(", %d return paths", rets);
             printf("\n");
@@ -157,9 +168,7 @@ void print_proofs(Node *program) {
                 printf("  guarantee %s_g%d:\n    %s\n\n", name, j + 1, spec->spec_guarantees[j]);
 
             if (spec->spec_ensures.len > 0) {
-                FnVerifyRes vr;
-                int ok = verify_fn_collect(program, item, &vr);
-                if (ok == 0) {
+                if (have_vr) {
                     for (int j = 0; j < vr.n_ens; j++) {
                         EnsVerifyRes *e = &vr.ens[j];
                         printf("  theorem %s_ensures_%d:\n", name, j + 1);
@@ -185,7 +194,6 @@ void print_proofs(Node *program) {
                         }
                         printf("\n");
                     }
-                    fn_verify_res_free(&vr);
                 } else {
                     for (int j = 0; j < spec->spec_ensures.len; j++) {
                         printf("  theorem %s_ensures_%d:\n", name, j + 1);
@@ -196,6 +204,19 @@ void print_proofs(Node *program) {
             } else if (spec->n_guarantees == 0) {
                 printf("  spec \"%s\": UNVERIFIED — no formal contracts\n\n", spec->spec_name);
             }
+
+            /* 5. Loop invariants — facts established by the Hoare rule (M1) */
+            if (have_vr) {
+                for (int k = 0; k < vr.n_inv; k++) {
+                    printf("  lemma %s_invariant_%d:\n", name, k + 1);
+                    printf("    invariant: %s\n", vr.inv_texts[k]);
+                    if (vr.inv_proven[k])
+                        printf("    status: ДОКАЗАНО (init + preservation, Hoare)\n\n");
+                    else
+                        printf("    status: НЕ Е ДОКАЗАНА — надолу по веригата е UNKNOWN\n\n");
+                }
+            }
         }
+        if (have_vr) fn_verify_res_free(&vr);
     }
 }

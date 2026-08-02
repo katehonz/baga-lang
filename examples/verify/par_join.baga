@@ -1,0 +1,41 @@
+// M14: fork-join determinism — a pure worker's contract transfers through
+// go/join. join(go(worker, x)) ≡ worker(x), so the worker's ensures
+// (assumed via assume–guarantee) prove the parallel function's ensures.
+
+spec worker {
+    input:
+        x: i64
+    output: i64
+    requires:
+        x >= 0
+    ensures:
+        output >= 1
+}
+
+fn worker(x: i64) -> i64 {
+    return x + 1
+}
+
+spec par_double {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 2
+}
+
+fn par_double(n: i64) -> i64 !Par {
+    let h1 = go(worker, n)
+    let h2 = go(worker, n)
+    let a = join(h1)
+    let b = join(h2)
+    return a + b
+}
+
+fn main() -> i64 !Par {
+    let r = par_double(20)
+    print(r)   // 42
+    return r
+}

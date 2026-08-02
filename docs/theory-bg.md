@@ -1212,8 +1212,25 @@ Spec : C^op → Set
 
 ### 8.5 Concurrency във verifier-а
 
-`!Par` е runtime (pthreads / LLVM). Статични race/deadlock върху канали —
-отворено.
+**M14 въвежда първия `!Par` фрагмент.** Езикът няма споделено mutable
+състояние (нито глобали, нито closures — `go(f, x)` взема име на функция и
+`i64` по стойност), така че data races са невъзможни по конструкция и
+съществуващото линейно ядро стига. Два sound механизма:
+
+- **Fork–join детерминизъм.** За чист, верифицируем worker `f`:
+  `join(go(f, x)) ≡ f(x)` — договорът на worker-а се прилага чрез M5
+  assume–guarantee (requires се discharge-ва при spawn, ensures се приема за
+  резултата на join). Така `ensures` на паралелна функция се доказва със
+  същата последователна машинерия (`examples/verify/par_join.baga`).
+- **Handle протоколи.** Join handles и канали носят ghost състояние на
+  символна променлива: `spawn → join | detach`. Второ консумиране
+  (join-след-detach е *фатално* в runtime) се оборва статично с контрапример
+  (`par_detach_bad.baga`). Каналите следят open/closed: `send` върху известно
+  затворен канал е доказуемо `-1` (`par_chan.baga`).
+
+Честна граница (M15): pair-връщащите builtins (`chan_recv2`/`try_recv`/
+`select2*`), cross-thread *съдържателни* инварианти на канали
+(rely–guarantee), mutex-и (liveness), `pool_map`, ефектни workers.
 
 ---
 

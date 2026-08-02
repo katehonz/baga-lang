@@ -345,6 +345,38 @@ test: $(BIN)
 		&& grep -q "bit_lsb_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: bitwise_laws — BV identities + n&1 (M13)" \
 		|| { echo "FAIL: bitwise_laws"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/par_join.baga > /tmp/baga_verify_out.txt; \
+	grep -q "par_double:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& ! grep -qE "ОБРОЧЕНО|НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: par_join — fork-join детерминизъм: spec на worker през go/join (M14)" \
+		|| { echo "FAIL: par_join"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/par_join_bad.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt && grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
+		&& echo "OK: par_join_bad — грешен ensures през join е оброчен (M14 soundness)" \
+		|| { echo "FAIL: par_join_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/par_detach_bad.baga > /tmp/baga_verify_out.txt; \
+	grep -q "протокол (join след detach.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: par_detach_bad — join след detach е статично оброчен (M14 протокол)" \
+		|| { echo "FAIL: par_detach_bad"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/par_chan.baga > /tmp/baga_verify_out.txt; \
+	grep -q "send_after_close:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "recv_claim:" /tmp/baga_verify_out.txt && grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: par_chan — send след close ⇒ -1 доказано; recv payload честно UNKNOWN (M14)" \
+		|| { echo "FAIL: par_chan"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --proofs examples/verify/sum.baga > /tmp/baga_proofs_out.txt; \
+	grep -q "lemma add_repeated_invariant_1" /tmp/baga_proofs_out.txt \
+		&& grep -q "invariant: (s >= 0)" /tmp/baga_proofs_out.txt \
+		&& grep -q "ДОКАЗАНО (init + preservation, Hoare)" /tmp/baga_proofs_out.txt \
+		&& echo "OK: proofs — верифицирани while инварианти в --proofs" \
+		|| { echo "FAIL: proofs invariants"; cat /tmp/baga_proofs_out.txt; exit 1; }
+	@./$(BIN) --proofs examples/verify/fact_full.baga > /tmp/baga_proofs_out.txt; \
+	grep -q "decreases measure — proven statically (full correctness)" /tmp/baga_proofs_out.txt \
+		&& echo "OK: proofs — реална терминация чрез decreases в --proofs" \
+		|| { echo "FAIL: proofs termination"; cat /tmp/baga_proofs_out.txt; exit 1; }
+	@./$(BIN) --proofs examples/verify/bad_loop.baga > /tmp/baga_proofs_out.txt; \
+	grep -q "НЕ Е ДОКАЗАНА" /tmp/baga_proofs_out.txt \
+		&& echo "OK: proofs — недоказан инвариант е отбелязан честно" \
+		|| { echo "FAIL: proofs unproven invariant"; cat /tmp/baga_proofs_out.txt; exit 1; }
 	@./$(BIN) examples/par_select.baga > /tmp/baga_par_sel_out.txt; \
 	printf "30\n2\n" | diff - /tmp/baga_par_sel_out.txt > /dev/null \
 		&& echo "OK: chan_select2_wait/timeout" \

@@ -210,7 +210,7 @@ baga/
 | `--ast` | Print AST (debug) |
 | `--tokens` | Print tokens (debug) |
 | `--specs` | Print spec documentation |
-| `--proofs` | Extract proof sketches (includes static verification status for specs) |
+| `--proofs` | Extract proof sketches (static verification status for specs, termination verdicts, loop-invariant lemmas) |
 | `--test-specs` | Property-based test of spec contracts (random inputs, deterministic seed) |
 | `--verify` | Static verification of `requires`/`ensures` (sound; linear i64, loops via invariants, no recursion — see below) |
 | `--json` | Machine-readable JSON output for `--verify` (verdicts + counterexamples; for AI agents and CI) |
@@ -220,6 +220,7 @@ baga/
 - [Theory & Mathematics (EN)](docs/theory-en.md) — Type theory, effects, Hoare, **Fourier–Motzkin / Farkas / nonlinear envelopes (M0–M13)**
 - [Теория и Математика (BG)](docs/theory-bg.md) — Типове, ефекти, Хоар, **FM / Farkas / нелинейни обвивки (M0–M13)** — не се учи в обикновен SE курс
 - [Thesis note M13](docs/thesis-m13-nonlinear-fragment.md) — research write-up of the nonlinear + bitwise fragment
+- [Thesis note M14](docs/thesis-m14-par-fragment.md) — fork–join determinism + handle protocols (concurrency in `--verify`)
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen
@@ -239,12 +240,14 @@ baga/
 | 8 | General non-linear reasoning | ✅ M9–M13 (var div/mod, AM-GM, products in if-guards, bitwise laws) |
 | 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
 | 10 | LLVM backend `!Par` parity (`libbaga_par.so` + lli `-load`) | ✅ |
+| 11 | `!Par` in `--verify`: fork–join determinism + handle protocols (M14) | ✅ |
 
 ### Static verification (`--verify`)
 
 `--verify` proves or refutes `requires`/`ensures` **statically** for pure
 functions over `i64` with **linear** arithmetic (recursion since M5 — partial
-correctness, see below). It is **sound by
+correctness, see below; `!Par` functions since M14 — fork–join + handle
+protocols, see below). It is **sound by
 construction**: the only path to "ДОКАЗАНО" (proven) is showing the negated
 obligation is unsatisfiable over the rationals (Fourier–Motzkin, with integer
 tightening so strict integer inequalities are exact — M7), which implies
@@ -378,9 +381,26 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   Examples: `nonlinear_if.baga`, `bitwise_laws.baga`.
   Scientific note: `docs/thesis-m13-nonlinear-fragment.md`.
 
+- **M14** — **concurrency (`!Par`) in the verifier**. No shared mutable state
+  exists in the language (no globals, no closures — `go(f, x)` passes a named
+  function and an `i64` by value), so the linear core suffices. Functions
+  whose only effect is `Par` are verifiable. **Fork–join determinism:** for a
+  pure verifiable worker, `join(go(f, x)) ≡ f(x)` — the worker's contract
+  applies via M5 assume–guarantee (requires discharged at spawn, ensures
+  assumed for the join result). **Handle protocols:** join handles and
+  channels carry a ghost state (`spawn → join | detach`; channel open/closed);
+  a second consume (fatal at runtime) is REFUTED statically with a
+  counterexample; `send` on a known-closed channel is provably `-1`.
+  Statement-level par calls only; pair-returning builtins, mutexes,
+  `pool_map`, and effectful workers stay honestly outside. Examples:
+  `par_join.baga`, `par_join_bad.baga`, `par_detach_bad.baga`,
+  `par_chan.baga`. Scientific note: `docs/thesis-m14-par-fragment.md`.
+
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
-supported. Remaining: richer polynomials, full BV, feeding verified
-invariants into `--proofs`.
+supported. `--proofs` surfaces the verifier's established facts: real
+termination verdicts (`decreases` → full correctness vs partial) and
+while-loop invariants as lemmas with their Hoare status. Remaining:
+richer polynomials, full BV, cross-thread channel invariants.
 
 > **Language note (M2):** `[T]` is now sugar for `Vec<T>` (the growable
 > `baga_Vec`), not a raw C pointer — so vector parameters can be written

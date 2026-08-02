@@ -1,0 +1,39 @@
+// M14: channel ghost state — send on a known-closed channel definitely
+// returns -1 (provable); a recv payload claim is honestly UNKNOWN (any
+// payload, or 0 on closed+empty, is possible).
+
+spec send_after_close {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output == 0 - 1
+}
+
+fn send_after_close(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    chan_close(c)
+    let s = chan_send(c, n)
+    return s
+}
+
+spec recv_claim {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 1
+}
+
+fn recv_claim(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    let s = chan_send(c, n)
+    let v = chan_recv(c)
+    return v + s
+}
+
+fn main() -> i64 !Par {
+    print(send_after_close(7))   // -1
+    print(recv_claim(41))        // 41
+    return 0
+}
