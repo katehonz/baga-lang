@@ -225,6 +225,7 @@ baga/
 - [Thesis note M15](docs/thesis-m15-arith-safety.md) — the ℤ-vs-i64 bridge (arithmetic safety) + the loop-havoc soundness fix
 - [Thesis note M16](docs/thesis-m16-channel-invariants.md) — channel content invariants, cross-thread rely–guarantee
 - [Thesis note M17](docs/thesis-m17-pairs.md) — pair abstraction: cell2 rewrites + channel pair APIs
+- [Evaluation](docs/evaluation.md) — Baga `--verify` vs bit-precise model checking (methodology + results, `bench/`)
 - [Thesis note M18](docs/thesis-m18-overflow-effect.md) — **the culmination: `!Overflow` as an effect (the effect system ≡ the verifier)**
 - [Open problems](docs/thesis-open-problems.md) — the honest frontier: liveness, full bitvectors, rich polynomials
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
