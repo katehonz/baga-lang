@@ -233,7 +233,7 @@ baga/
 | 5 | Spec verification — runtime contracts (`requires`/`ensures`) | ✅ |
 | 6 | Proof extraction | ✅ |
 | 7 | **Static** spec verification (`--verify`): M0–M8 + **M9** product sign table + const division | ✅ |
-| 8 | General non-linear reasoning | ✅ M9–M10 (sign/div/mod, square dom, mono, n=qk+r) |
+| 8 | General non-linear reasoning | ✅ M9–M11 (floor mul, complete square, …) |
 | 9 | Concurrency (`!Par`, `go`/`go_bg`/`join`/`detach`, channels, mutex) — cloud accept loops | ✅ M1 |
 | 10 | LLVM backend `!Par` parity (`libbaga_par.so` + lli `-load`) | ✅ |
 
@@ -348,7 +348,14 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   `fa>=1, fb>=0` then `p >= fb`. When both `n/k` and `n%k` appear for the
   same constant `k`, inject `n = k*q + r`. Also fixed `¬(a==b)` conversion
   so `ensures output == n` is provable. Examples: `poly_depth.baga`,
-  `div_mod_id.baga`. Still honest-UNKNOWN for division/mod by a variable.
+  `div_mod_id.baga`.
+
+- **M11** — **floor multiplication and complete square**. For `q = n/k` with
+  `n >= 0`, `k > 0`: inject `k*q <= n` and remainder bound `n - k*q <= k-1`
+  (so `k*(n/k) <= n` and `2*(n/2) <= n`). For square `s = v*v`: also
+  `s - 2v + 1 >= 0` and `s + 2v + 1 >= 0` (i.e. `(v±1)^2`). Examples:
+  `floor_mul.baga`, `complete_sq.baga`. Still honest-UNKNOWN for division/mod
+  by a variable.
 
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
 supported. Remaining: richer polynomials, variable divisors, feeding verified

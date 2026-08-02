@@ -313,6 +313,16 @@ test: $(BIN)
 		&& grep -q "rebuild_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 		&& echo "OK: div_mod_id — n = q*k + r (M10)" \
 		|| { echo "FAIL: div_mod_id"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/floor_mul.baga > /tmp/baga_verify_out.txt; \
+	grep -q "floor4" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "floor_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: floor_mul — k*(n/k)<=n (M11)" \
+		|| { echo "FAIL: floor_mul"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/complete_sq.baga > /tmp/baga_verify_out.txt; \
+	grep -q "complete_m1" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "too_strong" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: complete_sq — (x±1)^2 (M11)" \
+		|| { echo "FAIL: complete_sq"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) examples/par_select.baga > /tmp/baga_par_sel_out.txt; \
 	printf "30\n2\n" | diff - /tmp/baga_par_sel_out.txt > /dev/null \
 		&& echo "OK: chan_select2_wait/timeout" \

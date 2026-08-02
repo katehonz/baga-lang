@@ -1,0 +1,38 @@
+// M11: k*(n/k) <= n for n >= 0, k > 0 (C trunc toward zero).
+spec floor4 {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output <= n, output >= 0
+}
+fn floor4(n: i64) -> i64 {
+    let q = n / 4
+    return q * 4
+}
+
+spec half_twice {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output <= n, output >= 0
+}
+fn half_twice(n: i64) -> i64 {
+    let h = n / 2
+    return h + h
+}
+
+// too strong
+spec floor_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output == n
+}
+fn floor_bad(n: i64) -> i64 {
+    let q = n / 4
+    return q * 4
+}
+
+fn main() {
+    print(floor4(7))
+}

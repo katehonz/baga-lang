@@ -1597,10 +1597,9 @@ static void path_push_eq_zero(ConsList *path, Lin *expr) {
     cl_push(path, mk_cons(b, C_LE, rat_zero()));
 }
 
-/* M8–M10: inject TRUE facts about product/div/mod vars.
- * M10: square dominance (x*x >= x and x*x >= -x over ℤ), product
- * monotonicity (fa>=1,fb>=1 ⇒ p>=fa and p>=fb; fa>=0,fb>=1 ⇒ p>=fa; …),
- * and div–mod reconstruction (n = k*q + r) when both exist for same n,k. */
+/* M8–M11: inject TRUE facts about product/div/mod vars.
+ * M10: square dominance, product mono, n=k*q+r.
+ * M11: floor mul k*(n/k)<=n (n>=0,k>0); square complete s-2v+1>=0 and s+2v+1>=0. */
 static void inject_prod_axioms(State *st) {
     for (int i = 0; i < st->reads.n; i++) {
         ReadEntry *e = &st->reads.r[i];
@@ -1612,6 +1611,28 @@ static void inject_prod_axioms(State *st) {
             if (d > 0) {
                 if (n_ge0) path_push_ge(&st->path, e->var, 0);
                 if (n_le0) path_push_le(&st->path, e->var, 0);
+                /* M11: C trunc; n = d*q + r with 0 <= r < d when n>=0
+                 * ⇒ d*q <= n and n - d*q <= d-1. When n<=0: d*q >= n. */
+                if (n_ge0 || n_le0) {
+                    Lin qv = lin_var(e->var);
+                    Lin dq = lin_scale(&qv, rat_int(d));
+                    lin_free(&qv);
+                    if (n_ge0) {
+                        /* d*q - n <= 0 */
+                        Lin t = lin_sub(&dq, &e->fa);
+                        cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
+                        /* n - d*q - (d-1) <= 0  ⟺  remainder <= d-1 */
+                        Lin rem = lin_sub(&e->fa, &dq);
+                        rem.c = rat_sub(rem.c, rat_int(d - 1));
+                        cl_push(&st->path, mk_cons(rem, C_LE, rat_zero()));
+                    }
+                    if (n_le0) {
+                        /* n - d*q <= 0  ⟺  d*q >= n */
+                        Lin t = lin_sub(&e->fa, &dq);
+                        cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
+                    }
+                    lin_free(&dq);
+                }
             } else { /* d < 0 */
                 if (n_ge0) path_push_le(&st->path, e->var, 0);
                 if (n_le0) path_push_ge(&st->path, e->var, 0);
@@ -1643,11 +1664,33 @@ static void inject_prod_axioms(State *st) {
         }
         if (!e->is_prod) continue;
         if (lin_eq(&e->fa, &e->fb)) {
-            /* Square s = v*v over ℤ: s >= 0, s >= v, s >= -v
-             * (s - v = v(v-1), s + v = v(v+1) are products of consecutives). */
+            /* Square s = v*v over ℤ:
+             *   s >= 0, s >= v, s >= -v
+             *   s - 2v + 1 = (v-1)^2 >= 0
+             *   s + 2v + 1 = (v+1)^2 >= 0 */
             path_push_ge(&st->path, e->var, 0);
             path_push_ge_lin(&st->path, e->var, &e->fa);
             { Lin neg = lin_neg(&e->fa); path_push_ge_lin(&st->path, e->var, &neg); lin_free(&neg); }
+            {
+                Lin s = lin_var(e->var);
+                Lin two = lin_scale(&e->fa, rat_int(2));
+                /* -(s - 2v + 1) <= 0  ⟺  -s + 2v - 1 <= 0 */
+                Lin t = lin_sub(&two, &s);   /* 2v - s */
+                lin_free(&s); lin_free(&two);
+                t.c = rat_sub(t.c, rat_int(1));
+                cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
+            }
+            {
+                Lin s = lin_var(e->var);
+                Lin two = lin_scale(&e->fa, rat_int(2));
+                /* -(s + 2v + 1) <= 0  ⟺  -s - 2v - 1 <= 0 */
+                Lin neg2 = lin_neg(&two);
+                lin_free(&two);
+                Lin t = lin_sub(&neg2, &s);  /* -2v - s */
+                lin_free(&neg2); lin_free(&s);
+                t.c = rat_sub(t.c, rat_int(1));
+                cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));
+            }
             continue;
         }
         int fa_ge1 = path_proves_ge(st, &e->fa, 1);
