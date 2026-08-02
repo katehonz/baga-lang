@@ -117,6 +117,9 @@ SDD fixes the workflow around AI agents; Baga makes the spec something the
 *compiler* checks and extracts readable proofs from. In SDD terms, Baga is
 the **spec-as-source, machine-checked** end of the spectrum.
 
+> Защо го правим и какъв е смисълът, в крайна сметка —
+> виж [docs/meaning-bg.md](docs/meaning-bg.md).
+
 ## Examples
 
 ```baga
