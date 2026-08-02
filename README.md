@@ -18,6 +18,9 @@ make
 # Здравей, багатуре. Боят започва.
 ```
 
+Or try it in the browser — `python3 playground/serve.py` → http://localhost:8080
+(see [playground/README.md](playground/README.md)).
+
 Zero dependencies for the core compiler — only `gcc` and `make`. The LLVM
 backend is optional (see [Backends](#backends)).
 

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baga ⚔️ Playground</title>
+<style>
+  :root { --bg: #0f1115; --panel: #171a21; --fg: #d7dae0; --accent: #e0b040; --red: #e06c60; --green: #8fce6b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  header { padding: 12px 20px; display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #262a33; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; color: var(--accent); }
+  header .sub { color: #8a8f99; font-size: 13px; }
+  select, button { background: var(--panel); color: var(--fg); border: 1px solid #2c313c; border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #14161b; font-weight: 600; border: none; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 0; height: calc(100vh - 54px); }
+  textarea { width: 100%; height: 100%; background: var(--panel); color: var(--fg); border: none; outline: none; resize: none; padding: 16px; font: 14px/1.55 "SF Mono", Menlo, Consolas, monospace; tab-size: 4; }
+  #out { background: #0b0d10; padding: 16px; overflow: auto; white-space: pre-wrap; font: 13px/1.55 Menlo, Consolas, monospace; border-left: 1px solid #262a33; margin: 0; }
+  .ok { color: var(--green); } .bad { color: var(--red); } .dim { color: #8a8f99; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚔️ Baga</h1>
+  <span class="sub">spec-first верификация · ефекти като типове · доказателства от кода</span>
+  <select id="examples"></select>
+  <button class="primary" id="run">Run</button>
+  <button id="verify">--verify</button>
+  <button id="json">--json</button>
+  <button id="proofs">--proofs</button>
+</header>
+<main>
+  <textarea id="code" spellcheck="false"></textarea>
+  <pre id="out"><span class="dim">Изходът ще се появи тук…</span></pre>
+</main>
+<script>
+const EXAMPLES = {
+  "Факториел — напълно доказан (M5–M8)":
+`spec fact {
+    input: n: i64
+    output: i64
+    requires: n >= 0
+    ensures: output >= 1
+    decreases: n
+}
+
+fn fact(n: i64) -> i64 {
+    if n <= 0 { return 1 }
+    let r = fact(n - 1)
+    return n * r
+}
+
+fn main() {
+    print(fact(10))
+}
+`,
+  "Оборване с контрапример":
+`spec bad_abs {
+    input: x: i64
+    output: i64
+    ensures: output >= 0
+}
+
+fn bad_abs(x: i64) -> i64 {
+    if x < 0 { return x }
+    return x
+}
+
+fn main() {
+    print(bad_abs(0 - 5))
+}
+`,
+  "Ефекти като измерения на типа":
+`fn прочети_файл(път: str) -> str !IO !NotFound {
+    return "съдържание"
+}
+
+fn обработи(път: str) -> str !IO !NotFound {
+    // ? propagate-ва ефектите нагоре
+    let данни = прочети_файл(път)?
+    return данни
+}
+
+fn main() {
+    // catch обработва ВСЯКО измерение
+    let резултат = прочети_файл("данни.txt")
+        catch !NotFound => "празно"
+        catch !IO => "грешка"
+    print(резултат)
+}
+`,
+  "Кирилица и Фибоначи":
+`fn фибоначи(n: i64) -> i64 {
+    let mut a: i64 = 0
+    let mut b: i64 = 1
+    let mut i: i64 = 0
+    while i < n {
+        let temp = b
+        b = a + b
+        a = temp
+        i = i + 1
+    }
+    return a
+}
+
+fn main() {
+    for i in 0..15 {
+        print(фибоначи(i))
+    }
+}
+`,
+};
+
+const sel = document.getElementById("examples");
+const code = document.getElementById("code");
+const out = document.getElementById("out");
+for (const name of Object.keys(EXAMPLES)) {
+  const o = document.createElement("option");
+  o.textContent = name; o.value = name;
+  sel.appendChild(o);
+}
+sel.onchange = () => { code.value = EXAMPLES[sel.value]; };
+code.value = EXAMPLES[Object.keys(EXAMPLES)[0]];
+
+async function go(mode) {
+  out.innerHTML = '<span class="dim">работя…</span>';
+  try {
+    const r = await fetch("/api/run", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code: code.value, mode}),
+    });
+    const d = await r.json();
+    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    let html = "";
+    if (d.stdout) html += esc(d.stdout);
+    if (d.stderr) html += '<span class="dim">' + esc(d.stderr) + "</span>";
+    html += '<span class="' + (d.exit === 0 ? "ok" : "bad") + '">\n— exit ' + d.exit + "</span>";
+    out.innerHTML = html;
+  } catch (e) {
+    out.innerHTML = '<span class="bad">грешка: ' + e + "</span>";
+  }
+}
+document.getElementById("run").onclick = () => go("run");
+document.getElementById("verify").onclick = () => go("verify");
+document.getElementById("json").onclick = () => go("json");
+document.getElementById("proofs").onclick = () => go("proofs");
+</script>
+</body>
+</html>
