@@ -1,8 +1,10 @@
 # Baga: Theory and Mathematical Foundations
 
-> *Nothing is new. But nothing is timely. Linear logic is from 1987. It took 30 years to become Rust. Effect systems are from 2003. Maybe now is the time.*
+> *Nothing is new. But nothing is timely. Linear logic is from 1987. It took 30 years to become Rust. Effect systems are from 2003. Fourier–Motzkin is from 1826/1936. Maybe now is the time.*
 
-This document presents the formal mathematical foundations underlying the Baga programming language. Baga is built on three pillars — spec-first verification, effects as type dimensions, and automatic proof extraction — each of which draws on deep results from type theory, algebra, and logic. We develop the theory from first principles, connecting Baga's concrete syntax to the abstract mathematics that gives it meaning.
+This document presents the formal mathematical foundations underlying the Baga programming language. Baga is built on three pillars — spec-first verification, effects as type dimensions, and automatic proof extraction — each of which draws on deep results from type theory, algebra, real geometry of polyhedra, and program logic. We develop the theory from first principles, connecting Baga's concrete syntax to the abstract mathematics that gives it meaning.
+
+**Fair warning.** Ordinary undergraduate software-engineering programmes teach syntax, OOP, and HTTP. They do **not** teach join-semilattices of effect rows, Hoare triples with decreases measures, Fourier–Motzkin elimination over ℚ, Farkas certificates, the ℤ/ℚ gap for strict inequalities, or sound axiom envelopes for nonlinear products. This document does. Read it as the mathematical spine of the compiler, not as a tutorial.
 
 ---
 
@@ -442,102 +444,85 @@ fn сортирай(arr: i64) -> i64 {
 The spec and the function are **separate declarations**. The compiler associates them by name matching and checks:
 
 1. **Signature conformance**: input/output types match.
-2. **Guarantee verification**: the implementation satisfies all guarantees (current status: UNVERIFIED for complex guarantees).
+2. **Contract verification** (`requires` / `ensures`): mechanically discharged by the static verifier for a defined arithmetic fragment (see §8), or checked dynamically at runtime.
+
+Executable fragment used by `--verify`:
+
+```baga
+spec abs_val {
+    input:  n: i64
+    output: i64
+    ensures: output >= 0, output >= n, output >= 0 - n
+}
+fn abs_val(n: i64) -> i64 {
+    if n >= 0 { return n } else { return 0 - n }
+}
+```
 
 ### 3.3 Formal Specification Semantics
 
 **Definition (Specification).** A Baga specification is a tuple:
 
-    S = (name, inputs, output, guarantees)
+    S = (name, inputs, output, requires, ensures, decreases?)
 
 where:
 - name ∈ Identifier
-- inputs = [(x₁, T₁), ..., (xₙ, Tₙ)] is a list of typed parameters
-- output = T_ret is the return type
-- guarantees = [G₁, ..., Gₖ] is a list of guarantee predicates
+- inputs = [(x₁, T₁), ..., (xₙ, Tₙ)]
+- output = T_ret
+- requires = [R₁, ..., Rₘ] — precondition predicates over inputs
+- ensures = [E₁, ..., Eₖ] — postcondition predicates over inputs and `output`
+- decreases? — optional well-founded measure for termination (M6)
 
-**Definition (Spec-Function Association).** A function f is associated with spec S if and only if:
+**Definition (Spec-Function Association).** A function f is associated with spec S iff `name(f) = name(S)` (at most one spec per name).
 
-    name(f) = name(S)
-
-This is a **name-matching** association. There is at most one spec per function name.
-
-**Definition (Signature Conformance).** Function f conforms to spec S if and only if:
+**Definition (Signature Conformance).**
 
     typeof(params(f)) = inputs(S)  ∧  typeof(return(f)) = output(S)
 
-Formally, if f has signature (x₁: T₁, ..., xₙ: Tₙ) → T_ret, then:
-
-    ∀i ∈ {1,...,n}. Tᵢ = Tᵢ^S   ∧   T_ret = T_ret^S
-
-**Example of signature violation:**
-
-```baga
-spec грешна {
-    input:
-        x: i64
-    output: f64          // spec says f64
-    guarantees:
-        - something
-}
-
-fn грешна(x: i64) -> i64 {   // function returns i64
-    return x
-}
-```
-
-The compiler rejects this: `error: spec 'грешна' declares output f64, but function returns i64`.
-
 ### 3.4 Verification Conditions
 
-**Definition (Verification Condition).** Given spec S with guarantees [G₁, ..., Gₖ] and implementation f, the verification condition is:
+**Definition (Verification Condition).** For pure `f` with body paths Π:
 
-    VC(f, S) ≡ ∀x₁: T₁, ..., xₙ: Tₙ. G₁(f(x₁,...,xₙ)) ∧ ... ∧ Gₖ(f(x₁,...,xₙ))
+    VC(f, S) ≡ ∀ path π ∈ Π.  (requires ∧ path_π ∧ ret_π)  ⇒  ensures[output ↦ ret_π]
 
-That is: for all valid inputs, all guarantees hold simultaneously on the output.
+Equivalently, the verifier shows that for every path,
 
-**Current status.** Baga's current implementation checks:
-- ✅ Signature conformance (fully verified at compile time)
-- ⚠️ Guarantee verification (UNVERIFIED — guarantees are listed but not mechanically proved)
+    requires ∧ path_π ∧ ¬ensures   is unsatisfiable over ℤ
 
-**Future directions:**
-- SMT-based verification of simple guarantees (sortedness, element preservation)
-- Integration with proof extraction for automated discharge
-- AI-assisted verification: the compiler generates proof obligations, AI discharges them
+inside the fragment of §8. Outside the fragment the path is marked UNKNOWN — never falsely PROVEN.
+
+**Implemented.** Signature check; static `--verify` (M0–M13); runtime contracts; property-based `--test-specs`.
 
 ### 3.5 Connection to Hoare Logic
 
-Baga's specs can be read as Hoare triples:
+Baga contracts are Hoare triples with explicit preconditions:
 
-    {P} f {Q}
+    { requires }  f  { ensures }
 
-where:
-- P (precondition) = true (Baga specs currently have no explicit preconditions; all inputs of the declared type are valid)
-- Q (postcondition) = G₁ ∧ G₂ ∧ ... ∧ Gₖ (the conjunction of all guarantees)
-
-The Hoare logic rules that apply:
-
-**Consequence rule:**
+**Consequence:**
 
     {P'} f {Q'}    P ⇒ P'    Q' ⇒ Q
     -----------------------------------
     {P} f {Q}
 
-**Composition rule:**
+**While (invariant I, condition b):**
 
-    {P} f {Q}    {Q} g {R}
-    -------------------------
-    {P} g ∘ f {R}
+    {I}  assert I          (init)
+    {I ∧ b}  body  {I}     (preservation)
+    ─────────────────────────────────
+    {I} while b { body } {I ∧ ¬b}
 
-In Baga, composition of spec'd functions preserves guarantees through the effect system: if f guarantees G_f and g guarantees G_g, then g(f(x)) guarantees G_f ∧ G_g (modulo effect interactions).
+Trusted post-loop use of I only if both init and preservation are PROVEN (soundness gate).
+
+**Recursion (assume–guarantee):** callee `requires` discharged at call site; callee `ensures` assumed for the result iff body is verifiable — partial correctness unless `decreases` proves termination (full correctness).
 
 ### 3.6 The Spec as Communication Protocol
 
-The deeper role of specs in Baga is as a **communication protocol between human and AI**:
+Specs are a **protocol between human and AI**:
 
-1. The human writes the spec (architecture, intent, guarantees).
-2. The AI writes the implementation (mechanics, algorithms).
-3. The compiler mediates (checks conformance).
+1. Human writes the contract (intent, bounds, measures).
+2. AI writes the implementation.
+3. The compiler is the judge (`--verify` / runtime / `--test-specs`).
 
 This inverts the traditional workflow. The spec is not documentation — it is the **primary artifact**. The implementation is secondary, derivable, replaceable.
 
@@ -608,10 +593,10 @@ Extracted when f declares no effects (E = ∅). This is a theorem because purity
 
 For effectful functions, the compiler documents exactly which effects callers must handle.
 
-**5. Spec guarantees (with status):**
+**5. Spec contracts (with static status when `--verify` runs):**
 
-    theorem f_guarantees:
-        - G₁ [UNVERIFIED]
+    theorem f_ensures:
+        - E₁ [PROVEN | REFUTED | UNKNOWN]     // see §7
         - G₂ [UNVERIFIED]
 
 Guarantees from the associated spec are listed with their verification status.
@@ -968,7 +953,9 @@ This is why the bootstrap ritual requires only two generations, not an infinite 
 | Effect sets | Join-semilattice (𝒫_fin(𝔼), ∪, ∅) | Commutative, idempotent |
 | Effect composition | Monadic composition | Associativity |
 | Effect subtyping | Partial order (⊆) | Width subtyping |
-| Specifications | Hoare triples {P}f{Q} | Consequence rule |
+| Specifications | Hoare triples {P}f{Q} | Consequence / while / recursion rules |
+| Static verify | Polyhedra + FM + Farkas | Sound PROVEN / REFUTED / UNKNOWN |
+| Nonlinear envelope | Factor-aware product symbols | Incomplete, sound schemas M8–M13 |
 | Proof extraction | Curry-Howard (reverse) | Programs → Propositions |
 | Self-hosting | Fixed-point iteration | Kleene theorem |
 | Termination | Well-founded induction | Decreasing measure |
@@ -976,41 +963,197 @@ This is why the bootstrap ritual requires only two generations, not an infinite 
 
 ---
 
-## 7. Open Problems and Future Directions
+## 7. Static Verification Theory  
+*(Fourier–Motzkin, Farkas, ℤ-tightening, nonlinear envelopes)*
 
-### 7.1 Decidability of Guarantee Verification
+> This section is the part that does not appear in ordinary software-engineering curricula. It is the mathematical content of `src/verify.c` milestones M0–M13.
 
-The current system marks guarantees as UNVERIFIED. Full verification requires deciding:
+### 7.1 The decision problem and trichotomy
 
-    ∀x: T. G(f(x))
+Fix a pure function `f` with contract `{R} f {E}` over `i64`. After symbolic execution we obtain a finite set of *path obligations*. For each path π with path condition Γ_π and return expression r_π, the verifier must classify:
 
-For arbitrary G and f, this is undecidable (Rice's theorem). However, for restricted classes of guarantees (sortedness, length preservation, element membership), SMT-based approaches can provide decidable verification.
+    VC_π  ≡   R ∧ Γ_π  ⇒  E[output ↦ r_π]
 
-**Research question:** What is the largest decidable fragment of Baga guarantees that covers practical specifications?
+equivalently, decide satisfiability of
 
-### 7.2 Effect Polymorphism and Higher-Order Functions
+    Σ_π  ≡   R ∧ Γ_π ∧ ¬E[output ↦ r_π]
 
-The current effect system handles first-order functions. Extending to higher-order functions requires effect polymorphism:
+**Definition (Verdict trichotomy).**
+
+| Verdict | Meaning | Obligation on the engine |
+|---------|---------|---------------------------|
+| **PROVEN** (ДОКАЗАНО) | Σ_π is unsatisfiable over ℤ | Must be correct: never a false proof |
+| **REFUTED** (ОБРОЧЕНО) | ∃ concrete ℤ-witness violating E | Witness must be realizable (no free abstracts) |
+| **UNKNOWN** (НЕ МОГА ДА РЕША) | Outside fragment / incomplete | Always safe; never asserts |
+
+Rice's theorem: *arbitrary* semantic properties of programs are undecidable. Baga therefore works in a **syntactically restricted fragment** ℱ (defined below) where PROVEN is backed by linear arithmetic unsatisfiability, not by hope.
+
+### 7.2 Linear forms and polyhedral path conditions
+
+**Definition (Linear form over ℚ).** A linear form is
+
+    ℓ = c₀ + Σᵢ cᵢ · xᵢ    with   cᵢ ∈ ℚ, xᵢ free symbols.
+
+The symbolic state maps program variables to linear forms (or marks them nonlinear). Vector lengths are tracked as linear forms in a separate map; element axioms `v[*] ≥ c` are quantified templates instantiated at each `vec_get`.
+
+**Definition (Atomic constraint).**
+
+    ℓ  ⋖  0     where ⋖ ∈ { < , ≤ }
+
+**Definition (Path formula).** A path condition is a DNF of conjunctions of atomic constraints — a finite union of convex polyhedra in ℚⁿ. Boolean structure of `if` conditions is converted by De Morgan into this DNF (`bool_to_dnf`).
+
+### 7.3 Fourier–Motzkin elimination
+
+**Theorem (Fourier–Motzkin, classical).** Satisfiability of a finite system of linear inequalities over ℚ is decidable by successive variable elimination: to eliminate x, partition constraints into those with positive / negative / zero coefficient of x and form all cross-bounds. The system is sat iff the residual system after eliminating all variables is sat.
+
+Baga implements FM as the core engine for path obligations. Complexity is doubly exponential in the worst case in the number of variables — acceptable because path systems are small and the alternative (external SMT) violates the zero-dependency invariant.
+
+**Corollary (Rational completeness for LRA).** Inside pure linear real arithmetic, FM is a complete decision procedure. Combined with the trichotomy, every linear obligation is PROVEN or REFUTED (or UNKNOWN only if conversion to DNF fails for other reasons).
+
+### 7.4 Farkas certificates and the meaning of PROVEN
+
+**Theorem (Farkas' lemma, geometric form).** A system A x ≤ b over ℚ is unsatisfiable iff there exists λ ≥ 0 such that λᵀ A = 0 and λᵀ b < 0 (a nonnegative linear combination of inequalities yielding a contradiction 0 ≤ −ε).
+
+Operationally, when FM reports unsat, the combination that produced the empty face is a **Farkas certificate**: a checkable proof object that Σ_π has no rational solution. Baga's PROVEN path is exactly "¬E is unsat under R ∧ Γ", i.e. R ∧ Γ ⊨ E over ℚ, hence over ℤ after the tightening of §7.5.
+
+### 7.5 Integer tightening (M7) — closing the ℤ/ℚ gap
+
+Over ℤ, for integer-valued linear forms with integer coefficients:
+
+    ℓ < 0    ⟺    ℓ ≤ −1
+
+**Definition (Integer tightening).** Before FM, every strict inequality on integer forms is rewritten to a non-strict one shifted by one.
+
+**Proposition (Exactness on ℤ).** Tightening preserves the set of integer solutions and does not invent rational-only solutions that would create false PROVEN. The classic trap
+
+    n > 0  ⊬_ℚ  n ≥ 1     but    n > 0 ⊢_ℤ n ≥ 1
+
+is closed: after tightening, `n ≥ 1` is PROVEN from `n > 0`.
+
+This is standard in integer linear programming and almost never taught in software courses; without it, verifiers either lie or stay forever weak on the most basic integer facts.
+
+### 7.6 Symbolic execution rules (core fragment ℱ₀)
+
+States σ = (env, path, lengths, axioms, derived-symbols).
+
+| Construct | Rule |
+|-----------|------|
+| `let x = e` | bind x ↦ ⟦e⟧_σ if linear; else mark nonlinear / allocate product symbol |
+| `if b then t else e` | DNF-split on b and ¬b; fork path; inject product axioms (M13) |
+| `while b invariant I` | prove I at entry; prove I preserved under b; exit with I ∧ ¬b only if trusted |
+| `return e` | snapshot (path, ⟦e⟧) as obligation |
+| `vec_get(v,i)` | bound obligations 0 ≤ i < len(v); instantiate element axioms |
+| call `g(args)` with spec | discharge g.requires; assume g.ensures on fresh result (M5) |
+
+**Unsupported** constructs mark the function SKIPPED/UNKNOWN — honest incompleteness, never silent accept.
+
+### 7.7 Recursion and termination
+
+**Partial correctness (M5).** Recursive calls use the callee contract as induction hypothesis. Verdicts are labelled partial: they do not claim termination.
+
+**Full correctness (M6).** A `decreases: D` measure requires:
+
+    R ⇒ D ≥ 0
+    at each self-call: D' ≥ 0 ∧ D' < D
+
+under the path condition. This is well-founded induction on (ℕ, <) (or a lexicographic extension). A non-decreasing measure is REFUTED with a witness; the function falls back to partial correctness.
+
+### 7.8 Nonlinear envelope: product symbols (M8–M12)
+
+Nonlinear integer arithmetic (NIA) is undecidable. Baga does **not** decide NIA. It uses a **factor-aware envelope**:
+
+**Definition (Derived product symbol).** For non-constant product of linear forms f · g, allocate fresh p with record (f, g) ∈ Π. Similarly q for f/g, r for f%g.
+
+**Axiom injection.** Only universally valid schemas, often conditioned on path facts about f, g:
+
+| Schema | Hypothesis | Conclusion |
+|--------|------------|------------|
+| Square | — | v·v ≥ 0, v·v ≥ v, v·v ≥ −v, (v±1)² ≥ 0 |
+| Sign table | sign bounds on f,g | matching sign of fg |
+| Mono | f≥0, g≥1 | fg ≥ f (sym.) |
+| Const div/mod | d≠0, sign(n) | C trunc laws; 0 ≤ n%d < \|d\| if n≥0 |
+| Floor | n≥0, d>0 | d·(n/d) ≤ n |
+| Rebuild | both n/d and n%d | n = d·q + r |
+| Var div | m≥1, n≥0 | 0 ≤ n/m ≤ n, 0 ≤ n%m < m |
+| AM-GM form | f², g², fg present | f² + g² − 2fg ≥ 0 |
+
+**Witness soundness.** Free inputs are searched; product/div/mod values are *derived* from factors, never free. A **conclusiveness gate** rejects refutations that only work for unrealizable abstract symbols (the M8 false-alarm class).
+
+### 7.9 Nonlinear guards and bitwise envelope (M13)
+
+**Products in conditions.** `bool_to_dnf` threads the derived-symbol list, so a guard `n*n ≥ 1` becomes a linear constraint on a product symbol, not an automatic UNKNOWN. After each `if`/`while` decode, axiom injection runs so both forks inherit e.g. n·n ≥ 0.
+
+**Bitwise without bitvectors.** Full BV is decidable but exponential and alien to the polyhedral core. M13 admits only **linear rewrites / residue axioms**:
+
+- n \| 0 = n, n & 0 = 0, n ⊕ 0 = n, n ⊕ n = 0, n & (−1) = n  
+- n & 1 ∈ {0,1} over two's complement (explicitly **not** C `n % 2` on negatives)  
+- n ≪ k = n · 2ᵏ for constant k ∈ [0,62] (unbounded-ℤ model)  
+- n ≫ k as trunc n/2ᵏ with axioms under n ≥ 0  
+
+Anything else bitwise remains nonlinear → UNKNOWN.
+
+### 7.10 Soundness theorems (sketch)
+
+**Theorem (PROVEN is sound).**  
+If `--verify` reports PROVEN for ensures E, then every terminating execution of the body on inputs satisfying requires yields a return value satisfying E (under the idealized semantics of div/mod/shift used by the injector).
+
+*Proof idea.* Every PROVEN path has R ∧ Γ ∧ ¬E ℚ-unsat after sound axiom injection and integer tightening; axioms are valid on ℤ; unsupported features never produce PROVEN.
+
+**Theorem (REFUTED is sound).**  
+A reported counterexample evaluates to a true violation after deriving all product/div/mod/bit symbols from free inputs; conclusiveness re-checks independence from remaining abstracts.
+
+**Corollary (UNKNOWN is safe).** UNKNOWN never claims a false contract.
+
+### 7.11 Complexity and incompleteness map
+
+| Theory | Status | Baga stance |
+|--------|--------|-------------|
+| LRA (linear real arithmetic) | PSPACE-complete / FM exp | Core decision procedure |
+| LIA / Presburger | Decidable, expensive | Approximated via FM + tightening |
+| NIA (nonlinear integers) | Undecidable | Envelope schemas only |
+| Quantifier-free BV | Decidable, exp | Identity envelope only |
+| Arbitrary semantic properties | Undecidable (Rice) | Fragment gate → UNKNOWN |
+
+### 7.12 What this is *not* taught as in software universities
+
+A typical SE bachelor's degree covers none of: polyhedral path conditions, Farkas lemmas, the ℤ/ℚ gap, well-founded decreases measures, assume–guarantee recursion, or sound incompleteness as a first-class design choice. Those topics live in formal methods / PL theory tracks — if at all. Baga embeds them in a zero-dependency C compiler so that AI-written code faces a judge that knows more mathematics than the average bot prompt.
+
+**Artifact.** `src/verify.c`; examples under `examples/verify/`; research note `docs/thesis-m13-nonlinear-fragment.md`.
+
+---
+
+## 8. Open Problems and Future Directions
+
+### 8.1 Extending the decidable envelope
+
+M0–M13 answer a restricted form of:
+
+    What is the largest *practically useful* fragment ℱ ⊇ LRA
+    for which a zero-dep verifier can issue sound PROVEN/REFUTED?
+
+Open: cubes and general polynomials; full BV; quantifiers beyond `v[*]` / `sorted`; overflow-aware shifts; feeding verified invariants into `--proofs` export.
+
+### 8.2 Effect Polymorphism and Higher-Order Functions
 
     map : ∀E. (T → U !E) → [T] → [U] !E
 
-The effect of the callback propagates to the higher-order function. This requires row polymorphism or effect variables, increasing the complexity of type inference.
+requires effect variables / row polymorphism and richer inference.
 
-### 7.3 Proof Refinement
+### 8.3 Proof Refinement
 
-The current proof extraction produces sketches. A future direction is **proof refinement**: the ability to mark a sketch as VERIFIED (by human or AI attestation), creating a chain of trust:
+    UNKNOWN sketch → AI_VERIFIED → HUMAN_VERIFIED → FORMAL (Lean/Coq)
 
-    UNVERIFIED → AI_VERIFIED → HUMAN_VERIFIED → FORMAL (exported to Lean/Coq)
+each step increases confidence without full formalization at the base.
 
-Each level increases confidence without requiring full formalization at the base level.
-
-### 7.4 Categorical Semantics of Specs
-
-Specifications can be given categorical semantics as **fibred categories** or **indexed categories**:
+### 8.4 Categorical Semantics of Specs
 
     Spec : C^op → Set
 
-mapping each object (type) to the set of valid specifications over that type. The functorial action maps morphisms (functions) to specification transformations. This provides a compositional semantics for spec composition.
+as a fibration: objects map to predicates; morphisms to predicate transformers. Compositional semantics for contract composition.
+
+### 8.5 Concurrency in the verifier
+
+`!Par` is implemented at runtime (pthreads / LLVM runtime). Static race/deadlock reasoning over channels remains open.
 
 ---
 
@@ -1018,17 +1161,27 @@ mapping each object (type) to the set of valid specifications over that type. Th
 
 1. Barendregt, H. (1992). Lambda calculi with types. *Handbook of Logic in Computer Science*, Vol. 2.
 2. Curry, H.B. & Feys, R. (1958). *Combinatory Logic*, Vol. I. North-Holland.
-3. Dafny (2010). Leino, K.R.M. Dafny: An automatic program verifier for functional correctness. *LPAR-16*.
-4. Howard, W.A. (1980). The formulae-as-types notion of construction. In *To H.B. Curry: Essays on Combinatory Logic*.
-5. Knuth, D.E. (1984). Literate programming. *The Computer Journal*, 27(2), 97–111.
-6. Leijen, D. (2017). Type directed compilation of row-typed algebraic effects. *POPL 2017*.
-7. Meyer, B. (1986). Design by contract. *IEEE Computer*, 25(10), 40–51.
-8. Moggi, E. (1991). Notions of computation and monads. *Information and Computation*, 93(1), 55–92.
-9. Plotkin, G. & Power, J. (2003). Algebraic operations and generic effects. *Applied Categorical Structures*, 11(1), 69–94.
-10. Scott, D. (1971). The lattice of flow diagrams. *Semantics of Algorithmic Languages*, Springer.
+3. Dantzig, G.B. & Eaves, B.C. (1973). Fourier–Motzkin elimination and its dual. *J. Combinatorial Theory*.
+4. Farkas, J. (1902). Theorie der einfachen Ungleichungen. *Journal für die reine und angewandte Mathematik*.
+5. Floyd, R.W. (1967). Assigning meanings to programs. *Proc. AMS Symposia in Applied Mathematics*.
+6. Fourier, J. (1826). Solution d'une question particulière du calcul des inégalités.
+7. Hoare, C.A.R. (1969). An axiomatic basis for computer programming. *CACM* 12(10).
+8. Howard, W.A. (1980). The formulae-as-types notion of construction. In *To H.B. Curry: Essays…*
+9. Leino, K.R.M. (2010). Dafny: An automatic program verifier. *LPAR-16*.
+10. Leijen, D. (2017). Type directed compilation of row-typed algebraic effects. *POPL 2017*.
+11. Meyer, B. (1986). Design by contract. *IEEE Computer*.
+12. Moggi, E. (1991). Notions of computation and monads. *Information and Computation* 93(1).
+13. Motzkin, T.S. (1936). Beiträge zur Theorie der linearen Ungleichungen. Doctoral thesis, Basel.
+14. Plotkin, G. & Power, J. (2003). Algebraic operations and generic effects. *Applied Categorical Structures*.
+15. Presburger, M. (1929). Über die Vollständigkeit eines gewissen Systems der Arithmetik…
+16. Rice, H.G. (1953). Classes of recursively enumerable sets and their decision problems. *Trans. AMS*.
+17. Schrijver, A. (1986). *Theory of Linear and Integer Programming*. Wiley.
+18. Scott, D. (1971). The lattice of flow diagrams. *Semantics of Algorithmic Languages*, Springer.
+19. Winskel, G. (1993). *The Formal Semantics of Programming Languages*. MIT Press.
 
 ---
 
-*Written for the Baga programming language. Last updated: 2026.*
+*Written for the Baga programming language. Last updated: 2026-08 (M13).*
 
-*"The question is not 'what is new'. The question is 'what has not been glued together yet'."*
+*"The question is not 'what is new'. The question is 'what has not been glued together yet'."*  
+*"Ordinary software universities do not teach Farkas lemmas. The bots will learn them here."*

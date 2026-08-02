@@ -215,8 +215,9 @@ baga/
 
 ## Documentation
 
-- [Theory & Mathematics (EN)](docs/theory-en.md) — Type theory, effect systems, proof theory
-- [Теория и Математика (BG)](docs/theory-bg.md) — Теория на типовете, ефектови системи, теория на доказателствата
+- [Theory & Mathematics (EN)](docs/theory-en.md) — Type theory, effects, Hoare, **Fourier–Motzkin / Farkas / nonlinear envelopes (M0–M13)**
+- [Теория и Математика (BG)](docs/theory-bg.md) — Типове, ефекти, Хоар, **FM / Farkas / нелинейни обвивки (M0–M13)** — не се учи в обикновен SE курс
+- [Thesis note M13](docs/thesis-m13-nonlinear-fragment.md) — research write-up of the nonlinear + bitwise fragment
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen

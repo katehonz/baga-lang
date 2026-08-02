@@ -1,7 +1,14 @@
 # Теория и Математика на Бага
 
 > Формалните основи на езика Бага: теория на типовете, ефектови системи,
-> спецификации и извличане на доказателства.
+> спецификации, статична верификация (Fourier–Motzkin, Farkas, нелинейни
+> обвивки) и извличане на доказателства.
+
+**Предупреждение.** Обикновеният софтуерен бакалавър учи синтаксис, OOP и
+HTTP. Той **не** учи join-полурешетки на ефектови редове, тройки на Хоар с
+`decreases`, елиминация на Fourier–Motzkin над ℚ, лема на Farkas, пропастта
+ℤ/ℚ при строги неравенства, нито sound обвивки за нелинейни произведения.
+Този документ го прави. Това е гръбнакът на компилатора, не tutorial.
 
 ---
 
@@ -13,6 +20,8 @@
 4. [Извличане на Доказателства](#4-извличане-на-доказателства)
 5. [Self-Hosting и Bootstrapping](#5-self-hosting-и-bootstrapping)
 6. [Математически Основи (Обобщение)](#6-математически-основи-обобщение)
+7. [Статична верификация — FM, Farkas, нелинейни обвивки](#7-статична-верификация--fm-farkas-нелинейни-обвивки)
+8. [Отворени проблеми](#8-отворени-проблеми)
 
 ---
 
@@ -519,121 +528,90 @@ Rust, където грешката е *стойност* (`Result<T, E>`), в �
 
 Бага прави три фундаментални промени:
 
-**1. Спецификацията е първокласен гражданин.** Тя не е коментар, не е
-анотация, не е тест. Тя е `spec` — ключова дума в езика:
+**1. Спецификацията е първокласен гражданин.** `spec` с `requires` / `ensures`
+(и опционално `decreases`) — не коментар, не тест.
 
 ```baga
-spec сортирай {
-    input:
-        arr: [i64]
-    output: [i64]
-    guarantees:
-        - output is sorted
-        - output has same elements as input
+spec abs_val {
+    input:  n: i64
+    output: i64
+    ensures: output >= 0, output >= n, output >= 0 - n
+}
+fn abs_val(n: i64) -> i64 {
+    if n >= 0 { return n } else { return 0 - n }
 }
 ```
 
-**2. Компилаторът е съдията.** Проверката не е по време на изпълнение, а по
-време на *компилация*. Ако имплементацията нарушава гаранция, компилаторът
-отказва програмата:
+**2. Компилаторът е съдията** — статично (`--verify`, §7), runtime договори,
+property-based `--test-specs`. При ОБРОЧЕНО се дава **конкретен контрапример**.
+
+**3. Протокол човек ↔ AI.** Човекът пише договора; AI — тялото; компилаторът
+съди. Работният процес:
 
 ```
-error: implementation violates specification 'сортирай':
-  guarantee 'output is sorted' may not hold
-  counterexample: arr = [3, 1, 2] → output = [3, 1, 2]
-```
-
-**3. Спецификацията е интерфейсът между човек и AI.** Човекът пише spec-а
-(архитектът). AI пише имплементацията (изпълнителят). Компилаторът проверява
-(съдията). Това е новият работен процес:
-
-```
-Човек → spec → AI → impl → Компилатор → ✓ или ✗
+Човек → spec → AI → impl → --verify / runtime → ДОКАЗАНО | ОБРОЧЕНО | UNKNOWN
 ```
 
 ### 3.3 Формална семантика на спецификациите
 
-Спецификацията `spec S { input: x̄ : T̄, output: T_r, guarantees: ḡ }` се
-интерпретира като *логическа формула*:
+**Определение.** Спецификация:
 
 ```
-⟦S⟧ = ∀x̄ : T̄. ∀r : T_r. f(x̄) = r → g₁(x̄, r) ∧ g₂(x̄, r) ∧ ... ∧ gₙ(x̄, r)
+S = (name, inputs, output, requires, ensures, decreases?)
 ```
 
-където:
-- `x̄` са входните параметри
-- `r` е резултатът
-- `gᵢ` са гаранциите, изразени като предикати върху входа и изхода
-
-За примера със сортирането:
+Семантика на договора:
 
 ```
-⟦сортирай⟧ = ∀arr: [i64]. ∀r: [i64].
-    сортирай(arr) = r →
-    sorted(r) ∧ multiset(r) = multiset(arr)
+⟦S⟧ = ∀x̄.  requires(x̄)  ⇒  ensures(x̄, f(x̄))
 ```
+
+с частична коректност при рекурсия без `decreases`, и пълна коректност когато
+мярката доказва терминация (M6).
 
 ### 3.4 Връзка с логиката на Хоар
 
-Логиката на Хоар (Hoare, 1969) използва тройки:
-
 ```
-{P} C {Q}
+{ requires }  f  { ensures }
 ```
 
-което означава: „ако преди изпълнение на команда C е вярно P, то след
-изпълнението е вярно Q".
-
-Спецификацията на Бага съответства на тройка на Хоар:
+**Правило за следствие:**
 
 ```
-{true} f(x̄) {λr. g₁(x̄, r) ∧ ... ∧ gₙ(x̄, r)}
-```
-
-Предусловието е `true` (няма ограничения върху входа), а постусловието е
-конюнкцията на гаранциите.
-
-**Правило за следствие (от логиката на Хоар):**
-
-```
-{P} C {Q}    P′ ⊃ P    Q ⊃ Q′
-──────────────────────────────────
+{P} C {Q}    P′ ⇒ P    Q ⇒ Q′
+────────────────────────────────
 {P′} C {Q′}
 ```
 
-Това означава: ако спецификацията гарантира Q, то всяка по-слаба гаранция Q′
-(такава че Q ⊃ Q′) също е валидна.
+**While (инвариант I, условие b):**
+
+```
+{I}  assert I                 (init)
+{I ∧ b}  body  {I}            (preservation)
+────────────────────────────────────────────
+{I} while b { body } {I ∧ ¬b}
+```
+
+I се ползва след цикъла **само** ако init и preservation са ДОКАЗАНИ
+(soundness gate).
+
+**Рекурсия (assume–guarantee):** `requires` на callee се разтоварват на
+call-site; `ensures` се приемат за резултата при доказано тяло — частична
+коректност, освен ако `decreases` доказва терминация.
 
 ### 3.5 Проверка на спецификации
 
-Компилаторът на Бага проверява спецификациите чрез:
+1. **Синтактична / типова** съвместимост spec ↔ fn.
+2. **Статична** — `--verify` върху фрагмент ℱ (M0–M13, §7).
+3. **Динамична** — runtime `requires`/`ensures`.
+4. **Оракул** — `--test-specs` (property-based).
 
-1. **Синтактична проверка.** Спецификацията е добре образувана.
-2. **Съвместимост на типовете.** Типовете в spec съвпадат с типовете на
-   функцията:
+**Теорема (Консервативност / soundness на PROVEN).** Ако `--verify` каже
+ДОКАЗАНО, договорът е изпълнен за всички терминиращи изпълнения в модела.
+Обратното не важи: коректна програма извън фрагмента може да е UNKNOWN.
+ОБРОЧЕНО винаги носи реализируем контрапример (conclusiveness gate).
 
-```baga
-// ГРЕШКА: spec казва output: f64, но функцията връща i64
-spec грешна {
-    input:
-        x: i64
-    output: f64
-    guarantees:
-        - something
-}
-
-fn грешна(x: i64) -> i64 {
-    return x
-}
-```
-
-3. **Семантична проверка.** Гаранциите са изпълними (в общия случай това е
-   неразрешим проблем, затова Бага използва консервативен анализ).
-
-**Теорема (Консервативност).** Ако компилаторът приеме програмата, то
-спецификацията е удовлетворена. Обратното не е гарантирано — компилаторът
-може да отхвърли коректна програма (false positive), но никога не приема
-некоректна (false negative).
+Пълната теория на решението е в **§7**.
 
 ---
 
@@ -996,63 +974,298 @@ F(g)(n) = if n ≤ 1 then 1 else n · g(n - 1)
 | Теория на типовете | Къри-Хауард | Програми = доказателства |
 | Ефектови системи | Алгебрични ефекти | `!IO`, `!NotFound`, `catch` |
 | Теория на решетките | Join-полурешетка | Композиция на ефекти |
-| Логика на Хоар | Тройки `{P}C{Q}` | Спецификации |
+| Логика на Хоар | Тройки `{P}C{Q}` | `requires` / `ensures` / инварианти |
+| Полиедри / LRA | Fourier–Motzkin + Farkas | `--verify` ядро (M0–M7) |
+| Нелинейна обвивка | Продуктови символи + схеми | M8–M13 (не NIA solver) |
 | Теория на категориите | Монади | Ефекти като монадни анотации |
 | Теория на неподвижната точка | lfp | Рекурсия, self-hosting |
-| Комбинаторна логика | Y-комбинатор | Рекурсивни функции |
+| Добре обосновани наредби | `decreases` | Пълна коректност (M6) |
+| Теорема на Rice | Неразрешимост | Fragment gate → UNKNOWN |
+
+---
+
+## 7. Статична верификация — FM, Farkas, нелинейни обвивки
+
+> Това е главата, която **не** се преподава в обикновен софтуерен университет.
+> Тя е математическото съдържание на `src/verify.c`, етапи M0–M13.
+
+### 7.1 Задачата за решение и трихотомията
+
+Нека `f` е чиста функция с договор `{R} f {E}` над `i64`. След символно
+изпълнение всяка пътека π дава условие Γ_π и връщане r_π. Трябва да се
+класифицира:
+
+```
+VC_π  ≡   R ∧ Γ_π  ⇒  E[output ↦ r_π]
+```
+
+еквивалентно — удовлетворимост на
+
+```
+Σ_π  ≡   R ∧ Γ_π ∧ ¬E[output ↦ r_π]
+```
+
+| Вердикт | Значение | Задължение към двигателя |
+|---------|----------|---------------------------|
+| **ДОКАЗАНО** | Σ_π е неудовлетворима над ℤ | Никога фалшиво доказателство |
+| **ОБРОЧЕНО** | ∃ конкретен ℤ-witness | Witness-ът е реализируем |
+| **НЕ МОГА ДА РЕША** | Извън фрагмента | Винаги безопасно |
+
+Теоремата на Rice: произволни семантични свойства на програми са
+неразрешими. Затова Бага работи в **синтактично ограничен фрагмент** ℱ.
+
+### 7.2 Линейни форми и полиедрични path conditions
+
+**Определение (линейна форма над ℚ):**
+
+```
+ℓ = c₀ + Σᵢ cᵢ · xᵢ    ,   cᵢ ∈ ℚ
+```
+
+**Атомарно ограничение:** `ℓ ⋖ 0` с `⋖ ∈ { < , ≤ }`.
+
+**Path formula:** DNF от конюнкции — крайно обединение от изпъкнали полиедри
+в ℚⁿ. Булевата структура на `if` се обръща чрез De Morgan (`bool_to_dnf`).
+
+### 7.3 Елиминация на Fourier–Motzkin
+
+**Теорема (Fourier–Motzkin).** Удовлетворимостта на крайна система линейни
+неравенства над ℚ е разрешимa чрез последователна елиминация на променливи:
+ограниченията с положителен / отрицателен / нулев коефициент пред x се
+кръстосват; системата е sat iff остатъкът след елиминация на всички
+променливи е sat.
+
+Сложност: в най-лошия случай двойно експоненциална по броя променливи —
+приемливо, защото path системите са малки, а външен SMT нарушава
+zero-dependency инварианта.
+
+**Следствие.** Вътре в чиста LRA (линейна реална аритметика) FM е пълна
+процедура за решение.
+
+### 7.4 Лема на Farkas и смисълът на ДОКАЗАНО
+
+**Теорема (Farkas).** Системата A x ≤ b над ℚ е неудовлетворима iff
+съществува λ ≥ 0 с λᵀ A = 0 и λᵀ b < 0 (неотрицателна линейна комбинация,
+даваща противоречие 0 ≤ −ε).
+
+Когато FM каже unsat, комбинацията, която е изпразнила лицето, е
+**Farkas сертификат** — проверим доказателствен обект. ДОКАЗАНО =
+„¬E е unsat под R ∧ Γ“.
+
+### 7.5 Целочислено затягане (M7) — пропастта ℤ/ℚ
+
+Над ℤ, за целочислени линейни форми с целочислени коефициенти:
+
+```
+ℓ < 0    ⟺    ℓ ≤ −1
+```
+
+**Класическият капан:**
+
+```
+n > 0  ⊬_ℚ  n ≥ 1     но    n > 0 ⊢_ℤ n ≥ 1
+```
+
+след затягане `n ≥ 1` е ДОКАЗАНО от `n > 0`. Без това verifiers или лъжат,
+или остават слаби върху най-елементарните целочислени факти. В софтуерните
+курсове почти никога не се споменава.
+
+### 7.6 Правила за символно изпълнение (ядро ℱ₀)
+
+Състояние σ = (env, path, lengths, axioms, derived-symbols).
+
+| Конструкция | Правило |
+|-------------|---------|
+| `let x = e` | x ↦ ⟦e⟧ ако е линейно; иначе product/div символ |
+| `if b` | DNF split на b и ¬b; inject на аксиоми (M13) |
+| `while b invariant I` | init + preservation; изход I∧¬b само ако trusted |
+| `return e` | snapshot (path, ⟦e⟧) като задължение |
+| `vec_get(v,i)` | 0 ≤ i < len(v); инстанция на element axioms |
+| call `g` със spec | discharge g.requires; assume g.ensures (M5) |
+
+Неподдържаното → UNKNOWN / SKIPPED. Никога мълчаливо приемане.
+
+### 7.7 Рекурсия и терминация
+
+**Частична коректност (M5).** Рекурсивните извиквания ползват договора на
+callee като индукционна хипотеза. Вердиктът е етикетиран като частичен.
+
+**Пълна коректност (M6).** `decreases: D` изисква:
+
+```
+R ⇒ D ≥ 0
+на всяко self-call: D' ≥ 0 ∧ D' < D
+```
+
+— добре обоснована индукция върху (ℕ, <). Ненамаляваща мярка → ОБРОЧЕНО.
+
+### 7.8 Нелинейна обвивка: продуктови символи (M8–M12)
+
+NIA (нелинейна целочислена аритметика) е **неразрешима**. Бага **не** решава
+NIA. Използва *factor-aware envelope*:
+
+**Определение.** За неконстантно произведение f·g се отделя свеж символ p с
+запис (f,g) ∈ Π. Аналогично q за f/g, r за f%g.
+
+| Схема | Хипотеза | Заключение |
+|-------|----------|------------|
+| Квадрат | — | v·v ≥ 0, v·v ≥ v, v·v ≥ −v, (v±1)² ≥ 0 |
+| Знакова таблица | знаци на f,g | знак на fg |
+| Монотонност | f≥0, g≥1 | fg ≥ f |
+| Const div/mod | d≠0, знак(n) | C trunc; 0 ≤ n%d < \|d\| при n≥0 |
+| Floor | n≥0, d>0 | d·(n/d) ≤ n |
+| Rebuild | n/d и n%d | n = d·q + r |
+| Var div | m≥1, n≥0 | 0 ≤ n/m ≤ n, 0 ≤ n%m < m |
+| AM-GM форма | f², g², fg | f² + g² − 2fg ≥ 0 |
+
+**Witness soundness.** Свободни са само входовете; product/div/mod се
+*изчисляват* от факторите. **Conclusiveness gate** отхвърля оборвания,
+зависещи от нереализуеми абстрактни символи (класът фалшиви тревоги преди M8).
+
+### 7.9 Нелинейни guard-и и bitwise обвивка (M13)
+
+**Произведения в условия.** `bool_to_dnf` прокарва списъка derived-symbols:
+guard `n*n ≥ 1` става линейно ограничение върху продуктов символ, не автоматично
+UNKNOWN. След всеки `if`/`while` се inject-ват аксиомите.
+
+**Bitwise без bitvector теория.** Пълен BV е разрешим, но експоненциален и
+чужд на полиедричното ядро. M13 допуска само **линейни пренаписвания /
+остатъчни аксиоми**:
+
+- n \| 0 = n, n & 0 = 0, n ⊕ 0 = n, n ⊕ n = 0, n & (−1) = n  
+- n & 1 ∈ {0,1} (two's complement; **не** C `n % 2` при отрицателни)  
+- n ≪ k = n · 2ᵏ за константа k ∈ [0,62]  
+- n ≫ k като trunc n/2ᵏ с аксиоми при n ≥ 0  
+
+Всичко останало bitwise → UNKNOWN.
+
+### 7.10 Теореми за коректност (скица)
+
+**Теорема (ДОКАЗАНО е sound).** Ако `--verify` каже ДОКАЗАНО за E, то всяко
+терминиращо изпълнение върху входове, удовлетворяващи requires, дава резултат,
+удовлетворяващ E (в идеалната семантика на div/mod/shift на injector-а).
+
+**Теорема (ОБРОЧЕНО е sound).** Контрапримерът нарушава E след derived
+evaluation; conclusiveness изключва зависимост от свободни абстракти.
+
+**Следствие.** UNKNOWN никога не твърди фалшив договор.
+
+### 7.11 Карта на сложност и непълнота
+
+| Теория | Статус | Позиция на Бага |
+|--------|--------|-----------------|
+| LRA | разрешимa (FM) | ядро |
+| LIA / Presburger | разрешимa, скъпа | FM + tightening |
+| NIA | неразрешима | само axiom envelope |
+| QF-BV | разрешимa, exp | само identity envelope |
+| Произволна семантика | Rice | fragment → UNKNOWN |
+
+### 7.12 Какво *не* се учи в обикновен софтуерен университет
+
+Типичният SE бакалавър **не** покрива: полиедрични path conditions, лема на
+Farkas, пропастта ℤ/ℚ, добре обосновани `decreases`, assume–guarantee
+рекурсия, нито sound incompleteness като първокласен дизайн. Това живее във
+formal methods / PL theory — ако изобщо. Бага го вгражда в zero-dep C
+компилатор, за да срещне AI-написан код съдия, който знае повече математика
+от средния bot prompt.
+
+**Артефакти.** `src/verify.c`; `examples/verify/`;
+`docs/thesis-m13-nonlinear-fragment.md`.
+
+---
+
+## 8. Отворени проблеми
+
+### 8.1 Разширяване на разрешимата обвивка
+
+M0–M13 отговарят на ограничена форма на:
+
+```
+Кой е най-големият practically useful фрагмент ℱ ⊇ LRA,
+за който zero-dep verifier може sound-о да каже ДОКАЗАНО/ОБРОЧЕНО?
+```
+
+Отворено: кубове и общи полиноми; пълен BV; квантори отвъд `v[*]`/`sorted`;
+overflow-aware shifts; връзка verified invariants → `--proofs`.
+
+### 8.2 Ефектов полиморфизъм и higher-order
+
+```
+map : ∀E. (T → U !E) → [T] → [U] !E
+```
+
+изисква effect variables / row polymorphism.
+
+### 8.3 Усъвършенстване на доказателства
+
+```
+UNKNOWN sketch → AI_VERIFIED → HUMAN_VERIFIED → FORMAL (Lean/Coq)
+```
+
+### 8.4 Категорнa семантика на specs
+
+```
+Spec : C^op → Set
+```
+
+като фибрация: обекти → предикати; морфизми → predicate transformers.
+
+### 8.5 Concurrency във verifier-а
+
+`!Par` е runtime (pthreads / LLVM). Статични race/deadlock върху канали —
+отворено.
 
 ---
 
 ## Заключение
 
-Бага не изобретява нова математика. Тя *рекомбинира* съществуващи теории:
+Бага не изобретява нова математика. Тя *рекомбинира* съществуващи теории —
+включително такива, които софтуерният бакалавър никога не е виждал:
 
 - Просто типизирано ламбда смятане (Church, 1940)
 - Ефектови системи (Gifford & Lucassen, 1986; Plotkin & Power, 2003)
 - Design by Contract (Meyer, 1986)
-- Логика на Хоар (Hoare, 1969)
+- Логика на Хоар (Hoare, 1969) + Floyd
+- Fourier–Motzkin (1826 / 1936) + Farkas (1902)
+- Целочислено програмиране / ℤ-tightening (Schrijver)
+- Нелинейни обвивки вместо NIA solver (M8–M13)
 - Съответствие на Къри-Хауард (Curry, 1934; Howard, 1980)
 - Монади (Moggi, 1991)
 - Теорема за неподвижната точка (Kleene, 1952)
+- Теорема на Rice (1953) — защо UNKNOWN е добродетел
 
 Въпросът не е „кое е ново". Въпросът е „кое не е било залепено заедно".
 
 Линейната логика е от 1987. Отне 30 години да стане Rust.
-Ефектовите системи са от 2003. Може би сега е моментът.
+Ефектовите системи са от 2003. Fourier–Motzkin е от XIX век.
+Може би сега е моментът.
 
 ---
 
 ## Литература
 
-- Church, A. (1940). A formulation of the simple theory of types. *Journal of
-  Symbolic Logic*, 5(2), 56–68.
-- Curry, H. B. (1934). Functionality in combinatory logic. *Proceedings of the
-  National Academy of Sciences*, 20(11), 584–590.
+- Church, A. (1940). A formulation of the simple theory of types. *JSL* 5(2).
+- Curry, H. B. (1934). Functionality in combinatory logic. *PNAS* 20(11).
 - Curry, H. B. & Feys, R. (1958). *Combinatory Logic*, Vol. I. North-Holland.
-- Damas, L. & Milner, R. (1982). Principal type-schemes for functional programs.
-  *POPL '82*, 207–212.
-- Gifford, D. & Lucassen, J. (1986). Integrating functional and imperative
-  programming. *LFP '86*, 28–38.
-- Hoare, C. A. R. (1969). An axiomatic basis for computer programming.
-  *Communications of the ACM*, 12(10), 576–580.
-- Howard, W. A. (1980). The formulae-as-types notion of construction. В:
-  *To H. B. Curry: Essays on Combinatory Logic*, Academic Press, 479–490.
+- Dantzig, G. B. & Eaves, B. C. (1973). Fourier–Motzkin elimination and its dual.
+- Farkas, J. (1902). Theorie der einfachen Ungleichungen. *Crelle's Journal*.
+- Floyd, R. W. (1967). Assigning meanings to programs. *AMS Symposia*.
+- Fourier, J. (1826). Solution d'une question particulière du calcul des inégalités.
+- Gifford, D. & Lucassen, J. (1986). Integrating functional and imperative programming. *LFP '86*.
+- Hoare, C. A. R. (1969). An axiomatic basis for computer programming. *CACM* 12(10).
+- Howard, W. A. (1980). The formulae-as-types notion of construction.
 - Kleene, S. C. (1952). *Introduction to Metamathematics*. North-Holland.
-- Lambek, J. (1980). From λ-calculus to cartesian closed categories. В:
-  *To H. B. Curry: Essays on Combinatory Logic*, Academic Press, 375–402.
-- Leijen, D. (2017). Type directed compilation of row-typed algebraic effects.
-  *POPL '17*, 486–499.
+- Lambek, J. (1980). From λ-calculus to cartesian closed categories.
+- Leijen, D. (2017). Type directed compilation of row-typed algebraic effects. *POPL '17*.
+- Leino, K. R. M. (2010). Dafny: An automatic program verifier. *LPAR-16*.
 - Mac Lane, S. (1971). *Categories for the Working Mathematician*. Springer.
-- Meyer, B. (1986). Design by contract. *IEEE Computer*, 25(10), 40–51.
-- Milner, R. (1978). A theory of type polymorphism in programming. *Journal of
-  Computer and System Sciences*, 17(3), 348–375.
-- Moggi, E. (1991). Notions of computation and monads. *Information and
-  Computation*, 93(1), 55–92.
+- Meyer, B. (1986). Design by contract. *IEEE Computer* 25(10).
+- Moggi, E. (1991). Notions of computation and monads. *Inf. & Comp.* 93(1).
+- Motzkin, T. S. (1936). Beiträge zur Theorie der linearen Ungleichungen. Basel.
 - Plotkin, G. & Power, J. (2003). Algebraic operations and generic effects.
-  *Applied Categorical Structures*, 11(1), 69–94.
-- Robinson, J. A. (1965). A machine-oriented logic based on the resolution
-  principle. *Journal of the ACM*, 12(1), 23–41.
-- Tarski, A. (1955). A lattice-theoretical fixpoint theorem and its applications.
-  *Pacific Journal of Mathematics*, 5(2), 285–309.
-- Wright, A. & Felleisen, M. (1994). A syntactic approach to type soundness.
-  *Information and Computation*, 115(1), 38–94.
+- Presburger, M. (1929). Über die Vollständigkeit eines gewissen Systems der Arithmetik…
+- Rice, H. G. (1953). Classes of recursively enumerable sets… *Trans. AMS*.
+- Schrijver, A. (1986). *Theory of Linear and Integer Programming*. Wiley.
+- Tarski, A. (1955). A lattice-theoretical fixpoint theorem. *Pacific J. Math.*
+- Winskel, G. (1993). *The Formal Semantics of Programming Languages*. MIT Press.
+- Wright, A. & Felleisen, M. (1994). A syntactic approach to type soundness. *Inf. & Comp.*
