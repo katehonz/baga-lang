@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Static verification — M17: pair abstraction (`cell2` + channel pair APIs)
+- `cell2(a,b)` / `cell2_0(p)` / `cell2_1(p)` are exact rewrites in the
+  verifier (`cell2_0(cell2(a,b)) = a`) — allowed anywhere, including inside
+  conditions (`if cell2_0(r) == 1`).
+- The pair-returning channel APIs are now in the fragment with ranges for
+  the status component and M16 content axioms for the value component:
+  - `chan_recv2` (ok ∈ [0,1]), `chan_try_recv` / `chan_recv_timeout`
+    (status ∈ [0,2]), `chan_select2*` (which ∈ [0,3]; value gets only the
+    axioms BOTH channels share).
+  - `select2_wait`'s which ∈ {0,1,3} is modeled as the interval [0,3]
+    (over-approx; the abstract status keeps refutations honest).
+- `go(worker, cell2(a, b))`: packed arguments work; a worker's
+  `requires cell2_1(p) >= 1` is discharged at spawn where the pair's
+  components are visible. Inside the worker, packed params stay honestly
+  opaque.
+- Examples: `examples/verify/pair_{recv2,select,go}.baga`.
+- Note: `docs/thesis-m17-pairs.md`.
+
 ### Static verification — M16: channel content invariants (rely–guarantee)
 - New statement-level annotation `invariant <expr>` (contextual keyword):
   - `invariant c[*] >= 1` — "every payload sent on channel `c` satisfies the

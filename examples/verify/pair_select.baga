@@ -1,0 +1,48 @@
+// M17: chan_select2 — the which component provably stays in [0, 3];
+// claiming output <= 2 is honestly UNKNOWN (which is abstract: the model
+// cannot rule out 3, and the M8 gate refuses an unrealizable refutation).
+// The value component inherits only the axioms BOTH channels share.
+
+spec which_range {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures: 0 <= output, output <= 3
+}
+
+fn which_range(n: i64) -> i64 !Par {
+    let c0 = chan_new(2)
+    let c1 = chan_new(2)
+    invariant c0[*] >= 1
+    invariant c1[*] >= 1
+    chan_send(c0, n)
+    let s = chan_select2(c0, c1)
+    let w = cell2_0(s)
+    return w
+}
+
+spec which_too_high {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output <= 2
+}
+
+fn which_too_high(n: i64) -> i64 !Par {
+    let c0 = chan_new(2)
+    let c1 = chan_new(2)
+    chan_send(c0, n)
+    let s = chan_select2(c0, c1)
+    return cell2_0(s)
+}
+
+fn main() -> i64 !Par {
+    print(which_range(7))
+    print(which_too_high(7))
+    return 0
+}

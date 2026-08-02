@@ -1203,6 +1203,19 @@ with M14's fork–join determinism (`chan_inv_par.baga`). The scalar form
 `invariant e` doubles as `assume`. Note:
 `docs/thesis-m16-channel-invariants.md`.
 
+### 8.8 Pair abstraction (M17)
+
+`cell2(a,b)` / `cell2_0(p)` / `cell2_1(p)` are exact rewrites
+(`cell2_0(cell2(a,b)) = a`), allowed anywhere including conditions. The
+pair-returning channel APIs enter the fragment: `chan_recv2` (ok ∈ [0,1]),
+`chan_try_recv`/`chan_recv_timeout` (status ∈ [0,2]), `chan_select2*`
+(which ∈ [0,3]) — the value component carries M16 content axioms (for
+select2*, only what both channels share). `go(worker, cell2(a, b))` packs
+arguments; a worker's `requires cell2_1(p) >= 1` is discharged at spawn,
+where the components are visible (`pair_go.baga`). The ok-flag pattern
+(`if cell2_0(r) == 1`) is now the sanctioned answer to the closed+empty
+caveat (`pair_recv2.baga`). Note: `docs/thesis-m17-pairs.md`.
+
 ---
 
 ## References

@@ -1261,6 +1261,19 @@ rely–guarantee в миниатюра, композирано с fork–join д
 (`chan_inv_par.baga`). Скаларната форма `invariant e` е и `assume`. Бележка:
 `docs/thesis-m16-channel-invariants.md`.
 
+### 8.8 Pair абстракция (M17)
+
+`cell2(a,b)` / `cell2_0(p)` / `cell2_1(p)` са точни rewrite правила
+(`cell2_0(cell2(a,b)) = a`), разрешени навсякъде, включително в условия.
+Двоичните канални API-та влизат във фрагмента: `chan_recv2` (ok ∈ [0,1]),
+`chan_try_recv`/`chan_recv_timeout` (status ∈ [0,2]), `chan_select2*`
+(which ∈ [0,3]) — стойността носи M16 съдържателните аксиоми (при select2*
+само общите за двата канала). `go(worker, cell2(a, b))` пакетира аргументи;
+`requires cell2_1(p) >= 1` на worker се discharge-ва при spawn, където
+компонентите са видими (`pair_go.baga`). ok-flag pattern-ът
+(`if cell2_0(r) == 1`) е санкционираният отговор на closed+empty уговорката
+(`pair_recv2.baga`). Бележка: `docs/thesis-m17-pairs.md`.
+
 ---
 
 ## Заключение

@@ -223,6 +223,7 @@ baga/
 - [Thesis note M14](docs/thesis-m14-par-fragment.md) — fork–join determinism + handle protocols (concurrency in `--verify`)
 - [Thesis note M15](docs/thesis-m15-arith-safety.md) — the ℤ-vs-i64 bridge (arithmetic safety) + the loop-havoc soundness fix
 - [Thesis note M16](docs/thesis-m16-channel-invariants.md) — channel content invariants, cross-thread rely–guarantee
+- [Thesis note M17](docs/thesis-m17-pairs.md) — pair abstraction: cell2 rewrites + channel pair APIs
 - [Language Reference (EN)](docs/language-en.md) — Syntax, types, semantics
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen
@@ -245,6 +246,7 @@ baga/
 | 11 | `!Par` in `--verify`: fork–join determinism + handle protocols (M14) | ✅ |
 | 12 | Arithmetic safety: ℤ-vs-i64 bridge + loop-havoc soundness fix (M15) | ✅ |
 | 13 | Channel content invariants + cross-thread discharge (M16) | ✅ |
+| 14 | Pair abstraction: cell2 + channel pair APIs in `--verify` (M17) | ✅ |
 
 ### Static verification (`--verify`)
 
@@ -428,6 +430,17 @@ counterexample; anything undecidable in the fragment is reported "НЕ МОГА 
   `invariant e` doubles as an `assume`. Examples: `chan_inv.baga`,
   `chan_inv_bad.baga`, `chan_inv_par.baga`, `chan_inv_escape.baga`.
   Scientific note: `docs/thesis-m16-channel-invariants.md`.
+
+- **M17** — **pair abstraction**. `cell2(a,b)` / `cell2_0(p)` / `cell2_1(p)`
+  are exact rewrites (`cell2_0(cell2(a,b)) = a`), allowed anywhere including
+  conditions. The pair-returning channel APIs enter the fragment:
+  `chan_recv2` (ok ∈ [0,1]), `chan_try_recv`/`chan_recv_timeout`
+  (status ∈ [0,2]), `chan_select2*` (which ∈ [0,3]) — the value component
+  carries M16 content axioms (for select2*, only what both channels share).
+  `go(worker, cell2(a, b))` packs arguments; a worker's
+  `requires cell2_1(p) >= 1` is discharged at spawn where the components are
+  visible. Examples: `pair_recv2.baga`, `pair_select.baga`, `pair_go.baga`.
+  Scientific note: `docs/thesis-m17-pairs.md`.
 
 `vec_slice` / `vec_concat` propagate element invariants; `sorted(v)` is
 supported. `--proofs` surfaces the verifier's established facts: real

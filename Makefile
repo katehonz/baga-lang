@@ -406,6 +406,20 @@ test: $(BIN)
 		&& ! grep -q "boss2:" -A1 /tmp/baga_verify_out.txt | grep -q "ДОКАЗАНО" \
 		&& echo "OK: chan_inv_escape — worker без requires изпуска аксиомата при spawn (M16 drop rule)" \
 		|| { echo "FAIL: chan_inv_escape"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/pair_recv2.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: pair_recv2 — ok-flag + content инвариант през cell2 проекции (M17)" \
+		|| { echo "FAIL: pair_recv2"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/pair_select.baga > /tmp/baga_verify_out.txt; \
+	grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt && grep -q "ensures #2.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "which_too_high:" /tmp/baga_verify_out.txt && grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+		&& echo "OK: pair_select — which ∈ [0,3] доказано; ≤ 2 честно UNKNOWN (M17)" \
+		|| { echo "FAIL: pair_select"; cat /tmp/baga_verify_out.txt; exit 1; }
+	@./$(BIN) --verify examples/verify/pair_go.baga > /tmp/baga_verify_out.txt; \
+	grep -q "boss:" /tmp/baga_verify_out.txt && grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& grep -q "requires на 'worker' при извикване.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+		&& echo "OK: pair_go — packed аргумент, requires върху компоненти discharged при spawn (M17)" \
+		|| { echo "FAIL: pair_go"; cat /tmp/baga_verify_out.txt; exit 1; }
 	@./$(BIN) --proofs examples/verify/sum.baga > /tmp/baga_proofs_out.txt; \
 	grep -q "lemma add_repeated_invariant_1" /tmp/baga_proofs_out.txt \
 		&& grep -q "invariant: (s >= 0)" /tmp/baga_proofs_out.txt \

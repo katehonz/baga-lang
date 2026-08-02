@@ -1,0 +1,38 @@
+// M17: packed worker argument — go(worker, cell2(c, n)).
+// The worker's requires about the packed components (cell2_1(p) >= 1) is
+// discharged at the spawn site, where the pair's components are visible.
+
+spec worker {
+    input:
+        p: i64
+    output: i64
+    requires:
+        cell2_1(p) >= 1
+    ensures:
+        output >= 1
+}
+
+fn worker(p: i64) -> i64 {
+    return cell2_1(p)
+}
+
+spec boss {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn boss(n: i64) -> i64 !Par {
+    let c = chan_new(2)
+    let h = go(worker, cell2(c, n))   // requires cell2_1(p) >= 1: n >= 1 — discharged
+    return join(h)
+}
+
+fn main() -> i64 !Par {
+    print(boss(41))
+    return 0
+}

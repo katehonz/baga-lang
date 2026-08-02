@@ -1,0 +1,30 @@
+// M17: pair-returning channel API — chan_recv2 gives (ok, value).
+// The ok flag makes the closed+empty case explicit: on the ok == 1 path
+// the value provably satisfies the channel's content invariant.
+
+spec take {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+        n <= 10
+    ensures:
+        output >= 1
+}
+
+fn take(n: i64) -> i64 !Par {
+    let c = chan_new(4)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    let r = chan_recv2(c)
+    if cell2_0(r) == 1 {
+        return cell2_1(r)   // ok: a real payload, >= 1 by the invariant
+    }
+    return 1                // closed+empty fallback
+}
+
+fn main() -> i64 !Par {
+    print(take(5))
+    return 0
+}

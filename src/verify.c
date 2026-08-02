@@ -209,10 +209,12 @@ static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
  * divisor constant in fb; inject sign of quotient; witness derives trunc div.
  * M9b: n % k for nonzero const k (is_mod): bounds 0..|k|-1 when n has a sign.
  * M13: n & 1 (is_bitand1): residue in {0,1} over two's complement — NOT C % 2
- * for negative n (where % truncates toward zero). */
+ * for negative n (where % truncates toward zero).
+ * M17: cell2/pair-returning calls (is_pair): fa/fb are the two components;
+ * cell2_0/cell2_1 resolve through the pair table (exact rewrite, no theory). */
 typedef struct {
     Node *call; char *var; Lin fa, fb;
-    int is_prod; int is_div; int is_mod; int is_bitand1;
+    int is_prod; int is_div; int is_mod; int is_bitand1; int is_pair;
 } ReadEntry;
 typedef struct { ReadEntry *r; int n, cap; } ReadsList;
 typedef struct { char *var; Lin fa, fb; int is_div; int is_mod; int is_bitand1; } ProdEntry;
@@ -222,6 +224,8 @@ static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_bitand1(ReadsList *l, const char *var, Lin fa);
+static void reads_push_pair(ReadsList *l, const char *var, Lin fa, Lin fb);   /* M17 */
+static ReadEntry *reads_find_pair(ReadsList *l, const char *var);             /* M17 */
 static void prods_clone_into(ProdList *dst, ReadsList *src);
 static int lin_eq(Lin *a, Lin *b);   /* defined later; used by M13 XOR identity */
 static int g_prod_ctr = 0;
@@ -244,6 +248,30 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
     case NODE_CALL:
         /* a vec_get resolved to a fresh read variable (M3) */
         if (reads) { const char *rv = reads_find(reads, e); if (rv) return sym_lin(lin_var(rv)); }
+        /* M17: cell2/pair projections — exact rewrite, no theory */
+        if (e->callee && e->callee->kind == NODE_IDENT) {
+            const char *pn = e->callee->name;
+            if (strcmp(pn, "cell2") == 0 && e->args.len == 2 && reads) {
+                Sym a = se_from_ast(e->args.data[0], env, vlen, reads);
+                Sym b = se_from_ast(e->args.data[1], env, vlen, reads);
+                if (a.nonlinear || b.nonlinear) { lin_free(&a.lin); lin_free(&b.lin); return sym_nonlin(); }
+                char pv[64]; snprintf(pv, sizeof pv, "__q%d", g_prod_ctr++);
+                reads_push_pair(reads, pv, a.lin, b.lin);   /* moves both */
+                return sym_lin(lin_var(pv));
+            }
+            if ((strcmp(pn, "cell2_0") == 0 || strcmp(pn, "cell2_1") == 0) && e->args.len == 1 && reads) {
+                Sym p = se_from_ast(e->args.data[0], env, vlen, reads);
+                if (!p.nonlinear && p.lin.n == 1 && p.lin.c.num == 0 &&
+                    p.lin.terms[0].coeff.num == p.lin.terms[0].coeff.den) {
+                    ReadEntry *pe = reads_find_pair(reads, p.lin.terms[0].var);
+                    lin_free(&p.lin);
+                    if (pe) return sym_lin(lin_clone(pn[6] == '0' ? &pe->fa : &pe->fb));
+                    return sym_nonlin();
+                }
+                lin_free(&p.lin);
+                return sym_nonlin();
+            }
+        }
         /* vec_len(v) resolves to the tracked symbolic length of v (a concrete
          * linear form for locally-built vectors, a fresh symbolic variable for
          * Vec parameters, so requires like vec_len(v) >= 1 stay linear) */
@@ -1153,7 +1181,7 @@ static void reads_push(ReadsList *l, Node *call, const char *var) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = call; l->r[l->n].var = strdup(var);
     lin_init(&l->r[l->n].fa); lin_init(&l->r[l->n].fb);
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 0;
     l->n++;
 }
 /* M8b: register a product var with its factor linear forms (moves fa/fb). */
@@ -1161,7 +1189,7 @@ static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 1; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0;
+    l->r[l->n].is_prod = 1; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 0;
     l->n++;
 }
 /* M9: register integer division by a constant (moves fa; fb is the const divisor). */
@@ -1169,7 +1197,7 @@ static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 1; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 1; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 0;
     l->n++;
 }
 /* M9b: register integer mod by a constant. */
@@ -1177,7 +1205,7 @@ static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 1; l->r[l->n].is_bitand1 = 0;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 1; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 0;
     l->n++;
 }
 /* M13: n & 1 → fresh bit residue (moves fa). Always 0..1; not C % 2. */
@@ -1185,8 +1213,22 @@ static void reads_push_bitand1(ReadsList *l, const char *var, Lin fa) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
     l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
     l->r[l->n].fa = fa; lin_init(&l->r[l->n].fb); l->r[l->n].fb = lin_const(rat_int(2));
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 1;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 1; l->r[l->n].is_pair = 0;
     l->n++;
+}
+/* M17: register a pair var with its two components (moves fa/fb). */
+static void reads_push_pair(ReadsList *l, const char *var, Lin fa, Lin fb) {
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
+    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
+    l->r[l->n].fa = fa; l->r[l->n].fb = fb;
+    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 1;
+    l->n++;
+}
+/* M17: find the pair entry anchored on a bare symbolic var, or NULL. */
+static ReadEntry *reads_find_pair(ReadsList *l, const char *var) {
+    for (int i = 0; i < l->n; i++)
+        if (l->r[i].is_pair && strcmp(l->r[i].var, var) == 0) return &l->r[i];
+    return NULL;
 }
 static const char *reads_find(ReadsList *l, Node *call) {
     for (int i = 0; i < l->n; i++)
@@ -1205,6 +1247,8 @@ static void reads_clone_into(ReadsList *dst, ReadsList *src) {
             reads_push_mod(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else if (src->r[i].is_bitand1)
             reads_push_bitand1(dst, src->r[i].var, lin_clone(&src->r[i].fa));
+        else if (src->r[i].is_pair)
+            reads_push_pair(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else
             reads_push(dst, src->r[i].call, src->r[i].var);
     }
@@ -1409,16 +1453,27 @@ static int is_vec_builtin_call(Node *n) {
            strcmp(nm, "vec_concat") == 0;
 }
 
-/* M14: the !Par builtins modeled by the verifier. Pair-returning builtins
- * (chan_recv2/try_recv/timeout/select2*), mutexes and pool_map stay outside
- * the fragment (honest skip). */
+/* M17: pure pair builtins — allowed anywhere, including inside expressions
+ * (`if cell2_0(r) == 1` is the normal usage pattern). */
+static int is_pair_builtin_call(Node *n) {
+    if (n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    const char *nm = n->callee->name;
+    return strcmp(nm, "cell2") == 0 || strcmp(nm, "cell2_0") == 0 || strcmp(nm, "cell2_1") == 0;
+}
+
+/* M14: the !Par builtins modeled by the verifier. Mutexes and pool_map stay
+ * outside the fragment (honest skip). M17 adds the pair-returning channel
+ * APIs (status, value) with ranges for the status component. */
 static int is_par_builtin_call(Node *n) {
     if (n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
     const char *nm = n->callee->name;
     return strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0 ||
            strcmp(nm, "join") == 0 || strcmp(nm, "detach") == 0 ||
            strcmp(nm, "chan_new") == 0 || strcmp(nm, "chan_send") == 0 ||
-           strcmp(nm, "chan_recv") == 0 || strcmp(nm, "chan_close") == 0;
+           strcmp(nm, "chan_recv") == 0 || strcmp(nm, "chan_close") == 0 ||
+           strcmp(nm, "chan_recv2") == 0 || strcmp(nm, "chan_try_recv") == 0 ||
+           strcmp(nm, "chan_recv_timeout") == 0 || strcmp(nm, "chan_select2") == 0 ||
+           strcmp(nm, "chan_select2_wait") == 0 || strcmp(nm, "chan_select2_timeout") == 0;
 }
 
 /* M14 shallow gate for a par builtin call: right arity; for go/go_bg the
@@ -1445,7 +1500,10 @@ static int par_call_gate(Node *n) {
         return worker_sig_supported(find_fn(g_prog, w->name));
     }
     if (strcmp(nm, "chan_send") == 0) return n->args.len == 2;
-    return n->args.len == 1;   /* join/detach/chan_new/chan_recv/chan_close */
+    if (strcmp(nm, "chan_recv_timeout") == 0 || strcmp(nm, "chan_select2") == 0 ||
+        strcmp(nm, "chan_select2_wait") == 0) return n->args.len == 2;
+    if (strcmp(nm, "chan_select2_timeout") == 0) return n->args.len == 3;
+    return n->args.len == 1;   /* join/detach/chan_new/chan_recv/chan_close/recv2/try_recv */
 }
 
 static int has_unsupported_rec(Node *n, int flat, int in_expr) {
@@ -1458,7 +1516,7 @@ static int has_unsupported_rec(Node *n, int flat, int in_expr) {
     case NODE_STRUCT_LIT: case NODE_RANGE:
         return 1;
     case NODE_CALL:
-        if (is_vec_builtin_call(n)) {
+        if (is_vec_builtin_call(n) || is_pair_builtin_call(n)) {
             for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
             return 0;
         }
@@ -2512,8 +2570,50 @@ static void push_protocol_violation(State *st, Obligations *ob, const char *labe
  * the interval -1 <= s <= 0 is exact; on a known-closed channel s == -1.
  * recv payload is unconstrained (any payload, or 0 on closed+empty).
  * Returns the symbolic value of the call (owned). */
+/* M17: a (status, value) pair result for the pair-returning channel APIs.
+ * status: fresh __c var with [0, hi] range on the path. value: fresh __c var
+ * with M16 content axioms instantiated — from the single channel, or for
+ * select2* only the axioms BOTH channels share (same cmp, structurally equal
+ * rhs): the value may come from either, so only common facts are honest. */
+static Sym make_status_pair(State *st, Node *c0, Node *c1, int hi) {
+    char sv[64], vv[64], pv[64];
+    snprintf(sv, sizeof sv, "__c%d", g_call_ctr++);
+    snprintf(vv, sizeof vv, "__c%d", g_call_ctr++);
+    path_push_ge(&st->path, sv, 0);
+    path_push_le(&st->path, sv, hi);
+    char kbuf0[64], kbuf1[64];
+    const char *key0 = resolve_key(c0, st, kbuf0, sizeof kbuf0);
+    const char *key1 = c1 ? resolve_key(c1, st, kbuf1, sizeof kbuf1) : NULL;
+    for (int i = 0; i < st->ax.n; i++) {
+        ElemAxiom *a = &st->ax.a[i];
+        if (a->is_sorted || !key0 || strcmp(a->vec, key0) != 0) continue;
+        if (!c1) {
+            cl_push(&st->path, axiom_instantiate(a, vv));
+        } else if (key1) {
+            for (int j = 0; j < st->ax.n; j++) {
+                ElemAxiom *b = &st->ax.a[j];
+                if (b->is_sorted || strcmp(b->vec, key1) != 0 || b->cmp != a->cmp) continue;
+                if (lin_eq(&a->rhs, &b->rhs)) { cl_push(&st->path, axiom_instantiate(a, vv)); break; }
+            }
+        }
+    }
+    snprintf(pv, sizeof pv, "__q%d", g_prod_ctr++);
+    reads_push_pair(&st->reads, pv, lin_var(sv), lin_var(vv));
+    return sym_lin(lin_var(pv));
+}
+
 static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     const char *nm = call->callee->name;
+
+    /* M17: pair-returning channel APIs */
+    if (strncmp(nm, "chan_select2", 12) == 0 || strcmp(nm, "chan_recv2") == 0 ||
+        strcmp(nm, "chan_try_recv") == 0 || strcmp(nm, "chan_recv_timeout") == 0) {
+        int hi = 1;
+        if (strcmp(nm, "chan_recv2") != 0)
+            hi = (strncmp(nm, "chan_select2", 12) == 0) ? 3 : 2;
+        Node *c1 = (strncmp(nm, "chan_select2", 12) == 0) ? call->args.data[1] : NULL;
+        return make_status_pair(st, call->args.data[0], c1, hi);
+    }
 
     if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0) {
         Node *w = call->args.data[0];
