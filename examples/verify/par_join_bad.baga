@@ -1,0 +1,37 @@
+// M14: a claim contradicting the worker's contract through go/join is
+// REFUTED with a counterexample. worker(x) = x + 1 >= 1 for x >= 0, so
+// output <= 0 is impossible — for EVERY value the spec allows.
+
+spec worker {
+    input:
+        x: i64
+    output: i64
+    requires:
+        x >= 0
+    ensures:
+        output >= 1
+}
+
+fn worker(x: i64) -> i64 {
+    return x + 1
+}
+
+spec par_one {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output <= 0
+}
+
+fn par_one(n: i64) -> i64 !Par {
+    let h = go(worker, n)
+    return join(h)
+}
+
+fn main() -> i64 !Par {
+    print(par_one(5))
+    return 0
+}

@@ -1,0 +1,26 @@
+// M14: handle protocol — join after detach is a fatal runtime error
+// (src/baga_par_rt.c); the verifier refutes it statically, on any input.
+
+fn worker(x: i64) -> i64 {
+    return x + 1
+}
+
+spec bad_seq {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+fn bad_seq(n: i64) -> i64 !Par {
+    let h = go(worker, n)
+    detach(h)
+    let r = join(h)   // protocol violation: join след detach
+    return r
+}
+
+fn main() -> i64 !Par {
+    print(0)
+    return 0
+}

@@ -1153,7 +1153,26 @@ as a fibration: objects map to predicates; morphisms to predicate transformers. 
 
 ### 8.5 Concurrency in the verifier
 
-`!Par` is implemented at runtime (pthreads / LLVM runtime). Static race/deadlock reasoning over channels remains open.
+**M14 lands the first `!Par` fragment.** The language has no shared mutable
+state (no globals, no closures — `go(f, x)` takes a named function and an `i64`
+by value), so data races are impossible by construction and the existing linear
+core suffices. Two sound mechanisms:
+
+- **Fork–join determinism.** For a pure, verifiable worker `f`,
+  `join(go(f, x)) ≡ f(x)`: the worker's contract is applied via the M5
+  assume–guarantee machinery (requires discharged at spawn, ensures assumed
+  for the join result). `ensures` of a parallel function is thus proven with
+  exactly the sequential machinery (`examples/verify/par_join.baga`).
+- **Handle protocols.** Join handles and channels carry a ghost protocol
+  state per symbolic variable: `spawn → join | detach`. A second consume
+  (join-after-detach is *fatal* at runtime) is REFUTED statically with a
+  counterexample — on any input when the path is unconditional
+  (`par_detach_bad.baga`). Channels track open/closed: `send` on a
+  known-closed channel is provably `-1` (`par_chan.baga`).
+
+Honest frontier (M15): pair-returning builtins (`chan_recv2`/`try_recv`/
+`select2*`), cross-thread channel *content* invariants (rely–guarantee),
+mutexes (liveness), `pool_map`, effectful workers.
 
 ---
 

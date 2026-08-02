@@ -1208,9 +1208,52 @@ static void prods_free(ProdList *l) {
     free(l->p); l->p = NULL; l->n = l->cap = 0;
 }
 
-typedef struct { SEnv env; VLenMap vlen; AxiomList ax; ConsList path; ConsList read_cons; ReadsList reads; int bad; } State;
+/* M14: handle protocol state for !Par — join handles and channels are opaque
+ * i64 values; we track a ghost protocol state per symbolic handle variable.
+ * Keyed by the symbolic var name (e.g. __h0), so source-level aliasing
+ * (`let h2 = h`) works: both names hold the same linear form. */
+#define HK_JOIN 1   /* states: 0=open, 1=joined, 2=detached */
+#define HK_CHAN 2   /* states: 0=open, 1=closed */
+typedef struct { char *var; int kind; int state; Lin result; } HandleEntry;
+typedef struct { HandleEntry *h; int n, cap; } HandleList;
 
-static void state_free(State *s) { env_free(&s->env); vlen_free(&s->vlen); ax_free(&s->ax); cl_free(&s->path); cl_free(&s->read_cons); reads_free(&s->reads); }
+static void handles_init(HandleList *l) { l->h = NULL; l->n = 0; l->cap = 0; }
+static void handles_free(HandleList *l) {
+    for (int i = 0; i < l->n; i++) { free(l->h[i].var); lin_free(&l->h[i].result); }
+    free(l->h);
+    handles_init(l);
+}
+static HandleEntry *handles_find(HandleList *l, const char *var) {
+    for (int i = 0; i < l->n; i++) if (strcmp(l->h[i].var, var) == 0) return &l->h[i];
+    return NULL;
+}
+/* result is moved (may be NULL for channels). Re-setting replaces in place. */
+static void handles_set(HandleList *l, const char *var, int kind, int state, Lin *result) {
+    HandleEntry *e = handles_find(l, var);
+    if (!e) {
+        if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->h = realloc(l->h, (size_t)l->cap * sizeof(HandleEntry)); }
+        e = &l->h[l->n++];
+        e->var = strdup(var);
+        Lin empty; lin_init(&empty);
+        e->result = empty;
+    } else {
+        lin_free(&e->result);
+    }
+    e->kind = kind; e->state = state;
+    if (result) { e->result = *result; }
+    else { Lin empty; lin_init(&empty); e->result = empty; }
+}
+static void handles_clone_into(HandleList *dst, HandleList *src) {
+    handles_init(dst);
+    for (int i = 0; i < src->n; i++) {
+        Lin r = lin_clone(&src->h[i].result);
+        handles_set(dst, src->h[i].var, src->h[i].kind, src->h[i].state, &r);
+    }
+}
+
+typedef struct { SEnv env; VLenMap vlen; AxiomList ax; ConsList path; ConsList read_cons; ReadsList reads; HandleList handles; int bad; } State;
+
+static void state_free(State *s) { env_free(&s->env); vlen_free(&s->vlen); ax_free(&s->ax); cl_free(&s->path); cl_free(&s->read_cons); reads_free(&s->reads); handles_free(&s->handles); }
 
 typedef struct { State *s; int n, cap; } States;
 static void states_push(States *ss, State s) {
@@ -1224,9 +1267,85 @@ static void states_push(States *ss, State s) {
 static Node *g_prog = NULL;
 static const char *g_caller_name = NULL;
 static int g_call_ctr = 0;
+static int g_handle_ctr = 0;    /* M14: fresh __hN / __chN handle vars */
 static int g_partial = 0;        /* direct self-recursion seen during symexec */
 static int g_term = 0;           /* spec carries a decreases measure (M6) */
 static int g_term_failed = 0;    /* some termination obligation is not PROVEN */
+
+/* Verified-fact collection for --proofs: while-loop invariants encountered
+ * during symexec, each flagged by whether the Hoare checks (init +
+ * preservation) proved it trustworthy. */
+static char **g_inv_texts = NULL;
+static int  *g_inv_proven = NULL;
+static int   g_inv_n = 0, g_inv_cap = 0;
+
+/* Render an annotation expression (requires/ensures/invariant fragment) as
+ * source-like text for --proofs output. */
+static void expr_render(Node *e, char *b, size_t n, size_t *o) {
+    if (!e || *o >= n - 1) return;
+    #define ER_PUT(...) do { \
+        int w = snprintf(b + *o, n - *o, __VA_ARGS__); \
+        if (w > 0) { *o += (size_t)w; if (*o >= n) *o = n - 1; } \
+    } while (0)
+    static const char *binop_str[] = {
+        "+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=",
+        "&&", "||", "&", "|", "^", "<<", ">>"
+    };
+    switch (e->kind) {
+    case NODE_INT_LIT:  ER_PUT("%lld", (long long)e->int_val); break;
+    case NODE_BOOL_LIT: ER_PUT("%s", e->bool_val ? "true" : "false"); break;
+    case NODE_IDENT:    ER_PUT("%s", e->name); break;
+    case NODE_ELEM_REF:
+        expr_render(e->elem_obj, b, n, o);
+        ER_PUT("[*]");
+        break;
+    case NODE_UNARY: {
+        const char *op = e->un_op == UOP_NEG ? "-" : e->un_op == UOP_NOT ? "!" :
+                         e->un_op == UOP_REF ? "&" : "*";
+        ER_PUT("%s", op);
+        expr_render(e->operand, b, n, o);
+        break;
+    }
+    case NODE_BINARY:
+        ER_PUT("(");
+        expr_render(e->left, b, n, o);
+        ER_PUT(" %s ", binop_str[e->bin_op]);
+        expr_render(e->right, b, n, o);
+        ER_PUT(")");
+        break;
+    case NODE_CALL:
+        if (e->callee && e->callee->kind == NODE_IDENT) ER_PUT("%s", e->callee->name);
+        else ER_PUT("?");
+        ER_PUT("(");
+        for (int i = 0; i < e->args.len; i++) {
+            if (i) ER_PUT(", ");
+            expr_render(e->args.data[i], b, n, o);
+        }
+        ER_PUT(")");
+        break;
+    default: ER_PUT("?"); break;
+    }
+    #undef ER_PUT
+}
+
+static void inv_collect_reset(void) {
+    for (int i = 0; i < g_inv_n; i++) free(g_inv_texts[i]);
+    free(g_inv_texts); free(g_inv_proven);
+    g_inv_texts = NULL; g_inv_proven = NULL; g_inv_n = g_inv_cap = 0;
+}
+
+static void inv_collect_push(Node *inv, int proven) {
+    if (g_inv_n == g_inv_cap) {
+        g_inv_cap = g_inv_cap ? g_inv_cap * 2 : 8;
+        g_inv_texts = realloc(g_inv_texts, (size_t)g_inv_cap * sizeof(char *));
+        g_inv_proven = realloc(g_inv_proven, (size_t)g_inv_cap * sizeof(int));
+    }
+    char buf[512]; size_t off = 0; buf[0] = '\0';
+    expr_render(inv, buf, sizeof buf, &off);
+    g_inv_texts[g_inv_n] = strdup(buf);
+    g_inv_proven[g_inv_n] = proven;
+    g_inv_n++;
+}
 
 static Node *find_spec(Node *prog, const char *name);   /* defined below */
 static int type_is_i64(Node *t);                        /* defined below */
@@ -1268,6 +1387,34 @@ static int is_vec_builtin_call(Node *n) {
            strcmp(nm, "vec_concat") == 0;
 }
 
+/* M14: the !Par builtins modeled by the verifier. Pair-returning builtins
+ * (chan_recv2/try_recv/timeout/select2*), mutexes and pool_map stay outside
+ * the fragment (honest skip). */
+static int is_par_builtin_call(Node *n) {
+    if (n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    const char *nm = n->callee->name;
+    return strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0 ||
+           strcmp(nm, "join") == 0 || strcmp(nm, "detach") == 0 ||
+           strcmp(nm, "chan_new") == 0 || strcmp(nm, "chan_send") == 0 ||
+           strcmp(nm, "chan_recv") == 0 || strcmp(nm, "chan_close") == 0;
+}
+
+/* M14 shallow gate for a par builtin call: right arity; for go/go_bg the
+ * worker must be a user fn (i64) -> i64, pure (no effects — an effectful
+ * worker is outside the fragment). Body verifiability is checked later, at
+ * eval time, before any ensures are assumed (same discipline as M5). */
+static int par_call_gate(Node *n) {
+    const char *nm = n->callee->name;
+    if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0) {
+        if (n->args.len != 2) return 0;
+        Node *w = n->args.data[0];
+        if (!w || w->kind != NODE_IDENT || !g_prog) return 0;
+        return callee_sig_supported(find_fn(g_prog, w->name));
+    }
+    if (strcmp(nm, "chan_send") == 0) return n->args.len == 2;
+    return n->args.len == 1;   /* join/detach/chan_new/chan_recv/chan_close */
+}
+
 static int has_unsupported_rec(Node *n, int flat, int in_expr) {
     if (!n) return 0;
     switch (n->kind) {
@@ -1279,6 +1426,13 @@ static int has_unsupported_rec(Node *n, int flat, int in_expr) {
         return 1;
     case NODE_CALL:
         if (is_vec_builtin_call(n)) {
+            for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
+            return 0;
+        }
+        /* M14: par builtins at statement level only — never inside a loop
+         * (flat) and never nested in an expression. */
+        if (is_par_builtin_call(n)) {
+            if (flat || in_expr || !par_call_gate(n)) return 1;
             for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
             return 0;
         }
@@ -1453,7 +1607,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
         for (int k = 0; k < post_ss.n; k++) states_push(&out, post_ss.s[k]);
         free(post_ss.s);
         f_free(&nf);
-        env_free(&cur->env); cl_free(&cur->path);
+        env_free(&cur->env); cl_free(&cur->path); handles_free(&cur->handles);
     }
     free(states->s);
     *states = out;
@@ -1463,6 +1617,9 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
     for (int i = 0; i < states->n; i++)
         for (int j = 0; j < st->while_invariants.len; j++)
             extract_elem_axiom(st->while_invariants.data[j], &states->s[i].env, &states->s[i].ax);
+    /* record the loop's invariants for --proofs (verified facts, M1) */
+    for (int j = 0; j < st->while_invariants.len; j++)
+        inv_collect_push(st->while_invariants.data[j], trusted);
     return trusted;
 }
 
@@ -2073,6 +2230,137 @@ static Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *ca
     return sym_lin(lin_var(rv));
 }
 
+/* M14: protocol violation — a kind-3 obligation whose positive part is
+ * unsatisfiable (1 <= 0). On any live path this is REFUTED with the path
+ * witness (same machinery as call-site requires); on a dead path the
+ * obligation is vacuously PROVEN, which is correct. */
+static void push_protocol_violation(State *st, Obligations *ob, const char *label) {
+    ConsList opath; cl_init(&opath);
+    for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    ConsList pos; cl_init(&pos);
+    cl_push(&pos, mk_cons(lin_const(rat_int(1)), C_LE, rat_zero()));
+    obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &st->vlen, &st->reads, 0, 3, label);
+}
+
+/* M14: symbolic semantics of the !Par builtins (statement level only).
+ *
+ * go(f, x): f must be a pure verifiable (i64)->i64 user fn (gated earlier).
+ * Fork-join determinism: the spawned computation of a pure worker is the
+ * function call itself, so the worker's contract applies via the M5
+ * assume–guarantee machinery — the join handle carries the symbolic result.
+ * join(h)/detach(h): the runtime handle protocol (spawn → join | detach;
+ * join-after-detach is fatal, src/baga_par_rt.c) becomes a static protocol:
+ * a second consume on the same handle is a kind-3 violation (REFUTED).
+ * Channels: open/closed ghost state; send returns 0 (ok) or -1 (closed) —
+ * the interval -1 <= s <= 0 is exact; on a known-closed channel s == -1.
+ * recv payload is unconstrained (any payload, or 0 on closed+empty).
+ * Returns the symbolic value of the call (owned). */
+static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
+    const char *nm = call->callee->name;
+
+    if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0) {
+        Node *w = call->args.data[0];
+        const char *wname = w->name;
+        Node *wfn = find_fn(g_prog, wname);
+        Sym res;
+        if (find_spec(g_prog, wname)) {
+            /* synthesize `wname(arg)` and reuse M5: discharge requires
+             * (kind-2 obligations), assume ensures when justified */
+            Node fake; memset(&fake, 0, sizeof fake);
+            fake.kind = NODE_CALL; fake.callee = w;
+            NodeVec fa; fa.data = &call->args.data[1]; fa.len = 1; fa.cap = 1;
+            fake.args = fa;
+            res = eval_user_call(&fake, st, ob, g_caller_name);
+        } else {
+            /* spec-less worker: nothing to discharge or assume (honest) */
+            Sym a = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
+            lin_free(&a.lin);
+            char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
+            res = sym_lin(lin_var(rv));
+        }
+        (void)wfn;
+        if (strcmp(nm, "go_bg") == 0) {   /* detached at birth: no handle */
+            lin_free(&res.lin);
+            return sym_lin(lin_const(rat_int(0)));
+        }
+        char hv[64]; snprintf(hv, sizeof hv, "__h%d", g_handle_ctr++);
+        if (res.nonlinear) { Lin empty; lin_init(&empty); handles_set(&st->handles, hv, HK_JOIN, 0, &empty); }
+        else handles_set(&st->handles, hv, HK_JOIN, 0, &res.lin);   /* moves res.lin */
+        return sym_lin(lin_var(hv));
+    }
+
+    if (strcmp(nm, "join") == 0 || strcmp(nm, "detach") == 0) {
+        int is_join = (nm[0] == 'j');
+        Sym hv = se_from_ast(call->args.data[0], &st->env, &st->vlen, &st->reads);
+        HandleEntry *e = NULL;
+        if (!hv.nonlinear && hv.lin.n == 1 && hv.lin.c.num == 0 &&
+            hv.lin.terms[0].coeff.num == hv.lin.terms[0].coeff.den)
+            e = handles_find(&st->handles, hv.lin.terms[0].var);
+        if (!e || e->kind != HK_JOIN) {
+            /* unknown handle (e.g. an i64 parameter): no protocol claims —
+             * join returns an unconstrained value, detach 0 (sound) */
+            lin_free(&hv.lin);
+            if (!is_join) return sym_lin(lin_const(rat_int(0)));
+            char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
+            return sym_lin(lin_var(rv));
+        }
+        if (e->state != 0) {
+            char label[300];
+            snprintf(label, sizeof label, "%s след %s по същия handle",
+                     is_join ? "join" : "detach",
+                     e->state == 1 ? "join" : "detach");
+            push_protocol_violation(st, ob, label);
+        } else {
+            e->state = is_join ? 1 : 2;
+        }
+        if (!is_join) { lin_free(&hv.lin); return sym_lin(lin_const(rat_int(0))); }
+        lin_free(&hv.lin);
+        return sym_lin(lin_clone(&e->result));
+    }
+
+    if (strcmp(nm, "chan_new") == 0) {
+        Sym cap = se_from_ast(call->args.data[0], &st->env, &st->vlen, &st->reads);
+        lin_free(&cap.lin);
+        char hv[64]; snprintf(hv, sizeof hv, "__ch%d", g_handle_ctr++);
+        handles_set(&st->handles, hv, HK_CHAN, 0, NULL);
+        return sym_lin(lin_var(hv));
+    }
+
+    /* chan_send / chan_recv / chan_close */
+    Sym cv = se_from_ast(call->args.data[0], &st->env, &st->vlen, &st->reads);
+    HandleEntry *e = NULL;
+    if (!cv.nonlinear && cv.lin.n == 1 && cv.lin.c.num == 0 &&
+        cv.lin.terms[0].coeff.num == cv.lin.terms[0].coeff.den)
+        e = handles_find(&st->handles, cv.lin.terms[0].var);
+    if (e && e->kind != HK_CHAN) e = NULL;   /* not a channel: no claims */
+    lin_free(&cv.lin);
+
+    if (strcmp(nm, "chan_close") == 0) {
+        if (e) e->state = 1;   /* idempotent */
+        return sym_lin(lin_const(rat_int(0)));
+    }
+    if (strcmp(nm, "chan_recv") == 0) {
+        char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
+        return sym_lin(lin_var(rv));   /* unconstrained payload */
+    }
+    /* chan_send */
+    Sym v = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
+    lin_free(&v.lin);
+    char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
+    if (e && e->state == 1) {
+        /* known closed: send definitely fails → s == -1 */
+        Lin s = lin_var(rv);
+        cl_push(&st->path, mk_cons(lin_clone(&s), C_LE, rat_int(-1)));   /* s <= -1 */
+        Lin neg = lin_neg(&s);
+        cl_push(&st->path, mk_cons(neg, C_LE, rat_int(1)));              /* -s <= 1 */
+        lin_free(&s);
+    } else {
+        path_push_ge(&st->path, rv, -1);   /* s >= -1 */
+        path_push_le(&st->path, rv, 0);    /* s <= 0  */
+    }
+    return sym_lin(lin_var(rv));
+}
+
 /* M6: entry obligation for a decreases measure — requires ⇒ D >= 0.
  * Pushed as a kind-2 obligation (same discharge/witness machinery as
  * call-site requires); used in both the collect run and the print re-run. */
@@ -2115,6 +2403,7 @@ static State clone_state_with(State *cur, Formula *add) {
     vlen_clone_into(&t.vlen, &cur->vlen);
     ax_clone_into(&t.ax, &cur->ax);
     reads_clone_into(&t.reads, &cur->reads);
+    handles_clone_into(&t.handles, &cur->handles);
     cl_init(&t.path);
     for (int x = 0; x < cur->path.n; x++) { Constraint *c = &cur->path.c[x]; cl_push(&t.path, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
     if (add) for (int b = 0; b < add->n; b++) for (int x = 0; x < add->br[b].n; x++) {
@@ -2141,6 +2430,7 @@ static void drain_returns(States *states, Obligations *ob, Node *val_expr) {
         obl_push(ob, states->s[i].path, nobound, rc, r, &states->s[i].vlen, &states->s[i].reads, states->s[i].bad, 0, NULL);
         env_free(&states->s[i].env);
         vlen_free(&states->s[i].vlen);
+        handles_free(&states->s[i].handles);
     }
     states->n = 0;
 }
@@ -2153,6 +2443,11 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             for (int i = 0; i < states->n; i++) {
                 if (is_user_call(st->let_init)) {   /* M5: assume-guarantee */
                     Sym r = eval_user_call(st->let_init, &states->s[i], ob, g_caller_name);
+                    bind_sym(&states->s[i].env, st->let_name, r);
+                    continue;
+                }
+                if (is_par_builtin_call(st->let_init)) {   /* M14: !Par */
+                    Sym r = eval_par_call(st->let_init, &states->s[i], ob);
                     bind_sym(&states->s[i].env, st->let_name, r);
                     continue;
                 }
@@ -2205,6 +2500,15 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                 drain_returns(states, ob, &id);
                 return;
             }
+            if (is_par_builtin_call(st->ret_val)) {   /* M14 */
+                for (int i = 0; i < states->n; i++) {
+                    Sym r = eval_par_call(st->ret_val, &states->s[i], ob);
+                    env_bind(&states->s[i].env, "__retv", r.lin, r.nonlinear);
+                }
+                Node id; memset(&id, 0, sizeof id); id.kind = NODE_IDENT; id.name = "__retv";
+                drain_returns(states, ob, &id);
+                return;
+            }
             for (int i = 0; i < states->n; i++) scan_vec_expr(st->ret_val, &states->s[i], ob, spec);
             drain_returns(states, ob, st->ret_val);
             return;
@@ -2212,6 +2516,15 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             if (is_user_call(st->expr)) {   /* M5 */
                 for (int i = 0; i < states->n; i++) {
                     Sym r = eval_user_call(st->expr, &states->s[i], ob, g_caller_name);
+                    env_bind(&states->s[i].env, "__retv", r.lin, r.nonlinear);
+                }
+                Node id; memset(&id, 0, sizeof id); id.kind = NODE_IDENT; id.name = "__retv";
+                drain_returns(states, ob, &id);
+                return;
+            }
+            if (is_par_builtin_call(st->expr)) {   /* M14 */
+                for (int i = 0; i < states->n; i++) {
+                    Sym r = eval_par_call(st->expr, &states->s[i], ob);
                     env_bind(&states->s[i].env, "__retv", r.lin, r.nonlinear);
                 }
                 Node id; memset(&id, 0, sizeof id); id.kind = NODE_IDENT; id.name = "__retv";
@@ -2226,6 +2539,11 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             for (int i = 0; i < states->n; i++) {
                 if (is_user_call(st->expr)) {   /* M5: check requires, discard result */
                     Sym r = eval_user_call(st->expr, &states->s[i], ob, g_caller_name);
+                    lin_free(&r.lin);
+                    continue;
+                }
+                if (is_par_builtin_call(st->expr)) {   /* M14: discard result */
+                    Sym r = eval_par_call(st->expr, &states->s[i], ob);
                     lin_free(&r.lin);
                     continue;
                 }
@@ -2278,7 +2596,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                 for (int k = 0; k < else_ss.n; k++) states_push(&out, else_ss.s[k]);
                 free(else_ss.s);
                 f_free(&cf); f_free(&nf);
-                env_free(&cur->env); cl_free(&cur->path);
+                env_free(&cur->env); cl_free(&cur->path); handles_free(&cur->handles);
             }
             free(states->s);
             *states = out;
@@ -2312,6 +2630,16 @@ static int type_is_i64(Node *t) {
 }
 static int ret_has_effects(Node *t) {
     return t && t->kind == NODE_TYPE_EFFECT && t->n_effects > 0;
+}
+
+/* M14: a return type whose every declared effect is Par stays inside the
+ * verifiable fragment (concurrency is modeled symbolically); any other
+ * effect dimension keeps the function out. */
+static int ret_has_non_par_effects(Node *t) {
+    if (!t || t->kind != NODE_TYPE_EFFECT) return 0;
+    for (int i = 0; i < t->n_effects; i++)
+        if (strcmp(t->effect_names[i], "Par") != 0) return 1;
+    return 0;
 }
 
 typedef enum { R_PROVEN, R_REFUTED, R_UNKNOWN } VRes;
@@ -2653,16 +2981,18 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     g_caller_name = fn->fn_name;
     g_partial = 0;
     g_call_ctr = 0;
+    g_handle_ctr = 0;
     g_prod_ctr = 0;
     g_term = 0;
     g_term_failed = 0;
+    inv_collect_reset();
     Node *spec = find_spec(prog, fn->fn_name);
     if (!spec) return -1;
     if (spec->spec_decreases) g_term = 1;
 
     /* fragment gates */
     const char *skip = NULL;
-    if (ret_has_effects(fn->ret_type)) skip = "ефекти";
+    if (ret_has_non_par_effects(fn->ret_type)) skip = "ефекти (не-Par)";
     else if (fn->ret_type && !type_is_i64(fn->ret_type) && unwrap_type(fn->ret_type)->kind != NODE_TYPE) skip = "не-i64 резултат";
     else if (fn->ret_type && unwrap_type(fn->ret_type)->kind == NODE_TYPE &&
              strcmp(unwrap_type(fn->ret_type)->type_name, "i64") != 0) skip = "не-i64 резултат";
@@ -2692,7 +3022,7 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     /* symexec */
     Obligations ob; ob.o = NULL; ob.n = 0; ob.cap = 0;
     State init; env_init(&init.env); vlen_init(&init.vlen); ax_init(&init.ax);
-    cl_init(&init.path); cl_init(&init.read_cons); reads_init(&init.reads); init.bad = 0;
+    cl_init(&init.path); cl_init(&init.read_cons); reads_init(&init.reads); handles_init(&init.handles); init.bad = 0;
     for (int i = 0; i < fn->params.len; i++) {
         Node *p = fn->params.data[i];
         env_bind(&init.env, p->param_name, lin_var(p->param_name), 0);
@@ -2744,21 +3074,31 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     }
     for (int i = 0; i < ob.n; i++) { cl_free(&ob.o[i].path); cl_free(&ob.o[i].bound); cl_free(&ob.o[i].read_cons); lin_free(&ob.o[i].ret.lin); vlen_free(&ob.o[i].vlen); prods_free(&ob.o[i].prods); free(ob.o[i].label); }
     free(ob.o);
+    /* transfer verified facts (recursion/termination, invariants) to the caller */
+    out->partial = g_partial;
+    out->term = g_term;
+    out->term_failed = g_term_failed;
+    out->inv_texts = g_inv_texts; out->inv_proven = g_inv_proven; out->n_inv = g_inv_n;
+    g_inv_texts = NULL; g_inv_proven = NULL; g_inv_n = g_inv_cap = 0;
     return 0;
 }
 
 void fn_verify_res_free(FnVerifyRes *r) {
-    if (!r->ens) return;
-    for (int j = 0; j < r->n_ens; j++) {
-        if (r->ens[j].wit_names) {
-            for (int k = 0; k < r->ens[j].wn; k++) free(r->ens[j].wit_names[k]);
-            free(r->ens[j].wit_names);
+    if (r->ens) {
+        for (int j = 0; j < r->n_ens; j++) {
+            if (r->ens[j].wit_names) {
+                for (int k = 0; k < r->ens[j].wn; k++) free(r->ens[j].wit_names[k]);
+                free(r->ens[j].wit_names);
+            }
+            free(r->ens[j].wit_vals);
         }
-        free(r->ens[j].wit_vals);
+        free(r->ens);
+        r->ens = NULL;
+        r->n_ens = 0;
     }
-    free(r->ens);
-    r->ens = NULL;
-    r->n_ens = 0;
+    for (int j = 0; j < r->n_inv; j++) free(r->inv_texts[j]);
+    free(r->inv_texts); free(r->inv_proven);
+    r->inv_texts = NULL; r->inv_proven = NULL; r->n_inv = 0;
 }
 
 static int verify_fn(Node *prog, Node *fn) {
@@ -2821,7 +3161,7 @@ static int verify_fn(Node *prog, Node *fn) {
     if (!res.skipped) {
         Obligations ob2; ob2.o = NULL; ob2.n = 0; ob2.cap = 0;
         State init2; env_init(&init2.env); vlen_init(&init2.vlen); ax_init(&init2.ax);
-        cl_init(&init2.path); cl_init(&init2.read_cons); reads_init(&init2.reads); init2.bad = 0;
+        cl_init(&init2.path); cl_init(&init2.read_cons); reads_init(&init2.reads); handles_init(&init2.handles); init2.bad = 0;
         for (int i = 0; i < fn->params.len; i++) {
             Node *p = fn->params.data[i];
             env_bind(&init2.env, p->param_name, lin_var(p->param_name), 0);
@@ -2881,6 +3221,43 @@ static int verify_fn(Node *prog, Node *fn) {
             if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
         }
         if (g_json) printf("]");
+        /* handle protocol obligations (M14, kind 3) — same discharge/witness
+         * machinery as call-site requires */
+        if (g_json) printf(", \"protocol\": [");
+        int npr = 0;
+        for (int i = 0; i < ob2.n; i++) {
+            if (ob2.o[i].kind != 3) continue;
+            IBind *wit = NULL; int wn = 0;
+            VRes r = verify_call_req(&ob2.o[i], &wit, &wn);
+            if (g_json) {
+                if (npr) printf(", ");
+                npr++;
+                printf("{\"label\": ");
+                json_str(ob2.o[i].label ? ob2.o[i].label : "протокол");
+                printf(", \"result\": \"%s\", \"counterexample\": ", res_word_json((int)r));
+                if (r == R_REFUTED && wit) {
+                    char **names = malloc(wn * sizeof(char *));
+                    long long *vals = malloc(wn * sizeof(long long));
+                    for (int k = 0; k < wn; k++) { names[k] = wit[k].name; vals[k] = (long long)wit[k].val; }
+                    json_witness(names, vals, wn);
+                    free(names); free(vals);
+                } else {
+                    json_witness(NULL, NULL, 0);
+                }
+                printf("}");
+            } else {
+                printf("  протокол (%s): %s\n", ob2.o[i].label ? ob2.o[i].label : "handle", res_word(r));
+                if (r == R_REFUTED) {
+                    printf("    контрапример:");
+                    for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+                    if (wn == 0) printf(" (при всеки вход)");
+                    printf("\n");
+                }
+            }
+            if (r == R_REFUTED) any_refuted = 1;
+            if (wit) { for (int k = 0; k < wn; k++) free(wit[k].name); free(wit); }
+        }
+        if (g_json) printf("]");
         if (g_json) printf(", \"bounds\": [");
         int nb = 0;
         for (int i = 0; i < ob2.n; i++) {
@@ -2918,9 +3295,10 @@ static int verify_fn(Node *prog, Node *fn) {
         for (int i = 0; i < ob2.n; i++) { cl_free(&ob2.o[i].path); cl_free(&ob2.o[i].bound); cl_free(&ob2.o[i].read_cons); lin_free(&ob2.o[i].ret.lin); vlen_free(&ob2.o[i].vlen); prods_free(&ob2.o[i].prods); free(ob2.o[i].label); }
         free(ob2.o);
     } else if (g_json) {
-        printf(", \"calls\": [], \"bounds\": []}");
+        printf(", \"calls\": [], \"protocol\": [], \"bounds\": []}");
     }
     fn_verify_res_free(&res);
+    inv_collect_reset();   /* the reporting re-run above refilled the globals */
     return any_refuted;
 }
 
