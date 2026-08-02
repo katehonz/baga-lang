@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-02
+
+Second tagged release: M14–M18 static verification, soundness fixes, evaluation
+and research docs. CLI: `baga --version` / `-V` prints `baga 0.7.0`.
+
 ### Static verification — M18: `!Overflow` as an effect (effect system ≡ verifier)
 - Arithmetic safety (M15) is now a **type-level effect**. `!Overflow` is a
   permission (like `!IO`), not a claim: the M15 kind-4 obligations are the

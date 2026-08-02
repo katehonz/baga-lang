@@ -1,6 +1,6 @@
 # Baga ⚔️
 
-**Version [0.2.0](VERSION)** · [Changelog](CHANGELOG.md)
+**Version [0.7.0](VERSION)** · [Changelog](CHANGELOG.md)
 
 **A programming language for the age of AI.** Spec-first verification. Effects as type dimensions. Readable proof sketches — and a sound static verifier for a stated fragment.
 
