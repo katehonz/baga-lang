@@ -120,6 +120,7 @@ void type_merge_effects(Type *dst, Type *src) {
 typedef struct {
     char *name;
     Type *type;
+    int is_mut;
 } EnvEntry;
 
 typedef struct {
@@ -273,6 +274,24 @@ static void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) 
     if (s->count < ENV_VARS) {
         s->entries[s->count].name = (char *)name;
         s->entries[s->count].type = type;
+        s->entries[s->count].is_mut = 1;
+        s->count++;
+    }
+}
+
+static void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_mut, SrcPos pos) {
+    if (ctx->depth <= 0) return;
+    EnvScope *s = &ctx->scopes[ctx->depth - 1];
+    for (int i = 0; i < s->count; i++) {
+        if (strcmp(s->entries[i].name, name) == 0) {
+            check_error(ctx, pos, "повторно дефиниране на '%s'", name);
+            return;
+        }
+    }
+    if (s->count < ENV_VARS) {
+        s->entries[s->count].name = (char *)name;
+        s->entries[s->count].type = type;
+        s->entries[s->count].is_mut = is_mut;
         s->count++;
     }
 }
@@ -286,6 +305,17 @@ static Type *env_lookup(CheckCtx *ctx, const char *name) {
         }
     }
     return NULL;
+}
+
+static int env_is_mut(CheckCtx *ctx, const char *name) {
+    for (int d = ctx->depth - 1; d >= 0; d--) {
+        EnvScope *s = &ctx->scopes[d];
+        for (int i = s->count - 1; i >= 0; i--) {
+            if (strcmp(s->entries[i].name, name) == 0)
+                return s->entries[i].is_mut;
+        }
+    }
+    return 1;
 }
 
 static Type *find_fn(CheckCtx *ctx, const char *name) {
@@ -794,10 +824,17 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             break;
         }
 
-        case NODE_ASSIGN:
+        case NODE_ASSIGN: {
             infer(ctx, n->assign_target);
             t = infer(ctx, n->assign_val);
+            if (n->assign_target->kind == NODE_IDENT &&
+                !env_is_mut(ctx, n->assign_target->name)) {
+                check_error(ctx, n->pos,
+                    "променливата '%s' е декларирана с 'let' без 'mut' — присвояването е забранено",
+                    n->assign_target->name);
+            }
             break;
+        }
 
         case NODE_RANGE:
             infer(ctx, n->range_lo);
@@ -807,19 +844,56 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
         case NODE_STRUCT_LIT: {
             /* verify struct exists */
-            int found = 0;
+            Node *sdecl = NULL;
             for (int si = 0; si < ctx->n_structs; si++) {
                 if (strcmp(ctx->structs[si].name, n->lit_name) == 0) {
-                    found = 1;
+                    sdecl = ctx->structs[si].decl;
                     break;
                 }
             }
-            if (!found) {
+            if (!sdecl) {
                 check_error(ctx, n->pos, "непознат struct '%s'", n->lit_name);
             }
-            /* infer field value types */
-            for (int i = 0; i < n->lit_values.len; i++)
-                infer(ctx, n->lit_values.data[i]);
+            /* check each literal field: name exists + type matches */
+            for (int i = 0; i < n->n_lit_fields; i++) {
+                Type *vt = infer(ctx, n->lit_values.data[i]);
+                if (!sdecl) continue;
+                int fld_found = 0;
+                for (int fi = 0; fi < sdecl->fields.len; fi++) {
+                    Node *fld = sdecl->fields.data[fi];
+                    if (strcmp(fld->fld_name, n->lit_fields[i]) == 0) {
+                        fld_found = 1;
+                        Type *ft = resolve_type_node(ctx, fld->fld_type);
+                        if (ft && vt && !type_eq(ft, vt)) {
+                            check_error(ctx, n->pos,
+                                "поле '%s' очаква %s, но получава %s",
+                                n->lit_fields[i], type_str(ft), type_str(vt));
+                        }
+                        break;
+                    }
+                }
+                if (!fld_found) {
+                    check_error(ctx, n->pos,
+                        "struct '%s' няма поле '%s'", n->lit_name, n->lit_fields[i]);
+                }
+            }
+            /* check for missing fields */
+            if (sdecl) {
+                for (int fi = 0; fi < sdecl->fields.len; fi++) {
+                    Node *fld = sdecl->fields.data[fi];
+                    int present = 0;
+                    for (int i = 0; i < n->n_lit_fields; i++) {
+                        if (strcmp(n->lit_fields[i], fld->fld_name) == 0) {
+                            present = 1;
+                            break;
+                        }
+                    }
+                    if (!present) {
+                        check_error(ctx, n->pos,
+                            "липсва поле '%s' в struct '%s'", fld->fld_name, n->lit_name);
+                    }
+                }
+            }
             Type *st = type_new(TYPE_STRUCT);
             st->name = strdup(n->lit_name);
             t = st;
@@ -874,8 +948,12 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
         case NODE_LET: {
             Type *init_t = n->let_init ? infer(ctx, n->let_init) : type_new(TYPE_I64);
+            if (n->let_init && init_t->kind == TYPE_VOID) {
+                check_error(ctx, n->pos,
+                    "не може да се присвои void стойност на '%s'", n->let_name);
+            }
             Type *decl_t = n->let_type ? resolve_type_node(ctx, n->let_type) : init_t;
-            env_define(ctx, n->let_name, decl_t, n->pos);
+            env_define_mut(ctx, n->let_name, decl_t, n->is_mut, n->pos);
             t = type_new(TYPE_VOID);
             break;
         }

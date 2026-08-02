@@ -1,7 +1,7 @@
 import "../../std/crypto/sha256.baga"
 fn main() {
-    let s = "aaaaaaaaaa"
-    let i = 0
+    let mut s = "aaaaaaaaaa"
+    let mut i = 0
     while i < 17 {
         s = concat(s, s)
         i = i + 1

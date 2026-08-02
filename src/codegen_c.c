@@ -298,6 +298,15 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, ", ");
                 emit_expr(cg, n->right);
                 fprintf(f, ") %s 0)", n->bin_op == OP_EQ ? "==" : "!=");
+            } else if ((n->bin_op == OP_DIV || n->bin_op == OP_MOD) &&
+                       (!n->right->type || n->right->type->kind == TYPE_I64)) {
+                /* i64 деление/modulo: guard за нула */
+                fprintf(f, "({ int64_t _a = (");
+                emit_expr(cg, n->left);
+                fprintf(f, "); int64_t _b = (");
+                emit_expr(cg, n->right);
+                fprintf(f, "); if (_b == 0) baga_div_zero_fail(); _a %s _b; })",
+                        n->bin_op == OP_DIV ? "/" : "%");
             } else {
                 fprintf(f, "(");
                 emit_expr(cg, n->left);
@@ -1231,10 +1240,21 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_print_str(const char *s) { printf(\"%%s\\n\", s); }\n");
     fprintf(out, "static void baga_write(const char *s) { printf(\"%%s\", s); }\n");
     fprintf(out, "static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n");
+    fprintf(out, "static void baga_bounds_fail(const char *fn, int64_t i, int64_t len) {\n");
+    fprintf(out, "    fprintf(stderr, \"baga: %%s: индекс %%lld извън границите [0, %%lld)\\n\", fn, (long long)i, (long long)len);\n");
+    fprintf(out, "    exit(1);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_div_zero_fail(void) {\n");
+    fprintf(out, "    fprintf(stderr, \"baga: деление на нула\\n\");\n");
+    fprintf(out, "    exit(1);\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n");
     fprintf(out, "static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n");
-    fprintf(out, "    int64_t n = b - a; if (n < 0) n = 0;\n");
-    fprintf(out, "    char *r = malloc((size_t)n + 1); memcpy(r, s + a, (size_t)n); r[n] = 0; return r;\n");
+    fprintf(out, "    int64_t n = (int64_t)strlen(s);\n");
+    fprintf(out, "    if (a < 0 || a > n) baga_bounds_fail(\"substr\", a, n);\n");
+    fprintf(out, "    if (b < 0 || b > n) baga_bounds_fail(\"substr\", b, n);\n");
+    fprintf(out, "    int64_t len = b - a; if (len < 0) len = 0;\n");
+    fprintf(out, "    char *r = malloc((size_t)len + 1); memcpy(r, s + a, (size_t)len); r[len] = 0; return r;\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_concat(const char *a, const char *b) {\n");
     fprintf(out, "    size_t la = strlen(a), lb = strlen(b);\n");
@@ -1274,7 +1294,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "/* binary-safe byte buffer */\n");
     fprintf(out, "typedef struct { unsigned char *data; int64_t len; } baga_bytes;\n");
     fprintf(out, "static int64_t baga_bytes_len(baga_bytes b) { return b.len; }\n");
-    fprintf(out, "static int64_t baga_bytes_at(baga_bytes b, int64_t i) { return (int64_t)b.data[i]; }\n");
+    fprintf(out, "static int64_t baga_bytes_at(baga_bytes b, int64_t i) {\n");
+    fprintf(out, "    if (i < 0 || i >= b.len) baga_bounds_fail(\"bytes_at\", i, b.len);\n");
+    fprintf(out, "    return (int64_t)b.data[i];\n");
+    fprintf(out, "}\n");
     fprintf(out, "static baga_bytes baga_bytes_slice(baga_bytes b, int64_t a, int64_t c) {\n");
     fprintf(out, "    if (a < 0) a = 0; if (c > b.len) c = b.len; if (c < a) c = a;\n");
     fprintf(out, "    baga_bytes r; r.len = c - a; r.data = malloc((size_t)(r.len ? r.len : 1));\n");
@@ -1319,14 +1342,32 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (v->len == v->cap) { v->cap *= 2; v->data = realloc(v->data, (size_t)v->cap * sizeof(void *)); }\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_vec_push_i64(baga_Vec *v, int64_t x) { baga_vec_grow(v); v->data[v->len++] = (void *)(intptr_t)x; }\n");
-    fprintf(out, "static int64_t baga_vec_get_i64(baga_Vec *v, int64_t i) { return (int64_t)(intptr_t)v->data[i]; }\n");
-    fprintf(out, "static void baga_vec_set_i64(baga_Vec *v, int64_t i, int64_t x) { v->data[i] = (void *)(intptr_t)x; }\n");
+    fprintf(out, "static int64_t baga_vec_get_i64(baga_Vec *v, int64_t i) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_get\", i, v->len);\n");
+    fprintf(out, "    return (int64_t)(intptr_t)v->data[i];\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_vec_set_i64(baga_Vec *v, int64_t i, int64_t x) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+    fprintf(out, "    v->data[i] = (void *)(intptr_t)x;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static void baga_vec_push_str(baga_Vec *v, const char *s) { baga_vec_grow(v); v->data[v->len++] = (void *)s; }\n");
-    fprintf(out, "static const char *baga_vec_get_str(baga_Vec *v, int64_t i) { return (const char *)v->data[i]; }\n");
-    fprintf(out, "static void baga_vec_set_str(baga_Vec *v, int64_t i, const char *s) { v->data[i] = (void *)s; }\n");
+    fprintf(out, "static const char *baga_vec_get_str(baga_Vec *v, int64_t i) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_get\", i, v->len);\n");
+    fprintf(out, "    return (const char *)v->data[i];\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_vec_set_str(baga_Vec *v, int64_t i, const char *s) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+    fprintf(out, "    v->data[i] = (void *)s;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static void baga_vec_push_f64(baga_Vec *v, double x) { union { double d; void *p; } u; u.d = x; baga_vec_grow(v); v->data[v->len++] = u.p; }\n");
-    fprintf(out, "static double baga_vec_get_f64(baga_Vec *v, int64_t i) { union { double d; void *p; } u; u.p = v->data[i]; return u.d; }\n");
-    fprintf(out, "static void baga_vec_set_f64(baga_Vec *v, int64_t i, double x) { union { double d; void *p; } u; u.d = x; v->data[i] = u.p; }\n");
+    fprintf(out, "static double baga_vec_get_f64(baga_Vec *v, int64_t i) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_get\", i, v->len);\n");
+    fprintf(out, "    union { double d; void *p; } u; u.p = v->data[i]; return u.d;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_vec_set_f64(baga_Vec *v, int64_t i, double x) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+    fprintf(out, "    union { double d; void *p; } u; u.d = x; v->data[i] = u.p;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
     /* bridge: native bytes <-> Vec<i64> (crypto migration path) */
     fprintf(out, "static baga_bytes baga_bytes_from_vec(baga_Vec *v) {\n");
@@ -1403,9 +1444,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static int64_t baga_cell2_1(int64_t h) { return ((int64_t *)(intptr_t)h)[1]; }\n");
     fprintf(out, "typedef int64_t (*baga_par_fn)(int64_t);\n");
     fprintf(out, "typedef struct {\n");
+    fprintf(out, "    uint32_t magic;\n");
     fprintf(out, "    baga_par_fn fn; int64_t arg; int64_t result; pthread_t th;\n");
     fprintf(out, "    int joined; int detached;\n");
     fprintf(out, "} baga_JoinHandle;\n");
+    fprintf(out, "#define BAGA_HANDLE_MAGIC 0xBA6A0001u\n");
     fprintf(out, "static void *baga_par_trampoline(void *p) {\n");
     fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)p;\n");
     fprintf(out, "    h->result = h->fn(h->arg);\n");
@@ -1418,6 +1461,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)calloc(1, sizeof(baga_JoinHandle));\n");
     fprintf(out, "    if (!h) { fprintf(stderr, \"baga: go: out of memory\\n\"); exit(1); }\n");
     fprintf(out, "    h->fn = fn; h->arg = arg; h->joined = 0; h->detached = 0;\n");
+    fprintf(out, "    h->magic = BAGA_HANDLE_MAGIC;\n");
     fprintf(out, "    if (pthread_create(&h->th, NULL, baga_par_trampoline, h) != 0) {\n");
     fprintf(out, "        fprintf(stderr, \"baga: go: pthread_create failed\\n\"); exit(1);\n");
     fprintf(out, "    }\n");
@@ -1428,6 +1472,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)calloc(1, sizeof(baga_JoinHandle));\n");
     fprintf(out, "    if (!h) { fprintf(stderr, \"baga: go_bg: out of memory\\n\"); exit(1); }\n");
     fprintf(out, "    h->fn = fn; h->arg = arg; h->joined = 0; h->detached = 1;\n");
+    fprintf(out, "    h->magic = BAGA_HANDLE_MAGIC;\n");
     fprintf(out, "    pthread_attr_t attr; pthread_attr_init(&attr);\n");
     fprintf(out, "    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);\n");
     fprintf(out, "    if (pthread_create(&h->th, &attr, baga_par_trampoline, h) != 0) {\n");
@@ -1439,6 +1484,12 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static int64_t baga_join(int64_t handle) {\n");
     fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)(intptr_t)handle;\n");
     fprintf(out, "    if (!h) return 0;\n");
+    fprintf(out, "    if ((uintptr_t)h < 4096) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: join: невалиден handle\\n\"); exit(1);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    if (h->magic != BAGA_HANDLE_MAGIC) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: join: невалиден handle\\n\"); exit(1);\n");
+    fprintf(out, "    }\n");
     fprintf(out, "    if (h->detached == 1) {\n");
     fprintf(out, "        fprintf(stderr, \"baga: join: handle detached\\n\"); exit(1);\n");
     fprintf(out, "    }\n");
@@ -1448,7 +1499,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     /* detach joinable handle: fire-and-forget. Race-safe with trampoline. */
     fprintf(out, "static int64_t baga_detach(int64_t handle) {\n");
     fprintf(out, "    baga_JoinHandle *h = (baga_JoinHandle *)(intptr_t)handle;\n");
-    fprintf(out, "    if (!h || h->joined) return -1;\n");
+    fprintf(out, "    if (!h || h->magic != BAGA_HANDLE_MAGIC || h->joined) return -1;\n");
     fprintf(out, "    int old = __sync_lock_test_and_set(&h->detached, 1);\n");
     fprintf(out, "    if (old == 2) { free(h); return 0; } /* already finished */\n");
     fprintf(out, "    if (old == 1) return 0; /* double detach */\n");

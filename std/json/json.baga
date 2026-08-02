@@ -146,7 +146,7 @@ fn jp_string_node(p: JsonParser) -> JsonParser {
                     if e == 98 { out = concat(out, chr(8)) }
                     if e == 102 { out = concat(out, chr(12)) }
                     if e == 117 {
-                        let cp = hex4(substr(p.src, p.pos + 2, p.pos + 6))
+                        let mut cp = hex4(substr(p.src, p.pos + 2, p.pos + 6))
                         // surrogate pair: \uD800-DBFF следван от \uDC00-DFFF
                         // → астрална кодова точка (emoji и др. > U+FFFF)
                         if cp >= 55296 && cp <= 56319 && p.pos + 12 <= len(p.src) {
@@ -333,7 +333,7 @@ fn jp_object(p: JsonParser) -> JsonParser {
 
 // Parse a document. On error, the root's tag is -1.
 fn json_parse(s: str) -> JsonDoc {
-    let p = JsonParser {
+    let mut p = JsonParser {
         src: s, pos: 0,
         tags: vec_new(), nums: vec_new(), strs: vec_new(),
         kids: vec_new(), kfrom: vec_new(), klen: vec_new()
