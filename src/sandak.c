@@ -197,8 +197,11 @@ static void cmd_manifest(void) {
 typedef struct { Manifest pkgs[128]; int n; } Graph;   /* pkgs[0] = root */
 
 static void canon(const char *path, char out[512]) {
-    if (!realpath(path, out))
-        die("не мога да намеря '%s': %s", path, strerror(errno));
+    /* realpath(path, NULL) — POSIX изисква PATH_MAX буфер при realpath(path, buf) */
+    char *rp = realpath(path, NULL);
+    if (!rp) die("не мога да намеря '%s': %s", path, strerror(errno));
+    if (snprintf(out, 512, "%s", rp) >= 512) { free(rp); die("пътят е твърде дълъг: '%s'", path); }
+    free(rp);
 }
 
 static const char *base_name(const char *dir) {
@@ -263,15 +266,115 @@ static void resolve(Graph *g, const char *root_dir) {
     resolve_into(g, canon_root, stack, 0);
 }
 
+/* Lock запис: подмножество на манифест — само идентичността на пакета. */
+typedef struct {
+    char name[128]; char version[64];
+    char source[600];   /* "path+<abs>" или "git+<url>" */
+    char rev[128];      /* за git; "-" за path */
+} LockPkg;
+
+typedef struct { LockPkg pkgs[128]; int n; } Lock;
+
+static int lockpkg_cmp(const void *a, const void *b) {
+    return strcmp(((const LockPkg *)a)->name, ((const LockPkg *)b)->name);
+}
+
+static void write_lock(const Graph *g, const char *root_dir) {
+    char lpath[1024];
+    snprintf(lpath, sizeof lpath, "%s/sandak.lock", root_dir);
+    FILE *f = fopen(lpath, "w");
+    if (!f) die("не мога да пиша '%s': %s", lpath, strerror(errno));
+    Lock lk; lk.n = 0;
+    for (int i = 0; i < g->n; i++) {
+        LockPkg *p = &lk.pkgs[lk.n++];
+        snprintf(p->name, sizeof p->name, "%s", g->pkgs[i].name);
+        snprintf(p->version, sizeof p->version, "%s", g->pkgs[i].version);
+        /* за git deps (T5) source/rev се взимат от Dep-а; root и path deps → path+ */
+        snprintf(p->source, sizeof p->source, "path+%s", g->pkgs[i].dir);
+        snprintf(p->rev, sizeof p->rev, "-");
+    }
+    qsort(lk.pkgs, lk.n, sizeof(LockPkg), lockpkg_cmp);
+    fprintf(f, "# sandak.lock — генериран от sandak, не редактирай\n");
+    for (int i = 0; i < lk.n; i++) {
+        fprintf(f, "\n[[package]]\nname = %c%s%c\nversion = %c%s%c\nsource = %c%s%c\nrev = %c%s%c\n",
+                '"', lk.pkgs[i].name, '"', '"', lk.pkgs[i].version, '"',
+                '"', lk.pkgs[i].source, '"', '"', lk.pkgs[i].rev, '"');
+    }
+    fclose(f);
+}
+
+/* чете sandak.lock в Lock; die ако липсва или е счупен */
+static void read_lock(const char *root_dir, Lock *lk) {
+    char lpath[1024];
+    snprintf(lpath, sizeof lpath, "%s/sandak.lock", root_dir);
+    char *src = read_file(lpath);   /* die при липса — съобщението е достатъчно */
+    memset(lk, 0, sizeof *lk);
+    int in_pkg = 0, lineno = 0;
+    char *save_line = NULL;   /* strtok_r навсякъде — без споделено състояние */
+    for (char *line = strtok_r(src, "\n", &save_line); line; line = strtok_r(NULL, "\n", &save_line)) {
+        lineno++;
+        if (line[0] && line[strlen(line) - 1] == '\r') line[strlen(line) - 1] = '\0';
+        strip_comment(line);
+        char *s = trim(line);
+        if (!*s) continue;
+        if (strcmp(s, "[[package]]") == 0) {
+            if (lk->n >= 128) die("%s: твърде много пакети", lpath);
+            memset(&lk->pkgs[lk->n], 0, sizeof(LockPkg));
+            lk->n++; in_pkg = 1; continue;
+        }
+        char *eq = strchr(s, '=');
+        if (!eq || !in_pkg) die("%s:%d: очаквах [[package]] блок", lpath, lineno);
+        *eq = '\0';
+        char key[64], val[600];
+        snprintf(key, sizeof key, "%s", trim(s));
+        parse_string(eq + 1, val, sizeof val);
+        LockPkg *p = &lk->pkgs[lk->n - 1];
+        if (strcmp(key, "name") == 0)         snprintf(p->name, sizeof p->name, "%.*s", (int)sizeof p->name - 1, val);
+        else if (strcmp(key, "version") == 0) snprintf(p->version, sizeof p->version, "%.*s", (int)sizeof p->version - 1, val);
+        else if (strcmp(key, "source") == 0)  snprintf(p->source, sizeof p->source, "%s", val);
+        else if (strcmp(key, "rev") == 0)     snprintf(p->rev, sizeof p->rev, "%.*s", (int)sizeof p->rev - 1, val);
+        else die("%s:%d: непознато поле '%s'", lpath, lineno, key);
+    }
+    free(src);
+}
+
+static void check_locked(const Graph *g, const char *root_dir) {
+    Lock lk;
+    read_lock(root_dir, &lk);
+    if (lk.n != g->n)
+        die("sandak.lock е остарял: %d пакета в lock, %d в графа — пусни sandak fetch без --locked", lk.n, g->n);
+    for (int i = 0; i < g->n; i++) {
+        const Manifest *m = &g->pkgs[i];
+        int found = 0;
+        for (int j = 0; j < lk.n; j++) {
+            if (strcmp(lk.pkgs[j].name, m->name) != 0) continue;
+            found = 1;
+            if (strcmp(lk.pkgs[j].version, m->version) != 0)
+                die("sandak.lock е остарял: %s version %s (lock: %s)",
+                    m->name, m->version, lk.pkgs[j].version);
+            break;
+        }
+        if (!found)
+            die("sandak.lock е остарял: липсва пакет '%s' — пусни sandak fetch", m->name);
+    }
+}
+
+static int opt_locked = 0;
+
 static void cmd_fetch(void) {
     static Graph g;   /* ~15MB — не на стека */
     resolve(&g, ".");
+    if (opt_locked) check_locked(&g, ".");
+    else write_lock(&g, ".");
     for (int i = 0; i < g.n; i++)
         printf("resolved: %s %s\n", g.pkgs[i].name, g.pkgs[i].version);
 }
 
 int main(int argc, char **argv) {
     if (argc < 2) { usage(); return 1; }
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--locked") == 0) opt_locked = 1;
+    }
     if (strcmp(argv[1], "manifest") == 0) { cmd_manifest(); return 0; }
     if (strcmp(argv[1], "fetch") == 0) { cmd_fetch(); return 0; }
     usage();

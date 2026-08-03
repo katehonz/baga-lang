@@ -90,4 +90,39 @@ printf '[package]\nname = "root"\nversion = "0.1.0"\n[dependencies]\none = { pat
 grep -qE "дублирано име|не съвпада" "$T/err" || fail "дупликация без съобщение: $(cat "$T/err")"
 echo "OK: дублирано име на пакет — грешка"
 
+# --- T3 R2 регресия: diamond — d се резолвира точно веднъж ---
+mkdir -p "$T/dia/d" "$T/dia/b" "$T/dia/c" "$T/dia/root"
+printf '[package]\nname = "d"\nversion = "0.1.0"\n' > "$T/dia/d/sandak.toml"
+printf '[package]\nname = "b"\nversion = "0.1.0"\n[dependencies]\nd = { path = "../d" }\n' > "$T/dia/b/sandak.toml"
+printf '[package]\nname = "c"\nversion = "0.1.0"\n[dependencies]\nd = { path = "../d" }\n' > "$T/dia/c/sandak.toml"
+printf '[package]\nname = "root"\nversion = "0.1.0"\n[dependencies]\nb = { path = "../b" }\nc = { path = "../c" }\n' > "$T/dia/root/sandak.toml"
+out=$(cd "$T/dia/root" && "$SANDAK" fetch) || fail "diamond fetch exit"
+[ "$(echo "$out" | grep -c 'resolved: d ')" = "1" ] || fail "diamond: d не е резолвиран точно веднъж: [$out]"
+echo "OK: diamond — споделена зависимост веднъж"
+
+# --- T3 R2 регресия: dep директория без sandak.toml ---
+mkdir -p "$T/noman/dep" "$T/noman/root"
+printf '[package]\nname = "root"\nversion = "0.1.0"\n[dependencies]\ndep = { path = "../dep" }\n' > "$T/noman/root/sandak.toml"
+(cd "$T/noman/root" && "$SANDAK" fetch) 2>"$T/err" && fail "липсващ манифест трябва да гърми"
+grep -q "липсва манифест" "$T/err" || fail "липсващ манифест без съобщение: $(cat "$T/err")"
+echo "OK: dep без sandak.toml — грешка"
+
+# --- T4: lock файл ---
+(cd "$T/ws/myapp" && "$SANDAK" fetch) > /dev/null || fail "fetch за lock"
+[ -f "$T/ws/myapp/sandak.lock" ] || fail "sandak.lock не е създаден"
+grep -q 'name = "mylib"' "$T/ws/myapp/sandak.lock" || fail "lock без mylib"
+grep -q 'source = "path+' "$T/ws/myapp/sandak.lock" || fail "lock без source"
+grep -q 'name = "myapp"' "$T/ws/myapp/sandak.lock" || fail "lock без root пакета"
+echo "OK: sandak.lock се записва"
+
+(cd "$T/ws/myapp" && "$SANDAK" fetch --locked) > /dev/null || fail "--locked при съвпадение"
+echo "OK: --locked при съвпадение"
+
+# разминаване: сменяме версията на mylib след lock
+sed -i 's/0.1.0/0.2.0/' "$T/ws/mylib/sandak.toml"
+(cd "$T/ws/myapp" && "$SANDAK" fetch --locked) 2>"$T/err" && fail "--locked трябва да гърми"
+grep -q "lock" "$T/err" || fail "--locked без съобщение: $(cat "$T/err")"
+sed -i 's/0.2.0/0.1.0/' "$T/ws/mylib/sandak.toml"
+echo "OK: --locked при разминаване — грешка"
+
 echo "sandak: всички тестове минаха"
