@@ -3,8 +3,8 @@
 // matching password.txt / local bagatest role.
 
 import "pg.baga"
-import "../../std/os/os.baga"
-import "../../std/str/str.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
 
 fn cfg(name: str, def: str) -> str !IO {
     let v = env(name)?

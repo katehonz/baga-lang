@@ -1,5 +1,5 @@
 // probe_alloc_race.baga — confirm baga_alloc is not thread-safe (temporary).
-import "../std/str/str.baga"
+import "std/str/str.baga"
 
 fn hammer(x: i64) -> i64 {
     let mut s = "seed"

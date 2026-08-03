@@ -1,6 +1,6 @@
-import "../../std/crypto/hmac.baga"
-import "../../std/crypto/ct.baga"
-import "../../std/str/str.baga"
+import "std/crypto/hmac.baga"
+import "std/crypto/ct.baga"
+import "std/str/str.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

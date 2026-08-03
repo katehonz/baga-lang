@@ -1,4 +1,4 @@
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

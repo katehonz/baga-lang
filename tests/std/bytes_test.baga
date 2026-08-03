@@ -1,4 +1,4 @@
-import "../../std/bytes/bytes.baga"
+import "std/bytes/bytes.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

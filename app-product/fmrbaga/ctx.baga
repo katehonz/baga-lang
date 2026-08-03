@@ -1,8 +1,8 @@
 // ctx.baga — request context (FastAPI Request + path/query + app state).
 
-import "../httpdbaga/http.baga"
+import "httpdbaga/http.baga"
 import "route.baga"
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 // Per-request context. App state (JWT secret, DSN bits) is copied from FmrApp.
 // DB is held outside and threaded by the server (one OrmDb per TCP connection).

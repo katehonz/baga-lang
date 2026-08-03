@@ -4,8 +4,8 @@
 //   Byte1(type) + Int32(len including self) + payload(len-4)
 // StartupMessage / CancelRequest / SSLRequest have no type byte.
 
-import "../../std/bytes/bytes.baga"
-import "../../std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
 
 // ---------- endian / single-byte helpers ----------
 

@@ -11,9 +11,9 @@
 // Effects: everything touching the fd carries !IO !Net; the struct builders
 // and http_header are pure.
 
-import "../../std/net/tcp.baga"
-import "../../std/io/io.baga"
-import "../../std/str/str.baga"
+import "std/net/tcp.baga"
+import "std/io/io.baga"
+import "std/str/str.baga"
 
 struct Request {
     method: str,

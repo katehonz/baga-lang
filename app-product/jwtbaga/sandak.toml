@@ -1,0 +1,8 @@
+[package]
+name = "jwtbaga"
+version = "0.1.0"
+entry = "jwt.baga"
+
+[dependencies]
+std = { path = "../../std" }
+httpdbaga = { path = "../httpdbaga" }

@@ -3,7 +3,7 @@
 // h2_serve running in a go() thread; asserts :status, bodies over DATA with
 // END_STREAM, multiplexed streams, WINDOW_UPDATE replenishment, PING ack.
 
-import "../app-product/httpdbaga/h2.baga"
+import "httpdbaga/h2.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

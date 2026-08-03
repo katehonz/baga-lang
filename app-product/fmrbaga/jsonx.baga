@@ -2,8 +2,8 @@
 // Builders (jobj/jarr) + request body validation (jreq/jopt) + 422 detail.
 // Pure. No effects.
 
-import "../../std/json/json.baga"
-import "../../std/str/str.baga"
+import "std/json/json.baga"
+import "std/str/str.baga"
 
 // ---------- object builder (values pre-encoded as JSON text) ----------
 

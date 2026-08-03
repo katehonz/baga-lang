@@ -5,6 +5,7 @@ baga-llvm
 /sandak
 .sandak/
 target/
+sandak.lock
 *.llvm.o
 idea/
 lib/

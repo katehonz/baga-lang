@@ -5,10 +5,10 @@
 // Flow (after AuthenticationSASL lists SCRAM-SHA-256):
 //   client-first  → server-first → client-final → server-final → AuthOk
 
-import "../../std/crypto/hmac.baga"
-import "../../std/crypto/sha256.baga"
-import "../../std/bytes/bytes.baga"
-import "../../std/str/str.baga"
+import "std/crypto/hmac.baga"
+import "std/crypto/sha256.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
 
 // ---------- byte helpers ----------
 

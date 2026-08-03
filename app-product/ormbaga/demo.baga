@@ -4,7 +4,7 @@ import "orm.baga"
 import "migrate.baga"
 import "schema.baga"
 import "sql.baga"
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 fn main() -> i64 !Net !IO !Random {
     print("ormbaga demo (ActiveRecord + goose migrations)")

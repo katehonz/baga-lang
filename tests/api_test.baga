@@ -3,10 +3,10 @@
 
 import "../apps/api/models/user.baga"
 import "../apps/api/models/post.baga"
-import "../app-product/fmrbaga/jsonx.baga"
-import "../app-product/fmrbaga/openapi.baga"
-import "../app-product/ormbaga/orm.baga"
-import "../std/str/str.baga"
+import "fmrbaga/jsonx.baga"
+import "fmrbaga/openapi.baga"
+import "ormbaga/orm.baga"
+import "std/str/str.baga"
 
 fn check(name: str, cond: bool) {
     if cond {

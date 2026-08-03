@@ -1,4 +1,4 @@
-import "../../std/time/time.baga"
+import "std/time/time.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

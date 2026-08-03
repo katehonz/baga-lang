@@ -7,11 +7,11 @@
 
 import "pg_proto.baga"
 import "pg_scram.baga"
-import "../../std/net/tcp.baga"
-import "../../std/random/random.baga"
-import "../../std/os/os.baga"
-import "../../std/str/str.baga"
-import "../../std/bytes/bytes.baga"
+import "std/net/tcp.baga"
+import "std/random/random.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
 
 // ---------- connection ----------
 

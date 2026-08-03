@@ -1,4 +1,4 @@
-import "../../std/crypto/sha256.baga"
+import "std/crypto/sha256.baga"
 fn main() {
     let mut s = "aaaaaaaaaa"
     let mut i = 0

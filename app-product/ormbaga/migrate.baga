@@ -5,7 +5,7 @@
 
 import "sql.baga"
 import "orm.baga"
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 // Registry of migrations (sorted by version ascending when applying).
 struct MigrationSet {

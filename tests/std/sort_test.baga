@@ -1,4 +1,4 @@
-import "../../std/sort/sort.baga"
+import "std/sort/sort.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

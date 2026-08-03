@@ -1,7 +1,7 @@
 // route.baga — HTTP router with {param} path patterns (FastAPI-style).
 // Pure. Methods are matched case-sensitively (use uppercase at register time).
 
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 struct Router {
     methods: Vec<str>,

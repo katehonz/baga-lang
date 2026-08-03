@@ -2,11 +2,11 @@
 // Boot: migrate → fmr_run (workers / sync / go_bg from env).
 
 import "routes.baga"
-import "../../app-product/fmrbaga/app.baga"
-import "../../app-product/ormbaga/orm.baga"
-import "../../app-product/ormbaga/migrate.baga"
-import "../../app-product/ormbaga/schema.baga"
-import "../../std/str/str.baga"
+import "fmrbaga/app.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
+import "ormbaga/schema.baga"
+import "std/str/str.baga"
 
 fn boot_migrate() -> i64 !Net !IO !Random {
     let app = fmr_build_app()?

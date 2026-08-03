@@ -1,13 +1,13 @@
 // fmr_test.baga — pure + live tests for fmrbaga (framework, not a toy demo).
 
-import "../app-product/fmrbaga/jsonx.baga"
-import "../app-product/fmrbaga/route.baga"
-import "../app-product/fmrbaga/respond.baga"
-import "../app-product/fmrbaga/ctx.baga"
-import "../app-product/fmrbaga/deps.baga"
-import "../app-product/fmrbaga/openapi.baga"
-import "../app-product/httpdbaga/http.baga"
-import "../std/str/str.baga"
+import "fmrbaga/jsonx.baga"
+import "fmrbaga/route.baga"
+import "fmrbaga/respond.baga"
+import "fmrbaga/ctx.baga"
+import "fmrbaga/deps.baga"
+import "fmrbaga/openapi.baga"
+import "httpdbaga/http.baga"
+import "std/str/str.baga"
 
 fn check(name: str, cond: bool) {
     if cond {

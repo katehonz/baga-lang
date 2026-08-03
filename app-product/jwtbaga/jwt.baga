@@ -5,11 +5,11 @@
 // arbitrary 32-byte values that may contain 0x00 — handled as native `bytes`,
 // compared with ct_eq_b, never coerced to str.
 
-import "../../std/crypto/hmac.baga"
-import "../../std/crypto/ct.baga"
-import "../../std/bytes/bytes.baga"
-import "../../std/json/json.baga"
-import "../../std/str/str.baga"
+import "std/crypto/hmac.baga"
+import "std/crypto/ct.baga"
+import "std/bytes/bytes.baga"
+import "std/json/json.baga"
+import "std/str/str.baga"
 
 // ---------- low-level sign / verify ----------
 

@@ -5,11 +5,11 @@ import "actions/system.baga"
 import "actions/auth.baga"
 import "actions/users.baga"
 import "actions/posts.baga"
-import "../../app-product/fmrbaga/app.baga"
-import "../../app-product/fmrbaga/ctx.baga"
-import "../../app-product/fmrbaga/deps.baga"
-import "../../app-product/fmrbaga/config.baga"
-import "../../app-product/ormbaga/orm.baga"
+import "fmrbaga/app.baga"
+import "fmrbaga/ctx.baga"
+import "fmrbaga/deps.baga"
+import "fmrbaga/config.baga"
+import "ormbaga/orm.baga"
 
 // Route ids (stable; never reorder casually — OpenAPI operationIds use them)
 fn RID_HEALTH() -> i64 { return 1 }

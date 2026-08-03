@@ -5,10 +5,10 @@
 //  3. bytes literal x"..." + bytes_from_vec sanity.
 //  4. chr(255) trap: chr is UTF-8 codepoint, not raw byte (tcp.baga poke8 latent bug).
 
-import "../std/net/tcp.baga"
-import "../std/io/io.baga"
-import "../std/os/os.baga"
-import "../std/bytes/bytes.baga"
+import "std/net/tcp.baga"
+import "std/io/io.baga"
+import "std/os/os.baga"
+import "std/bytes/bytes.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

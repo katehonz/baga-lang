@@ -5,9 +5,9 @@
 //   C.4  the same three requests WITH Huffman-coded string literals
 // plus encoder round-trips through our own decoder.
 
-import "../app-product/httpdbaga/hpack.baga"
-import "../std/bytes/bytes.baga"
-import "../std/str/str.baga"
+import "httpdbaga/hpack.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

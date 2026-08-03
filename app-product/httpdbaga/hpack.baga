@@ -13,7 +13,7 @@
 // Known-answer vectors: tests/hpack_test.baga (RFC 7541 C.1/C.2/C.3/C.4).
 
 import "hpack_tables.baga"
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 struct HpackCtx {
     dyn_names: Vec<str>,   // oldest first, newest last

@@ -1,4 +1,4 @@
-import "../../std/random/random.baga"
+import "std/random/random.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

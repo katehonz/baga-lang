@@ -1,11 +1,11 @@
 // actions/system.baga — health / ready / meta (Lucky: Api::System::*)
 
-import "../../../app-product/fmrbaga/app.baga"
-import "../../../app-product/fmrbaga/ctx.baga"
-import "../../../app-product/fmrbaga/action.baga"
-import "../../../app-product/fmrbaga/jsonx.baga"
-import "../../../app-product/fmrbaga/openapi.baga"
-import "../../../app-product/ormbaga/orm.baga"
+import "fmrbaga/app.baga"
+import "fmrbaga/ctx.baga"
+import "fmrbaga/action.baga"
+import "fmrbaga/jsonx.baga"
+import "fmrbaga/openapi.baga"
+import "ormbaga/orm.baga"
 
 fn act_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {
     let mut o = jobj_new()

@@ -6,9 +6,9 @@ import "deps.baga"
 import "ctx.baga"
 import "jsonx.baga"
 import "app.baga"
-import "../ormbaga/orm.baga"
-import "../httpdbaga/http.baga"
-import "../../std/str/str.baga"
+import "ormbaga/orm.baga"
+import "httpdbaga/http.baga"
+import "std/str/str.baga"
 
 // ---------- JSON results ----------
 

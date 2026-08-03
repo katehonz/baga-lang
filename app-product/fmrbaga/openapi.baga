@@ -2,7 +2,7 @@
 // Pure builders on jsonx. Kept next to handlers so the contract stays honest.
 
 import "jsonx.baga"
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 // ---------- schema primitives ----------
 

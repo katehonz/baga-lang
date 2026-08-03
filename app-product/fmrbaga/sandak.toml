@@ -1,0 +1,10 @@
+[package]
+name = "fmrbaga"
+version = "0.1.0"
+entry = "handlers.baga"
+
+[dependencies]
+httpdbaga = { path = "../httpdbaga" }
+jwtbaga = { path = "../jwtbaga" }
+ormbaga = { path = "../ormbaga" }
+std = { path = "../../std" }

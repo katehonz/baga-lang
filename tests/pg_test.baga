@@ -2,11 +2,11 @@
 // Requires: PostgreSQL on 127.0.0.1:5432, role bagatest / pas+123 (see PLAN.md).
 // Override with PG* env vars.
 
-import "../app-product/pgbaga/pg.baga"
-import "../app-product/pgbaga/pg_scram.baga"
-import "../std/os/os.baga"
-import "../std/bytes/bytes.baga"
-import "../std/str/str.baga"
+import "pgbaga/pg.baga"
+import "pgbaga/pg_scram.baga"
+import "std/os/os.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
 
 fn check(name: str, cond: bool) {
     if cond {

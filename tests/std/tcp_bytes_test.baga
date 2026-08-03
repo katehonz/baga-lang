@@ -2,9 +2,9 @@
 // Probes the assumptions the HTTP/2 layer relies on: NUL and 0xFF bytes
 // travel both ways, tcp_read_exact loops on partial reads, EOF reads empty.
 
-import "../../std/net/tcp.baga"
-import "../../std/bytes/bytes.baga"
-import "../../std/str/str.baga"
+import "std/net/tcp.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

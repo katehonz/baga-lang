@@ -2,7 +2,7 @@
 // Modelled on ActiveRecord connection quoting + database/sql hygiene.
 // Required while pgbaga speaks Simple Query only (no $1 bind yet).
 
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 // Escape a string literal for PostgreSQL: wrap in '...' and double internal quotes.
 fn sql_lit(s: str) -> str {

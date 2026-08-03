@@ -8,12 +8,12 @@ import "respond.baga"
 import "deps.baga"
 import "jsonx.baga"
 import "openapi.baga"
-import "../ormbaga/orm.baga"
-import "../ormbaga/sql.baga"
-import "../ormbaga/migrate.baga"
-import "../ormbaga/schema.baga"
-import "../httpdbaga/http.baga"
-import "../../std/str/str.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/sql.baga"
+import "ormbaga/migrate.baga"
+import "ormbaga/schema.baga"
+import "httpdbaga/http.baga"
+import "std/str/str.baga"
 
 // ---------- route ids ----------
 

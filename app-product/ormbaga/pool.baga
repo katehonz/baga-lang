@@ -10,8 +10,8 @@
 // shared use within one process (sync servers, batch jobs, tests).
 
 import "orm.baga"
-import "../pgbaga/pg.baga"
-import "../../std/str/str.baga"
+import "pgbaga/pg.baga"
+import "std/str/str.baga"
 
 struct OrmPool {
     free_ch: i64,       // channel of free slot indices

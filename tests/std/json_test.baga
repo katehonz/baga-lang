@@ -1,4 +1,4 @@
-import "../../std/json/json.baga"
+import "std/json/json.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

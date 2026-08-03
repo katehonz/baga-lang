@@ -1,11 +1,11 @@
 // orm_test.baga — migrations + ActiveRecord CRUD against baga_orm.
 
-import "../app-product/ormbaga/orm.baga"
-import "../app-product/ormbaga/migrate.baga"
-import "../app-product/ormbaga/schema.baga"
-import "../app-product/ormbaga/sql.baga"
-import "../app-product/ormbaga/pool.baga"
-import "../std/str/str.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
+import "ormbaga/schema.baga"
+import "ormbaga/sql.baga"
+import "ormbaga/pool.baga"
+import "std/str/str.baga"
 
 fn check(name: str, cond: bool) {
     if cond {

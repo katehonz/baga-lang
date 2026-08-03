@@ -1,8 +1,8 @@
 // config.baga — 12-factor config for fmrbaga apps (Lucky/Crystal style: one place).
 // Pure of network; only !IO for env.
 
-import "../../std/os/os.baga"
-import "../../std/str/str.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
 
 struct FmrConfig {
     port: i64,

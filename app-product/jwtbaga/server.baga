@@ -8,10 +8,10 @@
 //   GET /verify    (Bearer tok)  -> 200 {"valid":true,"sub":"..."} | 401 {"valid":false}
 //   GET /protected (Bearer tok)  -> 200 {"secret":"...","sub":"..."} | 401
 
-import "../httpdbaga/http.baga"
+import "httpdbaga/http.baga"
 import "jwt.baga"
-import "../../std/os/os.baga"
-import "../../std/str/str.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
 
 // "Bearer abc" -> "abc"; "" when the header is not a Bearer token.
 fn bearer(auth: str) -> str {

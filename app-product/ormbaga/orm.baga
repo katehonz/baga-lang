@@ -3,10 +3,10 @@
 // One table name + column lists; rows remain PgResult cells (no codegen).
 // Always rebind:  db = result.db  (structs are by value).
 
-import "../pgbaga/pg.baga"
+import "pgbaga/pg.baga"
 import "sql.baga"
-import "../../std/str/str.baga"
-import "../../std/os/os.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
 
 // ---------- session ----------
 

@@ -1,5 +1,5 @@
-import "../../std/net/tcp.baga"
-import "../../std/str/str.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

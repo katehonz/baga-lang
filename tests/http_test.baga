@@ -3,7 +3,7 @@
 // the server side parses a raw HTTP request and echoes the parsed fields
 // as JSON; the client side reads the serialized response bytes.
 
-import "../app-product/httpdbaga/http.baga"
+import "httpdbaga/http.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

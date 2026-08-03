@@ -1,11 +1,11 @@
 // actions/auth.baga — token issue + /me (Lucky: Api::Auth::*)
 
-import "../../../app-product/fmrbaga/app.baga"
-import "../../../app-product/fmrbaga/ctx.baga"
-import "../../../app-product/fmrbaga/action.baga"
-import "../../../app-product/fmrbaga/deps.baga"
-import "../../../app-product/fmrbaga/jsonx.baga"
-import "../../../app-product/ormbaga/orm.baga"
+import "fmrbaga/app.baga"
+import "fmrbaga/ctx.baga"
+import "fmrbaga/action.baga"
+import "fmrbaga/deps.baga"
+import "fmrbaga/jsonx.baga"
+import "ormbaga/orm.baga"
 
 fn act_token(ctx: FmrCtx, db: OrmDb) -> FmrOut {
     let mut sub = fmr_query(ctx, "sub")

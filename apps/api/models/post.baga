@@ -1,10 +1,10 @@
 // models/post.baga — posts belong to users (Lucky-style model helpers).
 
-import "../../../app-product/ormbaga/orm.baga"
-import "../../../app-product/ormbaga/sql.baga"
-import "../../../app-product/fmrbaga/jsonx.baga"
-import "../../../app-product/pgbaga/pg.baga"
-import "../../../std/str/str.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/sql.baga"
+import "fmrbaga/jsonx.baga"
+import "pgbaga/pg.baga"
+import "std/str/str.baga"
 
 fn post_table() -> str {
     return "posts"

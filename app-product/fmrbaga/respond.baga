@@ -1,8 +1,8 @@
 // respond.baga — JSON responses and HTTPException-style errors (FastAPI detail).
 
-import "../httpdbaga/http.baga"
+import "httpdbaga/http.baga"
 import "jsonx.baga"
-import "../../std/str/str.baga"
+import "std/str/str.baga"
 
 // Expand reason phrases for API statuses used by the framework.
 fn fmr_reason(status: i64) -> str {

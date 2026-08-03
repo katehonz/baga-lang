@@ -4,9 +4,9 @@ import "ctx.baga"
 import "route.baga"
 import "respond.baga"
 import "jsonx.baga"
-import "../jwtbaga/jwt.baga"
-import "../httpdbaga/http.baga"
-import "../../std/str/str.baga"
+import "jwtbaga/jwt.baga"
+import "httpdbaga/http.baga"
+import "std/str/str.baga"
 
 // Result of a dependency: either continue with updated ctx, or short-circuit.
 struct DepResult {

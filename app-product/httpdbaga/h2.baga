@@ -17,7 +17,7 @@
 
 import "http.baga"
 import "hpack.baga"
-import "../../std/bytes/bytes.baga"
+import "std/bytes/bytes.baga"
 
 // ---------- frame constants ----------
 

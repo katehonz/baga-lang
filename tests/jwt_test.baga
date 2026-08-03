@@ -2,7 +2,7 @@
 // Pure (no sockets). The reference token below was generated independently
 // with Python hmac/hashlib/base64 (key "baga-secret", payload {"sub":"bagatur","n":7}).
 
-import "../app-product/jwtbaga/jwt.baga"
+import "jwtbaga/jwt.baga"
 
 fn check(name: str, ok: bool) {
     if ok {

@@ -25,7 +25,7 @@
 
 import "http.baga"
 import "h2.baga"
-import "../../std/os/os.baga"
+import "std/os/os.baga"
 
 // ---------- routing (shared by both protocols) ----------
 
