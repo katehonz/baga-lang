@@ -1163,7 +1163,26 @@ resulting binary, and cleans up the temporary files.
 | `--specs` | Print spec documentation extracted from the source. |
 | `--proofs` | Print extracted proof sketches. |
 | `--test-specs` | Property-based test of spec contracts (random inputs, deterministic seed). |
+| `--verify` | Static verification of requires/ensures contracts. |
+| `--json` | Machine-readable JSON output (with `--verify`). |
+| `--check`, `--lib` | Parse + typecheck only, no main, no codegen — for libraries. |
+| `--emit-llvm` | LLVM IR output (requires `make llvm`). |
+| `-I <dir>` | Import search directory (repeatable flag). |
+| `--version`, `-V` | Compiler version. |
 | `--help`, `-h` | Show usage. |
+
+### 18.1 Imports and Packages (sandak)
+
+`import "path/to/file.baga"` at the top of a file textually includes another
+file (with an include guard and cycle detection). Lookup order: (1) relative
+to the current file, (2) in each `-I` directory in the order given,
+(3) relative to the working directory.
+
+In a packaged project the import carries the package name —
+`import "fmrbaga/app.baga"`, `import "std/str/str.baga"` — and the `-I` flags
+are computed automatically by the **sandak** package manager from the
+`sandak.toml` manifests of the dependencies (`sandak fetch` / `sandak build` /
+`sandak run`; see README, "Packages — sandak").
 
 ---
 

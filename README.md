@@ -58,6 +58,12 @@ and `docker compose up --build` — the image clones the toolchain and the app
 from git, fetches the dependencies, and builds (`sandak fetch && sandak build
 --locked`; the fetch comes first because path-dep locks are not portable).
 
+Notes: `sandak build` and `sandak run` fetch automatically when there is no
+lock (plain `fetch` is for explicit control); `sandak manifest` prints the
+parsed manifest for debugging. Known limitations: one version of a package
+per graph, no registry; `branch`/`tag` refs float — pin with `rev = "<sha>"`
+for reproducible builds; the git cache is clone-once (no auto-update).
+
 ## The Three Pillars
 
 ### 1. Spec-First Verification

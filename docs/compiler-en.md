@@ -84,13 +84,23 @@ baga [options] <file.baga>
 
 Options:
   --emit-c    Generate C code to stdout (no compilation)
+  --check, --lib  Parse + typecheck only (no main, no codegen) — for libraries
+  --test-specs  Property-based test of spec contracts
+  --verify    Static verification of requires/ensures
+  --json      Machine-readable JSON output (with --verify)
   --ast       Print AST (debug)
   --tokens    Print token stream (debug)
   --specs     Print extracted specifications
   --proofs    Print proof sketches
+  -I <dir>    Import search directory (repeatable)
+  --version, -V  Compiler version
 ```
 
 Default behavior: generate C → compile with `gcc -O2` → execute binary → cleanup.
+
+Packages (`sandak.toml` manifests, lock file, git dependencies) are managed by
+the separate **sandak** tool (`src/sandak.c`), which computes the `-I` flags
+and drives the compiler — see README, "Packages — sandak".
 
 ---
 
