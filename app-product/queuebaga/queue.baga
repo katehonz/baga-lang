@@ -1,0 +1,195 @@
+// queue.baga — background job queue (apps-roadmap №5).
+//
+// Language constraints:
+//   - go/chan carry only i64 → workers receive job ids
+//   - no shared Map across threads → payload/status on disk (persistence)
+//   - no mkdir in std → flat path prefix: <prefix>.<id>.job|status|result|attempts
+//
+// Demo work: reverse payload bytes. Payload "fail:…" fails until max attempts.
+
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+struct Queue {
+    prefix: str,        // e.g. "/tmp/baga_qdemo"
+    work: i64,          // chan of job ids
+    mu: i64,            // mutex for id allocation
+    max_attempts: i64,
+    workers: i64
+}
+
+fn q_path(prefix: str, id: i64, kind: str) -> str {
+    // <prefix>.<id>.<kind>  kind = job|status|result|attempts
+    return concat(concat(concat(concat(prefix, "."), int_to_str(id)), "."), kind)
+}
+
+fn q_write(prefix: str, id: i64, kind: str, data: str) -> i64 !IO {
+    return write_file(q_path(prefix, id, kind), data)?
+}
+
+fn q_read(prefix: str, id: i64, kind: str) -> str !IO {
+    return read_file(q_path(prefix, id, kind))?
+}
+
+fn q_reverse(s: str) -> str {
+    let mut out = ""
+    let mut i = len(s)
+    while i > 0 {
+        i = i - 1
+        out = concat(out, substr(s, i, i + 1))
+    }
+    return out
+}
+
+fn q_open(prefix: str, max_attempts: i64) -> Queue !IO !Par {
+    write_file(concat(prefix, ".queue"), "ok")?
+    write_file(concat(prefix, ".next_id"), "1")?
+    let mut ma = max_attempts
+    if ma < 1 {
+        ma = 3
+    }
+    return Queue {
+        prefix: prefix,
+        work: chan_new(64),
+        mu: mutex_new(),
+        max_attempts: ma,
+        workers: 0
+    }
+}
+
+fn q_alloc_id(q: Queue) -> i64 !IO !Par {
+    mutex_lock(q.mu)
+    let path = concat(q.prefix, ".next_id")
+    let cur_s = read_file(path)?
+    let mut id: i64 = 1
+    if cur_s != "" {
+        id = parse_int(cur_s)
+        if id < 1 {
+            id = 1
+        }
+    }
+    write_file(path, int_to_str(id + 1))?
+    mutex_unlock(q.mu)
+    return id
+}
+
+// Enqueue; returns job id (>0) or -1 on I/O error.
+fn q_enqueue(q: Queue, payload: str) -> i64 !IO !Par {
+    let id = q_alloc_id(q)?
+    if q_write(q.prefix, id, "job", payload)? != 0 {
+        return -1
+    }
+    q_write(q.prefix, id, "status", "pending")?
+    q_write(q.prefix, id, "attempts", "0")?
+    q_write(q.prefix, id, "result", "")?
+    chan_send(q.work, id)
+    return id
+}
+
+fn q_status(q: Queue, id: i64) -> str !IO {
+    return q_read(q.prefix, id, "status")?
+}
+
+fn q_result(q: Queue, id: i64) -> str !IO {
+    return q_read(q.prefix, id, "result")?
+}
+
+// 0 = done, 1 = final fail, 2 = requeue
+fn q_process_one(prefix: str, id: i64, max_attempts: i64) -> i64 !IO {
+    q_write(prefix, id, "status", "running")?
+    let payload = q_read(prefix, id, "job")?
+    let att_s = q_read(prefix, id, "attempts")?
+    let mut att: i64 = 0
+    if att_s != "" {
+        att = parse_int(att_s)
+    }
+    att = att + 1
+    q_write(prefix, id, "attempts", int_to_str(att))?
+
+    if str_starts_with(payload, "fail:") {
+        if att < max_attempts {
+            q_write(prefix, id, "status", "pending")?
+            return 2
+        }
+        q_write(prefix, id, "status", "failed")?
+        q_write(prefix, id, "result", concat("failed after ", int_to_str(att)))?
+        return 1
+    }
+
+    q_write(prefix, id, "result", q_reverse(payload))?
+    q_write(prefix, id, "status", "done")?
+    return 0
+}
+
+// Worker: arg = work chan. Active prefix in /tmp/baga_queue_active (no setenv).
+fn q_worker(work: i64) -> i64 !IO !Par {
+    let prefix = read_file("/tmp/baga_queue_active")?
+    let ma_s = read_file("/tmp/baga_queue_max_attempts")?
+    let mut ma: i64 = 3
+    if ma_s != "" {
+        ma = parse_int(ma_s)
+        if ma < 1 {
+            ma = 3
+        }
+    }
+    if prefix == "" {
+        return -1
+    }
+    let mut running: i64 = 1
+    while running == 1 {
+        let cell = chan_recv2(work)
+        if cell2_0(cell) == 0 {
+            running = 0
+        } else {
+            let id = cell2_1(cell)
+            let rc = q_process_one(prefix, id, ma)?
+            if rc == 2 {
+                sleep_ms(15)
+                chan_send(work, id)
+            }
+        }
+    }
+    return 0
+}
+
+fn q_start_workers(q: Queue, n: i64) -> Queue !IO !Par {
+    write_file("/tmp/baga_queue_active", q.prefix)?
+    write_file("/tmp/baga_queue_max_attempts", int_to_str(q.max_attempts))?
+    let mut i: i64 = 0
+    while i < n {
+        go_bg(q_worker, q.work)
+        i = i + 1
+    }
+    return Queue {
+        prefix: q.prefix, work: q.work, mu: q.mu,
+        max_attempts: q.max_attempts, workers: n
+    }
+}
+
+fn q_wait(q: Queue, id: i64, timeout_ms: i64) -> str !IO !Par !Time {
+    let t0 = monotonic_ms()?
+    while true {
+        let st = q_status(q, id)?
+        if st == "done" || st == "failed" {
+            return st
+        }
+        // "" often means read raced with write_file's O_TRUNC — keep polling
+        if st != "" && st != "pending" && st != "running" {
+            return st
+        }
+        if monotonic_ms()? - t0 >= timeout_ms {
+            if st == "" {
+                return "missing"
+            }
+            return "timeout"
+        }
+        sleep_ms(10)
+    }
+    return "timeout"
+}
+
+fn q_close(q: Queue) -> i64 !Par {
+    chan_close(q.work)
+    return 0
+}

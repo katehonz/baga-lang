@@ -1,0 +1,35 @@
+// demo.baga — queue walkthrough (apps-roadmap №5).
+//   cd app-product/queuebaga
+//   BAGA=../../baga sandak build
+//   ../../baga -I ../.. -I .. demo.baga
+
+import "queue.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !IO !Par !Time {
+    let mut q = q_open("/tmp/baga_qdemo", 3)?
+    q = q_start_workers(q, 2)?
+
+    // ASCII payloads: byte-reverse is codepoint-safe for ASCII only
+    let a = q_enqueue(q, "hello")?
+    let b = q_enqueue(q, "queue")?
+    let c = q_enqueue(q, "fail:nope")?
+
+    print(concat("job_a=", int_to_str(a)))
+    print(concat("job_b=", int_to_str(b)))
+    print(concat("job_c=", int_to_str(c)))
+
+    let sa = q_wait(q, a, 3000)?
+    let sb = q_wait(q, b, 3000)?
+    let sc = q_wait(q, c, 3000)?
+
+    print(concat(concat("a ", sa), concat(" -> ", q_result(q, a)?)))
+    print(concat(concat("b ", sb), concat(" -> ", q_result(q, b)?)))
+    print(concat(concat("c ", sc), concat(" -> ", q_result(q, c)?)))
+
+    q_close(q)?
+    // give workers a moment to observe close
+    sleep_ms(50)
+    print("queue demo: done")
+    return 0
+}

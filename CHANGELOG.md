@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### App products — queuebaga (task queue, apps-roadmap №5)
+- New product `app-product/queuebaga`: disk-backed jobs, `chan` of job ids,
+  `go_bg` workers, reverse-payload demo work, `fail:` retry until max
+  attempts, `q_wait` with timeout.
+- Flat paths `<prefix>.<id>.{job,status,result,attempts}` (no mkdir).
+- `tests/queue_test.baga` + demo. Gaps: i64-only chan/go (Q1), no setenv
+  (Q2), write_file truncate races (Q3), no L5 handlers (Q5).
+
 ### App products — grebaga (grep-like CLI, apps-roadmap №9)
 - New product `app-product/grebaga`: literal + mini-pattern (`.`/`*`/`\`),
   ASCII `-i`, streaming line scan (chunked read; empty line ≠ EOF), CLI

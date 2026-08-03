@@ -1,0 +1,49 @@
+// queue_test.baga — live workers + file-backed jobs (apps-roadmap №5).
+
+import "queuebaga/queue.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !IO !Par !Time {
+    let prefix = "/tmp/baga_queue_test"
+    let mut q = q_open(prefix, 3)?
+    q = q_start_workers(q, 2)?
+
+    // --- reverse job ---
+    let id = q_enqueue(q, "baga")?
+    assert_true("enqueue_id", id > 0)
+    let st = q_wait(q, id, 2000)?
+    assert_eq_str("status_done", st, "done")
+    assert_eq_str("result_rev", q_result(q, id)?, "agab")
+
+    // --- second reverse ---
+    let id2 = q_enqueue(q, "xyz")?
+    let st2 = q_wait(q, id2, 2000)?
+    assert_eq_str("second_done", st2, "done")
+    assert_eq_str("second_rev", q_result(q, id2)?, "zyx")
+
+    // --- fail until max attempts ---
+    let id3 = q_enqueue(q, "fail:x")?
+    let st3 = q_wait(q, id3, 3000)?
+    assert_eq_str("fail_status", st3, "failed")
+    let att = read_file(concat(concat(concat(prefix, "."), int_to_str(id3)), ".attempts"))?
+    // max_attempts 3
+    assert_eq_str("fail_attempts", att, "3")
+    assert_true("fail_msg", str_find(q_result(q, id3)?, "failed") >= 0)
+
+    // --- several jobs ---
+    let j1 = q_enqueue(q, "one")?
+    let j2 = q_enqueue(q, "two")?
+    let j3 = q_enqueue(q, "three")?
+    assert_eq_str("w1", q_wait(q, j1, 2000)?, "done")
+    assert_eq_str("w2", q_wait(q, j2, 2000)?, "done")
+    assert_eq_str("w3", q_wait(q, j3, 2000)?, "done")
+    assert_eq_str("r1", q_result(q, j1)?, "eno")
+    assert_eq_str("r2", q_result(q, j2)?, "owt")
+    assert_eq_str("r3", q_result(q, j3)?, "eerht")
+
+    q_close(q)?
+    sleep_ms(30)
+    print("queue_test: all passed")
+    return 0
+}

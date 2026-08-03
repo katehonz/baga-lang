@@ -1,0 +1,7 @@
+[package]
+name = "queuebaga"
+version = "0.1.0"
+entry = "queue.baga"
+
+[dependencies]
+std = { path = "../../std" }
