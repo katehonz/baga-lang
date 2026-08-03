@@ -9,29 +9,26 @@ Same shape as pgbaga/httpdbaga/jwtbaga/fmrbaga.
 pointers). A second thread cannot receive the store, so the server is serial
 (one connection at a time).
 
-**Workaround.** Redis-1.x model: serial accept loop; idle connections bounded
-by `SO_RCVTIMEO`.
+**Workaround (P0).** Redis-1.x model: serial accept loop; idle connections
+bounded by `SO_RCVTIMEO`.
 
 **Severity.** High for throughput; correctness is fine.
 
-**Verdict.** Two honest paths: (a) event loop — `poll(2)` extern + one thread
-serving many fds (no sharing needed); (b) request/response channels with the
-store owned by one loop. Both are app-level; no language change strictly
-needed, but a `chan` of `str`/`bytes` would make (b) natural (today channels
-carry i64/cell2 only).
+**Path open (2026-08-04, chatbaga).** `std/net/poll.baga` is the designated
+fix: one thread, many fds, store owned by the loop — chatbaga ships this
+for WebSocket rooms. kvbaga can migrate `kv_serve` to the same pattern
+without further language changes. (Still serial *today*; not closed until
+kvbaga adopts poll.)
 
-## K2 — `str` is NUL-terminated → no binary values
+## K2 — ~~`str` is NUL-terminated → no binary values~~ — language path CLOSED
 
 **Symptom.** RESP bulk strings are length-prefixed and binary-safe; Baga `str`
-is not. Values with NUL cannot round-trip through the store.
+is not. Values with NUL cannot round-trip through a `Map<str,str>` store.
 
-**Workaround.** Text values only (documented).
-
-**Severity.** Medium (Redis is often used for binary blobs).
-
-**Verdict.** Store `bytes` values when `Map` grows a bytes value kind
-(language change) — or a parallel `MapBytes` builtin. Logged for the map
-roadmap.
+**Closed at language level (2026-08-04, chatbaga).** `Map` values may be
+`bytes` (checker + C runtime); residual buffers in chat use
+`Map<i64, bytes>`. kvbaga still stores `Map<str,str>` text — migrating the
+store to `Map<str, bytes>` is pure product work (P2).
 
 ## K3 — ~~C wrapper swallows `main`'s exit code~~ — CLOSED
 

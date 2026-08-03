@@ -1,0 +1,21 @@
+// demo.baga — standalone chat server for manual/interop testing.
+// Package imports (language §18.1): sandak.toml deps → -I parents.
+//   cd app-product/chatbaga && sandak build          # lib check
+//   baga -I ../.. -I .. demo.baga                   # server :16460
+//   wscat -c ws://127.0.0.1:16460
+//     > {"type":"join","name":"аз","room":"bg"}
+//     > {"type":"msg","text":"здравей"}
+
+import "chat.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !Net !IO !Par {
+    let port_s = env("CHATPORT")?
+    let mut port: i64 = 16460
+    if port_s != "" {
+        port = parse_int(port_s)
+    }
+    print(concat("chatbaga listening on ws://127.0.0.1:", int_to_str(port)))
+    return chat_serve(port)?
+}

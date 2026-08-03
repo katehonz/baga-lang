@@ -138,7 +138,7 @@ test: $(BIN) sandak
 	@echo "=== sandak (пакетен мениджър) ==="
 	@SANDAK=$(CURDIR)/sandak BAGA=$(CURDIR)/baga bash tests/sandak/run_tests.sh
 	@echo "=== sandak build на repo пакетите ==="
-	@for p in httpdbaga jwtbaga pgbaga ormbaga fmrbaga kvbaga wsbaga; do \
+	@for p in httpdbaga jwtbaga pgbaga ormbaga fmrbaga kvbaga wsbaga chatbaga; do \
 		(cd app-product/$$p && BAGA=$(CURDIR)/$(BIN) $(CURDIR)/sandak build > /dev/null) \
 			&& echo "OK: sandak build $$p" \
 			|| { echo "FAIL: sandak build $$p"; exit 1; }; \
@@ -295,7 +295,7 @@ test: $(BIN) sandak
 		&& echo "OK: конкурентни алокации през global arena (G11 регресия)" \
 		|| { echo "FAIL: alloc race"; cat /tmp/baga_race_out.txt; exit 1; }
 	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net/par) ==="
-	@for t in bytes hmac http_client io json map os random sha1 sha256 sort str tcp tcp_bytes time par; do \
+	@for t in bytes hmac http_client io json map os poll random sha1 sha256 sort str tcp tcp_bytes time par; do \
 		./$(BIN) $(BAGAIFLAGS) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
 			&& grep -q "all passed" /tmp/baga_std_out.txt \
 			&& echo "OK: std/$$t" \

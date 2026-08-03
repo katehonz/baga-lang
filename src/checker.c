@@ -249,9 +249,9 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     Type *vt = resolve_type_node(ctx, ty->inner_type2);
                     if (vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
                     if (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
-                        vt->kind != TYPE_F64) {
+                        vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES) {
                         check_error(ctx, ty->pos,
-                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str и f64)",
+                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64 и bytes)",
                             type_str(vt));
                     } else {
                         t->elem = vt;
@@ -584,9 +584,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             Type *vt = n->args.data[2]->type;
             if (vt && vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
             if (!vt || (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
-                        vt->kind != TYPE_F64 && vt->kind != TYPE_ERROR)) {
+                        vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES &&
+                        vt->kind != TYPE_ERROR)) {
                 check_error(ctx, n->pos,
-                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str и f64)",
+                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str, f64 и bytes)",
                     type_str(vt));
                 return type_new(TYPE_ERROR);
             }

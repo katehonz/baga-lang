@@ -1,0 +1,87 @@
+// poll_test.baga — live test for std/net/poll.baga (poll(2) event loop).
+// One thread watching several sockets: readiness, timeout, multi-fd.
+
+import "std/net/poll.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Net !IO !Time {
+    let port = 18450
+    let listener = tcp_listen(port)?
+    check("listen", listener >= 0)
+
+    // --- nothing pending: poll on the listener times out ---
+    let t0 = monotonic_ms()?
+    let r0 = poll_wait(vec_of1(listener), 120)?
+    let dt0 = monotonic_ms()? - t0
+    check("timeout_ok", r0.ok == 1)
+    check("timeout_none", vec_len(r0.ready) == 0)
+    check("timeout_waited", dt0 >= 100 && dt0 < 2000)
+
+    // --- a pending connection makes the listener ready ---
+    let c1 = tcp_connect("127.0.0.1", port)?
+    check("connect1", c1 >= 0)
+    let r1 = poll_wait(vec_of1(listener), 1000)?
+    check("listener_ready", r1.ok == 1 && poll_has(r1.ready, listener) == 1)
+    let s1 = tcp_accept(listener)?
+    check("accept1", s1 >= 0)
+
+    // --- no data yet: the accepted socket is not read-ready ---
+    let r2 = poll_wait(vec_of1(s1), 120)?
+    check("no_data_yet", r2.ok == 1 && vec_len(r2.ready) == 0)
+
+    // --- data sent → the fd becomes read-ready ---
+    tcp_write(c1, "ping")?
+    let r3 = poll_wait(vec_of1(s1), 1000)?
+    check("data_ready", r3.ok == 1 && poll_has(r3.ready, s1) == 1)
+    let got = tcp_read(s1, 16)?
+    check("read_back", got == "ping")
+
+    // --- multi-fd: watch both a quiet and a chatty socket at once ---
+    let c2 = tcp_connect("127.0.0.1", port)?
+    let s2 = tcp_accept(listener)?
+    check("connect2", c2 >= 0 && s2 >= 0)
+    tcp_write(c2, "hello")?
+    let both = vec_new()
+    vec_push(both, s1)
+    vec_push(both, s2)
+    let r4 = poll_wait(both, 1000)?
+    check("multi_only_chatty", r4.ok == 1 && poll_has(r4.ready, s2) == 1 && poll_has(r4.ready, s1) == 0)
+    let got2 = tcp_read(s2, 16)?
+    check("read_back2", got2 == "hello")
+
+    // --- closed peer → POLLHUP read-ready (read will return EOF) ---
+    tcp_close(c1)?
+    let r5 = poll_wait(vec_of1(s1), 1000)?
+    check("hup_ready", r5.ok == 1 && poll_has(r5.ready, s1) == 1)
+    let eof = tcp_read(s1, 16)?
+    check("eof_after_hup", len(eof) == 0)
+
+    // --- empty set is a no-op, not an error ---
+    let r6 = poll_wait(vec_new(), 10)?
+    check("empty_set", r6.ok == 1 && vec_len(r6.ready) == 0)
+
+    tcp_close(s1)?
+    tcp_close(s2)?
+    tcp_close(c2)?
+    tcp_close(listener)?
+
+    print("poll_test: all passed")
+    return 0
+}
+
+fn vec_of1(x: i64) -> Vec<i64> {
+    let v = vec_new()
+    vec_push(v, x)
+    return v
+}

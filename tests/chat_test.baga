@@ -1,0 +1,155 @@
+// chat_test.baga — live test for app-product/chatbaga: the poll(2) event loop
+// serving several WebSocket clients at once (rooms, broadcast, leave).
+// Three masked clients against one go_bg server thread.
+
+import "chatbaga/chat.baga"
+import "wsbaga/ws.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/json/json.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+struct TextRead {
+    conn: WsConn,
+    ok: i64,
+    text: str
+}
+
+// One text frame as str.
+fn read_text(conn: WsConn) -> TextRead !Net !IO {
+    let r = ws_read_frame(conn)?
+    if r.ok == 0 || r.bad == 1 || r.frame.opcode != WS_TEXT() {
+        return TextRead { conn: r.conn, ok: 0, text: "" }
+    }
+    return TextRead { conn: r.conn, ok: 1, text: str_of_bytes(r.frame.payload) }
+}
+
+// JSON field helper for the received messages.
+fn field(text: str, key: str) -> str {
+    if json_strict_valid(text) == 0 {
+        return ""
+    }
+    let d = json_parse(text)
+    let root = json_root(d)
+    let n = json_get(d, root, key)
+    if n < 0 || json_tag(d, n) != 4 {
+        return ""
+    }
+    return json_str(d, n)
+}
+
+fn main() -> i64 !Net !IO !Par !Random {
+    let port = 18460
+    go_bg(chat_serve, port)
+    sleep_ms(300)
+
+    // --- two clients join the same room ---
+    let da = ws_client_connect("localhost", port, 5)?
+    check("connect_a", da.ok == 1)
+    if da.ok == 0 {
+        eprintln("chat_test: FAILED (connect a)")
+        exit(1)
+    }
+    let mut a = da.conn
+    tcp_set_timeouts(a.fd, 5)?
+
+    let db = ws_client_connect("localhost", port, 5)?
+    check("connect_b", db.ok == 1)
+    let mut b = db.conn
+    tcp_set_timeouts(b.fd, 5)?
+
+    ws_send_text(a.fd, "{\"type\":\"join\",\"name\":\"alice\",\"room\":\"bg\"}")?
+    let ra1 = read_text(a)?
+    a = ra1.conn
+    check("a_joined", ra1.ok == 1 && field(ra1.text, "type") == "joined" && field(ra1.text, "room") == "bg")
+
+    ws_send_text(b.fd, "{\"type\":\"join\",\"name\":\"bob\",\"room\":\"bg\"}")?
+    let rb1 = read_text(b)?
+    b = rb1.conn
+    check("b_joined", rb1.ok == 1 && field(rb1.text, "type") == "joined")
+    let ra2 = read_text(a)?
+    a = ra2.conn
+    check("a_sees_b_join", ra2.ok == 1 && field(ra2.text, "type") == "join" && field(ra2.text, "name") == "bob")
+
+    // --- a message reaches every room member (incl. the sender) ---
+    ws_send_text(a.fd, "{\"type\":\"msg\",\"text\":\"Здравей, Боба!\"}")?
+    let ra3 = read_text(a)?
+    a = ra3.conn
+    check("a_gets_own_msg", ra3.ok == 1 && field(ra3.text, "type") == "msg" && field(ra3.text, "from") == "alice" && field(ra3.text, "text") == "Здравей, Боба!")
+    let rb2 = read_text(b)?
+    b = rb2.conn
+    check("b_gets_msg", rb2.ok == 1 && field(rb2.text, "from") == "alice" && field(rb2.text, "text") == "Здравей, Боба!")
+
+    // --- message from b, other direction ---
+    ws_send_text(b.fd, "{\"type\":\"msg\",\"text\":\"ey, alice\"}")?
+    let rb3 = read_text(b)?
+    b = rb3.conn
+    let ra4 = read_text(a)?
+    a = ra4.conn
+    check("a_gets_b_msg", rb3.ok == 1 && ra4.ok == 1 && field(ra4.text, "from") == "bob")
+
+    // --- a third client: msg before join is an error; invalid JSON too ---
+    let dc = ws_client_connect("localhost", port, 5)?
+    check("connect_c", dc.ok == 1)
+    let mut c = dc.conn
+    tcp_set_timeouts(c.fd, 5)?
+    ws_send_text(c.fd, "{\"type\":\"msg\",\"text\":\"no room\"}")?
+    let rc1 = read_text(c)?
+    c = rc1.conn
+    check("msg_before_join_err", rc1.ok == 1 && field(rc1.text, "type") == "error")
+    ws_send_text(c.fd, "{счупен json")?
+    let rc2 = read_text(c)?
+    c = rc2.conn
+    check("invalid_json_err", rc2.ok == 1 && field(rc2.text, "type") == "error")
+
+    // --- a separate room stays silent ---
+    let dd = ws_client_connect("localhost", port, 5)?
+    check("connect_d", dd.ok == 1)
+    let mut ddconn = dd.conn
+    tcp_set_timeouts(ddconn.fd, 2)?
+    ws_send_text(ddconn.fd, "{\"type\":\"join\",\"name\":\"carol\",\"room\":\"other\"}")?
+    let rd1 = read_text(ddconn)?
+    ddconn = rd1.conn
+    check("d_joined_other", rd1.ok == 1 && field(rd1.text, "room") == "other")
+    ws_send_text(a.fd, "{\"type\":\"msg\",\"text\":\"само за bg\"}")?
+    let ra5 = read_text(a)?
+    a = ra5.conn
+    check("a_gets_bg_msg", ra5.ok == 1 && field(ra5.text, "text") == "само за bg")
+    // carol must NOT receive it: her next read times out (empty)
+    let rd2 = ws_read_frame(ddconn)?
+    check("d_no_cross_talk", rd2.ok == 0)
+
+    // --- leave: b closes, a gets "left" ---
+    // (b may have queued broadcasts — drain them, then expect the close echo)
+    let sc = ws_send_close(b.fd)?
+    check("close_send", sc == 0)
+    let mut rb4 = ws_read_frame(b)?
+    b = rb4.conn
+    let mut guard: i64 = 0
+    while rb4.ok == 1 && rb4.frame.opcode != WS_CLOSE() && guard < 16 {
+        rb4 = ws_read_frame(b)?
+        b = rb4.conn
+        guard = guard + 1
+    }
+    check("b_close_echo", rb4.ok == 1 && rb4.frame.opcode == WS_CLOSE())
+    tcp_close(b.fd)?
+    let ra6 = read_text(a)?
+    a = ra6.conn
+    check("a_sees_b_left", ra6.ok == 1 && field(ra6.text, "type") == "left" && field(ra6.text, "name") == "bob")
+
+    tcp_close(a.fd)?
+    tcp_close(c.fd)?
+    tcp_close(ddconn.fd)?
+
+    print("chat_test: all passed")
+    return 0
+}

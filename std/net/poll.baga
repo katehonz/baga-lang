@@ -1,0 +1,88 @@
+// poll.baga — poll(2) event loop primitive. Effects: !Net !IO.
+//
+// One thread, many fds: the building block that closes kvbaga K1 / wsbaga W1
+// (serial accept). poll_wait watches a set of descriptors for read-readiness
+// (POLLIN | POLLERR | POLLHUP — all of them mean "read now; read() will
+// return data, 0/EOF, or an error").
+//
+// Implementation: struct pollfd { int fd; short events; short revents; } is
+// staged in arena memory through the memfd dance (same pattern as
+// tcp.baga's sockaddr), then SYS_poll(7) runs on it; revents are read back.
+
+import "tcp.baga"
+import "../bytes/bytes.baga"
+
+struct PollResult {
+    ok: i64,          // 1 = poll ran (even with 0 ready), -1 = error
+    ready: Vec<i64>   // fds with POLLIN|POLLERR|POLLHUP set
+}
+
+fn poll_empty() -> PollResult {
+    return PollResult { ok: 1, ready: vec_new() }
+}
+
+// Wait until at least one fd is read-ready or timeout_ms elapses
+// (timeout_ms < 0 = block forever). fds must be non-duplicated.
+fn poll_wait(fds: Vec<i64>, timeout_ms: i64) -> PollResult !Net !IO {
+    let n = vec_len(fds)
+    if n == 0 {
+        return poll_empty()
+    }
+    let a = arena_new()
+    let fds_ptr = arena_alloc(a, n * 8)
+    let mfd = memfd_create("baga_poll", 0)?
+    if mfd < 0 {
+        arena_free(a)
+        return PollResult { ok: -1, ready: vec_new() }
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let off = i * 8
+        let fd = vec_get(fds, i)
+        poke8(mfd, off, fd & 255)?
+        poke8(mfd, off + 1, (fd >> 8) & 255)?
+        poke8(mfd, off + 2, (fd >> 16) & 255)?
+        poke8(mfd, off + 3, (fd >> 24) & 255)?
+        poke8(mfd, off + 4, 1)?      // events = POLLIN (0x0001), little-endian
+        poke8(mfd, off + 5, 0)?
+        poke8(mfd, off + 6, 0)?      // revents = 0
+        poke8(mfd, off + 7, 0)?
+        i = i + 1
+    }
+    let written = pread(mfd, fds_ptr, n * 8, 0)?
+    syscall(3, mfd, 0, 0)?           // close mfd
+    if written != n * 8 {
+        arena_free(a)
+        return PollResult { ok: -1, ready: vec_new() }
+    }
+    let rc = syscall(7, fds_ptr, n, timeout_ms)?   // SYS_poll
+    if rc < 0 {
+        arena_free(a)
+        return PollResult { ok: -1, ready: vec_new() }
+    }
+    let back = mem_read(fds_ptr, n * 8)?
+    let ready = vec_new()
+    let mut j: i64 = 0
+    while j < n {
+        let revents = byte_at(back, j * 8 + 6) | (byte_at(back, j * 8 + 7) << 8)
+        // POLLIN=1, POLLERR=8, POLLHUP=16 → read now (data / EOF / error)
+        if (revents & 25) != 0 {
+            vec_push(ready, vec_get(fds, j))
+        }
+        j = j + 1
+    }
+    arena_free(a)
+    return PollResult { ok: 1, ready: ready }
+}
+
+// Convenience: is fd in the ready set?
+fn poll_has(ready: Vec<i64>, fd: i64) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(ready) {
+        if vec_get(ready, i) == fd {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}

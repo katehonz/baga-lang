@@ -403,6 +403,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                         if (mt->elem) {
                             if (mt->elem->kind == TYPE_STR) vsuf = "str";
                             else if (mt->elem->kind == TYPE_F64) vsuf = "f64";
+                            else if (mt->elem->kind == TYPE_BYTES) vsuf = "bytes";
                         }
                     }
                     fprintf(f, "baga_%s_%s_%s(", bn, ksuf, vsuf);
@@ -1495,7 +1496,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "\n/* hash map: chaining, key i64/str, value i64/str/f64 (leak-tolerant like baga_Vec) */\n");
     fprintf(out, "typedef struct baga_MapEntry {\n");
     fprintf(out, "    int64_t ik; const char *sk;\n");
-    fprintf(out, "    int64_t iv; double fv; const char *sv;\n");
+    fprintf(out, "    int64_t iv; double fv; const char *sv; baga_bytes bv;\n");
     fprintf(out, "    struct baga_MapEntry *next;\n");
     fprintf(out, "} baga_MapEntry;\n");
     fprintf(out, "typedef struct { baga_MapEntry **b; int64_t nb; int64_t len; } baga_Map;\n");
@@ -1515,7 +1516,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return m; }\n");
     /* slot lookup: returns the entry pointer or the NULL link (insert point) */
     fprintf(out, "static baga_MapEntry **baga_map_slot(baga_Map *m, int64_t ik, const char *sk, uint64_t h) {\n");
-    fprintf(out, "    baga_MapEntry **e = &m->b[h % (uint64_t)m->nb];\n");
+    fprintf(out, "    baga_MapEntry **e = &m->b[h %% (uint64_t)m->nb];\n");
     fprintf(out, "    while (*e) {\n");
     fprintf(out, "        if (sk ? ((*e)->sk && strcmp((*e)->sk, sk) == 0)\n");
     fprintf(out, "               : (!(*e)->sk && (*e)->ik == ik)) return e;\n");
@@ -1531,14 +1532,15 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        while (e) {\n");
     fprintf(out, "            baga_MapEntry *nx = e->next;\n");
     fprintf(out, "            uint64_t h = e->sk ? baga_map_hash_str(e->sk) : baga_map_hash_i64(e->ik);\n");
-    fprintf(out, "            e->next = m->b[h % (uint64_t)m->nb];\n");
-    fprintf(out, "            m->b[h % (uint64_t)m->nb] = e;\n");
+    fprintf(out, "            e->next = m->b[h %% (uint64_t)m->nb];\n");
+    fprintf(out, "            m->b[h %% (uint64_t)m->nb] = e;\n");
     fprintf(out, "            e = nx; } } }\n");
     fprintf(out, "static baga_MapEntry *baga_map_put(baga_Map *m, int64_t ik, const char *sk, uint64_t h) {\n");
     fprintf(out, "    baga_MapEntry **slot = baga_map_slot(m, ik, sk, h);\n");
     fprintf(out, "    if (*slot) return *slot;\n");
     fprintf(out, "    baga_MapEntry *e = baga_alloc(sizeof(baga_MapEntry));\n");
-    fprintf(out, "    e->ik = ik; e->sk = sk; e->iv = 0; e->fv = 0; e->sv = NULL; e->next = NULL;\n");
+    fprintf(out, "    e->ik = ik; e->sk = sk; e->iv = 0; e->fv = 0; e->sv = NULL;\n");
+    fprintf(out, "    e->bv.data = NULL; e->bv.len = 0; e->next = NULL;\n");
     fprintf(out, "    *slot = e; m->len++;\n");
     fprintf(out, "    if (m->len * 4 > m->nb * 3) baga_map_rehash(m);\n");
     fprintf(out, "    return e; }\n");
@@ -1565,6 +1567,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
             else if (vi == 0) fprintf(out, "    return e ? e->iv : 0; }\n");
             else fprintf(out, "    return e ? e->fv : 0; }\n");
         }
+        /* bytes values (binary-safe; kvbaga K2 / chat buffers) */
+        fprintf(out, "static void baga_map_set_%s_bytes(baga_Map *m, %s, baga_bytes v) {\n", kn, karg);
+        fprintf(out, "    baga_MapEntry *e = baga_map_put(m, %s, %s, %s);\n", ikv, skv, hk);
+        fprintf(out, "    e->bv = v; }\n");
+        fprintf(out, "static baga_bytes baga_map_get_%s_bytes(baga_Map *m, %s) {\n", kn, karg);
+        fprintf(out, "    baga_MapEntry *e = *baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
+        fprintf(out, "    if (!e) { baga_bytes z; z.data = NULL; z.len = 0; return z; }\n");
+        fprintf(out, "    return e->bv; }\n");
         fprintf(out, "static int64_t baga_map_has_%s(baga_Map *m, %s) {\n", kn, karg);
         fprintf(out, "    return *baga_map_slot(m, %s, %s, %s) ? 1 : 0; }\n", ikv, skv, hk);
         fprintf(out, "static void baga_map_del_%s(baga_Map *m, %s) {\n", kn, karg);

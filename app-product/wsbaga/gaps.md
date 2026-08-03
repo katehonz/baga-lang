@@ -2,19 +2,17 @@
 
 Probe log from apps-roadmap №3 (WebSocket). Same shape as kvbaga/pgbaga.
 
-## W1 — serial connections (K1 again)
+## W1 — ~~serial connections (K1 again)~~ — CLOSED
 
 **Symptom.** `ws_serve` accepts one connection at a time; a slow client
 blocks the rest. `go()` still carries only `i64`, so a shared listener
 state can't move to workers without per-connection spawning.
 
-**Workaround.** `go_bg(ws_serve, port)` + per-connection handling inside;
-fine for probe/dev scale.
-
-**Severity.** High for a real chat server.
-
-**Verdict.** Event loop via `poll(2)` extern (one thread, many fds) — the
-designated K1 fix; also unblocks kvbaga. Next language feature.
+**Closed (2026-08-04, chatbaga).** `std/net/poll.baga` + `chat_serve`
+watch the listener and every client fd on one thread; residual buffers are
+`Map<i64, bytes>`. The echo path (`ws_serve`) remains serial by design —
+multi-connection products use the poll loop. kvbaga can adopt the same
+pattern without further language changes.
 
 ## W2 — no fragmented message reassembly
 

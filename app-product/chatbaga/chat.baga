@@ -1,0 +1,275 @@
+// chat.baga — WebSocket chat rooms on the poll(2) event loop.
+//
+// One thread, many connections (closes wsbaga W1 / kvbaga K1): a poll set
+// watches the listener + every client fd; state lives in Maps keyed by fd
+// (Map<i64, bytes> buffers were the reason maps grew a bytes value kind).
+//
+// Protocol: JSON over WS text frames.
+//   client → server:  {"type":"join","name":"…","room":"…"}
+//                     {"type":"msg","text":"…"}
+//   server → client:  {"type":"joined","room":"…"}
+//                     {"type":"join","name":"…"}   (someone entered)
+//                     {"type":"msg","from":"…","text":"…"}
+//                     {"type":"left","name":"…"}   (someone disconnected)
+//                     {"type":"error","msg":"…"}
+
+import "wsbaga/ws.baga"
+import "std/net/poll.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/json/json.baga"
+
+struct ChatState {
+    listener: i64,
+    fds: Vec<i64>,            // active client fds (the poll set minus listener)
+    bufs: Map<i64, bytes>,    // residual bytes per fd
+    done_hs: Map<i64, i64>,   // 1 = WS handshake done
+    names: Map<i64, str>,     // fd -> nick (once joined)
+    rooms: Map<i64, str>      // fd -> room (once joined)
+}
+
+fn chat_state_new(listener: i64) -> ChatState {
+    return ChatState {
+        listener: listener,
+        fds: vec_new(),
+        bufs: map_new(),
+        done_hs: map_new(),
+        names: map_new(),
+        rooms: map_new()
+    }
+}
+
+// ---------- tiny JSON builders ----------
+
+// NB: std/json json_escape returns the QUOTED literal ("…"), so no extra
+// quotes here (chatbaga gap C2).
+fn jpair(k: str, v: str) -> str {
+    return concat(concat(json_escape(k), ":"), json_escape(v))
+}
+
+fn jmsg1(t: str, k1: str, v1: str) -> str {
+    return concat(concat(concat(concat("{", jpair("type", t)), ","), jpair(k1, v1)), "}")
+}
+
+fn jmsg2(t: str, k1: str, v1: str, k2: str, v2: str) -> str {
+    let mut s = concat(concat(concat("{", jpair("type", t)), ","), jpair(k1, v1))
+    s = concat(s, concat(concat(",", jpair(k2, v2)), "}"))
+    return s
+}
+
+// ---------- connection plumbing ----------
+
+fn chat_send(fd: i64, text: str) -> i64 !Net !IO {
+    return tcp_write_bytes(fd, ws_build_frame(1, WS_TEXT(), bytes_of_str(text), 0))?
+}
+
+// Everyone in `room` (skip_fd may be -1 for "no skip").
+fn chat_broadcast(st: ChatState, room: str, skip_fd: i64, text: str) -> i64 !Net !IO {
+    let ks = map_keys(st.rooms)
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        let fd = vec_get(ks, i)
+        if fd != skip_fd && map_get(st.rooms, fd) == room {
+            chat_send(fd, text)?
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn chat_add_conn(st: ChatState, fd: i64) -> ChatState {
+    let nv = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(st.fds) {
+        vec_push(nv, vec_get(st.fds, i))
+        i = i + 1
+    }
+    vec_push(nv, fd)
+    map_set(st.bufs, fd, bytes_from_vec(vec_new()))
+    map_set(st.done_hs, fd, 0)
+    return ChatState {
+        listener: st.listener, fds: nv, bufs: st.bufs,
+        done_hs: st.done_hs, names: st.names, rooms: st.rooms
+    }
+}
+
+fn chat_close_conn(st: ChatState, fd: i64) -> ChatState !Net !IO {
+    if map_has(st.names, fd) == 1 {
+        let name = map_get(st.names, fd)
+        let room = map_get(st.rooms, fd)
+        chat_broadcast(st, room, fd, jmsg1("left", "name", name))?
+    }
+    tcp_close(fd)?
+    map_del(st.bufs, fd)
+    map_del(st.done_hs, fd)
+    map_del(st.names, fd)
+    map_del(st.rooms, fd)
+    let nv = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(st.fds) {
+        let f = vec_get(st.fds, i)
+        if f != fd {
+            vec_push(nv, f)
+        }
+        i = i + 1
+    }
+    return ChatState {
+        listener: st.listener, fds: nv, bufs: st.bufs,
+        done_hs: st.done_hs, names: st.names, rooms: st.rooms
+    }
+}
+
+// ---------- message handling ----------
+
+fn chat_str_field(d: JsonDoc, root: i64, key: str) -> str {
+    let n = json_get(d, root, key)
+    if n < 0 || json_tag(d, n) != 4 {
+        return ""
+    }
+    return json_str(d, n)
+}
+
+fn chat_on_text(st: ChatState, fd: i64, text: str) -> ChatState !Net !IO {
+    if json_strict_valid(text) == 0 {
+        chat_send(fd, jmsg1("error", "msg", "invalid JSON"))?
+        return st
+    }
+    let d = json_parse(text)
+    let root = json_root(d)
+    if json_tag(d, root) != 6 {
+        chat_send(fd, jmsg1("error", "msg", "message must be an object"))?
+        return st
+    }
+    let typ = chat_str_field(d, root, "type")
+    if typ == "join" {
+        let name = chat_str_field(d, root, "name")
+        let room = chat_str_field(d, root, "room")
+        if name == "" || room == "" {
+            chat_send(fd, jmsg1("error", "msg", "join needs name and room"))?
+            return st
+        }
+        // moving rooms: announce departure first
+        if map_has(st.rooms, fd) == 1 {
+            let old_room = map_get(st.rooms, fd)
+            if old_room != room && map_has(st.names, fd) == 1 {
+                chat_broadcast(st, old_room, fd, jmsg1("left", "name", map_get(st.names, fd)))?
+            }
+        }
+        map_set(st.names, fd, name)
+        map_set(st.rooms, fd, room)
+        chat_send(fd, jmsg2("joined", "room", room, "name", name))?
+        chat_broadcast(st, room, fd, jmsg1("join", "name", name))?
+        return st
+    }
+    if typ == "msg" {
+        if map_has(st.rooms, fd) == 0 {
+            chat_send(fd, jmsg1("error", "msg", "join first"))?
+            return st
+        }
+        let body = chat_str_field(d, root, "text")
+        let room = map_get(st.rooms, fd)
+        let from = map_get(st.names, fd)
+        chat_broadcast(st, room, -1, jmsg2("msg", "from", from, "text", body))?
+        return st
+    }
+    chat_send(fd, jmsg1("error", "msg", concat("unknown type: ", typ)))?
+    return st
+}
+
+// ---------- per-fd readable ----------
+
+fn chat_on_readable(st: ChatState, fd: i64) -> ChatState !Net !IO {
+    let chunk = tcp_read_bytes(fd, 4096)?
+    if bytes_len(chunk) == 0 {
+        return chat_close_conn(st, fd)?
+    }
+    let mut b = bytes_concat(map_get(st.bufs, fd), chunk)
+    if map_get(st.done_hs, fd) != 1 {
+        let h = ws_parse_handshake_buf(b)
+        if h.bad == 1 {
+            return chat_close_conn(st, fd)?
+        }
+        if h.ok == 0 {
+            map_set(st.bufs, fd, b)
+            return st
+        }
+        tcp_write_bytes(fd, bytes_of_str(h.response))?
+        map_set(st.done_hs, fd, 1)
+        b = bytes_slice(b, h.consumed, bytes_len(b))
+    }
+    let mut cur = st
+    let mut running: i64 = 1
+    while running == 1 {
+        let t = ws_try_parse_frame(b)
+        if t.bad == 1 {
+            return chat_close_conn(cur, fd)?
+        }
+        if t.ok == 0 {
+            running = 0
+        } else {
+            b = bytes_slice(b, t.consumed, bytes_len(b))
+            let op = t.frame.opcode
+            if op == WS_CLOSE() {
+                tcp_write_bytes(fd, ws_build_frame(1, WS_CLOSE(), t.frame.payload, 0))?
+                map_set(cur.bufs, fd, b)
+                return chat_close_conn(cur, fd)?
+            } else {
+                if op == WS_PING() {
+                    tcp_write_bytes(fd, ws_build_frame(1, WS_PONG(), t.frame.payload, 0))?
+                } else {
+                    if op == WS_TEXT() {
+                        cur = chat_on_text(cur, fd, str_of_bytes(t.frame.payload))?
+                    }
+                    // binary / pong: ignore
+                }
+            }
+        }
+    }
+    map_set(cur.bufs, fd, b)
+    return cur
+}
+
+// ---------- the event loop ----------
+
+fn chat_serve(port: i64) -> i64 !Net !IO !Par {
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        return -1
+    }
+    let mut st = chat_state_new(listener)
+    while true {
+        let pollfds = vec_new()
+        vec_push(pollfds, listener)
+        let mut i: i64 = 0
+        while i < vec_len(st.fds) {
+            vec_push(pollfds, vec_get(st.fds, i))
+            i = i + 1
+        }
+        let pr = poll_wait(pollfds, 200)?
+        if pr.ok == 1 {
+            if poll_has(pr.ready, listener) == 1 {
+                let fd = tcp_accept(listener)?
+                if fd >= 0 {
+                    st = chat_add_conn(st, fd)
+                }
+            }
+            // snapshot: handlers may close fds and rebuild st.fds
+            let snapshot = vec_new()
+            let mut j: i64 = 0
+            while j < vec_len(st.fds) {
+                vec_push(snapshot, vec_get(st.fds, j))
+                j = j + 1
+            }
+            let mut k: i64 = 0
+            while k < vec_len(snapshot) {
+                let fd = vec_get(snapshot, k)
+                if poll_has(pr.ready, fd) == 1 {
+                    st = chat_on_readable(st, fd)?
+                }
+                k = k + 1
+            }
+        }
+    }
+    return 0
+}

@@ -84,6 +84,19 @@ fn main() {
     map_set(mf, "pi", 3.5)
     check("f64_val", map_get(mf, "pi") > 3.4 && map_get(mf, "pi") < 3.6)
 
+    // --- bytes values (binary-safe; K2) ---
+    let mb = map_new()
+    let nulv = vec_new()
+    vec_push(nulv, 0)
+    vec_push(nulv, 255)
+    vec_push(nulv, 66)
+    map_set(mb, "nul", bytes_from_vec(nulv))
+    map_set(mb, "txt", bytes_of_str("binary"))
+    let gb = map_get(mb, "nul")
+    check("bytes_val_nul", bytes_len(gb) == 3 && bytes_at(gb, 0) == 0 && bytes_at(gb, 1) == 255)
+    check("bytes_val_txt", str_of_bytes(map_get(mb, "txt")) == "binary")
+    check("bytes_missing_empty", bytes_len(map_get(mb, "nope")) == 0)
+
     // --- map_keys ---
     let mk = map_new()
     map_set(mk, "a", 1)

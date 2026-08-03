@@ -213,7 +213,7 @@ explicitly or let the compiler infer them from initializers.
 | `str`   | string (null-terminated, immutable)      | `const char *`     |
 | `Vec`   | dynamic array (heap-allocated)           | `baga_Vec *`       |
 | `Vec<T>` | vector with annotated element (`i64` or `str`) | `baga_Vec *` |
-| `Map<K,V>` | hash table; key `i64`/`str`, value `i64`/`str`/`f64` | `baga_Map *` |
+| `Map<K,V>` | hash table; key `i64`/`str`, value `i64`/`str`/`f64`/`bytes` | `baga_Map *` |
 | `[T]`   | array of `T`                             | pointer            |
 | `&T`    | reference to `T`                         | `T *`              |
 | `void`  | no value (procedures)                    | `void`             |
@@ -616,15 +616,17 @@ an element other than `i64`/`str` (`Vec<f64>`) is a compile-time error.
 ### 12.5 Maps (dynamic key–value tables)
 
 A `Map` is a heap-allocated hash table. Keys are `i64` or `str`; values are
-`i64`, `str`, or `f64` — fixed by the first `map_set` (or by a `Map<K, V>`
-annotation), exactly like `Vec`'s element type. Maps are pointers: passing
-one to a function shares it, and mutations are visible to the caller.
+`i64`, `str`, `f64`, or `bytes` — fixed by the first `map_set` (or by a
+`Map<K, V>` annotation), exactly like `Vec`'s element type. Maps are
+pointers: passing one to a function shares it, and mutations are visible to
+the caller. `bytes` values are binary-safe (NUL/0xFF round-trip) — used for
+residual I/O buffers (chatbaga) and any binary store.
 
 | Signature | Description |
 |-----------|-------------|
 | `map_new() -> Map` | Empty map; key/value types unknown until first use. |
 | `map_set(m, key, val)` | Insert or overwrite; fixes/validates both types. |
-| `map_get(m, key) -> val` | Value for the key; `0` / `""` / `0.0` when absent. |
+| `map_get(m, key) -> val` | Value for the key; `0` / `""` / `0.0` / empty `bytes` when absent. |
 | `map_has(m, key) -> i64` | `1` when the key exists, else `0`. |
 | `map_del(m, key)` | Remove the key (no-op when absent). |
 | `map_len(m) -> i64` | Entry count. |
@@ -1258,8 +1260,8 @@ are computed automatically by the **sandak** package manager from the
 | `vec_get_str` | `(v: Vec, i: i64) -> str` | — |
 | `vec_set_str` | `(v: Vec, i: i64, s: str) -> void` | — |
 | `map_new` | `() -> Map` | — |
-| `map_set` | `(m: Map, k: i64 \| str, v: i64 \| str \| f64) -> void` | first set fixes key/value types |
-| `map_get` | `(m: Map, k: i64 \| str) -> i64 \| str \| f64` | zero-value when absent |
+| `map_set` | `(m: Map, k: i64 \| str, v: i64 \| str \| f64 \| bytes) -> void` | first set fixes key/value types |
+| `map_get` | `(m: Map, k: i64 \| str) -> i64 \| str \| f64 \| bytes` | zero-value when absent |
 | `map_has` | `(m: Map, k: i64 \| str) -> i64` | 1 when the key exists |
 | `map_del` | `(m: Map, k: i64 \| str) -> void` | — |
 | `map_len` | `(m: Map) -> i64` | — |

@@ -134,64 +134,70 @@ fn ws_read_bad(conn: WsConn) -> WsRead {
     }
 }
 
-// One frame, masked or not. Continuation frames (opcode 0) come through —
-// this server treats them as errors (no reassembly; see gaps.md).
-fn ws_read_frame(c: WsConn) -> WsRead !IO !Net {
-    let f2 = ws_fill(c, 2)?
-    if f2.ok == 0 {
-        return WsRead { conn: f2.conn, frame: WsFrame { fin: 0, opcode: 0, payload: bytes_from_vec(vec_new()) }, ok: 0, bad: 0 }
+struct WsTryParse {
+    ok: i64,        // 1 = one full frame parsed
+    bad: i64,       // 1 = protocol violation (close the connection)
+    frame: WsFrame,
+    consumed: i64
+}
+
+fn ws_try_empty() -> WsTryParse {
+    return WsTryParse { ok: 0, bad: 0, frame: WsFrame { fin: 0, opcode: 0, payload: bytes_from_vec(vec_new()) }, consumed: 0 }
+}
+
+// Pure frame parse over what is in the buffer. ok=0 → need more bytes.
+// Continuation frames (opcode 0) come through; servers without reassembly
+// treat them as errors (see gaps.md W2).
+fn ws_try_parse_frame(buf: bytes) -> WsTryParse {
+    let n = bytes_len(buf)
+    if n < 2 {
+        return ws_try_empty()
     }
-    let mut conn = f2.conn
-    let b0 = bytes_at(conn.buf, 0)
-    let b1 = bytes_at(conn.buf, 1)
+    let b0 = bytes_at(buf, 0)
+    let b1 = bytes_at(buf, 1)
     let fin = (b0 >> 7) & 1
     let opcode = b0 & 15
     let masked = (b1 >> 7) & 1
     let mut plen: i64 = b1 & 127
     let mut off: i64 = 2
     if plen == 126 {
-        let f = ws_fill(conn, 4)?
-        if f.ok == 0 {
-            return WsRead { conn: f.conn, frame: WsFrame { fin: 0, opcode: 0, payload: bytes_from_vec(vec_new()) }, ok: 0, bad: 0 }
+        if n < 4 {
+            return ws_try_empty()
         }
-        conn = f.conn
-        plen = (bytes_at(conn.buf, 2) << 8) | bytes_at(conn.buf, 3)
+        plen = (bytes_at(buf, 2) << 8) | bytes_at(buf, 3)
         off = 4
     } else {
         if plen == 127 {
-            let f = ws_fill(conn, 10)?
-            if f.ok == 0 {
-                return WsRead { conn: f.conn, frame: WsFrame { fin: 0, opcode: 0, payload: bytes_from_vec(vec_new()) }, ok: 0, bad: 0 }
+            if n < 10 {
+                return ws_try_empty()
             }
-            conn = f.conn
             plen = 0
             let mut i: i64 = 0
             while i < 8 {
-                plen = plen * 256 + bytes_at(conn.buf, 2 + i)
+                plen = plen * 256 + bytes_at(buf, 2 + i)
                 i = i + 1
             }
             off = 10
         }
     }
     if plen < 0 || plen > 67108864 {   // 64 MiB sanity cap
-        return ws_read_bad(conn)
+        return WsTryParse { ok: 0, bad: 1, frame: WsFrame { fin: 0, opcode: 0, payload: bytes_from_vec(vec_new()) }, consumed: 0 }
+    }
+    if masked == 1 {
+        if n < off + 4 + plen {
+            return ws_try_empty()
+        }
+    } else {
+        if n < off + plen {
+            return ws_try_empty()
+        }
     }
     let mut mask = bytes_from_vec(vec_new())
     if masked == 1 {
-        let f = ws_fill(conn, off + 4)?
-        if f.ok == 0 {
-            return WsRead { conn: f.conn, frame: WsFrame { fin: 0, opcode: 0, payload: bytes_from_vec(vec_new()) }, ok: 0, bad: 0 }
-        }
-        conn = f.conn
-        mask = bytes_slice(conn.buf, off, off + 4)
+        mask = bytes_slice(buf, off, off + 4)
         off = off + 4
     }
-    let f = ws_fill(conn, off + plen)?
-    if f.ok == 0 {
-        return WsRead { conn: f.conn, frame: WsFrame { fin: 0, opcode: 0, payload: bytes_from_vec(vec_new()) }, ok: 0, bad: 0 }
-    }
-    conn = f.conn
-    let mut payload = bytes_slice(conn.buf, off, off + plen)
+    let mut payload = bytes_slice(buf, off, off + plen)
     if masked == 1 {
         let v = vec_new()
         let mut i: i64 = 0
@@ -201,12 +207,83 @@ fn ws_read_frame(c: WsConn) -> WsRead !IO !Net {
         }
         payload = bytes_from_vec(v)
     }
-    conn = WsConn { fd: conn.fd, buf: bytes_slice(conn.buf, off + plen, bytes_len(conn.buf)) }
-    return WsRead {
-        conn: conn,
-        frame: WsFrame { fin: fin, opcode: opcode, payload: payload },
+    return WsTryParse {
         ok: 1,
-        bad: 0
+        bad: 0,
+        frame: WsFrame { fin: fin, opcode: opcode, payload: payload },
+        consumed: off + plen
+    }
+}
+
+// Blocking reader built on the pure parser: fill until one frame lands.
+fn ws_read_frame(c: WsConn) -> WsRead !IO !Net {
+    let mut conn = c
+    let mut t = ws_try_parse_frame(conn.buf)
+    while t.ok == 0 && t.bad == 0 {
+        let f = ws_fill(conn, bytes_len(conn.buf) + 1)?
+        conn = f.conn
+        if f.ok == 0 {
+            return WsRead { conn: conn, frame: WsFrame { fin: 0, opcode: 0, payload: bytes_from_vec(vec_new()) }, ok: 0, bad: 0 }
+        }
+        t = ws_try_parse_frame(conn.buf)
+    }
+    if t.bad == 1 {
+        return ws_read_bad(conn)
+    }
+    conn = WsConn { fd: conn.fd, buf: bytes_slice(conn.buf, t.consumed, bytes_len(conn.buf)) }
+    return WsRead { conn: conn, frame: t.frame, ok: 1, bad: 0 }
+}
+
+// ---------- incremental handshake parse (pure, for event loops) ----------
+
+struct WsHandshakeParse {
+    ok: i64,        // 1 = upgrade request complete, response ready
+    bad: i64,       // 1 = not a valid upgrade request (close the connection)
+    response: str,  // the 101 text to send
+    consumed: i64   // header section length incl. \r\n\r\n
+}
+
+fn ws_parse_handshake_buf(buf: bytes) -> WsHandshakeParse {
+    let no = WsHandshakeParse { ok: 0, bad: 0, response: "", consumed: 0 }
+    let sep = ws_find_sub(buf, bytes_of_str("\r\n\r\n"))
+    if sep < 0 {
+        if bytes_len(buf) > 8192 {
+            return WsHandshakeParse { ok: 0, bad: 1, response: "", consumed: 0 }
+        }
+        return no
+    }
+    let head = str_of_bytes(bytes_slice(buf, 0, sep))
+    // str_split cuts on the FIRST delimiter char only — normalize CRLF → LF
+    let lines = str_split(str_replace(head, "\r\n", "\n"), "\n")
+    if vec_len(lines) == 0 {
+        return WsHandshakeParse { ok: 0, bad: 1, response: "", consumed: 0 }
+    }
+    if !str_starts_with(vec_get(lines, 0), "GET ") {
+        return WsHandshakeParse { ok: 0, bad: 1, response: "", consumed: 0 }
+    }
+    let mut key = ""
+    let mut upgrade_ok: i64 = 0
+    let mut i: i64 = 1
+    while i < vec_len(lines) {
+        let line = vec_get(lines, i)
+        let low = to_lower(line)
+        if str_starts_with(low, "upgrade:") && str_find(low, "websocket") >= 0 {
+            upgrade_ok = 1
+        }
+        if str_starts_with(low, "sec-websocket-key:") {
+            key = str_trim(substr(line, 18, len(line)))
+        }
+        i = i + 1
+    }
+    if upgrade_ok == 0 || key == "" {
+        return WsHandshakeParse { ok: 0, bad: 1, response: "", consumed: 0 }
+    }
+    let head_txt = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+    return WsHandshakeParse {
+        ok: 1,
+        bad: 0,
+        response: concat(concat(head_txt, ws_accept_key(key)), "\r\n\r\n"),
+        consumed: sep + 4
     }
 }
 

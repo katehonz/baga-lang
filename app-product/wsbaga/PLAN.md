@@ -1,10 +1,10 @@
 # wsbaga — WebSocket (plan)
 
 Date: 2026-08-04
-Status: P0 done (RFC 6455 core, interop-verified); chat layer pending
+Status: P0 done (RFC 6455 core, interop-verified); P1 chat done in chatbaga
 Goal: the roadmap №3 probe — real-time transport. What the probe found:
-std needed **SHA-1** (added), and the concurrency model (K1) is the wall
-between "echo" and "chat" — the event loop is the next language feature.
+std needed **SHA-1** (added), and the concurrency model (K1) was the wall
+between "echo" and "chat" — closed by `std/net/poll` + `app-product/chatbaga`.
 
 ## Phases
 
@@ -17,13 +17,11 @@ between "echo" and "chat" — the event loop is the next language feature.
 4. Echo server (`ws_serve`) + masked client helpers; loopback test (14
    checks) + `wscat` interop (UTF-8 text, 900-byte payloads).
 
-### P1 — chat (next)
+### P1 — chat (done in `app-product/chatbaga`) ✅
 
-- **Event loop via `poll(2)` extern** — one thread, many fds; closes W1/K1
-  and lets kvbaga move off serial accept too.
-- Rooms: `Map<i64, str>` fd→room + fd→name; broadcast by key walk
-  (`map_keys` on i64 keys — already in the runtime).
-- JOIN / MSG / LEAVE message envelope (JSON over text frames).
+- **Event loop via `poll(2)`** — `std/net/poll.baga`; closes W1/K1.
+- Rooms + broadcast: `chatbaga` (`Map` fd→room/name/bufs, JSON envelope).
+- See `app-product/chatbaga/{README,PLAN,gaps}.md`.
 
 ### P2 — completeness
 

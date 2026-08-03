@@ -15,14 +15,22 @@ Externs (libc):
 - `extern pread(fd: i64, buf: i64, count: i64, off: i64) -> i64 !Net`
 - `extern syscall(nr: i64, a1: i64, a2: i64, a3: i64) -> i64 !Net`
 
-Public API:
+Public API (`tcp.baga`):
 
 - `tcp_listen(port: i64) -> i64 !Net` — listen on `0.0.0.0:port` (SO_REUSEADDR set); returns the listener fd, or -1.
 - `tcp_accept(listener: i64) -> i64 !Net` — accept one connection (blocking); returns the connection fd, or -1.
 - `tcp_connect(host: str, port: i64) -> i64 !Net` — connect to dotted IPv4 `host:port`; returns the fd, or -1.
-- `tcp_read(fd: i64, n: i64) -> str !Net !IO` — read up to `n` bytes; `""` at EOF or on error.
-- `tcp_write(fd: i64, data: str) -> i64 !Net !IO` — write all of `data`; 0 on success, -1 on error.
-- `tcp_close(fd: i64) -> i64 !IO` — close the fd.
+- `tcp_connect_to` / `tcp_set_timeouts` / `tcp_resolve_ipv4` — production connects (DNS, timeouts, NODELAY/KEEPALIVE).
+- `tcp_read` / `tcp_write` / `tcp_read_bytes` / `tcp_write_bytes` / `tcp_close`.
+
+Event loop (`poll.baga`) — closes kvbaga K1 / wsbaga W1:
+
+- `poll_wait(fds: Vec<i64>, timeout_ms: i64) -> PollResult !Net !IO` —
+  SYS_poll; `ready` holds fds with POLLIN|POLLERR|POLLHUP.
+- `poll_has(ready, fd) -> i64` — membership helper.
+- Used by `app-product/chatbaga` for multi-connection chat.
+
+HTTP client: see `http_client.baga` (`http_get` / `http_post` / `http_request`).
 
 Notes:
 

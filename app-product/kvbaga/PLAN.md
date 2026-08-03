@@ -26,15 +26,15 @@ command touches it), and RESP is a small honest wire protocol — the same
 
 ### P1 — usable at work (next)
 
-- Event loop via `poll(2)` extern: one thread, many connections (K1) —
-  the serial model is correct but slow under concurrency.
+- Event loop via `poll(2)`: adopt `std/net/poll` like chatbaga (K1 path
+  open — language/primitive done; kv_serve still serial).
 - Persistence: SAVE/LOAD snapshot (line or RDB-lite format) via write_file.
 - AUTH (password from env), multi-DB index (SELECT n).
 - KEYS glob matching (K5 → std/str fnmatch).
 
 ### P2 — framework scale
 
-- bytes values (binary-safe; K2, needs map value kind in the language).
+- bytes values in the store (`Map<str, bytes>` — language kind exists).
 - Replication stream / SUBSCRIBE-style notifications (channels of str?).
 - Eviction policies beyond TTL (allkeys-lru needs ordered metadata).
 - Benchmark rig vs real redis-server (bench/).

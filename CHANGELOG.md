@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### App products — chatbaga (WebSocket chat, apps-roadmap №3 complete)
+- New product `app-product/chatbaga`: multi-room chat on a single-threaded
+  `poll(2)` event loop — JSON join/msg over wsbaga text frames, room
+  broadcast, leave notifications, error replies.
+- Closes **W1 / K1** (serial accept): one poll set watches the listener +
+  every client fd; connection state lives in `Map`s keyed by fd.
+- Forced **`Map` bytes values** into the language (`Map<i64, bytes>` residual
+  buffers) — also the path to close kvbaga K2 for binary store values.
+- `demo.baga` standalone server (`CHATPORT`, default 16460); interop with
+  `wscat` and raw RFC 6455 clients (UTF-8 text, multi-client broadcast).
+- `tests/chat_test.baga` — 18 live checks (two clients, errors, room
+  isolation, close/`left`); package via `sandak build` (app-product list).
+
+### std/net — poll(2) event loop primitive
+- `std/net/poll.baga`: `poll_wait(fds, timeout_ms)` / `poll_has` over
+  SYS_poll (POLLIN|POLLERR|POLLHUP). Same memfd staging pattern as tcp.
+- `tests/std/poll_test.baga` in the `make test` std loop.
+
+### Language — Map bytes values (kvbaga K2 path)
+- `Map<K,V>` values may be `bytes` (in addition to i64/str/f64). Checker +
+  C runtime (`baga_map_*_bytes`); missing key → empty bytes.
+- `tests/std/map_test.baga` covers NUL/0xFF round-trip through map values.
+
 ### App products — wsbaga (WebSocket, apps-roadmap №3)
 - New product `app-product/wsbaga`: RFC 6455 — server handshake
   (`Sec-WebSocket-Accept`), frame codec (FIN/opcode, 7/16/64-bit lengths,
@@ -12,8 +35,8 @@
   payloads against the Baga server; loopback `tests/ws_test.baga` covers
   all length boundaries (125/126/65535/65536), binary with NUL/0xFF,
   ping→pong, close→EOF (14 checks).
-- Honest limits in gaps.md: serial accept (W1 = kvbaga K1; poll-based event
-  loop is next), no fragmented-message reassembly (W2).
+- Honest limits in gaps.md: serial accept closed by chatbaga (W1 = K1 →
+  poll); no fragmented-message reassembly (W2) still open.
 
 ### std/crypto — SHA-1 (probed into existence by wsbaga)
 - `std/crypto/sha1.baga`: RFC 3174, same shape as sha256 (Vec core +
@@ -77,9 +100,9 @@
   worker and drives it. Both wired into `make test`.
 
 ### Language — `Map<K, V>` (first-class hash table)
-- New type `Map<K, V>`: keys `i64`/`str`, values `i64`/`str`/`f64` — the same
-  fix-on-first-use rules and annotations as `Vec<T>`; mixing key or value
-  types is a compile-time error.
+- New type `Map<K, V>`: keys `i64`/`str`, values `i64`/`str`/`f64`/`bytes` —
+  the same fix-on-first-use rules and annotations as `Vec<T>`; mixing key or
+  value types is a compile-time error. (`bytes` values added with chatbaga.)
 - Builtins: `map_new`, `map_set`, `map_get` (zero-value when absent),
   `map_has`, `map_del`, `map_len`, `map_keys` (→ `Vec<str>`/`Vec<i64>`).
 - Maps are pointers: passing one to a function shares it (mutate-through,
@@ -89,8 +112,8 @@
 - Self-hosting parity unchanged (`make self` fixed point holds); the self
   compiler does not parse `Map` yet (documented limitation).
 - Docs: `docs/language-{en,bg}.md` §12.5 + type/builtin tables.
-- Tests: `tests/std/map_test.baga` (31 checks, incl. rehash growth) +
-  two negative type-error checks wired into `make test`.
+- Tests: `tests/std/map_test.baga` (bytes + rehash growth) + two negative
+  type-error checks wired into `make test`.
 
 ### std/net — production connects
 - **DNS resolution:** `tcp_resolve_ipv4` — hostnames via `getaddrinfo`
