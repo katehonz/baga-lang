@@ -40,6 +40,7 @@ static void usage(void) {
         "  --test-specs  Property-based тестване на ensures/requires договорите\n"
         "  --verify    Статична верификация на requires/ensures (M0–M13 fragment)\n"
         "  --json      Машинно-четим JSON изход (с --verify)\n"
+        "  -I <dir>    Директория за търсене на import (повтаряем)\n"
         "  --ast       Изпечатвай AST (debug)\n"
         "  --tokens    Изпечатвай токени (debug)\n"
         "  --version, -V  Версия на компилатора\n"
@@ -59,6 +60,9 @@ static void print_version(void) {
  * declarations would be incompatible */
 typedef VEC(char *) StrVec;
 typedef VEC(Token) TokenVec;
+
+/* -I <dir> search paths за import, в реда на подаване (попълва се от argv) */
+static StrVec include_dirs = {0};
 
 /* import expansion: recursively collect tokens, resolving import "path"
  * directives at the top of each file. The include guard is keyed on the
@@ -124,8 +128,12 @@ static void collect_tokens(const char *path, TokenVec *out,
             char joined[1024];
             char resolved[1024];
             snprintf(joined, sizeof joined, "%s/%s", dir, rel);
-            if (realpath(joined, resolved) == NULL &&
-                realpath(rel, resolved) == NULL) {
+            int found = realpath(joined, resolved) != NULL;
+            for (int k = 0; !found && k < include_dirs.len; k++) {
+                snprintf(joined, sizeof joined, "%s/%s", include_dirs.data[k], rel);
+                found = realpath(joined, resolved) != NULL;
+            }
+            if (!found && realpath(rel, resolved) == NULL) {
                 baga_error(path, t->pos, "не мога да намеря import '%s'", rel);
                 exit(1);
             }
@@ -175,6 +183,16 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             usage();
             return 0;
+        }
+        else if (strcmp(argv[i], "-I") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "baga: -I очаква директория\n");
+                return 1;
+            }
+            vec_push(include_dirs, argv[i]);
+        }
+        else if (strncmp(argv[i], "-I", 2) == 0 && argv[i][2] != '\0') {
+            vec_push(include_dirs, argv[i] + 2);
         }
         else if (argv[i][0] == '-') {
             fprintf(stderr, "baga: непозната опция '%s'\n", argv[i]);

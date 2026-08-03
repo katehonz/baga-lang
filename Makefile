@@ -115,6 +115,15 @@ test: $(BIN)
 	@./$(BIN) tests/import_cycle_a.baga 2>&1 | grep -q "цикличен import" \
 		&& echo "OK: import цикълът е хванат" \
 		|| { echo "FAIL: import цикълът не е хванат"; exit 1; }
+	@echo "=== -I include path ==="
+	@cp tests/i_flag/main.baga /tmp/baga_i_flag_main.baga
+	@./$(BIN) -I tests/i_flag /tmp/baga_i_flag_main.baga > /tmp/baga_i_flag_out.txt \
+		&& test "$$(cat /tmp/baga_i_flag_out.txt)" = "42" \
+		&& echo "OK: -I include path резолюция" \
+		|| { echo "FAIL: -I include path"; exit 1; }
+	@./$(BIN) -Itests/i_flag /tmp/baga_i_flag_main.baga > /dev/null \
+		&& echo "OK: -I<dir> слепен вариант" \
+		|| { echo "FAIL: -I<dir> слепен вариант"; exit 1; }
 	@echo "=== string interpolation ==="
 	@./$(BIN) examples/interp.baga > /tmp/baga_interp_out.txt
 	@printf 'name=baga n=42 ok=true expr=84\ndollar=$$ braces={ } neg=-7\n' | diff - /tmp/baga_interp_out.txt > /dev/null \

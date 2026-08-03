@@ -1,0 +1,5 @@
+import "greeter/greet.baga"
+
+fn main() {
+    print(answer())
+}
