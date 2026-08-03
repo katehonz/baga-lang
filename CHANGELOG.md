@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### App products — jsonrpcbaga (JSON-RPC 2.0, apps-roadmap №6)
+- New product `app-product/jsonrpcbaga`: JSON-RPC 2.0 subset over HTTP —
+  single/batch, notifications, standard error codes, methods
+  `ping`/`add`/`echo`/`fail` via name switch.
+- `RpcResult` struct as L3 Result stand-in; `rpc_handle_body` pure +
+  `rpc_serve` accept loop; `tests/jsonrpc_test.baga` (pure + live HTTP).
+- Gaps: no sum types (R1/L3), no function-value method table (R2/L5).
+
 ### App products — queuebaga (task queue, apps-roadmap №5)
 - New product `app-product/queuebaga`: disk-backed jobs, `chan` of job ids,
   `go_bg` workers, reverse-payload demo work, `fail:` retry until max

@@ -1,0 +1,17 @@
+// demo.baga — JSON-RPC server (apps-roadmap №6).
+//   PORT=18580 baga -I ../.. -I .. demo.baga
+//   curl -s -d '{"jsonrpc":"2.0","method":"ping","id":1}' http://127.0.0.1:18580/rpc
+
+import "rpc.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !Net !IO !Par {
+    let ps = env("RPCPORT")?
+    let mut port: i64 = 18580
+    if ps != "" {
+        port = parse_int(ps)
+    }
+    print(concat("jsonrpcbaga on http://127.0.0.1:", concat(int_to_str(port), "/rpc")))
+    return rpc_serve(port)?
+}

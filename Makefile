@@ -138,7 +138,7 @@ test: $(BIN) sandak
 	@echo "=== sandak (пакетен мениджър) ==="
 	@SANDAK=$(CURDIR)/sandak BAGA=$(CURDIR)/baga bash tests/sandak/run_tests.sh
 	@echo "=== sandak build на repo пакетите ==="
-	@for p in httpdbaga jwtbaga pgbaga ormbaga fmrbaga kvbaga wsbaga chatbaga mdbaga testbaga grebaga queuebaga; do \
+	@for p in httpdbaga jwtbaga pgbaga ormbaga fmrbaga kvbaga wsbaga chatbaga mdbaga testbaga grebaga queuebaga jsonrpcbaga; do \
 		(cd app-product/$$p && BAGA=$(CURDIR)/$(BIN) $(CURDIR)/sandak build > /dev/null) \
 			&& echo "OK: sandak build $$p" \
 			|| { echo "FAIL: sandak build $$p"; exit 1; }; \

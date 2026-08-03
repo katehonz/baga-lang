@@ -1,0 +1,78 @@
+// jsonrpc_test.baga — pure + live HTTP tests for jsonrpcbaga (№6).
+
+import "jsonrpcbaga/rpc.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+import "std/net/tcp.baga"
+
+fn has(s: str, n: str) -> bool {
+    return str_find(s, n) >= 0
+}
+
+fn main() -> i64 !Net !IO !Par {
+    // --- pure body handler ---
+    let pong = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":1}")
+    assert_true("ping_result", has(pong, "\"result\":\"pong\""))
+    assert_true("ping_id", has(pong, "\"id\":1"))
+
+    let sum = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"add\",\"params\":[2,3],\"id\":7}")
+    assert_true("add_arr", has(sum, "\"result\":5"))
+    assert_true("add_id", has(sum, "\"id\":7"))
+
+    let sumo = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"add\",\"params\":{\"a\":10,\"b\":-3},\"id\":2}")
+    assert_true("add_obj", has(sumo, "\"result\":7"))
+
+    let echo = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"echo\",\"params\":{\"x\":1},\"id\":3}")
+    assert_true("echo", has(echo, "\"x\":1"))
+
+    let nf = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"nope\",\"id\":4}")
+    assert_true("method_not_found", has(nf, "-32601"))
+
+    let pe = rpc_handle_body("{not json")
+    assert_true("parse_error", has(pe, "-32700"))
+
+    let bad = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"id\":1}")
+    assert_true("invalid_req", has(bad, "-32600"))
+
+    let fl = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"fail\",\"id\":9}")
+    assert_true("app_error", has(fl, "-32000"))
+
+    // notification → empty response
+    let note = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}")
+    assert_eq_str("notification", note, "")
+
+    // batch
+    let batch = rpc_handle_body("[{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":1},{\"jsonrpc\":\"2.0\",\"method\":\"add\",\"params\":[1,1],\"id\":2}]")
+    assert_true("batch_arr", str_starts_with(batch, "["))
+    assert_true("batch_pong", has(batch, "pong"))
+    assert_true("batch_sum", has(batch, "\"result\":2"))
+
+    // batch all notifications → empty
+    let bn = rpc_handle_body("[{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}]")
+    assert_eq_str("batch_notes", bn, "")
+
+    // --- live HTTP ---
+    let port = 18590
+    go_bg(rpc_serve, port)
+    sleep_ms(200)
+
+    let fd = tcp_connect("127.0.0.1", port)?
+    assert_true("connect", fd >= 0)
+    let body = "{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":42}"
+    let mut reqh = "POST /rpc HTTP/1.1\r\nHost: t\r\n"
+    reqh = concat(reqh, "Content-Type: application/json\r\n")
+    reqh = concat(reqh, concat("Content-Length: ", int_to_str(len(body))))
+    reqh = concat(reqh, "\r\nConnection: close\r\n\r\n")
+    reqh = concat(reqh, body)
+    let w = tcp_write(fd, reqh)?
+    assert_eq_i64("write", w, 0)
+    let resp = tcp_read(fd, 4096)?
+    let cl = tcp_close(fd)?
+    assert_eq_i64("close", cl, 0)
+    assert_true("http_200", str_starts_with(resp, "HTTP/1.1 200"))
+    assert_true("http_pong", has(resp, "pong"))
+    assert_true("http_id", has(resp, "42"))
+
+    print("jsonrpc_test: all passed")
+    return 0
+}
