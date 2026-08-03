@@ -1,0 +1,12 @@
+# Само параметри: редактирай APP_REPO/APP_REF (и APP_DIR за monorepo),
+# после: docker compose up --build
+services:
+  api:
+    build:
+      context: .
+      args:
+        APP_REPO: https://git.bara-lang.org/you/your-baga-app.git
+        APP_REF: main
+        APP_DIR: .
+    ports:
+      - "8080:8080"

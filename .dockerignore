@@ -1,0 +1,9 @@
+.git
+.sandak
+.worktrees
+.superpowers
+target
+*.o
+baga
+baga-llvm
+sandak

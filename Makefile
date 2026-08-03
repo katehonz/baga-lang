@@ -17,6 +17,10 @@ all: $(BIN)
 sandak: src/sandak.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+.PHONY: docker
+docker: $(BIN) sandak
+	@bash tests/sandak/docker_smoke.sh
+
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
