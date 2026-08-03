@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### App products — kvbaga (Redis-compatible KV server)
+- New product `app-product/kvbaga`: a RESP2 KV server built deliberately on
+  the new map type — the first "app as language probe" on `Map<K,V>`.
+- `resp.baga` (pure RESP2 codec: buffered parse, reply builders, client
+  round-trip), `store.baga` (`Map<str,str>` + `Map<str,i64>` deadlines,
+  lazy TTL expiry), `server.baga` (serial accept loop for `go_bg`,
+  idle `SO_RCVTIMEO` guard).
+- Commands: PING, SET [EX s], GET, DEL, EXISTS, INCR, KEYS, EXPIRE, TTL,
+  DBSIZE, QUIT — Redis-shaped errors (`-ERR`, nil bulks, arity checks).
+- Honest limits logged in gaps.md (K1–K5): serial connections (`go()`
+  carries only i64 — the store can't cross threads), text-only values,
+  and the swallowed `main` exit code (K3 — repo idiom is `exit(1)`).
+- Tests: `tests/kv_test.baga` — 27 live loopback checks; demo boots a
+  worker and drives it. Both wired into `make test`.
+
+### Language — `Map<K, V>` (first-class hash table)
+- New type `Map<K, V>`: keys `i64`/`str`, values `i64`/`str`/`f64` — the same
+  fix-on-first-use rules and annotations as `Vec<T>`; mixing key or value
+  types is a compile-time error.
+- Builtins: `map_new`, `map_set`, `map_get` (zero-value when absent),
+  `map_has`, `map_del`, `map_len`, `map_keys` (→ `Vec<str>`/`Vec<i64>`).
+- Maps are pointers: passing one to a function shares it (mutate-through,
+  unlike by-value structs) — the natural store for servers and caches.
+- C backend: chained hash table (`baga_Map`, FNV-1a / Murmur-mix hashing,
+  grows at load factor 3/4). LLVM backend: honest "unsupported" diagnostic.
+- Self-hosting parity unchanged (`make self` fixed point holds); the self
+  compiler does not parse `Map` yet (documented limitation).
+- Docs: `docs/language-{en,bg}.md` §12.5 + type/builtin tables.
+- Tests: `tests/std/map_test.baga` (31 checks, incl. rehash growth) +
+  two negative type-error checks wired into `make test`.
+
 ### std/net — production connects
 - **DNS resolution:** `tcp_resolve_ipv4` — hostnames via `getaddrinfo`
   (AF_INET, `mem_read` pointer-walk through the `addrinfo` list); dotted

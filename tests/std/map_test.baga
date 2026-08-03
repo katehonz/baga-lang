@@ -1,0 +1,109 @@
+// map_test.baga — Map<K,V> builtin: hash table, key i64/str, value i64/str/f64.
+// Language feature (TYPE_MAP): map_* builtins are always in scope; the only
+// import here is int_to_str for the key names in the growth test.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// Map parameters are shared pointers — mutation is visible to the caller.
+fn tally(m: Map<str, i64>, word: str) -> i64 {
+    let cur = map_get(m, word)
+    map_set(m, word, cur + 1)
+    return cur + 1
+}
+
+fn keys_have(ks: Vec<str>, needle: str) -> i64 {
+    for i in 0..vec_len(ks) {
+        if vec_get(ks, i) == needle {
+            return 1
+        }
+    }
+    return 0
+}
+
+fn main() {
+    // --- str keys → i64 values ---
+    let m = map_new()
+    check("new_len", map_len(m) == 0)
+    map_set(m, "one", 1)
+    map_set(m, "two", 2)
+    map_set(m, "two", 22)                 // overwrite, not insert
+    check("len_after", map_len(m) == 2)
+    check("get_one", map_get(m, "one") == 1)
+    check("get_overwritten", map_get(m, "two") == 22)
+    check("missing_get", map_get(m, "missing") == 0)
+    check("has", map_has(m, "one") == 1)
+    check("has_not", map_has(m, "missing") == 0)
+    map_del(m, "one")
+    check("del_len", map_len(m) == 1)
+    check("del_gone", map_has(m, "one") == 0)
+    map_del(m, "never_there")             // del of a missing key is harmless
+    check("del_missing_len", map_len(m) == 1)
+
+    // --- annotated Map<str, i64> through a function parameter ---
+    let t: Map<str, i64> = map_new()
+    check("tally_1", tally(t, "бага") == 1)
+    check("tally_2", tally(t, "бага") == 2)
+    check("tally_other", tally(t, "език") == 1)
+    check("tally_val", map_get(t, "бага") == 2)
+    check("tally_len", map_len(t) == 2)
+
+    // --- str keys → str values ---
+    let ms = map_new()
+    map_set(ms, "bg", "Здравей")
+    map_set(ms, "en", "Hello")
+    check("str_val", map_get(ms, "bg") == "Здравей")
+    check("str_missing", map_get(ms, "fr") == "")
+
+    // --- i64 keys ---
+    let mi = map_new()
+    map_set(mi, 7, "seven")
+    map_set(mi, 8, "eight")
+    map_set(mi, 7, "СЕДЕМ")
+    check("i64_key_get", map_get(mi, 7) == "СЕДЕМ")
+    check("i64_key_len", map_len(mi) == 2)
+    check("i64_key_has", map_has(mi, 8) == 1)
+    map_del(mi, 8)
+    check("i64_key_del", map_has(mi, 8) == 0)
+
+    let mii = map_new()
+    map_set(mii, 100, 1000)
+    map_set(mii, 200, 2000)
+    check("i64_i64", map_get(mii, 200) == 2000)
+
+    // --- str keys → f64 values ---
+    let mf = map_new()
+    map_set(mf, "pi", 3.5)
+    check("f64_val", map_get(mf, "pi") > 3.4 && map_get(mf, "pi") < 3.6)
+
+    // --- map_keys ---
+    let mk = map_new()
+    map_set(mk, "a", 1)
+    map_set(mk, "b", 2)
+    map_set(mk, "c", 3)
+    let ks = map_keys(mk)
+    check("keys_len", vec_len(ks) == 3)
+    check("keys_have_a", keys_have(ks, "a") == 1)
+    check("keys_have_c", keys_have(ks, "c") == 1)
+
+    // --- growth: 500 entries force several rehashes (16 → 32 → ... buckets) ---
+    let big = map_new()
+    for i in 0..500 {
+        map_set(big, concat("k", int_to_str(i)), i * 3)
+    }
+    check("big_len", map_len(big) == 500)
+    check("big_get_lo", map_get(big, "k0") == 0)
+    check("big_get_mid", map_get(big, "k250") == 750)
+    check("big_get_hi", map_get(big, "k499") == 1497)
+    check("big_missing", map_get(big, "k500") == 0)
+
+    print("map_test: all passed")
+}

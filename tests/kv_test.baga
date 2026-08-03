@@ -1,0 +1,150 @@
+// kv_test.baga — live loopback test for app-product/kvbaga.
+// Boots the RESP server in a go_bg worker, drives it over TCP as a client.
+// Exercises the language Map type end to end (the store is Map<str,str>).
+
+import "kvbaga/server.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn args1(a: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    return v
+}
+
+fn args2(a: str, b: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    return v
+}
+
+fn args3(a: str, b: str, c: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    return v
+}
+
+fn args5(a: str, b: str, c: str, d: str, e: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    vec_push(v, d)
+    vec_push(v, e)
+    return v
+}
+
+fn main() -> i64 !Net !IO !Par !Time {
+    print("kv_test:")
+    let fails = vec_new()
+    let port = 16481
+
+    go_bg(kv_serve, port)
+    sleep_ms(200)
+
+    let fd = tcp_connect_to("localhost", port, 5)?
+    if fd < 0 {
+        eprintln("kv_test: FAILED (connect)")
+        exit(1)
+    }
+    check(fails, "connect", fd >= 0)
+    tcp_set_timeouts(fd, 5)?
+
+    let r1 = resp_round_trip(fd, args1("PING"))?
+    check(fails, "ping", r1.ok == 1 && r1.typ == 1 && r1.text == "PONG")
+
+    let r2 = resp_round_trip(fd, args3("SET", "greet", "Здравей, багатуре"))?
+    check(fails, "set_ok", r2.ok == 1 && r2.typ == 1 && r2.text == "OK")
+
+    let r3 = resp_round_trip(fd, args2("GET", "greet"))?
+    check(fails, "get_val", r3.ok == 1 && r3.typ == 4 && r3.text == "Здравей, багатуре")
+
+    let r4 = resp_round_trip(fd, args2("GET", "missing"))?
+    check(fails, "get_nil", r4.ok == 1 && r4.typ == 4 && r4.num == -1)
+
+    let r5 = resp_round_trip(fd, args3("SET", "greet", "предефинирано"))?
+    check(fails, "set_overwrite", r5.ok == 1 && r5.typ == 1)
+    let r6 = resp_round_trip(fd, args2("GET", "greet"))?
+    check(fails, "get_overwritten", r6.ok == 1 && r6.text == "предефинирано")
+
+    // DEL / EXISTS
+    let d1 = resp_round_trip(fd, args2("DEL", "greet"))?
+    check(fails, "del_one", d1.ok == 1 && d1.typ == 3 && d1.num == 1)
+    let d2 = resp_round_trip(fd, args2("DEL", "greet"))?
+    check(fails, "del_zero", d2.ok == 1 && d2.typ == 3 && d2.num == 0)
+    let e1 = resp_round_trip(fd, args2("EXISTS", "greet"))?
+    check(fails, "exists_no", e1.ok == 1 && e1.num == 0)
+    let s2 = resp_round_trip(fd, args3("SET", "k", "v"))?
+    let e2 = resp_round_trip(fd, args2("EXISTS", "k"))?
+    check(fails, "exists_yes", s2.ok == 1 && e2.ok == 1 && e2.num == 1)
+
+    // INCR
+    let i1 = resp_round_trip(fd, args2("INCR", "counter"))?
+    check(fails, "incr_new", i1.ok == 1 && i1.typ == 3 && i1.num == 1)
+    let i2 = resp_round_trip(fd, args2("INCR", "counter"))?
+    check(fails, "incr_again", i2.ok == 1 && i2.num == 2)
+    let ib = resp_round_trip(fd, args3("SET", "notnum", "12abc"))?
+    let i3 = resp_round_trip(fd, args2("INCR", "notnum"))?
+    check(fails, "incr_nonint_err", ib.ok == 1 && i3.ok == 1 && i3.typ == 2)
+
+    // SET EX + TTL + lazy expiry
+    let x1 = resp_round_trip(fd, args5("SET", "tmp", "x", "EX", "1"))?
+    check(fails, "set_ex", x1.ok == 1 && x1.typ == 1)
+    let t1 = resp_round_trip(fd, args2("TTL", "tmp"))?
+    check(fails, "ttl_positive", t1.ok == 1 && t1.typ == 3 && t1.num >= 1 && t1.num <= 2)
+    sleep_ms(1300)
+    let x2 = resp_round_trip(fd, args2("GET", "tmp"))?
+    check(fails, "expired_nil", x2.ok == 1 && x2.typ == 4 && x2.num == -1)
+    let x3 = resp_round_trip(fd, args2("TTL", "tmp"))?
+    check(fails, "ttl_missing", x3.ok == 1 && x3.num == -2)
+
+    // EXPIRE on a live key; TTL -1 without expiry
+    let p1 = resp_round_trip(fd, args3("SET", "exp", "1"))?
+    let p2 = resp_round_trip(fd, args3("EXPIRE", "exp", "10"))?
+    let p3 = resp_round_trip(fd, args2("TTL", "exp"))?
+    check(fails, "expire_set", p1.ok == 1 && p2.ok == 1 && p2.num == 1 && p3.num >= 9 && p3.num <= 10)
+    let p4 = resp_round_trip(fd, args2("TTL", "k"))?
+    check(fails, "ttl_no_expiry", p4.ok == 1 && p4.num == -1)
+    let p5 = resp_round_trip(fd, args3("EXPIRE", "never_here", "5"))?
+    check(fails, "expire_missing", p5.ok == 1 && p5.num == 0)
+
+    // KEYS / DBSIZE
+    let ks = resp_round_trip(fd, args1("KEYS"))?
+    check(fails, "keys_array", ks.ok == 1 && ks.typ == 5 && vec_len(ks.items) >= 3)
+    let db = resp_round_trip(fd, args1("DBSIZE"))?
+    check(fails, "dbsize", db.ok == 1 && db.typ == 3 && db.num == vec_len(ks.items))
+
+    // errors
+    let w1 = resp_round_trip(fd, args1("GET"))?
+    check(fails, "wrongnum_err", w1.ok == 1 && w1.typ == 2)
+    let w2 = resp_round_trip(fd, args1("НОНЕКЗИСТ"))?
+    check(fails, "unknown_cmd_err", w2.ok == 1 && w2.typ == 2)
+
+    // QUIT closes the connection
+    let q1 = resp_round_trip(fd, args1("QUIT"))?
+    check(fails, "quit_ok", q1.ok == 1 && q1.typ == 1 && q1.text == "OK")
+    let q2 = resp_round_trip(fd, args1("PING"))?
+    check(fails, "closed_after_quit", q2.ok == 0)
+
+    tcp_close(fd)?
+
+    if vec_len(fails) > 0 {
+        eprintln(concat(concat("kv_test: FAILED (", int_to_str(vec_len(fails))), " checks)"))
+        exit(1)
+    }
+    print("kv_test: all passed")
+    return 0
+}

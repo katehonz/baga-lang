@@ -1,0 +1,201 @@
+// resp.baga — RESP2 (REdis Serialization Protocol) for kvbaga. Pure framing:
+// parse one command from a byte buffer, build replies, encode client commands.
+// Redis-compatible subset; values travel as str (NUL-free — see gaps.md).
+
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+import "std/net/tcp.baga"
+
+// ---------- parsing (server side) ----------
+
+struct RespParse {
+    ok: i64,          // 1 = one full command parsed
+    args: Vec<str>,
+    consumed: i64     // bytes to drop from the buffer
+}
+
+// Index of the CR of the first CRLF at/after pos; -1 when absent.
+fn resp_find_crlf(buf: bytes, pos: i64) -> i64 {
+    let n = bytes_len(buf)
+    let mut i = pos
+    while i + 1 < n {
+        if bytes_at(buf, i) == 13 && bytes_at(buf, i + 1) == 10 {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// One RESP command: *N followed by N "$len\r\n<bytes>\r\n" frames.
+// ok=0 means "need more data" (or garbage — the connection is dropped then).
+fn resp_parse_command(buf: bytes) -> RespParse {
+    let none = vec_new()
+    let eol = resp_find_crlf(buf, 0)
+    if eol < 0 {
+        return RespParse { ok: 0, args: none, consumed: 0 }
+    }
+    let head = str_of_bytes(bytes_slice(buf, 0, eol))
+    if len(head) == 0 || char_at(head, 0) != 42 {   // '*'
+        return RespParse { ok: 0, args: none, consumed: 0 }
+    }
+    let n = parse_int(substr(head, 1, len(head)))
+    if n <= 0 || n > 64 {
+        return RespParse { ok: 0, args: none, consumed: 0 }
+    }
+    let args = vec_new()
+    let mut pos = eol + 2
+    let mut i: i64 = 0
+    while i < n {
+        let le = resp_find_crlf(buf, pos)
+        if le < 0 {
+            return RespParse { ok: 0, args: none, consumed: 0 }
+        }
+        let hl = str_of_bytes(bytes_slice(buf, pos, le))
+        if len(hl) == 0 || char_at(hl, 0) != 36 {   // '$'
+            return RespParse { ok: 0, args: none, consumed: 0 }
+        }
+        let blen = parse_int(substr(hl, 1, len(hl)))
+        if blen < 0 || blen > 536870912 {
+            return RespParse { ok: 0, args: none, consumed: 0 }
+        }
+        let start = le + 2
+        if bytes_len(buf) < start + blen + 2 {
+            return RespParse { ok: 0, args: none, consumed: 0 }
+        }
+        vec_push(args, str_of_bytes(bytes_slice(buf, start, start + blen)))
+        pos = start + blen + 2
+        i = i + 1
+    }
+    return RespParse { ok: 1, args: args, consumed: pos }
+}
+
+// ---------- reply builders (server side) ----------
+
+fn resp_simple(s: str) -> bytes {
+    return bytes_of_str(concat(concat("+", s), "\r\n"))
+}
+
+fn resp_error(msg: str) -> bytes {
+    return bytes_of_str(concat(concat("-", msg), "\r\n"))
+}
+
+fn resp_int(n: i64) -> bytes {
+    return bytes_of_str(concat(concat(":", int_to_str(n)), "\r\n"))
+}
+
+fn resp_bulk(s: str) -> bytes {
+    let head = concat(concat(concat("$", int_to_str(len(s))), "\r\n"), s)
+    return bytes_of_str(concat(head, "\r\n"))
+}
+
+fn resp_null_bulk() -> bytes {
+    return bytes_of_str("$-1\r\n")
+}
+
+fn resp_array(n: i64) -> bytes {
+    return bytes_of_str(concat(concat("*", int_to_str(n)), "\r\n"))
+}
+
+// ---------- client side ----------
+
+// Encode one command: *N + N bulk frames.
+fn resp_encode_command(args: Vec<str>) -> bytes {
+    let mut s = concat(concat("*", int_to_str(vec_len(args))), "\r\n")
+    for i in 0..vec_len(args) {
+        let a = vec_get(args, i)
+        let frame = concat(concat(concat("$", int_to_str(len(a))), "\r\n"), concat(a, "\r\n"))
+        s = concat(s, frame)
+    }
+    return bytes_of_str(s)
+}
+
+struct RespReply {
+    ok: i64,          // 1 = one full reply parsed
+    typ: i64,         // 1 simple, 2 error, 3 int, 4 bulk, 5 array
+    text: str,        // simple/error text; bulk payload
+    num: i64,         // int value; bulk len; array count (-1 null)
+    items: Vec<str>,  // array elements (first level, as text)
+    consumed: i64
+}
+
+// Parse one reply. Nested arrays are flattened to text items (tests/demo need
+// only arrays of bulk/simple/int — good enough for KEYS).
+fn resp_parse_reply(buf: bytes) -> RespReply {
+    let noitems = vec_new()
+    let eol = resp_find_crlf(buf, 0)
+    if eol < 0 {
+        return RespReply { ok: 0, typ: 0, text: "", num: 0, items: noitems, consumed: 0 }
+    }
+    let t = bytes_at(buf, 0)
+    let line = str_of_bytes(bytes_slice(buf, 1, eol))
+    if t == 43 {   // '+'
+        return RespReply { ok: 1, typ: 1, text: line, num: 0, items: vec_new(), consumed: eol + 2 }
+    }
+    if t == 45 {   // '-'
+        return RespReply { ok: 1, typ: 2, text: line, num: 0, items: vec_new(), consumed: eol + 2 }
+    }
+    if t == 58 {   // ':'
+        return RespReply { ok: 1, typ: 3, text: "", num: parse_int(line), items: vec_new(), consumed: eol + 2 }
+    }
+    if t == 36 {   // '$'
+        let blen = parse_int(line)
+        if blen < 0 {
+            return RespReply { ok: 1, typ: 4, text: "", num: -1, items: vec_new(), consumed: eol + 2 }
+        }
+        let start = eol + 2
+        if bytes_len(buf) < start + blen + 2 {
+            return RespReply { ok: 0, typ: 0, text: "", num: 0, items: vec_new(), consumed: 0 }
+        }
+        let payload = str_of_bytes(bytes_slice(buf, start, start + blen))
+        return RespReply { ok: 1, typ: 4, text: payload, num: blen, items: vec_new(), consumed: start + blen + 2 }
+    }
+    if t == 42 {   // '*'
+        let n = parse_int(line)
+        let items = vec_new()
+        if n < 0 {
+            return RespReply { ok: 1, typ: 5, text: "", num: -1, items: items, consumed: eol + 2 }
+        }
+        let mut pos = eol + 2
+        let mut i: i64 = 0
+        while i < n {
+            let sub = resp_parse_reply(bytes_slice(buf, pos, bytes_len(buf)))
+            if sub.ok == 0 {
+                return RespReply { ok: 0, typ: 0, text: "", num: 0, items: vec_new(), consumed: 0 }
+            }
+            if sub.typ == 4 || sub.typ == 1 {
+                vec_push(items, sub.text)
+            } else {
+                vec_push(items, int_to_str(sub.num))
+            }
+            pos = pos + sub.consumed
+            i = i + 1
+        }
+        return RespReply { ok: 1, typ: 5, text: "", num: n, items: items, consumed: pos }
+    }
+    return RespReply { ok: 1, typ: 2, text: "unknown reply type", num: 0, items: vec_new(), consumed: eol + 2 }
+}
+
+// Round-trip one command over fd: write, then read until one full reply.
+// ok=0 on I/O failure or timeout.
+fn resp_round_trip(fd: i64, args: Vec<str>) -> RespReply !Net !IO {
+    let w = tcp_write_bytes(fd, resp_encode_command(args))?
+    if w != 0 {
+        return RespReply { ok: 0, typ: 0, text: "", num: 0, items: vec_new(), consumed: 0 }
+    }
+    let mut buf = bytes_from_vec(vec_new())
+    let mut tries: i64 = 0
+    while tries < 1024 {
+        let chunk = tcp_read_bytes(fd, 4096)?
+        if bytes_len(chunk) == 0 {
+            return RespReply { ok: 0, typ: 0, text: "", num: 0, items: vec_new(), consumed: 0 }
+        }
+        buf = bytes_concat(buf, chunk)
+        let r = resp_parse_reply(buf)
+        if r.ok == 1 {
+            return r
+        }
+        tries = tries + 1
+    }
+    return RespReply { ok: 0, typ: 0, text: "", num: 0, items: vec_new(), consumed: 0 }
+}

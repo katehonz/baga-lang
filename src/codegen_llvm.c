@@ -79,6 +79,7 @@ static LLVMTypeRef llvm_type_resolved(Type *ty) {
             if (!ty->name) llvm_unsupported("анонимна структура");
             return user_struct_ty(ty->name);
         case TYPE_VEC:    return baga_vec_ptr_ty();
+        case TYPE_MAP:    llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)"); break;
         case TYPE_BYTES:  return baga_bytes_ty();
         case TYPE_ARRAY:  llvm_unsupported("масиви"); break;
         case TYPE_REF:    llvm_unsupported("референции"); break;
@@ -97,6 +98,8 @@ static LLVMTypeRef llvm_type(Node *ty) {
         if (strcmp(ty->type_name, "str") == 0) return lg.ptr_ty;
         if (strcmp(ty->type_name, "void") == 0) return lg.void_ty;
         if (strcmp(ty->type_name, "Vec") == 0) return baga_vec_ptr_ty();
+        if (strcmp(ty->type_name, "Map") == 0)
+            llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)");
         return user_struct_ty(ty->type_name);
     }
     if (ty->kind == NODE_TYPE_EFFECT) return llvm_type(ty->inner_type);

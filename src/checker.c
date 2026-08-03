@@ -40,6 +40,14 @@ const char *type_str(Type *t) {
             snprintf(buf, sizeof buf, "Vec<%s>", type_str(t->elem));
             return buf;
         }
+        case TYPE_MAP: {
+            if (!t->key && !t->elem) return "Map";
+            static char buf2[96];
+            snprintf(buf2, sizeof buf2, "Map<%s, %s>",
+                     t->key ? type_str(t->key) : "?",
+                     t->elem ? type_str(t->elem) : "?");
+            return buf2;
+        }
     }
     return "?";
 }
@@ -54,6 +62,13 @@ int type_eq(Type *a, Type *b) {
     if (a->kind == TYPE_VEC) {
         /* Vec срещу Vec: различни само ако и двата знаят elem и той се различава;
          * Vec без elem (наследен код) съвпада с всеки Vec<T> */
+        if (a->elem && b->elem && a->elem->kind != b->elem->kind) return 0;
+        return 1;
+    }
+    if (a->kind == TYPE_MAP) {
+        /* като Vec: непознат ключ/стойност съвпада с всеки; познатите трябва
+         * да съвпадат по вид */
+        if (a->key && b->key && a->key->kind != b->key->kind) return 0;
         if (a->elem && b->elem && a->elem->kind != b->elem->kind) return 0;
         return 1;
     }
@@ -209,6 +224,37 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                             type_str(el));
                     } else {
                         t->elem = el;
+                    }
+                }
+                return t;
+            }
+            if (strcmp(ty->type_name, "Map") == 0) {
+                Type *t = type_new(TYPE_MAP);
+                if (ty->inner_type || ty->inner_type2) {
+                    if (!ty->inner_type || !ty->inner_type2) {
+                        check_error(ctx, ty->pos,
+                            "Map<K, V>: очаквах два типа — ключ и стойност");
+                        return t;
+                    }
+                    /* Map<K,V>: ключ i64/str; стойност i64/str/f64 (като Vec<T>) */
+                    Type *kt = resolve_type_node(ctx, ty->inner_type);
+                    if (kt->kind == TYPE_I32) kt = type_new(TYPE_I64);
+                    if (kt->kind != TYPE_I64 && kt->kind != TYPE_STR) {
+                        check_error(ctx, ty->pos,
+                            "Map<K, V>: неподдържан ключов тип %s (поддържат се i64 и str)",
+                            type_str(kt));
+                    } else {
+                        t->key = kt;
+                    }
+                    Type *vt = resolve_type_node(ctx, ty->inner_type2);
+                    if (vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
+                    if (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
+                        vt->kind != TYPE_F64) {
+                        check_error(ctx, ty->pos,
+                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str и f64)",
+                            type_str(vt));
+                    } else {
+                        t->elem = vt;
                     }
                 }
                 return t;
@@ -498,6 +544,121 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             }
             Type *r = type_new(TYPE_VEC);
             r->elem = vt->elem ? vt->elem : wt->elem;
+            return r;
+        }
+
+        /* карти: Map<K, V> — ключ i64/str, стойност i64/str/f64.
+         * Чист Map фиксира ключа/стойността при първия map_set —
+         * същият механизъм като Vec (env пази същия Type указател). */
+        if (strcmp(name, "map_new") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 0) {
+                check_error(ctx, n->pos, "'map_new' очаква 0 аргумента, получих %d",
+                            n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            return type_new(TYPE_MAP);      /* key/elem = NULL: неизвестни */
+        }
+        if (strcmp(name, "map_set") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 3) {
+                check_error(ctx, n->pos,
+                    "'map_set' очаква 3 аргумента (карта, ключ, стойност), получих %d",
+                    n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            Type *mt = n->args.data[0]->type;
+            if (!mt || mt->kind != TYPE_MAP) {
+                check_error(ctx, n->pos, "'map_set' върху не-карта (%s)", type_str(mt));
+                return type_new(TYPE_ERROR);
+            }
+            Type *kt = n->args.data[1]->type;
+            if (kt && kt->kind == TYPE_I32) kt = type_new(TYPE_I64);
+            if (!kt || (kt->kind != TYPE_I64 && kt->kind != TYPE_STR &&
+                        kt->kind != TYPE_ERROR)) {
+                check_error(ctx, n->pos,
+                    "map_set: неподдържан ключов тип %s за Map (поддържат се i64 и str)",
+                    type_str(kt));
+                return type_new(TYPE_ERROR);
+            }
+            Type *vt = n->args.data[2]->type;
+            if (vt && vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
+            if (!vt || (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
+                        vt->kind != TYPE_F64 && vt->kind != TYPE_ERROR)) {
+                check_error(ctx, n->pos,
+                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str и f64)",
+                    type_str(vt));
+                return type_new(TYPE_ERROR);
+            }
+            if (kt->kind != TYPE_ERROR) {
+                if (!mt->key) {
+                    mt->key = kt;
+                } else if (mt->key->kind != kt->kind) {
+                    check_error(ctx, n->pos, "map_set: ключ от тип %s, но картата е %s",
+                        type_str(kt), type_str(mt));
+                }
+            }
+            if (vt->kind != TYPE_ERROR) {
+                if (!mt->elem) {
+                    mt->elem = vt;
+                } else if (mt->elem->kind != vt->kind) {
+                    check_error(ctx, n->pos, "map_set: стойност от тип %s, но картата е %s",
+                        type_str(vt), type_str(mt));
+                }
+            }
+            return type_new(TYPE_VOID);
+        }
+        if (strcmp(name, "map_get") == 0 || strcmp(name, "map_has") == 0 ||
+            strcmp(name, "map_del") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 2) {
+                check_error(ctx, n->pos, "'%s' очаква 2 аргумента (карта, ключ), получих %d",
+                            name, n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            Type *mt = n->args.data[0]->type;
+            if (!mt || mt->kind != TYPE_MAP) {
+                check_error(ctx, n->pos, "'%s' върху не-карта (%s)", name, type_str(mt));
+                return type_new(TYPE_ERROR);
+            }
+            Type *kt = n->args.data[1]->type;
+            if (kt && kt->kind == TYPE_I32) kt = type_new(TYPE_I64);
+            if (kt && kt->kind != TYPE_ERROR) {
+                if (kt->kind != TYPE_I64 && kt->kind != TYPE_STR) {
+                    check_error(ctx, n->pos,
+                        "%s: неподдържан ключов тип %s за Map (поддържат се i64 и str)",
+                        name, type_str(kt));
+                    return type_new(TYPE_ERROR);
+                }
+                /* чист Map: ключът се фиксира от първата употреба (като Vec) */
+                if (!mt->key) {
+                    mt->key = kt;
+                } else if (mt->key->kind != kt->kind) {
+                    check_error(ctx, n->pos, "%s: ключ от тип %s, но картата е %s",
+                        name, type_str(kt), type_str(mt));
+                }
+            }
+            if (strcmp(name, "map_has") == 0) return type_new(TYPE_I64);
+            if (strcmp(name, "map_del") == 0) return type_new(TYPE_VOID);
+            /* map_get: неизвестна стойност → i64 (исторически, като vec_get) */
+            if (!mt->elem) mt->elem = type_new(TYPE_I64);
+            return mt->elem;
+        }
+        if (strcmp(name, "map_len") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            return type_new(TYPE_I64);
+        }
+        if (strcmp(name, "map_keys") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            Type *mt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+            if (!mt || mt->kind != TYPE_MAP) {
+                check_error(ctx, n->pos, "'map_keys' върху не-карта (%s)", type_str(mt));
+                return type_new(TYPE_ERROR);
+            }
+            /* чист Map: ключовете са str по подразбиране (като vec_get → i64) */
+            if (!mt->key) mt->key = type_new(TYPE_STR);
+            Type *r = type_new(TYPE_VEC);
+            r->elem = mt->key;
             return r;
         }
 

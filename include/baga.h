@@ -352,7 +352,8 @@ struct Node {
         /* NODE_TYPE, NODE_TYPE_REF, NODE_TYPE_ARRAY, NODE_TYPE_EFFECT */
         struct {
             char *type_name;          /* for NODE_TYPE */
-            Node *inner_type;         /* for REF / ARRAY */
+            Node *inner_type;         /* for REF / ARRAY / Vec<T> / Map<K,..> */
+            Node *inner_type2;        /* for Map<..,V> */
             char **effect_names;      /* for NODE_TYPE_EFFECT */
             int n_effects;
         };
@@ -378,6 +379,7 @@ typedef enum {
     TYPE_STRUCT,
     TYPE_FN,
     TYPE_VEC,      /* dynamic array (baga_Vec *) */
+    TYPE_MAP,      /* hash map (baga_Map *); key = Type->key, value = Type->elem */
     TYPE_BYTES,    /* binary-safe byte buffer (baga_bytes, by value) */
     TYPE_ERROR,    /* sentinel for error recovery */
 } TypeKind;
@@ -386,8 +388,10 @@ typedef struct Type Type;
 
 struct Type {
     TypeKind kind;
-    /* TYPE_ARRAY */
+    /* TYPE_ARRAY / TYPE_VEC element / TYPE_MAP value */
     Type *elem;
+    /* TYPE_MAP key type */
+    Type *key;
     /* TYPE_REF */
     Type *pointee;
     /* TYPE_STRUCT / TYPE_FN */

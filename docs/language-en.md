@@ -213,6 +213,7 @@ explicitly or let the compiler infer them from initializers.
 | `str`   | string (null-terminated, immutable)      | `const char *`     |
 | `Vec`   | dynamic array (heap-allocated)           | `baga_Vec *`       |
 | `Vec<T>` | vector with annotated element (`i64` or `str`) | `baga_Vec *` |
+| `Map<K,V>` | hash table; key `i64`/`str`, value `i64`/`str`/`f64` | `baga_Map *` |
 | `[T]`   | array of `T`                             | pointer            |
 | `&T`    | reference to `T`                         | `T *`              |
 | `void`  | no value (procedures)                    | `void`             |
@@ -611,6 +612,51 @@ fn сума(v: Vec<i64>) -> i64 {
 Plain `Vec` without `<T>` keeps its old behavior: unknown element, with
 `vec_get` falling back to the historical default `i64`. An annotation with
 an element other than `i64`/`str` (`Vec<f64>`) is a compile-time error.
+
+### 12.5 Maps (dynamic key–value tables)
+
+A `Map` is a heap-allocated hash table. Keys are `i64` or `str`; values are
+`i64`, `str`, or `f64` — fixed by the first `map_set` (or by a `Map<K, V>`
+annotation), exactly like `Vec`'s element type. Maps are pointers: passing
+one to a function shares it, and mutations are visible to the caller.
+
+| Signature | Description |
+|-----------|-------------|
+| `map_new() -> Map` | Empty map; key/value types unknown until first use. |
+| `map_set(m, key, val)` | Insert or overwrite; fixes/validates both types. |
+| `map_get(m, key) -> val` | Value for the key; `0` / `""` / `0.0` when absent. |
+| `map_has(m, key) -> i64` | `1` when the key exists, else `0`. |
+| `map_del(m, key)` | Remove the key (no-op when absent). |
+| `map_len(m) -> i64` | Entry count. |
+| `map_keys(m) -> Vec` | All keys — `Vec<str>` or `Vec<i64>` per the key type. |
+
+```baga
+fn tally(m: Map<str, i64>, word: str) {
+    map_set(m, word, map_get(m, word) + 1)
+}
+
+fn main() {
+    let counts: Map<str, i64> = map_new()
+    tally(counts, "бага")
+    tally(counts, "бага")
+    print(map_get(counts, "бага"))   // 2
+
+    let meta = map_new()             // plain Map: types fixed by first set
+    map_set(meta, "version", "0.8")
+    print(map_get(meta, "version"))  // 0.8
+}
+```
+
+Mixing key or value types in one map is a compile-time error:
+
+```
+map_set: стойност от тип str, но картата е Map<str, i64>
+```
+
+Absent-key semantics are zero-values, like Go maps without the `, ok` form —
+use `map_has` to distinguish "missing" from "stored zero". The C backend
+implements maps natively (chained hash table, grows at load factor 3/4);
+the LLVM backend does not support `Map` yet.
 
 ---
 
@@ -1211,6 +1257,13 @@ are computed automatically by the **sandak** package manager from the
 | `vec_push_str` | `(v: Vec, s: str) -> void` | — |
 | `vec_get_str` | `(v: Vec, i: i64) -> str` | — |
 | `vec_set_str` | `(v: Vec, i: i64, s: str) -> void` | — |
+| `map_new` | `() -> Map` | — |
+| `map_set` | `(m: Map, k: i64 \| str, v: i64 \| str \| f64) -> void` | first set fixes key/value types |
+| `map_get` | `(m: Map, k: i64 \| str) -> i64 \| str \| f64` | zero-value when absent |
+| `map_has` | `(m: Map, k: i64 \| str) -> i64` | 1 when the key exists |
+| `map_del` | `(m: Map, k: i64 \| str) -> void` | — |
+| `map_len` | `(m: Map) -> i64` | — |
+| `map_keys` | `(m: Map) -> Vec` | `Vec<str>` / `Vec<i64>` per the key type |
 
 ---
 

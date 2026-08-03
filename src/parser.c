@@ -287,6 +287,13 @@ static Node *parse_type(Parser *p) {
         ty->inner_type = parse_type(p);
         expect(p, TOK_GT);
     }
+    /* Map<K, V> — хеш-карта с анотирани типове за ключ и стойност */
+    if (strcmp(ty->type_name, "Map") == 0 && match(p, TOK_LT)) {
+        ty->inner_type = parse_type(p);
+        expect(p, TOK_COMMA);
+        ty->inner_type2 = parse_type(p);
+        expect(p, TOK_GT);
+    }
     return ty;
 }
 

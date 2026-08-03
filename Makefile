@@ -138,7 +138,7 @@ test: $(BIN) sandak
 	@echo "=== sandak (пакетен мениджър) ==="
 	@SANDAK=$(CURDIR)/sandak BAGA=$(CURDIR)/baga bash tests/sandak/run_tests.sh
 	@echo "=== sandak build на repo пакетите ==="
-	@for p in httpdbaga jwtbaga pgbaga ormbaga fmrbaga; do \
+	@for p in httpdbaga jwtbaga pgbaga ormbaga fmrbaga kvbaga; do \
 		(cd app-product/$$p && BAGA=$(CURDIR)/$(BIN) $(CURDIR)/sandak build > /dev/null) \
 			&& echo "OK: sandak build $$p" \
 			|| { echo "FAIL: sandak build $$p"; exit 1; }; \
@@ -240,6 +240,14 @@ test: $(BIN) sandak
 	@grep -q "fmr_test: all passed" /tmp/baga_fmr_out.txt \
 		&& echo "OK: fmrbaga jsonx + router + validation" \
 		|| { echo "FAIL: fmr_test"; cat /tmp/baga_fmr_out.txt; exit 1; }
+	@echo "=== kv (app-product/kvbaga, RESP KV сървър върху Map) ==="
+	@./$(BIN) $(BAGAIFLAGS) --lib app-product/kvbaga/server.baga | grep -q "ok:" \
+		&& echo "OK: --lib kvbaga server" \
+		|| { echo "FAIL: --lib kvbaga"; exit 1; }
+	@./$(BIN) $(BAGAIFLAGS) tests/kv_test.baga > /tmp/baga_kv_out.txt
+	@grep -q "kv_test: all passed" /tmp/baga_kv_out.txt \
+		&& echo "OK: KV RESP сървър (loopback, Map<str,str> + TTL)" \
+		|| { echo "FAIL: kv_test"; cat /tmp/baga_kv_out.txt; exit 1; }
 	@echo "=== apps/api (Lucky-style product) ==="
 	@./$(BIN) $(BAGAIFLAGS) --check apps/api/start.baga | grep -q "ok:" \
 		&& echo "OK: --check apps/api/start.baga" \
@@ -266,12 +274,20 @@ test: $(BIN) sandak
 		&& echo "OK: конкурентни алокации през global arena (G11 регресия)" \
 		|| { echo "FAIL: alloc race"; cat /tmp/baga_race_out.txt; exit 1; }
 	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net/par) ==="
-	@for t in bytes hmac io json os random sha256 sort str tcp tcp_bytes time par; do \
+	@for t in bytes hmac io json map os random sha256 sort str tcp tcp_bytes time par; do \
 		./$(BIN) $(BAGAIFLAGS) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
 			&& grep -q "all passed" /tmp/baga_std_out.txt \
 			&& echo "OK: std/$$t" \
 			|| { echo "FAIL: std/$$t"; cat /tmp/baga_std_out.txt; exit 1; }; \
 	done
+	@printf 'fn main() {\n    let m: Map<str, i64> = map_new()\n    map_set(m, "a", "текст")\n}\n' > /tmp/baga_map_bad.baga
+	@./$(BIN) $(BAGAIFLAGS) /tmp/baga_map_bad.baga 2>&1 | grep -q "стойност от тип str, но картата е Map<str, i64>" \
+		&& echo "OK: Map<K,V> стойностен mismatch е отхвърлен" \
+		|| { echo "FAIL: map value mismatch трябва да гърми"; exit 1; }
+	@printf 'fn main() {\n    let m = map_new()\n    map_set(m, "k", 1)\n    map_set(m, 2, 3)\n}\n' > /tmp/baga_map_bad2.baga
+	@./$(BIN) $(BAGAIFLAGS) /tmp/baga_map_bad2.baga 2>&1 | grep -q "ключ от тип i64, но картата е" \
+		&& echo "OK: смесен ключов тип е отхвърлен" \
+		|| { echo "FAIL: map key mismatch трябва да гърми"; exit 1; }
 	@./$(BIN) $(BAGAIFLAGS) tests/probe_binary_io.baga > /tmp/baga_bio_out.txt 2>&1 \
 		&& grep -q "all passed" /tmp/baga_bio_out.txt \
 		&& echo "OK: binary I/O през сокети (NUL/0xFF, chr() UTF-8 капан — G8)" \
