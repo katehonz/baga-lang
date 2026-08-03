@@ -163,7 +163,15 @@ int main(int argc, char **argv) {
     int verify = 0;
     int check_only = 0;
 
+    /* програмни аргументи: всичко след input файла (или след '--')
+     * отива в arg()/arg_count() на компилираната програма */
+    StrVec prog_args = {0};
+    int seen_input = 0;
+    int dashdash = 0;
+
     for (int i = 1; i < argc; i++) {
+        if (dashdash) { vec_push(prog_args, argv[i]); continue; }
+        if (strcmp(argv[i], "--") == 0) { dashdash = 1; continue; }
         if (strcmp(argv[i], "--emit-c") == 0) { emit_c = 1; }
         else if (strcmp(argv[i], "--check") == 0 || strcmp(argv[i], "--lib") == 0) {
             check_only = 1;
@@ -194,13 +202,18 @@ int main(int argc, char **argv) {
         else if (strncmp(argv[i], "-I", 2) == 0 && argv[i][2] != '\0') {
             vec_push(include_dirs, argv[i] + 2);
         }
-        else if (argv[i][0] == '-') {
+        else if (argv[i][0] == '-' && !seen_input) {
             fprintf(stderr, "baga: непозната опция '%s'\n", argv[i]);
             usage();
             return 1;
         }
         else {
-            input_path = argv[i];
+            if (!seen_input) {
+                input_path = argv[i];
+                seen_input = 1;
+            } else {
+                vec_push(prog_args, argv[i]);
+            }
         }
     }
 
@@ -358,8 +371,26 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        /* run */
-        ret = system(bin_path);
+        /* run — програмните аргументи (след input файла / '--') се подават
+         * на бинарника; arg(i) ги чете без argv[0] */
+        char run_cmd[8192];
+        int off = snprintf(run_cmd, sizeof run_cmd, "'%s'", bin_path);
+        for (int i = 0; i < prog_args.len && off < (int)sizeof run_cmd - 8; i++) {
+            const char *a = prog_args.data[i];
+            run_cmd[off++] = ' ';
+            run_cmd[off++] = '\'';
+            for (const char *p = a; *p && off < (int)sizeof run_cmd - 5; p++) {
+                if (*p == '\'') {
+                    run_cmd[off++] = '\''; run_cmd[off++] = '\\';
+                    run_cmd[off++] = '\''; run_cmd[off++] = '\'';
+                } else {
+                    run_cmd[off++] = *p;
+                }
+            }
+            run_cmd[off++] = '\'';
+            run_cmd[off] = 0;
+        }
+        ret = system(run_cmd);
 
         /* cleanup */
         remove(c_path);

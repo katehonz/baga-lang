@@ -1,0 +1,34 @@
+// schema.baga — registry migrations (embedded, goose-style via ormbaga).
+// Version numbers are monotonic timestamps (YYYYMMDDNNN).
+
+import "ormbaga/migrate.baga"
+
+fn regbaga_migrations() -> MigrationSet {
+    let mut set = migrate_set_new()
+    set = migrate_add(
+        set,
+        20260804001,
+        "create_reg_packages",
+        "CREATE TABLE reg_packages (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL DEFAULT '',
+  latest_version TEXT NOT NULL DEFAULT '',
+  source_kind TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE reg_versions (
+  id BIGSERIAL PRIMARY KEY,
+  package_id BIGINT NOT NULL REFERENCES reg_packages(id) ON DELETE CASCADE,
+  version TEXT NOT NULL,
+  rev TEXT NOT NULL DEFAULT '',
+  subdir TEXT NOT NULL DEFAULT '',
+  published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (package_id, version)
+);
+CREATE INDEX reg_versions_package_id ON reg_versions (package_id)",
+        "DROP TABLE IF EXISTS reg_versions; DROP TABLE IF EXISTS reg_packages"
+    )
+    return set
+}

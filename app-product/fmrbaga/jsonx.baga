@@ -199,6 +199,11 @@ fn jbody_parse_str(s: str) -> JBody {
     if len(str_trim(s)) == 0 {
         return JBody { ok: 0, err: "empty body", doc: jbody_empty_doc(), root: 0 }
     }
+    // json_parse is lenient (recovers shape); request bodies must be
+    // well-formed — reject with the strict RFC 8259 check first (G13).
+    if json_strict_valid(s) == 0 {
+        return JBody { ok: 0, err: "invalid JSON", doc: jbody_empty_doc(), root: 0 }
+    }
     let d = json_parse(s)
     let r = json_root(d)
     if json_tag(d, r) < 0 {

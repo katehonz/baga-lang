@@ -261,6 +261,14 @@ test: $(BIN) sandak
 	@grep -q "api_test: all passed" /tmp/baga_api_out.txt \
 		&& echo "OK: apps/api models + openapi posts" \
 		|| { echo "FAIL: api_test"; cat /tmp/baga_api_out.txt; exit 1; }
+	@echo "=== registry (apps/registry + std HTTP клиент, live) ==="
+	@./$(BIN) $(BAGAIFLAGS) --check apps/registry/start.baga | grep -q "ok:" \
+		&& echo "OK: --check apps/registry/start.baga" \
+		|| { echo "FAIL: --check apps/registry"; exit 1; }
+	@PORT=8090 PGDATABASE=baga_registry ./$(BIN) $(BAGAIFLAGS) tests/registry_test.baga > /tmp/baga_reg_out.txt
+	@grep -q "registry_test: all passed" /tmp/baga_reg_out.txt \
+		&& echo "OK: registry publish/search/show + std HTTP клиент (live)" \
+		|| { echo "FAIL: registry_test (нужен е live Postgres)"; cat /tmp/baga_reg_out.txt; exit 1; }
 	@echo "=== par (go/join/chan, !Par) ==="
 	@./$(BIN) $(BAGAIFLAGS) examples/par.baga > /tmp/baga_par_out.txt
 	@printf "49\n81\n42\n" | diff - /tmp/baga_par_out.txt > /dev/null \

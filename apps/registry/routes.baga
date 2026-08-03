@@ -1,0 +1,46 @@
+// routes.baga — registry route table + dispatch.
+// Embeds fmr_build_app / fmr_before / fmr_dispatch for the app binary.
+
+import "actions/packages.baga"
+import "fmrbaga/app.baga"
+import "fmrbaga/ctx.baga"
+import "fmrbaga/deps.baga"
+import "fmrbaga/config.baga"
+import "fmrbaga/action.baga"
+import "ormbaga/orm.baga"
+
+fn RID_HEALTH() -> i64 { return 1 }
+fn RID_REG_INDEX() -> i64 { return 10 }
+fn RID_REG_SHOW() -> i64 { return 11 }
+fn RID_REG_CREATE() -> i64 { return 12 }
+
+fn fmr_build_app() -> FmrApp !IO {
+    let cfg = fmr_config_load()?
+    let mut app = fmr_app_new(cfg.title, cfg.version)
+    app = fmr_app_with_config(app, cfg)
+    app = fmr_route(app, "GET", "/health", RID_HEALTH())
+    app = fmr_route(app, "GET", "/v1/packages", RID_REG_INDEX())
+    app = fmr_route(app, "GET", "/v1/packages/{name}", RID_REG_SHOW())
+    app = fmr_route(app, "POST", "/v1/packages", RID_REG_CREATE())
+    return app
+}
+
+fn fmr_before(ctx: FmrCtx) -> DepResult {
+    return dep_ok(ctx)
+}
+
+fn act_reg_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut o = jobj_new()
+    o = jobj_str(o, "status", "ok")
+    o = jobj_str(o, "service", "baga-registry")
+    return act_ok(db, o)
+}
+
+fn fmr_dispatch(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let id = ctx.route_id
+    if id == RID_HEALTH() { return act_reg_health(ctx, db) }
+    if id == RID_REG_INDEX() { return act_packages_index(ctx, db)? }
+    if id == RID_REG_SHOW() { return act_packages_show(ctx, db)? }
+    if id == RID_REG_CREATE() { return act_packages_create(ctx, db)? }
+    return fmr_out(fmr_500("unhandled route"), db)
+}

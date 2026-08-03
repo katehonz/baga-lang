@@ -1,0 +1,10 @@
+[package]
+name = "registry"
+version = "0.1.0"
+entry = "start.baga"
+kind = "bin"
+
+[dependencies]
+fmrbaga = { path = "../../app-product/fmrbaga" }
+ormbaga = { path = "../../app-product/ormbaga" }
+std = { path = "../../std" }

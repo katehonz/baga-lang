@@ -1,0 +1,36 @@
+// start.baga — registry entrypoint: migrate → fmr_run.
+// Env: PORT (default 8080), PG* (default bagatest@baga_orm) — run with
+// PGDATABASE=baga_registry PORT=8090.
+
+import "routes.baga"
+import "schema.baga"
+import "fmrbaga/app.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
+import "std/str/str.baga"
+
+fn boot_migrate() -> i64 !Net !IO !Random {
+    let app = fmr_build_app()?
+    let db = fmr_open_db(app)?
+    if orm_ok_db(db) == 0 {
+        print(concat("migrate: db connect failed: ", orm_err_db(db)))
+        return 1
+    }
+    let up = migrate_up(db, regbaga_migrations())?
+    if up.ok == 0 {
+        print(concat("migrate failed: ", up.err))
+        orm_close(up.db)?
+        return 1
+    }
+    print(concat("registry migrate applied=", int_to_str(up.applied)))
+    orm_close(up.db)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par !Random {
+    let rc = boot_migrate()?
+    if rc != 0 {
+        return rc
+    }
+    return fmr_run()?
+}

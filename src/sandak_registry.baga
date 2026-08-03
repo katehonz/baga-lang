@@ -1,0 +1,171 @@
+// sandak_registry.baga — registry client for `sandak search` / `sandak publish`.
+// Sandak execs this file with the baga compiler; it speaks HTTP/JSON to the
+// registry server (apps/registry) using std/net/http_client.
+//
+//   sandak search [term]                       → list packages
+//   sandak publish --git URL [--rev R] [--subdir S]
+//                  [--path P]                  → publish cwd's sandak.toml
+//
+// Env: SANDAK_REGISTRY (default http://127.0.0.1:8090).
+
+import "std/net/http_client.baga"
+import "std/json/json.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn reg_base() -> str !IO {
+    let v = env("SANDAK_REGISTRY")?
+    if v == "" {
+        return "http://127.0.0.1:8090"
+    }
+    return v
+}
+
+fn fail(msg: str) -> i64 {
+    eprintln(concat("sandak registry: ", msg))
+    return 1
+}
+
+// manifest: first `key = "value"` line (toml subset good enough for ours).
+fn manifest_val(text: str, key: str) -> str {
+    let lines = str_split(text, "\n")
+    let mut i: i64 = 0
+    while i < vec_len(lines) {
+        let line = str_trim(vec_get(lines, i))
+        if str_starts_with(line, concat(key, " = ")) {
+            let rest = str_trim(substr(line, len(key) + 3, len(line)))
+            if len(rest) >= 2 && char_at(rest, 0) == 34 {
+                let end = str_find(substr(rest, 1, len(rest)), "\"")
+                if end >= 0 {
+                    return substr(rest, 1, 1 + end)
+                }
+            }
+            return rest
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// CLI flag value: --name VALUE somewhere in the args.
+fn flag_value(name: str) -> str {
+    let mut i: i64 = 0
+    while i < arg_count() {
+        if arg(i) == name && i + 1 < arg_count() {
+            return arg(i + 1)
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+fn cmd_search(term: str) -> i64 !Net !IO {
+    let mut url = concat(reg_base()?, "/v1/packages")
+    if term != "" {
+        url = concat(url, concat("?q=", term))
+    }
+    let r = http_get(url, 10)?
+    if r.ok == 0 {
+        return fail(concat("no response from ", url))
+    }
+    if r.status != 200 {
+        return fail(concat(concat("status ", int_to_str(r.status)), concat(": ", r.body)))
+    }
+    let d = json_parse(r.body)
+    let root = json_root(d)
+    if json_tag(d, root) != 6 {
+        return fail("invalid JSON from registry")
+    }
+    let items = json_get(d, root, "items")
+    if items < 0 || json_tag(d, items) != 5 {
+        print("no packages")
+        return 0
+    }
+    let n = json_count(d, items)
+    if n == 0 {
+        print("no packages found")
+        return 0
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let p = json_at(d, items, i)
+        let name = json_get(d, p, "name")
+        let ver = json_get(d, p, "latest_version")
+        let desc = json_get(d, p, "description")
+        let mut line = json_str(d, name)
+        line = concat(concat(line, " "), json_str(d, ver))
+        if desc >= 0 && json_tag(d, desc) == 4 && len(json_str(d, desc)) > 0 {
+            line = concat(concat(line, " — "), json_str(d, desc))
+        }
+        print(line)
+        i = i + 1
+    }
+    return 0
+}
+
+fn cmd_publish() -> i64 !Net !IO {
+    let text = read_file("sandak.toml")?
+    if text == "" {
+        return fail("no sandak.toml in the current directory")
+    }
+    let name = manifest_val(text, "name")
+    let version = manifest_val(text, "version")
+    let description = manifest_val(text, "description")
+    if name == "" || version == "" {
+        return fail("sandak.toml needs name and version")
+    }
+    let git = flag_value("--git")
+    let path = flag_value("--path")
+    let rev = flag_value("--rev")
+    let subdir = flag_value("--subdir")
+    let mut kind = ""
+    let mut url = ""
+    if git != "" {
+        kind = "git"
+        url = git
+    } else {
+        if path != "" {
+            kind = "path"
+            url = path
+        } else {
+            return fail("publish needs --git URL or --path P")
+        }
+    }
+    let mut body = concat(concat("{\"name\":", json_escape(name)), concat(",\"version\":", json_escape(version)))
+    body = concat(body, concat(",\"description\":", json_escape(description)))
+    body = concat(body, concat(",\"source_kind\":", json_escape(kind)))
+    body = concat(body, concat(",\"source_url\":", json_escape(url)))
+    body = concat(body, concat(",\"rev\":", json_escape(rev)))
+    body = concat(body, concat(",\"subdir\":", json_escape(subdir)))
+    body = concat(body, "}")
+    let r = http_post(concat(reg_base()?, "/v1/packages"), body, 10)?
+    if r.ok == 0 {
+        return fail("no response from registry")
+    }
+    if r.status != 200 && r.status != 201 {
+        return fail(concat(concat("status ", int_to_str(r.status)), concat(": ", r.body)))
+    }
+    print(concat(concat(concat("published ", name), concat("@", version)), concat(" → ", url)))
+    return 0
+}
+
+fn usage() -> i64 {
+    print("sandak registry client")
+    print("  search [term]")
+    print("  publish --git URL [--rev R] [--subdir S] | --path P")
+    return 2
+}
+
+fn main() -> i64 !Net !IO {
+    if arg_count() == 0 {
+        return usage()
+    }
+    let c = arg(0)
+    if c == "search" {
+        return cmd_search(arg(1))?
+    }
+    if c == "publish" {
+        return cmd_publish()?
+    }
+    return usage()
+}

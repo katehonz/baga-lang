@@ -183,7 +183,54 @@ static void usage(void) {
         "  manifest   Покажи парснатия sandak.toml (debug)\n"
         "  fetch      Резолвирай и изтегли зависимостите, запиши sandak.lock\n"
         "  build      fetch + компилирай (bin → target/<name>, lib → проверка)\n"
-        "  run        build + стартирай бинарника (args след --)\n");
+        "  run        build + стартирай бинарника (args след --)\n"
+        "  search     Търси пакети в registry (SANDAK_REGISTRY; по подразбиране :8090)\n"
+        "  publish    Публикувай sandak.toml от cwd: --git URL [--rev R] [--subdir S] | --path P\n");
+}
+
+/* ---- registry client: exec-ва src/sandak_registry.baga през baga ---- */
+
+static void registry_root(char out[1024]) {
+    const char *baga = getenv("BAGA");
+    if (baga) {
+        const char *sl = strrchr(baga, '/');
+        if (sl) {
+            size_t n = (size_t)(sl - baga);
+            if (n == 0) { strcpy(out, "/"); return; }
+            if (n > 1023) n = 1023;
+            memcpy(out, baga, n);
+            out[n] = 0;
+            return;
+        }
+    }
+    ssize_t n = readlink("/proc/self/exe", out, 1023);
+    if (n > 0) {
+        out[n] = 0;
+        char *sl = strrchr(out, '/');
+        if (sl) {
+            if (sl == out) { strcpy(out, "/"); return; }
+            *sl = 0;
+            return;
+        }
+    }
+    strcpy(out, ".");
+}
+
+static int cmd_registry(int argc, char **argv) {
+    const char *baga = getenv("BAGA");
+    if (!baga) baga = "baga";
+    char root[1024];
+    registry_root(root);
+    char cmd[8192];
+    int off = snprintf(cmd, sizeof cmd, "'%s' -I '%s' '%s/src/sandak_registry.baga'",
+                       baga, root, root);
+    /* argv[0] е командата (search/publish) — клиентът я чете като arg(0) */
+    for (int i = 0; i < argc && off < (int)sizeof cmd - 128; i++) {
+        off += snprintf(cmd + off, sizeof cmd - (size_t)off, " '%s'", argv[i]);
+    }
+    int rc = system(cmd);
+    if (rc == -1 || !WIFEXITED(rc)) return 1;
+    return WEXITSTATUS(rc);
 }
 
 static void cmd_manifest(void) {
@@ -538,6 +585,8 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "manifest") == 0) { cmd_manifest(); return 0; }
     if (strcmp(argv[1], "fetch") == 0) { cmd_fetch(); return 0; }
     if (strcmp(argv[1], "build") == 0) { cmd_build(0, 0, NULL); return 0; }
+    if (strcmp(argv[1], "search") == 0) return cmd_registry(argc - 1, argv + 1);
+    if (strcmp(argv[1], "publish") == 0) return cmd_registry(argc - 1, argv + 1);
     if (strcmp(argv[1], "run") == 0) {
         int sep = argc;
         for (int i = 2; i < argc; i++)

@@ -1,0 +1,115 @@
+// actions/packages.baga — registry endpoints: index / show / publish.
+// MVP: no auth (local/dev registry) — see PLAN.md P1 for tokens.
+
+import "../models/package.baga"
+import "fmrbaga/app.baga"
+import "fmrbaga/ctx.baga"
+import "fmrbaga/action.baga"
+import "fmrbaga/jsonx.baga"
+import "ormbaga/orm.baga"
+
+fn act_packages_index(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let term = fmr_query(ctx, "q")
+    if term != "" {
+        let q = reg_search(db, concat(concat("%", term), "%"))?
+        if q.ok == 0 {
+            return act_err(q.db, 500, q.err)
+        }
+        return act_ok(q.db, reg_list_json(q))
+    }
+    let q = reg_all(db)?
+    if q.ok == 0 {
+        return act_err(q.db, 500, q.err)
+    }
+    return act_ok(q.db, reg_list_json(q))
+}
+
+fn act_packages_show(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let name = fmr_param(ctx, "name")
+    if name == "" {
+        return act_err(db, 400, "invalid name")
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let q = reg_find_by_name(db, name)?
+    if q.ok == 0 {
+        return act_err(q.db, 500, q.err)
+    }
+    if q.nrows < 1 {
+        return act_404(q.db, "package not found")
+    }
+    let pid = orm_cell_by_i64(q, 0, "id")
+    let vs = reg_versions_by_package(q.db, pid)?
+    if vs.ok == 0 {
+        return act_err(vs.db, 500, vs.err)
+    }
+    let mut o = reg_to_json(q, 0)
+    o = jobj_raw(o, "versions", jarr_encode(reg_versions_jarr(vs)))
+    return act_ok(vs.db, o)
+}
+
+// Publish = upsert package row + insert version (unique per package).
+fn act_packages_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let body = jbody_parse_str(fmr_body(ctx))
+    if body.ok == 0 {
+        return act_err(db, 400, body.err)
+    }
+    let b = jbody_require_object(body)
+    if b.ok == 0 {
+        return act_err(db, 400, b.err)
+    }
+    let name = jreq_str(b.doc, b.root, "name")
+    if name.ok == 0 {
+        return act_422_field(db, "name", name)
+    }
+    let version = jreq_str(b.doc, b.root, "version")
+    if version.ok == 0 {
+        return act_422_field(db, "version", version)
+    }
+    let description = jopt_str(b.doc, b.root, "description", "")
+    let source_kind = jopt_str(b.doc, b.root, "source_kind", "")
+    let source_url = jopt_str(b.doc, b.root, "source_url", "")
+    let rev = jopt_str(b.doc, b.root, "rev", "")
+    let subdir = jopt_str(b.doc, b.root, "subdir", "")
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    // find or create the package row
+    let f = reg_find_by_name(db, name.val)?
+    if f.ok == 0 {
+        return act_err(f.db, 500, f.err)
+    }
+    let mut db2 = f.db
+    let mut pid: i64 = 0
+    if f.nrows >= 1 {
+        pid = orm_cell_by_i64(f, 0, "id")
+    } else {
+        let cr = reg_create(db2, name.val, description.val, source_kind.val, source_url.val)?
+        db2 = cr.db
+        if cr.ok == 0 {
+            return act_err(db2, 409, cr.err)
+        }
+        let f2 = reg_find_by_name(db2, name.val)?
+        db2 = f2.db
+        if f2.ok == 0 || f2.nrows < 1 {
+            return act_err(db2, 500, "insert ok but row missing")
+        }
+        pid = orm_cell_by_i64(f2, 0, "id")
+    }
+    let vi = reg_version_insert(db2, pid, version.val, rev.val, subdir.val)?
+    db2 = vi.db
+    if vi.ok == 0 {
+        return act_err(db2, 409, concat(concat("version already published: ", name.val), concat("@", version.val)))
+    }
+    let sl = reg_set_latest(db2, pid, version.val)?
+    db2 = sl.db
+    let q = reg_find_by_name(db2, name.val)?
+    if q.ok == 0 || q.nrows < 1 {
+        return act_err(q.db, 500, "publish ok but row missing")
+    }
+    return act_created(q.db, reg_to_json(q, 0))
+}

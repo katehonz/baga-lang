@@ -1,0 +1,145 @@
+// registry_test.baga — full-stack live test for apps/registry.
+// Boots the registry server in a go_bg worker (fmrbaga fmr_run) and drives it
+// over real HTTP with std/net/http_client — the first end-to-end product test
+// that exercises the HTTP client (apps-roadmap №2).
+//
+// Run with: PORT=8090 PGDATABASE=baga_registry (the Makefile sets both).
+
+import "../apps/registry/routes.baga"
+import "../apps/registry/schema.baga"
+import "fmrbaga/app.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
+import "pgbaga/pg.baga"
+import "std/net/http_client.baga"
+import "std/json/json.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" { return def }
+    return v
+}
+
+// Server entry: runs fmr_run (reads PORT / PG* from env).
+fn reg_serve(x: i64) -> i64 !Net !IO !Par !Random {
+    return fmr_run()?
+}
+
+// Create baga_registry if missing; then clean + migrate.
+fn prepare_db() -> i64 !Net !IO !Random {
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(cfg("PGPORT", "5432")?)
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+
+    // CREATE DATABASE cannot run in the app db — connect to "postgres".
+    let admin = pg_connect_to(host, port, user, password, "postgres", 5)?
+    if admin.ok == 0 {
+        print(concat("prepare: admin connect failed: ", admin.err))
+        return 1
+    }
+    let cd = pg_query(admin, "CREATE DATABASE baga_registry")?
+    // ok, or "already exists" are both fine
+    pg_close(cd.conn)?
+
+    let db = orm_connect(host, port, user, password, "baga_registry")?
+    if orm_ok_db(db) == 0 {
+        print(concat("prepare: registry db connect failed: ", orm_err_db(db)))
+        return 1
+    }
+    let up = migrate_up(db, regbaga_migrations())?
+    if up.ok == 0 {
+        print(concat("prepare: migrate failed: ", up.err))
+        return 1
+    }
+    // deterministic: reset packages between runs (versions cascade)
+    let cl = orm_exec(up.db, "DELETE FROM reg_packages")?
+    if cl.ok == 0 {
+        print(concat("prepare: clean failed: ", cl.err))
+        return 1
+    }
+    orm_close(cl.db)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par !Random {
+    print("registry_test:")
+
+    let rc = prepare_db()?
+    check("prepare_db", rc == 0)
+    if rc != 0 {
+        eprintln("registry_test: FAILED (prepare)")
+        exit(1)
+    }
+
+    go_bg(reg_serve, 0)
+    sleep_ms(400)
+
+    let base = concat(concat("http://localhost:", cfg("PORT", "8090")?), "")
+
+    // --- health ---
+    let h = http_get(concat(base, "/health"), 5)?
+    check("health_status", h.ok == 1 && h.status == 200)
+    check("health_service", str_find(h.body, "baga-registry") >= 0)
+
+    // --- publish a package ---
+    let mut body = "{\"name\":\"probe-pkg\",\"version\":\"0.1.0\","
+    body = concat(body, "\"description\":\"пробна сонда\",")
+    body = concat(body, "\"source_kind\":\"git\",\"source_url\":\"https://git.example/baga.git\",")
+    body = concat(body, "\"rev\":\"abc123\",\"subdir\":\"app-product/probe\"}")
+    let p1 = http_post(concat(base, "/v1/packages"), body, 5)?
+    check("publish_created", p1.ok == 1 && p1.status == 201)
+    check("publish_echo_name", str_find(p1.body, "\"name\":\"probe-pkg\"") >= 0)
+
+    // duplicate version → 409
+    let p2 = http_post(concat(base, "/v1/packages"), body, 5)?
+    check("publish_dup_conflict", p2.ok == 1 && p2.status == 409)
+
+    // new version → 201, latest_version bumped
+    let mut body2 = "{\"name\":\"probe-pkg\",\"version\":\"0.2.0\","
+    body2 = concat(body2, "\"source_kind\":\"git\",\"source_url\":\"https://git.example/baga.git\",")
+    body2 = concat(body2, "\"rev\":\"def456\",\"subdir\":\"app-product/probe\"}")
+    let p3 = http_post(concat(base, "/v1/packages"), body2, 5)?
+    check("publish_v2", p3.ok == 1 && p3.status == 201)
+    check("publish_v2_latest", str_find(p3.body, "\"latest_version\":\"0.2.0\"") >= 0)
+
+    // --- show ---
+    let s = http_get(concat(base, "/v1/packages/probe-pkg"), 5)?
+    check("show_status", s.ok == 1 && s.status == 200)
+    check("show_latest", str_find(s.body, "\"latest_version\":\"0.2.0\"") >= 0)
+    check("show_versions", str_find(s.body, "0.1.0") >= 0 && str_find(s.body, "def456") >= 0)
+
+    // --- index + search ---
+    let idx = http_get(concat(base, "/v1/packages"), 5)?
+    check("index_status", idx.ok == 1 && idx.status == 200)
+    check("index_has_probe", str_find(idx.body, "probe-pkg") >= 0)
+
+    let q1 = http_get(concat(base, "/v1/packages?q=пробна"), 5)?
+    check("search_hit", q1.ok == 1 && str_find(q1.body, "probe-pkg") >= 0)
+    let q2 = http_get(concat(base, "/v1/packages?q=несъществуващо"), 5)?
+    check("search_miss", q2.ok == 1 && str_find(q2.body, "probe-pkg") < 0)
+
+    // --- errors ---
+    let nf = http_get(concat(base, "/v1/packages/no-such-pkg"), 5)?
+    check("not_found", nf.ok == 1 && nf.status == 404)
+
+    let bad = http_post(concat(base, "/v1/packages"), "{not json", 5)?
+    check("bad_json", bad.ok == 1 && bad.status == 400)
+
+    let missing = http_post(concat(base, "/v1/packages"), "{\"name\":\"x\"}", 5)?
+    check("missing_version_422", missing.ok == 1 && missing.status == 422)
+
+    print("registry_test: all passed")
+    return 0
+}

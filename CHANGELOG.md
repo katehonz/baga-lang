@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### apps/registry — пакетен registry за sandak (apps-roadmap №2, втора половина)
+- New app `apps/registry`: JSON/HTTP package index on the fmrbaga/ormbaga/
+  pgbaga stack — `GET /v1/packages[?q=]`, `GET /v1/packages/{name}`,
+  `POST /v1/packages` (publish = upsert package + unique version; 409/422
+  error shapes). Migrations create `reg_packages` / `reg_versions`.
+- `sandak search [term]` / `sandak publish --git URL [--rev R] [--subdir S]
+  | --path P` — the client is a Baga program (`src/sandak_registry.baga`)
+  executed by sandak through the compiler, talking HTTP via the new std
+  client. Registry URL from `SANDAK_REGISTRY` (default http://127.0.0.1:8090).
+- `baga` CLI gained **program arguments**: `baga prog.baga arg1 arg2…` (and
+  an explicit `--` separator) — everything after the input file reaches
+  `arg()`/`arg_count()` of the compiled program. Before this, `arg()` had
+  no way to receive values through compile-and-run.
+- fmrbaga `jbody_parse_str` now rejects malformed bodies with
+  `json_strict_valid` before the lenient parse (G13 in a real request path).
+- `tests/registry_test.baga` — first full-stack live HTTP test: boots the
+  server in a go_bg worker, drives it through std/net/http_client (18
+  checks: publish/dup-409/show/index/search/404/400/422). In `make test`.
+
 ### std/net — HTTP/1.1 client (apps-roadmap №2, първа половина)
 - `std/net/http_client.baga`: `http_request(method, url, headers, body,
   timeout)` + `http_get` / `http_post`. URL parse (http:// only — https
