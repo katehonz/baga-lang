@@ -1,0 +1,111 @@
+// ws_test.baga — live loopback test for app-product/wsbaga (RFC 6455).
+// Boots ws_serve in a go_bg worker; the client does a real handshake
+// (verifying Sec-WebSocket-Accept) and exercises the frame codec:
+// text/binary echo, 7/16/64-bit length boundaries, ping/pong, close.
+
+import "wsbaga/ws.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+struct RoundTrip {
+    conn: WsConn,
+    ok: i64
+}
+
+// Send text, read the echo, compare. ok=1 only on an exact match.
+fn round_trip_text(conn: WsConn, s: str) -> RoundTrip !Net !IO !Random {
+    let w = ws_send_text(conn.fd, s)?
+    if w != 0 {
+        return RoundTrip { conn: conn, ok: 0 }
+    }
+    let r = ws_read_frame(conn)?
+    if r.ok == 0 || r.bad == 1 || r.frame.opcode != WS_TEXT() {
+        return RoundTrip { conn: r.conn, ok: 0 }
+    }
+    if str_of_bytes(r.frame.payload) != s {
+        return RoundTrip { conn: r.conn, ok: 0 }
+    }
+    return RoundTrip { conn: r.conn, ok: 1 }
+}
+
+fn main() -> i64 !Net !IO !Par !Random {
+    let port = 18440
+    go_bg(ws_serve, port)
+    sleep_ms(300)
+
+    // --- handshake (client verifies Sec-WebSocket-Accept) ---
+    let d = ws_client_connect("localhost", port, 5)?
+    check("handshake", d.ok == 1)
+    if d.ok == 0 {
+        eprintln("ws_test: FAILED (handshake)")
+        exit(1)
+    }
+    let mut conn = d.conn
+    tcp_set_timeouts(conn.fd, 5)?
+
+    // --- text echo, incl. UTF-8 ---
+    let t1 = round_trip_text(conn, "hello")?
+    conn = t1.conn
+    check("text_echo_hello", t1.ok == 1)
+    let t2 = round_trip_text(conn, "Здравей, WebSocket!")?
+    conn = t2.conn
+    check("text_echo_utf8", t2.ok == 1)
+
+    // --- length boundaries: 125 (7-bit max), 126 (16-bit min), 65535 (16-bit max), 65536 (64-bit min) ---
+    let t3 = round_trip_text(conn, str_repeat("a", 125))?
+    conn = t3.conn
+    check("len_125", t3.ok == 1)
+    let t4 = round_trip_text(conn, str_repeat("b", 126))?
+    conn = t4.conn
+    check("len_126", t4.ok == 1)
+    let t5 = round_trip_text(conn, str_repeat("c", 65535))?
+    conn = t5.conn
+    check("len_65535", t5.ok == 1)
+    let t6 = round_trip_text(conn, str_repeat("d", 65536))?
+    conn = t6.conn
+    check("len_65536", t6.ok == 1)
+
+    // --- binary frame with NUL / 0xFF (bytes are binary-safe) ---
+    let bv = vec_new()
+    vec_push(bv, 0)
+    vec_push(bv, 255)
+    vec_push(bv, 66)
+    vec_push(bv, 0)
+    vec_push(bv, 97)
+    let bpay = bytes_from_vec(bv)
+    let wb = ws_send_binary(conn.fd, bpay)?
+    check("binary_send", wb == 0)
+    let rb = ws_read_frame(conn)?
+    conn = rb.conn
+    check("binary_echo", rb.ok == 1 && rb.frame.opcode == WS_BINARY() && bytes_eq_b(rb.frame.payload, bpay))
+
+    // --- ping → pong with the same payload ---
+    let pp = bytes_of_str("ping-payload")
+    let wp = ws_send_ping(conn.fd, pp)?
+    check("ping_send", wp == 0)
+    let rp = ws_read_frame(conn)?
+    conn = rp.conn
+    check("pong", rp.ok == 1 && rp.frame.opcode == WS_PONG() && bytes_eq_b(rp.frame.payload, pp))
+
+    // --- close: server echoes close, then the socket is done ---
+    let wc = ws_send_close(conn.fd)?
+    check("close_send", wc == 0)
+    let rc = ws_read_frame(conn)?
+    conn = rc.conn
+    check("close_echo", rc.ok == 1 && rc.frame.opcode == WS_CLOSE())
+    let re = ws_read_frame(conn)?
+    check("eof_after_close", re.ok == 0)
+
+    print("ws_test: all passed")
+    return 0
+}

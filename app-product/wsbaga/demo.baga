@@ -1,0 +1,17 @@
+// demo.baga — standalone WebSocket echo server for manual/interop testing.
+//   ./baga app-product/wsbaga/demo.baga          # listens on :16441
+//   wscat -c ws://127.0.0.1:16441                # or any RFC 6455 client
+
+import "ws.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !Net !IO !Par !Random {
+    let port_s = env("WSPORT")?
+    let mut port: i64 = 16441
+    if port_s != "" {
+        port = parse_int(port_s)
+    }
+    print(concat("wsbaga echo server listening on ws://127.0.0.1:", int_to_str(port)))
+    return ws_serve(port)?
+}

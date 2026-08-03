@@ -138,7 +138,7 @@ test: $(BIN) sandak
 	@echo "=== sandak (пакетен мениджър) ==="
 	@SANDAK=$(CURDIR)/sandak BAGA=$(CURDIR)/baga bash tests/sandak/run_tests.sh
 	@echo "=== sandak build на repo пакетите ==="
-	@for p in httpdbaga jwtbaga pgbaga ormbaga fmrbaga kvbaga; do \
+	@for p in httpdbaga jwtbaga pgbaga ormbaga fmrbaga kvbaga wsbaga; do \
 		(cd app-product/$$p && BAGA=$(CURDIR)/$(BIN) $(CURDIR)/sandak build > /dev/null) \
 			&& echo "OK: sandak build $$p" \
 			|| { echo "FAIL: sandak build $$p"; exit 1; }; \
@@ -269,6 +269,14 @@ test: $(BIN) sandak
 	@grep -q "registry_test: all passed" /tmp/baga_reg_out.txt \
 		&& echo "OK: registry publish/search/show + std HTTP клиент (live)" \
 		|| { echo "FAIL: registry_test (нужен е live Postgres)"; cat /tmp/baga_reg_out.txt; exit 1; }
+	@echo "=== ws (app-product/wsbaga, RFC 6455 loopback) ==="
+	@./$(BIN) $(BAGAIFLAGS) --lib app-product/wsbaga/ws.baga | grep -q "ok:" \
+		&& echo "OK: --lib wsbaga ws.baga" \
+		|| { echo "FAIL: --lib wsbaga"; exit 1; }
+	@./$(BIN) $(BAGAIFLAGS) tests/ws_test.baga > /tmp/baga_ws_out.txt
+	@grep -q "ws_test: all passed" /tmp/baga_ws_out.txt \
+		&& echo "OK: WebSocket handshake + frames (loopback, SHA-1)" \
+		|| { echo "FAIL: ws_test"; cat /tmp/baga_ws_out.txt; exit 1; }
 	@echo "=== par (go/join/chan, !Par) ==="
 	@./$(BIN) $(BAGAIFLAGS) examples/par.baga > /tmp/baga_par_out.txt
 	@printf "49\n81\n42\n" | diff - /tmp/baga_par_out.txt > /dev/null \
@@ -287,7 +295,7 @@ test: $(BIN) sandak
 		&& echo "OK: конкурентни алокации през global arena (G11 регресия)" \
 		|| { echo "FAIL: alloc race"; cat /tmp/baga_race_out.txt; exit 1; }
 	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net/par) ==="
-	@for t in bytes hmac http_client io json map os random sha256 sort str tcp tcp_bytes time par; do \
+	@for t in bytes hmac http_client io json map os random sha1 sha256 sort str tcp tcp_bytes time par; do \
 		./$(BIN) $(BAGAIFLAGS) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
 			&& grep -q "all passed" /tmp/baga_std_out.txt \
 			&& echo "OK: std/$$t" \

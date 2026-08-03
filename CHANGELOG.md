@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### App products — wsbaga (WebSocket, apps-roadmap №3)
+- New product `app-product/wsbaga`: RFC 6455 — server handshake
+  (`Sec-WebSocket-Accept`), frame codec (FIN/opcode, 7/16/64-bit lengths,
+  client masking), text/binary/ping/pong/close handling, buffered
+  `ws_read_frame`, echo server `ws_serve(port)`, and a masked client
+  (`ws_client_connect` verifies the accept key).
+- **Interop-verified**: `wscat` (Node.js) echoes UTF-8 text and 900-byte
+  payloads against the Baga server; loopback `tests/ws_test.baga` covers
+  all length boundaries (125/126/65535/65536), binary with NUL/0xFF,
+  ping→pong, close→EOF (14 checks).
+- Honest limits in gaps.md: serial accept (W1 = kvbaga K1; poll-based event
+  loop is next), no fragmented-message reassembly (W2).
+
+### std/crypto — SHA-1 (probed into existence by wsbaga)
+- `std/crypto/sha1.baga`: RFC 3174, same shape as sha256 (Vec core +
+  `bytes` wrappers: sha1/sha1_hex/sha1_b/sha1_b_hex).
+- `tests/std/sha1_test.baga`: RFC vectors incl. million-'a' and the
+  RFC 6455 accept-key vector; in the `make test` std loop.
+- SHA-1 only for protocol mandates (RFC 6455); sha256 stays the default.
+
 ### apps/registry — пакетен registry за sandak (apps-roadmap №2, втора половина)
 - New app `apps/registry`: JSON/HTTP package index on the fmrbaga/ormbaga/
   pgbaga stack — `GET /v1/packages[?q=]`, `GET /v1/packages/{name}`,

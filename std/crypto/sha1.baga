@@ -1,0 +1,123 @@
+// sha1.baga — SHA-1 (RFC 3174), pure. Needed by the WebSocket handshake
+// (Sec-WebSocket-Accept). SHA-1 is broken for signatures — use only where a
+// protocol mandates it (like RFC 6455); sha256 everywhere else.
+//
+// Same shape as sha256.baga: Vec<i64> core (values 0..255) + bytes wrappers.
+// Reuses u32/push_word from sha256.baga; rotl is local.
+
+import "sha256.baga"
+import "../bytes/bytes.baga"
+import "../str/str.baga"
+
+fn sha1_rotl(x: i64, n: i64) -> i64 {
+    return u32((x << n) | (x >> (32 - n)))
+}
+
+// SHA-1 over a byte vector (values 0..255). Returns the 20-byte digest.
+fn sha1_bytes(data: Vec<i64>) -> Vec<i64> {
+    // ---- padding: 0x80, zeros to 56 mod 64, 64-bit big-endian length ----
+    let msg = vec_new()
+    let n = vec_len(data)
+    for i in 0..n {
+        vec_push(msg, vec_get(data, i) & 255)
+    }
+    let bitlen = n * 8
+    vec_push(msg, 128)
+    while (vec_len(msg) % 64) != 56 {
+        vec_push(msg, 0)
+    }
+    for i in 0..8 {
+        vec_push(msg, (bitlen >> ((7 - i) * 8)) & 255)
+    }
+
+    // ---- initial hash state (RFC 3174 §7) ----
+    let mut h0: i64 = 1732584193    // 0x67452301
+    let mut h1: i64 = 4023233417    // 0xEFCDAB89
+    let mut h2: i64 = 2562383102    // 0x98BADCFE
+    let mut h3: i64 = 271733878     // 0x10325476
+    let mut h4: i64 = 3285377520    // 0xC3D2E1F0
+
+    let total = vec_len(msg)
+    let mut block: i64 = 0
+    while block < total {
+        // ---- message schedule: 16 words, then rotl expansion to 80 ----
+        let w = vec_new()
+        for t in 0..16 {
+            let o = block + t * 4
+            let word = (vec_get(msg, o) << 24) | (vec_get(msg, o + 1) << 16) | (vec_get(msg, o + 2) << 8) | vec_get(msg, o + 3)
+            vec_push(w, u32(word))
+        }
+        for t in 16..80 {
+            let x = vec_get(w, t - 3) ^ vec_get(w, t - 8) ^ vec_get(w, t - 14) ^ vec_get(w, t - 16)
+            vec_push(w, sha1_rotl(x, 1))
+        }
+
+        // ---- compression: 80 rounds in four bands ----
+        let mut a = h0
+        let mut b = h1
+        let mut c = h2
+        let mut dd = h3
+        let mut e = h4
+        for t in 0..80 {
+            let mut f: i64 = 0
+            let mut k: i64 = 0
+            if t < 20 {
+                f = u32((b & c) ^ (u32((-1) ^ b) & dd))
+                k = 1518500249              // 0x5A827999
+            } else {
+                if t < 40 {
+                    f = u32(b ^ c ^ dd)
+                    k = 1859775393          // 0x6ED9EBA1
+                } else {
+                    if t < 60 {
+                        f = u32((b & c) ^ (b & dd) ^ (c & dd))
+                        k = 2400959708      // 0x8F1BBCDC
+                    } else {
+                        f = u32(b ^ c ^ dd)
+                        k = 3395469782      // 0xCA62C1D6
+                    }
+                }
+            }
+            let temp = u32(sha1_rotl(a, 5) + f + e + k + vec_get(w, t))
+            e = dd
+            dd = c
+            c = sha1_rotl(b, 30)
+            b = a
+            a = temp
+        }
+        h0 = u32(h0 + a)
+        h1 = u32(h1 + b)
+        h2 = u32(h2 + c)
+        h3 = u32(h3 + dd)
+        h4 = u32(h4 + e)
+        block = block + 64
+    }
+
+    // ---- digest: 5 words, big-endian ----
+    let out = vec_new()
+    push_word(out, h0)
+    push_word(out, h1)
+    push_word(out, h2)
+    push_word(out, h3)
+    push_word(out, h4)
+    return out
+}
+
+// SHA-1 over a string (its raw bytes). Returns the 20-byte digest.
+fn sha1(msg: str) -> Vec<i64> {
+    return sha1_bytes(bytes_from_str(msg))
+}
+
+// Lowercase hex digest of a string.
+fn sha1_hex(msg: str) -> str {
+    return bytes_to_hex(sha1(msg))
+}
+
+// Binary-safe bytes API (same convention as sha256_b).
+fn sha1_b(data: bytes) -> bytes {
+    return bytes_from_vec(sha1_bytes(vec_from_bytes(data)))
+}
+
+fn sha1_b_hex(data: bytes) -> str {
+    return hex_encode(sha1_b(data))
+}
