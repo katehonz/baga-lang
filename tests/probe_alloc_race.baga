@@ -1,0 +1,23 @@
+// probe_alloc_race.baga — confirm baga_alloc is not thread-safe (temporary).
+import "../std/str/str.baga"
+
+fn hammer(x: i64) -> i64 {
+    let mut s = "seed"
+    for i in 0..2000 {
+        s = concat(s, "abcdefgh")
+    }
+    return len(s)
+}
+
+fn main() -> i64 !Par {
+    let hs = vec_new()
+    for t in 0..8 {
+        vec_push(hs, go(hammer, t))
+    }
+    let mut total: i64 = 0
+    for t in 0..8 {
+        total = total + join(vec_get(hs, t))
+    }
+    print(concat("total=", int_to_str(total)))
+    return 0
+}

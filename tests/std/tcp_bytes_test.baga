@@ -1,0 +1,67 @@
+// tcp_bytes_test.baga — binary-safe socket I/O (tcp_*_bytes in std/net).
+// Probes the assumptions the HTTP/2 layer relies on: NUL and 0xFF bytes
+// travel both ways, tcp_read_exact loops on partial reads, EOF reads empty.
+
+import "../../std/net/tcp.baga"
+import "../../std/bytes/bytes.baga"
+import "../../std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Net !IO !Par {
+    let port = 18434
+    let listener = tcp_listen(port)?
+    let client = tcp_connect("127.0.0.1", port)?
+    let server = tcp_accept(listener)?
+
+    // --- case 1: NUL + 0xFF round-trip both directions ---
+    let v = vec_new()
+    vec_push(v, 0)
+    vec_push(v, 1)
+    vec_push(v, 255)
+    vec_push(v, 0)
+    vec_push(v, 65)
+    let b = bytes_from_vec(v)
+    check("write_bytes", tcp_write_bytes(client, b)? == 0)
+    let got = tcp_read_exact(server, 5)?
+    check("exact_len", bytes_len(got) == 5)
+    check("byte0_nul", bytes_at(got, 0) == 0)
+    check("byte1", bytes_at(got, 1) == 1)
+    check("byte2_ff", bytes_at(got, 2) == 255)
+    check("byte3_nul", bytes_at(got, 3) == 0)
+    check("byte4", bytes_at(got, 4) == 65)
+
+    // --- case 2: hex literal back the other way ---
+    check("write_bytes2", tcp_write_bytes(server, x"deadbeef00ff")? == 0)
+    let got2 = tcp_read_bytes(client, 64)?
+    check("read_up_to_n", bytes_len(got2) == 6)
+    check("hex_eq", bytes_eq_b(got2, x"deadbeef00ff"))
+
+    // --- case 3: tcp_read_exact across a split write (forces the loop).
+    // x"..." is 1 byte per hex PAIR: 8 hex digits = 4 bytes. ---
+    check("write_part1", tcp_write_bytes(client, x"cafebabe")? == 0)
+    sleep_ms(100)
+    check("write_part2", tcp_write_bytes(client, x"deadbeef")? == 0)
+    let got3 = tcp_read_exact(server, 8)?
+    check("split_exact", bytes_eq_b(got3, bytes_concat(x"cafebabe", x"deadbeef")))
+
+    // --- case 4: EOF reads empty ---
+    tcp_close(client)?
+    sleep_ms(100)
+    let got4 = tcp_read_bytes(server, 64)?
+    check("eof_empty", bytes_len(got4) == 0)
+    let got5 = tcp_read_exact(server, 4)?
+    check("eof_exact_short", bytes_len(got5) == 0)
+
+    tcp_close(server)?
+    tcp_close(listener)?
+    print("tcp_bytes_test: all passed")
+    return 0
+}

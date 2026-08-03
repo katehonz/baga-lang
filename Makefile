@@ -170,6 +170,16 @@ test: $(BIN)
 	@grep -q "http_test: all passed" /tmp/baga_http_out.txt \
 		&& echo "OK: HTTP parser + responder (loopback)" \
 		|| { echo "FAIL: http_test"; cat /tmp/baga_http_out.txt; exit 1; }
+	@echo "=== hpack (app-product/httpdbaga, RFC 7541) ==="
+	@./$(BIN) tests/hpack_test.baga > /tmp/baga_hpack_out.txt
+	@grep -q "hpack_test: all passed" /tmp/baga_hpack_out.txt \
+		&& echo "OK: HPACK known answers (RFC 7541 C.1–C.4) + encoder round-trip" \
+		|| { echo "FAIL: hpack_test"; cat /tmp/baga_hpack_out.txt; exit 1; }
+	@echo "=== h2 (app-product/httpdbaga, HTTP/2 loopback) ==="
+	@./$(BIN) tests/h2_test.baga > /tmp/baga_h2_out.txt
+	@grep -q "h2_test: all passed" /tmp/baga_h2_out.txt \
+		&& echo "OK: HTTP/2 framing + streams (in-process client vs h2_serve)" \
+		|| { echo "FAIL: h2_test"; cat /tmp/baga_h2_out.txt; exit 1; }
 	@echo "=== jwt (app-product/jwtbaga) ==="
 	@./$(BIN) tests/jwt_test.baga > /tmp/baga_jwt_out.txt
 	@grep -q "jwt_test: all passed" /tmp/baga_jwt_out.txt \
@@ -188,13 +198,21 @@ test: $(BIN)
 	@printf "385\n" | diff - /tmp/baga_par_pool_out.txt > /dev/null \
 		&& echo "OK: pool_map bounded workers" \
 		|| { echo "FAIL: par_pool"; cat /tmp/baga_par_pool_out.txt; exit 1; }
+	@./$(BIN) tests/probe_alloc_race.baga > /tmp/baga_race_out.txt
+	@grep -q "total=128032" /tmp/baga_race_out.txt \
+		&& echo "OK: конкурентни алокации през global arena (G11 регресия)" \
+		|| { echo "FAIL: alloc race"; cat /tmp/baga_race_out.txt; exit 1; }
 	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net/par) ==="
-	@for t in bytes hmac io json os random sha256 sort str tcp time par; do \
+	@for t in bytes hmac io json os random sha256 sort str tcp tcp_bytes time par; do \
 		./$(BIN) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
 			&& grep -q "all passed" /tmp/baga_std_out.txt \
 			&& echo "OK: std/$$t" \
 			|| { echo "FAIL: std/$$t"; cat /tmp/baga_std_out.txt; exit 1; }; \
 	done
+	@./$(BIN) tests/probe_binary_io.baga > /tmp/baga_bio_out.txt 2>&1 \
+		&& grep -q "all passed" /tmp/baga_bio_out.txt \
+		&& echo "OK: binary I/O през сокети (NUL/0xFF, chr() UTF-8 капан — G8)" \
+		|| { echo "FAIL: probe_binary_io"; cat /tmp/baga_bio_out.txt; exit 1; }
 	@./$(BIN) tests/std/sha_big_probe.baga > /tmp/baga_std_probe.txt \
 		&& printf '1310720\ndf0be9d175a152159d1a9c73747a686186eb63b56466d5eed6ad6f540d133aff\n' | diff - /tmp/baga_std_probe.txt > /dev/null \
 		&& echo "OK: std/sha256 върху 1.25 MB вход (oracle: hashlib)" \

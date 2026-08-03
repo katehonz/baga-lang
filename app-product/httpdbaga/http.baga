@@ -1,9 +1,15 @@
-// http.baga — minimal HTTP/1.1 request parser + response serializer.
-// Built only on std/ (net, io, str). One request per connection
-// (Connection: close); no keep-alive, no chunked encoding, no TLS.
+// http.baga — HTTP/1.1 request parser + response serializer.
+// Built only on std/ (net, io, os, str).
 //
-// Effects: http_read_request / http_respond carry !IO !Net (socket fd);
-// the struct builders and http_header are pure.
+// v1 API (kept): http_read_request / http_respond — one request, Connection:
+// close. v2 API (additive): a buffered binary reader (HttpReader),
+// http_read_request_r for keep-alive loops, chunked request bodies,
+// Expect: 100-continue, and http_respond_keepalive. The reader reads in 8 KiB
+// chunks (not 1-syscall-per-byte) and bodies are read exactly (looping on
+// partial reads), so large bodies are no longer truncated.
+//
+// Effects: everything touching the fd carries !IO !Net; the struct builders
+// and http_header are pure.
 
 import "../../std/net/tcp.baga"
 import "../../std/io/io.baga"
@@ -15,7 +21,8 @@ struct Request {
     version: str,
     hkeys: Vec<str>,
     hvals: Vec<str>,
-    body: str
+    body: str,          // textual view of body_bytes (safe for JSON/text)
+    body_bytes: bytes   // binary-safe source of truth
 }
 
 struct Response {
@@ -25,43 +32,240 @@ struct Response {
     body: str
 }
 
-// ---------- request parsing ----------
+// ---------- v2: buffered binary reader ----------
 
-// Parse one HTTP request off the fd. On EOF or a malformed request line
-// the returned Request has method == "" (the caller maps that to 400/close).
-fn http_read_request(fd: i64) -> Request !IO !Net {
-    let r = reader_new(fd)
-    let ks = vec_new()
-    let vs = vec_new()
-    let reqline = str_trim(read_line(r)?)
-    let parts = str_split(reqline, " ")
-    let mut method = ""
-    let mut path = ""
-    let mut version = ""
-    if vec_len(parts) >= 3 {
-        method = vec_get(parts, 0)
-        path = vec_get(parts, 1)
-        version = vec_get(parts, 2)
-    }
+struct HttpReader {
+    fd: i64,
+    buf: bytes,
+    pos: i64
+}
+
+struct LineRead {
+    reader: HttpReader,
+    line: str,
+    eof: i64
+}
+
+struct BodyRead {
+    reader: HttpReader,
+    body: bytes
+}
+
+struct HttpRead {
+    reader: HttpReader,
+    req: Request,
+    err: i64    // 0 ok; 400 malformed; 413 body too large; 431 headers too large
+}
+
+fn http_reader(fd: i64) -> HttpReader {
+    return HttpReader { fd: fd, buf: empty_bytes(), pos: 0 }
+}
+
+fn empty_bytes() -> bytes {
+    return bytes_from_vec(vec_new())
+}
+
+// One line without the trailing LF/CR; eof=1 when the connection ended
+// before a terminator (the buffered remainder is returned as the line).
+// Header lines carry no NUL in valid HTTP, so str_of_bytes is safe here.
+fn hr_read_line(r: HttpReader) -> LineRead !IO !Net {
+    let mut cur = r
     let mut running = true
     while running {
-        let line = str_trim(read_line(r)?)
-        if line == "" {
+        let mut found: i64 = 0 - 1
+        let mut i = cur.pos
+        while i < bytes_len(cur.buf) && found < 0 {
+            if bytes_at(cur.buf, i) == 10 {
+                found = i
+            }
+            i = i + 1
+        }
+        if found >= 0 {
+            let mut endc = found
+            if found > cur.pos {
+                if bytes_at(cur.buf, found - 1) == 13 {
+                    endc = found - 1
+                }
+            }
+            let lb = bytes_slice(cur.buf, cur.pos, endc)
+            let nr = HttpReader { fd: cur.fd, buf: cur.buf, pos: found + 1 }
+            return LineRead { reader: nr, line: str_of_bytes(lb), eof: 0 }
+        }
+        let rest = bytes_slice(cur.buf, cur.pos, bytes_len(cur.buf))
+        let chunk = tcp_read_bytes(cur.fd, 8192)?
+        if bytes_len(chunk) == 0 {
+            let nr = HttpReader { fd: cur.fd, buf: rest, pos: 0 }
+            return LineRead { reader: nr, line: str_of_bytes(rest), eof: 1 }
+        }
+        cur = HttpReader { fd: cur.fd, buf: bytes_concat(rest, chunk), pos: 0 }
+    }
+    return LineRead { reader: cur, line: "", eof: 1 }
+}
+
+// Exactly n body bytes: drain the buffer first, then read the remainder
+// from the fd with tcp_read_exact. Short only at EOF.
+fn hr_read_n(r: HttpReader, n: i64) -> BodyRead !IO !Net {
+    let mut cur = r
+    let mut out = empty_bytes()
+    while bytes_len(out) < n {
+        let avail = bytes_len(cur.buf) - cur.pos
+        if avail > 0 {
+            let mut take = avail
+            if take > n - bytes_len(out) {
+                take = n - bytes_len(out)
+            }
+            out = bytes_concat(out, bytes_slice(cur.buf, cur.pos, cur.pos + take))
+            cur = HttpReader { fd: cur.fd, buf: cur.buf, pos: cur.pos + take }
+        } else {
+            let chunk = tcp_read_exact(cur.fd, n - bytes_len(out))?
+            if bytes_len(chunk) == 0 {
+                return BodyRead { reader: cur, body: out }
+            }
+            out = bytes_concat(out, chunk)
+        }
+    }
+    return BodyRead { reader: cur, body: out }
+}
+
+// ---------- request parsing (v2 core, v1 wraps it) ----------
+
+fn http_read_request_r(r: HttpReader) -> HttpRead !IO !Net {
+    let l1 = hr_read_line(r)?
+    if l1.eof == 1 && l1.line == "" {
+        return HttpRead { reader: l1.reader, req: empty_request(), err: 0 }
+    }
+    let reqline = str_trim(l1.line)
+    let parts = str_split(reqline, " ")
+    if vec_len(parts) < 3 {
+        return HttpRead { reader: l1.reader, req: empty_request(), err: 400 }
+    }
+    let ks = vec_new()
+    let vs = vec_new()
+    let mut cur = l1.reader
+    let mut hdr_size = len(reqline) + 2
+    let mut running = true
+    while running {
+        let ln = hr_read_line(cur)?
+        cur = ln.reader
+        hdr_size = hdr_size + len(ln.line) + 2
+        if hdr_size > 65536 {
+            return HttpRead { reader: cur, req: empty_request(), err: 431 }
+        }
+        if ln.eof == 1 {
+            return HttpRead { reader: cur, req: empty_request(), err: 400 }
+        }
+        if ln.line == "" {
             running = false
         } else {
-            let c = str_find(line, ":")
+            let c = str_find(ln.line, ":")
             if c > 0 {
-                vec_push(ks, substr(line, 0, c))
-                vec_push(vs, str_trim(substr(line, c + 1, len(line))))
+                vec_push(ks, substr(ln.line, 0, c))
+                vec_push(vs, str_trim(substr(ln.line, c + 1, len(ln.line))))
             }
         }
     }
     let clen = http_header_raw(ks, vs, "content-length")
-    let mut body = ""
-    if clen != "" {
-        body = read_n(r, parse_int(clen))?
+    let te = to_lower(http_header_raw(ks, vs, "transfer-encoding"))
+    let expect = to_lower(http_header_raw(ks, vs, "expect"))
+    let has_body = str_find(te, "chunked") >= 0 || clen != ""
+    if has_body && str_find(expect, "100-continue") >= 0 {
+        tcp_write(cur.fd, "HTTP/1.1 100 Continue\r\n\r\n")?
     }
-    return Request { method: method, path: path, version: version, hkeys: ks, hvals: vs, body: body }
+    let mut bb = empty_bytes()
+    if str_find(te, "chunked") >= 0 {
+        let cd = read_chunked(cur)?
+        if cd.err != 0 {
+            return HttpRead { reader: cd.reader, req: empty_request(), err: cd.err }
+        }
+        cur = cd.reader
+        bb = cd.body
+    } else {
+        if clen != "" {
+            let n = parse_int(clen)
+            if n > 8388608 {
+                return HttpRead { reader: cur, req: empty_request(), err: 413 }
+            }
+            if n > 0 {
+                let bd = hr_read_n(cur, n)?
+                cur = bd.reader
+                bb = bd.body
+                if bytes_len(bb) < n {
+                    return HttpRead { reader: cur, req: empty_request(), err: 400 }
+                }
+            }
+        }
+    }
+    let req = Request {
+        method: vec_get(parts, 0),
+        path: vec_get(parts, 1),
+        version: vec_get(parts, 2),
+        hkeys: ks,
+        hvals: vs,
+        body: str_of_bytes(bb),
+        body_bytes: bb
+    }
+    return HttpRead { reader: cur, req: req, err: 0 }
+}
+
+// Chunked transfer decoding: size line (hex, optional ";ext"), data, CRLF;
+// terminates at size 0 + trailer block (ignored) + blank line.
+struct ChunkedRead {
+    reader: HttpReader,
+    body: bytes,
+    err: i64
+}
+
+fn read_chunked(r: HttpReader) -> ChunkedRead !IO !Net {
+    let mut cur = r
+    let mut out = empty_bytes()
+    let mut running = true
+    while running {
+        let sl = hr_read_line(cur)?
+        cur = sl.reader
+        if sl.eof == 1 {
+            return ChunkedRead { reader: cur, body: out, err: 400 }
+        }
+        let mut size_txt = str_trim(sl.line)
+        let semi = str_find(size_txt, ";")
+        if semi >= 0 {
+            size_txt = substr(size_txt, 0, semi)
+        }
+        let size = parse_hex(size_txt)
+        if size == 0 {
+            let mut tr = true
+            while tr {
+                let tl = hr_read_line(cur)?
+                cur = tl.reader
+                if tl.line == "" || tl.eof == 1 {
+                    tr = false
+                }
+            }
+            running = false
+        } else {
+            if bytes_len(out) + size > 8388608 {
+                return ChunkedRead { reader: cur, body: out, err: 413 }
+            }
+            let bd = hr_read_n(cur, size)?
+            cur = bd.reader
+            if bytes_len(bd.body) < size {
+                return ChunkedRead { reader: cur, body: out, err: 400 }
+            }
+            out = bytes_concat(out, bd.body)
+            let crlf = hr_read_line(cur)?
+            cur = crlf.reader
+        }
+    }
+    return ChunkedRead { reader: cur, body: out, err: 0 }
+}
+
+fn empty_request() -> Request {
+    return Request { method: "", path: "", version: "", hkeys: vec_new(), hvals: vec_new(), body: "", body_bytes: empty_bytes() }
+}
+
+// v1 shape: one request off a fresh reader.
+fn http_read_request(fd: i64) -> Request !IO !Net {
+    let out = http_read_request_r(http_reader(fd))?
+    return out.req
 }
 
 fn http_method(req: Request) -> str {
@@ -111,9 +315,31 @@ fn http_body(req: Request) -> str {
     return req.body
 }
 
+// Binary-safe body (v2).
+fn http_body_bytes(req: Request) -> bytes {
+    return req.body_bytes
+}
+
 // Case-insensitive header lookup; "" when absent.
 fn http_header(req: Request, name: str) -> str {
     return http_header_raw(req.hkeys, req.hvals, name)
+}
+
+// Keep-alive decision for the connection loop: 1 = read another request.
+// HTTP/1.1 defaults to keep-alive unless "Connection: close"; older
+// versions need an explicit "Connection: keep-alive".
+fn http_keepalive(req: Request) -> i64 {
+    let conn = to_lower(http_header(req, "connection"))
+    if str_find(conn, "close") >= 0 {
+        return 0
+    }
+    if req.version == "HTTP/1.1" {
+        return 1
+    }
+    if str_find(conn, "keep-alive") >= 0 {
+        return 1
+    }
+    return 0
 }
 
 // ---------- response building (pure) ----------
@@ -135,17 +361,26 @@ fn http_json_response(status: i64, body: str) -> Response {
 
 // ---------- response serialization ----------
 
-fn http_respond(fd: i64, resp: Response) -> i64 !IO !Net {
+// keep=1 → "Connection: keep-alive" (loop again); keep=0 → v1 semantics.
+fn http_respond_keepalive(fd: i64, resp: Response, keep: i64) -> i64 !IO !Net {
     let mut out = concat(concat(concat("HTTP/1.1 ", int_to_str(resp.status)), " "), reason_phrase(resp.status))
     out = concat(out, "\r\n")
     for i in 0..vec_len(resp.hkeys) {
         out = concat(out, concat(concat(vec_get(resp.hkeys, i), ": "), concat(vec_get(resp.hvals, i), "\r\n")))
     }
     out = concat(out, concat("Content-Length: ", concat(int_to_str(len(resp.body)), "\r\n")))
-    out = concat(out, "Connection: close\r\n")
+    if keep == 1 {
+        out = concat(out, "Connection: keep-alive\r\n")
+    } else {
+        out = concat(out, "Connection: close\r\n")
+    }
     out = concat(out, "\r\n")
     out = concat(out, resp.body)
     return tcp_write(fd, out)?
+}
+
+fn http_respond(fd: i64, resp: Response) -> i64 !IO !Net {
+    return http_respond_keepalive(fd, resp, 0)
 }
 
 // ---------- internals ----------
@@ -176,12 +411,38 @@ fn http_header_raw(ks: Vec<str>, vs: Vec<str>, name: str) -> str {
     return ""
 }
 
+fn hex_digit_val(c: i64) -> i64 {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    return 0 - 1
+}
+
+fn parse_hex(s: str) -> i64 {
+    let mut v: i64 = 0
+    let mut i: i64 = 0
+    while i < len(s) {
+        let d = hex_digit_val(char_at(s, i))
+        if d < 0 {
+            return v
+        }
+        v = v * 16 + d
+        i = i + 1
+    }
+    return v
+}
+
 fn reason_phrase(status: i64) -> str {
+    if status == 100 { return "Continue" }
+    if status == 101 { return "Switching Protocols" }
     if status == 200 { return "OK" }
     if status == 400 { return "Bad Request" }
     if status == 401 { return "Unauthorized" }
     if status == 404 { return "Not Found" }
     if status == 405 { return "Method Not Allowed" }
+    if status == 413 { return "Payload Too Large" }
+    if status == 431 { return "Request Header Fields Too Large" }
     if status == 500 { return "Internal Server Error" }
+    if status == 505 { return "HTTP Version Not Supported" }
     return "Status"
 }

@@ -86,6 +86,84 @@ fn main() -> i64 !Net !IO {
     tcp_close(c4)?
     tcp_close(s4)?
 
+    // --- case 5: keep-alive — two requests over one connection ---
+    let c5 = tcp_connect("127.0.0.1", port)?
+    let s5 = tcp_accept(listener)?
+    tcp_write(c5, "GET /one HTTP/1.1\r\nHost: x\r\n\r\nGET /two HTTP/1.1\r\nHost: x\r\n\r\n")?
+    let o5a = http_read_request_r(http_reader(s5))?
+    check("ka1_method", http_method(o5a.req) == "GET")
+    check("ka1_path", http_path(o5a.req) == "/one")
+    check("ka1_no_err", o5a.err == 0)
+    check("ka1_keep", http_keepalive(o5a.req) == 1)
+    http_respond_keepalive(s5, http_json_response(200, "{\"n\":\"one\"}"), 1)?
+    let o5b = http_read_request_r(o5a.reader)?
+    check("ka2_path", http_path(o5b.req) == "/two")
+    check("ka2_no_err", o5b.err == 0)
+    http_respond_keepalive(s5, http_json_response(200, "{\"n\":\"two\"}"), 0)?
+    let mut acc = ""
+    let mut tries: i64 = 0
+    while str_find(acc, "\"n\":\"two\"") < 0 && tries < 100 {
+        acc = concat(acc, tcp_read(c5, 4096)?)
+        tries = tries + 1
+    }
+    check("ka_resp_one", str_find(acc, "\"n\":\"one\"") >= 0)
+    check("ka_resp_two", str_find(acc, "\"n\":\"two\"") >= 0)
+    check("ka_keepalive_header", str_find(acc, "Connection: keep-alive") >= 0)
+    check("ka_close_header", str_find(acc, "Connection: close") >= 0)
+    tcp_close(c5)?
+    tcp_close(s5)?
+
+    // --- case 6: chunked request body ---
+    let c6 = tcp_connect("127.0.0.1", port)?
+    let s6 = tcp_accept(listener)?
+    tcp_write(c6, "POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n")?
+    let o6 = http_read_request_r(http_reader(s6))?
+    check("chunked_no_err", o6.err == 0)
+    check("chunked_body", http_body(o6.req) == "Wikipedia")
+    check("chunked_body_bytes", bytes_len(http_body_bytes(o6.req)) == 9)
+    tcp_close(c6)?
+    tcp_close(s6)?
+
+    // --- case 7: Expect: 100-continue (interim response is emitted) ---
+    let c7 = tcp_connect("127.0.0.1", port)?
+    let s7 = tcp_accept(listener)?
+    tcp_write(c7, "POST /up HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\nhello")?
+    let o7 = http_read_request_r(http_reader(s7))?
+    check("cont_no_err", o7.err == 0)
+    check("cont_body", http_body(o7.req) == "hello")
+    http_respond(s7, http_json_response(200, "{}"))?
+    let mut acc7 = ""
+    let mut tries7: i64 = 0
+    while str_find(acc7, "HTTP/1.1 200") < 0 && tries7 < 100 {
+        acc7 = concat(acc7, tcp_read(c7, 4096)?)
+        tries7 = tries7 + 1
+    }
+    check("cont_interim_100", str_find(acc7, "HTTP/1.1 100 Continue") >= 0)
+    check("cont_final_200", str_find(acc7, "HTTP/1.1 200") >= 0)
+    tcp_close(c7)?
+    tcp_close(s7)?
+
+    // --- case 8: malformed request line -> err 400, method "" ---
+    let c8 = tcp_connect("127.0.0.1", port)?
+    let s8 = tcp_accept(listener)?
+    tcp_write(c8, "GARBAGE\r\n\r\n")?
+    let o8 = http_read_request_r(http_reader(s8))?
+    check("bad_err_400", o8.err == 400)
+    check("bad_method_empty", http_method(o8.req) == "")
+    tcp_close(c8)?
+    tcp_close(s8)?
+
+    // --- case 9: body larger than one read() — exactness (old parser truncated) ---
+    let c9 = tcp_connect("127.0.0.1", port)?
+    let s9 = tcp_accept(listener)?
+    let big = str_repeat("A", 10000)
+    tcp_write(c9, concat(concat("POST /big HTTP/1.1\r\nContent-Length: 10000\r\n\r\n", big), ""))?
+    let o9 = http_read_request_r(http_reader(s9))?
+    check("big_no_err", o9.err == 0)
+    check("big_body_exact", len(http_body(o9.req)) == 10000)
+    tcp_close(c9)?
+    tcp_close(s9)?
+
     tcp_close(listener)?
     print("http_test: all passed")
     return 0

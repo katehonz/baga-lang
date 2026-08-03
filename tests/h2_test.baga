@@ -1,0 +1,204 @@
+// h2_test.baga — loopback HTTP/2 test. An in-process client speaks the h2
+// binary protocol (preface, SETTINGS, HPACK-encoded HEADERS, DATA) against
+// h2_serve running in a go() thread; asserts :status, bodies over DATA with
+// END_STREAM, multiplexed streams, WINDOW_UPDATE replenishment, PING ack.
+
+import "../app-product/httpdbaga/h2.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// The route h2_serve dispatches to (link-time convention).
+fn h2_route(req: Request) -> Response {
+    let method = http_method(req)
+    let path = http_path_only(req)
+    if method == "GET" && path == "/health" {
+        return http_json_response(200, "{\"status\":\"ok\"}")
+    }
+    if method == "POST" && path == "/echo" {
+        return http_json_response(200, http_body(req))
+    }
+    if method == "GET" && path == "/big" {
+        return http_json_response(200, str_repeat("B", 20000))
+    }
+    return http_json_response(404, "{\"error\":\"not found\"}")
+}
+
+fn h2_serve_worker(fd: i64) -> i64 !IO !Net {
+    return h2_serve(fd, http_reader(fd))?
+}
+
+// Client-side response collection for one stream: reads frames until
+// END_STREAM arrives on `want_sid`, decoding HEADERS into :status and
+// accumulating DATA. Notes WINDOW_UPDATE frames seen along the way.
+struct ClientResp {
+    reader: HttpReader,
+    hp: HpackCtx,
+    status: i64,
+    body: str,
+    saw_window_update: i64,
+    saw_ping_ack: i64
+}
+
+fn client_read_response(cr: ClientResp, want_sid: i64) -> ClientResp !IO !Net {
+    let mut cur = cr
+    cur.status = 0
+    cur.body = ""
+    cur.saw_window_update = 0
+    cur.saw_ping_ack = 0
+    let mut done = false
+    while !done {
+        let fr = h2_read_frame(cur.reader)?
+        cur.reader = fr.reader
+        if fr.err != 0 {
+            return cur
+        }
+        let f = fr.frame
+        if f.typ == H2_HEADERS() && f.sid == want_sid {
+            let dec = hpack_decode(cur.hp, f.payload)
+            cur.hp = dec.ctx
+            for i in 0..vec_len(dec.ks) {
+                if vec_get(dec.ks, i) == ":status" {
+                    cur.status = parse_int(vec_get(dec.vs, i))
+                }
+            }
+            if (f.flags & H2_F_END_STREAM()) == H2_F_END_STREAM() {
+                done = true
+            }
+        } else {
+            if f.typ == H2_DATA() && f.sid == want_sid {
+                cur.body = concat(cur.body, str_of_bytes(f.payload))
+                if (f.flags & H2_F_END_STREAM()) == H2_F_END_STREAM() {
+                    done = true
+                }
+            } else {
+                if f.typ == H2_WINDOW_UPDATE() {
+                    cur.saw_window_update = 1
+                } else {
+                    if f.typ == H2_PING() && (f.flags & H2_F_ACK()) == H2_F_ACK() {
+                        cur.saw_ping_ack = 1
+                    }
+                }
+            }
+        }
+    }
+    return cur
+}
+
+fn main() -> i64 !Net !IO !Par {
+    let port = 18436
+    let listener = tcp_listen(port)?
+    let client = tcp_connect("127.0.0.1", port)?
+    let server = tcp_accept(listener)?
+
+    let h = go(h2_serve_worker, server)
+
+    // --- client preface + SETTINGS ---
+    tcp_write_bytes(client, h2_preface())?
+    h2_write_frame(client, H2_SETTINGS(), 0, 0, hpack_empty_bytes())?
+
+    let mut cr = ClientResp {
+        reader: http_reader(client),
+        hp: hpack_ctx(4096),
+        status: 0,
+        body: "",
+        saw_window_update: 0,
+        saw_ping_ack: 0
+    }
+
+    // server's SETTINGS must be the first frame
+    let f0 = h2_read_frame(cr.reader)?
+    cr.reader = f0.reader
+    check("server_settings", f0.frame.typ == H2_SETTINGS() && (f0.frame.flags & H2_F_ACK()) == 0)
+    h2_write_frame(client, H2_SETTINGS(), H2_F_ACK(), 0, hpack_empty_bytes())?
+
+    // --- stream 1: GET /health ---
+    let k1 = vec_new()
+    let v1 = vec_new()
+    vec_push(k1, ":method")
+    vec_push(v1, "GET")
+    vec_push(k1, ":scheme")
+    vec_push(v1, "http")
+    vec_push(k1, ":path")
+    vec_push(v1, "/health")
+    vec_push(k1, ":authority")
+    vec_push(v1, "localhost")
+    h2_write_frame(client, H2_HEADERS(), H2_F_END_HEADERS() + H2_F_END_STREAM(), 1, hpack_encode(k1, v1))?
+
+    let r1 = client_read_response(cr, 1)
+    cr = r1
+    check("s1_status_200", r1.status == 200)
+    check("s1_body", r1.body == "{\"status\":\"ok\"}")
+
+    // --- stream 3: POST /echo with a DATA body ---
+    let k3 = vec_new()
+    let v3 = vec_new()
+    vec_push(k3, ":method")
+    vec_push(v3, "POST")
+    vec_push(k3, ":scheme")
+    vec_push(v3, "http")
+    vec_push(k3, ":path")
+    vec_push(v3, "/echo")
+    vec_push(k3, ":authority")
+    vec_push(v3, "localhost")
+    h2_write_frame(client, H2_HEADERS(), H2_F_END_HEADERS(), 3, hpack_encode(k3, v3))?
+    let echo_body = "{\"hi\":\"baga\"}"
+    h2_write_frame(client, H2_DATA(), H2_F_END_STREAM(), 3, bytes_of_str(echo_body))?
+
+    let r3 = client_read_response(cr, 3)
+    cr = r3
+    check("s3_status_200", r3.status == 200)
+    check("s3_echo", r3.body == echo_body)
+    check("window_update_replenish", r3.saw_window_update == 1)
+
+    // --- stream 5: GET /big — response spans two DATA frames ---
+    let k5 = vec_new()
+    let v5 = vec_new()
+    vec_push(k5, ":method")
+    vec_push(v5, "GET")
+    vec_push(k5, ":scheme")
+    vec_push(v5, "http")
+    vec_push(k5, ":path")
+    vec_push(v5, "/big")
+    vec_push(k5, ":authority")
+    vec_push(v5, "localhost")
+    h2_write_frame(client, H2_HEADERS(), H2_F_END_HEADERS() + H2_F_END_STREAM(), 5, hpack_encode(k5, v5))?
+    let r5 = client_read_response(cr, 5)
+    cr = r5
+    check("s5_status_200", r5.status == 200)
+    check("s5_big_body", len(r5.body) == 20000)
+
+    // --- PING must be acked with the same payload ---
+    h2_write_frame(client, H2_PING(), 0, 0, x"0102030405060708")?
+    let mut saw_ack = false
+    let mut tries: i64 = 0
+    while !saw_ack && tries < 50 {
+        let fp = h2_read_frame(cr.reader)?
+        cr.reader = fp.reader
+        if fp.err != 0 {
+            tries = 50
+        } else {
+            if fp.frame.typ == H2_PING() && (fp.frame.flags & H2_F_ACK()) == H2_F_ACK() {
+                saw_ack = bytes_eq_b(fp.frame.payload, x"0102030405060708")
+            }
+        }
+        tries = tries + 1
+    }
+    check("ping_acked", saw_ack)
+
+    // --- close the connection: GOAWAY, then the worker must exit ---
+    h2_write_frame(client, H2_GOAWAY(), 0, 0, bytes_concat(h2_be32(5), h2_be32(0)))?
+    let joined = join(h)
+    check("worker_exited", joined == 0)
+
+    tcp_close(client)?
+    tcp_close(listener)?
+    print("h2_test: all passed")
+    return 0
+}

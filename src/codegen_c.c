@@ -1236,10 +1236,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <time.h>\n");
     fprintf(out, "#include <pthread.h>\n\n");
 
-    /* arena — всички низови/векторни алокации минават тук (без individual free) */
+    /* arena — всички низови/векторни алокации минават тук (без individual free).
+     * baga_alloc_mu: глобалният arena се ползва от всички нишки (go/go_bg);
+     * без ключ две нишки могат да получат един и същ блок (race → corruption). */
     fprintf(out, "typedef struct baga_ABlk { struct baga_ABlk *next; size_t used, cap; char data[]; } baga_ABlk;\n");
     fprintf(out, "static baga_ABlk *baga_arena_head = NULL;\n");
+    fprintf(out, "static pthread_mutex_t baga_alloc_mu = PTHREAD_MUTEX_INITIALIZER;\n");
     fprintf(out, "static void *baga_alloc(size_t n) {\n");
+    fprintf(out, "    pthread_mutex_lock(&baga_alloc_mu);\n");
     fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
     fprintf(out, "    if (!b || b->used + n > b->cap) {\n");
     fprintf(out, "        size_t cap = n > 8192 ? n : 8192;\n");
@@ -1247,7 +1251,9 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        b->next = baga_arena_head; b->used = 0; b->cap = cap;\n");
     fprintf(out, "        baga_arena_head = b;\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    void *p = b->data + b->used; b->used += n; return p;\n");
+    fprintf(out, "    void *p = b->data + b->used; b->used += n;\n");
+    fprintf(out, "    pthread_mutex_unlock(&baga_alloc_mu);\n");
+    fprintf(out, "    return p;\n");
     fprintf(out, "}\n");
 
     /* runtime helpers */

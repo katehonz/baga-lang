@@ -174,3 +174,12 @@ fn base64url_encode_b(b: bytes) -> str {
 fn base64url_decode_b(s: str) -> bytes {
     return bytes_from_vec(base64url_decode(s))
 }
+
+// Equality over native bytes (Vec-level bytes_eq above predates the type).
+fn bytes_eq_b(a: bytes, b: bytes) -> bool {
+    if bytes_len(a) != bytes_len(b) { return false }
+    for i in 0..bytes_len(a) {
+        if bytes_at(a, i) != bytes_at(b, i) { return false }
+    }
+    return true
+}

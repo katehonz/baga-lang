@@ -1,0 +1,366 @@
+// hpack.baga — HPACK header compression (RFC 7541) for HTTP/2.
+// Pure: no IO. Tables are generated (hpack_tables.baga from RFC 7541
+// Appendices A+B via gen_hpack_tables.py).
+//
+// Decode: full — indexed, literal with/without indexing, never-indexed,
+// dynamic table with size accounting + FIFO eviction, dynamic table size
+// updates, integer coding (N-bit prefix), string literals with Huffman.
+// Encode: conformant subset for server responses — indexed representation
+// for exact static-table matches, literal-without-indexing otherwise, raw
+// strings only (Huffman on encode is optional per RFC; we skip it), no
+// dynamic-table inserts.
+//
+// Known-answer vectors: tests/hpack_test.baga (RFC 7541 C.1/C.2/C.3/C.4).
+
+import "hpack_tables.baga"
+import "../../std/str/str.baga"
+
+struct HpackCtx {
+    dyn_names: Vec<str>,   // oldest first, newest last
+    dyn_vals: Vec<str>,
+    dyn_size: i64,
+    max_size: i64
+}
+
+fn hpack_ctx(max_size: i64) -> HpackCtx {
+    return HpackCtx { dyn_names: vec_new(), dyn_vals: vec_new(), dyn_size: 0, max_size: max_size }
+}
+
+struct HpackInt {
+    value: i64,
+    consumed: i64,
+    err: i64
+}
+
+struct HpackStr {
+    value: str,
+    consumed: i64,
+    err: i64
+}
+
+struct HpackNameVal {
+    name: str,
+    value: str,
+    err: i64
+}
+
+struct HuffOut {
+    value: bytes,
+    err: i64
+}
+
+struct HpackOut {
+    ctx: HpackCtx,
+    ks: Vec<str>,
+    vs: Vec<str>,
+    err: i64
+}
+
+fn hpack_empty_bytes() -> bytes {
+    return bytes_from_vec(vec_new())
+}
+
+fn hpack_one_byte(v: i64) -> bytes {
+    let vec = vec_new()
+    vec_push(vec, v & 255)
+    return bytes_from_vec(vec)
+}
+
+// ---------- integer coding (RFC 7541 §5.1) ----------
+
+fn hpack_int_decode(b: bytes, off: i64, prefix: i64) -> HpackInt {
+    if off >= bytes_len(b) {
+        return HpackInt { value: 0, consumed: 0, err: 1 }
+    }
+    let mask = (1 << prefix) - 1
+    let first = bytes_at(b, off) & mask
+    if first < mask {
+        return HpackInt { value: first, consumed: 1, err: 0 }
+    }
+    let mut v = mask
+    let mut m: i64 = 0
+    let mut i = off + 1
+    let mut running = true
+    while running {
+        if i >= bytes_len(b) {
+            return HpackInt { value: 0, consumed: 0, err: 1 }
+        }
+        let byte = bytes_at(b, i)
+        v = v + ((byte & 127) << m)
+        m = m + 7
+        i = i + 1
+        if (byte & 128) == 0 {
+            running = false
+        }
+        if m > 62 {
+            return HpackInt { value: 0, consumed: 0, err: 1 }
+        }
+    }
+    return HpackInt { value: v, consumed: i - off, err: 0 }
+}
+
+// top = bits already set in the first byte outside the prefix
+// (0x80 for indexed, 0x40 for literal-with-indexing, ...).
+fn hpack_int_encode(v: i64, prefix: i64, top: i64) -> bytes {
+    let mask = (1 << prefix) - 1
+    if v < mask {
+        return hpack_one_byte(top | v)
+    }
+    let mut out = hpack_one_byte(top | mask)
+    let mut rest = v - mask
+    while rest >= 128 {
+        out = bytes_concat(out, hpack_one_byte((rest & 127) | 128))
+        rest = rest >> 7
+    }
+    out = bytes_concat(out, hpack_one_byte(rest))
+    return out
+}
+
+// ---------- Huffman (decode only; encode stays raw) ----------
+
+// Canonical walk using the generated per-length tables: accumulate bits;
+// at each length with entries, code - first_code gives the offset into the
+// (bits, code)-sorted symbol array. Padding must be ≤ 7 all-one bits.
+fn huff_decode_bytes(src: bytes) -> HuffOut {
+    let out = vec_new()
+    let mut code: i64 = 0
+    let mut nbits: i64 = 0
+    for i in 0..bytes_len(src) {
+        let byte = bytes_at(src, i)
+        let mut bit: i64 = 7
+        while bit >= 0 {
+            code = code * 2 + ((byte >> bit) & 1)
+            nbits = nbits + 1
+            if nbits > 30 {
+                return HuffOut { value: hpack_empty_bytes(), err: 1 }
+            }
+            let cnt = huff_count_at(nbits)
+            if cnt > 0 {
+                let k = code - huff_first_code(nbits)
+                if k >= 0 && k < cnt {
+                    let sym = huff_flat_sym(huff_first_off(nbits) + k)
+                    if sym == 256 {
+                        return HuffOut { value: hpack_empty_bytes(), err: 1 }
+                    }
+                    vec_push(out, sym)
+                    code = 0
+                    nbits = 0
+                }
+            }
+            bit = bit - 1
+        }
+    }
+    if nbits >= 8 {
+        return HuffOut { value: hpack_empty_bytes(), err: 1 }
+    }
+    if nbits > 0 {
+        if code != (1 << nbits) - 1 {
+            return HuffOut { value: hpack_empty_bytes(), err: 1 }
+        }
+    }
+    return HuffOut { value: bytes_from_vec(out), err: 0 }
+}
+
+// ---------- string literals (§5.2) ----------
+
+fn hpack_str_decode(b: bytes, off: i64) -> HpackStr {
+    if off >= bytes_len(b) {
+        return HpackStr { value: "", consumed: 0, err: 1 }
+    }
+    let huff = (bytes_at(b, off) & 128) == 128
+    let li = hpack_int_decode(b, off, 7)
+    if li.err != 0 {
+        return HpackStr { value: "", consumed: 0, err: 1 }
+    }
+    let start = off + li.consumed
+    if start + li.value > bytes_len(b) {
+        return HpackStr { value: "", consumed: 0, err: 1 }
+    }
+    let raw = bytes_slice(b, start, start + li.value)
+    if huff {
+        let hd = huff_decode_bytes(raw)
+        if hd.err != 0 {
+            return HpackStr { value: "", consumed: 0, err: 1 }
+        }
+        return HpackStr { value: str_of_bytes(hd.value), consumed: li.consumed + li.value, err: 0 }
+    }
+    return HpackStr { value: str_of_bytes(raw), consumed: li.consumed + li.value, err: 0 }
+}
+
+fn hpack_encode_str(s: str) -> bytes {
+    let b = bytes_of_str(s)
+    return bytes_concat(hpack_int_encode(bytes_len(b), 7, 0), b)
+}
+
+// ---------- table lookup ----------
+
+// Index resolution: 1..61 static; >= 62 dynamic (62 = newest).
+fn hpack_lookup(ctx: HpackCtx, idx: i64) -> HpackNameVal {
+    if idx >= 1 && idx <= 61 {
+        return HpackNameVal { name: hpack_static_name(idx), value: hpack_static_value(idx), err: 0 }
+    }
+    let p = idx - 62
+    let n = vec_len(ctx.dyn_names)
+    if p < 0 || p >= n {
+        return HpackNameVal { name: "", value: "", err: 1 }
+    }
+    let at = n - 1 - p
+    return HpackNameVal { name: vec_get(ctx.dyn_names, at), value: vec_get(ctx.dyn_vals, at), err: 0 }
+}
+
+fn vec_drop_first_str(v: Vec<str>) -> Vec<str> {
+    let out = vec_new()
+    for i in 1..vec_len(v) {
+        vec_push(out, vec_get(v, i))
+    }
+    return out
+}
+
+fn hpack_evict_to(ctx: HpackCtx, limit: i64) -> HpackCtx {
+    let mut c = ctx
+    while c.dyn_size > limit && vec_len(c.dyn_names) > 0 {
+        let on = vec_get(c.dyn_names, 0)
+        let ov = vec_get(c.dyn_vals, 0)
+        c.dyn_size = c.dyn_size - (len(on) + len(ov) + 32)
+        c.dyn_names = vec_drop_first_str(c.dyn_names)
+        c.dyn_vals = vec_drop_first_str(c.dyn_vals)
+    }
+    return c
+}
+
+fn hpack_dyn_add(ctx: HpackCtx, name: str, value: str) -> HpackCtx {
+    let esize = len(name) + len(value) + 32
+    let mut c = ctx
+    c.max_size = ctx.max_size
+    vec_push(c.dyn_names, name)
+    vec_push(c.dyn_vals, value)
+    c.dyn_size = c.dyn_size + esize
+    return hpack_evict_to(c, c.max_size)
+}
+
+fn hpack_set_max(ctx: HpackCtx, new_max: i64) -> HpackCtx {
+    let mut c = ctx
+    c.max_size = new_max
+    return hpack_evict_to(c, new_max)
+}
+
+// ---------- block decode ----------
+
+fn hpack_decode(ctx: HpackCtx, block: bytes) -> HpackOut {
+    let ks = vec_new()
+    let vs = vec_new()
+    let mut c = ctx
+    let mut off: i64 = 0
+    let n = bytes_len(block)
+    while off < n {
+        let b0 = bytes_at(block, off)
+        if (b0 & 128) == 128 {
+            // indexed header field (7-bit prefix)
+            let id = hpack_int_decode(block, off, 7)
+            if id.err != 0 {
+                return HpackOut { ctx: c, ks: ks, vs: vs, err: 1 }
+            }
+            let nv = hpack_lookup(c, id.value)
+            if nv.err != 0 {
+                return HpackOut { ctx: c, ks: ks, vs: vs, err: 1 }
+            }
+            vec_push(ks, nv.name)
+            vec_push(vs, nv.value)
+            off = off + id.consumed
+        } else {
+            if (b0 & 224) == 32 {
+                // dynamic table size update (5-bit prefix)
+                let id = hpack_int_decode(block, off, 5)
+                if id.err != 0 {
+                    return HpackOut { ctx: c, ks: ks, vs: vs, err: 1 }
+                }
+                c = hpack_set_max(c, id.value)
+                off = off + id.consumed
+            } else {
+                // literal: incremental (01xxxxxx, 6-bit name index, §6.2.1),
+                // without indexing (0000xxxx) / never indexed (0001xxxx),
+                // both with a 4-bit name index (§6.2.2/3)
+                let incremental = (b0 & 192) == 64
+                let mut name_prefix: i64 = 4
+                if incremental {
+                    name_prefix = 6
+                }
+                let id = hpack_int_decode(block, off, name_prefix)
+                if id.err != 0 {
+                    return HpackOut { ctx: c, ks: ks, vs: vs, err: 1 }
+                }
+                let mut name = ""
+                let mut noff = off + id.consumed
+                if id.value == 0 {
+                    let ns = hpack_str_decode(block, noff)
+                    if ns.err != 0 {
+                        return HpackOut { ctx: c, ks: ks, vs: vs, err: 1 }
+                    }
+                    name = ns.value
+                    noff = noff + ns.consumed
+                } else {
+                    let nv = hpack_lookup(c, id.value)
+                    if nv.err != 0 {
+                        return HpackOut { ctx: c, ks: ks, vs: vs, err: 1 }
+                    }
+                    name = nv.name
+                }
+                let val = hpack_str_decode(block, noff)
+                if val.err != 0 {
+                    return HpackOut { ctx: c, ks: ks, vs: vs, err: 1 }
+                }
+                vec_push(ks, name)
+                vec_push(vs, val.value)
+                if incremental {
+                    c = hpack_dyn_add(c, name, val.value)
+                }
+                off = noff + val.consumed
+            }
+        }
+    }
+    return HpackOut { ctx: c, ks: ks, vs: vs, err: 0 }
+}
+
+// ---------- encode (server responses; raw strings, no dynamic inserts) ----------
+
+fn hpack_static_exact(name: str, value: str) -> i64 {
+    for i in 1..62 {
+        if hpack_static_name(i) == name {
+            if hpack_static_value(i) == value {
+                return i
+            }
+        }
+    }
+    return 0
+}
+
+fn hpack_static_name_idx(name: str) -> i64 {
+    for i in 1..62 {
+        if hpack_static_name(i) == name {
+            return i
+        }
+    }
+    return 0
+}
+
+fn hpack_encode(ks: Vec<str>, vs: Vec<str>) -> bytes {
+    let mut out = hpack_empty_bytes()
+    for i in 0..vec_len(ks) {
+        let name = vec_get(ks, i)
+        let value = vec_get(vs, i)
+        let exact = hpack_static_exact(name, value)
+        if exact > 0 {
+            out = bytes_concat(out, hpack_int_encode(exact, 7, 128))
+        } else {
+            let nidx = hpack_static_name_idx(name)
+            if nidx > 0 {
+                out = bytes_concat(out, hpack_int_encode(nidx, 4, 0))
+            } else {
+                out = bytes_concat(out, hpack_one_byte(0))
+                out = bytes_concat(out, hpack_encode_str(name))
+            }
+            out = bytes_concat(out, hpack_encode_str(value))
+        }
+    }
+    return out
+}

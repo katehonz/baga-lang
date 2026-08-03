@@ -1,0 +1,131 @@
+// hpack_test.baga — HPACK (RFC 7541) known-answer tests.
+// Vectors are the RFC's own Appendix C examples:
+//   C.1  integer representation (10, 1337, 42)
+//   C.3  three-request decode sequence WITHOUT Huffman (dynamic table growth)
+//   C.4  the same three requests WITH Huffman-coded string literals
+// plus encoder round-trips through our own decoder.
+
+import "../app-product/httpdbaga/hpack.baga"
+import "../std/bytes/bytes.baga"
+import "../std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn pair_eq(ks: Vec<str>, vs: Vec<str>, i: i64, name: str, value: str) -> bool {
+    if i >= vec_len(ks) { return false }
+    return vec_get(ks, i) == name && vec_get(vs, i) == value
+}
+
+fn main() -> i64 {
+    // ---------- C.1 integer representation ----------
+    let i1 = hpack_int_decode(x"0a", 0, 5)
+    check("c1_1_decode", i1.err == 0 && i1.value == 10 && i1.consumed == 1)
+    let i2 = hpack_int_decode(x"1f9a0a", 0, 5)
+    check("c1_2_decode", i2.err == 0 && i2.value == 1337 && i2.consumed == 3)
+    let i3 = hpack_int_decode(x"2a", 0, 8)
+    check("c1_3_decode", i3.err == 0 && i3.value == 42 && i3.consumed == 1)
+    check("c1_1_encode", bytes_eq_b(hpack_int_encode(10, 5, 0), x"0a"))
+    check("c1_2_encode", bytes_eq_b(hpack_int_encode(1337, 5, 0), x"1f9a0a"))
+    check("c1_3_encode", bytes_eq_b(hpack_int_encode(42, 8, 0), x"2a"))
+
+    // ---------- C.2 string literals ----------
+    let s1 = hpack_str_decode(x"0f7777772e6578616d706c652e636f6d", 0)
+    check("c2_1_raw", s1.err == 0 && s1.value == "www.example.com")
+    let s2 = hpack_str_decode(x"86a8eb10649cbf", 0)
+    check("c2_2_huffman", s2.err == 0 && s2.value == "no-cache")
+
+    // ---------- standalone Huffman: www.example.com ----------
+    let hd = huff_decode_bytes(x"f1e3c2e5f23a6ba0ab90f4ff")
+    check("huff_www", hd.err == 0 && str_of_bytes(hd.value) == "www.example.com")
+
+    // ---------- C.3: three requests, no Huffman, dynamic table grows ----------
+    let mut ctx = hpack_ctx(4096)
+
+    let d1 = hpack_decode(ctx, x"828684410f7777772e6578616d706c652e636f6d")
+    check("c3_1_no_err", d1.err == 0)
+    check("c3_1_count", vec_len(d1.ks) == 4)
+    check("c3_1_method", pair_eq(d1.ks, d1.vs, 0, ":method", "GET"))
+    check("c3_1_scheme", pair_eq(d1.ks, d1.vs, 1, ":scheme", "http"))
+    check("c3_1_path", pair_eq(d1.ks, d1.vs, 2, ":path", "/"))
+    check("c3_1_authority", pair_eq(d1.ks, d1.vs, 3, ":authority", "www.example.com"))
+    check("c3_1_table_57", d1.ctx.dyn_size == 57)
+    ctx = d1.ctx
+
+    let d2 = hpack_decode(ctx, x"828684be58086e6f2d6361636865")
+    check("c3_2_no_err", d2.err == 0)
+    check("c3_2_count", vec_len(d2.ks) == 5)
+    check("c3_2_authority_dyn", pair_eq(d2.ks, d2.vs, 3, ":authority", "www.example.com"))
+    check("c3_2_cache", pair_eq(d2.ks, d2.vs, 4, "cache-control", "no-cache"))
+    check("c3_2_table_110", d2.ctx.dyn_size == 110)
+    ctx = d2.ctx
+
+    let d3 = hpack_decode(ctx, x"828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565")
+    check("c3_3_no_err", d3.err == 0)
+    check("c3_3_count", vec_len(d3.ks) == 5)
+    check("c3_3_scheme_https", pair_eq(d3.ks, d3.vs, 1, ":scheme", "https"))
+    check("c3_3_path_index", pair_eq(d3.ks, d3.vs, 2, ":path", "/index.html"))
+    check("c3_3_authority", pair_eq(d3.ks, d3.vs, 3, ":authority", "www.example.com"))
+    check("c3_3_custom", pair_eq(d3.ks, d3.vs, 4, "custom-key", "custom-value"))
+    check("c3_3_table_164", d3.ctx.dyn_size == 164)
+
+    // ---------- C.4: the same three requests with Huffman ----------
+    let mut ctx4 = hpack_ctx(4096)
+
+    let e1 = hpack_decode(ctx4, x"828684418cf1e3c2e5f23a6ba0ab90f4ff")
+    check("c4_1_no_err", e1.err == 0)
+    check("c4_1_authority", pair_eq(e1.ks, e1.vs, 3, ":authority", "www.example.com"))
+    check("c4_1_table_57", e1.ctx.dyn_size == 57)
+    ctx4 = e1.ctx
+
+    let e2 = hpack_decode(ctx4, x"828684be5886a8eb10649cbf")
+    check("c4_2_cache", pair_eq(e2.ks, e2.vs, 4, "cache-control", "no-cache"))
+    check("c4_2_table_110", e2.ctx.dyn_size == 110)
+    ctx4 = e2.ctx
+
+    let e3 = hpack_decode(ctx4, x"828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf")
+    check("c4_3_no_err", e3.err == 0)
+    check("c4_3_custom", pair_eq(e3.ks, e3.vs, 4, "custom-key", "custom-value"))
+    check("c4_3_table_164", e3.ctx.dyn_size == 164)
+
+    // ---------- dynamic table size update (001xxxxx, 5-bit prefix) ----------
+    let su = hpack_decode(hpack_ctx(4096), x"3f9a0a")
+    check("size_update", su.err == 0 && su.ctx.max_size == 1337 && vec_len(su.ks) == 0)
+
+    // ---------- encoder ----------
+    // exact static match encodes as a single indexed byte (:status 200 = 8)
+    let sk = vec_new()
+    let sv = vec_new()
+    vec_push(sk, ":status")
+    vec_push(sv, "200")
+    check("enc_status_indexed", bytes_eq_b(hpack_encode(sk, sv), x"88"))
+
+    // round-trip: encode a mixed list, decode it back
+    let rk = vec_new()
+    let rv = vec_new()
+    vec_push(rk, ":method")
+    vec_push(rv, "GET")
+    vec_push(rk, ":path")
+    vec_push(rv, "/health")
+    vec_push(rk, "content-type")
+    vec_push(rv, "application/json")
+    vec_push(rk, "x-baga")
+    vec_push(rv, "yes")
+    let enc = hpack_encode(rk, rv)
+    let dec = hpack_decode(hpack_ctx(4096), enc)
+    check("rt_no_err", dec.err == 0)
+    check("rt_count", vec_len(dec.ks) == 4)
+    check("rt_method", pair_eq(dec.ks, dec.vs, 0, ":method", "GET"))
+    check("rt_path", pair_eq(dec.ks, dec.vs, 1, ":path", "/health"))
+    check("rt_ctype", pair_eq(dec.ks, dec.vs, 2, "content-type", "application/json"))
+    check("rt_custom", pair_eq(dec.ks, dec.vs, 3, "x-baga", "yes"))
+
+    print("hpack_test: all passed")
+    return 0
+}

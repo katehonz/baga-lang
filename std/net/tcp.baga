@@ -134,3 +134,52 @@ fn tcp_write(fd: i64, data: str) -> i64 !Net !IO {
 fn tcp_close(fd: i64) -> i64 !IO {
     return close(fd)
 }
+
+// ---------- binary-safe I/O (bytes) ----------
+// str is NUL-terminated, so binary protocols (HTTP/2 framing) cannot ride on
+// tcp_read/tcp_write. Contract probed in tests/probe_binary_io.baga:
+//  - read:  read() fills a heap str buffer in place; bytes come out via
+//    byte_at (raw index, no strlen), so 0x00/0xFF survive;
+//  - write: str_of_bytes is a memcpy with explicit length and write() takes
+//    a count, so embedded NULs travel; len()/substr() must never touch the
+//    transport string afterwards (strlen would lie).
+
+// One read() of up to n bytes; bytes_len < n means fewer were available
+// (0 on EOF/error). Binary-safe.
+fn tcp_read_bytes(fd: i64, n: i64) -> bytes !Net !IO {
+    if n <= 0 { return bytes_from_vec(vec_new()) }
+    let buf = str_repeat(" ", n)
+    let got = read(fd, buf, n)?
+    if got <= 0 { return bytes_from_vec(vec_new()) }
+    let v = vec_new()
+    for i in 0..got {
+        vec_push(v, byte_at(buf, i))
+    }
+    return bytes_from_vec(v)
+}
+
+// Exactly n bytes, looping on partial reads. bytes_len < n only at
+// EOF/error (returns what was read). Binary-safe.
+fn tcp_read_exact(fd: i64, n: i64) -> bytes !Net !IO {
+    let mut out = bytes_from_vec(vec_new())
+    while bytes_len(out) < n {
+        let chunk = tcp_read_bytes(fd, n - bytes_len(out))?
+        if bytes_len(chunk) == 0 {
+            return out
+        }
+        out = bytes_concat(out, chunk)
+    }
+    return out
+}
+
+// Write all of b, looping on partial writes (bytes_slice, not substr —
+// substr bounds through strlen and corrupts binary tails). 0 ok, -1 error.
+fn tcp_write_bytes(fd: i64, b: bytes) -> i64 !Net !IO {
+    let mut rest = b
+    while bytes_len(rest) > 0 {
+        let w = write(fd, str_of_bytes(rest), bytes_len(rest))?
+        if w <= 0 { return -1 }
+        rest = bytes_slice(rest, w, bytes_len(rest))
+    }
+    return 0
+}

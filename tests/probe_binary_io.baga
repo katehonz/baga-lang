@@ -1,0 +1,69 @@
+// probe_binary_io.baga — empirical probe for the HTTP/2 milestone (temporary).
+// Questions:
+//  1. Write path: bytes -> str_of_bytes -> write(fd, s, n) — do NUL/high bytes travel?
+//  2. Read path: read(fd, str_repeat buf, n) + byte_at — do NUL/high bytes survive?
+//  3. bytes literal x"..." + bytes_from_vec sanity.
+//  4. chr(255) trap: chr is UTF-8 codepoint, not raw byte (tcp.baga poke8 latent bug).
+
+import "../std/net/tcp.baga"
+import "../std/io/io.baga"
+import "../std/os/os.baga"
+import "../std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Net !IO {
+    let port = 18999
+    let listener = tcp_listen(port)?
+    let c = tcp_connect("127.0.0.1", port)?
+    let s = tcp_accept(listener)?
+
+    // --- Q4 first: chr() is UTF-8, not a raw byte source ---
+    check("chr255_is_utf8_len2", len(chr(255)) == 2)
+
+    // --- Q1: send 00 01 ff 00 via bytes -> str_of_bytes -> write(count) ---
+    let v = vec_new()
+    vec_push(v, 0)
+    vec_push(v, 1)
+    vec_push(v, 255)
+    vec_push(v, 0)
+    let b = bytes_from_vec(v)
+    let sbuf = str_of_bytes(b)
+    let w = write(c, sbuf, 4)?
+    check("write_count4", w == 4)
+
+    // --- Q2: read into str buffer; NUL + 255 must survive byte_at ---
+    let rbuf = str_repeat(" ", 4)
+    let got = read(s, rbuf, 4)?
+    check("read_count4", got == 4)
+    check("nul_survives_b0", byte_at(rbuf, 0) == 0)
+    check("byte_b1", byte_at(rbuf, 1) == 1)
+    check("byte_b2_255", byte_at(rbuf, 2) == 255)
+    check("nul_survives_b3", byte_at(rbuf, 3) == 0)
+
+    // --- Q1b: echo the str buffer back (write from read-buffer) ---
+    let w2 = write(s, rbuf, 4)?
+    check("echo_write4", w2 == 4)
+    let rbuf2 = str_repeat(" ", 4)
+    let got2 = read(c, rbuf2, 4)?
+    check("echo_read4", got2 == 4)
+    check("echo_b0_nul", byte_at(rbuf2, 0) == 0)
+    check("echo_b2_255", byte_at(rbuf2, 2) == 255)
+
+    // --- Q3: bytes literal ---
+    let bl = x"deadbeef"
+    check("bytes_lit", bytes_len(bl) == 4 && bytes_at(bl, 0) == 222)
+
+    tcp_close(c)?
+    tcp_close(s)?
+    tcp_close(listener)?
+    print("probe_binary_io: all passed")
+    return 0
+}
