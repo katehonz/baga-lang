@@ -194,9 +194,86 @@ static void cmd_manifest(void) {
     }
 }
 
+typedef struct { Manifest pkgs[128]; int n; } Graph;   /* pkgs[0] = root */
+
+static void canon(const char *path, char out[512]) {
+    if (!realpath(path, out))
+        die("не мога да намеря '%s': %s", path, strerror(errno));
+}
+
+static const char *base_name(const char *dir) {
+    const char *s = strrchr(dir, '/');
+    return s ? s + 1 : dir;
+}
+
+/* dep -> корен на пакета. За path deps: <manifest_dir>/<path>. Git: Task 5. */
+static void dep_root(const Manifest *parent, const Dep *d, char out[512]) {
+    char tmp[1024];
+    if (d->path[0]) {
+        snprintf(tmp, sizeof tmp, "%s/%s", parent->dir, d->path);
+        canon(tmp, out);
+    } else {
+        die("git зависимости: неоще (T5)");   /* заменя се в Task 5 */
+    }
+}
+
+static void resolve_into(Graph *g, const char *dir, char stack[][512], int depth) {
+    if (depth >= 64) die("твърде дълбок граф на зависимостите");
+    for (int i = 0; i < depth; i++)
+        if (strcmp(stack[i], dir) == 0)
+            die("цикъл в зависимостите при '%s' (път: %s -> ...)", base_name(dir), base_name(stack[i]));
+
+    char mpath[1024];
+    snprintf(mpath, sizeof mpath, "%s/sandak.toml", dir);
+    if (access(mpath, R_OK) != 0)
+        die("липсва манифест: %s", mpath);
+
+    if (g->n >= 128) die("твърде много пакети (max 128)");
+    Manifest *m = &g->pkgs[g->n];
+    parse_manifest(mpath, m);
+    snprintf(m->dir, 512, "%s", dir);
+    if (strcmp(base_name(dir), m->name) != 0)
+        die("директория '%s' не съвпада с името на пакета '%s'", base_name(dir), m->name);
+    for (int i = 0; i < g->n; i++)
+        if (strcmp(g->pkgs[i].name, m->name) == 0)
+            die("дублирано име на пакет '%s' (%s и %s)", m->name, g->pkgs[i].dir, dir);
+    g->n++;
+
+    snprintf(stack[depth], 512, "%s", dir);
+    for (int i = 0; i < m->n_deps; i++) {
+        char root[512];
+        dep_root(m, &m->deps[i], root);
+        /* обратен ръб към връх от текущия път — цикъл (проверява се ПРЕДИ diamond-skip) */
+        for (int j = 0; j <= depth; j++)
+            if (strcmp(stack[j], root) == 0)
+                die("цикъл в зависимостите при '%s' (път: %s -> ...)", base_name(root), base_name(stack[j]));
+        /* вече резолвиран пакет (diamond) — пропускай */
+        int seen = 0;
+        for (int j = 0; j < g->n; j++)
+            if (strcmp(g->pkgs[j].dir, root) == 0) { seen = 1; break; }
+        if (!seen) resolve_into(g, root, stack, depth + 1);
+    }
+}
+
+static void resolve(Graph *g, const char *root_dir) {
+    memset(g, 0, sizeof *g);
+    char canon_root[512];
+    canon(root_dir, canon_root);
+    static char stack[64][512];
+    resolve_into(g, canon_root, stack, 0);
+}
+
+static void cmd_fetch(void) {
+    static Graph g;   /* ~15MB — не на стека */
+    resolve(&g, ".");
+    for (int i = 0; i < g.n; i++)
+        printf("resolved: %s %s\n", g.pkgs[i].name, g.pkgs[i].version);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { usage(); return 1; }
     if (strcmp(argv[1], "manifest") == 0) { cmd_manifest(); return 0; }
+    if (strcmp(argv[1], "fetch") == 0) { cmd_fetch(); return 0; }
     usage();
     return 1;
 }
