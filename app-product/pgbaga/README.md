@@ -11,7 +11,9 @@ model as httpdbaga/jwtbaga: ship a working product and log language friction in
 
 | Capability | Notes |
 |------------|--------|
-| TCP connect (IPv4) | `tcp_connect` dotted quad |
+| TCP connect | hostname (DNS via `getaddrinfo`) or dotted IPv4 |
+| Timeouts / tuning | `pg_connect_to` (SO_RCVTIMEO/SO_SNDTIMEO), TCP_NODELAY, SO_KEEPALIVE |
+| Cancel | `pg_cancel` — CancelRequest with the BackendKeyData from startup |
 | StartupMessage | protocol 3.0, `user` / `database` / `client_encoding` |
 | **SCRAM-SHA-256** | SASL (default on modern Postgres) |
 | Cleartext password | auth kind 3 (if `pg_hba` asks) |
@@ -52,6 +54,10 @@ struct PgResult { ok, err, tag, ncols, nrows, colnames, coltypes,
                   cells, nulls, tx_status, conn }
 
 fn pg_connect(host, port, user, password, database) -> PgConn !Net !IO !Random
+fn pg_connect_to(host, port, user, password, database, timeout_s) // hostname or
+    // dotted IPv4; timeout (seconds) bounds connect/reads/writes; 0 = blocking
+fn pg_set_timeout(conn, secs) -> i64   // retune a live connection (0 clears)
+fn pg_cancel(conn, host, port) -> i64  // CancelRequest on a fresh connection
 fn pg_close(conn: PgConn) -> i64 !IO !Net
 fn pg_query(conn: PgConn, sql: str) -> PgResult !IO !Net
 fn pg_query_params(conn, sql, vals: Vec<str>, nulls: Vec<i64>) -> PgResult !IO !Net

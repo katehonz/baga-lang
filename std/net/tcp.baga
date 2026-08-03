@@ -185,3 +185,204 @@ fn tcp_write_bytes(fd: i64, b: bytes) -> i64 !Net !IO {
     }
     return 0
 }
+
+// ---------- DNS + timeouts + client tuning (production connects) ----------
+
+extern fn getaddrinfo(name: str, service: str, hints: i64, res: i64) -> i64 !Net
+extern fn freeaddrinfo(ptr: i64) -> i64 !Net
+extern fn lseek(fd: i64, offset: i64, whence: i64) -> i64 !Net
+
+// Copy n bytes starting at memory address `addr` into a fresh str buffer.
+// Route: SYS_write(1) memfd<-memory, lseek back to 0 (SYS_write advances
+// the file offset), then read() memfd->heap str. Decode with byte_at/mem_i64
+// only — strlen-based ops (len/substr) lie on raw bytes.
+fn mem_read(addr: i64, n: i64) -> str !Net !IO {
+    if n <= 0 {
+        return ""
+    }
+    let mfd = memfd_create("baga_mr", 0)?
+    if mfd < 0 {
+        return ""
+    }
+    let w = syscall(1, mfd, addr, n)?
+    if w != n {
+        syscall(3, mfd, 0, 0)?
+        return ""
+    }
+    lseek(mfd, 0, 0)?
+    let buf = str_repeat(" ", n)
+    let r = read(mfd, buf, n)?
+    syscall(3, mfd, 0, 0)?
+    if r != n {
+        return ""
+    }
+    return buf
+}
+
+// Host (dotted IPv4 or name) → packed octets (o1<<24 | o2<<16 | o3<<8 | o4);
+// -1 on failure. Dotted input skips the resolver. AF_INET only for now.
+fn tcp_resolve_ipv4(host: str) -> i64 !Net !IO {
+    let parts = str_split(host, ".")
+    if vec_len(parts) == 4 {
+        return ((parse_int(vec_get(parts, 0)) & 255) << 24)
+            | ((parse_int(vec_get(parts, 1)) & 255) << 16)
+            | ((parse_int(vec_get(parts, 2)) & 255) << 8)
+            | (parse_int(vec_get(parts, 3)) & 255)
+    }
+    let a = arena_new()
+    let hints = arena_alloc(a, 48)    // struct addrinfo (LP64)
+    let res = arena_alloc(a, 8)       // struct addrinfo *
+    let mfd = memfd_create("baga_hints", 0)?
+    if mfd < 0 {
+        arena_free(a)
+        return -1
+    }
+    let mut i: i64 = 0
+    while i < 48 {
+        poke8(mfd, i, 0)?
+        i = i + 1
+    }
+    poke8(mfd, 4, 2)?                 // ai_family = AF_INET
+    poke8(mfd, 8, 1)?                 // ai_socktype = SOCK_STREAM
+    let n = pread(mfd, hints, 48, 0)?
+    syscall(3, mfd, 0, 0)?
+    if n != 48 {
+        arena_free(a)
+        return -1
+    }
+    // service "0" — the real port is patched by make_sockaddr afterwards
+    let rc = getaddrinfo(host, "0", hints, res)?
+    if rc != 0 {
+        arena_free(a)
+        return -1
+    }
+    let mut ai = mem_i64(mem_read(res, 8)?, 0)
+    let first = ai
+    let mut out: i64 = -1
+    while ai != 0 && out < 0 {
+        let sa_p = mem_i64(mem_read(ai + 24, 8)?, 0)   // ai_addr
+        let sa = mem_read(sa_p, 16)?
+        if sa != "" && byte_at(sa, 0) == 2 && byte_at(sa, 1) == 0 {
+            out = ((byte_at(sa, 4) & 255) << 24)
+                | ((byte_at(sa, 5) & 255) << 16)
+                | ((byte_at(sa, 6) & 255) << 8)
+                | (byte_at(sa, 7) & 255)
+        }
+        ai = mem_i64(mem_read(ai + 40, 8)?, 0)         // ai_next
+    }
+    freeaddrinfo(first)?
+    arena_free(a)
+    return out
+}
+
+// Stage one little-endian i64 into a memfd at off (poke8 is byte-wise).
+fn poke64(mfd: i64, off: i64, v: i64) -> i64 !Net {
+    let mut i: i64 = 0
+    while i < 8 {
+        poke8(mfd, off + i, (v >> (i * 8)) & 255)?
+        i = i + 1
+    }
+    return 0
+}
+
+// SO_RCVTIMEO + SO_SNDTIMEO from one struct timeval (16 bytes on LP64).
+// secs <= 0 is a no-op. Once set, a blocked read()/write()/connect() fails
+// instead of hanging forever. 0 on success, -1 on error.
+fn tcp_set_timeouts(fd: i64, secs: i64) -> i64 !Net {
+    if secs <= 0 {
+        return 0
+    }
+    let a = arena_new()
+    let tv = arena_alloc(a, 16)
+    let mfd = memfd_create("baga_tv", 0)?
+    if mfd < 0 {
+        arena_free(a)
+        return -1
+    }
+    poke64(mfd, 0, secs)?             // tv_sec
+    poke64(mfd, 8, 0)?                // tv_usec
+    let n = pread(mfd, tv, 16, 0)?
+    syscall(3, mfd, 0, 0)?
+    if n != 16 {
+        arena_free(a)
+        return -1
+    }
+    let r1 = setsockopt(fd, 1, 20, tv, 16)?   // SO_RCVTIMEO
+    let r2 = setsockopt(fd, 1, 21, tv, 16)?   // SO_SNDTIMEO
+    arena_free(a)
+    if r1 != 0 || r2 != 0 {
+        return -1
+    }
+    return 0
+}
+
+// Set an int socket option to 1 (4-byte staging, like set_reuseaddr).
+fn tcp_set_sockopt_one(fd: i64, level: i64, opt: i64) -> i64 !Net {
+    let a = arena_new()
+    let o = arena_alloc(a, 4)
+    let mfd = memfd_create("baga_so", 0)?
+    if mfd < 0 {
+        arena_free(a)
+        return -1
+    }
+    poke8(mfd, 0, 1)?
+    poke8(mfd, 1, 0)?
+    poke8(mfd, 2, 0)?
+    poke8(mfd, 3, 0)?
+    let n = pread(mfd, o, 4, 0)?
+    syscall(3, mfd, 0, 0)?
+    if n != 4 {
+        arena_free(a)
+        return -1
+    }
+    let r = setsockopt(fd, level, opt, o, 4)?
+    arena_free(a)
+    return r
+}
+
+// TCP_NODELAY — the wire protocols here are chatty; kill delayed-ACK waits.
+fn tcp_set_nodelay(fd: i64) -> i64 !Net {
+    return tcp_set_sockopt_one(fd, 6, 1)?       // IPPROTO_TCP, TCP_NODELAY
+}
+
+// SO_KEEPALIVE — let the kernel notice half-dead long-lived connections.
+fn tcp_set_keepalive(fd: i64) -> i64 !Net {
+    return tcp_set_sockopt_one(fd, 1, 9)?       // SOL_SOCKET, SO_KEEPALIVE
+}
+
+// Production connect: hostname or dotted IPv4, optional timeout in seconds
+// (0 = classic blocking behavior), TCP_NODELAY + SO_KEEPALIVE always.
+// On Linux SO_SNDTIMEO also bounds connect() itself. Returns fd, or -1.
+fn tcp_connect_to(host: str, port: i64, timeout_s: i64) -> i64 !Net !IO {
+    let packed = tcp_resolve_ipv4(host)?
+    if packed < 0 {
+        return -1
+    }
+    let a = arena_new()
+    let sa = arena_alloc(a, 16)
+    if make_sockaddr(sa, port,
+        (packed >> 24) & 255,
+        (packed >> 16) & 255,
+        (packed >> 8) & 255,
+        packed & 255) != 0 {
+        arena_free(a)
+        return -1
+    }
+    let s = socket(2, 1, 0)?
+    if s < 0 {
+        arena_free(a)
+        return -1
+    }
+    if timeout_s > 0 {
+        tcp_set_timeouts(s, timeout_s)?
+    }
+    tcp_set_nodelay(s)?
+    tcp_set_keepalive(s)?
+    let rc = connect(s, sa, 16)?
+    arena_free(a)
+    if rc != 0 {
+        close(s)?
+        return -1
+    }
+    return s
+}

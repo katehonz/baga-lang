@@ -129,6 +129,18 @@ fn pg_sync_msg() -> bytes {
     return pg_msg(83, pg_empty())     // 'S' = 83
 }
 
+// CancelRequest (no type byte, sent on a FRESH connection):
+// Int32(16) + Int32(80877102) + pid + 4-byte secret key from BackendKeyData.
+fn pg_cancel_msg(pid: i64, key: bytes) -> bytes {
+    let mut b = pg_be32(16)
+    b = bytes_concat(b, pg_be32(80877102))
+    b = bytes_concat(b, pg_be32(pid))
+    if bytes_len(key) >= 4 {
+        b = bytes_concat(b, bytes_slice(key, 0, 4))
+    }
+    return b
+}
+
 // ---------- Extended Query (parameterized $1..$n) ----------
 
 // Parse: 'P' + dest_stmt\0 + query\0 + Int16(nparams) + Int32 type_oids (0 = unspecified).

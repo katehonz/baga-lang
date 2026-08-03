@@ -231,6 +231,27 @@ fn main() -> i64 !Net !IO !Random {
 
     pg_close(c)?
 
+    // --- production connect: hostname, timeouts, cancel ---
+    let pc = pg_connect_to("localhost", port, user, password, database, 10)?
+    check(fails, "connect_hostname_timeout", pc.ok == 1)
+    if pc.ok == 1 {
+        check(fails, "set_timeout_live", pg_set_timeout(pc, 10) == 0)
+        let rp1 = pg_query(pc, "SELECT 5 AS n")?
+        check(fails, "query_after_set_timeout", rp1.ok == 1 && pg_cell_i64(rp1, 0, 0) == 5)
+        check(fails, "cancel_delivered", pg_cancel(rp1.conn, "localhost", port) == 0)
+        // idle backends ignore CancelRequest — the connection must survive
+        let rp2 = pg_query(rp1.conn, "SELECT 6 AS n")?
+        check(fails, "idle_cancel_harmless", rp2.ok == 1 && pg_cell_i64(rp2, 0, 0) == 6)
+        pg_close(rp2.conn)?
+    }
+
+    // cancel toward a dead endpoint fails cleanly (nothing hangs)
+    let pc2 = pg_connect(host, port, user, password, database)?
+    if pc2.ok == 1 {
+        check(fails, "cancel_bad_endpoint", pg_cancel(pc2, "127.0.0.1", 1) == -1)
+        pg_close(pc2)?
+    }
+
     // wrong password must fail
     let bad = pg_connect(host, port, user, "wrong-password-xyz", database)?
     check(fails, "bad_password", bad.ok == 0)

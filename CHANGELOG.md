@@ -2,7 +2,23 @@
 
 ## [Unreleased]
 
+### std/net — production connects
+- **DNS resolution:** `tcp_resolve_ipv4` — hostnames via `getaddrinfo`
+  (AF_INET, `mem_read` pointer-walk through the `addrinfo` list); dotted
+  IPv4 still short-circuits the resolver.
+- **Timeouts:** `tcp_set_timeouts` (SO_RCVTIMEO + SO_SNDTIMEO) — a blocked
+  read/write/connect fails instead of hanging forever.
+- **Client tuning:** `tcp_set_nodelay` (TCP_NODELAY), `tcp_set_keepalive`
+  (SO_KEEPALIVE); `tcp_connect_to(host, port, timeout_s)` wires all of it.
+  `tcp_connect` keeps its classic behavior.
+- New primitive `mem_read(addr, n)` — copy arbitrary process memory into a
+  Baga `str` via memfd (with the offset reset; SYS_write advances it).
+
 ### App products — pgbaga (Postgres adapter)
+- **Production connect:** `pg_connect_to(host, port, ..., timeout_s)` —
+  hostname or IPv4, bounded connect/read/write; `pg_set_timeout` retunes a
+  live connection; **`pg_cancel`** sends CancelRequest on a fresh connection
+  using the BackendKeyData captured at startup.
 - **JSON/JSONB tables end to end:** `pg_param_json` binds (`$N::json[b]`),
   column OID detection (`pg_col_is_json` / `pg_col_is_jsonb`), JSON cell
   accessors (`pg_cell_json` / `pg_cell_json_ok`), and validated literals in

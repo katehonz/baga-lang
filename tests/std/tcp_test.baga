@@ -1,5 +1,7 @@
 import "std/net/tcp.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
 
 fn check(name: str, ok: bool) {
     if ok {
@@ -10,7 +12,7 @@ fn check(name: str, ok: bool) {
     }
 }
 
-fn main() -> i64 !Net !IO {
+fn main() -> i64 !Net !IO !Time {
     let port = 18431
     let listener = tcp_listen(port)?
     check("listen", listener >= 0)
@@ -31,6 +33,43 @@ fn main() -> i64 !Net !IO {
     tcp_close(client)?
     tcp_close(server)?
     tcp_close(listener)?
+
+    // --- DNS resolution ---
+    check("resolve_dotted", tcp_resolve_ipv4("127.0.0.1")? == 2130706433)
+    check("resolve_name", tcp_resolve_ipv4("localhost")? == 2130706433)
+    check("resolve_bad", tcp_resolve_ipv4("no-such-host.baga.invalid")? == -1)
+
+    // --- production connect by hostname (NODELAY/KEEPALIVE on) ---
+    let port2 = 18432
+    let l2 = tcp_listen(port2)?
+    check("listen2", l2 >= 0)
+    let c2 = tcp_connect_to("localhost", port2, 0)?
+    check("connect_by_name", c2 >= 0)
+    let s2 = tcp_accept(l2)?
+    check("accept2", s2 >= 0)
+    check("write2", tcp_write(c2, "hi")? == 0)
+    check("read2", tcp_read(s2, 8)? == "hi")
+    tcp_close(c2)?
+    tcp_close(s2)?
+    tcp_close(l2)?
+
+    // --- read timeout on a silent server: fails fast instead of hanging ---
+    let port3 = 18433
+    let l3 = tcp_listen(port3)?
+    check("listen3", l3 >= 0)
+    let t0 = monotonic_ms()?
+    let c3 = tcp_connect_to("127.0.0.1", port3, 1)?
+    check("connect3", c3 >= 0)
+    let s3 = tcp_accept(l3)?          // accept, then stay silent
+    check("accept3", s3 >= 0)
+    let got3 = tcp_read_bytes(c3, 64)?
+    let dt = monotonic_ms()? - t0
+    check("timeout_fires", bytes_len(got3) == 0)
+    check("timeout_fast", dt < 5000)
+    tcp_close(c3)?
+    tcp_close(s3)?
+    tcp_close(l3)?
+
     print("tcp_test: all passed")
     return 0
 }

@@ -54,11 +54,14 @@ We intentionally mirror that split so the ORM sits on a stable low-level client.
 
 ### P2 — framework scale
 
-- Connection pool (`std/par` channels).
-- CancelRequest (second TCP connection + BackendKeyData).
+- Connection pool (`std/par` channels). ✅ (lives in `ormbaga/pool.baga`)
+- CancelRequest (second TCP connection + BackendKeyData). ✅ (`pg_cancel`)
+- Hostnames + timeouts: `getaddrinfo` in `std/net`, `pg_connect_to`,
+  SO_RCVTIMEO/SO_SNDTIMEO, TCP_NODELAY, SO_KEEPALIVE. ✅
 - COPY IN/OUT.
 - SSLRequest (blocked on TLS in std).
 - Binary format encode/decode for hot types.
+- Prepared-statement cache + row streaming (PortalSuspended).
 
 ## Non-goals (P0)
 

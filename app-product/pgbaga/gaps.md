@@ -152,3 +152,9 @@ additive — the lenient parser is unchanged); `pg_json_valid` /
   `jsonb` normalized output.
 - Message-size guard: `pg_read_msg` rejects `len` outside `[4, 2^30-1]`
   (corrupt/hostile streams fail instead of buffering).
+- CancelRequest live-verified: delivered on a fresh connection; idle
+  backends ignore it (documented Postgres behavior — the connection
+  survives; a running query is what gets canceled).
+- std/net memfd trap: `SYS_write` advances the memfd offset — a later
+  `read()` starts at EOF. Always `lseek(0)` back (or use pwrite/pread,
+  which never move the offset — that is why the staging code uses them).
