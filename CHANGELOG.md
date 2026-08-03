@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### App products — testbaga (test asserts + runner, apps-roadmap №8)
+- New product `app-product/testbaga`: fail-fast `assert_true` /
+  `assert_eq_i64` / `assert_eq_str` / `assert_ne_str`, plus `Suite`
+  (continue-on-fail, `suite_finish` → exit code).
+- `scripts/baga-test` — discovers `*_test.baga` and runs each via baga
+  (shell driver: no readdir/process spawn in language yet).
+- Dogfood: `tests/testbaga_test.baga`; `tests/std/sort_test` migrated off
+  local `check`.
+- Gaps: T1 process spawn, T2 list_dir, T3 function values (L5).
+
 ### App products — mdbaga (Markdown → HTML, apps-roadmap №4)
 - New product `app-product/mdbaga`: CommonMark-ish subset — ATX headings,
   paragraphs, emphasis, inline/fenced code, ul/ol, blockquotes, hr, links,

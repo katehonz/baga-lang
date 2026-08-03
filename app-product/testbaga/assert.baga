@@ -1,0 +1,111 @@
+// assert.baga — tiny test assertions for Baga (apps-roadmap №8).
+//
+// Replaces the copy-pasted `fn check(name, ok)` in every *_test.baga.
+// Two modes:
+//   1) fail-fast: assert_* → print ok / FAIL + exit(1)  (today's idiom)
+//   2) suite:     Suite accumulates; suite_finish → summary + exit code
+//
+// No function values (L5): tests stay as plain statements in main.
+// No process spawn / readdir: multi-file discovery is scripts/baga-test.
+
+import "std/str/str.baga"
+
+// ---------- fail-fast (drop-in for check) ----------
+
+fn assert_true(name: str, cond: bool) {
+    if cond {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn assert_eq_i64(name: str, got: i64, want: i64) {
+    if got == want {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat(concat(concat(concat(concat("FAIL ", name), ": got "), int_to_str(got)), ", want "), int_to_str(want)))
+        exit(1)
+    }
+}
+
+fn assert_eq_str(name: str, got: str, want: str) {
+    if got == want {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        eprintln(concat("  got:  ", got))
+        eprintln(concat("  want: ", want))
+        exit(1)
+    }
+}
+
+fn assert_ne_str(name: str, got: str, not_want: str) {
+    if got != not_want {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat(concat("FAIL ", name), ": values are equal"))
+        eprintln(concat("  value: ", got))
+        exit(1)
+    }
+}
+
+// ---------- suite (continue on failure) ----------
+
+struct Suite {
+    passed: i64,
+    failed: i64,
+    name: str
+}
+
+fn suite_new(name: str) -> Suite {
+    return Suite { passed: 0, failed: 0, name: name }
+}
+
+fn suite_ok(s: Suite, case_name: str) -> Suite {
+    print(concat("ok ", case_name))
+    return Suite { passed: s.passed + 1, failed: s.failed, name: s.name }
+}
+
+fn suite_fail(s: Suite, case_name: str, detail: str) -> Suite {
+    eprintln(concat("FAIL ", case_name))
+    if detail != "" {
+        eprintln(concat("  ", detail))
+    }
+    return Suite { passed: s.passed, failed: s.failed + 1, name: s.name }
+}
+
+fn suite_true(s: Suite, case_name: str, cond: bool) -> Suite {
+    if cond {
+        return suite_ok(s, case_name)
+    }
+    return suite_fail(s, case_name, "")
+}
+
+fn suite_eq_i64(s: Suite, case_name: str, got: i64, want: i64) -> Suite {
+    if got == want {
+        return suite_ok(s, case_name)
+    }
+    let d = concat(concat(concat(concat("got ", int_to_str(got)), ", want "), int_to_str(want)), "")
+    return suite_fail(s, case_name, d)
+}
+
+fn suite_eq_str(s: Suite, case_name: str, got: str, want: str) -> Suite {
+    if got == want {
+        return suite_ok(s, case_name)
+    }
+    let d = concat(concat(concat(concat("got  ", got), "\n  want "), want), "")
+    return suite_fail(s, case_name, d)
+}
+
+// Print summary. Returns process exit code (0 = all passed).
+fn suite_finish(s: Suite) -> i64 {
+    let total = s.passed + s.failed
+    if s.failed == 0 {
+        print(concat(concat(concat(concat(concat("suite ", s.name), ": "), int_to_str(s.passed)), "/"), concat(int_to_str(total), " passed")))
+        return 0
+    }
+    eprintln(concat(concat(concat(concat(concat(concat("suite ", s.name), ": "), int_to_str(s.failed)), " failed, "), int_to_str(s.passed)), " passed"))
+    return 1
+}

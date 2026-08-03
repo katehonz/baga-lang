@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# baga-test — discovery runner for *_test.baga (apps-roadmap №8).
+#
+# Pure Baga has no readdir / process spawn yet (see testbaga/gaps.md), so
+# discovery and process isolation live here. Each file is compile-and-run
+# via the baga CLI with monorepo package search paths (language §18.1).
+#
+# Usage (from repo root):
+#   ./scripts/baga-test                  # all tests/**/*_test.baga
+#   ./scripts/baga-test tests/std        # one directory
+#   ./scripts/baga-test tests/md_test.baga tests/testbaga_test.baga
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BAGA="${BAGA:-$ROOT/baga}"
+IFLAGS=(-I "$ROOT" -I "$ROOT/app-product")
+
+if [[ ! -x "$BAGA" ]]; then
+  echo "baga-test: missing executable $BAGA (run make)" >&2
+  exit 127
+fi
+
+collect() {
+  if [[ $# -eq 0 ]]; then
+    find "$ROOT/tests" -type f -name '*_test.baga' | sort
+    return
+  fi
+  for a in "$@"; do
+    if [[ -d "$a" ]]; then
+      find "$a" -type f -name '*_test.baga' | sort
+    elif [[ -f "$a" ]]; then
+      echo "$a"
+    else
+      echo "baga-test: not found: $a" >&2
+      exit 2
+    fi
+  done
+}
+
+mapfile -t FILES < <(collect "$@")
+if [[ ${#FILES[@]} -eq 0 ]]; then
+  echo "baga-test: no *_test.baga matched" >&2
+  exit 2
+fi
+
+pass=0
+fail=0
+failed_names=()
+
+echo "baga-test: ${#FILES[@]} file(s)"
+for f in "${FILES[@]}"; do
+  rel="${f#"$ROOT/"}"
+  echo "=== $rel ==="
+  if "$BAGA" "${IFLAGS[@]}" "$f"; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    failed_names+=("$rel")
+  fi
+done
+
+echo "---"
+echo "baga-test: $pass passed, $fail failed (${#FILES[@]} total)"
+if [[ $fail -ne 0 ]]; then
+  for n in "${failed_names[@]}"; do
+    echo "  FAIL $n"
+  done
+  exit 1
+fi
+exit 0

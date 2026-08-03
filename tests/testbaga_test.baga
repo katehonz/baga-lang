@@ -1,0 +1,39 @@
+// testbaga_test.baga — dogfood: test the test library with itself.
+// Also exercises suite continue-on-fail (failed counter without exit).
+
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 {
+    // --- fail-fast helpers (smoke) ---
+    assert_true("ff_true", true)
+    assert_eq_i64("ff_i64", 10 - 3, 7)
+    assert_eq_str("ff_str", "ab", concat("a", "b"))
+    assert_ne_str("ff_ne", "a", "b")
+
+    // --- suite: deliberate mix of pass + track ---
+    let mut s = suite_new("testbaga")
+    s = suite_true(s, "s_true", true)
+    s = suite_eq_i64(s, "s_i64_ok", 2 * 3, 6)
+    s = suite_eq_str(s, "s_str_ok", "xy", "xy")
+
+    // inject one soft failure, then more passes — suite must continue
+    s = suite_eq_i64(s, "s_i64_bad", 1, 2)
+    s = suite_true(s, "s_after_fail", true)
+    s = suite_eq_str(s, "s_str_bad", "got", "want")
+    s = suite_true(s, "s_last", true)
+
+    // We expect 5 passed, 2 failed — don't use suite_finish (would exit 1).
+    // Assert the counters with fail-fast:
+    assert_eq_i64("suite_passed_count", s.passed, 5)
+    assert_eq_i64("suite_failed_count", s.failed, 2)
+
+    // clean suite finishes 0
+    let mut clean = suite_new("clean")
+    clean = suite_eq_i64(clean, "clean_one", 0, 0)
+    let rc = suite_finish(clean)
+    assert_eq_i64("clean_exit", rc, 0)
+
+    print("testbaga_test: all passed")
+    return 0
+}
