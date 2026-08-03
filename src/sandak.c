@@ -224,17 +224,19 @@ static int is_dir(const char *p) {
 
 /* клонира (веднъж) в .sandak/cache/<name>-<ref> и връща корена на пакета */
 static void fetch_git(const Dep *d, char out_root[512]) {
-    char dir[512], cmd[3072];
+    char dir[512], cmd[4096];
     if (!is_dir(".sandak/cache"))
         run("mkdir -p '.sandak/cache'");
     snprintf(dir, sizeof dir, ".sandak/cache/%s-%s", d->name, d->ref);
     if (!is_dir(dir)) {
         if (strcmp(d->ref_kind, "rev") == 0) {
-            /* произволен commit: init + fetch --depth 1 + checkout */
+            /* произволен commit: init + fetch --depth 1 + checkout;
+             * при провал чистим dir-а, иначе is_dir guard-ът спира retry завинаги */
             snprintf(cmd, sizeof cmd,
                 "git init -q '%s' && git -C '%s' remote add origin '%s' && "
                 "git -C '%s' fetch -q --depth 1 origin '%s' && "
-                "git -C '%s' checkout -q FETCH_HEAD", dir, dir, d->git, dir, d->ref, dir);
+                "git -C '%s' checkout -q FETCH_HEAD || { rm -rf '%s'; false; }",
+                dir, dir, d->git, dir, d->ref, dir, dir);
         } else {
             snprintf(cmd, sizeof cmd,
                 "git clone -q --depth 1 --branch '%s' '%s' '%s'",

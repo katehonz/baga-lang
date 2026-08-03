@@ -204,4 +204,54 @@ echo "$out" | grep -q "resolved: subpkg 1.0.0" || fail "git subdir fetch: [$out]
 grep -q 'source = "git+file://' "$T/subapp/sandak.lock" || fail "subdir lock без git source"
 echo "OK: git зависимост със subdir"
 
+# --- T5 R1: git зависимост по rev (commit SHA) ---
+mkdir -p "$T/extlib2"
+cat > "$T/extlib2/sandak.toml" <<'EOF'
+[package]
+name = "extlib2"
+version = "0.4.0"
+entry = "extlib2.baga"
+EOF
+echo 'fn ext2_hi() -> i64 { return 11 }' > "$T/extlib2/extlib2.baga"
+git -C "$T/extlib2" init -q -b master
+git -C "$T/extlib2" add -A
+git -C "$T/extlib2" -c user.email=t@t -c user.name=t commit -qm init
+SHA=$(git -C "$T/extlib2" rev-parse HEAD)
+
+mkdir -p "$T/revapp"
+cat > "$T/revapp/sandak.toml" <<EOF
+[package]
+name = "revapp"
+version = "0.1.0"
+entry = "main.baga"
+kind = "bin"
+
+[dependencies]
+extlib2 = { git = "file://$T/extlib2", rev = "$SHA" }
+EOF
+echo 'import "extlib2/extlib2.baga"
+fn main() { print(ext2_hi()) }' > "$T/revapp/main.baga"
+
+out=$(cd "$T/revapp" && "$SANDAK" fetch) || fail "git rev fetch exit"
+echo "$out" | grep -q "resolved: extlib2 0.4.0" || fail "git rev fetch: [$out]"
+[ -d "$T/revapp/.sandak/cache/extlib2-$SHA" ] || fail "няма cache dir за rev"
+grep -q "rev = \"rev:$SHA\"" "$T/revapp/sandak.lock" || fail "lock без rev:<sha>"
+echo "OK: git зависимост по rev (commit SHA)"
+
+# несъществуващ rev: fetch гърми и НЕ оставя отровен cache dir
+sed -i "s/rev = \"$SHA\"/rev = \"0000000000000000000000000000000000000000\"/" "$T/revapp/sandak.toml"
+(cd "$T/revapp" && "$SANDAK" fetch) 2>"$T/err" && fail "лош rev трябва да гърми"
+[ ! -d "$T/revapp/.sandak/cache/extlib2-0000000000000000000000000000000000000000" ] \
+  || fail "отровен cache dir след провален rev fetch"
+sed -i "s/rev = \"00*\"/rev = \"$SHA\"/" "$T/revapp/sandak.toml"
+echo "OK: провален rev fetch не трови кеша"
+
+# --- T5 R1: --locked при git→path смяна (source mismatch) ---
+sed -i 's|extlib = .*|extlib = { path = "../extlib" }|' "$T/gitapp/sandak.toml"
+(cd "$T/gitapp" && "$SANDAK" fetch --locked) 2>"$T/err" \
+  && fail "--locked при git→path смяна трябва да гърми"
+grep -q "source" "$T/err" || fail "--locked без source съобщение: $(cat "$T/err")"
+sed -i "s|extlib = .*|extlib = { git = \"file://$T/extlib\", branch = \"master\" }|" "$T/gitapp/sandak.toml"
+echo "OK: --locked при git→path смяна — грешка source"
+
 echo "sandak: всички тестове минаха"
