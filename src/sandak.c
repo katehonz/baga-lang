@@ -168,6 +168,9 @@ void parse_manifest(const char *path, Manifest *m) {
     if (!m->name[0]) die("%s: липсва [package] name", path);
     if (!m->version[0]) die("%s: липсва [package] version", path);
     if (!m->is_lib && !m->entry[0]) die("%s: kind = \"bin\" изисква entry", path);
+    /* name и entry влизат в shell командите на build (target/<name>, <dir>/<entry>) */
+    check_safe("name", m->name);
+    if (m->entry[0]) check_safe("entry", m->entry);
 }
 
 static void usage(void) {
@@ -325,7 +328,7 @@ static void resolve(Graph *g, const char *root_dir) {
 /* Lock запис: подмножество на манифест — само идентичността на пакета. */
 typedef struct {
     char name[128]; char version[64];
-    char source[600];   /* "path+<abs>" или "git+<url>" */
+    char source[600];   /* "git+<url>", "path+<abs>" за path deps; root = "path+." */
     char rev[160];      /* "<ref_kind>:<ref>" за git; "-" за path */
 } LockPkg;
 
@@ -345,10 +348,16 @@ static void write_lock(const Graph *g, const char *root_dir) {
         LockPkg *p = &lk.pkgs[lk.n++];
         snprintf(p->name, sizeof p->name, "%s", g->pkgs[i].name);
         snprintf(p->version, sizeof p->version, "%s", g->pkgs[i].version);
-        /* git deps → source/rev от Dep-а (src_git/src_ref); root и path deps → path+ */
+        /* git deps → source/rev от Dep-а (src_git/src_ref);
+         * root → константата "path+." (абсолютният път не влиза в lock —
+         * иначе комитнат lock гърми при --locked на друга машина/checkout);
+         * path deps → path+<abs> (monorepo ограничение, не се комитва) */
         if (g->pkgs[i].src_git[0]) {
             snprintf(p->source, sizeof p->source, "git+%s", g->pkgs[i].src_git);
             snprintf(p->rev, sizeof p->rev, "%.*s", (int)sizeof p->rev - 1, g->pkgs[i].src_ref);
+        } else if (i == 0) {
+            snprintf(p->source, sizeof p->source, "path+.");
+            snprintf(p->rev, sizeof p->rev, "-");
         } else {
             snprintf(p->source, sizeof p->source, "path+%s", g->pkgs[i].dir);
             snprintf(p->rev, sizeof p->rev, "-");
@@ -413,11 +422,15 @@ static void check_locked(const Graph *g, const char *root_dir) {
             if (strcmp(lk.pkgs[j].version, m->version) != 0)
                 die("sandak.lock е остарял: %s version %s (lock: %s)",
                     m->name, m->version, lk.pkgs[j].version);
-            /* source/rev трябва да съвпадат и при path→git смяна със същите name/version */
+            /* source/rev трябва да съвпадат и при path→git смяна със същите name/version;
+             * root е константата "path+." — същата логика като в write_lock */
             char want_source[600], want_rev[160];
             if (m->src_git[0]) {
                 snprintf(want_source, sizeof want_source, "git+%s", m->src_git);
                 snprintf(want_rev, sizeof want_rev, "%s", m->src_ref);
+            } else if (i == 0) {
+                snprintf(want_source, sizeof want_source, "path+.");
+                snprintf(want_rev, sizeof want_rev, "-");
             } else {
                 snprintf(want_source, sizeof want_source, "path+%s", m->dir);
                 snprintf(want_rev, sizeof want_rev, "-");

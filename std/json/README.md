@@ -5,7 +5,7 @@ JSON parser + serializer, written in pure Baga.
 ## Usage
 
 ```baga
-import "../../std/json/json.baga"
+import "std/json/json.baga"
 
 let d = json_parse("{\"a\": [1, 2, 3]}")
 let r = json_root(d)

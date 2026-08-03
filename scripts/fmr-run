@@ -19,4 +19,4 @@ export PGDATABASE="${PGDATABASE:-baga_orm}"
 
 echo "fmr-run → $APP"
 echo "  PORT=$PORT FMR_WORKERS=$FMR_WORKERS PGUSER=$PGUSER PGDATABASE=$PGDATABASE"
-exec ./baga "$APP"
+exec ./baga -I . -I app-product "$APP"

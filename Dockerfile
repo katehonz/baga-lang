@@ -25,7 +25,9 @@ RUN test -n "$APP_REPO" || { echo "APP_REPO е задължителен (--build
 # --locked: възпроизводим build; deps се теглят от GitHub/git по sandak.lock.
 # Две стъпки: `fetch` първо генерира свеж lock за path-dep (monorepo) builds —
 # техните lock-ове съдържат абсолютни пътища и не са преносими — после --locked
-# го валидира. Apps с git deps комитват преносим lock и --locked минава директно.
+# го валидира. Apps с git deps комитват преносим lock и --locked минава директно:
+# dep sources са git URL-и, а root се записва константно като "path+." —
+# абсолютният път на checkout-а не влиза в lock файла.
 RUN git clone --depth 1 --branch "$APP_REF" "$APP_REPO" /tmp/src \
  && mkdir -p /pkg \
  && name=$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "/tmp/src/$APP_DIR/sandak.toml" | head -1) \

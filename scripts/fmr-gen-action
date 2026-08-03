@@ -26,11 +26,11 @@ if [[ ! -f "$FILE" ]]; then
   cat > "$FILE" <<EOF
 // actions/${RES}.baga — generated stub (edit me)
 
-import "../../../app-product/fmrbaga/app.baga"
-import "../../../app-product/fmrbaga/ctx.baga"
-import "../../../app-product/fmrbaga/action.baga"
-import "../../../app-product/fmrbaga/jsonx.baga"
-import "../../../app-product/ormbaga/orm.baga"
+import "fmrbaga/app.baga"
+import "fmrbaga/ctx.baga"
+import "fmrbaga/action.baga"
+import "fmrbaga/jsonx.baga"
+import "ormbaga/orm.baga"
 
 fn act_${RES}_${ACT}(ctx: FmrCtx, db: OrmDb) -> FmrOut {
     let mut o = jobj_new()

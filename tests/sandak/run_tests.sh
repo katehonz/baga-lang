@@ -254,6 +254,17 @@ grep -q "source" "$T/err" || fail "--locked без source съобщение: $(
 sed -i "s|extlib = .*|extlib = { git = \"file://$T/extlib\", branch = \"master\" }|" "$T/gitapp/sandak.toml"
 echo "OK: --locked при git→path смяна — грешка source"
 
+# --- регресия (финално ревю): root source е константата "path+." —
+# комитнат lock на git-dep app минава --locked след преместване на workspace-а ---
+grep -q 'source = "path+\."' "$T/gitapp/sandak.lock" \
+  || fail "lock: root source не е path+.: $(cat "$T/gitapp/sandak.lock")"
+mkdir -p "$T/moved"
+cp -a "$T/gitapp" "$T/moved/gitapp"   # basename остава == name; .sandak кешът се носи с копието
+out=$(cd "$T/moved/gitapp" && "$SANDAK" fetch --locked) \
+  || fail "--locked след преместване на workspace-а"
+echo "$out" | grep -q "resolved: gitapp 0.1.0" || fail "преместен fetch: [$out]"
+echo "OK: --locked минава след преместване (root = path+., dep = git URL)"
+
 # --- T6: build + run ---
 # използваме $T/ws от T3 (myapp -> mylib); myapp/main.baga липсва още
 cat > "$T/ws/myapp/main.baga" <<'EOF'
