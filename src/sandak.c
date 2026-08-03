@@ -22,6 +22,8 @@ typedef struct {
     int is_lib;
     Dep deps[64]; int n_deps;
     char dir[512];
+    char src_git[512];   /* git URL, ако пакетът идва от git dep; "" иначе */
+    char src_ref[160];   /* "<ref_kind>:<ref>" за git deps; "" иначе */
 } Manifest;
 
 static void die(const char *fmt, ...) {
@@ -156,6 +158,7 @@ void parse_manifest(const char *path, Manifest *m) {
             Dep *d = &m->deps[m->n_deps++];
             memset(d, 0, sizeof *d);
             snprintf(d->name, sizeof d->name, "%s", key);
+            check_safe("име на зависимост", key);   /* името влиза в shell командите на fetch_git */
             parse_dep_inline(val, d);
         } else {
             die("%s:%d: key извън секция", path, lineno);
@@ -209,18 +212,55 @@ static const char *base_name(const char *dir) {
     return s ? s + 1 : dir;
 }
 
-/* dep -> корен на пакета. За path deps: <manifest_dir>/<path>. Git: Task 5. */
+static void run(const char *cmd) {
+    int rc = system(cmd);
+    if (rc != 0) die("командата се провали (%d): %s", rc, cmd);
+}
+
+static int is_dir(const char *p) {
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* клонира (веднъж) в .sandak/cache/<name>-<ref> и връща корена на пакета */
+static void fetch_git(const Dep *d, char out_root[512]) {
+    char dir[512], cmd[3072];
+    if (!is_dir(".sandak/cache"))
+        run("mkdir -p '.sandak/cache'");
+    snprintf(dir, sizeof dir, ".sandak/cache/%s-%s", d->name, d->ref);
+    if (!is_dir(dir)) {
+        if (strcmp(d->ref_kind, "rev") == 0) {
+            /* произволен commit: init + fetch --depth 1 + checkout */
+            snprintf(cmd, sizeof cmd,
+                "git init -q '%s' && git -C '%s' remote add origin '%s' && "
+                "git -C '%s' fetch -q --depth 1 origin '%s' && "
+                "git -C '%s' checkout -q FETCH_HEAD", dir, dir, d->git, dir, d->ref, dir);
+        } else {
+            snprintf(cmd, sizeof cmd,
+                "git clone -q --depth 1 --branch '%s' '%s' '%s'",
+                d->ref, d->git, dir);
+        }
+        run(cmd);
+    }
+    char tmp[1024];
+    if (d->subdir[0]) snprintf(tmp, sizeof tmp, "%s/%s", dir, d->subdir);
+    else snprintf(tmp, sizeof tmp, "%s", dir);
+    canon(tmp, out_root);
+}
+
+/* dep -> корен на пакета. За path deps: <manifest_dir>/<path>. За git: кеш + clone. */
 static void dep_root(const Manifest *parent, const Dep *d, char out[512]) {
     char tmp[1024];
     if (d->path[0]) {
         snprintf(tmp, sizeof tmp, "%s/%s", parent->dir, d->path);
         canon(tmp, out);
     } else {
-        die("git зависимости: неоще (T5)");   /* заменя се в Task 5 */
+        fetch_git(d, out);
     }
 }
 
-static void resolve_into(Graph *g, const char *dir, char stack[][512], int depth) {
+static void resolve_into(Graph *g, const char *dir, char stack[][512], int depth,
+                         const Dep *from) {
     if (depth >= 64) die("твърде дълбок граф на зависимостите");
     for (int i = 0; i < depth; i++)
         if (strcmp(stack[i], dir) == 0)
@@ -235,8 +275,17 @@ static void resolve_into(Graph *g, const char *dir, char stack[][512], int depth
     Manifest *m = &g->pkgs[g->n];
     parse_manifest(mpath, m);
     snprintf(m->dir, 512, "%s", dir);
-    if (strcmp(base_name(dir), m->name) != 0)
-        die("директория '%s' не съвпада с името на пакета '%s'", base_name(dir), m->name);
+    if (from && from->git[0]) {
+        snprintf(m->src_git, sizeof m->src_git, "%s", from->git);
+        snprintf(m->src_ref, sizeof m->src_ref, "%s:%s", from->ref_kind, from->ref);
+    }
+    /* проверката dir == name: за git deps без subdir клонираната директория е
+     * <name>-<ref>, затова там я пропускаме; при subdir basename трябва да е
+     * името на пакета, както при path deps */
+    if (!from || !from->git[0] || from->subdir[0]) {
+        if (strcmp(base_name(dir), m->name) != 0)
+            die("директория '%s' не съвпада с името на пакета '%s'", base_name(dir), m->name);
+    }
     for (int i = 0; i < g->n; i++)
         if (strcmp(g->pkgs[i].name, m->name) == 0)
             die("дублирано име на пакет '%s' (%s и %s)", m->name, g->pkgs[i].dir, dir);
@@ -254,7 +303,7 @@ static void resolve_into(Graph *g, const char *dir, char stack[][512], int depth
         int seen = 0;
         for (int j = 0; j < g->n; j++)
             if (strcmp(g->pkgs[j].dir, root) == 0) { seen = 1; break; }
-        if (!seen) resolve_into(g, root, stack, depth + 1);
+        if (!seen) resolve_into(g, root, stack, depth + 1, &m->deps[i]);
     }
 }
 
@@ -263,14 +312,14 @@ static void resolve(Graph *g, const char *root_dir) {
     char canon_root[512];
     canon(root_dir, canon_root);
     static char stack[64][512];
-    resolve_into(g, canon_root, stack, 0);
+    resolve_into(g, canon_root, stack, 0, NULL);
 }
 
 /* Lock запис: подмножество на манифест — само идентичността на пакета. */
 typedef struct {
     char name[128]; char version[64];
     char source[600];   /* "path+<abs>" или "git+<url>" */
-    char rev[128];      /* за git; "-" за path */
+    char rev[160];      /* "<ref_kind>:<ref>" за git; "-" за path */
 } LockPkg;
 
 typedef struct { LockPkg pkgs[128]; int n; } Lock;
@@ -289,9 +338,14 @@ static void write_lock(const Graph *g, const char *root_dir) {
         LockPkg *p = &lk.pkgs[lk.n++];
         snprintf(p->name, sizeof p->name, "%s", g->pkgs[i].name);
         snprintf(p->version, sizeof p->version, "%s", g->pkgs[i].version);
-        /* за git deps (T5) source/rev се взимат от Dep-а; root и path deps → path+ */
-        snprintf(p->source, sizeof p->source, "path+%s", g->pkgs[i].dir);
-        snprintf(p->rev, sizeof p->rev, "-");
+        /* git deps → source/rev от Dep-а (src_git/src_ref); root и path deps → path+ */
+        if (g->pkgs[i].src_git[0]) {
+            snprintf(p->source, sizeof p->source, "git+%s", g->pkgs[i].src_git);
+            snprintf(p->rev, sizeof p->rev, "%.*s", (int)sizeof p->rev - 1, g->pkgs[i].src_ref);
+        } else {
+            snprintf(p->source, sizeof p->source, "path+%s", g->pkgs[i].dir);
+            snprintf(p->rev, sizeof p->rev, "-");
+        }
     }
     qsort(lk.pkgs, lk.n, sizeof(LockPkg), lockpkg_cmp);
     fprintf(f, "# sandak.lock — генериран от sandak, не редактирай\n");
@@ -352,6 +406,21 @@ static void check_locked(const Graph *g, const char *root_dir) {
             if (strcmp(lk.pkgs[j].version, m->version) != 0)
                 die("sandak.lock е остарял: %s version %s (lock: %s)",
                     m->name, m->version, lk.pkgs[j].version);
+            /* source/rev трябва да съвпадат и при path→git смяна със същите name/version */
+            char want_source[600], want_rev[160];
+            if (m->src_git[0]) {
+                snprintf(want_source, sizeof want_source, "git+%s", m->src_git);
+                snprintf(want_rev, sizeof want_rev, "%s", m->src_ref);
+            } else {
+                snprintf(want_source, sizeof want_source, "path+%s", m->dir);
+                snprintf(want_rev, sizeof want_rev, "-");
+            }
+            if (strcmp(lk.pkgs[j].source, want_source) != 0)
+                die("sandak.lock е остарял: %s source/rev се различава — source %s (lock: %s)",
+                    m->name, want_source, lk.pkgs[j].source);
+            if (strcmp(lk.pkgs[j].rev, want_rev) != 0)
+                die("sandak.lock е остарял: %s source/rev се различава — rev %s (lock: %s)",
+                    m->name, want_rev, lk.pkgs[j].rev);
             break;
         }
         if (!found)

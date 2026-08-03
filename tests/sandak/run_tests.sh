@@ -125,4 +125,83 @@ grep -q "lock" "$T/err" || fail "--locked без съобщение: $(cat "$T/e
 sed -i 's/0.2.0/0.1.0/' "$T/ws/mylib/sandak.toml"
 echo "OK: --locked при разминаване — грешка"
 
+# --- T5: git зависимост (локално repo, offline) ---
+mkdir -p "$T/extlib"
+cat > "$T/extlib/sandak.toml" <<'EOF'
+[package]
+name = "extlib"
+version = "0.3.0"
+entry = "extlib.baga"
+EOF
+echo 'fn ext_hi() -> i64 { return 9 }' > "$T/extlib/extlib.baga"
+git -C "$T/extlib" init -q -b master
+git -C "$T/extlib" add -A
+git -C "$T/extlib" -c user.email=t@t -c user.name=t commit -qm init
+git -C "$T/extlib" tag v1
+
+mkdir -p "$T/gitapp"
+cat > "$T/gitapp/sandak.toml" <<EOF
+[package]
+name = "gitapp"
+version = "0.1.0"
+entry = "main.baga"
+kind = "bin"
+
+[dependencies]
+extlib = { git = "file://$T/extlib", branch = "master" }
+EOF
+echo 'import "extlib/extlib.baga"
+fn main() { print(ext_hi()) }' > "$T/gitapp/main.baga"
+
+out=$(cd "$T/gitapp" && "$SANDAK" fetch) || fail "git fetch exit"
+echo "$out" | grep -q "resolved: extlib 0.3.0" || fail "git fetch extlib: [$out]"
+[ -d "$T/gitapp/.sandak/cache" ] || fail "няма .sandak/cache"
+grep -q 'source = "git+file://' "$T/gitapp/sandak.lock" || fail "lock без git source"
+grep -q 'rev = "branch:master"' "$T/gitapp/sandak.lock" || fail "lock без git rev"
+echo "OK: git зависимост се клонира и резолвира"
+
+# второ fetch ползва кеша (без мрежа) — трябва да мине
+out=$(cd "$T/gitapp" && "$SANDAK" fetch) || fail "git fetch от кеш"
+echo "OK: git кеш се ползва повторно"
+
+# --locked: сменен ref в манифеста срещу lock → грешка source/rev
+sed -i 's/branch = "master"/tag = "v1"/' "$T/gitapp/sandak.toml"
+(cd "$T/gitapp" && "$SANDAK" fetch --locked) 2>"$T/err" \
+  && fail "--locked със сменен rev трябва да гърми"
+grep -q "source/rev" "$T/err" || fail "--locked без source/rev съобщение: $(cat "$T/err")"
+sed -i 's/tag = "v1"/branch = "master"/' "$T/gitapp/sandak.toml"
+echo "OK: --locked при сменен git rev — грешка"
+
+# --- T5: git зависимост със subdir ---
+mkdir -p "$T/monorepo/subpkg"
+cat > "$T/monorepo/subpkg/sandak.toml" <<'EOF'
+[package]
+name = "subpkg"
+version = "1.0.0"
+entry = "subpkg.baga"
+EOF
+echo 'fn sub_hi() -> i64 { return 5 }' > "$T/monorepo/subpkg/subpkg.baga"
+git -C "$T/monorepo" init -q -b master
+git -C "$T/monorepo" add -A
+git -C "$T/monorepo" -c user.email=t@t -c user.name=t commit -qm init
+
+mkdir -p "$T/subapp"
+cat > "$T/subapp/sandak.toml" <<EOF
+[package]
+name = "subapp"
+version = "0.1.0"
+entry = "main.baga"
+kind = "bin"
+
+[dependencies]
+subpkg = { git = "file://$T/monorepo", branch = "master", subdir = "subpkg" }
+EOF
+echo 'import "subpkg/subpkg.baga"
+fn main() { print(sub_hi()) }' > "$T/subapp/main.baga"
+
+out=$(cd "$T/subapp" && "$SANDAK" fetch) || fail "git subdir fetch exit"
+echo "$out" | grep -q "resolved: subpkg 1.0.0" || fail "git subdir fetch: [$out]"
+grep -q 'source = "git+file://' "$T/subapp/sandak.lock" || fail "subdir lock без git source"
+echo "OK: git зависимост със subdir"
+
 echo "sandak: всички тестове минаха"
