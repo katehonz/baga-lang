@@ -17,9 +17,13 @@ model as httpdbaga/jwtbaga: ship a working product and log language friction in
 | Cleartext password | auth kind 3 (if `pg_hba` asks) |
 | Simple Query | `pg_query` — multi-statement string |
 | **Extended Query** | `pg_query_params` — `$1..$n` text binds |
+| Named prepared statements | `pg_prepare` / `pg_exec_prepared` / `pg_deallocate` |
+| **JSON / JSONB tables** | text-format cells + OID detection (`pg_col_is_json[b]`), strict validation (`pg_json_valid`), `pg_param_json` binds |
 | Rows | text format, NULL as flag |
+| Typed getters | `pg_cell_i64` / `pg_cell_bool` / `pg_cell_f64` / `pg_cell_json` |
 | Errors | severity \| SQLSTATE \| message |
 | Transactions | `BEGIN`/`COMMIT`/`ROLLBACK`; `tx_status` from ReadyForQuery |
+| Buffered reader in `PgConn` | survives across queries (ready for async messages) |
 | Terminate | clean close |
 
 ## Not yet (P2)
@@ -43,7 +47,7 @@ LISTEN/NOTIFY, MD5 auth (deprecated). Pooling lives in `ormbaga/pool.baga` +
 ## API
 
 ```baga
-struct PgConn  { fd, ok, err, pid, key, tx_status, server_version }
+struct PgConn  { fd, ok, err, pid, key, tx_status, server_version, reader }
 struct PgResult { ok, err, tag, ncols, nrows, colnames, coltypes,
                   cells, nulls, tx_status, conn }
 
@@ -52,7 +56,7 @@ fn pg_close(conn: PgConn) -> i64 !IO !Net
 fn pg_query(conn: PgConn, sql: str) -> PgResult !IO !Net
 fn pg_query_params(conn, sql, vals: Vec<str>, nulls: Vec<i64>) -> PgResult !IO !Net
 fn pg_query_params_str(conn, sql, vals: Vec<str>) -> PgResult !IO !Net
-fn pg_param_str / pg_param_i64 / pg_param_null   // builders for vals/nulls
+fn pg_param_str / pg_param_i64 / pg_param_null / pg_param_json  // builders for vals/nulls
 
 // Named prepared statements (session-scoped)
 fn pg_prepare(conn, name, sql, nparams) -> PgResult !IO !Net
@@ -60,9 +64,26 @@ fn pg_exec_prepared(conn, name, vals, nulls) -> PgResult !IO !Net
 fn pg_exec_prepared_str(conn, name, vals) -> PgResult !IO !Net
 fn pg_deallocate(conn, name) -> PgResult !IO !Net
 
+// Transactions (tx_status tracks every ReadyForQuery)
+fn pg_begin / pg_commit / pg_rollback
+
 fn pg_ok / pg_err / pg_tag / pg_nrows / pg_ncols
-fn pg_colname / pg_coltype / pg_cell / pg_isnull / pg_cell_i64
+fn pg_sqlstate / pg_err_message                  // split "SEV|SQLSTATE|message"
+fn pg_colname / pg_coltype / pg_cell / pg_isnull
+fn pg_cell_i64 / pg_cell_bool / pg_cell_f64       // typed getters from text cells
+
+// JSON / JSONB: cells arrive as JSON text (text protocol)
+fn pg_col_is_json(r, col) / pg_col_is_jsonb(r, col)   // OID 114/199 vs 3802/3807
+fn pg_json_valid(s) -> i64                            // strict RFC 8259 (std/json)
+fn pg_cell_json(r, row, col) -> str                   // raw JSON text
+fn pg_cell_json_ok(r, row, col) -> i64                // non-NULL and parses
 ```
+
+JSON tables work end to end: create them with `json` / `jsonb` columns,
+insert with `pg_param_json` + `$N::json[b]` binds (or `ormbaga`'s
+`sql_json` / `sql_jsonb` literals for trusted SQL), read cells back as JSON
+text and hand them to `std/json` (`json_parse`). `json` preserves the input
+text verbatim; `jsonb` comes back normalized.
 
 Prefer `pg_query_params` for any user-supplied values (injection-safe).
 Use `pg_prepare` + `pg_exec_prepared` for hot paths on a long-lived connection.
@@ -103,14 +124,12 @@ Postgres with SCRAM for `bagatest` (or override `PG*`).
 ## Honesty / limits
 
 - **No TLS** — same as httpdbaga; only cleartext TCP.
-- **Simple Query only** — parameters must be inlined carefully (SQL injection
-  risk until Extended Query lands); ORM layer will use Parse/Bind.
 - **Text format only** — cells are `str`; binary OIDs are recorded but not decoded.
+  JSON/JSONB travel as text (their native wire text form), so nothing is lost.
 - **SASLprep** — passwords are used as raw UTF-8; fine for ASCII, incomplete for
   exotic Unicode (gap).
-- **Buffered reader** is per-call (`pg_reader` rebuilt each `pg_query`); leftover
-  socket data is not retained across queries (OK for request/response Simple
-  Query; wrong for pipelining).
+- **Reader is request/response** — the buffer lives in `PgConn` and survives
+  across queries, but async messages (LISTEN/NOTIFY) are not dispatched yet.
 - Memory: leak-tolerant arena style like the rest of `std/` / app-product.
 
 ## Architecture (ORM path)

@@ -110,14 +110,19 @@ fn orm_pool_from_env(size: i64) -> OrmPool !Net !IO !Random !Par {
 }
 
 fn orm_pool_conn_at(pool: OrmPool, slot: i64) -> PgConn {
+    // Reader is rebuilt on acquire: parallel Vecs cannot hold the PgReader
+    // struct, and release leaves the socket drained at ReadyForQuery, so no
+    // residual bytes are lost across checkin/checkout.
+    let fd = vec_get(pool.fds, slot)
     return PgConn {
-        fd: vec_get(pool.fds, slot),
+        fd: fd,
         ok: vec_get(pool.oks, slot),
         err: vec_get(pool.errs, slot),
         pid: vec_get(pool.pids, slot),
         key: pg_empty(),
         tx_status: vec_get(pool.txs, slot),
-        server_version: vec_get(pool.versions, slot)
+        server_version: vec_get(pool.versions, slot),
+        reader: pg_reader(fd)
     }
 }
 

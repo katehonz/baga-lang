@@ -1,7 +1,8 @@
 # pgbaga — PostgreSQL wire adapter (plan)
 
-Date: 2026-08-03  
-Status: implementing  
+Date: 2026-08-03
+Status: P0 + P1 done (Extended Query, prepared statements, JSON/JSONB tables,
+        typed getters, conn-scoped reader); P2 pending
 Goal: native PostgreSQL client for Baga (wire protocol v3), foundation for a future ORM + framework.
 
 ## Motivation (from Go / Rust)
@@ -39,13 +40,17 @@ We intentionally mirror that split so the ORM sits on a stable low-level client.
 6. **Demo + test** against live Postgres; README + gaps.md.
 7. Fix language friction found while building (log in gaps.md; only fix if trivial and local).
 
-### P1 — ORM-ready (next)
+### P1 — ORM-ready — DONE
 
-- Extended Query: Parse / Bind / Describe / Execute / Sync (parameterized `$1`).
-- Named prepared statements + close.
-- Explicit transactions helpers (`BEGIN`/`COMMIT`/`ROLLBACK` wrappers + `tx_status`).
-- Typed getters (`pg_cell_i64`, bool, …) from text OIDs.
-- Notice / Notification handling (LISTEN/NOTIFY).
+- Extended Query: Parse / Bind / Describe / Execute / Sync (parameterized `$1`). ✅
+- Named prepared statements + close. ✅
+- Explicit transactions helpers (`BEGIN`/`COMMIT`/`ROLLBACK` wrappers + `tx_status`). ✅
+  (raw `BEGIN`/`COMMIT` + `tx_status` tracked on every ReadyForQuery)
+- Typed getters (`pg_cell_i64`, bool, …) from text OIDs. ✅ (`i64`/`bool`/`f64`/JSON)
+- JSON/JSONB tables: OID detection, strict validation (`std/json`
+  `json_strict_valid`), `pg_param_json` binds, `ormbaga` `sql_json[b]` literals. ✅
+- Reader buffer moved into `PgConn` (G9 closed; async dispatch still P2). ✅
+- Notice / Notification handling (LISTEN/NOTIFY) → P2.
 
 ### P2 — framework scale
 

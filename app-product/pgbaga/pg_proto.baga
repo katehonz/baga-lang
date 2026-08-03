@@ -250,6 +250,18 @@ fn pg_cstr_span(b: bytes, off: i64) -> i64 {
     return end - off + 1
 }
 
+// ---------- type OIDs (pg_type.dat, stable across supported versions) ----------
+
+fn pg_oid_bool() -> i64 { return 16 }
+fn pg_oid_int8() -> i64 { return 20 }
+fn pg_oid_text() -> i64 { return 25 }
+fn pg_oid_json() -> i64 { return 114 }
+fn pg_oid_json_array() -> i64 { return 199 }
+fn pg_oid_float8() -> i64 { return 701 }
+fn pg_oid_timestamptz() -> i64 { return 1184 }
+fn pg_oid_jsonb() -> i64 { return 3802 }
+fn pg_oid_jsonb_array() -> i64 { return 3807 }
+
 // ---------- decoded backend message ----------
 
 struct PgMsg {

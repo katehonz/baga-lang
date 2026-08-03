@@ -1,8 +1,10 @@
 // sql.baga — pure SQL quoting / building helpers for ormbaga.
 // Modelled on ActiveRecord connection quoting + database/sql hygiene.
-// Required while pgbaga speaks Simple Query only (no $1 bind yet).
+// Prefer pgbaga's $1 binds (sql_*_p) for values; literals remain for DDL/DML
+// built from trusted internal strings.
 
 import "std/str/str.baga"
+import "std/json/json.baga"
 
 // Escape a string literal for PostgreSQL: wrap in '...' and double internal quotes.
 fn sql_lit(s: str) -> str {
@@ -104,6 +106,24 @@ fn sql_bool(b: i64) -> str {
         return "FALSE"
     }
     return "TRUE"
+}
+
+// JSON literal for json columns: '<doc>'::json. The document is validated
+// strictly first — "" on invalid JSON (callers should check, like sql_ident).
+// For user-supplied data prefer $1 binds via pgbaga pg_param_json.
+fn sql_json(s: str) -> str {
+    if json_strict_valid(s) == 0 {
+        return ""
+    }
+    return concat(concat(sql_lit(s), "::"), "json")
+}
+
+// JSONB literal: '<doc>'::jsonb (same validation rule as sql_json).
+fn sql_jsonb(s: str) -> str {
+    if json_strict_valid(s) == 0 {
+        return ""
+    }
+    return concat(concat(sql_lit(s), "::"), "jsonb")
 }
 
 // SELECT * FROM "t"

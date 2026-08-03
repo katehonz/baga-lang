@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### App products — pgbaga (Postgres adapter)
+- **JSON/JSONB tables end to end:** `pg_param_json` binds (`$N::json[b]`),
+  column OID detection (`pg_col_is_json` / `pg_col_is_jsonb`), JSON cell
+  accessors (`pg_cell_json` / `pg_cell_json_ok`), and validated literals in
+  ormbaga (`sql_json` / `sql_jsonb`).
+- `std/json`: new `json_strict_valid` — a strict RFC 8259 validator
+  (the existing `json_parse` stays lenient for recovery).
+- Typed getters: `pg_cell_bool`, `pg_cell_f64`; transaction wrappers
+  `pg_begin` / `pg_commit` / `pg_rollback`; structured error accessors
+  `pg_sqlstate` / `pg_err_message`.
+- `PgReader` now lives inside `PgConn` — buffered socket state survives
+  across queries (gap G9 closed; ground for LISTEN/NOTIFY later).
+- Hardening: `pg_read_msg` rejects message lengths outside `[4, 2^30-1]`.
+- `tests/pg_test.baga`: live JSON table round-trips + strict harness
+  (a FAIL now exits 1 instead of printing "all passed"); 70 checks.
+
 ### Packages — sandak (пакетна система)
 - New tool `sandak`: `sandak.toml` manifests, path + git dependencies
   (with `subdir` for monorepos), `sandak.lock` with `--locked`, and
