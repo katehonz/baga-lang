@@ -311,7 +311,8 @@ static void parse_dep_inline(const char *tbl, Dep *d) {
         die("зависимост '%s': очаквах inline table { ... }", d->name);
     s[strlen(s) - 1] = '\0';
     s++;
-    for (char *tok = strtok(s, ","); tok; tok = strtok(NULL, ",")) {
+    char *save_tok = NULL;   /* strtok_r: без споделено състояние с line цикъла */
+    for (char *tok = strtok_r(s, ",", &save_tok); tok; tok = strtok_r(NULL, ",", &save_tok)) {
         char *eq = strchr(tok, '=');
         if (!eq) die("зависимост '%s': очаквах key = value в '%s'", d->name, tok);
         *eq = '\0';
@@ -342,7 +343,8 @@ void parse_manifest(const char *path, Manifest *m) {
     char *src = read_file(path);
     int section = 0;   /* 0=none, 1=package, 2=dependencies */
     int lineno = 0;
-    for (char *line = strtok(src, "\n"); line; line = strtok(NULL, "\n")) {
+    char *save_line = NULL;   /* strtok_r: parse_dep_inline има собствен цикъл */
+    for (char *line = strtok_r(src, "\n", &save_line); line; line = strtok_r(NULL, "\n", &save_line)) {
         lineno++;
         if (line[0] && line[strlen(line) - 1] == '\r') line[strlen(line) - 1] = '\0';
         strip_comment(line);
@@ -682,7 +684,8 @@ static void read_lock(const char *root_dir, Lock *lk) {
     char *src = read_file(lpath);   /* die при липса — съобщението е достатъчно */
     memset(lk, 0, sizeof *lk);
     int in_pkg = 0, lineno = 0;
-    for (char *line = strtok(src, "\n"); line; line = strtok(NULL, "\n")) {
+    char *save_line = NULL;   /* strtok_r навсякъде — без споделено състояние */
+    for (char *line = strtok_r(src, "\n", &save_line); line; line = strtok_r(NULL, "\n", &save_line)) {
         lineno++;
         if (line[0] && line[strlen(line) - 1] == '\r') line[strlen(line) - 1] = '\0';
         strip_comment(line);
