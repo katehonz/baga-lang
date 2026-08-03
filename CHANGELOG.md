@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### std/net — HTTP/1.1 client (apps-roadmap №2, първа половина)
+- `std/net/http_client.baga`: `http_request(method, url, headers, body,
+  timeout)` + `http_get` / `http_post`. URL parse (http:// only — https
+  waits for TLS), DNS hostnames through `tcp_connect_to`, `Map<str,str>`
+  request/response headers (lowercased, case-insensitive lookup via
+  `http_resp_header`), Content-Length + chunked bodies, read-to-close.
+- First product of the map type in std itself: headers are `Map<str,str>`.
+- `tests/std/http_client_test.baga` — 17 live loopback checks against an
+  httpdbaga worker (GET/POST/UTF-8 bodies, chunked, 418, refused, bad URL);
+  wired into `make test`.
+- Gap found (L6): no namespaces — the client's `http_header` collided with
+  httpdbaga's; renamed to `http_resp_header`. Prefix convention holds until
+  module scope exists.
+
+### Language — `main -> i64` exit code (kvbaga K3 closed)
+- The C wrapper emitted `b_main(); return 0;`, swallowing the exit code of
+  `fn main() -> i64`. Now `return (int)b_main();` for i64/i32 mains; void
+  mains unchanged. The baga CLI already propagated `WEXITSTATUS`.
+- Regression check in `make test`; kvbaga gaps.md K3 closed.
+
 ### App products — kvbaga (Redis-compatible KV server)
 - New product `app-product/kvbaga`: a RESP2 KV server built deliberately on
   the new map type — the first "app as language probe" on `Map<K,V>`.

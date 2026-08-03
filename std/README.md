@@ -15,7 +15,7 @@ then the working directory; every file is included at most once).
 | time    | time_now_ms, monotonic_ms                           | !Time        |
 | random  | random_bytes, random_i64                            | !Random      |
 | io      | buffered Reader/Writer over fds                     | !IO          |
-| net     | tcp_listen/accept/connect/read/write/close          | !Net (+!IO)  |
+| net     | tcp_listen/accept/connect/read/write/close; `tcp_connect_to` (DNS + timeouts + NODELAY/KEEPALIVE), `tcp_resolve_ipv4`, `tcp_set_timeouts`; `http_client` — HTTP/1.1 client (`http_get`/`http_post`/`http_request`, `Map<str,str>` headers, chunked) | !Net (+!IO)  |
 | crypto  | sha256, hmac_sha256, ct_eq                          | pure         |
 | par     | go/join tasks, i64 channels (CSP) — see std/par/    | !Par         |
 

@@ -1985,20 +1985,31 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         emit_test_driver(cg, program);
     } else {
         /* C main only when the program defines main (libraries may omit it) */
-        int has_main = 0;
+        Node *main_fn = NULL;
         for (int i = 0; i < program->items.len; i++) {
             Node *it = program->items.data[i];
             if (it->kind == NODE_FN && it->fn_body && it->fn_name &&
                 strcmp(it->fn_name, "main") == 0) {
-                has_main = 1;
+                main_fn = it;
                 break;
             }
         }
-        if (has_main) {
+        if (main_fn) {
+            /* main -> i64: the returned value is the process exit code
+             * (kvbaga K3 — before this the wrapper swallowed it) */
+            Node *rt = main_fn->ret_type;
+            if (rt && rt->kind == NODE_TYPE_EFFECT) rt = rt->inner_type;
+            int ret_int = rt && rt->kind == NODE_TYPE && rt->type_name &&
+                (strcmp(rt->type_name, "i64") == 0 ||
+                 strcmp(rt->type_name, "i32") == 0);
             fprintf(out, "int main(int argc, char **argv) {\n");
             fprintf(out, "    baga_argc = argc; baga_argv = argv;\n");
-            fprintf(out, "    b_main();\n");
-            fprintf(out, "    return 0;\n");
+            if (ret_int) {
+                fprintf(out, "    return (int)b_main();\n");
+            } else {
+                fprintf(out, "    b_main();\n");
+                fprintf(out, "    return 0;\n");
+            }
             fprintf(out, "}\n");
         }
     }

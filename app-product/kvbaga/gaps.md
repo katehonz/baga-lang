@@ -33,19 +33,16 @@ is not. Values with NUL cannot round-trip through the store.
 (language change) — or a parallel `MapBytes` builtin. Logged for the map
 roadmap.
 
-## K3 — C wrapper swallows `main`'s exit code
+## K3 — ~~C wrapper swallows `main`'s exit code~~ — CLOSED
 
 **Symptom.** `fn main() -> i64 { return 1 }` still exits 0: the emitted C
-`main` calls `b_main(); return 0;`. Tests must use the `exit(1)` builtin
-(the repo-wide idiom).
+`main` called `b_main(); return 0;`.
 
-**Workaround.** `exit(1)` (used by all std tests, kv_test, tcp_test).
-
-**Severity.** Medium — a real CLI/DX trap; demos returning 1 look successful.
-
-**Verdict.** Wrapper should `return (int)b_main();` when `main` returns i64.
-One-line codegen change but touches every program's exit status — do it as a
-dedicated compiler commit with a test.
+**Closed (2026-08-04, iteration №2).** The wrapper now emits
+`return (int)b_main();` when `main` is declared `-> i64`/`-> i32`
+(void mains keep `return 0`). The baga CLI already propagated
+`WEXITSTATUS`, so the code now travels end to end. Regression check in
+`make test` ("main -> i64 връща exit кода на процеса").
 
 ## K4 — KEYS without glob; DBSIZE walks all keys
 

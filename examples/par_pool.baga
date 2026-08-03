@@ -22,5 +22,5 @@ fn main() -> i64 !Par {
     }
     print(sum)
     // 1^2+...+10^2 = 385
-    return sum
+    return 0   // main -> i64 е exit код (K3); сумата е принтирана
 }

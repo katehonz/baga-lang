@@ -36,5 +36,5 @@ fn main() -> i64 !Par {
     chan_close(c)
     print(sum)
     // sum_{i=1..8} (i*i + i) = 204 + 36 = 240
-    return sum
+    return 0   // main -> i64 е exit код (K3); сумата е принтирана
 }

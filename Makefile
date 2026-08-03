@@ -196,6 +196,11 @@ test: $(BIN) sandak
 	@./$(BIN) $(BAGAIFLAGS) app-product/httpdbaga/http.baga 2>&1 | grep -q "липсва функция 'main'" \
 		&& echo "OK: run без main все още изисква main" \
 		|| { echo "FAIL: run без main трябва да гърми"; exit 1; }
+	@printf 'fn main() -> i64 {\n    return 7\n}\n' > /tmp/baga_exitcode.baga
+	@./$(BIN) $(BAGAIFLAGS) /tmp/baga_exitcode.baga > /dev/null 2>&1; \
+		test $$? -eq 7 \
+		&& echo "OK: main -> i64 връща exit кода на процеса (kvbaga K3)" \
+		|| { echo "FAIL: exit кодът на main се губи"; exit 1; }
 	@echo "=== http (app-product/httpdbaga) ==="
 	@./$(BIN) $(BAGAIFLAGS) tests/http_test.baga > /tmp/baga_http_out.txt
 	@grep -q "http_test: all passed" /tmp/baga_http_out.txt \
@@ -274,7 +279,7 @@ test: $(BIN) sandak
 		&& echo "OK: конкурентни алокации през global arena (G11 регресия)" \
 		|| { echo "FAIL: alloc race"; cat /tmp/baga_race_out.txt; exit 1; }
 	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net/par) ==="
-	@for t in bytes hmac io json map os random sha256 sort str tcp tcp_bytes time par; do \
+	@for t in bytes hmac http_client io json map os random sha256 sort str tcp tcp_bytes time par; do \
 		./$(BIN) $(BAGAIFLAGS) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
 			&& grep -q "all passed" /tmp/baga_std_out.txt \
 			&& echo "OK: std/$$t" \

@@ -19,5 +19,5 @@ fn main() -> i64 !Par {
     // timed select with nothing ready → timeout (which=2)
     let t = chan_select2_timeout(a, b, 15)
     print(cell2_0(t))  // 2
-    return s
+    return 0   // main -> i64 е exit код (K3); s е само за verify
 }

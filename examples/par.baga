@@ -19,5 +19,5 @@ fn main() -> i64 !Par {
     print(a)   // 49
     print(b)   // 81
     print(c)   // 42
-    return a + b + c
+    return 0   // main -> i64 е exit код (K3); резултатът е принтиран
 }

@@ -1,0 +1,286 @@
+// http_client.baga — HTTP/1.1 client over tcp_connect_to. Effects: !Net !IO.
+//
+// Design: one request per connection (Connection: close), read to EOF.
+// Hostnames resolve through getaddrinfo (tcp_connect_to); timeouts bound
+// every phase. Headers live in Map<str,str> (lowercased names). Bodies are
+// str — text-safe; binary bodies wait for a bytes-value map kind (gap).
+//
+// This is std's client half; the server half is app-product/httpdbaga.
+
+import "tcp.baga"
+import "../str/str.baga"
+import "../bytes/bytes.baga"
+
+// ---------- URL ----------
+
+struct HttpUrl {
+    ok: i64,
+    host: str,
+    port: i64,
+    path: str      // always starts with "/" (query included)
+}
+
+// http:// only (https waits for TLS in std — gap G6). Default port 80.
+fn http_parse_url(url: str) -> HttpUrl {
+    let bad = HttpUrl { ok: 0, host: "", port: 0, path: "" }
+    if !str_starts_with(url, "http://") {
+        return bad
+    }
+    let rest = substr(url, 7, len(url))
+    if len(rest) == 0 {
+        return bad
+    }
+    let slash = str_find(rest, "/")
+    let mut hostport = rest
+    let mut path = "/"
+    if slash >= 0 {
+        hostport = substr(rest, 0, slash)
+        path = substr(rest, slash, len(rest))
+    }
+    if len(hostport) == 0 {
+        return bad
+    }
+    let colon = str_find(hostport, ":")
+    if colon < 0 {
+        return HttpUrl { ok: 1, host: hostport, port: 80, path: path }
+    }
+    if colon == 0 {
+        return bad
+    }
+    let host = substr(hostport, 0, colon)
+    let port = parse_int(substr(hostport, colon + 1, len(hostport)))
+    if port <= 0 || port > 65535 {
+        return bad
+    }
+    return HttpUrl { ok: 1, host: host, port: port, path: path }
+}
+
+// ---------- response ----------
+
+struct HttpResponse {
+    ok: i64,
+    status: i64,
+    reason: str,
+    headers: Map<str, str>,   // names lowercased; last one wins on repeats
+    body: str
+}
+
+fn http_resp_bad() -> HttpResponse {
+    return HttpResponse { ok: 0, status: 0, reason: "", headers: map_new(), body: "" }
+}
+
+// Case-insensitive header lookup (names are lowercased at parse time).
+// Named *_resp to avoid clashing with httpdbaga's http_header(Request).
+fn http_resp_header(resp: HttpResponse, name: str) -> str {
+    return map_get(resp.headers, http_lower(name))
+}
+
+fn http_lower(s: str) -> str {
+    let mut out = ""
+    for i in 0..len(s) {
+        let mut c = char_at(s, i)
+        if c >= 65 && c <= 90 {
+            c = c + 32
+        }
+        out = concat(out, chr(c))
+    }
+    return out
+}
+
+// ---------- wire helpers ----------
+
+fn http_find_crlf(buf: bytes, pos: i64) -> i64 {
+    let n = bytes_len(buf)
+    let mut i = pos
+    while i + 1 < n {
+        if bytes_at(buf, i) == 13 && bytes_at(buf, i + 1) == 10 {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Index of \r\n\r\n at/after pos; -1 when absent.
+fn http_find_head_end(buf: bytes, pos: i64) -> i64 {
+    let n = bytes_len(buf)
+    let mut i = pos
+    while i + 3 < n {
+        if bytes_at(buf, i) == 13 && bytes_at(buf, i + 1) == 10 &&
+           bytes_at(buf, i + 2) == 13 && bytes_at(buf, i + 3) == 10 {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn http_hex_val(c: i64) -> i64 {
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    return -1
+}
+
+// Chunk-size line: hex digits (extensions after ';' ignored).
+fn http_chunk_size(line: str) -> i64 {
+    let mut v: i64 = 0
+    let mut i: i64 = 0
+    while i < len(line) {
+        let c = char_at(line, i)
+        if c == 59 {   // ';' extension — stop
+            return v
+        }
+        let d = http_hex_val(c)
+        if d < 0 {
+            return v
+        }
+        v = v * 16 + d
+        i = i + 1
+    }
+    return v
+}
+
+// chunked transfer body → decoded text. Stops at the 0-chunk or truncation.
+fn http_decode_chunked(b: bytes) -> str {
+    let mut out = bytes_from_vec(vec_new())
+    let mut pos: i64 = 0
+    let mut running: i64 = 1
+    while running == 1 {
+        let eol = http_find_crlf(b, pos)
+        if eol < 0 {
+            running = 0
+        } else {
+            let sz = http_chunk_size(str_of_bytes(bytes_slice(b, pos, eol)))
+            if sz <= 0 {
+                running = 0
+            } else {
+                let start = eol + 2
+                if bytes_len(b) < start + sz {
+                    running = 0
+                } else {
+                    out = bytes_concat(out, bytes_slice(b, start, start + sz))
+                    pos = start + sz + 2   // skip chunk CRLF
+                }
+            }
+        }
+    }
+    return str_of_bytes(out)
+}
+
+// ---------- response parsing ----------
+
+fn http_parse_response(buf: bytes) -> HttpResponse {
+    let head_end = http_find_head_end(buf, 0)
+    if head_end < 0 {
+        return http_resp_bad()
+    }
+    let head = str_of_bytes(bytes_slice(buf, 0, head_end))
+    let lines = str_split(head, "\r\n")
+    if vec_len(lines) == 0 {
+        return http_resp_bad()
+    }
+    // status line: HTTP/1.1 200 OK
+    let sl = vec_get(lines, 0)
+    let sp1 = str_find(sl, " ")
+    if sp1 < 0 {
+        return http_resp_bad()
+    }
+    let rest1 = substr(sl, sp1 + 1, len(sl))
+    let sp2 = str_find(rest1, " ")
+    let mut status_str = rest1
+    let mut reason = ""
+    if sp2 >= 0 {
+        status_str = substr(rest1, 0, sp2)
+        reason = substr(rest1, sp2 + 1, len(rest1))
+    }
+    let status = parse_int(status_str)
+    if status < 100 || status > 599 {
+        return http_resp_bad()
+    }
+    // headers
+    let headers = map_new()
+    let mut i: i64 = 1
+    while i < vec_len(lines) {
+        let line = vec_get(lines, i)
+        let colon = str_find(line, ":")
+        if colon > 0 {
+            let name = http_lower(str_trim(substr(line, 0, colon)))
+            let val = str_trim(substr(line, colon + 1, len(line)))
+            map_set(headers, name, val)
+        }
+        i = i + 1
+    }
+    // body: chunked or the rest (Content-Length bounded or read-to-close —
+    // we always sent Connection: close, so "the rest" is complete)
+    let body_start = head_end + 4
+    let te = map_get(headers, "transfer-encoding")
+    if str_find(te, "chunked") >= 0 {
+        let decoded = http_decode_chunked(bytes_slice(buf, body_start, bytes_len(buf)))
+        return HttpResponse { ok: 1, status: status, reason: reason, headers: headers, body: decoded }
+    }
+    let body = str_of_bytes(bytes_slice(buf, body_start, bytes_len(buf)))
+    return HttpResponse { ok: 1, status: status, reason: reason, headers: headers, body: body }
+}
+
+// ---------- request ----------
+
+// One request, one connection. headers may be an empty map (map_new());
+// Content-Length and Connection: close are added automatically.
+// timeout_s bounds connect/read/write (0 = block forever).
+fn http_request(method: str, url: str, headers: Map<str, str>, body: str, timeout_s: i64) -> HttpResponse !Net !IO {
+    let u = http_parse_url(url)
+    if u.ok == 0 {
+        return http_resp_bad()
+    }
+    let fd = tcp_connect_to(u.host, u.port, timeout_s)?
+    if fd < 0 {
+        return http_resp_bad()
+    }
+    let mut req = concat(concat(method, " "), concat(u.path, " HTTP/1.1\r\n"))
+    req = concat(req, concat(concat("Host: ", u.host), "\r\n"))
+    let ks = map_keys(headers)
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        let name = vec_get(ks, i)
+        req = concat(req, concat(concat(concat(name, ": "), map_get(headers, name)), "\r\n"))
+        i = i + 1
+    }
+    if len(body) > 0 {
+        req = concat(req, concat(concat("Content-Length: ", int_to_str(len(body))), "\r\n"))
+    }
+    req = concat(req, "Connection: close\r\n\r\n")
+    req = concat(req, body)
+    let w = tcp_write_bytes(fd, bytes_of_str(req))?
+    if w != 0 {
+        tcp_close(fd)?
+        return http_resp_bad()
+    }
+    let mut buf = bytes_from_vec(vec_new())
+    let mut reading: i64 = 1
+    while reading == 1 {
+        let chunk = tcp_read_bytes(fd, 8192)?
+        if bytes_len(chunk) == 0 {
+            reading = 0
+        } else {
+            buf = bytes_concat(buf, chunk)
+        }
+    }
+    tcp_close(fd)?
+    return http_parse_response(buf)
+}
+
+// Convenience: GET / POST with text body and no extra headers.
+fn http_get(url: str, timeout_s: i64) -> HttpResponse !Net !IO {
+    return http_request("GET", url, map_new(), "", timeout_s)?
+}
+
+fn http_post(url: str, body: str, timeout_s: i64) -> HttpResponse !Net !IO {
+    return http_request("POST", url, map_new(), body, timeout_s)?
+}

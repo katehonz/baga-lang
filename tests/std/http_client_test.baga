@@ -1,0 +1,104 @@
+// http_client_test.baga — live loopback test for std/net/http_client.baga.
+// The server side is httpdbaga (app-product) served from a go_bg worker:
+// DNS-by-hostname, status/headers/body parsing, chunked, POST, errors.
+
+import "std/net/http_client.baga"
+import "httpdbaga/http.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn serve_worker(port: i64) -> i64 !IO !Net !Par {
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        return -1
+    }
+    let mut running: i64 = 1
+    while running == 1 {
+        let fd = tcp_accept(listener)?
+        if fd >= 0 {
+            let req = http_read_request(fd)?
+            let p = http_path(req)
+            if p == "/chunked" {
+                tcp_write(fd, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")?
+            } else {
+                if p == "/teapot" {
+                    http_respond(fd, http_response(418, "I am a teapot"))?
+                } else {
+                    if p == "/post" {
+                        let b = http_body(req)
+                        let mut j = concat(concat(concat("{\"len\":", int_to_str(len(b))), ",\"echo\":\""), b)
+                        j = concat(j, "\"}")
+                        http_respond(fd, http_json_response(200, j))?
+                    } else {
+                        let probe = http_header(req, "x-probe")
+                        let mut j = concat(concat(concat(concat(concat("{\"path\":\"", p), "\",\"probe\":\""), probe), "\",\"method\":\""), http_method(req))
+                        j = concat(j, "\"}")
+                        http_respond(fd, http_json_response(200, j))?
+                    }
+                }
+            }
+            tcp_close(fd)?
+        }
+    }
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par {
+    let port = 18436
+    go_bg(serve_worker, port)
+    sleep_ms(300)
+
+    // --- URL parsing (pure) ---
+    let u1 = http_parse_url("http://example.com/x?y=1")
+    check("url_defaults", u1.ok == 1 && u1.host == "example.com" && u1.port == 80 && u1.path == "/x?y=1")
+    let u2 = http_parse_url("http://localhost:8080/a")
+    check("url_port", u2.ok == 1 && u2.port == 8080 && u2.path == "/a")
+    let u3 = http_parse_url("https://example.com")
+    check("url_https_rejected", u3.ok == 0)
+    let u4 = http_parse_url("http://")
+    check("url_empty_host", u4.ok == 0)
+
+    // --- GET by hostname (DNS path through tcp_connect_to) ---
+    let g1 = http_get(concat("http://localhost:", concat(int_to_str(port), "/hello")), 5)?
+    check("get_status", g1.ok == 1 && g1.status == 200)
+    check("get_reason", g1.reason == "OK")
+    check("get_path_echo", str_find(g1.body, "\"path\":\"/hello\"") >= 0)
+    check("get_content_type", http_resp_header(g1, "Content-Type") == "application/json")
+    check("header_ci_lookup", http_resp_header(g1, "CONTENT-TYPE") == "application/json")
+
+    // --- custom request header (Map) round-trip ---
+    let hs = map_new()
+    map_set(hs, "X-Probe", "бага")
+    let g2 = http_request("GET", concat("http://localhost:", int_to_str(port)), hs, "", 5)?
+    check("custom_header", g2.ok == 1 && str_find(g2.body, "\"probe\":\"бага\"") >= 0)
+
+    // --- POST with UTF-8 body (Content-Length path) ---
+    let pb = http_post(concat("http://localhost:", concat(int_to_str(port), "/post")), "бага test", 5)?
+    check("post_status", pb.ok == 1 && pb.status == 200)
+    check("post_bytelen", str_find(pb.body, "\"len\":13") >= 0)
+    check("post_echo", str_find(pb.body, "бага") >= 0)
+
+    // --- chunked transfer-encoding ---
+    let ch = http_get(concat("http://localhost:", concat(int_to_str(port), "/chunked")), 5)?
+    check("chunked_body", ch.ok == 1 && ch.body == "hello world")
+
+    // --- non-200 status is still a parsed response ---
+    let tp = http_get(concat("http://localhost:", concat(int_to_str(port), "/teapot")), 5)?
+    check("teapot_status", tp.ok == 1 && tp.status == 418)
+
+    // --- failures: refused connect, malformed URL ---
+    let bad1 = http_get("http://127.0.0.1:1/", 2)?
+    check("refused", bad1.ok == 0)
+    let bad2 = http_get("not a url", 2)?
+    check("bad_url", bad2.ok == 0)
+
+    print("http_client_test: all passed")
+    return 0
+}
