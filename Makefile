@@ -10,6 +10,9 @@ BIN  := baga
 
 all: $(BIN)
 
+sandak: src/sandak.c
+	$(CC) $(CFLAGS) -o $@ $<
+
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -62,7 +65,7 @@ self: $(BIN)
 		echo "FAIL: baga2 != baga3"; diff /tmp/baga_self3.c /tmp/baga_self4.c | head -20; exit 1; \
 	fi
 
-test: $(BIN)
+test: $(BIN) sandak
 	@echo "=== здравей ==="
 	./$(BIN) examples/zdravei.baga
 	@echo "=== факториел ==="
@@ -124,6 +127,8 @@ test: $(BIN)
 	@./$(BIN) -Itests/i_flag /tmp/baga_i_flag_main.baga > /dev/null \
 		&& echo "OK: -I<dir> слепен вариант" \
 		|| { echo "FAIL: -I<dir> слепен вариант"; exit 1; }
+	@echo "=== sandak (пакетен мениджър) ==="
+	@SANDAK=$(CURDIR)/sandak BAGA=$(CURDIR)/baga bash tests/sandak/run_tests.sh
 	@echo "=== string interpolation ==="
 	@./$(BIN) examples/interp.baga > /tmp/baga_interp_out.txt
 	@printf 'name=baga n=42 ok=true expr=84\ndollar=$$ braces={ } neg=-7\n' | diff - /tmp/baga_interp_out.txt > /dev/null \

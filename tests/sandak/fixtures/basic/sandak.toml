@@ -1,0 +1,9 @@
+# примерен манифест
+[package]
+name = "greeter"
+version = "0.1.0"
+entry = "greeter.baga"
+kind = "lib"
+
+[dependencies]
+std = { path = "../std" }   # коментар след стойност
