@@ -254,4 +254,31 @@ grep -q "source" "$T/err" || fail "--locked без source съобщение: $(
 sed -i "s|extlib = .*|extlib = { git = \"file://$T/extlib\", branch = \"master\" }|" "$T/gitapp/sandak.toml"
 echo "OK: --locked при git→path смяна — грешка source"
 
+# --- T6: build + run ---
+# използваме $T/ws от T3 (myapp -> mylib); myapp/main.baga липсва още
+cat > "$T/ws/myapp/main.baga" <<'EOF'
+import "mylib/mylib.baga"
+
+fn main() {
+    print(hi())
+}
+EOF
+out=$(cd "$T/ws/myapp" && "$SANDAK" build) || fail "build exit"
+[ -x "$T/ws/myapp/target/myapp" ] || fail "няма target/myapp"
+echo "OK: sandak build прави бинарник"
+
+out=$(cd "$T/ws/myapp" && "$SANDAK" run) || fail "run exit"
+[ "$out" = "7" ] || fail "run изход: [$out]"
+echo "OK: sandak run"
+
+# lib пакет: build = --lib проверка
+out=$(cd "$T/ws/mylib" && "$SANDAK" build) || fail "lib build exit"
+echo "$out" | grep -q "ok:" || fail "lib build изход: [$out]"
+echo "OK: sandak build на библиотека (--lib)"
+
+# gitapp от T5: build + run през git dep
+out=$(cd "$T/gitapp" && "$SANDAK" run) || fail "gitapp run exit"
+[ "$out" = "9" ] || fail "gitapp run изход: [$out]"
+echo "OK: build/run през git зависимост"
+
 echo "sandak: всички тестове минаха"

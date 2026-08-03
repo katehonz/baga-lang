@@ -244,6 +244,11 @@ static void fetch_git(const Dep *d, char out_root[512]) {
         }
         run(cmd);
     }
+    /* symlink <name> -> <name>-<ref>: иначе import "<name>/<file>" не се
+     * резолвира през -I .sandak/cache (клонираната директория е <name>-<ref>);
+     * -sfn, за да следи смяна на ref при повторен fetch */
+    snprintf(cmd, sizeof cmd, "ln -sfn '%s-%s' '.sandak/cache/%s'", d->name, d->ref, d->name);
+    run(cmd);
     char tmp[1024];
     if (d->subdir[0]) snprintf(tmp, sizeof tmp, "%s/%s", dir, d->subdir);
     else snprintf(tmp, sizeof tmp, "%s", dir);
@@ -441,13 +446,92 @@ static void cmd_fetch(void) {
         printf("resolved: %s %s\n", g.pkgs[i].name, g.pkgs[i].version);
 }
 
+/* -I флагове: родителската директория на всеки не-root пакет, dedup. */
+static void include_flags(const Graph *g, char out[8192]) {
+    char seen[128][512]; int n_seen = 0;
+    out[0] = '\0';
+    for (int i = 1; i < g->n; i++) {
+        char parent[512];
+        snprintf(parent, sizeof parent, "%s", g->pkgs[i].dir);
+        char *s = strrchr(parent, '/');
+        if (s) *s = '\0'; else snprintf(parent, sizeof parent, ".");
+        int dup = 0;
+        for (int j = 0; j < n_seen; j++)
+            if (strcmp(seen[j], parent) == 0) { dup = 1; break; }
+        if (dup) continue;
+        snprintf(seen[n_seen++], 512, "%s", parent);
+        strncat(out, " -I '", 8192 - strlen(out) - 1);
+        strncat(out, parent, 8192 - strlen(out) - 1);
+        strncat(out, "'", 8192 - strlen(out) - 1);
+    }
+}
+
+static void cmd_build(int run_after, int argc, char **argv) {
+    static Graph g;   /* ~15MB — не на стека */
+    resolve(&g, ".");
+    if (opt_locked) check_locked(&g, ".");
+    else write_lock(&g, ".");
+
+    Manifest *root = &g.pkgs[0];
+    char inc[8192];
+    include_flags(&g, inc);
+
+    const char *baga = getenv("BAGA");
+    if (!baga) baga = "baga";
+
+    char cmd[8192], entry[1024];
+    snprintf(entry, sizeof entry, "%s/%s", root->dir, root->entry);
+
+    if (root->is_lib) {
+        if (!root->entry[0]) { printf("sandak: %s — нищо за билдване (lib без entry)\n", root->name); return; }
+        snprintf(cmd, sizeof cmd, "'%s'%s --lib '%s'", baga, inc, entry);
+        run(cmd);
+        return;
+    }
+
+    snprintf(cmd, sizeof cmd, "mkdir -p target");
+    run(cmd);
+    char cfile[1024], bin[1024];
+    snprintf(cfile, sizeof cfile, "target/%s.c", root->name);
+    snprintf(bin, sizeof bin, "target/%s", root->name);
+    snprintf(cmd, sizeof cmd, "'%s'%s --emit-c '%s' > '%s'", baga, inc, entry, cfile);
+    run(cmd);
+    snprintf(cmd, sizeof cmd, "gcc -O2 -std=c11 -o '%s' '%s' -lm -pthread", bin, cfile);
+    run(cmd);
+    /* в stderr, за да не замърсява stdout на `sandak run` (както cargo) */
+    fprintf(stderr, "sandak: %s -> %s\n", root->name, bin);
+
+    if (run_after) {
+        /* exec с аргументите след `--` */
+        char r[8192];
+        snprintf(r, sizeof r, "'%s'", bin);
+        for (int i = 0; i < argc; i++) {
+            strncat(r, " '", sizeof r - strlen(r) - 1);
+            strncat(r, argv[i], sizeof r - strlen(r) - 1);
+            strncat(r, "'", sizeof r - strlen(r) - 1);
+        }
+        int rc = system(r);
+        if (rc == -1 || !WIFEXITED(rc)) exit(1);
+        exit(WEXITSTATUS(rc));
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) { usage(); return 1; }
     for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--") == 0) break;   /* args за run — не са опции на sandak */
         if (strcmp(argv[i], "--locked") == 0) opt_locked = 1;
     }
     if (strcmp(argv[1], "manifest") == 0) { cmd_manifest(); return 0; }
     if (strcmp(argv[1], "fetch") == 0) { cmd_fetch(); return 0; }
+    if (strcmp(argv[1], "build") == 0) { cmd_build(0, 0, NULL); return 0; }
+    if (strcmp(argv[1], "run") == 0) {
+        int sep = argc;
+        for (int i = 2; i < argc; i++)
+            if (strcmp(argv[i], "--") == 0) { sep = i; break; }
+        cmd_build(1, argc - sep - 1, argv + sep + 1);
+        return 0;
+    }
     usage();
     return 1;
 }
