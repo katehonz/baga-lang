@@ -10,3 +10,6 @@ lib/
 **/password.txt
 .env
 **/.env
+
+# worktrees
+.worktrees/
