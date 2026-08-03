@@ -26,6 +26,38 @@ Or try it in the browser — `python3 playground/serve.py` → http://localhost:
 Zero dependencies for the core compiler — only `gcc` and `make`. The LLVM
 backend is optional (see [Backends](#backends)).
 
+## Packages — sandak
+
+`sandak` is the package manager (the chest that holds the crates). Each package
+has a `sandak.toml`:
+
+```toml
+[package]
+name = "api"
+version = "0.1.0"
+entry = "start.baga"
+kind = "bin"            # default: lib
+
+[dependencies]
+fmrbaga = { path = "../../app-product/fmrbaga" }
+jwtbaga = { git = "https://github.com/user/jwtbaga", rev = "a1b2c3", subdir = "." }
+```
+
+```bash
+make sandak
+cd apps/api
+sandak fetch    # resolve deps, write sandak.lock
+sandak build    # -> target/api   (libs: typecheck via baga --lib)
+sandak run      # build + run
+```
+
+Imports name the package: `import "fmrbaga/app.baga"`. The compiler resolves
+them through `-I <dir>` search paths, which sandak computes from the
+dependency graph. Docker: edit `APP_REPO`/`APP_REF` in `docker-compose.yml`
+and `docker compose up --build` — the image clones the toolchain and the app
+from git, fetches the dependencies, and builds (`sandak fetch && sandak build
+--locked`; the fetch comes first because path-dep locks are not portable).
+
 ## The Three Pillars
 
 ### 1. Spec-First Verification

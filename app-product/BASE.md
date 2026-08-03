@@ -37,3 +37,5 @@ small community, real conventions, apps you can ship.
 2. Prefer `FMR_WORKERS=N` in production.
 3. Prefer parameterized ORM (`$1`) for user input.
 4. Do not fork a second web framework without a strong reason.
+5. Every package carries a `sandak.toml` (name == directory name) and builds
+   with `sandak build`; imports use package names, never `../../` paths.

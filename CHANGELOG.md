@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Packages — sandak (пакетна система)
+- New tool `sandak`: `sandak.toml` manifests, path + git dependencies
+  (with `subdir` for monorepos), `sandak.lock` with `--locked`, and
+  `fetch`/`build`/`run` commands. Zero dependencies (libc + git + gcc).
+- Compiler: repeatable `-I <dir>` import search path flag.
+- The whole monorepo is packaged: `std`, `app-product/*`, `apps/api` have
+  manifests; imports are package-named (`import "fmrbaga/app.baga"`).
+- Docker: multi-stage `Dockerfile` + `docker-compose.yml` — point `APP_REPO`
+  at a git URL and the container clones toolchain + app + deps and builds.
+
 ## [0.7.0] — 2026-08-02
 
 Second tagged release: M14–M18 static verification, soundness fixes, evaluation
