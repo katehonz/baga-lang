@@ -1,0 +1,79 @@
+// models/user.baga — User table helpers (Lucky model / query object style).
+// Table schema lives in ormbaga migrations (users).
+
+import "../../../app-product/ormbaga/orm.baga"
+import "../../../app-product/ormbaga/sql.baga"
+import "../../../app-product/fmrbaga/jsonx.baga"
+import "../../../app-product/pgbaga/pg.baga"
+import "../../../std/str/str.baga"
+
+fn user_table() -> str {
+    return "users"
+}
+
+fn user_to_json(q: OrmQuery, row: i64) -> JObj {
+    let mut o = jobj_new()
+    o = jobj_i64(o, "id", orm_cell_by_i64(q, row, "id"))
+    o = jobj_str(o, "email", orm_cell_by(q, row, "email"))
+    o = jobj_str(o, "name", orm_cell_by(q, row, "name"))
+    let ca = orm_cell_by(q, row, "created_at")
+    if ca != "" {
+        o = jobj_str(o, "created_at", ca)
+    }
+    return o
+}
+
+fn user_select_sql() -> str {
+    return "SELECT id, email, name, created_at::text AS created_at FROM users"
+}
+
+fn user_find(db: OrmDb, id: i64) -> OrmQuery !IO !Net {
+    let sql = concat(user_select_sql(), " WHERE id = $1")
+    let vals = vec_new()
+    let nulls = vec_new()
+    pg_param_i64(vals, nulls, id)
+    return orm_query_params(db, sql, vals, nulls)?
+}
+
+fn user_all(db: OrmDb) -> OrmQuery !IO !Net {
+    return orm_query(db, concat(user_select_sql(), " ORDER BY id"))?
+}
+
+fn user_find_by_email(db: OrmDb, email: str) -> OrmQuery !IO !Net {
+    return orm_where_eq_str(db, user_table(), "email", email)?
+}
+
+fn user_create(db: OrmDb, email: str, name: str) -> OrmExec !IO !Net {
+    let cols = vec_new()
+    vec_push(cols, "email")
+    vec_push(cols, "name")
+    let vals = vec_new()
+    vec_push(vals, email)
+    vec_push(vals, name)
+    return orm_insert_strs(db, user_table(), cols, vals)?
+}
+
+fn user_update_name(db: OrmDb, id: i64, name: str) -> OrmExec !IO !Net {
+    let cols = vec_new()
+    vec_push(cols, "name")
+    let vals = vec_new()
+    vec_push(vals, name)
+    return orm_update_by_id(db, user_table(), id, cols, vals)?
+}
+
+fn user_delete(db: OrmDb, id: i64) -> OrmExec !IO !Net {
+    return orm_delete_by_id(db, user_table(), id)?
+}
+
+fn user_list_json(q: OrmQuery) -> JObj {
+    let mut arr = jarr_new()
+    let mut i: i64 = 0
+    while i < q.nrows {
+        arr = jarr_obj(arr, user_to_json(q, i))
+        i = i + 1
+    }
+    let mut o = jobj_new()
+    o = jobj_raw(o, "items", jarr_encode(arr))
+    o = jobj_i64(o, "count", q.nrows)
+    return o
+}

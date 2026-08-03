@@ -1,0 +1,80 @@
+// ctx.baga — request context (FastAPI Request + path/query + app state).
+
+import "../httpdbaga/http.baga"
+import "route.baga"
+import "../../std/str/str.baga"
+
+// Per-request context. App state (JWT secret, DSN bits) is copied from FmrApp.
+// DB is held outside and threaded by the server (one OrmDb per TCP connection).
+struct FmrCtx {
+    req: Request,
+    route_id: i64,
+    pnames: Vec<str>,
+    pvals: Vec<str>,
+    jwt_secret: str,
+    // filled by deps / handlers
+    user_sub: str,
+    authed: i64
+}
+
+fn fmr_ctx_new(req: Request, m: RouteMatch, jwt_secret: str) -> FmrCtx {
+    return FmrCtx {
+        req: req,
+        route_id: m.id,
+        pnames: m.pnames,
+        pvals: m.pvals,
+        jwt_secret: jwt_secret,
+        user_sub: "",
+        authed: 0
+    }
+}
+
+fn fmr_method(ctx: FmrCtx) -> str {
+    return http_method(ctx.req)
+}
+
+fn fmr_path(ctx: FmrCtx) -> str {
+    return http_path_only(ctx.req)
+}
+
+fn fmr_query(ctx: FmrCtx, name: str) -> str {
+    return http_query_param(ctx.req, name)
+}
+
+fn fmr_header(ctx: FmrCtx, name: str) -> str {
+    return http_header(ctx.req, name)
+}
+
+fn fmr_body(ctx: FmrCtx) -> str {
+    return http_body(ctx.req)
+}
+
+// Path parameter by name; "" if missing.
+fn fmr_param(ctx: FmrCtx, name: str) -> str {
+    for i in 0..vec_len(ctx.pnames) {
+        if vec_get(ctx.pnames, i) == name {
+            return vec_get(ctx.pvals, i)
+        }
+    }
+    return ""
+}
+
+fn fmr_param_i64(ctx: FmrCtx, name: str) -> i64 {
+    let s = fmr_param(ctx, name)
+    if s == "" {
+        return 0
+    }
+    return parse_int(s)
+}
+
+fn fmr_set_user(ctx: FmrCtx, sub: str) -> FmrCtx {
+    return FmrCtx {
+        req: ctx.req,
+        route_id: ctx.route_id,
+        pnames: ctx.pnames,
+        pvals: ctx.pvals,
+        jwt_secret: ctx.jwt_secret,
+        user_sub: sub,
+        authed: 1
+    }
+}

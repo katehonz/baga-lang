@@ -185,6 +185,38 @@ test: $(BIN)
 	@grep -q "jwt_test: all passed" /tmp/baga_jwt_out.txt \
 		&& echo "OK: JWT HS256 sign/verify (golden vector)" \
 		|| { echo "FAIL: jwt_test"; cat /tmp/baga_jwt_out.txt; exit 1; }
+	@echo "=== pg (app-product/pgbaga, live Postgres) ==="
+	@./$(BIN) --lib app-product/pgbaga/pg.baga | grep -q "ok:" \
+		&& echo "OK: --lib pg.baga" \
+		|| { echo "FAIL: --lib pg.baga"; exit 1; }
+	@./$(BIN) tests/pg_test.baga > /tmp/baga_pg_out.txt
+	@grep -q "pg_test: all passed" /tmp/baga_pg_out.txt \
+		&& echo "OK: PostgreSQL SCRAM + Simple Query (live)" \
+		|| { echo "FAIL: pg_test (need PG on 127.0.0.1 + bagatest role?)"; cat /tmp/baga_pg_out.txt; exit 1; }
+	@echo "=== orm (app-product/ormbaga, ActiveRecord + goose) ==="
+	@./$(BIN) --lib app-product/ormbaga/orm.baga | grep -q "ok:" \
+		&& echo "OK: --lib orm.baga" \
+		|| { echo "FAIL: --lib orm.baga"; exit 1; }
+	@./$(BIN) tests/orm_test.baga > /tmp/baga_orm_out.txt
+	@grep -q "orm_test: all passed" /tmp/baga_orm_out.txt \
+		&& echo "OK: ORM migrations + CRUD (live baga_orm)" \
+		|| { echo "FAIL: orm_test (need DB baga_orm + bagatest?)"; cat /tmp/baga_orm_out.txt; exit 1; }
+	@echo "=== fmr (app-product/fmrbaga, FastAPI-style) ==="
+	@./$(BIN) --lib app-product/fmrbaga/handlers.baga | grep -q "ok:" \
+		&& echo "OK: --lib fmrbaga handlers" \
+		|| { echo "FAIL: --lib fmrbaga"; exit 1; }
+	@./$(BIN) tests/fmr_test.baga > /tmp/baga_fmr_out.txt
+	@grep -q "fmr_test: all passed" /tmp/baga_fmr_out.txt \
+		&& echo "OK: fmrbaga jsonx + router + validation" \
+		|| { echo "FAIL: fmr_test"; cat /tmp/baga_fmr_out.txt; exit 1; }
+	@echo "=== apps/api (Lucky-style product) ==="
+	@./$(BIN) --check apps/api/start.baga | grep -q "ok:" \
+		&& echo "OK: --check apps/api/start.baga" \
+		|| { echo "FAIL: apps/api"; exit 1; }
+	@./$(BIN) tests/api_test.baga > /tmp/baga_api_out.txt
+	@grep -q "api_test: all passed" /tmp/baga_api_out.txt \
+		&& echo "OK: apps/api models + openapi posts" \
+		|| { echo "FAIL: api_test"; cat /tmp/baga_api_out.txt; exit 1; }
 	@echo "=== par (go/join/chan, !Par) ==="
 	@./$(BIN) examples/par.baga > /tmp/baga_par_out.txt
 	@printf "49\n81\n42\n" | diff - /tmp/baga_par_out.txt > /dev/null \

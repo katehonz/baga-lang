@@ -1,0 +1,525 @@
+// openapi.baga — OpenAPI 3 document for fmrbaga-api (schemas + security).
+// Pure builders on jsonx. Kept next to handlers so the contract stays honest.
+
+import "jsonx.baga"
+import "../../std/str/str.baga"
+
+// ---------- schema primitives ----------
+
+fn oas_type(t: str) -> JObj {
+    let mut o = jobj_new()
+    o = jobj_str(o, "type", t)
+    return o
+}
+
+fn oas_str_schema() -> JObj {
+    return oas_type("string")
+}
+
+fn oas_int_schema() -> JObj {
+    let mut o = oas_type("integer")
+    o = jobj_str(o, "format", "int64")
+    return o
+}
+
+fn oas_obj_schema(props: JObj, required: JArr) -> JObj {
+    let mut o = oas_type("object")
+    o = jobj_obj(o, "properties", props)
+    if vec_len(required.items) > 0 {
+        o = jobj_raw(o, "required", jarr_encode(required))
+    }
+    return o
+}
+
+fn oas_arr_schema(items: JObj) -> JObj {
+    let mut o = oas_type("array")
+    o = jobj_obj(o, "items", items)
+    return o
+}
+
+fn oas_ref(name: str) -> JObj {
+    let mut o = jobj_new()
+    o = jobj_str(o, "$ref", concat("#/components/schemas/", name))
+    return o
+}
+
+fn oas_prop_str(props: JObj, name: str, desc: str) -> JObj {
+    let mut s = oas_str_schema()
+    if desc != "" {
+        s = jobj_str(s, "description", desc)
+    }
+    return jobj_obj(props, name, s)
+}
+
+fn oas_prop_int(props: JObj, name: str, desc: str) -> JObj {
+    let mut s = oas_int_schema()
+    if desc != "" {
+        s = jobj_str(s, "description", desc)
+    }
+    return jobj_obj(props, name, s)
+}
+
+// application/json content wrapper around a schema object
+fn oas_json_content(schema: JObj) -> JObj {
+    let mut app = jobj_new()
+    app = jobj_obj(app, "schema", schema)
+    let mut content = jobj_new()
+    content = jobj_obj(content, "application/json", app)
+    return content
+}
+
+fn oas_response(desc: str, schema: JObj) -> JObj {
+    let mut r = jobj_new()
+    r = jobj_str(r, "description", desc)
+    r = jobj_obj(r, "content", oas_json_content(schema))
+    return r
+}
+
+fn oas_response_ref(desc: str, schema_name: str) -> JObj {
+    return oas_response(desc, oas_ref(schema_name))
+}
+
+fn oas_response_empty(desc: str) -> JObj {
+    let mut r = jobj_new()
+    r = jobj_str(r, "description", desc)
+    return r
+}
+
+// security requirement: [{ "bearerAuth": [] }]
+fn oas_bearer_security() -> str {
+    let mut empty = jarr_new()
+    let mut one = jobj_new()
+    one = jobj_raw(one, "bearerAuth", jarr_encode(empty))
+    let mut arr = jarr_new()
+    arr = jarr_obj(arr, one)
+    return jarr_encode(arr)
+}
+
+fn oas_path_id_param() -> JObj {
+    let mut p = jobj_new()
+    p = jobj_str(p, "name", "id")
+    p = jobj_str(p, "in", "path")
+    p = jobj_bool(p, "required", 1)
+    p = jobj_str(p, "description", "User id")
+    p = jobj_obj(p, "schema", oas_int_schema())
+    return p
+}
+
+// ---------- components ----------
+
+fn oas_components() -> JObj {
+    // schemas
+    let mut user_props = jobj_new()
+    user_props = oas_prop_int(user_props, "id", "Primary key")
+    user_props = oas_prop_str(user_props, "email", "Unique email")
+    user_props = oas_prop_str(user_props, "name", "Display name")
+    user_props = oas_prop_str(user_props, "created_at", "ISO-ish timestamp from Postgres")
+    let mut user_req = jarr_new()
+    user_req = jarr_str(user_req, "id")
+    user_req = jarr_str(user_req, "email")
+    user_req = jarr_str(user_req, "name")
+    let user = oas_obj_schema(user_props, user_req)
+
+    let mut user_in_props = jobj_new()
+    user_in_props = oas_prop_str(user_in_props, "email", "")
+    user_in_props = oas_prop_str(user_in_props, "name", "")
+    let mut user_in_req = jarr_new()
+    user_in_req = jarr_str(user_in_req, "email")
+    user_in_req = jarr_str(user_in_req, "name")
+    let user_create = oas_obj_schema(user_in_props, user_in_req)
+
+    let mut user_patch_props = jobj_new()
+    user_patch_props = oas_prop_str(user_patch_props, "name", "")
+    let mut user_patch_req = jarr_new()
+    user_patch_req = jarr_str(user_patch_req, "name")
+    let user_patch = oas_obj_schema(user_patch_props, user_patch_req)
+
+    let mut user_list_props = jobj_new()
+    user_list_props = jobj_obj(user_list_props, "items", oas_arr_schema(oas_ref("User")))
+    user_list_props = oas_prop_int(user_list_props, "count", "")
+    let user_list = oas_obj_schema(user_list_props, jarr_new())
+
+    let mut token_in_props = jobj_new()
+    token_in_props = oas_prop_str(token_in_props, "sub", "Subject claim for JWT")
+    let mut token_in_req = jarr_new()
+    token_in_req = jarr_str(token_in_req, "sub")
+    let token_in = oas_obj_schema(token_in_props, token_in_req)
+
+    let mut token_out_props = jobj_new()
+    token_out_props = oas_prop_str(token_out_props, "access_token", "HS256 JWT")
+    token_out_props = oas_prop_str(token_out_props, "token_type", "Always bearer")
+    token_out_props = oas_prop_str(token_out_props, "sub", "")
+    let token_out = oas_obj_schema(token_out_props, jarr_new())
+
+    let mut me_props = jobj_new()
+    me_props = oas_prop_str(me_props, "sub", "Authenticated subject")
+    let me = oas_obj_schema(me_props, jarr_new())
+
+    let mut status_props = jobj_new()
+    status_props = oas_prop_str(status_props, "status", "")
+    let status_ok = oas_obj_schema(status_props, jarr_new())
+
+    let mut ready_props = jobj_new()
+    ready_props = oas_prop_str(ready_props, "status", "")
+    ready_props = oas_prop_str(ready_props, "database", "up when DB ping succeeds")
+    let ready = oas_obj_schema(ready_props, jarr_new())
+
+    let mut detail_props = jobj_new()
+    detail_props = oas_prop_str(detail_props, "detail", "Error message or FastAPI-style list")
+    let error = oas_obj_schema(detail_props, jarr_new())
+
+    let mut validation_item_props = jobj_new()
+    let mut loc_schema = oas_arr_schema(oas_str_schema())
+    validation_item_props = jobj_obj(validation_item_props, "loc", loc_schema)
+    validation_item_props = oas_prop_str(validation_item_props, "msg", "")
+    validation_item_props = oas_prop_str(validation_item_props, "type", "")
+    let validation_item = oas_obj_schema(validation_item_props, jarr_new())
+    let mut validation_props = jobj_new()
+    validation_props = jobj_obj(validation_props, "detail", oas_arr_schema(validation_item))
+    let validation_error = oas_obj_schema(validation_props, jarr_new())
+
+    let mut schemas = jobj_new()
+    schemas = jobj_obj(schemas, "User", user)
+    schemas = jobj_obj(schemas, "UserCreate", user_create)
+    schemas = jobj_obj(schemas, "UserPatch", user_patch)
+    schemas = jobj_obj(schemas, "UserList", user_list)
+    schemas = jobj_obj(schemas, "TokenRequest", token_in)
+    schemas = jobj_obj(schemas, "TokenResponse", token_out)
+    schemas = jobj_obj(schemas, "Me", me)
+    schemas = jobj_obj(schemas, "Status", status_ok)
+    schemas = jobj_obj(schemas, "Ready", ready)
+    schemas = jobj_obj(schemas, "Error", error)
+    schemas = jobj_obj(schemas, "HTTPValidationError", validation_error)
+
+    let mut post_props = jobj_new()
+    post_props = oas_prop_int(post_props, "id", "")
+    post_props = oas_prop_int(post_props, "user_id", "Author")
+    post_props = oas_prop_str(post_props, "title", "")
+    post_props = oas_prop_str(post_props, "body", "")
+    post_props = oas_prop_str(post_props, "created_at", "")
+    let post = oas_obj_schema(post_props, jarr_new())
+    let mut post_in_props = jobj_new()
+    post_in_props = oas_prop_int(post_in_props, "user_id", "")
+    post_in_props = oas_prop_str(post_in_props, "title", "")
+    post_in_props = oas_prop_str(post_in_props, "body", "")
+    let mut post_in_req = jarr_new()
+    post_in_req = jarr_str(post_in_req, "user_id")
+    post_in_req = jarr_str(post_in_req, "title")
+    let post_create = oas_obj_schema(post_in_props, post_in_req)
+    let mut post_list_props = jobj_new()
+    post_list_props = jobj_obj(post_list_props, "items", oas_arr_schema(oas_ref("Post")))
+    post_list_props = oas_prop_int(post_list_props, "count", "")
+    post_list_props = oas_prop_int(post_list_props, "limit", "")
+    post_list_props = oas_prop_int(post_list_props, "offset", "")
+    let post_list = oas_obj_schema(post_list_props, jarr_new())
+    schemas = jobj_obj(schemas, "Post", post)
+    schemas = jobj_obj(schemas, "PostCreate", post_create)
+    schemas = jobj_obj(schemas, "PostList", post_list)
+
+    // securitySchemes
+    let mut bearer = jobj_new()
+    bearer = jobj_str(bearer, "type", "http")
+    bearer = jobj_str(bearer, "scheme", "bearer")
+    bearer = jobj_str(bearer, "bearerFormat", "JWT")
+    bearer = jobj_str(bearer, "description", "HS256 access token from POST /v1/auth/token")
+    let mut schemes = jobj_new()
+    schemes = jobj_obj(schemes, "bearerAuth", bearer)
+
+    let mut c = jobj_new()
+    c = jobj_obj(c, "schemas", schemas)
+    c = jobj_obj(c, "securitySchemes", schemes)
+    return c
+}
+
+// ---------- operations ----------
+
+fn oas_op(op_id: str, summary: str, tag: str) -> JObj {
+    let mut op = jobj_new()
+    op = jobj_str(op, "operationId", op_id)
+    op = jobj_str(op, "summary", summary)
+    let mut tags = jarr_new()
+    tags = jarr_str(tags, tag)
+    op = jobj_raw(op, "tags", jarr_encode(tags))
+    return op
+}
+
+fn oas_add_bearer(op: JObj) -> JObj {
+    return jobj_raw(op, "security", oas_bearer_security())
+}
+
+fn oas_add_json_body(op: JObj, schema_name: str, required: i64) -> JObj {
+    let mut body = jobj_new()
+    body = jobj_bool(body, "required", required)
+    body = jobj_obj(body, "content", oas_json_content(oas_ref(schema_name)))
+    return jobj_obj(op, "requestBody", body)
+}
+
+fn oas_add_resp(op: JObj, code: str, desc: str, schema_name: str) -> JObj {
+    // merge into responses if present
+    // we rebuild responses each time — callers chain carefully
+    return op
+}
+
+// Build full responses map for common patterns.
+fn oas_responses_ok(schema_name: str) -> JObj {
+    let mut r = jobj_new()
+    r = jobj_obj(r, "200", oas_response_ref("OK", schema_name))
+    r = jobj_obj(r, "401", oas_response_ref("Unauthorized", "Error"))
+    r = jobj_obj(r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
+    r = jobj_obj(r, "500", oas_response_ref("Server Error", "Error"))
+    return r
+}
+
+fn oas_responses_public(schema_name: str) -> JObj {
+    let mut r = jobj_new()
+    r = jobj_obj(r, "200", oas_response_ref("OK", schema_name))
+    r = jobj_obj(r, "503", oas_response_ref("Unavailable", "Error"))
+    return r
+}
+
+fn oas_paths() -> JObj {
+    let mut paths = jobj_new()
+
+    // GET /health
+    let mut health = oas_op("get_health", "Liveness probe", "system")
+    health = jobj_obj(health, "responses", oas_responses_public("Status"))
+    let mut health_item = jobj_new()
+    health_item = jobj_obj(health_item, "get", health)
+    paths = jobj_obj(paths, "/health", health_item)
+
+    // GET /ready
+    let mut ready = oas_op("get_ready", "Readiness probe (DB ping)", "system")
+    ready = jobj_obj(ready, "responses", oas_responses_public("Ready"))
+    let mut ready_item = jobj_new()
+    ready_item = jobj_obj(ready_item, "get", ready)
+    paths = jobj_obj(paths, "/ready", ready_item)
+
+    // GET /v1/meta
+    let mut meta_props = jobj_new()
+    meta_props = oas_prop_str(meta_props, "title", "")
+    meta_props = oas_prop_str(meta_props, "version", "")
+    meta_props = oas_prop_str(meta_props, "framework", "")
+    meta_props = oas_prop_str(meta_props, "openapi", "")
+    let meta_schema = oas_obj_schema(meta_props, jarr_new())
+    let mut meta = oas_op("get_meta", "API metadata", "system")
+    let mut meta_r = jobj_new()
+    meta_r = jobj_obj(meta_r, "200", oas_response("OK", meta_schema))
+    meta = jobj_obj(meta, "responses", meta_r)
+    let mut meta_item = jobj_new()
+    meta_item = jobj_obj(meta_item, "get", meta)
+    paths = jobj_obj(paths, "/v1/meta", meta_item)
+
+    // GET /openapi.json — self
+    let mut oas = oas_op("get_openapi", "OpenAPI 3 document", "system")
+    let mut oas_r = jobj_new()
+    oas_r = jobj_obj(oas_r, "200", oas_response_empty("OpenAPI JSON"))
+    oas = jobj_obj(oas, "responses", oas_r)
+    let mut oas_item = jobj_new()
+    oas_item = jobj_obj(oas_item, "get", oas)
+    paths = jobj_obj(paths, "/openapi.json", oas_item)
+
+    // POST /v1/auth/token
+    let mut token = oas_op("post_token", "Issue JWT access token", "auth")
+    token = oas_add_json_body(token, "TokenRequest", 0)
+    // also allow ?sub= query
+    let mut qparam = jobj_new()
+    qparam = jobj_str(qparam, "name", "sub")
+    qparam = jobj_str(qparam, "in", "query")
+    qparam = jobj_bool(qparam, "required", 0)
+    qparam = jobj_str(qparam, "description", "Subject (alternative to JSON body)")
+    qparam = jobj_obj(qparam, "schema", oas_str_schema())
+    let mut params = jarr_new()
+    params = jarr_obj(params, qparam)
+    token = jobj_raw(token, "parameters", jarr_encode(params))
+    let mut token_r = jobj_new()
+    token_r = jobj_obj(token_r, "200", oas_response_ref("Token issued", "TokenResponse"))
+    token_r = jobj_obj(token_r, "400", oas_response_ref("Bad request", "Error"))
+    token_r = jobj_obj(token_r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
+    token = jobj_obj(token, "responses", token_r)
+    let mut token_item = jobj_new()
+    token_item = jobj_obj(token_item, "post", token)
+    paths = jobj_obj(paths, "/v1/auth/token", token_item)
+
+    // GET /v1/me
+    let mut me = oas_op("get_me", "Current authenticated subject", "auth")
+    me = oas_add_bearer(me)
+    let mut me_r = jobj_new()
+    me_r = jobj_obj(me_r, "200", oas_response_ref("OK", "Me"))
+    me_r = jobj_obj(me_r, "401", oas_response_ref("Unauthorized", "Error"))
+    me = jobj_obj(me, "responses", me_r)
+    let mut me_item = jobj_new()
+    me_item = jobj_obj(me_item, "get", me)
+    paths = jobj_obj(paths, "/v1/me", me_item)
+
+    // /v1/users
+    let mut users_get = oas_op("list_users", "List users", "users")
+    users_get = oas_add_bearer(users_get)
+    users_get = jobj_obj(users_get, "responses", oas_responses_ok("UserList"))
+
+    let mut users_post = oas_op("create_user", "Create user", "users")
+    users_post = oas_add_bearer(users_post)
+    users_post = oas_add_json_body(users_post, "UserCreate", 1)
+    let mut users_post_r = jobj_new()
+    users_post_r = jobj_obj(users_post_r, "201", oas_response_ref("Created", "User"))
+    users_post_r = jobj_obj(users_post_r, "401", oas_response_ref("Unauthorized", "Error"))
+    users_post_r = jobj_obj(users_post_r, "409", oas_response_ref("Conflict (e.g. email taken)", "Error"))
+    users_post_r = jobj_obj(users_post_r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
+    users_post = jobj_obj(users_post, "responses", users_post_r)
+
+    let mut users_item = jobj_new()
+    users_item = jobj_obj(users_item, "get", users_get)
+    users_item = jobj_obj(users_item, "post", users_post)
+    paths = jobj_obj(paths, "/v1/users", users_item)
+
+    // /v1/users/{id}
+    let mut id_params = jarr_new()
+    id_params = jarr_obj(id_params, oas_path_id_param())
+
+    let mut uget = oas_op("get_user", "Get user by id", "users")
+    uget = oas_add_bearer(uget)
+    uget = jobj_raw(uget, "parameters", jarr_encode(id_params))
+    let mut uget_r = jobj_new()
+    uget_r = jobj_obj(uget_r, "200", oas_response_ref("OK", "User"))
+    uget_r = jobj_obj(uget_r, "401", oas_response_ref("Unauthorized", "Error"))
+    uget_r = jobj_obj(uget_r, "404", oas_response_ref("Not found", "Error"))
+    uget = jobj_obj(uget, "responses", uget_r)
+
+    let mut upatch = oas_op("patch_user", "Update user name", "users")
+    upatch = oas_add_bearer(upatch)
+    upatch = jobj_raw(upatch, "parameters", jarr_encode(id_params))
+    upatch = oas_add_json_body(upatch, "UserPatch", 1)
+    let mut upatch_r = jobj_new()
+    upatch_r = jobj_obj(upatch_r, "200", oas_response_ref("OK", "User"))
+    upatch_r = jobj_obj(upatch_r, "401", oas_response_ref("Unauthorized", "Error"))
+    upatch_r = jobj_obj(upatch_r, "404", oas_response_ref("Not found", "Error"))
+    upatch_r = jobj_obj(upatch_r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
+    upatch = jobj_obj(upatch, "responses", upatch_r)
+
+    let mut udel = oas_op("delete_user", "Delete user", "users")
+    udel = oas_add_bearer(udel)
+    udel = jobj_raw(udel, "parameters", jarr_encode(id_params))
+    let mut udel_r = jobj_new()
+    udel_r = jobj_obj(udel_r, "204", oas_response_empty("No Content"))
+    udel_r = jobj_obj(udel_r, "401", oas_response_ref("Unauthorized", "Error"))
+    udel = jobj_obj(udel, "responses", udel_r)
+
+    let mut uid_item = jobj_new()
+    uid_item = jobj_obj(uid_item, "get", uget)
+    uid_item = jobj_obj(uid_item, "patch", upatch)
+    uid_item = jobj_obj(uid_item, "delete", udel)
+    paths = jobj_obj(paths, "/v1/users/{id}", uid_item)
+
+    // /v1/posts
+    let mut lim = jobj_new()
+    lim = jobj_str(lim, "name", "limit")
+    lim = jobj_str(lim, "in", "query")
+    lim = jobj_bool(lim, "required", 0)
+    lim = jobj_obj(lim, "schema", oas_int_schema())
+    let mut off = jobj_new()
+    off = jobj_str(off, "name", "offset")
+    off = jobj_str(off, "in", "query")
+    off = jobj_bool(off, "required", 0)
+    off = jobj_obj(off, "schema", oas_int_schema())
+    let mut uidq = jobj_new()
+    uidq = jobj_str(uidq, "name", "user_id")
+    uidq = jobj_str(uidq, "in", "query")
+    uidq = jobj_bool(uidq, "required", 0)
+    uidq = jobj_obj(uidq, "schema", oas_int_schema())
+    let mut pparams = jarr_new()
+    pparams = jarr_obj(pparams, lim)
+    pparams = jarr_obj(pparams, off)
+    pparams = jarr_obj(pparams, uidq)
+
+    let mut pget = oas_op("list_posts", "List posts (paginated)", "posts")
+    pget = oas_add_bearer(pget)
+    pget = jobj_raw(pget, "parameters", jarr_encode(pparams))
+    pget = jobj_obj(pget, "responses", oas_responses_ok("PostList"))
+
+    let mut ppost = oas_op("create_post", "Create post", "posts")
+    ppost = oas_add_bearer(ppost)
+    ppost = oas_add_json_body(ppost, "PostCreate", 1)
+    let mut ppost_r = jobj_new()
+    ppost_r = jobj_obj(ppost_r, "201", oas_response_ref("Created", "Post"))
+    ppost_r = jobj_obj(ppost_r, "401", oas_response_ref("Unauthorized", "Error"))
+    ppost_r = jobj_obj(ppost_r, "404", oas_response_ref("user_id not found", "Error"))
+    ppost_r = jobj_obj(ppost_r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
+    ppost = jobj_obj(ppost, "responses", ppost_r)
+
+    let mut posts_item = jobj_new()
+    posts_item = jobj_obj(posts_item, "get", pget)
+    posts_item = jobj_obj(posts_item, "post", ppost)
+    paths = jobj_obj(paths, "/v1/posts", posts_item)
+
+    let mut pshow = oas_op("get_post", "Get post by id", "posts")
+    pshow = oas_add_bearer(pshow)
+    pshow = jobj_raw(pshow, "parameters", jarr_encode(id_params))
+    let mut pshow_r = jobj_new()
+    pshow_r = jobj_obj(pshow_r, "200", oas_response_ref("OK", "Post"))
+    pshow_r = jobj_obj(pshow_r, "401", oas_response_ref("Unauthorized", "Error"))
+    pshow_r = jobj_obj(pshow_r, "404", oas_response_ref("Not found", "Error"))
+    pshow = jobj_obj(pshow, "responses", pshow_r)
+
+    let mut ppatch = oas_op("patch_post", "Update post", "posts")
+    ppatch = oas_add_bearer(ppatch)
+    ppatch = jobj_raw(ppatch, "parameters", jarr_encode(id_params))
+    ppatch = oas_add_json_body(ppatch, "PostCreate", 1)
+    let mut ppatch_r = jobj_new()
+    ppatch_r = jobj_obj(ppatch_r, "200", oas_response_ref("OK", "Post"))
+    ppatch_r = jobj_obj(ppatch_r, "401", oas_response_ref("Unauthorized", "Error"))
+    ppatch_r = jobj_obj(ppatch_r, "404", oas_response_ref("Not found", "Error"))
+    ppatch = jobj_obj(ppatch, "responses", ppatch_r)
+
+    let mut pdel = oas_op("delete_post", "Delete post", "posts")
+    pdel = oas_add_bearer(pdel)
+    pdel = jobj_raw(pdel, "parameters", jarr_encode(id_params))
+    let mut pdel_r = jobj_new()
+    pdel_r = jobj_obj(pdel_r, "204", oas_response_empty("No Content"))
+    pdel_r = jobj_obj(pdel_r, "401", oas_response_ref("Unauthorized", "Error"))
+    pdel = jobj_obj(pdel, "responses", pdel_r)
+
+    let mut pid_item = jobj_new()
+    pid_item = jobj_obj(pid_item, "get", pshow)
+    pid_item = jobj_obj(pid_item, "patch", ppatch)
+    pid_item = jobj_obj(pid_item, "delete", pdel)
+    paths = jobj_obj(paths, "/v1/posts/{id}", pid_item)
+
+    return paths
+}
+
+fn oas_tags() -> str {
+    let mut tags = jarr_new()
+    let mut t1 = jobj_new()
+    t1 = jobj_str(t1, "name", "system")
+    t1 = jobj_str(t1, "description", "Health and metadata")
+    tags = jarr_obj(tags, t1)
+    let mut t2 = jobj_new()
+    t2 = jobj_str(t2, "name", "auth")
+    t2 = jobj_str(t2, "description", "JWT issue and identity")
+    tags = jarr_obj(tags, t2)
+    let mut t3 = jobj_new()
+    t3 = jobj_str(t3, "name", "users")
+    t3 = jobj_str(t3, "description", "User CRUD (Bearer required)")
+    tags = jarr_obj(tags, t3)
+    let mut t4 = jobj_new()
+    t4 = jobj_str(t4, "name", "posts")
+    t4 = jobj_str(t4, "description", "Post CRUD (Bearer required)")
+    tags = jarr_obj(tags, t4)
+    return jarr_encode(tags)
+}
+
+// Full OpenAPI 3.0.3 document as JSON object.
+fn fmr_openapi_doc(title: str, version: str) -> JObj {
+    let mut info = jobj_new()
+    info = jobj_str(info, "title", title)
+    info = jobj_str(info, "version", version)
+    info = jobj_str(info, "description", "fmrbaga production API — JSON-first, JWT Bearer auth, Postgres-backed users.")
+
+    let mut root = jobj_new()
+    root = jobj_str(root, "openapi", "3.0.3")
+    root = jobj_obj(root, "info", info)
+    root = jobj_raw(root, "tags", oas_tags())
+    root = jobj_obj(root, "paths", oas_paths())
+    root = jobj_obj(root, "components", oas_components())
+    // empty global security — ops declare bearer where needed
+    return root
+}

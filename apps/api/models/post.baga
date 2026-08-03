@@ -1,0 +1,99 @@
+// models/post.baga — posts belong to users (Lucky-style model helpers).
+
+import "../../../app-product/ormbaga/orm.baga"
+import "../../../app-product/ormbaga/sql.baga"
+import "../../../app-product/fmrbaga/jsonx.baga"
+import "../../../app-product/pgbaga/pg.baga"
+import "../../../std/str/str.baga"
+
+fn post_table() -> str {
+    return "posts"
+}
+
+fn post_to_json(q: OrmQuery, row: i64) -> JObj {
+    let mut o = jobj_new()
+    o = jobj_i64(o, "id", orm_cell_by_i64(q, row, "id"))
+    o = jobj_i64(o, "user_id", orm_cell_by_i64(q, row, "user_id"))
+    o = jobj_str(o, "title", orm_cell_by(q, row, "title"))
+    o = jobj_str(o, "body", orm_cell_by(q, row, "body"))
+    let ca = orm_cell_by(q, row, "created_at")
+    if ca != "" {
+        o = jobj_str(o, "created_at", ca)
+    }
+    return o
+}
+
+fn post_select_sql() -> str {
+    return "SELECT id, user_id, title, body, created_at::text AS created_at FROM posts"
+}
+
+fn post_find(db: OrmDb, id: i64) -> OrmQuery !IO !Net {
+    let sql = concat(post_select_sql(), " WHERE id = $1")
+    let vals = vec_new()
+    let nulls = vec_new()
+    pg_param_i64(vals, nulls, id)
+    return orm_query_params(db, sql, vals, nulls)?
+}
+
+fn post_by_user(db: OrmDb, user_id: i64, limit: i64, offset: i64) -> OrmQuery !IO !Net {
+    let sql = concat(post_select_sql(), " WHERE user_id = $1 ORDER BY id DESC LIMIT $2 OFFSET $3")
+    let vals = vec_new()
+    let nulls = vec_new()
+    pg_param_i64(vals, nulls, user_id)
+    pg_param_i64(vals, nulls, limit)
+    pg_param_i64(vals, nulls, offset)
+    return orm_query_params(db, sql, vals, nulls)?
+}
+
+fn post_all(db: OrmDb, limit: i64, offset: i64) -> OrmQuery !IO !Net {
+    let sql = concat(post_select_sql(), " ORDER BY id DESC LIMIT $1 OFFSET $2")
+    let vals = vec_new()
+    let nulls = vec_new()
+    pg_param_i64(vals, nulls, limit)
+    pg_param_i64(vals, nulls, offset)
+    return orm_query_params(db, sql, vals, nulls)?
+}
+
+fn post_create(db: OrmDb, user_id: i64, title: str, body: str) -> OrmExec !IO !Net {
+    let cols = vec_new()
+    vec_push(cols, "user_id")
+    vec_push(cols, "title")
+    vec_push(cols, "body")
+    let vals = vec_new()
+    let nulls = vec_new()
+    pg_param_i64(vals, nulls, user_id)
+    vec_push(vals, title)
+    vec_push(nulls, 0)
+    vec_push(vals, body)
+    vec_push(nulls, 0)
+    return orm_exec_params(db, sql_insert_p(post_table(), cols), vals, nulls)?
+}
+
+fn post_update(db: OrmDb, id: i64, title: str, body: str) -> OrmExec !IO !Net {
+    let cols = vec_new()
+    vec_push(cols, "title")
+    vec_push(cols, "body")
+    let vals = vec_new()
+    vec_push(vals, title)
+    vec_push(vals, body)
+    let nulls = vec_new()
+    vec_push(nulls, 0)
+    vec_push(nulls, 0)
+    pg_param_i64(vals, nulls, id)
+    // sql_update_eq_p: SET title=$1, body=$2 WHERE id=$3
+    return orm_exec_params(db, sql_update_eq_p(post_table(), cols, "id"), vals, nulls)?
+}
+
+fn post_delete(db: OrmDb, id: i64) -> OrmExec !IO !Net {
+    return orm_delete_by_id(db, post_table(), id)?
+}
+
+fn post_list_json(q: OrmQuery) -> str {
+    let mut arr = jarr_new()
+    let mut i: i64 = 0
+    while i < q.nrows {
+        arr = jarr_obj(arr, post_to_json(q, i))
+        i = i + 1
+    }
+    return jarr_encode(arr)
+}

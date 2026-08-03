@@ -1,0 +1,163 @@
+// actions/posts.baga — Post CRUD (Lucky: Api::Posts::*)
+
+import "../models/post.baga"
+import "../models/user.baga"
+import "../../../app-product/fmrbaga/app.baga"
+import "../../../app-product/fmrbaga/ctx.baga"
+import "../../../app-product/fmrbaga/action.baga"
+import "../../../app-product/fmrbaga/jsonx.baga"
+import "../../../app-product/ormbaga/orm.baga"
+import "../../../std/str/str.baga"
+
+// Resolve user_id for "current" posts: query ?user_id= or all posts.
+fn act_posts_index(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let page = act_page(ctx, 20, 100)
+    let uid_s = fmr_query(ctx, "user_id")
+    if uid_s != "" {
+        let q = post_by_user(db, parse_int(uid_s), page.limit, page.offset)?
+        if q.ok == 0 {
+            return act_err(q.db, 500, q.err)
+        }
+        return act_ok(q.db, act_page_wrap(post_list_json(q), q.nrows, page))
+    }
+    let q2 = post_all(db, page.limit, page.offset)?
+    if q2.ok == 0 {
+        return act_err(q2.db, 500, q2.err)
+    }
+    return act_ok(q2.db, act_page_wrap(post_list_json(q2), q2.nrows, page))
+}
+
+fn act_posts_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let body = jbody_parse_str(fmr_body(ctx))
+    if body.ok == 0 {
+        return act_err(db, 400, body.err)
+    }
+    let b = jbody_require_object(body)
+    if b.ok == 0 {
+        return act_err(db, 400, b.err)
+    }
+    let user_id_f = jreq_i64(b.doc, b.root, "user_id")
+    if user_id_f.ok == 0 {
+        return act_422_field(db, "user_id", user_id_f)
+    }
+    let title = jreq_str(b.doc, b.root, "title")
+    if title.ok == 0 {
+        return act_422_field(db, "title", title)
+    }
+    let body_f = jopt_str(b.doc, b.root, "body", "")
+    if body_f.ok == 0 {
+        return act_422_field(db, "body", body_f)
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    // ensure user exists
+    let u = user_find(db, user_id_f.num)?
+    if u.ok == 0 {
+        return act_err(u.db, 500, u.err)
+    }
+    if u.nrows < 1 {
+        return act_404(u.db, "user_id not found")
+    }
+    let ins = post_create(u.db, user_id_f.num, title.val, body_f.val)?
+    if ins.ok == 0 {
+        return act_err(ins.db, 500, ins.err)
+    }
+    // re-fetch latest by user+title (no RETURNING yet) — last post for user
+    let list = post_by_user(ins.db, user_id_f.num, 1, 0)?
+    if list.ok == 0 || list.nrows < 1 {
+        return act_err(list.db, 500, "insert ok but row missing")
+    }
+    return act_created(list.db, post_to_json(list, 0))
+}
+
+fn act_posts_show(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let pid = act_require_id(ctx, db, "id")
+    if pid.ok == 0 {
+        return pid.out
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let q = post_find(db, pid.id)?
+    if q.ok == 0 {
+        return act_err(q.db, 500, q.err)
+    }
+    if q.nrows < 1 {
+        return act_404(q.db, "Post not found")
+    }
+    return act_ok(q.db, post_to_json(q, 0))
+}
+
+fn act_posts_update(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let pid = act_require_id(ctx, db, "id")
+    if pid.ok == 0 {
+        return pid.out
+    }
+    let body = jbody_parse_str(fmr_body(ctx))
+    if body.ok == 0 {
+        return act_err(db, 400, body.err)
+    }
+    let b = jbody_require_object(body)
+    if b.ok == 0 {
+        return act_err(db, 400, b.err)
+    }
+    let title = jreq_str(b.doc, b.root, "title")
+    if title.ok == 0 {
+        return act_422_field(db, "title", title)
+    }
+    let body_f = jopt_str(b.doc, b.root, "body", "")
+    if body_f.ok == 0 {
+        return act_422_field(db, "body", body_f)
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let upd = post_update(db, pid.id, title.val, body_f.val)?
+    if upd.ok == 0 {
+        return act_err(upd.db, 500, upd.err)
+    }
+    let q = post_find(upd.db, pid.id)?
+    if q.ok == 0 || q.nrows < 1 {
+        return act_404(q.db, "Post not found")
+    }
+    return act_ok(q.db, post_to_json(q, 0))
+}
+
+fn act_posts_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let pid = act_require_id(ctx, db, "id")
+    if pid.ok == 0 {
+        return pid.out
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let del = post_delete(db, pid.id)?
+    if del.ok == 0 {
+        return act_err(del.db, 500, del.err)
+    }
+    return act_no_content(del.db)
+}

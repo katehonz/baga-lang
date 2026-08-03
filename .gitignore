@@ -5,3 +5,8 @@ baga-llvm
 *.llvm.o
 idea/
 lib/
+
+# local DB credentials (never commit)
+**/password.txt
+.env
+**/.env

@@ -1,0 +1,79 @@
+// demo.baga — connect to local Postgres, run a few Simple Queries, print rows.
+// Credentials: env PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE, else defaults
+// matching password.txt / local bagatest role.
+
+import "pg.baga"
+import "../../std/os/os.baga"
+import "../../std/str/str.baga"
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" {
+        return def
+    }
+    return v
+}
+
+fn print_result(label: str, r: PgResult) {
+    if r.ok == 0 {
+        print(concat(concat("FAIL ", label), concat(": ", r.err)))
+        return
+    }
+    print(concat(concat("OK ", label), concat(" tag=", r.tag)))
+    let mut row: i64 = 0
+    while row < r.nrows {
+        let mut line = concat("  row", i64_to_dec(row))
+        let mut col: i64 = 0
+        while col < r.ncols {
+            let name = pg_colname(r, col)
+            let mut val = "NULL"
+            if pg_isnull(r, row, col) == 0 {
+                val = pg_cell(r, row, col)
+            }
+            line = concat(concat(concat(concat(line, " "), name), "="), val)
+            col = col + 1
+        }
+        print(line)
+        row = row + 1
+    }
+}
+
+fn main() -> i64 !Net !IO !Random {
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port_s = cfg("PGPORT", "5432")?
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+    let database = cfg("PGDATABASE", "postgres")?
+    let port = parse_int(port_s)
+    print(concat(concat(concat("pgbaga demo → ", host), ":"), port_s))
+    print(concat(concat("user=", user), concat(" db=", database)))
+
+    let conn = pg_connect(host, port, user, password, database)?
+    if conn.ok == 0 {
+        print(concat("connect failed: ", conn.err))
+        return 1
+    }
+    print(concat(concat("connected pid=", i64_to_dec(conn.pid)),
+        concat(" server=", conn.server_version)))
+
+    let mut c = conn
+    let r1 = pg_query(c, "SELECT 1 AS one, current_user::text AS usr, version() AS ver")?
+    c = r1.conn
+    print_result("select1", r1)
+
+    let r2 = pg_query(c, "CREATE TEMP TABLE pgbaga_demo(id int, name text)")?
+    c = r2.conn
+    print_result("create", r2)
+
+    let r3 = pg_query(c, "INSERT INTO pgbaga_demo VALUES (1, 'baga'), (2, NULL)")?
+    c = r3.conn
+    print_result("insert", r3)
+
+    let r4 = pg_query(c, "SELECT id, name FROM pgbaga_demo ORDER BY id")?
+    c = r4.conn
+    print_result("select_rows", r4)
+
+    pg_close(c)?
+    print("done")
+    return 0
+}

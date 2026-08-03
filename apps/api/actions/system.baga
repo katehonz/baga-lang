@@ -1,0 +1,43 @@
+// actions/system.baga — health / ready / meta (Lucky: Api::System::*)
+
+import "../../../app-product/fmrbaga/app.baga"
+import "../../../app-product/fmrbaga/ctx.baga"
+import "../../../app-product/fmrbaga/action.baga"
+import "../../../app-product/fmrbaga/jsonx.baga"
+import "../../../app-product/fmrbaga/openapi.baga"
+import "../../../app-product/ormbaga/orm.baga"
+
+fn act_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut o = jobj_new()
+    o = jobj_str(o, "status", "ok")
+    return act_ok(db, o)
+}
+
+fn act_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let q = orm_query(db, "SELECT 1 AS ok")?
+    if q.ok == 0 {
+        return act_err(q.db, 503, "database ping failed")
+    }
+    let mut o = jobj_new()
+    o = jobj_str(o, "status", "ready")
+    o = jobj_str(o, "database", "up")
+    return act_ok(q.db, o)
+}
+
+fn act_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
+    let app = fmr_build_app()?
+    let mut o = jobj_new()
+    o = jobj_str(o, "title", app.title)
+    o = jobj_str(o, "version", app.version)
+    o = jobj_str(o, "framework", "fmrbaga")
+    o = jobj_str(o, "openapi", "/openapi.json")
+    return act_ok(db, o)
+}
+
+fn act_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
+    let app = fmr_build_app()?
+    return act_ok(db, fmr_openapi_doc(app.title, app.version))
+}

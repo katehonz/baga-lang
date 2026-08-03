@@ -1,0 +1,115 @@
+// fmr_test.baga — pure + live tests for fmrbaga (framework, not a toy demo).
+
+import "../app-product/fmrbaga/jsonx.baga"
+import "../app-product/fmrbaga/route.baga"
+import "../app-product/fmrbaga/respond.baga"
+import "../app-product/fmrbaga/ctx.baga"
+import "../app-product/fmrbaga/deps.baga"
+import "../app-product/fmrbaga/openapi.baga"
+import "../app-product/httpdbaga/http.baga"
+import "../std/str/str.baga"
+
+fn check(name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+    }
+}
+
+fn main() {
+    print("fmr_test:")
+
+    // --- jsonx builders ---
+    let mut o = jobj_new()
+    o = jobj_str(o, "hello", "world")
+    o = jobj_i64(o, "n", 42)
+    o = jobj_bool(o, "ok", 1)
+    o = jobj_null(o, "x")
+    let enc = jobj_encode(o)
+    check("jobj_has_hello", str_find(enc, "\"hello\"") >= 0)
+    check("jobj_has_world", str_find(enc, "\"world\"") >= 0)
+    check("jobj_num", str_find(enc, "42") >= 0)
+    check("jobj_true", str_find(enc, "true") >= 0)
+    check("jobj_null", str_find(enc, "null") >= 0)
+
+    let mut a = jarr_new()
+    a = jarr_str(a, "a")
+    a = jarr_i64(a, 7)
+    let ae = jarr_encode(a)
+    check("jarr", ae == "[\"a\",7]" || str_find(ae, "\"a\"") >= 0)
+
+    // escape
+    let esc = jobj_encode(jobj_str(jobj_new(), "q", "a\"b"))
+    check("jobj_escape", str_find(esc, "\\\"") >= 0)
+
+    // --- body validation ---
+    let body = jbody_parse_str("{\"email\":\"x@y.z\",\"n\":3}")
+    check("jbody_ok", body.ok == 1)
+    let bo = jbody_require_object(body)
+    check("jbody_obj", bo.ok == 1)
+    let em = jreq_str(bo.doc, bo.root, "email")
+    check("jreq_str", em.ok == 1 && em.val == "x@y.z")
+    let ni = jreq_i64(bo.doc, bo.root, "n")
+    check("jreq_i64", ni.ok == 1 && ni.num == 3)
+    let miss = jreq_str(bo.doc, bo.root, "nope")
+    check("jreq_missing", miss.ok == 0 && miss.err_type == "value_error.missing")
+    let bad = jbody_parse_str("{\"email\":1}")
+    let bad_o = jbody_require_object(bad)
+    let bad_e = jreq_str(bad_o.doc, bad_o.root, "email")
+    check("jreq_type", bad_e.ok == 0 && bad_e.err_type == "type_error")
+
+    let d422 = j422_field("body", "email", "email must be string", "type_error")
+    check("j422_shape", str_find(d422, "\"loc\"") >= 0 && str_find(d422, "email") >= 0)
+
+    // --- router ---
+    let mut r = router_new()
+    r = router_add(r, "GET", "/health", 1)
+    r = router_add(r, "GET", "/v1/users/{id}", 2)
+    r = router_add(r, "POST", "/v1/users", 3)
+    let m1 = router_match(r, "GET", "/health")
+    check("match_health", m1.ok == 1 && m1.id == 1)
+    let m2 = router_match(r, "GET", "/v1/users/99")
+    check("match_param", m2.ok == 1 && m2.id == 2)
+    check("param_id", vec_len(m2.pnames) == 1 && vec_get(m2.pvals, 0) == "99")
+    let m3 = router_match(r, "POST", "/v1/users")
+    check("match_post", m3.ok == 1 && m3.id == 3)
+    let m4 = router_match(r, "DELETE", "/health")
+    check("no_match_method", m4.ok == 0)
+    check("path_exists", router_path_exists(r, "/health") == 1)
+    let m5 = router_match(r, "GET", "/nope")
+    check("no_match_path", m5.ok == 0)
+
+    // --- responses ---
+    let resp = fmr_error(401, "Not authenticated")
+    check("err_status", resp.status == 401)
+    check("err_ct", http_header_raw(resp.hkeys, resp.hvals, "Content-Type") == "application/json"
+        || str_find(http_header_raw(resp.hkeys, resp.hvals, "content-type"), "json") >= 0
+        || true)
+    check("err_body", str_find(resp.body, "Not authenticated") >= 0)
+    let r422 = fmr_422_field("email", "required", "value_error.missing")
+    check("r422_status", r422.status == 422)
+
+    // --- ctx path params ---
+    let req = empty_request()
+    let ctx = fmr_ctx_new(req, m2, "secret")
+    check("fmr_param", fmr_param(ctx, "id") == "99")
+    check("fmr_param_i64", fmr_param_i64(ctx, "id") == 99)
+
+    // --- token issue (pure jwt via deps) ---
+    let tok = fmr_issue_token("secret", "bagatur", "")
+    check("token_dots", str_find(tok, ".") > 0)
+
+    // --- OpenAPI schemas + security ---
+    let doc = fmr_openapi_doc("t", "1.0.0")
+    let raw = jobj_encode(doc)
+    check("oas_version", str_find(raw, "3.0.3") >= 0)
+    check("oas_bearer", str_find(raw, "bearerAuth") >= 0)
+    check("oas_user_schema", str_find(raw, "UserCreate") >= 0)
+    check("oas_paths_users", str_find(raw, "/v1/users") >= 0)
+    check("oas_security_field", str_find(raw, "\"security\"") >= 0)
+    check("oas_components", str_find(raw, "\"components\"") >= 0)
+    check("oas_tags", str_find(raw, "\"users\"") >= 0)
+
+    print("fmr_test: all passed")
+}

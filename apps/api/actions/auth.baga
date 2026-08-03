@@ -1,0 +1,53 @@
+// actions/auth.baga — token issue + /me (Lucky: Api::Auth::*)
+
+import "../../../app-product/fmrbaga/app.baga"
+import "../../../app-product/fmrbaga/ctx.baga"
+import "../../../app-product/fmrbaga/action.baga"
+import "../../../app-product/fmrbaga/deps.baga"
+import "../../../app-product/fmrbaga/jsonx.baga"
+import "../../../app-product/ormbaga/orm.baga"
+
+fn act_token(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut sub = fmr_query(ctx, "sub")
+    if sub == "" {
+        let body = jbody_parse_str(fmr_body(ctx))
+        if body.ok == 1 {
+            let b2 = jbody_require_object(body)
+            if b2.ok == 1 {
+                let f = jreq_str(b2.doc, b2.root, "sub")
+                if f.ok == 1 {
+                    sub = f.val
+                } else {
+                    return act_422_field(db, "sub", f)
+                }
+            } else {
+                if fmr_body(ctx) != "" {
+                    return act_err(db, 400, b2.err)
+                }
+            }
+        } else {
+            if fmr_body(ctx) != "" {
+                return act_err(db, 400, body.err)
+            }
+        }
+    }
+    if sub == "" {
+        return fmr_out(fmr_422_field("sub", "sub field required", "value_error.missing"), db)
+    }
+    let token = fmr_issue_token(ctx.jwt_secret, sub, "")
+    let mut o = jobj_new()
+    o = jobj_str(o, "access_token", token)
+    o = jobj_str(o, "token_type", "bearer")
+    o = jobj_str(o, "sub", sub)
+    return act_ok(db, o)
+}
+
+fn act_me(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let mut o = jobj_new()
+    o = jobj_str(o, "sub", auth.ctx.user_sub)
+    return act_ok(db, o)
+}

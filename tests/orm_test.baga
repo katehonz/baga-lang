@@ -1,0 +1,198 @@
+// orm_test.baga — migrations + ActiveRecord CRUD against baga_orm.
+
+import "../app-product/ormbaga/orm.baga"
+import "../app-product/ormbaga/migrate.baga"
+import "../app-product/ormbaga/schema.baga"
+import "../app-product/ormbaga/sql.baga"
+import "../app-product/ormbaga/pool.baga"
+import "../std/str/str.baga"
+
+fn check(name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+    }
+}
+
+fn main() -> i64 !Net !IO !Random !Par {
+    print("orm_test:")
+
+    // pure SQL quoting
+    check("sql_lit_escape", sql_lit("a'b") == "'a''b'")
+    check("sql_ident", sql_ident("users") == "\"users\"")
+    check("sql_i64_neg", sql_i64(0 - 42) == "-42")
+
+    let db0 = orm_connect_env()?
+    check("connect", orm_ok_db(db0) == 1)
+    if orm_ok_db(db0) == 0 {
+        print(concat("  connect err: ", orm_err_db(db0)))
+        print("orm_test: FAILED (connect — need baga_orm DB + bagatest)")
+        return 1
+    }
+    let mut db = db0
+    let set = ormbaga_migrations()
+
+    // clean slate: down all, then up
+    let down_all = migrate_down(db, set, 100)?
+    db = down_all.db
+    check("down_all_ok", down_all.ok == 1)
+
+    let up1 = migrate_up(db, set)?
+    db = up1.db
+    check("up_ok", up1.ok == 1)
+    check("up_applied_3", up1.applied == 3)
+
+    let up2 = migrate_up(db, set)?
+    db = up2.db
+    check("up_idempotent", up2.ok == 1 && up2.applied == 0)
+
+    let st = migrate_status(db, set)?
+    db = st.db
+    check("status_3", st.ok == 1 && st.nrows == 3)
+
+    // CRUD users
+    let cols = vec_new()
+    vec_push(cols, "email")
+    vec_push(cols, "name")
+    let vals = vec_new()
+    vec_push(vals, "test@baga.dev")
+    vec_push(vals, "Tester")
+    let ins = orm_insert_strs(db, "users", cols, vals)?
+    db = ins.db
+    check("insert_user", ins.ok == 1)
+
+    let q = orm_where_eq_str(db, "users", "email", "test@baga.dev")?
+    db = q.db
+    check("where_email", q.ok == 1 && q.nrows == 1)
+    check("name_cell", orm_cell_by(q, 0, "name") == "Tester")
+    let uid = orm_cell_by_i64(q, 0, "id")
+    check("id_positive", uid > 0)
+
+    let find = orm_find_i64(db, "users", "id", uid)?
+    db = find.db
+    check("find_by_id", find.ok == 1 && find.nrows == 1)
+
+    let ucols = vec_new()
+    vec_push(ucols, "name")
+    let uvals = vec_new()
+    vec_push(uvals, "Tester2")
+    let upd = orm_update_by_id(db, "users", uid, ucols, uvals)?
+    db = upd.db
+    check("update", upd.ok == 1)
+
+    let q2 = orm_find_i64(db, "users", "id", uid)?
+    db = q2.db
+    check("updated_name", orm_cell_by(q2, 0, "name") == "Tester2")
+
+    // posts FK
+    let pcols = vec_new()
+    vec_push(pcols, "user_id")
+    vec_push(pcols, "title")
+    vec_push(pcols, "body")
+    let plits = vec_new()
+    vec_push(plits, sql_i64(uid))
+    vec_push(plits, sql_lit("t1"))
+    vec_push(plits, sql_lit("b1"))
+    let pins = orm_insert_lits(db, "posts", pcols, plits)?
+    db = pins.db
+    check("insert_post", pins.ok == 1)
+
+    let pc = orm_count(db, "posts")?
+    db = pc.db
+    check("posts_count", pc.ok == 1 && pc.count >= 1)
+
+    // quote safety / params: email with quote (parameterized path)
+    let cols2 = vec_new()
+    vec_push(cols2, "email")
+    vec_push(cols2, "name")
+    let vals2 = vec_new()
+    vec_push(vals2, "o'hara@baga.dev")
+    vec_push(vals2, "O'Hara")
+    let ins2 = orm_insert_strs(db, "users", cols2, vals2)?
+    db = ins2.db
+    check("insert_quoted", ins2.ok == 1)
+    let q3 = orm_where_eq_str(db, "users", "email", "o'hara@baga.dev")?
+    db = q3.db
+    check("find_quoted", q3.ok == 1 && q3.nrows == 1)
+    check("name_quoted", orm_cell_by(q3, 0, "name") == "O'Hara")
+
+    // raw params API
+    let pv = vec_new()
+    vec_push(pv, "param@baga.dev")
+    let pq = orm_query_params_str(db, "SELECT $1::text AS e", pv)?
+    db = pq.db
+    check("orm_params", pq.ok == 1 && orm_cell(pq, 0, 0) == "param@baga.dev")
+
+    let del = orm_delete_by_id(db, "users", uid)?
+    db = del.db
+    check("delete_cascades_ok", del.ok == 1)
+    // posts for that user should be gone (ON DELETE CASCADE)
+    let pc2 = orm_where_eq_i64(db, "posts", "user_id", uid)?
+    db = pc2.db
+    check("cascade", pc2.ok == 1 && pc2.nrows == 0)
+
+    // rollback one migration
+    let d1 = migrate_down(db, set, 1)?
+    db = d1.db
+    check("down_1", d1.ok == 1 && d1.applied == 1)
+    let st2 = migrate_status(db, set)?
+    db = st2.db
+    check("status_after_down", st2.ok == 1 && st2.nrows == 2)
+
+    // re-up
+    let up3 = migrate_up(db, set)?
+    db = up3.db
+    check("re_up", up3.ok == 1 && up3.applied == 1)
+
+    // full down for cleanliness
+    let d2 = migrate_down(db, set, 100)?
+    db = d2.db
+    check("full_down", d2.ok == 1)
+
+    // prepared statements via ORM
+    let pr = orm_prepare(db, "orm_echo", "SELECT $1::int AS n", 1)?
+    db = pr.db
+    check("orm_prepare", pr.ok == 1)
+    let pvals = vec_new()
+    let pnulls = vec_new()
+    pg_param_i64(pvals, pnulls, 99)
+    let pqr = orm_query_prepared(db, "orm_echo", pvals, pnulls)?
+    db = pqr.db
+    check("orm_exec_prepared", pqr.ok == 1 && orm_cell_i64(pqr, 0, 0) == 99)
+    let pde = orm_deallocate(db, "orm_echo")?
+    db = pde.db
+    check("orm_deallocate", pde.ok == 1)
+
+    orm_close(db)?
+
+    // connection pool
+    let pool = orm_pool_from_env(2)?
+    check("pool_size", orm_pool_size(pool) == 2)
+    check("pool_idle2", orm_pool_idle(pool) == 2)
+    let lease1 = orm_pool_acquire(pool)?
+    check("pool_acq1", orm_ok_db(lease1.db) == 1)
+    check("pool_idle1", orm_pool_idle(pool) == 1)
+    let lease2 = orm_pool_acquire(pool)?
+    check("pool_acq2", orm_ok_db(lease2.db) == 1)
+    check("pool_idle0", orm_pool_idle(pool) == 0)
+    let q1 = orm_query(lease1.db, "SELECT 1 AS n")?
+    check("pool_query", q1.ok == 1 && orm_cell_i64(q1, 0, 0) == 1)
+    // release updated conn
+    let l1b = OrmLease {
+        db: q1.db,
+        slot: lease1.slot,
+        free_ch: lease1.free_ch,
+        fds: lease1.fds, oks: lease1.oks, pids: lease1.pids, txs: lease1.txs,
+        errs: lease1.errs, versions: lease1.versions
+    }
+    orm_pool_release(l1b)?
+    check("pool_idle_after", orm_pool_idle(pool) == 1)
+    orm_pool_release(lease2)?
+    check("pool_idle_full", orm_pool_idle(pool) == 2)
+    orm_pool_close(pool)?
+    check("pool_closed", true)
+
+    print("orm_test: all passed")
+    return 0
+}

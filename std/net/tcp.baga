@@ -24,9 +24,11 @@ extern fn pwrite(fd: i64, buf: str, count: i64, off: i64) -> i64 !Net
 extern fn pread(fd: i64, buf: i64, count: i64, off: i64) -> i64 !Net
 extern fn syscall(nr: i64, a1: i64, a2: i64, a3: i64) -> i64 !Net
 
-// Write one byte to the staging memfd at offset `off`.
+// Write one raw byte to the staging memfd at offset `off`.
+// Must use byte_chr (not chr): chr() emits UTF-8 for c>=128, which corrupts
+// sockaddr bytes (e.g. port 8080 low byte 0x90 → 2-byte write → wrong bind).
 fn poke8(mfd: i64, off: i64, v: i64) -> i64 !Net {
-    return pwrite(mfd, chr(v & 255), 1, off)?
+    return pwrite(mfd, byte_chr(v & 255), 1, off)?
 }
 
 // Build a sockaddr_in in `sa` (16 arena bytes): AF_INET, port, 4 ip octets.

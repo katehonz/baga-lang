@@ -1,0 +1,35 @@
+// start.baga — product entrypoint (Lucky: start_server / bin).
+// Boot: migrate → fmr_run (workers / sync / go_bg from env).
+
+import "routes.baga"
+import "../../app-product/fmrbaga/app.baga"
+import "../../app-product/ormbaga/orm.baga"
+import "../../app-product/ormbaga/migrate.baga"
+import "../../app-product/ormbaga/schema.baga"
+import "../../std/str/str.baga"
+
+fn boot_migrate() -> i64 !Net !IO !Random {
+    let app = fmr_build_app()?
+    let db = fmr_open_db(app)?
+    if orm_ok_db(db) == 0 {
+        print(concat("migrate: db connect failed: ", orm_err_db(db)))
+        return 1
+    }
+    let up = migrate_up(db, ormbaga_migrations())?
+    if up.ok == 0 {
+        print(concat("migrate failed: ", up.err))
+        orm_close(up.db)?
+        return 1
+    }
+    print(concat("migrate applied=", int_to_str(up.applied)))
+    orm_close(up.db)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par !Random {
+    let rc = boot_migrate()?
+    if rc != 0 {
+        return rc
+    }
+    return fmr_run()?
+}

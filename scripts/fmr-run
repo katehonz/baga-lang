@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# fmr-run — start apps/api (or FMR_APP) with sensible local defaults.
+# Usage: ./scripts/fmr-run [extra env already exported]
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP="${FMR_APP:-$ROOT/apps/api/start.baga}"
+cd "$ROOT"
+
+export PORT="${PORT:-8080}"
+export FMR_WORKERS="${FMR_WORKERS:-4}"
+export FMR_LOG="${FMR_LOG:-1}"
+export FMR_CORS="${FMR_CORS:-*}"
+export FMR_JWT_SECRET="${FMR_JWT_SECRET:-dev-secret}"
+export PGHOST="${PGHOST:-127.0.0.1}"
+export PGPORT="${PGPORT:-5432}"
+export PGUSER="${PGUSER:-bagatest}"
+export PGPASSWORD="${PGPASSWORD:-pas+123}"
+export PGDATABASE="${PGDATABASE:-baga_orm}"
+
+echo "fmr-run → $APP"
+echo "  PORT=$PORT FMR_WORKERS=$FMR_WORKERS PGUSER=$PGUSER PGDATABASE=$PGDATABASE"
+exec ./baga "$APP"

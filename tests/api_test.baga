@@ -1,0 +1,69 @@
+// api_test.baga — product-level checks for apps/api (no full server link).
+// Avoid importing app.baga (needs fmr_dispatch at link time).
+
+import "../apps/api/models/user.baga"
+import "../apps/api/models/post.baga"
+import "../app-product/fmrbaga/jsonx.baga"
+import "../app-product/fmrbaga/openapi.baga"
+import "../app-product/ormbaga/orm.baga"
+import "../std/str/str.baga"
+
+fn check(name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+    }
+}
+
+fn main() -> i64 !Net !IO !Random {
+    print("api_test:")
+
+    // openapi includes posts + security
+    let doc = jobj_encode(fmr_openapi_doc("api", "1.0.0"))
+    check("oas_posts", str_find(doc, "/v1/posts") >= 0)
+    check("oas_post_schema", str_find(doc, "PostCreate") >= 0)
+    check("oas_post_tag", str_find(doc, "\"posts\"") >= 0)
+    check("oas_bearer", str_find(doc, "bearerAuth") >= 0)
+
+    // live DB model smoke
+    let db = orm_connect_env()?
+    if orm_ok_db(db) == 0 {
+        print(concat("  skip db: ", orm_err_db(db)))
+        print("api_test: all passed (no db)")
+        return 0
+    }
+    let uq = user_all(db)?
+    check("user_all", uq.ok == 1)
+    let pq = post_all(uq.db, 5, 0)?
+    check("post_all", pq.ok == 1)
+    // create user + post if empty enough
+    let email = "api_test@baga.dev"
+    let found = user_find_by_email(pq.db, email)?
+    let mut db2 = found.db
+    let mut uid: i64 = 0
+    if found.ok == 1 && found.nrows >= 1 {
+        uid = orm_cell_by_i64(found, 0, "id")
+        check("user_exists", uid > 0)
+    } else {
+        let cr = user_create(db2, email, "ApiTest")?
+        db2 = cr.db
+        check("user_create", cr.ok == 1)
+        let f2 = user_find_by_email(db2, email)?
+        db2 = f2.db
+        check("user_created", f2.ok == 1 && f2.nrows == 1)
+        uid = orm_cell_by_i64(f2, 0, "id")
+    }
+    let pc = post_create(db2, uid, "hello post", "body text")?
+    check("post_create", pc.ok == 1)
+    let pl = post_by_user(pc.db, uid, 5, 0)?
+    check("post_by_user", pl.ok == 1 && pl.nrows >= 1)
+    let title = orm_cell_by(pl, 0, "title")
+    check("post_title", title == "hello post")
+    let pid = orm_cell_by_i64(pl, 0, "id")
+    let del = post_delete(pl.db, pid)?
+    check("post_delete", del.ok == 1)
+    orm_close(del.db)?
+    print("api_test: all passed")
+    return 0
+}

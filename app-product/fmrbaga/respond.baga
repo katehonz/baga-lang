@@ -1,0 +1,81 @@
+// respond.baga — JSON responses and HTTPException-style errors (FastAPI detail).
+
+import "../httpdbaga/http.baga"
+import "jsonx.baga"
+import "../../std/str/str.baga"
+
+// Expand reason phrases for API statuses used by the framework.
+fn fmr_reason(status: i64) -> str {
+    if status == 200 { return "OK" }
+    if status == 201 { return "Created" }
+    if status == 204 { return "No Content" }
+    if status == 400 { return "Bad Request" }
+    if status == 401 { return "Unauthorized" }
+    if status == 403 { return "Forbidden" }
+    if status == 404 { return "Not Found" }
+    if status == 405 { return "Method Not Allowed" }
+    if status == 409 { return "Conflict" }
+    if status == 422 { return "Unprocessable Entity" }
+    if status == 500 { return "Internal Server Error" }
+    if status == 503 { return "Service Unavailable" }
+    return "Status"
+}
+
+fn fmr_json(status: i64, body: str) -> Response {
+    let mut r = http_json_response(status, body)
+    // framework fingerprint (can be disabled later)
+    r = http_set_header(r, "X-Powered-By", "fmrbaga")
+    return r
+}
+
+fn fmr_jobj(status: i64, o: JObj) -> Response {
+    return fmr_json(status, jobj_encode(o))
+}
+
+fn fmr_jarr(status: i64, a: JArr) -> Response {
+    return fmr_json(status, jarr_encode(a))
+}
+
+// HTTPException-equivalent: {"detail": msg}
+fn fmr_error(status: i64, detail: str) -> Response {
+    return fmr_json(status, jdetail(detail))
+}
+
+// Validation error for one body field (FastAPI 422 shape).
+fn fmr_422_field(field: str, msg: str, typ: str) -> Response {
+    return fmr_json(422, j422_field("body", field, msg, typ))
+}
+
+fn fmr_422_jfield(field: str, f: JField) -> Response {
+    return fmr_422_field(field, f.err, f.err_type)
+}
+
+fn fmr_400(detail: str) -> Response { return fmr_error(400, detail) }
+fn fmr_401(detail: str) -> Response { return fmr_error(401, detail) }
+fn fmr_403(detail: str) -> Response { return fmr_error(403, detail) }
+fn fmr_404(detail: str) -> Response { return fmr_error(404, detail) }
+fn fmr_405(detail: str) -> Response { return fmr_error(405, detail) }
+fn fmr_409(detail: str) -> Response { return fmr_error(409, detail) }
+fn fmr_500(detail: str) -> Response { return fmr_error(500, detail) }
+fn fmr_503(detail: str) -> Response { return fmr_error(503, detail) }
+
+fn fmr_ok_obj(o: JObj) -> Response {
+    return fmr_jobj(200, o)
+}
+
+fn fmr_created_obj(o: JObj) -> Response {
+    return fmr_jobj(201, o)
+}
+
+fn fmr_no_content() -> Response {
+    return fmr_json(204, "")
+}
+
+// CORS helper (explicit opt-in per response or middleware).
+fn fmr_cors(resp: Response, origin: str) -> Response {
+    let mut r = resp
+    r = http_set_header(r, "Access-Control-Allow-Origin", origin)
+    r = http_set_header(r, "Access-Control-Allow-Headers", "Authorization, Content-Type")
+    r = http_set_header(r, "Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+    return r
+}

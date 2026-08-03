@@ -1,0 +1,362 @@
+// handlers.baga — production /v1 API handlers for fmrbaga.
+// This is the application layer: routing ids, dispatch, JWT auth, users CRUD.
+
+import "app.baga"
+import "ctx.baga"
+import "route.baga"
+import "respond.baga"
+import "deps.baga"
+import "jsonx.baga"
+import "openapi.baga"
+import "../ormbaga/orm.baga"
+import "../ormbaga/sql.baga"
+import "../ormbaga/migrate.baga"
+import "../ormbaga/schema.baga"
+import "../httpdbaga/http.baga"
+import "../../std/str/str.baga"
+
+// ---------- route ids ----------
+
+fn RID_HEALTH() -> i64 { return 1 }
+fn RID_READY() -> i64 { return 2 }
+fn RID_META() -> i64 { return 3 }
+fn RID_OPENAPI() -> i64 { return 4 }
+fn RID_TOKEN() -> i64 { return 10 }
+fn RID_ME() -> i64 { return 11 }
+fn RID_USERS_LIST() -> i64 { return 20 }
+fn RID_USERS_CREATE() -> i64 { return 21 }
+fn RID_USERS_GET() -> i64 { return 22 }
+fn RID_USERS_PATCH() -> i64 { return 23 }
+fn RID_USERS_DELETE() -> i64 { return 24 }
+
+fn fmr_build_app() -> FmrApp !IO {
+    let mut app = fmr_app_from_env("fmrbaga-api", "1.0.0")?
+    app = fmr_route(app, "GET", "/health", RID_HEALTH())
+    app = fmr_route(app, "GET", "/ready", RID_READY())
+    app = fmr_route(app, "GET", "/v1/meta", RID_META())
+    app = fmr_route(app, "GET", "/openapi.json", RID_OPENAPI())
+    app = fmr_route(app, "POST", "/v1/auth/token", RID_TOKEN())
+    app = fmr_route(app, "GET", "/v1/me", RID_ME())
+    app = fmr_route(app, "GET", "/v1/users", RID_USERS_LIST())
+    app = fmr_route(app, "POST", "/v1/users", RID_USERS_CREATE())
+    app = fmr_route(app, "GET", "/v1/users/{id}", RID_USERS_GET())
+    app = fmr_route(app, "PATCH", "/v1/users/{id}", RID_USERS_PATCH())
+    app = fmr_route(app, "DELETE", "/v1/users/{id}", RID_USERS_DELETE())
+    return app
+}
+
+// Global before-hook: request logging hook point (no-op pass-through for now).
+fn fmr_before(ctx: FmrCtx) -> DepResult {
+    return dep_ok(ctx)
+}
+
+// ---------- small helpers ----------
+
+fn user_to_obj(q: OrmQuery, row: i64) -> JObj {
+    let mut o = jobj_new()
+    o = jobj_i64(o, "id", orm_cell_by_i64(q, row, "id"))
+    o = jobj_str(o, "email", orm_cell_by(q, row, "email"))
+    o = jobj_str(o, "name", orm_cell_by(q, row, "name"))
+    let ca = orm_cell_by(q, row, "created_at")
+    if ca != "" {
+        o = jobj_str(o, "created_at", ca)
+    }
+    return o
+}
+
+// ---------- handlers ----------
+
+fn h_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut o = jobj_new()
+    o = jobj_str(o, "status", "ok")
+    return fmr_out(fmr_ok_obj(o), db)
+}
+
+fn h_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    if orm_ok_db(db) == 0 {
+        return fmr_out(fmr_503("database unavailable"), db)
+    }
+    let q = orm_query(db, "SELECT 1 AS ok")?
+    if q.ok == 0 {
+        return fmr_out(fmr_503("database ping failed"), q.db)
+    }
+    let mut o = jobj_new()
+    o = jobj_str(o, "status", "ready")
+    o = jobj_str(o, "database", "up")
+    return fmr_out(fmr_ok_obj(o), q.db)
+}
+
+fn h_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
+    let app = fmr_build_app()?
+    let mut o = jobj_new()
+    o = jobj_str(o, "title", app.title)
+    o = jobj_str(o, "version", app.version)
+    o = jobj_str(o, "framework", "fmrbaga")
+    o = jobj_str(o, "openapi", "/openapi.json")
+    return fmr_out(fmr_ok_obj(o), db)
+}
+
+// Full OpenAPI 3: schemas + bearerAuth + request bodies + response refs.
+fn h_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
+    let app = fmr_build_app()?
+    let doc = fmr_openapi_doc(app.title, app.version)
+    return fmr_out(fmr_ok_obj(doc), db)
+}
+
+// POST /v1/auth/token  body: {"sub":"name"}  or query ?sub=
+fn h_token(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut sub = fmr_query(ctx, "sub")
+    if sub == "" {
+        let body = jbody_parse_str(fmr_body(ctx))
+        if body.ok == 1 {
+            let b2 = jbody_require_object(body)
+            if b2.ok == 1 {
+                let f = jreq_str(b2.doc, b2.root, "sub")
+                if f.ok == 1 {
+                    sub = f.val
+                } else {
+                    return fmr_out(fmr_422_jfield("sub", f), db)
+                }
+            } else {
+                if fmr_body(ctx) != "" {
+                    return fmr_out(fmr_400(b2.err), db)
+                }
+            }
+        } else {
+            if fmr_body(ctx) != "" {
+                return fmr_out(fmr_400(body.err), db)
+            }
+        }
+    }
+    if sub == "" {
+        return fmr_out(fmr_422_field("sub", "sub field required", "value_error.missing"), db)
+    }
+    let token = fmr_issue_token(ctx.jwt_secret, sub, "")
+    let mut o = jobj_new()
+    o = jobj_str(o, "access_token", token)
+    o = jobj_str(o, "token_type", "bearer")
+    o = jobj_str(o, "sub", sub)
+    return fmr_out(fmr_ok_obj(o), db)
+}
+
+fn h_me(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let auth = deps_bearer(ctx)
+    if auth.ok == 0 {
+        return fmr_out(auth.resp, db)
+    }
+    let mut o = jobj_new()
+    o = jobj_str(o, "sub", auth.ctx.user_sub)
+    return fmr_out(fmr_ok_obj(o), db)
+}
+
+fn h_users_list(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = deps_bearer(ctx)
+    if auth.ok == 0 {
+        return fmr_out(auth.resp, db)
+    }
+    if orm_ok_db(db) == 0 {
+        return fmr_out(fmr_503("database unavailable"), db)
+    }
+    let q = orm_query(db, "SELECT id, email, name, created_at::text AS created_at FROM users ORDER BY id")?
+    if q.ok == 0 {
+        return fmr_out(fmr_500(q.err), q.db)
+    }
+    let mut arr = jarr_new()
+    let mut i: i64 = 0
+    while i < q.nrows {
+        arr = jarr_obj(arr, user_to_obj(q, i))
+        i = i + 1
+    }
+    let mut o = jobj_new()
+    o = jobj_raw(o, "items", jarr_encode(arr))
+    o = jobj_i64(o, "count", q.nrows)
+    return fmr_out(fmr_ok_obj(o), q.db)
+}
+
+fn h_users_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = deps_bearer(ctx)
+    if auth.ok == 0 {
+        return fmr_out(auth.resp, db)
+    }
+    let body = jbody_parse_str(fmr_body(ctx))
+    if body.ok == 0 {
+        return fmr_out(fmr_400(body.err), db)
+    }
+    let b = jbody_require_object(body)
+    if b.ok == 0 {
+        return fmr_out(fmr_400(b.err), db)
+    }
+    let email = jreq_str(b.doc, b.root, "email")
+    if email.ok == 0 {
+        return fmr_out(fmr_422_jfield("email", email), db)
+    }
+    let name = jreq_str(b.doc, b.root, "name")
+    if name.ok == 0 {
+        return fmr_out(fmr_422_jfield("name", name), db)
+    }
+    if orm_ok_db(db) == 0 {
+        return fmr_out(fmr_503("database unavailable"), db)
+    }
+    let cols = vec_new()
+    vec_push(cols, "email")
+    vec_push(cols, "name")
+    let vals = vec_new()
+    vec_push(vals, email.val)
+    vec_push(vals, name.val)
+    let ins = orm_insert_strs(db, "users", cols, vals)?
+    if ins.ok == 0 {
+        // unique violation etc.
+        return fmr_out(fmr_409(ins.err), ins.db)
+    }
+    let q = orm_where_eq_str(ins.db, "users", "email", email.val)?
+    if q.ok == 0 || q.nrows < 1 {
+        return fmr_out(fmr_500("insert ok but row missing"), q.db)
+    }
+    return fmr_out(fmr_created_obj(user_to_obj(q, 0)), q.db)
+}
+
+fn h_users_get(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = deps_bearer(ctx)
+    if auth.ok == 0 {
+        return fmr_out(auth.resp, db)
+    }
+    let id = fmr_param_i64(ctx, "id")
+    if id <= 0 {
+        return fmr_out(fmr_400("invalid id"), db)
+    }
+    if orm_ok_db(db) == 0 {
+        return fmr_out(fmr_503("database unavailable"), db)
+    }
+    let vals = vec_new()
+    let nulls = vec_new()
+    pg_param_i64(vals, nulls, id)
+    let q = orm_query_params(db, "SELECT id, email, name, created_at::text AS created_at FROM users WHERE id = $1", vals, nulls)?
+    if q.ok == 0 {
+        return fmr_out(fmr_500(q.err), q.db)
+    }
+    if q.nrows < 1 {
+        return fmr_out(fmr_404("User not found"), q.db)
+    }
+    return fmr_out(fmr_ok_obj(user_to_obj(q, 0)), q.db)
+}
+
+fn h_users_patch(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = deps_bearer(ctx)
+    if auth.ok == 0 {
+        return fmr_out(auth.resp, db)
+    }
+    let id = fmr_param_i64(ctx, "id")
+    if id <= 0 {
+        return fmr_out(fmr_400("invalid id"), db)
+    }
+    let body = jbody_parse_str(fmr_body(ctx))
+    if body.ok == 0 {
+        return fmr_out(fmr_400(body.err), db)
+    }
+    let b = jbody_require_object(body)
+    if b.ok == 0 {
+        return fmr_out(fmr_400(b.err), db)
+    }
+    let name = jreq_str(b.doc, b.root, "name")
+    if name.ok == 0 {
+        return fmr_out(fmr_422_jfield("name", name), db)
+    }
+    if orm_ok_db(db) == 0 {
+        return fmr_out(fmr_503("database unavailable"), db)
+    }
+    let cols = vec_new()
+    vec_push(cols, "name")
+    let vals = vec_new()
+    vec_push(vals, name.val)
+    let upd = orm_update_by_id(db, "users", id, cols, vals)?
+    if upd.ok == 0 {
+        return fmr_out(fmr_500(upd.err), upd.db)
+    }
+    let q = orm_query(upd.db, concat(
+        "SELECT id, email, name, created_at::text AS created_at FROM users WHERE id = ",
+        sql_i64(id)
+    ))?
+    if q.ok == 0 || q.nrows < 1 {
+        return fmr_out(fmr_404("User not found"), q.db)
+    }
+    return fmr_out(fmr_ok_obj(user_to_obj(q, 0)), q.db)
+}
+
+fn h_users_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = deps_bearer(ctx)
+    if auth.ok == 0 {
+        return fmr_out(auth.resp, db)
+    }
+    let id = fmr_param_i64(ctx, "id")
+    if id <= 0 {
+        return fmr_out(fmr_400("invalid id"), db)
+    }
+    if orm_ok_db(db) == 0 {
+        return fmr_out(fmr_503("database unavailable"), db)
+    }
+    let del = orm_delete_by_id(db, "users", id)?
+    if del.ok == 0 {
+        return fmr_out(fmr_500(del.err), del.db)
+    }
+    return fmr_out(fmr_no_content(), del.db)
+}
+
+// ---------- dispatch ----------
+
+fn fmr_dispatch(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let id = ctx.route_id
+    if id == RID_HEALTH() {
+        return h_health(ctx, db)
+    }
+    if id == RID_READY() {
+        return h_ready(ctx, db)?
+    }
+    if id == RID_META() {
+        return h_meta(ctx, db)?
+    }
+    if id == RID_OPENAPI() {
+        return h_openapi(ctx, db)?
+    }
+    if id == RID_TOKEN() {
+        return h_token(ctx, db)
+    }
+    if id == RID_ME() {
+        return h_me(ctx, db)
+    }
+    if id == RID_USERS_LIST() {
+        return h_users_list(ctx, db)?
+    }
+    if id == RID_USERS_CREATE() {
+        return h_users_create(ctx, db)?
+    }
+    if id == RID_USERS_GET() {
+        return h_users_get(ctx, db)?
+    }
+    if id == RID_USERS_PATCH() {
+        return h_users_patch(ctx, db)?
+    }
+    if id == RID_USERS_DELETE() {
+        return h_users_delete(ctx, db)?
+    }
+    return fmr_out(fmr_500("unhandled route id"), db)
+}
+
+// Run migrations once at process start (production boot).
+fn fmr_startup_migrate() -> i64 !Net !IO !Random {
+    let app = fmr_build_app()?
+    let db = fmr_open_db(app)?
+    if orm_ok_db(db) == 0 {
+        print(concat("fmrbaga migrate: db connect failed: ", orm_err_db(db)))
+        return 1
+    }
+    let set = ormbaga_migrations()
+    let up = migrate_up(db, set)?
+    if up.ok == 0 {
+        print(concat("fmrbaga migrate failed: ", up.err))
+        orm_close(up.db)?
+        return 1
+    }
+    print(concat("fmrbaga migrate applied=", int_to_str(up.applied)))
+    orm_close(up.db)?
+    return 0
+}

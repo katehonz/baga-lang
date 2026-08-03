@@ -1,0 +1,681 @@
+// pg.baga — PostgreSQL client (connect + Simple Query). Effects: !Net !IO !Random.
+// Built on pg_proto (framing) + pg_scram (SCRAM-SHA-256) + std/net binary I/O.
+//
+// P0 surface for a future ORM:
+//   pg_connect / pg_close / pg_query + row accessors.
+// Extended Query, pool, TLS → later (see PLAN.md).
+
+import "pg_proto.baga"
+import "pg_scram.baga"
+import "../../std/net/tcp.baga"
+import "../../std/random/random.baga"
+import "../../std/os/os.baga"
+import "../../std/str/str.baga"
+import "../../std/bytes/bytes.baga"
+
+// ---------- connection ----------
+
+struct PgConn {
+    fd: i64,
+    ok: i64,          // 1 = ready for queries
+    err: str,
+    pid: i64,
+    key: bytes,
+    tx_status: i64,   // 'I'/'T'/'E' after last ReadyForQuery
+    server_version: str
+}
+
+fn pg_conn_bad(err: str) -> PgConn {
+    return PgConn {
+        fd: -1,
+        ok: 0,
+        err: err,
+        pid: 0,
+        key: pg_empty(),
+        tx_status: 0,
+        server_version: ""
+    }
+}
+
+// Buffered read state for one connection (structs are by value — return updated).
+struct PgReader {
+    fd: i64,
+    buf: bytes,
+    pos: i64
+}
+
+fn pg_reader(fd: i64) -> PgReader {
+    return PgReader { fd: fd, buf: pg_empty(), pos: 0 }
+}
+
+// Ensure at least n bytes available from pos; returns updated reader + ok flag.
+struct PgFill {
+    reader: PgReader,
+    ok: i64
+}
+
+fn pg_fill(r: PgReader, n: i64) -> PgFill !IO !Net {
+    let mut reader = r
+    while bytes_len(reader.buf) - reader.pos < n {
+        let chunk = tcp_read_bytes(reader.fd, 8192)?
+        if bytes_len(chunk) == 0 {
+            return PgFill { reader: reader, ok: 0 }
+        }
+        // drop consumed prefix occasionally to avoid unbounded growth
+        if reader.pos > 0 {
+            reader = PgReader {
+                fd: reader.fd,
+                buf: bytes_concat(bytes_slice(reader.buf, reader.pos, bytes_len(reader.buf)), chunk),
+                pos: 0
+            }
+        } else {
+            reader = PgReader {
+                fd: reader.fd,
+                buf: bytes_concat(reader.buf, chunk),
+                pos: reader.pos
+            }
+        }
+    }
+    return PgFill { reader: reader, ok: 1 }
+}
+
+struct PgMsgRead {
+    reader: PgReader,
+    msg: PgMsg,
+    ok: i64
+}
+
+// Read one typed backend message (type + len + body).
+fn pg_read_msg(r: PgReader) -> PgMsgRead !IO !Net {
+    let f5 = pg_fill(r, 5)?
+    if f5.ok == 0 {
+        return PgMsgRead {
+            reader: f5.reader,
+            msg: PgMsg { typ: 0, body: pg_empty() },
+            ok: 0
+        }
+    }
+    let mut reader = f5.reader
+    let typ = bytes_at(reader.buf, reader.pos)
+    let ln = pg_be_read(reader.buf, reader.pos + 1, 4)
+    if ln < 4 {
+        return PgMsgRead {
+            reader: reader,
+            msg: PgMsg { typ: 0, body: pg_empty() },
+            ok: 0
+        }
+    }
+    let total = 1 + ln
+    let f = pg_fill(reader, total)?
+    if f.ok == 0 {
+        return PgMsgRead {
+            reader: f.reader,
+            msg: PgMsg { typ: 0, body: pg_empty() },
+            ok: 0
+        }
+    }
+    reader = f.reader
+    let body_start = reader.pos + 5
+    let body_end = reader.pos + total
+    let body = bytes_slice(reader.buf, body_start, body_end)
+    reader = PgReader { fd: reader.fd, buf: reader.buf, pos: body_end }
+    return PgMsgRead {
+        reader: reader,
+        msg: PgMsg { typ: typ, body: body },
+        ok: 1
+    }
+}
+
+fn pg_write(fd: i64, b: bytes) -> i64 !IO !Net {
+    return tcp_write_bytes(fd, b)?
+}
+
+// Drain startup tail: ParameterStatus*, BackendKeyData, ReadyForQuery / Error.
+struct PgStartupTail {
+    reader: PgReader,
+    conn: PgConn
+}
+
+fn pg_finish_startup(r: PgReader, base: PgConn) -> PgStartupTail !IO !Net {
+    let mut reader = r
+    let mut conn = base
+    let mut done: i64 = 0
+    while done == 0 {
+        let mr = pg_read_msg(reader)?
+        reader = mr.reader
+        if mr.ok == 0 {
+            conn = PgConn {
+                fd: conn.fd, ok: 0, err: "eof during startup",
+                pid: conn.pid, key: conn.key, tx_status: 0, server_version: conn.server_version
+            }
+            done = 1
+        } else {
+            let t = mr.msg.typ
+            if t == 69 {   // 'E' ErrorResponse
+                conn = PgConn {
+                    fd: conn.fd, ok: 0, err: pg_error_fields(mr.msg.body),
+                    pid: 0, key: pg_empty(), tx_status: 0, server_version: ""
+                }
+                done = 1
+            } else {
+                if t == 83 {   // 'S' ParameterStatus
+                    let ps = pg_parse_param_status(mr.msg.body)
+                    if ps.name == "server_version" {
+                        conn = PgConn {
+                            fd: conn.fd, ok: conn.ok, err: conn.err,
+                            pid: conn.pid, key: conn.key, tx_status: conn.tx_status,
+                            server_version: ps.value
+                        }
+                    }
+                } else {
+                    if t == 75 {   // 'K' BackendKeyData
+                        let bk = pg_parse_backend_key(mr.msg.body)
+                        conn = PgConn {
+                            fd: conn.fd, ok: conn.ok, err: conn.err,
+                            pid: bk.pid, key: bk.key, tx_status: conn.tx_status,
+                            server_version: conn.server_version
+                        }
+                    } else {
+                        if t == 90 {   // 'Z' ReadyForQuery
+                            conn = PgConn {
+                                fd: conn.fd, ok: 1, err: "",
+                                pid: conn.pid, key: conn.key,
+                                tx_status: pg_ready_status(mr.msg.body),
+                                server_version: conn.server_version
+                            }
+                            done = 1
+                        } else {
+                            if t == 78 {
+                                // 'N' NoticeResponse — ignore during startup
+                                conn = conn
+                            } else {
+                                // ignore unknown
+                                conn = conn
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return PgStartupTail { reader: reader, conn: conn }
+}
+
+// Authenticate after StartupMessage; leaves reader positioned at post-auth stream.
+struct PgAuthOut {
+    reader: PgReader,
+    conn: PgConn
+}
+
+fn pg_authenticate(r: PgReader, fd: i64, user: str, password: str) -> PgAuthOut !IO !Net !Random {
+    let mut reader = r
+    let mut running: i64 = 1
+    let mut expected_sig = ""
+    let mut client_first_bare = ""
+    while running == 1 {
+        let mr = pg_read_msg(reader)?
+        reader = mr.reader
+        if mr.ok == 0 {
+            return PgAuthOut {
+                reader: reader,
+                conn: pg_conn_bad("eof during authentication")
+            }
+        }
+        let t = mr.msg.typ
+        if t == 69 {   // ErrorResponse
+            return PgAuthOut {
+                reader: reader,
+                conn: pg_conn_bad(pg_error_fields(mr.msg.body))
+            }
+        }
+        if t != 82 {   // expect 'R' Authentication*
+            // ParameterStatus / Notice can appear? Usually not before AuthOk.
+            if t == 78 {
+                // continue
+                reader = reader
+            } else {
+                return PgAuthOut {
+                    reader: reader,
+                    conn: pg_conn_bad(concat("unexpected auth message type ", parse_int_to_str_dummy(t)))
+                }
+            }
+        } else {
+            let kind = pg_auth_kind(mr.msg.body)
+            if kind == 0 {
+                // AuthenticationOk — then ParameterStatus / Key / Ready
+                let base = PgConn {
+                    fd: fd, ok: 0, err: "", pid: 0, key: pg_empty(),
+                    tx_status: 0, server_version: ""
+                }
+                let tail = pg_finish_startup(reader, base)?
+                return PgAuthOut { reader: tail.reader, conn: tail.conn }
+            }
+            if kind == 3 {
+                // cleartext
+                let w = pg_write(fd, pg_cleartext_password(password))?
+                if w != 0 {
+                    return PgAuthOut { reader: reader, conn: pg_conn_bad("write password failed") }
+                }
+            } else {
+                if kind == 10 {
+                    // SASL — require SCRAM-SHA-256
+                    let mechs = pg_auth_sasl_mechs(mr.msg.body)
+                    if str_find(mechs, "SCRAM-SHA-256") < 0 {
+                        return PgAuthOut {
+                            reader: reader,
+                            conn: pg_conn_bad(concat("no SCRAM-SHA-256 in ", mechs))
+                        }
+                    }
+                    let raw = random_bytes(18)?
+                    let nonce = scram_nonce_from_bytes(raw)
+                    client_first_bare = scram_client_first_bare(nonce)
+                    let cfirst = scram_client_first(nonce)
+                    let w = pg_write(fd, pg_sasl_initial("SCRAM-SHA-256", bytes_of_str(cfirst)))?
+                    if w != 0 {
+                        return PgAuthOut { reader: reader, conn: pg_conn_bad("write SASL initial failed") }
+                    }
+                } else {
+                    if kind == 11 {
+                        // SASL continue — server-first
+                        let server_first = str_of_bytes(pg_auth_payload(mr.msg.body))
+                        let fin = scram_build_final(password, client_first_bare, server_first)
+                        if fin.message == "" {
+                            return PgAuthOut {
+                                reader: reader,
+                                conn: pg_conn_bad("SCRAM final build failed")
+                            }
+                        }
+                        expected_sig = fin.server_sig
+                        let w = pg_write(fd, pg_sasl_response(bytes_of_str(fin.message)))?
+                        if w != 0 {
+                            return PgAuthOut { reader: reader, conn: pg_conn_bad("write SASL response failed") }
+                        }
+                    } else {
+                        if kind == 12 {
+                            // SASL final — verify server signature
+                            let server_final = str_of_bytes(pg_auth_payload(mr.msg.body))
+                            if scram_check_server_final(server_final, expected_sig) == 0 {
+                                return PgAuthOut {
+                                    reader: reader,
+                                    conn: pg_conn_bad(concat("SCRAM server signature mismatch: ", server_final))
+                                }
+                            }
+                            // AuthenticationOk follows
+                        } else {
+                            if kind == 5 {
+                                return PgAuthOut {
+                                    reader: reader,
+                                    conn: pg_conn_bad("MD5 auth not supported (use SCRAM or trust)")
+                                }
+                            } else {
+                                return PgAuthOut {
+                                    reader: reader,
+                                    conn: pg_conn_bad(concat("unsupported auth kind ", i64_to_dec(kind)))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return PgAuthOut { reader: reader, conn: pg_conn_bad("auth loop exit") }
+}
+
+// Minimal i64 → decimal (for error strings). Avoids depending on missing itoa.
+fn i64_to_dec(n: i64) -> str {
+    if n == 0 {
+        return "0"
+    }
+    let mut v = n
+    let mut neg: i64 = 0
+    if v < 0 {
+        neg = 1
+        v = 0 - v
+    }
+    let mut out = ""
+    while v > 0 {
+        let d = v % 10
+        out = concat(chr(48 + d), out)
+        v = v / 10
+    }
+    if neg == 1 {
+        out = concat("-", out)
+    }
+    return out
+}
+
+fn parse_int_to_str_dummy(t: i64) -> str {
+    return i64_to_dec(t)
+}
+
+// Connect to host:port with SCRAM (or cleartext). host is dotted IPv4.
+fn pg_connect(host: str, port: i64, user: str, password: str, database: str) -> PgConn !Net !IO !Random {
+    let fd = tcp_connect(host, port)?
+    if fd < 0 {
+        return pg_conn_bad(concat("tcp_connect failed: ", host))
+    }
+    let w = pg_write(fd, pg_startup(user, database))?
+    if w != 0 {
+        tcp_close(fd)
+        return pg_conn_bad("write StartupMessage failed")
+    }
+    let auth = pg_authenticate(pg_reader(fd), fd, user, password)?
+    if auth.conn.ok == 0 {
+        tcp_close(fd)
+        return auth.conn
+    }
+    return auth.conn
+}
+
+// Graceful Terminate + close.
+fn pg_close(conn: PgConn) -> i64 !IO !Net {
+    if conn.fd < 0 {
+        return -1
+    }
+    pg_write(conn.fd, pg_terminate_msg())?
+    return tcp_close(conn.fd)
+}
+
+// ---------- query result ----------
+
+struct PgResult {
+    ok: i64,
+    err: str,
+    tag: str,
+    ncols: i64,
+    nrows: i64,
+    colnames: Vec<str>,
+    coltypes: Vec<i64>,
+    cells: Vec<str>,     // row-major, length nrows*ncols
+    nulls: Vec<i64>,     // 1 = NULL
+    tx_status: i64,
+    conn: PgConn         // updated connection (tx_status)
+}
+
+fn pg_result_err(conn: PgConn, err: str) -> PgResult {
+    return PgResult {
+        ok: 0,
+        err: err,
+        tag: "",
+        ncols: 0,
+        nrows: 0,
+        colnames: vec_new(),
+        coltypes: vec_new(),
+        cells: vec_new(),
+        nulls: vec_new(),
+        tx_status: conn.tx_status,
+        conn: conn
+    }
+}
+
+// Drain backend messages until ReadyForQuery. Shared by Simple + Extended Query.
+// Ignores ParseComplete/BindComplete/NoData/ParameterDescription/Notices.
+fn pg_collect_result(conn: PgConn, reader0: PgReader) -> PgResult !IO !Net {
+    let mut reader = reader0
+    let mut colnames = vec_new()
+    let mut coltypes = vec_new()
+    let mut cells = vec_new()
+    let mut nulls = vec_new()
+    let mut ncols: i64 = 0
+    let mut nrows: i64 = 0
+    let mut tag = ""
+    let mut err = ""
+    let mut tx: i64 = conn.tx_status
+    let mut done: i64 = 0
+    while done == 0 {
+        let mr = pg_read_msg(reader)?
+        reader = mr.reader
+        if mr.ok == 0 {
+            err = "eof during query"
+            done = 1
+        } else {
+            let t = mr.msg.typ
+            if t == 84 {   // 'T' RowDescription
+                let rd = pg_parse_rowdesc(mr.msg.body)
+                colnames = rd.names
+                coltypes = rd.type_oids
+                ncols = vec_len(colnames)
+                cells = vec_new()
+                nulls = vec_new()
+                nrows = 0
+            } else {
+                if t == 68 {   // 'D' DataRow
+                    let dr = pg_parse_datarow(mr.msg.body)
+                    let mut j: i64 = 0
+                    while j < vec_len(dr.cells) {
+                        vec_push(cells, vec_get(dr.cells, j))
+                        vec_push(nulls, vec_get(dr.nulls, j))
+                        j = j + 1
+                    }
+                    nrows = nrows + 1
+                } else {
+                    if t == 67 {   // 'C' CommandComplete
+                        tag = pg_command_tag(mr.msg.body)
+                    } else {
+                        if t == 69 {   // 'E' ErrorResponse
+                            err = pg_error_fields(mr.msg.body)
+                        } else {
+                            if t == 90 {   // 'Z' ReadyForQuery
+                                tx = pg_ready_status(mr.msg.body)
+                                done = 1
+                            } else {
+                                // '1' ParseComplete, '2' BindComplete, '3' CloseComplete,
+                                // 'n' NoData, 't' ParameterDescription, 'I' EmptyQuery,
+                                // 'N' Notice, 's' PortalSuspended — ignore
+                                tag = tag
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let new_conn = PgConn {
+        fd: conn.fd,
+        ok: conn.ok,
+        err: conn.err,
+        pid: conn.pid,
+        key: conn.key,
+        tx_status: tx,
+        server_version: conn.server_version
+    }
+    if err != "" {
+        return PgResult {
+            ok: 0, err: err, tag: tag, ncols: ncols, nrows: nrows,
+            colnames: colnames, coltypes: coltypes, cells: cells, nulls: nulls,
+            tx_status: tx, conn: new_conn
+        }
+    }
+    return PgResult {
+        ok: 1, err: "", tag: tag, ncols: ncols, nrows: nrows,
+        colnames: colnames, coltypes: coltypes, cells: cells, nulls: nulls,
+        tx_status: tx, conn: new_conn
+    }
+}
+
+// Simple Query protocol. SQL may contain multiple statements.
+fn pg_query(conn: PgConn, sql: str) -> PgResult !IO !Net {
+    if conn.ok == 0 || conn.fd < 0 {
+        return pg_result_err(conn, "not connected")
+    }
+    let w = pg_write(conn.fd, pg_query_msg(sql))?
+    if w != 0 {
+        return pg_result_err(conn, "write Query failed")
+    }
+    return pg_collect_result(conn, pg_reader(conn.fd))?
+}
+
+// Extended Query: one SQL with $1..$n text parameters (unnamed stmt/portal).
+// nulls[i]==1 → bind NULL for that slot (vals[i] ignored). Safe vs SQL injection.
+fn pg_query_params(conn: PgConn, sql: str, vals: Vec<str>, nulls: Vec<i64>) -> PgResult !IO !Net {
+    if conn.ok == 0 || conn.fd < 0 {
+        return pg_result_err(conn, "not connected")
+    }
+    let n = vec_len(vals)
+    // Parse + Bind + Describe portal + Execute + Sync (single flush)
+    let mut pkt = pg_parse_msg("", sql, n)
+    pkt = bytes_concat(pkt, pg_bind_msg("", "", vals, nulls))
+    pkt = bytes_concat(pkt, pg_describe_portal_msg(""))
+    pkt = bytes_concat(pkt, pg_execute_msg("", 0))
+    pkt = bytes_concat(pkt, pg_sync_msg())
+    let w = pg_write(conn.fd, pkt)?
+    if w != 0 {
+        return pg_result_err(conn, "write Extended Query failed")
+    }
+    return pg_collect_result(conn, pg_reader(conn.fd))?
+}
+
+// All parameters non-NULL text values.
+fn pg_query_params_str(conn: PgConn, sql: str, vals: Vec<str>) -> PgResult !IO !Net {
+    let nulls = vec_new()
+    for i in 0..vec_len(vals) {
+        vec_push(nulls, 0)
+    }
+    return pg_query_params(conn, sql, vals, nulls)?
+}
+
+// Helper: push a text param onto vals/nulls builders (returns nothing — mutate via push).
+fn pg_param_str(vals: Vec<str>, nulls: Vec<i64>, s: str) -> i64 {
+    vec_push(vals, s)
+    vec_push(nulls, 0)
+    return 0
+}
+
+fn pg_param_i64(vals: Vec<str>, nulls: Vec<i64>, n: i64) -> i64 {
+    // decimal without depending on orm sql_i64
+    let mut v = n
+    let mut neg: i64 = 0
+    if v < 0 {
+        neg = 1
+        v = 0 - v
+    }
+    let mut out = ""
+    if v == 0 {
+        out = "0"
+    } else {
+        while v > 0 {
+            let d = v % 10
+            out = concat(chr(48 + d), out)
+            v = v / 10
+        }
+    }
+    if neg == 1 {
+        out = concat("-", out)
+    }
+    vec_push(vals, out)
+    vec_push(nulls, 0)
+    return 0
+}
+
+fn pg_param_null(vals: Vec<str>, nulls: Vec<i64>) -> i64 {
+    vec_push(vals, "")
+    vec_push(nulls, 1)
+    return 0
+}
+
+// ---------- named prepared statements ----------
+// Parse once (named), then Bind/Execute many times. Survives until Close or session end.
+// Simple Query destroys the unnamed statement only — named ones stay.
+
+// PREPARE: Parse(name) + Sync. ok=1 on success.
+fn pg_prepare(conn: PgConn, name: str, sql: str, nparams: i64) -> PgResult !IO !Net {
+    if conn.ok == 0 || conn.fd < 0 {
+        return pg_result_err(conn, "not connected")
+    }
+    if name == "" {
+        return pg_result_err(conn, "prepared name must be non-empty")
+    }
+    let mut pkt = pg_parse_msg(name, sql, nparams)
+    pkt = bytes_concat(pkt, pg_sync_msg())
+    let w = pg_write(conn.fd, pkt)?
+    if w != 0 {
+        return pg_result_err(conn, "write Parse failed")
+    }
+    return pg_collect_result(conn, pg_reader(conn.fd))?
+}
+
+// EXECUTE named statement with text params (Bind unnamed portal + Describe + Execute + Sync).
+fn pg_exec_prepared(conn: PgConn, name: str, vals: Vec<str>, nulls: Vec<i64>) -> PgResult !IO !Net {
+    if conn.ok == 0 || conn.fd < 0 {
+        return pg_result_err(conn, "not connected")
+    }
+    if name == "" {
+        return pg_result_err(conn, "prepared name must be non-empty")
+    }
+    let mut pkt = pg_bind_msg("", name, vals, nulls)
+    pkt = bytes_concat(pkt, pg_describe_portal_msg(""))
+    pkt = bytes_concat(pkt, pg_execute_msg("", 0))
+    pkt = bytes_concat(pkt, pg_sync_msg())
+    let w = pg_write(conn.fd, pkt)?
+    if w != 0 {
+        return pg_result_err(conn, "write Bind/Execute failed")
+    }
+    return pg_collect_result(conn, pg_reader(conn.fd))?
+}
+
+fn pg_exec_prepared_str(conn: PgConn, name: str, vals: Vec<str>) -> PgResult !IO !Net {
+    let nulls = vec_new()
+    for i in 0..vec_len(vals) {
+        vec_push(nulls, 0)
+    }
+    return pg_exec_prepared(conn, name, vals, nulls)?
+}
+
+// DEALLOCATE: Close statement + Sync.
+fn pg_deallocate(conn: PgConn, name: str) -> PgResult !IO !Net {
+    if conn.ok == 0 || conn.fd < 0 {
+        return pg_result_err(conn, "not connected")
+    }
+    let mut pkt = pg_close_msg(83, name)   // 'S' statement
+    pkt = bytes_concat(pkt, pg_sync_msg())
+    let w = pg_write(conn.fd, pkt)?
+    if w != 0 {
+        return pg_result_err(conn, "write Close failed")
+    }
+    return pg_collect_result(conn, pg_reader(conn.fd))?
+}
+
+// ---------- accessors ----------
+
+fn pg_ok(r: PgResult) -> i64 { return r.ok }
+fn pg_err(r: PgResult) -> str { return r.err }
+fn pg_tag(r: PgResult) -> str { return r.tag }
+fn pg_nrows(r: PgResult) -> i64 { return r.nrows }
+fn pg_ncols(r: PgResult) -> i64 { return r.ncols }
+
+fn pg_colname(r: PgResult, col: i64) -> str {
+    if col < 0 || col >= r.ncols {
+        return ""
+    }
+    return vec_get(r.colnames, col)
+}
+
+fn pg_coltype(r: PgResult, col: i64) -> i64 {
+    if col < 0 || col >= r.ncols {
+        return 0
+    }
+    return vec_get(r.coltypes, col)
+}
+
+// Cell at (row, col); "" if OOB or NULL (use pg_isnull to distinguish).
+fn pg_cell(r: PgResult, row: i64, col: i64) -> str {
+    if row < 0 || col < 0 || row >= r.nrows || col >= r.ncols {
+        return ""
+    }
+    return vec_get(r.cells, row * r.ncols + col)
+}
+
+fn pg_isnull(r: PgResult, row: i64, col: i64) -> i64 {
+    if row < 0 || col < 0 || row >= r.nrows || col >= r.ncols {
+        return 1
+    }
+    return vec_get(r.nulls, row * r.ncols + col)
+}
+
+fn pg_cell_i64(r: PgResult, row: i64, col: i64) -> i64 {
+    if pg_isnull(r, row, col) == 1 {
+        return 0
+    }
+    return parse_int(pg_cell(r, row, col))
+}

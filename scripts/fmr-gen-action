@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# fmr-gen-action — scaffold a Lucky-style action stub for apps/api
+# Usage: ./scripts/fmr-gen-action <resource> <action> <METHOD> <path>
+# Example: ./scripts/fmr-gen-action notes index GET /v1/notes
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP="${FMR_APP:-$ROOT/apps/api}"
+
+if [[ $# -lt 4 ]]; then
+  echo "Usage: $0 <resource> <action> <METHOD> <path>"
+  echo "  e.g. $0 notes index GET /v1/notes"
+  exit 1
+fi
+
+RES="$1"
+ACT="$2"
+METHOD="$3"
+PATH_PAT="$4"
+FILE="$APP/actions/${RES}.baga"
+RID="RID_$(echo "${RES}_${ACT}" | tr '[:lower:]' '[:upper:]')"
+
+mkdir -p "$APP/actions"
+
+if [[ ! -f "$FILE" ]]; then
+  cat > "$FILE" <<EOF
+// actions/${RES}.baga — generated stub (edit me)
+
+import "../../../app-product/fmrbaga/app.baga"
+import "../../../app-product/fmrbaga/ctx.baga"
+import "../../../app-product/fmrbaga/action.baga"
+import "../../../app-product/fmrbaga/jsonx.baga"
+import "../../../app-product/ormbaga/orm.baga"
+
+fn act_${RES}_${ACT}(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut o = jobj_new()
+    o = jobj_str(o, "resource", "${RES}")
+    o = jobj_str(o, "action", "${ACT}")
+    return act_ok(db, o)
+}
+EOF
+  echo "created $FILE"
+else
+  if grep -q "act_${RES}_${ACT}" "$FILE" 2>/dev/null; then
+    echo "action act_${RES}_${ACT} already in $FILE"
+  else
+    cat >> "$FILE" <<EOF
+
+fn act_${RES}_${ACT}(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut o = jobj_new()
+    o = jobj_str(o, "resource", "${RES}")
+    o = jobj_str(o, "action", "${ACT}")
+    return act_ok(db, o)
+}
+EOF
+    echo "appended act_${RES}_${ACT} to $FILE"
+  fi
+fi
+
+echo ""
+echo "Next (manual, like Lucky gen.action follow-up):"
+echo "  1. Add $RID() in routes.baga"
+echo "  2. fmr_route(app, \"$METHOD\", \"$PATH_PAT\", $RID())"
+echo "  3. import \"actions/${RES}.baga\" if new file"
+echo "  4. in fmr_dispatch: if id == $RID() { return act_${RES}_${ACT}(ctx, db) }"
+echo ""
+echo "METHOD=$METHOD PATH=$PATH_PAT → act_${RES}_${ACT}"

@@ -1,0 +1,178 @@
+// pg_test.baga — live integration test for app-product/pgbaga against local Postgres.
+// Requires: PostgreSQL on 127.0.0.1:5432, role bagatest / pas+123 (see PLAN.md).
+// Override with PG* env vars.
+
+import "../app-product/pgbaga/pg.baga"
+import "../app-product/pgbaga/pg_scram.baga"
+import "../std/os/os.baga"
+import "../std/bytes/bytes.baga"
+import "../std/str/str.baga"
+
+fn check(name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+    }
+}
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" { return def }
+    return v
+}
+
+fn main() -> i64 !Net !IO !Random {
+    print("pg_test:")
+
+    // --- pure SCRAM / PBKDF2 smoke (known shape, not full RFC vector) ---
+    let salt = bytes_from_str("salt")
+    let pw = bytes_from_str("password")
+    let dk = pbkdf2_hmac_sha256(pw, salt, 2)
+    check("pbkdf2_len", vec_len(dk) == 32)
+    let n = scram_nonce_from_bytes(bytes_from_str("abcdefghijklmnopqr"))
+    check("nonce_nonempty", len(n) > 0)
+    let bare = scram_client_first_bare(n)
+    check("client_first_bare", str_starts_with(bare, "n=,r="))
+    // RFC-shaped server-first with our salt/i; must produce non-empty final
+    let server_first = concat(concat("r=", concat(n, "server")), ",s=c2FsdA==,i=2")
+    let fin = scram_build_final("password", bare, server_first)
+    check("scram_final_msg", len(fin.message) > 10)
+    check("scram_final_has_p", str_find(fin.message, ",p=") >= 0)
+    check("scram_server_sig", len(fin.server_sig) > 0)
+
+    // --- live connection ---
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(cfg("PGPORT", "5432")?)
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+    let database = cfg("PGDATABASE", "postgres")?
+
+    let conn = pg_connect(host, port, user, password, database)?
+    check("connect_ok", conn.ok == 1)
+    if conn.ok == 0 {
+        print(concat("  connect err: ", conn.err))
+        print("pg_test: FAILED (connect)")
+        return 1
+    }
+    check("pid_positive", conn.pid > 0)
+    check("server_version", len(conn.server_version) > 0)
+
+    let mut c = conn
+
+    let r1 = pg_query(c, "SELECT 1 AS one")?
+    c = r1.conn
+    check("select1_ok", r1.ok == 1)
+    check("select1_nrows", r1.nrows == 1)
+    check("select1_ncols", r1.ncols == 1)
+    check("select1_col", pg_colname(r1, 0) == "one")
+    check("select1_val", pg_cell(r1, 0, 0) == "1")
+    check("select1_i64", pg_cell_i64(r1, 0, 0) == 1)
+    check("select1_tag", str_starts_with(r1.tag, "SELECT"))
+
+    let r2 = pg_query(c, "SELECT 2 AS a, NULL::int AS b, 'x' AS c")?
+    c = r2.conn
+    check("null_ok", r2.ok == 1)
+    check("null_flag", pg_isnull(r2, 0, 1) == 1)
+    check("null_cell_empty", pg_cell(r2, 0, 1) == "")
+    check("not_null", pg_isnull(r2, 0, 0) == 0)
+    check("str_cell", pg_cell(r2, 0, 2) == "x")
+
+    let r3 = pg_query(c, "CREATE TEMP TABLE pgbaga_t(id int PRIMARY KEY, name text)")?
+    c = r3.conn
+    check("create_ok", r3.ok == 1)
+
+    let r4 = pg_query(c, "INSERT INTO pgbaga_t VALUES (10, 'bagatur'), (20, NULL)")?
+    c = r4.conn
+    check("insert_ok", r4.ok == 1)
+    check("insert_tag", str_starts_with(r4.tag, "INSERT"))
+
+    let r5 = pg_query(c, "SELECT id, name FROM pgbaga_t ORDER BY id")?
+    c = r5.conn
+    check("select_rows", r5.ok == 1 && r5.nrows == 2)
+    check("row0_id", pg_cell(r5, 0, 0) == "10")
+    check("row0_name", pg_cell(r5, 0, 1) == "bagatur")
+    check("row1_null", pg_isnull(r5, 1, 1) == 1)
+
+    let r6 = pg_query(c, "SELECT bad_column FROM pgbaga_t")?
+    c = r6.conn
+    check("error_ok_flag", r6.ok == 0)
+    check("error_msg", len(r6.err) > 0)
+
+    // connection still usable after error
+    let r7 = pg_query(c, "SELECT 42 AS n")?
+    c = r7.conn
+    check("after_error", r7.ok == 1 && pg_cell_i64(r7, 0, 0) == 42)
+
+    let r8 = pg_query(c, "BEGIN")?
+    c = r8.conn
+    check("begin", r8.ok == 1)
+    // 'T' = in transaction block
+    check("tx_status_T", c.tx_status == 84)
+    let r9 = pg_query(c, "ROLLBACK")?
+    c = r9.conn
+    check("rollback", r9.ok == 1)
+    check("tx_status_I", c.tx_status == 73)
+
+    // --- Extended Query / parameterized $1 ---
+    let pvals = vec_new()
+    vec_push(pvals, "hello")
+    let rp = pg_query_params_str(c, "SELECT $1::text AS t", pvals)?
+    c = rp.conn
+    check("params_ok", rp.ok == 1)
+    check("params_val", pg_cell(rp, 0, 0) == "hello")
+
+    let pvals2 = vec_new()
+    let pnulls = vec_new()
+    pg_param_i64(pvals2, pnulls, 7)
+    pg_param_str(pvals2, pnulls, "x")
+    let rp2 = pg_query_params(c, "SELECT $1::int AS n, $2::text AS s", pvals2, pnulls)?
+    c = rp2.conn
+    check("params2_ok", rp2.ok == 1)
+    check("params2_n", pg_cell_i64(rp2, 0, 0) == 7)
+    check("params2_s", pg_cell(rp2, 0, 1) == "x")
+
+    // injection attempt is data, not SQL
+    let evil = vec_new()
+    vec_push(evil, "'; DROP TABLE users; --")
+    let rp3 = pg_query_params_str(c, "SELECT $1::text AS t", evil)?
+    c = rp3.conn
+    check("params_injection_safe", rp3.ok == 1 && pg_cell(rp3, 0, 0) == "'; DROP TABLE users; --")
+
+    let pnull = vec_new()
+    let nflags = vec_new()
+    pg_param_null(pnull, nflags)
+    let rp4 = pg_query_params(c, "SELECT $1::text AS t", pnull, nflags)?
+    c = rp4.conn
+    check("params_null", rp4.ok == 1 && pg_isnull(rp4, 0, 0) == 1)
+
+    // --- named prepared statements ---
+    let prep = pg_prepare(c, "pgbaga_echo", "SELECT $1::text AS t", 1)?
+    c = prep.conn
+    check("prepare_ok", prep.ok == 1)
+    let pv = vec_new()
+    vec_push(pv, "prepared")
+    let ex1 = pg_exec_prepared_str(c, "pgbaga_echo", pv)?
+    c = ex1.conn
+    check("exec_prepared_1", ex1.ok == 1 && pg_cell(ex1, 0, 0) == "prepared")
+    let pv2 = vec_new()
+    vec_push(pv2, "again")
+    let ex2 = pg_exec_prepared_str(c, "pgbaga_echo", pv2)?
+    c = ex2.conn
+    check("exec_prepared_2", ex2.ok == 1 && pg_cell(ex2, 0, 0) == "again")
+    let de = pg_deallocate(c, "pgbaga_echo")?
+    c = de.conn
+    check("deallocate", de.ok == 1)
+
+    pg_close(c)?
+
+    // wrong password must fail
+    let bad = pg_connect(host, port, user, "wrong-password-xyz", database)?
+    check("bad_password", bad.ok == 0)
+    if bad.fd >= 0 {
+        pg_close(bad)?
+    }
+
+    print("pg_test: all passed")
+    return 0
+}

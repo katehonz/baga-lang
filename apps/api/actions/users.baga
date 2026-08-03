@@ -1,0 +1,140 @@
+// actions/users.baga — User CRUD (Lucky: Api::Users::*)
+
+import "../models/user.baga"
+import "../../../app-product/fmrbaga/app.baga"
+import "../../../app-product/fmrbaga/ctx.baga"
+import "../../../app-product/fmrbaga/action.baga"
+import "../../../app-product/fmrbaga/jsonx.baga"
+import "../../../app-product/ormbaga/orm.baga"
+
+fn act_users_index(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let page = act_page(ctx, 50, 200)
+    // full list then slice in SQL would need user_all_page — keep simple for now
+    let q = user_all(db)?
+    if q.ok == 0 {
+        return act_err(q.db, 500, q.err)
+    }
+    // client-side style meta (count = full set size); posts use SQL limit
+    let mut o = user_list_json(q)
+    o = jobj_i64(o, "limit", page.limit)
+    o = jobj_i64(o, "offset", page.offset)
+    return act_ok(q.db, o)
+}
+
+fn act_users_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let body = jbody_parse_str(fmr_body(ctx))
+    if body.ok == 0 {
+        return act_err(db, 400, body.err)
+    }
+    let b = jbody_require_object(body)
+    if b.ok == 0 {
+        return act_err(db, 400, b.err)
+    }
+    let email = jreq_str(b.doc, b.root, "email")
+    if email.ok == 0 {
+        return act_422_field(db, "email", email)
+    }
+    let name = jreq_str(b.doc, b.root, "name")
+    if name.ok == 0 {
+        return act_422_field(db, "name", name)
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let ins = user_create(db, email.val, name.val)?
+    if ins.ok == 0 {
+        return act_err(ins.db, 409, ins.err)
+    }
+    let q = user_find_by_email(ins.db, email.val)?
+    if q.ok == 0 || q.nrows < 1 {
+        return act_err(q.db, 500, "insert ok but row missing")
+    }
+    return act_created(q.db, user_to_json(q, 0))
+}
+
+fn act_users_show(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let id = fmr_param_i64(ctx, "id")
+    if id <= 0 {
+        return act_err(db, 400, "invalid id")
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let q = user_find(db, id)?
+    if q.ok == 0 {
+        return act_err(q.db, 500, q.err)
+    }
+    if q.nrows < 1 {
+        return act_404(q.db, "User not found")
+    }
+    return act_ok(q.db, user_to_json(q, 0))
+}
+
+fn act_users_update(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let id = fmr_param_i64(ctx, "id")
+    if id <= 0 {
+        return act_err(db, 400, "invalid id")
+    }
+    let body = jbody_parse_str(fmr_body(ctx))
+    if body.ok == 0 {
+        return act_err(db, 400, body.err)
+    }
+    let b = jbody_require_object(body)
+    if b.ok == 0 {
+        return act_err(db, 400, b.err)
+    }
+    let name = jreq_str(b.doc, b.root, "name")
+    if name.ok == 0 {
+        return act_422_field(db, "name", name)
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let upd = user_update_name(db, id, name.val)?
+    if upd.ok == 0 {
+        return act_err(upd.db, 500, upd.err)
+    }
+    let q = user_find(upd.db, id)?
+    if q.ok == 0 || q.nrows < 1 {
+        return act_404(q.db, "User not found")
+    }
+    return act_ok(q.db, user_to_json(q, 0))
+}
+
+fn act_users_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let auth = act_require_auth(ctx, db)
+    if auth.ok == 0 {
+        return auth.out
+    }
+    let id = fmr_param_i64(ctx, "id")
+    if id <= 0 {
+        return act_err(db, 400, "invalid id")
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let del = user_delete(db, id)?
+    if del.ok == 0 {
+        return act_err(del.db, 500, del.err)
+    }
+    return act_no_content(del.db)
+}
