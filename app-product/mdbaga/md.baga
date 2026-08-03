@@ -1,0 +1,449 @@
+// md.baga — Markdown → HTML (CommonMark-ish subset).
+//
+// Apps-roadmap №4: first large pure parser outside the compiler.
+// Probes string building (nested concat / ${} where useful), line walking,
+// recursive inline scan. No regex; HTML specials escaped.
+//
+// Blocks: ATX headings, paragraphs, blank lines, fenced ``` code, hr,
+// unordered (-/*/+) and ordered (1.) lists, blockquotes (>).
+// Inline: `code`, **bold**, *italic*, [text](url), HTML escape.
+
+import "std/str/str.baga"
+
+// ---------- HTML escape ----------
+
+fn md_esc(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c = char_at(s, i)
+        if c == 38 {
+            out = concat(out, "&amp;")
+        } else {
+            if c == 60 {
+                out = concat(out, "&lt;")
+            } else {
+                if c == 62 {
+                    out = concat(out, "&gt;")
+                } else {
+                    if c == 34 {
+                        out = concat(out, "&quot;")
+                    } else {
+                        out = concat(out, substr(s, i, i + 1))
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ---------- line classifiers ----------
+
+fn md_line_blank(line: str) -> bool {
+    return str_trim(line) == ""
+}
+
+fn md_heading_level(line: str) -> i64 {
+    let t = str_trim(line)
+    let mut n: i64 = 0
+    while n < len(t) && char_at(t, n) == 35 && n < 6 {
+        n = n + 1
+    }
+    if n == 0 {
+        return 0
+    }
+    if n >= len(t) {
+        return n
+    }
+    let c = char_at(t, n)
+    if c != 32 && c != 9 {
+        return 0
+    }
+    return n
+}
+
+fn md_heading_text(line: str, level: i64) -> str {
+    let t = str_trim(line)
+    let mut i = level
+    while i < len(t) && (char_at(t, i) == 32 || char_at(t, i) == 9) {
+        i = i + 1
+    }
+    let mut end = len(t)
+    while end > i && char_at(t, end - 1) == 35 {
+        end = end - 1
+    }
+    while end > i && (char_at(t, end - 1) == 32 || char_at(t, end - 1) == 9) {
+        end = end - 1
+    }
+    return substr(t, i, end)
+}
+
+fn md_is_hr(line: str) -> bool {
+    let t = str_trim(line)
+    if len(t) < 3 {
+        return false
+    }
+    let c0 = char_at(t, 0)
+    if c0 != 45 && c0 != 42 && c0 != 95 {
+        return false
+    }
+    let mut i: i64 = 0
+    let mut n: i64 = 0
+    while i < len(t) {
+        let c = char_at(t, i)
+        if c == c0 {
+            n = n + 1
+        } else {
+            if c != 32 && c != 9 {
+                return false
+            }
+        }
+        i = i + 1
+    }
+    return n >= 3
+}
+
+fn md_is_fence(line: str) -> bool {
+    return str_starts_with(str_trim(line), "```")
+}
+
+fn md_fence_lang(line: str) -> str {
+    let t = str_trim(line)
+    if len(t) <= 3 {
+        return ""
+    }
+    return str_trim(substr(t, 3, len(t)))
+}
+
+// Start index of list item text after unordered marker, or -1.
+fn md_ul_marker(line: str) -> i64 {
+    let mut i: i64 = 0
+    while i < len(line) && (char_at(line, i) == 32 || char_at(line, i) == 9) {
+        i = i + 1
+    }
+    if i >= len(line) {
+        return -1
+    }
+    let c = char_at(line, i)
+    if c != 45 && c != 42 && c != 43 {
+        return -1
+    }
+    if i + 1 >= len(line) {
+        return -1
+    }
+    if char_at(line, i + 1) != 32 && char_at(line, i + 1) != 9 {
+        return -1
+    }
+    return i + 2
+}
+
+fn md_ol_marker(line: str) -> i64 {
+    let mut i: i64 = 0
+    while i < len(line) && (char_at(line, i) == 32 || char_at(line, i) == 9) {
+        i = i + 1
+    }
+    if i >= len(line) {
+        return -1
+    }
+    if char_at(line, i) < 48 || char_at(line, i) > 57 {
+        return -1
+    }
+    let mut j = i
+    while j < len(line) && char_at(line, j) >= 48 && char_at(line, j) <= 57 {
+        j = j + 1
+    }
+    if j >= len(line) || char_at(line, j) != 46 {
+        return -1
+    }
+    j = j + 1
+    if j >= len(line) {
+        return -1
+    }
+    if char_at(line, j) != 32 && char_at(line, j) != 9 {
+        return -1
+    }
+    return j + 1
+}
+
+fn md_is_quote(line: str) -> bool {
+    return str_starts_with(str_trim(line), ">")
+}
+
+fn md_quote_body(line: str) -> str {
+    let t = str_trim(line)
+    if !str_starts_with(t, ">") {
+        return t
+    }
+    let mut i: i64 = 1
+    if i < len(t) && (char_at(t, i) == 32 || char_at(t, i) == 9) {
+        i = i + 1
+    }
+    return substr(t, i, len(t))
+}
+
+// True if line starts a non-paragraph block (caller already skipped blanks).
+fn md_is_block_start(line: str) -> bool {
+    if md_heading_level(line) > 0 {
+        return true
+    }
+    if md_is_hr(line) {
+        return true
+    }
+    if md_is_fence(line) {
+        return true
+    }
+    if md_ul_marker(line) >= 0 {
+        return true
+    }
+    if md_ol_marker(line) >= 0 {
+        return true
+    }
+    if md_is_quote(line) {
+        return true
+    }
+    return false
+}
+
+// ---------- inline ----------
+
+fn md_find_close(s: str, from: i64, delim: str) -> i64 {
+    let dlen = len(delim)
+    let mut i = from
+    while i + dlen <= len(s) {
+        if substr(s, i, i + dlen) == delim {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn md_inline(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    let n = len(s)
+    while i < n {
+        if char_at(s, i) == 96 {
+            let close = md_find_close(s, i + 1, "`")
+            if close >= 0 {
+                let code = substr(s, i + 1, close)
+                out = concat(out, concat(concat("<code>", md_esc(code)), "</code>"))
+                i = close + 1
+            } else {
+                out = concat(out, "`")
+                i = i + 1
+            }
+        } else {
+            if i + 1 < n && char_at(s, i) == 42 && char_at(s, i + 1) == 42 {
+                let close = md_find_close(s, i + 2, "**")
+                if close >= 0 {
+                    let inner = md_inline(substr(s, i + 2, close))
+                    out = concat(out, concat(concat("<strong>", inner), "</strong>"))
+                    i = close + 2
+                } else {
+                    out = concat(out, "*")
+                    i = i + 1
+                }
+            } else {
+                if char_at(s, i) == 42 {
+                    let close = md_find_close(s, i + 1, "*")
+                    if close > i + 1 {
+                        let inner = md_inline(substr(s, i + 1, close))
+                        out = concat(out, concat(concat("<em>", inner), "</em>"))
+                        i = close + 1
+                    } else {
+                        out = concat(out, "*")
+                        i = i + 1
+                    }
+                } else {
+                    if char_at(s, i) == 91 {
+                        let rb = md_find_close(s, i + 1, "]")
+                        if rb >= 0 && rb + 1 < n && char_at(s, rb + 1) == 40 {
+                            let rp = md_find_close(s, rb + 2, ")")
+                            if rp >= 0 {
+                                let text = md_inline(substr(s, i + 1, rb))
+                                let url = md_esc(substr(s, rb + 2, rp))
+                                out = concat(out, concat(concat(concat(concat("<a href=\"", url), "\">"), text), "</a>"))
+                                i = rp + 1
+                            } else {
+                                out = concat(out, md_esc(substr(s, i, i + 1)))
+                                i = i + 1
+                            }
+                        } else {
+                            out = concat(out, md_esc(substr(s, i, i + 1)))
+                            i = i + 1
+                        }
+                    } else {
+                        let c = char_at(s, i)
+                        if c == 38 {
+                            out = concat(out, "&amp;")
+                        } else {
+                            if c == 60 {
+                                out = concat(out, "&lt;")
+                            } else {
+                                if c == 62 {
+                                    out = concat(out, "&gt;")
+                                } else {
+                                    out = concat(out, substr(s, i, i + 1))
+                                }
+                            }
+                        }
+                        i = i + 1
+                    }
+                }
+            }
+        }
+    }
+    return out
+}
+
+// ---------- blocks ----------
+
+fn md_wrap(tag: str, body: str) -> str {
+    return concat(concat(concat(concat("<", tag), ">"), body), concat(concat("</", tag), ">"))
+}
+
+// Convert markdown source to an HTML fragment (no <html> shell).
+fn md_to_html(src: str) -> str {
+    let text = str_replace(str_replace(src, "\r\n", "\n"), "\r", "\n")
+    let lines = str_split(text, "\n")
+    let mut out = ""
+    let mut i: i64 = 0
+    let n = vec_len(lines)
+
+    while i < n {
+        let line = vec_get(lines, i)
+
+        if md_line_blank(line) {
+            i = i + 1
+        } else {
+            let h = md_heading_level(line)
+            if h > 0 {
+                let tag = concat("h", int_to_str(h))
+                out = concat(out, concat(md_wrap(tag, md_inline(md_heading_text(line, h))), "\n"))
+                i = i + 1
+            } else {
+                if md_is_hr(line) {
+                    out = concat(out, "<hr />\n")
+                    i = i + 1
+                } else {
+                    if md_is_fence(line) {
+                        let lang = md_fence_lang(line)
+                        i = i + 1
+                        let mut code = ""
+                        let mut first: i64 = 1
+                        while i < n && !md_is_fence(vec_get(lines, i)) {
+                            if first == 0 {
+                                code = concat(code, "\n")
+                            }
+                            code = concat(code, vec_get(lines, i))
+                            first = 0
+                            i = i + 1
+                        }
+                        if i < n {
+                            i = i + 1
+                        }
+                        let mut block = "<pre><code"
+                        if lang != "" {
+                            block = concat(concat(concat(block, " class=\"language-"), md_esc(lang)), "\"")
+                        }
+                        block = concat(block, ">")
+                        block = concat(block, md_esc(code))
+                        block = concat(block, "</code></pre>\n")
+                        out = concat(out, block)
+                    } else {
+                        if md_ul_marker(line) >= 0 {
+                            out = concat(out, "<ul>\n")
+                            let mut in_ul: i64 = 1
+                            while in_ul == 1 && i < n {
+                                let um = md_ul_marker(vec_get(lines, i))
+                                if um >= 0 {
+                                    let item = substr(vec_get(lines, i), um, len(vec_get(lines, i)))
+                                    out = concat(out, concat(concat("  <li>", md_inline(item)), "</li>\n"))
+                                    i = i + 1
+                                } else {
+                                    if md_line_blank(vec_get(lines, i)) && i + 1 < n && md_ul_marker(vec_get(lines, i + 1)) >= 0 {
+                                        i = i + 1
+                                    } else {
+                                        in_ul = 0
+                                    }
+                                }
+                            }
+                            out = concat(out, "</ul>\n")
+                        } else {
+                            if md_ol_marker(line) >= 0 {
+                                out = concat(out, "<ol>\n")
+                                let mut in_ol: i64 = 1
+                                while in_ol == 1 && i < n {
+                                    let om = md_ol_marker(vec_get(lines, i))
+                                    if om >= 0 {
+                                        let item = substr(vec_get(lines, i), om, len(vec_get(lines, i)))
+                                        out = concat(out, concat(concat("  <li>", md_inline(item)), "</li>\n"))
+                                        i = i + 1
+                                    } else {
+                                        if md_line_blank(vec_get(lines, i)) && i + 1 < n && md_ol_marker(vec_get(lines, i + 1)) >= 0 {
+                                            i = i + 1
+                                        } else {
+                                            in_ol = 0
+                                        }
+                                    }
+                                }
+                                out = concat(out, "</ol>\n")
+                            } else {
+                                if md_is_quote(line) {
+                                    out = concat(out, "<blockquote>\n")
+                                    let mut qbody = ""
+                                    let mut qfirst: i64 = 1
+                                    while i < n && md_is_quote(vec_get(lines, i)) {
+                                        if qfirst == 0 {
+                                            qbody = concat(qbody, "\n")
+                                        }
+                                        qbody = concat(qbody, md_quote_body(vec_get(lines, i)))
+                                        qfirst = 0
+                                        i = i + 1
+                                    }
+                                    out = concat(out, md_to_html(qbody))
+                                    out = concat(out, "</blockquote>\n")
+                                } else {
+                                    // paragraph
+                                    let mut p = str_trim(line)
+                                    i = i + 1
+                                    let mut in_p: i64 = 1
+                                    while in_p == 1 && i < n {
+                                        let L = vec_get(lines, i)
+                                        if md_line_blank(L) {
+                                            in_p = 0
+                                        } else {
+                                            if md_is_block_start(L) {
+                                                in_p = 0
+                                            } else {
+                                                p = concat(concat(p, " "), str_trim(L))
+                                                i = i + 1
+                                            }
+                                        }
+                                    }
+                                    out = concat(out, concat(md_wrap("p", md_inline(p)), "\n"))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return out
+}
+
+// Full HTML document shell around a fragment.
+fn md_to_document(src: str, title: str) -> str {
+    let body = md_to_html(src)
+    let t = md_esc(title)
+    let mut d = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\" />\n"
+    d = concat(d, concat(concat("<title>", t), "</title>\n"))
+    d = concat(d, "</head>\n<body>\n")
+    d = concat(d, body)
+    d = concat(d, "</body>\n</html>\n")
+    return d
+}

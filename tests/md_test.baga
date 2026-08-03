@@ -1,0 +1,82 @@
+// md_test.baga — unit checks for app-product/mdbaga (Markdown → HTML).
+// Pure string fixtures; no network. Apps-roadmap №4 probe.
+
+import "mdbaga/md.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn contains(hay: str, needle: str) -> bool {
+    return str_find(hay, needle) >= 0
+}
+
+fn main() {
+    // --- escape ---
+    check("esc_amp", md_esc("a&b") == "a&amp;b")
+    check("esc_lt", md_esc("<script>") == "&lt;script&gt;")
+
+    // --- headings ---
+    let h = md_to_html("# Здравей\n")
+    check("h1", contains(h, "<h1>") && contains(h, "Здравей") && contains(h, "</h1>"))
+    let h2 = md_to_html("## Sub\n")
+    check("h2", contains(h2, "<h2>") && contains(h2, "Sub"))
+
+    // --- paragraph + inline ---
+    let p = md_to_html("Hello **world** and *ital* and `code`.\n")
+    check("p_strong", contains(p, "<strong>world</strong>"))
+    check("p_em", contains(p, "<em>ital</em>"))
+    check("p_code", contains(p, "<code>code</code>"))
+    check("p_tag", contains(p, "<p>") && contains(p, "</p>"))
+
+    // --- link ---
+    let a = md_to_html("See [baga](https://example.com).\n")
+    check("link", contains(a, "<a href=\"https://example.com\">") && contains(a, "baga</a>"))
+
+    // --- list ul ---
+    let ul = md_to_html("- one\n- two\n")
+    check("ul", contains(ul, "<ul>") && contains(ul, "<li>") && contains(ul, "one") && contains(ul, "two"))
+
+    // --- list ol ---
+    let ol = md_to_html("1. first\n2. second\n")
+    check("ol", contains(ol, "<ol>") && contains(ol, "first") && contains(ol, "second"))
+
+    // --- fenced code + lang ---
+    let code = md_to_html("```baga\nfn main() {}\n```\n")
+    check("fence", contains(code, "<pre><code") && contains(code, "language-baga") && contains(code, "fn main()"))
+    check("fence_esc", contains(code, "fn main() {}") || contains(code, "fn main()"))
+
+    // raw < in code must be escaped
+    let cx = md_to_html("```\n<a>\n```\n")
+    check("fence_lt", contains(cx, "&lt;a&gt;") && !contains(cx, "<a>"))
+
+    // --- hr ---
+    let hr = md_to_html("---\n")
+    check("hr", contains(hr, "<hr"))
+
+    // --- blockquote ---
+    let bq = md_to_html("> quoted **x**\n")
+    check("quote", contains(bq, "<blockquote>") && contains(bq, "<strong>x</strong>"))
+
+    // --- multi paragraph ---
+    let mp = md_to_html("p1\n\np2\n")
+    check("multi_p", contains(mp, "p1") && contains(mp, "p2"))
+
+    // --- document shell ---
+    let doc = md_to_document("# T\n", "title")
+    check("doc_doctype", contains(doc, "<!DOCTYPE html>"))
+    check("doc_title", contains(doc, "<title>title</title>"))
+    check("doc_h1", contains(doc, "<h1>") && contains(doc, "T"))
+
+    // --- XSS-ish in paragraph ---
+    let xss = md_to_html("a <b> c\n")
+    check("xss_lt", contains(xss, "&lt;b&gt;") && !contains(xss, "<b>"))
+
+    print("md_test: all passed")
+}

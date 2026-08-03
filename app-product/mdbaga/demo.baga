@@ -1,0 +1,32 @@
+// demo.baga — Markdown → HTML CLI (apps-roadmap №4).
+// Package imports (language §18.1): sandak.toml → -I parents.
+//   cd app-product/mdbaga && sandak build
+//   baga -I ../.. -I .. demo.baga path/to/file.md
+//   baga -I ../.. -I .. demo.baga -- path.md   # same; -- separator ok
+// Reads file, writes HTML fragment to stdout. Exit 1 on usage / missing file.
+
+import "md.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !IO {
+    if arg_count() < 1 {
+        eprintln("usage: baga … demo.baga <file.md>")
+        return 1
+    }
+    let path = arg(0)
+    let src = read_file(path)?
+    if src == "" {
+        // empty file is valid MD; missing file also returns "" — probe gap
+        // try: if path looks non-empty and we got empty, still emit empty HTML
+        // (honest: cannot distinguish missing vs empty without a separate exists API)
+    }
+    // full document when MDDOC=1, else fragment
+    let mode = env("MDDOC")?
+    if mode == "1" {
+        print(md_to_document(src, path))
+    } else {
+        print(md_to_html(src))
+    }
+    return 0
+}

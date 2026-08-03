@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### App products — mdbaga (Markdown → HTML, apps-roadmap №4)
+- New product `app-product/mdbaga`: CommonMark-ish subset — ATX headings,
+  paragraphs, emphasis, inline/fenced code, ul/ol, blockquotes, hr, links,
+  HTML escape; `md_to_html` / `md_to_document`.
+- CLI `demo.baga` reads `arg(0)` via `read_file`, prints HTML (`MDDOC=1` for
+  full document shell). Package: `sandak build`.
+- `tests/md_test.baga` — escape, blocks, inline, XSS-ish `<` in text/code.
+- Probe gaps: nested concat still dominates builders (M1 / G1); no
+  file-exists vs empty distinction on `read_file` (M2).
+
 ### App products — chatbaga (WebSocket chat, apps-roadmap №3 complete)
 - New product `app-product/chatbaga`: multi-room chat on a single-threaded
   `poll(2)` event loop — JSON join/msg over wsbaga text frames, room
