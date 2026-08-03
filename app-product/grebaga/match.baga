@@ -1,0 +1,138 @@
+// match.baga — pattern match for grebaga (apps-roadmap №9).
+//
+// Modes:
+//   literal  — fixed substring (str_find)
+//   meta     — mini pattern: '.' = one byte, '*' = any run of bytes, '\' escapes
+//   -i       — ASCII case-fold on both sides (literal and meta)
+//
+// Not a real regex engine (no classes, groups, anchors). Honest subset.
+
+import "std/str/str.baga"
+
+// ASCII lower-case only (grep -i for Latin; Cyrillic left as-is).
+fn gre_lower_byte(c: i64) -> i64 {
+    if c >= 65 && c <= 90 {
+        return c + 32
+    }
+    return c
+}
+
+fn gre_to_lower(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c = gre_lower_byte(char_at(s, i))
+        out = concat(out, chr(c))
+        i = i + 1
+    }
+    return out
+}
+
+// True if pattern needs the mini engine (unescaped ./* or any \ escape).
+fn gre_has_meta(pat: str) -> bool {
+    let mut i: i64 = 0
+    while i < len(pat) {
+        let c = char_at(pat, i)
+        if c == 92 {
+            return true
+        }
+        if c == 46 || c == 42 {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Match pattern at start of text (prefix). Returns bytes consumed (>=0) or -1.
+fn gre_match_here(text: str, ti: i64, pat: str, pi: i64, fold: i64) -> i64 {
+    let tn = len(text)
+    let pn = len(pat)
+    if pi >= pn {
+        return ti
+    }
+    let pc = char_at(pat, pi)
+
+    // escape
+    if pc == 92 {
+        if pi + 1 >= pn {
+            return -1
+        }
+        let want = char_at(pat, pi + 1)
+        if ti >= tn {
+            return -1
+        }
+        let got = char_at(text, ti)
+        let mut a = got
+        let mut b = want
+        if fold == 1 {
+            a = gre_lower_byte(got)
+            b = gre_lower_byte(want)
+        }
+        if a != b {
+            return -1
+        }
+        return gre_match_here(text, ti + 1, pat, pi + 2, fold)
+    }
+
+    // '*' — any sequence (including empty), then rest of pattern
+    if pc == 42 {
+        // try consuming 0..rest bytes
+        let mut k = ti
+        while k <= tn {
+            let r = gre_match_here(text, k, pat, pi + 1, fold)
+            if r >= 0 {
+                return r
+            }
+            k = k + 1
+        }
+        return -1
+    }
+
+    // '.' — one byte
+    if pc == 46 {
+        if ti >= tn {
+            return -1
+        }
+        return gre_match_here(text, ti + 1, pat, pi + 1, fold)
+    }
+
+    // literal
+    if ti >= tn {
+        return -1
+    }
+    let got = char_at(text, ti)
+    let mut a = got
+    let mut b = pc
+    if fold == 1 {
+        a = gre_lower_byte(got)
+        b = gre_lower_byte(pc)
+    }
+    if a != b {
+        return -1
+    }
+    return gre_match_here(text, ti + 1, pat, pi + 1, fold)
+}
+
+// Substring search with mini-pattern. fold=1 → case-insensitive ASCII.
+fn gre_match(text: str, pat: str, fold: i64) -> bool {
+    if len(pat) == 0 {
+        return true
+    }
+    if !gre_has_meta(pat) {
+        if fold == 1 {
+            return str_find(gre_to_lower(text), gre_to_lower(pat)) >= 0
+        }
+        return str_find(text, pat) >= 0
+    }
+    // meta: try each start offset
+    let mut i: i64 = 0
+    let n = len(text)
+    while i <= n {
+        if gre_match_here(text, i, pat, 0, fold) >= 0 {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}

@@ -1,0 +1,74 @@
+// grep_test.baga — unit + file scan for grebaga (apps-roadmap №9).
+
+import "grebaga/match.baga"
+import "grebaga/scan.baga"
+import "testbaga/assert.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !IO {
+    // --- literal ---
+    assert_true("lit_hit", gre_match("hello world", "world", 0))
+    assert_true("lit_miss", !gre_match("hello", "xyz", 0))
+    assert_true("lit_empty_pat", gre_match("abc", "", 0))
+
+    // --- case fold ---
+    assert_true("ci_hit", gre_match("Hello", "hello", 1))
+    assert_true("ci_miss_sensitive", !gre_match("Hello", "hello", 0))
+
+    // --- meta ---
+    assert_true("dot", gre_match("cat", "c.t", 0))
+    assert_true("star", gre_match("foobar", "f*r", 0))
+    assert_true("star_empty", gre_match("ab", "a*b", 0))
+    assert_true("meta_miss", !gre_match("cat", "c.x", 0))
+    assert_true("escape_dot", gre_match("a.b", "a\\.b", 0))
+    assert_true("escape_dot_miss", !gre_match("axb", "a\\.b", 0))
+
+    // --- count in string ---
+    let src = "alpha\nbeta\nalpha\n"
+    assert_eq_i64("count_alpha", gre_count_in(src, "alpha", 0), 2)
+    assert_eq_i64("count_a_star", gre_count_in(src, "a*", 0), 3)
+
+    // --- streaming file ---
+    let path = "/tmp/baga_grep_test.txt"
+    let body = "one\nTWO\nthree\n\nend\n"
+    assert_eq_i64("write", write_file(path, body)?, 0)
+
+    let st = gre_stream_file(path)?
+    assert_true("open", st.fd >= 0)
+    let mut s = st
+    let r1 = gre_next_line(s)?
+    s = r1.stream
+    assert_eq_i64("l1_ok", r1.ok, 1)
+    assert_eq_str("l1", r1.line, "one")
+    assert_eq_i64("l1_no", s.lineno, 1)
+
+    let r2 = gre_next_line(s)?
+    s = r2.stream
+    assert_eq_str("l2", r2.line, "TWO")
+
+    let r3 = gre_next_line(s)?
+    s = r3.stream
+    assert_eq_str("l3", r3.line, "three")
+
+    let r4 = gre_next_line(s)?
+    s = r4.stream
+    assert_eq_i64("empty_line_ok", r4.ok, 1)
+    assert_eq_str("empty_line", r4.line, "")
+
+    let r5 = gre_next_line(s)?
+    s = r5.stream
+    assert_eq_str("l5", r5.line, "end")
+
+    let r6 = gre_next_line(s)?
+    s = r6.stream
+    assert_eq_i64("eof", r6.ok, 0)
+    close(s.fd)
+
+    // stream match count via pure count on same body
+    assert_eq_i64("count_e", gre_count_in(body, "e", 0), 3)
+    assert_eq_i64("count_two_ci", gre_count_in(body, "two", 1), 1)
+
+    print("grep_test: all passed")
+    return 0
+}

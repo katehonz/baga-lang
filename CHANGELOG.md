@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### App products — grebaga (grep-like CLI, apps-roadmap №9)
+- New product `app-product/grebaga`: literal + mini-pattern (`.`/`*`/`\`),
+  ASCII `-i`, streaming line scan (chunked read; empty line ≠ EOF), CLI
+  `demo.baga` (`-n`/`-i`, files or stdin, exit 0/1/2).
+- `tests/grep_test.baga` — match unit tests + live file stream.
+- Probe: std `read_line` empty/EOF collapse → custom scanner (G1).
+
 ### App products — testbaga (test asserts + runner, apps-roadmap №8)
 - New product `app-product/testbaga`: fail-fast `assert_true` /
   `assert_eq_i64` / `assert_eq_str` / `assert_ne_str`, plus `Suite`
