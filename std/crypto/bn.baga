@@ -1,0 +1,351 @@
+// bn.baga — fixed-width unsigned bignum (TLS milestone, T1).
+//
+// Limbs are 26-bit, little-endian, stored in Vec<i64> of a FIXED length n
+// per value; every op returns a value of its documented length. Signed-i64
+// discipline (std/crypto README): a product of two limbs is < 2^52 and the
+// widest column of a 79-limb (RSA-2048) schoolbook multiply sums 79 of them
+// — < 2^59, comfortably inside i64.
+//
+//   bn_zero(n) / bn_one(n)                    n-limb constants
+//   bn_from_bytes_be(b, n) / bn_to_bytes_be(v, len)   big-endian codec
+//   bn_cmp(a, b) -> -1|0|1     (equal lengths)
+//   bn_add(a, b) / bn_sub(a, b)   (equal lengths; add drops the overflow,
+//                                  sub requires a >= b — documented, not
+//                                  checked)
+//   bn_mul(a, b) -> 2n limbs     schoolbook
+//   bn_mod(x, m) -> len(m) limbs shift-subtract division (x may be any
+//                                  length >= len(m))
+//   bn_modmul(a, b, m) / bn_modexp(base, exp, m)
+//   bn_bits(v) / bn_bit(v, i) / bn_is_zero(v)
+//
+// RSA-2048 modexp with a 2048-bit exponent is O(bits * n^2) limb ops and
+// takes seconds in baga-C — measured in bn_test, documented, not hidden.
+// Timing is secret-dependent: fine for signature verification (public
+// exponents), not for private-key use (none exist in this client).
+//
+// Pure; no effects.
+
+fn bn_zero(n: i64) -> Vec<i64> {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, 0)
+        i = i + 1
+    }
+    return v
+}
+
+fn bn_one(n: i64) -> Vec<i64> {
+    let v = bn_zero(n)
+    if n > 0 {
+        vec_set(v, 0, 1)
+    }
+    return v
+}
+
+fn bn_is_zero(v: Vec<i64>) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        if vec_get(v, i) != 0 {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// Index of the highest set bit + 1 (0 for zero).
+fn bn_bits(v: Vec<i64>) -> i64 {
+    let mut i = vec_len(v) - 1
+    while i >= 0 {
+        let l = vec_get(v, i)
+        if l != 0 {
+            let mut b: i64 = 26
+            while b > 0 {
+                if ((l >> (b - 1)) & 1) == 1 {
+                    return i * 26 + b
+                }
+                b = b - 1
+            }
+        }
+        i = i - 1
+    }
+    return 0
+}
+
+// Bit i (0 = LSB); 0 when out of range.
+fn bn_bit(v: Vec<i64>, i: i64) -> i64 {
+    let limb = i / 26
+    if limb < 0 || limb >= vec_len(v) {
+        return 0
+    }
+    return (vec_get(v, limb) >> (i % 26)) & 1
+}
+
+// ---------- big-endian byte codec ----------
+
+fn bn_from_bytes_be(b: bytes, n: i64) -> Vec<i64> {
+    let v = bn_zero(n)
+    let total = bytes_len(b) * 8
+    let mut i: i64 = 0
+    while i < n {
+        let mut acc: i64 = 0
+        let base = 26 * i          // bit position of this limb's LSB
+        let mut k: i64 = 0
+        while k < 26 {
+            let bp = base + k      // bit position from the LSB
+            if bp < total {
+                let byte_idx = bytes_len(b) - 1 - bp / 8
+                let bv = (bytes_at(b, byte_idx) >> (bp % 8)) & 1
+                acc = acc | (bv << k)
+            }
+            k = k + 1
+        }
+        vec_set(v, i, acc)
+        i = i + 1
+    }
+    return v
+}
+
+// Big-endian bytes of exactly out_len (top bits beyond out_len dropped,
+// short values zero-padded).
+fn bn_to_bytes_be(v: Vec<i64>, out_len: i64) -> bytes {
+    let out = bn_zero(out_len)
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        let l = vec_get(v, i)
+        let mut k: i64 = 0
+        while k < 26 {
+            let bp = 26 * i + k
+            if bp < out_len * 8 {
+                if ((l >> k) & 1) == 1 {
+                    let byte_idx = out_len - 1 - bp / 8
+                    vec_set(out, byte_idx, vec_get(out, byte_idx) | (1 << (bp % 8)))
+                }
+            }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    return bytes_from_vec(out)
+}
+
+// ---------- compare / add / sub ----------
+
+fn bn_cmp(a: Vec<i64>, b: Vec<i64>) -> i64 {
+    let mut i = vec_len(a) - 1
+    while i >= 0 {
+        let x = vec_get(a, i)
+        let y = vec_get(b, i)
+        if x < y {
+            return -1
+        }
+        if x > y {
+            return 1
+        }
+        i = i - 1
+    }
+    return 0
+}
+
+// Overflow beyond n limbs is dropped (caller's contract).
+fn bn_add(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    let n = vec_len(a)
+    let v = bn_zero(n)
+    let mut carry: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let s = vec_get(a, i) + vec_get(b, i) + carry
+        vec_set(v, i, s & 67108863)   // 2^26 - 1
+        carry = s >> 26
+        i = i + 1
+    }
+    return v
+}
+
+// Requires a >= b.
+fn bn_sub(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    let n = vec_len(a)
+    let v = bn_zero(n)
+    let mut borrow: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let mut d = vec_get(a, i) - vec_get(b, i) - borrow
+        if d < 0 {
+            d = d + 67108864          // 2^26
+            borrow = 1
+        } else {
+            borrow = 0
+        }
+        vec_set(v, i, d)
+        i = i + 1
+    }
+    return v
+}
+
+// ---------- multiply (schoolbook, 2n limbs) ----------
+
+fn bn_mul(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    let n = vec_len(a)
+    let v = bn_zero(2 * n)
+    let mut i: i64 = 0
+    while i < n {
+        let ai = vec_get(a, i)
+        if ai != 0 {
+            let mut carry: i64 = 0
+            let mut j: i64 = 0
+            while j < n {
+                let cur = vec_get(v, i + j) + ai * vec_get(b, j) + carry
+                vec_set(v, i + j, cur & 67108863)
+                carry = cur >> 26
+                j = j + 1
+            }
+            vec_set(v, i + n, vec_get(v, i + n) + carry)
+        }
+        i = i + 1
+    }
+    // carry-accumulator limbs (i+n) can exceed 26 bits — normalize so
+    // every consumer sees canonical limbs (the true top carry is 0: the
+    // product of two n-limb values fits in 2n limbs)
+    let mut carry2: i64 = 0
+    let mut k: i64 = 0
+    while k < 2 * n {
+        let s = vec_get(v, k) + carry2
+        vec_set(v, k, s & 67108863)
+        carry2 = s >> 26
+        k = k + 1
+    }
+    return v
+}
+
+// ---------- divide: in-place shift-subtract ----------
+//
+// The naive form rebuilt (m << shift) as a fresh vector on every bit
+// iteration — thousands of allocations per mod, and baga's bump arena
+// never reclaims, so a 512-bit exponent modexp OOM'd. The in-place form
+// allocates nothing per iteration: a 26-bit window compare, then an
+// in-place subtract of (m << shift) from the working copy.
+
+// The 26-bit window of w starting at bit `pos`.
+fn bn_window(w: Vec<i64>, pos: i64) -> i64 {
+    let t = pos / 26
+    let r = pos % 26
+    let wlen = vec_len(w)
+    if t >= wlen {
+        return 0
+    }
+    let lo = vec_get(w, t) >> r
+    if r == 0 {
+        return lo
+    }
+    let mut hi: i64 = 0
+    if t + 1 < wlen {
+        hi = (vec_get(w, t + 1) << (26 - r)) & 67108863
+    }
+    return (lo | hi) & 67108863
+}
+
+// cmp(w, m << shift) without materializing the shift.
+fn bn_cmp_shl(w: Vec<i64>, m: Vec<i64>, shift: i64) -> i64 {
+    let mut k = vec_len(m) - 1
+    while k >= 0 {
+        let win = bn_window(w, shift + 26 * k)
+        let mk = vec_get(m, k)
+        if win > mk {
+            return 1
+        }
+        if win < mk {
+            return -1
+        }
+        k = k - 1
+    }
+    return 0
+}
+
+// w -= m << shift, in place. Requires w >= m << shift (caller checked);
+// both operands canonical.
+fn bn_sub_shl(w: Vec<i64>, m: Vec<i64>, shift: i64) {
+    let n = vec_len(m)
+    let wlen = vec_len(w)
+    let limb_shift = shift / 26
+    let bit_shift = shift % 26
+    let mut borrow: i64 = 0
+    let mut hi: i64 = 0   // high part of the previous m limb, pending
+    let mut k: i64 = 0
+    while k < n + 1 {
+        let t = k + limb_shift
+        if t < wlen {
+            let mut mk: i64 = 0
+            if k < n {
+                mk = vec_get(m, k)
+            }
+            let sub = ((mk << bit_shift) & 67108863) + hi + borrow
+            let mut d = vec_get(w, t) - sub
+            let mut bo: i64 = 0
+            while d < 0 {
+                d = d + 67108864
+                bo = bo + 1
+            }
+            vec_set(w, t, d)
+            borrow = bo
+        }
+        if bit_shift > 0 && k < n {
+            hi = vec_get(m, k) >> (26 - bit_shift)
+        } else {
+            hi = 0
+        }
+        k = k + 1
+    }
+}
+
+// x mod m; x may be any length >= len(m). Result has len(m) limbs.
+fn bn_mod(x: Vec<i64>, m: Vec<i64>) -> Vec<i64> {
+    let n = vec_len(m)
+    let wlen = vec_len(x)
+    // working copy of x (the only allocation in the whole op)
+    let w = bn_zero(wlen)
+    let mut i: i64 = 0
+    while i < wlen {
+        vec_set(w, i, vec_get(x, i))
+        i = i + 1
+    }
+    let mb = bn_bits(m)
+    if mb == 0 {
+        return bn_zero(n)   // mod 0 → 0 (documented; never happens in crypto)
+    }
+    let mut xb = bn_bits(w)
+    while xb >= mb {
+        if bn_cmp_shl(w, m, xb - mb) >= 0 {
+            bn_sub_shl(w, m, xb - mb)
+        }
+        xb = xb - 1
+    }
+    let r = bn_zero(n)
+    let mut j: i64 = 0
+    while j < n && j < wlen {
+        vec_set(r, j, vec_get(w, j))
+        j = j + 1
+    }
+    return r
+}
+
+fn bn_modmul(a: Vec<i64>, b: Vec<i64>, m: Vec<i64>) -> Vec<i64> {
+    return bn_mod(bn_mul(a, b), m)
+}
+
+// Left-to-right square-and-multiply over the bits of exp.
+fn bn_modexp(base: Vec<i64>, exp: Vec<i64>, m: Vec<i64>) -> Vec<i64> {
+    let n = vec_len(m)
+    let mut result = bn_one(n)
+    let b = bn_mod(base, m)
+    let ebits = bn_bits(exp)
+    let mut i = ebits - 1
+    while i >= 0 {
+        result = bn_modmul(result, result, m)
+        if bn_bit(exp, i) == 1 {
+            result = bn_modmul(result, b, m)
+        }
+        i = i - 1
+    }
+    return result
+}

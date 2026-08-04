@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### TLS 1.3 client, T1 — std/crypto/bn.baga (fixed-width bignum)
+- The milestone plan is `docs/superpowers/plans/2026-08-04-tls-client.md`
+  (T1–T8; closes №10 P2 / gap G6 — the last production blocker).
+- New `std/crypto/bn.baga`: unsigned bignum on 26-bit limbs in
+  `Vec<i64>` — add/sub/cmp, schoolbook mul, **in-place** shift-subtract
+  mod, modmul, left-to-right modexp, big-endian byte codec. Signed-i64
+  discipline: widest RSA-2048 column stays below 2^59.
+- `tests/std/bn_test.baga` — 19 golden-vector checks, oracle = python
+  bigints computed offline: byte round-trips, 256-bit mul/mod/exp
+  (NIST P-256 prime), and RSA-2048 modexp over the RFC 3526 group prime
+  (e=65537 fast path + 512-bit exponent slow path, ~1.5 s measured).
+- Design scar, documented: the first `bn_mod` rebuilt the shifted modulus
+  per bit — thousands of arena allocations per mod, and the bump arena
+  never reclaims, so the slow-path modexp was OOM-killed. In-place
+  reduction fixed it (43 s OOM → 2.1 s green).
+
 ### std/net — URL percent-encoding (oauthbaga gap O2)
 - New `std/net/url.baga`: `url_encode` / `url_decode` (RFC 3986 §2.1) —
   unreserved set passes through, everything else `%XX` per UTF-8 byte;

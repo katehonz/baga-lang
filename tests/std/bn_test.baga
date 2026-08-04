@@ -1,0 +1,85 @@
+// bn_test.baga — golden vectors for std/crypto/bn.baga (TLS milestone T1).
+// Oracle: python3 bigints, computed offline and embedded here.
+
+import "std/crypto/bn.baga"
+import "std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn from_hex(h: str, n: i64) -> Vec<i64> {
+    return bn_from_bytes_be(bytes_from_vec(bytes_from_hex(h)), n)
+}
+
+fn to_hex(v: Vec<i64>, nbytes: i64) -> str {
+    return bytes_to_hex(vec_from_bytes(bn_to_bytes_be(v, nbytes)))
+}
+
+fn main() {
+    let A = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    let B = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+    let P = "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff"
+    let MUL256 = "0011210db4f4aab4f13d777d2c62fedcccf034779771e4ce0b7afa67a082ecb999ad05c61005c97d433d8e57bbdcdcdccccdf25c2d888f6429000b6d47bcef00"
+    let MULMOD256 = "b860c60874459c142b50da840925951004a2c853eba76569f946a8865435809a"
+    let E256 = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    let EXPMOD256 = "a3ce8ddcde67f597656967451263b7cbc2f1435c2df686dbb7cf2b85fa7f775f"
+    let P2048 = "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca18217c32905e462e36ce3be39e772c180e86039b2783a2ec07a28fb5c55df06f4c52c9de2bcbf6955817183995497cea956ae515d2261898fa051015728e5a8aacaa68ffffffffffffffff"
+    let BASE2048 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    let EXP65537 = "51041aaf083d505a9ade945d33619f47dbdbdbfadbf6e21eaaad8c29149d690cfdd5067e8e851e9301e15cbb09e2890aa5e76407d6de3a9839c905ac21367b6244b0020a4bc9fea8b8f409c4e3d3f1dd72bbc7eb6a768cdfcb0e4dd33757306d660d736c19ba46e1079773f9ba05fd2a836b6be445fe9e72d33b5f3aa4c5cdfd3aa83b1ab068ec913f05a5eeb5ce5471defd97797f94e35dea580be3772609912c42a2ea57ac5ff52f727fd5386d7f1cd35a408bb75b9c1afd705e8c24b44c72fba7dad7fc022e83086ea424273d9b09f7d9608f434bea53d71b745749b75eeae2815c4e3267f5a38d2b06f0503e506bb74f29ab0ea0da78b7307f1924c066a9"
+    let E512 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    let EXP512 = "65c1e6a1eccb2c1fe2574d1c9619af1c3a1527a8f7bb0a30b11e5591452b46b3aad60f74f8a1215df18eacd6f83b68940c9be846907e0c773cd0564ece60a2feb0f1fc9542855ff0649899e474977e828f96846ea88e09b1f2921cfc23e1ad9a7d7a1ff0984ce5cfd1274dbda8fec4d8dbcf48bd09cc67270480e23fe911fdb445f349a40658f990a2ad5b2e47b4c16c6284e3b39d7d573b03e2f00ab92260c4ec655196c30425f7c308f900426a322f9edee0f4a39a25cf4a3a49844306da6e82f2d2051ddb63b32ca8e4ff324d5b712072a8a4aea85e9b3210039597bc561291397f69c7eb7233e83425e5efc1c943aac3d1905319d72939a3cd9cc708cdc2"
+
+    let av = from_hex(A, 10)
+    let bv = from_hex(B, 10)
+    let pv = from_hex(P, 10)
+
+    // --- bytes codec round-trips ---
+    check("roundtrip_a", to_hex(av, 32) == A)
+    check("roundtrip_b", to_hex(bv, 32) == B)
+    check("roundtrip_p2048", to_hex(from_hex(P2048, 79), 256) == P2048)
+    check("short_pad", to_hex(from_hex("010001", 10), 32) ==
+        "0000000000000000000000000000000000000000000000000000000000010001")
+
+    // --- bits ---
+    check("bits_a", bn_bits(av) == 245)
+    check("bit0_a", bn_bit(av, 0) == 1)
+    check("bit_oob", bn_bit(av, 9999) == 0)
+    check("zero", bn_is_zero(bn_zero(10)) == 1)
+
+    // --- cmp ---
+    check("cmp_eq", bn_cmp(av, av) == 0)
+    check("cmp_lt", bn_cmp(av, bv) == -1)
+    check("cmp_gt", bn_cmp(bv, av) == 1)
+
+    // --- add / sub ---
+    let one = bn_one(10)
+    let s = bn_add(av, one)
+    check("add_one", to_hex(s, 32) ==
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddef00")
+    check("sub_one", bn_cmp(bn_sub(s, one), av) == 0)
+
+    // --- small modexp: 3^5 mod 7 = 5 ---
+    let r = bn_modexp(from_hex("03", 1), from_hex("05", 1), from_hex("07", 1))
+    check("small_modexp", to_hex(r, 1) == "05")
+
+    // --- 256-bit multiply / modmul / modexp ---
+    check("mul256", to_hex(bn_mul(av, bv), 64) == MUL256)
+    check("modmul256", to_hex(bn_modmul(av, bv, pv), 32) == MULMOD256)
+    check("expmod256", to_hex(bn_modexp(av, from_hex(E256, 10), pv), 32) == EXPMOD256)
+
+    // --- 2048-bit modexp (RFC 3526 group prime) ---
+    let p2048 = from_hex(P2048, 79)
+    let base2048 = from_hex(BASE2048, 79)
+    // public-exponent shape (65537): the RSA-verify fast path
+    check("exp2048_e65537", to_hex(bn_modexp(base2048, from_hex("010001", 79), p2048), 256) == EXP65537)
+    // 512-bit exponent: the slow honest case (seconds, measured not hidden)
+    check("exp2048_e512", to_hex(bn_modexp(base2048, from_hex(E512, 79), p2048), 256) == EXP512)
+
+    print("bn_test: all passed")
+}
