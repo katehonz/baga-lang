@@ -150,6 +150,14 @@ fn main() {
     check("to_i64_overflow", dec_to_i64(must_parse("9223372036854775808")).ok == 0)
     check("neg_zero_eq", dec_eq(dec_from_parts(0, 0, 0, 1, 2), dec_zero()) == 1)
 
+    // --- Vec<Decimal> (L4 closed; D7 proof) ---
+    let inv: Vec<Decimal> = vec_new()
+    vec_push(inv, must_parse("10.25"))
+    vec_push(inv, must_parse("20.50"))
+    vec_push(inv, must_parse("0.25"))
+    let sv = dec_sum_vec(inv)
+    check("sum_vec", sv.ok == 1 && dec_to_string(sv.value) == "31.00")
+
     // --- rounding modes (P1) ---
     let t1 = dec_trunc_dp(must_parse("1.239"), 2)
     check("trunc", t1.ok == 1 && dec_to_string(t1.value) == "1.23")

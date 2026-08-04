@@ -63,6 +63,14 @@ const char *type_str(Type *t) {
     return "?";
 }
 
+/* елементно равенство за Vec<T>: вид + за struct — и име (Vec<A> ≠ Vec<B>) */
+static int vec_elem_eq(Type *a, Type *b) {
+    if (a->kind != b->kind) return 0;
+    if (a->kind == TYPE_STRUCT)
+        return a->name && b->name && strcmp(a->name, b->name) == 0;
+    return 1;
+}
+
 int type_eq(Type *a, Type *b) {
     if (!a || !b) return a == b;
     if (a->kind == TYPE_ERROR || b->kind == TYPE_ERROR) return 1;
@@ -73,7 +81,7 @@ int type_eq(Type *a, Type *b) {
     if (a->kind == TYPE_VEC) {
         /* Vec срещу Vec: различни само ако и двата знаят elem и той се различава;
          * Vec без elem (наследен код) съвпада с всеки Vec<T> */
-        if (a->elem && b->elem && a->elem->kind != b->elem->kind) return 0;
+        if (a->elem && b->elem && !vec_elem_eq(a->elem, b->elem)) return 0;
         return 1;
     }
     if (a->kind == TYPE_MAP) {
@@ -225,13 +233,14 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
             if (strcmp(ty->type_name, "Vec") == 0) {
                 Type *t = type_new(TYPE_VEC);
                 if (ty->inner_type) {
-                    /* Vec<T>: елементите са ограничени до i64 (i32 → i64), str, f64 и bytes */
+                    /* Vec<T>: i64 (i32 → i64), str, f64, bytes и struct */
                     Type *el = resolve_type_node(ctx, ty->inner_type);
                     if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
                     if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
-                        el->kind != TYPE_F64 && el->kind != TYPE_BYTES) {
+                        el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
+                        el->kind != TYPE_STRUCT) {
                         check_error(ctx, ty->pos,
-                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64 и bytes)",
+                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes и struct)",
                             type_str(el));
                     } else {
                         t->elem = el;
@@ -289,9 +298,10 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                 Type *el = resolve_type_node(ctx, ty->inner_type);
                 if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
                 if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
-                    el->kind != TYPE_F64 && el->kind != TYPE_BYTES) {
+                    el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
+                    el->kind != TYPE_STRUCT) {
                     check_error(ctx, ty->pos,
-                        "[T]: неподдържан елементен тип %s (поддържат се i64, str, f64 и bytes)",
+                        "[T]: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes и struct)",
                         type_str(el));
                 } else {
                     t->elem = el;
@@ -514,15 +524,16 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             Type *xt = is_str_alias ? type_new(TYPE_STR) : n->args.data[xidx]->type;
             if (xt->kind == TYPE_I32) xt = type_new(TYPE_I64);
             if (!is_str_alias && xt->kind != TYPE_I64 && xt->kind != TYPE_STR &&
-                xt->kind != TYPE_F64 && xt->kind != TYPE_BYTES) {
+                xt->kind != TYPE_F64 && xt->kind != TYPE_BYTES &&
+                xt->kind != TYPE_STRUCT) {
                 check_error(ctx, n->pos,
-                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str, f64 и bytes)",
+                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str, f64, bytes и struct)",
                     name, type_str(xt));
                 return type_new(TYPE_ERROR);
             }
             if (!vt->elem) {
                 vt->elem = xt;
-            } else if (vt->elem->kind != xt->kind) {
+            } else if (!vec_elem_eq(vt->elem, xt)) {
                 check_error(ctx, n->pos, "%s: елемент от тип %s, но векторът е %s",
                             name, type_str(xt), type_str(vt));
             }

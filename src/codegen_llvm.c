@@ -2095,6 +2095,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     else if (vt->elem->kind == TYPE_F64) suf = "f64";
                     else if (vt->elem->kind == TYPE_BYTES)
                         llvm_unsupported("Vec<bytes> (само C бекенда; вж. docs/language-en.md)");
+                    else if (vt->elem->kind == TYPE_STRUCT)
+                        llvm_unsupported("Vec<struct> (само C бекенда; вж. docs/language-en.md)");
                 }
                 char rt_name[64];
                 snprintf(rt_name, sizeof rt_name, "baga_%s_%s",

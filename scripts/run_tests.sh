@@ -284,6 +284,14 @@ printf 'fn main() {\n    let v: Vec<bytes> = vec_new()\n    vec_push(v, "тек�
 run /tmp/baga_vec_bad.baga 2>&1 | grep -q "елемент от тип str, но векторът е Vec<bytes>" \
 	&& echo "OK: Vec<bytes> елементен mismatch е отхвърлен" \
 	|| { echo "FAIL: Vec<bytes> str push трябва да гърми"; exit 1; }
+printf 'struct A { x: i64 }\nstruct B { x: i64 }\nfn main() {\n    let v: Vec<A> = vec_new()\n    vec_push(v, B { x: 1 })\n}\n' > /tmp/baga_vec_bad2.baga
+run /tmp/baga_vec_bad2.baga 2>&1 | grep -q "елемент от тип B, но векторът е Vec<A>" \
+	&& echo "OK: Vec<struct> — различни struct-ове не се смесват (L4)" \
+	|| { echo "FAIL: Vec<A> с push на B трябва да гърми"; exit 1; }
+printf 'struct A { x: i64 }\nfn main() {\n    let v: Vec<A> = vec_new()\n    vec_push(v, 5)\n}\n' > /tmp/baga_vec_bad3.baga
+run /tmp/baga_vec_bad3.baga 2>&1 | grep -q "елемент от тип i64, но векторът е Vec<A>" \
+	&& echo "OK: Vec<struct> — скаларен елемент е отхвърлен (L4)" \
+	|| { echo "FAIL: Vec<A> с push на i64 трябва да гърми"; exit 1; }
 run tests/probe_binary_io.baga > /tmp/baga_bio_out.txt 2>&1 \
 	&& grep -q "all passed" /tmp/baga_bio_out.txt \
 	&& echo "OK: binary I/O през сокети (NUL/0xFF, chr() UTF-8 капан — G8)" \

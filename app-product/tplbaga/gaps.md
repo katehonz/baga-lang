@@ -33,7 +33,9 @@ jsonrpcbaga R1.
 
 **Severity.** Medium; shared with queuebaga (job structs serialized to disk).
 
-**Verdict.** L4 milestone.
+**Verdict.** **Closed 2026-08-04** — `Vec<struct>` shipped (boxed copies,
+C backend). The prefix encoding stays (working, tested); a rewrite to
+`Vec<Token>` is optional cleanup, not a blocker.
 
 ## P4 — read_file: missing vs empty (mdbaga M2, re-hit)
 

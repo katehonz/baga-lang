@@ -17,16 +17,16 @@ stack per element — doable on top of the event API later.
 
 ## X2 — no DOM (L4: no Vec<struct>)
 
-**Symptom.** A tree API would need `Vec<XmlNode>` — struct elements are
-not supported in vectors (same L4 lineage as tplbaga P3, bagadecimal D7).
+**Symptom.** A tree API would need `Vec<XmlNode>`.
 
-**Workaround.** Pull events; applications keep their own path stacks
-(`Vec<str>`) — the same shape quick-xml users write by hand in Rust.
+**Status 2026-08-04.** `Vec<struct>` has shipped in the language, so a
+tree layer is now *possible* — but the pull API stays the recommended one
+(constant memory on large files); a DOM convenience layer would be a
+separate module on top.
 
-**Severity.** Low — pull parsing is arguably the right API for large
-files anyway (constant memory).
+**Severity.** Low.
 
-**Verdict.** By design; revisit if L4 closes for structs.
+**Verdict.** By design; the L4 blocker itself is closed.
 
 ## X3 — DOCTYPE skipped leniently
 

@@ -88,7 +88,7 @@ cd app-product/bagadecimal && sandak build
 | Format | `dec_to_string`, `dec_to_string_normalized` |
 | Ops | `dec_add/sub/mul/div/div_scale`, `dec_cmp/eq/lt`, `dec_abs/neg` |
 | Round | `dec_round_dp` (half-away), `dec_round_bankers_dp` (half-even), `dec_trunc_dp`, `dec_floor_dp`, `dec_ceil_dp` |
-| Money | `dec_money`, `dec_as_money`, `dec_is_money`, `dec_normalize`, `dec_percent_of`, `dec_with_percent`, `dec_sum2/3` |
+| Money | `dec_money`, `dec_as_money`, `dec_is_money`, `dec_normalize`, `dec_percent_of`, `dec_with_percent`, `dec_sum2/3`, `dec_sum_vec(Vec<Decimal>)` |
 | PG | see table above |
 
 Fallible paths return `DecResult { ok, err, value }`. `dec_mul` сваля
@@ -97,6 +97,6 @@ scale със закръгляне, докато мантисата се побе
 
 ## Gaps (език)
 
-- няма `Vec<Decimal>` (L4) → `dec_sum2/3` + цикъл с `dec_add`
+- ~~няма `Vec<Decimal>` (L4)~~ — от 2026-08-04 `Vec<struct>` е в езика → `dec_sum_vec`
 - няма `dec!` macro → `dec_parse` / `dec_money`
 - няма operator overloading → `dec_add(a,b)`

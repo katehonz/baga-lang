@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Language — `Vec<struct>` (L4 closed for struct elements)
+- `Vec<T>` element kinds now include **struct types** — in annotations
+  (`Vec<Line>`, `[Line]`) and in fix-on-first-use inference. Element
+  equality compares struct types **by name**: pushing a different struct
+  (or a scalar) into a typed vector is a compile-time error
+  (`vec_elem_eq`; `type_eq`'s Vec branch fixed to match).
+- C backend: struct elements are **boxed copies** — generic
+  `baga_vec_{push,get,set,slice,concat}_box` runtime helpers take the
+  element size from the call site (`sizeof(b_T)`); push/set wrap the
+  rvalue in a statement expression to get an lvalue. `vec_get` copies
+  out by value: mutating the result does not touch the vector, while
+  reference-typed fields (`Vec`/`Map`) stay shared — the same semantics
+  as plain struct assignment.
+- LLVM backend: honest `unsupported` diagnostic (same stance as
+  `Vec<bytes>`/`Map`). The `--verify` fragment already skips struct
+  constructions honestly — no change.
+- Real-world proof: `dec_sum_vec(Vec<Decimal>)` in bagadecimal closes
+  gap **D7** (invoice-line sums). Gaps updated: tplbaga **P3** closed,
+  oauthbaga **O3** half-closed (`Map<str,struct>` remains), httpdbaga
+  **G14** narrowed to `Map` struct values, xmlbaga **X2** unblocked.
+- Tests: `tests/std/vec_struct_test.baga` (20 checks: push/get/set,
+  copy-in/copy-out semantics, shared reference fields, slice/concat,
+  annotated + inferred parameters, growth) + two negative probes
+  (`Vec<A>` vs `B`, struct vs scalar) in `scripts/run_tests.sh`.
+- Docs: `docs/language-{en,bg}.md` §12.4 (element types + box/copy
+  semantics).
+
 ### App products — xmlbaga (universal XML, apps-roadmap №11)
 - New base package `app-product/xmlbaga`: **pull XML parser + writer**,
   quick-xml style — no DOM (L4: no struct elements in vectors; cursor

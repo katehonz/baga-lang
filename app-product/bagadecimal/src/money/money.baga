@@ -83,7 +83,7 @@ fn dec_with_percent(amount: Decimal, percent: Decimal) -> DecResult {
     return dec_add(base.value, tax.value)
 }
 
-// Sum helpers (no Vec<Decimal> — language L4; loop with dec_add in app code).
+// Sum helpers for two/three amounts; for longer lists use dec_sum_vec.
 fn dec_sum2(a: Decimal, b: Decimal) -> DecResult {
     return dec_add(a, b)
 }
@@ -94,4 +94,18 @@ fn dec_sum3(a: Decimal, b: Decimal, c: Decimal) -> DecResult {
         return s
     }
     return dec_add(s.value, c)
+}
+
+// Sum a list of amounts — invoice lines (L4 closed 2026-08-04:
+// Vec<Decimal> works; this is the D7 proof). Result rounded to 2 dp.
+fn dec_sum_vec(items: Vec<Decimal>) -> DecResult {
+    let mut acc = dec_from_parts(0, 0, 0, 0, 2)
+    for i in 0..vec_len(items) {
+        let next = dec_add(acc, vec_get(items, i))
+        if next.ok == 0 {
+            return next
+        }
+        acc = next.value
+    }
+    return dec_round_dp(acc, 2)
 }

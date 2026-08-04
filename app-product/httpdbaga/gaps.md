@@ -221,10 +221,11 @@ attribution just needs to follow them through import expansion.
 **Symptom.** HTTP/2 needs stream-id → state lookup; HPACK needs name →
 index. `Map<K,V>` has shipped since (kvbaga milestone) and covers the
 lookup half, but multi-field per-stream state still can't live in one
-container — struct values in `Map`/`Vec` are impossible (map values and
-vec elements are i64/str/f64/bytes only) — so the tables stay parallel
-`Vec` pools + linear scans (`h2_find`, `hpack_static_exact`), and
-per-stream payload storage needs flat pools with offset/length
+container — struct values in `Map` are impossible (map values are
+i64/str/f64/bytes only; `Vec<struct>` shipped 2026-08-04 but a stream
+table wants key → struct, not a positional list) — so the tables stay
+parallel `Vec` pools + linear scans (`h2_find`, `hpack_static_exact`),
+and per-stream payload storage needs flat pools with offset/length
 bookkeeping.
 
 **Evidence.** `h2.baga`'s stream pool (`s_ids`/`s_kseg`/`s_vseg`/

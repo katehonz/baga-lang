@@ -212,7 +212,7 @@ explicitly or let the compiler infer them from initializers.
 | `bool`  | boolean (`true` / `false`)               | `int`              |
 | `str`   | string (null-terminated, immutable)      | `const char *`     |
 | `Vec`   | dynamic array (heap-allocated)           | `baga_Vec *`       |
-| `Vec<T>` | vector with annotated element (`i64`, `str`, `f64` or `bytes`) | `baga_Vec *` |
+| `Vec<T>` | vector with annotated element (`i64`, `str`, `f64`, `bytes` or a struct type) | `baga_Vec *` |
 | `Map<K,V>` | hash table; key `i64`/`str`, value `i64`/`str`/`f64`/`bytes` | `baga_Map *` |
 | `[T]`   | array of `T`                             | pointer            |
 | `&T`    | reference to `T`                         | `T *`              |
@@ -550,17 +550,17 @@ either declare `!IO` in its own return type or handle it with `catch` (see
 ### 12.4 Vectors (dynamic arrays)
 
 A `Vec` is a heap-allocated, growable array. Each vector carries an element
-type — `Vec<i64>`, `Vec<str>`, `Vec<f64>`, or `Vec<bytes>` — which is fixed
-by the first `vec_push`/`vec_set`. Mixing element types in one vector is a
-compile-time error.
+type — `Vec<i64>`, `Vec<str>`, `Vec<f64>`, `Vec<bytes>`, or `Vec<SomeStruct>`
+— which is fixed by the first `vec_push`/`vec_set`. Mixing element types in
+one vector is a compile-time error.
 
 | Signature | Description |
 |-----------|-------------|
 | `vec_new() -> Vec` | Create an empty vector with an unknown element type. |
 | `vec_len(v: Vec) -> i64` | Number of elements. |
-| `vec_push(v: Vec, x: i64 \| str \| f64 \| bytes)` | Append an element; the first push fixes the element type. |
-| `vec_get(v: Vec, i: i64) -> i64 \| str \| f64 \| bytes` | Read the element at index `i` (the vector's element type). |
-| `vec_set(v: Vec, i: i64, x: i64 \| str \| f64 \| bytes)` | Overwrite the element at index `i`. |
+| `vec_push(v: Vec, x: i64 \| str \| f64 \| bytes \| struct)` | Append an element; the first push fixes the element type. |
+| `vec_get(v: Vec, i: i64) -> i64 \| str \| f64 \| bytes \| struct` | Read the element at index `i` (the vector's element type). |
+| `vec_set(v: Vec, i: i64, x: i64 \| str \| f64 \| bytes \| struct)` | Overwrite the element at index `i`. |
 | `vec_push_str(v: Vec, s: str)` | Alias of `vec_push` for strings (legacy code). |
 | `vec_get_str(v: Vec, i: i64) -> str` | Alias of `vec_get` for strings (legacy code). |
 | `vec_set_str(v: Vec, i: i64, s: str)` | Alias of `vec_set` for strings (legacy code). |
@@ -592,7 +592,13 @@ vec_push(v, "грешка")   // ERROR: vec_push: елемент от тип str
 ```
 
 Supported element types: `i64` (and `i32`, accepted as `i64`), `str`, `f64`,
-and `bytes` (binary-safe; elements are boxed, like `Map` bytes values).
+`bytes` (binary-safe; elements are boxed, like `Map` bytes values), and
+**struct types** — `Vec<Line>` etc. Struct elements are boxed copies:
+`vec_push`/`vec_set` copy the value in, `vec_get` copies it out (mutating
+the returned copy does not touch the vector; reference-typed fields like
+`Vec`/`Map` stay shared, as usual for struct assignment). Mixing two
+different struct types in one vector is a compile-time error, just like
+mixing scalars.
 The element type is a property of the type at the binding site.
 
 `Vec<T>` is a valid type anywhere a type can be written — parameters,
@@ -1165,8 +1171,8 @@ Bulgarian; English glosses follow.
 | `непознат struct '<name>'` | Struct literal for an undeclared struct. |
 | `връщам A, но функцията очаква B` | Returned type does not match the declared return type. |
 | `vec_push: елемент от тип A, но векторът е Vec<B>` | Mixing element types in one `Vec` (also `vec_set`). |
-| `vec_push: неподдържан елементен тип A за Vec (поддържат се i64, str, f64 и bytes)` | Element type other than `i64`/`str`/`f64`/`bytes` (also `vec_set`). |
-| `Vec<T>: неподдържан елементен тип A (поддържат се i64, str, f64 и bytes)` | `Vec<A>` annotation with an element other than `i64`/`str`/`f64`/`bytes`. |
+| `vec_push: неподдържан елементен тип A за Vec (поддържат се i64, str, f64, bytes и struct)` | Element type other than `i64`/`str`/`f64`/`bytes` (also `vec_set`). |
+| `Vec<T>: неподдържан елементен тип A (поддържат се i64, str, f64, bytes и struct)` | `Vec<A>` annotation with an element other than `i64`/`str`/`f64`/`bytes`. |
 
 ### 17.4 Effect errors
 
@@ -1254,15 +1260,15 @@ are computed automatically by the **sandak** package manager from the
 | `arg` | `(i: i64) -> str` | the i-th argument (0-based, excluding the name); `""` out of bounds |
 | `vec_new` | `() -> Vec` | — |
 | `vec_len` | `(v: Vec) -> i64` | — |
-| `vec_push` | `(v: Vec, x: i64 \| str \| f64 \| bytes) -> void` | first push fixes the element type |
-| `vec_get` | `(v: Vec, i: i64) -> i64 \| str \| f64 \| bytes` | returns the element type |
-| `vec_set` | `(v: Vec, i: i64, x: i64 \| str \| f64 \| bytes) -> void` | — |
+| `vec_push` | `(v: Vec, x: i64 \| str \| f64 \| bytes \| struct) -> void` | first push fixes the element type |
+| `vec_get` | `(v: Vec, i: i64) -> i64 \| str \| f64 \| bytes \| struct` | returns the element type |
+| `vec_set` | `(v: Vec, i: i64, x: i64 \| str \| f64 \| bytes \| struct) -> void` | — |
 | `vec_push_str` | `(v: Vec, s: str) -> void` | — |
 | `vec_get_str` | `(v: Vec, i: i64) -> str` | — |
 | `vec_set_str` | `(v: Vec, i: i64, s: str) -> void` | — |
 | `map_new` | `() -> Map` | — |
-| `map_set` | `(m: Map, k: i64 \| str, v: i64 \| str \| f64 \| bytes \| bytes) -> void` | first set fixes key/value types |
-| `map_get` | `(m: Map, k: i64 \| str) -> i64 \| str \| f64 \| bytes \| bytes` | zero-value when absent |
+| `map_set` | `(m: Map, k: i64 \| str, v: i64 \| str \| f64 \| bytes \| struct \| bytes) -> void` | first set fixes key/value types |
+| `map_get` | `(m: Map, k: i64 \| str) -> i64 \| str \| f64 \| bytes \| struct \| bytes` | zero-value when absent |
 | `map_has` | `(m: Map, k: i64 \| str) -> i64` | 1 when the key exists |
 | `map_del` | `(m: Map, k: i64 \| str) -> void` | — |
 | `map_len` | `(m: Map) -> i64` | — |

@@ -368,6 +368,36 @@ static void emit_expr(Codegen *cg, Node *n) {
                 if (strcmp(bn, "vec_push") == 0 || strcmp(bn, "vec_get") == 0 ||
                     strcmp(bn, "vec_set") == 0) {
                     Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+                    /* struct елементи: box-нато копие през generic box helper-ите
+                     * (statement expression дава lvalue на произволен rvalue) */
+                    if (vt && vt->kind == TYPE_VEC && vt->elem &&
+                        vt->elem->kind == TYPE_STRUCT && vt->elem->name) {
+                        char *mn = mangle_name(vt->elem->name);
+                        if (strcmp(bn, "vec_get") == 0) {
+                            fprintf(f, "(*(%s *)baga_vec_get_box(", mn);
+                            for (int i = 0; i < n->args.len; i++) {
+                                if (i > 0) fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[i]);
+                            }
+                            fprintf(f, "))");
+                        } else if (strcmp(bn, "vec_push") == 0) {
+                            fprintf(f, "({ %s _bx = (", mn);
+                            emit_expr(cg, n->args.data[1]);
+                            fprintf(f, "); baga_vec_push_box(");
+                            emit_expr(cg, n->args.data[0]);
+                            fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
+                        } else {
+                            fprintf(f, "({ %s _bx = (", mn);
+                            emit_expr(cg, n->args.data[2]);
+                            fprintf(f, "); baga_vec_set_box(");
+                            emit_expr(cg, n->args.data[0]);
+                            fprintf(f, ", ");
+                            emit_expr(cg, n->args.data[1]);
+                            fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
+                        }
+                        free(mn);
+                        goto call_done;
+                    }
                     const char *suf = "i64";
                     if (vt && vt->kind == TYPE_VEC && vt->elem) {
                         if (vt->elem->kind == TYPE_STR) suf = "str";
@@ -384,6 +414,19 @@ static void emit_expr(Codegen *cg, Node *n) {
                 }
                 if (strcmp(bn, "vec_slice") == 0 || strcmp(bn, "vec_concat") == 0) {
                     Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+                    /* struct елементи: размерът идва от call site-а */
+                    if (vt && vt->kind == TYPE_VEC && vt->elem &&
+                        vt->elem->kind == TYPE_STRUCT && vt->elem->name) {
+                        char *mn = mangle_name(vt->elem->name);
+                        fprintf(f, "baga_%s_box(", bn);
+                        for (int i = 0; i < n->args.len; i++) {
+                            if (i > 0) fprintf(f, ", ");
+                            emit_expr(cg, n->args.data[i]);
+                        }
+                        fprintf(f, ", (int64_t)sizeof(%s))", mn);
+                        free(mn);
+                        goto call_done;
+                    }
                     const char *suf = "i64";
                     if (vt && vt->kind == TYPE_VEC && vt->elem) {
                         if (vt->elem->kind == TYPE_STR) suf = "str";
@@ -1471,6 +1514,21 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
     fprintf(out, "    *(baga_bytes *)v->data[i] = b;\n");
     fprintf(out, "}\n");
+    /* struct елементи (L4): generic box helper-и; размерът идва от call site-а,
+     * елементите са box-нати копия (memcpy при push/set/slice/concat) */
+    fprintf(out, "static void baga_vec_push_box(baga_Vec *v, const void *src, int64_t size) {\n");
+    fprintf(out, "    baga_vec_grow(v);\n");
+    fprintf(out, "    void *p = baga_alloc((size_t)size); memcpy(p, src, (size_t)size);\n");
+    fprintf(out, "    v->data[v->len++] = p;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void *baga_vec_get_box(baga_Vec *v, int64_t i) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_get\", i, v->len);\n");
+    fprintf(out, "    return v->data[i];\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_vec_set_box(baga_Vec *v, int64_t i, const void *src, int64_t size) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+    fprintf(out, "    memcpy(v->data[i], src, (size_t)size);\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
     /* bridge: native bytes <-> Vec<i64> (crypto migration path) */
     fprintf(out, "static baga_bytes baga_bytes_from_vec(baga_Vec *v) {\n");
@@ -1521,6 +1579,16 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
     fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_bytes(r, *(baga_bytes *)v->data[i]);\n");
     fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_bytes(r, *(baga_bytes *)w->data[i]);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_slice_box(baga_Vec *v, int64_t a, int64_t b, int64_t size) {\n");
+    fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = a; i < b; i++) baga_vec_push_box(r, v->data[i], size);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_concat_box(baga_Vec *v, baga_Vec *w, int64_t size) {\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_box(r, v->data[i], size);\n");
+    fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_box(r, w->data[i], size);\n");
     fprintf(out, "    return r; }\n");
     fprintf(out, "\n/* hash map: chaining, key i64/str, value i64/str/f64/bytes (leak-tolerant like baga_Vec) */\n");
     fprintf(out, "typedef struct baga_MapEntry {\n");

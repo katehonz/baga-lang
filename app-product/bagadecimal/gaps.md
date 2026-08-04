@@ -129,7 +129,9 @@ Same L3 family as the rest of the stack.
 
 **Severity.** Medium for multi-line documents.
 
-**Verdict.** Language L4; app-level loops are fine for P0.5.
+**Verdict.** **Closed 2026-08-04** — `Vec<struct>` shipped in the language
+(C backend, boxed copies). `dec_sum_vec(Vec<Decimal>)` is the proof
+(regression: `sum_vec` in `tests/decimal_test.baga`).
 
 ## Closed
 
