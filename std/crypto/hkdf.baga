@@ -48,3 +48,27 @@ fn hkdf_expand(prk: bytes, info: bytes, out_len: i64) -> bytes {
     }
     return bytes_slice(acc, 0, out_len)
 }
+
+// ---- HKDF-SHA384 (RFC 5869, HashLen 48) — TLS_AES_256_GCM_SHA384 ----
+
+// PRK = HMAC-SHA384(salt, IKM); empty salt → 48 zero bytes (RFC §2.2).
+fn hkdf384_extract(salt: bytes, ikm: bytes) -> bytes {
+    if bytes_len(salt) == 0 {
+        return hmac_sha384_b(bytes_from_vec(hkdf_zeros(48)), ikm)
+    }
+    return hmac_sha384_b(salt, ikm)
+}
+
+// Same T(i) chain as hkdf_expand, with HMAC-SHA384.
+fn hkdf384_expand(prk: bytes, info: bytes, out_len: i64) -> bytes {
+    let mut acc = bytes_from_vec(hkdf_zeros(0))
+    let mut t = bytes_from_vec(hkdf_zeros(0))
+    let mut i: i64 = 1
+    while bytes_len(acc) < out_len {
+        let msg = bytes_concat(bytes_concat(t, info), hkdf_byte(i))
+        t = hmac_sha384_b(prk, msg)
+        acc = bytes_concat(acc, t)
+        i = i + 1
+    }
+    return bytes_slice(acc, 0, out_len)
+}

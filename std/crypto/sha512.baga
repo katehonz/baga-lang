@@ -1,0 +1,430 @@
+// sha512.baga — SHA-512 / SHA-384 (FIPS 180-4) on signed i64.
+//
+// 64-bit words are pairs of 32-bit halves in Vec<i64> (hi, lo interleaved).
+// Every half stays < 2^32 and every intermediate sum < 2^33, so signed i64
+// never wraps — the same discipline as sha256.baga ("stays below 2^36"),
+// which does NOT scale to 64-bit words directly (5 addends × 2^64 > 2^63).
+//
+// Public API (mirrors sha256.baga):
+//   sha384_bytes(Vec<i64>) -> Vec<i64>   (48 bytes)
+//   sha512_bytes(Vec<i64>) -> Vec<i64>   (64 bytes)
+//   sha384_b(bytes) -> bytes             (the TLS/HKDF entry point)
+//   sha512_b(bytes) -> bytes
+//   sha384_hex / sha512_hex (Vec<i64>) -> str
+
+import "../bytes/bytes.baga"
+
+fn u32(x: i64) -> i64 {
+    return x & 4294967295
+}
+
+// ---- 64-bit word ops on (hi, lo) halves ----
+
+// (a_hi:a_lo) + (b_hi:b_lo) mod 2^64 → Vec [hi, lo]
+fn add64(a_hi: i64, a_lo: i64, b_hi: i64, b_lo: i64) -> Vec<i64> {
+    let lo = a_lo + b_lo                 // < 2^33
+    let hi = u32(a_hi + b_hi + (lo >> 32))
+    let out = vec_new()
+    vec_push(out, hi)
+    vec_push(out, u32(lo))
+    return out
+}
+
+// rotate right by n (1..63)
+fn rotr64(hi: i64, lo: i64, n: i64) -> Vec<i64> {
+    let out = vec_new()
+    if n < 32 {
+        vec_push(out, u32((hi >> n) | u32(lo << (32 - n))))
+        vec_push(out, u32((lo >> n) | u32(hi << (32 - n))))
+    } else {
+        if n == 32 {
+            vec_push(out, lo)
+            vec_push(out, hi)
+        } else {
+            let m = n - 32
+            vec_push(out, u32((lo >> m) | u32(hi << (32 - m))))
+            vec_push(out, u32((hi >> m) | u32(lo << (32 - m))))
+        }
+    }
+    return out
+}
+
+// shift right by n (SHA-512 needs only 6 and 7, both < 32)
+fn shr64(hi: i64, lo: i64, n: i64) -> Vec<i64> {
+    let out = vec_new()
+    vec_push(out, hi >> n)
+    vec_push(out, u32((lo >> n) | u32(hi << (32 - n))))
+    return out
+}
+
+// word access in an interleaved (hi, lo) vector
+fn w_hi(w: Vec<i64>, i: i64) -> i64 {
+    return vec_get(w, i * 2)
+}
+
+fn w_lo(w: Vec<i64>, i: i64) -> i64 {
+    return vec_get(w, i * 2 + 1)
+}
+
+fn w_set(w: Vec<i64>, i: i64, v: Vec<i64>) {
+    vec_set(w, i * 2, vec_get(v, 0))
+    vec_set(w, i * 2 + 1, vec_get(v, 1))
+}
+
+fn w_from(hi: i64, lo: i64) -> Vec<i64> {
+    let out = vec_new()
+    vec_push(out, hi)
+    vec_push(out, lo)
+    return out
+}
+
+fn w_xor(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    return w_from(vec_get(a, 0) ^ vec_get(b, 0), vec_get(a, 1) ^ vec_get(b, 1))
+}
+
+// bitwise NOT of the low 32 bits (two's complement idiom from sha256.baga)
+fn w_not(a: Vec<i64>) -> Vec<i64> {
+    return w_from(u32((-1) ^ vec_get(a, 0)), u32((-1) ^ vec_get(a, 1)))
+}
+
+fn w_and(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    return w_from(vec_get(a, 0) & vec_get(b, 0), vec_get(a, 1) & vec_get(b, 1))
+}
+
+fn sha512_k() -> Vec<i64> {
+    let k = vec_new()
+    // __K_TABLE__
+    vec_push(k, 1116352408)
+    vec_push(k, 3609767458)
+    vec_push(k, 1899447441)
+    vec_push(k, 602891725)
+    vec_push(k, 3049323471)
+    vec_push(k, 3964484399)
+    vec_push(k, 3921009573)
+    vec_push(k, 2173295548)
+    vec_push(k, 961987163)
+    vec_push(k, 4081628472)
+    vec_push(k, 1508970993)
+    vec_push(k, 3053834265)
+    vec_push(k, 2453635748)
+    vec_push(k, 2937671579)
+    vec_push(k, 2870763221)
+    vec_push(k, 3664609560)
+    vec_push(k, 3624381080)
+    vec_push(k, 2734883394)
+    vec_push(k, 310598401)
+    vec_push(k, 1164996542)
+    vec_push(k, 607225278)
+    vec_push(k, 1323610764)
+    vec_push(k, 1426881987)
+    vec_push(k, 3590304994)
+    vec_push(k, 1925078388)
+    vec_push(k, 4068182383)
+    vec_push(k, 2162078206)
+    vec_push(k, 991336113)
+    vec_push(k, 2614888103)
+    vec_push(k, 633803317)
+    vec_push(k, 3248222580)
+    vec_push(k, 3479774868)
+    vec_push(k, 3835390401)
+    vec_push(k, 2666613458)
+    vec_push(k, 4022224774)
+    vec_push(k, 944711139)
+    vec_push(k, 264347078)
+    vec_push(k, 2341262773)
+    vec_push(k, 604807628)
+    vec_push(k, 2007800933)
+    vec_push(k, 770255983)
+    vec_push(k, 1495990901)
+    vec_push(k, 1249150122)
+    vec_push(k, 1856431235)
+    vec_push(k, 1555081692)
+    vec_push(k, 3175218132)
+    vec_push(k, 1996064986)
+    vec_push(k, 2198950837)
+    vec_push(k, 2554220882)
+    vec_push(k, 3999719339)
+    vec_push(k, 2821834349)
+    vec_push(k, 766784016)
+    vec_push(k, 2952996808)
+    vec_push(k, 2566594879)
+    vec_push(k, 3210313671)
+    vec_push(k, 3203337956)
+    vec_push(k, 3336571891)
+    vec_push(k, 1034457026)
+    vec_push(k, 3584528711)
+    vec_push(k, 2466948901)
+    vec_push(k, 113926993)
+    vec_push(k, 3758326383)
+    vec_push(k, 338241895)
+    vec_push(k, 168717936)
+    vec_push(k, 666307205)
+    vec_push(k, 1188179964)
+    vec_push(k, 773529912)
+    vec_push(k, 1546045734)
+    vec_push(k, 1294757372)
+    vec_push(k, 1522805485)
+    vec_push(k, 1396182291)
+    vec_push(k, 2643833823)
+    vec_push(k, 1695183700)
+    vec_push(k, 2343527390)
+    vec_push(k, 1986661051)
+    vec_push(k, 1014477480)
+    vec_push(k, 2177026350)
+    vec_push(k, 1206759142)
+    vec_push(k, 2456956037)
+    vec_push(k, 344077627)
+    vec_push(k, 2730485921)
+    vec_push(k, 1290863460)
+    vec_push(k, 2820302411)
+    vec_push(k, 3158454273)
+    vec_push(k, 3259730800)
+    vec_push(k, 3505952657)
+    vec_push(k, 3345764771)
+    vec_push(k, 106217008)
+    vec_push(k, 3516065817)
+    vec_push(k, 3606008344)
+    vec_push(k, 3600352804)
+    vec_push(k, 1432725776)
+    vec_push(k, 4094571909)
+    vec_push(k, 1467031594)
+    vec_push(k, 275423344)
+    vec_push(k, 851169720)
+    vec_push(k, 430227734)
+    vec_push(k, 3100823752)
+    vec_push(k, 506948616)
+    vec_push(k, 1363258195)
+    vec_push(k, 659060556)
+    vec_push(k, 3750685593)
+    vec_push(k, 883997877)
+    vec_push(k, 3785050280)
+    vec_push(k, 958139571)
+    vec_push(k, 3318307427)
+    vec_push(k, 1322822218)
+    vec_push(k, 3812723403)
+    vec_push(k, 1537002063)
+    vec_push(k, 2003034995)
+    vec_push(k, 1747873779)
+    vec_push(k, 3602036899)
+    vec_push(k, 1955562222)
+    vec_push(k, 1575990012)
+    vec_push(k, 2024104815)
+    vec_push(k, 1125592928)
+    vec_push(k, 2227730452)
+    vec_push(k, 2716904306)
+    vec_push(k, 2361852424)
+    vec_push(k, 442776044)
+    vec_push(k, 2428436474)
+    vec_push(k, 593698344)
+    vec_push(k, 2756734187)
+    vec_push(k, 3733110249)
+    vec_push(k, 3204031479)
+    vec_push(k, 2999351573)
+    vec_push(k, 3329325298)
+    vec_push(k, 3815920427)
+    vec_push(k, 3391569614)
+    vec_push(k, 3928383900)
+    vec_push(k, 3515267271)
+    vec_push(k, 566280711)
+    vec_push(k, 3940187606)
+    vec_push(k, 3454069534)
+    vec_push(k, 4118630271)
+    vec_push(k, 4000239992)
+    vec_push(k, 116418474)
+    vec_push(k, 1914138554)
+    vec_push(k, 174292421)
+    vec_push(k, 2731055270)
+    vec_push(k, 289380356)
+    vec_push(k, 3203993006)
+    vec_push(k, 460393269)
+    vec_push(k, 320620315)
+    vec_push(k, 685471733)
+    vec_push(k, 587496836)
+    vec_push(k, 852142971)
+    vec_push(k, 1086792851)
+    vec_push(k, 1017036298)
+    vec_push(k, 365543100)
+    vec_push(k, 1126000580)
+    vec_push(k, 2618297676)
+    vec_push(k, 1288033470)
+    vec_push(k, 3409855158)
+    vec_push(k, 1501505948)
+    vec_push(k, 4234509866)
+    vec_push(k, 1607167915)
+    vec_push(k, 987167468)
+    vec_push(k, 1816402316)
+    vec_push(k, 1246189591)
+    return k
+}
+
+// Initial state: which == 384 → SHA-384, else SHA-512 (FIPS 180-4 §5.3).
+fn sha512_init(which: i64) -> Vec<i64> {
+    let h = vec_new()
+    if which == 384 {
+        vec_push(h, 3418070365)   // cbbb9d5d c1059ed8
+        vec_push(h, 3238371032)
+        vec_push(h, 1654270250)   // 629a292a 367cd507
+        vec_push(h, 914150663)
+        vec_push(h, 2438529370)   // 9159015a 3070dd17
+        vec_push(h, 812702999)
+        vec_push(h, 355462360)    // 152fecd8 f70e5939
+        vec_push(h, 4144912697)
+        vec_push(h, 1731405415)   // 67332667 ffc00b31
+        vec_push(h, 4290775857)
+        vec_push(h, 2394180231)   // 8eb44a87 68581511
+        vec_push(h, 1750603025)
+        vec_push(h, 3675008525)   // db0c2e0d 64f98fa7
+        vec_push(h, 1694076839)
+        vec_push(h, 1203062813)   // 47b5481d befa4fa4
+        vec_push(h, 3204075428)
+    } else {
+        vec_push(h, 1779033703)   // 6a09e667 f3bcc908
+        vec_push(h, 4089235720)
+        vec_push(h, 3144134277)   // bb67ae85 84caa73b
+        vec_push(h, 2227873595)
+        vec_push(h, 1013904242)   // 3c6ef372 fe94f82b
+        vec_push(h, 4271175723)
+        vec_push(h, 2773480762)   // a54ff53a 5f1d36f1
+        vec_push(h, 1595750129)
+        vec_push(h, 1359893119)   // 510e527f ade682d1
+        vec_push(h, 2917565137)
+        vec_push(h, 2600822924)   // 9b05688c 2b3e6c1f
+        vec_push(h, 725511199)
+        vec_push(h, 528734635)    // 1f83d9ab fb41bd6b
+        vec_push(h, 4215389547)
+        vec_push(h, 1541459225)   // 5be0cd19 137e2179
+        vec_push(h, 327033209)
+    }
+    return h
+}
+
+// Core: FIPS 180-4 SHA-512 compression over `data`; which = 384 or 512.
+fn sha512_core(data: Vec<i64>, which: i64) -> Vec<i64> {
+    // padding: 0x80, zeros to len % 128 == 112, then 16-byte BE bit length
+    // (high 8 bytes zero — inputs are far below 2^64 bits)
+    let msg = vec_new()
+    for i in 0..vec_len(data) {
+        vec_push(msg, vec_get(data, i) & 255)
+    }
+    let n = vec_len(msg)
+    vec_push(msg, 128)
+    while (vec_len(msg) % 128) != 112 {
+        vec_push(msg, 0)
+    }
+    let bitlen = n * 8
+    let mut i: i64 = 15
+    while i >= 0 {
+        if i >= 8 {
+            vec_push(msg, 0)
+        } else {
+            vec_push(msg, (bitlen >> (i * 8)) & 255)
+        }
+        i = i + 0 - 1
+    }
+
+    let k = sha512_k()
+    let st = sha512_init(which)
+    let mut block: i64 = 0
+    while block < vec_len(msg) {
+        // message schedule: 80 words
+        let w = vec_new()
+        for t in 0..16 {
+            let base = block + t * 8
+            let hi = (((vec_get(msg, base) << 24) | (vec_get(msg, base + 1) << 16)) | (vec_get(msg, base + 2) << 8)) | vec_get(msg, base + 3)
+            let lo = (((vec_get(msg, base + 4) << 24) | (vec_get(msg, base + 5) << 16)) | (vec_get(msg, base + 6) << 8)) | vec_get(msg, base + 7)
+            vec_push(w, hi)
+            vec_push(w, lo)
+        }
+        for t in 16..80 {
+            let s0 = w_xor(w_xor(rotr64(w_hi(w, t - 15), w_lo(w, t - 15), 1), rotr64(w_hi(w, t - 15), w_lo(w, t - 15), 8)), shr64(w_hi(w, t - 15), w_lo(w, t - 15), 7))
+            let s1 = w_xor(w_xor(rotr64(w_hi(w, t - 2), w_lo(w, t - 2), 19), rotr64(w_hi(w, t - 2), w_lo(w, t - 2), 61)), shr64(w_hi(w, t - 2), w_lo(w, t - 2), 6))
+            let s = add64(vec_get(s1, 0), vec_get(s1, 1), w_hi(w, t - 7), w_lo(w, t - 7))
+            let s2 = add64(vec_get(s, 0), vec_get(s, 1), vec_get(s0, 0), vec_get(s0, 1))
+            let s3 = add64(vec_get(s2, 0), vec_get(s2, 1), w_hi(w, t - 16), w_lo(w, t - 16))
+            vec_push(w, vec_get(s3, 0))
+            vec_push(w, vec_get(s3, 1))
+        }
+
+        // working variables a..h = words 0..7 of v
+        let v = vec_new()
+        for t in 0..8 {
+            vec_push(v, vec_get(st, t * 2))
+            vec_push(v, vec_get(st, t * 2 + 1))
+        }
+
+        for t in 0..80 {
+            let bs1 = w_xor(w_xor(rotr64(w_hi(v, 4), w_lo(v, 4), 14), rotr64(w_hi(v, 4), w_lo(v, 4), 18)), rotr64(w_hi(v, 4), w_lo(v, 4), 41))
+            let ch = w_xor(w_and(w_from(w_hi(v, 4), w_lo(v, 4)), w_from(w_hi(v, 5), w_lo(v, 5))), w_and(w_not(w_from(w_hi(v, 4), w_lo(v, 4))), w_from(w_hi(v, 6), w_lo(v, 6))))
+            // t1 = h + BS1 + ch + K[t] + W[t]
+            let a1 = add64(w_hi(v, 7), w_lo(v, 7), vec_get(bs1, 0), vec_get(bs1, 1))
+            let a2 = add64(vec_get(a1, 0), vec_get(a1, 1), vec_get(ch, 0), vec_get(ch, 1))
+            let a3 = add64(vec_get(a2, 0), vec_get(a2, 1), vec_get(k, t * 2), vec_get(k, t * 2 + 1))
+            let t1 = add64(vec_get(a3, 0), vec_get(a3, 1), w_hi(w, t), w_lo(w, t))
+            let bs0 = w_xor(w_xor(rotr64(w_hi(v, 0), w_lo(v, 0), 28), rotr64(w_hi(v, 0), w_lo(v, 0), 34)), rotr64(w_hi(v, 0), w_lo(v, 0), 39))
+            let maj = w_xor(w_xor(w_and(w_from(w_hi(v, 0), w_lo(v, 0)), w_from(w_hi(v, 1), w_lo(v, 1))), w_and(w_from(w_hi(v, 0), w_lo(v, 0)), w_from(w_hi(v, 2), w_lo(v, 2)))), w_and(w_from(w_hi(v, 1), w_lo(v, 1)), w_from(w_hi(v, 2), w_lo(v, 2))))
+            let t2 = add64(vec_get(bs0, 0), vec_get(bs0, 1), vec_get(maj, 0), vec_get(maj, 1))
+            // rotate: h=g, g=f, f=e, e=d+t1, d=c, c=b, b=a, a=t1+t2
+            let e_new = add64(w_hi(v, 3), w_lo(v, 3), vec_get(t1, 0), vec_get(t1, 1))
+            let a_new = add64(vec_get(t1, 0), vec_get(t1, 1), vec_get(t2, 0), vec_get(t2, 1))
+            w_set(v, 7, w_from(w_hi(v, 6), w_lo(v, 6)))
+            w_set(v, 6, w_from(w_hi(v, 5), w_lo(v, 5)))
+            w_set(v, 5, w_from(w_hi(v, 4), w_lo(v, 4)))
+            w_set(v, 4, e_new)
+            w_set(v, 3, w_from(w_hi(v, 2), w_lo(v, 2)))
+            w_set(v, 2, w_from(w_hi(v, 1), w_lo(v, 1)))
+            w_set(v, 1, w_from(w_hi(v, 0), w_lo(v, 0)))
+            w_set(v, 0, a_new)
+        }
+
+        for t in 0..8 {
+            let s = add64(vec_get(st, t * 2), vec_get(st, t * 2 + 1), w_hi(v, t), w_lo(v, t))
+            vec_set(st, t * 2, vec_get(s, 0))
+            vec_set(st, t * 2 + 1, vec_get(s, 1))
+        }
+        block = block + 128
+    }
+
+    // digest: big-endian bytes (SHA-384 truncates to the first 6 words)
+    let mut words: i64 = 8
+    if which == 384 {
+        words = 6
+    }
+    let out = vec_new()
+    for t in 0..words {
+        let hi = vec_get(st, t * 2)
+        let lo = vec_get(st, t * 2 + 1)
+        vec_push(out, (hi >> 24) & 255)
+        vec_push(out, (hi >> 16) & 255)
+        vec_push(out, (hi >> 8) & 255)
+        vec_push(out, hi & 255)
+        vec_push(out, (lo >> 24) & 255)
+        vec_push(out, (lo >> 16) & 255)
+        vec_push(out, (lo >> 8) & 255)
+        vec_push(out, lo & 255)
+    }
+    return out
+}
+
+fn sha384_bytes(data: Vec<i64>) -> Vec<i64> {
+    return sha512_core(data, 384)
+}
+
+fn sha512_bytes(data: Vec<i64>) -> Vec<i64> {
+    return sha512_core(data, 512)
+}
+
+fn sha384_b(data: bytes) -> bytes {
+    return bytes_from_vec(sha384_bytes(vec_from_bytes(data)))
+}
+
+fn sha512_b(data: bytes) -> bytes {
+    return bytes_from_vec(sha512_bytes(vec_from_bytes(data)))
+}
+
+fn sha384_hex(data: Vec<i64>) -> str {
+    return bytes_to_hex(sha384_bytes(data))
+}
+
+fn sha512_hex(data: Vec<i64>) -> str {
+    return bytes_to_hex(sha512_bytes(data))
+}

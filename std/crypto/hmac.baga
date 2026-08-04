@@ -1,6 +1,7 @@
 // hmac.baga — HMAC-SHA256 (RFC 2104) over sha256.baga. Pure Baga.
 
 import "sha256.baga"
+import "sha512.baga"
 import "../bytes/bytes.baga"
 
 // HMAC-SHA256 with a string key and message. Returns the 32-byte MAC.
@@ -61,4 +62,35 @@ fn hmac_sha256_b(key: bytes, msg: bytes) -> bytes {
 
 fn hmac_sha256_b_hex(key: bytes, msg: bytes) -> str {
     return hex_encode(hmac_sha256_b(key, msg))
+}
+
+// HMAC-SHA384 (RFC 2104 over FIPS 180-4 SHA-384): block 128, MAC 48 bytes.
+// Needed by TLS 1.3 suite TLS_AES_256_GCM_SHA384 (HKDF-SHA384).
+fn hmac_sha384_b(key: bytes, msg: bytes) -> bytes {
+    let mut k = vec_from_bytes(key)
+    if vec_len(k) > 128 {
+        k = sha384_bytes(k)
+    }
+    while vec_len(k) < 128 {
+        vec_push(k, 0)
+    }
+    let inner = vec_new()
+    let outer = vec_new()
+    for i in 0..128 {
+        vec_push(inner, vec_get(k, i) ^ 54)   // 0x36 = ipad
+        vec_push(outer, vec_get(k, i) ^ 92)   // 0x5c = opad
+    }
+    let m = vec_from_bytes(msg)
+    for i in 0..vec_len(m) {
+        vec_push(inner, vec_get(m, i))
+    }
+    let ihash = sha384_bytes(inner)
+    for i in 0..48 {
+        vec_push(outer, vec_get(ihash, i))
+    }
+    return bytes_from_vec(sha384_bytes(outer))
+}
+
+fn hmac_sha384_b_hex(key: bytes, msg: bytes) -> str {
+    return bytes_to_hex(vec_from_bytes(hmac_sha384_b(key, msg)))
 }

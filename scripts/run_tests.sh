@@ -172,9 +172,11 @@ done
 # Specials need env or an external peer; the rest are plain discovery.
 echo "=== tls handshake (openssl s_server live: RSA + ECDSA-P256) ==="
 run_tls_peer() {
-	local kind=$1 key=$2 cert=$3
+	local kind=$1 key=$2 cert=$3 suites=${4:-}
+	local extra=()
+	[[ -n "$suites" ]] && extra=(-ciphersuites "$suites")
 	openssl s_server -accept 18443 -key "$key" -cert "$cert" \
-		-tls1_3 -quiet < /dev/null > /dev/null 2>&1 & echo $! > /tmp/baga_tls_srv.pid
+		-tls1_3 "${extra[@]}" -quiet < /dev/null > /dev/null 2>&1 & echo $! > /tmp/baga_tls_srv.pid
 	sleep 1
 	local RC=0
 	run tests/tls_handshake_test.baga > /tmp/baga_tlshs_out.txt 2>&1 || RC=$?
@@ -198,6 +200,9 @@ openssl req -x509 -new -key /tmp/baga_tls_ec_key.pem -out /tmp/baga_tls_ec_cert.
 	-days 2 -subj "/CN=localhost" > /dev/null 2>&1 \
 	|| { echo "FAIL: tls ECDSA cert"; exit 1; }
 run_tls_peer "ECDSA-P256" /tmp/baga_tls_ec_key.pem /tmp/baga_tls_ec_cert.pem
+# forced TLS_AES_256_GCM_SHA384 (0x1302): the baga client must switch the
+# whole key schedule to SHA-384/HKDF-SHA384 + 32-byte keys
+TLSCIPHER=4866 run_tls_peer "AES_256_GCM_SHA384" /tmp/baga_tls_rsa_key.pem /tmp/baga_tls_rsa_cert.pem TLS_AES_256_GCM_SHA384
 
 echo "=== https:// client (openssl -www mock, no real account) ==="
 openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/baga_https_key.pem \

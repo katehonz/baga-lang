@@ -6,7 +6,7 @@
 //   tls_client_hello(pub32, random32, sid32) -> bytes   // full record
 //   tls_read_record(fd) -> TlsRecord { ok, err, typ, payload }
 //   tls_parse_server_hello(payload) -> TlsHello
-//   tls_schedule(ch_msg, sh_msg, shared) -> TlsSchedule
+//   tls_schedule(cipher, ch_msg, sh_msg, shared) -> TlsSchedule
 //   tls_open_handshake(sched, ch, sh, chunked) -> TlsFlight
 //   tls_finished_record(sched, flight_hash) -> bytes
 //   tls_verify_server(flight, anchor_der) -> TlsVerify
@@ -24,6 +24,7 @@ import "tcp.baga"
 import "../bytes/bytes.baga"
 import "../str/str.baga"
 import "../crypto/sha256.baga"
+import "../crypto/sha512.baga"
 import "../crypto/hmac.baga"
 import "../crypto/hkdf.baga"
 import "../crypto/aes.baga"
@@ -281,8 +282,53 @@ fn tls_zeros(n: i64) -> bytes {
     return bytes_from_vec(v)
 }
 
+// ---- cipher-suite parameterization (4865 = AES_128_GCM_SHA256,
+// 4866 = AES_256_GCM_SHA384): hash, HashLen, key length ----
+
+fn tls_hash_len(cipher: i64) -> i64 {
+    if cipher == 4866 {
+        return 48
+    }
+    return 32
+}
+
+fn tls_key_len(cipher: i64) -> i64 {
+    if cipher == 4866 {
+        return 32
+    }
+    return 16
+}
+
+fn tls_hash_b(cipher: i64, data: bytes) -> bytes {
+    if cipher == 4866 {
+        return sha384_b(data)
+    }
+    return sha256_b(data)
+}
+
+fn tls_hmac_b(cipher: i64, key: bytes, msg: bytes) -> bytes {
+    if cipher == 4866 {
+        return hmac_sha384_b(key, msg)
+    }
+    return hmac_sha256_b(key, msg)
+}
+
+fn tls_hkdf_extract(cipher: i64, salt: bytes, ikm: bytes) -> bytes {
+    if cipher == 4866 {
+        return hkdf384_extract(salt, ikm)
+    }
+    return hkdf_extract(salt, ikm)
+}
+
+fn tls_hkdf_expand(cipher: i64, prk: bytes, info: bytes, out_len: i64) -> bytes {
+    if cipher == 4866 {
+        return hkdf384_expand(prk, info, out_len)
+    }
+    return hkdf_expand(prk, info, out_len)
+}
+
 // HkdfLabel (RFC 8446 §7.1): u16 len | u8 |"tls13 "+label| | u8 |ctx|
-fn tls_hkdf_label(secret: bytes, label: str, ctx: bytes, out_len: i64) -> bytes {
+fn tls_hkdf_label(cipher: i64, secret: bytes, label: str, ctx: bytes, out_len: i64) -> bytes {
     let lab = bytes_concat(tls_ascii("tls13 "), tls_ascii(label))
     let v = vec_new()
     tls_push_u16(v, out_len)
@@ -290,18 +336,19 @@ fn tls_hkdf_label(secret: bytes, label: str, ctx: bytes, out_len: i64) -> bytes 
     tls_push_bytes(v, lab)
     tls_push_u8(v, bytes_len(ctx))
     tls_push_bytes(v, ctx)
-    return hkdf_expand(secret, bytes_from_vec(v), out_len)
+    return tls_hkdf_expand(cipher, secret, bytes_from_vec(v), out_len)
 }
 
 // The "derived" step's context is the transcript hash of zero messages —
-// SHA-256 of the empty string, NOT an empty context (RFC 8446 §7.1).
-fn tls_derive(secret: bytes) -> bytes {
-    return tls_hkdf_label(secret, "derived", sha256_b(bytes_from_vec(vec_new())), 32)
+// H of the empty string, NOT an empty context (RFC 8446 §7.1).
+fn tls_derive(cipher: i64, secret: bytes) -> bytes {
+    return tls_hkdf_label(cipher, secret, "derived", tls_hash_b(cipher, bytes_from_vec(vec_new())), tls_hash_len(cipher))
 }
 
 struct TlsSchedule {
     ok: i64,
     err: str,
+    cipher: i64,          // negotiated suite (4865 / 4866)
     hs_secret: bytes,     // handshake secret (for master derivation, T8)
     server_hs: bytes,     // server_handshake_traffic_secret
     client_hs: bytes,     // client_handshake_traffic_secret
@@ -309,25 +356,26 @@ struct TlsSchedule {
 }
 
 fn tls_schedule_bad(err: str) -> TlsSchedule {
-    return TlsSchedule { ok: 0, err: err,
+    return TlsSchedule { ok: 0, err: err, cipher: 4865,
         hs_secret: bytes_from_vec(vec_new()),
         server_hs: bytes_from_vec(vec_new()),
         client_hs: bytes_from_vec(vec_new()), sh_hash: bytes_from_vec(vec_new()) }
 }
 
 // The handshake key schedule up to the handshake traffic secrets.
-fn tls_schedule(ch_msg: bytes, sh_msg: bytes, shared: bytes) -> TlsSchedule {
+fn tls_schedule(cipher: i64, ch_msg: bytes, sh_msg: bytes, shared: bytes) -> TlsSchedule {
     if bytes_len(shared) != 32 {
         return tls_schedule_bad("bad shared secret length")
     }
-    let zero = tls_zeros(32)
-    let early = hkdf_extract(zero, zero)
-    let d0 = tls_derive(early)
-    let hs_secret = hkdf_extract(d0, shared)
-    let sh_hash = sha256_b(bytes_concat(ch_msg, sh_msg))
-    let server_hs = tls_hkdf_label(hs_secret, "s hs traffic", sh_hash, 32)
-    let client_hs = tls_hkdf_label(hs_secret, "c hs traffic", sh_hash, 32)
-    return TlsSchedule { ok: 1, err: "", hs_secret: hs_secret,
+    let hl = tls_hash_len(cipher)
+    let zero = tls_zeros(hl)
+    let early = tls_hkdf_extract(cipher, zero, zero)
+    let d0 = tls_derive(cipher, early)
+    let hs_secret = tls_hkdf_extract(cipher, d0, shared)
+    let sh_hash = tls_hash_b(cipher, bytes_concat(ch_msg, sh_msg))
+    let server_hs = tls_hkdf_label(cipher, hs_secret, "s hs traffic", sh_hash, hl)
+    let client_hs = tls_hkdf_label(cipher, hs_secret, "c hs traffic", sh_hash, hl)
+    return TlsSchedule { ok: 1, err: "", cipher: cipher, hs_secret: hs_secret,
         server_hs: server_hs, client_hs: client_hs, sh_hash: sh_hash }
 }
 
@@ -388,8 +436,8 @@ fn tls_flight_bad(err: str) -> TlsFlight {
 // Vec<bytes> (L4, since closed); it is kept because the GCM sequence
 // numbers must stay aligned with the record order anyway.
 fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked: bytes) -> TlsFlight {
-    let key = tls_hkdf_label(sched.server_hs, "key", bytes_from_vec(vec_new()), 16)
-    let iv = tls_hkdf_label(sched.server_hs, "iv", bytes_from_vec(vec_new()), 12)
+    let key = tls_hkdf_label(sched.cipher, sched.server_hs, "key", bytes_from_vec(vec_new()), tls_key_len(sched.cipher))
+    let iv = tls_hkdf_label(sched.cipher, sched.server_hs, "iv", bytes_from_vec(vec_new()), 12)
     let aead = aes_expand(key)
     let mut pt = bytes_from_vec(vec_new())
     let mut seq: i64 = 0
@@ -452,7 +500,7 @@ fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked:
         if mt == 15 {
             // CertificateVerify: algo(2) sig_len(2) sig...
             // Signed content is H(transcript before this message).
-            cv_hash = sha256_b(acc)
+            cv_hash = tls_hash_b(sched.cipher, acc)
             if bytes_len(body) >= 4 {
                 cv_algo = (bytes_at(body, 0) << 8) | bytes_at(body, 1)
                 let sl = (bytes_at(body, 2) << 8) | bytes_at(body, 3)
@@ -463,9 +511,9 @@ fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked:
         }
         if mt == 20 {
             // Finished: HMAC over the transcript BEFORE this message
-            let fin_key = tls_hkdf_label(sched.server_hs, "finished", bytes_from_vec(vec_new()), 32)
-            let expect = hmac_sha256_b(fin_key, sha256_b(acc))
-            if bytes_len(body) == 32 {
+            let fin_key = tls_hkdf_label(sched.cipher, sched.server_hs, "finished", bytes_from_vec(vec_new()), tls_hash_len(sched.cipher))
+            let expect = tls_hmac_b(sched.cipher, fin_key, tls_hash_b(sched.cipher, acc))
+            if bytes_len(body) == tls_hash_len(sched.cipher) {
                 if ct_eq_b(body, expect) {
                     finished_ok = 1
                 }
@@ -475,7 +523,7 @@ fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked:
             // cover the transcript THROUGH server Finished (RFC 8446 §4.4.4
             // and §7.1). T5's live probe only checked outer record type ≠ 21
             // and missed encrypted decrypt_error alerts (outer type 23).
-            app_hash = sha256_b(bytes_concat(acc, msg))
+            app_hash = tls_hash_b(sched.cipher, bytes_concat(acc, msg))
             flight_hash = app_hash
         } else {
             acc = bytes_concat(acc, msg)
@@ -571,15 +619,15 @@ fn tls_verify_server(flight: TlsFlight, anchor_der: bytes) -> TlsVerify {
 
 // The encrypted record carrying the client Finished (handshake seq 0).
 fn tls_finished_record(sched: TlsSchedule, flight_hash: bytes) -> bytes {
-    let fin_key = tls_hkdf_label(sched.client_hs, "finished", bytes_from_vec(vec_new()), 32)
-    let body = hmac_sha256_b(fin_key, flight_hash)
+    let fin_key = tls_hkdf_label(sched.cipher, sched.client_hs, "finished", bytes_from_vec(vec_new()), tls_hash_len(sched.cipher))
+    let body = tls_hmac_b(sched.cipher, fin_key, flight_hash)
     let hs = vec_new()
     tls_push_u8(hs, 20)
     tls_push_u24(hs, bytes_len(body))
     tls_push_bytes(hs, body)
     let plain = bytes_from_vec(hs)
-    let key = tls_hkdf_label(sched.client_hs, "key", bytes_from_vec(vec_new()), 16)
-    let iv = tls_hkdf_label(sched.client_hs, "iv", bytes_from_vec(vec_new()), 12)
+    let key = tls_hkdf_label(sched.cipher, sched.client_hs, "key", bytes_from_vec(vec_new()), tls_key_len(sched.cipher))
+    let iv = tls_hkdf_label(sched.cipher, sched.client_hs, "iv", bytes_from_vec(vec_new()), 12)
     let aead = aes_expand(key)
     // TLSInnerPlaintext = content || content_type (22 = handshake)
     let plain_typed = bytes_concat(plain, hex_decode("16"))
@@ -614,17 +662,18 @@ fn tls_conn_bad(err: str) -> TlsConn {
 // Derive application traffic secrets from the handshake secret + app_hash
 // (transcript through server Finished).
 fn tls_app_secrets(sched: TlsSchedule, app_hash: bytes) -> TlsConn {
-    let zero = tls_zeros(32)
-    let d1 = tls_derive(sched.hs_secret)
-    let master = hkdf_extract(d1, zero)
-    let c_app = tls_hkdf_label(master, "c ap traffic", app_hash, 32)
-    let s_app = tls_hkdf_label(master, "s ap traffic", app_hash, 32)
+    let hl = tls_hash_len(sched.cipher)
+    let zero = tls_zeros(hl)
+    let d1 = tls_derive(sched.cipher, sched.hs_secret)
+    let master = tls_hkdf_extract(sched.cipher, d1, zero)
+    let c_app = tls_hkdf_label(sched.cipher, master, "c ap traffic", app_hash, hl)
+    let s_app = tls_hkdf_label(sched.cipher, master, "s ap traffic", app_hash, hl)
     return TlsConn {
         ok: 1, err: "", fd: -1,
-        c_key: tls_hkdf_label(c_app, "key", bytes_from_vec(vec_new()), 16),
-        c_iv: tls_hkdf_label(c_app, "iv", bytes_from_vec(vec_new()), 12),
-        s_key: tls_hkdf_label(s_app, "key", bytes_from_vec(vec_new()), 16),
-        s_iv: tls_hkdf_label(s_app, "iv", bytes_from_vec(vec_new()), 12),
+        c_key: tls_hkdf_label(sched.cipher, c_app, "key", bytes_from_vec(vec_new()), tls_key_len(sched.cipher)),
+        c_iv: tls_hkdf_label(sched.cipher, c_app, "iv", bytes_from_vec(vec_new()), 12),
+        s_key: tls_hkdf_label(sched.cipher, s_app, "key", bytes_from_vec(vec_new()), tls_key_len(sched.cipher)),
+        s_iv: tls_hkdf_label(sched.cipher, s_app, "iv", bytes_from_vec(vec_new()), 12),
         c_seq: 0, s_seq: 0
     }
 }
@@ -791,11 +840,11 @@ fn tls_handshake(fd: i64, sni: str, trust_anchor: bytes) -> TlsConn !Net !IO !Ra
     if shello.ok == 0 {
         return tls_conn_bad(shello.err)
     }
-    if shello.cipher != 4865 {
-        return tls_conn_bad("unsupported cipher (want TLS_AES_128_GCM_SHA256)")
+    if shello.cipher != 4865 && shello.cipher != 4866 {
+        return tls_conn_bad("unsupported cipher (want TLS_AES_128_GCM_SHA256 or TLS_AES_256_GCM_SHA384)")
     }
     let shared = x25519(scalar, shello.server_pub)
-    let sched = tls_schedule(ch_msg, sh_msg, shared)
+    let sched = tls_schedule(shello.cipher, ch_msg, sh_msg, shared)
     if sched.ok == 0 {
         return tls_conn_bad(sched.err)
     }

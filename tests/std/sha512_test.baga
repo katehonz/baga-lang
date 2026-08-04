@@ -1,0 +1,58 @@
+// sha512_test.baga — SHA-384/SHA-512 (FIPS 180-4), HMAC-SHA384 (RFC 4231
+// shape) and HKDF-SHA384 (RFC 5869 inputs) golden vectors.
+// Oracles: python hashlib/hmac, computed offline.
+
+import "std/crypto/sha512.baga"
+import "std/crypto/hmac.baga"
+import "std/crypto/hkdf.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn rep_a(n: i64) -> Vec<i64> {
+    let v = vec_new()
+    for i in 0..n {
+        vec_push(v, 97)
+    }
+    return v
+}
+
+fn main() {
+    // --- SHA-384 FIPS vectors ---
+    check("sha384_empty", sha384_hex(bytes_from_str("")) == "38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b")
+    check("sha384_abc", sha384_hex(bytes_from_str("abc")) == "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7")
+    check("sha384_56B", sha384_hex(bytes_from_str("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")) == "3391fdddfc8dc7393707a65b1b4709397cf8b1d162af05abfe8f450de5f36bc6b0455a8520bc4e6f5fe95b1fe3c8452b")
+    check("sha384_1M", sha384_hex(rep_a(1000000)) == "9d0e1809716474cb086e834e310a4a1ced149e9c00f248527972cec5704c2a5b07b8b3dc38ecc4ebae97ddd87f3d8985")
+
+    // --- SHA-512 FIPS vectors ---
+    check("sha512_abc", sha512_hex(bytes_from_str("abc")) == "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
+
+    // --- bytes bridge ---
+    check("sha384_b", bytes_to_hex(vec_from_bytes(sha384_b(bytes_of_str("abc")))) == "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7")
+
+    // --- HMAC-SHA384 (RFC 4231 cases 1/2/3/6) ---
+    check("hmac384_1", hmac_sha384_b_hex(bytes_from_vec(bytes_from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")), bytes_of_str("Hi There")) == "afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb6")
+    check("hmac384_2", hmac_sha384_b_hex(bytes_of_str("Jefe"), bytes_of_str("what do ya want for nothing?")) == "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649")
+    check("hmac384_3", hmac_sha384_b_hex(bytes_from_vec(bytes_from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")), bytes_from_vec(bytes_from_hex("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"))) == "88062608d3e6ad8a0aa2ace014c8a86f0aa635d947ac9febe83ef4e55966144b2a5ab39dc13814b94e3ab6e101a34f27")
+    // key longer than the 128-byte block → pre-hashed
+    check("hmac384_big_key", hmac_sha384_b_hex(bytes_from_vec(bytes_from_hex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")), bytes_of_str("Test Using Larger Than Block-Size Key - Hash Key First")) == "4ece084485813e9088d2c63a041bc5b44f9ef1012a2b588f3cd11f05033ac4c60c2ef6ab4030fe8296248df163f44952")
+
+    // --- HKDF-SHA384 (RFC 5869 case-1 inputs) ---
+    let prk = hkdf384_extract(bytes_from_vec(bytes_from_hex("000102030405060708090a0b0c")), bytes_from_vec(bytes_from_hex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")))
+    check("hkdf384_prk", bytes_to_hex(vec_from_bytes(prk)) == "704b39990779ce1dc548052c7dc39f303570dd13fb39f7acc564680bef80e8dec70ee9a7e1f3e293ef68eceb072a5ade")
+    let okm = hkdf384_expand(prk, bytes_from_vec(bytes_from_hex("f0f1f2f3f4f5f6f7f8f9")), 42)
+    check("hkdf384_okm", bytes_to_hex(vec_from_bytes(okm)) == "9b5097a86038b805309076a44b3a9f38063e25b516dcbf369f394cfab43685f748b6457763e4f0204fc5")
+    // empty salt → HashLen(48) zeros rule
+    let prk2 = hkdf384_extract(bytes_from_vec(vec_new()), bytes_from_vec(vec_new()))
+    check("hkdf384_empty_salt", bytes_to_hex(vec_from_bytes(prk2)) == "6c1f2ee938fad2e24bd91298474382ca218c75db3d83e114b3d4367776d14d3551289e75e8209cd4b792302840234adc")
+
+    print("sha512_test: all passed")
+}

@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### TLS 1.3 — TLS_AES_256_GCM_SHA384 (0x1302) negotiated end to end
+- New `std/crypto/sha512.baga`: SHA-384/SHA-512 (FIPS 180-4) with 64-bit
+  words as hi/lo 32-bit halves — no intermediate exceeds 2^33, the same
+  signed-i64 discipline as the rest of std/crypto. FIPS vectors incl.
+  the 56-byte and 1,000,000-'a' cases.
+- `hmac_sha384_b` (block 128, 48-byte MAC) and `hkdf384_extract/expand`
+  (RFC 5869; empty-salt → 48 zeros rule). Vectors from python
+  hashlib/hmac computed offline (`tests/std/sha512_test.baga`, 13
+  checks).
+- `std/net/tls.baga` is suite-parameterized: `TlsSchedule.cipher`
+  selects the transcript hash, HKDF/HMAC flavor, HashLen (32/48) and key
+  length (16/32) everywhere — schedule, flight decrypt, CertificateVerify
+  input, Finished HMACs, application secrets. The gate accepts both
+  suites; the ClientHello already offered both.
+- Live proof: `scripts/run_tests.sh` runs the openssl peer a **third**
+  time with `-ciphersuites TLS_AES_256_GCM_SHA384`; the handshake test
+  asserts the negotiated suite via `TLSCIPHER` env.
+- **L6 correction found by this work**: sha512.baga's `u32` collided
+  with sha256.baga's and every *internal* call turned ambiguous. The
+  unqualified resolution now prefers the **caller's own module** (the
+  main file is just the common case) instead of the main file only.
+
+### wsbaga — fragmented message reassembly (W2 closed)
+- New `ws_read_message`: reassembles continuation frames into one message
+  (original opcode, full payload, 64 MiB cap kept). Control frames
+  (ping/pong/close) are delivered immediately even mid-message (RFC 6455
+  §5.4); a lone continuation or a new data frame mid-message is a
+  protocol violation (`bad=1`). `WsConn` gains the accumulator state
+  (`frag_op`/`frag`); `ws_read_frame` stays the frame-level API.
+- `ws_handle_conn` (echo server) now serves fragmented messages instead
+  of closing on opcode 0.
+- `tests/ws_test.baga`: fragmented echo (UTF-8 split across frames),
+  ping interleaved mid-message, lone-continuation close on a fresh
+  connection (the accept loop is serial).
+
 ### Language — namespaces (L6): module-qualified calls
 - Every imported file is a **module** named by its basename
   (`std/net/http_client.baga` → `http_client`); its functions are

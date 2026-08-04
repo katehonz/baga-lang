@@ -499,15 +499,17 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
 
         /* user-defined (incl. extern) functions shadow builtins.
          * L6: късото име може да идва от няколко модула — печели дефиницията
-         * от главния файл, после единственият импортиран модул; иначе е
-         * нееднозначно и искаме уточнение 'модул.функция'.
+         * от модула на САМИЯ call site (вкл. главния файл), после
+         * единственият друг модул; иначе е нееднозначно и искаме уточнение
+         * 'модул.функция'.
          * Forward декларация + реализация (fmrbaga override идиомът):
          * ТИПЪт (ефектите-контракт) идва от декларацията без тяло —
          * историческото first-wins поведение; СИМВОЛЪТ — от тялото.
          * Нееднозначността се мери само между кандидати с тяло. */
         Type *ft_user = NULL;
         {
-            int first = -1, mainidx = -1, fwd = -1, first_body = -1;
+            const char *own = mod_base(n->pos.file);
+            int first = -1, ownidx = -1, fwd = -1, first_body = -1;
             const char *o1 = NULL, *o2 = NULL;
             for (int i = 0; i < ctx->n_fns; i++) {
                 if (strcmp(ctx->fns[i].name, name) != 0 &&
@@ -518,13 +520,13 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                     continue;
                 }
                 if (first_body < 0) first_body = i;
-                if (ctx->main_base && strcmp(ctx->fns[i].origin, ctx->main_base) == 0)
-                    mainidx = i;
+                if (strcmp(ctx->fns[i].origin, own) == 0)
+                    ownidx = i;
                 if (!o1) o1 = ctx->fns[i].origin;
                 else if (!o2 && strcmp(o1, ctx->fns[i].origin) != 0) o2 = ctx->fns[i].origin;
             }
             int chosen = -1;
-            if (mainidx >= 0) chosen = mainidx;
+            if (ownidx >= 0) chosen = ownidx;
             else if (!o2) chosen = first_body >= 0 ? first_body : first;
             else {
                 check_error(ctx, n->pos,

@@ -16,6 +16,7 @@ import "std/crypto/x509.baga"
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
 import "std/random/random.baga"
+import "std/os/os.baga"
 import "testbaga/assert.baga"
 
 fn chunk_add(acc: bytes, payload: bytes) -> bytes {
@@ -51,12 +52,19 @@ fn main() -> i64 !Net !IO !Par !Random {
     let shello = tls_parse_server_hello(sh_msg)
     assert_eq_i64("sh_parsed", shello.ok, 1)
     assert_eq_i64("sh_version_tls13", shello.version, 772)
-    assert_eq_i64("sh_cipher_aes128gcm", shello.cipher, 4865)
+    // expected suite: TLSCIPHER env (4865 default; 4866 for the forced
+    // TLS_AES_256_GCM_SHA384 peer run in run_tests.sh)
+    let mut want_cipher: i64 = 4865
+    let envc = env("TLSCIPHER")?
+    if envc != "" {
+        want_cipher = parse_int(envc)
+    }
+    assert_eq_i64("sh_cipher", shello.cipher, want_cipher)
     assert_eq_i64("sh_keyshare_len", bytes_len(shello.server_pub), 32)
 
     // --- schedule + flight decrypt ---
     let shared = x25519(scalar, shello.server_pub)
-    let sched = tls_schedule(ch_msg, sh_msg, shared)
+    let sched = tls_schedule(shello.cipher, ch_msg, sh_msg, shared)
     assert_eq_i64("schedule", sched.ok, 1)
 
     let mut chunked = bytes_from_vec(vec_new())
@@ -93,7 +101,7 @@ fn main() -> i64 !Net !IO !Par !Random {
     assert_eq_i64("server_finished_verified", flight.finished_ok, 1)
     // 0x0804 rsa_pss_rsae_sha256 or 0x0403 ecdsa_secp256r1_sha256
     assert_true("cv_algo_known", flight.cv_algo == 2052 || flight.cv_algo == 1027)
-    assert_eq_i64("cv_hash_len", bytes_len(flight.cv_hash), 32)
+    assert_eq_i64("cv_hash_len", bytes_len(flight.cv_hash), tls_hash_len(shello.cipher))
 
     // --- T6/T7: X.509 + CertificateVerify (RSA-PSS or ECDSA-P256) ---
     let leaf = x509_parse(flight.cert_der)
