@@ -26,6 +26,19 @@ Or try it in the browser — `python3 playground/serve.py` → http://localhost:
 Zero dependencies for the core compiler — only `gcc` and `make`. The LLVM
 backend is optional (see [Backends](#backends)).
 
+### Two build levels
+
+- The **toolchain** — the `baga` compiler (C bootstrap), `sandak` itself,
+  the optional LLVM backend, the `!Par` runtime — is C and builds through
+  the **Makefile**: `make`, `make sandak`, `make llvm`. `make test` and
+  `make self` are the regression harness CI runs.
+- **Baga code** (`std`, `app-product/*`, `apps/*`) builds through
+  **sandak** (`sandak.toml` per package) on top of the compiled `baga`
+  binary. The Makefile never compiles `.baga` sources — it only executes
+  them in the tests.
+
+As in Rust: cargo builds the packages, not rustc.
+
 ## Packages — sandak
 
 `sandak` is the package manager (the chest that holds the crates). Each package
