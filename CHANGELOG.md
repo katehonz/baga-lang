@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Toolchain / packaging — Makefile is C-only; tests via sandak + baga-test
+- The root `Makefile` no longer embeds the regression suite (~670 lines of
+  hand-listed package tests). It builds the C toolchain only (`baga`,
+  `sandak`, optional `baga-llvm`, `libbaga_par.so`) and thin targets
+  (`test`, `self`, `test-llvm`).
+- `make test` → `scripts/run_tests.sh`:
+  - **sandak** discovery — every `app-product/*/sandak.toml` and
+    `apps/*/sandak.toml` is built (no hand-maintained package list);
+  - **baga-test** discovery — every `tests/**/*_test.baga` (specials
+    with env/peers: registry, oauth PG, TLS vs openssl);
+  - **run_verify.sh** — the static `--verify` oracle (M0–M18).
+- Closes the GitHub-linguist skew where Makefile looked like a large
+  share of the repo; package work stays in the package system.
+
 ### TLS 1.3 client, T4+T5 — record layer, ClientHello, encrypted handshake
 - `std/net/tls.baga`: TLS 1.3 client core — record layer
   (`tls_read_record`), ClientHello builder (x25519 key share,

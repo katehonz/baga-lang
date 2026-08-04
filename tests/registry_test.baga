@@ -3,7 +3,7 @@
 // over real HTTP with std/net/http_client — the first end-to-end product test
 // that exercises the HTTP client (apps-roadmap №2).
 //
-// Run with: PORT=8090 PGDATABASE=baga_registry (the Makefile sets both).
+// Run with: PORT=8090 PGDATABASE=baga_registry (scripts/run_tests.sh sets both).
 
 import "../apps/registry/routes.baga"
 import "../apps/registry/schema.baga"

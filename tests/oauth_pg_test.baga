@@ -9,7 +9,7 @@
 // default ports (OAUTH_PORT/OAUTH_PROVIDER_PORT unset).
 //
 // Run with: OAUTH_PG=1 PGDATABASE=baga_oauth ./baga -I . -I app-product
-//           tests/oauth_pg_test.baga     (the Makefile sets both)
+//           tests/oauth_pg_test.baga     (scripts/run_tests.sh sets both)
 
 import "oauthbaga/server.baga"
 import "testbaga/assert.baga"

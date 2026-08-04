@@ -30,14 +30,17 @@ backend is optional (see [Backends](#backends)).
 
 - The **toolchain** — the `baga` compiler (C bootstrap), `sandak` itself,
   the optional LLVM backend, the `!Par` runtime — is C and builds through
-  the **Makefile**: `make`, `make sandak`, `make llvm`. `make test` and
-  `make self` are the regression harness CI runs.
+  the **Makefile**: `make`, `make sandak`, `make llvm`. The Makefile does
+  not list packages or product tests.
 - **Baga code** (`std`, `app-product/*`, `apps/*`) builds through
   **sandak** (`sandak.toml` per package) on top of the compiled `baga`
-  binary. The Makefile never compiles `.baga` sources — it only executes
-  them in the tests.
+  binary.
+- **Regression** — `make test` builds the toolchain, then runs
+  `scripts/run_tests.sh`: sandak discovery for packages, `scripts/baga-test`
+  for `tests/**/*_test.baga`, and `scripts/run_verify.sh` for `--verify`.
 
-As in Rust: cargo builds the packages, not rustc.
+As in Rust: cargo builds the packages, not rustc. The Makefile is rustc's
+bootstrap, not the crate graph.
 
 ## Packages — sandak
 
@@ -274,8 +277,12 @@ baga/
 │   ├── parser.baga         # Self-hosted parser
 │   └── compiler.baga       # Self-hosted compiler (~2660 lines)
 ├── examples/               # Example programs
+├── scripts/
+│   ├── run_tests.sh        # full regression (make test → here)
+│   ├── run_verify.sh       # --verify oracle (M0–M18)
+│   └── baga-test           # discover/run tests/**/*_test.baga
 ├── docs/                   # Documentation (EN + BG)
-├── Makefile
+├── Makefile                # C toolchain only (not the package graph)
 └── README.md
 ```
 
