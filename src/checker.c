@@ -44,7 +44,16 @@ const char *type_str(Type *t) {
         case TYPE_ARRAY: return "[T]";
         case TYPE_REF:   return "&T";
         case TYPE_STRUCT: return t->name ? t->name : "struct";
-        case TYPE_FN:    return "fn";
+        case TYPE_FN: {
+            char *buf = type_str_buf();
+            int off = snprintf(buf, 96, "fn(");
+            for (int i = 0; i < t->nparams && off < 80; i++) {
+                off += snprintf(buf + off, (size_t)(96 - off), "%s%s",
+                                i > 0 ? ", " : "", type_str(t->params[i]));
+            }
+            snprintf(buf + off, (size_t)(96 - off), ") -> %s", type_str(t->ret));
+            return buf;
+        }
         case TYPE_VEC: {
             if (!t->elem) return "Vec";
             char *buf = type_str_buf();
@@ -90,6 +99,14 @@ int type_eq(Type *a, Type *b) {
         if (a->key && b->key && a->key->kind != b->key->kind) return 0;
         if (a->elem && b->elem && !vec_elem_eq(a->elem, b->elem)) return 0;
         return 1;
+    }
+    if (a->kind == TYPE_FN) {
+        /* структурно: брой и видове параметри + връщан тип (ефектите се
+         * проверяват отделно при wrap — виж fn_effects_subset) */
+        if (a->nparams != b->nparams) return 0;
+        for (int i = 0; i < a->nparams; i++)
+            if (!type_eq(a->params[i], b->params[i])) return 0;
+        return type_eq(a->ret, b->ret);
     }
     return 1;
 }
@@ -202,6 +219,7 @@ typedef struct {
     Checker *chk;
     const char *cur_fn;
     const char *main_base; /* модул на главния файл (L6 предимство при неуточнени извиквания) */
+    int n_lambdas;         /* L5: брояч за синтетични имена __lam_N */
     Type *cur_ret;   /* expected return type of current function */
     Type *cur_effects; /* accumulated effects in current function body */
 } CheckCtx;
@@ -240,9 +258,9 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
                     if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
                         el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
-                        el->kind != TYPE_STRUCT) {
+                        el->kind != TYPE_STRUCT && el->kind != TYPE_FN) {
                         check_error(ctx, ty->pos,
-                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes и struct)",
+                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct и fn)",
                             type_str(el));
                     } else {
                         t->elem = el;
@@ -272,9 +290,9 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     if (vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
                     if (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
                         vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES &&
-                        vt->kind != TYPE_STRUCT) {
+                        vt->kind != TYPE_STRUCT && vt->kind != TYPE_FN) {
                         check_error(ctx, ty->pos,
-                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64, bytes и struct)",
+                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64, bytes, struct и fn)",
                             type_str(vt));
                     } else {
                         t->elem = vt;
@@ -302,9 +320,9 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                 if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
                 if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
                     el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
-                    el->kind != TYPE_STRUCT) {
+                    el->kind != TYPE_STRUCT && el->kind != TYPE_FN) {
                     check_error(ctx, ty->pos,
-                        "[T]: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes и struct)",
+                        "[T]: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct и fn)",
                         type_str(el));
                 } else {
                     t->elem = el;
@@ -317,6 +335,20 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
             for (int i = 0; i < ty->n_effects; i++)
                 type_add_effect(base, ty->effect_names[i]);
             return base;
+        }
+        case NODE_TYPE_FN: {
+            /* fn(T, ...) -> R — ефектите пътуват върху ret, както при
+             * декларациите (ret_type е TYPE_EFFECT обвивка при !E) */
+            int np = ty->params.len;
+            Type **params = NULL;
+            if (np > 0) {
+                params = malloc(sizeof(Type *) * (size_t)np);
+                for (int j = 0; j < np; j++)
+                    params[j] = resolve_type_node(ctx, ty->params.data[j]->param_type);
+            }
+            Type *ret = ty->ret_type ? resolve_type_node(ctx, ty->ret_type)
+                                     : type_new(TYPE_VOID);
+            return type_fn(ret, params, np);
         }
         default:
             return type_new(TYPE_ERROR);
@@ -461,6 +493,57 @@ static Type *infer_binary(CheckCtx *ctx, Node *n) {
     return type_new(TYPE_ERROR);
 }
 
+/* ============================================================
+ *  L5: function values & closures
+ * ============================================================ */
+
+/* ефектите на fn стойността (върху ret) ⊆ ефектите на анотацията */
+static int fn_effects_subset(Type *val, Type *annot) {
+    Type *ve = val && val->kind == TYPE_FN ? val->ret : NULL;
+    Type *ae = annot && annot->kind == TYPE_FN ? annot->ret : NULL;
+    if (!ve) return 1;
+    for (int i = 0; i < ve->n_effects; i++)
+        if (!ae || !type_has_effect(ae, ve->effects[i])) return 0;
+    return 1;
+}
+
+/* извикване през fn стойност; аргументите вече са infer-нати */
+static Type *call_fn_value(CheckCtx *ctx, Node *n, Type *ft) {
+    if (n->args.len != ft->nparams) {
+        check_error(ctx, n->pos, "fn стойност %s очаква %d аргумента, получих %d",
+                    type_str(ft), ft->nparams, n->args.len);
+    }
+    int check_n = n->args.len < ft->nparams ? n->args.len : ft->nparams;
+    for (int i = 0; i < check_n; i++) {
+        Type *at = n->args.data[i]->type;
+        Type *pt = ft->params[i];
+        if (!type_assignable(at, pt)) {
+            check_error(ctx, n->args.data[i]->pos,
+                "fn стойност: аргумент #%d е от тип %s, но параметърът е %s",
+                i + 1, type_str(at), type_str(pt));
+        } else if (at && pt && at->kind == TYPE_FN && pt->kind == TYPE_FN &&
+                   !fn_effects_subset(at, pt)) {
+            check_error(ctx, n->args.data[i]->pos,
+                "fn аргумент #%d има ефекти извън договора %s", i + 1, type_str(pt));
+        }
+    }
+    /* codegen маркер: TYPE_FN без име = стойност (извикване през handle) */
+    Type *marker = type_fn(ft->ret, ft->params, ft->nparams);
+    n->callee->type = marker;
+    Type *ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
+    Type *result = type_new(ret->kind);
+    result->elem = ret->elem;
+    result->name = ret->name;
+    /* fn (L5): пази сигнатурата — върнатата closure е извикваема */
+    result->ret = ret->ret;
+    result->params = ret->params;
+    result->nparams = ret->nparams;
+    type_merge_effects(result, ret);
+    if (ctx->cur_effects)
+        type_merge_effects(ctx->cur_effects, ret);
+    return result;
+}
+
 static Type *infer_call(CheckCtx *ctx, Node *n) {
     /* infer arg types */
     for (int i = 0; i < n->args.len; i++)
@@ -491,6 +574,20 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
          * освобождава callee->name, не трябва да алиасва decl->fn_name */
         n->callee->kind = NODE_IDENT;
         n->callee->name = strdup(ctx->fns[found].decl->fn_name);
+    }
+
+    /* L5: извикване през fn стойност — локална/параметър, или произволен
+     * израз с TYPE_FN тип (vec_get(t, i)(x), obj.handler(x) и пр.) */
+    if (n->callee->kind == NODE_IDENT) {
+        Type *lt = env_lookup(ctx, n->callee->name);
+        if (lt && lt->kind == TYPE_FN)
+            return call_fn_value(ctx, n, lt);
+    } else {
+        Type *ct = infer(ctx, n->callee);
+        if (ct && ct->kind == TYPE_FN)
+            return call_fn_value(ctx, n, ct);
+        check_error(ctx, n->pos, "извикване на не-функция (%s)", type_str(ct));
+        return type_new(TYPE_ERROR);
     }
 
     /* builtins */
@@ -582,6 +679,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             /* struct: keep the name so a returned struct matches the declared
              * return type / struct parameters (type_eq compares by name) */
             result->name = ret->name;
+            /* fn (L5): keep the signature so the returned closure is callable */
+            result->ret = ret->ret;
+            result->params = ret->params;
+            result->nparams = ret->nparams;
             type_merge_effects(result, ret);
             if (ctx->cur_effects)
                 type_merge_effects(ctx->cur_effects, ret);
@@ -620,9 +721,9 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             if (xt->kind == TYPE_I32) xt = type_new(TYPE_I64);
             if (!is_str_alias && xt->kind != TYPE_I64 && xt->kind != TYPE_STR &&
                 xt->kind != TYPE_F64 && xt->kind != TYPE_BYTES &&
-                xt->kind != TYPE_STRUCT) {
+                xt->kind != TYPE_STRUCT && xt->kind != TYPE_FN) {
                 check_error(ctx, n->pos,
-                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str, f64, bytes и struct)",
+                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str, f64, bytes, struct и fn)",
                     name, type_str(xt));
                 return type_new(TYPE_ERROR);
             }
@@ -717,10 +818,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             if (vt && vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
             if (!vt || (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
                         vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES &&
-                        vt->kind != TYPE_STRUCT &&
+                        vt->kind != TYPE_STRUCT && vt->kind != TYPE_FN &&
                         vt->kind != TYPE_ERROR)) {
                 check_error(ctx, n->pos,
-                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str, f64, bytes и struct)",
+                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str, f64, bytes, struct и fn)",
                     type_str(vt));
                 return type_new(TYPE_ERROR);
             }
@@ -984,7 +1085,13 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             return type_new(TYPE_BOOL);
         }
 
-        check_error(ctx, n->pos, "непозната функция '%s'", name);
+        /* L5: локална, която не е fn стойност — по-ясна диагностика */
+        Type *lt_local = env_lookup(ctx, name);
+        if (lt_local)
+            check_error(ctx, n->pos, "извикване на не-функция '%s' (%s)",
+                        name, type_str(lt_local));
+        else
+            check_error(ctx, n->pos, "непозната функция '%s'", name);
         return type_new(TYPE_ERROR);
     }
 
@@ -1025,7 +1132,32 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             if (vt) { t = vt; break; }
             /* check function registry */
             Type *ft = find_fn(ctx, n->name);
-            if (ft) { t = ft; break; }
+            if (ft) {
+                /* L5: fn като стойност — codegen-ът взема адреса на wrapper-а
+                 * по ПЪЛНОТО (евент. преименувано) име; при дубликати от
+                 * няколко модула печели собственият модул, иначе грешка */
+                int first = -1, ownidx = -1;
+                const char *o1 = NULL, *o2 = NULL;
+                const char *own = mod_base(n->pos.file);
+                for (int i = 0; i < ctx->n_fns; i++) {
+                    if (strcmp(ctx->fns[i].name, n->name) != 0) continue;
+                    if (first < 0) first = i;
+                    if (strcmp(ctx->fns[i].origin, own) == 0) ownidx = i;
+                    if (!o1) o1 = ctx->fns[i].origin;
+                    else if (!o2 && strcmp(o1, ctx->fns[i].origin) != 0) o2 = ctx->fns[i].origin;
+                }
+                int chosen = ownidx >= 0 ? ownidx : first;
+                if (o2 && ownidx < 0) {
+                    check_error(ctx, n->pos,
+                        "нееднозначна fn референция '%s' — уточни с %s.%s или %s.%s",
+                        n->name, o1, n->name, o2, n->name);
+                }
+                Type *vt2 = type_fn(ft->ret, ft->params, ft->nparams);
+                vt2->name = ctx->fns[chosen].decl->fn_name;
+                n->name = strdup(ctx->fns[chosen].decl->fn_name);  /* codegen: strcmp с type->name */
+                t = vt2;
+                break;
+            }
             /* check enum variants */
             for (int vi = 0; vi < ctx->n_variants; vi++) {
                 if (strcmp(ctx->variants[vi].variant, n->name) == 0) {
@@ -1099,6 +1231,23 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             break;
 
         case NODE_FIELD: {
+            /* L5/L6: модул.функция като СТОЯНОСТ (без извикване) — когато
+             * лявата част не е локална променлива, а име на модул */
+            if (n->field_obj->kind == NODE_IDENT &&
+                !env_lookup(ctx, n->field_obj->name)) {
+                const char *mod = n->field_obj->name;
+                for (int i = 0; i < ctx->n_fns; i++) {
+                    if (strcmp(ctx->fns[i].origin, mod) == 0 &&
+                        strcmp(ctx->fns[i].name, n->field_name) == 0) {
+                        Type *ft = ctx->fns[i].fn_type;
+                        Type *vt2 = type_fn(ft->ret, ft->params, ft->nparams);
+                        vt2->name = ctx->fns[i].decl->fn_name;
+                        t = vt2;
+                        break;
+                    }
+                }
+                if (t) break;
+            }
             Type *ot = infer(ctx, n->field_obj);
             /* resolve field type from struct definition */
             if (ot && ot->kind == TYPE_STRUCT && ot->name) {
@@ -1262,6 +1411,19 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                         n->let_name, type_str(decl_t), type_str(init_t));
                 }
             }
+            /* L5: fn стойности — ефектен договор при wrap + без засенчване
+             * на глобални функции (пази --verify sound) */
+            if (decl_t->kind == TYPE_FN && init_t->kind == TYPE_FN &&
+                !fn_effects_subset(init_t, decl_t)) {
+                check_error(ctx, n->pos,
+                    "fn стойността на '%s' има ефекти извън анотацията %s",
+                    n->let_name, type_str(decl_t));
+            }
+            if (decl_t->kind == TYPE_FN && find_fn(ctx, n->let_name)) {
+                check_error(ctx, n->pos,
+                    "fn стойност '%s' засенчи глобална функция — преименувай я",
+                    n->let_name);
+            }
             env_define_mut(ctx, n->let_name, decl_t, n->is_mut, n->pos);
             t = type_new(TYPE_VOID);
             break;
@@ -1334,6 +1496,68 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             t = type_new(TYPE_VOID);
             break;
 
+        case NODE_LAMBDA: {
+            /* fn [caps] (params) -> ret { body } — L5. Captures са по
+             * стойност и идват от обкръжението; ефектите на тялото се
+             * сливат върху ТИПА на ламбдата (създаването ѝ е чисто). */
+            if (!n->fn_name) {
+                char lbuf[40];
+                snprintf(lbuf, sizeof lbuf, "__lam_%d", ctx->n_lambdas++);
+                n->fn_name = strdup(lbuf);
+            }
+            for (int i = 0; i < n->captures.len; i++) {
+                Node *cap = n->captures.data[i];
+                Type *ct2 = env_lookup(ctx, cap->param_name);
+                if (!ct2) {
+                    check_error(ctx, cap->pos,
+                        "лямбда capture '%s' не е дефиниран в обкръжението", cap->param_name);
+                    ct2 = type_new(TYPE_ERROR);
+                }
+                cap->type = ct2;
+            }
+            int np = n->params.len;
+            Type **params = NULL;
+            if (np > 0) {
+                params = malloc(sizeof(Type *) * (size_t)np);
+                for (int j = 0; j < np; j++) {
+                    params[j] = resolve_type_node(ctx, n->params.data[j]->param_type);
+                    n->params.data[j]->type = params[j];
+                }
+            }
+            Type *ret = n->ret_type ? resolve_type_node(ctx, n->ret_type)
+                                    : type_new(TYPE_VOID);
+            Type *saved_ret = ctx->cur_ret;
+            Type *saved_eff = ctx->cur_effects;
+            const char *saved_fn = ctx->cur_fn;
+            ctx->cur_ret = ret;
+            ctx->cur_effects = type_new(TYPE_VOID);
+            ctx->cur_fn = n->fn_name;
+            push_scope(ctx);
+            for (int i = 0; i < n->captures.len; i++)
+                env_define(ctx, n->captures.data[i]->param_name,
+                           n->captures.data[i]->type, n->captures.data[i]->pos);
+            for (int j = 0; j < np; j++) {
+                if (params[j]->kind == TYPE_FN && find_fn(ctx, n->params.data[j]->param_name))
+                    check_error(ctx, n->params.data[j]->pos,
+                        "fn параметър '%s' засенчи глобална функция — преименувай го",
+                        n->params.data[j]->param_name);
+                env_define(ctx, n->params.data[j]->param_name, params[j],
+                           n->params.data[j]->pos);
+            }
+            if (n->fn_body) {
+                for (int i = 0; i < n->fn_body->stmts.len; i++)
+                    infer(ctx, n->fn_body->stmts.data[i]);
+            }
+            if (ctx->cur_effects)
+                type_merge_effects(ret, ctx->cur_effects);
+            pop_scope(ctx);
+            ctx->cur_ret = saved_ret;
+            ctx->cur_effects = saved_eff;
+            ctx->cur_fn = saved_fn;
+            t = type_fn(ret, params, np);
+            break;
+        }
+
         case NODE_BREAK:
         case NODE_CONTINUE:
             t = type_new(TYPE_VOID);
@@ -1364,6 +1588,11 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
         Node *p = fn->params.data[i];
         Type *pt = resolve_type_node(ctx, p->param_type);
         p->type = pt;
+        if (pt->kind == TYPE_FN && find_fn(ctx, p->param_name)) {
+            check_error(ctx, p->pos,
+                "fn параметър '%s' засенчи глобална функция — преименувай го",
+                p->param_name);
+        }
         env_define(ctx, p->param_name, pt, p->pos);
     }
 

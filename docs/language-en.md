@@ -671,6 +671,44 @@ NULL; `Vec`/`Map` fields are NULL but `vec_len`/`map_len` tolerate NULL and
 return 0. The C backend implements maps natively (chained hash table, grows
 at load factor 3/4); the LLVM backend does not support `Map` yet.
 
+### 12.6 Function values and lambdas (L5)
+
+Functions are first-class values. A function value is typed
+`fn(T, ...) -> R` (effects allowed: `fn(i64) -> i64 !IO`) and may live in
+locals, parameters, return types, and as `Vec`/`Map` elements (method
+tables).
+
+```baga
+fn add(a: i64, b: i64) -> i64 { return a + b }
+
+fn apply(h: fn(i64) -> i64, x: i64) -> i64 { return h(x) }
+
+fn main() {
+    let f = add                       // named reference
+    let g: fn(i64, i64) -> i64 = sub  // annotated
+    print(f(2, 3))                    // 5
+
+    let n = 10
+    let lam = fn [n] (x: i64) -> i64 { return x + n }   // lambda
+    print(apply(lam, 5))              // 15
+
+    let ops: Vec<fn(i64) -> i64> = vec_new()            // fn in containers
+    vec_push(ops, lam)
+    print(vec_get(ops, 0)(7))         // 17
+}
+```
+
+- **Captures are explicit and by value**: `fn [a, b] (x: i64) -> i64 { ... }`
+  copies `a`/`b` into the closure; later mutation of the source variables
+  does not propagate. `Vec`/`Map` captures share the reference (as always).
+- A lambda's effects ride on its type: wrapping into a pure annotation
+  (`let g: fn() -> i64 = do_io`) is a compile error.
+- Module-qualified references work: `let q = http_client.http_get` (L6).
+- A fn-typed local may not shadow a global function name (keeps `--verify`
+  sound); calls through values are opaque to the verifier (honest skip).
+- The LLVM backend reports `unsupported` for function values; the C backend
+  represents them as `(code, env)` handles.
+
 ---
 
 ## 13. The Effect System

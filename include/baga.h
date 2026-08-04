@@ -165,6 +165,7 @@ typedef enum {
     NODE_TRY,         /* e? — effect propagation */
     NODE_CATCH,       /* e catch !E => handler */
     NODE_TO_STR,      /* interpolation: convert inner expr to str (type-directed) */
+    NODE_LAMBDA,      /* fn [caps] (params) -> ret { body } — L5 (fn union member) */
 
     /* statements */
     NODE_LET,
@@ -192,6 +193,7 @@ typedef enum {
     NODE_TYPE_REF,    /* &T */
     NODE_TYPE_ARRAY,  /* [T] */
     NODE_TYPE_EFFECT, /* T !E1 !E2 */
+    NODE_TYPE_FN,     /* fn(T, ...) -> R — L5 (fn union member: params/ret_type) */
 
     /* top level */
     NODE_PROGRAM,
@@ -310,13 +312,14 @@ struct Node {
         /* NODE_INVARIANT */
         struct { NodeVec inv_exprs; };
 
-        /* NODE_FN */
+        /* NODE_FN, NODE_TYPE_FN (params/ret_type), NODE_LAMBDA (+captures) */
         struct {
             char *fn_name;
             NodeVec params;     /* NODE_PARAM */
             Node *ret_type;     /* NULL → void */
             Node *fn_body;      /* NODE_BLOCK */
             int is_extern;      /* extern fn — no body, links against libc */
+            NodeVec captures;   /* NODE_LAMBDA: NODE_PARAM с checked ->type */
         };
 
         /* NODE_PARAM */
@@ -473,6 +476,7 @@ typedef struct {
     int   tmp_counter;
     Node *program;   /* for enum variant lookup */
     int   test_specs;   /* --test-specs: генерирай тестов драйвър вместо main */
+    FILE *lambda_out;   /* L5: env struct-ове + ламбда wrapper-и (преди телата) */
 } Codegen;
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);

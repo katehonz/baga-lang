@@ -23,7 +23,9 @@ enums land. Error codes map cleanly onto `Err(RpcError)`.
 
 **Severity.** High for a framework; fine for a fixed probe surface.
 
-**Verdict.** L5 — shared with fmrbaga G1 and queuebaga Q5.
+**Verdict.** **Unblocked 2026-08-05** — L5 shipped: `Map<str, fn(...)>`
+works (see `tests/std/fnval_test.baga`'s method table). Migrating
+`rpc_dispatch` to a registered table is optional cleanup.
 
 ## R3 — nested concat for JSON encode
 

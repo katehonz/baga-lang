@@ -12,8 +12,9 @@ canonical closure use case — handlers as values, registered per render.
 
 **Severity.** High for a template *framework*; fine for a fixed probe.
 
-**Verdict.** L5 — same lineage as fmrbaga G1, queuebaga Q5, jsonrpcbaga R2.
-№7 confirms handler-style APIs are the loudest L5 customer.
+**Verdict.** **Unblocked 2026-08-05** — L5 shipped; a registered filter
+table (`Map<str, fn(str)->str>`) is expressible today. The name switch
+stays (working, tested); migration is optional cleanup.
 
 ## P2 — no Result / sum types (L3)
 

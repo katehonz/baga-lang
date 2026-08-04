@@ -128,6 +128,25 @@ static void emit_type(Codegen *cg, Node *ty) {
     }
 }
 
+/* C spelling от проверен (checker) Type — за fn-стойностните сигнатури (L5) */
+static void emit_ctype(Codegen *cg, Type *t) {
+    FILE *f = cg->out;
+    if (!t) { fprintf(f, "void"); return; }
+    switch (t->kind) {
+        case TYPE_I32:   fprintf(f, "int32_t"); break;
+        case TYPE_I64:   fprintf(f, "int64_t"); break;
+        case TYPE_F64:   fprintf(f, "double"); break;
+        case TYPE_BOOL:  fprintf(f, "int"); break;
+        case TYPE_STR:   fprintf(f, "const char *"); break;
+        case TYPE_BYTES: fprintf(f, "baga_bytes"); break;
+        case TYPE_VOID:  fprintf(f, "void"); break;
+        case TYPE_VEC:   fprintf(f, "baga_Vec *"); break;
+        case TYPE_MAP:   fprintf(f, "baga_Map *"); break;
+        case TYPE_STRUCT: emit_mangled(f, t->name ? t->name : "anon"); break;
+        default:         fprintf(f, "int64_t"); break;   /* TYPE_FN → handle */
+    }
+}
+
 /* ---- C string escaping ---- */
 
 static void emit_c_string(FILE *f, const char *s) {
@@ -157,6 +176,7 @@ static void emit_c_string(FILE *f, const char *s) {
 /* ---- expression emission ---- */
 
 static void emit_expr(Codegen *cg, Node *n);
+static void emit_stmt(Codegen *cg, Node *n);
 static void emit_zero_struct(Codegen *cg, const char *name);
 
 static const char *binop_c(BinOp op) {
@@ -264,6 +284,15 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_IDENT: {
+            /* L5: глобална fn като стойност → handle към wrapper-а. Локална
+             * fn-typed променлива има type->name == NULL или различно име. */
+            if (n->type && n->type->kind == TYPE_FN && n->type->name &&
+                strcmp(n->name, n->type->name) == 0) {
+                char *m = mangle_name(n->type->name);
+                fprintf(f, "(int64_t)baga_cell2((int64_t)(void *)%s__clo, 0)", m);
+                free(m);
+                break;
+            }
             /* check if it's an enum variant */
             int found_variant = 0;
             if (cg->program) {
@@ -597,6 +626,27 @@ static void emit_expr(Codegen *cg, Node *n) {
                     }
                 }
             }
+            /* L5: извикване през fn стойност (checker маркер: TYPE_FN без име) */
+            if (n->callee->type && n->callee->type->kind == TYPE_FN &&
+                !n->callee->type->name) {
+                Type *ft2 = n->callee->type;
+                fprintf(f, "({ int64_t _h = (int64_t)(");
+                emit_expr(cg, n->callee);
+                fprintf(f, "); ((");
+                emit_ctype(cg, ft2->ret);
+                fprintf(f, " (*)(void *");
+                for (int i = 0; i < ft2->nparams; i++) {
+                    fprintf(f, ", ");
+                    emit_ctype(cg, ft2->params[i]);
+                }
+                fprintf(f, "))(intptr_t)baga_cell2_0(_h))((void *)(intptr_t)baga_cell2_1(_h)");
+                for (int i = 0; i < n->args.len; i++) {
+                    fprintf(f, ", ");
+                    emit_expr(cg, n->args.data[i]);
+                }
+                fprintf(f, "); })");   /* stmt-expr: последният израз с ';' е стойността */
+                goto call_done;
+            }
             {
                 char *m = NULL;
                 if (n->callee->kind == NODE_IDENT) {
@@ -664,6 +714,13 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_FIELD: {
+            /* L5/L6: модул.функция като стойност → handle към wrapper-а */
+            if (n->type && n->type->kind == TYPE_FN && n->type->name) {
+                char *m = mangle_name(n->type->name);
+                fprintf(f, "(int64_t)baga_cell2((int64_t)(void *)%s__clo, 0)", m);
+                free(m);
+                break;
+            }
             emit_expr(cg, n->field_obj);
             char *fm = mangle_name(n->field_name);
             fprintf(f, ".%s", fm);
@@ -723,6 +780,97 @@ static void emit_expr(Codegen *cg, Node *n) {
                 emit_expr(cg, n->to_str_expr);
                 fprintf(f, ")");
             }
+            break;
+        }
+
+        case NODE_LAMBDA: {
+            /* L5: env struct + wrapper се емитват в lambda_out (в изхода —
+             * преди телата на функциите); тялото на wrapper-а — в собствен
+             * memstream, за да не се преплитат вложени ламбди. Тук остава
+             * само statement expression-ът, който строи handle-а. */
+            Type *ft = n->type;
+            char *lm = mangle_name(n->fn_name ? n->fn_name : "__lam_x");
+            char env_name[128];
+            snprintf(env_name, sizeof env_name, "b_env%s", lm + 1);  /* lm е "b_..." → b_env_lam... */
+            FILE *lf = cg->lambda_out ? cg->lambda_out : f;
+
+            char *bb = NULL;
+            size_t bs = 0;
+            FILE *mb = open_memstream(&bb, &bs);
+            FILE *saved = cg->out;
+            cg->out = mb;
+            /* env struct */
+            fprintf(mb, "typedef struct {\n");
+            for (int i = 0; i < n->captures.len; i++) {
+                Node *cap = n->captures.data[i];
+                fprintf(mb, "    ");
+                emit_ctype(cg, cap->type);
+                fprintf(mb, " ");
+                char *cm = mangle_name(cap->param_name);
+                fprintf(mb, "%s;\n", cm);
+                free(cm);
+            }
+            fprintf(mb, "} %s;\n\n", env_name);
+            /* wrapper */
+            fprintf(mb, "static ");
+            emit_ctype(cg, ft && ft->kind == TYPE_FN ? ft->ret : NULL);
+            fprintf(mb, " %s(void *_env", lm);
+            for (int i = 0; i < n->params.len; i++) {
+                Node *p = n->params.data[i];
+                fprintf(mb, ", ");
+                emit_type(cg, p->param_type);
+                fprintf(mb, " ");
+                char *pm = mangle_name(p->param_name);
+                fprintf(mb, "%s", pm);
+                free(pm);
+            }
+            fprintf(mb, ") {\n");
+            if (n->captures.len > 0) {
+                fprintf(mb, "    %s *_e = (%s *)_env;\n", env_name, env_name);
+                for (int i = 0; i < n->captures.len; i++) {
+                    Node *cap = n->captures.data[i];
+                    fprintf(mb, "    ");
+                    emit_ctype(cg, cap->type);
+                    fprintf(mb, " ");
+                    char *cm = mangle_name(cap->param_name);
+                    fprintf(mb, "%s = _e->%s;\n", cm, cm);
+                    free(cm);
+                }
+            }
+            if (n->fn_body) {
+                int has_ret = n->ret_type != NULL;
+                NodeVec *stmts = &n->fn_body->stmts;
+                cg->indent++;
+                for (int i = 0; i < stmts->len; i++) {
+                    Node *s = stmts->data[i];
+                    if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
+                        cg->indent--;
+                        emit_indent(cg);
+                        fprintf(mb, "return ");
+                        emit_expr(cg, s->expr);
+                        fprintf(mb, ";\n");
+                        cg->indent++;
+                    } else {
+                        emit_stmt(cg, s);
+                    }
+                }
+                cg->indent--;
+            }
+            fprintf(mb, "}\n\n");
+            fclose(mb);
+            cg->out = saved;
+            fwrite(bb, 1, bs, lf);
+            free(bb);
+
+            /* handle: ({ env *e = alloc; e->cap = local; cell2(wrapper, env) }) */
+            fprintf(f, "({ %s *_e = baga_alloc(sizeof(%s)); ", env_name, env_name);
+            for (int i = 0; i < n->captures.len; i++) {
+                char *cm = mangle_name(n->captures.data[i]->param_name);
+                fprintf(f, "_e->%s = %s; ", cm, cm);
+                free(cm);
+            }
+            fprintf(f, "(int64_t)baga_cell2((int64_t)(void *)%s, (int64_t)(void *)_e); })", lm);
+            free(lm);
             break;
         }
 
@@ -1018,6 +1166,41 @@ static int is_verifier_only_annotation(Node *e) {
     return 0;
 }
 
+/* L5: closure wrapper за потребителска функция — адресът му се взима от fn
+ * стойности; вика публичното име (с евент. spec проверки). Емитва се в
+ * lambda_out, който в изхода е преди телата на функциите. */
+static void emit_clo_wrapper(Codegen *cg, Node *fn) {
+    if (fn->is_extern) return;
+    FILE *lf = cg->lambda_out ? cg->lambda_out : cg->out;
+    char *wm = mangle_name(fn->fn_name);
+    FILE *saved = cg->out;
+    cg->out = lf;
+    fprintf(lf, "static __attribute__((unused)) ");
+    if (fn->ret_type) emit_type(cg, fn->ret_type); else fprintf(lf, "void");
+    fprintf(lf, " %s__clo(void *_env", wm);
+    for (int i = 0; i < fn->params.len; i++) {
+        Node *p = fn->params.data[i];
+        fprintf(lf, ", ");
+        emit_type(cg, p->param_type);
+        fprintf(lf, " ");
+        char *pm = mangle_name(p->param_name);
+        fprintf(lf, "%s", pm);
+        free(pm);
+    }
+    fprintf(lf, ") {\n    (void)_env;\n    ");
+    if (fn->ret_type) fprintf(lf, "return ");
+    fprintf(lf, "%s(", wm);
+    for (int i = 0; i < fn->params.len; i++) {
+        if (i > 0) fprintf(lf, ", ");
+        char *pm = mangle_name(fn->params.data[i]->param_name);
+        fprintf(lf, "%s", pm);
+        free(pm);
+    }
+    fprintf(lf, ");\n}\n\n");
+    free(wm);
+    cg->out = saved;
+}
+
 static void emit_fn(Codegen *cg, Node *fn) {
     FILE *f = cg->out;
 
@@ -1086,7 +1269,12 @@ static void emit_fn(Codegen *cg, Node *fn) {
     }
     fprintf(f, "\n\n");
 
-    if (!ensures_spec) return;
+    if (!ensures_spec) {
+        /* L5: closure wrapper — fn стойностите вземат адреса му; в
+         * lambda_out (преди телата на функциите в изхода) */
+        emit_clo_wrapper(cg, fn);
+        return;
+    }
 
     /* wrapper: публичното име, проверява requires преди и ensures след повикването */
     if (fn->ret_type) {
@@ -1180,6 +1368,9 @@ static void emit_fn(Codegen *cg, Node *fn) {
     cg->indent--;
     emit_indent(cg);
     fprintf(f, "}\n\n");
+
+    /* L5: closure wrapper и за spec-обвитите функции (викa публичното име) */
+    emit_clo_wrapper(cg, fn);
 }
 
 /* ---- struct emission ---- */
@@ -2179,12 +2370,28 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     /* forward declarations */
     emit_forward_decls(cg, program);
 
-    /* function definitions */
+    /* function definitions (L5: през memstream — env struct-овете и
+     * wrapper-ите на ламбдите/функциите (lambda_out) трябва да стоят ПРЕДИ
+     * телата в изхода, без AST pre-pass) */
+    char *fbuf = NULL, *lbuf = NULL;
+    size_t fsize = 0, lsize = 0;
+    FILE *fa = open_memstream(&fbuf, &fsize);
+    cg->lambda_out = open_memstream(&lbuf, &lsize);
+    FILE *saved_out = cg->out;
+    cg->out = fa;
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
         if (item->kind == NODE_FN && item->fn_body)
             emit_fn(cg, item);
     }
+    fclose(fa);
+    fclose(cg->lambda_out);
+    cg->out = saved_out;
+    cg->lambda_out = NULL;
+    fwrite(lbuf, 1, lsize, out);
+    fwrite(fbuf, 1, fsize, out);
+    free(lbuf);
+    free(fbuf);
 
     if (cg->test_specs) {
         emit_test_driver(cg, program);

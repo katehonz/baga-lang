@@ -260,6 +260,41 @@ static Node *parse_type_with_effects(Parser *p, Node *base) {
 static Node *parse_type(Parser *p) {
     SrcPos pos = cur(p)->pos;
 
+    /* fn(T, ...) -> R [!E ...] — функционален тип (L5) */
+    if (check(p, TOK_FN)) {
+        advance(p);
+        expect(p, TOK_LPAREN);
+        Node *t = node_alloc(NODE_TYPE_FN, pos);
+        t->fn_name = NULL;
+        t->params.len = 0; t->params.cap = 0; t->params.data = NULL;
+        t->ret_type = NULL;
+        t->fn_body = NULL;
+        t->is_extern = 0;
+        t->captures.len = 0; t->captures.cap = 0; t->captures.data = NULL;
+        if (!check(p, TOK_RPAREN)) {
+            do {
+                Node *pt = parse_type(p);
+                Node *prm = node_alloc(NODE_PARAM, pt->pos);
+                prm->param_name = NULL;
+                prm->param_type = pt;
+                vec_push(t->params, prm);
+            } while (match(p, TOK_COMMA));
+        }
+        expect(p, TOK_RPAREN);
+        if (match(p, TOK_ARROW)) {
+            t->ret_type = parse_type(p);
+        }
+        /* ефекти директно върху fn типа: fn(i64) -> i64 !IO — същият
+         * NODE_TYPE_EFFECT механизъм като при декларациите (върху ret) */
+        if (!t->ret_type) {
+            Node *v = node_alloc(NODE_TYPE, pos);
+            v->type_name = strdup("void");
+            t->ret_type = v;
+        }
+        t->ret_type = parse_type_with_effects(p, t->ret_type);
+        return t;
+    }
+
     /* &T — reference */
     if (match(p, TOK_AMP)) {
         Node *inner = parse_type(p);
@@ -566,6 +601,49 @@ static Node *parse_primary(Parser *p) {
     /* block expression */
     if (check(p, TOK_LBRACE)) {
         return parse_block(p);
+    }
+
+    /* lambda (L5): fn [a, b] (x: i64) -> i64 { body } — captures по стойност */
+    if (check(p, TOK_FN)) {
+        advance(p);
+        Node *n = node_alloc(NODE_LAMBDA, pos);
+        n->fn_name = NULL;
+        n->params.len = 0; n->params.cap = 0; n->params.data = NULL;
+        n->captures.len = 0; n->captures.cap = 0; n->captures.data = NULL;
+        n->ret_type = NULL;
+        n->is_extern = 0;
+        if (match(p, TOK_LBRACKET)) {
+            if (!check(p, TOK_RBRACKET)) {
+                do {
+                    Token *ct = expect(p, TOK_IDENT);
+                    Node *cap = node_alloc(NODE_PARAM, ct->pos);
+                    cap->param_name = ct->text ? strdup(ct->text) : NULL;
+                    cap->param_type = NULL;
+                    vec_push(n->captures, cap);
+                } while (match(p, TOK_COMMA));
+            }
+            expect(p, TOK_RBRACKET);
+        }
+        expect(p, TOK_LPAREN);
+        if (!check(p, TOK_RPAREN)) {
+            do {
+                SrcPos ppos = cur(p)->pos;
+                Token *pt = expect(p, TOK_IDENT);
+                expect(p, TOK_COLON);
+                Node *ptype = parse_type(p);
+                Node *prm = node_alloc(NODE_PARAM, ppos);
+                prm->param_name = pt->text ? strdup(pt->text) : NULL;
+                prm->param_type = ptype;
+                vec_push(n->params, prm);
+            } while (match(p, TOK_COMMA));
+        }
+        expect(p, TOK_RPAREN);
+        if (match(p, TOK_ARROW)) {
+            n->ret_type = parse_type(p);
+            n->ret_type = parse_type_with_effects(p, n->ret_type);
+        }
+        n->fn_body = parse_block(p);
+        return n;
     }
 
     parser_error(p, "очаквах израз, получих '%s'", token_kind_str(peek_kind(p)));

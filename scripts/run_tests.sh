@@ -313,6 +313,22 @@ printf 'fn dup() -> i64 { return 1 }\nfn dup() -> i64 { return 2 }\nfn main() { 
 run /tmp/baga_ns_dup.baga 2>&1 | grep -q "повторна дефиниция на функция 'dup'" \
 	&& echo "OK: L6 — дубликат в един модул е checker грешка (не от gcc)" \
 	|| { echo "FAIL: повторната дефиниция трябва да гърми в checker-а"; exit 1; }
+printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let f = add\n    print(f("x", 1))\n}\n' > /tmp/baga_fn_bad1.baga
+run /tmp/baga_fn_bad1.baga 2>&1 | grep -q "fn стойност: аргумент #1 е от тип str, но параметърът е i64" \
+	&& echo "OK: L5 — грешен аргумент през fn стойност е отхвърлен" \
+	|| { echo "FAIL: fn value arg mismatch трябва да гърми"; exit 1; }
+printf 'fn do_io() -> i64 !IO { print("x") return 1 }\nfn main() {\n    let g: fn() -> i64 = do_io\n    print(g())\n}\n' > /tmp/baga_fn_bad2.baga
+run /tmp/baga_fn_bad2.baga 2>&1 | grep -q "има ефекти извън анотацията" \
+	&& echo "OK: L5 — ефектно несъвместим wrap е отхвърлен" \
+	|| { echo "FAIL: !IO в чиста fn анотация трябва да гърми"; exit 1; }
+printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let add = fn (x: i64) -> i64 { return x }\n    print(add(1))\n}\n' > /tmp/baga_fn_bad3.baga
+run /tmp/baga_fn_bad3.baga 2>&1 | grep -q "засенчи глобална функция" \
+	&& echo "OK: L5 — fn стойност не може да засенчи глобална функция" \
+	|| { echo "FAIL: shadowing ban трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let x = 5\n    print(x(1))\n}\n' > /tmp/baga_fn_bad4.baga
+run /tmp/baga_fn_bad4.baga 2>&1 | grep -q "извикване на не-функция 'x' (i64)" \
+	&& echo "OK: L5 — извикване на скалар е ясна грешка" \
+	|| { echo "FAIL: извикване на не-функция трябва да гърми"; exit 1; }
 printf 'struct A { x: i64 }\nfn main() {\n    let v: Vec<A> = vec_new()\n    vec_push(v, 5)\n}\n' > /tmp/baga_vec_bad3.baga
 run /tmp/baga_vec_bad3.baga 2>&1 | grep -q "елемент от тип i64, но векторът е Vec<A>" \
 	&& echo "OK: Vec<struct> — скаларен елемент е отхвърлен (L4)" \

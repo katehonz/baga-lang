@@ -1,0 +1,108 @@
+// fnval_test.baga — L5: function values & closures. Named references,
+// annotations, apply-style params, lambdas with by-value captures,
+// closures in containers (method table), effect-carrying fn types.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+fn sub(a: i64, b: i64) -> i64 {
+    return a - b
+}
+
+fn shout(s: str) -> str {
+    return concat(s, "!")
+}
+
+fn whisper(s: str) -> str {
+    return concat(s, "...")
+}
+
+fn apply(h: fn(i64) -> i64, x: i64) -> i64 {
+    return h(x)
+}
+
+fn twice(h: fn(i64) -> i64, x: i64) -> i64 {
+    return h(h(x))
+}
+
+// closure factory: the env box outlives the call (arena)
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    return fn [n] (x: i64) -> i64 { return x + n }
+}
+
+fn main() {
+    // --- named reference ---
+    let f = add
+    check("named_call", f(2, 3) == 5)
+
+    // --- annotation + reassignment (mut) ---
+    let mut g: fn(i64, i64) -> i64 = add
+    check("annotated", g(10, 5) == 15)
+    g = sub
+    check("reassigned", g(10, 5) == 5)
+
+    // --- fn as parameter ---
+    let inc = fn (x: i64) -> i64 { return x + 1 }
+    check("apply_lambda", apply(inc, 41) == 42)
+    check("apply_named_twice", twice(inc, 40) == 42)
+
+    // --- captures: by value ---
+    let a = 10
+    let lam = fn [a] (x: i64) -> i64 { return a + x }
+    let mut a2 = 100
+    let lam2 = fn [a2] (x: i64) -> i64 { return a2 + x }
+    a2 = 200
+    check("capture_value", lam(5) == 15)
+    check("capture_frozen", lam2(5) == 105)
+
+    // --- capture a str + a Vec (reference stays shared) ---
+    let prefix = "език"
+    let words = vec_new()
+    vec_push(words, "б")
+    let lam3 = fn [prefix, words] (x: i64) -> str {
+        vec_push(words, "а")
+        return concat(prefix, int_to_str(x))
+    }
+    check("capture_str", lam3(1) == "език1")
+    check("capture_vec_shared", vec_len(words) == 2)
+
+    // --- closure factory ---
+    let add5 = make_adder(5)
+    let add7 = make_adder(7)
+    check("factory_5", add5(10) == 15)
+    check("factory_7", add7(10) == 17)
+    check("factory_independent", add5(0) == 5)
+
+    // --- fn values in Vec<i64>... по-точно Vec<fn(i64)->i64> ---
+    let ops: Vec<fn(i64) -> i64> = vec_new()
+    vec_push(ops, inc)
+    vec_push(ops, add5)
+    check("vec_fn", vec_get(ops, 0)(9) == 10)
+    check("vec_fn2", vec_get(ops, 1)(9) == 14)
+
+    // --- method table: Map<str, fn(str)->str> (jsonrpcbaga R2 идиом) ---
+    let methods: Map<str, fn(str) -> str> = map_new()
+    map_set(methods, "shout", shout)
+    map_set(methods, "whisper", whisper)
+    check("table_shout", map_get(methods, "shout")("бага") == "бага!")
+    check("table_whisper", map_get(methods, "whisper")("бага") == "бага...")
+    check("table_dispatch", map_get(methods, "shout")("x") == shout("x"))
+
+    // --- module-qualified fn value (L6 + L5) ---
+    let q = str_trim
+    check("qualified_ref", q("  х  ") == "х")
+
+    print("fnval_test: all passed")
+}

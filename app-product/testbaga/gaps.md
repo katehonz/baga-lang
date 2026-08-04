@@ -35,8 +35,9 @@ opendir). Natural follow-up to this probe.
 
 **Severity.** Medium for large suites; fine for current repo scale.
 
-**Verdict.** Closures/function values (L5) — №7 will press harder. Until
-then, statement-style tests are the Baga idiom.
+**Verdict.** **Unblocked 2026-08-05** — L5 shipped (lambdas with
+by-value captures + fn values in `Vec`/`Map`), so `test("name", fn)`
+is expressible. Statement-style tests remain the repo idiom for now.
 
 ## T4 — Suite is by-value field rebuild
 

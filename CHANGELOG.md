@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Language — function values & closures (L5)
+- Functions are first-class values, typed `fn(T, ...) -> R` (effects
+  allowed: `fn(i64) -> i64 !IO`), usable in locals, parameters, return
+  types, and as `Vec`/`Map` elements — method tables work
+  (`Map<str, fn(str)->str>`).
+- **Named references** (`let f = add`) and **lambdas with explicit
+  by-value captures** (`fn [a, b] (x: i64) -> i64 { ... }`; later
+  mutation of the source doesn't propagate, `Vec`/`Map` captures share
+  the reference). Closures can be returned from functions (env box lives
+  in the arena).
+- C backend: a fn value is an i64 `(code, env)` handle over the par
+  runtime's `cell2`; every user fn gets a `__clo` wrapper; lambdas
+  compile to a synthetic env struct + wrapper, emitted before the fn
+  bodies via memstreams (no AST pre-pass). Calls go through a statically
+  typed function-pointer cast.
+- Checker: structural `type_eq` for fn types; effect contract at wrap
+  time (the value's effects must fit the annotation); **fn-typed locals
+  may not shadow global functions** (keeps `--verify` sound — calls
+  through values are opaque to it, honest skip); clear errors for
+  calling non-functions and for ambiguous fn references (L6 rule:
+  caller's own module wins).
+- LLVM backend: honest `unsupported` for fn values.
+- Unblocked gaps: jsonrpcbaga **R2**, tplbaga **P1**, testbaga **T3**
+  (migrations optional; the probe tests live in
+  `tests/std/fnval_test.baga`, 18 checks + 4 negative probes).
+- Docs: §12.6 in both languages; spec in
+  `docs/superpowers/specs/2026-08-05-l5-closures-design.md`.
+
 ### TLS 1.3 — TLS_AES_256_GCM_SHA384 (0x1302) negotiated end to end
 - New `std/crypto/sha512.baga`: SHA-384/SHA-512 (FIPS 180-4) with 64-bit
   words as hi/lo 32-bit halves — no intermediate exceeds 2^33, the same

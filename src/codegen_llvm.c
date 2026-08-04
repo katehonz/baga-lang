@@ -1852,6 +1852,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             return LLVMBuildGlobalStringPtr(lg.builder, n->str_val, "str");
 
         case NODE_IDENT: {
+            /* L5: fn стойности (closures) са само в C бекенда */
+            if (n->type && n->type->kind == TYPE_FN)
+                llvm_unsupported("fn стойности/closures (само C бекенда; вж. docs/language-en.md §12.6)");
             LLVMValueRef alloca = st_lookup(n->name);
             if (alloca) {
                 char *name = tmp_name();
