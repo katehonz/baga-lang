@@ -1,0 +1,40 @@
+// ns_test.baga — L6 namespaces: module-qualified calls, main-file
+// precedence, unique names from duplicated modules.
+
+import "tests/ns_mods/alfa.baga"
+import "tests/ns_mods/beta.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// Собствената дефиниция печели при неуточнено извикване.
+fn who() -> str {
+    return "главен"
+}
+
+fn main() {
+    check("qualified_alfa", alfa.who() == "алфа")
+    check("qualified_beta", beta.who() == "бета")
+    check("main_wins_unqualified", who() == "главен")
+    check("alfa_unique_short", alfa_only() == "само алфа")
+    check("beta_unique_short", beta_only() == "само бета")
+    check("alfa_unique_qualified", alfa.alfa_only() == "само алфа")
+    check("qualified_args", concat(alfa.who(), beta.who()) == "алфабета")
+
+    // локална променлива с име на модул → field достъп, не модул
+    let pt = Point { x: 3, y: 4 }
+    check("struct_shadow", pt.x + pt.y == 7)
+
+    print("ns_test: all passed")
+}
+
+struct Point {
+    x: i64,
+    y: i64
+}

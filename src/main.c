@@ -92,7 +92,10 @@ static void collect_tokens(const char *path, TokenVec *out,
     int src_len = 0;
     char *src = read_file(path, &src_len);
     Lexer lexer;
-    lexer_init(&lexer, src, src_len, path);
+    /* canon (не path!): 'path' за импортите е stack буферът `resolved`,
+     * който умира — токените пазят filename за origin на модулите (L6);
+     * canon е собственост на include guard-а и живее до края */
+    lexer_init(&lexer, src, src_len, canon);
     VEC(Token) ftoks = {0};
     for (;;) {
         Token t = lexer_next(&lexer);
@@ -233,6 +236,7 @@ int main(int argc, char **argv) {
     eof.kind = TOK_EOF;
     eof.pos.line = 1;
     eof.pos.col = 1;
+    eof.pos.file = input_path;
     eof.text = strdup("");
     vec_push(tokens, eof);
 

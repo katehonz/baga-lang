@@ -24,6 +24,7 @@
 typedef struct {
     int line;
     int col;
+    const char *file;   /* origin file (import expansion keeps it; NULL = unknown) */
 } SrcPos;
 
 /* Growable array — usage:

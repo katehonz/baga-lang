@@ -1311,7 +1311,7 @@ Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename)
     p->filename = filename;
     p->n_errors = 0;
 
-    SrcPos pos = { 1, 1 };
+    SrcPos pos = { 1, 1, filename };
     Node *prog = node_alloc(NODE_PROGRAM, pos);
     prog->items.len = 0; prog->items.cap = 0; prog->items.data = NULL;
 

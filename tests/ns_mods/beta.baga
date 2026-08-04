@@ -1,0 +1,8 @@
+// beta.baga — namespace test module (L6): shares `who` with alfa.baga.
+fn who() -> str {
+    return "бета"
+}
+
+fn beta_only() -> str {
+    return "само бета"
+}

@@ -438,7 +438,7 @@ static Token lex_number(Lexer *l, SrcPos start) {
 Token lexer_next(Lexer *l) {
     skip_ws(l);
 
-    SrcPos start = { l->line, l->col };
+    SrcPos start = { l->line, l->col, l->filename };
 
     if (l->pos >= l->len)
         return make_token(l, TOK_EOF, start, NULL);

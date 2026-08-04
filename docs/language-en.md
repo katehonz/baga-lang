@@ -1237,6 +1237,21 @@ file (with an include guard and cycle detection). Lookup order: (1) relative
 to the current file, (2) in each `-I` directory in the order given,
 (3) relative to the working directory.
 
+**Namespaces.** Every imported file is also a *module* named after its
+basename without `.baga` (`std/net/http_client.baga` → module
+`http_client`), and its functions can be called qualified:
+`http_client.http_get(url)`. Two modules may define the same function name
+— this is legal now, and each definition gets a unique internal symbol
+(`module.name`). For an **unqualified** call the resolution order is:
+(1) the current file's own definition wins, (2) otherwise the single
+imported module that defines it, (3) otherwise a compile error listing the
+candidate modules (`нееднозначно извикване на 'f' …`). A local variable
+whose name equals a module name shadows the module (struct field access
+keeps working). Two functions with the same name in the *same* module are
+a checker error (`повторна дефиниция`) — forward declarations (`fn f(...)`
+without a body) plus one implementation are fine. Struct and enum names
+stay global (no qualification yet), as do `go` worker references.
+
 In a packaged project the import carries the package name —
 `import "fmrbaga/app.baga"`, `import "std/str/str.baga"` — and the `-I` flags
 are computed automatically by the **sandak** package manager from the

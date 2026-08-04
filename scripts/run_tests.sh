@@ -292,6 +292,22 @@ printf 'struct A { x: i64 }\nstruct B { x: i64 }\nfn main() {\n    let m: Map<st
 run /tmp/baga_map_bad3.baga 2>&1 | grep -q "стойност от тип B, но картата е Map<str, A>" \
 	&& echo "OK: Map<str,struct> — различни struct стойности не се смесват (L4)" \
 	|| { echo "FAIL: Map<str,A> със set на B трябва да гърми"; exit 1; }
+printf 'import "tests/ns_mods/alfa.baga"\nimport "tests/ns_mods/beta.baga"\nfn main() {\n    print(who())\n}\n' > /tmp/baga_ns_amb.baga
+run /tmp/baga_ns_amb.baga 2>&1 | grep -q "нееднозначно извикване на 'who'" \
+	&& echo "OK: L6 — неуточнено извикване при дубликат е грешка с подсказка" \
+	|| { echo "FAIL: нееднозначното извикване трябва да гърми"; exit 1; }
+printf 'import "tests/ns_mods/alfa.baga"\nfn main() {\n    print(gama.who())\n}\n' > /tmp/baga_ns_unk.baga
+run /tmp/baga_ns_unk.baga 2>&1 | grep -q "непознат модул 'gama'" \
+	&& echo "OK: L6 — непознат модул е ясна грешка" \
+	|| { echo "FAIL: непознатият модул трябва да гърми"; exit 1; }
+printf 'import "tests/ns_mods/alfa.baga"\nfn main() {\n    print(alfa.nope())\n}\n' > /tmp/baga_ns_nofn.baga
+run /tmp/baga_ns_nofn.baga 2>&1 | grep -q "модулът 'alfa' няма функция 'nope'" \
+	&& echo "OK: L6 — липсваща функция в модул е ясна грешка" \
+	|| { echo "FAIL: alfa.nope трябва да гърми"; exit 1; }
+printf 'fn dup() -> i64 { return 1 }\nfn dup() -> i64 { return 2 }\nfn main() { print(dup()) }\n' > /tmp/baga_ns_dup.baga
+run /tmp/baga_ns_dup.baga 2>&1 | grep -q "повторна дефиниция на функция 'dup'" \
+	&& echo "OK: L6 — дубликат в един модул е checker грешка (не от gcc)" \
+	|| { echo "FAIL: повторната дефиниция трябва да гърми в checker-а"; exit 1; }
 printf 'struct A { x: i64 }\nfn main() {\n    let v: Vec<A> = vec_new()\n    vec_push(v, 5)\n}\n' > /tmp/baga_vec_bad3.baga
 run /tmp/baga_vec_bad3.baga 2>&1 | grep -q "елемент от тип i64, но векторът е Vec<A>" \
 	&& echo "OK: Vec<struct> — скаларен елемент е отхвърлен (L4)" \

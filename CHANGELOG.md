@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Language — namespaces (L6): module-qualified calls
+- Every imported file is a **module** named by its basename
+  (`std/net/http_client.baga` → `http_client`); its functions are
+  callable qualified: `http_client.http_get(url)`. Same-named functions
+  in different modules are now legal — each decl gets a unique internal
+  symbol `module.name`, so the gcc "redefinition" wall is gone.
+- Unqualified resolution: the **current file's own** definition wins,
+  then the single module defining the name, otherwise a compile error
+  (`нееднозначно извикване на 'who' — има я в модулите 'alfa' и 'beta';
+  уточни с alfa.who или beta.who`). A local variable named like a module
+  shadows it (field access unaffected).
+- Same-module duplicates are now a **checker** error (`повторна
+  дефиниция на функция`, was: gcc redefinition); forward declaration +
+  one implementation stays legal (self/compiler.baga relies on it).
+- Clear errors for `unknown.module(...)` and `module.missing_fn(...)`.
+- Mechanism: `SrcPos.file` — token/node origin survives the textual
+  import expansion (this also unlocks G13 error attribution later).
+  Fixed a **latent use-after-scope**: imported files were lexed with a
+  filename pointing at the `resolved` stack buffer in `collect_tokens`.
+- Scope honestly documented: structs/enums and `go` worker references
+  stay global; no `import ... as` alias yet.
+- Tests: `tests/ns_mods/{alfa,beta}.baga` + `tests/std/ns_test.baga`
+  (qualified calls, main precedence, shadowing) + 4 negative probes in
+  `scripts/run_tests.sh`. Docs: §18.1 in both languages.
+
 ### Language — `Map<K, struct>` (the last piece of L4)
 - Map values may now be struct types — in annotations (`Map<str, Sess>`)
   and in fix-on-first-use inference; struct value types compare **by

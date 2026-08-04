@@ -170,7 +170,8 @@ typedef struct {
 
     /* function registry */
     struct {
-        char *name;
+        char *name;          /* късо име (както е в източника) */
+        const char *origin;  /* модул: basename на файла без .baga ("" = неизвестен) */
         Type *fn_type;   /* TYPE_FN */
         Node *decl;      /* NODE_FN */
     } fns[FNS_MAX];
@@ -200,6 +201,7 @@ typedef struct {
 
     Checker *chk;
     const char *cur_fn;
+    const char *main_base; /* модул на главния файл (L6 предимство при неуточнени извиквания) */
     Type *cur_ret;   /* expected return type of current function */
     Type *cur_effects; /* accumulated effects in current function body */
 } CheckCtx;
@@ -389,11 +391,32 @@ static int env_is_mut(CheckCtx *ctx, const char *name) {
 }
 
 static Type *find_fn(CheckCtx *ctx, const char *name) {
+    /* пълно (евентуално преименувано „модул.име") име — уникално (L6) */
+    for (int i = 0; i < ctx->n_fns; i++) {
+        if (ctx->fns[i].decl->fn_name &&
+            strcmp(ctx->fns[i].decl->fn_name, name) == 0)
+            return ctx->fns[i].fn_type;
+    }
+    /* късо име — първото съвпадение (историческо поведение) */
     for (int i = 0; i < ctx->n_fns; i++) {
         if (strcmp(ctx->fns[i].name, name) == 0)
             return ctx->fns[i].fn_type;
     }
     return NULL;
+}
+
+/* модулно име от път: basename без .baga (нов низ; NULL → "") */
+static char *mod_base(const char *path) {
+    if (!path) return strdup("");
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    size_t len = strlen(base);
+    if (len > 5 && strcmp(base + len - 5, ".baga") == 0) len -= 5;
+    char *out = malloc(len + 1);
+    if (!out) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    memcpy(out, base, len);
+    out[len] = '\0';
+    return out;
 }
 
 /* ============================================================
@@ -443,12 +466,81 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
     for (int i = 0; i < n->args.len; i++)
         infer(ctx, n->args.data[i]);
 
+    /* L6: модулно-уточнено извикване mod.f(...). Локална променлива с име
+     * mod печели — тогава е обикновен field достъп и минава по-долу. */
+    if (n->callee->kind == NODE_FIELD &&
+        n->callee->field_obj->kind == NODE_IDENT &&
+        !env_lookup(ctx, n->callee->field_obj->name)) {
+        const char *mod = n->callee->field_obj->name;
+        const char *fname = n->callee->field_name;
+        int found = -1, mod_known = 0;
+        for (int i = 0; i < ctx->n_fns; i++) {
+            if (strcmp(ctx->fns[i].origin, mod) != 0) continue;
+            mod_known = 1;
+            if (strcmp(ctx->fns[i].name, fname) == 0) { found = i; break; }
+        }
+        if (found < 0) {
+            if (mod_known)
+                check_error(ctx, n->pos, "модулът '%s' няма функция '%s'", mod, fname);
+            else
+                check_error(ctx, n->pos, "непознат модул '%s' (няма импортиран %s.baga)", mod, mod);
+            return type_new(TYPE_ERROR);
+        }
+        /* пренаписваме към уникалния вътрешен символ; стандартният път
+         * по-долу прави проверките на аргументите. strdup — node_free
+         * освобождава callee->name, не трябва да алиасва decl->fn_name */
+        n->callee->kind = NODE_IDENT;
+        n->callee->name = strdup(ctx->fns[found].decl->fn_name);
+    }
+
     /* builtins */
     if (n->callee->kind == NODE_IDENT) {
         const char *name = n->callee->name;
 
-        /* user-defined (incl. extern) functions shadow builtins */
-        Type *ft_user = find_fn(ctx, name);
+        /* user-defined (incl. extern) functions shadow builtins.
+         * L6: късото име може да идва от няколко модула — печели дефиницията
+         * от главния файл, после единственият импортиран модул; иначе е
+         * нееднозначно и искаме уточнение 'модул.функция'.
+         * Forward декларация + реализация (fmrbaga override идиомът):
+         * ТИПЪт (ефектите-контракт) идва от декларацията без тяло —
+         * историческото first-wins поведение; СИМВОЛЪТ — от тялото.
+         * Нееднозначността се мери само между кандидати с тяло. */
+        Type *ft_user = NULL;
+        {
+            int first = -1, mainidx = -1, fwd = -1, first_body = -1;
+            const char *o1 = NULL, *o2 = NULL;
+            for (int i = 0; i < ctx->n_fns; i++) {
+                if (strcmp(ctx->fns[i].name, name) != 0 &&
+                    strcmp(ctx->fns[i].decl->fn_name, name) != 0) continue;
+                if (first < 0) first = i;
+                if (!ctx->fns[i].decl->fn_body) {
+                    if (fwd < 0) fwd = i;
+                    continue;
+                }
+                if (first_body < 0) first_body = i;
+                if (ctx->main_base && strcmp(ctx->fns[i].origin, ctx->main_base) == 0)
+                    mainidx = i;
+                if (!o1) o1 = ctx->fns[i].origin;
+                else if (!o2 && strcmp(o1, ctx->fns[i].origin) != 0) o2 = ctx->fns[i].origin;
+            }
+            int chosen = -1;
+            if (mainidx >= 0) chosen = mainidx;
+            else if (!o2) chosen = first_body >= 0 ? first_body : first;
+            else {
+                check_error(ctx, n->pos,
+                    "нееднозначно извикване на '%s' — има я в модулите '%s' и '%s'; уточни с %s.%s или %s.%s",
+                    name, o1, o2, o1, name, o2, name);
+                chosen = first_body;  /* грешката е записана; продължаваме проверките */
+            }
+            if (chosen >= 0) {
+                ft_user = (fwd >= 0 && ctx->fns[chosen].decl->fn_body)
+                    ? ctx->fns[fwd].fn_type      /* контрактът на декларацията */
+                    : ctx->fns[chosen].fn_type;
+                /* уникалният вътрешен символ (преименуван при дубликати);
+                 * strdup — node_free освобождава callee->name */
+                n->callee->name = strdup(ctx->fns[chosen].decl->fn_name);
+            }
+        }
         if (ft_user && ft_user->kind == TYPE_FN) {
             n->callee->type = ft_user;
             if (n->args.len != ft_user->nparams) {
@@ -1305,6 +1397,7 @@ void check_program(Checker *c, Node *program) {
     CheckCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.chk = c;
+    ctx.main_base = mod_base(program->pos.file);
 
     push_scope(&ctx);
 
@@ -1326,7 +1419,8 @@ void check_program(Checker *c, Node *program) {
             ft->name = strdup(item->fn_name);
 
             if (ctx.n_fns < FNS_MAX) {
-                ctx.fns[ctx.n_fns].name = item->fn_name;
+                ctx.fns[ctx.n_fns].name = ft->name;  /* strdup-натото късо име */
+                ctx.fns[ctx.n_fns].origin = mod_base(item->pos.file);
                 ctx.fns[ctx.n_fns].fn_type = ft;
                 ctx.fns[ctx.n_fns].decl = item;
                 ctx.n_fns++;
@@ -1387,6 +1481,37 @@ void check_program(Checker *c, Node *program) {
             Type *et = type_new(TYPE_I64);
             et->name = strdup(item->enum_name);
             item->type = et;
+        }
+    }
+
+    /* L6 namespaces: еднакви имена от РАЗЛИЧНИ модули са легални — decl-ът
+     * получава уникално вътрешно име "модул.функция" ('.' не се лексва в
+     * идентификатори, така че сблъсък с източника е невъзможен), а с него и
+     * уникален C символ. Дубликат в ЕДИН модул е грешка (досега я хващаше
+     * gcc с redefinition). */
+    for (int i = 0; i < ctx.n_fns; i++) {
+        for (int j = i + 1; j < ctx.n_fns; j++) {
+            if (strcmp(ctx.fns[i].name, ctx.fns[j].name) != 0) continue;
+            /* forward декларация + реализация (или две декларации) — ОК;
+             * дубликатът е само между две тела */
+            if (!ctx.fns[i].decl->fn_body || !ctx.fns[j].decl->fn_body) continue;
+            if (strcmp(ctx.fns[i].origin, ctx.fns[j].origin) == 0) {
+                check_error(&ctx, ctx.fns[j].decl->pos,
+                    "повторна дефиниция на функция '%s' в модул '%s'",
+                    ctx.fns[j].name, ctx.fns[j].origin);
+                continue;
+            }
+            for (int k = 0; k < 2; k++) {
+                Node *d = k == 0 ? ctx.fns[i].decl : ctx.fns[j].decl;
+                const char *org = k == 0 ? ctx.fns[i].origin : ctx.fns[j].origin;
+                if (d->is_extern) continue;        /* FFI името е договор */
+                if (strchr(d->fn_name, '.')) continue;  /* вече преименувана */
+                size_t need = strlen(org) + 1 + strlen(d->fn_name) + 1;
+                char *nn = malloc(need);
+                if (!nn) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+                snprintf(nn, need, "%s.%s", org, d->fn_name);
+                d->fn_name = nn;
+            }
         }
     }
 
@@ -1508,7 +1633,7 @@ void check_program(Checker *c, Node *program) {
 
     /* check that main exists (skipped for --check / library mode) */
     if (!c->allow_no_main && !find_fn(&ctx, "main")) {
-        SrcPos pos = { 1, 1 };
+        SrcPos pos = { 1, 1, NULL };
         check_error(&ctx, pos, "липсва функция 'main'");
     }
 
