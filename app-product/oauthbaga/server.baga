@@ -1,0 +1,197 @@
+// server.baga — HTTP wiring + serve loops for both OAuth nodes
+// (apps-roadmap №10).
+//
+// Two serial nodes (kvbaga idiom): the provider never calls itself and the
+// proxy's only outbound call is to the provider, so there is no
+// self-accept deadlock. State is per-node in-memory (JSON records in maps);
+// pgbaga/ormbaga persistence is P1 in the plan.
+//
+//   provider: GET /oauth/authorize · POST /oauth/token · GET /api/me
+//   proxy:    GET /login · GET /callback · GET / · GET /logout
+
+import "oauth.baga"
+import "proxy.baga"
+import "httpdbaga/http.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+import "std/json/json.baga"
+import "std/time/time.baga"
+import "std/random/random.baga"
+
+// ---------- provider node ----------
+
+fn oauth_provider_http(req: Request, st: OAuthStore, cfg: OAuthCfg) -> Response !Time !Random {
+    let m = http_method(req)
+    let p = http_path_only(req)
+    if m == "GET" && p == "/health" {
+        return http_json_response(200, "{\"status\":\"ok\"}")
+    }
+    if m == "GET" && p == "/oauth/authorize" {
+        let cid = http_query_param(req, "client_id")
+        let redir = http_query_param(req, "redirect_uri")
+        let state = http_query_param(req, "state")
+        let mut sub = http_query_param(req, "sub")
+        let mut scope = http_query_param(req, "scope")
+        if sub == "" { sub = "user" }
+        if scope == "" { scope = "read" }
+        if cid != cfg.client_id {
+            return http_json_response(400, "{\"error\":\"invalid_request\",\"error_description\":\"unknown client_id\"}")
+        }
+        if redir != cfg.redirect_uri {
+            return http_json_response(400, "{\"error\":\"invalid_request\",\"error_description\":\"redirect_uri mismatch\"}")
+        }
+        let code = oa_issue_code(st, cfg, cid, sub, scope)?
+        let mut loc = concat(concat(redir, "?code="), code)
+        if state != "" {
+            loc = concat(loc, concat("&state=", state))
+        }
+        return http_set_header(http_response(302, ""), "Location", loc)
+    }
+    if m == "POST" && p == "/oauth/token" {
+        let r = oa_token(st, cfg, http_body(req))?
+        return http_json_response(r.status, r.json)
+    }
+    if m == "GET" && p == "/api/me" {
+        let payload = oa_bearer_payload(cfg, http_header(req, "Authorization"))?
+        if payload == "" {
+            return http_json_response(401, "{\"error\":\"invalid_token\"}")
+        }
+        let mut j = "{"
+        j = concat(j, oa_jpair("sub", oa_rec_str(payload, "sub")))
+        j = concat(j, concat(",", oa_jpair("scope", oa_rec_str(payload, "scope"))))
+        j = concat(j, "}")
+        return http_json_response(200, j)
+    }
+    return http_json_response(404, "{\"error\":\"not found\"}")
+}
+
+fn oauth_provider_conn(fd: i64, st: OAuthStore, cfg: OAuthCfg) -> i64 !IO !Net !Time !Random {
+    let req = http_read_request(fd)?
+    let resp = oauth_provider_http(req, st, cfg)?
+    return http_respond(fd, resp)?
+}
+
+// ctx = cell2(provider_port, proxy_port). Serial accept, shared store.
+fn oauth_provider_serve(ctx: i64) -> i64 !Net !IO !Time !Random {
+    let port = cell2_0(ctx)
+    let proxy_port = cell2_1(ctx)
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        return -1
+    }
+    let mut secret = env("OAUTH_SECRET")?
+    if secret == "" {
+        secret = "dev-secret"
+    }
+    let st = oa_store_new()
+    let cfg = oauth_cfg(port, proxy_port, secret)
+    while true {
+        let fd = tcp_accept(listener)?
+        if fd >= 0 {
+            tcp_set_timeouts(fd, 60)?
+            oauth_provider_conn(fd, st, cfg)?
+            tcp_close(fd)?
+        }
+    }
+    return 0
+}
+
+// ---------- proxy node ----------
+
+fn oauth_proxy_home_html(sub: str, scope: str) -> Response {
+    return http_set_header(http_response(200, px_render_home(sub, scope)),
+        "Content-Type", "text/html; charset=utf-8")
+}
+
+fn oauth_proxy_http(req: Request, st: ProxyStore, cfg: OAuthCfg) -> Response !Net !IO !Time !Random {
+    let m = http_method(req)
+    let p = http_path_only(req)
+    if m == "GET" && p == "/health" {
+        return http_json_response(200, "{\"status\":\"ok\"}")
+    }
+    if m == "GET" && p == "/login" {
+        let state = oa_rand_hex(8)?
+        map_set(st.states, state, 1)
+        return http_set_header(http_response(302, ""), "Location", px_authorize_url(cfg, state))
+    }
+    if m == "GET" && p == "/callback" {
+        let state = http_query_param(req, "state")
+        let code = http_query_param(req, "code")
+        if state == "" || map_has(st.states, state) == 0 {
+            return http_json_response(400, "{\"error\":\"bad_state\"}")
+        }
+        map_del(st.states, state)   // one-time CSRF guard
+        if code == "" {
+            return http_json_response(400, "{\"error\":\"missing_code\"}")
+        }
+        let t = px_exchange_code(cfg, code)?
+        if t.ok == 0 {
+            return http_json_response(502, "{\"error\":\"token_exchange_failed\"}")
+        }
+        let sid = px_session_new(st, t)?
+        let mut resp = http_response(302, "")
+        resp = http_set_header(resp, "Location", "/")
+        resp = http_set_header(resp, "Set-Cookie", concat(concat("sid=", sid), "; Path=/; HttpOnly"))
+        return resp
+    }
+    if m == "GET" && p == "/logout" {
+        let sid = px_cookie(http_header(req, "Cookie"), "sid")
+        if sid != "" {
+            map_del(st.sessions, sid)
+        }
+        let mut resp = http_response(302, "")
+        resp = http_set_header(resp, "Location", "/")
+        resp = http_set_header(resp, "Set-Cookie", "sid=; Path=/; Max-Age=0")
+        return resp
+    }
+    if m == "GET" && p == "/" {
+        let sid = px_cookie(http_header(req, "Cookie"), "sid")
+        if sid == "" || map_has(st.sessions, sid) == 0 {
+            return oauth_proxy_home_html("", "")
+        }
+        let rec = map_get(st.sessions, sid)
+        if oa_rec_num(rec, "exp") <= oa_now_s()? {
+            // transparent refresh with the stored refresh token
+            let t = px_refresh(cfg, oa_rec_str(rec, "refresh"))?
+            if t.ok == 0 {
+                map_del(st.sessions, sid)
+                return oauth_proxy_home_html("", "")
+            }
+            px_session_update(st, sid, t)?
+            return oauth_proxy_home_html(t.sub, t.scope)
+        }
+        return oauth_proxy_home_html(oa_rec_str(rec, "sub"), oa_rec_str(rec, "scope"))
+    }
+    return http_json_response(404, "{\"error\":\"not found\"}")
+}
+
+fn oauth_proxy_conn(fd: i64, st: ProxyStore, cfg: OAuthCfg) -> i64 !IO !Net !Time !Random {
+    let req = http_read_request(fd)?
+    let resp = oauth_proxy_http(req, st, cfg)?
+    return http_respond(fd, resp)?
+}
+
+// ctx = cell2(proxy_port, provider_port). Serial accept, shared store.
+fn oauth_proxy_serve(ctx: i64) -> i64 !Net !IO !Time !Random {
+    let port = cell2_0(ctx)
+    let provider_port = cell2_1(ctx)
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        return -1
+    }
+    let mut secret = env("OAUTH_SECRET")?
+    if secret == "" {
+        secret = "dev-secret"
+    }
+    let st = px_store_new()
+    let cfg = oauth_cfg(provider_port, port, secret)
+    while true {
+        let fd = tcp_accept(listener)?
+        if fd >= 0 {
+            tcp_set_timeouts(fd, 60)?
+            oauth_proxy_conn(fd, st, cfg)?
+            tcp_close(fd)?
+        }
+    }
+    return 0
+}

@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### App products — oauthbaga (OAuth proxy, apps-roadmap №10 complete)
+- New product `app-product/oauthbaga`: the integration exam — std HTTP
+  client (№2) + jwtbaga + cookie sessions, pages rendered by tplbaga
+  (first cross-product dependency in the series; №7 feeds №10).
+- Provider node: `/oauth/authorize` (auto-approve dev profile, one-time
+  codes), `/oauth/token` (authorization_code + refresh_token grants with
+  rotation), `/api/me` (Bearer JWT guard); RFC 6749-shaped JSON errors.
+- Proxy node: `/login` (CSRF state) → `/callback` (real server-to-server
+  code exchange over the std client) → `sid` cookie session with
+  transparent refresh → `/logout`.
+- Two serial nodes (`cell2` ports, kvbaga idiom): the provider never
+  calls itself, so no self-accept deadlock; state is `Map<str,str>` of
+  JSON records (L4 stand-in); `TokenReply`/`PxTokens` continue the L3
+  Result stand-in convention.
+- `demo.baga` boots both nodes (`OAUTH_PORT`/`OAUTH_PROVIDER_PORT`/
+  `OAUTH_SECRET`); a browser completes the flow on loopback.
+- `tests/oauth_test.baga` — live full cycle: authorize → exchange →
+  bearer → protected → refresh/rotation → browser flow → logout
+  (47 checks); runs via `scripts/baga-test`.
+- Probes: O2 no URL percent-coding in std (third hand-rolled query
+  parse); O5 go_bg carries i64 only → serial nodes until state moves to
+  Postgres (P1); TLS/G6 still the production blocker (O1).
+
+### httpdbaga — 302 reason phrase
+- `reason_phrase(302)` now says "Found" (was the generic "Status") —
+  the OAuth redirects were the first 3xx on the wire.
+
 ### App products — tplbaga (HTML templates, apps-roadmap №7)
 - New product `app-product/tplbaga`: mustache-ish subset — `{{ expr }}`
   escaped interpolation, `{{{ expr }}}` raw, `{% if %}` / `{% else %}` /

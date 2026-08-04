@@ -1,0 +1,161 @@
+// proxy.baga — OAuth 2.0 client/proxy half for Baga (apps-roadmap №10).
+//
+// The confidential client: /login builds the authorize redirect, /callback
+// exchanges the code over the std HTTP client (real server-to-server call),
+// sessions live in a Map as cookie sid -> JSON record, expired access
+// tokens refresh transparently. Pages are rendered by tplbaga — №7 feeds
+// №10 (roadmap rule 4).
+
+import "oauth.baga"
+import "tplbaga/tpl.baga"
+import "std/net/http_client.baga"
+import "std/json/json.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+import "std/random/random.baga"
+
+// ---------- proxy store ----------
+
+struct ProxyStore {
+    sessions: Map<str, str>,   // sid -> {"sub","scope","access","refresh","exp"(s)}
+    states: Map<str, i64>      // pending authorize states -> 1
+}
+
+fn px_store_new() -> ProxyStore {
+    return ProxyStore { sessions: map_new(), states: map_new() }
+}
+
+// ---------- cookies ----------
+
+// Value of `name` inside a Cookie header; "" when absent.
+fn px_cookie(header: str, name: str) -> str {
+    let parts = str_split(header, ";")
+    let want = concat(name, "=")
+    let mut i: i64 = 0
+    while i < vec_len(parts) {
+        let t = str_trim(vec_get(parts, i))
+        if str_starts_with(t, want) {
+            return substr(t, len(want), len(t))
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// ---------- authorize + token calls ----------
+
+fn px_authorize_url(cfg: OAuthCfg, state: str) -> str {
+    let mut u = concat(cfg.provider_base, "/oauth/authorize?client_id=")
+    u = concat(u, cfg.client_id)
+    u = concat(u, concat("&redirect_uri=", cfg.redirect_uri))
+    u = concat(u, concat("&state=", state))
+    u = concat(u, "&scope=read")
+    return u
+}
+
+struct PxTokens {
+    ok: i64,
+    access: str,
+    refresh: str,
+    expires_in: i64,
+    sub: str,
+    scope: str
+}
+
+fn px_tokens_bad() -> PxTokens {
+    return PxTokens { ok: 0, access: "", refresh: "", expires_in: 0, sub: "", scope: "" }
+}
+
+// POST the form to the provider /token endpoint and parse the JSON reply.
+fn px_call_token(cfg: OAuthCfg, form: str) -> PxTokens !Net !IO {
+    let hdrs: Map<str, str> = map_new()
+    map_set(hdrs, "Content-Type", "application/x-www-form-urlencoded")
+    let url = concat(cfg.provider_base, "/oauth/token")
+    let resp = http_request("POST", url, hdrs, form, 5)?
+    if resp.ok == 0 || resp.status != 200 {
+        return px_tokens_bad()
+    }
+    let d = json_parse(resp.body)
+    let root = json_root(d)
+    if root < 0 || json_tag(d, root) != 6 {
+        return px_tokens_bad()
+    }
+    let an = json_get(d, root, "access_token")
+    let rn = json_get(d, root, "refresh_token")
+    if an < 0 || rn < 0 {
+        return px_tokens_bad()
+    }
+    return PxTokens {
+        ok: 1,
+        access: json_str(d, an),
+        refresh: json_str(d, rn),
+        expires_in: oa_rec_num(resp.body, "expires_in"),
+        sub: oa_rec_str(resp.body, "sub"),
+        scope: oa_rec_str(resp.body, "scope")
+    }
+}
+
+fn px_exchange_code(cfg: OAuthCfg, code: str) -> PxTokens !Net !IO {
+    let mut form = "grant_type=authorization_code"
+    form = concat(form, concat("&code=", code))
+    form = concat(form, concat("&client_id=", cfg.client_id))
+    form = concat(form, concat("&client_secret=", cfg.client_secret))
+    return px_call_token(cfg, form)?
+}
+
+fn px_refresh(cfg: OAuthCfg, refresh: str) -> PxTokens !Net !IO {
+    let mut form = "grant_type=refresh_token"
+    form = concat(form, concat("&refresh_token=", refresh))
+    form = concat(form, concat("&client_id=", cfg.client_id))
+    form = concat(form, concat("&client_secret=", cfg.client_secret))
+    return px_call_token(cfg, form)?
+}
+
+// ---------- sessions ----------
+
+fn px_session_record(t: PxTokens) -> str !Time {
+    let mut rec = "{"
+    rec = concat(rec, oa_jpair("sub", t.sub))
+    rec = concat(rec, concat(",", oa_jpair("scope", t.scope)))
+    rec = concat(rec, concat(",", oa_jpair("access", t.access)))
+    rec = concat(rec, concat(",", oa_jpair("refresh", t.refresh)))
+    rec = concat(rec, concat(",", oa_jnum("exp", oa_now_s()? + t.expires_in)))
+    rec = concat(rec, "}")
+    return rec
+}
+
+fn px_session_new(st: ProxyStore, t: PxTokens) -> str !Random !Time {
+    let sid = oa_rand_hex(16)?
+    let rec = px_session_record(t)?
+    map_set(st.sessions, sid, rec)
+    return sid
+}
+
+fn px_session_update(st: ProxyStore, sid: str, t: PxTokens) -> i64 !Time {
+    let rec = px_session_record(t)?
+    map_set(st.sessions, sid, rec)
+    return 0
+}
+
+// ---------- pages (tplbaga, apps-roadmap №7) ----------
+
+fn px_tpl_home() -> str {
+    let mut t = "<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\" />"
+    t = concat(t, "<title>oauthbaga</title></head>\n<body>\n<h1>oauthbaga proxy</h1>\n")
+    t = concat(t, "{% if sub %}<p>Logged in as <b>{{ sub }}</b> (scope: {{ scope }}).</p>\n")
+    t = concat(t, "<p><a href=\"/logout\">log out</a></p>{% else %}")
+    t = concat(t, "<p>Not logged in.</p>\n<p><a href=\"/login\">log in</a></p>{% endif %}\n")
+    t = concat(t, "</body>\n</html>\n")
+    return t
+}
+
+fn px_render_home(sub: str, scope: str) -> str {
+    let ctx: Map<str, str> = map_new()
+    map_set(ctx, "sub", sub)
+    map_set(ctx, "scope", scope)
+    let r = tpl_render(px_tpl_home(), ctx)
+    if r.ok == 0 {
+        return concat("oauthbaga: template error: ", r.err)
+    }
+    return r.html
+}

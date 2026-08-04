@@ -1,0 +1,189 @@
+// oauth_test.baga — live loopback tests for oauthbaga (apps-roadmap №10).
+// The full product cycle: authorize → code → exchange → bearer → protected
+// resource → refresh (+ rotation), then the proxy browser flow (login →
+// callback → cookie session → logout). Plain HTTP, like №2 registry (TLS
+// waits on G6).
+
+import "oauthbaga/server.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+import "std/net/http_client.baga"
+import "std/json/json.baga"
+
+fn has(s: str, n: str) -> bool {
+    return str_find(s, n) >= 0
+}
+
+fn jstr(body: str, key: str) -> str {
+    let d = json_parse(body)
+    let n = json_get(d, json_root(d), key)
+    if n < 0 {
+        return ""
+    }
+    if json_tag(d, n) != 4 {
+        return ""
+    }
+    return json_str(d, n)
+}
+
+// sid value out of a Set-Cookie header ("sid=…; Path=/; …").
+fn setc_sid(header: str) -> str {
+    let semi = str_find(header, ";")
+    let mut kv = header
+    if semi >= 0 {
+        kv = substr(header, 0, semi)
+    }
+    if str_starts_with(kv, "sid=") {
+        return substr(kv, 4, len(kv))
+    }
+    return ""
+}
+
+fn main() -> i64 !Net !IO !Par !Time !Random {
+    let pport: i64 = 18691   // provider node
+    let xport: i64 = 18690   // proxy node
+    let redir = "http://127.0.0.1:18690/callback"
+    let pbase = "http://127.0.0.1:18691"
+    let xbase = "http://127.0.0.1:18690"
+    go_bg(oauth_provider_serve, cell2(pport, xport))
+    go_bg(oauth_proxy_serve, cell2(xport, pport))
+    sleep_ms(300)
+
+    // --- provider: health ---
+    let h = http_get(concat(pbase, "/health"), 5)?
+    assert_eq_i64("health", h.status, 200)
+
+    // --- authorize → 302 with a one-time code ---
+    let mut aurl = concat(pbase, "/oauth/authorize?client_id=baga-app")
+    aurl = concat(aurl, concat("&redirect_uri=", redir))
+    aurl = concat(aurl, "&state=xyz&sub=alice&scope=read")
+    let a = http_get(aurl, 5)?
+    assert_eq_i64("authorize_302", a.status, 302)
+    let loc = http_resp_header(a, "Location")
+    assert_true("loc_redirect", str_starts_with(loc, concat(redir, "?code=")))
+    assert_true("loc_state", has(loc, "&state=xyz"))
+    let code = query_param(loc, "code")
+    assert_true("code_nonempty", len(code) >= 16)
+
+    // unknown client / redirect_uri are rejected
+    let badc = http_get(concat(pbase, "/oauth/authorize?client_id=nope&redirect_uri=x&state=s"), 5)?
+    assert_eq_i64("authorize_bad_client", badc.status, 400)
+    let badr = http_get(concat(pbase, "/oauth/authorize?client_id=baga-app&redirect_uri=http://evil/cb&state=s"), 5)?
+    assert_eq_i64("authorize_bad_redirect", badr.status, 400)
+
+    // --- token endpoint: authorization_code grant ---
+    let mut form = "grant_type=authorization_code"
+    form = concat(form, concat("&code=", code))
+    form = concat(form, "&client_id=baga-app&client_secret=baga-secret")
+    let tk = http_request("POST", concat(pbase, "/oauth/token"), map_new(), form, 5)?
+    assert_eq_i64("token_200", tk.status, 200)
+    let access = jstr(tk.body, "access_token")
+    let refresh = jstr(tk.body, "refresh_token")
+    assert_eq_str("token_type", jstr(tk.body, "token_type"), "Bearer")
+    assert_eq_str("token_sub", jstr(tk.body, "sub"), "alice")
+    assert_eq_i64("access_is_jwt", vec_len(str_split(access, ".")), 3)
+    assert_true("refresh_nonempty", len(refresh) >= 16)
+
+    // the code is one-time
+    let tk2 = http_request("POST", concat(pbase, "/oauth/token"), map_new(), form, 5)?
+    assert_eq_i64("code_reuse_400", tk2.status, 400)
+    assert_true("code_reuse_err", has(tk2.body, "invalid_grant"))
+
+    // wrong client secret
+    let bads = http_request("POST", concat(pbase, "/oauth/token"), map_new(),
+        "grant_type=authorization_code&code=z&client_id=baga-app&client_secret=wrong", 5)?
+    assert_eq_i64("bad_secret_401", bads.status, 401)
+    assert_true("bad_secret_err", has(bads.body, "invalid_client"))
+
+    // --- protected resource ---
+    let mut ahdr: Map<str, str> = map_new()
+    map_set(ahdr, "Authorization", concat("Bearer ", access))
+    let me = http_request("GET", concat(pbase, "/api/me"), ahdr, "", 5)?
+    assert_eq_i64("me_200", me.status, 200)
+    assert_eq_str("me_sub", jstr(me.body, "sub"), "alice")
+    assert_eq_str("me_scope", jstr(me.body, "scope"), "read")
+
+    let me0 = http_get(concat(pbase, "/api/me"), 5)?
+    assert_eq_i64("me_no_token_401", me0.status, 401)
+    let mut bhdr: Map<str, str> = map_new()
+    map_set(bhdr, "Authorization", "Bearer x.y.z")
+    let me1 = http_request("GET", concat(pbase, "/api/me"), bhdr, "", 5)?
+    assert_eq_i64("me_bad_token_401", me1.status, 401)
+
+    // --- refresh grant + rotation ---
+    let mut rform = "grant_type=refresh_token"
+    rform = concat(rform, concat("&refresh_token=", refresh))
+    rform = concat(rform, "&client_id=baga-app&client_secret=baga-secret")
+    let rt = http_request("POST", concat(pbase, "/oauth/token"), map_new(), rform, 5)?
+    assert_eq_i64("refresh_200", rt.status, 200)
+    let access2 = jstr(rt.body, "access_token")
+    let refresh2 = jstr(rt.body, "refresh_token")
+    // within one second the JWT claims (iat/exp) repeat, so the access
+    // token may equal the old one — rotation is proven by the random
+    // refresh token and by the reuse rejection below
+    assert_eq_i64("new_access_jwt", vec_len(str_split(access2, ".")), 3)
+    assert_ne_str("new_refresh", refresh2, refresh)
+    // old refresh token is dead after rotation
+    let rt2 = http_request("POST", concat(pbase, "/oauth/token"), map_new(), rform, 5)?
+    assert_eq_i64("refresh_reuse_400", rt2.status, 400)
+    // the new access token opens the resource
+    let mut ahdr2: Map<str, str> = map_new()
+    map_set(ahdr2, "Authorization", concat("Bearer ", access2))
+    let me2 = http_request("GET", concat(pbase, "/api/me"), ahdr2, "", 5)?
+    assert_eq_i64("me_after_refresh", me2.status, 200)
+
+    // unsupported grant type
+    let ug = http_request("POST", concat(pbase, "/oauth/token"), map_new(),
+        "grant_type=password&client_id=baga-app&client_secret=baga-secret", 5)?
+    assert_eq_i64("unsupported_400", ug.status, 400)
+    assert_true("unsupported_err", has(ug.body, "unsupported_grant_type"))
+
+    // --- proxy: the browser flow, redirects followed by hand ---
+    let anon = http_get(concat(xbase, "/"), 5)?
+    assert_eq_i64("home_200", anon.status, 200)
+    assert_true("home_login_link", has(anon.body, "href=\"/login\""))
+    assert_true("home_anon", has(anon.body, "Not logged in"))
+
+    let lg = http_get(concat(xbase, "/login"), 5)?
+    assert_eq_i64("login_302", lg.status, 302)
+    let lloc = http_resp_header(lg, "Location")
+    assert_true("login_to_provider", str_starts_with(lloc, concat(pbase, "/oauth/authorize?")))
+    let lstate = query_param(lloc, "state")
+    assert_true("login_state", len(lstate) >= 8)
+
+    // follow the redirect as user alice
+    let auth = http_get(concat(lloc, "&sub=alice"), 5)?
+    assert_eq_i64("follow_authorize", auth.status, 302)
+    let cburl = http_resp_header(auth, "Location")
+    assert_true("cb_to_proxy", str_starts_with(cburl, concat(redir, "?code=")))
+
+    // callback: server-to-server code exchange, cookie session
+    let cb = http_get(cburl, 5)?
+    assert_eq_i64("callback_302", cb.status, 302)
+    assert_eq_str("callback_home", http_resp_header(cb, "Location"), "/")
+    let sid = setc_sid(http_resp_header(cb, "Set-Cookie"))
+    assert_true("cookie_sid", len(sid) >= 16)
+
+    // a forged state is rejected (CSRF guard)
+    let badst = http_get(concat(xbase, "/callback?code=z&state=forged"), 5)?
+    assert_eq_i64("bad_state_400", badst.status, 400)
+
+    // logged-in home renders through tplbaga
+    let mut chdr: Map<str, str> = map_new()
+    map_set(chdr, "Cookie", concat("sid=", sid))
+    let home = http_request("GET", concat(xbase, "/"), chdr, "", 5)?
+    assert_eq_i64("auth_home_200", home.status, 200)
+    assert_true("home_sub", has(home.body, "alice"))
+    assert_true("home_scope", has(home.body, "read"))
+    assert_true("home_logout_link", has(home.body, "href=\"/logout\""))
+
+    // logout kills the session and clears the cookie
+    let lo = http_request("GET", concat(xbase, "/logout"), chdr, "", 5)?
+    assert_eq_i64("logout_302", lo.status, 302)
+    assert_true("logout_clears", has(http_resp_header(lo, "Set-Cookie"), "Max-Age=0"))
+    let after = http_request("GET", concat(xbase, "/"), chdr, "", 5)?
+    assert_true("after_logout_anon", has(after.body, "Not logged in"))
+
+    print("oauth_test: all passed")
+    return 0
+}

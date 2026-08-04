@@ -1,0 +1,248 @@
+// oauth.baga — OAuth 2.0 provider core for Baga (apps-roadmap №10).
+//
+// Authorization-server half: authorization-code grant with one-time codes,
+// refresh-token grant with rotation, HS256 JWT access tokens (jwtbaga),
+// RFC 6749-shaped JSON errors. Dev profile: auto-approve (sub comes from
+// the query, no consent UI), plain HTTP loopback (TLS waits on G6), one
+// registered client.
+//
+// State is Map<str,str> of JSON records (no Vec<struct> / struct values —
+// L4 stand-in). Effects: !Time for expiry, !Random for opaque tokens.
+
+import "jwtbaga/jwt.baga"
+import "std/json/json.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+import "std/random/random.baga"
+import "std/bytes/bytes.baga"
+
+// ---------- config ----------
+
+struct OAuthCfg {
+    client_id: str,
+    client_secret: str,
+    jwt_secret: str,
+    redirect_uri: str,    // exact-match allow-list (one registered client)
+    provider_base: str,   // http://127.0.0.1:<provider port>
+    code_ttl_s: i64,
+    access_ttl_s: i64,
+    refresh_ttl_s: i64
+}
+
+fn oauth_cfg(provider_port: i64, proxy_port: i64, jwt_secret: str) -> OAuthCfg {
+    let mut redir = "http://127.0.0.1:"
+    redir = concat(redir, concat(int_to_str(proxy_port), "/callback"))
+    let mut base = "http://127.0.0.1:"
+    base = concat(base, int_to_str(provider_port))
+    return OAuthCfg {
+        client_id: "baga-app",
+        client_secret: "baga-secret",
+        jwt_secret: jwt_secret,
+        redirect_uri: redir,
+        provider_base: base,
+        code_ttl_s: 300,
+        access_ttl_s: 3600,
+        refresh_ttl_s: 86400
+    }
+}
+
+// ---------- provider store (JSON records in maps — L4 stand-in) ----------
+
+struct OAuthStore {
+    codes: Map<str, str>,    // code -> {"client_id","sub","scope","exp"(ms)}
+    refresh: Map<str, str>   // token -> {"sub","scope","exp"(ms)}
+}
+
+fn oa_store_new() -> OAuthStore {
+    return OAuthStore { codes: map_new(), refresh: map_new() }
+}
+
+// ---------- tiny JSON builders (json_escape is quoted — chatbaga C2) ----------
+
+fn oa_jpair(k: str, v: str) -> str {
+    return concat(concat(json_escape(k), ":"), json_escape(v))
+}
+
+fn oa_jnum(k: str, v: i64) -> str {
+    return concat(concat(json_escape(k), ":"), int_to_str(v))
+}
+
+// ---------- record readers (any JSON object string) ----------
+
+fn oa_rec_str(rec: str, key: str) -> str {
+    let d = json_parse(rec)
+    let n = json_get(d, json_root(d), key)
+    if n < 0 {
+        return ""
+    }
+    if json_tag(d, n) != 4 {
+        return ""
+    }
+    return json_str(d, n)
+}
+
+fn oa_rec_num(rec: str, key: str) -> i64 {
+    let d = json_parse(rec)
+    let n = json_get(d, json_root(d), key)
+    if n < 0 {
+        return 0
+    }
+    return parse_int(json_str(d, n))
+}
+
+// ---------- opaque tokens + clocks ----------
+
+fn oa_rand_hex(n: i64) -> str !Random {
+    return bytes_to_hex(random_bytes(n))
+}
+
+fn oa_now_ms() -> i64 !Time {
+    return time_now_ms()
+}
+
+fn oa_now_s() -> i64 !Time {
+    return time_now_ms() / 1000
+}
+
+// ---------- authorize (code issue) ----------
+
+// Issues a one-time authorization code; "" for an unknown client.
+fn oa_issue_code(st: OAuthStore, cfg: OAuthCfg, client_id: str, sub: str, scope: str) -> str !Time !Random {
+    if client_id != cfg.client_id {
+        return ""
+    }
+    let code = oa_rand_hex(16)?
+    let mut rec = "{"
+    rec = concat(rec, oa_jpair("client_id", client_id))
+    rec = concat(rec, concat(",", oa_jpair("sub", sub)))
+    rec = concat(rec, concat(",", oa_jpair("scope", scope)))
+    rec = concat(rec, concat(",", oa_jnum("exp", oa_now_ms()? + cfg.code_ttl_s * 1000)))
+    rec = concat(rec, "}")
+    map_set(st.codes, code, rec)
+    return code
+}
+
+// ---------- token endpoint ----------
+
+struct TokenReply {
+    status: i64,
+    json: str
+}
+
+fn oa_token_error(status: i64, err: str) -> TokenReply {
+    return TokenReply { status: status, json: concat(concat("{\"error\":", json_escape(err)), "}") }
+}
+
+fn oa_issue_jwt(cfg: OAuthCfg, sub: str, scope: str) -> str !Time {
+    let now = oa_now_s()?
+    let mut p = "{"
+    p = concat(p, oa_jpair("sub", sub))
+    p = concat(p, concat(",", oa_jpair("scope", scope)))
+    p = concat(p, concat(",", oa_jpair("iss", "oauthbaga")))
+    p = concat(p, concat(",", oa_jnum("iat", now)))
+    p = concat(p, concat(",", oa_jnum("exp", now + cfg.access_ttl_s)))
+    p = concat(p, "}")
+    return jwt_encode(cfg.jwt_secret, p)
+}
+
+// Mints the access JWT + a fresh refresh token (rotation target).
+fn oa_token_pair(st: OAuthStore, cfg: OAuthCfg, sub: str, scope: str) -> TokenReply !Time !Random {
+    let access = oa_issue_jwt(cfg, sub, scope)?
+    let refresh = oa_rand_hex(16)?
+    let mut rrec = "{"
+    rrec = concat(rrec, oa_jpair("sub", sub))
+    rrec = concat(rrec, concat(",", oa_jpair("scope", scope)))
+    rrec = concat(rrec, concat(",", oa_jnum("exp", oa_now_ms()? + cfg.refresh_ttl_s * 1000)))
+    rrec = concat(rrec, "}")
+    map_set(st.refresh, refresh, rrec)
+    let mut j = "{"
+    j = concat(j, oa_jpair("access_token", access))
+    j = concat(j, concat(",", oa_jpair("token_type", "Bearer")))
+    j = concat(j, concat(",", oa_jnum("expires_in", cfg.access_ttl_s)))
+    j = concat(j, concat(",", oa_jpair("refresh_token", refresh)))
+    j = concat(j, concat(",", oa_jpair("scope", scope)))
+    j = concat(j, concat(",", oa_jpair("sub", sub)))
+    j = concat(j, "}")
+    return TokenReply { status: 200, json: j }
+}
+
+// Form field from application/x-www-form-urlencoded (no %-decoding — the
+// generated values carry no '&'/'='/%; URL coding is gap O3).
+fn oa_form(body: str, name: str) -> str {
+    let pairs = str_split(body, "&")
+    let want = concat(name, "=")
+    let mut i: i64 = 0
+    while i < vec_len(pairs) {
+        let p = vec_get(pairs, i)
+        if str_starts_with(p, want) {
+            return substr(p, len(want), len(p))
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// POST /oauth/token body: authorization_code | refresh_token grants.
+fn oa_token(st: OAuthStore, cfg: OAuthCfg, body: str) -> TokenReply !Time !Random {
+    let grant = oa_form(body, "grant_type")
+    let cid = oa_form(body, "client_id")
+    let csec = oa_form(body, "client_secret")
+    if cid != cfg.client_id || csec != cfg.client_secret {
+        return oa_token_error(401, "invalid_client")
+    }
+    if grant == "authorization_code" {
+        let code = oa_form(body, "code")
+        if code == "" {
+            return oa_token_error(400, "invalid_request")
+        }
+        if map_has(st.codes, code) == 0 {
+            return oa_token_error(400, "invalid_grant")
+        }
+        let rec = map_get(st.codes, code)
+        map_del(st.codes, code)   // one-time use
+        if oa_rec_str(rec, "client_id") != cfg.client_id {
+            return oa_token_error(400, "invalid_grant")
+        }
+        if oa_rec_num(rec, "exp") < oa_now_ms()? {
+            return oa_token_error(400, "invalid_grant")
+        }
+        return oa_token_pair(st, cfg, oa_rec_str(rec, "sub"), oa_rec_str(rec, "scope"))?
+    }
+    if grant == "refresh_token" {
+        let rt = oa_form(body, "refresh_token")
+        if rt == "" || map_has(st.refresh, rt) == 0 {
+            return oa_token_error(400, "invalid_grant")
+        }
+        let rec = map_get(st.refresh, rt)
+        map_del(st.refresh, rt)   // rotation: old token dies
+        if oa_rec_num(rec, "exp") < oa_now_ms()? {
+            return oa_token_error(400, "invalid_grant")
+        }
+        return oa_token_pair(st, cfg, oa_rec_str(rec, "sub"), oa_rec_str(rec, "scope"))?
+    }
+    return oa_token_error(400, "unsupported_grant_type")
+}
+
+// ---------- protected resource ----------
+
+// Verified payload JSON of a "Bearer <jwt>" header; "" on any failure
+// (shape, signature, expiry). Read claims with oa_rec_str/oa_rec_num.
+fn oa_bearer_payload(cfg: OAuthCfg, authz: str) -> str !Time {
+    if !str_starts_with(authz, "Bearer ") {
+        return ""
+    }
+    let token = substr(authz, 7, len(authz))
+    let payload = jwt_decode(cfg.jwt_secret, token)
+    if payload == "" {
+        return ""
+    }
+    let d = json_parse(payload)
+    let en = json_get(d, json_root(d), "exp")
+    if en < 0 {
+        return ""
+    }
+    if parse_int(json_str(d, en)) < oa_now_s()? {
+        return ""
+    }
+    return payload
+}
