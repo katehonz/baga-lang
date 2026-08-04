@@ -1,14 +1,15 @@
-// tls.baga — TLS 1.3 client core (apps-roadmap №10 P2, T4+T5).
+// tls.baga — TLS 1.3 client core (apps-roadmap №10 P2, T4–T6).
 //
-// Record layer, ClientHello builder, ServerHello parser (T4) and the
-// handshake key schedule + encrypted flight (T5):
+// Record layer, ClientHello builder, ServerHello parser (T4), handshake
+// key schedule + encrypted flight (T5), X.509 + RSA-PSS verify (T6):
 //
 //   tls_client_hello(pub32, random32, sid32) -> bytes   // full record
 //   tls_read_record(fd) -> TlsRecord { ok, err, typ, payload }
 //   tls_parse_server_hello(payload) -> TlsHello
 //   tls_schedule(ch_msg, sh_msg, shared) -> TlsSchedule
-//   tls_open_handshake(sched, rec) -> TlsFlight   // decrypt + transcript
-//   tls_finished_record(sched, flight_hash) -> bytes   // client Finished
+//   tls_open_handshake(sched, ch, sh, chunked) -> TlsFlight
+//   tls_finished_record(sched, flight_hash) -> bytes
+//   tls_verify_server(flight, anchor_der) -> TlsVerify
 //
 // ClientHello shape: legacy_version 0x0303, 32-byte session id
 // (middlebox compatibility), cipher suites TLS_AES_128/256_GCM,
@@ -16,10 +17,9 @@
 // (rsa_pss_rsae_sha256, ecdsa_secp256r1_sha256), supported_versions
 // (0x0304), key_share (x25519 pub).
 //
-// T5 scope: decrypt EncryptedExtensions/Certificate/CertificateVerify/
-// Finished, verify the server Finished HMAC, build the client Finished.
-// Certificate/signature verification is T6 (the cert bytes are exposed
-// via TlsFlight for that).
+// T6: parse leaf cert (DER), self-signed/anchor trust, RSA-PSS-SHA256
+// CertificateVerify over the TLS 1.3 context string + transcript hash.
+// ECDSA leaves wait on T7.
 
 import "tcp.baga"
 import "../bytes/bytes.baga"
@@ -29,6 +29,9 @@ import "../crypto/hmac.baga"
 import "../crypto/hkdf.baga"
 import "../crypto/aes.baga"
 import "../crypto/gcm.baga"
+import "../crypto/x509.baga"
+import "../crypto/rsa.baga"
+import "../crypto/ct.baga"
 
 // ---------- byte-builder helpers ----------
 
@@ -346,7 +349,9 @@ struct TlsFlight {
     err: str,
     types: Vec<i64>,       // handshake message types, in order
     cert_der: bytes,       // first certificate (T6 input)
-    cv_sig: bytes,         // CertificateVerify signature (T6 input)
+    cv_sig: bytes,         // CertificateVerify signature
+    cv_algo: i64,          // SignatureScheme (e.g. 0x0804 = rsa_pss_rsae_sha256)
+    cv_hash: bytes,        // H(CH||SH||EE||Cert) — signed by CertificateVerify
     finished_ok: i64,      // server Finished HMAC verified
     flight_hash: bytes     // H(CH || SH || EE || Cert || CV)
 }
@@ -354,6 +359,7 @@ struct TlsFlight {
 fn tls_flight_bad(err: str) -> TlsFlight {
     return TlsFlight { ok: 0, err: err, types: vec_new(),
         cert_der: bytes_from_vec(vec_new()), cv_sig: bytes_from_vec(vec_new()),
+        cv_algo: 0, cv_hash: bytes_from_vec(vec_new()),
         finished_ok: 0, flight_hash: bytes_from_vec(vec_new()) }
 }
 
@@ -401,6 +407,8 @@ fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked:
     let types = vec_new()
     let mut cert_der = bytes_from_vec(vec_new())
     let mut cv_sig = bytes_from_vec(vec_new())
+    let mut cv_algo: i64 = 0
+    let mut cv_hash = bytes_from_vec(vec_new())
     let mut finished_ok: i64 = 0
     let mut flight_hash = bytes_from_vec(vec_new())
     let mut p: i64 = 0
@@ -424,7 +432,10 @@ fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked:
         }
         if mt == 15 {
             // CertificateVerify: algo(2) sig_len(2) sig...
+            // Signed content is H(transcript before this message).
+            cv_hash = sha256_b(acc)
             if bytes_len(body) >= 4 {
+                cv_algo = (bytes_at(body, 0) << 8) | bytes_at(body, 1)
                 let sl = (bytes_at(body, 2) << 8) | bytes_at(body, 3)
                 if 4 + sl <= bytes_len(body) {
                     cv_sig = bytes_slice(body, 4, 4 + sl)
@@ -447,7 +458,82 @@ fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked:
         p = p + 4 + ml
     }
     return TlsFlight { ok: 1, err: "", types: types, cert_der: cert_der,
-        cv_sig: cv_sig, finished_ok: finished_ok, flight_hash: flight_hash }
+        cv_sig: cv_sig, cv_algo: cv_algo, cv_hash: cv_hash,
+        finished_ok: finished_ok, flight_hash: flight_hash }
+}
+
+// ---------- T6: certificate + CertificateVerify ----------
+
+// RFC 8446 §4.4.3: 64 spaces || context || 0x00 || transcript_hash
+fn tls_cv_signed_content(transcript_hash: bytes) -> bytes {
+    let pad = vec_new()
+    let mut i: i64 = 0
+    while i < 64 {
+        vec_push(pad, 32)
+        i = i + 1
+    }
+    let ctx = tls_ascii("TLS 1.3, server CertificateVerify")
+    let z = vec_new()
+    vec_push(z, 0)
+    return bytes_concat(bytes_concat(bytes_concat(bytes_from_vec(pad), ctx), bytes_from_vec(z)), transcript_hash)
+}
+
+struct TlsVerify {
+    ok: i64,
+    err: str,
+    cert_ok: i64,
+    cv_ok: i64
+}
+
+fn tls_verify_bad(err: str) -> TlsVerify {
+    return TlsVerify { ok: 0, err: err, cert_ok: 0, cv_ok: 0 }
+}
+
+// Verify the leaf certificate against a caller-supplied trust anchor DER
+// (self-signed openssl peers: pass the same cert) and the CertificateVerify
+// signature (rsa_pss_rsae_sha256 only for now — ECDSA is T7).
+fn tls_verify_server(flight: TlsFlight, anchor_der: bytes) -> TlsVerify {
+    if flight.ok == 0 {
+        return tls_verify_bad(flight.err)
+    }
+    let cert = x509_parse(flight.cert_der)
+    if cert.ok == 0 {
+        return tls_verify_bad(cert.err)
+    }
+    let mut cert_ok: i64 = 0
+    if bytes_len(anchor_der) == 0 {
+        // no anchor: accept self-signed leaf (dev / loopback probe)
+        if x509_verify_self_signed(cert) == 1 {
+            cert_ok = 1
+        }
+    } else {
+        if x509_trust_anchor(flight.cert_der, anchor_der) == 1 {
+            cert_ok = 1
+        } else {
+            // chain of one: leaf signed by anchor key
+            let anchor = x509_parse(anchor_der)
+            if anchor.ok == 1 {
+                if x509_verify_cert(cert, anchor.n, anchor.e) == 1 {
+                    cert_ok = 1
+                }
+            }
+        }
+    }
+    if cert_ok == 0 {
+        return TlsVerify { ok: 0, err: "certificate not trusted", cert_ok: 0, cv_ok: 0 }
+    }
+    // CertificateVerify
+    if flight.cv_algo != 2052 {   // 0x0804 rsa_pss_rsae_sha256
+        return TlsVerify { ok: 0, err: "unsupported CertificateVerify algorithm",
+            cert_ok: 1, cv_ok: 0 }
+    }
+    let content = tls_cv_signed_content(flight.cv_hash)
+    let cv_ok = rsa_pss_sha256_verify(cert.n, cert.e, content, flight.cv_sig)
+    if cv_ok == 0 {
+        return TlsVerify { ok: 0, err: "CertificateVerify RSA-PSS failed",
+            cert_ok: 1, cv_ok: 0 }
+    }
+    return TlsVerify { ok: 1, err: "", cert_ok: 1, cv_ok: 1 }
 }
 
 // ---------- T5: client Finished record ----------

@@ -1,0 +1,212 @@
+// rsa.baga — RSA public-key verify for TLS 1.3 (T6).
+//
+//   rsa_public(n, e, sig) -> EM     raw s^e mod n as k-byte string
+//   rsa_pkcs1_sha256_verify(n, e, msg, sig) -> i64   // X.509 cert signatures
+//   rsa_pss_sha256_verify(n, e, msg, sig) -> i64     // CertificateVerify
+//
+// EMSA-PSS: Hash=SHA-256, MGF=MGF1-SHA256, sLen=hLen=32 (TLS rsa_pss_rsae_sha256).
+// EMSA-PKCS1-v1_5: DigestInfo for SHA-256.
+// Pure; uses bn.baga. Timing is secret-dependent — public exponents only.
+
+import "bn.baga"
+import "sha256.baga"
+import "ct.baga"
+
+// Limb count for a big-endian modulus of `nbytes` bytes.
+fn rsa_limbs(nbytes: i64) -> i64 {
+    return (nbytes * 8 + 25) / 26
+}
+
+// s^e mod n → k-byte big-endian EM (k = bytes_len(n)).
+fn rsa_public(n: bytes, e: bytes, sig: bytes) -> bytes {
+    let k = bytes_len(n)
+    let nl = rsa_limbs(k)
+    let nv = bn_from_bytes_be(n, nl)
+    let ev = bn_from_bytes_be(e, nl)
+    let sv = bn_from_bytes_be(sig, nl)
+    let mv = bn_modexp(sv, ev, nv)
+    return bn_to_bytes_be(mv, k)
+}
+
+// ---------- MGF1-SHA256 ----------
+
+fn rsa_i2osp4(c: i64) -> bytes {
+    let v = vec_new()
+    vec_push(v, (c >> 24) & 255)
+    vec_push(v, (c >> 16) & 255)
+    vec_push(v, (c >> 8) & 255)
+    vec_push(v, c & 255)
+    return bytes_from_vec(v)
+}
+
+fn rsa_mgf1_sha256(seed: bytes, mask_len: i64) -> bytes {
+    let out = vec_new()
+    let mut counter: i64 = 0
+    while vec_len(out) < mask_len {
+        let block = sha256_b(bytes_concat(seed, rsa_i2osp4(counter)))
+        let mut i: i64 = 0
+        while i < 32 && vec_len(out) < mask_len {
+            vec_push(out, bytes_at(block, i))
+            i = i + 1
+        }
+        counter = counter + 1
+    }
+    return bytes_from_vec(out)
+}
+
+fn rsa_xor_bytes(a: bytes, b: bytes) -> bytes {
+    let n = bytes_len(a)
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, bytes_at(a, i) ^ bytes_at(b, i))
+        i = i + 1
+    }
+    return bytes_from_vec(v)
+}
+
+// ---------- EMSA-PKCS1-v1_5 SHA-256 ----------
+// DigestInfo DER for SHA-256 (RFC 8017 §9.2 notes / RFC 3447):
+// 30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00 04 20 || H
+
+fn rsa_digestinfo_sha256(h: bytes) -> bytes {
+    let prefix = hex_decode("3031300d060960864801650304020105000420")
+    return bytes_concat(prefix, h)
+}
+
+fn rsa_pkcs1_sha256_verify(n: bytes, e: bytes, msg: bytes, sig: bytes) -> i64 {
+    let k = bytes_len(n)
+    if bytes_len(sig) != k {
+        return 0
+    }
+    let em = rsa_public(n, e, sig)
+    if bytes_len(em) != k {
+        return 0
+    }
+    // 0x00 0x01 0xff...0xff 0x00 || DigestInfo
+    if bytes_at(em, 0) != 0 {
+        return 0
+    }
+    if bytes_at(em, 1) != 1 {
+        return 0
+    }
+    let h = sha256_b(msg)
+    let di = rsa_digestinfo_sha256(h)
+    let di_len = bytes_len(di)
+    // need at least 00 01 FF 00 || DI  → 3 + di_len, and some FF padding
+    if k < di_len + 11 {
+        return 0
+    }
+    let ps_end = k - di_len - 1   // index of the 0x00 separator
+    if bytes_at(em, ps_end) != 0 {
+        return 0
+    }
+    let mut i: i64 = 2
+    while i < ps_end {
+        if bytes_at(em, i) != 255 {
+            return 0
+        }
+        i = i + 1
+    }
+    if ps_end - 2 < 8 {
+        return 0   // PS must be at least 8 octets of 0xff
+    }
+    let got = bytes_slice(em, ps_end + 1, k)
+    if ct_eq_b(got, di) {
+        return 1
+    }
+    return 0
+}
+
+// ---------- EMSA-PSS-VERIFY SHA-256, sLen=32 ----------
+
+fn rsa_pss_sha256_verify(n: bytes, e: bytes, msg: bytes, sig: bytes) -> i64 {
+    let k = bytes_len(n)
+    if bytes_len(sig) != k {
+        return 0
+    }
+    let h_len: i64 = 32
+    let s_len: i64 = 32
+    // modBits = 8*k - leading_zero_bits of n; for RSA-2048 with top bit set, 2048.
+    // emBits = modBits - 1; emLen = ceil(emBits/8).
+    let mut mod_bits = k * 8
+    let mut bi: i64 = 0
+    while bi < 8 {
+        if ((bytes_at(n, 0) >> (7 - bi)) & 1) == 1 {
+            mod_bits = k * 8 - bi
+            // break via bi = 8
+            bi = 8
+        } else {
+            bi = bi + 1
+        }
+    }
+    let em_bits = mod_bits - 1
+    let em_len = (em_bits + 7) / 8
+    if em_len < h_len + s_len + 2 {
+        return 0
+    }
+    let em_full = rsa_public(n, e, sig)
+    // EM is the rightmost emLen bytes of the k-byte result
+    if k < em_len {
+        return 0
+    }
+    let em = bytes_slice(em_full, k - em_len, k)
+    if bytes_at(em, em_len - 1) != 188 {   // 0xbc
+        return 0
+    }
+    let masked_db = bytes_slice(em, 0, em_len - h_len - 1)
+    let H = bytes_slice(em, em_len - h_len - 1, em_len - 1)
+    let db_mask = rsa_mgf1_sha256(H, em_len - h_len - 1)
+    let db = rsa_xor_bytes(masked_db, db_mask)
+    // Clear the leftmost 8*emLen - emBits bits
+    let zero_bits = 8 * em_len - em_bits
+    if zero_bits > 0 {
+        let mask = 255 >> zero_bits
+        let v = vec_from_bytes(db)
+        vec_set(v, 0, vec_get(v, 0) & mask)
+        // rebuild db
+        let db2 = bytes_from_vec(v)
+        // check leading zeros + 0x01
+        let mut i: i64 = 0
+        let ps_end = em_len - h_len - s_len - 2
+        while i < ps_end {
+            if bytes_at(db2, i) != 0 {
+                return 0
+            }
+            i = i + 1
+        }
+        if bytes_at(db2, ps_end) != 1 {
+            return 0
+        }
+        let salt = bytes_slice(db2, ps_end + 1, em_len - h_len - 1)
+        let m_hash = sha256_b(msg)
+        let zeros8 = hex_decode("0000000000000000")
+        let mp = bytes_concat(bytes_concat(zeros8, m_hash), salt)
+        let H2 = sha256_b(mp)
+        if ct_eq_b(H, H2) {
+            return 1
+        }
+        return 0
+    }
+    // zero_bits == 0 path (rare for RSA sizes)
+    let mut j: i64 = 0
+    let ps_end2 = em_len - h_len - s_len - 2
+    while j < ps_end2 {
+        if bytes_at(db, j) != 0 {
+            return 0
+        }
+        j = j + 1
+    }
+    if bytes_at(db, ps_end2) != 1 {
+        return 0
+    }
+    let salt2 = bytes_slice(db, ps_end2 + 1, em_len - h_len - 1)
+    let m_hash2 = sha256_b(msg)
+    let zeros8b = hex_decode("0000000000000000")
+    let mp2 = bytes_concat(bytes_concat(zeros8b, m_hash2), salt2)
+    let H2b = sha256_b(mp2)
+    if ct_eq_b(H, H2b) {
+        return 1
+    }
+    return 0
+}

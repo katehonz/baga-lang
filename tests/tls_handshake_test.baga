@@ -1,16 +1,18 @@
 // tls_handshake_test.baga — live TLS 1.3 handshake against openssl
-// s_server (apps-roadmap №10 P2, T4+T5). Full client flight in pure
-// Baga: ClientHello (x25519 key share) → ServerHello → key schedule →
-// decrypt EncryptedExtensions/Certificate/CertificateVerify/Finished →
-// verify the server Finished HMAC → send the client Finished.
+// s_server (apps-roadmap №10 P2, T4–T6). Full client flight in pure
+// Baga: ClientHello (x25519) → ServerHello → key schedule → decrypt
+// EncryptedExtensions/Certificate/CertificateVerify/Finished → verify
+// server Finished HMAC → T6 cert + RSA-PSS CertificateVerify → send
+// the client Finished.
 //
-// The peer is external (baga has no process spawn): the Makefile starts
-// `openssl s_server -accept 18443 -tls1_3` with a fresh self-signed
-// certificate before running this test.
+// The peer is external (baga has no process spawn): scripts/run_tests.sh
+// starts `openssl s_server -accept 18443 -tls1_3` with a fresh
+// self-signed certificate before running this test.
 
 import "std/net/tls.baga"
 import "std/net/tcp.baga"
 import "std/crypto/x25519.baga"
+import "std/crypto/x509.baga"
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
 import "std/random/random.baga"
@@ -89,6 +91,26 @@ fn main() -> i64 !Net !IO !Par !Random {
     assert_true("cert_der_present", bytes_len(flight.cert_der) > 100)
     assert_true("cv_sig_present", bytes_len(flight.cv_sig) > 0)
     assert_eq_i64("server_finished_verified", flight.finished_ok, 1)
+    assert_eq_i64("cv_algo_rsa_pss_sha256", flight.cv_algo, 2052)
+    assert_eq_i64("cv_hash_len", bytes_len(flight.cv_hash), 32)
+
+    // --- T6: X.509 parse + self-signed trust + RSA-PSS CertificateVerify ---
+    let leaf = x509_parse(flight.cert_der)
+    if leaf.ok == 0 {
+        eprintln(concat("tls_handshake_test: x509 ", leaf.err))
+        return 1
+    }
+    assert_eq_i64("x509_parse", leaf.ok, 1)
+    assert_eq_i64("x509_self_signed", x509_verify_self_signed(leaf), 1)
+    // empty anchor → accept self-signed leaf (openssl peer)
+    let ver = tls_verify_server(flight, bytes_from_vec(vec_new()))
+    if ver.ok == 0 {
+        eprintln(concat("tls_handshake_test: verify ", ver.err))
+        return 1
+    }
+    assert_eq_i64("cert_ok", ver.cert_ok, 1)
+    assert_eq_i64("cv_ok", ver.cv_ok, 1)
+    assert_eq_i64("verify_ok", ver.ok, 1)
 
     // --- client Finished; the server must accept it (no alert) ---
     let fin = tls_finished_record(sched, flight.flight_hash)

@@ -1,0 +1,156 @@
+// der.baga — minimal DER/ASN.1 walker for X.509 (TLS milestone T6).
+//
+// Tags used by certificates: SEQUENCE 0x30, INTEGER 0x02, BIT STRING 0x03,
+// OCTET STRING 0x04, NULL 0x05, OID 0x06, context-specific constructed 0xa0.
+// Lengths: short form and long form up to 3 length-bytes (enough for RSA-4k).
+// Pure; no effects. Honest limits: no indefinite length, no SET OF walkers.
+
+import "../str/str.baga"
+
+struct Der {
+    data: bytes,
+    pos: i64,
+    end: i64,
+    ok: i64,
+    err: str
+}
+
+fn der_of(b: bytes) -> Der {
+    return Der { data: b, pos: 0, end: bytes_len(b), ok: 1, err: "" }
+}
+
+fn der_bad(d: Der, err: str) -> Der {
+    return Der { data: d.data, pos: d.pos, end: d.end, ok: 0, err: err }
+}
+
+fn der_remain(d: Der) -> i64 {
+    return d.end - d.pos
+}
+
+// Read tag + definite length; advance past the header. Content is [pos, pos+len).
+// Returns tag in high bits of a side channel via Der.err empty and tag via
+// a small struct.
+struct DerHdr {
+    ok: i64,
+    err: str,
+    tag: i64,
+    len: i64,
+    pos: i64,     // start of content
+    end: i64,     // end of content (= pos+len)
+    next: i64     // position after the whole TLV
+}
+
+fn der_hdr_bad(err: str) -> DerHdr {
+    return DerHdr { ok: 0, err: err, tag: 0, len: 0, pos: 0, end: 0, next: 0 }
+}
+
+fn der_read_hdr(d: Der) -> DerHdr {
+    if d.ok == 0 {
+        return der_hdr_bad(d.err)
+    }
+    if d.pos >= d.end {
+        return der_hdr_bad("der: truncated tag")
+    }
+    let tag = bytes_at(d.data, d.pos)
+    let mut p = d.pos + 1
+    if p >= d.end {
+        return der_hdr_bad("der: truncated length")
+    }
+    let b0 = bytes_at(d.data, p)
+    p = p + 1
+    let mut ln: i64 = 0
+    if b0 < 128 {
+        ln = b0
+    } else {
+        let nlen = b0 & 127
+        if nlen == 0 || nlen > 3 {
+            return der_hdr_bad("der: unsupported length form")
+        }
+        if p + nlen > d.end {
+            return der_hdr_bad("der: truncated long length")
+        }
+        let mut i: i64 = 0
+        while i < nlen {
+            ln = (ln << 8) | bytes_at(d.data, p)
+            p = p + 1
+            i = i + 1
+        }
+    }
+    if p + ln > d.end {
+        return der_hdr_bad("der: content past end")
+    }
+    return DerHdr { ok: 1, err: "", tag: tag, len: ln, pos: p, end: p + ln, next: p + ln }
+}
+
+// Consume one TLV of expected tag; return content slice and advanced Der.
+struct DerTake {
+    ok: i64,
+    err: str,
+    content: bytes,
+    rest: Der
+}
+
+fn der_take_bad(err: str, d: Der) -> DerTake {
+    return DerTake { ok: 0, err: err, content: bytes_from_vec(vec_new()), rest: d }
+}
+
+fn der_take(d: Der, want_tag: i64) -> DerTake {
+    let h = der_read_hdr(d)
+    if h.ok == 0 {
+        return der_take_bad(h.err, d)
+    }
+    if h.tag != want_tag {
+        return der_take_bad(concat("der: want tag ", int_to_str(want_tag)), d)
+    }
+    let content = bytes_slice(d.data, h.pos, h.end)
+    let rest = Der { data: d.data, pos: h.next, end: d.end, ok: 1, err: "" }
+    return DerTake { ok: 1, err: "", content: content, rest: rest }
+}
+
+// Enter a SEQUENCE: content becomes the new window.
+fn der_enter_seq(d: Der) -> Der {
+    let t = der_take(d, 48)   // 0x30
+    if t.ok == 0 {
+        return der_bad(d, t.err)
+    }
+    return Der { data: t.content, pos: 0, end: bytes_len(t.content), ok: 1, err: "" }
+}
+
+// INTEGER content as unsigned big-endian (strip a single leading 0x00 if present
+// for positive values that set the high bit — standard DER integer encoding).
+fn der_integer_bytes(content: bytes) -> bytes {
+    let n = bytes_len(content)
+    if n == 0 {
+        return content
+    }
+    if bytes_at(content, 0) == 0 && n > 1 {
+        return bytes_slice(content, 1, n)
+    }
+    return content
+}
+
+// BIT STRING: first content byte is unused-bits count (must be 0 for keys/sigs).
+fn der_bitstring_payload(content: bytes) -> bytes {
+    let n = bytes_len(content)
+    if n == 0 {
+        return content
+    }
+    return bytes_slice(content, 1, n)
+}
+
+// Peek tag without advancing.
+fn der_peek_tag(d: Der) -> i64 {
+    if d.pos >= d.end {
+        return -1
+    }
+    return bytes_at(d.data, d.pos)
+}
+
+// Skip one full TLV.
+fn der_skip(d: Der) -> Der {
+    let h = der_read_hdr(d)
+    if h.ok == 0 {
+        return der_bad(d, h.err)
+    }
+    return Der { data: d.data, pos: h.next, end: d.end, ok: 1, err: "" }
+}

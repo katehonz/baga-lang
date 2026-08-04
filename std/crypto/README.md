@@ -1,11 +1,12 @@
-# std/crypto — hashes, MACs, bignum, X25519, HKDF, AES-GCM
+# std/crypto — hashes, MACs, bignum, X25519, HKDF, AES-GCM, RSA, X.509
 
 Pure Baga cryptography: no OpenSSL FFI, deliberately — zero dependencies and
 proof-of-language. SHA-256 is validated against NIST vectors, HMAC against
 RFC 4231, the bignum against python-generated golden vectors (RSA-2048
 modexp included), X25519 against RFC 7748, HKDF against RFC 5869, AES
-against FIPS-197 and AES-GCM against python `cryptography` vectors.
-The TLS 1.3 cipher suite (T1–T3 of the milestone) lives here.
+against FIPS-197 and AES-GCM against python `cryptography` vectors,
+RSA-PSS / PKCS#1 against the same oracle. The TLS 1.3 stack (T1–T6) lives
+here plus `std/net/tls.baga`.
 
 - `sha256_bytes(data: Vec<i64>) -> Vec<i64>` — SHA-256 (FIPS 180-4) over a byte buffer; returns the 32-byte digest.
 - `sha256(msg: str) -> Vec<i64>` — SHA-256 over the raw bytes of `msg`.
@@ -41,6 +42,14 @@ The TLS 1.3 cipher suite (T1–T3 of the milestone) lives here.
   — AES-GCM AEAD (SP 800-38D) with GHASH in GF(2^128); 12-byte nonces
   (the TLS 1.3 shape); tags compared with ct_eq_b. Vectors generated
   offline with python `cryptography`; the whole suite runs in ~0.5 s.
+- `der_*` (`der.baga`) — minimal DER walker for X.509 (TLS T6).
+- `rsa_pkcs1_sha256_verify` / `rsa_pss_sha256_verify` (`rsa.baga`) —
+  RSA public verify for cert signatures (PKCS#1 v1.5) and TLS 1.3
+  CertificateVerify (EMSA-PSS, sLen=32). Vectors in
+  `tests/std/rsa_pss_test.baga`.
+- `x509_parse` / `x509_verify_self_signed` / `x509_trust_anchor`
+  (`x509.baga`) — Certificate → RSA SPKI + TBS; sha256WithRSAEncryption
+  only. No name constraints, time checks, or revocation.
 
 Implementation notes: Baga has only signed i64, so u32 arithmetic is emulated
 by masking with `& 4294967295`; bitwise NOT is `(-1) ^ x`. All intermediate
@@ -50,7 +59,7 @@ hot loops must not allocate per iteration — that is why `bn_mod` reduces
 in place instead of rebuilding shifted copies (the naive form OOM'd on a
 512-bit RSA exponent).
 
-ChaCha20-Poly1305 stays v2; TLS 1.3 is in progress —
-`docs/superpowers/plans/2026-08-04-tls-client.md` (bn.baga is its T1).
+ChaCha20-Poly1305 stays v2; TLS 1.3 T1–T6 done, T7 ECDSA next —
+`docs/superpowers/plans/2026-08-04-tls-client.md`.
 
 Effects: none (pure). Memory: leak-tolerant.

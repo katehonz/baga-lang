@@ -1,7 +1,7 @@
 # TLS 1.3 client in std (G6) Implementation Plan
 
 > Progress: T1 bn ✓ · T2 x25519 ✓ · T3 hkdf/aes/gcm ✓ · T4 records+hello ✓
-> · T5 encrypted handshake ✓ (live against openssl) · T6–T8 ahead
+> · T5 encrypted handshake ✓ · T6 X.509 + RSA-PSS ✓ (live openssl) · T7–T8 ahead
 
 **Goal:** Close gap G6 — the last production blocker found by the apps
 roadmap (№10 OAuth proxy waits on it): a **TLS 1.3 client** in `std/`,
@@ -46,7 +46,7 @@ API so TLS slots in without interface change; std/crypto README reserved
 
 ## Tasks
 
-Status: T1–T5 done (2026-08-04). Next: T6 X.509 + RSA-PSS.
+Status: T1–T6 done (2026-08-04). Next: T7 ECDSA-P256.
 
 ### T1 — `std/crypto/bn.baga`: fixed-width bignum
 - 26-bit limbs in `Vec<i64>`, little-endian, fixed length per op.
@@ -79,11 +79,18 @@ Status: T1–T5 done (2026-08-04). Next: T6 X.509 + RSA-PSS.
   CertificateVerify/Finished; send client Finished. Verify against
   openssl s_server with a self-signed cert.
 
-### T6 — X.509: DER/ASN.1 + RSA-PSS chain verify
-- Minimal DER reader (SEQUENCE/OID/INTEGER/BIT STRING), TBSCertificate
-  fields, SPKI + signature extraction; chain verify against
-  caller-supplied trust anchors; RSA-PSS (RFC 8017 EMSA-PSS verify).
-  Honest gaps: name constraints/policies ignored, no revocation.
+### T6 — X.509: DER/ASN.1 + RSA-PSS chain verify ✅
+- `std/crypto/der.baga` — minimal DER walker (SEQUENCE/OID/INTEGER/BIT STRING).
+- `std/crypto/rsa.baga` — `rsa_pkcs1_sha256_verify` (cert signatures) +
+  `rsa_pss_sha256_verify` (EMSA-PSS, sLen=32, MGF1-SHA256).
+- `std/crypto/x509.baga` — parse Certificate → SPKI RSA n/e + TBS + sig;
+  self-signed and trust-anchor checks (sha256WithRSAEncryption).
+- `tls_verify_server(flight, anchor_der)` — leaf trust + CertificateVerify
+  (`rsa_pss_rsae_sha256`); empty anchor accepts self-signed (dev peer).
+- Tests: `tests/std/rsa_pss_test.baga` (python cryptography vectors) +
+  live openssl path in `tls_handshake_test` (cert + CV both green).
+- Honest gaps: name constraints/policies/time/revocation ignored; ECDSA
+  leaves are T7.
 
 ### T7 — ECDSA-P256 verify + cipher hardening
 - P-256 field/scalar arithmetic, point verify per RFC 5480/SEC1;

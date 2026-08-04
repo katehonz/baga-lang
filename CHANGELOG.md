@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### TLS 1.3 client, T6 — X.509 + RSA-PSS CertificateVerify
+- `std/crypto/der.baga`: minimal DER walker (SEQUENCE / INTEGER / BIT
+  STRING / OID, definite lengths).
+- `std/crypto/rsa.baga`: `rsa_public` (s^e mod n via bn), PKCS#1 v1.5
+  SHA-256 verify (X.509 cert signatures) and EMSA-PSS SHA-256 verify
+  (sLen=32, MGF1-SHA256 — TLS `rsa_pss_rsae_sha256`).
+- `std/crypto/x509.baga`: parse Certificate → TBS + RSA SPKI (n, e) +
+  signature; self-signed and trust-anchor checks.
+- `std/net/tls.baga`: `TlsFlight` exposes `cv_algo` / `cv_hash`;
+  `tls_verify_server(flight, anchor_der)` trusts the leaf and verifies
+  CertificateVerify. Empty anchor = accept self-signed (dev peer).
+- `tests/std/rsa_pss_test.baga` — python `cryptography` golden vectors
+  (PSS accept/reject + self-signed cert). Live openssl path in
+  `tls_handshake_test` now asserts cert + CV.
+- Honest gaps: no name constraints / time / revocation; ECDSA is T7.
+
 ### Toolchain / packaging — Makefile is C-only; tests via sandak + baga-test
 - The root `Makefile` no longer embeds the regression suite (~670 lines of
   hand-listed package tests). It builds the C toolchain only (`baga`,

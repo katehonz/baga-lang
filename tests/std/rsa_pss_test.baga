@@ -1,0 +1,59 @@
+// rsa_pss_test.baga — RSA-PSS-SHA256 + PKCS1 cert verify (TLS T6).
+// Oracle: python cryptography, vectors embedded offline.
+
+import "std/crypto/rsa.baga"
+import "std/crypto/x509.baga"
+import "std/crypto/der.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let n = hex_decode("b7b9784d59a62be97e38b0d8a77f282f558c6fdb61ffeff21fd2f00310de933919d59a944e0644901170d31d362b5724c691ad58cca092f94f39146ec23517536352e40ce18af6eb6e70b55bb6f3058a4c8f047ae999146139bf488586d46a50ded79d7cf825b5e2be6792d9811e045c936f5c93e7080016b203d9e22099edadc91f65f8430491b70ed947d96812ac7dbf058c90f0668f7d83fc5686e8d0bea9ee53d8d3e79b490ee2170844787563794e96207132947e1f6757a8ff201755f4e5ed8cc77bf2b20c7475bb585da901659e58ce239a7acf05b366f6f484cd5611ef97f47c01884293591fcc283a87a7c8b53c8ddd52ac5270e3b1d8fd4ad1266d")
+    let e = hex_decode("010001")
+    let msg = hex_decode("20202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020544c5320312e332c2073657276657220436572746966696361746556657269667900a9b3bf651f93b706e0ff6c53c9ee64f9ef9ec102d7dccd59f78411cfd6c9f25a")
+    let sig = hex_decode("96e9ff950a900a2ea36bb44a6d27c76e638fe15cb9ca970f9d3c726a1d00959963c4aff5015cabf17142dd426a690365e42d36028e96350a78b1df1d29b29769b76ec58a0bdb41b41775bdecc2b7a8ece2c13e084d2cae7539c44bf1bf2c3133a20a225d03cbc6bdc1be4721bd71e0d5a38be7dbd87bb686fdff72a7aec92c3eeb29a9054ba992630115845ca1f110094410a78e9159168a6193b51b8c034ac126bf526d02524d9dcaa98ea20312f39d4f670587fb64afb3e0f77d8acf8a5c76f7ffa027db4478031a53b35d78bd15c033692b4aa44cab3db01f0710a282a63104c2cd5a8ccbcdab3a337892fb29f5df5dcddb9840ec2b07bcd37b229b6ebc46")
+    let cert_der = hex_decode("308202a130820189a003020102020101300d06092a864886f70d01010b050030143112301006035504030c096c6f63616c686f7374301e170d3236303830333130323831375a170d3236303930333130323831375a30143112301006035504030c096c6f63616c686f737430820122300d06092a864886f70d01010105000382010f003082010a0282010100b7b9784d59a62be97e38b0d8a77f282f558c6fdb61ffeff21fd2f00310de933919d59a944e0644901170d31d362b5724c691ad58cca092f94f39146ec23517536352e40ce18af6eb6e70b55bb6f3058a4c8f047ae999146139bf488586d46a50ded79d7cf825b5e2be6792d9811e045c936f5c93e7080016b203d9e22099edadc91f65f8430491b70ed947d96812ac7dbf058c90f0668f7d83fc5686e8d0bea9ee53d8d3e79b490ee2170844787563794e96207132947e1f6757a8ff201755f4e5ed8cc77bf2b20c7475bb585da901659e58ce239a7acf05b366f6f484cd5611ef97f47c01884293591fcc283a87a7c8b53c8ddd52ac5270e3b1d8fd4ad1266d0203010001300d06092a864886f70d01010b050003820101003100a471d6ae2802c251a4677cf673d1a9d6c84a04ca9ab7ab9069819d8c186e7e4e39b989b6f3dda1a8190952cb4968686e3c559ca35717717c6b2cee5180520b506a60e2ec8bfeac712e5a277808b8c0dd0d8abc0384002901f952b99a50e44f7cdf36aee2ac10b953b331062f83544505099d180ca7afbfe6563093a5a6c3121873f895cf38a8956d5d14a758c85b271cbecce6f55a2d7d9225a1ac70d21fbe740d578d2284eca32920af1bf6dc3b8435a38b58b690d8bc5f37a1e09d0e7e66b83e3a304615ab3e142ca327a12b24df9dffa1547c2d8a46e9ead1c8f8ab3f7f579db6c245676224b011cf52820c7a43e9927fd49094890322d77ca654f09b")
+
+    check("n_len", bytes_len(n) == 256)
+    check("sig_len", bytes_len(sig) == 256)
+    check("pss_verify", rsa_pss_sha256_verify(n, e, msg, sig) == 1)
+
+    // Tamper: flip a message byte → must fail
+    let bad_msg = bytes_concat(hex_decode("21"), bytes_slice(msg, 1, bytes_len(msg)))
+    check("pss_reject_bad_msg", rsa_pss_sha256_verify(n, e, bad_msg, sig) == 0)
+
+    // Tamper: flip a signature byte
+    let bad_sig = bytes_concat(hex_decode("00"), bytes_slice(sig, 1, bytes_len(sig)))
+    check("pss_reject_bad_sig", rsa_pss_sha256_verify(n, e, msg, bad_sig) == 0)
+
+    // X.509 parse + self-signed PKCS#1 verify
+    let cert = x509_parse(cert_der)
+    if cert.ok == 0 {
+        eprintln(concat("parse err: ", cert.err))
+        exit(1)
+    }
+    check("x509_parse", cert.ok == 1)
+    check("x509_is_rsa", cert.is_rsa == 1)
+    check("x509_n_match", bytes_len(cert.n) == 256)
+    // n may have leading zero stripped from DER integer; compare via bn or length
+    check("x509_n_eq", hex_encode(cert.n) == hex_encode(n) || bytes_len(cert.n) == 256)
+    // exact n match
+    check("x509_n_exact", hex_encode(cert.n) == "b7b9784d59a62be97e38b0d8a77f282f558c6fdb61ffeff21fd2f00310de933919d59a944e0644901170d31d362b5724c691ad58cca092f94f39146ec23517536352e40ce18af6eb6e70b55bb6f3058a4c8f047ae999146139bf488586d46a50ded79d7cf825b5e2be6792d9811e045c936f5c93e7080016b203d9e22099edadc91f65f8430491b70ed947d96812ac7dbf058c90f0668f7d83fc5686e8d0bea9ee53d8d3e79b490ee2170844787563794e96207132947e1f6757a8ff201755f4e5ed8cc77bf2b20c7475bb585da901659e58ce239a7acf05b366f6f484cd5611ef97f47c01884293591fcc283a87a7c8b53c8ddd52ac5270e3b1d8fd4ad1266d")
+    check("x509_e_65537", hex_encode(cert.e) == "010001")
+    check("x509_self_signed", x509_verify_self_signed(cert) == 1)
+    check("x509_trust_self", x509_trust_anchor(cert_der, cert_der) == 1)
+
+    // DER smoke: outer is SEQUENCE
+    let d = der_of(cert_der)
+    let h = der_read_hdr(d)
+    check("der_outer_seq", h.ok == 1 && h.tag == 48)
+
+    print("rsa_pss_test: all passed")
+}
