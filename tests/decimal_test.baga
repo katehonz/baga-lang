@@ -1,0 +1,102 @@
+// decimal_test.baga — bagaDecimal P0 suite (rust-decimal-style money math).
+
+import "bagadecimal/src/decimal.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn must_parse(s: str) -> Decimal {
+    let r = dec_parse(s)
+    if r.ok == 0 {
+        eprintln(concat(concat("parse failed: ", s), concat(" — ", r.err)))
+        exit(1)
+    }
+    return r.value
+}
+
+fn main() {
+    // --- constructors ---
+    check("zero", dec_is_zero(dec_zero()) == 1)
+    check("one_str", dec_to_string(dec_one()) == "1")
+    let p = dec_from_parts(123, 0, 0, 0, 2)
+    check("from_parts_scale", dec_scale(p) == 2)
+    check("from_parts_str", dec_to_string(p) == "1.23")
+
+    // --- parse / format ---
+    check("parse_int", dec_to_string(must_parse("42")) == "42")
+    check("parse_neg", dec_to_string(must_parse("-3.5")) == "-3.5")
+    check("parse_plus", dec_to_string(must_parse("+0.5")) == "0.5")
+    check("parse_trail_zero", dec_to_string(must_parse("1.50")) == "1.50")
+    check("parse_lead_dot", dec_to_string(must_parse("0.25")) == "0.25")
+    let bad = dec_parse("1.2.3")
+    check("parse_bad_dots", bad.ok == 0)
+    let bad2 = dec_parse("abc")
+    check("parse_bad_alpha", bad2.ok == 0)
+
+    // --- i64 convert ---
+    check("from_i64", dec_to_string(dec_from_i64(100)) == "100")
+    check("from_i64_scale", dec_to_string(dec_from_i64_scale(202, 2)) == "2.02")
+    let ti = dec_to_i64(must_parse("-99"))
+    check("to_i64", ti.ok == 1 && ti.value == 0 - 99)
+
+    // --- cmp ---
+    check("cmp_lt", dec_lt(must_parse("1.0"), must_parse("1.1")) == 1)
+    check("cmp_eq_diff_scale", dec_eq(must_parse("1.0"), must_parse("1.00")) == 1)
+    check("cmp_neg", dec_cmp(must_parse("-2"), must_parse("1")) < 0)
+    check("abs", dec_to_string(dec_abs(must_parse("-4.2"))) == "4.2")
+    check("neg", dec_to_string(dec_neg(must_parse("3"))) == "-3")
+
+    // --- add / sub ---
+    let s1 = dec_add(must_parse("1.5"), must_parse("2.25"))
+    check("add", s1.ok == 1 && dec_to_string(s1.value) == "3.75")
+    let s2 = dec_sub(must_parse("10.00"), must_parse("0.01"))
+    check("sub", s2.ok == 1 && dec_to_string(s2.value) == "9.99")
+    let s3 = dec_add(must_parse("-1.5"), must_parse("2.0"))
+    check("add_mixed_sign", s3.ok == 1 && dec_to_string(s3.value) == "0.5")
+
+    // --- mul ---
+    let m1 = dec_mul(must_parse("1.5"), must_parse("2"))
+    check("mul", m1.ok == 1 && dec_to_string(m1.value) == "3.0")
+    let m2 = dec_mul(must_parse("25.12"), must_parse("0.085"))
+    check("mul_tax", m2.ok == 1)
+    // 25.12 * 0.085 = 2.1352 (scale may keep trailing zero → 2.13520)
+    check("mul_tax_val", dec_to_string_normalized(m2.value) == "2.1352")
+
+    // --- round (money) ---
+    let r1 = dec_round_dp(must_parse("2.1352"), 2)
+    check("round_dp", r1.ok == 1 && dec_to_string(r1.value) == "2.14")
+    let r2 = dec_round_dp(must_parse("1.225"), 2)
+    check("round_half_away", r2.ok == 1 && dec_to_string(r2.value) == "1.23")
+    let r3 = dec_round_dp(must_parse("-1.225"), 2)
+    check("round_half_away_neg", r3.ok == 1 && dec_to_string(r3.value) == "-1.23")
+
+    // rust-decimal README money example: 25.12 * 1.085 → 27.26 at 2 dp
+    let price = must_parse("25.12")
+    let rate = must_parse("0.085")
+    let tax = dec_mul(price, rate)
+    check("tax_ok", tax.ok == 1)
+    let tax_r = dec_round_dp(tax.value, 2)
+    let total = dec_add(price, tax_r.value)
+    check("total_ok", total.ok == 1)
+    let total_r = dec_round_dp(total.value, 2)
+    check("money_total", total_r.ok == 1 && dec_to_string(total_r.value) == "27.26")
+
+    // --- div ---
+    let d1 = dec_div_scale(must_parse("10"), must_parse("4"), 2)
+    check("div_scale", d1.ok == 1 && dec_to_string(d1.value) == "2.50")
+    let d0 = dec_div(must_parse("1"), must_parse("0"))
+    check("div_zero", d0.ok == 0)
+
+    // --- normalize string ---
+    check("norm", dec_to_string_normalized(must_parse("1.50")) == "1.5")
+    check("norm_int", dec_to_string_normalized(must_parse("2.00")) == "2")
+
+    print("decimal_test: all passed")
+}

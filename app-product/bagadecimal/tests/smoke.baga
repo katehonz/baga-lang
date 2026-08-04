@@ -1,0 +1,22 @@
+// smoke.baga — package-local smoke.
+
+import "../src/decimal.baga"
+
+fn main() {
+    let a = dec_parse("10.50")
+    let b = dec_parse("2")
+    if a.ok == 0 || b.ok == 0 {
+        eprintln("parse fail")
+        exit(1)
+    }
+    let p = dec_mul(a.value, b.value)
+    if p.ok == 0 {
+        eprintln(p.err)
+        exit(1)
+    }
+    if dec_to_string(p.value) != "21.00" {
+        eprintln(concat("want 21.00 got ", dec_to_string(p.value)))
+        exit(1)
+    }
+    print("bagadecimal smoke: ok")
+}

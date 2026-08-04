@@ -1,0 +1,92 @@
+// parse.baga — string → Decimal
+
+import "../types.baga"
+import "../limb.baga"
+import "std/str/str.baga"
+
+fn dec_digit(c: i64) -> i64 {
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    return -1
+}
+
+// Parse plain decimal: optional sign, digits, optional '.' fraction.
+// No scientific notation in P0 (P1).
+fn dec_parse(s: str) -> DecResult {
+    let n = len(s)
+    if n == 0 {
+        return dec_err("empty string")
+    }
+    let mut i: i64 = 0
+    // skip spaces
+    while i < n && char_at(s, i) == 32 {
+        i = i + 1
+    }
+    if i >= n {
+        return dec_err("empty string")
+    }
+    let mut neg: i64 = 0
+    if char_at(s, i) == 45 {
+        neg = 1
+        i = i + 1
+    } else {
+        if char_at(s, i) == 43 {
+            i = i + 1
+        }
+    }
+    if i >= n {
+        return dec_err("no digits")
+    }
+    let mut v = dec_limb3(0, 0, 0)
+    let mut saw_digit: i64 = 0
+    let mut saw_dot: i64 = 0
+    let mut scale: i64 = 0
+    while i < n {
+        let c = char_at(s, i)
+        if c == 46 {
+            if saw_dot != 0 {
+                return dec_err("multiple decimal points")
+            }
+            saw_dot = 1
+            i = i + 1
+        } else {
+            let d = dec_digit(c)
+            if d < 0 {
+                // trailing spaces ok
+                if c == 32 {
+                    i = i + 1
+                    while i < n {
+                        if char_at(s, i) != 32 {
+                            return dec_err("trailing junk")
+                        }
+                        i = i + 1
+                    }
+                } else {
+                    return dec_err("invalid character")
+                }
+            } else {
+                saw_digit = 1
+                v = dec_limb_mul_small(v, 10)
+                v = dec_limb_add(v, dec_limb3(d, 0, 0))
+                if dec_limb_fits96(v) == 0 {
+                    return dec_err("overflow parsing mantissa")
+                }
+                if saw_dot != 0 {
+                    scale = scale + 1
+                    if scale > 28 {
+                        return dec_err("scale > 28")
+                    }
+                }
+                i = i + 1
+            }
+        }
+    }
+    if saw_digit == 0 {
+        return dec_err("no digits")
+    }
+    if neg != 0 && dec_limb_is_zero(v) == 1 {
+        neg = 0
+    }
+    return dec_ok(dec_from_limb3(v, neg, scale))
+}

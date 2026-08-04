@@ -1,0 +1,7 @@
+[package]
+name = "bagadecimal"
+version = "0.1.0"
+entry = "src/decimal.baga"
+
+[dependencies]
+std = { path = "../../std" }

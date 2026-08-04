@@ -1,0 +1,14 @@
+// decimal.baga — bagaDecimal package entry (sandak).
+//
+// Pulls the full module graph. Public API lives in the imported modules;
+// start with `import "bagadecimal/src/decimal.baga"`.
+
+import "types.baga"
+import "limb.baga"
+import "ops/cmp.baga"
+import "ops/arith.baga"
+import "parse/parse.baga"
+import "format/format.baga"
+import "round/round.baga"
+import "convert/convert.baga"
+import "math/math.baga"
