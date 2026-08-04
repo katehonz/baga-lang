@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### bagaDecimal — signed-overflow fixes + mul rescue (P0.6)
+- **BUG (crash).** `dec_limb_mul` accumulated 32-bit limb products +
+  carry up to ~2^64 in signed `i64`; the sum wrapped negative, the
+  arithmetic-shift carry followed, and the carry drain walked out of
+  bounds. `dec_mul(3100000000, 3100000000)` aborted at runtime — the
+  whole upper half of the 96-bit mantissa range was broken.
+- **BUG (silent wrong digits).** `dec_limb_div_small` stepped in base
+  2^32 (`rem * 2^32 + limb`) and overflowed for single-limb divisors
+  > 2^31: `dec_div_scale(1, 3000000000, 28)` returned confidently wrong
+  digits with `ok = 1`.
+- **Fix:** the wide paths now run on 16-bit half-limbs — every
+  intermediate stays below 2^48 (`dec_limb_mul`, `dec_limb_mul_small`,
+  `dec_limb_div_small`). Documented invariant in `docs/design-notes.md`:
+  no intermediate may reach 2^63. gaps.md D1 verdict revised.
+- **`dec_mul` scale rescue (rust-decimal parity):** a product that still
+  exceeds 96 bits after the scale-28 rescale now drops fractional digits
+  (half-away on the most significant dropped) until it fits; an error is
+  returned only when the integer part alone overflows. Was: loud error.
+- **BUG (accounting).** `dec_percent_of` pre-rounded the rate to scale 8
+  before multiplying — 33.3333333% of 999999999.99 posted 333333330.00
+  instead of 333333333.00. Now exact product → one division by 100 → one
+  rounding at the posting. `dec_with_percent` taxes the same rounded
+  base it posts.
+- Tests: `tests/decimal_test.baga` 40 → 59 checks — big-limb mul,
+  192-bit rescale (scale 48 → rescued 19), true overflow stays loud,
+  big-divisor div, precise percent, parse/round/-0/to_i64 edges.
+
 ### Compiler — non-ASCII string literals before a hex digit (C backend)
 - **Bugfix.** `emit_c_string` emitted non-ASCII bytes as `\xHH`, and C hex
   escapes are greedy: a Cyrillic (UTF-8) literal directly followed by an

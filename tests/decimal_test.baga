@@ -108,5 +108,47 @@ fn main() {
     let sm = dec_sum2(must_parse("1.10"), must_parse("2.20"))
     check("sum2", sm.ok == 1 && dec_to_string(sm.value) == "3.30")
 
+    // --- BUG A regression: limb_mul signed overflow (crash / wrong carry) ---
+    // limb products >= 2^63 wrapped negative in i64; the carry drain walked
+    // out of bounds. The whole upper mantissa range was broken.
+    let bma = dec_mul(dec_from_i64(3100000000), dec_from_i64(3100000000))
+    check("mul_big_limbs", bma.ok == 1 && dec_to_string(bma.value) == "9610000000000000000")
+    let max32 = dec_from_parts(4294967295, 0, 0, 0, 0)
+    let bmb = dec_mul(max32, max32)
+    check("mul_max32", bmb.ok == 1 && dec_to_string(bmb.value) == "18446744065119617025")
+    // 192-bit intermediate + scale-48 → rescale past 28, rescued down to
+    // scale 19 so the 96-bit mantissa fits (rust-decimal style)
+    let bmc = dec_mul(must_parse("123456789.123456789012345678"), must_parse("9.876543210987654321098765"))
+    check("mul_rescale_big", bmc.ok == 1 && dec_to_string(bmc.value) == "1219326312.4676116324950464221")
+    let bmd = dec_mul(must_parse("79228162514264337593543950335"), dec_from_i64(1))
+    check("mul_max96_identity", bmd.ok == 1 && dec_to_string(bmd.value) == "79228162514264337593543950335")
+    // integer part alone overflows 96 bits → loud error, no rescue possible
+    let bme = dec_mul(must_parse("79228162514264337593543950335"), dec_from_i64(2))
+    check("mul_true_overflow", bme.ok == 0)
+
+    // --- BUG B regression: div_small signed overflow (silent wrong digits) ---
+    // single-limb divisor > 2^31: rem * 2^32 + limb wrapped negative.
+    let bba = dec_div_scale(dec_from_i64(1), dec_from_i64(3000000000), 28)
+    check("div_big_single_limb", bba.ok == 1 && dec_to_string(bba.value) == "0.0000000003333333333333333333")
+    let bbb = dec_div_scale(dec_from_i64(1), max32, 20)
+    check("div_max32", bbb.ok == 1 && dec_to_string(bbb.value) == "0.00000000023283064371")
+
+    // --- BUG C regression: percent_of pre-rounded the rate to scale 8 ---
+    // amount * percent / 100 with one final rounding instead.
+    let bca = dec_percent_of(must_parse("999999999.99"), must_parse("33.3333333"))
+    check("percent_precise", bca.ok == 1 && dec_to_string(bca.value) == "333333333.00")
+
+    // --- edge coverage ---
+    check("parse_empty", dec_parse("").ok == 0)
+    check("parse_dash", dec_parse("-").ok == 0)
+    check("parse_dot", dec_parse(".").ok == 0)
+    check("parse_dot5", dec_to_string(must_parse(".5")) == "0.5")
+    check("parse_trailing_dot", dec_to_string(must_parse("1.")) == "1")
+    let rd0 = dec_round_dp(must_parse("2.5"), 0)
+    check("round_dp0", rd0.ok == 1 && dec_to_string(rd0.value) == "3")
+    check("round_dp_bad", dec_round_dp(must_parse("1"), 29).ok == 0)
+    check("to_i64_overflow", dec_to_i64(must_parse("9223372036854775808")).ok == 0)
+    check("neg_zero_eq", dec_eq(dec_from_parts(0, 0, 0, 1, 2), dec_zero()) == 1)
+
     print("decimal_test: all passed")
 }

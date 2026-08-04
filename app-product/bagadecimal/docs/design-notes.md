@@ -19,15 +19,23 @@
 - Addition/subtraction: align to the **larger** scale, then operate on
   mantissas; result scale = max(scale_a, scale_b) before optional normalize.
 - Multiplication: mantissa product, scale = scale_a + scale_b; if scale > 28
-  or mantissa exceeds 96 bits → overflow / rescale policy (document per op).
-- Division: choose result scale (default: max(scale_a, scale_b) or a
-  fixed “money” scale parameter) — exact policy fixed when implementing
-  `dec_div`.
+  the product is rescaled to 28 (half-away on the most significant dropped
+  digit). If the result still exceeds 96 bits, the scale is **rescued**
+  rust-decimal-style: fractional digits are dropped (same rounding rule)
+  until the mantissa fits; an error is returned only when the integer part
+  alone overflows 96 bits.
+- Division: `dec_div_scale(a, b, rs)` gives the result at scale `rs`,
+  rounded half-away via a guard digit; `dec_div` picks
+  `clamp(max(scale_a, scale_b), 6, 28)`.
 
 ## Overflow
 
-P0 may use “best effort + document”; P1 introduces `DecResult` and never
-silent wrap. Prefer failing loud over wrong money.
+P1 rule (already in force): `DecResult` everywhere and never silent wrap —
+fail loud over wrong money. The limb library keeps a stricter invariant:
+**no intermediate may reach 2^63**. Wide paths therefore run on 16-bit
+half-limbs (products < 2^32, column sums < 2^34, division steps < 2^48);
+the 2026-08-04 mul/div signed-overflow bugs (see gaps.md D1) are what this
+invariant prevents.
 
 ## Why not arbitrary precision?
 

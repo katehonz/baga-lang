@@ -56,29 +56,29 @@ fn dec_is_money(d: Decimal) -> i64 {
 }
 
 // percent is e.g. 8.5 meaning 8.5%. Result rounded to 2 dp.
-// amount * (percent/100)
+// Exact product, one division, ONE rounding at the end (the posting) —
+// the old code pre-rounded the rate to scale 8 and the error scaled with
+// the amount (33.3333333% of 999999999.99 posted 333333330.00 instead of
+// 333333333.00).
 fn dec_percent_of(amount: Decimal, percent: Decimal) -> DecResult {
-    let hundred = dec_from_i64(100)
-    let rate = dec_div_scale(percent, hundred, 8)
-    if rate.ok == 0 {
-        return rate
-    }
-    let raw = dec_mul(amount, rate.value)
+    let raw = dec_mul(amount, percent)
     if raw.ok == 0 {
         return raw
     }
-    return dec_round_dp(raw.value, 2)
+    return dec_div_scale(raw.value, dec_from_i64(100), 2)
 }
 
 // amount + percent_of(amount, percent), both rounded to 2 dp.
+// The tax is computed on the SAME rounded base that gets posted —
+// consistent cents (the old code taxed the unrounded amount).
 fn dec_with_percent(amount: Decimal, percent: Decimal) -> DecResult {
-    let tax = dec_percent_of(amount, percent)
-    if tax.ok == 0 {
-        return tax
-    }
     let base = dec_as_money(amount)
     if base.ok == 0 {
         return base
+    }
+    let tax = dec_percent_of(base.value, percent)
+    if tax.ok == 0 {
+        return tax
     }
     return dec_add(base.value, tax.value)
 }

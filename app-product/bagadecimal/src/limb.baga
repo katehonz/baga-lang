@@ -122,15 +122,18 @@ fn dec_limb_sub(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
     return out
 }
 
-fn dec_limb_mul_small(a: Vec<i64>, m: i64) -> Vec<i64> {
-    let mm = m & 4294967295
+// Internal: multiply by m < 2^17. Products stay < 2^48 — the signed-i64
+// discipline: a full 32-bit multiplier can push a[i]*m + carry past 2^63
+// and wrap negative (BUG A class), so general multipliers go through the
+// 16-bit split below.
+fn dec_limb_mul_small16(a: Vec<i64>, m: i64) -> Vec<i64> {
     let out = vec_new()
     let mut carry: i64 = 0
     let mut i: i64 = 0
     while i < vec_len(a) || carry != 0 {
         let mut cur = carry
         if i < vec_len(a) {
-            cur = cur + (vec_get(a, i) & 4294967295) * mm
+            cur = cur + (vec_get(a, i) & 4294967295) * m
         }
         vec_push(out, cur & 4294967295)
         carry = cur >> 32
@@ -139,38 +142,84 @@ fn dec_limb_mul_small(a: Vec<i64>, m: i64) -> Vec<i64> {
     return out
 }
 
+fn dec_limb_mul_small(a: Vec<i64>, m: i64) -> Vec<i64> {
+    let mm = m & 4294967295
+    let hi16 = mm >> 16
+    let lo = dec_limb_mul_small16(a, mm & 65535)
+    if hi16 == 0 {
+        return lo
+    }
+    // a*mm = a*(mm & 0xFFFF) + 65536 * (a*(mm >> 16))
+    let hi = dec_limb_mul_small16(a, hi16)
+    let his = dec_limb_mul_small16(hi, 65536)
+    return dec_limb_add(lo, his)
+}
+
+// Expand/collapse between 32-bit limbs and 16-bit sub-limbs (little-endian).
+fn dec_limb_to16(a: Vec<i64>) -> Vec<i64> {
+    let out = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(a) {
+        let x = vec_get(a, i) & 4294967295
+        vec_push(out, x & 65535)
+        vec_push(out, (x >> 16) & 65535)
+        i = i + 1
+    }
+    return out
+}
+
+fn dec_limb_from16(a: Vec<i64>) -> Vec<i64> {
+    let out = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(a) {
+        let mut hi: i64 = 0
+        if i + 1 < vec_len(a) {
+            hi = vec_get(a, i + 1) & 65535
+        }
+        vec_push(out, ((hi * 65536) | (vec_get(a, i) & 65535)) & 4294967295)
+        i = i + 2
+    }
+    return out
+}
+
+// Schoolbook over 16-bit sub-limbs: every partial product is < 2^32 and
+// every column sum < 2^34, so signed i64 never wraps (BUG A regression:
+// 32-bit products + carry reached 2^64 and the carry drain walked out of
+// bounds — dec_mul(3100000000, 3100000000) aborted).
 fn dec_limb_mul(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
-    let n = vec_len(a)
-    let m = vec_len(b)
+    let a16 = dec_limb_to16(a)
+    let b16 = dec_limb_to16(b)
+    let n = vec_len(a16)
+    let m = vec_len(b16)
     let out = vec_new()
     let mut k: i64 = 0
-    while k < n + m + 1 {
+    while k < n + m + 2 {
         vec_push(out, 0)
         k = k + 1
     }
     let mut i: i64 = 0
     while i < n {
-        let ai = vec_get(a, i) & 4294967295
+        let ai = vec_get(a16, i) & 65535
         if ai != 0 {
             let mut carry: i64 = 0
             let mut j: i64 = 0
             while j < m {
-                let cur = (vec_get(out, i + j) & 4294967295) + ai * (vec_get(b, j) & 4294967295) + carry
-                vec_set(out, i + j, cur & 4294967295)
-                carry = cur >> 32
+                let cur = (vec_get(out, i + j) & 65535) + ai * (vec_get(b16, j) & 65535) + carry
+                vec_set(out, i + j, cur & 65535)
+                carry = cur >> 16
                 j = j + 1
             }
             let mut t = i + m
             while carry != 0 {
-                let cur2 = (vec_get(out, t) & 4294967295) + carry
-                vec_set(out, t, cur2 & 4294967295)
-                carry = cur2 >> 32
+                let cur2 = (vec_get(out, t) & 65535) + carry
+                vec_set(out, t, cur2 & 65535)
+                carry = cur2 >> 16
                 t = t + 1
             }
         }
         i = i + 1
     }
-    return out
+    return dec_limb_from16(out)
 }
 
 struct DecLimbDiv {
@@ -178,6 +227,10 @@ struct DecLimbDiv {
     rem: i64
 }
 
+// Long division by a single-limb divisor in base 2^16: with rem < m the
+// running value rem*65536 + chunk stays < 2^48, so signed i64 never wraps
+// (BUG B regression: base-2^32 steps reached ~2^64 with a divisor > 2^31
+// and produced silently wrong digits — dec_div_scale(1, 3000000000, 28)).
 fn dec_limb_div_small(a: Vec<i64>, m: i64) -> DecLimbDiv {
     let mm = m & 4294967295
     let q = vec_new()
@@ -187,12 +240,22 @@ fn dec_limb_div_small(a: Vec<i64>, m: i64) -> DecLimbDiv {
         i = i + 1
     }
     let mut rem: i64 = 0
-    let mut j = vec_len(a) - 1
+    let mut j = vec_len(a) * 2 - 1
     while j >= 0 {
-        let cur = rem * 4294967296 + (vec_get(a, j) & 4294967295)
-        let digit = cur / mm
-        rem = cur - digit * mm
-        vec_set(q, j, digit & 4294967295)
+        let limb = vec_get(a, j / 2) & 4294967295
+        let mut chunk = limb & 65535
+        if j % 2 == 1 {
+            chunk = (limb >> 16) & 65535
+        }
+        let cur = rem * 65536 + chunk
+        let d = cur / mm
+        rem = cur - d * mm
+        let qi = j / 2
+        if j % 2 == 1 {
+            vec_set(q, qi, (vec_get(q, qi) & 4294967295) | ((d & 65535) * 65536))
+        } else {
+            vec_set(q, qi, (vec_get(q, qi) & 4294967295) | (d & 65535))
+        }
         j = j - 1
     }
     return DecLimbDiv { q: q, rem: rem }

@@ -98,6 +98,22 @@ fn dec_mul(a: Decimal, b: Decimal) -> DecResult {
         }
         sc = 28
     }
+    // rescue (rust-decimal style): still wider than 96 bits → keep dropping
+    // fractional digits, rounding on the most significant dropped one, until
+    // it fits or only the integer part is left. Error only when the integer
+    // part itself overflows — the caller never loses a representable result.
+    let mut rem2: i64 = 0
+    let mut dropped: i64 = 0
+    while dec_limb_fits96(v) == 0 && sc > 0 {
+        let dv2 = dec_limb_div_small(v, 10)
+        v = dv2.q
+        rem2 = dv2.rem
+        dropped = 1
+        sc = sc - 1
+    }
+    if dropped != 0 && rem2 >= 5 {
+        v = dec_limb_add(v, dec_limb3(1, 0, 0))
+    }
     if dec_limb_fits96(v) == 0 {
         return dec_err("overflow in mul")
     }
