@@ -6,9 +6,9 @@
 //   ws_server_handshake / ws_accept_key — HTTP upgrade (httpdbaga + std/crypto sha1)
 //   client helpers                     — ws_client_connect / ws_send_* (masked frames)
 //
-// Honest limits (gaps.md): serial connections (K1 model), no fragmented
-// message reassembly (FIN=0 → protocol error), no permessage-deflate, no
-// close-status interpretation (close payload echoed as-is).
+// Honest limits (gaps.md): serial connections (K1 model), no
+// permessage-deflate, no close-status interpretation (close payload echoed
+// as-is). Fragmented messages ARE reassembled (ws_read_message, W2 closed).
 
 import "httpdbaga/http.baga"
 import "std/crypto/sha1.baga"
@@ -87,11 +87,13 @@ fn wb8(v: i64) -> bytes {
 
 struct WsConn {
     fd: i64,
-    buf: bytes   // residual bytes not yet consumed
+    buf: bytes,   // residual bytes not yet consumed
+    frag_op: i64, // 0 = no fragmented message in progress; else its opcode
+    frag: bytes   // accumulated payload of the fragmented message (W2)
 }
 
 fn ws_conn(fd: i64) -> WsConn {
-    return WsConn { fd: fd, buf: bytes_from_vec(vec_new()) }
+    return WsConn { fd: fd, buf: bytes_from_vec(vec_new()), frag_op: 0, frag: bytes_from_vec(vec_new()) }
 }
 
 struct WsFill {
@@ -107,7 +109,7 @@ fn ws_fill(c: WsConn, n: i64) -> WsFill !IO !Net {
         if bytes_len(chunk) == 0 {
             return WsFill { conn: conn, ok: 0 }
         }
-        conn = WsConn { fd: conn.fd, buf: bytes_concat(conn.buf, chunk) }
+        conn = WsConn { fd: conn.fd, buf: bytes_concat(conn.buf, chunk), frag_op: conn.frag_op, frag: conn.frag }
     }
     return WsFill { conn: conn, ok: 1 }
 }
@@ -230,8 +232,60 @@ fn ws_read_frame(c: WsConn) -> WsRead !IO !Net {
     if t.bad == 1 {
         return ws_read_bad(conn)
     }
-    conn = WsConn { fd: conn.fd, buf: bytes_slice(conn.buf, t.consumed, bytes_len(conn.buf)) }
+    conn = WsConn { fd: conn.fd, buf: bytes_slice(conn.buf, t.consumed, bytes_len(conn.buf)), frag_op: conn.frag_op, frag: conn.frag }
     return WsRead { conn: conn, frame: t.frame, ok: 1, bad: 0 }
+}
+
+// Message-level reader (W2): reassembles fragmented messages.
+// A data frame with FIN=0 starts accumulation; continuation frames
+// (opcode 0) extend it; the final continuation returns ONE WsRead with
+// the original opcode and the full payload. Control frames (close/ping/
+// pong) are delivered immediately even mid-message, as the RFC requires.
+// A continuation with no active message — or a new data frame before the
+// current one finishes — is a protocol violation (bad=1). Accumulated
+// messages stay under the same 64 MiB sanity cap as frames.
+fn ws_read_message(c: WsConn) -> WsRead !IO !Net {
+    let mut conn = c
+    let mut done = 0
+    let mut out = ws_read_bad(conn)
+    while done == 0 {
+        let r = ws_read_frame(conn)?
+        conn = r.conn
+        if r.ok == 0 || r.bad == 1 {
+            return WsRead { conn: conn, frame: r.frame, ok: r.ok, bad: r.bad }
+        }
+        let op = r.frame.opcode
+        if op == 0 {
+            // continuation
+            if conn.frag_op == 0 {
+                return ws_read_bad(conn)   // no active message
+            }
+            conn = WsConn { fd: conn.fd, buf: conn.buf, frag_op: conn.frag_op,
+                            frag: bytes_concat(conn.frag, r.frame.payload) }
+            if bytes_len(conn.frag) > 67108864 {
+                return ws_read_bad(conn)
+            }
+            if r.frame.fin == 1 {
+                let msg = WsFrame { fin: 1, opcode: conn.frag_op, payload: conn.frag }
+                conn = WsConn { fd: conn.fd, buf: conn.buf, frag_op: 0, frag: bytes_from_vec(vec_new()) }
+                return WsRead { conn: conn, frame: msg, ok: 1, bad: 0 }
+            }
+        } else {
+            if op == WS_TEXT() || op == WS_BINARY() {
+                if conn.frag_op != 0 {
+                    return ws_read_bad(conn)   // new message before finishing the current
+                }
+                if r.frame.fin == 1 {
+                    return WsRead { conn: conn, frame: r.frame, ok: 1, bad: 0 }
+                }
+                conn = WsConn { fd: conn.fd, buf: conn.buf, frag_op: op, frag: r.frame.payload }
+            } else {
+                // control frame — delivered immediately
+                return WsRead { conn: conn, frame: r.frame, ok: 1, bad: 0 }
+            }
+        }
+    }
+    return out
 }
 
 // ---------- incremental handshake parse (pure, for event loops) ----------
@@ -346,13 +400,13 @@ fn ws_handle_conn(fd: i64) -> i64 !IO !Net !Random {
     let mut conn = ws_conn(fd)
     let mut running: i64 = 1
     while running == 1 {
-        let r = ws_read_frame(conn)?
+        let r = ws_read_message(conn)?
         conn = r.conn
         if r.ok == 0 {
             running = 0
         } else {
-            if r.bad == 1 || r.frame.opcode == 0 {
-                running = 0   // protocol violation / unsupported continuation
+            if r.bad == 1 {
+                running = 0   // protocol violation
             } else {
                 let op = r.frame.opcode
                 if op == WS_CLOSE() {
@@ -447,7 +501,7 @@ fn ws_client_connect(host: str, port: i64, timeout_s: i64) -> WsDial !Net !IO !R
         return bad
     }
     let leftover = bytes_slice(buf, split + 4, bytes_len(buf))
-    return WsDial { ok: 1, conn: WsConn { fd: fd, buf: leftover } }
+    return WsDial { ok: 1, conn: WsConn { fd: fd, buf: leftover, frag_op: 0, frag: bytes_from_vec(vec_new()) } }
 }
 
 // Index of needle in hay; -1 if absent.

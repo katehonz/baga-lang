@@ -14,18 +14,16 @@ watch the listener and every client fd on one thread; residual buffers are
 multi-connection products use the poll loop. kvbaga can adopt the same
 pattern without further language changes.
 
-## W2 — no fragmented message reassembly
+## W2 — fragmented message reassembly
 
-**Symptom.** RFC 6455 allows a message split across continuation frames
-(FIN=0, opcode 0). wsbaga closes the connection on opcode 0.
-
-**Workaround.** Control frames (ping/pong/close) are exempt and handled;
-large single-frame messages work up to the 64 MiB cap.
-
-**Severity.** Medium — browsers rarely fragment, but proxies sometimes do.
-
-**Verdict.** Small stateful addition to `ws_read_frame` (buffer until FIN);
-needs a per-conn message accumulator — easy once W1 lands a conn registry.
+**Status 2026-08-04: closed.** `ws_read_message` reassembles continuation
+frames into one message (original opcode, full payload); control frames
+are delivered immediately even mid-message (RFC 6455 §5.4); a lone
+continuation or a new data frame mid-message is a protocol violation.
+The accumulator keeps the 64 MiB sanity cap. `ws_handle_conn` (echo
+server) uses it. Live tests in `tests/ws_test.baga`: fragmented echo,
+interleaved ping, lone-continuation close. `ws_read_frame` stays the
+frame-level API (chatbaga uses it directly).
 
 ## W3 — sha1 exists now, but std/crypto has no HMAC-SHA1
 

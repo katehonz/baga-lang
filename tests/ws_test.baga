@@ -97,6 +97,27 @@ fn main() -> i64 !Net !IO !Par !Random {
     conn = rp.conn
     check("pong", rp.ok == 1 && rp.frame.opcode == WS_PONG() && bytes_eq_b(rp.frame.payload, pp))
 
+    // --- fragmented message (W2): FIN=0 text + continuation FIN=1 ---
+    // (client frames are masked — ws_build_frame with a nonzero key)
+    let w1 = tcp_write_bytes(conn.fd, ws_build_frame(0, WS_TEXT(), bytes_of_str("Здра"), 7))?
+    check("frag_part1_send", w1 == 0)
+    let w2 = tcp_write_bytes(conn.fd, ws_build_frame(1, 0, bytes_of_str("вей"), 9))?
+    check("frag_part2_send", w2 == 0)
+    let rf = ws_read_frame(conn)?
+    conn = rf.conn
+    check("frag_echo", rf.ok == 1 && rf.frame.opcode == WS_TEXT() && str_of_bytes(rf.frame.payload) == "Здравей")
+
+    // --- control frame interleaved mid-message (RFC 6455 §5.4) ---
+    tcp_write_bytes(conn.fd, ws_build_frame(0, WS_TEXT(), bytes_of_str("по"), 11))?
+    ws_send_ping(conn.fd, bytes_of_str("mid"))?
+    tcp_write_bytes(conn.fd, ws_build_frame(1, 0, bytes_of_str("чив"), 13))?
+    let rmid1 = ws_read_frame(conn)?
+    conn = rmid1.conn
+    check("frag_mid_pong", rmid1.ok == 1 && rmid1.frame.opcode == WS_PONG() && str_of_bytes(rmid1.frame.payload) == "mid")
+    let rmid2 = ws_read_frame(conn)?
+    conn = rmid2.conn
+    check("frag_mid_echo", rmid2.ok == 1 && rmid2.frame.opcode == WS_TEXT() && str_of_bytes(rmid2.frame.payload) == "почив")
+
     // --- close: server echoes close, then the socket is done ---
     let wc = ws_send_close(conn.fd)?
     check("close_send", wc == 0)
@@ -105,6 +126,14 @@ fn main() -> i64 !Net !IO !Par !Random {
     check("close_echo", rc.ok == 1 && rc.frame.opcode == WS_CLOSE())
     let re = ws_read_frame(conn)?
     check("eof_after_close", re.ok == 0)
+
+    // --- lone continuation on a FRESH connection (the serial server is
+    // free only after the previous close): protocol violation → close ---
+    let d2 = ws_client_connect("localhost", port, 5)?
+    check("frag_handshake2", d2.ok == 1)
+    tcp_write_bytes(d2.conn.fd, ws_build_frame(1, 0, bytes_of_str("x"), 15))?
+    let rl = ws_read_frame(d2.conn)?
+    check("frag_lone_cont_close", rl.ok == 0)
 
     print("ws_test: all passed")
     return 0

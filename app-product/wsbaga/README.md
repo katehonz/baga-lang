@@ -26,7 +26,8 @@ fn ws_apply_mask(payload, mask: bytes) -> bytes
 
 // server (effects)
 fn ws_server_handshake(fd) -> i64 !IO !Net
-fn ws_read_frame(conn: WsConn) -> WsRead !IO !Net
+fn ws_read_frame(conn: WsConn) -> WsRead !IO !Net       // frame level
+fn ws_read_message(conn: WsConn) -> WsRead !IO !Net     // message level (W2)
 fn ws_handle_conn(fd) -> i64 !IO !Net !Random
 fn ws_serve(port) -> i64 !Net !IO !Random !Par
 
@@ -34,7 +35,7 @@ fn ws_serve(port) -> i64 !Net !IO !Random !Par
 fn ws_client_connect(host, port, timeout_s) -> WsDial !Net !IO !Random
 fn ws_send_text / ws_send_binary / ws_send_ping / ws_send_close   // masked
 
-struct WsConn  { fd, buf }        // buffered connection (residual bytes)
+struct WsConn  { fd, buf, frag_op, frag }  // buffered conn + fragment accumulator
 struct WsFrame { fin, opcode, payload: bytes }
 struct WsRead  { conn, frame, ok, bad }
 ```
@@ -57,8 +58,9 @@ hash — RFC 3174 vectors + the RFC 6455 accept-key vector).
 
 - **Serial**: one connection at a time (same model as kvbaga; the event loop
   is the P1 path — gaps W1).
-- **No fragmented-message reassembly**: FIN=0 (continuation) closes the
-  connection (W2). Control frames are handled whole, as the RFC requires.
+- **Fragmented messages are reassembled** by `ws_read_message` (W2 closed
+  2026-08-04); control frames interleave mid-message per RFC 6455 §5.4.
+  `ws_read_frame` remains the frame-level API.
 - No `permessage-deflate`, no close-status interpretation (payload echoed),
   no server-side origin/protocol-version enforcement beyond key presence.
 - SHA-1 is used **only** because RFC 6455 mandates it; everything else in
