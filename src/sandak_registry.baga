@@ -59,7 +59,7 @@ fn flag_value(name: str) -> str {
     return ""
 }
 
-fn cmd_search(term: str) -> i64 !Net !IO {
+fn cmd_search(term: str) -> i64 !Net !IO !Random {
     let mut url = concat(reg_base()?, "/v1/packages")
     if term != "" {
         url = concat(url, concat("?q=", term))
@@ -103,7 +103,7 @@ fn cmd_search(term: str) -> i64 !Net !IO {
     return 0
 }
 
-fn cmd_publish() -> i64 !Net !IO {
+fn cmd_publish() -> i64 !Net !IO !Random {
     let text = read_file("sandak.toml")?
     if text == "" {
         return fail("no sandak.toml in the current directory")
@@ -156,7 +156,7 @@ fn usage() -> i64 {
     return 2
 }
 
-fn main() -> i64 !Net !IO {
+fn main() -> i64 !Net !IO !Random {
     if arg_count() == 0 {
         return usage()
     }

@@ -50,7 +50,7 @@ fn serve_worker(port: i64) -> i64 !IO !Net !Par {
     return 0
 }
 
-fn main() -> i64 !Net !IO !Par {
+fn main() -> i64 !Net !IO !Par !Random {
     let port = 18436
     go_bg(serve_worker, port)
     sleep_ms(300)
@@ -61,7 +61,7 @@ fn main() -> i64 !Net !IO !Par {
     let u2 = http_parse_url("http://localhost:8080/a")
     check("url_port", u2.ok == 1 && u2.port == 8080 && u2.path == "/a")
     let u3 = http_parse_url("https://example.com")
-    check("url_https_rejected", u3.ok == 0)
+    check("url_https", u3.ok == 1 && u3.https == 1 && u3.port == 443)
     let u4 = http_parse_url("http://")
     check("url_empty_host", u4.ok == 0)
 

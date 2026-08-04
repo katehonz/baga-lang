@@ -34,8 +34,8 @@ fn oa_token(st, cfg, form_body) -> TokenReply !Time !Random
 fn oa_bearer_payload(cfg, authz_header) -> str !Time
 
 // proxy
-fn px_exchange_code(cfg, code) -> PxTokens !Net !IO
-fn px_refresh(cfg, refresh) -> PxTokens !Net !IO
+fn px_exchange_code(cfg, code) -> PxTokens !Net !IO !Random
+fn px_refresh(cfg, refresh) -> PxTokens !Net !IO !Random
 
 // serve (ctx = cell2(port, other_port); serial accept, shared store)
 fn oauth_provider_serve(ctx: i64) -> i64 !Net !IO !Time !Random

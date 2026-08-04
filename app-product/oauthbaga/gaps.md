@@ -2,19 +2,21 @@
 
 Probe log from apps-roadmap **№10** (OAuth proxy — the integration exam).
 
-## O1 — TLS (G6): the whole flow is plain HTTP
+## O1 — TLS (G6): ~~the whole flow is plain HTTP~~ CLOSED for the client (T8)
 
-**Symptom.** Provider and proxy talk over `http://`; the std client is
-`http://`-only by design. A real OAuth deployment cannot exist without
-https on every leg.
+**Symptom (historical).** Provider and proxy talk over `http://`; the std
+client was `http://`-only.
 
-**Workaround.** Loopback dev profile, same as №2 registry.
+**Closed (T8, 2026-08-04).** `std/net/http_client` accepts `https://` over
+the pure-Baga TLS 1.3 stack (`tls_connect` + app traffic). Mock proof:
+`tests/std/https_test.baga` against `openssl s_server -tls1_3 -www` with a
+self-signed cert (empty trust anchor = accept self-signed). No real OAuth
+provider account is required or used.
 
-**Severity.** Blocking for production; none for the probe.
-
-**Verdict.** G6 — the designated big milestone. The client API was shaped
-in №2 so TLS slots in without interface change; №10 confirms the shape
-holds for redirect-chasing + form POSTs too.
+**Still open for a full product deploy.** oauthbaga nodes themselves still
+serve plain HTTP; putting them on TLS needs a server-side stack (out of
+scope — client G6 was the roadmap blocker). Real public CAs need a trust
+store (also out of scope for the probe).
 
 ## O2 — no URL percent-coding anywhere in std
 

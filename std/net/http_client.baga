@@ -1,13 +1,15 @@
-// http_client.baga — HTTP/1.1 client over tcp_connect_to. Effects: !Net !IO.
+// http_client.baga — HTTP/1.1 client over TCP or TLS 1.3. Effects: !Net !IO.
 //
 // Design: one request per connection (Connection: close), read to EOF.
 // Hostnames resolve through getaddrinfo (tcp_connect_to); timeouts bound
 // every phase. Headers live in Map<str,str> (lowercased names). Bodies are
 // str — text-safe; binary bodies wait for a bytes-value map kind (gap).
 //
-// This is std's client half; the server half is app-product/httpdbaga.
+// https:// uses pure-Baga TLS 1.3 (std/net/tls.baga). Trust anchors are
+// optional: empty = accept self-signed (dev/mock). No system store.
 
 import "tcp.baga"
+import "tls.baga"
 import "../str/str.baga"
 import "../bytes/bytes.baga"
 
@@ -15,18 +17,27 @@ import "../bytes/bytes.baga"
 
 struct HttpUrl {
     ok: i64,
+    https: i64,    // 1 = https://
     host: str,
     port: i64,
     path: str      // always starts with "/" (query included)
 }
 
-// http:// only (https waits for TLS in std — gap G6). Default port 80.
+// http:// and https://. Default ports 80 / 443.
 fn http_parse_url(url: str) -> HttpUrl {
-    let bad = HttpUrl { ok: 0, host: "", port: 0, path: "" }
-    if !str_starts_with(url, "http://") {
-        return bad
+    let bad = HttpUrl { ok: 0, https: 0, host: "", port: 0, path: "" }
+    let mut https: i64 = 0
+    let mut rest = ""
+    if str_starts_with(url, "https://") {
+        https = 1
+        rest = substr(url, 8, len(url))
+    } else {
+        if str_starts_with(url, "http://") {
+            rest = substr(url, 7, len(url))
+        } else {
+            return bad
+        }
     }
-    let rest = substr(url, 7, len(url))
     if len(rest) == 0 {
         return bad
     }
@@ -40,9 +51,14 @@ fn http_parse_url(url: str) -> HttpUrl {
     if len(hostport) == 0 {
         return bad
     }
+    let def_port = 80
+    let mut dp = def_port
+    if https == 1 {
+        dp = 443
+    }
     let colon = str_find(hostport, ":")
     if colon < 0 {
-        return HttpUrl { ok: 1, host: hostport, port: 80, path: path }
+        return HttpUrl { ok: 1, https: https, host: hostport, port: dp, path: path }
     }
     if colon == 0 {
         return bad
@@ -52,7 +68,7 @@ fn http_parse_url(url: str) -> HttpUrl {
     if port <= 0 || port > 65535 {
         return bad
     }
-    return HttpUrl { ok: 1, host: host, port: port, path: path }
+    return HttpUrl { ok: 1, https: https, host: host, port: port, path: path }
 }
 
 // ---------- response ----------
@@ -229,22 +245,11 @@ fn http_parse_response(buf: bytes) -> HttpResponse {
     return HttpResponse { ok: 1, status: status, reason: reason, headers: headers, body: body }
 }
 
-// ---------- request ----------
+// ---------- request wire bytes ----------
 
-// One request, one connection. headers may be an empty map (map_new());
-// Content-Length and Connection: close are added automatically.
-// timeout_s bounds connect/read/write (0 = block forever).
-fn http_request(method: str, url: str, headers: Map<str, str>, body: str, timeout_s: i64) -> HttpResponse !Net !IO {
-    let u = http_parse_url(url)
-    if u.ok == 0 {
-        return http_resp_bad()
-    }
-    let fd = tcp_connect_to(u.host, u.port, timeout_s)?
-    if fd < 0 {
-        return http_resp_bad()
-    }
-    let mut req = concat(concat(method, " "), concat(u.path, " HTTP/1.1\r\n"))
-    req = concat(req, concat(concat("Host: ", u.host), "\r\n"))
+fn http_build_request(method: str, path: str, host: str, headers: Map<str, str>, body: str) -> str {
+    let mut req = concat(concat(method, " "), concat(path, " HTTP/1.1\r\n"))
+    req = concat(req, concat(concat("Host: ", host), "\r\n"))
     let ks = map_keys(headers)
     let mut i: i64 = 0
     while i < vec_len(ks) {
@@ -257,6 +262,35 @@ fn http_request(method: str, url: str, headers: Map<str, str>, body: str, timeou
     }
     req = concat(req, "Connection: close\r\n\r\n")
     req = concat(req, body)
+    return req
+}
+
+// ---------- request ----------
+
+// One request, one connection. headers may be an empty map (map_new());
+// Content-Length and Connection: close are added automatically.
+// timeout_s bounds connect/read/write (0 = block forever).
+// https:// uses TLS 1.3; self-signed peers are accepted (no system store).
+// !Random is required because https:// generates an ephemeral X25519 key
+// and ClientHello random; plain http:// still declares it so the API is
+// one function (call sites that only use http:// pay a declaration cost).
+fn http_request(method: str, url: str, headers: Map<str, str>, body: str, timeout_s: i64) -> HttpResponse !Net !IO !Random {
+    let u = http_parse_url(url)
+    if u.ok == 0 {
+        return http_resp_bad()
+    }
+    let req = http_build_request(method, u.path, u.host, headers, body)
+    if u.https == 0 {
+        return http_request_plain(u.host, u.port, req, timeout_s)?
+    }
+    return http_request_tls(u.host, u.port, req, timeout_s)?
+}
+
+fn http_request_plain(host: str, port: i64, req: str, timeout_s: i64) -> HttpResponse !Net !IO {
+    let fd = tcp_connect_to(host, port, timeout_s)?
+    if fd < 0 {
+        return http_resp_bad()
+    }
     let w = tcp_write_bytes(fd, bytes_of_str(req))?
     if w != 0 {
         tcp_close(fd)?
@@ -276,11 +310,67 @@ fn http_request(method: str, url: str, headers: Map<str, str>, body: str, timeou
     return http_parse_response(buf)
 }
 
+fn http_request_tls(host: str, port: i64, req: str, timeout_s: i64) -> HttpResponse !Net !IO !Random {
+    // Empty trust anchor → accept self-signed (mock openssl peer, local dev).
+    let mut conn = tls_connect(host, port, timeout_s, bytes_from_vec(vec_new()))?
+    if conn.ok == 0 {
+        return http_resp_bad()
+    }
+    // Send the request; any NewSessionTicket the server pushed before the
+    // request is consumed interleaved with the response reads (type 22 skip).
+    conn = tls_conn_write(conn, bytes_of_str(req))?
+    if conn.ok == 0 {
+        tls_conn_close(conn)?
+        return http_resp_bad()
+    }
+    let mut acc = bytes_from_vec(vec_new())
+    let mut reading: i64 = 1
+    let mut idle: i64 = 0
+    while reading == 1 {
+        let r = tls_conn_read(conn)?
+        conn = r.conn
+        if r.typ == 23 {
+            acc = bytes_concat(acc, r.data)
+            idle = 0
+            // Complete HTTP message with Connection: close is usually the
+            // whole body; stop once headers are present and peer closes.
+        } else {
+            if r.typ == 21 {
+                reading = 0
+            } else {
+                if r.typ == 0 {
+                    if conn.ok == 0 {
+                        reading = 0
+                    } else {
+                        // CCS / empty skip
+                        idle = idle + 1
+                        if idle > 2 && bytes_len(acc) > 0 {
+                            reading = 0
+                        }
+                        if idle > 8 {
+                            reading = 0
+                        }
+                    }
+                }
+                // typ 22 NewSessionTicket — ignore
+            }
+        }
+        if bytes_len(acc) > 2000000 {
+            reading = 0
+        }
+    }
+    tls_conn_close(conn)?
+    if bytes_len(acc) == 0 {
+        return http_resp_bad()
+    }
+    return http_parse_response(acc)
+}
+
 // Convenience: GET / POST with text body and no extra headers.
-fn http_get(url: str, timeout_s: i64) -> HttpResponse !Net !IO {
+fn http_get(url: str, timeout_s: i64) -> HttpResponse !Net !IO !Random {
     return http_request("GET", url, map_new(), "", timeout_s)?
 }
 
-fn http_post(url: str, body: str, timeout_s: i64) -> HttpResponse !Net !IO {
+fn http_post(url: str, body: str, timeout_s: i64) -> HttpResponse !Net !IO !Random {
     return http_request("POST", url, map_new(), body, timeout_s)?
 }

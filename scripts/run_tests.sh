@@ -199,6 +199,25 @@ openssl req -x509 -new -key /tmp/baga_tls_ec_key.pem -out /tmp/baga_tls_ec_cert.
 	|| { echo "FAIL: tls ECDSA cert"; exit 1; }
 run_tls_peer "ECDSA-P256" /tmp/baga_tls_ec_key.pem /tmp/baga_tls_ec_cert.pem
 
+echo "=== https:// client (openssl -www mock, no real account) ==="
+openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/baga_https_key.pem \
+	-out /tmp/baga_https_cert.pem -days 2 -subj "/CN=localhost" > /dev/null 2>&1 \
+	|| { echo "FAIL: https mock cert"; exit 1; }
+openssl s_server -accept 18444 -key /tmp/baga_https_key.pem -cert /tmp/baga_https_cert.pem \
+	-tls1_3 -www -quiet < /dev/null > /dev/null 2>&1 & echo $! > /tmp/baga_https_srv.pid
+sleep 1
+RC=0
+run tests/std/https_test.baga > /tmp/baga_https_out.txt 2>&1 || RC=$?
+kill "$(cat /tmp/baga_https_srv.pid)" > /dev/null 2>&1 || true
+wait "$(cat /tmp/baga_https_srv.pid)" 2>/dev/null || true
+if [[ $RC -eq 0 ]] && grep -q "https_test: all passed" /tmp/baga_https_out.txt; then
+	echo "OK: https:// GET over TLS 1.3 against openssl -www (self-signed mock)"
+else
+	echo "FAIL: https_test"
+	cat /tmp/baga_https_out.txt
+	exit 1
+fi
+
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
 
@@ -210,7 +229,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|registry_test.baga|oauth_pg_test.baga) continue ;;
+			tls_handshake_test.baga|https_test.baga|registry_test.baga|oauth_pg_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

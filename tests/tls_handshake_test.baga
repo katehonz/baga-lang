@@ -39,7 +39,7 @@ fn main() -> i64 !Net !IO !Par !Random {
     let sid = bytes_from_vec(random_bytes(32))
     let rnd = bytes_from_vec(random_bytes(32))
     let pub = x25519_public(scalar)
-    let rec0 = tls_client_hello(pub, rnd, sid)
+    let rec0 = tls_client_hello(pub, rnd, sid, "")
     let w = tcp_write_bytes(fd, rec0)?
     assert_eq_i64("hello_written", w, 0)
     let ch_msg = bytes_slice(rec0, 5, bytes_len(rec0))
@@ -114,17 +114,24 @@ fn main() -> i64 !Net !IO !Par !Random {
     assert_eq_i64("cv_ok", ver.cv_ok, 1)
     assert_eq_i64("verify_ok", ver.ok, 1)
 
-    // --- client Finished; the server must accept it (no alert) ---
+    // --- client Finished (transcript through server Finished) ---
     let fin = tls_finished_record(sched, flight.flight_hash)
     let w2 = tcp_write_bytes(fd, fin)?
     assert_eq_i64("finished_written", w2, 0)
-    tcp_set_timeouts(fd, 3)?
-    let chk = tls_read_record(fd)?
-    // openssl answers with a NewSessionTicket (type 23); an alert (21)
-    // would mean our Finished was rejected.
-    if chk.ok == 1 {
-        assert_true("no_alert", chk.typ != 21)
+    // App traffic: first record is NewSessionTicket (inner type 22), not
+    // an encrypted decrypt_error alert (outer type 23, inner 21 — T5 used
+    // to miss that by only checking the outer type).
+    let mut conn = tls_app_secrets(sched, flight.app_hash)
+    conn = TlsConn {
+        ok: 1, err: "", fd: fd,
+        c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
+        c_seq: 0, s_seq: 0
     }
+    tcp_set_timeouts(fd, 3)?
+    let post = tls_conn_read(conn)?
+    assert_eq_i64("post_hs_ok", post.conn.ok, 1)
+    assert_true("not_alert", post.typ != 21)
+    assert_eq_i64("new_session_ticket", post.typ, 22)
 
     print("tls_handshake_test: all passed")
     return 0

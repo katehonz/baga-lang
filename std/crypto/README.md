@@ -48,8 +48,12 @@ against the same oracle, RSA-PSS / PKCS#1 likewise. The TLS 1.3 stack
   CertificateVerify (EMSA-PSS, sLen=32). Vectors in
   `tests/std/rsa_pss_test.baga`.
 - `x509_parse` / `x509_verify_self_signed` / `x509_trust_anchor`
-  (`x509.baga`) — Certificate → RSA SPKI + TBS; sha256WithRSAEncryption
-  only. No name constraints, time checks, or revocation.
+  (`x509.baga`) — Certificate → RSA or EC P-256 SPKI + TBS;
+  sha256WithRSAEncryption and ecdsa-with-SHA256. No name constraints,
+  time checks, or revocation.
+- `ecdsa_p256_verify_sha256` / `p256_on_curve` (`p256.baga`) — NIST
+  P-256 ECDSA verify (SEC1), DER signatures; ~9 s per full verify in
+  baga-C (affine scalar mults). Vectors in `tests/std/p256_test.baga`.
 
 Implementation notes: Baga has only signed i64, so u32 arithmetic is emulated
 by masking with `& 4294967295`; bitwise NOT is `(-1) ^ x`. All intermediate
@@ -59,7 +63,8 @@ hot loops must not allocate per iteration — that is why `bn_mod` reduces
 in place instead of rebuilding shifted copies (the naive form OOM'd on a
 512-bit RSA exponent).
 
-ChaCha20-Poly1305 stays v2; TLS 1.3 T1–T6 done, T7 ECDSA next —
+ChaCha20-Poly1305 stays v2; TLS 1.3 client T1–T8 done (`https://` via
+`std/net/http_client` + openssl mock) —
 `docs/superpowers/plans/2026-08-04-tls-client.md`.
 
 Effects: none (pure). Memory: leak-tolerant.

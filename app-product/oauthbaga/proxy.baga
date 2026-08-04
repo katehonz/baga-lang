@@ -199,7 +199,7 @@ fn px_tokens_bad() -> PxTokens {
 }
 
 // POST the form to the provider /token endpoint and parse the JSON reply.
-fn px_call_token(cfg: OAuthCfg, form: str) -> PxTokens !Net !IO {
+fn px_call_token(cfg: OAuthCfg, form: str) -> PxTokens !Net !IO !Random {
     let hdrs: Map<str, str> = map_new()
     map_set(hdrs, "Content-Type", "application/x-www-form-urlencoded")
     let url = concat(cfg.provider_base, "/oauth/token")
@@ -227,7 +227,7 @@ fn px_call_token(cfg: OAuthCfg, form: str) -> PxTokens !Net !IO {
     }
 }
 
-fn px_exchange_code(cfg: OAuthCfg, code: str) -> PxTokens !Net !IO {
+fn px_exchange_code(cfg: OAuthCfg, code: str) -> PxTokens !Net !IO !Random {
     let mut form = "grant_type=authorization_code"
     form = concat(form, concat("&code=", code))
     form = concat(form, concat("&client_id=", cfg.client_id))
@@ -235,7 +235,7 @@ fn px_exchange_code(cfg: OAuthCfg, code: str) -> PxTokens !Net !IO {
     return px_call_token(cfg, form)?
 }
 
-fn px_refresh(cfg: OAuthCfg, refresh: str) -> PxTokens !Net !IO {
+fn px_refresh(cfg: OAuthCfg, refresh: str) -> PxTokens !Net !IO !Random {
     let mut form = "grant_type=refresh_token"
     form = concat(form, concat("&refresh_token=", refresh))
     form = concat(form, concat("&client_id=", cfg.client_id))

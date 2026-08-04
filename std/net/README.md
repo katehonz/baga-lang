@@ -30,11 +30,17 @@ Event loop (`poll.baga`) — closes kvbaga K1 / wsbaga W1:
 - `poll_has(ready, fd) -> i64` — membership helper.
 - Used by `app-product/chatbaga` for multi-connection chat.
 
-HTTP client: see `http_client.baga` (`http_get` / `http_post` / `http_request`).
+HTTP client: see `http_client.baga` (`http_get` / `http_post` / `http_request`)
+— supports `http://` and `https://` (TLS 1.3 via `tls.baga`).
+
+TLS 1.3 client (`tls.baga`): record layer, handshake, X.509 + RSA-PSS/ECDSA
+verify, application data. `tls_connect(host, port, timeout, trust_anchor)`;
+empty trust anchor accepts self-signed (dev/mock).
 
 Notes:
 
-- IPv4 only, blocking sockets. No TLS (v2). Linux-only staging (memfd).
+- IPv4 only, blocking sockets. TLS 1.3 client only (no server, no 1.2).
+  Linux-only staging (memfd).
 - `sockaddr_in` (16 bytes) is staged in a short-lived arena per call.
   The bytes are first `pwrite`n one at a time into an anonymous memfd
   (from `chr()` strings — this is how byte value 0 is written, since it

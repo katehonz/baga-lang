@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### TLS 1.3 client, T8 — `https://` + openssl mock (no real OAuth account)
+- Application traffic secrets and `TlsConn` (`tls_connect`, seal/open,
+  read/write) on pure Baga TLS 1.3.
+- **Bugfix:** client Finished HMAC must cover the transcript through
+  the server Finished. The T5 probe only checked outer record type ≠ 21
+  and accepted encrypted `decrypt_error` alerts (outer type 23).
+- `std/net/http_client`: `https://` URLs (port 443); same `http_get` /
+  `http_post` / `http_request` API. Self-signed peers accepted (empty
+  trust anchor). `!Random` on the client API for ephemeral key share.
+- `tests/std/https_test.baga` — live GET against `openssl s_server
+  -tls1_3 -www` with a fresh self-signed cert (mock; no third-party
+  account). Wired into `scripts/run_tests.sh`.
+- Closes oauthbaga gap O1 for the **client** half of G6.
+
 ### TLS 1.3 client, T7 — ECDSA-P256 CertificateVerify
 - `std/crypto/p256.baga`: NIST P-256 field/point arithmetic on bn limbs;
   `ecdsa_p256_verify_sha256(qx, qy, msg, sig_der)` (SEC1, DER signatures).

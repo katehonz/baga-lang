@@ -1,8 +1,6 @@
 # TLS 1.3 client in std (G6) Implementation Plan
 
-> Progress: T1 bn ✓ · T2 x25519 ✓ · T3 hkdf/aes/gcm ✓ · T4 records+hello ✓
-> · T5 encrypted handshake ✓ · T6 X.509 + RSA-PSS ✓ · T7 ECDSA-P256 ✓
-> · T8 ahead
+> Progress: T1–T8 complete (2026-08-04). https:// live against openssl mock.
 
 **Goal:** Close gap G6 — the last production blocker found by the apps
 roadmap (№10 OAuth proxy waits on it): a **TLS 1.3 client** in `std/`,
@@ -47,7 +45,8 @@ API so TLS slots in without interface change; std/crypto README reserved
 
 ## Tasks
 
-Status: T1–T6 done (2026-08-04). Next: T7 ECDSA-P256.
+Status: T1–T8 done (2026-08-04). G6 client closed via openssl mock (no real
+OAuth account).
 
 ### T1 — `std/crypto/bn.baga`: fixed-width bignum
 - 26-bit limbs in `Vec<i64>`, little-endian, fixed length per op.
@@ -93,16 +92,31 @@ Status: T1–T6 done (2026-08-04). Next: T7 ECDSA-P256.
 - Honest gaps: name constraints/policies/time/revocation ignored; ECDSA
   leaves are T7.
 
-### T7 — ECDSA-P256 verify + cipher hardening
-- P-256 field/scalar arithmetic, point verify per RFC 5480/SEC1;
-  TLS_AES_256_GCM; HelloRetryRequest if seen in the wild.
+### T7 — ECDSA-P256 verify + cipher hardening ✅
+- `std/crypto/p256.baga`: affine Weierstrass over bn (10 limbs), on-curve
+  check, scalar mult, `ecdsa_p256_verify_sha256` (SEC1 §4.1.4, DER r||s).
+- `x509.baga`: EC SPKI (id-ecPublicKey + prime256v1 uncompressed point)
+  and ecdsa-with-SHA256 cert signatures.
+- `tls_verify_server`: accepts `ecdsa_secp256r1_sha256` (0x0403) as well
+  as RSA-PSS (0x0804).
+- Tests: `tests/std/p256_test.baga` (~9 s) + live openssl dual peer
+  (RSA-PSS and ECDSA-P256) in `scripts/run_tests.sh`.
+- Cipher note: ClientHello still offers AES_256_GCM_SHA384 second, but
+  the suite needs SHA-384 HKDF — servers pick AES_128 first; full 256
+  stays deferred. HelloRetryRequest not observed with x25519-only CH.
 
-### T8 — `https://` in http_client + the OAuth proof
-- `http_request` grows `https://` (TLS connect → request → read to
-  close_notify/EOF); redirect chasing unchanged.
-- Capstone: oauthbaga variant talking to a real provider over https
-  (or an openssl-served https mock), closing №10 P2 and G6.
-  CHANGELOG + README + gaps updates; idea/apps-10.md status final.
+### T8 — `https://` in http_client + mock proof ✅
+- App traffic secrets (`c ap traffic` / `s ap traffic`) after handshake;
+  `TlsConn` seal/open; `tls_connect` / `tls_handshake`.
+- **Client Finished transcript bug fixed:** verify_data must cover the
+  server Finished (RFC 8446 §4.4.4). The T5 live check only looked at
+  outer record type ≠ 21 and missed encrypted `decrypt_error` alerts.
+- `http_parse_url` / `http_request` accept `https://` (default port 443);
+  empty trust anchor accepts self-signed (dev/mock).
+- Capstone without a real account: `tests/std/https_test.baga` against
+  `openssl s_server -tls1_3 -www` (self-signed). oauthbaga O1 client half
+  closed; serving oauth over TLS is a separate server-side task.
+- SNI omitted for dotted IPv4 hosts (servers often reject IP names).
 
 ## Out of scope (written so nobody forgets)
 
