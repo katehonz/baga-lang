@@ -1,0 +1,7 @@
+[package]
+name = "tplbaga"
+version = "0.1.0"
+entry = "tpl.baga"
+
+[dependencies]
+std = { path = "../../std" }

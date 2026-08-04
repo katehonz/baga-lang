@@ -1,0 +1,161 @@
+// tpl_test.baga — pure render tests for app-product/tplbaga (№7).
+// No network; tokenizer + jump table + filters. Apps-roadmap №7 probe.
+
+import "tplbaga/tpl.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn has(s: str, n: str) -> bool {
+    return str_find(s, n) >= 0
+}
+
+fn main() {
+    let empty: Map<str, str> = map_new()
+
+    // --- plain text ---
+    let p = tpl_render("hello world", empty)
+    assert_eq_i64("plain_ok", p.ok, 1)
+    assert_eq_str("plain", p.html, "hello world")
+
+    // --- variables + escape ---
+    let c: Map<str, str> = map_new()
+    map_set(c, "name", "baga")
+    map_set(c, "xss", "<b>&\"q\"</b>")
+    map_set(c, "zero", "0")
+    map_set(c, "blank", "")
+    map_set(c, "html", "<i>raw</i>")
+    map_set(c, "spaced", "  pad  ")
+
+    let v1 = tpl_render("hi {{ name }}!", c)
+    assert_eq_str("var", v1.html, "hi baga!")
+
+    let v2 = tpl_render("{{ xss }}", c)
+    assert_eq_str("escape", v2.html, "&lt;b&gt;&amp;&quot;q&quot;&lt;/b&gt;")
+
+    let v3 = tpl_render("[{{ missing }}]", c)
+    assert_eq_str("missing_empty", v3.html, "[]")
+
+    let v4 = tpl_render("{{{ html }}}", c)
+    assert_eq_str("raw", v4.html, "<i>raw</i>")
+
+    let v5 = tpl_render("{{    name    }}", c)
+    assert_eq_str("ws_tolerant", v5.html, "baga")
+
+    let v6 = tpl_render("a }} b", c)
+    assert_eq_str("stray_close", v6.html, "a }} b")
+
+    // --- filters ---
+    let f1 = tpl_render("{{ name | upper }}", c)
+    assert_eq_str("upper", f1.html, "BAGA")
+
+    let f2 = tpl_render("{{ name | upper | lower }}", c)
+    assert_eq_str("chain_down", f2.html, "baga")
+
+    let f3 = tpl_render("{{ spaced | trim }}|", c)
+    assert_eq_str("trim", f3.html, "pad|")
+
+    let f4 = tpl_render("{{ name | len }}", c)
+    assert_eq_str("len", f4.html, "4")
+
+    let f5 = tpl_render("{{ missing | default:n/a }}", c)
+    assert_eq_str("default_hit", f5.html, "n/a")
+
+    let f6 = tpl_render("{{ name | default:n/a }}", c)
+    assert_eq_str("default_miss", f6.html, "baga")
+
+    let f7 = tpl_render("{{ spaced | trim | upper }}", c)
+    assert_eq_str("chain_two", f7.html, "PAD")
+
+    let f8 = tpl_render("{{ missing | upper }}", c)
+    assert_eq_str("filter_on_missing", f8.html, "")
+
+    let fe = tpl_render("{{ name | nope }}", c)
+    assert_eq_i64("unknown_filter_err", fe.ok, 0)
+    assert_true("unknown_filter_msg", has(fe.err, "непознат филтър"))
+
+    // --- if / else / endif ---
+    let i1 = tpl_render("{% if name %}yes{% endif %}", c)
+    assert_eq_str("if_true", i1.html, "yes")
+
+    let i2 = tpl_render("{% if missing %}yes{% endif %}!", c)
+    assert_eq_str("if_false", i2.html, "!")
+
+    let i3 = tpl_render("{% if zero %}y{% else %}n{% endif %}", c)
+    assert_eq_str("if_zero_falsy", i3.html, "n")
+
+    let i4 = tpl_render("{% if blank %}y{% else %}n{% endif %}", c)
+    assert_eq_str("if_blank_falsy", i4.html, "n")
+
+    let i5 = tpl_render("{% if missing %}y{% else %}n{% endif %}", c)
+    assert_eq_str("else_branch", i5.html, "n")
+
+    let i6 = tpl_render("{% if name %}A{% else %}B{% endif %}", c)
+    assert_eq_str("then_branch", i6.html, "A")
+
+    let i7 = tpl_render("{% if !missing %}y{% endif %}", c)
+    assert_eq_str("negation", i7.html, "y")
+
+    let i8 = tpl_render("{% if !name %}y{% else %}n{% endif %}", c)
+    assert_eq_str("negation_falsy", i8.html, "n")
+
+    // nested: outer true / inner false
+    let nested = tpl_render("{% if name %}o[{% if missing %}x{% else %}y{% endif %}]o{% endif %}", c)
+    assert_eq_str("nested", nested.html, "o[y]o")
+
+    // nested: outer false skips the whole inner block
+    let nested2 = tpl_render("a{% if missing %}{% if name %}x{% endif %}y{% endif %}b", c)
+    assert_eq_str("nested_skip", nested2.html, "ab")
+
+    // sibling blocks
+    let sib = tpl_render("{% if name %}1{% endif %}-{% if missing %}2{% else %}3{% endif %}", c)
+    assert_eq_str("siblings", sib.html, "1-3")
+
+    // --- comments ---
+    let cm = tpl_render("a{# secret #}b", c)
+    assert_eq_str("comment", cm.html, "ab")
+
+    // --- errors ---
+    let e1 = tpl_render("{% if name %}no end", c)
+    assert_eq_i64("unclosed_if", e1.ok, 0)
+    assert_true("unclosed_if_msg", has(e1.err, "if без"))
+
+    let e2 = tpl_render("endif{% endif %}", c)
+    assert_eq_i64("endif_no_if", e2.ok, 0)
+
+    let e3 = tpl_render("{% else %}", c)
+    assert_eq_i64("else_no_if", e3.ok, 0)
+
+    let e4 = tpl_render("a{% if name %}{% else %}{% else %}{% endif %}", c)
+    assert_eq_i64("double_else", e4.ok, 0)
+
+    let e5 = tpl_render("x {{ name", c)
+    assert_eq_i64("unclosed_expr", e5.ok, 0)
+    assert_true("unclosed_expr_msg", has(e5.err, "незатворен израз"))
+
+    let e6 = tpl_render("{% foo %}", c)
+    assert_eq_i64("unknown_tag", e6.ok, 0)
+    assert_true("unknown_tag_msg", has(e6.err, "непознат таг"))
+
+    let e7 = tpl_render("{{}}", c)
+    assert_eq_i64("empty_expr", e7.ok, 0)
+
+    // --- realistic page ---
+    map_set(c, "title", "Baga <home>")
+    map_set(c, "user", "")
+    map_set(c, "items", "3")
+    let mut page = "<html><head><title>{{ title }}</title></head><body>"
+    page = concat(page, "<h1>{{ title | upper }}</h1>")
+    page = concat(page, "{% if user %}<p>Hello, {{ user }}!</p>{% else %}<p>Please log in.</p>{% endif %}")
+    page = concat(page, "{# nav goes here #}")
+    page = concat(page, "{% if items %}<div>{{ items }} item(s), raw: {{{ html }}}</div>{% endif %}")
+    page = concat(page, "</body></html>")
+    let pr = tpl_render(page, c)
+    assert_eq_i64("page_ok", pr.ok, 1)
+    assert_true("page_title_esc", has(pr.html, "<title>Baga &lt;home&gt;</title>"))
+    assert_true("page_h1", has(pr.html, "<h1>BAGA &lt;HOME&gt;</h1>"))
+    assert_true("page_else", has(pr.html, "<p>Please log in.</p>") && !has(pr.html, "Hello,"))
+    assert_true("page_no_comment", !has(pr.html, "nav goes here"))
+    assert_true("page_items", has(pr.html, "3 item(s), raw: <i>raw</i>"))
+
+    print("tpl_test: all passed")
+}

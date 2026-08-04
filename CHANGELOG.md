@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### App products — tplbaga (HTML templates, apps-roadmap №7)
+- New product `app-product/tplbaga`: mustache-ish subset — `{{ expr }}`
+  escaped interpolation, `{{{ expr }}}` raw, `{% if %}` / `{% else %}` /
+  `{% endif %}` (nestable, `!` negation), `{# comments #}`, filter chains
+  `{{ v | trim | upper }}` (upper/lower/trim/len/default:arg, ASCII case).
+- Tokens are prefix-encoded `Vec<str>` + a `Map<i64,i64>` jump table for
+  block pairing — one iterative walk, no recursion (L4 stand-in); `TplOut`
+  ok/err struct as the L3 stand-in; filters dispatch by name — the
+  designated L5 (closures) probe.
+- `demo.baga` CLI: template file + `key=value` data file (exit 0/1/2).
+- `tests/tpl_test.baga` — 46 checks (escape, jump table, filters, error
+  paths, realistic page); runs via `scripts/baga-test`.
+- Probes: unannotated `vec_new()` passes the checker but codegen emitted
+  i64 element access until annotated (P5, compiler bug candidate); `spec`
+  keyword cannot be an identifier and the diagnostic doesn't say so (P6).
+
 ### App products — jsonrpcbaga (JSON-RPC 2.0, apps-roadmap №6)
 - New product `app-product/jsonrpcbaga`: JSON-RPC 2.0 subset over HTTP —
   single/batch, notifications, standard error codes, methods
