@@ -1,0 +1,226 @@
+// gcm.baga — AES-GCM AEAD (RFC 5116 / NIST SP 800-38D), TLS milestone T3.
+//
+//   gcm_seal(k: AesKey, nonce12: bytes, aad: bytes, pt: bytes) -> bytes
+//       returns ct || tag (tag is 16 bytes)
+//   gcm_open(k, nonce12, aad, ct_tag: bytes) -> GcmOpen { ok, pt }
+//       ok = 0 on any tag mismatch (constant-time compare via ct.baga)
+//
+// Nonces are 12 bytes (the TLS 1.3 shape); J0 = nonce || 00000001.
+// GHASH multiplies in GF(2^128) with R = e1 || 0^120, right-shift form.
+// Pure; no effects.
+
+import "aes.baga"
+import "ct.baga"
+import "../bytes/bytes.baga"
+
+fn gcm_zero16() -> Vec<i64> {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < 16 {
+        vec_push(v, 0)
+        i = i + 1
+    }
+    return v
+}
+
+// X · Y in GF(2^128) (GCM spec §6.3, right-shift algorithm).
+fn ghash_mul(X: Vec<i64>, Y: Vec<i64>) -> Vec<i64> {
+    let Z = gcm_zero16()
+    let V = gcm_zero16()
+    let mut i: i64 = 0
+    while i < 16 {
+        vec_set(V, i, vec_get(Y, i))
+        i = i + 1
+    }
+    let mut bit: i64 = 0
+    while bit < 128 {
+        if ((vec_get(X, bit / 8) >> (7 - bit % 8)) & 1) == 1 {
+            let mut x: i64 = 0
+            while x < 16 {
+                vec_set(Z, x, vec_get(Z, x) ^ vec_get(V, x))
+                x = x + 1
+            }
+        }
+        let lsb = vec_get(V, 15) & 1
+        // V >>= 1 across the 16 bytes
+        let mut x: i64 = 15
+        while x >= 0 {
+            let mut nv = vec_get(V, x) >> 1
+            if x > 0 {
+                nv = nv | ((vec_get(V, x - 1) & 1) << 7)
+            }
+            vec_set(V, x, nv)
+            x = x - 1
+        }
+        if lsb == 1 {
+            vec_set(V, 0, vec_get(V, 0) ^ 225)   // 0xe1
+        }
+        bit = bit + 1
+    }
+    return Z
+}
+
+fn ghash_block_xor(Y: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    let r = gcm_zero16()
+    let mut i: i64 = 0
+    while i < 16 {
+        vec_set(r, i, vec_get(Y, i) ^ vec_get(b, i))
+        i = i + 1
+    }
+    return r
+}
+
+// GHASH over data padded to 16-byte blocks (zero padding).
+fn ghash(H: Vec<i64>, data: bytes) -> Vec<i64> {
+    let mut Y = gcm_zero16()
+    let n = bytes_len(data)
+    let mut off: i64 = 0
+    while off < n {
+        let b = gcm_zero16()
+        let mut i: i64 = 0
+        while i < 16 && off + i < n {
+            vec_set(b, i, bytes_at(data, off + i))
+            i = i + 1
+        }
+        Y = ghash_mul(ghash_block_xor(Y, b), H)
+        off = off + 16
+    }
+    return Y
+}
+
+fn gcm_block(k: AesKey, b: Vec<i64>) -> Vec<i64> {
+    let inb = bytes_from_vec(b)
+    let out = aes_encrypt(k, inb)
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < 16 {
+        vec_push(v, bytes_at(out, i))
+        i = i + 1
+    }
+    return v
+}
+
+// Increment the rightmost 32 bits (big-endian), in place.
+fn gcm_inc32(b: Vec<i64>) {
+    let mut carry: i64 = 1
+    let mut i: i64 = 15
+    while i >= 12 && carry > 0 {
+        let s = vec_get(b, i) + carry
+        vec_set(b, i, s & 255)
+        carry = s >> 8
+        i = i - 1
+    }
+}
+
+// J0 for a 12-byte nonce.
+fn gcm_j0(nonce12: bytes) -> Vec<i64> {
+    let j = gcm_zero16()
+    let mut i: i64 = 0
+    while i < 12 {
+        vec_set(j, i, bytes_at(nonce12, i))
+        i = i + 1
+    }
+    vec_set(j, 15, 1)
+    return j
+}
+
+// 64-bit big-endian bit length of n bytes.
+fn gcm_len64(nbytes: i64) -> Vec<i64> {
+    let v = gcm_zero16()   // reused as an 8-byte builder below
+    let bits = nbytes * 8
+    let out = vec_new()
+    let mut i: i64 = 7
+    while i >= 0 {
+        vec_push(out, 0)
+        i = i - 1
+    }
+    let mut x = bits
+    let mut j: i64 = 7
+    while j >= 0 {
+        vec_set(out, j, x & 255)
+        x = x >> 8
+        j = j - 1
+    }
+    return out
+}
+
+fn gcm_crypt(k: AesKey, j0: Vec<i64>, data: bytes) -> bytes {
+    let mut out = vec_new()
+    let cb = gcm_zero16()
+    let mut i: i64 = 0
+    while i < 16 {
+        vec_set(cb, i, vec_get(j0, i))
+        i = i + 1
+    }
+    let n = bytes_len(data)
+    let mut off: i64 = 0
+    while off < n {
+        gcm_inc32(cb)
+        let ks = gcm_block(k, cb)
+        let mut i: i64 = 0
+        while i < 16 && off + i < n {
+            vec_push(out, bytes_at(data, off + i) ^ vec_get(ks, i))
+            i = i + 1
+        }
+        off = off + 16
+    }
+    return bytes_from_vec(out)
+}
+
+fn gcm_tag(k: AesKey, H: Vec<i64>, j0: Vec<i64>, aad: bytes, ct: bytes) -> bytes {
+    let mut data = aad
+    let apad = (16 - bytes_len(aad) % 16) % 16
+    let mut i: i64 = 0
+    while i < apad {
+        data = bytes_concat(data, bytes_from_vec(vec_from_i64_zero()))
+        i = i + 1
+    }
+    data = bytes_concat(data, ct)
+    let cpad = (16 - bytes_len(ct) % 16) % 16
+    let mut j: i64 = 0
+    while j < cpad {
+        data = bytes_concat(data, bytes_from_vec(vec_from_i64_zero()))
+        j = j + 1
+    }
+    data = bytes_concat(data, bytes_from_vec(gcm_len64(bytes_len(aad))))
+    data = bytes_concat(data, bytes_from_vec(gcm_len64(bytes_len(ct))))
+    let S = ghash(H, data)
+    let E = gcm_block(k, j0)
+    let t = ghash_block_xor(S, E)
+    return bytes_from_vec(t)
+}
+
+fn vec_from_i64_zero() -> Vec<i64> {
+    let v = vec_new()
+    vec_push(v, 0)
+    return v
+}
+
+fn gcm_seal(k: AesKey, nonce12: bytes, aad: bytes, pt: bytes) -> bytes {
+    let H = gcm_block(k, gcm_zero16())
+    let j0 = gcm_j0(nonce12)
+    let ct = gcm_crypt(k, j0, pt)
+    let tag = gcm_tag(k, H, j0, aad, ct)
+    return bytes_concat(ct, tag)
+}
+
+struct GcmOpen {
+    ok: i64,
+    pt: bytes
+}
+
+fn gcm_open(k: AesKey, nonce12: bytes, aad: bytes, ct_tag: bytes) -> GcmOpen {
+    let n = bytes_len(ct_tag)
+    if n < 16 {
+        return GcmOpen { ok: 0, pt: bytes_from_vec(vec_new()) }
+    }
+    let ct = bytes_slice(ct_tag, 0, n - 16)
+    let tag = bytes_slice(ct_tag, n - 16, n)
+    let H = gcm_block(k, gcm_zero16())
+    let j0 = gcm_j0(nonce12)
+    let expect = gcm_tag(k, H, j0, aad, ct)
+    if !ct_eq_b(tag, expect) {
+        return GcmOpen { ok: 0, pt: bytes_from_vec(vec_new()) }
+    }
+    return GcmOpen { ok: 1, pt: gcm_crypt(k, j0, ct) }
+}

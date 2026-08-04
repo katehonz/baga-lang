@@ -1,0 +1,219 @@
+// aes.baga — AES-128/256 forward cipher (FIPS-197), TLS milestone T3.
+//
+//   aes_expand(key: bytes) -> AesKey      // 16 or 32 bytes
+//   aes_encrypt(k: AesKey, block: bytes) -> bytes   // 16 bytes in/out
+//
+// Only the forward direction exists, deliberately: GCM (CTR + GHASH)
+// never needs decryption. The S-box is computed at expand time (GF(2^8)
+// inversion by x^254 + the affine map) — no 256-byte literal to mistype.
+// Pure; no effects.
+
+import "../bytes/bytes.baga"
+
+struct AesKey {
+    rk: Vec<i64>,     // (rounds+1) * 16 round-key bytes
+    rounds: i64       // 10 (AES-128) or 14 (AES-256)
+}
+
+// ---------- GF(2^8), x^8 + x^4 + x^3 + x + 1 ----------
+
+fn gf_mul(a: i64, b: i64) -> i64 {
+    let mut x = a & 255
+    let mut y = b & 255
+    let mut r: i64 = 0
+    while y > 0 {
+        if (y & 1) == 1 {
+            r = r ^ x
+        }
+        let hi = x & 128
+        x = (x << 1) & 255
+        if hi > 0 {
+            x = x ^ 27
+        }
+        y = y >> 1
+    }
+    return r
+}
+
+// x^254 by square-and-multiply; 0 maps to 0 (the S-box convention).
+fn gf_inv(x: i64) -> i64 {
+    if x == 0 {
+        return 0
+    }
+    let mut r: i64 = 1
+    let mut b = x
+    let mut e: i64 = 254
+    while e > 0 {
+        if (e & 1) == 1 {
+            r = gf_mul(r, b)
+        }
+        b = gf_mul(b, b)
+        e = e >> 1
+    }
+    return r
+}
+
+fn aes_sbox_table() -> Vec<i64> {
+    let t = vec_new()
+    let mut x: i64 = 0
+    while x < 256 {
+        let b = gf_inv(x)
+        // affine: b'_i = b_i ^ b_(i+4) ^ b_(i+5) ^ b_(i+6) ^ b_(i+7) ^ c_i
+        // b_(i+k) is bit (i+k) mod 8 of b = rotate-left by (8-k)
+        let mut s = b
+        let r4 = ((b << 4) | (b >> 4)) & 255
+        let r5 = ((b << 3) | (b >> 5)) & 255
+        let r6 = ((b << 2) | (b >> 6)) & 255
+        let r7 = ((b << 1) | (b >> 7)) & 255
+        s = s ^ r4 ^ r5 ^ r6 ^ r7 ^ 99
+        vec_push(t, s)
+        x = x + 1
+    }
+    return t
+}
+
+// ---------- key expansion (FIPS-197 §5.2) ----------
+
+fn aes_expand(key: bytes) -> AesKey {
+    let klen = bytes_len(key)
+    let mut nk: i64 = 4
+    if klen == 32 {
+        nk = 8
+    }
+    let rounds = nk + 6
+    let sbox = aes_sbox_table()
+    let w = vec_new()   // 4-byte words, flat bytes
+    let mut i: i64 = 0
+    while i < 4 * nk {
+        vec_push(w, bytes_at(key, i))
+        i = i + 1
+    }
+    // rcon: 01 02 04 08 10 20 40 80 1b 36 (x^(j-1) in GF(2^8))
+    let rcon = vec_new()
+    let mut rv: i64 = 1
+    let mut j: i64 = 0
+    while j < 10 {
+        vec_push(rcon, rv)
+        let hi = rv & 128
+        rv = (rv << 1) & 255
+        if hi > 0 {
+            rv = rv ^ 27
+        }
+        j = j + 1
+    }
+    let total = 4 * (rounds + 1)   // words
+    let mut iw = nk
+    while iw < total {
+        let base = 4 * (iw - 1)
+        let mut t0 = vec_get(w, base)
+        let mut t1 = vec_get(w, base + 1)
+        let mut t2 = vec_get(w, base + 2)
+        let mut t3 = vec_get(w, base + 3)
+        if iw % nk == 0 {
+            // RotWord + SubWord + Rcon
+            let r0 = t0
+            t0 = vec_get(sbox, t1) ^ vec_get(rcon, iw / nk - 1)
+            t1 = vec_get(sbox, t2)
+            t2 = vec_get(sbox, t3)
+            t3 = vec_get(sbox, r0)
+        } else {
+            if nk == 8 && iw % nk == 4 {
+                t0 = vec_get(sbox, t0)
+                t1 = vec_get(sbox, t1)
+                t2 = vec_get(sbox, t2)
+                t3 = vec_get(sbox, t3)
+            }
+        }
+        let p = 4 * (iw - nk)
+        vec_push(w, vec_get(w, p) ^ t0)
+        vec_push(w, vec_get(w, p + 1) ^ t1)
+        vec_push(w, vec_get(w, p + 2) ^ t2)
+        vec_push(w, vec_get(w, p + 3) ^ t3)
+        iw = iw + 1
+    }
+    return AesKey { rk: w, rounds: rounds }
+}
+
+// ---------- block encrypt ----------
+
+fn aes_encrypt(k: AesKey, block: bytes) -> bytes {
+    let sbox = aes_sbox_table()
+    let st = vec_new()
+    let mut i: i64 = 0
+    while i < 16 {
+        vec_push(st, bytes_at(block, i))
+        i = i + 1
+    }
+    // add round key 0
+    let mut c: i64 = 0
+    while c < 16 {
+        vec_set(st, c, vec_get(st, c) ^ vec_get(k.rk, c))
+        c = c + 1
+    }
+    let mut round: i64 = 1
+    while round <= k.rounds {
+        // SubBytes
+        let mut x: i64 = 0
+        while x < 16 {
+            vec_set(st, x, vec_get(sbox, vec_get(st, x)))
+            x = x + 1
+        }
+        // ShiftRows: out[r + 4c] = in[r + 4((c + r) % 4)]
+        // (vec_set at the true flat index — push order would transpose)
+        let ns = vec_new()
+        let mut p: i64 = 0
+        while p < 16 {
+            vec_push(ns, 0)
+            p = p + 1
+        }
+        let mut r: i64 = 0
+        while r < 4 {
+            let mut col: i64 = 0
+            while col < 4 {
+                let sc = (col + r) % 4
+                vec_set(ns, r + 4 * col, vec_get(st, r + 4 * sc))
+                col = col + 1
+            }
+            r = r + 1
+        }
+        let mut y: i64 = 0
+        while y < 16 {
+            vec_set(st, y, vec_get(ns, y))
+            y = y + 1
+        }
+        // MixColumns (skipped on the final round)
+        if round < k.rounds {
+            let mut col: i64 = 0
+            while col < 4 {
+                let b0 = vec_get(st, 4 * col)
+                let b1 = vec_get(st, 4 * col + 1)
+                let b2 = vec_get(st, 4 * col + 2)
+                let b3 = vec_get(st, 4 * col + 3)
+                let x2_0 = gf_mul(b0, 2)
+                let x2_1 = gf_mul(b1, 2)
+                let x2_2 = gf_mul(b2, 2)
+                let x2_3 = gf_mul(b3, 2)
+                vec_set(st, 4 * col, x2_0 ^ x2_1 ^ b1 ^ b2 ^ b3)
+                vec_set(st, 4 * col + 1, b0 ^ x2_1 ^ x2_2 ^ b2 ^ b3)
+                vec_set(st, 4 * col + 2, b0 ^ b1 ^ x2_2 ^ x2_3 ^ b3)
+                vec_set(st, 4 * col + 3, x2_0 ^ b0 ^ b1 ^ b2 ^ x2_3)
+                col = col + 1
+            }
+        }
+        // AddRoundKey
+        let off = 16 * round
+        let mut z: i64 = 0
+        while z < 16 {
+            vec_set(st, z, vec_get(st, z) ^ vec_get(k.rk, off + z))
+            z = z + 1
+        }
+        round = round + 1
+    }
+    let out = vec_new()
+    let mut q: i64 = 0
+    while q < 16 {
+        vec_push(out, vec_get(st, q))
+        q = q + 1
+    }
+    return bytes_from_vec(out)
+}

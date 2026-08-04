@@ -1,9 +1,11 @@
-# std/crypto — hashes, MACs, bignum, X25519
+# std/crypto — hashes, MACs, bignum, X25519, HKDF, AES-GCM
 
 Pure Baga cryptography: no OpenSSL FFI, deliberately — zero dependencies and
 proof-of-language. SHA-256 is validated against NIST vectors, HMAC against
 RFC 4231, the bignum against python-generated golden vectors (RSA-2048
-modexp included), X25519 against RFC 7748.
+modexp included), X25519 against RFC 7748, HKDF against RFC 5869, AES
+against FIPS-197 and AES-GCM against python `cryptography` vectors.
+The TLS 1.3 cipher suite (T1–T3 of the milestone) lives here.
 
 - `sha256_bytes(data: Vec<i64>) -> Vec<i64>` — SHA-256 (FIPS 180-4) over a byte buffer; returns the 32-byte digest.
 - `sha256(msg: str) -> Vec<i64>` — SHA-256 over the raw bytes of `msg`.
@@ -29,6 +31,16 @@ modexp included), X25519 against RFC 7748.
   ECDH: clamped scalars, Montgomery ladder with constant-time cswap,
   field reduction by the 2^255 ≡ 19 fold. A full scalar multiply is
   ~0.1 s; RFC 7748 §5.2/§6.1 vectors in `tests/std/x25519_test.baga`.
+- `hkdf_extract(salt, ikm) -> bytes`, `hkdf_expand(prk, info, len) -> bytes`
+  (`hkdf.baga`) — RFC 5869 over hmac_sha256_b; Appendix A test cases 1–3.
+- `aes_expand(key) -> AesKey`, `aes_encrypt(k, block) -> bytes`
+  (`aes.baga`) — AES-128/256 forward cipher (FIPS-197 C.1/C.3); the
+  S-box is computed from GF(2^8) inversion, no literal table.
+- `gcm_seal(k, nonce12, aad, pt) -> bytes` (ct‖tag),
+  `gcm_open(k, nonce12, aad, ct_tag) -> GcmOpen { ok, pt }` (`gcm.baga`)
+  — AES-GCM AEAD (SP 800-38D) with GHASH in GF(2^128); 12-byte nonces
+  (the TLS 1.3 shape); tags compared with ct_eq_b. Vectors generated
+  offline with python `cryptography`; the whole suite runs in ~0.5 s.
 
 Implementation notes: Baga has only signed i64, so u32 arithmetic is emulated
 by masking with `& 4294967295`; bitwise NOT is `(-1) ^ x`. All intermediate

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### TLS 1.3 client, T3 — HKDF + AES-GCM (std/crypto)
+- `hkdf.baga`: RFC 5869 HKDF-SHA256 (extract with the empty-salt →
+  HashLen-zeros rule, expand); Appendix A cases 1–3 pass.
+- `aes.baga`: AES-128/256 forward cipher (FIPS-197 C.1/C.3). The S-box
+  is computed at expand time from GF(2^8) inversion + the affine map —
+  no 256-byte literal to mistype. Decryption is deliberately absent:
+  GCM needs only the forward direction.
+- `gcm.baga`: AES-GCM AEAD — GHASH in GF(2^128) (right-shift form,
+  R = e1‖0^120), CTR from J0 = nonce‖00000001 (12-byte nonces, the
+  TLS 1.3 shape), 16-byte tags verified with ct_eq_b.
+- `tests/std/hkdf_test.baga` + `tests/std/aes_gcm_test.baga`: vectors
+  from RFC 5869, FIPS-197, and python `cryptography` generated offline
+  (AES-256-GCM, 60-byte non-block PT + AAD, AAD-only, tamper/nonce/AAD
+  rejection). Both in the make test std loop; ~0.5 s each.
+- Scars, documented: the S-box affine rotations were first written as
+  rotl 5/6/7 instead of 3/2/1, and ShiftRows filled its buffer in
+  push order (a transpose) — both caught by the intermediate-state
+  probes against the FIPS walkthrough, not by the end-to-end vector.
+
 ### TLS 1.3 client, T2 — std/crypto/x25519.baga (RFC 7748 ECDH)
 - X25519 on top of bn.baga: clamped scalars, Montgomery ladder (bits
   254..0) with constant-time conditional swaps, field arithmetic mod

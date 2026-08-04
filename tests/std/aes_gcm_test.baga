@@ -1,0 +1,91 @@
+// aes_gcm_test.baga — AES (FIPS-197 C.1/C.3) + AES-GCM vectors for
+// std/crypto/aes.baga + gcm.baga (TLS milestone T3). Oracle: python
+// `cryptography` (AESGCM), generated offline.
+
+import "std/crypto/aes.baga"
+import "std/crypto/gcm.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn h(b: bytes) -> str {
+    return bytes_to_hex(vec_from_bytes(b))
+}
+
+fn hx(s: str) -> bytes {
+    return bytes_from_vec(bytes_from_hex(s))
+}
+
+fn main() {
+    // --- AES block (FIPS-197 Appendix C.1 / C.3) ---
+    let k128 = aes_expand(hx("000102030405060708090a0b0c0d0e0f"))
+    check("aes128_block", h(aes_encrypt(k128, hx("00112233445566778899aabbccddeeff"))) ==
+        "69c4e0d86a7b0430d8cdb78070b4c55a")
+    let k256 = aes_expand(hx("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"))
+    check("aes256_block", h(aes_encrypt(k256, hx("00112233445566778899aabbccddeeff"))) ==
+        "8ea2b7ca516745bfeafc49904b496089")
+
+    // --- GCM g1: zero key/iv/pt (McGrew–Viega test case 2) ---
+    let z16 = hx("00000000000000000000000000000000")
+    let z12 = hx("000000000000000000000000")
+    let s1 = gcm_seal(k128_zero(), z12, hx(""), z16)
+    check("g1_seal", h(s1) ==
+        "0388dace60b6a392f328c2b971b2fe78ab6e47d42cec13bdf53a67b21257bddf")
+    let o1 = gcm_open(k128_zero(), z12, hx(""), s1)
+    check("g1_open", o1.ok == 1 && h(o1.pt) == "00000000000000000000000000000000")
+
+    // --- GCM g2: 64-byte zero pt ---
+    let s2 = gcm_seal(k128_zero(), z12, hx(""), hx(
+        "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))
+    check("g2_seal", h(s2) ==
+        "0388dace60b6a392f328c2b971b2fe78f795aaab494b5923f7fd89ff948bc1e0200211214e7394da2089b6acd093abe0c94da219118e297d7b7ebcbcc9c388f2a25c524b069089f1674445d64e18c4f5")
+
+    // --- GCM g3: 60-byte pt (non-block multiple) + 20-byte AAD ---
+    let s3 = gcm_seal(k128, hx("000102030405060708090a0b"),
+        hx("feedfacedeadbeeffeedfacedeadbeefabaddad2"),
+        hx("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255"))
+    check("g3_seal", h(s3) ==
+        "4a5d95eb9e9ff1b1ee8b684f995656923581b3b546d90a2cc86dc1109e75281e9998d76261e8beb06f3b07c3892f62b77df5f905ae8ad02c942d09ebb0e3c4b143d6ad640acc73351166e3761cbc62c5")
+    let o3 = gcm_open(k128, hx("000102030405060708090a0b"),
+        hx("feedfacedeadbeeffeedfacedeadbeefabaddad2"), s3)
+    check("g3_open", o3.ok == 1 && h(o3.pt) ==
+        "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255")
+
+    // --- GCM g4: AES-256-GCM, 48-byte pt, 8-byte AAD ---
+    let s4 = gcm_seal(k256, hx("cafebabefacedbaddecaf888"), hx("0102030405060708"), hx(
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"))
+    check("g4_seal", h(s4) ==
+        "8aa3a026aa7a4f1b460b5ddd7b1d893f0d20c051df196a744edf0471be8965ffad50c146c1d44962265b286832832065a073302e14215cea51f4f62da40614f5")
+
+    // --- GCM g5: AAD only, empty plaintext ---
+    let s5 = gcm_seal(k128_zero(), z12, hx("aabbccdd"), hx(""))
+    check("g5_seal", h(s5) == "c3d8fbf5ca9b4b9550d46fd1828aa461")
+
+    // --- tamper detection ---
+    let mut tampered = bytes_slice(s3, 0, 16)
+    tampered = bytes_concat(tampered, bytes_slice(s3, 16, bytes_len(s3)))
+    let bad = bytes_concat(bytes_slice(tampered, 0, 5), hx("ff"))
+    let bad2 = bytes_concat(bad, bytes_slice(tampered, 6, bytes_len(tampered)))
+    let o4 = gcm_open(k128, hx("000102030405060708090a0b"),
+        hx("feedfacedeadbeeffeedfacedeadbeefabaddad2"), bad2)
+    check("tamper_rejected", o4.ok == 0)
+    let o5 = gcm_open(k128, hx("000102030405060708090a0c"),
+        hx("feedfacedeadbeeffeedfacedeadbeefabaddad2"), s3)
+    check("nonce_rejected", o5.ok == 0)
+    let o6 = gcm_open(k128, hx("000102030405060708090a0b"), hx(""), s3)
+    check("aad_rejected", o6.ok == 0)
+
+    print("aes_gcm_test: all passed")
+}
+
+fn k128_zero() -> AesKey {
+    return aes_expand(hx("00000000000000000000000000000000"))
+}

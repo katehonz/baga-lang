@@ -1,0 +1,50 @@
+// hkdf.baga — HKDF-SHA256 (RFC 5869) over hmac.baga (TLS milestone, T3).
+//
+//   hkdf_extract(salt: bytes, ikm: bytes) -> bytes       // 32-byte PRK
+//   hkdf_expand(prk: bytes, info: bytes, out_len) -> bytes
+//
+// An empty salt becomes HashLen zeros per the RFC. TLS 1.3's
+// HKDF-Expand-Label wrapper (tls.baga, T4) builds on hkdf_expand.
+// Pure; no effects.
+
+import "hmac.baga"
+import "../bytes/bytes.baga"
+
+fn hkdf_byte(v: i64) -> bytes {
+    let b = vec_new()
+    vec_push(b, v & 255)
+    return bytes_from_vec(b)
+}
+
+fn hkdf_zeros(n: i64) -> Vec<i64> {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, 0)
+        i = i + 1
+    }
+    return v
+}
+
+// PRK = HMAC-SHA256(salt, IKM); empty salt → 32 zero bytes (RFC §2.2).
+fn hkdf_extract(salt: bytes, ikm: bytes) -> bytes {
+    if bytes_len(salt) == 0 {
+        return hmac_sha256_b(bytes_from_vec(hkdf_zeros(32)), ikm)
+    }
+    return hmac_sha256_b(salt, ikm)
+}
+
+// OKM = T(1) | T(2) | ... truncated to out_len;
+// T(i) = HMAC-SHA256(PRK, T(i-1) | info | i), T(0) = empty.
+fn hkdf_expand(prk: bytes, info: bytes, out_len: i64) -> bytes {
+    let mut acc = bytes_from_vec(hkdf_zeros(0))
+    let mut t = bytes_from_vec(hkdf_zeros(0))
+    let mut i: i64 = 1
+    while bytes_len(acc) < out_len {
+        let msg = bytes_concat(bytes_concat(t, info), hkdf_byte(i))
+        t = hmac_sha256_b(prk, msg)
+        acc = bytes_concat(acc, t)
+        i = i + 1
+    }
+    return bytes_slice(acc, 0, out_len)
+}
