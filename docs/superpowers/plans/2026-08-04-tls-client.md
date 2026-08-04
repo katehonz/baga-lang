@@ -1,5 +1,8 @@
 # TLS 1.3 client in std (G6) Implementation Plan
 
+> Progress: T1 bn ✓ · T2 x25519 ✓ · T3 hkdf/aes/gcm ✓ · T4 records+hello ✓
+> · T5 encrypted handshake ✓ (live against openssl) · T6–T8 ahead
+
 **Goal:** Close gap G6 — the last production blocker found by the apps
 roadmap (№10 OAuth proxy waits on it): a **TLS 1.3 client** in `std/`,
 pure Baga, wired into `std/net/http_client.baga` so `https://` works
@@ -42,6 +45,8 @@ API so TLS slots in without interface change; std/crypto README reserved
   change-of-key detection, close_notify.
 
 ## Tasks
+
+Status: T1–T5 done (2026-08-04). Next: T6 X.509 + RSA-PSS.
 
 ### T1 — `std/crypto/bn.baga`: fixed-width bignum
 - 26-bit limbs in `Vec<i64>`, little-endian, fixed length per op.

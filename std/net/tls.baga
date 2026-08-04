@@ -1,0 +1,470 @@
+// tls.baga — TLS 1.3 client core (apps-roadmap №10 P2, T4+T5).
+//
+// Record layer, ClientHello builder, ServerHello parser (T4) and the
+// handshake key schedule + encrypted flight (T5):
+//
+//   tls_client_hello(pub32, random32, sid32) -> bytes   // full record
+//   tls_read_record(fd) -> TlsRecord { ok, err, typ, payload }
+//   tls_parse_server_hello(payload) -> TlsHello
+//   tls_schedule(ch_msg, sh_msg, shared) -> TlsSchedule
+//   tls_open_handshake(sched, rec) -> TlsFlight   // decrypt + transcript
+//   tls_finished_record(sched, flight_hash) -> bytes   // client Finished
+//
+// ClientHello shape: legacy_version 0x0303, 32-byte session id
+// (middlebox compatibility), cipher suites TLS_AES_128/256_GCM,
+// extensions: supported_groups (x25519, secp256r1), signature_algorithms
+// (rsa_pss_rsae_sha256, ecdsa_secp256r1_sha256), supported_versions
+// (0x0304), key_share (x25519 pub).
+//
+// T5 scope: decrypt EncryptedExtensions/Certificate/CertificateVerify/
+// Finished, verify the server Finished HMAC, build the client Finished.
+// Certificate/signature verification is T6 (the cert bytes are exposed
+// via TlsFlight for that).
+
+import "tcp.baga"
+import "../bytes/bytes.baga"
+import "../str/str.baga"
+import "../crypto/sha256.baga"
+import "../crypto/hmac.baga"
+import "../crypto/hkdf.baga"
+import "../crypto/aes.baga"
+import "../crypto/gcm.baga"
+
+// ---------- byte-builder helpers ----------
+
+fn tls_push_u8(v: Vec<i64>, x: i64) {
+    vec_push(v, x & 255)
+}
+
+fn tls_push_u16(v: Vec<i64>, x: i64) {
+    vec_push(v, (x >> 8) & 255)
+    vec_push(v, x & 255)
+}
+
+fn tls_push_u24(v: Vec<i64>, x: i64) {
+    vec_push(v, (x >> 16) & 255)
+    vec_push(v, (x >> 8) & 255)
+    vec_push(v, x & 255)
+}
+
+fn tls_push_bytes(v: Vec<i64>, b: bytes) {
+    let mut i: i64 = 0
+    while i < bytes_len(b) {
+        vec_push(v, bytes_at(b, i))
+        i = i + 1
+    }
+}
+
+// ---------- ClientHello ----------
+
+// One extension: id(2) len(2) data.
+fn tls_ext(v: Vec<i64>, id: i64, data: Vec<i64>) {
+    tls_push_u16(v, id)
+    tls_push_u16(v, vec_len(data))
+    let mut i: i64 = 0
+    while i < vec_len(data) {
+        vec_push(v, vec_get(data, i))
+        i = i + 1
+    }
+}
+
+// The full TLS record carrying the ClientHello.
+fn tls_client_hello(pub32: bytes, random32: bytes, sid32: bytes) -> bytes {
+    // ---- extensions ----
+    let exts = vec_new()
+    // supported_groups: x25519 (0x001d), secp256r1 (0x0017)
+    let groups = vec_new()
+    tls_push_u16(groups, 4)
+    tls_push_u16(groups, 29)
+    tls_push_u16(groups, 23)
+    tls_ext(exts, 10, groups)
+    // signature_algorithms: rsa_pss_rsae_sha256 (0x0804),
+    //                       ecdsa_secp256r1_sha256 (0x0403)
+    let sigs = vec_new()
+    tls_push_u16(sigs, 4)
+    tls_push_u16(sigs, 2052)
+    tls_push_u16(sigs, 1027)
+    tls_ext(exts, 13, sigs)
+    // supported_versions: TLS 1.3 (0x0304)
+    let sv = vec_new()
+    tls_push_u8(sv, 2)
+    tls_push_u16(sv, 772)
+    tls_ext(exts, 43, sv)
+    // key_share: x25519 entry (group 0x001d, 32-byte key)
+    let ks = vec_new()
+    tls_push_u16(ks, 36)      // key exchange list length: 2+2+32
+    tls_push_u16(ks, 29)
+    tls_push_u16(ks, 32)
+    tls_push_bytes(ks, pub32)
+    tls_ext(exts, 51, ks)
+    // ---- handshake body ----
+    let body = vec_new()
+    tls_push_u16(body, 771)          // legacy_version 0x0303
+    tls_push_bytes(body, random32)
+    tls_push_u8(body, bytes_len(sid32))
+    tls_push_bytes(body, sid32)
+    tls_push_u16(body, 4)            // cipher suites length
+    tls_push_u16(body, 4865)         // TLS_AES_128_GCM_SHA256
+    tls_push_u16(body, 4866)         // TLS_AES_256_GCM_SHA384
+    tls_push_u8(body, 1)             // compression methods length
+    tls_push_u8(body, 0)
+    tls_push_u16(body, vec_len(exts))
+    let mut e: i64 = 0
+    while e < vec_len(exts) {
+        vec_push(body, vec_get(exts, e))
+        e = e + 1
+    }
+    // ---- handshake header + record header ----
+    let hs = vec_new()
+    tls_push_u8(hs, 1)               // client_hello
+    tls_push_u24(hs, vec_len(body))
+    let mut b: i64 = 0
+    while b < vec_len(body) {
+        vec_push(hs, vec_get(body, b))
+        b = b + 1
+    }
+    let rec = vec_new()
+    tls_push_u8(rec, 22)             // handshake
+    tls_push_u16(rec, 769)           // legacy record version 0x0301
+    tls_push_u16(rec, vec_len(hs))
+    let mut h: i64 = 0
+    while h < vec_len(hs) {
+        vec_push(rec, vec_get(hs, h))
+        h = h + 1
+    }
+    return bytes_from_vec(rec)
+}
+
+// ---------- record layer ----------
+
+struct TlsRecord {
+    ok: i64,
+    err: str,
+    typ: i64,
+    payload: bytes
+}
+
+fn tls_record_bad(err: str) -> TlsRecord {
+    return TlsRecord { ok: 0, err: err, typ: 0, payload: bytes_from_vec(vec_new()) }
+}
+
+// Read one TLS record (5-byte header + exact payload).
+fn tls_read_record(fd: i64) -> TlsRecord !IO !Net {
+    let hdr = tcp_read_exact(fd, 5)?
+    if bytes_len(hdr) < 5 {
+        return tls_record_bad("short header")
+    }
+    let typ = bytes_at(hdr, 0)
+    let plen = (bytes_at(hdr, 3) << 8) | bytes_at(hdr, 4)
+    if plen > 32768 {
+        return tls_record_bad("record too large")
+    }
+    let pl = tcp_read_exact(fd, plen)?
+    if bytes_len(pl) < plen {
+        return tls_record_bad("short payload")
+    }
+    return TlsRecord { ok: 1, err: "", typ: typ, payload: pl }
+}
+
+// ---------- ServerHello ----------
+
+struct TlsHello {
+    ok: i64,
+    err: str,
+    version: i64,          // from supported_versions (772 = TLS 1.3)
+    cipher: i64,
+    server_random: bytes,
+    server_pub: bytes      // x25519 key_share; empty when absent
+}
+
+fn tls_hello_bad(err: str) -> TlsHello {
+    return TlsHello { ok: 0, err: err, version: 0, cipher: 0,
+        server_random: bytes_from_vec(vec_new()), server_pub: bytes_from_vec(vec_new()) }
+}
+
+fn tls_u16_at(b: bytes, off: i64) -> i64 {
+    return (bytes_at(b, off) << 8) | bytes_at(b, off + 1)
+}
+
+fn tls_parse_server_hello(payload: bytes) -> TlsHello {
+    let n = bytes_len(payload)
+    if n < 4 || bytes_at(payload, 0) != 2 {
+        return tls_hello_bad("not a ServerHello")
+    }
+    let hslen = (bytes_at(payload, 1) << 16) | (bytes_at(payload, 2) << 8) | bytes_at(payload, 3)
+    if 4 + hslen > n {
+        return tls_hello_bad("truncated handshake")
+    }
+    let mut p: i64 = 4
+    let legacy = tls_u16_at(payload, p)
+    if legacy != 771 {
+        return tls_hello_bad("bad legacy version")
+    }
+    p = p + 2
+    let rnd = bytes_slice(payload, p, p + 32)
+    p = p + 32
+    let sidl = bytes_at(payload, p)
+    p = p + 1 + sidl
+    if p + 3 > n {
+        return tls_hello_bad("truncated body")
+    }
+    let cipher = tls_u16_at(payload, p)
+    p = p + 2
+    p = p + 1                       // compression
+    let extlen = tls_u16_at(payload, p)
+    p = p + 2
+    let mut vend = p + extlen
+    if vend > n {
+        vend = n
+    }
+    let mut version: i64 = 0
+    let mut pub = bytes_from_vec(vec_new())
+    while p + 4 <= vend {
+        let eid = tls_u16_at(payload, p)
+        let elen = tls_u16_at(payload, p + 2)
+        p = p + 4
+        if p + elen > vend {
+            return tls_hello_bad("truncated extension")
+        }
+        if eid == 43 && elen >= 2 {
+            version = tls_u16_at(payload, p)
+        }
+        if eid == 51 && elen >= 4 {
+            // ServerHello key_share is a single KeyShareEntry (no list
+            // length — that wrapper exists only in the ClientHello)
+            let g = tls_u16_at(payload, p)
+            let kl = tls_u16_at(payload, p + 2)
+            if g == 29 && kl == 32 && p + 4 + 32 <= vend {
+                pub = bytes_slice(payload, p + 4, p + 4 + 32)
+            }
+        }
+        p = p + elen
+    }
+    return TlsHello { ok: 1, err: "", version: version, cipher: cipher,
+        server_random: rnd, server_pub: pub }
+}
+
+// ---------- T5: key schedule ----------
+
+fn tls_ascii(s: str) -> bytes {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < len(s) {
+        vec_push(v, char_at(s, i))
+        i = i + 1
+    }
+    return bytes_from_vec(v)
+}
+
+fn tls_zeros(n: i64) -> bytes {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, 0)
+        i = i + 1
+    }
+    return bytes_from_vec(v)
+}
+
+// HkdfLabel (RFC 8446 §7.1): u16 len | u8 |"tls13 "+label| | u8 |ctx|
+fn tls_hkdf_label(secret: bytes, label: str, ctx: bytes, out_len: i64) -> bytes {
+    let lab = bytes_concat(tls_ascii("tls13 "), tls_ascii(label))
+    let v = vec_new()
+    tls_push_u16(v, out_len)
+    tls_push_u8(v, bytes_len(lab))
+    tls_push_bytes(v, lab)
+    tls_push_u8(v, bytes_len(ctx))
+    tls_push_bytes(v, ctx)
+    return hkdf_expand(secret, bytes_from_vec(v), out_len)
+}
+
+// The "derived" step's context is the transcript hash of zero messages —
+// SHA-256 of the empty string, NOT an empty context (RFC 8446 §7.1).
+fn tls_derive(secret: bytes) -> bytes {
+    return tls_hkdf_label(secret, "derived", sha256_b(bytes_from_vec(vec_new())), 32)
+}
+
+struct TlsSchedule {
+    ok: i64,
+    err: str,
+    server_hs: bytes,     // server_handshake_traffic_secret
+    client_hs: bytes,     // client_handshake_traffic_secret
+    sh_hash: bytes        // H(ClientHello || ServerHello)
+}
+
+fn tls_schedule_bad(err: str) -> TlsSchedule {
+    return TlsSchedule { ok: 0, err: err, server_hs: bytes_from_vec(vec_new()),
+        client_hs: bytes_from_vec(vec_new()), sh_hash: bytes_from_vec(vec_new()) }
+}
+
+// The handshake key schedule up to the handshake traffic secrets.
+fn tls_schedule(ch_msg: bytes, sh_msg: bytes, shared: bytes) -> TlsSchedule {
+    if bytes_len(shared) != 32 {
+        return tls_schedule_bad("bad shared secret length")
+    }
+    let zero = tls_zeros(32)
+    let early = hkdf_extract(zero, zero)
+    let d0 = tls_derive(early)
+    let hs_secret = hkdf_extract(d0, shared)
+    let sh_hash = sha256_b(bytes_concat(ch_msg, sh_msg))
+    let server_hs = tls_hkdf_label(hs_secret, "s hs traffic", sh_hash, 32)
+    let client_hs = tls_hkdf_label(hs_secret, "c hs traffic", sh_hash, 32)
+    return TlsSchedule { ok: 1, err: "", server_hs: server_hs,
+        client_hs: client_hs, sh_hash: sh_hash }
+}
+
+// nonce = iv XOR 64-bit sequence (in the last 8 bytes of the 12-byte iv).
+fn tls_nonce(iv: bytes, seq: i64) -> bytes {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < 12 {
+        vec_push(v, bytes_at(iv, i))
+        i = i + 1
+    }
+    let mut s = seq
+    let mut j: i64 = 11
+    while j >= 4 {
+        vec_set(v, j, vec_get(v, j) ^ (s & 255))
+        s = s >> 8
+        j = j - 1
+    }
+    return bytes_from_vec(v)
+}
+
+fn tls_hdr_bytes(typ: i64, plen: i64) -> bytes {
+    let v = vec_new()
+    tls_push_u8(v, typ)
+    tls_push_u16(v, 771)
+    tls_push_u16(v, plen)
+    return bytes_from_vec(v)
+}
+
+// ---------- T5: encrypted server flight ----------
+
+struct TlsFlight {
+    ok: i64,
+    err: str,
+    types: Vec<i64>,       // handshake message types, in order
+    cert_der: bytes,       // first certificate (T6 input)
+    cv_sig: bytes,         // CertificateVerify signature (T6 input)
+    finished_ok: i64,      // server Finished HMAC verified
+    flight_hash: bytes     // H(CH || SH || EE || Cert || CV)
+}
+
+fn tls_flight_bad(err: str) -> TlsFlight {
+    return TlsFlight { ok: 0, err: err, types: vec_new(),
+        cert_der: bytes_from_vec(vec_new()), cv_sig: bytes_from_vec(vec_new()),
+        finished_ok: 0, flight_hash: bytes_from_vec(vec_new()) }
+}
+
+// Decrypt the application-data records carrying the server handshake
+// flight and verify the server Finished. `chunked` is the concatenation
+// of (u24 length || record payload)* for each type-23 record in order —
+// record i has GCM sequence i (openssl splits EncryptedExtensions into
+// its own record; the RFC allows any split). A Vec<bytes> parameter
+// would be the natural shape — not supported by the language yet (L4).
+fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked: bytes) -> TlsFlight {
+    let key = tls_hkdf_label(sched.server_hs, "key", bytes_from_vec(vec_new()), 16)
+    let iv = tls_hkdf_label(sched.server_hs, "iv", bytes_from_vec(vec_new()), 12)
+    let aead = aes_expand(key)
+    let mut pt = bytes_from_vec(vec_new())
+    let mut seq: i64 = 0
+    let mut c: i64 = 0
+    let cn = bytes_len(chunked)
+    while c + 3 <= cn {
+        let plen = (bytes_at(chunked, c) << 16) | (bytes_at(chunked, c + 1) << 8) | bytes_at(chunked, c + 2)
+        c = c + 3
+        if c + plen > cn {
+            return tls_flight_bad("truncated chunked flight")
+        }
+        let payload = bytes_slice(chunked, c, c + plen)
+        c = c + plen
+        let aad = tls_hdr_bytes(23, plen)
+        let open = gcm_open(aead, tls_nonce(iv, seq), aad, payload)
+        if open.ok == 0 {
+            return tls_flight_bad(concat("flight decrypt failed at record ", int_to_str(seq)))
+        }
+        // RFC 8446 §5.2: inner plaintext ends with a content-type byte
+        // (22 = handshake); strip it, keep only handshake records.
+        let in_len = bytes_len(open.pt)
+        if in_len == 0 {
+            return tls_flight_bad("empty flight record")
+        }
+        if bytes_at(open.pt, in_len - 1) == 22 {
+            pt = bytes_concat(pt, bytes_slice(open.pt, 0, in_len - 1))
+        }
+        seq = seq + 1
+    }
+    let n = bytes_len(pt)
+    // walk the handshake messages; transcript = CH || SH || flight-so-far
+    let mut acc = bytes_concat(ch_msg, sh_msg)
+    let types = vec_new()
+    let mut cert_der = bytes_from_vec(vec_new())
+    let mut cv_sig = bytes_from_vec(vec_new())
+    let mut finished_ok: i64 = 0
+    let mut flight_hash = bytes_from_vec(vec_new())
+    let mut p: i64 = 0
+    while p + 4 <= n {
+        let mt = bytes_at(pt, p)
+        let ml = (bytes_at(pt, p + 1) << 16) | (bytes_at(pt, p + 2) << 8) | bytes_at(pt, p + 3)
+        if p + 4 + ml > n {
+            return tls_flight_bad("truncated flight message")
+        }
+        let msg = bytes_slice(pt, p, p + 4 + ml)
+        let body = bytes_slice(pt, p + 4, p + 4 + ml)
+        vec_push(types, mt)
+        if mt == 11 {
+            // Certificate: ctx(1) list_len(3) cert_len(3) cert...
+            if bytes_len(body) >= 7 {
+                let clen = (bytes_at(body, 4) << 16) | (bytes_at(body, 5) << 8) | bytes_at(body, 6)
+                if 7 + clen <= bytes_len(body) {
+                    cert_der = bytes_slice(body, 7, 7 + clen)
+                }
+            }
+        }
+        if mt == 15 {
+            // CertificateVerify: algo(2) sig_len(2) sig...
+            if bytes_len(body) >= 4 {
+                let sl = (bytes_at(body, 2) << 8) | bytes_at(body, 3)
+                if 4 + sl <= bytes_len(body) {
+                    cv_sig = bytes_slice(body, 4, 4 + sl)
+                }
+            }
+        }
+        if mt == 20 {
+            // Finished: HMAC over the transcript BEFORE this message
+            let fin_key = tls_hkdf_label(sched.server_hs, "finished", bytes_from_vec(vec_new()), 32)
+            let expect = hmac_sha256_b(fin_key, sha256_b(acc))
+            if bytes_len(body) == 32 {
+                if ct_eq_b(body, expect) {
+                    finished_ok = 1
+                }
+            }
+            flight_hash = sha256_b(acc)
+        } else {
+            acc = bytes_concat(acc, msg)
+        }
+        p = p + 4 + ml
+    }
+    return TlsFlight { ok: 1, err: "", types: types, cert_der: cert_der,
+        cv_sig: cv_sig, finished_ok: finished_ok, flight_hash: flight_hash }
+}
+
+// ---------- T5: client Finished record ----------
+
+// The encrypted record carrying the client Finished (handshake seq 0).
+fn tls_finished_record(sched: TlsSchedule, flight_hash: bytes) -> bytes {
+    let fin_key = tls_hkdf_label(sched.client_hs, "finished", bytes_from_vec(vec_new()), 32)
+    let body = hmac_sha256_b(fin_key, flight_hash)
+    let hs = vec_new()
+    tls_push_u8(hs, 20)
+    tls_push_u24(hs, bytes_len(body))
+    tls_push_bytes(hs, body)
+    let plain = bytes_from_vec(hs)
+    let key = tls_hkdf_label(sched.client_hs, "key", bytes_from_vec(vec_new()), 16)
+    let iv = tls_hkdf_label(sched.client_hs, "iv", bytes_from_vec(vec_new()), 12)
+    let aead = aes_expand(key)
+    let aad = tls_hdr_bytes(23, bytes_len(plain) + 16)
+    let sealed = gcm_seal(aead, tls_nonce(iv, 0), aad, plain)
+    return bytes_concat(tls_hdr_bytes(23, bytes_len(sealed)), sealed)
+}

@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### TLS 1.3 client, T4+T5 — record layer, ClientHello, encrypted handshake
+- `std/net/tls.baga`: TLS 1.3 client core — record layer
+  (`tls_read_record`), ClientHello builder (x25519 key share,
+  supported_versions, signature_algorithms), ServerHello parser, the RFC
+  8446 §7.1 key schedule (`tls_schedule`), flight decryption
+  (`tls_open_handshake`: multi-record, GCM sequence numbers, inner
+  content-type stripping, transcript walk, server-Finished HMAC verify)
+  and the client Finished builder (`tls_finished_record`).
+- `tests/tls_handshake_test.baga` — a full live handshake against
+  `openssl s_server -tls1_3` with a fresh self-signed cert, wired into
+  make test: ClientHello → ServerHello → decrypt
+  EncryptedExtensions/Certificate/CertificateVerify/Finished → verify the
+  server Finished → send the client Finished and assert no alert.
+- Scars, documented:
+  - the "derived" key-schedule step takes the transcript hash of the
+    empty message (SHA-256 of "") as context — not an empty context;
+    validated against RFC 8448 known answers before the live server
+    would decrypt anything;
+  - the ServerHello key_share is a single KeyShareEntry (the list-length
+    wrapper exists only in the ClientHello);
+  - openssl splits the flight into separate records (EE | Cert | CV+Fin)
+    and sends a middlebox-compat ChangeCipherSpec; the flight reader
+    handles both;
+  - `openssl s_server` without `-quiet` resets connections (stdin loop);
+    the harness runs it with `-quiet < /dev/null`;
+  - `Vec<bytes>` is not a supported element kind yet (L4) — the flight
+    reader takes a u24-length-prefixed `bytes` instead.
+
 ### TLS 1.3 client, T3 — HKDF + AES-GCM (std/crypto)
 - `hkdf.baga`: RFC 5869 HKDF-SHA256 (extract with the empty-salt →
   HashLen-zeros rule, expand); Appendix A cases 1–3 pass.

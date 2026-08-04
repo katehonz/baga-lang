@@ -274,6 +274,20 @@ test: $(BIN) sandak
 	@grep -q "oauth_pg_test: all passed" /tmp/baga_oauth_out.txt \
 		&& echo "OK: OAuth пълен цикъл с Postgres codes/refresh/sessions (live)" \
 		|| { echo "FAIL: oauth_pg_test (нужен е live Postgres)"; cat /tmp/baga_oauth_out.txt; exit 1; }
+	@echo "=== tls handshake (openssl s_server live) ==="
+	@openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/baga_tls_key.pem \
+		-out /tmp/baga_tls_cert.pem -days 2 -subj "/CN=localhost" > /dev/null 2>&1 \
+		|| { echo "FAIL: tls cert (нужен е openssl)"; exit 1; }
+	@openssl s_server -accept 18443 -key /tmp/baga_tls_key.pem -cert /tmp/baga_tls_cert.pem \
+		-tls1_3 -quiet < /dev/null > /dev/null 2>&1 & echo $$! > /tmp/baga_tls_srv.pid; \
+	sleep 1; \
+	./$(BIN) $(BAGAIFLAGS) tests/tls_handshake_test.baga > /tmp/baga_tlshs_out.txt 2>&1; RC=$$?; \
+	kill `cat /tmp/baga_tls_srv.pid` > /dev/null 2>&1 || true; \
+	if [ $$RC -eq 0 ] && grep -q "tls_handshake_test: all passed" /tmp/baga_tlshs_out.txt; then \
+		echo "OK: TLS 1.3 handshake срещу openssl (ClientHello → Finished, pure Baga)"; \
+	else \
+		echo "FAIL: tls_handshake_test (нужен е openssl s_server на :18443)"; cat /tmp/baga_tlshs_out.txt; exit 1; \
+	fi
 	@echo "=== ws (app-product/wsbaga, RFC 6455 loopback) ==="
 	@./$(BIN) $(BAGAIFLAGS) --lib app-product/wsbaga/ws.baga | grep -q "ok:" \
 		&& echo "OK: --lib wsbaga ws.baga" \
