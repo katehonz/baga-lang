@@ -233,8 +233,8 @@ grep -q "boss:" /tmp/baga_verify_out.txt && grep -q "ensures #1.*ДОКАЗАН�
 	&& grep -q "ефект !Overflow: безопасна — типът е точен" /tmp/baga_verify_out.txt \
 	&& echo "OK: ovf_eff_safe — доказано безопасна, без !Overflow ⇒ типът е точен (M18)" \
 	|| { echo "FAIL: ovf_eff_safe"; cat /tmp/baga_verify_out.txt; exit 1; }
-"$BIN" $BAGAIFLAGS --verify examples/verify/ovf_eff_refuted.baga > /tmp/baga_verify_out.txt || true; \
-test $? -ne 0 \
+rc=0; "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_eff_refuted.baga > /tmp/baga_verify_out.txt || rc=$?; \
+test $rc -ne 0 \
 	&& grep -q "прелива при n = 9223372036854775807, а !Overflow не е деклариран" /tmp/baga_verify_out.txt \
 	&& echo "OK: ovf_eff_refuted — недекларирано преливане е нарушение, ненулев exit (M18)" \
 	|| { echo "FAIL: ovf_eff_refuted"; cat /tmp/baga_verify_out.txt; exit 1; }
@@ -310,7 +310,7 @@ for f in sorted_param sorted_push; do \
 		&& echo "OK: $f — sorted + element axiom (relational M3+)" \
 		|| { echo "FAIL: $f — очаквах ensures ДОКАЗАНО"; cat /tmp/baga_verify_out.txt; exit 1; }; \
 done
-"$BIN" $BAGAIFLAGS --verify examples/verify/sorted_not_le.baga > /tmp/baga_verify_out.txt; true; \
+rc=0; "$BIN" $BAGAIFLAGS --verify examples/verify/sorted_not_le.baga > /tmp/baga_verify_out.txt || rc=$?; \
 grep -qE "ensures #1.*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt && ! grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: sorted_not_le — sorted ≠ v[*]<=0 (soundness)" \
 	|| { echo "FAIL: sorted_not_le — sorted не трябва да доказва output<=0"; cat /tmp/baga_verify_out.txt; exit 1; }
@@ -324,7 +324,7 @@ echo "=== --verify --json (машинен изход) ==="
 python3 -c "import json; d=json.load(open('/tmp/baga_verify_json.txt')); f=d['functions'][0]; assert f['name']=='max2' and f['ensures'][0]['result']=='proven' and f['arith']==[]" \
 	&& echo "OK: --verify --json валиден JSON, proven" \
 	|| { echo "FAIL: --verify --json"; cat /tmp/baga_verify_json.txt; exit 1; }
-"$BIN" $BAGAIFLAGS --verify --json examples/verify/bad_abs.baga > /tmp/baga_verify_json_bad.txt; test $? -eq 1 \
+rc=0; "$BIN" $BAGAIFLAGS --verify --json examples/verify/bad_abs.baga > /tmp/baga_verify_json_bad.txt || rc=$?; test $rc -eq 1 \
 	&& python3 -c "import json; d=json.load(open('/tmp/baga_verify_json_bad.txt')); e=d['functions'][0]['ensures'][0]; assert e['result']=='refuted' and e['counterexample']" \
 	&& echo "OK: --verify --json refuted + контрапример, exit=1" \
 	|| { echo "FAIL: --verify --json refuted"; cat /tmp/baga_verify_json_bad.txt; exit 1; }
