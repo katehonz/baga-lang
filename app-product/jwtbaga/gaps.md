@@ -99,12 +99,31 @@ back bare (`7`). The caller must know each claim's type.
 
 ---
 
-## Triage summary (end of milestone)
+## G10 — RS256/ES256 verify (closed with TLS crypto)
 
-| Gap | Verdict | Next step |
-|-----|---------|-----------|
-| G5 binary-safe str / bytes type | **closed** | first-class `bytes` + hex literals `x"..."` |
-| G6 base64url in std/bytes | **closed** | `base64url_encode`/`decode` in `std/bytes`; jwt uses them |
-| G7 query-string parsing | **closed** | `http_query_param` / `http_path_only` in http.baga |
-| G8 incomplete reason table | app-specific | fixed in http.baga (401 added) |
-| G9 typed claim accessors | **closed** | `jwt_claim_str` / `jwt_claim_int` |
+**Symptom (historical).** README said RS256/ES256 blocked on missing bignum.
+
+**Closed (2026-08-04).** After TLS T6/T7: `jwt_verify_rs256` /
+`jwt_verify_es256` use `rsa` + `p256`. Signing still HS256-only (no private
+key API).
+
+## G11 — private key sign for RS256/ES256
+
+**Symptom.** Cannot *issue* RS256/ES256 tokens; only verify.
+
+**Workaround.** Issue with HS256 or an external IdP; verify provider tokens
+with RS256/ES256.
+
+**Severity.** Medium for a full auth server; none for resource servers.
+
+**Verdict.** Future: RSA/ECDSA sign + PEM/JWK loaders.
+
+---
+
+## Triage summary
+
+| Gap | Verdict |
+|-----|---------|
+| G5–G9 | **closed** |
+| G10 RS256/ES256 verify | **closed** (TLS crypto) |
+| G11 asymmetric sign | open (optional) |

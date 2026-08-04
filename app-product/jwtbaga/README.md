@@ -1,66 +1,58 @@
 # jwtbaga
 
-A pure JWT (RFC 7519) **HS256** signer + verifier for Baga, built only on
-`std/` (`crypto/hmac`, `crypto/ct`, `bytes`, `json`, `str`). The demo server is
-the first consumer of [`../httpdbaga/http.baga`](../httpdbaga/README.md).
+JWT / JWS (RFC 7519 / 7518) for Baga — pure library + small demo HTTP server.
 
-HS256 only. `alg:none` is never produced and never accepted. Asymmetric
-algorithms (RS256/ES256) need bignum crypto that `std/` does not have yet.
+Built on the full TLS crypto stack:
 
-This product is also a probe of the language — see [`gaps.md`](gaps.md).
+| Alg | Sign | Verify | Backend |
+|-----|------|--------|---------|
+| **HS256** | ✅ | ✅ | `hmac_sha256_b` |
+| **RS256** | — | ✅ | `rsa_pkcs1_sha256_verify` (bn) |
+| **ES256** | — | ✅ | `ecdsa_p256_verify_sha256_raw` |
+| `none` | never | **rejected** | — |
 
-## Files
+Asymmetric *signing* needs private-key ops (not exposed yet). **Verify** of
+RS256/ES256 is what OIDC / API gateways need when tokens come from a provider.
 
-| File | What |
-|------|------|
-| `jwt.baga` | the library: sign/verify, encode/decode/claim (all pure; base64url from std/bytes) |
-| `server.baga` | demo auth server (issue / verify / protected) |
-| `gaps.md` | language gaps found, with evidence and triage |
-
-## API (all pure)
+## API
 
 ```baga
-// base64url_encode / base64url_decode live in std/bytes (G6 closed)
+// --- HS256 (issue + accept) ---
+fn jwt_encode(key, payload_json) -> str          // always alg=HS256
+fn jwt_verify_hs256(key, token) -> i64           // checks header.alg
+fn jwt_decode(key, token) -> str                 // payload or ""
+fn jwt_accept_hs256(key, token, now_s, iss, aud) -> i64  // + exp/nbf/iss/aud
 
-fn jwt_sign(key: str, msg: str) -> str         // base64url(HMAC-SHA256(key,msg))
-fn jwt_verify(key: str, msg: str, sig: str) -> bool   // constant-time
+// --- discover / claims (read after verify) ---
+fn jwt_alg(token) -> str
+fn jwt_claim / jwt_claim_str / jwt_claim_int
+fn jwt_time_ok(token, now_s) -> i64              // exp / nbf
+fn jwt_iss_ok / jwt_aud_ok
 
-fn jwt_encode(key: str, payload_json: str) -> str     // header.payload.signature
-fn jwt_decode(key: str, token: str) -> str            // payload JSON; "" if invalid
-fn jwt_claim(token: str, name: str) -> str            // raw claim text; "" if absent
-fn jwt_claim_str(token: str, name: str) -> str        // unquoted string claim (G9)
-fn jwt_claim_int(token: str, name: str) -> i64        // integer claim; 0 if missing (G9)
+// --- RS256 / ES256 verify only ---
+fn jwt_verify_rs256(n: bytes, e: bytes, token) -> i64
+fn jwt_decode_rs256(n, e, token) -> str
+fn jwt_verify_es256(qx: bytes, qy: bytes, token) -> i64   // P-256 coords
+fn jwt_decode_es256(qx, qy, token) -> str
 ```
 
-**Binary-safety note.** Signatures use native `bytes` + `hmac_sha256_b` /
-`ct_eq_b` (may contain `0x00`). Payload is JSON text returned as `str`.
+ES256 signatures use the JWS raw **R‖S** (64 bytes), not DER.
 
-## Run the demo
+## Demo server
 
 ```bash
-./baga --emit-c app-product/jwtbaga/server.baga > /tmp/jwtd.c
-gcc -O2 -Iinclude -o /tmp/jwtd /tmp/jwtd.c -lm -pthread
-PORT=8080 JWT_SECRET=s3cret /tmp/jwtd &   # concurrent (go_bg); BAGA_SYNC=1 for serial
-
-# 1. issue a token
-TOKEN=$(curl -s 'localhost:8080/token?sub=bagatur' | sed 's/.*"token":"//; s/".*//')
-
-# 2. use it
-curl -H "Authorization: Bearer $TOKEN" localhost:8080/verify      # {"valid":true,"sub":"bagatur"}
-curl -H "Authorization: Bearer $TOKEN" localhost:8080/protected   # {"secret":"...","sub":"bagatur"}
-curl -i localhost:8080/protected                                   # 401 Unauthorized
+PORT=8080 JWT_SECRET=s3cret ./baga app-product/jwtbaga/server.baga
+curl -s 'localhost:8080/token?sub=bagatur'
+curl -H "Authorization: Bearer $TOKEN" localhost:8080/protected
 ```
 
 ## Test
 
 ```bash
-./baga tests/jwt_test.baga    # golden vector (Python-cross-checked), tamper, wrong key, claims
+./baga -I . -I app-product tests/jwt_test.baga
+# HS256 golden, alg:none reject, exp, RS256 + ES256 vectors (python oracle)
 ```
-
-Also wired into `make test`. The golden token in the test was generated
-independently with Python `hmac`/`hashlib`/`base64` and matches byte-for-byte.
 
 ## Effects
 
-Everything in `jwt.baga` is **pure** — visible purity in the type. Effects
-(`!IO !Net`) appear only in `server.baga`, via http/tcp.
+`jwt.baga` is **pure**. Effects only in `server.baga` (`!IO !Net !Par`).

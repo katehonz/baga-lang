@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### jwtbaga — RS256/ES256 verify + hardening (full crypto stack)
+- JWT verify now uses TLS crypto: **RS256** (`rsa_pkcs1_sha256_verify`) and
+  **ES256** (`ecdsa_p256_verify_sha256_raw`, JWS R‖S format).
+- Hardening: `jwt_alg`, reject `alg:none`, `jwt_verify_hs256` requires
+  header `alg == HS256`; `jwt_time_ok` / `jwt_accept_hs256` for exp/nbf/iss/aud.
+- `ecdsa_p256_verify_sha256_raw` added in `std/crypto/p256.baga` for JWT.
+- HS256 sign/encode unchanged (`jwt_encode`). Asymmetric *sign* still out
+  (no private-key API) — verify is enough for OIDC resource servers.
+- `tests/jwt_test.baga`: golden HS256, none-attack, exp, RS256/ES256 vectors.
+
 ### bagaDecimal — decimal + Postgres NUMERIC (accounting)
 - New `app-product/bagadecimal` (**bagaDecimal**), inspired by
   [paupino/rust-decimal](https://github.com/paupino/rust-decimal): 96-bit

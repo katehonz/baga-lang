@@ -1,64 +1,217 @@
-// jwt.baga — JWT (RFC 7519) HS256 signer + verifier. Pure Baga.
-// Built on std/ crypto (hmac_sha256_b, ct_eq_b), bytes (base64url), json, str.
+// jwt.baga — JWT / JWS (RFC 7519 / 7518) for Baga.
 //
-// HS256 only. alg:none is never produced and never accepted. Signatures are
-// arbitrary 32-byte values that may contain 0x00 — handled as native `bytes`,
-// compared with ct_eq_b, never coerced to str.
+// Sign:   HS256 (HMAC-SHA256) — symmetric, pure std/crypto.
+// Verify: HS256 + RS256 (RSA PKCS#1 SHA-256) + ES256 (P-256 raw R||S)
+//         using the TLS crypto stack (rsa.baga, p256.baga).
+//
+// Security defaults:
+//   - alg "none" is never produced and never accepted
+//   - verify paths require header.alg to match the API used
+//   - signatures stay on `bytes` (may contain 0x00); compared with ct_eq_b
+//
+// RS256/ES256 *signing* needs private keys (not in std yet) — verify only,
+// which is what OIDC / access-token consumers need.
 
 import "std/crypto/hmac.baga"
 import "std/crypto/ct.baga"
+import "std/crypto/rsa.baga"
+import "std/crypto/p256.baga"
+import "std/crypto/sha256.baga"
 import "std/bytes/bytes.baga"
 import "std/json/json.baga"
 import "std/str/str.baga"
 
-// ---------- low-level sign / verify ----------
+// ---------- token split ----------
 
-// base64url(HMAC-SHA256(key, msg)).
-fn jwt_sign(key: str, msg: str) -> str {
+struct JwtParts {
+    ok: i64,
+    header_b64: str,
+    payload_b64: str,
+    sig_b64: str,
+    signing: str       // header.payload
+}
+
+fn jwt_parts_bad() -> JwtParts {
+    return JwtParts { ok: 0, header_b64: "", payload_b64: "", sig_b64: "", signing: "" }
+}
+
+fn jwt_split(token: str) -> JwtParts {
+    let parts = str_split(token, ".")
+    if vec_len(parts) != 3 {
+        return jwt_parts_bad()
+    }
+    let h = vec_get(parts, 0)
+    let p = vec_get(parts, 1)
+    let s = vec_get(parts, 2)
+    if h == "" || p == "" {
+        return jwt_parts_bad()
+    }
+    return JwtParts {
+        ok: 1,
+        header_b64: h,
+        payload_b64: p,
+        sig_b64: s,
+        signing: concat(concat(h, "."), p)
+    }
+}
+
+// Header "alg" claim; "" if missing/unparseable.
+fn jwt_alg(token: str) -> str {
+    let parts = jwt_split(token)
+    if parts.ok == 0 {
+        return ""
+    }
+    let hdr = str_of_bytes(base64url_decode_b(parts.header_b64))
+    let d = json_parse(hdr)
+    let node = json_get(d, json_root(d), "alg")
+    if node < 0 {
+        return ""
+    }
+    let raw = json_serialize(d, node)
+    // expect "HS256" with quotes
+    if len(raw) >= 2 && char_at(raw, 0) == 34 && char_at(raw, len(raw) - 1) == 34 {
+        return substr(raw, 1, len(raw) - 1)
+    }
+    return ""
+}
+
+// Reject alg:none and empty / missing alg.
+fn jwt_alg_is_none(alg: str) -> i64 {
+    if alg == "" {
+        return 1
+    }
+    if alg == "none" || alg == "None" || alg == "NONE" {
+        return 1
+    }
+    return 0
+}
+
+// ---------- HS256 sign / verify ----------
+
+fn jwt_sign_hs256(key: str, msg: str) -> str {
     return base64url_encode_b(hmac_sha256_b(bytes_of_str(key), bytes_of_str(msg)))
 }
 
-// Constant-time: decode signature to bytes and compare against a fresh MAC.
-fn jwt_verify(key: str, msg: str, sig_b64url: str) -> bool {
+// Legacy aliases (HS256).
+fn jwt_sign(key: str, msg: str) -> str {
+    return jwt_sign_hs256(key, msg)
+}
+
+fn jwt_verify_mac(key: str, msg: str, sig_b64url: str) -> bool {
     let expected = hmac_sha256_b(bytes_of_str(key), bytes_of_str(msg))
     let got = base64url_decode_b(sig_b64url)
     return ct_eq_b(expected, got)
 }
 
-// ---------- token encode / decode ----------
+fn jwt_verify(key: str, msg: str, sig_b64url: str) -> bool {
+    return jwt_verify_mac(key, msg, sig_b64url)
+}
 
-// header.payload.signature over a caller-supplied JSON payload string.
+// Full-token HS256 verify (checks header.alg == HS256).
+fn jwt_verify_hs256(key: str, token: str) -> i64 {
+    let alg = jwt_alg(token)
+    if jwt_alg_is_none(alg) == 1 {
+        return 0
+    }
+    if alg != "HS256" {
+        return 0
+    }
+    let parts = jwt_split(token)
+    if parts.ok == 0 {
+        return 0
+    }
+    if jwt_verify_mac(key, parts.signing, parts.sig_b64) {
+        return 1
+    }
+    return 0
+}
+
+// header.payload.signature — always HS256.
 fn jwt_encode(key: str, payload_json: str) -> str {
     let h = base64url_encode_b(bytes_of_str("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"))
     let p = base64url_encode_b(bytes_of_str(payload_json))
     let signing = concat(concat(h, "."), p)
-    let sig = jwt_sign(key, signing)
+    let sig = jwt_sign_hs256(key, signing)
     return concat(concat(signing, "."), sig)
 }
 
-// The payload JSON on a valid token; "" on any failure (bad shape, bad sig).
-fn jwt_decode(key: str, token: str) -> str {
-    let parts = str_split(token, ".")
-    if vec_len(parts) != 3 {
-        return ""
-    }
-    let signing = concat(concat(vec_get(parts, 0), "."), vec_get(parts, 1))
-    if !jwt_verify(key, signing, vec_get(parts, 2)) {
-        return ""
-    }
-    // Payload is JSON text — no embedded NUL, so str_of_bytes is safe.
-    return str_of_bytes(base64url_decode_b(vec_get(parts, 1)))
+fn jwt_encode_hs256(key: str, payload_json: str) -> str {
+    return jwt_encode(key, payload_json)
 }
 
-// Raw JSON text of a claim (string claims keep their quotes, numbers are bare);
-// "" when absent or the payload does not parse. Does NOT check the signature —
-// it is a read helper; verify with jwt_decode/jwt_verify first.
-fn jwt_claim(token: str, name: str) -> str {
-    let parts = str_split(token, ".")
-    if vec_len(parts) != 3 {
+// Payload JSON if HS256 valid; "" otherwise.
+fn jwt_decode(key: str, token: str) -> str {
+    if jwt_verify_hs256(key, token) == 0 {
         return ""
     }
-    let payload = str_of_bytes(base64url_decode_b(vec_get(parts, 1)))
+    let parts = jwt_split(token)
+    return str_of_bytes(base64url_decode_b(parts.payload_b64))
+}
+
+fn jwt_decode_hs256(key: str, token: str) -> str {
+    return jwt_decode(key, token)
+}
+
+// ---------- RS256 verify (OIDC / access tokens) ----------
+
+// n, e: RSA public key big-endian (e often x"010001").
+fn jwt_verify_rs256(n: bytes, e: bytes, token: str) -> i64 {
+    let alg = jwt_alg(token)
+    if alg != "RS256" {
+        return 0
+    }
+    if jwt_alg_is_none(alg) == 1 {
+        return 0
+    }
+    let parts = jwt_split(token)
+    if parts.ok == 0 {
+        return 0
+    }
+    let sig = base64url_decode_b(parts.sig_b64)
+    let msg = bytes_of_str(parts.signing)
+    return rsa_pkcs1_sha256_verify(n, e, msg, sig)
+}
+
+fn jwt_decode_rs256(n: bytes, e: bytes, token: str) -> str {
+    if jwt_verify_rs256(n, e, token) == 0 {
+        return ""
+    }
+    let parts = jwt_split(token)
+    return str_of_bytes(base64url_decode_b(parts.payload_b64))
+}
+
+// ---------- ES256 verify (P-256, raw R||S) ----------
+
+fn jwt_verify_es256(qx: bytes, qy: bytes, token: str) -> i64 {
+    let alg = jwt_alg(token)
+    if alg != "ES256" {
+        return 0
+    }
+    let parts = jwt_split(token)
+    if parts.ok == 0 {
+        return 0
+    }
+    let sig = base64url_decode_b(parts.sig_b64)
+    let msg = bytes_of_str(parts.signing)
+    return ecdsa_p256_verify_sha256_raw(qx, qy, msg, sig)
+}
+
+fn jwt_decode_es256(qx: bytes, qy: bytes, token: str) -> str {
+    if jwt_verify_es256(qx, qy, token) == 0 {
+        return ""
+    }
+    let parts = jwt_split(token)
+    return str_of_bytes(base64url_decode_b(parts.payload_b64))
+}
+
+// ---------- claims (unsigned reads — verify first) ----------
+
+fn jwt_claim(token: str, name: str) -> str {
+    let parts = jwt_split(token)
+    if parts.ok == 0 {
+        return ""
+    }
+    let payload = str_of_bytes(base64url_decode_b(parts.payload_b64))
     let d = json_parse(payload)
     let node = json_get(d, json_root(d), name)
     if node < 0 {
@@ -67,7 +220,6 @@ fn jwt_claim(token: str, name: str) -> str {
     return json_serialize(d, node)
 }
 
-// G9: string claim without JSON quotes; "" if missing or not a string.
 fn jwt_claim_str(token: str, name: str) -> str {
     let raw = jwt_claim(token, name)
     if len(raw) >= 2 {
@@ -80,15 +232,90 @@ fn jwt_claim_str(token: str, name: str) -> str {
     return ""
 }
 
-// G9: integer claim; 0 if missing or not an integer (use jwt_claim for raw).
 fn jwt_claim_int(token: str, name: str) -> i64 {
     let raw = jwt_claim(token, name)
     if raw == "" {
         return 0
     }
-    // reject quoted strings
     if char_at(raw, 0) == 34 {
         return 0
     }
     return parse_int(raw)
+}
+
+// ---------- registered claim checks (unsigned; call after verify) ----------
+
+// 1 if exp/nbf (when present) accept now_s (unix seconds).
+// Missing exp/nbf → ok. exp == 0 treated as missing for claim_int.
+fn jwt_time_ok(token: str, now_s: i64) -> i64 {
+    let exp_raw = jwt_claim(token, "exp")
+    if exp_raw != "" && char_at(exp_raw, 0) != 34 {
+        let exp = parse_int(exp_raw)
+        if exp > 0 && now_s >= exp {
+            return 0
+        }
+    }
+    let nbf_raw = jwt_claim(token, "nbf")
+    if nbf_raw != "" && char_at(nbf_raw, 0) != 34 {
+        let nbf = parse_int(nbf_raw)
+        if nbf > 0 && now_s < nbf {
+            return 0
+        }
+    }
+    return 1
+}
+
+// iss must equal expected when the claim is present; if missing, ok=1.
+fn jwt_iss_ok(token: str, expected: str) -> i64 {
+    let iss = jwt_claim_str(token, "iss")
+    if iss == "" {
+        return 1
+    }
+    if iss == expected {
+        return 1
+    }
+    return 0
+}
+
+// aud: if claim is a string, must equal expected; arrays not fully supported (L4).
+fn jwt_aud_ok(token: str, expected: str) -> i64 {
+    let aud = jwt_claim_str(token, "aud")
+    if aud == "" {
+        // might be array — treat non-string as "present but unchecked" → fail closed if raw present
+        let raw = jwt_claim(token, "aud")
+        if raw == "" {
+            return 1
+        }
+        // array form: rough contains check via str_find of quoted expected
+        let needle = concat(concat("\"", expected), "\"")
+        if str_find(raw, needle) >= 0 {
+            return 1
+        }
+        return 0
+    }
+    if aud == expected {
+        return 1
+    }
+    return 0
+}
+
+// Convenience: HS256 verify + time + optional iss/aud (pass "" to skip).
+fn jwt_accept_hs256(key: str, token: str, now_s: i64, iss: str, aud: str) -> i64 {
+    if jwt_verify_hs256(key, token) == 0 {
+        return 0
+    }
+    if jwt_time_ok(token, now_s) == 0 {
+        return 0
+    }
+    if iss != "" {
+        if jwt_iss_ok(token, iss) == 0 {
+            return 0
+        }
+    }
+    if aud != "" {
+        if jwt_aud_ok(token, aud) == 0 {
+            return 0
+        }
+    }
+    return 1
 }

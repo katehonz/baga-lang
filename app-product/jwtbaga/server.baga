@@ -21,14 +21,6 @@ fn bearer(auth: str) -> str {
     return ""
 }
 
-// "\"x\"" -> "x" (jwt_claim returns string claims quoted).
-fn unquote(s: str) -> str {
-    if len(s) >= 2 && char_at(s, 0) == 34 {
-        return substr(s, 1, len(s) - 1)
-    }
-    return s
-}
-
 fn resolve_secret() -> str !IO {
     if env("JWT_SECRET") != "" {
         return env("JWT_SECRET")?
@@ -50,8 +42,9 @@ fn handle(fd: i64, secret: str) -> i64 !IO !Net {
 
     if method == "GET" && http_path_only(req) == "/verify" {
         let token = bearer(http_header(req, "Authorization"))
-        if token != "" && jwt_decode(secret, token) != "" {
-            let sub = unquote(jwt_claim(token, "sub"))
+        // HS256 + header.alg check (rejects alg:none)
+        if token != "" && jwt_verify_hs256(secret, token) == 1 {
+            let sub = jwt_claim_str(token, "sub")
             let body = concat(concat("{\"valid\":true,\"sub\":\"", sub), "\"}")
             return http_respond(fd, http_json_response(200, body))?
         }
@@ -60,8 +53,8 @@ fn handle(fd: i64, secret: str) -> i64 !IO !Net {
 
     if method == "GET" && http_path_only(req) == "/protected" {
         let token = bearer(http_header(req, "Authorization"))
-        if token != "" && jwt_decode(secret, token) != "" {
-            let sub = unquote(jwt_claim(token, "sub"))
+        if token != "" && jwt_verify_hs256(secret, token) == 1 {
+            let sub = jwt_claim_str(token, "sub")
             let body = concat(concat("{\"secret\":\"the cake is a lie\",\"sub\":\"", sub), "\"}")
             return http_respond(fd, http_json_response(200, body))?
         }

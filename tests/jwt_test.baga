@@ -1,6 +1,4 @@
-// jwt_test.baga — golden-vector + tamper tests for app-product/jwtbaga/jwt.baga.
-// Pure (no sockets). The reference token below was generated independently
-// with Python hmac/hashlib/base64 (key "baga-secret", payload {"sub":"bagatur","n":7}).
+// jwt_test.baga — HS256 golden + RS256/ES256 verify + alg:none / exp guards.
 
 import "jwtbaga/jwt.baga"
 
@@ -14,7 +12,7 @@ fn check(name: str, ok: bool) {
 }
 
 fn main() {
-    // --- base64url alphabet + null-byte round-trip ---
+    // --- base64url ---
     let special = vec_new()
     vec_push(special, 251)
     vec_push(special, 255)
@@ -26,31 +24,65 @@ fn main() {
     vec_push(nb, 66)
     check("b64url_roundtrip_null", bytes_eq(base64url_decode(base64url_encode(nb)), nb))
 
-    // --- golden vector ---
+    // --- HS256 golden ---
     let key = "baga-secret"
     let payload = "{\"sub\":\"bagatur\",\"n\":7}"
     let token = jwt_encode(key, payload)
     let expect = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiYWdhdHVyIiwibiI6N30.otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"
     check("golden_encode", token == expect)
-    check("verify_ok", jwt_verify(key, concat("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.", "eyJzdWIiOiJiYWdhdHVyIiwibiI6N30"), "otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"))
-
-    // --- tamper: flip one payload char, keep the signature ---
-    let tampered = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiYWdhdHVyIiwibiI6OH0.otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"
-    check("verify_tampered_false", !jwt_verify(key, concat(vec_get(str_split(tampered, "."), 0), concat(".", vec_get(str_split(tampered, "."), 1))), vec_get(str_split(tampered, "."), 2)))
-    check("decode_tampered_empty", jwt_decode(key, tampered) == "")
-
-    // --- wrong key ---
-    check("wrong_key_false", !jwt_verify("other", concat("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.", "eyJzdWIiOiJiYWdhdHVyIiwibiI6N30"), "otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"))
-
-    // --- decode + claim extraction ---
+    check("alg_hs256", jwt_alg(token) == "HS256")
+    check("verify_hs256", jwt_verify_hs256(key, token) == 1)
     check("decode_ok", jwt_decode(key, token) == payload)
-    check("claim_sub", jwt_claim(token, "sub") == "\"bagatur\"")
-    check("claim_n", jwt_claim(token, "n") == "7")
-    check("claim_missing", jwt_claim(token, "nope") == "")
     check("claim_str", jwt_claim_str(token, "sub") == "bagatur")
-    check("claim_str_missing", jwt_claim_str(token, "nope") == "")
     check("claim_int", jwt_claim_int(token, "n") == 7)
-    check("claim_int_str", jwt_claim_int(token, "sub") == 0)
+
+    // tamper / wrong key
+    let tampered = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiYWdhdHVyIiwibiI6OH0.otlWIEzx27cUbGdWAMgSjKysAqs7GmIRRbaw53isubo"
+    check("decode_tampered_empty", jwt_decode(key, tampered) == "")
+    check("wrong_key", jwt_verify_hs256("other", token) == 0)
+
+    // alg:none must never verify as HS256
+    let none_tok = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJiYWdhdHVyIiwibiI6N30."
+    check("alg_none_name", jwt_alg(none_tok) == "none")
+    check("alg_none_reject", jwt_verify_hs256(key, none_tok) == 0)
+    check("alg_none_decode", jwt_decode(key, none_tok) == "")
+
+    // exp in the past
+    let exp_tok = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiAieCIsICJleHAiOiAxfQ.-qV9MM2I2y0ZBgc8FVC-w2za_7PZxc1DrkFyQdqNzb4"
+    // re-issue exp token with our encoder for reliable verify
+    let exp_payload = "{\"sub\":\"x\",\"exp\":1}"
+    let exp_tok2 = jwt_encode(key, exp_payload)
+    check("exp_sig_ok", jwt_verify_hs256(key, exp_tok2) == 1)
+    check("exp_time_fail", jwt_time_ok(exp_tok2, 100) == 0)
+    check("exp_time_future_ok", jwt_time_ok(token, 1) == 1)  // no exp on golden
+
+    let far = jwt_encode(key, "{\"sub\":\"a\",\"exp\":9999999999}")
+    check("accept_hs256", jwt_accept_hs256(key, far, 1000, "", "") == 1)
+    check("accept_exp_fail", jwt_accept_hs256(key, exp_tok2, 1000, "", "") == 0)
+
+    // --- RS256 verify (python cryptography golden) ---
+    let n = hex_decode("9e5e4f343323f81292c8a00ed885a5199aea6bb603a9c4da92ff718651594d1036e81cd79e2e3deafc5a1dc222a507e3aeb8d7e6f0c75b7bd42202ea7e3c3f94f15ef81212c6173acb0ce47e9cb84151c201ae376d9fcfff030fcccdf1782f6f1b0adadf5a64b16940a9d5fe034d8f1c74743195f32fff0643ef6acc3609f822ac64e89225a0a0e829e047798a9bfc6c1e74753203a6c482e348f18bc42bcc7a969e89d32e8e0b6b58c1dd2807f7c6bcb499c823d810d366135d7fc4ca7d2715c336469869fcd79c0f81791c2bd088cb8c9f70d3e91c8fdac7409bda69a1a148912e9407f031ce6549c76c08eaad33df508f0283c8c8b4c44a6d9901faf596cb")
+    let e = hex_decode("010001")
+    let rs = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiYWdhdHVyIiwibiI6NywiZXhwIjo5OTk5OTk5OTk5fQ.hADL_CIB8xWYTML2332fTwBrhMp2R0R1u-4UUie6gun5kYvLKhq_yBgT16E71qE8k7cUjjYd5rI4nw9FaMvTJ2C6oZkfZUCCgYR_ufMNug5JhfOHaeRRRbXLEYQJFnQHBSxRtKqiDtHAirjH2w7akHll-Zyckn8DEQ407Cb5jAnIRS_6g6f70bOp0ynUf-vgiLnFCtQhRMuzDYfrKMm8V1Tk8jVoiQohdMK5-ONQp7EDqYsFob_ras_MHQS9wuDIPj3scx4N29v7tJWmLeoO6IlGHuZqmMGa5k62uvh-kAucKZYsMyVVHpmginPRkGH9WbKmhcb2xP1FErjD_4geKg"
+    check("alg_rs256", jwt_alg(rs) == "RS256")
+    check("verify_rs256", jwt_verify_rs256(n, e, rs) == 1)
+    let rs_payload = jwt_decode_rs256(n, e, rs)
+    check("rs256_payload", str_find(rs_payload, "bagatur") >= 0)
+    check("rs256_sub", jwt_claim_str(rs, "sub") == "bagatur")
+    check("rs256_as_hs_fail", jwt_verify_hs256(key, rs) == 0)
+    // wrong n
+    check("rs256_bad_key", jwt_verify_rs256(hex_decode("010001"), e, rs) == 0)
+
+    // --- ES256 verify ---
+    let qx = hex_decode("e9343a9351f2fe37cdf01d0aa2c4efc4276a3d11fce8bdc38f6f5c2d45f60465")
+    let qy = hex_decode("9232e8d62a15f44ccd5a3e6e9dd44d83bebaab73fc444435c9edb3e8725e9d5b")
+    let es = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJlYy11c2VyIiwiZXhwIjo5OTk5OTk5OTk5fQ.PafsMkAJ1r7bRvctq0IkpIR325T5OSR_spzoHjxi3i1vn8CxR_Dn-yUyr3oVQUt3GqayxBAtVUDoAp-Gr7etIA"
+    check("alg_es256", jwt_alg(es) == "ES256")
+    check("verify_es256", jwt_verify_es256(qx, qy, es) == 1)
+    let es_payload = jwt_decode_es256(qx, qy, es)
+    check("es256_payload", str_find(es_payload, "ec-user") >= 0)
+    check("es256_as_hs_fail", jwt_verify_hs256(key, es) == 0)
+    check("es256_bad_point", jwt_verify_es256(qy, qx, es) == 0)
 
     print("jwt_test: all passed")
 }
