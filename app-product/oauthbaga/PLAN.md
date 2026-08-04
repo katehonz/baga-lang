@@ -29,14 +29,16 @@ jwtbaga + sessions, pages through tplbaga (№7 feeds №10, rule 4).
   `oauth_sessions` (goose-style migrations, `$N` parameterized queries),
   switched by `OAUTH_PG=1` + `PG*`; in-memory maps remain the dev backend.
 - One DB connection per HTTP connection (fmr legacy idiom) — no struct
-  rebinding across the handler chain, and the natural path to a worker
-  pool later.
+  rebinding across the handler chain.
 - `tests/oauth_pg_test.baga` — live full cycle + DB-level proofs (code
-  row consumed, refresh rotated, session row appears/dies on logout);
-  wired into `make test` like registry_test.
-- Still open here: multi-worker accept — sessions/codes/refresh are
-  DB-shared now, but the CSRF `states` map is per-node in memory; moving
-  it (or a pool with per-worker state) is the remaining step.
+  row consumed, refresh rotated, state row 1→0 across connections,
+  session row appears/dies on logout); wired into `make test` like
+  registry_test.
+- Multi-worker done too: in PG mode the CSRF states live in
+  `oauth_states` and every HTTP connection runs on its own `go_bg`
+  worker with its own DB connection (fmr legacy idiom) — nothing is
+  shared between threads. The demo pre-migrates once so the two nodes
+  don't race on the version insert at boot.
 
 ### P2 — the TLS leg (G6)
 

@@ -300,7 +300,7 @@ test: $(BIN) sandak
 		&& echo "OK: конкурентни алокации през global arena (G11 регресия)" \
 		|| { echo "FAIL: alloc race"; cat /tmp/baga_race_out.txt; exit 1; }
 	@echo "=== std библиотеката (str/bytes/sort/json/crypto/os/time/random/io/net/par) ==="
-	@for t in bytes hmac http_client io json map os poll random sha1 sha256 sort str tcp tcp_bytes time par; do \
+	@for t in bytes hmac http_client io json map os poll random sha1 sha256 sort str tcp tcp_bytes time url par; do \
 		./$(BIN) $(BAGAIFLAGS) tests/std/$${t}_test.baga > /tmp/baga_std_out.txt 2>&1 \
 			&& grep -q "all passed" /tmp/baga_std_out.txt \
 			&& echo "OK: std/$$t" \

@@ -1,8 +1,12 @@
 // oauth_pg_test.baga — Postgres-backed live test for oauthbaga (№10 P1).
 // Same flow as oauth_test but with OAUTH_PG=1: codes / refresh tokens /
-// sessions live in oauth_codes / oauth_refresh / oauth_sessions tables
-// (ormbaga migrations, parameterized $N queries). Adds DB-level proofs:
-// row counts after exchange / rotation / logout.
+// sessions / CSRF states live in oauth_* tables (ormbaga migrations,
+// parameterized $N queries), and every HTTP connection runs on its own
+// go_bg worker with its own DB connection. Adds DB-level proofs: row
+// counts after exchange / rotation / login / logout.
+//
+// The workers rebuild their config from env, so this test uses the
+// default ports (OAUTH_PORT/OAUTH_PROVIDER_PORT unset).
 //
 // Run with: OAUTH_PG=1 PGDATABASE=baga_oauth ./baga -I . -I app-product
 //           tests/oauth_pg_test.baga     (the Makefile sets both)
@@ -79,7 +83,7 @@ fn prepare_db() -> i64 !Net !IO !Random {
         print(concat("prepare: migrate failed: ", up.err))
         return 1
     }
-    let cl = orm_exec(up.db, "DELETE FROM oauth_sessions; DELETE FROM oauth_refresh; DELETE FROM oauth_codes")?
+    let cl = orm_exec(up.db, "DELETE FROM oauth_states; DELETE FROM oauth_sessions; DELETE FROM oauth_refresh; DELETE FROM oauth_codes")?
     if cl.ok == 0 {
         print(concat("prepare: clean failed: ", cl.err))
         return 1
@@ -123,11 +127,11 @@ fn main() -> i64 !Net !IO !Par !Time !Random {
         return 1
     }
 
-    let pport: i64 = 18693   // provider node
-    let xport: i64 = 18692   // proxy node
-    let redir = "http://127.0.0.1:18692/callback"
-    let pbase = "http://127.0.0.1:18693"
-    let xbase = "http://127.0.0.1:18692"
+    let pport: i64 = 18691   // provider node (env default — workers read env)
+    let xport: i64 = 18690   // proxy node
+    let redir = "http://127.0.0.1:18690/callback"
+    let pbase = "http://127.0.0.1:18691"
+    let xbase = "http://127.0.0.1:18690"
     go_bg(oauth_provider_serve, cell2(pport, xport))
     go_bg(oauth_proxy_serve, cell2(xport, pport))
     sleep_ms(400)
@@ -173,6 +177,8 @@ fn main() -> i64 !Net !IO !Par !Time !Random {
     let lg = http_get(concat(xbase, "/login"), 5)?
     assert_eq_i64("login_302", lg.status, 302)
     let lloc = http_resp_header(lg, "Location")
+    assert_true("redir_encoded", has(lloc, "redirect_uri=http%3A%2F%2F"))
+    assert_eq_i64("db_state_row", db_count("oauth_states")?, 1)
     let auth = http_get(concat(lloc, "&sub=pguser"), 5)?
     assert_eq_i64("follow_authorize", auth.status, 302)
     let cb = http_get(http_resp_header(auth, "Location"), 5)?
@@ -180,6 +186,7 @@ fn main() -> i64 !Net !IO !Par !Time !Random {
     let sid = setc_sid(http_resp_header(cb, "Set-Cookie"))
     assert_true("cookie_sid", len(sid) >= 16)
     assert_eq_i64("db_session_row", db_count("oauth_sessions")?, 1)
+    assert_eq_i64("db_state_consumed", db_count("oauth_states")?, 0)
 
     let mut chdr: Map<str, str> = map_new()
     map_set(chdr, "Cookie", concat("sid=", sid))

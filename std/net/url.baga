@@ -1,0 +1,83 @@
+// url.baga — percent-encoding (RFC 3986 §2.1) for query/form values.
+// Pure Baga. Gap O2 (oauthbaga): the third hand-rolled query parse made
+// this one land in std.
+//
+//   url_encode("a b&c=1")      -> "a%20b%26c%3D1"
+//   url_decode("a%20b%26c%3D1") -> "a b&c=1"
+//
+// Decode is lenient: a malformed %XX is copied through literally (never
+// crashes on hostile input). '+' stays literal — RFC 3986
+// percent-encoding, not form-urlencoded space-as-plus. %00 is copied
+// literally too: baga strings are C strings, an embedded NUL would lie
+// about the length.
+
+import "../bytes/bytes.baga"
+
+// RFC 3986 unreserved set: A-Z a-z 0-9 - _ . ~
+fn url_unreserved(c: i64) -> bool {
+    if c >= 65 && c <= 90 { return true }
+    if c >= 97 && c <= 122 { return true }
+    if c >= 48 && c <= 57 { return true }
+    return c == 45 || c == 95 || c == 46 || c == 126
+}
+
+fn url_hex_upper(v: i64) -> str {
+    if v < 10 {
+        return chr(48 + v)
+    }
+    return chr(55 + v)   // 10 -> 'A'
+}
+
+// Every byte outside the unreserved set becomes %XX (UTF-8 multibyte
+// characters are encoded byte by byte, so the output is pure ASCII).
+fn url_encode(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c = char_at(s, i)
+        if url_unreserved(c) {
+            out = concat(out, substr(s, i, i + 1))
+        } else {
+            let mut e = "%"
+            e = concat(e, url_hex_upper((c / 16) % 16))
+            e = concat(e, url_hex_upper(c % 16))
+            out = concat(out, e)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn url_hex_val(c: i64) -> i64 {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    return -1
+}
+
+// Byte-at-a-time rebuild (chr() would UTF-8-encode values >= 0x80 and
+// double-encode the stream). Malformed %XX and %00 pass through as-is.
+fn url_decode(s: str) -> str {
+    let out = vec_new()
+    let mut i: i64 = 0
+    let n = len(s)
+    while i < n {
+        let c = char_at(s, i)
+        if c == 37 && i + 2 < n {
+            let h = url_hex_val(char_at(s, i + 1))
+            let l = url_hex_val(char_at(s, i + 2))
+            let v = h * 16 + l
+            if h >= 0 && l >= 0 && v > 0 {
+                vec_push(out, v)
+                i = i + 3
+            } else {
+                vec_push(out, c)
+                i = i + 1
+            }
+        } else {
+            vec_push(out, c)
+            i = i + 1
+        }
+    }
+    return str_of_bytes(bytes_from_vec(out))
+}

@@ -7,6 +7,16 @@ fn oauth_migrations() -> MigrationSet {
     let mut set = migrate_set_new()
     set = migrate_add(
         set,
+        20260804102,
+        "create_oauth_states",
+        "CREATE TABLE oauth_states (
+  state TEXT PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)",
+        "DROP TABLE IF EXISTS oauth_states"
+    )
+    set = migrate_add(
+        set,
         20260804101,
         "create_oauth_tables",
         "CREATE TABLE oauth_codes (

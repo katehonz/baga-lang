@@ -1,0 +1,43 @@
+import "std/net/url.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // --- encode ---
+    check("enc_unreserved", url_encode("abcXYZ019-_.~") == "abcXYZ019-_.~")
+    check("enc_space", url_encode("a b") == "a%20b")
+    check("enc_reserved", url_encode("a&b=c") == "a%26b%3Dc")
+    check("enc_empty", url_encode("") == "")
+    check("enc_cyr", url_encode("А") == "%D0%90")
+    check("enc_url", url_encode("http://127.0.0.1:18690/callback") ==
+        "http%3A%2F%2F127.0.0.1%3A18690%2Fcallback")
+
+    // --- decode ---
+    check("dec_plain", url_decode("abc") == "abc")
+    check("dec_space", url_decode("a%20b") == "a b")
+    check("dec_cyr", url_decode("%D0%90") == "А")
+    check("dec_lower_hex", url_decode("%d0%90") == "А")
+    check("dec_empty", url_decode("") == "")
+    check("dec_plus_literal", url_decode("a+b") == "a+b")
+
+    // lenient on malformed input — never crashes, copies through
+    check("dec_bad_zz", url_decode("%ZZ") == "%ZZ")
+    check("dec_short", url_decode("a%2") == "a%2")
+    check("dec_lone", url_decode("%") == "%")
+    check("dec_nul_literal", url_decode("%00") == "%00")
+    check("dec_mixed", url_decode("x%D0%90%ZZy") == "xА%ZZy")
+
+    // --- round-trips (UTF-8 byte-exact) ---
+    check("rt_cyr", url_decode(url_encode("Здравей, свят!")) == "Здравей, свят!")
+    check("rt_emoji", url_decode(url_encode("🐆 &=")) == "🐆 &=")
+    check("rt_ascii", url_decode(url_encode("plain-ASCII_123")) == "plain-ASCII_123")
+
+    print("url_test: all passed")
+}

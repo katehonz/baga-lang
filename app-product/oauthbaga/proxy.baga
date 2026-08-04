@@ -10,6 +10,7 @@ import "oauth.baga"
 import "tplbaga/tpl.baga"
 import "ormbaga/orm.baga"
 import "std/net/http_client.baga"
+import "std/net/url.baga"
 import "std/json/json.baga"
 import "std/str/str.baga"
 import "std/time/time.baga"
@@ -120,6 +121,42 @@ fn px_session_del(st: ProxyStore, db: OrmDb, sid: str) -> i64 !IO !Net {
     return ex.ok
 }
 
+// CSRF authorize states. kind 0: the per-node map; kind 1: oauth_states in
+// the DB — which is what lets every connection run on its own thread.
+fn px_state_put(st: ProxyStore, db: OrmDb, state: str) -> i64 !IO !Net {
+    if st.kind == 0 {
+        map_set(st.states, state, 1)
+        return 1
+    }
+    let vals: Vec<str> = vec_new()
+    vec_push(vals, state)
+    let ex = orm_exec_params_str(db,
+        "INSERT INTO oauth_states (state) VALUES ($1)", vals)?
+    return ex.ok
+}
+
+// One-time check: 1 when the state existed (and is now consumed).
+fn px_state_take(st: ProxyStore, db: OrmDb, state: str) -> i64 !IO !Net {
+    if st.kind == 0 {
+        if map_has(st.states, state) == 0 {
+            return 0
+        }
+        map_del(st.states, state)
+        return 1
+    }
+    let qvals: Vec<str> = vec_new()
+    vec_push(qvals, state)
+    let q = orm_query_params_str(db,
+        "SELECT state FROM oauth_states WHERE state = $1", qvals)?
+    if q.ok == 0 || q.nrows == 0 {
+        return 0
+    }
+    let dvals: Vec<str> = vec_new()
+    vec_push(dvals, state)
+    orm_exec_params_str(q.db, "DELETE FROM oauth_states WHERE state = $1", dvals)?
+    return 1
+}
+
 // ---------- cookies ----------
 
 // Value of `name` inside a Cookie header; "" when absent.
@@ -142,7 +179,7 @@ fn px_cookie(header: str, name: str) -> str {
 fn px_authorize_url(cfg: OAuthCfg, state: str) -> str {
     let mut u = concat(cfg.provider_base, "/oauth/authorize?client_id=")
     u = concat(u, cfg.client_id)
-    u = concat(u, concat("&redirect_uri=", cfg.redirect_uri))
+    u = concat(u, concat("&redirect_uri=", url_encode(cfg.redirect_uri)))
     u = concat(u, concat("&state=", state))
     u = concat(u, "&scope=read")
     return u

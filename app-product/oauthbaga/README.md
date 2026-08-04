@@ -58,7 +58,10 @@ OAUTH_PG=1 PGDATABASE=baga_oauth \
 Env: `OAUTH_PORT` (proxy), `OAUTH_PROVIDER_PORT`, `OAUTH_SECRET`, and
 for the Postgres backend `OAUTH_PG=1` + `PGHOST/PGPORT/PGUSER/PGPASSWORD/
 PGDATABASE` (migrations apply at boot; one DB connection per HTTP
-connection, the fmr legacy idiom).
+connection, the fmr legacy idiom). In PG mode every HTTP connection also
+runs on its own `go_bg` worker — codes, refresh tokens, sessions and CSRF
+states are all in `oauth_*` tables, so nothing is shared between threads.
+In dev (in-memory) mode both nodes stay serial.
 
 ## Honest limits
 

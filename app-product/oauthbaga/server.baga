@@ -19,6 +19,7 @@ import "httpdbaga/http.baga"
 import "ormbaga/orm.baga"
 import "ormbaga/migrate.baga"
 import "std/net/tcp.baga"
+import "std/net/url.baga"
 import "std/str/str.baga"
 import "std/json/json.baga"
 import "std/time/time.baga"
@@ -52,6 +53,63 @@ fn oauth_pg_open(kind: i64) -> OrmDb !Net !IO !Random {
     return orm_connect_env()?
 }
 
+// Source of truth for the per-connection workers: env with the same
+// defaults as demo.baga (go_bg can only carry the fd).
+fn oauth_cfg_env() -> OAuthCfg !IO {
+    let mut pp: i64 = 18690
+    let s = env("OAUTH_PORT")?
+    if s != "" && parse_int(s) > 0 {
+        pp = parse_int(s)
+    }
+    let mut vp: i64 = 18691
+    let s2 = env("OAUTH_PROVIDER_PORT")?
+    if s2 != "" && parse_int(s2) > 0 {
+        vp = parse_int(s2)
+    }
+    let mut secret = env("OAUTH_SECRET")?
+    if secret == "" {
+        secret = "dev-secret"
+    }
+    return oauth_cfg(vp, pp, secret)
+}
+
+// PG mode: each connection runs on its own thread (go_bg) and rebuilds
+// everything from env — state lives in the DB, so nothing is shared
+// (fmr legacy idiom; closes the worker half of gap O5).
+fn oauth_provider_conn_bg(fd: i64) -> i64 !IO !Net !Time !Random {
+    let cfg = oauth_cfg_env()?
+    let st = oa_store_pg()
+    let db = orm_connect_env()?
+    if orm_ok_db(db) == 0 {
+        let w = http_respond(fd, http_json_response(500, "{\"error\":\"db_unavailable\"}"))?
+        tcp_close(fd)?
+        return w
+    }
+    let req = http_read_request(fd)?
+    let resp = oauth_provider_http(req, st, db, cfg)?
+    let w = http_respond(fd, resp)?
+    tcp_close(fd)?   // Connection: close — the client reads to EOF
+    orm_close(db)?
+    return w
+}
+
+fn oauth_proxy_conn_bg(fd: i64) -> i64 !IO !Net !Time !Random {
+    let cfg = oauth_cfg_env()?
+    let st = px_store_pg()
+    let db = orm_connect_env()?
+    if orm_ok_db(db) == 0 {
+        let w = http_respond(fd, http_json_response(500, "{\"error\":\"db_unavailable\"}"))?
+        tcp_close(fd)?
+        return w
+    }
+    let req = http_read_request(fd)?
+    let resp = oauth_proxy_http(req, st, db, cfg)?
+    let w = http_respond(fd, resp)?
+    tcp_close(fd)?   // Connection: close — the client reads to EOF
+    orm_close(db)?
+    return w
+}
+
 // ---------- provider node ----------
 
 fn oauth_provider_http(req: Request, st: OAuthStore, db: OrmDb, cfg: OAuthCfg) -> Response !Time !Random !IO !Net {
@@ -62,7 +120,7 @@ fn oauth_provider_http(req: Request, st: OAuthStore, db: OrmDb, cfg: OAuthCfg) -
     }
     if m == "GET" && p == "/oauth/authorize" {
         let cid = http_query_param(req, "client_id")
-        let redir = http_query_param(req, "redirect_uri")
+        let redir = url_decode(http_query_param(req, "redirect_uri"))
         let state = http_query_param(req, "state")
         let mut sub = http_query_param(req, "sub")
         let mut scope = http_query_param(req, "scope")
@@ -113,8 +171,10 @@ fn oauth_provider_conn(fd: i64, st: OAuthStore, cfg: OAuthCfg) -> i64 !IO !Net !
     return w
 }
 
-// ctx = cell2(provider_port, proxy_port). Serial accept, shared store.
-fn oauth_provider_serve(ctx: i64) -> i64 !Net !IO !Time !Random {
+// ctx = cell2(provider_port, proxy_port). PG mode: go_bg per connection
+// (state is in the DB, workers rebuild cfg from env); dev mode: serial
+// accept over the shared in-memory store.
+fn oauth_provider_serve(ctx: i64) -> i64 !Net !IO !Time !Random !Par {
     let port = cell2_0(ctx)
     let proxy_port = cell2_1(ctx)
     let listener = tcp_listen(port)?
@@ -137,9 +197,13 @@ fn oauth_provider_serve(ctx: i64) -> i64 !Net !IO !Time !Random {
     while true {
         let fd = tcp_accept(listener)?
         if fd >= 0 {
-            tcp_set_timeouts(fd, 60)?
-            oauth_provider_conn(fd, st, cfg)?
-            tcp_close(fd)?
+            if st.kind == 1 {
+                go_bg(oauth_provider_conn_bg, fd)
+            } else {
+                tcp_set_timeouts(fd, 60)?
+                oauth_provider_conn(fd, st, cfg)?
+                tcp_close(fd)?
+            }
         }
     }
     return 0
@@ -160,16 +224,18 @@ fn oauth_proxy_http(req: Request, st: ProxyStore, db: OrmDb, cfg: OAuthCfg) -> R
     }
     if m == "GET" && p == "/login" {
         let state = oa_rand_hex(8)?
-        map_set(st.states, state, 1)
+        if px_state_put(st, db, state)? == 0 {
+            return http_json_response(500, "{\"error\":\"state_store_failed\"}")
+        }
         return http_set_header(http_response(302, ""), "Location", px_authorize_url(cfg, state))
     }
     if m == "GET" && p == "/callback" {
         let state = http_query_param(req, "state")
         let code = http_query_param(req, "code")
-        if state == "" || map_has(st.states, state) == 0 {
+        // one-time CSRF guard (map for kind 0, oauth_states for kind 1)
+        if state == "" || px_state_take(st, db, state)? == 0 {
             return http_json_response(400, "{\"error\":\"bad_state\"}")
         }
-        map_del(st.states, state)   // one-time CSRF guard
         if code == "" {
             return http_json_response(400, "{\"error\":\"missing_code\"}")
         }
@@ -234,8 +300,9 @@ fn oauth_proxy_conn(fd: i64, st: ProxyStore, cfg: OAuthCfg) -> i64 !IO !Net !Tim
     return w
 }
 
-// ctx = cell2(proxy_port, provider_port). Serial accept, shared store.
-fn oauth_proxy_serve(ctx: i64) -> i64 !Net !IO !Time !Random {
+// ctx = cell2(proxy_port, provider_port). PG mode: go_bg per connection;
+// dev mode: serial accept over the shared in-memory store.
+fn oauth_proxy_serve(ctx: i64) -> i64 !Net !IO !Time !Random !Par {
     let port = cell2_0(ctx)
     let provider_port = cell2_1(ctx)
     let listener = tcp_listen(port)?
@@ -258,9 +325,13 @@ fn oauth_proxy_serve(ctx: i64) -> i64 !Net !IO !Time !Random {
     while true {
         let fd = tcp_accept(listener)?
         if fd >= 0 {
-            tcp_set_timeouts(fd, 60)?
-            oauth_proxy_conn(fd, st, cfg)?
-            tcp_close(fd)?
+            if st.kind == 1 {
+                go_bg(oauth_proxy_conn_bg, fd)
+            } else {
+                tcp_set_timeouts(fd, 60)?
+                oauth_proxy_conn(fd, st, cfg)?
+                tcp_close(fd)?
+            }
         }
     }
     return 0

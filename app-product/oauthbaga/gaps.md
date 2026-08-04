@@ -49,20 +49,25 @@ is now contained to the dev backend.
 
 **Verdict.** L3 migrate target, alongside jsonrpcbaga R1 / tplbaga P2.
 
-## O5 — go_bg carries i64/cell2 only → serial nodes
+## O5 — go_bg carries i64/cell2 only (CLOSED by P1, with a scar)
 
 **Symptom.** Workers cannot receive a config struct or a store; the nodes
 rebuild config from ports + env inside the serve loop.
 
 **Workaround.** `cell2(port, other_port)`; env for secrets.
 
-**Status after P1.** The state half is solved — codes/refresh/sessions
-live in Postgres and each HTTP connection opens its own (fmr legacy
-idiom), which is concurrency-safe. The nodes stay serial anyway because
-the CSRF `states` map is still per-node in memory; moving it to the DB
-(or per-worker state) is the remaining step to a pool.
+**Status after P1.** Closed: codes/refresh/sessions *and* the CSRF states
+(`oauth_states`) live in Postgres, and in PG mode every HTTP connection
+runs on its own `go_bg` worker with its own DB connection — nothing is
+shared between threads. Dev mode stays serial by design.
 
-**Verdict.** Q1 lineage (queuebaga) — mostly closed by P1.
+**The scar.** The first bg handlers forgot `tcp_close(fd)` after
+`http_respond` — with Connection: close the client reads to EOF, so an
+unclosed fd hangs every client until its read timeout (the nested
+server-to-server exchange then blows its 5 s budget mid-flight). Every
+future baga server must close the fd after responding.
+
+**Verdict.** Q1 lineage (queuebaga) — closed by P1.
 
 ## O7 — per-connection DB = one SCRAM handshake per request
 
@@ -72,7 +77,8 @@ keep-alive/pool mode (FMR_WORKERS>0 equivalent) with one DB per worker.
 
 **Severity.** Performance only.
 
-**Verdict.** Comes together with the worker-pool step in O5.
+**Verdict.** Open for real deployments: a pool of long-lived DB
+connections (FMR_WORKERS-style), now that O5's worker model is in place.
 
 ## Closed / fine
 

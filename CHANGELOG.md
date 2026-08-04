@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### std/net — URL percent-encoding (oauthbaga gap O2)
+- New `std/net/url.baga`: `url_encode` / `url_decode` (RFC 3986 §2.1) —
+  unreserved set passes through, everything else `%XX` per UTF-8 byte;
+  decode is byte-exact (rebuilt through `bytes`, since `chr()` would
+  UTF-8-encode values ≥ 0x80 and double-encode the stream) and lenient
+  (malformed `%XX` and `%00` copy through literally — baga strings are
+  C strings).
+- `tests/std/url_test.baga` — 20 checks incl. Cyrillic/emoji round-trips;
+  in the `make test` std loop.
+- First user: oauthbaga percent-encodes `redirect_uri` in the authorize
+  redirect and the provider decodes it.
+
+### App products — oauthbaga worker model (O5 closed)
+- PG mode is now fully concurrent: every HTTP connection runs on its own
+  `go_bg` worker with its own DB connection (fmr legacy idiom); the CSRF
+  authorize states moved to an `oauth_states` table (migration
+  20260804102), so nothing is shared between threads. Dev (in-memory)
+  mode stays serial.
+- `oauth_pg_test` proves the cross-thread flow: the `/login` state row is
+  written by one connection and consumed by another; the suite is now on
+  the default ports (the workers rebuild config from env).
+- `demo.baga` migrates once before booting the two nodes (two concurrent
+  `migrate_up` would race on the version insert).
+- Honest scar, recorded in gaps.md: the first bg handlers responded
+  without `tcp_close(fd)` — with Connection: close the client reads to
+  EOF, so an unclosed fd hangs clients until their read timeout.
+
 ### Compiler — call-site Vec/Map element inference (tplbaga P5 closed)
 - **Soundness fix.** An unannotated `vec_new()` / `map_new()` passed to a
   typed parameter (`Vec<str>`, `Map<str,str>`, …) now gets its element
