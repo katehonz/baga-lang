@@ -1,16 +1,53 @@
 # Baga ⚔️
 
-**Version [0.7.0](VERSION)** · [Changelog](CHANGELOG.md)
-
-**A programming language for the age of AI.** Spec-first verification. Effects as type dimensions. Readable proof sketches — and a sound static verifier for a stated fragment.
+**Version [0.8.0](VERSION)** · [Changelog](CHANGELOG.md)
 
 > *"The question is not 'what is new'. The question is 'what has not been glued together yet'."*
 
-Baga (Бага) is a programming language built on three pillars:
+## What is Baga
 
-1. **Spec-first verification** — specifications are first-class citizens. The compiler checks implementations against specs.
-2. **Effects as type dimensions** — `String !IO !NotFound` is a different type from `String`. Errors are visible in the type system.
-3. **Readable proof sketches** — the compiler extracts human-readable *sketches* from code and specs. Not Coq. Not Lean. Not machine-checked proof objects — structured text a human (or AI) can audit.
+**Baga (Бага)** is a **programming language** for systems and product code in the age of AI: you write normal programs; the compiler keeps effects, specs, and proof sketches visible so a human (or an agent) can trust the result.
+
+| Pillar | Meaning |
+|--------|---------|
+| **Spec-first verification** | Specs are first-class; the compiler checks implementations against them (`--verify` on a stated fragment). |
+| **Effects as type dimensions** | `str !IO !Net` is a different type from `str` — side effects show up in the type. |
+| **Readable proof sketches** | Human-readable sketches extracted from code and specs — not Coq/Lean proof objects. |
+
+The **toolchain** is a small C bootstrap (`baga`, optional LLVM backend, package manager **sandak**). **Product code** is written in Baga itself under `std/`, `app-product/`, and `apps/`.
+
+## Pure-Baga cryptography (no OpenSSL at runtime)
+
+Cryptography is **implemented in Baga**, not linked against OpenSSL/libcrypto for runtime. OpenSSL is only a **test peer** (e.g. TLS handshake / `https` mock).
+
+| Layer | In-tree modules | Use |
+|-------|-----------------|-----|
+| Primitives | `std/crypto` — SHA-1/256, HMAC, AES, GCM, HKDF, **bn**, **X25519**, **P-256/ECDSA**, **RSA** (PKCS#1 / PSS), DER, X.509 | hashes, MAC, AEAD, signatures |
+| TLS 1.3 client | `std/net/tls.baga` | record layer, handshake, cert + CertificateVerify, app traffic |
+| HTTPS | `std/net/http_client.baga` | `http://` and **`https://`** over pure TLS |
+| JWT | `app-product/jwtbaga` | **HS256** sign/verify; **RS256** / **ES256** verify (OIDC-ready) |
+
+Stack highlights: live TLS against `openssl s_server`; JWT goldens cross-checked with Python; constant-time compares for MACs/tags where it matters.
+
+## Application ecosystem (`app-product/` + `apps/`)
+
+Real packages (not toy snippets) — each is a probe of the language and a shippable building block. Build with **sandak** (`sandak.toml` per package).
+
+| Package | Role |
+|---------|------|
+| **httpdbaga** | HTTP/1.1 + HTTP/2 + HPACK |
+| **jwtbaga** | JWT HS256 / RS256 / ES256 |
+| **pgbaga** | PostgreSQL wire client (SCRAM, `$1` params) |
+| **ormbaga** | ActiveRecord-style ORM + goose migrations |
+| **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired |
+| **kvbaga** | RESP KV server (`Map` probe) |
+| **wsbaga** / **chatbaga** | WebSocket + multi-room chat (`poll`) |
+| **oauthbaga** | OAuth proxy (integration exam) |
+| **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) |
+| **mdbaga**, **tplbaga**, **queuebaga**, **jsonrpcbaga**, **grebaga**, **testbaga** | Markdown, templates, jobs, RPC, grep CLI, asserts |
+| **apps/api**, **apps/registry** | Sample product + sandak package registry |
+
+Canonical stack: `apps/*` → **fmrbaga** → httpdbaga / jwtbaga / ormbaga → **pgbaga** → Postgres. See [`app-product/BASE.md`](app-product/BASE.md).
 
 ## Quick Start
 
@@ -263,26 +300,16 @@ it by oracles in `make test`.
 ```
 baga/
 ├── include/baga.h          # AST, tokens, types
-├── src/
-│   ├── main.c              # CLI
-│   ├── lexer.c             # Tokenizer
-│   ├── parser.c            # Recursive descent parser
-│   ├── checker.c           # Type checking + effect checking
-│   ├── codegen_c.c         # C code generator
-│   ├── codegen_llvm.c      # LLVM IR backend (optional, `make llvm`)
-│   ├── verify.c            # Static spec verification (`--verify`)
-│   └── proofs.c            # Proof extraction
-├── self/
-│   ├── lexer.baga          # Self-hosted lexer
-│   ├── parser.baga         # Self-hosted parser
-│   └── compiler.baga       # Self-hosted compiler (~2660 lines)
-├── examples/               # Example programs
-├── scripts/
-│   ├── run_tests.sh        # full regression (make test → here)
-│   ├── run_verify.sh       # --verify oracle (M0–M18)
-│   └── baga-test           # discover/run tests/**/*_test.baga
-├── docs/                   # Documentation (EN + BG)
-├── Makefile                # C toolchain only (not the package graph)
+├── src/                    # C bootstrap compiler + sandak
+├── self/                   # Self-hosted compiler (Baga)
+├── std/                    # Standard library (crypto, net/tls, json, …)
+├── app-product/            # Ecosystem packages (http, jwt, pg, oauth, decimal, …)
+├── apps/                   # Sample products (api, registry)
+├── examples/               # Language examples
+├── tests/                  # Regression suite
+├── scripts/run_tests.sh    # make test → here
+├── docs/                   # Language / compiler / theory (EN + BG)
+├── Makefile                # C toolchain only
 └── README.md
 ```
 

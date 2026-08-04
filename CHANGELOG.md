@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-04
+
+**Language + ecosystem + pure-Baga cryptography.** README opens with the
+language story, the in-tree crypto stack (no OpenSSL at runtime), and the
+`app-product` application ecosystem.
+
 ### jwtbaga — RS256/ES256 verify + hardening (full crypto stack)
 - JWT verify now uses TLS crypto: **RS256** (`rsa_pkcs1_sha256_verify`) and
   **ES256** (`ecdsa_p256_verify_sha256_raw`, JWS R‖S format).
