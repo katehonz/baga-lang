@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Compiler — call-site Vec/Map element inference (tplbaga P5 closed)
+- **Soundness fix.** An unannotated `vec_new()` / `map_new()` passed to a
+  typed parameter (`Vec<str>`, `Map<str,str>`, …) now gets its element
+  kind fixed from the callee parameter at the call site — the same
+  fix-on-first-use mutation `vec_push` already did. Before, a later
+  `vec_get` fell into the historical i64 default and the codegen read
+  `str` memory as `i64`: garbage output, no diagnostic, no compiler
+  complaint. Found by tplbaga (№7) the way the roadmap intended.
+- The reverse order (`vec_get` before the fixing call) is now a compile
+  error instead of a silent wrong type.
+- Two regressions in `make test` (vec + map call-site inference).
+- `type_str`: rotating buffers — two `Vec`/`Map` types in one diagnostic
+  no longer overwrite each other's text.
+
+### Compiler — LLVM `ord` decodes UTF-8 (oracle parity)
+- The LLVM backend's `baga_ord` returned the first *byte* (208 for "А");
+  the C runtime decodes the code point (1040). Now both backends decode
+  1–4 byte UTF-8 sequences; `examples/strings.baga` matches byte-for-byte
+  and `make test-llvm` is fully green.
+
 ### App products — oauthbaga P1 (Postgres persistence, №10 "всичко заедно")
 - The pgbaga/ormbaga leg of №10: `oauth_codes` / `oauth_refresh` /
   `oauth_sessions` tables (goose-style migrations, version 20260804101),

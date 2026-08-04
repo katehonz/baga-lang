@@ -19,6 +19,17 @@ Type *type_fn(Type *ret, Type **params, int nparams) {
     return t;
 }
 
+/* Въртящ се буфер: няколко type_str в един printf не трябва да се
+ * заличават (предишните два статични буфера се сблъскваха, когато две
+ * Vec/Map-та се отпечатваха в едно съобщение). */
+static char *type_str_buf(void) {
+    static char bufs[8][96];
+    static int bi = 0;
+    char *b = bufs[bi];
+    bi = (bi + 1) % 8;
+    return b;
+}
+
 const char *type_str(Type *t) {
     if (!t) return "void";
     switch (t->kind) {
@@ -36,17 +47,17 @@ const char *type_str(Type *t) {
         case TYPE_FN:    return "fn";
         case TYPE_VEC: {
             if (!t->elem) return "Vec";
-            static char buf[64];
-            snprintf(buf, sizeof buf, "Vec<%s>", type_str(t->elem));
+            char *buf = type_str_buf();
+            snprintf(buf, 96, "Vec<%s>", type_str(t->elem));
             return buf;
         }
         case TYPE_MAP: {
             if (!t->key && !t->elem) return "Map";
-            static char buf2[96];
-            snprintf(buf2, sizeof buf2, "Map<%s, %s>",
+            char *buf = type_str_buf();
+            snprintf(buf, 96, "Map<%s, %s>",
                      t->key ? type_str(t->key) : "?",
                      t->elem ? type_str(t->elem) : "?");
-            return buf2;
+            return buf;
         }
     }
     return "?";
@@ -436,10 +447,25 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             int check_n = n->args.len < ft_user->nparams ? n->args.len : ft_user->nparams;
             for (int i = 0; i < check_n; i++) {
                 Type *at = n->args.data[i]->type;
-                if (!type_assignable(at, ft_user->params[i])) {
+                Type *pt = ft_user->params[i];
+                if (!type_assignable(at, pt)) {
                     check_error(ctx, n->pos,
                         "'%s': аргумент #%d е от тип %s, но параметърът е %s",
                         name, i + 1, type_str(at), type_str(ft_user->params[i]));
+                } else if (at && pt) {
+                    /* Неанотиран Vec/Map аргумент: параметърът фиксира
+                     * елементния вид — същата мутация като при vec_push
+                     * (env пази същия Type указател, така че фиксирането
+                     * стига до всички употреби). Без това един по-късен
+                     * vec_get фиксира i64 и codegen-ът чете str памет като
+                     * i64 (tplbaga P5). */
+                    if (at->kind == TYPE_VEC && pt->kind == TYPE_VEC &&
+                        !at->elem && pt->elem)
+                        at->elem = pt->elem;
+                    if (at->kind == TYPE_MAP && pt->kind == TYPE_MAP) {
+                        if (!at->key && pt->key) at->key = pt->key;
+                        if (!at->elem && pt->elem) at->elem = pt->elem;
+                    }
                 }
             }
             Type *ret = ft_user->ret ? ft_user->ret : type_new(TYPE_VOID);

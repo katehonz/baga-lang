@@ -399,8 +399,9 @@ static LLVMValueRef build_baga_chr(void) {
     return fn;
 }
 
-/* static int64_t baga_ord(const char *s)
- * { return s[0] ? (int64_t)(unsigned char)s[0] : 0; } */
+/* static int64_t baga_ord(const char *s) — UTF-8 code point of s[0..].
+ * Mirrors the C runtime helper (1–4 byte sequences) so the LLVM oracle
+ * matches byte-for-byte on non-ASCII input. */
 static LLVMValueRef build_baga_ord(void) {
     LLVMTypeRef p[] = { lg.ptr_ty };
     LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_ord",
@@ -408,14 +409,104 @@ static LLVMValueRef build_baga_ord(void) {
     h_begin(fn);
     LLVMValueRef s = LLVMGetParam(fn, 0);
     LLVMValueRef z = LLVMConstInt(lg.i64_ty, 0, 0);
-    LLVMValueRef p8 = LLVMBuildGEP2(lg.builder, lg.i8_ty, s, &z, 1, "p");
-    LLVMValueRef ch = LLVMBuildLoad2(lg.builder, lg.i8_ty, p8, "c");
-    LLVMValueRef nz = LLVMBuildICmp(lg.builder, LLVMIntNE, ch,
+    LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
+
+    /* c8 = s[0]; empty string → 0 */
+    LLVMValueRef p0 = LLVMBuildGEP2(lg.builder, lg.i8_ty, s, &z, 1, "p0");
+    LLVMValueRef c8 = LLVMBuildLoad2(lg.builder, lg.i8_ty, p0, "c8");
+    LLVMValueRef nz = LLVMBuildICmp(lg.builder, LLVMIntNE, c8,
         LLVMConstInt(lg.i8_ty, 0, 0), "nz");
-    LLVMValueRef ext = LLVMBuildZExt(lg.builder, ch, lg.i64_ty, "e");
-    LLVMValueRef r = LLVMBuildSelect(lg.builder, nz, ext,
-        LLVMConstInt(lg.i64_ty, 0, 0), "r");
-    LLVMBuildRet(lg.builder, r);
+    /* c lives in an alloca so every block sees the same value */
+    LLVMValueRef ca = entry_alloca(lg.i64_ty, "ca");
+    LLVMBuildStore(lg.builder, LLVMBuildZExt(lg.builder, c8, lg.i64_ty, "c"), ca);
+
+    LLVMBasicBlockRef zero_b  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "zero");
+    LLVMBasicBlockRef chk_b   = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chk");
+    LLVMBasicBlockRef ascii_b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ascii");
+    LLVMBasicBlockRef two_b   = LLVMAppendBasicBlockInContext(lg.ctx, fn, "two");
+    LLVMBasicBlockRef three_b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "three");
+    LLVMBasicBlockRef four_b  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "four");
+    LLVMBuildCondBr(lg.builder, nz, chk_b, zero_b);
+
+    /* chk: c < 0x80 → ascii; (c&0xE0)==0xC0 → two; (c&0xF0)==0xE0 → three; else four */
+    LLVMPositionBuilderAtEnd(lg.builder, chk_b);
+    LLVMValueRef c = LLVMBuildLoad2(lg.builder, lg.i64_ty, ca, "c");
+    LLVMValueRef is_ascii = LLVMBuildICmp(lg.builder, LLVMIntULT, c,
+        LLVMConstInt(lg.i64_ty, 0x80, 0), "is_ascii");
+    LLVMBasicBlockRef chk2_b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chk2");
+    LLVMBuildCondBr(lg.builder, is_ascii, ascii_b, chk2_b);
+
+    LLVMPositionBuilderAtEnd(lg.builder, chk2_b);
+    LLVMValueRef mE0 = LLVMBuildAnd(lg.builder, c,
+        LLVMConstInt(lg.i64_ty, 0xE0, 0), "mE0");
+    LLVMValueRef is_two = LLVMBuildICmp(lg.builder, LLVMIntEQ, mE0,
+        LLVMConstInt(lg.i64_ty, 0xC0, 0), "is_two");
+    LLVMBasicBlockRef chk3_b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chk3");
+    LLVMBuildCondBr(lg.builder, is_two, two_b, chk3_b);
+
+    LLVMPositionBuilderAtEnd(lg.builder, chk3_b);
+    LLVMValueRef mF0 = LLVMBuildAnd(lg.builder, c,
+        LLVMConstInt(lg.i64_ty, 0xF0, 0), "mF0");
+    LLVMValueRef is_three = LLVMBuildICmp(lg.builder, LLVMIntEQ, mF0,
+        LLVMConstInt(lg.i64_ty, 0xE0, 0), "is_three");
+    LLVMBuildCondBr(lg.builder, is_three, three_b, four_b);
+
+    LLVMPositionBuilderAtEnd(lg.builder, zero_b);
+    LLVMBuildRet(lg.builder, z);
+
+    LLVMPositionBuilderAtEnd(lg.builder, ascii_b);
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, lg.i64_ty, ca, "c1"));
+
+    /* continuation bytes: dst = s[idx] & 0x3F (zext i8 → i64 first) */
+    #define ORD_CONT(idx, dst, nm) do { \
+        LLVMValueRef nm ## p = LLVMBuildGEP2(lg.builder, lg.i8_ty, s, &(idx), 1, #nm "p"); \
+        LLVMValueRef nm ## b8 = LLVMBuildLoad2(lg.builder, lg.i8_ty, nm ## p, #nm "b8"); \
+        dst = LLVMBuildAnd(lg.builder, \
+            LLVMBuildZExt(lg.builder, nm ## b8, lg.i64_ty, #nm "e"), \
+            LLVMConstInt(lg.i64_ty, 0x3F, 0), #nm); \
+    } while (0)
+
+    LLVMPositionBuilderAtEnd(lg.builder, two_b);
+    LLVMValueRef cv2 = LLVMBuildLoad2(lg.builder, lg.i64_ty, ca, "c2");
+    LLVMValueRef b1;
+    ORD_CONT(one, b1, t1);
+    LLVMValueRef head2 = LLVMBuildShl(lg.builder,
+        LLVMBuildAnd(lg.builder, cv2, LLVMConstInt(lg.i64_ty, 0x1F, 0), "h2"),
+        LLVMConstInt(lg.i64_ty, 6, 0), "h2s");
+    LLVMBuildRet(lg.builder, LLVMBuildOr(lg.builder, head2, b1, "r2"));
+
+    LLVMPositionBuilderAtEnd(lg.builder, three_b);
+    LLVMValueRef cv3 = LLVMBuildLoad2(lg.builder, lg.i64_ty, ca, "c3");
+    LLVMValueRef two_i = LLVMConstInt(lg.i64_ty, 2, 0);
+    LLVMValueRef b2;
+    ORD_CONT(one, b1, u1);
+    ORD_CONT(two_i, b2, u2);
+    LLVMValueRef head3 = LLVMBuildShl(lg.builder,
+        LLVMBuildAnd(lg.builder, cv3, LLVMConstInt(lg.i64_ty, 0x0F, 0), "h3"),
+        LLVMConstInt(lg.i64_ty, 12, 0), "h3s");
+    LLVMValueRef mid3 = LLVMBuildShl(lg.builder, b1,
+        LLVMConstInt(lg.i64_ty, 6, 0), "m3");
+    LLVMBuildRet(lg.builder, LLVMBuildOr(lg.builder,
+        LLVMBuildOr(lg.builder, head3, mid3, "hm3"), b2, "r3"));
+
+    LLVMPositionBuilderAtEnd(lg.builder, four_b);
+    LLVMValueRef cv4 = LLVMBuildLoad2(lg.builder, lg.i64_ty, ca, "c4");
+    LLVMValueRef three_i = LLVMConstInt(lg.i64_ty, 3, 0);
+    LLVMValueRef b3;
+    ORD_CONT(one, b1, v1);
+    ORD_CONT(two_i, b2, v2);
+    ORD_CONT(three_i, b3, v3);
+    LLVMValueRef head4 = LLVMBuildShl(lg.builder,
+        LLVMBuildAnd(lg.builder, cv4, LLVMConstInt(lg.i64_ty, 0x07, 0), "h4"),
+        LLVMConstInt(lg.i64_ty, 18, 0), "h4s");
+    LLVMValueRef m4a = LLVMBuildShl(lg.builder, b1,
+        LLVMConstInt(lg.i64_ty, 12, 0), "m4a");
+    LLVMValueRef m4b = LLVMBuildShl(lg.builder, b2,
+        LLVMConstInt(lg.i64_ty, 6, 0), "m4b");
+    LLVMBuildRet(lg.builder, LLVMBuildOr(lg.builder,
+        LLVMBuildOr(lg.builder,
+            LLVMBuildOr(lg.builder, head4, m4a, "hm4"), m4b, "hmm4"), b3, "r4"));
+    #undef ORD_CONT
     return fn;
 }
 

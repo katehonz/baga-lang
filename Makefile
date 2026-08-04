@@ -314,6 +314,14 @@ test: $(BIN) sandak
 	@./$(BIN) $(BAGAIFLAGS) /tmp/baga_map_bad2.baga 2>&1 | grep -q "ключ от тип i64, но картата е" \
 		&& echo "OK: смесен ключов тип е отхвърлен" \
 		|| { echo "FAIL: map key mismatch трябва да гърми"; exit 1; }
+	@printf 'fn p5_fill(v: Vec<str>) { vec_push(v, "abc") }\nfn main() {\n    let xs = vec_new()\n    p5_fill(xs)\n    print(vec_get(xs, 0))\n}\n' > /tmp/baga_vec_infer.baga
+	@test "$$(./$(BIN) $(BAGAIFLAGS) /tmp/baga_vec_infer.baga)" = "abc" \
+		&& echo "OK: неанотиран vec_new се фиксира от параметъра при извикване (tplbaga P5)" \
+		|| { echo "FAIL: Vec елементна инференция при извикване"; exit 1; }
+	@printf 'fn p5_put(m: Map<str, str>) { map_set(m, "k", "v") }\nfn main() {\n    let m = map_new()\n    p5_put(m)\n    print(map_get(m, "k"))\n}\n' > /tmp/baga_map_infer.baga
+	@test "$$(./$(BIN) $(BAGAIFLAGS) /tmp/baga_map_infer.baga)" = "v" \
+		&& echo "OK: неанотиран map_new се фиксира от параметъра при извикване (tplbaga P5)" \
+		|| { echo "FAIL: Map ключ/стойност инференция при извикване"; exit 1; }
 	@./$(BIN) $(BAGAIFLAGS) tests/probe_binary_io.baga > /tmp/baga_bio_out.txt 2>&1 \
 		&& grep -q "all passed" /tmp/baga_bio_out.txt \
 		&& echo "OK: binary I/O през сокети (NUL/0xFF, chr() UTF-8 капан — G8)" \
