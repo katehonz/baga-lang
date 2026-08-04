@@ -64,7 +64,10 @@ careful i64 products or `std/crypto/bn`.
 
 **Severity.** Medium for P1 maths.
 
-**Verdict.** Measure in ops; optimize only if tests force it.
+**Verdict.** **Measured 2026-08-04, closed.** 200 `dec_div` calls with a
+multi-limb divisor (the bit-by-bit path, worst case) run in ~1.4 s —
+≈7 ms/division. Fine for money workloads (tens of divisions per
+document). Knuth-style divmod only if a real bulk workload shows up.
 
 ## Observed in P0
 

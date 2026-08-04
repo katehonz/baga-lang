@@ -28,6 +28,22 @@
   rounded half-away via a guard digit; `dec_div` picks
   `clamp(max(scale_a, scale_b), 6, 28)`.
 
+## Rounding modes (P1, shipped 2026-08-04)
+
+One `dec_round_impl(d, places, mode)` behind five public entries:
+`dec_round_dp` (half-away, default), `dec_round_bankers_dp` (half-even),
+`dec_trunc_dp` (toward zero), `dec_floor_dp` (toward −inf),
+`dec_ceil_dp` (toward +inf). Dropped digits are tracked as
+most-significant-dropped + sticky bit; zero results normalize to +0.
+
+## Scientific notation (P1, shipped 2026-08-04)
+
+`dec_parse` accepts `[eE][+-]?digits` after the mantissa (`1.23e4`,
+`1E-2`). Exact when representable; a resulting scale above 28 is rounded
+half-away (same rule as the mul rescale), an overflowing mantissa is an
+error. Exponent digits saturate at ±1000 — larger exponents can only
+overflow (error) or round to zero anyway.
+
 ## Overflow
 
 P1 rule (already in force): `DecResult` everywhere and never silent wrap —

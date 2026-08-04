@@ -104,8 +104,12 @@ serde features, diesel/postgres drivers (use package API from orm later).
 
 ### P1 — robustness
 
-- `trunc`, `floor`, `ceil`, more rounding modes (banker's).
-- `from_str` scientific notation (`1.2e-3`).
+- ~~`trunc`, `floor`, `ceil`, more rounding modes (banker's).~~ **shipped
+  2026-08-04** — `dec_trunc_dp`, `dec_floor_dp`, `dec_ceil_dp`,
+  `dec_round_bankers_dp` (all via one `dec_round_impl`).
+- ~~`from_str` scientific notation (`1.2e-3`).~~ **shipped 2026-08-04** —
+  `dec_parse` accepts `[eE][+-]?digits`; scale > 28 rounds half-away,
+  mantissa overflow errors.
 - Checked ops naming consistency; more edge vectors.
 - JSON: always serialize money as **string**, never f64.
 

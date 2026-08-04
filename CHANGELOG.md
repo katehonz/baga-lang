@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### bagaDecimal 0.3.0 — rounding modes + scientific parse (P1 shipped)
+- **Rounding modes:** one `dec_round_impl` behind five public entries —
+  `dec_round_dp` (half-away, unchanged default), `dec_round_bankers_dp`
+  (half-even), `dec_trunc_dp`, `dec_floor_dp`, `dec_ceil_dp`. Dropped
+  digits tracked as most-significant-dropped + sticky; zero normalizes
+  to +0.
+- **Scientific notation:** `dec_parse` accepts `[eE][+-]?digits`
+  (`1.23e4`, `1E-2`). Exact when representable; scale > 28 rounds
+  half-away, mantissa overflow errors; exponents saturate at ±1000.
+- **D6 closed with data:** worst-case `dec_div` (bit-by-bit multi-limb
+  path) measured at ≈7 ms — fine for money workloads; Knuth divmod only
+  if a bulk workload appears.
+- `pg_cell_decimal_or_zero` now carries an explicit "display only, never
+  post sums computed through it" warning (strict `pg_cell_decimal` is
+  the posting path).
+- Tests: `tests/decimal_test.baga` 59 → 86 checks (five modes × signs,
+  bankers sticky/odd, exponent round-trips incl. exact 96-bit max,
+  exponent error paths).
+- Package version 0.2.0 → 0.3.0; PLAN/gaps/design-notes updated.
+
 ### bagaDecimal — signed-overflow fixes + mul rescue (P0.6)
 - **BUG (crash).** `dec_limb_mul` accumulated 32-bit limb products +
   carry up to ~2^64 in signed `i64`; the sum wrapped negative, the

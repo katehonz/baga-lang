@@ -11,8 +11,10 @@ fn dec_digit(c: i64) -> i64 {
     return -1
 }
 
-// Parse plain decimal: optional sign, digits, optional '.' fraction.
-// No scientific notation in P0 (P1).
+// Parse plain decimal: optional sign, digits, optional '.' fraction,
+// optional scientific exponent: 1.23e4, 1E-2 (P1). Exact when possible;
+// a resulting scale above 28 is rounded half-away, an overflowing
+// mantissa is an error.
 fn dec_parse(s: str) -> DecResult {
     let n = len(s)
     if n == 0 {
@@ -51,6 +53,86 @@ fn dec_parse(s: str) -> DecResult {
             saw_dot = 1
             i = i + 1
         } else {
+            if c == 101 || c == 69 {
+                // scientific exponent: [eE][+-]?digits, then optional spaces
+                if saw_digit == 0 {
+                    return dec_err("no digits")
+                }
+                i = i + 1
+                let mut eneg: i64 = 0
+                if i < n && char_at(s, i) == 45 {
+                    eneg = 1
+                    i = i + 1
+                } else {
+                    if i < n && char_at(s, i) == 43 {
+                        i = i + 1
+                    }
+                }
+                let mut exp: i64 = 0
+                let mut edigits: i64 = 0
+                while i < n {
+                    let ec = char_at(s, i)
+                    if ec == 32 {
+                        i = i + 1
+                        while i < n {
+                            if char_at(s, i) != 32 {
+                                return dec_err("trailing junk")
+                            }
+                            i = i + 1
+                        }
+                    } else {
+                        let ed = dec_digit(ec)
+                        if ed < 0 {
+                            return dec_err("invalid exponent")
+                        }
+                        edigits = edigits + 1
+                        if exp < 1000 {
+                            exp = exp * 10 + ed
+                        }
+                        if exp > 1000 {
+                            exp = 1000
+                        }
+                        i = i + 1
+                    }
+                }
+                if edigits == 0 {
+                    return dec_err("no exponent digits")
+                }
+                if eneg != 0 {
+                    exp = 0 - exp
+                }
+                // value = mantissa * 10^(exp - scale)
+                let mut ns = scale - exp
+                if ns < 0 {
+                    let pw = dec_limb_mul_pow10(v, 0 - ns, 1)
+                    if pw.ok == 0 {
+                        return dec_err("overflow applying exponent")
+                    }
+                    v = pw.v
+                    ns = 0
+                }
+                if ns > 28 {
+                    let mut rem: i64 = 0
+                    let mut k: i64 = 0
+                    while k < ns - 28 {
+                        let dv = dec_limb_div_small(v, 10)
+                        v = dv.q
+                        rem = dv.rem
+                        k = k + 1
+                    }
+                    if rem >= 5 {
+                        v = dec_limb_add(v, dec_limb3(1, 0, 0))
+                    }
+                    ns = 28
+                }
+                if dec_limb_fits96(v) == 0 {
+                    return dec_err("overflow applying exponent")
+                }
+                if neg != 0 && dec_limb_is_zero(v) == 1 {
+                    neg = 0
+                }
+                return dec_ok(dec_from_limb3(v, neg, ns))
+            }
             let d = dec_digit(c)
             if d < 0 {
                 // trailing spaces ok

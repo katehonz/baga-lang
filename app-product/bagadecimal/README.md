@@ -6,7 +6,7 @@
 
 | | |
 |--|--|
-| **sandak** | `bagadecimal` **0.2.0** |
+| **sandak** | `bagadecimal` **0.3.0** |
 | **Layout** | `src/` modules |
 | **Postgres** | `NUMERIC` text bridge (`src/pg`) — като rust-decimal `db-postgres` |
 | **Plan** | [PLAN.md](PLAN.md) · [gaps.md](gaps.md) |
@@ -55,9 +55,11 @@ Live proof: `tests/decimal_pg_test.baga` (същият Postgres като `pg_tes
 | `pg_param_decimal` | bind `$N::numeric` |
 | `pg_cell_decimal` | read cell → `Decimal` |
 | `pg_col_is_numeric` | OID 1700 |
-| `pg_cell_decimal_or_zero` | NULL-safe |
+| `pg_cell_decimal_or_zero` | NULL-safe (display only — виж предупреждението) |
 
-**Не ползвай** `pg_cell_f64` за пари.
+**Не ползвай** `pg_cell_f64` за пари. **Не поствай** суми, сметнати с
+`pg_cell_decimal_or_zero` — грешка в клетката е неразличима от реално
+0.00; за постнати суми ползвай `pg_cell_decimal` (стриктен `DecResult`).
 
 ## Layout
 
@@ -78,18 +80,20 @@ cd app-product/bagadecimal && sandak build
 ./baga -I . -I app-product tests/decimal_pg_test.baga   # needs Postgres
 ```
 
-## API snapshot (P0 + accounting)
+## API snapshot (P0 + accounting + P1 rounding/parse)
 
 | Area | Functions |
 |------|-----------|
-| Construct | `dec_zero`, `dec_one`, `dec_from_parts`, `dec_from_i64(_scale)`, `dec_parse` |
+| Construct | `dec_zero`, `dec_one`, `dec_from_parts`, `dec_from_i64(_scale)`, `dec_parse` (с експонента: `1.23e4`) |
 | Format | `dec_to_string`, `dec_to_string_normalized` |
 | Ops | `dec_add/sub/mul/div/div_scale`, `dec_cmp/eq/lt`, `dec_abs/neg` |
-| Round | `dec_round_dp` (half away from zero) |
+| Round | `dec_round_dp` (half-away), `dec_round_bankers_dp` (half-even), `dec_trunc_dp`, `dec_floor_dp`, `dec_ceil_dp` |
 | Money | `dec_money`, `dec_as_money`, `dec_is_money`, `dec_normalize`, `dec_percent_of`, `dec_with_percent`, `dec_sum2/3` |
 | PG | see table above |
 
-Fallible paths return `DecResult { ok, err, value }`.
+Fallible paths return `DecResult { ok, err, value }`. `dec_mul` сваля
+scale със закръгляне, докато мантисата се побере в 96 бита (rescue) —
+грешка само когато цялата част прелива.
 
 ## Gaps (език)
 

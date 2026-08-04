@@ -63,7 +63,10 @@ fn pg_cell_decimal(r: PgResult, row: i64, col: i64) -> DecResult {
     return dec_from_pg(pg_cell(r, row, col))
 }
 
-// NULL-safe: NULL or parse error → zero (for display totals; check isnull when needed).
+// NULL-safe: NULL or parse error → zero.
+// WARNING: a parse error (corrupt/unexpected cell) is indistinguishable
+// from a real 0.00 — fine for display totals, dangerous for posted money.
+// Use pg_cell_decimal (strict DecResult) whenever the sum gets posted.
 fn pg_cell_decimal_or_zero(r: PgResult, row: i64, col: i64) -> Decimal {
     if pg_isnull(r, row, col) == 1 {
         return dec_zero()
