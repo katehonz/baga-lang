@@ -384,8 +384,9 @@ fn tls_flight_bad(err: str) -> TlsFlight {
 // flight and verify the server Finished. `chunked` is the concatenation
 // of (u24 length || record payload)* for each type-23 record in order —
 // record i has GCM sequence i (openssl splits EncryptedExtensions into
-// its own record; the RFC allows any split). A Vec<bytes> parameter
-// would be the natural shape — not supported by the language yet (L4).
+// its own record; the RFC allows any split). The flat u24 shape predates
+// Vec<bytes> (L4, since closed); it is kept because the GCM sequence
+// numbers must stay aligned with the record order anyway.
 fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked: bytes) -> TlsFlight {
     let key = tls_hkdf_label(sched.server_hs, "key", bytes_from_vec(vec_new()), 16)
     let iv = tls_hkdf_label(sched.server_hs, "iv", bytes_from_vec(vec_new()), 12)

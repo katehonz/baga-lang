@@ -221,8 +221,8 @@ attribution just needs to follow them through import expansion.
 **Symptom.** HTTP/2 needs stream-id → state lookup; HPACK needs name →
 index. With no map type these become parallel `Vec` pools + linear scans
 (`h2_find`, `hpack_static_exact`), and per-stream payload storage needs
-flat pools with offset/length bookkeeping (`Vec<bytes>` is also impossible —
-element types are i64/str/f64 only).
+flat pools with offset/length bookkeeping (struct elements stay impossible
+— element types are i64/str/f64/bytes only).
 
 **Evidence.** `h2.baga`'s stream pool (`s_ids`/`s_kseg`/`s_vseg`/
 `s_body_off`/`s_body_len`/`s_state`), the header-segment `\n`-join trick in

@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Language — `Vec<bytes>` (L4 closed for the bytes element kind)
+- `Vec<T>` element kinds now include `bytes` alongside `i64`/`str`/`f64` —
+  in annotations (`Vec<bytes>`, `[bytes]`) and in fix-on-first-use
+  inference (`vec_push`/`vec_set`). Mixing bytes with another element type
+  is a compile-time error, same as the other kinds.
+- C backend: elements are boxed `baga_bytes` behind a pointer per slot
+  (the `Map` bytes-values precedent); `baga_vec_{push,get,set,slice,concat}_bytes`
+  emitted in the runtime. Binary-safe: NUL/0xFF round-trips.
+- LLVM backend: honest `unsupported` diagnostic for `Vec<bytes>` (same
+  stance as `Map`) instead of a silent fall-back to the i64 helpers.
+- `Vec<struct>`/`Vec<Decimal>` etc. remain outside the element whitelist —
+  that part of L4 stays open (tplbaga P3, bagadecimal D7).
+- Tests: `tests/std/vec_test.baga` (27 checks: round-trip, set, slice,
+  concat, annotated parameter, unannotated inference, growth) via baga-test
+  discovery; a negative `Vec<bytes>` + str push probe in
+  `scripts/run_tests.sh` next to the Map mismatch probes.
+- Docs: `docs/language-{en,bg}.md` §12.4 + error/builtin tables; the
+  `std/net/tls.baga` flight reader keeps its flat u24 shape (comment
+  updated — the format predates `Vec<bytes>` and tracks GCM sequence
+  numbers by record order anyway).
+
 ## [0.8.0] — 2026-08-04
 
 **Language + ecosystem + pure-Baga cryptography.** README opens with the

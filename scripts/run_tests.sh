@@ -219,7 +219,7 @@ else
 fi
 
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
-PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
+PORT="${PORT:-8090}" PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
 
 echo "=== oauth PG (live Postgres) ==="
 OAUTH_PG=1 PGDATABASE=baga_oauth "$ROOT/scripts/baga-test" tests/oauth_pg_test.baga
@@ -280,6 +280,10 @@ printf 'fn p5_put(m: Map<str, str>) { map_set(m, "k", "v") }\nfn main() {\n    l
 test "$(run /tmp/baga_map_infer.baga)" = "v" \
 	&& echo "OK: неанотиран map_new се фиксира от параметъра при извикване (tplbaga P5)" \
 	|| { echo "FAIL: Map ключ/стойност инференция при извикване"; exit 1; }
+printf 'fn main() {\n    let v: Vec<bytes> = vec_new()\n    vec_push(v, "текст")\n}\n' > /tmp/baga_vec_bad.baga
+run /tmp/baga_vec_bad.baga 2>&1 | grep -q "елемент от тип str, но векторът е Vec<bytes>" \
+	&& echo "OK: Vec<bytes> елементен mismatch е отхвърлен" \
+	|| { echo "FAIL: Vec<bytes> str push трябва да гърми"; exit 1; }
 run tests/probe_binary_io.baga > /tmp/baga_bio_out.txt 2>&1 \
 	&& grep -q "all passed" /tmp/baga_bio_out.txt \
 	&& echo "OK: binary I/O през сокети (NUL/0xFF, chr() UTF-8 капан — G8)" \

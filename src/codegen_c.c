@@ -369,6 +369,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (vt && vt->kind == TYPE_VEC && vt->elem) {
                         if (vt->elem->kind == TYPE_STR) suf = "str";
                         else if (vt->elem->kind == TYPE_F64) suf = "f64";
+                        else if (vt->elem->kind == TYPE_BYTES) suf = "bytes";
                     }
                     fprintf(f, "baga_%s_%s(", bn, suf);
                     for (int i = 0; i < n->args.len; i++) {
@@ -384,6 +385,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (vt && vt->kind == TYPE_VEC && vt->elem) {
                         if (vt->elem->kind == TYPE_STR) suf = "str";
                         else if (vt->elem->kind == TYPE_F64) suf = "f64";
+                        else if (vt->elem->kind == TYPE_BYTES) suf = "bytes";
                     }
                     fprintf(f, "baga_%s_%s(", bn, suf);
                     for (int i = 0; i < n->args.len; i++) {
@@ -1452,6 +1454,20 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
     fprintf(out, "    union { double d; void *p; } u; u.d = x; v->data[i] = u.p;\n");
     fprintf(out, "}\n");
+    /* bytes елементи: box-нат baga_bytes по указател (като baga_map_*_bytes) */
+    fprintf(out, "static void baga_vec_push_bytes(baga_Vec *v, baga_bytes b) {\n");
+    fprintf(out, "    baga_vec_grow(v);\n");
+    fprintf(out, "    baga_bytes *p = baga_alloc(sizeof(baga_bytes)); *p = b;\n");
+    fprintf(out, "    v->data[v->len++] = p;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static baga_bytes baga_vec_get_bytes(baga_Vec *v, int64_t i) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_get\", i, v->len);\n");
+    fprintf(out, "    return *(baga_bytes *)v->data[i];\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_vec_set_bytes(baga_Vec *v, int64_t i, baga_bytes b) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+    fprintf(out, "    *(baga_bytes *)v->data[i] = b;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
     /* bridge: native bytes <-> Vec<i64> (crypto migration path) */
     fprintf(out, "static baga_bytes baga_bytes_from_vec(baga_Vec *v) {\n");
@@ -1493,7 +1509,17 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    for (int64_t i = 0; i < v->len; i++) { union { double d; void *p; } u; u.p = v->data[i]; baga_vec_push_f64(r, u.d); }\n");
     fprintf(out, "    for (int64_t i = 0; i < w->len; i++) { union { double d; void *p; } u; u.p = w->data[i]; baga_vec_push_f64(r, u.d); }\n");
     fprintf(out, "    return r; }\n");
-    fprintf(out, "\n/* hash map: chaining, key i64/str, value i64/str/f64 (leak-tolerant like baga_Vec) */\n");
+    fprintf(out, "static baga_Vec *baga_vec_slice_bytes(baga_Vec *v, int64_t a, int64_t b) {\n");
+    fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = a; i < b; i++) baga_vec_push_bytes(r, *(baga_bytes *)v->data[i]);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_concat_bytes(baga_Vec *v, baga_Vec *w) {\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_bytes(r, *(baga_bytes *)v->data[i]);\n");
+    fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_bytes(r, *(baga_bytes *)w->data[i]);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "\n/* hash map: chaining, key i64/str, value i64/str/f64/bytes (leak-tolerant like baga_Vec) */\n");
     fprintf(out, "typedef struct baga_MapEntry {\n");
     fprintf(out, "    int64_t ik; const char *sk;\n");
     fprintf(out, "    int64_t iv; double fv; const char *sv; baga_bytes bv;\n");
