@@ -105,8 +105,8 @@ fn main() {
     check("normalize", dec_scale(nrm) == 1 && dec_to_string(nrm) == "1.5")
     let pct = dec_percent_of(must_parse("200.00"), must_parse("10"))
     check("percent_of", pct.ok == 1 && dec_to_string(pct.value) == "20.00")
-    let s2 = dec_sum2(must_parse("1.10"), must_parse("2.20"))
-    check("sum2", s2.ok == 1 && dec_to_string(s2.value) == "3.30")
+    let sm = dec_sum2(must_parse("1.10"), must_parse("2.20"))
+    check("sum2", sm.ok == 1 && dec_to_string(sm.value) == "3.30")
 
     print("decimal_test: all passed")
 }
