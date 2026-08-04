@@ -1,0 +1,97 @@
+// money.baga — accounting helpers on Decimal (scale-2 money path).
+//
+// Conventions for sчетоводство:
+//   - store/display money at 2 decimal places unless you need intermediate
+//     rates (keep full scale, round only at posting);
+//   - never use f64 for amounts;
+//   - bind to Postgres as NUMERIC text via src/pg (dec_to_pg / pg_param_decimal).
+
+import "../types.baga"
+import "../limb.baga"
+import "../parse/parse.baga"
+import "../format/format.baga"
+import "../round/round.baga"
+import "../ops/arith.baga"
+import "../ops/cmp.baga"
+import "../convert/convert.baga"
+
+// Strip trailing fractional zeros from the value (adjust scale).
+fn dec_normalize(d: Decimal) -> Decimal {
+    if dec_is_zero(d) == 1 {
+        return dec_from_parts(0, 0, 0, 0, 0)
+    }
+    let mut scale = dec_scale(d)
+    let mut v = dec_limb_from_dec(d)
+    while scale > 0 {
+        let dv = dec_limb_div_small(v, 10)
+        if dv.rem != 0 {
+            return dec_from_limb3(v, dec_is_negative(d), scale)
+        }
+        v = dv.q
+        scale = scale - 1
+    }
+    return dec_from_limb3(v, dec_is_negative(d), 0)
+}
+
+// Parse and force exactly 2 decimal places (round half away from zero).
+fn dec_money(s: str) -> DecResult {
+    let p = dec_parse(s)
+    if p.ok == 0 {
+        return p
+    }
+    return dec_round_dp(p.value, 2)
+}
+
+// Round any Decimal to 2 dp (cash amount).
+fn dec_as_money(d: Decimal) -> DecResult {
+    return dec_round_dp(d, 2)
+}
+
+// True when scale is exactly 2 (posted money shape).
+fn dec_is_money(d: Decimal) -> i64 {
+    if dec_scale(d) == 2 {
+        return 1
+    }
+    return 0
+}
+
+// percent is e.g. 8.5 meaning 8.5%. Result rounded to 2 dp.
+// amount * (percent/100)
+fn dec_percent_of(amount: Decimal, percent: Decimal) -> DecResult {
+    let hundred = dec_from_i64(100)
+    let rate = dec_div_scale(percent, hundred, 8)
+    if rate.ok == 0 {
+        return rate
+    }
+    let raw = dec_mul(amount, rate.value)
+    if raw.ok == 0 {
+        return raw
+    }
+    return dec_round_dp(raw.value, 2)
+}
+
+// amount + percent_of(amount, percent), both rounded to 2 dp.
+fn dec_with_percent(amount: Decimal, percent: Decimal) -> DecResult {
+    let tax = dec_percent_of(amount, percent)
+    if tax.ok == 0 {
+        return tax
+    }
+    let base = dec_as_money(amount)
+    if base.ok == 0 {
+        return base
+    }
+    return dec_add(base.value, tax.value)
+}
+
+// Sum helpers (no Vec<Decimal> — language L4; loop with dec_add in app code).
+fn dec_sum2(a: Decimal, b: Decimal) -> DecResult {
+    return dec_add(a, b)
+}
+
+fn dec_sum3(a: Decimal, b: Decimal, c: Decimal) -> DecResult {
+    let s = dec_add(a, b)
+    if s.ok == 0 {
+        return s
+    }
+    return dec_add(s.value, c)
+}

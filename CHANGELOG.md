@@ -2,16 +2,20 @@
 
 ## [Unreleased]
 
-### bagaDecimal P0 — fixed-precision decimal package
-- New `app-product/bagadecimal` (product name **bagaDecimal**), inspired by
+### bagaDecimal — decimal + Postgres NUMERIC (accounting)
+- New `app-product/bagadecimal` (**bagaDecimal**), inspired by
   [paupino/rust-decimal](https://github.com/paupino/rust-decimal): 96-bit
-  mantissa + scale + sign under a standard `src/` layout
-  (`ops/`, `parse/`, `format/`, `round/`, `convert/`, `math/`).
-- P0 API: `dec_parse`, `dec_to_string`, `dec_add`/`sub`/`mul`/`div`,
-  `dec_round_dp` (half away from zero), `dec_cmp`/`abs`/`neg`,
-  `dec_from_i64_scale` / `dec_to_i64`. Fallible ops → `DecResult`.
-- `tests/decimal_test.baga` + `examples/money.baga` (25.12 × 8.5% = 27.26).
-- PLAN/gaps document D1–D6 language probes (no u128, no macros, no `Result`).
+  mantissa + scale under `src/` (`ops/`, `parse/`, `format/`, `round/`,
+  `convert/`, `money/`, `pg/`, `math/`).
+- Core: `dec_parse`, `dec_to_string`, `dec_add/sub/mul/div`, `dec_round_dp`,
+  cmp/abs/neg, i64 convert → `DecResult`.
+- **Accounting:** `dec_money`, `dec_as_money`, `dec_normalize`,
+  `dec_percent_of`, `dec_with_percent`, `dec_sum2/3`.
+- **Postgres NUMERIC** (text protocol, like rust-decimal db-postgres):
+  `dec_to_pg` / `dec_from_pg`, `pg_param_decimal`, `pg_cell_decimal`,
+  `pg_col_is_numeric` (OID 1700). Dependency: `pgbaga`.
+- Tests: `tests/decimal_test.baga`, live `tests/decimal_pg_test.baga`
+  (INSERT/SELECT/SUM numeric), `examples/money.baga` (27.26).
 
 ### TLS 1.3 client, T8 — `https://` + openssl mock (no real OAuth account)
 - Application traffic secrets and `TlsConn` (`tls_connect`, seal/open,

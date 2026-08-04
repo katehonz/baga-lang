@@ -82,6 +82,18 @@ All ops are `dec_add` / `dec_mul` / … — acceptable.
 Parse, arith, and round return `DecResult`. Integer extract uses `DecI64`.
 Same L3 family as the rest of the stack.
 
+### D7 — no `Vec<Decimal>` (L4)
+
+**Symptom.** Cannot `vec_push` of `Decimal` for invoice lines.
+
+**Workaround.** `dec_sum2` / `dec_sum3` or loop variables; parallel
+`Vec<str>` of `dec_to_pg` strings when batching.
+
+**Severity.** Medium for multi-line documents.
+
+**Verdict.** Language L4; app-level loops are fine for P0.5.
+
 ## Closed
 
 - P0 money path (parse, +−×÷, round_dp, format, money example).
+- P0.5 Postgres NUMERIC text bridge + accounting helpers (`decimal_pg_test`).

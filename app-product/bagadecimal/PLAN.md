@@ -6,9 +6,10 @@
 
 **Package name (sandak):** `bagadecimal`  
 **Product name:** bagaDecimal  
-**Status:** **P0 complete** (2026-08-04) · P1 next (checked ops, normalize API)  
-**Roadmap role:** apps probe **№11** — stresses big-integer-ish arithmetic,
-string parsers, rounding policy, and (later) Postgres `NUMERIC` / JSON money.
+**Status:** **P0 + accounting/PG path** (2026-08-04) · next: more rounding modes,
+checked overflow, JSON string money  
+**Roadmap role:** apps probe **№11** — money type + Postgres `NUMERIC` for
+accounting apps (like rust-decimal + db-postgres).
 
 ---
 
@@ -68,7 +69,8 @@ adjustment / overflow check.
 | `from_i64` / `to_i64` / f64 lossy | `src/convert/` | i64 exact | f64 lossy | |
 | `pow`, `sqrt`, `ln`, `exp` | `src/math/` | | √ subset | fuller maths |
 | serde / JSON string | later / std json helpers | | string codec | |
-| Postgres `NUMERIC` | via ormbaga/pgbaga | | | wire codec |
+| Postgres `NUMERIC` | `src/pg` text bind/cell | ✅ text | | binary OID |
+| money helpers | `src/money` | ✅ | | |
 | `dec!` macro | **gap** (no macros) | parse at runtime | | |
 
 Out of scope v1: SIMD, const eval, arbitrary precision (`bigdecimal`-class),
@@ -78,35 +80,40 @@ serde features, diesel/postgres drivers (use package API from orm later).
 
 ## Implementation phases
 
-### P0 — core money path (ship bar)
+### P0 — core money path (ship bar) ✅
 
 1. `Decimal` + constructors: zero, one, `from_parts`, `from_i64_scale`,
    `from_str` (plain decimal, optional leading `+`/`-`).
 2. Format: `to_string` (preserve scale / trailing zeros like rust-decimal).
-3. Ops: `add`, `sub`, `mul`, `div` (div scale policy documented), `cmp`,
+3. Ops: `add`, `sub`, `mul`, `div` / `div_scale`, `cmp`,
    `is_zero`, `is_negative`, `abs`, `neg`.
 4. Round: `round_dp(d, n)` MidpointAwayFromZero (common for money).
-5. Tests: golden vectors ported from rust-decimal / hand-checked money cases.
-6. `examples/money.baga` CLI: parse amounts, tax %, print total.
+5. Tests: `tests/decimal_test.baga` (30+ checks) + package smoke.
+6. `examples/money.baga`: 25.12 × 8.5% → **27.26**.
 
-**Exit:** `sandak build` + `tests/decimal_test.baga` green in monorepo suite.
+**Exit:** `sandak build` + `tests/decimal_test.baga` green ✅
+
+### P0.5 — accounting + Postgres NUMERIC ✅
+
+- `src/money/`: `dec_money`, `dec_as_money`, `dec_normalize`, `dec_percent_of`,
+  `dec_with_percent`, `dec_sum2/3` (no `Vec<Decimal>` — L4).
+- `src/pg/`: `dec_to_pg` / `dec_from_pg`, `pg_param_decimal`, `pg_cell_decimal`,
+  `pg_col_is_numeric` (OID 1700) — text protocol, same idea as rust-decimal’s
+  postgres feature without binary format.
+- Live: `tests/decimal_pg_test.baga` (CREATE / INSERT $N::numeric / SELECT / SUM).
 
 ### P1 — robustness
 
-- Overflow / scale-out-of-range → structured error (`DecResult { ok, err, value }`
-  L3 stand-in until sum types).
-- `normalize`, `trunc`, `floor`, `ceil`, more rounding modes.
+- `trunc`, `floor`, `ceil`, more rounding modes (banker's).
 - `from_str` scientific notation (`1.2e-3`).
-- Checked ops: `checked_add` / `checked_mul` that never panic.
-- More vectors; property-style tests via `--test-specs` where specs fit.
+- Checked ops naming consistency; more edge vectors.
+- JSON: always serialize money as **string**, never f64.
 
-### P2 — maths + integrations
+### P2 — maths + binary NUMERIC (optional)
 
-- `src/math/`: `powi`, `sqrt` (Newton), optional `ln`/`exp` with documented
-  domain (or honest “unsupported”).
-- JSON helpers: encode as string (never float) for std/json.
-- Optional pg NUMERIC encode/decode experiment (separate file, feature-flagged
-  by docs only — no cargo features in sandak yet).
+- `src/math/`: `powi`, `sqrt`.
+- Binary NUMERIC wire (if pgbaga gains binary binds) — not required for
+  accounting if text `$1::numeric` stays the default.
 
 ---
 

@@ -1,64 +1,98 @@
 # bagaDecimal
 
-**Fixed-precision decimal arithmetic** for Baga — money, rates, and exact
-base-10 math without `f64` round-off.
-
-Inspired by [paupino/rust-decimal](https://github.com/paupino/rust-decimal)
-(96-bit mantissa + scale + sign, ~28 significant digits).
+**Fixed-precision decimal** for Baga — счетоводство, цени, ДДС, курсове — без
+`f64` грешки. Модел: [paupino/rust-decimal](https://github.com/paupino/rust-decimal)
+(96-bit mantissa + scale + sign).
 
 | | |
 |--|--|
-| **sandak name** | `bagadecimal` |
-| **Layout** | `src/` modules (not a flat package root) |
-| **Status** | **P0 shipped** — parse/ops/round/format |
-| **Plan** | [PLAN.md](PLAN.md) · gaps: [gaps.md](gaps.md) |
+| **sandak** | `bagadecimal` **0.2.0** |
+| **Layout** | `src/` modules |
+| **Postgres** | `NUMERIC` text bridge (`src/pg`) — като rust-decimal `db-postgres` |
+| **Plan** | [PLAN.md](PLAN.md) · [gaps.md](gaps.md) |
 
-## Quick start
+## Счетоводен пример
 
 ```baga
 import "bagadecimal/src/decimal.baga"
 
-let price = dec_parse("25.12")
-let rate  = dec_parse("0.085")
-let tax   = dec_round_dp(dec_mul(price.value, rate.value).value, 2)
-let total = dec_round_dp(dec_add(price.value, tax.value).value, 2)
-print(dec_to_string(total.value))   // "27.26"
+let price = dec_money("25.12")           // scale 2
+let line  = dec_with_percent(price.value, dec_parse("8.5").value)
+// line.value == 27.26  (ДДС 8.5%)
+print(dec_to_string(line.value))
 ```
 
-Fallible ops return `DecResult { ok, err, value }`. There is no `dec!(…)`
-macro — use `dec_parse` (PLAN D3).
+## PostgreSQL `NUMERIC` (text protocol / pgbaga)
+
+Същият подход като rust-decimal върху text format: сумата е decimal string
+на wire-а, без binary float.
+
+```baga
+import "bagadecimal/src/decimal.baga"   // includes pg helpers
+// or: import "bagadecimal/src/pg/pg.baga"
+
+// INSERT
+let vals = vec_new()
+let nulls = vec_new()
+pg_param_str(vals, nulls, "фактура-1")
+pg_param_decimal(vals, nulls, dec_money("1500.00").value)
+let r = pg_query_params(c,
+    "INSERT INTO lines(label, amount) VALUES ($1, $2::numeric)",
+    vals, nulls)?
+
+// SELECT
+let s = pg_query(c, "SELECT amount FROM lines")?
+let amt = pg_cell_decimal(s, 0, 0)       // DecResult
+// pg_col_is_numeric(s, 0) == 1          // OID 1700
+// pg_cell_decimal_or_zero(s, 0, 0)      // NULL → 0
+```
+
+Live proof: `tests/decimal_pg_test.baga` (същият Postgres като `pg_test`).
+
+| Helper | Role |
+|--------|------|
+| `dec_to_pg` / `dec_from_pg` | pure text codec |
+| `pg_param_decimal` | bind `$N::numeric` |
+| `pg_cell_decimal` | read cell → `Decimal` |
+| `pg_col_is_numeric` | OID 1700 |
+| `pg_cell_decimal_or_zero` | NULL-safe |
+
+**Не ползвай** `pg_cell_f64` за пари.
 
 ## Layout
 
 ```
-bagadecimal/
-├── sandak.toml
-├── README.md  PLAN.md  gaps.md
-├── src/
-│   ├── decimal.baga     # Decimal + facade imports
-│   ├── ops/             # arith, cmp
-│   ├── parse/           # from string
-│   ├── format/          # to string
-│   ├── round/           # round_dp + modes
-│   ├── convert/         # i64 / f64 bridges
-│   └── math/            # P2: powi, sqrt, …
-├── examples/money.baga
-├── tests/smoke.baga
-└── docs/design-notes.md
+src/
+  types.baga limb.baga decimal.baga   # core + entry
+  ops/   parse/  format/  round/  convert/
+  money/   # dec_money, percent, normalize, sum2/3
+  pg/      # NUMERIC bridge (depends on pgbaga)
+  math/    # P2 stubs
+examples/money.baga
+tests/smoke.baga
 ```
-
-Build:
 
 ```bash
-cd app-product/bagadecimal
-sandak build          # typechecks entry = src/decimal.baga
+cd app-product/bagadecimal && sandak build
+./baga -I . -I app-product tests/decimal_test.baga
+./baga -I . -I app-product tests/decimal_pg_test.baga   # needs Postgres
 ```
 
-## Relation to the stack
+## API snapshot (P0 + accounting)
 
-Pure library — no HTTP/DB. Intended consumers: business logic in `apps/*`,
-JSON money as **strings**, later optional Postgres `NUMERIC` helpers.
+| Area | Functions |
+|------|-----------|
+| Construct | `dec_zero`, `dec_one`, `dec_from_parts`, `dec_from_i64(_scale)`, `dec_parse` |
+| Format | `dec_to_string`, `dec_to_string_normalized` |
+| Ops | `dec_add/sub/mul/div/div_scale`, `dec_cmp/eq/lt`, `dec_abs/neg` |
+| Round | `dec_round_dp` (half away from zero) |
+| Money | `dec_money`, `dec_as_money`, `dec_is_money`, `dec_normalize`, `dec_percent_of`, `dec_with_percent`, `dec_sum2/3` |
+| PG | see table above |
 
-## License
+Fallible paths return `DecResult { ok, err, value }`.
 
-Same as the monorepo.
+## Gaps (език)
+
+- няма `Vec<Decimal>` (L4) → `dec_sum2/3` + цикъл с `dec_add`
+- няма `dec!` macro → `dec_parse` / `dec_money`
+- няма operator overloading → `dec_add(a,b)`

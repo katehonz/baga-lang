@@ -1,0 +1,129 @@
+// decimal_pg_test.baga — bagaDecimal ↔ Postgres NUMERIC (live).
+// Requires local Postgres like pg_test (bagatest / PG* env).
+//
+// Proves the accounting path: bind Decimal as $1::numeric, read back,
+// round-trip money amounts without f64.
+
+import "bagadecimal/src/decimal.baga"
+import "pgbaga/pg.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" {
+        return def
+    }
+    return v
+}
+
+fn main() -> i64 !Net !IO !Random {
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(cfg("PGPORT", "5432")?)
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+    let database = cfg("PGDATABASE", "postgres")?
+
+    let conn = pg_connect(host, port, user, password, database)?
+    if conn.ok == 0 {
+        eprintln(concat("decimal_pg_test: connect failed: ", conn.err))
+        eprintln("(need local Postgres + bagatest role — same as pg_test)")
+        return 1
+    }
+    let mut c = conn
+
+    // --- pure codec ---
+    let m = dec_money("1234.50")
+    check("money_parse", m.ok == 1 && dec_to_pg(m.value) == "1234.50")
+    let back = dec_from_pg("99.90")
+    check("from_pg", back.ok == 1 && dec_to_string(back.value) == "99.90")
+    check("reject_nan", dec_from_pg("NaN").ok == 0)
+
+    // --- live table ---
+    let d1 = pg_query(c, "DROP TABLE IF EXISTS baga_decimal_demo")?
+    c = d1.conn
+    check("drop", d1.ok == 1)
+    let d2 = pg_query(c, "CREATE TABLE baga_decimal_demo (
+        id serial PRIMARY KEY,
+        label text NOT NULL,
+        amount numeric(18,2) NOT NULL,
+        rate numeric(10,6)
+    )")?
+    c = d2.conn
+    check("create", d2.ok == 1)
+
+    // insert money + rate via parameterized NUMERIC
+    let amount = dec_money("25.12")
+    let rate = dec_parse("0.085000")
+    check("prep", amount.ok == 1 && rate.ok == 1)
+    let vals = vec_new()
+    let nulls = vec_new()
+    pg_param_str(vals, nulls, "line-1")
+    pg_param_decimal(vals, nulls, amount.value)
+    pg_param_decimal(vals, nulls, rate.value)
+    let ins = pg_query_params(c,
+        "INSERT INTO baga_decimal_demo(label, amount, rate) VALUES ($1, $2::numeric, $3::numeric)",
+        vals, nulls)?
+    c = ins.conn
+    check("insert", ins.ok == 1)
+
+    // second line for sum
+    let vals2 = vec_new()
+    let nulls2 = vec_new()
+    pg_param_str(vals2, nulls2, "line-2")
+    pg_param_decimal(vals2, nulls2, dec_money("10.00").value)
+    pg_param_null(vals2, nulls2)
+    let ins2 = pg_query_params(c,
+        "INSERT INTO baga_decimal_demo(label, amount, rate) VALUES ($1, $2::numeric, $3::numeric)",
+        vals2, nulls2)?
+    c = ins2.conn
+    check("insert2", ins2.ok == 1)
+
+    // select and decode
+    let sel = pg_query(c, "SELECT label, amount, rate FROM baga_decimal_demo ORDER BY id")?
+    c = sel.conn
+    check("select_ok", sel.ok == 1 && sel.nrows == 2)
+    check("oid_numeric", pg_col_is_numeric(sel, 1) == 1)
+
+    let a0 = pg_cell_decimal(sel, 0, 1)
+    check("cell_amount", a0.ok == 1 && dec_to_string(a0.value) == "25.12")
+    let r0 = pg_cell_decimal(sel, 0, 2)
+    check("cell_rate", r0.ok == 1)
+    // rate may come back as 0.085000 — compare numerically
+    check("cell_rate_eq", dec_eq(r0.value, dec_parse("0.085").value) == 1)
+
+    let a1 = pg_cell_decimal(sel, 1, 1)
+    check("cell2", a1.ok == 1 && dec_to_string(a1.value) == "10.00")
+    check("null_rate", pg_isnull(sel, 1, 2) == 1)
+    check("null_or_zero", dec_is_zero(pg_cell_decimal_or_zero(sel, 1, 2)) == 1)
+
+    // SUM in SQL still returns numeric text — parse as Decimal
+    let sumq = pg_query(c, "SELECT SUM(amount) FROM baga_decimal_demo")?
+    c = sumq.conn
+    let sumd = pg_cell_decimal(sumq, 0, 0)
+    check("sum_db", sumd.ok == 1 && dec_to_string(sumd.value) == "35.12")
+
+    // client-side sum of lines (no Vec<Decimal> — L4)
+    let scli = dec_sum2(a0.value, a1.value)
+    check("sum_client", scli.ok == 1 && dec_eq(scli.value, sumd.value) == 1)
+
+    // tax on first line (accounting helper)
+    let with_tax = dec_with_percent(a0.value, dec_parse("8.5").value)
+    check("with_percent", with_tax.ok == 1 && dec_to_string(with_tax.value) == "27.26")
+
+    let drop = pg_query(c, "DROP TABLE baga_decimal_demo")?
+    c = drop.conn
+    pg_close(c)?
+
+    print("decimal_pg_test: all passed")
+    return 0
+}

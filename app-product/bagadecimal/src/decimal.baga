@@ -1,7 +1,8 @@
 // decimal.baga — bagaDecimal package entry (sandak).
 //
-// Pulls the full module graph. Public API lives in the imported modules;
-// start with `import "bagadecimal/src/decimal.baga"`.
+// Core money type + optional Postgres NUMERIC bridge (src/pg).
+//   import "bagadecimal/src/decimal.baga"     // full graph
+//   import "bagadecimal/src/pg/pg.baga"       // only if you need PG helpers
 
 import "types.baga"
 import "limb.baga"
@@ -11,4 +12,6 @@ import "parse/parse.baga"
 import "format/format.baga"
 import "round/round.baga"
 import "convert/convert.baga"
+import "money/money.baga"
 import "math/math.baga"
+import "pg/pg.baga"

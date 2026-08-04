@@ -1,0 +1,76 @@
+// pg.baga — bagaDecimal ↔ PostgreSQL NUMERIC (text protocol).
+//
+// Mirrors rust-decimal's postgres integration approach for the common case:
+// NUMERIC travels as decimal text on the wire (pgbaga is text-format today).
+//
+//   INSERT ... VALUES ($1::numeric)  with pg_param_decimal(...)
+//   SELECT amount::text / amount     with pg_cell_decimal(...)
+//
+// OID 1700 = numeric; 1231 = numeric[] (array not fully decoded here).
+
+import "../types.baga"
+import "../parse/parse.baga"
+import "../format/format.baga"
+import "pgbaga/pg.baga"
+
+// Postgres type OIDs (src/include/catalog/pg_type.dat).
+fn dec_pg_oid_numeric() -> i64 {
+    return 1700
+}
+
+fn dec_pg_oid_numeric_array() -> i64 {
+    return 1231
+}
+
+// Encode for text-format Bind. Same as dec_to_string (preserves scale).
+fn dec_to_pg(d: Decimal) -> str {
+    return dec_to_string(d)
+}
+
+// Decode a NUMERIC cell (or any decimal text Postgres returns).
+fn dec_from_pg(s: str) -> DecResult {
+    if s == "" {
+        return dec_err("empty numeric text")
+    }
+    // Postgres may return "NaN" / "Infinity" — reject for money safety.
+    if s == "NaN" || s == "Infinity" || s == "-Infinity" {
+        return dec_err("non-finite numeric")
+    }
+    return dec_parse(s)
+}
+
+// Column is NUMERIC / NUMERIC[].
+fn pg_col_is_numeric(r: PgResult, col: i64) -> i64 {
+    let oid = pg_coltype(r, col)
+    if oid == dec_pg_oid_numeric() || oid == dec_pg_oid_numeric_array() {
+        return 1
+    }
+    return 0
+}
+
+// Bind Decimal as text param (use with $N::numeric in SQL).
+fn pg_param_decimal(vals: Vec<str>, nulls: Vec<i64>, d: Decimal) -> i64 {
+    vec_push(vals, dec_to_pg(d))
+    vec_push(nulls, 0)
+    return 0
+}
+
+// Read cell as Decimal. NULL → ok=0 err="null".
+fn pg_cell_decimal(r: PgResult, row: i64, col: i64) -> DecResult {
+    if pg_isnull(r, row, col) == 1 {
+        return dec_err("null")
+    }
+    return dec_from_pg(pg_cell(r, row, col))
+}
+
+// NULL-safe: NULL or parse error → zero (for display totals; check isnull when needed).
+fn pg_cell_decimal_or_zero(r: PgResult, row: i64, col: i64) -> Decimal {
+    if pg_isnull(r, row, col) == 1 {
+        return dec_zero()
+    }
+    let p = dec_from_pg(pg_cell(r, row, col))
+    if p.ok == 0 {
+        return dec_zero()
+    }
+    return p.value
+}
