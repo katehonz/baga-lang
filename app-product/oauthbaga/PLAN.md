@@ -1,7 +1,7 @@
 # oauthbaga — OAuth proxy (plan)
 
 Date: 2026-08-04
-Status: P0 done (provider + proxy, live full cycle over plain HTTP)
+Status: P0 + P1 done (provider + proxy; Postgres persistence live-tested)
 Goal: apps-roadmap **№10** — the integration exam: HTTP client (№2) +
 jwtbaga + sessions, pages through tplbaga (№7 feeds №10, rule 4).
 
@@ -23,12 +23,20 @@ jwtbaga + sessions, pages through tplbaga (№7 feeds №10, rule 4).
 5. `tests/oauth_test.baga` — live full cycle (authorize → exchange →
    bearer → protected → refresh/rotation → browser flow → logout).
 
-### P1 — the Postgres leg ("всичко заедно")
+### P1 — the Postgres leg ("всичко заедно") ✅
 
 - `pgbaga`/`ormbaga` persistence: `oauth_codes` / `oauth_refresh` /
-  `oauth_sessions` (migrations like apps/registry).
-- Then multi-worker proxy (fmrbaga pool) — sessions survive across
-  workers because they live in the DB, not in one serial node.
+  `oauth_sessions` (goose-style migrations, `$N` parameterized queries),
+  switched by `OAUTH_PG=1` + `PG*`; in-memory maps remain the dev backend.
+- One DB connection per HTTP connection (fmr legacy idiom) — no struct
+  rebinding across the handler chain, and the natural path to a worker
+  pool later.
+- `tests/oauth_pg_test.baga` — live full cycle + DB-level proofs (code
+  row consumed, refresh rotated, session row appears/dies on logout);
+  wired into `make test` like registry_test.
+- Still open here: multi-worker accept — sessions/codes/refresh are
+  DB-shared now, but the CSRF `states` map is per-node in memory; moving
+  it (or a pool with per-worker state) is the remaining step.
 
 ### P2 — the TLS leg (G6)
 
@@ -41,3 +49,10 @@ jwtbaga + sessions, pages through tplbaga (№7 feeds №10, rule 4).
 1. `sandak build` oauthbaga OK (deps: std, httpdbaga, jwtbaga, tplbaga).
 2. `oauth_test` all passed (live loopback, redirects followed by hand).
 3. `demo.baga` boots both nodes; a browser can complete the flow.
+
+## Success criteria (P1) — met
+
+1. `OAUTH_PG=1 PGDATABASE=baga_oauth` run: migrations apply, full cycle
+   green, in-memory mode unaffected (`oauth_test` still green).
+2. `oauth_pg_test` proves the store at the DB level (row counts).
+3. Parameterized queries only — no literal interpolation of user values.

@@ -8,6 +8,7 @@
 
 import "oauth.baga"
 import "tplbaga/tpl.baga"
+import "ormbaga/orm.baga"
 import "std/net/http_client.baga"
 import "std/json/json.baga"
 import "std/str/str.baga"
@@ -15,14 +16,108 @@ import "std/time/time.baga"
 import "std/random/random.baga"
 
 // ---------- proxy store ----------
+//
+// Sessions: kind 0 = in-memory JSON records, kind 1 = Postgres
+// (oauth_sessions). States stay in memory on both backends: they are
+// per-node, one-time, seconds-lived (fine for a serial node; a future
+// worker pool would move them too).
 
 struct ProxyStore {
-    sessions: Map<str, str>,   // sid -> {"sub","scope","access","refresh","exp"(s)}
+    kind: i64,                 // 0 = in-memory, 1 = Postgres
+    sessions: Map<str, str>,   // kind 0: sid -> {"sub","scope","access","refresh","exp"(s)}
     states: Map<str, i64>      // pending authorize states -> 1
 }
 
 fn px_store_new() -> ProxyStore {
-    return ProxyStore { sessions: map_new(), states: map_new() }
+    return ProxyStore { kind: 0, sessions: map_new(), states: map_new() }
+}
+
+fn px_store_pg() -> ProxyStore {
+    return ProxyStore { kind: 1, sessions: map_new(), states: map_new() }
+}
+
+struct PxSess {
+    ok: i64,
+    sub: str,
+    scope: str,
+    access: str,
+    refresh: str,
+    exp_s: i64
+}
+
+fn px_sess_bad() -> PxSess {
+    return PxSess { ok: 0, sub: "", scope: "", access: "", refresh: "", exp_s: 0 }
+}
+
+fn px_session_put(st: ProxyStore, db: OrmDb, sid: str, t: PxTokens) -> i64 !IO !Net !Time {
+    let exp = oa_now_s()? + t.expires_in
+    if st.kind == 0 {
+        let mut rec = "{"
+        rec = concat(rec, oa_jpair("sub", t.sub))
+        rec = concat(rec, concat(",", oa_jpair("scope", t.scope)))
+        rec = concat(rec, concat(",", oa_jpair("access", t.access)))
+        rec = concat(rec, concat(",", oa_jpair("refresh", t.refresh)))
+        rec = concat(rec, concat(",", oa_jnum("exp", exp)))
+        rec = concat(rec, "}")
+        map_set(st.sessions, sid, rec)
+        return 1
+    }
+    let vals: Vec<str> = vec_new()
+    vec_push(vals, sid)
+    vec_push(vals, t.sub)
+    vec_push(vals, t.scope)
+    vec_push(vals, t.access)
+    vec_push(vals, t.refresh)
+    vec_push(vals, int_to_str(exp))
+    let ex = orm_exec_params_str(db,
+        "INSERT INTO oauth_sessions (sid, sub, scope, access, refresh, expires_s)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (sid) DO UPDATE SET
+           sub = $2, scope = $3, access = $4, refresh = $5, expires_s = $6", vals)?
+    return ex.ok
+}
+
+fn px_session_get(st: ProxyStore, db: OrmDb, sid: str) -> PxSess !IO !Net {
+    if st.kind == 0 {
+        if map_has(st.sessions, sid) == 0 {
+            return px_sess_bad()
+        }
+        let rec = map_get(st.sessions, sid)
+        return PxSess {
+            ok: 1,
+            sub: oa_rec_str(rec, "sub"),
+            scope: oa_rec_str(rec, "scope"),
+            access: oa_rec_str(rec, "access"),
+            refresh: oa_rec_str(rec, "refresh"),
+            exp_s: oa_rec_num(rec, "exp")
+        }
+    }
+    let qvals: Vec<str> = vec_new()
+    vec_push(qvals, sid)
+    let q = orm_query_params_str(db,
+        "SELECT sub, scope, access, refresh, expires_s FROM oauth_sessions WHERE sid = $1", qvals)?
+    if q.ok == 0 || q.nrows == 0 {
+        return px_sess_bad()
+    }
+    return PxSess {
+        ok: 1,
+        sub: orm_cell(q, 0, 0),
+        scope: orm_cell(q, 0, 1),
+        access: orm_cell(q, 0, 2),
+        refresh: orm_cell(q, 0, 3),
+        exp_s: parse_int(orm_cell(q, 0, 4))
+    }
+}
+
+fn px_session_del(st: ProxyStore, db: OrmDb, sid: str) -> i64 !IO !Net {
+    if st.kind == 0 {
+        map_del(st.sessions, sid)
+        return 1
+    }
+    let vals: Vec<str> = vec_new()
+    vec_push(vals, sid)
+    let ex = orm_exec_params_str(db, "DELETE FROM oauth_sessions WHERE sid = $1", vals)?
+    return ex.ok
 }
 
 // ---------- cookies ----------
@@ -109,32 +204,6 @@ fn px_refresh(cfg: OAuthCfg, refresh: str) -> PxTokens !Net !IO {
     form = concat(form, concat("&client_id=", cfg.client_id))
     form = concat(form, concat("&client_secret=", cfg.client_secret))
     return px_call_token(cfg, form)?
-}
-
-// ---------- sessions ----------
-
-fn px_session_record(t: PxTokens) -> str !Time {
-    let mut rec = "{"
-    rec = concat(rec, oa_jpair("sub", t.sub))
-    rec = concat(rec, concat(",", oa_jpair("scope", t.scope)))
-    rec = concat(rec, concat(",", oa_jpair("access", t.access)))
-    rec = concat(rec, concat(",", oa_jpair("refresh", t.refresh)))
-    rec = concat(rec, concat(",", oa_jnum("exp", oa_now_s()? + t.expires_in)))
-    rec = concat(rec, "}")
-    return rec
-}
-
-fn px_session_new(st: ProxyStore, t: PxTokens) -> str !Random !Time {
-    let sid = oa_rand_hex(16)?
-    let rec = px_session_record(t)?
-    map_set(st.sessions, sid, rec)
-    return sid
-}
-
-fn px_session_update(st: ProxyStore, sid: str, t: PxTokens) -> i64 !Time {
-    let rec = px_session_record(t)?
-    map_set(st.sessions, sid, rec)
-    return 0
 }
 
 // ---------- pages (tplbaga, apps-roadmap №7) ----------

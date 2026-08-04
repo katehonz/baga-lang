@@ -50,15 +50,21 @@ BAGA=../../baga sandak build
 ../../baga -I ../.. -I .. demo.baga     # provider :18691, proxy :18690
 # open http://127.0.0.1:18690/ and follow "log in"
 
-./baga -I . -I app-product tests/oauth_test.baga
+./baga -I . -I app-product tests/oauth_test.baga          # in-memory
+OAUTH_PG=1 PGDATABASE=baga_oauth \
+  ./baga -I . -I app-product tests/oauth_pg_test.baga     # Postgres
 ```
 
-Env: `OAUTH_PORT` (proxy), `OAUTH_PROVIDER_PORT`, `OAUTH_SECRET`.
+Env: `OAUTH_PORT` (proxy), `OAUTH_PROVIDER_PORT`, `OAUTH_SECRET`, and
+for the Postgres backend `OAUTH_PG=1` + `PGHOST/PGPORT/PGUSER/PGPASSWORD/
+PGDATABASE` (migrations apply at boot; one DB connection per HTTP
+connection, the fmr legacy idiom).
 
 ## Honest limits
 
 See [`gaps.md`](gaps.md): plain HTTP only (O1/TLS-G6); no URL
-percent-coding in std (O2); sessions/codes are JSON records in maps,
-not structs (L4, O3); `TokenReply`/`PxTokens` are L3 stand-ins (O4);
-serial nodes with in-memory state — Postgres persistence + workers are
-P1 (O5).
+percent-coding in std (O2); the in-memory backend keeps JSON records in
+maps (L4, O3); `TokenReply`/`PxTokens` are L3 stand-ins (O4); nodes stay
+serial — the CSRF `states` map is the last thing keeping them from a
+worker pool (O5); per-connection DB costs a SCRAM handshake per request
+(O7).

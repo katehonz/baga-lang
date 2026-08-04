@@ -32,9 +32,13 @@ G7, oa_form here).
 
 ## O3 — JSON records in Map<str,str> instead of struct values (L4)
 
-**Symptom.** Codes / refresh tokens / sessions are JSON strings in maps;
-every read re-parses (`oa_rec_str`/`oa_rec_num`). `Map<str, Session>` or
-`Vec<struct>` would delete the codec entirely.
+**Symptom.** The in-memory backend keeps codes / refresh tokens / sessions
+as JSON strings in maps; every read re-parses (`oa_rec_str`/`oa_rec_num`).
+`Map<str, Session>` or `Vec<struct>` would delete the codec entirely.
+
+**Status after P1.** The Postgres backend stores real columns and both
+backends meet at typed rows (`OaCode`/`OaTok`/`PxSess`) — the JSON codec
+is now contained to the dev backend.
 
 **Verdict.** L4 — same lineage as tplbaga P3 / queuebaga disk structs.
 
@@ -45,20 +49,30 @@ every read re-parses (`oa_rec_str`/`oa_rec_num`). `Map<str, Session>` or
 
 **Verdict.** L3 migrate target, alongside jsonrpcbaga R1 / tplbaga P2.
 
-## O5 — go_bg carries i64/cell2 only → serial nodes + in-memory state
+## O5 — go_bg carries i64/cell2 only → serial nodes
 
 **Symptom.** Workers cannot receive a config struct or a store; the nodes
-rebuild config from ports + env inside the serve loop, and shared state
-forces serial accept (kvbaga idiom). A multi-worker proxy needs the state
-in Postgres — exactly the P1 leg.
+rebuild config from ports + env inside the serve loop.
 
 **Workaround.** `cell2(port, other_port)`; env for secrets.
 
-**Severity.** Structural until L5/struct-carrying channels or DB-backed
-state.
+**Status after P1.** The state half is solved — codes/refresh/sessions
+live in Postgres and each HTTP connection opens its own (fmr legacy
+idiom), which is concurrency-safe. The nodes stay serial anyway because
+the CSRF `states` map is still per-node in memory; moving it to the DB
+(or per-worker state) is the remaining step to a pool.
 
-**Verdict.** Q1 lineage (queuebaga). P1 closes it the honest way:
-pgbaga/ormbaga tables + fmrbaga-style worker pool.
+**Verdict.** Q1 lineage (queuebaga) — mostly closed by P1.
+
+## O7 — per-connection DB = one SCRAM handshake per request
+
+**Symptom.** The fmr legacy idiom spends a connect + SCRAM exchange on
+every HTTP request. Fine for a probe; real deployments want the
+keep-alive/pool mode (FMR_WORKERS>0 equivalent) with one DB per worker.
+
+**Severity.** Performance only.
+
+**Verdict.** Comes together with the worker-pool step in O5.
 
 ## Closed / fine
 

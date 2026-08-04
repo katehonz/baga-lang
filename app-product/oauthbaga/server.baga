@@ -3,24 +3,58 @@
 //
 // Two serial nodes (kvbaga idiom): the provider never calls itself and the
 // proxy's only outbound call is to the provider, so there is no
-// self-accept deadlock. State is per-node in-memory (JSON records in maps);
-// pgbaga/ormbaga persistence is P1 in the plan.
+// self-accept deadlock.
+//
+// State backends: OAUTH_PG=1 + PG* env → Postgres via ormbaga (migrations
+// at boot, one DB connection per HTTP connection — the fmr legacy idiom);
+// otherwise in-memory maps (dev).
 //
 //   provider: GET /oauth/authorize · POST /oauth/token · GET /api/me
 //   proxy:    GET /login · GET /callback · GET / · GET /logout
 
 import "oauth.baga"
 import "proxy.baga"
+import "schema.baga"
 import "httpdbaga/http.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
 import "std/net/tcp.baga"
 import "std/str/str.baga"
 import "std/json/json.baga"
 import "std/time/time.baga"
 import "std/random/random.baga"
 
+// ---------- boot ----------
+
+// Idempotent: both nodes may call it (migrate table records versions).
+fn oauth_boot_migrate() -> i64 !Net !IO !Random {
+    let db = orm_connect_env()?
+    if orm_ok_db(db) == 0 {
+        print(concat("oauthbaga: pg connect failed: ", orm_err_db(db)))
+        return 1
+    }
+    let up = migrate_up(db, oauth_migrations())?
+    if up.ok == 0 {
+        print(concat("oauthbaga: migrate failed: ", up.err))
+        orm_close(up.db)?
+        return 1
+    }
+    print(concat("oauthbaga migrate applied=", int_to_str(up.applied)))
+    orm_close(up.db)?
+    return 0
+}
+
+// kind 0 → bad handle (never touched); kind 1 → fresh env connection.
+fn oauth_pg_open(kind: i64) -> OrmDb !Net !IO !Random {
+    if kind == 0 {
+        return orm_db_bad("")
+    }
+    return orm_connect_env()?
+}
+
 // ---------- provider node ----------
 
-fn oauth_provider_http(req: Request, st: OAuthStore, cfg: OAuthCfg) -> Response !Time !Random {
+fn oauth_provider_http(req: Request, st: OAuthStore, db: OrmDb, cfg: OAuthCfg) -> Response !Time !Random !IO !Net {
     let m = http_method(req)
     let p = http_path_only(req)
     if m == "GET" && p == "/health" {
@@ -40,7 +74,7 @@ fn oauth_provider_http(req: Request, st: OAuthStore, cfg: OAuthCfg) -> Response 
         if redir != cfg.redirect_uri {
             return http_json_response(400, "{\"error\":\"invalid_request\",\"error_description\":\"redirect_uri mismatch\"}")
         }
-        let code = oa_issue_code(st, cfg, cid, sub, scope)?
+        let code = oa_issue_code(st, db, cfg, cid, sub, scope)?
         let mut loc = concat(concat(redir, "?code="), code)
         if state != "" {
             loc = concat(loc, concat("&state=", state))
@@ -48,7 +82,7 @@ fn oauth_provider_http(req: Request, st: OAuthStore, cfg: OAuthCfg) -> Response 
         return http_set_header(http_response(302, ""), "Location", loc)
     }
     if m == "POST" && p == "/oauth/token" {
-        let r = oa_token(st, cfg, http_body(req))?
+        let r = oa_token(st, db, cfg, http_body(req))?
         return http_json_response(r.status, r.json)
     }
     if m == "GET" && p == "/api/me" {
@@ -66,9 +100,17 @@ fn oauth_provider_http(req: Request, st: OAuthStore, cfg: OAuthCfg) -> Response 
 }
 
 fn oauth_provider_conn(fd: i64, st: OAuthStore, cfg: OAuthCfg) -> i64 !IO !Net !Time !Random {
+    let db = oauth_pg_open(st.kind)?
+    if st.kind == 1 && orm_ok_db(db) == 0 {
+        return http_respond(fd, http_json_response(500, "{\"error\":\"db_unavailable\"}"))?
+    }
     let req = http_read_request(fd)?
-    let resp = oauth_provider_http(req, st, cfg)?
-    return http_respond(fd, resp)?
+    let resp = oauth_provider_http(req, st, db, cfg)?
+    let w = http_respond(fd, resp)?
+    if st.kind == 1 {
+        orm_close(db)?
+    }
+    return w
 }
 
 // ctx = cell2(provider_port, proxy_port). Serial accept, shared store.
@@ -83,7 +125,14 @@ fn oauth_provider_serve(ctx: i64) -> i64 !Net !IO !Time !Random {
     if secret == "" {
         secret = "dev-secret"
     }
-    let st = oa_store_new()
+    let mut st = oa_store_new()
+    let pg_on = env("OAUTH_PG")?
+    if pg_on == "1" {
+        if oauth_boot_migrate()? != 0 {
+            return 1
+        }
+        st = oa_store_pg()
+    }
     let cfg = oauth_cfg(port, proxy_port, secret)
     while true {
         let fd = tcp_accept(listener)?
@@ -103,7 +152,7 @@ fn oauth_proxy_home_html(sub: str, scope: str) -> Response {
         "Content-Type", "text/html; charset=utf-8")
 }
 
-fn oauth_proxy_http(req: Request, st: ProxyStore, cfg: OAuthCfg) -> Response !Net !IO !Time !Random {
+fn oauth_proxy_http(req: Request, st: ProxyStore, db: OrmDb, cfg: OAuthCfg) -> Response !Net !IO !Time !Random {
     let m = http_method(req)
     let p = http_path_only(req)
     if m == "GET" && p == "/health" {
@@ -128,7 +177,10 @@ fn oauth_proxy_http(req: Request, st: ProxyStore, cfg: OAuthCfg) -> Response !Ne
         if t.ok == 0 {
             return http_json_response(502, "{\"error\":\"token_exchange_failed\"}")
         }
-        let sid = px_session_new(st, t)?
+        let sid = oa_rand_hex(16)?
+        if px_session_put(st, db, sid, t)? == 0 {
+            return http_json_response(500, "{\"error\":\"session_store_failed\"}")
+        }
         let mut resp = http_response(302, "")
         resp = http_set_header(resp, "Location", "/")
         resp = http_set_header(resp, "Set-Cookie", concat(concat("sid=", sid), "; Path=/; HttpOnly"))
@@ -137,7 +189,7 @@ fn oauth_proxy_http(req: Request, st: ProxyStore, cfg: OAuthCfg) -> Response !Ne
     if m == "GET" && p == "/logout" {
         let sid = px_cookie(http_header(req, "Cookie"), "sid")
         if sid != "" {
-            map_del(st.sessions, sid)
+            px_session_del(st, db, sid)?
         }
         let mut resp = http_response(302, "")
         resp = http_set_header(resp, "Location", "/")
@@ -146,29 +198,40 @@ fn oauth_proxy_http(req: Request, st: ProxyStore, cfg: OAuthCfg) -> Response !Ne
     }
     if m == "GET" && p == "/" {
         let sid = px_cookie(http_header(req, "Cookie"), "sid")
-        if sid == "" || map_has(st.sessions, sid) == 0 {
+        if sid == "" {
             return oauth_proxy_home_html("", "")
         }
-        let rec = map_get(st.sessions, sid)
-        if oa_rec_num(rec, "exp") <= oa_now_s()? {
+        let sess = px_session_get(st, db, sid)?
+        if sess.ok == 0 {
+            return oauth_proxy_home_html("", "")
+        }
+        if sess.exp_s <= oa_now_s()? {
             // transparent refresh with the stored refresh token
-            let t = px_refresh(cfg, oa_rec_str(rec, "refresh"))?
+            let t = px_refresh(cfg, sess.refresh)?
             if t.ok == 0 {
-                map_del(st.sessions, sid)
+                px_session_del(st, db, sid)?
                 return oauth_proxy_home_html("", "")
             }
-            px_session_update(st, sid, t)?
+            px_session_put(st, db, sid, t)?
             return oauth_proxy_home_html(t.sub, t.scope)
         }
-        return oauth_proxy_home_html(oa_rec_str(rec, "sub"), oa_rec_str(rec, "scope"))
+        return oauth_proxy_home_html(sess.sub, sess.scope)
     }
     return http_json_response(404, "{\"error\":\"not found\"}")
 }
 
 fn oauth_proxy_conn(fd: i64, st: ProxyStore, cfg: OAuthCfg) -> i64 !IO !Net !Time !Random {
+    let db = oauth_pg_open(st.kind)?
+    if st.kind == 1 && orm_ok_db(db) == 0 {
+        return http_respond(fd, http_json_response(500, "{\"error\":\"db_unavailable\"}"))?
+    }
     let req = http_read_request(fd)?
-    let resp = oauth_proxy_http(req, st, cfg)?
-    return http_respond(fd, resp)?
+    let resp = oauth_proxy_http(req, st, db, cfg)?
+    let w = http_respond(fd, resp)?
+    if st.kind == 1 {
+        orm_close(db)?
+    }
+    return w
 }
 
 // ctx = cell2(proxy_port, provider_port). Serial accept, shared store.
@@ -183,7 +246,14 @@ fn oauth_proxy_serve(ctx: i64) -> i64 !Net !IO !Time !Random {
     if secret == "" {
         secret = "dev-secret"
     }
-    let st = px_store_new()
+    let mut st = px_store_new()
+    let pg_on = env("OAUTH_PG")?
+    if pg_on == "1" {
+        if oauth_boot_migrate()? != 0 {
+            return 1
+        }
+        st = px_store_pg()
+    }
     let cfg = oauth_cfg(provider_port, port, secret)
     while true {
         let fd = tcp_accept(listener)?

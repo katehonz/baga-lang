@@ -269,6 +269,11 @@ test: $(BIN) sandak
 	@grep -q "registry_test: all passed" /tmp/baga_reg_out.txt \
 		&& echo "OK: registry publish/search/show + std HTTP клиент (live)" \
 		|| { echo "FAIL: registry_test (нужен е live Postgres)"; cat /tmp/baga_reg_out.txt; exit 1; }
+	@echo "=== oauth (app-product/oauthbaga, Postgres persistence) ==="
+	@OAUTH_PG=1 PGDATABASE=baga_oauth ./$(BIN) $(BAGAIFLAGS) tests/oauth_pg_test.baga > /tmp/baga_oauth_out.txt
+	@grep -q "oauth_pg_test: all passed" /tmp/baga_oauth_out.txt \
+		&& echo "OK: OAuth пълен цикъл с Postgres codes/refresh/sessions (live)" \
+		|| { echo "FAIL: oauth_pg_test (нужен е live Postgres)"; cat /tmp/baga_oauth_out.txt; exit 1; }
 	@echo "=== ws (app-product/wsbaga, RFC 6455 loopback) ==="
 	@./$(BIN) $(BAGAIFLAGS) --lib app-product/wsbaga/ws.baga | grep -q "ok:" \
 		&& echo "OK: --lib wsbaga ws.baga" \

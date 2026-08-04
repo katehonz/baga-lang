@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### App products — oauthbaga P1 (Postgres persistence, №10 "всичко заедно")
+- The pgbaga/ormbaga leg of №10: `oauth_codes` / `oauth_refresh` /
+  `oauth_sessions` tables (goose-style migrations, version 20260804101),
+  `$N` parameterized queries only; `OAUTH_PG=1` + `PG*` switches the
+  backend, in-memory maps remain the dev mode (both live-tested).
+- Store ops meet at typed rows (`OaCode`/`OaTok`/`PxSess`); the JSON
+  record codec is now contained to the in-memory backend (O3 shrunk).
+- One DB connection per HTTP connection (fmr legacy idiom) — no struct
+  rebinding through the handler chain, concurrency-safe, and the natural
+  path to a worker pool (O5 mostly closed; the CSRF `states` map stays
+  per-node for now, O7 notes the per-request SCRAM cost).
+- `tests/oauth_pg_test.baga` — live full cycle on ports 18692/18693 plus
+  DB-level proofs: the code row is consumed by the exchange, refresh
+  rotation keeps exactly one live token, the session row appears on
+  login and dies on logout. Wired into `make test` like registry_test
+  (`OAUTH_PG=1 PGDATABASE=baga_oauth`).
+
 ### App products — oauthbaga (OAuth proxy, apps-roadmap №10 complete)
 - New product `app-product/oauthbaga`: the integration exam — std HTTP
   client (№2) + jwtbaga + cookie sessions, pages rendered by tplbaga

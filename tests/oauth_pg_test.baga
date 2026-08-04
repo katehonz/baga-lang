@@ -1,0 +1,195 @@
+// oauth_pg_test.baga — Postgres-backed live test for oauthbaga (№10 P1).
+// Same flow as oauth_test but with OAUTH_PG=1: codes / refresh tokens /
+// sessions live in oauth_codes / oauth_refresh / oauth_sessions tables
+// (ormbaga migrations, parameterized $N queries). Adds DB-level proofs:
+// row counts after exchange / rotation / logout.
+//
+// Run with: OAUTH_PG=1 PGDATABASE=baga_oauth ./baga -I . -I app-product
+//           tests/oauth_pg_test.baga     (the Makefile sets both)
+
+import "oauthbaga/server.baga"
+import "testbaga/assert.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
+import "pgbaga/pg.baga"
+import "std/net/http_client.baga"
+import "std/json/json.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn has(s: str, n: str) -> bool {
+    return str_find(s, n) >= 0
+}
+
+fn jstr(body: str, key: str) -> str {
+    let d = json_parse(body)
+    let n = json_get(d, json_root(d), key)
+    if n < 0 {
+        return ""
+    }
+    if json_tag(d, n) != 4 {
+        return ""
+    }
+    return json_str(d, n)
+}
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" {
+        return def
+    }
+    return v
+}
+
+fn setc_sid(header: str) -> str {
+    let semi = str_find(header, ";")
+    let mut kv = header
+    if semi >= 0 {
+        kv = substr(header, 0, semi)
+    }
+    if str_starts_with(kv, "sid=") {
+        return substr(kv, 4, len(kv))
+    }
+    return ""
+}
+
+// Create baga_oauth if missing; migrate + clean the three tables.
+fn prepare_db() -> i64 !Net !IO !Random {
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(cfg("PGPORT", "5432")?)
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+
+    // CREATE DATABASE cannot run in the app db — connect to "postgres".
+    let admin = pg_connect_to(host, port, user, password, "postgres", 5)?
+    if admin.ok == 0 {
+        print(concat("prepare: admin connect failed: ", admin.err))
+        return 1
+    }
+    pg_query(admin, "CREATE DATABASE baga_oauth")?   // ok or "already exists"
+    pg_close(admin)?
+
+    let db = orm_connect(host, port, user, password, "baga_oauth")?
+    if orm_ok_db(db) == 0 {
+        print(concat("prepare: oauth db connect failed: ", orm_err_db(db)))
+        return 1
+    }
+    let up = migrate_up(db, oauth_migrations())?
+    if up.ok == 0 {
+        print(concat("prepare: migrate failed: ", up.err))
+        return 1
+    }
+    let cl = orm_exec(up.db, "DELETE FROM oauth_sessions; DELETE FROM oauth_refresh; DELETE FROM oauth_codes")?
+    if cl.ok == 0 {
+        print(concat("prepare: clean failed: ", cl.err))
+        return 1
+    }
+    orm_close(cl.db)?
+    return 0
+}
+
+fn db_count(table: str) -> i64 !Net !IO !Random {
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(cfg("PGPORT", "5432")?)
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+    let db = orm_connect(host, port, user, password, "baga_oauth")?
+    if orm_ok_db(db) == 0 {
+        return -1
+    }
+    let c = orm_count_sql(db, concat("SELECT COUNT(*) FROM ", table))?
+    orm_close(c.db)?
+    if c.ok == 0 {
+        return -1
+    }
+    return c.count
+}
+
+fn main() -> i64 !Net !IO !Par !Time !Random {
+    print("oauth_pg_test:")
+
+    // honest guards: the serve loops read OAUTH_PG / PGDATABASE themselves
+    let pg_on = cfg("OAUTH_PG", "")?
+    let pg_db = cfg("PGDATABASE", "")?
+    if pg_on != "1" || pg_db != "baga_oauth" {
+        eprintln("oauth_pg_test: run with OAUTH_PG=1 PGDATABASE=baga_oauth (make test sets both)")
+        return 2
+    }
+
+    let rc = prepare_db()?
+    assert_true("prepare_db", rc == 0)
+    if rc != 0 {
+        eprintln("oauth_pg_test: FAILED (prepare — is Postgres up?)")
+        return 1
+    }
+
+    let pport: i64 = 18693   // provider node
+    let xport: i64 = 18692   // proxy node
+    let redir = "http://127.0.0.1:18692/callback"
+    let pbase = "http://127.0.0.1:18693"
+    let xbase = "http://127.0.0.1:18692"
+    go_bg(oauth_provider_serve, cell2(pport, xport))
+    go_bg(oauth_proxy_serve, cell2(xport, pport))
+    sleep_ms(400)
+
+    // --- authorize → code (a row in oauth_codes) ---
+    let mut aurl = concat(pbase, "/oauth/authorize?client_id=baga-app")
+    aurl = concat(aurl, concat("&redirect_uri=", redir))
+    aurl = concat(aurl, "&state=pgst&sub=pguser&scope=read")
+    let a = http_get(aurl, 5)?
+    assert_eq_i64("authorize_302", a.status, 302)
+    let loc = http_resp_header(a, "Location")
+    let code = query_param(loc, "code")
+    assert_true("code_nonempty", len(code) >= 16)
+    assert_eq_i64("db_code_row", db_count("oauth_codes")?, 1)
+
+    // --- exchange: the code row is consumed ---
+    let mut form = "grant_type=authorization_code"
+    form = concat(form, concat("&code=", code))
+    form = concat(form, "&client_id=baga-app&client_secret=baga-secret")
+    let tk = http_request("POST", concat(pbase, "/oauth/token"), map_new(), form, 5)?
+    assert_eq_i64("token_200", tk.status, 200)
+    let refresh = jstr(tk.body, "refresh_token")
+    assert_eq_str("token_sub", jstr(tk.body, "sub"), "pguser")
+    assert_eq_i64("db_code_consumed", db_count("oauth_codes")?, 0)
+    assert_eq_i64("db_refresh_row", db_count("oauth_refresh")?, 1)
+
+    // code reuse stays rejected with the DB backend
+    let tk2 = http_request("POST", concat(pbase, "/oauth/token"), map_new(), form, 5)?
+    assert_eq_i64("code_reuse_400", tk2.status, 400)
+
+    // --- refresh rotation in the DB ---
+    let mut rform = "grant_type=refresh_token"
+    rform = concat(rform, concat("&refresh_token=", refresh))
+    rform = concat(rform, "&client_id=baga-app&client_secret=baga-secret")
+    let rt = http_request("POST", concat(pbase, "/oauth/token"), map_new(), rform, 5)?
+    assert_eq_i64("refresh_200", rt.status, 200)
+    assert_ne_str("rotated_refresh", jstr(rt.body, "refresh_token"), refresh)
+    assert_eq_i64("db_refresh_still_one", db_count("oauth_refresh")?, 1)
+    let rt2 = http_request("POST", concat(pbase, "/oauth/token"), map_new(), rform, 5)?
+    assert_eq_i64("refresh_reuse_400", rt2.status, 400)
+
+    // --- proxy flow: session row appears, then disappears on logout ---
+    let lg = http_get(concat(xbase, "/login"), 5)?
+    assert_eq_i64("login_302", lg.status, 302)
+    let lloc = http_resp_header(lg, "Location")
+    let auth = http_get(concat(lloc, "&sub=pguser"), 5)?
+    assert_eq_i64("follow_authorize", auth.status, 302)
+    let cb = http_get(http_resp_header(auth, "Location"), 5)?
+    assert_eq_i64("callback_302", cb.status, 302)
+    let sid = setc_sid(http_resp_header(cb, "Set-Cookie"))
+    assert_true("cookie_sid", len(sid) >= 16)
+    assert_eq_i64("db_session_row", db_count("oauth_sessions")?, 1)
+
+    let mut chdr: Map<str, str> = map_new()
+    map_set(chdr, "Cookie", concat("sid=", sid))
+    let home = http_request("GET", concat(xbase, "/"), chdr, "", 5)?
+    assert_true("home_sub", has(home.body, "pguser"))
+
+    let lo = http_request("GET", concat(xbase, "/logout"), chdr, "", 5)?
+    assert_eq_i64("logout_302", lo.status, 302)
+    assert_eq_i64("db_session_gone", db_count("oauth_sessions")?, 0)
+
+    print("oauth_pg_test: all passed")
+    return 0
+}
