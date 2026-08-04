@@ -247,7 +247,7 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                             "Map<K, V>: очаквах два типа — ключ и стойност");
                         return t;
                     }
-                    /* Map<K,V>: ключ i64/str; стойност i64/str/f64 (като Vec<T>) */
+                    /* Map<K,V>: ключ i64/str; стойност i64/str/f64/bytes */
                     Type *kt = resolve_type_node(ctx, ty->inner_type);
                     if (kt->kind == TYPE_I32) kt = type_new(TYPE_I64);
                     if (kt->kind != TYPE_I64 && kt->kind != TYPE_STR) {
@@ -573,7 +573,7 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             return r;
         }
 
-        /* карти: Map<K, V> — ключ i64/str, стойност i64/str/f64.
+        /* карти: Map<K, V> — ключ i64/str, стойност i64/str/f64/bytes.
          * Чист Map фиксира ключа/стойността при първия map_set —
          * същият механизъм като Vec (env пази същия Type указател). */
         if (strcmp(name, "map_new") == 0) {

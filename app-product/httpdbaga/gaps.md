@@ -216,24 +216,29 @@ exist in the file.
 **Verdict.** Roadmap (diagnostics pass) — tokens carry source positions;
 attribution just needs to follow them through import expansion.
 
-## G14 — no associative container (maps) — stream tables are parallel Vecs
+## G14 — stream tables are parallel Vecs (struct elements stay impossible)
 
 **Symptom.** HTTP/2 needs stream-id → state lookup; HPACK needs name →
-index. With no map type these become parallel `Vec` pools + linear scans
-(`h2_find`, `hpack_static_exact`), and per-stream payload storage needs
-flat pools with offset/length bookkeeping (struct elements stay impossible
-— element types are i64/str/f64/bytes only).
+index. `Map<K,V>` has shipped since (kvbaga milestone) and covers the
+lookup half, but multi-field per-stream state still can't live in one
+container — struct values in `Map`/`Vec` are impossible (map values and
+vec elements are i64/str/f64/bytes only) — so the tables stay parallel
+`Vec` pools + linear scans (`h2_find`, `hpack_static_exact`), and
+per-stream payload storage needs flat pools with offset/length
+bookkeeping.
 
 **Evidence.** `h2.baga`'s stream pool (`s_ids`/`s_kseg`/`s_vseg`/
 `s_body_off`/`s_body_len`/`s_state`), the header-segment `\n`-join trick in
 `h2_finish_headers`, and the append-only `body_pool` — all shaped by the
 missing map.
 
-**Workaround.** The above; fine at demo scale, O(n) per lookup.
+**Workaround.** The above; fine at demo scale, O(n) per lookup. A
+`Map<i64,i64>` of stream-id → pool index would remove the scans.
 
 **Severity.** Medium. Every stateful protocol/data structure hits it.
 
-**Verdict.** Roadmap (long-term language feature, not this milestone).
+**Verdict.** Map half closed (language shipped `Map<K,V>`); the struct
+half is the same lineage as tplbaga P3 / oauthbaga O3 (L4) — roadmap.
 
 ---
 
@@ -251,4 +256,4 @@ missing map.
 | G11 arena not thread-safe | **closed** | mutex in the emitted runtime (fixed 2026-08-03) |
 | G12 bitwise-vs-compare precedence | roadmap | precedence change or diagnostic |
 | G13 error attribution across imports | roadmap | diagnostics pass (positions through imports) |
-| G14 no map type | roadmap | long-term feature; stream tables stay parallel Vecs |
+| G14 parallel-Vec stream tables | partially closed | `Map<K,V>` shipped; struct elements stay L4 roadmap |

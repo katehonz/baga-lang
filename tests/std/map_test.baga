@@ -1,4 +1,4 @@
-// map_test.baga — Map<K,V> builtin: hash table, key i64/str, value i64/str/f64.
+// map_test.baga — Map<K,V> builtin: hash table, key i64/str, value i64/str/f64/bytes.
 // Language feature (TYPE_MAP): map_* builtins are always in scope; the only
 // import here is int_to_str for the key names in the growth test.
 

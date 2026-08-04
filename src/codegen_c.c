@@ -144,7 +144,10 @@ static void emit_c_string(FILE *f, const char *s) {
                 if (*p >= 0x20 && *p < 0x7f)
                     fputc(*p, f);
                 else
-                    fprintf(f, "\\x%02x", *p);
+                    /* 3-цифрен осмичен escape: \xHH е лаком и би погълнал
+                     * следваща ASCII hex цифра ("ел0" → \xbb0); \ooo е
+                     * ограничен до точно 3 цифри по стандарт */
+                    fprintf(f, "\\%03o", *p);
                 break;
         }
     }

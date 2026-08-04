@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Compiler — non-ASCII string literals before a hex digit (C backend)
+- **Bugfix.** `emit_c_string` emitted non-ASCII bytes as `\xHH`, and C hex
+  escapes are greedy: a Cyrillic (UTF-8) literal directly followed by an
+  ASCII hex digit (`"ел0"`, `"елa"`, `"елf9"`) fused into one invalid
+  escape (`\xbb0`) — gcc warned "hex escape sequence out of range" and the
+  string came out wrong. Bytes now emit as 3-digit octal (`\ooo`), which
+  the standard bounds to exactly three digits.
+- Regression probe in `scripts/run_tests.sh` (Cyrillic + `0`/`a`/`f9`).
+- `app-product/httpdbaga/gaps.md` G14 brought up to date: `Map<K,V>` has
+  shipped, the remaining parallel-Vec shape is the struct-element half
+  (L4 lineage, tplbaga P3 / oauthbaga O3).
+
 ### Language — `Vec<bytes>` (L4 closed for the bytes element kind)
 - `Vec<T>` element kinds now include `bytes` alongside `i64`/`str`/`f64` —
   in annotations (`Vec<bytes>`, `[bytes]`) and in fix-on-first-use

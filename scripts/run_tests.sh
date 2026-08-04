@@ -292,6 +292,11 @@ run tests/std/sha_big_probe.baga > /tmp/baga_std_probe.txt \
 	&& printf '1310720\ndf0be9d175a152159d1a9c73747a686186eb63b56466d5eed6ad6f540d133aff\n' | diff - /tmp/baga_std_probe.txt > /dev/null \
 	&& echo "OK: std/sha256 върху 1.25 MB вход (oracle: hashlib)" \
 	|| { echo "FAIL: sha_big_probe"; cat /tmp/baga_std_probe.txt; exit 1; }
+printf 'fn main() {\n    print("ел0")\n    print("елa")\n    print("елf9")\n}\n' > /tmp/baga_hexlit.baga
+run /tmp/baga_hexlit.baga > /tmp/baga_hexlit_out.txt \
+	&& printf 'ел0\nелa\nелf9\n' | diff - /tmp/baga_hexlit_out.txt > /dev/null \
+	&& echo "OK: не-ASCII литерал пред ASCII hex цифра (greedy escape регресия)" \
+	|| { echo "FAIL: escape на не-ASCII литерал"; cat /tmp/baga_hexlit_out.txt; exit 1; }
 
 # ── 6. Static verifier oracle ────────────────────────────────────────────
 bash "$ROOT/scripts/run_verify.sh"
