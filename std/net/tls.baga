@@ -1,4 +1,4 @@
-// tls.baga — TLS 1.3 client core (apps-roadmap №10 P2, T4–T6).
+// tls.baga — TLS 1.3 client core (apps-roadmap №10 P2, T4–T7).
 //
 // Record layer, ClientHello builder, ServerHello parser (T4), handshake
 // key schedule + encrypted flight (T5), X.509 + RSA-PSS verify (T6):
@@ -17,9 +17,8 @@
 // (rsa_pss_rsae_sha256, ecdsa_secp256r1_sha256), supported_versions
 // (0x0304), key_share (x25519 pub).
 //
-// T6: parse leaf cert (DER), self-signed/anchor trust, RSA-PSS-SHA256
-// CertificateVerify over the TLS 1.3 context string + transcript hash.
-// ECDSA leaves wait on T7.
+// T6/T7: parse leaf cert (DER), self-signed/anchor trust; CertificateVerify
+// via RSA-PSS-SHA256 or ECDSA-P256-SHA256 over the TLS 1.3 context string.
 
 import "tcp.baga"
 import "../bytes/bytes.baga"
@@ -31,6 +30,7 @@ import "../crypto/aes.baga"
 import "../crypto/gcm.baga"
 import "../crypto/x509.baga"
 import "../crypto/rsa.baga"
+import "../crypto/p256.baga"
 import "../crypto/ct.baga"
 
 // ---------- byte-builder helpers ----------
@@ -490,8 +490,10 @@ fn tls_verify_bad(err: str) -> TlsVerify {
 }
 
 // Verify the leaf certificate against a caller-supplied trust anchor DER
-// (self-signed openssl peers: pass the same cert) and the CertificateVerify
-// signature (rsa_pss_rsae_sha256 only for now — ECDSA is T7).
+// (self-signed openssl peers: empty anchor accepts self-signed) and the
+// CertificateVerify signature:
+//   0x0804 rsa_pss_rsae_sha256  (T6)
+//   0x0403 ecdsa_secp256r1_sha256 (T7)
 fn tls_verify_server(flight: TlsFlight, anchor_der: bytes) -> TlsVerify {
     if flight.ok == 0 {
         return tls_verify_bad(flight.err)
@@ -502,36 +504,40 @@ fn tls_verify_server(flight: TlsFlight, anchor_der: bytes) -> TlsVerify {
     }
     let mut cert_ok: i64 = 0
     if bytes_len(anchor_der) == 0 {
-        // no anchor: accept self-signed leaf (dev / loopback probe)
         if x509_verify_self_signed(cert) == 1 {
             cert_ok = 1
         }
     } else {
         if x509_trust_anchor(flight.cert_der, anchor_der) == 1 {
             cert_ok = 1
-        } else {
-            // chain of one: leaf signed by anchor key
-            let anchor = x509_parse(anchor_der)
-            if anchor.ok == 1 {
-                if x509_verify_cert(cert, anchor.n, anchor.e) == 1 {
-                    cert_ok = 1
-                }
-            }
         }
     }
     if cert_ok == 0 {
         return TlsVerify { ok: 0, err: "certificate not trusted", cert_ok: 0, cv_ok: 0 }
     }
-    // CertificateVerify
-    if flight.cv_algo != 2052 {   // 0x0804 rsa_pss_rsae_sha256
-        return TlsVerify { ok: 0, err: "unsupported CertificateVerify algorithm",
-            cert_ok: 1, cv_ok: 0 }
-    }
     let content = tls_cv_signed_content(flight.cv_hash)
-    let cv_ok = rsa_pss_sha256_verify(cert.n, cert.e, content, flight.cv_sig)
-    if cv_ok == 0 {
-        return TlsVerify { ok: 0, err: "CertificateVerify RSA-PSS failed",
-            cert_ok: 1, cv_ok: 0 }
+    let mut cv_ok: i64 = 0
+    if flight.cv_algo == 2052 {   // 0x0804 rsa_pss_rsae_sha256
+        if cert.is_rsa == 1 {
+            cv_ok = rsa_pss_sha256_verify(cert.n, cert.e, content, flight.cv_sig)
+        }
+        if cv_ok == 0 {
+            return TlsVerify { ok: 0, err: "CertificateVerify RSA-PSS failed",
+                cert_ok: 1, cv_ok: 0 }
+        }
+    } else {
+        if flight.cv_algo == 1027 {   // 0x0403 ecdsa_secp256r1_sha256
+            if cert.is_ec == 1 {
+                cv_ok = ecdsa_p256_verify_sha256(cert.qx, cert.qy, content, flight.cv_sig)
+            }
+            if cv_ok == 0 {
+                return TlsVerify { ok: 0, err: "CertificateVerify ECDSA-P256 failed",
+                    cert_ok: 1, cv_ok: 0 }
+            }
+        } else {
+            return TlsVerify { ok: 0, err: "unsupported CertificateVerify algorithm",
+                cert_ok: 1, cv_ok: 0 }
+        }
     }
     return TlsVerify { ok: 1, err: "", cert_ok: 1, cv_ok: 1 }
 }

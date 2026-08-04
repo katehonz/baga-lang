@@ -1,0 +1,277 @@
+// p256.baga — NIST P-256 (secp256r1) + ECDSA-SHA256 verify (TLS T7).
+//
+//   p256_on_curve(qx, qy) -> i64
+//   ecdsa_p256_verify_sha256(qx, qy, msg, sig_der) -> i64
+//
+// Affine Weierstrass arithmetic over bn.baga (10×26-bit limbs). ECDSA
+// follows SEC1 §4.1.4; signatures are DER SEQUENCE { r, s } as in X.509
+// and TLS 1.3 CertificateVerify (ecdsa_secp256r1_sha256).
+// Pure; no effects. Timing is secret-dependent — verification only.
+
+import "bn.baga"
+import "sha256.baga"
+import "der.baga"
+import "ct.baga"
+import "../bytes/bytes.baga"
+
+// ---------- curve parameters (big-endian hex → 10 limbs) ----------
+
+fn p256_p() -> Vec<i64> {
+    return bn_from_bytes_be(hex_decode(
+        "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff"), 10)
+}
+
+fn p256_n() -> Vec<i64> {
+    return bn_from_bytes_be(hex_decode(
+        "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551"), 10)
+}
+
+// a = p - 3
+fn p256_a() -> Vec<i64> {
+    return bn_from_bytes_be(hex_decode(
+        "ffffffff00000001000000000000000000000000fffffffffffffffffffffffc"), 10)
+}
+
+fn p256_b() -> Vec<i64> {
+    return bn_from_bytes_be(hex_decode(
+        "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b"), 10)
+}
+
+fn p256_gx() -> Vec<i64> {
+    return bn_from_bytes_be(hex_decode(
+        "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"), 10)
+}
+
+fn p256_gy() -> Vec<i64> {
+    return bn_from_bytes_be(hex_decode(
+        "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5"), 10)
+}
+
+// ---------- field helpers ----------
+
+fn p256_fe(b: bytes) -> Vec<i64> {
+    return bn_mod(bn_from_bytes_be(b, 10), p256_p())
+}
+
+fn p256_red(x: Vec<i64>) -> Vec<i64> {
+    return bn_mod(x, p256_p())
+}
+
+fn p256_fadd(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    return p256_red(bn_add(a, b))
+}
+
+fn p256_fsub(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    let p = p256_p()
+    if bn_cmp(a, b) >= 0 {
+        return bn_sub(a, b)
+    }
+    return bn_sub(bn_add(a, p), b)
+}
+
+fn p256_fmul(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    return bn_mod(bn_mul(a, b), p256_p())
+}
+
+fn p256_fsqr(a: Vec<i64>) -> Vec<i64> {
+    return p256_fmul(a, a)
+}
+
+// a^(p-2) mod p  (p prime)
+fn p256_finv(a: Vec<i64>) -> Vec<i64> {
+    let p = p256_p()
+    let exp = bn_sub(p, bn_from_bytes_be(hex_decode("02"), 10))
+    return bn_modexp(a, exp, p)
+}
+
+// a^(n-2) mod n
+fn p256_ninv(a: Vec<i64>) -> Vec<i64> {
+    let n = p256_n()
+    let exp = bn_sub(n, bn_from_bytes_be(hex_decode("02"), 10))
+    return bn_modexp(a, exp, n)
+}
+
+fn p256_nmod(x: Vec<i64>) -> Vec<i64> {
+    return bn_mod(x, p256_n())
+}
+
+// ---------- points ----------
+
+struct P256Pt {
+    x: Vec<i64>,
+    y: Vec<i64>,
+    inf: i64
+}
+
+fn p256_inf() -> P256Pt {
+    return P256Pt { x: bn_zero(10), y: bn_zero(10), inf: 1 }
+}
+
+fn p256_pt(x: Vec<i64>, y: Vec<i64>) -> P256Pt {
+    return P256Pt { x: x, y: y, inf: 0 }
+}
+
+fn p256_base() -> P256Pt {
+    return p256_pt(p256_gx(), p256_gy())
+}
+
+fn p256_on_curve_fe(x: Vec<i64>, y: Vec<i64>) -> i64 {
+    // y^2 == x^3 + a*x + b
+    let lhs = p256_fsqr(y)
+    let x2 = p256_fsqr(x)
+    let x3 = p256_fmul(x2, x)
+    let ax = p256_fmul(p256_a(), x)
+    let rhs = p256_fadd(p256_fadd(x3, ax), p256_b())
+    if bn_cmp(lhs, rhs) == 0 {
+        return 1
+    }
+    return 0
+}
+
+fn p256_on_curve(qx: bytes, qy: bytes) -> i64 {
+    return p256_on_curve_fe(p256_fe(qx), p256_fe(qy))
+}
+
+fn p256_neg(p: P256Pt) -> P256Pt {
+    if p.inf == 1 {
+        return p
+    }
+    return p256_pt(p.x, p256_fsub(bn_zero(10), p.y))
+}
+
+fn p256_double(p: P256Pt) -> P256Pt {
+    if p.inf == 1 {
+        return p
+    }
+    if bn_is_zero(p.y) == 1 {
+        return p256_inf()
+    }
+    // λ = (3x² + a) / (2y)
+    let x2 = p256_fsqr(p.x)
+    let three = bn_from_bytes_be(hex_decode("03"), 10)
+    let num = p256_fadd(p256_fmul(three, x2), p256_a())
+    let two = bn_from_bytes_be(hex_decode("02"), 10)
+    let den = p256_fmul(two, p.y)
+    let lam = p256_fmul(num, p256_finv(den))
+    // x3 = λ² - 2x
+    let x3 = p256_fsub(p256_fsqr(lam), p256_fmul(two, p.x))
+    // y3 = λ(x - x3) - y
+    let y3 = p256_fsub(p256_fmul(lam, p256_fsub(p.x, x3)), p.y)
+    return p256_pt(x3, y3)
+}
+
+fn p256_add(p: P256Pt, q: P256Pt) -> P256Pt {
+    if p.inf == 1 {
+        return q
+    }
+    if q.inf == 1 {
+        return p
+    }
+    if bn_cmp(p.x, q.x) == 0 {
+        if bn_cmp(p.y, q.y) == 0 {
+            return p256_double(p)
+        }
+        return p256_inf()
+    }
+    // λ = (y2 - y1) / (x2 - x1)
+    let num = p256_fsub(q.y, p.y)
+    let den = p256_fsub(q.x, p.x)
+    let lam = p256_fmul(num, p256_finv(den))
+    let x3 = p256_fsub(p256_fsub(p256_fsqr(lam), p.x), q.x)
+    let y3 = p256_fsub(p256_fmul(lam, p256_fsub(p.x, x3)), p.y)
+    return p256_pt(x3, y3)
+}
+
+// k * P  (left-to-right double-and-add)
+fn p256_mul(k: Vec<i64>, p: P256Pt) -> P256Pt {
+    let mut r = p256_inf()
+    let bits = bn_bits(k)
+    let mut i = bits - 1
+    while i >= 0 {
+        r = p256_double(r)
+        if bn_bit(k, i) == 1 {
+            r = p256_add(r, p)
+        }
+        i = i - 1
+    }
+    return r
+}
+
+// ---------- ECDSA signature DER ----------
+
+struct P256Sig {
+    ok: i64,
+    r: Vec<i64>,
+    s: Vec<i64>
+}
+
+fn p256_sig_bad() -> P256Sig {
+    return P256Sig { ok: 0, r: bn_zero(10), s: bn_zero(10) }
+}
+
+fn p256_parse_sig(sig_der: bytes) -> P256Sig {
+    let d = der_enter_seq(der_of(sig_der))
+    if d.ok == 0 {
+        return p256_sig_bad()
+    }
+    let ri = der_take(d, 2)
+    if ri.ok == 0 {
+        return p256_sig_bad()
+    }
+    let si = der_take(ri.rest, 2)
+    if si.ok == 0 {
+        return p256_sig_bad()
+    }
+    let rb = der_integer_bytes(ri.content)
+    let sb = der_integer_bytes(si.content)
+    // integers may be up to 33 bytes (leading 0x00); reduce mod n later
+    let r = bn_from_bytes_be(rb, 10)
+    let s = bn_from_bytes_be(sb, 10)
+    return P256Sig { ok: 1, r: r, s: s }
+}
+
+// 1 <= v < n
+fn p256_in_range(v: Vec<i64>) -> i64 {
+    if bn_is_zero(v) == 1 {
+        return 0
+    }
+    if bn_cmp(v, p256_n()) >= 0 {
+        return 0
+    }
+    return 1
+}
+
+// ---------- ECDSA verify (SEC1 4.1.4) ----------
+
+// qx, qy: 32-byte big-endian affine coordinates (or shorter, left-padded by bn).
+fn ecdsa_p256_verify_sha256(qx: bytes, qy: bytes, msg: bytes, sig_der: bytes) -> i64 {
+    let x = p256_fe(qx)
+    let y = p256_fe(qy)
+    if p256_on_curve_fe(x, y) == 0 {
+        return 0
+    }
+    let sig = p256_parse_sig(sig_der)
+    if sig.ok == 0 {
+        return 0
+    }
+    let r = p256_nmod(sig.r)
+    let s = p256_nmod(sig.s)
+    if p256_in_range(r) == 0 || p256_in_range(s) == 0 {
+        return 0
+    }
+    let e = p256_nmod(bn_from_bytes_be(sha256_b(msg), 10))
+    let w = p256_ninv(s)
+    let u1 = p256_nmod(bn_mul(e, w))
+    let u2 = p256_nmod(bn_mul(r, w))
+    let p1 = p256_mul(u1, p256_base())
+    let p2 = p256_mul(u2, p256_pt(x, y))
+    let xpt = p256_add(p1, p2)
+    if xpt.inf == 1 {
+        return 0
+    }
+    let v = p256_nmod(xpt.x)
+    if bn_cmp(v, r) == 0 {
+        return 1
+    }
+    return 0
+}

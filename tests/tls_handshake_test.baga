@@ -91,16 +91,18 @@ fn main() -> i64 !Net !IO !Par !Random {
     assert_true("cert_der_present", bytes_len(flight.cert_der) > 100)
     assert_true("cv_sig_present", bytes_len(flight.cv_sig) > 0)
     assert_eq_i64("server_finished_verified", flight.finished_ok, 1)
-    assert_eq_i64("cv_algo_rsa_pss_sha256", flight.cv_algo, 2052)
+    // 0x0804 rsa_pss_rsae_sha256 or 0x0403 ecdsa_secp256r1_sha256
+    assert_true("cv_algo_known", flight.cv_algo == 2052 || flight.cv_algo == 1027)
     assert_eq_i64("cv_hash_len", bytes_len(flight.cv_hash), 32)
 
-    // --- T6: X.509 parse + self-signed trust + RSA-PSS CertificateVerify ---
+    // --- T6/T7: X.509 + CertificateVerify (RSA-PSS or ECDSA-P256) ---
     let leaf = x509_parse(flight.cert_der)
     if leaf.ok == 0 {
         eprintln(concat("tls_handshake_test: x509 ", leaf.err))
         return 1
     }
     assert_eq_i64("x509_parse", leaf.ok, 1)
+    assert_true("x509_key_type", leaf.is_rsa == 1 || leaf.is_ec == 1)
     assert_eq_i64("x509_self_signed", x509_verify_self_signed(leaf), 1)
     // empty anchor → accept self-signed leaf (openssl peer)
     let ver = tls_verify_server(flight, bytes_from_vec(vec_new()))

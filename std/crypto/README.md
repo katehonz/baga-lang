@@ -1,12 +1,12 @@
-# std/crypto — hashes, MACs, bignum, X25519, HKDF, AES-GCM, RSA, X.509
+# std/crypto — hashes, MACs, bignum, X25519, P-256, HKDF, AES-GCM, RSA, X.509
 
 Pure Baga cryptography: no OpenSSL FFI, deliberately — zero dependencies and
 proof-of-language. SHA-256 is validated against NIST vectors, HMAC against
 RFC 4231, the bignum against python-generated golden vectors (RSA-2048
-modexp included), X25519 against RFC 7748, HKDF against RFC 5869, AES
-against FIPS-197 and AES-GCM against python `cryptography` vectors,
-RSA-PSS / PKCS#1 against the same oracle. The TLS 1.3 stack (T1–T6) lives
-here plus `std/net/tls.baga`.
+modexp included), X25519 against RFC 7748, P-256/ECDSA against python
+`cryptography`, HKDF against RFC 5869, AES against FIPS-197 and AES-GCM
+against the same oracle, RSA-PSS / PKCS#1 likewise. The TLS 1.3 stack
+(T1–T7) lives here plus `std/net/tls.baga`.
 
 - `sha256_bytes(data: Vec<i64>) -> Vec<i64>` — SHA-256 (FIPS 180-4) over a byte buffer; returns the 32-byte digest.
 - `sha256(msg: str) -> Vec<i64>` — SHA-256 over the raw bytes of `msg`.

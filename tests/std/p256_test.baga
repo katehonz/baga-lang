@@ -1,0 +1,55 @@
+// p256_test.baga — NIST P-256 + ECDSA-SHA256 (TLS T7).
+// Oracle: python cryptography, vectors embedded offline.
+
+import "std/crypto/p256.baga"
+import "std/crypto/x509.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let qx = hex_decode("9803467b83313155e1c055162422e6428e4d444221e7c9af055895fc8d300d4a")
+    let qy = hex_decode("b012dfaa86fa8874c7036caa70f02637306b4b07e188c24060e266f76ef8b702")
+    let msg = hex_decode("20202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020544c5320312e332c2073657276657220436572746966696361746556657269667900a9b3bf651f93b706e0ff6c53c9ee64f9ef9ec102d7dccd59f78411cfd6c9f25a")
+    let sig = hex_decode("304502200d5fe3eb7417e202338850e4b1f74c9537ed379fa9be052a1740fb02235f4ad40221008eb612f43ce73481fbae8ab48716ed31edf45f9e44ea5bc72497277f0cadd0c6")
+    let cert_der = hex_decode("308201143081bba003020102020101300a06082a8648ce3d04030230143112301006035504030c096c6f63616c686f7374301e170d3236303830333130333532385a170d3236303930333130333532385a30143112301006035504030c096c6f63616c686f73743059301306072a8648ce3d020106082a8648ce3d030107034200049803467b83313155e1c055162422e6428e4d444221e7c9af055895fc8d300d4ab012dfaa86fa8874c7036caa70f02637306b4b07e188c24060e266f76ef8b702300a06082a8648ce3d0403020348003045022100bea99e7895708cc4aa8fb95920412ce7552f38fa0e1a39d05bcae2965485de1a02204138347013debcccb9af6b9d0da29a89ee5962c94220637c1d54f4873d65925f")
+
+    // Base point on curve
+    let gx = hex_decode("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296")
+    let gy = hex_decode("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5")
+    check("G_on_curve", p256_on_curve(gx, gy) == 1)
+    check("Q_on_curve", p256_on_curve(qx, qy) == 1)
+    check("bad_point", p256_on_curve(qx, gx) == 0)
+
+    check("ecdsa_verify", ecdsa_p256_verify_sha256(qx, qy, msg, sig) == 1)
+
+    // Tamper message
+    let bad_msg = bytes_concat(hex_decode("21"), bytes_slice(msg, 1, bytes_len(msg)))
+    check("ecdsa_reject_msg", ecdsa_p256_verify_sha256(qx, qy, bad_msg, sig) == 0)
+
+    // Tamper signature (flip first content byte after SEQUENCE header-ish)
+    let bad_sig = bytes_concat(bytes_concat(bytes_slice(sig, 0, 4), hex_decode("00")), bytes_slice(sig, 5, bytes_len(sig)))
+    check("ecdsa_reject_sig", ecdsa_p256_verify_sha256(qx, qy, msg, bad_sig) == 0)
+
+    // X.509 EC cert
+    let cert = x509_parse(cert_der)
+    if cert.ok == 0 {
+        eprintln(concat("parse: ", cert.err))
+        exit(1)
+    }
+    check("x509_ec_parse", cert.ok == 1)
+    check("x509_is_ec", cert.is_ec == 1)
+    check("x509_not_rsa", cert.is_rsa == 0)
+    check("x509_qx", hex_encode(cert.qx) == "9803467b83313155e1c055162422e6428e4d444221e7c9af055895fc8d300d4a")
+    check("x509_qy", hex_encode(cert.qy) == "b012dfaa86fa8874c7036caa70f02637306b4b07e188c24060e266f76ef8b702")
+    check("x509_self_signed_ec", x509_verify_self_signed(cert) == 1)
+    check("x509_trust_ec", x509_trust_anchor(cert_der, cert_der) == 1)
+
+    print("p256_test: all passed")
+}

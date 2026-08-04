@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### TLS 1.3 client, T7 — ECDSA-P256 CertificateVerify
+- `std/crypto/p256.baga`: NIST P-256 field/point arithmetic on bn limbs;
+  `ecdsa_p256_verify_sha256(qx, qy, msg, sig_der)` (SEC1, DER signatures).
+- `std/crypto/x509.baga`: EC SPKI (prime256v1 uncompressed) and
+  ecdsa-with-SHA256 cert signatures alongside RSA.
+- `tls_verify_server`: `ecdsa_secp256r1_sha256` (0x0403) in addition to
+  RSA-PSS (0x0804).
+- `tests/std/p256_test.baga` — python cryptography vectors (~9 s).
+- Live openssl peer runs **twice** in `scripts/run_tests.sh`: RSA-2048
+  self-signed and ECDSA-P256 self-signed — both full handshakes green.
+- AES_256_GCM_SHA384 still deferred (needs SHA-384 HKDF); servers keep
+  picking AES_128_GCM_SHA256 from the ClientHello order.
+
 ### TLS 1.3 client, T6 — X.509 + RSA-PSS CertificateVerify
 - `std/crypto/der.baga`: minimal DER walker (SEQUENCE / INTEGER / BIT
   STRING / OID, definite lengths).

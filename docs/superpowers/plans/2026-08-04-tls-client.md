@@ -1,7 +1,8 @@
 # TLS 1.3 client in std (G6) Implementation Plan
 
 > Progress: T1 bn ✓ · T2 x25519 ✓ · T3 hkdf/aes/gcm ✓ · T4 records+hello ✓
-> · T5 encrypted handshake ✓ · T6 X.509 + RSA-PSS ✓ (live openssl) · T7–T8 ahead
+> · T5 encrypted handshake ✓ · T6 X.509 + RSA-PSS ✓ · T7 ECDSA-P256 ✓
+> · T8 ahead
 
 **Goal:** Close gap G6 — the last production blocker found by the apps
 roadmap (№10 OAuth proxy waits on it): a **TLS 1.3 client** in `std/`,

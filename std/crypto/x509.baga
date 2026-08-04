@@ -1,44 +1,46 @@
-// x509.baga — minimal X.509 Certificate parse + RSA chain verify (TLS T6).
+// x509.baga — minimal X.509 Certificate parse + chain verify (TLS T6/T7).
 //
-//   x509_parse(der) -> X509Cert   // SPKI RSA n/e, TBS, signature
-//   x509_verify_cert(cert, issuer_n, issuer_e) -> i64
+//   x509_parse(der) -> X509Cert
 //   x509_verify_self_signed(cert) -> i64
-//   x509_trust(cert, anchor_der) -> i64   // DER equality OR self-signed match
+//   x509_trust_anchor(cert_der, anchor_der) -> i64
 //
-// Supports sha256WithRSAEncryption cert signatures (openssl default).
-// RSA-PSS cert signatures are not required for the openssl s_server peer
-// (CertificateVerify is PSS; the cert itself is PKCS#1 v1.5).
-// Honest gaps: name constraints, policies, EKUs, revocation, time validity
-// are ignored — the caller supplies trust anchors.
+// Key types: RSA (rsaEncryption) and EC P-256 (id-ecPublicKey + prime256v1).
+// Cert signatures: sha256WithRSAEncryption, ecdsa-with-SHA256.
+// Honest gaps: name constraints, policies, EKUs, revocation, time validity.
 
 import "der.baga"
 import "rsa.baga"
-
-// OID 1.2.840.113549.1.1.1  rsaEncryption
-// OID 1.2.840.113549.1.1.11 sha256WithRSAEncryption
+import "p256.baga"
 
 struct X509Cert {
     ok: i64,
     err: str,
-    tbs: bytes,        // TBSCertificate DER bytes (for signature verify)
-    n: bytes,          // RSA modulus
-    e: bytes,          // RSA public exponent
-    sig: bytes,        // certificate signature (BIT STRING payload)
-    is_rsa: i64
+    tbs: bytes,
+    sig: bytes,
+    // RSA
+    is_rsa: i64,
+    n: bytes,
+    e: bytes,
+    // ECDSA P-256
+    is_ec: i64,
+    qx: bytes,
+    qy: bytes,
+    // certificate signature algorithm
+    sig_rsa: i64,     // sha256WithRSAEncryption
+    sig_ecdsa: i64    // ecdsa-with-SHA256
 }
 
 fn x509_bad(err: str) -> X509Cert {
     return X509Cert {
         ok: 0, err: err,
         tbs: bytes_from_vec(vec_new()),
-        n: bytes_from_vec(vec_new()),
-        e: bytes_from_vec(vec_new()),
         sig: bytes_from_vec(vec_new()),
-        is_rsa: 0
+        is_rsa: 0, n: bytes_from_vec(vec_new()), e: bytes_from_vec(vec_new()),
+        is_ec: 0, qx: bytes_from_vec(vec_new()), qy: bytes_from_vec(vec_new()),
+        sig_rsa: 0, sig_ecdsa: 0
     }
 }
 
-// Compare two OIDs (raw DER content of the OID TLV).
 fn x509_oid_eq(a: bytes, b: bytes) -> i64 {
     if bytes_len(a) != bytes_len(b) {
         return 0
@@ -53,7 +55,6 @@ fn x509_oid_eq(a: bytes, b: bytes) -> i64 {
     return 1
 }
 
-// Parse AlgorithmIdentifier: SEQUENCE { OID, optional params } → OID content.
 fn x509_alg_oid(seq: bytes) -> bytes {
     let d = der_of(seq)
     let oid = der_take(d, 6)
@@ -63,65 +64,111 @@ fn x509_alg_oid(seq: bytes) -> bytes {
     return oid.content
 }
 
-// Parse SubjectPublicKeyInfo → RSA n, e.
+// Second OID in AlgorithmIdentifier (namedCurve for EC).
+fn x509_alg_param_oid(seq: bytes) -> bytes {
+    let d = der_of(seq)
+    let first = der_take(d, 6)
+    if first.ok == 0 {
+        return bytes_from_vec(vec_new())
+    }
+    if der_peek_tag(first.rest) == 6 {
+        let second = der_take(first.rest, 6)
+        if second.ok == 0 {
+            return bytes_from_vec(vec_new())
+        }
+        return second.content
+    }
+    return bytes_from_vec(vec_new())
+}
+
 struct X509Spki {
     ok: i64,
     err: str,
+    is_rsa: i64,
     n: bytes,
-    e: bytes
+    e: bytes,
+    is_ec: i64,
+    qx: bytes,
+    qy: bytes
 }
 
 fn x509_spki_bad(err: str) -> X509Spki {
-    return X509Spki { ok: 0, err: err, n: bytes_from_vec(vec_new()), e: bytes_from_vec(vec_new()) }
+    return X509Spki {
+        ok: 0, err: err,
+        is_rsa: 0, n: bytes_from_vec(vec_new()), e: bytes_from_vec(vec_new()),
+        is_ec: 0, qx: bytes_from_vec(vec_new()), qy: bytes_from_vec(vec_new())
+    }
 }
 
-fn x509_parse_spki(spki_der: bytes) -> X509Spki {
-    let d = der_of(spki_der)
+// SPKI content (inside SEQUENCE): algorithm, subjectPublicKey.
+fn x509_parse_spki_content(content: bytes) -> X509Spki {
+    let d = der_of(content)
     let alg_t = der_take(d, 48)
     if alg_t.ok == 0 {
         return x509_spki_bad(alg_t.err)
     }
     let oid = x509_alg_oid(alg_t.content)
-    // rsaEncryption 2a 86 48 86 f7 0d 01 01 01
-    let rsa_oid = hex_decode("2a864886f70d010101")
-    if x509_oid_eq(oid, rsa_oid) == 0 {
-        return x509_spki_bad("x509: SPKI not rsaEncryption")
-    }
     let bit = der_take(alg_t.rest, 3)
     if bit.ok == 0 {
         return x509_spki_bad(bit.err)
     }
-    let key_der = der_bitstring_payload(bit.content)
-    // RSAPublicKey ::= SEQUENCE { n INTEGER, e INTEGER }
-    let kd = der_enter_seq(der_of(key_der))
-    if kd.ok == 0 {
-        return x509_spki_bad(kd.err)
+    let key = der_bitstring_payload(bit.content)
+
+    // rsaEncryption 2a864886f70d010101
+    let rsa_oid = hex_decode("2a864886f70d010101")
+    if x509_oid_eq(oid, rsa_oid) == 1 {
+        let kd = der_enter_seq(der_of(key))
+        if kd.ok == 0 {
+            return x509_spki_bad(kd.err)
+        }
+        let ni = der_take(kd, 2)
+        if ni.ok == 0 {
+            return x509_spki_bad(ni.err)
+        }
+        let ei = der_take(ni.rest, 2)
+        if ei.ok == 0 {
+            return x509_spki_bad(ei.err)
+        }
+        return X509Spki {
+            ok: 1, err: "",
+            is_rsa: 1, n: der_integer_bytes(ni.content), e: der_integer_bytes(ei.content),
+            is_ec: 0, qx: bytes_from_vec(vec_new()), qy: bytes_from_vec(vec_new())
+        }
     }
-    let ni = der_take(kd, 2)
-    if ni.ok == 0 {
-        return x509_spki_bad(ni.err)
+
+    // id-ecPublicKey 2a8648ce3d0201 + namedCurve prime256v1 2a8648ce3d030107
+    let ec_oid = hex_decode("2a8648ce3d0201")
+    let p256_oid = hex_decode("2a8648ce3d030107")
+    if x509_oid_eq(oid, ec_oid) == 1 {
+        let curve = x509_alg_param_oid(alg_t.content)
+        if x509_oid_eq(curve, p256_oid) == 0 {
+            return x509_spki_bad("x509: only prime256v1 supported")
+        }
+        // uncompressed point: 0x04 || X(32) || Y(32)
+        if bytes_len(key) != 65 {
+            return x509_spki_bad("x509: EC point not uncompressed 65-byte")
+        }
+        if bytes_at(key, 0) != 4 {
+            return x509_spki_bad("x509: EC point missing 0x04 prefix")
+        }
+        return X509Spki {
+            ok: 1, err: "",
+            is_rsa: 0, n: bytes_from_vec(vec_new()), e: bytes_from_vec(vec_new()),
+            is_ec: 1,
+            qx: bytes_slice(key, 1, 33),
+            qy: bytes_slice(key, 33, 65)
+        }
     }
-    let ei = der_take(ni.rest, 2)
-    if ei.ok == 0 {
-        return x509_spki_bad(ei.err)
-    }
-    return X509Spki {
-        ok: 1, err: "",
-        n: der_integer_bytes(ni.content),
-        e: der_integer_bytes(ei.content)
-    }
+
+    return x509_spki_bad("x509: unsupported SPKI algorithm")
 }
 
-// Full Certificate DER → X509Cert.
 fn x509_parse(der: bytes) -> X509Cert {
     let outer = der_of(der)
-    // Certificate ::= SEQUENCE { tbs, sigAlg, signature }
     let cert_seq = der_enter_seq(outer)
     if cert_seq.ok == 0 {
         return x509_bad(cert_seq.err)
     }
-    // TBSCertificate TLV as it appears inside the outer SEQUENCE — that is
-    // what the certificate signature covers (RFC 5280 §4.1.1.3).
     let tbs_hdr = der_read_hdr(cert_seq)
     if tbs_hdr.ok == 0 {
         return x509_bad(tbs_hdr.err)
@@ -137,10 +184,18 @@ fn x509_parse(der: bytes) -> X509Cert {
         return x509_bad(sig_alg_t.err)
     }
     let sig_oid = x509_alg_oid(sig_alg_t.content)
-    // sha256WithRSAEncryption 2a 86 48 86 f7 0d 01 01 0b
     let sha256_rsa = hex_decode("2a864886f70d01010b")
-    if x509_oid_eq(sig_oid, sha256_rsa) == 0 {
-        return x509_bad("x509: unsupported cert signature algorithm (want sha256WithRSAEncryption)")
+    let ecdsa_sha256 = hex_decode("2a8648ce3d040302")
+    let mut sig_rsa: i64 = 0
+    let mut sig_ecdsa: i64 = 0
+    if x509_oid_eq(sig_oid, sha256_rsa) == 1 {
+        sig_rsa = 1
+    } else {
+        if x509_oid_eq(sig_oid, ecdsa_sha256) == 1 {
+            sig_ecdsa = 1
+        } else {
+            return x509_bad("x509: unsupported cert signature algorithm")
+        }
     }
 
     let sig_bit = der_take(sig_alg_t.rest, 3)
@@ -149,16 +204,13 @@ fn x509_parse(der: bytes) -> X509Cert {
     }
     let sig = der_bitstring_payload(sig_bit.content)
 
-    // Walk TBS fields to subjectPublicKeyInfo.
     let mut tbs_body = Der { data: cert_seq.data, pos: tbs_hdr.pos, end: tbs_hdr.end, ok: 1, err: "" }
-    // version [0] EXPLICIT — optional, tag 0xa0
     if der_peek_tag(tbs_body) == 160 {
         tbs_body = der_skip(tbs_body)
         if tbs_body.ok == 0 {
             return x509_bad(tbs_body.err)
         }
     }
-    // serialNumber, signature, issuer, validity, subject
     let mut step: i64 = 0
     while step < 5 {
         tbs_body = der_skip(tbs_body)
@@ -167,7 +219,6 @@ fn x509_parse(der: bytes) -> X509Cert {
         }
         step = step + 1
     }
-    // subjectPublicKeyInfo
     let spki_t = der_take(tbs_body, 48)
     if spki_t.ok == 0 {
         return x509_bad(spki_t.err)
@@ -179,61 +230,48 @@ fn x509_parse(der: bytes) -> X509Cert {
     return X509Cert {
         ok: 1, err: "",
         tbs: tbs_full,
-        n: spki.n,
-        e: spki.e,
         sig: sig,
-        is_rsa: 1
+        is_rsa: spki.is_rsa, n: spki.n, e: spki.e,
+        is_ec: spki.is_ec, qx: spki.qx, qy: spki.qy,
+        sig_rsa: sig_rsa, sig_ecdsa: sig_ecdsa
     }
 }
 
-// SPKI content (inside SEQUENCE): algorithm, subjectPublicKey.
-fn x509_parse_spki_content(content: bytes) -> X509Spki {
-    let d = der_of(content)
-    let alg_t = der_take(d, 48)
-    if alg_t.ok == 0 {
-        return x509_spki_bad(alg_t.err)
-    }
-    let oid = x509_alg_oid(alg_t.content)
-    let rsa_oid = hex_decode("2a864886f70d010101")
-    if x509_oid_eq(oid, rsa_oid) == 0 {
-        return x509_spki_bad("x509: SPKI not rsaEncryption")
-    }
-    let bit = der_take(alg_t.rest, 3)
-    if bit.ok == 0 {
-        return x509_spki_bad(bit.err)
-    }
-    let key_der = der_bitstring_payload(bit.content)
-    let kd = der_enter_seq(der_of(key_der))
-    if kd.ok == 0 {
-        return x509_spki_bad(kd.err)
-    }
-    let ni = der_take(kd, 2)
-    if ni.ok == 0 {
-        return x509_spki_bad(ni.err)
-    }
-    let ei = der_take(ni.rest, 2)
-    if ei.ok == 0 {
-        return x509_spki_bad(ei.err)
-    }
-    return X509Spki {
-        ok: 1, err: "",
-        n: der_integer_bytes(ni.content),
-        e: der_integer_bytes(ei.content)
-    }
-}
-
-fn x509_verify_cert(cert: X509Cert, issuer_n: bytes, issuer_e: bytes) -> i64 {
+fn x509_verify_self_signed(cert: X509Cert) -> i64 {
     if cert.ok == 0 {
+        return 0
+    }
+    if cert.sig_rsa == 1 && cert.is_rsa == 1 {
+        return rsa_pkcs1_sha256_verify(cert.n, cert.e, cert.tbs, cert.sig)
+    }
+    if cert.sig_ecdsa == 1 && cert.is_ec == 1 {
+        return ecdsa_p256_verify_sha256(cert.qx, cert.qy, cert.tbs, cert.sig)
+    }
+    return 0
+}
+
+// Issuer key verifies subject cert signature.
+fn x509_verify_with_issuer(cert: X509Cert, issuer: X509Cert) -> i64 {
+    if cert.ok == 0 || issuer.ok == 0 {
+        return 0
+    }
+    if cert.sig_rsa == 1 && issuer.is_rsa == 1 {
+        return rsa_pkcs1_sha256_verify(issuer.n, issuer.e, cert.tbs, cert.sig)
+    }
+    if cert.sig_ecdsa == 1 && issuer.is_ec == 1 {
+        return ecdsa_p256_verify_sha256(issuer.qx, issuer.qy, cert.tbs, cert.sig)
+    }
+    return 0
+}
+
+// Back-compat for RSA-only call sites.
+fn x509_verify_cert(cert: X509Cert, issuer_n: bytes, issuer_e: bytes) -> i64 {
+    if cert.ok == 0 || cert.sig_rsa == 0 {
         return 0
     }
     return rsa_pkcs1_sha256_verify(issuer_n, issuer_e, cert.tbs, cert.sig)
 }
 
-fn x509_verify_self_signed(cert: X509Cert) -> i64 {
-    return x509_verify_cert(cert, cert.n, cert.e)
-}
-
-// Trust if DER equals the anchor, or if self-signed and SPKI matches anchor's SPKI.
 fn x509_der_eq(a: bytes, b: bytes) -> i64 {
     if bytes_len(a) != bytes_len(b) {
         return 0
@@ -248,6 +286,20 @@ fn x509_der_eq(a: bytes, b: bytes) -> i64 {
     return 1
 }
 
+fn x509_same_key(a: X509Cert, b: X509Cert) -> i64 {
+    if a.is_rsa == 1 && b.is_rsa == 1 {
+        if x509_der_eq(a.n, b.n) == 1 && x509_der_eq(a.e, b.e) == 1 {
+            return 1
+        }
+    }
+    if a.is_ec == 1 && b.is_ec == 1 {
+        if x509_der_eq(a.qx, b.qx) == 1 && x509_der_eq(a.qy, b.qy) == 1 {
+            return 1
+        }
+    }
+    return 0
+}
+
 fn x509_trust_anchor(cert_der: bytes, anchor_der: bytes) -> i64 {
     if x509_der_eq(cert_der, anchor_der) == 1 {
         return 1
@@ -257,11 +309,14 @@ fn x509_trust_anchor(cert_der: bytes, anchor_der: bytes) -> i64 {
     if cert.ok == 0 || anchor.ok == 0 {
         return 0
     }
-    // same RSA key as the trust anchor and self-signed
-    if x509_der_eq(cert.n, anchor.n) == 1 && x509_der_eq(cert.e, anchor.e) == 1 {
+    if x509_same_key(cert, anchor) == 1 {
         if x509_verify_self_signed(cert) == 1 {
             return 1
         }
+    }
+    // leaf signed by anchor key
+    if x509_verify_with_issuer(cert, anchor) == 1 {
+        return 1
     }
     return 0
 }

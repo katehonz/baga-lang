@@ -170,23 +170,34 @@ done
 
 # ── 4. Package / product / std tests via baga-test discovery ─────────────
 # Specials need env or an external peer; the rest are plain discovery.
-echo "=== tls handshake (openssl s_server live) ==="
-openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/baga_tls_key.pem \
-	-out /tmp/baga_tls_cert.pem -days 2 -subj "/CN=localhost" > /dev/null 2>&1 \
-	|| { echo "FAIL: tls cert (нужен е openssl)"; exit 1; }
-openssl s_server -accept 18443 -key /tmp/baga_tls_key.pem -cert /tmp/baga_tls_cert.pem \
-	-tls1_3 -quiet < /dev/null > /dev/null 2>&1 & echo $! > /tmp/baga_tls_srv.pid
-sleep 1
-RC=0
-run tests/tls_handshake_test.baga > /tmp/baga_tlshs_out.txt 2>&1 || RC=$?
-kill "$(cat /tmp/baga_tls_srv.pid)" > /dev/null 2>&1 || true
-if [[ $RC -eq 0 ]] && grep -q "tls_handshake_test: all passed" /tmp/baga_tlshs_out.txt; then
-	echo "OK: TLS 1.3 handshake срещу openssl (ClientHello → Finished, pure Baga)"
-else
-	echo "FAIL: tls_handshake_test (нужен е openssl s_server на :18443)"
-	cat /tmp/baga_tlshs_out.txt
-	exit 1
-fi
+echo "=== tls handshake (openssl s_server live: RSA + ECDSA-P256) ==="
+run_tls_peer() {
+	local kind=$1 key=$2 cert=$3
+	openssl s_server -accept 18443 -key "$key" -cert "$cert" \
+		-tls1_3 -quiet < /dev/null > /dev/null 2>&1 & echo $! > /tmp/baga_tls_srv.pid
+	sleep 1
+	local RC=0
+	run tests/tls_handshake_test.baga > /tmp/baga_tlshs_out.txt 2>&1 || RC=$?
+	kill "$(cat /tmp/baga_tls_srv.pid)" > /dev/null 2>&1 || true
+	wait "$(cat /tmp/baga_tls_srv.pid)" 2>/dev/null || true
+	if [[ $RC -eq 0 ]] && grep -q "tls_handshake_test: all passed" /tmp/baga_tlshs_out.txt; then
+		echo "OK: TLS 1.3 handshake ($kind) — cert + CertificateVerify + Finished"
+	else
+		echo "FAIL: tls_handshake_test $kind (нужен е openssl s_server на :18443)"
+		cat /tmp/baga_tlshs_out.txt
+		exit 1
+	fi
+}
+openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/baga_tls_rsa_key.pem \
+	-out /tmp/baga_tls_rsa_cert.pem -days 2 -subj "/CN=localhost" > /dev/null 2>&1 \
+	|| { echo "FAIL: tls RSA cert (нужен е openssl)"; exit 1; }
+run_tls_peer "RSA-PSS" /tmp/baga_tls_rsa_key.pem /tmp/baga_tls_rsa_cert.pem
+openssl ecparam -name prime256v1 -genkey -noout -out /tmp/baga_tls_ec_key.pem > /dev/null 2>&1 \
+	|| { echo "FAIL: tls EC key"; exit 1; }
+openssl req -x509 -new -key /tmp/baga_tls_ec_key.pem -out /tmp/baga_tls_ec_cert.pem \
+	-days 2 -subj "/CN=localhost" > /dev/null 2>&1 \
+	|| { echo "FAIL: tls ECDSA cert"; exit 1; }
+run_tls_peer "ECDSA-P256" /tmp/baga_tls_ec_key.pem /tmp/baga_tls_ec_cert.pem
 
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
