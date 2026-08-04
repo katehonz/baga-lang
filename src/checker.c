@@ -86,9 +86,9 @@ int type_eq(Type *a, Type *b) {
     }
     if (a->kind == TYPE_MAP) {
         /* като Vec: непознат ключ/стойност съвпада с всеки; познатите трябва
-         * да съвпадат по вид */
+         * да съвпадат по вид (и по име за struct стойности) */
         if (a->key && b->key && a->key->kind != b->key->kind) return 0;
-        if (a->elem && b->elem && a->elem->kind != b->elem->kind) return 0;
+        if (a->elem && b->elem && !vec_elem_eq(a->elem, b->elem)) return 0;
         return 1;
     }
     return 1;
@@ -269,9 +269,10 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     Type *vt = resolve_type_node(ctx, ty->inner_type2);
                     if (vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
                     if (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
-                        vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES) {
+                        vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES &&
+                        vt->kind != TYPE_STRUCT) {
                         check_error(ctx, ty->pos,
-                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64 и bytes)",
+                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64, bytes и struct)",
                             type_str(vt));
                     } else {
                         t->elem = vt;
@@ -622,9 +623,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             if (vt && vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
             if (!vt || (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
                         vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES &&
+                        vt->kind != TYPE_STRUCT &&
                         vt->kind != TYPE_ERROR)) {
                 check_error(ctx, n->pos,
-                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str, f64 и bytes)",
+                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str, f64, bytes и struct)",
                     type_str(vt));
                 return type_new(TYPE_ERROR);
             }
@@ -639,7 +641,7 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             if (vt->kind != TYPE_ERROR) {
                 if (!mt->elem) {
                     mt->elem = vt;
-                } else if (mt->elem->kind != vt->kind) {
+                } else if (!vec_elem_eq(mt->elem, vt)) {
                     check_error(ctx, n->pos, "map_set: стойност от тип %s, но картата е %s",
                         type_str(vt), type_str(mt));
                 }

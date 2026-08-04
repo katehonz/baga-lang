@@ -1,0 +1,102 @@
+// map_struct_test.baga — Map<K, struct> (L4, последното парче): boxed
+// struct values in maps. set copies in, get copies out, missing key →
+// zero struct. Keys str and i64; rehash growth; reference fields shared.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+struct Sess {
+    user: str,
+    ttl: i64,
+    roles: Vec<str>
+}
+
+fn bump(m: Map<str, Sess>, key: str) -> i64 {
+    let mut s = map_get(m, key)
+    s.ttl = s.ttl + 1
+    map_set(m, key, s)          // copy back in
+    return map_get(m, key).ttl
+}
+
+fn main() {
+    // --- str keys → struct values ---
+    let m: Map<str, Sess> = map_new()
+    check("new_len", map_len(m) == 0)
+    let r1 = vec_new()
+    vec_push(r1, "admin")
+    map_set(m, "s1", Sess { user: "иван", ttl: 100, roles: r1 })
+    map_set(m, "s2", Sess { user: "мария", ttl: 200, roles: vec_new() })
+    check("len_after", map_len(m) == 2)
+    check("get_user", map_get(m, "s1").user == "иван")
+    check("get_ttl", map_get(m, "s2").ttl == 200)
+    check("has", map_has(m, "s1") == 1)
+
+    // --- get copies out: mutating the copy does not touch the map ---
+    let mut g = map_get(m, "s1")
+    g.ttl = 999
+    check("get_copies_out", map_get(m, "s1").ttl == 100)
+
+    // --- set copies in / overwrite ---
+    let mut repl = Sess { user: "заменен", ttl: 1, roles: vec_new() }
+    map_set(m, "s1", repl)
+    check("set_copies_in", map_get(m, "s1").user == "заменен")
+    repl.user = "друг"
+    check("set_independent", map_get(m, "s1").user == "заменен")
+    check("overwrite_len", map_len(m) == 2)
+
+    // --- copy back through a helper (bump) ---
+    check("bump_once", bump(m, "s2") == 201)
+    check("bump_twice", bump(m, "s2") == 202)
+
+    // --- reference fields stay shared ---
+    vec_push(r1, "editor")
+    check("ref_field_shared", vec_len(map_get(m, "s1").roles) == 0)
+    let s3 = Sess { user: "петър", ttl: 5, roles: vec_new() }
+    vec_push(s3.roles, "x")
+    map_set(m, "s3", s3)
+    vec_push(s3.roles, "y")
+    check("ref_shared_after_set", vec_len(map_get(m, "s3").roles) == 2)
+
+    // --- missing key → zero struct ---
+    let miss = map_get(m, "няма")
+    check("missing_zero_str", miss.user == "")
+    check("missing_zero_i64", miss.ttl == 0)
+    check("missing_zero_vec", vec_len(miss.roles) == 0)
+
+    // --- del ---
+    map_del(m, "s3")
+    check("del_gone", map_has(m, "s3") == 0)
+    check("del_len", map_len(m) == 2)
+
+    // --- i64 keys ---
+    let mi: Map<i64, Sess> = map_new()
+    map_set(mi, 7, Sess { user: "седем", ttl: 70, roles: vec_new() })
+    map_set(mi, 8, Sess { user: "осем", ttl: 80, roles: vec_new() })
+    check("i64_key_get", map_get(mi, 7).user == "седем")
+    check("i64_key_ttl", map_get(mi, 8).ttl == 80)
+
+    // --- unannotated map fixed on first set ---
+    let u = map_new()
+    map_set(u, "k", Sess { user: "u", ttl: 1, roles: vec_new() })
+    check("infer_get", map_get(u, "k").user == "u")
+
+    // --- growth: 500 entries force several rehashes ---
+    let big: Map<str, Sess> = map_new()
+    for i in 0..500 {
+        map_set(big, concat("k", int_to_str(i)), Sess { user: "u", ttl: i, roles: vec_new() })
+    }
+    check("big_len", map_len(big) == 500)
+    check("big_lo", map_get(big, "k0").ttl == 0)
+    check("big_mid", map_get(big, "k250").ttl == 250)
+    check("big_hi", map_get(big, "k499").ttl == 499)
+
+    print("map_struct_test: all passed")
+}

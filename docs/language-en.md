@@ -623,17 +623,19 @@ an element other than `i64`/`str` (`Vec<f64>`) is a compile-time error.
 ### 12.5 Maps (dynamic key–value tables)
 
 A `Map` is a heap-allocated hash table. Keys are `i64` or `str`; values are
-`i64`, `str`, `f64`, or `bytes` — fixed by the first `map_set` (or by a
-`Map<K, V>` annotation), exactly like `Vec`'s element type. Maps are
-pointers: passing one to a function shares it, and mutations are visible to
-the caller. `bytes` values are binary-safe (NUL/0xFF round-trip) — used for
-residual I/O buffers (chatbaga) and any binary store.
+`i64`, `str`, `f64`, `bytes`, or a struct type — fixed by the first
+`map_set` (or by a `Map<K, V>` annotation), exactly like `Vec`'s element
+type. Maps are pointers: passing one to a function shares it, and mutations
+are visible to the caller. `bytes` values are binary-safe (NUL/0xFF
+round-trip) — used for residual I/O buffers (chatbaga) and any binary
+store. Struct values are boxed copies, like `Vec<struct>`: `map_set` copies
+in, `map_get` copies out; reference-typed fields (`Vec`/`Map`) stay shared.
 
 | Signature | Description |
 |-----------|-------------|
 | `map_new() -> Map` | Empty map; key/value types unknown until first use. |
 | `map_set(m, key, val)` | Insert or overwrite; fixes/validates both types. |
-| `map_get(m, key) -> val` | Value for the key; `0` / `""` / `0.0` / empty `bytes` when absent. |
+| `map_get(m, key) -> val` | Value for the key; `0` / `""` / `0.0` / empty `bytes` / zero struct when absent. |
 | `map_has(m, key) -> i64` | `1` when the key exists, else `0`. |
 | `map_del(m, key)` | Remove the key (no-op when absent). |
 | `map_len(m) -> i64` | Entry count. |
@@ -663,9 +665,11 @@ map_set: стойност от тип str, но картата е Map<str, i64>
 ```
 
 Absent-key semantics are zero-values, like Go maps without the `, ok` form —
-use `map_has` to distinguish "missing" from "stored zero". The C backend
-implements maps natively (chained hash table, grows at load factor 3/4);
-the LLVM backend does not support `Map` yet.
+use `map_has` to distinguish "missing" from "stored zero". For struct values
+the zero struct is field-wise safe: `str` fields are `""` (printable), not
+NULL; `Vec`/`Map` fields are NULL but `vec_len`/`map_len` tolerate NULL and
+return 0. The C backend implements maps natively (chained hash table, grows
+at load factor 3/4); the LLVM backend does not support `Map` yet.
 
 ---
 
@@ -1267,8 +1271,8 @@ are computed automatically by the **sandak** package manager from the
 | `vec_get_str` | `(v: Vec, i: i64) -> str` | — |
 | `vec_set_str` | `(v: Vec, i: i64, s: str) -> void` | — |
 | `map_new` | `() -> Map` | — |
-| `map_set` | `(m: Map, k: i64 \| str, v: i64 \| str \| f64 \| bytes \| struct \| bytes) -> void` | first set fixes key/value types |
-| `map_get` | `(m: Map, k: i64 \| str) -> i64 \| str \| f64 \| bytes \| struct \| bytes` | zero-value when absent |
+| `map_set` | `(m: Map, k: i64 \| str, v: i64 \| str \| f64 \| bytes \| struct) -> void` | first set fixes key/value types |
+| `map_get` | `(m: Map, k: i64 \| str) -> i64 \| str \| f64 \| bytes \| struct` | zero-value when absent |
 | `map_has` | `(m: Map, k: i64 \| str) -> i64` | 1 when the key exists |
 | `map_del` | `(m: Map, k: i64 \| str) -> void` | — |
 | `map_len` | `(m: Map) -> i64` | — |

@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Language — `Map<K, struct>` (the last piece of L4)
+- Map values may now be struct types — in annotations (`Map<str, Sess>`)
+  and in fix-on-first-use inference; struct value types compare **by
+  name** (`vec_elem_eq` reused; `type_eq`'s Map branch too).
+- C backend: one box per entry (`void *pv` on `baga_MapEntry`, stable
+  across rehashes); `baga_map_{set,get}_{str,i64}_box` runtime helpers.
+  `map_set` copies in, `map_get` copies out — same semantics as
+  `Vec<struct>`.
+- **Missing key → field-wise zero struct** (new `emit_zero_struct` in
+  codegen): `str` fields come out as `""` — not NULL — so printing a
+  missing entry is safe; nested structs recurse; `bytes` zeroed.
+- Runtime hardening (needed by the zero struct): `vec_len`/`map_len`
+  tolerate NULL and return 0.
+- Tests: `tests/std/map_struct_test.baga` (25 checks: copy in/out,
+  shared reference fields, missing-key zero struct, del, i64 keys,
+  inference, 500-entry rehash) + a negative probe (`Map<str,A>` set `B`)
+  in `scripts/run_tests.sh`.
+- Gaps closed: oauthbaga **O3**, httpdbaga **G14** — the whole
+  "no struct values in containers" class is now gone from the language.
+- Docs: `docs/language-{en,bg}.md` §12.5 (struct values + zero-struct
+  semantics).
+
 ### Language — `Vec<struct>` (L4 closed for struct elements)
 - `Vec<T>` element kinds now include **struct types** — in annotations
   (`Vec<Line>`, `[Line]`) and in fix-on-first-use inference. Element

@@ -43,9 +43,9 @@ backends meet at typed rows (`OaCode`/`OaTok`/`PxSess`) — the JSON codec
 is now contained to the dev backend.
 
 **Verdict.** L4 — same lineage as tplbaga P3 / queuebaga disk structs.
-**Half-closed 2026-08-04:** `Vec<struct>` shipped (tplbaga P3, bagadecimal
-D7); `Map<str, Session>` struct values remain open — the dev-backend codec
-stays for now.
+**Closed 2026-08-04:** `Vec<struct>` (tplbaga P3, bagadecimal D7) and
+`Map<K,struct>` both shipped — `Map<str, Session>` is now expressible.
+Rewriting the dev backend is optional cleanup, not a blocker.
 
 ## O4 — TokenReply / PxTokens are L3 stand-ins (again)
 

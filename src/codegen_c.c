@@ -157,6 +157,7 @@ static void emit_c_string(FILE *f, const char *s) {
 /* ---- expression emission ---- */
 
 static void emit_expr(Codegen *cg, Node *n);
+static void emit_zero_struct(Codegen *cg, const char *name);
 
 static const char *binop_c(BinOp op) {
     switch (op) {
@@ -445,6 +446,35 @@ static void emit_expr(Codegen *cg, Node *n) {
                  * (типовете идват от checker-а; чист Map → str/i64 по подразбиране) */
                 if (strcmp(bn, "map_set") == 0 || strcmp(bn, "map_get") == 0) {
                     Type *mt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+                    /* struct стойности: box-нато копие през generic box helper-ите */
+                    if (mt && mt->kind == TYPE_MAP && mt->elem &&
+                        mt->elem->kind == TYPE_STRUCT && mt->elem->name) {
+                        const char *ksuf = "str";
+                        if (mt->key && mt->key->kind == TYPE_I64) ksuf = "i64";
+                        char *mn = mangle_name(mt->elem->name);
+                        if (strcmp(bn, "map_set") == 0) {
+                            fprintf(f, "({ %s _bx = (", mn);
+                            emit_expr(cg, n->args.data[2]);
+                            fprintf(f, "); baga_map_set_%s_box(", ksuf);
+                            emit_expr(cg, n->args.data[0]);
+                            fprintf(f, ", ");
+                            emit_expr(cg, n->args.data[1]);
+                            fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
+                        } else {
+                            /* липсващ ключ → нулев struct (безопасни полета:
+                             * str → "", вложен struct → рекурсивно) */
+                            fprintf(f, "({ void *_bp = baga_map_get_%s_box(", ksuf);
+                            for (int i = 0; i < n->args.len; i++) {
+                                if (i > 0) fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[i]);
+                            }
+                            fprintf(f, "); _bp ? *(%s *)_bp : ", mn);
+                            emit_zero_struct(cg, mt->elem->name);
+                            fprintf(f, "; })");
+                        }
+                        free(mn);
+                        goto call_done;
+                    }
                     const char *ksuf = "str", *vsuf = "i64";
                     if (mt && mt->kind == TYPE_MAP) {
                         if (mt->key && mt->key->kind == TYPE_I64) ksuf = "i64";
@@ -1172,6 +1202,65 @@ static void emit_struct(Codegen *cg, Node *s) {
     free(m);
 }
 
+static Node *find_struct_decl(Codegen *cg, const char *name) {
+    if (!cg->program) return NULL;
+    for (int i = 0; i < cg->program->items.len; i++) {
+        Node *it = cg->program->items.data[i];
+        if (it->kind == NODE_STRUCT && it->struct_name &&
+            strcmp(it->struct_name, name) == 0)
+            return it;
+    }
+    return NULL;
+}
+
+/* нулев struct литерал с нули по полета: str → "" (не NULL — безопасно за
+ * печат/concat), bytes → (baga_bytes){0}, вложен struct → рекурсивно;
+ * Vec/Map/числа → 0 (vec_len/map_len търпят NULL). Нужен за map_get на
+ * липсващ ключ при Map<K, struct>. */
+static void emit_zero_struct(Codegen *cg, const char *name) {
+    FILE *f = cg->out;
+    char *m = mangle_name(name);
+    Node *decl = find_struct_decl(cg, name);
+    if (!decl) {
+        fprintf(f, "(%s){0}", m);
+        free(m);
+        return;
+    }
+    fprintf(f, "(%s){", m);
+    free(m);
+    for (int i = 0; i < decl->fields.len; i++) {
+        Node *fld = decl->fields.data[i];
+        if (i > 0) fprintf(f, ", ");
+        char *fm = mangle_name(fld->fld_name);
+        fprintf(f, ".%s = ", fm);
+        free(fm);
+        Node *ft = fld->fld_type;
+        if (ft && ft->kind == NODE_TYPE && ft->type_name) {
+            if (strcmp(ft->type_name, "str") == 0) {
+                fprintf(f, "\"\"");
+                continue;
+            }
+            if (strcmp(ft->type_name, "bytes") == 0) {
+                fprintf(f, "(baga_bytes){0}");
+                continue;
+            }
+            if (strcmp(ft->type_name, "i64") != 0 &&
+                strcmp(ft->type_name, "i32") != 0 &&
+                strcmp(ft->type_name, "f64") != 0 &&
+                strcmp(ft->type_name, "bool") != 0 &&
+                strcmp(ft->type_name, "Vec") != 0 &&
+                strcmp(ft->type_name, "Map") != 0 &&
+                ft->kind == NODE_TYPE) {
+                /* не-примитив, не-Vec/Map → вложен struct */
+                emit_zero_struct(cg, ft->type_name);
+                continue;
+            }
+        }
+        fprintf(f, "0");
+    }
+    fprintf(f, "}");
+}
+
 /* ---- forward declarations ---- */
 
 static void emit_forward_decls(Codegen *cg, Node *program) {
@@ -1529,7 +1618,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
     fprintf(out, "    memcpy(v->data[i], src, (size_t)size);\n");
     fprintf(out, "}\n");
-    fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v->len; }\n");
+    fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v ? v->len : 0; }\n");
     /* bridge: native bytes <-> Vec<i64> (crypto migration path) */
     fprintf(out, "static baga_bytes baga_bytes_from_vec(baga_Vec *v) {\n");
     fprintf(out, "    int64_t n = v ? v->len : 0;\n");
@@ -1593,7 +1682,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "\n/* hash map: chaining, key i64/str, value i64/str/f64/bytes (leak-tolerant like baga_Vec) */\n");
     fprintf(out, "typedef struct baga_MapEntry {\n");
     fprintf(out, "    int64_t ik; const char *sk;\n");
-    fprintf(out, "    int64_t iv; double fv; const char *sv; baga_bytes bv;\n");
+    fprintf(out, "    int64_t iv; double fv; const char *sv; baga_bytes bv; void *pv;\n");
     fprintf(out, "    struct baga_MapEntry *next;\n");
     fprintf(out, "} baga_MapEntry;\n");
     fprintf(out, "typedef struct { baga_MapEntry **b; int64_t nb; int64_t len; } baga_Map;\n");
@@ -1637,11 +1726,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (*slot) return *slot;\n");
     fprintf(out, "    baga_MapEntry *e = baga_alloc(sizeof(baga_MapEntry));\n");
     fprintf(out, "    e->ik = ik; e->sk = sk; e->iv = 0; e->fv = 0; e->sv = NULL;\n");
-    fprintf(out, "    e->bv.data = NULL; e->bv.len = 0; e->next = NULL;\n");
+    fprintf(out, "    e->bv.data = NULL; e->bv.len = 0; e->pv = NULL; e->next = NULL;\n");
     fprintf(out, "    *slot = e; m->len++;\n");
     fprintf(out, "    if (m->len * 4 > m->nb * 3) baga_map_rehash(m);\n");
     fprintf(out, "    return e; }\n");
-    fprintf(out, "static int64_t baga_map_len(baga_Map *m) { return m->len; }\n");
+    fprintf(out, "static int64_t baga_map_len(baga_Map *m) { return m ? m->len : 0; }\n");
     /* typed variants: baga_map_{set,get}_{str,i64}_{i64,str,f64},
      * has/del/keys по ключ — имената съвпадат с lowering-а по-горе */
     for (int ki = 0; ki < 2; ki++) {
@@ -1672,6 +1761,15 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    baga_MapEntry *e = *baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
         fprintf(out, "    if (!e) { baga_bytes z; z.data = NULL; z.len = 0; return z; }\n");
         fprintf(out, "    return e->bv; }\n");
+        /* struct values (L4): box per entry; set copies in, get returns the
+         * box (NULL when missing — call site substitutes a zero struct) */
+        fprintf(out, "static void baga_map_set_%s_box(baga_Map *m, %s, const void *src, int64_t size) {\n", kn, karg);
+        fprintf(out, "    baga_MapEntry *e = baga_map_put(m, %s, %s, %s);\n", ikv, skv, hk);
+        fprintf(out, "    if (!e->pv) e->pv = baga_alloc((size_t)size);\n");
+        fprintf(out, "    memcpy(e->pv, src, (size_t)size); }\n");
+        fprintf(out, "static void *baga_map_get_%s_box(baga_Map *m, %s) {\n", kn, karg);
+        fprintf(out, "    baga_MapEntry *e = *baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
+        fprintf(out, "    return e ? e->pv : NULL; }\n");
         fprintf(out, "static int64_t baga_map_has_%s(baga_Map *m, %s) {\n", kn, karg);
         fprintf(out, "    return *baga_map_slot(m, %s, %s, %s) ? 1 : 0; }\n", ikv, skv, hk);
         fprintf(out, "static void baga_map_del_%s(baga_Map *m, %s) {\n", kn, karg);

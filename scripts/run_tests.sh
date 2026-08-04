@@ -288,6 +288,10 @@ printf 'struct A { x: i64 }\nstruct B { x: i64 }\nfn main() {\n    let v: Vec<A>
 run /tmp/baga_vec_bad2.baga 2>&1 | grep -q "елемент от тип B, но векторът е Vec<A>" \
 	&& echo "OK: Vec<struct> — различни struct-ове не се смесват (L4)" \
 	|| { echo "FAIL: Vec<A> с push на B трябва да гърми"; exit 1; }
+printf 'struct A { x: i64 }\nstruct B { x: i64 }\nfn main() {\n    let m: Map<str, A> = map_new()\n    map_set(m, "k", B { x: 1 })\n}\n' > /tmp/baga_map_bad3.baga
+run /tmp/baga_map_bad3.baga 2>&1 | grep -q "стойност от тип B, но картата е Map<str, A>" \
+	&& echo "OK: Map<str,struct> — различни struct стойности не се смесват (L4)" \
+	|| { echo "FAIL: Map<str,A> със set на B трябва да гърми"; exit 1; }
 printf 'struct A { x: i64 }\nfn main() {\n    let v: Vec<A> = vec_new()\n    vec_push(v, 5)\n}\n' > /tmp/baga_vec_bad3.baga
 run /tmp/baga_vec_bad3.baga 2>&1 | grep -q "елемент от тип i64, но векторът е Vec<A>" \
 	&& echo "OK: Vec<struct> — скаларен елемент е отхвърлен (L4)" \

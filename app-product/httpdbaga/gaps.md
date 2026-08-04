@@ -219,14 +219,11 @@ attribution just needs to follow them through import expansion.
 ## G14 — stream tables are parallel Vecs (struct elements stay impossible)
 
 **Symptom.** HTTP/2 needs stream-id → state lookup; HPACK needs name →
-index. `Map<K,V>` has shipped since (kvbaga milestone) and covers the
-lookup half, but multi-field per-stream state still can't live in one
-container — struct values in `Map` are impossible (map values are
-i64/str/f64/bytes only; `Vec<struct>` shipped 2026-08-04 but a stream
-table wants key → struct, not a positional list) — so the tables stay
-parallel `Vec` pools + linear scans (`h2_find`, `hpack_static_exact`),
-and per-stream payload storage needs flat pools with offset/length
-bookkeeping.
+index. Written before the language had containers: today `Map<K,V>` covers
+the lookup half and `Map<i64, struct>` / `Vec<struct>` (both shipped
+2026-08-04) cover multi-field per-stream state — the parallel-`Vec` pools
++ linear scans (`h2_find`, `hpack_static_exact`) and flat payload pools
+could now be replaced wholesale.
 
 **Evidence.** `h2.baga`'s stream pool (`s_ids`/`s_kseg`/`s_vseg`/
 `s_body_off`/`s_body_len`/`s_state`), the header-segment `\n`-join trick in
@@ -238,8 +235,9 @@ missing map.
 
 **Severity.** Medium. Every stateful protocol/data structure hits it.
 
-**Verdict.** Map half closed (language shipped `Map<K,V>`); the struct
-half is the same lineage as tplbaga P3 / oauthbaga O3 (L4) — roadmap.
+**Verdict.** **Closed 2026-08-04** — `Map<K,V>`, `Vec<struct>` and
+`Map<K,struct>` are all in the language; replacing the parallel pools is
+optional cleanup, not a blocker.
 
 ---
 
@@ -257,4 +255,4 @@ half is the same lineage as tplbaga P3 / oauthbaga O3 (L4) — roadmap.
 | G11 arena not thread-safe | **closed** | mutex in the emitted runtime (fixed 2026-08-03) |
 | G12 bitwise-vs-compare precedence | roadmap | precedence change or diagnostic |
 | G13 error attribution across imports | roadmap | diagnostics pass (positions through imports) |
-| G14 parallel-Vec stream tables | partially closed | `Map<K,V>` shipped; struct elements stay L4 roadmap |
+| G14 parallel-Vec stream tables | **closed** | `Map<K,struct>`/`Vec<struct>` shipped (2026-08-04); rewrite optional |
