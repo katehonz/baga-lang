@@ -1,0 +1,494 @@
+// xml.baga — pull XML parser (events) + writer, quick-xml style.
+//
+// Parser: streaming events over a source string — no DOM (no Vec<struct>
+// in the language, L4). Well-formedness is checked as we go: mismatched
+// closing tags, unclosed elements/tags, multiple roots, text outside the
+// root, duplicate attributes, bad entities, bad char refs.
+//
+// Event kinds: 0 EOF, 1 OPEN, 2 CLOSE, 3 TEXT, -1 ERROR (err field set).
+// Self-closing <a/> emits OPEN then CLOSE. Comments and processing
+// instructions are skipped (the XML declaration too). CDATA comes out as
+// a TEXT event, undecoded. DOCTYPE is skipped leniently (no entities are
+// defined from it). Names are kept raw — no namespace resolution (X1).
+// Strings are byte-indexed; UTF-8 name bytes (>= 128) are accepted
+// leniently.
+
+import "std/str/str.baga"
+
+struct XmlParser {
+    src: str,
+    pos: Vec<i64>,     // [0] = cursor (byte offset)
+    stack: Vec<str>,   // open element names (never shrinks; see flags[2])
+    flags: Vec<i64>    // [0] = root seen, [1] = pending self-close, [2] = depth
+}
+
+struct XmlEvent {
+    kind: i64,
+    name: str,
+    text: str,
+    err: str,
+    attrs: Map<str, str>
+}
+
+fn xml_attrs_new() -> Map<str, str> {
+    let m: Map<str, str> = map_new()
+    return m
+}
+
+fn xml_ev(kind: i64, name: str, text: str, err: str) -> XmlEvent {
+    return XmlEvent { kind: kind, name: name, text: text, err: err, attrs: xml_attrs_new() }
+}
+
+fn xml_err(msg: str, pos: i64) -> XmlEvent {
+    return xml_ev(0 - 1, "", "", concat(concat(msg, " (byte "), concat(int_to_str(pos), ")")))
+}
+
+fn xml_parser(src: str) -> XmlParser {
+    let pos = vec_new()
+    vec_push(pos, 0)
+    let flags = vec_new()
+    vec_push(flags, 0)
+    vec_push(flags, 0)
+    vec_push(flags, 0)
+    return XmlParser { src: src, pos: pos, stack: vec_new(), flags: flags }
+}
+
+fn xml_depth(p: XmlParser) -> i64 {
+    return vec_get(p.flags, 2)
+}
+
+fn xml_is_name_char(c: i64) -> i64 {
+    if c >= 65 && c <= 90 { return 1 }   // A-Z
+    if c >= 97 && c <= 122 { return 1 }  // a-z
+    if c >= 48 && c <= 57 { return 1 }   // 0-9
+    if c == 95 || c == 58 || c == 45 || c == 46 { return 1 }  // _ : - .
+    if c >= 128 { return 1 }             // UTF-8 name bytes (lenient)
+    return 0
+}
+
+fn xml_skip_ws(src: str, j: i64) -> i64 {
+    let n = len(src)
+    let mut k = j
+    while k < n {
+        let c = char_at(src, k)
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            k = k + 1
+        } else {
+            return k
+        }
+    }
+    return k
+}
+
+// Prefix probe with bounds check (substr aborts out of range).
+fn xml_at(src: str, pos: i64, tag: str) -> i64 {
+    if pos + len(tag) > len(src) {
+        return 0
+    }
+    if substr(src, pos, pos + len(tag)) == tag {
+        return 1
+    }
+    return 0
+}
+
+struct XmlDecoded { ok: i64, text: str, err: str }
+
+// Decode the five builtin entities + numeric character references.
+// Unknown entities and invalid/control characters are well-formedness errors.
+fn xml_decode(s: str) -> XmlDecoded {
+    let n = len(s)
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_at(s, i)
+        if c == 38 {
+            // entity: find ';' within a small window
+            let mut semi = i + 1
+            let mut found = 0
+            while semi < n && semi < i + 12 && found == 0 {
+                if char_at(s, semi) == 59 {
+                    found = 1
+                } else {
+                    semi = semi + 1
+                }
+            }
+            if found == 0 {
+                return XmlDecoded { ok: 0, text: "", err: "unterminated entity reference" }
+            }
+            let ent = substr(s, i + 1, semi)
+            if ent == "lt" {
+                out = concat(out, "<")
+            } else {
+                if ent == "gt" {
+                    out = concat(out, ">")
+                } else {
+                    if ent == "amp" {
+                        out = concat(out, "&")
+                    } else {
+                        if ent == "apos" {
+                            out = concat(out, "'")
+                        } else {
+                            if ent == "quot" {
+                                out = concat(out, "\"")
+                            } else {
+                                if str_starts_with(ent, "#") {
+                                    // numeric char reference: &#65; &#x41;
+                                    let mut code: i64 = 0
+                                    let mut k = 1
+                                    let mut base: i64 = 10
+                                    if k < len(ent) && (char_at(ent, k) == 120 || char_at(ent, k) == 88) {
+                                        base = 16
+                                        k = k + 1
+                                    }
+                                    let mut nd: i64 = 0
+                                    while k < len(ent) {
+                                        let dc = char_at(ent, k)
+                                        let mut dv: i64 = 0 - 1
+                                        if dc >= 48 && dc <= 57 {
+                                            dv = dc - 48
+                                        } else {
+                                            if base == 16 && dc >= 97 && dc <= 102 {
+                                                dv = dc - 87
+                                            } else {
+                                                if base == 16 && dc >= 65 && dc <= 70 {
+                                                    dv = dc - 55
+                                                }
+                                            }
+                                        }
+                                        if dv < 0 || dv >= base {
+                                            return XmlDecoded { ok: 0, text: "", err: "bad digit in character reference" }
+                                        }
+                                        code = code * base + dv
+                                        if code > 1114111 {
+                                            return XmlDecoded { ok: 0, text: "", err: "character reference out of range" }
+                                        }
+                                        nd = nd + 1
+                                        k = k + 1
+                                    }
+                                    if nd == 0 {
+                                        return XmlDecoded { ok: 0, text: "", err: "empty character reference" }
+                                    }
+                                    // XML 1.0 valid chars: tab, lf, cr, >= space (minus surrogates)
+                                    if code != 9 && code != 10 && code != 13 && (code < 32 || (code >= 55296 && code <= 57343)) {
+                                        return XmlDecoded { ok: 0, text: "", err: "control character in reference" }
+                                    }
+                                    out = concat(out, chr(code))
+                                } else {
+                                    return XmlDecoded { ok: 0, text: "", err: concat(concat("unknown entity '&", ent), ";'") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            i = semi + 1
+        } else {
+            out = concat(out, substr(s, i, i + 1))
+            i = i + 1
+        }
+    }
+    return XmlDecoded { ok: 1, text: out, err: "" }
+}
+
+// Next event. Parser state advances through the Vec/Map fields (reference
+// semantics); the XmlParser value itself may be copied freely.
+fn xml_next(p: XmlParser) -> XmlEvent {
+    let src = p.src
+    let n = len(src)
+    let mut done = 0
+    let mut out = xml_ev(0, "", "", "")
+    while done == 0 {
+        // synthetic CLOSE after a self-closing tag
+        if vec_get(p.flags, 1) == 1 {
+            vec_set(p.flags, 1, 0)
+            let depth = vec_get(p.flags, 2) - 1
+            vec_set(p.flags, 2, depth)
+            return xml_ev(2, vec_get(p.stack, depth), "", "")
+        }
+        let pos = vec_get(p.pos, 0)
+        if pos >= n {
+            if vec_get(p.flags, 2) > 0 {
+                return xml_err(concat("unclosed element <", concat(vec_get(p.stack, vec_get(p.flags, 2) - 1), ">")), pos)
+            }
+            return xml_ev(0, "", "", "")
+        }
+        let c = char_at(src, pos)
+        if c != 60 {
+            // character data up to the next '<'
+            let mut j = pos
+            while j < n && char_at(src, j) != 60 {
+                j = j + 1
+            }
+            vec_set(p.pos, 0, j)
+            let raw = substr(src, pos, j)
+            if vec_get(p.flags, 2) == 0 {
+                // outside the root element: only whitespace is allowed
+                if str_trim(raw) == "" {
+                    // skip and continue scanning
+                } else {
+                    return xml_err("text outside the root element", pos)
+                }
+            } else {
+                let dec = xml_decode(raw)
+                if dec.ok == 0 {
+                    return xml_err(dec.err, pos)
+                }
+                return xml_ev(3, "", dec.text, "")
+            }
+        } else {
+            if pos + 1 < n && char_at(src, pos + 1) == 47 {
+                // closing tag </name>
+                let mut j = pos + 2
+                while j < n && xml_is_name_char(char_at(src, j)) == 1 {
+                    j = j + 1
+                }
+                let name = substr(src, pos + 2, j)
+                j = xml_skip_ws(src, j)
+                if j >= n || char_at(src, j) != 62 {
+                    return xml_err("malformed closing tag", pos)
+                }
+                vec_set(p.pos, 0, j + 1)
+                let depth = vec_get(p.flags, 2)
+                if depth == 0 {
+                    return xml_err("closing tag without an open element", pos)
+                }
+                let top = vec_get(p.stack, depth - 1)
+                if top != name {
+                    return xml_err(concat(concat("mismatched closing tag: expected </", top), concat(">, got </", concat(name, ">"))), pos)
+                }
+                vec_set(p.flags, 2, depth - 1)
+                return xml_ev(2, name, "", "")
+            } else {
+                if xml_at(src, pos, "<!--") == 1 {
+                    let idx = str_find(substr(src, pos + 4, n), "-->")
+                    if idx < 0 {
+                        return xml_err("unterminated comment", pos)
+                    }
+                    vec_set(p.pos, 0, pos + 4 + idx + 3)
+                } else {
+                    if xml_at(src, pos, "<![CDATA[") == 1 {
+                        let idx = str_find(substr(src, pos + 9, n), "]]>")
+                        if idx < 0 {
+                            return xml_err("unterminated CDATA section", pos)
+                        }
+                        vec_set(p.pos, 0, pos + 9 + idx + 3)
+                        if vec_get(p.flags, 2) == 0 {
+                            return xml_err("CDATA outside the root element", pos)
+                        }
+                        return xml_ev(3, "", substr(src, pos + 9, pos + 9 + idx), "")
+                    } else {
+                        if xml_at(src, pos, "<?") == 1 {
+                            let idx = str_find(substr(src, pos + 2, n), "?>")
+                            if idx < 0 {
+                                return xml_err("unterminated processing instruction", pos)
+                            }
+                            vec_set(p.pos, 0, pos + 2 + idx + 2)
+                        } else {
+                            if xml_at(src, pos, "<!DOCTYPE") == 1 {
+                                // lenient skip: [internal subset] tolerated, nothing is defined from it
+                                let mut j = pos + 9
+                                let mut mode: i64 = 0   // 0 before '>', 1 inside [...], 2 after ']'
+                                let mut closed = 0
+                                while j < n && closed == 0 {
+                                    let dc = char_at(src, j)
+                                    if dc == 91 && mode == 0 {
+                                        mode = 1
+                                    }
+                                    if dc == 93 && mode == 1 {
+                                        mode = 2
+                                    }
+                                    if dc == 62 && mode != 1 {
+                                        closed = 1
+                                    }
+                                    j = j + 1
+                                }
+                                if closed == 0 {
+                                    return xml_err("unterminated DOCTYPE", pos)
+                                }
+                                vec_set(p.pos, 0, j)
+                            } else {
+                                if xml_at(src, pos, "<!") == 1 {
+                                    return xml_err("unsupported markup declaration", pos)
+                                } else {
+                                    // open tag <name attr="v" ...> or <name .../>
+                                    let mut j = pos + 1
+                                    while j < n && xml_is_name_char(char_at(src, j)) == 1 {
+                                        j = j + 1
+                                    }
+                                    let name = substr(src, pos + 1, j)
+                                    if name == "" {
+                                        return xml_err("expected element name", pos)
+                                    }
+                                    let attrs = xml_attrs_new()
+                                    let mut selfclose = 0
+                                    let mut tagdone = 0
+                                    while tagdone == 0 {
+                                        j = xml_skip_ws(src, j)
+                                        if j >= n {
+                                            return xml_err("unterminated tag", pos)
+                                        }
+                                        let tc = char_at(src, j)
+                                        if tc == 62 {
+                                            j = j + 1
+                                            tagdone = 1
+                                        } else {
+                                            if tc == 47 {
+                                                if j + 1 < n && char_at(src, j + 1) == 62 {
+                                                    j = j + 2
+                                                    selfclose = 1
+                                                    tagdone = 1
+                                                } else {
+                                                    return xml_err("expected '/>'", pos)
+                                                }
+                                            } else {
+                                                // attribute
+                                                let astart = j
+                                                while j < n && xml_is_name_char(char_at(src, j)) == 1 {
+                                                    j = j + 1
+                                                }
+                                                let aname = substr(src, astart, j)
+                                                if aname == "" {
+                                                    return xml_err("expected attribute name", pos)
+                                                }
+                                                j = xml_skip_ws(src, j)
+                                                if j >= n || char_at(src, j) != 61 {
+                                                    return xml_err("expected '=' after attribute name", pos)
+                                                }
+                                                j = xml_skip_ws(src, j + 1)
+                                                if j >= n || (char_at(src, j) != 34 && char_at(src, j) != 39) {
+                                                    return xml_err("expected quoted attribute value", pos)
+                                                }
+                                                let quote = char_at(src, j)
+                                                let vstart = j + 1
+                                                let mut vj = vstart
+                                                while vj < n && char_at(src, vj) != quote {
+                                                    if char_at(src, vj) == 60 {
+                                                        return xml_err("'<' in attribute value", pos)
+                                                    }
+                                                    vj = vj + 1
+                                                }
+                                                if vj >= n {
+                                                    return xml_err("unterminated attribute value", pos)
+                                                }
+                                                let adec = xml_decode(substr(src, vstart, vj))
+                                                if adec.ok == 0 {
+                                                    return xml_err(adec.err, pos)
+                                                }
+                                                if map_has(attrs, aname) == 1 {
+                                                    return xml_err(concat("duplicate attribute '", concat(aname, "'")), pos)
+                                                }
+                                                map_set(attrs, aname, adec.text)
+                                                j = vj + 1
+                                            }
+                                        }
+                                    }
+                                    vec_set(p.pos, 0, j)
+                                    let depth = vec_get(p.flags, 2)
+                                    if depth == 0 {
+                                        if vec_get(p.flags, 0) == 1 {
+                                            return xml_err("multiple root elements", pos)
+                                        }
+                                        vec_set(p.flags, 0, 1)
+                                    }
+                                    // push (stack slots are reused via the depth counter)
+                                    if depth < vec_len(p.stack) {
+                                        vec_set(p.stack, depth, name)
+                                    } else {
+                                        vec_push(p.stack, name)
+                                    }
+                                    vec_set(p.flags, 2, depth + 1)
+                                    if selfclose == 1 {
+                                        vec_set(p.flags, 1, 1)
+                                    }
+                                    return XmlEvent { kind: 1, name: name, text: "", err: "", attrs: attrs }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return out
+}
+
+// ---- writer ----
+
+fn xml_escape_text(s: str) -> str {
+    return str_replace(str_replace(str_replace(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
+}
+
+fn xml_escape_attr(s: str) -> str {
+    return str_replace(xml_escape_text(s), "\"", "&quot;")
+}
+
+fn xml_str_lt(a: str, b: str) -> i64 {
+    let na = len(a)
+    let nb = len(b)
+    let mut i: i64 = 0
+    while i < na && i < nb {
+        let ca = char_at(a, i)
+        let cb = char_at(b, i)
+        if ca < cb { return 1 }
+        if ca > cb { return 0 }
+        i = i + 1
+    }
+    if na < nb { return 1 }
+    return 0
+}
+
+// Attributes serialized in sorted key order — deterministic output
+// (map_keys order is hash order).
+fn xml_attrs_str(attrs: Map<str, str>) -> str {
+    let keys = map_keys(attrs)
+    let nk = vec_len(keys)
+    let mut i: i64 = 1
+    while i < nk {
+        let key = vec_get(keys, i)
+        let mut j = i - 1
+        let mut moving = 1
+        while j >= 0 && moving == 1 {
+            if xml_str_lt(key, vec_get(keys, j)) == 1 {
+                vec_set(keys, j + 1, vec_get(keys, j))
+                j = j - 1
+            } else {
+                moving = 0
+            }
+        }
+        vec_set(keys, j + 1, key)
+        i = i + 1
+    }
+    let mut out = ""
+    let mut k: i64 = 0
+    while k < nk {
+        let name = vec_get(keys, k)
+        out = concat(out, concat(concat(concat(" ", name), "=\""), concat(xml_escape_attr(map_get(attrs, name)), "\"")))
+        k = k + 1
+    }
+    return out
+}
+
+fn xml_decl() -> str {
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+}
+
+fn xml_open(name: str, attrs: Map<str, str>) -> str {
+    return concat(concat(concat("<", name), xml_attrs_str(attrs)), ">")
+}
+
+fn xml_open_empty(name: str, attrs: Map<str, str>) -> str {
+    return concat(concat(concat("<", name), xml_attrs_str(attrs)), "/>")
+}
+
+fn xml_close(name: str) -> str {
+    return concat(concat("</", name), ">")
+}
+
+fn xml_text(s: str) -> str {
+    return xml_escape_text(s)
+}
+
+// <name k="v">text</name> in one call.
+fn xml_elem(name: str, attrs: Map<str, str>, text: str) -> str {
+    return concat(xml_open(name, attrs), concat(xml_escape_text(text), xml_close(name)))
+}

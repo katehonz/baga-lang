@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### App products — xmlbaga (universal XML, apps-roadmap №11)
+- New base package `app-product/xmlbaga`: **pull XML parser + writer**,
+  quick-xml style — no DOM (L4: no struct elements in vectors; cursor
+  state lives in reference-typed fields so `XmlParser` stays copyable).
+- Events: OPEN / CLOSE / TEXT / EOF / ERROR. Self-closing tags emit
+  OPEN+CLOSE; comments, PIs and the declaration are skipped; CDATA is raw
+  TEXT; DOCTYPE skipped leniently. Full well-formedness errors:
+  mismatched/unclosed tags, multiple roots, text outside root, duplicate
+  attributes, `<` in attribute values, unknown entities, invalid/control
+  char refs, unterminated markup (with byte offsets).
+- Entities: builtin five + numeric char refs decoded as UTF-8. Raw names,
+  no namespace resolution (X1, documented).
+- Writer: text/attr escaping, **sorted (deterministic) attribute order**,
+  `xml_elem` convenience, declaration helper; writer → parser round-trip
+  in tests.
+- CLI `demo.baga`: event dump + `ROUNDTRIP=1` re-emit mode.
+- `tests/xml_test.baga` — 35 checks (events, all error paths, entities,
+  CDATA, writer goldens, round-trip); sandak discovery builds it.
+- Format-specific importers (bank camt.053, invoices) are deliberately
+  out of scope — they belong to apps on top of this package.
+- Honest gaps in gaps.md: X1 namespaces, X2 no DOM (L4), X3 DOCTYPE
+  entities, X4 byte-lenient names, X5 per-char concat (G1 lineage).
+
 ### bagaDecimal 0.3.0 — rounding modes + scientific parse (P1 shipped)
 - **Rounding modes:** one `dec_round_impl` behind five public entries —
   `dec_round_dp` (half-away, unchanged default), `dec_round_bankers_dp`

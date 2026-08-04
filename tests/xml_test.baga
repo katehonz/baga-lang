@@ -1,0 +1,129 @@
+// xml_test.baga — xmlbaga suite (apps-roadmap №11): pull parser events,
+// well-formedness errors, entity/char-ref decoding, CDATA, and the writer.
+
+import "xmlbaga/xml.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// Drain the stream; returns "kinds" string like "13121" for golden checks.
+fn kinds_of(src: str) -> str {
+    let p = xml_parser(src)
+    let mut out = ""
+    let mut done = 0
+    while done == 0 {
+        let ev = xml_next(p)
+        if ev.kind == 0 {
+            done = 1
+        } else {
+            if ev.kind == 0 - 1 {
+                out = concat(out, "E")
+                done = 1
+            } else {
+                out = concat(out, int_to_str(ev.kind))
+            }
+        }
+    }
+    return out
+}
+
+// First error message ("" when the stream is clean).
+fn err_of(src: str) -> str {
+    let p = xml_parser(src)
+    let mut out = ""
+    let mut done = 0
+    while done == 0 {
+        let ev = xml_next(p)
+        if ev.kind == 0 {
+            done = 1
+        } else {
+            if ev.kind == 0 - 1 {
+                out = ev.err
+                done = 1
+            }
+        }
+    }
+    return out
+}
+
+fn main() {
+    // --- basic event stream (decl + comment + PI skipped) ---
+    check("basic_kinds", kinds_of("<?xml version=\"1.0\"?><!-- c --><?pi x?><a><b>t</b></a>") == "11322")
+    check("ws_text_kept", kinds_of("<a> <b/> </a>") == "131232")
+    check("selfclose_pair", kinds_of("<a><b/></a>") == "1122")
+
+    // --- names and text content ---
+    let p1 = xml_parser("<root><item>здравей</item></root>")
+    let e1 = xml_next(p1)
+    check("open_root", e1.kind == 1 && e1.name == "root")
+    let e2 = xml_next(p1)
+    check("open_item", e2.kind == 1 && e2.name == "item")
+    let e3 = xml_next(p1)
+    check("text_utf8", e3.kind == 3 && e3.text == "здравей")
+    let e4 = xml_next(p1)
+    check("close_item", e4.kind == 2 && e4.name == "item")
+
+    // --- attributes ---
+    let p2 = xml_parser("<r a=\"1\" b='два' c=\"x &amp; y\"/>")
+    let ea = xml_next(p2)
+    check("attr_count", ea.kind == 1 && map_len(ea.attrs) == 3)
+    check("attr_double_quote", map_get(ea.attrs, "a") == "1")
+    check("attr_single_quote", map_get(ea.attrs, "b") == "два")
+    check("attr_entity", map_get(ea.attrs, "c") == "x & y")
+
+    // --- entities and character references in text ---
+    let p3 = xml_parser("<r>&lt;&gt;&amp;&apos;&quot;</r>")
+    xml_next(p3)
+    let et = xml_next(p3)
+    check("entities_five", et.kind == 3 && et.text == "<>&'\"")
+    let p4 = xml_parser("<r>&#65;&#x42;&#1040;</r>")
+    xml_next(p4)
+    let ec = xml_next(p4)
+    check("char_refs", ec.kind == 3 && ec.text == "ABА")
+
+    // --- CDATA is raw text (no entity decoding) ---
+    let p5 = xml_parser("<r><![CDATA[a <b> &amp; ]]]></r>")
+    xml_next(p5)
+    let ecd = xml_next(p5)
+    check("cdata_raw", ecd.kind == 3 && ecd.text == "a <b> &amp; ]")
+
+    // --- well-formedness errors ---
+    check("err_mismatch", str_find(err_of("<a><b></a>"), "mismatched closing tag") >= 0)
+    check("err_unclosed", str_find(err_of("<a><b>"), "unclosed element") >= 0)
+    check("err_close_without_open", str_find(err_of("</a>"), "without an open element") >= 0)
+    check("err_text_outside", str_find(err_of("junk<a/>"), "text outside the root") >= 0)
+    check("err_multi_root", str_find(err_of("<a/><b/>"), "multiple root elements") >= 0)
+    check("err_dup_attr", str_find(err_of("<a x=\"1\" x=\"2\"/>"), "duplicate attribute") >= 0)
+    check("err_unknown_entity", str_find(err_of("<a>&nbsp;</a>"), "unknown entity") >= 0)
+    check("err_bad_charref", str_find(err_of("<a>&#xZZ;</a>"), "bad digit") >= 0)
+    check("err_ctrl_charref", str_find(err_of("<a>&#1;</a>"), "control character") >= 0)
+    check("err_unterminated_comment", str_find(err_of("<a><!-- x</a>"), "unterminated comment") >= 0)
+    check("err_lt_in_attr", str_find(err_of("<a x=\"</a>\"/>"), "'<' in attribute value") >= 0)
+    check("err_unterminated_tag", str_find(err_of("<a"), "unterminated tag") >= 0)
+    check("err_amp_bare", str_find(err_of("<a>b & c</a>"), "unterminated entity") >= 0)
+    check("ws_around_root_ok", err_of("  <a/>  ") == "")
+    check("doctype_skipped", kinds_of("<!DOCTYPE note><a>x</a>") == "132")
+
+    // --- writer ---
+    let wattrs = xml_attrs_new()
+    map_set(wattrs, "b", "2")
+    map_set(wattrs, "a", "1 &\"<")
+    check("writer_elem", xml_elem("amt", wattrs, "27.26 & <tax>") == "<amt a=\"1 &amp;&quot;&lt;\" b=\"2\">27.26 &amp; &lt;tax&gt;</amt>")
+    check("writer_attr_sorted", xml_open("r", wattrs) == "<r a=\"1 &amp;&quot;&lt;\" b=\"2\">")
+    check("writer_empty", xml_open_empty("br", xml_attrs_new()) == "<br/>")
+    check("writer_decl", xml_decl() == "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+
+    // --- writer → parser round-trip ---
+    let doc = concat(xml_decl(), concat(xml_open("книга", xml_attrs_new()), concat(xml_elem("заглавие", xml_attrs_new(), "Игри & игри"), xml_close("книга"))))
+    check("roundtrip_kinds", kinds_of(doc) == "11322")
+    check("roundtrip_err", err_of(doc) == "")
+
+    print("xml_test: all passed")
+}

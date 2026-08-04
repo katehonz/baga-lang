@@ -1,0 +1,58 @@
+// demo.baga — xmlbaga CLI (apps-roadmap №11, universal XML).
+//
+//   baga demo.baga file.xml            → event stream dump (PYX-style)
+//   ROUNDTRIP=1 baga demo.baga f.xml   → re-emit the document via the writer
+//   exit 0 = well-formed, 1 = parse error, 2 = usage/read error
+
+import "xml.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+
+fn main() -> i64 !IO {
+    if arg_count() < 1 {
+        eprintln("usage: demo <file.xml>   (ROUNDTRIP=1 to re-emit via the writer)")
+        return 2
+    }
+    let src = read_file(arg(0))?
+    if src == "" {
+        eprintln(concat("cannot read (or empty): ", arg(0)))
+        return 2
+    }
+    let roundtrip = env("ROUNDTRIP")? == "1"
+    let p = xml_parser(src)
+    let mut done = 0
+    while done == 0 {
+        let ev = xml_next(p)
+        if ev.kind == 0 {
+            done = 1
+        } else {
+            if ev.kind == 0 - 1 {
+                eprintln(concat("parse error: ", ev.err))
+                return 1
+            } else {
+                if roundtrip {
+                    if ev.kind == 1 {
+                        print(xml_open(ev.name, ev.attrs))
+                    } else {
+                        if ev.kind == 2 {
+                            print(xml_close(ev.name))
+                        } else {
+                            print(xml_text(ev.text))
+                        }
+                    }
+                } else {
+                    if ev.kind == 1 {
+                        print(concat(concat("OPEN ", ev.name), xml_attrs_str(ev.attrs)))
+                    } else {
+                        if ev.kind == 2 {
+                            print(concat("CLOSE ", ev.name))
+                        } else {
+                            print(concat(concat("TEXT \"", ev.text), "\""))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0
+}
