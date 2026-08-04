@@ -1,9 +1,9 @@
-# std/crypto — hashes, MACs, bignum
+# std/crypto — hashes, MACs, bignum, X25519
 
 Pure Baga cryptography: no OpenSSL FFI, deliberately — zero dependencies and
 proof-of-language. SHA-256 is validated against NIST vectors, HMAC against
 RFC 4231, the bignum against python-generated golden vectors (RSA-2048
-modexp included).
+modexp included), X25519 against RFC 7748.
 
 - `sha256_bytes(data: Vec<i64>) -> Vec<i64>` — SHA-256 (FIPS 180-4) over a byte buffer; returns the 32-byte digest.
 - `sha256(msg: str) -> Vec<i64>` — SHA-256 over the raw bytes of `msg`.
@@ -24,6 +24,11 @@ modexp included).
   in-place shift-subtract mod; measured in `tests/std/bn_test.baga`, not
   hidden). Timing is secret-dependent — for signature verification
   (public exponents) only, never private keys.
+- `x25519(scalar_le: bytes, u_le: bytes) -> bytes`,
+  `x25519_public(scalar_le: bytes) -> bytes` (`x25519.baga`) — RFC 7748
+  ECDH: clamped scalars, Montgomery ladder with constant-time cswap,
+  field reduction by the 2^255 ≡ 19 fold. A full scalar multiply is
+  ~0.1 s; RFC 7748 §5.2/§6.1 vectors in `tests/std/x25519_test.baga`.
 
 Implementation notes: Baga has only signed i64, so u32 arithmetic is emulated
 by masking with `& 4294967295`; bitwise NOT is `(-1) ^ x`. All intermediate

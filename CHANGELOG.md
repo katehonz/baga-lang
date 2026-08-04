@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### TLS 1.3 client, T2 — std/crypto/x25519.baga (RFC 7748 ECDH)
+- X25519 on top of bn.baga: clamped scalars, Montgomery ladder (bits
+  254..0) with constant-time conditional swaps, field arithmetic mod
+  2^255-19 with the 2^255 ≡ 19 fold, final inversion z^(p-2) over fmul.
+  Little-endian encoding per the RFC. A full scalar multiply ≈ 0.1 s.
+- `tests/std/x25519_test.baga` — RFC 7748 §5.2 (first iteration, k=u=9)
+  and §6.1 (both public keys + shared secret, both directions); in the
+  make test std loop. The 1,000-iteration vector is documented but kept
+  out of CI.
+- Scar, documented: the first fold dropped a carry that escaped limb 9
+  (≥ 2^260 must fold by ×608 again) — (p-1)² came out p-607 instead of
+  1, exactly one lost 608. Caught by the modexp-free field probes.
+
 ### TLS 1.3 client, T1 — std/crypto/bn.baga (fixed-width bignum)
 - The milestone plan is `docs/superpowers/plans/2026-08-04-tls-client.md`
   (T1–T8; closes №10 P2 / gap G6 — the last production blocker).

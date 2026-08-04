@@ -1,0 +1,273 @@
+// x25519.baga — X25519 ECDH (RFC 7748) over bn.baga (TLS milestone, T2).
+//
+//   x25519(scalar_le: bytes, u_le: bytes) -> bytes    // 32 bytes
+//   x25519_public(scalar_le: bytes) -> bytes          // u = 9
+//
+// Field: p = 2^255 - 19 on ten 26-bit limbs. Multiplication reduces with
+// the fold 2^255 ≡ 19 (a generic bn_mod per fmul would be too slow for
+// the Montgomery ladder). The ladder is RFC 7748 §5 with clamped scalars;
+// the final inversion is z^(p-2) by square-and-multiply over fmul.
+//
+// Encodings are little-endian per RFC 7748. Vectors: tests/std/x25519_test
+// (§5.2 one-iteration + §6.1 Diffie–Hellman). Pure; no effects.
+
+import "bn.baga"
+import "../bytes/bytes.baga"
+
+fn x25519_p() -> Vec<i64> {
+    return bn_from_bytes_be(bytes_from_vec(bytes_from_hex(
+        "7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed")), 10)
+}
+
+// ---------- little-endian codec (RFC 7748 byte order) ----------
+
+fn xfrom_le(b: bytes, n: i64) -> Vec<i64> {
+    let v = bn_zero(n)
+    let total = bytes_len(b) * 8
+    let mut i: i64 = 0
+    while i < n {
+        let mut acc: i64 = 0
+        let base = 26 * i
+        let mut k: i64 = 0
+        while k < 26 {
+            let bp = base + k
+            if bp < total {
+                let bv = (bytes_at(b, bp / 8) >> (bp % 8)) & 1
+                acc = acc | (bv << k)
+            }
+            k = k + 1
+        }
+        vec_set(v, i, acc)
+        i = i + 1
+    }
+    return v
+}
+
+fn xto_le(v: Vec<i64>, out_len: i64) -> bytes {
+    let out = bn_zero(out_len)
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        let l = vec_get(v, i)
+        let mut k: i64 = 0
+        while k < 26 {
+            let bp = 26 * i + k
+            if bp < out_len * 8 {
+                if ((l >> k) & 1) == 1 {
+                    vec_set(out, bp / 8, vec_get(out, bp / 8) | (1 << (bp % 8)))
+                }
+            }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    return bytes_from_vec(out)
+}
+
+// ---------- field arithmetic mod 2^255 - 19 ----------
+
+// Canonicalize ten limbs: carry chain, fold the bits above 255 by ×19,
+// then at most two conditional subtractions of p.
+fn xnorm(t: Vec<i64>) -> Vec<i64> {
+    let p = x25519_p()
+    // carry chain
+    let mut carry: i64 = 0
+    let mut i: i64 = 0
+    while i < 10 {
+        let s = vec_get(t, i) + carry
+        vec_set(t, i, s & 67108863)
+        carry = s >> 26
+        i = i + 1
+    }
+    // bits 255..259 live at the top of limb 9 (26*9 = 234; 255-234 = 21)
+    let top = vec_get(t, 9) >> 21
+    vec_set(t, 9, vec_get(t, 9) & 2097151)   // (1 << 21) - 1
+    let mut c2 = top * 19
+    let mut j: i64 = 0
+    while c2 > 0 && j < 10 {
+        let s = vec_get(t, j) + c2
+        vec_set(t, j, s & 67108863)
+        c2 = s >> 26
+        j = j + 1
+    }
+    // conditional subtractions (value is < 2p + a sliver here)
+    let mut k: i64 = 0
+    while k < 2 {
+        if bn_cmp(t, p) >= 0 {
+            let sub = bn_sub(t, p)
+            let mut m: i64 = 0
+            while m < 10 {
+                vec_set(t, m, vec_get(sub, m))
+                m = m + 1
+            }
+        }
+        k = k + 1
+    }
+    return t
+}
+
+fn xfadd(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    return xnorm(bn_add(a, b))
+}
+
+fn xfsub(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    // a + 2p - b keeps everything non-negative (a,b < p)
+    let p = x25519_p()
+    return xnorm(bn_sub(bn_add(bn_add(a, p), p), b))
+}
+
+// Reduce a 20-limb product: limbs 10..19 fold down by 2^260 ≡ 19·2^5.
+// A carry that escapes limb 9 is ≥ 2^260, so it folds by ×608 again.
+fn xfred(x: Vec<i64>) -> Vec<i64> {
+    let t = bn_zero(10)
+    let mut i: i64 = 0
+    while i < 10 {
+        vec_set(t, i, vec_get(x, i))
+        i = i + 1
+    }
+    let mut k: i64 = 10
+    while k < 20 {
+        let mut carry = vec_get(x, k) * 608   // 19 * 2^5
+        let mut j = k - 10
+        while carry > 0 {
+            if j < 10 {
+                let s = vec_get(t, j) + carry
+                vec_set(t, j, s & 67108863)
+                carry = s >> 26
+                j = j + 1
+            } else {
+                carry = carry * 608   // 2^260 ≡ 608, fold back into limb 0
+                j = 0
+            }
+        }
+        k = k + 1
+    }
+    return xnorm(t)
+}
+
+fn xfmul(a: Vec<i64>, b: Vec<i64>) -> Vec<i64> {
+    return xfred(bn_mul(a, b))
+}
+
+fn xfsq(a: Vec<i64>) -> Vec<i64> {
+    return xfred(bn_mul(a, a))
+}
+
+// z^(p-2) — square-and-multiply over fmul (255 bits).
+fn xfinv(z: Vec<i64>) -> Vec<i64> {
+    let p = x25519_p()
+    let e = bn_sub(p, bn_one(10))   // p - 2 = (p-1) - 1... see below
+    // p - 2: subtract one more
+    let em2 = bn_sub(e, bn_one(10))
+    let mut result = bn_one(10)
+    let mut i = bn_bits(em2) - 1
+    while i >= 0 {
+        result = xfmul(result, result)
+        if bn_bit(em2, i) == 1 {
+            result = xfmul(result, z)
+        }
+        i = i - 1
+    }
+    return result
+}
+
+// ---------- Montgomery ladder (RFC 7748 §5) ----------
+
+// Constant-time conditional swap of two field elements (swap ∈ {0,1}).
+fn xcswap(swap: i64, a: Vec<i64>, b: Vec<i64>) {
+    let mask = 0 - swap
+    let mut i: i64 = 0
+    while i < 10 {
+        let d = (vec_get(a, i) ^ vec_get(b, i)) & mask
+        vec_set(a, i, vec_get(a, i) ^ d)
+        vec_set(b, i, vec_get(b, i) ^ d)
+        i = i + 1
+    }
+}
+
+// Independent copy (vectors are pointers — the ladder must not mutate u).
+fn xcopy(v: Vec<i64>) -> Vec<i64> {
+    let c = bn_zero(vec_len(v))
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        vec_set(c, i, vec_get(v, i))
+        i = i + 1
+    }
+    return c
+}
+
+fn x25519_core(k: Vec<i64>, u: Vec<i64>) -> Vec<i64> {
+    let a24 = bn_zero(10)
+    vec_set(a24, 0, 121665)
+    let x_1 = xcopy(u)
+    let x_2 = bn_one(10)
+    let z_2 = bn_zero(10)
+    let x_3 = xcopy(u)
+    let z_3 = bn_one(10)
+    let mut swap: i64 = 0
+    let mut t: i64 = 254
+    while t >= 0 {
+        let k_t = bn_bit(k, t)
+        swap = swap ^ k_t
+        xcswap(swap, x_2, x_3)
+        xcswap(swap, z_2, z_3)
+        swap = k_t
+        let A = xfadd(x_2, z_2)
+        let AA = xfsq(A)
+        let B = xfsub(x_2, z_2)
+        let BB = xfsq(B)
+        let E = xfsub(AA, BB)
+        let C = xfadd(x_3, z_3)
+        let D = xfsub(x_3, z_3)
+        let DA = xfmul(D, A)
+        let CB = xfmul(C, B)
+        let dap = xfadd(DA, CB)
+        let dam = xfsub(DA, CB)
+        let x3n = xfsq(dap)
+        let z3n = xfmul(x_1, xfsq(dam))
+        let e24 = xfmul(a24, E)
+        let x2n = xfmul(AA, BB)
+        let z2n = xfmul(E, xfadd(AA, e24))
+        // assign back (vectors are pointers; rebuild to be explicit)
+        let mut i: i64 = 0
+        while i < 10 {
+            vec_set(x_3, i, vec_get(x3n, i))
+            vec_set(z_3, i, vec_get(z3n, i))
+            vec_set(x_2, i, vec_get(x2n, i))
+            vec_set(z_2, i, vec_get(z2n, i))
+            i = i + 1
+        }
+        t = t - 1
+    }
+    xcswap(swap, x_2, x_3)
+    xcswap(swap, z_2, z_3)
+    return xfmul(x_2, xfinv(z_2))
+}
+
+// ---------- public API ----------
+
+// Clamp the 32-byte scalar in place (RFC 7748 §5).
+fn xclamp(b: bytes) -> bytes {
+    let v = bn_zero(32)
+    let mut i: i64 = 0
+    while i < 32 && i < bytes_len(b) {
+        vec_set(v, i, bytes_at(b, i))
+        i = i + 1
+    }
+    vec_set(v, 0, vec_get(v, 0) & 248)
+    vec_set(v, 31, (vec_get(v, 31) & 127) | 64)
+    return bytes_from_vec(v)
+}
+
+// X25519: scalar (32 bytes LE) × u (32 bytes LE) → 32 bytes LE.
+fn x25519(scalar_le: bytes, u_le: bytes) -> bytes {
+    let k = xfrom_le(xclamp(scalar_le), 10)
+    let u = xfrom_le(u_le, 10)
+    return xto_le(x25519_core(k, u), 32)
+}
+
+// Public key for a scalar: x25519(k, 9).
+fn x25519_public(scalar_le: bytes) -> bytes {
+    let u = bn_zero(32)
+    vec_set(u, 0, 9)
+    return x25519(scalar_le, bytes_from_vec(u))
+}
