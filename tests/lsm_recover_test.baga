@@ -23,6 +23,7 @@ fn wipe(prefix: str) -> i64 !IO {
     let mut g: i64 = 1
     while g <= 40 {
         unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
         g = g + 1
     }
     return 0
