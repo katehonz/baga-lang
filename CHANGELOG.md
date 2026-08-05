@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Language — sum types (L3): payload enums + full match
+- Enums can carry a payload per variant — real sum types:
+  `enum Res { Ok(i64), Err(str) }`, constructed as `Ok(42)`; payload-less
+  variants stay bare (`None`). The type is nominal (`TYPE_ENUM`, not
+  `i64`) — a `Res` no longer passes where an `i64` is expected.
+- Checker: variant names of sum enums are globally unique across the
+  program and may not collide with function names (`повторена дефиниция на
+  вариант`); constructor arity and payload type are checked; `match` on a
+  sum enum takes `Variant(binding)` / `Variant` / `_` patterns, must be
+  **exhaustive** (the error names the missing variant), and all arms must
+  agree in type. Non-enum matches keep first-arm-wins with no
+  exhaustiveness.
+- C backend: tagged struct + payload `union` + a `static inline`
+  constructor per variant. LLVM backend: honest `unsupported` pointing at
+  docs §11.
+- Honest v1 limits: no `Vec<sum enum>` / `Map<K, sum enum>` (existing
+  `неподдържан елементен тип` error), no generics (write a concrete enum
+  per use site), exactly one payload type per variant (use a struct for
+  more), sum enums can't be struct fields yet (C typedef order), and an
+  enum payload must be declared before the enum that uses it.
+- Bug fixed alongside: bare-expression match arms in `-> void` functions
+  were wrongly checked against the enclosing fn's return type.
+- Unblocked gaps: jsonrpcbaga **R1**, tplbaga **P2**, bagadecimal **D4**,
+  oauthbaga **O4** (migrations of the stand-in structs optional).
+- Tests: `tests/std/sumtype_test.baga` (15 checks) + 8 negative probes in
+  `scripts/run_tests.sh`. Spec:
+  `docs/superpowers/specs/2026-08-05-l3-sum-types-design.md`.
+
 ### Language — function values & closures (L5)
 - Functions are first-class values, typed `fn(T, ...) -> R` (effects
   allowed: `fn(i64) -> i64 !IO`), usable in locals, parameters, return

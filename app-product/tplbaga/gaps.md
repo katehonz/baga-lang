@@ -21,8 +21,10 @@ stays (working, tested); migration is optional cleanup.
 **Symptom.** `TplOut { ok, html, err }` — same stand-in as pgbaga G1 /
 jsonrpcbaga R1.
 
-**Verdict.** Migrate target when `Result` lands: `Render(html)` /
-`Err(TplError)` with position in the template.
+**Verdict.** **Unblocked 2026-08-05** — L3 shipped (`enum Res { Ok(i64),
+Err(str) }` + exhaustive match); migration of the stand-in struct is
+optional. `Render(html)` / `Err(TplError)` with position in the template
+is expressible today.
 
 ## P3 — no Vec<struct> (L4) → prefix-encoded tokens
 

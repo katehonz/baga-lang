@@ -52,7 +52,9 @@ Rewriting the dev backend is optional cleanup, not a blocker.
 **Symptom.** `{status, json}` and `{ok, access, …}` structs instead of
 `Result`/sum types; third package using the convention.
 
-**Verdict.** L3 migrate target, alongside jsonrpcbaga R1 / tplbaga P2.
+**Verdict.** **Unblocked 2026-08-05** — L3 shipped (`enum Res { Ok(i64),
+Err(str) }` + exhaustive match); migration of the stand-in structs is
+optional, alongside jsonrpcbaga R1 / tplbaga P2.
 
 ## O5 — go_bg carries i64/cell2 only (CLOSED by P1, with a scar)
 

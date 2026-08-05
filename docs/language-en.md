@@ -403,7 +403,29 @@ fn описание(n: i64) -> i64 {
 ```
 
 The `_` wildcard matches anything and is conventionally placed last. An arm
-whose body is a bare expression returns that value from the enclosing function.
+whose body is a bare expression returns that value from the enclosing
+function.
+
+When the matched value is a **sum enum** (§11.1), patterns are
+`Variant(binding)`, bare `Variant` for payload-less variants, or `_`:
+
+```baga
+enum Res { Ok(i64), Err(str) }
+
+fn describe(r: Res) -> str {
+    return match r {
+        Ok(v) => "успех",
+        Err(e) => e,
+    }
+}
+```
+
+The match must be **exhaustive** — the checker errors with the missing
+variant's name (`не е пълен — липсва вариант 'Err' (или добави '_')`), and
+all arms must agree in type. A pattern that is not a variant of the
+scrutinee's enum is rejected. Matches over non-enum values keep the
+first-arm-wins rule above with no exhaustiveness check. A bare-expression
+arm also works in `-> void` functions, where the value is discarded.
 
 ---
 
@@ -506,6 +528,59 @@ fn main() {
     print(име(c))        // зелено
 }
 ```
+
+### 11.1 Sum types (L3)
+
+An enum may give a variant a single **payload** type, turning it into a sum
+type (tagged union):
+
+```baga
+enum Res { Ok(i64), Err(str) }
+enum Opt { Some(str), None }
+
+fn unwrap_or(r: Res, dflt: i64) -> i64 {
+    return match r { Ok(v) => v, _ => dflt }
+}
+
+fn main() {
+    let r = Ok(42)              // construction: Variant(payload)
+    let n: Opt = None           // payload-less variants stay bare
+    print(unwrap_or(r, -1))     // 42
+}
+```
+
+Construction is `Variant(payload)` for payload variants and the bare
+`Variant` name for payload-less ones; a payload variant referenced without
+its argument is a compile error. Payloads may be any declared type,
+including structs (`enum Shape { Dot, Circle(Point) }`).
+
+Checker rules:
+
+- The type is nominal — `enum Res` is its own type, **not** an `i64`; you
+  cannot pass a `Res` where an `i64` is expected, or the reverse.
+- Variant names of sum enums are **globally unique** across the whole
+  program (`повторена дефиниция на вариант`) and may not collide with a
+  function name — construction is by name.
+- Constructor arity and payload type are checked (`конструкторът 'Ok'
+  очаква 1 аргумент`).
+- `match` on a sum enum uses variant patterns with bindings and must be
+  exhaustive — see §8.
+
+The C backend lowers a sum enum to a tagged struct with a `union` of the
+payloads plus a `static inline` constructor per variant. The LLVM backend
+rejects sum types with an honest `unsupported` error pointing here.
+
+Honest v1 limits:
+
+- No `Vec<Res>` / `Map<K, Res>` — the checker rejects sum enums as
+  container elements (`Vec<T>: неподдържан елементен тип Res` /
+  `Map<K, V>: неподдържан стойностен тип Res`).
+- No generics — write a concrete enum per use site.
+- Exactly one payload type per variant; wrap several fields in a struct.
+- A sum enum cannot be a struct **field** yet (C typedef order — it fails
+  at the C compile stage); locals, parameters and return types work.
+- A payload that is itself a sum enum must be declared **before** the enum
+  that uses it.
 
 ---
 

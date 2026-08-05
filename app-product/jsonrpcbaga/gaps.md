@@ -11,8 +11,9 @@ or parallel fields. Call sites branch on `ok`/`skip` integers.
 
 **Severity.** High for clean protocol APIs.
 
-**Verdict.** This package is the designated migrate target when `Result` /
-enums land. Error codes map cleanly onto `Err(RpcError)`.
+**Verdict.** **Unblocked 2026-08-05** — L3 shipped (`enum Res { Ok(i64),
+Err(str) }` + exhaustive match); migration of the stand-in struct is
+optional. Error codes map cleanly onto `Err(RpcError)`.
 
 ## R2 — no function values (L5) → switch dispatch
 

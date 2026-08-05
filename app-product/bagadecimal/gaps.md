@@ -44,7 +44,9 @@ careful i64 products or `std/crypto/bn`.
 
 **Severity.** Medium.
 
-**Verdict.** Migrate when L3 lands.
+**Verdict.** **Unblocked 2026-08-05** — L3 shipped (`enum Res { Ok(i64),
+Err(str) }` + exhaustive match); migration of the stand-in struct is
+optional.
 
 ### D5 — only `f64` among floats
 
