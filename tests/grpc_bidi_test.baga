@@ -47,11 +47,22 @@ fn main() -> i64 !Net !IO !Par {
     let down = hello_bidi(up)
     check(fails, "down_count", grpc_stream_count(down) == 3)
     let r0 = grpc_stream_next(down, 0)
-    let h0 = hello_reply_decode(r0.payload)
-    check(fails, "bidi0", h0.ok == 1 && str_find(h0.message, "u-0") >= 0)
-    let r1 = grpc_stream_next(down, r0.next)
-    let h1 = hello_reply_decode(r1.payload)
-    check(fails, "bidi1", h1.ok == 1 && str_find(h1.message, "n=2") >= 0)
+    check(fails, "bidi0", match r0 {
+        StreamOk(f) => match hello_reply_decode(f.payload) {
+            ReplyOk(m) => str_find(m, "u-0") >= 0,
+            ReplyBad => false,
+        },
+        StreamEnd => false,
+    })
+    let pos1 = match r0 { StreamOk(f) => f.next, StreamEnd => 0 }
+    let r1 = grpc_stream_next(down, pos1)
+    check(fails, "bidi1", match r1 {
+        StreamOk(f) => match hello_reply_decode(f.payload) {
+            ReplyOk(m) => str_find(m, "n=2") >= 0,
+            ReplyBad => false,
+        },
+        StreamEnd => false,
+    })
 
     // server streaming via unary request with n=count
     let one = hello_request_encode("stream", 4)
@@ -102,8 +113,13 @@ fn main() -> i64 !Net !IO !Par {
             let bbody = bytes_slice(raw, sep + 4, bytes_len(raw))
             check(fails, "live_n", grpc_stream_count(bbody) == 2)
             let lr = grpc_stream_next(bbody, 0)
-            let lh = hello_reply_decode(lr.payload)
-            check(fails, "live_echo", lh.ok == 1 && str_find(lh.message, "live-0") >= 0)
+            check(fails, "live_echo", match lr {
+                StreamOk(f) => match hello_reply_decode(f.payload) {
+                    ReplyOk(m) => str_find(m, "live-0") >= 0,
+                    ReplyBad => false,
+                },
+                StreamEnd => false,
+            })
         }
         tcp_close(fd)?
     }

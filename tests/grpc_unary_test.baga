@@ -47,9 +47,14 @@ fn main() -> i64 !Net !IO !Par {
     let u = grpc_hello_handle(frame)
     check(fails, "handle_ok", u.ok == 1 && u.status == 200 && u.grpc_status == 0)
     let g = grpc_decode(u.frame)
-    check(fails, "frame_ok", g.ok == 1)
-    let hr = hello_reply_decode(g.payload)
-    check(fails, "reply", hr.ok == 1 && hr.message == "Здравей, bagatur×2")
+    check(fails, "frame_ok", match g { GFrame(fr) => true, GBad => false })
+    check(fails, "reply", match g {
+        GFrame(fr) => match hello_reply_decode(fr.payload) {
+            ReplyOk(m) => m == "Здравей, bagatur×2",
+            ReplyBad => false,
+        },
+        GBad => false,
+    })
 
     check(fails, "path_ok", grpc_is_method_path("/hellopb.Greeter/SayHello") == 1)
     check(fails, "path_bad", grpc_is_method_path("/health") == 0)
@@ -110,9 +115,14 @@ fn main() -> i64 !Net !IO !Par {
             check(fails, "http200", str_find(head, "200") >= 0)
             let body = bytes_slice(raw, sep + 4, bytes_len(raw))
             let g2 = grpc_decode(body)
-            check(fails, "live_frame", g2.ok == 1)
-            let hr2 = hello_reply_decode(g2.payload)
-            check(fails, "live_reply", hr2.ok == 1 && str_find(hr2.message, "bagatur") >= 0)
+            check(fails, "live_frame", match g2 { GFrame(fr) => true, GBad => false })
+            check(fails, "live_reply", match g2 {
+                GFrame(fr) => match hello_reply_decode(fr.payload) {
+                    ReplyOk(m) => str_find(m, "bagatur") >= 0,
+                    ReplyBad => false,
+                },
+                GBad => false,
+            })
         }
         tcp_close(fd)?
     }

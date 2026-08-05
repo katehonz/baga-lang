@@ -25,10 +25,14 @@ Decode with `pb_reader` → `pb_next` → `pb_take_*` / `pb_skip`.
 
 ```baga
 let frame = grpc_encode(msg)
-let g = grpc_decode(frame)   // g.payload
+let g = grpc_decode(frame)   // GFrame(GrpcFrame) | GBad  (L3)
+match g {
+    GFrame(fr) => … fr.payload …,
+    GBad => …,
+}
 ```
 
-Example unary types: `HelloRequest` / `HelloReply` + `hello_rpc`.
+Hello messages: `HelloOk(HelloBody) | HelloBad`, `ReplyOk(str) | ReplyBad`.
 
 ## Unary glue
 

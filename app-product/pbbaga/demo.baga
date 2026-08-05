@@ -9,8 +9,16 @@ fn main() {
     let frame = grpc_encode(req)
     print(concat("gRPC frame hex:  ", hex_encode(frame)))
     let g = grpc_decode(frame)
-    let hr = hello_request_decode(g.payload)
-    print(concat(concat("decoded name=", hr.name), concat(" n=", int_to_str(hr.n))))
+    if match g { GFrame(fr) => 1, GBad => 0 } == 1 {
+        let payload = match g {
+            GFrame(fr) => fr.payload,
+            GBad => bytes_new(0),
+        }
+        let hr = hello_request_decode(payload)
+        print(concat(concat("decoded name=", hello_req_name(hr)), concat(" n=", int_to_str(hello_req_n(hr)))))
+    } else {
+        print("decode failed")
+    }
     let reply = hello_rpc("багатуре", 3)
     print(concat("rpc → ", reply))
     let rb = hello_reply_encode(reply)
@@ -23,6 +31,12 @@ fn main() {
     let down = hello_bidi(up)
     print(concat("bidi up/down frames=", concat(int_to_str(grpc_stream_count(up)), concat("/", int_to_str(grpc_stream_count(down))))))
     let r0 = grpc_stream_next(down, 0)
-    let h0 = hello_reply_decode(r0.payload)
-    print(concat("bidi[0] → ", h0.message))
+    if grpc_stream_ended(r0) == 0 {
+        let h0 = hello_reply_decode(grpc_stream_payload(r0))
+        let m = match h0 {
+            ReplyOk(s) => s,
+            ReplyBad => "?",
+        }
+        print(concat("bidi[0] → ", m))
+    }
 }

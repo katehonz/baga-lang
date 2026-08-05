@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### B1 pbbaga — L3 decode (no ok:i64 stand-ins)
+- `GrpcMsg`: `GFrame` / `GBad`; stream: `StreamOk` / `StreamEnd`
+- Hello: `HelloOk(HelloBody)` / `HelloBad`; reply: `ReplyOk(str)` / `ReplyBad`
+- Unary/client/demo + `pb_test` / grpc_* tests updated.
+
 ### A2 Vec/Map of sum enums
 - `Vec<Res>` / `Map<K, Res>` allowed (same box path as L4 structs):
   push/get/set/slice/concat and map_set/get; missing map key → zero tag.

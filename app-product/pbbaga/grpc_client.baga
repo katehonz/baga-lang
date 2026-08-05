@@ -192,8 +192,8 @@ fn grpc_call_unary(
     }
 
     let g = grpc_decode(body)
-    if g.ok == 0 {
-        // empty body with status 0 is legal for some methods; still fail Hello-style
+    if match g { GBad => 1, GFrame(fr) => 0 } == 1 {
+        // empty body with status 0 is legal for some methods
         if bytes_len(body) == 0 {
             return CallOk(GrpcCallOk {
                 payload: empty,
@@ -204,9 +204,12 @@ fn grpc_call_unary(
         }
         return CallErr(status_error(GRPC_INTERNAL(), "bad response frame"))
     }
-
+    let payload = match g {
+        GFrame(fr) => fr.payload,
+        GBad => empty,
+    }
     return CallOk(GrpcCallOk {
-        payload: g.payload,
+        payload: payload,
         status_code: code,
         message: gm,
         headers: out_md

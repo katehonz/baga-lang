@@ -21,7 +21,7 @@ struct GrpcUnary {
 fn grpc_hello_handle(body: bytes) -> GrpcUnary {
     let empty = bytes_new(0)
     let g = grpc_decode(body)
-    if g.ok == 0 {
+    if match g { GBad => 1, GFrame(fr) => 0 } == 1 {
         return GrpcUnary {
             ok: 0,
             status: status_http(GRPC_INVALID_ARGUMENT()),
@@ -30,8 +30,12 @@ fn grpc_hello_handle(body: bytes) -> GrpcUnary {
             frame: empty
         }
     }
-    let hr = hello_request_decode(g.payload)
-    if hr.ok == 0 {
+    let payload = match g {
+        GFrame(fr) => fr.payload,
+        GBad => empty,
+    }
+    let hr = hello_request_decode(payload)
+    if match hr { HelloBad => 1, HelloOk(b) => 0 } == 1 {
         return GrpcUnary {
             ok: 0,
             status: status_http(GRPC_INVALID_ARGUMENT()),
@@ -40,9 +44,8 @@ fn grpc_hello_handle(body: bytes) -> GrpcUnary {
             frame: empty
         }
     }
-    let msg = concat(concat(concat("Здравей, ", hr.name), "×"), int_to_str(hr.n))
-    let rep = hello_reply_encode(msg)
-    let frame = grpc_encode(rep)
+    let msg = concat(concat(concat("Здравей, ", hello_req_name(hr)), "×"), int_to_str(hello_req_n(hr)))
+    let frame = grpc_encode(hello_reply_encode(msg))
     return GrpcUnary {
         ok: 1,
         status: status_http(GRPC_OK()),
@@ -102,18 +105,19 @@ fn grpc_hello_response(body: bytes) -> Response {
 fn grpc_hello_stream_response(body: bytes) -> Response {
     // If body is a single frame with n>1, treat as unary with count; else bidi.
     let g = grpc_decode(body)
-    if g.ok == 1 && grpc_stream_count(body) == 1 {
-        let hr = hello_request_decode(g.payload)
-        if hr.ok == 1 && hr.n > 1 {
-            let stream = hello_stream_replies(hr.name, hr.n)
-            let mut r = http_response_bytes(status_http(GRPC_OK()), stream)
-            r = http_set_header(r, "Content-Type", grpc_content_type())
-            r = http_set_trailer(r, "grpc-status", status_trailer_code(status_ok()))
-            return r
+    let mut stream = hello_bidi(body)
+    if match g { GFrame(fr) => 1, GBad => 0 } == 1 && grpc_stream_count(body) == 1 {
+        let payload = match g {
+            GFrame(fr) => fr.payload,
+            GBad => bytes_new(0),
+        }
+        let hr = hello_request_decode(payload)
+        if match hr { HelloOk(b) => 1, HelloBad => 0 } == 1 {
+            if hello_req_n(hr) > 1 {
+                stream = hello_stream_replies(hello_req_name(hr), hello_req_n(hr))
+            }
         }
     }
-    // bidi: one reply per request frame
-    let stream = hello_bidi(body)
     let mut r = http_response_bytes(status_http(GRPC_OK()), stream)
     r = http_set_header(r, "Content-Type", grpc_content_type())
     r = http_set_trailer(r, "grpc-status", status_trailer_code(status_ok()))

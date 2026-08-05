@@ -1,14 +1,22 @@
 // grpc.baga — gRPC length-prefixed message framing (C5).
 // Format: [1 byte compressed=0][4 byte BE length][protobuf payload]
 // Transport (H2 + trailers) is left to the host; this is the message layer.
+// B1: decode outcomes are L3 sum types (no ok:i64 stand-ins).
 
 import "pb.baga"
 import "std/str/str.baga"
 
-struct GrpcMsg {
-    ok: i64,
+// ---------- frame decode (L3) ----------
+
+struct GrpcFrame {
     compressed: i64,
     payload: bytes
+}
+
+// Unique variant names (A1: other packages may use Ok/Err too).
+enum GrpcMsg {
+    GFrame(GrpcFrame),
+    GBad
 }
 
 fn grpc_encode(msg: bytes) -> bytes {
@@ -23,9 +31,8 @@ fn grpc_encode(msg: bytes) -> bytes {
 }
 
 fn grpc_decode(frame: bytes) -> GrpcMsg {
-    let empty = bytes_new(0)
     if bytes_len(frame) < 5 {
-        return GrpcMsg { ok: 0, compressed: 0, payload: empty }
+        return GBad
     }
     let comp = bytes_at(frame, 0)
     let n = ((bytes_at(frame, 1) & 255) << 24)
@@ -33,13 +40,12 @@ fn grpc_decode(frame: bytes) -> GrpcMsg {
         | ((bytes_at(frame, 3) & 255) << 8)
         | (bytes_at(frame, 4) & 255)
     if n < 0 || 5 + n > bytes_len(frame) {
-        return GrpcMsg { ok: 0, compressed: comp, payload: empty }
+        return GBad
     }
-    return GrpcMsg {
-        ok: 1,
+    return GFrame(GrpcFrame {
         compressed: comp,
         payload: bytes_slice(frame, 5, 5 + n)
-    }
+    })
 }
 
 // ---------- server/client streaming: concatenate length-prefixed messages ----------
@@ -49,18 +55,21 @@ fn grpc_stream_append(stream: bytes, msg: bytes) -> bytes {
     return bytes_concat(stream, grpc_encode(msg))
 }
 
-// Decode one frame starting at `pos`. Returns payload + next position.
-struct GrpcStreamRead {
-    ok: i64,
+// One complete frame starting at `pos`, or StreamEnd (EOF / incomplete).
+struct GrpcStreamFrame {
     compressed: i64,
     payload: bytes,
     next: i64        // byte offset after this frame
 }
 
+enum GrpcStreamRead {
+    StreamOk(GrpcStreamFrame),
+    StreamEnd
+}
+
 fn grpc_stream_next(stream: bytes, pos: i64) -> GrpcStreamRead {
-    let empty = bytes_new(0)
     if pos < 0 || pos + 5 > bytes_len(stream) {
-        return GrpcStreamRead { ok: 0, compressed: 0, payload: empty, next: pos }
+        return StreamEnd
     }
     let comp = bytes_at(stream, pos)
     let n = ((bytes_at(stream, pos + 1) & 255) << 24)
@@ -68,13 +77,26 @@ fn grpc_stream_next(stream: bytes, pos: i64) -> GrpcStreamRead {
         | ((bytes_at(stream, pos + 3) & 255) << 8)
         | (bytes_at(stream, pos + 4) & 255)
     if n < 0 || pos + 5 + n > bytes_len(stream) {
-        return GrpcStreamRead { ok: 0, compressed: comp, payload: empty, next: pos }
+        return StreamEnd
     }
-    return GrpcStreamRead {
-        ok: 1,
+    return StreamOk(GrpcStreamFrame {
         compressed: comp,
         payload: bytes_slice(stream, pos + 5, pos + 5 + n),
         next: pos + 5 + n
+    })
+}
+
+fn grpc_stream_ended(r: GrpcStreamRead) -> i64 {
+    return match r {
+        StreamEnd => 1,
+        StreamOk(f) => 0,
+    }
+}
+
+fn grpc_stream_pos(r: GrpcStreamRead) -> i64 {
+    return match r {
+        StreamEnd => 0,
+        StreamOk(f) => f.next,
     }
 }
 
@@ -85,11 +107,11 @@ fn grpc_stream_count(stream: bytes) -> i64 {
     let mut more: i64 = 1
     while more == 1 {
         let r = grpc_stream_next(stream, pos)
-        if r.ok == 0 {
+        if grpc_stream_ended(r) == 1 {
             more = 0
         } else {
             n = n + 1
-            pos = r.next
+            pos = grpc_stream_pos(r)
         }
     }
     return n
@@ -115,6 +137,27 @@ fn hello_stream_replies(name: str, count: i64) -> bytes {
     return stream
 }
 
+fn hello_req_name(hr: HelloReq) -> str {
+    return match hr {
+        HelloOk(b) => b.name,
+        HelloBad => "?",
+    }
+}
+
+fn hello_req_n(hr: HelloReq) -> i64 {
+    return match hr {
+        HelloOk(b) => b.n,
+        HelloBad => 0,
+    }
+}
+
+fn grpc_stream_payload(r: GrpcStreamRead) -> bytes {
+    return match r {
+        StreamOk(f) => f.payload,
+        StreamEnd => bytes_new(0),
+    }
+}
+
 // Bidirectional streaming (message layer): for each HelloRequest frame in
 // `inbound`, append one HelloReply. Transport is still a single request/
 // response body pair (or half-close H2 stream) — this is the frame algebra.
@@ -125,19 +168,15 @@ fn hello_bidi(inbound: bytes) -> bytes {
     let mut i: i64 = 0
     while more == 1 {
         let r = grpc_stream_next(inbound, pos)
-        if r.ok == 0 {
+        if grpc_stream_ended(r) == 1 {
             more = 0
         } else {
-            let hr = hello_request_decode(r.payload)
-            let mut name = "?"
-            let mut n: i64 = 0
-            if hr.ok == 1 {
-                name = hr.name
-                n = hr.n
-            }
+            let hr = hello_request_decode(grpc_stream_payload(r))
+            let name = hello_req_name(hr)
+            let n = hello_req_n(hr)
             let msg = concat(concat(concat(concat(concat("echo ", name), " n="), int_to_str(n)), " #"), int_to_str(i + 1))
             out = grpc_stream_append(out, hello_reply_encode(msg))
-            pos = r.next
+            pos = grpc_stream_pos(r)
             i = i + 1
             if i > 64 {
                 more = 0
@@ -192,13 +231,17 @@ fn hello_request_encode(name: str, n: i64) -> bytes {
     return b
 }
 
-struct HelloRequest {
-    ok: i64,
+struct HelloBody {
     name: str,
     n: i64
 }
 
-fn hello_request_decode(data: bytes) -> HelloRequest {
+enum HelloReq {
+    HelloOk(HelloBody),
+    HelloBad
+}
+
+fn hello_request_decode(data: bytes) -> HelloReq {
     let mut name = ""
     let mut n: i64 = 0
     let mut r = pb_reader(data)
@@ -212,7 +255,7 @@ fn hello_request_decode(data: bytes) -> HelloRequest {
             if t.field == 1 && t.wire == PB_LEN() {
                 let s = pb_take_string(r)
                 if s.ok == 0 {
-                    return HelloRequest { ok: 0, name: "", n: 0 }
+                    return HelloBad
                 }
                 name = s.s
                 r = PbReader { data: r.data, pos: s.pos, ok: 1 }
@@ -220,20 +263,20 @@ fn hello_request_decode(data: bytes) -> HelloRequest {
                 if t.field == 2 && t.wire == PB_VARINT() {
                     let v = pb_get_uvarint(r.data, r.pos)
                     if v.ok == 0 {
-                        return HelloRequest { ok: 0, name: "", n: 0 }
+                        return HelloBad
                     }
                     n = v.val
                     r = PbReader { data: r.data, pos: v.pos, ok: 1 }
                 } else {
                     r = pb_skip(r, t.wire)
                     if r.ok == 0 {
-                        return HelloRequest { ok: 0, name: "", n: 0 }
+                        return HelloBad
                     }
                 }
             }
         }
     }
-    return HelloRequest { ok: 1, name: name, n: n }
+    return HelloOk(HelloBody { name: name, n: n })
 }
 
 fn hello_reply_encode(message: str) -> bytes {
@@ -242,12 +285,13 @@ fn hello_reply_encode(message: str) -> bytes {
     return b
 }
 
-struct HelloReply {
-    ok: i64,
-    message: str
+// ReplyOk payload is the message string.
+enum HelloRep {
+    ReplyOk(str),
+    ReplyBad
 }
 
-fn hello_reply_decode(data: bytes) -> HelloReply {
+fn hello_reply_decode(data: bytes) -> HelloRep {
     let mut message = ""
     let mut r = pb_reader(data)
     let mut more: i64 = 1
@@ -260,19 +304,19 @@ fn hello_reply_decode(data: bytes) -> HelloReply {
             if t.field == 1 && t.wire == PB_LEN() {
                 let s = pb_take_string(r)
                 if s.ok == 0 {
-                    return HelloReply { ok: 0, message: "" }
+                    return ReplyBad
                 }
                 message = s.s
                 r = PbReader { data: r.data, pos: s.pos, ok: 1 }
             } else {
                 r = pb_skip(r, t.wire)
                 if r.ok == 0 {
-                    return HelloReply { ok: 0, message: "" }
+                    return ReplyBad
                 }
             }
         }
     }
-    return HelloReply { ok: 1, message: message }
+    return ReplyOk(message)
 }
 
 // Unary "RPC" pure: Hello(name,n) → "Здравей, {name}×{n}"
@@ -280,13 +324,11 @@ fn hello_rpc(name: str, n: i64) -> str {
     let req = hello_request_encode(name, n)
     let frame = grpc_encode(req)
     let g = grpc_decode(frame)
-    if g.ok == 0 {
-        return ""
+    return match g {
+        GBad => "",
+        GFrame(fr) => match hello_request_decode(fr.payload) {
+            HelloBad => "",
+            HelloOk(body) => concat(concat(concat("Здравей, ", body.name), "×"), int_to_str(body.n)),
+        },
     }
-    let hr = hello_request_decode(g.payload)
-    if hr.ok == 0 {
-        return ""
-    }
-    let msg = concat(concat(concat("Здравей, ", hr.name), "×"), int_to_str(hr.n))
-    return msg
 }

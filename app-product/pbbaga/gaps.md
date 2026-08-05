@@ -25,5 +25,12 @@ Not implemented. Skip unknown fields works for forward compatibility.
 - **grpc_client**: unary over H1 with `CallOk`/`CallErr` (L3), metadata +
   `grpc-timeout`, client handle with `last: GrpcCall` field.
 
+## P5 — ~~ok:i64 decode stand-ins~~ — migrated (B1)
+
+- `GrpcMsg` → `GFrame(GrpcFrame) | GBad`
+- `GrpcStreamRead` → `StreamOk(…) | StreamEnd`
+- `HelloReq` → `HelloOk(HelloBody) | HelloBad`
+- `HelloRep` → `ReplyOk(str) | ReplyBad`
+
 Still open: `google.rpc.Status` details Any, client interceptors, true
 H2 half-close bidi, H2 client transport.

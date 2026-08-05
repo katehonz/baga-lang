@@ -88,8 +88,14 @@ fn main() -> i64 !Net !IO !Par {
     check(fails, "call_ok", is_call_ok(r) == 1)
     check(fails, "status0", call_status_code(r) == 0)
     let hr = hello_reply_decode(call_payload(r))
-    check(fails, "reply", hr.ok == 1 && str_find(hr.message, "client") >= 0)
-    check(fails, "n3", hr.ok == 1 && str_find(hr.message, "×3") >= 0)
+    check(fails, "reply", match hr {
+        ReplyOk(m) => str_find(m, "client") >= 0,
+        ReplyBad => false,
+    })
+    check(fails, "n3", match hr {
+        ReplyOk(m) => str_find(m, "×3") >= 0,
+        ReplyBad => false,
+    })
 
     // client handle stores last: GrpcCall (sum as field)
     let port2 = 18094
@@ -100,7 +106,10 @@ fn main() -> i64 !Net !IO !Par {
     c = grpc_client_call(c, "/hellopb.Greeter/SayHello", frame2, mdt_new(), 0)?
     check(fails, "client_ok", grpc_client_last_ok(c) == 1)
     let hr2 = hello_reply_decode(grpc_client_last_payload(c))
-    check(fails, "client_payload", hr2.ok == 1 && str_find(hr2.message, "held") >= 0)
+    check(fails, "client_payload", match hr2 {
+        ReplyOk(m) => str_find(m, "held") >= 0,
+        ReplyBad => false,
+    })
 
     // connect failure → CallErr
     let bad = grpc_call_unary("127.0.0.1", 1, "/x/Y", frame, 1, mdt_new(), 0)?

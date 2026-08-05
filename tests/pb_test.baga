@@ -28,22 +28,34 @@ fn main() {
     let z = pb_put_uvarint(bytes_new(0), 0)
     check("varint_0", bytes_len(z) == 1 && bytes_at(z, 0) == 0)
 
-    // field string + int round-trip
+    // field string + int round-trip (L3 HelloReq)
     let msg = hello_request_encode("hi", 7)
     let hr = hello_request_decode(msg)
-    check("hello_name", hr.ok == 1 && hr.name == "hi")
-    check("hello_n", hr.n == 7)
+    check("hello_name", match hr {
+        HelloOk(b) => b.name == "hi",
+        HelloBad => false,
+    })
+    check("hello_n", match hr {
+        HelloOk(b) => b.n == 7,
+        HelloBad => false,
+    })
 
     // cyrillic
     let msg2 = hello_request_encode("Здравей", 1)
     let hr2 = hello_request_decode(msg2)
-    check("hello_cyr", hr2.ok == 1 && hr2.name == "Здравей")
+    check("hello_cyr", match hr2 {
+        HelloOk(b) => b.name == "Здравей",
+        HelloBad => false,
+    })
 
     // unknown field skip: inject field 9 varint before name
     let mut junk = pb_field_varint(bytes_new(0), 9, 99)
     junk = bytes_concat(junk, hello_request_encode("x", 2))
     let hr3 = hello_request_decode(junk)
-    check("skip_unknown", hr3.ok == 1 && hr3.name == "x" && hr3.n == 2)
+    check("skip_unknown", match hr3 {
+        HelloOk(b) => b.name == "x" && b.n == 2,
+        HelloBad => false,
+    })
 
     // fixed32/64
     let mut fb = pb_field_fixed32(bytes_new(0), 3, 0x01020304)
@@ -75,17 +87,28 @@ fn main() {
     let vn = pb_get_uvarint(neg, tn.pos)
     check("neg_int64", vn.ok == 1 && vn.val == -2)
 
-    // gRPC frame
+    // gRPC frame (L3 GrpcMsg)
     let payload = hello_request_encode("a", 1)
     let frame = grpc_encode(payload)
     check("frame_hdr", bytes_len(frame) == 5 + bytes_len(payload) && bytes_at(frame, 0) == 0)
     let gm = grpc_decode(frame)
-    check("frame_ok", gm.ok == 1 && bytes_len(gm.payload) == bytes_len(payload))
-    let hr4 = hello_request_decode(gm.payload)
-    check("frame_payload", hr4.name == "a" && hr4.n == 1)
+    check("frame_ok", match gm {
+        GFrame(fr) => bytes_len(fr.payload) == bytes_len(payload),
+        GBad => false,
+    })
+    check("frame_payload", match gm {
+        GFrame(fr) => match hello_request_decode(fr.payload) {
+            HelloOk(b) => b.name == "a" && b.n == 1,
+            HelloBad => false,
+        },
+        GBad => false,
+    })
 
     // short frame fails
-    check("frame_short", grpc_decode(bytes_new(3)).ok == 0)
+    check("frame_short", match grpc_decode(bytes_new(3)) {
+        GBad => true,
+        GFrame(fr) => false,
+    })
 
     // pure rpc helper
     check("rpc", hello_rpc("X", 2) == "Здравей, X×2")
@@ -94,16 +117,29 @@ fn main() {
     let stream = hello_stream_replies("S", 3)
     check("stream_count", grpc_stream_count(stream) == 3)
     let r0 = grpc_stream_next(stream, 0)
-    check("stream0", r0.ok == 1)
-    let h0 = hello_reply_decode(r0.payload)
-    check("stream0_msg", h0.ok == 1 && str_find(h0.message, "#1") >= 0)
-    let r1 = grpc_stream_next(stream, r0.next)
-    let r2 = grpc_stream_next(stream, r1.next)
-    check("stream2", r2.ok == 1)
-    let h2 = hello_reply_decode(r2.payload)
-    check("stream2_msg", h2.ok == 1 && str_find(h2.message, "#3") >= 0)
-    let r3 = grpc_stream_next(stream, r2.next)
-    check("stream_end", r3.ok == 0)
+    check("stream0", match r0 { StreamOk(f) => true, StreamEnd => false })
+    check("stream0_msg", match r0 {
+        StreamOk(f) => match hello_reply_decode(f.payload) {
+            ReplyOk(m) => str_find(m, "#1") >= 0,
+            ReplyBad => false,
+        },
+        StreamEnd => false,
+    })
+    let pos1 = match r0 { StreamOk(f) => f.next, StreamEnd => 0 }
+    let r1 = grpc_stream_next(stream, pos1)
+    let pos2 = match r1 { StreamOk(f) => f.next, StreamEnd => 0 }
+    let r2 = grpc_stream_next(stream, pos2)
+    check("stream2", match r2 { StreamOk(f) => true, StreamEnd => false })
+    check("stream2_msg", match r2 {
+        StreamOk(f) => match hello_reply_decode(f.payload) {
+            ReplyOk(m) => str_find(m, "#3") >= 0,
+            ReplyBad => false,
+        },
+        StreamEnd => false,
+    })
+    let pos3 = match r2 { StreamOk(f) => f.next, StreamEnd => 0 }
+    let r3 = grpc_stream_next(stream, pos3)
+    check("stream_end", match r3 { StreamEnd => true, StreamOk(f) => false })
 
     // golden: field 1 string "testing" — known from protoc
     // message { string s = 1; } with s="testing"
