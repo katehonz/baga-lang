@@ -16,6 +16,10 @@ enum Opt { Some(str), None }
 struct Point { x: i64, y: i64 }
 enum Shape { Dot, Circle(Point) }
 enum Blob { Raw(bytes), Empty }
+struct Hold { r: Res, n: i64 }
+struct Wrap { inner: Res }
+// Unique variant names (global uniqueness — Blob already uses Empty).
+enum Box { BoxHas(Wrap), BoxEmpty }
 
 fn unwrap_or(r: Res, dflt: i64) -> i64 {
     return match r { Ok(v) => v, _ => dflt }
@@ -77,6 +81,22 @@ fn main() {
         Ok(v) => print(concat("stmt_arm ", int_to_str(v))),
         Err(m) => print(m),
     }
+
+    // L3+: sum enum as struct field (typedef topo order)
+    let h = Hold { r: Ok(11), n: 4 }
+    let hv = match h.r { Ok(x) => x + h.n, Err(e) => 0 }
+    check("field_ok", hv == 15)
+    let h2 = Hold { r: Err("x"), n: 1 }
+    check("field_err", match h2.r { Ok(x) => x, Err(e) => 0 - 1 } == 0 - 1)
+
+    // nested: sum payload is struct that itself holds a sum
+    let b = BoxHas(Wrap { inner: Ok(9) })
+    let bv = match b {
+        BoxHas(w) => match w.inner { Ok(n) => n, Err(e) => 0 },
+        BoxEmpty => 0 - 1,
+    }
+    check("nested_field", bv == 9)
+    check("empty_box", match BoxEmpty { BoxHas(w) => 1, BoxEmpty => 0 } == 0)
 
     print("sumtype: all passed")
 }

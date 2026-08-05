@@ -577,10 +577,12 @@ Honest v1 limits:
   `Map<K, V>: неподдържан стойностен тип Res`).
 - No generics — write a concrete enum per use site.
 - Exactly one payload type per variant; wrap several fields in a struct.
-- A sum enum cannot be a struct **field** yet (C typedef order — it fails
-  at the C compile stage); locals, parameters and return types work.
-- A payload that is itself a sum enum must be declared **before** the enum
-  that uses it.
+- Variant names of sum enums are **globally unique** in a whole program
+  (including imports) — library Result types must pick unique constructors
+  (`CallOk` / `CallErr`, not a second `Ok` / `Err`).
+- Nested sum/struct cycles fall back to declaration order; acyclic graphs
+  (the common case: `struct Hold { r: Res }`, `enum Box { Has(Wrap) }`) are
+  emitted in topological order so **sum enums as struct fields work**.
 
 ---
 

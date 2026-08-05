@@ -64,6 +64,24 @@ let u = grpc_unary_with_status(bytes_new(0), st)
 let r = grpc_to_response(u)
 ```
 
+## Unary client (not a demo)
+
+```baga
+let frame = grpc_encode(hello_request_encode("x", 1))
+let r = grpc_call_unary("localhost", 50051, "/pkg.Svc/Method",
+    frame, 3, mdt_new(), 5000)?
+// L3 sum: CallOk(GrpcCallOk) | CallErr(Status)
+match r {
+    CallOk(o) => { /* o.payload, o.status_code */ },
+    CallErr(s) => { /* s.code, s.message */ },
+}
+// handle with last: GrpcCall field
+let mut c = grpc_client("localhost", 50051, 3)
+c = grpc_client_call(c, "/pkg.Svc/Method", frame, mdt_new(), 0)?
+```
+
+Tests: `grpc_client_test`, `grpc_unary_test`, `grpc_bidi_test`, `pb_test`.
+
 ## Honest limits
 
 - No proto codegen, packed repeated, or maps.

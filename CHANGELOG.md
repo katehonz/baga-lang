@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### L3 sum enums as struct fields + real gRPC client
+- **Language (C backend):** structs and sum enums emit in **topological
+  order**, so `struct Hold { r: Res }` and nested `enum Box { BoxHas(Wrap) }`
+  compile. Docs §11.1 updated (en/bg).
+- **pbbaga `grpc_client`:** unary client over HTTP/1.1 binary body —
+  `grpc_call_unary` returns L3 `CallOk(GrpcCallOk) | CallErr(Status)`;
+  `GrpcClient.last` stores the sum on a field; wires **statusbaga** +
+  **mdtbaga** + `grpc-timeout`. Live test: `tests/grpc_client_test.baga`.
+- **sumtype_test:** field + nested sum/struct cases.
+
 ### gRPC-shaped universal packages (status / metadata / context)
 - **statusbaga**: gRPC codes 0–16 (`GRPC_OK`…`GRPC_UNAUTHENTICATED`),
   `Status`, HTTP mapping, trailer helpers, `grpc-timeout` encode/decode.

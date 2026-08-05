@@ -1550,7 +1550,35 @@ static void emit_fn(Codegen *cg, Node *fn) {
     emit_clo_wrapper(cg, fn);
 }
 
-/* ---- struct emission ---- */
+/* ---- struct / sum-enum emission (topo-ordered) ---- */
+
+static int is_sum_enum_item(Node *item) {
+    if (!item || item->kind != NODE_ENUM) return 0;
+    for (int j = 0; j < item->n_variants; j++)
+        if (item->enum_payloads && item->enum_payloads[j]) return 1;
+    return 0;
+}
+
+/* Named user type from a type AST node (struct or sum enum), or NULL for
+ * primitives / Vec / Map / unknown. Unwraps !effects and &T. */
+static const char *user_type_name(Node *ty) {
+    while (ty) {
+        if (ty->kind == NODE_TYPE_EFFECT || ty->kind == NODE_TYPE_REF) {
+            ty = ty->inner_type;
+            continue;
+        }
+        if (ty->kind != NODE_TYPE || !ty->type_name) return NULL;
+        const char *n = ty->type_name;
+        if (strcmp(n, "i64") == 0 || strcmp(n, "i32") == 0 ||
+            strcmp(n, "f64") == 0 || strcmp(n, "bool") == 0 ||
+            strcmp(n, "str") == 0 || strcmp(n, "bytes") == 0 ||
+            strcmp(n, "void") == 0 || strcmp(n, "Vec") == 0 ||
+            strcmp(n, "Map") == 0 || strcmp(n, "fn") == 0)
+            return NULL;
+        return n;
+    }
+    return NULL;
+}
 
 static void emit_struct(Codegen *cg, Node *s) {
     FILE *f = cg->out;
@@ -1570,12 +1598,156 @@ static void emit_struct(Codegen *cg, Node *s) {
     free(m);
 }
 
+/* L3 sum enum → tagged C struct + union + static inline constructors. */
+static void emit_sum_enum(Codegen *cg, Node *item) {
+    FILE *out = cg->out;
+    char *em = mangle_name(item->enum_name);
+    fprintf(out, "typedef struct {\n    int tag;\n    union {\n");
+    for (int j = 0; j < item->n_variants; j++) {
+        if (!item->enum_payloads || !item->enum_payloads[j]) continue;
+        char *vm = mangle_name(item->enum_variants[j]);
+        fprintf(out, "        ");
+        emit_type(cg, item->enum_payloads[j]);
+        fprintf(out, " v_%s;\n", vm);
+        free(vm);
+    }
+    fprintf(out, "    } u;\n} %s;\n\n", em);
+    for (int j = 0; j < item->n_variants; j++) {
+        char *vm = mangle_name(item->enum_variants[j]);
+        if (item->enum_payloads && item->enum_payloads[j]) {
+            fprintf(out, "static inline %s %s__%s(", em, em, vm);
+            emit_type(cg, item->enum_payloads[j]);
+            fprintf(out, " a0) {\n    %s r; r.tag = %d; r.u.v_%s = a0; return r;\n}\n\n",
+                    em, j, vm);
+        } else {
+            fprintf(out, "static inline %s %s__%s(void) {\n    %s r; r.tag = %d; return r;\n}\n\n",
+                    em, em, vm, em, j);
+        }
+        free(vm);
+    }
+    free(em);
+}
+
+/* Emit structs and sum enums in dependency order so sum-enum fields work
+ * (Wrap { r: Res }) and struct payloads still work (Circle(Point)). */
+static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
+    int n = 0;
+    for (int i = 0; i < program->items.len; i++) {
+        Node *it = program->items.data[i];
+        if (it->kind == NODE_STRUCT || is_sum_enum_item(it)) n++;
+    }
+    if (n == 0) return;
+
+    Node **nodes = (Node **)calloc((size_t)n, sizeof(Node *));
+    int *indeg = (int *)calloc((size_t)n, sizeof(int));
+    /* adj[j] is list of indices that depend on j (edges j → k) */
+    int **adj = (int **)calloc((size_t)n, sizeof(int *));
+    int *adj_len = (int *)calloc((size_t)n, sizeof(int));
+    int *adj_cap = (int *)calloc((size_t)n, sizeof(int));
+    if (!nodes || !indeg || !adj || !adj_len || !adj_cap) {
+        fprintf(stderr, "baga: out of memory\n");
+        exit(1);
+    }
+
+    int k = 0;
+    for (int i = 0; i < program->items.len; i++) {
+        Node *it = program->items.data[i];
+        if (it->kind == NODE_STRUCT || is_sum_enum_item(it))
+            nodes[k++] = it;
+    }
+
+    /* name → index */
+    for (int a = 0; a < n; a++) {
+        /* collect dependency names of a */
+        const char *deps[64];
+        int nd = 0;
+        if (nodes[a]->kind == NODE_STRUCT) {
+            for (int f = 0; f < nodes[a]->fields.len && nd < 64; f++) {
+                const char *dn = user_type_name(nodes[a]->fields.data[f]->fld_type);
+                if (dn) deps[nd++] = dn;
+            }
+        } else {
+            for (int v = 0; v < nodes[a]->n_variants && nd < 64; v++) {
+                if (!nodes[a]->enum_payloads || !nodes[a]->enum_payloads[v]) continue;
+                const char *dn = user_type_name(nodes[a]->enum_payloads[v]);
+                if (dn) deps[nd++] = dn;
+            }
+        }
+        for (int d = 0; d < nd; d++) {
+            int b = -1;
+            for (int j = 0; j < n; j++) {
+                const char *bn = nodes[j]->kind == NODE_STRUCT
+                    ? nodes[j]->struct_name : nodes[j]->enum_name;
+                if (bn && strcmp(bn, deps[d]) == 0) { b = j; break; }
+            }
+            if (b < 0 || b == a) continue; /* primitive / other / self */
+            /* edge b → a (b must be emitted before a) */
+            if (adj_len[b] + 1 > adj_cap[b]) {
+                int nc = adj_cap[b] ? adj_cap[b] * 2 : 4;
+                int *na = (int *)realloc(adj[b], (size_t)nc * sizeof(int));
+                if (!na) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+                adj[b] = na;
+                adj_cap[b] = nc;
+            }
+            adj[b][adj_len[b]++] = a;
+            indeg[a]++;
+        }
+    }
+
+    int *queue = (int *)malloc((size_t)n * sizeof(int));
+    int *order = (int *)malloc((size_t)n * sizeof(int));
+    int qh = 0, qt = 0, on = 0;
+    if (!queue || !order) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    for (int i = 0; i < n; i++)
+        if (indeg[i] == 0) queue[qt++] = i;
+    while (qh < qt) {
+        int u = queue[qh++];
+        order[on++] = u;
+        for (int e = 0; e < adj_len[u]; e++) {
+            int v = adj[u][e];
+            indeg[v]--;
+            if (indeg[v] == 0) queue[qt++] = v;
+        }
+    }
+    /* cycle or leftover: append remaining in declaration order */
+    if (on < n) {
+        for (int i = 0; i < n; i++) {
+            int seen = 0;
+            for (int j = 0; j < on; j++) if (order[j] == i) { seen = 1; break; }
+            if (!seen) order[on++] = i;
+        }
+    }
+
+    for (int i = 0; i < on; i++) {
+        Node *it = nodes[order[i]];
+        if (it->kind == NODE_STRUCT)
+            emit_struct(cg, it);
+        else
+            emit_sum_enum(cg, it);
+    }
+
+    for (int i = 0; i < n; i++) free(adj[i]);
+    free(adj); free(adj_len); free(adj_cap);
+    free(nodes); free(indeg); free(queue); free(order);
+}
+
 static Node *find_struct_decl(Codegen *cg, const char *name) {
     if (!cg->program) return NULL;
     for (int i = 0; i < cg->program->items.len; i++) {
         Node *it = cg->program->items.data[i];
         if (it->kind == NODE_STRUCT && it->struct_name &&
             strcmp(it->struct_name, name) == 0)
+            return it;
+    }
+    return NULL;
+}
+
+static Node *find_sum_enum_decl(Codegen *cg, const char *name) {
+    if (!cg->program || !name) return NULL;
+    for (int i = 0; i < cg->program->items.len; i++) {
+        Node *it = cg->program->items.data[i];
+        if (is_sum_enum_item(it) && it->enum_name &&
+            strcmp(it->enum_name, name) == 0)
             return it;
     }
     return NULL;
@@ -1619,8 +1791,14 @@ static void emit_zero_struct(Codegen *cg, const char *name) {
                 strcmp(ft->type_name, "Vec") != 0 &&
                 strcmp(ft->type_name, "Map") != 0 &&
                 ft->kind == NODE_TYPE) {
-                /* не-примитив, не-Vec/Map → вложен struct */
-                emit_zero_struct(cg, ft->type_name);
+                /* sum enum field → zeroed tagged union; else nested struct */
+                if (find_sum_enum_decl(cg, ft->type_name)) {
+                    char *em = mangle_name(ft->type_name);
+                    fprintf(f, "(%s){0}", em);
+                    free(em);
+                } else {
+                    emit_zero_struct(cg, ft->type_name);
+                }
                 continue;
             }
         }
@@ -2638,14 +2816,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "\n");
 
-    /* enums first (plain only — sum enum-ите зависят от struct typedef-овете) */
+    /* plain enums (i64 tags) — no payload deps */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
-        if (item->kind != NODE_ENUM) continue;
-        int is_sum = 0;
-        for (int j = 0; j < item->n_variants; j++)
-            if (item->enum_payloads && item->enum_payloads[j]) is_sum = 1;
-        if (is_sum) continue;
+        if (item->kind != NODE_ENUM || is_sum_enum_item(item)) continue;
         char *em = mangle_name(item->enum_name);
         fprintf(out, "typedef enum {\n");
         for (int j = 0; j < item->n_variants; j++) {
@@ -2657,47 +2831,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         free(em);
     }
 
-    /* structs */
-    for (int i = 0; i < program->items.len; i++) {
-        Node *item = program->items.data[i];
-        if (item->kind == NODE_STRUCT)
-            emit_struct(cg, item);
-    }
-
-    /* L3 sum enums: tagged struct + union + static inline конструктори */
-    for (int i = 0; i < program->items.len; i++) {
-        Node *item = program->items.data[i];
-        if (item->kind != NODE_ENUM) continue;
-        int is_sum = 0;
-        for (int j = 0; j < item->n_variants; j++)
-            if (item->enum_payloads && item->enum_payloads[j]) is_sum = 1;
-        if (!is_sum) continue;
-        char *em = mangle_name(item->enum_name);
-        fprintf(out, "typedef struct {\n    int tag;\n    union {\n");
-        for (int j = 0; j < item->n_variants; j++) {
-            if (!item->enum_payloads[j]) continue;
-            char *vm = mangle_name(item->enum_variants[j]);
-            fprintf(out, "        ");
-            emit_type(cg, item->enum_payloads[j]);
-            fprintf(out, " v_%s;\n", vm);
-            free(vm);
-        }
-        fprintf(out, "    } u;\n} %s;\n\n", em);
-        for (int j = 0; j < item->n_variants; j++) {
-            char *vm = mangle_name(item->enum_variants[j]);
-            if (item->enum_payloads[j]) {
-                fprintf(out, "static inline %s %s__%s(", em, em, vm);
-                emit_type(cg, item->enum_payloads[j]);
-                fprintf(out, " a0) {\n    %s r; r.tag = %d; r.u.v_%s = a0; return r;\n}\n\n",
-                        em, j, vm);
-            } else {
-                fprintf(out, "static inline %s %s__%s(void) {\n    %s r; r.tag = %d; return r;\n}\n\n",
-                        em, em, vm, em, j);
-            }
-            free(vm);
-        }
-        free(em);
-    }
+    /* structs + sum enums in dependency order (L3 fields + struct payloads) */
+    emit_structs_and_sum_enums(cg, program);
 
     /* forward declarations */
     emit_forward_decls(cg, program);

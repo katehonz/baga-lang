@@ -1,0 +1,115 @@
+// grpc_client_test.baga — real unary client (status+mdt+L3 CallOk/CallErr).
+
+import "pbbaga/grpc_client.baga"
+import "pbbaga/grpc_unary.baga"
+import "pbbaga/grpc.baga"
+import "statusbaga/status.baga"
+import "mdtbaga/mdt.baga"
+import "httpdbaga/http.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn is_call_ok(r: GrpcCall) -> i64 {
+    return match r {
+        CallOk(o) => 1,
+        CallErr(s) => 0,
+    }
+}
+
+fn call_err_code(r: GrpcCall) -> i64 {
+    return match r {
+        CallOk(o) => 0 - 1,
+        CallErr(s) => s.code,
+    }
+}
+
+fn call_payload(r: GrpcCall) -> bytes {
+    return match r {
+        CallOk(o) => o.payload,
+        CallErr(s) => bytes_new(0),
+    }
+}
+
+fn call_status_code(r: GrpcCall) -> i64 {
+    return match r {
+        CallOk(o) => o.status_code,
+        CallErr(s) => s.code,
+    }
+}
+
+fn serve_once(port: i64) -> i64 !Net !IO !Par {
+    let listener = tcp_listen(port)?
+    if listener < 0 { return -1 }
+    let fd = tcp_accept(listener)?
+    if fd < 0 {
+        tcp_close(listener)?
+        return -1
+    }
+    let req = http_read_request(fd)?
+    let path = http_path_only(req)
+    if http_method(req) == "POST" && grpc_is_method_path(path) == 1 {
+        let u = grpc_hello_handle(http_body_bytes(req))
+        grpc_write_response(fd, u)?
+    } else {
+        tcp_write(fd, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?
+    }
+    tcp_close(fd)?
+    tcp_close(listener)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par {
+    print("grpc_client_test:")
+    let fails = vec_new()
+
+    let st = status_error(GRPC_NOT_FOUND(), "gone")
+    let e = CallErr(st)
+    check(fails, "sum_err", call_err_code(e) == 5)
+
+    let port = 18093
+    go_bg(serve_once, port)
+    sleep_ms(150)
+
+    let frame = grpc_encode(hello_request_encode("client", 3))
+    let mut md = mdt_new()
+    md = mdt_append(md, "x-request-id", "t-1")
+
+    let r = grpc_call_unary("localhost", port, "/hellopb.Greeter/SayHello",
+        frame, 3, md, 5000)?
+    check(fails, "call_ok", is_call_ok(r) == 1)
+    check(fails, "status0", call_status_code(r) == 0)
+    let hr = hello_reply_decode(call_payload(r))
+    check(fails, "reply", hr.ok == 1 && str_find(hr.message, "client") >= 0)
+    check(fails, "n3", hr.ok == 1 && str_find(hr.message, "×3") >= 0)
+
+    // client handle stores last: GrpcCall (sum as field)
+    let port2 = 18094
+    go_bg(serve_once, port2)
+    sleep_ms(150)
+    let mut c = grpc_client("localhost", port2, 3)
+    let frame2 = grpc_encode(hello_request_encode("held", 1))
+    c = grpc_client_call(c, "/hellopb.Greeter/SayHello", frame2, mdt_new(), 0)?
+    check(fails, "client_ok", grpc_client_last_ok(c) == 1)
+    let hr2 = hello_reply_decode(grpc_client_last_payload(c))
+    check(fails, "client_payload", hr2.ok == 1 && str_find(hr2.message, "held") >= 0)
+
+    // connect failure → CallErr
+    let bad = grpc_call_unary("127.0.0.1", 1, "/x/Y", frame, 1, mdt_new(), 0)?
+    check(fails, "conn_fail", call_err_code(bad) == GRPC_UNAVAILABLE())
+
+    if vec_len(fails) == 0 {
+        print("grpc_client_test: all passed")
+        return 0
+    }
+    print(concat(concat("grpc_client_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

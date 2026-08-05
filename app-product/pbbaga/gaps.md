@@ -22,5 +22,8 @@ Not implemented. Skip unknown fields works for forward compatibility.
 - **ctxbaga**: deadline / cancel / values + `ctx_from_grpc_timeout`
 - Wired into `grpc_unary` (`grpc_unary_with_status`, `grpc_response_with_md`)
 
+- **grpc_client**: unary over H1 with `CallOk`/`CallErr` (L3), metadata +
+  `grpc-timeout`, client handle with `last: GrpcCall` field.
+
 Still open: `google.rpc.Status` details Any, client interceptors, true
-H2 half-close bidi.
+H2 half-close bidi, H2 client transport.
