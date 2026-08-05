@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Phase 4 B4.1 — lsm recovery + page-cache stress
+- **`tests/lsm_recover_test.baga`:** WAL/SST/tomb reopen (crash-style close),
+  double reopen, many-key compact recovery, page cache `cap=2` scan still
+  correct. README recovery story (`sync_every=1` fdatasync).
+
 ### Phase 4 B4.2 — raft durable log lite
 - **raftbaga:** `persist.baga` saves term/vote/commit/log to
   `/tmp/baga_raft_<id>.state`; nodes load + re-apply on start; flush on

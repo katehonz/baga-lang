@@ -1,0 +1,131 @@
+// lsm_recover_test.baga — B4.1 kill/reopen recovery + page-cache stress.
+// Simulates process restart by lsm_close + lsm_open (WAL + MANIFEST + SST).
+// Default sync_every=1 → each put is fdatasync'd (crash loses only mid-write tail).
+
+import "lsmbaga/engine.baga"
+import "lsmbaga/page.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO {
+    print("lsm_recover_test:")
+    let fails = vec_new()
+    let prefix = "/tmp/baga_lsm_recover"
+    wipe(prefix)?
+
+    // --- 1. crash-style reopen: WAL-only keys, no flush ---
+    let mut db = lsm_open(prefix, 64, 8)?
+    check(fails, "open1", db.ok == 1)
+    db = lsm_put(db, "w1", "one")?
+    db = lsm_put(db, "w2", "two")?
+    db = lsm_del(db, "w1")?
+    // close = fdatasync WAL (like orderly stop; kill -9 after fdatasync is same)
+    lsm_close(db)?
+
+    let mut db2 = lsm_open(prefix, 64, 8)?
+    check(fails, "reopen1", db2.ok == 1)
+    let a = lsm_get(db2, "w1")?
+    check(fails, "tomb_after_crash", a.found == 0)
+    let b = lsm_get(a.db, "w2")?
+    check(fails, "wal_after_crash", b.found == 1 && str_of_bytes(b.val) == "two")
+    db2 = b.db
+
+    // --- 2. flush to SST, more WAL, double reopen ---
+    db2 = lsm_put(db2, "s1", "sst")?
+    db2 = lsm_flush_force(db2)?
+    db2 = lsm_put(db2, "w3", "wal3")?
+    lsm_close(db2)?
+
+    let mut db3 = lsm_open(prefix, 64, 8)?
+    let c = lsm_get(db3, "s1")?
+    check(fails, "sst_survive", c.found == 1 && str_of_bytes(c.val) == "sst")
+    let d = lsm_get(c.db, "w3")?
+    check(fails, "wal_after_sst", d.found == 1 && str_of_bytes(d.val) == "wal3")
+    let e = lsm_get(d.db, "w2")?
+    check(fails, "older_wal", e.found == 1 && str_of_bytes(e.val) == "two")
+    lsm_close(e.db)?
+
+    // second reopen without writes
+    let db4 = lsm_open(prefix, 64, 8)?
+    let f = lsm_get(db4, "s1")?
+    check(fails, "double_reopen", f.found == 1 && str_of_bytes(f.val) == "sst")
+    lsm_close(f.db)?
+
+    // --- 3. many keys + compact + reopen (recovery after levels change) ---
+    wipe(prefix)?
+    let mut db5 = lsm_open(prefix, 3, 3)?
+    let mut i: i64 = 0
+    while i < 24 {
+        db5 = lsm_put(db5, concat("k", int_to_str(i)), concat("v", int_to_str(i)))?
+        i = i + 1
+    }
+    db5 = lsm_del(db5, "k3")?
+    lsm_close(db5)?
+
+    let mut db6 = lsm_open(prefix, 3, 3)?
+    let g0 = lsm_get(db6, "k0")?
+    check(fails, "many_k0", g0.found == 1 && str_of_bytes(g0.val) == "v0")
+    let g3 = lsm_get(g0.db, "k3")?
+    check(fails, "many_del", g3.found == 0)
+    let g23 = lsm_get(g3.db, "k23")?
+    check(fails, "many_k23", g23.found == 1 && str_of_bytes(g23.val) == "v23")
+    db6 = g23.db
+
+    // --- 4. page-cache stress: tiny cache, many SST gets ---
+    db6.cache = pc_new(4096, 2)   // cap=2 pages → force eviction
+    let mut j: i64 = 0
+    let mut ok_scan: i64 = 1
+    while j < 24 {
+        if j != 3 {
+            let g = lsm_get(db6, concat("k", int_to_str(j)))?
+            db6 = g.db
+            if g.found == 0 {
+                ok_scan = 0
+            } else {
+                if str_of_bytes(g.val) != concat("v", int_to_str(j)) {
+                    ok_scan = 0
+                }
+            }
+        }
+        j = j + 1
+    }
+    check(fails, "pc_stress_scan", ok_scan == 1)
+    // cache stayed bounded
+    check(fails, "pc_cap", vec_len(db6.cache.keys) <= db6.cache.cap)
+
+    lsm_close(db6)?
+    // reopen after stress still correct
+    let db7 = lsm_open(prefix, 3, 3)?
+    let g7 = lsm_get(db7, "k10")?
+    check(fails, "post_stress_reopen", g7.found == 1 && str_of_bytes(g7.val) == "v10")
+    lsm_close(g7.db)?
+
+    wipe(prefix)?
+    if vec_len(fails) == 0 {
+        print("lsm_recover_test: all passed")
+        return 0
+    }
+    print(concat(concat("lsm_recover_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

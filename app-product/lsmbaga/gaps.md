@@ -40,6 +40,10 @@ readable (parse + bsearch).
 get block load). **L2** level: L1 ≥ `compact_at` → merge to L2; collapse ≥2
 L2 files. File-count size-tier lite (not byte-size targets). v1–v4 readable.
 
+**Shipped (B4.1):** recovery story + test (`tests/lsm_recover_test.baga`):
+WAL+SST reopen (tomb/wal/sst), multi-reopen after compact, page-cache stress
+with `cap=2` (eviction) still correct. v5 get remains partial-file for hits.
+
 **Still open (later):** byte-size level targets, drop whole-body CRC on get-only
 path, bloom as standalone filter file, rename **rocksbaga** when quality
 warrants.

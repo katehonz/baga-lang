@@ -42,7 +42,8 @@ Example: `LSMPATH=/tmp/baga_lsm` → `/tmp/baga_lsm.wal`, `/tmp/baga_lsm.sst.1`,
 LSMPATH=/tmp/baga_lsm_demo LSMPORT=16579 ./baga app-product/lsmbaga/demo.baga
 
 # tests
-./baga tests/lsm_test.baga
+./baga -I . -I app-product tests/lsm_test.baga
+./baga -I . -I app-product tests/lsm_recover_test.baga   # B4.1 kill/reopen
 ```
 
 With redis-cli (server must be running):
@@ -65,6 +66,14 @@ fn lsm_put / lsm_put_b / lsm_del / lsm_get / lsm_keys / lsm_flush_force / lsm_cl
 fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 ```
 
+## Recovery (B4.1)
+
+On `lsm_open`: read MANIFEST gens + levels, open WAL, **replay** records into
+mem/tomb. Default `sync_every=1` → each put/del `fdatasync`s the WAL, so a
+process kill after a completed put is equivalent to clean close for that op.
+`lsm_close` fdatasyncs then closes. Test: `tests/lsm_recover_test.baga`
+(WAL/SST/tomb reopen, multi-reopen after compact, page-cache cap stress).
+
 ## Honest limits
 
 - Serial connections (same `go`/store constraint as kvbaga K1).
@@ -74,5 +83,6 @@ fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 - v5 get is partial IO + per-block CRC; compact/`KEYS` still full-load + whole-body CRC.
 - Levels L0–L2 by **file count**, not byte-size amplification targets.
 - Single process; no multi-writer.
+- Kill mid-`fdatasync` can leave a partial WAL record (replay stops at CRC fail).
 
 See [gaps.md](gaps.md).

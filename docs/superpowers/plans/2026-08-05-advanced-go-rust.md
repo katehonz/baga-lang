@@ -209,7 +209,7 @@ MVPs shipped; advanced means **ops-grade behavior**:
 
 | Step | Work |
 |------|------|
-| B4.1 | lsmbaga: reduce full-file SST load (gaps L3); bounded page cache under stress test |
+| B4.1 | lsmbaga recovery + page-cache stress (`lsm_recover_test`; partial get already R5) | ✅ |
 | B4.2 | raftbaga: persistence of log + restart recovery test (not only in-memory election) | ✅ |
 | B4.3 | txnbaga: multi-key 2PC under concurrent clients (channel stress) |
 | B4.4 | Bench gate: `bench/run_latency.sh` numbers recorded in CHANGELOG or `bench/results/` for regressions |
