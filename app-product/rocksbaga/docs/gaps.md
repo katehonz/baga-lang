@@ -80,7 +80,11 @@ Unlinked with SST on compact. Test: `r9_*` in `tests/lsm_test.baga`.
 first/last key loaded once per gen. Partial get skips re-reading index and
 last block. Bench n=1000 durable: GET ~80k → ~167k ops/s (~31% of RocksDB).
 
-**Still open (later):** pin-count shared page cache; fewer restart-key preads;
+**Shipped (R13):** `SstMeta.rkeys` — all restart keys loaded once; get does
+in-memory bsearch + **one** block `pc_read_at`. Bench n=1000 durable:
+GET_SEQ ~200k ops/s (~37% RocksDB), GET_RND ~250k (~48%).
+
+**Still open (later):** pin-count shared page cache; PUT batching; 
 `db/manifest.baga` / `table/block.baga` when needed; RocksDB feature parity
 (not claimed).
 

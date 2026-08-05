@@ -36,6 +36,11 @@
   + index (no footer/last-block re-read).
 - Bench n=1000 durable: GET ~167k ops/s (~31% of RocksDB).
 
+### RocksDB path R13 — restart-key cache
+- **`SstMeta.rkeys`:** load every restart key once with the meta; get bsearch
+  is pure memory, then a single block read. Bench n=1000 durable: GET_SEQ
+  ~200k ops/s (~37% RocksDB), GET_RND ~250k (~48%).
+
 ### RocksDB path R10 — package rename rocksbaga
 - **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine
   unchanged). Prefer `import "rocksbaga/…"`. Deprecated **`lsmbaga/`** shims

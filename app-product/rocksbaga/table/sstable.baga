@@ -641,7 +641,8 @@ struct SstHitPc {
     hit: SstHit
 }
 
-// R12: cached SST layout for partial get (footer + restart offs + min/max keys).
+// R12/R13: cached SST layout for partial get.
+// idx = restart offsets; rkeys = first key of each restart block (R13).
 struct SstMeta {
     ok: i64,
     core_len: i64,
@@ -650,13 +651,15 @@ struct SstMeta {
     tag: i64,
     first_key: str,
     last_key: str,
-    idx: bytes   // n_restarts × u32 LE offsets only
+    idx: bytes,      // n_restarts × u32 LE offsets
+    rkeys: Vec<str>  // n_restarts restart keys (in-memory bsearch)
 }
 
 fn sst_meta_empty() -> SstMeta {
+    let empty: Vec<str> = vec_new()
     return SstMeta {
         ok: 0, core_len: 0, n_restarts: 0, idx_base: 0, tag: 0,
-        first_key: "", last_key: "", idx: bytes_new(0)
+        first_key: "", last_key: "", idx: bytes_new(0), rkeys: empty
     }
 }
 
@@ -711,10 +714,18 @@ fn sst_meta_load(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstMetaLoad !I
     if first_off != 4 {
         return SstMetaLoad { pc: cur, meta: bad }
     }
-    let frk = sst_rec_at_fd(cur, fd, gen, first_off)?
-    cur = frk.pc
-    if frk.ok == 0 {
-        return SstMetaLoad { pc: cur, meta: bad }
+    // R13: load every restart key once (bsearch becomes pure memory).
+    let rkeys: Vec<str> = vec_new()
+    let mut ri: i64 = 0
+    while ri < n_restarts {
+        let off = get_u32_le(ir.data, ri * 4)
+        let rk = sst_rec_at_fd(cur, fd, gen, off)?
+        cur = rk.pc
+        if rk.ok == 0 {
+            return SstMetaLoad { pc: cur, meta: bad }
+        }
+        vec_push(rkeys, rk.key)
+        ri = ri + 1
     }
     let last_off = get_u32_le(ir.data, (n_restarts - 1) * 4)
     let span = idx_base - last_off
@@ -728,16 +739,17 @@ fn sst_meta_load(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstMetaLoad !I
         return SstMetaLoad { pc: cur, meta: bad }
     }
     let idx = bytes_slice(ir.data, 0, n_restarts * 4)
+    let first_key = vec_get(rkeys, 0)
     return SstMetaLoad {
         pc: cur,
         meta: SstMeta {
             ok: 1, core_len: core_len, n_restarts: n_restarts, idx_base: idx_base,
-            tag: tag, first_key: frk.key, last_key: last_key, idx: idx
+            tag: tag, first_key: first_key, last_key: last_key, idx: idx, rkeys: rkeys
         }
     }
 }
 
-// Partial get using cached meta (R12). skip_bloom kept for API; sidecar covers it.
+// Partial get using cached meta (R12) + in-memory restart-key bsearch (R13).
 fn sst_lookup_with_meta(pc: PageCache, fd: i64, gen: i64, meta: SstMeta, key: str) -> SstHitPc !IO {
     let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
     if meta.ok == 0 {
@@ -753,27 +765,25 @@ fn sst_lookup_with_meta(pc: PageCache, fd: i64, gen: i64, meta: SstMeta, key: st
     let n_restarts = meta.n_restarts
     let idx = meta.idx
     let idx_base = meta.idx_base
+    let rkeys = meta.rkeys
+    // Binary search over cached restart keys — no IO.
     let mut lo: i64 = 0
     let mut hi = n_restarts - 1
     let mut best: i64 = 0
     while lo <= hi {
         let mid = lo + (hi - lo) / 2
-        let off = get_u32_le(idx, mid * 4)
-        let rk = sst_rec_at_fd(cur, fd, gen, off)?
-        cur = rk.pc
-        if rk.ok == 0 {
-            return SstHitPc { pc: cur, hit: miss }
-        }
-        let c = str_cmp(rk.key, key)
+        let c = str_cmp(vec_get(rkeys, mid), key)
         if c == 0 {
-            let h = sst_hit_from_row(SstRow { op: rk.op, key: rk.key, val: rk.val })
-            return SstHitPc { pc: cur, hit: h }
-        }
-        if c < 0 {
             best = mid
             lo = mid + 1
-        } else {
             hi = mid - 1
+        } else {
+            if c < 0 {
+                best = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
         }
     }
     let start = get_u32_le(idx, best * 4)
