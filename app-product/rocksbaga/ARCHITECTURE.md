@@ -58,14 +58,22 @@ rocksbaga/
           db/engine
            /   |   \
           ▼    ▼    ▼
-        wal  table  cache/page
-          \    |    /
-           ▼   ▼   ▼
-            util/codec
-                 │
-                 ▼
-            std/{os,str,crypto,net,bytes}
+   db/compact  wal  cache/page
+        │        \    /
+        ▼         \  /
+   table/sstable   \/
+        │          /
+        ▼         /
+   table/bloom   /
+        \       /
+         ▼     ▼
+         util/codec
+              │
+              ▼
+     std/{os,str,crypto,net,bytes}
 ```
+
+`db/types` is imported by `engine` and `compact` (no cycles).
 
 **Rules**
 
@@ -116,12 +124,14 @@ Keyed by SST gen (file id).
 Put/Del records, crc32c, replay into mem/tomb maps (called by `db`).
 
 ### table
-On-disk SST: magic/version, restart index, bloom (embedded + **sidecar**
-`BAGABLM1`), partial block get, full parse for compact/KEYS.
+- **bloom** — bitset + R9 sidecar files (key-list API, no `SstRow`).
+- **sstable** — magic/version, restart index, embedded bloom in v5 body,
+  partial block get, full parse for compact/KEYS.
 
 ### db
-`LsmDB`, open/close, put/get/del, flush → L0, compaction L0…L3
-(`compact_at`, `target_bytes`, `merge_pick`), MANIFEST.
+- **types** — `LsmDB` only.
+- **compact** — pick/merge/promote, MANIFEST write on merge.
+- **engine** — open/close, put/get/del, flush → L0, recovery; calls compact.
 
 ### net
 RESP command loop; maps SET/GET/… to `db`. Env: `LSMPATH`, `LSM_*`.
@@ -137,12 +147,12 @@ RESP command loop; maps SET/GET/… to `db`. Env: `LSMPATH`, `LSM_*`.
 
 Layers own **code**, not a new disk format.
 
-## Future splits (planned, not required now)
+## Future splits (when files grow again)
 
 | Split | When |
 |-------|------|
-| `table/bloom.baga` | bloom logic grows (multi-filter, filter blocks) |
-| `db/compact.baga` | compaction policy / picker isolated from put path |
+| ~~`table/bloom.baga`~~ | **done** |
+| ~~`db/compact.baga` + `types.baga`~~ | **done** |
 | `db/manifest.baga` | version edit log beyond flat MANIFEST |
 | `table/block.baga` | shared block builder for SST rebuild |
 | `tools/` | offline SST dump / consistency check |

@@ -10,6 +10,15 @@
   `import "rocksbaga/db/engine.baga"`; short paths still work.
 - Further split: **`table/bloom.baga`**, **`db/types.baga`**,
   **`db/compact.baga`** (engine orchestrates flush/recovery only).
+- **Architecture doc** updated for the split dependency graph
+  (`db/compact` → `table/{sstable,bloom}`).
+
+### rocksbaga — vs RocksDB engine microbench
+- **`bench/rocks/`:** head-to-head harness — pure `lsm_put`/`lsm_get`
+  (`engine_bench.baga`) vs RocksDB via `rocksdict` (`rocksdb_bench.py`).
+  Modes: `durable` (fsync each put) and `batch`. Run:
+  `./bench/rocks/run_vs_rocksdb.sh`. Baseline snapshot under
+  `bench/rocks/results/`.
 
 ### RocksDB path R10 — package rename rocksbaga
 - **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine
