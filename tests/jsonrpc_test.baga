@@ -54,7 +54,7 @@ fn main() -> i64 !Net !IO !Par {
     // --- live HTTP ---
     let port = 18590
     go_bg(rpc_serve, port)
-    sleep_ms(200)
+    sleep_ms(400)
 
     let fd = tcp_connect("127.0.0.1", port)?
     assert_true("connect", fd >= 0)
@@ -66,7 +66,19 @@ fn main() -> i64 !Net !IO !Par {
     reqh = concat(reqh, body)
     let w = tcp_write(fd, reqh)?
     assert_eq_i64("write", w, 0)
-    let resp = tcp_read(fd, 4096)?
+    // A single tcp_read can return headers only under load; read a few times
+    // or until body contains the JSON-RPC result (server may keep-alive).
+    let mut resp = tcp_read(fd, 4096)?
+    let mut rounds: i64 = 0
+    while rounds < 8 && has(resp, "pong") == false {
+        let chunk = tcp_read(fd, 4096)?
+        if len(chunk) == 0 {
+            rounds = 8
+        } else {
+            resp = concat(resp, chunk)
+            rounds = rounds + 1
+        }
+    }
     let cl = tcp_close(fd)?
     assert_eq_i64("close", cl, 0)
     assert_true("http_200", str_starts_with(resp, "HTTP/1.1 200"))

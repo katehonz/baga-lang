@@ -51,7 +51,7 @@ fn prepare_db() -> i64 !Net !IO !Random {
     }
     let cd = pg_query(admin, "CREATE DATABASE baga_registry")?
     // ok, or "already exists" are both fine
-    pg_close(cd.conn)?
+    pg_close(pg_conn_of(cd))?
 
     let db = orm_connect(host, port, user, password, "baga_registry")?
     if orm_ok_db(db) == 0 {

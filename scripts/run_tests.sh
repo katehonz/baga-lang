@@ -224,7 +224,9 @@ else
 fi
 
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
-PORT="${PORT:-8090}" PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
+# Force 8090 — ambient PORT=8080 (fmr-run default) would race apps/api and
+# make health checks flaky.
+PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
 
 echo "=== oauth PG (live Postgres) ==="
 OAUTH_PG=1 PGDATABASE=baga_oauth "$ROOT/scripts/baga-test" tests/oauth_pg_test.baga
