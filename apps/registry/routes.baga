@@ -2,6 +2,7 @@
 // Embeds fmr_build_app / fmr_before / fmr_dispatch for the app binary.
 
 import "actions/packages.baga"
+import "grpc_svc.baga"
 import "fmrbaga/app.baga"
 import "fmrbaga/ctx.baga"
 import "fmrbaga/deps.baga"
@@ -27,6 +28,11 @@ fn fmr_build_app() -> FmrApp !IO {
 
 fn fmr_before(ctx: FmrCtx) -> DepResult {
     return dep_ok(ctx)
+}
+
+// B3 dual-protocol gRPC entry (same TCP port as JSON).
+fn fmr_grpc_handle(path: str, body: bytes, db: OrmDb) -> FmrOut !IO !Net {
+    return reg_grpc_dispatch(path, body, db)?
 }
 
 fn act_reg_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {

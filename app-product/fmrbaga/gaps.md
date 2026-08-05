@@ -66,3 +66,11 @@ app-defined hook (`fmr_before`) plus the built-in correlation chain.
 **Symptom.** Full serve unit is large (many imports); compile times grow.
 
 **Verdict.** Acceptable; barrel files + FNS_MAX headroom help.
+
+## G9 — Dual protocol gRPC (B3.3 partial)
+
+**Shipped.** `fmr_handle` detects gRPC POSTs and calls app `fmr_grpc_handle`.
+Registry implements GetPackage/ListPackages; api/handlers return UNIMPLEMENTED.
+
+**Open.** Full interceptor chain, H2 native trailers-only status, auth MD on
+gRPC, OpenAPI↔proto parity.

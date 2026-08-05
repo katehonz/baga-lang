@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Phase 3 B3.3 — registry dual protocol (HTTP + gRPC)
+- **fmrbaga:** `fmr_is_grpc_request` + `fmr_grpc_handle` hook — same port as JSON
+  when `Content-Type: application/grpc` and `/Service/Method` path.
+- **apps/registry:** `regbaga.Registry` RPCs `GetPackage` / `ListPackages`
+  (hand PB + statusbaga codes); test `tests/registry_grpc_test.baga`.
+
 ### Phase 3 B2.4 — OpenAPI from route table
 - **fmrbaga:** `fmr_openapi_from_router` emits `paths` from the live `Router`
   (path params, bearer/public heuristics, body/response schema names,

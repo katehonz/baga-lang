@@ -195,11 +195,11 @@ Order by call-graph fan-in (migrate leaves first or bottom-up drivers):
 
 | Step | Work |
 |------|------|
-| B3.1 | H2 unary client path (or document H1 as intentional edge proxy mode) |
-| B3.2 | Server interceptor chain: auth MD → ctx → metrics → handler (compose with mdt/status) |
-| B3.3 | One **real** service: e.g. `apps/registry` or new `apps/greeter` is **not** enough — prefer **registry** or **api** dual-protocol (HTTP JSON + gRPC) |
-| B3.4 | Interop check: generate golden frames vs `protoc`/Go client **or** fixed golden vectors (no full protoc yet) |
-| B3.5 | `google.rpc.Status` details-bin optional (statusbaga S1) |
+| B3.1 | H2 unary client path (or document H1 as intentional edge proxy mode) | partial (H1 unary product path) |
+| B3.2 | Server interceptor chain: auth MD → ctx → metrics → handler (compose with mdt/status) | lite (request-id + log on gRPC via fmr) |
+| B3.3 | **registry dual-protocol** HTTP JSON + gRPC GetPackage/ListPackages same port | ✅ |
+| B3.4 | Interop check: generate golden frames vs `protoc`/Go client **or** fixed golden vectors (no full protoc yet) | next |
+| B3.5 | `google.rpc.Status` details-bin optional (statusbaga S1) | later |
 
 **Acceptance:** live test calls Baga server from Baga client; status codes match Go semantics for 0/3/5/14/16.
 
@@ -311,8 +311,8 @@ in `lsmbaga/gaps.md`.
 
 1. fmr middleware + apps/api otel/log — **B2.1 done**  
 2. OpenAPI emit from route table — **B2.4 done**  
-3. gRPC dual path on one product service — **next** (B3)  
-4. Interop goldens  
+3. gRPC dual path on registry — **B3.3 done** (GetPackage/ListPackages)  
+4. Interop goldens / H2 client — **next** (B3.4)
 
 **Exit criteria:** single README path runs product API + gRPC call with metrics and graceful shutdown.
 

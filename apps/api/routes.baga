@@ -56,6 +56,15 @@ fn fmr_before(ctx: FmrCtx) -> DepResult {
     return dep_ok(ctx)
 }
 
+// B3: apps/api has no gRPC surface yet — dual hook returns empty unimplemented.
+fn fmr_grpc_handle(path: str, body: bytes, db: OrmDb) -> FmrOut !IO !Net {
+    let mut r = http_response_bytes(200, bytes_new(0))
+    r = http_set_header(r, "Content-Type", "application/grpc")
+    r = http_set_header(r, "grpc-status", "12")
+    r = http_set_header(r, "grpc-message", "UNIMPLEMENTED")
+    return fmr_out(r, db)
+}
+
 fn fmr_dispatch(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     let id = ctx.route_id
     if id == RID_HEALTH() { return act_health(ctx, db) }

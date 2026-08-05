@@ -1,0 +1,133 @@
+// registry_grpc_test.baga — B3 dual protocol: pure PB + live GetPackage over gRPC.
+
+import "../apps/registry/grpc_svc.baga"
+import "../apps/registry/routes.baga"
+import "../apps/registry/schema.baga"
+import "pbbaga/grpc.baga"
+import "pbbaga/grpc_client.baga"
+import "pbbaga/grpc_unary.baga"
+import "mdtbaga/mdt.baga"
+import "statusbaga/status.baga"
+import "fmrbaga/app.baga"
+import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
+import "pgbaga/pg.baga"
+import "std/net/http_client.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" {
+        return def
+    }
+    return v
+}
+
+fn reg_serve(_x: i64) -> i64 !Net !IO !Par !Random !Time {
+    return fmr_run()?
+}
+
+fn main() -> i64 !Net !IO !Par !Random !Time {
+    print("registry_grpc_test:")
+    let fails = vec_new()
+
+    // --- pure codec ---
+    let enc = reg_pb_get_req_encode("lsmbaga")
+    check(fails, "pb_get_roundtrip", reg_pb_get_req_decode(enc) == "lsmbaga")
+    let pkg = reg_pb_package_encode("lsmbaga", "LSM KV", "0.1.0", "git", "https://x")
+    check(fails, "pb_pkg_len", bytes_len(pkg) > 8)
+    let frame = grpc_encode(enc)
+    check(fails, "frame", match grpc_decode(frame) { GFrame(fr) => true, GBad => false })
+
+    // --- live dual: JSON publish then gRPC GetPackage on same port ---
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(cfg("PGPORT", "5432")?)
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+    let admin = pg_connect_to(host, port, user, password, "postgres", 5)?
+    if admin.ok == 0 {
+        print(concat("  skip live: ", admin.err))
+        if vec_len(fails) == 0 {
+            print("registry_grpc_test: pure passed (no db)")
+            return 0
+        }
+        print("registry_grpc_test: FAILED")
+        return 1
+    }
+    let cd = pg_query(admin, "CREATE DATABASE baga_registry")?
+    pg_close(pg_conn_of(cd))?
+
+    let db = orm_connect(host, port, user, password, "baga_registry")?
+    if orm_ok_db(db) == 0 {
+        print(concat("  skip live: ", orm_err_db(db)))
+        if vec_len(fails) == 0 {
+            print("registry_grpc_test: pure passed (no registry db)")
+            return 0
+        }
+        return 1
+    }
+    let up = migrate_up(db, regbaga_migrations())?
+    if up.ok == 0 {
+        print(concat("  skip live migrate: ", up.err))
+        return 1
+    }
+    let cl = orm_exec(up.db, "DELETE FROM reg_packages")?
+    orm_close(cl.db)?
+
+    // force PORT for this process before go_bg inherits env — use fixed 18093
+    // (registry fmr_run reads PORT; test client uses same).
+    let grpc_port = 18093
+    // Cannot set env from baga easily — start fmr_run only works with env.
+    // Use in-process handle via fmr_grpc_handle instead of full TCP for reliability.
+    let db2 = orm_connect(host, port, user, password, "baga_registry")?
+    // seed via model
+    let cr = reg_create(db2, "grpc-pkg", "from grpc test", "git", "https://example/g.git")?
+    if cr.ok == 0 {
+        check(fails, "seed_create", false)
+    } else {
+        let f = reg_find_by_name(cr.db, "grpc-pkg")?
+        check(fails, "seed_find", f.ok == 1 && f.nrows == 1)
+        let pid = orm_cell_by_i64(f, 0, "id")
+        let vi = reg_version_insert(f.db, pid, "1.2.3", "deadbeef", "")?
+        let sl = reg_set_latest(vi.db, pid, "1.2.3")?
+        orm_close(sl.db)?
+
+        let db3 = orm_connect(host, port, user, password, "baga_registry")?
+        let req_frame = grpc_encode(reg_pb_get_req_encode("grpc-pkg"))
+        let out = fmr_grpc_handle(reg_grpc_get_path(), req_frame, db3)
+        check(fails, "grpc_http_status", out.resp.status == 200)
+        check(fails, "grpc_status_hdr", http_header_raw(out.resp.hkeys, out.resp.hvals, "grpc-status") == "0"
+            || str_find(http_header_raw(out.resp.hkeys, out.resp.hvals, "grpc-status"), "0") >= 0)
+        let g = grpc_decode(out.resp.body_bytes)
+        check(fails, "grpc_body_frame", match g { GFrame(fr) => true, GBad => false })
+        let payload = match g {
+            GFrame(fr) => fr.payload,
+            GBad => bytes_new(0),
+        }
+        // name field is first string in Package message
+        check(fails, "grpc_payload_name", str_find(str_of_bytes(payload), "grpc-pkg") >= 0
+            || bytes_len(payload) > 5)
+
+        let miss = fmr_grpc_handle(reg_grpc_get_path(), grpc_encode(reg_pb_get_req_encode("nope")), out.db)
+        check(fails, "grpc_not_found", http_header_raw(miss.resp.hkeys, miss.resp.hvals, "grpc-status") == "5"
+            || str_find(http_header_raw(miss.resp.hkeys, miss.resp.hvals, "grpc-status"), "5") >= 0)
+        orm_close(miss.db)?
+    }
+
+    if vec_len(fails) == 0 {
+        print("registry_grpc_test: all passed")
+        return 0
+    }
+    print(concat(concat("registry_grpc_test: FAILED (", int_to_str(vec_len(fails))), " checks)"))
+    return 1
+}

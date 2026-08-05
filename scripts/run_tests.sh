@@ -227,6 +227,8 @@ echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 # Force 8090 — ambient PORT=8080 (fmr-run default) would race apps/api and
 # make health checks flaky.
 PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
+echo "=== registry gRPC dual (B3, live Postgres) ==="
+PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_grpc_test.baga
 
 echo "=== oauth PG (live Postgres) ==="
 OAUTH_PG=1 PGDATABASE=baga_oauth "$ROOT/scripts/baga-test" tests/oauth_pg_test.baga
@@ -236,7 +238,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|https_test.baga|registry_test.baga|oauth_pg_test.baga) continue ;;
+			tls_handshake_test.baga|https_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

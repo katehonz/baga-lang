@@ -1,0 +1,193 @@
+// grpc_svc.baga — gRPC surface for baga-registry (B3 dual protocol).
+// Service: regbaga.Registry
+//   rpc GetPackage (GetPackageRequest) returns (Package)
+//   rpc ListPackages (ListPackagesRequest) returns (PackageList)
+//
+// message GetPackageRequest { string name = 1; }
+// message ListPackagesRequest { string q = 1; }  // optional ILIKE term
+// message Package {
+//   string name = 1; string description = 2; string latest_version = 3;
+//   string source_kind = 4; string source_url = 5;
+// }
+// message PackageList { repeated Package items = 1; int64 count = 2; }
+
+import "models/package.baga"
+import "pbbaga/pb.baga"
+import "pbbaga/grpc.baga"
+import "pbbaga/grpc_unary.baga"
+import "statusbaga/status.baga"
+import "ormbaga/orm.baga"
+import "httpdbaga/http.baga"
+import "fmrbaga/app.baga"
+import "std/str/str.baga"
+
+fn reg_grpc_get_path() -> str {
+    return "/regbaga.Registry/GetPackage"
+}
+
+fn reg_grpc_list_path() -> str {
+    return "/regbaga.Registry/ListPackages"
+}
+
+// ---------- protobuf ----------
+
+fn reg_pb_get_req_encode(name: str) -> bytes {
+    let mut b = bytes_new(0)
+    b = pb_field_string(b, 1, name)
+    return b
+}
+
+fn reg_pb_get_req_decode(data: bytes) -> str {
+    let mut name = ""
+    let mut r = pb_reader(data)
+    let mut more: i64 = 1
+    while more == 1 {
+        let t = pb_next(r)
+        if t.ok == 0 {
+            more = 0
+        } else {
+            r = PbReader { data: r.data, pos: t.pos, ok: 1 }
+            if t.field == 1 && t.wire == PB_LEN() {
+                let s = pb_take_string(r)
+                if s.ok == 0 {
+                    return ""
+                }
+                name = s.s
+                r = PbReader { data: r.data, pos: s.pos, ok: 1 }
+            } else {
+                r = pb_skip(r, t.wire)
+                if r.ok == 0 {
+                    return name
+                }
+            }
+        }
+    }
+    return name
+}
+
+fn reg_pb_list_req_encode(q: str) -> bytes {
+    let mut b = bytes_new(0)
+    if q != "" {
+        b = pb_field_string(b, 1, q)
+    }
+    return b
+}
+
+fn reg_pb_list_req_decode(data: bytes) -> str {
+    return reg_pb_get_req_decode(data)
+}
+
+fn reg_pb_package_encode(name: str, description: str, latest: str, kind: str, url: str) -> bytes {
+    let mut b = bytes_new(0)
+    b = pb_field_string(b, 1, name)
+    b = pb_field_string(b, 2, description)
+    b = pb_field_string(b, 3, latest)
+    b = pb_field_string(b, 4, kind)
+    b = pb_field_string(b, 5, url)
+    return b
+}
+
+fn reg_pb_package_from_row(q: OrmQuery, row: i64) -> bytes {
+    return reg_pb_package_encode(
+        orm_cell_by(q, row, "name"),
+        orm_cell_by(q, row, "description"),
+        orm_cell_by(q, row, "latest_version"),
+        orm_cell_by(q, row, "source_kind"),
+        orm_cell_by(q, row, "source_url")
+    )
+}
+
+fn reg_pb_list_encode(q: OrmQuery) -> bytes {
+    let mut b = bytes_new(0)
+    for i in 0..q.nrows {
+        b = pb_field_bytes(b, 1, reg_pb_package_from_row(q, i))
+    }
+    b = pb_field_varint(b, 2, q.nrows)
+    return b
+}
+
+// H1-friendly: trailers also as headers (grpc_client reads headers).
+fn reg_grpc_response(u: GrpcUnary) -> Response {
+    let mut r = grpc_to_response(u)
+    r = http_set_header(r, "grpc-status", int_to_str(u.grpc_status))
+    if u.message != "" {
+        r = http_set_header(r, "grpc-message", status_grpc_message_encode(u.message))
+    }
+    return r
+}
+
+fn reg_grpc_err(db: OrmDb, code: i64, msg: str) -> FmrOut {
+    let st = status_error(code, msg)
+    let u = grpc_unary_with_status(bytes_new(0), st)
+    return fmr_out(reg_grpc_response(u), db)
+}
+
+fn reg_grpc_ok(db: OrmDb, payload: bytes) -> FmrOut {
+    let frame = grpc_encode(payload)
+    let u = grpc_unary_with_status(frame, status_ok())
+    return fmr_out(reg_grpc_response(u), db)
+}
+
+fn reg_grpc_get(db: OrmDb, body: bytes) -> FmrOut !IO !Net {
+    let g = grpc_decode(body)
+    if match g { GBad => 1, GFrame(fr) => 0 } == 1 {
+        return reg_grpc_err(db, GRPC_INVALID_ARGUMENT(), "bad frame")
+    }
+    let payload = match g {
+        GFrame(fr) => fr.payload,
+        GBad => bytes_new(0),
+    }
+    let name = reg_pb_get_req_decode(payload)
+    if name == "" {
+        return reg_grpc_err(db, GRPC_INVALID_ARGUMENT(), "name required")
+    }
+    if orm_ok_db(db) == 0 {
+        return reg_grpc_err(db, GRPC_UNAVAILABLE(), "database unavailable")
+    }
+    let q = reg_find_by_name(db, name)?
+    if q.ok == 0 {
+        return reg_grpc_err(q.db, GRPC_INTERNAL(), q.err)
+    }
+    if q.nrows < 1 {
+        return reg_grpc_err(q.db, GRPC_NOT_FOUND(), "package not found")
+    }
+    return reg_grpc_ok(q.db, reg_pb_package_from_row(q, 0))
+}
+
+fn reg_grpc_list(db: OrmDb, body: bytes) -> FmrOut !IO !Net {
+    let g = grpc_decode(body)
+    if match g { GBad => 1, GFrame(fr) => 0 } == 1 {
+        return reg_grpc_err(db, GRPC_INVALID_ARGUMENT(), "bad frame")
+    }
+    let payload = match g {
+        GFrame(fr) => fr.payload,
+        GBad => bytes_new(0),
+    }
+    let term = reg_pb_list_req_decode(payload)
+    if orm_ok_db(db) == 0 {
+        return reg_grpc_err(db, GRPC_UNAVAILABLE(), "database unavailable")
+    }
+    if term != "" {
+        let q = reg_search(db, concat(concat("%", term), "%"))?
+        if q.ok == 0 {
+            return reg_grpc_err(q.db, GRPC_INTERNAL(), q.err)
+        }
+        return reg_grpc_ok(q.db, reg_pb_list_encode(q))
+    }
+    let q2 = reg_all(db)?
+    if q2.ok == 0 {
+        return reg_grpc_err(q2.db, GRPC_INTERNAL(), q2.err)
+    }
+    return reg_grpc_ok(q2.db, reg_pb_list_encode(q2))
+}
+
+// App hook: path → method.
+fn reg_grpc_dispatch(path: str, body: bytes, db: OrmDb) -> FmrOut !IO !Net {
+    if path == reg_grpc_get_path() {
+        return reg_grpc_get(db, body)?
+    }
+    if path == reg_grpc_list_path() {
+        return reg_grpc_list(db, body)?
+    }
+    return reg_grpc_err(db, GRPC_UNIMPLEMENTED(), concat("unknown method ", path))
+}

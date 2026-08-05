@@ -7,6 +7,8 @@ JSON/HTTP registry за Baga пакети (apps-roadmap №2, втора пол�
 
 ## API
 
+### HTTP JSON (fmrbaga)
+
 | Метод | Път | Резултат |
 |-------|-----|----------|
 | GET | `/health` | `{status, service}` |
@@ -16,6 +18,24 @@ JSON/HTTP registry за Baga пакети (apps-roadmap №2, втора пол�
 
 Publish body: `{name*, version*, description, source_kind, source_url, rev, subdir}`.
 MVP без auth (локален/dev registry) — токени са P1 (виж PLAN-а на езика).
+
+### gRPC (B3 dual protocol — same port)
+
+`Content-Type: application/grpc` + POST method path:
+
+| RPC | Path | Notes |
+|-----|------|--------|
+| GetPackage | `/regbaga.Registry/GetPackage` | `name` → Package (NOT_FOUND=5) |
+| ListPackages | `/regbaga.Registry/ListPackages` | optional `q` ILIKE → PackageList |
+
+PB fields (hand-encoded, no protoc): Package `{name, description, latest_version, source_kind, source_url}`; List `{repeated Package items, count}`.
+
+```baga
+let frame = grpc_encode(reg_pb_get_req_encode("lsmbaga"))
+let r = grpc_call_unary("localhost", 8090, "/regbaga.Registry/GetPackage", frame, 5, mdt_new(), 0)?
+```
+
+Test: `tests/registry_grpc_test.baga`.
 
 ## Пускане
 

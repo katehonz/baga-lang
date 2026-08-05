@@ -122,6 +122,37 @@ fn fmr_app_with_config(app: FmrApp, cfg: FmrConfig) -> FmrApp {
 fn fmr_dispatch(ctx: FmrCtx, db: OrmDb) -> FmrOut
 fn fmr_before(ctx: FmrCtx) -> DepResult
 fn fmr_build_app() -> FmrApp !IO
+// Optional dual-protocol hook (B3): gRPC method path + binary body → FmrOut.
+// Effects match fmr_dispatch (implemented by the app; forward decl is pure).
+fn fmr_grpc_handle(path: str, body: bytes, db: OrmDb) -> FmrOut
+
+// POST + Content-Type application/grpc* + /Service/Method path shape.
+fn fmr_is_grpc_request(req: Request) -> i64 {
+    if http_method(req) != "POST" {
+        return 0
+    }
+    let ct = http_header(req, "Content-Type")
+    if str_find(ct, "application/grpc") < 0 {
+        return 0
+    }
+    let path = http_path_only(req)
+    if len(path) < 3 || char_at(path, 0) != 47 {
+        return 0
+    }
+    // At least /pkg.Svc/Method (two segments).
+    let mut segs: i64 = 0
+    let mut i: i64 = 0
+    while i < len(path) {
+        if char_at(path, i) == 47 {
+            segs = segs + 1
+        }
+        i = i + 1
+    }
+    if segs >= 2 {
+        return 1
+    }
+    return 0
+}
 
 fn fmr_maybe_cors(app: FmrApp, resp: Response) -> Response {
     if app.cors_origin == "" {
@@ -157,7 +188,7 @@ fn fmr_finish(app: FmrApp, resp: Response, rid: str) -> Response {
     return fmr_maybe_cors(app, fmr_with_request_id(resp, rid))
 }
 
-// Pipeline (B2.1): request-id → otel → fmr_before → dispatch → log → headers.
+// Pipeline (B2.1 + B3): request-id → [gRPC dual | JSON routes] → log → headers.
 fn fmr_handle(app: FmrApp, req: Request, db: OrmDb) -> FmrOut !Random !Time {
     let method = http_method(req)
     let path = http_path_only(req)
@@ -172,6 +203,21 @@ fn fmr_handle(app: FmrApp, req: Request, db: OrmDb) -> FmrOut !Random !Time {
             r = fmr_cors(r, origin)
         }
         return fmr_out(fmr_with_request_id(r, rid), db)
+    }
+
+    // B3 dual protocol: same port, application/grpc + /Service/Method
+    if fmr_is_grpc_request(req) == 1 {
+        let gout = fmr_grpc_handle(path, http_body_bytes(req), db)
+        if app.log_requests == 1 {
+            let empty_n: Vec<str> = vec_new()
+            let empty_v: Vec<str> = vec_new()
+            let mut fake = fmr_ctx_new(req, RouteMatch {
+                ok: 1, id: 0, pnames: empty_n, pvals: empty_v
+            }, app.jwt_secret)
+            fake = fmr_ctx_set_req_id(fake, rid)
+            fmr_mw_log(fake, method, path, gout.resp.status)?
+        }
+        return fmr_out(fmr_with_request_id(gout.resp, rid), gout.db)
     }
 
     let m = router_match(app.router, method, path)
