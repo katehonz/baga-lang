@@ -12,9 +12,20 @@
 
 **Symptom.** Every call returns updated `db`; forget rebind → stale connection state.
 
-**Workaround.** `db = r.db` everywhere (documented).
+**Workaround.** `db = r.db` everywhere (documented). Prefer `orm_db_q` / `orm_db_exec`
+when writing new code.
 
 **Verdict.** Same as pgbaga G2.
+
+## G2b — OrmQuery / OrmExec still ok:i64 stand-ins (B1 deferred)
+
+**Symptom.** `pgbaga` query results are L3 (`PgOk`/`PgErr`); ORM wrappers still
+expose `ok`/`err` fields for apps fan-in.
+
+**Workaround.** Field access remains; helpers `orm_ok_q` / `orm_err_q` /
+`orm_nrows` / `orm_result` added. Full L3 enum deferred under **stabilize**.
+
+**Verdict.** Backlog after language+apps stabilize — not silent.
 
 ## G3 — No parameterized queries
 

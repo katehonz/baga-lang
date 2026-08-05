@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Stabilize language + applications (focus)
+- Advanced plan **Phase Stabilize**: pause further Result migrations
+  (orm/jsonrpc L3 deferred); keep `main` green for ship.
+- B1 landed for **pbbaga** + **pgbaga**; ormbaga keeps stand-in fields +
+  accessor helpers (`orm_ok_q`, `orm_db_q`, …).
+- Optional light borrow (C′) remains non-mandatory direction only.
+
 ### Plan: optional light borrow checker (direction only)
 - `docs/superpowers/plans/2026-08-05-memory-management.md` §7 — light
   **opt-in** borrow later; **not mandatory**, default sharing unchanged.

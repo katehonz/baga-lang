@@ -1,7 +1,8 @@
 # Advanced plan: Baga vs Go / Rust — language + real apps (not demos)
 
 **Date:** 2026-08-05  
-**Version baseline:** 0.8.0 · HEAD includes L3 fields + gRPC client (`991f782`)  
+**Status:** **Phase Stabilize** (language + apps) — product Result churn paused  
+**Version baseline:** 0.8.0+ · A1/A2/MEM + B1 pbbaga/pgbaga shipped  
 **North star:** Ship systems/product code that a team would choose over Go for *cloud services* and over “just another language” for *storage/consensus* — with effects + `--verify` as the differentiator, not feature-count parity.
 
 ---
@@ -37,13 +38,13 @@ sharing stays; no package must adopt it.
 
 **Residual that blocks “advanced language in apps”**
 
-1. Global unique sum-variant names → cannot share `Ok`/`Err` across packages  
-2. No `Vec<Res>` / `Map<K,Res>`  
-3. Stand-in `ok:i64` / `err:str` still dominate orm/pg/jsonrpc/oauth/tpl/decimal  
+1. ~~Global unique sum-variant names~~ — **A1 shipped** (`Enum::Ok`)  
+2. ~~No `Vec<Res>` / `Map<K,Res>`~~ — **A2 shipped**  
+3. Stand-in `ok:i64` / `err:str` — **pbbaga + PgResult migrated**; orm/jsonrpc/… remain  
 4. fmr routes still id-dispatch (L5 not adopted in router)  
 5. gRPC client is H1-only; H2 trailers still approximate  
 6. apps/api does not yet use status/ctx/mdt/otel as default middleware  
-7. LLVM rejects L3 (honest); production path is C backend  
+7. LLVM rejects L3 (honest); production path is C backend
 
 ---
 
@@ -228,6 +229,25 @@ MVPs shipped; advanced means **ops-grade behavior**:
 - Public APIs of drivers show `!IO !Net !Par` honestly  
 - Handlers in apps/api stay effect-correct (no silent catch)
 
+### C′ — Light optional borrow checker (**optional — not mandatory**)
+
+Parent design space: `docs/superpowers/plans/2026-08-05-memory-management.md`
+(Option A revised §7). **This track never blocks A/B phases.**
+
+| Rule | Meaning |
+|------|---------|
+| **Opt-in only** | Default typecheck unchanged; no pragma = no new errors |
+| **Not full Rust** | No lifetime params, no move-by-default, no rewrite of Vec/Map sharing |
+| **Lite shapes** | Spot exclusive borrow of a local; and/or drop-adjacent alias ban; and/or `--borrow-lite` WARN pass |
+| **Honesty** | Aliases through containers still unchecked (same as MEM-1) |
+
+**When to design:** only if/when product pain shows (e.g. use-after-drop
+through a second name the checker could have seen). Prefer finishing MEM-3
+payload regions first if both compete for attention.
+
+**Exit criteria (if ever started):** a design note + one opt-in probe file;
+existing monorepo builds without flags still green.
+
 ---
 
 ## 6. Phased roadmap (execution order)
@@ -238,23 +258,38 @@ MVPs shipped; advanced means **ops-grade behavior**:
 - [ ] README “vs Go/Rust” one-pager pointer (optional, no marketing fluff)  
 - [ ] Milestone labels: A1… / B1… / C1… in CHANGELOG Unreleased sections as they land  
 
-### Phase 1 — Language unlock (A1 + A5, then A2)
+### Phase 1 — Language unlock (A1 + A5, then A2) — **done**
 
-1. **A5** FNS_MAX hard error  
-2. **A1** qualified variants (design note + implement + tests)  
-3. **A2** Vec/Map of sum enums  
-4. Docs language-en/bg + sumtype_test expansion  
+1. **A5** FNS_MAX hard error ✅  
+2. **A1** qualified variants ✅  
+3. **A2** Vec/Map of sum enums ✅  
 
-**Exit criteria:** two packages in one program each define `Ok`/`Err` under different enums; `Vec` of that type works.
+### Phase 2 — Stack migration (B1) — **paused for stabilize**
 
-### Phase 2 — Stack migration (B1)
+1. pbbaga decode sums ✅  
+2. pgbaga `PgResult` → `PgOk`/`PgErr` ✅ · ormbaga wrappers adapted  
+3. ~~ormbaga `OrmQuery`/`OrmExec` L3~~ — **deferred** (high fan-in in apps/api/registry;
+   keep struct stand-in + `pg_*` accessors until stabilize lands)  
+4. jsonrpc L3 — deferred with (3)  
+5. Optional later: delete stand-in fields package-by-package  
 
-1. pbbaga decode sums (pattern exemplar)  
-2. pgbaga → ormbaga  
-3. jsonrpc + one more (tpl or decimal)  
-4. Delete stand-in fields; update gaps.md “migrated” not “unblocked”  
+**Pause reason (2026-08-05):** return to **stabilize language + applications**
+before more Result churn. C′ borrow remains optional-only.
 
-**Exit criteria:** `grep -R "ok: i64" app-product/{pg,orm,jsonrpc,pbbaga}` shows only intentional wire flags, not Result stand-ins.
+### Phase Stabilize — language + apps (current focus)
+
+**Goal:** green regressions, honest docs, no new feature waves until smoke holds.
+
+| Step | Work |
+|------|------|
+| S1 | Full `scripts/baga-test` / key product tests green |
+| S2 | Document freeze: no new universal packages; B1 residual listed |
+| S3 | apps/api + apps/registry smoke path (migrate + compile) |
+| S4 | Language §11.1 / MEM docs match shipped A1/A2/MEM |
+| S5 | CHANGELOG “stabilize” note; plan status **stabilize** |
+
+**Exit:** team can ship from `main` without open compile breaks; residual B1
+orm/jsonrpc is explicit backlog, not silent debt.
 
 ### Phase 3 — Flagship apps (B2 + B3)
 
@@ -280,6 +315,12 @@ MVPs shipped; advanced means **ops-grade behavior**:
 - protoc → baga sketch (P1 pbbaga)  
 - io_uring poll backend experiment  
 - Thesis open problems: one structural liveness lemma (not full)  
+- **C′ light optional borrow** — design note only if still desired; never required  
+
+### Phase note — MEM vs product
+
+Default execution order remains **B (product) first**. Track C / C′ are
+differentiators. **Optional borrow does not reorder or delay B1–B3.**
 
 ---
 
@@ -338,9 +379,11 @@ The advanced plan is **done** when all of:
 - New universal packages (path/glob/uuid wave is closed enough)  
 - Rewriting cloudbaga as the flagship (apps/api is)  
 - Full generic `Result<T,E>`  
+- **Full** Rust borrow checker / move-by-default (light optional is C′, not this)  
 - Kubernetes operator / multi-cluster  
 - Self-hosting compiler on L3 APIs  
 
 ---
 
-*End of advanced plan. Approve Phase 1 (A1 + A5) to begin implementation; Phase 2+ wait on A1 landing.*
+*Plan living doc. Phase 1 done; Phase 2 B1 in progress. C′ borrow lite =
+optional only — see memory-management.md §7.*
