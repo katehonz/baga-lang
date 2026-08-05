@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Positioning + RocksDB path (R1)
+- **README / BASE:** Baga is an **educational systems language**; packages are
+  ecosystem blocks to **prove the language**, not demos. End goal: **RocksDB-class**
+  embedded KV (`lsmbaga` road).
+- **lsmbaga R1:** SST lookup uses **binary search** + first/last key filter
+  (still full-file parse; block index is R2).
+
 ### Stabilize language + applications (focus)
 - Advanced plan **Phase Stabilize**: pause further Result migrations
   (orm/jsonrpc L3 deferred); keep `main` green for ship.

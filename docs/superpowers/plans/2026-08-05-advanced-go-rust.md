@@ -1,9 +1,17 @@
 # Advanced plan: Baga vs Go / Rust — language + real apps (not demos)
 
 **Date:** 2026-08-05  
-**Status:** **Phase Stabilize** (language + apps) — product Result churn paused  
+**Status:** active — educational language + **ecosystem to prove Baga**; long goal **RocksDB-class DB**  
 **Version baseline:** 0.8.0+ · A1/A2/MEM + B1 pbbaga/pgbaga shipped  
-**North star:** Ship systems/product code that a team would choose over Go for *cloud services* and over “just another language” for *storage/consensus* — with effects + `--verify` as the differentiator, not feature-count parity.
+**North star:**  
+1. **Language lab** — Baga is an *educational systems language*; packages are
+   real building blocks, not throwaway demos.  
+2. **Ecosystem** — HTTP/TLS/PG/gRPC/consensus/apps exist to *exercise and
+   showcase* the language (effects, MEM, verify).  
+3. **Endgame storage** — a **RocksDB-like embedded KV** in pure Baga
+   (`lsmbaga` → block indexes, compaction quality, binary values, …).  
+4. Differentiator vs Go/Rust: effects + `--verify` + honest systems stack —
+   not full Rust borrow (optional light borrow only; never mandatory).
 
 ---
 
@@ -276,20 +284,26 @@ existing monorepo builds without flags still green.
 **Pause reason (2026-08-05):** return to **stabilize language + applications**
 before more Result churn. C′ borrow remains optional-only.
 
-### Phase Stabilize — language + apps (current focus)
+### Phase Stabilize — language + apps (**landed baseline**)
 
-**Goal:** green regressions, honest docs, no new feature waves until smoke holds.
+Green full suite + apps/api runbook. Residual B1 orm/jsonrpc explicit backlog.
 
-| Step | Work |
-|------|------|
-| S1 | Full `scripts/baga-test` / key product tests green |
-| S2 | Document freeze: no new universal packages; B1 residual listed |
-| S3 | apps/api + apps/registry smoke path (migrate + compile) |
-| S4 | Language §11.1 / MEM docs match shipped A1/A2/MEM |
-| S5 | CHANGELOG “stabilize” note; plan status **stabilize** |
+### Phase R — RocksDB path (storage endgame; parallel with product)
 
-**Exit:** team can ship from `main` without open compile breaks; residual B1
-orm/jsonrpc is explicit backlog, not silent debt.
+**Horizon:** embedded engine comparable *in ambition* to RocksDB — not a
+feature clone, but a real LSM store that forces the language.
+
+| Step | Work | Status |
+|------|------|--------|
+| R0 | `lsmbaga` MVP: WAL + memtable + SST + page cache + RESP | ✅ |
+| R1 | **Binary search** on sorted SST + min/max key filter | **now** |
+| R2 | Block / restart index in SST format (avoid full parse) | next |
+| R3 | Binary values (`Map`/bytes), better compaction | later |
+| R4 | Bloom / sparse index, multi-level compaction | later |
+| R5 | Name / package as durable “rocksbaga” when quality warrants | later |
+
+**Rule:** every R step keeps `tests/lsm_test.baga` green and documents honesty
+in `lsmbaga/gaps.md`.
 
 ### Phase 3 — Flagship apps (B2 + B3)
 

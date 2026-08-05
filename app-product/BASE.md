@@ -3,6 +3,10 @@
 **Locked:** 2026-08-03 · **DX model:** Crystal [Lucky](https://luckyframework.org/) —
 small community, real conventions, apps you can ship.
 
+**Language role:** Baga is an **educational systems language**. Packages here
+are **ecosystem building blocks to prove the language** — not throwaway demos.
+Long-horizon storage goal: a **RocksDB-like** engine (`lsmbaga` path).
+
 ```
                  apps/api   (your product — actions, models, routes)
                       │

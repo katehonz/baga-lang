@@ -4,6 +4,30 @@
 
 > *"The question is not 'what is new'. The question is 'what has not been glued together yet'."*
 
+## Positioning (read this first)
+
+**Baga is an educational systems language** — not a commercial product claim,
+and **nothing in this monorepo is a “demo toy” written to look impressive and
+die**. Every package under `std/`, `app-product/`, and `apps/` is meant as a
+**real building block** in a growing **ecosystem used to prove the language**:
+can we ship HTTP, TLS, Postgres, gRPC, consensus, and storage **in Baga
+itself**, with effects and verification visible?
+
+| We are | We are not |
+|--------|------------|
+| A language lab with a **working toolchain** and **product-shaped packages** | A drop-in replacement for Rust/Go today |
+| Building an **ecosystem to exercise and showcase** the language | Shipping one-off snippets that never re-enter the stack |
+| Aiming long-term at a **RocksDB-class embedded DB** in Baga | Claiming production RocksDB parity now |
+
+**End goal (north star):** an **embedded key-value / storage engine** in the
+spirit of **RocksDB** (LSM, durable WAL, SST, compaction, cache) — the
+flagship that forces memory discipline, IO, and engine design. Today that
+path is **`lsmbaga`** (LSM MVP on RESP); the road continues through indexes,
+smarter compaction, and binary values.
+
+Direction docs: [`docs/superpowers/plans/2026-08-05-advanced-go-rust.md`](docs/superpowers/plans/2026-08-05-advanced-go-rust.md),
+[`docs/superpowers/plans/2026-08-05-cloud-storage-direction.md`](docs/superpowers/plans/2026-08-05-cloud-storage-direction.md).
+
 ## What is Baga
 
 **Baga (Бага)** is a **programming language** for systems and product code in the age of AI: you write normal programs; the compiler keeps effects, specs, and proof sketches visible so a human (or an agent) can trust the result.
@@ -31,7 +55,10 @@ Stack highlights: live TLS against `openssl s_server`; JWT goldens cross-checked
 
 ## Application ecosystem (`app-product/` + `apps/`)
 
-Real packages (not toy snippets) — each is a probe of the language and a shippable building block. Build with **sandak** (`sandak.toml` per package).
+**Ecosystem packages, not demos** — each is a shippable building block that
+stresses the language (effects, IO, concurrency, memory). Build with **sandak**
+(`sandak.toml` per package). The stack exists to **prove Baga can host real
+systems work**; the long horizon is a **RocksDB-like engine** (`lsmbaga` → …).
 
 | Package | Role |
 |---------|------|
@@ -41,7 +68,7 @@ Real packages (not toy snippets) — each is a probe of the language and a shipp
 | **ormbaga** | ActiveRecord-style ORM + goose migrations |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired |
 | **kvbaga** | RESP KV server (`Map` probe) |
-| **lsmbaga** | Durable LSM KV (WAL → memtable → SST + page cache) on RESP — Track S flagship |
+| **lsmbaga** | Durable LSM KV (WAL → memtable → SST + page cache) on RESP — **storage flagship → RocksDB path** |
 | **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam |
 | **metbaga** / **logbaga** / **cloudbaga** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
 | **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) |

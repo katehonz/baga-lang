@@ -161,7 +161,39 @@ struct SstLookup {
     val: str
 }
 
-// Newest-first lookup across gens.
+// Binary search in a sorted SST row vector (keys ascending).
+// Returns index of key, or -1 if absent.
+fn sst_bsearch(rows: Vec<SstRow>, key: str) -> i64 {
+    let n = vec_len(rows)
+    if n == 0 {
+        return 0 - 1
+    }
+    // Range filter: outside [first, last] → miss without full scan.
+    if str_cmp(key, vec_get(rows, 0).key) < 0 {
+        return 0 - 1
+    }
+    if str_cmp(key, vec_get(rows, n - 1).key) > 0 {
+        return 0 - 1
+    }
+    let mut lo: i64 = 0
+    let mut hi = n - 1
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2
+        let r = vec_get(rows, mid)
+        let c = str_cmp(r.key, key)
+        if c == 0 {
+            return mid
+        }
+        if c < 0 {
+            lo = mid + 1
+        } else {
+            hi = mid - 1
+        }
+    }
+    return 0 - 1
+}
+
+// Newest-first lookup across gens (binary search per SST — RocksDB-class path step).
 fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
     let mut cur = pc
     let mut i = vec_len(gens) - 1
@@ -170,16 +202,13 @@ fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
         let ld = sst_load(cur, dir, gen)?
         cur = ld.pc
         if ld.parse.ok == 1 {
-            let mut j: i64 = 0
-            while j < vec_len(ld.parse.rows) {
+            let j = sst_bsearch(ld.parse.rows, key)
+            if j >= 0 {
                 let r = vec_get(ld.parse.rows, j)
-                if r.key == key {
-                    if r.op == 2 {
-                        return SstLookup { pc: cur, found: 1, alive: 0, val: "" }
-                    }
-                    return SstLookup { pc: cur, found: 1, alive: 1, val: r.val }
+                if r.op == 2 {
+                    return SstLookup { pc: cur, found: 1, alive: 0, val: "" }
                 }
-                j = j + 1
+                return SstLookup { pc: cur, found: 1, alive: 1, val: r.val }
             }
         }
         i = i - 1

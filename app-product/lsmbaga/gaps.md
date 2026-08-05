@@ -20,13 +20,17 @@ wrappers). Documented in page.baga.
 
 **Workaround.** Prefer path **prefix** files (no directory), like queuebaga.
 
-## L3 — SST full-file load on every get
+## L3 — SST full-file load on every get (partial)
 
-**Symptom.** `sst_get` loads and parses each SST (page cache warms pages
-but parse still walks all rows). Fine at probe scale; not a real engine
-read path.
+**Symptom.** `sst_get` still **loads and parses** each SST through the page
+cache (full body). Fine at probe scale; RocksDB path needs block index.
 
-**Path.** Block index + restart keys; keep page cache for block bodies.
+**Shipped step (R1):** after parse, lookup is **binary search** on sorted
+keys + **min/max key filter** (skip table if key outside range). No longer
+O(n) linear scan of rows.
+
+**Still open (R2+):** block / restart index in the file format so a get does
+not re-parse the whole SST; keep page cache for block bodies.
 
 ## L4 — TTL / binary values / concurrent writers
 
