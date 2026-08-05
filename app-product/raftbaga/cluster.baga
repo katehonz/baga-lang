@@ -2,6 +2,7 @@
 
 import "msg.baga"
 import "node.baga"
+import "persist.baga"
 import "std/str/str.baga"
 
 struct RaftCluster {
@@ -10,7 +11,9 @@ struct RaftCluster {
     ok: i64
 }
 
-fn raft_start() -> RaftCluster !Par {
+fn raft_start() -> RaftCluster !Par !IO {
+    // Fresh durable files so prior runs do not pin old terms/logs.
+    raft_persist_wipe(3)?
     let in0 = chan_new(64)
     let in1 = chan_new(64)
     let in2 = chan_new(64)

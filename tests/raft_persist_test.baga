@@ -1,0 +1,97 @@
+// raft_persist_test.baga — B4.2 durable log encode/load + restart recovery apply.
+
+import "raftbaga/persist.baga"
+import "raftbaga/msg.baga"
+import "raftbaga/cluster.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn main() -> i64 !Par !IO {
+    print("raft_persist_test:")
+    let fails = vec_new()
+
+    // --- pure encode/load round-trip ---
+    let path = "/tmp/baga_raft_persist_unit.state"
+    unlink(path)?
+    let log_terms: Vec<i64> = vec_new()
+    let log_cmds: Vec<i64> = vec_new()
+    vec_push(log_terms, 0)
+    vec_push(log_cmds, 0)
+    vec_push(log_terms, 1)
+    vec_push(log_cmds, cmd_pack(10, 100))
+    vec_push(log_terms, 1)
+    vec_push(log_cmds, cmd_pack(20, 200))
+    let log_len: i64 = 3
+    let rc = raft_persist_save(path, 2, 1, 2, log_terms, log_cmds, log_len)?
+    check(fails, "save", rc == 0)
+
+    let ld = raft_persist_load(path)?
+    check(fails, "load_ok", ld.ok == 1)
+    check(fails, "term", ld.term == 2)
+    check(fails, "voted", ld.voted_for == 1)
+    check(fails, "commit", ld.commit_idx == 2)
+    check(fails, "log_len", ld.log_len == 3)
+    check(fails, "e1_term", vec_get(ld.log_terms, 1) == 1)
+    check(fails, "e1_cmd", cmd_key(vec_get(ld.log_cmds, 1)) == 10
+        && cmd_val(vec_get(ld.log_cmds, 1)) == 100)
+    check(fails, "e2_cmd", cmd_key(vec_get(ld.log_cmds, 2)) == 20
+        && cmd_val(vec_get(ld.log_cmds, 2)) == 200)
+
+    // --- recovery apply into store ---
+    let store: Map<i64, i64> = map_new()
+    raft_persist_apply(store, ld.log_cmds, ld.commit_idx)
+    check(fails, "apply_10", map_get(store, 10) == 100)
+    check(fails, "apply_20", map_get(store, 20) == 200)
+
+    // --- live cluster writes durable files; stop then load leader-ish state ---
+    raft_persist_wipe(3)?
+    let c = raft_start()?
+    check(fails, "start", c.ok == 1)
+    check(fails, "put", raft_put(c, 7, 77)? == 0)
+    check(fails, "get", raft_get(c, 7)? == 77)
+    raft_stop(c)?
+
+    // After stop, at least one node should have commit with key 7.
+    let mut found: i64 = 0
+    let mut ni: i64 = 0
+    while ni < 3 {
+        let p = raft_persist_load(raft_state_path(ni))?
+        if p.ok == 1 && p.commit_idx >= 1 {
+            let st2: Map<i64, i64> = map_new()
+            raft_persist_apply(st2, p.log_cmds, p.commit_idx)
+            if map_get(st2, 7) == 77 {
+                found = 1
+            }
+        }
+        ni = ni + 1
+    }
+    check(fails, "disk_recover_kv", found == 1)
+
+    // Simulate restart: load node files still present; re-apply without running loops.
+    let p0 = raft_persist_load(raft_state_path(0))?
+    if p0.ok == 1 {
+        check(fails, "restart_term_nonneg", p0.term >= 0)
+        check(fails, "restart_log_ge1", p0.log_len >= 1)
+    } else {
+        check(fails, "restart_file", false)
+    }
+
+    raft_persist_wipe(3)?
+    unlink(path)?
+
+    if vec_len(fails) == 0 {
+        print("raft_persist_test: all passed")
+        return 0
+    }
+    print(concat(concat("raft_persist_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

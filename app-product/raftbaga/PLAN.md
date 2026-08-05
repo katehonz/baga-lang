@@ -20,6 +20,7 @@ Goal: distributed exam — election + replication over channels.
 
 ## P2
 
-- Durable log via lsmbaga
+- Durable log lite (term/vote/log file) — **done (B4.2)**
+- Durable log via lsmbaga (stronger)
 - TCP/jsonrpc transport
 - Pre-vote + snapshot

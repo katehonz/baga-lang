@@ -1,0 +1,188 @@
+// persist.baga — durable Raft state lite (B4.2 / R2).
+// On-disk text format (path = raft_state_path(id)):
+//   raft1
+//   term <i64>
+//   voted_for <i64>     # -1 = none
+//   commit_idx <i64>
+//   log_len <i64>
+//   e <idx> <term> <key> <val>   # one line per log index (0..log_len-1)
+//
+// Cmd 0 is the empty sentinel (key=0,val=0). Recovery reloads term/vote/log
+// and re-applies committed entries into a KV map.
+
+import "msg.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn raft_state_path(id: i64) -> str {
+    return concat("/tmp/baga_raft_", concat(int_to_str(id), ".state"))
+}
+
+struct RaftPersist {
+    ok: i64,
+    term: i64,
+    voted_for: i64,
+    commit_idx: i64,
+    log_terms: Vec<i64>,
+    log_cmds: Vec<i64>,
+    log_len: i64
+}
+
+fn raft_persist_empty() -> RaftPersist {
+    let log_terms: Vec<i64> = vec_new()
+    let log_cmds: Vec<i64> = vec_new()
+    vec_push(log_terms, 0)
+    vec_push(log_cmds, 0)
+    return RaftPersist {
+        ok: 0,
+        term: 0,
+        voted_for: -1,
+        commit_idx: 0,
+        log_terms: log_terms,
+        log_cmds: log_cmds,
+        log_len: 1
+    }
+}
+
+// Serialize current durable fields to a string.
+fn raft_persist_encode(term: i64, voted_for: i64, commit_idx: i64,
+                       log_terms: Vec<i64>, log_cmds: Vec<i64>, log_len: i64) -> str {
+    let mut s = "raft1\n"
+    s = concat(s, concat(concat("term ", int_to_str(term)), "\n"))
+    s = concat(s, concat(concat("voted_for ", int_to_str(voted_for)), "\n"))
+    s = concat(s, concat(concat("commit_idx ", int_to_str(commit_idx)), "\n"))
+    s = concat(s, concat(concat("log_len ", int_to_str(log_len)), "\n"))
+    let mut i: i64 = 0
+    while i < log_len {
+        let t = vec_get(log_terms, i)
+        let c = vec_get(log_cmds, i)
+        let mut k: i64 = 0
+        let mut v: i64 = 0
+        if c != 0 {
+            k = cmd_key(c)
+            v = cmd_val(c)
+        }
+        s = concat(s, "e ")
+        s = concat(s, concat(int_to_str(i), " "))
+        s = concat(s, concat(int_to_str(t), " "))
+        s = concat(s, concat(int_to_str(k), " "))
+        s = concat(s, concat(int_to_str(v), "\n"))
+        i = i + 1
+    }
+    return s
+}
+
+fn raft_persist_save(path: str, term: i64, voted_for: i64, commit_idx: i64,
+                     log_terms: Vec<i64>, log_cmds: Vec<i64>, log_len: i64) -> i64 !IO {
+    let body = raft_persist_encode(term, voted_for, commit_idx, log_terms, log_cmds, log_len)
+    return write_file(path, body)?
+}
+
+// Parse durable file. ok=0 if missing/corrupt (caller starts empty).
+fn raft_persist_load(path: str) -> RaftPersist !IO {
+    let empty = raft_persist_empty()
+    let body = read_file(path)?
+    if body == "" {
+        return empty
+    }
+    let lines = str_split(body, "\n")
+    if vec_len(lines) < 1 || vec_get(lines, 0) != "raft1" {
+        return empty
+    }
+    let mut term: i64 = 0
+    let mut voted_for: i64 = -1
+    let mut commit_idx: i64 = 0
+    let mut want_len: i64 = 1
+    let log_terms: Vec<i64> = vec_new()
+    let log_cmds: Vec<i64> = vec_new()
+    // pre-size with zeros; fill from e lines
+    let mut i: i64 = 0
+    while i < 256 {
+        vec_push(log_terms, 0)
+        vec_push(log_cmds, 0)
+        i = i + 1
+    }
+    let mut max_idx: i64 = 0
+    let mut li: i64 = 1
+    while li < vec_len(lines) {
+        let ln = vec_get(lines, li)
+        if ln != "" {
+            let parts = str_split(ln, " ")
+            let head = vec_get(parts, 0)
+            if head == "term" && vec_len(parts) >= 2 {
+                term = parse_int(vec_get(parts, 1))
+            }
+            if head == "voted_for" && vec_len(parts) >= 2 {
+                voted_for = parse_int(vec_get(parts, 1))
+            }
+            if head == "commit_idx" && vec_len(parts) >= 2 {
+                commit_idx = parse_int(vec_get(parts, 1))
+            }
+            if head == "log_len" && vec_len(parts) >= 2 {
+                want_len = parse_int(vec_get(parts, 1))
+                if want_len < 1 {
+                    want_len = 1
+                }
+            }
+            if head == "e" && vec_len(parts) >= 5 {
+                let idx = parse_int(vec_get(parts, 1))
+                let t = parse_int(vec_get(parts, 2))
+                let k = parse_int(vec_get(parts, 3))
+                let v = parse_int(vec_get(parts, 4))
+                if idx >= 0 && idx < 256 {
+                    vec_set(log_terms, idx, t)
+                    if k == 0 && v == 0 {
+                        vec_set(log_cmds, idx, 0)
+                    } else {
+                        vec_set(log_cmds, idx, cmd_pack(k, v))
+                    }
+                    if idx > max_idx {
+                        max_idx = idx
+                    }
+                }
+            }
+        }
+        li = li + 1
+    }
+    let mut log_len = want_len
+    if max_idx + 1 > log_len {
+        log_len = max_idx + 1
+    }
+    if commit_idx >= log_len {
+        commit_idx = log_len - 1
+    }
+    if commit_idx < 0 {
+        commit_idx = 0
+    }
+    return RaftPersist {
+        ok: 1,
+        term: term,
+        voted_for: voted_for,
+        commit_idx: commit_idx,
+        log_terms: log_terms,
+        log_cmds: log_cmds,
+        log_len: log_len
+    }
+}
+
+// Rebuild KV store from committed log prefix (recovery apply).
+fn raft_persist_apply(store: Map<i64, i64>, log_cmds: Vec<i64>, commit_idx: i64) {
+    let mut i: i64 = 1
+    while i <= commit_idx {
+        let c = vec_get(log_cmds, i)
+        if c != 0 {
+            map_set(store, cmd_key(c), cmd_val(c))
+        }
+        i = i + 1
+    }
+}
+
+// Best-effort remove durable files for nodes 0..n-1 (tests).
+fn raft_persist_wipe(n: i64) -> i64 !IO {
+    let mut i: i64 = 0
+    while i < n {
+        unlink(raft_state_path(i))?
+        i = i + 1
+    }
+    return 0
+}

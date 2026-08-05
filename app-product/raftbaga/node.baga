@@ -2,6 +2,7 @@
 
 import "msg.baga"
 import "rules.baga"
+import "persist.baga"
 import "std/str/str.baga"
 
 fn ROLE_FOLLOWER() -> i64 { return 0 }
@@ -58,8 +59,15 @@ fn apply_committed(store: Map<i64, i64>, log_cmds: Vec<i64>,
     return la
 }
 
+// Flush durable fields (term, vote, log, commit) — B4.2 lite.
+fn raft_flush(id: i64, term: i64, voted_for: i64, commit_idx: i64,
+              log_terms: Vec<i64>, log_cmds: Vec<i64>, log_len: i64) -> i64 !IO {
+    return raft_persist_save(raft_state_path(id), term, voted_for, commit_idx,
+        log_terms, log_cmds, log_len)?
+}
+
 // ctx = cell2(id, cell2(inbox, peers))
-fn raft_node(ctx: i64) -> i64 !Par {
+fn raft_node(ctx: i64) -> i64 !Par !IO {
     let id = cell2_0(ctx)
     let inbox = cell2_0(cell2_1(ctx))
     let peers = cell2_1(cell2_1(ctx))
@@ -77,6 +85,26 @@ fn raft_node(ctx: i64) -> i64 !Par {
     let mut commit_idx: i64 = 0
     let mut last_applied: i64 = 0
     let store: Map<i64, i64> = map_new()
+
+    // B4.2: load durable state if present (restart recovery).
+    let loaded = raft_persist_load(raft_state_path(id))?
+    if loaded.ok == 1 {
+        term = loaded.term
+        voted_for = loaded.voted_for
+        commit_idx = loaded.commit_idx
+        log_len = loaded.log_len
+        let mut j: i64 = 0
+        while j < log_len {
+            while vec_len(log_terms) <= j {
+                vec_push(log_terms, 0)
+                vec_push(log_cmds, 0)
+            }
+            vec_set(log_terms, j, vec_get(loaded.log_terms, j))
+            vec_set(log_cmds, j, vec_get(loaded.log_cmds, j))
+            j = j + 1
+        }
+        last_applied = apply_committed(store, log_cmds, 0, commit_idx)
+    }
 
     let next_idx: Vec<i64> = vec_new()
     let match_idx: Vec<i64> = vec_new()
@@ -129,6 +157,7 @@ fn raft_node(ctx: i64) -> i64 !Par {
                     role = ROLE_CANDIDATE()
                     voted_for = id
                     votes = 1
+                    raft_flush(id, term, voted_for, commit_idx, log_terms, log_cmds, log_len)?
                     let last_i = log_len - 1
                     let last_t = vec_get(log_terms, last_i)
                     broadcast(peers, id, msg_rv(term, id, last_i, last_t))?
@@ -148,6 +177,7 @@ fn raft_node(ctx: i64) -> i64 !Par {
                 let mt = msg_type(m)
 
                 if mt == MT_STOP() {
+                    raft_flush(id, term, voted_for, commit_idx, log_terms, log_cmds, log_len)?
                     running = 0
                 } else {
                     if mt == MT_RV() || mt == MT_RV_REP() || mt == MT_AE() || mt == MT_AE_REP() {
@@ -168,6 +198,7 @@ fn raft_node(ctx: i64) -> i64 !Par {
                             term = rterm
                             voted_for = -1
                             role = ROLE_FOLLOWER()
+                            raft_flush(id, term, voted_for, commit_idx, log_terms, log_cmds, log_len)?
                         }
                     }
 
@@ -185,6 +216,7 @@ fn raft_node(ctx: i64) -> i64 !Par {
                                     granted = 1
                                     voted_for = cand
                                     role = ROLE_FOLLOWER()
+                                    raft_flush(id, term, voted_for, commit_idx, log_terms, log_cmds, log_len)?
                                 }
                             }
                         }
@@ -238,6 +270,7 @@ fn raft_node(ctx: i64) -> i64 !Par {
                                     vec_set(log_cmds, keep, ec)
                                     log_len = keep + 1
                                     match_i = keep
+                                    raft_flush(id, term, voted_for, commit_idx, log_terms, log_cmds, log_len)?
                                 } else {
                                     match_i = prev_i
                                 }
@@ -249,6 +282,7 @@ fn raft_node(ctx: i64) -> i64 !Par {
                                     commit_idx = nc2
                                     last_applied = apply_committed(store, log_cmds,
                                         last_applied, commit_idx)
+                                    raft_flush(id, term, voted_for, commit_idx, log_terms, log_cmds, log_len)?
                                 }
                             }
                         }
@@ -290,6 +324,7 @@ fn raft_node(ctx: i64) -> i64 !Par {
                                     commit_idx = ci
                                     last_applied = apply_committed(store, log_cmds,
                                         last_applied, commit_idx)
+                                    raft_flush(id, term, voted_for, commit_idx, log_terms, log_cmds, log_len)?
                                 }
                             } else {
                                 let ni = vec_get(next_idx, from)
@@ -317,6 +352,7 @@ fn raft_node(ctx: i64) -> i64 !Par {
                             let new_idx = log_len
                             log_len = log_len + 1
                             vec_set(match_idx, id, new_idx)
+                            raft_flush(id, term, voted_for, commit_idx, log_terms, log_cmds, log_len)?
                             let mut p5: i64 = 0
                             while p5 < N() {
                                 if p5 != id {

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Phase 4 B4.2 — raft durable log lite
+- **raftbaga:** `persist.baga` saves term/vote/commit/log to
+  `/tmp/baga_raft_<id>.state`; nodes load + re-apply on start; flush on
+  durable changes. `raft_persist_test` covers encode/load/apply and live
+  disk recovery after PUT/stop.
+
 ### Phase 3 B3.4 — gRPC interop goldens
 - **`tests/grpc_goldens_test.baga`:** fixed hex vectors matching protoc wire
   (HelloRequest/Reply, gRPC length-prefix frames, registry GetPackage/Package

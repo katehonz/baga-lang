@@ -9,10 +9,16 @@ While the leader waits for AE_REP after a client PUT, other message types
 
 **Path.** Small inbound queue (Vec) drained each loop iteration.
 
-## R2 — no durable Raft log
+## R2 — durable Raft log (lite — B4.2)
 
-Log lives in process memory. Process kill loses uncommitted and committed
-state. Pairing with lsmbaga for durable log is S8-adjacent product work.
+**Shipped.** `persist.baga` writes term / voted_for / commit_idx / log to
+`/tmp/baga_raft_<id>.state`. Nodes load on start and re-apply committed
+entries; flush on vote/log/commit/stop. `raft_start` wipes files for a clean
+cluster.
+
+**Residual.** Not fsynced on every entry (best-effort `write_file`); no
+stable storage path config; not lsmbaga-backed. Kill mid-write can corrupt
+the text file (no CRC).
 
 ## R3 — N fixed at 3
 

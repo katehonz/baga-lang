@@ -13,7 +13,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
     }
 }
 
-fn main() -> i64 !Par {
+fn main() -> i64 !Par !IO {
     print("raft_test:")
     let fails = vec_new()
 

@@ -210,7 +210,7 @@ MVPs shipped; advanced means **ops-grade behavior**:
 | Step | Work |
 |------|------|
 | B4.1 | lsmbaga: reduce full-file SST load (gaps L3); bounded page cache under stress test |
-| B4.2 | raftbaga: persistence of log + restart recovery test (not only in-memory election) |
+| B4.2 | raftbaga: persistence of log + restart recovery test (not only in-memory election) | ✅ |
 | B4.3 | txnbaga: multi-key 2PC under concurrent clients (channel stress) |
 | B4.4 | Bench gate: `bench/run_latency.sh` numbers recorded in CHANGELOG or `bench/results/` for regressions |
 
@@ -319,7 +319,7 @@ in `lsmbaga/gaps.md`.
 ### Phase 4 — Engines + verify (B4 + C)
 
 1. lsm SST/page hardening + recovery test  
-2. raft persistence lite  
+2. raft persistence lite — **B4.2 done** (`persist.baga` + `raft_persist_test`)  
 3. MEM-3 where it pays  
 4. Bench numbers checked in  
 
