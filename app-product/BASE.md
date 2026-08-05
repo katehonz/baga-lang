@@ -5,7 +5,7 @@ small community, real conventions, apps you can ship.
 
 **Language role:** Baga is an **educational systems language**. Packages here
 are **ecosystem building blocks to prove the language** — not throwaway demos.
-Long-horizon storage goal: a **RocksDB-like** engine (`lsmbaga` path).
+Long-horizon storage goal: a **RocksDB-like** engine (`rocksbaga`; was `lsmbaga`).
 
 ```
                  apps/api   (your product — actions, models, routes)

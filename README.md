@@ -22,8 +22,8 @@ itself**, with effects and verification visible?
 **End goal (north star):** an **embedded key-value / storage engine** in the
 spirit of **RocksDB** (LSM, durable WAL, SST, compaction, cache) — the
 flagship that forces memory discipline, IO, and engine design. Today that
-path is **`lsmbaga`** (LSM MVP on RESP); the road continues through indexes,
-smarter compaction, and binary values.
+path is **`rocksbaga`** (LSM engine on RESP; was `lsmbaga`); the road continues
+through quality work without claiming RocksDB parity.
 
 Direction docs: [`docs/superpowers/plans/2026-08-05-advanced-go-rust.md`](docs/superpowers/plans/2026-08-05-advanced-go-rust.md)
 (**plan DoD met** — [close-out](docs/superpowers/plans/2026-08-05-advanced-plan-dod.md)),
@@ -60,7 +60,7 @@ Stack highlights: live TLS against `openssl s_server`; JWT goldens cross-checked
 **Ecosystem packages, not demos** — each is a shippable building block that
 stresses the language (effects, IO, concurrency, memory). Build with **sandak**
 (`sandak.toml` per package). The stack exists to **prove Baga can host real
-systems work**; the long horizon is a **RocksDB-like engine** (`lsmbaga` → …).
+systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 
 | Package | Role |
 |---------|------|
@@ -70,7 +70,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`lsmbaga` → …
 | **ormbaga** | ActiveRecord-style ORM + goose migrations |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired |
 | **kvbaga** | RESP KV server (`Map` probe) |
-| **lsmbaga** | Durable LSM KV (WAL → memtable → SST + page cache) on RESP — **storage flagship → RocksDB path** |
+| **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) |
 | **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam |
 | **metbaga** / **logbaga** / **cloudbaga** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
 | **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) |

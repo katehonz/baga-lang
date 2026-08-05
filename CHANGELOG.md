@@ -2,14 +2,20 @@
 
 ## [Unreleased]
 
+### RocksDB path R10 — package rename rocksbaga
+- **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine
+  unchanged). Prefer `import "rocksbaga/…"`. Deprecated **`lsmbaga/`** shims
+  re-export modules for old imports. Symbols stay `lsm_*` / env `LSM_*`.
+  Not RocksDB feature parity — see `rocksbaga/gaps.md`.
+
 ### RocksDB path R9 — standalone bloom sidecar
-- **lsmbaga:** each new SST also writes `<dir>.bloom.<gen>` (`BAGABLM1` +
+- **rocksbaga (was lsmbaga):** each new SST also writes `<dir>.bloom.<gen>` (`BAGABLM1` +
   bit array + crc). `sst_get` consults the sidecar first and skips SST open
   on definite miss. Compact unlinks bloom with SST. Embedded bloom stays in
   BAGASST5. Tests: `r9_*` in `tests/lsm_test.baga`.
 
 ### RocksDB path R8 — oldest-N compact pick
-- **lsmbaga:** `LsmDB.merge_pick` (default 0 = merge all files when a level
+- **rocksbaga:** `LsmDB.merge_pick` (default 0 = merge all files when a level
   is over). When `>0`, compact merges the **oldest N** SSTs only (min 2);
   with byte targets the pick grows until size coverage. Env `LSM_MERGE_PICK`.
   Tests: `r8_*` in `tests/lsm_test.baga`.

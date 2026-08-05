@@ -10,7 +10,7 @@ to prove Baga; long goal **RocksDB-class DB** continues as post-plan horizon
 2. **Ecosystem** — HTTP/TLS/PG/gRPC/consensus/apps exist to *exercise and
    showcase* the language (effects, MEM, verify).  
 3. **Endgame storage** — a **RocksDB-like embedded KV** in pure Baga
-   (`lsmbaga` → block indexes, compaction quality, binary values, …).  
+   (`rocksbaga` → LSM quality; not RocksDB feature parity).  
 4. Differentiator vs Go/Rust: effects + `--verify` + honest systems stack —
    not full Rust borrow (optional light borrow only; never mandatory).
 
@@ -309,6 +309,7 @@ feature clone, but a real LSM store that forces the language.
 | R7 | Byte-size targets + **L3**; optional rocksbaga name when quality warrants | ✅ targets+L3; rename later |
 | R8 | Oldest-N merge pick (`merge_pick`) | ✅ |
 | R9 | Standalone bloom sidecar (`BAGABLM1`) | ✅ |
+| R10 | Package rename **`rocksbaga`** (`lsmbaga` shim kept) | ✅ |
 
 **Rule:** every R step keeps `tests/lsm_test.baga` green and documents honesty
 in `lsmbaga/gaps.md`.
@@ -387,7 +388,7 @@ Full write-up: [2026-08-05-advanced-plan-dod.md](2026-08-05-advanced-plan-dod.md
 
 **Post-plan horizon** (not gates for this plan’s DoD) — pick one:
 
-1. **Storage:** rocksbaga rename when quality warrants (R8 pick + R9 bloom done)  
+1. **Storage:** ~~rocksbaga rename (R10)~~; further quality (not RocksDB parity)  
 2. **Product:** L5 route table; gRPC H2 client; optional status/ctx defaults in more handlers  
 3. **Language:** LLVM L3 (or keep C-only honesty); optional C′ borrow-lite impl  
 4. **Sketches → product only if needed:** multi-arg syscall / ring mmap for io_uring; full protoc plugin  
@@ -405,7 +406,7 @@ See §11 and [advanced-plan-dod.md](2026-08-05-advanced-plan-dod.md).
 | B1 migrations | `app-product/{pbbaga,pgbaga,ormbaga,jsonrpcbaga}/`, matching `tests/*` |
 | B2 | `app-product/fmrbaga/`, `apps/api/` |
 | B3 | `app-product/pbbaga/grpc_client.baga`, H2 client glue, product service |
-| B4 | `app-product/{lsmbaga,raftbaga,txnbaga}/`, `bench/` |
+| B4 | `app-product/{rocksbaga,raftbaga,txnbaga}/`, `bench/` |
 | C | `src/verify.c` examples, MEM region in checker |
 
 ---
@@ -430,13 +431,13 @@ See §11 and [advanced-plan-dod.md](2026-08-05-advanced-plan-dod.md).
 | Generics / traits | language docs; this plan non-goals |
 | H2 gaps | `app-product/httpdbaga/gaps.md` |
 | Raft incompleteness | `app-product/raftbaga/gaps.md` |
-| LSM vs RocksDB | `app-product/lsmbaga/gaps.md` (R7–R8 shipped; rename later) |
+| LSM vs RocksDB | `app-product/rocksbaga/gaps.md` (R0–R10; not full RocksDB) |
 | LLVM L3 | `docs/superpowers/specs/2026-08-05-llvm-l3-status.md` |
 | Borrow-lite (C′) | design only: `…/2026-08-05-borrow-lite-design.md` |
 
 ### Post-plan residual (ordered by north-star fit)
 
-1. lsmbaga quality → optional **rocksbaga** name  
+1. ~~lsmbaga → **rocksbaga** (R10)~~  
 2. L5 fmr route table; gRPC over H2  
 3. LLVM L3 or permanent C-backend honesty  
 4. Optional C′ borrow-lite implementation  

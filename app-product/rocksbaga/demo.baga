@@ -76,7 +76,7 @@ fn main() -> i64 !Net !IO !Par !Time {
         return 1
     }
     tcp_set_timeouts(fd, 5)?
-    print(concat(concat("lsmbaga demo → localhost:", int_to_str(port)), concat(" path=", dir)))
+    print(concat(concat("rocksbaga demo → localhost:", int_to_str(port)), concat(" path=", dir)))
 
     run(fd, "PING", args1("PING"))?
     run(fd, "SET user:1 Здравей", args3("SET", "user:1", "Здравей"))?

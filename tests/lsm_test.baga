@@ -1,7 +1,7 @@
 // lsm_test.baga — S5+S6: page cache + WAL/memtable/SST + RESP recovery.
 
-import "lsmbaga/engine.baga"
-import "lsmbaga/server.baga"
+import "rocksbaga/engine.baga"
+import "rocksbaga/server.baga"
 import "kvbaga/resp.baga"
 import "std/net/tcp.baga"
 import "std/os/os.baga"

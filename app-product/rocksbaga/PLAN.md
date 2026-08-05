@@ -1,4 +1,4 @@
-# lsmbaga — plan
+# rocksbaga — plan (was lsmbaga)
 
 Date: 2026-08-05
 Status: **P0 MVP done** (S5+S6)
@@ -32,6 +32,6 @@ Goal: Track S flagship — durable KV on RESP.
 - Byte-size level targets + **L3** — **done (R7)** (`target_bytes`)
 - Oldest-N merge pick — **done (R8)** (`merge_pick`)
 - Standalone bloom filter file — **done (R9)** (`BAGABLM1` sidecar)
+- Package rename **rocksbaga** — **done (R10)**; `lsmbaga` shim kept
 - Shared page cache across open files with pin counts
 - Optional skip whole-body CRC on get-only path
-- Rename rocksbaga when quality warrants

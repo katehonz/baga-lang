@@ -2,8 +2,8 @@
 // Simulates process restart by lsm_close + lsm_open (WAL + MANIFEST + SST).
 // Default sync_every=1 → each put is fdatasync'd (crash loses only mid-write tail).
 
-import "lsmbaga/engine.baga"
-import "lsmbaga/page.baga"
+import "rocksbaga/engine.baga"
+import "rocksbaga/page.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"

@@ -1,4 +1,4 @@
-# lsmbaga — language & storage gaps
+# rocksbaga — language & storage gaps (was lsmbaga)
 
 Probe log from building the Track S flagship on S2–S4 + MEM-1/2.
 
@@ -58,8 +58,11 @@ coverage). Env `LSM_MERGE_PICK`. Test: `r8_*` in `tests/lsm_test.baga`.
 definite miss. Embedded bloom remains in BAGASST5 for compatibility.
 Unlinked with SST on compact. Test: `r9_*` in `tests/lsm_test.baga`.
 
-**Still open (later):** drop whole-body CRC on get-only path; rename
-**rocksbaga** when quality warrants.
+**Shipped (R10):** package renamed **`rocksbaga`** (was `lsmbaga`);
+`app-product/lsmbaga/` is a deprecated import shim. API symbols still `lsm_*`.
+
+**Still open (later):** drop whole-body CRC on get-only path; RocksDB feature
+parity (not claimed).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
