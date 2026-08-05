@@ -15,6 +15,9 @@ Thin wrappers over libc, declared with `extern fn`.
 - `extern unlink(path: str) -> i64 !IO` — libc `unlink(2)`.
 - `extern link(oldpath: str, newpath: str) -> i64 !IO` — libc `link(2)`.
 - `extern getpid() -> i64 !IO` — libc `getpid(2)`.
+- `extern access(path: str, mode: i64) -> i64 !IO` — libc `access(2)`; mode `F_OK=0`, `R_OK=4`, `W_OK=2`, `X_OK=1`; returns 0 if ok, -1 else.
+- `file_exists(path: str) -> i64 !IO` — 1 if path exists (any type), 0 otherwise (`access` F_OK).
+- `file_readable(path: str) -> i64 !IO` — 1 if path is readable by this process (`access` R_OK).
 - `fs_rename(oldpath: str, newpath: str) -> i64 !IO` — `link`+`unlink` stand-in (`rename`/`renameat` collide with `stdio.h` prototypes in the generated C).
 
 Signals (C1) are **language builtins**, not `std/os` externs:

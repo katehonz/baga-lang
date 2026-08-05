@@ -1,0 +1,46 @@
+// glob_test.baga — globbaga shell-style matching.
+
+import "globbaga/glob.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("exact", glob_match("hello", "hello") == 1)
+    check("exact_no", glob_match("hello", "hell") == 0)
+    check("star_all", glob_match("*", "anything") == 1)
+    check("star_empty", glob_match("*", "") == 1)
+    check("prefix", glob_match("user:*", "user:42") == 1)
+    check("prefix_no", glob_match("user:*", "admin:1") == 0)
+    check("suffix", glob_match("*.baga", "path.baga") == 1)
+    check("suffix_no", glob_match("*.baga", "path.md") == 0)
+    check("mid", glob_match("a*c", "abc") == 1)
+    check("mid_long", glob_match("a*c", "abbbc") == 1)
+    check("q_one", glob_match("?.baga", "a.baga") == 1)
+    check("q_no", glob_match("?.baga", "ab.baga") == 0)
+    check("q_star", glob_match("a?c*", "abcxyz") == 1)
+    check("empty_pat", glob_match("", "") == 1)
+    check("empty_pat_no", glob_match("", "x") == 0)
+
+    let keys = vec_new()
+    vec_push(keys, "user:1")
+    vec_push(keys, "user:2")
+    vec_push(keys, "admin:1")
+    vec_push(keys, "session:abc")
+    let hit = glob_filter("user:*", keys)
+    check("filter_n", vec_len(hit) == 2)
+    check("filter0", vec_get(hit, 0) == "user:1")
+    check("filter1", vec_get(hit, 1) == "user:2")
+
+    let none = glob_filter("missing:*", keys)
+    check("filter_none", vec_len(none) == 0)
+
+    print("glob_test: all passed")
+}

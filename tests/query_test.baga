@@ -1,0 +1,68 @@
+// query_test.baga — querybaga URL query / form parse+encode.
+
+import "querybaga/query.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let q = query_parse("a=1&b=hello%20x")
+    check("get_a", query_get(q, "a") == "1")
+    check("get_b", query_get(q, "b") == "hello x")
+    check("has_a", query_has(q, "a") == 1)
+    check("no_c", query_has(q, "c") == 0)
+    check("miss", query_get(q, "c") == "")
+
+    // leading '?'
+    let q2 = query_parse("?x=9&y=z")
+    check("qmark_x", query_get(q2, "x") == "9")
+    check("qmark_y", query_get(q2, "y") == "z")
+
+    // empty
+    let qe = query_parse("")
+    check("empty", query_has(qe, "a") == 0)
+
+    // key without value
+    let qk = query_parse("flag")
+    check("flag_key", query_has(qk, "flag") == 1)
+    check("flag_val", query_get(qk, "flag") == "")
+
+    // form plus → space
+    let qp = query_parse("q=hello+world")
+    check("plus", query_get(qp, "q") == "hello world")
+
+    // set / overwrite
+    let mut qm = query_new()
+    qm = query_set(qm, "k", "1")
+    qm = query_set(qm, "k", "2")
+    check("set", query_get(qm, "k") == "2")
+
+    // encode
+    let mut qe2 = query_new()
+    qe2 = query_set(qe2, "a", "1")
+    qe2 = query_set(qe2, "b", "hello x")
+    let enc = query_encode(qe2)
+    check("enc_a", str_find(enc, "a=1") >= 0)
+    check("enc_space", str_find(enc, "hello%20x") >= 0 || str_find(enc, "b=hello") >= 0)
+
+    // round-trip
+    let back = query_parse(enc)
+    check("rt_a", query_get(back, "a") == "1")
+    check("rt_b", query_get(back, "b") == "hello x")
+
+    // from path
+    let qp2 = query_from_path("/api/v1?user=42&ok=1")
+    check("path_user", query_get(qp2, "user") == "42")
+    check("path_ok", query_get(qp2, "ok") == "1")
+    let qp3 = query_from_path("/noquery")
+    check("path_none", query_has(qp3, "x") == 0)
+
+    print("query_test: all passed")
+}

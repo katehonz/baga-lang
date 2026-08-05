@@ -1,0 +1,54 @@
+// buf_test.baga — bufbaga string builder.
+
+import "bufbaga/buf.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let mut b = buf_new()
+    check("empty_parts", buf_len_parts(b) == 0)
+    check("empty_str", buf_str(b) == "")
+    check("empty_len", buf_len(b) == 0)
+
+    b = buf_push(b, "<h1>")
+    b = buf_push(b, "hi")
+    b = buf_push(b, "</h1>")
+    check("parts3", buf_len_parts(b) == 3)
+    check("str", buf_str(b) == "<h1>hi</h1>")
+    check("len", buf_len(b) == 11)
+
+    let mut n = buf_new()
+    n = buf_push_i64(n, 42)
+    n = buf_push(n, "-")
+    n = buf_push_i64(n, 7)
+    check("i64", buf_str(n) == "42-7")
+
+    let mut s = buf_new()
+    s = buf_push(s, "a")
+    s = buf_push(s, "b")
+    s = buf_push(s, "c")
+    check("sep", buf_str_sep(s, ",") == "a,b,c")
+
+    s = buf_clear(s)
+    check("clear_parts", buf_len_parts(s) == 0)
+    check("clear_str", buf_str(s) == "")
+
+    // many pushes stay linear-join at end
+    let mut big = buf_new()
+    for i in 0..20 {
+        big = buf_push(big, "x")
+    }
+    check("many_parts", buf_len_parts(big) == 20)
+    check("many_len", buf_len(big) == 20)
+    check("many_str0", char_at(buf_str(big), 0) == 120)
+
+    print("buf_test: all passed")
+}

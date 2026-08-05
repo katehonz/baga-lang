@@ -14,9 +14,11 @@ fn check(name: str, ok: bool) {
 }
 
 fn main() -> i64 !IO {
-    let dir = "/tmp/baga_os_fs_test_dir"
-    let path = "/tmp/baga_os_fs_test_dir/blob.bin"
-    let path2 = "/tmp/baga_os_fs_test_dir/blob2.bin"
+    // Unique per pid so leftover dirs from a crashed run do not flake mkdir.
+    let pid = getpid()?
+    let dir = concat("/tmp/baga_os_fs_test_", int_to_str(pid))
+    let path = concat(dir, "/blob.bin")
+    let path2 = concat(dir, "/blob2.bin")
     unlink(path)?
     unlink(path2)?
     unlink(dir)?
@@ -63,7 +65,16 @@ fn main() -> i64 !IO {
     let fd4 = open(path2, 0, 0)?
     check("rename_open", fd4 >= 0)
     close(fd4)
+
+    // access / file_exists / file_readable
+    check("exists_yes", file_exists(path2)? == 1)
+    check("readable_yes", file_readable(path2)? == 1)
+    let missing = concat(dir, "/no_such_file_xyz")
+    check("exists_no", file_exists(missing)? == 0)
+    check("readable_no", file_readable(missing)? == 0)
+
     check("unlink", unlink(path2)? == 0)
+    check("exists_after_unlink", file_exists(path2)? == 0)
     // rmdir not wrapped — best-effort; dir may remain if non-empty
     unlink(dir)?
 

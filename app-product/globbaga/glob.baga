@@ -1,0 +1,55 @@
+// glob.baga — simple shell-style pattern matching. Pure.
+// * = any sequence (incl. empty); ? = any single byte; other chars literal.
+// No ** recursion, no character classes.
+
+import "std/str/str.baga"
+
+// Recursive-descent match of pattern[pi..] against s[si..].
+fn glob_match_at(pat: str, pi: i64, s: str, si: i64) -> i64 {
+    let pn = len(pat)
+    let sn = len(s)
+    if pi >= pn {
+        if si >= sn {
+            return 1
+        }
+        return 0
+    }
+    let pc = char_at(pat, pi)
+    if pc == 42 {   // *
+        // greedily try every rest position
+        let mut k = si
+        while k <= sn {
+            if glob_match_at(pat, pi + 1, s, k) == 1 {
+                return 1
+            }
+            k = k + 1
+        }
+        return 0
+    }
+    if si >= sn {
+        return 0
+    }
+    if pc == 63 {   // ?
+        return glob_match_at(pat, pi + 1, s, si + 1)
+    }
+    if pc == char_at(s, si) {
+        return glob_match_at(pat, pi + 1, s, si + 1)
+    }
+    return 0
+}
+
+fn glob_match(pattern: str, s: str) -> i64 {
+    return glob_match_at(pattern, 0, s, 0)
+}
+
+// Filter keys that match pattern (e.g. KEYS user:*).
+fn glob_filter(pattern: str, keys: Vec<str>) -> Vec<str> {
+    let out = vec_new()
+    for i in 0..vec_len(keys) {
+        let k = vec_get(keys, i)
+        if glob_match(pattern, k) == 1 {
+            vec_push(out, k)
+        }
+    }
+    return out
+}

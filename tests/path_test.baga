@@ -1,0 +1,47 @@
+// path_test.baga — pathbaga universal path helpers.
+
+import "pathbaga/path.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("abs", path_is_abs("/tmp") == 1)
+    check("rel", path_is_abs("tmp") == 0)
+    check("empty_abs", path_is_abs("") == 0)
+
+    check("join", path_join("/var", "log") == "/var/log")
+    check("join_trail", path_join("/var/", "log") == "/var/log")
+    check("join_abs_b", path_join("/var", "/etc") == "/etc")
+    check("join_empty_a", path_join("", "x") == "x")
+    check("join_empty_b", path_join("/a", "") == "/a")
+    check("join_nested", path_join("/var", "log/app") == "/var/log/app")
+
+    check("base", path_basename("/a/b.c") == "b.c")
+    check("base_trail", path_basename("/a/b/") == "b")
+    check("base_root", path_basename("/") == "")
+    check("base_plain", path_basename("file.txt") == "file.txt")
+
+    check("dir", path_dirname("/a/b.c") == "/a")
+    check("dir_root", path_dirname("/x") == "/")
+    check("dir_plain", path_dirname("file.txt") == ".")
+    check("dir_nested", path_dirname("/a/b/c") == "/a/b")
+
+    check("ext", path_ext("x.baga") == ".baga")
+    check("ext_multi", path_ext("/a/b.tar.gz") == ".gz")
+    check("ext_none", path_ext("README") == "")
+    check("ext_dotfile", path_ext(".gitignore") == "")
+
+    check("stem", path_stem("x.baga") == "x")
+    check("stem_path", path_stem("/a/b.c") == "b")
+    check("stem_none", path_stem("README") == "README")
+
+    print("path_test: all passed")
+}

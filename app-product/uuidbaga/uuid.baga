@@ -1,0 +1,69 @@
+// uuid.baga — UUID v4 (RFC 4122). !Random.
+
+import "std/str/str.baga"
+import "std/random/random.baga"
+
+fn uuid_hex_byte(v: i64) -> str {
+    let hi = (v >> 4) & 15
+    let lo = v & 15
+    let mut s = ""
+    if hi < 10 {
+        s = concat(s, chr(48 + hi))
+    } else {
+        s = concat(s, chr(87 + hi))
+    }
+    if lo < 10 {
+        s = concat(s, chr(48 + lo))
+    } else {
+        s = concat(s, chr(87 + lo))
+    }
+    return s
+}
+
+// 8-4-4-4-12 lowercase hex with version=4, variant=10xx.
+fn uuid_v4() -> str !Random {
+    let b = random_bytes(16)?
+    // version 4
+    let b6 = (vec_get(b, 6) & 15) | 64
+    // variant RFC 4122
+    let b8 = (vec_get(b, 8) & 63) | 128
+    let mut out = ""
+    for i in 0..16 {
+        let mut v = vec_get(b, i)
+        if i == 6 {
+            v = b6
+        }
+        if i == 8 {
+            v = b8
+        }
+        out = concat(out, uuid_hex_byte(v))
+        if i == 3 || i == 5 || i == 7 || i == 9 {
+            out = concat(out, "-")
+        }
+    }
+    return out
+}
+
+// Lenient: 36 chars with dashes, hex only.
+fn uuid_ok(s: str) -> i64 {
+    if len(s) != 36 {
+        return 0
+    }
+    for i in 0..36 {
+        if i == 8 || i == 13 || i == 18 || i == 23 {
+            if char_at(s, i) != 45 {
+                return 0
+            }
+        } else {
+            let c = char_at(s, i)
+            let mut hex = 0
+            if c >= 48 && c <= 57 { hex = 1 }
+            if c >= 97 && c <= 102 { hex = 1 }
+            if c >= 65 && c <= 70 { hex = 1 }
+            if hex == 0 {
+                return 0
+            }
+        }
+    }
+    return 1
+}

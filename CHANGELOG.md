@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Universal foundation packages + file_exists
+- **pathbaga**: POSIX-ish path helpers — `path_join`, `path_basename` /
+  `dirname`, `path_ext` / `path_stem`, `path_is_abs` (pure).
+- **globbaga**: shell-style `*` / `?` match + `glob_filter` for KEYS/routing.
+- **uuidbaga**: UUID v4 (RFC 4122) + `uuid_ok` validator (`!Random`).
+- **bufbaga**: `StrBuf` string builder (`buf_push` / `buf_str`) — closes
+  md/template quadratic-concat gaps (M1).
+- **querybaga**: URL query / form parse+encode with `+`→space decode
+  (`query_parse` / `query_encode` / `query_from_path`) — G7-style gap.
+- **std/os**: `access(2)` extern + `file_exists` / `file_readable` helpers.
+- Tests: `path_test`, `glob_test`, `uuid_test`, `buf_test`, `query_test`,
+  `os_fs_test` (exists/readable).
+
 ### gRPC bidi algebra + OTLP mock-collector integration
 - **pbbaga**: `hello_bidi` / `hello_bidi_requests`, `grpc_hello_stream_response`
   (server-stream when unary n>1, else bidi). Live H1 test:

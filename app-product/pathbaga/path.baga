@@ -1,0 +1,89 @@
+// path.baga — universal path helpers (POSIX-ish). Pure.
+
+import "std/str/str.baga"
+
+fn path_is_abs(p: str) -> i64 {
+    if len(p) > 0 && char_at(p, 0) == 47 {
+        return 1
+    }
+    return 0
+}
+
+// Join two segments with a single '/'; no double slash (except root).
+fn path_join(a: str, b: str) -> str {
+    if b == "" {
+        return a
+    }
+    if a == "" {
+        return b
+    }
+    if path_is_abs(b) == 1 {
+        return b
+    }
+    let mut left = a
+    if str_ends_with(left, "/") {
+        left = substr(left, 0, len(left) - 1)
+    }
+    if str_starts_with(b, "/") {
+        return concat(left, b)
+    }
+    return concat(concat(left, "/"), b)
+}
+
+// Last component after '/'; whole string if no slash.
+fn path_basename(p: str) -> str {
+    let mut i = len(p) - 1
+    // strip trailing slashes (except "/")
+    while i > 0 && char_at(p, i) == 47 {
+        i = i - 1
+    }
+    let end = i + 1
+    while i >= 0 {
+        if char_at(p, i) == 47 {
+            return substr(p, i + 1, end)
+        }
+        i = i - 1
+    }
+    return substr(p, 0, end)
+}
+
+// Parent directory; "." if none; "/" stays "/".
+fn path_dirname(p: str) -> str {
+    let mut i = len(p) - 1
+    while i > 0 && char_at(p, i) == 47 {
+        i = i - 1
+    }
+    while i >= 0 {
+        if char_at(p, i) == 47 {
+            if i == 0 {
+                return "/"
+            }
+            return substr(p, 0, i)
+        }
+        i = i - 1
+    }
+    return "."
+}
+
+// Extension including the dot (".baga"), or "" if none.
+fn path_ext(p: str) -> str {
+    let base = path_basename(p)
+    let mut i = len(base) - 1
+    while i > 0 {
+        if char_at(base, i) == 46 {
+            return substr(base, i, len(base))
+        }
+        i = i - 1
+    }
+    return ""
+}
+
+// Stem: basename without extension.
+fn path_stem(p: str) -> str {
+    let base = path_basename(p)
+    let ext = path_ext(p)
+    if ext == "" {
+        return base
+    }
+    return substr(base, 0, len(base) - len(ext))
+}

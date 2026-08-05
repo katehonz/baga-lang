@@ -1,0 +1,40 @@
+// uuid_test.baga — uuidbaga v4 + validation.
+
+import "uuidbaga/uuid.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Random {
+    let id = uuid_v4()?
+    check("len", len(id) == 36)
+    check("ok", uuid_ok(id) == 1)
+    // version nibble at position 14 is '4'
+    check("ver", char_at(id, 14) == 52)
+    // variant: char at 19 is 8,9,a,b
+    let v = char_at(id, 19)
+    let var_ok = (v == 56 || v == 57 || v == 97 || v == 98)
+    check("variant", var_ok)
+
+    // two calls differ (extremely high probability)
+    let id2 = uuid_v4()?
+    check("uniq", id != id2)
+
+    check("dashes", char_at(id, 8) == 45 && char_at(id, 13) == 45
+        && char_at(id, 18) == 45 && char_at(id, 23) == 45)
+
+    check("bad_len", uuid_ok("too-short") == 0)
+    check("bad_dash", uuid_ok("550e8400e29b-41d4-a716-446655440000") == 0)
+    check("bad_hex", uuid_ok("550e8400-e29b-41d4-a716-44665544000g") == 0)
+    check("good_upper", uuid_ok("550E8400-E29B-41D4-A716-446655440000") == 1)
+
+    print("uuid_test: all passed")
+    return 0
+}

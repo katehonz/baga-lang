@@ -1,0 +1,7 @@
+[package]
+name = "uuidbaga"
+version = "0.1.0"
+entry = "uuid.baga"
+
+[dependencies]
+std = { path = "../../std" }
