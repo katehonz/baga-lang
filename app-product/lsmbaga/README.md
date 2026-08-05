@@ -19,9 +19,9 @@ and binary `fd_*_bytes` in `std/os`.
 | Page cache (S5) | Fixed-size pages (4 KiB), clock eviction, dirty writeback, invalidate-on-unlink |
 | WAL | Length-prefixed records, crc32c, `fdatasync` every `sync_every` (default 1) |
 | Memtable | `Map<str, bytes>` + tombstone map (binary-safe values) |
-| SSTable | Magic **`BAGASST3`** (writes): rows + **restart index** + **bloom** + crc. Get = bloom → index bsearch → block scan. **v1/v2** still readable |
-| Flush | Threshold `flush_at` (default 32); `SAVE` forces flush over RESP |
-| Compaction | When `gens >= compact_at` → merge **oldest** `compact_at` gens (chain until under limit); drop pure tombs |
+| SSTable | Magic **`BAGASST4`**: core + bloom + **fixed footer**. Get = footer → bloom → index → one block via **page cache** (no full-file on miss). **v1–v3** readable |
+| Flush | Threshold `flush_at` (default 32); writes **L0**; `SAVE` forces flush |
+| Compaction | **L0→L1** when L0 ≥ `compact_at`; collapse multiple L1; pure tombs kept on partial merge |
 | Recovery | MANIFEST + SST gens + WAL replay |
 | RESP | `PING` `SET` `GET` `DEL` `EXISTS` `INCR` `KEYS` `DBSIZE` `SAVE` `QUIT` |
 
@@ -29,7 +29,7 @@ and binary `fd_*_bytes` in `std/os`.
 
 ```
 <dir>.wal
-<dir>.manifest      # next_gen\n then gens oldest-first
+<dir>.manifest      # next_gen\n then "gen level" lines (0=L0, 1=L1)
 <dir>.sst.<gen>
 ```
 
@@ -71,8 +71,8 @@ fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 - Keys are still `str` (NUL-free); **values** are `bytes` (NUL-safe in engine/WAL/SST).
 - RESP **SET** args still go through `str` parser; GET replies use binary-safe bulk.
 - No TTL/EXPIRE; SET options rejected with ERR.
-- Get still loads the full SST file (bloom/index avoid wasted *lookup* work, not full IO); no page-sized data blocks yet.
-- Compaction is chained oldest-N merge, not full leveled LSM with size targets.
+- v4 get is partial IO; compact/`KEYS` still full-load + whole-body CRC.
+- Two levels only (L0/L1), not full leveled LSM with size targets / L2+.
 - Single process; no multi-writer.
 
 See [gaps.md](gaps.md).

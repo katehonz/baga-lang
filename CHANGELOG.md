@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### RocksDB path R5 — partial SST get + L0/L1
+- **lsmbaga:** new SSTs write **`BAGASST4`** (core + bloom + fixed footer).
+  Get: `fd_size` → footer → bloom pages → restart index → one data block via
+  page cache (no full-file materialize on miss). **v1–v3** still readable.
+- **L0/L1:** MANIFEST lines `gen level`; flush → L0; L0 ≥ `compact_at` →
+  merge to L1; collapse multiple L1. Pure tombs kept on partial merges.
+- **std/os:** `lseek` + `fd_size` for SST footer addressing.
+
 ### RocksDB path R4 — bloom filter + chain compact
 - **lsmbaga:** new SSTs write **`BAGASST3`**: restart index + **bloom filter**
   (~10 bits/key, 4 double-hash probes). Get: CRC → bloom may-contain →

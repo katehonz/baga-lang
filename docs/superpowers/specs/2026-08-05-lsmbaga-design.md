@@ -77,23 +77,26 @@ Append via `fd_write_bytes`; durability via `fdatasync` every
 
 ### SSTable
 
-**v3 (current writes) — `BAGASST3`:**
+**v4 (current writes) — `BAGASST4`:**
 
 ```
-magic 8 = "BAGASST3"
+magic 8 = "BAGASST4"
 body:
-  u32 le count
-  records sorted by key:
-    u8 op | u32 klen | key | u32 vlen | val
-  restart index: N × u32 le offsets into body, then u32 N
-    (restart every 16 records; first offset = 4)
-  bloom filter bytes (m/8), then u32 le m  (m ≈ 10 bits/key, min 64)
-u32 le crc32c(body)
+  core: u32 count | records | N×u32 restart_off | u32 N
+  bloom: m/8 bytes
+  footer 24: core_len | bloom_nbytes | bloom_bits | n_restarts | count | tag=4
+u32 le crc32c(body)   // full-load paths (compact/KEYS)
 ```
 
-Lookup: newest table first; bloom may-contain → restart bsearch → one-block
-scan. `BAGASST2` (index, no bloom) and `BAGASST1` (full parse + bsearch)
-still readable. Tombstone (op=Del) shadows older Puts.
+Lookup (partial): footer → bloom pages → restart index → one data block via
+page cache. Older magics `BAGASST1`–`3` still readable (full file).
+Tombstone (op=Del) shadows older Puts.
+
+### Levels (R5)
+
+MANIFEST lines after `next_gen`: `gen level` (0 = L0 flush, 1 = L1 compact).
+Flush appends L0; when L0 count ≥ `compact_at`, merge all L0 → one L1;
+if ≥2 L1 files, collapse to one L1.
 
 ### Memtable
 
@@ -108,13 +111,12 @@ ops since last flush; when `mem_n >= flush_at` (default 32), flush.
 3. Rotate WAL (`unlink` + reopen `O_CREAT|O_TRUNC` or rewrite empty).
 4. Clear mem/tomb; `mem_n = 0`.
 
-### Compaction (oldest-N)
+### Compaction (L0/L1)
 
-When `vec_len(gens) >= compact_at` (default 3): merge the **oldest**
-`compact_at` tables newest-wins into one new SST, drop pure tombstones
-(nothing older under the merged prefix), keep younger gens, `unlink`
-merged files, rewrite MANIFEST. Page-cache slots for old file_ids
-invalidated.
+When L0 count ≥ `compact_at` (default 3): merge all L0 newest-wins into one
+L1 SST; pure tombs **kept** if any older SST remains. If ≥2 L1 files, merge
+them into one L1 (pure tombs droppable only when merge covers all gens).
+`unlink` merged files; rewrite MANIFEST; invalidate page-cache file_ids.
 
 ### Recovery
 

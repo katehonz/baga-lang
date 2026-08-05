@@ -32,14 +32,16 @@ cache (full body IO). Fine at probe scale; true block-level page IO is later.
 row materialize). Compaction/`KEYS` still full-parse. **BAGASST1** still
 readable (parse + bsearch).
 
-**Shipped (R4):** new writes **BAGASST3** — restart index + **bloom filter**
-(~10 bits/key, 4 probes). Get: CRC → bloom may-contain → restart bsearch →
-block scan. v1/v2 still readable. Compaction **chains** oldest-N merges while
-`gens >= compact_at`.
+**Shipped (R4):** bloom + restart (BAGASST3).
 
-**Still open (R5+ / later):** page-sized data blocks (avoid reading whole file
-IO), true multi-level (L0/L1/…) with size amplification targets, bloom as
-standalone filter file.
+**Shipped (R5):** **BAGASST4** fixed footer; get uses **partial page-cache IO**
+(footer → bloom → restart index → one data block). Full-file CRC still on
+compact/KEYS load. **L0/L1** in MANIFEST (`gen level`); flush → L0; L0 count
+≥ `compact_at` → merge to L1; multiple L1 collapsed. v1–v3 still readable.
+
+**Still open (later):** true size-tiered levels (L2+), per-block CRCs (skip
+full-body CRC on write path), bloom as standalone filter file, rename
+rocksbaga when quality warrants.
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

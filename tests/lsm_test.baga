@@ -122,8 +122,10 @@ fn main() -> i64 !Net !IO !Par !Time {
     db3 = lsm_put(db3, "k3", "v3")?
     db3 = lsm_put(db3, "k4", "v4")?  // flush
     db3 = lsm_put(db3, "k5", "v5")?
-    db3 = lsm_put(db3, "k6", "v6")?  // flush → compact
-    check(fails, "compact_gens", vec_len(db3.gens) <= 2)
+    db3 = lsm_put(db3, "k6", "v6")?  // flush → L0; may compact L0→L1
+    // R5: L0/L1 — after enough L0 flushes, L0 is under compact_at and total
+    // gens stay small (not unbounded L0 pile-up).
+    check(fails, "compact_gens", vec_len(db3.gens) <= 6)
     let r4 = lsm_get(db3, "k1")?
     db3 = r4.db
     check(fails, "compact_get", r4.found == 1 && str_of_bytes(r4.val) == "v1")

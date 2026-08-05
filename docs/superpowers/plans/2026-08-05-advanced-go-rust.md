@@ -300,7 +300,8 @@ feature clone, but a real LSM store that forces the language.
 | R2 | **BAGASST2** restart index (bsearch restarts + block scan; v1 read OK) | ✅ |
 | R3 | Binary values (`Map<str,bytes>`), oldest-N compact + drop pure tombs | ✅ |
 | R4 | **BAGASST3** bloom + restart; chain oldest-N compact | ✅ |
-| R5 | Page-sized blocks / true multi-level; name “rocksbaga” when quality warrants | **next** |
+| R5 | **BAGASST4** footer partial get + **L0/L1** levels | ✅ |
+| R6 | L2+/size targets; per-block CRC; name “rocksbaga” when quality warrants | later |
 
 **Rule:** every R step keeps `tests/lsm_test.baga` green and documents honesty
 in `lsmbaga/gaps.md`.

@@ -26,6 +26,17 @@ extern fn getpid() -> i64 !IO
 // for self-tests, or syscall if you need cross-process kill.
 // access(2): mode F_OK=0, R_OK=4, W_OK=2, X_OK=1. Returns 0 if ok, -1 else.
 extern fn access(path: str, mode: i64) -> i64 !IO
+// lseek(2): whence SEEK_SET=0, SEEK_CUR=1, SEEK_END=2.
+extern fn lseek(fd: i64, offset: i64, whence: i64) -> i64 !IO
+
+// Size of open fd in bytes (SEEK_END), or -1 on error.
+fn fd_size(fd: i64) -> i64 !IO {
+    let n = lseek(fd, 0, 2)?
+    if n < 0 {
+        return -1
+    }
+    return n
+}
 
 // 1 if path exists (any type), 0 otherwise.
 fn file_exists(path: str) -> i64 !IO {
