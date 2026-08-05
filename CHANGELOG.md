@@ -48,6 +48,11 @@
   sync / buffer full / memtable flush / close.
 - Bench n=1000 durable PUT ~695 ops/s (~82% RocksDB).
 
+### RocksDB path R15 — poll multi-conn RESP
+- **`lsm_serve`** uses `std/net/poll` event loop: many TCP clients, one
+  `LsmDB`, per-fd read buffers. Closes the serial-accept limit (kvbaga K1
+  path). `LSM_SERIAL=1` restores one-at-a-time accept. Tests: `tcp2_*`.
+
 ### RocksDB path R10 — package rename rocksbaga
 - **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine
   unchanged). Prefer `import "rocksbaga/…"`. Deprecated **`lsmbaga/`** shims

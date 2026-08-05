@@ -103,9 +103,13 @@ GET_SEQ ~200k ops/s (~37% RocksDB), GET_RND ~250k (~48%).
 `lsm_put_b` for NUL-safe puts. Compaction merges oldest `compact_at` gens and
 **drops pure tombstones**.
 
+**Shipped (R15):** poll multi-conn RESP serve (`std/net/poll`) — many clients
+share one `LsmDB` on a single thread. Env `LSM_SERIAL=1` keeps the old
+one-conn-at-a-time accept loop. Test: `tcp2_*` in `tests/lsm_test.baga`.
+
 **Still residual:** RESP **command** args are still `Vec<str>` (SET cannot
 inject raw NUL over the wire parser); GET uses `resp_bulk_b`. No EXPIRE/TTL;
-no multi-writer; poll multi-conn same as kvbaga K1.
+no multi-writer (shared store is single-threaded event loop).
 
 ## Closed by this package
 

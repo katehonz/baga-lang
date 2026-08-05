@@ -33,7 +33,7 @@ docs/           PLAN, gaps
 | WAL | `wal/` | crc32c records, fdatasync |
 | Memtable + compact | `db/` | L0…L3, byte targets, oldest-N pick |
 | SSTable | `table/` | BAGASST5 + `.bloom.<gen>` sidecar; R11 bloom/fd cache |
-| RESP | `net/` | redis-cli subset |
+| RESP | `net/` | redis-cli subset; **poll multi-conn** (R15) |
 
 **Bench:** `./bench/rocks/run_vs_rocksdb.sh` — pure engine vs RocksDB.
 

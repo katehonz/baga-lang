@@ -268,6 +268,29 @@ fn main() -> i64 !Net !IO !Par !Time {
     check(fails, "tcp_durable", gx.found == 1 && str_of_bytes(gx.val) == "y")
     lsm_close(gx.db)?
 
+    // R15: two concurrent clients on poll multi-conn share one store
+    wipe("/tmp/baga_lsm")?
+    let port2 = 16582
+    go_bg(lsm_serve, port2)
+    sleep_ms(250)
+    let c1 = tcp_connect_to("localhost", port2, 5)?
+    let c2 = tcp_connect_to("localhost", port2, 5)?
+    check(fails, "tcp2_connect", c1 >= 0 && c2 >= 0)
+    if c1 >= 0 && c2 >= 0 {
+        tcp_set_timeouts(c1, 5)?
+        tcp_set_timeouts(c2, 5)?
+        let s1 = resp_round_trip(c1, args3("SET", "a", "from1"))?
+        check(fails, "tcp2_set1", s1.ok == 1 && s1.text == "OK")
+        let s2 = resp_round_trip(c2, args3("SET", "b", "from2"))?
+        check(fails, "tcp2_set2", s2.ok == 1 && s2.text == "OK")
+        let g1 = resp_round_trip(c1, args2("GET", "b"))?
+        check(fails, "tcp2_cross_get", g1.ok == 1 && g1.text == "from2")
+        let g2 = resp_round_trip(c2, args2("GET", "a"))?
+        check(fails, "tcp2_cross_get2", g2.ok == 1 && g2.text == "from1")
+        tcp_close(c1)?
+        tcp_close(c2)?
+    }
+
     if vec_len(fails) == 0 {
         print("lsm_test: all passed")
         return 0

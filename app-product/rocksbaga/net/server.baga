@@ -4,6 +4,7 @@
 import "../db/engine.baga"
 import "kvbaga/resp.baga"
 import "std/net/tcp.baga"
+import "std/net/poll.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/time/time.baga"
@@ -171,6 +172,7 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO {
     }
 }
 
+// Single-connection drain (legacy / tests). Blocks on read until EOF.
 fn lsm_serve_conn(fd: i64, db: LsmDB) -> LsmDB !IO !Net {
     let mut buf = bytes_from_vec(vec_new())
     let mut running: i64 = 1
@@ -202,9 +204,72 @@ fn lsm_serve_conn(fd: i64, db: LsmDB) -> LsmDB !IO !Net {
     return cur
 }
 
-// Serial accept loop. Dir from env LSMPATH (default /tmp/baga_lsm).
-// flush_at from env LSM_FLUSH_AT (default 32).
-fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
+// --- R15: poll(2) multi-conn (closes serial-accept limit / kvbaga K1 path) ---
+
+struct LsmSrv {
+    db: LsmDB,
+    listener: i64,
+    fds: Vec<i64>,
+    bufs: Map<i64, bytes>
+}
+
+fn lsm_srv_add(st: LsmSrv, fd: i64) -> LsmSrv {
+    vec_push(st.fds, fd)
+    map_set(st.bufs, fd, bytes_from_vec(vec_new()))
+    return st
+}
+
+fn lsm_srv_drop(st: LsmSrv, fd: i64) -> LsmSrv !Net !IO {
+    tcp_close(fd)?
+    map_del(st.bufs, fd)
+    let nv: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(st.fds) {
+        let f = vec_get(st.fds, i)
+        if f != fd {
+            vec_push(nv, f)
+        }
+        i = i + 1
+    }
+    st.fds = nv
+    return st
+}
+
+// Handle one readable client fd: non-blocking-ish (called after poll).
+// Returns updated state; drops conn on EOF / QUIT / write error.
+fn lsm_srv_on_readable(st: LsmSrv, fd: i64) -> LsmSrv !IO !Net {
+    let chunk = tcp_read_bytes(fd, 4096)?
+    if bytes_len(chunk) == 0 {
+        return lsm_srv_drop(st, fd)?
+    }
+    let mut buf = map_get(st.bufs, fd)
+    buf = bytes_concat(buf, chunk)
+    let mut cur = st.db
+    let mut drop_me: i64 = 0
+    let mut again: i64 = 1
+    while again == 1 && drop_me == 0 {
+        let p = resp_parse_command(buf)
+        if p.ok == 0 {
+            again = 0
+        } else {
+            buf = bytes_slice(buf, p.consumed, bytes_len(buf))
+            let ex = lsm_exec(cur, p.args)?
+            cur = ex.db
+            let w = tcp_write_bytes(fd, ex.reply)?
+            if w != 0 || ex.quit == 1 {
+                drop_me = 1
+            }
+        }
+    }
+    st.db = cur
+    if drop_me == 1 {
+        return lsm_srv_drop(st, fd)?
+    }
+    map_set(st.bufs, fd, buf)
+    return st
+}
+
+fn lsm_open_for_serve() -> LsmDB !IO {
     let mut dir = env("LSMPATH")?
     if dir == "" {
         dir = "/tmp/baga_lsm"
@@ -221,7 +286,7 @@ fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
     }
     let mut db = lsm_open(dir, flush_at, compact_at)?
     if db.ok == 0 {
-        return -1
+        return db
     }
     // R7: optional L0 byte target (L1=4×, L2=16×, L3=64×). 0 / unset = file-count only.
     let te = env("LSM_TARGET_BYTES")?
@@ -239,6 +304,15 @@ fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
             db.merge_pick = mp
         }
     }
+    return db
+}
+
+// Serial accept loop (one conn at a time). Env LSM_SERIAL=1 selects this.
+fn lsm_serve_serial_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
+    let mut db = lsm_open_for_serve()?
+    if db.ok == 0 {
+        return -1
+    }
     let listener = tcp_listen(port)?
     if listener < 0 {
         lsm_close(db)?
@@ -252,6 +326,65 @@ fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
             }
             db = lsm_serve_conn(fd, db)?
             tcp_close(fd)?
+        }
+    }
+    return 0
+}
+
+// Default: poll multi-conn (R15). Dir/env same as before.
+// LSM_SERIAL=1 → legacy one-at-a-time accept.
+fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
+    let ser = env("LSM_SERIAL")?
+    if ser == "1" {
+        return lsm_serve_serial_to(port, timeout_s)?
+    }
+    let mut db = lsm_open_for_serve()?
+    if db.ok == 0 {
+        return -1
+    }
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        lsm_close(db)?
+        return -1
+    }
+    let mut st = LsmSrv {
+        db: db, listener: listener, fds: vec_new(), bufs: map_new()
+    }
+    while true {
+        let pollfds: Vec<i64> = vec_new()
+        vec_push(pollfds, st.listener)
+        let mut i: i64 = 0
+        while i < vec_len(st.fds) {
+            vec_push(pollfds, vec_get(st.fds, i))
+            i = i + 1
+        }
+        let pr = poll_wait(pollfds, 200)?
+        if pr.ok == 1 {
+            if poll_has(pr.ready, st.listener) == 1 {
+                let fd = tcp_accept(st.listener)?
+                if fd >= 0 {
+                    if timeout_s > 0 {
+                        // optional idle soft-timeout; poll still drives readiness
+                        tcp_set_timeouts(fd, timeout_s)?
+                    }
+                    st = lsm_srv_add(st, fd)
+                }
+            }
+            // Snapshot: handlers may drop fds.
+            let snapshot: Vec<i64> = vec_new()
+            let mut j: i64 = 0
+            while j < vec_len(st.fds) {
+                vec_push(snapshot, vec_get(st.fds, j))
+                j = j + 1
+            }
+            let mut k: i64 = 0
+            while k < vec_len(snapshot) {
+                let fd = vec_get(snapshot, k)
+                if poll_has(pr.ready, fd) == 1 {
+                    st = lsm_srv_on_readable(st, fd)?
+                }
+                k = k + 1
+            }
         }
     }
     return 0
