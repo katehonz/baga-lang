@@ -1,0 +1,127 @@
+// grpc_goldens_test.baga — B3.4 fixed interop vectors (no protoc required).
+// Hex strings match protoc/Go protobuf wire encoding for the same messages.
+// Status HTTP map matches grpc-gateway / common reverse-proxy conventions.
+// Registry GetPackage request uses the same field layout as apps/registry/grpc_svc
+// (field 1 = name string) without linking the full registry app.
+
+import "pbbaga/pb.baga"
+import "pbbaga/grpc.baga"
+import "pbbaga/grpc_unary.baga"
+import "statusbaga/status.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+// Same wire as reg_pb_get_req_encode / reg_pb_package_encode (registry grpc_svc).
+fn gold_get_req(name: str) -> bytes {
+    return pb_field_string(bytes_new(0), 1, name)
+}
+
+fn gold_package(name: str, description: str, latest: str) -> bytes {
+    let mut b = bytes_new(0)
+    b = pb_field_string(b, 1, name)
+    b = pb_field_string(b, 2, description)
+    b = pb_field_string(b, 3, latest)
+    return b
+}
+
+fn main() {
+    print("grpc_goldens_test:")
+    let fails = vec_new()
+
+    // --- protoc-class string field goldens ---
+    // message M { string s = 1; } s="testing" → 0a0774657374696e67
+    let only = pb_field_string(bytes_new(0), 1, "testing")
+    check(fails, "pb_string_testing", hex_encode(only) == "0a0774657374696e67")
+
+    // s="hi" → 0a026869
+    let hi = pb_field_string(bytes_new(0), 1, "hi")
+    check(fails, "pb_string_hi", hex_encode(hi) == "0a026869")
+
+    // varint field 2 = 7 → 10 07
+    let v7 = pb_field_varint(bytes_new(0), 2, 7)
+    check(fails, "pb_varint_f2_7", hex_encode(v7) == "1007")
+
+    // HelloRequest { name="hi", n=7 }
+    let hello = hello_request_encode("hi", 7)
+    check(fails, "hello_hi_7", hex_encode(hello) == "0a0268691007")
+    let hr = hello_request_decode(hello)
+    check(fails, "hello_decode", match hr {
+        HelloOk(b) => b.name == "hi" && b.n == 7,
+        HelloBad => false,
+    })
+
+    // HelloReply { message="hi" }
+    let rep = hello_reply_encode("hi")
+    check(fails, "reply_hi", hex_encode(rep) == "0a026869")
+
+    // --- gRPC frame golden ---
+    // payload 0a026869 (4 bytes) → 00 00 00 00 04 0a 02 68 69
+    let fr = grpc_encode(hi)
+    check(fails, "grpc_frame_hi", hex_encode(fr) == "00000000040a026869")
+    let g = grpc_decode(fr)
+    check(fails, "grpc_frame_round", match g {
+        GFrame(f) => hex_encode(f.payload) == "0a026869" && f.compressed == 0,
+        GBad => false,
+    })
+
+    let empty_fr = grpc_encode(bytes_new(0))
+    check(fails, "grpc_frame_empty", hex_encode(empty_fr) == "0000000000")
+
+    // --- registry-shaped GetPackage (field 1 name) ---
+    // GetPackageRequest { name = "lsmbaga" } → 0a076c736d62616761
+    let get_req = gold_get_req("lsmbaga")
+    check(fails, "reg_get_req", hex_encode(get_req) == "0a076c736d62616761")
+    let get_frame = grpc_encode(get_req)
+    check(fails, "reg_get_frame", hex_encode(get_frame) == "00000000090a076c736d62616761")
+
+    // Package { name=lsmbaga, description=LSM, latest=0.1.0 }
+    // protoc: 0a076c736d6261676112034c534d1a05302e312e30
+    let pkg = gold_package("lsmbaga", "LSM", "0.1.0")
+    check(fails, "reg_package", hex_encode(pkg) == "0a076c736d6261676112034c534d1a05302e312e30")
+
+    // --- status codes (Go google.rpc.Code) ---
+    check(fails, "code_ok", GRPC_OK() == 0)
+    check(fails, "code_invalid", GRPC_INVALID_ARGUMENT() == 3)
+    check(fails, "code_not_found", GRPC_NOT_FOUND() == 5)
+    check(fails, "code_unavailable", GRPC_UNAVAILABLE() == 14)
+    check(fails, "code_unauth", GRPC_UNAUTHENTICATED() == 16)
+
+    check(fails, "http_ok", status_http(0) == 200)
+    check(fails, "http_3", status_http(3) == 400)
+    check(fails, "http_5", status_http(5) == 404)
+    check(fails, "http_14", status_http(14) == 503)
+    check(fails, "http_16", status_http(16) == 401)
+
+    let st = status_error(GRPC_NOT_FOUND(), "package not found")
+    let u = grpc_unary_with_status(bytes_new(0), st)
+    check(fails, "unary_nf_code", u.grpc_status == 5 && u.status == 404 && u.ok == 0)
+
+    let ok = grpc_unary_with_status(grpc_encode(hi), status_ok())
+    check(fails, "unary_ok", ok.grpc_status == 0 && ok.status == 200 && ok.ok == 1)
+
+    let hframe = grpc_encode(hello_request_encode("bagatur", 2))
+    let hu = grpc_hello_handle(hframe)
+    check(fails, "hello_handle_ok", hu.ok == 1 && hu.grpc_status == 0)
+    check(fails, "hello_handle_msg", match grpc_decode(hu.frame) {
+        GFrame(fr) => match hello_reply_decode(fr.payload) {
+            ReplyOk(m) => m == "Здравей, bagatur×2",
+            ReplyBad => false,
+        },
+        GBad => false,
+    })
+
+    if vec_len(fails) == 0 {
+        print("grpc_goldens_test: all passed")
+        return
+    }
+    print(concat(concat("grpc_goldens_test: FAILED (", int_to_str(vec_len(fails))), " checks)"))
+    exit(1)
+}

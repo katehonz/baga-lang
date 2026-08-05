@@ -32,5 +32,8 @@ Not implemented. Skip unknown fields works for forward compatibility.
 - `HelloReq` → `HelloOk(HelloBody) | HelloBad`
 - `HelloRep` → `ReplyOk(str) | ReplyBad`
 
+**Shipped (B3.4):** fixed golden hex vectors in `tests/grpc_goldens_test.baga`
+(Hello, frames, registry-shaped GetPackage/Package, status codes/HTTP map).
+
 Still open: `google.rpc.Status` details Any, client interceptors, true
 H2 half-close bidi, H2 client transport.

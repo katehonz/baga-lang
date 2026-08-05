@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Phase 3 B3.4 — gRPC interop goldens
+- **`tests/grpc_goldens_test.baga`:** fixed hex vectors matching protoc wire
+  (HelloRequest/Reply, gRPC length-prefix frames, registry GetPackage/Package
+  shapes) + google.rpc.Code / HTTP map for 0, 3, 5, 14, 16.
+
 ### Phase 3 B3.3 — registry dual protocol (HTTP + gRPC)
 - **fmrbaga:** `fmr_is_grpc_request` + `fmr_grpc_handle` hook — same port as JSON
   when `Content-Type: application/grpc` and `/Service/Method` path.

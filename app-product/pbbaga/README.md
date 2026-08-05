@@ -84,7 +84,8 @@ let mut c = grpc_client("localhost", 50051, 3)
 c = grpc_client_call(c, "/pkg.Svc/Method", frame, mdt_new(), 0)?
 ```
 
-Tests: `grpc_client_test`, `grpc_unary_test`, `grpc_bidi_test`, `pb_test`.
+Tests: `grpc_client_test`, `grpc_unary_test`, `grpc_bidi_test`, `pb_test`,
+`grpc_goldens_test` (B3.4 fixed hex vectors vs protoc wire + status map).
 
 ## Honest limits
 
