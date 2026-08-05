@@ -29,6 +29,9 @@ Event loop (`poll.baga`) — closes kvbaga K1 / wsbaga W1:
   SYS_poll; `ready` holds fds with POLLIN|POLLERR|POLLHUP.
 - `poll_has(ready, fd) -> i64` — membership helper.
 - Used by `app-product/chatbaga` for multi-connection chat.
+- Phase 5 stretch: io_uring experiment lives under `tools/iouring/`
+  (not wired into baga; see design note
+  `docs/superpowers/specs/2026-08-05-io-uring-poll-sketch-design.md`).
 
 HTTP client: see `http_client.baga` (`http_get` / `http_post` / `http_request`)
 — supports `http://` and `https://` (TLS 1.3 via `tls.baga`).

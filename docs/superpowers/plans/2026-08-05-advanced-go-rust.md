@@ -28,7 +28,8 @@
 - **Full** Rust borrow checker / affine types / lifetime generics  
 - Generics / traits / protoc codegen (later tracks)  
 - Async/await (CSP + poll stays; document as feature)  
-- Full OTel SDK, full Raft safety proof, io_uring  
+- Full OTel SDK, full Raft safety proof, **production** io_uring poll backend
+  (Phase 5 sketch only: `tools/iouring/`)  
 
 **Optional (never a gate):** a **light, opt-in borrow checker** — see Track C′
 and `docs/superpowers/plans/2026-08-05-memory-management.md` §7. Default Baga
@@ -330,7 +331,8 @@ in `lsmbaga/gaps.md`.
 
 - A4 LLVM L3 — **status note** (`specs/2026-08-05-llvm-l3-status.md`); still C-only  
 - protoc → baga sketch (P1 pbbaga) — **done** (`tools/protoc_baga/`)  
-- io_uring poll backend experiment  
+- io_uring poll backend experiment — **sketch done** (`tools/iouring/` +
+  `specs/2026-08-05-io-uring-poll-sketch-design.md`); product still `SYS_poll`  
 - Structural liveness lemmas — **done** (`examples/verify/liveness_struct.baga`)  
 - **C′ light optional borrow** — **design note** (`specs/2026-08-05-borrow-lite-design.md`); not implemented
 

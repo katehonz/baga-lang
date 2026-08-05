@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Phase 5 — io_uring poll backend sketch
+- **`tools/iouring/`:** raw x86-64 Linux probe (no liburing):
+  `io_uring_setup` detect, NOP CQE, `IORING_OP_POLL_ADD` on a self-pipe.
+  Design note maps future `poll_wait_iouring` to today’s `PollResult`;
+  production stays `std/net/poll.baga` (`SYS_poll`). Smoke:
+  `./tools/iouring/test_sketch.sh`. Baga gap: 3-arg `syscall` + no ring mmap.
+
 ### Phase 5 — structural liveness + design notes
 - **`examples/verify/liveness_struct.baga`:** `--verify` proves fixed-N
   unanimous 2PC ⇒ commit and matched fan-in ⇒ balanced (counting progress,
