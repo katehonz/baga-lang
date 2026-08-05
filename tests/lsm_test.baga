@@ -139,6 +139,38 @@ fn main() -> i64 !Net !IO !Par !Time {
     check(fails, "bloom_hit", rhit.found == 1 && str_of_bytes(rhit.val) == "v6")
     lsm_close(db3)?
 
+    // --- R7: byte-size L0 target (file-count alone would not fire) ---
+    wipe("/tmp/baga_lsm_bytes")?
+    let mut db5 = lsm_open("/tmp/baga_lsm_bytes", 1, 100)?  // flush each put; compact_at huge
+    check(fails, "r7_open", db5.ok == 1)
+    db5.target_bytes = 400   // small L0 byte target
+    let blob = str_repeat("X", 180)
+    db5 = lsm_put(db5, "b1", blob)?   // flush L0 #1
+    db5 = lsm_put(db5, "b2", blob)?   // flush L0 #2 → over bytes → L0→L1
+    // After byte-triggered compact, L0 should be drained (merged to L1+).
+    let n0 = lsm_count_level(db5.levels, 0)
+    let n1 = lsm_count_level(db5.levels, 1)
+    let n2 = lsm_count_level(db5.levels, 2)
+    let n3 = lsm_count_level(db5.levels, 3)
+    check(fails, "r7_l0_drained", n0 == 0)
+    check(fails, "r7_promoted", n1 + n2 + n3 >= 1)
+    let r7a = lsm_get(db5, "b1")?
+    db5 = r7a.db
+    check(fails, "r7_get_b1", r7a.found == 1 && str_of_bytes(r7a.val) == blob)
+    let r7b = lsm_get(db5, "b2")?
+    db5 = r7b.db
+    check(fails, "r7_get_b2", r7b.found == 1 && str_of_bytes(r7b.val) == blob)
+    // More L0 files with low target should still keep gens bounded
+    db5 = lsm_put(db5, "b3", blob)?
+    db5 = lsm_put(db5, "b4", blob)?
+    db5 = lsm_put(db5, "b5", blob)?
+    db5 = lsm_put(db5, "b6", blob)?
+    check(fails, "r7_bounded_gens", vec_len(db5.gens) <= 6)
+    let gb6 = lsm_get(db5, "b6")?
+    db5 = gb6.db
+    check(fails, "r7_get_b6", gb6.found == 1)
+    lsm_close(db5)?
+
     // --- RESP loopback ---
     wipe("/tmp/baga_lsm_resp")?
     // server reads LSMPATH from env — set via... we can't set env from baga easily

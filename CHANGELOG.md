@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### RocksDB path R7 — byte-size targets + L3
+- **lsmbaga:** `LsmDB.target_bytes` (default 0 = file-count only). When set,
+  levels compact if file-count ≥ `compact_at` **or** total SST bytes ≥
+  level target (L0=T, L1=4T, L2=16T, L3=64T). **L3** promote from L2.
+  Helpers `lsm_level_bytes` / `lsm_level_target`. Serve env `LSM_TARGET_BYTES`.
+  Tests: `r7_*` in `tests/lsm_test.baga`. Not renamed to rocksbaga yet.
+
 ### Phase 5 — io_uring poll backend sketch
 - **`tools/iouring/`:** raw x86-64 Linux probe (no liburing):
   `io_uring_setup` detect, NOP CQE, `IORING_OP_POLL_ADD` on a self-pipe.

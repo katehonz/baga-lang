@@ -303,7 +303,7 @@ feature clone, but a real LSM store that forces the language.
 | R4 | **BAGASST3** bloom + restart; chain oldest-N compact | ✅ |
 | R5 | **BAGASST4** footer partial get + **L0/L1** levels | ✅ |
 | R6 | **BAGASST5** per-block CRC + **L2** file-count tiers | ✅ |
-| R7 | Byte-size targets / L3+; optional rocksbaga name when quality warrants | later |
+| R7 | Byte-size targets + **L3**; optional rocksbaga name when quality warrants | ✅ targets+L3; rename later |
 
 **Rule:** every R step keeps `tests/lsm_test.baga` green and documents honesty
 in `lsmbaga/gaps.md`.

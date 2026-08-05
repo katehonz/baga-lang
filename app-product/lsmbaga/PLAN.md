@@ -29,6 +29,7 @@ Goal: Track S flagship — durable KV on RESP.
 - **BAGASST4** footer + partial get — **done (R5)**
 - L0/L1 levels — **done (R5)**
 - **BAGASST5** per-block CRC + **L2** — **done (R6)**
-- Byte-size level targets / L3+
+- Byte-size level targets + **L3** — **done (R7)** (`target_bytes`)
 - Shared page cache across open files with pin counts
 - Optional skip whole-body CRC on get-only path
+- Rename rocksbaga when quality warrants

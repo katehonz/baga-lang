@@ -223,6 +223,14 @@ fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
     if db.ok == 0 {
         return -1
     }
+    // R7: optional L0 byte target (L1=4×, L2=16×, L3=64×). 0 / unset = file-count only.
+    let te = env("LSM_TARGET_BYTES")?
+    if te != "" {
+        let tb = parse_int(te)
+        if tb > 0 {
+            db.target_bytes = tb
+        }
+    }
     let listener = tcp_listen(port)?
     if listener < 0 {
         lsm_close(db)?

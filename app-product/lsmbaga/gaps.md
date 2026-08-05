@@ -38,15 +38,20 @@ readable (parse + bsearch).
 
 **Shipped (R6):** **BAGASST5** per-restart-block **crc32c** (verified on partial
 get block load). **L2** level: L1 ≥ `compact_at` → merge to L2; collapse ≥2
-L2 files. File-count size-tier lite (not byte-size targets). v1–v4 readable.
+L2 files. File-count size-tier lite. v1–v4 readable.
+
+**Shipped (R7):** **byte-size level targets** via `LsmDB.target_bytes` (L0 = T,
+L1 = 4T, L2 = 16T, L3 = 64T) + **L3** promote from L2. File-count `compact_at`
+still works; `target_bytes=0` (default) keeps R5/R6 pair-collapse behaviour.
+Env `LSM_TARGET_BYTES` on serve. Test: `r7_*` in `tests/lsm_test.baga`.
 
 **Shipped (B4.1):** recovery story + test (`tests/lsm_recover_test.baga`):
 WAL+SST reopen (tomb/wal/sst), multi-reopen after compact, page-cache stress
 with `cap=2` (eviction) still correct. v5 get remains partial-file for hits.
 
-**Still open (later):** byte-size level targets, drop whole-body CRC on get-only
-path, bloom as standalone filter file, rename **rocksbaga** when quality
-warrants.
+**Still open (later):** drop whole-body CRC on get-only path, bloom as
+standalone filter file, finer per-level pick (not always merge-all), rename
+**rocksbaga** when quality warrants.
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
