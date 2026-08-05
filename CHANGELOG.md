@@ -2,12 +2,18 @@
 
 ## [Unreleased]
 
+### RocksDB path R2 — SST restart index
+- **lsmbaga:** new SSTs write **`BAGASST2`**: sorted records + restart index
+  (every 16 keys) + crc. `sst_get` uses restart **bsearch** + one-block scan
+  (no full row materialize). **`BAGASST1`** still readable. Compaction/KEYS
+  still full-parse. Full file IO remains (page-sized blocks = later).
+
 ### Positioning + RocksDB path (R1)
 - **README / BASE:** Baga is an **educational systems language**; packages are
   ecosystem blocks to **prove the language**, not demos. End goal: **RocksDB-class**
   embedded KV (`lsmbaga` road).
 - **lsmbaga R1:** SST lookup uses **binary search** + first/last key filter
-  (still full-file parse; block index is R2).
+  (still full-file parse; block index landed as R2).
 
 ### Stabilize language + applications (focus)
 - Advanced plan **Phase Stabilize**: pause further Result migrations

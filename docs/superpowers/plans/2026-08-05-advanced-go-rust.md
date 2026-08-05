@@ -296,9 +296,9 @@ feature clone, but a real LSM store that forces the language.
 | Step | Work | Status |
 |------|------|--------|
 | R0 | `lsmbaga` MVP: WAL + memtable + SST + page cache + RESP | ✅ |
-| R1 | **Binary search** on sorted SST + min/max key filter | **now** |
-| R2 | Block / restart index in SST format (avoid full parse) | next |
-| R3 | Binary values (`Map`/bytes), better compaction | later |
+| R1 | **Binary search** on sorted SST + min/max key filter | ✅ |
+| R2 | **BAGASST2** restart index (bsearch restarts + block scan; v1 read OK) | ✅ |
+| R3 | Binary values (`Map`/bytes), better compaction | **next** |
 | R4 | Bloom / sparse index, multi-level compaction | later |
 | R5 | Name / package as durable “rocksbaga” when quality warrants | later |
 

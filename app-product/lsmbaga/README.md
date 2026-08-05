@@ -19,7 +19,7 @@ and binary `fd_*_bytes` in `std/os`.
 | Page cache (S5) | Fixed-size pages (4 KiB), clock eviction, dirty writeback, invalidate-on-unlink |
 | WAL | Length-prefixed records, crc32c, `fdatasync` every `sync_every` (default 1) |
 | Memtable | `Map<str,str>` + tombstone map |
-| SSTable | Magic `BAGASST1`, sorted rows, crc footer; **binary search** + min/max filter (R1) |
+| SSTable | Magic **`BAGASST2`** (writes): sorted rows + **restart index** (every 16) + crc; get = index bsearch + block scan. **`BAGASST1`** still readable (R1 path) |
 | Flush | Threshold `flush_at` (default 32); `SAVE` forces flush over RESP |
 | Compaction-lite | When `gens >= compact_at` (default 3) → one merged SST |
 | Recovery | MANIFEST + SST gens + WAL replay |
@@ -69,7 +69,7 @@ fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 - Serial connections (same `go`/store constraint as kvbaga K1).
 - NUL-free `str` keys/values (kvbaga K2 product residual).
 - No TTL/EXPIRE; SET options rejected with ERR.
-- SST lookup is linear; no bloom/block index.
+- Get still loads the full SST file (index avoids full *parse*, not full IO); no bloom / page-sized blocks yet.
 - Compaction is “merge everything”, not leveled.
 - Single process; no multi-writer.
 

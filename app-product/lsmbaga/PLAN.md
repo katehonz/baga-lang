@@ -17,7 +17,7 @@ Goal: Track S flagship — durable KV on RESP.
 
 ## P1
 
-- Sparse index / restart keys for SST
+- Sparse index / restart keys for SST — **done (R2, BAGASST2)**
 - `Map<str, bytes>` values (binary-safe RESP)
 - poll-based multi-conn serve (kvbaga K1)
 - Optional TTL column

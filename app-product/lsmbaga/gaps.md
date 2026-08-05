@@ -22,15 +22,18 @@ wrappers). Documented in page.baga.
 
 ## L3 — SST full-file load on every get (partial)
 
-**Symptom.** `sst_get` still **loads and parses** each SST through the page
-cache (full body). Fine at probe scale; RocksDB path needs block index.
+**Symptom.** `sst_get` still **reads the whole SST file** through the page
+cache (full body IO). Fine at probe scale; true block-level page IO is later.
 
-**Shipped step (R1):** after parse, lookup is **binary search** on sorted
-keys + **min/max key filter** (skip table if key outside range). No longer
-O(n) linear scan of rows.
+**Shipped (R1):** after full parse, lookup was **binary search** + min/max.
 
-**Still open (R2+):** block / restart index in the file format so a get does
-not re-parse the whole SST; keep page cache for block bodies.
+**Shipped (R2):** new writes use **BAGASST2** with a **restart index** every
+16 records. Get does CRC + restart **bsearch** + **one-block scan** (no full
+row materialize). Compaction/`KEYS` still full-parse. **BAGASST1** still
+readable (parse + bsearch).
+
+**Still open (R3+):** sparse page-sized blocks (avoid reading whole file),
+binary values, bloom, leveled compaction.
 
 ## L4 — TTL / binary values / concurrent writers
 
