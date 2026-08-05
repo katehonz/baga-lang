@@ -99,7 +99,7 @@ fn h_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
 // Full OpenAPI 3: schemas + bearerAuth + request bodies + response refs.
 fn h_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
     let app = fmr_build_app()?
-    let doc = fmr_openapi_doc(app.title, app.version)
+    let doc = fmr_openapi_from_router(app.router, app.title, app.version)
     return fmr_out(fmr_ok_obj(doc), db)
 }
 

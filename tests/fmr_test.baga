@@ -110,6 +110,16 @@ fn main() {
     check("oas_security_field", str_find(raw, "\"security\"") >= 0)
     check("oas_components", str_find(raw, "\"components\"") >= 0)
     check("oas_tags", str_find(raw, "\"users\"") >= 0)
+    check("oas_route_id", str_find(raw, "x-baga-route-id") >= 0)
+
+    // B2.4: paths follow the router (omit posts if not registered)
+    let mut rmin = router_new()
+    rmin = router_add(rmin, "GET", "/health", 1)
+    rmin = router_add(rmin, "GET", "/v1/users", 20)
+    let slim = jobj_encode(fmr_openapi_from_router(rmin, "slim", "0.1.0"))
+    check("oas_emit_health", str_find(slim, "/health") >= 0)
+    check("oas_emit_users", str_find(slim, "/v1/users") >= 0)
+    check("oas_emit_no_posts", str_find(slim, "/v1/posts") < 0)
 
     // B2.1: ctx correlation fields (middleware pipeline fills these in serve path)
     let c0 = fmr_ctx_new(req, m1, "secret")

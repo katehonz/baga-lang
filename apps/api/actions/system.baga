@@ -39,5 +39,6 @@ fn act_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
 
 fn act_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
     let app = fmr_build_app()?
-    return act_ok(db, fmr_openapi_doc(app.title, app.version))
+    // B2.4: paths from live route table (same as fmr_dispatch)
+    return act_ok(db, fmr_openapi_from_router(app.router, app.title, app.version))
 }

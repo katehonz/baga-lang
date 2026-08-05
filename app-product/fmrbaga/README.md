@@ -142,7 +142,7 @@ Wired into `make test`.
 
 ## OpenAPI 3 (schemas + security)
 
-`GET /openapi.json` — full-ish OpenAPI 3.0.3 document (`openapi.baga`):
+`GET /openapi.json` — OpenAPI 3.0.3 **from the route table** (`fmr_openapi_from_router`):
 
 | Section | Contents |
 |---------|----------|

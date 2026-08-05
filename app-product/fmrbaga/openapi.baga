@@ -1,7 +1,10 @@
-// openapi.baga — OpenAPI 3 document for fmrbaga-api (schemas + security).
-// Pure builders on jsonx. Kept next to handlers so the contract stays honest.
+// openapi.baga — OpenAPI 3 document for fmrbaga (schemas + security).
+// B2.4: paths are emitted from the live Router (route table), not a second
+// hand-maintained list. Components/schemas stay curated; per-op detail uses
+// path heuristics + path params from `{name}` segments.
 
 import "jsonx.baga"
+import "route.baga"
 import "std/str/str.baga"
 
 // ---------- schema primitives ----------
@@ -277,213 +280,325 @@ fn oas_responses_public(schema_name: str) -> JObj {
     return r
 }
 
-fn oas_paths() -> JObj {
-    let mut paths = jobj_new()
+// ---------- B2.4: emit paths from Router ----------
 
-    // GET /health
-    let mut health = oas_op("get_health", "Liveness probe", "system")
-    health = jobj_obj(health, "responses", oas_responses_public("Status"))
-    let mut health_item = jobj_new()
-    health_item = jobj_obj(health_item, "get", health)
-    paths = jobj_obj(paths, "/health", health_item)
+fn oas_lower_method(m: str) -> str {
+    let mut out = ""
+    for i in 0..len(m) {
+        let mut c = char_at(m, i)
+        if c >= 65 && c <= 90 {
+            c = c + 32
+        }
+        out = concat(out, chr(c))
+    }
+    return out
+}
 
-    // GET /ready
-    let mut ready = oas_op("get_ready", "Readiness probe (DB ping)", "system")
-    ready = jobj_obj(ready, "responses", oas_responses_public("Ready"))
-    let mut ready_item = jobj_new()
-    ready_item = jobj_obj(ready_item, "get", ready)
-    paths = jobj_obj(paths, "/ready", ready_item)
+// Public routes (no Bearer).
+fn oas_is_public(pattern: str, method: str) -> i64 {
+    if pattern == "/health" {
+        return 1
+    }
+    if pattern == "/ready" {
+        return 1
+    }
+    if pattern == "/v1/meta" {
+        return 1
+    }
+    if pattern == "/openapi.json" {
+        return 1
+    }
+    if pattern == "/v1/auth/token" {
+        return 1
+    }
+    return 0
+}
 
-    // GET /v1/meta
-    let mut meta_props = jobj_new()
-    meta_props = oas_prop_str(meta_props, "title", "")
-    meta_props = oas_prop_str(meta_props, "version", "")
-    meta_props = oas_prop_str(meta_props, "framework", "")
-    meta_props = oas_prop_str(meta_props, "openapi", "")
-    let meta_schema = oas_obj_schema(meta_props, jarr_new())
-    let mut meta = oas_op("get_meta", "API metadata", "system")
-    let mut meta_r = jobj_new()
-    meta_r = jobj_obj(meta_r, "200", oas_response("OK", meta_schema))
-    meta = jobj_obj(meta, "responses", meta_r)
-    let mut meta_item = jobj_new()
-    meta_item = jobj_obj(meta_item, "get", meta)
-    paths = jobj_obj(paths, "/v1/meta", meta_item)
+fn oas_tag_for(pattern: str) -> str {
+    if str_starts_with(pattern, "/v1/users") {
+        return "users"
+    }
+    if str_starts_with(pattern, "/v1/posts") {
+        return "posts"
+    }
+    if str_starts_with(pattern, "/v1/auth") {
+        return "auth"
+    }
+    if pattern == "/v1/me" {
+        return "auth"
+    }
+    return "system"
+}
 
-    // GET /openapi.json — self
-    let mut oas = oas_op("get_openapi", "OpenAPI 3 document", "system")
-    let mut oas_r = jobj_new()
-    oas_r = jobj_obj(oas_r, "200", oas_response_empty("OpenAPI JSON"))
-    oas = jobj_obj(oas, "responses", oas_r)
-    let mut oas_item = jobj_new()
-    oas_item = jobj_obj(oas_item, "get", oas)
-    paths = jobj_obj(paths, "/openapi.json", oas_item)
+// operationId: get_v1_users_id style from method + pattern.
+fn oas_op_id_for(method: str, pattern: str) -> str {
+    let mut out = oas_lower_method(method)
+    let segs = route_segments(pattern)
+    for i in 0..vec_len(segs) {
+        out = concat(out, "_")
+        let s = vec_get(segs, i)
+        if route_is_param(s) == 1 {
+            out = concat(out, route_param_name(s))
+        } else {
+            out = concat(out, s)
+        }
+    }
+    if out == oas_lower_method(method) {
+        out = concat(out, "_root")
+    }
+    return out
+}
 
-    // POST /v1/auth/token
-    let mut token = oas_op("post_token", "Issue JWT access token", "auth")
-    token = oas_add_json_body(token, "TokenRequest", 0)
-    // also allow ?sub= query
-    let mut qparam = jobj_new()
-    qparam = jobj_str(qparam, "name", "sub")
-    qparam = jobj_str(qparam, "in", "query")
-    qparam = jobj_bool(qparam, "required", 0)
-    qparam = jobj_str(qparam, "description", "Subject (alternative to JSON body)")
-    qparam = jobj_obj(qparam, "schema", oas_str_schema())
+fn oas_summary_for(method: str, pattern: str) -> str {
+    return concat(concat(method, " "), pattern)
+}
+
+// Path + query parameters for a route.
+fn oas_params_from_route(method: str, pattern: str) -> JArr {
     let mut params = jarr_new()
-    params = jarr_obj(params, qparam)
-    token = jobj_raw(token, "parameters", jarr_encode(params))
-    let mut token_r = jobj_new()
-    token_r = jobj_obj(token_r, "200", oas_response_ref("Token issued", "TokenResponse"))
-    token_r = jobj_obj(token_r, "400", oas_response_ref("Bad request", "Error"))
-    token_r = jobj_obj(token_r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
-    token = jobj_obj(token, "responses", token_r)
-    let mut token_item = jobj_new()
-    token_item = jobj_obj(token_item, "post", token)
-    paths = jobj_obj(paths, "/v1/auth/token", token_item)
+    let segs = route_segments(pattern)
+    for i in 0..vec_len(segs) {
+        let s = vec_get(segs, i)
+        if route_is_param(s) == 1 {
+            let name = route_param_name(s)
+            let mut p = jobj_new()
+            p = jobj_str(p, "name", name)
+            p = jobj_str(p, "in", "path")
+            p = jobj_bool(p, "required", 1)
+            p = jobj_str(p, "description", concat(name, " path parameter"))
+            if name == "id" {
+                p = jobj_obj(p, "schema", oas_int_schema())
+            } else {
+                p = jobj_obj(p, "schema", oas_str_schema())
+            }
+            params = jarr_obj(params, p)
+        }
+    }
+    // Query extras for known list GETs
+    if method == "GET" {
+        if pattern == "/v1/posts" {
+            let mut lim = jobj_new()
+            lim = jobj_str(lim, "name", "limit")
+            lim = jobj_str(lim, "in", "query")
+            lim = jobj_bool(lim, "required", 0)
+            lim = jobj_obj(lim, "schema", oas_int_schema())
+            params = jarr_obj(params, lim)
+            let mut off = jobj_new()
+            off = jobj_str(off, "name", "offset")
+            off = jobj_str(off, "in", "query")
+            off = jobj_bool(off, "required", 0)
+            off = jobj_obj(off, "schema", oas_int_schema())
+            params = jarr_obj(params, off)
+            let mut uidq = jobj_new()
+            uidq = jobj_str(uidq, "name", "user_id")
+            uidq = jobj_str(uidq, "in", "query")
+            uidq = jobj_bool(uidq, "required", 0)
+            uidq = jobj_obj(uidq, "schema", oas_int_schema())
+            params = jarr_obj(params, uidq)
+        }
+    }
+    if pattern == "/v1/auth/token" {
+        if method == "POST" {
+            let mut qparam = jobj_new()
+            qparam = jobj_str(qparam, "name", "sub")
+            qparam = jobj_str(qparam, "in", "query")
+            qparam = jobj_bool(qparam, "required", 0)
+            qparam = jobj_str(qparam, "description", "Subject (alternative to JSON body)")
+            qparam = jobj_obj(qparam, "schema", oas_str_schema())
+            params = jarr_obj(params, qparam)
+        }
+    }
+    return params
+}
 
-    // GET /v1/me
-    let mut me = oas_op("get_me", "Current authenticated subject", "auth")
-    me = oas_add_bearer(me)
-    let mut me_r = jobj_new()
-    me_r = jobj_obj(me_r, "200", oas_response_ref("OK", "Me"))
-    me_r = jobj_obj(me_r, "401", oas_response_ref("Unauthorized", "Error"))
-    me = jobj_obj(me, "responses", me_r)
-    let mut me_item = jobj_new()
-    me_item = jobj_obj(me_item, "get", me)
-    paths = jobj_obj(paths, "/v1/me", me_item)
+// Request body schema name; "" = none.
+fn oas_body_schema(method: str, pattern: str) -> str {
+    if method == "POST" {
+        if pattern == "/v1/users" {
+            return "UserCreate"
+        }
+        if pattern == "/v1/posts" {
+            return "PostCreate"
+        }
+        if pattern == "/v1/auth/token" {
+            return "TokenRequest"
+        }
+    }
+    if method == "PATCH" {
+        if pattern == "/v1/users/{id}" {
+            return "UserPatch"
+        }
+        if pattern == "/v1/posts/{id}" {
+            return "PostCreate"
+        }
+    }
+    return ""
+}
 
-    // /v1/users
-    let mut users_get = oas_op("list_users", "List users", "users")
-    users_get = oas_add_bearer(users_get)
-    users_get = jobj_obj(users_get, "responses", oas_responses_ok("UserList"))
+// Primary success response schema; "" = empty body (204-style).
+fn oas_ok_schema(method: str, pattern: str) -> str {
+    if method == "DELETE" {
+        return ""
+    }
+    if pattern == "/health" {
+        return "Status"
+    }
+    if pattern == "/ready" {
+        return "Ready"
+    }
+    if pattern == "/openapi.json" {
+        return ""
+    }
+    if pattern == "/v1/meta" {
+        return "Status"
+    }
+    if pattern == "/v1/auth/token" {
+        return "TokenResponse"
+    }
+    if pattern == "/v1/me" {
+        return "Me"
+    }
+    if pattern == "/v1/users" {
+        if method == "GET" {
+            return "UserList"
+        }
+        if method == "POST" {
+            return "User"
+        }
+    }
+    if pattern == "/v1/users/{id}" {
+        return "User"
+    }
+    if pattern == "/v1/posts" {
+        if method == "GET" {
+            return "PostList"
+        }
+        if method == "POST" {
+            return "Post"
+        }
+    }
+    if pattern == "/v1/posts/{id}" {
+        return "Post"
+    }
+    return "Status"
+}
 
-    let mut users_post = oas_op("create_user", "Create user", "users")
-    users_post = oas_add_bearer(users_post)
-    users_post = oas_add_json_body(users_post, "UserCreate", 1)
-    let mut users_post_r = jobj_new()
-    users_post_r = jobj_obj(users_post_r, "201", oas_response_ref("Created", "User"))
-    users_post_r = jobj_obj(users_post_r, "401", oas_response_ref("Unauthorized", "Error"))
-    users_post_r = jobj_obj(users_post_r, "409", oas_response_ref("Conflict (e.g. email taken)", "Error"))
-    users_post_r = jobj_obj(users_post_r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
-    users_post = jobj_obj(users_post, "responses", users_post_r)
+fn oas_success_code(method: str, pattern: str) -> str {
+    if method == "POST" {
+        if pattern == "/v1/users" {
+            return "201"
+        }
+        if pattern == "/v1/posts" {
+            return "201"
+        }
+    }
+    if method == "DELETE" {
+        return "204"
+    }
+    return "200"
+}
 
-    let mut users_item = jobj_new()
-    users_item = jobj_obj(users_item, "get", users_get)
-    users_item = jobj_obj(users_item, "post", users_post)
-    paths = jobj_obj(paths, "/v1/users", users_item)
+// Build one operation for a registered route (method + pattern + id).
+fn oas_op_from_route(method: str, pattern: str, id: i64) -> JObj {
+    let tag = oas_tag_for(pattern)
+    let mut op = oas_op(oas_op_id_for(method, pattern), oas_summary_for(method, pattern), tag)
+    op = jobj_i64(op, "x-baga-route-id", id)
+    if oas_is_public(pattern, method) == 0 {
+        op = oas_add_bearer(op)
+    }
+    let params = oas_params_from_route(method, pattern)
+    if vec_len(params.items) > 0 {
+        op = jobj_raw(op, "parameters", jarr_encode(params))
+    }
+    let body = oas_body_schema(method, pattern)
+    if body != "" {
+        let mut reqd: i64 = 1
+        if pattern == "/v1/auth/token" {
+            reqd = 0
+        }
+        op = oas_add_json_body(op, body, reqd)
+    }
+    let code = oas_success_code(method, pattern)
+    let ok_schema = oas_ok_schema(method, pattern)
+    let mut resp = jobj_new()
+    if ok_schema == "" {
+        resp = jobj_obj(resp, code, oas_response_empty("OK"))
+    } else {
+        resp = jobj_obj(resp, code, oas_response_ref("OK", ok_schema))
+    }
+    if oas_is_public(pattern, method) == 0 {
+        resp = jobj_obj(resp, "401", oas_response_ref("Unauthorized", "Error"))
+    }
+    if pattern == "/ready" {
+        resp = jobj_obj(resp, "503", oas_response_ref("Unavailable", "Error"))
+    }
+    if body != "" {
+        resp = jobj_obj(resp, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
+    }
+    if method != "POST" {
+        if str_find(pattern, "{id}") >= 0 {
+            resp = jobj_obj(resp, "404", oas_response_ref("Not found", "Error"))
+        }
+    }
+    op = jobj_obj(op, "responses", resp)
+    return op
+}
 
-    // /v1/users/{id}
-    let mut id_params = jarr_new()
-    id_params = jarr_obj(id_params, oas_path_id_param())
+fn oas_pattern_seen(seen: Vec<str>, pattern: str) -> i64 {
+    for i in 0..vec_len(seen) {
+        if vec_get(seen, i) == pattern {
+            return 1
+        }
+    }
+    return 0
+}
 
-    let mut uget = oas_op("get_user", "Get user by id", "users")
-    uget = oas_add_bearer(uget)
-    uget = jobj_raw(uget, "parameters", jarr_encode(id_params))
-    let mut uget_r = jobj_new()
-    uget_r = jobj_obj(uget_r, "200", oas_response_ref("OK", "User"))
-    uget_r = jobj_obj(uget_r, "401", oas_response_ref("Unauthorized", "Error"))
-    uget_r = jobj_obj(uget_r, "404", oas_response_ref("Not found", "Error"))
-    uget = jobj_obj(uget, "responses", uget_r)
-
-    let mut upatch = oas_op("patch_user", "Update user name", "users")
-    upatch = oas_add_bearer(upatch)
-    upatch = jobj_raw(upatch, "parameters", jarr_encode(id_params))
-    upatch = oas_add_json_body(upatch, "UserPatch", 1)
-    let mut upatch_r = jobj_new()
-    upatch_r = jobj_obj(upatch_r, "200", oas_response_ref("OK", "User"))
-    upatch_r = jobj_obj(upatch_r, "401", oas_response_ref("Unauthorized", "Error"))
-    upatch_r = jobj_obj(upatch_r, "404", oas_response_ref("Not found", "Error"))
-    upatch_r = jobj_obj(upatch_r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
-    upatch = jobj_obj(upatch, "responses", upatch_r)
-
-    let mut udel = oas_op("delete_user", "Delete user", "users")
-    udel = oas_add_bearer(udel)
-    udel = jobj_raw(udel, "parameters", jarr_encode(id_params))
-    let mut udel_r = jobj_new()
-    udel_r = jobj_obj(udel_r, "204", oas_response_empty("No Content"))
-    udel_r = jobj_obj(udel_r, "401", oas_response_ref("Unauthorized", "Error"))
-    udel = jobj_obj(udel, "responses", udel_r)
-
-    let mut uid_item = jobj_new()
-    uid_item = jobj_obj(uid_item, "get", uget)
-    uid_item = jobj_obj(uid_item, "patch", upatch)
-    uid_item = jobj_obj(uid_item, "delete", udel)
-    paths = jobj_obj(paths, "/v1/users/{id}", uid_item)
-
-    // /v1/posts
-    let mut lim = jobj_new()
-    lim = jobj_str(lim, "name", "limit")
-    lim = jobj_str(lim, "in", "query")
-    lim = jobj_bool(lim, "required", 0)
-    lim = jobj_obj(lim, "schema", oas_int_schema())
-    let mut off = jobj_new()
-    off = jobj_str(off, "name", "offset")
-    off = jobj_str(off, "in", "query")
-    off = jobj_bool(off, "required", 0)
-    off = jobj_obj(off, "schema", oas_int_schema())
-    let mut uidq = jobj_new()
-    uidq = jobj_str(uidq, "name", "user_id")
-    uidq = jobj_str(uidq, "in", "query")
-    uidq = jobj_bool(uidq, "required", 0)
-    uidq = jobj_obj(uidq, "schema", oas_int_schema())
-    let mut pparams = jarr_new()
-    pparams = jarr_obj(pparams, lim)
-    pparams = jarr_obj(pparams, off)
-    pparams = jarr_obj(pparams, uidq)
-
-    let mut pget = oas_op("list_posts", "List posts (paginated)", "posts")
-    pget = oas_add_bearer(pget)
-    pget = jobj_raw(pget, "parameters", jarr_encode(pparams))
-    pget = jobj_obj(pget, "responses", oas_responses_ok("PostList"))
-
-    let mut ppost = oas_op("create_post", "Create post", "posts")
-    ppost = oas_add_bearer(ppost)
-    ppost = oas_add_json_body(ppost, "PostCreate", 1)
-    let mut ppost_r = jobj_new()
-    ppost_r = jobj_obj(ppost_r, "201", oas_response_ref("Created", "Post"))
-    ppost_r = jobj_obj(ppost_r, "401", oas_response_ref("Unauthorized", "Error"))
-    ppost_r = jobj_obj(ppost_r, "404", oas_response_ref("user_id not found", "Error"))
-    ppost_r = jobj_obj(ppost_r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
-    ppost = jobj_obj(ppost, "responses", ppost_r)
-
-    let mut posts_item = jobj_new()
-    posts_item = jobj_obj(posts_item, "get", pget)
-    posts_item = jobj_obj(posts_item, "post", ppost)
-    paths = jobj_obj(paths, "/v1/posts", posts_item)
-
-    let mut pshow = oas_op("get_post", "Get post by id", "posts")
-    pshow = oas_add_bearer(pshow)
-    pshow = jobj_raw(pshow, "parameters", jarr_encode(id_params))
-    let mut pshow_r = jobj_new()
-    pshow_r = jobj_obj(pshow_r, "200", oas_response_ref("OK", "Post"))
-    pshow_r = jobj_obj(pshow_r, "401", oas_response_ref("Unauthorized", "Error"))
-    pshow_r = jobj_obj(pshow_r, "404", oas_response_ref("Not found", "Error"))
-    pshow = jobj_obj(pshow, "responses", pshow_r)
-
-    let mut ppatch = oas_op("patch_post", "Update post", "posts")
-    ppatch = oas_add_bearer(ppatch)
-    ppatch = jobj_raw(ppatch, "parameters", jarr_encode(id_params))
-    ppatch = oas_add_json_body(ppatch, "PostCreate", 1)
-    let mut ppatch_r = jobj_new()
-    ppatch_r = jobj_obj(ppatch_r, "200", oas_response_ref("OK", "Post"))
-    ppatch_r = jobj_obj(ppatch_r, "401", oas_response_ref("Unauthorized", "Error"))
-    ppatch_r = jobj_obj(ppatch_r, "404", oas_response_ref("Not found", "Error"))
-    ppatch = jobj_obj(ppatch, "responses", ppatch_r)
-
-    let mut pdel = oas_op("delete_post", "Delete post", "posts")
-    pdel = oas_add_bearer(pdel)
-    pdel = jobj_raw(pdel, "parameters", jarr_encode(id_params))
-    let mut pdel_r = jobj_new()
-    pdel_r = jobj_obj(pdel_r, "204", oas_response_empty("No Content"))
-    pdel_r = jobj_obj(pdel_r, "401", oas_response_ref("Unauthorized", "Error"))
-    pdel = jobj_obj(pdel, "responses", pdel_r)
-
-    let mut pid_item = jobj_new()
-    pid_item = jobj_obj(pid_item, "get", pshow)
-    pid_item = jobj_obj(pid_item, "patch", ppatch)
-    pid_item = jobj_obj(pid_item, "delete", pdel)
-    paths = jobj_obj(paths, "/v1/posts/{id}", pid_item)
-
+// Paths object: only routes present in `r` (source of truth = route table).
+fn oas_paths_from_router(r: Router) -> JObj {
+    let seen: Vec<str> = vec_new()
+    for i in 0..vec_len(r.patterns) {
+        let p = vec_get(r.patterns, i)
+        if oas_pattern_seen(seen, p) == 0 {
+            vec_push(seen, p)
+        }
+    }
+    let mut paths = jobj_new()
+    for si in 0..vec_len(seen) {
+        let pattern = vec_get(seen, si)
+        let mut item = jobj_new()
+        for i in 0..vec_len(r.patterns) {
+            if vec_get(r.patterns, i) == pattern {
+                let method = vec_get(r.methods, i)
+                let id = vec_get(r.ids, i)
+                let op = oas_op_from_route(method, pattern, id)
+                item = jobj_obj(item, oas_lower_method(method), op)
+            }
+        }
+        paths = jobj_obj(paths, pattern, item)
+    }
     return paths
+}
+
+// Catalog router: same surface as apps/api (for pure unit tests without FmrApp).
+fn oas_catalog_router() -> Router {
+    let mut r = router_new()
+    r = router_add(r, "GET", "/health", 1)
+    r = router_add(r, "GET", "/ready", 2)
+    r = router_add(r, "GET", "/v1/meta", 3)
+    r = router_add(r, "GET", "/openapi.json", 4)
+    r = router_add(r, "POST", "/v1/auth/token", 10)
+    r = router_add(r, "GET", "/v1/me", 11)
+    r = router_add(r, "GET", "/v1/users", 20)
+    r = router_add(r, "POST", "/v1/users", 21)
+    r = router_add(r, "GET", "/v1/users/{id}", 22)
+    r = router_add(r, "PATCH", "/v1/users/{id}", 23)
+    r = router_add(r, "DELETE", "/v1/users/{id}", 24)
+    r = router_add(r, "GET", "/v1/posts", 30)
+    r = router_add(r, "POST", "/v1/posts", 31)
+    r = router_add(r, "GET", "/v1/posts/{id}", 32)
+    r = router_add(r, "PATCH", "/v1/posts/{id}", 33)
+    r = router_add(r, "DELETE", "/v1/posts/{id}", 34)
+    return r
 }
 
 fn oas_tags() -> str {
@@ -507,19 +622,23 @@ fn oas_tags() -> str {
     return jarr_encode(tags)
 }
 
-// Full OpenAPI 3.0.3 document as JSON object.
-fn fmr_openapi_doc(title: str, version: str) -> JObj {
+// Full OpenAPI 3.0.3 from a live route table (B2.4).
+fn fmr_openapi_from_router(r: Router, title: str, version: str) -> JObj {
     let mut info = jobj_new()
     info = jobj_str(info, "title", title)
     info = jobj_str(info, "version", version)
-    info = jobj_str(info, "description", "fmrbaga production API — JSON-first, JWT Bearer auth, Postgres-backed users.")
+    info = jobj_str(info, "description", "fmrbaga API — paths emitted from the route table; JWT Bearer where required.")
 
     let mut root = jobj_new()
     root = jobj_str(root, "openapi", "3.0.3")
     root = jobj_obj(root, "info", info)
     root = jobj_raw(root, "tags", oas_tags())
-    root = jobj_obj(root, "paths", oas_paths())
+    root = jobj_obj(root, "paths", oas_paths_from_router(r))
     root = jobj_obj(root, "components", oas_components())
-    // empty global security — ops declare bearer where needed
     return root
+}
+
+// Pure helper for tests: catalog router (= apps/api surface).
+fn fmr_openapi_doc(title: str, version: str) -> JObj {
+    return fmr_openapi_from_router(oas_catalog_router(), title, version)
 }

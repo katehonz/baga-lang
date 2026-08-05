@@ -34,11 +34,16 @@ were written as multi-byte UTF-8 via `chr()` in `poke8`.
 
 **Verdict.** Same as pgbaga/ormbaga.
 
-## G5 — No OpenAPI / schema codegen
+## G5 — OpenAPI from route table (B2.4 shipped)
 
-**Symptom.** Clients discover routes only via README or `/v1/meta`.
+**Shipped.** `fmr_openapi_from_router(r, title, version)` walks the live
+`Router` and emits `paths` (methods, path params, bearer heuristic, body/
+response schema names). `GET /openapi.json` uses the app's registered
+routes. Schemas stay in `oas_components()`. Ops carry `x-baga-route-id`.
 
-**Verdict.** P1: emit OpenAPI JSON from the route table.
+**Residual.** Full per-op prose still heuristic (not a second hand table);
+new resources need body/ok schema name rules in `oas_body_schema` /
+`oas_ok_schema` for rich refs.
 
 ## G6 — Middleware stack (partial — B2.1)
 

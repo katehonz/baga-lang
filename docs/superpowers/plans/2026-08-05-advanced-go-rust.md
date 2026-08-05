@@ -185,7 +185,7 @@ Order by call-graph fan-in (migrate leaves first or bottom-up drivers):
 | B2.1 | Middleware stack: request-id, **otel traceparent**, **logbaga** JSON, optional CORS (ordered hooks, not only `fmr_before`) | ✅ |
 | B2.2 | Wire **ctxbaga** deadline from `grpc-timeout` / `X-Request-Timeout` on long routes |
 | B2.3 | Errors: map domain failures → **statusbaga** codes where gRPC; HTTP detail envelope stays |
-| B2.4 | OpenAPI emit from route table (closes fmr G5) — real client contract |
+| B2.4 | OpenAPI emit from route table (closes fmr G5) — real client contract | ✅ |
 | B2.5 | L5 route table experiment: `Map<str, fn(FmrCtx)->FmrOut>` *or* keep ids but codegen from table (pick one; ids OK if documented) |
 | B2.6 | Integration script: migrate → serve → curl auth CRUD → metrics/readyz (CI-friendly) |
 
@@ -309,9 +309,9 @@ in `lsmbaga/gaps.md`.
 
 ### Phase 3 — Flagship apps (B2 + B3)
 
-1. fmr middleware + apps/api otel/log — **B2.1 done** (request-id, traceparent, logbaga)  
-2. OpenAPI emit — **next** (B2.4; partial via `/openapi.json` already)  
-3. gRPC dual path on one product service  
+1. fmr middleware + apps/api otel/log — **B2.1 done**  
+2. OpenAPI emit from route table — **B2.4 done**  
+3. gRPC dual path on one product service — **next** (B3)  
 4. Interop goldens  
 
 **Exit criteria:** single README path runs product API + gRPC call with metrics and graceful shutdown.

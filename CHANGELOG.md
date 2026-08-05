@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Phase 3 B2.4 — OpenAPI from route table
+- **fmrbaga:** `fmr_openapi_from_router` emits `paths` from the live `Router`
+  (path params, bearer/public heuristics, body/response schema names,
+  `x-baga-route-id`). `/openapi.json` uses the app's registered routes.
+  `fmr_openapi_doc` keeps a catalog router for pure tests.
+
 ### Phase 3 B2.1 — fmr middleware (request-id + otel + log)
 - **fmrbaga:** ordered pipeline in `fmr_handle`: request-id → W3C
   `traceparent` (otelbaga child span) → `fmr_before` → dispatch → logbaga
