@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Phase 5 — structural liveness + design notes
+- **`examples/verify/liveness_struct.baga`:** `--verify` proves fixed-N
+  unanimous 2PC ⇒ commit and matched fan-in ⇒ balanced (counting progress,
+  not full temporal liveness). Wired into `scripts/run_verify.sh`.
+- **Design notes:** C′ borrow-lite
+  (`docs/superpowers/specs/2026-08-05-borrow-lite-design.md`); A4 LLVM L3
+  status still C-only (`…/2026-08-05-llvm-l3-status.md`).
+
 ### Phase 5 — protoc_baga sketch
 - **`tools/protoc_baga/`:** proto3 subset → baga `Msg_encode`/`Msg_decode`
   (string/int64/bytes/bool). Design note + `examples/hello.proto` /

@@ -9,7 +9,7 @@ BIN="${BAGA:-./baga}"
 BAGAIFLAGS="${BAGAIFLAGS:--I . -I app-product}"
 
 echo "=== verify (статична верификация, M0–M18) ==="
-for f in abs_val max2 clamp sum; do \
+for f in abs_val max2 clamp sum liveness_struct; do \
 	"$BIN" $BAGAIFLAGS --verify examples/verify/$f.baga > /tmp/baga_verify_out.txt || true; \
 	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: $f доказано (completeness)" \

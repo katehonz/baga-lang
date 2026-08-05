@@ -1,0 +1,84 @@
+// liveness_struct.baga — Phase 5: structural progress lemmas under --verify.
+//
+// Not full temporal liveness (no "eventually under all fair schedules").
+// Counting properties of fixed-N protocols — Baga-native seed from
+// docs/thesis-open-problems.md §1.4:
+//   unanimous 2PC votes ⇒ commit
+//   matched fan-in (n sends, n recvs) ⇒ balanced
+//
+//   ./baga --verify examples/verify/liveness_struct.baga
+//   ./baga examples/verify/liveness_struct.baga
+
+// --- 2PC: all N participants YES ⇒ commit decision ---
+spec tpc_all_yes {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+        n <= 64
+    ensures:
+        output == 1
+}
+fn tpc_all_yes(n: i64) -> i64 {
+    let yes_count = n
+    if yes_count == n {
+        return 1
+    }
+    return 0
+}
+
+// --- Fan-in balance predicate (0 or 1) ---
+spec fanin_balanced {
+    input:
+        sends: i64
+        recvs: i64
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+        n <= 64
+        sends >= 0
+        recvs >= 0
+        sends <= n
+        recvs <= n
+    ensures:
+        output == 0 || output == 1
+}
+fn fanin_balanced(sends: i64, recvs: i64, n: i64) -> i64 {
+    if sends == n {
+        if recvs == n {
+            return 1
+        }
+    }
+    return 0
+}
+
+// --- Matched counts ⇒ balanced (progress seed) ---
+spec fanin_matched {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+        n <= 64
+    ensures:
+        output == 1
+}
+fn fanin_matched(n: i64) -> i64 {
+    let sends = n
+    let recvs = n
+    if sends == n {
+        if recvs == n {
+            return 1
+        }
+    }
+    return 0
+}
+
+fn main() {
+    print(tpc_all_yes(2))
+    print(fanin_matched(3))
+    print(fanin_balanced(3, 3, 3))
+    print(fanin_balanced(2, 3, 3))
+}

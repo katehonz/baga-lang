@@ -20,6 +20,10 @@ fn tpc_decide(yes_count: i64, n: i64) -> i64 {
     return 0
 }
 
+// Structural progress lemmas for fixed-N 2PC / fan-in live under
+// examples/verify/liveness_struct.baga (Phase 5). Kept out of this file so
+// `import rules.baga` + --verify is not polluted by next_ts overflow noise
+// when only the progress specs are wanted.
 // A version written at write_ts is visible to a snapshot at read_ts
 // iff write_ts <= read_ts.
 spec mvcc_visible {

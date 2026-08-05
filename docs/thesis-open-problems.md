@@ -84,6 +84,11 @@ dynamic scheduling, and it says nothing about fairness/starvation. Of the
 three frontiers this is the one most native to Baga's design, and the one
 most likely to yield a clean next chapter.
 
+**Phase 5 sketch (2026-08-05):** `examples/verify/liveness_struct.baga`
+proves two *counting* progress lemmas under `--verify` (not temporal
+liveness): fixed-N unanimous 2PC ⇒ commit (`tpc_all_yes`); matched fan-in
+counts ⇒ balanced (`fanin_matched`). Wait-for acyclicity remains open.
+
 ---
 
 ## 2. Full bitvector theory

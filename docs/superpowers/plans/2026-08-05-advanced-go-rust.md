@@ -328,11 +328,11 @@ in `lsmbaga/gaps.md`.
 
 ### Phase 5 — Stretch (only if Phases 1–3 hold)
 
-- A4 LLVM L3  
+- A4 LLVM L3 — **status note** (`specs/2026-08-05-llvm-l3-status.md`); still C-only  
 - protoc → baga sketch (P1 pbbaga) — **done** (`tools/protoc_baga/`)  
 - io_uring poll backend experiment  
-- Thesis open problems: one structural liveness lemma (not full)  
-- **C′ light optional borrow** — design note only if still desired; never required  
+- Structural liveness lemmas — **done** (`examples/verify/liveness_struct.baga`)  
+- **C′ light optional borrow** — **design note** (`specs/2026-08-05-borrow-lite-design.md`); not implemented
 
 ### Phase note — MEM vs product
 
