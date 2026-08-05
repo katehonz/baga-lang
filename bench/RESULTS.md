@@ -2,6 +2,18 @@
 
 Generated: 2026-08-02T18:53:19+03:00 on Linux 6.1.0-51-amd64 x86_64
 
+## Latency (B4.4)
+
+See [results/latency-2026-08-05.md](results/latency-2026-08-05.md).
+
+| Host | baga | p50 batch ms | p99 batch ms |
+|------|------|--------------|--------------|
+| Ryzen 5 3600 / Linux 6.1 | 0.7.0 | 7 | 8 |
+
+Re-run: `./bench/run_latency.sh`.
+
+---
+
 Verdicts: **ensures** = spec contracts; **arith** = M15/M18 overflow safety; **protocol** = M14 handle protocols.
 
 | Task | Category | Baga ensures | Baga arith | Baga protocol | ms | Expected | CBMC | ms |

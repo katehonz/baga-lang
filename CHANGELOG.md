@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Phase 4 B4.4 — latency bench gate
+- Recorded `./bench/run_latency.sh` on Ryzen 5 3600 / baga 0.7.0:
+  **p50 ≈ 7 ms**, **p99 ≈ 8 ms** per 8e6-iter batch (40 batches).
+  Artifacts: `bench/results/latency-2026-08-05.md`, `bench/results/latency-latest.txt`.
+
 ### Phase 4 B4.3 — multi-key 2PC concurrent stress
 - **txnbaga:** participants hold **multiple concurrent PREPARE**s when locks
   do not conflict; `tpc_txn_id` for disjoint tx ranges. Stress test

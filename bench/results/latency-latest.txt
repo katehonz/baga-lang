@@ -1,0 +1,13 @@
+date=2026-08-05T23:03:08+03:00
+host=Linux 6.1.0-51-amd64 x86_64
+cpu=AMD Ryzen 5 3600 6-Core Processor
+baga=baga 0.7.0
+=== baga latency microbench ===
+bench.latency batches=40
+  wall_ms=281
+  batch_min_ms=6
+  batch_avg_ms=7
+  batch_max_ms=8
+  batch_p50_ms=7
+  batch_p99_ms=8
+  work_checksum=352047104
