@@ -12,7 +12,7 @@
 | 2 | pg / orm / jsonrpc / pbbaga L3 results (no dual `ok:i64` world on those APIs) | ✅ | `pgbaga` `PgResult`; `ormbaga` `OrmExec`/`OrmQuery`/`MigrateResult`; `jsonrpcbaga` `JrpcOk`/`JrpcErr`/`JrpcSkip`; `pbbaga` `GrpcCall` |
 | 3 | apps/api production layout (tracing/logs/metrics/timeouts surface) | ✅ | fmr middleware B2.1; OpenAPI B2.4; `/metrics` + `/ready` + graceful SIGTERM; [product-path.md](../../runbooks/product-path.md) |
 | 4 | gRPC unary client + server product path + Go-aligned codes | ✅ | client + registry dual protocol; `tests/grpc_goldens_test.baga`, `registry_grpc_test.baga`; statusbaga |
-| 5 | Engine recovery beyond happy-path MVP | ✅ | `tests/lsm_recover_test.baga`; `tests/raft_persist_test.baga`; LSM R0–R7 |
+| 5 | Engine recovery beyond happy-path MVP | ✅ | `tests/lsm_recover_test.baga`; `tests/raft_persist_test.baga`; LSM R0–R8 |
 | 6 | Honest limits still listed | ✅ | Plan non-goals + §11; package `gaps.md`; LLVM / borrow / io_uring design notes |
 
 ## What shipped under the plan (summary)

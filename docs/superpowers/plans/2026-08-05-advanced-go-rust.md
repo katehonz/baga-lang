@@ -386,7 +386,7 @@ Full write-up: [2026-08-05-advanced-plan-dod.md](2026-08-05-advanced-plan-dod.md
 
 **Post-plan horizon** (not gates for this plan’s DoD) — pick one:
 
-1. **Storage:** rocksbaga rename when quality warrants; finer compact pick; bloom standalone  
+1. **Storage:** rocksbaga rename when quality warrants; bloom standalone (R8 pick done)  
 2. **Product:** L5 route table; gRPC H2 client; optional status/ctx defaults in more handlers  
 3. **Language:** LLVM L3 (or keep C-only honesty); optional C′ borrow-lite impl  
 4. **Sketches → product only if needed:** multi-arg syscall / ring mmap for io_uring; full protoc plugin  
