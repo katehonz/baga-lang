@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### OTLP/JSON export, gRPC streaming frames, MEM-3 mut rebind
+- **otelbaga**: `OtelSpan`, `otel_span_to_otlp_json` (base64 ids),
+  `otel_export_file` / `otel_export_http` / `otel_export_span_file`.
+- **pbbaga**: `grpc_stream_append` / `grpc_stream_next` / `grpc_stream_count`,
+  `hello_stream_replies` (server-streaming message layer).
+- **MEM-3**: `mut p = arena_alloc(...)` rebinds region; free of old arena
+  no longer kills rebound `p` (probes in `run_tests.sh`).
+
 ### C8 lite otelbaga + MEM-3 region tags + cloudbaga gRPC
 - **otelbaga**: W3C `traceparent` parse/format/new/child/from_header;
   `log_info_trace` / `log_emit_trace` for correlation. No OTLP export.

@@ -1636,6 +1636,21 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     "променливата '%s' е декларирана с 'let' без 'mut' — присвояването е забранено",
                     n->assign_target->name);
             }
+            /* MEM-3: mut p = arena_alloc(a, n) rebinds region; other assigns clear it */
+            if (n->assign_target->kind == NODE_IDENT) {
+                EnvEntry *pe = env_find(ctx, n->assign_target->name);
+                if (pe) {
+                    pe->region = NULL;
+                    if (n->assign_val && n->assign_val->kind == NODE_CALL &&
+                        n->assign_val->callee && n->assign_val->callee->kind == NODE_IDENT &&
+                        strcmp(n->assign_val->callee->name, "arena_alloc") == 0 &&
+                        n->assign_val->args.len >= 1 &&
+                        n->assign_val->args.data[0]->kind == NODE_IDENT) {
+                        EnvEntry *ae = env_find(ctx, n->assign_val->args.data[0]->name);
+                        if (ae) pe->region = ae;
+                    }
+                }
+            }
             break;
         }
 

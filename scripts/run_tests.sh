@@ -468,6 +468,15 @@ printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n  
 run /tmp/baga_arena_reg1.baga 2>&1 | grep -q "използване на 'p' след free" \
 	&& echo "OK: region — use of arena_alloc result after free е хванат" \
 	|| { echo "FAIL: p след arena_free(a) трябва да гърми"; exit 1; }
+# MEM-3 mut rebind region
+printf 'fn main() {\n    let a = arena_new()\n    let mut p = arena_alloc(a, 8)\n    let b = arena_new()\n    p = arena_alloc(b, 8)\n    arena_free(a)\n    print(p)\n    arena_free(b)\n}\n' > /tmp/baga_arena_reg2.baga
+test "$(run /tmp/baga_arena_reg2.baga 2>/dev/null)" != "" \
+	&& echo "OK: mut rebind — free of old arena не убива rebind-натия p" \
+	|| { echo "FAIL: mut rebind region"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let mut p = arena_alloc(a, 8)\n    p = arena_alloc(a, 8)\n    arena_free(a)\n    print(p)\n}\n' > /tmp/baga_arena_reg3.baga
+run /tmp/baga_arena_reg3.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: mut rebind same arena — free still kills p" \
+	|| { echo "FAIL: rebind same arena + free"; exit 1; }
 
 # ── 6. Static verifier oracle ────────────────────────────────────────────
 bash "$ROOT/scripts/run_verify.sh"

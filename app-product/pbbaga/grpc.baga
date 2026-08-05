@@ -42,6 +42,79 @@ fn grpc_decode(frame: bytes) -> GrpcMsg {
     }
 }
 
+// ---------- server/client streaming: concatenate length-prefixed messages ----------
+
+// Append one message frame onto an existing stream buffer.
+fn grpc_stream_append(stream: bytes, msg: bytes) -> bytes {
+    return bytes_concat(stream, grpc_encode(msg))
+}
+
+// Decode one frame starting at `pos`. Returns payload + next position.
+struct GrpcStreamRead {
+    ok: i64,
+    compressed: i64,
+    payload: bytes,
+    next: i64        // byte offset after this frame
+}
+
+fn grpc_stream_next(stream: bytes, pos: i64) -> GrpcStreamRead {
+    let empty = bytes_new(0)
+    if pos < 0 || pos + 5 > bytes_len(stream) {
+        return GrpcStreamRead { ok: 0, compressed: 0, payload: empty, next: pos }
+    }
+    let comp = bytes_at(stream, pos)
+    let n = ((bytes_at(stream, pos + 1) & 255) << 24)
+        | ((bytes_at(stream, pos + 2) & 255) << 16)
+        | ((bytes_at(stream, pos + 3) & 255) << 8)
+        | (bytes_at(stream, pos + 4) & 255)
+    if n < 0 || pos + 5 + n > bytes_len(stream) {
+        return GrpcStreamRead { ok: 0, compressed: comp, payload: empty, next: pos }
+    }
+    return GrpcStreamRead {
+        ok: 1,
+        compressed: comp,
+        payload: bytes_slice(stream, pos + 5, pos + 5 + n),
+        next: pos + 5 + n
+    }
+}
+
+// Count complete frames in a stream buffer.
+fn grpc_stream_count(stream: bytes) -> i64 {
+    let mut pos: i64 = 0
+    let mut n: i64 = 0
+    let mut more: i64 = 1
+    while more == 1 {
+        let r = grpc_stream_next(stream, pos)
+        if r.ok == 0 {
+            more = 0
+        } else {
+            n = n + 1
+            pos = r.next
+        }
+    }
+    return n
+}
+
+// Server-streaming Hello: emit N HelloReply messages for one request.
+fn hello_stream_replies(name: str, count: i64) -> bytes {
+    let mut stream = bytes_new(0)
+    let mut i: i64 = 0
+    let mut c = count
+    if c < 1 {
+        c = 1
+    }
+    if c > 64 {
+        c = 64
+    }
+    while i < c {
+        let msg = concat(concat(concat(concat("Здравей, ", name), " #"), int_to_str(i + 1)), "")
+        let rep = hello_reply_encode(msg)
+        stream = grpc_stream_append(stream, rep)
+        i = i + 1
+    }
+    return stream
+}
+
 // Trailer helpers (HTTP/2 trailers or response headers in probes).
 fn grpc_status_ok() -> str {
     return "0"

@@ -1,14 +1,26 @@
 # otelbaga
 
-**W3C Trace Context lite** (Track **C8** subset — no OTLP export).
+**W3C Trace Context + OTLP/JSON export lite** (Track **C8**).
+
+## Trace context
 
 ```baga
-let t = otel_parse_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
-let tp = otel_format(t)          // round-trip
-let root = otel_new_trace()?     // random ids
-let child = otel_child(root)?    // same trace_id, new span
+let t = otel_parse_traceparent("00-4bf9…-00f0…-01")
+let root = otel_new_trace()?
+let child = otel_child(root)?
 let from = otel_from_header(http_header(req, "traceparent"))?
 ```
 
-Use `trace_id` / `span_id` in `logbaga` fields for correlation. Full OpenTelemetry
-SDK/export remains deferred.
+## Spans + export
+
+```baga
+let sp = otel_span_now("GET /hello", ctx, 2)?   // kind 2 = SERVER
+sp = otel_span_end(sp)?
+let body = otel_span_to_otlp_json(sp, "myservice")
+otel_export_span_file("/var/log/spans.ndjson", sp, "myservice")?
+// optional collector:
+// otel_export_http("http://localhost:4318/v1/traces", body, 5)?
+```
+
+OTLP JSON uses base64 `traceId`/`spanId` plus hex in attributes for humans.
+No metrics/logs pipeline; no batching daemon.

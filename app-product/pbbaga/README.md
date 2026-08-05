@@ -35,9 +35,19 @@ Example unary types: `HelloRequest` / `HelloReply` + `hello_rpc`.
 ```baga
 let u = grpc_hello_handle(request_frame)
 grpc_write_response(fd, u)?   // headers + binary body
+// or Response for H2:
+let r = grpc_hello_response(request_frame)
 ```
 
-See `tests/grpc_unary_test.baga`.
+## Server streaming (message layer)
+
+```baga
+let stream = hello_stream_replies("name", 3)  // N length-prefixed frames
+let r = grpc_stream_next(stream, 0)
+// r.payload, r.next …
+```
+
+See `tests/grpc_unary_test.baga`, `tests/pb_test.baga` (stream_*).
 
 ## Honest limits
 

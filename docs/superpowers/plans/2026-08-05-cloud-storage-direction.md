@@ -1,8 +1,9 @@
 # Cloud & storage direction plan
 
-Date: 2026-08-05. Status: **Track S + C core complete** — S1–S8 + C1–C7 +
-MEM-3 lite + gRPC unary + latency bench shipped; remaining optional:
-C8 OTel (defer), full arena region tags, H2 trailers-native gRPC.
+Date: 2026-08-05. Status: **complete for stated scope** — S1–S8 + C1–C8
+(incl. OTLP/JSON export lite) + MEM-3 regions (alloc tags + mut rebind) +
+gRPC unary/streaming frames + latency bench. Open-ended: full OTel SDK,
+gRPC bidirectional streaming transport.
 Driver: the target profile is Rust/C++-class systems work — multithreading,
 async, performance analysis — plus distributed systems: distributed
 transactions and consensus (Paxos/Raft). We build for cloud (Kubernetes)

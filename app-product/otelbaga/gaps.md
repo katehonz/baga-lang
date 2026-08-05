@@ -1,13 +1,11 @@
 # otelbaga — gaps
 
-## O1 — no OTLP / Jaeger export
+## O1 — OTLP export is fire-and-forget
 
-IDs only. Shipping spans to a collector is a separate service.
+File append + optional HTTP POST. No retry queue, no batching agent.
 
-## O2 — no tracestate
+## O2 — no tracestate / baggage
 
-W3C `tracestate` header ignored.
+## O3 — hex→base64 only for even-length hex
 
-## O3 — random quality
-
-`random_bytes` for ids; not crypto-bound to a specific RNG seed story.
+Odd lengths truncate the last nibble.

@@ -90,6 +90,21 @@ fn main() {
     // pure rpc helper
     check("rpc", hello_rpc("X", 2) == "Здравей, X×2")
 
+    // server streaming: 3 frames
+    let stream = hello_stream_replies("S", 3)
+    check("stream_count", grpc_stream_count(stream) == 3)
+    let r0 = grpc_stream_next(stream, 0)
+    check("stream0", r0.ok == 1)
+    let h0 = hello_reply_decode(r0.payload)
+    check("stream0_msg", h0.ok == 1 && str_find(h0.message, "#1") >= 0)
+    let r1 = grpc_stream_next(stream, r0.next)
+    let r2 = grpc_stream_next(stream, r1.next)
+    check("stream2", r2.ok == 1)
+    let h2 = hello_reply_decode(r2.payload)
+    check("stream2_msg", h2.ok == 1 && str_find(h2.message, "#3") >= 0)
+    let r3 = grpc_stream_next(stream, r2.next)
+    check("stream_end", r3.ok == 0)
+
     // golden: field 1 string "testing" — known from protoc
     // message { string s = 1; } with s="testing"
     // 0a 07 74 65 73 74 69 6e 67

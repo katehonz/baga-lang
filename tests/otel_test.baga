@@ -1,7 +1,8 @@
-// otel_test.baga — C8 lite W3C traceparent.
+// otel_test.baga — C8 W3C traceparent + OTLP/JSON export lite.
 
 import "otelbaga/otel.baga"
 import "std/str/str.baga"
+import "std/os/os.baga"
 
 fn check(name: str, ok: bool) {
     if ok {
@@ -12,7 +13,7 @@ fn check(name: str, ok: bool) {
     }
 }
 
-fn main() -> i64 !Random {
+fn main() -> i64 !Random !Time !IO {
     let sample = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     let t = otel_parse_traceparent(sample)
     check("parse_ok", t.ok == 1)
@@ -38,6 +39,21 @@ fn main() -> i64 !Random {
     let from = otel_from_header(sample)?
     check("from_header", from.ok == 1 && from.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736")
     check("header_name", otel_header_name() == "traceparent")
+
+    // OTLP/JSON export
+    let sp = otel_span_now("GET /hello", root, 2)?
+    let sp2 = otel_span_end(sp)?
+    let js = otel_span_to_otlp_json(sp2, "otel_test")
+    check("otlp_has_resource", str_find(js, "resourceSpans") >= 0)
+    check("otlp_service", str_find(js, "otel_test") >= 0 || str_find(js, "service.name") >= 0)
+    check("otlp_b64", str_find(js, "traceId") >= 0)
+    // known hex → base64: "00" → "AA=="
+    check("b64_00", otel_hex_to_b64_fixed("00") == "AA==")
+    let path = "/tmp/baga_otel_export_test.ndjson"
+    unlink(path)?
+    check("export_file", otel_export_span_file(path, sp2, "otel_test")? == 0)
+    let body = read_file(path)?
+    check("file_has_span", str_find(body, "GET /hello") >= 0)
 
     print("otel_test: all passed")
     return 0
