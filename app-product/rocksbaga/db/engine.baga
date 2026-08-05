@@ -25,7 +25,7 @@ fn lsm_empty_db(dir: str) -> LsmDB {
         wal_fd: -1, wal_off: 0,
         gens: gens, levels: levels, next_gen: 1, cache: pc_new(4096, 256),
         blooms: bloom_cache_new(),
-        sst_fds: map_new(), sst_sizes: map_new(),
+        sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
         sync_every: 1, since_sync: 0, ok: 1
     }
 }
@@ -73,7 +73,7 @@ fn lsm_read_manifest(dir: str) -> LsmDB !IO {
         wal_fd: -1, wal_off: 0,
         gens: gens, levels: levels, next_gen: next_gen, cache: pc_new(4096, 256),
         blooms: bloom_cache_new(),
-        sst_fds: map_new(), sst_sizes: map_new(),
+        sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
         sync_every: 1, since_sync: 0, ok: 1
     }
 }
@@ -191,11 +191,13 @@ fn lsm_get(db: LsmDB, key: str) -> LsmGet !IO {
     if map_has(db.mem, key) == 1 {
         return LsmGet { db: db, found: 1, val: map_get(db.mem, key) }
     }
-    let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.dir, db.gens, key)?
+    let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.sst_meta,
+                     db.dir, db.gens, key)?
     db.cache = lk.pc
     db.blooms = lk.blooms
     db.sst_fds = lk.sst_fds
     db.sst_sizes = lk.sst_sizes
+    db.sst_meta = lk.sst_meta
     if lk.found == 1 {
         if lk.alive == 1 {
             return LsmGet { db: db, found: 1, val: lk.val }

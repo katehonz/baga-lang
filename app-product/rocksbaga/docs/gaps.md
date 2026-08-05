@@ -76,9 +76,13 @@ Unlinked with SST on compact. Test: `r9_*` in `tests/lsm_test.baga`.
 - Bench (`bench/rocks`, n=1000 durable): GET ~0.5k → ~80k ops/s (~150×);
   still well below RocksDB (~0.5M ops/s). See `results/vs-rocksdb-latest.txt`.
 
-**Still open (later):** SST footer/index in-memory cache; pin-count shared
-page cache; `db/manifest.baga` / `table/block.baga` when needed; RocksDB
-feature parity (not claimed).
+**Shipped (R12):** `SstMeta` cache on `LsmDB` — footer, restart offsets,
+first/last key loaded once per gen. Partial get skips re-reading index and
+last block. Bench n=1000 durable: GET ~80k → ~167k ops/s (~31% of RocksDB).
+
+**Still open (later):** pin-count shared page cache; fewer restart-key preads;
+`db/manifest.baga` / `table/block.baga` when needed; RocksDB feature parity
+(not claimed).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

@@ -295,6 +295,7 @@ struct SstLookup {
     blooms: BloomCache,
     sst_fds: Map<i64, i64>,
     sst_sizes: Map<i64, i64>,
+    sst_meta: Map<i64, SstMeta>,
     found: i64,
     alive: i64,
     val: bytes
@@ -640,95 +641,124 @@ struct SstHitPc {
     hit: SstHit
 }
 
-// Partial get for v4/v5: footer → bloom → restart index → one block (+ CRC for v5).
-// skip_bloom=1 when sidecar already said "maybe" (R11 — avoid second bloom IO).
-fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str, skip_bloom: i64) -> SstHitPc !IO {
-    let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
+// R12: cached SST layout for partial get (footer + restart offs + min/max keys).
+struct SstMeta {
+    ok: i64,
+    core_len: i64,
+    n_restarts: i64,
+    idx_base: i64,
+    tag: i64,
+    first_key: str,
+    last_key: str,
+    idx: bytes   // n_restarts × u32 LE offsets only
+}
+
+fn sst_meta_empty() -> SstMeta {
+    return SstMeta {
+        ok: 0, core_len: 0, n_restarts: 0, idx_base: 0, tag: 0,
+        first_key: "", last_key: "", idx: bytes_new(0)
+    }
+}
+
+struct SstMetaLoad {
+    pc: PageCache,
+    meta: SstMeta
+}
+
+// Load footer + restart index + first/last key once per gen.
+fn sst_meta_load(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstMetaLoad !IO {
+    let bad = sst_meta_empty()
     let fl = sst_footer_len()
     if fsize < 8 + fl + 4 {
-        return SstHitPc { pc: pc, hit: miss }
+        return SstMetaLoad { pc: pc, meta: bad }
     }
     let body_len = fsize - 8 - 4
     let footer_file_off = 8 + body_len - fl
     let fr = pc_read_at(pc, fd, gen, footer_file_off, fl)?
     let mut cur = fr.pc
     if bytes_len(fr.data) < fl {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
     let core_len = get_u32_le(fr.data, 0)
     let bloom_nbytes = get_u32_le(fr.data, 4)
-    let m = get_u32_le(fr.data, 8)
     let n_restarts = get_u32_le(fr.data, 12)
     let tag = get_u32_le(fr.data, 20)
     if tag != 4 {
         if tag != 5 {
-            return SstHitPc { pc: cur, hit: miss }
+            return SstMetaLoad { pc: cur, meta: bad }
         }
     }
     if core_len <= 0 || n_restarts <= 0 {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
     if core_len + bloom_nbytes + fl != body_len {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
-    if skip_bloom == 0 && bloom_nbytes > 0 {
-        let br = pc_read_at(cur, fd, gen, 8 + core_len, bloom_nbytes)?
-        cur = br.pc
-        if bytes_len(br.data) < bloom_nbytes {
-            return SstHitPc { pc: cur, hit: miss }
-        }
-        if bloom_may(br.data, m, key) == 0 {
-            return SstHitPc { pc: cur, hit: miss }
-        }
-    }
-    // Restart index: before trailing block CRCs (v5) or at end of pure core (v4).
     let mut idx_base = core_len - 4 - n_restarts * 4
     if tag == 5 {
         idx_base = core_len - 4 - n_restarts * 4 - n_restarts * 4
     }
     if idx_base < 4 {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
     let idx_len = n_restarts * 4 + 4
     let ir = pc_read_at(cur, fd, gen, 8 + idx_base, idx_len)?
     cur = ir.pc
     if bytes_len(ir.data) < idx_len {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
-    // ir.data is restarts + n_restarts; first N u32s are offsets.
     let first_off = get_u32_le(ir.data, 0)
     if first_off != 4 {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
     let frk = sst_rec_at_fd(cur, fd, gen, first_off)?
     cur = frk.pc
     if frk.ok == 0 {
-        return SstHitPc { pc: cur, hit: miss }
-    }
-    if str_cmp(key, frk.key) < 0 {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
     let last_off = get_u32_le(ir.data, (n_restarts - 1) * 4)
-    let block_end = idx_base
-    let span = block_end - last_off
+    let span = idx_base - last_off
     if span < 0 || span > 16777216 {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
     let lr = pc_read_at(cur, fd, gen, 8 + last_off, span)?
     cur = lr.pc
     let last_key = sst_last_key(lr.data, 0, bytes_len(lr.data))
     if len(last_key) == 0 {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstMetaLoad { pc: cur, meta: bad }
     }
-    if str_cmp(key, last_key) > 0 {
-        return SstHitPc { pc: cur, hit: miss }
+    let idx = bytes_slice(ir.data, 0, n_restarts * 4)
+    return SstMetaLoad {
+        pc: cur,
+        meta: SstMeta {
+            ok: 1, core_len: core_len, n_restarts: n_restarts, idx_base: idx_base,
+            tag: tag, first_key: frk.key, last_key: last_key, idx: idx
+        }
     }
+}
+
+// Partial get using cached meta (R12). skip_bloom kept for API; sidecar covers it.
+fn sst_lookup_with_meta(pc: PageCache, fd: i64, gen: i64, meta: SstMeta, key: str) -> SstHitPc !IO {
+    let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
+    if meta.ok == 0 {
+        return SstHitPc { pc: pc, hit: miss }
+    }
+    if str_cmp(key, meta.first_key) < 0 {
+        return SstHitPc { pc: pc, hit: miss }
+    }
+    if str_cmp(key, meta.last_key) > 0 {
+        return SstHitPc { pc: pc, hit: miss }
+    }
+    let mut cur = pc
+    let n_restarts = meta.n_restarts
+    let idx = meta.idx
+    let idx_base = meta.idx_base
     let mut lo: i64 = 0
     let mut hi = n_restarts - 1
     let mut best: i64 = 0
     while lo <= hi {
         let mid = lo + (hi - lo) / 2
-        let off = get_u32_le(ir.data, mid * 4)
+        let off = get_u32_le(idx, mid * 4)
         let rk = sst_rec_at_fd(cur, fd, gen, off)?
         cur = rk.pc
         if rk.ok == 0 {
@@ -736,8 +766,6 @@ fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str, sk
         }
         let c = str_cmp(rk.key, key)
         if c == 0 {
-            // Exact hit at restart boundary — return without re-reading block
-            // (R11: skip block CRC on get; compact/full-parse still verifies body CRC).
             let h = sst_hit_from_row(SstRow { op: rk.op, key: rk.key, val: rk.val })
             return SstHitPc { pc: cur, hit: h }
         }
@@ -748,10 +776,10 @@ fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str, sk
             hi = mid - 1
         }
     }
-    let start = get_u32_le(ir.data, best * 4)
+    let start = get_u32_le(idx, best * 4)
     let mut end = idx_base
     if best + 1 < n_restarts {
-        end = get_u32_le(ir.data, (best + 1) * 4)
+        end = get_u32_le(idx, (best + 1) * 4)
     }
     let bspan = end - start
     if bspan < 0 || bspan > 16777216 {
@@ -760,7 +788,6 @@ fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str, sk
     let br2 = pc_read_at(cur, fd, gen, 8 + start, bspan)?
     cur = br2.pc
     let block = br2.data
-    // R11: skip per-block CRC on get path (body CRC still on full-load / compact).
     let mut pos: i64 = 0
     let mut go: i64 = 1
     let mut hit = miss
@@ -789,74 +816,86 @@ fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str, sk
     return SstHitPc { pc: cur, hit: hit }
 }
 
-// Newest-first lookup. R9/R11: cached bloom + open SST fds.
+// Legacy entry (uncached meta) — kept for callers that do not pass a meta map.
+fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str, skip_bloom: i64) -> SstHitPc !IO {
+    let ml = sst_meta_load(pc, fd, gen, fsize)?
+    // skip_bloom unused: meta path does not re-check embedded bloom (R11+).
+    if skip_bloom == 0 {
+        // still no embedded bloom on this path — bloom sidecar is preferred
+    }
+    if ml.meta.ok == 0 {
+        return SstHitPc { pc: ml.pc, hit: SstHit { found: 0, alive: 0, val: bytes_new(0) } }
+    }
+    return sst_lookup_with_meta(ml.pc, fd, gen, ml.meta, key)?
+}
+
+// Newest-first lookup. R9–R12: bloom + fd + footer/index meta caches.
 // v4/v5 partial page-cache path; older formats full read.
 fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64, i64>,
-           dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
+           meta: Map<i64, SstMeta>, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
     let mut cur = pc
     let mut bc = blooms
     let mut i = vec_len(gens) - 1
     while i >= 0 {
         let gen = vec_get(gens, i)
-        // Sidecar bloom (cached): 0 = skip this gen without opening SST.
         let bm = bloom_cache_may(bc, dir, gen, key)?
         bc = bm.cache
         if bm.may == 0 {
             i = i - 1
         } else {
-            // skip embedded bloom when sidecar already said maybe (R11)
-            let mut skip_bloom: i64 = 0
-            if bm.may == 1 {
-                skip_bloom = 1
-            }
             let fd = sst_fd_get(fds, sizes, dir, gen)?
-            if fd >= 0 {
+            if fd < 0 {
+                i = i - 1
+            } else {
                 let fsize = map_get(sizes, gen)
-                let magb = fd_pread_bytes(fd, 8, 0)?
-                if bytes_len(magb) == 8 {
-                    let mag = str_of_bytes(magb)
-                    if mag == "BAGASST5" {
-                        let r = sst_lookup_partial(cur, fd, gen, fsize, key, skip_bloom)?
-                        cur = r.pc
-                        if r.hit.found == 1 {
-                            return SstLookup {
-                                pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes,
-                                found: 1, alive: r.hit.alive, val: r.hit.val
-                            }
-                        }
+                if map_has(meta, gen) == 0 {
+                    let ml = sst_meta_load(cur, fd, gen, fsize)?
+                    cur = ml.pc
+                    if ml.meta.ok == 1 {
+                        map_set(meta, gen, ml.meta)
                     } else {
-                        if mag == "BAGASST4" {
-                            let r = sst_lookup_partial(cur, fd, gen, fsize, key, skip_bloom)?
-                            cur = r.pc
-                            if r.hit.found == 1 {
+                        // Not v4/v5: full-file path once.
+                        sst_fd_drop(fds, sizes, gen)?
+                        let raw = sst_read_raw(cur, dir, gen)?
+                        cur = raw.pc
+                        if raw.ok == 1 {
+                            let h = sst_lookup_data(raw.data, key)
+                            if h.found == 1 {
                                 return SstLookup {
                                     pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes,
-                                    found: 1, alive: r.hit.alive, val: r.hit.val
-                                }
-                            }
-                        } else {
-                            // Older formats: drop cached fd, full path reopens.
-                            sst_fd_drop(fds, sizes, gen)?
-                            let raw = sst_read_raw(cur, dir, gen)?
-                            cur = raw.pc
-                            if raw.ok == 1 {
-                                let h = sst_lookup_data(raw.data, key)
-                                if h.found == 1 {
-                                    return SstLookup {
-                                        pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes,
-                                        found: 1, alive: h.alive, val: h.val
-                                    }
+                                    sst_meta: meta, found: 1, alive: h.alive, val: h.val
                                 }
                             }
                         }
                     }
                 }
+                if map_has(meta, gen) == 1 {
+                    let m = map_get(meta, gen)
+                    if str_cmp(key, m.first_key) < 0 {
+                        i = i - 1
+                    } else {
+                        if str_cmp(key, m.last_key) > 0 {
+                            i = i - 1
+                        } else {
+                            let r = sst_lookup_with_meta(cur, fd, gen, m, key)?
+                            cur = r.pc
+                            if r.hit.found == 1 {
+                                return SstLookup {
+                                    pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes,
+                                    sst_meta: meta, found: 1, alive: r.hit.alive, val: r.hit.val
+                                }
+                            }
+                            i = i - 1
+                        }
+                    }
+                } else {
+                    i = i - 1
+                }
             }
-            i = i - 1
         }
     }
     return SstLookup {
-        pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes,
+        pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes, sst_meta: meta,
         found: 0, alive: 0, val: bytes_new(0)
     }
 }

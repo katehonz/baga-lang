@@ -30,6 +30,12 @@
 - Default page cache cap **256** pages (was 32).
 - Bench n=1000 durable: GET ~538 → ~77k–90k ops/s; PUT ~50%→~70% of RocksDB.
 
+### RocksDB path R12 — SST meta cache
+- **`SstMeta`** (footer, restart offsets, first/last key) cached per gen on
+  `LsmDB.sst_meta`; invalidated on compact. Partial get uses cached range
+  + index (no footer/last-block re-read).
+- Bench n=1000 durable: GET ~167k ops/s (~31% of RocksDB).
+
 ### RocksDB path R10 — package rename rocksbaga
 - **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine
   unchanged). Prefer `import "rocksbaga/…"`. Deprecated **`lsmbaga/`** shims

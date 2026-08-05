@@ -38,5 +38,6 @@ Goal: Track S flagship — durable KV on RESP.
 - **R11 get path** — bloom cache, SST fd cache, O(n) `pc_read_at`,
   skip embedded bloom when sidecar hit, skip block CRC on get,
   default page cache 256 pages — **done**
+- **R12 SST meta cache** — footer + restart offs + min/max keys per gen — **done**
 - Shared page cache across open files with pin counts
-- Index/footer cache per SST (avoid re-reading restarts every get)
+- Block/value page warm path (less `sst_rec_at_fd` preads)

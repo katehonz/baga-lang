@@ -2,6 +2,7 @@
 
 import "../cache/page.baga"
 import "../table/bloom.baga"
+import "../table/sstable.baga"
 
 struct LsmDB {
     dir: str,
@@ -21,6 +22,7 @@ struct LsmDB {
     blooms: BloomCache, // R11: sidecar bloom filters loaded once per gen
     sst_fds: Map<i64, i64>,   // R11: open SST fd cache (gen → fd)
     sst_sizes: Map<i64, i64>, // gen → file size
+    sst_meta: Map<i64, SstMeta>, // R12: footer/index/minmax per gen
     sync_every: i64,
     since_sync: i64,
     ok: i64
