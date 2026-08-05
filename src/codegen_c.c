@@ -423,6 +423,68 @@ static void emit_expr(Codegen *cg, Node *n) {
             /* string/io builtins → C helpers */
             if (n->callee->kind == NODE_IDENT) {
                 const char *bn = n->callee->name;
+                /* MEM-1: drop(x) builtin. Огледало на checker guard-а: не се
+                 * задейства при user fn 'drop' (скан на program) нито при fn
+                 * стойност (callee->type == TYPE_FN); extern е хванат по-горе. */
+                if (strcmp(bn, "drop") == 0 && n->args.len == 1 &&
+                    !(n->callee->type && n->callee->type->kind == TYPE_FN)) {
+                    int user_drop = 0;
+                    if (cg->program) {
+                        for (int i = 0; i < cg->program->items.len; i++) {
+                            Node *it = cg->program->items.data[i];
+                            if (it->kind == NODE_FN && it->fn_name &&
+                                strcmp(it->fn_name, "drop") == 0) { user_drop = 1; break; }
+                        }
+                    }
+                    if (!user_drop) {
+                        Type *at = n->args.data[0]->type;
+                        if (at && at->kind == TYPE_BYTES) {
+                            fprintf(f, "baga_drop_bytes(");
+                            emit_expr(cg, n->args.data[0]);
+                            fprintf(f, ")");
+                        } else if (at && at->kind == TYPE_FN) {
+                            fprintf(f, "baga_drop_fn(");
+                            emit_expr(cg, n->args.data[0]);
+                            fprintf(f, ")");
+                        } else if (at && at->kind == TYPE_VEC) {
+                            if (at->elem && at->elem->kind == TYPE_STRUCT && at->elem->name) {
+                                char *mn = mangle_name(at->elem->name);
+                                fprintf(f, "baga_drop_vec(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", 2, (int64_t)sizeof(%s))", mn);
+                                free(mn);
+                            } else if (at->elem && at->elem->kind == TYPE_BYTES) {
+                                fprintf(f, "baga_drop_vec(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", 2, (int64_t)sizeof(baga_bytes))");
+                            } else if (at->elem && at->elem->kind == TYPE_STR) {
+                                fprintf(f, "baga_drop_vec(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", 1, 0)");
+                            } else {
+                                fprintf(f, "baga_drop_vec(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", 0, 0)");
+                            }
+                        } else if (at && at->kind == TYPE_MAP) {
+                            if (at->elem && at->elem->kind == TYPE_STRUCT && at->elem->name) {
+                                char *mn = mangle_name(at->elem->name);
+                                fprintf(f, "baga_drop_map(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", 1, (int64_t)sizeof(%s))", mn);
+                                free(mn);
+                            } else {
+                                fprintf(f, "baga_drop_map(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", 0, 0)");
+                            }
+                        } else {
+                            /* типът е NULL/unknown (checker вече е репортвал) */
+                            fprintf(f, "0 /* drop */");
+                        }
+                        goto call_done;
+                    }
+                }
                 /* типизирани вектори: helper по елементния тип на вектора */
                 if (strcmp(bn, "vec_push") == 0 || strcmp(bn, "vec_get") == 0 ||
                     strcmp(bn, "vec_set") == 0) {
@@ -1721,16 +1783,39 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "typedef struct baga_ABlk { struct baga_ABlk *next; size_t used, cap; char data[]; } baga_ABlk;\n");
     fprintf(out, "static baga_ABlk *baga_arena_head = NULL;\n");
     fprintf(out, "static pthread_mutex_t baga_alloc_mu = PTHREAD_MUTEX_INITIALIZER;\n");
+    /* MEM-1: free list — 16-байтови класове ≤ 1024 B; drop рециклира блокове */
+    fprintf(out, "#define BAGA_FL_CLASSES 64   /* free list: 16-байтови класове ≤ 1024 B */\n");
+    fprintf(out, "static void *baga_fl[BAGA_FL_CLASSES];\n");
+    fprintf(out, "static void baga_free(void *p, int64_t n) {\n");
+    fprintf(out, "    if (!p || n <= 0 || n > 1024) return;\n");
+    fprintf(out, "    int c = (int)((n + 15) / 16) - 1;\n");
+    fprintf(out, "    pthread_mutex_lock(&baga_alloc_mu);\n");
+    fprintf(out, "    *(void **)p = baga_fl[c];\n");
+    fprintf(out, "    baga_fl[c] = p;\n");
+    fprintf(out, "    pthread_mutex_unlock(&baga_alloc_mu);\n");
+    fprintf(out, "}\n");
     fprintf(out, "static void *baga_alloc(size_t n) {\n");
+    fprintf(out, "    size_t rn = (n + 15) & ~(size_t)15;\n");
+    fprintf(out, "    if (rn >= 16 && rn <= 1024) {\n");
+    fprintf(out, "        pthread_mutex_lock(&baga_alloc_mu);\n");
+    fprintf(out, "        void *fb = baga_fl[rn / 16 - 1];\n");
+    fprintf(out, "        if (fb) { baga_fl[rn / 16 - 1] = *(void **)fb; pthread_mutex_unlock(&baga_alloc_mu); return fb; }\n");
+    fprintf(out, "        pthread_mutex_unlock(&baga_alloc_mu);\n");
+    fprintf(out, "    }\n");
+    /* MEM-1 fix: малките алокации се bump-ват с КЛАСОВИЯ размер rn (не n) —
+     * иначе free-list блок от по-малка заявка обслужва по-голяма в същия
+     * клас и я презаписва съседния блок (segfault при review). >1024 B:
+     * точен n, както преди. До 15 B slack на малка алокация. */
+    fprintf(out, "    size_t an = (rn <= 1024) ? rn : n;\n");
     fprintf(out, "    pthread_mutex_lock(&baga_alloc_mu);\n");
     fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
-    fprintf(out, "    if (!b || b->used + n > b->cap) {\n");
-    fprintf(out, "        size_t cap = n > 8192 ? n : 8192;\n");
+    fprintf(out, "    if (!b || b->used + an > b->cap) {\n");
+    fprintf(out, "        size_t cap = an > 8192 ? an : 8192;\n");
     fprintf(out, "        b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
     fprintf(out, "        b->next = baga_arena_head; b->used = 0; b->cap = cap;\n");
     fprintf(out, "        baga_arena_head = b;\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    void *p = b->data + b->used; b->used += n;\n");
+    fprintf(out, "    void *p = b->data + b->used; b->used += an;\n");
     fprintf(out, "    pthread_mutex_unlock(&baga_alloc_mu);\n");
     fprintf(out, "    return p;\n");
     fprintf(out, "}\n");
@@ -2101,6 +2186,36 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         else         fprintf(out, "            baga_vec_push_i64(v, e->ik);\n");
         fprintf(out, "    return v; }\n");
     }
+    /* MEM-1: drop walkers — рециклират собствените алокации през baga_free.
+     * Вътрешните буфери (bytes.data, str полета, env box-ове на closures)
+     * остават в arena-та — споделена собственост, документирано. */
+    fprintf(out, "\nstatic void baga_cell2_free(int64_t h);\n");
+    fprintf(out, "static void baga_drop_bytes(baga_bytes b) { baga_free(b.data, b.len); }\n");
+    fprintf(out, "/* elem_kind: 0 = inline (i64/f64), 1 = str (споделени — не се пипат), 2 = box (bytes/struct) */\n");
+    fprintf(out, "static void baga_drop_vec(baga_Vec *v, int elem_kind, int64_t elem_size) {\n");
+    fprintf(out, "    if (!v) return;\n");
+    fprintf(out, "    if (elem_kind == 2)\n");
+    fprintf(out, "        for (int64_t i = 0; i < v->len; i++) baga_free(v->data[i], elem_size);\n");
+    fprintf(out, "    baga_free(v->data, v->cap * 8);\n");
+    fprintf(out, "    baga_free(v, (int64_t)sizeof(baga_Vec));\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_drop_map(baga_Map *m, int val_is_box, int64_t val_size) {\n");
+    fprintf(out, "    if (!m) return;\n");
+    /* next се пази ПРЕДИ free — baga_free презаписва първата дума на блока,
+     * не разчитаме на offset-а на 'next' в layout-а */
+    fprintf(out, "    for (int64_t i = 0; i < m->nb; i++) {\n");
+    fprintf(out, "        baga_MapEntry *e = m->b[i];\n");
+    fprintf(out, "        while (e) {\n");
+    fprintf(out, "            baga_MapEntry *nx = e->next;\n");
+    fprintf(out, "            if (val_is_box && e->pv) baga_free(e->pv, val_size);\n");
+    fprintf(out, "            baga_free(e, (int64_t)sizeof(baga_MapEntry));\n");
+    fprintf(out, "            e = nx;\n");
+    fprintf(out, "        }\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    baga_free(m->b, m->nb * (int64_t)sizeof(baga_MapEntry *));\n");
+    fprintf(out, "    baga_free(m, (int64_t)sizeof(baga_Map));\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_drop_fn(int64_t h) { baga_cell2_free(h); }\n");
     fprintf(out, "\n/* arena allocator: bump allocation, free-all-at-once */\n");
     fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; } baga_Arena;\n");
     fprintf(out, "static int64_t baga_arena_new(void) {\n");
@@ -2132,6 +2247,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (!p) { fprintf(stderr, \"baga: cell2: oom\\n\"); exit(1); }\n");
     fprintf(out, "    p[0] = a; p[1] = b; return (int64_t)(intptr_t)p;\n");
     fprintf(out, "}\n");
+    /* MEM-1: cell2 е ЕДИН malloc блок (2×i64) — не arena, истински free() */
+    fprintf(out, "static void baga_cell2_free(int64_t h) { if (h) free((void *)(intptr_t)h); }\n");
     fprintf(out, "static int64_t baga_cell2_0(int64_t h) { return ((int64_t *)(intptr_t)h)[0]; }\n");
     fprintf(out, "static int64_t baga_cell2_1(int64_t h) { return ((int64_t *)(intptr_t)h)[1]; }\n");
     fprintf(out, "typedef int64_t (*baga_par_fn)(int64_t);\n");

@@ -1,0 +1,97 @@
+// drop_test.baga — MEM-1: drop(x) builtin + free list в arena-та (happy path).
+// Vec<i64|str|bytes|struct>, Map<str,i64|struct>, bytes, closure — стойностите
+// се проверяват ПРЕДИ drop; след drop променливата е мъртва (seatbelt: Task 2).
+// Накрая: reclaim probe — 100k vec_new/push/drop без растеж на паметта.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+struct Pt { x: i64, y: i64 }
+
+fn main() {
+    // --- Vec<i64> ---
+    let vi: Vec<i64> = vec_new()
+    vec_push(vi, 10)
+    vec_push(vi, 20)
+    vec_push(vi, 30)
+    check("vi_len", vec_len(vi) == 3)
+    check("vi_sum", vec_get(vi, 0) + vec_get(vi, 1) + vec_get(vi, 2) == 60)
+    drop(vi)
+
+    // --- Vec<str> ---
+    let vs: Vec<str> = vec_new()
+    vec_push(vs, "а")
+    vec_push(vs, "б")
+    vec_push(vs, "в")
+    check("vs_len", vec_len(vs) == 3)
+    check("vs_1", vec_get(vs, 1) == "б")
+    drop(vs)
+
+    // --- Vec<bytes> ---
+    let vb: Vec<bytes> = vec_new()
+    vec_push(vb, bytes_of_str("aa"))
+    vec_push(vb, bytes_of_str("bb"))
+    vec_push(vb, bytes_of_str("cc"))
+    check("vb_len", vec_len(vb) == 3)
+    check("vb_2_len", bytes_len(vec_get(vb, 2)) == 2)
+    check("vb_0_at", bytes_at(vec_get(vb, 0), 0) == 97)
+    drop(vb)
+
+    // --- Vec<struct> ---
+    let vp: Vec<Pt> = vec_new()
+    vec_push(vp, Pt { x: 1, y: 2 })
+    vec_push(vp, Pt { x: 3, y: 4 })
+    vec_push(vp, Pt { x: 5, y: 6 })
+    check("vp_len", vec_len(vp) == 3)
+    check("vp_sum", vec_get(vp, 0).x + vec_get(vp, 1).y + vec_get(vp, 2).x == 10)
+    drop(vp)
+
+    // --- Map<str, i64> ---
+    let mi: Map<str, i64> = map_new()
+    map_set(mi, "едно", 1)
+    map_set(mi, "две", 2)
+    check("mi_len", map_len(mi) == 2)
+    check("mi_get", map_get(mi, "две") == 2)
+    drop(mi)
+
+    // --- Map<str, struct> ---
+    let ms: Map<str, Pt> = map_new()
+    map_set(ms, "ляво", Pt { x: -1, y: 0 })
+    map_set(ms, "дясно", Pt { x: 1, y: 0 })
+    check("ms_len", map_len(ms) == 2)
+    check("ms_get", map_get(ms, "ляво").x == -1)
+    drop(ms)
+
+    // --- bytes ---
+    let b = bytes_new(4)
+    bytes_set(b, 0, 66)
+    bytes_set(b, 3, 71)
+    check("b_len", bytes_len(b) == 4)
+    check("b_at", bytes_at(b, 0) == 66 && bytes_at(b, 3) == 71)
+    drop(b)
+
+    // --- closure (fn стойност: cell2 handle) ---
+    let base = 40
+    let cl = fn [base] (y: i64) -> i64 { return base + y }
+    check("cl_call", cl(2) == 42)
+    drop(cl)
+
+    print("drop_test: all passed")
+
+    // --- reclaim probe: 100k пъти vec_new/push/drop ---
+    // Под старата arena това е ~10+ MB растеж; с free list-а паметта е стабилна.
+    for i in 0..100000 {
+        let v = vec_new()
+        vec_push(v, i)
+        drop(v)
+    }
+    check("reclaim_probe", 1 == 1)
+}

@@ -2149,6 +2149,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 fn = LLVMGetNamedFunction(lg.mod, m);
                 free(m);
             }
+            /* MEM-1: drop е само за C бекенда; user fn 'drop' е намерена по-горе */
+            if (!fn && strcmp(n->callee->name, "drop") == 0)
+                llvm_unsupported("drop — само C бекенда; вж. docs/language-en.md");
             if (!fn) {
                 char buf[256];
                 snprintf(buf, sizeof buf, "вградена функция '%s'", n->callee->name);

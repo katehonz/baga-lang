@@ -384,6 +384,63 @@ run /tmp/baga_bytes_oob.baga 2>&1 | grep -q "bytes_set: индекс 5 извъ�
 	&& echo "OK: S2 — bytes_set извън границите е хванат" \
 	|| { echo "FAIL: bytes_set OOB трябва да гърми"; exit 1; }
 
+echo "=== MEM-2: drop seatbelt (checker) ==="
+printf 'fn main() {\n    let v = vec_new()\n    drop(v)\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_p1.baga
+run /tmp/baga_drop_p1.baga 2>&1 | grep -q "използване на 'v' след drop" \
+	&& echo "OK: use-after-drop е хванат" \
+	|| { echo "FAIL: use-after-drop трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let v = vec_new()\n    drop(v)\n    drop(v)\n}\n' > /tmp/baga_drop_p2.baga
+run /tmp/baga_drop_p2.baga 2>&1 | grep -q "повторен drop на 'v'" \
+	&& echo "OK: повторен drop е хванат" \
+	|| { echo "FAIL: повторен drop трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let v = vec_new()\n    for i in 0..3 { drop(v) }\n}\n' > /tmp/baga_drop_p3.baga
+run /tmp/baga_drop_p3.baga 2>&1 | grep -q "външна за цикъла променлива" \
+	&& echo "OK: drop на външна за цикъла променлива е хванат" \
+	|| { echo "FAIL: drop в цикъл на външна променлива трябва да гърми"; exit 1; }
+printf 'fn f(v: Vec<i64>) { drop(v) }\nfn main() { print(1) }\n' > /tmp/baga_drop_p4.baga
+run /tmp/baga_drop_p4.baga 2>&1 | grep -q "drop на параметър 'v'" \
+	&& echo "OK: drop на параметър е хванат" \
+	|| { echo "FAIL: drop на параметър трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let v = vec_new()\n    let f = fn [v] (x: i64) -> i64 { return x }\n    drop(v)\n}\n' > /tmp/baga_drop_p5.baga
+run /tmp/baga_drop_p5.baga 2>&1 | grep -q "заснет от ламбда" \
+	&& echo "OK: drop на заснета от ламбда променлива е хванат" \
+	|| { echo "FAIL: drop на capture трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let s = "abc"\n    drop(s)\n}\n' > /tmp/baga_drop_p6.baga
+run /tmp/baga_drop_p6.baga 2>&1 | grep -q "неподдържан тип str" \
+	&& echo "OK: drop на str е хванат" \
+	|| { echo "FAIL: drop на str трябва да гърми"; exit 1; }
+printf 'fn main() {\n    drop(vec_new())\n}\n' > /tmp/baga_drop_p7.baga
+run /tmp/baga_drop_p7.baga 2>&1 | grep -q "drop очаква локална променлива" \
+	&& echo "OK: drop на израз е хванат" \
+	|| { echo "FAIL: drop на израз трябва да гърми"; exit 1; }
+# if/else join: drop и в двата клона → use след това е грешка
+printf 'fn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    if true { drop(v) } else { drop(v) }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_pos1.baga
+run /tmp/baga_drop_pos1.baga 2>&1 | grep -q "използване на 'v' след drop" \
+	&& echo "OK: drop в двата if-клона се слива (intersection)" \
+	|| { echo "FAIL: drop в двата клона + use трябва да гърми"; exit 1; }
+# drop само в един клон → НЕ е сигурно drop-нато, програмата върви
+printf 'fn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    if true { drop(v) }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_pos2.baga
+test "$(run /tmp/baga_drop_pos2.baga)" = "1" \
+	&& echo "OK: drop само в един if-клон не е definite — компилира и върви" \
+	|| { echo "FAIL: drop в един клон не трябва да блокира"; exit 1; }
+printf 'fn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    if false { print(0) } else { drop(v) }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_pos3.baga
+test "$(run /tmp/baga_drop_pos3.baga)" = "1" \
+	&& echo "OK: drop само в else-клон не е definite — компилира и върви" \
+	|| { echo "FAIL: drop само в else не трябва да блокира"; exit 1; }
+# match/catch join: arm-овете и catch handler-ът са алтернативни пътища
+printf 'fn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    let n = 1\n    let r = match n { 1 => { drop(v) 0 }, _ => 0 }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_m1.baga
+test "$(run /tmp/baga_drop_m1.baga)" = "1" \
+	&& echo "OK: drop в един match arm не е definite — компилира и върви" \
+	|| { echo "FAIL: drop в един arm не трябва да блокира"; exit 1; }
+printf 'fn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    let n = 1\n    let r = match n { 1 => { drop(v) 0 }, _ => { drop(v) 0 } }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_m2.baga
+run /tmp/baga_drop_m2.baga 2>&1 | grep -q "използване на 'v' след drop" \
+	&& echo "OK: drop във всички match arm-ове се слива (intersection)" \
+	|| { echo "FAIL: drop във всички arm-ове + use трябва да гърми"; exit 1; }
+printf 'fn f() -> i64 !IO { print("f") return 1 }\nfn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    let r = f() catch !IO => { drop(v) 0 }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_c1.baga
+test "$(run /tmp/baga_drop_c1.baga)" = "$(printf 'f\n1')" \
+	&& echo "OK: drop в catch handler не е definite — компилира и върви" \
+	|| { echo "FAIL: drop в catch handler не трябва да блокира"; exit 1; }
+
 # ── 6. Static verifier oracle ────────────────────────────────────────────
 bash "$ROOT/scripts/run_verify.sh"
 

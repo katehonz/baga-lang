@@ -179,6 +179,11 @@ typedef struct {
     char *name;
     Type *type;
     int is_mut;
+    /* MEM-2: drop seatbelt — per-variable live/dropped състояние */
+    int dropped;      /* drop() е извикан върху тази локална */
+    int is_param;     /* параметър — буферът е на извикващия, drop забранен */
+    int captured;     /* заснет от ламбда — drop би оставил висящ указател */
+    int scope_depth;  /* ctx->depth при дефиницията (за loop-правилото) */
 } EnvEntry;
 
 typedef struct {
@@ -228,6 +233,11 @@ typedef struct {
     int n_lambdas;         /* L5: брояч за синтетични имена __lam_N */
     Type *cur_ret;   /* expected return type of current function */
     Type *cur_effects; /* accumulated effects in current function body */
+    /* MEM-2: drop seatbelt — drop-лог за if/else join и дълбочина на цикъл */
+    EnvEntry *drop_log[256];
+    int n_drop_log;
+    int drop_log_overflowed; /* логът се е препълнил — join деградира консервативно */
+    int loop_depth;   /* 0 = извън цикъл; иначе depth-а на обграждащия цикъл */
 } CheckCtx;
 
 static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
@@ -394,6 +404,10 @@ static void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) 
         s->entries[s->count].name = (char *)name;
         s->entries[s->count].type = type;
         s->entries[s->count].is_mut = 1;
+        s->entries[s->count].dropped = 0;
+        s->entries[s->count].is_param = 0;
+        s->entries[s->count].captured = 0;
+        s->entries[s->count].scope_depth = ctx->depth;
         s->count++;
     }
 }
@@ -411,8 +425,110 @@ static void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_m
         s->entries[s->count].name = (char *)name;
         s->entries[s->count].type = type;
         s->entries[s->count].is_mut = is_mut;
+        s->entries[s->count].dropped = 0;
+        s->entries[s->count].is_param = 0;
+        s->entries[s->count].captured = 0;
+        s->entries[s->count].scope_depth = ctx->depth;
         s->count++;
     }
+}
+
+/* MEM-2: като env_lookup, но връща самата EnvEntry (за drop seatbelt-а).
+ * env_lookup пази подписа си. */
+static EnvEntry *env_find(CheckCtx *ctx, const char *name) {
+    for (int d = ctx->depth - 1; d >= 0; d--) {
+        EnvScope *s = &ctx->scopes[d];
+        for (int i = s->count - 1; i >= 0; i--) {
+            if (strcmp(s->entries[i].name, name) == 0)
+                return &s->entries[i];
+        }
+    }
+    return NULL;
+}
+
+/* MEM-2: drop-join машинерия — споделена от if/else, match и catch.
+ * Логът е append-only; всеки алтернативен клон записва drop-овете си в
+ * непрекъснат диапазон. Преди всеки нов клон предишните се "вдигат"
+ * (dropped = 0), за да не ги вижда той. */
+
+/* вдигни всички drop-ове, логнати от base нататък */
+static void drop_lift_from(CheckCtx *ctx, int base) {
+    for (int i = base; i < ctx->n_drop_log; i++) ctx->drop_log[i]->dropped = 0;
+}
+
+/* двуклонен join (if/else, catch): [log_base, mid) = първи път,
+ * [mid, n_drop_log) = втори път. Остава dropped само маркираното и в двата;
+ * оцелелите се компактират на log_base, за да ги види външен конструкт.
+ * При препълнен лог — консервативно вдигане на всичко (пропусната грешка,
+ * никога измислена); нелогнатите drop-ове изобщо не са маркирани. */
+static void drop_join2(CheckCtx *ctx, int log_base, int mid) {
+    if (ctx->drop_log_overflowed) {
+        drop_lift_from(ctx, log_base);
+        ctx->n_drop_log = log_base;
+        ctx->drop_log_overflowed = 0;
+        return;
+    }
+    int end = ctx->n_drop_log;
+    for (int j = mid; j < end; j++) {
+        EnvEntry *e = ctx->drop_log[j];
+        int in_first = 0;
+        for (int i = log_base; i < mid; i++)
+            if (ctx->drop_log[i] == e) { in_first = 1; break; }
+        e->dropped = in_first;
+    }
+    int w = log_base;
+    for (int j = mid; j < end; j++) {
+        EnvEntry *e = ctx->drop_log[j];
+        if (!e->dropped) continue;
+        int seen = 0;
+        for (int k = log_base; k < w; k++)
+            if (ctx->drop_log[k] == e) { seen = 1; break; }
+        if (!seen) ctx->drop_log[w++] = e;
+    }
+    ctx->n_drop_log = w;
+}
+
+/* N-arm join (match): arm_end[k] = n_drop_log след arm k. Definitely dropped
+ * = drop-нато във ВСЕКИ arm. arm_end NULL (над 64 arm-а) или препълнен лог →
+ * консервативно вдигане на всичко. Празен match (0 arm-а): нищо не се пипа. */
+static void drop_join_arms(CheckCtx *ctx, int log_base, const int *arm_end, int narm) {
+    if (ctx->drop_log_overflowed || !arm_end || narm <= 0) {
+        drop_lift_from(ctx, log_base);
+        ctx->n_drop_log = log_base;
+        ctx->drop_log_overflowed = 0;
+        return;
+    }
+    int w = log_base;
+    /* кандидатите са записите от arm 0; оцелява само присъстващият навсякъде */
+    for (int i = log_base; i < arm_end[0]; i++) {
+        EnvEntry *e = ctx->drop_log[i];
+        int everywhere = 1;
+        for (int k = 1; k < narm && everywhere; k++) {
+            int found = 0;
+            for (int j = arm_end[k - 1]; j < arm_end[k]; j++)
+                if (ctx->drop_log[j] == e) { found = 1; break; }
+            if (!found) everywhere = 0;
+        }
+        e->dropped = everywhere;
+        if (everywhere) {
+            int seen = 0;
+            for (int m = log_base; m < w; m++)
+                if (ctx->drop_log[m] == e) { seen = 1; break; }
+            if (!seen) ctx->drop_log[w++] = e;
+        }
+    }
+    /* записи от по-късни arm-ове, липсващи в arm 0 — вдигни */
+    for (int k = 1; k < narm; k++) {
+        for (int j = arm_end[k - 1]; j < arm_end[k]; j++) {
+            EnvEntry *e = ctx->drop_log[j];
+            if (!e->dropped) continue;
+            int in0 = 0;
+            for (int i = log_base; i < arm_end[0]; i++)
+                if (ctx->drop_log[i] == e) { in0 = 1; break; }
+            if (!in0) e->dropped = 0;
+        }
+    }
+    ctx->n_drop_log = w;
 }
 
 static Type *env_lookup(CheckCtx *ctx, const char *name) {
@@ -1114,6 +1230,66 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             r->elem = type_new(TYPE_I64);
             return r;
         }
+        /* MEM-1: drop(x) — само let-локални Vec/Map/bytes/fn; MEM-2: пълен seatbelt */
+        if (strcmp(name, "drop") == 0 &&
+            !env_lookup(ctx, "drop") && !find_fn(ctx, "drop")) {
+            if (n->args.len != 1) {
+                check_error(ctx, n->pos, "drop очаква 1 аргумент, получих %d", n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            Node *a = n->args.data[0];
+            Type *at = a->type;
+            if (a->kind != NODE_IDENT) {
+                check_error(ctx, n->pos, "drop очаква локална променлива (let), не израз");
+                return type_new(TYPE_ERROR);
+            }
+            if (!at || (at->kind != TYPE_VEC && at->kind != TYPE_MAP &&
+                        at->kind != TYPE_BYTES && at->kind != TYPE_FN)) {
+                check_error(ctx, n->pos, "drop: неподдържан тип %s — drop е за Vec/Map/bytes/fn",
+                            at ? type_str(at) : "?");
+                return type_new(TYPE_ERROR);
+            }
+            /* MEM-2: live/dropped правила върху EnvEntry */
+            EnvEntry *e = env_find(ctx, a->name);
+            if (!e) {
+                check_error(ctx, n->pos, "drop: '%s' не е локална променлива", a->name);
+                return type_new(TYPE_ERROR);
+            }
+            if (e->dropped) {
+                check_error(ctx, n->pos, "повторен drop на '%s'", a->name);
+                return type_new(TYPE_ERROR);
+            }
+            if (e->is_param) {
+                check_error(ctx, n->pos,
+                    "drop на параметър '%s' — параметрите споделят буфера на извикващия",
+                    a->name);
+                return type_new(TYPE_ERROR);
+            }
+            if (e->captured) {
+                check_error(ctx, n->pos,
+                    "'%s' е заснет от ламбда — drop би оставил висящ указател", a->name);
+                return type_new(TYPE_ERROR);
+            }
+            /* MEM-2: loop_depth е depth-ът на нивото на loop-израза; променлива,
+             * дефинирана на него или по-навън (scope_depth <= loop_depth), е
+             * "външна за цикъла" — drop в тялото = use-after-drop на итерация 2 */
+            if (ctx->loop_depth && e->scope_depth <= ctx->loop_depth) {
+                check_error(ctx, n->pos,
+                    "drop на външна за цикъла променлива '%s' — втората итерация би била use-after-drop",
+                    a->name);
+                return type_new(TYPE_ERROR);
+            }
+            if (ctx->n_drop_log < 256) {
+                e->dropped = 1;
+                ctx->drop_log[ctx->n_drop_log++] = e;
+            } else {
+                /* логът е пълен — НЕ маркираме: консервативно "пропусната
+                 * грешка", никога измислена (runtime drop-ът пак се генерира);
+                 * join-ът на обграждащия if ще вдигне и логнатите от клоните */
+                ctx->drop_log_overflowed = 1;
+            }
+            return type_new(TYPE_VOID);
+        }
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {
                 n->callee->type = type_new(TYPE_VOID);
@@ -1183,7 +1359,13 @@ static Type *infer(CheckCtx *ctx, Node *n) {
         case NODE_IDENT: {
             /* check local env first */
             Type *vt = env_lookup(ctx, n->name);
-            if (vt) { t = vt; break; }
+            if (vt) {
+                /* MEM-2: use-after-drop (error recovery — продължаваме проверката) */
+                EnvEntry *e = env_find(ctx, n->name);
+                if (e && e->dropped)
+                    check_error(ctx, n->pos, "използване на '%s' след drop", n->name);
+                t = vt; break;
+            }
             /* check function registry */
             Type *ft = find_fn(ctx, n->name);
             if (ft) {
@@ -1272,8 +1454,22 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             if (ct->kind != TYPE_BOOL && ct->kind != TYPE_ERROR) {
                 check_error(ctx, n->cond->pos, "очаквах bool в условие, получих %s", type_str(ct));
             }
+            /* MEM-2: drop-join — drop-нато в then се брои само ако else
+             * (или отсъствието му) също го гарантира. */
+            int log_base = ctx->n_drop_log;
             Type *tt = infer(ctx, n->then_br);
+            int then_end = ctx->n_drop_log;
+            /* else-клонът не трябва да вижда drop-овете от then: временно ги вдигни */
+            drop_lift_from(ctx, log_base);
             Type *et = n->else_br ? infer(ctx, n->else_br) : type_new(TYPE_VOID);
+            if (n->else_br) {
+                drop_join2(ctx, log_base, then_end);
+            } else {
+                /* без else нищо не е сигурно drop-нато — вече вдигнахме
+                 * флаговете; нелогнатите (overflow) изобщо не са маркирани */
+                ctx->n_drop_log = log_base;
+                ctx->drop_log_overflowed = 0;
+            }
             t = type_eq(tt, et) ? tt : tt;
             break;
         }
@@ -1434,8 +1630,15 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
         case NODE_CATCH: {
             /* e catch !E => handler — remove effect E from e's type */
+            /* MEM-2: две алтернативи — try изразът (нормален път) и handler-ът
+             * (прихванат ефект); definitely dropped = drop-нато и в двете */
+            int log_base = ctx->n_drop_log;
             Type *et = infer(ctx, n->catch_expr);
+            int try_end = ctx->n_drop_log;
+            /* handler-ът не трябва да вижда drop-овете от try израза */
+            drop_lift_from(ctx, log_base);
             infer(ctx, n->catch_handler);
+            drop_join2(ctx, log_base, try_end);
             t = type_new(et->kind);
             /* keep Vec elem / struct name, like a plain call result does */
             t->elem = et->elem;
@@ -1515,7 +1718,11 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                 check_error(ctx, n->while_cond->pos, "очаквах bool в условие на while, получих %s",
                             type_str(ct));
             }
+            /* MEM-2: drop на променлива извън цикъла = use-after-drop на итерация 2 */
+            int saved_loop = ctx->loop_depth;
+            ctx->loop_depth = ctx->depth;
             infer(ctx, n->while_body);
+            ctx->loop_depth = saved_loop;
             t = type_new(TYPE_VOID);
             break;
         }
@@ -1524,7 +1731,12 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             infer(ctx, n->for_iter);
             push_scope(ctx);
             env_define(ctx, n->for_var, type_new(TYPE_I64), n->pos);
+            /* MEM-2: loop_depth е depth-ът на самия цикъл; for-променливата е
+             * в прясния scope (scope_depth > loop_depth) — не е "външна" */
+            int saved_loop = ctx->loop_depth;
+            ctx->loop_depth = ctx->depth - 1;
             infer(ctx, n->for_body);
+            ctx->loop_depth = saved_loop;
             pop_scope(ctx);
             t = type_new(TYPE_VOID);
             break;
@@ -1543,8 +1755,14 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                 int *covered = calloc((size_t)nv, sizeof(int));
                 int has_wild = 0;
                 t = type_new(TYPE_VOID);
+                /* MEM-2: всеки arm е алтернатива — N-arm drop-join */
+                int log_base = ctx->n_drop_log;
+                int arm_end[64];
+                int narm = n->match_arms.len;
                 for (int i = 0; i < n->match_arms.len; i++) {
                     Node *arm = n->match_arms.data[i];
+                    /* този arm не трябва да вижда drop-овете от предишните */
+                    drop_lift_from(ctx, log_base);
                     if (!arm->arm_pattern) {
                         has_wild = 1;
                     } else if (arm->arm_pattern->kind != NODE_IDENT) {
@@ -1588,6 +1806,7 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     Type *bt = infer(ctx, arm->arm_body);
                     ctx->cur_ret = saved_ret;
                     pop_scope(ctx);
+                    if (i < 64) arm_end[i] = ctx->n_drop_log;
                     if (bt->kind == TYPE_VOID && arm->arm_body &&
                         arm->arm_body->kind == NODE_BLOCK &&
                         arm->arm_body->stmts.len > 0) {
@@ -1608,26 +1827,49 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                                 "match върху '%s' не е пълен — липсва вариант '%s' (или добави '_')",
                                 st->name, ed->enum_variants[j]);
                 free(covered);
+                /* MEM-2: definitely dropped = drop-нато във всеки arm */
+                drop_join_arms(ctx, log_base, narm <= 64 ? arm_end : NULL, narm);
                 break;
             }
             /* не-enum match: досегашното поведение (първият arm дава типа) */
             t = type_new(TYPE_VOID);
-            for (int i = 0; i < n->match_arms.len; i++) {
-                Node *arm = n->match_arms.data[i];
-                if (arm->arm_pattern) infer(ctx, arm->arm_pattern);
-                /* infer arm body; extract type from return if wrapped */
-                Type *saved_ret = ctx->cur_ret;
-                ctx->cur_ret = NULL;
-                Type *bt = infer(ctx, arm->arm_body);
-                ctx->cur_ret = saved_ret;
-                if (bt->kind == TYPE_VOID && arm->arm_body &&
-                    arm->arm_body->kind == NODE_BLOCK &&
-                    arm->arm_body->stmts.len > 0) {
-                    Node *last = arm->arm_body->stmts.data[arm->arm_body->stmts.len - 1];
-                    if (last->kind == NODE_RETURN && last->ret_val && last->ret_val->type)
-                        bt = last->ret_val->type;
+            {
+                /* MEM-2: всеки arm е алтернатива — N-arm drop-join */
+                int log_base = ctx->n_drop_log;
+                int arm_end[64];
+                int narm = n->match_arms.len;
+                int has_wild = 0;
+                for (int i = 0; i < n->match_arms.len; i++) {
+                    Node *arm = n->match_arms.data[i];
+                    /* този arm не трябва да вижда drop-овете от предишните */
+                    drop_lift_from(ctx, log_base);
+                    if (arm->arm_pattern) infer(ctx, arm->arm_pattern);
+                    else has_wild = 1;  /* `_` — гарантира изпълнение на някой arm */
+                    /* infer arm body; extract type from return if wrapped */
+                    Type *saved_ret = ctx->cur_ret;
+                    ctx->cur_ret = NULL;
+                    Type *bt = infer(ctx, arm->arm_body);
+                    ctx->cur_ret = saved_ret;
+                    if (i < 64) arm_end[i] = ctx->n_drop_log;
+                    if (bt->kind == TYPE_VOID && arm->arm_body &&
+                        arm->arm_body->kind == NODE_BLOCK &&
+                        arm->arm_body->stmts.len > 0) {
+                        Node *last = arm->arm_body->stmts.data[arm->arm_body->stmts.len - 1];
+                        if (last->kind == NODE_RETURN && last->ret_val && last->ret_val->type)
+                            bt = last->ret_val->type;
+                    }
+                    if (i == 0) t = bt;
                 }
-                if (i == 0) t = bt;
+                /* MEM-2: не-enum match няма exhaustiveness проверка — без `_`
+                 * при runtime може да не се изпълни НИТО ЕДИН arm, затова
+                 * intersection-ът е unsound: консервативно вдигане на всичко */
+                if (has_wild)
+                    drop_join_arms(ctx, log_base, narm <= 64 ? arm_end : NULL, narm);
+                else {
+                    drop_lift_from(ctx, log_base);
+                    ctx->n_drop_log = log_base;
+                    ctx->drop_log_overflowed = 0;
+                }
             }
             break;
         }
@@ -1664,6 +1906,11 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     check_error(ctx, cap->pos,
                         "лямбда capture '%s' не е дефиниран в обкръжението", cap->param_name);
                     ct2 = type_new(TYPE_ERROR);
+                } else {
+                    /* MEM-2: заснетата външна променлива не може да се drop-ва
+                     * (лямбдата държи указател към същия буфер) */
+                    EnvEntry *ce = env_find(ctx, cap->param_name);
+                    if (ce) ce->captured = 1;
                 }
                 cap->type = ct2;
             }
@@ -1685,9 +1932,13 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             ctx->cur_effects = type_new(TYPE_VOID);
             ctx->cur_fn = n->fn_name;
             push_scope(ctx);
-            for (int i = 0; i < n->captures.len; i++)
+            for (int i = 0; i < n->captures.len; i++) {
                 env_define(ctx, n->captures.data[i]->param_name,
                            n->captures.data[i]->type, n->captures.data[i]->pos);
+                /* MEM-2: и вътре в тялото capture-ът не може да се drop-ва */
+                EnvEntry *ie = env_find(ctx, n->captures.data[i]->param_name);
+                if (ie) ie->captured = 1;
+            }
             for (int j = 0; j < np; j++) {
                 if (params[j]->kind == TYPE_FN && find_fn(ctx, n->params.data[j]->param_name))
                     check_error(ctx, n->params.data[j]->pos,
@@ -1695,6 +1946,9 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                         n->params.data[j]->param_name);
                 env_define(ctx, n->params.data[j]->param_name, params[j],
                            n->params.data[j]->pos);
+                /* MEM-2: параметрите споделят буфера на извикващия */
+                EnvEntry *pe = env_find(ctx, n->params.data[j]->param_name);
+                if (pe) pe->is_param = 1;
             }
             if (n->fn_body) {
                 for (int i = 0; i < n->fn_body->stmts.len; i++)
@@ -1746,9 +2000,15 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
                 p->param_name);
         }
         env_define(ctx, p->param_name, pt, p->pos);
+        /* MEM-2: параметрите споделят буфера на извикващия — drop забранен */
+        EnvEntry *pe = env_find(ctx, p->param_name);
+        if (pe) pe->is_param = 1;
     }
 
-    /* check body */
+    /* check body — MEM-2: drop-логът е per-функция (drop-ове не пресичат
+     * fn граница); без reset block-local drop-ове пълнят лога за целия модул */
+    ctx->n_drop_log = 0;
+    ctx->drop_log_overflowed = 0;
     if (fn->fn_body) {
         for (int i = 0; i < fn->fn_body->stmts.len; i++)
             infer(ctx, fn->fn_body->stmts.data[i]);

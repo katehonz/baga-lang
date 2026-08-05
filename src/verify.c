@@ -1280,6 +1280,9 @@ static void prods_free(ProdList *l) {
  * (`let h2 = h`) works: both names hold the same linear form. */
 #define HK_JOIN 1   /* states: 0=open, 1=joined, 2=detached */
 #define HK_CHAN 2   /* states: 0=open, 1=closed */
+#define HK_DROP 3   /* MEM-2: alloc→drop; states: 0=live, 1=dropped.
+                       * Keyed by the SOURCE variable name (Vec/Map/bytes are
+                       * opaque, not symbolic Lin values), unlike M14 handles. */
 typedef struct { char *var; int kind; int state; Lin result; } HandleEntry;
 typedef struct { HandleEntry *h; int n, cap; } HandleList;
 
@@ -1476,6 +1479,28 @@ static int is_par_builtin_call(Node *n) {
            strcmp(nm, "chan_select2_wait") == 0 || strcmp(nm, "chan_select2_timeout") == 0;
 }
 
+/* MEM-2: the drop(x) builtin — one bare-ident argument (the checker enforces
+ * the rest). A user fn named `drop` shadows the builtin, same guard as the
+ * checker (a let-bound `drop` variable is not visible here; such a call just
+ * finds no HK_DROP handle and makes no claims — sound). */
+static int is_drop_call(Node *n) {
+    if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    if (strcmp(n->callee->name, "drop") != 0) return 0;
+    if (n->args.len != 1 || n->args.data[0]->kind != NODE_IDENT) return 0;
+    if (g_prog && find_fn(g_prog, "drop")) return 0;
+    return 1;
+}
+
+/* MEM-2: allocators of owned, droppable buffers (vec_new is already covered
+ * by is_vec_builtin_call; listed here for the registration hook). The values
+ * themselves stay opaque — only the alloc→drop protocol is tracked. */
+static int is_mem_alloc_call(Node *n) {
+    if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    const char *nm = n->callee->name;
+    return strcmp(nm, "vec_new") == 0 || strcmp(nm, "map_new") == 0 ||
+           strcmp(nm, "bytes_new") == 0;
+}
+
 /* M14 shallow gate for a par builtin call: right arity; for go/go_bg the
  * worker must be a user fn (i64) -> i64 whose only allowed effect is Par
  * itself (channel-using workers are Par by construction); any other effect
@@ -1527,6 +1552,19 @@ static int has_unsupported_rec(Node *n, int flat, int in_expr) {
             for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
             return 0;
         }
+        /* MEM-2: drop(x) — same discipline as the par builtins: statement
+         * level only, never inside a loop or nested in an expression. The
+         * argument is a bare ident by construction, nothing to recurse into. */
+        if (is_drop_call(n)) {
+            if (flat || in_expr) return 1;
+            return 0;
+        }
+        /* MEM-2: map_new/bytes_new — owned opaque buffers; allowed like the
+         * vec builtins (vec_new itself is covered by is_vec_builtin_call). */
+        if (is_mem_alloc_call(n)) {
+            for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
+            return 0;
+        }
         /* M5: a user call in statement position is supported when the callee
          * carries a spec and has an i64 signature (shallow gate). */
         if (!in_expr && g_prog && n->callee && n->callee->kind == NODE_IDENT &&
@@ -1568,6 +1606,7 @@ static State clone_state_with(State *cur, Formula *add);
 static void inject_prod_axioms(State *st);
 static void symexec_block(Node *blk, States *states, Obligations *ob, int is_nonvoid, Node *spec);
 static void scan_arith_expr(Node *e, State *st, Obligations *ob);   /* M15 */
+static void check_drop_uses(Node *e, State *st, Obligations *ob);   /* MEM-2 */
 static int cl_implied_by(ConsList *path, ConsList *cons);
 
 /* Prove one invariant holds in every body-final state, given the head state
@@ -1677,6 +1716,7 @@ static int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvo
     for (int i = 0; i < states->n; i++) {
         State *cur = &states->s[i];
         scan_arith_expr(st->cond, cur, ob);   /* M15: loop-guard arithmetic (entry) */
+        check_drop_uses(st->cond, cur, ob);   /* MEM-2: dropped buffer in the guard */
 
         /* init: each invariant must follow from the current path */
         for (int j = 0; j < st->while_invariants.len && trusted; j++) {
@@ -2753,6 +2793,61 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     return sym_lin(lin_var(rv));
 }
 
+/* MEM-2: drop(x) — consume the alloc→drop protocol state of an owned buffer
+ * (Vec/Map/bytes/fn). Keyed by the SOURCE variable name, not by a Lin term:
+ * these values are opaque (nonlinear) in the scalar machinery. A second drop
+ * on a live path is a kind-3 protocol violation (REFUTED with the path
+ * witness); on a dead path it is vacuously PROVEN, which is correct. An
+ * untracked value (e.g. a fn-typed local, which is never registered) makes
+ * no claims — the checker has already validated the type. */
+static void eval_drop_call(Node *call, State *st, Obligations *ob) {
+    Node *a = call->args.data[0];
+    HandleEntry *e = handles_find(&st->handles, a->name);
+    if (!e || e->kind != HK_DROP) return;   /* untracked: no claims */
+    if (e->state != 0) {
+        char label[300];
+        snprintf(label, sizeof label, "повторен drop на '%s'", a->name);
+        push_protocol_violation(st, ob, label);
+    } else {
+        e->state = 1;
+    }
+}
+
+/* MEM-2: flag ident USES of an already-dropped buffer anywhere in a
+ * statement-level expression (call args, operands). `seen` dedups per
+ * statement, so one statement yields at most one violation per variable. */
+static void check_drop_uses_rec(Node *e, State *st, Obligations *ob, const char **seen, int *nseen) {
+    if (!e) return;
+    switch (e->kind) {
+    case NODE_IDENT: {
+        HandleEntry *h = handles_find(&st->handles, e->name);
+        if (!h || h->kind != HK_DROP || h->state != 1) return;
+        for (int k = 0; k < *nseen; k++) if (strcmp(seen[k], e->name) == 0) return;
+        if (*nseen < 16) seen[(*nseen)++] = e->name;
+        char label[300];
+        snprintf(label, sizeof label, "използване след drop на '%s'", e->name);
+        push_protocol_violation(st, ob, label);
+        return;
+    }
+    case NODE_CALL:
+        if (is_drop_call(e)) return;   /* drop consumes the buffer; not a "use" */
+        for (int i = 0; i < e->args.len; i++) check_drop_uses_rec(e->args.data[i], st, ob, seen, nseen);
+        return;
+    case NODE_BINARY:
+        check_drop_uses_rec(e->left, st, ob, seen, nseen);
+        check_drop_uses_rec(e->right, st, ob, seen, nseen);
+        return;
+    case NODE_UNARY:
+        check_drop_uses_rec(e->operand, st, ob, seen, nseen);
+        return;
+    default: return;   /* INDEX/FIELD/... are outside the fragment (gated) */
+    }
+}
+static void check_drop_uses(Node *e, State *st, Obligations *ob) {
+    const char *seen[16]; int nseen = 0;
+    check_drop_uses_rec(e, st, ob, seen, &nseen);
+}
+
 /* ======================= M15: arithmetic safety =======================
  * The verifier reasons in idealized ℤ; the runtime is i64. This bridge
  * emits one kind-4 obligation per arithmetic operation: prove the result
@@ -2936,6 +3031,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
         if (st->kind == NODE_LET) {
             for (int i = 0; i < states->n; i++) {
                 scan_arith_expr(st->let_init, &states->s[i], ob);   /* M15 */
+                check_drop_uses(st->let_init, &states->s[i], ob);   /* MEM-2 */
                 if (is_user_call(st->let_init)) {   /* M5: assume-guarantee */
                     Sym r = eval_user_call(st->let_init, &states->s[i], ob, g_caller_name);
                     bind_sym(&states->s[i].env, st->let_name, r);
@@ -2947,6 +3043,10 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                     continue;
                 }
                 bind_sym(&states->s[i].env, st->let_name, se_from_ast(st->let_init, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads));
+                /* MEM-2: a freshly-allocated buffer is live — start the
+                 * alloc→drop protocol for this source variable */
+                if (is_mem_alloc_call(st->let_init))
+                    handles_set(&states->s[i].handles, st->let_name, HK_DROP, 0, NULL);
                 /* a fresh vec_new() has length 0 */
                 if (st->let_init && st->let_init->kind == NODE_CALL && st->let_init->callee->kind == NODE_IDENT &&
                     strcmp(st->let_init->callee->name, "vec_new") == 0)
@@ -2985,10 +3085,12 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             if (st->assign_target->kind != NODE_IDENT) { for (int i = 0; i < states->n; i++) states->s[i].bad = 1; continue; }
             for (int i = 0; i < states->n; i++) {
                 scan_arith_expr(st->assign_val, &states->s[i], ob);   /* M15 */
+                check_drop_uses(st->assign_val, &states->s[i], ob);   /* MEM-2 */
                 bind_sym(&states->s[i].env, st->assign_target->name, se_from_ast(st->assign_val, &states->s[i].env, &states->s[i].vlen, &states->s[i].reads));
             }
         } else if (st->kind == NODE_RETURN) {
             for (int i = 0; i < states->n; i++) scan_arith_expr(st->ret_val, &states->s[i], ob);   /* M15 */
+            for (int i = 0; i < states->n; i++) check_drop_uses(st->ret_val, &states->s[i], ob);   /* MEM-2 */
             if (is_user_call(st->ret_val)) {   /* M5 */
                 for (int i = 0; i < states->n; i++) {
                     Sym r = eval_user_call(st->ret_val, &states->s[i], ob, g_caller_name);
@@ -3012,6 +3114,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             return;
         } else if (st->kind == NODE_EXPR_STMT && last && is_nonvoid) {
             for (int i = 0; i < states->n; i++) scan_arith_expr(st->expr, &states->s[i], ob);   /* M15 */
+            for (int i = 0; i < states->n; i++) check_drop_uses(st->expr, &states->s[i], ob);   /* MEM-2 */
             if (is_user_call(st->expr)) {   /* M5 */
                 for (int i = 0; i < states->n; i++) {
                     Sym r = eval_user_call(st->expr, &states->s[i], ob, g_caller_name);
@@ -3047,6 +3150,11 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
                     lin_free(&r.lin);
                     continue;
                 }
+                if (is_drop_call(st->expr)) {   /* MEM-2: consume the buffer */
+                    eval_drop_call(st->expr, &states->s[i], ob);
+                    continue;
+                }
+                check_drop_uses(st->expr, &states->s[i], ob);   /* MEM-2 */
                 scan_vec_expr(st->expr, &states->s[i], ob, spec);
             }
         } else if (st->kind == NODE_IF) {
@@ -3054,6 +3162,7 @@ static void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int i
             for (int i = 0; i < states->n; i++) {
                 State *cur = &states->s[i];
                 scan_arith_expr(st->cond, cur, ob);   /* M15: guard arithmetic */
+                check_drop_uses(st->cond, cur, ob);   /* MEM-2: dropped buffer in the guard */
                 Formula cf, nf;
                 int cok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, &cur->reads, 0, &cf);
                 int nok = bool_to_dnf(st->cond, &cur->env, &cur->vlen, &cur->reads, 1, &nf);

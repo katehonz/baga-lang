@@ -172,6 +172,15 @@ grep -q "send_after_close:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАН�
 	&& grep -q "recv_claim:" /tmp/baga_verify_out.txt && grep -q "НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& echo "OK: par_chan — send след close ⇒ -1 доказано; recv payload честно UNKNOWN (M14)" \
 	|| { echo "FAIL: par_chan"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/mem_drop.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "ok_seq:" /tmp/baga_verify_out.txt && grep -q "ok_map:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^4$' \
+	&& grep -q "протокол (използване след drop.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (повторен drop.*ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "контрапример: n = 1" /tmp/baga_verify_out.txt \
+	&& ! grep -q "протокол.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& echo "OK: mem_drop — alloc→drop: чистите са доказани; use-after-drop и повторен drop зад if-клон са оброчени с контрапример (MEM-2)" \
+	|| { echo "FAIL: mem_drop"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/ovf_add.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "inc_bounded:" /tmp/baga_verify_out.txt && grep -q "1/1 операции доказано безопасни" /tmp/baga_verify_out.txt \
 	&& grep -q "контрапример: n = 9223372036854775807" /tmp/baga_verify_out.txt \

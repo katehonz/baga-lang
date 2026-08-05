@@ -1,0 +1,82 @@
+// MEM-2: alloc → drop protocol (ghost-state per source variable, HK_DROP).
+// The checker rejects STRAIGHT-LINE use-after-drop / double-drop at compile
+// time, so the refuted cases here hide the violation behind a path the
+// checker's certainty rules miss: dropped in one if-arm only ⇒ after the
+// join the variable is not CERTAINLY dropped, so the checker allows the
+// later use/drop. The verifier explores both paths and refutes the bad one
+// with a witness (n > 0).
+
+spec ok_seq {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// clean: alloc → use → drop, no violation
+fn ok_seq(n: i64) -> i64 {
+    let v = vec_new()
+    vec_push(v, n)
+    let l = vec_len(v)
+    drop(v)
+    return l
+}
+
+spec ok_map {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// clean: map_new/bytes_new register the same protocol
+fn ok_map(n: i64) -> i64 {
+    let m = map_new()
+    let b = bytes_new(8)
+    drop(m)
+    drop(b)
+    return 0
+}
+
+spec bad_use {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// checker-legal (drop only in the then-arm ⇒ not certainly dropped after the
+// join), but on the n > 0 path vec_len(v) is a use after drop
+fn bad_use(n: i64) -> i64 {
+    let v = vec_new()
+    if n > 0 {
+        drop(v)
+    }
+    let l = vec_len(v)
+    return l
+}
+
+spec bad_double {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// checker-legal for the same reason; on the n > 0 path drop runs twice
+fn bad_double(n: i64) -> i64 {
+    let v = vec_new()
+    if n > 0 {
+        drop(v)
+    }
+    drop(v)
+    return 0
+}
+
+fn main() -> i64 {
+    return 0
+}
