@@ -16,10 +16,14 @@
 
 **Non-goals of this plan**
 
-- Full Rust borrow checker / affine types  
+- **Full** Rust borrow checker / affine types / lifetime generics  
 - Generics / traits / protoc codegen (later tracks)  
 - Async/await (CSP + poll stays; document as feature)  
 - Full OTel SDK, full Raft safety proof, io_uring  
+
+**Optional (never a gate):** a **light, opt-in borrow checker** — see Track C′
+and `docs/superpowers/plans/2026-08-05-memory-management.md` §7. Default Baga
+sharing stays; no package must adopt it.
 
 **Rule:** every milestone ends with a **regression-green product surface** (tests + one real app path), not a new orphan package.
 

@@ -36,9 +36,14 @@ next; this plan is the design reference for the memory arc after it.
 
 ### Option A — Ownership + borrow checking (Rust-lite)
 Move semantics on assignment, `&` borrows with lifetimes.
-**Against**: fights the language's core semantics — structs are by-value,
-`Vec`/`Map` are shared pointers passed freely through functions (every
-package relies on this). A borrow checker would rewrite the language. Reject.
+**Against (full Rust)**: fights the language's core semantics — structs are
+by-value, `Vec`/`Map` are shared pointers passed freely through functions
+(every package relies on this). A full borrow checker would rewrite the
+language.
+
+**Revised 2026-08-05 (user direction):** a **light, optional** borrow
+checker may still be explored later — **not mandatory**, not a gate for
+MEM-1/2/3 or product tracks. See §7. Full affine ownership remains out.
 
 ### Option B — Linear consumption in the checker (Austral-lite)
 New builtin `drop(x)` for heap values (`Vec`, `Map`, `bytes`, closures,
@@ -107,7 +112,46 @@ long-run fragmentation is measured, not claimed away.
 
 ## 6. Non-goals (v1)
 
-No borrow checker, no lifetimes on references, no GC, no refcounts, no
+No **full** borrow checker / no lifetime generics, no GC, no refcounts, no
 raw-pointer free of arbitrary `&T`. Strings stay immutable arena values
 (dropping individual strings is not tracked in v1 — they're the cheapest
 and the most shared).
+
+A **light optional** borrow mode (flag / attribute / separate pass) is
+**not** a v1 non-goal forever — see §7 — but it is **not required** to
+ship MEM-1/2/3 or any product milestone.
+
+## 7. Optional later: light borrow checker (not mandatory)
+
+**Status:** direction only — **opt-in**, never default, never a language
+requirement. Tracked also from `2026-08-05-advanced-go-rust.md` Track C'.
+
+**Intent (contrast with rejected full Option A):**
+
+| Full Rust-style (still out) | Light optional (maybe later) |
+|-----------------------------|------------------------------|
+| Move on every assignment | Spot-check selected locals / params |
+| Lifetime parameters | No lifetime generics |
+| Breaks shared `Vec`/`Map` | Default sharing unchanged |
+| Whole program | File / fn / pragma opt-in |
+
+**Possible lite shapes (pick when designed, not now):**
+
+1. **Opt-in exclusive borrow of a local** — e.g. after `borrow mut x` (or
+   attribute), checker rejects aliasing use until reborrow ends; no change
+   to call-by-value defaults.
+2. **Drop-adjacent borrow** — while a value is `drop`-owned, forbid
+   secondary live aliases that the checker can *see* (still no full heap
+   graph).
+3. **`--borrow-lite` pass** — separate from typecheck; WARN by default,
+   ERROR only under flag; product code may ignore forever.
+
+**Hard rules for any lite design:**
+
+- **Default Baga stays share-by-value** for structs / Vec / Map.
+- Opt-in only: missing pragma = zero new errors.
+- Must not rewrite existing monorepo packages.
+- Document honesty: aliases through containers remain unchecked.
+
+**Sequencing:** after MEM-3 payload regions if still wanted; never blocks
+Track B (product Result migrations) or A-language Result work.

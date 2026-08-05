@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Plan: optional light borrow checker (direction only)
+- `docs/superpowers/plans/2026-08-05-memory-management.md` §7 — light
+  **opt-in** borrow later; **not mandatory**, default sharing unchanged.
+- Advanced plan Track **C′** mirrors this; does not block product B1–B3.
+
 ### B1 pgbaga — PgResult as L3 sum
 - `PgResult` → `PgOk(PgRows) | PgErr(PgFail)`; rebind with `pg_conn_of(r)`.
 - Accessors sum-aware; ormbaga `orm_*_from` updated. `pg_test` green.
