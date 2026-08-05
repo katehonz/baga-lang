@@ -42,5 +42,5 @@ Goal: Track S flagship — durable KV on RESP.
 - **R13 restart keys in meta** — in-memory bsearch, one block read per get — **done**
 - **R14 put path** — prealloc WAL/bloom/SST encode, `push_u32_le` 1-concat,
   single bloom build, 64 KiB WAL write buffer — **done**
+- **R15 poll multi-conn** — `std/net/poll` event loop for RESP serve — **done**
 - Shared page cache across open files with pin counts
-- poll multi-conn serve (kvbaga K1)

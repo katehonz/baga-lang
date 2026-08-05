@@ -48,7 +48,7 @@ LSMPATH=/tmp/baga_rocks_demo LSMPORT=16579 \
 ```
 
 Env: `LSMPATH`, `LSMPORT`, `LSM_FLUSH_AT`, `LSM_COMPACT_AT`,
-`LSM_TARGET_BYTES`, `LSM_MERGE_PICK`.
+`LSM_TARGET_BYTES`, `LSM_MERGE_PICK`, `LSM_SERIAL=1` (legacy single-conn).
 
 ## API
 
