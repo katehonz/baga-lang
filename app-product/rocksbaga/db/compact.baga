@@ -229,9 +229,11 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO {
         let ix = vec_get(idxs, ii)
         map_set(dropm, ix, 1)
         let g = vec_get(db.gens, ix)
+        sst_fd_drop(db.sst_fds, db.sst_sizes, g)?
         unlink(sst_path(db.dir, g))?
         unlink(bloom_path(db.dir, g))?
         db.cache = pc_invalidate_file(db.cache, g)
+        db.blooms = bloom_cache_drop(db.blooms, g)
     }
     // Rebuild oldest-first: L3 … L0; append new file at end of its level.
     let ng: Vec<i64> = vec_new()

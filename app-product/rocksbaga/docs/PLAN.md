@@ -35,5 +35,8 @@ Goal: Track S flagship — durable KV on RESP.
 - Package rename **rocksbaga** — **done (R10)**; `lsmbaga` shim kept
 - Layered package tree (`util`/`cache`/`wal`/`table`/`db`/`net`) — **done**
 - Split `table/bloom` + `db/{types,compact}` — **done**
+- **R11 get path** — bloom cache, SST fd cache, O(n) `pc_read_at`,
+  skip embedded bloom when sidecar hit, skip block CRC on get,
+  default page cache 256 pages — **done**
 - Shared page cache across open files with pin counts
-- Optional skip whole-body CRC on get-only path
+- Index/footer cache per SST (avoid re-reading restarts every get)

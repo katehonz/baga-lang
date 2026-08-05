@@ -145,6 +145,7 @@ fn bloom_write_file(dir: str, gen: i64, bits: bytes, m: i64) -> i64 !IO {
 }
 
 // Returns: 0 = not present (skip SST), 1 = maybe, 2 = no/bad file.
+// Uncached (open+read+crc every call). Prefer bloom_cache_may on the hot path.
 fn bloom_file_may(dir: str, gen: i64, key: str) -> i64 !IO {
     let path = bloom_path(dir, gen)
     let fd = open(path, 0, 0)?
@@ -186,4 +187,99 @@ fn bloom_file_may(dir: str, gen: i64, key: str) -> i64 !IO {
         return 0
     }
     return 1
+}
+
+// --- R11 in-memory bloom cache (load sidecar once per gen) ---
+
+struct BloomCache {
+    bits: Map<i64, bytes>,
+    m: Map<i64, i64>,
+    st: Map<i64, i64>   // 1 = loaded filter, 2 = no/bad sidecar
+}
+
+fn bloom_cache_new() -> BloomCache {
+    return BloomCache {
+        bits: map_new(),
+        m: map_new(),
+        st: map_new()
+    }
+}
+
+fn bloom_cache_drop(cache: BloomCache, gen: i64) -> BloomCache {
+    map_del(cache.bits, gen)
+    map_del(cache.m, gen)
+    map_del(cache.st, gen)
+    return cache
+}
+
+struct BloomMay {
+    cache: BloomCache,
+    may: i64   // 0 = skip SST, 1 = maybe, 2 = no sidecar (open SST)
+}
+
+// Load-or-hit bloom sidecar; same return codes as bloom_file_may.
+fn bloom_cache_may(cache: BloomCache, dir: str, gen: i64, key: str) -> BloomMay !IO {
+    if map_has(cache.st, gen) == 1 {
+        let s = map_get(cache.st, gen)
+        if s == 2 {
+            return BloomMay { cache: cache, may: 2 }
+        }
+        let m = map_get(cache.m, gen)
+        let bits = map_get(cache.bits, gen)
+        if bloom_may(bits, m, key) == 0 {
+            return BloomMay { cache: cache, may: 0 }
+        }
+        return BloomMay { cache: cache, may: 1 }
+    }
+    let path = bloom_path(dir, gen)
+    let fd = open(path, 0, 0)?
+    if fd < 0 {
+        map_set(cache.st, gen, 2)
+        return BloomMay { cache: cache, may: 2 }
+    }
+    let fsize = fd_size(fd)?
+    if fsize < 8 + 4 + 4 {
+        close(fd)
+        map_set(cache.st, gen, 2)
+        return BloomMay { cache: cache, may: 2 }
+    }
+    let raw = fd_pread_bytes(fd, fsize, 0)?
+    close(fd)
+    if bytes_len(raw) < fsize {
+        map_set(cache.st, gen, 2)
+        return BloomMay { cache: cache, may: 2 }
+    }
+    if str_of_bytes(bytes_slice(raw, 0, 8)) != "BAGABLM1" {
+        map_set(cache.st, gen, 2)
+        return BloomMay { cache: cache, may: 2 }
+    }
+    let body_len = fsize - 8 - 4
+    if body_len < 4 {
+        map_set(cache.st, gen, 2)
+        return BloomMay { cache: cache, may: 2 }
+    }
+    let body = bytes_slice(raw, 8, 8 + body_len)
+    let want = get_u32_le(raw, 8 + body_len)
+    if crc32c_b(body) != want {
+        map_set(cache.st, gen, 2)
+        return BloomMay { cache: cache, may: 2 }
+    }
+    let m = get_u32_le(body, 0)
+    if m <= 0 {
+        map_set(cache.st, gen, 2)
+        return BloomMay { cache: cache, may: 2 }
+    }
+    let nbytes = m / 8
+    if bytes_len(body) != 4 + nbytes {
+        map_set(cache.st, gen, 2)
+        return BloomMay { cache: cache, may: 2 }
+    }
+    let bits = bytes_slice(body, 4, 4 + nbytes)
+    map_set(cache.bits, gen, bits)
+    map_set(cache.m, gen, m)
+    map_set(cache.st, gen, 1)
+    if bloom_may(bits, m, key) == 0 {
+        return BloomMay { cache: cache, may: 0 }
+    }
+    return BloomMay { cache: cache, may: 1 }
 }

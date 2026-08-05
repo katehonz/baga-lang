@@ -228,12 +228,14 @@ struct PcRead {
 }
 
 // Read n bytes at file offset through the page cache (may span pages).
+// Preallocates the result — avoids O(n²) bytes_push on every byte (R11).
 fn pc_read_at(pc: PageCache, fd: i64, file_id: i64, off: i64, n: i64) -> PcRead !IO {
     if n <= 0 {
         return PcRead { pc: pc, data: bytes_new(0) }
     }
     let mut cur = pc
-    let mut out = bytes_new(0)
+    let out = bytes_new(n)
+    let mut w: i64 = 0
     let mut left = n
     let mut pos = off
     while left > 0 {
@@ -243,7 +245,11 @@ fn pc_read_at(pc: PageCache, fd: i64, file_id: i64, off: i64, n: i64) -> PcRead 
         cur = g.pc
         let page = g.data
         if bytes_len(page) == 0 {
-            return PcRead { pc: cur, data: out }
+            // Short read: return only what was filled.
+            if w == 0 {
+                return PcRead { pc: cur, data: bytes_new(0) }
+            }
+            return PcRead { pc: cur, data: bytes_slice(out, 0, w) }
         }
         let mut take = cur.page_size - poff
         if take > left {
@@ -251,9 +257,10 @@ fn pc_read_at(pc: PageCache, fd: i64, file_id: i64, off: i64, n: i64) -> PcRead 
         }
         let mut i: i64 = 0
         while i < take {
-            out = bytes_push(out, bytes_at(page, poff + i))
+            bytes_set(out, w + i, bytes_at(page, poff + i))
             i = i + 1
         }
+        w = w + take
         pos = pos + take
         left = left - take
     }

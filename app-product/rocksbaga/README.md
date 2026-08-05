@@ -29,11 +29,13 @@ docs/           PLAN, gaps
 
 | Piece | Layer | Notes |
 |-------|-------|--------|
-| Page cache | `cache/` | 4 KiB pages, clock eviction |
+| Page cache | `cache/` | 4 KiB pages, clock eviction (default 256 pages) |
 | WAL | `wal/` | crc32c records, fdatasync |
 | Memtable + compact | `db/` | L0…L3, byte targets, oldest-N pick |
-| SSTable | `table/` | BAGASST5 + `.bloom.<gen>` sidecar |
+| SSTable | `table/` | BAGASST5 + `.bloom.<gen>` sidecar; R11 bloom/fd cache |
 | RESP | `net/` | redis-cli subset |
+
+**Bench:** `./bench/rocks/run_vs_rocksdb.sh` — pure engine vs RocksDB.
 
 ## Run
 

@@ -20,6 +20,16 @@
   `./bench/rocks/run_vs_rocksdb.sh`. Baseline snapshot under
   `bench/rocks/results/`.
 
+### RocksDB path R11 — get-path performance
+- **`pc_read_at`:** preallocate + `bytes_set` (was O(n²) `bytes_push`).
+- **BloomCache** on `LsmDB`: load `.bloom.<gen>` once; drop on compact.
+- **SST fd cache** (`sst_fds`/`sst_sizes`): reuse open descriptors on get;
+  closed on compact / `lsm_close`.
+- Partial get: skip embedded bloom when sidecar said maybe; skip block CRC
+  on get (compact/full-parse still verify body CRC).
+- Default page cache cap **256** pages (was 32).
+- Bench n=1000 durable: GET ~538 → ~77k–90k ops/s; PUT ~50%→~70% of RocksDB.
+
 ### RocksDB path R10 — package rename rocksbaga
 - **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine
   unchanged). Prefer `import "rocksbaga/…"`. Deprecated **`lsmbaga/`** shims

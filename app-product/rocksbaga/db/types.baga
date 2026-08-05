@@ -1,6 +1,7 @@
 // types.baga — shared engine types (LsmDB).
 
 import "../cache/page.baga"
+import "../table/bloom.baga"
 
 struct LsmDB {
     dir: str,
@@ -17,6 +18,9 @@ struct LsmDB {
     levels: Vec<i64>,   // parallel: 0=L0 … 3=L3
     next_gen: i64,
     cache: PageCache,
+    blooms: BloomCache, // R11: sidecar bloom filters loaded once per gen
+    sst_fds: Map<i64, i64>,   // R11: open SST fd cache (gen → fd)
+    sst_sizes: Map<i64, i64>, // gen → file size
     sync_every: i64,
     since_sync: i64,
     ok: i64

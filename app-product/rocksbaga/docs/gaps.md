@@ -65,9 +65,20 @@ Unlinked with SST on compact. Test: `r9_*` in `tests/lsm_test.baga`.
 `table/{bloom,sstable}`, `db/{types,compact,engine}`, `net/`, `examples/`,
 `docs/` + root re-exports. See [ARCHITECTURE.md](../ARCHITECTURE.md).
 
-**Still open (later):** drop whole-body CRC on get-only path;
-`db/manifest.baga` / `table/block.baga` when needed; RocksDB feature parity
-(not claimed).
+**Shipped (R11 get path):**
+- **`pc_read_at`** preallocates (was O(n²) `bytes_push` per byte).
+- **In-memory bloom cache** (`BloomCache` on `LsmDB`) — load sidecar once
+  per gen; invalidate on compact.
+- **Open SST fd cache** (`sst_fds` / `sst_sizes`) — no open/close per get.
+- Skip embedded bloom when sidecar already said maybe.
+- Skip per-block CRC on partial get (full-parse / compact still body-CRC).
+- Default page cache **256 × 4 KiB**.
+- Bench (`bench/rocks`, n=1000 durable): GET ~0.5k → ~80k ops/s (~150×);
+  still well below RocksDB (~0.5M ops/s). See `results/vs-rocksdb-latest.txt`.
+
+**Still open (later):** SST footer/index in-memory cache; pin-count shared
+page cache; `db/manifest.baga` / `table/block.baga` when needed; RocksDB
+feature parity (not claimed).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
