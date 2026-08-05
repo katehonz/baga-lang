@@ -1,4 +1,5 @@
 // participant.baga — 2PC participant with local MVCC store + prepare locks.
+// B4.3: multiple concurrent PREPARE allowed when write-sets do not lock-conflict.
 
 import "msg.baga"
 import "mvcc.baga"
@@ -20,11 +21,10 @@ fn tpc_participant(ctx: i64) -> i64 !Par {
     let id = cell2_0(ctx)
     let inbox = cell2_1(ctx)
     let store = mvcc_new()
-    // locks: key → tx holding prepare lock (-1 free encoded as missing)
+    // locks: key → tx holding prepare lock
     let locks: Map<i64, i64> = map_new()
-    let mut prep = Prep {
-        active: 0, tx: -1, k1: 0, v1: 0, k2: -1, v2: 0
-    }
+    // active prepares by tx id (multiple concurrent non-conflicting)
+    let preps: Map<i64, Prep> = map_new()
 
     let mut running: i64 = 1
     while running == 1 {
@@ -58,34 +58,32 @@ fn tpc_participant(ctx: i64) -> i64 !Par {
                     let v2 = prep_v2(m)
                     let mut yes: i64 = 1
 
-                    // already prepared for another tx?
-                    if prep.active == 1 && prep.tx != tx {
-                        yes = 0
-                    }
-
-                    // lock checks
-                    if yes == 1 {
+                    // already prepared this tx? idempotent yes
+                    if map_has(preps, tx) == 1 {
+                        yes = 1
+                    } else {
+                        // lock checks
                         if map_has(locks, k1) == 1 {
                             if lock_conflict(map_get(locks, k1), tx) == 1 {
                                 yes = 0
                             }
                         }
-                    }
-                    if yes == 1 && k2 >= 0 {
-                        if map_has(locks, k2) == 1 {
-                            if lock_conflict(map_get(locks, k2), tx) == 1 {
-                                yes = 0
+                        if yes == 1 && k2 >= 0 {
+                            if map_has(locks, k2) == 1 {
+                                if lock_conflict(map_get(locks, k2), tx) == 1 {
+                                    yes = 0
+                                }
                             }
                         }
-                    }
 
-                    if yes == 1 {
-                        map_set(locks, k1, tx)
-                        if k2 >= 0 {
-                            map_set(locks, k2, tx)
-                        }
-                        prep = Prep {
-                            active: 1, tx: tx, k1: k1, v1: v1, k2: k2, v2: v2
+                        if yes == 1 {
+                            map_set(locks, k1, tx)
+                            if k2 >= 0 {
+                                map_set(locks, k2, tx)
+                            }
+                            map_set(preps, tx, Prep {
+                                active: 1, tx: tx, k1: k1, v1: v1, k2: k2, v2: v2
+                            })
                         }
                     }
                     chan_send(rep, msg_vote(yes, tx, id))
@@ -95,19 +93,17 @@ fn tpc_participant(ctx: i64) -> i64 !Par {
                     let tx = ca_tx(m)
                     let cts = ca_ts(m)
                     let rep = ca_reply(m)
-                    if prep.active == 1 && prep.tx == tx {
-                        mvcc_put_version(store, prep.k1, prep.v1, cts)
-                        if prep.k2 >= 0 {
-                            mvcc_put_version(store, prep.k2, prep.v2, cts)
+                    if map_has(preps, tx) == 1 {
+                        let p = map_get(preps, tx)
+                        mvcc_put_version(store, p.k1, p.v1, cts)
+                        if p.k2 >= 0 {
+                            mvcc_put_version(store, p.k2, p.v2, cts)
                         }
-                        map_del(locks, prep.k1)
-                        if prep.k2 >= 0 {
-                            map_del(locks, prep.k2)
+                        map_del(locks, p.k1)
+                        if p.k2 >= 0 {
+                            map_del(locks, p.k2)
                         }
-                        prep = Prep {
-                            active: 0, tx: -1, k1: 0, v1: 0, k2: -1, v2: 0
-                        }
-                        // keep store clock ahead
+                        map_del(preps, tx)
                         if cts >= store.next_ts {
                             store.next_ts = cts + 1
                         }
@@ -118,14 +114,13 @@ fn tpc_participant(ctx: i64) -> i64 !Par {
                 if mt == MT_ABORT() {
                     let tx = ca_tx(m)
                     let rep = ca_reply(m)
-                    if prep.active == 1 && prep.tx == tx {
-                        map_del(locks, prep.k1)
-                        if prep.k2 >= 0 {
-                            map_del(locks, prep.k2)
+                    if map_has(preps, tx) == 1 {
+                        let p = map_get(preps, tx)
+                        map_del(locks, p.k1)
+                        if p.k2 >= 0 {
+                            map_del(locks, p.k2)
                         }
-                        prep = Prep {
-                            active: 0, tx: -1, k1: 0, v1: 0, k2: -1, v2: 0
-                        }
+                        map_del(preps, tx)
                     }
                     chan_send(rep, msg_ack(tx, id))
                 }

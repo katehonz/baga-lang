@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Phase 4 B4.3 — multi-key 2PC concurrent stress
+- **txnbaga:** participants hold **multiple concurrent PREPARE**s when locks
+  do not conflict; `tpc_txn_id` for disjoint tx ranges. Stress test
+  `tests/txn_stress_test.baga` (3 go_bg workers, private multi-key + hot-key
+  contention).
+
 ### Phase 4 B4.1 — lsm recovery + page-cache stress
 - **`tests/lsm_recover_test.baga`:** WAL/SST/tomb reopen (crash-style close),
   double reopen, many-key compact recovery, page cache `cap=2` scan still

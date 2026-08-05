@@ -18,7 +18,11 @@ Versions accumulate. Watermark GC is straightforward on `ver` map.
 
 Message packing limit; general write-sets need a list encoding.
 
-## T5 — concurrent conflicting txns
+## T5 — concurrent PREPARE (improved B4.3)
 
-Second PREPARE while locks held gets VOTE_NO (no wait queue). Client
-retries are app-level (`relbaga`).
+**Shipped.** Multiple concurrent PREPARE allowed when write-sets do not
+lock-conflict (`Map` of preps by tx). Conflicting keys still VOTE_NO (no
+wait queue). Stress: `tests/txn_stress_test.baga` (go_bg clients + hot key).
+
+**Residual.** No wait queue / deadlock detection; client retries are
+app-level (`relbaga`).

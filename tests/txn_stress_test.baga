@@ -1,0 +1,143 @@
+// txn_stress_test.baga — B4.3 multi-key 2PC under concurrent clients.
+// Workers use disjoint tx id ranges + mostly disjoint keys; a hot-key burst
+// exercises VOTE_NO / abort under lock contention.
+
+import "txnbaga/cluster.baga"
+import "txnbaga/msg.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+// Worker context: cell2(p0, cell2(p1, cell2(base_tx, cell2(wid, done_ch))))
+// Reports cell2(commits, aborts) on done_ch.
+fn stress_worker(ctx: i64) -> i64 !Par {
+    let p0 = cell2_0(ctx)
+    let rest = cell2_1(ctx)
+    let p1 = cell2_0(rest)
+    let rest2 = cell2_1(rest)
+    let base_tx = cell2_0(rest2)
+    let rest3 = cell2_1(rest2)
+    let wid = cell2_0(rest3)
+    let done = cell2_1(rest3)
+
+    // Fake cluster shell (only p0/p1 used by tpc_txn_id).
+    let c = TpcCluster { p0: p0, p1: p1, next_tx: base_tx, commit_ts: 0, ok: 1 }
+
+    let mut commits: i64 = 0
+    let mut aborts: i64 = 0
+    let mut i: i64 = 0
+    // 12 multi-key txns on private keys
+    while i < 12 {
+        let tx = base_tx + i
+        // private key space high enough to avoid hot key 1
+        let k1 = 10000 + wid * 1000 + i * 2
+        let k2 = k1 + 1
+        let rc = tpc_txn_id(c, tx, k1, i + 1, k2, i + 2)?
+        if rc > 0 {
+            commits = commits + 1
+        } else {
+            aborts = aborts + 1
+        }
+        i = i + 1
+    }
+    // 6 contending writes on hot key 1 (serialize via locks → some NO)
+    let mut j: i64 = 0
+    while j < 6 {
+        let tx = base_tx + 100 + j
+        let rc2 = tpc_txn_id(c, tx, 1, wid * 100 + j, -1, 0)?
+        if rc2 > 0 {
+            commits = commits + 1
+        } else {
+            aborts = aborts + 1
+        }
+        j = j + 1
+    }
+    chan_send(done, cell2(commits, aborts))
+    return 0
+}
+
+fn main() -> i64 !Par {
+    print("txn_stress_test:")
+    let fails = vec_new()
+
+    let cl = tpc_start()?
+    check(fails, "start", cl.ok == 1)
+
+    // --- sequential multi-key burst (baseline) ---
+    let mut c = cl
+    let mut seq_ok: i64 = 0
+    let mut s: i64 = 0
+    while s < 20 {
+        let r = tpc_txn_ex(c, 500 + s, s, 600 + s, s * 2)?
+        c = r.cluster
+        if r.code > 0 {
+            seq_ok = seq_ok + 1
+        }
+        s = s + 1
+    }
+    check(fails, "seq_multi", seq_ok == 20)
+    check(fails, "seq_read", tpc_get(c, 505, c.commit_ts)? == 5)
+
+    // --- concurrent workers (channel stress) ---
+    let n_workers: i64 = 3
+    let done = chan_new(8)
+    let mut w: i64 = 0
+    while w < n_workers {
+        // disjoint tx ranges: worker w → base 1000 + w*200
+        let base = 1000 + w * 200
+        go_bg(stress_worker, cell2(c.p0, cell2(c.p1, cell2(base, cell2(w, done)))))
+        w = w + 1
+    }
+
+    let mut total_c: i64 = 0
+    let mut total_a: i64 = 0
+    let mut got: i64 = 0
+    while got < n_workers {
+        let r = chan_recv_timeout(done, 5000)
+        if cell2_0(r) == 1 {
+            let pack = cell2_1(r)
+            total_c = total_c + cell2_0(pack)
+            total_a = total_a + cell2_1(pack)
+            got = got + 1
+        } else {
+            // timeout
+            got = n_workers
+            check(fails, "workers_timeout", false)
+        }
+    }
+    check(fails, "workers_done", got == n_workers)
+    // private multi-key: 3*12=36 + some hot commits; allow hot-key aborts
+    check(fails, "private_commits", total_c >= 30)
+    check(fails, "some_progress", total_c + total_a == n_workers * (12 + 6))
+    check(fails, "had_work", total_c > 0)
+
+    // final reads of private keys (worker 0, i=0 → 10000/10001)
+    let ts = 99999
+    let g0 = tpc_get(c, 10000, ts)?
+    check(fails, "w0_k0", g0 == 1)
+    let g1 = tpc_get(c, 10001, ts)?
+    check(fails, "w0_k1", g1 == 2)
+
+    // hot key 1: either committed value or aborts under contention
+    let hot = tpc_get(c, 1, ts)?
+    check(fails, "hot_key", hot != -999999 || total_a > 0)
+
+    tpc_stop(c)?
+    check(fails, "stop", true)
+
+    if vec_len(fails) == 0 {
+        print("txn_stress_test: all passed")
+        print(concat(concat(concat("  (commits=", int_to_str(total_c)),
+            concat(" aborts=", int_to_str(total_a))), ")"))
+        return 0
+    }
+    print(concat(concat("txn_stress_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

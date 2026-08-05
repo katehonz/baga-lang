@@ -68,20 +68,16 @@ fn tpc_recv_ack(ch: i64, tx: i64, timeout_ms: i64) -> i64 !Par {
     return 0
 }
 
-// Run 2PC for a write set of 1 or 2 keys (k2 < 0 → single key).
-// Both participants apply the same write set (replicated KV demo).
-// Returns commit_ts (>= 1) on success, -1 on abort.
-// Note: TpcCluster is by-value; caller must keep the returned ts (fields
-// written on `c` do not stick to the caller's copy).
-fn tpc_txn(c: TpcCluster, k1: i64, v1: i64, k2: i64, v2: i64) -> i64 !Par {
-    let tx = c.next_tx
+// Run 2PC with an explicit tx id (for concurrent clients with disjoint id ranges).
+// Returns commit_ts (== tx) on success, -1 on abort.
+fn tpc_txn_id(c: TpcCluster, tx: i64, k1: i64, v1: i64, k2: i64, v2: i64) -> i64 !Par {
     let votes = chan_new(4)
 
     chan_send(c.p0, msg_prepare(tx, votes, k1, v1, k2, v2))
     chan_send(c.p1, msg_prepare(tx, votes, k1, v1, k2, v2))
 
-    let vote_a = tpc_recv_vote(votes, tx, 500)?
-    let vote_b = tpc_recv_vote(votes, tx, 500)?
+    let vote_a = tpc_recv_vote(votes, tx, 2000)?
+    let vote_b = tpc_recv_vote(votes, tx, 2000)?
     let mut yes: i64 = 0
     if vote_a == 1 {
         yes = yes + 1
@@ -97,12 +93,11 @@ fn tpc_txn(c: TpcCluster, k1: i64, v1: i64, k2: i64, v2: i64) -> i64 !Par {
     let decide = tpc_decide(yes, 2)
     let acks = chan_new(4)
     if decide == 1 {
-        // monotonic commit timestamps: use tx id (starts at 1)
         let cts = tx
         chan_send(c.p0, msg_commit(tx, cts, acks))
         chan_send(c.p1, msg_commit(tx, cts, acks))
-        tpc_recv_ack(acks, tx, 500)?
-        tpc_recv_ack(acks, tx, 500)?
+        tpc_recv_ack(acks, tx, 2000)?
+        tpc_recv_ack(acks, tx, 2000)?
         chan_close(votes)
         chan_close(acks)
         return cts
@@ -110,11 +105,20 @@ fn tpc_txn(c: TpcCluster, k1: i64, v1: i64, k2: i64, v2: i64) -> i64 !Par {
 
     chan_send(c.p0, msg_abort(tx, acks))
     chan_send(c.p1, msg_abort(tx, acks))
-    tpc_recv_ack(acks, tx, 500)?
-    tpc_recv_ack(acks, tx, 500)?
+    tpc_recv_ack(acks, tx, 2000)?
+    tpc_recv_ack(acks, tx, 2000)?
     chan_close(votes)
     chan_close(acks)
     return -1
+}
+
+// Run 2PC for a write set of 1 or 2 keys (k2 < 0 → single key).
+// Both participants apply the same write set (replicated KV demo).
+// Returns commit_ts (>= 1) on success, -1 on abort.
+// Note: TpcCluster is by-value; caller must keep the returned ts (fields
+// written on `c` do not stick to the caller's copy).
+fn tpc_txn(c: TpcCluster, k1: i64, v1: i64, k2: i64, v2: i64) -> i64 !Par {
+    return tpc_txn_id(c, c.next_tx, k1, v1, k2, v2)?
 }
 
 // Snapshot read from participant 0 (both hold same data after commits).
