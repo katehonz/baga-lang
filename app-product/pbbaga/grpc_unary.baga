@@ -1,18 +1,17 @@
-// grpc_unary.baga — unary gRPC Hello over raw binary HTTP bodies (C5 glue).
-// Response.body is str and is NUL-terminated in C — a gRPC frame starts with
-// 0x00 (compression flag), so we must NOT put frames in Response.body.
-// Instead: pure handlers return the reply frame as bytes; the server writes
-// headers (str) + body (tcp_write_bytes).
+// grpc_unary.baga — unary gRPC Hello (C5 glue).
+// Builds httpdbaga Response with body_bytes + trailers (grpc-status) for H2,
+// and can still write H1 via grpc_write_response (binary body).
 
 import "grpc.baga"
+import "httpdbaga/http.baga"
 import "std/str/str.baga"
 import "std/net/tcp.baga"
 
 struct GrpcUnary {
     ok: i64,
-    status: i64,       // HTTP status
-    grpc_status: i64,  // 0 = OK
-    frame: bytes       // reply frame (empty on error)
+    status: i64,
+    grpc_status: i64,
+    frame: bytes
 }
 
 fn grpc_hello_handle(body: bytes) -> GrpcUnary {
@@ -29,6 +28,21 @@ fn grpc_hello_handle(body: bytes) -> GrpcUnary {
     let rep = hello_reply_encode(msg)
     let frame = grpc_encode(rep)
     return GrpcUnary { ok: 1, status: 200, grpc_status: 0, frame: frame }
+}
+
+// Response with binary frame + H2 trailers (grpc-status / grpc-message).
+fn grpc_to_response(u: GrpcUnary) -> Response {
+    let mut r = http_response_bytes(u.status, u.frame)
+    r = http_set_header(r, "Content-Type", grpc_content_type())
+    r = http_set_trailer(r, "grpc-status", int_to_str(u.grpc_status))
+    if u.ok == 0 {
+        r = http_set_trailer(r, "grpc-message", "error")
+    }
+    return r
+}
+
+fn grpc_hello_response(body: bytes) -> Response {
+    return grpc_to_response(grpc_hello_handle(body))
 }
 
 fn grpc_is_method_path(path: str) -> i64 {
@@ -49,7 +63,7 @@ fn grpc_is_method_path(path: str) -> i64 {
     return 0
 }
 
-// Write unary gRPC response: HTTP headers + binary frame body.
+// H1 path: headers as str, body via tcp_write_bytes.
 fn grpc_write_response(fd: i64, u: GrpcUnary) -> i64 !Net !IO {
     let mut hdr = concat(concat("HTTP/1.1 ", int_to_str(u.status)), " OK\r\n")
     if u.status != 200 {

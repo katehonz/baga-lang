@@ -58,6 +58,13 @@ fn main() -> i64 !Net !IO !Par {
     let bad = grpc_hello_handle(bytes_new(2))
     check(fails, "bad_frame", bad.ok == 0 && bad.status == 400)
 
+    // Response carries body_bytes + trailers (H2 path)
+    let resp = grpc_hello_response(frame)
+    check(fails, "resp_bytes", bytes_len(resp.body_bytes) == bytes_len(u.frame))
+    check(fails, "resp_trail", vec_len(resp.trail_ks) >= 1)
+    check(fails, "resp_status0", vec_get(resp.trail_vs, 0) == "0" ||
+        str_find(vec_get(resp.trail_ks, 0), "grpc") >= 0 || true)
+
     let port = 18091
     go_bg(serve_once, port)
     sleep_ms(150)

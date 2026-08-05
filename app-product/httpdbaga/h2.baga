@@ -284,10 +284,13 @@ fn h2_request_of(c: H2Conn, idx: i64) -> Request {
     return Request { method: method, path: path, version: "HTTP/2.0", hkeys: ks, hvals: vs, body: str_of_bytes(bb), body_bytes: bb }
 }
 
-// Respond on a stream: HEADERS (+CONTINUATION if the block is big) then
-// DATA frames <= peer MAX_FRAME_SIZE; END_STREAM on the last piece.
+// Respond on a stream: HEADERS (+CONTINUATION) then DATA; optional trailer
+// HEADERS with END_STREAM (gRPC). Binary body_bytes preferred over body str.
 fn h2_respond(c: H2Conn, sid: i64, resp: Response) -> H2Conn !IO !Net {
     let mut cur = c
+    let body_b = http_body_as_bytes(resp)
+    let body_n = bytes_len(body_b)
+    let has_trail = vec_len(resp.trail_ks) > 0
     let ks = vec_new()
     let vs = vec_new()
     vec_push(ks, ":status")
@@ -299,13 +302,13 @@ fn h2_respond(c: H2Conn, sid: i64, resp: Response) -> H2Conn !IO !Net {
         vec_push(vs, vec_get(resp.hvals, i))
     }
     vec_push(ks, "content-length")
-    vec_push(vs, int_to_str(len(resp.body)))
+    vec_push(vs, int_to_str(body_n))
     let block = hpack_encode(ks, vs)
     let maxf = cur.peer_max_frame
     let bn = bytes_len(block)
     if bn <= maxf {
         let mut fl = H2_F_END_HEADERS()
-        if len(resp.body) == 0 {
+        if body_n == 0 && has_trail == false {
             fl = fl + H2_F_END_STREAM()
         }
         h2_write_frame(cur.fd, H2_HEADERS(), fl, sid, block)?
@@ -323,7 +326,7 @@ fn h2_respond(c: H2Conn, sid: i64, resp: Response) -> H2Conn !IO !Net {
                 let mut fl = 0
                 if last {
                     fl = H2_F_END_HEADERS()
-                    if len(resp.body) == 0 {
+                    if body_n == 0 && has_trail == false {
                         fl = fl + H2_F_END_STREAM()
                     }
                 }
@@ -333,7 +336,7 @@ fn h2_respond(c: H2Conn, sid: i64, resp: Response) -> H2Conn !IO !Net {
                 let mut fl = 0
                 if last {
                     fl = H2_F_END_HEADERS()
-                    if len(resp.body) == 0 {
+                    if body_n == 0 && has_trail == false {
                         fl = fl + H2_F_END_STREAM()
                     }
                 }
@@ -342,14 +345,12 @@ fn h2_respond(c: H2Conn, sid: i64, resp: Response) -> H2Conn !IO !Net {
             off = off + take
         }
     }
-    let body_n = len(resp.body)
     if body_n > 0 {
         if body_n > cur.conn_window {
             h2_goaway(cur.fd, cur.last_sid, H2_ERR_FLOW())?
             cur.closed = 1
             return cur
         }
-        let body_b = bytes_of_str(resp.body)
         let mut off: i64 = 0
         while off < body_n {
             let mut take = maxf
@@ -358,13 +359,26 @@ fn h2_respond(c: H2Conn, sid: i64, resp: Response) -> H2Conn !IO !Net {
             }
             let frag = bytes_slice(body_b, off, off + take)
             let mut fl = 0
-            if off + take >= body_n {
+            // END_STREAM on last DATA only when there are no trailers
+            if off + take >= body_n && has_trail == false {
                 fl = H2_F_END_STREAM()
             }
             h2_write_frame(cur.fd, H2_DATA(), fl, sid, frag)?
             off = off + take
         }
         cur.conn_window = cur.conn_window - body_n
+    }
+    // Trailers: HEADERS with END_HEADERS | END_STREAM (RFC 7540 §8.1)
+    if has_trail {
+        let tks = vec_new()
+        let tvs = vec_new()
+        for i in 0..vec_len(resp.trail_ks) {
+            vec_push(tks, to_lower(vec_get(resp.trail_ks, i)))
+            vec_push(tvs, vec_get(resp.trail_vs, i))
+        }
+        let tblock = hpack_encode(tks, tvs)
+        let tfl = H2_F_END_HEADERS() + H2_F_END_STREAM()
+        h2_write_frame(cur.fd, H2_HEADERS(), tfl, sid, tblock)?
     }
     return cur
 }

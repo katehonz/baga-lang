@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### HTTP: binary Response body + H2 trailers (gRPC-native)
+- `Response` gains `body_bytes`, `trail_ks`/`trail_vs`; helpers
+  `http_response_bytes`, `http_set_trailer`, `http_body_len` /
+  `http_body_as_bytes`.
+- `http_respond_keepalive` and `h2_respond` prefer `body_bytes` (NUL-safe);
+  H2 emits trailer HEADERS with `END_STREAM` when trailers are set (gRPC
+  `grpc-status`).
+- `pbbaga/grpc_unary`: `grpc_hello_response` / `grpc_to_response` for H2.
+
 ### MEM-3 arena seatbelt + gRPC unary glue + latency bench
 - **MEM-3 (lite):** checker tracks `arena_free` like `drop` on the handle —
   double `arena_free`, `arena_alloc`/`reset` after free, and use of a freed

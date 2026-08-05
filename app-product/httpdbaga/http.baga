@@ -29,7 +29,13 @@ struct Response {
     status: i64,
     hkeys: Vec<str>,
     hvals: Vec<str>,
-    body: str
+    body: str,
+    // Binary body (gRPC frames, etc.). When bytes_len(body_bytes) > 0,
+    // wire paths prefer it over body (which is strlen-truncated at NUL).
+    body_bytes: bytes,
+    // H2 trailers (e.g. grpc-status); ignored on HTTP/1.1 respond.
+    trail_ks: Vec<str>,
+    trail_vs: Vec<str>
 }
 
 // ---------- v2: buffered binary reader ----------
@@ -345,38 +351,106 @@ fn http_keepalive(req: Request) -> i64 {
 // ---------- response building (pure) ----------
 
 fn http_response(status: i64, body: str) -> Response {
-    return Response { status: status, hkeys: vec_new(), hvals: vec_new(), body: body }
+    return Response {
+        status: status,
+        hkeys: vec_new(),
+        hvals: vec_new(),
+        body: body,
+        body_bytes: bytes_new(0),
+        trail_ks: vec_new(),
+        trail_vs: vec_new()
+    }
+}
+
+// Binary-safe body (prefer over body str on the wire).
+fn http_response_bytes(status: i64, body: bytes) -> Response {
+    return Response {
+        status: status,
+        hkeys: vec_new(),
+        hvals: vec_new(),
+        body: "",
+        body_bytes: body,
+        trail_ks: vec_new(),
+        trail_vs: vec_new()
+    }
 }
 
 // Functional update: returns a new Response carrying the added header.
 fn http_set_header(resp: Response, k: str, v: str) -> Response {
     vec_push(resp.hkeys, k)
     vec_push(resp.hvals, v)
-    return Response { status: resp.status, hkeys: resp.hkeys, hvals: resp.hvals, body: resp.body }
+    return Response {
+        status: resp.status,
+        hkeys: resp.hkeys,
+        hvals: resp.hvals,
+        body: resp.body,
+        body_bytes: resp.body_bytes,
+        trail_ks: resp.trail_ks,
+        trail_vs: resp.trail_vs
+    }
+}
+
+fn http_set_trailer(resp: Response, k: str, v: str) -> Response {
+    vec_push(resp.trail_ks, k)
+    vec_push(resp.trail_vs, v)
+    return Response {
+        status: resp.status,
+        hkeys: resp.hkeys,
+        hvals: resp.hvals,
+        body: resp.body,
+        body_bytes: resp.body_bytes,
+        trail_ks: resp.trail_ks,
+        trail_vs: resp.trail_vs
+    }
 }
 
 fn http_json_response(status: i64, body: str) -> Response {
     return http_set_header(http_response(status, body), "Content-Type", "application/json")
 }
 
+// Effective wire body length (binary preferred).
+fn http_body_len(resp: Response) -> i64 {
+    if bytes_len(resp.body_bytes) > 0 {
+        return bytes_len(resp.body_bytes)
+    }
+    return len(resp.body)
+}
+
+fn http_body_as_bytes(resp: Response) -> bytes {
+    if bytes_len(resp.body_bytes) > 0 {
+        return resp.body_bytes
+    }
+    return bytes_of_str(resp.body)
+}
+
 // ---------- response serialization ----------
 
 // keep=1 → "Connection: keep-alive" (loop again); keep=0 → v1 semantics.
+// Binary body_bytes is written with tcp_write_bytes after the header block.
 fn http_respond_keepalive(fd: i64, resp: Response, keep: i64) -> i64 !IO !Net {
+    let blen = http_body_len(resp)
     let mut out = concat(concat(concat("HTTP/1.1 ", int_to_str(resp.status)), " "), reason_phrase(resp.status))
     out = concat(out, "\r\n")
     for i in 0..vec_len(resp.hkeys) {
         out = concat(out, concat(concat(vec_get(resp.hkeys, i), ": "), concat(vec_get(resp.hvals, i), "\r\n")))
     }
-    out = concat(out, concat("Content-Length: ", concat(int_to_str(len(resp.body)), "\r\n")))
+    out = concat(out, concat("Content-Length: ", concat(int_to_str(blen), "\r\n")))
     if keep == 1 {
         out = concat(out, "Connection: keep-alive\r\n")
     } else {
         out = concat(out, "Connection: close\r\n")
     }
     out = concat(out, "\r\n")
-    out = concat(out, resp.body)
-    return tcp_write(fd, out)?
+    if tcp_write(fd, out)? != 0 {
+        return -1
+    }
+    if blen == 0 {
+        return 0
+    }
+    if bytes_len(resp.body_bytes) > 0 {
+        return tcp_write_bytes(fd, resp.body_bytes)?
+    }
+    return tcp_write(fd, resp.body)?
 }
 
 fn http_respond(fd: i64, resp: Response) -> i64 !IO !Net {

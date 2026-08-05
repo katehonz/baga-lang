@@ -5,11 +5,11 @@
 Messages are hand-encoded. Fine for probes; real services want a
 `.proto` → `.baga` generator.
 
-## P2 — ~~full gRPC transport~~ — partial
+## P2 — ~~full gRPC transport~~ — mostly closed
 
-`grpc_unary.baga` handles unary Hello over binary HTTP bodies
-(`tcp_write_bytes` — frames start with 0x00 so they cannot use
-`Response.body` str). H2 trailers-native path still open.
+`grpc_unary.baga` + `http_response_bytes` / `http_set_trailer` +
+`h2_respond` trailers (HEADERS END_STREAM). H1 uses
+`grpc_write_response`; H2 uses `grpc_hello_response` → `h2_respond`.
 
 ## P3 — packed repeated / maps / groups
 
