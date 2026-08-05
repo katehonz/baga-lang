@@ -11,8 +11,8 @@ Externs (libc):
 - `extern accept(fd: i64, addr: i64, addrlen: i64) -> i64 !Net`
 - `extern connect(fd: i64, addr: i64, addrlen: i64) -> i64 !Net`
 - `extern memfd_create(name: str, flags: i64) -> i64 !Net`
-- `extern pwrite(fd: i64, buf: str, count: i64, off: i64) -> i64 !Net`
-- `extern pread(fd: i64, buf: i64, count: i64, off: i64) -> i64 !Net`
+- `extern pwrite64(fd: i64, buf: str, count: i64, off: i64) -> i64 !Net`
+- `extern pread64(fd: i64, buf: i64, count: i64, off: i64) -> i64 !Net`
 - `extern syscall(nr: i64, a1: i64, a2: i64, a3: i64) -> i64 !Net`
 
 Public API (`tcp.baga`):

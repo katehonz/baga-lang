@@ -784,6 +784,30 @@ fn main() {
 - The LLVM backend reports `unsupported` for function values; the C backend
   represents them as `(code, env)` handles.
 
+### 12.7 `bytes` mutators (S2)
+
+`bytes` buffers are built and mutated with three builtins:
+
+| Signature | Description |
+|-----------|-------------|
+| `bytes_new(n: i64) -> bytes` | Fresh zeroed buffer of `n` bytes; `n < 0` clamps to 0. |
+| `bytes_set(b: bytes, i: i64, v: i64) -> void` | Bounds-checked write — OOB aborts with `baga: bytes_set: индекс N извън границите [0, L)`; `v` is masked to a byte (`& 255`). **Mutates the shared buffer** — aliases see the write (Vec/Map semantics). |
+| `bytes_push(b: bytes, v: i64) -> bytes` | Returns a **new** `bytes` of length `len+1` with `v` appended; the source buffer is untouched. O(n) copy per push — fine for frame building, not for hot loops. |
+
+```baga
+let buf = bytes_new(4)
+bytes_set(buf, 0, 255)
+let alias = buf
+bytes_set(alias, 1, 7)
+print(bytes_at(buf, 1))            // 7 — set is visible through the alias
+
+let f = bytes_push(bytes_push(bytes_new(0), 137), 1)
+let g = bytes_push(f, 2)           // f stays len 2; g is a fresh len-3 buffer
+```
+
+C backend only; the LLVM backend honestly reports `unsupported` for the
+three mutators.
+
 ---
 
 ## 13. The Effect System

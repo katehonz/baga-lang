@@ -129,8 +129,8 @@ buffer and one extra copy.
 
 **Severity.** Medium. A per-byte tax on every binary protocol.
 
-**Verdict.** Roadmap. `bytes` mutators (push/set, or a bytes builder) —
-pairs naturally with G10.
+**Verdict.** **Unblocked 2026-08-05** — `bytes_new`/`bytes_set`/`bytes_push`
+shipped; h2/hpack builder migration optional.
 
 ## G10 — `extern fn` cannot take `bytes` (binary FFI needs a workaround)
 
@@ -250,7 +250,7 @@ optional cleanup, not a blocker.
 | G3 `read_line` keeps `\r` | **closed** | `read_line` strips trailing `\r` (CRLF == LF) |
 | G4 error location on imbalance | YAGNI | fold into a future diagnostics pass |
 | G8 `chr()` UTF-8 only (poke8 ≥ 128 broken) | roadmap | raw byte constructor + poke8 fix |
-| G9 no `bytes` mutators | roadmap | bytes push/set/builder |
+| G9 no `bytes` mutators | **unblocked 2026-08-05** | `bytes_new`/`bytes_set`/`bytes_push` shipped; builder migration optional |
 | G10 extern can't take `bytes` | roadmap | `bytes` FFI parameters |
 | G11 arena not thread-safe | **closed** | mutex in the emitted runtime (fixed 2026-08-03) |
 | G12 bitwise-vs-compare precedence | roadmap | precedence change or diagnostic |

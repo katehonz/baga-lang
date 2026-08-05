@@ -17,6 +17,15 @@ against the same oracle, RSA-PSS / PKCS#1 likewise. The TLS 1.3 stack
 - `hmac_sha256_hex(key: str, msg: str) -> str` — lowercase hex MAC.
 - `hmac_sha256_b(key: bytes, msg: bytes) -> bytes` — HMAC over native `bytes`.
 - `hmac_sha256_b_hex(key: bytes, msg: bytes) -> str` — hex MAC over native `bytes`.
+- `crc32c_update(crc: i64, data: bytes) -> i64`, `crc32c_final(crc: i64) -> i64`,
+  `crc32c_b(data: bytes) -> i64` (`crc32c.baga`) — CRC-32C (Castagnoli,
+  reflected poly 0x82F63B78) over native `bytes`, masked-i64 u32. Init the
+  running state with `4294967295` (0xFFFFFFFF) and chain incrementally:
+  `st = crc32c_update(st, chunk)`, then `crc32c_final(st)`; `crc32c_b` is the
+  one-shot form. Validated against the published iSCSI vector set
+  (`tests/std/crc32c_test.baga`). Perf note: the 256-entry table is rebuilt on
+  every `crc32c_update` call — fine at WAL-record scale; cache it in a wrapper
+  if profiling shows a hot spot.
 - `ct_eq(a: str, b: str) -> bool` — constant-time string equality; time depends on length only, never on content.
 - `ct_eq_bytes(a: Vec<i64>, b: Vec<i64>) -> bool` — constant-time equality over byte buffers.
 - `ct_eq_b(a: bytes, b: bytes) -> bool` — constant-time equality over native `bytes`.

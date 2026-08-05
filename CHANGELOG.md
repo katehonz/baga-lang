@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Storage foundation (S2–S4): bytes mutators, positioned IO, crc32c
+- **S2 — `bytes` mutators** (httpdbaga **G9**): `bytes_new(n)` returns a
+  fresh zeroed buffer (`n < 0` clamps to 0); `bytes_set(b, i, v)` is a
+  bounds-checked write (`baga: bytes_set: индекс N извън границите [0, L)`,
+  `v` masked to a byte) that **mutates the shared buffer** — aliases see
+  the write (Vec/Map semantics); `bytes_push(b, v)` returns a **new**
+  `bytes` of length `len+1` (the source is untouched, O(n) copy per push —
+  fine for frame building). C backend only; the LLVM backend honestly
+  reports `unsupported`.
+- **S3 — positioned IO** (`std/os`): new externs `pread`/`pwrite`/
+  `fsync`/`fdatasync`/`fallocate` (!IO, i64/str params) plus wrappers
+  `fd_pwrite(fd, data, off) -> 0/-1` (partial-write loop) and
+  `fd_pread(fd, n, off) -> str` (heap buffer, `""` at EOF/error) — neither
+  moves the fd's file position. `std/net/tcp.baga` now externs
+  `pread64`/`pwrite64` (glibc weak aliases of the same symbols): two
+  same-named body-less externs can't coexist — both prototypes are emitted
+  unmangled and gcc fails with "conflicting types".
+- **S4 — CRC-32C** (`std/crypto/crc32c.baga`): Castagnoli (reflected poly
+  0x82F63B78) over native `bytes`, masked-i64 u32 — `crc32c_update` /
+  `crc32c_final` / `crc32c_b`, incremental chaining; validated against the
+  published iSCSI vector set.
+- Tests: `tests/std/bytes_mut_test.baga` (8 checks), `tests/std/os_io_test.baga`
+  (11 checks), `tests/std/crc32c_test.baga` (10 checks) + an S2 OOB negative
+  probe (`bytes_set` out of bounds). Spec: `docs/superpowers/specs/2026-08-05-storage-foundation-design.md`;
+  parent plan `docs/superpowers/plans/2026-08-05-cloud-storage-direction.md`
+  (Track S step 1).
+
 ### Language — sum types (L3): payload enums + full match
 - Enums can carry a payload per variant — real sum types:
   `enum Res { Ok(i64), Err(str) }`, constructed as `Ok(42)`; payload-less
