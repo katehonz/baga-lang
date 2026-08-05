@@ -1,0 +1,100 @@
+// met.baga — Prometheus text-format metrics (Track C2).
+// Counter + gauge registry; render() → exposition body for GET /metrics.
+
+import "std/str/str.baga"
+
+// kind: 0 = counter, 1 = gauge
+struct Metrics {
+    names: Vec<str>,
+    helps: Vec<str>,
+    kinds: Vec<i64>,
+    values: Vec<i64>
+}
+
+fn met_new() -> Metrics {
+    return Metrics {
+        names: vec_new(),
+        helps: vec_new(),
+        kinds: vec_new(),
+        values: vec_new()
+    }
+}
+
+// Register a counter; returns handle (index). Idempotent by name.
+fn met_counter(m: Metrics, name: str, help: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(m.names) {
+        if vec_get(m.names, i) == name {
+            return i
+        }
+        i = i + 1
+    }
+    vec_push(m.names, name)
+    vec_push(m.helps, help)
+    vec_push(m.kinds, 0)
+    vec_push(m.values, 0)
+    return vec_len(m.names) - 1
+}
+
+fn met_gauge(m: Metrics, name: str, help: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(m.names) {
+        if vec_get(m.names, i) == name {
+            return i
+        }
+        i = i + 1
+    }
+    vec_push(m.names, name)
+    vec_push(m.helps, help)
+    vec_push(m.kinds, 1)
+    vec_push(m.values, 0)
+    return vec_len(m.names) - 1
+}
+
+fn met_inc(m: Metrics, h: i64) {
+    if h >= 0 && h < vec_len(m.values) {
+        vec_set(m.values, h, vec_get(m.values, h) + 1)
+    }
+}
+
+fn met_add(m: Metrics, h: i64, n: i64) {
+    if h >= 0 && h < vec_len(m.values) {
+        vec_set(m.values, h, vec_get(m.values, h) + n)
+    }
+}
+
+fn met_set(m: Metrics, h: i64, v: i64) {
+    if h >= 0 && h < vec_len(m.values) {
+        vec_set(m.values, h, v)
+    }
+}
+
+fn met_get(m: Metrics, h: i64) -> i64 {
+    if h >= 0 && h < vec_len(m.values) {
+        return vec_get(m.values, h)
+    }
+    return 0
+}
+
+// Prometheus text 0.0.4 exposition (no labels in MVP).
+fn met_render(m: Metrics) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < vec_len(m.names) {
+        let name = vec_get(m.names, i)
+        let help = vec_get(m.helps, i)
+        let kind = vec_get(m.kinds, i)
+        let val = vec_get(m.values, i)
+        out = concat(out, concat(concat("# HELP ", name), concat(" ", help)))
+        out = concat(out, "\n")
+        if kind == 0 {
+            out = concat(out, concat(concat("# TYPE ", name), " counter\n"))
+        } else {
+            out = concat(out, concat(concat("# TYPE ", name), " gauge\n"))
+        }
+        out = concat(out, concat(concat(name, " "), int_to_str(val)))
+        out = concat(out, "\n")
+        i = i + 1
+    }
+    return out
+}

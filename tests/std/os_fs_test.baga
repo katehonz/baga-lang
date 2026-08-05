@@ -1,0 +1,72 @@
+// os_fs_test.baga — S5 helpers: mkdir/unlink/rename + binary fd_*_bytes.
+// Round-trip includes an embedded 0x00 so strlen-based paths cannot cheat.
+
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !IO {
+    let dir = "/tmp/baga_os_fs_test_dir"
+    let path = "/tmp/baga_os_fs_test_dir/blob.bin"
+    let path2 = "/tmp/baga_os_fs_test_dir/blob2.bin"
+    unlink(path)?
+    unlink(path2)?
+    unlink(dir)?
+
+    check("mkdir", mkdir(dir, 493)? == 0)   // 0755
+    // O_RDWR|O_CREAT|O_TRUNC = 578
+    let fd = open(path, 578, 420)?
+    check("open", fd >= 0)
+
+    // payload: 'A' 0x00 'B' 0xFF 'C'
+    let mut b = bytes_new(5)
+    bytes_set(b, 0, 65)
+    bytes_set(b, 1, 0)
+    bytes_set(b, 2, 66)
+    bytes_set(b, 3, 255)
+    bytes_set(b, 4, 67)
+    check("pwrite_bytes", fd_pwrite_bytes(fd, b, 0) == 0)
+    check("fdatasync", fdatasync(fd)? == 0)
+
+    let got = fd_pread_bytes(fd, 5, 0)?
+    check("pread_len", bytes_len(got) == 5)
+    check("pread_A", bytes_at(got, 0) == 65)
+    check("pread_NUL", bytes_at(got, 1) == 0)
+    check("pread_B", bytes_at(got, 2) == 66)
+    check("pread_FF", bytes_at(got, 3) == 255)
+    check("pread_C", bytes_at(got, 4) == 67)
+
+    // append via sequential write
+    close(fd)
+    // O_WRONLY|O_APPEND = 1|1024 = 1025
+    let fd2 = open(path, 1025, 420)?
+    check("reopen_append", fd2 >= 0)
+    let tail = bytes_new(1)
+    bytes_set(tail, 0, 90)   // 'Z'
+    check("write_bytes", fd_write_bytes(fd2, tail) == 0)
+    close(fd2)
+
+    let fd3 = open(path, 0, 0)?
+    let all = fd_pread_bytes(fd3, 6, 0)?
+    check("append_len", bytes_len(all) == 6 && bytes_at(all, 5) == 90)
+    close(fd3)
+
+    check("rename", fs_rename(path, path2)? == 0)
+    let fd4 = open(path2, 0, 0)?
+    check("rename_open", fd4 >= 0)
+    close(fd4)
+    check("unlink", unlink(path2)? == 0)
+    // rmdir not wrapped — best-effort; dir may remain if non-empty
+    unlink(dir)?
+
+    print("os_fs_test: all passed")
+    return 0
+}

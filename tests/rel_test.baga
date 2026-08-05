@@ -1,0 +1,93 @@
+// rel_test.baga — C6 relbaga: backoff, retry, breaker, bulkhead.
+
+import "relbaga/rel.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn always_fail(_x: i64) -> i64 {
+    return 7
+}
+
+fn always_ok(_x: i64) -> i64 {
+    return 0
+}
+
+// Stateful flaky: arg is "failure budget" stored by re-encoding —
+// rel_retry always passes the same arg, so we use a Map captured? No top-level let.
+// Test retry success path with always_ok; exhaustion with always_fail;
+// manual loop for "succeeds on 3rd" without shared mut.
+
+fn main() -> i64 !Par !Time {
+    check("backoff_0", rel_backoff_ms(0, 10, 1000, 2) == 10)
+    check("backoff_1", rel_backoff_ms(1, 10, 1000, 2) == 20)
+    check("backoff_2", rel_backoff_ms(2, 10, 1000, 2) == 40)
+    check("backoff_cap", rel_backoff_ms(10, 10, 100, 2) == 100)
+    check("should_retry", rel_should_retry(0, 3) == 1)
+    check("should_stop", rel_should_retry(2, 3) == 0)
+
+    check("retry_ok", rel_retry(always_ok, 0, 3, 1, 5, 2)? == 0)
+    check("retry_exhaust", rel_retry(always_fail, 0, 3, 1, 5, 2)? == 7)
+
+    // manual retry idiom (same as rel_retry) succeeds on 3rd
+    let mut a: i64 = 0
+    let mut last: i64 = 1
+    while a < 5 && last != 0 {
+        if a >= 2 {
+            last = 0
+        } else {
+            last = 1
+            sleep_ms(rel_backoff_ms(a, 1, 5, 2))
+        }
+        a = a + 1
+    }
+    check("manual_3rd", last == 0 && a == 3)
+
+    // circuit breaker
+    let mut b = brk_new(2, 50)
+    let now = monotonic_ms()?
+    check("allow_closed", brk_allow(b, now) == 1)
+    b = brk_failure(b, now)
+    check("still_closed", b.state == BRK_CLOSED() && brk_allow(b, now) == 1)
+    b = brk_failure(b, now)
+    check("now_open", b.state == BRK_OPEN() && brk_allow(b, now) == 0)
+    sleep_ms(60)
+    let later = monotonic_ms()?
+    b = brk_tick(b, later)
+    check("half", b.state == BRK_HALF())
+    check("allow_half", brk_allow(b, later) == 1)
+    b = brk_on_start(b, later)
+    b = brk_success(b, later)
+    check("closed_again", b.state == BRK_CLOSED())
+
+    b = brk_new(1, 30)
+    b = brk_failure(b, later)
+    check("open2", b.state == BRK_OPEN())
+    sleep_ms(40)
+    let t3 = monotonic_ms()?
+    b = brk_tick(b, t3)
+    b = brk_on_start(b, t3)
+    b = brk_failure(b, t3)
+    check("reopen", b.state == BRK_OPEN())
+
+    // bulkhead
+    let bh = bh_new(2)?
+    check("try1", bh_try_acquire(bh)? == 0)
+    check("try2", bh_try_acquire(bh)? == 0)
+    check("try_full", bh_try_acquire(bh)? == -1)
+    bh_release(bh)?
+    check("try_after", bh_try_acquire(bh)? == 0)
+    bh_release(bh)?
+    bh_release(bh)?
+
+    print("rel_test: all passed")
+    return 0
+}

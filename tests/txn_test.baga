@@ -1,0 +1,73 @@
+// txn_test.baga — S8: MVCC snapshots + 2PC commit/abort.
+
+import "txnbaga/mvcc.baga"
+import "txnbaga/cluster.baga"
+import "txnbaga/rules.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn main() -> i64 !Par {
+    print("txn_test:")
+    let fails = vec_new()
+
+    check(fails, "decide_all", tpc_decide(2, 2) == 1)
+    check(fails, "decide_one", tpc_decide(1, 2) == 0)
+    check(fails, "visible", mvcc_visible(3, 5) == 1)
+    check(fails, "invisible", mvcc_visible(5, 3) == 0)
+    check(fails, "lock_free", lock_conflict(-1, 1) == 0)
+    check(fails, "lock_self", lock_conflict(1, 1) == 0)
+    check(fails, "lock_other", lock_conflict(1, 2) == 1)
+    check(fails, "next_ts", next_ts(4) == 5)
+
+    let s = mvcc_new()
+    mvcc_put_version(s, 1, 10, 1)
+    mvcc_put_version(s, 1, 20, 3)
+    let a = mvcc_get(s, 1, 1)
+    let b = mvcc_get(s, 1, 2)
+    let cget = mvcc_get(s, 1, 3)
+    let d = mvcc_get(s, 1, 0)
+    check(fails, "mvcc_v1", a.found == 1 && a.val == 10)
+    check(fails, "mvcc_v2_snap", b.found == 1 && b.val == 10)
+    check(fails, "mvcc_v3", cget.found == 1 && cget.val == 20)
+    check(fails, "mvcc_empty", d.found == 0)
+    check(fails, "mvcc_miss", mvcc_get(s, 99, 10).found == 0)
+
+    let mut cl = tpc_start()?
+    check(fails, "start", cl.ok == 1)
+
+    let r1 = tpc_put_ex(cl, 5, 50)?
+    cl = r1.cluster
+    check(fails, "put_ok", r1.code == 1)
+    check(fails, "get_ok", tpc_get(cl, 5, r1.code)? == 50)
+    check(fails, "snap_before", tpc_get(cl, 5, 0)? == -999999)
+
+    let r2 = tpc_put_ex(cl, 5, 51)?
+    cl = r2.cluster
+    check(fails, "put2", r2.code == 2)
+    check(fails, "get_new", tpc_get(cl, 5, r2.code)? == 51)
+    check(fails, "get_old_snap", tpc_get(cl, 5, r1.code)? == 50)
+
+    let r3 = tpc_txn_ex(cl, 100, 1, 101, 2)?
+    cl = r3.cluster
+    check(fails, "two_key", r3.code > 0)
+    check(fails, "k100", tpc_get(cl, 100, r3.code)? == 1)
+    check(fails, "k101", tpc_get(cl, 101, r3.code)? == 2)
+
+    tpc_stop(cl)?
+    check(fails, "stop", true)
+
+    if vec_len(fails) == 0 {
+        print("txn_test: all passed")
+        return 0
+    }
+    print(concat(concat("txn_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

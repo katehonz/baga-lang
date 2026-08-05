@@ -1,0 +1,10 @@
+// tpc_decide.baga — S8 pure 2PC/MVCC fragments under --verify.
+
+import "txnbaga/rules.baga"
+
+fn main() {
+    print(tpc_decide(2, 2))
+    print(mvcc_visible(1, 2))
+    print(lock_conflict(-1, 0))
+    print(next_ts(0))
+}

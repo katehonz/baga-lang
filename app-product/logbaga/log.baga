@@ -1,0 +1,58 @@
+// log.baga — structured JSON-line logging (Track C3).
+// One object per line on stderr. Levels: debug/info/warn/error.
+
+import "std/str/str.baga"
+import "std/json/json.baga"
+import "std/time/time.baga"
+
+// Escape a string value for embedding in a JSON object (uses json_escape
+// which returns a quoted literal including surrounding quotes).
+fn log_field(k: str, v: str) -> str {
+    return concat(concat(json_escape(k), ":"), json_escape(v))
+}
+
+fn log_field_i64(k: str, v: i64) -> str {
+    return concat(concat(json_escape(k), ":"), int_to_str(v))
+}
+
+// Core emitter. ts_ms from monotonic or wall; 0 → omit.
+fn log_emit(level: str, msg: str, req_id: str) -> i64 !Time {
+    let ts = time_now_ms()?
+    let mut line = "{"
+    line = concat(line, log_field_i64("ts", ts))
+    line = concat(line, ",")
+    line = concat(line, log_field("level", level))
+    line = concat(line, ",")
+    line = concat(line, log_field("msg", msg))
+    if req_id != "" {
+        line = concat(line, ",")
+        line = concat(line, log_field("req_id", req_id))
+    }
+    line = concat(line, "}")
+    eprintln(line)
+    return 0
+}
+
+fn log_info(msg: str) -> i64 !Time {
+    return log_emit("info", msg, "")?
+}
+
+fn log_warn(msg: str) -> i64 !Time {
+    return log_emit("warn", msg, "")?
+}
+
+fn log_error(msg: str) -> i64 !Time {
+    return log_emit("error", msg, "")?
+}
+
+fn log_debug(msg: str) -> i64 !Time {
+    return log_emit("debug", msg, "")?
+}
+
+fn log_info_req(msg: str, req_id: str) -> i64 !Time {
+    return log_emit("info", msg, req_id)?
+}
+
+fn log_error_req(msg: str, req_id: str) -> i64 !Time {
+    return log_emit("error", msg, req_id)?
+}

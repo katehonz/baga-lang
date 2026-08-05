@@ -1,0 +1,213 @@
+// rel.baga — resilience primitives (Track C6).
+// Retry/backoff (pure + sleep loop), circuit breaker, bulkhead (chan semaphore).
+
+import "std/str/str.baga"
+
+// ---------- retry / exponential backoff ----------
+
+// Delay for attempt a (0-based): min(max_ms, base_ms * mult^a).
+// mult is integer (typically 2).
+fn rel_backoff_ms(attempt: i64, base_ms: i64, max_ms: i64, mult: i64) -> i64 {
+    let mut a = attempt
+    if a < 0 {
+        a = 0
+    }
+    let mut b = base_ms
+    if b < 1 {
+        b = 1
+    }
+    let mut m = mult
+    if m < 1 {
+        m = 1
+    }
+    let mut d = b
+    let mut i: i64 = 0
+    while i < a {
+        // saturate toward max
+        if d >= max_ms {
+            return max_ms
+        }
+        let next = d * m
+        if next < d {
+            // overflow
+            return max_ms
+        }
+        d = next
+        i = i + 1
+    }
+    if d > max_ms {
+        return max_ms
+    }
+    return d
+}
+
+fn rel_should_retry(attempt: i64, max_attempts: i64) -> i64 {
+    if attempt + 1 < max_attempts {
+        return 1
+    }
+    return 0
+}
+
+// Call op(arg) up to max_attempts times until it returns 0 (success).
+// op: fn(i64) -> i64  (0 = ok, non-zero = retryable failure).
+// Sleeps between attempts with exponential backoff.
+fn rel_retry(op: fn(i64) -> i64, arg: i64, max_attempts: i64,
+             base_ms: i64, max_ms: i64, mult: i64) -> i64 !Par {
+    let mut a: i64 = 0
+    let mut last: i64 = -1
+    let mut ma = max_attempts
+    if ma < 1 {
+        ma = 1
+    }
+    while a < ma {
+        last = op(arg)
+        if last == 0 {
+            return 0
+        }
+        if rel_should_retry(a, ma) == 0 {
+            return last
+        }
+        sleep_ms(rel_backoff_ms(a, base_ms, max_ms, mult))
+        a = a + 1
+    }
+    return last
+}
+
+// ---------- circuit breaker ----------
+// States: 0 closed (normal), 1 open (reject), 2 half-open (one probe).
+
+fn BRK_CLOSED() -> i64 { return 0 }
+fn BRK_OPEN() -> i64 { return 1 }
+fn BRK_HALF() -> i64 { return 2 }
+
+struct Breaker {
+    state: i64,
+    failures: i64,
+    threshold: i64,
+    open_ms: i64,
+    open_until: i64,   // monotonic ms when open ends
+    half_inflight: i64
+}
+
+fn brk_new(threshold: i64, open_ms: i64) -> Breaker {
+    let mut t = threshold
+    if t < 1 {
+        t = 1
+    }
+    let mut o = open_ms
+    if o < 1 {
+        o = 1
+    }
+    return Breaker {
+        state: BRK_CLOSED(),
+        failures: 0,
+        threshold: t,
+        open_ms: o,
+        open_until: 0,
+        half_inflight: 0
+    }
+}
+
+// 1 = call allowed, 0 = short-circuit (open).
+fn brk_allow(b: Breaker, now_ms: i64) -> i64 {
+    if b.state == BRK_CLOSED() {
+        return 1
+    }
+    if b.state == BRK_OPEN() {
+        if now_ms >= b.open_until {
+            // transition to half-open is done by brk_enter_half
+            return 0
+        }
+        return 0
+    }
+    // half-open: only one probe
+    if b.half_inflight == 0 {
+        return 1
+    }
+    return 0
+}
+
+// After open timeout, move to half-open so the next allow succeeds.
+fn brk_tick(b: Breaker, now_ms: i64) -> Breaker {
+    if b.state == BRK_OPEN() && now_ms >= b.open_until {
+        b.state = BRK_HALF()
+        b.half_inflight = 0
+        b.failures = 0
+    }
+    return b
+}
+
+fn brk_on_start(b: Breaker, now_ms: i64) -> Breaker {
+    b = brk_tick(b, now_ms)
+    if b.state == BRK_HALF() && brk_allow(b, now_ms) == 1 {
+        b.half_inflight = 1
+    }
+    return b
+}
+
+fn brk_success(b: Breaker, now_ms: i64) -> Breaker {
+    b = brk_tick(b, now_ms)
+    b.failures = 0
+    b.half_inflight = 0
+    b.state = BRK_CLOSED()
+    return b
+}
+
+fn brk_failure(b: Breaker, now_ms: i64) -> Breaker {
+    b = brk_tick(b, now_ms)
+    b.half_inflight = 0
+    if b.state == BRK_HALF() {
+        b.state = BRK_OPEN()
+        b.open_until = now_ms + b.open_ms
+        b.failures = b.threshold
+        return b
+    }
+    b.failures = b.failures + 1
+    if b.failures >= b.threshold {
+        b.state = BRK_OPEN()
+        b.open_until = now_ms + b.open_ms
+    }
+    return b
+}
+
+// ---------- bulkhead (bounded concurrency via channel tokens) ----------
+
+struct Bulkhead {
+    tokens: i64,   // chan handle
+    cap: i64
+}
+
+// Create a bulkhead with `cap` concurrent slots.
+fn bh_new(cap: i64) -> Bulkhead !Par {
+    let mut c = cap
+    if c < 1 {
+        c = 1
+    }
+    let ch = chan_new(c)
+    let mut i: i64 = 0
+    while i < c {
+        chan_send(ch, 1)
+        i = i + 1
+    }
+    return Bulkhead { tokens: ch, cap: c }
+}
+
+// Block until a slot is free. Returns 0.
+fn bh_acquire(bh: Bulkhead) -> i64 !Par {
+    chan_recv(bh.tokens)
+    return 0
+}
+
+// Non-blocking: 0 = got slot, -1 = full.
+fn bh_try_acquire(bh: Bulkhead) -> i64 !Par {
+    let r = chan_try_recv(bh.tokens)
+    if cell2_0(r) == 1 {
+        return 0
+    }
+    return -1
+}
+
+fn bh_release(bh: Bulkhead) -> i64 !Par {
+    chan_send(bh.tokens, 1)
+    return 0
+}

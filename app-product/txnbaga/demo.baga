@@ -1,0 +1,31 @@
+// demo.baga — 2PC commit + MVCC snapshot read.
+
+import "cluster.baga"
+import "mvcc.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !Par {
+    print("txnbaga demo — MVCC local + 2PC cluster")
+
+    let s = mvcc_new()
+    mvcc_put_version(s, 1, 100, 1)
+    mvcc_put_version(s, 1, 200, 2)
+    print(concat("snap@1 → ", int_to_str(mvcc_get(s, 1, 1).val)))
+    print(concat("snap@2 → ", int_to_str(mvcc_get(s, 1, 2).val)))
+
+    let mut cl = tpc_start()?
+    let r = tpc_put_ex(cl, 10, 42)?
+    cl = r.cluster
+    print(concat("tpc_put 10→42 ts=", int_to_str(r.code)))
+    print(concat("tpc_get @commit → ", int_to_str(tpc_get(cl, 10, r.code)?)))
+
+    let r2 = tpc_txn_ex(cl, 1, 7, 2, 8)?
+    cl = r2.cluster
+    print(concat("tpc_txn {1:7,2:8} ts=", int_to_str(r2.code)))
+    print(concat("get 1 → ", int_to_str(tpc_get(cl, 1, r2.code)?)))
+    print(concat("get 2 → ", int_to_str(tpc_get(cl, 2, r2.code)?)))
+
+    tpc_stop(cl)?
+    print("done")
+    return 0
+}

@@ -1,0 +1,13 @@
+// server.baga — cloudbaga binary entrypoint.
+
+import "app.baga"
+import "std/os/os.baga"
+
+fn main() -> i64 !Net !IO !Par !Time {
+    let mut port: i64 = 18080
+    let pe = env("PORT")?
+    if pe != "" {
+        port = parse_int(pe)
+    }
+    return cloud_run(port)?
+}

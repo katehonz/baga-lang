@@ -1,7 +1,8 @@
 # Memory management plan — checker-enforced, systems-grade
 
-Date: 2026-08-05. Status: MEM-1/2 landed 2026-08-05 (drop + seatbelt +
-verifier obligations); MEM-3 regions next.
+Date: 2026-08-05. Status: MEM-1/2 landed; **MEM-3 lite** (arena handle
+seatbelt) landed 2026-08-05 — double free / use-after-free on the arena
+variable. Full region tagging of arena-allocated payloads remains later.
 Context: user direction — "the language is a systems language, with
 checker-enforced manual memory management". L3 (sum types) is scheduled
 next; this plan is the design reference for the memory arc after it.
@@ -95,7 +96,7 @@ rejected for the core (nothing stops a future `gc.baga` package).
 |------|-------|-------|
 | MEM-1 checker tracking | `src/checker.c` (per-var live/dropped table, path join at if/while like loop-havoc), `src/codegen_c.c` (`baga_drop_*` runtime) | `tests/std/drop_test.baga` + negative probes (use-after-drop, double-drop, leak-at-scope-exit) |
 | MEM-2 verifier kind | `src/verify.c` (protocol ghost state reuse) | `examples/verify/mem_*.baga` — REFUTED use-after-drop with witness |
-| MEM-3 regions | checker region tags + `arena_*` typing | server-loop test with bounded RSS probe |
+| MEM-3 regions | checker region tags + `arena_*` typing | **lite shipped**: handle seatbelt (double free / use-after-free); full region tags later |
 | MEM-4 docs | `docs/language-{en,bg}.md` new §, CHANGELOG | regression |
 
 Risks: (1) aliasing through containers is the documented honesty boundary —

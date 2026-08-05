@@ -1,0 +1,13 @@
+// raft_term.baga — S7 verify fragments: term adopt + vote + majority + prev_log.
+// Full concurrent Raft stays UNKNOWN; these pure rules are ДОКАЗАНО.
+
+import "raftbaga/rules.baga"
+
+fn main() {
+    // exercise for runtime smoke when not under --verify
+    print(adopt_term(1, 3))
+    print(can_grant_vote(2, -1, 2, 1))
+    print(majority(3, 2))
+    print(prev_log_ok(4, 2, 7, 7))
+    print(log_up_to_date(1, 3, 1, 4))
+}

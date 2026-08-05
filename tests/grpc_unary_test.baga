@@ -1,0 +1,119 @@
+// grpc_unary_test.baga — gRPC frame + Hello unary (binary HTTP body).
+
+import "pbbaga/grpc_unary.baga"
+import "pbbaga/grpc.baga"
+import "httpdbaga/http.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn serve_once(port: i64) -> i64 !Net !IO !Par {
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        return -1
+    }
+    let fd = tcp_accept(listener)?
+    if fd < 0 {
+        tcp_close(listener)?
+        return -1
+    }
+    let req = http_read_request(fd)?
+    let path = http_path_only(req)
+    if http_method(req) == "POST" && grpc_is_method_path(path) == 1 {
+        let u = grpc_hello_handle(http_body_bytes(req))
+        grpc_write_response(fd, u)?
+    } else {
+        tcp_write(fd, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?
+    }
+    tcp_close(fd)?
+    tcp_close(listener)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par {
+    print("grpc_unary_test:")
+    let fails = vec_new()
+
+    let reqb = hello_request_encode("bagatur", 2)
+    let frame = grpc_encode(reqb)
+    let u = grpc_hello_handle(frame)
+    check(fails, "handle_ok", u.ok == 1 && u.status == 200 && u.grpc_status == 0)
+    let g = grpc_decode(u.frame)
+    check(fails, "frame_ok", g.ok == 1)
+    let hr = hello_reply_decode(g.payload)
+    check(fails, "reply", hr.ok == 1 && hr.message == "Здравей, bagatur×2")
+
+    check(fails, "path_ok", grpc_is_method_path("/hellopb.Greeter/SayHello") == 1)
+    check(fails, "path_bad", grpc_is_method_path("/health") == 0)
+
+    // bad frame
+    let bad = grpc_hello_handle(bytes_new(2))
+    check(fails, "bad_frame", bad.ok == 0 && bad.status == 400)
+
+    let port = 18091
+    go_bg(serve_once, port)
+    sleep_ms(150)
+    let fd = tcp_connect_to("localhost", port, 3)?
+    check(fails, "connect", fd >= 0)
+    if fd >= 0 {
+        tcp_set_timeouts(fd, 3)?
+        // headers as str, body as binary write
+        let mut hdr = "POST /hellopb.Greeter/SayHello HTTP/1.1\r\n"
+        hdr = concat(hdr, "Host: localhost\r\n")
+        hdr = concat(hdr, "Content-Type: application/grpc\r\n")
+        hdr = concat(hdr, concat(concat("Content-Length: ", int_to_str(bytes_len(frame))), "\r\n"))
+        hdr = concat(hdr, "Connection: close\r\n\r\n")
+        tcp_write(fd, hdr)?
+        tcp_write_bytes(fd, frame)?
+
+        let mut raw = bytes_new(0)
+        let mut n: i64 = 0
+        while n < 40 {
+            let chunk = tcp_read_bytes(fd, 4096)?
+            if bytes_len(chunk) == 0 {
+                n = 40
+            } else {
+                raw = bytes_concat(raw, chunk)
+                n = n + 1
+            }
+        }
+        // find \r\n\r\n then grpc frame
+        let mut i: i64 = 0
+        let mut sep: i64 = -1
+        while i + 3 < bytes_len(raw) {
+            if bytes_at(raw, i) == 13 && bytes_at(raw, i + 1) == 10 &&
+               bytes_at(raw, i + 2) == 13 && bytes_at(raw, i + 3) == 10 {
+                sep = i
+                i = bytes_len(raw)
+            } else {
+                i = i + 1
+            }
+        }
+        check(fails, "has_sep", sep >= 0)
+        if sep >= 0 {
+            let head = str_of_bytes(bytes_slice(raw, 0, sep))
+            check(fails, "http200", str_find(head, "200") >= 0)
+            let body = bytes_slice(raw, sep + 4, bytes_len(raw))
+            let g2 = grpc_decode(body)
+            check(fails, "live_frame", g2.ok == 1)
+            let hr2 = hello_reply_decode(g2.payload)
+            check(fails, "live_reply", hr2.ok == 1 && str_find(hr2.message, "bagatur") >= 0)
+        }
+        tcp_close(fd)?
+    }
+
+    if vec_len(fails) == 0 {
+        print("grpc_unary_test: all passed")
+        return 0
+    }
+    print(concat(concat("grpc_unary_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

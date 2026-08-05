@@ -1,0 +1,102 @@
+// pb_test.baga — C5 pbbaga wire codec + gRPC framing.
+
+import "pbbaga/pb.baga"
+import "pbbaga/grpc.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // varint: 1 → 0x01
+    let v1 = pb_put_uvarint(bytes_new(0), 1)
+    check("varint_1", bytes_len(v1) == 1 && bytes_at(v1, 0) == 1)
+
+    // 300 → 0xAC 0x02 (protobuf classic example)
+    let v300 = pb_put_uvarint(bytes_new(0), 300)
+    check("varint_300", bytes_len(v300) == 2 && bytes_at(v300, 0) == 172 && bytes_at(v300, 1) == 2)
+    let g300 = pb_get_uvarint(v300, 0)
+    check("varint_300_rd", g300.ok == 1 && g300.val == 300)
+
+    // 0
+    let z = pb_put_uvarint(bytes_new(0), 0)
+    check("varint_0", bytes_len(z) == 1 && bytes_at(z, 0) == 0)
+
+    // field string + int round-trip
+    let msg = hello_request_encode("hi", 7)
+    let hr = hello_request_decode(msg)
+    check("hello_name", hr.ok == 1 && hr.name == "hi")
+    check("hello_n", hr.n == 7)
+
+    // cyrillic
+    let msg2 = hello_request_encode("Здравей", 1)
+    let hr2 = hello_request_decode(msg2)
+    check("hello_cyr", hr2.ok == 1 && hr2.name == "Здравей")
+
+    // unknown field skip: inject field 9 varint before name
+    let mut junk = pb_field_varint(bytes_new(0), 9, 99)
+    junk = bytes_concat(junk, hello_request_encode("x", 2))
+    let hr3 = hello_request_decode(junk)
+    check("skip_unknown", hr3.ok == 1 && hr3.name == "x" && hr3.n == 2)
+
+    // fixed32/64
+    let mut fb = pb_field_fixed32(bytes_new(0), 3, 0x01020304)
+    fb = pb_field_fixed64(fb, 4, 0x0102030405060708)
+    let mut r = pb_reader(fb)
+    let t1 = pb_next(r)
+    check("f32_tag", t1.ok == 1 && t1.field == 3 && t1.wire == PB_FIXED32())
+    r = PbReader { data: r.data, pos: t1.pos, ok: 1 }
+    let f32 = pb_take_fixed32(r)
+    check("f32_val", f32.ok == 1 && f32.val == 0x01020304)
+    r = PbReader { data: r.data, pos: f32.pos, ok: 1 }
+    let t2 = pb_next(r)
+    r = PbReader { data: r.data, pos: t2.pos, ok: 1 }
+    let f64 = pb_take_fixed64(r)
+    check("f64_val", f64.ok == 1 && f64.val == 0x0102030405060708)
+
+    // zigzag
+    check("zz_neg1", pb_zigzag64(-1) == 1)
+    check("zz_1", pb_zigzag64(1) == 2)
+    check("unzz", pb_unzigzag64(pb_zigzag64(-42)) == -42)
+    let sz = pb_field_sint64(bytes_new(0), 1, -5)
+    let ts = pb_next(pb_reader(sz))
+    let rv = pb_get_uvarint(sz, ts.pos)
+    check("sint_round", pb_unzigzag64(rv.val) == -5)
+
+    // negative int64 encode/decode
+    let neg = pb_field_varint(bytes_new(0), 1, -2)
+    let tn = pb_next(pb_reader(neg))
+    let vn = pb_get_uvarint(neg, tn.pos)
+    check("neg_int64", vn.ok == 1 && vn.val == -2)
+
+    // gRPC frame
+    let payload = hello_request_encode("a", 1)
+    let frame = grpc_encode(payload)
+    check("frame_hdr", bytes_len(frame) == 5 + bytes_len(payload) && bytes_at(frame, 0) == 0)
+    let gm = grpc_decode(frame)
+    check("frame_ok", gm.ok == 1 && bytes_len(gm.payload) == bytes_len(payload))
+    let hr4 = hello_request_decode(gm.payload)
+    check("frame_payload", hr4.name == "a" && hr4.n == 1)
+
+    // short frame fails
+    check("frame_short", grpc_decode(bytes_new(3)).ok == 0)
+
+    // pure rpc helper
+    check("rpc", hello_rpc("X", 2) == "Здравей, X×2")
+
+    // golden: field 1 string "testing" — known from protoc
+    // message { string s = 1; } with s="testing"
+    // 0a 07 74 65 73 74 69 6e 67
+    let gold = hello_request_encode("testing", 0)
+    // only field 1 if n=0 might still encode field 2 as 0 — we always encode n
+    let only = pb_field_string(bytes_new(0), 1, "testing")
+    check("golden_testing", hex_encode(only) == "0a0774657374696e67")
+
+    print("pb_test: all passed")
+}

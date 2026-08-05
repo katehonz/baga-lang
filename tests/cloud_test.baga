@@ -1,0 +1,77 @@
+// cloud_test.baga — C4 cloudbaga live routes.
+
+import "cloudbaga/app.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn cloud_serve_port(port: i64) -> i64 !Net !IO !Par !Time {
+    return cloud_run(port)?
+}
+
+fn http_get(port: i64, path: str) -> str !Net !IO {
+    let fd = tcp_connect_to("localhost", port, 3)?
+    if fd < 0 {
+        return ""
+    }
+    tcp_set_timeouts(fd, 3)?
+    let req = concat(concat(concat("GET ", path), " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"), "")
+    tcp_write(fd, req)?
+    let mut body = ""
+    let mut n: i64 = 0
+    while n < 30 {
+        let chunk = tcp_read(fd, 2048)?
+        if chunk == "" {
+            n = 30
+        } else {
+            body = concat(body, chunk)
+            n = n + 1
+        }
+    }
+    tcp_close(fd)?
+    return body
+}
+
+fn main() -> i64 !Net !IO !Par !Time {
+    print("cloud_test:")
+    let fails = vec_new()
+    let port = 18081
+    go_bg(cloud_serve_port, port)
+    sleep_ms(250)
+
+    let h = http_get(port, "/healthz")?
+    check(fails, "healthz", str_find(h, "200") >= 0 && str_find(h, "ok") >= 0)
+
+    let r = http_get(port, "/readyz")?
+    check(fails, "readyz", str_find(r, "200") >= 0 && str_find(r, "ready") >= 0)
+
+    let m = http_get(port, "/metrics")?
+    check(fails, "metrics", str_find(m, "http_requests_total") >= 0)
+
+    let hello = http_get(port, "/")?
+    check(fails, "hello", str_find(hello, "cloudbaga") >= 0)
+
+    let miss = http_get(port, "/nope")?
+    check(fails, "404", str_find(miss, "404") >= 0)
+
+    // unit: readiness flip on CloudState
+    let st = cloud_new()
+    check(fails, "ready_init", st.ready == 1)
+    st.ready = 0
+    check(fails, "ready_down", st.ready == 0)
+
+    if vec_len(fails) == 0 {
+        print("cloud_test: all passed")
+        return 0
+    }
+    print(concat(concat("cloud_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

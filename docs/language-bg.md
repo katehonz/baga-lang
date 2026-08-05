@@ -842,7 +842,7 @@ fn main() {
 #### Правила на checker-а (всички са грешки при компилация)
 
 - **Използване след drop** — всяко по-късно четене на променливата:
-  `използване на 'x' след drop`.
+  `използване на 'x' след free` (същият текст и след `arena_free`).
 - **Повторен drop** — `повторен drop на 'x'`.
 - **Drop на параметър** — параметрите споделят буфера на извикващия за
   Vec/Map, затова освобождаването би оставило висящ указател там:
@@ -913,6 +913,17 @@ print(vec_len(v))             // OK — maybe-dropped не е definitely-dropped
 (`examples/verify/mem_drop.baga`). Алиасингът и drop на fn стойност са
 мълчаливи no-claim пътеки, а програми извън поддържания фрагмент се
 прескачат честно — същият gating като M14.
+
+#### MEM-3 lite: seatbelt за arena handle
+
+`arena_free(a)` маркира локалния handle `a` по същия начин като `drop`:
+
+- **двоен free** — `повторен arena_free на 'a'`;
+- **alloc/reset след free** — `използване на арена 'a' след arena_free`;
+- **всяка употреба на `a` след free** — `използване на 'a' след free`.
+
+Това е само на ниво **handle**: стойностите от `arena_alloc` не са
+маркирани с регион. Пълното region typing е по-късен milestone.
 
 ---
 
@@ -1530,6 +1541,11 @@ baga [опции] <файл.baga>
 | `map_del` | `(m: Map, k: i64 \| str) -> void` | — |
 | `map_len` | `(m: Map) -> i64` | — |
 | `map_keys` | `(m: Map) -> Vec` | `Vec<str>` / `Vec<i64>` според ключа |
+| `signal_watch` | `(sig: i64) -> i64` | C1: инсталира handler; 0 ok, -1 грешка |
+| `signal_check` | `() -> i64` | 0 = няма, иначе номер на сигнала |
+| `signal_clear` | `() -> i64` | връща и нулира pending |
+| `signal_wait` | `(ms: i64) -> i64` | чака до `ms` ms (`<0` = forever); signo или 0 |
+| `signal_raise` | `(sig: i64) -> i64` | `raise(sig)` към себе си (тестове) |
 
 ---
 

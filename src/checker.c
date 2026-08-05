@@ -1208,6 +1208,12 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"mutex_new",   TYPE_I64, 0, 0, 1},
             {"mutex_lock",  TYPE_I64, 1, 0, 1},
             {"mutex_unlock",TYPE_I64, 1, 0, 1},
+            /* C1 signals — graceful shutdown (K8s SIGTERM); process-global */
+            {"signal_watch", TYPE_I64, 1, 0, 0}, /* install handler; 0 ok, -1 err */
+            {"signal_check", TYPE_I64, 0, 0, 0}, /* 0 = none, else signo */
+            {"signal_clear", TYPE_I64, 0, 0, 0}, /* return+clear pending */
+            {"signal_wait",  TYPE_I64, 1, 0, 0}, /* ms; <0 = forever; return signo or 0 */
+            {"signal_raise", TYPE_I64, 1, 0, 0}, /* raise(sig) to self; 0 ok */
             /* heap pair — pure context packing for single-arg go workers */
             {"cell2",       TYPE_I64, 2, 0, 0},
             {"cell2_0",     TYPE_I64, 1, 0, 0},
@@ -1290,6 +1296,60 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             }
             return type_new(TYPE_VOID);
         }
+        /* MEM-3: arena_free / arena_alloc / arena_reset seatbelt on the
+         * arena handle (i64 local). Reuses EnvEntry.dropped + drop_log join
+         * machinery — after arena_free(a), a is dead; double free and
+         * alloc/reset on a freed handle are compile errors. Full region
+         * tagging of arena-allocated payloads is not claimed (values stay
+         * untracked pointers). */
+        if ((strcmp(name, "arena_free") == 0 || strcmp(name, "arena_alloc") == 0 ||
+             strcmp(name, "arena_reset") == 0) &&
+            !env_lookup(ctx, name) && !find_fn(ctx, name)) {
+            int is_free = strcmp(name, "arena_free") == 0;
+            int is_alloc = strcmp(name, "arena_alloc") == 0;
+            int need = is_alloc ? 2 : 1;
+            if (n->args.len != need) {
+                check_error(ctx, n->pos, "'%s' очаква %d аргумент(а), получих %d",
+                            name, need, n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            Node *ah = n->args.data[0];
+            if (ah->kind != NODE_IDENT) {
+                if (is_free)
+                    check_error(ctx, n->pos,
+                        "arena_free очаква локална променлива (let), не израз");
+                /* alloc/reset on non-ident: still type-check as i64 below */
+            } else {
+                EnvEntry *e = env_find(ctx, ah->name);
+                if (e) {
+                    if (e->dropped) {
+                        if (is_free)
+                            check_error(ctx, n->pos,
+                                "повторен arena_free на '%s'", ah->name);
+                        else
+                            check_error(ctx, n->pos,
+                                "използване на арена '%s' след arena_free", ah->name);
+                    } else if (is_free) {
+                        if (e->is_param)
+                            check_error(ctx, n->pos,
+                                "arena_free на параметър '%s' — собствеността е на извикващия",
+                                ah->name);
+                        else if (ctx->loop_depth && e->scope_depth <= ctx->loop_depth)
+                            check_error(ctx, n->pos,
+                                "arena_free на външна за цикъла арена '%s'", ah->name);
+                        else if (ctx->n_drop_log < 256) {
+                            e->dropped = 1;
+                            ctx->drop_log[ctx->n_drop_log++] = e;
+                        } else {
+                            ctx->drop_log_overflowed = 1;
+                        }
+                    }
+                }
+            }
+            n->callee->type = type_new(TYPE_VOID);
+            if (is_alloc) return type_new(TYPE_I64);
+            return type_new(TYPE_VOID);
+        }
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {
                 n->callee->type = type_new(TYPE_VOID);
@@ -1363,7 +1423,8 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                 /* MEM-2: use-after-drop (error recovery — продължаваме проверката) */
                 EnvEntry *e = env_find(ctx, n->name);
                 if (e && e->dropped)
-                    check_error(ctx, n->pos, "използване на '%s' след drop", n->name);
+                    check_error(ctx, n->pos,
+                        "използване на '%s' след free", n->name);
                 t = vt; break;
             }
             /* check function registry */

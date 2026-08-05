@@ -1,0 +1,96 @@
+// latency.baga — micro-latency harness (cloud profile perf runner).
+// Runs N iterations of a pure workload, records ms buckets via monotonic_ms,
+// prints min/avg/max and crude p50/p99 (sorted sample of batch times).
+//
+//   ./baga bench/latency.baga
+//   BENCH_N=5000 ./baga bench/latency.baga
+
+import "std/time/time.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+import "std/sort/sort.baga"
+
+// Workload: integer-ish checksum (stable cost, no IO).
+// Sized so a batch is usually ≥1 ms on typical hosts.
+fn work(n: i64) -> i64 {
+    let mut s: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        s = s + i * 3 + (i >> 2)
+        s = s ^ (i * 17)
+        i = i + 1
+    }
+    return s
+}
+
+fn percentile(sorted: Vec<i64>, p: i64) -> i64 {
+    let n = vec_len(sorted)
+    if n == 0 {
+        return 0
+    }
+    let idx = (p * n) / 100
+    if idx >= n {
+        return vec_get(sorted, n - 1)
+    }
+    return vec_get(sorted, idx)
+}
+
+fn main() -> i64 !Time !IO {
+    let mut n: i64 = 2000
+    let envn = env("BENCH_N")?
+    if envn != "" {
+        n = parse_int(envn)
+        if n < 10 {
+            n = 10
+        }
+    }
+    // Fixed batch count; each batch does `inner` iterations of work().
+    // ~5e6 iters ≈ 1ms on this host class; scale for stable p50/p99.
+    let batches: i64 = 40
+    let inner: i64 = 8000000
+
+    let samples: Vec<i64> = vec_new()
+    let mut total: i64 = 0
+    let mut i: i64 = 0
+    let mut sink: i64 = 0
+    let t0 = monotonic_ms()?
+    while i < batches {
+        let a = monotonic_ms()?
+        sink = sink + work(inner)
+        let b = monotonic_ms()?
+        let dt = b - a
+        if dt >= 0 {
+            vec_push(samples, dt)
+            total = total + dt
+        }
+        i = i + 1
+    }
+    let t1 = monotonic_ms()?
+    sort_i64(samples)
+
+    let ns = vec_len(samples)
+    let mut mn: i64 = 0
+    let mut mx: i64 = 0
+    if ns > 0 {
+        mn = vec_get(samples, 0)
+        mx = vec_get(samples, ns - 1)
+    }
+    let mut av: i64 = 0
+    if ns > 0 {
+        av = total / ns
+    }
+
+    print(concat("bench.latency batches=", int_to_str(ns)))
+    print(concat("  wall_ms=", int_to_str(t1 - t0)))
+    print(concat("  batch_min_ms=", int_to_str(mn)))
+    print(concat("  batch_avg_ms=", int_to_str(av)))
+    print(concat("  batch_max_ms=", int_to_str(mx)))
+    print(concat("  batch_p50_ms=", int_to_str(percentile(samples, 50))))
+    print(concat("  batch_p99_ms=", int_to_str(percentile(samples, 99))))
+    print(concat("  work_checksum=", int_to_str(sink & 2147483647)))
+    // silence unused n from BENCH_N for now (reserved for future scaling)
+    if n < 0 {
+        print("never")
+    }
+    return 0
+}

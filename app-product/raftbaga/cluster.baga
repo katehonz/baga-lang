@@ -1,0 +1,85 @@
+// cluster.baga — start a 3-node in-process Raft cluster; client helpers.
+
+import "msg.baga"
+import "node.baga"
+import "std/str/str.baga"
+
+struct RaftCluster {
+    peers: i64,       // cell2(in0, cell2(in1, in2))
+    n: i64,
+    ok: i64
+}
+
+fn raft_start() -> RaftCluster !Par {
+    let in0 = chan_new(64)
+    let in1 = chan_new(64)
+    let in2 = chan_new(64)
+    let peers = cell2(in0, cell2(in1, in2))
+    go_bg(raft_node, cell2(0, cell2(in0, peers)))
+    go_bg(raft_node, cell2(1, cell2(in1, peers)))
+    go_bg(raft_node, cell2(2, cell2(in2, peers)))
+    // allow first election (slowest timeout ~260 ms + margin)
+    sleep_ms(700)
+    return RaftCluster { peers: peers, n: 3, ok: 1 }
+}
+
+fn raft_broadcast(c: RaftCluster, m: i64) -> i64 !Par {
+    let mut i: i64 = 0
+    while i < c.n {
+        chan_send(peer_ch(c.peers, i), m)
+        i = i + 1
+    }
+    return 0
+}
+
+// Try each node in turn (only the leader accepts). Avoids broadcasting a
+// PUT to every node — that would append once per retry storm.
+fn raft_put(c: RaftCluster, key: i64, val: i64) -> i64 !Par {
+    let mut attempt: i64 = 0
+    while attempt < 8 {
+        let mut i: i64 = 0
+        while i < c.n {
+            let reply = chan_new(1)
+            chan_send(peer_ch(c.peers, i), msg_put(key, val, reply))
+            let r = chan_recv_timeout(reply, 500)
+            chan_close(reply)
+            if cell2_0(r) == 1 {
+                if reply_is_ok(cell2_1(r)) == 1 {
+                    return 0
+                }
+            }
+            i = i + 1
+        }
+        sleep_ms(100)
+        attempt = attempt + 1
+    }
+    return -1
+}
+
+fn raft_get(c: RaftCluster, key: i64) -> i64 !Par {
+    let mut attempt: i64 = 0
+    while attempt < 8 {
+        let mut i: i64 = 0
+        while i < c.n {
+            let reply = chan_new(1)
+            chan_send(peer_ch(c.peers, i), msg_get(key, reply))
+            let r = chan_recv_timeout(reply, 300)
+            chan_close(reply)
+            if cell2_0(r) == 1 {
+                if reply_is_ok(cell2_1(r)) == 1 {
+                    return reply_val(cell2_1(r))
+                }
+            }
+            i = i + 1
+        }
+        sleep_ms(100)
+        attempt = attempt + 1
+    }
+    return -999999
+}
+
+fn raft_stop(c: RaftCluster) -> i64 !Par {
+    raft_broadcast(c, msg_stop())?
+    sleep_ms(80)
+    return 0
+}

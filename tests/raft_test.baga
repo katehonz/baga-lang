@@ -1,0 +1,71 @@
+// raft_test.baga — S7: election + log replication + KV apply.
+
+import "raftbaga/cluster.baga"
+import "raftbaga/rules.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn main() -> i64 !Par {
+    print("raft_test:")
+    let fails = vec_new()
+
+    // --- pure rules (also covered by --verify) ---
+    check(fails, "adopt_higher", adopt_term(3, 5) == 5)
+    check(fails, "adopt_same", adopt_term(3, 2) == 3)
+    check(fails, "vote_fresh", can_grant_vote(1, -1, 1, 0) == 1)
+    check(fails, "vote_taken", can_grant_vote(1, 2, 1, 0) == 0)
+    check(fails, "vote_same", can_grant_vote(1, 0, 1, 0) == 1)
+    check(fails, "log_newer_term", log_up_to_date(1, 5, 2, 1) == 1)
+    check(fails, "log_older_term", log_up_to_date(2, 1, 1, 9) == 0)
+    check(fails, "majority_2of3", majority(3, 2) == 1)
+    check(fails, "majority_1of3", majority(3, 1) == 0)
+    check(fails, "prev_ok", prev_log_ok(3, 1, 4, 4) == 1)
+    check(fails, "prev_bad_term", prev_log_ok(3, 1, 4, 5) == 0)
+
+    // --- live cluster ---
+    let c = raft_start()?
+    check(fails, "start", c.ok == 1)
+
+    let p1 = raft_put(c, 10, 100)?
+    check(fails, "put1", p1 == 0)
+    let g1 = raft_get(c, 10)?
+    check(fails, "get1", g1 == 100)
+
+    let p2 = raft_put(c, 20, 200)?
+    check(fails, "put2", p2 == 0)
+    let p3 = raft_put(c, 10, 101)?
+    check(fails, "put_overwrite", p3 == 0)
+    check(fails, "get_overwrite", raft_get(c, 10)? == 101)
+    check(fails, "get2", raft_get(c, 20)? == 200)
+    check(fails, "get_miss", raft_get(c, 999)? == -999999)
+
+    // several more entries (replication pressure)
+    let mut i: i64 = 0
+    let mut ok_all: i64 = 1
+    while i < 5 {
+        if raft_put(c, 100 + i, i * 3)? != 0 {
+            ok_all = 0
+        }
+        i = i + 1
+    }
+    check(fails, "multi_put", ok_all == 1)
+    check(fails, "multi_get", raft_get(c, 102)? == 6)
+
+    raft_stop(c)?
+    check(fails, "stop", true)
+
+    if vec_len(fails) == 0 {
+        print("raft_test: all passed")
+        return 0
+    }
+    print(concat(concat("raft_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

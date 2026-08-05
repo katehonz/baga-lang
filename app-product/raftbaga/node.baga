@@ -1,0 +1,410 @@
+// node.baga — single Raft node loop (local state only; peers via channels).
+
+import "msg.baga"
+import "rules.baga"
+import "std/str/str.baga"
+
+fn ROLE_FOLLOWER() -> i64 { return 0 }
+fn ROLE_CANDIDATE() -> i64 { return 1 }
+fn ROLE_LEADER() -> i64 { return 2 }
+
+fn N() -> i64 { return 3 }
+
+// peers = cell2(in0, cell2(in1, in2))
+fn peer_ch(peers: i64, i: i64) -> i64 {
+    if i == 0 {
+        return cell2_0(peers)
+    }
+    if i == 1 {
+        return cell2_0(cell2_1(peers))
+    }
+    return cell2_1(cell2_1(peers))
+}
+
+fn send_to(peers: i64, to: i64, m: i64) -> i64 !Par {
+    chan_send(peer_ch(peers, to), m)
+    return 0
+}
+
+fn broadcast(peers: i64, self_id: i64, m: i64) -> i64 !Par {
+    let mut i: i64 = 0
+    while i < N() {
+        if i != self_id {
+            send_to(peers, i, m)?
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn election_timeout_ms(id: i64) -> i64 {
+    return 180 + id * 40
+}
+
+fn heartbeat_ms() -> i64 {
+    return 40
+}
+
+fn apply_committed(store: Map<i64, i64>, log_cmds: Vec<i64>,
+                   last_applied: i64, commit_idx: i64) -> i64 {
+    let mut la = last_applied
+    while la < commit_idx {
+        la = la + 1
+        let cmd = vec_get(log_cmds, la)
+        if cmd != 0 {
+            map_set(store, cmd_key(cmd), cmd_val(cmd))
+        }
+    }
+    return la
+}
+
+// ctx = cell2(id, cell2(inbox, peers))
+fn raft_node(ctx: i64) -> i64 !Par {
+    let id = cell2_0(ctx)
+    let inbox = cell2_0(cell2_1(ctx))
+    let peers = cell2_1(cell2_1(ctx))
+
+    let mut term: i64 = 0
+    let mut voted_for: i64 = -1
+    let mut role: i64 = ROLE_FOLLOWER()
+
+    let log_terms: Vec<i64> = vec_new()
+    let log_cmds: Vec<i64> = vec_new()
+    vec_push(log_terms, 0)
+    vec_push(log_cmds, 0)
+    let mut log_len: i64 = 1
+
+    let mut commit_idx: i64 = 0
+    let mut last_applied: i64 = 0
+    let store: Map<i64, i64> = map_new()
+
+    let next_idx: Vec<i64> = vec_new()
+    let match_idx: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < N() {
+        vec_push(next_idx, 1)
+        vec_push(match_idx, 0)
+        i = i + 1
+    }
+    let mut votes: i64 = 0
+
+    let mut running: i64 = 1
+    while running == 1 {
+        let mut timeout = election_timeout_ms(id)
+        if role == ROLE_LEADER() {
+            timeout = heartbeat_ms()
+        }
+        let r = chan_recv_timeout(inbox, timeout)
+        let st = cell2_0(r)
+
+        if st == 2 {
+            running = 0
+        } else {
+            if st == 0 {
+                // timeout
+                if role == ROLE_LEADER() {
+                    let mut p: i64 = 0
+                    while p < N() {
+                        if p != id {
+                            let ni = vec_get(next_idx, p)
+                            let mut prev_i = ni - 1
+                            if prev_i < 0 {
+                                prev_i = 0
+                            }
+                            let prev_t = vec_get(log_terms, prev_i)
+                            let mut et: i64 = 0
+                            let mut ec: i64 = 0
+                            if ni < log_len {
+                                et = vec_get(log_terms, ni)
+                                ec = vec_get(log_cmds, ni)
+                            }
+                            send_to(peers, p, msg_ae(term, id, prev_i, prev_t,
+                                commit_idx, et, ec))?
+                        }
+                        p = p + 1
+                    }
+                } else {
+                    // start election
+                    term = term + 1
+                    role = ROLE_CANDIDATE()
+                    voted_for = id
+                    votes = 1
+                    let last_i = log_len - 1
+                    let last_t = vec_get(log_terms, last_i)
+                    broadcast(peers, id, msg_rv(term, id, last_i, last_t))?
+                    if majority(N(), votes) == 1 {
+                        role = ROLE_LEADER()
+                        let mut p2: i64 = 0
+                        while p2 < N() {
+                            vec_set(next_idx, p2, log_len)
+                            vec_set(match_idx, p2, 0)
+                            p2 = p2 + 1
+                        }
+                        vec_set(match_idx, id, log_len - 1)
+                    }
+                }
+            } else {
+                let m = cell2_1(r)
+                let mt = msg_type(m)
+
+                if mt == MT_STOP() {
+                    running = 0
+                } else {
+                    if mt == MT_RV() || mt == MT_RV_REP() || mt == MT_AE() || mt == MT_AE_REP() {
+                        let mut rterm: i64 = 0
+                        if mt == MT_RV() {
+                            rterm = rv_term(m)
+                        }
+                        if mt == MT_RV_REP() {
+                            rterm = rvr_term(m)
+                        }
+                        if mt == MT_AE() {
+                            rterm = ae_term(m)
+                        }
+                        if mt == MT_AE_REP() {
+                            rterm = aer_term(m)
+                        }
+                        if rterm > term {
+                            term = rterm
+                            voted_for = -1
+                            role = ROLE_FOLLOWER()
+                        }
+                    }
+
+                    if mt == MT_RV() {
+                        let cterm = rv_term(m)
+                        let cand = rv_from(m)
+                        let cl_i = rv_last_idx(m)
+                        let cl_t = rv_last_term(m)
+                        let mut granted: i64 = 0
+                        if cterm == term {
+                            let last_i = log_len - 1
+                            let last_t = vec_get(log_terms, last_i)
+                            if can_grant_vote(term, voted_for, cterm, cand) == 1 {
+                                if log_up_to_date(last_t, last_i, cl_t, cl_i) == 1 {
+                                    granted = 1
+                                    voted_for = cand
+                                    role = ROLE_FOLLOWER()
+                                }
+                            }
+                        }
+                        send_to(peers, cand, msg_rv_rep(term, id, granted))?
+                    }
+
+                    if mt == MT_RV_REP() {
+                        if role == ROLE_CANDIDATE() {
+                            if rvr_term(m) == term && rvr_granted(m) == 1 {
+                                votes = votes + 1
+                                if majority(N(), votes) == 1 {
+                                    role = ROLE_LEADER()
+                                    let mut p3: i64 = 0
+                                    while p3 < N() {
+                                        vec_set(next_idx, p3, log_len)
+                                        vec_set(match_idx, p3, 0)
+                                        p3 = p3 + 1
+                                    }
+                                    vec_set(match_idx, id, log_len - 1)
+                                }
+                            }
+                        }
+                    }
+
+                    if mt == MT_AE() {
+                        let aterm = ae_term(m)
+                        let leader = ae_from(m)
+                        let prev_i = ae_prev_idx(m)
+                        let prev_t = ae_prev_term(m)
+                        let lcommit = ae_leader_commit(m)
+                        let et = ae_entry_term(m)
+                        let ec = ae_entry_cmd(m)
+                        let mut success: i64 = 0
+                        let mut match_i: i64 = 0
+                        if aterm == term {
+                            role = ROLE_FOLLOWER()
+                            let mut pl_term: i64 = 0
+                            if prev_i < log_len {
+                                pl_term = vec_get(log_terms, prev_i)
+                            }
+                            if prev_log_ok(log_len, prev_i, pl_term, prev_t) == 1 {
+                                success = 1
+                                if et != 0 {
+                                    let keep = prev_i + 1
+                                    while vec_len(log_terms) < keep + 1 {
+                                        vec_push(log_terms, 0)
+                                        vec_push(log_cmds, 0)
+                                    }
+                                    // conflict: overwrite from keep onward
+                                    vec_set(log_terms, keep, et)
+                                    vec_set(log_cmds, keep, ec)
+                                    log_len = keep + 1
+                                    match_i = keep
+                                } else {
+                                    match_i = prev_i
+                                }
+                                let mut nc2 = lcommit
+                                if nc2 > log_len - 1 {
+                                    nc2 = log_len - 1
+                                }
+                                if nc2 > commit_idx {
+                                    commit_idx = nc2
+                                    last_applied = apply_committed(store, log_cmds,
+                                        last_applied, commit_idx)
+                                }
+                            }
+                        }
+                        send_to(peers, leader, msg_ae_rep(term, id, success, match_i))?
+                    }
+
+                    if mt == MT_AE_REP() {
+                        if role == ROLE_LEADER() && aer_term(m) == term {
+                            let from = aer_from(m)
+                            if aer_success(m) == 1 {
+                                let mi = aer_match(m)
+                                if mi > vec_get(match_idx, from) {
+                                    vec_set(match_idx, from, mi)
+                                }
+                                let ni = mi + 1
+                                if ni > vec_get(next_idx, from) {
+                                    vec_set(next_idx, from, ni)
+                                }
+                                let mut ci = commit_idx
+                                let mut probe = log_len - 1
+                                while probe > commit_idx {
+                                    if vec_get(log_terms, probe) == term {
+                                        let mut cnt: i64 = 1
+                                        let mut p4: i64 = 0
+                                        while p4 < N() {
+                                            if p4 != id && vec_get(match_idx, p4) >= probe {
+                                                cnt = cnt + 1
+                                            }
+                                            p4 = p4 + 1
+                                        }
+                                        if majority(N(), cnt) == 1 {
+                                            ci = probe
+                                            probe = commit_idx
+                                        }
+                                    }
+                                    probe = probe - 1
+                                }
+                                if ci > commit_idx {
+                                    commit_idx = ci
+                                    last_applied = apply_committed(store, log_cmds,
+                                        last_applied, commit_idx)
+                                }
+                            } else {
+                                let ni = vec_get(next_idx, from)
+                                if ni > 1 {
+                                    vec_set(next_idx, from, ni - 1)
+                                }
+                            }
+                        }
+                    }
+
+                    if mt == MT_PUT() {
+                        let rep = put_reply(m)
+                        if role != ROLE_LEADER() {
+                            chan_send(rep, reply_err())
+                        } else {
+                            let key = put_key(m)
+                            let val = put_val(m)
+                            let cmd = cmd_pack(key, val)
+                            while vec_len(log_terms) <= log_len {
+                                vec_push(log_terms, 0)
+                                vec_push(log_cmds, 0)
+                            }
+                            vec_set(log_terms, log_len, term)
+                            vec_set(log_cmds, log_len, cmd)
+                            let new_idx = log_len
+                            log_len = log_len + 1
+                            vec_set(match_idx, id, new_idx)
+                            let mut p5: i64 = 0
+                            while p5 < N() {
+                                if p5 != id {
+                                    let ni = vec_get(next_idx, p5)
+                                    let mut prev_i = ni - 1
+                                    if prev_i < 0 {
+                                        prev_i = 0
+                                    }
+                                    let prev_t = vec_get(log_terms, prev_i)
+                                    let mut et: i64 = 0
+                                    let mut ec: i64 = 0
+                                    if ni < log_len {
+                                        et = vec_get(log_terms, ni)
+                                        ec = vec_get(log_cmds, ni)
+                                    }
+                                    send_to(peers, p5, msg_ae(term, id, prev_i, prev_t,
+                                        commit_idx, et, ec))?
+                                }
+                                p5 = p5 + 1
+                            }
+                            let mut waited: i64 = 0
+                            let mut committed: i64 = 0
+                            while waited < 80 && committed == 0 {
+                                if commit_idx >= new_idx {
+                                    committed = 1
+                                } else {
+                                    let r2 = chan_recv_timeout(inbox, 25)
+                                    if cell2_0(r2) == 1 {
+                                        let m2 = cell2_1(r2)
+                                        if msg_type(m2) == MT_AE_REP() {
+                                            if aer_term(m2) == term && aer_success(m2) == 1 {
+                                                let from = aer_from(m2)
+                                                let mi = aer_match(m2)
+                                                if mi > vec_get(match_idx, from) {
+                                                    vec_set(match_idx, from, mi)
+                                                }
+                                                vec_set(next_idx, from, mi + 1)
+                                                let mut cnt: i64 = 1
+                                                let mut p6: i64 = 0
+                                                while p6 < N() {
+                                                    if p6 != id && vec_get(match_idx, p6) >= new_idx {
+                                                        cnt = cnt + 1
+                                                    }
+                                                    p6 = p6 + 1
+                                                }
+                                                if majority(N(), cnt) == 1 {
+                                                    if new_idx > commit_idx {
+                                                        commit_idx = new_idx
+                                                        last_applied = apply_committed(store,
+                                                            log_cmds, last_applied, commit_idx)
+                                                    }
+                                                    committed = 1
+                                                }
+                                            }
+                                        } else {
+                                            if msg_type(m2) == MT_STOP() {
+                                                running = 0
+                                                waited = 80
+                                            }
+                                        }
+                                    }
+                                    waited = waited + 1
+                                }
+                            }
+                            if committed == 1 {
+                                chan_send(rep, reply_ok(val))
+                            } else {
+                                chan_send(rep, reply_err())
+                            }
+                        }
+                    }
+
+                    if mt == MT_GET() {
+                        let rep = get_reply(m)
+                        if role != ROLE_LEADER() {
+                            chan_send(rep, reply_err())
+                        } else {
+                            let key = get_key(m)
+                            if map_has(store, key) == 1 {
+                                chan_send(rep, reply_ok(map_get(store, key)))
+                            } else {
+                                chan_send(rep, reply_ok(-999999))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0
+}

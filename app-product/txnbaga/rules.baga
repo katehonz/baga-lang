@@ -1,0 +1,79 @@
+// rules.baga — pure 2PC / MVCC fragments for --verify (S8).
+
+// All participants must vote YES to commit.
+spec tpc_decide {
+    input:
+        yes_count: i64
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+        yes_count >= 0
+        yes_count <= n
+    ensures:
+        output == 0 || output == 1
+}
+fn tpc_decide(yes_count: i64, n: i64) -> i64 {
+    if yes_count == n {
+        return 1
+    }
+    return 0
+}
+
+// A version written at write_ts is visible to a snapshot at read_ts
+// iff write_ts <= read_ts.
+spec mvcc_visible {
+    input:
+        write_ts: i64
+        read_ts: i64
+    output: i64
+    requires:
+        write_ts >= 0
+        read_ts >= 0
+    ensures:
+        output == 0 || output == 1
+}
+fn mvcc_visible(write_ts: i64, read_ts: i64) -> i64 {
+    if write_ts <= read_ts {
+        return 1
+    }
+    return 0
+}
+
+// Lock held by holder blocks a different requester.
+spec lock_conflict {
+    input:
+        holder: i64
+        req: i64
+    output: i64
+    requires:
+        holder >= -1
+        req >= 0
+    ensures:
+        output == 0 || output == 1
+}
+fn lock_conflict(holder: i64, req: i64) -> i64 {
+    if holder == -1 {
+        return 0
+    }
+    if holder == req {
+        return 0
+    }
+    return 1
+}
+
+// Next commit timestamp is strictly greater than the previous
+// (within a bounded range so !Overflow is honest).
+spec next_ts {
+    input:
+        prev: i64
+    output: i64
+    requires:
+        prev >= 0
+        prev < 1000000000
+    ensures:
+        output > prev
+}
+fn next_ts(prev: i64) -> i64 {
+    return prev + 1
+}

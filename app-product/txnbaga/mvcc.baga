@@ -1,0 +1,70 @@
+// mvcc.baga — multi-version key-value (i64 keys/values). Snapshot reads.
+// Physical layout: ver[(k * STRIDE) + ts] = val; head[k] = latest ts.
+
+import "rules.baga"
+import "std/str/str.baga"
+
+fn TS_STRIDE() -> i64 { return 1000000 }
+
+struct MvccStore {
+    ver: Map<i64, i64>,    // composite key → value
+    head: Map<i64, i64>,   // logical key → latest ts
+    next_ts: i64           // allocator for commits (coordinator may override)
+}
+
+fn mvcc_new() -> MvccStore {
+    return MvccStore {
+        ver: map_new(),
+        head: map_new(),
+        next_ts: 1
+    }
+}
+
+fn mvcc_ver_key(k: i64, ts: i64) -> i64 {
+    return k * TS_STRIDE() + ts
+}
+
+// Publish a version (after 2PC COMMIT). Does not bump store.next_ts.
+fn mvcc_put_version(s: MvccStore, k: i64, val: i64, commit_ts: i64) {
+    map_set(s.ver, mvcc_ver_key(k, commit_ts), val)
+    if map_has(s.head, k) == 0 {
+        map_set(s.head, k, commit_ts)
+    } else {
+        if commit_ts >= map_get(s.head, k) {
+            map_set(s.head, k, commit_ts)
+        }
+    }
+}
+
+struct MvccGet {
+    found: i64,
+    val: i64,
+    ts: i64
+}
+
+// Snapshot read: latest version with write_ts <= read_ts.
+fn mvcc_get(s: MvccStore, k: i64, read_ts: i64) -> MvccGet {
+    if map_has(s.head, k) == 0 {
+        return MvccGet { found: 0, val: 0, ts: 0 }
+    }
+    let mut ts = map_get(s.head, k)
+    // walk down versions until visible (versions are dense-ish from commits;
+    // worst case walk ts..1 looking for ver_key)
+    while ts >= 1 {
+        if mvcc_visible(ts, read_ts) == 1 {
+            let vk = mvcc_ver_key(k, ts)
+            if map_has(s.ver, vk) == 1 {
+                return MvccGet { found: 1, val: map_get(s.ver, vk), ts: ts }
+            }
+        }
+        ts = ts - 1
+    }
+    return MvccGet { found: 0, val: 0, ts: 0 }
+}
+
+// Allocate a commit timestamp from the store clock.
+fn mvcc_alloc_ts(s: MvccStore) -> i64 {
+    let t = s.next_ts
+    s.next_ts = next_ts(s.next_ts)
+    return t
+}

@@ -1,0 +1,172 @@
+// cluster.baga — 2PC coordinator + 2 participants (S8).
+
+import "msg.baga"
+import "participant.baga"
+import "rules.baga"
+import "std/str/str.baga"
+
+struct TpcCluster {
+    p0: i64,
+    p1: i64,
+    next_tx: i64,
+    commit_ts: i64,
+    ok: i64
+}
+
+fn tpc_start() -> TpcCluster !Par {
+    let p0 = chan_new(32)
+    let p1 = chan_new(32)
+    go_bg(tpc_participant, cell2(0, p0))
+    go_bg(tpc_participant, cell2(1, p1))
+    sleep_ms(20)
+    return TpcCluster {
+        p0: p0, p1: p1, next_tx: 1, commit_ts: 0, ok: 1
+    }
+}
+
+fn tpc_stop(c: TpcCluster) -> i64 !Par {
+    chan_send(c.p0, msg_stop())
+    chan_send(c.p1, msg_stop())
+    sleep_ms(30)
+    return 0
+}
+
+// Collect one vote with timeout. Returns 1 YES, 0 NO, -1 timeout.
+fn tpc_recv_vote(ch: i64, tx: i64, timeout_ms: i64) -> i64 !Par {
+    let deadline_steps = timeout_ms / 20 + 1
+    let mut i: i64 = 0
+    while i < deadline_steps {
+        let r = chan_recv_timeout(ch, 20)
+        if cell2_0(r) == 1 {
+            let m = cell2_1(r)
+            let mt = msg_type(m)
+            if (mt == MT_VOTE_YES() || mt == MT_VOTE_NO()) && vote_tx(m) == tx {
+                if mt == MT_VOTE_YES() {
+                    return 1
+                }
+                return 0
+            }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn tpc_recv_ack(ch: i64, tx: i64, timeout_ms: i64) -> i64 !Par {
+    let deadline_steps = timeout_ms / 20 + 1
+    let mut i: i64 = 0
+    while i < deadline_steps {
+        let r = chan_recv_timeout(ch, 20)
+        if cell2_0(r) == 1 {
+            let m = cell2_1(r)
+            if msg_type(m) == MT_ACK() && ack_tx(m) == tx {
+                return 1
+            }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Run 2PC for a write set of 1 or 2 keys (k2 < 0 → single key).
+// Both participants apply the same write set (replicated KV demo).
+// Returns commit_ts (>= 1) on success, -1 on abort.
+// Note: TpcCluster is by-value; caller must keep the returned ts (fields
+// written on `c` do not stick to the caller's copy).
+fn tpc_txn(c: TpcCluster, k1: i64, v1: i64, k2: i64, v2: i64) -> i64 !Par {
+    let tx = c.next_tx
+    let votes = chan_new(4)
+
+    chan_send(c.p0, msg_prepare(tx, votes, k1, v1, k2, v2))
+    chan_send(c.p1, msg_prepare(tx, votes, k1, v1, k2, v2))
+
+    let vote_a = tpc_recv_vote(votes, tx, 500)?
+    let vote_b = tpc_recv_vote(votes, tx, 500)?
+    let mut yes: i64 = 0
+    if vote_a == 1 {
+        yes = yes + 1
+    }
+    if vote_b == 1 {
+        yes = yes + 1
+    }
+    // timeouts count as NO
+    if vote_a < 0 || vote_b < 0 {
+        yes = 0
+    }
+
+    let decide = tpc_decide(yes, 2)
+    let acks = chan_new(4)
+    if decide == 1 {
+        // monotonic commit timestamps: use tx id (starts at 1)
+        let cts = tx
+        chan_send(c.p0, msg_commit(tx, cts, acks))
+        chan_send(c.p1, msg_commit(tx, cts, acks))
+        tpc_recv_ack(acks, tx, 500)?
+        tpc_recv_ack(acks, tx, 500)?
+        chan_close(votes)
+        chan_close(acks)
+        return cts
+    }
+
+    chan_send(c.p0, msg_abort(tx, acks))
+    chan_send(c.p1, msg_abort(tx, acks))
+    tpc_recv_ack(acks, tx, 500)?
+    tpc_recv_ack(acks, tx, 500)?
+    chan_close(votes)
+    chan_close(acks)
+    return -1
+}
+
+// Snapshot read from participant 0 (both hold same data after commits).
+fn tpc_get(c: TpcCluster, key: i64, read_ts: i64) -> i64 !Par {
+    let rep = chan_new(1)
+    chan_send(c.p0, msg_get(key, read_ts, rep))
+    let r = chan_recv_timeout(rep, 500)
+    chan_close(rep)
+    if cell2_0(r) != 1 {
+        return -999999
+    }
+    let m = cell2_1(r)
+    if msg_type(m) != MT_GET_REP() {
+        return -999999
+    }
+    if gre_found(m) == 0 {
+        return -999999
+    }
+    return gre_val(m)
+}
+
+// Convenience: single-key transaction. Returns commit_ts or -1.
+fn tpc_put(c: TpcCluster, key: i64, val: i64) -> i64 !Par {
+    return tpc_txn(c, key, val, -1, 0)?
+}
+
+// Allocate next tx id on the caller's cluster copy (return-updated).
+fn tpc_bump_tx(c: TpcCluster) -> TpcCluster {
+    c.next_tx = c.next_tx + 1
+    return c
+}
+
+// Full put that returns updated cluster + result (return-updated pattern).
+struct TpcResult {
+    cluster: TpcCluster,
+    code: i64          // commit_ts or -1
+}
+
+fn tpc_put_ex(cl: TpcCluster, key: i64, val: i64) -> TpcResult !Par {
+    let rc = tpc_txn(cl, key, val, -1, 0)?
+    let mut cl2 = tpc_bump_tx(cl)
+    if rc > 0 {
+        cl2.commit_ts = rc
+    }
+    return TpcResult { cluster: cl2, code: rc }
+}
+
+fn tpc_txn_ex(cl: TpcCluster, k1: i64, v1: i64, k2: i64, v2: i64) -> TpcResult !Par {
+    let rc = tpc_txn(cl, k1, v1, k2, v2)?
+    let mut cl2 = tpc_bump_tx(cl)
+    if rc > 0 {
+        cl2.commit_ts = rc
+    }
+    return TpcResult { cluster: cl2, code: rc }
+}

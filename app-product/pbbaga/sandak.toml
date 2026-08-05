@@ -1,0 +1,7 @@
+[package]
+name = "pbbaga"
+version = "0.1.0"
+entry = "pb.baga"
+
+[dependencies]
+std = { path = "../../std" }

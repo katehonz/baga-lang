@@ -1,0 +1,69 @@
+// grpc_unary.baga — unary gRPC Hello over raw binary HTTP bodies (C5 glue).
+// Response.body is str and is NUL-terminated in C — a gRPC frame starts with
+// 0x00 (compression flag), so we must NOT put frames in Response.body.
+// Instead: pure handlers return the reply frame as bytes; the server writes
+// headers (str) + body (tcp_write_bytes).
+
+import "grpc.baga"
+import "std/str/str.baga"
+import "std/net/tcp.baga"
+
+struct GrpcUnary {
+    ok: i64,
+    status: i64,       // HTTP status
+    grpc_status: i64,  // 0 = OK
+    frame: bytes       // reply frame (empty on error)
+}
+
+fn grpc_hello_handle(body: bytes) -> GrpcUnary {
+    let empty = bytes_new(0)
+    let g = grpc_decode(body)
+    if g.ok == 0 {
+        return GrpcUnary { ok: 0, status: 400, grpc_status: 3, frame: empty }
+    }
+    let hr = hello_request_decode(g.payload)
+    if hr.ok == 0 {
+        return GrpcUnary { ok: 0, status: 400, grpc_status: 3, frame: empty }
+    }
+    let msg = concat(concat(concat("Здравей, ", hr.name), "×"), int_to_str(hr.n))
+    let rep = hello_reply_encode(msg)
+    let frame = grpc_encode(rep)
+    return GrpcUnary { ok: 1, status: 200, grpc_status: 0, frame: frame }
+}
+
+fn grpc_is_method_path(path: str) -> i64 {
+    if len(path) < 2 || char_at(path, 0) != 47 {
+        return 0
+    }
+    let mut i: i64 = 1
+    let mut slashes: i64 = 0
+    while i < len(path) {
+        if char_at(path, i) == 47 {
+            slashes = slashes + 1
+        }
+        i = i + 1
+    }
+    if slashes >= 1 {
+        return 1
+    }
+    return 0
+}
+
+// Write unary gRPC response: HTTP headers + binary frame body.
+fn grpc_write_response(fd: i64, u: GrpcUnary) -> i64 !Net !IO {
+    let mut hdr = concat(concat("HTTP/1.1 ", int_to_str(u.status)), " OK\r\n")
+    if u.status != 200 {
+        hdr = concat(concat("HTTP/1.1 ", int_to_str(u.status)), " Bad Request\r\n")
+    }
+    hdr = concat(hdr, "Content-Type: application/grpc\r\n")
+    hdr = concat(hdr, concat(concat("grpc-status: ", int_to_str(u.grpc_status)), "\r\n"))
+    hdr = concat(hdr, concat(concat("Content-Length: ", int_to_str(bytes_len(u.frame))), "\r\n"))
+    hdr = concat(hdr, "Connection: close\r\n\r\n")
+    if tcp_write(fd, hdr)? != 0 {
+        return -1
+    }
+    if bytes_len(u.frame) > 0 {
+        return tcp_write_bytes(fd, u.frame)?
+    }
+    return 0
+}

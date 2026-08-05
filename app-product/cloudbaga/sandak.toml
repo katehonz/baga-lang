@@ -1,0 +1,10 @@
+[package]
+name = "cloudbaga"
+version = "0.1.0"
+entry = "app.baga"
+
+[dependencies]
+httpdbaga = { path = "../httpdbaga" }
+metbaga = { path = "../metbaga" }
+logbaga = { path = "../logbaga" }
+std = { path = "../../std" }

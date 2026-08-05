@@ -839,7 +839,7 @@ or `fn`. The free is deep:
 #### Checker rules (all compile errors)
 
 - **Use after drop** — any later read of the variable:
-  `използване на 'x' след drop`.
+  `използване на 'x' след free` (same wording after `arena_free`).
 - **Double drop** — `повторен drop на 'x'`.
 - **Drop of a parameter** — params share the caller's buffer for
   Vec/Map, so freeing would dangle the caller:
@@ -907,6 +907,19 @@ on a live path is **ОБРОЧЕНО (REFUTED)** with a witness path
 (`examples/verify/mem_drop.baga`). Aliasing and fn-value drop are silent
 no-claim paths, and programs outside the supported fragment are skipped
 honestly — same gating as M14.
+
+#### MEM-3 lite: arena handle seatbelt
+
+`arena_free(a)` marks the local handle `a` the same way `drop` does:
+
+- **double free** — `повторен arena_free на 'a'`;
+- **alloc/reset after free** — `използване на арена 'a' после arena_free`;
+- **any use of `a` after free** — `използване на 'a' след free`.
+
+This is **handle-level** only: values returned by `arena_alloc` are not
+region-tagged, so escaping pointers are still the programmer's contract.
+Full region typing remains a later milestone. Runtime: null-handle
+guards on `arena_alloc` / `arena_reset`.
 
 ---
 
@@ -1529,6 +1542,11 @@ are computed automatically by the **sandak** package manager from the
 | `map_del` | `(m: Map, k: i64 \| str) -> void` | — |
 | `map_len` | `(m: Map) -> i64` | — |
 | `map_keys` | `(m: Map) -> Vec` | `Vec<str>` / `Vec<i64>` per the key type |
+| `signal_watch` | `(sig: i64) -> i64` | C1: install handler; 0 ok, -1 error |
+| `signal_check` | `() -> i64` | 0 = none, else signal number |
+| `signal_clear` | `() -> i64` | return and clear pending |
+| `signal_wait` | `(ms: i64) -> i64` | wait up to `ms` (`<0` = forever); signo or 0 |
+| `signal_raise` | `(sig: i64) -> i64` | `raise(sig)` to self (tests) |
 
 ---
 

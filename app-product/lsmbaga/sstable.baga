@@ -1,0 +1,188 @@
+// sstable.baga — sorted string table write + scan (MVP linear lookup).
+
+import "codec.baga"
+import "page.baga"
+import "std/os/os.baga"
+import "std/crypto/crc32c.baga"
+import "std/str/str.baga"
+
+// One logical row in an SST / merge view.
+struct SstRow {
+    op: i64,      // 1 put, 2 del
+    key: str,
+    val: str
+}
+
+fn sst_path(dir: str, gen: i64) -> str {
+    return concat(concat(dir, ".sst."), int_to_str(gen))
+}
+
+fn sst_build(rows: Vec<SstRow>) -> bytes {
+    let mut body = bytes_new(0)
+    body = push_u32_le(body, vec_len(rows))
+    for i in 0..vec_len(rows) {
+        let r = vec_get(rows, i)
+        body = bytes_push(body, r.op & 255)
+        let kb = bytes_of_str(r.key)
+        let vb = bytes_of_str(r.val)
+        body = push_u32_le(body, bytes_len(kb))
+        body = push_bytes(body, kb)
+        body = push_u32_le(body, bytes_len(vb))
+        body = push_bytes(body, vb)
+    }
+    return body
+}
+
+// Write a new SST file. Returns 0 ok, -1 error.
+fn sst_write(dir: str, gen: i64, rows: Vec<SstRow>) -> i64 !IO {
+    let path = sst_path(dir, gen)
+    let fd = open(path, 578, 420)?   // O_RDWR|O_CREAT|O_TRUNC
+    if fd < 0 {
+        return -1
+    }
+    let magic = bytes_of_str("BAGASST1")
+    let body = sst_build(rows)
+    let crc = crc32c_b(body)
+    let mut file = magic
+    file = push_bytes(file, body)
+    file = push_u32_le(file, crc)
+    if fd_write_bytes(fd, file) != 0 {
+        close(fd)
+        return -1
+    }
+    if fsync(fd)? != 0 {
+        close(fd)
+        return -1
+    }
+    close(fd)
+    return 0
+}
+
+struct SstParse {
+    ok: i64,
+    rows: Vec<SstRow>
+}
+
+fn sst_parse(data: bytes) -> SstParse {
+    let empty: Vec<SstRow> = vec_new()
+    if bytes_len(data) < 8 + 4 + 4 {
+        return SstParse { ok: 0, rows: empty }
+    }
+    let mag = str_of_bytes(bytes_slice(data, 0, 8))
+    if mag != "BAGASST1" {
+        return SstParse { ok: 0, rows: empty }
+    }
+    let body = bytes_slice(data, 8, bytes_len(data) - 4)
+    let got = get_u32_le(data, bytes_len(data) - 4)
+    if crc32c_b(body) != got {
+        return SstParse { ok: 0, rows: empty }
+    }
+    if bytes_len(body) < 4 {
+        return SstParse { ok: 0, rows: empty }
+    }
+    let count = get_u32_le(body, 0)
+    let mut pos: i64 = 4
+    let rows: Vec<SstRow> = vec_new()
+    let mut i: i64 = 0
+    let mut ok: i64 = 1
+    while i < count && ok == 1 {
+        if pos + 1 + 4 > bytes_len(body) {
+            ok = 0
+        } else {
+            let op = bytes_at(body, pos)
+            pos = pos + 1
+            let klen = get_u32_le(body, pos)
+            pos = pos + 4
+            if pos + klen + 4 > bytes_len(body) {
+                ok = 0
+            } else {
+                let key = str_of_bytes(bytes_slice(body, pos, pos + klen))
+                pos = pos + klen
+                let vlen = get_u32_le(body, pos)
+                pos = pos + 4
+                if pos + vlen > bytes_len(body) {
+                    ok = 0
+                } else {
+                    let val = str_of_bytes(bytes_slice(body, pos, pos + vlen))
+                    pos = pos + vlen
+                    vec_push(rows, SstRow { op: op, key: key, val: val })
+                    i = i + 1
+                }
+            }
+        }
+    }
+    if ok == 0 {
+        return SstParse { ok: 0, rows: empty }
+    }
+    return SstParse { ok: 1, rows: rows }
+}
+
+struct SstLoad {
+    pc: PageCache,
+    parse: SstParse
+}
+
+// Read entire SST through the page cache (warms pages; file_id = gen).
+fn sst_load(pc: PageCache, dir: str, gen: i64) -> SstLoad !IO {
+    let empty: Vec<SstRow> = vec_new()
+    let path = sst_path(dir, gen)
+    let fd = open(path, 0, 0)?
+    if fd < 0 {
+        return SstLoad { pc: pc, parse: SstParse { ok: 0, rows: empty } }
+    }
+    let mut cur = pc
+    let mut data = bytes_new(0)
+    let mut pno: i64 = 0
+    let mut more: i64 = 1
+    while more == 1 {
+        let raw = fd_pread_bytes(fd, cur.page_size, pno * cur.page_size)?
+        if bytes_len(raw) == 0 {
+            more = 0
+        } else {
+            // also install into cache
+            let g = pc_get(cur, fd, gen, pno)?
+            cur = g.pc
+            data = push_bytes(data, raw)
+            if bytes_len(raw) < cur.page_size {
+                more = 0
+            } else {
+                pno = pno + 1
+            }
+        }
+    }
+    close(fd)
+    return SstLoad { pc: cur, parse: sst_parse(data) }
+}
+
+struct SstLookup {
+    pc: PageCache,
+    found: i64,
+    alive: i64,
+    val: str
+}
+
+// Newest-first lookup across gens.
+fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
+    let mut cur = pc
+    let mut i = vec_len(gens) - 1
+    while i >= 0 {
+        let gen = vec_get(gens, i)
+        let ld = sst_load(cur, dir, gen)?
+        cur = ld.pc
+        if ld.parse.ok == 1 {
+            let mut j: i64 = 0
+            while j < vec_len(ld.parse.rows) {
+                let r = vec_get(ld.parse.rows, j)
+                if r.key == key {
+                    if r.op == 2 {
+                        return SstLookup { pc: cur, found: 1, alive: 0, val: "" }
+                    }
+                    return SstLookup { pc: cur, found: 1, alive: 1, val: r.val }
+                }
+                j = j + 1
+            }
+        }
+        i = i - 1
+    }
+    return SstLookup { pc: cur, found: 0, alive: 0, val: "" }
+}

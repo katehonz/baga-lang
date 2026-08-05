@@ -1,5 +1,7 @@
 # Storage Foundation (S2+S3+S4) Implementation Plan
 
+**Status: shipped 2026-08-05** (S2 bytes mutators, S3 positioned IO, S4 crc32c). Parent direction: `2026-08-05-cloud-storage-direction.md`. Unlocks S5–S6 lsmbaga (also shipped).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the storage-track foundation: bytes mutators (`bytes_new`/`bytes_set`/`bytes_push`), positioned/durable file IO in std/os (`pread`/`pwrite`/`fsync`/`fdatasync`/`fallocate`), and `std/crypto/crc32c.baga`.
@@ -32,11 +34,11 @@
 **Interfaces:**
 - Produces: builtins `bytes_new(i64) -> bytes`, `bytes_set(bytes, i64, i64) -> void`, `bytes_push(bytes, i64) -> bytes` — pure (no !IO), like the other bytes builtins.
 
-- [ ] **Step 1: checker rows**
+- [x] **Step 1: checker rows**
 
 In the flat builtin table (`src/checker.c:1066-1073`), mirror the existing `bytes_at`/`bytes_concat` rows and add: `bytes_new` (ret bytes, 1 param), `bytes_set` (ret void, 3 params), `bytes_push` (ret bytes, 2 params). Read how the table encodes param types for the bytes builtins (there may be a param-kind column or a separate check site — grep for `bytes_at` in checker.c to find every place that special-cases it) and replicate for the new names. If arg types are checked positionally somewhere (e.g. "bytes arg must be bytes"), add the new names there too.
 
-- [ ] **Step 2: runtime helpers (`src/codegen_c.c`, next to `baga_bytes_concat` ~:1822-1824)**
+- [x] **Step 2: runtime helpers (`src/codegen_c.c`, next to `baga_bytes_concat` ~:1822-1824)**
 
 ```c
 static baga_bytes baga_bytes_new(int64_t n) {
@@ -58,11 +60,11 @@ static baga_bytes baga_bytes_push(baga_bytes b, int64_t v) {
 ```
 (Check the exact `baga_bounds_fail` signature/order at the existing `baga_bytes_at` helper and match it. Emit the helpers unconditionally alongside the others.)
 
-- [ ] **Step 3: name mapping (`src/codegen_c.c:615-620`)**
+- [x] **Step 3: name mapping (`src/codegen_c.c:615-620`)**
 
 Add `bytes_new → baga_bytes_new`, `bytes_set → baga_bytes_set`, `bytes_push → baga_bytes_push` to the builtin-name→C-symbol table. Verify call emission passes args positionally like `bytes_at`.
 
-- [ ] **Step 4: `tests/std/bytes_mut_test.baga`**
+- [x] **Step 4: `tests/std/bytes_mut_test.baga`**
 
 ```baga
 // bytes_mut_test.baga — S2: bytes mutators (httpdbaga G9).
@@ -105,11 +107,11 @@ fn main() {
 }
 ```
 
-- [ ] **Step 5: run**
+- [x] **Step 5: run**
 
 `./baga tests/std/bytes_mut_test.baga` → all ok + `bytes_mut_test: all passed`.
 
-- [ ] **Step 6: OOB probe in `scripts/run_tests.sh` (probes section)**
+- [x] **Step 6: OOB probe in `scripts/run_tests.sh` (probes section)**
 
 ```bash
 printf 'fn main() {\n    let b = bytes_new(2)\n    bytes_set(b, 5, 1)\n}\n' > /tmp/baga_bytes_oob.baga
@@ -119,7 +121,7 @@ run /tmp/baga_bytes_oob.baga 2>&1 | grep -q "излизане извън гра�
 ```
 (First run the failing program once and copy the EXACT `baga_bounds_fail` message into the grep string.)
 
-- [ ] **Step 7: gates** — `make -j4 && make test` green (baga-test discovers the new file automatically).
+- [x] **Step 7: gates** — `make -j4 && make test` green (baga-test discovers the new file automatically).
 
 ---
 
@@ -132,7 +134,7 @@ run /tmp/baga_bytes_oob.baga 2>&1 | grep -q "излизане извън гра�
 **Interfaces:**
 - Consumes: nothing from Task 1. Produces: `pread`/`pwrite`/`fsync`/`fdatasync`/`fallocate` externs + `fd_pwrite(fd, s, off) -> i64` / `fd_pread(fd, n, off) -> str` wrappers (all `!IO`).
 
-- [ ] **Step 1: externs (`std/os/os.baga`, after line 13)**
+- [x] **Step 1: externs (`std/os/os.baga`, after line 13)**
 
 ```baga
 extern fn pread(fd: i64, buf: str, count: i64, offset: i64) -> i64 !IO
@@ -142,7 +144,7 @@ extern fn fdatasync(fd: i64) -> i64 !IO
 extern fn fallocate(fd: i64, mode: i64, offset: i64, len: i64) -> i64 !IO
 ```
 
-- [ ] **Step 2: wrappers (after `fd_read`, :40)**
+- [x] **Step 2: wrappers (after `fd_read`, :40)**
 
 ```baga
 // Write all of `data` at absolute offset, looping on partial writes.
@@ -167,7 +169,7 @@ fn fd_pread(fd: i64, n: i64, off: i64) -> str !IO {
 }
 ```
 
-- [ ] **Step 3: `tests/std/os_io_test.baga`**
+- [x] **Step 3: `tests/std/os_io_test.baga`**
 
 ```baga
 // os_io_test.baga — S3: positioned IO + durability (pread/pwrite/fsync).
@@ -211,7 +213,7 @@ fn main() -> i64 !IO {
 }
 ```
 
-- [ ] **Step 4: run + gates**
+- [x] **Step 4: run + gates**
 
 `./baga tests/std/os_io_test.baga` → all ok; `make test` green. (fd 1 = stdout writes in os_test stay green — no shared state.)
 
@@ -227,7 +229,7 @@ fn main() -> i64 !IO {
 **Interfaces:**
 - Produces: `crc32c_update(crc: i64, data: bytes) -> i64` (state, init `4294967295`), `crc32c_final(crc: i64) -> i64`, `crc32c_b(data: bytes) -> i64`.
 
-- [ ] **Step 1: oracle — generate + validate vectors**
+- [x] **Step 1: oracle — generate + validate vectors**
 
 Run a throwaway bitwise python CRC-32C (reflected poly 0x82F63B78) and FIRST assert the published check value `crc32c("123456789") == 0xE3069283`; then print decimals for: `"123456789"`, `""`, `"The quick brown fox jumps over the lazy dog"` (expect 0x22620404), 32×0x00 (expect 0x8A9136AA), 32×0xFF (expect 0x62A8AB43), bytes 0..31 (expect 0x46DD794E), bytes 31..0 (expect 0x113FDB5C). Paste the script and output into the task report; embed the decimals in the Baga test.
 
@@ -243,7 +245,7 @@ def crc32c(data):
 assert crc32c(b"123456789") == 0xE3069283
 ```
 
-- [ ] **Step 2: `std/crypto/crc32c.baga`**
+- [x] **Step 2: `std/crypto/crc32c.baga`**
 
 ```baga
 // crc32c.baga — CRC-32C (Castagnoli, reflected poly 0x82F63B78).
@@ -292,11 +294,11 @@ fn crc32c_b(data: bytes) -> i64 {
 }
 ```
 
-- [ ] **Step 3: `tests/std/crc32c_test.baga`**
+- [x] **Step 3: `tests/std/crc32c_test.baga`**
 
 check-idiom file with: the seven one-shot vectors from Step 1 (hex_decode("00"×32) etc. for the binary ones — `hex_decode` exists; build 0..31 via a bytes_push chain or `bytes_from_vec`), incremental `"1234"+"56789"` == one-shot, and `crc32c_final`/`update` state chaining over 3 chunks. End `crc32c_test: all passed`.
 
-- [ ] **Step 4: run + gates**
+- [x] **Step 4: run + gates**
 
 `./baga tests/std/crc32c_test.baga` green; `make test` green. Add the file line to `std/crypto/README.md`.
 
@@ -311,11 +313,11 @@ check-idiom file with: the seven one-shot vectors from Step 1 (hex_decode("00"×
 - Modify: `app-product/httpdbaga/gaps.md` (G9 → "**Unblocked 2026-08-05** — `bytes_new`/`bytes_set`/`bytes_push` shipped; h2/hpack builder migration optional.")
 
 **Steps:**
-- [ ] **Step 1:** std/os README — new externs + wrappers + buffer contract reminder.
-- [ ] **Step 2:** language docs bytes section — `bytes_new`/`bytes_set`/`bytes_push` with the alias/new-buffer semantics, both languages in sync; note LLVM honest unsupported if that section tracks backend support.
-- [ ] **Step 3:** CHANGELOG entry (S2 builtins + semantics, S3 externs+wrappers, S4 crc32c + API, tests, spec link).
-- [ ] **Step 4:** httpdbaga G9 verdict.
-- [ ] **Step 5:** final gates: `make test && make self && make test-llvm` (SKIP-clean).
+- [x] **Step 1:** std/os README — new externs + wrappers + buffer contract reminder.
+- [x] **Step 2:** language docs bytes section — `bytes_new`/`bytes_set`/`bytes_push` with the alias/new-buffer semantics, both languages in sync; note LLVM honest unsupported if that section tracks backend support.
+- [x] **Step 3:** CHANGELOG entry (S2 builtins + semantics, S3 externs+wrappers, S4 crc32c + API, tests, spec link).
+- [x] **Step 4:** httpdbaga G9 verdict.
+- [x] **Step 5:** final gates: `make test && make self && make test-llvm` (SKIP-clean).
 
 ---
 

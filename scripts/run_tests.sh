@@ -386,7 +386,7 @@ run /tmp/baga_bytes_oob.baga 2>&1 | grep -q "bytes_set: индекс 5 извъ�
 
 echo "=== MEM-2: drop seatbelt (checker) ==="
 printf 'fn main() {\n    let v = vec_new()\n    drop(v)\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_p1.baga
-run /tmp/baga_drop_p1.baga 2>&1 | grep -q "използване на 'v' след drop" \
+run /tmp/baga_drop_p1.baga 2>&1 | grep -q "използване на 'v' след free" \
 	&& echo "OK: use-after-drop е хванат" \
 	|| { echo "FAIL: use-after-drop трябва да гърми"; exit 1; }
 printf 'fn main() {\n    let v = vec_new()\n    drop(v)\n    drop(v)\n}\n' > /tmp/baga_drop_p2.baga
@@ -415,7 +415,7 @@ run /tmp/baga_drop_p7.baga 2>&1 | grep -q "drop очаква локална пр
 	|| { echo "FAIL: drop на израз трябва да гърми"; exit 1; }
 # if/else join: drop и в двата клона → use след това е грешка
 printf 'fn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    if true { drop(v) } else { drop(v) }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_pos1.baga
-run /tmp/baga_drop_pos1.baga 2>&1 | grep -q "използване на 'v' след drop" \
+run /tmp/baga_drop_pos1.baga 2>&1 | grep -q "използване на 'v' след free" \
 	&& echo "OK: drop в двата if-клона се слива (intersection)" \
 	|| { echo "FAIL: drop в двата клона + use трябва да гърми"; exit 1; }
 # drop само в един клон → НЕ е сигурно drop-нато, програмата върви
@@ -433,13 +433,36 @@ test "$(run /tmp/baga_drop_m1.baga)" = "1" \
 	&& echo "OK: drop в един match arm не е definite — компилира и върви" \
 	|| { echo "FAIL: drop в един arm не трябва да блокира"; exit 1; }
 printf 'fn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    let n = 1\n    let r = match n { 1 => { drop(v) 0 }, _ => { drop(v) 0 } }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_m2.baga
-run /tmp/baga_drop_m2.baga 2>&1 | grep -q "използване на 'v' след drop" \
+run /tmp/baga_drop_m2.baga 2>&1 | grep -q "използване на 'v' след free" \
 	&& echo "OK: drop във всички match arm-ове се слива (intersection)" \
 	|| { echo "FAIL: drop във всички arm-ове + use трябва да гърми"; exit 1; }
 printf 'fn f() -> i64 !IO { print("f") return 1 }\nfn main() {\n    let v = vec_new()\n    vec_push(v, 7)\n    let r = f() catch !IO => { drop(v) 0 }\n    print(vec_len(v))\n}\n' > /tmp/baga_drop_c1.baga
 test "$(run /tmp/baga_drop_c1.baga)" = "$(printf 'f\n1')" \
 	&& echo "OK: drop в catch handler не е definite — компилира и върви" \
 	|| { echo "FAIL: drop в catch handler не трябва да блокира"; exit 1; }
+
+echo "=== MEM-3: arena_free seatbelt (checker) ==="
+printf 'fn main() {\n    let a = arena_new()\n    arena_free(a)\n    arena_free(a)\n}\n' > /tmp/baga_arena_p1.baga
+run /tmp/baga_arena_p1.baga 2>&1 | grep -q "повторен arena_free на 'a'" \
+	&& echo "OK: повторен arena_free е хванат" \
+	|| { echo "FAIL: повторен arena_free трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    arena_free(a)\n    let p = arena_alloc(a, 8)\n    print(p)\n}\n' > /tmp/baga_arena_p2.baga
+run /tmp/baga_arena_p2.baga 2>&1 | grep -q "използване на арена 'a' след arena_free" \
+	&& echo "OK: arena_alloc след free е хванат" \
+	|| { echo "FAIL: arena_alloc след free трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    arena_free(a)\n    arena_reset(a)\n}\n' > /tmp/baga_arena_p3.baga
+run /tmp/baga_arena_p3.baga 2>&1 | grep -q "използване на арена 'a' след arena_free" \
+	&& echo "OK: arena_reset след free е хванат" \
+	|| { echo "FAIL: arena_reset след free трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    arena_free(a)\n    print(a)\n}\n' > /tmp/baga_arena_p4.baga
+run /tmp/baga_arena_p4.baga 2>&1 | grep -q "използване на 'a' след free" \
+	&& echo "OK: use на free-ната арена е хванат" \
+	|| { echo "FAIL: use на free-ната арена трябва да гърми"; exit 1; }
+# happy path still works
+run examples/arena.baga > /tmp/baga_arena_mem3.txt
+printf "true\ntrue\narena ok\n" | diff - /tmp/baga_arena_mem3.txt > /dev/null \
+	&& echo "OK: arena happy path (MEM-3 regress)" \
+	|| { echo "FAIL: arena happy path"; exit 1; }
 
 # ── 6. Static verifier oracle ────────────────────────────────────────────
 bash "$ROOT/scripts/run_verify.sh"

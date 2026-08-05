@@ -1,0 +1,95 @@
+// demo.baga — durable LSM KV over RESP. Env: LSMPORT (16579), LSMPATH.
+
+import "server.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" {
+        return def
+    }
+    return v
+}
+
+fn args1(a: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    return v
+}
+
+fn args2(a: str, b: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    return v
+}
+
+fn args3(a: str, b: str, c: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    return v
+}
+
+fn show(fd: i64, a: Vec<str>) -> str !Net !IO {
+    let r = resp_round_trip(fd, a)?
+    if r.ok == 0 {
+        return "(io error)"
+    }
+    if r.typ == 1 {
+        return concat("+", r.text)
+    }
+    if r.typ == 2 {
+        return concat("-", r.text)
+    }
+    if r.typ == 3 {
+        return concat(":", int_to_str(r.num))
+    }
+    if r.typ == 4 {
+        if r.num < 0 {
+            return "(nil)"
+        }
+        return r.text
+    }
+    return concat("*", int_to_str(r.num))
+}
+
+fn run(fd: i64, label: str, a: Vec<str>) -> i64 !Net !IO {
+    print(concat(concat(label, " → "), show(fd, a)?))
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par !Time {
+    let port = parse_int(cfg("LSMPORT", "16579")?)
+    // fresh data dir for the demo
+    let dir = cfg("LSMPATH", "/tmp/baga_lsm_demo")?
+    // best-effort wipe of prefix files is left to the operator; demo reuses path
+    go_bg(lsm_serve, port)
+    sleep_ms(300)
+    let fd = tcp_connect_to("localhost", port, 5)?
+    if fd < 0 {
+        print("connect failed")
+        return 1
+    }
+    tcp_set_timeouts(fd, 5)?
+    print(concat(concat("lsmbaga demo → localhost:", int_to_str(port)), concat(" path=", dir)))
+
+    run(fd, "PING", args1("PING"))?
+    run(fd, "SET user:1 Здравей", args3("SET", "user:1", "Здравей"))?
+    run(fd, "GET user:1", args2("GET", "user:1"))?
+    run(fd, "SET counter 41", args3("SET", "counter", "41"))?
+    run(fd, "INCR counter", args2("INCR", "counter"))?
+    run(fd, "SAVE", args1("SAVE"))?
+    run(fd, "DBSIZE", args1("DBSIZE"))?
+    run(fd, "DEL user:1", args2("DEL", "user:1"))?
+    run(fd, "GET user:1", args2("GET", "user:1"))?
+    run(fd, "EXISTS counter", args2("EXISTS", "counter"))?
+
+    tcp_close(fd)?
+    print("done")
+    return 0
+}

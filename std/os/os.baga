@@ -16,6 +16,27 @@ extern fn pwrite(fd: i64, buf: str, count: i64, offset: i64) -> i64 !IO
 extern fn fsync(fd: i64) -> i64 !IO
 extern fn fdatasync(fd: i64) -> i64 !IO
 extern fn fallocate(fd: i64, mode: i64, offset: i64, len: i64) -> i64 !IO
+extern fn mkdir(path: str, mode: i64) -> i64 !IO
+extern fn unlink(path: str) -> i64 !IO
+// link(2) — used to implement fs_rename without colliding with stdio.h's
+// `int rename` / `int renameat` prototypes (baga emits int64_t externs).
+extern fn link(oldpath: str, newpath: str) -> i64 !IO
+extern fn getpid() -> i64 !IO
+// kill(2) collides with signal.h once C1 includes it — use signal_raise builtin
+// for self-tests, or syscall if you need cross-process kill.
+
+// Atomicity: not a true rename(2) (no overwrite of newpath; not atomic on
+// all FS). Enough for test/setup paths. Prefer write-temp + this for
+// publish-side moves when newpath must not already exist.
+fn fs_rename(oldpath: str, newpath: str) -> i64 !IO {
+    if link(oldpath, newpath)? != 0 {
+        return -1
+    }
+    if unlink(oldpath)? != 0 {
+        return -1
+    }
+    return 0
+}
 
 // Environment variable, or "" when unset (the C backend coerces NULL → "").
 fn env(name: str) -> str !IO {
@@ -63,6 +84,53 @@ fn fd_pread(fd: i64, n: i64, off: i64) -> str !IO {
     let got = pread(fd, buf, n, off)?
     if got <= 0 { return "" }
     return substr(buf, 0, got)
+}
+
+// ---------- binary-safe IO (bytes; same idiom as std/net tcp_write_bytes) ----------
+// Length always comes from bytes_len / the count arg — never strlen on the
+// payload. str_of_bytes is a memcpy with explicit length; write/pwrite take
+// that count so embedded NULs travel. On read, pread fills a heap buffer
+// and bytes are recovered with byte_at (not substr/len).
+
+// Write all of b, looping on partial writes. 0 ok, -1 error.
+fn fd_write_bytes(fd: i64, b: bytes) -> i64 !IO {
+    let mut rest = b
+    while bytes_len(rest) > 0 {
+        let w = write(fd, str_of_bytes(rest), bytes_len(rest))?
+        if w <= 0 { return -1 }
+        rest = bytes_slice(rest, w, bytes_len(rest))
+    }
+    return 0
+}
+
+// Write all of b at absolute offset off. 0 ok, -1 error. Does not move fd pos.
+fn fd_pwrite_bytes(fd: i64, b: bytes, off: i64) -> i64 !IO {
+    let total = bytes_len(b)
+    let mut done: i64 = 0
+    while done < total {
+        let rest = bytes_slice(b, done, total)
+        let w = pwrite(fd, str_of_bytes(rest), bytes_len(rest), off + done)?
+        if w <= 0 { return -1 }
+        done = done + w
+    }
+    return 0
+}
+
+// Read up to n bytes at absolute offset as binary-safe bytes. Empty at EOF/error.
+fn fd_pread_bytes(fd: i64, n: i64, off: i64) -> bytes !IO {
+    if n <= 0 {
+        return bytes_new(0)
+    }
+    let buf = str_repeat(" ", n)
+    let got = pread(fd, buf, n, off)?
+    if got <= 0 {
+        return bytes_new(0)
+    }
+    let mut b = bytes_new(got)
+    for i in 0..got {
+        bytes_set(b, i, byte_at(buf, i))
+    }
+    return b
 }
 
 // Read an entire file into a string. "" on error or for an empty file.

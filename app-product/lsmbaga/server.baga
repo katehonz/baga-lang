@@ -1,0 +1,245 @@
+// server.baga — RESP2 front-end for lsmbaga (redis-cli compatible subset).
+// Durable store: WAL + memtable + SSTables. Reuses kvbaga/resp framing.
+
+import "engine.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+import "std/bytes/bytes.baga"
+
+fn lsm_upper(s: str) -> str {
+    let mut out = ""
+    for i in 0..len(s) {
+        let mut c = char_at(s, i)
+        if c >= 97 && c <= 122 {
+            c = c - 32
+        }
+        out = concat(out, chr(c))
+    }
+    return out
+}
+
+fn lsm_wrongnum(cmd: str) -> bytes {
+    return resp_error(concat(concat("ERR wrong number of arguments for '", cmd), "'"))
+}
+
+fn lsm_is_int(s: str) -> i64 {
+    if len(s) == 0 {
+        return 0
+    }
+    let mut i: i64 = 0
+    if char_at(s, 0) == 45 {
+        if len(s) == 1 {
+            return 0
+        }
+        i = 1
+    }
+    while i < len(s) {
+        let c = char_at(s, i)
+        if c < 48 || c > 57 {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+struct LsmExec {
+    db: LsmDB,
+    reply: bytes,
+    quit: i64
+}
+
+// Execute one RESP command. Mutates/returns db (flush may run).
+fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO {
+    let cmd = lsm_upper(vec_get(args, 0))
+    let n = vec_len(args)
+
+    if cmd == "PING" {
+        return LsmExec { db: db, reply: resp_simple("PONG"), quit: 0 }
+    }
+    if cmd == "QUIT" {
+        return LsmExec { db: db, reply: resp_simple("OK"), quit: 1 }
+    }
+    if cmd == "SET" {
+        if n < 3 {
+            return LsmExec { db: db, reply: lsm_wrongnum("set"), quit: 0 }
+        }
+        if n >= 4 {
+            return LsmExec {
+                db: db,
+                reply: resp_error("ERR lsmbaga MVP: SET options (EX/PX/…) not supported"),
+                quit: 0
+            }
+        }
+        db = lsm_put(db, vec_get(args, 1), vec_get(args, 2))?
+        return LsmExec { db: db, reply: resp_simple("OK"), quit: 0 }
+    }
+    if cmd == "GET" {
+        if n != 2 {
+            return LsmExec { db: db, reply: lsm_wrongnum("get"), quit: 0 }
+        }
+        let g = lsm_get(db, vec_get(args, 1))?
+        db = g.db
+        if g.found == 0 {
+            return LsmExec { db: db, reply: resp_null_bulk(), quit: 0 }
+        }
+        return LsmExec { db: db, reply: resp_bulk(g.val), quit: 0 }
+    }
+    if cmd == "DEL" {
+        if n != 2 {
+            return LsmExec { db: db, reply: lsm_wrongnum("del"), quit: 0 }
+        }
+        let g = lsm_get(db, vec_get(args, 1))?
+        db = g.db
+        if g.found == 0 {
+            return LsmExec { db: db, reply: resp_int(0), quit: 0 }
+        }
+        db = lsm_del(db, vec_get(args, 1))?
+        return LsmExec { db: db, reply: resp_int(1), quit: 0 }
+    }
+    if cmd == "EXISTS" {
+        if n != 2 {
+            return LsmExec { db: db, reply: lsm_wrongnum("exists"), quit: 0 }
+        }
+        let g = lsm_get(db, vec_get(args, 1))?
+        db = g.db
+        return LsmExec { db: db, reply: resp_int(g.found), quit: 0 }
+    }
+    if cmd == "INCR" {
+        if n != 2 {
+            return LsmExec { db: db, reply: lsm_wrongnum("incr"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_get(db, k)?
+        db = g.db
+        let mut base: i64 = 0
+        if g.found == 1 {
+            if lsm_is_int(g.val) == 0 {
+                return LsmExec {
+                    db: db,
+                    reply: resp_error("ERR value is not an integer or out of range"),
+                    quit: 0
+                }
+            }
+            base = parse_int(g.val)
+        }
+        let nv = base + 1
+        db = lsm_put(db, k, int_to_str(nv))?
+        return LsmExec { db: db, reply: resp_int(nv), quit: 0 }
+    }
+    if cmd == "KEYS" {
+        if n != 1 {
+            return LsmExec { db: db, reply: lsm_wrongnum("keys"), quit: 0 }
+        }
+        let kg = lsm_keys(db)?
+        db = kg.db
+        let alive = kg.keys
+        let mut r = resp_array(vec_len(alive))
+        for i in 0..vec_len(alive) {
+            r = bytes_concat(r, resp_bulk(vec_get(alive, i)))
+        }
+        return LsmExec { db: db, reply: r, quit: 0 }
+    }
+    if cmd == "DBSIZE" {
+        if n != 1 {
+            return LsmExec { db: db, reply: lsm_wrongnum("dbsize"), quit: 0 }
+        }
+        let kg = lsm_keys(db)?
+        db = kg.db
+        return LsmExec { db: db, reply: resp_int(vec_len(kg.keys)), quit: 0 }
+    }
+    if cmd == "SAVE" || cmd == "BGSAVE" {
+        // Forces memtable flush (durable snapshot of mem into SST).
+        db = lsm_flush_force(db)?
+        return LsmExec { db: db, reply: resp_simple("OK"), quit: 0 }
+    }
+    if cmd == "EXPIRE" || cmd == "TTL" {
+        return LsmExec {
+            db: db,
+            reply: resp_error("ERR lsmbaga MVP: TTL/EXPIRE not supported"),
+            quit: 0
+        }
+    }
+    return LsmExec {
+        db: db,
+        reply: resp_error(concat(concat("ERR unknown command '", vec_get(args, 0)), "'")),
+        quit: 0
+    }
+}
+
+fn lsm_serve_conn(fd: i64, db: LsmDB) -> LsmDB !IO !Net {
+    let mut buf = bytes_from_vec(vec_new())
+    let mut running: i64 = 1
+    let mut cur = db
+    while running == 1 {
+        let chunk = tcp_read_bytes(fd, 4096)?
+        if bytes_len(chunk) == 0 {
+            running = 0
+        } else {
+            buf = bytes_concat(buf, chunk)
+            let mut again: i64 = 1
+            while again == 1 {
+                let p = resp_parse_command(buf)
+                if p.ok == 0 {
+                    again = 0
+                } else {
+                    buf = bytes_slice(buf, p.consumed, bytes_len(buf))
+                    let ex = lsm_exec(cur, p.args)?
+                    cur = ex.db
+                    let w = tcp_write_bytes(fd, ex.reply)?
+                    if w != 0 || ex.quit == 1 {
+                        running = 0
+                        again = 0
+                    }
+                }
+            }
+        }
+    }
+    return cur
+}
+
+// Serial accept loop. Dir from env LSMPATH (default /tmp/baga_lsm).
+// flush_at from env LSM_FLUSH_AT (default 32).
+fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
+    let mut dir = env("LSMPATH")?
+    if dir == "" {
+        dir = "/tmp/baga_lsm"
+    }
+    let mut flush_at: i64 = 32
+    let fe = env("LSM_FLUSH_AT")?
+    if fe != "" {
+        flush_at = parse_int(fe)
+    }
+    let mut compact_at: i64 = 3
+    let ce = env("LSM_COMPACT_AT")?
+    if ce != "" {
+        compact_at = parse_int(ce)
+    }
+    let mut db = lsm_open(dir, flush_at, compact_at)?
+    if db.ok == 0 {
+        return -1
+    }
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        lsm_close(db)?
+        return -1
+    }
+    while true {
+        let fd = tcp_accept(listener)?
+        if fd >= 0 {
+            if timeout_s > 0 {
+                tcp_set_timeouts(fd, timeout_s)?
+            }
+            db = lsm_serve_conn(fd, db)?
+            tcp_close(fd)?
+        }
+    }
+    return 0
+}
+
+fn lsm_serve(port: i64) -> i64 !Net !IO !Time !Par {
+    return lsm_serve_to(port, 60)?
+}

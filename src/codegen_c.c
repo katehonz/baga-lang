@@ -704,6 +704,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"mutex_new",   "baga_mutex_new"},
                     {"mutex_lock",  "baga_mutex_lock"},
                     {"mutex_unlock","baga_mutex_unlock"},
+                    {"signal_watch","baga_signal_watch"},
+                    {"signal_check","baga_signal_check"},
+                    {"signal_clear","baga_signal_clear"},
+                    {"signal_wait", "baga_signal_wait"},
+                    {"signal_raise","baga_signal_raise"},
                     {"cell2",       "baga_cell2"},
                     {"cell2_0",     "baga_cell2_0"},
                     {"cell2_1",     "baga_cell2_1"},
@@ -1775,6 +1780,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <string.h>\n");
     fprintf(out, "#include <errno.h>\n");
     fprintf(out, "#include <time.h>\n");
+    fprintf(out, "#include <signal.h>\n");
     fprintf(out, "#include <pthread.h>\n\n");
 
     /* arena — всички низови/векторни алокации минават тук (без individual free).
@@ -2225,6 +2231,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_arena_alloc(int64_t h, int64_t size) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: arena_alloc: null handle\\n\"); exit(1); }\n");
+    fprintf(out, "    if (size < 0) size = 0;\n");
     fprintf(out, "    if (a->used + size > a->cap) {\n");
     fprintf(out, "        int64_t nc = (a->used + size) * 2;\n");
     fprintf(out, "        a->base = realloc(a->base, (size_t)nc); a->cap = nc;\n");
@@ -2233,10 +2241,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return (int64_t)(intptr_t)p;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_arena_reset(int64_t h) {\n");
-    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h; a->used = 0;\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: arena_reset: null handle\\n\"); exit(1); }\n");
+    fprintf(out, "    a->used = 0;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_arena_free(int64_t h) {\n");
     fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    if (!a) return;\n");
     fprintf(out, "    free(a->base); free(a);\n");
     fprintf(out, "}\n");
     fprintf(out, "\n");
@@ -2409,6 +2420,45 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    struct timespec ts; ts.tv_sec = ms / 1000; ts.tv_nsec = (ms %% 1000) * 1000000L;\n");
     fprintf(out, "    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {}\n");
     fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    /* C1: process-global signal slot for graceful shutdown (SIGTERM/SIGINT). */
+    fprintf(out, "static volatile sig_atomic_t baga_sig_seen = 0;\n");
+    fprintf(out, "static void baga_sig_handler(int s) { baga_sig_seen = s; }\n");
+    fprintf(out, "static int64_t baga_signal_watch(int64_t sig) {\n");
+    fprintf(out, "    if (sig <= 0 || sig >= 64) return -1;\n");
+    fprintf(out, "    struct sigaction sa; memset(&sa, 0, sizeof sa);\n");
+    fprintf(out, "    sa.sa_handler = baga_sig_handler;\n");
+    fprintf(out, "    sigemptyset(&sa.sa_mask);\n");
+    fprintf(out, "    if (sigaction((int)sig, &sa, NULL) != 0) return -1;\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_signal_check(void) { return (int64_t)baga_sig_seen; }\n");
+    fprintf(out, "static int64_t baga_signal_clear(void) {\n");
+    fprintf(out, "    int64_t v = (int64_t)baga_sig_seen; baga_sig_seen = 0; return v;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_signal_wait(int64_t ms) {\n");
+    fprintf(out, "    if (baga_sig_seen) return (int64_t)baga_sig_seen;\n");
+    fprintf(out, "    if (ms == 0) return 0;\n");
+    fprintf(out, "    if (ms < 0) {\n");
+    fprintf(out, "        while (!baga_sig_seen) {\n");
+    fprintf(out, "            struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 50000000L;\n");
+    fprintf(out, "            nanosleep(&ts, NULL);\n");
+    fprintf(out, "        }\n");
+    fprintf(out, "        return (int64_t)baga_sig_seen;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    int64_t left = ms;\n");
+    fprintf(out, "    while (left > 0) {\n");
+    fprintf(out, "        if (baga_sig_seen) return (int64_t)baga_sig_seen;\n");
+    fprintf(out, "        int64_t step = left > 50 ? 50 : left;\n");
+    fprintf(out, "        struct timespec ts; ts.tv_sec = step / 1000;\n");
+    fprintf(out, "        ts.tv_nsec = (step %% 1000) * 1000000L;\n");
+    fprintf(out, "        nanosleep(&ts, NULL);\n");
+    fprintf(out, "        left -= step;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return baga_sig_seen ? (int64_t)baga_sig_seen : 0;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_signal_raise(int64_t sig) {\n");
+    fprintf(out, "    return raise((int)sig) == 0 ? 0 : -1;\n");
     fprintf(out, "}\n");
     /* non-blocking select over two channels.
      * cell2(which, value): which=0|1 got value; which=2 neither ready;

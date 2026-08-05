@@ -1,0 +1,13 @@
+// log_test.baga — C3 logbaga (smoke: no crash; lines go to stderr).
+
+import "logbaga/log.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !Time {
+    log_info("log_test info")?
+    log_warn("log_test warn")?
+    log_error("log_test error")?
+    log_info_req("handled", "req-1")?
+    print("log_test: all passed")
+    return 0
+}

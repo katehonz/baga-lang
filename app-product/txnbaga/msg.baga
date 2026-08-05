@@ -1,0 +1,71 @@
+// msg.baga — 2PC / participant wire (nested cell2).
+
+fn MT_PREPARE() -> i64 { return 1 }
+fn MT_VOTE_YES() -> i64 { return 2 }
+fn MT_VOTE_NO() -> i64 { return 3 }
+fn MT_COMMIT() -> i64 { return 4 }
+fn MT_ABORT() -> i64 { return 5 }
+fn MT_ACK() -> i64 { return 6 }
+fn MT_GET() -> i64 { return 7 }
+fn MT_GET_REP() -> i64 { return 8 }
+fn MT_STOP() -> i64 { return 9 }
+
+fn msg_type(m: i64) -> i64 { return cell2_0(m) }
+
+// PREPARE: cell2(PREPARE, cell2(tx, cell2(reply, cell2(k1, cell2(v1, cell2(k2, v2))))))
+// k2 < 0 means single-key write set.
+fn msg_prepare(tx: i64, reply: i64, k1: i64, v1: i64, k2: i64, v2: i64) -> i64 {
+    return cell2(MT_PREPARE(), cell2(tx, cell2(reply, cell2(k1, cell2(v1, cell2(k2, v2))))))
+}
+fn prep_tx(m: i64) -> i64 { return cell2_0(cell2_1(m)) }
+fn prep_reply(m: i64) -> i64 { return cell2_0(cell2_1(cell2_1(m))) }
+fn prep_k1(m: i64) -> i64 { return cell2_0(cell2_1(cell2_1(cell2_1(m)))) }
+fn prep_v1(m: i64) -> i64 { return cell2_0(cell2_1(cell2_1(cell2_1(cell2_1(m))))) }
+fn prep_k2(m: i64) -> i64 { return cell2_0(cell2_1(cell2_1(cell2_1(cell2_1(cell2_1(m)))))) }
+fn prep_v2(m: i64) -> i64 { return cell2_1(cell2_1(cell2_1(cell2_1(cell2_1(cell2_1(m)))))) }
+
+// VOTE: cell2(YES|NO, cell2(tx, from_id))
+fn msg_vote(yes: i64, tx: i64, from: i64) -> i64 {
+    if yes == 1 {
+        return cell2(MT_VOTE_YES(), cell2(tx, from))
+    }
+    return cell2(MT_VOTE_NO(), cell2(tx, from))
+}
+fn vote_tx(m: i64) -> i64 { return cell2_0(cell2_1(m)) }
+fn vote_from(m: i64) -> i64 { return cell2_1(cell2_1(m)) }
+
+// COMMIT/ABORT: cell2(op, cell2(tx, cell2(commit_ts, reply)))
+fn msg_commit(tx: i64, commit_ts: i64, reply: i64) -> i64 {
+    return cell2(MT_COMMIT(), cell2(tx, cell2(commit_ts, reply)))
+}
+fn msg_abort(tx: i64, reply: i64) -> i64 {
+    return cell2(MT_ABORT(), cell2(tx, cell2(0, reply)))
+}
+fn ca_tx(m: i64) -> i64 { return cell2_0(cell2_1(m)) }
+fn ca_ts(m: i64) -> i64 { return cell2_0(cell2_1(cell2_1(m))) }
+fn ca_reply(m: i64) -> i64 { return cell2_1(cell2_1(cell2_1(m))) }
+
+// ACK: cell2(ACK, cell2(tx, from))
+fn msg_ack(tx: i64, from: i64) -> i64 {
+    return cell2(MT_ACK(), cell2(tx, from))
+}
+fn ack_tx(m: i64) -> i64 { return cell2_0(cell2_1(m)) }
+fn ack_from(m: i64) -> i64 { return cell2_1(cell2_1(m)) }
+
+// GET: cell2(GET, cell2(key, cell2(read_ts, reply)))
+fn msg_get(key: i64, read_ts: i64, reply: i64) -> i64 {
+    return cell2(MT_GET(), cell2(key, cell2(read_ts, reply)))
+}
+fn get_key(m: i64) -> i64 { return cell2_0(cell2_1(m)) }
+fn get_ts(m: i64) -> i64 { return cell2_0(cell2_1(cell2_1(m))) }
+fn get_reply(m: i64) -> i64 { return cell2_1(cell2_1(cell2_1(m))) }
+
+// GET_REP: cell2(GET_REP, cell2(found, cell2(val, ts)))
+fn msg_get_rep(found: i64, val: i64, ts: i64) -> i64 {
+    return cell2(MT_GET_REP(), cell2(found, cell2(val, ts)))
+}
+fn gre_found(m: i64) -> i64 { return cell2_0(cell2_1(m)) }
+fn gre_val(m: i64) -> i64 { return cell2_0(cell2_1(cell2_1(m))) }
+fn gre_ts(m: i64) -> i64 { return cell2_1(cell2_1(cell2_1(m))) }
+
+fn msg_stop() -> i64 { return cell2(MT_STOP(), 0) }

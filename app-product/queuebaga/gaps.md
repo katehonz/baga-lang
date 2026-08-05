@@ -38,7 +38,12 @@ with mutex. (a) is production-honest for durable queues.
 **Verdict.** Write-temp + `rename` when rename exists; or record format
 with length prefix. Logged.
 
-## Q4 — no `mkdir`
+## Q4 — ~~no `mkdir`~~ — UNBLOCKED 2026-08-05 (lsmbaga / std/os)
+
+`mkdir` / `unlink` / `link` + `fs_rename` land in `std/os` with the
+lsmbaga MVP. queuebaga can migrate off flat prefixes when desired.
+
+## Q4 (historical) — no `mkdir`
 
 **Symptom.** Cannot create job directories; flat prefix paths only.
 

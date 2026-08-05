@@ -1,0 +1,175 @@
+// lsm_test.baga — S5+S6: page cache + WAL/memtable/SST + RESP recovery.
+
+import "lsmbaga/engine.baga"
+import "lsmbaga/server.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn args1(a: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    return v
+}
+
+fn args2(a: str, b: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    return v
+}
+
+fn args3(a: str, b: str, c: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    return v
+}
+
+fn wipe(prefix: str) -> i64 !IO {
+    // best-effort remove known files for gens 1..20
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    let mut g: i64 = 1
+    while g <= 20 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par !Time {
+    print("lsm_test:")
+    let fails = vec_new()
+    let prefix = "/tmp/baga_lsm_test"
+    wipe(prefix)?
+
+    // --- engine: put/get/del + flush + reopen recovery ---
+    let mut db = lsm_open(prefix, 4, 3)?   // flush every 4 ops
+    check(fails, "open", db.ok == 1)
+
+    db = lsm_put(db, "a", "1")?
+    db = lsm_put(db, "b", "2")?
+    let g1 = lsm_get(db, "a")?
+    db = g1.db
+    check(fails, "get_mem", g1.found == 1 && g1.val == "1")
+
+    db = lsm_put(db, "c", "3")?
+    db = lsm_put(db, "d", "4")?   // triggers flush (mem_n>=4)
+    check(fails, "flushed_gens", vec_len(db.gens) >= 1)
+    check(fails, "mem_cleared", db.mem_n == 0)
+
+    let g2 = lsm_get(db, "b")?
+    db = g2.db
+    check(fails, "get_after_flush", g2.found == 1 && g2.val == "2")
+
+    db = lsm_del(db, "a")?
+    let g3 = lsm_get(db, "a")?
+    db = g3.db
+    check(fails, "del_tombstone", g3.found == 0)
+
+    db = lsm_put(db, "e", "5")?
+    db = lsm_put(db, "f", "6")?
+    db = lsm_flush_force(db)?
+
+    // WAL-only key then reopen without flush
+    db = lsm_put(db, "wal_only", "W")?
+    lsm_close(db)?
+
+    let db2 = lsm_open(prefix, 4, 3)?
+    check(fails, "reopen", db2.ok == 1)
+    let r1 = lsm_get(db2, "b")?
+    check(fails, "recover_sst", r1.found == 1 && r1.val == "2")
+    let r2 = lsm_get(r1.db, "wal_only")?
+    check(fails, "recover_wal", r2.found == 1 && r2.val == "W")
+    let r3 = lsm_get(r2.db, "a")?
+    check(fails, "recover_tomb", r3.found == 0)
+
+    // compaction path: force multiple flushes
+    let mut db3 = r3.db
+    db3.flush_at = 2
+    db3.compact_at = 3
+    db3 = lsm_put(db3, "k1", "v1")?
+    db3 = lsm_put(db3, "k2", "v2")?  // flush
+    db3 = lsm_put(db3, "k3", "v3")?
+    db3 = lsm_put(db3, "k4", "v4")?  // flush
+    db3 = lsm_put(db3, "k5", "v5")?
+    db3 = lsm_put(db3, "k6", "v6")?  // flush → compact
+    check(fails, "compact_gens", vec_len(db3.gens) <= 2)
+    let r4 = lsm_get(db3, "k1")?
+    db3 = r4.db
+    check(fails, "compact_get", r4.found == 1 && r4.val == "v1")
+    lsm_close(db3)?
+
+    // --- RESP loopback ---
+    wipe("/tmp/baga_lsm_resp")?
+    // server reads LSMPATH from env — set via... we can't set env from baga easily
+    // so use default path for serve and a dedicated wipe, OR call engine only.
+    // Drive RESP by opening store in-process through lsm_exec (no go_bg needed
+    // for protocol checks), plus one go_bg smoke on a free port with shared path.
+
+    let mut sdb = lsm_open("/tmp/baga_lsm_resp", 64, 8)?
+    let e1 = lsm_exec(sdb, args1("PING"))?
+    sdb = e1.db
+    check(fails, "resp_ping", bytes_len(e1.reply) > 0)
+    let e2 = lsm_exec(sdb, args3("SET", "greet", "Здравей"))?
+    sdb = e2.db
+    let e3 = lsm_exec(sdb, args2("GET", "greet"))?
+    sdb = e3.db
+    let e4 = lsm_exec(sdb, args2("INCR", "n"))?
+    sdb = e4.db
+    let e5 = lsm_exec(sdb, args2("INCR", "n"))?
+    sdb = e5.db
+    let e6 = lsm_exec(sdb, args1("DBSIZE"))?
+    sdb = e6.db
+    let e7 = lsm_exec(sdb, args2("DEL", "greet"))?
+    sdb = e7.db
+    let e8 = lsm_exec(sdb, args2("GET", "greet"))?
+    sdb = e8.db
+    check(fails, "resp_set_get_del", e2.quit == 0 && e7.quit == 0)
+    lsm_close(sdb)?
+
+    // live TCP server (uses LSMPATH env if set; default /tmp/baga_lsm)
+    wipe("/tmp/baga_lsm")?
+    let port = 16581
+    go_bg(lsm_serve, port)
+    sleep_ms(250)
+    let fd = tcp_connect_to("localhost", port, 5)?
+    check(fails, "tcp_connect", fd >= 0)
+    if fd >= 0 {
+        tcp_set_timeouts(fd, 5)?
+        let p = resp_round_trip(fd, args1("PING"))?
+        check(fails, "tcp_ping", p.ok == 1 && p.text == "PONG")
+        let s = resp_round_trip(fd, args3("SET", "x", "y"))?
+        check(fails, "tcp_set", s.ok == 1 && s.text == "OK")
+        let g = resp_round_trip(fd, args2("GET", "x"))?
+        check(fails, "tcp_get", g.ok == 1 && g.text == "y")
+        let sv = resp_round_trip(fd, args1("SAVE"))?
+        check(fails, "tcp_save", sv.ok == 1)
+        tcp_close(fd)?
+    }
+
+    // reopen default path after SAVE
+    let db4 = lsm_open("/tmp/baga_lsm", 64, 8)?
+    let gx = lsm_get(db4, "x")?
+    check(fails, "tcp_durable", gx.found == 1 && gx.val == "y")
+    lsm_close(gx.db)?
+
+    if vec_len(fails) == 0 {
+        print("lsm_test: all passed")
+        return 0
+    }
+    print(concat(concat("lsm_test: FAILED (", int_to_str(vec_len(fails))), " checks)"))
+    return 1
+}

@@ -41,6 +41,12 @@ Real packages (not toy snippets) — each is a probe of the language and a shipp
 | **ormbaga** | ActiveRecord-style ORM + goose migrations |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired |
 | **kvbaga** | RESP KV server (`Map` probe) |
+| **lsmbaga** | Durable LSM KV (WAL → memtable → SST + page cache) on RESP — Track S flagship |
+| **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam |
+| **metbaga** / **logbaga** / **cloudbaga** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
+| **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) |
+| **relbaga** / **flagbaga** | Retry/breaker/bulkhead + typed CLI flags (Track C6–C7) |
+| **txnbaga** | 2PC coordinator + MVCC store (Track S8) |
 | **wsbaga** / **chatbaga** | WebSocket + multi-room chat (`poll`) |
 | **oauthbaga** | OAuth proxy (integration exam) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) |

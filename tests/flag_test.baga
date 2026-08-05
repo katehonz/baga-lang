@@ -1,0 +1,71 @@
+// flag_test.baga — C7 flagbaga parsing.
+
+import "flagbaga/flag.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // --port 8080 --verbose=true file.txt  (bool via = so file stays positional)
+    let v = vec_new()
+    vec_push(v, "--port")
+    vec_push(v, "8080")
+    vec_push(v, "--verbose=true")
+    vec_push(v, "file.txt")
+    let f = flags_parse_vec(v)
+    check("ok", f.ok == 1)
+    check("port", flags_i64(f, "port", 0) == 8080)
+    check("verbose", flags_bool(f, "verbose") == 1)
+    check("has_v", flags_has(f, "verbose") == 1)
+    check("no_x", flags_has(f, "x") == 0)
+    check("pos0", flags_positional(f, 0) == "file.txt")
+    check("npos", flags_n_positional(f) == 1)
+    check("def", flags_str(f, "missing", "d") == "d")
+    check("def_i", flags_i64(f, "missing", 9) == 9)
+
+    // bare bool at end
+    let vb = vec_new()
+    vec_push(vb, "in.txt")
+    vec_push(vb, "--verbose")
+    let fb = flags_parse_vec(vb)
+    check("bool_bare", flags_bool(fb, "verbose") == 1 && flags_positional(fb, 0) == "in.txt")
+
+    // --name=baga
+    let v2 = vec_new()
+    vec_push(v2, "--name=бага")
+    vec_push(v2, "--count=3")
+    let f2 = flags_parse_vec(v2)
+    check("eq_name", flags_str(f2, "name", "") == "бага")
+    check("eq_count", flags_i64(f2, "count", 0) == 3)
+
+    // bool false
+    let v3 = vec_new()
+    vec_push(v3, "--debug=false")
+    let f3 = flags_parse_vec(v3)
+    check("bool_false", flags_bool(f3, "debug") == 0)
+
+    // two positionals
+    let v4 = vec_new()
+    vec_push(v4, "a")
+    vec_push(v4, "b")
+    let f4 = flags_parse_vec(v4)
+    check("pos_ab", flags_positional(f4, 0) == "a" && flags_positional(f4, 1) == "b")
+
+    // overwrite
+    let v5 = vec_new()
+    vec_push(v5, "--x")
+    vec_push(v5, "1")
+    vec_push(v5, "--x")
+    vec_push(v5, "2")
+    let f5 = flags_parse_vec(v5)
+    check("overwrite", flags_i64(f5, "x", 0) == 2)
+
+    print("flag_test: all passed")
+}

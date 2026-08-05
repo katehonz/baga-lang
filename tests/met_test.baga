@@ -1,0 +1,36 @@
+// met_test.baga — C2 metbaga Prometheus render.
+
+import "metbaga/met.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let m = met_new()
+    let c = met_counter(m, "http_requests_total", "HTTP requests")
+    let g = met_gauge(m, "workers", "Worker count")
+    met_inc(m, c)
+    met_inc(m, c)
+    met_set(m, g, 4)
+    check("counter", met_get(m, c) == 2)
+    check("gauge", met_get(m, g) == 4)
+    // idempotent re-register
+    let c2 = met_counter(m, "http_requests_total", "HTTP requests")
+    check("idempotent", c2 == c)
+    met_add(m, c, 3)
+    check("add", met_get(m, c) == 5)
+
+    let body = met_render(m)
+    check("has_help", str_find(body, "# HELP http_requests_total") >= 0)
+    check("has_type", str_find(body, "# TYPE http_requests_total counter") >= 0)
+    check("has_val", str_find(body, "http_requests_total 5") >= 0)
+    check("has_gauge", str_find(body, "workers 4") >= 0)
+    print("met_test: all passed")
+}

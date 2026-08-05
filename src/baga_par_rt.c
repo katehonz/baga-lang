@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <signal.h>
 #include <pthread.h>
 
 
@@ -172,6 +173,46 @@ int64_t baga_sleep_ms(int64_t ms) {
     struct timespec ts; ts.tv_sec = ms / 1000; ts.tv_nsec = (ms % 1000) * 1000000L;
     while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {}
     return 0;
+}
+
+/* C1 signals (also used by LLVM backend when linked with this RT) */
+static volatile sig_atomic_t baga_sig_seen = 0;
+static void baga_sig_handler(int s) { baga_sig_seen = s; }
+int64_t baga_signal_watch(int64_t sig) {
+    if (sig <= 0 || sig >= 64) return -1;
+    struct sigaction sa; memset(&sa, 0, sizeof sa);
+    sa.sa_handler = baga_sig_handler;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction((int)sig, &sa, NULL) != 0) return -1;
+    return 0;
+}
+int64_t baga_signal_check(void) { return (int64_t)baga_sig_seen; }
+int64_t baga_signal_clear(void) {
+    int64_t v = (int64_t)baga_sig_seen; baga_sig_seen = 0; return v;
+}
+int64_t baga_signal_wait(int64_t ms) {
+    if (baga_sig_seen) return (int64_t)baga_sig_seen;
+    if (ms == 0) return 0;
+    if (ms < 0) {
+        while (!baga_sig_seen) {
+            struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 50000000L;
+            nanosleep(&ts, NULL);
+        }
+        return (int64_t)baga_sig_seen;
+    }
+    int64_t left = ms;
+    while (left > 0) {
+        if (baga_sig_seen) return (int64_t)baga_sig_seen;
+        int64_t step = left > 50 ? 50 : left;
+        struct timespec ts; ts.tv_sec = step / 1000;
+        ts.tv_nsec = (step % 1000) * 1000000L;
+        nanosleep(&ts, NULL);
+        left -= step;
+    }
+    return baga_sig_seen ? (int64_t)baga_sig_seen : 0;
+}
+int64_t baga_signal_raise(int64_t sig) {
+    return raise((int)sig) == 0 ? 0 : -1;
 }
 int64_t baga_chan_select2(int64_t c0, int64_t c1) {
     baga_Chan *a = (baga_Chan *)(intptr_t)c0;

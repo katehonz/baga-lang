@@ -1,0 +1,297 @@
+// pb.baga — Protocol Buffers wire codec (C5). Hand-built messages only.
+// Wire types: 0 varint, 1 fixed64, 2 length-delimited, 5 fixed32.
+// Non-negative varints via pb_put_uvarint; signed via zigzag (sint64)
+// or pb_field_int64 (two's-complement 10-byte path).
+
+import "std/str/str.baga"
+
+fn PB_VARINT() -> i64 { return 0 }
+fn PB_FIXED64() -> i64 { return 1 }
+fn PB_LEN() -> i64 { return 2 }
+fn PB_FIXED32() -> i64 { return 5 }
+
+// ---------- encode ----------
+
+// Unsigned varint; v must be >= 0 (clamped otherwise).
+fn pb_put_uvarint(b: bytes, v: i64) -> bytes {
+    let mut x = v
+    if x < 0 {
+        x = 0
+    }
+    let mut out = b
+    let mut more: i64 = 1
+    while more == 1 {
+        if x < 128 {
+            out = bytes_push(out, x)
+            more = 0
+        } else {
+            out = bytes_push(out, (x & 127) | 128)
+            x = x >> 7
+        }
+    }
+    return out
+}
+
+// Logical >> for a 64-bit bit pattern stored in i64 (zero-fill).
+fn pb_shr_u64(v: i64, n: i64) -> i64 {
+    if n <= 0 {
+        return v
+    }
+    if n >= 64 {
+        return 0
+    }
+    if v >= 0 {
+        return v >> n
+    }
+    // arithmetic >> then clear the top n bits that became 1
+    let shifted = v >> n
+    let bits = 64 - n
+    if bits >= 63 {
+        // mask with all bits except sign: 0x7fffffffffffffff
+        return shifted & 9223372036854775807
+    }
+    let mut mask: i64 = 1
+    let mut i: i64 = 1
+    while i < bits {
+        mask = (mask << 1) | 1
+        i = i + 1
+    }
+    return shifted & mask
+}
+
+// int64 on the wire (two's complement varint, up to 10 bytes).
+fn pb_put_int64(b: bytes, v: i64) -> bytes {
+    if v >= 0 {
+        return pb_put_uvarint(b, v)
+    }
+    let mut out = b
+    let mut u = v
+    let mut i: i64 = 0
+    while i < 9 {
+        out = bytes_push(out, (u & 127) | 128)
+        u = pb_shr_u64(u, 7)
+        i = i + 1
+    }
+    out = bytes_push(out, u & 127)
+    return out
+}
+
+fn pb_zigzag64(v: i64) -> i64 {
+    return (v << 1) ^ (v >> 63)
+}
+
+fn pb_unzigzag64(v: i64) -> i64 {
+    return (v >> 1) ^ (-(v & 1))
+}
+
+fn pb_put_key(b: bytes, field: i64, wire: i64) -> bytes {
+    return pb_put_uvarint(b, (field << 3) | (wire & 7))
+}
+
+fn pb_put_fixed32(b: bytes, v: i64) -> bytes {
+    let mut out = b
+    out = bytes_push(out, v & 255)
+    out = bytes_push(out, (v >> 8) & 255)
+    out = bytes_push(out, (v >> 16) & 255)
+    out = bytes_push(out, (v >> 24) & 255)
+    return out
+}
+
+fn pb_put_fixed64(b: bytes, v: i64) -> bytes {
+    let mut out = b
+    let mut i: i64 = 0
+    while i < 8 {
+        out = bytes_push(out, (v >> (i * 8)) & 255)
+        i = i + 1
+    }
+    return out
+}
+
+fn pb_put_len(b: bytes, payload: bytes) -> bytes {
+    let mut out = pb_put_uvarint(b, bytes_len(payload))
+    return bytes_concat(out, payload)
+}
+
+fn pb_field_varint(b: bytes, field: i64, v: i64) -> bytes {
+    let mut out = pb_put_key(b, field, PB_VARINT())
+    return pb_put_int64(out, v)
+}
+
+fn pb_field_sint64(b: bytes, field: i64, v: i64) -> bytes {
+    let mut out = pb_put_key(b, field, PB_VARINT())
+    return pb_put_uvarint(out, pb_zigzag64(v))
+}
+
+fn pb_field_bytes(b: bytes, field: i64, payload: bytes) -> bytes {
+    let mut out = pb_put_key(b, field, PB_LEN())
+    return pb_put_len(out, payload)
+}
+
+fn pb_field_string(b: bytes, field: i64, s: str) -> bytes {
+    return pb_field_bytes(b, field, bytes_of_str(s))
+}
+
+fn pb_field_fixed32(b: bytes, field: i64, v: i64) -> bytes {
+    let mut out = pb_put_key(b, field, PB_FIXED32())
+    return pb_put_fixed32(out, v)
+}
+
+fn pb_field_fixed64(b: bytes, field: i64, v: i64) -> bytes {
+    let mut out = pb_put_key(b, field, PB_FIXED64())
+    return pb_put_fixed64(out, v)
+}
+
+// ---------- decode ----------
+
+struct PbReader {
+    data: bytes,
+    pos: i64,
+    ok: i64
+}
+
+fn pb_reader(data: bytes) -> PbReader {
+    return PbReader { data: data, pos: 0, ok: 1 }
+}
+
+struct PbVarint {
+    val: i64,
+    pos: i64,
+    ok: i64
+}
+
+fn pb_get_uvarint(data: bytes, pos: i64) -> PbVarint {
+    let mut x: i64 = 0
+    let mut shift: i64 = 0
+    let mut p = pos
+    let n = bytes_len(data)
+    while p < n && shift < 64 {
+        let b = bytes_at(data, p)
+        p = p + 1
+        x = x | ((b & 127) << shift)
+        if (b & 128) == 0 {
+            return PbVarint { val: x, pos: p, ok: 1 }
+        }
+        shift = shift + 7
+    }
+    return PbVarint { val: 0, pos: pos, ok: 0 }
+}
+
+struct PbTag {
+    field: i64,
+    wire: i64,
+    pos: i64,
+    ok: i64
+}
+
+fn pb_next(r: PbReader) -> PbTag {
+    if r.ok == 0 || r.pos >= bytes_len(r.data) {
+        return PbTag { field: 0, wire: 0, pos: r.pos, ok: 0 }
+    }
+    let v = pb_get_uvarint(r.data, r.pos)
+    if v.ok == 0 {
+        return PbTag { field: 0, wire: 0, pos: r.pos, ok: 0 }
+    }
+    return PbTag {
+        field: v.val >> 3,
+        wire: v.val & 7,
+        pos: v.pos,
+        ok: 1
+    }
+}
+
+fn pb_skip(r: PbReader, wire: i64) -> PbReader {
+    if wire == PB_VARINT() {
+        let v = pb_get_uvarint(r.data, r.pos)
+        if v.ok == 0 {
+            return PbReader { data: r.data, pos: r.pos, ok: 0 }
+        }
+        return PbReader { data: r.data, pos: v.pos, ok: 1 }
+    }
+    if wire == PB_FIXED64() {
+        if r.pos + 8 > bytes_len(r.data) {
+            return PbReader { data: r.data, pos: r.pos, ok: 0 }
+        }
+        return PbReader { data: r.data, pos: r.pos + 8, ok: 1 }
+    }
+    if wire == PB_FIXED32() {
+        if r.pos + 4 > bytes_len(r.data) {
+            return PbReader { data: r.data, pos: r.pos, ok: 0 }
+        }
+        return PbReader { data: r.data, pos: r.pos + 4, ok: 1 }
+    }
+    if wire == PB_LEN() {
+        let v = pb_get_uvarint(r.data, r.pos)
+        if v.ok == 0 {
+            return PbReader { data: r.data, pos: r.pos, ok: 0 }
+        }
+        let end = v.pos + v.val
+        if end > bytes_len(r.data) {
+            return PbReader { data: r.data, pos: r.pos, ok: 0 }
+        }
+        return PbReader { data: r.data, pos: end, ok: 1 }
+    }
+    return PbReader { data: r.data, pos: r.pos, ok: 0 }
+}
+
+struct PbBytes {
+    data: bytes,
+    pos: i64,
+    ok: i64
+}
+
+fn pb_take_bytes(r: PbReader) -> PbBytes {
+    let v = pb_get_uvarint(r.data, r.pos)
+    if v.ok == 0 {
+        return PbBytes { data: bytes_new(0), pos: r.pos, ok: 0 }
+    }
+    let start = v.pos
+    let end = start + v.val
+    if end > bytes_len(r.data) {
+        return PbBytes { data: bytes_new(0), pos: r.pos, ok: 0 }
+    }
+    return PbBytes {
+        data: bytes_slice(r.data, start, end),
+        pos: end,
+        ok: 1
+    }
+}
+
+struct PbStr {
+    s: str,
+    pos: i64,
+    ok: i64
+}
+
+fn pb_take_string(r: PbReader) -> PbStr {
+    let b = pb_take_bytes(r)
+    if b.ok == 0 {
+        return PbStr { s: "", pos: r.pos, ok: 0 }
+    }
+    return PbStr { s: str_of_bytes(b.data), pos: b.pos, ok: 1 }
+}
+
+fn pb_take_fixed32(r: PbReader) -> PbVarint {
+    if r.pos + 4 > bytes_len(r.data) {
+        return PbVarint { val: 0, pos: r.pos, ok: 0 }
+    }
+    let p = r.pos
+    let v = (bytes_at(r.data, p) & 255)
+        | ((bytes_at(r.data, p + 1) & 255) << 8)
+        | ((bytes_at(r.data, p + 2) & 255) << 16)
+        | ((bytes_at(r.data, p + 3) & 255) << 24)
+    return PbVarint { val: v, pos: p + 4, ok: 1 }
+}
+
+fn pb_take_fixed64(r: PbReader) -> PbVarint {
+    if r.pos + 8 > bytes_len(r.data) {
+        return PbVarint { val: 0, pos: r.pos, ok: 0 }
+    }
+    let p = r.pos
+    let mut v: i64 = 0
+    let mut i: i64 = 0
+    while i < 8 {
+        v = v | ((bytes_at(r.data, p + i) & 255) << (i * 8))
+        i = i + 1
+    }
+    return PbVarint { val: v, pos: p + 8, ok: 1 }
+}

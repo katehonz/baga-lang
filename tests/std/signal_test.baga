@@ -1,0 +1,41 @@
+// signal_test.baga — C1: signal_watch / check / clear / wait / raise.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Par {
+    check("watch_term", signal_watch(15) == 0)
+    check("watch_int", signal_watch(2) == 0)
+    signal_clear()
+    check("check_clear", signal_check() == 0)
+
+    // self-signal SIGTERM via raise
+    check("raise_term", signal_raise(15) == 0)
+    sleep_ms(20)
+    let s = signal_check()
+    check("check_term", s == 15)
+    let c = signal_clear()
+    check("clear_val", c == 15)
+    check("check_after_clear", signal_check() == 0)
+
+    // wait timeout with nothing pending
+    let w = signal_wait(30)
+    check("wait_timeout", w == 0)
+
+    // wait catches a signal
+    signal_raise(2)
+    let w2 = signal_wait(500)
+    check("wait_int", w2 == 2)
+    signal_clear()
+
+    print("signal_test: all passed")
+    return 0
+}

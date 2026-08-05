@@ -1,0 +1,172 @@
+// grpc.baga — gRPC length-prefixed message framing (C5).
+// Format: [1 byte compressed=0][4 byte BE length][protobuf payload]
+// Transport (H2 + trailers) is left to the host; this is the message layer.
+
+import "pb.baga"
+import "std/str/str.baga"
+
+struct GrpcMsg {
+    ok: i64,
+    compressed: i64,
+    payload: bytes
+}
+
+fn grpc_encode(msg: bytes) -> bytes {
+    let n = bytes_len(msg)
+    let mut f = bytes_new(0)
+    f = bytes_push(f, 0)   // not compressed
+    f = bytes_push(f, (n >> 24) & 255)
+    f = bytes_push(f, (n >> 16) & 255)
+    f = bytes_push(f, (n >> 8) & 255)
+    f = bytes_push(f, n & 255)
+    return bytes_concat(f, msg)
+}
+
+fn grpc_decode(frame: bytes) -> GrpcMsg {
+    let empty = bytes_new(0)
+    if bytes_len(frame) < 5 {
+        return GrpcMsg { ok: 0, compressed: 0, payload: empty }
+    }
+    let comp = bytes_at(frame, 0)
+    let n = ((bytes_at(frame, 1) & 255) << 24)
+        | ((bytes_at(frame, 2) & 255) << 16)
+        | ((bytes_at(frame, 3) & 255) << 8)
+        | (bytes_at(frame, 4) & 255)
+    if n < 0 || 5 + n > bytes_len(frame) {
+        return GrpcMsg { ok: 0, compressed: comp, payload: empty }
+    }
+    return GrpcMsg {
+        ok: 1,
+        compressed: comp,
+        payload: bytes_slice(frame, 5, 5 + n)
+    }
+}
+
+// Trailer helpers (HTTP/2 trailers or response headers in probes).
+fn grpc_status_ok() -> str {
+    return "0"
+}
+
+fn grpc_status_line(code: i64, msg: str) -> str {
+    // "grpc-status: N\r\ngrpc-message: …\r\n"
+    let mut s = concat(concat("grpc-status: ", int_to_str(code)), "\r\n")
+    if msg != "" {
+        s = concat(s, concat(concat("grpc-message: ", msg), "\r\n"))
+    }
+    return s
+}
+
+// Content-Type for unary gRPC.
+fn grpc_content_type() -> str {
+    return "application/grpc"
+}
+
+// ---------- example message: HelloRequest / HelloReply ----------
+// message HelloRequest { string name = 1; int64 n = 2; }
+// message HelloReply   { string message = 1; }
+
+fn hello_request_encode(name: str, n: i64) -> bytes {
+    let mut b = bytes_new(0)
+    b = pb_field_string(b, 1, name)
+    b = pb_field_varint(b, 2, n)
+    return b
+}
+
+struct HelloRequest {
+    ok: i64,
+    name: str,
+    n: i64
+}
+
+fn hello_request_decode(data: bytes) -> HelloRequest {
+    let mut name = ""
+    let mut n: i64 = 0
+    let mut r = pb_reader(data)
+    let mut more: i64 = 1
+    while more == 1 {
+        let t = pb_next(r)
+        if t.ok == 0 {
+            more = 0
+        } else {
+            r = PbReader { data: r.data, pos: t.pos, ok: 1 }
+            if t.field == 1 && t.wire == PB_LEN() {
+                let s = pb_take_string(r)
+                if s.ok == 0 {
+                    return HelloRequest { ok: 0, name: "", n: 0 }
+                }
+                name = s.s
+                r = PbReader { data: r.data, pos: s.pos, ok: 1 }
+            } else {
+                if t.field == 2 && t.wire == PB_VARINT() {
+                    let v = pb_get_uvarint(r.data, r.pos)
+                    if v.ok == 0 {
+                        return HelloRequest { ok: 0, name: "", n: 0 }
+                    }
+                    n = v.val
+                    r = PbReader { data: r.data, pos: v.pos, ok: 1 }
+                } else {
+                    r = pb_skip(r, t.wire)
+                    if r.ok == 0 {
+                        return HelloRequest { ok: 0, name: "", n: 0 }
+                    }
+                }
+            }
+        }
+    }
+    return HelloRequest { ok: 1, name: name, n: n }
+}
+
+fn hello_reply_encode(message: str) -> bytes {
+    let mut b = bytes_new(0)
+    b = pb_field_string(b, 1, message)
+    return b
+}
+
+struct HelloReply {
+    ok: i64,
+    message: str
+}
+
+fn hello_reply_decode(data: bytes) -> HelloReply {
+    let mut message = ""
+    let mut r = pb_reader(data)
+    let mut more: i64 = 1
+    while more == 1 {
+        let t = pb_next(r)
+        if t.ok == 0 {
+            more = 0
+        } else {
+            r = PbReader { data: r.data, pos: t.pos, ok: 1 }
+            if t.field == 1 && t.wire == PB_LEN() {
+                let s = pb_take_string(r)
+                if s.ok == 0 {
+                    return HelloReply { ok: 0, message: "" }
+                }
+                message = s.s
+                r = PbReader { data: r.data, pos: s.pos, ok: 1 }
+            } else {
+                r = pb_skip(r, t.wire)
+                if r.ok == 0 {
+                    return HelloReply { ok: 0, message: "" }
+                }
+            }
+        }
+    }
+    return HelloReply { ok: 1, message: message }
+}
+
+// Unary "RPC" pure: Hello(name,n) → "Здравей, {name}×{n}"
+fn hello_rpc(name: str, n: i64) -> str {
+    let req = hello_request_encode(name, n)
+    let frame = grpc_encode(req)
+    let g = grpc_decode(frame)
+    if g.ok == 0 {
+        return ""
+    }
+    let hr = hello_request_decode(g.payload)
+    if hr.ok == 0 {
+        return ""
+    }
+    let msg = concat(concat(concat("Здравей, ", hr.name), "×"), int_to_str(hr.n))
+    return msg
+}

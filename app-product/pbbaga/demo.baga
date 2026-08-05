@@ -1,0 +1,18 @@
+// demo.baga — protobuf + gRPC frame round-trip.
+
+import "grpc.baga"
+import "std/str/str.baga"
+
+fn main() {
+    let req = hello_request_encode("багатуре", 3)
+    print(concat("HelloRequest hex: ", hex_encode(req)))
+    let frame = grpc_encode(req)
+    print(concat("gRPC frame hex:  ", hex_encode(frame)))
+    let g = grpc_decode(frame)
+    let hr = hello_request_decode(g.payload)
+    print(concat(concat("decoded name=", hr.name), concat(" n=", int_to_str(hr.n))))
+    let reply = hello_rpc("багатуре", 3)
+    print(concat("rpc → ", reply))
+    let rb = hello_reply_encode(reply)
+    print(concat("HelloReply hex:  ", hex_encode(rb)))
+}

@@ -2,6 +2,107 @@
 
 ## [Unreleased]
 
+### MEM-3 arena seatbelt + gRPC unary glue + latency bench
+- **MEM-3 (lite):** checker tracks `arena_free` like `drop` on the handle —
+  double `arena_free`, `arena_alloc`/`reset` after free, and use of a freed
+  handle are compile errors (reuses drop_log join). Runtime null-guards on
+  alloc/reset. Full region tagging of arena payloads not claimed. Probes in
+  `scripts/run_tests.sh`.
+- **gRPC unary glue** (`pbbaga/grpc_unary.baga`): `grpc_hello_handle` +
+  `grpc_write_response` (headers as str, body via `tcp_write_bytes` —
+  frames start with 0x00 so they cannot live in `Response.body` str).
+  Live test: `tests/grpc_unary_test.baga`.
+- **Latency bench:** `bench/latency.baga` + `bench/run_latency.sh` —
+  batch min/avg/max/p50/p99 via `monotonic_ms`.
+
+### Storage — S8 txnbaga: 2PC coordinator + MVCC
+- New package `app-product/txnbaga`: in-process **two-phase commit**
+  (2 participants, channels) + **MVCC** i64 store (snapshot reads by
+  `read_ts`, versioned commits).
+- PREPARE locks + write-set; all-YES → COMMIT publishes versions; any NO /
+  timeout → ABORT. Return-updated `tpc_put_ex` / `tpc_txn_ex` (cluster is
+  by-value).
+- Pure rules under `--verify`: `tpc_decide`, `mvcc_visible`, `lock_conflict`,
+  `next_ts` (`examples/verify/tpc_decide.baga`).
+- Tests: `tests/txn_test.baga` (MVCC snaps + 2PC multi-version + two-key).
+  Spec/notes: `docs/superpowers/specs/2026-08-05-txnbaga-design.md`.
+- Closes Track S sequencing step S8 (distributed transactions probe).
+
+### Cloud — C6 relbaga + C7 flagbaga
+- **relbaga** (C6): exponential backoff (`rel_backoff_ms`), `rel_retry` over
+  `fn(i64)->i64`, circuit breaker (`brk_*` closed/open/half-open), bulkhead
+  via channel tokens (`bh_new`/`acquire`/`try`/`release`). Tests:
+  `tests/rel_test.baga`.
+- **flagbaga** (C7): `--name value` / `--name=value` / bare bool flags,
+  positionals; `flags_str`/`i64`/`bool`/`has`; `flags_parse` (process) +
+  `flags_parse_vec` (tests). Tests: `tests/flag_test.baga`.
+
+### Cloud — C5 pbbaga: protobuf wire + gRPC framing
+- New package `app-product/pbbaga`: Protocol Buffers wire codec (varint,
+  fixed32/64, length-delimited strings/bytes), zigzag `sint64`, skip
+  unknown fields, hand-built field helpers (no protoc).
+- gRPC length-prefixed messages: `[0][BE32 len][payload]` via
+  `grpc_encode` / `grpc_decode`; example `HelloRequest`/`HelloReply` +
+  pure `hello_rpc`. Full H2 transport remains host glue on httpdbaga.
+- Tests: `tests/pb_test.baga` (varint 300 golden, cyrillic, skip,
+  fixed, zigzag, neg int64, frame, protoc string golden `testing`).
+- Spec: `docs/superpowers/specs/2026-08-05-pbbaga-design.md`.
+
+### Cloud — C1–C4: signals, metrics, logs, cloudbaga demo
+- **C1 signals** (builtins): `signal_watch` / `signal_check` / `signal_clear`
+  / `signal_wait` / `signal_raise` — process-global slot for graceful
+  shutdown (SIGTERM/SIGINT). C backend + `libbaga_par.so` (LLVM). Tests:
+  `tests/std/signal_test.baga`.
+- **C2 metbaga**: Prometheus text exposition — counters, gauges,
+  `met_render` for `GET /metrics`.
+- **C3 logbaga**: JSON lines on stderr (`ts`, `level`, `msg`, optional
+  `req_id`) via `std/json` escape.
+- **C4 cloudbaga**: 12-factor demo service — `/healthz`, `/readyz`,
+  `/metrics`, `/`; poll accept loop observes signals and flips readiness.
+- Docs: language §19 builtins; cloud direction plan C1–C4 marked shipped.
+
+### Consensus — raftbaga (S7): leader election + log replication
+- New package `app-product/raftbaga`: **3-node in-process Raft** over CSP
+  (`go` / channels / `chan_recv_timeout`). No shared mutable state between
+  nodes; messages are nested `cell2` trees (M17 packing).
+- Election (staggered timeouts), heartbeats, single-entry AppendEntries,
+  majority commit, apply to per-node `Map<i64,i64>`.
+- Client: `raft_start` / `raft_put` / `raft_get` / `raft_stop` — tries nodes
+  one-by-one so only the leader appends.
+- Pure decision rules in `rules.baga` with specs; `--verify` on
+  `examples/verify/raft_term.baga` proves term adoption, log up-to-date,
+  majority (and reports honest UNKNOWN on thinner fragments). **Full Raft
+  safety is not claimed.**
+- Tests: `tests/raft_test.baga` (rules + live cluster put/get/multi).
+  Demo: `app-product/raftbaga/demo.baga`.
+- Spec/plan: `docs/superpowers/specs/2026-08-05-raftbaga-design.md`,
+  `docs/superpowers/plans/2026-08-05-raftbaga.md`.
+
+### Storage — lsmbaga MVP (S5+S6): page cache + WAL → memtable → SSTable
+- New package `app-product/lsmbaga`: durable LSM-style KV on **RESP2**
+  (reuses `kvbaga/resp.baga` so redis-cli works for the supported set).
+- **S5 page cache** (`page.baga`): fixed 4 KiB pages, clock eviction,
+  dirty writeback, invalidate-on-unlink; composite key
+  `file_id * 1e9 + page_no`.
+- **S6 engine** (`engine.baga` / `wal.baga` / `sstable.baga`):
+  crc32c WAL records → memtable; flush to sorted `BAGASST1` SSTables +
+  MANIFEST; compaction-lite when `gens >= compact_at`; recovery =
+  MANIFEST + SST gens + WAL replay. Path **prefix** layout
+  (`<dir>.wal`, `<dir>.sst.<gen>`, `<dir>.manifest`).
+- RESP: `PING SET GET DEL EXISTS INCR KEYS DBSIZE SAVE QUIT`; honest
+  ERR for TTL/EXPIRE/SET EX. Env: `LSMPATH`, `LSM_FLUSH_AT`,
+  `LSM_COMPACT_AT`.
+- **std/os** helpers for the engine: `mkdir`/`unlink`/`link`,
+  `fs_rename` (link+unlink — raw `rename` collides with `stdio.h`),
+  binary-safe `fd_write_bytes` / `fd_pwrite_bytes` / `fd_pread_bytes`
+  (tcp idiom: explicit length, embedded NUL ok).
+- Tests: `tests/std/os_fs_test.baga` (incl. mid-buffer `0x00`),
+  `tests/lsm_test.baga` (flush, tombstone, reopen recovery, compact,
+  RESP in-process + TCP loopback durability). Demo:
+  `app-product/lsmbaga/demo.baga`.
+- Spec/plan: `docs/superpowers/specs/2026-08-05-lsmbaga-design.md`,
+  `docs/superpowers/plans/2026-08-05-lsmbaga.md`.
+
 ### Language — drop + checker-enforced memory discipline (MEM-1/2)
 - `drop(x)` frees a let-bound local's heap blocks **now**: deep free for
   `Vec` (element boxes for bytes/struct elems, data buffer, struct), `Map`
