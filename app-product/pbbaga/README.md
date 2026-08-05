@@ -51,6 +51,19 @@ let r = grpc_stream_next(down, 0)
 HTTP helper: `grpc_hello_stream_response(body)`.  
 Tests: `grpc_unary_test`, `grpc_bidi_test`, `pb_test` (stream_*).
 
+## Status / metadata (Go-shaped)
+
+Unary glue uses **statusbaga** codes (`GRPC_OK`, `GRPC_INVALID_ARGUMENT`, …)
+and trailers (`grpc-status` / `grpc-message`). Attach outbound MD with
+`grpc_response_with_md` (**mdtbaga**). Deadlines via **ctxbaga** +
+`grpc-timeout` header (`ctx_from_grpc_timeout`).
+
+```baga
+let st = status_error(GRPC_NOT_FOUND(), "no user")
+let u = grpc_unary_with_status(bytes_new(0), st)
+let r = grpc_to_response(u)
+```
+
 ## Honest limits
 
 - No proto codegen, packed repeated, or maps.
@@ -59,6 +72,7 @@ Tests: `grpc_unary_test`, `grpc_bidi_test`, `pb_test` (stream_*).
 - H2 trailers-native gRPC still approximate (status in headers).
 - `pb_put_uvarint` is for non-negative values; use `pb_field_varint` /
   `pb_field_sint64` for signed.
+- No `google.rpc.Status` details/`Any` blob yet.
 
 ## Run
 

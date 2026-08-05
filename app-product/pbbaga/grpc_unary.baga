@@ -1,9 +1,12 @@
 // grpc_unary.baga — unary gRPC Hello (C5 glue).
 // Builds httpdbaga Response with body_bytes + trailers (grpc-status) for H2,
 // and can still write H1 via grpc_write_response (binary body).
+// Status codes via statusbaga (Go codes/status).
 
 import "grpc.baga"
 import "httpdbaga/http.baga"
+import "statusbaga/status.baga"
+import "mdtbaga/mdt.baga"
 import "std/str/str.baga"
 import "std/net/tcp.baga"
 
@@ -11,6 +14,7 @@ struct GrpcUnary {
     ok: i64,
     status: i64,
     grpc_status: i64,
+    message: str,
     frame: bytes
 }
 
@@ -18,16 +22,49 @@ fn grpc_hello_handle(body: bytes) -> GrpcUnary {
     let empty = bytes_new(0)
     let g = grpc_decode(body)
     if g.ok == 0 {
-        return GrpcUnary { ok: 0, status: 400, grpc_status: 3, frame: empty }
+        return GrpcUnary {
+            ok: 0,
+            status: status_http(GRPC_INVALID_ARGUMENT()),
+            grpc_status: GRPC_INVALID_ARGUMENT(),
+            message: "bad frame",
+            frame: empty
+        }
     }
     let hr = hello_request_decode(g.payload)
     if hr.ok == 0 {
-        return GrpcUnary { ok: 0, status: 400, grpc_status: 3, frame: empty }
+        return GrpcUnary {
+            ok: 0,
+            status: status_http(GRPC_INVALID_ARGUMENT()),
+            grpc_status: GRPC_INVALID_ARGUMENT(),
+            message: "bad HelloRequest",
+            frame: empty
+        }
     }
     let msg = concat(concat(concat("Здравей, ", hr.name), "×"), int_to_str(hr.n))
     let rep = hello_reply_encode(msg)
     let frame = grpc_encode(rep)
-    return GrpcUnary { ok: 1, status: 200, grpc_status: 0, frame: frame }
+    return GrpcUnary {
+        ok: 1,
+        status: status_http(GRPC_OK()),
+        grpc_status: GRPC_OK(),
+        message: "",
+        frame: frame
+    }
+}
+
+// Apply Status to a unary result (HTTP status + trailers).
+fn grpc_unary_with_status(frame: bytes, st: Status) -> GrpcUnary {
+    let mut ok: i64 = 0
+    if status_is_ok(st) == 1 {
+        ok = 1
+    }
+    return GrpcUnary {
+        ok: ok,
+        status: status_http(st.code),
+        grpc_status: st.code,
+        message: st.message,
+        frame: frame
+    }
 }
 
 // Response with binary frame + H2 trailers (grpc-status / grpc-message).
@@ -35,10 +72,26 @@ fn grpc_to_response(u: GrpcUnary) -> Response {
     let mut r = http_response_bytes(u.status, u.frame)
     r = http_set_header(r, "Content-Type", grpc_content_type())
     r = http_set_trailer(r, "grpc-status", int_to_str(u.grpc_status))
-    if u.ok == 0 {
-        r = http_set_trailer(r, "grpc-message", "error")
+    if u.message != "" {
+        r = http_set_trailer(r, "grpc-message", status_grpc_message_encode(u.message))
+    } else {
+        if u.ok == 0 {
+            r = http_set_trailer(r, "grpc-message", status_code_name(u.grpc_status))
+        }
     }
     return r
+}
+
+// Attach outgoing metadata as response headers (non-reserved keys).
+fn grpc_response_with_md(r: Response, md: Metadata) -> Response {
+    let mut out = r
+    for i in 0..mdt_len(md) {
+        let k = mdt_key_at(md, i)
+        if mdt_is_reserved(k) == 0 {
+            out = http_set_header(out, k, mdt_val_at(md, i))
+        }
+    }
+    return out
 }
 
 fn grpc_hello_response(body: bytes) -> Response {
@@ -53,17 +106,17 @@ fn grpc_hello_stream_response(body: bytes) -> Response {
         let hr = hello_request_decode(g.payload)
         if hr.ok == 1 && hr.n > 1 {
             let stream = hello_stream_replies(hr.name, hr.n)
-            let mut r = http_response_bytes(200, stream)
+            let mut r = http_response_bytes(status_http(GRPC_OK()), stream)
             r = http_set_header(r, "Content-Type", grpc_content_type())
-            r = http_set_trailer(r, "grpc-status", "0")
+            r = http_set_trailer(r, "grpc-status", status_trailer_code(status_ok()))
             return r
         }
     }
     // bidi: one reply per request frame
     let stream = hello_bidi(body)
-    let mut r = http_response_bytes(200, stream)
+    let mut r = http_response_bytes(status_http(GRPC_OK()), stream)
     r = http_set_header(r, "Content-Type", grpc_content_type())
-    r = http_set_trailer(r, "grpc-status", "0")
+    r = http_set_trailer(r, "grpc-status", status_trailer_code(status_ok()))
     return r
 }
 
@@ -93,6 +146,9 @@ fn grpc_write_response(fd: i64, u: GrpcUnary) -> i64 !Net !IO {
     }
     hdr = concat(hdr, "Content-Type: application/grpc\r\n")
     hdr = concat(hdr, concat(concat("grpc-status: ", int_to_str(u.grpc_status)), "\r\n"))
+    if u.message != "" {
+        hdr = concat(hdr, concat(concat("grpc-message: ", status_grpc_message_encode(u.message)), "\r\n"))
+    }
     hdr = concat(hdr, concat(concat("Content-Length: ", int_to_str(bytes_len(u.frame))), "\r\n"))
     hdr = concat(hdr, "Connection: close\r\n\r\n")
     if tcp_write(fd, hdr)? != 0 {

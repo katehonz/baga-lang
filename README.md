@@ -49,6 +49,7 @@ Real packages (not toy snippets) — each is a probe of the language and a shipp
 | **txnbaga** | 2PC coordinator + MVCC store (Track S8) |
 | **otelbaga** | W3C traceparent lite (Track C8 subset) |
 | **pathbaga** / **globbaga** / **uuidbaga** / **bufbaga** / **querybaga** | Universal path, glob, UUID v4, string builder, URL query |
+| **statusbaga** / **mdtbaga** / **ctxbaga** | gRPC codes/Status, metadata MD, context deadline/cancel (Go-shaped) |
 | **wsbaga** / **chatbaga** | WebSocket + multi-room chat (`poll`) |
 | **oauthbaga** | OAuth proxy (integration exam) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) |

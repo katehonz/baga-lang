@@ -1,0 +1,61 @@
+// mdt_test.baga — mdtbaga gRPC metadata.
+
+import "mdtbaga/mdt.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let mut md = mdt_new()
+    check("empty", mdt_len(md) == 0)
+    check("no", mdt_has(md, "x") == 0)
+
+    md = mdt_append(md, "X-Request-Id", "a")
+    md = mdt_append(md, "x-request-id", "b")
+    check("lower", mdt_key_at(md, 0) == "x-request-id")
+    check("first", mdt_get(md, "X-Request-Id") == "a")
+    let all = mdt_get_all(md, "x-request-id")
+    check("all_n", vec_len(all) == 2)
+    check("all0", vec_get(all, 0) == "a" && vec_get(all, 1) == "b")
+    check("has", mdt_has(md, "x-request-id") == 1)
+
+    md = mdt_set(md, "x-request-id", "only")
+    check("set_n", mdt_len(md) == 1)
+    check("set_v", mdt_get(md, "x-request-id") == "only")
+
+    md = mdt_append(md, "authorization", "Bearer t")
+    md = mdt_delete(md, "authorization")
+    check("del", mdt_has(md, "authorization") == 0)
+    check("del_keep", mdt_get(md, "x-request-id") == "only")
+
+    let a = mdt_new()
+    let b = mdt_new()
+    let a2 = mdt_append(a, "k", "1")
+    let b2 = mdt_append(b, "k", "2")
+    let j = mdt_join(a2, b2)
+    check("join", vec_len(mdt_get_all(j, "k")) == 2)
+
+    let ks = vec_new()
+    let vs = vec_new()
+    vec_push(ks, "Content-Type")
+    vec_push(vs, "application/grpc")
+    vec_push(ks, "x-trace")
+    vec_push(vs, "1")
+    vec_push(ks, "grpc-timeout")
+    vec_push(vs, "5S")
+    let filtered = mdt_from_http_pairs(ks, vs)
+    check("filter_n", mdt_len(filtered) == 1)
+    check("filter_v", mdt_get(filtered, "x-trace") == "1")
+    check("reserved_ct", mdt_is_reserved("Content-Type") == 1)
+    check("reserved_pseudo", mdt_is_reserved(":path") == 1)
+    check("not_res", mdt_is_reserved("x-trace") == 0)
+
+    print("mdt_test: all passed")
+}

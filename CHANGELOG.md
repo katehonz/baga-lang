@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### gRPC-shaped universal packages (status / metadata / context)
+- **statusbaga**: gRPC codes 0–16 (`GRPC_OK`…`GRPC_UNAUTHENTICATED`),
+  `Status`, HTTP mapping, trailer helpers, `grpc-timeout` encode/decode.
+- **mdtbaga**: metadata multimap (lowercase keys, multi-value, reserved
+  header filter) — Go `metadata.MD`.
+- **ctxbaga**: deadline / cancel / values + `ctx_from_grpc_timeout`
+  (depends on statusbaga).
+- **pbbaga**: unary glue uses status codes/messages; `grpc_unary_with_status`,
+  `grpc_response_with_md`.
+- Tests: `status_test`, `mdt_test`, `ctx_test` + existing grpc unary/bidi.
+
 ### Universal foundation packages + file_exists
 - **pathbaga**: POSIX-ish path helpers — `path_join`, `path_basename` /
   `dirname`, `path_ext` / `path_stem`, `path_is_abs` (pure).

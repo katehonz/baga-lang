@@ -1,0 +1,172 @@
+// mdt.baga — gRPC metadata (Go: google.golang.org/grpc/metadata).
+// Multimap of ASCII keys → values. Keys folded to lowercase (HTTP/2 + gRPC).
+// Pure. Binary "-bin" values stay as opaque str (base64 at the wire edge).
+
+import "std/str/str.baga"
+
+struct Metadata {
+    keys: Vec<str>,
+    vals: Vec<str>
+}
+
+fn mdt_new() -> Metadata {
+    return Metadata { keys: vec_new(), vals: vec_new() }
+}
+
+// ASCII lowercase (gRPC requires lowercase header names).
+fn mdt_lower(s: str) -> str {
+    let mut out = ""
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        if c >= 65 && c <= 90 {
+            out = concat(out, chr(c + 32))
+        } else {
+            out = concat(out, substr(s, i, i + 1))
+        }
+    }
+    return out
+}
+
+// Append a value (multi-value keys allowed, like Go MD.Append).
+fn mdt_append(md: Metadata, k: str, v: str) -> Metadata {
+    vec_push(md.keys, mdt_lower(k))
+    vec_push(md.vals, v)
+    return md
+}
+
+// Set replaces all existing values for k with a single v.
+fn mdt_set(md: Metadata, k: str, v: str) -> Metadata {
+    let key = mdt_lower(k)
+    let out = mdt_new()
+    for i in 0..vec_len(md.keys) {
+        if vec_get(md.keys, i) != key {
+            vec_push(out.keys, vec_get(md.keys, i))
+            vec_push(out.vals, vec_get(md.vals, i))
+        }
+    }
+    vec_push(out.keys, key)
+    vec_push(out.vals, v)
+    return out
+}
+
+// First value for k, or "".
+fn mdt_get(md: Metadata, k: str) -> str {
+    let key = mdt_lower(k)
+    for i in 0..vec_len(md.keys) {
+        if vec_get(md.keys, i) == key {
+            return vec_get(md.vals, i)
+        }
+    }
+    return ""
+}
+
+// All values for k (order preserved).
+fn mdt_get_all(md: Metadata, k: str) -> Vec<str> {
+    let key = mdt_lower(k)
+    let out = vec_new()
+    for i in 0..vec_len(md.keys) {
+        if vec_get(md.keys, i) == key {
+            vec_push(out, vec_get(md.vals, i))
+        }
+    }
+    return out
+}
+
+fn mdt_has(md: Metadata, k: str) -> i64 {
+    let key = mdt_lower(k)
+    for i in 0..vec_len(md.keys) {
+        if vec_get(md.keys, i) == key {
+            return 1
+        }
+    }
+    return 0
+}
+
+fn mdt_len(md: Metadata) -> i64 {
+    return vec_len(md.keys)
+}
+
+// Delete every entry with key k.
+fn mdt_delete(md: Metadata, k: str) -> Metadata {
+    let key = mdt_lower(k)
+    let out = mdt_new()
+    for i in 0..vec_len(md.keys) {
+        if vec_get(md.keys, i) != key {
+            vec_push(out.keys, vec_get(md.keys, i))
+            vec_push(out.vals, vec_get(md.vals, i))
+        }
+    }
+    return out
+}
+
+// Join two maps (right appended after left; multi-values accumulate).
+fn mdt_join(a: Metadata, b: Metadata) -> Metadata {
+    let mut out = mdt_new()
+    for i in 0..vec_len(a.keys) {
+        out = mdt_append(out, vec_get(a.keys, i), vec_get(a.vals, i))
+    }
+    for i in 0..vec_len(b.keys) {
+        out = mdt_append(out, vec_get(b.keys, i), vec_get(b.vals, i))
+    }
+    return out
+}
+
+// Build from parallel header key/value vectors (HTTP request headers).
+fn mdt_from_pairs(ks: Vec<str>, vs: Vec<str>) -> Metadata {
+    let mut md = mdt_new()
+    let mut lim = vec_len(ks)
+    if vec_len(vs) < lim {
+        lim = vec_len(vs)
+    }
+    for i in 0..lim {
+        md = mdt_append(md, vec_get(ks, i), vec_get(vs, i))
+    }
+    return md
+}
+
+// Pairs for wire emission (already lowercased keys).
+fn mdt_key_at(md: Metadata, i: i64) -> str {
+    if i < 0 || i >= vec_len(md.keys) {
+        return ""
+    }
+    return vec_get(md.keys, i)
+}
+
+fn mdt_val_at(md: Metadata, i: i64) -> str {
+    if i < 0 || i >= vec_len(md.vals) {
+        return ""
+    }
+    return vec_get(md.vals, i)
+}
+
+// gRPC reserved / pseudo headers that should not be copied as app MD.
+fn mdt_is_reserved(k: str) -> i64 {
+    let key = mdt_lower(k)
+    if key == "content-type" { return 1 }
+    if key == "content-length" { return 1 }
+    if key == "te" { return 1 }
+    if key == "grpc-timeout" { return 1 }
+    if key == "grpc-status" { return 1 }
+    if key == "grpc-message" { return 1 }
+    if key == "grpc-encoding" { return 1 }
+    if key == "grpc-accept-encoding" { return 1 }
+    if key == "grpc-status-details-bin" { return 1 }
+    if str_starts_with(key, ":") { return 1 }
+    return 0
+}
+
+// Copy only non-reserved pairs (incoming request → app metadata).
+fn mdt_from_http_pairs(ks: Vec<str>, vs: Vec<str>) -> Metadata {
+    let mut md = mdt_new()
+    let mut lim = vec_len(ks)
+    if vec_len(vs) < lim {
+        lim = vec_len(vs)
+    }
+    for i in 0..lim {
+        let k = vec_get(ks, i)
+        if mdt_is_reserved(k) == 0 {
+            md = mdt_append(md, k, vec_get(vs, i))
+        }
+    }
+    return md
+}

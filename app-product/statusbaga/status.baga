@@ -1,0 +1,213 @@
+// status.baga — gRPC status codes + Status (Go: codes + status packages).
+// Pure. Wire-facing helpers for trailers and grpc-timeout header (gRPC over HTTP/2).
+
+import "std/str/str.baga"
+
+// ---------- codes (google.rpc.Code / grpc/codes) ----------
+
+fn GRPC_OK() -> i64 { return 0 }
+fn GRPC_CANCELED() -> i64 { return 1 }
+fn GRPC_UNKNOWN() -> i64 { return 2 }
+fn GRPC_INVALID_ARGUMENT() -> i64 { return 3 }
+fn GRPC_DEADLINE_EXCEEDED() -> i64 { return 4 }
+fn GRPC_NOT_FOUND() -> i64 { return 5 }
+fn GRPC_ALREADY_EXISTS() -> i64 { return 6 }
+fn GRPC_PERMISSION_DENIED() -> i64 { return 7 }
+fn GRPC_RESOURCE_EXHAUSTED() -> i64 { return 8 }
+fn GRPC_FAILED_PRECONDITION() -> i64 { return 9 }
+fn GRPC_ABORTED() -> i64 { return 10 }
+fn GRPC_OUT_OF_RANGE() -> i64 { return 11 }
+fn GRPC_UNIMPLEMENTED() -> i64 { return 12 }
+fn GRPC_INTERNAL() -> i64 { return 13 }
+fn GRPC_UNAVAILABLE() -> i64 { return 14 }
+fn GRPC_DATA_LOSS() -> i64 { return 15 }
+fn GRPC_UNAUTHENTICATED() -> i64 { return 16 }
+
+// Canonical name (uppercase, Go Code.String()).
+fn status_code_name(code: i64) -> str {
+    if code == 0 { return "OK" }
+    if code == 1 { return "Canceled" }
+    if code == 2 { return "Unknown" }
+    if code == 3 { return "InvalidArgument" }
+    if code == 4 { return "DeadlineExceeded" }
+    if code == 5 { return "NotFound" }
+    if code == 6 { return "AlreadyExists" }
+    if code == 7 { return "PermissionDenied" }
+    if code == 8 { return "ResourceExhausted" }
+    if code == 9 { return "FailedPrecondition" }
+    if code == 10 { return "Aborted" }
+    if code == 11 { return "OutOfRange" }
+    if code == 12 { return "Unimplemented" }
+    if code == 13 { return "Internal" }
+    if code == 14 { return "Unavailable" }
+    if code == 15 { return "DataLoss" }
+    if code == 16 { return "Unauthenticated" }
+    return "Code"
+}
+
+// HTTP status used by grpc-gateway / common reverse proxies.
+fn status_http(code: i64) -> i64 {
+    if code == 0 { return 200 }
+    if code == 1 { return 499 }   // client closed (nginx)
+    if code == 3 { return 400 }
+    if code == 4 { return 504 }
+    if code == 5 { return 404 }
+    if code == 6 { return 409 }
+    if code == 7 { return 403 }
+    if code == 8 { return 429 }
+    if code == 9 { return 400 }
+    if code == 10 { return 409 }
+    if code == 11 { return 400 }
+    if code == 12 { return 501 }
+    if code == 13 { return 500 }
+    if code == 14 { return 503 }
+    if code == 15 { return 500 }
+    if code == 16 { return 401 }
+    return 500
+}
+
+fn status_code_ok(code: i64) -> i64 {
+    if code >= 0 && code <= 16 {
+        return 1
+    }
+    return 0
+}
+
+// ---------- Status value ----------
+
+struct Status {
+    code: i64,
+    message: str
+}
+
+fn status_ok() -> Status {
+    return Status { code: 0, message: "" }
+}
+
+fn status_error(code: i64, message: str) -> Status {
+    return Status { code: code, message: message }
+}
+
+fn status_is_ok(s: Status) -> i64 {
+    if s.code == 0 {
+        return 1
+    }
+    return 0
+}
+
+fn status_code(s: Status) -> i64 {
+    return s.code
+}
+
+fn status_message(s: Status) -> str {
+    return s.message
+}
+
+// "rpc error: code = InvalidArgument desc = bad name" (Go status.Error style text).
+fn status_string(s: Status) -> str {
+    let mut out = "rpc error: code = "
+    out = concat(out, status_code_name(s.code))
+    if s.message != "" {
+        out = concat(out, concat(" desc = ", s.message))
+    }
+    return out
+}
+
+// ---------- wire: grpc-status / grpc-message trailers ----------
+
+// Percent-encode non-printable / non-ASCII for grpc-message (lite: space and
+// printable ASCII pass; others become %XX). Enough for probes.
+fn status_grpc_message_encode(msg: str) -> str {
+    let mut out = ""
+    for i in 0..len(msg) {
+        let c = char_at(msg, i)
+        if c == 32 || (c >= 33 && c <= 126 && c != 37) {
+            out = concat(out, substr(msg, i, i + 1))
+        } else {
+            let hi = (c >> 4) & 15
+            let lo = c & 15
+            let mut hex = "%"
+            if hi < 10 {
+                hex = concat(hex, chr(48 + hi))
+            } else {
+                hex = concat(hex, chr(65 + hi - 10))
+            }
+            if lo < 10 {
+                hex = concat(hex, chr(48 + lo))
+            } else {
+                hex = concat(hex, chr(65 + lo - 10))
+            }
+            out = concat(out, hex)
+        }
+    }
+    return out
+}
+
+// "0" / "3" for the grpc-status trailer value.
+fn status_trailer_code(s: Status) -> str {
+    return int_to_str(s.code)
+}
+
+fn status_trailer_message(s: Status) -> str {
+    return status_grpc_message_encode(s.message)
+}
+
+// ---------- grpc-timeout header (gRPC over HTTP/2) ----------
+// Encoding: decimal + unit  H|M|S|m|u|n  (hours…nanoseconds).
+// We work in milliseconds; sub-ms rounds up to 1u when non-zero remainder.
+
+fn grpc_timeout_encode_ms(ms: i64) -> str {
+    if ms <= 0 {
+        return "0n"
+    }
+    // Prefer largest unit that divides cleanly (gRPC servers accept any unit).
+    if ms % 3600000 == 0 {
+        return concat(int_to_str(ms / 3600000), "H")
+    }
+    if ms % 60000 == 0 {
+        return concat(int_to_str(ms / 60000), "M")
+    }
+    if ms % 1000 == 0 {
+        return concat(int_to_str(ms / 1000), "S")
+    }
+    return concat(int_to_str(ms), "m")
+}
+
+// Parse "100m" / "5S" / "1H" → milliseconds. -1 on error.
+fn grpc_timeout_decode_ms(s: str) -> i64 {
+    if len(s) < 2 {
+        return 0 - 1
+    }
+    let unit = char_at(s, len(s) - 1)
+    let num_s = substr(s, 0, len(s) - 1)
+    // only digits
+    if len(num_s) == 0 {
+        return 0 - 1
+    }
+    for i in 0..len(num_s) {
+        let c = char_at(num_s, i)
+        if c < 48 || c > 57 {
+            return 0 - 1
+        }
+    }
+    let n = parse_int(num_s)
+    if unit == 72 {   // H
+        return n * 3600000
+    }
+    if unit == 77 {   // M
+        return n * 60000
+    }
+    if unit == 83 {   // S
+        return n * 1000
+    }
+    if unit == 109 {  // m
+        return n
+    }
+    if unit == 117 {  // u (microseconds)
+        return n / 1000
+    }
+    if unit == 110 {  // n (nanoseconds)
+        return n / 1000000
+    }
+    return 0 - 1
+}

@@ -1,0 +1,174 @@
+// ctx.baga — request context lite (Go: context.Context).
+// deadline + cancel + string values. No tree of cancel children yet.
+// Pairs with statusbaga for err codes (Canceled / DeadlineExceeded).
+
+import "statusbaga/status.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+// deadline_ms: absolute monotonic deadline; -1 = none.
+// canceled: 1 after ctx_cancel.
+struct Ctx {
+    deadline_ms: i64,
+    canceled: i64,
+    keys: Vec<str>,
+    vals: Vec<str>
+}
+
+fn ctx_background() -> Ctx {
+    return Ctx {
+        deadline_ms: 0 - 1,
+        canceled: 0,
+        keys: vec_new(),
+        vals: vec_new()
+    }
+}
+
+fn ctx_todo() -> Ctx {
+    return ctx_background()
+}
+
+// Child that copies parent values; optional new deadline (absolute mono ms).
+fn ctx_with_deadline(parent: Ctx, deadline_ms: i64) -> Ctx {
+    // Earlier deadline wins when parent already has one.
+    let mut d = deadline_ms
+    if parent.deadline_ms >= 0 {
+        if d < 0 || parent.deadline_ms < d {
+            d = parent.deadline_ms
+        }
+    }
+    return Ctx {
+        deadline_ms: d,
+        canceled: parent.canceled,
+        keys: parent.keys,
+        vals: parent.vals
+    }
+}
+
+// Timeout from now (monotonic).
+fn ctx_with_timeout(parent: Ctx, timeout_ms: i64) -> Ctx !Time {
+    let now = monotonic_ms()?
+    let mut t = timeout_ms
+    if t < 0 {
+        t = 0
+    }
+    return ctx_with_deadline(parent, now + t)
+}
+
+// Detached cancel flag (manual). Child starts not-canceled unless parent is.
+fn ctx_with_cancel(parent: Ctx) -> Ctx {
+    return Ctx {
+        deadline_ms: parent.deadline_ms,
+        canceled: parent.canceled,
+        keys: parent.keys,
+        vals: parent.vals
+    }
+}
+
+fn ctx_cancel(c: Ctx) -> Ctx {
+    return Ctx {
+        deadline_ms: c.deadline_ms,
+        canceled: 1,
+        keys: c.keys,
+        vals: c.vals
+    }
+}
+
+fn ctx_with_value(parent: Ctx, k: str, v: str) -> Ctx {
+    // replace if exists
+    let mut keys = vec_new()
+    let mut vals = vec_new()
+    let mut found: i64 = 0
+    for i in 0..vec_len(parent.keys) {
+        if vec_get(parent.keys, i) == k {
+            vec_push(keys, k)
+            vec_push(vals, v)
+            found = 1
+        } else {
+            vec_push(keys, vec_get(parent.keys, i))
+            vec_push(vals, vec_get(parent.vals, i))
+        }
+    }
+    if found == 0 {
+        vec_push(keys, k)
+        vec_push(vals, v)
+    }
+    return Ctx {
+        deadline_ms: parent.deadline_ms,
+        canceled: parent.canceled,
+        keys: keys,
+        vals: vals
+    }
+}
+
+fn ctx_value(c: Ctx, k: str) -> str {
+    for i in 0..vec_len(c.keys) {
+        if vec_get(c.keys, i) == k {
+            return vec_get(c.vals, i)
+        }
+    }
+    return ""
+}
+
+fn ctx_has_value(c: Ctx, k: str) -> i64 {
+    for i in 0..vec_len(c.keys) {
+        if vec_get(c.keys, i) == k {
+            return 1
+        }
+    }
+    return 0
+}
+
+// 1 if canceled or past deadline.
+fn ctx_done(c: Ctx) -> i64 !Time {
+    if c.canceled == 1 {
+        return 1
+    }
+    if c.deadline_ms < 0 {
+        return 0
+    }
+    let now = monotonic_ms()?
+    if now >= c.deadline_ms {
+        return 1
+    }
+    return 0
+}
+
+// Status when done; OK when still live.
+fn ctx_err(c: Ctx) -> Status !Time {
+    if c.canceled == 1 {
+        return status_error(GRPC_CANCELED(), "context canceled")
+    }
+    if c.deadline_ms >= 0 {
+        let now = monotonic_ms()?
+        if now >= c.deadline_ms {
+            return status_error(GRPC_DEADLINE_EXCEEDED(), "context deadline exceeded")
+        }
+    }
+    return status_ok()
+}
+
+// Remaining ms until deadline; -1 if none; 0 if already past.
+fn ctx_remaining_ms(c: Ctx) -> i64 !Time {
+    if c.deadline_ms < 0 {
+        return 0 - 1
+    }
+    let now = monotonic_ms()?
+    let left = c.deadline_ms - now
+    if left < 0 {
+        return 0
+    }
+    return left
+}
+
+// Apply grpc-timeout header (relative ms) onto parent.
+fn ctx_from_grpc_timeout(parent: Ctx, timeout_hdr: str) -> Ctx !Time {
+    if timeout_hdr == "" {
+        return parent
+    }
+    let ms = grpc_timeout_decode_ms(timeout_hdr)
+    if ms < 0 {
+        return parent
+    }
+    return ctx_with_timeout(parent, ms)?
+}

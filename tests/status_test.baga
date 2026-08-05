@@ -1,0 +1,58 @@
+// status_test.baga — statusbaga gRPC codes + timeout codec.
+
+import "statusbaga/status.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("ok_code", GRPC_OK() == 0)
+    check("inv", GRPC_INVALID_ARGUMENT() == 3)
+    check("unauth", GRPC_UNAUTHENTICATED() == 16)
+    check("name_ok", status_code_name(0) == "OK")
+    check("name_inv", status_code_name(3) == "InvalidArgument")
+    check("name_dl", status_code_name(4) == "DeadlineExceeded")
+    check("http_ok", status_http(0) == 200)
+    check("http_inv", status_http(3) == 400)
+    check("http_nf", status_http(5) == 404)
+    check("http_unauth", status_http(16) == 401)
+    check("http_unavail", status_http(14) == 503)
+    check("code_ok_range", status_code_ok(16) == 1 && status_code_ok(17) == 0)
+
+    let s = status_error(GRPC_NOT_FOUND(), "user missing")
+    check("is_err", status_is_ok(s) == 0)
+    check("code", status_code(s) == 5)
+    check("msg", status_message(s) == "user missing")
+    check("str", str_find(status_string(s), "NotFound") >= 0)
+    check("str_desc", str_find(status_string(s), "user missing") >= 0)
+    check("trail", status_trailer_code(s) == "5")
+
+    let ok = status_ok()
+    check("is_ok", status_is_ok(ok) == 1)
+    check("trail0", status_trailer_code(ok) == "0")
+
+    // percent-encode space stays; non-ascii becomes %XX
+    let enc = status_grpc_message_encode("a b")
+    check("enc_space", enc == "a b")
+    let enc2 = status_grpc_message_encode(concat("x", chr(10)))
+    check("enc_nl", str_find(enc2, "%") >= 0)
+
+    check("to_5S", grpc_timeout_encode_ms(5000) == "5S")
+    check("to_100m", grpc_timeout_encode_ms(100) == "100m")
+    check("to_1H", grpc_timeout_encode_ms(3600000) == "1H")
+    check("to_1M", grpc_timeout_encode_ms(60000) == "1M")
+    check("from_5S", grpc_timeout_decode_ms("5S") == 5000)
+    check("from_100m", grpc_timeout_decode_ms("100m") == 100)
+    check("from_1H", grpc_timeout_decode_ms("1H") == 3600000)
+    check("from_bad", grpc_timeout_decode_ms("x") < 0)
+    check("from_empty", grpc_timeout_decode_ms("") < 0)
+
+    print("status_test: all passed")
+}

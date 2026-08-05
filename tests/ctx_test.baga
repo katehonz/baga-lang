@@ -1,0 +1,84 @@
+// ctx_test.baga — ctxbaga deadline/cancel/value + grpc-timeout.
+
+import "ctxbaga/ctx.baga"
+import "statusbaga/status.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Time {
+    let mut c = ctx_background()
+    check("bg_done", ctx_done(c)? == 0)
+    check("bg_err", status_is_ok(ctx_err(c)?) == 1)
+    check("bg_remain", ctx_remaining_ms(c)? < 0)
+
+    c = ctx_with_value(c, "user", "42")
+    c = ctx_with_value(c, "role", "admin")
+    check("val", ctx_value(c, "user") == "42")
+    check("role", ctx_value(c, "role") == "admin")
+    check("has", ctx_has_value(c, "user") == 1)
+    check("no", ctx_has_value(c, "x") == 0)
+    // overwrite
+    c = ctx_with_value(c, "user", "7")
+    check("ow", ctx_value(c, "user") == "7")
+
+    // cancel
+    let mut cc = ctx_with_cancel(c)
+    check("pre_cancel", ctx_done(cc)? == 0)
+    cc = ctx_cancel(cc)
+    check("canceled", ctx_done(cc)? == 1)
+    let ce = ctx_err(cc)?
+    check("cancel_code", ce.code == GRPC_CANCELED())
+
+    // short timeout already expired: deadline in the past
+    let past = ctx_with_deadline(ctx_background(), 0)
+    // 0 is almost always past on monotonic clock; if not, force cancel path
+    let pe = ctx_err(past)?
+    // Either deadline exceeded or still ok if clock is 0 (unlikely)
+    if ctx_done(past)? == 1 {
+        check("dl_code", pe.code == GRPC_DEADLINE_EXCEEDED())
+    } else {
+        // fallback: with_timeout 0
+        let z = ctx_with_timeout(ctx_background(), 0)?
+        check("to0_done", ctx_done(z)? == 1)
+        check("to0_code", ctx_err(z)?.code == GRPC_DEADLINE_EXCEEDED())
+    }
+
+    // long timeout still live
+    let live = ctx_with_timeout(ctx_background(), 60000)?
+    check("live", ctx_done(live)? == 0)
+    let rem = ctx_remaining_ms(live)?
+    check("rem_pos", rem > 0 && rem <= 60000)
+
+    // earlier deadline wins
+    let a = ctx_with_timeout(ctx_background(), 60000)?
+    let b = ctx_with_timeout(a, 1000)?
+    let ra = ctx_remaining_ms(a)?
+    let rb = ctx_remaining_ms(b)?
+    check("earlier", rb <= ra)
+
+    // grpc-timeout header
+    let from = ctx_from_grpc_timeout(ctx_background(), "5S")?
+    check("hdr_live", ctx_done(from)? == 0)
+    let rh = ctx_remaining_ms(from)?
+    check("hdr_rem", rh > 4000 && rh <= 5000)
+
+    let bad = ctx_from_grpc_timeout(ctx_background(), "nope")?
+    check("bad_hdr", ctx_remaining_ms(bad)? < 0)
+
+    // values survive timeout wrap
+    let v0 = ctx_with_value(ctx_background(), "k", "v")
+    let v1 = ctx_with_timeout(v0, 10000)?
+    check("val_keep", ctx_value(v1, "k") == "v")
+
+    print("ctx_test: all passed")
+    return 0
+}
