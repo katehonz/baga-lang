@@ -1,0 +1,46 @@
+// os_io_test.baga — S3: positioned IO + durability (pread/pwrite/fsync).
+// Офсетите са в байтове: "аабб"/"вв" са 8/4 байта в UTF-8 (len = strlen).
+
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !IO {
+    let path = "/tmp/baga_os_io_test.bin"
+    // O_RDWR|O_CREAT|O_TRUNC = 2|64|512 = 578, mode 0644 = 420
+    let fd = open(path, 578, 420)?
+    check("open", fd >= 0)
+
+    check("pwrite_at_0", fd_pwrite(fd, "аабб", 0) == 0)
+    check("pwrite_at_12", fd_pwrite(fd, "вв", 12) == 0)
+    check("fdatasync", fdatasync(fd)? == 0)
+    check("fsync", fsync(fd)? == 0)
+
+    check("pread_at_0", fd_pread(fd, 8, 0) == "аабб")
+    check("pread_at_12", fd_pread(fd, 4, 12) == "вв")
+    // Дупката (байтове 8-11) се чете като NUL-ове. Baga str е C низ — NUL
+    // не оцелява през substr/concat (strlen-базирани; същият капан като G8
+    // в std/net/tcp.baga), затова четем директно през extern pread и
+    // проверяваме байтовете с byte_at (без strlen).
+    let hbuf = str_repeat(" ", 2)
+    let hg = pread(fd, hbuf, 2, 8)?
+    check("pread_hole", hg == 2 && byte_at(hbuf, 0) == 0 && byte_at(hbuf, 1) == 0)
+    check("pread_eof", fd_pread(fd, 4, 100) == "")
+
+    check("fallocate", fallocate(fd, 0, 0, 4096)? == 0)
+
+    // файловата позиция не е помръднала: обикновен read чете от 0
+    check("pos_untouched", fd_read(fd, 2) == "а")
+
+    close(fd)
+    print("os_io_test: all passed")
+    return 0
+}

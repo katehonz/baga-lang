@@ -1,0 +1,56 @@
+import "std/crypto/crc32c.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn seq_bytes(lo: i64, hi: i64) -> bytes {
+    let mut b = bytes_new(0)
+    let mut i = lo
+    while i <= hi {
+        b = bytes_push(b, i)
+        i = i + 1
+    }
+    return b
+}
+
+fn rseq_bytes(hi: i64, lo: i64) -> bytes {
+    let mut b = bytes_new(0)
+    let mut i = hi
+    while i >= lo {
+        b = bytes_push(b, i)
+        i = i - 1
+    }
+    return b
+}
+
+fn main() {
+    // One-shot vectors (iSCSI CRC-32C set; decimals from the python oracle
+    // in .superpowers/sdd/2026-08-05-storage-foundation/task-3-oracle.py).
+    check("ascii_123456789", crc32c_b(bytes_of_str("123456789")) == 3808858755)
+    check("empty", crc32c_b(bytes_new(0)) == 0)
+    check("quick_brown_fox", crc32c_b(bytes_of_str("The quick brown fox jumps over the lazy dog")) == 576848900)
+    check("zeros_32", crc32c_b(hex_decode(str_repeat("00", 32))) == 2324772522)
+    check("ff_32", crc32c_b(hex_decode(str_repeat("ff", 32))) == 1655221059)
+    check("seq_0_31", crc32c_b(seq_bytes(0, 31)) == 1188919630)
+    check("rseq_31_0", crc32c_b(rseq_bytes(31, 0)) == 289397596)
+
+    // Incremental: "1234" + "56789" == one-shot "123456789"
+    let st = crc32c_update(crc32c_update(4294967295, bytes_of_str("1234")), bytes_of_str("56789"))
+    check("incremental_2ch", crc32c_final(st) == 3808858755)
+
+    // State chaining over 3 chunks
+    let s1 = crc32c_update(4294967295, bytes_of_str("123"))
+    let s2 = crc32c_update(s1, bytes_of_str("456"))
+    let s3 = crc32c_update(s2, bytes_of_str("789"))
+    check("chained_3ch", crc32c_final(s3) == 3808858755)
+    check("chained_ne_unfinalized", crc32c_final(s3) != s3)
+
+    print("crc32c_test: all passed")
+}

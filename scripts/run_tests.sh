@@ -379,6 +379,10 @@ run /tmp/baga_hexlit.baga > /tmp/baga_hexlit_out.txt \
 	&& printf 'ел0\nелa\nелf9\n' | diff - /tmp/baga_hexlit_out.txt > /dev/null \
 	&& echo "OK: не-ASCII литерал пред ASCII hex цифра (greedy escape регресия)" \
 	|| { echo "FAIL: escape на не-ASCII литерал"; cat /tmp/baga_hexlit_out.txt; exit 1; }
+printf 'fn main() {\n    let b = bytes_new(2)\n    bytes_set(b, 5, 1)\n}\n' > /tmp/baga_bytes_oob.baga
+run /tmp/baga_bytes_oob.baga 2>&1 | grep -q "bytes_set: индекс 5 извън границите" \
+	&& echo "OK: S2 — bytes_set извън границите е хванат" \
+	|| { echo "FAIL: bytes_set OOB трябва да гърми"; exit 1; }
 
 # ── 6. Static verifier oracle ────────────────────────────────────────────
 bash "$ROOT/scripts/run_verify.sh"

@@ -1,0 +1,44 @@
+// crc32c.baga — CRC-32C (Castagnoli, reflected poly 0x82F63B78).
+// WAL/page checksums. Masked-i64 u32 discipline (std/crypto README).
+// Таблицата се строи при всяко извикване (256 итерации) — ОК на ниво
+// WAL record; ако профилът покаже гореща точка, кеширайте в обвивка.
+
+fn u32(x: i64) -> i64 {
+    return x & 4294967295
+}
+
+fn crc32c_table() -> Vec<i64> {
+    let t = vec_new()
+    let poly = 2197175160
+    for i in 0..256 {
+        let mut c = i
+        for k in 0..8 {
+            if (c & 1) == 1 {
+                c = u32((c >> 1) ^ poly)
+            } else {
+                c = c >> 1
+            }
+        }
+        vec_push(t, c)
+    }
+    return t
+}
+
+// Running CRC state over a chunk; init with 4294967295 (0xFFFFFFFF).
+// Chain: st = crc32c_update(st, next_chunk).
+fn crc32c_update(crc: i64, data: bytes) -> i64 {
+    let t = crc32c_table()
+    let mut c = crc
+    for i in 0..bytes_len(data) {
+        c = u32(vec_get(t, (c ^ bytes_at(data, i)) & 255) ^ (c >> 8))
+    }
+    return c
+}
+
+fn crc32c_final(crc: i64) -> i64 {
+    return u32(crc ^ 4294967295)
+}
+
+fn crc32c_b(data: bytes) -> i64 {
+    return crc32c_final(crc32c_update(4294967295, data))
+}

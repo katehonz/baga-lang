@@ -616,6 +616,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"bytes_at",    "baga_bytes_at"},
                     {"bytes_slice", "baga_bytes_slice"},
                     {"bytes_concat","baga_bytes_concat"},
+                    {"bytes_new",  "baga_bytes_new"},
+                    {"bytes_set",  "baga_bytes_set"},
+                    {"bytes_push", "baga_bytes_push"},
                     {"bytes_of_str","baga_bytes_from_str"},
                     {"str_of_bytes","baga_bytes_to_str"},
                     {"hex_encode",  "baga_hex_encode"},
@@ -1822,6 +1825,22 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static baga_bytes baga_bytes_concat(baga_bytes a, baga_bytes b) {\n");
     fprintf(out, "    baga_bytes r; r.len = a.len + b.len; r.data = baga_alloc((size_t)(r.len ? r.len : 1));\n");
     fprintf(out, "    memcpy(r.data, a.data, (size_t)a.len); memcpy(r.data + a.len, b.data, (size_t)b.len); return r; }\n");
+    fprintf(out, "static baga_bytes baga_bytes_new(int64_t n) {\n");
+    fprintf(out, "    if (n < 0) n = 0;\n");
+    fprintf(out, "    baga_bytes b; b.len = n; b.data = baga_alloc(n > 0 ? n : 1);\n");
+    fprintf(out, "    memset(b.data, 0, (size_t)(n > 0 ? n : 1));\n");
+    fprintf(out, "    return b;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_bytes_set(baga_bytes b, int64_t i, int64_t v) {\n");
+    fprintf(out, "    if (i < 0 || i >= b.len) baga_bounds_fail(\"bytes_set\", i, b.len);\n");
+    fprintf(out, "    b.data[i] = (unsigned char)(v & 0xff);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static baga_bytes baga_bytes_push(baga_bytes b, int64_t v) {\n");
+    fprintf(out, "    baga_bytes r; r.len = b.len + 1; r.data = baga_alloc(r.len);\n");
+    fprintf(out, "    memcpy(r.data, b.data, (size_t)b.len);\n");
+    fprintf(out, "    r.data[b.len] = (unsigned char)(v & 0xff);\n");
+    fprintf(out, "    return r;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static baga_bytes baga_bytes_from_str(const char *s) {\n");
     fprintf(out, "    int64_t n = (int64_t)strlen(s); baga_bytes r; r.len = n; r.data = baga_alloc((size_t)(n ? n : 1));\n");
     fprintf(out, "    memcpy(r.data, s, (size_t)n); return r; }\n");

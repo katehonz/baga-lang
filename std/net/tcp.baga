@@ -20,15 +20,21 @@ extern fn listen(fd: i64, backlog: i64) -> i64 !Net
 extern fn accept(fd: i64, addr: i64, addrlen: i64) -> i64 !Net
 extern fn connect(fd: i64, addr: i64, addrlen: i64) -> i64 !Net
 extern fn memfd_create(name: str, flags: i64) -> i64 !Net
-extern fn pwrite(fd: i64, buf: str, count: i64, off: i64) -> i64 !Net
-extern fn pread(fd: i64, buf: i64, count: i64, off: i64) -> i64 !Net
+// pread64/pwrite64, не pread/pwrite: std/os декларира pread/pwrite (str буфер,
+// !IO). L6 не преименува extern декларациите (нямат тяло — "FFI името е
+// договор"), така че два едноименни extern-а с различни сигнатури не могат да
+// съществуват заедно: и двата прототипа се емитват неманглирани в C изхода и
+// gcc гърми с "conflicting types for 'pread'". На glibc x86-64 pread64/
+// pwrite64 са същите символи като pread/pwrite (weak aliases, същия адрес).
+extern fn pwrite64(fd: i64, buf: str, count: i64, off: i64) -> i64 !Net
+extern fn pread64(fd: i64, buf: i64, count: i64, off: i64) -> i64 !Net
 extern fn syscall(nr: i64, a1: i64, a2: i64, a3: i64) -> i64 !Net
 
 // Write one raw byte to the staging memfd at offset `off`.
 // Must use byte_chr (not chr): chr() emits UTF-8 for c>=128, which corrupts
 // sockaddr bytes (e.g. port 8080 low byte 0x90 → 2-byte write → wrong bind).
 fn poke8(mfd: i64, off: i64, v: i64) -> i64 !Net {
-    return pwrite(mfd, byte_chr(v & 255), 1, off)?
+    return pwrite64(mfd, byte_chr(v & 255), 1, off)?
 }
 
 // Build a sockaddr_in in `sa` (16 arena bytes): AF_INET, port, 4 ip octets.
@@ -49,7 +55,7 @@ fn make_sockaddr(sa: i64, port: i64, o1: i64, o2: i64, o3: i64, o4: i64) -> i64 
         poke8(mfd, 8 + i, 0)?
         i = i + 1
     }
-    let n = pread(mfd, sa, 16, 0)?
+    let n = pread64(mfd, sa, 16, 0)?
     syscall(3, mfd, 0, 0)?             // close(mfd) — SYS_close on x86-64
     if n != 16 { return -1 }
     return 0
@@ -64,7 +70,7 @@ fn set_reuseaddr(a: i64, s: i64) -> i64 !Net {
     poke8(mfd, 1, 0)?
     poke8(mfd, 2, 0)?
     poke8(mfd, 3, 0)?
-    let n = pread(mfd, opt, 4, 0)?
+    let n = pread64(mfd, opt, 4, 0)?
     syscall(3, mfd, 0, 0)?             // close(mfd)
     if n != 4 { return -1 }
     return setsockopt(s, 1, 2, opt, 4)?
@@ -244,7 +250,7 @@ fn tcp_resolve_ipv4(host: str) -> i64 !Net !IO {
     }
     poke8(mfd, 4, 2)?                 // ai_family = AF_INET
     poke8(mfd, 8, 1)?                 // ai_socktype = SOCK_STREAM
-    let n = pread(mfd, hints, 48, 0)?
+    let n = pread64(mfd, hints, 48, 0)?
     syscall(3, mfd, 0, 0)?
     if n != 48 {
         arena_free(a)
@@ -301,7 +307,7 @@ fn tcp_set_timeouts(fd: i64, secs: i64) -> i64 !Net {
     }
     poke64(mfd, 0, secs)?             // tv_sec
     poke64(mfd, 8, 0)?                // tv_usec
-    let n = pread(mfd, tv, 16, 0)?
+    let n = pread64(mfd, tv, 16, 0)?
     syscall(3, mfd, 0, 0)?
     if n != 16 {
         arena_free(a)
@@ -329,7 +335,7 @@ fn tcp_set_sockopt_one(fd: i64, level: i64, opt: i64) -> i64 !Net {
     poke8(mfd, 1, 0)?
     poke8(mfd, 2, 0)?
     poke8(mfd, 3, 0)?
-    let n = pread(mfd, o, 4, 0)?
+    let n = pread64(mfd, o, 4, 0)?
     syscall(3, mfd, 0, 0)?
     if n != 4 {
         arena_free(a)

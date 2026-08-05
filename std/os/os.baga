@@ -11,6 +11,11 @@ extern fn close(fd: i64) -> i64 !IO
 extern fn read(fd: i64, buf: str, count: i64) -> i64 !IO
 extern fn write(fd: i64, buf: str, count: i64) -> i64 !IO
 extern fn getenv(name: str) -> str !IO
+extern fn pread(fd: i64, buf: str, count: i64, offset: i64) -> i64 !IO
+extern fn pwrite(fd: i64, buf: str, count: i64, offset: i64) -> i64 !IO
+extern fn fsync(fd: i64) -> i64 !IO
+extern fn fdatasync(fd: i64) -> i64 !IO
+extern fn fallocate(fd: i64, mode: i64, offset: i64, len: i64) -> i64 !IO
 
 // Environment variable, or "" when unset (the C backend coerces NULL → "").
 fn env(name: str) -> str !IO {
@@ -35,6 +40,27 @@ fn fd_write(fd: i64, data: str) -> i64 !IO {
 fn fd_read(fd: i64, n: i64) -> str !IO {
     let buf = str_repeat(" ", n)
     let got = read(fd, buf, n)?
+    if got <= 0 { return "" }
+    return substr(buf, 0, got)
+}
+
+// Write all of `data` at absolute offset, looping on partial writes.
+// Returns 0, or -1. Не мести файловата позиция на fd (pread/pwrite семантика).
+fn fd_pwrite(fd: i64, data: str, off: i64) -> i64 !IO {
+    let total = len(data)
+    let mut done: i64 = 0
+    while done < total {
+        let w = pwrite(fd, substr(data, done, total), total - done, off + done)?
+        if w <= 0 { return -1 }
+        done = done + w
+    }
+    return 0
+}
+
+// Read up to n bytes at absolute offset. "" at EOF or on error.
+fn fd_pread(fd: i64, n: i64, off: i64) -> str !IO {
+    let buf = str_repeat(" ", n)
+    let got = pread(fd, buf, n, off)?
     if got <= 0 { return "" }
     return substr(buf, 0, got)
 }

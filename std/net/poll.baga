@@ -49,7 +49,7 @@ fn poll_wait(fds: Vec<i64>, timeout_ms: i64) -> PollResult !Net !IO {
         poke8(mfd, off + 7, 0)?
         i = i + 1
     }
-    let written = pread(mfd, fds_ptr, n * 8, 0)?
+    let written = pread64(mfd, fds_ptr, n * 8, 0)?
     syscall(3, mfd, 0, 0)?           // close mfd
     if written != n * 8 {
         arena_free(a)

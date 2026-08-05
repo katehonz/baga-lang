@@ -1,0 +1,39 @@
+// bytes_mut_test.baga — S2: bytes mutators (httpdbaga G9).
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let buf = bytes_new(4)
+    check("new_zeroed", bytes_len(buf) == 4 && bytes_at(buf, 3) == 0)
+    check("new_clamp", bytes_len(bytes_new(-3)) == 0)
+    bytes_set(buf, 0, 255)
+    bytes_set(buf, 1, 300)           // маскира се до 44
+    check("set_roundtrip", bytes_at(buf, 0) == 255 && bytes_at(buf, 1) == 44)
+
+    // alias semantics: set е видим през алиаса (като Vec/Map)
+    let alias = buf
+    bytes_set(alias, 2, 7)
+    check("set_alias", bytes_at(buf, 2) == 7)
+
+    // push: нов bytes, старият не се пипа
+    let f = bytes_push(bytes_push(bytes_new(0), 137), 1)
+    check("push_build", bytes_len(f) == 2 && bytes_at(f, 0) == 137 && bytes_at(f, 1) == 1)
+    let g = bytes_push(f, 2)
+    check("push_new_buf", bytes_len(g) == 3 && bytes_len(f) == 2)
+    check("push_hex", hex_encode(g) == "890102")
+
+    // frame building — G9 идиомът (be16/be32 без Vec round-trip)
+    let frame = bytes_push(bytes_push(bytes_push(bytes_push(bytes_new(0), 0), 8), 0), 1)
+    check("frame", hex_encode(frame) == "00080001")
+
+    print("bytes_mut_test: all passed")
+}
