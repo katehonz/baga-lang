@@ -8,6 +8,8 @@
   shims (`engine.baga` → `db/engine.baga`, …). Documented in
   `app-product/rocksbaga/ARCHITECTURE.md`. Prefer
   `import "rocksbaga/db/engine.baga"`; short paths still work.
+- Further split: **`table/bloom.baga`**, **`db/types.baga`**,
+  **`db/compact.baga`** (engine orchestrates flush/recovery only).
 
 ### RocksDB path R10 — package rename rocksbaga
 - **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine

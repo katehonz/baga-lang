@@ -1,0 +1,24 @@
+// types.baga — shared engine types (LsmDB).
+
+import "../cache/page.baga"
+
+struct LsmDB {
+    dir: str,
+    mem: Map<str, bytes>,
+    tomb: Map<str, i64>,
+    mem_n: i64,
+    flush_at: i64,
+    compact_at: i64,
+    target_bytes: i64,  // 0 = byte triggers off; L0 target size
+    merge_pick: i64,    // 0 = merge all over files; >0 = oldest-N (R8)
+    wal_fd: i64,
+    wal_off: i64,
+    gens: Vec<i64>,
+    levels: Vec<i64>,   // parallel: 0=L0 … 3=L3
+    next_gen: i64,
+    cache: PageCache,
+    sync_every: i64,
+    since_sync: i64,
+    ok: i64
+}
+

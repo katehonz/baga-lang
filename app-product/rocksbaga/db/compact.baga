@@ -1,0 +1,320 @@
+// compact.baga — level pick, merge, and promote (L0…L3).
+
+import "types.baga"
+import "../util/codec.baga"
+import "../cache/page.baga"
+import "../table/sstable.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn lsm_manifest_path(dir: str) -> str {
+    return concat(dir, ".manifest")
+}
+
+fn lsm_write_manifest(dir: str, next_gen: i64, gens: Vec<i64>, levels: Vec<i64>) -> i64 !IO {
+    let mut s = concat(int_to_str(next_gen), "\n")
+    for i in 0..vec_len(gens) {
+        let mut lv: i64 = 0
+        if i < vec_len(levels) {
+            lv = vec_get(levels, i)
+        }
+        s = concat(s, concat(int_to_str(vec_get(gens, i)), " "))
+        s = concat(s, concat(int_to_str(lv), "\n"))
+    }
+    if write_file(lsm_manifest_path(dir), s)? != 0 {
+        return -1
+    }
+    let fd = open(lsm_manifest_path(dir), 0, 0)?
+    if fd >= 0 {
+        fsync(fd)?
+        close(fd)
+    }
+    return 0
+}
+
+fn lsm_count_level(levels: Vec<i64>, want: i64) -> i64 {
+    let mut n: i64 = 0
+    for i in 0..vec_len(levels) {
+        if vec_get(levels, i) == want {
+            n = n + 1
+        }
+    }
+    return n
+}
+
+// On-disk size of one SST (0 if missing).
+fn lsm_sst_bytes(dir: str, gen: i64) -> i64 !IO {
+    let fd = open(sst_path(dir, gen), 0, 0)?
+    if fd < 0 {
+        return 0
+    }
+    let n = fd_size(fd)?
+    close(fd)
+    if n < 0 {
+        return 0
+    }
+    return n
+}
+
+// Sum of SST sizes at a level.
+fn lsm_level_bytes(db: LsmDB, want: i64) -> i64 !IO {
+    let mut total: i64 = 0
+    for i in 0..vec_len(db.gens) {
+        if i < vec_len(db.levels) && vec_get(db.levels, i) == want {
+            total = total + lsm_sst_bytes(db.dir, vec_get(db.gens, i))?
+        }
+    }
+    return total
+}
+
+// Byte target for level: L0 = target_bytes, L1 = 4×, L2 = 16×, L3 = 64×.
+// 0 means byte-size compaction is disabled for all levels.
+fn lsm_level_target(db: LsmDB, level: i64) -> i64 {
+    if db.target_bytes <= 0 {
+        return 0
+    }
+    let mut t = db.target_bytes
+    let mut lv: i64 = 0
+    while lv < level {
+        t = t * 4
+        lv = lv + 1
+    }
+    return t
+}
+
+// 1 if this level should compact (file-count and/or byte target; need ≥2 files).
+fn lsm_level_over(db: LsmDB, level: i64, nfiles: i64, nbytes: i64) -> i64 {
+    if nfiles < 2 {
+        return 0
+    }
+    if nfiles >= db.compact_at {
+        return 1
+    }
+    let tgt = lsm_level_target(db, level)
+    if tgt > 0 && nbytes >= tgt {
+        return 1
+    }
+    return 0
+}
+
+// First `k` indices (oldest-first within level). k clamped to [0, len].
+fn lsm_take_oldest(idxs: Vec<i64>, k: i64) -> Vec<i64> {
+    let out: Vec<i64> = vec_new()
+    let n = vec_len(idxs)
+    let mut m = k
+    if m > n {
+        m = n
+    }
+    if m < 0 {
+        m = 0
+    }
+    let mut i: i64 = 0
+    while i < m {
+        vec_push(out, vec_get(idxs, i))
+        i = i + 1
+    }
+    return out
+}
+
+// R8 pick: merge_pick==0 → all idxs; else oldest max(2, merge_pick) (capped by n).
+// With byte targets: grow the pick until cumulative size ≥ level target.
+fn lsm_pick_merge(db: LsmDB, idxs: Vec<i64>, level: i64) -> Vec<i64> !IO {
+    let n = vec_len(idxs)
+    if n < 2 {
+        return idxs
+    }
+    if db.merge_pick <= 0 {
+        return idxs
+    }
+    let mut k = db.merge_pick
+    if k < 2 {
+        k = 2
+    }
+    if k > n {
+        k = n
+    }
+    let tgt = lsm_level_target(db, level)
+    if tgt > 0 {
+        let mut sum: i64 = 0
+        let mut i: i64 = 0
+        let mut done: i64 = 0
+        while i < n && done == 0 {
+            let gen = vec_get(db.gens, vec_get(idxs, i))
+            sum = sum + lsm_sst_bytes(db.dir, gen)?
+            i = i + 1
+            if i >= 2 && sum >= tgt {
+                if i >= k {
+                    k = i
+                    done = 1
+                }
+            }
+        }
+        if done == 0 {
+            k = n
+        }
+        if k > n {
+            k = n
+        }
+        if k < 2 {
+            k = 2
+        }
+    }
+    return lsm_take_oldest(idxs, k)
+}
+
+// Merge gens at given indices (ascending order), write new SST at `out_level`.
+// Pure tombs dropped only when the merge covers *all* gens (nothing older left
+// to shadow). Partial merges (L0→L1 with L1 remaining) keep pure tombs.
+fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO {
+    if vec_len(idxs) < 1 {
+        return db
+    }
+    let keep_tombs = vec_len(idxs) < vec_len(db.gens)
+    let acc: Map<str, bytes> = map_new()
+    let tomb: Map<str, i64> = map_new()
+    let mut cur = db.cache
+    for ii in 0..vec_len(idxs) {
+        let gen = vec_get(db.gens, vec_get(idxs, ii))
+        let ld = sst_load(cur, db.dir, gen)?
+        cur = ld.pc
+        if ld.parse.ok == 1 {
+            for j in 0..vec_len(ld.parse.rows) {
+                let r = vec_get(ld.parse.rows, j)
+                if r.op == 2 {
+                    map_del(acc, r.key)
+                    map_set(tomb, r.key, 1)
+                } else {
+                    map_set(acc, r.key, r.val)
+                    map_del(tomb, r.key)
+                }
+            }
+        }
+    }
+    db.cache = cur
+    let keys = map_keys(acc)
+    let tkeys = map_keys(tomb)
+    let all: Vec<str> = vec_new()
+    for ki in 0..vec_len(keys) {
+        vec_push(all, vec_get(keys, ki))
+    }
+    if keep_tombs == 1 {
+        for ti in 0..vec_len(tkeys) {
+            let k = vec_get(tkeys, ti)
+            if map_has(acc, k) == 0 {
+                vec_push(all, k)
+            }
+        }
+    }
+    sort_strs(all)
+    let rows: Vec<SstRow> = vec_new()
+    for ki in 0..vec_len(all) {
+        let k = vec_get(all, ki)
+        if map_has(tomb, k) == 1 && map_has(acc, k) == 0 {
+            vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
+        } else {
+            vec_push(rows, SstRow { op: 1, key: k, val: map_get(acc, k) })
+        }
+    }
+    let new_gen = db.next_gen
+    if vec_len(rows) > 0 {
+        if sst_write(db.dir, new_gen, rows)? != 0 {
+            db.ok = 0
+            return db
+        }
+        db.next_gen = new_gen + 1
+    }
+    // Mark which indices were merged
+    let dropm: Map<i64, i64> = map_new()
+    for ii in 0..vec_len(idxs) {
+        let ix = vec_get(idxs, ii)
+        map_set(dropm, ix, 1)
+        let g = vec_get(db.gens, ix)
+        unlink(sst_path(db.dir, g))?
+        unlink(bloom_path(db.dir, g))?
+        db.cache = pc_invalidate_file(db.cache, g)
+    }
+    // Rebuild oldest-first: L3 … L0; append new file at end of its level.
+    let ng: Vec<i64> = vec_new()
+    let nl: Vec<i64> = vec_new()
+    let mut target_lv: i64 = 3
+    while target_lv >= 0 {
+        for i in 0..vec_len(db.gens) {
+            if map_has(dropm, i) == 0 {
+                if vec_get(db.levels, i) == target_lv {
+                    vec_push(ng, vec_get(db.gens, i))
+                    vec_push(nl, target_lv)
+                }
+            }
+        }
+        if vec_len(rows) > 0 && out_level == target_lv {
+            vec_push(ng, new_gen)
+            vec_push(nl, out_level)
+        }
+        target_lv = target_lv - 1
+    }
+    db.gens = ng
+    db.levels = nl
+    if lsm_write_manifest(db.dir, db.next_gen, db.gens, db.levels)? != 0 {
+        db.ok = 0
+        return db
+    }
+    return db
+}
+
+// Collect indices at `level` into out vec (caller-owned).
+fn lsm_indices_at(db: LsmDB, level: i64) -> Vec<i64> {
+    let out: Vec<i64> = vec_new()
+    for i in 0..vec_len(db.gens) {
+        if i < vec_len(db.levels) && vec_get(db.levels, i) == level {
+            vec_push(out, i)
+        }
+    }
+    return out
+}
+
+// L0→L1→L2→L3 by file-count and/or byte targets; R8 oldest-N when merge_pick>0.
+fn lsm_compact(db: LsmDB) -> LsmDB !IO {
+    // L0 → L1
+    let l0 = lsm_indices_at(db, 0)
+    let b0 = lsm_level_bytes(db, 0)?
+    if lsm_level_over(db, 0, vec_len(l0), b0) == 1 {
+        let p0 = lsm_pick_merge(db, l0, 0)?
+        db = lsm_merge_indices(db, p0, 1)?
+    }
+    // L1 → L2
+    let l1 = lsm_indices_at(db, 1)
+    let b1 = lsm_level_bytes(db, 1)?
+    if lsm_level_over(db, 1, vec_len(l1), b1) == 1 {
+        let p1 = lsm_pick_merge(db, l1, 1)?
+        db = lsm_merge_indices(db, p1, 2)?
+    } else {
+        // Legacy R5: collapse a pair of L1 files when under compact_at (file path only).
+        if vec_len(l1) >= 2 && vec_len(l1) < db.compact_at && db.target_bytes <= 0 {
+            let p1b = lsm_take_oldest(l1, 2)
+            db = lsm_merge_indices(db, p1b, 1)?
+        }
+    }
+    // L2 → L3 (or collapse L2 when no L3 promotion needed)
+    let l2 = lsm_indices_at(db, 2)
+    let b2 = lsm_level_bytes(db, 2)?
+    if lsm_level_over(db, 2, vec_len(l2), b2) == 1 {
+        let p2 = lsm_pick_merge(db, l2, 2)?
+        db = lsm_merge_indices(db, p2, 3)?
+    } else {
+        if vec_len(l2) >= 2 && db.target_bytes <= 0 {
+            let p2b = lsm_take_oldest(l2, 2)
+            db = lsm_merge_indices(db, p2b, 2)?
+        }
+    }
+    // Collapse L3 when multi-file
+    let l3 = lsm_indices_at(db, 3)
+    let b3 = lsm_level_bytes(db, 3)?
+    if vec_len(l3) >= 2 {
+        if lsm_level_over(db, 3, vec_len(l3), b3) == 1 || db.target_bytes <= 0 {
+            let p3 = lsm_pick_merge(db, l3, 3)?
+            db = lsm_merge_indices(db, p3, 3)?
+        }
+    }
+    return db
+}
+

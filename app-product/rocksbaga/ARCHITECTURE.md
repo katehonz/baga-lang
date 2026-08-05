@@ -34,9 +34,12 @@ rocksbaga/
 ├── wal/
 │   └── wal.baga             # append-only WAL + crc32c replay
 ├── table/
-│   └── sstable.baga         # BAGASST* format, bloom sidecar, partial get
+│   ├── bloom.baga           # filter + BAGABLM1 sidecar (no SST types)
+│   └── sstable.baga         # BAGASST* format, partial get, uses bloom
 ├── db/
-│   └── engine.baga          # LsmDB: memtable, flush, compact, recovery
+│   ├── types.baga           # LsmDB struct
+│   ├── compact.baga         # pick, merge, promote L0…L3, MANIFEST write
+│   └── engine.baga          # open/put/get/flush/recovery (orchestrates)
 ├── net/
 │   └── server.baga          # RESP2 front-end (redis-cli subset)
 ├── examples/

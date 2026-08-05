@@ -1,4 +1,4 @@
-// sstable.baga — sorted string table (R6: BAGASST5 + R9 external bloom).
+// sstable.baga — sorted string table (BAGASST5). Bloom: table/bloom.baga.
 //
 // On-disk (new writes = v5):
 //   magic 8 = "BAGASST5"
@@ -17,6 +17,7 @@
 
 import "../util/codec.baga"
 import "../cache/page.baga"
+import "bloom.baga"
 import "std/os/os.baga"
 import "std/crypto/crc32c.baga"
 import "std/str/str.baga"
@@ -25,11 +26,6 @@ fn sst_restart_every() -> i64 {
     return 16
 }
 
-fn bloom_k() -> i64 {
-    return 4
-}
-
-// Fixed footer size at end of v4 body.
 fn sst_footer_len() -> i64 {
     return 24
 }
@@ -44,187 +40,15 @@ fn sst_path(dir: str, gen: i64) -> str {
     return concat(concat(dir, ".sst."), int_to_str(gen))
 }
 
-// R9 standalone bloom filter path (sidecar of SST).
-fn bloom_path(dir: str, gen: i64) -> str {
-    return concat(concat(dir, ".bloom."), int_to_str(gen))
-}
-
-// --- bloom ---
-
-fn bloom_h1(key: str) -> i64 {
-    let mut h: i64 = 2166136261
-    let n = len(key)
-    let mut i: i64 = 0
-    while i < n {
-        h = h ^ (char_at(key, i) & 255)
-        h = (h * 16777619) & 4294967295
-        i = i + 1
-    }
-    return h
-}
-
-fn bloom_h2(key: str) -> i64 {
-    let mut h: i64 = 0
-    let n = len(key)
-    let mut i: i64 = 0
-    while i < n {
-        h = (h * 33 + (char_at(key, i) & 255)) & 4294967295
-        i = i + 1
-    }
-    if h == 0 {
-        h = 1
-    }
-    return h
-}
-
-fn bloom_bits_for(nkeys: i64) -> i64 {
-    let mut b = nkeys * 10
-    if b < 64 {
-        b = 64
-    }
-    return ((b + 7) / 8) * 8
-}
-
-fn bloom_set_bit(bits: bytes, bit: i64) {
-    let bi = bit / 8
-    let bo = bit % 8
-    let cur = bytes_at(bits, bi)
-    bytes_set(bits, bi, cur | (1 << bo))
-}
-
-fn bloom_test_bit(bits: bytes, bit: i64) -> i64 {
-    let bi = bit / 8
-    let bo = bit % 8
-    if (bytes_at(bits, bi) & (1 << bo)) != 0 {
-        return 1
-    }
-    return 0
-}
-
-fn bloom_add(bits: bytes, m: i64, key: str) {
-    let h1 = bloom_h1(key)
-    let h2 = bloom_h2(key)
-    let k = bloom_k()
-    let mut i: i64 = 0
-    while i < k {
-        let mut bit = (h1 + i * h2) % m
-        if bit < 0 {
-            bit = 0 - bit
-        }
-        bloom_set_bit(bits, bit)
-        i = i + 1
-    }
-}
-
-fn bloom_may(bits: bytes, m: i64, key: str) -> i64 {
-    if m <= 0 || bytes_len(bits) == 0 {
-        return 1
-    }
-    let h1 = bloom_h1(key)
-    let h2 = bloom_h2(key)
-    let k = bloom_k()
-    let mut i: i64 = 0
-    while i < k {
-        let mut bit = (h1 + i * h2) % m
-        if bit < 0 {
-            bit = 0 - bit
-        }
-        if bloom_test_bit(bits, bit) == 0 {
-            return 0
-        }
-        i = i + 1
-    }
-    return 1
-}
-
-// Bloom bytes only (no trailing m); m returned via bits_for.
 fn bloom_build_bits(rows: Vec<SstRow>) -> bytes {
-    let m = bloom_bits_for(vec_len(rows))
-    let nbytes = m / 8
-    let bits = bytes_new(nbytes)
-    let mut i: i64 = 0
-    while i < nbytes {
-        bytes_set(bits, i, 0)
-        i = i + 1
-    }
+    let keys: Vec<str> = vec_new()
     let n = vec_len(rows)
     let mut j: i64 = 0
     while j < n {
-        bloom_add(bits, m, vec_get(rows, j).key)
+        vec_push(keys, vec_get(rows, j).key)
         j = j + 1
     }
-    return bits
-}
-
-// Write R9 sidecar: BAGABLM1 | m | bits | crc32c(m||bits). Returns 0 ok.
-fn bloom_write_file(dir: str, gen: i64, bits: bytes, m: i64) -> i64 !IO {
-    let path = bloom_path(dir, gen)
-    let fd = open(path, 578, 420)?
-    if fd < 0 {
-        return -1
-    }
-    let mut payload = bytes_new(0)
-    payload = push_u32_le(payload, m)
-    payload = push_bytes(payload, bits)
-    let crc = crc32c_b(payload)
-    let mut file = bytes_of_str("BAGABLM1")
-    file = push_bytes(file, payload)
-    file = push_u32_le(file, crc)
-    if fd_write_bytes(fd, file) != 0 {
-        close(fd)
-        return -1
-    }
-    if fsync(fd)? != 0 {
-        close(fd)
-        return -1
-    }
-    close(fd)
-    return 0
-}
-
-// Probe external bloom for key.
-// Returns: 0 = key not present (safe skip SST), 1 = maybe present, 2 = no/bad file.
-fn bloom_file_may(dir: str, gen: i64, key: str) -> i64 !IO {
-    let path = bloom_path(dir, gen)
-    let fd = open(path, 0, 0)?
-    if fd < 0 {
-        return 2
-    }
-    let fsize = fd_size(fd)?
-    if fsize < 8 + 4 + 4 {
-        close(fd)
-        return 2
-    }
-    let raw = fd_pread_bytes(fd, fsize, 0)?
-    close(fd)
-    if bytes_len(raw) < fsize {
-        return 2
-    }
-    if str_of_bytes(bytes_slice(raw, 0, 8)) != "BAGABLM1" {
-        return 2
-    }
-    let body_len = fsize - 8 - 4
-    if body_len < 4 {
-        return 2
-    }
-    let body = bytes_slice(raw, 8, 8 + body_len)
-    let want = get_u32_le(raw, 8 + body_len)
-    if crc32c_b(body) != want {
-        return 2
-    }
-    let m = get_u32_le(body, 0)
-    if m <= 0 {
-        return 2
-    }
-    let nbytes = m / 8
-    if bytes_len(body) != 4 + nbytes {
-        return 2
-    }
-    let bits = bytes_slice(body, 4, 4 + nbytes)
-    if bloom_may(bits, m, key) == 0 {
-        return 0
-    }
-    return 1
+    return bloom_build_keys(keys)
 }
 
 // Build v5 body: core (+ block CRCs) + bloom + fixed footer.

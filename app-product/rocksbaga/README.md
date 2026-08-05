@@ -11,15 +11,18 @@ feature parity — see [docs/gaps.md](docs/gaps.md).
 ## Layout
 
 ```
-util/     codec (LE, sort)
-cache/    page cache
-wal/      write-ahead log
-table/    SSTable + bloom sidecar
-db/       LsmDB engine (flush, compact, recovery)
-net/      RESP2 server
-examples/ demo
-docs/     PLAN, gaps
-*.baga    root re-exports (stable import paths)
+util/           codec (LE, sort)
+cache/          page cache
+wal/            write-ahead log
+table/bloom     filter + BAGABLM1 sidecar
+table/sstable   SST format + partial get
+db/types        LsmDB struct
+db/compact      merge / pick / promote
+db/engine       open, put/get, flush, recovery
+net/            RESP2 server
+examples/       demo
+docs/           PLAN, gaps
+*.baga          root re-exports (stable import paths)
 ```
 
 ## What works
