@@ -1,0 +1,20 @@
+// Registry product messages (subset of apps/registry/grpc_svc.baga).
+
+syntax = "proto3";
+package regbaga;
+
+message GetPackageRequest {
+  string name = 1;
+}
+
+message Package {
+  string name = 1;
+  string description = 2;
+  string latest_version = 3;
+  string source_kind = 4;
+  string source_url = 5;
+}
+
+message ListPackagesRequest {
+  string q = 1;
+}

@@ -1,0 +1,14 @@
+// Minimal proto3 used by the protoc_baga sketch (Phase 5).
+// Wire layout matches hand-written hellopb helpers in pbbaga/grpc.baga.
+
+syntax = "proto3";
+package hellopb;
+
+message HelloRequest {
+  string name = 1;
+  int64 n = 2;
+}
+
+message HelloReply {
+  string message = 1;
+}

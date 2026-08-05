@@ -87,9 +87,18 @@ c = grpc_client_call(c, "/pkg.Svc/Method", frame, mdt_new(), 0)?
 Tests: `grpc_client_test`, `grpc_unary_test`, `grpc_bidi_test`, `pb_test`,
 `grpc_goldens_test` (B3.4 fixed hex vectors vs protoc wire + status map).
 
+## Codegen sketch (Phase 5)
+
+```bash
+python3 tools/protoc_baga/protoc_baga.py tools/protoc_baga/examples/hello.proto
+./tools/protoc_baga/test_sketch.sh
+```
+
+See `tools/protoc_baga/README.md` — not full protoc; scalar fields only.
+
 ## Honest limits
 
-- No proto codegen, packed repeated, or maps.
+- No full protoc plugin; sketch only. No packed repeated or maps.
 - gRPC frames start with `0x00` — never put them in `str` HTTP bodies
   (NUL truncation); use `tcp_write_bytes`.
 - H2 trailers-native gRPC still approximate (status in headers).

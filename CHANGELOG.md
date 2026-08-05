@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Phase 5 — protoc_baga sketch
+- **`tools/protoc_baga/`:** proto3 subset → baga `Msg_encode`/`Msg_decode`
+  (string/int64/bytes/bool). Design note + `examples/hello.proto` /
+  `registry.proto`. Smoke: `./tools/protoc_baga/test_sketch.sh` (hex goldens
+  + baga compile of generated Hello helpers).
+
 ### Phase 3 exit — metrics + graceful shutdown
 - **fmrbaga:** `fmr_run` uses `poll_wait` + `signal_watch(SIGTERM/SIGINT)`;
   stops accepting on signal; `fmr_shutting_down()` for readiness drain.

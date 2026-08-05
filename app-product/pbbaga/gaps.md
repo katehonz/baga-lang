@@ -1,9 +1,13 @@
 # pbbaga — gaps
 
-## P1 — no protoc / codegen
+## P1 — protoc / codegen (sketch)
 
-Messages are hand-encoded. Fine for probes; real services want a
-`.proto` → `.baga` generator.
+**Shipped (Phase 5 sketch):** `tools/protoc_baga/` — proto3 subset
+(`string`/`int64`/…) → `Msg_encode`/`Msg_decode` baga. Design:
+`docs/superpowers/specs/2026-08-05-protoc-baga-sketch-design.md`. Smoke:
+`./tools/protoc_baga/test_sketch.sh`.
+
+**Still open:** full protoc plugin, repeated/nested/maps, gRPC service stubs.
 
 ## P2 — ~~full gRPC transport~~ — mostly closed
 

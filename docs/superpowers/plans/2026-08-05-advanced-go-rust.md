@@ -329,7 +329,7 @@ in `lsmbaga/gaps.md`.
 ### Phase 5 — Stretch (only if Phases 1–3 hold)
 
 - A4 LLVM L3  
-- protoc → baga sketch (P1 pbbaga)  
+- protoc → baga sketch (P1 pbbaga) — **done** (`tools/protoc_baga/`)  
 - io_uring poll backend experiment  
 - Thesis open problems: one structural liveness lemma (not full)  
 - **C′ light optional borrow** — design note only if still desired; never required  
