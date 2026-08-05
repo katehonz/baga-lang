@@ -299,8 +299,8 @@ feature clone, but a real LSM store that forces the language.
 | R1 | **Binary search** on sorted SST + min/max key filter | ✅ |
 | R2 | **BAGASST2** restart index (bsearch restarts + block scan; v1 read OK) | ✅ |
 | R3 | Binary values (`Map<str,bytes>`), oldest-N compact + drop pure tombs | ✅ |
-| R4 | Bloom / page-sized blocks, multi-level compaction | **next** |
-| R5 | Name / package as durable “rocksbaga” when quality warrants | later |
+| R4 | **BAGASST3** bloom + restart; chain oldest-N compact | ✅ |
+| R5 | Page-sized blocks / true multi-level; name “rocksbaga” when quality warrants | **next** |
 
 **Rule:** every R step keeps `tests/lsm_test.baga` green and documents honesty
 in `lsmbaga/gaps.md`.

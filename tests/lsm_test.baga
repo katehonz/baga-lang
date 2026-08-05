@@ -127,6 +127,14 @@ fn main() -> i64 !Net !IO !Par !Time {
     let r4 = lsm_get(db3, "k1")?
     db3 = r4.db
     check(fails, "compact_get", r4.found == 1 && str_of_bytes(r4.val) == "v1")
+    // bloom / index path: absent key must miss (no false positive required;
+    // false negatives forbidden — bloom_may must not drop real keys).
+    let rmiss = lsm_get(db3, "zzz_absent_key_r4")?
+    db3 = rmiss.db
+    check(fails, "bloom_miss", rmiss.found == 0)
+    let rhit = lsm_get(db3, "k6")?
+    db3 = rhit.db
+    check(fails, "bloom_hit", rhit.found == 1 && str_of_bytes(rhit.val) == "v6")
     lsm_close(db3)?
 
     // --- RESP loopback ---

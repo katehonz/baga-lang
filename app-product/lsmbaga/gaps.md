@@ -32,8 +32,14 @@ cache (full body IO). Fine at probe scale; true block-level page IO is later.
 row materialize). Compaction/`KEYS` still full-parse. **BAGASST1** still
 readable (parse + bsearch).
 
-**Still open (R4+):** sparse page-sized blocks (avoid reading whole file),
-bloom filters, multi-level compaction.
+**Shipped (R4):** new writes **BAGASST3** — restart index + **bloom filter**
+(~10 bits/key, 4 probes). Get: CRC → bloom may-contain → restart bsearch →
+block scan. v1/v2 still readable. Compaction **chains** oldest-N merges while
+`gens >= compact_at`.
+
+**Still open (R5+ / later):** page-sized data blocks (avoid reading whole file
+IO), true multi-level (L0/L1/…) with size amplification targets, bloom as
+standalone filter file.
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

@@ -77,22 +77,23 @@ Append via `fd_write_bytes`; durability via `fdatasync` every
 
 ### SSTable
 
-**v2 (current writes) — `BAGASST2`:**
+**v3 (current writes) — `BAGASST3`:**
 
 ```
-magic 8 = "BAGASST2"
+magic 8 = "BAGASST3"
 body:
   u32 le count
   records sorted by key:
     u8 op | u32 klen | key | u32 vlen | val
   restart index: N × u32 le offsets into body, then u32 N
     (restart every 16 records; first offset = 4)
+  bloom filter bytes (m/8), then u32 le m  (m ≈ 10 bits/key, min 64)
 u32 le crc32c(body)
 ```
 
-Lookup: newest table first; restart bsearch + linear scan of one block.
-`BAGASST1` (no index) still readable via full parse + binary search.
-Tombstone (op=Del) shadows older Puts.
+Lookup: newest table first; bloom may-contain → restart bsearch → one-block
+scan. `BAGASST2` (index, no bloom) and `BAGASST1` (full parse + bsearch)
+still readable. Tombstone (op=Del) shadows older Puts.
 
 ### Memtable
 

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### RocksDB path R4 — bloom filter + chain compact
+- **lsmbaga:** new SSTs write **`BAGASST3`**: restart index + **bloom filter**
+  (~10 bits/key, 4 double-hash probes). Get: CRC → bloom may-contain →
+  restart bsearch → block scan. **BAGASST1/2** still readable.
+- Compaction **chains** oldest-N merges while `gens >= compact_at`.
+
 ### RocksDB path R3 — binary values + better compaction
 - **lsmbaga:** memtable `Map<str, bytes>`; WAL/SST values as bytes; `lsm_put_b`
   for NUL-safe puts; `lsm_get` returns `bytes`. Compaction merges the **oldest**

@@ -19,9 +19,9 @@ and binary `fd_*_bytes` in `std/os`.
 | Page cache (S5) | Fixed-size pages (4 KiB), clock eviction, dirty writeback, invalidate-on-unlink |
 | WAL | Length-prefixed records, crc32c, `fdatasync` every `sync_every` (default 1) |
 | Memtable | `Map<str, bytes>` + tombstone map (binary-safe values) |
-| SSTable | Magic **`BAGASST2`** (writes): sorted rows + **restart index** (every 16) + crc; get = index bsearch + block scan. **`BAGASST1`** still readable (R1 path) |
+| SSTable | Magic **`BAGASST3`** (writes): rows + **restart index** + **bloom** + crc. Get = bloom → index bsearch → block scan. **v1/v2** still readable |
 | Flush | Threshold `flush_at` (default 32); `SAVE` forces flush over RESP |
-| Compaction | When `gens >= compact_at` (default 3) → merge **oldest** `compact_at` gens; drop pure tombs; keep younger files |
+| Compaction | When `gens >= compact_at` → merge **oldest** `compact_at` gens (chain until under limit); drop pure tombs |
 | Recovery | MANIFEST + SST gens + WAL replay |
 | RESP | `PING` `SET` `GET` `DEL` `EXISTS` `INCR` `KEYS` `DBSIZE` `SAVE` `QUIT` |
 
@@ -71,8 +71,8 @@ fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 - Keys are still `str` (NUL-free); **values** are `bytes` (NUL-safe in engine/WAL/SST).
 - RESP **SET** args still go through `str` parser; GET replies use binary-safe bulk.
 - No TTL/EXPIRE; SET options rejected with ERR.
-- Get still loads the full SST file (index avoids full *parse*, not full IO); no bloom / page-sized blocks yet.
-- Compaction is oldest-N merge, not full leveled LSM.
+- Get still loads the full SST file (bloom/index avoid wasted *lookup* work, not full IO); no page-sized data blocks yet.
+- Compaction is chained oldest-N merge, not full leveled LSM with size targets.
 - Single process; no multi-writer.
 
 See [gaps.md](gaps.md).

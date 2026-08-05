@@ -263,9 +263,11 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO {
     db.tomb = map_new()
     db.mem_n = 0
     db.since_sync = 0
-    // compaction?
-    if vec_len(db.gens) >= db.compact_at {
+    // compaction (chain while still over limit — multi-pass oldest-N)
+    let mut guard: i64 = 0
+    while vec_len(db.gens) >= db.compact_at && guard < 32 {
         db = lsm_compact(db)?
+        guard = guard + 1
     }
     return db
 }

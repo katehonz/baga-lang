@@ -25,7 +25,8 @@ Goal: Track S flagship — durable KV on RESP.
 
 ## P2
 
-- Leveled / multi-level compaction
-- Bloom filters
+- Bloom filter in SST — **done (R4, BAGASST3)**
+- Chain oldest-N compact while over limit — **done (R4)**
+- True multi-level (L0/L1/… size targets)
 - Shared page cache across open files with pin counts
 - Page-sized SST blocks (partial file IO)

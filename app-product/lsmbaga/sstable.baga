@@ -1,16 +1,16 @@
-// sstable.baga — sorted string table (R2: BAGASST2 restart index).
+// sstable.baga — sorted string table (R4: BAGASST3 bloom + R2 restart index).
 //
-// On-disk (new writes = v2):
-//   magic 8 = "BAGASST2"
+// On-disk (new writes = v3):
+//   magic 8 = "BAGASST3"
 //   body (crc32c footer):
 //     u32 le count
 //     records sorted by key: u8 op | u32 klen | key | u32 vlen | val
 //     restart index: n_restarts × u32 le offsets into body, then u32 n_restarts
-//     (restart every 16 records; first always at offset 4)
+//     bloom filter bytes, then u32 le bloom_bits
 //   u32 le crc32c(body)
 //
-// v1 "BAGASST1" still readable (full parse + binary search). Get on v2 uses
-// restart bsearch then linear scan of one block — no full row materialize.
+// Get: CRC → bloom may-contain → restart bsearch → block scan.
+// v1 BAGASST1 / v2 BAGASST2 still readable.
 
 import "codec.baga"
 import "page.baga"
@@ -21,6 +21,11 @@ import "std/str/str.baga"
 // Restart every N records (LevelDB-style sparse index).
 fn sst_restart_every() -> i64 {
     return 16
+}
+
+// Bloom probes (double-hashing).
+fn bloom_k() -> i64 {
+    return 4
 }
 
 // One logical row in an SST / merge view.
@@ -34,7 +39,119 @@ fn sst_path(dir: str, gen: i64) -> str {
     return concat(concat(dir, ".sst."), int_to_str(gen))
 }
 
-// Build v2 body: rows + restart footer.
+// --- bloom filter (bits in a byte buffer) ---
+
+// FNV-1a 32-bit over key bytes.
+fn bloom_h1(key: str) -> i64 {
+    let mut h: i64 = 2166136261
+    let n = len(key)
+    let mut i: i64 = 0
+    while i < n {
+        h = h ^ (char_at(key, i) & 255)
+        h = (h * 16777619) & 4294967295
+        i = i + 1
+    }
+    return h
+}
+
+// Secondary mix (so probes spread).
+fn bloom_h2(key: str) -> i64 {
+    let mut h: i64 = 0
+    let n = len(key)
+    let mut i: i64 = 0
+    while i < n {
+        h = (h * 33 + (char_at(key, i) & 255)) & 4294967295
+        i = i + 1
+    }
+    if h == 0 {
+        h = 1
+    }
+    return h
+}
+
+fn bloom_bits_for(nkeys: i64) -> i64 {
+    // ~10 bits/key, min 64, rounded up to multiple of 8.
+    let mut b = nkeys * 10
+    if b < 64 {
+        b = 64
+    }
+    return ((b + 7) / 8) * 8
+}
+
+fn bloom_set_bit(bits: bytes, bit: i64) {
+    let bi = bit / 8
+    let bo = bit % 8
+    let cur = bytes_at(bits, bi)
+    bytes_set(bits, bi, cur | (1 << bo))
+}
+
+fn bloom_test_bit(bits: bytes, bit: i64) -> i64 {
+    let bi = bit / 8
+    let bo = bit % 8
+    if (bytes_at(bits, bi) & (1 << bo)) != 0 {
+        return 1
+    }
+    return 0
+}
+
+fn bloom_add(bits: bytes, m: i64, key: str) {
+    let h1 = bloom_h1(key)
+    let h2 = bloom_h2(key)
+    let k = bloom_k()
+    let mut i: i64 = 0
+    while i < k {
+        let bit = (h1 + i * h2) % m
+        if bit < 0 {
+            bloom_set_bit(bits, 0 - bit)
+        } else {
+            bloom_set_bit(bits, bit)
+        }
+        i = i + 1
+    }
+}
+
+// 1 = maybe present, 0 = definitely absent.
+fn bloom_may(bits: bytes, m: i64, key: str) -> i64 {
+    if m <= 0 || bytes_len(bits) == 0 {
+        return 1
+    }
+    let h1 = bloom_h1(key)
+    let h2 = bloom_h2(key)
+    let k = bloom_k()
+    let mut i: i64 = 0
+    while i < k {
+        let mut bit = (h1 + i * h2) % m
+        if bit < 0 {
+            bit = 0 - bit
+        }
+        if bloom_test_bit(bits, bit) == 0 {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+fn bloom_build(rows: Vec<SstRow>) -> bytes {
+    let m = bloom_bits_for(vec_len(rows))
+    let nbytes = m / 8
+    let bits = bytes_new(nbytes)
+    let mut i: i64 = 0
+    while i < nbytes {
+        bytes_set(bits, i, 0)
+        i = i + 1
+    }
+    let n = vec_len(rows)
+    let mut j: i64 = 0
+    while j < n {
+        bloom_add(bits, m, vec_get(rows, j).key)
+        j = j + 1
+    }
+    // Append bit count so readers know m.
+    return push_u32_le(bits, m)
+}
+
+// Build v3 body: rows + restart footer + bloom.
 fn sst_build(rows: Vec<SstRow>) -> bytes {
     let mut body = bytes_new(0)
     body = push_u32_le(body, vec_len(rows))
@@ -63,17 +180,19 @@ fn sst_build(rows: Vec<SstRow>) -> bytes {
         j = j + 1
     }
     body = push_u32_le(body, nr)
+    // Bloom filter + u32 bits.
+    body = push_bytes(body, bloom_build(rows))
     return body
 }
 
-// Write a new SST file (BAGASST2). Returns 0 ok, -1 error.
+// Write a new SST file (BAGASST3). Returns 0 ok, -1 error.
 fn sst_write(dir: str, gen: i64, rows: Vec<SstRow>) -> i64 !IO {
     let path = sst_path(dir, gen)
     let fd = open(path, 578, 420)?   // O_RDWR|O_CREAT|O_TRUNC
     if fd < 0 {
         return -1
     }
-    let magic = bytes_of_str("BAGASST2")
+    let magic = bytes_of_str("BAGASST3")
     let body = sst_build(rows)
     let crc = crc32c_b(body)
     let mut file = magic
@@ -130,8 +249,7 @@ fn sst_rec_at(body: bytes, pos: i64) -> SstRec {
     return SstRec { ok: 1, op: op, key: key, val: val, next: p }
 }
 
-// Decode rows from body after magic+crc already stripped. If data_end >= 0,
-// only parse records with start < data_end (v2 index region excluded by count).
+// Decode rows from body after magic+crc already stripped.
 fn sst_parse_rows(body: bytes) -> SstParse {
     let empty: Vec<SstRow> = vec_new()
     if bytes_len(body) < 4 {
@@ -166,7 +284,9 @@ fn sst_parse(data: bytes) -> SstParse {
     let mag = str_of_bytes(bytes_slice(data, 0, 8))
     if mag != "BAGASST1" {
         if mag != "BAGASST2" {
-            return SstParse { ok: 0, rows: empty }
+            if mag != "BAGASST3" {
+                return SstParse { ok: 0, rows: empty }
+            }
         }
     }
     let body = bytes_slice(data, 8, bytes_len(data) - 4)
@@ -174,7 +294,7 @@ fn sst_parse(data: bytes) -> SstParse {
     if crc32c_b(body) != got {
         return SstParse { ok: 0, rows: empty }
     }
-    // v1 and v2: count then records; v2 trailing restart index is ignored after count rows.
+    // count drives rows; trailing restart/bloom ignored after count rows.
     return sst_parse_rows(body)
 }
 
@@ -306,8 +426,9 @@ fn sst_last_key(body: bytes, start: i64, end: i64) -> str {
     return last
 }
 
-// v2: restart index bsearch + scan one block. Body is CRC-verified file body.
-fn sst_lookup_v2(body: bytes, key: str) -> SstHit {
+// Core: restart index bsearch + scan one block. `body` ends at restart footer
+// (no trailing bloom). Used by v2 and by v3 after bloom strip.
+fn sst_lookup_indexed(body: bytes, key: str) -> SstHit {
     let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
     let blen = bytes_len(body)
     if blen < 8 {
@@ -404,7 +525,31 @@ fn sst_lookup_v2(body: bytes, key: str) -> SstHit {
     return hit
 }
 
-// Dispatch v1 (full parse + bsearch) or v2 (restart index).
+// v3: bloom then indexed lookup on the core (body without bloom trailer).
+fn sst_lookup_v3(body: bytes, key: str) -> SstHit {
+    let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
+    let blen = bytes_len(body)
+    if blen < 12 {
+        return miss
+    }
+    let m = get_u32_le(body, blen - 4)
+    if m <= 0 {
+        return miss
+    }
+    let nbytes = m / 8
+    if nbytes <= 0 || blen < 4 + nbytes + 8 {
+        return miss
+    }
+    let bloom_off = blen - 4 - nbytes
+    let bits = bytes_slice(body, bloom_off, bloom_off + nbytes)
+    if bloom_may(bits, m, key) == 0 {
+        return miss
+    }
+    let core = bytes_slice(body, 0, bloom_off)
+    return sst_lookup_indexed(core, key)
+}
+
+// Dispatch v1 / v2 / v3.
 fn sst_lookup_data(data: bytes, key: str) -> SstHit {
     let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
     if bytes_len(data) < 8 + 4 + 4 {
@@ -416,8 +561,11 @@ fn sst_lookup_data(data: bytes, key: str) -> SstHit {
     if crc32c_b(body) != got {
         return miss
     }
+    if mag == "BAGASST3" {
+        return sst_lookup_v3(body, key)
+    }
     if mag == "BAGASST2" {
-        return sst_lookup_v2(body, key)
+        return sst_lookup_indexed(body, key)
     }
     if mag == "BAGASST1" {
         let p = sst_parse_rows(body)
@@ -433,7 +581,7 @@ fn sst_lookup_data(data: bytes, key: str) -> SstHit {
     return miss
 }
 
-// Newest-first lookup across gens (v2 index path; v1 full parse + bsearch).
+// Newest-first lookup across gens.
 fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
     let mut cur = pc
     let mut i = vec_len(gens) - 1
