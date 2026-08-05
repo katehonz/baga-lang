@@ -1,0 +1,87 @@
+// ttl.baga — optional absolute expire_at in value envelope (R16).
+// On-disk / WAL: plain bytes (no TTL) or:
+//   magic "BAGATTL1" (8) | i64 le expire_at_ms | payload
+// expire_at_ms is wall-clock ms (CLOCK_REALTIME). 0 / plain = no TTL.
+
+import "codec.baga"
+
+struct TtlVal {
+    expire_at: i64,  // 0 = no TTL
+    val: bytes
+}
+
+fn ttl_magic_str() -> str {
+    return "BAGATTL1"
+}
+
+fn ttl_pack(val: bytes, expire_at: i64) -> bytes {
+    if expire_at <= 0 {
+        return val
+    }
+    let vlen = bytes_len(val)
+    let out = bytes_new(8 + 8 + vlen)
+    let mag = bytes_of_str(ttl_magic_str())
+    let mut i: i64 = 0
+    while i < 8 {
+        bytes_set(out, i, bytes_at(mag, i))
+        i = i + 1
+    }
+    put_i64_le(out, 8, expire_at)
+    i = 0
+    while i < vlen {
+        bytes_set(out, 16 + i, bytes_at(val, i))
+        i = i + 1
+    }
+    return out
+}
+
+fn ttl_unpack(raw: bytes) -> TtlVal {
+    if bytes_len(raw) < 16 {
+        return TtlVal { expire_at: 0, val: raw }
+    }
+    let mag = str_of_bytes(bytes_slice(raw, 0, 8))
+    if mag != ttl_magic_str() {
+        return TtlVal { expire_at: 0, val: raw }
+    }
+    let exp = get_i64_le(raw, 8)
+    if exp <= 0 {
+        return TtlVal { expire_at: 0, val: bytes_slice(raw, 16, bytes_len(raw)) }
+    }
+    return TtlVal {
+        expire_at: exp,
+        val: bytes_slice(raw, 16, bytes_len(raw))
+    }
+}
+
+// 1 if key should be treated as gone. now_ms < 0 skips the check.
+fn ttl_expired(expire_at: i64, now_ms: i64) -> i64 {
+    if expire_at <= 0 {
+        return 0
+    }
+    if now_ms < 0 {
+        return 0
+    }
+    if expire_at <= now_ms {
+        return 1
+    }
+    return 0
+}
+
+// Remaining whole seconds; -1 = no TTL; -2 = already expired (caller may del).
+fn ttl_remaining_sec(expire_at: i64, now_ms: i64) -> i64 {
+    if expire_at <= 0 {
+        return 0 - 1
+    }
+    if now_ms < 0 {
+        return 0 - 1
+    }
+    if expire_at <= now_ms {
+        return 0 - 2
+    }
+    let ms = expire_at - now_ms
+    let sec = ms / 1000
+    if sec < 1 {
+        return 1
+    }
+    return sec
+}

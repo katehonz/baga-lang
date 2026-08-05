@@ -54,7 +54,7 @@ struct LsmExec {
 }
 
 // Execute one RESP command. Mutates/returns db (flush may run).
-fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO {
+fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
     let cmd = lsm_upper(vec_get(args, 0))
     let n = vec_len(args)
 
@@ -68,14 +68,46 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO {
         if n < 3 {
             return LsmExec { db: db, reply: lsm_wrongnum("set"), quit: 0 }
         }
-        if n >= 4 {
+        // SET key val [EX seconds]
+        if n == 5 {
+            let opt = lsm_upper(vec_get(args, 3))
+            if opt == "EX" {
+                if lsm_is_int(vec_get(args, 4)) == 0 {
+                    return LsmExec {
+                        db: db, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+                    }
+                }
+                let sec = parse_int(vec_get(args, 4))
+                db = lsm_put_ex(db, vec_get(args, 1), vec_get(args, 2), sec)?
+                return LsmExec { db: db, reply: resp_simple("OK"), quit: 0 }
+            }
             return LsmExec {
                 db: db,
-                reply: resp_error("ERR rocksbaga: SET options (EX/PX/…) not supported"),
+                reply: resp_error("ERR rocksbaga: SET options other than EX not supported"),
+                quit: 0
+            }
+        }
+        if n != 3 {
+            return LsmExec {
+                db: db,
+                reply: resp_error("ERR rocksbaga: SET syntax"),
                 quit: 0
             }
         }
         db = lsm_put(db, vec_get(args, 1), vec_get(args, 2))?
+        return LsmExec { db: db, reply: resp_simple("OK"), quit: 0 }
+    }
+    if cmd == "SETEX" {
+        if n != 4 {
+            return LsmExec { db: db, reply: lsm_wrongnum("setex"), quit: 0 }
+        }
+        if lsm_is_int(vec_get(args, 2)) == 0 {
+            return LsmExec {
+                db: db, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+            }
+        }
+        let sec = parse_int(vec_get(args, 2))
+        db = lsm_put_ex(db, vec_get(args, 1), vec_get(args, 3), sec)?
         return LsmExec { db: db, reply: resp_simple("OK"), quit: 0 }
     }
     if cmd == "GET" {
@@ -158,12 +190,35 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO {
         db = lsm_flush_force(db)?
         return LsmExec { db: db, reply: resp_simple("OK"), quit: 0 }
     }
-    if cmd == "EXPIRE" || cmd == "TTL" {
-        return LsmExec {
-            db: db,
-            reply: resp_error("ERR rocksbaga: TTL/EXPIRE not supported"),
-            quit: 0
+    if cmd == "EXPIRE" {
+        if n != 3 {
+            return LsmExec { db: db, reply: lsm_wrongnum("expire"), quit: 0 }
         }
+        if lsm_is_int(vec_get(args, 2)) == 0 {
+            return LsmExec {
+                db: db, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+            }
+        }
+        let sec = parse_int(vec_get(args, 2))
+        let e = lsm_expire(db, vec_get(args, 1), sec)?
+        db = e.db
+        return LsmExec { db: db, reply: resp_int(e.ok), quit: 0 }
+    }
+    if cmd == "TTL" {
+        if n != 2 {
+            return LsmExec { db: db, reply: lsm_wrongnum("ttl"), quit: 0 }
+        }
+        let t = lsm_ttl(db, vec_get(args, 1))?
+        db = t.db
+        return LsmExec { db: db, reply: resp_int(t.n), quit: 0 }
+    }
+    if cmd == "PERSIST" {
+        if n != 2 {
+            return LsmExec { db: db, reply: lsm_wrongnum("persist"), quit: 0 }
+        }
+        let p = lsm_persist(db, vec_get(args, 1))?
+        db = p.db
+        return LsmExec { db: db, reply: resp_int(p.ok), quit: 0 }
     }
     return LsmExec {
         db: db,
@@ -173,7 +228,7 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO {
 }
 
 // Single-connection drain (legacy / tests). Blocks on read until EOF.
-fn lsm_serve_conn(fd: i64, db: LsmDB) -> LsmDB !IO !Net {
+fn lsm_serve_conn(fd: i64, db: LsmDB) -> LsmDB !IO !Net !Time {
     let mut buf = bytes_from_vec(vec_new())
     let mut running: i64 = 1
     let mut cur = db
@@ -237,7 +292,7 @@ fn lsm_srv_drop(st: LsmSrv, fd: i64) -> LsmSrv !Net !IO {
 
 // Handle one readable client fd: non-blocking-ish (called after poll).
 // Returns updated state; drops conn on EOF / QUIT / write error.
-fn lsm_srv_on_readable(st: LsmSrv, fd: i64) -> LsmSrv !IO !Net {
+fn lsm_srv_on_readable(st: LsmSrv, fd: i64) -> LsmSrv !IO !Net !Time {
     let chunk = tcp_read_bytes(fd, 4096)?
     if bytes_len(chunk) == 0 {
         return lsm_srv_drop(st, fd)?

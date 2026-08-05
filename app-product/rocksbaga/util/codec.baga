@@ -17,6 +17,17 @@ fn get_u32_le(b: bytes, off: i64) -> i64 {
         | ((bytes_at(b, off + 3) & 255) << 24)
 }
 
+fn put_i64_le(b: bytes, off: i64, v: i64) {
+    put_u32_le(b, off, v)
+    put_u32_le(b, off + 4, v >> 32)
+}
+
+fn get_i64_le(b: bytes, off: i64) -> i64 {
+    let lo = get_u32_le(b, off)
+    let hi = get_u32_le(b, off + 4)
+    return lo | (hi << 32)
+}
+
 // Append one u32 le to a growing buffer (returns new bytes).
 // One concat of a 4-byte chunk — not 4× bytes_push (R14).
 fn push_u32_le(b: bytes, v: i64) -> bytes {

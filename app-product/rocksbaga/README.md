@@ -79,5 +79,6 @@ fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 
 ## Honest limits
 
-Serial accept, no TTL, no multi-writer, compaction not RocksDB-scored.
+Serial accept, no multi-writer, compaction not RocksDB-scored.
+TTL is lazy (expiry on read/flush/compact); no active expire cycle.
 Details: [docs/gaps.md](docs/gaps.md), [docs/PLAN.md](docs/PLAN.md).

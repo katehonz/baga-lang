@@ -2,10 +2,12 @@
 
 import "types.baga"
 import "../util/codec.baga"
+import "../util/ttl.baga"
 import "../cache/page.baga"
 import "../table/sstable.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
+import "std/time/time.baga"
 
 fn lsm_manifest_path(dir: str) -> str {
     return concat(dir, ".manifest")
@@ -165,10 +167,11 @@ fn lsm_pick_merge(db: LsmDB, idxs: Vec<i64>, level: i64) -> Vec<i64> !IO {
 // Merge gens at given indices (ascending order), write new SST at `out_level`.
 // Pure tombs dropped only when the merge covers *all* gens (nothing older left
 // to shadow). Partial merges (L0→L1 with L1 remaining) keep pure tombs.
-fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO {
+fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Time {
     if vec_len(idxs) < 1 {
         return db
     }
+    let now = time_now_ms()?
     let keep_tombs = vec_len(idxs) < vec_len(db.gens)
     let acc: Map<str, bytes> = map_new()
     let tomb: Map<str, i64> = map_new()
@@ -212,7 +215,16 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO {
         if map_has(tomb, k) == 1 && map_has(acc, k) == 0 {
             vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
         } else {
-            vec_push(rows, SstRow { op: 1, key: k, val: map_get(acc, k) })
+            let raw = map_get(acc, k)
+            let u = ttl_unpack(raw)
+            if ttl_expired(u.expire_at, now) == 1 {
+                // drop expired live value; keep tomb only if partial merge
+                if keep_tombs == 1 {
+                    vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
+                }
+            } else {
+                vec_push(rows, SstRow { op: 1, key: k, val: raw })
+            }
         }
     }
     let new_gen = db.next_gen
@@ -276,7 +288,7 @@ fn lsm_indices_at(db: LsmDB, level: i64) -> Vec<i64> {
 }
 
 // L0→L1→L2→L3 by file-count and/or byte targets; R8 oldest-N when merge_pick>0.
-fn lsm_compact(db: LsmDB) -> LsmDB !IO {
+fn lsm_compact(db: LsmDB) -> LsmDB !IO !Time {
     // L0 → L1
     let l0 = lsm_indices_at(db, 0)
     let b0 = lsm_level_bytes(db, 0)?

@@ -7,6 +7,7 @@ import "std/net/tcp.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
+import "std/time/time.baga"
 
 fn check(fails: Vec<i64>, name: str, cond: bool) {
     if cond {
@@ -35,6 +36,15 @@ fn args3(a: str, b: str, c: str) -> Vec<str> {
     vec_push(v, a)
     vec_push(v, b)
     vec_push(v, c)
+    return v
+}
+
+fn args4(a: str, b: str, c: str, d: str) -> Vec<str> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    vec_push(v, d)
     return v
 }
 
@@ -290,6 +300,47 @@ fn main() -> i64 !Net !IO !Par !Time {
         tcp_close(c1)?
         tcp_close(c2)?
     }
+
+    // --- R16: TTL / EXPIRE / SETEX / PERSIST ---
+    wipe("/tmp/baga_lsm_ttl")?
+    let mut tdb = lsm_open("/tmp/baga_lsm_ttl", 64, 8)?
+    check(fails, "ttl_open", tdb.ok == 1)
+    tdb = lsm_put_ex(tdb, "temp", "v", 2)?
+    let tt = lsm_ttl(tdb, "temp")?
+    tdb = tt.db
+    check(fails, "ttl_pos", tt.n >= 1 && tt.n <= 2)
+    let tg = lsm_get(tdb, "temp")?
+    tdb = tg.db
+    check(fails, "ttl_get", tg.found == 1 && str_of_bytes(tg.val) == "v")
+    let te = lsm_exec(tdb, args3("EXPIRE", "temp", "1"))?
+    tdb = te.db
+    check(fails, "ttl_expire_cmd", te.quit == 0)
+    let tp = lsm_persist(tdb, "temp")?
+    tdb = tp.db
+    check(fails, "ttl_persist", tp.ok == 1)
+    let tt2 = lsm_ttl(tdb, "temp")?
+    tdb = tt2.db
+    check(fails, "ttl_after_persist", tt2.n == 0 - 1)
+    // short expire then wait
+    tdb = lsm_put_ex(tdb, "gone", "x", 1)?
+    sleep_ms(1100)
+    let tg2 = lsm_get(tdb, "gone")?
+    tdb = tg2.db
+    check(fails, "ttl_expired_get", tg2.found == 0)
+    let tt3 = lsm_ttl(tdb, "gone")?
+    tdb = tt3.db
+    check(fails, "ttl_expired_ttl", tt3.n == 0 - 2)
+    // SETEX via RESP + durable across reopen
+    let se = lsm_exec(tdb, args4("SETEX", "dur", "30", "ok"))?
+    tdb = se.db
+    tdb = lsm_flush_force(tdb)?
+    lsm_close(tdb)?
+    let tdb2 = lsm_open("/tmp/baga_lsm_ttl", 64, 8)?
+    let tg3 = lsm_get(tdb2, "dur")?
+    check(fails, "ttl_durable", tg3.found == 1 && str_of_bytes(tg3.val) == "ok")
+    let tt4 = lsm_ttl(tg3.db, "dur")?
+    check(fails, "ttl_durable_ttl", tt4.n > 0)
+    lsm_close(tt4.db)?
 
     if vec_len(fails) == 0 {
         print("lsm_test: all passed")

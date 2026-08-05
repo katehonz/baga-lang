@@ -29,7 +29,7 @@ fn wipe(prefix: str) -> i64 !IO {
     return 0
 }
 
-fn main() -> i64 !IO {
+fn main() -> i64 !IO !Time {
     print("lsm_recover_test:")
     let fails = vec_new()
     let prefix = "/tmp/baga_lsm_recover"
