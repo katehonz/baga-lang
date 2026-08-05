@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Phase 3 B2.1 — fmr middleware (request-id + otel + log)
+- **fmrbaga:** ordered pipeline in `fmr_handle`: request-id → W3C
+  `traceparent` (otelbaga child span) → `fmr_before` → dispatch → logbaga
+  JSON line (`FMR_LOG=1`) → response headers (`X-Request-Id`, `traceparent`,
+  CORS). `FmrCtx` carries `req_id` / `trace_id` / `span_id`.
+- **apps/api** + **registry** mains gain `!Time` for the log path.
+
 ### RocksDB path R6 — per-block CRC + L2
 - **lsmbaga:** new SSTs write **`BAGASST5`**: per-restart-block **crc32c** after
   the restart index; partial get verifies the loaded block. **L2** level:

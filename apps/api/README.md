@@ -51,7 +51,10 @@ Migrate runs on boot (`migrate_up`). Re-run after schema changes.
 
 ```bash
 curl -s localhost:8080/health
-curl -s -D- localhost:8080/health -o /dev/null | grep -i request-id
+# correlation headers (B2.1 middleware)
+curl -s -D- localhost:8080/health -o /dev/null | grep -iE 'request-id|traceparent'
+# propagate a parent trace
+curl -s -D- localhost:8080/health -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' -o /dev/null
 TOKEN=$(curl -s -X POST localhost:8080/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"sub":"ada"}' | sed 's/.*"access_token":"//;s/".*//')
 curl -s localhost:8080/v1/users -H "Authorization: Bearer $TOKEN"

@@ -40,13 +40,15 @@ were written as multi-byte UTF-8 via `chr()` in `poke8`.
 
 **Verdict.** P1: emit OpenAPI JSON from the route table.
 
-## G6 — Middleware is a single `fmr_before` hook
+## G6 — Middleware stack (partial — B2.1)
 
-**Symptom.** No ordered middleware stack / DI graph.
+**Shipped.** Fixed pipeline in `fmr_handle` + `middleware.baga`:
+request-id → otel `traceparent` (child span) → `fmr_before` → dispatch →
+logbaga JSON (when `FMR_LOG=1`) → response headers (`X-Request-Id`,
+`traceparent`, CORS).
 
-**Workaround.** Call `deps_*` inside handlers (FastAPI Depends style).
-
-**Verdict.** Enough for v1; stack of middleware ids later.
+**Still open.** Pluggable ordered middleware *ids* / DI graph; only one
+app-defined hook (`fmr_before`) plus the built-in correlation chain.
 
 ## G7 — Connection-per-TCP DB session
 

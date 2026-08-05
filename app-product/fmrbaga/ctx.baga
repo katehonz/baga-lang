@@ -14,7 +14,11 @@ struct FmrCtx {
     jwt_secret: str,
     // filled by deps / handlers
     user_sub: str,
-    authed: i64
+    authed: i64,
+    // B2.1 middleware: correlation (set in fmr_handle)
+    req_id: str,
+    trace_id: str,
+    span_id: str
 }
 
 fn fmr_ctx_new(req: Request, m: RouteMatch, jwt_secret: str) -> FmrCtx {
@@ -25,7 +29,10 @@ fn fmr_ctx_new(req: Request, m: RouteMatch, jwt_secret: str) -> FmrCtx {
         pvals: m.pvals,
         jwt_secret: jwt_secret,
         user_sub: "",
-        authed: 0
+        authed: 0,
+        req_id: "",
+        trace_id: "",
+        span_id: ""
     }
 }
 
@@ -67,14 +74,29 @@ fn fmr_param_i64(ctx: FmrCtx, name: str) -> i64 {
     return parse_int(s)
 }
 
-fn fmr_set_user(ctx: FmrCtx, sub: str) -> FmrCtx {
+fn fmr_ctx_copy(ctx: FmrCtx, user_sub: str, authed: i64, req_id: str, trace_id: str, span_id: str) -> FmrCtx {
     return FmrCtx {
         req: ctx.req,
         route_id: ctx.route_id,
         pnames: ctx.pnames,
         pvals: ctx.pvals,
         jwt_secret: ctx.jwt_secret,
-        user_sub: sub,
-        authed: 1
+        user_sub: user_sub,
+        authed: authed,
+        req_id: req_id,
+        trace_id: trace_id,
+        span_id: span_id
     }
+}
+
+fn fmr_set_user(ctx: FmrCtx, sub: str) -> FmrCtx {
+    return fmr_ctx_copy(ctx, sub, 1, ctx.req_id, ctx.trace_id, ctx.span_id)
+}
+
+fn fmr_ctx_set_req_id(ctx: FmrCtx, rid: str) -> FmrCtx {
+    return fmr_ctx_copy(ctx, ctx.user_sub, ctx.authed, rid, ctx.trace_id, ctx.span_id)
+}
+
+fn fmr_ctx_set_trace(ctx: FmrCtx, tid: str, sid: str) -> FmrCtx {
+    return fmr_ctx_copy(ctx, ctx.user_sub, ctx.authed, ctx.req_id, tid, sid)
 }

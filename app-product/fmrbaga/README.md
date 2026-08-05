@@ -17,9 +17,9 @@ Framework core stays in this folder; **business code belongs in `apps/*`**.
 ```
 handlers / your app
       ↓
-fmrbaga  (router, jsonx, deps, pipeline)
+fmrbaga  (router, jsonx, deps, middleware, pipeline)
       ↓
-httpdbaga · jwtbaga · ormbaga · pgbaga
+httpdbaga · jwtbaga · ormbaga · otelbaga · logbaga · pgbaga
       ↓
 HTTP/1.1          PostgreSQL
 ```
@@ -30,7 +30,8 @@ HTTP/1.1          PostgreSQL
 |------|------|
 | `jsonx.baga` | JSON object/array builders + body field validation |
 | `route.baga` | `{param}` router |
-| `ctx.baga` | `FmrCtx` (request, params, JWT secret, user) |
+| `ctx.baga` | `FmrCtx` (request, params, JWT, user, req_id/trace) |
+| `middleware.baga` | request-id + otel `traceparent` + logbaga (B2.1) |
 | `respond.baga` | `fmr_json` / `fmr_error` / `fmr_422_*` |
 | `deps.baga` | `deps_bearer`, Content-Type, `fmr_issue_token` |
 | `app.baga` | `FmrApp`, pipeline, HTTP serve (`fmr_run`) |

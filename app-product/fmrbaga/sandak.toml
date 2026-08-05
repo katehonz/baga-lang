@@ -7,4 +7,6 @@ entry = "handlers.baga"
 httpdbaga = { path = "../httpdbaga" }
 jwtbaga = { path = "../jwtbaga" }
 ormbaga = { path = "../ormbaga" }
+otelbaga = { path = "../otelbaga" }
+logbaga = { path = "../logbaga" }
 std = { path = "../../std" }

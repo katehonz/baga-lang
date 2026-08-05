@@ -111,5 +111,15 @@ fn main() {
     check("oas_components", str_find(raw, "\"components\"") >= 0)
     check("oas_tags", str_find(raw, "\"users\"") >= 0)
 
+    // B2.1: ctx correlation fields (middleware pipeline fills these in serve path)
+    let c0 = fmr_ctx_new(req, m1, "secret")
+    check("ctx_req_id_empty", c0.req_id == "")
+    let c1 = fmr_ctx_set_req_id(c0, "abc123")
+    check("ctx_req_id", c1.req_id == "abc123")
+    let c2 = fmr_ctx_set_trace(c1, "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")
+    check("ctx_trace", c2.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736" && len(c2.span_id) == 16)
+    let c3 = fmr_set_user(c2, "ada")
+    check("ctx_ids_survive_user", c3.req_id == "abc123" && c3.trace_id == c2.trace_id && c3.user_sub == "ada")
+
     print("fmr_test: all passed")
 }

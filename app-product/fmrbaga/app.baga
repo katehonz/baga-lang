@@ -8,6 +8,7 @@ import "route.baga"
 import "ctx.baga"
 import "respond.baga"
 import "deps.baga"
+import "middleware.baga"
 import "jsonx.baga"
 import "config.baga"
 import "httpdbaga/http.baga"
@@ -146,11 +147,18 @@ fn fmr_with_request_id(resp: Response, rid: str) -> Response {
     return http_set_header(resp, "X-Request-Id", rid)
 }
 
+// Apply CORS + middleware response headers (request-id, traceparent).
+fn fmr_finish_ctx(app: FmrApp, resp: Response, ctx: FmrCtx) -> Response {
+    return fmr_maybe_cors(app, fmr_mw_response_headers(resp, ctx))
+}
+
+// Legacy helper when only rid is known (404 before ctx is fully filled).
 fn fmr_finish(app: FmrApp, resp: Response, rid: str) -> Response {
     return fmr_maybe_cors(app, fmr_with_request_id(resp, rid))
 }
 
-fn fmr_handle(app: FmrApp, req: Request, db: OrmDb) -> FmrOut !Random {
+// Pipeline (B2.1): request-id → otel → fmr_before → dispatch → log → headers.
+fn fmr_handle(app: FmrApp, req: Request, db: OrmDb) -> FmrOut !Random !Time {
     let method = http_method(req)
     let path = http_path_only(req)
     let rid = fmr_make_request_id(req)?
@@ -174,19 +182,17 @@ fn fmr_handle(app: FmrApp, req: Request, db: OrmDb) -> FmrOut !Random {
         return fmr_out(fmr_finish(app, fmr_404("Not found"), rid), db)
     }
 
-    let ctx0 = fmr_ctx_new(req, m, app.jwt_secret)
+    let ctx0 = fmr_mw_ids(fmr_ctx_new(req, m, app.jwt_secret), rid)?
     let before = fmr_before(ctx0)
     if before.ok == 0 {
-        return fmr_out(fmr_finish(app, before.resp, rid), db)
+        // Prefer ids from ctx0 (middleware); before.ctx may be a short-circuit copy.
+        return fmr_out(fmr_finish_ctx(app, before.resp, ctx0), db)
     }
     let out = fmr_dispatch(before.ctx, db)
     if app.log_requests == 1 {
-        eprintln(concat(
-            concat(concat(concat(rid, " "), method), concat(" ", path)),
-            concat(" → ", int_to_str(out.resp.status))
-        ))
+        fmr_mw_log(before.ctx, method, path, out.resp.status)?
     }
-    return fmr_out(fmr_finish(app, out.resp, rid), out.db)
+    return fmr_out(fmr_finish_ctx(app, out.resp, before.ctx), out.db)
 }
 
 // Result of serving one TCP connection (updated DB session for reuse).
@@ -197,7 +203,7 @@ struct FmrConnOut {
 
 // close_db=1 → orm_close when the HTTP connection ends (per-conn DB mode).
 // close_db=0 → keep DB open (worker-pool mode; one DB per worker).
-fn fmr_h1_conn(app: FmrApp, fd: i64, r0: HttpReader, db0: OrmDb, close_db: i64) -> FmrConnOut !IO !Net !Random {
+fn fmr_h1_conn(app: FmrApp, fd: i64, r0: HttpReader, db0: OrmDb, close_db: i64) -> FmrConnOut !IO !Net !Random !Time {
     let mut r = r0
     let mut db = db0
     let mut keep = true
@@ -255,7 +261,7 @@ fn fmr_open_db(app: FmrApp) -> OrmDb !Net !IO !Random {
 }
 
 // Per-HTTP-connection DB (legacy default when FMR_WORKERS=0).
-fn fmr_serve_conn(fd: i64) -> i64 !IO !Net !Random {
+fn fmr_serve_conn(fd: i64) -> i64 !IO !Net !Random !Time {
     let app = fmr_build_app()?
     let db = fmr_open_db(app)?
     let r = http_reader(fd)
@@ -265,7 +271,7 @@ fn fmr_serve_conn(fd: i64) -> i64 !IO !Net !Random {
 
 // Fixed worker: one long-lived DB + pull accepted fds from channel.
 // ctx = cell2(fd_chan, worker_id)
-fn fmr_pool_worker(ctx: i64) -> i64 !IO !Net !Par !Random {
+fn fmr_pool_worker(ctx: i64) -> i64 !IO !Net !Par !Random !Time {
     let ch = cell2_0(ctx)
     let wid = cell2_1(ctx)
     let app = fmr_build_app()?
@@ -307,7 +313,7 @@ fn fmr_workers_n() -> i64 !IO {
     return n
 }
 
-fn fmr_run() -> i64 !Net !IO !Par !Random {
+fn fmr_run() -> i64 !Net !IO !Par !Random !Time {
     let port = fmr_listen_port()?
     let sync_s = fmr_env_or("FMR_SYNC", "0")?
     let bsync = env("BAGA_SYNC")?

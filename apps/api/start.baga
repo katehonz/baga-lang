@@ -26,7 +26,7 @@ fn boot_migrate() -> i64 !Net !IO !Random {
     return 0
 }
 
-fn main() -> i64 !Net !IO !Par !Random {
+fn main() -> i64 !Net !IO !Par !Random !Time {
     let rc = boot_migrate()?
     if rc != 0 {
         return rc
