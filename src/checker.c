@@ -2172,6 +2172,10 @@ void check_program(Checker *c, Node *program) {
             ctx.enums[ctx.n_enums].name = item->enum_name;
             ctx.enums[ctx.n_enums].decl = item;
             ctx.n_enums++;
+        } else {
+            check_error(&ctx, item->pos,
+                "твърде много enum декларации (лимит %d) — раздели програмата",
+                FNS_MAX);
         }
         Type *et = type_new(is_sum ? TYPE_ENUM : TYPE_I64);
         et->name = strdup(item->enum_name);
@@ -2201,6 +2205,11 @@ void check_program(Checker *c, Node *program) {
                 ctx.fns[ctx.n_fns].fn_type = ft;
                 ctx.fns[ctx.n_fns].decl = item;
                 ctx.n_fns++;
+            } else {
+                check_error(&ctx, item->pos,
+                    "твърде много функции (лимит %d, FNS_MAX) — fn '%s' е отрязана; "
+                    "раздели модулите или вдигни лимита",
+                    FNS_MAX, item->fn_name);
             }
             item->type = ft;
 
@@ -2235,6 +2244,10 @@ void check_program(Checker *c, Node *program) {
                 ctx.structs[ctx.n_structs].name = item->struct_name;
                 ctx.structs[ctx.n_structs].decl = item;
                 ctx.n_structs++;
+            } else {
+                check_error(&ctx, item->pos,
+                    "твърде много struct декларации (лимит %d) — struct '%s' е отрязан",
+                    FNS_MAX, item->struct_name);
             }
             Type *st = type_new(TYPE_STRUCT);
             st->name = strdup(item->struct_name);
@@ -2253,6 +2266,10 @@ void check_program(Checker *c, Node *program) {
                         (item->enum_payloads && item->enum_payloads[j])
                             ? resolve_type_node(&ctx, item->enum_payloads[j]) : NULL;
                     ctx.n_variants++;
+                } else {
+                    check_error(&ctx, item->pos,
+                        "твърде много enum варианти (лимит %d) — '%s.%s' е отрязан",
+                        FNS_MAX * 4, item->enum_name, item->enum_variants[j]);
                 }
             }
         }

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Advanced plan (Go/Rust) + A5 FNS_MAX hard error
+- Plan: `docs/superpowers/plans/2026-08-05-advanced-go-rust.md` — Track A
+  language unlock, B product migrations, C verify/MEM differentiator.
+- A1 design: `docs/superpowers/specs/2026-08-05-sum-variant-qualify-design.md`
+  (qualified `Enum::Variant`, bare when unique).
+- **A5:** exceeding `FNS_MAX` (1024) for fns/structs/enums/variants is a
+  **compile error** (no more silent truncation of symbols).
+
 ### L3 sum enums as struct fields + real gRPC client
 - **Language (C backend):** structs and sum enums emit in **topological
   order**, so `struct Hold { r: Res }` and nested `enum Box { BoxHas(Wrap) }`

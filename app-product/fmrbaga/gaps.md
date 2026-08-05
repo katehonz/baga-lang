@@ -13,10 +13,11 @@
 **Symptom.** Importing http + jsonx + orm together “lost” functions (`getrandom`,
 `orm_query`, …) with no clear error.
 
-**Fix.** `FNS_MAX` raised to 1024 in `src/checker.c`. Still silent if exceeded —
-should warn when full.
+**Fix.** `FNS_MAX` raised to 1024 in `src/checker.c`. **A5 (2026-08-05):**
+exceeding the limit is a compile error (`твърде много функции`), not silent
+truncation.
 
-**Verdict.** Closed for normal apps; add a hard error when `n_fns == FNS_MAX`.
+**Verdict.** Closed for normal apps.
 
 ## G3 — `chr()` vs raw socket bytes (FIXED in std/net)
 
