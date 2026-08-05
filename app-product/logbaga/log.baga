@@ -56,3 +56,33 @@ fn log_info_req(msg: str, req_id: str) -> i64 !Time {
 fn log_error_req(msg: str, req_id: str) -> i64 !Time {
     return log_emit("error", msg, req_id)?
 }
+
+// Trace-correlated log line (C8 lite / otelbaga).
+fn log_emit_trace(level: str, msg: str, req_id: str, trace_id: str, span_id: str) -> i64 !Time {
+    let ts = time_now_ms()?
+    let mut line = "{"
+    line = concat(line, log_field_i64("ts", ts))
+    line = concat(line, ",")
+    line = concat(line, log_field("level", level))
+    line = concat(line, ",")
+    line = concat(line, log_field("msg", msg))
+    if req_id != "" {
+        line = concat(line, ",")
+        line = concat(line, log_field("req_id", req_id))
+    }
+    if trace_id != "" {
+        line = concat(line, ",")
+        line = concat(line, log_field("trace_id", trace_id))
+    }
+    if span_id != "" {
+        line = concat(line, ",")
+        line = concat(line, log_field("span_id", span_id))
+    }
+    line = concat(line, "}")
+    eprintln(line)
+    return 0
+}
+
+fn log_info_trace(msg: str, trace_id: str, span_id: str) -> i64 !Time {
+    return log_emit_trace("info", msg, "", trace_id, span_id)?
+}

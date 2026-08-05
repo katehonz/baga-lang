@@ -175,7 +175,8 @@ void type_merge_effects(Type *dst, Type *src) {
  * (fmrbaga) and multi-product apps need headroom. Silent drop when full. */
 #define FNS_MAX  1024
 
-typedef struct {
+typedef struct EnvEntry EnvEntry;
+struct EnvEntry {
     char *name;
     Type *type;
     int is_mut;
@@ -184,7 +185,11 @@ typedef struct {
     int is_param;     /* параметър — буферът е на извикващия, drop забранен */
     int captured;     /* заснет от ламбда — drop би оставил висящ указател */
     int scope_depth;  /* ctx->depth при дефиницията (за loop-правилото) */
-} EnvEntry;
+    /* MEM-3: region — EnvEntry of arena handle that produced this local
+     * via arena_alloc (NULL = not arena-allocated / unknown). Freeing the
+     * arena marks all locals with region==that entry as dropped. */
+    EnvEntry *region;
+};
 
 typedef struct {
     EnvEntry entries[ENV_VARS];
@@ -408,6 +413,7 @@ static void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) 
         s->entries[s->count].is_param = 0;
         s->entries[s->count].captured = 0;
         s->entries[s->count].scope_depth = ctx->depth;
+        s->entries[s->count].region = NULL;
         s->count++;
     }
 }
@@ -429,7 +435,25 @@ static void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_m
         s->entries[s->count].is_param = 0;
         s->entries[s->count].captured = 0;
         s->entries[s->count].scope_depth = ctx->depth;
+        s->entries[s->count].region = NULL;
         s->count++;
+    }
+}
+
+/* MEM-3: mark every local that came from arena `ae` as dropped (region free). */
+static void mem3_invalidate_region(CheckCtx *ctx, EnvEntry *ae) {
+    if (!ae) return;
+    for (int d = 0; d < ctx->depth; d++) {
+        EnvScope *s = &ctx->scopes[d];
+        for (int i = 0; i < s->count; i++) {
+            EnvEntry *e = &s->entries[i];
+            if (e->region != ae || e->dropped) continue;
+            e->dropped = 1;
+            if (ctx->n_drop_log < 256)
+                ctx->drop_log[ctx->n_drop_log++] = e;
+            else
+                ctx->drop_log_overflowed = 1;
+        }
     }
 }
 
@@ -1337,11 +1361,15 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                         else if (ctx->loop_depth && e->scope_depth <= ctx->loop_depth)
                             check_error(ctx, n->pos,
                                 "arena_free на външна за цикъла арена '%s'", ah->name);
-                        else if (ctx->n_drop_log < 256) {
-                            e->dropped = 1;
-                            ctx->drop_log[ctx->n_drop_log++] = e;
-                        } else {
-                            ctx->drop_log_overflowed = 1;
+                        else {
+                            /* invalidate all arena_alloc results from this handle first */
+                            mem3_invalidate_region(ctx, e);
+                            if (ctx->n_drop_log < 256) {
+                                e->dropped = 1;
+                                ctx->drop_log[ctx->n_drop_log++] = e;
+                            } else {
+                                ctx->drop_log_overflowed = 1;
+                            }
                         }
                     }
                 }
@@ -1759,6 +1787,16 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     n->let_name);
             }
             env_define_mut(ctx, n->let_name, decl_t, n->is_mut, n->pos);
+            /* MEM-3: let p = arena_alloc(a, n) → p.region = a */
+            if (n->let_init && n->let_init->kind == NODE_CALL &&
+                n->let_init->callee && n->let_init->callee->kind == NODE_IDENT &&
+                strcmp(n->let_init->callee->name, "arena_alloc") == 0 &&
+                n->let_init->args.len >= 1 &&
+                n->let_init->args.data[0]->kind == NODE_IDENT) {
+                EnvEntry *pe = env_find(ctx, n->let_name);
+                EnvEntry *ae = env_find(ctx, n->let_init->args.data[0]->name);
+                if (pe && ae) pe->region = ae;
+            }
             t = type_new(TYPE_VOID);
             break;
         }

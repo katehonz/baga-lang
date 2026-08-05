@@ -463,6 +463,11 @@ run examples/arena.baga > /tmp/baga_arena_mem3.txt
 printf "true\ntrue\narena ok\n" | diff - /tmp/baga_arena_mem3.txt > /dev/null \
 	&& echo "OK: arena happy path (MEM-3 regress)" \
 	|| { echo "FAIL: arena happy path"; exit 1; }
+# MEM-3 region: free arena invalidates arena_alloc results
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    arena_free(a)\n    print(p)\n}\n' > /tmp/baga_arena_reg1.baga
+run /tmp/baga_arena_reg1.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: region — use of arena_alloc result after free е хванат" \
+	|| { echo "FAIL: p след arena_free(a) трябва да гърми"; exit 1; }
 
 # ── 6. Static verifier oracle ────────────────────────────────────────────
 bash "$ROOT/scripts/run_verify.sh"

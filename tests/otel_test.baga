@@ -1,0 +1,44 @@
+// otel_test.baga — C8 lite W3C traceparent.
+
+import "otelbaga/otel.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Random {
+    let sample = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    let t = otel_parse_traceparent(sample)
+    check("parse_ok", t.ok == 1)
+    check("trace_id", t.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736")
+    check("span_id", t.span_id == "00f067aa0ba902b7")
+    check("flags", t.flags == "01")
+    check("format", otel_format(t) == sample)
+
+    // uppercase hex accepted, lowercased
+    let t2 = otel_parse_traceparent("00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01")
+    check("upper", t2.ok == 1 && t2.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736")
+
+    check("bad_parts", otel_parse_traceparent("00-only").ok == 0)
+    check("bad_len", otel_parse_traceparent("00-abcd-ef-01").ok == 0)
+    check("zero_trace", otel_parse_traceparent(concat(concat("00-", str_repeat("0", 32)), concat("-", concat(str_repeat("0", 16), "-01")))).ok == 0)
+
+    let root = otel_new_trace()?
+    check("new_ok", root.ok == 1 && len(root.trace_id) == 32 && len(root.span_id) == 16)
+    let child = otel_child(root)?
+    check("child_same_trace", child.trace_id == root.trace_id)
+    check("child_new_span", child.span_id != root.span_id)
+
+    let from = otel_from_header(sample)?
+    check("from_header", from.ok == 1 && from.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736")
+    check("header_name", otel_header_name() == "traceparent")
+
+    print("otel_test: all passed")
+    return 0
+}

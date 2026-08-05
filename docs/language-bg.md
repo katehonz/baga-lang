@@ -922,8 +922,10 @@ print(vec_len(v))             // OK — maybe-dropped не е definitely-dropped
 - **alloc/reset след free** — `използване на арена 'a' след arena_free`;
 - **всяка употреба на `a` след free** — `използване на 'a' след free`.
 
-Това е само на ниво **handle**: стойностите от `arena_alloc` не са
-маркирани с регион. Пълното region typing е по-късен milestone.
+**Region tags:** `let p = arena_alloc(a, n)` свързва `p` с арената `a`.
+След `arena_free(a)` употребата на `p` е `използване на 'p' след free`.
+Само директни `arena_alloc` свързвания се маркират (не аритметика върху
+указателя).
 
 ---
 

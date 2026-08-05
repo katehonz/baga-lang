@@ -916,9 +916,10 @@ honestly — same gating as M14.
 - **alloc/reset after free** — `използване на арена 'a' после arena_free`;
 - **any use of `a` after free** — `използване на 'a' след free`.
 
-This is **handle-level** only: values returned by `arena_alloc` are not
-region-tagged, so escaping pointers are still the programmer's contract.
-Full region typing remains a later milestone. Runtime: null-handle
+**Region tags (MEM-3):** `let p = arena_alloc(a, n)` associates `p` with
+arena handle `a`. After `arena_free(a)`, any use of `p` is
+`използване на 'p' след free`. Only direct `arena_alloc` bindings are
+tagged (not pointer arithmetic descendants). Runtime: null-handle
 guards on `arena_alloc` / `arena_reset`.
 
 ---

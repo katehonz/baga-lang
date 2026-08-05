@@ -96,7 +96,7 @@ rejected for the core (nothing stops a future `gc.baga` package).
 |------|-------|-------|
 | MEM-1 checker tracking | `src/checker.c` (per-var live/dropped table, path join at if/while like loop-havoc), `src/codegen_c.c` (`baga_drop_*` runtime) | `tests/std/drop_test.baga` + negative probes (use-after-drop, double-drop, leak-at-scope-exit) |
 | MEM-2 verifier kind | `src/verify.c` (protocol ghost state reuse) | `examples/verify/mem_*.baga` — REFUTED use-after-drop with witness |
-| MEM-3 regions | checker region tags + `arena_*` typing | **lite shipped**: handle seatbelt (double free / use-after-free); full region tags later |
+| MEM-3 regions | checker region tags + `arena_*` typing | **shipped**: handle seatbelt + `arena_alloc` result tags invalidated on free |
 | MEM-4 docs | `docs/language-{en,bg}.md` new §, CHANGELOG | regression |
 
 Risks: (1) aliasing through containers is the documented honesty boundary —

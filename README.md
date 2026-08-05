@@ -47,6 +47,7 @@ Real packages (not toy snippets) — each is a probe of the language and a shipp
 | **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) |
 | **relbaga** / **flagbaga** | Retry/breaker/bulkhead + typed CLI flags (Track C6–C7) |
 | **txnbaga** | 2PC coordinator + MVCC store (Track S8) |
+| **otelbaga** | W3C traceparent lite (Track C8 subset) |
 | **wsbaga** / **chatbaga** | WebSocket + multi-room chat (`poll`) |
 | **oauthbaga** | OAuth proxy (integration exam) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) |

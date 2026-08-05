@@ -3,6 +3,8 @@
 import "httpdbaga/http.baga"
 import "metbaga/met.baga"
 import "logbaga/log.baga"
+import "otelbaga/otel.baga"
+import "pbbaga/grpc_unary.baga"
 import "std/net/tcp.baga"
 import "std/net/poll.baga"
 import "std/os/os.baga"
@@ -26,10 +28,19 @@ fn cloud_new() -> CloudState {
     return CloudState { metrics: m, h_req: h_req, h_up: h_up, ready: 1 }
 }
 
-fn cloud_handle(st: CloudState, req: Request) -> Response {
+fn cloud_handle(st: CloudState, req: Request) -> Response !Random !Time {
     met_inc(st.metrics, st.h_req)
     let method = http_method(req)
     let path = http_path_only(req)
+    let tr = otel_from_header(http_header(req, otel_header_name()))?
+    log_info_trace(concat(concat(method, " "), path), tr.trace_id, tr.span_id)?
+
+    // gRPC unary Hello
+    if method == "POST" && grpc_is_method_path(path) == 1 {
+        let mut r = grpc_hello_response(http_body_bytes(req))
+        r = http_set_header(r, otel_header_name(), otel_format(tr))
+        return r
+    }
 
     if method == "GET" && path == "/healthz" {
         return http_json_response(200, "{\"status\":\"ok\"}")
@@ -46,24 +57,28 @@ fn cloud_handle(st: CloudState, req: Request) -> Response {
         return http_set_header(resp, "Content-Type", "text/plain; version=0.0.4")
     }
     if method == "GET" && (path == "/" || path == "/hello") {
-        return http_json_response(200, "{\"service\":\"cloudbaga\",\"msg\":\"Здравей, облак\"}")
+        let mut body = "{\"service\":\"cloudbaga\",\"msg\":\"Здравей, облак\""
+        body = concat(body, concat(concat(",\"trace_id\":\"", tr.trace_id), "\"}"))
+        let mut r = http_json_response(200, body)
+        r = http_set_header(r, otel_header_name(), otel_format(tr))
+        return r
     }
     return http_json_response(404, "{\"error\":\"not found\"}")
 }
 
-fn cloud_serve_one(st: CloudState, fd: i64) -> i64 !IO !Net {
+fn cloud_serve_one(st: CloudState, fd: i64) -> i64 !IO !Net !Random !Time {
     let out = http_read_request(fd)?
     if http_method(out) == "" {
         tcp_close(fd)?
         return 0
     }
-    let resp = cloud_handle(st, out)
+    let resp = cloud_handle(st, out)?
     http_respond(fd, resp)?
     tcp_close(fd)?
     return 0
 }
 
-fn cloud_run(port: i64) -> i64 !Net !IO !Par !Time {
+fn cloud_run(port: i64) -> i64 !Net !IO !Par !Time !Random {
     signal_watch(SIGTERM())
     signal_watch(SIGINT())
 

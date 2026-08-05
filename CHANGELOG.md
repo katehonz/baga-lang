@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### C8 lite otelbaga + MEM-3 region tags + cloudbaga gRPC
+- **otelbaga**: W3C `traceparent` parse/format/new/child/from_header;
+  `log_info_trace` / `log_emit_trace` for correlation. No OTLP export.
+- **MEM-3 region**: `let p = arena_alloc(a, n)` tags `p` with arena `a`;
+  `arena_free(a)` invalidates all such locals (compile error on use).
+- **cloudbaga**: POST gRPC method paths → `grpc_hello_response`; logs
+  include `trace_id`/`span_id`; echoes `traceparent` on `/hello`.
+
 ### HTTP: binary Response body + H2 trailers (gRPC-native)
 - `Response` gains `body_bytes`, `trail_ks`/`trail_vs`; helpers
   `http_response_bytes`, `http_set_trailer`, `http_body_len` /

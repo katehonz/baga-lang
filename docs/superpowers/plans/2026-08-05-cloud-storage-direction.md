@@ -36,7 +36,7 @@ What a K8s-grade service needs vs what we have:
 | health/readiness | **shipped** | **C4**: `cloudbaga` demo — `/healthz` `/readyz` `/metrics` + SIGTERM drain |
 | gRPC | **codec+frame+unary shipped** | **C5**: `pbbaga` + `grpc_unary` (binary HTTP body; H2 trailers still approximate) |
 | resilience | **shipped** | **C6**: `relbaga` — retry+backoff, circuit breaker, bulkhead |
-| tracing (OTel) | big | **C8**: defer, document as later |
+| tracing (OTel) | **lite shipped** | **C8**: `otelbaga` W3C traceparent + log fields; OTLP export still deferred |
 | flags/CLI | **shipped** | **C7**: `flagbaga` — typed CLI flags (`--name`, `=`, bools, positionals) |
 
 Flagship probe: a 12-factor demo service (config via env, `/metrics`,

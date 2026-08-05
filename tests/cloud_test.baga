@@ -13,7 +13,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
     }
 }
 
-fn cloud_serve_port(port: i64) -> i64 !Net !IO !Par !Time {
+fn cloud_serve_port(port: i64) -> i64 !Net !IO !Par !Time !Random {
     return cloud_run(port)?
 }
 
@@ -40,7 +40,7 @@ fn http_get(port: i64, path: str) -> str !Net !IO {
     return body
 }
 
-fn main() -> i64 !Net !IO !Par !Time {
+fn main() -> i64 !Net !IO !Par !Time !Random {
     print("cloud_test:")
     let fails = vec_new()
     let port = 18081

@@ -1,0 +1,143 @@
+// otel.baga — W3C Trace Context lite (Track C8 deferred subset).
+// Parses/generates `traceparent` (no OTLP export). Enough to correlate
+// logs and propagate IDs across HTTP hops.
+
+import "std/str/str.baga"
+import "std/random/random.baga"
+
+// version-traceid-spanid-flags  (hex, lowercase preferred)
+// 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+
+struct TraceCtx {
+    ok: i64,
+    version: str,
+    trace_id: str,   // 32 hex
+    span_id: str,    // 16 hex
+    flags: str       // 2 hex
+}
+
+fn otel_empty() -> TraceCtx {
+    return TraceCtx {
+        ok: 0, version: "00", trace_id: "", span_id: "", flags: "00"
+    }
+}
+
+fn otel_is_hex(c: i64) -> i64 {
+    if c >= 48 && c <= 57 { return 1 }   // 0-9
+    if c >= 97 && c <= 102 { return 1 }  // a-f
+    if c >= 65 && c <= 70 { return 1 }   // A-F
+    return 0
+}
+
+fn otel_hex_ok(s: str, n: i64) -> i64 {
+    if len(s) != n {
+        return 0
+    }
+    for i in 0..n {
+        if otel_is_hex(char_at(s, i)) == 0 {
+            return 0
+        }
+    }
+    return 1
+}
+
+fn otel_to_lower_hex(s: str) -> str {
+    let mut out = ""
+    for i in 0..len(s) {
+        let mut c = char_at(s, i)
+        if c >= 65 && c <= 70 {
+            c = c + 32
+        }
+        out = concat(out, chr(c))
+    }
+    return out
+}
+
+// Parse W3C traceparent. Returns ok=0 on malformed.
+fn otel_parse_traceparent(s: str) -> TraceCtx {
+    let parts = str_split(s, "-")
+    if vec_len(parts) != 4 {
+        return otel_empty()
+    }
+    let ver = vec_get(parts, 0)
+    let tid = otel_to_lower_hex(vec_get(parts, 1))
+    let sid = otel_to_lower_hex(vec_get(parts, 2))
+    let fl = otel_to_lower_hex(vec_get(parts, 3))
+    if len(ver) != 2 || otel_hex_ok(tid, 32) == 0 || otel_hex_ok(sid, 16) == 0 ||
+       otel_hex_ok(fl, 2) == 0 {
+        return otel_empty()
+    }
+    // all-zero trace/span invalid per W3C
+    if tid == str_repeat("0", 32) || sid == str_repeat("0", 16) {
+        return otel_empty()
+    }
+    return TraceCtx {
+        ok: 1, version: ver, trace_id: tid, span_id: sid, flags: fl
+    }
+}
+
+fn otel_format(t: TraceCtx) -> str {
+    if t.ok == 0 {
+        return ""
+    }
+    return concat(concat(concat(concat(concat(concat(t.version, "-"), t.trace_id), "-"),
+        t.span_id), "-"), t.flags)
+}
+
+// Hex from random_bytes (Vec 0..255).
+fn otel_hex_of(b: Vec<i64>) -> str {
+    return hex_encode(bytes_from_vec(b))
+}
+
+fn otel_new_trace() -> TraceCtx !Random {
+    let tid = otel_hex_of(random_bytes(16)?)
+    let sid = otel_hex_of(random_bytes(8)?)
+    // force non-zero (extremely unlikely zeros)
+    let mut t = tid
+    let mut s = sid
+    if t == str_repeat("0", 32) {
+        t = "4bf92f3577b34da6a3ce929d0e0e4736"
+    }
+    if s == str_repeat("0", 16) {
+        s = "00f067aa0ba902b7"
+    }
+    return TraceCtx {
+        ok: 1, version: "00", trace_id: t, span_id: s, flags: "01"
+    }
+}
+
+// Child span: same trace_id, new span_id, sampled if parent was.
+fn otel_child(parent: TraceCtx) -> TraceCtx !Random {
+    if parent.ok == 0 {
+        return otel_new_trace()?
+    }
+    let sid = otel_hex_of(random_bytes(8)?)
+    let mut s = sid
+    if s == str_repeat("0", 16) {
+        s = "00f067aa0ba902b7"
+    }
+    return TraceCtx {
+        ok: 1,
+        version: parent.version,
+        trace_id: parent.trace_id,
+        span_id: s,
+        flags: parent.flags
+    }
+}
+
+// Extract from HTTP header value (or empty → new root).
+fn otel_from_header(h: str) -> TraceCtx !Random {
+    if h == "" {
+        return otel_new_trace()?
+    }
+    let t = otel_parse_traceparent(h)
+    if t.ok == 1 {
+        return otel_child(t)?
+    }
+    return otel_new_trace()?
+}
+
+// Header name (canonical).
+fn otel_header_name() -> str {
+    return "traceparent"
+}

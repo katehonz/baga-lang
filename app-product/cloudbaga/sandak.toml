@@ -7,4 +7,6 @@ entry = "app.baga"
 httpdbaga = { path = "../httpdbaga" }
 metbaga = { path = "../metbaga" }
 logbaga = { path = "../logbaga" }
+otelbaga = { path = "../otelbaga" }
+pbbaga = { path = "../pbbaga" }
 std = { path = "../../std" }
