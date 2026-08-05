@@ -311,8 +311,8 @@ in `lsmbaga/gaps.md`.
 
 1. fmr middleware + apps/api otel/log — **B2.1 done**  
 2. OpenAPI emit from route table — **B2.4 done**  
-3. gRPC dual path on registry — **B3.3 done** (GetPackage/ListPackages)  
-4. Interop goldens / H2 client — **next** (B3.4)
+3. gRPC dual path on registry — **B3.3 done**  
+4. Interop goldens — **B3.4 done** (`tests/grpc_goldens_test.baga`)
 
 **Exit criteria:** single README path runs product API + gRPC call with metrics and graceful shutdown.
 
