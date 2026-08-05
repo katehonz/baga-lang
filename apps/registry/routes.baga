@@ -8,9 +8,15 @@ import "fmrbaga/ctx.baga"
 import "fmrbaga/deps.baga"
 import "fmrbaga/config.baga"
 import "fmrbaga/action.baga"
+import "fmrbaga/jsonx.baga"
+import "fmrbaga/respond.baga"
+import "metbaga/met.baga"
 import "ormbaga/orm.baga"
+import "httpdbaga/http.baga"
 
 fn RID_HEALTH() -> i64 { return 1 }
+fn RID_READY() -> i64 { return 2 }
+fn RID_METRICS() -> i64 { return 3 }
 fn RID_REG_INDEX() -> i64 { return 10 }
 fn RID_REG_SHOW() -> i64 { return 11 }
 fn RID_REG_CREATE() -> i64 { return 12 }
@@ -20,6 +26,9 @@ fn fmr_build_app() -> FmrApp !IO {
     let mut app = fmr_app_new(cfg.title, cfg.version)
     app = fmr_app_with_config(app, cfg)
     app = fmr_route(app, "GET", "/health", RID_HEALTH())
+    app = fmr_route(app, "GET", "/ready", RID_READY())
+    app = fmr_route(app, "GET", "/readyz", RID_READY())
+    app = fmr_route(app, "GET", "/metrics", RID_METRICS())
     app = fmr_route(app, "GET", "/v1/packages", RID_REG_INDEX())
     app = fmr_route(app, "GET", "/v1/packages/{name}", RID_REG_SHOW())
     app = fmr_route(app, "POST", "/v1/packages", RID_REG_CREATE())
@@ -42,9 +51,48 @@ fn act_reg_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {
     return act_ok(db, o)
 }
 
+fn act_reg_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    if fmr_shutting_down() == 1 {
+        return act_err(db, 503, "shutting down")
+    }
+    if orm_ok_db(db) == 0 {
+        return act_err(db, 503, "database unavailable")
+    }
+    let q = orm_query(db, "SELECT 1 AS ok")?
+    if q.ok == 0 {
+        return act_err(q.db, 503, "database ping failed")
+    }
+    let mut o = jobj_new()
+    o = jobj_str(o, "status", "ready")
+    o = jobj_str(o, "service", "baga-registry")
+    o = jobj_str(o, "database", "up")
+    return act_ok(q.db, o)
+}
+
+fn act_reg_metrics(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let m = met_new()
+    let h_up = met_gauge(m, "process_up", "1 if process accepting work")
+    let h_ready = met_gauge(m, "fmr_ready", "1 if /ready would succeed")
+    let h_info = met_gauge(m, "registry_info", "Constant 1; baga-registry")
+    if fmr_shutting_down() == 1 {
+        met_set(m, h_up, 0)
+        met_set(m, h_ready, 0)
+    } else {
+        met_set(m, h_up, 1)
+        met_set(m, h_ready, 1)
+    }
+    met_set(m, h_info, 1)
+    let body = met_render(m)
+    let mut r = http_response(200, body)
+    r = http_set_header(r, "Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+    return fmr_out(r, db)
+}
+
 fn fmr_dispatch(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     let id = ctx.route_id
     if id == RID_HEALTH() { return act_reg_health(ctx, db) }
+    if id == RID_READY() { return act_reg_ready(ctx, db)? }
+    if id == RID_METRICS() { return act_reg_metrics(ctx, db) }
     if id == RID_REG_INDEX() { return act_packages_index(ctx, db)? }
     if id == RID_REG_SHOW() { return act_packages_show(ctx, db)? }
     if id == RID_REG_CREATE() { return act_packages_create(ctx, db)? }

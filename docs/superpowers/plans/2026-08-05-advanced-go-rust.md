@@ -314,7 +314,8 @@ in `lsmbaga/gaps.md`.
 3. gRPC dual path on registry — **B3.3 done**  
 4. Interop goldens — **B3.4 done** (`tests/grpc_goldens_test.baga`)
 
-**Exit criteria:** single README path runs product API + gRPC call with metrics and graceful shutdown.
+**Exit criteria:** single README path runs product API + gRPC call with metrics and graceful shutdown.  
+**Done:** [docs/runbooks/product-path.md](../../runbooks/product-path.md) — API `/metrics`+`/ready`, registry dual gRPC, `fmr_run` SIGTERM/SIGINT + poll accept.
 
 ### Phase 4 — Engines + verify (B4 + C)
 

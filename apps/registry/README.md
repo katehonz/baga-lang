@@ -12,6 +12,8 @@ JSON/HTTP registry за Baga пакети (apps-roadmap №2, втора пол�
 | Метод | Път | Резултат |
 |-------|-----|----------|
 | GET | `/health` | `{status, service}` |
+| GET | `/ready` `/readyz` | DB ping; **503** while shutting down (SIGTERM) |
+| GET | `/metrics` | Prometheus text (`process_up`, `fmr_ready`, `registry_info`) |
 | GET | `/v1/packages?q=term` | `{items:[…], count}` — ILIKE в name/description |
 | GET | `/v1/packages/{name}` | пакет + `versions[]` |
 | POST | `/v1/packages` | publish: upsert пакет + нов version; 409 при дубъл версия, 422 при липсващи полета |

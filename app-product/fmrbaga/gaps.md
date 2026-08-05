@@ -67,6 +67,14 @@ app-defined hook (`fmr_before`) plus the built-in correlation chain.
 
 **Verdict.** Acceptable; barrel files + FNS_MAX headroom help.
 
+## G10 — Graceful shutdown (Phase 3 exit)
+
+**Shipped.** Accept loop is `poll_wait`-based; SIGTERM/SIGINT stop accepting.
+`/ready` returns 503 when `fmr_shutting_down()`. Workers receive stop fd.
+
+**Residual.** In-flight `go_bg` connections are not drained with a deadline;
+no shared request counter across workers (gauges only on `/metrics`).
+
 ## G9 — Dual protocol gRPC (B3.3 partial)
 
 **Shipped.** `fmr_handle` detects gRPC POSTs and calls app `fmr_grpc_handle`.

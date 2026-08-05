@@ -13,11 +13,24 @@ import "jsonx.baga"
 import "config.baga"
 import "httpdbaga/http.baga"
 import "ormbaga/orm.baga"
+import "logbaga/log.baga"
 import "std/net/tcp.baga"
+import "std/net/poll.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/random/random.baga"
 import "std/bytes/bytes.baga"
+
+fn FMR_SIGTERM() -> i64 { return 15 }
+fn FMR_SIGINT() -> i64 { return 2 }
+
+// 1 if SIGTERM/SIGINT is pending (draining / not ready).
+fn fmr_shutting_down() -> i64 {
+    if signal_check() != 0 {
+        return 1
+    }
+    return 0
+}
 
 struct FmrApp {
     router: Router,
@@ -335,7 +348,9 @@ fn fmr_pool_worker(ctx: i64) -> i64 !IO !Net !Par !Random !Time {
             running = 0
         } else {
             let fd = cell2_1(p)
-            if fd >= 0 {
+            if fd < 0 {
+                running = 0
+            } else {
                 let co = fmr_h1_conn(app, fd, http_reader(fd), db, 0)?
                 db = co.db
             }
@@ -360,6 +375,9 @@ fn fmr_workers_n() -> i64 !IO {
 }
 
 fn fmr_run() -> i64 !Net !IO !Par !Random !Time {
+    signal_watch(FMR_SIGTERM())
+    signal_watch(FMR_SIGINT())
+
     let port = fmr_listen_port()?
     let sync_s = fmr_env_or("FMR_SYNC", "0")?
     let bsync = env("BAGA_SYNC")?
@@ -376,7 +394,11 @@ fn fmr_run() -> i64 !Net !IO !Par !Random !Time {
     let app = fmr_build_app()?
     print(concat(concat("fmrbaga ", app.title), concat(" v", app.version)))
 
+    let pollfds: Vec<i64> = vec_new()
+    vec_push(pollfds, listener)
+
     // Mode priority: FMR_WORKERS>0 → fixed pool; else FMR_SYNC → serial; else go_bg/conn
+    // Accept loop always uses poll so SIGTERM/SIGINT are observed (Phase 3 exit).
     if workers > 0 {
         let ch = chan_new(workers * 4)
         let mut i: i64 = 0
@@ -386,29 +408,68 @@ fn fmr_run() -> i64 !Net !IO !Par !Random !Time {
         }
         print(concat(concat("listening on :", int_to_str(port)),
             concat(concat(" (workers=", int_to_str(workers)), ", 1 DB each)")))
-        while true {
-            let fd = tcp_accept(listener)?
-            if fd >= 0 {
-                chan_send(ch, fd)
+        let mut run_w: i64 = 1
+        while run_w == 1 {
+            if fmr_shutting_down() == 1 {
+                let sig = signal_clear()
+                log_warn(concat("fmrbaga shutdown signal ", int_to_str(sig)))?
+                run_w = 0
+            } else {
+                let pr = poll_wait(pollfds, 200)?
+                if pr.ok < 0 {
+                    run_w = 0
+                } else {
+                    if poll_has(pr.ready, listener) == 1 {
+                        let fd = tcp_accept(listener)?
+                        if fd >= 0 {
+                            chan_send(ch, fd)
+                        }
+                    }
+                }
             }
         }
+        // stop workers
+        let mut j: i64 = 0
+        while j < workers {
+            chan_send(ch, -1)
+            j = j + 1
+        }
+        sleep_ms(100)
+        tcp_close(listener)?
+        log_info("fmrbaga stopped")?
         return 0
     }
 
     if sync_mode == "1" {
-        print(concat("listening on :", concat(int_to_str(port), " (sync)")))
+        print(concat("listening on :", concat(int_to_str(port), " (sync, graceful)")))
     } else {
-        print(concat("listening on :", concat(int_to_str(port), " (go_bg per connection)")))
+        print(concat("listening on :", concat(int_to_str(port), " (go_bg, graceful)")))
     }
-    while true {
-        let fd = tcp_accept(listener)?
-        if fd >= 0 {
-            if sync_mode == "1" {
-                fmr_serve_conn(fd)?
+    let mut running: i64 = 1
+    while running == 1 {
+        if fmr_shutting_down() == 1 {
+            let sig = signal_clear()
+            log_warn(concat("fmrbaga shutdown signal ", int_to_str(sig)))?
+            running = 0
+        } else {
+            let pr = poll_wait(pollfds, 200)?
+            if pr.ok < 0 {
+                running = 0
             } else {
-                go_bg(fmr_serve_conn, fd)
+                if poll_has(pr.ready, listener) == 1 {
+                    let fd = tcp_accept(listener)?
+                    if fd >= 0 {
+                        if sync_mode == "1" {
+                            fmr_serve_conn(fd)?
+                        } else {
+                            go_bg(fmr_serve_conn, fd)
+                        }
+                    }
+                }
             }
         }
     }
+    tcp_close(listener)?
+    log_info("fmrbaga stopped")?
     return 0
 }

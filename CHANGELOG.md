@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Phase 3 exit — metrics + graceful shutdown
+- **fmrbaga:** `fmr_run` uses `poll_wait` + `signal_watch(SIGTERM/SIGINT)`;
+  stops accepting on signal; `fmr_shutting_down()` for readiness drain.
+- **apps/api + registry:** `GET /metrics` (metbaga), `/ready`/`/readyz` → 503
+  while shutting down.
+- **Runbook:** `docs/runbooks/product-path.md` (API + registry gRPC + probes).
+
 ### Phase 4 B4.4 — latency bench gate
 - Recorded `./bench/run_latency.sh` on Ryzen 5 3600 / baga 0.7.0:
   **p50 ≈ 7 ms**, **p99 ≈ 8 ms** per 8e6-iter batch (40 batches).

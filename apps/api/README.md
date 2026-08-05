@@ -51,6 +51,8 @@ Migrate runs on boot (`migrate_up`). Re-run after schema changes.
 
 ```bash
 curl -s localhost:8080/health
+curl -s localhost:8080/ready
+curl -s localhost:8080/metrics | head
 # correlation headers (B2.1 middleware)
 curl -s -D- localhost:8080/health -o /dev/null | grep -iE 'request-id|traceparent'
 # propagate a parent trace
@@ -62,7 +64,11 @@ curl -s -X POST localhost:8080/v1/posts -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"user_id":1,"title":"hi","body":"from fmr"}'
 curl -s 'localhost:8080/v1/posts?limit=10&offset=0' -H "Authorization: Bearer $TOKEN"
+# graceful stop: kill -TERM <pid>  → /ready becomes 503, accept loop exits
 ```
+
+**Full product path** (API + registry gRPC + metrics + SIGTERM):  
+[docs/runbooks/product-path.md](../../docs/runbooks/product-path.md)
 
 Automated: `tests/api_test.baga` (needs same PG defaults).
 

@@ -9,4 +9,5 @@ jwtbaga = { path = "../jwtbaga" }
 ormbaga = { path = "../ormbaga" }
 otelbaga = { path = "../otelbaga" }
 logbaga = { path = "../logbaga" }
+metbaga = { path = "../metbaga" }
 std = { path = "../../std" }

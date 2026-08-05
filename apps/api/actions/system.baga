@@ -1,11 +1,14 @@
-// actions/system.baga — health / ready / meta (Lucky: Api::System::*)
+// actions/system.baga — health / ready / meta / metrics (Lucky: Api::System::*)
 
 import "fmrbaga/app.baga"
 import "fmrbaga/ctx.baga"
 import "fmrbaga/action.baga"
 import "fmrbaga/jsonx.baga"
 import "fmrbaga/openapi.baga"
+import "fmrbaga/respond.baga"
+import "metbaga/met.baga"
 import "ormbaga/orm.baga"
+import "httpdbaga/http.baga"
 
 fn act_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {
     let mut o = jobj_new()
@@ -14,6 +17,10 @@ fn act_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {
 }
 
 fn act_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    // Phase 3: drain — SIGTERM/SIGINT makes readiness fail while process exits.
+    if fmr_shutting_down() == 1 {
+        return act_err(db, 503, "shutting down")
+    }
     if orm_ok_db(db) == 0 {
         return act_err(db, 503, "database unavailable")
     }
@@ -34,6 +41,7 @@ fn act_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
     o = jobj_str(o, "version", app.version)
     o = jobj_str(o, "framework", "fmrbaga")
     o = jobj_str(o, "openapi", "/openapi.json")
+    o = jobj_str(o, "metrics", "/metrics")
     return act_ok(db, o)
 }
 
@@ -41,4 +49,25 @@ fn act_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
     let app = fmr_build_app()?
     // B2.4: paths from live route table (same as fmr_dispatch)
     return act_ok(db, fmr_openapi_from_router(app.router, app.title, app.version))
+}
+
+// Prometheus text (metbaga). process_up / fmr_ready reflect signal drain.
+fn act_metrics(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let m = met_new()
+    let h_up = met_gauge(m, "process_up", "1 if process accepting work")
+    let h_ready = met_gauge(m, "fmr_ready", "1 if /ready would succeed (not shutting down)")
+    let h_info = met_gauge(m, "fmr_info", "Constant 1; identify fmrbaga process")
+    if fmr_shutting_down() == 1 {
+        met_set(m, h_up, 0)
+        met_set(m, h_ready, 0)
+    } else {
+        met_set(m, h_up, 1)
+        met_set(m, h_ready, 1)
+    }
+    met_set(m, h_info, 1)
+    let body = met_render(m)
+    let mut r = http_response(200, body)
+    r = http_set_header(r, "Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+    r = http_set_header(r, "X-Powered-By", "fmrbaga")
+    return fmr_out(r, db)
 }

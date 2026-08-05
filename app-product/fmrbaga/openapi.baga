@@ -449,6 +449,9 @@ fn oas_ok_schema(method: str, pattern: str) -> str {
     if pattern == "/openapi.json" {
         return ""
     }
+    if pattern == "/metrics" {
+        return ""
+    }
     if pattern == "/v1/meta" {
         return "Status"
     }
@@ -584,6 +587,7 @@ fn oas_catalog_router() -> Router {
     let mut r = router_new()
     r = router_add(r, "GET", "/health", 1)
     r = router_add(r, "GET", "/ready", 2)
+    r = router_add(r, "GET", "/metrics", 5)
     r = router_add(r, "GET", "/v1/meta", 3)
     r = router_add(r, "GET", "/openapi.json", 4)
     r = router_add(r, "POST", "/v1/auth/token", 10)
