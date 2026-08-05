@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### RocksDB path R8 — oldest-N compact pick
+- **lsmbaga:** `LsmDB.merge_pick` (default 0 = merge all files when a level
+  is over). When `>0`, compact merges the **oldest N** SSTs only (min 2);
+  with byte targets the pick grows until size coverage. Env `LSM_MERGE_PICK`.
+  Tests: `r8_*` in `tests/lsm_test.baga`.
+
 ### Advanced plan DoD met
 - **Plan close-out:** `docs/superpowers/plans/2026-08-05-advanced-go-rust.md`
   status **plan DoD met**; evidence table in §7; residual horizon §9/§11.

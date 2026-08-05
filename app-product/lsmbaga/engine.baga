@@ -1,6 +1,7 @@
 // engine.baga — LSM: WAL + memtable + flush + L0..L3 + recovery.
 // Values Map<str,bytes>. Flush → L0; promote by file-count (compact_at)
-// and/or byte-size targets (target_bytes; L1=4×, L2=16×, L3=64×). Pure tombs
+// and/or byte-size targets (target_bytes; L1=4×, L2=16×, L3=64×). R8:
+// merge_pick > 0 merges oldest-N only (0 = merge all over files). Pure tombs
 // kept on partial merges.
 
 import "codec.baga"
@@ -18,6 +19,7 @@ struct LsmDB {
     flush_at: i64,
     compact_at: i64,
     target_bytes: i64,  // 0 = byte triggers off; L0 target size
+    merge_pick: i64,    // 0 = merge all over files; >0 = oldest-N (R8)
     wal_fd: i64,
     wal_off: i64,
     gens: Vec<i64>,
@@ -63,7 +65,8 @@ fn lsm_empty_db(dir: str) -> LsmDB {
     let levels: Vec<i64> = vec_new()
     return LsmDB {
         dir: dir, mem: map_new(), tomb: map_new(), mem_n: 0,
-        flush_at: 32, compact_at: 3, target_bytes: 0, wal_fd: -1, wal_off: 0,
+        flush_at: 32, compact_at: 3, target_bytes: 0, merge_pick: 0,
+        wal_fd: -1, wal_off: 0,
         gens: gens, levels: levels, next_gen: 1, cache: pc_new(4096, 32),
         sync_every: 1, since_sync: 0, ok: 1
     }
@@ -108,7 +111,8 @@ fn lsm_read_manifest(dir: str) -> LsmDB !IO {
     }
     return LsmDB {
         dir: dir, mem: map_new(), tomb: map_new(), mem_n: 0,
-        flush_at: 32, compact_at: 3, target_bytes: 0, wal_fd: -1, wal_off: 0,
+        flush_at: 32, compact_at: 3, target_bytes: 0, merge_pick: 0,
+        wal_fd: -1, wal_off: 0,
         gens: gens, levels: levels, next_gen: next_gen, cache: pc_new(4096, 32),
         sync_every: 1, since_sync: 0, ok: 1
     }
@@ -296,6 +300,71 @@ fn lsm_level_over(db: LsmDB, level: i64, nfiles: i64, nbytes: i64) -> i64 {
     return 0
 }
 
+// First `k` indices (oldest-first within level). k clamped to [0, len].
+fn lsm_take_oldest(idxs: Vec<i64>, k: i64) -> Vec<i64> {
+    let out: Vec<i64> = vec_new()
+    let n = vec_len(idxs)
+    let mut m = k
+    if m > n {
+        m = n
+    }
+    if m < 0 {
+        m = 0
+    }
+    let mut i: i64 = 0
+    while i < m {
+        vec_push(out, vec_get(idxs, i))
+        i = i + 1
+    }
+    return out
+}
+
+// R8 pick: merge_pick==0 → all idxs; else oldest max(2, merge_pick) (capped by n).
+// With byte targets: grow the pick until cumulative size ≥ level target.
+fn lsm_pick_merge(db: LsmDB, idxs: Vec<i64>, level: i64) -> Vec<i64> !IO {
+    let n = vec_len(idxs)
+    if n < 2 {
+        return idxs
+    }
+    if db.merge_pick <= 0 {
+        return idxs
+    }
+    let mut k = db.merge_pick
+    if k < 2 {
+        k = 2
+    }
+    if k > n {
+        k = n
+    }
+    let tgt = lsm_level_target(db, level)
+    if tgt > 0 {
+        let mut sum: i64 = 0
+        let mut i: i64 = 0
+        let mut done: i64 = 0
+        while i < n && done == 0 {
+            let gen = vec_get(db.gens, vec_get(idxs, i))
+            sum = sum + lsm_sst_bytes(db.dir, gen)?
+            i = i + 1
+            if i >= 2 && sum >= tgt {
+                if i >= k {
+                    k = i
+                    done = 1
+                }
+            }
+        }
+        if done == 0 {
+            k = n
+        }
+        if k > n {
+            k = n
+        }
+        if k < 2 {
+            k = 2
+        }
+    }
+    return lsm_take_oldest(idxs, k)
+}
+
 // Merge gens at given indices (ascending order), write new SST at `out_level`.
 // Pure tombs dropped only when the merge covers *all* gens (nothing older left
 // to shadow). Partial merges (L0→L1 with L1 remaining) keep pure tombs.
@@ -405,41 +474,47 @@ fn lsm_indices_at(db: LsmDB, level: i64) -> Vec<i64> {
     return out
 }
 
-// L0→L1→L2→L3 by file-count and/or byte targets; collapse deepest multi-file.
+// L0→L1→L2→L3 by file-count and/or byte targets; R8 oldest-N when merge_pick>0.
 fn lsm_compact(db: LsmDB) -> LsmDB !IO {
     // L0 → L1
     let l0 = lsm_indices_at(db, 0)
     let b0 = lsm_level_bytes(db, 0)?
     if lsm_level_over(db, 0, vec_len(l0), b0) == 1 {
-        db = lsm_merge_indices(db, l0, 1)?
+        let p0 = lsm_pick_merge(db, l0, 0)?
+        db = lsm_merge_indices(db, p0, 1)?
     }
     // L1 → L2
     let l1 = lsm_indices_at(db, 1)
     let b1 = lsm_level_bytes(db, 1)?
     if lsm_level_over(db, 1, vec_len(l1), b1) == 1 {
-        db = lsm_merge_indices(db, l1, 2)?
+        let p1 = lsm_pick_merge(db, l1, 1)?
+        db = lsm_merge_indices(db, p1, 2)?
     } else {
         // Legacy R5: collapse a pair of L1 files when under compact_at (file path only).
         if vec_len(l1) >= 2 && vec_len(l1) < db.compact_at && db.target_bytes <= 0 {
-            db = lsm_merge_indices(db, l1, 1)?
+            let p1b = lsm_take_oldest(l1, 2)
+            db = lsm_merge_indices(db, p1b, 1)?
         }
     }
     // L2 → L3 (or collapse L2 when no L3 promotion needed)
     let l2 = lsm_indices_at(db, 2)
     let b2 = lsm_level_bytes(db, 2)?
     if lsm_level_over(db, 2, vec_len(l2), b2) == 1 {
-        db = lsm_merge_indices(db, l2, 3)?
+        let p2 = lsm_pick_merge(db, l2, 2)?
+        db = lsm_merge_indices(db, p2, 3)?
     } else {
         if vec_len(l2) >= 2 && db.target_bytes <= 0 {
-            db = lsm_merge_indices(db, l2, 2)?
+            let p2b = lsm_take_oldest(l2, 2)
+            db = lsm_merge_indices(db, p2b, 2)?
         }
     }
     // Collapse L3 when multi-file
     let l3 = lsm_indices_at(db, 3)
     let b3 = lsm_level_bytes(db, 3)?
-    if lsm_level_over(db, 3, vec_len(l3), b3) == 1 || (vec_len(l3) >= 2 && db.target_bytes <= 0) {
-        if vec_len(l3) >= 2 {
-            db = lsm_merge_indices(db, l3, 3)?
+    if vec_len(l3) >= 2 {
+        if lsm_level_over(db, 3, vec_len(l3), b3) == 1 || db.target_bytes <= 0 {
+            let p3 = lsm_pick_merge(db, l3, 3)?
+            db = lsm_merge_indices(db, p3, 3)?
         }
     }
     return db

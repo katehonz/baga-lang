@@ -49,9 +49,12 @@ Env `LSM_TARGET_BYTES` on serve. Test: `r7_*` in `tests/lsm_test.baga`.
 WAL+SST reopen (tomb/wal/sst), multi-reopen after compact, page-cache stress
 with `cap=2` (eviction) still correct. v5 get remains partial-file for hits.
 
+**Shipped (R8):** **oldest-N merge pick** via `LsmDB.merge_pick` (0 = merge all
+over files; >0 = oldest max(2,N), with byte targets growing the pick until
+coverage). Env `LSM_MERGE_PICK`. Test: `r8_*` in `tests/lsm_test.baga`.
+
 **Still open (later):** drop whole-body CRC on get-only path, bloom as
-standalone filter file, finer per-level pick (not always merge-all), rename
-**rocksbaga** when quality warrants.
+standalone filter file, rename **rocksbaga** when quality warrants.
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

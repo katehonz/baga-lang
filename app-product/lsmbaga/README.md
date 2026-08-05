@@ -21,7 +21,7 @@ and binary `fd_*_bytes` in `std/os`.
 | Memtable | `Map<str, bytes>` + tombstone map (binary-safe values) |
 | SSTable | Magic **`BAGASST5`**: core + **per-block crc** + bloom + footer. Get = footer → bloom → index → block + CRC via page cache. **v1–v4** readable |
 | Flush | Threshold `flush_at` (default 32); writes **L0**; `SAVE` forces flush |
-| Compaction | **L0→L1→L2→L3** by file-count (`compact_at`) and/or **byte targets** (`target_bytes`: L0=T, L1=4T, L2=16T, L3=64T); pure tombs kept on partial merge |
+| Compaction | **L0→L1→L2→L3** by file-count (`compact_at`) and/or **byte targets** (`target_bytes`: L0=T, L1=4T, L2=16T, L3=64T); optional **oldest-N** (`merge_pick`); pure tombs kept on partial merge |
 | Recovery | MANIFEST + SST gens + WAL replay |
 | RESP | `PING` `SET` `GET` `DEL` `EXISTS` `INCR` `KEYS` `DBSIZE` `SAVE` `QUIT` |
 
@@ -56,15 +56,17 @@ redis-cli -p 6379 SAVE
 ```
 
 Env: `LSMPATH`, `LSMPORT` / port arg, `LSM_FLUSH_AT`, `LSM_COMPACT_AT`,
-`LSM_TARGET_BYTES` (R7; 0/unset = file-count only).
+`LSM_TARGET_BYTES` (R7; 0/unset = file-count only),
+`LSM_MERGE_PICK` (R8; 0/unset = merge all over files).
 
 ## API (engine)
 
 ```baga
 fn lsm_open(dir, flush_at, compact_at) -> LsmDB !IO
 // set db.target_bytes > 0 for byte-size L0 target (higher levels ×4 each)
+// set db.merge_pick > 0 for oldest-N merge (R8; 0 = merge-all over files)
 fn lsm_put / lsm_put_b / lsm_del / lsm_get / lsm_keys / lsm_flush_force / lsm_close
-fn lsm_level_bytes / lsm_level_target / lsm_count_level  // compaction helpers
+fn lsm_level_bytes / lsm_level_target / lsm_count_level / lsm_pick_merge
 // lsm_put_b(key, bytes) — binary values; lsm_get returns bytes
 fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 ```
@@ -85,7 +87,7 @@ process kill after a completed put is equivalent to clean close for that op.
 - No TTL/EXPIRE; SET options rejected with ERR.
 - v5 get is partial IO + per-block CRC; compact/`KEYS` still full-load + whole-body CRC.
 - Levels L0–L3; default compact is **file count**; optional **byte targets**
-  (R7) merge whole level when over — not RocksDB-style score pick.
+  (R7) and **oldest-N** pick (R8 `merge_pick`) — not full RocksDB scoring.
 - Single process; no multi-writer.
 - Kill mid-`fdatasync` can leave a partial WAL record (replay stops at CRC fail).
 

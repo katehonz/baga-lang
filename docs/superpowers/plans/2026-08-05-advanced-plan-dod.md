@@ -32,7 +32,7 @@
 
 Ordered for north-star fit (storage + product + language honesty):
 
-1. **Storage polish** — finer compact pick, bloom filter file, then optional rename to rocksbaga  
+1. **Storage polish** — ~~finer compact pick (R8)~~; bloom filter file; optional rename to rocksbaga  
 2. **Product depth** — L5 fmr routes; gRPC H2 client; more status/ctx defaults  
 3. **Language** — LLVM L3 or keep C-only; optional C′ borrow-lite impl  
 4. **Sketches only if product needs them** — syscall6 + mmap for real io_uring; full protoc  

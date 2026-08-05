@@ -171,6 +171,28 @@ fn main() -> i64 !Net !IO !Par !Time {
     check(fails, "r7_get_b6", gb6.found == 1)
     lsm_close(db5)?
 
+    // --- R8: oldest-N pick leaves L0 remainder (compact_at=4, merge_pick=2) ---
+    wipe("/tmp/baga_lsm_pick")?
+    let mut db6 = lsm_open("/tmp/baga_lsm_pick", 1, 4)?
+    check(fails, "r8_open", db6.ok == 1)
+    db6.merge_pick = 2
+    db6 = lsm_put(db6, "p1", "1")?
+    db6 = lsm_put(db6, "p2", "2")?
+    db6 = lsm_put(db6, "p3", "3")?   // L0=3 < compact_at
+    check(fails, "r8_pre_n0", lsm_count_level(db6.levels, 0) == 3)
+    db6 = lsm_put(db6, "p4", "4")?   // L0=4 → over → pick 2 → leave 2 L0 + 1 L1
+    let r8n0 = lsm_count_level(db6.levels, 0)
+    let r8n1 = lsm_count_level(db6.levels, 1)
+    check(fails, "r8_l0_remainder", r8n0 == 2)
+    check(fails, "r8_l1_has", r8n1 >= 1)
+    let gp1 = lsm_get(db6, "p1")?
+    db6 = gp1.db
+    check(fails, "r8_get_p1", gp1.found == 1 && str_of_bytes(gp1.val) == "1")
+    let gp4 = lsm_get(db6, "p4")?
+    db6 = gp4.db
+    check(fails, "r8_get_p4", gp4.found == 1 && str_of_bytes(gp4.val) == "4")
+    lsm_close(db6)?
+
     // --- RESP loopback ---
     wipe("/tmp/baga_lsm_resp")?
     // server reads LSMPATH from env — set via... we can't set env from baga easily

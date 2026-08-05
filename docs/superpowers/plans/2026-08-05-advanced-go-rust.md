@@ -307,6 +307,7 @@ feature clone, but a real LSM store that forces the language.
 | R5 | **BAGASST4** footer partial get + **L0/L1** levels | ✅ |
 | R6 | **BAGASST5** per-block CRC + **L2** file-count tiers | ✅ |
 | R7 | Byte-size targets + **L3**; optional rocksbaga name when quality warrants | ✅ targets+L3; rename later |
+| R8 | Oldest-N merge pick (`merge_pick`) | ✅ |
 
 **Rule:** every R step keeps `tests/lsm_test.baga` green and documents honesty
 in `lsmbaga/gaps.md`.

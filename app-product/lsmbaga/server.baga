@@ -231,6 +231,14 @@ fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
             db.target_bytes = tb
         }
     }
+    // R8: oldest-N merge pick (0 / unset = merge all over files).
+    let me = env("LSM_MERGE_PICK")?
+    if me != "" {
+        let mp = parse_int(me)
+        if mp > 0 {
+            db.merge_pick = mp
+        }
+    }
     let listener = tcp_listen(port)?
     if listener < 0 {
         lsm_close(db)?
