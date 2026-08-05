@@ -66,6 +66,21 @@ static LLVMTypeRef baga_vec_ptr_ty(void);
 static LLVMTypeRef baga_bytes_ty(void);
 static LLVMTypeRef user_struct_ty(const char *name);
 
+/* 1 ако името е L3 sum enum (вариант с payload) — LLVM бекендът ги отказва честно */
+static int is_sum_enum_name(const char *name) {
+    if (!name || !lg.program) return 0;
+    for (int i = 0; i < lg.program->items.len; i++) {
+        Node *item = lg.program->items.data[i];
+        if (item->kind != NODE_ENUM) continue;
+        if (strcmp(item->enum_name, name) != 0) continue;
+        if (!item->enum_payloads) return 0;
+        for (int j = 0; j < item->n_variants; j++)
+            if (item->enum_payloads[j]) return 1;
+        return 0;
+    }
+    return 0;
+}
+
 static LLVMTypeRef llvm_type_resolved(Type *ty) {
     if (!ty) return lg.i64_ty;
     switch (ty->kind) {
@@ -80,6 +95,7 @@ static LLVMTypeRef llvm_type_resolved(Type *ty) {
             return user_struct_ty(ty->name);
         case TYPE_VEC:    return baga_vec_ptr_ty();
         case TYPE_MAP:    llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)"); break;
+        case TYPE_ENUM:   llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11"); break;
         case TYPE_BYTES:  return baga_bytes_ty();
         case TYPE_ARRAY:  llvm_unsupported("масиви"); break;
         case TYPE_REF:    llvm_unsupported("референции"); break;
@@ -100,6 +116,8 @@ static LLVMTypeRef llvm_type(Node *ty) {
         if (strcmp(ty->type_name, "Vec") == 0) return baga_vec_ptr_ty();
         if (strcmp(ty->type_name, "Map") == 0)
             llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)");
+        if (is_sum_enum_name(ty->type_name))
+            llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
         return user_struct_ty(ty->type_name);
     }
     if (ty->kind == NODE_TYPE_EFFECT) return llvm_type(ty->inner_type);
@@ -1779,6 +1797,10 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
 }
 
 static LLVMValueRef emit_match_llvm(Node *n) {
+    /* L3: match върху sum enum е само в C бекенда */
+    if (n->match_expr && n->match_expr->type &&
+        n->match_expr->type->kind == TYPE_ENUM)
+        llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
     LLVMValueRef mv = emit_expr_llvm(n->match_expr);
     if (!mv || LLVMGetTypeKind(LLVMTypeOf(mv)) != LLVMIntegerTypeKind)
         llvm_unsupported("match върху не-целочислена стойност");
@@ -1820,6 +1842,10 @@ static LLVMValueRef emit_match_llvm(Node *n) {
         }
     }
 
+    /* без wildcard: последният match_next остава отворен — пада в merge
+     * (както codegen_c: _mr остава 0 при непокрит случай) */
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
+        LLVMBuildBr(lg.builder, merge_bb);
     LLVMPositionBuilderAtEnd(lg.builder, merge_bb);
     if (!res_alloca) return NULL;
     char *name = tmp_name();
@@ -1855,6 +1881,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             /* L5: fn стойности (closures) са само в C бекенда */
             if (n->type && n->type->kind == TYPE_FN)
                 llvm_unsupported("fn стойности/closures (само C бекенда; вж. docs/language-en.md §12.6)");
+            /* L3: sum types (payload enums) са само в C бекенда */
+            if (n->type && n->type->kind == TYPE_ENUM)
+                llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
             LLVMValueRef alloca = st_lookup(n->name);
             if (alloca) {
                 char *name = tmp_name();
@@ -1954,6 +1983,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         }
 
         case NODE_CALL: {
+            /* L3: конструктори на sum enum-и са само в C бекенда */
+            if (n->type && n->type->kind == TYPE_ENUM)
+                llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
             /* extern fn → raw libc symbol, before the print/builtin dispatch
              * (an extern named `write` must not become baga_write) */
             Node *ef = NULL;

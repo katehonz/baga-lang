@@ -1,0 +1,82 @@
+// sumtype_test.baga — L3: sum types (payload enums) + full match.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+enum Res { Ok(i64), Err(str) }
+enum Opt { Some(str), None }
+struct Point { x: i64, y: i64 }
+enum Shape { Dot, Circle(Point) }
+enum Blob { Raw(bytes), Empty }
+
+fn unwrap_or(r: Res, dflt: i64) -> i64 {
+    return match r { Ok(v) => v, _ => dflt }
+}
+
+fn describe(o: Opt) -> str {
+    return match o {
+        Some(s) => s,
+        None => "нищо",
+    }
+}
+
+fn make_ok(x: i64) -> Res {
+    return Ok(x)
+}
+
+fn main() {
+    let r = Ok(42)
+    check("construct_match", match r { Ok(v) => v, Err(e) => 0 } == 42)
+
+    let e = Err("гръм")
+    check("err_wildcard", unwrap_or(e, -1) == -1)
+    check("ok_unwrap", unwrap_or(r, -1) == 42)
+    check("fn_return", unwrap_or(make_ok(7), 0) == 7)
+
+    check("none_bare", describe(None) == "нищо")
+    check("some_str", describe(Some("има")) == "има")
+
+    let c = Circle(Point { x: 3, y: 4 })
+    let area = match c {
+        Circle(p) => p.x * p.x + p.y * p.y,
+        Dot => 0,
+    }
+    check("struct_payload", area == 25)
+    check("dot_tag", match Dot { Dot => 1, Circle(p) => 0 } == 1)
+
+    let msg = match e { Ok(v) => "ок", Err(m) => m }
+    check("err_binding", msg == "гръм")
+
+    let rr = match r {
+        Ok(v) => match e { Ok(w) => v + w, Err(m) => v },
+        Err(m) => 0,
+    }
+    check("nested_match", rr == 42)
+
+    let mut cur = Ok(1)
+    cur = Err("сменен")
+    check("reassign", unwrap_or(cur, 9) == 9)
+
+    let ann: Res = Ok(5)
+    check("annotation", unwrap_or(ann, 0) == 5)
+
+    let bl = Raw(bytes_of_str("blob"))
+    check("blob_len", match bl { Raw(p) => bytes_len(p), Empty => 0 } == 4)
+    check("blob_byte", match bl { Raw(p) => bytes_at(p, 0), Empty => -1 } == 98)
+    check("blob_empty", match Empty { Raw(p) => 1, Empty => 0 } == 0)
+
+    match r {
+        Ok(v) => print(concat("stmt_arm ", int_to_str(v))),
+        Err(m) => print(m),
+    }
+
+    print("sumtype: all passed")
+}

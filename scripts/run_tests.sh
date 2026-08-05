@@ -329,6 +329,39 @@ printf 'fn main() {\n    let x = 5\n    print(x(1))\n}\n' > /tmp/baga_fn_bad4.ba
 run /tmp/baga_fn_bad4.baga 2>&1 | grep -q "извикване на не-функция 'x' (i64)" \
 	&& echo "OK: L5 — извикване на скалар е ясна грешка" \
 	|| { echo "FAIL: извикване на не-функция трябва да гърми"; exit 1; }
+echo "=== L3 sum types probes ==="
+printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let r = Ok(1)\n    print(match r { Ok(v) => v })\n}\n' > /tmp/baga_sum_bad1.baga
+run /tmp/baga_sum_bad1.baga 2>&1 | grep -q "не е пълен — липсва вариант 'Err'" \
+	&& echo "OK: L3 — непълен match е грешка с името на липсващия вариант" \
+	|| { echo "FAIL: непълен match трябва да гърми"; exit 1; }
+printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let r = Ok("текст")\n}\n' > /tmp/baga_sum_bad2.baga
+run /tmp/baga_sum_bad2.baga 2>&1 | grep -q "'Ok': аргументът е от тип str, но payload-ът е i64" \
+	&& echo "OK: L3 — грешен payload тип е отхвърлен" \
+	|| { echo "FAIL: payload mismatch трябва да гърми"; exit 1; }
+printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let r = Ok()\n}\n' > /tmp/baga_sum_bad3.baga
+run /tmp/baga_sum_bad3.baga 2>&1 | grep -q "конструкторът 'Ok' очаква 1 аргумент" \
+	&& echo "OK: L3 — конструктор без аргумент е отхвърлен" \
+	|| { echo "FAIL: 0-аргументен конструктор трябва да гърми"; exit 1; }
+printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let r = Ok\n}\n' > /tmp/baga_sum_bad4.baga
+run /tmp/baga_sum_bad4.baga 2>&1 | grep -q "конструкторът 'Ok' изисква 1 аргумент" \
+	&& echo "OK: L3 — голяма референция към payload вариант е отхвърлена" \
+	|| { echo "FAIL: bare payload variant трябва да гърми"; exit 1; }
+printf 'enum A { X(i64) }\nenum B { X(str) }\nfn main() { print(1) }\n' > /tmp/baga_sum_bad5.baga
+run /tmp/baga_sum_bad5.baga 2>&1 | grep -q "повторена дефиниция на вариант 'X'" \
+	&& echo "OK: L3 — дублиран вариант между enum-и е грешка" \
+	|| { echo "FAIL: дублиран вариант трябва да гърми"; exit 1; }
+printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let v: Vec<Res> = vec_new()\n}\n' > /tmp/baga_sum_bad6.baga
+run /tmp/baga_sum_bad6.baga 2>&1 | grep -q "неподдържан елементен тип" \
+	&& echo "OK: L3 — Vec<sum enum> е честно отхвърлен (v1)" \
+	|| { echo "FAIL: Vec<Res> трябва да гърми"; exit 1; }
+printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let r = Ok(1)\n    print(match r { Ok(v) => v, Nope(x) => 0, Err(e) => 0 })\n}\n' > /tmp/baga_sum_bad7.baga
+run /tmp/baga_sum_bad7.baga 2>&1 | grep -q "патернът 'Nope' не е вариант на enum 'Res'" \
+	&& echo "OK: L3 — несъществуващ вариант в патерн е ясна грешка" \
+	|| { echo "FAIL: невалиден патерн трябва да гърми"; exit 1; }
+printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let r = Ok(1, 2)\n}\n' > /tmp/baga_sum_bad8.baga
+run /tmp/baga_sum_bad8.baga 2>&1 | grep -q "конструкторът 'Ok' очаква 1 аргумент, получих 2" \
+	&& echo "OK: L3 — конструктор с 2 аргумента е отхвърлен" \
+	|| { echo "FAIL: 2-аргументен конструктор трябва да гърми"; exit 1; }
 printf 'struct A { x: i64 }\nfn main() {\n    let v: Vec<A> = vec_new()\n    vec_push(v, 5)\n}\n' > /tmp/baga_vec_bad3.baga
 run /tmp/baga_vec_bad3.baga 2>&1 | grep -q "елемент от тип i64, но векторът е Vec<A>" \
 	&& echo "OK: Vec<struct> — скаларен елемент е отхвърлен (L4)" \

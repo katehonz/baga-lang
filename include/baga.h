@@ -304,7 +304,7 @@ struct Node {
         struct { Node *match_expr; NodeVec match_arms; };
 
         /* NODE_MATCH_ARM */
-        struct { Node *arm_pattern; Node *arm_body; };
+        struct { Node *arm_pattern; char *arm_binding; Node *arm_body; };
 
         /* NODE_EXPR_STMT */
         struct { Node *expr; };
@@ -347,6 +347,7 @@ struct Node {
         struct {
             char *enum_name;
             char **enum_variants;
+            Node **enum_payloads;  /* L3: per-variant payload type node, NULL = plain */
             int n_variants;
         };
 
@@ -385,6 +386,7 @@ typedef enum {
     TYPE_VEC,      /* dynamic array (baga_Vec *) */
     TYPE_MAP,      /* hash map (baga_Map *); key = Type->key, value = Type->elem */
     TYPE_BYTES,    /* binary-safe byte buffer (baga_bytes, by value) */
+    TYPE_ENUM,     /* sum enum with payloads — L3; nominal by name */
     TYPE_ERROR,    /* sentinel for error recovery */
 } TypeKind;
 

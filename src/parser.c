@@ -109,6 +109,7 @@ void node_free(Node *n) {
             break;
         case NODE_MATCH_ARM:
             node_free(n->arm_pattern);
+            free(n->arm_binding);
             node_free(n->arm_body);
             break;
         case NODE_EXPR_STMT:
@@ -159,6 +160,8 @@ void node_free(Node *n) {
             free(n->enum_name);
             for (int i = 0; i < n->n_variants; i++) free(n->enum_variants[i]);
             free(n->enum_variants);
+            for (int i = 0; i < n->n_variants; i++) node_free(n->enum_payloads[i]);
+            free(n->enum_payloads);
             break;
         case NODE_TYPE:
         case NODE_TYPE_EFFECT:
@@ -568,10 +571,21 @@ static Node *parse_primary(Parser *p) {
             SrcPos apos = cur(p)->pos;
             Node *arm = node_alloc(NODE_MATCH_ARM, apos);
 
-            /* pattern: _ | literal | identifier */
+            /* pattern: _ | Variant(binding) | literal | identifier */
             if (check(p, TOK_UNDERSCORE)) {
                 advance(p);
                 arm->arm_pattern = NULL;  /* wildcard */
+            } else if (check(p, TOK_IDENT) &&
+                       p->pos + 1 < p->len &&
+                       p->tokens[p->pos + 1].kind == TOK_LPAREN) {
+                Token *vt = advance(p);
+                advance(p); /* consume '(' */
+                Token *bt = expect(p, TOK_IDENT);
+                expect(p, TOK_RPAREN);
+                Node *pat = node_alloc(NODE_IDENT, vt->pos);
+                pat->name = strdup(vt->text ? vt->text : "");
+                arm->arm_pattern = pat;
+                arm->arm_binding = strdup(bt->text ? bt->text : "");
             } else {
                 arm->arm_pattern = parse_unary(p);
             }
@@ -924,6 +938,7 @@ static Node *clone_expr(Node *e) {
         case NODE_MATCH_ARM:
             c->arm_pattern = clone_expr(e->arm_pattern);
             c->arm_body = clone_expr(e->arm_body);
+            c->arm_binding = e->arm_binding ? strdup(e->arm_binding) : NULL;
             break;
         case NODE_BLOCK:
             c->stmts.len = 0; c->stmts.cap = 0; c->stmts.data = NULL;
@@ -1368,9 +1383,16 @@ static Node *parse_enum(Parser *p) {
     expect(p, TOK_LBRACE);
 
     VEC(char *) variants = {0};
+    VEC(Node *) payloads = {0};
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
         char *vname = expect_ident(p);
         vec_push(variants, vname);
+        if (match(p, TOK_LPAREN)) {
+            vec_push(payloads, parse_type(p));
+            expect(p, TOK_RPAREN);
+        } else {
+            vec_push(payloads, NULL);
+        }
         if (!check(p, TOK_RBRACE)) match(p, TOK_COMMA);
     }
     expect(p, TOK_RBRACE);
@@ -1378,6 +1400,7 @@ static Node *parse_enum(Parser *p) {
     Node *e = node_alloc(NODE_ENUM, pos);
     e->enum_name = name;
     e->enum_variants = variants.data;
+    e->enum_payloads = payloads.data;
     e->n_variants = variants.len;
     return e;
 }

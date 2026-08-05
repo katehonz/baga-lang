@@ -143,6 +143,7 @@ static void emit_ctype(Codegen *cg, Type *t) {
         case TYPE_VEC:   fprintf(f, "baga_Vec *"); break;
         case TYPE_MAP:   fprintf(f, "baga_Map *"); break;
         case TYPE_STRUCT: emit_mangled(f, t->name ? t->name : "anon"); break;
+        case TYPE_ENUM:  emit_mangled(f, t->name ? t->name : "anon"); break;
         default:         fprintf(f, "int64_t"); break;   /* TYPE_FN → handle */
     }
 }
@@ -301,9 +302,15 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (item->kind != NODE_ENUM) continue;
                     for (int j = 0; j < item->n_variants; j++) {
                         if (strcmp(item->enum_variants[j], n->name) == 0) {
+                            int is_sum = 0;
+                            for (int k = 0; k < item->n_variants; k++)
+                                if (item->enum_payloads && item->enum_payloads[k]) is_sum = 1;
                             char *em = mangle_name(item->enum_name);
                             char *vm = mangle_name(item->enum_variants[j]);
-                            fprintf(f, "%s_%s", em, vm);
+                            if (is_sum)
+                                fprintf(f, "(%s){ .tag = %d }", em, j);   /* payload-less variant */
+                            else
+                                fprintf(f, "%s_%s", em, vm);
                             free(em); free(vm);
                             found_variant = 1;
                             break;
@@ -360,6 +367,28 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_CALL:
+            /* L3: конструктор на sum enum → Em__Vm(arg) */
+            if (n->callee->kind == NODE_IDENT && cg->program) {
+                int emitted = 0;
+                for (int i = 0; i < cg->program->items.len && !emitted; i++) {
+                    Node *item = cg->program->items.data[i];
+                    if (item->kind != NODE_ENUM) continue;
+                    for (int j = 0; j < item->n_variants; j++) {
+                        if (item->enum_payloads && item->enum_payloads[j] &&
+                            strcmp(item->enum_variants[j], n->callee->name) == 0) {
+                            char *em = mangle_name(item->enum_name);
+                            char *vm = mangle_name(item->enum_variants[j]);
+                            fprintf(f, "%s__%s(", em, vm);
+                            if (n->args.len > 0) emit_expr(cg, n->args.data[0]);
+                            fprintf(f, ")");
+                            free(em); free(vm);
+                            emitted = 1;
+                            break;
+                        }
+                    }
+                }
+                if (emitted) break;
+            }
             /* extern fn → direct libc call, no mangling, before builtin dispatch */
             if (n->callee->kind == NODE_IDENT) {
                 Node *ef = find_extern_fn(cg, n->callee->name);
@@ -875,38 +904,110 @@ static void emit_expr(Codegen *cg, Node *n) {
         }
 
         case NODE_MATCH: {
-            /* GCC statement expression */
             int tmp = cg->tmp_counter++;
-            /* determine result C type from inferred type */
+            int is_enum = n->match_expr->type &&
+                          n->match_expr->type->kind == TYPE_ENUM &&
+                          n->match_expr->type->name;
+            /* match като оператор (void) — без _mr резултатна променлива */
+            int is_void = n->type && n->type->kind == TYPE_VOID;
+            /* result C type from inferred type */
+            char *rm = NULL;
             const char *ctype = "int64_t";
             if (n->type) {
                 switch (n->type->kind) {
-                    case TYPE_STR:  ctype = "const char *"; break;
-                    case TYPE_F64:  ctype = "double"; break;
-                    case TYPE_BOOL: ctype = "int"; break;
-                    default:        ctype = "int64_t"; break;
+                    case TYPE_STR:   ctype = "const char *"; break;
+                    case TYPE_F64:   ctype = "double"; break;
+                    case TYPE_BOOL:  ctype = "int"; break;
+                    case TYPE_BYTES: ctype = "baga_bytes"; break;
+                    case TYPE_VEC:   ctype = "baga_Vec *"; break;
+                    case TYPE_MAP:   ctype = "baga_Map *"; break;
+                    case TYPE_STRUCT:
+                    case TYPE_ENUM:
+                        rm = mangle_name(n->type->name); ctype = rm; break;
+                    default:         ctype = "int64_t"; break;
                 }
             }
-            fprintf(f, "({ %s _mr%d = 0; int64_t _mv%d = ", ctype, tmp, tmp);
+            if (!is_enum) {
+                /* GCC statement expression */
+                if (is_void) fprintf(f, "({ int64_t _mv%d = ", tmp);
+                else fprintf(f, "({ %s _mr%d = 0; int64_t _mv%d = ", ctype, tmp, tmp);
+                emit_expr(cg, n->match_expr);
+                fprintf(f, "; ");
+                for (int i = 0; i < n->match_arms.len; i++) {
+                    Node *arm = n->match_arms.data[i];
+                    if (arm->arm_pattern) {
+                        if (i > 0) fprintf(f, "else ");
+                        fprintf(f, "if (_mv%d == ", tmp);
+                        emit_expr(cg, arm->arm_pattern);
+                        fprintf(f, ") { ");
+                    } else {
+                        /* wildcard → else */
+                        fprintf(f, "else { ");
+                    }
+                    /* emit arm body */
+                    if (arm->arm_body && arm->arm_body->kind == NODE_BLOCK) {
+                        for (int j = 0; j < arm->arm_body->stmts.len; j++) {
+                            Node *s = arm->arm_body->stmts.data[j];
+                            if (s->kind == NODE_RETURN && s->ret_val) {
+                                if (!is_void) fprintf(f, "_mr%d = ", tmp);
+                                emit_expr(cg, s->ret_val);
+                                fprintf(f, "; ");
+                            } else if (s->kind == NODE_EXPR_STMT) {
+                                emit_expr(cg, s->expr);
+                                fprintf(f, "; ");
+                            }
+                        }
+                    }
+                    fprintf(f, "} ");
+                }
+                if (is_void) fprintf(f, "})");
+                else fprintf(f, "_mr%d; })", tmp);
+                free(rm);
+                break;
+            }
+            /* L3: match върху sum enum — сравнение по .tag, binding от .u.v_Var */
+            Node *ed = NULL;
+            for (int i = 0; i < cg->program->items.len; i++) {
+                Node *item = cg->program->items.data[i];
+                if (item->kind == NODE_ENUM &&
+                    strcmp(item->enum_name, n->match_expr->type->name) == 0)
+                { ed = item; break; }
+            }
+            fprintf(f, "({ ");
+            if (!is_void) fprintf(f, "%s _mr%d = {0}; ", ctype, tmp);
+            {
+                char *sm = mangle_name(n->match_expr->type->name);
+                fprintf(f, "%s _mv%d = ", sm, tmp);
+                free(sm);
+            }
             emit_expr(cg, n->match_expr);
             fprintf(f, "; ");
             for (int i = 0; i < n->match_arms.len; i++) {
                 Node *arm = n->match_arms.data[i];
                 if (arm->arm_pattern) {
+                    int vidx = -1;
+                    if (ed)
+                        for (int j = 0; j < ed->n_variants; j++)
+                            if (strcmp(ed->enum_variants[j], arm->arm_pattern->name) == 0)
+                            { vidx = j; break; }
                     if (i > 0) fprintf(f, "else ");
-                    fprintf(f, "if (_mv%d == ", tmp);
-                    emit_expr(cg, arm->arm_pattern);
-                    fprintf(f, ") { ");
+                    fprintf(f, "if (_mv%d.tag == %d) { ", tmp, vidx);
+                    if (arm->arm_binding && ed && vidx >= 0 &&
+                        ed->enum_payloads && ed->enum_payloads[vidx]) {
+                        char *bm = mangle_name(arm->arm_binding);
+                        char *vm = mangle_name(ed->enum_variants[vidx]);
+                        emit_type(cg, ed->enum_payloads[vidx]);
+                        fprintf(f, " %s = _mv%d.u.v_%s; ", bm, tmp, vm);
+                        free(bm); free(vm);
+                    }
                 } else {
-                    /* wildcard → else */
                     fprintf(f, "else { ");
                 }
-                /* emit arm body */
                 if (arm->arm_body && arm->arm_body->kind == NODE_BLOCK) {
                     for (int j = 0; j < arm->arm_body->stmts.len; j++) {
                         Node *s = arm->arm_body->stmts.data[j];
                         if (s->kind == NODE_RETURN && s->ret_val) {
-                            fprintf(f, "_mr%d = ", tmp);
+                            if (!is_void) fprintf(f, "_mr%d = ", tmp);
                             emit_expr(cg, s->ret_val);
                             fprintf(f, "; ");
                         } else if (s->kind == NODE_EXPR_STMT) {
@@ -917,7 +1018,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                 }
                 fprintf(f, "} ");
             }
-            fprintf(f, "_mr%d; })", tmp);
+            if (is_void) fprintf(f, "})");
+            else fprintf(f, "_mr%d; })", tmp);
+            free(rm);
             break;
         }
 
@@ -961,6 +1064,10 @@ static void emit_stmt(Codegen *cg, Node *n) {
                     case TYPE_I32:  fprintf(f, "int32_t"); break;
                     case TYPE_STRUCT:
                         if (it->name) { char *sm = mangle_name(it->name); fprintf(f, "%s", sm); free(sm); }
+                        else fprintf(f, "int64_t");
+                        break;
+                    case TYPE_ENUM:
+                        if (it->name) { char *em = mangle_name(it->name); fprintf(f, "%s", em); free(em); }
                         else fprintf(f, "int64_t");
                         break;
                     case TYPE_VEC:
@@ -2345,10 +2452,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "\n");
 
-    /* enums first */
+    /* enums first (plain only — sum enum-ите зависят от struct typedef-овете) */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
         if (item->kind != NODE_ENUM) continue;
+        int is_sum = 0;
+        for (int j = 0; j < item->n_variants; j++)
+            if (item->enum_payloads && item->enum_payloads[j]) is_sum = 1;
+        if (is_sum) continue;
         char *em = mangle_name(item->enum_name);
         fprintf(out, "typedef enum {\n");
         for (int j = 0; j < item->n_variants; j++) {
@@ -2365,6 +2476,41 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         Node *item = program->items.data[i];
         if (item->kind == NODE_STRUCT)
             emit_struct(cg, item);
+    }
+
+    /* L3 sum enums: tagged struct + union + static inline конструктори */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *item = program->items.data[i];
+        if (item->kind != NODE_ENUM) continue;
+        int is_sum = 0;
+        for (int j = 0; j < item->n_variants; j++)
+            if (item->enum_payloads && item->enum_payloads[j]) is_sum = 1;
+        if (!is_sum) continue;
+        char *em = mangle_name(item->enum_name);
+        fprintf(out, "typedef struct {\n    int tag;\n    union {\n");
+        for (int j = 0; j < item->n_variants; j++) {
+            if (!item->enum_payloads[j]) continue;
+            char *vm = mangle_name(item->enum_variants[j]);
+            fprintf(out, "        ");
+            emit_type(cg, item->enum_payloads[j]);
+            fprintf(out, " v_%s;\n", vm);
+            free(vm);
+        }
+        fprintf(out, "    } u;\n} %s;\n\n", em);
+        for (int j = 0; j < item->n_variants; j++) {
+            char *vm = mangle_name(item->enum_variants[j]);
+            if (item->enum_payloads[j]) {
+                fprintf(out, "static inline %s %s__%s(", em, em, vm);
+                emit_type(cg, item->enum_payloads[j]);
+                fprintf(out, " a0) {\n    %s r; r.tag = %d; r.u.v_%s = a0; return r;\n}\n\n",
+                        em, j, vm);
+            } else {
+                fprintf(out, "static inline %s %s__%s(void) {\n    %s r; r.tag = %d; return r;\n}\n\n",
+                        em, em, vm, em, j);
+            }
+            free(vm);
+        }
+        free(em);
     }
 
     /* forward declarations */
