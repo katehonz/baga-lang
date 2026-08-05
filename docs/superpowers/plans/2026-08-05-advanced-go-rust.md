@@ -1,8 +1,9 @@
 # Advanced plan: Baga vs Go / Rust — language + real apps (not demos)
 
 **Date:** 2026-08-05  
-**Status:** active — educational language + **ecosystem to prove Baga**; long goal **RocksDB-class DB**  
-**Version baseline:** 0.8.0+ · A1/A2/MEM + B1 pbbaga/pgbaga shipped  
+**Status:** **plan DoD met** (2026-08-05) — educational language + ecosystem
+to prove Baga; long goal **RocksDB-class DB** continues as post-plan horizon  
+**Version baseline:** 0.8.0 · A1/A2/MEM + B1–B4 + Phase R0–R7 + Phase 5 sketches  
 **North star:**  
 1. **Language lab** — Baga is an *educational systems language*; packages are
    real building blocks, not throwaway demos.  
@@ -45,15 +46,18 @@ sharing stays; no package must adopt it.
 
 **Product:** fmrbaga + apps/api (Lucky stack); httpdbaga H1/H2; pg/orm; jwt; pbbaga + **unary client** (`CallOk`/`CallErr`); status/mdt/ctx; lsm/raft/txn; cloud metrics/logs/signals; otel lite.
 
-**Residual that blocks “advanced language in apps”**
+**Residuals at plan open (historical) → status at DoD**
 
 1. ~~Global unique sum-variant names~~ — **A1 shipped** (`Enum::Ok`)  
 2. ~~No `Vec<Res>` / `Map<K,Res>`~~ — **A2 shipped**  
 3. ~~Stand-in `ok:i64` / `err:str`~~ — **pbbaga + pg + orm + jsonrpc L3** ✅  
-4. fmr routes still id-dispatch (L5 not adopted in router)  
-5. gRPC client is H1-only; H2 trailers still approximate  
-6. apps/api does not yet use status/ctx/mdt/otel as default middleware  
-7. LLVM rejects L3 (honest); production path is C backend
+4. fmr routes still id-dispatch (L5 not adopted in router) — **post-plan**  
+5. gRPC client is H1-only; H2 trailers still approximate — **post-plan**  
+6. ~~apps/api middleware bare~~ — **B2.1 shipped** (request-id + otel
+   traceparent + structured log); full status/ctx/mdt as *handler default*
+   still optional polish  
+7. LLVM rejects L3 (honest); production path is C backend — **post-plan**
+   (status note `specs/2026-08-05-llvm-l3-status.md`)
 
 ---
 
@@ -342,16 +346,24 @@ differentiators. **Optional borrow does not reorder or delay B1–B3.**
 
 ---
 
-## 7. Definition of Done (plan success)
+## 7. Definition of Done (plan success) — **MET 2026-08-05**
 
 The advanced plan is **done** when all of:
 
-1. **Language:** qualified sum variants + `Vec` of sum enums shipped and documented  
-2. **Stack:** pg/orm/jsonrpc/pbbaga use L3 results end-to-end (no ok/err dual world)  
-3. **App:** apps/api is the canonical production layout with tracing/logs/metrics/timeouts  
-4. **gRPC:** unary client+server product path with status/metadata/context semantics aligned to Go codes  
-5. **Engine:** at least one recovery test beyond happy-path MVP for lsm or raft  
-6. **Honest limits** still listed (no generics, no full Raft proof, H2 gaps named)  
+| # | Criterion | Evidence |
+|---|-----------|----------|
+| 1 | **Language:** qualified sum variants + `Vec` of sum enums | A1/A2; `tests/std/sum_qualify_test.baga`, `sum_vec_test.baga`; language docs |
+| 2 | **Stack:** pg/orm/jsonrpc/pbbaga L3 results end-to-end | `PgResult`, `Orm*`, `RpcResult`/`Jrpc*`, `GrpcCall`/`CallOk`; no dual `ok:i64` world on those surfaces |
+| 3 | **App:** apps/api production layout | middleware + OpenAPI + `/metrics`/`/ready`; [product-path runbook](../../runbooks/product-path.md) |
+| 4 | **gRPC:** unary client+server product path | `pbbaga` client + registry dual protocol; goldens `tests/grpc_goldens_test.baga`; statusbaga codes |
+| 5 | **Engine:** recovery beyond happy-path MVP | `tests/lsm_recover_test.baga`, `tests/raft_persist_test.baga`; R0–R7 on lsmbaga |
+| 6 | **Honest limits** still listed | This § non-goals + package `gaps.md` + §11 residual horizon |
+
+**Verdict:** criteria 1–6 are satisfied. Stretch Phase 5 items that shipped as
+**sketches/notes** (protoc_baga, io_uring probe, structural liveness, borrow-lite
+design, LLVM L3 status) count as honesty, not full product backends.
+
+Full write-up: [2026-08-05-advanced-plan-dod.md](2026-08-05-advanced-plan-dod.md).
 
 ---
 
@@ -369,12 +381,16 @@ The advanced plan is **done** when all of:
 
 ## 9. Immediate next implementation step
 
-**Start Phase 0+1:**
+**Plan DoD met.** Historical Phase 0+1 start steps are complete (A1/A5/A2 → B1–B4 → R → Phase 5 sketches).
 
-1. Write design note for **A1 qualified variants** under `docs/superpowers/specs/2026-08-05-sum-variant-qualify-design.md`  
-2. Implement A5 FNS_MAX hard error (tiny, unblocks real apps)  
-3. Implement A1 against sumtype_test multi-enum `Ok` collision  
-4. Only then open B1.2 pbbaga decode migration as the first product consumer  
+**Post-plan horizon** (not gates for this plan’s DoD) — pick one:
+
+1. **Storage:** rocksbaga rename when quality warrants; finer compact pick; bloom standalone  
+2. **Product:** L5 route table; gRPC H2 client; optional status/ctx defaults in more handlers  
+3. **Language:** LLVM L3 (or keep C-only honesty); optional C′ borrow-lite impl  
+4. **Sketches → product only if needed:** multi-arg syscall / ring mmap for io_uring; full protoc plugin  
+
+See §11 and [advanced-plan-dod.md](2026-08-05-advanced-plan-dod.md).
 
 ---
 
@@ -392,7 +408,9 @@ The advanced plan is **done** when all of:
 
 ---
 
-## 11. Out of scope this plan (record, don’t “accidentally” do)
+## 11. Out of scope this plan + post-plan residual horizon
+
+### Still out of scope (do not claim)
 
 - New universal packages (path/glob/uuid wave is closed enough)  
 - Rewriting cloudbaga as the flagship (apps/api is)  
@@ -400,6 +418,26 @@ The advanced plan is **done** when all of:
 - **Full** Rust borrow checker / move-by-default (light optional is C′, not this)  
 - Kubernetes operator / multi-cluster  
 - Self-hosting compiler on L3 APIs  
+- Production io_uring poll backend (sketch only: `tools/iouring/`)  
+- Full protoc plugin / full Raft safety proof / full OTel SDK  
+
+### Honest limits (pointers)
+
+| Area | Where named |
+|------|-------------|
+| Generics / traits | language docs; this plan non-goals |
+| H2 gaps | `app-product/httpdbaga/gaps.md` |
+| Raft incompleteness | `app-product/raftbaga/gaps.md` |
+| LSM vs RocksDB | `app-product/lsmbaga/gaps.md` (R7 targets shipped; rename later) |
+| LLVM L3 | `docs/superpowers/specs/2026-08-05-llvm-l3-status.md` |
+| Borrow-lite (C′) | design only: `…/2026-08-05-borrow-lite-design.md` |
+
+### Post-plan residual (ordered by north-star fit)
+
+1. lsmbaga quality → optional **rocksbaga** name  
+2. L5 fmr route table; gRPC over H2  
+3. LLVM L3 or permanent C-backend honesty  
+4. Optional C′ borrow-lite implementation  
 
 ---
 

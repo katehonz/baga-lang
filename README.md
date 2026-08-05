@@ -25,8 +25,10 @@ flagship that forces memory discipline, IO, and engine design. Today that
 path is **`lsmbaga`** (LSM MVP on RESP); the road continues through indexes,
 smarter compaction, and binary values.
 
-Direction docs: [`docs/superpowers/plans/2026-08-05-advanced-go-rust.md`](docs/superpowers/plans/2026-08-05-advanced-go-rust.md),
+Direction docs: [`docs/superpowers/plans/2026-08-05-advanced-go-rust.md`](docs/superpowers/plans/2026-08-05-advanced-go-rust.md)
+(**plan DoD met** — [close-out](docs/superpowers/plans/2026-08-05-advanced-plan-dod.md)),
 [`docs/superpowers/plans/2026-08-05-cloud-storage-direction.md`](docs/superpowers/plans/2026-08-05-cloud-storage-direction.md).
+Product smoke path: [`docs/runbooks/product-path.md`](docs/runbooks/product-path.md).
 
 ## What is Baga
 

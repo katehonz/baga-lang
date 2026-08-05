@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Advanced plan DoD met
+- **Plan close-out:** `docs/superpowers/plans/2026-08-05-advanced-go-rust.md`
+  status **plan DoD met**; evidence table in §7; residual horizon §9/§11.
+- **Write-up:** `docs/superpowers/plans/2026-08-05-advanced-plan-dod.md`
+  (criteria checklist, explicit non-claims, post-plan workstreams, smoke list).
+
 ### Phase 2 B1 — ormbaga + jsonrpc L3 results
 - **ormbaga:** `OrmExec` / `OrmQuery` / `OrmCount` / `MigrateResult` are L3
   enums (`OrmEOk`/`OrmEErr`, `OrmQOk`/`OrmQErr`, …); helpers `orm_ok`,
