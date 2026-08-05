@@ -41,6 +41,13 @@
   is pure memory, then a single block read. Bench n=1000 durable: GET_SEQ
   ~200k ops/s (~37% RocksDB), GET_RND ~250k (~48%).
 
+### RocksDB path R14 — put-path encode + WAL buffer
+- Faster binary builders: `push_u32_le` one-concat; preallocated WAL record,
+  bloom sidecar, SST file layout; single bloom build for SST+sidecar.
+- **WAL write buffer** (`LsmDB.wal_buf`, max 64 KiB) — coalesces pwrites until
+  sync / buffer full / memtable flush / close.
+- Bench n=1000 durable PUT ~695 ops/s (~82% RocksDB).
+
 ### RocksDB path R10 — package rename rocksbaga
 - **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine
   unchanged). Prefer `import "rocksbaga/…"`. Deprecated **`lsmbaga/`** shims

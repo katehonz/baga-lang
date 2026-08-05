@@ -15,6 +15,8 @@ struct LsmDB {
     merge_pick: i64,    // 0 = merge all over files; >0 = oldest-N (R8)
     wal_fd: i64,
     wal_off: i64,
+    wal_buf: bytes,   // R14: pending WAL bytes (flushed on sync / full)
+    wal_buf_max: i64, // flush buffer when len >= this (0 = unbuffered)
     gens: Vec<i64>,
     levels: Vec<i64>,   // parallel: 0=L0 … 3=L3
     next_gen: i64,

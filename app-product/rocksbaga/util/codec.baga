@@ -18,13 +18,18 @@ fn get_u32_le(b: bytes, off: i64) -> i64 {
 }
 
 // Append one u32 le to a growing buffer (returns new bytes).
+// One concat of a 4-byte chunk — not 4× bytes_push (R14).
 fn push_u32_le(b: bytes, v: i64) -> bytes {
-    let mut out = b
-    out = bytes_push(out, v & 255)
-    out = bytes_push(out, (v >> 8) & 255)
-    out = bytes_push(out, (v >> 16) & 255)
-    out = bytes_push(out, (v >> 24) & 255)
-    return out
+    let chunk = bytes_new(4)
+    put_u32_le(chunk, 0, v)
+    return bytes_concat(b, chunk)
+}
+
+// Append a single byte without O(n) per-byte realloc chain when possible.
+fn push_u8(b: bytes, v: i64) -> bytes {
+    let chunk = bytes_new(1)
+    bytes_set(chunk, 0, v & 255)
+    return bytes_concat(b, chunk)
 }
 
 fn push_bytes(dst: bytes, src: bytes) -> bytes {

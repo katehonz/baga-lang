@@ -40,5 +40,7 @@ Goal: Track S flagship — durable KV on RESP.
   default page cache 256 pages — **done**
 - **R12 SST meta cache** — footer + restart offs + min/max keys per gen — **done**
 - **R13 restart keys in meta** — in-memory bsearch, one block read per get — **done**
+- **R14 put path** — prealloc WAL/bloom/SST encode, `push_u32_le` 1-concat,
+  single bloom build, 64 KiB WAL write buffer — **done**
 - Shared page cache across open files with pin counts
-- PUT path: batch WAL / less fsync tax when sync_every>1
+- poll multi-conn serve (kvbaga K1)

@@ -84,7 +84,16 @@ last block. Bench n=1000 durable: GET ~80k → ~167k ops/s (~31% of RocksDB).
 in-memory bsearch + **one** block `pc_read_at`. Bench n=1000 durable:
 GET_SEQ ~200k ops/s (~37% RocksDB), GET_RND ~250k (~48%).
 
-**Still open (later):** pin-count shared page cache; PUT batching; 
+**Shipped (R14 put path):**
+- `push_u32_le` / `push_u8` via one concat (not 4× `bytes_push`).
+- Preallocated `wal_record` / bloom sidecar / SST file buffer.
+- `sst_build` returns bloom once (sidecar reuses it).
+- **WAL write buffer** (`wal_buf`, default 64 KiB) flushed on sync / full /
+  memtable flush / close.
+- Bench n=1000 durable PUT ~695 ops/s (~82% RocksDB). Batch PUT still ≪
+  RocksDB (interpreter + flush tax).
+
+**Still open (later):** pin-count shared page cache; poll multi-conn;
 `db/manifest.baga` / `table/block.baga` when needed; RocksDB feature parity
 (not claimed).
 

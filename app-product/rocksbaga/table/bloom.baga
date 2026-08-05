@@ -119,19 +119,36 @@ fn bloom_build_keys(keys: Vec<str>) -> bytes {
 }
 
 // Write R9 sidecar: BAGABLM1 | m | bits | crc32c(m||bits). Returns 0 ok.
+// R14: single preallocated file buffer.
 fn bloom_write_file(dir: str, gen: i64, bits: bytes, m: i64) -> i64 !IO {
     let path = bloom_path(dir, gen)
     let fd = open(path, 578, 420)?
     if fd < 0 {
         return -1
     }
-    let mut payload = bytes_new(0)
-    payload = push_u32_le(payload, m)
-    payload = push_bytes(payload, bits)
+    let blen = bytes_len(bits)
+    let payload = bytes_new(4 + blen)
+    put_u32_le(payload, 0, m)
+    let mut i: i64 = 0
+    while i < blen {
+        bytes_set(payload, 4 + i, bytes_at(bits, i))
+        i = i + 1
+    }
     let crc = crc32c_b(payload)
-    let mut file = bytes_of_str("BAGABLM1")
-    file = push_bytes(file, payload)
-    file = push_u32_le(file, crc)
+    // magic(8) + payload + crc(4)
+    let file = bytes_new(8 + 4 + blen + 4)
+    let mag = bytes_of_str("BAGABLM1")
+    i = 0
+    while i < 8 {
+        bytes_set(file, i, bytes_at(mag, i))
+        i = i + 1
+    }
+    i = 0
+    while i < 4 + blen {
+        bytes_set(file, 8 + i, bytes_at(payload, i))
+        i = i + 1
+    }
+    put_u32_le(file, 8 + 4 + blen, crc)
     if fd_write_bytes(fd, file) != 0 {
         close(fd)
         return -1

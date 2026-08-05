@@ -9,24 +9,45 @@ import "std/str/str.baga"
 // op: 1 = Put, 2 = Del
 fn wal_payload(op: i64, key: str, val: bytes) -> bytes {
     let kb = bytes_of_str(key)
-    let mut p = bytes_new(0)
-    p = bytes_push(p, op & 255)
-    p = push_u32_le(p, bytes_len(kb))
-    p = push_bytes(p, kb)
-    p = push_u32_le(p, bytes_len(val))
-    p = push_bytes(p, val)
+    let klen = bytes_len(kb)
+    let vlen = bytes_len(val)
+    let plen = 1 + 4 + klen + 4 + vlen
+    let p = bytes_new(plen)
+    bytes_set(p, 0, op & 255)
+    put_u32_le(p, 1, klen)
+    let mut i: i64 = 0
+    while i < klen {
+        bytes_set(p, 5 + i, bytes_at(kb, i))
+        i = i + 1
+    }
+    put_u32_le(p, 5 + klen, vlen)
+    i = 0
+    while i < vlen {
+        bytes_set(p, 9 + klen + i, bytes_at(val, i))
+        i = i + 1
+    }
     return p
+}
+
+// Encode one WAL record (len | payload | crc) without writing (R14).
+fn wal_record(op: i64, key: str, val: bytes) -> bytes {
+    let payload = wal_payload(op, key, val)
+    let plen = bytes_len(payload)
+    let crc = crc32c_b(payload)
+    let rec = bytes_new(4 + plen + 4)
+    put_u32_le(rec, 0, plen)
+    let mut i: i64 = 0
+    while i < plen {
+        bytes_set(rec, 4 + i, bytes_at(payload, i))
+        i = i + 1
+    }
+    put_u32_le(rec, 4 + plen, crc)
+    return rec
 }
 
 // Append one record; returns new file offset after the write, or -1.
 fn wal_append(fd: i64, off: i64, op: i64, key: str, val: bytes) -> i64 !IO {
-    let payload = wal_payload(op, key, val)
-    let crc = crc32c_b(payload)
-    let mut rec = bytes_new(0)
-    rec = push_u32_le(rec, bytes_len(payload))
-    rec = push_bytes(rec, payload)
-    rec = push_u32_le(rec, crc)
-    // positioned write at off (WAL opened without depending on O_APPEND alone)
+    let rec = wal_record(op, key, val)
     if fd_pwrite_bytes(fd, rec, off) != 0 {
         return -1
     }
