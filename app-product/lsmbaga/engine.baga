@@ -1,6 +1,6 @@
-// engine.baga — LSM: WAL + memtable + flush + L0/L1 + recovery.
-// Values Map<str,bytes>. Flush → L0; when L0 >= compact_at → merge to L1;
-// multiple L1 collapsed to one. Pure tombs dropped on compact.
+// engine.baga — LSM: WAL + memtable + flush + L0/L1/L2 + recovery.
+// Values Map<str,bytes>. Flush → L0; L0≥compact_at → L1; L1≥compact_at → L2;
+// collapse ≥2 files at L2. Pure tombs kept on partial merges.
 
 import "codec.baga"
 import "page.baga"
@@ -19,7 +19,7 @@ struct LsmDB {
     wal_fd: i64,
     wal_off: i64,
     gens: Vec<i64>,
-    levels: Vec<i64>,   // parallel to gens: 0 = L0 (flush), 1 = L1 (compacted)
+    levels: Vec<i64>,   // parallel: 0=L0 flush, 1=L1, 2=L2
     next_gen: i64,
     cache: PageCache,
     sync_every: i64,
@@ -96,8 +96,8 @@ fn lsm_read_manifest(dir: str) -> LsmDB !IO {
                     if lv < 0 {
                         lv = 0
                     }
-                    if lv > 1 {
-                        lv = 1
+                    if lv > 2 {
+                        lv = 2
                     }
                 }
                 vec_push(levels, lv)
@@ -309,26 +309,24 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO {
         unlink(sst_path(db.dir, g))?
         db.cache = pc_invalidate_file(db.cache, g)
     }
+    // Rebuild oldest-first: L2, then L1, then L0; append new file at end of its level.
     let ng: Vec<i64> = vec_new()
     let nl: Vec<i64> = vec_new()
-    // Keep non-merged in order; insert new L1 after existing L1, before L0
-    let mut inserted: i64 = 0
-    for i in 0..vec_len(db.gens) {
-        if map_has(dropm, i) == 0 {
-            let lv = vec_get(db.levels, i)
-            // before first L0, insert new L1 if not yet
-            if inserted == 0 && lv == 0 && vec_len(rows) > 0 && out_level == 1 {
-                vec_push(ng, new_gen)
-                vec_push(nl, 1)
-                inserted = 1
+    let mut target_lv: i64 = 2
+    while target_lv >= 0 {
+        for i in 0..vec_len(db.gens) {
+            if map_has(dropm, i) == 0 {
+                if vec_get(db.levels, i) == target_lv {
+                    vec_push(ng, vec_get(db.gens, i))
+                    vec_push(nl, target_lv)
+                }
             }
-            vec_push(ng, vec_get(db.gens, i))
-            vec_push(nl, lv)
         }
-    }
-    if inserted == 0 && vec_len(rows) > 0 {
-        vec_push(ng, new_gen)
-        vec_push(nl, out_level)
+        if vec_len(rows) > 0 && out_level == target_lv {
+            vec_push(ng, new_gen)
+            vec_push(nl, out_level)
+        }
+        target_lv = target_lv - 1
     }
     db.gens = ng
     db.levels = nl
@@ -339,9 +337,8 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO {
     return db
 }
 
-// L0 → L1 when enough flushes; collapse L1 if 2+.
+// L0 → L1 when enough flushes; L1 → L2 at same threshold; collapse L2 if 2+.
 fn lsm_compact(db: LsmDB) -> LsmDB !IO {
-    // Collect L0 indices
     let l0: Vec<i64> = vec_new()
     for i in 0..vec_len(db.gens) {
         if i < vec_len(db.levels) && vec_get(db.levels, i) == 0 {
@@ -351,15 +348,30 @@ fn lsm_compact(db: LsmDB) -> LsmDB !IO {
     if vec_len(l0) >= db.compact_at && vec_len(l0) >= 2 {
         db = lsm_merge_indices(db, l0, 1)?
     }
-    // Collapse L1
+    // L1 → L2 when L1 reaches compact_at (size-tier lite).
     let l1: Vec<i64> = vec_new()
     for i in 0..vec_len(db.gens) {
         if i < vec_len(db.levels) && vec_get(db.levels, i) == 1 {
             vec_push(l1, i)
         }
     }
-    if vec_len(l1) >= 2 {
-        db = lsm_merge_indices(db, l1, 1)?
+    if vec_len(l1) >= db.compact_at && vec_len(l1) >= 2 {
+        db = lsm_merge_indices(db, l1, 2)?
+    } else {
+        // Still collapse a pair of L1 files if only 2 (legacy R5 path).
+        if vec_len(l1) >= 2 && vec_len(l1) < db.compact_at {
+            db = lsm_merge_indices(db, l1, 1)?
+        }
+    }
+    // Collapse L2
+    let l2: Vec<i64> = vec_new()
+    for i in 0..vec_len(db.gens) {
+        if i < vec_len(db.levels) && vec_get(db.levels, i) == 2 {
+            vec_push(l2, i)
+        }
+    }
+    if vec_len(l2) >= 2 {
+        db = lsm_merge_indices(db, l2, 2)?
     }
     return db
 }
@@ -414,15 +426,19 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO {
     db.tomb = map_new()
     db.mem_n = 0
     db.since_sync = 0
-    // L0/L1 compaction (chain a few rounds)
+    // L0/L1/L2 compaction (chain while any level is over threshold)
     let mut guard: i64 = 0
-    while lsm_count_level(db.levels, 0) >= db.compact_at && guard < 32 {
-        db = lsm_compact(db)?
-        guard = guard + 1
-    }
-    // Also collapse L1 if needed
-    if lsm_count_level(db.levels, 1) >= 2 {
-        db = lsm_compact(db)?
+    let mut more: i64 = 1
+    while more == 1 && guard < 32 {
+        let n0 = lsm_count_level(db.levels, 0)
+        let n1 = lsm_count_level(db.levels, 1)
+        let n2 = lsm_count_level(db.levels, 2)
+        if n0 >= db.compact_at || n1 >= db.compact_at || n1 >= 2 || n2 >= 2 {
+            db = lsm_compact(db)?
+            guard = guard + 1
+        } else {
+            more = 0
+        }
     }
     return db
 }

@@ -1,17 +1,17 @@
-// sstable.baga — sorted string table (R5: BAGASST4 footer + partial get).
+// sstable.baga — sorted string table (R6: BAGASST5 per-block CRC + footer).
 //
-// On-disk (new writes = v4):
-//   magic 8 = "BAGASST4"
+// On-disk (new writes = v5):
+//   magic 8 = "BAGASST5"
 //   body:
-//     core: u32 count | records | N×u32 restart_off | u32 N
-//     bloom: m/8 bytes (no trailing m)
+//     core: u32 count | records | N×u32 restart_off | u32 N | N×u32 block_crc
+//       (block_crc[i] = crc32c of records in [restart_i, restart_{i+1}))
+//     bloom: m/8 bytes
 //     fixed footer 24:
-//       u32 core_len | bloom_nbytes | bloom_bits | n_restarts | count | tag=4
-//   u32 le crc32c(body)   // verified on full-load paths (compact/KEYS)
+//       u32 core_len | bloom_nbytes | bloom_bits | n_restarts | count | tag=5
+//   u32 le crc32c(body)   // full-load paths (compact/KEYS)
 //
-// Get (v4): size → footer → bloom pages only → on maybe: restart index +
-// one data block via page cache (no full-file materialize on miss/hit).
-// v1–v3 still readable (full read + lookup).
+// Get: footer → bloom → restart index → load one block + verify block CRC
+// via page cache. v1–v4 still readable.
 
 import "codec.baga"
 import "page.baga"
@@ -149,7 +149,7 @@ fn bloom_build_bits(rows: Vec<SstRow>) -> bytes {
     return bits
 }
 
-// Build v4 body: core + bloom + fixed footer.
+// Build v5 body: core (+ block CRCs) + bloom + fixed footer.
 fn sst_build(rows: Vec<SstRow>) -> bytes {
     let mut core = bytes_new(0)
     core = push_u32_le(core, vec_len(rows))
@@ -170,25 +170,43 @@ fn sst_build(rows: Vec<SstRow>) -> bytes {
         core = push_bytes(core, r.val)
         i = i + 1
     }
+    let rec_end = bytes_len(core)
     let nr = vec_len(restarts)
+    // Per-restart-block crc32c (R6) — computed before index is appended.
+    let bcrcs: Vec<i64> = vec_new()
+    let mut bi: i64 = 0
+    while bi < nr {
+        let start = vec_get(restarts, bi)
+        let mut end = rec_end
+        if bi + 1 < nr {
+            end = vec_get(restarts, bi + 1)
+        }
+        vec_push(bcrcs, crc32c_b(bytes_slice(core, start, end)))
+        bi = bi + 1
+    }
     let mut j: i64 = 0
     while j < nr {
         core = push_u32_le(core, vec_get(restarts, j))
         j = j + 1
     }
     core = push_u32_le(core, nr)
+    let mut ci: i64 = 0
+    while ci < nr {
+        core = push_u32_le(core, vec_get(bcrcs, ci))
+        ci = ci + 1
+    }
     let core_len = bytes_len(core)
     let bloom = bloom_build_bits(rows)
     let m = bloom_bits_for(n)
     let mut body = core
     body = push_bytes(body, bloom)
-    // footer 24
+    // footer 24 (tag=5)
     body = push_u32_le(body, core_len)
     body = push_u32_le(body, bytes_len(bloom))
     body = push_u32_le(body, m)
     body = push_u32_le(body, nr)
     body = push_u32_le(body, n)
-    body = push_u32_le(body, 4)
+    body = push_u32_le(body, 5)
     return body
 }
 
@@ -198,7 +216,7 @@ fn sst_write(dir: str, gen: i64, rows: Vec<SstRow>) -> i64 !IO {
     if fd < 0 {
         return -1
     }
-    let magic = bytes_of_str("BAGASST4")
+    let magic = bytes_of_str("BAGASST5")
     let body = sst_build(rows)
     let crc = crc32c_b(body)
     let mut file = magic
@@ -290,6 +308,9 @@ fn sst_magic_ok(mag: str) -> i64 {
         return 1
     }
     if mag == "BAGASST4" {
+        return 1
+    }
+    if mag == "BAGASST5" {
         return 1
     }
     return 0
@@ -553,8 +574,8 @@ fn sst_lookup_v3(body: bytes, key: str) -> SstHit {
     return sst_lookup_indexed(bytes_slice(body, 0, bloom_off), key)
 }
 
-// v4 full-buffer path (footer at end).
-fn sst_lookup_v4(body: bytes, key: str) -> SstHit {
+// Footer path (tag 4 = v4, tag 5 = v5 with per-block CRCs after restart index).
+fn sst_lookup_footer(body: bytes, key: str) -> SstHit {
     let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
     let blen = bytes_len(body)
     let fl = sst_footer_len()
@@ -565,11 +586,14 @@ fn sst_lookup_v4(body: bytes, key: str) -> SstHit {
     let core_len = get_u32_le(body, fo)
     let bloom_nbytes = get_u32_le(body, fo + 4)
     let m = get_u32_le(body, fo + 8)
+    let n_restarts = get_u32_le(body, fo + 12)
     let tag = get_u32_le(body, fo + 20)
     if tag != 4 {
-        return miss
+        if tag != 5 {
+            return miss
+        }
     }
-    if core_len <= 0 || bloom_nbytes < 0 {
+    if core_len <= 0 || bloom_nbytes < 0 || n_restarts <= 0 {
         return miss
     }
     if core_len + bloom_nbytes + fl != blen {
@@ -579,7 +603,18 @@ fn sst_lookup_v4(body: bytes, key: str) -> SstHit {
     if bloom_may(bits, m, key) == 0 {
         return miss
     }
-    return sst_lookup_indexed(bytes_slice(body, 0, core_len), key)
+    // Pure restart core (strip trailing block CRCs for v5).
+    let mut pure_len = core_len
+    if tag == 5 {
+        pure_len = core_len - n_restarts * 4
+        if pure_len < 8 {
+            return miss
+        }
+    }
+    let pure = bytes_slice(body, 0, pure_len)
+    let hit = sst_lookup_indexed(pure, key)
+    // Optional: verify the block we would scan — full path already trusts whole-body CRC.
+    return hit
 }
 
 fn sst_lookup_data(data: bytes, key: str) -> SstHit {
@@ -593,8 +628,11 @@ fn sst_lookup_data(data: bytes, key: str) -> SstHit {
     if crc32c_b(body) != got {
         return miss
     }
+    if mag == "BAGASST5" {
+        return sst_lookup_footer(body, key)
+    }
     if mag == "BAGASST4" {
-        return sst_lookup_v4(body, key)
+        return sst_lookup_footer(body, key)
     }
     if mag == "BAGASST3" {
         return sst_lookup_v3(body, key)
@@ -663,11 +701,10 @@ struct SstHitPc {
     hit: SstHit
 }
 
-// Partial v4 get: footer → bloom → restart index → one block (page cache).
-fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str) -> SstHitPc !IO {
+// Partial get for v4/v5: footer → bloom → restart index → one block (+ CRC for v5).
+fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str) -> SstHitPc !IO {
     let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
     let fl = sst_footer_len()
-    // magic(8) + body + crc(4)
     if fsize < 8 + fl + 4 {
         return SstHitPc { pc: pc, hit: miss }
     }
@@ -683,13 +720,17 @@ fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str)
     let m = get_u32_le(fr.data, 8)
     let n_restarts = get_u32_le(fr.data, 12)
     let tag = get_u32_le(fr.data, 20)
-    if tag != 4 || core_len <= 0 || n_restarts <= 0 {
+    if tag != 4 {
+        if tag != 5 {
+            return SstHitPc { pc: cur, hit: miss }
+        }
+    }
+    if core_len <= 0 || n_restarts <= 0 {
         return SstHitPc { pc: cur, hit: miss }
     }
     if core_len + bloom_nbytes + fl != body_len {
         return SstHitPc { pc: cur, hit: miss }
     }
-    // Bloom only.
     if bloom_nbytes > 0 {
         let br = pc_read_at(cur, fd, gen, 8 + core_len, bloom_nbytes)?
         cur = br.pc
@@ -700,8 +741,11 @@ fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str)
             return SstHitPc { pc: cur, hit: miss }
         }
     }
-    // Restart index at end of core.
-    let idx_base = core_len - 4 - n_restarts * 4
+    // Restart index: before trailing block CRCs (v5) or at end of pure core (v4).
+    let mut idx_base = core_len - 4 - n_restarts * 4
+    if tag == 5 {
+        idx_base = core_len - 4 - n_restarts * 4 - n_restarts * 4
+    }
     if idx_base < 4 {
         return SstHitPc { pc: cur, hit: miss }
     }
@@ -711,11 +755,11 @@ fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str)
     if bytes_len(ir.data) < idx_len {
         return SstHitPc { pc: cur, hit: miss }
     }
+    // ir.data is restarts + n_restarts; first N u32s are offsets.
     let first_off = get_u32_le(ir.data, 0)
     if first_off != 4 {
         return SstHitPc { pc: cur, hit: miss }
     }
-    // min key
     let frk = sst_rec_at_fd(cur, fd, gen, first_off)?
     cur = frk.pc
     if frk.ok == 0 {
@@ -724,7 +768,6 @@ fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str)
     if str_cmp(key, frk.key) < 0 {
         return SstHitPc { pc: cur, hit: miss }
     }
-    // max key: scan last restart block into a small buffer
     let last_off = get_u32_le(ir.data, (n_restarts - 1) * 4)
     let block_end = idx_base
     let span = block_end - last_off
@@ -734,18 +777,12 @@ fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str)
     let lr = pc_read_at(cur, fd, gen, 8 + last_off, span)?
     cur = lr.pc
     let last_key = sst_last_key(lr.data, 0, bytes_len(lr.data))
-    // sst_last_key uses offsets in buffer; rewrite: scan with relative pos
-    // Actually sst_last_key expects body offsets matching rec layout in buffer
-    // starting at `start` — we pass buffer as body with start=0 end=len. Good
-    // only if records start at 0 in buffer — yes last_off mapped to 0.
-    // But sst_last_key uses sst_rec_at on buffer; records are contiguous from 0. OK.
     if len(last_key) == 0 {
         return SstHitPc { pc: cur, hit: miss }
     }
     if str_cmp(key, last_key) > 0 {
         return SstHitPc { pc: cur, hit: miss }
     }
-    // Bsearch restarts.
     let mut lo: i64 = 0
     let mut hi = n_restarts - 1
     let mut best: i64 = 0
@@ -759,6 +796,24 @@ fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str)
         }
         let c = str_cmp(rk.key, key)
         if c == 0 {
+            // Exact hit at restart — still verify block CRC for v5.
+            if tag == 5 {
+                let mut end = idx_base
+                if mid + 1 < n_restarts {
+                    end = get_u32_le(ir.data, (mid + 1) * 4)
+                }
+                let bspan = end - off
+                let brc = pc_read_at(cur, fd, gen, 8 + off, bspan)?
+                cur = brc.pc
+                let want = pc_read_at(cur, fd, gen, 8 + core_len - n_restarts * 4 + mid * 4, 4)?
+                cur = want.pc
+                if bytes_len(want.data) < 4 {
+                    return SstHitPc { pc: cur, hit: miss }
+                }
+                if crc32c_b(brc.data) != get_u32_le(want.data, 0) {
+                    return SstHitPc { pc: cur, hit: miss }
+                }
+            }
             let h = sst_hit_from_row(SstRow { op: rk.op, key: rk.key, val: rk.val })
             return SstHitPc { pc: cur, hit: h }
         }
@@ -781,6 +836,17 @@ fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str)
     let br2 = pc_read_at(cur, fd, gen, 8 + start, bspan)?
     cur = br2.pc
     let block = br2.data
+    if tag == 5 {
+        let crc_off = core_len - n_restarts * 4 + best * 4
+        let want = pc_read_at(cur, fd, gen, 8 + crc_off, 4)?
+        cur = want.pc
+        if bytes_len(want.data) < 4 {
+            return SstHitPc { pc: cur, hit: miss }
+        }
+        if crc32c_b(block) != get_u32_le(want.data, 0) {
+            return SstHitPc { pc: cur, hit: miss }
+        }
+    }
     let mut pos: i64 = 0
     let mut go: i64 = 1
     let mut hit = miss
@@ -809,7 +875,7 @@ fn sst_lookup_v4_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str)
     return SstHitPc { pc: cur, hit: hit }
 }
 
-// Newest-first lookup. v4 uses partial page-cache path; older formats full read.
+// Newest-first lookup. v4/v5 partial page-cache path; older formats full read.
 fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
     let mut cur = pc
     let mut i = vec_len(gens) - 1
@@ -822,8 +888,8 @@ fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
             let magb = fd_pread_bytes(fd, 8, 0)?
             if bytes_len(magb) == 8 {
                 let mag = str_of_bytes(magb)
-                if mag == "BAGASST4" {
-                    let r = sst_lookup_v4_partial(cur, fd, gen, fsize, key)?
+                if mag == "BAGASST5" {
+                    let r = sst_lookup_partial(cur, fd, gen, fsize, key)?
                     cur = r.pc
                     close(fd)
                     if r.hit.found == 1 {
@@ -832,14 +898,25 @@ fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
                         }
                     }
                 } else {
-                    close(fd)
-                    let raw = sst_read_raw(cur, dir, gen)?
-                    cur = raw.pc
-                    if raw.ok == 1 {
-                        let h = sst_lookup_data(raw.data, key)
-                        if h.found == 1 {
+                    if mag == "BAGASST4" {
+                        let r = sst_lookup_partial(cur, fd, gen, fsize, key)?
+                        cur = r.pc
+                        close(fd)
+                        if r.hit.found == 1 {
                             return SstLookup {
-                                pc: cur, found: 1, alive: h.alive, val: h.val
+                                pc: cur, found: 1, alive: r.hit.alive, val: r.hit.val
+                            }
+                        }
+                    } else {
+                        close(fd)
+                        let raw = sst_read_raw(cur, dir, gen)?
+                        cur = raw.pc
+                        if raw.ok == 1 {
+                            let h = sst_lookup_data(raw.data, key)
+                            if h.found == 1 {
+                                return SstLookup {
+                                    pc: cur, found: 1, alive: h.alive, val: h.val
+                                }
                             }
                         }
                     }

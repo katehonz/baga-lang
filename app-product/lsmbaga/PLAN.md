@@ -26,8 +26,9 @@ Goal: Track S flagship — durable KV on RESP.
 ## P2
 
 - Bloom filter in SST — **done (R4)**
-- **BAGASST4** footer + partial get (page cache) — **done (R5)**
-- L0/L1 levels in MANIFEST — **done (R5)**
-- L2+ / size-tiered amplification targets
+- **BAGASST4** footer + partial get — **done (R5)**
+- L0/L1 levels — **done (R5)**
+- **BAGASST5** per-block CRC + **L2** — **done (R6)**
+- Byte-size level targets / L3+
 - Shared page cache across open files with pin counts
-- Per-block CRCs (optional full-body CRC skip on get)
+- Optional skip whole-body CRC on get-only path

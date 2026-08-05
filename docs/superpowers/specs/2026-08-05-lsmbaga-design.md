@@ -77,26 +77,27 @@ Append via `fd_write_bytes`; durability via `fdatasync` every
 
 ### SSTable
 
-**v4 (current writes) — `BAGASST4`:**
+**v5 (current writes) — `BAGASST5`:**
 
 ```
-magic 8 = "BAGASST4"
+magic 8 = "BAGASST5"
 body:
-  core: u32 count | records | N×u32 restart_off | u32 N
+  core: u32 count | records | N×u32 restart_off | u32 N | N×u32 block_crc
+    (block_crc[i] = crc32c of [restart_i, restart_{i+1}))
   bloom: m/8 bytes
-  footer 24: core_len | bloom_nbytes | bloom_bits | n_restarts | count | tag=4
+  footer 24: core_len | bloom_nbytes | bloom_bits | n_restarts | count | tag=5
 u32 le crc32c(body)   // full-load paths (compact/KEYS)
 ```
 
-Lookup (partial): footer → bloom pages → restart index → one data block via
-page cache. Older magics `BAGASST1`–`3` still readable (full file).
+Lookup (partial): footer → bloom → restart index → one data block + **block CRC
+check** via page cache. Older magics `BAGASST1`–`4` still readable.
 Tombstone (op=Del) shadows older Puts.
 
-### Levels (R5)
+### Levels (R5–R6)
 
-MANIFEST lines after `next_gen`: `gen level` (0 = L0 flush, 1 = L1 compact).
-Flush appends L0; when L0 count ≥ `compact_at`, merge all L0 → one L1;
-if ≥2 L1 files, collapse to one L1.
+MANIFEST lines after `next_gen`: `gen level` (0=L0, 1=L1, 2=L2).
+Flush → L0; L0 ≥ `compact_at` → L1; L1 ≥ `compact_at` → L2; collapse ≥2 L2
+(and pairs of L1 when under the L2 promotion threshold).
 
 ### Memtable
 
@@ -111,12 +112,12 @@ ops since last flush; when `mem_n >= flush_at` (default 32), flush.
 3. Rotate WAL (`unlink` + reopen `O_CREAT|O_TRUNC` or rewrite empty).
 4. Clear mem/tomb; `mem_n = 0`.
 
-### Compaction (L0/L1)
+### Compaction (L0/L1/L2)
 
-When L0 count ≥ `compact_at` (default 3): merge all L0 newest-wins into one
-L1 SST; pure tombs **kept** if any older SST remains. If ≥2 L1 files, merge
-them into one L1 (pure tombs droppable only when merge covers all gens).
-`unlink` merged files; rewrite MANIFEST; invalidate page-cache file_ids.
+File-count size-tier: L0→L1 and L1→L2 at `compact_at`; collapse multi-file
+L2 (and L1 pairs). Pure tombs **kept** if any SST remains outside the merge;
+droppable only when merge covers all gens. `unlink` merged files; rewrite
+MANIFEST; invalidate page-cache file_ids.
 
 ### Recovery
 

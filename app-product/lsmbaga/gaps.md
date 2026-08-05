@@ -34,14 +34,15 @@ readable (parse + bsearch).
 
 **Shipped (R4):** bloom + restart (BAGASST3).
 
-**Shipped (R5):** **BAGASST4** fixed footer; get uses **partial page-cache IO**
-(footer → bloom → restart index → one data block). Full-file CRC still on
-compact/KEYS load. **L0/L1** in MANIFEST (`gen level`); flush → L0; L0 count
-≥ `compact_at` → merge to L1; multiple L1 collapsed. v1–v3 still readable.
+**Shipped (R5):** **BAGASST4** footer + partial get; **L0/L1**.
 
-**Still open (later):** true size-tiered levels (L2+), per-block CRCs (skip
-full-body CRC on write path), bloom as standalone filter file, rename
-rocksbaga when quality warrants.
+**Shipped (R6):** **BAGASST5** per-restart-block **crc32c** (verified on partial
+get block load). **L2** level: L1 ≥ `compact_at` → merge to L2; collapse ≥2
+L2 files. File-count size-tier lite (not byte-size targets). v1–v4 readable.
+
+**Still open (later):** byte-size level targets, drop whole-body CRC on get-only
+path, bloom as standalone filter file, rename **rocksbaga** when quality
+warrants.
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

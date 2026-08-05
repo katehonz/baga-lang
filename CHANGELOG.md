@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### RocksDB path R6 — per-block CRC + L2
+- **lsmbaga:** new SSTs write **`BAGASST5`**: per-restart-block **crc32c** after
+  the restart index; partial get verifies the loaded block. **L2** level:
+  L1 ≥ `compact_at` → merge to L2; collapse ≥2 L2 files. v1–v4 readable.
+- Not renamed to rocksbaga yet (byte-size targets / more polish still open).
+
 ### RocksDB path R5 — partial SST get + L0/L1
 - **lsmbaga:** new SSTs write **`BAGASST4`** (core + bloom + fixed footer).
   Get: `fd_size` → footer → bloom pages → restart index → one data block via
