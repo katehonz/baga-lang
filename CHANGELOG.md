@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Language — drop + checker-enforced memory discipline (MEM-1/2)
+- `drop(x)` frees a let-bound local's heap blocks **now**: deep free for
+  `Vec` (element boxes for bytes/struct elems, data buffer, struct), `Map`
+  (pv boxes for boxed struct values, entries, buckets, struct), `bytes`
+  (data buffer), and `fn`
+  (the malloc'd `(code, env)` cell handle — the closure env box stays in
+  the arena, shared ownership, documented).
+- Checker seatbelt (all compile errors): use after drop
+  (`използване на 'x' след drop`), double drop, drop of a parameter,
+  drop of a lambda-captured variable (inside or outside the lambda),
+  drop inside a loop of a variable declared outside it, drop of
+  `str`/scalars, drop of a non-local expression. Branch-join semantics are
+  certainties only: a variable is definitely-dropped after an `if` only
+  when dropped on ALL arms; maybe-dropped use after the join is allowed.
+- Runtime: 16 B-granularity size-classed free list for blocks ≤ 1024 B in
+  `baga_alloc` (padded allocations, serialized by the existing pthread
+  mutex — `go`-safe). Reclaim proof: a 1M-iteration alloc+drop loop peaks
+  at ~6.2 MB maxrss vs ~87.6 MB without `drop`.
+- MEM-2 (`--verify`): `HK_DROP` ghost state keyed by source variable,
+  registered at `let x = vec_new()/map_new()/bytes_new(...)`; use-after-drop
+  or double drop on a live path is **ОБРОЧЕНО (REFUTED)** with a witness
+  (`examples/verify/mem_drop.baga`); aliasing and fn-value drop are silent
+  no-claim paths; fragment gating as M14.
+- Honesty boundary: assignment revival stays an error (`drop(v); v =
+  vec_new(); use(v)` — conservative v1); aliasing is the programmer's
+  contract (`let y = x; drop(x); use(y)` NOT diagnosed — the checker
+  tracks variables, not heap graphs); blocks > 1024 B not reclaimed;
+  historical `vec_grow`/`map_rehash` garbage stays; scope-exit leaks are
+  NOT diagnosed (no warning severity — MEM-3 territory); bytes/str inner
+  buffers of freed boxes stay in the arena; LLVM backend honestly
+  `unsupported`.
+- Tests: `tests/std/drop_test.baga` (17 checks) + reclaim probe, 10
+  probes (8 negative + 2 positive-join) in `scripts/run_tests.sh`,
+  `examples/verify/mem_drop.baga`. Spec:
+  `docs/superpowers/specs/2026-08-05-mem-drop-design.md`; docs §12.8.
+
 ### Storage foundation (S2–S4): bytes mutators, positioned IO, crc32c
 - **S2 — `bytes` mutators** (httpdbaga **G9**): `bytes_new(n)` returns a
   fresh zeroed buffer (`n < 0` clamps to 0); `bytes_set(b, i, v)` is a

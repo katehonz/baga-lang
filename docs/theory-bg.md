@@ -1232,7 +1232,9 @@ Spec : C^op → Set
   символна променлива: `spawn → join | detach`. Второ консумиране
   (join-след-detach е *фатално* в runtime) се оборва статично с контрапример
   (`par_detach_bad.baga`). Каналите следят open/closed: `send` върху известно
-  затворен канал е доказуемо `-1` (`par_chan.baga`).
+  затворен канал е доказуемо `-1` (`par_chan.baga`). Същата handle-протоколна
+  машинерия вече стои и зад `HK_DROP` ghost състоянието на MEM-2 за `drop` —
+  виж `docs/language-bg.md` §12.8 (`mem_drop.baga`).
 
 Честна граница (M15+): pair-връщащите builtins (`chan_recv2`/`try_recv`/
 `select2*`), cross-thread *съдържателни* инварианти на канали

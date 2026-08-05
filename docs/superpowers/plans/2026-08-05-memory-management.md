@@ -1,6 +1,7 @@
 # Memory management plan — checker-enforced, systems-grade
 
-Date: 2026-08-05. Status: plan for discussion (no code yet).
+Date: 2026-08-05. Status: MEM-1/2 landed 2026-08-05 (drop + seatbelt +
+verifier obligations); MEM-3 regions next.
 Context: user direction — "the language is a systems language, with
 checker-enforced manual memory management". L3 (sum types) is scheduled
 next; this plan is the design reference for the memory arc after it.

@@ -1178,7 +1178,9 @@ core suffices. Two sound mechanisms:
   (join-after-detach is *fatal* at runtime) is REFUTED statically with a
   counterexample — on any input when the path is unconditional
   (`par_detach_bad.baga`). Channels track open/closed: `send` on a
-  known-closed channel is provably `-1` (`par_chan.baga`).
+  known-closed channel is provably `-1` (`par_chan.baga`). The same
+  handle-protocol machinery now backs MEM-2's `HK_DROP` ghost state for
+  `drop` — see `docs/language-en.md` §12.8 (`mem_drop.baga`).
 
 Honest frontier (M15+): pair-returning builtins (`chan_recv2`/`try_recv`/
 `select2*`), cross-thread channel *content* invariants (rely–guarantee),

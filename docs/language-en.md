@@ -808,6 +808,106 @@ let g = bytes_push(f, 2)           // f stays len 2; g is a fresh len-3 buffer
 C backend only; the LLVM backend honestly reports `unsupported` for the
 three mutators.
 
+### 12.8 `drop` and memory (MEM-1)
+
+Baga allocates from a bump arena that never reclaims on its own — fine for
+short runs, fatal for servers. `drop(x)` is the manual reclamation builtin:
+it frees a value's heap blocks **now**, and the checker enforces that you
+can never touch the value again.
+
+```baga
+fn main() {
+    let v = vec_new()
+    vec_push(v, 1)
+    drop(v)                    // buffer + struct freed
+    print(vec_len(v))          // compile error: използване на 'v' след drop
+}
+```
+
+`drop` accepts only a **let-bound local** of type `Vec`, `Map`, `bytes`,
+or `fn`. The free is deep:
+
+- **Vec**: element boxes (for `bytes`/struct elements), the data buffer,
+  the Vec struct.
+- **Map**: per-value boxes (for boxed struct values), entries, buckets,
+  the Map struct.
+- **bytes**: the data buffer.
+- **fn**: the malloc'd `(code, env)` cell handle. The closure **env box
+  stays in the arena** — it may be shared with other fn values, so it is
+  not reclaimed (documented, not hidden).
+
+#### Checker rules (all compile errors)
+
+- **Use after drop** — any later read of the variable:
+  `използване на 'x' след drop`.
+- **Double drop** — `повторен drop на 'x'`.
+- **Drop of a parameter** — params share the caller's buffer for
+  Vec/Map, so freeing would dangle the caller:
+  `drop на параметър 'x' — параметрите споделят буфера на извикващия`.
+- **Drop of a lambda-captured variable** — capturing `x` in a lambda
+  marks it (captures of Vec/Map share the reference per §12.6); dropping
+  it afterwards — inside or outside the lambda — is rejected:
+  `'x' е заснет от ламбда — drop би оставил висящ указател`.
+- **Drop inside a loop of a variable declared outside it** — the second
+  iteration would be use-after-drop:
+  `drop на външна за цикъла променлива 'x' — втората итерация би била use-after-drop`.
+  Dropping loop-locals is fine (they are fresh per iteration).
+- **Drop of `str` or scalars** — `str` data is arena/interned, scalars
+  own no heap: `drop: неподдържан тип ... — drop е за Vec/Map/bytes/fn`.
+- **Drop of a non-local expression** — `drop(vec_new())`, `drop(f(x))`:
+  `drop очаква локална променлива (let), не израз`.
+
+#### Branches: certainties only
+
+After an `if`, a variable counts as dropped only if it is dropped on
+**all** arms. Using it after a join where only one arm dropped it is
+allowed — the checker reasons in certainties, not maybes:
+
+```baga
+let v = vec_new()
+if n > 0 { drop(v) }          // else-arm keeps v live
+print(vec_len(v))             // OK — maybe-dropped is not definitely-dropped
+```
+
+#### Honest limits (v1)
+
+- **Assignment revival stays an error**: `drop(v); v = vec_new(); use(v)`
+  is still rejected — the checker is conservative and keeps `v` dead.
+- **Aliasing is the programmer's contract**: the checker tracks
+  *variables*, not heap graphs. `let y = x; drop(x); use(y)` is **not**
+  diagnosed — exactly like C, dropping `x` while an alias lives is your
+  responsibility. The same holds for values stashed inside other
+  containers (`vec_push(v2, x)`-style sharing of str/bytes elements).
+- **bytes/str inner buffers of freed boxes stay in the arena** — they may
+  be shared (a `str` element interned elsewhere), so the deep walker does
+  not free them.
+- **Blocks > 1024 B are not reclaimed** by the free list (below).
+- **Historical garbage stays**: old buffers abandoned by `vec_grow` /
+  `map_rehash` are not tracked; `drop` frees the *current* blocks only.
+- **Scope-exit leaks are NOT diagnosed** — the compiler has no warning
+  severity, so a value that goes out of scope without `drop` is silently
+  arena-leaked. Leak hunting is MEM-3 (regions) territory.
+- **LLVM backend**: honest `unsupported` for `drop` (C backend only).
+
+#### Runtime: the free list
+
+`baga_alloc` keeps per-size-class free lists for blocks **≤ 1024 B**
+(16 B granularity, 64 classes, padded allocations, serialized by the
+existing pthread mutex so `go` threads stay safe); freed blocks are
+reused before the bump pointer advances. Proof it works: a 1M-iteration
+alloc+drop loop peaks at ~6.2 MB maxrss vs ~87.6 MB without `drop`.
+
+#### MEM-2: verifier obligations (`--verify`)
+
+The static verifier tracks a `HK_DROP` ghost state per source variable
+(the same handle-protocol machinery as M14's `spawn → join | detach`):
+`let x = vec_new()/map_new()/bytes_new(...)` registers `x` as live,
+`drop(x)` transitions it to dropped, and use-after-drop or double drop
+on a live path is **ОБРОЧЕНО (REFUTED)** with a witness path
+(`examples/verify/mem_drop.baga`). Aliasing and fn-value drop are silent
+no-claim paths, and programs outside the supported fragment are skipped
+honestly — same gating as M14.
+
 ---
 
 ## 13. The Effect System
