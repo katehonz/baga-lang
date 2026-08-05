@@ -91,7 +91,7 @@ fn post_delete(db: OrmDb, id: i64) -> OrmExec !IO !Net {
 fn post_list_json(q: OrmQuery) -> str {
     let mut arr = jarr_new()
     let mut i: i64 = 0
-    while i < q.nrows {
+    while i < orm_nrows(q) {
         arr = jarr_obj(arr, post_to_json(q, i))
         i = i + 1
     }

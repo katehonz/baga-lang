@@ -32,7 +32,7 @@ fn cfg(name: str, def: str) -> str !IO {
 }
 
 // Server entry: runs fmr_run (reads PORT / PG* from env).
-fn reg_serve(x: i64) -> i64 !Net !IO !Par !Random {
+fn reg_serve(x: i64) -> i64 !Net !IO !Par !Random !Time {
     return fmr_run()?
 }
 
@@ -59,21 +59,21 @@ fn prepare_db() -> i64 !Net !IO !Random {
         return 1
     }
     let up = migrate_up(db, regbaga_migrations())?
-    if up.ok == 0 {
-        print(concat("prepare: migrate failed: ", up.err))
+    if migrate_is_ok(up) == 0 {
+        print(concat("prepare: migrate failed: ", migrate_err_str(up)))
         return 1
     }
     // deterministic: reset packages between runs (versions cascade)
-    let cl = orm_exec(up.db, "DELETE FROM reg_packages")?
-    if cl.ok == 0 {
-        print(concat("prepare: clean failed: ", cl.err))
+    let cl = orm_exec(migrate_db(up), "DELETE FROM reg_packages")?
+    if orm_ok(cl) == 0 {
+        print(concat("prepare: clean failed: ", orm_err_exec(cl)))
         return 1
     }
-    orm_close(cl.db)?
+    orm_close(orm_db_exec(cl))?
     return 0
 }
 
-fn main() -> i64 !Net !IO !Par !Random {
+fn main() -> i64 !Net !IO !Par !Random !Time {
     print("registry_test:")
 
     let rc = prepare_db()?

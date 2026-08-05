@@ -192,7 +192,7 @@ fn orm_pool_release(lease: OrmLease) -> i64 !IO !Net !Par {
     // 'T' = 84 in transaction, 'E' = 69 failed transaction
     if db.conn.tx_status == 84 || db.conn.tx_status == 69 {
         let rb = orm_rollback(db)?
-        db = rb.db
+        db = orm_db_exec(rb)
     }
     let c = db.conn
     vec_set(lease.fds, lease.slot, c.fd)

@@ -35,65 +35,192 @@ fn orm_err_db(db: OrmDb) -> str {
     return db.conn.err
 }
 
-// ---------- result wrappers (carry updated db) ----------
-// Stand-in ok:i64 for now (B1 L3 deferred — high apps fan-in). Prefer
-// orm_ok / orm_db / orm_nrows helpers for new code; field access still works.
+// ---------- result wrappers (B1 L3 — carry updated db) ----------
+// Prefer orm_ok / orm_db_* / orm_nrows helpers; no ok:i64 stand-in fields.
 
-struct OrmExec {
-    ok: i64,
+struct OrmExecOk {
+    tag: str,
+    db: OrmDb
+}
+
+struct OrmExecFail {
     err: str,
     tag: str,
     db: OrmDb
 }
 
-struct OrmQuery {
-    ok: i64,
-    err: str,
+enum OrmExec {
+    OrmEOk(OrmExecOk),
+    OrmEErr(OrmExecFail)
+}
+
+struct OrmQueryOk {
     tag: str,
     nrows: i64,
     ncols: i64,
-    result: PgResult,   // full row buffer for accessors
+    result: PgResult,
     db: OrmDb
 }
 
-struct OrmCount {
-    ok: i64,
+struct OrmQueryFail {
     err: str,
+    tag: str,
+    db: OrmDb
+}
+
+enum OrmQuery {
+    OrmQOk(OrmQueryOk),
+    OrmQErr(OrmQueryFail)
+}
+
+struct OrmCountOk {
     count: i64,
     db: OrmDb
 }
 
-fn orm_ok(r: OrmExec) -> i64 { return r.ok }
-fn orm_err_exec(r: OrmExec) -> str { return r.err }
-fn orm_tag(r: OrmExec) -> str { return r.tag }
-fn orm_db_exec(r: OrmExec) -> OrmDb { return r.db }
+struct OrmCountFail {
+    err: str,
+    db: OrmDb
+}
 
-fn orm_ok_q(q: OrmQuery) -> i64 { return q.ok }
-fn orm_err_q(q: OrmQuery) -> str { return q.err }
-fn orm_db_q(q: OrmQuery) -> OrmDb { return q.db }
-fn orm_nrows(q: OrmQuery) -> i64 { return q.nrows }
-fn orm_ncols(q: OrmQuery) -> i64 { return q.ncols }
-fn orm_result(q: OrmQuery) -> PgResult { return q.result }
+enum OrmCount {
+    OrmCOk(OrmCountOk),
+    OrmCErr(OrmCountFail)
+}
 
-fn orm_exec_from(r: PgResult) -> OrmExec {
-    return OrmExec {
-        ok: pg_ok(r),
-        err: pg_err(r),
-        tag: pg_tag(r),
-        db: OrmDb { conn: pg_conn_of(r) }
+fn orm_ok(r: OrmExec) -> i64 {
+    return match r {
+        OrmEOk(_u1) => 1,
+        OrmEErr(_u2) => 0,
     }
 }
 
-fn orm_query_from(r: PgResult) -> OrmQuery {
-    return OrmQuery {
-        ok: pg_ok(r),
+fn orm_err_exec(r: OrmExec) -> str {
+    return match r {
+        OrmEOk(_u3) => "",
+        OrmEErr(e) => e.err,
+    }
+}
+
+fn orm_tag(r: OrmExec) -> str {
+    return match r {
+        OrmEOk(x) => x.tag,
+        OrmEErr(e) => e.tag,
+    }
+}
+
+fn orm_db_exec(r: OrmExec) -> OrmDb {
+    return match r {
+        OrmEOk(x) => x.db,
+        OrmEErr(e) => e.db,
+    }
+}
+
+fn orm_ok_q(q: OrmQuery) -> i64 {
+    return match q {
+        OrmQOk(_u4) => 1,
+        OrmQErr(_u5) => 0,
+    }
+}
+
+fn orm_err_q(q: OrmQuery) -> str {
+    return match q {
+        OrmQOk(_u6) => "",
+        OrmQErr(e) => e.err,
+    }
+}
+
+fn orm_db_q(q: OrmQuery) -> OrmDb {
+    return match q {
+        OrmQOk(x) => x.db,
+        OrmQErr(e) => e.db,
+    }
+}
+
+fn orm_nrows(q: OrmQuery) -> i64 {
+    return match q {
+        OrmQOk(x) => x.nrows,
+        OrmQErr(_u7) => 0,
+    }
+}
+
+fn orm_ncols(q: OrmQuery) -> i64 {
+    return match q {
+        OrmQOk(x) => x.ncols,
+        OrmQErr(_u8) => 0,
+    }
+}
+
+fn orm_result_err_from(e: OrmQueryFail) -> PgResult {
+    let edb = e.db
+    return pg_result_err(edb.conn, e.err)
+}
+
+fn orm_result(q: OrmQuery) -> PgResult {
+    return match q {
+        OrmQOk(x) => x.result,
+        OrmQErr(e) => orm_result_err_from(e),
+    }
+}
+
+fn orm_ok_c(c: OrmCount) -> i64 {
+    return match c {
+        OrmCOk(_u9) => 1,
+        OrmCErr(_u10) => 0,
+    }
+}
+
+fn orm_err_c(c: OrmCount) -> str {
+    return match c {
+        OrmCOk(_u11) => "",
+        OrmCErr(e) => e.err,
+    }
+}
+
+fn orm_count_n(c: OrmCount) -> i64 {
+    return match c {
+        OrmCOk(x) => x.count,
+        OrmCErr(_u12) => 0,
+    }
+}
+
+fn orm_db_c(c: OrmCount) -> OrmDb {
+    return match c {
+        OrmCOk(x) => x.db,
+        OrmCErr(e) => e.db,
+    }
+}
+
+fn orm_exec_from(r: PgResult) -> OrmExec {
+    // Use accessors (not match-bind + field copy) so conn/tag stay consistent.
+    if pg_ok(r) == 1 {
+        return OrmEOk(OrmExecOk {
+            tag: pg_tag(r),
+            db: OrmDb { conn: pg_conn_of(r) }
+        })
+    }
+    return OrmEErr(OrmExecFail {
         err: pg_err(r),
         tag: pg_tag(r),
-        nrows: pg_nrows(r),
-        ncols: pg_ncols(r),
-        result: r,
         db: OrmDb { conn: pg_conn_of(r) }
+    })
+}
+
+fn orm_query_from(r: PgResult) -> OrmQuery {
+    if pg_ok(r) == 1 {
+        return OrmQOk(OrmQueryOk {
+            tag: pg_tag(r),
+            nrows: pg_nrows(r),
+            ncols: pg_ncols(r),
+            result: r,
+            db: OrmDb { conn: pg_conn_of(r) }
+        })
     }
+    return OrmQErr(OrmQueryFail {
+        err: pg_err(r),
+        tag: pg_tag(r),
+        db: OrmDb { conn: pg_conn_of(r) }
+    })
 }
 
 // Raw SQL execute (DDL/DML). Prefer typed helpers for user data.
@@ -111,18 +238,16 @@ fn orm_query(db: OrmDb, sql: str) -> OrmQuery !IO !Net {
 // COUNT(*) helper from a full SQL that returns one row / col "count" or first cell.
 fn orm_count_sql(db: OrmDb, sql: str) -> OrmCount !IO !Net {
     let q = orm_query(db, sql)?
-    if q.ok == 0 {
-        return OrmCount { ok: 0, err: q.err, count: 0, db: q.db }
+    if orm_ok_q(q) == 0 {
+        return OrmCErr(OrmCountFail { err: orm_err_q(q), db: orm_db_q(q) })
     }
-    if q.nrows < 1 {
-        return OrmCount { ok: 1, err: "", count: 0, db: q.db }
+    if orm_nrows(q) < 1 {
+        return OrmCOk(OrmCountOk { count: 0, db: orm_db_q(q) })
     }
-    return OrmCount {
-        ok: 1,
-        err: "",
-        count: pg_cell_i64(q.result, 0, 0),
-        db: q.db
-    }
+    return OrmCOk(OrmCountOk {
+        count: pg_cell_i64(orm_result(q), 0, 0),
+        db: orm_db_q(q)
+    })
 }
 
 // ---------- transactions (explicit, like ActiveRecord transaction blocks) ----------
@@ -296,26 +421,28 @@ fn orm_deallocate(db: OrmDb, name: str) -> OrmExec !IO !Net {
 // ---------- row accessors (thin wrappers) ----------
 
 fn orm_cell(q: OrmQuery, row: i64, col: i64) -> str {
-    return pg_cell(q.result, row, col)
+    return pg_cell(orm_result(q), row, col)
 }
 
 fn orm_cell_i64(q: OrmQuery, row: i64, col: i64) -> i64 {
-    return pg_cell_i64(q.result, row, col)
+    return pg_cell_i64(orm_result(q), row, col)
 }
 
 fn orm_isnull(q: OrmQuery, row: i64, col: i64) -> i64 {
-    return pg_isnull(q.result, row, col)
+    return pg_isnull(orm_result(q), row, col)
 }
 
 fn orm_colname(q: OrmQuery, col: i64) -> str {
-    return pg_colname(q.result, col)
+    return pg_colname(orm_result(q), col)
 }
 
 // Find column index by name; -1 if missing.
 fn orm_col_index(q: OrmQuery, name: str) -> i64 {
     let mut i: i64 = 0
-    while i < q.ncols {
-        if pg_colname(q.result, i) == name {
+    let nc = orm_ncols(q)
+    let res = orm_result(q)
+    while i < nc {
+        if pg_colname(res, i) == name {
             return i
         }
         i = i + 1

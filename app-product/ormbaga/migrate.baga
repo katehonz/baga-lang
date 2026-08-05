@@ -124,29 +124,66 @@ fn migrate_sorted_indices(set: MigrationSet) -> Vec<i64> {
     return idx
 }
 
-struct MigrateResult {
-    ok: i64,
-    err: str,
-    applied: i64,    // how many migrations ran this call
+// B1 L3: migration batch outcome (how many versions ran this call).
+struct MigOkData {
+    applied: i64,
     db: OrmDb
 }
 
+struct MigErrData {
+    err: str,
+    db: OrmDb
+}
+
+enum MigrateResult {
+    MigOk(MigOkData),
+    MigErr(MigErrData)
+}
+
 fn migrate_ok(db: OrmDb, n: i64) -> MigrateResult {
-    return MigrateResult { ok: 1, err: "", applied: n, db: db }
+    return MigOk(MigOkData { applied: n, db: db })
 }
 
 fn migrate_err(db: OrmDb, err: str) -> MigrateResult {
-    return MigrateResult { ok: 0, err: err, applied: 0, db: db }
+    return MigErr(MigErrData { err: err, db: db })
+}
+
+fn migrate_is_ok(r: MigrateResult) -> i64 {
+    return match r {
+        MigOk(_u1) => 1,
+        MigErr(_u2) => 0,
+    }
+}
+
+fn migrate_err_str(r: MigrateResult) -> str {
+    return match r {
+        MigOk(_u3) => "",
+        MigErr(e) => e.err,
+    }
+}
+
+fn migrate_applied_n(r: MigrateResult) -> i64 {
+    return match r {
+        MigOk(x) => x.applied,
+        MigErr(_u4) => 0,
+    }
+}
+
+fn migrate_db(r: MigrateResult) -> OrmDb {
+    return match r {
+        MigOk(x) => x.db,
+        MigErr(e) => e.db,
+    }
 }
 
 // Apply all pending migrations in version order. Each migration runs inside
 // BEGIN … COMMIT (schema + history row); on failure ROLLBACK.
 fn migrate_up(db: OrmDb, set: MigrationSet) -> MigrateResult !IO !Net {
     let ens = migrate_ensure_table(db)?
-    if ens.ok == 0 {
-        return migrate_err(ens.db, ens.err)
+    if orm_ok(ens) == 0 {
+        return migrate_err(orm_db_exec(ens), orm_err_exec(ens))
     }
-    let mut d = ens.db
+    let mut d = orm_db_exec(ens)
     let order = migrate_sorted_indices(set)
     let mut count: i64 = 0
     let mut i: i64 = 0
@@ -156,32 +193,32 @@ fn migrate_up(db: OrmDb, set: MigrationSet) -> MigrateResult !IO !Net {
         let name = vec_get(set.names, mi)
         let up = vec_get(set.ups, mi)
         let chk = migrate_is_applied(d, ver)?
-        d = chk.db
-        if chk.ok == 0 {
-            return migrate_err(d, chk.err)
+        d = orm_db_c(chk)
+        if orm_ok_c(chk) == 0 {
+            return migrate_err(d, orm_err_c(chk))
         }
-        if chk.count == 0 {
+        if orm_count_n(chk) == 0 {
             let b = orm_begin(d)?
-            d = b.db
-            if b.ok == 0 {
-                return migrate_err(d, b.err)
+            d = orm_db_exec(b)
+            if orm_ok(b) == 0 {
+                return migrate_err(d, orm_err_exec(b))
             }
             let ex = orm_exec(d, up)?
-            d = ex.db
-            if ex.ok == 0 {
+            d = orm_db_exec(ex)
+            if orm_ok(ex) == 0 {
                 let rb = orm_rollback(d)?
-                return migrate_err(rb.db, concat(concat("up ", name), concat(": ", ex.err)))
+                return migrate_err(orm_db_exec(rb), concat(concat("up ", name), concat(": ", orm_err_exec(ex))))
             }
             let rec = migrate_record(d, ver, name)?
-            d = rec.db
-            if rec.ok == 0 {
+            d = orm_db_exec(rec)
+            if orm_ok(rec) == 0 {
                 let rb2 = orm_rollback(d)?
-                return migrate_err(rb2.db, concat("record: ", rec.err))
+                return migrate_err(orm_db_exec(rb2), concat("record: ", orm_err_exec(rec)))
             }
             let c = orm_commit(d)?
-            d = c.db
-            if c.ok == 0 {
-                return migrate_err(d, c.err)
+            d = orm_db_exec(c)
+            if orm_ok(c) == 0 {
+                return migrate_err(d, orm_err_exec(c))
             }
             count = count + 1
         }
@@ -193,19 +230,21 @@ fn migrate_up(db: OrmDb, set: MigrationSet) -> MigrateResult !IO !Net {
 // Roll back the last `steps` applied migrations that exist in `set` (highest version first).
 fn migrate_down(db: OrmDb, set: MigrationSet, steps: i64) -> MigrateResult !IO !Net {
     let ens = migrate_ensure_table(db)?
-    if ens.ok == 0 {
-        return migrate_err(ens.db, ens.err)
+    if orm_ok(ens) == 0 {
+        return migrate_err(orm_db_exec(ens), orm_err_exec(ens))
     }
-    let mut d = ens.db
+    let mut d = orm_db_exec(ens)
     let q = orm_query(d, "SELECT version FROM baga_schema_migrations ORDER BY version DESC")?
-    d = q.db
-    if q.ok == 0 {
-        return migrate_err(d, q.err)
+    d = orm_db_q(q)
+    if orm_ok_q(q) == 0 {
+        return migrate_err(d, orm_err_q(q))
     }
     let mut done: i64 = 0
     let mut row: i64 = 0
-    while row < q.nrows && done < steps {
-        let ver = parse_int(pg_cell(q.result, row, 0))
+    let nq = orm_nrows(q)
+    let qres = orm_result(q)
+    while row < nq && done < steps {
+        let ver = parse_int(pg_cell(qres, row, 0))
         let mi = migrate_index(set, ver)
         if mi < 0 {
             return migrate_err(d, concat("no down SQL in set for version ", sql_i64(ver)))
@@ -213,26 +252,26 @@ fn migrate_down(db: OrmDb, set: MigrationSet, steps: i64) -> MigrateResult !IO !
         let name = vec_get(set.names, mi)
         let down = vec_get(set.downs, mi)
         let b = orm_begin(d)?
-        d = b.db
-        if b.ok == 0 {
-            return migrate_err(d, b.err)
+        d = orm_db_exec(b)
+        if orm_ok(b) == 0 {
+            return migrate_err(d, orm_err_exec(b))
         }
         let ex = orm_exec(d, down)?
-        d = ex.db
-        if ex.ok == 0 {
+        d = orm_db_exec(ex)
+        if orm_ok(ex) == 0 {
             let rb = orm_rollback(d)?
-            return migrate_err(rb.db, concat(concat("down ", name), concat(": ", ex.err)))
+            return migrate_err(orm_db_exec(rb), concat(concat("down ", name), concat(": ", orm_err_exec(ex))))
         }
         let un = migrate_unrecord(d, ver)?
-        d = un.db
-        if un.ok == 0 {
+        d = orm_db_exec(un)
+        if orm_ok(un) == 0 {
             let rb2 = orm_rollback(d)?
-            return migrate_err(rb2.db, un.err)
+            return migrate_err(orm_db_exec(rb2), orm_err_exec(un))
         }
         let c = orm_commit(d)?
-        d = c.db
-        if c.ok == 0 {
-            return migrate_err(d, c.err)
+        d = orm_db_exec(c)
+        if orm_ok(c) == 0 {
+            return migrate_err(d, orm_err_exec(c))
         }
         done = done + 1
         row = row + 1
@@ -249,10 +288,10 @@ fn migrate_status(db: OrmDb, set: MigrationSet) -> OrmQuery !IO !Net {
 
 fn migrate_status_text(db: OrmDb, set: MigrationSet) -> str !IO !Net {
     let ens = migrate_ensure_table(db)?
-    if ens.ok == 0 {
-        return concat("error: ", ens.err)
+    if orm_ok(ens) == 0 {
+        return concat("error: ", orm_err_exec(ens))
     }
-    let mut d = ens.db
+    let mut d = orm_db_exec(ens)
     let order = migrate_sorted_indices(set)
     let mut out = ""
     let mut i: i64 = 0
@@ -261,14 +300,14 @@ fn migrate_status_text(db: OrmDb, set: MigrationSet) -> str !IO !Net {
         let ver = vec_get(set.versions, mi)
         let name = vec_get(set.names, mi)
         let chk = migrate_is_applied(d, ver)?
-        d = chk.db
+        d = orm_db_c(chk)
         let mut st = "pending"
-        if chk.ok == 1 {
-            if chk.count > 0 {
+        if orm_ok_c(chk) == 1 {
+            if orm_count_n(chk) > 0 {
                 st = "applied"
             }
         } else {
-            st = concat("error:", chk.err)
+            st = concat("error:", orm_err_c(chk))
         }
         out = concat(out, concat(concat(concat(concat(sql_i64(ver), " "), name), " ["), concat(st, "]\n")))
         i = i + 1

@@ -4,44 +4,64 @@
 // response); standard error codes; methods registered by name via switch
 // (no function values / L5).
 //
-// Errors use RpcResult { ok, … } structs — honest stand-in for L3 Result/
-// sum types (pgbaga G1). When sum types land, this package is the migrate
-// target.
+// Outcomes are L3 sums (B1) — no ok:i64 stand-in.
 
 import "httpdbaga/http.baga"
 import "std/json/json.baga"
 import "std/str/str.baga"
 import "std/net/tcp.baga"
 
-// ---------- result type (L3 stand-in) ----------
+// ---------- result type (B1 L3) ----------
 
-struct RpcResult {
-    ok: i64,            // 1 = result_json is the "result" value (raw JSON)
-    skip: i64,          // 1 = notification handled — emit nothing
+struct JrpcOkData {
     result_json: str,   // raw JSON value (number, string, object, …)
+    id_json: str
+}
+
+struct JrpcErrData {
     err_code: i64,
     err_msg: str,
-    id_json: str        // raw JSON for id (number/string/null); "" if none
+    id_json: str
+}
+
+enum RpcResult {
+    JrpcOk(JrpcOkData),
+    JrpcErr(JrpcErrData),
+    JrpcSkip
 }
 
 fn rpc_ok(id_json: str, result_json: str) -> RpcResult {
-    return RpcResult {
-        ok: 1, skip: 0, result_json: result_json,
-        err_code: 0, err_msg: "", id_json: id_json
-    }
+    return JrpcOk(JrpcOkData {
+        result_json: result_json,
+        id_json: id_json
+    })
 }
 
 fn rpc_err(id_json: str, code: i64, msg: str) -> RpcResult {
-    return RpcResult {
-        ok: 0, skip: 0, result_json: "null",
-        err_code: code, err_msg: msg, id_json: id_json
-    }
+    return JrpcErr(JrpcErrData {
+        err_code: code,
+        err_msg: msg,
+        id_json: id_json
+    })
 }
 
 fn rpc_skip() -> RpcResult {
-    return RpcResult {
-        ok: 1, skip: 1, result_json: "",
-        err_code: 0, err_msg: "", id_json: ""
+    return JrpcSkip
+}
+
+fn rpc_is_ok(r: RpcResult) -> i64 {
+    return match r {
+        JrpcOk(x) => 1,
+        JrpcErr(e) => 0,
+        JrpcSkip => 0,
+    }
+}
+
+fn rpc_is_skip(r: RpcResult) -> i64 {
+    return match r {
+        JrpcOk(x) => 0,
+        JrpcErr(e) => 0,
+        JrpcSkip => 1,
     }
 }
 
@@ -54,26 +74,32 @@ fn rpc_id_field(id_json: str) -> str {
     return concat("\"id\":", id_json)
 }
 
-fn rpc_encode(r: RpcResult) -> str {
-    if r.skip == 1 {
-        return ""
-    }
-    if r.ok == 1 {
-        let mut s = "{\"jsonrpc\":\"2.0\",\"result\":"
-        s = concat(s, r.result_json)
-        s = concat(s, ",")
-        s = concat(s, rpc_id_field(r.id_json))
-        s = concat(s, "}")
-        return s
-    }
-    let mut s = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":"
-    s = concat(s, int_to_str(r.err_code))
-    s = concat(s, ",\"message\":")
-    s = concat(s, json_escape(r.err_msg))
-    s = concat(s, "},")
-    s = concat(s, rpc_id_field(r.id_json))
+fn rpc_encode_ok(x: JrpcOkData) -> str {
+    let mut s = "{\"jsonrpc\":\"2.0\",\"result\":"
+    s = concat(s, x.result_json)
+    s = concat(s, ",")
+    s = concat(s, rpc_id_field(x.id_json))
     s = concat(s, "}")
     return s
+}
+
+fn rpc_encode_err(e: JrpcErrData) -> str {
+    let mut s = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":"
+    s = concat(s, int_to_str(e.err_code))
+    s = concat(s, ",\"message\":")
+    s = concat(s, json_escape(e.err_msg))
+    s = concat(s, "},")
+    s = concat(s, rpc_id_field(e.id_json))
+    s = concat(s, "}")
+    return s
+}
+
+fn rpc_encode(r: RpcResult) -> str {
+    return match r {
+        JrpcSkip => "",
+        JrpcOk(x) => rpc_encode_ok(x),
+        JrpcErr(e) => rpc_encode_err(e),
+    }
 }
 
 // Serialize a JSON node to raw text (reuse std serializer).
@@ -185,12 +211,8 @@ fn rpc_handle_object(d: JsonDoc, root: i64) -> RpcResult {
     let id_json = rpc_extract_id(d, root)
     let params = json_get(d, root, "params")
     let r = rpc_dispatch(method, d, params, id_json)
-    // notifications: no id → no response body
+    // notifications: no id → no response body (errors also suppressed per 2.0)
     if id_json == "" {
-        if r.ok == 1 {
-            return rpc_skip()
-        }
-        // errors on notifications are still suppressed per JSON-RPC 2.0
         return rpc_skip()
     }
     return r

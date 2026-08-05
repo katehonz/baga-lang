@@ -79,16 +79,16 @@ fn prepare_db() -> i64 !Net !IO !Random {
         return 1
     }
     let up = migrate_up(db, oauth_migrations())?
-    if up.ok == 0 {
-        print(concat("prepare: migrate failed: ", up.err))
+    if migrate_is_ok(up) == 0 {
+        print(concat("prepare: migrate failed: ", migrate_err_str(up)))
         return 1
     }
-    let cl = orm_exec(up.db, "DELETE FROM oauth_states; DELETE FROM oauth_sessions; DELETE FROM oauth_refresh; DELETE FROM oauth_codes")?
-    if cl.ok == 0 {
-        print(concat("prepare: clean failed: ", cl.err))
+    let cl = orm_exec(migrate_db(up), "DELETE FROM oauth_states; DELETE FROM oauth_sessions; DELETE FROM oauth_refresh; DELETE FROM oauth_codes")?
+    if orm_ok(cl) == 0 {
+        print(concat("prepare: clean failed: ", orm_err_exec(cl)))
         return 1
     }
-    orm_close(cl.db)?
+    orm_close(orm_db_exec(cl))?
     return 0
 }
 
@@ -102,11 +102,11 @@ fn db_count(table: str) -> i64 !Net !IO !Random {
         return -1
     }
     let c = orm_count_sql(db, concat("SELECT COUNT(*) FROM ", table))?
-    orm_close(c.db)?
-    if c.ok == 0 {
+    orm_close(orm_db_c(c))?
+    if orm_ok_c(c) == 0 {
         return -1
     }
-    return c.count
+    return orm_count_n(c)
 }
 
 fn main() -> i64 !Net !IO !Par !Time !Random {

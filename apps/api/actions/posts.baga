@@ -22,16 +22,16 @@ fn act_posts_index(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     let uid_s = fmr_query(ctx, "user_id")
     if uid_s != "" {
         let q = post_by_user(db, parse_int(uid_s), page.limit, page.offset)?
-        if q.ok == 0 {
-            return act_err(q.db, 500, q.err)
+        if orm_ok_q(q) == 0 {
+            return act_err(orm_db_q(q), 500, orm_err_q(q))
         }
-        return act_ok(q.db, act_page_wrap(post_list_json(q), q.nrows, page))
+        return act_ok(orm_db_q(q), act_page_wrap(post_list_json(q), orm_nrows(q), page))
     }
     let q2 = post_all(db, page.limit, page.offset)?
-    if q2.ok == 0 {
-        return act_err(q2.db, 500, q2.err)
+    if orm_ok_q(q2) == 0 {
+        return act_err(orm_db_q(q2), 500, orm_err_q(q2))
     }
-    return act_ok(q2.db, act_page_wrap(post_list_json(q2), q2.nrows, page))
+    return act_ok(orm_db_q(q2), act_page_wrap(post_list_json(q2), orm_nrows(q2), page))
 }
 
 fn act_posts_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -64,22 +64,22 @@ fn act_posts_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     }
     // ensure user exists
     let u = user_find(db, user_id_f.num)?
-    if u.ok == 0 {
-        return act_err(u.db, 500, u.err)
+    if orm_ok_q(u) == 0 {
+        return act_err(orm_db_q(u), 500, orm_err_q(u))
     }
-    if u.nrows < 1 {
-        return act_404(u.db, "user_id not found")
+    if orm_nrows(u) < 1 {
+        return act_404(orm_db_q(u), "user_id not found")
     }
-    let ins = post_create(u.db, user_id_f.num, title.val, body_f.val)?
-    if ins.ok == 0 {
-        return act_err(ins.db, 500, ins.err)
+    let ins = post_create(orm_db_q(u), user_id_f.num, title.val, body_f.val)?
+    if orm_ok(ins) == 0 {
+        return act_err(orm_db_exec(ins), 500, orm_err_exec(ins))
     }
     // re-fetch latest by user+title (no RETURNING yet) — last post for user
-    let list = post_by_user(ins.db, user_id_f.num, 1, 0)?
-    if list.ok == 0 || list.nrows < 1 {
-        return act_err(list.db, 500, "insert ok but row missing")
+    let list = post_by_user(orm_db_exec(ins), user_id_f.num, 1, 0)?
+    if orm_ok_q(list) == 0 || orm_nrows(list) < 1 {
+        return act_err(orm_db_q(list), 500, "insert ok but row missing")
     }
-    return act_created(list.db, post_to_json(list, 0))
+    return act_created(orm_db_q(list), post_to_json(list, 0))
 }
 
 fn act_posts_show(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -95,13 +95,13 @@ fn act_posts_show(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return act_err(db, 503, "database unavailable")
     }
     let q = post_find(db, pid.id)?
-    if q.ok == 0 {
-        return act_err(q.db, 500, q.err)
+    if orm_ok_q(q) == 0 {
+        return act_err(orm_db_q(q), 500, orm_err_q(q))
     }
-    if q.nrows < 1 {
-        return act_404(q.db, "Post not found")
+    if orm_nrows(q) < 1 {
+        return act_404(orm_db_q(q), "Post not found")
     }
-    return act_ok(q.db, post_to_json(q, 0))
+    return act_ok(orm_db_q(q), post_to_json(q, 0))
 }
 
 fn act_posts_update(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -133,14 +133,14 @@ fn act_posts_update(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return act_err(db, 503, "database unavailable")
     }
     let upd = post_update(db, pid.id, title.val, body_f.val)?
-    if upd.ok == 0 {
-        return act_err(upd.db, 500, upd.err)
+    if orm_ok(upd) == 0 {
+        return act_err(orm_db_exec(upd), 500, orm_err_exec(upd))
     }
-    let q = post_find(upd.db, pid.id)?
-    if q.ok == 0 || q.nrows < 1 {
-        return act_404(q.db, "Post not found")
+    let q = post_find(orm_db_exec(upd), pid.id)?
+    if orm_ok_q(q) == 0 || orm_nrows(q) < 1 {
+        return act_404(orm_db_q(q), "Post not found")
     }
-    return act_ok(q.db, post_to_json(q, 0))
+    return act_ok(orm_db_q(q), post_to_json(q, 0))
 }
 
 fn act_posts_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -156,8 +156,8 @@ fn act_posts_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return act_err(db, 503, "database unavailable")
     }
     let del = post_delete(db, pid.id)?
-    if del.ok == 0 {
-        return act_err(del.db, 500, del.err)
+    if orm_ok(del) == 0 {
+        return act_err(orm_db_exec(del), 500, orm_err_exec(del))
     }
-    return act_no_content(del.db)
+    return act_no_content(orm_db_exec(del))
 }

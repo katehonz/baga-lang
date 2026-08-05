@@ -92,7 +92,7 @@ fn reg_to_json(q: OrmQuery, row: i64) -> JObj {
 fn reg_versions_jarr(q: OrmQuery) -> JArr {
     let mut arr = jarr_new()
     let mut i: i64 = 0
-    while i < q.nrows {
+    while i < orm_nrows(q) {
         let mut v = jobj_new()
         v = jobj_str(v, "version", orm_cell_by(q, i, "version"))
         let r = orm_cell_by(q, i, "rev")
@@ -112,12 +112,12 @@ fn reg_versions_jarr(q: OrmQuery) -> JArr {
 fn reg_list_json(q: OrmQuery) -> JObj {
     let mut arr = jarr_new()
     let mut i: i64 = 0
-    while i < q.nrows {
+    while i < orm_nrows(q) {
         arr = jarr_obj(arr, reg_to_json(q, i))
         i = i + 1
     }
     let mut o = jobj_new()
     o = jobj_raw(o, "items", jarr_encode(arr))
-    o = jobj_i64(o, "count", q.nrows)
+    o = jobj_i64(o, "count", orm_nrows(q))
     return o
 }

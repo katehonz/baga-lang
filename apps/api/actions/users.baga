@@ -18,14 +18,14 @@ fn act_users_index(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     let page = act_page(ctx, 50, 200)
     // full list then slice in SQL would need user_all_page — keep simple for now
     let q = user_all(db)?
-    if q.ok == 0 {
-        return act_err(q.db, 500, q.err)
+    if orm_ok_q(q) == 0 {
+        return act_err(orm_db_q(q), 500, orm_err_q(q))
     }
     // client-side style meta (count = full set size); posts use SQL limit
     let mut o = user_list_json(q)
     o = jobj_i64(o, "limit", page.limit)
     o = jobj_i64(o, "offset", page.offset)
-    return act_ok(q.db, o)
+    return act_ok(orm_db_q(q), o)
 }
 
 fn act_users_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -53,14 +53,14 @@ fn act_users_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return act_err(db, 503, "database unavailable")
     }
     let ins = user_create(db, email.val, name.val)?
-    if ins.ok == 0 {
-        return act_err(ins.db, 409, ins.err)
+    if orm_ok(ins) == 0 {
+        return act_err(orm_db_exec(ins), 409, orm_err_exec(ins))
     }
-    let q = user_find_by_email(ins.db, email.val)?
-    if q.ok == 0 || q.nrows < 1 {
-        return act_err(q.db, 500, "insert ok but row missing")
+    let q = user_find_by_email(orm_db_exec(ins), email.val)?
+    if orm_ok_q(q) == 0 || orm_nrows(q) < 1 {
+        return act_err(orm_db_q(q), 500, "insert ok but row missing")
     }
-    return act_created(q.db, user_to_json(q, 0))
+    return act_created(orm_db_q(q), user_to_json(q, 0))
 }
 
 fn act_users_show(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -76,13 +76,13 @@ fn act_users_show(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return act_err(db, 503, "database unavailable")
     }
     let q = user_find(db, id)?
-    if q.ok == 0 {
-        return act_err(q.db, 500, q.err)
+    if orm_ok_q(q) == 0 {
+        return act_err(orm_db_q(q), 500, orm_err_q(q))
     }
-    if q.nrows < 1 {
-        return act_404(q.db, "User not found")
+    if orm_nrows(q) < 1 {
+        return act_404(orm_db_q(q), "User not found")
     }
-    return act_ok(q.db, user_to_json(q, 0))
+    return act_ok(orm_db_q(q), user_to_json(q, 0))
 }
 
 fn act_users_update(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -110,14 +110,14 @@ fn act_users_update(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return act_err(db, 503, "database unavailable")
     }
     let upd = user_update_name(db, id, name.val)?
-    if upd.ok == 0 {
-        return act_err(upd.db, 500, upd.err)
+    if orm_ok(upd) == 0 {
+        return act_err(orm_db_exec(upd), 500, orm_err_exec(upd))
     }
-    let q = user_find(upd.db, id)?
-    if q.ok == 0 || q.nrows < 1 {
-        return act_404(q.db, "User not found")
+    let q = user_find(orm_db_exec(upd), id)?
+    if orm_ok_q(q) == 0 || orm_nrows(q) < 1 {
+        return act_404(orm_db_q(q), "User not found")
     }
-    return act_ok(q.db, user_to_json(q, 0))
+    return act_ok(orm_db_q(q), user_to_json(q, 0))
 }
 
 fn act_users_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -133,8 +133,8 @@ fn act_users_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return act_err(db, 503, "database unavailable")
     }
     let del = user_delete(db, id)?
-    if del.ok == 0 {
-        return act_err(del.db, 500, del.err)
+    if orm_ok(del) == 0 {
+        return act_err(orm_db_exec(del), 500, orm_err_exec(del))
     }
-    return act_no_content(del.db)
+    return act_no_content(orm_db_exec(del))
 }

@@ -18,7 +18,7 @@ via name dispatch (no L5 function values).
 `-32700` parse · `-32600` invalid request · `-32601` method not found ·
 `-32602` invalid params · app `-32000`.
 
-`RpcResult { ok, skip, result_json, err_code, err_msg, id_json }` is the
+`RpcResult` L3 enum (`JrpcOk` / `JrpcErr` / `JrpcSkip`) is the
 honest **L3 Result stand-in** until sum types exist.
 
 ## API

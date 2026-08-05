@@ -35,13 +35,13 @@ fn oauth_boot_migrate() -> i64 !Net !IO !Random {
         return 1
     }
     let up = migrate_up(db, oauth_migrations())?
-    if up.ok == 0 {
-        print(concat("oauthbaga: migrate failed: ", up.err))
-        orm_close(up.db)?
+    if migrate_is_ok(up) == 0 {
+        print(concat("oauthbaga: migrate failed: ", migrate_err_str(up)))
+        orm_close(migrate_db(up))?
         return 1
     }
-    print(concat("oauthbaga migrate applied=", int_to_str(up.applied)))
-    orm_close(up.db)?
+    print(concat("oauthbaga migrate applied=", int_to_str(migrate_applied_n(up))))
+    orm_close(migrate_db(up))?
     return 0
 }
 

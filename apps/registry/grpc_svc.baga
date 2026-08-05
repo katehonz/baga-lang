@@ -99,10 +99,10 @@ fn reg_pb_package_from_row(q: OrmQuery, row: i64) -> bytes {
 
 fn reg_pb_list_encode(q: OrmQuery) -> bytes {
     let mut b = bytes_new(0)
-    for i in 0..q.nrows {
+    for i in 0..orm_nrows(q) {
         b = pb_field_bytes(b, 1, reg_pb_package_from_row(q, i))
     }
-    b = pb_field_varint(b, 2, q.nrows)
+    b = pb_field_varint(b, 2, orm_nrows(q))
     return b
 }
 
@@ -145,13 +145,13 @@ fn reg_grpc_get(db: OrmDb, body: bytes) -> FmrOut !IO !Net {
         return reg_grpc_err(db, GRPC_UNAVAILABLE(), "database unavailable")
     }
     let q = reg_find_by_name(db, name)?
-    if q.ok == 0 {
-        return reg_grpc_err(q.db, GRPC_INTERNAL(), q.err)
+    if orm_ok_q(q) == 0 {
+        return reg_grpc_err(orm_db_q(q), GRPC_INTERNAL(), orm_err_q(q))
     }
-    if q.nrows < 1 {
-        return reg_grpc_err(q.db, GRPC_NOT_FOUND(), "package not found")
+    if orm_nrows(q) < 1 {
+        return reg_grpc_err(orm_db_q(q), GRPC_NOT_FOUND(), "package not found")
     }
-    return reg_grpc_ok(q.db, reg_pb_package_from_row(q, 0))
+    return reg_grpc_ok(orm_db_q(q), reg_pb_package_from_row(q, 0))
 }
 
 fn reg_grpc_list(db: OrmDb, body: bytes) -> FmrOut !IO !Net {
@@ -169,16 +169,16 @@ fn reg_grpc_list(db: OrmDb, body: bytes) -> FmrOut !IO !Net {
     }
     if term != "" {
         let q = reg_search(db, concat(concat("%", term), "%"))?
-        if q.ok == 0 {
-            return reg_grpc_err(q.db, GRPC_INTERNAL(), q.err)
+        if orm_ok_q(q) == 0 {
+            return reg_grpc_err(orm_db_q(q), GRPC_INTERNAL(), orm_err_q(q))
         }
-        return reg_grpc_ok(q.db, reg_pb_list_encode(q))
+        return reg_grpc_ok(orm_db_q(q), reg_pb_list_encode(q))
     }
     let q2 = reg_all(db)?
-    if q2.ok == 0 {
-        return reg_grpc_err(q2.db, GRPC_INTERNAL(), q2.err)
+    if orm_ok_q(q2) == 0 {
+        return reg_grpc_err(orm_db_q(q2), GRPC_INTERNAL(), orm_err_q(q2))
     }
-    return reg_grpc_ok(q2.db, reg_pb_list_encode(q2))
+    return reg_grpc_ok(orm_db_q(q2), reg_pb_list_encode(q2))
 }
 
 // App hook: path → method.

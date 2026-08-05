@@ -2,18 +2,10 @@
 
 Probe log from apps-roadmap **№6** (JSON-RPC).
 
-## R1 — no Result / sum types (L3)
+## R1 — Result / sum types (L3) — **shipped (B1)**
 
-**Symptom.** Every outcome is `RpcResult { ok, skip, result_json, err_* }`
-or parallel fields. Call sites branch on `ok`/`skip` integers.
-
-**Workaround.** Documented struct convention (same as pgbaga G1).
-
-**Severity.** High for clean protocol APIs.
-
-**Verdict.** **Unblocked 2026-08-05** — L3 shipped (`enum Res { Ok(i64),
-Err(str) }` + exhaustive match); migration of the stand-in struct is
-optional. Error codes map cleanly onto `Err(RpcError)`.
+**Shipped.** `RpcResult` is `JrpcOk` / `JrpcErr` / `JrpcSkip`. Public path is
+still `rpc_handle_body` → string; encode matches on the sum.
 
 ## R2 — no function values (L5) → switch dispatch
 

@@ -75,7 +75,7 @@ fn px_session_put(st: ProxyStore, db: OrmDb, sid: str, t: PxTokens) -> i64 !IO !
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (sid) DO UPDATE SET
            sub = $2, scope = $3, access = $4, refresh = $5, expires_s = $6", vals)?
-    return ex.ok
+    return orm_ok(ex)
 }
 
 fn px_session_get(st: ProxyStore, db: OrmDb, sid: str) -> PxSess !IO !Net {
@@ -97,7 +97,7 @@ fn px_session_get(st: ProxyStore, db: OrmDb, sid: str) -> PxSess !IO !Net {
     vec_push(qvals, sid)
     let q = orm_query_params_str(db,
         "SELECT sub, scope, access, refresh, expires_s FROM oauth_sessions WHERE sid = $1", qvals)?
-    if q.ok == 0 || q.nrows == 0 {
+    if orm_ok_q(q) == 0 || orm_nrows(q) == 0 {
         return px_sess_bad()
     }
     return PxSess {
@@ -118,7 +118,7 @@ fn px_session_del(st: ProxyStore, db: OrmDb, sid: str) -> i64 !IO !Net {
     let vals: Vec<str> = vec_new()
     vec_push(vals, sid)
     let ex = orm_exec_params_str(db, "DELETE FROM oauth_sessions WHERE sid = $1", vals)?
-    return ex.ok
+    return orm_ok(ex)
 }
 
 // CSRF authorize states. kind 0: the per-node map; kind 1: oauth_states in
@@ -132,7 +132,7 @@ fn px_state_put(st: ProxyStore, db: OrmDb, state: str) -> i64 !IO !Net {
     vec_push(vals, state)
     let ex = orm_exec_params_str(db,
         "INSERT INTO oauth_states (state) VALUES ($1)", vals)?
-    return ex.ok
+    return orm_ok(ex)
 }
 
 // One-time check: 1 when the state existed (and is now consumed).
@@ -148,12 +148,12 @@ fn px_state_take(st: ProxyStore, db: OrmDb, state: str) -> i64 !IO !Net {
     vec_push(qvals, state)
     let q = orm_query_params_str(db,
         "SELECT state FROM oauth_states WHERE state = $1", qvals)?
-    if q.ok == 0 || q.nrows == 0 {
+    if orm_ok_q(q) == 0 || orm_nrows(q) == 0 {
         return 0
     }
     let dvals: Vec<str> = vec_new()
     vec_push(dvals, state)
-    orm_exec_params_str(q.db, "DELETE FROM oauth_states WHERE state = $1", dvals)?
+    orm_exec_params_str(orm_db_q(q), "DELETE FROM oauth_states WHERE state = $1", dvals)?
     return 1
 }
 

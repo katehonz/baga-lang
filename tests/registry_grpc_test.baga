@@ -77,12 +77,12 @@ fn main() -> i64 !Net !IO !Par !Random !Time {
         return 1
     }
     let up = migrate_up(db, regbaga_migrations())?
-    if up.ok == 0 {
-        print(concat("  skip live migrate: ", up.err))
+    if migrate_is_ok(up) == 0 {
+        print(concat("  skip live migrate: ", migrate_err_str(up)))
         return 1
     }
-    let cl = orm_exec(up.db, "DELETE FROM reg_packages")?
-    orm_close(cl.db)?
+    let cl = orm_exec(migrate_db(up), "DELETE FROM reg_packages")?
+    orm_close(orm_db_exec(cl))?
 
     // force PORT for this process before go_bg inherits env — use fixed 18093
     // (registry fmr_run reads PORT; test client uses same).
@@ -92,15 +92,15 @@ fn main() -> i64 !Net !IO !Par !Random !Time {
     let db2 = orm_connect(host, port, user, password, "baga_registry")?
     // seed via model
     let cr = reg_create(db2, "grpc-pkg", "from grpc test", "git", "https://example/g.git")?
-    if cr.ok == 0 {
+    if orm_ok(cr) == 0 {
         check(fails, "seed_create", false)
     } else {
-        let f = reg_find_by_name(cr.db, "grpc-pkg")?
-        check(fails, "seed_find", f.ok == 1 && f.nrows == 1)
+        let f = reg_find_by_name(orm_db_exec(cr), "grpc-pkg")?
+        check(fails, "seed_find", orm_ok_q(f) == 1 && orm_nrows(f) == 1)
         let pid = orm_cell_by_i64(f, 0, "id")
-        let vi = reg_version_insert(f.db, pid, "1.2.3", "deadbeef", "")?
-        let sl = reg_set_latest(vi.db, pid, "1.2.3")?
-        orm_close(sl.db)?
+        let vi = reg_version_insert(orm_db_q(f), pid, "1.2.3", "deadbeef", "")?
+        let sl = reg_set_latest(orm_db_exec(vi), pid, "1.2.3")?
+        orm_close(orm_db_exec(sl))?
 
         let db3 = orm_connect(host, port, user, password, "baga_registry")?
         let req_frame = grpc_encode(reg_pb_get_req_encode("grpc-pkg"))

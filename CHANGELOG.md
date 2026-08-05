@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Phase 2 B1 — ormbaga + jsonrpc L3 results
+- **ormbaga:** `OrmExec` / `OrmQuery` / `OrmCount` / `MigrateResult` are L3
+  enums (`OrmEOk`/`OrmEErr`, `OrmQOk`/`OrmQErr`, …); helpers `orm_ok`,
+  `orm_db_q`, `migrate_is_ok`, … Apps/api + registry + oauth use helpers
+  (no `ok:i64` stand-in fields).
+- **jsonrpcbaga:** `RpcResult` → `JrpcOk` / `JrpcErr` / `JrpcSkip`.
+- Tests: `orm_test`, `api_test`, `jsonrpc_test` green (with migrated DB).
+
 ### RocksDB path R7 — byte-size targets + L3
 - **lsmbaga:** `LsmDB.target_bytes` (default 0 = file-count only). When set,
   levels compact if file-count ≥ `compact_at` **or** total SST bytes ≥

@@ -25,13 +25,13 @@ fn act_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return act_err(db, 503, "database unavailable")
     }
     let q = orm_query(db, "SELECT 1 AS ok")?
-    if q.ok == 0 {
-        return act_err(q.db, 503, "database ping failed")
+    if orm_ok_q(q) == 0 {
+        return act_err(orm_db_q(q), 503, "database ping failed")
     }
     let mut o = jobj_new()
     o = jobj_str(o, "status", "ready")
     o = jobj_str(o, "database", "up")
-    return act_ok(q.db, o)
+    return act_ok(orm_db_q(q), o)
 }
 
 fn act_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {

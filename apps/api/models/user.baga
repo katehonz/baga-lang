@@ -68,12 +68,12 @@ fn user_delete(db: OrmDb, id: i64) -> OrmExec !IO !Net {
 fn user_list_json(q: OrmQuery) -> JObj {
     let mut arr = jarr_new()
     let mut i: i64 = 0
-    while i < q.nrows {
+    while i < orm_nrows(q) {
         arr = jarr_obj(arr, user_to_json(q, i))
         i = i + 1
     }
     let mut o = jobj_new()
     o = jobj_raw(o, "items", jarr_encode(arr))
-    o = jobj_i64(o, "count", q.nrows)
+    o = jobj_i64(o, "count", orm_nrows(q))
     return o
 }

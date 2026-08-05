@@ -49,7 +49,7 @@ sharing stays; no package must adopt it.
 
 1. ~~Global unique sum-variant names~~ — **A1 shipped** (`Enum::Ok`)  
 2. ~~No `Vec<Res>` / `Map<K,Res>`~~ — **A2 shipped**  
-3. Stand-in `ok:i64` / `err:str` — **pbbaga + PgResult migrated**; orm/jsonrpc/… remain  
+3. ~~Stand-in `ok:i64` / `err:str`~~ — **pbbaga + pg + orm + jsonrpc L3** ✅  
 4. fmr routes still id-dispatch (L5 not adopted in router)  
 5. gRPC client is H1-only; H2 trailers still approximate  
 6. apps/api does not yet use status/ctx/mdt/otel as default middleware  
@@ -273,17 +273,16 @@ existing monorepo builds without flags still green.
 2. **A1** qualified variants ✅  
 3. **A2** Vec/Map of sum enums ✅  
 
-### Phase 2 — Stack migration (B1) — **paused for stabilize**
+### Phase 2 — Stack migration (B1) — **done**
 
 1. pbbaga decode sums ✅  
-2. pgbaga `PgResult` → `PgOk`/`PgErr` ✅ · ormbaga wrappers adapted  
-3. ~~ormbaga `OrmQuery`/`OrmExec` L3~~ — **deferred** (high fan-in in apps/api/registry;
-   keep struct stand-in + `pg_*` accessors until stabilize lands)  
-4. jsonrpc L3 — deferred with (3)  
-5. Optional later: delete stand-in fields package-by-package  
+2. pgbaga `PgResult` → `PgOk`/`PgErr` ✅  
+3. ormbaga `OrmQuery`/`OrmExec`/`OrmCount`/`MigrateResult` L3 ✅  
+4. jsonrpc `RpcResult` L3 ✅ (`JrpcOk`/`JrpcErr`/`JrpcSkip`)  
+5. Optional later: polish call sites to always use helpers (done for apps/api/registry/oauth)
 
-**Pause reason (2026-08-05):** return to **stabilize language + applications**
-before more Result churn. C′ borrow remains optional-only.
+**Note:** access via `orm_ok` / `orm_db_q` / `migrate_*` helpers — sum enums
+have no `.ok` fields. C′ borrow remains optional-only.
 
 ### Phase Stabilize — language + apps (**landed baseline**)
 

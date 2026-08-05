@@ -115,7 +115,7 @@ fn oa_code_put(st: OAuthStore, db: OrmDb, code: str, client_id: str, sub: str, s
     vec_push(vals, int_to_str(exp_ms))
     let ex = orm_exec_params_str(db,
         "INSERT INTO oauth_codes (code, client_id, sub, scope, expires_ms) VALUES ($1, $2, $3, $4, $5)", vals)?
-    return ex.ok
+    return orm_ok(ex)
 }
 
 // One-time read: returns the row and deletes it.
@@ -138,7 +138,7 @@ fn oa_code_take(st: OAuthStore, db: OrmDb, code: str) -> OaCode !IO !Net {
     vec_push(qvals, code)
     let q = orm_query_params_str(db,
         "SELECT client_id, sub, scope, expires_ms FROM oauth_codes WHERE code = $1", qvals)?
-    if q.ok == 0 || q.nrows == 0 {
+    if orm_ok_q(q) == 0 || orm_nrows(q) == 0 {
         return oa_code_bad()
     }
     let row = OaCode {
@@ -150,7 +150,7 @@ fn oa_code_take(st: OAuthStore, db: OrmDb, code: str) -> OaCode !IO !Net {
     }
     let dvals: Vec<str> = vec_new()
     vec_push(dvals, code)
-    orm_exec_params_str(q.db, "DELETE FROM oauth_codes WHERE code = $1", dvals)?
+    orm_exec_params_str(orm_db_q(q), "DELETE FROM oauth_codes WHERE code = $1", dvals)?
     return row
 }
 
@@ -171,7 +171,7 @@ fn oa_refresh_put(st: OAuthStore, db: OrmDb, token: str, sub: str, scope: str, e
     vec_push(vals, int_to_str(exp_ms))
     let ex = orm_exec_params_str(db,
         "INSERT INTO oauth_refresh (token, sub, scope, expires_ms) VALUES ($1, $2, $3, $4)", vals)?
-    return ex.ok
+    return orm_ok(ex)
 }
 
 // Rotation: returns the row and deletes it.
@@ -193,7 +193,7 @@ fn oa_refresh_take(st: OAuthStore, db: OrmDb, token: str) -> OaTok !IO !Net {
     vec_push(qvals, token)
     let q = orm_query_params_str(db,
         "SELECT sub, scope, expires_ms FROM oauth_refresh WHERE token = $1", qvals)?
-    if q.ok == 0 || q.nrows == 0 {
+    if orm_ok_q(q) == 0 || orm_nrows(q) == 0 {
         return oa_tok_bad()
     }
     let row = OaTok {
@@ -204,7 +204,7 @@ fn oa_refresh_take(st: OAuthStore, db: OrmDb, token: str) -> OaTok !IO !Net {
     }
     let dvals: Vec<str> = vec_new()
     vec_push(dvals, token)
-    orm_exec_params_str(q.db, "DELETE FROM oauth_refresh WHERE token = $1", dvals)?
+    orm_exec_params_str(orm_db_q(q), "DELETE FROM oauth_refresh WHERE token = $1", dvals)?
     return row
 }
 
