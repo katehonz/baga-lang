@@ -43,4 +43,8 @@ Goal: Track S flagship — durable KV on RESP.
 - **R14 put path** — prealloc WAL/bloom/SST encode, `push_u32_le` 1-concat,
   single bloom build, 64 KiB WAL write buffer — **done**
 - **R15 poll multi-conn** — `std/net/poll` event loop for RESP serve — **done**
+- **R16 TTL** — `BAGATTL1` value envelope, lazy expiry, RESP EXPIRE/TTL/SETEX/
+  PERSIST — **done** (P1 "Optional TTL column" closed)
+- **R17 sst_build prealloc** — killed the O(n²) concat chain (OOM at n≥5000
+  bench) — **done**
 - Shared page cache across open files with pin counts

@@ -93,9 +93,25 @@ GET_SEQ ~200k ops/s (~37% RocksDB), GET_RND ~250k (~48%).
 - Bench n=1000 durable PUT ~695 ops/s (~82% RocksDB). Batch PUT still ≪
   RocksDB (interpreter + flush tax).
 
-**Still open (later):** pin-count shared page cache; poll multi-conn;
-`db/manifest.baga` / `table/block.baga` when needed; RocksDB feature parity
-(not claimed).
+**Shipped (R15):** poll multi-conn RESP serve — see L4 below.
+
+**Shipped (R16 TTL):** optional `BAGATTL1` value envelope (`util/ttl.baga`),
+lazy expiry on get/flush/compact; RESP `SET EX`/`SETEX`/`EXPIRE`/`TTL`/
+`PERSIST`. Tests: `ttl_*` in `tests/lsm_test.baga`.
+
+**Shipped (R17 `sst_build` prealloc):** the R14 concat chain in `sst_build`
+was O(n²) in time **and** in unreachable garbage — Baga has no GC, so every
+`bytes_concat` intermediate lives until exit. Merges past ~4.5k rows (n=5000
+bench, L3 collapse) allocated ~7 GB per call and got OOM-killed (froze the
+host). Rewritten as exact prealloc + offset writes (two passes, zero concat).
+Bench n=10000 durable now completes: PUT ~549 ops/s, GET_SEQ ~175k,
+GET_RND ~123k. **Language lesson:** in a no-GC language, growable-buffer
+concat chains are memory bombs even when they are "fast enough" — prealloc
+like R14 did for WAL, or pay quadratic RSS.
+
+**Still open (later):** pin-count shared page cache; poll multi-conn done
+(R15); `db/manifest.baga` / `table/block.baga` when needed; RocksDB feature
+parity (not claimed).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

@@ -59,28 +59,56 @@ struct SstBuilt {
 
 // Build v5 body: core (+ block CRCs) + bloom + fixed footer.
 // R14: return bloom once so sst_write does not rebuild the filter.
+// R17: exact prealloc + offset writes. The concat chain was O(n²) in time
+// *and* in unreachable garbage (no GC) — merges past ~4.5k rows got OOM-killed.
 fn sst_build(rows: Vec<SstRow>) -> SstBuilt {
-    let mut core = bytes_new(0)
-    core = push_u32_le(core, vec_len(rows))
-    let restarts: Vec<i64> = vec_new()
-    let every = sst_restart_every()
     let n = vec_len(rows)
+    let every = sst_restart_every()
+    let nr = (n + every - 1) / every
+    // Pass 1: exact core size (count + records + restart offs + nr + CRCs).
+    let mut rec_end: i64 = 4
     let mut i: i64 = 0
     while i < n {
-        if i % every == 0 {
-            vec_push(restarts, bytes_len(core))
-        }
         let r = vec_get(rows, i)
-        core = push_u8(core, r.op & 255)
-        let kb = bytes_of_str(r.key)
-        core = push_u32_le(core, bytes_len(kb))
-        core = push_bytes(core, kb)
-        core = push_u32_le(core, bytes_len(r.val))
-        core = push_bytes(core, r.val)
+        rec_end = rec_end + 9 + bytes_len(bytes_of_str(r.key)) + bytes_len(r.val)
         i = i + 1
     }
-    let rec_end = bytes_len(core)
-    let nr = vec_len(restarts)
+    let core_len = rec_end + 4 * nr + 4 + 4 * nr
+    let core = bytes_new(core_len)
+    put_u32_le(core, 0, n)
+    // Pass 2: fill records, remember restart offsets.
+    let restarts: Vec<i64> = vec_new()
+    let mut off: i64 = 4
+    let mut j: i64 = 0
+    i = 0
+    while i < n {
+        if i % every == 0 {
+            vec_push(restarts, off)
+        }
+        let r = vec_get(rows, i)
+        bytes_set(core, off, r.op & 255)
+        off = off + 1
+        let kb = bytes_of_str(r.key)
+        let klen = bytes_len(kb)
+        put_u32_le(core, off, klen)
+        off = off + 4
+        j = 0
+        while j < klen {
+            bytes_set(core, off + j, bytes_at(kb, j))
+            j = j + 1
+        }
+        off = off + klen
+        let vlen = bytes_len(r.val)
+        put_u32_le(core, off, vlen)
+        off = off + 4
+        j = 0
+        while j < vlen {
+            bytes_set(core, off + j, bytes_at(r.val, j))
+            j = j + 1
+        }
+        off = off + vlen
+        i = i + 1
+    }
     // Per-restart-block crc32c (R6) — computed before index is appended.
     let bcrcs: Vec<i64> = vec_new()
     let mut bi: i64 = 0
@@ -93,29 +121,42 @@ fn sst_build(rows: Vec<SstRow>) -> SstBuilt {
         vec_push(bcrcs, crc32c_b(bytes_slice(core, start, end)))
         bi = bi + 1
     }
-    let mut j: i64 = 0
-    while j < nr {
-        core = push_u32_le(core, vec_get(restarts, j))
-        j = j + 1
+    bi = 0
+    while bi < nr {
+        put_u32_le(core, off, vec_get(restarts, bi))
+        off = off + 4
+        bi = bi + 1
     }
-    core = push_u32_le(core, nr)
-    let mut ci: i64 = 0
-    while ci < nr {
-        core = push_u32_le(core, vec_get(bcrcs, ci))
-        ci = ci + 1
+    put_u32_le(core, off, nr)
+    off = off + 4
+    bi = 0
+    while bi < nr {
+        put_u32_le(core, off, vec_get(bcrcs, bi))
+        off = off + 4
+        bi = bi + 1
     }
-    let core_len = bytes_len(core)
     let bloom = bloom_build_bits(rows)
     let m = bloom_bits_for(n)
-    let mut body = core
-    body = push_bytes(body, bloom)
+    let blen = bytes_len(bloom)
+    let mut body = bytes_new(core_len + blen + 24)
+    i = 0
+    while i < core_len {
+        bytes_set(body, i, bytes_at(core, i))
+        i = i + 1
+    }
+    i = 0
+    while i < blen {
+        bytes_set(body, core_len + i, bytes_at(bloom, i))
+        i = i + 1
+    }
     // footer 24 (tag=5)
-    body = push_u32_le(body, core_len)
-    body = push_u32_le(body, bytes_len(bloom))
-    body = push_u32_le(body, m)
-    body = push_u32_le(body, nr)
-    body = push_u32_le(body, n)
-    body = push_u32_le(body, 5)
+    let foff = core_len + blen
+    put_u32_le(body, foff, core_len)
+    put_u32_le(body, foff + 4, blen)
+    put_u32_le(body, foff + 8, m)
+    put_u32_le(body, foff + 12, nr)
+    put_u32_le(body, foff + 16, n)
+    put_u32_le(body, foff + 20, 5)
     return SstBuilt { body: body, bloom: bloom, m: m }
 }
 
