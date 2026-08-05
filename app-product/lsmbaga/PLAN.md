@@ -18,12 +18,14 @@ Goal: Track S flagship — durable KV on RESP.
 ## P1
 
 - Sparse index / restart keys for SST — **done (R2, BAGASST2)**
-- `Map<str, bytes>` values (binary-safe RESP)
+- `Map<str, bytes>` values — **done (R3)**; RESP command path still str
+- Oldest-N compaction + drop pure tombs — **done (R3)**
 - poll-based multi-conn serve (kvbaga K1)
 - Optional TTL column
 
 ## P2
 
-- Leveled compaction
+- Leveled / multi-level compaction
 - Bloom filters
 - Shared page cache across open files with pin counts
+- Page-sized SST blocks (partial file IO)

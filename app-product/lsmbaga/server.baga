@@ -86,7 +86,7 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO {
         if g.found == 0 {
             return LsmExec { db: db, reply: resp_null_bulk(), quit: 0 }
         }
-        return LsmExec { db: db, reply: resp_bulk(g.val), quit: 0 }
+        return LsmExec { db: db, reply: resp_bulk_b(g.val), quit: 0 }
     }
     if cmd == "DEL" {
         if n != 2 {
@@ -117,14 +117,15 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO {
         db = g.db
         let mut base: i64 = 0
         if g.found == 1 {
-            if lsm_is_int(g.val) == 0 {
+            let vs = str_of_bytes(g.val)
+            if lsm_is_int(vs) == 0 {
                 return LsmExec {
                     db: db,
                     reply: resp_error("ERR value is not an integer or out of range"),
                     quit: 0
                 }
             }
-            base = parse_int(g.val)
+            base = parse_int(vs)
         }
         let nv = base + 1
         db = lsm_put(db, k, int_to_str(nv))?

@@ -96,9 +96,9 @@ Tombstone (op=Del) shadows older Puts.
 
 ### Memtable
 
-`Map<str,str>` values + `Map<str,i64>` tombstones (1 = deleted). Same
-NUL-free `str` contract as kvbaga. `mem_n` counts live put/del ops since
-last flush; when `mem_n >= flush_at` (default 32), flush.
+`Map<str, bytes>` values + `Map<str, i64>` tombstones (1 = deleted). Keys
+remain `str` (NUL-free); values are binary-safe. `mem_n` counts live put/del
+ops since last flush; when `mem_n >= flush_at` (default 32), flush.
 
 ### Flush
 
@@ -107,11 +107,12 @@ last flush; when `mem_n >= flush_at` (default 32), flush.
 3. Rotate WAL (`unlink` + reopen `O_CREAT|O_TRUNC` or rewrite empty).
 4. Clear mem/tomb; `mem_n = 0`.
 
-### Compaction-lite
+### Compaction (oldest-N)
 
-When `vec_len(gens) >= compact_at` (default 3): merge all tables
-newest-wins into one new SST, replace gens with `[new]`, delete old
-files via `unlink`, rewrite MANIFEST. Page-cache slots for old file_ids
+When `vec_len(gens) >= compact_at` (default 3): merge the **oldest**
+`compact_at` tables newest-wins into one new SST, drop pure tombstones
+(nothing older under the merged prefix), keep younger gens, `unlink`
+merged files, rewrite MANIFEST. Page-cache slots for old file_ids
 invalidated.
 
 ### Recovery

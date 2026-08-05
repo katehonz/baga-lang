@@ -1,4 +1,5 @@
 // wal.baga — append-only write-ahead log with crc32c records.
+// Values are binary-safe bytes (R3).
 
 import "codec.baga"
 import "std/os/os.baga"
@@ -6,20 +7,19 @@ import "std/crypto/crc32c.baga"
 import "std/str/str.baga"
 
 // op: 1 = Put, 2 = Del
-fn wal_payload(op: i64, key: str, val: str) -> bytes {
+fn wal_payload(op: i64, key: str, val: bytes) -> bytes {
     let kb = bytes_of_str(key)
-    let vb = bytes_of_str(val)
     let mut p = bytes_new(0)
     p = bytes_push(p, op & 255)
     p = push_u32_le(p, bytes_len(kb))
     p = push_bytes(p, kb)
-    p = push_u32_le(p, bytes_len(vb))
-    p = push_bytes(p, vb)
+    p = push_u32_le(p, bytes_len(val))
+    p = push_bytes(p, val)
     return p
 }
 
 // Append one record; returns new file offset after the write, or -1.
-fn wal_append(fd: i64, off: i64, op: i64, key: str, val: str) -> i64 !IO {
+fn wal_append(fd: i64, off: i64, op: i64, key: str, val: bytes) -> i64 !IO {
     let payload = wal_payload(op, key, val)
     let crc = crc32c_b(payload)
     let mut rec = bytes_new(0)
@@ -39,14 +39,14 @@ struct WalReplay {
     ok: i64,
     ops: Vec<i64>,
     keys: Vec<str>,
-    vals: Vec<str>,
+    vals: Vec<bytes>,
     end_off: i64
 }
 
 fn wal_replay(fd: i64) -> WalReplay !IO {
     let ops: Vec<i64> = vec_new()
     let keys: Vec<str> = vec_new()
-    let vals: Vec<str> = vec_new()
+    let vals: Vec<bytes> = vec_new()
     let mut off: i64 = 0
     let mut running: i64 = 1
     while running == 1 {
@@ -85,7 +85,7 @@ fn wal_replay(fd: i64) -> WalReplay !IO {
                                 if bytes_len(payload) < vstart + vlen {
                                     running = 0
                                 } else {
-                                    let val = str_of_bytes(bytes_slice(payload, vstart, vstart + vlen))
+                                    let val = bytes_slice(payload, vstart, vstart + vlen)
                                     vec_push(ops, op)
                                     vec_push(keys, key)
                                     vec_push(vals, val)

@@ -27,7 +27,7 @@ fn sst_restart_every() -> i64 {
 struct SstRow {
     op: i64,      // 1 put, 2 del
     key: str,
-    val: str
+    val: bytes
 }
 
 fn sst_path(dir: str, gen: i64) -> str {
@@ -49,11 +49,10 @@ fn sst_build(rows: Vec<SstRow>) -> bytes {
         let r = vec_get(rows, i)
         body = bytes_push(body, r.op & 255)
         let kb = bytes_of_str(r.key)
-        let vb = bytes_of_str(r.val)
         body = push_u32_le(body, bytes_len(kb))
         body = push_bytes(body, kb)
-        body = push_u32_le(body, bytes_len(vb))
-        body = push_bytes(body, vb)
+        body = push_u32_le(body, bytes_len(r.val))
+        body = push_bytes(body, r.val)
         i = i + 1
     }
     // Restart index footer (offsets then count).
@@ -103,12 +102,12 @@ struct SstRec {
     ok: i64,
     op: i64,
     key: str,
-    val: str,
+    val: bytes,
     next: i64
 }
 
 fn sst_rec_at(body: bytes, pos: i64) -> SstRec {
-    let bad = SstRec { ok: 0, op: 0, key: "", val: "", next: pos }
+    let bad = SstRec { ok: 0, op: 0, key: "", val: bytes_new(0), next: pos }
     if pos + 1 + 4 > bytes_len(body) {
         return bad
     }
@@ -126,7 +125,7 @@ fn sst_rec_at(body: bytes, pos: i64) -> SstRec {
     if vlen < 0 || p + vlen > bytes_len(body) {
         return bad
     }
-    let val = str_of_bytes(bytes_slice(body, p, p + vlen))
+    let val = bytes_slice(body, p, p + vlen)
     p = p + vlen
     return SstRec { ok: 1, op: op, key: key, val: val, next: p }
 }
@@ -234,13 +233,13 @@ struct SstLookup {
     pc: PageCache,
     found: i64,
     alive: i64,
-    val: str
+    val: bytes
 }
 
 struct SstHit {
     found: i64,
     alive: i64,
-    val: str
+    val: bytes
 }
 
 // Binary search in a sorted SST row vector (keys ascending).
@@ -277,7 +276,7 @@ fn sst_bsearch(rows: Vec<SstRow>, key: str) -> i64 {
 
 fn sst_hit_from_row(r: SstRow) -> SstHit {
     if r.op == 2 {
-        return SstHit { found: 1, alive: 0, val: "" }
+        return SstHit { found: 1, alive: 0, val: bytes_new(0) }
     }
     return SstHit { found: 1, alive: 1, val: r.val }
 }
@@ -309,7 +308,7 @@ fn sst_last_key(body: bytes, start: i64, end: i64) -> str {
 
 // v2: restart index bsearch + scan one block. Body is CRC-verified file body.
 fn sst_lookup_v2(body: bytes, key: str) -> SstHit {
-    let miss = SstHit { found: 0, alive: 0, val: "" }
+    let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
     let blen = bytes_len(body)
     if blen < 8 {
         return miss
@@ -407,7 +406,7 @@ fn sst_lookup_v2(body: bytes, key: str) -> SstHit {
 
 // Dispatch v1 (full parse + bsearch) or v2 (restart index).
 fn sst_lookup_data(data: bytes, key: str) -> SstHit {
-    let miss = SstHit { found: 0, alive: 0, val: "" }
+    let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
     if bytes_len(data) < 8 + 4 + 4 {
         return miss
     }
@@ -450,5 +449,5 @@ fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
         }
         i = i - 1
     }
-    return SstLookup { pc: cur, found: 0, alive: 0, val: "" }
+    return SstLookup { pc: cur, found: 0, alive: 0, val: bytes_new(0) }
 }

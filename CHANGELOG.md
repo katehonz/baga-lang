@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### RocksDB path R3 — binary values + better compaction
+- **lsmbaga:** memtable `Map<str, bytes>`; WAL/SST values as bytes; `lsm_put_b`
+  for NUL-safe puts; `lsm_get` returns `bytes`. Compaction merges the **oldest**
+  `compact_at` gens (keeps younger SSTs) and **drops pure tombstones**.
+- **kvbaga:** `resp_bulk_b` for binary-safe RESP bulk replies.
+
 ### RocksDB path R2 — SST restart index
 - **lsmbaga:** new SSTs write **`BAGASST2`**: sorted records + restart index
   (every 16 keys) + crc. `sst_get` uses restart **bsearch** + one-block scan

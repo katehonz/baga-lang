@@ -32,13 +32,18 @@ cache (full body IO). Fine at probe scale; true block-level page IO is later.
 row materialize). Compaction/`KEYS` still full-parse. **BAGASST1** still
 readable (parse + bsearch).
 
-**Still open (R3+):** sparse page-sized blocks (avoid reading whole file),
-binary values, bloom, leveled compaction.
+**Still open (R4+):** sparse page-sized blocks (avoid reading whole file),
+bloom filters, multi-level compaction.
 
-## L4 — TTL / binary values / concurrent writers
+## L4 — TTL / RESP binary wire / concurrent writers
 
-Same product residuals as kvbaga (K1 poll migration, K2 `Map<str,bytes>`,
-no EXPIRE column). Out of MVP scope by design.
+**Shipped (R3 engine):** memtable `Map<str, bytes>`, WAL/SST values as bytes,
+`lsm_put_b` for NUL-safe puts. Compaction merges oldest `compact_at` gens and
+**drops pure tombstones**.
+
+**Still residual:** RESP **command** args are still `Vec<str>` (SET cannot
+inject raw NUL over the wire parser); GET uses `resp_bulk_b`. No EXPIRE/TTL;
+no multi-writer; poll multi-conn same as kvbaga K1.
 
 ## Closed by this package
 

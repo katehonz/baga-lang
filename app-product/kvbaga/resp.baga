@@ -89,6 +89,13 @@ fn resp_bulk(s: str) -> bytes {
     return bytes_of_str(concat(head, "\r\n"))
 }
 
+// Binary-safe bulk ($N\\r\\n + raw bytes + \\r\\n). Prefer for Map/bytes stores.
+fn resp_bulk_b(b: bytes) -> bytes {
+    let head = bytes_of_str(concat(concat("$", int_to_str(bytes_len(b))), "\r\n"))
+    let tail = bytes_of_str("\r\n")
+    return bytes_concat(bytes_concat(head, b), tail)
+}
+
 fn resp_null_bulk() -> bytes {
     return bytes_of_str("$-1\r\n")
 }

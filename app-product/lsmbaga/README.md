@@ -18,10 +18,10 @@ and binary `fd_*_bytes` in `std/os`.
 |-------|--------|
 | Page cache (S5) | Fixed-size pages (4 KiB), clock eviction, dirty writeback, invalidate-on-unlink |
 | WAL | Length-prefixed records, crc32c, `fdatasync` every `sync_every` (default 1) |
-| Memtable | `Map<str,str>` + tombstone map |
+| Memtable | `Map<str, bytes>` + tombstone map (binary-safe values) |
 | SSTable | Magic **`BAGASST2`** (writes): sorted rows + **restart index** (every 16) + crc; get = index bsearch + block scan. **`BAGASST1`** still readable (R1 path) |
 | Flush | Threshold `flush_at` (default 32); `SAVE` forces flush over RESP |
-| Compaction-lite | When `gens >= compact_at` (default 3) → one merged SST |
+| Compaction | When `gens >= compact_at` (default 3) → merge **oldest** `compact_at` gens; drop pure tombs; keep younger files |
 | Recovery | MANIFEST + SST gens + WAL replay |
 | RESP | `PING` `SET` `GET` `DEL` `EXISTS` `INCR` `KEYS` `DBSIZE` `SAVE` `QUIT` |
 
@@ -60,17 +60,19 @@ Env: `LSMPATH`, `LSMPORT` / port arg, `LSM_FLUSH_AT`, `LSM_COMPACT_AT`.
 
 ```baga
 fn lsm_open(dir, flush_at, compact_at) -> LsmDB !IO
-fn lsm_put / lsm_del / lsm_get / lsm_keys / lsm_flush_force / lsm_close
+fn lsm_put / lsm_put_b / lsm_del / lsm_get / lsm_keys / lsm_flush_force / lsm_close
+// lsm_put_b(key, bytes) — binary values; lsm_get returns bytes
 fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 ```
 
 ## Honest limits
 
 - Serial connections (same `go`/store constraint as kvbaga K1).
-- NUL-free `str` keys/values (kvbaga K2 product residual).
+- Keys are still `str` (NUL-free); **values** are `bytes` (NUL-safe in engine/WAL/SST).
+- RESP **SET** args still go through `str` parser; GET replies use binary-safe bulk.
 - No TTL/EXPIRE; SET options rejected with ERR.
 - Get still loads the full SST file (index avoids full *parse*, not full IO); no bloom / page-sized blocks yet.
-- Compaction is “merge everything”, not leveled.
+- Compaction is oldest-N merge, not full leveled LSM.
 - Single process; no multi-writer.
 
 See [gaps.md](gaps.md).

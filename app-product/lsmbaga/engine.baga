@@ -1,4 +1,6 @@
-// engine.baga — LSM: WAL + memtable + flush + compaction-lite + recovery.
+// engine.baga — LSM: WAL + memtable + flush + compaction + recovery.
+// Values are Map<str, bytes> / binary-safe (R3). Compaction merges the oldest
+// `compact_at` gens and drops pure tombstones (nothing older under them).
 
 import "codec.baga"
 import "page.baga"
@@ -9,7 +11,7 @@ import "std/str/str.baga"
 
 struct LsmDB {
     dir: str,
-    mem: Map<str, str>,
+    mem: Map<str, bytes>,
     tomb: Map<str, i64>,
     mem_n: i64,
     flush_at: i64,
@@ -140,7 +142,8 @@ fn lsm_maybe_sync(db: LsmDB) -> LsmDB !IO {
     return db
 }
 
-fn lsm_put(db: LsmDB, key: str, val: str) -> LsmDB !IO {
+// Binary-safe put (core write path).
+fn lsm_put_b(db: LsmDB, key: str, val: bytes) -> LsmDB !IO {
     let off = wal_append(db.wal_fd, db.wal_off, 1, key, val)?
     if off < 0 {
         db.ok = 0
@@ -157,8 +160,13 @@ fn lsm_put(db: LsmDB, key: str, val: str) -> LsmDB !IO {
     return db
 }
 
+// Convenience: UTF-8 / str value → bytes.
+fn lsm_put(db: LsmDB, key: str, val: str) -> LsmDB !IO {
+    return lsm_put_b(db, key, bytes_of_str(val))?
+}
+
 fn lsm_del(db: LsmDB, key: str) -> LsmDB !IO {
-    let off = wal_append(db.wal_fd, db.wal_off, 2, key, "")?
+    let off = wal_append(db.wal_fd, db.wal_off, 2, key, bytes_new(0))?
     if off < 0 {
         db.ok = 0
         return db
@@ -177,12 +185,12 @@ fn lsm_del(db: LsmDB, key: str) -> LsmDB !IO {
 struct LsmGet {
     db: LsmDB,
     found: i64,
-    val: str
+    val: bytes
 }
 
 fn lsm_get(db: LsmDB, key: str) -> LsmGet !IO {
     if map_has(db.tomb, key) == 1 {
-        return LsmGet { db: db, found: 0, val: "" }
+        return LsmGet { db: db, found: 0, val: bytes_new(0) }
     }
     if map_has(db.mem, key) == 1 {
         return LsmGet { db: db, found: 1, val: map_get(db.mem, key) }
@@ -193,9 +201,9 @@ fn lsm_get(db: LsmDB, key: str) -> LsmGet !IO {
         if lk.alive == 1 {
             return LsmGet { db: db, found: 1, val: lk.val }
         }
-        return LsmGet { db: db, found: 0, val: "" }
+        return LsmGet { db: db, found: 0, val: bytes_new(0) }
     }
-    return LsmGet { db: db, found: 0, val: "" }
+    return LsmGet { db: db, found: 0, val: bytes_new(0) }
 }
 
 fn lsm_exists(db: LsmDB, key: str) -> LsmGet !IO {
@@ -222,7 +230,7 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO {
     for i in 0..vec_len(all) {
         let k = vec_get(all, i)
         if map_has(db.tomb, k) == 1 && map_has(db.mem, k) == 0 {
-            vec_push(rows, SstRow { op: 2, key: k, val: "" })
+            vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
         } else {
             vec_push(rows, SstRow { op: 1, key: k, val: map_get(db.mem, k) })
         }
@@ -262,16 +270,27 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO {
     return db
 }
 
-// Merge all SSTs newest-wins into one; unlink old files.
+// Merge the oldest `compact_at` SSTs (or all if fewer) newest-wins into one;
+// drop pure tombstones (no live put in the merge set — nothing older exists).
+// Keeps any younger gens untouched (lower rewrite amp than full merge).
 fn lsm_compact(db: LsmDB) -> LsmDB !IO {
-    if vec_len(db.gens) < 2 {
+    let n = vec_len(db.gens)
+    if n < 2 {
         return db
     }
-    // merge map: key -> SstRow (scan oldest first so newest overwrites)
-    let acc: Map<str, str> = map_new()
+    let mut take = db.compact_at
+    if take > n {
+        take = n
+    }
+    if take < 2 {
+        return db
+    }
+    // merge map: key -> value (scan oldest first so newest overwrites)
+    let acc: Map<str, bytes> = map_new()
     let tomb: Map<str, i64> = map_new()
     let mut cur = db.cache
-    for i in 0..vec_len(db.gens) {
+    let mut i: i64 = 0
+    while i < take {
         let gen = vec_get(db.gens, i)
         let ld = sst_load(cur, db.dir, gen)?
         cur = ld.pc
@@ -287,45 +306,44 @@ fn lsm_compact(db: LsmDB) -> LsmDB !IO {
                 }
             }
         }
+        i = i + 1
     }
     db.cache = cur
+    // Only live puts — pure tombs are droppable (merge covers oldest prefix).
     let keys = map_keys(acc)
-    let tkeys = map_keys(tomb)
-    let all: Vec<str> = vec_new()
-    for i in 0..vec_len(keys) {
-        vec_push(all, vec_get(keys, i))
-    }
-    for i in 0..vec_len(tkeys) {
-        let k = vec_get(tkeys, i)
-        if map_has(acc, k) == 0 {
-            vec_push(all, k)
-        }
-    }
-    sort_strs(all)
+    sort_strs(keys)
     let rows: Vec<SstRow> = vec_new()
-    for i in 0..vec_len(all) {
-        let k = vec_get(all, i)
-        if map_has(tomb, k) == 1 && map_has(acc, k) == 0 {
-            vec_push(rows, SstRow { op: 2, key: k, val: "" })
-        } else {
-            vec_push(rows, SstRow { op: 1, key: k, val: map_get(acc, k) })
-        }
+    for ki in 0..vec_len(keys) {
+        let k = vec_get(keys, ki)
+        vec_push(rows, SstRow { op: 1, key: k, val: map_get(acc, k) })
     }
     let new_gen = db.next_gen
-    if sst_write(db.dir, new_gen, rows)? != 0 {
-        db.ok = 0
-        return db
+    if vec_len(rows) > 0 {
+        if sst_write(db.dir, new_gen, rows)? != 0 {
+            db.ok = 0
+            return db
+        }
     }
-    // unlink old
-    for i in 0..vec_len(db.gens) {
-        let g = vec_get(db.gens, i)
+    // unlink merged gens
+    let mut j: i64 = 0
+    while j < take {
+        let g = vec_get(db.gens, j)
         unlink(sst_path(db.dir, g))?
         db.cache = pc_invalidate_file(db.cache, g)
+        j = j + 1
     }
     let ng: Vec<i64> = vec_new()
-    vec_push(ng, new_gen)
+    if vec_len(rows) > 0 {
+        vec_push(ng, new_gen)
+        db.next_gen = new_gen + 1
+    }
+    // keep younger gens
+    let mut k: i64 = take
+    while k < n {
+        vec_push(ng, vec_get(db.gens, k))
+        k = k + 1
+    }
     db.gens = ng
-    db.next_gen = new_gen + 1
     if lsm_write_manifest(db.dir, db.next_gen, db.gens)? != 0 {
         db.ok = 0
         return db

@@ -6,6 +6,7 @@ import "kvbaga/resp.baga"
 import "std/net/tcp.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
 
 fn check(fails: Vec<i64>, name: str, cond: bool) {
     if cond {
@@ -63,7 +64,7 @@ fn main() -> i64 !Net !IO !Par !Time {
     db = lsm_put(db, "b", "2")?
     let g1 = lsm_get(db, "a")?
     db = g1.db
-    check(fails, "get_mem", g1.found == 1 && g1.val == "1")
+    check(fails, "get_mem", g1.found == 1 && str_of_bytes(g1.val) == "1")
 
     db = lsm_put(db, "c", "3")?
     db = lsm_put(db, "d", "4")?   // triggers flush (mem_n>=4)
@@ -72,16 +73,30 @@ fn main() -> i64 !Net !IO !Par !Time {
 
     let g2 = lsm_get(db, "b")?
     db = g2.db
-    check(fails, "get_after_flush", g2.found == 1 && g2.val == "2")
+    check(fails, "get_after_flush", g2.found == 1 && str_of_bytes(g2.val) == "2")
 
     db = lsm_del(db, "a")?
     let g3 = lsm_get(db, "a")?
     db = g3.db
     check(fails, "del_tombstone", g3.found == 0)
 
+    // binary value with embedded NUL (R3 Map<str,bytes>)
+    let bin = vec_new()
+    vec_push(bin, 0)
+    vec_push(bin, 255)
+    vec_push(bin, 66)
+    db = lsm_put_b(db, "bin", bytes_from_vec(bin))?
+    let gb = lsm_get(db, "bin")?
+    db = gb.db
+    check(fails, "bin_mem", gb.found == 1 && bytes_len(gb.val) == 3 && bytes_at(gb.val, 0) == 0 && bytes_at(gb.val, 1) == 255)
+
     db = lsm_put(db, "e", "5")?
     db = lsm_put(db, "f", "6")?
     db = lsm_flush_force(db)?
+
+    let gb2 = lsm_get(db, "bin")?
+    db = gb2.db
+    check(fails, "bin_sst", gb2.found == 1 && bytes_eq_b(gb2.val, bytes_from_vec(bin)))
 
     // WAL-only key then reopen without flush
     db = lsm_put(db, "wal_only", "W")?
@@ -90,14 +105,16 @@ fn main() -> i64 !Net !IO !Par !Time {
     let db2 = lsm_open(prefix, 4, 3)?
     check(fails, "reopen", db2.ok == 1)
     let r1 = lsm_get(db2, "b")?
-    check(fails, "recover_sst", r1.found == 1 && r1.val == "2")
+    check(fails, "recover_sst", r1.found == 1 && str_of_bytes(r1.val) == "2")
     let r2 = lsm_get(r1.db, "wal_only")?
-    check(fails, "recover_wal", r2.found == 1 && r2.val == "W")
+    check(fails, "recover_wal", r2.found == 1 && str_of_bytes(r2.val) == "W")
     let r3 = lsm_get(r2.db, "a")?
     check(fails, "recover_tomb", r3.found == 0)
+    let rbin = lsm_get(r3.db, "bin")?
+    check(fails, "recover_bin", rbin.found == 1 && bytes_at(rbin.val, 1) == 255)
 
     // compaction path: force multiple flushes
-    let mut db3 = r3.db
+    let mut db3 = rbin.db
     db3.flush_at = 2
     db3.compact_at = 3
     db3 = lsm_put(db3, "k1", "v1")?
@@ -109,7 +126,7 @@ fn main() -> i64 !Net !IO !Par !Time {
     check(fails, "compact_gens", vec_len(db3.gens) <= 2)
     let r4 = lsm_get(db3, "k1")?
     db3 = r4.db
-    check(fails, "compact_get", r4.found == 1 && r4.val == "v1")
+    check(fails, "compact_get", r4.found == 1 && str_of_bytes(r4.val) == "v1")
     lsm_close(db3)?
 
     // --- RESP loopback ---
@@ -163,7 +180,7 @@ fn main() -> i64 !Net !IO !Par !Time {
     // reopen default path after SAVE
     let db4 = lsm_open("/tmp/baga_lsm", 64, 8)?
     let gx = lsm_get(db4, "x")?
-    check(fails, "tcp_durable", gx.found == 1 && gx.val == "y")
+    check(fails, "tcp_durable", gx.found == 1 && str_of_bytes(gx.val) == "y")
     lsm_close(gx.db)?
 
     if vec_len(fails) == 0 {
