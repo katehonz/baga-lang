@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### B1 pgbaga — PgResult as L3 sum
+- `PgResult` → `PgOk(PgRows) | PgErr(PgFail)`; rebind with `pg_conn_of(r)`.
+- Accessors sum-aware; ormbaga `orm_*_from` updated. `pg_test` green.
+
 ### B1 pbbaga — L3 decode (no ok:i64 stand-ins)
 - `GrpcMsg`: `GFrame` / `GBad`; stream: `StreamOk` / `StreamEnd`
 - Hello: `HelloOk(HelloBody)` / `HelloBad`; reply: `ReplyOk(str)` / `ReplyBad`

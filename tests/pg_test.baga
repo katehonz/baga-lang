@@ -64,75 +64,75 @@ fn main() -> i64 !Net !IO !Random {
     let mut c = conn
 
     let r1 = pg_query(c, "SELECT 1 AS one")?
-    c = r1.conn
-    check(fails, "select1_ok", r1.ok == 1)
-    check(fails, "select1_nrows", r1.nrows == 1)
-    check(fails, "select1_ncols", r1.ncols == 1)
+    c = pg_conn_of(r1)
+    check(fails, "select1_ok", pg_ok(r1) == 1)
+    check(fails, "select1_nrows", pg_nrows(r1) == 1)
+    check(fails, "select1_ncols", pg_ncols(r1) == 1)
     check(fails, "select1_col", pg_colname(r1, 0) == "one")
     check(fails, "select1_val", pg_cell(r1, 0, 0) == "1")
     check(fails, "select1_i64", pg_cell_i64(r1, 0, 0) == 1)
-    check(fails, "select1_tag", str_starts_with(r1.tag, "SELECT"))
+    check(fails, "select1_tag", str_starts_with(pg_tag(r1), "SELECT"))
 
     let r2 = pg_query(c, "SELECT 2 AS a, NULL::int AS b, 'x' AS c")?
-    c = r2.conn
-    check(fails, "null_ok", r2.ok == 1)
+    c = pg_conn_of(r2)
+    check(fails, "null_ok", pg_ok(r2) == 1)
     check(fails, "null_flag", pg_isnull(r2, 0, 1) == 1)
     check(fails, "null_cell_empty", pg_cell(r2, 0, 1) == "")
     check(fails, "not_null", pg_isnull(r2, 0, 0) == 0)
     check(fails, "str_cell", pg_cell(r2, 0, 2) == "x")
 
     let r3 = pg_query(c, "CREATE TEMP TABLE pgbaga_t(id int PRIMARY KEY, name text)")?
-    c = r3.conn
-    check(fails, "create_ok", r3.ok == 1)
+    c = pg_conn_of(r3)
+    check(fails, "create_ok", pg_ok(r3) == 1)
 
     let r4 = pg_query(c, "INSERT INTO pgbaga_t VALUES (10, 'bagatur'), (20, NULL)")?
-    c = r4.conn
-    check(fails, "insert_ok", r4.ok == 1)
-    check(fails, "insert_tag", str_starts_with(r4.tag, "INSERT"))
+    c = pg_conn_of(r4)
+    check(fails, "insert_ok", pg_ok(r4) == 1)
+    check(fails, "insert_tag", str_starts_with(pg_tag(r4), "INSERT"))
 
     let r5 = pg_query(c, "SELECT id, name FROM pgbaga_t ORDER BY id")?
-    c = r5.conn
-    check(fails, "select_rows", r5.ok == 1 && r5.nrows == 2)
+    c = pg_conn_of(r5)
+    check(fails, "select_rows", pg_ok(r5) == 1 && pg_nrows(r5) == 2)
     check(fails, "row0_id", pg_cell(r5, 0, 0) == "10")
     check(fails, "row0_name", pg_cell(r5, 0, 1) == "bagatur")
     check(fails, "row1_null", pg_isnull(r5, 1, 1) == 1)
 
     let r6 = pg_query(c, "SELECT bad_column FROM pgbaga_t")?
-    c = r6.conn
-    check(fails, "error_ok_flag", r6.ok == 0)
-    check(fails, "error_msg", len(r6.err) > 0)
+    c = pg_conn_of(r6)
+    check(fails, "error_ok_flag", pg_ok(r6) == 0)
+    check(fails, "error_msg", len(pg_err(r6)) > 0)
     check(fails, "error_sqlstate", pg_sqlstate(r6) == "42703")
     check(fails, "error_message", len(pg_err_message(r6)) > 0)
 
     // connection still usable after error
     let r7 = pg_query(c, "SELECT 42 AS n")?
-    c = r7.conn
-    check(fails, "after_error", r7.ok == 1 && pg_cell_i64(r7, 0, 0) == 42)
+    c = pg_conn_of(r7)
+    check(fails, "after_error", pg_ok(r7) == 1 && pg_cell_i64(r7, 0, 0) == 42)
 
     let r8 = pg_query(c, "BEGIN")?
-    c = r8.conn
-    check(fails, "begin", r8.ok == 1)
+    c = pg_conn_of(r8)
+    check(fails, "begin", pg_ok(r8) == 1)
     // 'T' = in transaction block
     check(fails, "tx_status_T", c.tx_status == 84)
     let r9 = pg_query(c, "ROLLBACK")?
-    c = r9.conn
-    check(fails, "rollback", r9.ok == 1)
+    c = pg_conn_of(r9)
+    check(fails, "rollback", pg_ok(r9) == 1)
     check(fails, "tx_status_I", c.tx_status == 73)
 
     // transaction wrappers
     let rb1 = pg_begin(c)?
-    c = rb1.conn
-    check(fails, "tx_wrapper_begin", rb1.ok == 1 && c.tx_status == 84)
+    c = pg_conn_of(rb1)
+    check(fails, "tx_wrapper_begin", pg_ok(rb1) == 1 && c.tx_status == 84)
     let rb2 = pg_commit(c)?
-    c = rb2.conn
-    check(fails, "tx_wrapper_commit", rb2.ok == 1 && c.tx_status == 73)
+    c = pg_conn_of(rb2)
+    check(fails, "tx_wrapper_commit", pg_ok(rb2) == 1 && c.tx_status == 73)
 
     // --- Extended Query / parameterized $1 ---
     let pvals = vec_new()
     vec_push(pvals, "hello")
     let rp = pg_query_params_str(c, "SELECT $1::text AS t", pvals)?
-    c = rp.conn
-    check(fails, "params_ok", rp.ok == 1)
+    c = pg_conn_of(rp)
+    check(fails, "params_ok", pg_ok(rp) == 1)
     check(fails, "params_val", pg_cell(rp, 0, 0) == "hello")
 
     let pvals2 = vec_new()
@@ -140,8 +140,8 @@ fn main() -> i64 !Net !IO !Random {
     pg_param_i64(pvals2, pnulls, 7)
     pg_param_str(pvals2, pnulls, "x")
     let rp2 = pg_query_params(c, "SELECT $1::int AS n, $2::text AS s", pvals2, pnulls)?
-    c = rp2.conn
-    check(fails, "params2_ok", rp2.ok == 1)
+    c = pg_conn_of(rp2)
+    check(fails, "params2_ok", pg_ok(rp2) == 1)
     check(fails, "params2_n", pg_cell_i64(rp2, 0, 0) == 7)
     check(fails, "params2_s", pg_cell(rp2, 0, 1) == "x")
 
@@ -149,38 +149,38 @@ fn main() -> i64 !Net !IO !Random {
     let evil = vec_new()
     vec_push(evil, "'; DROP TABLE users; --")
     let rp3 = pg_query_params_str(c, "SELECT $1::text AS t", evil)?
-    c = rp3.conn
-    check(fails, "params_injection_safe", rp3.ok == 1 && pg_cell(rp3, 0, 0) == "'; DROP TABLE users; --")
+    c = pg_conn_of(rp3)
+    check(fails, "params_injection_safe", pg_ok(rp3) == 1 && pg_cell(rp3, 0, 0) == "'; DROP TABLE users; --")
 
     let pnull = vec_new()
     let nflags = vec_new()
     pg_param_null(pnull, nflags)
     let rp4 = pg_query_params(c, "SELECT $1::text AS t", pnull, nflags)?
-    c = rp4.conn
-    check(fails, "params_null", rp4.ok == 1 && pg_isnull(rp4, 0, 0) == 1)
+    c = pg_conn_of(rp4)
+    check(fails, "params_null", pg_ok(rp4) == 1 && pg_isnull(rp4, 0, 0) == 1)
 
     // --- named prepared statements ---
     let prep = pg_prepare(c, "pgbaga_echo", "SELECT $1::text AS t", 1)?
-    c = prep.conn
-    check(fails, "prepare_ok", prep.ok == 1)
+    c = pg_conn_of(prep)
+    check(fails, "prepare_ok", pg_ok(prep) == 1)
     let pv = vec_new()
     vec_push(pv, "prepared")
     let ex1 = pg_exec_prepared_str(c, "pgbaga_echo", pv)?
-    c = ex1.conn
-    check(fails, "exec_prepared_1", ex1.ok == 1 && pg_cell(ex1, 0, 0) == "prepared")
+    c = pg_conn_of(ex1)
+    check(fails, "exec_prepared_1", pg_ok(ex1) == 1 && pg_cell(ex1, 0, 0) == "prepared")
     let pv2 = vec_new()
     vec_push(pv2, "again")
     let ex2 = pg_exec_prepared_str(c, "pgbaga_echo", pv2)?
-    c = ex2.conn
-    check(fails, "exec_prepared_2", ex2.ok == 1 && pg_cell(ex2, 0, 0) == "again")
+    c = pg_conn_of(ex2)
+    check(fails, "exec_prepared_2", pg_ok(ex2) == 1 && pg_cell(ex2, 0, 0) == "again")
     let de = pg_deallocate(c, "pgbaga_echo")?
-    c = de.conn
-    check(fails, "deallocate", de.ok == 1)
+    c = pg_conn_of(de)
+    check(fails, "deallocate", pg_ok(de) == 1)
 
     // --- typed getters (bool / float8) ---
     let rt = pg_query(c, "SELECT true AS b, 1.5::float8 AS f")?
-    c = rt.conn
-    check(fails, "cell_bool", rt.ok == 1 && pg_cell_bool(rt, 0, 0) == 1)
+    c = pg_conn_of(rt)
+    check(fails, "cell_bool", pg_ok(rt) == 1 && pg_cell_bool(rt, 0, 0) == 1)
     check(fails, "cell_f64", pg_cell_f64(rt, 0, 1) > 1.49 && pg_cell_f64(rt, 0, 1) < 1.51)
 
     // --- JSON / JSONB tables ---
@@ -191,8 +191,8 @@ fn main() -> i64 !Net !IO !Random {
     check(fails, "json_invalid_comma", pg_json_valid("[1,]") == 0)
 
     let rj0 = pg_query(c, "CREATE TEMP TABLE pgbaga_j(id int, meta json, doc jsonb)")?
-    c = rj0.conn
-    check(fails, "json_create", rj0.ok == 1)
+    c = pg_conn_of(rj0)
+    check(fails, "json_create", pg_ok(rj0) == 1)
 
     let jvals = vec_new()
     let jnulls = vec_new()
@@ -200,12 +200,12 @@ fn main() -> i64 !Net !IO !Random {
     pg_param_json(jvals, jnulls, "{\"a\":1,\"s\":\"бага\"}")
     pg_param_json(jvals, jnulls, "{\"tags\":[\"x\",\"y\"],\"n\":2}")
     let rj1 = pg_query_params(c, "INSERT INTO pgbaga_j VALUES ($1, $2::json, $3::jsonb)", jvals, jnulls)?
-    c = rj1.conn
-    check(fails, "json_insert", rj1.ok == 1)
+    c = pg_conn_of(rj1)
+    check(fails, "json_insert", pg_ok(rj1) == 1)
 
     let rj2 = pg_query(c, "SELECT id, meta, doc FROM pgbaga_j ORDER BY id")?
-    c = rj2.conn
-    check(fails, "json_select", rj2.ok == 1 && rj2.nrows == 1)
+    c = pg_conn_of(rj2)
+    check(fails, "json_select", pg_ok(rj2) == 1 && pg_nrows(rj2) == 1)
     check(fails, "json_col_json", pg_col_is_json(rj2, 1) == 1 && pg_col_is_jsonb(rj2, 1) == 0)
     check(fails, "json_col_jsonb", pg_col_is_jsonb(rj2, 2) == 1 && pg_col_is_json(rj2, 2) == 0)
     check(fails, "json_meta_valid", pg_cell_json_ok(rj2, 0, 1) == 1)
@@ -223,11 +223,11 @@ fn main() -> i64 !Net !IO !Random {
     let jbad = vec_new()
     vec_push(jbad, "{nope")
     let rj3 = pg_query_params_str(c, "SELECT $1::json AS j", jbad)?
-    c = rj3.conn
-    check(fails, "json_invalid_rejected", rj3.ok == 0)
+    c = pg_conn_of(rj3)
+    check(fails, "json_invalid_rejected", pg_ok(rj3) == 0)
     let rj4 = pg_query(c, "SELECT 3 AS alive")?
-    c = rj4.conn
-    check(fails, "json_after_error", rj4.ok == 1 && pg_cell_i64(rj4, 0, 0) == 3)
+    c = pg_conn_of(rj4)
+    check(fails, "json_after_error", pg_ok(rj4) == 1 && pg_cell_i64(rj4, 0, 0) == 3)
 
     pg_close(c)?
 
@@ -237,12 +237,12 @@ fn main() -> i64 !Net !IO !Random {
     if pc.ok == 1 {
         check(fails, "set_timeout_live", pg_set_timeout(pc, 10) == 0)
         let rp1 = pg_query(pc, "SELECT 5 AS n")?
-        check(fails, "query_after_set_timeout", rp1.ok == 1 && pg_cell_i64(rp1, 0, 0) == 5)
-        check(fails, "cancel_delivered", pg_cancel(rp1.conn, "localhost", port) == 0)
+        check(fails, "query_after_set_timeout", pg_ok(rp1) == 1 && pg_cell_i64(rp1, 0, 0) == 5)
+        check(fails, "cancel_delivered", pg_cancel(pg_conn_of(rp1), "localhost", port) == 0)
         // idle backends ignore CancelRequest — the connection must survive
-        let rp2 = pg_query(rp1.conn, "SELECT 6 AS n")?
-        check(fails, "idle_cancel_harmless", rp2.ok == 1 && pg_cell_i64(rp2, 0, 0) == 6)
-        pg_close(rp2.conn)?
+        let rp2 = pg_query(pg_conn_of(rp1), "SELECT 6 AS n")?
+        check(fails, "idle_cancel_harmless", pg_ok(rp2) == 1 && pg_cell_i64(rp2, 0, 0) == 6)
+        pg_close(pg_conn_of(rp2))?
     }
 
     // cancel toward a dead endpoint fails cleanly (nothing hangs)

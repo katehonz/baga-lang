@@ -2,16 +2,16 @@
 
 Probe log while building the PostgreSQL adapter. Same shape as httpdbaga/jwtbaga.
 
-## G1 — No `Result` / sum-type errors
+## G1 — ~~No `Result` / sum-type errors~~ — **PgResult migrated (B1)**
 
-**Symptom.** Every fallible op returns a struct with `ok: i64` + `err: str`
-(`PgConn`, `PgResult`, `PgMsgRead`, …).
+**Was.** `PgResult { ok, err, … }` stand-in.
 
-**Workaround.** Convention: `ok == 1` means success; check before use.
+**Now.** `PgOk(PgRows) | PgErr(PgFail)` with accessors `pg_ok` / `pg_err` /
+`pg_conn_of` / `pg_nrows` / `pg_cell` / …. `PgConn` still uses `ok:i64`
+(connection state, not a Result). Wire parsers (`PgMsgRead`) keep `ok` as
+frame validity.
 
-**Severity.** Medium for ORM ergonomics.
-
-**Verdict.** Language gap — enum payloads / Result would shrink API noise.
+**Severity.** Closed for query results.
 
 ## G2 — Structs are by-value; connection must be threaded
 

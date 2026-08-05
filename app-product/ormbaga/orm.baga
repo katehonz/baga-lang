@@ -63,22 +63,22 @@ struct OrmCount {
 
 fn orm_exec_from(r: PgResult) -> OrmExec {
     return OrmExec {
-        ok: r.ok,
-        err: r.err,
-        tag: r.tag,
-        db: OrmDb { conn: r.conn }
+        ok: pg_ok(r),
+        err: pg_err(r),
+        tag: pg_tag(r),
+        db: OrmDb { conn: pg_conn_of(r) }
     }
 }
 
 fn orm_query_from(r: PgResult) -> OrmQuery {
     return OrmQuery {
-        ok: r.ok,
-        err: r.err,
-        tag: r.tag,
-        nrows: r.nrows,
-        ncols: r.ncols,
+        ok: pg_ok(r),
+        err: pg_err(r),
+        tag: pg_tag(r),
+        nrows: pg_nrows(r),
+        ncols: pg_ncols(r),
         result: r,
-        db: OrmDb { conn: r.conn }
+        db: OrmDb { conn: pg_conn_of(r) }
     }
 }
 

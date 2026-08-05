@@ -50,8 +50,10 @@ LISTEN/NOTIFY, MD5 auth (deprecated). Pooling lives in `ormbaga/pool.baga` +
 
 ```baga
 struct PgConn  { fd, ok, err, pid, key, tx_status, server_version, reader }
-struct PgResult { ok, err, tag, ncols, nrows, colnames, coltypes,
-                  cells, nulls, tx_status, conn }
+// B1 L3: query outcome is a sum (not ok:i64)
+struct PgRows  { tag, ncols, nrows, colnames, coltypes, cells, nulls, tx_status, conn }
+struct PgFail  { err, tag, tx_status, conn }
+enum PgResult { PgOk(PgRows), PgErr(PgFail) }
 
 fn pg_connect(host, port, user, password, database) -> PgConn !Net !IO !Random
 fn pg_connect_to(host, port, user, password, database, timeout_s) // hostname or
@@ -73,7 +75,7 @@ fn pg_deallocate(conn, name) -> PgResult !IO !Net
 // Transactions (tx_status tracks every ReadyForQuery)
 fn pg_begin / pg_commit / pg_rollback
 
-fn pg_ok / pg_err / pg_tag / pg_nrows / pg_ncols
+fn pg_ok / pg_err / pg_tag / pg_nrows / pg_ncols / pg_conn_of
 fn pg_sqlstate / pg_err_message                  // split "SEV|SQLSTATE|message"
 fn pg_colname / pg_coltype / pg_cell / pg_isnull
 fn pg_cell_i64 / pg_cell_bool / pg_cell_f64       // typed getters from text cells
@@ -94,8 +96,8 @@ text verbatim; `jsonb` comes back normalized.
 Prefer `pg_query_params` for any user-supplied values (injection-safe).
 Use `pg_prepare` + `pg_exec_prepared` for hot paths on a long-lived connection.
 
-`PgResult.conn` is the connection after the query (structs are by value —
-always continue with `r.conn`).
+Always rebind the connection after a query: `c = pg_conn_of(r)` (structs are
+by value). Check outcomes with `pg_ok(r)` / `match r { PgOk(rows) => …, PgErr(e) => … }`.
 
 Effects: SCRAM needs `!Random` (client nonce). Socket paths carry `!Net !IO`.
 `pg_proto` / `pg_scram` are pure.

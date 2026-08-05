@@ -50,16 +50,16 @@ fn main() -> i64 !Net !IO !Random {
 
     // --- live table ---
     let d1 = pg_query(c, "DROP TABLE IF EXISTS baga_decimal_demo")?
-    c = d1.conn
-    check("drop", d1.ok == 1)
+    c = pg_conn_of(d1)
+    check("drop", pg_ok(d1) == 1)
     let d2 = pg_query(c, "CREATE TABLE baga_decimal_demo (
         id serial PRIMARY KEY,
         label text NOT NULL,
         amount numeric(18,2) NOT NULL,
         rate numeric(10,6)
     )")?
-    c = d2.conn
-    check("create", d2.ok == 1)
+    c = pg_conn_of(d2)
+    check("create", pg_ok(d2) == 1)
 
     // insert money + rate via parameterized NUMERIC
     let amount = dec_money("25.12")
@@ -73,8 +73,8 @@ fn main() -> i64 !Net !IO !Random {
     let ins = pg_query_params(c,
         "INSERT INTO baga_decimal_demo(label, amount, rate) VALUES ($1, $2::numeric, $3::numeric)",
         vals, nulls)?
-    c = ins.conn
-    check("insert", ins.ok == 1)
+    c = pg_conn_of(ins)
+    check("insert", pg_ok(ins) == 1)
 
     // second line for sum
     let vals2 = vec_new()
@@ -85,13 +85,13 @@ fn main() -> i64 !Net !IO !Random {
     let ins2 = pg_query_params(c,
         "INSERT INTO baga_decimal_demo(label, amount, rate) VALUES ($1, $2::numeric, $3::numeric)",
         vals2, nulls2)?
-    c = ins2.conn
-    check("insert2", ins2.ok == 1)
+    c = pg_conn_of(ins2)
+    check("insert2", pg_ok(ins2) == 1)
 
     // select and decode
     let sel = pg_query(c, "SELECT label, amount, rate FROM baga_decimal_demo ORDER BY id")?
-    c = sel.conn
-    check("select_ok", sel.ok == 1 && sel.nrows == 2)
+    c = pg_conn_of(sel)
+    check("select_ok", pg_ok(sel) == 1 && pg_nrows(sel) == 2)
     check("oid_numeric", pg_col_is_numeric(sel, 1) == 1)
 
     let a0 = pg_cell_decimal(sel, 0, 1)
@@ -108,7 +108,7 @@ fn main() -> i64 !Net !IO !Random {
 
     // SUM in SQL still returns numeric text — parse as Decimal
     let sumq = pg_query(c, "SELECT SUM(amount) FROM baga_decimal_demo")?
-    c = sumq.conn
+    c = pg_conn_of(sumq)
     let sumd = pg_cell_decimal(sumq, 0, 0)
     check("sum_db", sumd.ok == 1 && dec_to_string(sumd.value) == "35.12")
 
@@ -121,7 +121,7 @@ fn main() -> i64 !Net !IO !Random {
     check("with_percent", with_tax.ok == 1 && dec_to_string(with_tax.value) == "27.26")
 
     let drop = pg_query(c, "DROP TABLE baga_decimal_demo")?
-    c = drop.conn
+    c = pg_conn_of(drop)
     pg_close(c)?
 
     print("decimal_pg_test: all passed")

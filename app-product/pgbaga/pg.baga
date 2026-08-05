@@ -414,11 +414,10 @@ fn pg_close(conn: PgConn) -> i64 !IO !Net {
     return tcp_close(conn.fd)
 }
 
-// ---------- query result ----------
+// ---------- query result (B1: L3 sum — no ok:i64 stand-in) ----------
 
-struct PgResult {
-    ok: i64,
-    err: str,
+// Successful query buffer + threaded connection.
+struct PgRows {
     tag: str,
     ncols: i64,
     nrows: i64,
@@ -427,13 +426,32 @@ struct PgResult {
     cells: Vec<str>,     // row-major, length nrows*ncols
     nulls: Vec<i64>,     // 1 = NULL
     tx_status: i64,
-    conn: PgConn         // updated connection (tx_status)
+    conn: PgConn
+}
+
+struct PgFail {
+    err: str,
+    tag: str,
+    tx_status: i64,
+    conn: PgConn
+}
+
+enum PgResult {
+    PgOk(PgRows),
+    PgErr(PgFail)
 }
 
 fn pg_result_err(conn: PgConn, err: str) -> PgResult {
-    return PgResult {
-        ok: 0,
+    return PgErr(PgFail {
         err: err,
+        tag: "",
+        tx_status: conn.tx_status,
+        conn: conn
+    })
+}
+
+fn pg_empty_rows(conn: PgConn) -> PgRows {
+    return PgRows {
         tag: "",
         ncols: 0,
         nrows: 0,
@@ -443,6 +461,14 @@ fn pg_result_err(conn: PgConn, err: str) -> PgResult {
         nulls: vec_new(),
         tx_status: conn.tx_status,
         conn: conn
+    }
+}
+
+// Connection after a result (always rebind: c = pg_conn_of(r)).
+fn pg_conn_of(r: PgResult) -> PgConn {
+    return match r {
+        PgOk(x) => x.conn,
+        PgErr(e) => e.conn,
     }
 }
 
@@ -519,17 +545,24 @@ fn pg_collect_result(conn: PgConn, reader0: PgReader) -> PgResult !IO !Net {
         reader: reader
     }
     if err != "" {
-        return PgResult {
-            ok: 0, err: err, tag: tag, ncols: ncols, nrows: nrows,
-            colnames: colnames, coltypes: coltypes, cells: cells, nulls: nulls,
-            tx_status: tx, conn: new_conn
-        }
+        return PgErr(PgFail {
+            err: err,
+            tag: tag,
+            tx_status: tx,
+            conn: new_conn
+        })
     }
-    return PgResult {
-        ok: 1, err: "", tag: tag, ncols: ncols, nrows: nrows,
-        colnames: colnames, coltypes: coltypes, cells: cells, nulls: nulls,
-        tx_status: tx, conn: new_conn
-    }
+    return PgOk(PgRows {
+        tag: tag,
+        ncols: ncols,
+        nrows: nrows,
+        colnames: colnames,
+        coltypes: coltypes,
+        cells: cells,
+        nulls: nulls,
+        tx_status: tx,
+        conn: new_conn
+    })
 }
 
 // Simple Query protocol. SQL may contain multiple statements.
@@ -677,22 +710,52 @@ fn pg_rollback(conn: PgConn) -> PgResult !IO !Net {
     return pg_query(conn, "ROLLBACK")?
 }
 
-// ---------- accessors ----------
+// ---------- accessors (sum-aware) ----------
 
-fn pg_ok(r: PgResult) -> i64 { return r.ok }
-fn pg_err(r: PgResult) -> str { return r.err }
-fn pg_tag(r: PgResult) -> str { return r.tag }
-fn pg_nrows(r: PgResult) -> i64 { return r.nrows }
-fn pg_ncols(r: PgResult) -> i64 { return r.ncols }
+fn pg_ok(r: PgResult) -> i64 {
+    return match r {
+        PgOk(x) => 1,
+        PgErr(e) => 0,
+    }
+}
+
+fn pg_err(r: PgResult) -> str {
+    return match r {
+        PgOk(x) => "",
+        PgErr(e) => e.err,
+    }
+}
+
+fn pg_tag(r: PgResult) -> str {
+    return match r {
+        PgOk(x) => x.tag,
+        PgErr(e) => e.tag,
+    }
+}
+
+fn pg_nrows(r: PgResult) -> i64 {
+    return match r {
+        PgOk(x) => x.nrows,
+        PgErr(e) => 0,
+    }
+}
+
+fn pg_ncols(r: PgResult) -> i64 {
+    return match r {
+        PgOk(x) => x.ncols,
+        PgErr(e) => 0,
+    }
+}
 
 // Error string shape is "SEV|SQLSTATE|message" (pg_error_fields).
 // SQLSTATE of the last error; "" when there is none.
 fn pg_sqlstate(r: PgResult) -> str {
-    let i1 = str_find(r.err, "|")
+    let e = pg_err(r)
+    let i1 = str_find(e, "|")
     if i1 < 0 {
         return ""
     }
-    let rest = substr(r.err, i1 + 1, len(r.err))
+    let rest = substr(e, i1 + 1, len(e))
     let i2 = str_find(rest, "|")
     if i2 < 0 {
         return rest
@@ -703,11 +766,12 @@ fn pg_sqlstate(r: PgResult) -> str {
 // Message part of the last error (everything after the second '|', so
 // embedded pipes survive); the whole err when the shape is short.
 fn pg_err_message(r: PgResult) -> str {
-    let i1 = str_find(r.err, "|")
+    let e = pg_err(r)
+    let i1 = str_find(e, "|")
     if i1 < 0 {
-        return r.err
+        return e
     }
-    let rest = substr(r.err, i1 + 1, len(r.err))
+    let rest = substr(e, i1 + 1, len(e))
     let i2 = str_find(rest, "|")
     if i2 < 0 {
         return rest
@@ -715,33 +779,61 @@ fn pg_err_message(r: PgResult) -> str {
     return substr(rest, i2 + 1, len(rest))
 }
 
-fn pg_colname(r: PgResult, col: i64) -> str {
-    if col < 0 || col >= r.ncols {
+fn pg_colname_rows(x: PgRows, col: i64) -> str {
+    if col < 0 || col >= x.ncols {
         return ""
     }
-    return vec_get(r.colnames, col)
+    return vec_get(x.colnames, col)
+}
+
+fn pg_colname(r: PgResult, col: i64) -> str {
+    return match r {
+        PgErr(e) => "",
+        PgOk(x) => pg_colname_rows(x, col),
+    }
+}
+
+fn pg_coltype_rows(x: PgRows, col: i64) -> i64 {
+    if col < 0 || col >= x.ncols {
+        return 0
+    }
+    return vec_get(x.coltypes, col)
 }
 
 fn pg_coltype(r: PgResult, col: i64) -> i64 {
-    if col < 0 || col >= r.ncols {
-        return 0
+    return match r {
+        PgErr(e) => 0,
+        PgOk(x) => pg_coltype_rows(x, col),
     }
-    return vec_get(r.coltypes, col)
+}
+
+fn pg_cell_rows(x: PgRows, row: i64, col: i64) -> str {
+    if row < 0 || col < 0 || row >= x.nrows || col >= x.ncols {
+        return ""
+    }
+    return vec_get(x.cells, row * x.ncols + col)
 }
 
 // Cell at (row, col); "" if OOB or NULL (use pg_isnull to distinguish).
 fn pg_cell(r: PgResult, row: i64, col: i64) -> str {
-    if row < 0 || col < 0 || row >= r.nrows || col >= r.ncols {
-        return ""
+    return match r {
+        PgErr(e) => "",
+        PgOk(x) => pg_cell_rows(x, row, col),
     }
-    return vec_get(r.cells, row * r.ncols + col)
+}
+
+fn pg_isnull_rows(x: PgRows, row: i64, col: i64) -> i64 {
+    if row < 0 || col < 0 || row >= x.nrows || col >= x.ncols {
+        return 1
+    }
+    return vec_get(x.nulls, row * x.ncols + col)
 }
 
 fn pg_isnull(r: PgResult, row: i64, col: i64) -> i64 {
-    if row < 0 || col < 0 || row >= r.nrows || col >= r.ncols {
-        return 1
+    return match r {
+        PgErr(e) => 1,
+        PgOk(x) => pg_isnull_rows(x, row, col),
     }
-    return vec_get(r.nulls, row * r.ncols + col)
 }
 
 fn pg_cell_i64(r: PgResult, row: i64, col: i64) -> i64 {

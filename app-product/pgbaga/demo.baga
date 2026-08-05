@@ -15,16 +15,16 @@ fn cfg(name: str, def: str) -> str !IO {
 }
 
 fn print_result(label: str, r: PgResult) {
-    if r.ok == 0 {
-        print(concat(concat("FAIL ", label), concat(": ", r.err)))
+    if pg_ok(r) == 0 {
+        print(concat(concat("FAIL ", label), concat(": ", pg_err(r))))
         return
     }
-    print(concat(concat("OK ", label), concat(" tag=", r.tag)))
+    print(concat(concat("OK ", label), concat(" tag=", pg_tag(r))))
     let mut row: i64 = 0
-    while row < r.nrows {
+    while row < pg_nrows(r) {
         let mut line = concat("  row", i64_to_dec(row))
         let mut col: i64 = 0
-        while col < r.ncols {
+        while col < pg_ncols(r) {
             let name = pg_colname(r, col)
             let mut val = "NULL"
             if pg_isnull(r, row, col) == 0 {
@@ -58,24 +58,24 @@ fn main() -> i64 !Net !IO !Random {
 
     let mut c = conn
     let r1 = pg_query(c, "SELECT 1 AS one, current_user::text AS usr, version() AS ver")?
-    c = r1.conn
+    c = pg_conn_of(r1)
     print_result("select1", r1)
 
     let r2 = pg_query(c, "CREATE TEMP TABLE pgbaga_demo(id int, name text)")?
-    c = r2.conn
+    c = pg_conn_of(r2)
     print_result("create", r2)
 
     let r3 = pg_query(c, "INSERT INTO pgbaga_demo VALUES (1, 'baga'), (2, NULL)")?
-    c = r3.conn
+    c = pg_conn_of(r3)
     print_result("insert", r3)
 
     let r4 = pg_query(c, "SELECT id, name FROM pgbaga_demo ORDER BY id")?
-    c = r4.conn
+    c = pg_conn_of(r4)
     print_result("select_rows", r4)
 
     // JSON/JSONB tables: parameterized insert, OID detection, JSON accessors
     let rj = pg_query(c, "CREATE TEMP TABLE pgbaga_demo_j(id int, doc jsonb)")?
-    c = rj.conn
+    c = pg_conn_of(rj)
     print_result("create_json", rj)
 
     let jvals = vec_new()
@@ -83,13 +83,13 @@ fn main() -> i64 !Net !IO !Random {
     pg_param_i64(jvals, jnulls, 1)
     pg_param_json(jvals, jnulls, "{\"name\":\"бага\",\"tags\":[\"json\",\"pg\"]}")
     let rji = pg_query_params(c, "INSERT INTO pgbaga_demo_j VALUES ($1, $2::jsonb)", jvals, jnulls)?
-    c = rji.conn
+    c = pg_conn_of(rji)
     print_result("insert_json", rji)
 
     let rjs = pg_query(c, "SELECT id, doc, doc->>'name' AS name FROM pgbaga_demo_j")?
-    c = rjs.conn
+    c = pg_conn_of(rjs)
     print_result("select_json", rjs)
-    if rjs.ok == 1 && rjs.nrows > 0 {
+    if pg_ok(rjs) == 1 && pg_nrows(rjs) > 0 {
         let mut jline = concat("doc_is_jsonb=", int_to_str(pg_col_is_jsonb(rjs, 1)))
         jline = concat(jline, concat(" json_ok=", int_to_str(pg_cell_json_ok(rjs, 0, 1))))
         jline = concat(jline, concat(" name=", pg_cell(rjs, 0, 2)))
