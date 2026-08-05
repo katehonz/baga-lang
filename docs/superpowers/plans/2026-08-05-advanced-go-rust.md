@@ -318,7 +318,7 @@ in `lsmbaga/gaps.md`.
 
 ### Phase 4 — Engines + verify (B4 + C)
 
-1. lsm SST/page hardening + recovery test  
+1. lsm recovery + page-cache stress — **B4.1 done** (`lsm_recover_test`)  
 2. raft persistence lite — **B4.2 done** (`persist.baga` + `raft_persist_test`)  
 3. MEM-3 where it pays  
 4. Bench numbers checked in  
