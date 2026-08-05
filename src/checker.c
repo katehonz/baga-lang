@@ -732,12 +732,13 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
     }
 
     /* L5: извикване през fn стойност — локална/параметър, или произволен
-     * израз с TYPE_FN тип (vec_get(t, i)(x), obj.handler(x) и пр.) */
+     * израз с TYPE_FN тип (vec_get(t, i)(x), obj.handler(x) и пр.).
+     * A1 NODE_PATH is a sum constructor, not a fn value — skip this branch. */
     if (n->callee->kind == NODE_IDENT) {
         Type *lt = env_lookup(ctx, n->callee->name);
         if (lt && lt->kind == TYPE_FN)
             return call_fn_value(ctx, n, lt);
-    } else {
+    } else if (n->callee->kind != NODE_PATH) {
         Type *ct = infer(ctx, n->callee);
         if (ct && ct->kind == TYPE_FN)
             return call_fn_value(ctx, n, ct);
@@ -745,14 +746,55 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
         return type_new(TYPE_ERROR);
     }
 
-    /* L3: конструктор на sum enum — Variant(payload). Сблъсъкът функция/
-     * вариант е грешка от post-pass-а, така че редът тук е безопасен. */
-    if (n->callee->kind == NODE_IDENT) {
+    /* L3/A1: конструктор на sum enum — Variant(payload) или Enum::Variant(payload).
+     * Bare: точно един payload-вариант с това име; иначе Enum::Variant. */
+    if (n->callee->kind == NODE_PATH) {
+        const char *en = n->callee->path_enum;
+        const char *vn = n->callee->path_variant;
         int vhit = -1;
         for (int vi = 0; vi < ctx->n_variants; vi++)
             if (ctx->variants[vi].payload &&
-                strcmp(ctx->variants[vi].variant, n->callee->name) == 0)
+                strcmp(ctx->variants[vi].enum_name, en) == 0 &&
+                strcmp(ctx->variants[vi].variant, vn) == 0)
                 { vhit = vi; break; }
+        if (vhit < 0) {
+            check_error(ctx, n->pos,
+                "няма payload-вариант '%s::%s'", en, vn);
+            return type_new(TYPE_ERROR);
+        }
+        if (n->args.len != 1) {
+            check_error(ctx, n->pos,
+                "конструкторът '%s::%s' очаква 1 аргумент, получих %d",
+                en, vn, n->args.len);
+            return type_new(TYPE_ERROR);
+        }
+        Type *at = n->args.data[0]->type;
+        if (!type_assignable(at, ctx->variants[vhit].payload)) {
+            check_error(ctx, n->pos,
+                "'%s::%s': аргументът е от тип %s, но payload-ът е %s",
+                en, vn, type_str(at), type_str(ctx->variants[vhit].payload));
+        }
+        Type *t = type_new(TYPE_ENUM);
+        t->name = strdup(ctx->variants[vhit].enum_name);
+        return t;
+    }
+    if (n->callee->kind == NODE_IDENT) {
+        int vhit = -1, nhit = 0, hit0 = -1;
+        for (int vi = 0; vi < ctx->n_variants; vi++) {
+            if (!ctx->variants[vi].payload) continue;
+            if (strcmp(ctx->variants[vi].variant, n->callee->name) != 0) continue;
+            nhit++;
+            if (hit0 < 0) hit0 = vi;
+        }
+        if (nhit > 1) {
+            check_error(ctx, n->pos,
+                "вариантът '%s' е нееднозначен — ползвай Enum::%s(...) "
+                "(напр. %s::%s)",
+                n->callee->name, n->callee->name,
+                ctx->variants[hit0].enum_name, n->callee->name);
+            return type_new(TYPE_ERROR);
+        }
+        if (nhit == 1) vhit = hit0;
         if (vhit >= 0) {
             if (n->args.len != 1) {
                 check_error(ctx, n->pos,
@@ -1444,6 +1486,40 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             t = type_new(TYPE_BOOL);
             break;
 
+        case NODE_PATH: {
+            /* A1: Enum::Variant bare (payload-less) or error if payload required */
+            const char *en = n->path_enum;
+            const char *vn = n->path_variant;
+            int vhit = -1;
+            for (int vi = 0; vi < ctx->n_variants; vi++)
+                if (strcmp(ctx->variants[vi].enum_name, en) == 0 &&
+                    strcmp(ctx->variants[vi].variant, vn) == 0)
+                    { vhit = vi; break; }
+            if (vhit < 0) {
+                check_error(ctx, n->pos, "няма вариант '%s::%s'", en, vn);
+                t = type_new(TYPE_ERROR);
+                break;
+            }
+            if (ctx->variants[vhit].payload) {
+                check_error(ctx, n->pos,
+                    "конструкторът '%s::%s' изисква 1 аргумент (%s)",
+                    en, vn, type_str(ctx->variants[vhit].payload));
+                t = type_new(TYPE_ERROR);
+                break;
+            }
+            Node *ed = NULL;
+            for (int ei = 0; ei < ctx->n_enums; ei++)
+                if (strcmp(ctx->enums[ei].name, en) == 0)
+                    { ed = ctx->enums[ei].decl; break; }
+            if (ed && ed->type && ed->type->kind == TYPE_ENUM) {
+                t = type_new(TYPE_ENUM);
+                t->name = strdup(en);
+            } else {
+                t = type_new(TYPE_I64);
+            }
+            break;
+        }
+
         case NODE_IDENT: {
             /* check local env first */
             Type *vt = env_lookup(ctx, n->name);
@@ -1483,22 +1559,53 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                 t = vt2;
                 break;
             }
-            /* check enum variants */
-            for (int vi = 0; vi < ctx->n_variants; vi++) {
-                if (strcmp(ctx->variants[vi].variant, n->name) == 0) {
-                    if (ctx->variants[vi].payload) {
-                        check_error(ctx, n->pos,
-                            "конструкторът '%s' изисква 1 аргумент (%s)",
-                            n->name, type_str(ctx->variants[vi].payload));
-                        t = type_new(TYPE_ERROR);
-                    } else {
+            /* bare enum variants (A1: unique among sum payload-less / plain) */
+            {
+                int nhit = 0, hit0 = -1;
+                for (int vi = 0; vi < ctx->n_variants; vi++) {
+                    if (strcmp(ctx->variants[vi].variant, n->name) != 0) continue;
+                    nhit++;
+                    if (hit0 < 0) hit0 = vi;
+                }
+                if (nhit > 1) {
+                    /* prefer reporting only sum-enum collisions for bare form */
+                    int sum_hits = 0, sum0 = -1;
+                    for (int vi = 0; vi < ctx->n_variants; vi++) {
+                        if (strcmp(ctx->variants[vi].variant, n->name) != 0) continue;
                         Node *ed = NULL;
                         for (int ei = 0; ei < ctx->n_enums; ei++)
                             if (strcmp(ctx->enums[ei].name, ctx->variants[vi].enum_name) == 0)
                                 { ed = ctx->enums[ei].decl; break; }
                         if (ed && ed->type && ed->type->kind == TYPE_ENUM) {
+                            sum_hits++;
+                            if (sum0 < 0) sum0 = vi;
+                        }
+                    }
+                    if (sum_hits > 1) {
+                        check_error(ctx, n->pos,
+                            "вариантът '%s' е нееднозначен — ползвай Enum::%s "
+                            "(напр. %s::%s)",
+                            n->name, n->name,
+                            ctx->variants[sum0].enum_name, n->name);
+                        t = type_new(TYPE_ERROR);
+                        break;
+                    }
+                    if (sum_hits == 1) hit0 = sum0, nhit = 1;
+                }
+                if (nhit >= 1 && hit0 >= 0) {
+                    if (ctx->variants[hit0].payload) {
+                        check_error(ctx, n->pos,
+                            "конструкторът '%s' изисква 1 аргумент (%s)",
+                            n->name, type_str(ctx->variants[hit0].payload));
+                        t = type_new(TYPE_ERROR);
+                    } else {
+                        Node *ed = NULL;
+                        for (int ei = 0; ei < ctx->n_enums; ei++)
+                            if (strcmp(ctx->enums[ei].name, ctx->variants[hit0].enum_name) == 0)
+                                { ed = ctx->enums[ei].decl; break; }
+                        if (ed && ed->type && ed->type->kind == TYPE_ENUM) {
                             t = type_new(TYPE_ENUM);
-                            t->name = strdup(ctx->variants[vi].enum_name);
+                            t->name = strdup(ctx->variants[hit0].enum_name);
                         } else {
                             t = type_new(TYPE_I64);
                         }
@@ -1879,12 +1986,21 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     drop_lift_from(ctx, log_base);
                     if (!arm->arm_pattern) {
                         has_wild = 1;
-                    } else if (arm->arm_pattern->kind != NODE_IDENT) {
+                    } else if (arm->arm_pattern->kind != NODE_IDENT &&
+                               arm->arm_pattern->kind != NODE_PATH) {
                         check_error(ctx, arm->arm_pattern->pos,
                             "match върху '%s': патернът трябва да е вариант или '_'",
                             st->name);
                     } else {
-                        const char *vn = arm->arm_pattern->name;
+                        const char *vn = arm->arm_pattern->kind == NODE_PATH
+                            ? arm->arm_pattern->path_variant
+                            : arm->arm_pattern->name;
+                        if (arm->arm_pattern->kind == NODE_PATH &&
+                            strcmp(arm->arm_pattern->path_enum, st->name) != 0) {
+                            check_error(ctx, arm->arm_pattern->pos,
+                                "патернът '%s::%s' не е за enum '%s'",
+                                arm->arm_pattern->path_enum, vn, st->name);
+                        }
                         int vidx = -1;
                         for (int j = 0; j < nv; j++)
                             if (strcmp(ed->enum_variants[j], vn) == 0) { vidx = j; break; }
@@ -1905,10 +2021,14 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     }
                     push_scope(ctx);
                     if (arm->arm_binding && arm->arm_pattern &&
-                        arm->arm_pattern->kind == NODE_IDENT) {
+                        (arm->arm_pattern->kind == NODE_IDENT ||
+                         arm->arm_pattern->kind == NODE_PATH)) {
+                        const char *pvn = arm->arm_pattern->kind == NODE_PATH
+                            ? arm->arm_pattern->path_variant
+                            : arm->arm_pattern->name;
                         Type *pt = type_new(TYPE_ERROR);
                         for (int j = 0; j < nv; j++)
-                            if (strcmp(ed->enum_variants[j], arm->arm_pattern->name) == 0 &&
+                            if (strcmp(ed->enum_variants[j], pvn) == 0 &&
                                 ed->enum_payloads && ed->enum_payloads[j])
                                 pt = resolve_type_node(ctx, ed->enum_payloads[j]);
                         env_define(ctx, arm->arm_binding, pt, arm->pos);
@@ -2306,27 +2426,21 @@ void check_program(Checker *c, Node *program) {
         }
     }
 
-    /* L3: вариантите на sum enum-и са глобално уникални (конструкцията е по
-     * име) и не могат да се сблъскват с име на функция */
+    /* A1: sum variants may share names across enums (use Enum::Variant).
+     * Still forbid the same name twice *inside one enum*, and warn-as-error
+     * only when a bare name would always be ambiguous is handled at use site.
+     * Function vs variant: allowed; bare call prefers unique variant, else fn. */
     for (int i = 0; i < ctx.n_variants; i++) {
-        /* вариантът принадлежи на sum enum, ако декларацията на собствения
-         * му enum е TYPE_ENUM (няма значение дали самият вариант носи payload) */
         Node *ed = NULL;
         for (int ei = 0; ei < ctx.n_enums; ei++)
             if (strcmp(ctx.enums[ei].name, ctx.variants[i].enum_name) == 0)
                 { ed = ctx.enums[ei].decl; break; }
-        if (!ed || !ed->type || ed->type->kind != TYPE_ENUM) continue;
+        if (!ed) continue;
         for (int j = i + 1; j < ctx.n_variants; j++) {
-            if (strcmp(ctx.variants[i].variant, ctx.variants[j].variant) == 0)
+            if (strcmp(ctx.variants[i].enum_name, ctx.variants[j].enum_name) == 0 &&
+                strcmp(ctx.variants[i].variant, ctx.variants[j].variant) == 0)
                 check_error(&ctx, ed->pos,
-                    "повторена дефиниция на вариант '%s' (enum-ите '%s' и '%s')",
-                    ctx.variants[i].variant,
-                    ctx.variants[i].enum_name, ctx.variants[j].enum_name);
-        }
-        for (int j = 0; j < ctx.n_fns; j++) {
-            if (strcmp(ctx.fns[j].name, ctx.variants[i].variant) == 0)
-                check_error(&ctx, ctx.fns[j].decl->pos,
-                    "името '%s' е едновременно функция и вариант на enum '%s'",
+                    "повторена дефиниция на вариант '%s' в enum '%s'",
                     ctx.variants[i].variant, ctx.variants[i].enum_name);
         }
     }

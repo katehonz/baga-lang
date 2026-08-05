@@ -294,7 +294,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                 free(m);
                 break;
             }
-            /* check if it's an enum variant */
+            /* check if it's an enum variant (bare — first match; checker ensures unique for sum) */
             int found_variant = 0;
             if (cg->program) {
                 for (int i = 0; i < cg->program->items.len && !found_variant; i++) {
@@ -323,6 +323,37 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, "%s", m);
                 free(m);
             }
+            break;
+        }
+
+        case NODE_PATH: {
+            /* A1: Enum::Variant bare (payload-less sum or plain enum tag) */
+            int found = 0;
+            if (cg->program) {
+                for (int i = 0; i < cg->program->items.len && !found; i++) {
+                    Node *item = cg->program->items.data[i];
+                    if (item->kind != NODE_ENUM) continue;
+                    if (strcmp(item->enum_name, n->path_enum) != 0) continue;
+                    for (int j = 0; j < item->n_variants; j++) {
+                        if (strcmp(item->enum_variants[j], n->path_variant) != 0) continue;
+                        int is_sum = 0;
+                        for (int k = 0; k < item->n_variants; k++)
+                            if (item->enum_payloads && item->enum_payloads[k]) is_sum = 1;
+                        char *em = mangle_name(item->enum_name);
+                        char *vm = mangle_name(item->enum_variants[j]);
+                        if (is_sum)
+                            fprintf(f, "(%s){ .tag = %d }", em, j);
+                        else
+                            fprintf(f, "%s_%s", em, vm);
+                        free(em); free(vm);
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) fprintf(f, "0 /* bad path %s::%s */",
+                n->path_enum ? n->path_enum : "?",
+                n->path_variant ? n->path_variant : "?");
             break;
         }
 
@@ -367,15 +398,21 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_CALL:
-            /* L3: конструктор на sum enum → Em__Vm(arg) */
-            if (n->callee->kind == NODE_IDENT && cg->program) {
+            /* L3/A1: конструктор на sum enum → Em__Vm(arg); bare or Enum::Variant */
+            if (cg->program &&
+                (n->callee->kind == NODE_IDENT || n->callee->kind == NODE_PATH)) {
                 int emitted = 0;
                 for (int i = 0; i < cg->program->items.len && !emitted; i++) {
                     Node *item = cg->program->items.data[i];
                     if (item->kind != NODE_ENUM) continue;
+                    if (n->callee->kind == NODE_PATH &&
+                        strcmp(item->enum_name, n->callee->path_enum) != 0)
+                        continue;
                     for (int j = 0; j < item->n_variants; j++) {
+                        const char *vn = n->callee->kind == NODE_PATH
+                            ? n->callee->path_variant : n->callee->name;
                         if (item->enum_payloads && item->enum_payloads[j] &&
-                            strcmp(item->enum_variants[j], n->callee->name) == 0) {
+                            strcmp(item->enum_variants[j], vn) == 0) {
                             char *em = mangle_name(item->enum_name);
                             char *vm = mangle_name(item->enum_variants[j]);
                             fprintf(f, "%s__%s(", em, vm);
@@ -1056,9 +1093,14 @@ static void emit_expr(Codegen *cg, Node *n) {
                 Node *arm = n->match_arms.data[i];
                 if (arm->arm_pattern) {
                     int vidx = -1;
-                    if (ed)
+                    const char *pvn = NULL;
+                    if (arm->arm_pattern->kind == NODE_PATH)
+                        pvn = arm->arm_pattern->path_variant;
+                    else if (arm->arm_pattern->kind == NODE_IDENT)
+                        pvn = arm->arm_pattern->name;
+                    if (ed && pvn)
                         for (int j = 0; j < ed->n_variants; j++)
-                            if (strcmp(ed->enum_variants[j], arm->arm_pattern->name) == 0)
+                            if (strcmp(ed->enum_variants[j], pvn) == 0)
                             { vidx = j; break; }
                     if (i > 0) fprintf(f, "else ");
                     fprintf(f, "if (_mv%d.tag == %d) { ", tmp, vidx);

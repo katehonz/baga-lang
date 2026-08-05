@@ -346,10 +346,15 @@ printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let r = Ok\n}\n' > /tmp
 run /tmp/baga_sum_bad4.baga 2>&1 | grep -q "конструкторът 'Ok' изисква 1 аргумент" \
 	&& echo "OK: L3 — голяма референция към payload вариант е отхвърлена" \
 	|| { echo "FAIL: bare payload variant трябва да гърми"; exit 1; }
-printf 'enum A { X(i64) }\nenum B { X(str) }\nfn main() { print(1) }\n' > /tmp/baga_sum_bad5.baga
-run /tmp/baga_sum_bad5.baga 2>&1 | grep -q "повторена дефиниция на вариант 'X'" \
-	&& echo "OK: L3 — дублиран вариант между enum-и е грешка" \
-	|| { echo "FAIL: дублиран вариант трябва да гърми"; exit 1; }
+printf 'enum A { X(i64) }\nenum B { X(str) }\nfn main() {\n    let a = A::X(1)\n    let b = B::X("s")\n    print(1)\n}\n' > /tmp/baga_sum_a1_ok.baga
+run /tmp/baga_sum_a1_ok.baga > /tmp/baga_sum_a1_out.txt \
+	&& test "$(cat /tmp/baga_sum_a1_out.txt)" = "1" \
+	&& echo "OK: A1 — споделен вариант X между enum-и + A::X / B::X" \
+	|| { echo "FAIL: A1 qualified construction"; cat /tmp/baga_sum_a1_out.txt 2>/dev/null; exit 1; }
+printf 'enum A { Ok(i64), Err(str) }\nenum B { Ok(str), Err(i64) }\nfn main() { let x = Ok(1) }\n' > /tmp/baga_sum_bad5.baga
+run /tmp/baga_sum_bad5.baga 2>&1 | grep -q "нееднозначен" \
+	&& echo "OK: A1 — bare Ok при два enum-а е нееднозначен" \
+	|| { echo "FAIL: нееднозначният bare Ok трябва да гърми"; exit 1; }
 printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let v: Vec<Res> = vec_new()\n}\n' > /tmp/baga_sum_bad6.baga
 run /tmp/baga_sum_bad6.baga 2>&1 | grep -q "неподдържан елементен тип" \
 	&& echo "OK: L3 — Vec<sum enum> е честно отхвърлен (v1)" \

@@ -1,6 +1,6 @@
 # A1 — Qualified sum variants: design
 
-Date: 2026-08-05. Status: **approved direction** (advanced plan Phase 1).  
+Date: 2026-08-05. Status: **implemented** (Phase 1 A1).  
 Parent: `docs/superpowers/plans/2026-08-05-advanced-go-rust.md` Track A1-a.
 
 ## Goal

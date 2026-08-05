@@ -554,13 +554,31 @@ Construction is `Variant(payload)` for payload variants and the bare
 its argument is a compile error. Payloads may be any declared type,
 including structs (`enum Shape { Dot, Circle(Point) }`).
 
+**A1 — qualified variants.** Several enums may reuse the same variant
+names (`Ok` / `Err`). Prefer the qualified form:
+
+```baga
+enum PgRes { Ok(i64), Err(str) }
+enum RpcRes { Ok(str), Err(i64) }
+
+let a = PgRes::Ok(1)
+let b = RpcRes::Ok("{}")
+match a {
+    PgRes::Ok(v) => v,
+    PgRes::Err(e) => 0,
+}
+// Bare Ok(x) is allowed only when exactly one Ok exists in the program.
+// Match patterns are scoped to the scrutinee type, so bare Ok(v) is fine
+// when matching a PgRes even if RpcRes also has Ok.
+```
+
 Checker rules:
 
 - The type is nominal — `enum Res` is its own type, **not** an `i64`; you
   cannot pass a `Res` where an `i64` is expected, or the reverse.
-- Variant names of sum enums are **globally unique** across the whole
-  program (`повторена дефиниция на вариант`) and may not collide with a
-  function name — construction is by name.
+- Variant names may be shared across enums; use `Enum::Variant`. Bare
+  names error when ambiguous (`нееднозначен`). The same name twice
+  **inside one enum** is still an error.
 - Constructor arity and payload type are checked (`конструкторът 'Ok'
   очаква 1 аргумент`).
 - `match` on a sum enum uses variant patterns with bindings and must be
@@ -577,12 +595,10 @@ Honest v1 limits:
   `Map<K, V>: неподдържан стойностен тип Res`).
 - No generics — write a concrete enum per use site.
 - Exactly one payload type per variant; wrap several fields in a struct.
-- Variant names of sum enums are **globally unique** in a whole program
-  (including imports) — library Result types must pick unique constructors
-  (`CallOk` / `CallErr`, not a second `Ok` / `Err`).
 - Nested sum/struct cycles fall back to declaration order; acyclic graphs
-  (the common case: `struct Hold { r: Res }`, `enum Box { Has(Wrap) }`) are
-  emitted in topological order so **sum enums as struct fields work**.
+  (the common case: `struct Hold { r: Res }`, `enum Box { BoxHas(Wrap) }`)
+  are emitted in topological order so **sum enums as struct fields work**.
+  Prefer `Enum::Ok` when several Result enums coexist.
 
 ---
 

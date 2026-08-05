@@ -25,6 +25,10 @@ void node_free(Node *n) {
         case NODE_IDENT:
             free(n->name);
             break;
+        case NODE_PATH:
+            free(n->path_enum);
+            free(n->path_variant);
+            break;
         case NODE_BINARY:
             node_free(n->left);
             node_free(n->right);
@@ -520,6 +524,16 @@ static Node *parse_primary(Parser *p) {
             return lit;
         }
 
+        /* A1: Enum::Variant path */
+        if (check(p, TOK_COLONCOLON)) {
+            advance(p); /* :: */
+            Token *vt = expect(p, TOK_IDENT);
+            Node *path = node_alloc(NODE_PATH, pos);
+            path->path_enum = name;
+            path->path_variant = strdup(vt->text ? vt->text : "");
+            return path;
+        }
+
         Node *n = node_alloc(NODE_IDENT, pos);
         n->name = name;
         return n;
@@ -571,10 +585,29 @@ static Node *parse_primary(Parser *p) {
             SrcPos apos = cur(p)->pos;
             Node *arm = node_alloc(NODE_MATCH_ARM, apos);
 
-            /* pattern: _ | Variant(binding) | literal | identifier */
+            /* pattern: _ | Enum::Variant(binding) | Variant(binding)
+             *        | Enum::Variant | literal | identifier */
             if (check(p, TOK_UNDERSCORE)) {
                 advance(p);
                 arm->arm_pattern = NULL;  /* wildcard */
+            } else if (check(p, TOK_IDENT) &&
+                       p->pos + 1 < p->len &&
+                       p->tokens[p->pos + 1].kind == TOK_COLONCOLON &&
+                       p->pos + 3 < p->len &&
+                       p->tokens[p->pos + 2].kind == TOK_IDENT &&
+                       p->tokens[p->pos + 3].kind == TOK_LPAREN) {
+                /* Enum::Variant(binding) */
+                Token *et = advance(p);
+                advance(p); /* :: */
+                Token *vt = expect(p, TOK_IDENT);
+                advance(p); /* ( */
+                Token *bt = expect(p, TOK_IDENT);
+                expect(p, TOK_RPAREN);
+                Node *pat = node_alloc(NODE_PATH, et->pos);
+                pat->path_enum = strdup(et->text ? et->text : "");
+                pat->path_variant = strdup(vt->text ? vt->text : "");
+                arm->arm_pattern = pat;
+                arm->arm_binding = strdup(bt->text ? bt->text : "");
             } else if (check(p, TOK_IDENT) &&
                        p->pos + 1 < p->len &&
                        p->tokens[p->pos + 1].kind == TOK_LPAREN) {
@@ -587,6 +620,7 @@ static Node *parse_primary(Parser *p) {
                 arm->arm_pattern = pat;
                 arm->arm_binding = strdup(bt->text ? bt->text : "");
             } else {
+                /* Enum::Variant bare / other expr patterns via unary/postfix */
                 arm->arm_pattern = parse_unary(p);
             }
 
@@ -873,6 +907,10 @@ static Node *clone_expr(Node *e) {
         case NODE_STR_LIT:
         case NODE_BYTES_LIT: c->str_val = strdup(e->str_val ? e->str_val : ""); break;
         case NODE_IDENT:     c->name = strdup(e->name ? e->name : ""); break;
+        case NODE_PATH:
+            c->path_enum = strdup(e->path_enum ? e->path_enum : "");
+            c->path_variant = strdup(e->path_variant ? e->path_variant : "");
+            break;
         case NODE_BINARY:
             c->bin_op = e->bin_op;
             c->left = clone_expr(e->left);
@@ -1579,6 +1617,11 @@ void print_ast(Node *n, int indent) {
             break;
         case NODE_IDENT:
             fprintf(stderr, "IDENT %s\n", n->name);
+            break;
+        case NODE_PATH:
+            fprintf(stderr, "PATH %s::%s\n",
+                n->path_enum ? n->path_enum : "?",
+                n->path_variant ? n->path_variant : "?");
             break;
         case NODE_ASSIGN:
             fprintf(stderr, "ASSIGN\n");

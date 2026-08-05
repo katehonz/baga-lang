@@ -65,6 +65,7 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_RBRACKET]  = "]",
     [TOK_COMMA]     = ",",
     [TOK_COLON]     = ":",
+    [TOK_COLONCOLON]= "::",
     [TOK_DOT]       = ".",
     [TOK_SEMICOLON] = ";",
     [TOK_ARROW]     = "->",
@@ -509,6 +510,7 @@ Token lexer_next(Lexer *l) {
     if (c == '/' && c2 == '=') { lex_advance(l); lex_advance(l); return make_token(l, TOK_SLASH_ASSIGN, start, strdup("/=")); }
     if (c == '.' && c2 == '.') { lex_advance(l); lex_advance(l); return make_token(l, TOK_DOTDOT, start, strdup("..")); }
     if (c == '=' && c2 == '>') { lex_advance(l); lex_advance(l); return make_token(l, TOK_FAT_ARROW, start, strdup("=>")); }
+    if (c == ':' && c2 == ':') { lex_advance(l); lex_advance(l); return make_token(l, TOK_COLONCOLON, start, strdup("::")); }
 
     /* single-char tokens */
     lex_advance(l);

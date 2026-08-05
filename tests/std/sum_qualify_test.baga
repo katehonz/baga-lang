@@ -1,0 +1,51 @@
+// sum_qualify_test.baga — A1: qualified sum variants Enum::Variant.
+// Two Result-shaped enums share Ok/Err names.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+enum PgRes { Ok(i64), Err(str) }
+enum RpcRes { Ok(str), Err(i64) }
+enum Flag { On, Off }
+struct Hold { r: PgRes }
+
+fn main() {
+    let a = PgRes::Ok(7)
+    let b = RpcRes::Ok("hi")
+    check("pg_q", match a {
+        PgRes::Ok(v) => v == 7,
+        PgRes::Err(e) => false,
+    })
+    check("rpc_q", match b {
+        RpcRes::Ok(s) => s == "hi",
+        RpcRes::Err(c) => false,
+    })
+
+    // bare match is scoped to scrutinee type (Ok is unique *within* PgRes)
+    check("bare_match", match a {
+        Ok(v) => v == 7,
+        Err(e) => false,
+    })
+
+    // qualified bare (payload-less)
+    let f = Flag::On
+    check("flag", match f { Flag::On => true, Flag::Off => false })
+    check("flag_bare", match f { On => true, Off => false })
+
+    // hold sum as field with qualified construct
+    let h = Hold { r: PgRes::Err("x") }
+    check("field_q", match h.r {
+        PgRes::Err(m) => m == "x",
+        PgRes::Ok(v) => false,
+    })
+
+    print("sum_qualify: all passed")
+}

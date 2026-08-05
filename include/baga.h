@@ -93,6 +93,7 @@ typedef enum {
     TOK_RBRACKET,   /* ] */
     TOK_COMMA,      /* , */
     TOK_COLON,      /* : */
+    TOK_COLONCOLON, /* ::  — A1 qualified path Enum::Variant */
     TOK_DOT,        /* . */
     TOK_SEMICOLON,  /* ; */
     TOK_ARROW,      /* -> */
@@ -151,6 +152,7 @@ typedef enum {
     NODE_BYTES_LIT,  /* x"deadbeef" — str_val holds the raw hex text */
     NODE_BOOL_LIT,
     NODE_IDENT,
+    NODE_PATH,        /* Enum::Variant — A1 qualified sum variant */
     NODE_BINARY,
     NODE_UNARY,
     NODE_CALL,
@@ -240,6 +242,9 @@ struct Node {
 
         /* NODE_IDENT */
         char *name;
+
+        /* NODE_PATH — Enum::Variant (A1) */
+        struct { char *path_enum; char *path_variant; };
 
         /* NODE_BINARY */
         struct { BinOp bin_op; Node *left; Node *right; };

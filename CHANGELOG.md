@@ -2,11 +2,17 @@
 
 ## [Unreleased]
 
+### A1 qualified sum variants (`Enum::Ok`)
+- Syntax: `PgRes::Ok(1)`, match `PgRes::Ok(v)` / bare `Ok(v)` when unique or
+  scoped to match scrutinee. Token `::`, AST `NODE_PATH`.
+- Cross-enum shared names allowed; bare ambiguous → `нееднозначен`.
+- Tests: `tests/std/sum_qualify_test.baga`; probes in `run_tests.sh`.
+- Docs: language §11.1 (en/bg); design marked implemented.
+
 ### Advanced plan (Go/Rust) + A5 FNS_MAX hard error
 - Plan: `docs/superpowers/plans/2026-08-05-advanced-go-rust.md` — Track A
   language unlock, B product migrations, C verify/MEM differentiator.
-- A1 design: `docs/superpowers/specs/2026-08-05-sum-variant-qualify-design.md`
-  (qualified `Enum::Variant`, bare when unique).
+- A1 design: `docs/superpowers/specs/2026-08-05-sum-variant-qualify-design.md`.
 - **A5:** exceeding `FNS_MAX` (1024) for fns/structs/enums/variants is a
   **compile error** (no more silent truncation of symbols).
 
