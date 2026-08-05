@@ -61,7 +61,12 @@ Unlinked with SST on compact. Test: `r9_*` in `tests/lsm_test.baga`.
 **Shipped (R10):** package renamed **`rocksbaga`** (was `lsmbaga`);
 `app-product/lsmbaga/` is a deprecated import shim. API symbols still `lsm_*`.
 
-**Still open (later):** drop whole-body CRC on get-only path; RocksDB feature
+**Shipped (layout):** multi-directory architecture — `util/`, `cache/`, `wal/`,
+`table/`, `db/`, `net/`, `examples/`, `docs/` + root re-exports. See
+[ARCHITECTURE.md](../ARCHITECTURE.md).
+
+**Still open (later):** drop whole-body CRC on get-only path; split
+`table/bloom.baga` / `db/compact.baga` when size warrants; RocksDB feature
 parity (not claimed).
 
 ## L4 — TTL / RESP binary wire / concurrent writers

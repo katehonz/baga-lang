@@ -33,5 +33,7 @@ Goal: Track S flagship — durable KV on RESP.
 - Oldest-N merge pick — **done (R8)** (`merge_pick`)
 - Standalone bloom filter file — **done (R9)** (`BAGABLM1` sidecar)
 - Package rename **rocksbaga** — **done (R10)**; `lsmbaga` shim kept
+- Layered package tree (`util`/`cache`/`wal`/`table`/`db`/`net`) — **done**
 - Shared page cache across open files with pin counts
 - Optional skip whole-body CRC on get-only path
+- Split bloom / compact modules when files grow

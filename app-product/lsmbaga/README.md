@@ -5,10 +5,12 @@ This package name is **deprecated** as of R10 (2026-08-05).
 The storage engine lives at **[`../rocksbaga/`](../rocksbaga/)**.
 
 ```baga
-// preferred
+// preferred (layered)
+import "rocksbaga/db/engine.baga"
+import "rocksbaga/net/server.baga"
+// or short re-exports
 import "rocksbaga/engine.baga"
-import "rocksbaga/server.baga"
 ```
 
-Shim files under this directory re-export the same modules so old
-`import "lsmbaga/…"` paths keep compiling during migration.
+See `../rocksbaga/ARCHITECTURE.md`. Shim files here re-export rocksbaga
+root paths so old `import "lsmbaga/…"` still compiles.

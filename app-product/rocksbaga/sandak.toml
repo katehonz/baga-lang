@@ -1,7 +1,7 @@
 [package]
 name = "rocksbaga"
 version = "0.1.0"
-entry = "server.baga"
+entry = "examples/demo.baga"
 
 [dependencies]
 kvbaga = { path = "../kvbaga" }

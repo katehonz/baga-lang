@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### rocksbaga — layered package architecture
+- Split flat folder into **`util/`**, **`cache/`**, **`wal/`**, **`table/`**,
+  **`db/`**, **`net/`**, **`examples/`**, **`docs/`** with root re-export
+  shims (`engine.baga` → `db/engine.baga`, …). Documented in
+  `app-product/rocksbaga/ARCHITECTURE.md`. Prefer
+  `import "rocksbaga/db/engine.baga"`; short paths still work.
+
 ### RocksDB path R10 — package rename rocksbaga
 - **`app-product/rocksbaga/`:** former `lsmbaga` package (R0–R9 engine
   unchanged). Prefer `import "rocksbaga/…"`. Deprecated **`lsmbaga/`** shims

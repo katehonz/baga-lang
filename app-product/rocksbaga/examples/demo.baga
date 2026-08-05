@@ -1,6 +1,6 @@
 // demo.baga — durable LSM KV over RESP. Env: LSMPORT (16579), LSMPATH.
 
-import "server.baga"
+import "../net/server.baga"
 import "kvbaga/resp.baga"
 import "std/net/tcp.baga"
 import "std/os/os.baga"
