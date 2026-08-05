@@ -1,9 +1,9 @@
 # Cloud & storage direction plan
 
 Date: 2026-08-05. Status: **complete for stated scope** — S1–S8 + C1–C8
-(incl. OTLP/JSON export lite) + MEM-3 regions (alloc tags + mut rebind) +
-gRPC unary/streaming frames + latency bench. Open-ended: full OTel SDK,
-gRPC bidirectional streaming transport.
+(OTLP/JSON + mock collector test) + MEM-3 regions + gRPC unary/server/bidi
+message algebra + H2 trailers + latency bench. Open-ended: full OTel SDK
+agent, true half-close H2 bidi transport.
 Driver: the target profile is Rust/C++-class systems work — multithreading,
 async, performance analysis — plus distributed systems: distributed
 transactions and consensus (Paxos/Raft). We build for cloud (Kubernetes)

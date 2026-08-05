@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### gRPC bidi algebra + OTLP mock-collector integration
+- **pbbaga**: `hello_bidi` / `hello_bidi_requests`, `grpc_hello_stream_response`
+  (server-stream when unary n>1, else bidi). Live H1 test:
+  `tests/grpc_bidi_test.baga`.
+- **otelbaga**: end-to-end `otel_export_http` against in-process mock
+  collector (`tests/otel_http_test.baga` → POST `/v1/traces`, 200).
+
 ### OTLP/JSON export, gRPC streaming frames, MEM-3 mut rebind
 - **otelbaga**: `OtelSpan`, `otel_span_to_otlp_json` (base64 ids),
   `otel_export_file` / `otel_export_http` / `otel_export_span_file`.

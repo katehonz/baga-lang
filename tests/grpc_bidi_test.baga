@@ -1,0 +1,117 @@
+// grpc_bidi_test.baga — bidirectional + server-streaming message layer.
+
+import "pbbaga/grpc.baga"
+import "pbbaga/grpc_unary.baga"
+import "httpdbaga/http.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn serve_stream(port: i64) -> i64 !Net !IO !Par {
+    let listener = tcp_listen(port)?
+    if listener < 0 { return -1 }
+    let fd = tcp_accept(listener)?
+    if fd < 0 {
+        tcp_close(listener)?
+        return -1
+    }
+    let req = http_read_request(fd)?
+    let path = http_path_only(req)
+    if http_method(req) == "POST" && grpc_is_method_path(path) == 1 {
+        let resp = grpc_hello_stream_response(http_body_bytes(req))
+        // write via standard respond (body_bytes path)
+        http_respond(fd, resp)?
+    } else {
+        tcp_write(fd, "HTTP/1.1 404\r\nContent-Length: 0\r\n\r\n")?
+    }
+    tcp_close(fd)?
+    tcp_close(listener)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par {
+    print("grpc_bidi_test:")
+    let fails = vec_new()
+
+    // pure bidi algebra
+    let up = hello_bidi_requests("u", 3)
+    check(fails, "up_count", grpc_stream_count(up) == 3)
+    let down = hello_bidi(up)
+    check(fails, "down_count", grpc_stream_count(down) == 3)
+    let r0 = grpc_stream_next(down, 0)
+    let h0 = hello_reply_decode(r0.payload)
+    check(fails, "bidi0", h0.ok == 1 && str_find(h0.message, "u-0") >= 0)
+    let r1 = grpc_stream_next(down, r0.next)
+    let h1 = hello_reply_decode(r1.payload)
+    check(fails, "bidi1", h1.ok == 1 && str_find(h1.message, "n=2") >= 0)
+
+    // server streaming via unary request with n=count
+    let one = hello_request_encode("stream", 4)
+    let sresp = grpc_hello_stream_response(grpc_encode(one))
+    check(fails, "ss_frames", grpc_stream_count(sresp.body_bytes) == 4)
+
+    // live H1 bidi
+    let port = 18092
+    go_bg(serve_stream, port)
+    sleep_ms(150)
+    let fd = tcp_connect_to("localhost", port, 3)?
+    check(fails, "connect", fd >= 0)
+    if fd >= 0 {
+        tcp_set_timeouts(fd, 3)?
+        let body = hello_bidi_requests("live", 2)
+        let mut hdr = "POST /hellopb.Greeter/BidiHello HTTP/1.1\r\nHost: localhost\r\n"
+        hdr = concat(hdr, "Content-Type: application/grpc\r\n")
+        hdr = concat(hdr, concat(concat("Content-Length: ", int_to_str(bytes_len(body))), "\r\n"))
+        hdr = concat(hdr, "Connection: close\r\n\r\n")
+        tcp_write(fd, hdr)?
+        tcp_write_bytes(fd, body)?
+        let mut raw = bytes_new(0)
+        let mut n: i64 = 0
+        while n < 40 {
+            let chunk = tcp_read_bytes(fd, 4096)?
+            if bytes_len(chunk) == 0 {
+                n = 40
+            } else {
+                raw = bytes_concat(raw, chunk)
+                n = n + 1
+            }
+        }
+        let mut sep: i64 = -1
+        let mut i: i64 = 0
+        while i + 3 < bytes_len(raw) {
+            if bytes_at(raw, i) == 13 && bytes_at(raw, i + 1) == 10 &&
+               bytes_at(raw, i + 2) == 13 && bytes_at(raw, i + 3) == 10 {
+                sep = i
+                i = bytes_len(raw)
+            } else {
+                i = i + 1
+            }
+        }
+        check(fails, "sep", sep >= 0)
+        if sep >= 0 {
+            let head = str_of_bytes(bytes_slice(raw, 0, sep))
+            check(fails, "200", str_find(head, "200") >= 0)
+            let bbody = bytes_slice(raw, sep + 4, bytes_len(raw))
+            check(fails, "live_n", grpc_stream_count(bbody) == 2)
+            let lr = grpc_stream_next(bbody, 0)
+            let lh = hello_reply_decode(lr.payload)
+            check(fails, "live_echo", lh.ok == 1 && str_find(lh.message, "live-0") >= 0)
+        }
+        tcp_close(fd)?
+    }
+
+    if vec_len(fails) == 0 {
+        print("grpc_bidi_test: all passed")
+        return 0
+    }
+    print(concat(concat("grpc_bidi_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

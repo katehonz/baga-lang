@@ -1,0 +1,75 @@
+// otel_http_test.baga — OTLP/JSON export against an in-process mock collector.
+
+import "otelbaga/otel.baga"
+import "httpdbaga/http.baga"
+import "std/net/tcp.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+// One-shot mock: accept POST /v1/traces, require resourceSpans, reply 200.
+// Writes the body to a side file so the main thread can assert contents.
+fn mock_collector(port: i64) -> i64 !Net !IO !Par {
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        return -1
+    }
+    let fd = tcp_accept(listener)?
+    if fd < 0 {
+        tcp_close(listener)?
+        return -1
+    }
+    let req = http_read_request(fd)?
+    let path = http_path_only(req)
+    let method = http_method(req)
+    let body = http_body(req)
+    let ok_path = path == "/v1/traces" || str_find(path, "traces") >= 0
+    let ok_body = str_find(body, "resourceSpans") >= 0
+    write_file("/tmp/baga_otel_http_body.json", body)?
+    if method == "POST" && ok_path == true && ok_body == true {
+        tcp_write(fd, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")?
+    } else {
+        tcp_write(fd, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?
+    }
+    tcp_close(fd)?
+    tcp_close(listener)?
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par !Time !Random {
+    print("otel_http_test:")
+    let fails = vec_new()
+    let port = 14318
+    unlink("/tmp/baga_otel_http_body.json")?
+
+    go_bg(mock_collector, port)
+    sleep_ms(150)
+
+    let t = otel_new_trace()?
+    let sp = otel_span_now("collector.probe", t, 1)?
+    let sp2 = otel_span_end(sp)?
+    let body = otel_span_to_otlp_json(sp2, "otel_http_test")
+    let url = concat("http://127.0.0.1:", concat(int_to_str(port), "/v1/traces"))
+    let status = otel_export_http(url, body, 5)?
+    check(fails, "http_status", status == 200)
+
+    let saved = read_file("/tmp/baga_otel_http_body.json")?
+    check(fails, "body_spans", str_find(saved, "resourceSpans") >= 0)
+    check(fails, "body_name", str_find(saved, "collector.probe") >= 0)
+    check(fails, "body_service", str_find(saved, "otel_http_test") >= 0)
+
+    if vec_len(fails) == 0 {
+        print("otel_http_test: all passed")
+        return 0
+    }
+    print(concat(concat("otel_http_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

@@ -18,9 +18,10 @@ let sp = otel_span_now("GET /hello", ctx, 2)?   // kind 2 = SERVER
 sp = otel_span_end(sp)?
 let body = otel_span_to_otlp_json(sp, "myservice")
 otel_export_span_file("/var/log/spans.ndjson", sp, "myservice")?
-// optional collector:
-// otel_export_http("http://localhost:4318/v1/traces", body, 5)?
+// collector (or mock):
+otel_export_http("http://localhost:4318/v1/traces", body, 5)?
 ```
 
 OTLP JSON uses base64 `traceId`/`spanId` plus hex in attributes for humans.
+Integration: `tests/otel_http_test.baga` (mock POST `/v1/traces`).
 No metrics/logs pipeline; no batching daemon.

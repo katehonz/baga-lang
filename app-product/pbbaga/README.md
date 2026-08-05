@@ -39,15 +39,17 @@ grpc_write_response(fd, u)?   // headers + binary body
 let r = grpc_hello_response(request_frame)
 ```
 
-## Server streaming (message layer)
+## Server / bidi streaming (message layer)
 
 ```baga
-let stream = hello_stream_replies("name", 3)  // N length-prefixed frames
-let r = grpc_stream_next(stream, 0)
-// r.payload, r.next …
+let stream = hello_stream_replies("name", 3)     // server stream
+let up = hello_bidi_requests("c", 2)
+let down = hello_bidi(up)                        // one reply per request frame
+let r = grpc_stream_next(down, 0)
 ```
 
-See `tests/grpc_unary_test.baga`, `tests/pb_test.baga` (stream_*).
+HTTP helper: `grpc_hello_stream_response(body)`.  
+Tests: `grpc_unary_test`, `grpc_bidi_test`, `pb_test` (stream_*).
 
 ## Honest limits
 

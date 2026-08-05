@@ -1,4 +1,4 @@
-// demo.baga — protobuf + gRPC frame round-trip.
+// demo.baga — protobuf + gRPC unary / stream / bidi frames.
 
 import "grpc.baga"
 import "std/str/str.baga"
@@ -15,4 +15,14 @@ fn main() {
     print(concat("rpc → ", reply))
     let rb = hello_reply_encode(reply)
     print(concat("HelloReply hex:  ", hex_encode(rb)))
+
+    let ss = hello_stream_replies("stream", 3)
+    print(concat("server-stream frames=", int_to_str(grpc_stream_count(ss))))
+
+    let up = hello_bidi_requests("bidi", 2)
+    let down = hello_bidi(up)
+    print(concat("bidi up/down frames=", concat(int_to_str(grpc_stream_count(up)), concat("/", int_to_str(grpc_stream_count(down))))))
+    let r0 = grpc_stream_next(down, 0)
+    let h0 = hello_reply_decode(r0.payload)
+    print(concat("bidi[0] → ", h0.message))
 }

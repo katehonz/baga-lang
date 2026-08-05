@@ -115,6 +115,53 @@ fn hello_stream_replies(name: str, count: i64) -> bytes {
     return stream
 }
 
+// Bidirectional streaming (message layer): for each HelloRequest frame in
+// `inbound`, append one HelloReply. Transport is still a single request/
+// response body pair (or half-close H2 stream) — this is the frame algebra.
+fn hello_bidi(inbound: bytes) -> bytes {
+    let mut out = bytes_new(0)
+    let mut pos: i64 = 0
+    let mut more: i64 = 1
+    let mut i: i64 = 0
+    while more == 1 {
+        let r = grpc_stream_next(inbound, pos)
+        if r.ok == 0 {
+            more = 0
+        } else {
+            let hr = hello_request_decode(r.payload)
+            let mut name = "?"
+            let mut n: i64 = 0
+            if hr.ok == 1 {
+                name = hr.name
+                n = hr.n
+            }
+            let msg = concat(concat(concat(concat(concat("echo ", name), " n="), int_to_str(n)), " #"), int_to_str(i + 1))
+            out = grpc_stream_append(out, hello_reply_encode(msg))
+            pos = r.next
+            i = i + 1
+            if i > 64 {
+                more = 0
+            }
+        }
+    }
+    return out
+}
+
+// Build a client bidi upload: N HelloRequest frames.
+fn hello_bidi_requests(base_name: str, count: i64) -> bytes {
+    let mut stream = bytes_new(0)
+    let mut i: i64 = 0
+    let mut c = count
+    if c < 1 { c = 1 }
+    if c > 64 { c = 64 }
+    while i < c {
+        let name = concat(concat(base_name, "-"), int_to_str(i))
+        stream = grpc_stream_append(stream, hello_request_encode(name, i + 1))
+        i = i + 1
+    }
+    return stream
+}
+
 // Trailer helpers (HTTP/2 trailers or response headers in probes).
 fn grpc_status_ok() -> str {
     return "0"

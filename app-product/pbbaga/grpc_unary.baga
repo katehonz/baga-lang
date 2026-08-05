@@ -45,6 +45,28 @@ fn grpc_hello_response(body: bytes) -> Response {
     return grpc_to_response(grpc_hello_handle(body))
 }
 
+// Server-streaming / bidi: body is multi-frame; reply is multi-frame stream.
+fn grpc_hello_stream_response(body: bytes) -> Response {
+    // If body is a single frame with n>1, treat as unary with count; else bidi.
+    let g = grpc_decode(body)
+    if g.ok == 1 && grpc_stream_count(body) == 1 {
+        let hr = hello_request_decode(g.payload)
+        if hr.ok == 1 && hr.n > 1 {
+            let stream = hello_stream_replies(hr.name, hr.n)
+            let mut r = http_response_bytes(200, stream)
+            r = http_set_header(r, "Content-Type", grpc_content_type())
+            r = http_set_trailer(r, "grpc-status", "0")
+            return r
+        }
+    }
+    // bidi: one reply per request frame
+    let stream = hello_bidi(body)
+    let mut r = http_response_bytes(200, stream)
+    r = http_set_header(r, "Content-Type", grpc_content_type())
+    r = http_set_trailer(r, "grpc-status", "0")
+    return r
+}
+
 fn grpc_is_method_path(path: str) -> i64 {
     if len(path) < 2 || char_at(path, 0) != 47 {
         return 0
