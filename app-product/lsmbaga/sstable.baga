@@ -1,17 +1,19 @@
-// sstable.baga — sorted string table (R6: BAGASST5 per-block CRC + footer).
+// sstable.baga — sorted string table (R6: BAGASST5 + R9 external bloom).
 //
 // On-disk (new writes = v5):
 //   magic 8 = "BAGASST5"
 //   body:
 //     core: u32 count | records | N×u32 restart_off | u32 N | N×u32 block_crc
 //       (block_crc[i] = crc32c of records in [restart_i, restart_{i+1}))
-//     bloom: m/8 bytes
+//     bloom: m/8 bytes  (still embedded for v5 readers)
 //     fixed footer 24:
 //       u32 core_len | bloom_nbytes | bloom_bits | n_restarts | count | tag=5
 //   u32 le crc32c(body)   // full-load paths (compact/KEYS)
 //
-// Get: footer → bloom → restart index → load one block + verify block CRC
-// via page cache. v1–v4 still readable.
+// R9 external bloom (sidecar, optional):
+//   <dir>.bloom.<gen> — magic "BAGABLM1" | u32 m | bits | u32 crc32c(m||bits)
+// Get prefers sidecar before opening SST data (skip file on bloom miss).
+// v1–v4 still readable (no sidecar required).
 
 import "codec.baga"
 import "page.baga"
@@ -40,6 +42,11 @@ struct SstRow {
 
 fn sst_path(dir: str, gen: i64) -> str {
     return concat(concat(dir, ".sst."), int_to_str(gen))
+}
+
+// R9 standalone bloom filter path (sidecar of SST).
+fn bloom_path(dir: str, gen: i64) -> str {
+    return concat(concat(dir, ".bloom."), int_to_str(gen))
 }
 
 // --- bloom ---
@@ -149,6 +156,77 @@ fn bloom_build_bits(rows: Vec<SstRow>) -> bytes {
     return bits
 }
 
+// Write R9 sidecar: BAGABLM1 | m | bits | crc32c(m||bits). Returns 0 ok.
+fn bloom_write_file(dir: str, gen: i64, bits: bytes, m: i64) -> i64 !IO {
+    let path = bloom_path(dir, gen)
+    let fd = open(path, 578, 420)?
+    if fd < 0 {
+        return -1
+    }
+    let mut payload = bytes_new(0)
+    payload = push_u32_le(payload, m)
+    payload = push_bytes(payload, bits)
+    let crc = crc32c_b(payload)
+    let mut file = bytes_of_str("BAGABLM1")
+    file = push_bytes(file, payload)
+    file = push_u32_le(file, crc)
+    if fd_write_bytes(fd, file) != 0 {
+        close(fd)
+        return -1
+    }
+    if fsync(fd)? != 0 {
+        close(fd)
+        return -1
+    }
+    close(fd)
+    return 0
+}
+
+// Probe external bloom for key.
+// Returns: 0 = key not present (safe skip SST), 1 = maybe present, 2 = no/bad file.
+fn bloom_file_may(dir: str, gen: i64, key: str) -> i64 !IO {
+    let path = bloom_path(dir, gen)
+    let fd = open(path, 0, 0)?
+    if fd < 0 {
+        return 2
+    }
+    let fsize = fd_size(fd)?
+    if fsize < 8 + 4 + 4 {
+        close(fd)
+        return 2
+    }
+    let raw = fd_pread_bytes(fd, fsize, 0)?
+    close(fd)
+    if bytes_len(raw) < fsize {
+        return 2
+    }
+    if str_of_bytes(bytes_slice(raw, 0, 8)) != "BAGABLM1" {
+        return 2
+    }
+    let body_len = fsize - 8 - 4
+    if body_len < 4 {
+        return 2
+    }
+    let body = bytes_slice(raw, 8, 8 + body_len)
+    let want = get_u32_le(raw, 8 + body_len)
+    if crc32c_b(body) != want {
+        return 2
+    }
+    let m = get_u32_le(body, 0)
+    if m <= 0 {
+        return 2
+    }
+    let nbytes = m / 8
+    if bytes_len(body) != 4 + nbytes {
+        return 2
+    }
+    let bits = bytes_slice(body, 4, 4 + nbytes)
+    if bloom_may(bits, m, key) == 0 {
+        return 0
+    }
+    return 1
+}
+
 // Build v5 body: core (+ block CRCs) + bloom + fixed footer.
 fn sst_build(rows: Vec<SstRow>) -> bytes {
     let mut core = bytes_new(0)
@@ -231,6 +309,12 @@ fn sst_write(dir: str, gen: i64, rows: Vec<SstRow>) -> i64 !IO {
         return -1
     }
     close(fd)
+    // R9: standalone bloom sidecar (same bits as embedded in body).
+    let bloom = bloom_build_bits(rows)
+    let m = bloom_bits_for(vec_len(rows))
+    if bloom_write_file(dir, gen, bloom, m)? != 0 {
+        return -1
+    }
     return 0
 }
 
@@ -875,30 +959,26 @@ fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str) ->
     return SstHitPc { pc: cur, hit: hit }
 }
 
-// Newest-first lookup. v4/v5 partial page-cache path; older formats full read.
+// Newest-first lookup. R9: external bloom can skip SST open on definite miss.
+// v4/v5 partial page-cache path; older formats full read.
 fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
     let mut cur = pc
     let mut i = vec_len(gens) - 1
     while i >= 0 {
         let gen = vec_get(gens, i)
-        let path = sst_path(dir, gen)
-        let fd = open(path, 0, 0)?
-        if fd >= 0 {
-            let fsize = fd_size(fd)?
-            let magb = fd_pread_bytes(fd, 8, 0)?
-            if bytes_len(magb) == 8 {
-                let mag = str_of_bytes(magb)
-                if mag == "BAGASST5" {
-                    let r = sst_lookup_partial(cur, fd, gen, fsize, key)?
-                    cur = r.pc
-                    close(fd)
-                    if r.hit.found == 1 {
-                        return SstLookup {
-                            pc: cur, found: 1, alive: r.hit.alive, val: r.hit.val
-                        }
-                    }
-                } else {
-                    if mag == "BAGASST4" {
+        // Sidecar bloom: 0 = skip this gen without opening SST.
+        let bm = bloom_file_may(dir, gen, key)?
+        if bm == 0 {
+            i = i - 1
+        } else {
+            let path = sst_path(dir, gen)
+            let fd = open(path, 0, 0)?
+            if fd >= 0 {
+                let fsize = fd_size(fd)?
+                let magb = fd_pread_bytes(fd, 8, 0)?
+                if bytes_len(magb) == 8 {
+                    let mag = str_of_bytes(magb)
+                    if mag == "BAGASST5" {
                         let r = sst_lookup_partial(cur, fd, gen, fsize, key)?
                         cur = r.pc
                         close(fd)
@@ -908,24 +988,35 @@ fn sst_get(pc: PageCache, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
                             }
                         }
                     } else {
-                        close(fd)
-                        let raw = sst_read_raw(cur, dir, gen)?
-                        cur = raw.pc
-                        if raw.ok == 1 {
-                            let h = sst_lookup_data(raw.data, key)
-                            if h.found == 1 {
+                        if mag == "BAGASST4" {
+                            let r = sst_lookup_partial(cur, fd, gen, fsize, key)?
+                            cur = r.pc
+                            close(fd)
+                            if r.hit.found == 1 {
                                 return SstLookup {
-                                    pc: cur, found: 1, alive: h.alive, val: h.val
+                                    pc: cur, found: 1, alive: r.hit.alive, val: r.hit.val
+                                }
+                            }
+                        } else {
+                            close(fd)
+                            let raw = sst_read_raw(cur, dir, gen)?
+                            cur = raw.pc
+                            if raw.ok == 1 {
+                                let h = sst_lookup_data(raw.data, key)
+                                if h.found == 1 {
+                                    return SstLookup {
+                                        pc: cur, found: 1, alive: h.alive, val: h.val
+                                    }
                                 }
                             }
                         }
                     }
+                } else {
+                    close(fd)
                 }
-            } else {
-                close(fd)
             }
+            i = i - 1
         }
-        i = i - 1
     }
     return SstLookup { pc: cur, found: 0, alive: 0, val: bytes_new(0) }
 }

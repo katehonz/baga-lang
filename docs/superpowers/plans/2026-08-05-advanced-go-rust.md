@@ -3,7 +3,7 @@
 **Date:** 2026-08-05  
 **Status:** **plan DoD met** (2026-08-05) — educational language + ecosystem
 to prove Baga; long goal **RocksDB-class DB** continues as post-plan horizon  
-**Version baseline:** 0.8.0 · A1/A2/MEM + B1–B4 + Phase R0–R7 + Phase 5 sketches  
+**Version baseline:** 0.8.0 · A1/A2/MEM + B1–B4 + Phase R0–R8 + Phase 5 sketches  
 **North star:**  
 1. **Language lab** — Baga is an *educational systems language*; packages are
    real building blocks, not throwaway demos.  
@@ -308,6 +308,7 @@ feature clone, but a real LSM store that forces the language.
 | R6 | **BAGASST5** per-block CRC + **L2** file-count tiers | ✅ |
 | R7 | Byte-size targets + **L3**; optional rocksbaga name when quality warrants | ✅ targets+L3; rename later |
 | R8 | Oldest-N merge pick (`merge_pick`) | ✅ |
+| R9 | Standalone bloom sidecar (`BAGABLM1`) | ✅ |
 
 **Rule:** every R step keeps `tests/lsm_test.baga` green and documents honesty
 in `lsmbaga/gaps.md`.
@@ -386,7 +387,7 @@ Full write-up: [2026-08-05-advanced-plan-dod.md](2026-08-05-advanced-plan-dod.md
 
 **Post-plan horizon** (not gates for this plan’s DoD) — pick one:
 
-1. **Storage:** rocksbaga rename when quality warrants; bloom standalone (R8 pick done)  
+1. **Storage:** rocksbaga rename when quality warrants (R8 pick + R9 bloom done)  
 2. **Product:** L5 route table; gRPC H2 client; optional status/ctx defaults in more handlers  
 3. **Language:** LLVM L3 (or keep C-only honesty); optional C′ borrow-lite impl  
 4. **Sketches → product only if needed:** multi-arg syscall / ring mmap for io_uring; full protoc plugin  
@@ -429,7 +430,7 @@ See §11 and [advanced-plan-dod.md](2026-08-05-advanced-plan-dod.md).
 | Generics / traits | language docs; this plan non-goals |
 | H2 gaps | `app-product/httpdbaga/gaps.md` |
 | Raft incompleteness | `app-product/raftbaga/gaps.md` |
-| LSM vs RocksDB | `app-product/lsmbaga/gaps.md` (R7 targets shipped; rename later) |
+| LSM vs RocksDB | `app-product/lsmbaga/gaps.md` (R7–R8 shipped; rename later) |
 | LLVM L3 | `docs/superpowers/specs/2026-08-05-llvm-l3-status.md` |
 | Borrow-lite (C′) | design only: `…/2026-08-05-borrow-lite-design.md` |
 

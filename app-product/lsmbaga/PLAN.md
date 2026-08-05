@@ -31,6 +31,7 @@ Goal: Track S flagship — durable KV on RESP.
 - **BAGASST5** per-block CRC + **L2** — **done (R6)**
 - Byte-size level targets + **L3** — **done (R7)** (`target_bytes`)
 - Oldest-N merge pick — **done (R8)** (`merge_pick`)
+- Standalone bloom filter file — **done (R9)** (`BAGABLM1` sidecar)
 - Shared page cache across open files with pin counts
 - Optional skip whole-body CRC on get-only path
 - Rename rocksbaga when quality warrants

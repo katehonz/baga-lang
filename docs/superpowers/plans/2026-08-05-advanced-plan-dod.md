@@ -19,7 +19,7 @@
 
 - **Track A:** A1 qualified variants, A2 Vec/Map of sums, A5 FNS_MAX, MEM lite  
 - **Track B:** B1 L3 stack (pb/pg/orm/jsonrpc); B2 middleware + OpenAPI; B3 dual gRPC + goldens; B4 recover/stress/latency  
-- **Track R:** lsmbaga R0–R7 (SST v5, L0–L3, byte targets)  
+- **Track R:** lsmbaga R0–R9 (SST v5, L0–L3, byte targets, pick, bloom sidecar)  
 - **Phase 5 stretch (sketches/notes):** protoc_baga, io_uring probe, structural liveness, borrow-lite design, LLVM L3 status  
 
 ## Explicitly not claimed
@@ -32,7 +32,7 @@
 
 Ordered for north-star fit (storage + product + language honesty):
 
-1. **Storage polish** — ~~finer compact pick (R8)~~; bloom filter file; optional rename to rocksbaga  
+1. **Storage polish** — ~~R8 pick + R9 bloom~~; optional rename to rocksbaga  
 2. **Product depth** — L5 fmr routes; gRPC H2 client; more status/ctx defaults  
 3. **Language** — LLVM L3 or keep C-only; optional C′ borrow-lite impl  
 4. **Sketches only if product needs them** — syscall6 + mmap for real io_uring; full protoc  

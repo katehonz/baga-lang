@@ -39,12 +39,13 @@ fn args3(a: str, b: str, c: str) -> Vec<str> {
 }
 
 fn wipe(prefix: str) -> i64 !IO {
-    // best-effort remove known files for gens 1..20
+    // best-effort remove known files for gens 1..40
     unlink(concat(prefix, ".wal"))?
     unlink(concat(prefix, ".manifest"))?
     let mut g: i64 = 1
-    while g <= 20 {
+    while g <= 40 {
         unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
         g = g + 1
     }
     return 0
@@ -192,6 +193,26 @@ fn main() -> i64 !Net !IO !Par !Time {
     db6 = gp4.db
     check(fails, "r8_get_p4", gp4.found == 1 && str_of_bytes(gp4.val) == "4")
     lsm_close(db6)?
+
+    // --- R9: standalone bloom sidecar (BAGABLM1) ---
+    wipe("/tmp/baga_lsm_bloom")?
+    let mut db7 = lsm_open("/tmp/baga_lsm_bloom", 2, 100)?
+    check(fails, "r9_open", db7.ok == 1)
+    db7 = lsm_put(db7, "bloom_hit", "yes")?
+    db7 = lsm_put(db7, "other", "x")?   // flush → SST + .bloom.<gen>
+    check(fails, "r9_has_gen", vec_len(db7.gens) >= 1)
+    let g0 = vec_get(db7.gens, 0)
+    let bpath = bloom_path("/tmp/baga_lsm_bloom", g0)
+    check(fails, "r9_file_exists", file_exists(bpath)? == 1)
+    check(fails, "r9_may_hit", bloom_file_may("/tmp/baga_lsm_bloom", g0, "bloom_hit")? == 1)
+    check(fails, "r9_may_miss", bloom_file_may("/tmp/baga_lsm_bloom", g0, "zzz_absent_r9")? == 0)
+    let gh = lsm_get(db7, "bloom_hit")?
+    db7 = gh.db
+    check(fails, "r9_get_hit", gh.found == 1 && str_of_bytes(gh.val) == "yes")
+    let gm = lsm_get(db7, "zzz_absent_r9")?
+    db7 = gm.db
+    check(fails, "r9_get_miss", gm.found == 0)
+    lsm_close(db7)?
 
     // --- RESP loopback ---
     wipe("/tmp/baga_lsm_resp")?

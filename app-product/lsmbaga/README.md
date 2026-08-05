@@ -19,8 +19,7 @@ and binary `fd_*_bytes` in `std/os`.
 | Page cache (S5) | Fixed-size pages (4 KiB), clock eviction, dirty writeback, invalidate-on-unlink |
 | WAL | Length-prefixed records, crc32c, `fdatasync` every `sync_every` (default 1) |
 | Memtable | `Map<str, bytes>` + tombstone map (binary-safe values) |
-| SSTable | Magic **`BAGASST5`**: core + **per-block crc** + bloom + footer. Get = footer → bloom → index → block + CRC via page cache. **v1–v4** readable |
-| Flush | Threshold `flush_at` (default 32); writes **L0**; `SAVE` forces flush |
+| SSTable | Magic **`BAGASST5`**: core + **per-block crc** + bloom + footer. **R9** sidecar `<dir>.bloom.<gen>` for early miss. Get = external bloom → footer → bloom → index → block. **v1–v4** readable || Flush | Threshold `flush_at` (default 32); writes **L0**; `SAVE` forces flush |
 | Compaction | **L0→L1→L2→L3** by file-count (`compact_at`) and/or **byte targets** (`target_bytes`: L0=T, L1=4T, L2=16T, L3=64T); optional **oldest-N** (`merge_pick`); pure tombs kept on partial merge |
 | Recovery | MANIFEST + SST gens + WAL replay |
 | RESP | `PING` `SET` `GET` `DEL` `EXISTS` `INCR` `KEYS` `DBSIZE` `SAVE` `QUIT` |
@@ -31,9 +30,11 @@ and binary `fd_*_bytes` in `std/os`.
 <dir>.wal
 <dir>.manifest      # next_gen\n then "gen level" lines (0=L0 … 3=L3)
 <dir>.sst.<gen>
+<dir>.bloom.<gen>   # R9 BAGABLM1 sidecar (optional for old gens)
 ```
 
-Example: `LSMPATH=/tmp/baga_lsm` → `/tmp/baga_lsm.wal`, `/tmp/baga_lsm.sst.1`, …
+Example: `LSMPATH=/tmp/baga_lsm` → `/tmp/baga_lsm.wal`, `/tmp/baga_lsm.sst.1`,
+`/tmp/baga_lsm.bloom.1`, …
 
 ## Run
 

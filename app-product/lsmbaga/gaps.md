@@ -53,8 +53,13 @@ with `cap=2` (eviction) still correct. v5 get remains partial-file for hits.
 over files; >0 = oldest max(2,N), with byte targets growing the pick until
 coverage). Env `LSM_MERGE_PICK`. Test: `r8_*` in `tests/lsm_test.baga`.
 
-**Still open (later):** drop whole-body CRC on get-only path, bloom as
-standalone filter file, rename **rocksbaga** when quality warrants.
+**Shipped (R9):** **standalone bloom sidecar** `<dir>.bloom.<gen>` (`BAGABLM1`
++ m + bits + crc). Written with every new SST; `sst_get` skips SST open on
+definite miss. Embedded bloom remains in BAGASST5 for compatibility.
+Unlinked with SST on compact. Test: `r9_*` in `tests/lsm_test.baga`.
+
+**Still open (later):** drop whole-body CRC on get-only path; rename
+**rocksbaga** when quality warrants.
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
