@@ -1,0 +1,71 @@
+// sum_vec_test.baga — A2: Vec / Map of sum enums (box path like L4 structs).
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+enum Res { Ok(i64), Err(str) }
+enum Flag { On, Off }
+
+fn main() {
+    // --- Vec<Res> ---
+    let v: Vec<Res> = vec_new()
+    check("v_empty", vec_len(v) == 0)
+    vec_push(v, Ok(10))
+    vec_push(v, Err("e"))
+    vec_push(v, Ok(20))
+    check("v_len", vec_len(v) == 3)
+    check("v0", match vec_get(v, 0) { Ok(x) => x == 10, Err(e) => false })
+    check("v1", match vec_get(v, 1) { Ok(x) => false, Err(e) => e == "e" })
+    check("v2", match vec_get(v, 2) { Ok(x) => x == 20, Err(e) => false })
+
+    // set copies in
+    vec_set(v, 1, Ok(99))
+    check("v_set", match vec_get(v, 1) { Ok(x) => x == 99, Err(e) => false })
+
+    // get copies out
+    let mut g = vec_get(v, 0)
+    g = Err("mut")
+    check("v_copy", match vec_get(v, 0) { Ok(x) => x == 10, Err(e) => false })
+
+    // slice / concat
+    let mid = vec_slice(v, 0, 2)
+    check("slice_len", vec_len(mid) == 2)
+    let w: Vec<Res> = vec_new()
+    vec_push(w, Ok(1))
+    let c = vec_concat(v, w)
+    check("concat_len", vec_len(c) == 4)
+    check("concat_last", match vec_get(c, 3) { Ok(x) => x == 1, Err(e) => false })
+
+    // inference without annotation
+    let u = vec_new()
+    vec_push(u, On)
+    vec_push(u, Off)
+    check("infer_flag", match vec_get(u, 0) { On => true, Off => false })
+
+    // --- Map<str, Res> ---
+    let m: Map<str, Res> = map_new()
+    map_set(m, "a", Ok(5))
+    map_set(m, "b", Err("no"))
+    check("m_len", map_len(m) == 2)
+    check("m_a", match map_get(m, "a") { Ok(x) => x == 5, Err(e) => false })
+    check("m_b", match map_get(m, "b") { Ok(x) => false, Err(e) => e == "no" })
+    check("m_has", map_has(m, "a") == 1)
+    // missing → zero sum enum (tag 0 = first variant Ok)
+    let miss = map_get(m, "zzz")
+    check("m_miss_ok_tag", match miss { Ok(x) => x == 0, Err(e) => false })
+
+    // Map<i64, Res>
+    let mi: Map<i64, Res> = map_new()
+    map_set(mi, 1, Ok(7))
+    check("mi", match map_get(mi, 1) { Ok(x) => x == 7, Err(e) => false })
+
+    print("sum_vec: all passed")
+}

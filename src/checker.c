@@ -279,9 +279,10 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
                     if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
                         el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
-                        el->kind != TYPE_STRUCT && el->kind != TYPE_FN) {
+                        el->kind != TYPE_STRUCT && el->kind != TYPE_FN &&
+                        el->kind != TYPE_ENUM) {
                         check_error(ctx, ty->pos,
-                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct и fn)",
+                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
                             type_str(el));
                     } else {
                         t->elem = el;
@@ -311,9 +312,10 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     if (vt->kind == TYPE_I32) vt = type_new(TYPE_I64);
                     if (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
                         vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES &&
-                        vt->kind != TYPE_STRUCT && vt->kind != TYPE_FN) {
+                        vt->kind != TYPE_STRUCT && vt->kind != TYPE_FN &&
+                        vt->kind != TYPE_ENUM) {
                         check_error(ctx, ty->pos,
-                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64, bytes, struct и fn)",
+                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
                             type_str(vt));
                     } else {
                         t->elem = vt;
@@ -350,9 +352,10 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                 if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
                 if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
                     el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
-                    el->kind != TYPE_STRUCT && el->kind != TYPE_FN) {
+                    el->kind != TYPE_STRUCT && el->kind != TYPE_FN &&
+                    el->kind != TYPE_ENUM) {
                     check_error(ctx, ty->pos,
-                        "[T]: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct и fn)",
+                        "[T]: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
                         type_str(el));
                 } else {
                     t->elem = el;
@@ -946,15 +949,12 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             if (xt->kind == TYPE_I32) xt = type_new(TYPE_I64);
             if (!is_str_alias && xt->kind != TYPE_I64 && xt->kind != TYPE_STR &&
                 xt->kind != TYPE_F64 && xt->kind != TYPE_BYTES &&
-                xt->kind != TYPE_STRUCT && xt->kind != TYPE_FN) {
+                xt->kind != TYPE_STRUCT && xt->kind != TYPE_FN &&
+                xt->kind != TYPE_ENUM) {
                 check_error(ctx, n->pos,
-                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str, f64, bytes, struct и fn)",
+                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
                     name, type_str(xt));
                 return type_new(TYPE_ERROR);
-            }
-            if (xt->kind == TYPE_ENUM) {
-                check_error(ctx, n->pos,
-                    "sum enum-ите още не са елементи на Vec/Map (L3 v1)");
             }
             if (!vt->elem) {
                 vt->elem = xt;
@@ -1048,9 +1048,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             if (!vt || (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
                         vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES &&
                         vt->kind != TYPE_STRUCT && vt->kind != TYPE_FN &&
+                        vt->kind != TYPE_ENUM &&
                         vt->kind != TYPE_ERROR)) {
                 check_error(ctx, n->pos,
-                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str, f64, bytes, struct и fn)",
+                    "map_set: неподдържан стойностен тип %s за Map (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
                     type_str(vt));
                 return type_new(TYPE_ERROR);
             }
@@ -1061,10 +1062,6 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                     check_error(ctx, n->pos, "map_set: ключ от тип %s, но картата е %s",
                         type_str(kt), type_str(mt));
                 }
-            }
-            if (vt->kind == TYPE_ENUM) {
-                check_error(ctx, n->pos,
-                    "sum enum-ите още не са елементи на Vec/Map (L3 v1)");
             }
             if (vt->kind != TYPE_ERROR) {
                 if (!mt->elem) {

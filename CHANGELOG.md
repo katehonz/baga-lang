@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### A2 Vec/Map of sum enums
+- `Vec<Res>` / `Map<K, Res>` allowed (same box path as L4 structs):
+  push/get/set/slice/concat and map_set/get; missing map key → zero tag.
+- Checker + C codegen; test `tests/std/sum_vec_test.baga`; probe in
+  `run_tests.sh`. Docs §11.1 updated.
+
 ### A1 qualified sum variants (`Enum::Ok`)
 - Syntax: `PgRes::Ok(1)`, match `PgRes::Ok(v)` / bare `Ok(v)` when unique or
   scoped to match scrutinee. Token `::`, AST `NODE_PATH`.

@@ -484,7 +484,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ")");
                         } else if (at && at->kind == TYPE_VEC) {
-                            if (at->elem && at->elem->kind == TYPE_STRUCT && at->elem->name) {
+                            if (at->elem && at->elem->name &&
+                                (at->elem->kind == TYPE_STRUCT ||
+                                 at->elem->kind == TYPE_ENUM)) {
                                 char *mn = mangle_name(at->elem->name);
                                 fprintf(f, "baga_drop_vec(");
                                 emit_expr(cg, n->args.data[0]);
@@ -504,7 +506,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                                 fprintf(f, ", 0, 0)");
                             }
                         } else if (at && at->kind == TYPE_MAP) {
-                            if (at->elem && at->elem->kind == TYPE_STRUCT && at->elem->name) {
+                            if (at->elem && at->elem->name &&
+                                (at->elem->kind == TYPE_STRUCT ||
+                                 at->elem->kind == TYPE_ENUM)) {
                                 char *mn = mangle_name(at->elem->name);
                                 fprintf(f, "baga_drop_map(");
                                 emit_expr(cg, n->args.data[0]);
@@ -526,10 +530,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                 if (strcmp(bn, "vec_push") == 0 || strcmp(bn, "vec_get") == 0 ||
                     strcmp(bn, "vec_set") == 0) {
                     Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
-                    /* struct елементи: box-нато копие през generic box helper-ите
-                     * (statement expression дава lvalue на произволен rvalue) */
-                    if (vt && vt->kind == TYPE_VEC && vt->elem &&
-                        vt->elem->kind == TYPE_STRUCT && vt->elem->name) {
+                    /* struct / sum-enum елементи (L4 + A2): box-нато копие */
+                    if (vt && vt->kind == TYPE_VEC && vt->elem && vt->elem->name &&
+                        (vt->elem->kind == TYPE_STRUCT ||
+                         vt->elem->kind == TYPE_ENUM)) {
                         char *mn = mangle_name(vt->elem->name);
                         if (strcmp(bn, "vec_get") == 0) {
                             fprintf(f, "(*(%s *)baga_vec_get_box(", mn);
@@ -572,9 +576,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                 }
                 if (strcmp(bn, "vec_slice") == 0 || strcmp(bn, "vec_concat") == 0) {
                     Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
-                    /* struct елементи: размерът идва от call site-а */
-                    if (vt && vt->kind == TYPE_VEC && vt->elem &&
-                        vt->elem->kind == TYPE_STRUCT && vt->elem->name) {
+                    /* struct / sum-enum: размерът идва от call site-а */
+                    if (vt && vt->kind == TYPE_VEC && vt->elem && vt->elem->name &&
+                        (vt->elem->kind == TYPE_STRUCT ||
+                         vt->elem->kind == TYPE_ENUM)) {
                         char *mn = mangle_name(vt->elem->name);
                         fprintf(f, "baga_%s_box(", bn);
                         for (int i = 0; i < n->args.len; i++) {
@@ -603,9 +608,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                  * (типовете идват от checker-а; чист Map → str/i64 по подразбиране) */
                 if (strcmp(bn, "map_set") == 0 || strcmp(bn, "map_get") == 0) {
                     Type *mt = n->args.len > 0 ? n->args.data[0]->type : NULL;
-                    /* struct стойности: box-нато копие през generic box helper-ите */
-                    if (mt && mt->kind == TYPE_MAP && mt->elem &&
-                        mt->elem->kind == TYPE_STRUCT && mt->elem->name) {
+                    /* struct / sum-enum стойности: box path */
+                    if (mt && mt->kind == TYPE_MAP && mt->elem && mt->elem->name &&
+                        (mt->elem->kind == TYPE_STRUCT ||
+                         mt->elem->kind == TYPE_ENUM)) {
                         const char *ksuf = "str";
                         if (mt->key && mt->key->kind == TYPE_I64) ksuf = "i64";
                         char *mn = mangle_name(mt->elem->name);
@@ -618,15 +624,17 @@ static void emit_expr(Codegen *cg, Node *n) {
                             emit_expr(cg, n->args.data[1]);
                             fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
                         } else {
-                            /* липсващ ключ → нулев struct (безопасни полета:
-                             * str → "", вложен struct → рекурсивно) */
+                            /* missing key → zero struct, or zero tagged union */
                             fprintf(f, "({ void *_bp = baga_map_get_%s_box(", ksuf);
                             for (int i = 0; i < n->args.len; i++) {
                                 if (i > 0) fprintf(f, ", ");
                                 emit_expr(cg, n->args.data[i]);
                             }
                             fprintf(f, "); _bp ? *(%s *)_bp : ", mn);
-                            emit_zero_struct(cg, mt->elem->name);
+                            if (mt->elem->kind == TYPE_ENUM)
+                                fprintf(f, "(%s){0}", mn);
+                            else
+                                emit_zero_struct(cg, mt->elem->name);
                             fprintf(f, "; })");
                         }
                         free(mn);

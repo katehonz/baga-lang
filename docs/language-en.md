@@ -590,15 +590,14 @@ rejects sum types with an honest `unsupported` error pointing here.
 
 Honest v1 limits:
 
-- No `Vec<Res>` / `Map<K, Res>` — the checker rejects sum enums as
-  container elements (`Vec<T>: неподдържан елементен тип Res` /
-  `Map<K, V>: неподдържан стойностен тип Res`).
-- No generics — write a concrete enum per use site.
+- No generics — write a concrete enum per use site; use `Enum::Ok` when
+  several Result enums coexist (A1).
 - Exactly one payload type per variant; wrap several fields in a struct.
 - Nested sum/struct cycles fall back to declaration order; acyclic graphs
   (the common case: `struct Hold { r: Res }`, `enum Box { BoxHas(Wrap) }`)
   are emitted in topological order so **sum enums as struct fields work**.
-  Prefer `Enum::Ok` when several Result enums coexist.
+- **A2:** `Vec<Res>` and `Map<K, Res>` work via the same box path as
+  `Vec`/`Map` of structs (push/get copy; missing map key → zeroed tag).
 
 ---
 

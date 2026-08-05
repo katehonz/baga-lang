@@ -355,10 +355,11 @@ printf 'enum A { Ok(i64), Err(str) }\nenum B { Ok(str), Err(i64) }\nfn main() { 
 run /tmp/baga_sum_bad5.baga 2>&1 | grep -q "нееднозначен" \
 	&& echo "OK: A1 — bare Ok при два enum-а е нееднозначен" \
 	|| { echo "FAIL: нееднозначният bare Ok трябва да гърми"; exit 1; }
-printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let v: Vec<Res> = vec_new()\n}\n' > /tmp/baga_sum_bad6.baga
-run /tmp/baga_sum_bad6.baga 2>&1 | grep -q "неподдържан елементен тип" \
-	&& echo "OK: L3 — Vec<sum enum> е честно отхвърлен (v1)" \
-	|| { echo "FAIL: Vec<Res> трябва да гърми"; exit 1; }
+printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let v: Vec<Res> = vec_new()\n    vec_push(v, Ok(3))\n    let r = vec_get(v, 0)\n    print(match r { Ok(x) => x, Err(e) => 0 })\n}\n' > /tmp/baga_sum_a2_vec.baga
+run /tmp/baga_sum_a2_vec.baga > /tmp/baga_sum_a2_out.txt \
+	&& test "$(cat /tmp/baga_sum_a2_out.txt)" = "3" \
+	&& echo "OK: A2 — Vec<Res> push/get + match" \
+	|| { echo "FAIL: Vec<Res>"; cat /tmp/baga_sum_a2_out.txt 2>/dev/null; exit 1; }
 printf 'enum Res { Ok(i64), Err(str) }\nfn main() {\n    let r = Ok(1)\n    print(match r { Ok(v) => v, Nope(x) => 0, Err(e) => 0 })\n}\n' > /tmp/baga_sum_bad7.baga
 run /tmp/baga_sum_bad7.baga 2>&1 | grep -q "патернът 'Nope' не е вариант на enum 'Res'" \
 	&& echo "OK: L3 — несъществуващ вариант в патерн е ясна грешка" \
