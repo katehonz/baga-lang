@@ -320,7 +320,7 @@ in `lsmbaga/gaps.md`.
 
 1. lsm recovery + page-cache stress — **B4.1 done** (`lsm_recover_test`)  
 2. raft persistence lite — **B4.2 done** (`persist.baga` + `raft_persist_test`)  
-3. MEM-3 where it pays  
+3. txn multi-key concurrent 2PC — **B4.3 done** (`txn_stress_test`)  
 4. Bench numbers checked in  
 
 **Exit criteria:** recovery + latency note; verify examples still green.
