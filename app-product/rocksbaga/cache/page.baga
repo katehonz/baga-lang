@@ -17,7 +17,8 @@ struct PageCache {
     data: Map<i64, bytes>,
     dirty: Map<i64, i64>,
     refbit: Map<i64, i64>,
-    keys: Vec<i64>
+    keys: Vec<i64>,
+    scratch: str  // R18: shared pread buffer — raw write space, never a string
 }
 
 fn pc_new(page_size: i64, cap: i64) -> PageCache {
@@ -36,7 +37,8 @@ fn pc_new(page_size: i64, cap: i64) -> PageCache {
         data: map_new(),
         dirty: map_new(),
         refbit: map_new(),
-        keys: vec_new()
+        keys: vec_new(),
+        scratch: str_repeat(" ", ps)
     }
 }
 
@@ -92,6 +94,8 @@ fn pc_evict_one(pc: PageCache, fd: i64) -> PcEvict !IO {
                 }
             }
             pc.keys = nk
+            let pb = map_get(pc.data, key)
+            drop(pb)  // R18: recycle the page block
             map_del(pc.data, key)
             map_del(pc.dirty, key)
             map_del(pc.refbit, key)
@@ -114,6 +118,8 @@ fn pc_evict_one(pc: PageCache, fd: i64) -> PcEvict !IO {
         vec_push(nk2, vec_get(pc.keys, i))
     }
     pc.keys = nk2
+    let pb2 = map_get(pc.data, key)
+    drop(pb2)  // R18: recycle the page block
     map_del(pc.data, key)
     map_del(pc.dirty, key)
     map_del(pc.refbit, key)
@@ -151,7 +157,7 @@ fn pc_get(pc: PageCache, fd: i64, file_id: i64, page_no: i64) -> PcGet !IO {
         return PcGet { pc: cur, data: bytes_new(0) }
     }
     let off = page_no * cur.page_size
-    let raw = fd_pread_bytes(fd, cur.page_size, off)?
+    let raw = fd_pread_into(fd, cur.scratch, cur.page_size, off)?
     let mut page = bytes_new(cur.page_size)
     let n = bytes_len(raw)
     let mut i: i64 = 0
@@ -159,6 +165,7 @@ fn pc_get(pc: PageCache, fd: i64, file_id: i64, page_no: i64) -> PcGet !IO {
         bytes_set(page, i, bytes_at(raw, i))
         i = i + 1
     }
+    drop(raw)  // R18: copied into page; recycle the read buffer
     map_set(cur.data, key, page)
     map_set(cur.dirty, key, 0)
     map_set(cur.refbit, key, 1)
@@ -210,6 +217,8 @@ fn pc_invalidate_file(pc: PageCache, file_id: i64) -> PageCache {
     for i in 0..vec_len(pc.keys) {
         let key = vec_get(pc.keys, i)
         if key >= lo && key < hi {
+            let pb = map_get(pc.data, key)
+            drop(pb)  // R18: recycle the page block (file is gone)
             map_del(pc.data, key)
             map_del(pc.dirty, key)
             map_del(pc.refbit, key)

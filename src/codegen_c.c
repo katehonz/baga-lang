@@ -2017,30 +2017,57 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "typedef struct baga_ABlk { struct baga_ABlk *next; size_t used, cap; char data[]; } baga_ABlk;\n");
     fprintf(out, "static baga_ABlk *baga_arena_head = NULL;\n");
     fprintf(out, "static pthread_mutex_t baga_alloc_mu = PTHREAD_MUTEX_INITIALIZER;\n");
-    /* MEM-1: free list — 16-байтови класове ≤ 1024 B; drop рециклира блокове */
+    /* MEM-1: free list — 16-байтови класове ≤ 1024 B; R18: + pow2 класове
+     * 2 KiB..32 MiB — drop рециклира блокове. Големите класове се bump-ват с
+     * ПЪЛНИЯ класов размер, за да е консистентен всеки бъдещ free в класа. */
     fprintf(out, "#define BAGA_FL_CLASSES 64   /* free list: 16-байтови класове ≤ 1024 B */\n");
+    fprintf(out, "#define BAGA_FL_BIG 12       /* pow2 класове: 2 KiB .. 32 MiB */\n");
     fprintf(out, "static void *baga_fl[BAGA_FL_CLASSES];\n");
+    fprintf(out, "static void *baga_fl_big[BAGA_FL_BIG];\n");
+    fprintf(out, "static int baga_fl_big_idx(int64_t n) {\n");
+    fprintf(out, "    int i = 0; int64_t c = 2048;\n");
+    fprintf(out, "    while (i < BAGA_FL_BIG) { if (n <= c) return i; c <<= 1; i++; }\n");
+    fprintf(out, "    return -1;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static void baga_free(void *p, int64_t n) {\n");
-    fprintf(out, "    if (!p || n <= 0 || n > 1024) return;\n");
-    fprintf(out, "    int c = (int)((n + 15) / 16) - 1;\n");
+    fprintf(out, "    if (!p || n <= 0) return;\n");
     fprintf(out, "    pthread_mutex_lock(&baga_alloc_mu);\n");
-    fprintf(out, "    *(void **)p = baga_fl[c];\n");
-    fprintf(out, "    baga_fl[c] = p;\n");
+    fprintf(out, "    if (n <= 1024) {\n");
+    fprintf(out, "        int c = (int)((n + 15) / 16) - 1;\n");
+    fprintf(out, "        *(void **)p = baga_fl[c]; baga_fl[c] = p;\n");
+    fprintf(out, "    } else {\n");
+    fprintf(out, "        int i = baga_fl_big_idx(n);\n");
+    fprintf(out, "        if (i >= 0) { *(void **)p = baga_fl_big[i]; baga_fl_big[i] = p; }\n");
+    fprintf(out, "    }\n");
     fprintf(out, "    pthread_mutex_unlock(&baga_alloc_mu);\n");
     fprintf(out, "}\n");
     fprintf(out, "static void *baga_alloc(size_t n) {\n");
     fprintf(out, "    size_t rn = (n + 15) & ~(size_t)15;\n");
-    fprintf(out, "    if (rn >= 16 && rn <= 1024) {\n");
+    fprintf(out, "    size_t an;\n");
+    fprintf(out, "    if (n == 0) {\n");
+    fprintf(out, "        an = 0;\n");
+    fprintf(out, "    } else if (rn <= 1024) {\n");
     fprintf(out, "        pthread_mutex_lock(&baga_alloc_mu);\n");
     fprintf(out, "        void *fb = baga_fl[rn / 16 - 1];\n");
     fprintf(out, "        if (fb) { baga_fl[rn / 16 - 1] = *(void **)fb; pthread_mutex_unlock(&baga_alloc_mu); return fb; }\n");
     fprintf(out, "        pthread_mutex_unlock(&baga_alloc_mu);\n");
+    fprintf(out, "        an = rn;\n");
+    fprintf(out, "    } else {\n");
+    fprintf(out, "        int bi = baga_fl_big_idx((int64_t)n);\n");
+    fprintf(out, "        if (bi >= 0) {\n");
+    fprintf(out, "            pthread_mutex_lock(&baga_alloc_mu);\n");
+    fprintf(out, "            void *fb = baga_fl_big[bi];\n");
+    fprintf(out, "            if (fb) { baga_fl_big[bi] = *(void **)fb; pthread_mutex_unlock(&baga_alloc_mu); return fb; }\n");
+    fprintf(out, "            pthread_mutex_unlock(&baga_alloc_mu);\n");
+    fprintf(out, "            an = ((size_t)2048 << bi);\n");
+    fprintf(out, "        } else {\n");
+    fprintf(out, "            an = n;\n");
+    fprintf(out, "        }\n");
     fprintf(out, "    }\n");
     /* MEM-1 fix: малките алокации се bump-ват с КЛАСОВИЯ размер rn (не n) —
      * иначе free-list блок от по-малка заявка обслужва по-голяма в същия
-     * клас и я презаписва съседния блок (segfault при review). >1024 B:
-     * точен n, както преди. До 15 B slack на малка алокация. */
-    fprintf(out, "    size_t an = (rn <= 1024) ? rn : n;\n");
+     * клас и я презаписва съседния блок (segfault при review). Същото и за
+     * pow2 класовете (R18): винаги пълен класов размер. */
     fprintf(out, "    pthread_mutex_lock(&baga_alloc_mu);\n");
     fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
     fprintf(out, "    if (!b || b->used + an > b->cap) {\n");

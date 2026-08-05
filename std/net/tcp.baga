@@ -154,16 +154,34 @@ fn tcp_close(fd: i64) -> i64 !IO {
 
 // One read() of up to n bytes; bytes_len < n means fewer were available
 // (0 on EOF/error). Binary-safe.
+// R18: prealloc bytes + bytes_set (same shape as fd_pread_bytes). The old
+// per-byte vec_push into Vec<i64> leaked ~100 KB of spine garbage per 4 KB
+// read (no GC) — the rocksbaga soak test measured 34 KB/command RSS growth.
 fn tcp_read_bytes(fd: i64, n: i64) -> bytes !Net !IO {
     if n <= 0 { return bytes_from_vec(vec_new()) }
     let buf = str_repeat(" ", n)
     let got = read(fd, buf, n)?
     if got <= 0 { return bytes_from_vec(vec_new()) }
-    let v = vec_new()
+    let b = bytes_new(got)
     for i in 0..got {
-        vec_push(v, byte_at(buf, i))
+        bytes_set(b, i, byte_at(buf, i))
     }
-    return bytes_from_vec(v)
+    return b
+}
+
+// Read into caller-owned scratch (allocated once, reused every call).
+// Per-call cost: only the returned bytes (droppable) — no 4 KB str garbage
+// per read like tcp_read_bytes. `scratch` MUST be >= n bytes and is raw
+// write space: never use it as a string afterwards (strlen lies).
+fn tcp_read_into(fd: i64, scratch: str, n: i64) -> bytes !Net !IO {
+    if n <= 0 { return bytes_from_vec(vec_new()) }
+    let got = read(fd, scratch, n)?
+    if got <= 0 { return bytes_from_vec(vec_new()) }
+    let b = bytes_new(got)
+    for i in 0..got {
+        bytes_set(b, i, byte_at(scratch, i))
+    }
+    return b
 }
 
 // Exactly n bytes, looping on partial reads. bytes_len < n only at

@@ -183,6 +183,7 @@ fn sst_write(dir: str, gen: i64, rows: Vec<SstRow>) -> i64 !IO {
         i = i + 1
     }
     put_u32_le(file, 8 + bytes_len(body), crc)
+    drop(body)  // R18: fully copied into file
     if fd_write_bytes(fd, file) != 0 {
         close(fd)
         return -1
@@ -192,10 +193,14 @@ fn sst_write(dir: str, gen: i64, rows: Vec<SstRow>) -> i64 !IO {
         return -1
     }
     close(fd)
+    drop(file)  // R18: on disk now
     // R9/R14: sidecar reuses the bloom from sst_build (no second filter pass).
-    if bloom_write_file(dir, gen, built.bloom, built.m)? != 0 {
+    let bloom = built.bloom
+    let m = built.m
+    if bloom_write_file(dir, gen, bloom, m)? != 0 {
         return -1
     }
+    drop(bloom)
     return 0
 }
 
@@ -316,23 +321,35 @@ fn sst_read_raw(pc: PageCache, dir: str, gen: i64) -> SstRaw !IO {
         return SstRaw { pc: pc, ok: 0, data: bytes_new(0) }
     }
     let mut cur = pc
-    let mut data = bytes_new(0)
+    let fsize = fd_size(fd)?
+    if fsize <= 0 {
+        close(fd)
+        return SstRaw { pc: cur, ok: 1, data: bytes_new(0) }
+    }
+    // R18: exact prealloc + page copies through the cache. The old
+    // push_bytes-per-page chain leaked O(pages^2) garbage (~45 MB per
+    // 600 KB file in a no-GC runtime).
+    let data = bytes_new(fsize)
+    let npages = (fsize + cur.page_size - 1) / cur.page_size
     let mut pno: i64 = 0
-    let mut more: i64 = 1
-    while more == 1 {
-        let raw = fd_pread_bytes(fd, cur.page_size, pno * cur.page_size)?
-        if bytes_len(raw) == 0 {
-            more = 0
-        } else {
-            let g = pc_get(cur, fd, gen, pno)?
-            cur = g.pc
-            data = push_bytes(data, raw)
-            if bytes_len(raw) < cur.page_size {
-                more = 0
-            } else {
-                pno = pno + 1
-            }
+    while pno < npages {
+        let g = pc_get(cur, fd, gen, pno)?
+        cur = g.pc
+        if bytes_len(g.data) == 0 {
+            close(fd)
+            return SstRaw { pc: cur, ok: 0, data: bytes_new(0) }
         }
+        let base = pno * cur.page_size
+        let mut take = cur.page_size
+        if base + take > fsize {
+            take = fsize - base
+        }
+        let mut i: i64 = 0
+        while i < take {
+            bytes_set(data, base + i, bytes_at(g.data, i))
+            i = i + 1
+        }
+        pno = pno + 1
     }
     close(fd)
     return SstRaw { pc: cur, ok: 1, data: data }
@@ -344,7 +361,10 @@ fn sst_load(pc: PageCache, dir: str, gen: i64) -> SstLoad !IO {
     if raw.ok == 0 {
         return SstLoad { pc: raw.pc, parse: SstParse { ok: 0, rows: empty } }
     }
-    return SstLoad { pc: raw.pc, parse: sst_parse(raw.data) }
+    let d = raw.data
+    let p = sst_parse(d)
+    drop(d)  // R18: rows hold copies (sst_rec_at slices out) — body is dead
+    return SstLoad { pc: raw.pc, parse: p }
 }
 
 struct SstLookup {

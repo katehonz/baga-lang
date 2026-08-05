@@ -180,9 +180,10 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
         let gen = vec_get(db.gens, vec_get(idxs, ii))
         let ld = sst_load(cur, db.dir, gen)?
         cur = ld.pc
+        let prows = ld.parse.rows
         if ld.parse.ok == 1 {
-            for j in 0..vec_len(ld.parse.rows) {
-                let r = vec_get(ld.parse.rows, j)
+            for j in 0..vec_len(prows) {
+                let r = vec_get(prows, j)
                 if r.op == 2 {
                     map_del(acc, r.key)
                     map_set(tomb, r.key, 1)
@@ -192,6 +193,8 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
                 }
             }
         }
+        // R18: keys/vals live on in acc/tomb (shared); the row boxes are dead
+        drop(prows)
     }
     db.cache = cur
     let keys = map_keys(acc)
@@ -269,6 +272,9 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
     }
     db.gens = ng
     db.levels = nl
+    drop(rows)  // R18: on disk (sst_write copies); row field values live in acc
+    drop(acc)   // R18: entry boxes/buckets dead after the write
+    drop(tomb)
     if lsm_write_manifest(db.dir, db.next_gen, db.gens, db.levels)? != 0 {
         db.ok = 0
         return db

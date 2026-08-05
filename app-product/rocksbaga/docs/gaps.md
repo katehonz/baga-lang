@@ -109,6 +109,34 @@ GET_RND ~123k. **Language lesson:** in a no-GC language, growable-buffer
 concat chains are memory bombs even when they are "fast enough" — prealloc
 like R14 did for WAL, or pay quadratic RSS.
 
+**Shipped (R18 server memory arc — MEM-1 machinery applied):** soak test
+(RESP server, 100k cmd) drove RSS 1 MB → 6.8 GB (~34 KB/cmd). Root causes
+and fixes:
+- `tcp_read_bytes` built a Vec<i64> per byte (~100 KB garbage per 4 KB read)
+  → prealloc `bytes_set` shape; new `tcp_read_into` / `fd_pread_into` take a
+  caller-owned scratch str (allocated once), so a read costs only the
+  returned (droppable) bytes.
+- serve loops: zero-copy chunk adopt + `drop` of consumed chunk / args
+  spine / reply per command.
+- WAL buffer: offset append into a preallocated 64 KiB buffer
+  (`wal_buf_len`) — the concat append leaked the whole window per record.
+- `sst_read_raw`: exact prealloc via `fd_size` + page copies — the
+  per-page `push_bytes` chain leaked O(pages²) (~45 MB per 600 KB merge).
+- `drop` on: loaded SST bodies after parse, merge row vecs / acc maps,
+  written SST body/file/bloom, evicted/invalidated page-cache pages.
+- **Runtime: free list extended past 1 KiB** — pow2 classes 2 KiB..32 MiB
+  (`baga_fl_big`, full-class-size bump like the MEM-1 small-class fix).
+  Without this, `drop` of any block >1 KiB was a no-op and the whole
+  storage-engine churn (4 KiB pages, SST bodies) could never recycle.
+  C backend only; LLVM backend has no drop/free-list yet (parity TODO).
+
+Soak after: PING 1.3 KB/cmd, GET ~2 KB/cmd, SET ~9 KB/cmd (was 34/37);
+engine in-process 200k puts complete (was OOM ~150k). Bench n=10000
+durable: PUT ~599 ops/s, GET_SEQ ~204k, GET_RND ~164k — faster than R17.
+**Residual (by design, v1):** `str` is not droppable (plan §6) — RESP arg
+strings and small temporaries (~1 KB/cmd) stay arena-bound forever. That
+is the MEM-3-full / str-reclamation roadmap item, not a bug.
+
 **Still open (later):** pin-count shared page cache; poll multi-conn done
 (R15); `db/manifest.baga` / `table/block.baga` when needed; RocksDB feature
 parity (not claimed).

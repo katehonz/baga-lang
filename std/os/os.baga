@@ -162,6 +162,25 @@ fn fd_pread_bytes(fd: i64, n: i64, off: i64) -> bytes !IO {
     return b
 }
 
+// Same, but reads into caller-owned scratch (allocated once, reused per call).
+// Per-call cost: only the returned bytes (droppable) — no n-byte str garbage
+// per read. `scratch` MUST be >= n bytes; it is raw write space afterwards,
+// never a string (strlen lies).
+fn fd_pread_into(fd: i64, scratch: str, n: i64, off: i64) -> bytes !IO {
+    if n <= 0 {
+        return bytes_new(0)
+    }
+    let got = pread(fd, scratch, n, off)?
+    if got <= 0 {
+        return bytes_new(0)
+    }
+    let mut b = bytes_new(got)
+    for i in 0..got {
+        bytes_set(b, i, byte_at(scratch, i))
+    }
+    return b
+}
+
 // Read an entire file into a string. "" on error or for an empty file.
 fn read_file(path: str) -> str !IO {
     let fd = open(path, 0, 0)?

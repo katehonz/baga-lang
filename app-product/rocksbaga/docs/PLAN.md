@@ -47,4 +47,6 @@ Goal: Track S flagship — durable KV on RESP.
   PERSIST — **done** (P1 "Optional TTL column" closed)
 - **R17 sst_build prealloc** — killed the O(n²) concat chain (OOM at n≥5000
   bench) — **done**
+- **R18 server memory** — scratch-buffer reads, drop discipline, offset WAL
+  append, free list >1 KiB (runtime); soak 34→1.3 KB/cmd (PING) — **done**
 - Shared page cache across open files with pin counts

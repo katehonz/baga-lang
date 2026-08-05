@@ -25,7 +25,7 @@ fn lsm_empty_db(dir: str) -> LsmDB {
         dir: dir, mem: map_new(), tomb: map_new(), mem_n: 0,
         flush_at: 32, compact_at: 3, target_bytes: 0, merge_pick: 0,
         wal_fd: -1, wal_off: 0,
-        wal_buf: bytes_new(0), wal_buf_max: 65536,
+        wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
         gens: gens, levels: levels, next_gen: 1, cache: pc_new(4096, 256),
         blooms: bloom_cache_new(),
         sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
@@ -74,7 +74,7 @@ fn lsm_read_manifest(dir: str) -> LsmDB !IO {
         dir: dir, mem: map_new(), tomb: map_new(), mem_n: 0,
         flush_at: 32, compact_at: 3, target_bytes: 0, merge_pick: 0,
         wal_fd: -1, wal_off: 0,
-        wal_buf: bytes_new(0), wal_buf_max: 65536,
+        wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
         gens: gens, levels: levels, next_gen: next_gen, cache: pc_new(4096, 256),
         blooms: bloom_cache_new(),
         sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
@@ -118,16 +118,17 @@ fn lsm_open(dir: str, flush_at: i64, compact_at: i64) -> LsmDB !IO {
 
 // Flush pending WAL buffer to the fd (no fdatasync).
 fn lsm_wal_flush_buf(db: LsmDB) -> LsmDB !IO {
-    let n = bytes_len(db.wal_buf)
-    if n <= 0 {
+    if db.wal_buf_len <= 0 {
         return db
     }
-    if fd_pwrite_bytes(db.wal_fd, db.wal_buf, db.wal_off) != 0 {
+    let view = bytes_slice(db.wal_buf, 0, db.wal_buf_len)
+    if fd_pwrite_bytes(db.wal_fd, view, db.wal_off) != 0 {
         db.ok = 0
         return db
     }
-    db.wal_off = db.wal_off + n
-    db.wal_buf = bytes_new(0)
+    drop(view)
+    db.wal_off = db.wal_off + db.wal_buf_len
+    db.wal_buf_len = 0  // buffer stays allocated, reused next window
     return db
 }
 
@@ -166,20 +167,56 @@ fn lsm_maybe_sync(db: LsmDB) -> LsmDB !IO {
 }
 
 // Append WAL record into buffer (or direct write if buf disabled).
+// R18: offset append into a preallocated buffer (wal_buf_len) — the old
+// push_bytes concat leaked the whole accumulated buffer per append, and
+// blocks >1 KiB never reach the free list (~12 KB/PUT in the soak test).
 fn lsm_wal_append(db: LsmDB, op: i64, key: str, val: bytes) -> LsmDB !IO {
     let rec = wal_record(op, key, val)
+    let rl = bytes_len(rec)
     if db.wal_buf_max <= 0 {
         if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
+            drop(rec)
             db.ok = 0
             return db
         }
-        db.wal_off = db.wal_off + bytes_len(rec)
+        db.wal_off = db.wal_off + rl
+        drop(rec)
         return db
     }
-    db.wal_buf = push_bytes(db.wal_buf, rec)
-    if bytes_len(db.wal_buf) >= db.wal_buf_max {
+    if rl >= db.wal_buf_max {
+        // oversized record: drain pending, then write directly
         db = lsm_wal_flush_buf(db)?
+        if db.ok == 0 {
+            drop(rec)
+            return db
+        }
+        if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
+            drop(rec)
+            db.ok = 0
+            return db
+        }
+        db.wal_off = db.wal_off + rl
+        drop(rec)
+        return db
     }
+    if db.wal_buf_len + rl > db.wal_buf_max {
+        db = lsm_wal_flush_buf(db)?
+        if db.ok == 0 {
+            drop(rec)
+            return db
+        }
+    }
+    if bytes_len(db.wal_buf) < db.wal_buf_max {
+        db.wal_buf = bytes_new(db.wal_buf_max)
+        db.wal_buf_len = 0
+    }
+    let mut i: i64 = 0
+    while i < rl {
+        bytes_set(db.wal_buf, db.wal_buf_len + i, bytes_at(rec, i))
+        i = i + 1
+    }
+    db.wal_buf_len = db.wal_buf_len + rl
+    drop(rec)
     return db
 }
 
@@ -422,6 +459,7 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
         vec_push(db.levels, 0)   // L0
         db.next_gen = gen + 1
     }
+    drop(rows)  // R18: on disk; vals stay with db.mem until it is replaced
     if lsm_write_manifest(db.dir, db.next_gen, db.gens, db.levels)? != 0 {
         db.ok = 0
         return db
@@ -435,7 +473,7 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
     }
     db.wal_fd = wfd
     db.wal_off = 0
-    db.wal_buf = bytes_new(0)
+    db.wal_buf_len = 0  // R18: keep the allocated buffer
     db.mem = map_new()
     db.tomb = map_new()
     db.mem_n = 0

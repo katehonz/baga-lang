@@ -230,14 +230,21 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
 // Single-connection drain (legacy / tests). Blocks on read until EOF.
 fn lsm_serve_conn(fd: i64, db: LsmDB) -> LsmDB !IO !Net !Time {
     let mut buf = bytes_from_vec(vec_new())
+    let scratch = str_repeat(" ", 4096)  // reused read buffer — never a string
     let mut running: i64 = 1
     let mut cur = db
     while running == 1 {
-        let chunk = tcp_read_bytes(fd, 4096)?
+        let chunk = tcp_read_into(fd, scratch, 4096)?
         if bytes_len(chunk) == 0 {
             running = 0
         } else {
-            buf = bytes_concat(buf, chunk)
+            if bytes_len(buf) > 0 {
+                let joined = bytes_concat(buf, chunk)
+                drop(chunk)
+                buf = joined
+            } else {
+                buf = chunk
+            }
             let mut again: i64 = 1
             while again == 1 {
                 let p = resp_parse_command(buf)
@@ -245,9 +252,13 @@ fn lsm_serve_conn(fd: i64, db: LsmDB) -> LsmDB !IO !Net !Time {
                     again = 0
                 } else {
                     buf = bytes_slice(buf, p.consumed, bytes_len(buf))
-                    let ex = lsm_exec(cur, p.args)?
+                    let pargs = p.args
+                    let ex = lsm_exec(cur, pargs)?
                     cur = ex.db
-                    let w = tcp_write_bytes(fd, ex.reply)?
+                    drop(pargs)
+                    let rep = ex.reply
+                    let w = tcp_write_bytes(fd, rep)?
+                    drop(rep)
                     if w != 0 || ex.quit == 1 {
                         running = 0
                         again = 0
@@ -265,7 +276,8 @@ struct LsmSrv {
     db: LsmDB,
     listener: i64,
     fds: Vec<i64>,
-    bufs: Map<i64, bytes>
+    bufs: Map<i64, bytes>,
+    scratch: str  // shared read buffer (single-threaded loop) — never a string
 }
 
 fn lsm_srv_add(st: LsmSrv, fd: i64) -> LsmSrv {
@@ -293,12 +305,20 @@ fn lsm_srv_drop(st: LsmSrv, fd: i64) -> LsmSrv !Net !IO {
 // Handle one readable client fd: non-blocking-ish (called after poll).
 // Returns updated state; drops conn on EOF / QUIT / write error.
 fn lsm_srv_on_readable(st: LsmSrv, fd: i64) -> LsmSrv !IO !Net !Time {
-    let chunk = tcp_read_bytes(fd, 4096)?
+    let chunk = tcp_read_into(fd, st.scratch, 4096)?
     if bytes_len(chunk) == 0 {
         return lsm_srv_drop(st, fd)?
     }
     let mut buf = map_get(st.bufs, fd)
-    buf = bytes_concat(buf, chunk)
+    if bytes_len(buf) > 0 {
+        // pipelined residue — join; the copy consumes chunk's contents
+        let joined = bytes_concat(buf, chunk)
+        drop(chunk)
+        buf = joined
+    } else {
+        // fast path: adopt the read buffer zero-copy
+        buf = chunk
+    }
     let mut cur = st.db
     let mut drop_me: i64 = 0
     let mut again: i64 = 1
@@ -308,9 +328,15 @@ fn lsm_srv_on_readable(st: LsmSrv, fd: i64) -> LsmSrv !IO !Net !Time {
             again = 0
         } else {
             buf = bytes_slice(buf, p.consumed, bytes_len(buf))
-            let ex = lsm_exec(cur, p.args)?
+            let pargs = p.args
+            let ex = lsm_exec(cur, pargs)?
             cur = ex.db
-            let w = tcp_write_bytes(fd, ex.reply)?
+            // Vec<str> spine only — the strings stay owned by the engine
+            // (memtable keys/vals). drop(args) must NOT walk them (it doesn't).
+            drop(pargs)
+            let rep = ex.reply
+            let w = tcp_write_bytes(fd, rep)?
+            drop(rep)
             if w != 0 || ex.quit == 1 {
                 drop_me = 1
             }
@@ -403,7 +429,8 @@ fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
         return -1
     }
     let mut st = LsmSrv {
-        db: db, listener: listener, fds: vec_new(), bufs: map_new()
+        db: db, listener: listener, fds: vec_new(), bufs: map_new(),
+        scratch: str_repeat(" ", 4096)
     }
     while true {
         let pollfds: Vec<i64> = vec_new()
