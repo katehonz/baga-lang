@@ -140,6 +140,25 @@ static void collect_tokens(const char *path, TokenVec *out,
                 baga_error(path, t->pos, "не мога да намеря import '%s'", rel);
                 exit(1);
             }
+            /* L6: `import "p" as a` — alias става модулното име на файла
+             * (origin), така че еднакви basename-и в различни директории
+             * могат да се уточнят: a.f(). Регистрира се и при повторен
+             * import (include guard-ът е отделен). */
+            if (i + 3 < ftoks.len && ftoks.data[i + 2].kind == TOK_AS) {
+                if (ftoks.data[i + 3].kind != TOK_IDENT) {
+                    baga_error(path, ftoks.data[i + 2].pos,
+                               "очаквах име на alias след 'as'");
+                    exit(1);
+                }
+                const char *prev =
+                    baga_note_import_alias(resolved, ftoks.data[i + 3].text);
+                if (prev) {
+                    baga_error(path, ftoks.data[i + 3].pos,
+                               "файлът вече има import alias '%s'", prev);
+                    exit(1);
+                }
+                i += 2;
+            }
             collect_tokens(resolved, out, included, stack);
             i++;   /* consume the path string token */
             continue;

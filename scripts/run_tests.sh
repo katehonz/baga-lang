@@ -317,6 +317,18 @@ printf 'fn dup() -> i64 { return 1 }\nfn dup() -> i64 { return 2 }\nfn main() { 
 run /tmp/baga_ns_dup.baga 2>&1 | grep -q "повторна дефиниция на функция 'dup'" \
 	&& echo "OK: L6 — дубликат в един модул е checker грешка (не от gcc)" \
 	|| { echo "FAIL: повторната дефиниция трябва да гърми в checker-а"; exit 1; }
+printf 'import "tests/ns_alias/mod1/util.baga"\nimport "tests/ns_alias/mod2/util.baga" as util2\nfn main() {\n    print(who())\n}\n' > /tmp/baga_ns_alias_amb.baga
+run /tmp/baga_ns_alias_amb.baga 2>&1 | grep -q "уточни с util.who или util2.who" \
+	&& echo "OK: L6 — alias влиза в подсказката за нееднозначно извикване" \
+	|| { echo "FAIL: alias подсказката трябва да гърми"; exit 1; }
+printf 'import "tests/ns_alias/mod1/util.baga" as u1\nimport "tests/ns_alias/mod1/util.baga" as u2\nfn main() {}\n' > /tmp/baga_ns_alias_conf.baga
+run /tmp/baga_ns_alias_conf.baga 2>&1 | grep -q "вече има import alias 'u1'" \
+	&& echo "OK: L6 — втори различен alias за същия файл е грешка" \
+	|| { echo "FAIL: конфликтният alias трябва да гърми"; exit 1; }
+printf 'import "tests/ns_alias/mod1/util.baga" as\nfn main() {}\n' > /tmp/baga_ns_alias_bad.baga
+run /tmp/baga_ns_alias_bad.baga 2>&1 | grep -q "очаквах име на alias след 'as'" \
+	&& echo "OK: L6 — as без име е ясна грешка" \
+	|| { echo "FAIL: as без име трябва да гърми"; exit 1; }
 printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let f = add\n    print(f("x", 1))\n}\n' > /tmp/baga_fn_bad1.baga
 run /tmp/baga_fn_bad1.baga 2>&1 | grep -q "fn стойност: аргумент #1 е от тип str, но параметърът е i64" \
 	&& echo "OK: L5 — грешен аргумент през fn стойност е отхвърлен" \

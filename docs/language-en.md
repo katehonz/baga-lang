@@ -1526,6 +1526,14 @@ a checker error (`повторна дефиниция`) — forward declarations
 without a body) plus one implementation are fine. Struct and enum names
 stay global (no qualification yet), as do `go` worker references.
 
+**Import alias.** `import "modb/util.baga" as util2` renames the module:
+its functions are called `util2.f()` and ambiguity hints use the alias.
+This is the escape hatch when two imported files share a basename
+(`moda/util.baga` vs `modb/util.baga` — both would be module `util`, and
+their same-named functions would collide as "duplicates in one module").
+One alias per file: re-importing with the same alias is idempotent, a
+different second alias is a compile error.
+
 In a packaged project the import carries the package name —
 `import "fmrbaga/app.baga"`, `import "std/str/str.baga"` — and the `-I` flags
 are computed automatically by the **sandak** package manager from the

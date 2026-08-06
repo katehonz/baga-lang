@@ -82,6 +82,7 @@ typedef enum {
     TOK_BREAK,
     TOK_CONTINUE,
     TOK_IMPORT,
+    TOK_AS,
     TOK_EXTERN,
 
     /* punctuation */
@@ -472,6 +473,10 @@ typedef struct {
 } Checker;
 
 void check_program(Checker *c, Node *program);
+
+/* L6: import alias — регистрира се от main.c при `import "p" as a`.
+ * Връща NULL при успех, или съществуващия alias при конфликт. */
+const char *baga_note_import_alias(const char *canon_path, const char *alias);
 
 /* ============================================================
  *  Codegen (C transpiler)

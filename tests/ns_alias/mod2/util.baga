@@ -1,0 +1,9 @@
+// util.baga (mod2) — alias test module (L6): same basename as mod1/util.baga;
+// imported with `as util2` by ns_alias_test.
+fn who() -> str {
+    return "mod2"
+}
+
+fn two() -> i64 {
+    return 2
+}

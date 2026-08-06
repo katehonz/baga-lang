@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Language — L6 import alias (`import "p" as name`)
+- `import "modb/util.baga" as util2` renames the module: qualified calls
+  `util2.f()`, ambiguity hints use the alias. Closes the last L6 gap —
+  two imported files sharing a basename no longer collide as "duplicates
+  in one module". New `as` keyword; one alias per file (same alias
+  re-import is idempotent, a different one is a compile error).
+- Tests: `tests/ns_alias_test.baga` + `tests/ns_alias/{mod1,mod2}/util.baga`,
+  three negatives in `run_tests.sh`; works in both backends.
+
 ### Language — LLVM parity for function values / closures (L5 closed)
 - fn values are `cell2(code, env)` i64 handles in both backends:
   `TYPE_FN`/`NODE_TYPE_FN` lower to i64; named refs and module-qualified

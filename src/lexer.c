@@ -56,6 +56,7 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_BREAK]    = "break",
     [TOK_CONTINUE] = "continue",
     [TOK_IMPORT]   = "import",
+    [TOK_AS]       = "as",
     [TOK_EXTERN]   = "extern",
     [TOK_LPAREN]    = "(",
     [TOK_RPAREN]    = ")",
@@ -243,6 +244,7 @@ static TokenKind keyword_kind(const char *s) {
         {"break",  TOK_BREAK},
         {"continue", TOK_CONTINUE},
         {"import", TOK_IMPORT},
+        {"as",     TOK_AS},
         {"extern", TOK_EXTERN},
     };
     for (int i = 0; i < (int)(sizeof(kw) / sizeof(kw[0])); i++) {

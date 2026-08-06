@@ -1,0 +1,8 @@
+// util.baga (mod1) — alias test module (L6): same basename as mod2/util.baga.
+fn who() -> str {
+    return "mod1"
+}
+
+fn one() -> i64 {
+    return 1
+}

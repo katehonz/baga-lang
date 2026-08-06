@@ -596,9 +596,39 @@ static Type *find_fn(CheckCtx *ctx, const char *name) {
     return NULL;
 }
 
-/* модулно име от път: basename без .baga (нов низ; NULL → "") */
+/* L6: import alias таблица (canonical path → alias). Пълни се от main.c
+ * при `import "p" as a`; mod_base я консултира преди basename правилото. */
+#define IMPORT_ALIASES_MAX 128
+static struct { char *canon; char *alias; } g_import_aliases[IMPORT_ALIASES_MAX];
+static int g_n_import_aliases = 0;
+
+const char *baga_note_import_alias(const char *canon_path, const char *alias) {
+    for (int i = 0; i < g_n_import_aliases; i++) {
+        if (strcmp(g_import_aliases[i].canon, canon_path) == 0)
+            return strcmp(g_import_aliases[i].alias, alias) == 0
+                 ? NULL : g_import_aliases[i].alias;   /* същият alias — ОК */
+    }
+    if (g_n_import_aliases >= IMPORT_ALIASES_MAX)
+        return "<лимит>";
+    g_import_aliases[g_n_import_aliases].canon = strdup(canon_path);
+    g_import_aliases[g_n_import_aliases].alias = strdup(alias);
+    g_n_import_aliases++;
+    return NULL;
+}
+
+static const char *import_alias_for(const char *canon_path) {
+    for (int i = 0; i < g_n_import_aliases; i++)
+        if (strcmp(g_import_aliases[i].canon, canon_path) == 0)
+            return g_import_aliases[i].alias;
+    return NULL;
+}
+
+/* модулно име от път: alias ако е даден (`import … as a`), иначе basename
+ * без .baga (нов низ; NULL → "") */
 static char *mod_base(const char *path) {
     if (!path) return strdup("");
+    const char *al = import_alias_for(path);
+    if (al) return strdup(al);
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     size_t len = strlen(base);

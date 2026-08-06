@@ -1,0 +1,24 @@
+// ns_alias_test.baga — L6 import alias: two modules with the same basename
+// (mod1/util.baga, mod2/util.baga) coexist via `import … as util2`;
+// qualified calls disambiguate, unqualified stays an ambiguity error
+// (negative half lives in scripts/run_tests.sh).
+import "ns_alias/mod1/util.baga"
+import "ns_alias/mod2/util.baga" as util2
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 {
+    check("plain_module", util.who() == "mod1")
+    check("alias_module", util2.who() == "mod2")
+    check("plain_fn", util.one() == 1)
+    check("alias_fn", util2.two() == 2)
+    print("ns_alias_test: all passed")
+    return 0
+}
