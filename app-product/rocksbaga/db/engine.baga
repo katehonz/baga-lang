@@ -187,6 +187,68 @@ fn lsm_flushdb(db: LsmDB) -> LsmDB !IO {
     return ndb
 }
 
+// R58: binary file copy (1 MiB chunks; O_RDONLY → O_CREAT|O_TRUNC).
+fn lsm_copy_file(src: str, dst: str) -> i64 !IO {
+    let fd = open(src, 0, 0)?
+    if fd < 0 {
+        return 0 - 1
+    }
+    let sz = fd_size(fd)?
+    let out = open(dst, 578, 420)?
+    if out < 0 {
+        close(fd)
+        return 0 - 1
+    }
+    let mut off: i64 = 0
+    while off < sz {
+        let chunk = fd_pread_bytes(fd, 1048576, off)?
+        let n = bytes_len(chunk)
+        if n == 0 {
+            off = sz
+        } else {
+            fd_write_bytes(out, chunk)?
+            drop(chunk)
+            off = off + n
+        }
+    }
+    close(fd)
+    close(out)
+    return 0
+}
+
+// R58: RocksDB-style checkpoint — durable point-in-time copy of the store
+// at `dest`. Flushes the memtable first (WAL rotates empty), then copies
+// every live SST + bloom sidecar and writes a fresh MANIFEST. The source
+// store stays usable (in MT mode call under the shard mutex). Recovery
+// path for the copy is the ordinary lsm_open(dest).
+fn lsm_checkpoint(db: LsmDB, dest: str) -> LsmDB !IO !Time {
+    db = lsm_flush_force(db)?
+    if db.ok == 0 {
+        return db
+    }
+    let mut i: i64 = 0
+    while i < vec_len(db.gens) {
+        let g = vec_get(db.gens, i)
+        let gs = int_to_str(g)
+        if lsm_copy_file(concat(concat(db.dir, ".sst."), gs), concat(concat(dest, ".sst."), gs))? != 0 {
+            db.ok = 0
+            return db
+        }
+        let bl_src = concat(concat(db.dir, ".bloom."), gs)
+        if file_exists(bl_src) == 1 {
+            if lsm_copy_file(bl_src, concat(concat(dest, ".bloom."), gs))? != 0 {
+                db.ok = 0
+                return db
+            }
+        }
+        i = i + 1
+    }
+    if lsm_write_manifest(dest, db.next_gen, db.gens, db.levels)? != 0 {
+        db.ok = 0
+    }
+    return db
+}
+
 fn lsm_maybe_sync(db: LsmDB) -> LsmDB !IO {
     db.since_sync = db.since_sync + 1
     if db.since_sync >= db.sync_every {

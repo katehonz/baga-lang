@@ -364,6 +364,35 @@ fn main() -> i64 !Net !IO !Par !Time {
     check(fails, "ttl_durable_ttl", tt4.n > 0)
     lsm_close(tt4.db)?
 
+    // --- R58: checkpoint — durable point-in-time copy ---
+    wipe("/tmp/baga_lsm_cp_src")?
+    wipe("/tmp/baga_lsm_cp_dst")?
+    let mut cdb = lsm_open("/tmp/baga_lsm_cp_src", 8, 4)?
+    cdb.sync_every = 1000
+    let mut ci: i64 = 0
+    while ci < 50 {
+        cdb = lsm_put(cdb, concat("ck", int_to_str(ci)), concat("v", int_to_str(ci)))?
+        ci = ci + 1
+    }
+    cdb = lsm_del(cdb, "ck0")?
+    cdb = lsm_checkpoint(cdb, "/tmp/baga_lsm_cp_dst")?
+    check(fails, "r58_ok", cdb.ok == 1)
+    // source stays usable
+    let cg = lsm_get(cdb, "ck1")?
+    check(fails, "r58_src_alive", cg.found == 1)
+    lsm_close(cg.db)?
+    // the copy opens and has the same view
+    let mut ddb = lsm_open("/tmp/baga_lsm_cp_dst", 8, 4)?
+    let dg = lsm_get(ddb, "ck1")?
+    check(fails, "r58_dst_get", dg.found == 1 && str_of_bytes(dg.val) == "v1")
+    let dg2 = lsm_get(dg.db, "ck49")?
+    check(fails, "r58_dst_last", dg2.found == 1 && str_of_bytes(dg2.val) == "v49")
+    let dg3 = lsm_get(dg2.db, "ck0")?
+    check(fails, "r58_dst_del", dg3.found == 0)
+    let dds = lsm_dbsize(dg3.db)?
+    check(fails, "r58_dst_size", dds.n == 49)
+    lsm_close(dds.db)?
+
     if vec_len(fails) == 0 {
         print("lsm_test: all passed")
         return 0

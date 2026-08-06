@@ -457,6 +457,85 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         c = lsm_cluster_put(c, k, int_to_str(nv))?
         return LsmExecC { c: c, reply: resp_int(nv), quit: 0 }
     }
+    // R59: DECR / APPEND / TYPE / MGET / MSET — poll-path parity with MT.
+    if lsm_eq_ci(c0, "DECR") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("decr"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get(c, k)?
+        c = g.c
+        let mut base: i64 = 0
+        if g.found == 1 {
+            let vs = str_of_bytes(g.val)
+            if lsm_is_int(vs) == 0 {
+                return LsmExecC {
+                    c: c,
+                    reply: resp_error("ERR value is not an integer or out of range"),
+                    quit: 0
+                }
+            }
+            base = parse_int(vs)
+        }
+        let nv = base - 1
+        c = lsm_cluster_put(c, k, int_to_str(nv))?
+        return LsmExecC { c: c, reply: resp_int(nv), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "APPEND") == 1 {
+        if n != 3 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("append"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get(c, k)?
+        c = g.c
+        let mut cur = ""
+        if g.found == 1 {
+            cur = str_of_bytes(g.val)
+        }
+        let nv = concat(cur, vec_get(args, 2))
+        c = lsm_cluster_put(c, k, nv)?
+        return LsmExecC { c: c, reply: resp_int(len(nv)), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "TYPE") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("type"), quit: 0 }
+        }
+        let g = lsm_cluster_get(c, vec_get(args, 1))?
+        c = g.c
+        if g.found == 1 {
+            return LsmExecC { c: c, reply: resp_simple("string"), quit: 0 }
+        }
+        return LsmExecC { c: c, reply: resp_simple("none"), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "MGET") == 1 {
+        if n < 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("mget"), quit: 0 }
+        }
+        let mut r = resp_array(n - 1)
+        let mut i: i64 = 1
+        while i < n {
+            let g = lsm_cluster_get(c, vec_get(args, i))?
+            c = g.c
+            if g.found == 1 {
+                r = bytes_concat(r, resp_bulk_b(g.val))
+            } else {
+                r = bytes_concat(r, resp_null_bulk())
+            }
+            i = i + 1
+        }
+        return LsmExecC { c: c, reply: r, quit: 0 }
+    }
+    if lsm_eq_ci(c0, "MSET") == 1 {
+        if n < 3 || n % 2 == 0 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("mset"), quit: 0 }
+        }
+        let mut i: i64 = 1
+        while i + 1 < n + 1 {
+            c = lsm_cluster_put(c, vec_get(args, i), vec_get(args, i + 1))?
+            i = i + 2
+        }
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
     if lsm_eq_ci(c0, "KEYS") == 1 {
         if n != 1 {
             return LsmExecC { c: c, reply: lsm_wrongnum("keys"), quit: 0 }

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### RocksDB path R58/R59 — checkpoint + poll command parity
+- **R58:** `lsm_checkpoint(db, dest)` — RocksDB-style Checkpoint: flush,
+  copy live SST/bloom files, fresh MANIFEST; the copy opens with plain
+  `lsm_open(dest)`. Tests `r58_*`.
+- **R59:** poll path (cluster exec) gains MGET/MSET/DECR/APPEND/TYPE —
+  same command surface as MT mode.
+
 ### RocksDB path R56/R57 — MT command parity + active expire
 - **R56:** `lsm_mt_exec` — MGET/MSET, INCR/DECR, APPEND, TYPE, EXISTS,
   EXPIRE/TTL/PERSIST, DBSIZE, SAVE/BGSAVE inline in MT mode (one shard

@@ -425,7 +425,18 @@ it already answers.
 - Lazy expiry (R16) stays the correctness net; the sweeper frees space
   and keeps DBSIZE honest without reads.
 
-**Still open (later):** richer RocksDB CF options; MGET/MSET/DECR/APPEND/TYPE also in the poll path (currently MT-only); per-CF block-cache policy; LLVM backend parity for R51/R52/R54/R55 (handle builtins, thread-local arena, bytes_put).
+**Shipped (R58 checkpoint):**
+- `lsm_checkpoint(db, dest)` — flush memtable, copy every live SST +
+  bloom sidecar (1 MiB binary chunks), write a fresh MANIFEST at `dest`.
+  RocksDB Checkpoint analogue: the copy opens with plain `lsm_open(dest)`.
+  Source store stays online. Tests: `r58_*` in `tests/lsm_test.baga`
+  (copy matches source incl. deletes; source usable after).
+
+**Shipped (R59 poll command parity):**
+- Cluster exec (poll path) gained MGET/MSET/DECR/APPEND/TYPE — same
+  surface as MT mode now. Wire-tested with redis-cli.
+
+**Still open (later):** richer RocksDB CF options; CHECKPOINT over RESP; per-CF block-cache policy; LLVM backend parity for R51/R52/R54/R55 (handle builtins, thread-local arena, bytes_put).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

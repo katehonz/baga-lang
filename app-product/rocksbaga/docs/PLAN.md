@@ -146,4 +146,9 @@ Goal: Track S flagship — durable KV on RESP.
   (`"sid:key" -> deadline`, own mutex) + 100ms sweeper thread; tombstones
   due keys whose value is still expired (re-SET without TTL → skipped).
   Lazy expiry stays as the correctness net — **done**
-- (next) richer RocksDB CF options; MGET/MSET/DECR/APPEND in poll path
+- **R58 checkpoint** — `lsm_checkpoint(db, dest)`: flush + copy live
+  SST/bloom + fresh MANIFEST; durable point-in-time copy that opens with
+  plain `lsm_open(dest)` (RocksDB Checkpoint analogue) — **done**
+- **R59 poll command parity** — MGET/MSET/DECR/APPEND/TYPE in the cluster
+  exec (poll path matches MT) — **done**
+- (next) richer RocksDB CF options; CHECKPOINT over RESP; LLVM parity

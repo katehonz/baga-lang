@@ -90,6 +90,7 @@ import "rocksbaga/server.baga"
 
 fn lsm_open(dir, flush_at, compact_at) -> LsmDB !IO
 fn lsm_put / lsm_put_b / lsm_del / lsm_get / lsm_flush_force / lsm_close
+fn lsm_checkpoint(db, dest) -> LsmDB !IO !Time   // R58: point-in-time copy
 fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 ```
 
