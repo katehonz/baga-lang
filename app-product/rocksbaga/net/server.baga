@@ -613,6 +613,17 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         c = p.c
         return LsmExecC { c: c, reply: resp_int(p.ok), quit: 0 }
     }
+    // R60: CHECKPOINT dest — durable point-in-time copy (all shards)
+    if lsm_eq_ci(c0, "CHECKPOINT") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("checkpoint"), quit: 0 }
+        }
+        c = lsm_cluster_checkpoint(c, vec_get(args, 1))?
+        if c.ok == 0 {
+            return LsmExecC { c: c, reply: resp_error("ERR checkpoint failed"), quit: 0 }
+        }
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
     return LsmExecC {
         c: c,
         reply: resp_error(concat(concat("ERR unknown command '", c0), "'")),
@@ -1626,6 +1637,31 @@ fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
         }
         return resp_ok()
     }
+    if lsm_eq_ci(c0, "CHECKPOINT") == 1 && n == 2 {
+        let dest = vec_get(args, 1)
+        let mut sid: i64 = 0
+        let mut ok_all: i64 = 1
+        while sid < c.nshards {
+            let mu = map_get(c.mus, sid)
+            mutex_lock(mu)
+            let db0 = map_get(c.dbs, sid)
+            let mut d = dest
+            if c.nshards > 1 {
+                d = concat(concat(dest, ".s"), int_to_str(sid))
+            }
+            let db1 = lsm_checkpoint(db0, d)?
+            if db1.ok == 0 {
+                ok_all = 0
+            }
+            map_set(c.dbs, sid, db1)
+            mutex_unlock(mu)
+            sid = sid + 1
+        }
+        if ok_all == 1 {
+            return resp_ok()
+        }
+        return resp_error("ERR checkpoint failed")
+    }
     return resp_error(concat(concat("ERR unknown/unsupported command '", c0), "' (mt mode)"))
 }
 
@@ -1939,6 +1975,36 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
             return LsmCfExec { db: db, reply: resp_error("ERR cannot drop default cf"), quit: 0 }
         }
         return LsmCfExec { db: db, reply: resp_int(dr.rc), quit: 0 }
+    }
+    // CF.SETOPT name flush_at|compact_at value  (R61; 0 clears override)
+    if lsm_eq_ci(c0, "CF.SETOPT") == 1 {
+        if n != 4 {
+            return LsmCfExec { db: db, reply: lsm_wrongnum("cf.setopt"), quit: 0 }
+        }
+        if lsm_is_int(vec_get(args, 3)) == 0 {
+            return LsmCfExec {
+                db: db, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+            }
+        }
+        let v = parse_int(vec_get(args, 3))
+        let mut fa: i64 = 0
+        let mut ca: i64 = 0
+        if lsm_eq_ci(vec_get(args, 2), "flush_at") == 1 {
+            fa = v
+        } else {
+            if lsm_eq_ci(vec_get(args, 2), "compact_at") == 1 {
+                ca = v
+            } else {
+                return LsmCfExec {
+                    db: db, reply: resp_error("ERR option must be flush_at or compact_at"), quit: 0
+                }
+            }
+        }
+        db = lsm_cf_setopt(db, vec_get(args, 1), fa, ca)?
+        if db.ok == 0 {
+            return LsmCfExec { db: db, reply: resp_error("ERR no such cf"), quit: 0 }
+        }
+        return LsmCfExec { db: db, reply: resp_ok(), quit: 0 }
     }
     // CF.LIST → array of names
     if lsm_eq_ci(c0, "CF.LIST") == 1 {

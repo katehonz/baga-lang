@@ -188,6 +188,52 @@ fn main() -> i64 !IO !Time {
     check("r49_resp_dropped", lsm_cf_id_of(exd.db, "hot") == 0 - 1)
     lsm_cf_close(exd.db)?
 
+    // --- R61: per-CF options (flush_at/compact_at, persisted) ---
+    wipe(dir)?
+    let mut db9 = lsm_cf_open(dir, 1000, 1000)?  // db-level: huge thresholds
+    let cro = lsm_cf_create(db9, "opts")?
+    db9 = cro.db
+    let opts = cro.id
+    db9 = lsm_cf_setopt(db9, "opts", 4, 0)?
+    check("r61_setopt", db9.ok == 1)
+    // 4 puts → this CF auto-flushes despite db-level flush_at=1000
+    let mut oi: i64 = 0
+    while oi < 4 {
+        db9 = lsm_cf_put(db9, opts, concat("ok", int_to_str(oi)), "v")?
+        oi = oi + 1
+    }
+    let famo = map_get(db9.families, opts)
+    check("r61_auto_flush", vec_len(famo.gens) == 1)
+    // default CF untouched by the override (no flush at 4 puts)
+    let mut oi2: i64 = 0
+    while oi2 < 4 {
+        db9 = lsm_cf_put(db9, 0, concat("dk", int_to_str(oi2)), "v")?
+        oi2 = oi2 + 1
+    }
+    let famd = map_get(db9.families, 0)
+    check("r61_default_untouched", vec_len(famd.gens) == 0)
+    // options survive reopen
+    lsm_cf_close(db9)?
+    let mut db10 = lsm_cf_open(dir, 1000, 1000)?
+    let cro2 = lsm_cf_resolve(db10, "opts", 0)?
+    db10 = cro2.db
+    let mut oi3: i64 = 0
+    while oi3 < 4 {
+        db10 = lsm_cf_put(db10, cro2.id, concat("nk", int_to_str(oi3)), "v")?
+        oi3 = oi3 + 1
+    }
+    let famo2 = map_get(db10.families, cro2.id)
+    check("r61_persisted", vec_len(famo2.gens) == 2)
+    // RESP CF.SETOPT
+    let argso: Vec<str> = vec_new()
+    vec_push(argso, "CF.SETOPT")
+    vec_push(argso, "opts")
+    vec_push(argso, "compact_at")
+    vec_push(argso, "2")
+    let exo = lsm_exec_cf(db10, argso)?
+    check("r61_resp_setopt", exo.quit == 0)
+    lsm_cf_close(exo.db)?
+
     print("cf_test: all passed")
     return 0
 }

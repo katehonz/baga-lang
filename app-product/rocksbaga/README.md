@@ -63,9 +63,9 @@ LSMPATH=/tmp/baga_rocks_demo LSMPORT=16579 \
 Env: `LSMPATH`, `LSMPORT`, `LSM_SHARDS` (default 1; key-hash partition),
 `LSM_PARALLEL=1` (per-shard workers behind RESP poll; default 0),
 `LSM_SERVE_MT=1` (go_bg per connection → same workers; multi-core multi-conn),
-`LSM_CF=1` (shared-WAL CF mode: `CF.CREATE/SET/GET/DEL/DROP/LIST`; plain SET = default CF),
+`LSM_CF=1` (shared-WAL CF mode: `CF.CREATE/SET/GET/DEL/DROP/LIST/SETOPT`; plain SET = default CF),
 `LSM_MAX_DB` (default 16; Redis-style `SELECT` 0..N-1 → `dir` / `dir.db{n}`),
-`LSM_FLUSH_AT` (default 256), `LSM_COMPACT_AT` (default 4),
+`LSM_FLUSH_AT` (default 256), `LSM_COMPACT_AT` (default 4; per-CF via `CF.SETOPT`),
 `LSM_CACHE_PAGES` (default 2048 ≈ 8 MiB, split across shards),
 `LSM_SYNC_EVERY` (default 1 = fsync each put; raise for bulk),
 `LSM_TARGET_BYTES`, `LSM_MERGE_PICK`, `LSM_SERIAL=1` (legacy single-conn).

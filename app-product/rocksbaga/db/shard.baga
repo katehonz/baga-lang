@@ -122,6 +122,26 @@ fn lsm_cluster_del(c: LsmCluster, key: str) -> LsmCluster !IO !Time {
     return c
 }
 
+// R60: checkpoint every shard — dest for n==1, dest.s{i} for n>1.
+fn lsm_cluster_checkpoint(c: LsmCluster, dest: str) -> LsmCluster !IO !Time {
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        let mut d = dest
+        if c.n > 1 {
+            d = concat(concat(dest, ".s"), int_to_str(i))
+        }
+        db = lsm_checkpoint(db, d)?
+        vec_set(c.shards, i, db)
+        if db.ok == 0 {
+            c.ok = 0
+            return c
+        }
+        i = i + 1
+    }
+    return c
+}
+
 struct LsmClusterGet {
     c: LsmCluster,
     found: i64,

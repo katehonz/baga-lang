@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### RocksDB path R60/R61 — CHECKPOINT over RESP + per-CF options
+- **R60:** `CHECKPOINT dest` command (poll + MT); per-shard copies when
+  sharded. Wire-tested end-to-end.
+- **R61:** `lsm_cf_setopt` + RESP `CF.SETOPT name flush_at|compact_at v`,
+  persisted in `.cfs`; `r61_*` tests.
+
 ### RocksDB path R58/R59 — checkpoint + poll command parity
 - **R58:** `lsm_checkpoint(db, dest)` — RocksDB-style Checkpoint: flush,
   copy live SST/bloom files, fresh MANIFEST; the copy opens with plain

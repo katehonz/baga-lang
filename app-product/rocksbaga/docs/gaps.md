@@ -436,7 +436,19 @@ it already answers.
 - Cluster exec (poll path) gained MGET/MSET/DECR/APPEND/TYPE — same
   surface as MT mode now. Wire-tested with redis-cli.
 
-**Still open (later):** richer RocksDB CF options; CHECKPOINT over RESP; per-CF block-cache policy; LLVM backend parity for R51/R52/R54/R55 (handle builtins, thread-local arena, bytes_put).
+**Shipped (R60 CHECKPOINT over RESP):**
+- `CHECKPOINT dest` in poll (cluster exec) and MT modes. Sharded stores
+  copy per shard to `dest.s{i}`. Wire test: MT server (4 shards) →
+  CHECKPOINT → fresh server on the copy serves MGET correctly.
+
+**Shipped (R61 per-CF options):**
+- `lsm_cf_setopt(db, name, flush_at, compact_at)` + RESP `CF.SETOPT`.
+  Overrides live in `.cfs` as optional 3rd/4th line fields; applied in
+  `lsm_cf_ensure` on load and live on loaded families. 0 clears.
+- Tests: `r61_*` (auto-flush at per-CF threshold, default CF untouched,
+  options survive reopen, RESP path).
+
+**Still open (later):** per-CF block-cache policy; LLVM backend parity for R51/R52/R54/R55 (handle builtins, thread-local arena, bytes_put).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

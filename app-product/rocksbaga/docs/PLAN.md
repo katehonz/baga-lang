@@ -151,4 +151,9 @@ Goal: Track S flagship — durable KV on RESP.
   plain `lsm_open(dest)` (RocksDB Checkpoint analogue) — **done**
 - **R59 poll command parity** — MGET/MSET/DECR/APPEND/TYPE in the cluster
   exec (poll path matches MT) — **done**
-- (next) richer RocksDB CF options; CHECKPOINT over RESP; LLVM parity
+- **R60 CHECKPOINT over RESP** — `CHECKPOINT dest` in poll + MT; per-shard
+  copies (`dest.s{i}` when sharded); wire-tested end-to-end (copy serves
+  the data) — **done**
+- **R61 per-CF options** — `lsm_cf_setopt` + RESP `CF.SETOPT name
+  flush_at|compact_at v`; persisted as optional fields in `.cfs` — **done**
+- (next) LLVM backend parity; backup tool (checkpoint + ship)
