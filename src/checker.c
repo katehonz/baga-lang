@@ -1021,6 +1021,27 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             }
             return type_new(TYPE_MAP);      /* key/elem = NULL: неизвестни */
         }
+        /* R55: unsafe map handle casts — предаване на споделена карта през
+         * i64 контекст на go_bg (като str_h/h_str, R51). Map е baga_Map*
+         * (heap, arena-ish живот) — handle-ът е валиден за живота на процеса. */
+        if (strcmp(name, "map_h") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 1) {
+                check_error(ctx, n->pos, "'map_h' очаква 1 аргумент, получих %d",
+                            n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            return type_new(TYPE_I64);
+        }
+        if (strcmp(name, "h_map") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 1) {
+                check_error(ctx, n->pos, "'h_map' очаква 1 аргумент, получих %d",
+                            n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            return type_new(TYPE_MAP);      /* key/elem = NULL: неизвестни */
+        }
         if (strcmp(name, "map_set") == 0) {
             n->callee->type = type_new(TYPE_VOID);
             if (n->args.len != 3) {

@@ -760,6 +760,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"cell2_1",     "baga_cell2_1"},
                     {"str_h",       "baga_str_h"},
                     {"h_str",       "baga_h_str"},
+                    {"map_h",       "baga_map_h"},
+                    {"h_map",       "baga_h_map"},
                 };
                 for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                     if (strcmp(bn, bmap[bi].baga) == 0) {
@@ -2524,6 +2526,9 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
        Safe because str is arena-bound (never freed). C backend only. */
     fprintf(out, "static int64_t baga_str_h(const char *s) { return (int64_t)(intptr_t)s; }\n");
     fprintf(out, "static const char *baga_h_str(int64_t h) { return (const char *)(intptr_t)h; }\n");
+    /* R55: unsafe map handle casts — shared map through a go_bg i64 ctx. */
+    fprintf(out, "static int64_t baga_map_h(baga_Map *m) { return (int64_t)(intptr_t)m; }\n");
+    fprintf(out, "static baga_Map *baga_h_map(int64_t h) { return (baga_Map *)(intptr_t)h; }\n");
     fprintf(out, "typedef int64_t (*baga_par_fn)(int64_t);\n");
     fprintf(out, "typedef struct {\n");
     fprintf(out, "    uint32_t magic;\n");
