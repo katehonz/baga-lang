@@ -175,26 +175,11 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
     let keep_tombs = vec_len(idxs) < vec_len(db.gens)
     let acc: Map<str, bytes> = map_new()
     let tomb: Map<str, i64> = map_new()
+    // R20: stream each SST by restart blocks (page cache) — no full-file copy.
     let mut cur = db.cache
     for ii in 0..vec_len(idxs) {
         let gen = vec_get(db.gens, vec_get(idxs, ii))
-        let ld = sst_load(cur, db.dir, gen)?
-        cur = ld.pc
-        let prows = ld.parse.rows
-        if ld.parse.ok == 1 {
-            for j in 0..vec_len(prows) {
-                let r = vec_get(prows, j)
-                if r.op == 2 {
-                    map_del(acc, r.key)
-                    map_set(tomb, r.key, 1)
-                } else {
-                    map_set(acc, r.key, r.val)
-                    map_del(tomb, r.key)
-                }
-            }
-        }
-        // R18: keys/vals live on in acc/tomb (shared); the row boxes are dead
-        drop(prows)
+        cur = sst_fold_into(cur, db.dir, gen, db.sst_fds, db.sst_sizes, acc, tomb)?
     }
     db.cache = cur
     let keys = map_keys(acc)

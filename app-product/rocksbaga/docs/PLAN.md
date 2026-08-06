@@ -52,4 +52,7 @@ Goal: Track S flagship — durable KV on RESP.
 - **R19 shared page cache + pins** — per-file fd registry for multi-file
   writeback; pin counts block eviction; `pc_get_pin` / `pc_read_at` pin
   mid-span; `sst_fd_get` registers on open — **done**
-- (next) Shared page cache polish / block-level page IO / `table/block.baga`
+- **R20 block scan + `table/block.baga`** — record encode/decode module;
+  restart-block iterator (`sst_scan_*`); compact fold streams via page
+  cache (no full-file copy for v4/v5); legacy full-load fallback — **done**
+- (next) `db/manifest.baga` / tools SST dump / RocksDB feature gaps

@@ -34,8 +34,9 @@ rocksbaga/
 ├── wal/
 │   └── wal.baga             # append-only WAL + crc32c replay
 ├── table/
+│   ├── block.baga           # record layout + encode/decode (R20)
 │   ├── bloom.baga           # filter + BAGABLM1 sidecar (no SST types)
-│   └── sstable.baga         # BAGASST* format, partial get, uses bloom
+│   └── sstable.baga         # BAGASST* format, partial get, block scan
 ├── db/
 │   ├── types.baga           # LsmDB struct
 │   ├── compact.baga         # pick, merge, promote L0…L3, MANIFEST write
@@ -127,9 +128,11 @@ Keyed by SST gen (file id).
 Put/Del records, crc32c, replay into mem/tomb maps (called by `db`).
 
 ### table
+- **block** — record encode/decode + size helpers (R20); no file IO.
 - **bloom** — bitset + R9 sidecar files (key-list API, no `SstRow`).
 - **sstable** — magic/version, restart index, embedded bloom in v5 body,
-  partial block get, full parse for compact/KEYS.
+  partial block get, **block scan** for compact (`sst_scan_*` / `sst_fold_into`);
+  full parse retained for KEYS / legacy formats.
 
 ### db
 - **types** — `LsmDB` only.
@@ -156,8 +159,8 @@ Layers own **code**, not a new disk format.
 |-------|------|
 | ~~`table/bloom.baga`~~ | **done** |
 | ~~`db/compact.baga` + `types.baga`~~ | **done** |
+| ~~`table/block.baga`~~ | **done (R20)** — record builder + scan |
 | `db/manifest.baga` | version edit log beyond flat MANIFEST |
-| `table/block.baga` | shared block builder for SST rebuild |
 | `tools/` | offline SST dump / consistency check |
 
 ## Tests
@@ -166,6 +169,8 @@ Layers own **code**, not a new disk format.
 |------|---------|
 | `tests/lsm_test.baga` | `rocksbaga/engine` + `server` (root re-export) |
 | `tests/lsm_recover_test.baga` | `rocksbaga/engine` + `page` |
+| `tests/page_cache_test.baga` | `rocksbaga/cache/page` (R19 pins + multi-fd) |
+| `tests/sst_scan_test.baga` | `rocksbaga/table/sstable` (R20 block scan) |
 | Layer smoke | `import "rocksbaga/db/engine.baga"` |
 
 ## Non-goals of this layout

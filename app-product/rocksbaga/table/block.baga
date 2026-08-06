@@ -1,0 +1,112 @@
+// block.baga — SST record layout + restart-block helpers (R20).
+//
+// One on-disk record (in body, after u32 count):
+//   u8 op | u32 le klen | key | u32 le vlen | val
+// Restart blocks are contiguous runs of records; the restart index is owned
+// by sstable (footer / BAGASST5). This module stays free of file IO so
+// compact/scan and in-memory parse share one decoder.
+
+import "../util/codec.baga"
+import "std/str/str.baga"
+
+// Restart interval used by BAGASST2…5 writers (records per restart).
+fn block_restart_every() -> i64 {
+    return 16
+}
+
+// Fixed footer size for BAGASST4/5 (see sstable).
+fn block_footer_len() -> i64 {
+    return 24
+}
+
+// Exact on-disk size of one record (op + klen + key + vlen + val).
+fn block_rec_size(klen: i64, vlen: i64) -> i64 {
+    return 1 + 4 + klen + 4 + vlen
+}
+
+struct BlockRec {
+    ok: i64,
+    op: i64,
+    key: str,
+    val: bytes,
+    next: i64
+}
+
+// Decode one record at `pos` in an in-memory block/body slice.
+fn block_rec_at(body: bytes, pos: i64) -> BlockRec {
+    let bad = BlockRec { ok: 0, op: 0, key: "", val: bytes_new(0), next: pos }
+    if pos + 1 + 4 > bytes_len(body) {
+        return bad
+    }
+    let op = bytes_at(body, pos)
+    let mut p = pos + 1
+    let klen = get_u32_le(body, p)
+    p = p + 4
+    if klen < 0 || p + klen + 4 > bytes_len(body) {
+        return bad
+    }
+    let key = str_of_bytes(bytes_slice(body, p, p + klen))
+    p = p + klen
+    let vlen = get_u32_le(body, p)
+    p = p + 4
+    if vlen < 0 || p + vlen > bytes_len(body) {
+        return bad
+    }
+    let val = bytes_slice(body, p, p + vlen)
+    p = p + vlen
+    return BlockRec { ok: 1, op: op, key: key, val: val, next: p }
+}
+
+// Walk [start, end) and return the last key ("" on empty/corrupt).
+fn block_last_key(body: bytes, start: i64, end: i64) -> str {
+    let mut pos = start
+    let mut last: str = ""
+    let mut go: i64 = 1
+    while go == 1 {
+        if pos >= end {
+            go = 0
+        } else {
+            let rec = block_rec_at(body, pos)
+            if rec.ok == 0 {
+                go = 0
+            } else {
+                if rec.next > end {
+                    go = 0
+                } else {
+                    last = rec.key
+                    pos = rec.next
+                }
+            }
+        }
+    }
+    return last
+}
+
+// Encode one record into `dst` at `off`. Returns new offset, or -1 on overflow.
+fn block_rec_put(dst: bytes, off: i64, op: i64, key: str, val: bytes) -> i64 {
+    let kb = bytes_of_str(key)
+    let klen = bytes_len(kb)
+    let vlen = bytes_len(val)
+    let need = block_rec_size(klen, vlen)
+    if off < 0 || off + need > bytes_len(dst) {
+        return 0 - 1
+    }
+    bytes_set(dst, off, op & 255)
+    let mut p = off + 1
+    put_u32_le(dst, p, klen)
+    p = p + 4
+    let mut j: i64 = 0
+    while j < klen {
+        bytes_set(dst, p + j, bytes_at(kb, j))
+        j = j + 1
+    }
+    p = p + klen
+    put_u32_le(dst, p, vlen)
+    p = p + 4
+    j = 0
+    while j < vlen {
+        bytes_set(dst, p + j, bytes_at(val, j))
+        j = j + 1
+    }
+    return p + vlen
+}

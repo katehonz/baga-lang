@@ -1,4 +1,5 @@
 // sstable.baga — sorted string table (BAGASST5). Bloom: table/bloom.baga.
+// Record layout: table/block.baga. R20: block-level scan for compact.
 //
 // On-disk (new writes = v5):
 //   magic 8 = "BAGASST5"
@@ -8,7 +9,7 @@
 //     bloom: m/8 bytes  (still embedded for v5 readers)
 //     fixed footer 24:
 //       u32 core_len | bloom_nbytes | bloom_bits | n_restarts | count | tag=5
-//   u32 le crc32c(body)   // full-load paths (compact/KEYS)
+//   u32 le crc32c(body)   // full-load paths (KEYS / legacy compact fallback)
 //
 // R9 external bloom (sidecar, optional):
 //   <dir>.bloom.<gen> — magic "BAGABLM1" | u32 m | bits | u32 crc32c(m||bits)
@@ -17,17 +18,18 @@
 
 import "../util/codec.baga"
 import "../cache/page.baga"
+import "block.baga"
 import "bloom.baga"
 import "std/os/os.baga"
 import "std/crypto/crc32c.baga"
 import "std/str/str.baga"
 
 fn sst_restart_every() -> i64 {
-    return 16
+    return block_restart_every()
 }
 
 fn sst_footer_len() -> i64 {
-    return 24
+    return block_footer_len()
 }
 
 struct SstRow {
@@ -70,43 +72,23 @@ fn sst_build(rows: Vec<SstRow>) -> SstBuilt {
     let mut i: i64 = 0
     while i < n {
         let r = vec_get(rows, i)
-        rec_end = rec_end + 9 + bytes_len(bytes_of_str(r.key)) + bytes_len(r.val)
+        let klen = bytes_len(bytes_of_str(r.key))
+        rec_end = rec_end + block_rec_size(klen, bytes_len(r.val))
         i = i + 1
     }
     let core_len = rec_end + 4 * nr + 4 + 4 * nr
     let core = bytes_new(core_len)
     put_u32_le(core, 0, n)
-    // Pass 2: fill records, remember restart offsets.
+    // Pass 2: fill records via block_rec_put (R20 shared builder).
     let restarts: Vec<i64> = vec_new()
     let mut off: i64 = 4
-    let mut j: i64 = 0
     i = 0
     while i < n {
         if i % every == 0 {
             vec_push(restarts, off)
         }
         let r = vec_get(rows, i)
-        bytes_set(core, off, r.op & 255)
-        off = off + 1
-        let kb = bytes_of_str(r.key)
-        let klen = bytes_len(kb)
-        put_u32_le(core, off, klen)
-        off = off + 4
-        j = 0
-        while j < klen {
-            bytes_set(core, off + j, bytes_at(kb, j))
-            j = j + 1
-        }
-        off = off + klen
-        let vlen = bytes_len(r.val)
-        put_u32_le(core, off, vlen)
-        off = off + 4
-        j = 0
-        while j < vlen {
-            bytes_set(core, off + j, bytes_at(r.val, j))
-            j = j + 1
-        }
-        off = off + vlen
+        off = block_rec_put(core, off, r.op, r.key, r.val)
         i = i + 1
     }
     // Per-restart-block crc32c (R6) — computed before index is appended.
@@ -209,6 +191,7 @@ struct SstParse {
     rows: Vec<SstRow>
 }
 
+// Compat alias — record decode lives in table/block.baga (R20).
 struct SstRec {
     ok: i64,
     op: i64,
@@ -218,27 +201,8 @@ struct SstRec {
 }
 
 fn sst_rec_at(body: bytes, pos: i64) -> SstRec {
-    let bad = SstRec { ok: 0, op: 0, key: "", val: bytes_new(0), next: pos }
-    if pos + 1 + 4 > bytes_len(body) {
-        return bad
-    }
-    let op = bytes_at(body, pos)
-    let mut p = pos + 1
-    let klen = get_u32_le(body, p)
-    p = p + 4
-    if klen < 0 || p + klen + 4 > bytes_len(body) {
-        return bad
-    }
-    let key = str_of_bytes(bytes_slice(body, p, p + klen))
-    p = p + klen
-    let vlen = get_u32_le(body, p)
-    p = p + 4
-    if vlen < 0 || p + vlen > bytes_len(body) {
-        return bad
-    }
-    let val = bytes_slice(body, p, p + vlen)
-    p = p + vlen
-    return SstRec { ok: 1, op: op, key: key, val: val, next: p }
+    let r = block_rec_at(body, pos)
+    return SstRec { ok: r.ok, op: r.op, key: r.key, val: r.val, next: r.next }
 }
 
 fn sst_parse_rows(body: bytes) -> SstParse {
@@ -252,7 +216,7 @@ fn sst_parse_rows(body: bytes) -> SstParse {
     let mut i: i64 = 0
     let mut ok: i64 = 1
     while i < count && ok == 1 {
-        let rec = sst_rec_at(body, pos)
+        let rec = block_rec_at(body, pos)
         if rec.ok == 0 {
             ok = 0
         } else {
@@ -459,27 +423,7 @@ fn sst_hit_from_row(r: SstRow) -> SstHit {
 }
 
 fn sst_last_key(body: bytes, start: i64, end: i64) -> str {
-    let mut pos = start
-    let mut last: str = ""
-    let mut go: i64 = 1
-    while go == 1 {
-        if pos >= end {
-            go = 0
-        } else {
-            let rec = sst_rec_at(body, pos)
-            if rec.ok == 0 {
-                go = 0
-            } else {
-                if rec.next > end {
-                    go = 0
-                } else {
-                    last = rec.key
-                    pos = rec.next
-                }
-            }
-        }
-    }
-    return last
+    return block_last_key(body, start, end)
 }
 
 // Indexed lookup on core body (ends with restart footer).
@@ -995,4 +939,191 @@ fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64
         pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes, sst_meta: meta,
         found: 0, alive: 0, val: bytes_new(0)
     }
+}
+
+// --- R20: block-level SST scan (compact / full iterate without full-file copy) ---
+
+struct SstScan {
+    pc: PageCache,
+    fd: i64,
+    gen: i64,
+    meta: SstMeta,
+    bi: i64,       // current restart block index
+    pos: i64,      // offset inside current block bytes
+    block: bytes,  // current restart-block payload
+    open: i64      // 1 = usable (v4/v5 meta ok)
+}
+
+struct SstScanStep {
+    scan: SstScan,
+    ok: i64,    // 1 = yielded a row
+    done: i64,  // 1 = end of file (or not open)
+    row: SstRow
+}
+
+fn sst_scan_closed(pc: PageCache) -> SstScan {
+    return SstScan {
+        pc: pc, fd: 0 - 1, gen: 0, meta: sst_meta_empty(),
+        bi: 0, pos: 0, block: bytes_new(0), open: 0
+    }
+}
+
+// Load restart block `bi` into scan.block. Returns updated scan; open=0 on error.
+fn sst_scan_load_block(sc: SstScan) -> SstScan !IO {
+    let mut s = sc
+    if s.open == 0 {
+        return s
+    }
+    if s.bi >= s.meta.n_restarts {
+        return s
+    }
+    let start = get_u32_le(s.meta.idx, s.bi * 4)
+    let mut end = s.meta.idx_base
+    if s.bi + 1 < s.meta.n_restarts {
+        end = get_u32_le(s.meta.idx, (s.bi + 1) * 4)
+    }
+    let bspan = end - start
+    if bspan < 0 || bspan > 16777216 {
+        s.open = 0
+        return s
+    }
+    // drop previous block payload before replace (R18 free-list)
+    if bytes_len(s.block) > 0 {
+        let oldb = s.block
+        s.block = bytes_new(0)
+        drop(oldb)
+    }
+    let br = pc_read_at(s.pc, s.fd, s.gen, 8 + start, bspan)?
+    s.pc = br.pc
+    if bytes_len(br.data) < bspan {
+        s.open = 0
+        s.block = bytes_new(0)
+        return s
+    }
+    s.block = br.data
+    s.pos = 0
+    return s
+}
+
+// Begin a block-level scan. open=0 if file is not v4/v5 (caller may fall back
+// to sst_load). Does not take ownership of fd — caller keeps it open.
+fn sst_scan_begin(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstScan !IO {
+    if fd < 0 || fsize <= 0 {
+        return sst_scan_closed(pc)
+    }
+    let ml = sst_meta_load(pc, fd, gen, fsize)?
+    if ml.meta.ok == 0 {
+        return sst_scan_closed(ml.pc)
+    }
+    let mut sc = SstScan {
+        pc: ml.pc, fd: fd, gen: gen, meta: ml.meta,
+        bi: 0, pos: 0, block: bytes_new(0), open: 1
+    }
+    if sc.meta.n_restarts <= 0 {
+        sc.open = 0
+        return sc
+    }
+    return sst_scan_load_block(sc)?
+}
+
+// Yield next record in key order. When done=1, scan is finished (block freed).
+fn sst_scan_next(sc: SstScan) -> SstScanStep !IO {
+    let empty = SstRow { op: 0, key: "", val: bytes_new(0) }
+    let mut s = sc
+    if s.open == 0 {
+        return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+    }
+    let mut guard: i64 = 0
+    while guard < 100000000 {
+        guard = guard + 1
+        if s.bi >= s.meta.n_restarts {
+            if bytes_len(s.block) > 0 {
+                let oldb = s.block
+                s.block = bytes_new(0)
+                drop(oldb)
+            }
+            s.open = 0
+            return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+        }
+        if s.pos >= bytes_len(s.block) {
+            s.bi = s.bi + 1
+            if s.bi >= s.meta.n_restarts {
+                if bytes_len(s.block) > 0 {
+                    let oldb2 = s.block
+                    s.block = bytes_new(0)
+                    drop(oldb2)
+                }
+                s.open = 0
+                return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+            }
+            s = sst_scan_load_block(s)?
+            if s.open == 0 {
+                return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+            }
+        } else {
+            let rec = block_rec_at(s.block, s.pos)
+            if rec.ok == 0 {
+                s.open = 0
+                return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+            }
+            s.pos = rec.next
+            return SstScanStep {
+                scan: s, ok: 1, done: 0,
+                row: SstRow { op: rec.op, key: rec.key, val: rec.val }
+            }
+        }
+    }
+    s.open = 0
+    return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+}
+
+// Fold every row of one SST into acc/tomb maps (R20 compact path).
+// Returns updated page cache. Uses block scan when v4/v5; else full sst_load.
+fn sst_fold_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, sizes: Map<i64, i64>,
+                 acc: Map<str, bytes>, tomb: Map<str, i64>) -> PageCache !IO {
+    let fd = sst_fd_get(pc, fds, sizes, dir, gen)?
+    if fd < 0 {
+        return pc
+    }
+    let fsize = map_get(sizes, gen)
+    let mut sc = sst_scan_begin(pc, fd, gen, fsize)?
+    if sc.open == 1 {
+        let mut go: i64 = 1
+        while go == 1 {
+            let st = sst_scan_next(sc)?
+            sc = st.scan
+            if st.done == 1 {
+                go = 0
+            } else {
+                if st.ok == 1 {
+                    let r = st.row
+                    if r.op == 2 {
+                        map_del(acc, r.key)
+                        map_set(tomb, r.key, 1)
+                    } else {
+                        map_set(acc, r.key, r.val)
+                        map_del(tomb, r.key)
+                    }
+                }
+            }
+        }
+        return sc.pc
+    }
+    // Legacy formats: full-file parse (same as pre-R20).
+    let ld = sst_load(sc.pc, dir, gen)?
+    let prows = ld.parse.rows
+    if ld.parse.ok == 1 {
+        for j in 0..vec_len(prows) {
+            let r = vec_get(prows, j)
+            if r.op == 2 {
+                map_del(acc, r.key)
+                map_set(tomb, r.key, 1)
+            } else {
+                map_set(acc, r.key, r.val)
+                map_del(tomb, r.key)
+            }
+        }
+    }
+    drop(prows)
+    return ld.pc
 }

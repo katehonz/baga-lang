@@ -32,7 +32,7 @@ docs/           PLAN, gaps
 | Page cache | `cache/` | 4 KiB pages, clock eviction (default 256); R19 multi-file fd registry + pins |
 | WAL | `wal/` | crc32c records, fdatasync |
 | Memtable + compact | `db/` | L0…L3, byte targets, oldest-N pick |
-| SSTable | `table/` | BAGASST5 + `.bloom.<gen>` sidecar; R11 bloom/fd cache |
+| SSTable | `table/` | BAGASST5 + `.bloom.<gen>` sidecar; R20 block scan compact |
 | RESP | `net/` | redis-cli subset; **poll multi-conn** (R15) |
 
 **Bench:** `./bench/rocks/run_vs_rocksdb.sh` — pure engine vs RocksDB.
@@ -46,6 +46,7 @@ LSMPATH=/tmp/baga_rocks_demo LSMPORT=16579 \
 ./baga -I . -I app-product tests/lsm_test.baga
 ./baga -I . -I app-product tests/lsm_recover_test.baga
 ./baga -I . -I app-product tests/page_cache_test.baga
+./baga -I . -I app-product tests/sst_scan_test.baga
 ```
 
 Env: `LSMPATH`, `LSMPORT`, `LSM_FLUSH_AT`, `LSM_COMPACT_AT`,

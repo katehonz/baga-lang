@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### RocksDB path R20 — block scan + `table/block.baga`
+- **`table/block.baga`:** shared record encode/decode (`block_rec_at` /
+  `block_rec_put` / `block_rec_size`). `sst_build` writes records through
+  the builder.
+- **Block-level SST scan:** `sst_scan_begin` / `sst_scan_next` walk restart
+  blocks via the page cache (one block resident; prior block dropped).
+- **Compact:** `sst_fold_into` streams merge inputs — no full-file copy for
+  v4/v5; legacy formats still use `sst_load`.
+- Tests: `tests/sst_scan_test.baga`; `lsm_test` / `lsm_recover_test` green.
+
 ## [0.8.4] — 2026-08-06
 
 **rocksbaga storage path R10–R19**, layered package architecture, engine

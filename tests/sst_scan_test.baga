@@ -1,0 +1,104 @@
+// sst_scan_test.baga — R20 block-level scan + fold (no full-file materialize).
+import "rocksbaga/table/sstable.baga"
+import "rocksbaga/cache/page.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<str>, name: str, ok: bool) {
+    if ok == false {
+        vec_push(fails, name)
+        print(concat("FAIL ", name))
+    } else {
+        print(concat("  ok  ", name))
+    }
+}
+
+fn main() -> i64 !IO {
+    let fails: Vec<str> = vec_new()
+    let prefix = "/tmp/baga_sst_scan_r20"
+    unlink(concat(prefix, ".sst.1"))?
+    unlink(concat(prefix, ".bloom.1"))?
+
+    // Build a multi-block SST (restart every 16 → 40 rows ⇒ 3 blocks).
+    let rows: Vec<SstRow> = vec_new()
+    let mut i: i64 = 0
+    while i < 40 {
+        let k = concat("k", int_to_str(i))
+        let v = bytes_of_str(concat("v", int_to_str(i)))
+        if i == 7 {
+            vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })  // tomb
+        } else {
+            vec_push(rows, SstRow { op: 1, key: k, val: v })
+        }
+        i = i + 1
+    }
+    check(fails, "write", sst_write(prefix, 1, rows)? == 0)
+
+    let mut pc = pc_new(4096, 8)
+    let fds: Map<i64, i64> = map_new()
+    let sizes: Map<i64, i64> = map_new()
+    let fd = sst_fd_get(pc, fds, sizes, prefix, 1)?
+    check(fails, "fd", fd >= 0)
+    let fsize = map_get(sizes, 1)
+    check(fails, "fsize", fsize > 0)
+
+    // --- scan yields 40 rows in order ---
+    let mut sc = sst_scan_begin(pc, fd, 1, fsize)?
+    check(fails, "scan_open", sc.open == 1)
+    let mut n: i64 = 0
+    let mut saw_tomb: i64 = 0
+    let mut order_ok: i64 = 1
+    let mut go: i64 = 1
+    while go == 1 {
+        let st = sst_scan_next(sc)?
+        sc = st.scan
+        if st.done == 1 {
+            go = 0
+        } else {
+            if st.ok == 1 {
+                let expect = concat("k", int_to_str(n))
+                if st.row.key != expect {
+                    order_ok = 0
+                }
+                if n == 7 {
+                    if st.row.op == 2 {
+                        saw_tomb = 1
+                    }
+                }
+                n = n + 1
+            }
+        }
+    }
+    pc = sc.pc
+    check(fails, "scan_count", n == 40)
+    check(fails, "scan_order", order_ok == 1)
+    check(fails, "scan_tomb", saw_tomb == 1)
+
+    // --- fold into maps ---
+    let acc: Map<str, bytes> = map_new()
+    let tomb: Map<str, i64> = map_new()
+    pc = sst_fold_into(pc, prefix, 1, fds, sizes, acc, tomb)?
+    check(fails, "fold_live", map_has(acc, "k0") == 1)
+    check(fails, "fold_tomb", map_has(tomb, "k7") == 1 && map_has(acc, "k7") == 0)
+    check(fails, "fold_val", str_of_bytes(map_get(acc, "k10")) == "v10")
+    check(fails, "fold_n_acc", vec_len(map_keys(acc)) == 39)
+
+    // block.baga round-trip
+    let body = bytes_new(64)
+    let end = block_rec_put(body, 0, 1, "ab", bytes_of_str("xy"))
+    check(fails, "rec_put", end == block_rec_size(2, 2))
+    let r = block_rec_at(body, 0)
+    check(fails, "rec_get", r.ok == 1 && r.key == "ab" && str_of_bytes(r.val) == "xy")
+
+    sst_fd_drop(pc, fds, sizes, 1)?
+    unlink(concat(prefix, ".sst.1"))?
+    unlink(concat(prefix, ".bloom.1"))?
+
+    if vec_len(fails) == 0 {
+        print("sst_scan_test: all passed")
+        return 0
+    }
+    print(concat(concat("sst_scan_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

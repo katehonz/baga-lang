@@ -152,9 +152,19 @@ is the MEM-3-full / str-reclamation roadmap item, not a bug.
 - Tests: `tests/page_cache_test.baga` (pin survival, multi-file writeback,
   all-pinned fail); existing `lsm_test` / `lsm_recover_test` green.
 
-**Still open (later):** block-level page IO (true partial SST body, not
-full-file via cache); `db/manifest.baga` / `table/block.baga` when needed;
-RocksDB feature parity (not claimed).
+**Shipped (R20 block-level scan + `table/block.baga`):**
+- **`table/block.baga`** — record layout (`block_rec_at` / `block_rec_put` /
+  `block_rec_size` / `block_last_key`); shared by `sst_build` and parse.
+- **`sst_scan_begin` / `sst_scan_next`** — iterate one SST by restart block
+  through the page cache (one block resident at a time; drop previous).
+- **`sst_fold_into`** — compact merge path streams rows into acc/tomb maps
+  without materializing the whole SST file. v4/v5 only; older formats fall
+  back to `sst_load`.
+- Tests: `tests/sst_scan_test.baga`; `lsm_test` / `lsm_recover_test` green.
+
+**Still open (later):** true block CRC verify on scan path; KEYS without
+full load; `db/manifest.baga` / tools SST dump; RocksDB feature parity
+(not claimed).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
