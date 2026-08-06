@@ -38,6 +38,13 @@ Machine lines from both engines, then a ratio table (rocksbaga as % of RocksDB o
 
 Artifacts: `bench/rocks/results/vs-rocksdb-*.txt` and `vs-rocksdb-latest.txt`.
 
+**Scorecard (2026-08-06, n=5000):** [`results/vs-rocksdb-scorecard.md`](results/vs-rocksdb-scorecard.md)
+
+| mode | PUT | GET_SEQ | GET_RND |
+|------|----:|--------:|--------:|
+| durable | **92%** of RocksDB | **103%** | **98%** |
+| batch | **137%** of RocksDB | **119%** | **100%** |
+
 ## How to read results
 
 - **ratio ≥ 100%** — rocksbaga matches or beats RocksDB on that metric
@@ -45,6 +52,7 @@ Artifacts: `bench/rocks/results/vs-rocksdb-*.txt` and `vs-rocksdb-latest.txt`.
 - **ratio ≪ 50%** — clear gap; see gaps (interpreter/C backend, page cache, fsync path)
 
 This is not a claim of RocksDB feature parity — only throughput under this harness.
+Worth owning: pure Baga LSM in the same league as a decade of C++ storage work.
 
 ## Phase profile (differential)
 

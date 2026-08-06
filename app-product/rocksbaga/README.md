@@ -35,7 +35,9 @@ docs/           PLAN, gaps
 | SSTable | `table/` | BAGASST5 + `.bloom.<gen>` sidecar; R20 block scan compact |
 | RESP | `net/` | redis-cli subset; **poll multi-conn** (R15) |
 
-**Bench:** `./bench/rocks/run_vs_rocksdb.sh` — pure engine vs RocksDB.
+**Bench:** `./bench/rocks/run_vs_rocksdb.sh` — pure engine vs RocksDB.  
+Scorecard (n=5000): durable PUT **92%** / GET ~parity; batch PUT **137%** —
+see [`bench/rocks/results/vs-rocksdb-scorecard.md`](../../bench/rocks/results/vs-rocksdb-scorecard.md).
 
 **Dump:**  
 `LSMPATH=/tmp/baga_lsm ./baga -I . -I app-product app-product/rocksbaga/tools/sst_dump.baga`  
