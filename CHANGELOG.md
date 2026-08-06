@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### RocksDB path R56/R57 — MT command parity + active expire
+- **R56:** `lsm_mt_exec` — MGET/MSET, INCR/DECR, APPEND, TYPE, EXISTS,
+  EXPIRE/TTL/PERSIST, DBSIZE, SAVE/BGSAVE inline in MT mode (one shard
+  locked at a time). Perf held at 97/94/98% of Redis (pipe=16, shards=8).
+- **R57:** Redis-style active expire — shared `"sid:key" -> deadline`
+  index + 100 ms sweeper thread; tombstones due keys verified still
+  expired. DBSIZE 3→1 three seconds after SETEX 1, no reads.
+
 ### Language R55 + RocksDB path — hop-less MT serve (Redis parity)
 - **`map_h` / `h_map` builtins** (C backend): shared `Map<i64, LsmDB>`
   through the go_bg i64 ctx.

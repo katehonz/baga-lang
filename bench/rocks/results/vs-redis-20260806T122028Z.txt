@@ -21,3 +21,5 @@ PING               344001       351882        97%
 SET                232535       247049        94%
 GET                219659       223502        98%
 
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T122028Z.txt
+OK

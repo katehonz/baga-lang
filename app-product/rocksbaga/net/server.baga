@@ -1262,6 +1262,351 @@ fn lsm_serve_parallel_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
     return 0
 }
 
+// --- R56/R57: MT inline command execution + active expire (hop-less) ---
+
+// Shared MT context: shard dbs + per-shard mutexes + expires index.
+// Maps are shared by reference; struct passed by value is fine.
+struct LsmMTCtx {
+    dbs: Map<i64, LsmDB>,
+    mus: Map<i64, i64>,
+    exps: Map<str, i64>,   // "sid:key" -> deadline ms (R57 active expire)
+    emu: i64,              // mutex guarding exps
+    nshards: i64
+}
+
+fn lsm_mt_ctx(h: i64) -> LsmMTCtx {
+    let dbs: Map<i64, LsmDB> = h_map(cell2_0(h))
+    let r1 = cell2_1(h)
+    let mus: Map<i64, i64> = h_map(cell2_0(r1))
+    let r2 = cell2_1(r1)
+    let exps: Map<str, i64> = h_map(cell2_0(r2))
+    let r3 = cell2_1(r2)
+    return LsmMTCtx {
+        dbs: dbs, mus: mus, exps: exps,
+        emu: cell2_0(r3), nshards: cell2_1(r3)
+    }
+}
+
+fn lsm_mt_pack_ctx(c: LsmMTCtx) -> i64 {
+    return cell2(map_h(c.dbs), cell2(map_h(c.mus), cell2(map_h(c.exps), cell2(c.emu, c.nshards))))
+}
+
+fn lsm_mt_ek(sid: i64, key: str) -> str {
+    return concat(concat(int_to_str(sid), ":"), key)
+}
+
+// R57: record/clear expiry intent (deadline ms; 0 = clear).
+fn lsm_mt_exp_note(c: LsmMTCtx, sid: i64, key: str, deadline: i64) -> i64 !Par {
+    let ek = lsm_mt_ek(sid, key)
+    mutex_lock(c.emu)
+    if deadline > 0 {
+        map_set(c.exps, ek, deadline)
+    } else {
+        if map_has(c.exps, ek) == 1 {
+            map_del(c.exps, ek)
+        }
+    }
+    mutex_unlock(c.emu)
+    return 0
+}
+
+struct LsmMTGet {
+    found: i64,
+    val: bytes
+}
+
+fn lsm_mt_get(c: LsmMTCtx, key: str) -> LsmMTGet !IO !Time !Par {
+    let sid = lsm_shard_ix(c.nshards, key)
+    let mu = map_get(c.mus, sid)
+    mutex_lock(mu)
+    let db0 = map_get(c.dbs, sid)
+    let g = lsm_get(db0, key)?
+    map_set(c.dbs, sid, g.db)
+    mutex_unlock(mu)
+    return LsmMTGet { found: g.found, val: g.val }
+}
+
+// ttl_sec <= 0 → plain put (clears TTL, Redis semantics)
+fn lsm_mt_put(c: LsmMTCtx, key: str, val: str, ttl_sec: i64) -> i64 !IO !Time !Par {
+    let sid = lsm_shard_ix(c.nshards, key)
+    let mu = map_get(c.mus, sid)
+    mutex_lock(mu)
+    let db0 = map_get(c.dbs, sid)
+    let mut db1 = db0
+    if ttl_sec > 0 {
+        db1 = lsm_put_ex(db0, key, val, ttl_sec)?
+    } else {
+        db1 = lsm_put(db0, key, val)?
+    }
+    map_set(c.dbs, sid, db1)
+    mutex_unlock(mu)
+    let mut dl: i64 = 0
+    if ttl_sec > 0 {
+        dl = time_now_ms()? + ttl_sec * 1000
+    }
+    lsm_mt_exp_note(c, sid, key, dl)?
+    return 1
+}
+
+fn lsm_mt_del(c: LsmMTCtx, key: str) -> i64 !IO !Time !Par {
+    let sid = lsm_shard_ix(c.nshards, key)
+    let mu = map_get(c.mus, sid)
+    mutex_lock(mu)
+    let db0 = map_get(c.dbs, sid)
+    let g = lsm_get(db0, key)?
+    let mut db1 = g.db
+    let mut nfound: i64 = 0
+    if g.found == 1 {
+        db1 = lsm_del(db1, key)?
+        nfound = 1
+    }
+    map_set(c.dbs, sid, db1)
+    mutex_unlock(mu)
+    if nfound == 1 {
+        lsm_mt_exp_note(c, sid, key, 0)?
+    }
+    return nfound
+}
+
+fn lsm_mt_int_op(c: LsmMTCtx, key: str, delta: i64) -> str !IO !Time !Par {
+    // returns reply string: ":n\r\n" or error
+    let sid = lsm_shard_ix(c.nshards, key)
+    let mu = map_get(c.mus, sid)
+    mutex_lock(mu)
+    let db0 = map_get(c.dbs, sid)
+    let g = lsm_get(db0, key)?
+    let mut db1 = g.db
+    let mut base: i64 = 0
+    let mut bad: i64 = 0
+    if g.found == 1 {
+        let vs = str_of_bytes(g.val)
+        if lsm_is_int(vs) == 0 {
+            bad = 1
+        } else {
+            base = parse_int(vs)
+        }
+    }
+    let mut rep = "-ERR value is not an integer or out of range\r\n"
+    if bad == 0 {
+        let nv = base + delta
+        db1 = lsm_put(db1, key, int_to_str(nv))?
+        map_set(c.dbs, sid, db1)
+        rep = concat(concat(":", int_to_str(nv)), "\r\n")
+    }
+    mutex_unlock(mu)
+    if bad == 0 {
+        lsm_mt_exp_note(c, sid, key, 0)?
+    }
+    return rep
+}
+
+// R56: one RESP command → reply bytes, executed inline (no worker hop).
+// Multi-key / all-shard commands lock one shard at a time — no deadlocks.
+fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
+    let c0 = vec_get(args, 0)
+    let n = vec_len(args)
+    if lsm_eq_ci(c0, "SET") == 1 && n == 3 {
+        lsm_mt_put(c, vec_get(args, 1), vec_get(args, 2), 0)?
+        return resp_ok()
+    }
+    if lsm_eq_ci(c0, "SETEX") == 1 && n == 4 {
+        if lsm_is_int(vec_get(args, 2)) == 0 {
+            return resp_error("ERR value is not an integer or out of range")
+        }
+        lsm_mt_put(c, vec_get(args, 1), vec_get(args, 3), parse_int(vec_get(args, 2)))?
+        return resp_ok()
+    }
+    if lsm_eq_ci(c0, "GET") == 1 && n == 2 {
+        let g = lsm_mt_get(c, vec_get(args, 1))?
+        if g.found == 0 {
+            return resp_null_bulk()
+        }
+        return resp_bulk_b(g.val)
+    }
+    if lsm_eq_ci(c0, "DEL") == 1 && n == 2 {
+        return resp_int(lsm_mt_del(c, vec_get(args, 1))?)
+    }
+    if lsm_eq_ci(c0, "EXISTS") == 1 && n == 2 {
+        let g = lsm_mt_get(c, vec_get(args, 1))?
+        return resp_int(g.found)
+    }
+    if lsm_eq_ci(c0, "INCR") == 1 && n == 2 {
+        return bytes_of_str(lsm_mt_int_op(c, vec_get(args, 1), 1)?)
+    }
+    if lsm_eq_ci(c0, "DECR") == 1 && n == 2 {
+        return bytes_of_str(lsm_mt_int_op(c, vec_get(args, 1), 0 - 1)?)
+    }
+    if lsm_eq_ci(c0, "APPEND") == 1 && n == 3 {
+        let key = vec_get(args, 1)
+        let g = lsm_mt_get(c, key)?
+        let mut cur = ""
+        if g.found == 1 {
+            cur = str_of_bytes(g.val)
+        }
+        let nv = concat(cur, vec_get(args, 2))
+        lsm_mt_put(c, key, nv, 0)?
+        return resp_int(len(nv))
+    }
+    if lsm_eq_ci(c0, "TYPE") == 1 && n == 2 {
+        let g = lsm_mt_get(c, vec_get(args, 1))?
+        if g.found == 1 {
+            return resp_simple("string")
+        }
+        return resp_simple("none")
+    }
+    if lsm_eq_ci(c0, "MGET") == 1 && n >= 2 {
+        let mut r = resp_array(n - 1)
+        let mut i: i64 = 1
+        while i < n {
+            let g = lsm_mt_get(c, vec_get(args, i))?
+            if g.found == 1 {
+                r = bytes_concat(r, resp_bulk_b(g.val))
+            } else {
+                r = bytes_concat(r, resp_null_bulk())
+            }
+            i = i + 1
+        }
+        return r
+    }
+    if lsm_eq_ci(c0, "MSET") == 1 && n >= 3 && n % 2 == 1 {
+        let mut i: i64 = 1
+        while i + 1 < n + 1 {
+            lsm_mt_put(c, vec_get(args, i), vec_get(args, i + 1), 0)?
+            i = i + 2
+        }
+        return resp_ok()
+    }
+    if lsm_eq_ci(c0, "EXPIRE") == 1 && n == 3 {
+        if lsm_is_int(vec_get(args, 2)) == 0 {
+            return resp_error("ERR value is not an integer or out of range")
+        }
+        let key = vec_get(args, 1)
+        let sec = parse_int(vec_get(args, 2))
+        let sid = lsm_shard_ix(c.nshards, key)
+        let mu = map_get(c.mus, sid)
+        mutex_lock(mu)
+        let db0 = map_get(c.dbs, sid)
+        let e = lsm_expire(db0, key, sec)?
+        map_set(c.dbs, sid, e.db)
+        mutex_unlock(mu)
+        if e.ok == 1 {
+            lsm_mt_exp_note(c, sid, key, time_now_ms()? + sec * 1000)?
+        }
+        return resp_int(e.ok)
+    }
+    if lsm_eq_ci(c0, "TTL") == 1 && n == 2 {
+        let key = vec_get(args, 1)
+        let sid = lsm_shard_ix(c.nshards, key)
+        let mu = map_get(c.mus, sid)
+        mutex_lock(mu)
+        let db0 = map_get(c.dbs, sid)
+        let t = lsm_ttl(db0, key)?
+        map_set(c.dbs, sid, t.db)
+        mutex_unlock(mu)
+        return resp_int(t.n)
+    }
+    if lsm_eq_ci(c0, "PERSIST") == 1 && n == 2 {
+        let key = vec_get(args, 1)
+        let sid = lsm_shard_ix(c.nshards, key)
+        let mu = map_get(c.mus, sid)
+        mutex_lock(mu)
+        let db0 = map_get(c.dbs, sid)
+        let pe = lsm_persist(db0, key)?
+        map_set(c.dbs, sid, pe.db)
+        mutex_unlock(mu)
+        if pe.ok == 1 {
+            lsm_mt_exp_note(c, sid, key, 0)?
+        }
+        return resp_int(pe.ok)
+    }
+    if lsm_eq_ci(c0, "DBSIZE") == 1 && n == 1 {
+        let mut total: i64 = 0
+        let mut sid: i64 = 0
+        while sid < c.nshards {
+            let mu = map_get(c.mus, sid)
+            mutex_lock(mu)
+            let db0 = map_get(c.dbs, sid)
+            let ds = lsm_dbsize(db0)?
+            map_set(c.dbs, sid, ds.db)
+            mutex_unlock(mu)
+            total = total + ds.n
+            sid = sid + 1
+        }
+        return resp_int(total)
+    }
+    if (lsm_eq_ci(c0, "SAVE") == 1 || lsm_eq_ci(c0, "BGSAVE") == 1) && n == 1 {
+        let mut sid: i64 = 0
+        while sid < c.nshards {
+            let mu = map_get(c.mus, sid)
+            mutex_lock(mu)
+            let db0 = map_get(c.dbs, sid)
+            let db1 = lsm_flush_force(db0)?
+            map_set(c.dbs, sid, db1)
+            mutex_unlock(mu)
+            sid = sid + 1
+        }
+        return resp_ok()
+    }
+    return resp_error(concat(concat("ERR unknown/unsupported command '", c0), "' (mt mode)"))
+}
+
+// R57: active expire cycle (Redis-style). Every 100ms snapshot the due
+// entries of the shared expires index, then tombstone each key whose VALUE
+// is still expired (re-SET without TTL in the meantime → skip). Lazy
+// expiry on read stays as the always-correct net; this frees the space.
+fn lsm_mt_sweeper(ctx: i64) -> i64 !IO !Par !Time {
+    let c = lsm_mt_ctx(ctx)
+    while true {
+        sleep_ms(100)
+        let now = time_now_ms()?
+        let due: Vec<str> = vec_new()
+        mutex_lock(c.emu)
+        let ks = map_keys(c.exps)
+        let mut i: i64 = 0
+        while i < vec_len(ks) {
+            let ek = vec_get(ks, i)
+            if map_get(c.exps, ek) <= now {
+                vec_push(due, ek)
+            }
+            i = i + 1
+        }
+        mutex_unlock(c.emu)
+        let mut j: i64 = 0
+        while j < vec_len(due) {
+            let ek = vec_get(due, j)
+            // claim the entry (only if still due) before touching the shard
+            let mut mine: i64 = 0
+            mutex_lock(c.emu)
+            if map_has(c.exps, ek) == 1 {
+                if map_get(c.exps, ek) <= now {
+                    map_del(c.exps, ek)
+                    mine = 1
+                }
+            }
+            mutex_unlock(c.emu)
+            if mine == 1 {
+                let ci = str_find(ek, ":")
+                let sid = parse_int(substr(ek, 0, ci))
+                let key = substr(ek, ci + 1, len(ek))
+                let mu = map_get(c.mus, sid)
+                mutex_lock(mu)
+                let db0 = map_get(c.dbs, sid)
+                let g = lsm_get(db0, key)?
+                let mut db1 = g.db
+                if g.found == 0 {
+                    // found==0: expired-in-place (lazy) or absent — tombstone
+                    // clears the stale envelope; absent is a rare stray tomb
+                    db1 = lsm_del(db1, key)?
+                }
+                map_set(c.dbs, sid, db1)
+                mutex_unlock(mu)
+            }
+            j = j + 1
+        }
+    }
+    return 0
+}
+
 // --- R45/R55: multi-core RESP — go_bg per connection, HOP-LESS execution ---
 // R55: no workers, no chans on the command path. Shard dbs live in a shared
 // Map<i64, LsmDB> (boxed entries, stable after setup); each conn thread
@@ -1272,11 +1617,7 @@ fn lsm_serve_parallel_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
 // ctx = cell2(fd, cell2(dbs_h, cell2(mus_h, nshards)))
 fn lsm_mt_conn(ctx: i64) -> i64 !IO !Net !Par !Time {
     let fd = cell2_0(ctx)
-    let rest = cell2_1(ctx)
-    let dbs: Map<i64, LsmDB> = h_map(cell2_0(rest))
-    let rest2 = cell2_1(rest)
-    let mus: Map<i64, i64> = h_map(cell2_0(rest2))
-    let nshards = cell2_1(rest2)
+    let c = lsm_mt_ctx(cell2_1(ctx))
     tcp_set_nodelay(fd)?
     let scratch = str_repeat(" ", 65536)
     // R54: persistent reply scratch — replies are appended in place
@@ -1326,81 +1667,7 @@ fn lsm_mt_conn(ctx: i64) -> i64 !IO !Net !Par !Time {
                                 running = 0
                                 again = 0
                             } else {
-                                let mut op: i64 = 0
-                                let mut key = ""
-                                let mut val = ""
-                                let mut extra = ""
-                                let mut ok_cmd: i64 = 0
-                                if lsm_eq_ci(c0, "SET") == 1 && n == 3 {
-                                    op = LSM_OP_SET()
-                                    key = vec_get(args, 1)
-                                    val = vec_get(args, 2)
-                                    ok_cmd = 1
-                                } else {
-                                    if lsm_eq_ci(c0, "GET") == 1 && n == 2 {
-                                        op = LSM_OP_GET()
-                                        key = vec_get(args, 1)
-                                        ok_cmd = 1
-                                    } else {
-                                        if lsm_eq_ci(c0, "DEL") == 1 && n == 2 {
-                                            op = LSM_OP_DEL()
-                                            key = vec_get(args, 1)
-                                            ok_cmd = 1
-                                        } else {
-                                            if lsm_eq_ci(c0, "SETEX") == 1 && n == 4 {
-                                                op = LSM_OP_SETEX()
-                                                key = vec_get(args, 1)
-                                                extra = vec_get(args, 2)
-                                                val = vec_get(args, 3)
-                                                ok_cmd = 1
-                                            }
-                                        }
-                                    }
-                                }
-                                if ok_cmd == 1 {
-                                    // R55: inline engine op under shard mutex
-                                    let sid = lsm_shard_ix(nshards, key)
-                                    let mu = map_get(mus, sid)
-                                    mutex_lock(mu)
-                                    let db0 = map_get(dbs, sid)
-                                    if op == LSM_OP_SET() {
-                                        let db1 = lsm_put(db0, key, val)?
-                                        map_set(dbs, sid, db1)
-                                        rb = resp_ok()
-                                    } else {
-                                        if op == LSM_OP_GET() {
-                                            let g = lsm_get(db0, key)?
-                                            map_set(dbs, sid, g.db)
-                                            if g.found == 0 {
-                                                rb = resp_null_bulk()
-                                            } else {
-                                                rb = resp_bulk_b(g.val)
-                                            }
-                                        } else {
-                                            if op == LSM_OP_DEL() {
-                                                let g2 = lsm_get(db0, key)?
-                                                let mut db2 = g2.db
-                                                let mut nfound: i64 = 0
-                                                if g2.found == 1 {
-                                                    db2 = lsm_del(db2, key)?
-                                                    nfound = 1
-                                                }
-                                                map_set(dbs, sid, db2)
-                                                rb = resp_int(nfound)
-                                            } else {
-                                                let sec = parse_int(extra)
-                                                let db3 = lsm_put_ex(db0, key, val, sec)?
-                                                map_set(dbs, sid, db3)
-                                                rb = resp_ok()
-                                            }
-                                        }
-                                    }
-                                    mutex_unlock(mu)
-                                } else {
-                                    rb = bytes_of_str(
-                                        "-ERR mt mode: use SET/GET/DEL/SETEX/PING\r\n"
-                                    )
-                                }
+                                rb = lsm_mt_exec(c, args)?
                             }
                         }
                         drop(args)
@@ -1469,6 +1736,7 @@ fn lsm_serve_mt_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
     // under per-shard mutexes (hop-less). Map handles go through the ctx.
     let dbs: Map<i64, LsmDB> = map_new()
     let mus: Map<i64, i64> = map_new()
+    let exps: Map<str, i64> = map_new()
     let mut sid: i64 = 0
     while sid < nshards {
         let sp = lsm_shard_path(dir, sid, nshards)
@@ -1485,7 +1753,11 @@ fn lsm_serve_mt_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
     if listener < 0 {
         return 0 - 1
     }
-    let pack = cell2(map_h(dbs), cell2(map_h(mus), nshards))
+    let pack = lsm_mt_pack_ctx(LsmMTCtx {
+        dbs: dbs, mus: mus, exps: exps, emu: mutex_new(), nshards: nshards
+    })
+    // R57: active expire sweeper
+    go_bg(lsm_mt_sweeper, pack)
     while true {
         let fd = tcp_accept(listener)?
         if fd >= 0 {

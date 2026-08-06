@@ -139,4 +139,11 @@ Goal: Track S flagship — durable KV on RESP.
   run engine ops inline under per-shard mutexes. Workers/chans dropped
   from the MT command path. vs Redis (8 clients, shards=8): pipe=16
   **104/93/98%**, pipe=64 **98/94/99%** PING/SET/GET — **done**
-- (next) richer RocksDB CF options; TTL in MT/P1 worker path
+- **R56 MT command parity** — `lsm_mt_exec`: MGET/MSET, INCR/DECR, APPEND,
+  TYPE, EXISTS, EXPIRE/TTL/PERSIST, DBSIZE, SAVE/BGSAVE inline under
+  shard mutexes (one shard locked at a time) — **done**
+- **R57 active expire (MT)** — Redis-style cycle: shared expires index
+  (`"sid:key" -> deadline`, own mutex) + 100ms sweeper thread; tombstones
+  due keys whose value is still expired (re-SET without TTL → skipped).
+  Lazy expiry stays as the correctness net — **done**
+- (next) richer RocksDB CF options; MGET/MSET/DECR/APPEND in poll path

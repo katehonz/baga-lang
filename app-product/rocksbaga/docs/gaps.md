@@ -408,7 +408,24 @@ it already answers.
   Artifacts: `vs-redis-20260806T120051Z.txt`, `…120104Z.txt`.
 - Smoke: SET/GET/DEL/SETEX + kill/restart recovery — values survive.
 
-**Still open (later):** richer RocksDB CF options; TTL ops in MT/P1 worker path; per-CF block-cache policy; LLVM backend parity for R51/R52/R54/R55 (handle builtins, thread-local arena, bytes_put).
+**Shipped (R56 MT command parity):**
+- `lsm_mt_exec`: MGET/MSET, INCR/DECR, APPEND, TYPE, EXISTS,
+  EXPIRE/TTL/PERSIST, DBSIZE, SAVE/BGSAVE — inline under shard mutexes
+  (multi-key commands lock one shard at a time). Wire-tested with
+  redis-cli. Perf unchanged: 97/94/98% (pipe=16, shards=8).
+
+**Shipped (R57 active expire, MT mode):**
+- Redis-style active cycle: shared expires index `"sid:key" -> deadline`
+  (own mutex `emu`) + a 100 ms sweeper thread (`lsm_mt_sweeper`).
+- Update points: SETEX/EXPIRE record; SET/MSET/INCR/DECR/APPEND/PERSIST/
+  DEL clear (plain SET clears TTL — Redis semantics).
+- Sweeper claims due entries, then tombstones only keys whose value is
+  still expired (re-SET without TTL in the meantime is skipped).
+- Verified: dbsize 3 → 1 three seconds after SETEX 1 with no reads.
+- Lazy expiry (R16) stays the correctness net; the sweeper frees space
+  and keeps DBSIZE honest without reads.
+
+**Still open (later):** richer RocksDB CF options; MGET/MSET/DECR/APPEND/TYPE also in the poll path (currently MT-only); per-CF block-cache policy; LLVM backend parity for R51/R52/R54/R55 (handle builtins, thread-local arena, bytes_put).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
