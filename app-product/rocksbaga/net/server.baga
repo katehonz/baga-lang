@@ -1262,28 +1262,27 @@ fn lsm_serve_parallel_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
     return 0
 }
 
-// --- R45: multi-core RESP — go_bg per connection → shared shard workers ---
-// ctx = cell2(fd, cell2(done, cell2(nshards, work_pack)))
-// R47: each conn thread submits jobs with its OWN reply chan (mydone);
-// the shared done chan in ctx is kept for ctx compat but unused — with one
-// shared chan, conn threads stole each other's replies into local stashes
-// and the robbed thread blocked forever (MT soak hang at 8 clients).
+// --- R45/R55: multi-core RESP — go_bg per connection, HOP-LESS execution ---
+// R55: no workers, no chans on the command path. Shard dbs live in a shared
+// Map<i64, LsmDB> (boxed entries, stable after setup); each conn thread
+// locks the shard mutex, copies the db out, runs the engine op inline, and
+// stores it back. Replies are immediate — no ids, no reply chans.
+// Safety: all shard keys are inserted before the first go_bg (no rehash
+// afterwards); a shard's entry is touched only under its own mutex.
+// ctx = cell2(fd, cell2(dbs_h, cell2(mus_h, nshards)))
 fn lsm_mt_conn(ctx: i64) -> i64 !IO !Net !Par !Time {
     let fd = cell2_0(ctx)
     let rest = cell2_1(ctx)
-    let done = cell2_0(rest)
+    let dbs: Map<i64, LsmDB> = h_map(cell2_0(rest))
     let rest2 = cell2_1(rest)
-    let nshards = cell2_0(rest2)
-    let work_pack = cell2_1(rest2)
-    let mydone = chan_new(1024)
+    let mus: Map<i64, i64> = h_map(cell2_0(rest2))
+    let nshards = cell2_1(rest2)
     tcp_set_nodelay(fd)?
     let scratch = str_repeat(" ", 65536)
     // R54: persistent reply scratch — replies are appended in place
     // (bytes_put), not concat-chained (O(batch²) copies killed GET pipe≥32).
     let mut outb = bytes_new(262144)
     let mut buf = bytes_new(0)
-    let stash: Map<i64, i64> = map_new()
-    let mut local: i64 = 1
     let mut running: i64 = 1
     while running == 1 {
         let chunk = tcp_read_into(fd, scratch, 65536)?
@@ -1297,16 +1296,9 @@ fn lsm_mt_conn(ctx: i64) -> i64 !IO !Net !Par !Time {
             } else {
                 buf = chunk
             }
-            // R50: two-phase batch hop — parse + submit every complete
-            // command first (workers run the batch concurrently), then wait
-            // for replies in request order. Before: submit→wait per command
-            // serialized the hop even inside a client pipeline.
             let mut again: i64 = 1
             let mut out_len: i64 = 0
             let mut n_out: i64 = 0
-            let kinds: Vec<i64> = vec_new()  // 0 = immediate reply, 1 = job id
-            let refs: Vec<i64> = vec_new()   // imm index, or job id
-            let imm: Vec<bytes> = vec_new()  // immediate replies (PING/err/QUIT)
             while again == 1 && running == 1 {
                 let p = resp_parse_command(buf)
                 if p.ok == 0 {
@@ -1325,15 +1317,12 @@ fn lsm_mt_conn(ctx: i64) -> i64 !IO !Net !Par !Time {
                         drop(args)
                     } else {
                         let c0 = vec_get(args, 0)
+                        let mut rb = bytes_new(0)
                         if lsm_eq_ci(c0, "PING") == 1 {
-                            vec_push(kinds, 0)
-                            vec_push(refs, vec_len(imm))
-                            vec_push(imm, resp_pong())
+                            rb = resp_pong()
                         } else {
                             if lsm_eq_ci(c0, "QUIT") == 1 {
-                                vec_push(kinds, 0)
-                                vec_push(refs, vec_len(imm))
-                                vec_push(imm, resp_ok())
+                                rb = resp_ok()
                                 running = 0
                                 again = 0
                             } else {
@@ -1369,64 +1358,68 @@ fn lsm_mt_conn(ctx: i64) -> i64 !IO !Net !Par !Time {
                                     }
                                 }
                                 if ok_cmd == 1 {
-                                    // Unique id: fd-scoped so multi conn threads need no shared idbox.
-                                    let id = fd * 1000000000 + local
-                                    local = local + 1
-                                    lsm_mt_submit(work_pack, nshards, mydone, id, op, key, val, extra)?
-                                    vec_push(kinds, 1)
-                                    vec_push(refs, id)
+                                    // R55: inline engine op under shard mutex
+                                    let sid = lsm_shard_ix(nshards, key)
+                                    let mu = map_get(mus, sid)
+                                    mutex_lock(mu)
+                                    let db0 = map_get(dbs, sid)
+                                    if op == LSM_OP_SET() {
+                                        let db1 = lsm_put(db0, key, val)?
+                                        map_set(dbs, sid, db1)
+                                        rb = resp_ok()
+                                    } else {
+                                        if op == LSM_OP_GET() {
+                                            let g = lsm_get(db0, key)?
+                                            map_set(dbs, sid, g.db)
+                                            if g.found == 0 {
+                                                rb = resp_null_bulk()
+                                            } else {
+                                                rb = resp_bulk_b(g.val)
+                                            }
+                                        } else {
+                                            if op == LSM_OP_DEL() {
+                                                let g2 = lsm_get(db0, key)?
+                                                let mut db2 = g2.db
+                                                let mut nfound: i64 = 0
+                                                if g2.found == 1 {
+                                                    db2 = lsm_del(db2, key)?
+                                                    nfound = 1
+                                                }
+                                                map_set(dbs, sid, db2)
+                                                rb = resp_int(nfound)
+                                            } else {
+                                                let sec = parse_int(extra)
+                                                let db3 = lsm_put_ex(db0, key, val, sec)?
+                                                map_set(dbs, sid, db3)
+                                                rb = resp_ok()
+                                            }
+                                        }
+                                    }
+                                    mutex_unlock(mu)
                                 } else {
-                                    vec_push(kinds, 0)
-                                    vec_push(refs, vec_len(imm))
-                                    vec_push(imm, bytes_of_str(
+                                    rb = bytes_of_str(
                                         "-ERR mt mode: use SET/GET/DEL/SETEX/PING\r\n"
-                                    ))
+                                    )
                                 }
                             }
                         }
                         drop(args)
+                        let rl = bytes_len(rb)
+                        if out_len + rl > bytes_len(outb) {
+                            // grow: old scratch abandoned (rare; doubling caps it)
+                            let nb = bytes_new(bytes_len(outb) * 2)
+                            let keep = bytes_slice(outb, 0, out_len)
+                            bytes_put(nb, 0, keep)
+                            drop(keep)
+                            outb = nb
+                        }
+                        bytes_put(outb, out_len, rb)
+                        out_len = out_len + rl
+                        drop(rb)
+                        n_out = n_out + 1
                     }
                 }
             }
-            // Phase 2: wait for job replies in request order, append to outb.
-            let mut wi: i64 = 0
-            let nk = vec_len(kinds)
-            while wi < nk {
-                let mut rb = bytes_new(0)
-                let mut rb_own: i64 = 0
-                if vec_get(kinds, wi) == 0 {
-                    rb = vec_get(imm, vec_get(refs, wi))
-                } else {
-                    let rep_s = lsm_mt_wait(mydone, vec_get(refs, wi), stash)?
-                    rb = bytes_of_str(rep_s)
-                    rb_own = 1
-                }
-                let rl = bytes_len(rb)
-                if out_len + rl > bytes_len(outb) {
-                    // grow: old scratch is abandoned (rare; doubling caps it)
-                    let nb = bytes_new(bytes_len(outb) * 2)
-                    let keep = bytes_slice(outb, 0, out_len)
-                    bytes_put(nb, 0, keep)
-                    drop(keep)
-                    outb = nb
-                }
-                bytes_put(outb, out_len, rb)
-                out_len = out_len + rl
-                if rb_own == 1 {
-                    drop(rb)
-                }
-                n_out = n_out + 1
-                wi = wi + 1
-            }
-            let mut di: i64 = 0
-            while di < vec_len(imm) {
-                let ib = vec_get(imm, di)
-                drop(ib)
-                di = di + 1
-            }
-            drop(kinds)
-            drop(refs)
-            drop(imm)
             if n_out > 0 {
                 let wb = bytes_slice(outb, 0, out_len)
                 let w = tcp_write_bytes(fd, wb)?
@@ -1454,21 +1447,52 @@ fn lsm_serve_mt_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
             nshards = 1
         }
     }
-    let p = lsm_parallel_start(dir, nshards)?
-    let work_pack = lsm_work_pack(p.work, 0, p.n)
+    let mut flush_at: i64 = 256
+    let fe = env("LSM_FLUSH_AT")?
+    if fe != "" {
+        flush_at = parse_int(fe)
+    }
+    let mut compact_at: i64 = 4
+    let ce = env("LSM_COMPACT_AT")?
+    if ce != "" {
+        compact_at = parse_int(ce)
+    }
+    let mut sync_every: i64 = 1
+    let se = env("LSM_SYNC_EVERY")?
+    if se != "" {
+        let sv = parse_int(se)
+        if sv > 0 {
+            sync_every = sv
+        }
+    }
+    // R55: shard dbs opened once here; conn threads execute ops directly
+    // under per-shard mutexes (hop-less). Map handles go through the ctx.
+    let dbs: Map<i64, LsmDB> = map_new()
+    let mus: Map<i64, i64> = map_new()
+    let mut sid: i64 = 0
+    while sid < nshards {
+        let sp = lsm_shard_path(dir, sid, nshards)
+        let mut sdb = lsm_open(sp, flush_at, compact_at)?
+        if sdb.ok == 0 {
+            return 0 - 1
+        }
+        sdb.sync_every = sync_every
+        map_set(dbs, sid, sdb)
+        map_set(mus, sid, mutex_new())
+        sid = sid + 1
+    }
     let listener = tcp_listen(port)?
     if listener < 0 {
-        lsm_parallel_stop(p)?
         return 0 - 1
     }
+    let pack = cell2(map_h(dbs), cell2(map_h(mus), nshards))
     while true {
         let fd = tcp_accept(listener)?
         if fd >= 0 {
             if timeout_s > 0 {
                 tcp_set_timeouts(fd, timeout_s)?
             }
-            // go_bg per connection; shared workers via packed chans
-            go_bg(lsm_mt_conn, cell2(fd, cell2(p.done, cell2(p.n, work_pack))))
+            go_bg(lsm_mt_conn, cell2(fd, pack))
         }
     }
     return 0

@@ -134,4 +134,9 @@ Goal: Track S flagship — durable KV on RESP.
   (in-place memcpy append); MT conn keeps a persistent per-conn scratch.
   GET pipe=64: 114k→**289k (34→87%)**; pipe=16 shards=8: **99/85/86%**
   PING/SET/GET vs Redis — **done**
+- **R55 hop-less MT** — new `map_h`/`h_map` builtins; shard dbs live in a
+  shared `Map<i64, LsmDB>` (boxed, rehash-free after setup); conn threads
+  run engine ops inline under per-shard mutexes. Workers/chans dropped
+  from the MT command path. vs Redis (8 clients, shards=8): pipe=16
+  **104/93/98%**, pipe=64 **98/94/99%** PING/SET/GET — **done**
 - (next) richer RocksDB CF options; TTL in MT/P1 worker path

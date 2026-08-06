@@ -384,7 +384,31 @@ it already answers.
   pipe=16 shards=8 **PING 99% / SET 85% / GET 86%**.
   Artifacts: `vs-redis-20260806T114833Z.txt`, `…114851Z.txt`.
 
-**Still open (later):** richer RocksDB CF options; TTL ops in MT/P1 worker path; per-CF block-cache policy; LLVM backend parity for R51/R52/R54 (handle builtins, thread-local arena, bytes_put).
+**Shipped (R55 hop-less MT — parity with Redis):**
+- The remaining ~15% was structural: every command hopped conn thread →
+  chan → worker → chan → conn. Removed the hop entirely.
+- New builtins `map_h(map) -> i64` / `h_map(i64) -> map` (C backend; LLVM
+  parity TODO) — a shared `Map<i64, LsmDB>` passes through the go_bg ctx.
+- Design: shard dbs are boxed map entries (`baga_map_set_box` memcpys into
+  a stable per-entry box). All keys inserted before the first `go_bg`
+  (no rehash afterwards); each shard's entry is read/copied-back only
+  under its own mutex. Conn thread: `mutex_lock` → copy db out →
+  `lsm_put/get/del/put_ex` inline → store back → `mutex_unlock`.
+- No workers, no chans, no job packing on the MT command path; the R50
+  kinds/refs/imm machinery collapsed (replies are immediate again).
+- Safety note: concurrent `map_get_box` on *different* entries is pure
+  reads of stable buckets; same-entry access is mutex-serialized.
+- vs Redis 8.x (8 clients, n=5000, shards=8):
+
+  | pipe | PING | SET | GET |
+  |------|-----:|----:|----:|
+  | 16 | 350k (**104%**) | 234k (**93%**) | 220k (**98%**) |
+  | 64 | 613k (98%) | 363k (94%) | 326k (**99%**) |
+
+  Artifacts: `vs-redis-20260806T120051Z.txt`, `…120104Z.txt`.
+- Smoke: SET/GET/DEL/SETEX + kill/restart recovery — values survive.
+
+**Still open (later):** richer RocksDB CF options; TTL ops in MT/P1 worker path; per-CF block-cache policy; LLVM backend parity for R51/R52/R54/R55 (handle builtins, thread-local arena, bytes_put).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

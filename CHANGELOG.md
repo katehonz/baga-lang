@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Language R55 + RocksDB path — hop-less MT serve (Redis parity)
+- **`map_h` / `h_map` builtins** (C backend): shared `Map<i64, LsmDB>`
+  through the go_bg i64 ctx.
+- MT serve no longer hops commands through worker threads: shard dbs are
+  boxed map entries; conn threads execute `lsm_put/get/del/put_ex` inline
+  under per-shard mutexes (all shard keys inserted before the first go_bg,
+  so the map never rehashes at runtime).
+- vs Redis 8.x (8 clients, shards=8): pipe=16 **104/93/98%**, pipe=64
+  **98/94/99%** (PING/SET/GET). Smoke: SET/GET/DEL/SETEX + restart
+  recovery pass.
+
 ### Language R54 — `bytes_put` builtin (bulk in-place append)
 - `bytes_put(dst, off, src)` — memcpy append into a preallocated buffer.
   rocksbaga MT serve assembles pipelined replies in a persistent per-conn

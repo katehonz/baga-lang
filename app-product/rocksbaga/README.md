@@ -106,7 +106,8 @@ fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 
 ## Honest limits
 
-Serial accept by default; `LSM_SERVE_MT=1` (R47 fixed) wins at pipe≥8.
+Serial accept by default; `LSM_SERVE_MT=1` (R55 hop-less) reaches Redis
+parity on this harness (8 clients: 93–104% PING/SET/GET).
 Compaction not RocksDB-scored.
 TTL is lazy (expiry on read/flush/compact); no active expire cycle.
 Details: [docs/gaps.md](docs/gaps.md), [docs/PLAN.md](docs/PLAN.md).
