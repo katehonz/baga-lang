@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-08-06
+
+**rocksbaga storage path R10–R19**, layered package architecture, engine
+perf (get/put, multi-conn RESP, TTL, memory arc), plus post-0.8.0 product
+and verify work carried in Unreleased.
+
 ### RocksDB path R19 — shared page cache + pin counts
 - **`PageCache.fds` / `pins`:** multi-file buffer pool. Eviction writeback
   uses the registered fd for each page's `file_id` (fixes wrong-fd writeback

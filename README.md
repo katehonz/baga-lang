@@ -1,6 +1,6 @@
 # Baga ⚔️
 
-**Version [0.8.0](VERSION)** · [Changelog](CHANGELOG.md)
+**Version [0.8.4](VERSION)** · [Changelog](CHANGELOG.md)
 
 > *"The question is not 'what is new'. The question is 'what has not been glued together yet'."*
 
