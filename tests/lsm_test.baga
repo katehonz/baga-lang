@@ -2,6 +2,7 @@
 
 import "rocksbaga/engine.baga"
 import "rocksbaga/server.baga"
+import "rocksbaga/db/backup.baga"
 import "kvbaga/resp.baga"
 import "std/net/tcp.baga"
 import "std/os/os.baga"
@@ -392,6 +393,192 @@ fn main() -> i64 !Net !IO !Par !Time {
     let dds = lsm_dbsize(dg3.db)?
     check(fails, "r58_dst_size", dds.n == 49)
     lsm_close(dds.db)?
+
+    // --- R62: backup create + verify + ship/restore ---
+    wipe("/tmp/baga_lsm_bk_src")?
+    wipe("/tmp/baga_lsm_bk_a")?
+    wipe("/tmp/baga_lsm_bk_b")?
+    unlink("/tmp/baga_lsm_bk_a.backup")?
+    unlink("/tmp/baga_lsm_bk_b.backup")?
+    let mut bdb = lsm_open("/tmp/baga_lsm_bk_src", 8, 4)?
+    bdb.sync_every = 1000
+    let mut bi: i64 = 0
+    while bi < 30 {
+        bdb = lsm_put(bdb, concat("bk", int_to_str(bi)), concat("v", int_to_str(bi)))?
+        bi = bi + 1
+    }
+    bdb = lsm_del(bdb, "bk0")?
+    let bcr = lsm_backup_create(bdb, "/tmp/baga_lsm_bk_a")?
+    bdb = bcr.db
+    check(fails, "r62_create_ok", bcr.stat.ok == 1 && bcr.stat.nfiles >= 1)
+    lsm_close(bdb)?
+    let bv = lsm_backup_verify("/tmp/baga_lsm_bk_a")?
+    check(fails, "r62_verify", bv.ok == 1 && bv.nfiles == bcr.stat.nfiles)
+    // open backup as ordinary store
+    let mut bopen = lsm_open("/tmp/baga_lsm_bk_a", 8, 4)?
+    let bg = lsm_get(bopen, "bk1")?
+    check(fails, "r62_open_get", bg.found == 1 && str_of_bytes(bg.val) == "v1")
+    let bg2 = lsm_get(bg.db, "bk0")?
+    check(fails, "r62_open_del", bg2.found == 0)
+    lsm_close(bg2.db)?
+    // ship offline to second prefix + restore open
+    let sh = lsm_backup_ship("/tmp/baga_lsm_bk_a", "/tmp/baga_lsm_bk_b")?
+    check(fails, "r62_ship", sh.ok == 1)
+    let bv2 = lsm_backup_verify("/tmp/baga_lsm_bk_b")?
+    check(fails, "r62_ship_verify", bv2.ok == 1)
+    let mut bopen2 = lsm_open("/tmp/baga_lsm_bk_b", 8, 4)?
+    let bg3 = lsm_get(bopen2, "bk29")?
+    check(fails, "r62_ship_get", bg3.found == 1 && str_of_bytes(bg3.val) == "v29")
+    let bds = lsm_dbsize(bg3.db)?
+    check(fails, "r62_ship_size", bds.n == 29)
+    lsm_close(bds.db)?
+    // --- R63: streaming SCAN snapshot (multi-page, no re-fold per page) ---
+    wipe("/tmp/baga_lsm_scan")?
+    let mut scandb = lsm_open("/tmp/baga_lsm_scan", 64, 8)?
+    scandb.sync_every = 1000
+    let mut si: i64 = 0
+    while si < 25 {
+        scandb = lsm_put(scandb, concat("s", int_to_str(si)), "v")?
+        si = si + 1
+    }
+    // page through all keys with COUNT=7
+    let mut cur: i64 = 0
+    let mut seen_n: i64 = 0
+    let mut rounds: i64 = 0
+    let mut done: i64 = 0
+    while done == 0 && rounds < 20 {
+        let sc = lsm_scan(scandb, cur, 7, "")?
+        scandb = sc.db
+        seen_n = seen_n + vec_len(sc.keys)
+        rounds = rounds + 1
+        if sc.next == 0 {
+            done = 1
+        } else {
+            cur = sc.next
+        }
+    }
+    check(fails, "r63_scan_pages", rounds >= 3 && rounds <= 5)
+    check(fails, "r63_scan_count", seen_n == 25)
+    // MATCH filter
+    let sc2 = lsm_scan(scandb, 0, 100, "s1*")?
+    scandb = sc2.db
+    // s1, s10..s19 → 11 keys
+    check(fails, "r63_match", vec_len(sc2.keys) == 11 && sc2.next == 0)
+    // write invalidates mid-stream cache; new SCAN sees new key
+    scandb = lsm_put(scandb, "s99", "x")?
+    let sc3 = lsm_scan(scandb, 0, 1000, "")?
+    scandb = sc3.db
+    check(fails, "r63_after_write", vec_len(sc3.keys) == 26 && sc3.next == 0)
+    // second page after first half — cache hit path (same epoch)
+    let sc4 = lsm_scan(scandb, 0, 10, "")?
+    scandb = sc4.db
+    check(fails, "r63_page1", vec_len(sc4.keys) == 10 && sc4.next == 10)
+    let sc5 = lsm_scan(scandb, sc4.next, 10, "")?
+    scandb = sc5.db
+    check(fails, "r63_page2", vec_len(sc5.keys) == 10 && sc5.next == 20)
+    let sc6 = lsm_scan(scandb, sc5.next, 10, "")?
+    scandb = sc6.db
+    check(fails, "r63_page3", vec_len(sc6.keys) == 6 && sc6.next == 0)
+    lsm_close(scandb)?
+
+    // --- R65: binary RESP values (embedded NUL) ---
+    wipe("/tmp/baga_lsm_bin")?
+    let mut bindb = lsm_open("/tmp/baga_lsm_bin", 64, 8)?
+    bindb.sync_every = 1000
+    // in-process put_b / get
+    let nulval = bytes_new(3)
+    bytes_set(nulval, 0, 65)   // 'A'
+    bytes_set(nulval, 1, 0)    // NUL
+    bytes_set(nulval, 2, 66)   // 'B'
+    bindb = lsm_put_b(bindb, "bk", nulval)?
+    let bg0 = lsm_get(bindb, "bk")?
+    bindb = bg0.db
+    check(fails, "r65_put_b", bg0.found == 1 && bytes_len(bg0.val) == 3
+        && bytes_at(bg0.val, 0) == 65 && bytes_at(bg0.val, 1) == 0 && bytes_at(bg0.val, 2) == 66)
+    // wire: RESP encode_b → serve conn → GET bulk_b
+    bindb = lsm_flush_force(bindb)?
+    let bport: i64 = 17665
+    let blisten = tcp_listen(bport)?
+    check(fails, "r65_listen", blisten >= 0)
+    if blisten >= 0 {
+        let bclient = tcp_connect("127.0.0.1", bport)?
+        let bserv = tcp_accept(blisten)?
+        check(fails, "r65_accept", bclient >= 0 && bserv >= 0)
+        // SET bin A\0B
+        let setargs: Vec<bytes> = vec_new()
+        vec_push(setargs, bytes_of_str("SET"))
+        vec_push(setargs, bytes_of_str("wkey"))
+        vec_push(setargs, nulval)
+        let setcmd = resp_encode_command_b(setargs)
+        tcp_write_bytes(bserv, bytes_new(0))?  // no-op keep type checker happy path
+        // drive one command on server side via parse+exec_b (no full serve loop)
+        let mut sdb = bindb
+        let pset = resp_parse_command_b(setcmd)
+        check(fails, "r65_parse_set", pset.ok == 1 && vec_len(pset.args) == 3
+            && bytes_len(vec_get(pset.args, 2)) == 3 && bytes_at(vec_get(pset.args, 2), 1) == 0)
+        let exs = lsm_exec_b(sdb, pset.args)?
+        sdb = exs.db
+        check(fails, "r65_exec_set", bytes_len(exs.reply) >= 5)
+        let gbin = lsm_get(sdb, "wkey")?
+        sdb = gbin.db
+        check(fails, "r65_wire_get", gbin.found == 1 && bytes_len(gbin.val) == 3
+            && bytes_at(gbin.val, 1) == 0)
+        // APPEND binary
+        let more = bytes_new(1)
+        bytes_set(more, 0, 67)  // 'C'
+        let apargs: Vec<bytes> = vec_new()
+        vec_push(apargs, bytes_of_str("APPEND"))
+        vec_push(apargs, bytes_of_str("wkey"))
+        vec_push(apargs, more)
+        let exa = lsm_exec_b(sdb, apargs)?
+        sdb = exa.db
+        let g2 = lsm_get(sdb, "wkey")?
+        sdb = g2.db
+        check(fails, "r65_append", g2.found == 1 && bytes_len(g2.val) == 4
+            && bytes_at(g2.val, 3) == 67)
+        // legacy parse still works for text (no regression)
+        let leg = resp_parse_command(bytes_of_str("*2\r\n$4\r\nPING\r\n$0\r\n\r\n"))
+        // actually PING is *1 — keep simple
+        let leg2 = resp_parse_command(resp_encode_command(args1("PING")))
+        check(fails, "r65_legacy_parse", leg2.ok == 1 && vec_len(leg2.args) == 1
+            && vec_get(leg2.args, 0) == "PING")
+        bindb = sdb
+        close(bclient)
+        close(bserv)
+        close(blisten)
+    }
+    lsm_close(bindb)?
+
+    // corrupt one SST byte → verify must fail
+    let mmeta = lsm_backup_load_meta("/tmp/baga_lsm_bk_b")?
+    check(fails, "r62_meta_ok", mmeta.ok == 1 && vec_len(mmeta.entries) >= 1)
+    let mut ei: i64 = 0
+    let mut corrupt_path = ""
+    while ei < vec_len(mmeta.entries) {
+        let e = vec_get(mmeta.entries, ei)
+        if e.kind == "sst" && corrupt_path == "" {
+            corrupt_path = lsm_backup_entry_path(
+                "/tmp/baga_lsm_bk_b",
+                lsm_backup_shard_suffix(mmeta.nshards, e.shard),
+                e.kind,
+                e.gen
+            )
+        }
+        ei = ei + 1
+    }
+    check(fails, "r62_found_sst", corrupt_path != "")
+    if corrupt_path != "" {
+        let cfd = open(corrupt_path, 2, 0)?  // O_RDWR
+        if cfd >= 0 {
+            let one = bytes_new(1)
+            bytes_set(one, 0, 255)
+            fd_pwrite_bytes(cfd, one, 0)?
+            drop(one)
+            close(cfd)
+        }
+        let bad = lsm_backup_verify("/tmp/baga_lsm_bk_b")?
+        check(fails, "r62_verify_corrupt", bad.ok == 0)
+    }
 
     if vec_len(fails) == 0 {
         print("lsm_test: all passed")

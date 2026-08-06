@@ -40,9 +40,15 @@ rocksbaga/
 ├── db/
 │   ├── types.baga           # LsmDB struct
 │   ├── compact.baga         # pick, merge, promote L0…L3, MANIFEST write
-│   └── engine.baga          # open/put/get/flush/recovery (orchestrates)
+│   ├── engine.baga          # open/put/get/flush/recovery (orchestrates)
+│   ├── backup.baga          # R62: BAGABK1 inventory, create/verify/ship
+│   └── …                    # shard, cf, manifest, workers, multidb
 ├── net/
 │   └── server.baga          # RESP2 front-end (redis-cli subset)
+├── tools/
+│   ├── serve.baga
+│   ├── sst_dump.baga
+│   └── backup.baga          # R62 offline CLI
 ├── examples/
 │   └── demo.baga            # runnable demo
 └── docs/
@@ -168,7 +174,9 @@ Layers own **code**, not a new disk format.
 | ~~`tools/sst_dump`~~ | **done (R26)** — offline SST/MANIFEST dump |
 | ~~`db/shard.baga`~~ | **done (R32)** — key-hash multi-shard cluster |
 | ~~`db/workers.baga`~~ | **done (R33/R35)** — per-shard workers + in-mem mailbox |
-| (later) version edit log | beyond flat MANIFEST if needed |
+| ~~version edit log~~ | **done (R40)** — A/D/N + compact |
+| ~~`db/backup.baga` + tools/backup~~ | **done (R62)** — checkpoint + BAGABK1 ship |
+| ~~per-CF block cache~~ | **done (R64)** — `cache_pages` per CF in `.cfs` |
 
 ## Tests
 

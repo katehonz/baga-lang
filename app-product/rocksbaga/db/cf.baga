@@ -6,8 +6,9 @@
 //       CF 0 → <dir>            (compat with single-store)
 //       CF n → <dir>.cf{n}
 //   • WAL records: legacy op 1/2 = CF 0; op 17/18 = CF put/del + cf_id.
-//   • Not full RocksDB CF (no per-CF options object, no shared block cache
-//     policy). Enough for multi-namespace durability with one fsync stream.
+//   • Not full RocksDB CF (no shared global block-cache pool). Each CF has
+//     its own page cache; R64 sets per-CF capacity (cache_pages) as policy.
+//     Enough for multi-namespace durability with one fsync stream.
 //
 // API: lsm_cf_open / create / put / get / del / flush / drop / close.
 // R46: durable name map at <dir>.cfs (atomic publish like MANIFEST).
@@ -19,6 +20,7 @@
 import "engine.baga"
 import "manifest.baga"
 import "compact.baga"
+import "../cache/page.baga"
 import "../wal/wal.baga"
 import "../table/sstable.baga"
 import "../util/codec.baga"
@@ -45,9 +47,10 @@ fn lsm_cfs_map_tmp_path(dir: str) -> str {
 
 // Format:
 //   <next_cf_id>\n
-//   <name> <id> [<flush_at> <compact_at>]\n   (R61: optional per-CF options)
+//   <name> <id> [<flush_at> <compact_at> [<cache_pages>]]\n
+//   R61: flush/compact; R64: optional cache_pages (0 = no override in file).
 //   ...
-fn lsm_cfs_format(next_id: i64, names: Map<str, i64>, of: Map<i64, i64>, oc: Map<i64, i64>) -> str {
+fn lsm_cfs_format(next_id: i64, names: Map<str, i64>, of: Map<i64, i64>, oc: Map<i64, i64>, ocache: Map<i64, i64>) -> str {
     let mut s = concat(int_to_str(next_id), "\n")
     let ks = map_keys(names)
     let mut i: i64 = 0
@@ -58,7 +61,8 @@ fn lsm_cfs_format(next_id: i64, names: Map<str, i64>, of: Map<i64, i64>, oc: Map
         if name != "default" {
             s = concat(s, concat(name, " "))
             s = concat(s, int_to_str(id))
-            if map_has(of, id) == 1 || map_has(oc, id) == 1 {
+            let has_o = map_has(of, id) == 1 || map_has(oc, id) == 1 || map_has(ocache, id) == 1
+            if has_o {
                 let mut fa: i64 = 0
                 let mut ca: i64 = 0
                 if map_has(of, id) == 1 {
@@ -68,6 +72,9 @@ fn lsm_cfs_format(next_id: i64, names: Map<str, i64>, of: Map<i64, i64>, oc: Map
                     ca = map_get(oc, id)
                 }
                 s = concat(s, concat(concat(concat(" ", int_to_str(fa)), " "), int_to_str(ca)))
+                if map_has(ocache, id) == 1 {
+                    s = concat(s, concat(" ", int_to_str(map_get(ocache, id))))
+                }
             }
             s = concat(s, "\n")
         }
@@ -81,6 +88,7 @@ struct LsmCfsMap {
     names: Map<str, i64>,
     of: Map<i64, i64>,
     oc: Map<i64, i64>,
+    ocache: Map<i64, i64>,
     ok: i64
 }
 
@@ -89,9 +97,12 @@ fn lsm_cfs_load(dir: str) -> LsmCfsMap !IO {
     map_set(names, "default", 0)
     let of: Map<i64, i64> = map_new()
     let oc: Map<i64, i64> = map_new()
+    let ocache: Map<i64, i64> = map_new()
     let body = read_file(lsm_cfs_map_path(dir))?
     if body == "" {
-        return LsmCfsMap { next_id: 1, names: names, of: of, oc: oc, ok: 1 }
+        return LsmCfsMap {
+            next_id: 1, names: names, of: of, oc: oc, ocache: ocache, ok: 1
+        }
     }
     let lines = str_split(body, "\n")
     let mut next_id: i64 = 1
@@ -114,7 +125,7 @@ fn lsm_cfs_load(dir: str) -> LsmCfsMap !IO {
                     if id >= next_id {
                         next_id = id + 1
                     }
-                    // R61: optional per-CF options on the same line
+                    // R61/R64: optional per-CF options on the same line
                     if vec_len(parts) >= 4 {
                         let fa = parse_int(vec_get(parts, 2))
                         let ca = parse_int(vec_get(parts, 3))
@@ -125,17 +136,25 @@ fn lsm_cfs_load(dir: str) -> LsmCfsMap !IO {
                             map_set(oc, id, ca)
                         }
                     }
+                    if vec_len(parts) >= 5 {
+                        let cp = parse_int(vec_get(parts, 4))
+                        if cp >= 16 {
+                            map_set(ocache, id, cp)
+                        }
+                    }
                 }
             }
         }
         i = i + 1
     }
-    return LsmCfsMap { next_id: next_id, names: names, of: of, oc: oc, ok: 1 }
+    return LsmCfsMap {
+        next_id: next_id, names: names, of: of, oc: oc, ocache: ocache, ok: 1
+    }
 }
 
 // Atomic publish of name map (tmp + fsync + rename).
-fn lsm_cfs_save(dir: str, next_id: i64, names: Map<str, i64>, of: Map<i64, i64>, oc: Map<i64, i64>) -> i64 !IO {
-    let body = lsm_cfs_format(next_id, names, of, oc)
+fn lsm_cfs_save(dir: str, next_id: i64, names: Map<str, i64>, of: Map<i64, i64>, oc: Map<i64, i64>, ocache: Map<i64, i64>) -> i64 !IO {
+    let body = lsm_cfs_format(next_id, names, of, oc, ocache)
     let tmp = lsm_cfs_map_tmp_path(dir)
     let live = lsm_cfs_map_path(dir)
     let fd = open(tmp, 577, 420)?
@@ -179,11 +198,25 @@ struct LsmCFDB {
     // cf_id → LsmDB (SST path = lsm_cf_path; WAL fields ignored for n>0)
     families: Map<i64, LsmDB>,
     names: Map<str, i64>,
-    // R61: per-CF options (cf_id → value); absent → db-level default
+    // R61/R64: per-CF options (cf_id → value); absent → db-level default
     opt_flush: Map<i64, i64>,
     opt_compact: Map<i64, i64>,
+    opt_cache: Map<i64, i64>,   // R64: page-cache capacity (pages × 4 KiB)
+    cache_pages: i64,           // R64: default for families without override (0 → engine 2048)
     next_cf_id: i64,
     ok: i64
+}
+
+// R64: apply page-cache capacity to a family (min 16 pages).
+fn lsm_cf_apply_cache(fam: LsmDB, pages: i64) -> LsmDB {
+    let mut p = pages
+    if p < 16 {
+        return fam
+    }
+    // Same pattern as lsm_cluster_apply_cache: replace buffer pool.
+    // SST pages are read-mostly; open fds re-register on next get.
+    fam.cache = pc_new(4096, p)
+    return fam
 }
 
 fn lsm_cf_ensure(db: LsmCFDB, cf_id: i64) -> LsmCFDB !IO {
@@ -201,6 +234,14 @@ fn lsm_cf_ensure(db: LsmCFDB, cf_id: i64) -> LsmCFDB !IO {
     fam.compact_at = db.compact_at
     if map_has(db.opt_compact, cf_id) == 1 {
         fam.compact_at = map_get(db.opt_compact, cf_id)
+    }
+    // R64: per-CF or db-level page cache budget
+    let mut cp: i64 = db.cache_pages
+    if map_has(db.opt_cache, cf_id) == 1 {
+        cp = map_get(db.opt_cache, cf_id)
+    }
+    if cp >= 16 {
+        fam = lsm_cf_apply_cache(fam, cp)
     }
     fam.sync_every = db.sync_every
     fam.wal_fd = 0 - 1
@@ -233,7 +274,8 @@ fn lsm_cf_open(dir: str, flush_at: i64, compact_at: i64) -> LsmCFDB !IO {
             wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
             sync_every: 1, since_sync: 0, flush_at: fa, compact_at: ca,
             families: families, names: names,
-            opt_flush: map_new(), opt_compact: map_new(),
+            opt_flush: map_new(), opt_compact: map_new(), opt_cache: map_new(),
+            cache_pages: 0,
             next_cf_id: next_cf_id, ok: 0
         }
     }
@@ -242,7 +284,8 @@ fn lsm_cf_open(dir: str, flush_at: i64, compact_at: i64) -> LsmCFDB !IO {
         wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
         sync_every: 1, since_sync: 0, flush_at: fa, compact_at: ca,
         families: families, names: names,
-        opt_flush: nm.of, opt_compact: nm.oc,
+        opt_flush: nm.of, opt_compact: nm.oc, opt_cache: nm.ocache,
+        cache_pages: 0,
         next_cf_id: next_cf_id, ok: 1
     }
     // Always ensure default CF 0 (loads its SST manifest)
@@ -302,7 +345,7 @@ fn lsm_cf_create(db: LsmCFDB, name: str) -> LsmCFCreate !IO {
     db.next_cf_id = id + 1
     map_set(db.names, name, id)
     db = lsm_cf_ensure(db, id)?
-    if lsm_cfs_save(db.dir, db.next_cf_id, db.names, db.opt_flush, db.opt_compact)? != 0 {
+    if lsm_cfs_save(db.dir, db.next_cf_id, db.names, db.opt_flush, db.opt_compact, db.opt_cache)? != 0 {
         db.ok = 0
         return LsmCFCreate { db: db, id: 0 - 1 }
     }
@@ -397,51 +440,102 @@ fn lsm_cf_drop(db: LsmCFDB, name: str) -> LsmCFDrop !IO !Time {
     unlink(concat(path, ".manifest.tmp"))?
     map_del(db.families, id)
     map_del(db.names, name)
-    if lsm_cfs_save(db.dir, db.next_cf_id, db.names, db.opt_flush, db.opt_compact)? != 0 {
+    if lsm_cfs_save(db.dir, db.next_cf_id, db.names, db.opt_flush, db.opt_compact, db.opt_cache)? != 0 {
         db.ok = 0
         return LsmCFDrop { db: db, rc: 0 - 1 }
     }
     return LsmCFDrop { db: db, rc: 1 }
 }
 
-// R61: per-CF options — flush_at / compact_at overrides, persisted in .cfs.
-// Values <= 0 clear the override (db-level default applies again).
-fn lsm_cf_setopt(db: LsmCFDB, name: str, flush_at: i64, compact_at: i64) -> LsmCFDB !IO {
+// R64: set a single per-CF option by name (does not touch other options).
+// Keys: "flush_at" | "compact_at" | "cache_pages" (case-sensitive API;
+// RESP normalizes via lsm_eq_ci before call).
+// val > 0 → set override; val <= 0 → clear override (db default).
+// cache_pages minimum effective is 16.
+fn lsm_cf_setopt_one(db: LsmCFDB, name: str, key: str, val: i64) -> LsmCFDB !IO {
     if lsm_cf_id_of(db, name) < 0 {
         db.ok = 0
         return db
     }
     let id = map_get(db.names, name)
-    if flush_at > 0 {
-        map_set(db.opt_flush, id, flush_at)
+    if key == "flush_at" {
+        if val > 0 {
+            map_set(db.opt_flush, id, val)
+        } else {
+            if map_has(db.opt_flush, id) == 1 {
+                map_del(db.opt_flush, id)
+            }
+        }
     } else {
-        if map_has(db.opt_flush, id) == 1 {
-            map_del(db.opt_flush, id)
+        if key == "compact_at" {
+            if val > 0 {
+                map_set(db.opt_compact, id, val)
+            } else {
+                if map_has(db.opt_compact, id) == 1 {
+                    map_del(db.opt_compact, id)
+                }
+            }
+        } else {
+            if key == "cache_pages" {
+                if val >= 16 {
+                    map_set(db.opt_cache, id, val)
+                } else {
+                    if map_has(db.opt_cache, id) == 1 {
+                        map_del(db.opt_cache, id)
+                    }
+                }
+            } else {
+                db.ok = 0
+                return db
+            }
         }
     }
-    if compact_at > 0 {
-        map_set(db.opt_compact, id, compact_at)
-    } else {
-        if map_has(db.opt_compact, id) == 1 {
-            map_del(db.opt_compact, id)
-        }
-    }
-    if lsm_cfs_save(db.dir, db.next_cf_id, db.names, db.opt_flush, db.opt_compact)? != 0 {
+    if lsm_cfs_save(db.dir, db.next_cf_id, db.names, db.opt_flush, db.opt_compact, db.opt_cache)? != 0 {
         db.ok = 0
         return db
     }
     // apply live if the family is loaded
     if map_has(db.families, id) == 1 {
         let mut fam = map_get(db.families, id)
-        if flush_at > 0 {
-            fam.flush_at = flush_at
+        if key == "flush_at" {
+            if val > 0 {
+                fam.flush_at = val
+            } else {
+                fam.flush_at = db.flush_at
+            }
         }
-        if compact_at > 0 {
-            fam.compact_at = compact_at
+        if key == "compact_at" {
+            if val > 0 {
+                fam.compact_at = val
+            } else {
+                fam.compact_at = db.compact_at
+            }
+        }
+        if key == "cache_pages" {
+            let mut cp = db.cache_pages
+            if val >= 16 {
+                cp = val
+            }
+            if cp >= 16 {
+                fam = lsm_cf_apply_cache(fam, cp)
+            } else {
+                // clear → engine default pool
+                fam = lsm_cf_apply_cache(fam, 2048)
+            }
         }
         map_set(db.families, id, fam)
     }
     return db
+}
+
+// R61: bulk set flush_at / compact_at (0 clears that option). Prefer
+// lsm_cf_setopt_one for single-key updates so other options are left alone.
+fn lsm_cf_setopt(db: LsmCFDB, name: str, flush_at: i64, compact_at: i64) -> LsmCFDB !IO {
+    db = lsm_cf_setopt_one(db, name, "flush_at", flush_at)?
+    if db.ok == 0 {
+        return db
+    }
+    return lsm_cf_setopt_one(db, name, "compact_at", compact_at)?
 }
 
 // Shared WAL append (CF-aware record).
@@ -523,15 +617,15 @@ fn lsm_cf_maybe_sync(db: LsmCFDB) -> LsmCFDB !IO {
     return db
 }
 
-fn lsm_cf_put(db: LsmCFDB, cf_id: i64, key: str, val: str) -> LsmCFDB !IO !Time {
+// R65: binary-safe CF put (value may contain NUL).
+fn lsm_cf_put_b(db: LsmCFDB, cf_id: i64, key: str, val: bytes) -> LsmCFDB !IO !Time {
     db = lsm_cf_ensure(db, cf_id)?
-    let vb = bytes_of_str(val)
-    db = lsm_cf_wal_append(db, 1, cf_id, key, vb)?
+    db = lsm_cf_wal_append(db, 1, cf_id, key, val)?
     if db.ok == 0 {
         return db
     }
     let mut fam = map_get(db.families, cf_id)
-    map_set(fam.mem, key, vb)
+    map_set(fam.mem, key, val)
     if map_len(fam.tomb) > 0 {
         map_del(fam.tomb, key)
     }
@@ -544,6 +638,10 @@ fn lsm_cf_put(db: LsmCFDB, cf_id: i64, key: str, val: str) -> LsmCFDB !IO !Time 
         db = lsm_cf_flush(db, cf_id)?
     }
     return db
+}
+
+fn lsm_cf_put(db: LsmCFDB, cf_id: i64, key: str, val: str) -> LsmCFDB !IO !Time {
+    return lsm_cf_put_b(db, cf_id, key, bytes_of_str(val))?
 }
 
 struct LsmCFGet {
@@ -740,7 +838,7 @@ fn lsm_cf_close(db: LsmCFDB) -> i64 !IO !Time {
         close(db.wal_fd)
     }
     // Persist name map
-    lsm_cfs_save(db.dir, db.next_cf_id, db.names, db.opt_flush, db.opt_compact)?
+    lsm_cfs_save(db.dir, db.next_cf_id, db.names, db.opt_flush, db.opt_compact, db.opt_cache)?
     // Close family SST caches (no WAL)
     i = 0
     while i < vec_len(ks) {

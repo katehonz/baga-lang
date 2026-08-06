@@ -282,12 +282,23 @@ is the MEM-3-full / str-reclamation roadmap item, not a bug.
   walks all logical DB indices.
 
 **Shipped (R43 SCAN):**
-- Cursor paging over sorted live keys + MATCH/COUNT. Still full live-set fold
-  per call (honest; not a streaming iterator yet).
+- Cursor paging over live keys + MATCH/COUNT.
+
+**Shipped (R63 streaming SCAN):**
+- `write_epoch` / `scan_epoch` / `scan_keys` / `scan_pat` on `LsmDB`
+  (cluster: sum of shard epochs + cluster snapshot).
+- First SCAN of a cursor loop folds live keys once and filters MATCH;
+  subsequent pages are O(count) slices — **no per-page full re-fold**.
+- put/del (via `lsm_scan_touch`) invalidate the snapshot.
+- Snapshot freed when next cursor returns 0.
+- Unordered results (Redis SCAN style); `KEYS` remains sorted.
+- Not a block-level merge iterator: the first page of a loop is still O(n)
+  live fold; mid-loop concurrent writes may see Redis-class
+  duplicates/skips after rebuild.
 
 **Shipped (R44 shared-WAL CF):**
 - One WAL, many CF memtables/SST trees. Engine API + recover.
-  No per-CF block-cache policy.
+  Per-CF page-cache size: R64.
 
 **Shipped (R45 MT serve):**
 - `LSM_SERVE_MT=1`: OS thread per connection, shared exclusive shard workers.
@@ -442,13 +453,41 @@ it already answers.
   CHECKPOINT → fresh server on the copy serves MGET correctly.
 
 **Shipped (R61 per-CF options):**
-- `lsm_cf_setopt(db, name, flush_at, compact_at)` + RESP `CF.SETOPT`.
+- `lsm_cf_setopt` / `lsm_cf_setopt_one` + RESP `CF.SETOPT`.
   Overrides live in `.cfs` as optional 3rd/4th line fields; applied in
   `lsm_cf_ensure` on load and live on loaded families. 0 clears.
 - Tests: `r61_*` (auto-flush at per-CF threshold, default CF untouched,
   options survive reopen, RESP path).
 
-**Still open (later):** per-CF block-cache policy. LLVM parity status: `str_h`/`h_str`/`bytes_put` now have LLVM builders (oracle green); `map_h`/`h_map` are C-only *by design* (the LLVM backend has no `Map` at all); the thread-local arena is a C-runtime detail (LLVM lowers allocs to plain `malloc`, already thread-safe).
+**Shipped (R64 per-CF block-cache policy):**
+- Each CF keeps its own page cache (not a shared RocksDB-style pool).
+- `opt_cache` + optional 5th `.cfs` field `cache_pages` (min 16).
+- `lsm_cf_setopt_one(db, name, "cache_pages", N)` applies live via
+  `pc_new`; clear with N < 16 → default 2048.
+- RESP: `CF.SETOPT name cache_pages|cache N`.
+- Also fixed CF.SETOPT single-key path: used to clear the other option
+  (fa/ca both passed through bulk setopt); now `setopt_one` only.
+- Tests: `r64_*` in `tests/cf_test.baga`.
+- Not a global shared block cache with charge/pin across CFs.
+
+**Shipped (R62 backup tool):**
+- `db/backup.baga` — BAGABK1 meta (`<dest>.backup`) lists every
+  manifest/SST/bloom with size + crc32c; ops:
+  `lsm_backup_create` / `lsm_cluster_backup_create` (checkpoint + meta),
+  `lsm_backup_verify`, `lsm_backup_ship` / `lsm_backup_restore`.
+- Offline CLI: `tools/backup.baga` (`BACKUP_MODE=create|verify|ship|restore`).
+- RESP `BACKUP dest` (poll + MT) — same layout as CHECKPOINT plus meta.
+- Backup prefix opens with plain `lsm_open` / `lsm_cluster_open`.
+- Tests: `r62_*` in `tests/lsm_test.baga` (create, open, ship, corrupt→fail).
+- Not a tar/remote agent: ship is prefix→prefix file copy; CF multi-family
+  and multi-DB SELECT namespaces are out of scope (default CF / one cluster).
+
+**Still open (later):** binary keys (`Map` key type = only `i64`/`str`
+today). LLVM builders for `bytes_h`/`h_bytes` (C path is the storage flagship).
+LLVM parity status: `str_h`/`h_str`/`bytes_put`
+now have LLVM builders (oracle green); `map_h`/`h_map` are C-only *by design*
+(the LLVM backend has no `Map` at all); the thread-local arena is a C-runtime
+detail (LLVM lowers allocs to plain `malloc`, already thread-safe).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
@@ -460,10 +499,23 @@ it already answers.
 share one `LsmDB` on a single thread. Env `LSM_SERIAL=1` keeps the old
 one-conn-at-a-time accept loop. Test: `tcp2_*` in `tests/lsm_test.baga`.
 
-**Still residual:** RESP **command** args are still `Vec<str>` (SET cannot
-inject raw NUL over the wire parser); GET uses `resp_bulk_b`. TTL via
-`SETEX`/`EXPIRE` is R16. No multi-writer (shared store is single-threaded
-event loop).
+**Shipped (R65 binary RESP values):**
+- `resp_parse_command_b` → `Vec<bytes>`; rocksbaga serve/poll/MT/CF use it.
+- SET/SETEX/MSET/APPEND (+ CF.SET) store values via `lsm_put_b` / `*_put_b`
+  (embedded NUL round-trips). GET already replied with `resp_bulk_b`.
+- Legacy `resp_parse_command` → `Vec<str>` **unchanged** for kvbaga.
+- **Still residual:** keys remain `str` (NUL in key unsupported —
+  `Map` only allows `i64`/`str` keys). TTL via `SETEX`/`EXPIRE` is R16.
+
+**Shipped (R66 PARALLEL binary job payloads):**
+- Builtins `bytes_h(bytes) -> i64` / `h_bytes(i64) -> bytes` (C backend;
+  boxes `baga_bytes` header on arena).
+- Worker SET/SETEX: `h_bytes` → `lsm_put_b` / `lsm_put_ex_b`.
+- Worker GET: bulk payload `bytes_h(val)`; reply expansion
+  `lsm_mb_rep_to_bytes` (binary-safe `$N` framing).
+- PARALLEL serve: `reps` map holds `bytes`; flush writes raw bytes.
+- API: `lsm_parallel_submit_b` / `set_b` / `get_b` / `wait_b`.
+- Tests: `r66_*` in `tests/workers_test.baga`.
 
 ## Closed by this package
 

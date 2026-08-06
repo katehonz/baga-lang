@@ -232,7 +232,48 @@ fn main() -> i64 !IO !Time {
     vec_push(argso, "2")
     let exo = lsm_exec_cf(db10, argso)?
     check("r61_resp_setopt", exo.quit == 0)
-    lsm_cf_close(exo.db)?
+    // R61 fix: single-key SETOPT must not clear flush_at
+    check("r61_setopt_one_keeps_flush", map_has(exo.db.opt_flush, cro2.id) == 1)
+
+    // --- R64: per-CF block-cache policy (cache_pages) ---
+    let mut db11 = exo.db
+    db11 = lsm_cf_setopt_one(db11, "opts", "cache_pages", 64)?
+    check("r64_setopt_cache", db11.ok == 1)
+    check("r64_opt_map", map_has(db11.opt_cache, cro2.id) == 1 && map_get(db11.opt_cache, cro2.id) == 64)
+    let famc = map_get(db11.families, cro2.id)
+    check("r64_live_cap", famc.cache.cap == 64)
+    // flush_at still present after cache set
+    check("r64_keeps_flush", map_has(db11.opt_flush, cro2.id) == 1)
+    // hot CF without override keeps default engine pool (2048)
+    let crh2 = lsm_cf_create(db11, "cold")?
+    db11 = crh2.db
+    let cold = crh2.id
+    db11 = lsm_cf_ensure(db11, cold)?
+    let famcold = map_get(db11.families, cold)
+    check("r64_default_cap", famcold.cache.cap == 2048)
+    // persist across reopen
+    lsm_cf_close(db11)?
+    let db12 = lsm_cf_open(dir, 1000, 1000)?
+    check("r64_persist_map", map_has(db12.opt_cache, cro2.id) == 1 && map_get(db12.opt_cache, cro2.id) == 64)
+    let famc2 = map_get(db12.families, cro2.id)
+    check("r64_reopen_cap", famc2.cache.cap == 64)
+    // RESP CF.SETOPT cache_pages
+    let argsc: Vec<str> = vec_new()
+    vec_push(argsc, "CF.SETOPT")
+    vec_push(argsc, "opts")
+    vec_push(argsc, "cache_pages")
+    vec_push(argsc, "128")
+    let exc = lsm_exec_cf(db12, argsc)?
+    check("r64_resp_cache", exc.quit == 0)
+    let famc3 = map_get(exc.db.families, cro2.id)
+    check("r64_resp_cap", famc3.cache.cap == 128)
+    // clear override (<16)
+    let mut db13 = exc.db
+    db13 = lsm_cf_setopt_one(db13, "opts", "cache_pages", 0)?
+    check("r64_clear", map_has(db13.opt_cache, cro2.id) == 0)
+    let famc4 = map_get(db13.families, cro2.id)
+    check("r64_clear_cap", famc4.cache.cap == 2048)
+    lsm_cf_close(db13)?
 
     print("cf_test: all passed")
     return 0

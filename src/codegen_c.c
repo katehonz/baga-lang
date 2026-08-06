@@ -760,6 +760,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"cell2_1",     "baga_cell2_1"},
                     {"str_h",       "baga_str_h"},
                     {"h_str",       "baga_h_str"},
+                    {"bytes_h",     "baga_bytes_h"},
+                    {"h_bytes",     "baga_h_bytes"},
                     {"map_h",       "baga_map_h"},
                     {"h_map",       "baga_h_map"},
                 };
@@ -2526,6 +2528,15 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
        Safe because str is arena-bound (never freed). C backend only. */
     fprintf(out, "static int64_t baga_str_h(const char *s) { return (int64_t)(intptr_t)s; }\n");
     fprintf(out, "static const char *baga_h_str(int64_t h) { return (const char *)(intptr_t)h; }\n");
+    /* R66: box baga_bytes header on arena for chan hop; data ptr already arena. */
+    fprintf(out, "static int64_t baga_bytes_h(baga_bytes b) {\n");
+    fprintf(out, "    baga_bytes *p = (baga_bytes *)baga_alloc(sizeof(baga_bytes));\n");
+    fprintf(out, "    p->data = b.data; p->len = b.len; return (int64_t)(intptr_t)p;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static baga_bytes baga_h_bytes(int64_t h) {\n");
+    fprintf(out, "    baga_bytes z; z.data = (unsigned char *)\"\"; z.len = 0;\n");
+    fprintf(out, "    if (!h) return z; return *(baga_bytes *)(intptr_t)h;\n");
+    fprintf(out, "}\n");
     /* R55: unsafe map handle casts — shared map through a go_bg i64 ctx. */
     fprintf(out, "static int64_t baga_map_h(baga_Map *m) { return (int64_t)(intptr_t)m; }\n");
     fprintf(out, "static baga_Map *baga_h_map(int64_t h) { return (baga_Map *)(intptr_t)h; }\n");

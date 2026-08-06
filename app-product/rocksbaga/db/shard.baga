@@ -13,11 +13,17 @@ import "engine.baga"
 import "../cache/page.baga"
 import "../util/codec.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
 import "std/os/os.baga"
 
 struct LsmCluster {
     shards: Vec<LsmDB>,
     n: i64,
+    // R63: cluster-level SCAN snapshot (merged live keys).
+    // Valid while scan_epoch equals sum of shard write_epochs and MATCH matches.
+    scan_epoch: i64,
+    scan_pat: str,
+    scan_keys: Vec<str>,
     ok: i64
 }
 
@@ -73,7 +79,12 @@ fn lsm_cluster_open(dir: str, nshards: i64, flush_at: i64, compact_at: i64) -> L
         vec_push(shards, db)
         i = i + 1
     }
-    return LsmCluster { shards: shards, n: n, ok: ok }
+    let sk: Vec<str> = vec_new()
+    return LsmCluster {
+        shards: shards, n: n,
+        scan_epoch: 0 - 1, scan_pat: "", scan_keys: sk,
+        ok: ok
+    }
 }
 
 fn lsm_cluster_close(c: LsmCluster) -> i64 !IO {
@@ -96,18 +107,27 @@ fn lsm_cluster_set_shard(c: LsmCluster, i: i64, db: LsmDB) -> LsmCluster {
 }
 
 fn lsm_cluster_put(c: LsmCluster, key: str, val: str) -> LsmCluster !IO !Time {
+    return lsm_cluster_put_b(c, key, bytes_of_str(val))?
+}
+
+// R65: binary-safe put (value may contain NUL).
+fn lsm_cluster_put_b(c: LsmCluster, key: str, val: bytes) -> LsmCluster !IO !Time {
     let i = lsm_shard_ix(c.n, key)
     let mut db = vec_get(c.shards, i)
-    db = lsm_put(db, key, val)?
+    db = lsm_put_b(db, key, val)?
     vec_set(c.shards, i, db)
     c.ok = db.ok
     return c
 }
 
 fn lsm_cluster_put_ex(c: LsmCluster, key: str, val: str, ttl_sec: i64) -> LsmCluster !IO !Time {
+    return lsm_cluster_put_ex_b(c, key, bytes_of_str(val), ttl_sec)?
+}
+
+fn lsm_cluster_put_ex_b(c: LsmCluster, key: str, val: bytes, ttl_sec: i64) -> LsmCluster !IO !Time {
     let i = lsm_shard_ix(c.n, key)
     let mut db = vec_get(c.shards, i)
-    db = lsm_put_ex(db, key, val, ttl_sec)?
+    db = lsm_put_ex_b(db, key, val, ttl_sec)?
     vec_set(c.shards, i, db)
     c.ok = db.ok
     return c
@@ -186,7 +206,12 @@ fn lsm_cluster_flushdb(c: LsmCluster) -> LsmCluster !IO {
         vec_push(shards, ndb)
         i = i + 1
     }
-    return LsmCluster { shards: shards, n: n, ok: ok }
+    let sk: Vec<str> = vec_new()
+    return LsmCluster {
+        shards: shards, n: n,
+        scan_epoch: 0 - 1, scan_pat: "", scan_keys: sk,
+        ok: ok
+    }
 }
 
 struct LsmClusterKeys {
@@ -239,25 +264,64 @@ struct LsmClusterScan {
     keys: Vec<str>
 }
 
-// R43: SCAN over merged sorted keys of all shards (same cost model as KEYS
-// for the fold; returns a page of COUNT keys with a cursor).
-fn lsm_cluster_scan(c: LsmCluster, cursor: i64, count: i64, match_pat: str) -> LsmClusterScan !IO !Time {
-    let kr = lsm_cluster_keys(c)?
-    c = kr.c
-    let all = kr.keys
+// Sum of per-shard write_epochs — cluster SCAN cache key.
+fn lsm_cluster_write_epoch(c: LsmCluster) -> i64 {
+    let mut e: i64 = 0
+    let mut i: i64 = 0
+    while i < c.n {
+        let db = vec_get(c.shards, i)
+        e = e + db.write_epoch
+        i = i + 1
+    }
+    return e
+}
+
+// R63: rebuild cluster SCAN snapshot (unordered, MATCH-filtered).
+fn lsm_cluster_scan_rebuild(c: LsmCluster, match_pat: str) -> LsmCluster !IO !Time {
+    // Gather live keys per shard without global sort (SCAN is unordered).
     let filtered: Vec<str> = vec_new()
     let mut i: i64 = 0
-    while i < vec_len(all) {
-        let k = vec_get(all, i)
-        if lsm_match_glob(match_pat, k) == 1 {
-            vec_push(filtered, k)
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        let r = lsm_live_map(db)?
+        db = r.db
+        vec_set(c.shards, i, db)
+        let mut j: i64 = 0
+        while j < vec_len(r.keys) {
+            let k = vec_get(r.keys, j)
+            if lsm_match_glob(match_pat, k) == 1 {
+                vec_push(filtered, k)
+            }
+            j = j + 1
         }
         i = i + 1
     }
-    let n = vec_len(filtered)
+    if vec_len(c.scan_keys) > 0 {
+        let old = c.scan_keys
+        c.scan_keys = filtered
+        drop(old)
+    } else {
+        c.scan_keys = filtered
+    }
+    c.scan_pat = match_pat
+    c.scan_epoch = lsm_cluster_write_epoch(c)
+    return c
+}
+
+// R43 + R63: SCAN over merged live keys of all shards.
+// R63: one live fold per write-epoch×MATCH; subsequent pages are O(count).
+fn lsm_cluster_scan(c: LsmCluster, cursor: i64, count: i64, match_pat: str) -> LsmClusterScan !IO !Time {
+    let epoch = lsm_cluster_write_epoch(c)
+    if c.scan_epoch != epoch || c.scan_pat != match_pat {
+        c = lsm_cluster_scan_rebuild(c, match_pat)?
+    }
+    let n = vec_len(c.scan_keys)
     let mut cur = cursor
     if cur < 0 {
         cur = 0
+    }
+    if cur > n {
+        cur = n
     }
     let mut cnt = count
     if cnt < 1 {
@@ -270,13 +334,20 @@ fn lsm_cluster_scan(c: LsmCluster, cursor: i64, count: i64, match_pat: str) -> L
     let mut j = cur
     let mut taken: i64 = 0
     while j < n && taken < cnt {
-        vec_push(out, vec_get(filtered, j))
+        vec_push(out, vec_get(c.scan_keys, j))
         j = j + 1
         taken = taken + 1
     }
     let mut next: i64 = j
     if next >= n {
         next = 0
+        if vec_len(c.scan_keys) > 0 {
+            let old = c.scan_keys
+            c.scan_keys = vec_new()
+            drop(old)
+        }
+        c.scan_epoch = 0 - 1
+        c.scan_pat = ""
     }
     return LsmClusterScan { c: c, next: next, keys: out }
 }

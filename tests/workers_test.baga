@@ -3,6 +3,7 @@ import "rocksbaga/db/workers.baga"
 import "rocksbaga/db/shard.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
 
 fn check(name: str, ok: bool) {
     if ok {
@@ -108,6 +109,20 @@ fn main() -> i64 !IO !Par !Time {
     check("flood_done", left == 0)
     let g4 = lsm_parallel_get(p, "k7")?
     check("flood_get", g4 == "$2\r\nv7\r\n")
+
+    // --- R66: binary values over PARALLEL hop (embedded NUL) ---
+    let nulv = bytes_new(3)
+    bytes_set(nulv, 0, 65)
+    bytes_set(nulv, 1, 0)
+    bytes_set(nulv, 2, 66)
+    let srb = lsm_parallel_set_b(p, "bin", nulv)?
+    check("r66_set_b", str_of_bytes(srb) == "+OK\r\n")
+    let grb = lsm_parallel_get_b(p, "bin")?
+    // "$3\r\nA\0B\r\n" = 9 bytes
+    check("r66_get_b_len", bytes_len(grb) == 9)
+    check("r66_get_b_head", bytes_at(grb, 0) == 36 && bytes_at(grb, 1) == 51)  // $3
+    // payload at offset 4 after "$3\r\n"
+    check("r66_get_b_nul", bytes_at(grb, 4) == 65 && bytes_at(grb, 5) == 0 && bytes_at(grb, 6) == 66)
 
     lsm_parallel_stop(p)?
     check("stop", true)

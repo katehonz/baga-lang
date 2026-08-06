@@ -1021,6 +1021,33 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             }
             return type_new(TYPE_MAP);      /* key/elem = NULL: неизвестни */
         }
+        /* R66: unsafe bytes handle casts — zero-copy hop of binary values
+         * across chan(i64) (PARALLEL workers). Boxes a baga_bytes header on
+         * the arena; payload data is already arena-bound. */
+        if (strcmp(name, "bytes_h") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 1) {
+                check_error(ctx, n->pos, "'bytes_h' очаква 1 аргумент, получих %d",
+                            n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            Type *bt = n->args.data[0]->type;
+            if (bt && bt->kind != TYPE_BYTES && bt->kind != TYPE_ERROR) {
+                check_error(ctx, n->pos, "'bytes_h' очаква bytes, получих %s",
+                            type_str(bt));
+                return type_new(TYPE_ERROR);
+            }
+            return type_new(TYPE_I64);
+        }
+        if (strcmp(name, "h_bytes") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 1) {
+                check_error(ctx, n->pos, "'h_bytes' очаква 1 аргумент, получих %d",
+                            n->args.len);
+                return type_new(TYPE_ERROR);
+            }
+            return type_new(TYPE_BYTES);
+        }
         /* R55: unsafe map handle casts — предаване на споделена карта през
          * i64 контекст на go_bg (като str_h/h_str, R51). Map е baga_Map*
          * (heap, arena-ish живот) — handle-ът е валиден за живота на процеса. */
@@ -1306,6 +1333,9 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             /* R51: unsafe str handle casts — zero-copy chan hop (C backend) */
             {"str_h",       TYPE_I64, 1, 0, 0},
             {"h_str",       TYPE_STR, 1, 0, 0},
+            /* R66: also in special-case above for TYPE_BYTES return of h_bytes */
+            {"bytes_h",     TYPE_I64, 1, 0, 0},
+            {"h_bytes",     TYPE_BYTES, 1, 0, 0},
         };
         /* bytes_from_vec / vec_from_bytes — typed bridge (not in the flat table) */
         if (strcmp(name, "bytes_from_vec") == 0) {

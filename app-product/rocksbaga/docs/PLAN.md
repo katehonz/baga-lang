@@ -156,4 +156,24 @@ Goal: Track S flagship — durable KV on RESP.
   the data) — **done**
 - **R61 per-CF options** — `lsm_cf_setopt` + RESP `CF.SETOPT name
   flush_at|compact_at v`; persisted as optional fields in `.cfs` — **done**
-- (next) LLVM backend parity; backup tool (checkpoint + ship)
+- **R62 backup tool** — `db/backup.baga` + `tools/backup.baga`:
+  create (checkpoint + BAGABK1 meta with size/crc), verify, ship,
+  restore; RESP `BACKUP dest` (poll + MT); tests `r62_*` — **done**
+- **R63 streaming SCAN** — epoch snapshot cache on `LsmDB` /
+  `LsmCluster`: one live fold per `write_epoch`×MATCH, later pages
+  O(count); put/del invalidate; unordered (Redis SCAN style; KEYS still
+  sorted); tests `r63_*` — **done**
+- **R64 per-CF block-cache policy** — `opt_cache` / `cache_pages` in
+  `.cfs`; `lsm_cf_setopt_one(..., "cache_pages", N)`; RESP
+  `CF.SETOPT name cache_pages N` (also fixes single-key SETOPT so it no
+  longer clears sibling options); tests `r64_*` — **done**
+- **R65 RESP binary values** — `resp_parse_command_b` / `encode_b`
+  (`Vec<bytes>`); rocksbaga serve uses `_b` + `put_b` for
+  SET/SETEX/MSET/APPEND (and CF.SET); legacy `resp_parse_command` kept
+  (kvbaga + tests); keys still `str` (NUL-in-key out of scope);
+  tests `r65_*` — **done**
+- **R66 PARALLEL binary job payloads** — language `bytes_h`/`h_bytes`;
+  workers SET/SETEX via `bytes_h` + `put_b`; GET bulk via `bytes_h`;
+  `lsm_mb_rep_to_bytes` + serve `reps: Map<i64, bytes>`; tests
+  `r66_*` in `workers_test` — **done**
+- (next) optional: binary keys (needs language `Map<bytes, …>`)

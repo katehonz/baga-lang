@@ -43,6 +43,21 @@ see [`bench/rocks/results/vs-rocksdb-scorecard.md`](../../bench/rocks/results/vs
 `LSMPATH=/tmp/baga_lsm ./baga -I . -I app-product app-product/rocksbaga/tools/sst_dump.baga`  
 (`SST_GEN`, `SST_KEYS=1`, `SST_MAX` optional).
 
+**Backup (R62):**  
+```bash
+# live create (checkpoint + BAGABK1 crc inventory)
+LSMPATH=/tmp/baga_lsm BACKUP_DEST=/tmp/baga_bk BACKUP_MODE=create \
+  ./baga -I . -I app-product app-product/rocksbaga/tools/backup.baga
+# offline ship / verify / restore
+BACKUP_SRC=/tmp/baga_bk BACKUP_DEST=/tmp/baga_ship BACKUP_MODE=ship \
+  ./baga -I . -I app-product app-product/rocksbaga/tools/backup.baga
+BACKUP_SRC=/tmp/baga_ship BACKUP_MODE=verify \
+  ./baga -I . -I app-product app-product/rocksbaga/tools/backup.baga
+```
+API: `import "rocksbaga/db/backup.baga"` — `lsm_backup_create` /
+`lsm_backup_verify` / `lsm_backup_ship` / `lsm_backup_restore`.
+RESP: `BACKUP dest` (poll + MT).
+
 **Parallel engine (R33/R35):**  
 `import "rocksbaga/db/workers.baga"` — `lsm_parallel_start(dir, N)` then
 `lsm_parallel_set/get`. Jobs are in-memory (cell2 packs on chans). Requires
@@ -63,7 +78,9 @@ LSMPATH=/tmp/baga_rocks_demo LSMPORT=16579 \
 Env: `LSMPATH`, `LSMPORT`, `LSM_SHARDS` (default 1; key-hash partition),
 `LSM_PARALLEL=1` (per-shard workers behind RESP poll; default 0),
 `LSM_SERVE_MT=1` (go_bg per connection → same workers; multi-core multi-conn),
-`LSM_CF=1` (shared-WAL CF mode: `CF.CREATE/SET/GET/DEL/DROP/LIST/SETOPT`; plain SET = default CF),
+`LSM_CF=1` (shared-WAL CF mode: `CF.CREATE/SET/GET/DEL/DROP/LIST/SETOPT`;
+  `CF.SETOPT name flush_at|compact_at|cache_pages v`; plain SET = default CF),
+`BACKUP_MODE` / `BACKUP_DEST` / `BACKUP_SRC` (R62 offline tool),
 `LSM_MAX_DB` (default 16; Redis-style `SELECT` 0..N-1 → `dir` / `dir.db{n}`),
 `LSM_FLUSH_AT` (default 256), `LSM_COMPACT_AT` (default 4; per-CF via `CF.SETOPT`),
 `LSM_CACHE_PAGES` (default 2048 ≈ 8 MiB, split across shards),
@@ -91,6 +108,8 @@ import "rocksbaga/server.baga"
 fn lsm_open(dir, flush_at, compact_at) -> LsmDB !IO
 fn lsm_put / lsm_put_b / lsm_del / lsm_get / lsm_flush_force / lsm_close
 fn lsm_checkpoint(db, dest) -> LsmDB !IO !Time   // R58: point-in-time copy
+fn lsm_backup_create(db, dest)                   // R62: checkpoint + meta
+fn lsm_backup_verify / lsm_backup_ship / lsm_backup_restore
 fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 ```
 
@@ -110,5 +129,7 @@ fn lsm_serve(port) -> i64 !Net !IO !Time !Par
 Serial accept by default; `LSM_SERVE_MT=1` (R55 hop-less) reaches Redis
 parity on this harness (8 clients: 93–104% PING/SET/GET).
 Compaction not RocksDB-scored.
-TTL is lazy (expiry on read/flush/compact); no active expire cycle.
+TTL is lazy on the library path (expiry on read/flush/compact); MT serve
+also runs an active expire sweeper (R57).
+SCAN (R63) reuses a per-epoch key snapshot across cursor pages.
 Details: [docs/gaps.md](docs/gaps.md), [docs/PLAN.md](docs/PLAN.md).

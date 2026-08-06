@@ -36,6 +36,12 @@ struct LsmDB {
     since_sync: i64,
     // R40: edit lines appended to dir.manifest.log since last snapshot compact.
     manifest_edits: i64,
+    // R63: SCAN streaming snapshot — live keys for one MATCH, reused across
+    // cursor pages until write_epoch advances (put/del/flush/compact).
+    write_epoch: i64,
+    scan_epoch: i64,     // equals write_epoch when scan_keys is valid
+    scan_pat: str,       // MATCH pattern used to build scan_keys
+    scan_keys: Vec<str>, // filtered live keys (unordered — Redis SCAN style)
     ok: i64
 }
 

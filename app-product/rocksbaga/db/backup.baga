@@ -1,0 +1,360 @@
+// backup.baga — R62 backup tool (checkpoint + ship).
+//
+// A backup is a durable checkpoint layout (openable with lsm_open /
+// lsm_cluster_open) plus a self-describing meta file:
+//
+//   <dest>.backup          BAGABK1 inventory (sizes + crc32c)
+//   <dest>.manifest        (nshards=1)
+//   <dest>.sst.<gen>
+//   <dest>.bloom.<gen>
+//   <dest>.s{i}.…          (nshards>1 — same layout as cluster checkpoint)
+//
+// Ops:
+//   create  — live checkpoint + write meta
+//   verify  — re-check every listed file (size + crc)
+//   ship    — copy listed files + meta to another prefix (offline)
+//   restore — ship alias (dest becomes an ordinary store)
+
+import "engine.baga"
+import "manifest.baga"
+import "shard.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+import "std/crypto/crc32c.baga"
+import "std/bytes/bytes.baga"
+
+fn lsm_backup_meta_path(dest: str) -> str {
+    return concat(dest, ".backup")
+}
+
+// Path for one inventory entry. kind: "manifest" | "sst" | "bloom".
+// shard_suffix: "" (n=1) or ".s0" / ".s1" / …
+fn lsm_backup_entry_path(root: str, shard_suffix: str, kind: str, gen: i64) -> str {
+    let base = concat(root, shard_suffix)
+    if kind == "manifest" {
+        return concat(base, ".manifest")
+    }
+    if kind == "sst" {
+        return concat(concat(base, ".sst."), int_to_str(gen))
+    }
+    if kind == "bloom" {
+        return concat(concat(base, ".bloom."), int_to_str(gen))
+    }
+    return base
+}
+
+struct LsmFileInfo {
+    size: i64,
+    crc: i64,
+    ok: i64
+}
+
+// Size + full-file crc32c. Missing file → ok=0.
+fn lsm_file_info(path: str) -> LsmFileInfo !IO {
+    let fd = open(path, 0, 0)?
+    if fd < 0 {
+        return LsmFileInfo { size: 0, crc: 0, ok: 0 }
+    }
+    let sz = fd_size(fd)?
+    let mut st: i64 = 4294967295
+    let mut off: i64 = 0
+    while off < sz {
+        let chunk = fd_pread_bytes(fd, 1048576, off)?
+        let n = bytes_len(chunk)
+        if n == 0 {
+            off = sz
+        } else {
+            st = crc32c_update(st, chunk)
+            drop(chunk)
+            off = off + n
+        }
+    }
+    close(fd)
+    return LsmFileInfo { size: sz, crc: crc32c_final(st), ok: 1 }
+}
+
+struct LsmBackupStat {
+    ok: i64,
+    nfiles: i64,
+    nbytes: i64
+}
+
+// Inventory one store prefix (after checkpoint) into meta body lines.
+// Returns body fragment (no header) + counts.
+struct LsmBackupInv {
+    body: str,
+    nfiles: i64,
+    nbytes: i64,
+    ok: i64
+}
+
+fn lsm_backup_inventory_store(root: str, shard_suffix: str) -> LsmBackupInv !IO {
+    let path = concat(root, shard_suffix)
+    let m = lsm_load_manifest(path)?
+    let mut body = ""
+    let mut nfiles: i64 = 0
+    let mut nbytes: i64 = 0
+    // always record manifest (empty store still has a snapshot after checkpoint)
+    let mp = lsm_backup_entry_path(root, shard_suffix, "manifest", 0)
+    let mi = lsm_file_info(mp)?
+    if mi.ok == 0 {
+        return LsmBackupInv { body: "", nfiles: 0, nbytes: 0, ok: 0 }
+    }
+    body = concat(body, concat("file manifest 0 ", int_to_str(mi.size)))
+    body = concat(body, concat(" ", concat(int_to_str(mi.crc), "\n")))
+    nfiles = nfiles + 1
+    nbytes = nbytes + mi.size
+    let mut i: i64 = 0
+    while i < vec_len(m.gens) {
+        let g = vec_get(m.gens, i)
+        let sp = lsm_backup_entry_path(root, shard_suffix, "sst", g)
+        let si = lsm_file_info(sp)?
+        if si.ok == 0 {
+            return LsmBackupInv { body: body, nfiles: nfiles, nbytes: nbytes, ok: 0 }
+        }
+        body = concat(body, concat("file sst ", int_to_str(g)))
+        body = concat(body, concat(" ", int_to_str(si.size)))
+        body = concat(body, concat(" ", concat(int_to_str(si.crc), "\n")))
+        nfiles = nfiles + 1
+        nbytes = nbytes + si.size
+        let bp = lsm_backup_entry_path(root, shard_suffix, "bloom", g)
+        if file_exists(bp) == 1 {
+            let bi = lsm_file_info(bp)?
+            if bi.ok == 0 {
+                return LsmBackupInv { body: body, nfiles: nfiles, nbytes: nbytes, ok: 0 }
+            }
+            body = concat(body, concat("file bloom ", int_to_str(g)))
+            body = concat(body, concat(" ", int_to_str(bi.size)))
+            body = concat(body, concat(" ", concat(int_to_str(bi.crc), "\n")))
+            nfiles = nfiles + 1
+            nbytes = nbytes + bi.size
+        }
+        i = i + 1
+    }
+    return LsmBackupInv { body: body, nfiles: nfiles, nbytes: nbytes, ok: 1 }
+}
+
+// Write BAGABK1 meta for an existing checkpoint layout at dest.
+fn lsm_backup_write_meta(dest: str, nshards: i64) -> LsmBackupStat !IO !Time {
+    let mut n = nshards
+    if n < 1 {
+        n = 1
+    }
+    let ts = time_now_ms()?
+    let mut body = "BAGABK1\n"
+    body = concat(body, concat("nshards ", concat(int_to_str(n), "\n")))
+    body = concat(body, concat("created_ms ", concat(int_to_str(ts), "\n")))
+    let mut nfiles: i64 = 0
+    let mut nbytes: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let mut suf = ""
+        if n > 1 {
+            suf = concat(".s", int_to_str(i))
+        }
+        body = concat(body, concat("shard ", concat(int_to_str(i), "\n")))
+        let inv = lsm_backup_inventory_store(dest, suf)?
+        if inv.ok == 0 {
+            return LsmBackupStat { ok: 0, nfiles: nfiles, nbytes: nbytes }
+        }
+        body = concat(body, inv.body)
+        nfiles = nfiles + inv.nfiles
+        nbytes = nbytes + inv.nbytes
+        i = i + 1
+    }
+    let rc = write_file(lsm_backup_meta_path(dest), body)?
+    if rc != 0 {
+        return LsmBackupStat { ok: 0, nfiles: nfiles, nbytes: nbytes }
+    }
+    return LsmBackupStat { ok: 1, nfiles: nfiles, nbytes: nbytes }
+}
+
+struct LsmBackupCreate {
+    db: LsmDB,
+    stat: LsmBackupStat
+}
+
+// Live create for one store: checkpoint then meta (nshards=1).
+fn lsm_backup_create(db: LsmDB, dest: str) -> LsmBackupCreate !IO !Time {
+    db = lsm_checkpoint(db, dest)?
+    if db.ok == 0 {
+        return LsmBackupCreate {
+            db: db,
+            stat: LsmBackupStat { ok: 0, nfiles: 0, nbytes: 0 }
+        }
+    }
+    let st = lsm_backup_write_meta(dest, 1)?
+    if st.ok == 0 {
+        db.ok = 0
+    }
+    return LsmBackupCreate { db: db, stat: st }
+}
+
+struct LsmClusterBackupCreate {
+    c: LsmCluster,
+    stat: LsmBackupStat
+}
+
+// Live create for a cluster (uses lsm_cluster_checkpoint layout).
+fn lsm_cluster_backup_create(c: LsmCluster, dest: str) -> LsmClusterBackupCreate !IO !Time {
+    c = lsm_cluster_checkpoint(c, dest)?
+    if c.ok == 0 {
+        return LsmClusterBackupCreate {
+            c: c,
+            stat: LsmBackupStat { ok: 0, nfiles: 0, nbytes: 0 }
+        }
+    }
+    let st = lsm_backup_write_meta(dest, c.n)?
+    if st.ok == 0 {
+        c.ok = 0
+    }
+    return LsmClusterBackupCreate { c: c, stat: st }
+}
+
+// --- meta parse / verify / ship ---
+
+struct LsmBackupEntry {
+    shard: i64,
+    kind: str,
+    gen: i64,
+    size: i64,
+    crc: i64
+}
+
+struct LsmBackupMeta {
+    nshards: i64,
+    created_ms: i64,
+    entries: Vec<LsmBackupEntry>,
+    ok: i64
+}
+
+fn lsm_backup_parse_meta(body: str) -> LsmBackupMeta {
+    let entries: Vec<LsmBackupEntry> = vec_new()
+    let empty = LsmBackupMeta {
+        nshards: 0, created_ms: 0, entries: entries, ok: 0
+    }
+    if body == "" {
+        return empty
+    }
+    let lines = str_split(body, "\n")
+    if vec_len(lines) < 1 || vec_get(lines, 0) != "BAGABK1" {
+        return empty
+    }
+    let mut nshards: i64 = 1
+    let mut created: i64 = 0
+    let mut cur_shard: i64 = 0
+    let mut i: i64 = 1
+    while i < vec_len(lines) {
+        let ln = vec_get(lines, i)
+        i = i + 1
+        if ln == "" {
+            // skip
+        } else {
+            let parts = str_split(ln, " ")
+            let p0 = vec_get(parts, 0)
+            if p0 == "nshards" && vec_len(parts) >= 2 {
+                nshards = parse_int(vec_get(parts, 1))
+                if nshards < 1 {
+                    nshards = 1
+                }
+            } else {
+                if p0 == "created_ms" && vec_len(parts) >= 2 {
+                    created = parse_int(vec_get(parts, 1))
+                } else {
+                    if p0 == "shard" && vec_len(parts) >= 2 {
+                        cur_shard = parse_int(vec_get(parts, 1))
+                    } else {
+                        // file kind gen size crc  (gen ignored for manifest → 0)
+                        if p0 == "file" && vec_len(parts) >= 5 {
+                            let kind = vec_get(parts, 1)
+                            let gen = parse_int(vec_get(parts, 2))
+                            let size = parse_int(vec_get(parts, 3))
+                            let crc = parse_int(vec_get(parts, 4))
+                            vec_push(entries, LsmBackupEntry {
+                                shard: cur_shard,
+                                kind: kind,
+                                gen: gen,
+                                size: size,
+                                crc: crc
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return LsmBackupMeta {
+        nshards: nshards, created_ms: created, entries: entries, ok: 1
+    }
+}
+
+fn lsm_backup_load_meta(dest: str) -> LsmBackupMeta !IO {
+    let body = read_file(lsm_backup_meta_path(dest))?
+    return lsm_backup_parse_meta(body)
+}
+
+fn lsm_backup_shard_suffix(nshards: i64, shard: i64) -> str {
+    if nshards <= 1 {
+        return ""
+    }
+    return concat(".s", int_to_str(shard))
+}
+
+// Verify every entry: exists, size match, crc match.
+fn lsm_backup_verify(dest: str) -> LsmBackupStat !IO {
+    let m = lsm_backup_load_meta(dest)?
+    if m.ok == 0 {
+        return LsmBackupStat { ok: 0, nfiles: 0, nbytes: 0 }
+    }
+    let mut nfiles: i64 = 0
+    let mut nbytes: i64 = 0
+    let mut i: i64 = 0
+    while i < vec_len(m.entries) {
+        let e = vec_get(m.entries, i)
+        let suf = lsm_backup_shard_suffix(m.nshards, e.shard)
+        let path = lsm_backup_entry_path(dest, suf, e.kind, e.gen)
+        let fi = lsm_file_info(path)?
+        if fi.ok == 0 || fi.size != e.size || fi.crc != e.crc {
+            return LsmBackupStat { ok: 0, nfiles: nfiles, nbytes: nbytes }
+        }
+        nfiles = nfiles + 1
+        nbytes = nbytes + fi.size
+        i = i + 1
+    }
+    return LsmBackupStat { ok: 1, nfiles: nfiles, nbytes: nbytes }
+}
+
+// Offline ship: copy meta-listed files + meta itself from src → dest.
+fn lsm_backup_ship(src: str, dest: str) -> LsmBackupStat !IO {
+    let m = lsm_backup_load_meta(src)?
+    if m.ok == 0 {
+        return LsmBackupStat { ok: 0, nfiles: 0, nbytes: 0 }
+    }
+    let mut nfiles: i64 = 0
+    let mut nbytes: i64 = 0
+    let mut i: i64 = 0
+    while i < vec_len(m.entries) {
+        let e = vec_get(m.entries, i)
+        let suf = lsm_backup_shard_suffix(m.nshards, e.shard)
+        let sp = lsm_backup_entry_path(src, suf, e.kind, e.gen)
+        let dp = lsm_backup_entry_path(dest, suf, e.kind, e.gen)
+        if lsm_copy_file(sp, dp)? != 0 {
+            return LsmBackupStat { ok: 0, nfiles: nfiles, nbytes: nbytes }
+        }
+        nfiles = nfiles + 1
+        nbytes = nbytes + e.size
+        i = i + 1
+    }
+    // copy meta as-is (relative layout identical)
+    if lsm_copy_file(lsm_backup_meta_path(src), lsm_backup_meta_path(dest))? != 0 {
+        return LsmBackupStat { ok: 0, nfiles: nfiles, nbytes: nbytes }
+    }
+    nfiles = nfiles + 1
+    return LsmBackupStat { ok: 1, nfiles: nfiles, nbytes: nbytes }
+}
+
+// Restore = ship into dest (openable with lsm_open / lsm_cluster_open).
+fn lsm_backup_restore(src: str, dest: str) -> LsmBackupStat !IO {
+    return lsm_backup_ship(src, dest)?
+}

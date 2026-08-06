@@ -1,0 +1,122 @@
+// backup.baga — offline / live backup CLI (R62).
+//
+// Usage (repo root):
+//   LSMPATH=/tmp/db BACKUP_DEST=/tmp/bk BACKUP_MODE=create \
+//     ./baga -I . -I app-product app-product/rocksbaga/tools/backup.baga
+//
+// Env:
+//   BACKUP_MODE   create | verify | ship | restore   (default create)
+//   LSMPATH       live store prefix (create)
+//   BACKUP_DEST   backup / ship destination prefix
+//   BACKUP_SRC    source prefix (verify/ship/restore; default BACKUP_DEST for verify)
+//   LSM_SHARDS    shard count for create (default 1)
+//   LSM_FLUSH_AT  create open knob (default 256)
+//   LSM_COMPACT_AT create open knob (default 4)
+
+import "rocksbaga/db/backup.baga"
+import "rocksbaga/db/engine.baga"
+import "rocksbaga/db/shard.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" {
+        return def
+    }
+    return v
+}
+
+fn cfg_i(name: str, def: i64) -> i64 !IO {
+    let v = env(name)?
+    if v == "" {
+        return def
+    }
+    return parse_int(v)
+}
+
+fn print_stat(tag: str, st: LsmBackupStat) {
+    if st.ok == 1 {
+        print(concat(concat(tag, " ok nfiles="), int_to_str(st.nfiles)))
+        print(concat(" nbytes=", int_to_str(st.nbytes)))
+    } else {
+        print(concat(tag, " FAIL"))
+        print(concat(" partial nfiles=", int_to_str(st.nfiles)))
+    }
+}
+
+fn main() -> i64 !IO !Time {
+    let mode = cfg("BACKUP_MODE", "create")?
+    let dest = cfg("BACKUP_DEST", "/tmp/baga_backup")?
+    let src = cfg("BACKUP_SRC", dest)?
+
+    if mode == "verify" {
+        let st = lsm_backup_verify(src)?
+        print_stat("verify", st)
+        if st.ok == 1 {
+            return 0
+        }
+        return 1
+    }
+    if mode == "ship" || mode == "restore" {
+        if src == dest {
+            print("backup: BACKUP_SRC and BACKUP_DEST must differ for ship/restore")
+            return 1
+        }
+        let st = lsm_backup_ship(src, dest)?
+        print_stat(mode, st)
+        if st.ok == 1 {
+            // re-verify destination
+            let v = lsm_backup_verify(dest)?
+            print_stat("verify_dest", v)
+            if v.ok == 1 {
+                return 0
+            }
+            return 1
+        }
+        return 1
+    }
+    // create (default)
+    let path = cfg("LSMPATH", "/tmp/baga_lsm")?
+    let nshards = cfg_i("LSM_SHARDS", 1)?
+    let flush_at = cfg_i("LSM_FLUSH_AT", 256)?
+    let compact_at = cfg_i("LSM_COMPACT_AT", 4)?
+    if nshards <= 1 {
+        let mut db = lsm_open(path, flush_at, compact_at)?
+        if db.ok == 0 {
+            print("backup: open failed")
+            return 1
+        }
+        let cr = lsm_backup_create(db, dest)?
+        db = cr.db
+        lsm_close(db)?
+        print_stat("create", cr.stat)
+        if cr.stat.ok == 0 {
+            return 1
+        }
+        let v = lsm_backup_verify(dest)?
+        print_stat("verify", v)
+        if v.ok == 1 {
+            return 0
+        }
+        return 1
+    }
+    let mut c = lsm_cluster_open(path, nshards, flush_at, compact_at)?
+    if c.ok == 0 {
+        print("backup: cluster open failed")
+        return 1
+    }
+    let cr2 = lsm_cluster_backup_create(c, dest)?
+    c = cr2.c
+    lsm_cluster_close(c)?
+    print_stat("create", cr2.stat)
+    if cr2.stat.ok == 0 {
+        return 1
+    }
+    let v2 = lsm_backup_verify(dest)?
+    print_stat("verify", v2)
+    if v2.ok == 1 {
+        return 0
+    }
+    return 1
+}

@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### RocksDB path R66 — PARALLEL binary job payloads
+- Language: `bytes_h` / `h_bytes` builtins (C backend) — box `baga_bytes`
+  header for zero-copy hop on `chan(i64)`.
+- workers: SET/SETEX values via `bytes_h` + `put_b`; GET bulk via
+  `bytes_h`; `lsm_mb_rep_to_bytes` for RESP framing.
+- PARALLEL serve stores ordered replies as `Map<i64, bytes>`.
+- Tests: `r66_*` in `tests/workers_test.baga` (NUL round-trip).
+
+### RocksDB path R65 — binary RESP values (safe)
+- `kvbaga/resp`: `resp_parse_command_b` / `resp_encode_command_b` /
+  `resp_round_trip_b` / `resp_parse_bulk_b` (`Vec<bytes>`).
+- Legacy `resp_parse_command` kept (implemented via `_b` + `str_of_bytes`)
+  so kvbaga + existing tests are unchanged.
+- rocksbaga serve (poll / MT / CF) parses with `_b`; SET/SETEX/MSET/APPEND
+  and CF.SET use `*_put_b` (NUL-safe values). Keys remain `str`.
+- PARALLEL workers still str-pack values (documented residual).
+- Tests: `r65_*` in `tests/lsm_test.baga`; full kv/cf/shard/scan green.
+
+### RocksDB path R64 — per-CF block-cache policy
+- `opt_cache` / `.cfs` 5th field `cache_pages`; `lsm_cf_setopt_one` for
+  single-key updates (`flush_at` | `compact_at` | `cache_pages`).
+- RESP `CF.SETOPT name cache_pages N` (alias `cache`); live `pc_new`.
+- Fix: single-key SETOPT no longer clears sibling options (R61 bug).
+- Tests: `r64_*` in `tests/cf_test.baga`.
+
+### RocksDB path R63 — streaming SCAN
+- Epoch snapshot cache on `LsmDB` / `LsmCluster`: one live fold per
+  `write_epoch`×MATCH; later SCAN pages are O(count) slices.
+- put/del invalidate via `lsm_scan_touch`; snapshot freed at cursor end.
+- Unordered (Redis SCAN); `KEYS` still sorted. Tests `r63_*`.
+
+### RocksDB path R62 — backup tool (checkpoint + ship)
+- **`db/backup.baga`:** BAGABK1 meta (`<dest>.backup`) with per-file size +
+  crc32c; `lsm_backup_create` / `lsm_cluster_backup_create`,
+  `lsm_backup_verify`, `lsm_backup_ship` / `lsm_backup_restore`.
+- **CLI:** `tools/backup.baga` — `BACKUP_MODE=create|verify|ship|restore`.
+- **RESP:** `BACKUP dest` (poll + MT).
+- Backup layout is openable with plain `lsm_open` / `lsm_cluster_open`.
+- Tests: `r62_*` in `tests/lsm_test.baga` (incl. corrupt→verify fail).
+
 ### Language — LLVM parity for R51/R54 builtins
 - `str_h`/`h_str`/`bytes_put` have LLVM builders now (PtrToInt / IntToPtr /
   bounds-checked memcpy); llvm_oracle green. `map_h`/`h_map` stay C-only

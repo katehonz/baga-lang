@@ -1,6 +1,9 @@
 // resp.baga — RESP2 (REdis Serialization Protocol) for kvbaga. Pure framing:
 // parse one command from a byte buffer, build replies, encode client commands.
-// Redis-compatible subset; values travel as str (NUL-free — see gaps.md).
+//
+// R65: binary-safe bulk args via RespParseB / resp_parse_command_b (Vec<bytes>).
+// Legacy RespParse / resp_parse_command still returns Vec<str> (NUL-unsafe for
+// values — kept for kvbaga + existing tests; rocksbaga uses the _b path).
 
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
@@ -12,6 +15,13 @@ struct RespParse {
     ok: i64,          // 1 = one full command parsed
     args: Vec<str>,
     consumed: i64     // bytes to drop from the buffer
+}
+
+// R65: same framing, payloads stay as bytes (binary-safe bulk strings).
+struct RespParseB {
+    ok: i64,
+    args: Vec<bytes>,
+    consumed: i64
 }
 
 // Index of the CR of the first CRLF at/after pos; -1 when absent.
@@ -46,55 +56,71 @@ fn resp_parse_dec(buf: bytes, start: i64, end: i64) -> i64 {
     return n
 }
 
-// One RESP command: *N followed by N "$len\r\n<bytes>\r\n" frames.
+// R65: binary-safe parse — arg payloads stay bytes (embedded NUL ok).
 // ok=0 means "need more data" (or garbage — the connection is dropped then).
-// R29: headers (*N / $len) parsed as digits on the wire — no str_of_bytes/
-// parse_int for framing; only arg payloads become strings.
-fn resp_parse_command(buf: bytes) -> RespParse {
-    let none = vec_new()
+// R29: headers (*N / $len) parsed as digits on the wire — no str for framing.
+fn resp_parse_command_b(buf: bytes) -> RespParseB {
+    let none: Vec<bytes> = vec_new()
     let blen0 = bytes_len(buf)
     if blen0 < 4 {
-        return RespParse { ok: 0, args: none, consumed: 0 }
+        return RespParseB { ok: 0, args: none, consumed: 0 }
     }
     if (bytes_at(buf, 0) & 255) != 42 {   // '*'
-        return RespParse { ok: 0, args: none, consumed: 0 }
+        return RespParseB { ok: 0, args: none, consumed: 0 }
     }
     let eol = resp_find_crlf(buf, 0)
     if eol < 1 {
-        return RespParse { ok: 0, args: none, consumed: 0 }
+        return RespParseB { ok: 0, args: none, consumed: 0 }
     }
     let n = resp_parse_dec(buf, 1, eol)
     if n <= 0 || n > 64 {
-        return RespParse { ok: 0, args: none, consumed: 0 }
+        return RespParseB { ok: 0, args: none, consumed: 0 }
     }
-    let args = vec_new()
+    let args: Vec<bytes> = vec_new()
     let mut pos = eol + 2
     let mut i: i64 = 0
     while i < n {
         if pos >= blen0 {
-            return RespParse { ok: 0, args: none, consumed: 0 }
+            return RespParseB { ok: 0, args: none, consumed: 0 }
         }
         if (bytes_at(buf, pos) & 255) != 36 {   // '$'
-            return RespParse { ok: 0, args: none, consumed: 0 }
+            return RespParseB { ok: 0, args: none, consumed: 0 }
         }
         let le = resp_find_crlf(buf, pos)
         if le < pos + 1 {
-            return RespParse { ok: 0, args: none, consumed: 0 }
+            return RespParseB { ok: 0, args: none, consumed: 0 }
         }
         let alen = resp_parse_dec(buf, pos + 1, le)
         if alen < 0 || alen > 536870912 {
-            return RespParse { ok: 0, args: none, consumed: 0 }
+            return RespParseB { ok: 0, args: none, consumed: 0 }
         }
         let start = le + 2
         if blen0 < start + alen + 2 {
-            return RespParse { ok: 0, args: none, consumed: 0 }
+            return RespParseB { ok: 0, args: none, consumed: 0 }
         }
-        // Only payload → str (keys/vals). Framing never became a string.
-        vec_push(args, str_of_bytes(bytes_slice(buf, start, start + alen)))
+        vec_push(args, bytes_slice(buf, start, start + alen))
         pos = start + alen + 2
         i = i + 1
     }
-    return RespParse { ok: 1, args: args, consumed: pos }
+    return RespParseB { ok: 1, args: args, consumed: pos }
+}
+
+// Legacy: *N + bulk frames → Vec<str>. Identical wire framing to _b; payloads
+// go through str_of_bytes (NUL-unsafe). Prefer resp_parse_command_b for
+// binary values. Implemented via _b so framing stays one code path.
+fn resp_parse_command(buf: bytes) -> RespParse {
+    let none: Vec<str> = vec_new()
+    let pb = resp_parse_command_b(buf)
+    if pb.ok == 0 {
+        return RespParse { ok: 0, args: none, consumed: 0 }
+    }
+    let args: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(pb.args) {
+        vec_push(args, str_of_bytes(vec_get(pb.args, i)))
+        i = i + 1
+    }
+    return RespParse { ok: 1, args: args, consumed: pb.consumed }
 }
 
 // ---------- reply builders (server side) ----------
@@ -163,15 +189,32 @@ fn resp_array(n: i64) -> bytes {
 
 // ---------- client side ----------
 
-// Encode one command: *N + N bulk frames.
-fn resp_encode_command(args: Vec<str>) -> bytes {
-    let mut s = concat(concat("*", int_to_str(vec_len(args))), "\r\n")
-    for i in 0..vec_len(args) {
+// R65: encode command with binary-safe bulk args.
+fn resp_encode_command_b(args: Vec<bytes>) -> bytes {
+    let n = vec_len(args)
+    let mut out = bytes_of_str(concat(concat("*", int_to_str(n)), "\r\n"))
+    let mut i: i64 = 0
+    while i < n {
         let a = vec_get(args, i)
-        let frame = concat(concat(concat("$", int_to_str(len(a))), "\r\n"), concat(a, "\r\n"))
-        s = concat(s, frame)
+        let head = bytes_of_str(concat(concat("$", int_to_str(bytes_len(a))), "\r\n"))
+        let crlf = bytes_of_str("\r\n")
+        out = bytes_concat(out, head)
+        out = bytes_concat(out, a)
+        out = bytes_concat(out, crlf)
+        i = i + 1
     }
-    return bytes_of_str(s)
+    return out
+}
+
+// Encode one command: *N + N bulk frames (text args; NUL-unsafe).
+fn resp_encode_command(args: Vec<str>) -> bytes {
+    let bs: Vec<bytes> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(args) {
+        vec_push(bs, bytes_of_str(vec_get(args, i)))
+        i = i + 1
+    }
+    return resp_encode_command_b(bs)
 }
 
 struct RespReply {
@@ -242,8 +285,8 @@ fn resp_parse_reply(buf: bytes) -> RespReply {
 
 // Round-trip one command over fd: write, then read until one full reply.
 // ok=0 on I/O failure or timeout.
-fn resp_round_trip(fd: i64, args: Vec<str>) -> RespReply !Net !IO {
-    let w = tcp_write_bytes(fd, resp_encode_command(args))?
+fn resp_round_trip_raw(fd: i64, cmd: bytes) -> RespReply !Net !IO {
+    let w = tcp_write_bytes(fd, cmd)?
     if w != 0 {
         return RespReply { ok: 0, typ: 0, text: "", num: 0, items: vec_new(), consumed: 0 }
     }
@@ -262,4 +305,45 @@ fn resp_round_trip(fd: i64, args: Vec<str>) -> RespReply !Net !IO {
         tries = tries + 1
     }
     return RespReply { ok: 0, typ: 0, text: "", num: 0, items: vec_new(), consumed: 0 }
+}
+
+// R65: binary-safe client round-trip.
+fn resp_round_trip_b(fd: i64, args: Vec<bytes>) -> RespReply !Net !IO {
+    return resp_round_trip_raw(fd, resp_encode_command_b(args))?
+}
+
+fn resp_round_trip(fd: i64, args: Vec<str>) -> RespReply !Net !IO {
+    return resp_round_trip_raw(fd, resp_encode_command(args))?
+}
+
+// Parse bulk reply payload as raw bytes (for binary GET checks).
+// Returns ok=0 if not a full bulk reply; found=0 for null bulk ($-1).
+struct RespBulkB {
+    ok: i64,
+    found: i64,
+    val: bytes,
+    consumed: i64
+}
+
+fn resp_parse_bulk_b(buf: bytes) -> RespBulkB {
+    let empty = bytes_new(0)
+    let eol = resp_find_crlf(buf, 0)
+    if eol < 0 || (bytes_at(buf, 0) & 255) != 36 {
+        return RespBulkB { ok: 0, found: 0, val: empty, consumed: 0 }
+    }
+    let blen = resp_parse_dec(buf, 1, eol)
+    if blen < 0 {
+        // null bulk $-1
+        return RespBulkB { ok: 1, found: 0, val: empty, consumed: eol + 2 }
+    }
+    let start = eol + 2
+    if bytes_len(buf) < start + blen + 2 {
+        return RespBulkB { ok: 0, found: 0, val: empty, consumed: 0 }
+    }
+    return RespBulkB {
+        ok: 1,
+        found: 1,
+        val: bytes_slice(buf, start, start + blen),
+        consumed: start + blen + 2
+    }
 }
