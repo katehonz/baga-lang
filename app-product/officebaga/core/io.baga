@@ -1,0 +1,11 @@
+// io.baga — binary-safe file load/store via std (ZIP-safe; no strlen path).
+
+import "std/os/os.baga"
+
+fn office_read_bytes(path: str) -> bytes !IO {
+    return read_file_bytes(path)?
+}
+
+fn office_write_bytes(path: str, data: bytes) -> i64 !IO {
+    return write_file_bytes(path, data)?
+}

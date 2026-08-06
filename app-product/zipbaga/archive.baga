@@ -1,0 +1,453 @@
+// archive.baga — ZIP reader (local + central directory + EOCD).
+// Methods: 0 store, 8 DEFLATE. No ZIP64, no encryption, no multi-disk.
+
+import "crc32.baga"
+import "inflate.baga"
+import "deflate.baga"
+import "std/str/str.baga"
+
+struct ZipArchive {
+    data: bytes,
+    names: Vec<str>,
+    methods: Vec<i64>,
+    crcs: Vec<i64>,
+    comp_sizes: Vec<i64>,
+    uncomp_sizes: Vec<i64>,
+    offsets: Vec<i64>,
+    ok: i64,
+    err: str
+}
+
+struct ZipPart {
+    ok: i64,
+    err: str,
+    data: bytes
+}
+
+fn zip_part_ok(data: bytes) -> ZipPart {
+    return ZipPart { ok: 1, err: "", data: data }
+}
+
+fn zip_part_err(msg: str) -> ZipPart {
+    return ZipPart { ok: 0, err: msg, data: bytes_new(0) }
+}
+
+fn zip_empty_err(msg: str) -> ZipArchive {
+    return ZipArchive {
+        data: bytes_new(0),
+        names: vec_new(),
+        methods: vec_new(),
+        crcs: vec_new(),
+        comp_sizes: vec_new(),
+        uncomp_sizes: vec_new(),
+        offsets: vec_new(),
+        ok: 0,
+        err: msg
+    }
+}
+
+fn zip_u16(b: bytes, off: i64) -> i64 {
+    return (bytes_at(b, off) & 255) | ((bytes_at(b, off + 1) & 255) << 8)
+}
+
+fn zip_u32(b: bytes, off: i64) -> i64 {
+    return (bytes_at(b, off) & 255)
+        | ((bytes_at(b, off + 1) & 255) << 8)
+        | ((bytes_at(b, off + 2) & 255) << 16)
+        | ((bytes_at(b, off + 3) & 255) << 24)
+}
+
+fn zip_sig_eocd() -> i64 { return 101010256 }   // 0x06054b50
+fn zip_sig_central() -> i64 { return 33639248 } // 0x02014b50
+fn zip_sig_local() -> i64 { return 67324752 }   // 0x04034b50
+
+// Find EOCD signature scanning backwards from end (comment ≤ 64 KiB).
+fn zip_find_eocd(b: bytes) -> i64 {
+    let n = bytes_len(b)
+    if n < 22 {
+        return 0 - 1
+    }
+    let mut i = n - 22
+    let min: i64 = 0
+    // allow comment up to 65535
+    if n > 22 + 65535 {
+        // start search window
+        let start = n - 22 - 65535
+        // min stays 0; just bound loop via i floor
+        i = n - 22
+        while i >= start {
+            if zip_u32(b, i) == zip_sig_eocd() {
+                return i
+            }
+            if i == start {
+                return 0 - 1
+            }
+            i = i - 1
+        }
+        return 0 - 1
+    }
+    while i >= min {
+        if zip_u32(b, i) == zip_sig_eocd() {
+            return i
+        }
+        if i == 0 {
+            return 0 - 1
+        }
+        i = i - 1
+    }
+    return 0 - 1
+}
+
+fn zip_open_bytes(data: bytes) -> ZipArchive {
+    let eocd = zip_find_eocd(data)
+    if eocd < 0 {
+        return zip_empty_err("zip: EOCD not found")
+    }
+    let total = zip_u16(data, eocd + 10)
+    let cd_size = zip_u32(data, eocd + 12)
+    let cd_off = zip_u32(data, eocd + 16)
+    if cd_off + cd_size > bytes_len(data) {
+        return zip_empty_err("zip: central directory out of range")
+    }
+
+    let names = vec_new()
+    let methods = vec_new()
+    let crcs = vec_new()
+    let comp_sizes = vec_new()
+    let uncomp_sizes = vec_new()
+    let offsets = vec_new()
+
+    let mut pos = cd_off
+    let mut i: i64 = 0
+    while i < total {
+        if pos + 46 > bytes_len(data) {
+            return zip_empty_err("zip: truncated central directory")
+        }
+        if zip_u32(data, pos) != zip_sig_central() {
+            return zip_empty_err("zip: bad central directory signature")
+        }
+        let method = zip_u16(data, pos + 10)
+        let crc = zip_u32(data, pos + 16)
+        let csize = zip_u32(data, pos + 20)
+        let usize = zip_u32(data, pos + 24)
+        let nlen = zip_u16(data, pos + 28)
+        let elen = zip_u16(data, pos + 30)
+        let clen = zip_u16(data, pos + 32)
+        let loff = zip_u32(data, pos + 42)
+        if pos + 46 + nlen + elen + clen > bytes_len(data) {
+            return zip_empty_err("zip: central entry truncated")
+        }
+        let name_b = bytes_slice(data, pos + 46, pos + 46 + nlen)
+        let name = str_of_bytes(name_b)
+        vec_push(names, name)
+        vec_push(methods, method)
+        vec_push(crcs, crc)
+        vec_push(comp_sizes, csize)
+        vec_push(uncomp_sizes, usize)
+        vec_push(offsets, loff)
+        pos = pos + 46 + nlen + elen + clen
+        i = i + 1
+    }
+
+    return ZipArchive {
+        data: data,
+        names: names,
+        methods: methods,
+        crcs: crcs,
+        comp_sizes: comp_sizes,
+        uncomp_sizes: uncomp_sizes,
+        offsets: offsets,
+        ok: 1,
+        err: ""
+    }
+}
+
+fn zip_count(z: ZipArchive) -> i64 {
+    return vec_len(z.names)
+}
+
+fn zip_name(z: ZipArchive, i: i64) -> str {
+    return vec_get(z.names, i)
+}
+
+fn zip_find(z: ZipArchive, name: str) -> i64 {
+    let n = vec_len(z.names)
+    let mut i: i64 = 0
+    while i < n {
+        if vec_get(z.names, i) == name {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+fn zip_read_index(z: ZipArchive, i: i64) -> ZipPart {
+    if z.ok == 0 {
+        return zip_part_err(z.err)
+    }
+    if i < 0 || i >= vec_len(z.names) {
+        return zip_part_err("zip: index out of range")
+    }
+    let loff = vec_get(z.offsets, i)
+    let data = z.data
+    if loff + 30 > bytes_len(data) {
+        return zip_part_err("zip: local header out of range")
+    }
+    if zip_u32(data, loff) != zip_sig_local() {
+        return zip_part_err("zip: bad local header signature")
+    }
+    let flags = zip_u16(data, loff + 6)
+    let method = zip_u16(data, loff + 8)
+    let nlen = zip_u16(data, loff + 26)
+    let elen = zip_u16(data, loff + 28)
+    let data_off = loff + 30 + nlen + elen
+    // Prefer central-directory sizes (reliable with data descriptors).
+    let csize = vec_get(z.comp_sizes, i)
+    let expect_crc = vec_get(z.crcs, i)
+    let method_cd = vec_get(z.methods, i)
+    let mut m = method
+    if method_cd != method {
+        m = method_cd
+    }
+    if data_off + csize > bytes_len(data) {
+        return zip_part_err("zip: compressed data out of range")
+    }
+    let comp = bytes_slice(data, data_off, data_off + csize)
+    let mut plain = bytes_new(0)
+    if m == 0 {
+        plain = comp
+    } else {
+        if m == 8 {
+            let r = inflate_raw(comp)
+            if r.ok == 0 {
+                return zip_part_err(r.err)
+            }
+            plain = r.data
+        } else {
+            return zip_part_err(concat("zip: unsupported method ", int_to_str(m)))
+        }
+    }
+    let got = crc32_b(plain)
+    if got != expect_crc {
+        return zip_part_err(concat(
+            concat("zip: CRC mismatch got=", int_to_str(got)),
+            concat(" want=", int_to_str(expect_crc))
+        ))
+    }
+    // data descriptor flag unused after CD sizes; silence unused
+    if flags < 0 {
+        return zip_part_err("zip: impossible")
+    }
+    return zip_part_ok(plain)
+}
+
+fn zip_read(z: ZipArchive, name: str) -> ZipPart {
+    let i = zip_find(z, name)
+    if i < 0 {
+        return zip_part_err(concat("zip: missing entry ", name))
+    }
+    return zip_read_index(z, i)
+}
+
+// Rebuild archive: replace entry `name` with `data` (append if missing).
+// compress=1 → deflate all; compress=0 → store all.
+// Special: if first entry is "mimetype", that entry is always stored (ODF).
+fn zip_set_entry(z: ZipArchive, name: str, data: bytes, compress: i64) -> ZipPart {
+    if z.ok == 0 {
+        return zip_part_err(z.err)
+    }
+    let names = vec_new()
+    let parts = vec_new()
+    let methods = vec_new()
+    let mut found: i64 = 0
+    let n = zip_count(z)
+    let mut i: i64 = 0
+    while i < n {
+        let en = zip_name(z, i)
+        vec_push(names, en)
+        if en == name {
+            vec_push(parts, data)
+            found = 1
+        } else {
+            let p = zip_read_index(z, i)
+            if p.ok == 0 {
+                return p
+            }
+            vec_push(parts, p.data)
+        }
+        i = i + 1
+    }
+    if found == 0 {
+        vec_push(names, name)
+        vec_push(parts, data)
+    }
+    // methods
+    i = 0
+    while i < vec_len(names) {
+        let en = vec_get(names, i)
+        if en == "mimetype" {
+            vec_push(methods, 0)
+        } else {
+            if compress == 1 {
+                vec_push(methods, 8)
+            } else {
+                vec_push(methods, 0)
+            }
+        }
+        i = i + 1
+    }
+    let out = zip_write_methods(names, parts, methods)
+    return zip_part_ok(out)
+}
+
+// Expand all entries to store/deflate package bytes (identity rebuild).
+fn zip_to_bytes(z: ZipArchive, compress: i64) -> ZipPart {
+    if z.ok == 0 {
+        return zip_part_err(z.err)
+    }
+    if zip_count(z) == 0 {
+        return zip_part_err("zip: empty archive")
+    }
+    // set_entry of first entry to itself triggers full rebuild
+    let p0 = zip_read_index(z, 0)
+    if p0.ok == 0 {
+        return p0
+    }
+    return zip_set_entry(z, zip_name(z, 0), p0.data, compress)
+}
+
+// ---------- ZIP writer (method 0 store only) ----------
+
+fn zip_put_u16(b: bytes, off: i64, v: i64) {
+    bytes_set(b, off, v & 255)
+    bytes_set(b, off + 1, (v >> 8) & 255)
+}
+
+fn zip_put_u32(b: bytes, off: i64, v: i64) {
+    bytes_set(b, off, v & 255)
+    bytes_set(b, off + 1, (v >> 8) & 255)
+    bytes_set(b, off + 2, (v >> 16) & 255)
+    bytes_set(b, off + 3, (v >> 24) & 255)
+}
+
+fn zip_push_u16(b: bytes, v: i64) -> bytes {
+    let c = bytes_new(2)
+    zip_put_u16(c, 0, v)
+    return bytes_concat(b, c)
+}
+
+fn zip_push_u32(b: bytes, v: i64) -> bytes {
+    let c = bytes_new(4)
+    zip_put_u32(c, 0, v)
+    return bytes_concat(b, c)
+}
+
+// Core ZIP writer. methods[i]: 0 store, 8 deflate (other → store).
+fn zip_write_methods(names: Vec<str>, parts: Vec<bytes>, methods: Vec<i64>) -> bytes {
+    let n = vec_len(names)
+    let mut locals = bytes_new(0)
+    let mut centrals = bytes_new(0)
+    let mut i: i64 = 0
+    while i < n {
+        let name = vec_get(names, i)
+        let payload = vec_get(parts, i)
+        let name_b = bytes_of_str(name)
+        let nlen = bytes_len(name_b)
+        let usz = bytes_len(payload)
+        let crc = crc32_b(payload)
+        let mut method: i64 = 0
+        if i < vec_len(methods) {
+            method = vec_get(methods, i)
+        }
+        let mut body = payload
+        if method == 8 {
+            body = deflate_raw(payload)
+        } else {
+            method = 0
+        }
+        let csz = bytes_len(body)
+        let loff = bytes_len(locals)
+
+        // local file header
+        locals = zip_push_u32(locals, zip_sig_local())
+        locals = zip_push_u16(locals, 20)   // version needed
+        locals = zip_push_u16(locals, 0)    // flags
+        locals = zip_push_u16(locals, method)
+        locals = zip_push_u16(locals, 0)    // time
+        locals = zip_push_u16(locals, 0)    // date
+        locals = zip_push_u32(locals, crc)
+        locals = zip_push_u32(locals, csz)
+        locals = zip_push_u32(locals, usz)
+        locals = zip_push_u16(locals, nlen)
+        locals = zip_push_u16(locals, 0)    // extra len
+        locals = bytes_concat(locals, name_b)
+        locals = bytes_concat(locals, body)
+
+        // central directory header
+        centrals = zip_push_u32(centrals, zip_sig_central())
+        centrals = zip_push_u16(centrals, 20)  // version made by
+        centrals = zip_push_u16(centrals, 20)  // version needed
+        centrals = zip_push_u16(centrals, 0)
+        centrals = zip_push_u16(centrals, method)
+        centrals = zip_push_u16(centrals, 0)
+        centrals = zip_push_u16(centrals, 0)
+        centrals = zip_push_u32(centrals, crc)
+        centrals = zip_push_u32(centrals, csz)
+        centrals = zip_push_u32(centrals, usz)
+        centrals = zip_push_u16(centrals, nlen)
+        centrals = zip_push_u16(centrals, 0)   // extra
+        centrals = zip_push_u16(centrals, 0)   // comment
+        centrals = zip_push_u16(centrals, 0)   // disk start
+        centrals = zip_push_u16(centrals, 0)   // int attrs
+        centrals = zip_push_u32(centrals, 0)   // ext attrs
+        centrals = zip_push_u32(centrals, loff)
+        centrals = bytes_concat(centrals, name_b)
+
+        i = i + 1
+    }
+
+    let cd_off = bytes_len(locals)
+    let cd_size = bytes_len(centrals)
+    let mut out = bytes_concat(locals, centrals)
+    // EOCD
+    out = zip_push_u32(out, zip_sig_eocd())
+    out = zip_push_u16(out, 0)
+    out = zip_push_u16(out, 0)
+    out = zip_push_u16(out, n)
+    out = zip_push_u16(out, n)
+    out = zip_push_u32(out, cd_size)
+    out = zip_push_u32(out, cd_off)
+    out = zip_push_u16(out, 0)  // comment len
+    return out
+}
+
+// Store-only ZIP (method 0). ODF mimetype entry must stay store.
+fn zip_write_store(names: Vec<str>, parts: Vec<bytes>) -> bytes {
+    let methods = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(names) {
+        vec_push(methods, 0)
+        i = i + 1
+    }
+    return zip_write_methods(names, parts, methods)
+}
+
+// Deflate all entries (method 8). Good for OOXML; not for ODF mimetype.
+fn zip_write_deflate(names: Vec<str>, parts: Vec<bytes>) -> bytes {
+    let methods = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(names) {
+        vec_push(methods, 8)
+        i = i + 1
+    }
+    return zip_write_methods(names, parts, methods)
+}
+
+// compress=0 store all; compress=1 deflate all.
+fn zip_write(names: Vec<str>, parts: Vec<bytes>, compress: i64) -> bytes {
+    if compress == 1 {
+        return zip_write_deflate(names, parts)
+    }
+    return zip_write_store(names, parts)
+}

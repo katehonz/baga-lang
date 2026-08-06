@@ -1,0 +1,316 @@
+// deflate.baga — raw DEFLATE compress (RFC 1951).
+// Fixed Huffman + greedy LZ77 (window 4 KiB, min match 3, max 258).
+// Bit packing matches inflate.baga (LSB-first).
+
+struct DefW {
+    out: bytes,
+    bitbuf: i64,
+    bitcnt: i64
+}
+
+fn def_new() -> DefW {
+    return DefW { out: bytes_new(0), bitbuf: 0, bitcnt: 0 }
+}
+
+// Emit n low bits of val (LSB first into the byte stream).
+fn def_bits(w: DefW, val: i64, n: i64) -> DefW {
+    if n <= 0 {
+        return w
+    }
+    let mut bitbuf = w.bitbuf | ((val & ((1 << n) - 1)) << w.bitcnt)
+    let mut bitcnt = w.bitcnt + n
+    let mut out = w.out
+    while bitcnt >= 8 {
+        let c = bytes_new(1)
+        bytes_set(c, 0, bitbuf & 255)
+        out = bytes_concat(out, c)
+        bitbuf = bitbuf >> 8
+        bitcnt = bitcnt - 8
+    }
+    return DefW { out: out, bitbuf: bitbuf, bitcnt: bitcnt }
+}
+
+fn def_flush(w: DefW) -> bytes {
+    let mut ww = w
+    if ww.bitcnt > 0 {
+        ww = def_bits(ww, 0, 8 - ww.bitcnt)
+    }
+    return ww.out
+}
+
+fn def_rev(c: i64, n: i64) -> i64 {
+    let mut x = c
+    let mut r: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        r = (r << 1) | (x & 1)
+        x = x >> 1
+        i = i + 1
+    }
+    return r
+}
+
+// Fixed Huffman lit/len symbol 0..285.
+fn def_fixed_sym(w: DefW, sym: i64) -> DefW {
+    if sym <= 143 {
+        let code = 48 + sym
+        return def_bits(w, def_rev(code, 8), 8)
+    }
+    if sym <= 255 {
+        let code = 400 + (sym - 144)
+        return def_bits(w, def_rev(code, 9), 9)
+    }
+    if sym <= 279 {
+        let code = sym - 256
+        return def_bits(w, def_rev(code, 7), 7)
+    }
+    let code = 192 + (sym - 280)
+    return def_bits(w, def_rev(code, 8), 8)
+}
+
+// Fixed distance: 5-bit code = symbol 0..29.
+fn def_fixed_dist(w: DefW, dsym: i64) -> DefW {
+    return def_bits(w, def_rev(dsym & 31, 5), 5)
+}
+
+// Encode match length 3..258 → length symbol + extra bits.
+fn def_emit_length(w: DefW, length: i64) -> DefW {
+    let mut len = length
+    if len < 3 {
+        len = 3
+    }
+    if len > 258 {
+        len = 258
+    }
+    let mut sym: i64 = 257
+    let mut extra: i64 = 0
+    let mut eval: i64 = 0
+    if len <= 10 {
+        sym = 257 + (len - 3)
+        extra = 0
+        eval = 0
+    } else {
+        if len <= 18 {
+            sym = 265 + ((len - 11) / 2)
+            extra = 1
+            eval = (len - 11) % 2
+        } else {
+            if len <= 34 {
+                sym = 269 + ((len - 19) / 4)
+                extra = 2
+                eval = (len - 19) % 4
+            } else {
+                if len <= 66 {
+                    sym = 273 + ((len - 35) / 8)
+                    extra = 3
+                    eval = (len - 35) % 8
+                } else {
+                    if len <= 130 {
+                        sym = 277 + ((len - 67) / 16)
+                        extra = 4
+                        eval = (len - 67) % 16
+                    } else {
+                        if len <= 257 {
+                            sym = 281 + ((len - 131) / 32)
+                            extra = 5
+                            eval = (len - 131) % 32
+                        } else {
+                            sym = 285
+                            extra = 0
+                            eval = 0
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut ww = def_fixed_sym(w, sym)
+    ww = def_bits(ww, eval, extra)
+    return ww
+}
+
+// Encode distance 1..32768 → dist symbol + extra.
+fn def_emit_dist(w: DefW, distance: i64) -> DefW {
+    let mut d = distance
+    if d < 1 {
+        d = 1
+    }
+    if d > 32768 {
+        d = 32768
+    }
+    // Find smallest dist symbol whose base+extra can represent d.
+    // Tables mirror inflate inf_dist_base / inf_dist_extra.
+    let bases = vec_new()
+    let extras = vec_new()
+    // bases 0..29
+    vec_push(bases, 1)
+    vec_push(bases, 2)
+    vec_push(bases, 3)
+    vec_push(bases, 4)
+    vec_push(bases, 5)
+    vec_push(bases, 7)
+    vec_push(bases, 9)
+    vec_push(bases, 13)
+    vec_push(bases, 17)
+    vec_push(bases, 25)
+    vec_push(bases, 33)
+    vec_push(bases, 49)
+    vec_push(bases, 65)
+    vec_push(bases, 97)
+    vec_push(bases, 129)
+    vec_push(bases, 193)
+    vec_push(bases, 257)
+    vec_push(bases, 385)
+    vec_push(bases, 513)
+    vec_push(bases, 769)
+    vec_push(bases, 1025)
+    vec_push(bases, 1537)
+    vec_push(bases, 2049)
+    vec_push(bases, 3073)
+    vec_push(bases, 4097)
+    vec_push(bases, 6145)
+    vec_push(bases, 8193)
+    vec_push(bases, 12289)
+    vec_push(bases, 16385)
+    vec_push(bases, 24577)
+    vec_push(extras, 0)
+    vec_push(extras, 0)
+    vec_push(extras, 0)
+    vec_push(extras, 0)
+    vec_push(extras, 1)
+    vec_push(extras, 1)
+    vec_push(extras, 2)
+    vec_push(extras, 2)
+    vec_push(extras, 3)
+    vec_push(extras, 3)
+    vec_push(extras, 4)
+    vec_push(extras, 4)
+    vec_push(extras, 5)
+    vec_push(extras, 5)
+    vec_push(extras, 6)
+    vec_push(extras, 6)
+    vec_push(extras, 7)
+    vec_push(extras, 7)
+    vec_push(extras, 8)
+    vec_push(extras, 8)
+    vec_push(extras, 9)
+    vec_push(extras, 9)
+    vec_push(extras, 10)
+    vec_push(extras, 10)
+    vec_push(extras, 11)
+    vec_push(extras, 11)
+    vec_push(extras, 12)
+    vec_push(extras, 12)
+    vec_push(extras, 13)
+    vec_push(extras, 13)
+
+    let mut sym: i64 = 0
+    let mut s: i64 = 0
+    while s < 30 {
+        let base = vec_get(bases, s)
+        let ex = vec_get(extras, s)
+        let maxv = base + ((1 << ex) - 1)
+        if d <= maxv {
+            sym = s
+            let mut ww = def_fixed_dist(w, sym)
+            ww = def_bits(ww, d - base, ex)
+            return ww
+        }
+        s = s + 1
+    }
+    // fallback last
+    let mut ww = def_fixed_dist(w, 29)
+    ww = def_bits(ww, d - 24577, 13)
+    return ww
+}
+
+fn def_window() -> i64 {
+    return 4096
+}
+
+fn def_max_match() -> i64 {
+    return 258
+}
+
+// Greedy longest match at pos; returns length (0 if none), distance in DefMatch.
+struct DefMatch {
+    len: i64,
+    dist: i64
+}
+
+fn def_find_match(src: bytes, pos: i64) -> DefMatch {
+    let n = bytes_len(src)
+    let win = def_window()
+    let maxm = def_max_match()
+    let mut start = pos - win
+    if start < 0 {
+        start = 0
+    }
+    let mut best_len: i64 = 0
+    let mut best_dist: i64 = 0
+    let mut j = start
+    while j < pos {
+        let mut k: i64 = 0
+        let limit = n - pos
+        let mut lim = maxm
+        if limit < lim {
+            lim = limit
+        }
+        while k < lim {
+            if bytes_at(src, j + k) != bytes_at(src, pos + k) {
+                break
+            }
+            k = k + 1
+        }
+        if k >= 3 && k > best_len {
+            best_len = k
+            best_dist = pos - j
+            if best_len == maxm {
+                return DefMatch { len: best_len, dist: best_dist }
+            }
+        }
+        j = j + 1
+    }
+    return DefMatch { len: best_len, dist: best_dist }
+}
+
+// Raw DEFLATE: one final fixed-Huffman block with LZ77 + EOB.
+fn deflate_raw(src: bytes) -> bytes {
+    let mut w = def_new()
+    // BFINAL=1, BTYPE=01 (fixed)
+    w = def_bits(w, 1, 1)
+    w = def_bits(w, 1, 1)
+    w = def_bits(w, 0, 1)
+    let n = bytes_len(src)
+    let mut i: i64 = 0
+    while i < n {
+        let m = def_find_match(src, i)
+        if m.len >= 3 {
+            w = def_emit_length(w, m.len)
+            w = def_emit_dist(w, m.dist)
+            i = i + m.len
+        } else {
+            w = def_fixed_sym(w, bytes_at(src, i) & 255)
+            i = i + 1
+        }
+    }
+    w = def_fixed_sym(w, 256)
+    return def_flush(w)
+}
+
+struct DeflateChoice {
+    method: i64,
+    data: bytes
+}
+
+// Pick deflate if smaller, else store.
+fn deflate_for_zip(src: bytes) -> DeflateChoice {
+    if bytes_len(src) < 16 {
+        return DeflateChoice { method: 0, data: src }
+    }
+    let comp = deflate_raw(src)
+    if bytes_len(comp) < bytes_len(src) {
+        return DeflateChoice { method: 8, data: comp }
+    }
+    return DeflateChoice { method: 0, data: src }
+}

@@ -1,0 +1,74 @@
+// crc32.baga — IEEE CRC-32 (ISO poly 0xEDB88320), reflected.
+// ZIP archive checksums. Distinct from std CRC-32C (Castagnoli).
+// Masked-i64 u32 discipline (same as crc32c).
+
+fn crc32_u32(x: i64) -> i64 {
+    return x & 4294967295
+}
+
+// Soft reflected CRC over one byte (inner 8 shifts).
+fn crc32_soft_byte(c: i64, b: i64) -> i64 {
+    let poly = 3988292384
+    let mut x = crc32_u32(c ^ (b & 255))
+    let mut k: i64 = 0
+    while k < 8 {
+        if (x & 1) == 1 {
+            x = crc32_u32((x >> 1) ^ poly)
+        } else {
+            x = x >> 1
+        }
+        k = k + 1
+    }
+    return x
+}
+
+fn crc32_table() -> Vec<i64> {
+    let t = vec_new()
+    let poly = 3988292384
+    for i in 0..256 {
+        let mut c = i
+        for k in 0..8 {
+            if (c & 1) == 1 {
+                c = crc32_u32((c >> 1) ^ poly)
+            } else {
+                c = c >> 1
+            }
+        }
+        vec_push(t, c)
+    }
+    return t
+}
+
+fn crc32_table_threshold() -> i64 {
+    return 4096
+}
+
+// Running state; init with 4294967295 (0xFFFFFFFF).
+fn crc32_update(crc: i64, data: bytes) -> i64 {
+    let n = bytes_len(data)
+    if n < crc32_table_threshold() {
+        let mut c = crc
+        let mut i: i64 = 0
+        while i < n {
+            c = crc32_soft_byte(c, bytes_at(data, i))
+            i = i + 1
+        }
+        return c
+    }
+    let t = crc32_table()
+    let mut c = crc
+    let mut i: i64 = 0
+    while i < n {
+        c = crc32_u32(vec_get(t, (c ^ bytes_at(data, i)) & 255) ^ (c >> 8))
+        i = i + 1
+    }
+    return c
+}
+
+fn crc32_final(crc: i64) -> i64 {
+    return crc32_u32(crc ^ 4294967295)
+}
+
+fn crc32_b(data: bytes) -> i64 {
+    return crc32_final(crc32_update(4294967295, data))
+}

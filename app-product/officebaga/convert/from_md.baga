@@ -1,0 +1,146 @@
+// convert/from_md.baga — Markdown → DOCX (line heuristics via mdbaga).
+// Headings, paragraphs, ul/ol markers, hr as blank para. Inline markers
+// are left as literal text (honest subset; no full inline AST → runs).
+
+import "mdbaga/md.baga"
+import "zipbaga/archive.baga"
+import "xmlbaga/xml.baga"
+import "bufbaga/buf.baga"
+import "std/str/str.baga"
+import "../docx/write.baga"
+
+fn md_docx_esc(s: str) -> str {
+    return xml_escape_text(s)
+}
+
+fn md_docx_para_xml(text: str) -> str {
+    let mut b = buf_new()
+    b = buf_push(b, "<w:p><w:r><w:t xml:space=\"preserve\">")
+    b = buf_push(b, md_docx_esc(text))
+    b = buf_push(b, "</w:t></w:r></w:p>")
+    return buf_str(b)
+}
+
+fn md_docx_heading_xml(level: i64, text: str) -> str {
+    // outlineLvl 0..5 (Word)
+    let mut lvl = level - 1
+    if lvl < 0 {
+        lvl = 0
+    }
+    if lvl > 5 {
+        lvl = 5
+    }
+    let mut b = buf_new()
+    b = buf_push(b, "<w:p><w:pPr><w:outlineLvl w:val=\"")
+    b = buf_push_i64(b, lvl)
+    b = buf_push(b, "\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">")
+    b = buf_push(b, md_docx_esc(text))
+    b = buf_push(b, "</w:t></w:r></w:p>")
+    return buf_str(b)
+}
+
+// Strip a leading list marker; returns body text (may be empty).
+fn md_docx_list_body(line: str) -> str {
+    let t = str_trim(line)
+    let um = md_ul_marker(t)
+    if um > 0 {
+        return str_trim(substr(t, um, len(t)))
+    }
+    let om = md_ol_marker(t)
+    if om > 0 {
+        return str_trim(substr(t, om, len(t)))
+    }
+    return t
+}
+
+fn md_to_docx_body_xml(md: str) -> str {
+    let lines = str_split(md, "\n")
+    let mut b = buf_new()
+    b = buf_push(b, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+    b = buf_push(b, "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>")
+
+    let mut i: i64 = 0
+    let mut para_acc = ""
+    let mut in_para: i64 = 0
+
+    while i < vec_len(lines) {
+        let line = vec_get(lines, i)
+        let blank = md_line_blank(line)
+        let hl = md_heading_level(line)
+        let fence = md_is_fence(line)
+        let hr = md_is_hr(line)
+        let um = md_ul_marker(str_trim(line))
+        let om = md_ol_marker(str_trim(line))
+        let is_list = um > 0 || om > 0
+
+        if blank || hl > 0 || fence || hr || is_list {
+            // flush accumulated paragraph
+            if in_para == 1 {
+                b = buf_push(b, md_docx_para_xml(para_acc))
+                para_acc = ""
+                in_para = 0
+            }
+        }
+
+        if blank {
+            // skip
+        } else {
+            if hl > 0 {
+                b = buf_push(b, md_docx_heading_xml(hl, md_heading_text(line, hl)))
+            } else {
+                if hr {
+                    b = buf_push(b, md_docx_para_xml("────────"))
+                } else {
+                    if fence {
+                        // consume fenced block as monospace-ish plain lines
+                        let mut j = i + 1
+                        while j < vec_len(lines) && md_is_fence(vec_get(lines, j)) == false {
+                            b = buf_push(b, md_docx_para_xml(vec_get(lines, j)))
+                            j = j + 1
+                        }
+                        i = j
+                        // skip closing fence (loop will i++)
+                    } else {
+                        if is_list {
+                            let body = md_docx_list_body(line)
+                            let mut bullet = "• "
+                            if om > 0 {
+                                bullet = "• "
+                            }
+                            b = buf_push(b, md_docx_para_xml(concat(bullet, body)))
+                        } else {
+                            // soft-join paragraph lines with space
+                            if in_para == 0 {
+                                para_acc = str_trim(line)
+                                in_para = 1
+                            } else {
+                                para_acc = concat(concat(para_acc, " "), str_trim(line))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    if in_para == 1 {
+        b = buf_push(b, md_docx_para_xml(para_acc))
+    }
+
+    b = buf_push(b, "</w:body></w:document>")
+    return buf_str(b)
+}
+
+fn md_to_docx_bytes(md: str) -> bytes {
+    let names = vec_new()
+    let parts = vec_new()
+    vec_push(names, "[Content_Types].xml")
+    vec_push(parts, bytes_of_str(docx_content_types()))
+    vec_push(names, "_rels/.rels")
+    vec_push(parts, bytes_of_str(docx_root_rels()))
+    vec_push(names, "word/document.xml")
+    vec_push(parts, bytes_of_str(md_to_docx_body_xml(md)))
+    vec_push(names, "word/_rels/document.xml.rels")
+    vec_push(parts, bytes_of_str(docx_doc_rels()))
+    return zip_write_deflate(names, parts)
+}

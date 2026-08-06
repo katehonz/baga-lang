@@ -75,6 +75,24 @@ fn main() -> i64 !IO {
 
     check("unlink", unlink(path2)? == 0)
     check("exists_after_unlink", file_exists(path2)? == 0)
+
+    // read_file_bytes / write_file_bytes — path-level binary (ZIP-class)
+    let path3 = concat(dir, "/full.bin")
+    let mut blob = bytes_new(4)
+    bytes_set(blob, 0, 80)   // 'P'
+    bytes_set(blob, 1, 0)    // NUL
+    bytes_set(blob, 2, 75)   // 'K'
+    bytes_set(blob, 3, 3)
+    check("write_file_bytes", write_file_bytes(path3, blob)? == 0)
+    let got3 = read_file_bytes(path3)?
+    check("read_file_bytes_len", bytes_len(got3) == 4)
+    check("read_file_bytes_nul", bytes_at(got3, 0) == 80 && bytes_at(got3, 1) == 0)
+    check("read_file_bytes_pk", bytes_at(got3, 2) == 75 && bytes_at(got3, 3) == 3)
+    // str path would truncate at NUL — prove the hazard still exists
+    let as_str = read_file(path3)?
+    check("read_file_truncates", len(as_str) == 1 && char_at(as_str, 0) == 80)
+    unlink(path3)?
+
     // rmdir not wrapped — best-effort; dir may remain if non-empty
     unlink(dir)?
 

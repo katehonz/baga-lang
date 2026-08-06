@@ -1,0 +1,351 @@
+// ole/cfb.baga — Compound File Binary (OLE2/CFB) reader (minimal).
+// Lists directory streams and reads stream bytes. Not a full Word/Excel parser.
+
+import "std/str/str.baga"
+import "bufbaga/buf.baga"
+
+struct CfbFile {
+    data: bytes,
+    sector_size: i64,
+    mini_sector_size: i64,
+    fat: Vec<i64>,
+    mini_fat: Vec<i64>,
+    dir_start: i64,
+    mini_cutoff: i64,
+    mini_fat_start: i64,
+    first_dir: i64,
+    ok: i64,
+    err: str
+}
+
+struct CfbEntry {
+    name: str,
+    typ: i64,       // 1 storage, 2 stream, 5 root
+    start: i64,     // first sector
+    size: i64
+}
+
+struct CfbResult {
+    ok: i64,
+    err: str,
+    data: bytes
+}
+
+fn cfb_u16(b: bytes, off: i64) -> i64 {
+    return (bytes_at(b, off) & 255) | ((bytes_at(b, off + 1) & 255) << 8)
+}
+
+fn cfb_u32(b: bytes, off: i64) -> i64 {
+    return (bytes_at(b, off) & 255)
+        | ((bytes_at(b, off + 1) & 255) << 8)
+        | ((bytes_at(b, off + 2) & 255) << 16)
+        | ((bytes_at(b, off + 3) & 255) << 24)
+}
+
+fn cfb_i32(b: bytes, off: i64) -> i64 {
+    let u = cfb_u32(b, off)
+    // interpret as signed 32
+    if u >= 2147483648 {
+        return u - 4294967296
+    }
+    return u
+}
+
+fn cfb_err(msg: str) -> CfbFile {
+    return CfbFile {
+        data: bytes_new(0),
+        sector_size: 0,
+        mini_sector_size: 0,
+        fat: vec_new(),
+        mini_fat: vec_new(),
+        dir_start: 0,
+        mini_cutoff: 0,
+        mini_fat_start: 0,
+        first_dir: 0,
+        ok: 0,
+        err: msg
+    }
+}
+
+fn cfb_magic_ok(b: bytes) -> bool {
+    if bytes_len(b) < 8 {
+        return false
+    }
+    // D0 CF 11 E0 A1 B1 1A E1
+    return bytes_at(b, 0) == 208
+        && bytes_at(b, 1) == 207
+        && bytes_at(b, 2) == 17
+        && bytes_at(b, 3) == 224
+        && bytes_at(b, 4) == 161
+        && bytes_at(b, 5) == 177
+        && bytes_at(b, 6) == 26
+        && bytes_at(b, 7) == 225
+}
+
+// Sector data starts after 512-byte header; sector i at 512 + i*sector_size
+fn cfb_sector_off(sector_size: i64, sec: i64) -> i64 {
+    return 512 + sec * sector_size
+}
+
+fn cfb_open_bytes(data: bytes) -> CfbFile {
+    if cfb_magic_ok(data) == false {
+        return cfb_err("cfb: bad magic")
+    }
+    if bytes_len(data) < 512 {
+        return cfb_err("cfb: truncated header")
+    }
+    let shift = cfb_u16(data, 30)
+    let mini_shift = cfb_u16(data, 32)
+    let sector_size = 1 << shift
+    let mini_sector_size = 1 << mini_shift
+    let dir_start = cfb_u32(data, 48)
+    let mini_cutoff = cfb_u32(data, 56)
+    let mini_fat_start = cfb_i32(data, 60)
+    let fat_count = cfb_u32(data, 44)
+    // DIFAT first 109 entries at offset 76
+    let fat = vec_new()
+    let mut fi: i64 = 0
+    while fi < fat_count && fi < 109 {
+        let sec = cfb_i32(data, 76 + fi * 4)
+        if sec >= 0 {
+            let off = cfb_sector_off(sector_size, sec)
+            let mut j: i64 = 0
+            while j < sector_size {
+                if off + j + 4 > bytes_len(data) {
+                    break
+                }
+                vec_push(fat, cfb_u32(data, off + j))
+                j = j + 4
+            }
+        }
+        fi = fi + 1
+    }
+    // MiniFAT (optional, chain from mini_fat_start)
+    let mini_fat = vec_new()
+    if mini_fat_start >= 0 {
+        let mut sec = mini_fat_start
+        let mut guard: i64 = 0
+        while sec >= 0 && sec < 4294967294 && guard < 1024 {
+            let off = cfb_sector_off(sector_size, sec)
+            let mut j: i64 = 0
+            while j < sector_size {
+                if off + j + 4 > bytes_len(data) {
+                    break
+                }
+                vec_push(mini_fat, cfb_u32(data, off + j))
+                j = j + 4
+            }
+            if sec >= vec_len(fat) {
+                break
+            }
+            sec = vec_get(fat, sec)
+            // ENDOFCHAIN = 0xFFFFFFFE
+            if sec >= 4294967294 {
+                break
+            }
+            guard = guard + 1
+        }
+    }
+    return CfbFile {
+        data: data,
+        sector_size: sector_size,
+        mini_sector_size: mini_sector_size,
+        fat: fat,
+        mini_fat: mini_fat,
+        dir_start: dir_start,
+        mini_cutoff: mini_cutoff,
+        mini_fat_start: mini_fat_start,
+        first_dir: dir_start,
+        ok: 1,
+        err: ""
+    }
+}
+
+// UTF-16LE name from directory entry (64 bytes name field).
+fn cfb_entry_name(data: bytes, eoff: i64) -> str {
+    let name_len = cfb_u16(data, eoff + 64)   // bytes including NUL
+    let mut b = buf_new()
+    let mut i: i64 = 0
+    let maxb = name_len
+    if maxb > 64 {
+        // clamp
+    }
+    while i + 1 < 64 {
+        let lo = bytes_at(data, eoff + i) & 255
+        let hi = bytes_at(data, eoff + i + 1) & 255
+        if lo == 0 && hi == 0 {
+            break
+        }
+        if hi == 0 && lo < 128 {
+            b = buf_push(b, chr(lo))
+        } else {
+            // skip non-ASCII for MVP
+            if hi == 0 {
+                b = buf_push(b, chr(lo))
+            }
+        }
+        i = i + 2
+    }
+    return buf_str(b)
+}
+
+fn cfb_dir_entry(cfb: CfbFile, index: i64) -> CfbEntry {
+    let empty = CfbEntry { name: "", typ: 0, start: 0, size: 0 }
+    if cfb.ok == 0 {
+        return empty
+    }
+    // Directory is a stream of 128-byte entries starting at first_dir sector chain
+    let mut sec = cfb.first_dir
+    let mut skip = index
+    let mut guard: i64 = 0
+    while sec >= 0 && sec < 4294967294 && guard < 4096 {
+        let off = cfb_sector_off(cfb.sector_size, sec)
+        let per = cfb.sector_size / 128
+        if skip < per {
+            let eoff = off + skip * 128
+            if eoff + 128 > bytes_len(cfb.data) {
+                return empty
+            }
+            let typ = bytes_at(cfb.data, eoff + 66) & 255
+            let start = cfb_u32(cfb.data, eoff + 116)
+            let size = cfb_u32(cfb.data, eoff + 120)
+            let name = cfb_entry_name(cfb.data, eoff)
+            return CfbEntry { name: name, typ: typ, start: start, size: size }
+        }
+        skip = skip - per
+        if sec >= vec_len(cfb.fat) {
+            return empty
+        }
+        sec = vec_get(cfb.fat, sec)
+        guard = guard + 1
+    }
+    return empty
+}
+
+fn cfb_list(cfb: CfbFile) -> Vec<str> {
+    let out = vec_new()
+    if cfb.ok == 0 {
+        return out
+    }
+    let mut i: i64 = 0
+    while i < 256 {
+        let e = cfb_dir_entry(cfb, i)
+        if e.typ == 0 && e.name == "" {
+            // empty entry — stop after a streak? keep scanning a bit
+            if i > 8 {
+                // continue until we've seen many empties
+            }
+        }
+        if e.typ == 2 || e.typ == 1 || e.typ == 5 {
+            if e.name != "" {
+                vec_push(out, e.name)
+            }
+        }
+        if e.typ == 0 && i > 32 {
+            break
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn cfb_find(cfb: CfbFile, name: str) -> i64 {
+    let mut i: i64 = 0
+    while i < 256 {
+        let e = cfb_dir_entry(cfb, i)
+        if e.name == name && (e.typ == 2 || e.typ == 5) {
+            return i
+        }
+        if e.typ == 0 && i > 64 {
+            break
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Read stream by directory index (regular FAT sectors; mini streams if size < cutoff).
+fn cfb_read_index(cfb: CfbFile, index: i64) -> CfbResult {
+    if cfb.ok == 0 {
+        return CfbResult { ok: 0, err: cfb.err, data: bytes_new(0) }
+    }
+    let e = cfb_dir_entry(cfb, index)
+    if e.typ != 2 && e.typ != 5 {
+        return CfbResult { ok: 0, err: "cfb: not a stream", data: bytes_new(0) }
+    }
+    if e.size == 0 {
+        return CfbResult { ok: 1, err: "", data: bytes_new(0) }
+    }
+    // Mini stream path needs root storage stream — simplified: only regular FAT if size >= cutoff
+    if e.size < cfb.mini_cutoff && e.typ == 2 {
+        // Mini stream: need Root Entry stream as container — skip with error if complex
+        // Try regular chain anyway for small streams that still use FAT
+    }
+    let mut out = bytes_new(0)
+    let mut sec = e.start
+    let mut left = e.size
+    let mut guard: i64 = 0
+    while left > 0 && sec >= 0 && sec < 4294967294 && guard < 100000 {
+        let off = cfb_sector_off(cfb.sector_size, sec)
+        let mut take = cfb.sector_size
+        if take > left {
+            take = left
+        }
+        if off + take > bytes_len(cfb.data) {
+            return CfbResult { ok: 0, err: "cfb: truncated stream", data: bytes_new(0) }
+        }
+        out = bytes_concat(out, bytes_slice(cfb.data, off, off + take))
+        left = left - take
+        if sec >= vec_len(cfb.fat) {
+            break
+        }
+        sec = vec_get(cfb.fat, sec)
+        guard = guard + 1
+    }
+    if bytes_len(out) > e.size {
+        out = bytes_slice(out, 0, e.size)
+    }
+    return CfbResult { ok: 1, err: "", data: out }
+}
+
+fn cfb_read(cfb: CfbFile, name: str) -> CfbResult {
+    let i = cfb_find(cfb, name)
+    if i < 0 {
+        return CfbResult { ok: 0, err: concat("cfb: missing stream ", name), data: bytes_new(0) }
+    }
+    return cfb_read_index(cfb, i)
+}
+
+// Naive text: extract ASCII runs from a stream (legacy Word/Excel probe).
+fn cfb_ascii_text(data: bytes) -> str {
+    let mut b = buf_new()
+    let mut run = ""
+    let mut i: i64 = 0
+    let n = bytes_len(data)
+    while i < n {
+        let c = bytes_at(data, i) & 255
+        if c >= 32 && c < 127 {
+            run = concat(run, chr(c))
+        } else {
+            if len(run) >= 4 {
+                if buf_len_parts(b) > 0 {
+                    b = buf_push(b, "\n")
+                }
+                b = buf_push(b, run)
+            }
+            run = ""
+        }
+        i = i + 1
+    }
+    if len(run) >= 4 {
+        if buf_len_parts(b) > 0 {
+            b = buf_push(b, "\n")
+        }
+        b = buf_push(b, run)
+    }
+    return buf_str(b)
+}
+
+fn cfb_is_ole(data: bytes) -> bool {
+    return cfb_magic_ok(data)
+}

@@ -1,0 +1,100 @@
+// xlsx/write.baga — minimal XLSX (store ZIP). Rows: Vec<str> of TSV lines.
+
+import "zipbaga/archive.baga"
+import "xmlbaga/xml.baga"
+import "bufbaga/buf.baga"
+import "std/str/str.baga"
+
+fn xlsx_esc(s: str) -> str {
+    return xml_escape_text(s)
+}
+
+fn xlsx_col_name(col: i64) -> str {
+    // 0 -> A, 25 -> Z, 26 -> AA (simple, enough for demos)
+    if col < 26 {
+        return chr(65 + col)
+    }
+    let hi = col / 26 - 1
+    let lo = col % 26
+    return concat(chr(65 + hi), chr(65 + lo))
+}
+
+// rows: each element is one row, cells separated by tab.
+fn xlsx_sheet_xml(rows: Vec<str>) -> str {
+    let mut b = buf_new()
+    b = buf_push(b, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+    b = buf_push(b, "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>")
+    let mut r: i64 = 0
+    while r < vec_len(rows) {
+        let line = vec_get(rows, r)
+        let cells = str_split(line, "\t")
+        b = buf_push(b, "<row r=\"")
+        b = buf_push_i64(b, r + 1)
+        b = buf_push(b, "\">")
+        let mut c: i64 = 0
+        while c < vec_len(cells) {
+            let ref = concat(xlsx_col_name(c), int_to_str(r + 1))
+            b = buf_push(b, "<c r=\"")
+            b = buf_push(b, ref)
+            b = buf_push(b, "\" t=\"inlineStr\"><is><t>")
+            b = buf_push(b, xlsx_esc(vec_get(cells, c)))
+            b = buf_push(b, "</t></is></c>")
+            c = c + 1
+        }
+        b = buf_push(b, "</row>")
+        r = r + 1
+    }
+    b = buf_push(b, "</sheetData></worksheet>")
+    return buf_str(b)
+}
+
+fn xlsx_content_types() -> str {
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>"
+}
+
+fn xlsx_root_rels() -> str {
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>"
+}
+
+fn xlsx_workbook() -> str {
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Sheet1\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>"
+}
+
+fn xlsx_wb_rels() -> str {
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/></Relationships>"
+}
+
+fn xlsx_create_bytes(rows: Vec<str>) -> bytes {
+    let names = vec_new()
+    let parts = vec_new()
+    vec_push(names, "[Content_Types].xml")
+    vec_push(parts, bytes_of_str(xlsx_content_types()))
+    vec_push(names, "_rels/.rels")
+    vec_push(parts, bytes_of_str(xlsx_root_rels()))
+    vec_push(names, "xl/workbook.xml")
+    vec_push(parts, bytes_of_str(xlsx_workbook()))
+    vec_push(names, "xl/_rels/workbook.xml.rels")
+    vec_push(parts, bytes_of_str(xlsx_wb_rels()))
+    vec_push(names, "xl/worksheets/sheet1.xml")
+    vec_push(parts, bytes_of_str(xlsx_sheet_xml(rows)))
+    return zip_write_deflate(names, parts)
+}
+
+// Convenience: body is newline-separated rows, tabs between cells.
+fn xlsx_create_from_tsv(tsv: str) -> bytes {
+    let rows = str_split(tsv, "\n")
+    // drop trailing empty from final newline
+    if vec_len(rows) > 0 {
+        if vec_get(rows, vec_len(rows) - 1) == "" {
+            // rebuild without last empty — Vec has no pop; copy
+            let r2 = vec_new()
+            let mut i: i64 = 0
+            while i < vec_len(rows) - 1 {
+                vec_push(r2, vec_get(rows, i))
+                i = i + 1
+            }
+            return xlsx_create_bytes(r2)
+        }
+    }
+    return xlsx_create_bytes(rows)
+}

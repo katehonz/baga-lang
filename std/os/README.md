@@ -32,18 +32,21 @@ Signals (C1) are **language builtins**, not `std/os` externs:
 - `fd_write_bytes(fd: i64, b: bytes) -> i64 !IO` — binary-safe write of all of `b` (explicit length; NULs ok).
 - `fd_pwrite_bytes(fd: i64, b: bytes, off: i64) -> i64 !IO` — binary-safe positioned write.
 - `fd_pread_bytes(fd: i64, n: i64, off: i64) -> bytes !IO` — binary-safe positioned read (empty at EOF/error).
-- `read_file(path: str) -> str !IO` — read an entire file; `""` on error or for an empty file.
-- `write_file(path: str, data: str) -> i64 !IO` — write `data` to a file (O_WRONLY|O_CREAT|O_TRUNC, mode 0644); 0 on success, -1 on error.
+- `read_file(path: str) -> str !IO` — read an entire file; `""` on error or for an empty file. **Not binary-safe** (strlen).
+- `write_file(path: str, data: str) -> i64 !IO` — write `data` to a file (O_WRONLY|O_CREAT|O_TRUNC, mode 0644); 0 on success, -1 on error. **Not binary-safe**.
+- `read_file_bytes(path: str) -> bytes !IO` — full-file binary-safe read (empty on missing/error/empty).
+- `write_file_bytes(path: str, data: bytes) -> i64 !IO` — full-file binary-safe write; 0 ok, -1 error.
 - `mem_i64(s: str, off: i64) -> i64` — little-endian u64 load from 8 bytes of `s` at `off`; decodes structs filled by libc (e.g. `struct timespec`). Pure.
 
 Buffer contract: `read`-style externs write into the `str` buffer you pass —
 the buffer must be heap-allocated (built by `str_repeat`), never a string
 literal.
 
-NUL caveat: `fd_read`/`fd_pread` are strlen-based — the returned `str`
-truncates at the first NUL byte, so they are only safe for NUL-free data.
-For binary payloads use `fd_*_bytes` (or raw `pread` + `byte_at`, as in
-`tests/std/os_io_test.baga` / `tests/std/os_fs_test.baga`).
+NUL caveat: `fd_read`/`fd_pread`/`read_file`/`write_file` are strlen-based —
+the returned `str` truncates at the first NUL byte, so they are only safe for
+NUL-free text. For binary (ZIP, Office packages, images) use
+`read_file_bytes` / `write_file_bytes` / `fd_*_bytes` (see
+`tests/std/os_fs_test.baga`).
 
 Note: `std/net/tcp.baga` externs `pread64`/`pwrite64` instead of
 `pread`/`pwrite`. Two same-named body-less externs cannot coexist — both

@@ -1,0 +1,662 @@
+// inflate.baga — raw DEFLATE inflate (RFC 1951), ZIP method 8.
+// LSB-first bit packing. Fixed + dynamic Huffman + stored blocks.
+// No zlib/gzip wrapper (those add a header; ZIP uses raw DEFLATE).
+
+struct InfBit {
+    data: bytes,
+    pos: i64,
+    bitbuf: i64,
+    bitcnt: i64,
+    ok: i64,
+    err: str
+}
+
+struct InfResult {
+    ok: i64,
+    err: str,
+    data: bytes
+}
+
+fn inf_ok(data: bytes) -> InfResult {
+    return InfResult { ok: 1, err: "", data: data }
+}
+
+fn inf_err(msg: str) -> InfResult {
+    return InfResult { ok: 0, err: msg, data: bytes_new(0) }
+}
+
+fn inf_br(data: bytes) -> InfBit {
+    return InfBit { data: data, pos: 0, bitbuf: 0, bitcnt: 0, ok: 1, err: "" }
+}
+
+fn inf_br_fail(br: InfBit, msg: str) -> InfBit {
+    return InfBit {
+        data: br.data, pos: br.pos, bitbuf: br.bitbuf, bitcnt: br.bitcnt,
+        ok: 0, err: msg
+    }
+}
+
+// Align to next byte boundary (drop partial bits).
+fn inf_align(br: InfBit) -> InfBit {
+    let drop = br.bitcnt % 8
+    if drop == 0 {
+        return br
+    }
+    return InfBit {
+        data: br.data, pos: br.pos,
+        bitbuf: br.bitbuf >> drop,
+        bitcnt: br.bitcnt - drop,
+        ok: br.ok, err: br.err
+    }
+}
+
+fn inf_bits(br: InfBit, n: i64) -> InfBit {
+    if br.ok == 0 {
+        return br
+    }
+    let mut bitbuf = br.bitbuf
+    let mut bitcnt = br.bitcnt
+    let mut pos = br.pos
+    let data = br.data
+    let dn = bytes_len(data)
+    while bitcnt < n {
+        if pos >= dn {
+            return inf_br_fail(br, "deflate: truncated input")
+        }
+        bitbuf = bitbuf | ((bytes_at(data, pos) & 255) << bitcnt)
+        bitcnt = bitcnt + 8
+        pos = pos + 1
+    }
+    // value lives in low n bits of bitbuf — caller uses inf_val
+    return InfBit {
+        data: data, pos: pos, bitbuf: bitbuf, bitcnt: bitcnt, ok: 1, err: ""
+    }
+}
+
+fn inf_val(br: InfBit, n: i64) -> i64 {
+    let mask = (1 << n) - 1
+    return br.bitbuf & mask
+}
+
+fn inf_drop(br: InfBit, n: i64) -> InfBit {
+    return InfBit {
+        data: br.data, pos: br.pos,
+        bitbuf: br.bitbuf >> n,
+        bitcnt: br.bitcnt - n,
+        ok: br.ok, err: br.err
+    }
+}
+
+fn inf_get(br: InfBit, n: i64) -> InfBit {
+    let b2 = inf_bits(br, n)
+    if b2.ok == 0 {
+        return b2
+    }
+    return inf_drop(b2, n)
+}
+
+// Return (updated br with bits consumed, value). Value in InfBit.bitbuf low
+// is wrong after drop — use a pair pattern via InfBit.err? Better: store
+// last value in bitbuf temporarily... Use InfBit with ok=2 for "has val".
+// Simpler: return value via side channel struct.
+
+struct InfGet {
+    br: InfBit,
+    v: i64
+}
+
+fn inf_take(br: InfBit, n: i64) -> InfGet {
+    let b2 = inf_bits(br, n)
+    if b2.ok == 0 {
+        return InfGet { br: b2, v: 0 }
+    }
+    let v = inf_val(b2, n)
+    return InfGet { br: inf_drop(b2, n), v: v }
+}
+
+// ---------- Huffman: codes from lengths; decode bit-by-bit ----------
+// lens: Vec of code lengths for symbols 0..nsyms-1
+// codes: assigned bit-reversed codes (DEFLATE LSB-first stream)
+
+fn inf_rev_bits(c: i64, n: i64) -> i64 {
+    let mut x = c
+    let mut r: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        r = (r << 1) | (x & 1)
+        x = x >> 1
+        i = i + 1
+    }
+    return r
+}
+
+// Build codes vector same length as lens; unused symbols get -1.
+fn inf_huff_codes(lens: Vec<i64>) -> Vec<i64> {
+    let n = vec_len(lens)
+    let bl = vec_new()
+    let mut i: i64 = 0
+    while i <= 15 {
+        vec_push(bl, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < n {
+        let L = vec_get(lens, i)
+        if L > 0 {
+            vec_set(bl, L, vec_get(bl, L) + 1)
+        }
+        i = i + 1
+    }
+    let next = vec_new()
+    vec_push(next, 0)
+    let mut code: i64 = 0
+    i = 1
+    while i <= 15 {
+        code = (code + vec_get(bl, i - 1)) << 1
+        vec_push(next, code)
+        i = i + 1
+    }
+    let codes = vec_new()
+    i = 0
+    while i < n {
+        vec_push(codes, 0 - 1)
+        i = i + 1
+    }
+    i = 0
+    while i < n {
+        let L = vec_get(lens, i)
+        if L > 0 {
+            let c = vec_get(next, L)
+            vec_set(next, L, c + 1)
+            vec_set(codes, i, inf_rev_bits(c, L))
+        }
+        i = i + 1
+    }
+    return codes
+}
+
+fn inf_huff_decode(br: InfBit, lens: Vec<i64>, codes: Vec<i64>) -> InfGet {
+    if br.ok == 0 {
+        return InfGet { br: br, v: 0 }
+    }
+    let n = vec_len(lens)
+    let mut acc: i64 = 0
+    let mut len: i64 = 0
+    let mut b = br
+    while len < 15 {
+        let g = inf_take(b, 1)
+        b = g.br
+        if b.ok == 0 {
+            return InfGet { br: b, v: 0 }
+        }
+        acc = acc | (g.v << len)
+        len = len + 1
+        let mut s: i64 = 0
+        while s < n {
+            if vec_get(lens, s) == len && vec_get(codes, s) == acc {
+                return InfGet { br: b, v: s }
+            }
+            s = s + 1
+        }
+    }
+    return InfGet { br: inf_br_fail(b, "deflate: bad huffman code"), v: 0 }
+}
+
+// ---------- Length / distance tables (RFC 1951) ----------
+
+fn inf_len_base(sym: i64) -> i64 {
+    // sym 257..285
+    if sym == 257 { return 3 }
+    if sym == 258 { return 4 }
+    if sym == 259 { return 5 }
+    if sym == 260 { return 6 }
+    if sym == 261 { return 7 }
+    if sym == 262 { return 8 }
+    if sym == 263 { return 9 }
+    if sym == 264 { return 10 }
+    if sym == 265 { return 11 }
+    if sym == 266 { return 13 }
+    if sym == 267 { return 15 }
+    if sym == 268 { return 17 }
+    if sym == 269 { return 19 }
+    if sym == 270 { return 23 }
+    if sym == 271 { return 27 }
+    if sym == 272 { return 31 }
+    if sym == 273 { return 35 }
+    if sym == 274 { return 43 }
+    if sym == 275 { return 51 }
+    if sym == 276 { return 59 }
+    if sym == 277 { return 67 }
+    if sym == 278 { return 83 }
+    if sym == 279 { return 99 }
+    if sym == 280 { return 115 }
+    if sym == 281 { return 131 }
+    if sym == 282 { return 163 }
+    if sym == 283 { return 195 }
+    if sym == 284 { return 227 }
+    if sym == 285 { return 258 }
+    return 0
+}
+
+fn inf_len_extra(sym: i64) -> i64 {
+    if sym >= 257 && sym <= 264 { return 0 }
+    if sym >= 265 && sym <= 268 { return 1 }
+    if sym >= 269 && sym <= 272 { return 2 }
+    if sym >= 273 && sym <= 276 { return 3 }
+    if sym >= 277 && sym <= 280 { return 4 }
+    if sym >= 281 && sym <= 284 { return 5 }
+    if sym == 285 { return 0 }
+    return 0
+}
+
+fn inf_dist_base(sym: i64) -> i64 {
+    if sym == 0 { return 1 }
+    if sym == 1 { return 2 }
+    if sym == 2 { return 3 }
+    if sym == 3 { return 4 }
+    if sym == 4 { return 5 }
+    if sym == 5 { return 7 }
+    if sym == 6 { return 9 }
+    if sym == 7 { return 13 }
+    if sym == 8 { return 17 }
+    if sym == 9 { return 25 }
+    if sym == 10 { return 33 }
+    if sym == 11 { return 49 }
+    if sym == 12 { return 65 }
+    if sym == 13 { return 97 }
+    if sym == 14 { return 129 }
+    if sym == 15 { return 193 }
+    if sym == 16 { return 257 }
+    if sym == 17 { return 385 }
+    if sym == 18 { return 513 }
+    if sym == 19 { return 769 }
+    if sym == 20 { return 1025 }
+    if sym == 21 { return 1537 }
+    if sym == 22 { return 2049 }
+    if sym == 23 { return 3073 }
+    if sym == 24 { return 4097 }
+    if sym == 25 { return 6145 }
+    if sym == 26 { return 8193 }
+    if sym == 27 { return 12289 }
+    if sym == 28 { return 16385 }
+    if sym == 29 { return 24577 }
+    return 0
+}
+
+fn inf_dist_extra(sym: i64) -> i64 {
+    if sym <= 3 { return 0 }
+    if sym <= 5 { return 1 }
+    if sym <= 7 { return 2 }
+    if sym <= 9 { return 3 }
+    if sym <= 11 { return 4 }
+    if sym <= 13 { return 5 }
+    if sym <= 15 { return 6 }
+    if sym <= 17 { return 7 }
+    if sym <= 19 { return 8 }
+    if sym <= 21 { return 9 }
+    if sym <= 23 { return 10 }
+    if sym <= 25 { return 11 }
+    if sym <= 27 { return 12 }
+    if sym <= 29 { return 13 }
+    return 0
+}
+
+fn inf_fixed_lit_lens() -> Vec<i64> {
+    let lens = vec_new()
+    let mut i: i64 = 0
+    while i < 144 {
+        vec_push(lens, 8)
+        i = i + 1
+    }
+    while i < 256 {
+        vec_push(lens, 9)
+        i = i + 1
+    }
+    while i < 280 {
+        vec_push(lens, 7)
+        i = i + 1
+    }
+    while i < 288 {
+        vec_push(lens, 8)
+        i = i + 1
+    }
+    return lens
+}
+
+fn inf_fixed_dist_lens() -> Vec<i64> {
+    let lens = vec_new()
+    let mut i: i64 = 0
+    while i < 32 {
+        vec_push(lens, 5)
+        i = i + 1
+    }
+    return lens
+}
+
+// Code-length alphabet order (RFC 1951 §3.2.7)
+fn inf_clen_order(i: i64) -> i64 {
+    if i == 0 { return 16 }
+    if i == 1 { return 17 }
+    if i == 2 { return 18 }
+    if i == 3 { return 0 }
+    if i == 4 { return 8 }
+    if i == 5 { return 7 }
+    if i == 6 { return 9 }
+    if i == 7 { return 6 }
+    if i == 8 { return 10 }
+    if i == 9 { return 5 }
+    if i == 10 { return 11 }
+    if i == 11 { return 4 }
+    if i == 12 { return 12 }
+    if i == 13 { return 3 }
+    if i == 14 { return 13 }
+    if i == 15 { return 2 }
+    if i == 16 { return 14 }
+    if i == 17 { return 1 }
+    if i == 18 { return 15 }
+    return 0
+}
+
+fn inf_push_byte(out: bytes, v: i64) -> bytes {
+    let chunk = bytes_new(1)
+    bytes_set(chunk, 0, v & 255)
+    return bytes_concat(out, chunk)
+}
+
+struct InfBody {
+    br: InfBit,
+    out: bytes,
+    ok: i64,
+    err: str
+}
+
+fn inf_body(br: InfBit, lit_lens: Vec<i64>, lit_codes: Vec<i64>, dist_lens: Vec<i64>, dist_codes: Vec<i64>, out0: bytes) -> InfBody {
+    let mut br2 = br
+    let mut out = out0
+    let mut running = 1
+    while running == 1 {
+        let g = inf_huff_decode(br2, lit_lens, lit_codes)
+        br2 = g.br
+        if br2.ok == 0 {
+            return InfBody { br: br2, out: out, ok: 0, err: br2.err }
+        }
+        let sym = g.v
+        if sym < 256 {
+            out = inf_push_byte(out, sym)
+        } else {
+            if sym == 256 {
+                running = 0
+            } else {
+                if sym > 285 {
+                    return InfBody { br: br2, out: out, ok: 0, err: "deflate: bad lit/len symbol" }
+                }
+                let base = inf_len_base(sym)
+                let extra = inf_len_extra(sym)
+                let ge = inf_take(br2, extra)
+                br2 = ge.br
+                if br2.ok == 0 {
+                    return InfBody { br: br2, out: out, ok: 0, err: br2.err }
+                }
+                let length = base + ge.v
+                let gd = inf_huff_decode(br2, dist_lens, dist_codes)
+                br2 = gd.br
+                if br2.ok == 0 {
+                    return InfBody { br: br2, out: out, ok: 0, err: br2.err }
+                }
+                let dsym = gd.v
+                if dsym > 29 {
+                    return InfBody { br: br2, out: out, ok: 0, err: "deflate: bad dist symbol" }
+                }
+                let dbase = inf_dist_base(dsym)
+                let dextra = inf_dist_extra(dsym)
+                let gde = inf_take(br2, dextra)
+                br2 = gde.br
+                if br2.ok == 0 {
+                    return InfBody { br: br2, out: out, ok: 0, err: br2.err }
+                }
+                let dist = dbase + gde.v
+                let on = bytes_len(out)
+                if dist < 1 || dist > on {
+                    return InfBody { br: br2, out: out, ok: 0, err: "deflate: bad distance" }
+                }
+                // Overlap-safe: each byte reads from already-written output.
+                let mut k: i64 = 0
+                while k < length {
+                    out = inf_push_byte(out, bytes_at(out, bytes_len(out) - dist))
+                    k = k + 1
+                }
+            }
+        }
+    }
+    return InfBody { br: br2, out: out, ok: 1, err: "" }
+}
+
+fn inf_stored(br: InfBit, out0: bytes) -> InfBody {
+    let mut br2 = inf_align(br)
+    let g1 = inf_take(br2, 16)
+    br2 = g1.br
+    if br2.ok == 0 {
+        return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+    }
+    let g2 = inf_take(br2, 16)
+    br2 = g2.br
+    if br2.ok == 0 {
+        return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+    }
+    let len = g1.v
+    let nlen = g2.v
+    if (len ^ 65535) != nlen {
+        return InfBody { br: br2, out: out0, ok: 0, err: "deflate: bad stored nlen" }
+    }
+    // After align, bitcnt should be 0; read raw bytes from pos
+    if br2.bitcnt != 0 {
+        return InfBody { br: br2, out: out0, ok: 0, err: "deflate: stored not aligned" }
+    }
+    let pos = br2.pos
+    if pos + len > bytes_len(br2.data) {
+        return InfBody { br: br2, out: out0, ok: 0, err: "deflate: stored truncated" }
+    }
+    let chunk = bytes_slice(br2.data, pos, pos + len)
+    let out = bytes_concat(out0, chunk)
+    let br3 = InfBit {
+        data: br2.data, pos: pos + len, bitbuf: 0, bitcnt: 0, ok: 1, err: ""
+    }
+    return InfBody { br: br3, out: out, ok: 1, err: "" }
+}
+
+// Dynamic Huffman block: header + body into out0
+fn inf_dynamic_block(br: InfBit, out0: bytes) -> InfBody {
+    let g_hlit = inf_take(br, 5)
+    let mut br2 = g_hlit.br
+    if br2.ok == 0 {
+        return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+    }
+    let g_hdist = inf_take(br2, 5)
+    br2 = g_hdist.br
+    if br2.ok == 0 {
+        return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+    }
+    let g_hclen = inf_take(br2, 4)
+    br2 = g_hclen.br
+    if br2.ok == 0 {
+        return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+    }
+    let hlit = g_hlit.v + 257
+    let hdist = g_hdist.v + 1
+    let hclen = g_hclen.v + 4
+
+    let clen = vec_new()
+    let mut i: i64 = 0
+    while i < 19 {
+        vec_push(clen, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < hclen {
+        let g = inf_take(br2, 3)
+        br2 = g.br
+        if br2.ok == 0 {
+            return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+        }
+        vec_set(clen, inf_clen_order(i), g.v)
+        i = i + 1
+    }
+    let clen_codes = inf_huff_codes(clen)
+
+    let all_n = hlit + hdist
+    let all_lens = vec_new()
+    i = 0
+    while i < all_n {
+        vec_push(all_lens, 0)
+        i = i + 1
+    }
+    i = 0
+    while i < all_n {
+        let g = inf_huff_decode(br2, clen, clen_codes)
+        br2 = g.br
+        if br2.ok == 0 {
+            return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+        }
+        let sym = g.v
+        if sym < 16 {
+            vec_set(all_lens, i, sym)
+            i = i + 1
+        } else {
+            if sym == 16 {
+                if i == 0 {
+                    return InfBody { br: br2, out: out0, ok: 0, err: "deflate: clen 16 at start" }
+                }
+                let gr = inf_take(br2, 2)
+                br2 = gr.br
+                if br2.ok == 0 {
+                    return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+                }
+                let rep = 3 + gr.v
+                let prev = vec_get(all_lens, i - 1)
+                let mut r: i64 = 0
+                while r < rep {
+                    if i >= all_n {
+                        return InfBody { br: br2, out: out0, ok: 0, err: "deflate: clen 16 overrun" }
+                    }
+                    vec_set(all_lens, i, prev)
+                    i = i + 1
+                    r = r + 1
+                }
+            } else {
+                if sym == 17 {
+                    let gr = inf_take(br2, 3)
+                    br2 = gr.br
+                    if br2.ok == 0 {
+                        return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+                    }
+                    let rep = 3 + gr.v
+                    let mut r: i64 = 0
+                    while r < rep {
+                        if i >= all_n {
+                            return InfBody { br: br2, out: out0, ok: 0, err: "deflate: clen 17 overrun" }
+                        }
+                        vec_set(all_lens, i, 0)
+                        i = i + 1
+                        r = r + 1
+                    }
+                } else {
+                    if sym == 18 {
+                        let gr = inf_take(br2, 7)
+                        br2 = gr.br
+                        if br2.ok == 0 {
+                            return InfBody { br: br2, out: out0, ok: 0, err: br2.err }
+                        }
+                        let rep = 11 + gr.v
+                        let mut r: i64 = 0
+                        while r < rep {
+                            if i >= all_n {
+                                return InfBody { br: br2, out: out0, ok: 0, err: "deflate: clen 18 overrun" }
+                            }
+                            vec_set(all_lens, i, 0)
+                            i = i + 1
+                            r = r + 1
+                        }
+                    } else {
+                        return InfBody { br: br2, out: out0, ok: 0, err: "deflate: bad clen symbol" }
+                    }
+                }
+            }
+        }
+    }
+
+    let lit_lens = vec_new()
+    i = 0
+    while i < hlit {
+        vec_push(lit_lens, vec_get(all_lens, i))
+        i = i + 1
+    }
+    let dist_lens = vec_new()
+    i = 0
+    while i < hdist {
+        vec_push(dist_lens, vec_get(all_lens, hlit + i))
+        i = i + 1
+    }
+    // RFC: if all dist lengths 0 but only one distance code needed, still ok
+    // Single-distance edge: if hdist==1 and lens[0]==0, some streams still valid
+
+    let lit_codes = inf_huff_codes(lit_lens)
+    let dist_codes = inf_huff_codes(dist_lens)
+    return inf_body(br2, lit_lens, lit_codes, dist_lens, dist_codes, out0)
+}
+
+// Public: inflate raw DEFLATE stream to bytes.
+fn inflate_raw(src: bytes) -> InfResult {
+    let mut br = inf_br(src)
+    let mut out = bytes_new(0)
+    let mut done = 0
+    while done == 0 {
+        let gbfinal = inf_take(br, 1)
+        br = gbfinal.br
+        if br.ok == 0 {
+            return inf_err(br.err)
+        }
+        let bfinal = gbfinal.v
+        let gbtype = inf_take(br, 2)
+        br = gbtype.br
+        if br.ok == 0 {
+            return inf_err(br.err)
+        }
+        let btype = gbtype.v
+        if btype == 0 {
+            let body = inf_stored(br, out)
+            if body.ok == 0 {
+                return inf_err(body.err)
+            }
+            br = body.br
+            out = body.out
+        } else {
+            if btype == 1 {
+                let lit_lens = inf_fixed_lit_lens()
+                let dist_lens = inf_fixed_dist_lens()
+                let lit_codes = inf_huff_codes(lit_lens)
+                let dist_codes = inf_huff_codes(dist_lens)
+                let body = inf_body(br, lit_lens, lit_codes, dist_lens, dist_codes, out)
+                if body.ok == 0 {
+                    return inf_err(body.err)
+                }
+                br = body.br
+                out = body.out
+            } else {
+                if btype == 2 {
+                    let body = inf_dynamic_block(br, out)
+                    if body.ok == 0 {
+                        return inf_err(body.err)
+                    }
+                    br = body.br
+                    out = body.out
+                } else {
+                    return inf_err("deflate: reserved block type")
+                }
+            }
+        }
+        if bfinal == 1 {
+            done = 1
+        }
+    }
+    return inf_ok(out)
+}

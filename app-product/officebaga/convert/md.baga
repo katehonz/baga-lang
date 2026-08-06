@@ -1,0 +1,108 @@
+// convert/md.baga — honest Markdown export (no layout fidelity).
+
+import "bufbaga/buf.baga"
+import "std/str/str.baga"
+import "../core/detect.baga"
+import "../docx/read.baga"
+import "../xlsx/read.baga"
+import "../odf/read.baga"
+import "../opc/package.baga"
+
+// DOCX/ODT plain lines → paragraphs separated by blank lines.
+fn office_md_from_paras(plain: str) -> str {
+    let lines = str_split(plain, "\n")
+    let mut b = buf_new()
+    let mut i: i64 = 0
+    let mut first: i64 = 1
+    while i < vec_len(lines) {
+        let line = str_trim(vec_get(lines, i))
+        if line != "" {
+            if first == 0 {
+                b = buf_push(b, "\n\n")
+            }
+            b = buf_push(b, line)
+            first = 0
+        }
+        i = i + 1
+    }
+    if first == 0 {
+        b = buf_push(b, "\n")
+    }
+    return buf_str(b)
+}
+
+// Escape cell text for markdown tables (| and newlines).
+fn office_md_cell(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c = char_at(s, i)
+        if c == 124 {
+            out = concat(out, "\\|")
+        } else {
+            if c == 10 || c == 13 {
+                out = concat(out, " ")
+            } else {
+                out = concat(out, chr(c))
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// TSV rows → GitHub-style markdown table (first row = header).
+fn office_md_from_tsv(tsv: str) -> str {
+    let rows = str_split(tsv, "\n")
+    // drop trailing empty
+    let mut n = vec_len(rows)
+    if n > 0 {
+        if vec_get(rows, n - 1) == "" {
+            n = n - 1
+        }
+    }
+    if n == 0 {
+        return ""
+    }
+    let mut b = buf_new()
+    let mut r: i64 = 0
+    while r < n {
+        let cells = str_split(vec_get(rows, r), "\t")
+        b = buf_push(b, "|")
+        let mut c: i64 = 0
+        while c < vec_len(cells) {
+            b = buf_push(b, " ")
+            b = buf_push(b, office_md_cell(vec_get(cells, c)))
+            b = buf_push(b, " |")
+            c = c + 1
+        }
+        b = buf_push(b, "\n")
+        if r == 0 {
+            b = buf_push(b, "|")
+            c = 0
+            while c < vec_len(cells) {
+                b = buf_push(b, " --- |")
+                c = c + 1
+            }
+            b = buf_push(b, "\n")
+        }
+        r = r + 1
+    }
+    return buf_str(b)
+}
+
+fn office_to_markdown_pkg(pkg: OpcPackage, fmt: i64) -> str {
+    if fmt == OFFICE_DOCX() {
+        return office_md_from_paras(docx_plain_text(pkg))
+    }
+    if fmt == OFFICE_ODT() {
+        return office_md_from_paras(odt_plain_text(pkg))
+    }
+    if fmt == OFFICE_XLSX() {
+        return office_md_from_tsv(xlsx_plain_text(pkg))
+    }
+    if fmt == OFFICE_ODS() {
+        return office_md_from_tsv(ods_plain_text(pkg))
+    }
+    return ""
+}

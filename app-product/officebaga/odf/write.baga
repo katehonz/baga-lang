@@ -1,0 +1,129 @@
+// odf/write.baga — minimal ODT / ODS (store ZIP). No presentations.
+
+import "zipbaga/archive.baga"
+import "xmlbaga/xml.baga"
+import "bufbaga/buf.baga"
+import "std/str/str.baga"
+
+fn odf_esc(s: str) -> str {
+    return xml_escape_text(s)
+}
+
+fn odf_manifest(entries: Vec<str>, mimes: Vec<str>) -> str {
+    let mut b = buf_new()
+    b = buf_push(b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+    b = buf_push(b, "<manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.2\">")
+    let mut i: i64 = 0
+    while i < vec_len(entries) {
+        b = buf_push(b, "<manifest:file-entry manifest:full-path=\"")
+        b = buf_push(b, vec_get(entries, i))
+        b = buf_push(b, "\" manifest:media-type=\"")
+        b = buf_push(b, vec_get(mimes, i))
+        b = buf_push(b, "\"/>")
+        i = i + 1
+    }
+    b = buf_push(b, "</manifest:manifest>")
+    return buf_str(b)
+}
+
+// Body: newlines → text:p paragraphs. Optional title as first heading.
+fn odt_content_xml(title: str, body: str) -> str {
+    let mut b = buf_new()
+    b = buf_push(b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+    b = buf_push(b, "<office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" office:version=\"1.2\">")
+    b = buf_push(b, "<office:body><office:text>")
+    if title != "" {
+        b = buf_push(b, "<text:h text:outline-level=\"1\">")
+        b = buf_push(b, odf_esc(title))
+        b = buf_push(b, "</text:h>")
+    }
+    let lines = str_split(body, "\n")
+    let mut i: i64 = 0
+    while i < vec_len(lines) {
+        b = buf_push(b, "<text:p>")
+        b = buf_push(b, odf_esc(vec_get(lines, i)))
+        b = buf_push(b, "</text:p>")
+        i = i + 1
+    }
+    b = buf_push(b, "</office:text></office:body></office:document-content>")
+    return buf_str(b)
+}
+
+fn odt_create_bytes(title: str, body: str) -> bytes {
+    let mt = "application/vnd.oasis.opendocument.text"
+    let names = vec_new()
+    let parts = vec_new()
+    // mimetype should be first and stored (ZIP store) — we only have store.
+    vec_push(names, "mimetype")
+    vec_push(parts, bytes_of_str(mt))
+    vec_push(names, "content.xml")
+    vec_push(parts, bytes_of_str(odt_content_xml(title, body)))
+    let man_paths = vec_new()
+    let man_mimes = vec_new()
+    vec_push(man_paths, "/")
+    vec_push(man_mimes, mt)
+    vec_push(man_paths, "content.xml")
+    vec_push(man_mimes, "text/xml")
+    vec_push(names, "META-INF/manifest.xml")
+    vec_push(parts, bytes_of_str(odf_manifest(man_paths, man_mimes)))
+    // ODF: mimetype must be first + stored; other parts may deflate.
+    let methods = vec_new()
+    vec_push(methods, 0)
+    vec_push(methods, 8)
+    vec_push(methods, 8)
+    return zip_write_methods(names, parts, methods)
+}
+
+// TSV rows → table:table
+fn ods_content_xml(tsv: str) -> str {
+    let rows = str_split(tsv, "\n")
+    let mut n = vec_len(rows)
+    if n > 0 {
+        if vec_get(rows, n - 1) == "" {
+            n = n - 1
+        }
+    }
+    let mut b = buf_new()
+    b = buf_push(b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+    b = buf_push(b, "<office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:table=\"urn:oasis:names:tc:opendocument:xmlns:table:1.0\" xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" office:version=\"1.2\">")
+    b = buf_push(b, "<office:body><office:spreadsheet><table:table table:name=\"Sheet1\">")
+    let mut r: i64 = 0
+    while r < n {
+        let cells = str_split(vec_get(rows, r), "\t")
+        b = buf_push(b, "<table:table-row>")
+        let mut c: i64 = 0
+        while c < vec_len(cells) {
+            b = buf_push(b, "<table:table-cell office:value-type=\"string\"><text:p>")
+            b = buf_push(b, odf_esc(vec_get(cells, c)))
+            b = buf_push(b, "</text:p></table:table-cell>")
+            c = c + 1
+        }
+        b = buf_push(b, "</table:table-row>")
+        r = r + 1
+    }
+    b = buf_push(b, "</table:table></office:spreadsheet></office:body></office:document-content>")
+    return buf_str(b)
+}
+
+fn ods_create_bytes(tsv: str) -> bytes {
+    let mt = "application/vnd.oasis.opendocument.spreadsheet"
+    let names = vec_new()
+    let parts = vec_new()
+    vec_push(names, "mimetype")
+    vec_push(parts, bytes_of_str(mt))
+    vec_push(names, "content.xml")
+    vec_push(parts, bytes_of_str(ods_content_xml(tsv)))
+    let man_paths = vec_new()
+    let man_mimes = vec_new()
+    vec_push(man_paths, "/")
+    vec_push(man_mimes, mt)
+    vec_push(man_paths, "content.xml")
+    vec_push(man_mimes, "text/xml")
+    vec_push(names, "META-INF/manifest.xml")
+    vec_push(parts, bytes_of_str(odf_manifest(man_paths, man_mimes)))
+    let methods = vec_new()
+    vec_push(methods, 0)
+    vec_push(methods, 8)
+    vec_push(methods, 8)
+    return zip_write_methods(names, parts, methods)
+}

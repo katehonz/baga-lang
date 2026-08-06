@@ -1,0 +1,16 @@
+// zip.baga — public re-export surface for zipbaga.
+//
+//   zip_open_bytes / zip_count / zip_name / zip_find / zip_read / zip_read_index
+//   zip_write / zip_write_store / zip_write_deflate
+//   inflate_raw / deflate_raw / crc32_b
+//
+// Design: docs/superpowers/specs/2026-08-06-officebaga-design.md
+
+import "crc32.baga"
+import "inflate.baga"
+import "deflate.baga"
+import "archive.baga"
+
+fn zip_version() -> str {
+    return "0.2.2"
+}

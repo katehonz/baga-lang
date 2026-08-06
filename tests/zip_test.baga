@@ -1,0 +1,118 @@
+// zip_test.baga — zipbaga: IEEE CRC-32, DEFLATE inflate, ZIP reader.
+
+import "zipbaga/zip.baga"
+import "zipbaga/crc32.baga"
+import "zipbaga/inflate.baga"
+import "zipbaga/deflate.baga"
+import "zipbaga/archive.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // --- CRC-32 IEEE ---
+    check("crc_empty", crc32_b(bytes_new(0)) == 0)
+    check("crc_123456789", crc32_b(bytes_of_str("123456789")) == 3421780262)
+    check("crc_fox", crc32_b(bytes_of_str("The quick brown fox jumps over the lazy dog")) == 1095738169)
+    check("crc_hello", crc32_b(bytes_of_str("hello")) == 907060870)
+
+    let st = crc32_update(crc32_update(4294967295, bytes_of_str("1234")), bytes_of_str("56789"))
+    check("crc_incremental", crc32_final(st) == 3421780262)
+
+    // --- DEFLATE inflate (raw, fixed Huffman from zlib wbits=-15) ---
+    // "hello" → cb48cdc9c90700
+    let h = inflate_raw(hex_decode("cb48cdc9c90700"))
+    check("inf_hello_ok", h.ok == 1)
+    check("inf_hello", str_of_bytes(h.data) == "hello")
+
+    // "hello world" → cb48cdc9c95728cf2fca490100
+    let hw = inflate_raw(hex_decode("cb48cdc9c95728cf2fca490100"))
+    check("inf_hw_ok", hw.ok == 1)
+    check("inf_hw", str_of_bytes(hw.data) == "hello world")
+
+    // 100 × 'a' (backrefs) → 4b4ca43d0000
+    let aa = inflate_raw(hex_decode("4b4ca43d0000"))
+    check("inf_aaa_ok", aa.ok == 1)
+    check("inf_aaa_len", bytes_len(aa.data) == 100)
+    check("inf_aaa_byte", bytes_at(aa.data, 0) == 97 && bytes_at(aa.data, 99) == 97)
+
+    // --- ZIP store ---
+    // two entries: hello.txt="hello", dir/a.txt="abc" (hand-built, method 0)
+    let store = hex_decode("504b03041400000000000000000086a6103605000000050000000900000068656c6c6f2e74787468656c6c6f504b030414000000000000000000c24124350300000003000000090000006469722f612e747874616263504b010214001400000000000000000086a61036050000000500000009000000000000000000000000000000000068656c6c6f2e747874504b0102140014000000000000000000c2412435030000000300000009000000000000000000000000002c0000006469722f612e747874504b050600000000020002006e000000560000000000")
+    let zs = zip_open_bytes(store)
+    check("zip_store_ok", zs.ok == 1)
+    check("zip_store_count", zip_count(zs) == 2)
+    check("zip_store_name0", zip_name(zs, 0) == "hello.txt")
+    check("zip_store_name1", zip_name(zs, 1) == "dir/a.txt")
+    let p0 = zip_read(zs, "hello.txt")
+    check("zip_store_hello_ok", p0.ok == 1)
+    check("zip_store_hello", str_of_bytes(p0.data) == "hello")
+    let p1 = zip_read(zs, "dir/a.txt")
+    check("zip_store_abc", p1.ok == 1 && str_of_bytes(p1.data) == "abc")
+    let miss = zip_read(zs, "nope")
+    check("zip_store_miss", miss.ok == 0)
+
+    // --- ZIP deflate ---
+    let defl = hex_decode("504b03041400000008000000000085114a0d0d0000000b0000000900000068656c6c6f2e747874cb48cdc9c95728cf2fca490100504b010214001400000008000000000085114a0d0d0000000b00000009000000000000000000000000000000000068656c6c6f2e747874504b0506000000000100010037000000340000000000")
+    let zd = zip_open_bytes(defl)
+    check("zip_defl_ok", zd.ok == 1)
+    check("zip_defl_count", zip_count(zd) == 1)
+    let pd = zip_read(zd, "hello.txt")
+    check("zip_defl_read_ok", pd.ok == 1)
+    check("zip_defl_text", str_of_bytes(pd.data) == "hello world")
+
+    check("zip_version", zip_version() == "0.2.2")
+
+    // --- ZIP writer (store) round-trip ---
+    let wn = vec_new()
+    let wp = vec_new()
+    vec_push(wn, "a.txt")
+    vec_push(wp, bytes_of_str("alpha"))
+    vec_push(wn, "b/c.txt")
+    vec_push(wp, bytes_of_str("beta"))
+    let built = zip_write_store(wn, wp)
+    let zb = zip_open_bytes(built)
+    check("zip_write_ok", zb.ok == 1)
+    check("zip_write_count", zip_count(zb) == 2)
+    let pa = zip_read(zb, "a.txt")
+    check("zip_write_a", pa.ok == 1 && str_of_bytes(pa.data) == "alpha")
+    let pb = zip_read(zb, "b/c.txt")
+    check("zip_write_b", pb.ok == 1 && str_of_bytes(pb.data) == "beta")
+
+    // --- DEFLATE compress → inflate round-trip ---
+    let src = bytes_of_str("The quick brown fox jumps over the lazy dog. The quick brown fox.")
+    let comp = deflate_raw(src)
+    check("deflate_smaller", bytes_len(comp) > 0)
+    let back = inflate_raw(comp)
+    check("deflate_rt_ok", back.ok == 1)
+    check("deflate_rt_text", str_of_bytes(back.data) == str_of_bytes(src))
+    // LZ77 should beat literal-only on highly repetitive input
+    let rep = bytes_of_str(str_repeat("abcdefghij", 50))
+    let crep = deflate_raw(rep)
+    check("deflate_lz77_shrinks", bytes_len(crep) < bytes_len(rep) / 2)
+    let brep = inflate_raw(crep)
+    check("deflate_lz77_rt", brep.ok == 1 && bytes_len(brep.data) == bytes_len(rep))
+
+    // --- ZIP writer with deflate ---
+    let dn = vec_new()
+    let dp = vec_new()
+    vec_push(dn, "fox.txt")
+    vec_push(dp, src)
+    let dzip = zip_write_deflate(dn, dp)
+    let zdw = zip_open_bytes(dzip)
+    check("zip_defl_write_ok", zdw.ok == 1)
+    // method should be 8 for compressible text
+    check("zip_defl_method", vec_get(zdw.methods, 0) == 8)
+    let pdw = zip_read(zdw, "fox.txt")
+    check("zip_defl_write_read", pdw.ok == 1 && str_of_bytes(pdw.data) == str_of_bytes(src))
+
+    print("zip_test: all passed")
+}

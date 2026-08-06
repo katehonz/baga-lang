@@ -1,0 +1,11 @@
+[package]
+name = "officebaga"
+version = "0.2.0"
+entry = "office.baga"
+
+[dependencies]
+std = { path = "../../std" }
+zipbaga = { path = "../zipbaga" }
+xmlbaga = { path = "../xmlbaga" }
+bufbaga = { path = "../bufbaga" }
+mdbaga = { path = "../mdbaga" }
