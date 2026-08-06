@@ -1,0 +1,145 @@
+// page_cache_test.baga — R19: shared multi-file page cache + pin counts.
+import "rocksbaga/cache/page.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<str>, name: str, ok: bool) {
+    if ok == false {
+        vec_push(fails, name)
+        print(concat("FAIL ", name))
+    }
+}
+
+fn make_page(ps: i64, fill: i64) -> bytes {
+    let mut p = bytes_new(ps)
+    let mut i: i64 = 0
+    while i < ps {
+        bytes_set(p, i, fill)
+        i = i + 1
+    }
+    return p
+}
+
+fn page_byte(pc: PageCache, file_id: i64, page_no: i64) -> i64 {
+    let key = pc_key(file_id, page_no)
+    if map_has(pc.data, key) == 0 {
+        return 0 - 1
+    }
+    let p = map_get(pc.data, key)
+    if bytes_len(p) == 0 {
+        return 0 - 1
+    }
+    return bytes_at(p, 0)
+}
+
+fn main() -> i64 !IO {
+    let fails: Vec<str> = vec_new()
+    let prefix = "/tmp/baga_pc_r19"
+    unlink(concat(prefix, ".a"))?
+    unlink(concat(prefix, ".b"))?
+
+    // --- 1. pin blocks eviction under tiny cap ---
+    let mut pc = pc_new(256, 2)
+    let fa = open(concat(prefix, ".a"), 578, 420)?  // O_RDWR|CREAT|TRUNC
+    check(fails, "open_a", fa >= 0)
+    pc_register_file(pc, 1, fa)
+    // seed two pages on disk
+    let p0 = make_page(256, 10)
+    let p1 = make_page(256, 11)
+    check(fails, "w0", fd_pwrite_bytes(fa, p0, 0) == 0)
+    check(fails, "w1", fd_pwrite_bytes(fa, p1, 256) == 0)
+
+    let g0 = pc_get_pin(pc, fa, 1, 0)?
+    pc = g0.pc
+    check(fails, "get_pin0", bytes_at(g0.data, 0) == 10)
+    check(fails, "pin_ct", pc_pin_count(pc, pc_key(1, 0)) == 1)
+
+    // Load page 1 (fills cap=2)
+    let g1 = pc_get(pc, fa, 1, 1)?
+    pc = g1.pc
+    check(fails, "get1", bytes_at(g1.data, 0) == 11)
+    check(fails, "cap2", vec_len(pc.keys) == 2)
+
+    // Force another miss with a third page — must not evict pinned page 0
+    let p2 = make_page(256, 12)
+    check(fails, "w2", fd_pwrite_bytes(fa, p2, 512) == 0)
+    let g2 = pc_get(pc, fa, 1, 2)?
+    pc = g2.pc
+    check(fails, "get2", bytes_at(g2.data, 0) == 12)
+    check(fails, "pin0_survives", map_has(pc.data, pc_key(1, 0)) == 1)
+    check(fails, "page1_or_ok", vec_len(pc.keys) <= 2)
+    // page 0 still holds fill 10
+    check(fails, "pin0_data", page_byte(pc, 1, 0) == 10)
+
+    pc_unpin(pc, 1, 0)
+    check(fails, "unpin", pc_pin_count(pc, pc_key(1, 0)) == 0)
+
+    // After unpin, further loads may evict page 0
+    let p3 = make_page(256, 13)
+    check(fails, "w3", fd_pwrite_bytes(fa, p3, 768) == 0)
+    // fill cache with 2 and 3
+    let g2b = pc_get(pc, fa, 1, 2)?
+    pc = g2b.pc
+    let g3 = pc_get(pc, fa, 1, 3)?
+    pc = g3.pc
+    // page 0 may be gone
+    check(fails, "after_unpin_evictable", page_byte(pc, 1, 0) == 0 - 1 || page_byte(pc, 1, 0) == 10)
+
+    // --- 2. multi-file writeback: dirty page of file A not written to fd B ---
+    let fb = open(concat(prefix, ".b"), 578, 420)?
+    check(fails, "open_b", fb >= 0)
+    pc_register_file(pc, 2, fb)
+    // fresh tiny cache
+    pc = pc_new(256, 2)
+    pc_register_file(pc, 1, fa)
+    pc_register_file(pc, 2, fb)
+    // dirty page on file 1
+    let dirty = make_page(256, 99)
+    let put = pc_put_page(pc, fa, 1, 0, dirty)?
+    pc = put.pc
+    check(fails, "put_dirty", put.rc == 0)
+    // fill remaining slot + force eviction via file 2 reads
+    check(fails, "wb_seed", fd_pwrite_bytes(fb, make_page(256, 20), 0) == 0)
+    check(fails, "wb_seed2", fd_pwrite_bytes(fb, make_page(256, 21), 256) == 0)
+    check(fails, "wb_seed3", fd_pwrite_bytes(fb, make_page(256, 22), 512) == 0)
+    let b0 = pc_get(pc, fb, 2, 0)?
+    pc = b0.pc
+    let b1 = pc_get(pc, fb, 2, 1)?
+    pc = b1.pc
+    // third get on B must evict A's dirty page via registry → fa, not fb
+    let b2 = pc_get(pc, fb, 2, 2)?
+    pc = b2.pc
+    // read back file A page 0 from disk — should be 99
+    let back = fd_pread_bytes(fa, 256, 0)?
+    check(fails, "multi_wb_len", bytes_len(back) == 256)
+    check(fails, "multi_wb_byte", bytes_at(back, 0) == 99)
+    // file B page 0 must still be 20 (not corrupted by wrong writeback)
+    let bback = fd_pread_bytes(fb, 256, 0)?
+    check(fails, "multi_wb_b_ok", bytes_at(bback, 0) == 20)
+
+    // --- 3. all-pinned: ensure_cap fails with rc=-2 ---
+    pc = pc_new(256, 1)
+    pc_register_file(pc, 1, fa)
+    let gp = pc_get_pin(pc, fa, 1, 0)?
+    pc = gp.pc
+    check(fails, "allpin_has", bytes_len(gp.data) > 0)
+    // put a different page must fail capacity (only slot is pinned)
+    let putf = pc_put_page(pc, fa, 1, 5, make_page(256, 55))?
+    pc = putf.pc
+    check(fails, "all_pinned_rc", putf.rc == 0 - 2)
+
+    // cleanup
+    pc_unpin(pc, 1, 0)
+    close(fa)
+    close(fb)
+    unlink(concat(prefix, ".a"))?
+    unlink(concat(prefix, ".b"))?
+
+    if vec_len(fails) == 0 {
+        print("page_cache_test: all passed")
+        return 0
+    }
+    print(concat(concat("page_cache_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

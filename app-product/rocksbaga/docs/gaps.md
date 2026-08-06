@@ -137,9 +137,24 @@ durable: PUT ~599 ops/s, GET_SEQ ~204k, GET_RND ~164k — faster than R17.
 strings and small temporaries (~1 KB/cmd) stay arena-bound forever. That
 is the MEM-3-full / str-reclamation roadmap item, not a bug.
 
-**Still open (later):** pin-count shared page cache; poll multi-conn done
-(R15); `db/manifest.baga` / `table/block.baga` when needed; RocksDB feature
-parity (not claimed).
+**Shipped (R19 shared page cache + pin counts):**
+- **`PageCache.fds`** — `file_id → fd` registry. Eviction writeback resolves
+  the correct fd per dirty page (no more single-fallback-fd bug when the
+  cache holds pages from multiple SSTs). `pc_register_file` /
+  `pc_unregister_file`; wired from `sst_fd_get` / `sst_fd_drop` /
+  `sst_read_raw` / compact invalidate / `lsm_close`.
+- **`PageCache.pins`** — pin count per cache key. Clock eviction never
+  drops `pin > 0`; if every resident page is pinned, `pc_ensure_cap`
+  returns `rc = -2` (buffer pool full).
+- **`pc_pin` / `pc_unpin` / `pc_get_pin`** — explicit hold for callers that
+  keep page bytes across further cache mutations. `pc_read_at` pins each
+  source page while copying so a tiny cap cannot free the page mid-span.
+- Tests: `tests/page_cache_test.baga` (pin survival, multi-file writeback,
+  all-pinned fail); existing `lsm_test` / `lsm_recover_test` green.
+
+**Still open (later):** block-level page IO (true partial SST body, not
+full-file via cache); `db/manifest.baga` / `table/block.baga` when needed;
+RocksDB feature parity (not claimed).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
@@ -152,8 +167,9 @@ share one `LsmDB` on a single thread. Env `LSM_SERIAL=1` keeps the old
 one-conn-at-a-time accept loop. Test: `tcp2_*` in `tests/lsm_test.baga`.
 
 **Still residual:** RESP **command** args are still `Vec<str>` (SET cannot
-inject raw NUL over the wire parser); GET uses `resp_bulk_b`. No EXPIRE/TTL;
-no multi-writer (shared store is single-threaded event loop).
+inject raw NUL over the wire parser); GET uses `resp_bulk_b`. TTL via
+`SETEX`/`EXPIRE` is R16. No multi-writer (shared store is single-threaded
+event loop).
 
 ## Closed by this package
 

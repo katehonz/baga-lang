@@ -321,9 +321,12 @@ fn sst_read_raw(pc: PageCache, dir: str, gen: i64) -> SstRaw !IO {
         return SstRaw { pc: pc, ok: 0, data: bytes_new(0) }
     }
     let mut cur = pc
+    // R19: temporary open — register so eviction writeback hits this fd.
+    pc_register_file(cur, gen, fd)
     let fsize = fd_size(fd)?
     if fsize <= 0 {
         close(fd)
+        pc_unregister_file(cur, gen)
         return SstRaw { pc: cur, ok: 1, data: bytes_new(0) }
     }
     // R18: exact prealloc + page copies through the cache. The old
@@ -337,6 +340,7 @@ fn sst_read_raw(pc: PageCache, dir: str, gen: i64) -> SstRaw !IO {
         cur = g.pc
         if bytes_len(g.data) == 0 {
             close(fd)
+            pc_unregister_file(cur, gen)
             return SstRaw { pc: cur, ok: 0, data: bytes_new(0) }
         }
         let base = pno * cur.page_size
@@ -352,6 +356,7 @@ fn sst_read_raw(pc: PageCache, dir: str, gen: i64) -> SstRaw !IO {
         pno = pno + 1
     }
     close(fd)
+    pc_unregister_file(cur, gen)
     return SstRaw { pc: cur, ok: 1, data: data }
 }
 
@@ -378,10 +383,13 @@ struct SstLookup {
     val: bytes
 }
 
-// Open or reuse cached SST fd (R11).
-fn sst_fd_get(fds: Map<i64, i64>, sizes: Map<i64, i64>, dir: str, gen: i64) -> i64 !IO {
+// Open or reuse cached SST fd (R11). R19: also register fd on the page cache
+// so multi-file writeback during eviction uses the correct descriptor.
+fn sst_fd_get(pc: PageCache, fds: Map<i64, i64>, sizes: Map<i64, i64>, dir: str, gen: i64) -> i64 !IO {
     if map_has(fds, gen) == 1 {
-        return map_get(fds, gen)
+        let fd = map_get(fds, gen)
+        pc_register_file(pc, gen, fd)
+        return fd
     }
     let path = sst_path(dir, gen)
     let fd = open(path, 0, 0)?
@@ -391,10 +399,11 @@ fn sst_fd_get(fds: Map<i64, i64>, sizes: Map<i64, i64>, dir: str, gen: i64) -> i
     let fsize = fd_size(fd)?
     map_set(fds, gen, fd)
     map_set(sizes, gen, fsize)
+    pc_register_file(pc, gen, fd)
     return fd
 }
 
-fn sst_fd_drop(fds: Map<i64, i64>, sizes: Map<i64, i64>, gen: i64) -> i64 !IO {
+fn sst_fd_drop(pc: PageCache, fds: Map<i64, i64>, sizes: Map<i64, i64>, gen: i64) -> i64 !IO {
     if map_has(fds, gen) == 1 {
         let fd = map_get(fds, gen)
         if fd >= 0 {
@@ -403,6 +412,7 @@ fn sst_fd_drop(fds: Map<i64, i64>, sizes: Map<i64, i64>, gen: i64) -> i64 !IO {
         map_del(fds, gen)
         map_del(sizes, gen)
     }
+    pc_unregister_file(pc, gen)
     return 0
 }
 
@@ -930,7 +940,7 @@ fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64
         if bm.may == 0 {
             i = i - 1
         } else {
-            let fd = sst_fd_get(fds, sizes, dir, gen)?
+            let fd = sst_fd_get(cur, fds, sizes, dir, gen)?
             if fd < 0 {
                 i = i - 1
             } else {
@@ -942,7 +952,7 @@ fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64
                         map_set(meta, gen, ml.meta)
                     } else {
                         // Not v4/v5: full-file path once.
-                        sst_fd_drop(fds, sizes, gen)?
+                        sst_fd_drop(cur, fds, sizes, gen)?
                         let raw = sst_read_raw(cur, dir, gen)?
                         cur = raw.pc
                         if raw.ok == 1 {

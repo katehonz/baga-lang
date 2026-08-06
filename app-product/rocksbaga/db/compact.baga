@@ -244,7 +244,7 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
         let ix = vec_get(idxs, ii)
         map_set(dropm, ix, 1)
         let g = vec_get(db.gens, ix)
-        sst_fd_drop(db.sst_fds, db.sst_sizes, g)?
+        sst_fd_drop(db.cache, db.sst_fds, db.sst_sizes, g)?
         map_del(db.sst_meta, g)
         unlink(sst_path(db.dir, g))?
         unlink(bloom_path(db.dir, g))?

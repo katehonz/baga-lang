@@ -49,4 +49,7 @@ Goal: Track S flagship — durable KV on RESP.
   bench) — **done**
 - **R18 server memory** — scratch-buffer reads, drop discipline, offset WAL
   append, free list >1 KiB (runtime); soak 34→1.3 KB/cmd (PING) — **done**
-- Shared page cache across open files with pin counts
+- **R19 shared page cache + pins** — per-file fd registry for multi-file
+  writeback; pin counts block eviction; `pc_get_pin` / `pc_read_at` pin
+  mid-span; `sst_fd_get` registers on open — **done**
+- (next) Shared page cache polish / block-level page IO / `table/block.baga`

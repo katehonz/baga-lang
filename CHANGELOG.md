@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### RocksDB path R19 — shared page cache + pin counts
+- **`PageCache.fds` / `pins`:** multi-file buffer pool. Eviction writeback
+  uses the registered fd for each page's `file_id` (fixes wrong-fd writeback
+  when the cache holds dirty pages from more than one SST). Pin count > 0
+  blocks clock eviction; all-pinned + full → `rc = -2`.
+- **API:** `pc_register_file` / `pc_unregister_file`, `pc_pin` / `pc_unpin`,
+  `pc_get_pin`. `pc_read_at` pins each source page while copying.
+- **Wiring:** `sst_fd_get`/`drop` and `sst_read_raw` register temporary and
+  cached SST fds; compact invalidate + `lsm_close` unregister.
+- Tests: `tests/page_cache_test.baga`; `lsm_test` / `lsm_recover_test` green.
+
 ### rocksbaga — layered package architecture
 - Split flat folder into **`util/`**, **`cache/`**, **`wal/`**, **`table/`**,
   **`db/`**, **`net/`**, **`examples/`**, **`docs/`** with root re-export

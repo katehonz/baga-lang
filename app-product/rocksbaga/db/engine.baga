@@ -140,6 +140,7 @@ fn lsm_close(db: LsmDB) -> i64 !IO {
         close(d.wal_fd)
     }
     // Maps are shared — close cached SST fds without return-updated dance.
+    // R19: unregister each gen from the page-cache fd registry.
     let ks = map_keys(d.sst_fds)
     for i in 0..vec_len(ks) {
         let g = vec_get(ks, i)
@@ -149,6 +150,7 @@ fn lsm_close(db: LsmDB) -> i64 !IO {
         }
         map_del(d.sst_fds, g)
         map_del(d.sst_sizes, g)
+        pc_unregister_file(d.cache, g)
     }
     return 0
 }

@@ -118,6 +118,9 @@ Endian helpers, key compare/sort. No IO.
 
 ### cache
 `PageCache`: fixed page size, clock eviction, `pc_read_at` / invalidate.
+**R19:** shared multi-file pool — composite keys `(file_id, page_no)`,
+per-file fd registry for writeback, pin counts (`pc_pin` / `pc_get_pin`)
+so eviction never drops a page a caller still holds.
 Keyed by SST gen (file id).
 
 ### wal
