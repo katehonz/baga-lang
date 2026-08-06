@@ -324,6 +324,18 @@ static Node *parse_type(Parser *p) {
     Node *ty = node_alloc(NODE_TYPE, pos);
     ty->type_name = t->text ? strdup(t->text) : strdup("i32");
 
+    /* L6: модул.Type — уточнен тип (точка в типова позиция е само това) */
+    if (check(p, TOK_DOT)) {
+        advance(p);
+        Token *mt = expect(p, TOK_IDENT);
+        size_t need = strlen(ty->type_name) + 1 + strlen(mt->text ? mt->text : "") + 1;
+        char *qn = malloc(need);
+        if (!qn) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+        snprintf(qn, need, "%s.%s", ty->type_name, mt->text ? mt->text : "");
+        free(ty->type_name);
+        ty->type_name = qn;
+    }
+
     /* Vec<T> — вектор с анотиран елементен тип */
     if (strcmp(ty->type_name, "Vec") == 0 && match(p, TOK_LT)) {
         ty->inner_type = parse_type(p);
@@ -495,6 +507,24 @@ static Node *parse_primary(Parser *p) {
     if (check(p, TOK_IDENT)) {
         Token *t = advance(p);
         char *name = strdup(t->text ? t->text : "");
+
+        /* L6: модул.Type { ... } — уточнен struct литерал; lookahead-ът
+         * `{ IDENT :` по-долу пази `a.b` field достъпа незасегнат */
+        if (check(p, TOK_DOT) &&
+            p->pos + 4 < p->len &&
+            p->tokens[p->pos + 1].kind == TOK_IDENT &&
+            p->tokens[p->pos + 2].kind == TOK_LBRACE &&
+            p->tokens[p->pos + 3].kind == TOK_IDENT &&
+            p->tokens[p->pos + 4].kind == TOK_COLON) {
+            advance(p); /* . */
+            Token *mt = advance(p); /* Type */
+            size_t need = strlen(name) + 1 + strlen(mt->text ? mt->text : "") + 1;
+            char *qn = malloc(need);
+            if (!qn) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+            snprintf(qn, need, "%s.%s", name, mt->text ? mt->text : "");
+            free(name);
+            name = qn;
+        }
 
         /* lookahead: { IDENT : → struct literal */
         if (check(p, TOK_LBRACE) &&

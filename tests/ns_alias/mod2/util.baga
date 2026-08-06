@@ -7,3 +7,12 @@ fn who() -> str {
 fn two() -> i64 {
     return 2
 }
+
+// same struct name as mod1 — L6 struct qualification probe
+struct Rec {
+    v: i64
+}
+
+fn mk() -> Rec {
+    return Rec { v: 2 }
+}

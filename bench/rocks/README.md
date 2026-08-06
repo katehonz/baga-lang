@@ -116,3 +116,12 @@ Uses `tools/serve.baga` + `resp_client.py` (`--clients` / `BENCH_CLIENTS`).
 Redis side only if `redis-server` is on `PATH` (`--appendonly no` for fair bulk SET).
 
 Multi-conn artifact: `results/multi-par-soak-latest.txt`.
+
+**RESP scorecard (2026-08-06, MT serve, 8 clients, pipe=16, shards=8):**
+[`results/vs-redis-scorecard.md`](results/vs-redis-scorecard.md)
+
+| metric | ratio vs Redis 8.x |
+|--------|-------------------:|
+| PING | **97%** |
+| SET | **92%** |
+| GET | **98%** |

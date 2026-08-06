@@ -331,6 +331,14 @@ printf 'import "tests/ns_alias/mod1/util.baga" as\nfn main() {}\n' > /tmp/baga_n
 run /tmp/baga_ns_alias_bad.baga 2>&1 | grep -q "очаквах име на alias след 'as'" \
 	&& echo "OK: L6 — as без име е ясна грешка" \
 	|| { echo "FAIL: as без име трябва да гърми"; exit 1; }
+printf 'import "tests/ns_alias/mod1/util.baga"\nimport "tests/ns_alias/mod2/util.baga" as util2\nfn main() {\n    let r = Rec { v: 1 }\n    print(r.v)\n}\n' > /tmp/baga_ns_struct_amb.baga
+run /tmp/baga_ns_struct_amb.baga 2>&1 | grep -q "нееднозначен struct 'Rec'.*уточни с util.Rec или util2.Rec" \
+	&& echo "OK: L6 — неуточнен struct при дубликат е грешка с подсказка" \
+	|| { echo "FAIL: нееднозначният struct трябва да гърми"; exit 1; }
+printf 'struct Pt { x: i64 }\nstruct Pt { y: i64 }\nfn main() {}\n' > /tmp/baga_ns_struct_dup.baga
+run /tmp/baga_ns_struct_dup.baga 2>&1 | grep -q "повторна дефиниция на struct 'Pt' в модул" \
+	&& echo "OK: L6 — дублиран struct в един модул е checker грешка (не от gcc)" \
+	|| { echo "FAIL: дублираният struct трябва да гърми в checker-а"; exit 1; }
 printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let f = add\n    print(f("x", 1))\n}\n' > /tmp/baga_fn_bad1.baga
 run /tmp/baga_fn_bad1.baga 2>&1 | grep -q "fn стойност: аргумент #1 е от тип str, но параметърът е i64" \
 	&& echo "OK: L5 — грешен аргумент през fn стойност е отхвърлен" \

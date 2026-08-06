@@ -14,6 +14,17 @@
   `OAUTH_WORKERS=2` (verified: both nodes boot in pool mode, full OAuth
   flow + DB-level proofs pass).
 
+### Language — L6 struct module qualification
+- Same-named structs in different modules no longer collide in gcc: a
+  pre-pass renames them to `module.Type` (like functions), type
+  annotations and literals resolve scoped (own module wins, unique
+  import, else ambiguity error with hint), and `mod.Type` works in both
+  type position and literals (`util2.Rec { v: 7 }`). Duplicate struct in
+  one module and duplicate enum across modules are now clean checker
+  errors instead of C compiler noise.
+- Tests: struct probes in `tests/ns_alias_test.baga` + two negatives in
+  `run_tests.sh`; both backends.
+
 ### Language — L6 import alias (`import "p" as name`)
 - `import "modb/util.baga" as util2` renames the module: qualified calls
   `util2.f()`, ambiguity hints use the alias. Closes the last L6 gap —

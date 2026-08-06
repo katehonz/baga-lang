@@ -1523,8 +1523,13 @@ candidate modules (`нееднозначно извикване на 'f' …`). 
 whose name equals a module name shadows the module (struct field access
 keeps working). Two functions with the same name in the *same* module are
 a checker error (`повторна дефиниция`) — forward declarations (`fn f(...)`
-without a body) plus one implementation are fine. Struct and enum names
-stay global (no qualification yet), as do `go` worker references.
+without a body) plus one implementation are fine. **Struct names follow
+the same module rules**: two modules may define `struct Rec` — each file's
+own wins locally, cross-module uses qualify as `util2.Rec` (type
+annotations and literals), and an unqualified ambiguous reference is a
+checker error with a hint. A duplicate struct in one module is a checker
+error. Enum names stay global (a cross-module duplicate is a clean
+checker error, not a gcc one), as do `go` worker references.
 
 **Import alias.** `import "modb/util.baga" as util2` renames the module:
 its functions are called `util2.f()` and ambiguity hints use the alias.

@@ -235,6 +235,7 @@ typedef struct {
     Checker *chk;
     const char *cur_fn;
     const char *main_base; /* модул на главния файл (L6 предимство при неуточнени извиквания) */
+    Node *program;         /* коренът — за L6 scoped struct resolution */
     int n_lambdas;         /* L5: брояч за синтетични имена __lam_N */
     Type *cur_ret;   /* expected return type of current function */
     Type *cur_effects; /* accumulated effects in current function body */
@@ -244,6 +245,13 @@ typedef struct {
     int drop_log_overflowed; /* логът се е препълнил — join деградира консервативно */
     int loop_depth;   /* 0 = извън цикъл; иначе depth-а на обграждащия цикъл */
 } CheckCtx;
+
+/* L6 forward декларации — дефинициите са след import alias таблицата. */
+static char *mod_base(const char *path);
+static Node *find_struct_scoped(CheckCtx *ctx, const char *name,
+                                const char *posfile, int *ambiguous);
+static void struct_amb_hint(CheckCtx *ctx, const char *name,
+                            char *m1, char *m2, size_t cap);
 
 static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
     if (ctx->chk->n_errors >= BAGA_MAX_ERRORS) return;
@@ -334,8 +342,23 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                         return t;
                     }
                 }
+                int amb = 0;
+                Node *sd = find_struct_scoped(ctx, ty->type_name, ty->pos.file, &amb);
+                if (amb) {
+                    char m1[128], m2[128];
+                    struct_amb_hint(ctx, ty->type_name, m1, m2, sizeof m1);
+                    check_error(ctx, ty->pos,
+                        "нееднозначен struct '%s' — има го в модулите '%s' и '%s'; уточни с %s.%s или %s.%s",
+                        ty->type_name, m1, m2, m1, ty->type_name, m2, ty->type_name);
+                }
+                if (sd && strcmp(ty->type_name, sd->struct_name) != 0) {
+                    /* L6: codegen чете AST текста — пренаписваме към финалното
+                     * "модул.Type" име, за да е консистентен mangling-ът */
+                    free(ty->type_name);
+                    ty->type_name = strdup(sd->struct_name);
+                }
                 Type *t = type_new(TYPE_STRUCT);
-                t->name = strdup(ty->type_name);
+                t->name = strdup(sd ? sd->struct_name : ty->type_name);
                 return t;
             }
         case NODE_TYPE_REF: {
@@ -621,6 +644,68 @@ static const char *import_alias_for(const char *canon_path) {
         if (strcmp(g_import_aliases[i].canon, canon_path) == 0)
             return g_import_aliases[i].alias;
     return NULL;
+}
+
+/* късото име на (евентуално преименуван „модул.Type") тип */
+static const char *type_short_name(const char *name) {
+    const char *d = strrchr(name, '.');
+    return d ? d + 1 : name;
+}
+
+/* L6: struct decl по име от гледна точка posfile. Пълното име печели
+ * винаги; при късо име — собственият модул, после единственият кандидат;
+ * повече от един чужд → *ambiguous = 1 и NULL (поикащият диагностицира). */
+static Node *find_struct_scoped(CheckCtx *ctx, const char *name,
+                                const char *posfile, int *ambiguous) {
+    if (ambiguous) *ambiguous = 0;
+    if (!ctx->program) return NULL;
+    Node *first = NULL;
+    int nfound = 0;
+    for (int i = 0; i < ctx->program->items.len; i++) {
+        Node *it = ctx->program->items.data[i];
+        if (it->kind != NODE_STRUCT) continue;
+        if (strcmp(it->struct_name, name) == 0) return it;   /* пълно име */
+        if (strcmp(type_short_name(it->struct_name), name) == 0) {
+            if (!first) first = it;
+            nfound++;
+        }
+    }
+    if (nfound <= 1) return first;
+    char *own = mod_base(posfile);
+    Node *mine = NULL;
+    for (int i = 0; i < ctx->program->items.len; i++) {
+        Node *it = ctx->program->items.data[i];
+        if (it->kind != NODE_STRUCT) continue;
+        if (strcmp(type_short_name(it->struct_name), name) != 0) continue;
+        char *org = mod_base(it->pos.file);
+        int eq = strcmp(org, own) == 0;
+        free(org);
+        if (eq) { mine = it; break; }
+    }
+    free(own);
+    if (mine) return mine;
+    if (ambiguous) *ambiguous = 1;
+    return NULL;
+}
+
+/* първите два модула с кандидати за късото име (за ambiguity подсказката) */
+static void struct_amb_hint(CheckCtx *ctx, const char *name,
+                            char *m1, char *m2, size_t cap) {
+    m1[0] = '\0';
+    m2[0] = '\0';
+    for (int i = 0; ctx->program && i < ctx->program->items.len; i++) {
+        Node *it = ctx->program->items.data[i];
+        if (it->kind != NODE_STRUCT) continue;
+        if (strcmp(type_short_name(it->struct_name), name) != 0) continue;
+        char *org = mod_base(it->pos.file);
+        if (m1[0] == '\0') {
+            snprintf(m1, cap, "%s", org);
+        } else if (strcmp(m1, org) != 0 && m2[0] == '\0') {
+            snprintf(m2, cap, "%s", org);
+        }
+        free(org);
+        if (m1[0] && m2[0]) return;
+    }
 }
 
 /* модулно име от път: alias ако е даден (`import … as a`), иначе basename
@@ -1852,15 +1937,17 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             break;
 
         case NODE_STRUCT_LIT: {
-            /* verify struct exists */
-            Node *sdecl = NULL;
-            for (int si = 0; si < ctx->n_structs; si++) {
-                if (strcmp(ctx->structs[si].name, n->lit_name) == 0) {
-                    sdecl = ctx->structs[si].decl;
-                    break;
-                }
+            /* verify struct exists (L6: scoped по модула на литерала) */
+            int amb = 0;
+            Node *sdecl = find_struct_scoped(ctx, n->lit_name, n->pos.file, &amb);
+            if (amb) {
+                char m1[128], m2[128];
+                struct_amb_hint(ctx, n->lit_name, m1, m2, sizeof m1);
+                check_error(ctx, n->pos,
+                    "нееднозначен struct '%s' — има го в модулите '%s' и '%s'; уточни с %s.%s или %s.%s",
+                    n->lit_name, m1, m2, m1, n->lit_name, m2, n->lit_name);
             }
-            if (!sdecl) {
+            else if (!sdecl) {
                 check_error(ctx, n->pos, "непознат struct '%s'", n->lit_name);
             }
             /* check each literal field: name exists + type matches */
@@ -1903,8 +1990,13 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     }
                 }
             }
+            if (sdecl && strcmp(n->lit_name, sdecl->struct_name) != 0) {
+                /* L6: codegen чете lit_name — пренаписваме към финалното име */
+                free(n->lit_name);
+                n->lit_name = strdup(sdecl->struct_name);
+            }
             Type *st = type_new(TYPE_STRUCT);
-            st->name = strdup(n->lit_name);
+            st->name = strdup(sdecl ? sdecl->struct_name : n->lit_name);
             t = st;
             break;
         }
@@ -2359,6 +2451,42 @@ void check_program(Checker *c, Node *program) {
     memset(&ctx, 0, sizeof(ctx));
     ctx.chk = c;
     ctx.main_base = mod_base(program->pos.file);
+    ctx.program = program;
+
+    /* L6 struct pre-pass: еднакви struct имена от РАЗЛИЧНИ модули се
+     * преименуват на "модул.Type" ПРЕДИ pass 1 (fn сигнатурите resolve-ват
+     * struct имена още при регистрация). Дубликат в ЕДИН модул е грешка —
+     * досега и двата случая излизаха чак в gcc с "conflicting types". */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *a = program->items.data[i];
+        if (a->kind != NODE_STRUCT) continue;
+        for (int j = i + 1; j < program->items.len; j++) {
+            Node *b = program->items.data[j];
+            if (b->kind != NODE_STRUCT) continue;
+            if (strcmp(type_short_name(a->struct_name),
+                       type_short_name(b->struct_name)) != 0) continue;
+            char *oa = mod_base(a->pos.file);
+            char *ob = mod_base(b->pos.file);
+            if (strcmp(oa, ob) == 0) {
+                check_error(&ctx, b->pos,
+                    "повторна дефиниция на struct '%s' в модул '%s'",
+                    type_short_name(b->struct_name), ob);
+            } else {
+                for (int k = 0; k < 2; k++) {
+                    Node *d = k == 0 ? a : b;
+                    const char *org = k == 0 ? oa : ob;
+                    if (strchr(d->struct_name, '.')) continue;  /* вече преименуван */
+                    size_t need = strlen(org) + 1 + strlen(d->struct_name) + 1;
+                    char *nn = malloc(need);
+                    if (!nn) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+                    snprintf(nn, need, "%s.%s", org, d->struct_name);
+                    d->struct_name = nn;
+                }
+            }
+            free(oa);
+            free(ob);
+        }
+    }
 
     push_scope(&ctx);
 
@@ -2369,6 +2497,16 @@ void check_program(Checker *c, Node *program) {
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
         if (item->kind != NODE_ENUM) continue;
+        /* L6: enum имената остават глобални — дубликат между модули е ясна
+         * грешка тук (досега излизаше в gcc при несвързани варианти) */
+        for (int k = 0; k < ctx.n_enums; k++) {
+            if (strcmp(ctx.enums[k].name, item->enum_name) == 0) {
+                check_error(&ctx, item->pos,
+                    "повторна дефиниция на enum '%s' (enum имената са глобални — модулно уточняване не се поддържа)",
+                    item->enum_name);
+                break;
+            }
+        }
         int is_sum = 0;
         for (int j = 0; j < item->n_variants; j++)
             if (item->enum_payloads && item->enum_payloads[j]) is_sum = 1;
@@ -2456,6 +2594,11 @@ void check_program(Checker *c, Node *program) {
             Type *st = type_new(TYPE_STRUCT);
             st->name = strdup(item->struct_name);
             item->type = st;
+            /* L6: resolve-ваме полетата тут (и пренаписваме AST имената към
+             * финалните "модул.Type"), защото codegen емитва typedef-а от
+             * AST текстa — иначе нереферирано поле би останало с късо име */
+            for (int fi = 0; fi < item->fields.len; fi++)
+                resolve_type_node(&ctx, item->fields.data[fi]->fld_type);
 
         } else if (item->kind == NODE_ENUM) {
             /* името и типът са регистрирани в L3 pre-pass-а (преди pass 1) —

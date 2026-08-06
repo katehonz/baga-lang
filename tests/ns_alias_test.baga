@@ -14,11 +14,22 @@ fn check(name: str, ok: bool) {
     }
 }
 
+fn double_it(r: util.Rec) -> i64 {
+    return r.v * 2
+}
+
 fn main() -> i64 {
     check("plain_module", util.who() == "mod1")
     check("alias_module", util2.who() == "mod2")
     check("plain_fn", util.one() == 1)
     check("alias_fn", util2.two() == 2)
+    // L6 struct остатък: еднаквоименни struct-ове от различни модули
+    let a = util.mk()
+    let b = util2.mk()
+    check("struct_scoped", a.v == 1 && b.v == 2)
+    let c = util2.Rec { v: 7 }
+    check("struct_qualified_lit", c.v == 7)
+    check("struct_qualified_type", double_it(a) == 2)
     print("ns_alias_test: all passed")
     return 0
 }
