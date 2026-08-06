@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### oauthbaga — O7: DB connection pool (`OAUTH_WORKERS=N`)
+- PG mode gains a fixed worker pool per node (fmrbaga `FMR_WORKERS`
+  idiom): N go_bg workers pull accepted fds from a buffered chan, each
+  holding one long-lived DB connection — SCRAM once per worker instead
+  of connect+auth per HTTP request.
+- Self-healing: store ops thread `OrmDb` by value, so every checkout
+  probes `SELECT 1` (1 RTT) and reconnects on a silently dropped
+  connection. `OAUTH_WORKERS=0` (default) keeps the per-connection idiom.
+- `scripts/run_tests.sh` runs `oauth_pg_test` a second time with
+  `OAUTH_WORKERS=2` (verified: both nodes boot in pool mode, full OAuth
+  flow + DB-level proofs pass).
+
 ### Language — L6 import alias (`import "p" as name`)
 - `import "modb/util.baga" as util2` renames the module: qualified calls
   `util2.f()`, ambiguity hints use the alias. Closes the last L6 gap —

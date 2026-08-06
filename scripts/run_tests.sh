@@ -232,6 +232,8 @@ PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_grpc
 
 echo "=== oauth PG (live Postgres) ==="
 OAUTH_PG=1 PGDATABASE=baga_oauth "$ROOT/scripts/baga-test" tests/oauth_pg_test.baga
+echo "=== oauth PG pool (O7: OAUTH_WORKERS=2, 1 long-lived DB на worker) ==="
+OAUTH_PG=1 OAUTH_WORKERS=2 PGDATABASE=baga_oauth "$ROOT/scripts/baga-test" tests/oauth_pg_test.baga
 
 echo "=== baga-test discovery (tests/**/*_test.baga, без specials по-горе) ==="
 mapfile -t DISCOVERED < <(

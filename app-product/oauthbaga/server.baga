@@ -110,6 +110,97 @@ fn oauth_proxy_conn_bg(fd: i64) -> i64 !IO !Net !Time !Random {
     return w
 }
 
+// ---------- O7: fixed worker pool (OAUTH_WORKERS=N, PG mode) ----------
+// N go_bg workers, each holding ONE long-lived DB connection — SCRAM is
+// paid once at first use, not per HTTP request. The accept loop pushes
+// fds on a channel (fmrbaga FMR_WORKERS idiom). Store ops thread db by
+// value, so a mid-life death is invisible to the worker's local: every
+// checkout probes with SELECT 1 (1 RTT) and reconnects on failure.
+
+fn oauth_workers_n() -> i64 !IO {
+    let n = parse_int(env("OAUTH_WORKERS")?)
+    if n < 0 {
+        return 0
+    }
+    if n > 64 {
+        return 64
+    }
+    return n
+}
+
+// Live long-lived connection: (re)connect when bad, probe + reconnect on
+// a silently dropped one (PG idle timeout).
+fn oauth_pool_db(db: OrmDb) -> OrmDb !Net !IO !Random {
+    if orm_ok_db(db) == 0 {
+        return orm_connect_env()?
+    }
+    let q = orm_query(db, "SELECT 1")?
+    if orm_ok_q(q) == 1 {
+        return orm_db_q(q)
+    }
+    return orm_connect_env()?
+}
+
+fn oauth_provider_pool_worker(ch: i64) -> i64 !IO !Net !Time !Random !Par {
+    let cfg = oauth_cfg_env()?
+    let st = oa_store_pg()
+    let mut db = orm_db_bad("")
+    let mut running: i64 = 1
+    while running == 1 {
+        let p = chan_recv2(ch)
+        let st2 = cell2_0(p)
+        let fd = cell2_1(p)
+        if st2 == 0 || fd < 0 {
+            running = 0
+        } else {
+            db = oauth_pool_db(db)?
+            if orm_ok_db(db) == 0 {
+                http_respond(fd, http_json_response(500, "{\"error\":\"db_unavailable\"}"))?
+                tcp_close(fd)?
+            } else {
+                let req = http_read_request(fd)?
+                let resp = oauth_provider_http(req, st, db, cfg)?
+                http_respond(fd, resp)?
+                tcp_close(fd)?   // Connection: close — the client reads to EOF
+            }
+        }
+    }
+    if orm_ok_db(db) == 1 {
+        orm_close(db)?
+    }
+    return 0
+}
+
+fn oauth_proxy_pool_worker(ch: i64) -> i64 !IO !Net !Time !Random !Par {
+    let cfg = oauth_cfg_env()?
+    let st = px_store_pg()
+    let mut db = orm_db_bad("")
+    let mut running: i64 = 1
+    while running == 1 {
+        let p = chan_recv2(ch)
+        let st2 = cell2_0(p)
+        let fd = cell2_1(p)
+        if st2 == 0 || fd < 0 {
+            running = 0
+        } else {
+            db = oauth_pool_db(db)?
+            if orm_ok_db(db) == 0 {
+                http_respond(fd, http_json_response(500, "{\"error\":\"db_unavailable\"}"))?
+                tcp_close(fd)?
+            } else {
+                let req = http_read_request(fd)?
+                let resp = oauth_proxy_http(req, st, db, cfg)?
+                http_respond(fd, resp)?
+                tcp_close(fd)?   // Connection: close — the client reads to EOF
+            }
+        }
+    }
+    if orm_ok_db(db) == 1 {
+        orm_close(db)?
+    }
+    return 0
+}
+
 // ---------- provider node ----------
 
 fn oauth_provider_http(req: Request, st: OAuthStore, db: OrmDb, cfg: OAuthCfg) -> Response !Time !Random !IO !Net {
@@ -187,17 +278,31 @@ fn oauth_provider_serve(ctx: i64) -> i64 !Net !IO !Time !Random !Par {
     }
     let mut st = oa_store_new()
     let pg_on = env("OAUTH_PG")?
+    let mut pool_ch: i64 = 0
     if pg_on == "1" {
         if oauth_boot_migrate()? != 0 {
             return 1
         }
         st = oa_store_pg()
+        // O7: fixed pool — N workers × one long-lived DB each
+        let nw = oauth_workers_n()?
+        if nw > 0 {
+            pool_ch = chan_new(nw * 4)
+            let mut i: i64 = 0
+            while i < nw {
+                go_bg(oauth_provider_pool_worker, pool_ch)
+                i = i + 1
+            }
+            print(concat(concat("oauth provider pool: workers=", int_to_str(nw)), ", 1 DB each"))
+        }
     }
     let cfg = oauth_cfg(port, proxy_port, secret)
     while true {
         let fd = tcp_accept(listener)?
         if fd >= 0 {
-            if st.kind == 1 {
+            if pool_ch != 0 {
+                chan_send(pool_ch, fd)
+            } else if st.kind == 1 {
                 go_bg(oauth_provider_conn_bg, fd)
             } else {
                 tcp_set_timeouts(fd, 60)?
@@ -315,17 +420,31 @@ fn oauth_proxy_serve(ctx: i64) -> i64 !Net !IO !Time !Random !Par {
     }
     let mut st = px_store_new()
     let pg_on = env("OAUTH_PG")?
+    let mut pool_ch: i64 = 0
     if pg_on == "1" {
         if oauth_boot_migrate()? != 0 {
             return 1
         }
         st = px_store_pg()
+        // O7: fixed pool — N workers × one long-lived DB each
+        let nw = oauth_workers_n()?
+        if nw > 0 {
+            pool_ch = chan_new(nw * 4)
+            let mut i: i64 = 0
+            while i < nw {
+                go_bg(oauth_proxy_pool_worker, pool_ch)
+                i = i + 1
+            }
+            print(concat(concat("oauth proxy pool: workers=", int_to_str(nw)), ", 1 DB each"))
+        }
     }
     let cfg = oauth_cfg(provider_port, port, secret)
     while true {
         let fd = tcp_accept(listener)?
         if fd >= 0 {
-            if st.kind == 1 {
+            if pool_ch != 0 {
+                chan_send(pool_ch, fd)
+            } else if st.kind == 1 {
                 go_bg(oauth_proxy_conn_bg, fd)
             } else {
                 tcp_set_timeouts(fd, 60)?

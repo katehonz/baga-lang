@@ -84,8 +84,15 @@ keep-alive/pool mode (FMR_WORKERS>0 equivalent) with one DB per worker.
 
 **Severity.** Performance only.
 
-**Verdict.** Open for real deployments: a pool of long-lived DB
-connections (FMR_WORKERS-style), now that O5's worker model is in place.
+**Verdict.** **Closed 2026-08-06** — `OAUTH_WORKERS=N` (PG mode) boots a
+fixed pool of go_bg workers per node, each holding one long-lived DB
+connection (fmrbaga FMR_WORKERS idiom: fds through a buffered chan).
+SCRAM is paid once per worker, not per request. Store ops thread `OrmDb`
+by value, so a silently dropped connection (PG idle timeout) is invisible
+to the worker's local — every checkout probes with `SELECT 1` (1 RTT) and
+reconnects on failure. Default `OAUTH_WORKERS=0` keeps the per-connection
+idiom. Proven: `oauth_pg_test` passes with `OAUTH_WORKERS=2` (second run
+in `scripts/run_tests.sh`, both nodes confirmed in pool mode).
 
 ## Closed / fine
 
