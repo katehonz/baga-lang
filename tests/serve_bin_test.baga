@@ -1,0 +1,238 @@
+// serve_bin_test.baga — R68: binary keys over the RESP wire (poll mode).
+// Keys with embedded NUL round-trip distinctly over raw TCP ("a" vs "a\0b"
+// vs "\0b" are three different keys); MSET/MGET/SETEX/TTL/INCR/APPEND work;
+// KEYS/SCAN emit binary-safe bulks (resp_bulk_b) and MATCH globs raw bytes.
+// The in-process block at the end covers multi-shard routing (lsm_shard_ix_b).
+
+import "rocksbaga/server.baga"
+import "rocksbaga/engine.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe(prefix: str) -> i64 !IO {
+    lsm_path_wipe(prefix)?
+    return 0
+}
+
+fn bargs1(a: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    return v
+}
+
+fn bargs2(a: bytes, b: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    return v
+}
+
+fn bargs3(a: bytes, b: bytes, c: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    return v
+}
+
+fn bargs4(a: bytes, b: bytes, c: bytes, d: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    vec_push(v, d)
+    return v
+}
+
+fn bargs5(a: bytes, b: bytes, c: bytes, d: bytes, e: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    vec_push(v, d)
+    vec_push(v, e)
+    return v
+}
+
+// Raw round-trip: write one command, read until one full reply parses;
+// returns the raw reply bytes (binary-safe — never goes through str).
+fn wire_rt(fd: i64, args: Vec<bytes>) -> bytes !Net !IO {
+    let cmd = resp_encode_command_b(args)
+    let w = tcp_write_bytes(fd, cmd)?
+    if w != 0 {
+        return bytes_new(0)
+    }
+    let mut buf = bytes_new(0)
+    let mut tries: i64 = 0
+    while tries < 256 {
+        let chunk = tcp_read_bytes(fd, 4096)?
+        if bytes_len(chunk) == 0 {
+            return buf
+        }
+        buf = bytes_concat(buf, chunk)
+        let r = resp_parse_reply(buf)
+        if r.ok == 1 {
+            return buf
+        }
+        tries = tries + 1
+    }
+    return buf
+}
+
+// haystack contains needle (raw bytes).
+fn bytes_contains(h: bytes, n: bytes) -> bool {
+    let nh = bytes_len(h)
+    let nn = bytes_len(n)
+    let mut i: i64 = 0
+    while i + nn <= nh {
+        let mut j: i64 = 0
+        let mut same: i64 = 1
+        while j < nn && same == 1 {
+            if bytes_at(h, i + j) != bytes_at(n, j) {
+                same = 0
+            }
+            j = j + 1
+        }
+        if same == 1 {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fn main() -> i64 !Net !IO !Par !Time {
+    print("serve_bin_test:")
+    let fails = vec_new()
+    wipe("/tmp/baga_lsm")?
+
+    // --- poll serve (default mode → lsm_exec_c_b on a 1-shard cluster) ---
+    let port = 17701
+    go_bg(lsm_serve, port)
+    sleep_ms(250)
+    let fd = tcp_connect_to("localhost", port, 5)?
+    check(fails, "connect", fd >= 0)
+    if fd >= 0 {
+        tcp_set_timeouts(fd, 5)?
+        let ka = bytes_of_str("a")
+        let kn = x"610062"   // "a\0b"
+        let kp = x"0062"     // "\0b"
+        // three distinct keys: "a", "a\0b", "\0b"
+        let r1 = wire_rt(fd, bargs3(bytes_of_str("SET"), ka, bytes_of_str("va")))?
+        check(fails, "r68_set_a", bytes_eq_b(r1, resp_ok()))
+        let r2 = wire_rt(fd, bargs3(bytes_of_str("SET"), kn, bytes_of_str("vn")))?
+        check(fails, "r68_set_nul", bytes_eq_b(r2, resp_ok()))
+        let r3 = wire_rt(fd, bargs3(bytes_of_str("SET"), kp, bytes_of_str("vp")))?
+        check(fails, "r68_set_nulpre", bytes_eq_b(r3, resp_ok()))
+        // each GET returns its own value — no prefix/suffix confusion
+        let g1 = wire_rt(fd, bargs2(bytes_of_str("GET"), ka))?
+        check(fails, "r68_get_a", bytes_eq_b(g1, resp_bulk_b(bytes_of_str("va"))))
+        let g2 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68_get_nul", bytes_eq_b(g2, resp_bulk_b(bytes_of_str("vn"))))
+        let g3 = wire_rt(fd, bargs2(bytes_of_str("GET"), kp))?
+        check(fails, "r68_get_nulpre", bytes_eq_b(g3, resp_bulk_b(bytes_of_str("vp"))))
+        // binary value under binary key
+        let bv = bytes_new(3)
+        bytes_set(bv, 0, 65)
+        bytes_set(bv, 1, 0)
+        bytes_set(bv, 2, 66)
+        let r4 = wire_rt(fd, bargs3(bytes_of_str("SET"), kn, bv))?
+        check(fails, "r68_set_binval", bytes_eq_b(r4, resp_ok()))
+        let g4 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68_get_binval", bytes_eq_b(g4, resp_bulk_b(bv)))
+        // DEL the NUL key — "a" and "\0b" survive
+        let d1 = wire_rt(fd, bargs2(bytes_of_str("DEL"), kn))?
+        check(fails, "r68_del_nul", bytes_eq_b(d1, resp_int(1)))
+        let g5 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68_get_nul_gone", bytes_eq_b(g5, resp_null_bulk()))
+        let g6 = wire_rt(fd, bargs2(bytes_of_str("GET"), ka))?
+        check(fails, "r68_a_survives", bytes_eq_b(g6, resp_bulk_b(bytes_of_str("va"))))
+        // MSET/MGET with NUL keys
+        let ms = wire_rt(fd, bargs5(bytes_of_str("MSET"), kn, bytes_of_str("m1"), kp, bytes_of_str("m2")))?
+        check(fails, "r68_mset", bytes_eq_b(ms, resp_ok()))
+        let mg = wire_rt(fd, bargs3(bytes_of_str("MGET"), kn, kp))?
+        let mgexp = bytes_concat(resp_array(2),
+            bytes_concat(resp_bulk_b(bytes_of_str("m1")), resp_bulk_b(bytes_of_str("m2"))))
+        check(fails, "r68_mget_nul", bytes_eq_b(mg, mgexp))
+        // SETEX + TTL with a NUL key
+        let sx = wire_rt(fd, bargs4(bytes_of_str("SETEX"), kn, bytes_of_str("30"), bytes_of_str("tx")))?
+        check(fails, "r68_setex_nul", bytes_eq_b(sx, resp_ok()))
+        let tt = wire_rt(fd, bargs2(bytes_of_str("TTL"), kn))?
+        let ttr = resp_parse_reply(tt)
+        check(fails, "r68_ttl_nul", ttr.ok == 1 && ttr.typ == 3 && ttr.num > 0 && ttr.num <= 30)
+        // EXISTS / INCR / APPEND with NUL keys
+        let ex = wire_rt(fd, bargs2(bytes_of_str("EXISTS"), kn))?
+        check(fails, "r68_exists_nul", bytes_eq_b(ex, resp_int(1)))
+        let ii = wire_rt(fd, bargs2(bytes_of_str("INCR"), x"006e"))?   // "\0n"
+        check(fails, "r68_incr_nul", bytes_eq_b(ii, resp_int(1)))
+        let ap = wire_rt(fd, bargs3(bytes_of_str("APPEND"), x"006e", bytes_of_str("7")))?
+        check(fails, "r68_append_nul", bytes_eq_b(ap, resp_int(2)))
+        // KEYS: raw keys, bytes_cmp order — "\0b"(0062) < "a"(61) < "a\0b"(610062)
+        let d2 = wire_rt(fd, bargs2(bytes_of_str("DEL"), x"006e"))?
+        let ks = wire_rt(fd, bargs1(bytes_of_str("KEYS")))?
+        let kexp = bytes_concat(resp_array(3),
+            bytes_concat(resp_bulk_b(x"0062"),
+            bytes_concat(resp_bulk_b(bytes_of_str("a")), resp_bulk_b(x"610062"))))
+        check(fails, "r68_keys_bin", bytes_eq_b(ks, kexp))
+        // SCAN: contains the NUL keys verbatim
+        let sc = wire_rt(fd, bargs2(bytes_of_str("SCAN"), bytes_of_str("0")))?
+        check(fails, "r68_scan_nul", bytes_contains(sc, x"610062") && bytes_contains(sc, x"0062"))
+        // SCAN MATCH over raw bytes: "a\0*" matches only "a\0b"
+        let sc2 = wire_rt(fd, bargs4(bytes_of_str("SCAN"), bytes_of_str("0"),
+            bytes_of_str("MATCH"), x"61002a"))?
+        check(fails, "r68_scan_match_bin",
+            bytes_contains(sc2, x"610062")
+            && bytes_contains(sc2, bytes_of_str("$1\r\na\r\n")) == false
+            && bytes_contains(sc2, resp_bulk_b(x"0062")) == false)
+        tcp_close(fd)?
+    }
+
+    // --- in-process sharded poll exec (LSM_SHARDS>1 routing via lsm_shard_ix_b) ---
+    wipe("/tmp/baga_lsm_r68c.s0")?
+    wipe("/tmp/baga_lsm_r68c.s1")?
+    wipe("/tmp/baga_lsm_r68c.s2")?
+    wipe("/tmp/baga_lsm_r68c.s3")?
+    let mut cc = lsm_cluster_open("/tmp/baga_lsm_r68c", 4, 64, 4)?
+    check(fails, "r68c_open", cc.ok == 1)
+    let ea = lsm_exec_c_b(cc, bargs3(bytes_of_str("SET"), x"610062", bytes_of_str("cv")))?
+    cc = ea.c
+    check(fails, "r68c_set_nul", bytes_eq_b(ea.reply, resp_ok()))
+    let ga = lsm_exec_c_b(cc, bargs2(bytes_of_str("GET"), x"610062"))?
+    cc = ga.c
+    check(fails, "r68c_get_nul", bytes_eq_b(ga.reply, resp_bulk_b(bytes_of_str("cv"))))
+    let gb = lsm_exec_c_b(cc, bargs2(bytes_of_str("GET"), bytes_of_str("a")))?
+    cc = gb.c
+    check(fails, "r68c_no_prefix_hit", bytes_eq_b(gb.reply, resp_null_bulk()))
+    // multi-arg DEL with NUL keys
+    let mset = lsm_exec_c_b(cc, bargs5(bytes_of_str("MSET"), x"0062", bytes_of_str("1"),
+        x"6200", bytes_of_str("2")))?
+    cc = mset.c
+    let md = lsm_exec_c_b(cc, bargs3(bytes_of_str("DEL"), x"0062", x"6200"))?
+    cc = md.c
+    check(fails, "r68c_del_multi", bytes_eq_b(md.reply, resp_int(2)))
+    // KEYS over the sharded exec returns the raw NUL key
+    let kk = lsm_exec_c_b(cc, bargs1(bytes_of_str("KEYS")))?
+    cc = kk.c
+    check(fails, "r68c_keys_bin", bytes_contains(kk.reply, x"610062"))
+    lsm_cluster_close(cc)?
+
+    if vec_len(fails) == 0 {
+        print("serve_bin_test: all passed")
+        return 0
+    }
+    print(concat(concat("serve_bin_test: FAILED (", int_to_str(vec_len(fails))), " checks)"))
+    return 1
+}

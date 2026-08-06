@@ -111,10 +111,11 @@ fn lsm_mb_unpack_str(h: i64) -> str {
 }
 
 // Job: cell2(id, cell2(rc, cell2(op, cell2(kh, cell2(vh, eh)))))
-// rc = reply chan (R47). R51: kh/eh = str_h. R66: vh = bytes_h for SET/SETEX
-// (0 if unused). Keys remain str (Map key type).
-fn lsm_mb_job_b(rc: i64, id: i64, op: i64, key: str, val: bytes, extra: str) -> i64 {
-    let kh = str_h(key)
+// rc = reply chan (R47). R68: kh = bytes_h (NUL-safe key hop — keys were
+// str_h until R68). R66: vh = bytes_h for SET/SETEX (0 if unused).
+// eh = str_h (SETEX seconds — ASCII).
+fn lsm_mb_job_kb(rc: i64, id: i64, op: i64, key: bytes, val: bytes, extra: str) -> i64 {
+    let kh = bytes_h(key)
     let mut vh: i64 = 0
     let mut eh: i64 = 0
     if op == LSM_OP_SET() || op == LSM_OP_SETEX() {
@@ -124,6 +125,11 @@ fn lsm_mb_job_b(rc: i64, id: i64, op: i64, key: str, val: bytes, extra: str) -> 
         eh = str_h(extra)
     }
     return cell2(id, cell2(rc, cell2(op, cell2(kh, cell2(vh, eh)))))
+}
+
+// str-key wrapper (bytes_of_str is lossless).
+fn lsm_mb_job_b(rc: i64, id: i64, op: i64, key: str, val: bytes, extra: str) -> i64 {
+    return lsm_mb_job_kb(rc, id, op, bytes_of_str(key), val, extra)
 }
 
 // Text-value submit (workers_test / simple clients) — wraps bytes_of_str.
@@ -271,8 +277,9 @@ fn lsm_shard_worker(ctx: i64) -> i64 !IO !Par !Time {
     return 0
 }
 
-// R53/R66: execute one job (unpack handles, engine op, typed reply on rc).
-// SET/SETEX values via h_bytes + put_b; GET bulk payload via bytes_h.
+// R53/R66/R68: execute one job (unpack handles, engine op, typed reply on rc).
+// Keys hop as bytes_h → engine _kb APIs; SET/SETEX values via h_bytes;
+// GET bulk payload via bytes_h.
 fn lsm_worker_one(db: LsmDB, msg: i64) -> LsmDB !IO !Par !Time {
     let id = cell2_0(msg)
     let body = cell2_1(msg)
@@ -280,17 +287,17 @@ fn lsm_worker_one(db: LsmDB, msg: i64) -> LsmDB !IO !Par !Time {
     let ob = cell2_1(body)
     let op = cell2_0(ob)
     let kv = cell2_1(ob)
-    let key = h_str(cell2_0(kv))
+    let key = h_bytes(cell2_0(kv))
     let ve = cell2_1(kv)
     let mut kind = LSM_REP_OK()
     let mut ph: i64 = 0
     if op == LSM_OP_SET() {
         let val = h_bytes(cell2_0(ve))
-        db = lsm_put_b(db, key, val)?
+        db = lsm_put_kb(db, key, val)?
         kind = LSM_REP_OK()
     } else {
         if op == LSM_OP_GET() {
-            let g = lsm_get(db, key)?
+            let g = lsm_get_kb(db, key)?
             db = g.db
             if g.found == 0 {
                 kind = LSM_REP_NIL()
@@ -300,12 +307,12 @@ fn lsm_worker_one(db: LsmDB, msg: i64) -> LsmDB !IO !Par !Time {
             }
         } else {
             if op == LSM_OP_DEL() {
-                let g2 = lsm_get(db, key)?
+                let g2 = lsm_get_kb(db, key)?
                 db = g2.db
                 if g2.found == 0 {
                     kind = LSM_REP_INT0()
                 } else {
-                    db = lsm_del(db, key)?
+                    db = lsm_del_kb(db, key)?
                     kind = LSM_REP_INT1()
                 }
             } else {
@@ -313,7 +320,7 @@ fn lsm_worker_one(db: LsmDB, msg: i64) -> LsmDB !IO !Par !Time {
                     let val = h_bytes(cell2_0(ve))
                     let extra = h_str(cell2_1(ve))
                     let sec = parse_int(extra)
-                    db = lsm_put_ex_b(db, key, val, sec)?
+                    db = lsm_put_ex_kb(db, key, val, sec)?
                     kind = LSM_REP_OK()
                 } else {
                     if op == LSM_OP_FLUSH() {
@@ -401,11 +408,17 @@ fn lsm_work_get(pack: i64, i: i64) -> i64 {
     return cell2_0(p)
 }
 
-// R66: binary-value submit.
+// R66: binary-value submit. R68: str-key wrapper over the bytes-key core.
 fn lsm_parallel_submit_b(p: LsmParallel, op: i64, key: str, val: bytes, extra: str) -> i64 !Par {
+    return lsm_parallel_submit_kb(p, op, bytes_of_str(key), val, extra)?
+}
+
+// R68: bytes-key submit core — routes via lsm_shard_ix_b (same digest as
+// the str hash for the same byte sequence).
+fn lsm_parallel_submit_kb(p: LsmParallel, op: i64, key: bytes, val: bytes, extra: str) -> i64 !Par {
     let id = lsm_parallel_alloc_id(p)?
-    let job = lsm_mb_job_b(p.done, id, op, key, val, extra)
-    let sid = lsm_shard_ix(p.n, key)
+    let job = lsm_mb_job_kb(p.done, id, op, key, val, extra)
+    let sid = lsm_shard_ix_b(p.n, key)
     let ch = vec_get(p.work, sid)
     chan_send(ch, job)
     return id
@@ -439,8 +452,20 @@ fn lsm_parallel_submit_id_b(
     val: bytes,
     extra: str
 ) -> i64 !Par {
-    let job = lsm_mb_job_b(p.done, id, op, key, val, extra)
-    let sid = lsm_shard_ix(p.n, key)
+    return lsm_parallel_submit_id_kb(p, id, op, bytes_of_str(key), val, extra)?
+}
+
+// R68: bytes-key variant of lsm_parallel_submit_id_b.
+fn lsm_parallel_submit_id_kb(
+    p: LsmParallel,
+    id: i64,
+    op: i64,
+    key: bytes,
+    val: bytes,
+    extra: str
+) -> i64 !Par {
+    let job = lsm_mb_job_kb(p.done, id, op, key, val, extra)
+    let sid = lsm_shard_ix_b(p.n, key)
     let ch = vec_get(p.work, sid)
     chan_send(ch, job)
     return id
@@ -469,8 +494,22 @@ fn lsm_mt_submit_b(
     val: bytes,
     extra: str
 ) -> i64 !Par {
-    let job = lsm_mb_job_b(rc, id, op, key, val, extra)
-    let sid = lsm_shard_ix(nshards, key)
+    return lsm_mt_submit_kb(work_pack, nshards, rc, id, op, bytes_of_str(key), val, extra)?
+}
+
+// R68: bytes-key variant of lsm_mt_submit_b.
+fn lsm_mt_submit_kb(
+    work_pack: i64,
+    nshards: i64,
+    rc: i64,
+    id: i64,
+    op: i64,
+    key: bytes,
+    val: bytes,
+    extra: str
+) -> i64 !Par {
+    let job = lsm_mb_job_kb(rc, id, op, key, val, extra)
+    let sid = lsm_shard_ix_b(nshards, key)
     let ch = lsm_work_get(work_pack, sid)
     chan_send(ch, job)
     return id

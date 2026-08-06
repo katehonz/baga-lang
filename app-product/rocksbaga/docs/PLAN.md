@@ -187,5 +187,16 @@ Goal: Track S flagship — durable KV on RESP.
   is an unchanged thin wrapper (`bytes_of_str`). KEYS/SCAN MATCH still
   glob on `str` — NUL keys truncate there (binary MATCH is R68);
   tests `r67_*` — **done**
-- (next) binary keys over the RESP wire in net/server.baga — engine
-  `_kb` APIs ready (R68)
+- **R68 binary keys over the RESP wire** — every serve mode dispatches
+  raw `Vec<bytes>` args into `_kb` cores (`lsm_exec_kb` /
+  `lsm_exec_c_kb` / `lsm_mt_exec_kb` / `lsm_exec_cf_kb`; str execs kept
+  as `bytes_of_str` wrappers). KEYS/SCAN reply with `resp_bulk_b`;
+  MATCH globs raw bytes (`lsm_match_glob_b` + `lsm_scan_kb` /
+  `lsm_cluster_scan_kb`). MT expires index is binary-safe
+  (`u32le(sid)‖key` in `Map<bytes, i64>`). PARALLEL workers hop keys as
+  `bytes_h` (`lsm_mb_job_kb` / `lsm_parallel_submit_kb`). New cluster /
+  CF helpers: `lsm_cluster_*_kb`, `lsm_cf_*_kb`. Wire tests
+  `tests/serve_bin{,_mt,_par,_cf}_test.baga`; bench
+  `vs-redis-20260806T152425Z.txt` (97/92/98% vs Redis) — **done**
+- (next) optional: LLVM builders for `bytes_h`/`h_bytes` (C backend is
+  the storage flagship; see gaps.md LLVM parity note)

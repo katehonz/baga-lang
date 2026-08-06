@@ -1,0 +1,126 @@
+// serve_bin_cf_test.baga — R68: binary keys over the RESP wire in CF mode
+// (LSM_CF=1 loop driven directly). Keys with embedded NUL work on the
+// default CF (SET/GET/DEL) and inside named families (CF.SET/CF.GET/CF.DEL);
+// CF names stay str (they are identifiers in the .cfs name map).
+
+import "rocksbaga/server.baga"
+import "rocksbaga/engine.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn serve_cf(port: i64) -> i64 !Net !IO !Time !Par {
+    return lsm_serve_cf_to(port, 60)?
+}
+
+fn bargs2(a: bytes, b: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    return v
+}
+
+fn bargs3(a: bytes, b: bytes, c: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    return v
+}
+
+fn bargs4(a: bytes, b: bytes, c: bytes, d: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    vec_push(v, d)
+    return v
+}
+
+// Raw round-trip: write one command, read until one full reply parses.
+fn wire_rt(fd: i64, args: Vec<bytes>) -> bytes !Net !IO {
+    let cmd = resp_encode_command_b(args)
+    let w = tcp_write_bytes(fd, cmd)?
+    if w != 0 {
+        return bytes_new(0)
+    }
+    let mut buf = bytes_new(0)
+    let mut tries: i64 = 0
+    while tries < 256 {
+        let chunk = tcp_read_bytes(fd, 4096)?
+        if bytes_len(chunk) == 0 {
+            return buf
+        }
+        buf = bytes_concat(buf, chunk)
+        let r = resp_parse_reply(buf)
+        if r.ok == 1 {
+            return buf
+        }
+        tries = tries + 1
+    }
+    return buf
+}
+
+fn main() -> i64 !Net !IO !Par !Time {
+    print("serve_bin_cf_test:")
+    let fails = vec_new()
+    // wipe default CF store + name map + family sidecar files
+    lsm_path_wipe("/tmp/baga_lsm")?
+    lsm_path_wipe("/tmp/baga_lsm.cf1")?
+    unlink("/tmp/baga_lsm.cfs")?
+    unlink("/tmp/baga_lsm.cfs.tmp")?
+
+    let port = 17704
+    go_bg(serve_cf, port)
+    sleep_ms(400)
+    let fd = tcp_connect_to("localhost", port, 5)?
+    check(fails, "connect", fd >= 0)
+    if fd >= 0 {
+        tcp_set_timeouts(fd, 6)?
+        let ka = bytes_of_str("a")
+        let kn = x"610062"   // "a\0b"
+        // default CF 0: SET/GET/DEL with NUL key
+        let r1 = wire_rt(fd, bargs3(bytes_of_str("SET"), kn, bytes_of_str("vn")))?
+        check(fails, "r68cf_set_nul", bytes_eq_b(r1, resp_ok()))
+        let g1 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68cf_get_nul", bytes_eq_b(g1, resp_bulk_b(bytes_of_str("vn"))))
+        let g2 = wire_rt(fd, bargs2(bytes_of_str("GET"), ka))?
+        check(fails, "r68cf_no_prefix_hit", bytes_eq_b(g2, resp_null_bulk()))
+        let d1 = wire_rt(fd, bargs2(bytes_of_str("DEL"), kn))?
+        check(fails, "r68cf_del_nul", bytes_eq_b(d1, resp_int(1)))
+        let g3 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68cf_get_nul_gone", bytes_eq_b(g3, resp_null_bulk()))
+        // named family: CF.SET/CF.GET/CF.DEL with NUL key
+        let cs = wire_rt(fd, bargs4(bytes_of_str("CF.SET"), bytes_of_str("bin"), kn, bytes_of_str("fv")))?
+        check(fails, "r68cf_cfset_nul", bytes_eq_b(cs, resp_ok()))
+        let cg = wire_rt(fd, bargs3(bytes_of_str("CF.GET"), bytes_of_str("bin"), kn))?
+        check(fails, "r68cf_cfget_nul", bytes_eq_b(cg, resp_bulk_b(bytes_of_str("fv"))))
+        // same bytes key in default CF is a different entry
+        let g4 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68cf_namespaces_split", bytes_eq_b(g4, resp_null_bulk()))
+        let cd = wire_rt(fd, bargs3(bytes_of_str("CF.DEL"), bytes_of_str("bin"), kn))?
+        check(fails, "r68cf_cfdel_nul", bytes_eq_b(cd, resp_int(1)))
+        let cg2 = wire_rt(fd, bargs3(bytes_of_str("CF.GET"), bytes_of_str("bin"), kn))?
+        check(fails, "r68cf_cfget_gone", bytes_eq_b(cg2, resp_null_bulk()))
+        tcp_close(fd)?
+    }
+
+    if vec_len(fails) == 0 {
+        print("serve_bin_cf_test: all passed")
+        return 0
+    }
+    print(concat(concat("serve_bin_cf_test: FAILED (", int_to_str(vec_len(fails))), " checks)"))
+    return 1
+}

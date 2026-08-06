@@ -1,0 +1,133 @@
+// serve_bin_par_test.baga — R68: binary keys over the RESP wire in PARALLEL
+// mode (LSM_PARALLEL=1 loop driven directly; keys hop to shard workers as
+// bytes_h handles → engine _kb APIs).
+
+import "rocksbaga/server.baga"
+import "rocksbaga/engine.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+// PARALLEL serve reads LSMPATH (default /tmp/baga_lsm), nshards=4 default.
+fn serve_par(port: i64) -> i64 !Net !IO !Time !Par {
+    return lsm_serve_parallel_to(port, 60)?
+}
+
+fn bargs2(a: bytes, b: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    return v
+}
+
+fn bargs3(a: bytes, b: bytes, c: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    return v
+}
+
+fn bargs4(a: bytes, b: bytes, c: bytes, d: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    vec_push(v, d)
+    return v
+}
+
+// Raw round-trip: write one command, read until one full reply parses.
+fn wire_rt(fd: i64, args: Vec<bytes>) -> bytes !Net !IO {
+    let cmd = resp_encode_command_b(args)
+    let w = tcp_write_bytes(fd, cmd)?
+    if w != 0 {
+        return bytes_new(0)
+    }
+    let mut buf = bytes_new(0)
+    let mut tries: i64 = 0
+    while tries < 256 {
+        let chunk = tcp_read_bytes(fd, 4096)?
+        if bytes_len(chunk) == 0 {
+            return buf
+        }
+        buf = bytes_concat(buf, chunk)
+        let r = resp_parse_reply(buf)
+        if r.ok == 1 {
+            return buf
+        }
+        tries = tries + 1
+    }
+    return buf
+}
+
+fn main() -> i64 !Net !IO !Par !Time {
+    print("serve_bin_par_test:")
+    let fails = vec_new()
+    lsm_path_wipe("/tmp/baga_lsm.s0")?
+    lsm_path_wipe("/tmp/baga_lsm.s1")?
+    lsm_path_wipe("/tmp/baga_lsm.s2")?
+    lsm_path_wipe("/tmp/baga_lsm.s3")?
+
+    let port = 17703
+    go_bg(serve_par, port)
+    sleep_ms(500)
+    let fd = tcp_connect_to("localhost", port, 5)?
+    check(fails, "connect", fd >= 0)
+    if fd >= 0 {
+        tcp_set_timeouts(fd, 6)?
+        let ka = bytes_of_str("a")
+        let kn = x"610062"   // "a\0b"
+        let kp = x"0062"     // "\0b"
+        let r1 = wire_rt(fd, bargs3(bytes_of_str("SET"), kn, bytes_of_str("vn")))?
+        check(fails, "r68p_set_nul", bytes_eq_b(r1, resp_ok()))
+        let r2 = wire_rt(fd, bargs3(bytes_of_str("SET"), ka, bytes_of_str("va")))?
+        check(fails, "r68p_set_a", bytes_eq_b(r2, resp_ok()))
+        let r3 = wire_rt(fd, bargs3(bytes_of_str("SET"), kp, bytes_of_str("vp")))?
+        check(fails, "r68p_set_nulpre", bytes_eq_b(r3, resp_ok()))
+        let g1 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68p_get_nul", bytes_eq_b(g1, resp_bulk_b(bytes_of_str("vn"))))
+        let g2 = wire_rt(fd, bargs2(bytes_of_str("GET"), ka))?
+        check(fails, "r68p_get_a", bytes_eq_b(g2, resp_bulk_b(bytes_of_str("va"))))
+        let g3 = wire_rt(fd, bargs2(bytes_of_str("GET"), kp))?
+        check(fails, "r68p_get_nulpre", bytes_eq_b(g3, resp_bulk_b(bytes_of_str("vp"))))
+        // binary value under binary key through the worker hop
+        let bv = bytes_new(3)
+        bytes_set(bv, 0, 88)
+        bytes_set(bv, 1, 0)
+        bytes_set(bv, 2, 89)
+        let r4 = wire_rt(fd, bargs3(bytes_of_str("SET"), kn, bv))?
+        check(fails, "r68p_set_binval", bytes_eq_b(r4, resp_ok()))
+        let g4 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68p_get_binval", bytes_eq_b(g4, resp_bulk_b(bv)))
+        // SETEX + DEL with NUL keys
+        let sx = wire_rt(fd, bargs4(bytes_of_str("SETEX"), kp, bytes_of_str("30"), bytes_of_str("tx")))?
+        check(fails, "r68p_setex_nul", bytes_eq_b(sx, resp_ok()))
+        let dd = wire_rt(fd, bargs2(bytes_of_str("DEL"), kn))?
+        check(fails, "r68p_del_nul", bytes_eq_b(dd, resp_int(1)))
+        let g5 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68p_get_nul_gone", bytes_eq_b(g5, resp_null_bulk()))
+        let g6 = wire_rt(fd, bargs2(bytes_of_str("GET"), ka))?
+        check(fails, "r68p_a_survives", bytes_eq_b(g6, resp_bulk_b(bytes_of_str("va"))))
+        tcp_close(fd)?
+    }
+
+    if vec_len(fails) == 0 {
+        print("serve_bin_par_test: all passed")
+        return 0
+    }
+    print(concat(concat("serve_bin_par_test: FAILED (", int_to_str(vec_len(fails))), " checks)"))
+    return 1
+}

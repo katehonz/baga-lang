@@ -538,9 +538,9 @@ fn lsm_cf_setopt(db: LsmCFDB, name: str, flush_at: i64, compact_at: i64) -> LsmC
     return lsm_cf_setopt_one(db, name, "compact_at", compact_at)?
 }
 
-// Shared WAL append (CF-aware record).
-fn lsm_cf_wal_append(db: LsmCFDB, op: i64, cf_id: i64, key: str, val: bytes) -> LsmCFDB !IO {
-    let rec = wal_record_cf(op, cf_id, key, val)
+// Shared WAL append (CF-aware record). R68: key arrives as raw bytes.
+fn lsm_cf_wal_append(db: LsmCFDB, op: i64, cf_id: i64, key: bytes, val: bytes) -> LsmCFDB !IO {
+    let rec = wal_record_cf_b(op, cf_id, key, val)
     let rl = bytes_len(rec)
     if db.wal_buf_max <= 0 {
         if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
@@ -617,19 +617,17 @@ fn lsm_cf_maybe_sync(db: LsmCFDB) -> LsmCFDB !IO {
     return db
 }
 
-// R65: binary-safe CF put (value may contain NUL).
-// R67: memtable keys are bytes internally — convert the str key once here.
-fn lsm_cf_put_b(db: LsmCFDB, cf_id: i64, key: str, val: bytes) -> LsmCFDB !IO !Time {
+// R68: bytes-key CF put core (memtable keys are bytes since R67).
+fn lsm_cf_put_kb(db: LsmCFDB, cf_id: i64, key: bytes, val: bytes) -> LsmCFDB !IO !Time {
     db = lsm_cf_ensure(db, cf_id)?
     db = lsm_cf_wal_append(db, 1, cf_id, key, val)?
     if db.ok == 0 {
         return db
     }
-    let kb = bytes_of_str(key)
     let mut fam = map_get(db.families, cf_id)
-    map_set(fam.mem, kb, val)
+    map_set(fam.mem, key, val)
     if map_len(fam.tomb) > 0 {
-        map_del(fam.tomb, kb)
+        map_del(fam.tomb, key)
     }
     fam.mem_n = fam.mem_n + 1
     map_set(db.families, cf_id, fam)
@@ -640,6 +638,11 @@ fn lsm_cf_put_b(db: LsmCFDB, cf_id: i64, key: str, val: bytes) -> LsmCFDB !IO !T
         db = lsm_cf_flush(db, cf_id)?
     }
     return db
+}
+
+// R65: binary-safe CF put (value may contain NUL).
+fn lsm_cf_put_b(db: LsmCFDB, cf_id: i64, key: str, val: bytes) -> LsmCFDB !IO !Time {
+    return lsm_cf_put_kb(db, cf_id, bytes_of_str(key), val)?
 }
 
 fn lsm_cf_put(db: LsmCFDB, cf_id: i64, key: str, val: str) -> LsmCFDB !IO !Time {
@@ -653,26 +656,35 @@ struct LsmCFGet {
 }
 
 fn lsm_cf_get(db: LsmCFDB, cf_id: i64, key: str) -> LsmCFGet !IO !Time {
+    return lsm_cf_get_kb(db, cf_id, bytes_of_str(key))?
+}
+
+// R68: bytes-key CF get core.
+fn lsm_cf_get_kb(db: LsmCFDB, cf_id: i64, key: bytes) -> LsmCFGet !IO !Time {
     db = lsm_cf_ensure(db, cf_id)?
     let mut fam = map_get(db.families, cf_id)
     // Reuse single-store get on the family LsmDB (SST path only; no WAL on fam)
-    let g = lsm_get(fam, key)?
+    let g = lsm_get_kb(fam, key)?
     fam = g.db
     map_set(db.families, cf_id, fam)
     return LsmCFGet { db: db, found: g.found, val: g.val }
 }
 
 fn lsm_cf_del(db: LsmCFDB, cf_id: i64, key: str) -> LsmCFDB !IO !Time {
+    return lsm_cf_del_kb(db, cf_id, bytes_of_str(key))?
+}
+
+// R68: bytes-key CF delete core.
+fn lsm_cf_del_kb(db: LsmCFDB, cf_id: i64, key: bytes) -> LsmCFDB !IO !Time {
     db = lsm_cf_ensure(db, cf_id)?
     let empty = bytes_new(0)
     db = lsm_cf_wal_append(db, 2, cf_id, key, empty)?
     if db.ok == 0 {
         return db
     }
-    let kb = bytes_of_str(key)   // R67: memtable keys are bytes
     let mut fam = map_get(db.families, cf_id)
-    map_del(fam.mem, kb)
-    map_set(fam.tomb, kb, 1)
+    map_del(fam.mem, key)
+    map_set(fam.tomb, key, 1)
     fam.mem_n = fam.mem_n + 1
     map_set(db.families, cf_id, fam)
     db = lsm_cf_maybe_sync(db)?

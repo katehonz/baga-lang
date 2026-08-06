@@ -1,0 +1,155 @@
+// serve_bin_mt_test.baga — R68: binary keys over the RESP wire in MT mode
+// (the LSM_SERVE_MT=1 serve loop driven directly via go_bg; 4 shards).
+// Covers the hop-less exec (lsm_mt_exec_kb) and the binary-safe active
+// expires index (u32le(sid)‖key — SETEX + sweeper on a NUL key).
+
+import "rocksbaga/server.baga"
+import "rocksbaga/engine.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+// MT serve reads LSMPATH (default /tmp/baga_lsm) with nshards=4.
+fn serve_mt(port: i64) -> i64 !Net !IO !Time !Par {
+    return lsm_serve_mt_to(port, 60)?
+}
+
+fn bargs2(a: bytes, b: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    return v
+}
+
+fn bargs3(a: bytes, b: bytes, c: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    return v
+}
+
+fn bargs4(a: bytes, b: bytes, c: bytes, d: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    vec_push(v, d)
+    return v
+}
+
+fn bargs5(a: bytes, b: bytes, c: bytes, d: bytes, e: bytes) -> Vec<bytes> {
+    let v = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    vec_push(v, d)
+    vec_push(v, e)
+    return v
+}
+
+// Raw round-trip: write one command, read until one full reply parses.
+fn wire_rt(fd: i64, args: Vec<bytes>) -> bytes !Net !IO {
+    let cmd = resp_encode_command_b(args)
+    let w = tcp_write_bytes(fd, cmd)?
+    if w != 0 {
+        return bytes_new(0)
+    }
+    let mut buf = bytes_new(0)
+    let mut tries: i64 = 0
+    while tries < 256 {
+        let chunk = tcp_read_bytes(fd, 4096)?
+        if bytes_len(chunk) == 0 {
+            return buf
+        }
+        buf = bytes_concat(buf, chunk)
+        let r = resp_parse_reply(buf)
+        if r.ok == 1 {
+            return buf
+        }
+        tries = tries + 1
+    }
+    return buf
+}
+
+fn main() -> i64 !Net !IO !Par !Time {
+    print("serve_bin_mt_test:")
+    let fails = vec_new()
+    // wipe the 4 MT shard stores (default LSMPATH /tmp/baga_lsm)
+    lsm_path_wipe("/tmp/baga_lsm.s0")?
+    lsm_path_wipe("/tmp/baga_lsm.s1")?
+    lsm_path_wipe("/tmp/baga_lsm.s2")?
+    lsm_path_wipe("/tmp/baga_lsm.s3")?
+
+    let port = 17702
+    go_bg(serve_mt, port)
+    sleep_ms(400)
+    let fd = tcp_connect_to("localhost", port, 5)?
+    check(fails, "connect", fd >= 0)
+    if fd >= 0 {
+        tcp_set_timeouts(fd, 6)?
+        let ka = bytes_of_str("a")
+        let kn = x"610062"   // "a\0b"
+        let kp = x"0062"     // "\0b"
+        // distinct NUL keys across shards
+        let r1 = wire_rt(fd, bargs3(bytes_of_str("SET"), kn, bytes_of_str("vn")))?
+        check(fails, "r68mt_set_nul", bytes_eq_b(r1, resp_ok()))
+        let r2 = wire_rt(fd, bargs3(bytes_of_str("SET"), ka, bytes_of_str("va")))?
+        check(fails, "r68mt_set_a", bytes_eq_b(r2, resp_ok()))
+        let r3 = wire_rt(fd, bargs3(bytes_of_str("SET"), kp, bytes_of_str("vp")))?
+        check(fails, "r68mt_set_nulpre", bytes_eq_b(r3, resp_ok()))
+        let g1 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68mt_get_nul", bytes_eq_b(g1, resp_bulk_b(bytes_of_str("vn"))))
+        let g2 = wire_rt(fd, bargs2(bytes_of_str("GET"), ka))?
+        check(fails, "r68mt_get_a", bytes_eq_b(g2, resp_bulk_b(bytes_of_str("va"))))
+        let g3 = wire_rt(fd, bargs2(bytes_of_str("GET"), kp))?
+        check(fails, "r68mt_get_nulpre", bytes_eq_b(g3, resp_bulk_b(bytes_of_str("vp"))))
+        // MSET/MGET + multi-op mix on NUL keys
+        let ms = wire_rt(fd, bargs5(bytes_of_str("MSET"), x"6200", bytes_of_str("m1"),
+            x"0063", bytes_of_str("m2")))?
+        check(fails, "r68mt_mset", bytes_eq_b(ms, resp_ok()))
+        let mg = wire_rt(fd, bargs3(bytes_of_str("MGET"), x"6200", x"0063"))?
+        let mgexp = bytes_concat(resp_array(2),
+            bytes_concat(resp_bulk_b(bytes_of_str("m1")), resp_bulk_b(bytes_of_str("m2"))))
+        check(fails, "r68mt_mget_nul", bytes_eq_b(mg, mgexp))
+        let ii = wire_rt(fd, bargs2(bytes_of_str("INCR"), x"006e"))?
+        check(fails, "r68mt_incr_nul", bytes_eq_b(ii, resp_int(1)))
+        let dd = wire_rt(fd, bargs2(bytes_of_str("DEL"), x"6200"))?
+        check(fails, "r68mt_del_nul", bytes_eq_b(dd, resp_int(1)))
+        // SETEX on a NUL key: TTL counts down, sweeper expires it (binary index)
+        let sx = wire_rt(fd, bargs4(bytes_of_str("SETEX"), kn, bytes_of_str("1"), bytes_of_str("tx")))?
+        check(fails, "r68mt_setex_nul", bytes_eq_b(sx, resp_ok()))
+        let tt = wire_rt(fd, bargs2(bytes_of_str("TTL"), kn))?
+        let ttr = resp_parse_reply(tt)
+        check(fails, "r68mt_ttl_nul", ttr.ok == 1 && ttr.typ == 3 && ttr.num >= 1 && ttr.num <= 2)
+        sleep_ms(1400)
+        let g4 = wire_rt(fd, bargs2(bytes_of_str("GET"), kn))?
+        check(fails, "r68mt_swept", bytes_eq_b(g4, resp_null_bulk()))
+        // re-SET without TTL clears the deadline (sweeper must not tombstone)
+        let sx2 = wire_rt(fd, bargs4(bytes_of_str("SETEX"), kp, bytes_of_str("1"), bytes_of_str("t1")))?
+        let rs = wire_rt(fd, bargs3(bytes_of_str("SET"), kp, bytes_of_str("keep")))?
+        sleep_ms(1400)
+        let g5 = wire_rt(fd, bargs2(bytes_of_str("GET"), kp))?
+        check(fails, "r68mt_reset_keeps", bytes_eq_b(g5, resp_bulk_b(bytes_of_str("keep"))))
+        tcp_close(fd)?
+    }
+
+    if vec_len(fails) == 0 {
+        print("serve_bin_mt_test: all passed")
+        return 0
+    }
+    print(concat(concat("serve_bin_mt_test: FAILED (", int_to_str(vec_len(fails))), " checks)"))
+    return 1
+}

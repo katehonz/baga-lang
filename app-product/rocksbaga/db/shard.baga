@@ -21,9 +21,10 @@ struct LsmCluster {
     n: i64,
     // R63: cluster-level SCAN snapshot (merged live keys).
     // Valid while scan_epoch equals sum of shard write_epochs and MATCH matches.
+    // R68: snapshot and MATCH pattern are raw bytes.
     scan_epoch: i64,
-    scan_pat: str,
-    scan_keys: Vec<str>,
+    scan_pat: bytes,
+    scan_keys: Vec<bytes>,
     ok: i64
 }
 
@@ -105,10 +106,10 @@ fn lsm_cluster_open(dir: str, nshards: i64, flush_at: i64, compact_at: i64) -> L
         vec_push(shards, db)
         i = i + 1
     }
-    let sk: Vec<str> = vec_new()
+    let sk: Vec<bytes> = vec_new()
     return LsmCluster {
         shards: shards, n: n,
-        scan_epoch: 0 - 1, scan_pat: "", scan_keys: sk,
+        scan_epoch: 0 - 1, scan_pat: bytes_new(0), scan_keys: sk,
         ok: ok
     }
 }
@@ -138,9 +139,15 @@ fn lsm_cluster_put(c: LsmCluster, key: str, val: str) -> LsmCluster !IO !Time {
 
 // R65: binary-safe put (value may contain NUL).
 fn lsm_cluster_put_b(c: LsmCluster, key: str, val: bytes) -> LsmCluster !IO !Time {
-    let i = lsm_shard_ix(c.n, key)
+    return lsm_cluster_put_kb(c, bytes_of_str(key), val)?
+}
+
+// R68: bytes-key put core — routes via lsm_shard_ix_b (same digest as the
+// str hash for the same byte sequence, so str and bytes callers share shards).
+fn lsm_cluster_put_kb(c: LsmCluster, key: bytes, val: bytes) -> LsmCluster !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
     let mut db = vec_get(c.shards, i)
-    db = lsm_put_b(db, key, val)?
+    db = lsm_put_kb(db, key, val)?
     vec_set(c.shards, i, db)
     c.ok = db.ok
     return c
@@ -151,18 +158,28 @@ fn lsm_cluster_put_ex(c: LsmCluster, key: str, val: str, ttl_sec: i64) -> LsmClu
 }
 
 fn lsm_cluster_put_ex_b(c: LsmCluster, key: str, val: bytes, ttl_sec: i64) -> LsmCluster !IO !Time {
-    let i = lsm_shard_ix(c.n, key)
+    return lsm_cluster_put_ex_kb(c, bytes_of_str(key), val, ttl_sec)?
+}
+
+// R68: bytes-key SETEX core.
+fn lsm_cluster_put_ex_kb(c: LsmCluster, key: bytes, val: bytes, ttl_sec: i64) -> LsmCluster !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
     let mut db = vec_get(c.shards, i)
-    db = lsm_put_ex_b(db, key, val, ttl_sec)?
+    db = lsm_put_ex_kb(db, key, val, ttl_sec)?
     vec_set(c.shards, i, db)
     c.ok = db.ok
     return c
 }
 
 fn lsm_cluster_del(c: LsmCluster, key: str) -> LsmCluster !IO !Time {
-    let i = lsm_shard_ix(c.n, key)
+    return lsm_cluster_del_kb(c, bytes_of_str(key))?
+}
+
+// R68: bytes-key delete core.
+fn lsm_cluster_del_kb(c: LsmCluster, key: bytes) -> LsmCluster !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
     let mut db = vec_get(c.shards, i)
-    db = lsm_del(db, key)?
+    db = lsm_del_kb(db, key)?
     vec_set(c.shards, i, db)
     c.ok = db.ok
     return c
@@ -195,9 +212,14 @@ struct LsmClusterGet {
 }
 
 fn lsm_cluster_get(c: LsmCluster, key: str) -> LsmClusterGet !IO !Time {
-    let i = lsm_shard_ix(c.n, key)
+    return lsm_cluster_get_kb(c, bytes_of_str(key))?
+}
+
+// R68: bytes-key get core.
+fn lsm_cluster_get_kb(c: LsmCluster, key: bytes) -> LsmClusterGet !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
     let mut db = vec_get(c.shards, i)
-    let g = lsm_get(db, key)?
+    let g = lsm_get_kb(db, key)?
     db = g.db
     vec_set(c.shards, i, db)
     return LsmClusterGet { c: c, found: g.found, val: g.val }
@@ -232,10 +254,10 @@ fn lsm_cluster_flushdb(c: LsmCluster) -> LsmCluster !IO {
         vec_push(shards, ndb)
         i = i + 1
     }
-    let sk: Vec<str> = vec_new()
+    let sk: Vec<bytes> = vec_new()
     return LsmCluster {
         shards: shards, n: n,
-        scan_epoch: 0 - 1, scan_pat: "", scan_keys: sk,
+        scan_epoch: 0 - 1, scan_pat: bytes_new(0), scan_keys: sk,
         ok: ok
     }
 }
@@ -245,13 +267,19 @@ struct LsmClusterKeys {
     keys: Vec<str>
 }
 
-// Merge KEYS from all shards (sorted).
-fn lsm_cluster_keys(c: LsmCluster) -> LsmClusterKeys !IO !Time {
-    let all: Vec<str> = vec_new()
+// R68: bytes-key sibling of LsmClusterKeys (wire path).
+struct LsmClusterKeysB {
+    c: LsmCluster,
+    keys: Vec<bytes>
+}
+
+// R68: bytes-key KEYS core — merge raw live keys from all shards (sorted).
+fn lsm_cluster_keys_kb(c: LsmCluster) -> LsmClusterKeysB !IO !Time {
+    let all: Vec<bytes> = vec_new()
     let mut i: i64 = 0
     while i < c.n {
         let mut db = vec_get(c.shards, i)
-        let kr = lsm_keys(db)?
+        let kr = lsm_keys_kb(db)?
         db = kr.db
         vec_set(c.shards, i, db)
         let mut j: i64 = 0
@@ -261,8 +289,19 @@ fn lsm_cluster_keys(c: LsmCluster) -> LsmClusterKeys !IO !Time {
         }
         i = i + 1
     }
-    sort_strs(all)
-    return LsmClusterKeys { c: c, keys: all }
+    sort_bytes(all)
+    return LsmClusterKeysB { c: c, keys: all }
+}
+
+// Merge KEYS from all shards (sorted). str wrapper — NUL keys truncate
+// (use lsm_cluster_keys_kb on the wire path, R68).
+fn lsm_cluster_keys(c: LsmCluster) -> LsmClusterKeys !IO !Time {
+    let r = lsm_cluster_keys_kb(c)?
+    let out: Vec<str> = vec_new()
+    for i in 0..vec_len(r.keys) {
+        vec_push(out, str_of_bytes(vec_get(r.keys, i)))
+    }
+    return LsmClusterKeys { c: r.c, keys: out }
 }
 
 struct LsmClusterSize {
@@ -290,6 +329,13 @@ struct LsmClusterScan {
     keys: Vec<str>
 }
 
+// R68: bytes-key sibling of LsmClusterScan (wire path).
+struct LsmClusterScanB {
+    c: LsmCluster,
+    next: i64,
+    keys: Vec<bytes>
+}
+
 // Sum of per-shard write_epochs — cluster SCAN cache key.
 fn lsm_cluster_write_epoch(c: LsmCluster) -> i64 {
     let mut e: i64 = 0
@@ -302,20 +348,21 @@ fn lsm_cluster_write_epoch(c: LsmCluster) -> i64 {
     return e
 }
 
-// R63: rebuild cluster SCAN snapshot (unordered, MATCH-filtered).
-fn lsm_cluster_scan_rebuild(c: LsmCluster, match_pat: str) -> LsmCluster !IO !Time {
+// R68: rebuild cluster SCAN snapshot from a raw-bytes MATCH pattern
+// (unordered, MATCH-filtered over raw key bytes).
+fn lsm_cluster_scan_rebuild_b(c: LsmCluster, match_pat: bytes) -> LsmCluster !IO !Time {
     // Gather live keys per shard without global sort (SCAN is unordered).
-    let filtered: Vec<str> = vec_new()
+    let filtered: Vec<bytes> = vec_new()
     let mut i: i64 = 0
     while i < c.n {
         let mut db = vec_get(c.shards, i)
-        let r = lsm_live_map(db)?
+        let r = lsm_live_map_kb(db)?
         db = r.db
         vec_set(c.shards, i, db)
         let mut j: i64 = 0
         while j < vec_len(r.keys) {
             let k = vec_get(r.keys, j)
-            if lsm_match_glob(match_pat, k) == 1 {
+            if lsm_match_glob_b(match_pat, k) == 1 {
                 vec_push(filtered, k)
             }
             j = j + 1
@@ -334,12 +381,12 @@ fn lsm_cluster_scan_rebuild(c: LsmCluster, match_pat: str) -> LsmCluster !IO !Ti
     return c
 }
 
-// R43 + R63: SCAN over merged live keys of all shards.
+// R68: bytes-key SCAN core over merged live keys of all shards.
 // R63: one live fold per write-epoch×MATCH; subsequent pages are O(count).
-fn lsm_cluster_scan(c: LsmCluster, cursor: i64, count: i64, match_pat: str) -> LsmClusterScan !IO !Time {
+fn lsm_cluster_scan_kb(c: LsmCluster, cursor: i64, count: i64, match_pat: bytes) -> LsmClusterScanB !IO !Time {
     let epoch = lsm_cluster_write_epoch(c)
-    if c.scan_epoch != epoch || c.scan_pat != match_pat {
-        c = lsm_cluster_scan_rebuild(c, match_pat)?
+    if c.scan_epoch != epoch || bytes_eq_b(c.scan_pat, match_pat) == false {
+        c = lsm_cluster_scan_rebuild_b(c, match_pat)?
     }
     let n = vec_len(c.scan_keys)
     let mut cur = cursor
@@ -356,7 +403,7 @@ fn lsm_cluster_scan(c: LsmCluster, cursor: i64, count: i64, match_pat: str) -> L
     if cnt > 1000 {
         cnt = 1000
     }
-    let out: Vec<str> = vec_new()
+    let out: Vec<bytes> = vec_new()
     let mut j = cur
     let mut taken: i64 = 0
     while j < n && taken < cnt {
@@ -373,9 +420,20 @@ fn lsm_cluster_scan(c: LsmCluster, cursor: i64, count: i64, match_pat: str) -> L
             drop(old)
         }
         c.scan_epoch = 0 - 1
-        c.scan_pat = ""
+        c.scan_pat = bytes_new(0)
     }
-    return LsmClusterScan { c: c, next: next, keys: out }
+    return LsmClusterScanB { c: c, next: next, keys: out }
+}
+
+// str-keyed compat wrapper (NUL keys truncate in the result — R68 wire path
+// uses lsm_cluster_scan_kb).
+fn lsm_cluster_scan(c: LsmCluster, cursor: i64, count: i64, match_pat: str) -> LsmClusterScan !IO !Time {
+    let r = lsm_cluster_scan_kb(c, cursor, count, bytes_of_str(match_pat))?
+    let out: Vec<str> = vec_new()
+    for i in 0..vec_len(r.keys) {
+        vec_push(out, str_of_bytes(vec_get(r.keys, i)))
+    }
+    return LsmClusterScan { c: r.c, next: r.next, keys: out }
 }
 
 struct LsmClusterExpire {
@@ -384,9 +442,14 @@ struct LsmClusterExpire {
 }
 
 fn lsm_cluster_expire(c: LsmCluster, key: str, ttl_sec: i64) -> LsmClusterExpire !IO !Time {
-    let i = lsm_shard_ix(c.n, key)
+    return lsm_cluster_expire_kb(c, bytes_of_str(key), ttl_sec)?
+}
+
+// R68: bytes-key EXPIRE core.
+fn lsm_cluster_expire_kb(c: LsmCluster, key: bytes, ttl_sec: i64) -> LsmClusterExpire !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
     let mut db = vec_get(c.shards, i)
-    let e = lsm_expire(db, key, ttl_sec)?
+    let e = lsm_expire_kb(db, key, ttl_sec)?
     db = e.db
     vec_set(c.shards, i, db)
     return LsmClusterExpire { c: c, ok: e.ok }
@@ -398,18 +461,28 @@ struct LsmClusterTtl {
 }
 
 fn lsm_cluster_ttl(c: LsmCluster, key: str) -> LsmClusterTtl !IO !Time {
-    let i = lsm_shard_ix(c.n, key)
+    return lsm_cluster_ttl_kb(c, bytes_of_str(key))?
+}
+
+// R68: bytes-key TTL core.
+fn lsm_cluster_ttl_kb(c: LsmCluster, key: bytes) -> LsmClusterTtl !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
     let mut db = vec_get(c.shards, i)
-    let t = lsm_ttl(db, key)?
+    let t = lsm_ttl_kb(db, key)?
     db = t.db
     vec_set(c.shards, i, db)
     return LsmClusterTtl { c: c, n: t.n }
 }
 
 fn lsm_cluster_persist(c: LsmCluster, key: str) -> LsmClusterExpire !IO !Time {
-    let i = lsm_shard_ix(c.n, key)
+    return lsm_cluster_persist_kb(c, bytes_of_str(key))?
+}
+
+// R68: bytes-key PERSIST core.
+fn lsm_cluster_persist_kb(c: LsmCluster, key: bytes) -> LsmClusterExpire !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
     let mut db = vec_get(c.shards, i)
-    let p = lsm_persist(db, key)?
+    let p = lsm_persist_kb(db, key)?
     db = p.db
     vec_set(c.shards, i, db)
     return LsmClusterExpire { c: c, ok: p.ok }

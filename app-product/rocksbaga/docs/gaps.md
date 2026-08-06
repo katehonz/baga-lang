@@ -498,8 +498,9 @@ it already answers.
   `lsm_persist_kb` (+ internal `lsm_live_map_kb`, `lsm_shard_ix_b`).
   All existing str-keyed APIs remain as thin `bytes_of_str` wrappers —
   callers (cf/workers/backup/multidb/server/tests) compile unchanged.
-- KEYS/SCAN MATCH still glob on `str` (`str_of_bytes` per key) — keys
-  with embedded NUL truncate at the NUL for MATCH/display only.
+- KEYS/SCAN MATCH globbed on `str` at R67 time (NUL keys truncated at
+  the NUL for MATCH/display) — closed by R68 (`lsm_match_glob_b`,
+  binary-safe bulks on the wire).
 - Tests: `r67_*` in `tests/lsm_test.baga` (NUL put/get/del, SST read,
   WAL recovery, compaction tomb survival, str-wrapper interop).
 - Perf: no regression from the `bytes_of_str` wrapper hop — MT soak vs
@@ -507,10 +508,40 @@ it already answers.
   GET 97% (R55-level parity). Artifact:
   `bench/rocks/results/vs-redis-20260806T142727Z.txt`.
 
-**Still open (later):** binary keys over the RESP wire
-(`net/server.baga` parses command args as `str`; engine `_kb` APIs are
-ready — R68). LLVM builders for `bytes_h`/`h_bytes` (C path is the
-storage flagship). LLVM parity status: `str_h`/`h_str`/`bytes_put`
+**Shipped (R68 binary keys over the RESP wire):**
+- Every serve mode executes raw `Vec<bytes>` args against the engine
+  `_kb` APIs — new dispatch cores `lsm_exec_kb` (single-db),
+  `lsm_exec_c_kb` (poll/multi-DB cluster), `lsm_mt_exec_kb` (MT),
+  `lsm_exec_cf_kb` (CF). The old str-arg execs (`lsm_exec`,
+  `lsm_exec_c`, `lsm_mt_exec`, `lsm_exec_cf`) remain as `bytes_of_str`
+  wrappers, so tests and kvbaga-style callers are untouched. Only
+  command names / options / numbers parse via `str_of_bytes` (ASCII).
+- Key-returning replies are binary-safe: KEYS/SCAN emit `resp_bulk_b`
+  via `lsm_keys_kb` / `lsm_scan_kb` / `lsm_cluster_keys_kb` /
+  `lsm_cluster_scan_kb` (+ `lsm_resp_scan_b`). SCAN MATCH globs raw
+  bytes — `lsm_match_glob_b` (+ `lsm_bytes_has_prefix/suffix/find`);
+  `LsmDB.scan_pat` and the cluster scan cache hold `bytes`.
+- MT active-expire index is binary-safe: `exps: Map<bytes, i64>` keyed
+  `u32le(sid)‖key` (`lsm_mt_ek`); sweeper decodes with `get_u32_le` +
+  `bytes_slice`. Redis semantics kept (re-SET without TTL clears the
+  deadline; sweeper tombstones only still-expired keys).
+- PARALLEL workers hop keys as `bytes_h` handles (`lsm_mb_job_kb`,
+  `lsm_parallel_submit_kb` / `lsm_parallel_submit_id_kb` /
+  `lsm_mt_submit_kb`); routing via `lsm_shard_ix_b` (same djb2 digest
+  as the str hash for the same bytes — str and bytes callers share
+  shards). CF helpers `lsm_cf_put_kb` / `lsm_cf_get_kb` / `lsm_cf_del_kb`
+  (CF names stay str — identifiers in `.cfs`).
+- Wire tests: `tests/serve_bin_test.baga` (poll + in-process 4-shard
+  exec), `tests/serve_bin_mt_test.baga` (MT incl. sweeper expiry of a
+  NUL key and re-SET-clears-TTL), `tests/serve_bin_par_test.baga`
+  (PARALLEL worker hop), `tests/serve_bin_cf_test.baga` (CF mode).
+  "a" / "a\0b" / "\0b" verified distinct in all modes.
+- Perf: MT soak vs Redis 8.x (8 clients, n=5000, pipe=16, shards=8):
+  PING 97% / SET 92% / GET 98% (R67 parity). Artifact:
+  `bench/rocks/results/vs-redis-20260806T152425Z.txt`.
+
+**Still open (later):** LLVM builders for `bytes_h`/`h_bytes` (C path
+is the storage flagship). LLVM parity status: `str_h`/`h_str`/`bytes_put`
 now have LLVM builders (oracle green); `map_h`/`h_map` are C-only *by design*
 (the LLVM backend has no `Map` at all); the thread-local arena is a C-runtime
 detail (LLVM lowers allocs to plain `malloc`, already thread-safe).
@@ -530,8 +561,9 @@ one-conn-at-a-time accept loop. Test: `tcp2_*` in `tests/lsm_test.baga`.
 - SET/SETEX/MSET/APPEND (+ CF.SET) store values via `lsm_put_b` / `*_put_b`
   (embedded NUL round-trips). GET already replied with `resp_bulk_b`.
 - Legacy `resp_parse_command` → `Vec<str>` **unchanged** for kvbaga.
-- **Still residual:** wire keys remain `str` (NUL-in-key over RESP is
-  R68 — the engine core is binary-safe since R67). TTL via `SETEX`/`EXPIRE` is R16.
+- **Residual closed by R68:** wire keys are binary-safe in all serve
+  modes (exec cores take `Vec<bytes>`; str execs are wrappers). TTL via
+  `SETEX`/`EXPIRE` is R16.
 
 **Shipped (R66 PARALLEL binary job payloads):**
 - Builtins `bytes_h(bytes) -> i64` / `h_bytes(i64) -> bytes` (C backend;

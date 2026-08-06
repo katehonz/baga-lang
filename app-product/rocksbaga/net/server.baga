@@ -59,67 +59,68 @@ fn lsm_wrongnum(cmd: str) -> bytes {
     return resp_error(concat(concat("ERR wrong number of arguments for '", cmd), "'"))
 }
 
-// R65: convert binary RESP args to str for legacy dispatch (commands/keys).
-// Value payloads that need NUL-safety must use lsm_*_b paths instead.
-fn lsm_args_str(args: Vec<bytes>) -> Vec<str> {
-    let out: Vec<str> = vec_new()
+// R68: convert str args to bytes for the bytes-key dispatch cores
+// (bytes_of_str is lossless — used by the str compat wrappers).
+fn lsm_args_bytes(args: Vec<str>) -> Vec<bytes> {
+    let out: Vec<bytes> = vec_new()
     let mut i: i64 = 0
     while i < vec_len(args) {
-        vec_push(out, str_of_bytes(vec_get(args, i)))
+        vec_push(out, bytes_of_str(vec_get(args, i)))
         i = i + 1
     }
     return out
 }
 
-// R43: SCAN reply = [next_cursor, [k1, k2, …]]
-fn lsm_resp_scan(next: i64, keys: Vec<str>) -> bytes {
+// R43/R68: SCAN reply = [next_cursor, [k1, k2, …]] — keys as binary-safe bulks.
+fn lsm_resp_scan_b(next: i64, keys: Vec<bytes>) -> bytes {
     let mut r = resp_array(2)
     r = bytes_concat(r, resp_bulk(int_to_str(next)))
     let n = vec_len(keys)
     r = bytes_concat(r, resp_array(n))
     let mut i: i64 = 0
     while i < n {
-        r = bytes_concat(r, resp_bulk(vec_get(keys, i)))
+        r = bytes_concat(r, resp_bulk_b(vec_get(keys, i)))
         i = i + 1
     }
     return r
 }
 
-// Parse SCAN options after cursor: [MATCH pat] [COUNT n]. Returns
-// cell2(count, match_packed) — use helpers below... actually return via out params
-// as a small struct.
-struct LsmScanOpts {
+// Parse SCAN options after cursor: [MATCH pat] [COUNT n].
+// R68: the MATCH pattern stays raw bytes (binary glob via lsm_match_glob_b);
+// COUNT/cursor are ASCII and parse via str_of_bytes.
+struct LsmScanOptsB {
     count: i64,
-    match_pat: str,
+    match_pat: bytes,
     ok: i64
 }
 
-fn lsm_parse_scan_opts(args: Vec<str>, start: i64) -> LsmScanOpts {
+fn lsm_parse_scan_opts_b(args: Vec<bytes>, start: i64) -> LsmScanOptsB {
     let mut count: i64 = 10
-    let mut match_pat = ""
+    let mut match_pat = bytes_new(0)
+    let bad = LsmScanOptsB { count: 10, match_pat: bytes_new(0), ok: 0 }
     let n = vec_len(args)
     let mut i = start
     while i < n {
-        let a = vec_get(args, i)
+        let a = str_of_bytes(vec_get(args, i))
         if lsm_eq_ci(a, "COUNT") == 1 {
-            if i + 1 >= n || lsm_is_int(vec_get(args, i + 1)) == 0 {
-                return LsmScanOpts { count: 10, match_pat: "", ok: 0 }
+            if i + 1 >= n || lsm_is_int(str_of_bytes(vec_get(args, i + 1))) == 0 {
+                return bad
             }
-            count = parse_int(vec_get(args, i + 1))
+            count = parse_int(str_of_bytes(vec_get(args, i + 1)))
             i = i + 2
         } else {
             if lsm_eq_ci(a, "MATCH") == 1 {
                 if i + 1 >= n {
-                    return LsmScanOpts { count: 10, match_pat: "", ok: 0 }
+                    return bad
                 }
                 match_pat = vec_get(args, i + 1)
                 i = i + 2
             } else {
-                return LsmScanOpts { count: 10, match_pat: "", ok: 0 }
+                return bad
             }
         }
     }
-    return LsmScanOpts { count: count, match_pat: match_pat, ok: 1 }
+    return LsmScanOptsB { count: count, match_pat: match_pat, ok: 1 }
 }
 
 fn lsm_is_int(s: str) -> i64 {
@@ -149,147 +150,17 @@ struct LsmExec {
     quit: i64
 }
 
-// R65: binary-value commands (SET/SETEX/APPEND) — did=1 when handled.
-// Keys remain str (NUL in key still unsupported); values stay bytes.
-struct LsmBinHit {
-    did: i64,
-    reply: bytes,
-    quit: i64
-}
-
-struct LsmBinHitDB {
-    hit: LsmBinHit,
-    db: LsmDB
-}
-
-fn lsm_bin_miss() -> LsmBinHit {
-    return LsmBinHit { did: 0, reply: bytes_new(0), quit: 0 }
-}
-
-fn lsm_try_bin_exec(db: LsmDB, args: Vec<bytes>) -> LsmBinHitDB !IO !Time {
-    let n = vec_len(args)
-    if n < 1 {
-        return LsmBinHitDB { hit: lsm_bin_miss(), db: db }
-    }
-    let c0 = str_of_bytes(vec_get(args, 0))
-    // SET key val [EX sec]
-    if lsm_eq_ci(c0, "SET") == 1 {
-        if n == 5 {
-            if lsm_eq_ci(str_of_bytes(vec_get(args, 3)), "EX") == 1 {
-                let sec_s = str_of_bytes(vec_get(args, 4))
-                if lsm_is_int(sec_s) == 0 {
-                    return LsmBinHitDB {
-                        hit: LsmBinHit {
-                            did: 1,
-                            reply: resp_error("ERR value is not an integer or out of range"),
-                            quit: 0
-                        },
-                        db: db
-                    }
-                }
-                let key = str_of_bytes(vec_get(args, 1))
-                let val = vec_get(args, 2)
-                db = lsm_put_ex_b(db, key, val, parse_int(sec_s))?
-                return LsmBinHitDB {
-                    hit: LsmBinHit { did: 1, reply: resp_ok(), quit: 0 },
-                    db: db
-                }
-            }
-            return LsmBinHitDB {
-                hit: LsmBinHit {
-                    did: 1,
-                    reply: resp_error("ERR rocksbaga: SET options other than EX not supported"),
-                    quit: 0
-                },
-                db: db
-            }
-        }
-        if n != 3 {
-            return LsmBinHitDB {
-                hit: LsmBinHit {
-                    did: 1, reply: resp_error("ERR rocksbaga: SET syntax"), quit: 0
-                },
-                db: db
-            }
-        }
-        let key = str_of_bytes(vec_get(args, 1))
-        let val = vec_get(args, 2)
-        db = lsm_put_b(db, key, val)?
-        return LsmBinHitDB {
-            hit: LsmBinHit { did: 1, reply: resp_ok(), quit: 0 },
-            db: db
-        }
-    }
-    if lsm_eq_ci(c0, "SETEX") == 1 {
-        if n != 4 {
-            return LsmBinHitDB {
-                hit: LsmBinHit { did: 1, reply: lsm_wrongnum("setex"), quit: 0 },
-                db: db
-            }
-        }
-        let sec_s = str_of_bytes(vec_get(args, 2))
-        if lsm_is_int(sec_s) == 0 {
-            return LsmBinHitDB {
-                hit: LsmBinHit {
-                    did: 1,
-                    reply: resp_error("ERR value is not an integer or out of range"),
-                    quit: 0
-                },
-                db: db
-            }
-        }
-        let key = str_of_bytes(vec_get(args, 1))
-        let val = vec_get(args, 3)
-        db = lsm_put_ex_b(db, key, val, parse_int(sec_s))?
-        return LsmBinHitDB {
-            hit: LsmBinHit { did: 1, reply: resp_ok(), quit: 0 },
-            db: db
-        }
-    }
-    if lsm_eq_ci(c0, "APPEND") == 1 {
-        if n != 3 {
-            return LsmBinHitDB {
-                hit: LsmBinHit { did: 1, reply: lsm_wrongnum("append"), quit: 0 },
-                db: db
-            }
-        }
-        let key = str_of_bytes(vec_get(args, 1))
-        let add = vec_get(args, 2)
-        let g = lsm_get(db, key)?
-        db = g.db
-        let mut cur = bytes_new(0)
-        if g.found == 1 {
-            cur = g.val
-        }
-        let nv = bytes_concat(cur, add)
-        let nlen = bytes_len(nv)
-        db = lsm_put_b(db, key, nv)?
-        return LsmBinHitDB {
-            hit: LsmBinHit { did: 1, reply: resp_int(nlen), quit: 0 },
-            db: db
-        }
-    }
-    return LsmBinHitDB { hit: lsm_bin_miss(), db: db }
-}
-
-// R65 entry: binary parse args → try binary-value cmds, else str dispatch.
-fn lsm_exec_b(db: LsmDB, args: Vec<bytes>) -> LsmExec !IO !Time {
-    let br = lsm_try_bin_exec(db, args)?
-    db = br.db
-    if br.hit.did == 1 {
-        return LsmExec { db: db, reply: br.hit.reply, quit: br.hit.quit }
-    }
-    return lsm_exec(db, lsm_args_str(args))?
-}
-
 // Execute one RESP command. Mutates/returns db (flush may run).
 // R29: command dispatch via lsm_eq_ci (no per-cmd uppercase alloc).
-fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
+// R68: keys are raw RESP bytes end-to-end — every key arg goes to the
+// engine _kb APIs without str conversion (NUL-safe); only command names,
+// options and numbers parse via str_of_bytes (ASCII).
+fn lsm_exec_kb(db: LsmDB, args: Vec<bytes>) -> LsmExec !IO !Time {
     let n = vec_len(args)
     if n < 1 {
         return LsmExec { db: db, reply: resp_error("ERR empty command"), quit: 0 }
     }
-    let c0 = vec_get(args, 0)
+    let c0 = str_of_bytes(vec_get(args, 0))
 
     if lsm_eq_ci(c0, "PING") == 1 {
         return LsmExec { db: db, reply: resp_pong(), quit: 0 }
@@ -303,14 +174,14 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
         }
         // SET key val [EX seconds]
         if n == 5 {
-            if lsm_eq_ci(vec_get(args, 3), "EX") == 1 {
-                if lsm_is_int(vec_get(args, 4)) == 0 {
+            if lsm_eq_ci(str_of_bytes(vec_get(args, 3)), "EX") == 1 {
+                let sec_s = str_of_bytes(vec_get(args, 4))
+                if lsm_is_int(sec_s) == 0 {
                     return LsmExec {
                         db: db, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
                     }
                 }
-                let sec = parse_int(vec_get(args, 4))
-                db = lsm_put_ex(db, vec_get(args, 1), vec_get(args, 2), sec)?
+                db = lsm_put_ex_kb(db, vec_get(args, 1), vec_get(args, 2), parse_int(sec_s))?
                 return LsmExec { db: db, reply: resp_ok(), quit: 0 }
             }
             return LsmExec {
@@ -326,27 +197,27 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
                 quit: 0
             }
         }
-        db = lsm_put(db, vec_get(args, 1), vec_get(args, 2))?
+        db = lsm_put_kb(db, vec_get(args, 1), vec_get(args, 2))?
         return LsmExec { db: db, reply: resp_ok(), quit: 0 }
     }
     if lsm_eq_ci(c0, "SETEX") == 1 {
         if n != 4 {
             return LsmExec { db: db, reply: lsm_wrongnum("setex"), quit: 0 }
         }
-        if lsm_is_int(vec_get(args, 2)) == 0 {
+        let sec_s = str_of_bytes(vec_get(args, 2))
+        if lsm_is_int(sec_s) == 0 {
             return LsmExec {
                 db: db, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
             }
         }
-        let sec = parse_int(vec_get(args, 2))
-        db = lsm_put_ex(db, vec_get(args, 1), vec_get(args, 3), sec)?
+        db = lsm_put_ex_kb(db, vec_get(args, 1), vec_get(args, 3), parse_int(sec_s))?
         return LsmExec { db: db, reply: resp_ok(), quit: 0 }
     }
     if lsm_eq_ci(c0, "GET") == 1 {
         if n != 2 {
             return LsmExec { db: db, reply: lsm_wrongnum("get"), quit: 0 }
         }
-        let g = lsm_get(db, vec_get(args, 1))?
+        let g = lsm_get_kb(db, vec_get(args, 1))?
         db = g.db
         if g.found == 0 {
             return LsmExec { db: db, reply: resp_null_bulk(), quit: 0 }
@@ -357,19 +228,19 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
         if n != 2 {
             return LsmExec { db: db, reply: lsm_wrongnum("del"), quit: 0 }
         }
-        let g = lsm_get(db, vec_get(args, 1))?
+        let g = lsm_get_kb(db, vec_get(args, 1))?
         db = g.db
         if g.found == 0 {
             return LsmExec { db: db, reply: resp_int(0), quit: 0 }
         }
-        db = lsm_del(db, vec_get(args, 1))?
+        db = lsm_del_kb(db, vec_get(args, 1))?
         return LsmExec { db: db, reply: resp_int(1), quit: 0 }
     }
     if lsm_eq_ci(c0, "EXISTS") == 1 {
         if n != 2 {
             return LsmExec { db: db, reply: lsm_wrongnum("exists"), quit: 0 }
         }
-        let g = lsm_get(db, vec_get(args, 1))?
+        let g = lsm_exists_kb(db, vec_get(args, 1))?
         db = g.db
         return LsmExec { db: db, reply: resp_int(g.found), quit: 0 }
     }
@@ -378,7 +249,7 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
             return LsmExec { db: db, reply: lsm_wrongnum("incr"), quit: 0 }
         }
         let k = vec_get(args, 1)
-        let g = lsm_get(db, k)?
+        let g = lsm_get_kb(db, k)?
         db = g.db
         let mut base: i64 = 0
         if g.found == 1 {
@@ -393,37 +264,55 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
             base = parse_int(vs)
         }
         let nv = base + 1
-        db = lsm_put(db, k, int_to_str(nv))?
+        db = lsm_put_kb(db, k, bytes_of_str(int_to_str(nv)))?
         return LsmExec { db: db, reply: resp_int(nv), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "APPEND") == 1 {
+        if n != 3 {
+            return LsmExec { db: db, reply: lsm_wrongnum("append"), quit: 0 }
+        }
+        // R65: binary-safe append (value may contain NUL).
+        let k = vec_get(args, 1)
+        let g = lsm_get_kb(db, k)?
+        db = g.db
+        let mut cur = bytes_new(0)
+        if g.found == 1 {
+            cur = g.val
+        }
+        let nv = bytes_concat(cur, vec_get(args, 2))
+        let nlen = bytes_len(nv)
+        db = lsm_put_kb(db, k, nv)?
+        return LsmExec { db: db, reply: resp_int(nlen), quit: 0 }
     }
     if lsm_eq_ci(c0, "KEYS") == 1 {
         if n != 1 {
             return LsmExec { db: db, reply: lsm_wrongnum("keys"), quit: 0 }
         }
-        let kg = lsm_keys(db)?
+        // R68: keys reply with binary-safe bulks (raw key bytes).
+        let kg = lsm_keys_kb(db)?
         db = kg.db
         let alive = kg.keys
         let mut r = resp_array(vec_len(alive))
         for i in 0..vec_len(alive) {
-            r = bytes_concat(r, resp_bulk(vec_get(alive, i)))
+            r = bytes_concat(r, resp_bulk_b(vec_get(alive, i)))
         }
         return LsmExec { db: db, reply: r, quit: 0 }
     }
     if lsm_eq_ci(c0, "SCAN") == 1 {
         // R43: SCAN cursor [MATCH pat] [COUNT n]
-        if n < 2 || lsm_is_int(vec_get(args, 1)) == 0 {
+        if n < 2 || lsm_is_int(str_of_bytes(vec_get(args, 1))) == 0 {
             return LsmExec { db: db, reply: lsm_wrongnum("scan"), quit: 0 }
         }
-        let cursor = parse_int(vec_get(args, 1))
-        let opts = lsm_parse_scan_opts(args, 2)
+        let cursor = parse_int(str_of_bytes(vec_get(args, 1)))
+        let opts = lsm_parse_scan_opts_b(args, 2)
         if opts.ok == 0 {
             return LsmExec {
                 db: db, reply: resp_error("ERR syntax error"), quit: 0
             }
         }
-        let sc = lsm_scan(db, cursor, opts.count, opts.match_pat)?
+        let sc = lsm_scan_kb(db, cursor, opts.count, opts.match_pat)?
         db = sc.db
-        return LsmExec { db: db, reply: lsm_resp_scan(sc.next, sc.keys), quit: 0 }
+        return LsmExec { db: db, reply: lsm_resp_scan_b(sc.next, sc.keys), quit: 0 }
     }
     if lsm_eq_ci(c0, "DBSIZE") == 1 {
         if n != 1 {
@@ -453,13 +342,13 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
         if n != 3 {
             return LsmExec { db: db, reply: lsm_wrongnum("expire"), quit: 0 }
         }
-        if lsm_is_int(vec_get(args, 2)) == 0 {
+        let sec_s = str_of_bytes(vec_get(args, 2))
+        if lsm_is_int(sec_s) == 0 {
             return LsmExec {
                 db: db, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
             }
         }
-        let sec = parse_int(vec_get(args, 2))
-        let e = lsm_expire(db, vec_get(args, 1), sec)?
+        let e = lsm_expire_kb(db, vec_get(args, 1), parse_int(sec_s))?
         db = e.db
         return LsmExec { db: db, reply: resp_int(e.ok), quit: 0 }
     }
@@ -467,7 +356,7 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
         if n != 2 {
             return LsmExec { db: db, reply: lsm_wrongnum("ttl"), quit: 0 }
         }
-        let t = lsm_ttl(db, vec_get(args, 1))?
+        let t = lsm_ttl_kb(db, vec_get(args, 1))?
         db = t.db
         return LsmExec { db: db, reply: resp_int(t.n), quit: 0 }
     }
@@ -475,15 +364,26 @@ fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
         if n != 2 {
             return LsmExec { db: db, reply: lsm_wrongnum("persist"), quit: 0 }
         }
-        let p = lsm_persist(db, vec_get(args, 1))?
+        let p = lsm_persist_kb(db, vec_get(args, 1))?
         db = p.db
         return LsmExec { db: db, reply: resp_int(p.ok), quit: 0 }
     }
     return LsmExec {
         db: db,
-        reply: resp_error(concat(concat("ERR unknown command '", vec_get(args, 0)), "'")),
+        reply: resp_error(concat(concat("ERR unknown command '", c0), "'")),
         quit: 0
     }
+}
+
+// str-arg compat wrapper (tests / legacy callers) — args convert losslessly
+// (bytes_of_str); replies are built by the shared bytes-key core.
+fn lsm_exec(db: LsmDB, args: Vec<str>) -> LsmExec !IO !Time {
+    return lsm_exec_kb(db, lsm_args_bytes(args))?
+}
+
+// R65/R68 wire entry: binary parse args → bytes-key core.
+fn lsm_exec_b(db: LsmDB, args: Vec<bytes>) -> LsmExec !IO !Time {
+    return lsm_exec_kb(db, args)?
 }
 
 // --- R32: cluster exec (key-hash shards) ---
@@ -494,139 +394,15 @@ struct LsmExecC {
     quit: i64
 }
 
-struct LsmBinHitC {
-    hit: LsmBinHit,
-    c: LsmCluster
-}
-
-// R65: binary SET/SETEX/MSET/APPEND on cluster.
-fn lsm_try_bin_exec_c(c: LsmCluster, args: Vec<bytes>) -> LsmBinHitC !IO !Time {
-    let n = vec_len(args)
-    if n < 1 {
-        return LsmBinHitC { hit: lsm_bin_miss(), c: c }
-    }
-    let c0 = str_of_bytes(vec_get(args, 0))
-    if lsm_eq_ci(c0, "SET") == 1 {
-        if n == 5 {
-            if lsm_eq_ci(str_of_bytes(vec_get(args, 3)), "EX") == 1 {
-                let sec_s = str_of_bytes(vec_get(args, 4))
-                if lsm_is_int(sec_s) == 0 {
-                    return LsmBinHitC {
-                        hit: LsmBinHit {
-                            did: 1,
-                            reply: resp_error("ERR value is not an integer or out of range"),
-                            quit: 0
-                        },
-                        c: c
-                    }
-                }
-                c = lsm_cluster_put_ex_b(
-                    c, str_of_bytes(vec_get(args, 1)), vec_get(args, 2), parse_int(sec_s)
-                )?
-                return LsmBinHitC {
-                    hit: LsmBinHit { did: 1, reply: resp_ok(), quit: 0 }, c: c
-                }
-            }
-            return LsmBinHitC {
-                hit: LsmBinHit {
-                    did: 1,
-                    reply: resp_error("ERR rocksbaga: SET options other than EX not supported"),
-                    quit: 0
-                },
-                c: c
-            }
-        }
-        if n != 3 {
-            return LsmBinHitC {
-                hit: LsmBinHit {
-                    did: 1, reply: resp_error("ERR rocksbaga: SET syntax"), quit: 0
-                },
-                c: c
-            }
-        }
-        c = lsm_cluster_put_b(c, str_of_bytes(vec_get(args, 1)), vec_get(args, 2))?
-        return LsmBinHitC {
-            hit: LsmBinHit { did: 1, reply: resp_ok(), quit: 0 }, c: c
-        }
-    }
-    if lsm_eq_ci(c0, "SETEX") == 1 {
-        if n != 4 {
-            return LsmBinHitC {
-                hit: LsmBinHit { did: 1, reply: lsm_wrongnum("setex"), quit: 0 }, c: c
-            }
-        }
-        let sec_s = str_of_bytes(vec_get(args, 2))
-        if lsm_is_int(sec_s) == 0 {
-            return LsmBinHitC {
-                hit: LsmBinHit {
-                    did: 1,
-                    reply: resp_error("ERR value is not an integer or out of range"),
-                    quit: 0
-                },
-                c: c
-            }
-        }
-        c = lsm_cluster_put_ex_b(
-            c, str_of_bytes(vec_get(args, 1)), vec_get(args, 3), parse_int(sec_s)
-        )?
-        return LsmBinHitC {
-            hit: LsmBinHit { did: 1, reply: resp_ok(), quit: 0 }, c: c
-        }
-    }
-    if lsm_eq_ci(c0, "MSET") == 1 {
-        if n < 3 || (n % 2) == 0 {
-            return LsmBinHitC {
-                hit: LsmBinHit { did: 1, reply: lsm_wrongnum("mset"), quit: 0 }, c: c
-            }
-        }
-        let mut i: i64 = 1
-        while i + 1 < n {
-            c = lsm_cluster_put_b(c, str_of_bytes(vec_get(args, i)), vec_get(args, i + 1))?
-            i = i + 2
-        }
-        return LsmBinHitC {
-            hit: LsmBinHit { did: 1, reply: resp_ok(), quit: 0 }, c: c
-        }
-    }
-    if lsm_eq_ci(c0, "APPEND") == 1 {
-        if n != 3 {
-            return LsmBinHitC {
-                hit: LsmBinHit { did: 1, reply: lsm_wrongnum("append"), quit: 0 }, c: c
-            }
-        }
-        let key = str_of_bytes(vec_get(args, 1))
-        let add = vec_get(args, 2)
-        let g = lsm_cluster_get(c, key)?
-        c = g.c
-        let mut cur = bytes_new(0)
-        if g.found == 1 {
-            cur = g.val
-        }
-        let nv = bytes_concat(cur, add)
-        let nlen = bytes_len(nv)
-        c = lsm_cluster_put_b(c, key, nv)?
-        return LsmBinHitC {
-            hit: LsmBinHit { did: 1, reply: resp_int(nlen), quit: 0 }, c: c
-        }
-    }
-    return LsmBinHitC { hit: lsm_bin_miss(), c: c }
-}
-
-fn lsm_exec_c_b(c: LsmCluster, args: Vec<bytes>) -> LsmExecC !IO !Time {
-    let br = lsm_try_bin_exec_c(c, args)?
-    c = br.c
-    if br.hit.did == 1 {
-        return LsmExecC { c: c, reply: br.hit.reply, quit: br.hit.quit }
-    }
-    return lsm_exec_c(c, lsm_args_str(args))?
-}
-
-fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
+// R68: bytes-key cluster exec core — raw RESP args; keys route via
+// lsm_shard_ix_b into the engine _kb APIs (NUL-safe). Only command names,
+// options and numbers parse via str_of_bytes (ASCII).
+fn lsm_exec_c_kb(c: LsmCluster, args: Vec<bytes>) -> LsmExecC !IO !Time {
     let n = vec_len(args)
     if n < 1 {
         return LsmExecC { c: c, reply: resp_error("ERR empty command"), quit: 0 }
     }
-    let c0 = vec_get(args, 0)
+    let c0 = str_of_bytes(vec_get(args, 0))
 
     if lsm_eq_ci(c0, "PING") == 1 {
         return LsmExecC { c: c, reply: resp_pong(), quit: 0 }
@@ -639,14 +415,14 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
             return LsmExecC { c: c, reply: lsm_wrongnum("set"), quit: 0 }
         }
         if n == 5 {
-            if lsm_eq_ci(vec_get(args, 3), "EX") == 1 {
-                if lsm_is_int(vec_get(args, 4)) == 0 {
+            if lsm_eq_ci(str_of_bytes(vec_get(args, 3)), "EX") == 1 {
+                let sec_s = str_of_bytes(vec_get(args, 4))
+                if lsm_is_int(sec_s) == 0 {
                     return LsmExecC {
                         c: c, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
                     }
                 }
-                let sec = parse_int(vec_get(args, 4))
-                c = lsm_cluster_put_ex(c, vec_get(args, 1), vec_get(args, 2), sec)?
+                c = lsm_cluster_put_ex_kb(c, vec_get(args, 1), vec_get(args, 2), parse_int(sec_s))?
                 return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
             }
             return LsmExecC {
@@ -660,27 +436,27 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
                 c: c, reply: resp_error("ERR rocksbaga: SET syntax"), quit: 0
             }
         }
-        c = lsm_cluster_put(c, vec_get(args, 1), vec_get(args, 2))?
+        c = lsm_cluster_put_kb(c, vec_get(args, 1), vec_get(args, 2))?
         return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
     }
     if lsm_eq_ci(c0, "SETEX") == 1 {
         if n != 4 {
             return LsmExecC { c: c, reply: lsm_wrongnum("setex"), quit: 0 }
         }
-        if lsm_is_int(vec_get(args, 2)) == 0 {
+        let sec_s = str_of_bytes(vec_get(args, 2))
+        if lsm_is_int(sec_s) == 0 {
             return LsmExecC {
                 c: c, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
             }
         }
-        let sec = parse_int(vec_get(args, 2))
-        c = lsm_cluster_put_ex(c, vec_get(args, 1), vec_get(args, 3), sec)?
+        c = lsm_cluster_put_ex_kb(c, vec_get(args, 1), vec_get(args, 3), parse_int(sec_s))?
         return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
     }
     if lsm_eq_ci(c0, "GET") == 1 {
         if n != 2 {
             return LsmExecC { c: c, reply: lsm_wrongnum("get"), quit: 0 }
         }
-        let g = lsm_cluster_get(c, vec_get(args, 1))?
+        let g = lsm_cluster_get_kb(c, vec_get(args, 1))?
         c = g.c
         if g.found == 0 {
             return LsmExecC { c: c, reply: resp_null_bulk(), quit: 0 }
@@ -688,22 +464,28 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         return LsmExecC { c: c, reply: resp_bulk_b(g.val), quit: 0 }
     }
     if lsm_eq_ci(c0, "DEL") == 1 {
-        if n != 2 {
+        if n < 2 {
             return LsmExecC { c: c, reply: lsm_wrongnum("del"), quit: 0 }
         }
-        let g = lsm_cluster_get(c, vec_get(args, 1))?
-        c = g.c
-        if g.found == 0 {
-            return LsmExecC { c: c, reply: resp_int(0), quit: 0 }
+        // R68: multi-arg DEL sums removed count over raw bytes keys.
+        let mut ndel: i64 = 0
+        let mut di: i64 = 1
+        while di < n {
+            let g = lsm_cluster_get_kb(c, vec_get(args, di))?
+            c = g.c
+            if g.found == 1 {
+                c = lsm_cluster_del_kb(c, vec_get(args, di))?
+                ndel = ndel + 1
+            }
+            di = di + 1
         }
-        c = lsm_cluster_del(c, vec_get(args, 1))?
-        return LsmExecC { c: c, reply: resp_int(1), quit: 0 }
+        return LsmExecC { c: c, reply: resp_int(ndel), quit: 0 }
     }
     if lsm_eq_ci(c0, "EXISTS") == 1 {
         if n != 2 {
             return LsmExecC { c: c, reply: lsm_wrongnum("exists"), quit: 0 }
         }
-        let g = lsm_cluster_get(c, vec_get(args, 1))?
+        let g = lsm_cluster_get_kb(c, vec_get(args, 1))?
         c = g.c
         return LsmExecC { c: c, reply: resp_int(g.found), quit: 0 }
     }
@@ -712,7 +494,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
             return LsmExecC { c: c, reply: lsm_wrongnum("incr"), quit: 0 }
         }
         let k = vec_get(args, 1)
-        let g = lsm_cluster_get(c, k)?
+        let g = lsm_cluster_get_kb(c, k)?
         c = g.c
         let mut base: i64 = 0
         if g.found == 1 {
@@ -727,7 +509,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
             base = parse_int(vs)
         }
         let nv = base + 1
-        c = lsm_cluster_put(c, k, int_to_str(nv))?
+        c = lsm_cluster_put_kb(c, k, bytes_of_str(int_to_str(nv)))?
         return LsmExecC { c: c, reply: resp_int(nv), quit: 0 }
     }
     // R59: DECR / APPEND / TYPE / MGET / MSET — poll-path parity with MT.
@@ -736,7 +518,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
             return LsmExecC { c: c, reply: lsm_wrongnum("decr"), quit: 0 }
         }
         let k = vec_get(args, 1)
-        let g = lsm_cluster_get(c, k)?
+        let g = lsm_cluster_get_kb(c, k)?
         c = g.c
         let mut base: i64 = 0
         if g.found == 1 {
@@ -751,7 +533,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
             base = parse_int(vs)
         }
         let nv = base - 1
-        c = lsm_cluster_put(c, k, int_to_str(nv))?
+        c = lsm_cluster_put_kb(c, k, bytes_of_str(int_to_str(nv)))?
         return LsmExecC { c: c, reply: resp_int(nv), quit: 0 }
     }
     if lsm_eq_ci(c0, "APPEND") == 1 {
@@ -759,21 +541,21 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
             return LsmExecC { c: c, reply: lsm_wrongnum("append"), quit: 0 }
         }
         let k = vec_get(args, 1)
-        let g = lsm_cluster_get(c, k)?
+        let g = lsm_cluster_get_kb(c, k)?
         c = g.c
-        let mut cur = ""
+        let mut cur = bytes_new(0)
         if g.found == 1 {
-            cur = str_of_bytes(g.val)
+            cur = g.val
         }
-        let nv = concat(cur, vec_get(args, 2))
-        c = lsm_cluster_put(c, k, nv)?
-        return LsmExecC { c: c, reply: resp_int(len(nv)), quit: 0 }
+        let nv = bytes_concat(cur, vec_get(args, 2))
+        c = lsm_cluster_put_kb(c, k, nv)?
+        return LsmExecC { c: c, reply: resp_int(bytes_len(nv)), quit: 0 }
     }
     if lsm_eq_ci(c0, "TYPE") == 1 {
         if n != 2 {
             return LsmExecC { c: c, reply: lsm_wrongnum("type"), quit: 0 }
         }
-        let g = lsm_cluster_get(c, vec_get(args, 1))?
+        let g = lsm_cluster_get_kb(c, vec_get(args, 1))?
         c = g.c
         if g.found == 1 {
             return LsmExecC { c: c, reply: resp_simple("string"), quit: 0 }
@@ -787,7 +569,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         let mut r = resp_array(n - 1)
         let mut i: i64 = 1
         while i < n {
-            let g = lsm_cluster_get(c, vec_get(args, i))?
+            let g = lsm_cluster_get_kb(c, vec_get(args, i))?
             c = g.c
             if g.found == 1 {
                 r = bytes_concat(r, resp_bulk_b(g.val))
@@ -804,7 +586,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         }
         let mut i: i64 = 1
         while i + 1 < n + 1 {
-            c = lsm_cluster_put(c, vec_get(args, i), vec_get(args, i + 1))?
+            c = lsm_cluster_put_kb(c, vec_get(args, i), vec_get(args, i + 1))?
             i = i + 2
         }
         return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
@@ -813,30 +595,31 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         if n != 1 {
             return LsmExecC { c: c, reply: lsm_wrongnum("keys"), quit: 0 }
         }
-        let kg = lsm_cluster_keys(c)?
+        // R68: keys reply with binary-safe bulks (raw key bytes).
+        let kg = lsm_cluster_keys_kb(c)?
         c = kg.c
         let alive = kg.keys
         let mut r = resp_array(vec_len(alive))
         for i in 0..vec_len(alive) {
-            r = bytes_concat(r, resp_bulk(vec_get(alive, i)))
+            r = bytes_concat(r, resp_bulk_b(vec_get(alive, i)))
         }
         return LsmExecC { c: c, reply: r, quit: 0 }
     }
     if lsm_eq_ci(c0, "SCAN") == 1 {
         // R43: SCAN cursor [MATCH pat] [COUNT n]
-        if n < 2 || lsm_is_int(vec_get(args, 1)) == 0 {
+        if n < 2 || lsm_is_int(str_of_bytes(vec_get(args, 1))) == 0 {
             return LsmExecC { c: c, reply: lsm_wrongnum("scan"), quit: 0 }
         }
-        let cursor = parse_int(vec_get(args, 1))
-        let opts = lsm_parse_scan_opts(args, 2)
+        let cursor = parse_int(str_of_bytes(vec_get(args, 1)))
+        let opts = lsm_parse_scan_opts_b(args, 2)
         if opts.ok == 0 {
             return LsmExecC {
                 c: c, reply: resp_error("ERR syntax error"), quit: 0
             }
         }
-        let sc = lsm_cluster_scan(c, cursor, opts.count, opts.match_pat)?
+        let sc = lsm_cluster_scan_kb(c, cursor, opts.count, opts.match_pat)?
         c = sc.c
-        return LsmExecC { c: c, reply: lsm_resp_scan(sc.next, sc.keys), quit: 0 }
+        return LsmExecC { c: c, reply: lsm_resp_scan_b(sc.next, sc.keys), quit: 0 }
     }
     if lsm_eq_ci(c0, "DBSIZE") == 1 {
         if n != 1 {
@@ -860,13 +643,13 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         if n != 3 {
             return LsmExecC { c: c, reply: lsm_wrongnum("expire"), quit: 0 }
         }
-        if lsm_is_int(vec_get(args, 2)) == 0 {
+        let sec_s = str_of_bytes(vec_get(args, 2))
+        if lsm_is_int(sec_s) == 0 {
             return LsmExecC {
                 c: c, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
             }
         }
-        let sec = parse_int(vec_get(args, 2))
-        let e = lsm_cluster_expire(c, vec_get(args, 1), sec)?
+        let e = lsm_cluster_expire_kb(c, vec_get(args, 1), parse_int(sec_s))?
         c = e.c
         return LsmExecC { c: c, reply: resp_int(e.ok), quit: 0 }
     }
@@ -874,7 +657,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         if n != 2 {
             return LsmExecC { c: c, reply: lsm_wrongnum("ttl"), quit: 0 }
         }
-        let t = lsm_cluster_ttl(c, vec_get(args, 1))?
+        let t = lsm_cluster_ttl_kb(c, vec_get(args, 1))?
         c = t.c
         return LsmExecC { c: c, reply: resp_int(t.n), quit: 0 }
     }
@@ -882,7 +665,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         if n != 2 {
             return LsmExecC { c: c, reply: lsm_wrongnum("persist"), quit: 0 }
         }
-        let p = lsm_cluster_persist(c, vec_get(args, 1))?
+        let p = lsm_cluster_persist_kb(c, vec_get(args, 1))?
         c = p.c
         return LsmExecC { c: c, reply: resp_int(p.ok), quit: 0 }
     }
@@ -891,7 +674,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         if n != 2 {
             return LsmExecC { c: c, reply: lsm_wrongnum("checkpoint"), quit: 0 }
         }
-        c = lsm_cluster_checkpoint(c, vec_get(args, 1))?
+        c = lsm_cluster_checkpoint(c, str_of_bytes(vec_get(args, 1)))?
         if c.ok == 0 {
             return LsmExecC { c: c, reply: resp_error("ERR checkpoint failed"), quit: 0 }
         }
@@ -902,7 +685,7 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         if n != 2 {
             return LsmExecC { c: c, reply: lsm_wrongnum("backup"), quit: 0 }
         }
-        let bc = lsm_cluster_backup_create(c, vec_get(args, 1))?
+        let bc = lsm_cluster_backup_create(c, str_of_bytes(vec_get(args, 1)))?
         c = bc.c
         if c.ok == 0 || bc.stat.ok == 0 {
             return LsmExecC { c: c, reply: resp_error("ERR backup failed"), quit: 0 }
@@ -914,6 +697,16 @@ fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
         reply: resp_error(concat(concat("ERR unknown command '", c0), "'")),
         quit: 0
     }
+}
+
+// str-arg compat wrapper (tests / legacy callers) — args convert losslessly.
+fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
+    return lsm_exec_c_kb(c, lsm_args_bytes(args))?
+}
+
+// R65/R68 wire entry: binary parse args → bytes-key cluster core.
+fn lsm_exec_c_b(c: LsmCluster, args: Vec<bytes>) -> LsmExecC !IO !Time {
+    return lsm_exec_c_kb(c, args)?
 }
 
 // Single-connection drain (legacy / tests). Blocks on read until EOF.
@@ -1436,9 +1229,9 @@ fn lsm_par_drain(st: LsmParSrv) -> LsmParSrv !IO !Net !Par {
     return st
 }
 
-// R66: enqueue key-op with binary value; reply deferred.
-fn lsm_par_submit_cmd_b(st: LsmParSrv, fd: i64, op: i64, key: str, val: bytes, extra: str) -> LsmParSrv !IO !Par !Net {
-    let id = lsm_parallel_submit_b(st.p, op, key, val, extra)?
+// R66/R68: enqueue key-op with binary key + value; reply deferred.
+fn lsm_par_submit_cmd_b(st: LsmParSrv, fd: i64, op: i64, key: bytes, val: bytes, extra: str) -> LsmParSrv !IO !Par !Net {
+    let id = lsm_parallel_submit_kb(st.p, op, key, val, extra)?
     if id < 0 {
         let err = bytes_of_str("-ERR enqueue failed\r\n")
         tcp_write_bytes(fd, err)?
@@ -1456,7 +1249,7 @@ fn lsm_par_submit_cmd_b(st: LsmParSrv, fd: i64, op: i64, key: str, val: bytes, e
 }
 
 fn lsm_par_submit_cmd(st: LsmParSrv, fd: i64, op: i64, key: str, val: str, extra: str) -> LsmParSrv !IO !Par !Net {
-    return lsm_par_submit_cmd_b(st, fd, op, key, bytes_of_str(val), extra)?
+    return lsm_par_submit_cmd_b(st, fd, op, bytes_of_str(key), bytes_of_str(val), extra)?
 }
 
 fn lsm_par_on_readable(st: LsmParSrv, fd: i64) -> LsmParSrv !IO !Net !Time !Par {
@@ -1491,8 +1284,7 @@ fn lsm_par_on_readable(st: LsmParSrv, fd: i64) -> LsmParSrv !IO !Net !Time !Par 
             if n < 1 {
                 drop(args)
             } else {
-                // R65: PARALLEL path still packs str job payloads (NUL values
-                // unsupported here); poll/MT use binary put_b.
+                // R68: job keys hop as raw bytes (bytes_h) into _kb workers.
                 let c0 = str_of_bytes(vec_get(args, 0))
                 if lsm_eq_ci(c0, "PING") == 1 {
                     // immediate ordered reply
@@ -1517,7 +1309,7 @@ fn lsm_par_on_readable(st: LsmParSrv, fd: i64) -> LsmParSrv !IO !Net !Time !Par 
                         if lsm_eq_ci(c0, "SET") == 1 && n == 3 {
                             st = lsm_par_submit_cmd_b(
                                 st, fd, LSM_OP_SET(),
-                                str_of_bytes(vec_get(args, 1)),
+                                vec_get(args, 1),
                                 vec_get(args, 2),
                                 ""
                             )?
@@ -1525,7 +1317,7 @@ fn lsm_par_on_readable(st: LsmParSrv, fd: i64) -> LsmParSrv !IO !Net !Time !Par 
                             if lsm_eq_ci(c0, "GET") == 1 && n == 2 {
                                 st = lsm_par_submit_cmd_b(
                                     st, fd, LSM_OP_GET(),
-                                    str_of_bytes(vec_get(args, 1)),
+                                    vec_get(args, 1),
                                     bytes_new(0),
                                     ""
                                 )?
@@ -1533,7 +1325,7 @@ fn lsm_par_on_readable(st: LsmParSrv, fd: i64) -> LsmParSrv !IO !Net !Time !Par 
                                 if lsm_eq_ci(c0, "DEL") == 1 && n == 2 {
                                     st = lsm_par_submit_cmd_b(
                                         st, fd, LSM_OP_DEL(),
-                                        str_of_bytes(vec_get(args, 1)),
+                                        vec_get(args, 1),
                                         bytes_new(0),
                                         ""
                                     )?
@@ -1541,7 +1333,7 @@ fn lsm_par_on_readable(st: LsmParSrv, fd: i64) -> LsmParSrv !IO !Net !Time !Par 
                                     if lsm_eq_ci(c0, "SETEX") == 1 && n == 4 {
                                         st = lsm_par_submit_cmd_b(
                                             st, fd, LSM_OP_SETEX(),
-                                            str_of_bytes(vec_get(args, 1)),
+                                            vec_get(args, 1),
                                             vec_get(args, 3),
                                             str_of_bytes(vec_get(args, 2))
                                         )?
@@ -1669,7 +1461,7 @@ fn lsm_serve_parallel_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
 struct LsmMTCtx {
     dbs: Map<i64, LsmDB>,
     mus: Map<i64, i64>,
-    exps: Map<str, i64>,   // "sid:key" -> deadline ms (R57 active expire)
+    exps: Map<bytes, i64>, // u32le(sid)‖key -> deadline ms (R57; R68 binary-safe)
     emu: i64,              // mutex guarding exps
     nshards: i64
 }
@@ -1679,7 +1471,7 @@ fn lsm_mt_ctx(h: i64) -> LsmMTCtx {
     let r1 = cell2_1(h)
     let mus: Map<i64, i64> = h_map(cell2_0(r1))
     let r2 = cell2_1(r1)
-    let exps: Map<str, i64> = h_map(cell2_0(r2))
+    let exps: Map<bytes, i64> = h_map(cell2_0(r2))
     let r3 = cell2_1(r2)
     return LsmMTCtx {
         dbs: dbs, mus: mus, exps: exps,
@@ -1691,12 +1483,22 @@ fn lsm_mt_pack_ctx(c: LsmMTCtx) -> i64 {
     return cell2(map_h(c.dbs), cell2(map_h(c.mus), cell2(map_h(c.exps), cell2(c.emu, c.nshards))))
 }
 
-fn lsm_mt_ek(sid: i64, key: str) -> str {
-    return concat(concat(int_to_str(sid), ":"), key)
+// R68: expires-index key = u32 LE sid prefix + raw key bytes (one prealloc,
+// no concat; the old "sid:key" str broke on keys with embedded NUL or ':').
+fn lsm_mt_ek(sid: i64, key: bytes) -> bytes {
+    let klen = bytes_len(key)
+    let ek = bytes_new(4 + klen)
+    put_u32_le(ek, 0, sid)
+    let mut i: i64 = 0
+    while i < klen {
+        bytes_set(ek, 4 + i, bytes_at(key, i))
+        i = i + 1
+    }
+    return ek
 }
 
 // R57: record/clear expiry intent (deadline ms; 0 = clear).
-fn lsm_mt_exp_note(c: LsmMTCtx, sid: i64, key: str, deadline: i64) -> i64 !Par {
+fn lsm_mt_exp_note(c: LsmMTCtx, sid: i64, key: bytes, deadline: i64) -> i64 !Par {
     let ek = lsm_mt_ek(sid, key)
     mutex_lock(c.emu)
     if deadline > 0 {
@@ -1715,28 +1517,33 @@ struct LsmMTGet {
     val: bytes
 }
 
-fn lsm_mt_get(c: LsmMTCtx, key: str) -> LsmMTGet !IO !Time !Par {
-    let sid = lsm_shard_ix(c.nshards, key)
+// R68: bytes-key MT get core.
+fn lsm_mt_get_kb(c: LsmMTCtx, key: bytes) -> LsmMTGet !IO !Time !Par {
+    let sid = lsm_shard_ix_b(c.nshards, key)
     let mu = map_get(c.mus, sid)
     mutex_lock(mu)
     let db0 = map_get(c.dbs, sid)
-    let g = lsm_get(db0, key)?
+    let g = lsm_get_kb(db0, key)?
     map_set(c.dbs, sid, g.db)
     mutex_unlock(mu)
     return LsmMTGet { found: g.found, val: g.val }
 }
 
-// R65: binary-safe MT put.
-fn lsm_mt_put_b(c: LsmMTCtx, key: str, val: bytes, ttl_sec: i64) -> i64 !IO !Time !Par {
-    let sid = lsm_shard_ix(c.nshards, key)
+fn lsm_mt_get(c: LsmMTCtx, key: str) -> LsmMTGet !IO !Time !Par {
+    return lsm_mt_get_kb(c, bytes_of_str(key))?
+}
+
+// R68: bytes-key MT put core (ttl_sec <= 0 → plain put, clears TTL).
+fn lsm_mt_put_kb(c: LsmMTCtx, key: bytes, val: bytes, ttl_sec: i64) -> i64 !IO !Time !Par {
+    let sid = lsm_shard_ix_b(c.nshards, key)
     let mu = map_get(c.mus, sid)
     mutex_lock(mu)
     let db0 = map_get(c.dbs, sid)
     let mut db1 = db0
     if ttl_sec > 0 {
-        db1 = lsm_put_ex_b(db0, key, val, ttl_sec)?
+        db1 = lsm_put_ex_kb(db0, key, val, ttl_sec)?
     } else {
-        db1 = lsm_put_b(db0, key, val)?
+        db1 = lsm_put_kb(db0, key, val)?
     }
     map_set(c.dbs, sid, db1)
     mutex_unlock(mu)
@@ -1748,21 +1555,27 @@ fn lsm_mt_put_b(c: LsmMTCtx, key: str, val: bytes, ttl_sec: i64) -> i64 !IO !Tim
     return 1
 }
 
+// R65: binary-safe MT put.
+fn lsm_mt_put_b(c: LsmMTCtx, key: str, val: bytes, ttl_sec: i64) -> i64 !IO !Time !Par {
+    return lsm_mt_put_kb(c, bytes_of_str(key), val, ttl_sec)?
+}
+
 // ttl_sec <= 0 → plain put (clears TTL, Redis semantics)
 fn lsm_mt_put(c: LsmMTCtx, key: str, val: str, ttl_sec: i64) -> i64 !IO !Time !Par {
     return lsm_mt_put_b(c, key, bytes_of_str(val), ttl_sec)?
 }
 
-fn lsm_mt_del(c: LsmMTCtx, key: str) -> i64 !IO !Time !Par {
-    let sid = lsm_shard_ix(c.nshards, key)
+// R68: bytes-key MT delete core.
+fn lsm_mt_del_kb(c: LsmMTCtx, key: bytes) -> i64 !IO !Time !Par {
+    let sid = lsm_shard_ix_b(c.nshards, key)
     let mu = map_get(c.mus, sid)
     mutex_lock(mu)
     let db0 = map_get(c.dbs, sid)
-    let g = lsm_get(db0, key)?
+    let g = lsm_get_kb(db0, key)?
     let mut db1 = g.db
     let mut nfound: i64 = 0
     if g.found == 1 {
-        db1 = lsm_del(db1, key)?
+        db1 = lsm_del_kb(db1, key)?
         nfound = 1
     }
     map_set(c.dbs, sid, db1)
@@ -1773,13 +1586,17 @@ fn lsm_mt_del(c: LsmMTCtx, key: str) -> i64 !IO !Time !Par {
     return nfound
 }
 
-fn lsm_mt_int_op(c: LsmMTCtx, key: str, delta: i64) -> str !IO !Time !Par {
-    // returns reply string: ":n\r\n" or error
-    let sid = lsm_shard_ix(c.nshards, key)
+fn lsm_mt_del(c: LsmMTCtx, key: str) -> i64 !IO !Time !Par {
+    return lsm_mt_del_kb(c, bytes_of_str(key))?
+}
+
+// R68: bytes-key INCR/DECR core. Returns reply string: ":n\r\n" or error.
+fn lsm_mt_int_op_kb(c: LsmMTCtx, key: bytes, delta: i64) -> str !IO !Time !Par {
+    let sid = lsm_shard_ix_b(c.nshards, key)
     let mu = map_get(c.mus, sid)
     mutex_lock(mu)
     let db0 = map_get(c.dbs, sid)
-    let g = lsm_get(db0, key)?
+    let g = lsm_get_kb(db0, key)?
     let mut db1 = g.db
     let mut base: i64 = 0
     let mut bad: i64 = 0
@@ -1794,7 +1611,7 @@ fn lsm_mt_int_op(c: LsmMTCtx, key: str, delta: i64) -> str !IO !Time !Par {
     let mut rep = "-ERR value is not an integer or out of range\r\n"
     if bad == 0 {
         let nv = base + delta
-        db1 = lsm_put(db1, key, int_to_str(nv))?
+        db1 = lsm_put_kb(db1, key, bytes_of_str(int_to_str(nv)))?
         map_set(c.dbs, sid, db1)
         rep = concat(concat(":", int_to_str(nv)), "\r\n")
     }
@@ -1805,17 +1622,19 @@ fn lsm_mt_int_op(c: LsmMTCtx, key: str, delta: i64) -> str !IO !Time !Par {
     return rep
 }
 
+fn lsm_mt_int_op(c: LsmMTCtx, key: str, delta: i64) -> str !IO !Time !Par {
+    return lsm_mt_int_op_kb(c, bytes_of_str(key), delta)?
+}
+
 // R56: one RESP command → reply bytes, executed inline (no worker hop).
 // Multi-key / all-shard commands lock one shard at a time — no deadlocks.
-// R65: binary-arg MT dispatch; falls back to str path for other commands.
-fn lsm_mt_exec_b(c: LsmMTCtx, args: Vec<bytes>) -> bytes !IO !Time !Par {
-    let n = vec_len(args)
-    if n < 1 {
-        return resp_error("ERR empty command")
-    }
+// R68: bytes-key core — raw RESP args; keys go to lsm_mt_*_kb (NUL-safe).
+// Only command names / numbers parse via str_of_bytes (ASCII).
+fn lsm_mt_exec_kb(c: LsmMTCtx, args: Vec<bytes>) -> bytes !IO !Time !Par {
     let c0 = str_of_bytes(vec_get(args, 0))
+    let n = vec_len(args)
     if lsm_eq_ci(c0, "SET") == 1 && n == 3 {
-        lsm_mt_put_b(c, str_of_bytes(vec_get(args, 1)), vec_get(args, 2), 0)?
+        lsm_mt_put_kb(c, vec_get(args, 1), vec_get(args, 2), 0)?
         return resp_ok()
     }
     if lsm_eq_ci(c0, "SETEX") == 1 && n == 4 {
@@ -1823,83 +1642,43 @@ fn lsm_mt_exec_b(c: LsmMTCtx, args: Vec<bytes>) -> bytes !IO !Time !Par {
         if lsm_is_int(sec_s) == 0 {
             return resp_error("ERR value is not an integer or out of range")
         }
-        lsm_mt_put_b(
-            c, str_of_bytes(vec_get(args, 1)), vec_get(args, 3), parse_int(sec_s)
-        )?
-        return resp_ok()
-    }
-    if lsm_eq_ci(c0, "APPEND") == 1 && n == 3 {
-        let key = str_of_bytes(vec_get(args, 1))
-        let add = vec_get(args, 2)
-        let g = lsm_mt_get(c, key)?
-        let mut cur = bytes_new(0)
-        if g.found == 1 {
-            cur = g.val
-        }
-        let nv = bytes_concat(cur, add)
-        let nlen = bytes_len(nv)
-        lsm_mt_put_b(c, key, nv, 0)?
-        return resp_int(nlen)
-    }
-    if lsm_eq_ci(c0, "MSET") == 1 && n >= 3 && n % 2 == 1 {
-        let mut i: i64 = 1
-        while i + 1 < n {
-            lsm_mt_put_b(c, str_of_bytes(vec_get(args, i)), vec_get(args, i + 1), 0)?
-            i = i + 2
-        }
-        return resp_ok()
-    }
-    // Other commands: str path (keys/cmds only — values for SET already handled).
-    return lsm_mt_exec(c, lsm_args_str(args))?
-}
-
-fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
-    let c0 = vec_get(args, 0)
-    let n = vec_len(args)
-    if lsm_eq_ci(c0, "SET") == 1 && n == 3 {
-        lsm_mt_put(c, vec_get(args, 1), vec_get(args, 2), 0)?
-        return resp_ok()
-    }
-    if lsm_eq_ci(c0, "SETEX") == 1 && n == 4 {
-        if lsm_is_int(vec_get(args, 2)) == 0 {
-            return resp_error("ERR value is not an integer or out of range")
-        }
-        lsm_mt_put(c, vec_get(args, 1), vec_get(args, 3), parse_int(vec_get(args, 2)))?
+        lsm_mt_put_kb(c, vec_get(args, 1), vec_get(args, 3), parse_int(sec_s))?
         return resp_ok()
     }
     if lsm_eq_ci(c0, "GET") == 1 && n == 2 {
-        let g = lsm_mt_get(c, vec_get(args, 1))?
+        let g = lsm_mt_get_kb(c, vec_get(args, 1))?
         if g.found == 0 {
             return resp_null_bulk()
         }
         return resp_bulk_b(g.val)
     }
     if lsm_eq_ci(c0, "DEL") == 1 && n == 2 {
-        return resp_int(lsm_mt_del(c, vec_get(args, 1))?)
+        return resp_int(lsm_mt_del_kb(c, vec_get(args, 1))?)
     }
     if lsm_eq_ci(c0, "EXISTS") == 1 && n == 2 {
-        let g = lsm_mt_get(c, vec_get(args, 1))?
+        let g = lsm_mt_get_kb(c, vec_get(args, 1))?
         return resp_int(g.found)
     }
     if lsm_eq_ci(c0, "INCR") == 1 && n == 2 {
-        return bytes_of_str(lsm_mt_int_op(c, vec_get(args, 1), 1)?)
+        return bytes_of_str(lsm_mt_int_op_kb(c, vec_get(args, 1), 1)?)
     }
     if lsm_eq_ci(c0, "DECR") == 1 && n == 2 {
-        return bytes_of_str(lsm_mt_int_op(c, vec_get(args, 1), 0 - 1)?)
+        return bytes_of_str(lsm_mt_int_op_kb(c, vec_get(args, 1), 0 - 1)?)
     }
     if lsm_eq_ci(c0, "APPEND") == 1 && n == 3 {
         let key = vec_get(args, 1)
-        let g = lsm_mt_get(c, key)?
-        let mut cur = ""
+        let g = lsm_mt_get_kb(c, key)?
+        let mut cur = bytes_new(0)
         if g.found == 1 {
-            cur = str_of_bytes(g.val)
+            cur = g.val
         }
-        let nv = concat(cur, vec_get(args, 2))
-        lsm_mt_put(c, key, nv, 0)?
-        return resp_int(len(nv))
+        let nv = bytes_concat(cur, vec_get(args, 2))
+        let nlen = bytes_len(nv)
+        lsm_mt_put_kb(c, key, nv, 0)?
+        return resp_int(nlen)
     }
     if lsm_eq_ci(c0, "TYPE") == 1 && n == 2 {
-        let g = lsm_mt_get(c, vec_get(args, 1))?
+        let g = lsm_mt_get_kb(c, vec_get(args, 1))?
         if g.found == 1 {
             return resp_simple("string")
         }
@@ -1909,7 +1688,7 @@ fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
         let mut r = resp_array(n - 1)
         let mut i: i64 = 1
         while i < n {
-            let g = lsm_mt_get(c, vec_get(args, i))?
+            let g = lsm_mt_get_kb(c, vec_get(args, i))?
             if g.found == 1 {
                 r = bytes_concat(r, resp_bulk_b(g.val))
             } else {
@@ -1921,23 +1700,24 @@ fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
     }
     if lsm_eq_ci(c0, "MSET") == 1 && n >= 3 && n % 2 == 1 {
         let mut i: i64 = 1
-        while i + 1 < n + 1 {
-            lsm_mt_put(c, vec_get(args, i), vec_get(args, i + 1), 0)?
+        while i + 1 < n {
+            lsm_mt_put_kb(c, vec_get(args, i), vec_get(args, i + 1), 0)?
             i = i + 2
         }
         return resp_ok()
     }
     if lsm_eq_ci(c0, "EXPIRE") == 1 && n == 3 {
-        if lsm_is_int(vec_get(args, 2)) == 0 {
+        let sec_s = str_of_bytes(vec_get(args, 2))
+        if lsm_is_int(sec_s) == 0 {
             return resp_error("ERR value is not an integer or out of range")
         }
         let key = vec_get(args, 1)
-        let sec = parse_int(vec_get(args, 2))
-        let sid = lsm_shard_ix(c.nshards, key)
+        let sec = parse_int(sec_s)
+        let sid = lsm_shard_ix_b(c.nshards, key)
         let mu = map_get(c.mus, sid)
         mutex_lock(mu)
         let db0 = map_get(c.dbs, sid)
-        let e = lsm_expire(db0, key, sec)?
+        let e = lsm_expire_kb(db0, key, sec)?
         map_set(c.dbs, sid, e.db)
         mutex_unlock(mu)
         if e.ok == 1 {
@@ -1947,22 +1727,22 @@ fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
     }
     if lsm_eq_ci(c0, "TTL") == 1 && n == 2 {
         let key = vec_get(args, 1)
-        let sid = lsm_shard_ix(c.nshards, key)
+        let sid = lsm_shard_ix_b(c.nshards, key)
         let mu = map_get(c.mus, sid)
         mutex_lock(mu)
         let db0 = map_get(c.dbs, sid)
-        let t = lsm_ttl(db0, key)?
+        let t = lsm_ttl_kb(db0, key)?
         map_set(c.dbs, sid, t.db)
         mutex_unlock(mu)
         return resp_int(t.n)
     }
     if lsm_eq_ci(c0, "PERSIST") == 1 && n == 2 {
         let key = vec_get(args, 1)
-        let sid = lsm_shard_ix(c.nshards, key)
+        let sid = lsm_shard_ix_b(c.nshards, key)
         let mu = map_get(c.mus, sid)
         mutex_lock(mu)
         let db0 = map_get(c.dbs, sid)
-        let pe = lsm_persist(db0, key)?
+        let pe = lsm_persist_kb(db0, key)?
         map_set(c.dbs, sid, pe.db)
         mutex_unlock(mu)
         if pe.ok == 1 {
@@ -1999,7 +1779,7 @@ fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
         return resp_ok()
     }
     if lsm_eq_ci(c0, "CHECKPOINT") == 1 && n == 2 {
-        let dest = vec_get(args, 1)
+        let dest = str_of_bytes(vec_get(args, 1))
         let mut sid: i64 = 0
         let mut ok_all: i64 = 1
         while sid < c.nshards {
@@ -2025,7 +1805,7 @@ fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
     }
     // R62: BACKUP dest — checkpoint each shard under mutex, then meta.
     if lsm_eq_ci(c0, "BACKUP") == 1 && n == 2 {
-        let dest = vec_get(args, 1)
+        let dest = str_of_bytes(vec_get(args, 1))
         let mut sid: i64 = 0
         let mut ok_all: i64 = 1
         while sid < c.nshards {
@@ -2056,16 +1836,35 @@ fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
     return resp_error(concat(concat("ERR unknown/unsupported command '", c0), "' (mt mode)"))
 }
 
+// R65/R68 wire entry: binary parse args → bytes-key MT core.
+fn lsm_mt_exec_b(c: LsmMTCtx, args: Vec<bytes>) -> bytes !IO !Time !Par {
+    let n = vec_len(args)
+    if n < 1 {
+        return resp_error("ERR empty command")
+    }
+    return lsm_mt_exec_kb(c, args)?
+}
+
+// str-arg compat wrapper (tests / legacy callers) — args convert losslessly.
+fn lsm_mt_exec(c: LsmMTCtx, args: Vec<str>) -> bytes !IO !Time !Par {
+    let n = vec_len(args)
+    if n < 1 {
+        return resp_error("ERR empty command")
+    }
+    return lsm_mt_exec_kb(c, lsm_args_bytes(args))?
+}
+
 // R57: active expire cycle (Redis-style). Every 100ms snapshot the due
 // entries of the shared expires index, then tombstone each key whose VALUE
 // is still expired (re-SET without TTL in the meantime → skip). Lazy
 // expiry on read stays as the always-correct net; this frees the space.
+// R68: index keys are u32le(sid)‖raw-key bytes — NUL-safe.
 fn lsm_mt_sweeper(ctx: i64) -> i64 !IO !Par !Time {
     let c = lsm_mt_ctx(ctx)
     while true {
         sleep_ms(100)
         let now = time_now_ms()?
-        let due: Vec<str> = vec_new()
+        let due: Vec<bytes> = vec_new()
         mutex_lock(c.emu)
         let ks = map_keys(c.exps)
         let mut i: i64 = 0
@@ -2091,18 +1890,17 @@ fn lsm_mt_sweeper(ctx: i64) -> i64 !IO !Par !Time {
             }
             mutex_unlock(c.emu)
             if mine == 1 {
-                let ci = str_find(ek, ":")
-                let sid = parse_int(substr(ek, 0, ci))
-                let key = substr(ek, ci + 1, len(ek))
+                let sid = get_u32_le(ek, 0)
+                let key = bytes_slice(ek, 4, bytes_len(ek))
                 let mu = map_get(c.mus, sid)
                 mutex_lock(mu)
                 let db0 = map_get(c.dbs, sid)
-                let g = lsm_get(db0, key)?
+                let g = lsm_get_kb(db0, key)?
                 let mut db1 = g.db
                 if g.found == 0 {
                     // found==0: expired-in-place (lazy) or absent — tombstone
                     // clears the stale envelope; absent is a rare stray tomb
-                    db1 = lsm_del(db1, key)?
+                    db1 = lsm_del_kb(db1, key)?
                 }
                 map_set(c.dbs, sid, db1)
                 mutex_unlock(mu)
@@ -2242,7 +2040,7 @@ fn lsm_serve_mt_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
     // under per-shard mutexes (hop-less). Map handles go through the ctx.
     let dbs: Map<i64, LsmDB> = map_new()
     let mus: Map<i64, i64> = map_new()
-    let exps: Map<str, i64> = map_new()
+    let exps: Map<bytes, i64> = map_new()   // R68: u32le(sid)‖key -> deadline
     let mut sid: i64 = 0
     while sid < nshards {
         let sp = lsm_shard_path(dir, sid, nshards)
@@ -2285,36 +2083,14 @@ struct LsmCfExec {
     quit: i64
 }
 
-// R65: CF path with binary SET values.
-fn lsm_exec_cf_b(db: LsmCFDB, args: Vec<bytes>) -> LsmCfExec !IO !Time {
-    let n = vec_len(args)
-    if n >= 1 {
-        let c0 = str_of_bytes(vec_get(args, 0))
-        // CF.SET name key val
-        if lsm_eq_ci(c0, "CF.SET") == 1 && n == 4 {
-            let r = lsm_cf_resolve(db, str_of_bytes(vec_get(args, 1)), 1)?
-            db = r.db
-            if r.id < 0 {
-                return LsmCfExec { db: db, reply: resp_error("ERR cf resolve failed"), quit: 0 }
-            }
-            db = lsm_cf_put_b(db, r.id, str_of_bytes(vec_get(args, 2)), vec_get(args, 3))?
-            return LsmCfExec { db: db, reply: resp_ok(), quit: 0 }
-        }
-        // plain SET on default CF 0
-        if lsm_eq_ci(c0, "SET") == 1 && n == 3 {
-            db = lsm_cf_put_b(db, 0, str_of_bytes(vec_get(args, 1)), vec_get(args, 2))?
-            return LsmCfExec { db: db, reply: resp_ok(), quit: 0 }
-        }
-    }
-    return lsm_exec_cf(db, lsm_args_str(args))?
-}
-
-fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
+// R68: bytes-key CF exec core — raw RESP args; CF names stay str (ASCII
+// identifiers in the .cfs name map), keys go to lsm_cf_*_kb (NUL-safe).
+fn lsm_exec_cf_kb(db: LsmCFDB, args: Vec<bytes>) -> LsmCfExec !IO !Time {
     let n = vec_len(args)
     if n < 1 {
         return LsmCfExec { db: db, reply: resp_error("ERR empty command"), quit: 0 }
     }
-    let c0 = vec_get(args, 0)
+    let c0 = str_of_bytes(vec_get(args, 0))
     if lsm_eq_ci(c0, "PING") == 1 {
         return LsmCfExec { db: db, reply: resp_pong(), quit: 0 }
     }
@@ -2326,7 +2102,7 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
         if n != 2 {
             return LsmCfExec { db: db, reply: lsm_wrongnum("cf.create"), quit: 0 }
         }
-        let cr = lsm_cf_create(db, vec_get(args, 1))?
+        let cr = lsm_cf_create(db, str_of_bytes(vec_get(args, 1)))?
         db = cr.db
         if cr.id < 0 {
             return LsmCfExec { db: db, reply: resp_error("ERR cf create failed"), quit: 0 }
@@ -2338,12 +2114,12 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
         if n != 4 {
             return LsmCfExec { db: db, reply: lsm_wrongnum("cf.set"), quit: 0 }
         }
-        let cr = lsm_cf_resolve(db, vec_get(args, 1), 1)?
+        let cr = lsm_cf_resolve(db, str_of_bytes(vec_get(args, 1)), 1)?
         db = cr.db
         if cr.id < 0 {
             return LsmCfExec { db: db, reply: resp_error("ERR bad cf name"), quit: 0 }
         }
-        db = lsm_cf_put(db, cr.id, vec_get(args, 2), vec_get(args, 3))?
+        db = lsm_cf_put_kb(db, cr.id, vec_get(args, 2), vec_get(args, 3))?
         return LsmCfExec { db: db, reply: resp_ok(), quit: 0 }
     }
     // CF.GET name key
@@ -2351,11 +2127,11 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
         if n != 3 {
             return LsmCfExec { db: db, reply: lsm_wrongnum("cf.get"), quit: 0 }
         }
-        let id = lsm_cf_id_of(db, vec_get(args, 1))
+        let id = lsm_cf_id_of(db, str_of_bytes(vec_get(args, 1)))
         if id < 0 {
             return LsmCfExec { db: db, reply: resp_null_bulk(), quit: 0 }
         }
-        let g = lsm_cf_get(db, id, vec_get(args, 2))?
+        let g = lsm_cf_get_kb(db, id, vec_get(args, 2))?
         db = g.db
         if g.found == 0 {
             return LsmCfExec { db: db, reply: resp_null_bulk(), quit: 0 }
@@ -2367,16 +2143,16 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
         if n != 3 {
             return LsmCfExec { db: db, reply: lsm_wrongnum("cf.del"), quit: 0 }
         }
-        let id = lsm_cf_id_of(db, vec_get(args, 1))
+        let id = lsm_cf_id_of(db, str_of_bytes(vec_get(args, 1)))
         if id < 0 {
             return LsmCfExec { db: db, reply: resp_int(0), quit: 0 }
         }
-        let g = lsm_cf_get(db, id, vec_get(args, 2))?
+        let g = lsm_cf_get_kb(db, id, vec_get(args, 2))?
         db = g.db
         if g.found == 0 {
             return LsmCfExec { db: db, reply: resp_int(0), quit: 0 }
         }
-        db = lsm_cf_del(db, id, vec_get(args, 2))?
+        db = lsm_cf_del_kb(db, id, vec_get(args, 2))?
         return LsmCfExec { db: db, reply: resp_int(1), quit: 0 }
     }
     // CF.DROP name — drop whole family (R49)
@@ -2384,7 +2160,7 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
         if n != 2 {
             return LsmCfExec { db: db, reply: lsm_wrongnum("cf.drop"), quit: 0 }
         }
-        let dr = lsm_cf_drop(db, vec_get(args, 1))?
+        let dr = lsm_cf_drop(db, str_of_bytes(vec_get(args, 1)))?
         db = dr.db
         if dr.rc < 0 {
             return LsmCfExec { db: db, reply: resp_error("ERR cannot drop default cf"), quit: 0 }
@@ -2398,13 +2174,13 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
         if n != 4 {
             return LsmCfExec { db: db, reply: lsm_wrongnum("cf.setopt"), quit: 0 }
         }
-        if lsm_is_int(vec_get(args, 3)) == 0 {
+        if lsm_is_int(str_of_bytes(vec_get(args, 3))) == 0 {
             return LsmCfExec {
                 db: db, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
             }
         }
-        let v = parse_int(vec_get(args, 3))
-        let opt = vec_get(args, 2)
+        let v = parse_int(str_of_bytes(vec_get(args, 3)))
+        let opt = str_of_bytes(vec_get(args, 2))
         // lsm_eq_ci expects an UPPERCASE literal for the second arg.
         let mut key = ""
         if lsm_eq_ci(opt, "FLUSH_AT") == 1 {
@@ -2424,7 +2200,7 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
                 }
             }
         }
-        db = lsm_cf_setopt_one(db, vec_get(args, 1), key, v)?
+        db = lsm_cf_setopt_one(db, str_of_bytes(vec_get(args, 1)), key, v)?
         if db.ok == 0 {
             return LsmCfExec { db: db, reply: resp_error("ERR no such cf or bad option"), quit: 0 }
         }
@@ -2443,11 +2219,11 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
     }
     // Default CF 0: plain SET/GET/DEL for redis-cli familiarity
     if lsm_eq_ci(c0, "SET") == 1 && n == 3 {
-        db = lsm_cf_put(db, 0, vec_get(args, 1), vec_get(args, 2))?
+        db = lsm_cf_put_kb(db, 0, vec_get(args, 1), vec_get(args, 2))?
         return LsmCfExec { db: db, reply: resp_ok(), quit: 0 }
     }
     if lsm_eq_ci(c0, "GET") == 1 && n == 2 {
-        let g = lsm_cf_get(db, 0, vec_get(args, 1))?
+        let g = lsm_cf_get_kb(db, 0, vec_get(args, 1))?
         db = g.db
         if g.found == 0 {
             return LsmCfExec { db: db, reply: resp_null_bulk(), quit: 0 }
@@ -2455,12 +2231,12 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
         return LsmCfExec { db: db, reply: resp_bulk_b(g.val), quit: 0 }
     }
     if lsm_eq_ci(c0, "DEL") == 1 && n == 2 {
-        let g = lsm_cf_get(db, 0, vec_get(args, 1))?
+        let g = lsm_cf_get_kb(db, 0, vec_get(args, 1))?
         db = g.db
         if g.found == 0 {
             return LsmCfExec { db: db, reply: resp_int(0), quit: 0 }
         }
-        db = lsm_cf_del(db, 0, vec_get(args, 1))?
+        db = lsm_cf_del_kb(db, 0, vec_get(args, 1))?
         return LsmCfExec { db: db, reply: resp_int(1), quit: 0 }
     }
     if lsm_eq_ci(c0, "SAVE") == 1 || lsm_eq_ci(c0, "BGSAVE") == 1 {
@@ -2478,6 +2254,16 @@ fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
         reply: resp_error(concat(concat("ERR unknown command '", c0), "' (CF mode)")),
         quit: 0
     }
+}
+
+// R65/R68 wire entry: binary parse args → bytes-key CF core.
+fn lsm_exec_cf_b(db: LsmCFDB, args: Vec<bytes>) -> LsmCfExec !IO !Time {
+    return lsm_exec_cf_kb(db, args)?
+}
+
+// str-arg compat wrapper (tests / legacy callers) — args convert losslessly.
+fn lsm_exec_cf(db: LsmCFDB, args: Vec<str>) -> LsmCfExec !IO !Time {
+    return lsm_exec_cf_kb(db, lsm_args_bytes(args))?
 }
 
 struct LsmCfSrv {

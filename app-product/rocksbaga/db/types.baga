@@ -41,7 +41,7 @@ struct LsmDB {
     // cursor pages until write_epoch advances (put/del/flush/compact).
     write_epoch: i64,
     scan_epoch: i64,       // equals write_epoch when scan_keys is valid
-    scan_pat: str,         // MATCH pattern used to build scan_keys
+    scan_pat: bytes,       // R68: MATCH pattern (raw bytes) used to build scan_keys
     scan_keys: Vec<bytes>, // R67: filtered live keys as raw bytes (unordered — Redis SCAN style)
     ok: i64
 }

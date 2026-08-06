@@ -39,7 +39,7 @@ fn lsm_empty_db(dir: str) -> LsmDB {
         sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
         hot_gen: 0 - 1, hot_off: 0 - 1, hot_n: 0, hot_data: bytes_new(0),
         sync_every: 1, since_sync: 0, manifest_edits: 0,
-        write_epoch: 0, scan_epoch: 0 - 1, scan_pat: "", scan_keys: sk,
+        write_epoch: 0, scan_epoch: 0 - 1, scan_pat: bytes_new(0), scan_keys: sk,
         ok: 1
     }
 }
@@ -70,7 +70,7 @@ fn lsm_read_manifest(dir: str) -> LsmDB !IO {
         sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
         hot_gen: 0 - 1, hot_off: 0 - 1, hot_n: 0, hot_data: bytes_new(0),
         sync_every: 1, since_sync: 0, manifest_edits: edits,
-        write_epoch: 0, scan_epoch: 0 - 1, scan_pat: "", scan_keys: sk,
+        write_epoch: 0, scan_epoch: 0 - 1, scan_pat: bytes_new(0), scan_keys: sk,
         ok: 1
     }
 }
@@ -337,7 +337,7 @@ fn lsm_scan_touch(db: LsmDB) -> LsmDB {
         drop(old)
     }
     db.scan_epoch = 0 - 1
-    db.scan_pat = ""
+    db.scan_pat = bytes_new(0)
     return db
 }
 
@@ -816,6 +816,13 @@ fn lsm_keys(db: LsmDB) -> LsmGetKeys !IO !Time {
     return r
 }
 
+// R68: bytes-key KEYS core — raw live keys sorted via bytes_cmp (wire path).
+fn lsm_keys_kb(db: LsmDB) -> LsmGetKeysB !IO !Time {
+    let r = lsm_live_map_kb(db)?
+    sort_bytes(r.keys)
+    return r
+}
+
 // Live key count without sorting (RESP DBSIZE). Same semantics as KEYS length.
 fn lsm_dbsize(db: LsmDB) -> LsmDbSize !IO !Time {
     let r = lsm_live_map_kb(db)?
@@ -892,19 +899,151 @@ fn lsm_match_glob(pat: str, s: str) -> i64 {
     return 1
 }
 
+// --- R68: bytes glob helpers (SCAN MATCH over raw key bytes) ---
+
+// s starts with pat[0, n).
+fn lsm_bytes_has_prefix(s: bytes, pat: bytes, n: i64) -> i64 {
+    if bytes_len(s) < n {
+        return 0
+    }
+    let mut i: i64 = 0
+    while i < n {
+        if bytes_at(s, i) != bytes_at(pat, i) {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// s ends with pat[poff, poff+n).
+fn lsm_bytes_has_suffix(s: bytes, pat: bytes, poff: i64, n: i64) -> i64 {
+    let ns = bytes_len(s)
+    if ns < n {
+        return 0
+    }
+    let base = ns - n
+    let mut i: i64 = 0
+    while i < n {
+        if bytes_at(s, base + i) != bytes_at(pat, poff + i) {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// Index of pat[poff, poff+n) inside s, or -1.
+fn lsm_bytes_find(s: bytes, pat: bytes, poff: i64, n: i64) -> i64 {
+    let ns = bytes_len(s)
+    if n <= 0 {
+        return 0
+    }
+    let mut i: i64 = 0
+    while i + n <= ns {
+        let mut j: i64 = 0
+        let mut same: i64 = 1
+        while j < n && same == 1 {
+            if bytes_at(s, i + j) != bytes_at(pat, poff + j) {
+                same = 0
+            }
+            j = j + 1
+        }
+        if same == 1 {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// R68: bytes glob for SCAN MATCH — same grammar as lsm_match_glob
+// (*, prefix*, *suffix, *mid*, exact) but NUL-safe over raw bytes.
+fn lsm_match_glob_b(pat: bytes, s: bytes) -> i64 {
+    let np = bytes_len(pat)
+    if np == 0 {
+        return 1
+    }
+    if np == 1 && bytes_at(pat, 0) == 42 {
+        return 1
+    }
+    // find first '*'
+    let mut star: i64 = 0 - 1
+    let mut i: i64 = 0
+    while i < np {
+        if bytes_at(pat, i) == 42 {
+            star = i
+            i = np
+        } else {
+            i = i + 1
+        }
+    }
+    if star < 0 {
+        // exact
+        if bytes_eq_b(pat, s) {
+            return 1
+        }
+        return 0
+    }
+    // prefix before star
+    if lsm_bytes_has_prefix(s, pat, star) == 0 {
+        return 0
+    }
+    // suffix after star (only one * supported; rest is literal suffix)
+    let nsuf = np - star - 1
+    if nsuf == 0 {
+        return 1
+    }
+    // if another * in suffix, treat remaining as contains
+    let mut star2: i64 = 0 - 1
+    let mut j: i64 = 0
+    while j < nsuf {
+        if bytes_at(pat, star + 1 + j) == 42 {
+            star2 = j
+            j = nsuf
+        } else {
+            j = j + 1
+        }
+    }
+    if star2 < 0 {
+        if lsm_bytes_has_suffix(s, pat, star + 1, nsuf) == 1 {
+            return 1
+        }
+        return 0
+    }
+    // *a*b form: require contains middle between prefix and suffix
+    if star2 > 0 {
+        if lsm_bytes_find(s, pat, star + 1, star2) < 0 {
+            return 0
+        }
+    }
+    let nsuf2 = nsuf - star2 - 1
+    if nsuf2 > 0 {
+        if lsm_bytes_has_suffix(s, pat, star + 1 + star2 + 1, nsuf2) == 0 {
+            return 0
+        }
+    }
+    return 1
+}
+
 struct LsmScan {
     db: LsmDB,
     next: i64,
     keys: Vec<str>
 }
 
-// R63: (re)build SCAN snapshot when epoch/pattern miss.
+// R68: bytes-key sibling of LsmScan (wire path emits raw key bytes).
+struct LsmScanB {
+    db: LsmDB,
+    next: i64,
+    keys: Vec<bytes>
+}
+
+// R68: (re)build SCAN snapshot from a raw-bytes MATCH pattern.
 // Unordered live keys + MATCH filter — Redis SCAN does not promise order
-// (KEYS remains sorted via lsm_keys).
-// R67: the fold yields bytes keys and the snapshot stores them raw; the
-// MATCH glob runs on str_of_bytes(key) — keys with embedded NUL truncate at
-// the NUL for MATCH purposes only (binary MATCH is R68; str can't hold NUL).
-fn lsm_scan_rebuild(db: LsmDB, match_pat: str) -> LsmDB !IO !Time {
+// (KEYS remains sorted via lsm_keys). Snapshot and pattern stay raw bytes;
+// the glob never sees a lossy str conversion.
+fn lsm_scan_rebuild_b(db: LsmDB, match_pat: bytes) -> LsmDB !IO !Time {
     let r = lsm_live_map_kb(db)?
     db = r.db
     let all = r.keys
@@ -912,7 +1051,7 @@ fn lsm_scan_rebuild(db: LsmDB, match_pat: str) -> LsmDB !IO !Time {
     let mut i: i64 = 0
     while i < vec_len(all) {
         let k = vec_get(all, i)
-        if lsm_match_glob(match_pat, str_of_bytes(k)) == 1 {
+        if lsm_match_glob_b(match_pat, k) == 1 {
             vec_push(filtered, k)
         }
         i = i + 1
@@ -929,20 +1068,18 @@ fn lsm_scan_rebuild(db: LsmDB, match_pat: str) -> LsmDB !IO !Time {
     return db
 }
 
-// R43 + R63: SCAN page over live keys.
+// R43 + R63 + R68: SCAN page over live keys, raw-bytes pattern and results.
 // Cursor is a 0-based index into the filtered snapshot; 0 = start/end
 // (Redis-compatible). count is a page size hint (default 10, clamp 1..1000).
 // R63: the live fold runs once per write_epoch×MATCH; later pages are
 // O(count) slices of the cached snapshot (no per-page full re-fold).
-// R67: returned keys are str (str_of_bytes per page) — NUL keys truncate;
-// binary SCAN results are R68.
-fn lsm_scan(db: LsmDB, cursor: i64, count: i64, match_pat: str) -> LsmScan !IO !Time {
+fn lsm_scan_kb(db: LsmDB, cursor: i64, count: i64, match_pat: bytes) -> LsmScanB !IO !Time {
     // Rebuild when: no cache, write since last build, or MATCH changed.
     // Cursor 0 always accepts a rebuild if cache is stale; mid-cursor with
     // a stale cache also rebuilds (caller may see duplicates / skips —
     // same honesty class as Redis under concurrent writes).
-    if db.scan_epoch != db.write_epoch || db.scan_pat != match_pat {
-        db = lsm_scan_rebuild(db, match_pat)?
+    if db.scan_epoch != db.write_epoch || bytes_eq_b(db.scan_pat, match_pat) == false {
+        db = lsm_scan_rebuild_b(db, match_pat)?
     }
     let n = vec_len(db.scan_keys)
     let mut cur = cursor
@@ -960,11 +1097,11 @@ fn lsm_scan(db: LsmDB, cursor: i64, count: i64, match_pat: str) -> LsmScan !IO !
     if cnt > 1000 {
         cnt = 1000
     }
-    let out: Vec<str> = vec_new()
+    let out: Vec<bytes> = vec_new()
     let mut j = cur
     let mut taken: i64 = 0
     while j < n && taken < cnt {
-        vec_push(out, str_of_bytes(vec_get(db.scan_keys, j)))
+        vec_push(out, vec_get(db.scan_keys, j))
         j = j + 1
         taken = taken + 1
     }
@@ -978,7 +1115,19 @@ fn lsm_scan(db: LsmDB, cursor: i64, count: i64, match_pat: str) -> LsmScan !IO !
             drop(old)
         }
         db.scan_epoch = 0 - 1
-        db.scan_pat = ""
+        db.scan_pat = bytes_new(0)
     }
-    return LsmScan { db: db, next: next, keys: out }
+    return LsmScanB { db: db, next: next, keys: out }
+}
+
+// str-keyed compat wrapper: pattern converts losslessly (bytes_of_str);
+// returned keys convert via str_of_bytes — NUL keys truncate (use
+// lsm_scan_kb on the wire path, R68).
+fn lsm_scan(db: LsmDB, cursor: i64, count: i64, match_pat: str) -> LsmScan !IO !Time {
+    let r = lsm_scan_kb(db, cursor, count, bytes_of_str(match_pat))?
+    let out: Vec<str> = vec_new()
+    for i in 0..vec_len(r.keys) {
+        vec_push(out, str_of_bytes(vec_get(r.keys, i)))
+    }
+    return LsmScan { db: r.db, next: r.next, keys: out }
 }
