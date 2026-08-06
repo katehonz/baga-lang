@@ -6,8 +6,9 @@ import "../table/sstable.baga"
 
 struct LsmDB {
     dir: str,
-    mem: Map<str, bytes>,
-    tomb: Map<str, i64>,
+    // R67: in-memory keys are raw bytes (NUL-safe); str APIs adapt at the edge.
+    mem: Map<bytes, bytes>,
+    tomb: Map<bytes, i64>,
     mem_n: i64,
     flush_at: i64,
     compact_at: i64,
@@ -39,9 +40,9 @@ struct LsmDB {
     // R63: SCAN streaming snapshot — live keys for one MATCH, reused across
     // cursor pages until write_epoch advances (put/del/flush/compact).
     write_epoch: i64,
-    scan_epoch: i64,     // equals write_epoch when scan_keys is valid
-    scan_pat: str,       // MATCH pattern used to build scan_keys
-    scan_keys: Vec<str>, // filtered live keys (unordered — Redis SCAN style)
+    scan_epoch: i64,       // equals write_epoch when scan_keys is valid
+    scan_pat: str,         // MATCH pattern used to build scan_keys
+    scan_keys: Vec<bytes>, // R67: filtered live keys as raw bytes (unordered — Redis SCAN style)
     ok: i64
 }
 

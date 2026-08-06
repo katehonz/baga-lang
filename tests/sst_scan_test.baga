@@ -22,10 +22,11 @@ fn main() -> i64 !IO {
     unlink(concat(prefix, ".bloom.1"))?
 
     // Build a multi-block SST (restart every 16 → 40 rows ⇒ 3 blocks).
+    // R67: SstRow keys are raw bytes.
     let rows: Vec<SstRow> = vec_new()
     let mut i: i64 = 0
     while i < 40 {
-        let k = concat("k", int_to_str(i))
+        let k = bytes_of_str(concat("k", int_to_str(i)))
         let v = bytes_of_str(concat("v", int_to_str(i)))
         if i == 7 {
             vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })  // tomb
@@ -58,8 +59,8 @@ fn main() -> i64 !IO {
             go = 0
         } else {
             if st.ok == 1 {
-                let expect = concat("k", int_to_str(n))
-                if st.row.key != expect {
+                let expect = bytes_of_str(concat("k", int_to_str(n)))
+                if bytes_eq_b(st.row.key, expect) == false {
                     order_ok = 0
                 }
                 if n == 7 {
@@ -76,21 +77,21 @@ fn main() -> i64 !IO {
     check(fails, "scan_order", order_ok == 1)
     check(fails, "scan_tomb", saw_tomb == 1)
 
-    // --- fold into maps ---
-    let acc: Map<str, bytes> = map_new()
-    let tomb: Map<str, i64> = map_new()
+    // --- fold into maps (R67: bytes-keyed accumulators) ---
+    let acc: Map<bytes, bytes> = map_new()
+    let tomb: Map<bytes, i64> = map_new()
     pc = sst_fold_into(pc, prefix, 1, fds, sizes, acc, tomb)?
-    check(fails, "fold_live", map_has(acc, "k0") == 1)
-    check(fails, "fold_tomb", map_has(tomb, "k7") == 1 && map_has(acc, "k7") == 0)
-    check(fails, "fold_val", str_of_bytes(map_get(acc, "k10")) == "v10")
+    check(fails, "fold_live", map_has(acc, bytes_of_str("k0")) == 1)
+    check(fails, "fold_tomb", map_has(tomb, bytes_of_str("k7")) == 1 && map_has(acc, bytes_of_str("k7")) == 0)
+    check(fails, "fold_val", str_of_bytes(map_get(acc, bytes_of_str("k10"))) == "v10")
     check(fails, "fold_n_acc", vec_len(map_keys(acc)) == 39)
 
     // block.baga round-trip
     let body = bytes_new(64)
-    let end = block_rec_put(body, 0, 1, "ab", bytes_of_str("xy"))
+    let end = block_rec_put(body, 0, 1, bytes_of_str("ab"), bytes_of_str("xy"))
     check(fails, "rec_put", end == block_rec_size(2, 2))
     let r = block_rec_at(body, 0)
-    check(fails, "rec_get", r.ok == 1 && r.key == "ab" && str_of_bytes(r.val) == "xy")
+    check(fails, "rec_get", r.ok == 1 && bytes_eq_b(r.key, bytes_of_str("ab")) && str_of_bytes(r.val) == "xy")
 
     // R27: meta loads bcrcs; clean block CRC ok
     let ml = sst_meta_load(pc, fd, 1, fsize)?
@@ -130,8 +131,8 @@ fn main() -> i64 !IO {
     check(fails, "corrupt_scan_closed", sc2.open == 0 && sc2.meta.ok == 1)
     pc2 = sc2.pc
     // fold must not resurrect via full-load fallback
-    let acc2: Map<str, bytes> = map_new()
-    let tomb2: Map<str, i64> = map_new()
+    let acc2: Map<bytes, bytes> = map_new()
+    let tomb2: Map<bytes, i64> = map_new()
     pc2 = sst_fold_into(pc2, prefix, 1, fds2, sizes2, acc2, tomb2)?
     check(fails, "corrupt_fold_empty", map_len(acc2) == 0)
 

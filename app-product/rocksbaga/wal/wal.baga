@@ -1,5 +1,7 @@
 // wal.baga — append-only write-ahead log with crc32c records.
-// Values are binary-safe bytes (R3).
+// Values are binary-safe bytes (R3). R67: keys are binary-safe bytes too —
+// the *_b cores take key: bytes; the plain names stay str wrappers
+// (bytes_of_str is lossless). On-disk layout unchanged (length-prefixed).
 
 import "../util/codec.baga"
 import "std/os/os.baga"
@@ -16,9 +18,8 @@ fn WAL_OP_DEL() -> i64 { return 2 }
 fn WAL_OP_CF_PUT() -> i64 { return 17 }
 fn WAL_OP_CF_DEL() -> i64 { return 18 }
 
-fn wal_payload(op: i64, key: str, val: bytes) -> bytes {
-    let kb = bytes_of_str(key)
-    let klen = bytes_len(kb)
+fn wal_payload_b(op: i64, key: bytes, val: bytes) -> bytes {
+    let klen = bytes_len(key)
     let vlen = bytes_len(val)
     let plen = 1 + 4 + klen + 4 + vlen
     let p = bytes_new(plen)
@@ -26,7 +27,7 @@ fn wal_payload(op: i64, key: str, val: bytes) -> bytes {
     put_u32_le(p, 1, klen)
     let mut i: i64 = 0
     while i < klen {
-        bytes_set(p, 5 + i, bytes_at(kb, i))
+        bytes_set(p, 5 + i, bytes_at(key, i))
         i = i + 1
     }
     put_u32_le(p, 5 + klen, vlen)
@@ -38,12 +39,16 @@ fn wal_payload(op: i64, key: str, val: bytes) -> bytes {
     return p
 }
 
+fn wal_payload(op: i64, key: str, val: bytes) -> bytes {
+    return wal_payload_b(op, bytes_of_str(key), val)
+}
+
 // Encode one WAL record (len | payload | crc) without writing.
 // R14: prealloc. R22: single buffer — write payload at off=4, CRC over that
 // span (no separate payload alloc + full copy into rec).
-fn wal_record(op: i64, key: str, val: bytes) -> bytes {
-    let kb = bytes_of_str(key)
-    let klen = bytes_len(kb)
+// R67: bytes-key core.
+fn wal_record_b(op: i64, key: bytes, val: bytes) -> bytes {
+    let klen = bytes_len(key)
     let vlen = bytes_len(val)
     let plen = 1 + 4 + klen + 4 + vlen
     let rec = bytes_new(4 + plen + 4)
@@ -52,7 +57,7 @@ fn wal_record(op: i64, key: str, val: bytes) -> bytes {
     put_u32_le(rec, 5, klen)
     let mut i: i64 = 0
     while i < klen {
-        bytes_set(rec, 9 + i, bytes_at(kb, i))
+        bytes_set(rec, 9 + i, bytes_at(key, i))
         i = i + 1
     }
     put_u32_le(rec, 9 + klen, vlen)
@@ -70,8 +75,12 @@ fn wal_record(op: i64, key: str, val: bytes) -> bytes {
     return rec
 }
 
-// R44: CF-aware WAL record (op 17/18).
-fn wal_record_cf(op: i64, cf_id: i64, key: str, val: bytes) -> bytes {
+fn wal_record(op: i64, key: str, val: bytes) -> bytes {
+    return wal_record_b(op, bytes_of_str(key), val)
+}
+
+// R44: CF-aware WAL record (op 17/18). R67: bytes-key core.
+fn wal_record_cf_b(op: i64, cf_id: i64, key: bytes, val: bytes) -> bytes {
     // Normalize to CF ops
     let mut o = op
     if o == 1 {
@@ -80,8 +89,7 @@ fn wal_record_cf(op: i64, cf_id: i64, key: str, val: bytes) -> bytes {
     if o == 2 {
         o = WAL_OP_CF_DEL()
     }
-    let kb = bytes_of_str(key)
-    let klen = bytes_len(kb)
+    let klen = bytes_len(key)
     let vlen = bytes_len(val)
     // plen = op + cf_id + klen + key + vlen + val
     let plen = 1 + 4 + 4 + klen + 4 + vlen
@@ -92,7 +100,7 @@ fn wal_record_cf(op: i64, cf_id: i64, key: str, val: bytes) -> bytes {
     put_u32_le(rec, 9, klen)
     let mut i: i64 = 0
     while i < klen {
-        bytes_set(rec, 13 + i, bytes_at(kb, i))
+        bytes_set(rec, 13 + i, bytes_at(key, i))
         i = i + 1
     }
     put_u32_le(rec, 13 + klen, vlen)
@@ -108,6 +116,10 @@ fn wal_record_cf(op: i64, cf_id: i64, key: str, val: bytes) -> bytes {
     return rec
 }
 
+fn wal_record_cf(op: i64, cf_id: i64, key: str, val: bytes) -> bytes {
+    return wal_record_cf_b(op, cf_id, bytes_of_str(key), val)
+}
+
 // Append one record; returns new file offset after the write, or -1.
 fn wal_append(fd: i64, off: i64, op: i64, key: str, val: bytes) -> i64 !IO {
     let rec = wal_record(op, key, val)
@@ -120,10 +132,11 @@ fn wal_append(fd: i64, off: i64, op: i64, key: str, val: bytes) -> i64 !IO {
 // Replay callback result is accumulated by the engine; this returns a
 // decoded list of ops as parallel vectors (ops, keys, vals, cfs).
 // R44: cfs[i] is column-family id (0 for legacy op 1/2).
+// R67: keys are raw bytes slices (no str_of_bytes — NUL keys survive replay).
 struct WalReplay {
     ok: i64,
     ops: Vec<i64>,
-    keys: Vec<str>,
+    keys: Vec<bytes>,
     vals: Vec<bytes>,
     cfs: Vec<i64>,
     end_off: i64
@@ -131,7 +144,7 @@ struct WalReplay {
 
 fn wal_replay(fd: i64) -> WalReplay !IO {
     let ops: Vec<i64> = vec_new()
-    let keys: Vec<str> = vec_new()
+    let keys: Vec<bytes> = vec_new()
     let vals: Vec<bytes> = vec_new()
     let cfs: Vec<i64> = vec_new()
     let mut off: i64 = 0
@@ -178,7 +191,7 @@ fn wal_replay(fd: i64) -> WalReplay !IO {
                                 if bytes_len(payload) < kstart + klen + 4 {
                                     running = 0
                                 } else {
-                                    let key = str_of_bytes(bytes_slice(payload, kstart, kstart + klen))
+                                    let key = bytes_slice(payload, kstart, kstart + klen)
                                     let vlen = get_u32_le(payload, kstart + klen)
                                     let vstart = kstart + klen + 4
                                     if bytes_len(payload) < vstart + vlen {

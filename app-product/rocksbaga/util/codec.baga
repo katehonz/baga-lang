@@ -147,3 +147,100 @@ fn sort_strs(v: Vec<str>) {
         sort_strs_qs(v, 0, n - 1)
     }
 }
+
+// R67: lexicographic compare of raw key bytes (NUL-safe — a Baga str cannot
+// hold an embedded 0x00, so binary keys must live and compare as bytes).
+// -1 if a<b, 0 if equal, 1 if a>b.
+fn bytes_cmp(a: bytes, b: bytes) -> i64 {
+    let na = bytes_len(a)
+    let nb = bytes_len(b)
+    let mut n = na
+    if nb < n {
+        n = nb
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let ca = bytes_at(a, i) & 255
+        let cb = bytes_at(b, i) & 255
+        if ca < cb {
+            return 0 - 1
+        }
+        if ca > cb {
+            return 1
+        }
+        i = i + 1
+    }
+    if na < nb {
+        return 0 - 1
+    }
+    if na > nb {
+        return 1
+    }
+    return 0
+}
+
+// In-place insertion sort (small n), bytes variant of sort_strs_ins.
+fn sort_bytes_ins(v: Vec<bytes>, lo: i64, hi: i64) {
+    let mut i = lo + 1
+    while i <= hi {
+        let key = vec_get(v, i)
+        let mut j = i - 1
+        let mut moving = 1
+        while moving == 1 {
+            if j < lo {
+                moving = 0
+            } else {
+                if bytes_cmp(vec_get(v, j), key) <= 0 {
+                    moving = 0
+                } else {
+                    vec_set(v, j + 1, vec_get(v, j))
+                    j = j - 1
+                }
+            }
+        }
+        vec_set(v, j + 1, key)
+        i = i + 1
+    }
+}
+
+// Quicksort partition (last element pivot), bytes variant.
+fn sort_bytes_part(v: Vec<bytes>, lo: i64, hi: i64) -> i64 {
+    let pivot = vec_get(v, hi)
+    let mut i = lo
+    let mut j = lo
+    while j < hi {
+        if bytes_cmp(vec_get(v, j), pivot) <= 0 {
+            let tmp = vec_get(v, i)
+            vec_set(v, i, vec_get(v, j))
+            vec_set(v, j, tmp)
+            i = i + 1
+        }
+        j = j + 1
+    }
+    let tmp = vec_get(v, i)
+    vec_set(v, i, vec_get(v, hi))
+    vec_set(v, hi, tmp)
+    return i
+}
+
+fn sort_bytes_qs(v: Vec<bytes>, lo: i64, hi: i64) {
+    if hi - lo < 16 {
+        if lo < hi {
+            sort_bytes_ins(v, lo, hi)
+        }
+        return
+    }
+    if lo < hi {
+        let p = sort_bytes_part(v, lo, hi)
+        sort_bytes_qs(v, lo, p - 1)
+        sort_bytes_qs(v, p + 1, hi)
+    }
+}
+
+// R67: in-place sort of Vec<bytes> ascending (same shape as sort_strs).
+fn sort_bytes(v: Vec<bytes>) {
+    let n = vec_len(v)
+    if n > 1 {
+        sort_bytes_qs(v, 0, n - 1)
+    }
+}

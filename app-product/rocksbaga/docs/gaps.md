@@ -482,9 +482,35 @@ it already answers.
 - Not a tar/remote agent: ship is prefix→prefix file copy; CF multi-family
   and multi-DB SELECT namespaces are out of scope (default CF / one cluster).
 
-**Still open (later):** binary keys (`Map` key type = only `i64`/`str`
-today). LLVM builders for `bytes_h`/`h_bytes` (C path is the storage flagship).
-LLVM parity status: `str_h`/`h_str`/`bytes_put`
+**Shipped (R67 binary-safe keys, engine core):**
+- Language `Map<bytes, V>` keys (FNV-1a over data+len, memcmp compare)
+  unblocked the engine conversion.
+- Engine core keys are raw `bytes` end-to-end: `LsmDB.mem` /
+  `LsmDB.tomb` / `scan_keys`, WAL record/replay (`wal_record_b`,
+  `WalReplay.keys: Vec<bytes>`), SST rows/meta (`SstRow.key`,
+  `SstMeta.first_key`/`last_key`/`rkeys`), bloom filters
+  (`bloom_*_b`), compaction accumulators — all NUL-safe via
+  `bytes_cmp` / `sort_bytes` (`util/codec.baga`).
+- On-disk formats unchanged (WAL/SST records were already
+  length-prefixed); old stores open unchanged.
+- New `_kb` core APIs: `lsm_put_kb` / `lsm_put_ex_kb` / `lsm_del_kb` /
+  `lsm_get_kb` / `lsm_exists_kb` / `lsm_expire_kb` / `lsm_ttl_kb` /
+  `lsm_persist_kb` (+ internal `lsm_live_map_kb`, `lsm_shard_ix_b`).
+  All existing str-keyed APIs remain as thin `bytes_of_str` wrappers —
+  callers (cf/workers/backup/multidb/server/tests) compile unchanged.
+- KEYS/SCAN MATCH still glob on `str` (`str_of_bytes` per key) — keys
+  with embedded NUL truncate at the NUL for MATCH/display only.
+- Tests: `r67_*` in `tests/lsm_test.baga` (NUL put/get/del, SST read,
+  WAL recovery, compaction tomb survival, str-wrapper interop).
+- Perf: no regression from the `bytes_of_str` wrapper hop — MT soak vs
+  Redis 8.x (8 clients, n=5000, pipe=16, shards=8): PING 97% / SET 94% /
+  GET 97% (R55-level parity). Artifact:
+  `bench/rocks/results/vs-redis-20260806T142727Z.txt`.
+
+**Still open (later):** binary keys over the RESP wire
+(`net/server.baga` parses command args as `str`; engine `_kb` APIs are
+ready — R68). LLVM builders for `bytes_h`/`h_bytes` (C path is the
+storage flagship). LLVM parity status: `str_h`/`h_str`/`bytes_put`
 now have LLVM builders (oracle green); `map_h`/`h_map` are C-only *by design*
 (the LLVM backend has no `Map` at all); the thread-local arena is a C-runtime
 detail (LLVM lowers allocs to plain `malloc`, already thread-safe).
@@ -504,8 +530,8 @@ one-conn-at-a-time accept loop. Test: `tcp2_*` in `tests/lsm_test.baga`.
 - SET/SETEX/MSET/APPEND (+ CF.SET) store values via `lsm_put_b` / `*_put_b`
   (embedded NUL round-trips). GET already replied with `resp_bulk_b`.
 - Legacy `resp_parse_command` → `Vec<str>` **unchanged** for kvbaga.
-- **Still residual:** keys remain `str` (NUL in key unsupported —
-  `Map` only allows `i64`/`str` keys). TTL via `SETEX`/`EXPIRE` is R16.
+- **Still residual:** wire keys remain `str` (NUL-in-key over RESP is
+  R68 — the engine core is binary-safe since R67). TTL via `SETEX`/`EXPIRE` is R16.
 
 **Shipped (R66 PARALLEL binary job payloads):**
 - Builtins `bytes_h(bytes) -> i64` / `h_bytes(i64) -> bytes` (C backend;

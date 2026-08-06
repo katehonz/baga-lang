@@ -39,12 +39,38 @@ fn lsm_key_hash(key: str) -> i64 {
     return h
 }
 
+// R67: same djb2-ish hash over raw key bytes — identical digest for the same
+// byte sequence, so str and bytes callers route to the same shard.
+fn lsm_key_hash_b(key: bytes) -> i64 {
+    let mut h: i64 = 5381
+    let n = bytes_len(key)
+    let mut i: i64 = 0
+    while i < n {
+        h = ((h * 33) + (bytes_at(key, i) & 255)) & 2147483647
+        i = i + 1
+    }
+    return h
+}
+
 fn lsm_shard_ix(nshards: i64, key: str) -> i64 {
     let mut n = nshards
     if n < 1 {
         n = 1
     }
     let mut i = lsm_key_hash(key) % n
+    if i < 0 {
+        i = 0 - i
+    }
+    return i
+}
+
+// R67: bytes-key shard routing (engine _kb path).
+fn lsm_shard_ix_b(nshards: i64, key: bytes) -> i64 {
+    let mut n = nshards
+    if n < 1 {
+        n = 1
+    }
+    let mut i = lsm_key_hash_b(key) % n
     if i < 0 {
         i = 0 - i
     }

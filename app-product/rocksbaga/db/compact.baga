@@ -229,8 +229,9 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
     }
     let now = time_now_ms()?
     let keep_tombs = vec_len(idxs) < vec_len(db.gens)
-    let acc: Map<str, bytes> = map_new()
-    let tomb: Map<str, i64> = map_new()
+    // R67: merge accumulators keyed by raw bytes (NUL-safe).
+    let acc: Map<bytes, bytes> = map_new()
+    let tomb: Map<bytes, i64> = map_new()
     // R20: stream each SST by restart blocks (page cache) — no full-file copy.
     let mut cur = db.cache
     for ii in 0..vec_len(idxs) {
@@ -252,7 +253,7 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
             ti = ti + 1
         }
     }
-    sort_strs(all)
+    sort_bytes(all)
     let nall = vec_len(all)
     let rows: Vec<SstRow> = vec_new()
     let mut ki: i64 = 0

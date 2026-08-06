@@ -549,6 +549,76 @@ fn main() -> i64 !Net !IO !Par !Time {
     }
     lsm_close(bindb)?
 
+    // --- R67: binary-safe keys via the _kb engine APIs (embedded NUL) ---
+    wipe("/tmp/baga_lsm_r67")?
+    let mut kdb = lsm_open("/tmp/baga_lsm_r67", 4, 3)?
+    kdb.sync_every = 1000
+    let k_nul = x"610062"    // "a\0b"
+    let k_nul2 = x"610063"   // "a\0c"
+    let k_plain = x"6162"    // "ab"
+    // put/get with embedded NUL (memtable)
+    kdb = lsm_put_kb(kdb, k_nul, bytes_of_str("v-nul"))?
+    kdb = lsm_put_kb(kdb, k_nul2, bytes_of_str("v-nul2"))?
+    let kg1 = lsm_get_kb(kdb, k_nul)?
+    kdb = kg1.db
+    check(fails, "r67_get_mem", kg1.found == 1 && str_of_bytes(kg1.val) == "v-nul")
+    // "a" is a prefix of "a\0b" but must NOT hit
+    let kg1b = lsm_get_kb(kdb, x"61")?
+    kdb = kg1b.db
+    check(fails, "r67_no_prefix_hit", kg1b.found == 0)
+    // auto-flush to SST (flush_at=4)
+    kdb = lsm_put_kb(kdb, k_plain, bytes_of_str("v-ab"))?
+    kdb = lsm_put_kb(kdb, bytes_of_str("zz"), bytes_of_str("v-zz"))?
+    check(fails, "r67_flushed", vec_len(kdb.gens) >= 1 && kdb.mem_n == 0)
+    // get NUL keys back from the SST (bloom + restart-index path)
+    let kg2 = lsm_get_kb(kdb, k_nul)?
+    kdb = kg2.db
+    check(fails, "r67_get_sst", kg2.found == 1 && str_of_bytes(kg2.val) == "v-nul")
+    let kg2b = lsm_get_kb(kdb, k_nul2)?
+    kdb = kg2b.db
+    check(fails, "r67_get_sst2", kg2b.found == 1 && str_of_bytes(kg2b.val) == "v-nul2")
+    // delete one NUL key — tombstone stays in the memtable (WAL only)
+    kdb = lsm_del_kb(kdb, k_nul2)?
+    let kg3 = lsm_get_kb(kdb, k_nul2)?
+    kdb = kg3.db
+    check(fails, "r67_del", kg3.found == 0)
+    // close/reopen: WAL recovery must preserve NUL keys and the tomb
+    lsm_close(kdb)?
+    let mut kdb2 = lsm_open("/tmp/baga_lsm_r67", 4, 3)?
+    let kr1 = lsm_get_kb(kdb2, k_nul)?
+    kdb2 = kr1.db
+    check(fails, "r67_recover_sst", kr1.found == 1 && str_of_bytes(kr1.val) == "v-nul")
+    let kr2 = lsm_get_kb(kdb2, k_nul2)?
+    kdb2 = kr2.db
+    check(fails, "r67_recover_tomb", kr2.found == 0)
+    // compaction: one op per flush so L0 piles up and merges (compact_at=3)
+    kdb2.flush_at = 1
+    kdb2 = lsm_put_kb(kdb2, x"610064", bytes_of_str("v-nul3"))?  // "a\0d", flush
+    kdb2 = lsm_del_kb(kdb2, k_plain)?                             // tomb "ab", flush
+    kdb2 = lsm_put_kb(kdb2, bytes_of_str("zz2"), bytes_of_str("w"))? // flush → L0 merge
+    let kr3 = lsm_get_kb(kdb2, k_nul)?
+    kdb2 = kr3.db
+    check(fails, "r67_compact_get", kr3.found == 1 && str_of_bytes(kr3.val) == "v-nul")
+    let kr4 = lsm_get_kb(kdb2, k_plain)?
+    kdb2 = kr4.db
+    check(fails, "r67_compact_tomb", kr4.found == 0)
+    let kr5 = lsm_get_kb(kdb2, x"610064")?
+    kdb2 = kr5.db
+    check(fails, "r67_compact_get2", kr5.found == 1 && str_of_bytes(kr5.val) == "v-nul3")
+    // str wrapper API still works on the same db (sees the same store)
+    kdb2 = lsm_put(kdb2, "plain", "pv")?
+    let kw = lsm_get(kdb2, "plain")?
+    kdb2 = kw.db
+    check(fails, "r67_str_wrapper", kw.found == 1 && str_of_bytes(kw.val) == "pv")
+    let kw2 = lsm_get(kdb2, "ab")?   // deleted above via the bytes path
+    kdb2 = kw2.db
+    check(fails, "r67_str_tomb", kw2.found == 0)
+    // live: a\0b, zz, a\0d, zz2, plain (a\0c and ab are tombed)
+    let ksz = lsm_dbsize(kdb2)?
+    kdb2 = ksz.db
+    check(fails, "r67_dbsize", ksz.n == 5)
+    lsm_close(kdb2)?
+
     // corrupt one SST byte → verify must fail
     let mmeta = lsm_backup_load_meta("/tmp/baga_lsm_bk_b")?
     check(fails, "r62_meta_ok", mmeta.ok == 1 && vec_len(mmeta.entries) >= 1)

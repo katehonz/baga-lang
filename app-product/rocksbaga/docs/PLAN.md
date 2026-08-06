@@ -176,4 +176,16 @@ Goal: Track S flagship — durable KV on RESP.
   workers SET/SETEX via `bytes_h` + `put_b`; GET bulk via `bytes_h`;
   `lsm_mb_rep_to_bytes` + serve `reps: Map<i64, bytes>`; tests
   `r66_*` in `workers_test` — **done**
-- (next) optional: binary keys (needs language `Map<bytes, …>`)
+- **R67 binary-safe keys (engine core)** — language `Map<bytes, …>`
+  landed; engine memtable/tomb/scan snapshot, WAL record/replay, SST
+  rows/meta/bloom and compaction accumulators all key on raw `bytes`
+  end-to-end (`bytes_cmp` / `sort_bytes` in `util/codec.baga`; on-disk
+  formats unchanged — already length-prefixed). New `_kb` core APIs:
+  `lsm_put_kb` / `lsm_put_ex_kb` / `lsm_del_kb` / `lsm_get_kb` /
+  `lsm_exists_kb` / `lsm_expire_kb` / `lsm_ttl_kb` / `lsm_persist_kb`
+  (+ `lsm_live_map_kb`, `lsm_shard_ix_b`); every existing str-keyed API
+  is an unchanged thin wrapper (`bytes_of_str`). KEYS/SCAN MATCH still
+  glob on `str` — NUL keys truncate there (binary MATCH is R68);
+  tests `r67_*` — **done**
+- (next) binary keys over the RESP wire in net/server.baga — engine
+  `_kb` APIs ready (R68)

@@ -15,11 +15,16 @@ fn bloom_path(dir: str, gen: i64) -> str {
 }
 
 fn bloom_h1(key: str) -> i64 {
+    return bloom_h1_b(bytes_of_str(key))
+}
+
+// R67: FNV-1a over raw key bytes (data+len; NUL-safe).
+fn bloom_h1_b(key: bytes) -> i64 {
     let mut h: i64 = 2166136261
-    let n = len(key)
+    let n = bytes_len(key)
     let mut i: i64 = 0
     while i < n {
-        h = h ^ (char_at(key, i) & 255)
+        h = h ^ (bytes_at(key, i) & 255)
         h = (h * 16777619) & 4294967295
         i = i + 1
     }
@@ -27,11 +32,16 @@ fn bloom_h1(key: str) -> i64 {
 }
 
 fn bloom_h2(key: str) -> i64 {
+    return bloom_h2_b(bytes_of_str(key))
+}
+
+// R67: djb2 over raw key bytes (same shape as the str variant).
+fn bloom_h2_b(key: bytes) -> i64 {
     let mut h: i64 = 0
-    let n = len(key)
+    let n = bytes_len(key)
     let mut i: i64 = 0
     while i < n {
-        h = (h * 33 + (char_at(key, i) & 255)) & 4294967295
+        h = (h * 33 + (bytes_at(key, i) & 255)) & 4294967295
         i = i + 1
     }
     if h == 0 {
@@ -65,8 +75,13 @@ fn bloom_test_bit(bits: bytes, bit: i64) -> i64 {
 }
 
 fn bloom_add(bits: bytes, m: i64, key: str) {
-    let h1 = bloom_h1(key)
-    let h2 = bloom_h2(key)
+    bloom_add_b(bits, m, bytes_of_str(key))
+}
+
+// R67: bytes-key core (hashing over data+len).
+fn bloom_add_b(bits: bytes, m: i64, key: bytes) {
+    let h1 = bloom_h1_b(key)
+    let h2 = bloom_h2_b(key)
     let k = bloom_k()
     let mut i: i64 = 0
     while i < k {
@@ -80,11 +95,16 @@ fn bloom_add(bits: bytes, m: i64, key: str) {
 }
 
 fn bloom_may(bits: bytes, m: i64, key: str) -> i64 {
+    return bloom_may_b(bits, m, bytes_of_str(key))
+}
+
+// R67: bytes-key core.
+fn bloom_may_b(bits: bytes, m: i64, key: bytes) -> i64 {
     if m <= 0 || bytes_len(bits) == 0 {
         return 1
     }
-    let h1 = bloom_h1(key)
-    let h2 = bloom_h2(key)
+    let h1 = bloom_h1_b(key)
+    let h2 = bloom_h2_b(key)
     let k = bloom_k()
     let mut i: i64 = 0
     while i < k {
@@ -100,7 +120,9 @@ fn bloom_may(bits: bytes, m: i64, key: str) -> i64 {
     return 1
 }
 
-fn bloom_build_keys(keys: Vec<str>) -> bytes {
+// R67: keys are raw bytes (Vec<bytes>); callers with str keys convert via
+// bytes_of_str first.
+fn bloom_build_keys(keys: Vec<bytes>) -> bytes {
     let m = bloom_bits_for(vec_len(keys))
     let nbytes = m / 8
     let bits = bytes_new(nbytes)
@@ -112,7 +134,7 @@ fn bloom_build_keys(keys: Vec<str>) -> bytes {
     let n = vec_len(keys)
     let mut j: i64 = 0
     while j < n {
-        bloom_add(bits, m, vec_get(keys, j))
+        bloom_add_b(bits, m, vec_get(keys, j))
         j = j + 1
     }
     return bits
@@ -235,7 +257,8 @@ struct BloomMay {
 }
 
 // Load-or-hit bloom sidecar; same return codes as bloom_file_may.
-fn bloom_cache_may(cache: BloomCache, dir: str, gen: i64, key: str) -> BloomMay !IO {
+// R67: key is raw bytes (only caller is the SST get path, which is bytes now).
+fn bloom_cache_may(cache: BloomCache, dir: str, gen: i64, key: bytes) -> BloomMay !IO {
     if map_has(cache.st, gen) == 1 {
         let s = map_get(cache.st, gen)
         if s == 2 {
@@ -243,7 +266,7 @@ fn bloom_cache_may(cache: BloomCache, dir: str, gen: i64, key: str) -> BloomMay 
         }
         let m = map_get(cache.m, gen)
         let bits = map_get(cache.bits, gen)
-        if bloom_may(bits, m, key) == 0 {
+        if bloom_may_b(bits, m, key) == 0 {
             return BloomMay { cache: cache, may: 0 }
         }
         return BloomMay { cache: cache, may: 1 }
@@ -295,7 +318,7 @@ fn bloom_cache_may(cache: BloomCache, dir: str, gen: i64, key: str) -> BloomMay 
     map_set(cache.bits, gen, bits)
     map_set(cache.m, gen, m)
     map_set(cache.st, gen, 1)
-    if bloom_may(bits, m, key) == 0 {
+    if bloom_may_b(bits, m, key) == 0 {
         return BloomMay { cache: cache, may: 0 }
     }
     return BloomMay { cache: cache, may: 1 }

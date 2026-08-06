@@ -78,7 +78,7 @@ fn dump_one(dir: str, gen: i64, print_keys: i64, max_keys: i64) -> i64 !IO {
                             if st.row.op == 2 {
                                 tag = "DEL"
                             }
-                            print(concat(concat(concat(concat("  ", tag), " "), st.row.key),
+                            print(concat(concat(concat(concat("  ", tag), " "), str_of_bytes(st.row.key)),
                                 concat(" vlen=", int_to_str(bytes_len(st.row.val)))))
                             shown = shown + 1
                         }
@@ -108,12 +108,12 @@ fn dump_one(dir: str, gen: i64, print_keys: i64, max_keys: i64) -> i64 !IO {
                     ),
                     " first="
                 ),
-                ml.meta.first_key
+                str_of_bytes(ml.meta.first_key)
             ),
             concat(
                 concat(
                     concat(
-                        concat(concat(" last=", ml.meta.last_key), " puts="),
+                        concat(concat(" last=", str_of_bytes(ml.meta.last_key)), " puts="),
                         int_to_str(nkeys)
                     ),
                     " tombs="

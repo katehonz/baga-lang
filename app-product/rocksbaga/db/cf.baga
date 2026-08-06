@@ -618,16 +618,18 @@ fn lsm_cf_maybe_sync(db: LsmCFDB) -> LsmCFDB !IO {
 }
 
 // R65: binary-safe CF put (value may contain NUL).
+// R67: memtable keys are bytes internally — convert the str key once here.
 fn lsm_cf_put_b(db: LsmCFDB, cf_id: i64, key: str, val: bytes) -> LsmCFDB !IO !Time {
     db = lsm_cf_ensure(db, cf_id)?
     db = lsm_cf_wal_append(db, 1, cf_id, key, val)?
     if db.ok == 0 {
         return db
     }
+    let kb = bytes_of_str(key)
     let mut fam = map_get(db.families, cf_id)
-    map_set(fam.mem, key, val)
+    map_set(fam.mem, kb, val)
     if map_len(fam.tomb) > 0 {
-        map_del(fam.tomb, key)
+        map_del(fam.tomb, kb)
     }
     fam.mem_n = fam.mem_n + 1
     map_set(db.families, cf_id, fam)
@@ -667,9 +669,10 @@ fn lsm_cf_del(db: LsmCFDB, cf_id: i64, key: str) -> LsmCFDB !IO !Time {
     if db.ok == 0 {
         return db
     }
+    let kb = bytes_of_str(key)   // R67: memtable keys are bytes
     let mut fam = map_get(db.families, cf_id)
-    map_del(fam.mem, key)
-    map_set(fam.tomb, key, 1)
+    map_del(fam.mem, kb)
+    map_set(fam.tomb, kb, 1)
     fam.mem_n = fam.mem_n + 1
     map_set(db.families, cf_id, fam)
     db = lsm_cf_maybe_sync(db)?
@@ -751,6 +754,7 @@ fn lsm_cf_flush(db: LsmCFDB, cf_id: i64) -> LsmCFDB !IO !Time {
     }
     fdatasync(db.wal_fd)?
     let now = time_now_ms()?
+    // R67: family memtable keys are bytes (sort via bytes_cmp).
     let all = map_keys(fam.mem)
     let tk = map_keys(fam.tomb)
     let mut ti: i64 = 0
@@ -761,7 +765,7 @@ fn lsm_cf_flush(db: LsmCFDB, cf_id: i64) -> LsmCFDB !IO !Time {
         }
         ti = ti + 1
     }
-    sort_strs(all)
+    sort_bytes(all)
     let rows: Vec<SstRow> = vec_new()
     let mut i: i64 = 0
     while i < vec_len(all) {
