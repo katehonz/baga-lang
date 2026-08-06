@@ -1670,6 +1670,104 @@ static LLVMValueRef build_baga_eprintln(void) {
     return fn;
 }
 
+/* L4: struct елементи — generic box helper-и; размерът идва от call site-а
+ * (sizeof на mangled struct типа). Елементите са box-нати копия (memcpy при
+ * push/set/slice/concat) — огледало на C preamble-а. Без bounds check,
+ * както останалите LLVM vec helper-и. */
+static LLVMValueRef build_baga_vec_push_box(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.ptr_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_push_box",
+        LLVMFunctionType(lg.void_ty, p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef v = LLVMGetParam(fn, 0);
+    LLVMValueRef gv[] = { v };
+    h_call(baga_rt("baga_vec_grow"), gv, 1, "");
+    LLVMValueRef ma[] = { LLVMGetParam(fn, 2) };
+    LLVMValueRef box = h_call(rt_malloc(), ma, 1, "box");
+    LLVMValueRef mc[] = { box, LLVMGetParam(fn, 1), LLVMGetParam(fn, 2) };
+    h_call(rt_memcpy(), mc, 3, "");
+    LLVMValueRef len = vec_load_len(v);
+    LLVMValueRef slot = LLVMBuildGEP2(lg.builder, lg.ptr_ty,
+        vec_load_data(v), &len, 1, "slot");
+    LLVMBuildStore(lg.builder, box, slot);
+    LLVMValueRef nl = LLVMBuildAdd(lg.builder, len,
+        LLVMConstInt(lg.i64_ty, 1, 0), "nl");
+    LLVMBuildStore(lg.builder, nl, vec_field_ptr(v, 1, "lenp"));
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+static LLVMValueRef build_baga_vec_get_box(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_get_box",
+        LLVMFunctionType(lg.ptr_ty, p, 2, 0));
+    h_begin(fn);
+    LLVMBuildRet(lg.builder,
+        vec_load_at(LLVMGetParam(fn, 0), LLVMGetParam(fn, 1)));
+    return fn;
+}
+static LLVMValueRef build_baga_vec_set_box(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.i64_ty, lg.ptr_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_set_box",
+        LLVMFunctionType(lg.void_ty, p, 4, 0));
+    h_begin(fn);
+    LLVMValueRef box = vec_load_at(LLVMGetParam(fn, 0), LLVMGetParam(fn, 1));
+    LLVMValueRef mc[] = { box, LLVMGetParam(fn, 2), LLVMGetParam(fn, 3) };
+    h_call(rt_memcpy(), mc, 3, "");
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+/* loop i in [from, to): baga_vec_push_box(r, src->data[i], size) */
+static void box_copy_loop(LLVMValueRef fn, LLVMValueRef src, LLVMValueRef r,
+                          LLVMValueRef from, LLVMValueRef to, LLVMValueRef size) {
+    LLVMValueRef iv = LLVMBuildAlloca(lg.builder, lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, from, iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, to, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef e = vec_load_at(src, i);
+    LLVMValueRef pa[] = { r, e, size };
+    h_call(baga_rt("baga_vec_push_box"), pa, 3, "");
+    LLVMValueRef inext = LLVMBuildAdd(lg.builder, i, LLVMConstInt(lg.i64_ty, 1, 0), "in");
+    LLVMBuildStore(lg.builder, inext, iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+}
+static LLVMValueRef build_baga_vec_slice_box(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.i64_ty, lg.i64_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_slice_box",
+        LLVMFunctionType(baga_vec_ptr_ty(), p, 4, 0));
+    h_begin(fn);
+    LLVMValueRef v = LLVMGetParam(fn, 0);
+    LLVMValueRef a = LLVMGetParam(fn, 1);
+    LLVMValueRef b = LLVMGetParam(fn, 2);
+    slice_clamp(v, &a, &b);
+    LLVMValueRef r = h_call(baga_rt("baga_vec_new"), NULL, 0, "r");
+    box_copy_loop(fn, v, r, a, b, LLVMGetParam(fn, 3));
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+static LLVMValueRef build_baga_vec_concat_box(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), baga_vec_ptr_ty(), lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_concat_box",
+        LLVMFunctionType(baga_vec_ptr_ty(), p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef v = LLVMGetParam(fn, 0);
+    LLVMValueRef w = LLVMGetParam(fn, 1);
+    LLVMValueRef size = LLVMGetParam(fn, 2);
+    LLVMValueRef z = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef r = h_call(baga_rt("baga_vec_new"), NULL, 0, "r");
+    box_copy_loop(fn, v, r, z, vec_load_len(v), size);
+    box_copy_loop(fn, w, r, z, vec_load_len(w), size);
+    LLVMBuildRet(lg.builder, r);
+    return fn;
+}
+
 /* lazy dispatcher: връща helper-а, генерирайки тялото му при първа употреба */
 static LLVMValueRef baga_rt(const char *name) {
     LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, name);
@@ -1695,6 +1793,11 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_vec_get_f64") == 0) fn = build_baga_vec_get_f64();
     else if (strcmp(name, "baga_vec_set_f64") == 0) fn = build_baga_vec_set_f64();
     else if (strcmp(name, "baga_vec_len") == 0)     fn = build_baga_vec_len();
+    else if (strcmp(name, "baga_vec_push_box") == 0) fn = build_baga_vec_push_box();
+    else if (strcmp(name, "baga_vec_get_box") == 0) fn = build_baga_vec_get_box();
+    else if (strcmp(name, "baga_vec_set_box") == 0) fn = build_baga_vec_set_box();
+    else if (strcmp(name, "baga_vec_slice_box") == 0) fn = build_baga_vec_slice_box();
+    else if (strcmp(name, "baga_vec_concat_box") == 0) fn = build_baga_vec_concat_box();
     else if (strcmp(name, "baga_vec_slice_i64") == 0) fn = build_baga_vec_slice("i64", "baga_vec_push_i64");
     else if (strcmp(name, "baga_vec_slice_str") == 0) fn = build_baga_vec_slice("str", "baga_vec_push_str");
     else if (strcmp(name, "baga_vec_slice_f64") == 0) fn = build_baga_vec_slice("f64", "baga_vec_push_f64");
@@ -2234,6 +2337,54 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                  strcmp(n->callee->name, "vec_slice") == 0 ||
                  strcmp(n->callee->name, "vec_concat") == 0)) {
                 Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+                /* L4: struct елементи → box helper-и, sizeof от call site-а
+                 * (огледало на codegen_c box пътя; slice/concat включени) */
+                if (vt && vt->kind == TYPE_VEC && vt->elem &&
+                    vt->elem->kind == TYPE_STRUCT && vt->elem->name) {
+                    LLVMTypeRef sty = user_struct_ty(vt->elem->name);
+                    LLVMValueRef sz = LLVMSizeOf(sty);
+                    const char *cn = n->callee->name;
+                    LLVMValueRef v = emit_expr_llvm(n->args.data[0]);
+                    if (!v) llvm_unsupported("vec аргумент");
+                    if (strcmp(cn, "vec_push") == 0) {
+                        LLVMValueRef e = emit_expr_llvm(n->args.data[1]);
+                        if (!e) llvm_unsupported("vec_push аргумент");
+                        LLVMValueRef tmp = entry_alloca(sty, "bx");
+                        LLVMBuildStore(lg.builder, e, tmp);
+                        LLVMValueRef bp = LLVMBuildBitCast(lg.builder, tmp, lg.ptr_ty, "bp");
+                        LLVMValueRef pa[] = { v, bp, sz };
+                        return h_call(baga_rt("baga_vec_push_box"), pa, 3, "");
+                    }
+                    if (strcmp(cn, "vec_get") == 0) {
+                        LLVMValueRef i = coerce(emit_expr_llvm(n->args.data[1]), lg.i64_ty);
+                        LLVMValueRef pa[] = { v, i };
+                        LLVMValueRef box = h_call(baga_rt("baga_vec_get_box"), pa, 2, "box");
+                        LLVMValueRef sp = LLVMBuildBitCast(lg.builder, box,
+                            LLVMPointerType(sty, 0), "sp");
+                        return LLVMBuildLoad2(lg.builder, sty, sp, "v");
+                    }
+                    if (strcmp(cn, "vec_set") == 0) {
+                        LLVMValueRef i = coerce(emit_expr_llvm(n->args.data[1]), lg.i64_ty);
+                        LLVMValueRef e = emit_expr_llvm(n->args.data[2]);
+                        if (!e) llvm_unsupported("vec_set аргумент");
+                        LLVMValueRef tmp = entry_alloca(sty, "bx");
+                        LLVMBuildStore(lg.builder, e, tmp);
+                        LLVMValueRef bp = LLVMBuildBitCast(lg.builder, tmp, lg.ptr_ty, "bp");
+                        LLVMValueRef pa[] = { v, i, bp, sz };
+                        return h_call(baga_rt("baga_vec_set_box"), pa, 4, "");
+                    }
+                    if (strcmp(cn, "vec_slice") == 0) {
+                        LLVMValueRef a = coerce(emit_expr_llvm(n->args.data[1]), lg.i64_ty);
+                        LLVMValueRef b = coerce(emit_expr_llvm(n->args.data[2]), lg.i64_ty);
+                        LLVMValueRef pa[] = { v, a, b, sz };
+                        return h_call(baga_rt("baga_vec_slice_box"), pa, 4, "r");
+                    }
+                    /* vec_concat */
+                    LLVMValueRef w = emit_expr_llvm(n->args.data[1]);
+                    if (!w) llvm_unsupported("vec_concat аргумент");
+                    LLVMValueRef pa[] = { v, w, sz };
+                    return h_call(baga_rt("baga_vec_concat_box"), pa, 3, "r");
+                }
                 const char *suf = "i64";
                 if (vt && vt->kind == TYPE_VEC && vt->elem) {
                     if (vt->elem->kind == TYPE_STR) suf = "str";
@@ -2241,7 +2392,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     else if (vt->elem->kind == TYPE_BYTES)
                         llvm_unsupported("Vec<bytes> (само C бекенда; вж. docs/language-en.md)");
                     else if (vt->elem->kind == TYPE_STRUCT)
-                        llvm_unsupported("Vec<struct> (само C бекенда; вж. docs/language-en.md)");
+                        llvm_unsupported("Vec<struct> (анонимен — само C бекенда; вж. docs/language-en.md)");
                 }
                 char rt_name[64];
                 snprintf(rt_name, sizeof rt_name, "baga_%s_%s",

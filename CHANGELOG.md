@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Language — LLVM parity for `Vec<struct>` (L4 closed)
+- LLVM box helpers `baga_vec_{push,get,set,slice,concat}_box` (malloc-boxed
+  element copies, size from the call site) mirror the C preamble; the
+  `Vec<struct>` honest refusal is gone for named struct types.
+- Oracle example `examples/vec_struct.baga` (push/get/set, nested
+  `Vec<Pt>` field, slice/concat, grow past cap) — both backends agree.
+- `Map<K,struct>` stays C-only (the LLVM backend has no `Map` at all).
+- Docs: `Map` keys are `i64`/`str`/`bytes` (R67 follow-up), `map_keys`
+  row, `Vec<struct>` both-backends note (en+bg).
+
 ### Language — LLVM parity for `bytes_h`/`h_bytes`
 - LLVM builders: `baga_bytes_h` (malloc-boxed `{data,len}` header → i64)
   and `baga_h_bytes` (inverse; `h=0` → empty bytes), wired into bmap.

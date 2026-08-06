@@ -1,0 +1,42 @@
+struct Pt { x: i64, y: i64 }
+struct Line { name: str, pts: Vec<Pt> }
+
+fn sum_x(v: Vec<Pt>) -> i64 {
+    let mut s: i64 = 0
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        let p = vec_get(v, i)
+        s = s + p.x
+        i = i + 1
+    }
+    return s
+}
+
+fn main() -> i64 {
+    let v: Vec<Pt> = vec_new()
+    vec_push(v, Pt { x: 1, y: 2 })
+    vec_push(v, Pt { x: 3, y: 4 })
+    let p = vec_get(v, 1)
+    print("get=${p.x},${p.y}")
+    vec_set(v, 0, Pt { x: 9, y: 9 })
+    let p0 = vec_get(v, 0)
+    print("set=${p0.x},${p0.y}")
+    let mut l = Line { name: "L", pts: vec_new() }
+    vec_push(l.pts, Pt { x: 7, y: 8 })
+    let lp = vec_get(l.pts, 0)
+    print("nested=${l.name}:${lp.x},${lp.y}")
+    print("sum=${sum_x(v)}")
+    let sl = vec_slice(v, 0, 1)
+    print("slice=${sum_x(sl)}")
+    let cc = vec_concat(v, sl)
+    print("concat=${sum_x(cc)}")
+    // grow past initial cap 8
+    let g: Vec<Pt> = vec_new()
+    let mut i: i64 = 0
+    while i < 20 {
+        vec_push(g, Pt { x: i, y: i })
+        i = i + 1
+    }
+    print("grow=${sum_x(g)}")
+    return 0
+}

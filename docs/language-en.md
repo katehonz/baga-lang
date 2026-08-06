@@ -690,7 +690,8 @@ Supported element types: `i64` (and `i32`, accepted as `i64`), `str`, `f64`,
 the returned copy does not touch the vector; reference-typed fields like
 `Vec`/`Map` stay shared, as usual for struct assignment). Mixing two
 different struct types in one vector is a compile-time error, just like
-mixing scalars.
+mixing scalars. Works in both backends (LLVM uses the same box helpers;
+oracle: `examples/vec_struct.baga`).
 The element type is a property of the type at the binding site.
 
 `Vec<T>` is a valid type anywhere a type can be written — parameters,
@@ -714,7 +715,8 @@ an element other than `i64`/`str` (`Vec<f64>`) is a compile-time error.
 
 ### 12.5 Maps (dynamic key–value tables)
 
-A `Map` is a heap-allocated hash table. Keys are `i64` or `str`; values are
+A `Map` is a heap-allocated hash table. Keys are `i64`, `str`, or `bytes`
+(`bytes` keys are NUL-safe, compared by content); values are
 `i64`, `str`, `f64`, `bytes`, or a struct type — fixed by the first
 `map_set` (or by a `Map<K, V>` annotation), exactly like `Vec`'s element
 type. Maps are pointers: passing one to a function shares it, and mutations
@@ -731,7 +733,7 @@ in, `map_get` copies out; reference-typed fields (`Vec`/`Map`) stay shared.
 | `map_has(m, key) -> i64` | `1` when the key exists, else `0`. |
 | `map_del(m, key)` | Remove the key (no-op when absent). |
 | `map_len(m) -> i64` | Entry count. |
-| `map_keys(m) -> Vec` | All keys — `Vec<str>` or `Vec<i64>` per the key type. |
+| `map_keys(m) -> Vec` | All keys — `Vec<str>` / `Vec<i64>` / `Vec<bytes>` per the key type. |
 
 ```baga
 fn tally(m: Map<str, i64>, word: str) {
@@ -1562,7 +1564,7 @@ are computed automatically by the **sandak** package manager from the
 | `map_has` | `(m: Map, k: i64 \| str) -> i64` | 1 when the key exists |
 | `map_del` | `(m: Map, k: i64 \| str) -> void` | — |
 | `map_len` | `(m: Map) -> i64` | — |
-| `map_keys` | `(m: Map) -> Vec` | `Vec<str>` / `Vec<i64>` per the key type |
+| `map_keys` | `(m: Map) -> Vec` | `Vec<str>` / `Vec<i64>` / `Vec<bytes>` per the key type |
 | `signal_watch` | `(sig: i64) -> i64` | C1: install handler; 0 ok, -1 error |
 | `signal_check` | `() -> i64` | 0 = none, else signal number |
 | `signal_clear` | `() -> i64` | return and clear pending |
