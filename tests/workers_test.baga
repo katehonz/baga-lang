@@ -1,0 +1,116 @@
+// workers_test.baga — R33 per-shard parallel workers.
+import "rocksbaga/db/workers.baga"
+import "rocksbaga/db/shard.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn wipe_all(dir: str, n: i64) -> i64 !IO {
+    // R35: no job files; still wipe legacy leftovers + shard data
+    unlink(concat(dir, ".jobs.next"))?
+    let mut j: i64 = 1
+    while j < 500 {
+        unlink(concat(concat(dir, ".jobs."), concat(int_to_str(j), ".req")))?
+        unlink(concat(concat(dir, ".jobs."), concat(int_to_str(j), ".rep")))?
+        j = j + 1
+    }
+    if n <= 1 {
+        unlink(concat(dir, ".wal"))?
+        unlink(concat(dir, ".manifest"))?
+        unlink(concat(dir, ".manifest.log"))?
+        let mut g: i64 = 1
+        while g <= 40 {
+            unlink(concat(concat(dir, ".sst."), int_to_str(g)))?
+            unlink(concat(concat(dir, ".bloom."), int_to_str(g)))?
+            g = g + 1
+        }
+        return 0
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let p = concat(concat(dir, ".s"), int_to_str(i))
+        unlink(concat(p, ".wal"))?
+        unlink(concat(p, ".manifest"))?
+        unlink(concat(p, ".manifest.log"))?
+        let mut g2: i64 = 1
+        while g2 <= 40 {
+            unlink(concat(concat(p, ".sst."), int_to_str(g2)))?
+            unlink(concat(concat(p, ".bloom."), int_to_str(g2)))?
+            g2 = g2 + 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Par !Time {
+    print("workers_test:")
+    let dir = "/tmp/baga_workers_t"
+    let n: i64 = 4
+    wipe_all(dir, n)?
+
+    // env for workers
+    // baga can't setenv easily — workers read LSMPATH; we pass dir via env by
+    // writing? engine uses env(). Parent must export. Test sets via... 
+    // workers read LSMPATH — document that test runner sets it.
+    // For in-process: write path is p.dir in submit; worker uses env.
+    // Set by running with LSMPATH=... from shell.
+
+    let p = lsm_parallel_start(dir, n)?
+    check("start", p.ok == 1 && p.n == n)
+
+    let r1 = lsm_parallel_set(p, "alpha", "1")?
+    check("set1", r1 == "+OK\r\n")
+    let r2 = lsm_parallel_set(p, "beta", "2")?
+    check("set2", r2 == "+OK\r\n")
+    let g1 = lsm_parallel_get(p, "alpha")?
+    check("get1", g1 == "$1\r\n1\r\n")
+    let g2 = lsm_parallel_get(p, "beta")?
+    check("get2", g2 == "$1\r\n2\r\n")
+    let gm = lsm_parallel_get(p, "nope")?
+    check("miss", gm == "$-1\r\n")
+    let d1 = lsm_parallel_del(p, "beta")?
+    check("del", d1 == ":1\r\n")
+    let g3 = lsm_parallel_get(p, "beta")?
+    check("del_get", g3 == "$-1\r\n")
+
+    // parallel flood: many sets then gets
+    let mut i: i64 = 0
+    let ids: Vec<i64> = vec_new()
+    while i < 32 {
+        let k = concat("k", int_to_str(i))
+        let id = lsm_parallel_submit(p, LSM_OP_SET(), k, concat("v", int_to_str(i)), "")?
+        vec_push(ids, id)
+        i = i + 1
+    }
+    // wait all (order may interleave on done chan — R35: done = cell2(id, reply_h))
+    let mut left: i64 = 32
+    let mut guard: i64 = 0
+    let done_map: Map<i64, i64> = map_new()
+    while left > 0 && guard < 10000 {
+        let pr = chan_recv2(p.done)
+        check("recv_ok", cell2_0(pr) == 1)
+        let msg = cell2_1(pr)
+        let id = cell2_0(msg)
+        map_set(done_map, id, 1)
+        // discard packed reply (not needed for flood)
+        left = left - 1
+        guard = guard + 1
+    }
+    check("flood_done", left == 0)
+    let g4 = lsm_parallel_get(p, "k7")?
+    check("flood_get", g4 == "$2\r\nv7\r\n")
+
+    lsm_parallel_stop(p)?
+    check("stop", true)
+    print("workers_test: all passed")
+    return 0
+}

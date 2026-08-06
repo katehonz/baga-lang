@@ -1,0 +1,542 @@
+// flush_profile.baga — break down lsm_flush / sst_write / compact cost.
+//
+// Env:
+//   BENCH_N      rows in one flush (default 2000)
+//   BENCH_VLEN   value bytes (default 100)
+//   BENCH_COMPACT_N  keys for multi-flush+compact path (default 2000)
+//
+// Output: PHASE name=… us=… ops=… note=…
+// ops is rows/s for single-flush phases; for COMPACT_* ops is keys/s.
+
+import "rocksbaga/db/engine.baga"
+import "rocksbaga/db/compact.baga"
+import "rocksbaga/table/sstable.baga"
+import "rocksbaga/table/bloom.baga"
+import "rocksbaga/util/codec.baga"
+import "rocksbaga/util/ttl.baga"
+import "std/time/time.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+import "std/bytes/bytes.baga"
+import "std/crypto/crc32c.baga"
+
+fn pad_key(i: i64) -> str {
+    let s = int_to_str(i)
+    let pad = 8 - len(s)
+    if pad <= 0 {
+        return concat("k", s)
+    }
+    return concat("k", concat(str_repeat("0", pad), s))
+}
+
+fn wipe_prefix(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    let mut g: i64 = 1
+    while g <= 800 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn ops_per_s_us(n: i64, us: i64) -> i64 {
+    if us <= 0 {
+        return n * 1000000
+    }
+    return (n * 1000000) / us
+}
+
+fn elapsed_us(t0: i64, t1: i64) -> i64 {
+    let d = t1 - t0
+    if d < 0 {
+        return 0
+    }
+    return d
+}
+
+fn emit(name: str, n: i64, us: i64, note: str) {
+    print(concat(
+        concat(
+            concat(
+                concat(
+                    concat(
+                        concat(concat("PHASE name=", name), " us="),
+                        int_to_str(us)
+                    ),
+                    " ops="
+                ),
+                int_to_str(ops_per_s_us(n, us))
+            ),
+            " note="
+        ),
+        note
+    ))
+}
+
+// Fill memtable only (no flush, rare sync).
+fn fill_mem(prefix: str, n: i64, val: bytes) -> LsmDB !IO !Time {
+    wipe_prefix(prefix)?
+    let mut db = lsm_open(prefix, n + 100, 9999)?
+    if db.ok == 0 {
+        return db
+    }
+    db.sync_every = n + 100
+    let mut i: i64 = 0
+    while i < n {
+        db = lsm_put_b(db, pad_key(i), val)?
+        if db.ok == 0 {
+            return db
+        }
+        i = i + 1
+    }
+    return db
+}
+
+// Build sorted SstRow list from current mem/tomb (same logic as lsm_flush head / R21).
+fn build_rows(db: LsmDB) -> Vec<SstRow> !Time {
+    let now = time_now_ms()?
+    let all = map_keys(db.mem)
+    let tk = map_keys(db.tomb)
+    let ntom = vec_len(tk)
+    let mut ti: i64 = 0
+    while ti < ntom {
+        let k = vec_get(tk, ti)
+        if map_has(db.mem, k) == 0 {
+            vec_push(all, k)
+        }
+        ti = ti + 1
+    }
+    sort_strs(all)
+    let nall = vec_len(all)
+    let rows: Vec<SstRow> = vec_new()
+    let mut i: i64 = 0
+    while i < nall {
+        let k = vec_get(all, i)
+        if map_has(db.mem, k) == 0 {
+            vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
+        } else {
+            let raw = map_get(db.mem, k)
+            let u = ttl_unpack(raw)
+            if ttl_expired(u.expire_at, now) == 1 {
+                vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
+            } else {
+                vec_push(rows, SstRow { op: 1, key: k, val: raw })
+            }
+        }
+        i = i + 1
+    }
+    return rows
+}
+
+// Disk write of already-built body+bloom (mirrors sst_write tail, no rebuild).
+fn sst_write_built(dir: str, gen: i64, built: SstBuilt) -> i64 !IO {
+    let path = sst_path(dir, gen)
+    let fd = open(path, 578, 420)?
+    if fd < 0 {
+        return -1
+    }
+    let body = built.body
+    let crc = crc32c_b(body)
+    let file = bytes_new(8 + bytes_len(body) + 4)
+    let mag = bytes_of_str("BAGASST5")
+    let mut i: i64 = 0
+    while i < 8 {
+        bytes_set(file, i, bytes_at(mag, i))
+        i = i + 1
+    }
+    i = 0
+    while i < bytes_len(body) {
+        bytes_set(file, 8 + i, bytes_at(body, i))
+        i = i + 1
+    }
+    put_u32_le(file, 8 + bytes_len(body), crc)
+    if fd_write_bytes(fd, file) != 0 {
+        close(fd)
+        return -1
+    }
+    if fsync(fd)? != 0 {
+        close(fd)
+        return -1
+    }
+    close(fd)
+    drop(file)
+    if bloom_write_file(dir, gen, built.bloom, built.m)? != 0 {
+        return -1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time {
+    let mut n: i64 = 2000
+    let en = env("BENCH_N")?
+    if en != "" {
+        n = parse_int(en)
+        if n < 64 {
+            n = 64
+        }
+    }
+    let mut vlen: i64 = 100
+    let ev = env("BENCH_VLEN")?
+    if ev != "" {
+        vlen = parse_int(ev)
+        if vlen < 1 {
+            vlen = 1
+        }
+        if vlen > 4096 {
+            vlen = 4096
+        }
+    }
+    let mut cn: i64 = 2000
+    let ec = env("BENCH_COMPACT_N")?
+    if ec != "" {
+        cn = parse_int(ec)
+        if cn < 256 {
+            cn = 256
+        }
+    }
+
+    let prefix = "/tmp/baga_rocks_flush_prof"
+    let val_s = str_repeat("x", vlen)
+    let val = bytes_of_str(val_s)
+
+    print(concat(
+        concat(
+            concat(concat("META n=", int_to_str(n)), " vlen="),
+            int_to_str(vlen)
+        ),
+        concat(" compact_n=", int_to_str(cn))
+    ))
+
+    // ========== Single flush breakdown (no compact) ==========
+    let mut db = fill_mem(prefix, n, val)?
+    if db.ok == 0 {
+        print("FAIL fill")
+        return 1
+    }
+
+    // 1) ROWS: keys + sort + SstRow materialize
+    let mut t0 = monotonic_us()?
+    let rows = build_rows(db)?
+    let mut t1 = monotonic_us()?
+    let us_rows = elapsed_us(t0, t1)
+    emit("ROWS", n, us_rows, "map_keys_sort_build_SstRow")
+    if vec_len(rows) != n {
+        print(concat("FAIL rows=", int_to_str(vec_len(rows))))
+        return 1
+    }
+
+    // 2) BLOOM alone (subset of sst_build)
+    t0 = monotonic_us()?
+    let bloom = bloom_build_bits(rows)
+    t1 = monotonic_us()?
+    let us_bloom = elapsed_us(t0, t1)
+    emit("BLOOM", n, us_bloom, "bloom_build_bits_only")
+    drop(bloom)
+
+    // 3) SST_BUILD (core + bloom + footer in memory)
+    t0 = monotonic_us()?
+    let built = sst_build(rows)
+    t1 = monotonic_us()?
+    let us_build = elapsed_us(t0, t1)
+    emit("SST_BUILD", n, us_build, "sst_build_in_memory_incl_bloom")
+
+    // 4) SST_DISK (write file + fsync + bloom sidecar) on a copy via rebuild
+    //    Use same built buffer once.
+    t0 = monotonic_us()?
+    if sst_write_built(db.dir, db.next_gen, built)? != 0 {
+        print("FAIL sst_write_built")
+        return 1
+    }
+    t1 = monotonic_us()?
+    let us_disk = elapsed_us(t0, t1)
+    emit("SST_DISK", n, us_disk, "write_fsync_bloom_sidecar")
+    // cleanup written probe file so later flush gen stays clean
+    unlink(sst_path(db.dir, db.next_gen))?
+    unlink(bloom_path(db.dir, db.next_gen))?
+    let b_body = built.body
+    let b_bloom = built.bloom
+    drop(b_body)
+    drop(b_bloom)
+
+    // 5) WAL_SYNC (drain buf + fdatasync) — same as flush durable boundary
+    t0 = monotonic_us()?
+    db = lsm_wal_flush_buf(db)?
+    fdatasync(db.wal_fd)?
+    t1 = monotonic_us()?
+    let us_wal = elapsed_us(t0, t1)
+    emit("WAL_SYNC", n, us_wal, "wal_flush_buf_plus_fdatasync")
+
+    // 6) Full sst_write (build+disk) for cross-check
+    t0 = monotonic_us()?
+    if sst_write(db.dir, db.next_gen, rows)? != 0 {
+        print("FAIL sst_write")
+        return 1
+    }
+    t1 = monotonic_us()?
+    let us_sst_write = elapsed_us(t0, t1)
+    emit("SST_WRITE", n, us_sst_write, "full_sst_write_build_plus_disk")
+    unlink(sst_path(db.dir, db.next_gen))?
+    unlink(bloom_path(db.dir, db.next_gen))?
+    drop(rows)
+
+    // 7) MANIFEST write + fsync
+    let gens: Vec<i64> = vec_new()
+    let levels: Vec<i64> = vec_new()
+    vec_push(gens, 1)
+    vec_push(levels, 0)
+    t0 = monotonic_us()?
+    if lsm_write_manifest(db.dir, 2, gens, levels)? != 0 {
+        print("FAIL manifest")
+        return 1
+    }
+    t1 = monotonic_us()?
+    let us_man = elapsed_us(t0, t1)
+    emit("MANIFEST", n, us_man, "write_file_plus_fsync")
+
+    // 8) WAL rotate (close + unlink + open empty)
+    t0 = monotonic_us()?
+    close(db.wal_fd)
+    unlink(concat(db.dir, ".wal"))?
+    let wfd = open(concat(db.dir, ".wal"), 578, 420)?
+    if wfd < 0 {
+        print("FAIL wal rotate")
+        return 1
+    }
+    db.wal_fd = wfd
+    db.wal_off = 0
+    db.wal_buf_len = 0
+    t1 = monotonic_us()?
+    let us_rot = elapsed_us(t0, t1)
+    emit("WAL_ROTATE", n, us_rot, "close_unlink_open")
+
+    // 9) Full lsm_flush_force baseline (includes compact loop; compact_at=9999 → none)
+    //    Refill cleanly for a fair full-flush number.
+    lsm_close(db)?
+    db = fill_mem(prefix, n, val)?
+    if db.ok == 0 {
+        print("FAIL refill")
+        return 1
+    }
+    t0 = monotonic_us()?
+    db = lsm_flush_force(db)?
+    t1 = monotonic_us()?
+    let us_flush = elapsed_us(t0, t1)
+    emit("FLUSH_FORCE", n, us_flush, "lsm_flush_force_no_compact")
+    if db.ok == 0 {
+        print("FAIL flush_force")
+        return 1
+    }
+    lsm_close(db)?
+
+    // ========== Compact path: many L0 flushes ==========
+    wipe_prefix(prefix)?
+    db = lsm_open(prefix, 64, 4)?
+    if db.ok == 0 {
+        print("FAIL open compact")
+        return 1
+    }
+    db.sync_every = cn + 100
+    t0 = monotonic_us()?
+    let mut i: i64 = 0
+    while i < cn {
+        db = lsm_put_b(db, pad_key(i), val)?
+        if db.ok == 0 {
+            print("FAIL put compact path")
+            return 1
+        }
+        i = i + 1
+    }
+    // final force if residual mem
+    if db.mem_n > 0 {
+        db = lsm_flush_force(db)?
+    }
+    t1 = monotonic_us()?
+    let us_multi = elapsed_us(t0, t1)
+    emit("MULTI_FLUSH", cn, us_multi, "flush_at_64_compact_at_4_like_bench")
+
+    // Isolated compact: build L0 files without compact, then compact once.
+    lsm_close(db)?
+    wipe_prefix(prefix)?
+    // flush_at=64, compact_at huge → many L0, no compact during fill
+    db = lsm_open(prefix, 64, 9999)?
+    if db.ok == 0 {
+        print("FAIL open isolate")
+        return 1
+    }
+    db.sync_every = cn + 100
+    i = 0
+    while i < cn {
+        db = lsm_put_b(db, pad_key(i), val)?
+        if db.ok == 0 {
+            print("FAIL put isolate")
+            return 1
+        }
+        i = i + 1
+    }
+    if db.mem_n > 0 {
+        db = lsm_flush_force(db)?
+    }
+    let n_l0 = vec_len(db.gens)
+    // Now enable compact_at and run compact loop like lsm_flush tail
+    db.compact_at = 4
+    t0 = monotonic_us()?
+    let mut guard: i64 = 0
+    let mut more: i64 = 1
+    while more == 1 && guard < 64 {
+        let n0 = lsm_count_level(db.levels, 0)
+        let n1 = lsm_count_level(db.levels, 1)
+        let n2 = lsm_count_level(db.levels, 2)
+        let n3 = lsm_count_level(db.levels, 3)
+        let b0 = lsm_level_bytes(db, 0)?
+        let b1 = lsm_level_bytes(db, 1)?
+        let b2 = lsm_level_bytes(db, 2)?
+        let b3 = lsm_level_bytes(db, 3)?
+        let over0 = lsm_level_over(db, 0, n0, b0)
+        let over1 = lsm_level_over(db, 1, n1, b1)
+        let over2 = lsm_level_over(db, 2, n2, b2)
+        let over3 = lsm_level_over(db, 3, n3, b3)
+        let mut pair: i64 = 0
+        if db.target_bytes <= 0 {
+            if n1 >= 2 || n2 >= 2 || n3 >= 2 {
+                pair = 1
+            }
+        }
+        if over0 == 1 || over1 == 1 || over2 == 1 || over3 == 1 || pair == 1 {
+            db = lsm_compact(db)?
+            if db.ok == 0 {
+                print("FAIL compact")
+                return 1
+            }
+            guard = guard + 1
+        } else {
+            more = 0
+        }
+    }
+    t1 = monotonic_us()?
+    let us_comp = elapsed_us(t0, t1)
+    emit("COMPACT", cn, us_comp, concat(
+        concat(concat("from_l0_files=", int_to_str(n_l0)), " rounds="),
+        int_to_str(guard)
+    ))
+    lsm_close(db)?
+
+    // ========== Derived shares for one FLUSH_FORCE ==========
+    let mut us_core = us_rows + us_build + us_disk + us_wal + us_man + us_rot
+    // bloom is inside build; report non-build residual of build
+    let mut us_build_nobloom = us_build - us_bloom
+    if us_build_nobloom < 0 {
+        us_build_nobloom = 0
+    }
+    let mut pct = 0
+    if us_flush > 0 {
+        pct = (us_core * 100) / us_flush
+    }
+    print(concat(
+        concat(
+            concat(
+                concat(
+                    concat(
+                        concat(
+                            concat(
+                                concat("DERIVE rows_us=", int_to_str(us_rows)),
+                                " bloom_us="
+                            ),
+                            int_to_str(us_bloom)
+                        ),
+                        " build_core_us="
+                    ),
+                    int_to_str(us_build_nobloom)
+                ),
+                " disk_us="
+            ),
+            int_to_str(us_disk)
+        ),
+        concat(
+            concat(
+                concat(
+                    concat(
+                        concat(
+                            concat(" wal_us=", int_to_str(us_wal)),
+                            " man_us="
+                        ),
+                        int_to_str(us_man)
+                    ),
+                    " rot_us="
+                ),
+                int_to_str(us_rot)
+            ),
+            concat(
+                concat(" sum_parts_us=", int_to_str(us_core)),
+                concat(
+                    concat(" flush_force_us=", int_to_str(us_flush)),
+                    concat(" coverage%=", int_to_str(pct))
+                )
+            )
+        )
+    ))
+
+    // Share of FLUSH_FORCE
+    let mut p_rows: i64 = 0
+    let mut p_bloom: i64 = 0
+    let mut p_build: i64 = 0
+    let mut p_disk: i64 = 0
+    let mut p_wal: i64 = 0
+    let mut p_other: i64 = 0
+    if us_flush > 0 {
+        p_rows = (us_rows * 100) / us_flush
+        p_bloom = (us_bloom * 100) / us_flush
+        p_build = (us_build_nobloom * 100) / us_flush
+        p_disk = (us_disk * 100) / us_flush
+        p_wal = (us_wal * 100) / us_flush
+        p_other = 100 - p_rows - p_bloom - p_build - p_disk - p_wal
+        if p_other < 0 {
+            p_other = 0
+        }
+    }
+    print(concat(
+        concat(
+            concat(
+                concat(
+                    concat(
+                        concat(
+                            concat(
+                                concat("SHARE_OF_FLUSH rows%=", int_to_str(p_rows)),
+                                " bloom%="
+                            ),
+                            int_to_str(p_bloom)
+                        ),
+                        " build_core%="
+                    ),
+                    int_to_str(p_build)
+                ),
+                " disk%="
+            ),
+            int_to_str(p_disk)
+        ),
+        concat(
+            concat(
+                concat(" wal%=", int_to_str(p_wal)),
+                " other%="
+            ),
+            int_to_str(p_other)
+        )
+    ))
+
+    // Compact vs multi-flush share
+    let mut p_comp: i64 = 0
+    if us_multi > 0 {
+        p_comp = (us_comp * 100) / us_multi
+    }
+    print(concat(
+        concat(
+            concat("SHARE_OF_MULTI compact_isolated%=", int_to_str(p_comp)),
+            "  (compact timed after L0-only fill; multi includes flushes)"
+        ),
+        ""
+    ))
+
+    print("OK")
+    return 0
+}

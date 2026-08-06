@@ -1,0 +1,97 @@
+// scan_test.baga — R43 SCAN cursor + MATCH.
+import "rocksbaga/db/engine.baga"
+import "rocksbaga/net/server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn wipe(p: str) -> i64 !IO {
+    unlink(concat(p, ".wal"))?
+    unlink(concat(p, ".manifest"))?
+    unlink(concat(p, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(p, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(p, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time {
+    print("scan_test:")
+    check("glob_all", lsm_match_glob("*", "abc") == 1)
+    check("glob_exact", lsm_match_glob("abc", "abc") == 1)
+    check("glob_pre", lsm_match_glob("a*", "abc") == 1)
+    check("glob_suf", lsm_match_glob("*c", "abc") == 1)
+    check("glob_mid", lsm_match_glob("*b*", "abc") == 1)
+    check("glob_no", lsm_match_glob("x*", "abc") == 0)
+
+    let dir = "/tmp/baga_scan_t"
+    wipe(dir)?
+    let mut db = lsm_open(dir, 64, 8)?
+    db.sync_every = 1000
+    db = lsm_put(db, "a1", "1")?
+    db = lsm_put(db, "a2", "2")?
+    db = lsm_put(db, "b1", "3")?
+    db = lsm_put(db, "c9", "4")?
+    db = lsm_put(db, "z", "5")?
+
+    // page through all with COUNT 2
+    let mut cur: i64 = 0
+    let mut total: i64 = 0
+    let mut guard: i64 = 0
+    while guard < 20 {
+        let sc = lsm_scan(db, cur, 2, "")?
+        db = sc.db
+        total = total + vec_len(sc.keys)
+        if sc.next == 0 {
+            guard = 20
+        } else {
+            cur = sc.next
+            guard = guard + 1
+        }
+    }
+    check("scan_all_n", total == 5)
+
+    // MATCH a*
+    let sc2 = lsm_scan(db, 0, 10, "a*")?
+    db = sc2.db
+    check("match_a", vec_len(sc2.keys) == 2)
+    check("match_done", sc2.next == 0)
+
+    // RESP framing
+    let args: Vec<str> = vec_new()
+    vec_push(args, "SCAN")
+    vec_push(args, "0")
+    vec_push(args, "COUNT")
+    vec_push(args, "2")
+    let ex = lsm_exec(db, args)?
+    db = ex.db
+    check("exec_scan", ex.quit == 0 && bytes_len(ex.reply) > 4)
+
+    // MATCH via exec
+    let args2: Vec<str> = vec_new()
+    vec_push(args2, "SCAN")
+    vec_push(args2, "0")
+    vec_push(args2, "MATCH")
+    vec_push(args2, "b*")
+    vec_push(args2, "COUNT")
+    vec_push(args2, "10")
+    let ex2 = lsm_exec(db, args2)?
+    db = ex2.db
+    check("exec_match", ex2.quit == 0)
+
+    lsm_close(db)?
+    print("scan_test: all passed")
+    return 0
+}

@@ -20,6 +20,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
 fn wipe(prefix: str) -> i64 !IO {
     unlink(concat(prefix, ".wal"))?
     unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
     let mut g: i64 = 1
     while g <= 40 {
         unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?

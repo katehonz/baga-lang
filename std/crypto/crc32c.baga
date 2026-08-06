@@ -1,12 +1,32 @@
 // crc32c.baga — CRC-32C (Castagnoli, reflected poly 0x82F63B78).
 // WAL/page checksums. Masked-i64 u32 discipline (std/crypto README).
-// Таблицата се строи при всяко извикване (256 итерации) — ОК на ниво
-// WAL record; ако профилът покаже гореща точка, кеширайте в обвивка.
+//
+// R22: small payloads use bit-reflected soft CRC (no per-call table build).
+// Large payloads use a 256-entry table (built once per call — amortized over
+// long buffers). Profile (n=5000 × 120 B): table-rebuild ~280k ops/s, soft
+// ~1.2M ops/s; 100 KiB favors the table path.
 
 fn u32(x: i64) -> i64 {
     return x & 4294967295
 }
 
+// Soft reflected CRC over one byte of state (inner 8 shifts).
+fn crc32c_soft_byte(c: i64, b: i64) -> i64 {
+    let poly = 2197175160
+    let mut x = u32(c ^ (b & 255))
+    let mut k: i64 = 0
+    while k < 8 {
+        if (x & 1) == 1 {
+            x = u32((x >> 1) ^ poly)
+        } else {
+            x = x >> 1
+        }
+        k = k + 1
+    }
+    return x
+}
+
+// Table built once per large-buffer call (amortized).
 fn crc32c_table() -> Vec<i64> {
     let t = vec_new()
     let poly = 2197175160
@@ -24,13 +44,30 @@ fn crc32c_table() -> Vec<i64> {
     return t
 }
 
+// Below this length soft CRC beats rebuild-table; above, table wins.
+fn crc32c_table_threshold() -> i64 {
+    return 4096
+}
+
 // Running CRC state over a chunk; init with 4294967295 (0xFFFFFFFF).
 // Chain: st = crc32c_update(st, next_chunk).
 fn crc32c_update(crc: i64, data: bytes) -> i64 {
+    let n = bytes_len(data)
+    if n < crc32c_table_threshold() {
+        let mut c = crc
+        let mut i: i64 = 0
+        while i < n {
+            c = crc32c_soft_byte(c, bytes_at(data, i))
+            i = i + 1
+        }
+        return c
+    }
     let t = crc32c_table()
     let mut c = crc
-    for i in 0..bytes_len(data) {
+    let mut i: i64 = 0
+    while i < n {
         c = u32(vec_get(t, (c ^ bytes_at(data, i)) & 255) ^ (c >> 8))
+        i = i + 1
     }
     return c
 }

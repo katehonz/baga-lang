@@ -20,6 +20,14 @@ fn main() -> i64 !Time {
     let m2 = monotonic_ms()?
     check("monotonic_advances", m2 >= m1)
     check("spin", spin >= 0)
+    let u1 = monotonic_us()?
+    spin = 0
+    for i in 0..100000 {
+        spin = spin + i
+    }
+    let u2 = monotonic_us()?
+    check("monotonic_us_advances", u2 >= u1)
+    check("monotonic_us_scale", u1 > 0)
     print("time_test: all passed")
     return 0
 }

@@ -1,6 +1,7 @@
 // compact.baga — level pick, merge, and promote (L0…L3).
 
 import "types.baga"
+import "manifest.baga"
 import "../util/codec.baga"
 import "../util/ttl.baga"
 import "../cache/page.baga"
@@ -8,31 +9,6 @@ import "../table/sstable.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/time/time.baga"
-
-fn lsm_manifest_path(dir: str) -> str {
-    return concat(dir, ".manifest")
-}
-
-fn lsm_write_manifest(dir: str, next_gen: i64, gens: Vec<i64>, levels: Vec<i64>) -> i64 !IO {
-    let mut s = concat(int_to_str(next_gen), "\n")
-    for i in 0..vec_len(gens) {
-        let mut lv: i64 = 0
-        if i < vec_len(levels) {
-            lv = vec_get(levels, i)
-        }
-        s = concat(s, concat(int_to_str(vec_get(gens, i)), " "))
-        s = concat(s, concat(int_to_str(lv), "\n"))
-    }
-    if write_file(lsm_manifest_path(dir), s)? != 0 {
-        return -1
-    }
-    let fd = open(lsm_manifest_path(dir), 0, 0)?
-    if fd >= 0 {
-        fsync(fd)?
-        close(fd)
-    }
-    return 0
-}
 
 fn lsm_count_level(levels: Vec<i64>, want: i64) -> i64 {
     let mut n: i64 = 0
@@ -118,8 +94,92 @@ fn lsm_take_oldest(idxs: Vec<i64>, k: i64) -> Vec<i64> {
     return out
 }
 
-// R8 pick: merge_pick==0 → all idxs; else oldest max(2, merge_pick) (capped by n).
-// With byte targets: grow the pick until cumulative size ≥ level target.
+// R31: pick `k` SST indices by size score (larger first). Tie-break: lower
+// index (older) wins so equal-size L0 still prefers oldest — preserves R8.
+// Returned indices are sorted ascending (oldest-first) for correct merge order.
+fn lsm_pick_scored(db: LsmDB, idxs: Vec<i64>, k: i64) -> Vec<i64> !IO {
+    let n = vec_len(idxs)
+    let mut kk = k
+    if kk > n {
+        kk = n
+    }
+    if kk < 2 {
+        return lsm_take_oldest(idxs, n)
+    }
+    // Candidate arrays parallel to idxs.
+    let cidx: Vec<i64> = vec_new()
+    let csz: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        let ix = vec_get(idxs, i)
+        let gen = vec_get(db.gens, ix)
+        let sz = lsm_sst_bytes(db.dir, gen)?
+        vec_push(cidx, ix)
+        vec_push(csz, sz)
+        i = i + 1
+    }
+    // Selection: repeatedly pull max size (then min ix) into out — O(k·n), fine for L0.
+    let out: Vec<i64> = vec_new()
+    let used: Map<i64, i64> = map_new()
+    let mut t: i64 = 0
+    while t < kk {
+        let mut best: i64 = 0 - 1
+        let mut best_sz: i64 = 0 - 1
+        let mut best_ix: i64 = 0
+        let mut j: i64 = 0
+        while j < n {
+            let ix = vec_get(cidx, j)
+            if map_has(used, ix) == 0 {
+                let sz = vec_get(csz, j)
+                if best < 0 || sz > best_sz || (sz == best_sz && ix < best_ix) {
+                    best = j
+                    best_sz = sz
+                    best_ix = ix
+                }
+            }
+            j = j + 1
+        }
+        if best < 0 {
+            t = kk
+        } else {
+            let ix2 = vec_get(cidx, best)
+            map_set(used, ix2, 1)
+            vec_push(out, ix2)
+            t = t + 1
+        }
+    }
+    // Ascending index order for fold (older gens first).
+    sort_i64_asc(out)
+    return out
+}
+
+// In-place ascending sort of Vec<i64> (small n).
+fn sort_i64_asc(v: Vec<i64>) {
+    let n = vec_len(v)
+    let mut i: i64 = 1
+    while i < n {
+        let key = vec_get(v, i)
+        let mut j = i - 1
+        let mut moving = 1
+        while moving == 1 {
+            if j < 0 {
+                moving = 0
+            } else {
+                if vec_get(v, j) <= key {
+                    moving = 0
+                } else {
+                    vec_set(v, j + 1, vec_get(v, j))
+                    j = j - 1
+                }
+            }
+        }
+        vec_set(v, j + 1, key)
+        i = i + 1
+    }
+}
+
+// R8/R31 pick: merge_pick==0 → all idxs; else score-pick max(2, merge_pick).
+// With byte targets: grow k until cumulative size of scored pick ≥ level target.
 fn lsm_pick_merge(db: LsmDB, idxs: Vec<i64>, level: i64) -> Vec<i64> !IO {
     let n = vec_len(idxs)
     if n < 2 {
@@ -137,31 +197,27 @@ fn lsm_pick_merge(db: LsmDB, idxs: Vec<i64>, level: i64) -> Vec<i64> !IO {
     }
     let tgt = lsm_level_target(db, level)
     if tgt > 0 {
-        let mut sum: i64 = 0
-        let mut i: i64 = 0
+        // Grow k until the k largest (scored) cover the byte target.
+        let mut kk = k
         let mut done: i64 = 0
-        while i < n && done == 0 {
-            let gen = vec_get(db.gens, vec_get(idxs, i))
-            sum = sum + lsm_sst_bytes(db.dir, gen)?
-            i = i + 1
-            if i >= 2 && sum >= tgt {
-                if i >= k {
-                    k = i
-                    done = 1
-                }
+        while kk <= n && done == 0 {
+            let cand = lsm_pick_scored(db, idxs, kk)?
+            let mut sum: i64 = 0
+            let mut ci: i64 = 0
+            while ci < vec_len(cand) {
+                let gen = vec_get(db.gens, vec_get(cand, ci))
+                sum = sum + lsm_sst_bytes(db.dir, gen)?
+                ci = ci + 1
+            }
+            if sum >= tgt || kk == n {
+                k = kk
+                done = 1
+            } else {
+                kk = kk + 1
             }
         }
-        if done == 0 {
-            k = n
-        }
-        if k > n {
-            k = n
-        }
-        if k < 2 {
-            k = 2
-        }
     }
-    return lsm_take_oldest(idxs, k)
+    return lsm_pick_scored(db, idxs, k)?
 }
 
 // Merge gens at given indices (ascending order), write new SST at `out_level`.
@@ -182,25 +238,27 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
         cur = sst_fold_into(cur, db.dir, gen, db.sst_fds, db.sst_sizes, acc, tomb)?
     }
     db.cache = cur
-    let keys = map_keys(acc)
-    let tkeys = map_keys(tomb)
-    let all: Vec<str> = vec_new()
-    for ki in 0..vec_len(keys) {
-        vec_push(all, vec_get(keys, ki))
-    }
+    // R21: sort map_keys(acc) in place; append pure tombs when keep_tombs.
+    let all = map_keys(acc)
     if keep_tombs == 1 {
-        for ti in 0..vec_len(tkeys) {
+        let tkeys = map_keys(tomb)
+        let ntk = vec_len(tkeys)
+        let mut ti: i64 = 0
+        while ti < ntk {
             let k = vec_get(tkeys, ti)
             if map_has(acc, k) == 0 {
                 vec_push(all, k)
             }
+            ti = ti + 1
         }
     }
     sort_strs(all)
+    let nall = vec_len(all)
     let rows: Vec<SstRow> = vec_new()
-    for ki in 0..vec_len(all) {
+    let mut ki: i64 = 0
+    while ki < nall {
         let k = vec_get(all, ki)
-        if map_has(tomb, k) == 1 && map_has(acc, k) == 0 {
+        if map_has(acc, k) == 0 {
             vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
         } else {
             let raw = map_get(acc, k)
@@ -214,6 +272,7 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
                 vec_push(rows, SstRow { op: 1, key: k, val: raw })
             }
         }
+        ki = ki + 1
     }
     let new_gen = db.next_gen
     if vec_len(rows) > 0 {
@@ -223,12 +282,14 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
         }
         db.next_gen = new_gen + 1
     }
-    // Mark which indices were merged
+    // Mark which indices were merged; collect deleted gen ids for edit log.
     let dropm: Map<i64, i64> = map_new()
+    let dels: Vec<i64> = vec_new()
     for ii in 0..vec_len(idxs) {
         let ix = vec_get(idxs, ii)
         map_set(dropm, ix, 1)
         let g = vec_get(db.gens, ix)
+        vec_push(dels, g)
         sst_fd_drop(db.cache, db.sst_fds, db.sst_sizes, g)?
         map_del(db.sst_meta, g)
         unlink(sst_path(db.dir, g))?
@@ -257,13 +318,28 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
     }
     db.gens = ng
     db.levels = nl
+    let mut add_g: i64 = 0
+    if vec_len(rows) > 0 {
+        add_g = new_gen
+    }
     drop(rows)  // R18: on disk (sst_write copies); row field values live in acc
     drop(acc)   // R18: entry boxes/buckets dead after the write
     drop(tomb)
-    if lsm_write_manifest(db.dir, db.next_gen, db.gens, db.levels)? != 0 {
+    // R40: one fsync batch of DELs + optional ADD + NEXT
+    let na = lsm_manifest_log_merge(db.dir, dels, add_g, out_level, db.next_gen)?
+    if na < 0 {
         db.ok = 0
         return db
     }
+    db.manifest_edits = db.manifest_edits + na
+    let ec = lsm_manifest_maybe_compact(
+        db.dir, db.next_gen, db.gens, db.levels, db.manifest_edits
+    )?
+    if ec < 0 {
+        db.ok = 0
+        return db
+    }
+    db.manifest_edits = ec
     return db
 }
 

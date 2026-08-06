@@ -1,0 +1,19 @@
+=== rocksbaga flush/sst/compact profile ===
+n=2000 vlen=100 compact_n=2000 host=deb1 x86_64
+
+META n=2000 vlen=100 compact_n=2000
+PHASE name=ROWS us=757 ops=2642007 note=map_keys_sort_build_SstRow
+PHASE name=BLOOM us=87 ops=22988505 note=bloom_build_bits_only
+PHASE name=SST_BUILD us=1648 ops=1213592 note=sst_build_in_memory_incl_bloom
+PHASE name=SST_DISK us=8645 ops=231347 note=write_fsync_bloom_sidecar
+PHASE name=WAL_SYNC us=1386 ops=1443001 note=wal_flush_buf_plus_fdatasync
+PHASE name=SST_WRITE us=5103 ops=391926 note=full_sst_write_build_plus_disk
+PHASE name=MANIFEST us=1147 ops=1743679 note=write_file_plus_fsync
+PHASE name=WAL_ROTATE us=105 ops=19047619 note=close_unlink_open
+PHASE name=FLUSH_FORCE us=8405 ops=237953 note=lsm_flush_force_no_compact
+PHASE name=MULTI_FLUSH us=263467 ops=7591 note=flush_at_64_compact_at_4_like_bench
+PHASE name=COMPACT us=10813 ops=184962 note=from_l0_files=32 rounds=1
+DERIVE rows_us=757 bloom_us=87 build_core_us=1561 disk_us=8645 wal_us=1386 man_us=1147 rot_us=105 sum_parts_us=13688 flush_force_us=8405 coverage%=162
+SHARE_OF_FLUSH rows%=9 bloom%=1 build_core%=18 disk%=102 wal%=16 other%=0
+SHARE_OF_MULTI compact_isolated%=4  (compact timed after L0-only fill; multi includes flushes)
+OK

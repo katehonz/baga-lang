@@ -35,12 +35,27 @@ fn ttl_pack(val: bytes, expire_at: i64) -> bytes {
     return out
 }
 
+// Magic match without str_of_bytes (R23 hot get path).
+fn ttl_magic_ok(raw: bytes) -> i64 {
+    if bytes_len(raw) < 8 {
+        return 0
+    }
+    let m = ttl_magic_str()
+    let mut i: i64 = 0
+    while i < 8 {
+        if (bytes_at(raw, i) & 255) != (char_at(m, i) & 255) {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
 fn ttl_unpack(raw: bytes) -> TtlVal {
     if bytes_len(raw) < 16 {
         return TtlVal { expire_at: 0, val: raw }
     }
-    let mag = str_of_bytes(bytes_slice(raw, 0, 8))
-    if mag != ttl_magic_str() {
+    if ttl_magic_ok(raw) == 0 {
         return TtlVal { expire_at: 0, val: raw }
     }
     let exp = get_i64_le(raw, 8)

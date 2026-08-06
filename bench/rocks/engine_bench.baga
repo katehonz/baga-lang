@@ -6,7 +6,8 @@
 //   BENCH_VLEN   value bytes (default 100)
 //   BENCH_MODE   durable | batch  (default durable)
 //     durable: sync_every=1  (fsync each put — worst case, fairest vs RocksDB sync)
-//     batch:   sync_every=N  (fsync every N puts; closer to bulk load)
+//     batch:   sync_every=N, flush_at=N  (mem+wal only; flush_force at end — bulk load)
+//   BENCH_FLUSH_AT  override flush threshold (0 = mode default)
 //
 // Output lines (machine-parseable):
 //   META n=… vlen=… mode=…
@@ -77,8 +78,25 @@ fn main() -> i64 !IO !Time {
     let prefix = "/tmp/baga_rocks_bench"
     wipe_prefix(prefix)?
 
-    // flush_at: moderately small so compaction runs; not every put
-    let mut db = lsm_open(prefix, 64, 4)?
+    // flush_at: durable keeps small L0 pressure; batch holds all puts in mem
+    // then flush_force once (fairer vs RocksDB WriteOptions.sync=false + flush).
+    let mut flush_at: i64 = 64
+    if mode == "batch" {
+        flush_at = n
+        if flush_at < 256 {
+            flush_at = 256
+        }
+    } else {
+        mode = "durable"
+    }
+    let efa = env("BENCH_FLUSH_AT")?
+    if efa != "" {
+        let fa = parse_int(efa)
+        if fa > 0 {
+            flush_at = fa
+        }
+    }
+    let mut db = lsm_open(prefix, flush_at, 4)?
     if db.ok == 0 {
         print("FAIL open")
         return 1
@@ -90,7 +108,6 @@ fn main() -> i64 !IO !Time {
         }
     } else {
         db.sync_every = 1
-        mode = "durable"
     }
 
     print(concat(concat(concat(concat(concat("META n=", int_to_str(n)), " vlen="), int_to_str(vlen)), " mode="), mode))

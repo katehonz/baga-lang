@@ -23,9 +23,9 @@ against the same oracle, RSA-PSS / PKCS#1 likewise. The TLS 1.3 stack
   running state with `4294967295` (0xFFFFFFFF) and chain incrementally:
   `st = crc32c_update(st, chunk)`, then `crc32c_final(st)`; `crc32c_b` is the
   one-shot form. Validated against the published iSCSI vector set
-  (`tests/std/crc32c_test.baga`). Perf note: the 256-entry table is rebuilt on
-  every `crc32c_update` call — fine at WAL-record scale; cache it in a wrapper
-  if profiling shows a hot spot.
+  (`tests/std/crc32c_test.baga`). Perf (R22): payloads under 4 KiB use a
+  bit-reflected soft path (no per-call table rebuild — WAL-hot); larger
+  buffers use a 256-entry table built once per call (amortized).
 - `ct_eq(a: str, b: str) -> bool` — constant-time string equality; time depends on length only, never on content.
 - `ct_eq_bytes(a: Vec<i64>, b: Vec<i64>) -> bool` — constant-time equality over byte buffers.
 - `ct_eq_b(a: bytes, b: bytes) -> bool` — constant-time equality over native `bytes`.

@@ -344,7 +344,12 @@ struct SstLookup {
     sst_meta: Map<i64, SstMeta>,
     found: i64,
     alive: i64,
-    val: bytes
+    val: bytes,
+    // R23: get-path hot restart-block (owned; not used by compact/scan)
+    hot_gen: i64,
+    hot_off: i64,
+    hot_n: i64,
+    hot_data: bytes
 }
 
 // Open or reuse cached SST fd (R11). R19: also register fd on the page cache
@@ -669,11 +674,16 @@ fn sst_rec_at_fd(pc: PageCache, fd: i64, gen: i64, body_off: i64) -> SstKeyAt !I
 
 struct SstHitPc {
     pc: PageCache,
-    hit: SstHit
+    hit: SstHit,
+    hot_gen: i64,
+    hot_off: i64,
+    hot_n: i64,
+    hot_data: bytes
 }
 
 // R12/R13: cached SST layout for partial get.
 // idx = restart offsets; rkeys = first key of each restart block (R13).
+// R27: bcrcs = per-block crc32c for tag=5 (empty for v4).
 struct SstMeta {
     ok: i64,
     core_len: i64,
@@ -683,14 +693,16 @@ struct SstMeta {
     first_key: str,
     last_key: str,
     idx: bytes,      // n_restarts × u32 LE offsets
-    rkeys: Vec<str>  // n_restarts restart keys (in-memory bsearch)
+    rkeys: Vec<str>, // n_restarts restart keys (in-memory bsearch)
+    bcrcs: bytes     // n_restarts × u32 LE block CRCs (tag 5 only)
 }
 
 fn sst_meta_empty() -> SstMeta {
     let empty: Vec<str> = vec_new()
     return SstMeta {
         ok: 0, core_len: 0, n_restarts: 0, idx_base: 0, tag: 0,
-        first_key: "", last_key: "", idx: bytes_new(0), rkeys: empty
+        first_key: "", last_key: "", idx: bytes_new(0), rkeys: empty,
+        bcrcs: bytes_new(0)
     }
 }
 
@@ -771,26 +783,66 @@ fn sst_meta_load(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstMetaLoad !I
     }
     let idx = bytes_slice(ir.data, 0, n_restarts * 4)
     let first_key = vec_get(rkeys, 0)
+    // R27: load per-block CRCs for BAGASST5 (after u32 N in core).
+    let mut bcrcs = bytes_new(0)
+    if tag == 5 {
+        let crc_off = 8 + idx_base + n_restarts * 4 + 4
+        let crc_len = n_restarts * 4
+        let cr = pc_read_at(cur, fd, gen, crc_off, crc_len)?
+        cur = cr.pc
+        if bytes_len(cr.data) < crc_len {
+            return SstMetaLoad { pc: cur, meta: bad }
+        }
+        bcrcs = cr.data
+    }
     return SstMetaLoad {
         pc: cur,
         meta: SstMeta {
             ok: 1, core_len: core_len, n_restarts: n_restarts, idx_base: idx_base,
-            tag: tag, first_key: first_key, last_key: last_key, idx: idx, rkeys: rkeys
+            tag: tag, first_key: first_key, last_key: last_key, idx: idx, rkeys: rkeys,
+            bcrcs: bcrcs
         }
     }
 }
 
+// R27: verify block payload against meta.bcrcs[bi]. 1 = ok, 0 = fail/skip.
+// tag≠5 or missing table → ok (no check). Soft CRC is cheap for ~1 KiB blocks.
+fn sst_block_crc_ok(meta: SstMeta, bi: i64, block: bytes) -> i64 {
+    if meta.tag != 5 {
+        return 1
+    }
+    if bi < 0 || bi >= meta.n_restarts {
+        return 0
+    }
+    if bytes_len(meta.bcrcs) < (bi + 1) * 4 {
+        return 0
+    }
+    let want = get_u32_le(meta.bcrcs, bi * 4)
+    let got = crc32c_b(block)
+    if got != want {
+        return 0
+    }
+    return 1
+}
+
 // Partial get using cached meta (R12) + in-memory restart-key bsearch (R13).
-fn sst_lookup_with_meta(pc: PageCache, fd: i64, gen: i64, meta: SstMeta, key: str) -> SstHitPc !IO {
+// R23: optional hot span (gen/off/n/data) reuses last restart block without
+// re-copying from the page cache — get-path only (caller owns hot_*).
+fn sst_lookup_with_meta(pc: PageCache, fd: i64, gen: i64, meta: SstMeta, key: str,
+                        hot_gen: i64, hot_off: i64, hot_n: i64, hot_data: bytes) -> SstHitPc !IO {
     let miss = SstHit { found: 0, alive: 0, val: bytes_new(0) }
+    let mut hg = hot_gen
+    let mut ho = hot_off
+    let mut hn = hot_n
+    let mut hd = hot_data
     if meta.ok == 0 {
-        return SstHitPc { pc: pc, hit: miss }
+        return SstHitPc { pc: pc, hit: miss, hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd }
     }
     if str_cmp(key, meta.first_key) < 0 {
-        return SstHitPc { pc: pc, hit: miss }
+        return SstHitPc { pc: pc, hit: miss, hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd }
     }
     if str_cmp(key, meta.last_key) > 0 {
-        return SstHitPc { pc: pc, hit: miss }
+        return SstHitPc { pc: pc, hit: miss, hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd }
     }
     let mut cur = pc
     let n_restarts = meta.n_restarts
@@ -824,37 +876,37 @@ fn sst_lookup_with_meta(pc: PageCache, fd: i64, gen: i64, meta: SstMeta, key: st
     }
     let bspan = end - start
     if bspan < 0 || bspan > 16777216 {
-        return SstHitPc { pc: cur, hit: miss }
+        return SstHitPc { pc: cur, hit: miss, hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd }
     }
-    let br2 = pc_read_at(cur, fd, gen, 8 + start, bspan)?
-    cur = br2.pc
-    let block = br2.data
-    let mut pos: i64 = 0
-    let mut go: i64 = 1
-    let mut hit = miss
-    while go == 1 {
-        if pos >= bytes_len(block) {
-            go = 0
+    let file_off = 8 + start
+    let mut block = bytes_new(0)
+    if hg == gen && ho == file_off && hn == bspan && bytes_len(hd) == bspan {
+        block = hd
+    } else {
+        let br2 = pc_read_at(cur, fd, gen, file_off, bspan)?
+        cur = br2.pc
+        // replace hot span
+        if hn > 0 {
+            let old = hd
+            hd = br2.data
+            drop(old)
         } else {
-            let rec = sst_rec_at(block, pos)
-            if rec.ok == 0 {
-                go = 0
-            } else {
-                let c = str_cmp(rec.key, key)
-                if c == 0 {
-                    hit = sst_hit_from_row(SstRow { op: rec.op, key: rec.key, val: rec.val })
-                    go = 0
-                } else {
-                    if c > 0 {
-                        go = 0
-                    } else {
-                        pos = rec.next
-                    }
-                }
-            }
+            hd = br2.data
         }
+        hg = gen
+        ho = file_off
+        hn = bspan
+        block = hd
     }
-    return SstHitPc { pc: cur, hit: hit }
+    // R27: get path does not re-check block CRC (R11 perf — soft CRC of a
+    // ~1 KiB block per get cut throughput ~4×). Scan/compact verify on load.
+    // R23: no-alloc key compare on the block; materialize only on hit.
+    let rec = block_find(block, key)
+    if rec.ok == 0 {
+        return SstHitPc { pc: cur, hit: miss, hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd }
+    }
+    let hit = sst_hit_from_row(SstRow { op: rec.op, key: rec.key, val: rec.val })
+    return SstHitPc { pc: cur, hit: hit, hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd }
 }
 
 // Legacy entry (uncached meta) — kept for callers that do not pass a meta map.
@@ -865,17 +917,25 @@ fn sst_lookup_partial(pc: PageCache, fd: i64, gen: i64, fsize: i64, key: str, sk
         // still no embedded bloom on this path — bloom sidecar is preferred
     }
     if ml.meta.ok == 0 {
-        return SstHitPc { pc: ml.pc, hit: SstHit { found: 0, alive: 0, val: bytes_new(0) } }
+        return SstHitPc {
+            pc: ml.pc, hit: SstHit { found: 0, alive: 0, val: bytes_new(0) },
+            hot_gen: 0 - 1, hot_off: 0 - 1, hot_n: 0, hot_data: bytes_new(0)
+        }
     }
-    return sst_lookup_with_meta(ml.pc, fd, gen, ml.meta, key)?
+    return sst_lookup_with_meta(ml.pc, fd, gen, ml.meta, key, 0 - 1, 0 - 1, 0, bytes_new(0))?
 }
 
-// Newest-first lookup. R9–R12: bloom + fd + footer/index meta caches.
+// Newest-first lookup. R9–R13 + R23 hot span on get path.
 // v4/v5 partial page-cache path; older formats full read.
 fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64, i64>,
-           meta: Map<i64, SstMeta>, dir: str, gens: Vec<i64>, key: str) -> SstLookup !IO {
+           meta: Map<i64, SstMeta>, dir: str, gens: Vec<i64>, key: str,
+           hot_gen: i64, hot_off: i64, hot_n: i64, hot_data: bytes) -> SstLookup !IO {
     let mut cur = pc
     let mut bc = blooms
+    let mut hg = hot_gen
+    let mut ho = hot_off
+    let mut hn = hot_n
+    let mut hd = hot_data
     let mut i = vec_len(gens) - 1
     while i >= 0 {
         let gen = vec_get(gens, i)
@@ -904,7 +964,8 @@ fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64
                             if h.found == 1 {
                                 return SstLookup {
                                     pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes,
-                                    sst_meta: meta, found: 1, alive: h.alive, val: h.val
+                                    sst_meta: meta, found: 1, alive: h.alive, val: h.val,
+                                    hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd
                                 }
                             }
                         }
@@ -918,12 +979,17 @@ fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64
                         if str_cmp(key, m.last_key) > 0 {
                             i = i - 1
                         } else {
-                            let r = sst_lookup_with_meta(cur, fd, gen, m, key)?
+                            let r = sst_lookup_with_meta(cur, fd, gen, m, key, hg, ho, hn, hd)?
                             cur = r.pc
+                            hg = r.hot_gen
+                            ho = r.hot_off
+                            hn = r.hot_n
+                            hd = r.hot_data
                             if r.hit.found == 1 {
                                 return SstLookup {
                                     pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes,
-                                    sst_meta: meta, found: 1, alive: r.hit.alive, val: r.hit.val
+                                    sst_meta: meta, found: 1, alive: r.hit.alive, val: r.hit.val,
+                                    hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd
                                 }
                             }
                             i = i - 1
@@ -937,7 +1003,8 @@ fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64
     }
     return SstLookup {
         pc: cur, blooms: bc, sst_fds: fds, sst_sizes: sizes, sst_meta: meta,
-        found: 0, alive: 0, val: bytes_new(0)
+        found: 0, alive: 0, val: bytes_new(0),
+        hot_gen: hg, hot_off: ho, hot_n: hn, hot_data: hd
     }
 }
 
@@ -1000,7 +1067,15 @@ fn sst_scan_load_block(sc: SstScan) -> SstScan !IO {
         s.block = bytes_new(0)
         return s
     }
-    s.block = br.data
+    // R27: per-block crc32c (BAGASST5) — fail closed on mismatch.
+    let blk = br.data
+    if sst_block_crc_ok(s.meta, s.bi, blk) == 0 {
+        drop(blk)
+        s.open = 0
+        s.block = bytes_new(0)
+        return s
+    }
+    s.block = blk
     s.pos = 0
     return s
 }
@@ -1079,6 +1154,8 @@ fn sst_scan_next(sc: SstScan) -> SstScanStep !IO {
 
 // Fold every row of one SST into acc/tomb maps (R20 compact path).
 // Returns updated page cache. Uses block scan when v4/v5; else full sst_load.
+// R27: if meta is v4/v5, never fall back to full load after CRC fail mid-scan
+// (fail closed — leave acc/tomb partially updated from prior blocks only).
 fn sst_fold_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, sizes: Map<i64, i64>,
                  acc: Map<str, bytes>, tomb: Map<str, i64>) -> PageCache !IO {
     let fd = sst_fd_get(pc, fds, sizes, dir, gen)?
@@ -1087,7 +1164,11 @@ fn sst_fold_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, sizes: M
     }
     let fsize = map_get(sizes, gen)
     let mut sc = sst_scan_begin(pc, fd, gen, fsize)?
-    if sc.open == 1 {
+    // v4/v5: meta.ok=1 even if first block CRC fails (open=0).
+    if sc.meta.ok == 1 {
+        if sc.open == 0 {
+            return sc.pc
+        }
         let mut go: i64 = 1
         while go == 1 {
             let st = sst_scan_next(sc)?
@@ -1109,7 +1190,7 @@ fn sst_fold_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, sizes: M
         }
         return sc.pc
     }
-    // Legacy formats: full-file parse (same as pre-R20).
+    // Legacy formats only: full-file parse (same as pre-R20).
     let ld = sst_load(sc.pc, dir, gen)?
     let prows = ld.parse.rows
     if ld.parse.ok == 1 {

@@ -1,0 +1,509 @@
+// workers.baga — per-shard exclusive workers (R33 multi-core writers).
+//
+// LSM_PARALLEL=1 + LSM_SHARDS=N:
+//   N go_bg workers; worker i exclusively owns <dir> / <dir>.s{i}.
+// Network / test harness enqueues jobs as i64 cell2 trees (no disk hop).
+//
+// R35: in-memory mailbox — payloads on channels (i64 only).
+// R37: cheaper hop —
+//   • short-string pack (n≤8 = one cell2, empty = 0)
+//   • typed reply codes (no pack of "+OK\r\n" every SET)
+//   • skip unpack val/extra when op does not need them
+//   • id alloc lock-free (single submitter thread)
+//
+// PING stays on the caller thread. SET/GET/DEL hop to the key's shard worker.
+
+import "engine.baga"
+import "shard.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn LSM_OP_SET() -> i64 { return 1 }
+fn LSM_OP_GET() -> i64 { return 2 }
+fn LSM_OP_DEL() -> i64 { return 3 }
+fn LSM_OP_SETEX() -> i64 { return 4 }
+fn LSM_OP_FLUSH() -> i64 { return 5 }
+
+// Reply kinds on done channel: cell2(id, cell2(kind, payload_h))
+// payload_h is 0 for fixed replies; packed bulk/err body for BULK/ERR.
+fn LSM_REP_OK() -> i64 { return 1 }
+fn LSM_REP_NIL() -> i64 { return 2 }
+fn LSM_REP_INT0() -> i64 { return 3 }
+fn LSM_REP_INT1() -> i64 { return 4 }
+fn LSM_REP_BULK() -> i64 { return 5 }
+fn LSM_REP_ERR() -> i64 { return 6 }
+
+// --- R35/R37: pack str ↔ cell2 ---
+// empty → 0
+// n≤8  → cell2(n, word)          (one node; word holds LE bytes)
+// n>8  → cell2(n, cell2(w0, …))  (word list)
+
+fn lsm_mb_pack_str(s: str) -> i64 {
+    let n = len(s)
+    if n <= 0 {
+        return 0
+    }
+    if n <= 8 {
+        let mut w: i64 = 0
+        let mut j: i64 = 0
+        while j < n {
+            let c = char_at(s, j) & 255
+            w = w | (c << (j * 8))
+            j = j + 1
+        }
+        return cell2(n, w)
+    }
+    let nwords = (n + 7) / 8
+    let mut rest: i64 = 0
+    let mut wi = nwords - 1
+    while wi >= 0 {
+        let off = wi * 8
+        let mut w: i64 = 0
+        let mut j: i64 = 0
+        while j < 8 && off + j < n {
+            let c = char_at(s, off + j) & 255
+            w = w | (c << (j * 8))
+            j = j + 1
+        }
+        rest = cell2(w, rest)
+        wi = wi - 1
+    }
+    return cell2(n, rest)
+}
+
+fn lsm_mb_unpack_str(h: i64) -> str {
+    if h == 0 {
+        return ""
+    }
+    let n = cell2_0(h)
+    if n <= 0 {
+        return ""
+    }
+    let b = bytes_new(n)
+    if n <= 8 {
+        let w = cell2_1(h)
+        let mut j: i64 = 0
+        while j < n {
+            bytes_set(b, j, (w >> (j * 8)) & 255)
+            j = j + 1
+        }
+        return str_of_bytes(b)
+    }
+    let mut words = cell2_1(h)
+    let mut off: i64 = 0
+    while off < n {
+        let w = cell2_0(words)
+        words = cell2_1(words)
+        let mut j: i64 = 0
+        while j < 8 && off + j < n {
+            bytes_set(b, off + j, (w >> (j * 8)) & 255)
+            j = j + 1
+        }
+        off = off + 8
+    }
+    return str_of_bytes(b)
+}
+
+// Job: cell2(id, cell2(op, cell2(kh, cell2(vh, eh))))
+// vh/eh may be 0 when unused.
+fn lsm_mb_job(id: i64, op: i64, key: str, val: str, extra: str) -> i64 {
+    let kh = lsm_mb_pack_str(key)
+    let mut vh: i64 = 0
+    let mut eh: i64 = 0
+    if op == LSM_OP_SET() || op == LSM_OP_SETEX() {
+        vh = lsm_mb_pack_str(val)
+    }
+    if op == LSM_OP_SETEX() {
+        eh = lsm_mb_pack_str(extra)
+    }
+    return cell2(id, cell2(op, cell2(kh, cell2(vh, eh))))
+}
+
+fn lsm_mb_done(id: i64, kind: i64, payload_h: i64) -> i64 {
+    return cell2(id, cell2(kind, payload_h))
+}
+
+// Expand typed reply to RESP string (main thread).
+fn lsm_mb_rep_to_str(kind: i64, payload_h: i64) -> str {
+    if kind == LSM_REP_OK() {
+        return "+OK\r\n"
+    }
+    if kind == LSM_REP_NIL() {
+        return "$-1\r\n"
+    }
+    if kind == LSM_REP_INT0() {
+        return ":0\r\n"
+    }
+    if kind == LSM_REP_INT1() {
+        return ":1\r\n"
+    }
+    if kind == LSM_REP_BULK() {
+        let s = lsm_mb_unpack_str(payload_h)
+        return concat(
+            concat(concat("$", int_to_str(len(s))), "\r\n"),
+            concat(s, "\r\n")
+        )
+    }
+    if kind == LSM_REP_ERR() {
+        let e = lsm_mb_unpack_str(payload_h)
+        if e == "" {
+            return "-ERR worker\r\n"
+        }
+        return concat(concat("-ERR ", e), "\r\n")
+    }
+    return "-ERR bad reply kind\r\n"
+}
+
+// Kept for wipe/tests that still clean leftover disk from older runs.
+fn lsm_job_req_path(dir: str, id: i64) -> str {
+    return concat(concat(dir, ".jobs."), concat(int_to_str(id), ".req"))
+}
+
+fn lsm_job_rep_path(dir: str, id: i64) -> str {
+    return concat(concat(dir, ".jobs."), concat(int_to_str(id), ".rep"))
+}
+
+fn lsm_job_next_path(dir: str) -> str {
+    return concat(dir, ".jobs.next")
+}
+
+// Worker ctx = cell2(work_ch, cell2(shard_id, done_ch))
+fn lsm_shard_worker(ctx: i64) -> i64 !IO !Par !Time {
+    let work = cell2_0(ctx)
+    let pack = cell2_1(ctx)
+    let sid = cell2_0(pack)
+    let done = cell2_1(pack)
+
+    let mut dir = env("LSMPATH")?
+    if dir == "" {
+        dir = "/tmp/baga_lsm"
+    }
+    let mut nshards: i64 = 1
+    let ns = env("LSM_SHARDS")?
+    if ns != "" {
+        nshards = parse_int(ns)
+        if nshards < 1 {
+            nshards = 1
+        }
+    }
+    let mut flush_at: i64 = 256
+    let fe = env("LSM_FLUSH_AT")?
+    if fe != "" {
+        flush_at = parse_int(fe)
+    }
+    let mut compact_at: i64 = 4
+    let ce = env("LSM_COMPACT_AT")?
+    if ce != "" {
+        compact_at = parse_int(ce)
+    }
+    let path = lsm_shard_path(dir, sid, nshards)
+    let mut db = lsm_open(path, flush_at, compact_at)?
+    let se = env("LSM_SYNC_EVERY")?
+    if se != "" {
+        let sv = parse_int(se)
+        if sv > 0 {
+            db.sync_every = sv
+        }
+    }
+
+    let mut run: i64 = 1
+    while run == 1 {
+        let p = chan_recv2(work)
+        if cell2_0(p) == 0 {
+            run = 0
+        } else {
+            let msg = cell2_1(p)
+            if msg < 0 {
+                run = 0
+            } else {
+                let id = cell2_0(msg)
+                let body = cell2_1(msg)
+                let op = cell2_0(body)
+                let kv = cell2_1(body)
+                let key = lsm_mb_unpack_str(cell2_0(kv))
+                let ve = cell2_1(kv)
+                let mut kind = LSM_REP_OK()
+                let mut ph: i64 = 0
+                if op == LSM_OP_SET() {
+                    let val = lsm_mb_unpack_str(cell2_0(ve))
+                    db = lsm_put(db, key, val)?
+                    kind = LSM_REP_OK()
+                } else {
+                    if op == LSM_OP_GET() {
+                        let g = lsm_get(db, key)?
+                        db = g.db
+                        if g.found == 0 {
+                            kind = LSM_REP_NIL()
+                        } else {
+                            kind = LSM_REP_BULK()
+                            ph = lsm_mb_pack_str(str_of_bytes(g.val))
+                        }
+                    } else {
+                        if op == LSM_OP_DEL() {
+                            let g2 = lsm_get(db, key)?
+                            db = g2.db
+                            if g2.found == 0 {
+                                kind = LSM_REP_INT0()
+                            } else {
+                                db = lsm_del(db, key)?
+                                kind = LSM_REP_INT1()
+                            }
+                        } else {
+                            if op == LSM_OP_SETEX() {
+                                let val = lsm_mb_unpack_str(cell2_0(ve))
+                                let extra = lsm_mb_unpack_str(cell2_1(ve))
+                                let sec = parse_int(extra)
+                                db = lsm_put_ex(db, key, val, sec)?
+                                kind = LSM_REP_OK()
+                            } else {
+                                if op == LSM_OP_FLUSH() {
+                                    db = lsm_flush_force(db)?
+                                    kind = LSM_REP_OK()
+                                } else {
+                                    kind = LSM_REP_ERR()
+                                    ph = lsm_mb_pack_str("bad job op")
+                                }
+                            }
+                        }
+                    }
+                }
+                chan_send(done, lsm_mb_done(id, kind, ph))
+            }
+        }
+    }
+    lsm_close(db)?
+    return 0
+}
+
+struct LsmParallel {
+    dir: str,
+    n: i64,
+    work: Vec<i64>,
+    done: i64,
+    mu: i64,
+    // key 0 → next job id (Map is heap; mutations visible through copies)
+    idbox: Map<i64, i64>,
+    // completed replies: id → cell2(kind, payload_h) (main thread only)
+    reps: Map<i64, i64>,
+    ok: i64
+}
+
+fn lsm_parallel_start(dir: str, nshards: i64) -> LsmParallel !IO !Par !Time {
+    let mut n = nshards
+    if n < 1 {
+        n = 1
+    }
+    if n > 32 {
+        n = 32
+    }
+    let idbox: Map<i64, i64> = map_new()
+    map_set(idbox, 0, 1)
+    let reps: Map<i64, i64> = map_new()
+    let work: Vec<i64> = vec_new()
+    let done = chan_new(n * 256)
+    let mut i: i64 = 0
+    while i < n {
+        let ch = chan_new(256)
+        vec_push(work, ch)
+        go_bg(lsm_shard_worker, cell2(ch, cell2(i, done)))
+        i = i + 1
+    }
+    sleep_ms(80)
+    return LsmParallel {
+        dir: dir, n: n, work: work, done: done, mu: mutex_new(),
+        idbox: idbox, reps: reps, ok: 1
+    }
+}
+
+// R37/R45: id alloc under mutex (multi-submitter safe for MT serve).
+fn lsm_parallel_alloc_id(p: LsmParallel) -> i64 !Par {
+    mutex_lock(p.mu)
+    let mut id = map_get(p.idbox, 0)
+    if id < 1 {
+        id = 1
+    }
+    map_set(p.idbox, 0, id + 1)
+    mutex_unlock(p.mu)
+    return id
+}
+
+// R45: pack work chans into nested cell2 for go_bg (i64-only).
+fn lsm_work_pack(work: Vec<i64>, i: i64, n: i64) -> i64 {
+    if i >= n {
+        return 0
+    }
+    return cell2(vec_get(work, i), lsm_work_pack(work, i + 1, n))
+}
+
+fn lsm_work_get(pack: i64, i: i64) -> i64 {
+    let mut p = pack
+    let mut j: i64 = 0
+    while j < i {
+        p = cell2_1(p)
+        j = j + 1
+    }
+    return cell2_0(p)
+}
+
+// Submit job; returns id (>0) or -1.
+fn lsm_parallel_submit(p: LsmParallel, op: i64, key: str, val: str, extra: str) -> i64 !Par {
+    let id = lsm_parallel_alloc_id(p)?
+    let job = lsm_mb_job(id, op, key, val, extra)
+    let sid = lsm_shard_ix(p.n, key)
+    let ch = vec_get(p.work, sid)
+    chan_send(ch, job)
+    return id
+}
+
+fn lsm_parallel_submit_flush_all(p: LsmParallel) -> i64 !Par {
+    let mut i: i64 = 0
+    let mut last: i64 = 0
+    while i < p.n {
+        let id = lsm_parallel_alloc_id(p)?
+        let job = lsm_mb_job(id, LSM_OP_FLUSH(), "_", "", "")
+        let ch = vec_get(p.work, i)
+        chan_send(ch, job)
+        last = id
+        i = i + 1
+    }
+    return last
+}
+
+// R45: submit with pre-allocated id (MT conn threads use fd-scoped ids).
+fn lsm_parallel_submit_id(
+    p: LsmParallel,
+    id: i64,
+    op: i64,
+    key: str,
+    val: str,
+    extra: str
+) -> i64 !Par {
+    let job = lsm_mb_job(id, op, key, val, extra)
+    let sid = lsm_shard_ix(p.n, key)
+    let ch = vec_get(p.work, sid)
+    chan_send(ch, job)
+    return id
+}
+
+// Low-level submit by packed work chans (go_bg context).
+fn lsm_mt_submit(
+    work_pack: i64,
+    nshards: i64,
+    id: i64,
+    op: i64,
+    key: str,
+    val: str,
+    extra: str
+) -> i64 !Par {
+    let job = lsm_mb_job(id, op, key, val, extra)
+    let sid = lsm_shard_ix(nshards, key)
+    let ch = lsm_work_get(work_pack, sid)
+    chan_send(ch, job)
+    return id
+}
+
+// Block until job id completes on done channel; returns typed reply string.
+// Stashes out-of-order completions in local map (caller-owned).
+fn lsm_mt_wait(done: i64, id: i64, stash: Map<i64, i64>) -> str !Par {
+    if map_has(stash, id) == 1 {
+        let rp = map_get(stash, id)
+        map_del(stash, id)
+        return lsm_mb_rep_to_str(cell2_0(rp), cell2_1(rp))
+    }
+    let mut guard: i64 = 0
+    while guard < 100000 {
+        let pr = chan_recv2(done)
+        if cell2_0(pr) == 0 {
+            return "-ERR worker closed\r\n"
+        }
+        let msg = cell2_1(pr)
+        let got = cell2_0(msg)
+        let body = cell2_1(msg)
+        if got == id {
+            return lsm_mb_rep_to_str(cell2_0(body), cell2_1(body))
+        }
+        map_set(stash, got, body)
+        guard = guard + 1
+    }
+    return "-ERR timeout\r\n"
+}
+
+// Stash done: msg = cell2(id, cell2(kind, payload_h))
+fn lsm_parallel_stash_done(p: LsmParallel, msg: i64) {
+    let id = cell2_0(msg)
+    let rp = cell2_1(msg)
+    map_set(p.reps, id, rp)
+}
+
+// Block until `id` completes; returns reply string.
+fn lsm_parallel_wait(p: LsmParallel, id: i64) -> str !Par {
+    if map_has(p.reps, id) == 1 {
+        return lsm_parallel_take_rep(p, id)
+    }
+    let mut guard: i64 = 0
+    while guard < 100000 {
+        let pr = chan_recv2(p.done)
+        if cell2_0(pr) == 0 {
+            return "-ERR worker closed\r\n"
+        }
+        let msg = cell2_1(pr)
+        lsm_parallel_stash_done(p, msg)
+        if cell2_0(msg) == id {
+            return lsm_parallel_take_rep(p, id)
+        }
+        guard = guard + 1
+    }
+    return "-ERR timeout\r\n"
+}
+
+// Sync helper: submit + wait (tests / simple clients).
+fn lsm_parallel_set(p: LsmParallel, key: str, val: str) -> str !Par {
+    let id = lsm_parallel_submit(p, LSM_OP_SET(), key, val, "")?
+    return lsm_parallel_wait(p, id)?
+}
+
+fn lsm_parallel_get(p: LsmParallel, key: str) -> str !Par {
+    let id = lsm_parallel_submit(p, LSM_OP_GET(), key, "", "")?
+    return lsm_parallel_wait(p, id)?
+}
+
+fn lsm_parallel_del(p: LsmParallel, key: str) -> str !Par {
+    let id = lsm_parallel_submit(p, LSM_OP_DEL(), key, "", "")?
+    return lsm_parallel_wait(p, id)?
+}
+
+fn lsm_parallel_stop(p: LsmParallel) -> i64 !Par {
+    let mut i: i64 = 0
+    while i < p.n {
+        chan_send(vec_get(p.work, i), 0 - 1)
+        i = i + 1
+    }
+    sleep_ms(150)
+    return 0
+}
+
+// Non-blocking poll of completion. Returns job id (>0), 0 empty, -1 closed.
+fn lsm_parallel_try_done(p: LsmParallel) -> i64 !Par {
+    let pr = chan_try_recv(p.done)
+    let st = cell2_0(pr)
+    if st == 1 {
+        let msg = cell2_1(pr)
+        lsm_parallel_stash_done(p, msg)
+        return cell2_0(msg)
+    }
+    if st == 2 {
+        return 0 - 1
+    }
+    return 0
+}
+
+// Expand typed reply for completed job.
+fn lsm_parallel_take_rep(p: LsmParallel, id: i64) -> str {
+    let rp = map_get(p.reps, id)
+    map_del(p.reps, id)
+    if rp == 0 {
+        return "-ERR missing reply\r\n"
+    }
+    return lsm_mb_rep_to_str(cell2_0(rp), cell2_1(rp))
+}

@@ -1,6 +1,7 @@
-// sst_scan_test.baga — R20 block-level scan + fold (no full-file materialize).
+// sst_scan_test.baga — R20 block-level scan + fold; R27 block CRC verify.
 import "rocksbaga/table/sstable.baga"
 import "rocksbaga/cache/page.baga"
+import "rocksbaga/util/codec.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
@@ -91,7 +92,50 @@ fn main() -> i64 !IO {
     let r = block_rec_at(body, 0)
     check(fails, "rec_get", r.ok == 1 && r.key == "ab" && str_of_bytes(r.val) == "xy")
 
+    // R27: meta loads bcrcs; clean block CRC ok
+    let ml = sst_meta_load(pc, fd, 1, fsize)?
+    pc = ml.pc
+    check(fails, "meta_ok", ml.meta.ok == 1 && ml.meta.tag == 5)
+    check(fails, "bcrcs_len", bytes_len(ml.meta.bcrcs) == ml.meta.n_restarts * 4)
+    let start0 = get_u32_le(ml.meta.idx, 0)
+    let mut end0 = ml.meta.idx_base
+    if ml.meta.n_restarts > 1 {
+        end0 = get_u32_le(ml.meta.idx, 4)
+    }
+    let br0 = pc_read_at(pc, fd, 1, 8 + start0, end0 - start0)?
+    pc = br0.pc
+    check(fails, "crc_ok", sst_block_crc_ok(ml.meta, 0, br0.data) == 1)
+
     sst_fd_drop(pc, fds, sizes, 1)?
+
+    // Corrupt first data byte after magic → block CRC fails → scan closed
+    let path = concat(prefix, ".sst.1")
+    let cfd = open(path, 2, 0)?  // O_RDWR = 2
+    check(fails, "corrupt_open", cfd >= 0)
+    // magic 8 + count 4 + first record: flip a value byte deep in file
+    let poke = fd_pread_bytes(cfd, 1, 20)?
+    let mut b = bytes_at(poke, 0) ^ 255
+    let one = bytes_new(1)
+    bytes_set(one, 0, b)
+    check(fails, "corrupt_write", fd_pwrite_bytes(cfd, one, 20) == 0)
+    close(cfd)
+
+    let mut pc2 = pc_new(4096, 8)
+    let fds2: Map<i64, i64> = map_new()
+    let sizes2: Map<i64, i64> = map_new()
+    let fd2 = sst_fd_get(pc2, fds2, sizes2, prefix, 1)?
+    let fsize2 = map_get(sizes2, 1)
+    let sc2 = sst_scan_begin(pc2, fd2, 1, fsize2)?
+    // meta may still load; first block CRC should fail → open=0
+    check(fails, "corrupt_scan_closed", sc2.open == 0 && sc2.meta.ok == 1)
+    pc2 = sc2.pc
+    // fold must not resurrect via full-load fallback
+    let acc2: Map<str, bytes> = map_new()
+    let tomb2: Map<str, i64> = map_new()
+    pc2 = sst_fold_into(pc2, prefix, 1, fds2, sizes2, acc2, tomb2)?
+    check(fails, "corrupt_fold_empty", map_len(acc2) == 0)
+
+    sst_fd_drop(pc2, fds2, sizes2, 1)?
     unlink(concat(prefix, ".sst.1"))?
     unlink(concat(prefix, ".bloom.1"))?
 

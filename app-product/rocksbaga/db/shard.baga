@@ -1,0 +1,355 @@
+// shard.baga — key-hash multi-shard cluster (R32 multi-writer foundation).
+//
+// Model (honest):
+//   • Keys are partitioned by hash into N independent LsmDB instances
+//     (separate WAL/SST/MANIFEST prefixes: <dir>.s0 … <dir>.s{N-1}).
+//   • The RESP poll loop remains single-threaded; shards shrink per-key
+//     working sets and enable future per-shard workers without API break.
+//   • Not RocksDB ColumnFamily / concurrent memtable writers.
+//
+// Env: LSM_SHARDS=N (default 1).
+
+import "engine.baga"
+import "../cache/page.baga"
+import "../util/codec.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+
+struct LsmCluster {
+    shards: Vec<LsmDB>,
+    n: i64,
+    ok: i64
+}
+
+// djb2-ish over key bytes (stable, fast).
+fn lsm_key_hash(key: str) -> i64 {
+    let mut h: i64 = 5381
+    let n = len(key)
+    let mut i: i64 = 0
+    while i < n {
+        h = ((h * 33) + (char_at(key, i) & 255)) & 2147483647
+        i = i + 1
+    }
+    return h
+}
+
+fn lsm_shard_ix(nshards: i64, key: str) -> i64 {
+    let mut n = nshards
+    if n < 1 {
+        n = 1
+    }
+    let mut i = lsm_key_hash(key) % n
+    if i < 0 {
+        i = 0 - i
+    }
+    return i
+}
+
+// Path for shard i. N=1 uses `dir` unchanged (compat with pre-R32 single store).
+fn lsm_shard_path(dir: str, i: i64, nshards: i64) -> str {
+    if nshards <= 1 {
+        return dir
+    }
+    return concat(concat(dir, ".s"), int_to_str(i))
+}
+
+fn lsm_cluster_open(dir: str, nshards: i64, flush_at: i64, compact_at: i64) -> LsmCluster !IO {
+    let mut n = nshards
+    if n < 1 {
+        n = 1
+    }
+    if n > 64 {
+        n = 64
+    }
+    let shards: Vec<LsmDB> = vec_new()
+    let mut i: i64 = 0
+    let mut ok: i64 = 1
+    while i < n {
+        let path = lsm_shard_path(dir, i, n)
+        let db = lsm_open(path, flush_at, compact_at)?
+        if db.ok == 0 {
+            ok = 0
+        }
+        vec_push(shards, db)
+        i = i + 1
+    }
+    return LsmCluster { shards: shards, n: n, ok: ok }
+}
+
+fn lsm_cluster_close(c: LsmCluster) -> i64 !IO {
+    let mut i: i64 = 0
+    while i < c.n {
+        let db = vec_get(c.shards, i)
+        lsm_close(db)?
+        i = i + 1
+    }
+    return 0
+}
+
+fn lsm_cluster_get_shard(c: LsmCluster, i: i64) -> LsmDB {
+    return vec_get(c.shards, i)
+}
+
+fn lsm_cluster_set_shard(c: LsmCluster, i: i64, db: LsmDB) -> LsmCluster {
+    vec_set(c.shards, i, db)
+    return c
+}
+
+fn lsm_cluster_put(c: LsmCluster, key: str, val: str) -> LsmCluster !IO !Time {
+    let i = lsm_shard_ix(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    db = lsm_put(db, key, val)?
+    vec_set(c.shards, i, db)
+    c.ok = db.ok
+    return c
+}
+
+fn lsm_cluster_put_ex(c: LsmCluster, key: str, val: str, ttl_sec: i64) -> LsmCluster !IO !Time {
+    let i = lsm_shard_ix(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    db = lsm_put_ex(db, key, val, ttl_sec)?
+    vec_set(c.shards, i, db)
+    c.ok = db.ok
+    return c
+}
+
+fn lsm_cluster_del(c: LsmCluster, key: str) -> LsmCluster !IO !Time {
+    let i = lsm_shard_ix(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    db = lsm_del(db, key)?
+    vec_set(c.shards, i, db)
+    c.ok = db.ok
+    return c
+}
+
+struct LsmClusterGet {
+    c: LsmCluster,
+    found: i64,
+    val: bytes
+}
+
+fn lsm_cluster_get(c: LsmCluster, key: str) -> LsmClusterGet !IO !Time {
+    let i = lsm_shard_ix(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    let g = lsm_get(db, key)?
+    db = g.db
+    vec_set(c.shards, i, db)
+    return LsmClusterGet { c: c, found: g.found, val: g.val }
+}
+
+fn lsm_cluster_flush_force(c: LsmCluster) -> LsmCluster !IO !Time {
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db = lsm_flush_force(db)?
+        vec_set(c.shards, i, db)
+        if db.ok == 0 {
+            c.ok = 0
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// R42: wipe every shard path and reopen empty (Redis FLUSHDB).
+fn lsm_cluster_flushdb(c: LsmCluster) -> LsmCluster !IO {
+    let n = c.n
+    let mut ok: i64 = 1
+    let shards: Vec<LsmDB> = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        let db = vec_get(c.shards, i)
+        let ndb = lsm_flushdb(db)?
+        if ndb.ok == 0 {
+            ok = 0
+        }
+        vec_push(shards, ndb)
+        i = i + 1
+    }
+    return LsmCluster { shards: shards, n: n, ok: ok }
+}
+
+struct LsmClusterKeys {
+    c: LsmCluster,
+    keys: Vec<str>
+}
+
+// Merge KEYS from all shards (sorted).
+fn lsm_cluster_keys(c: LsmCluster) -> LsmClusterKeys !IO !Time {
+    let all: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        let kr = lsm_keys(db)?
+        db = kr.db
+        vec_set(c.shards, i, db)
+        let mut j: i64 = 0
+        while j < vec_len(kr.keys) {
+            vec_push(all, vec_get(kr.keys, j))
+            j = j + 1
+        }
+        i = i + 1
+    }
+    sort_strs(all)
+    return LsmClusterKeys { c: c, keys: all }
+}
+
+struct LsmClusterSize {
+    c: LsmCluster,
+    n: i64
+}
+
+fn lsm_cluster_dbsize(c: LsmCluster) -> LsmClusterSize !IO !Time {
+    let mut total: i64 = 0
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        let ds = lsm_dbsize(db)?
+        db = ds.db
+        vec_set(c.shards, i, db)
+        total = total + ds.n
+        i = i + 1
+    }
+    return LsmClusterSize { c: c, n: total }
+}
+
+struct LsmClusterScan {
+    c: LsmCluster,
+    next: i64,
+    keys: Vec<str>
+}
+
+// R43: SCAN over merged sorted keys of all shards (same cost model as KEYS
+// for the fold; returns a page of COUNT keys with a cursor).
+fn lsm_cluster_scan(c: LsmCluster, cursor: i64, count: i64, match_pat: str) -> LsmClusterScan !IO !Time {
+    let kr = lsm_cluster_keys(c)?
+    c = kr.c
+    let all = kr.keys
+    let filtered: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(all) {
+        let k = vec_get(all, i)
+        if lsm_match_glob(match_pat, k) == 1 {
+            vec_push(filtered, k)
+        }
+        i = i + 1
+    }
+    let n = vec_len(filtered)
+    let mut cur = cursor
+    if cur < 0 {
+        cur = 0
+    }
+    let mut cnt = count
+    if cnt < 1 {
+        cnt = 10
+    }
+    if cnt > 1000 {
+        cnt = 1000
+    }
+    let out: Vec<str> = vec_new()
+    let mut j = cur
+    let mut taken: i64 = 0
+    while j < n && taken < cnt {
+        vec_push(out, vec_get(filtered, j))
+        j = j + 1
+        taken = taken + 1
+    }
+    let mut next: i64 = j
+    if next >= n {
+        next = 0
+    }
+    return LsmClusterScan { c: c, next: next, keys: out }
+}
+
+struct LsmClusterExpire {
+    c: LsmCluster,
+    ok: i64
+}
+
+fn lsm_cluster_expire(c: LsmCluster, key: str, ttl_sec: i64) -> LsmClusterExpire !IO !Time {
+    let i = lsm_shard_ix(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    let e = lsm_expire(db, key, ttl_sec)?
+    db = e.db
+    vec_set(c.shards, i, db)
+    return LsmClusterExpire { c: c, ok: e.ok }
+}
+
+struct LsmClusterTtl {
+    c: LsmCluster,
+    n: i64
+}
+
+fn lsm_cluster_ttl(c: LsmCluster, key: str) -> LsmClusterTtl !IO !Time {
+    let i = lsm_shard_ix(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    let t = lsm_ttl(db, key)?
+    db = t.db
+    vec_set(c.shards, i, db)
+    return LsmClusterTtl { c: c, n: t.n }
+}
+
+fn lsm_cluster_persist(c: LsmCluster, key: str) -> LsmClusterExpire !IO !Time {
+    let i = lsm_shard_ix(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    let p = lsm_persist(db, key)?
+    db = p.db
+    vec_set(c.shards, i, db)
+    return LsmClusterExpire { c: c, ok: p.ok }
+}
+
+// Apply open-time knobs (sync_every, merge_pick, target_bytes, cache) to every shard.
+fn lsm_cluster_apply_sync(c: LsmCluster, sync_every: i64) -> LsmCluster {
+    if sync_every <= 0 {
+        return c
+    }
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db.sync_every = sync_every
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    return c
+}
+
+fn lsm_cluster_apply_merge_pick(c: LsmCluster, mp: i64) -> LsmCluster {
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db.merge_pick = mp
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    return c
+}
+
+fn lsm_cluster_apply_target_bytes(c: LsmCluster, tb: i64) -> LsmCluster {
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db.target_bytes = tb
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    return c
+}
+
+fn lsm_cluster_apply_cache(c: LsmCluster, pages: i64) -> LsmCluster {
+    if pages < 16 {
+        return c
+    }
+    // Split cache budget across shards (min 16 pages each).
+    let mut per = pages / c.n
+    if per < 16 {
+        per = 16
+    }
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db.cache = pc_new(4096, per)
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    return c
+}

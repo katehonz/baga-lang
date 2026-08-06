@@ -1,7 +1,8 @@
 // engine.baga — open/put/get/flush/recovery (orchestration).
-// Compaction: compact.baga. Types: types.baga.
+// Compaction: compact.baga. Types: types.baga. Manifest: manifest.baga.
 
 import "types.baga"
+import "manifest.baga"
 import "compact.baga"
 import "../util/codec.baga"
 import "../util/ttl.baga"
@@ -20,65 +21,46 @@ fn lsm_wal_path(dir: str) -> str {
 fn lsm_empty_db(dir: str) -> LsmDB {
     let gens: Vec<i64> = vec_new()
     let levels: Vec<i64> = vec_new()
-    // Default page cache: 256 × 4 KiB ≈ 1 MiB (R11; was 32 pages).
+    // R25: default page cache 2048 × 4 KiB ≈ 8 MiB (was R11 256×4 KiB = 1 MiB).
+    // Random GET at n≥10k thrashed the 1 MiB pool (~27% of RocksDB at n=20k).
     return LsmDB {
         dir: dir, mem: map_new(), tomb: map_new(), mem_n: 0,
         flush_at: 32, compact_at: 3, target_bytes: 0, merge_pick: 0,
         wal_fd: -1, wal_off: 0,
         wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
-        gens: gens, levels: levels, next_gen: 1, cache: pc_new(4096, 256),
+        gens: gens, levels: levels, next_gen: 1, cache: pc_new(4096, 2048),
         blooms: bloom_cache_new(),
         sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
-        sync_every: 1, since_sync: 0, ok: 1
+        hot_gen: 0 - 1, hot_off: 0 - 1, hot_n: 0, hot_data: bytes_new(0),
+        sync_every: 1, since_sync: 0, manifest_edits: 0, ok: 1
     }
 }
 
+// Build LsmDB skeleton from on-disk MANIFEST (R26 via manifest.baga).
+// R40: snapshot + edit log replay.
 fn lsm_read_manifest(dir: str) -> LsmDB !IO {
-    let gens: Vec<i64> = vec_new()
-    let levels: Vec<i64> = vec_new()
-    let body = read_file(lsm_manifest_path(dir))?
-    if body == "" {
-        return lsm_empty_db(dir)
-    }
-    let lines = str_split(body, "\n")
-    let mut next_gen: i64 = 1
-    if vec_len(lines) > 0 && vec_get(lines, 0) != "" {
-        next_gen = parse_int(vec_get(lines, 0))
-        if next_gen < 1 {
-            next_gen = 1
+    let m = lsm_load_manifest(dir)?
+    if vec_len(m.gens) == 0 && m.next_gen == 1 {
+        // Empty / missing file — same as fresh DB (WAL may still exist).
+        let body = read_file(lsm_manifest_path(dir))?
+        let logb = read_file(lsm_manifest_log_path(dir))?
+        if body == "" && logb == "" {
+            return lsm_empty_db(dir)
         }
     }
-    for i in 1..vec_len(lines) {
-        let ln = vec_get(lines, i)
-        if ln != "" {
-            // "gen level" or legacy "gen"
-            let parts = str_split(ln, " ")
-            let g = parse_int(vec_get(parts, 0))
-            if g > 0 {
-                vec_push(gens, g)
-                let mut lv: i64 = 0
-                if vec_len(parts) >= 2 {
-                    lv = parse_int(vec_get(parts, 1))
-                    if lv < 0 {
-                        lv = 0
-                    }
-                    if lv > 3 {
-                        lv = 3
-                    }
-                }
-                vec_push(levels, lv)
-            }
-        }
-    }
+    // Count pending log lines so compact threshold still works after reopen.
+    let edits = lsm_manifest_log_lines(dir)?
     return LsmDB {
         dir: dir, mem: map_new(), tomb: map_new(), mem_n: 0,
         flush_at: 32, compact_at: 3, target_bytes: 0, merge_pick: 0,
         wal_fd: -1, wal_off: 0,
         wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
-        gens: gens, levels: levels, next_gen: next_gen, cache: pc_new(4096, 256),
+        gens: m.gens, levels: m.levels, next_gen: m.next_gen,
+        cache: pc_new(4096, 2048),
         blooms: bloom_cache_new(),
         sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
-        sync_every: 1, since_sync: 0, ok: 1
+        hot_gen: 0 - 1, hot_off: 0 - 1, hot_n: 0, hot_data: bytes_new(0),
+        sync_every: 1, since_sync: 0, manifest_edits: edits, ok: 1
     }
 }
 
@@ -100,17 +82,24 @@ fn lsm_open(dir: str, flush_at: i64, compact_at: i64) -> LsmDB !IO {
     let rp = wal_replay(wfd)?
     db.wal_off = rp.end_off
     for i in 0..vec_len(rp.ops) {
-        let op = vec_get(rp.ops, i)
-        let k = vec_get(rp.keys, i)
-        let v = vec_get(rp.vals, i)
-        if op == 1 {
-            map_set(db.mem, k, v)
-            map_del(db.tomb, k)
-        } else {
-            map_del(db.mem, k)
-            map_set(db.tomb, k, 1)
+        // R44: single-store open only applies CF 0 / legacy records.
+        let mut cf: i64 = 0
+        if i < vec_len(rp.cfs) {
+            cf = vec_get(rp.cfs, i)
         }
-        db.mem_n = db.mem_n + 1
+        if cf == 0 {
+            let op = vec_get(rp.ops, i)
+            let k = vec_get(rp.keys, i)
+            let v = vec_get(rp.vals, i)
+            if op == 1 {
+                map_set(db.mem, k, v)
+                map_del(db.tomb, k)
+            } else {
+                map_del(db.mem, k)
+                map_set(db.tomb, k, 1)
+            }
+            db.mem_n = db.mem_n + 1
+        }
     }
     db.ok = 1
     return db
@@ -134,6 +123,14 @@ fn lsm_wal_flush_buf(db: LsmDB) -> LsmDB !IO {
 
 fn lsm_close(db: LsmDB) -> i64 !IO {
     let mut d = db
+    // R40: fold edit log into atomic snapshot on close (clean on-disk form).
+    if d.manifest_edits > 0 {
+        if lsm_write_manifest(d.dir, d.next_gen, d.gens, d.levels)? != 0 {
+            // still try to close WAL below
+        } else {
+            d.manifest_edits = 0
+        }
+    }
     if d.wal_fd >= 0 {
         d = lsm_wal_flush_buf(d)?
         fdatasync(d.wal_fd)?
@@ -153,6 +150,41 @@ fn lsm_close(db: LsmDB) -> i64 !IO {
         pc_unregister_file(d.cache, g)
     }
     return 0
+}
+
+// R42: delete all durable files for one store path (after close).
+// WAL, MANIFEST(+log/tmp), SST/bloom gens 1..512.
+fn lsm_path_wipe(path: str) -> i64 !IO {
+    unlink(concat(path, ".wal"))?
+    unlink(concat(path, ".manifest"))?
+    unlink(concat(path, ".manifest.log"))?
+    unlink(concat(path, ".manifest.tmp"))?
+    let mut g: i64 = 1
+    while g <= 512 {
+        unlink(concat(concat(path, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(path, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+// R42: close, wipe files, reopen empty store (preserves path + knobs).
+fn lsm_flushdb(db: LsmDB) -> LsmDB !IO {
+    let path = db.dir
+    let flush_at = db.flush_at
+    let compact_at = db.compact_at
+    let sync_every = db.sync_every
+    let target_bytes = db.target_bytes
+    let merge_pick = db.merge_pick
+    lsm_close(db)?
+    lsm_path_wipe(path)?
+    let mut ndb = lsm_open(path, flush_at, compact_at)?
+    if sync_every > 0 {
+        ndb.sync_every = sync_every
+    }
+    ndb.target_bytes = target_bytes
+    ndb.merge_pick = merge_pick
+    return ndb
 }
 
 fn lsm_maybe_sync(db: LsmDB) -> LsmDB !IO {
@@ -229,7 +261,10 @@ fn lsm_put_b(db: LsmDB, key: str, val: bytes) -> LsmDB !IO !Time {
         return db
     }
     map_set(db.mem, key, val)
-    map_del(db.tomb, key)
+    // R22: skip tomb probe when empty (hot put path).
+    if map_len(db.tomb) > 0 {
+        map_del(db.tomb, key)
+    }
     db.mem_n = db.mem_n + 1
     db = lsm_maybe_sync(db)?
     if db.mem_n >= db.flush_at {
@@ -285,22 +320,34 @@ fn lsm_resolve(db: LsmDB, key: str, raw: bytes, now: i64) -> LsmGet !IO !Time {
 }
 
 fn lsm_get(db: LsmDB, key: str) -> LsmGet !IO !Time {
-    let now = time_now_ms()?
-    if map_has(db.tomb, key) == 1 {
-        return LsmGet { db: db, found: 0, val: bytes_new(0) }
+    // R23: defer time_now until a live value needs TTL check.
+    // R25: skip map probes when empty (post-flush SST-only path).
+    if map_len(db.tomb) > 0 {
+        if map_has(db.tomb, key) == 1 {
+            return LsmGet { db: db, found: 0, val: bytes_new(0) }
+        }
     }
-    if map_has(db.mem, key) == 1 {
-        return lsm_resolve(db, key, map_get(db.mem, key), now)?
+    if map_len(db.mem) > 0 {
+        if map_has(db.mem, key) == 1 {
+            let now = time_now_ms()?
+            return lsm_resolve(db, key, map_get(db.mem, key), now)?
+        }
     }
     let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.sst_meta,
-                     db.dir, db.gens, key)?
+                     db.dir, db.gens, key,
+                     db.hot_gen, db.hot_off, db.hot_n, db.hot_data)?
     db.cache = lk.pc
     db.blooms = lk.blooms
     db.sst_fds = lk.sst_fds
     db.sst_sizes = lk.sst_sizes
     db.sst_meta = lk.sst_meta
+    db.hot_gen = lk.hot_gen
+    db.hot_off = lk.hot_off
+    db.hot_n = lk.hot_n
+    db.hot_data = lk.hot_data
     if lk.found == 1 {
         if lk.alive == 1 {
+            let now = time_now_ms()?
             return lsm_resolve(db, key, lk.val, now)?
         }
         return LsmGet { db: db, found: 0, val: bytes_new(0) }
@@ -353,12 +400,17 @@ fn lsm_ttl(db: LsmDB, key: str) -> LsmTtl !IO !Time {
         have = 1
     } else {
         let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.sst_meta,
-                         db.dir, db.gens, key)?
+                         db.dir, db.gens, key,
+                         db.hot_gen, db.hot_off, db.hot_n, db.hot_data)?
         db.cache = lk.pc
         db.blooms = lk.blooms
         db.sst_fds = lk.sst_fds
         db.sst_sizes = lk.sst_sizes
         db.sst_meta = lk.sst_meta
+        db.hot_gen = lk.hot_gen
+        db.hot_off = lk.hot_off
+        db.hot_n = lk.hot_n
+        db.hot_data = lk.hot_data
         if lk.found == 1 && lk.alive == 1 {
             raw = lk.val
             have = 1
@@ -388,12 +440,17 @@ fn lsm_persist(db: LsmDB, key: str) -> LsmExpire !IO !Time {
         have = 1
     } else {
         let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.sst_meta,
-                         db.dir, db.gens, key)?
+                         db.dir, db.gens, key,
+                         db.hot_gen, db.hot_off, db.hot_n, db.hot_data)?
         db.cache = lk.pc
         db.blooms = lk.blooms
         db.sst_fds = lk.sst_fds
         db.sst_sizes = lk.sst_sizes
         db.sst_meta = lk.sst_meta
+        db.hot_gen = lk.hot_gen
+        db.hot_off = lk.hot_off
+        db.hot_n = lk.hot_n
+        db.hot_data = lk.hot_data
         if lk.found == 1 && lk.alive == 1 {
             raw = lk.val
             have = 1
@@ -416,23 +473,27 @@ fn lsm_persist(db: LsmDB, key: str) -> LsmExpire !IO !Time {
 
 fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
     let now = time_now_ms()?
-    let mk = map_keys(db.mem)
+    // R21: sort map_keys in place (no mem-key copy); append pure tombs only.
+    let all = map_keys(db.mem)
     let tk = map_keys(db.tomb)
-    let all: Vec<str> = vec_new()
-    for i in 0..vec_len(mk) {
-        vec_push(all, vec_get(mk, i))
-    }
-    for i in 0..vec_len(tk) {
-        let k = vec_get(tk, i)
+    let ntom = vec_len(tk)
+    let mut ti: i64 = 0
+    while ti < ntom {
+        let k = vec_get(tk, ti)
         if map_has(db.mem, k) == 0 {
             vec_push(all, k)
         }
+        ti = ti + 1
     }
     sort_strs(all)
+    let nall = vec_len(all)
     let rows: Vec<SstRow> = vec_new()
-    for i in 0..vec_len(all) {
+    let mut i: i64 = 0
+    while i < nall {
         let k = vec_get(all, i)
-        if map_has(db.tomb, k) == 1 && map_has(db.mem, k) == 0 {
+        // Pure tomb: in tomb set and not in mem (already filtered for keys only
+        // in tomb; live keys may still be tomb-superseded — use mem presence).
+        if map_has(db.mem, k) == 0 {
             vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
         } else {
             let raw = map_get(db.mem, k)
@@ -444,6 +505,7 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
                 vec_push(rows, SstRow { op: 1, key: k, val: raw })
             }
         }
+        i = i + 1
     }
     // Durable boundary before SST: drain WAL buffer then fsync.
     db = lsm_wal_flush_buf(db)?
@@ -462,10 +524,32 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
         db.next_gen = gen + 1
     }
     drop(rows)  // R18: on disk; vals stay with db.mem until it is replaced
-    if lsm_write_manifest(db.dir, db.next_gen, db.gens, db.levels)? != 0 {
+    // R40: append version edit (ADD+NEXT) instead of full snapshot rewrite.
+    if gen < db.next_gen {
+        // we wrote an L0 SST at `gen` and bumped next_gen
+        let na = lsm_manifest_log_add(db.dir, gen, 0, db.next_gen)?
+        if na < 0 {
+            db.ok = 0
+            return db
+        }
+        db.manifest_edits = db.manifest_edits + na
+    } else {
+        // empty flush still durable-rotate WAL — snapshot next_gen only via N
+        let t = concat(concat("N ", int_to_str(db.next_gen)), "\n")
+        if lsm_manifest_log_append(db.dir, t)? != 0 {
+            db.ok = 0
+            return db
+        }
+        db.manifest_edits = db.manifest_edits + 1
+    }
+    let ec = lsm_manifest_maybe_compact(
+        db.dir, db.next_gen, db.gens, db.levels, db.manifest_edits
+    )?
+    if ec < 0 {
         db.ok = 0
         return db
     }
+    db.manifest_edits = ec
     close(db.wal_fd)
     unlink(lsm_wal_path(db.dir))?
     let wfd = open(lsm_wal_path(db.dir), 578, 420)?
@@ -525,27 +609,20 @@ struct LsmGetKeys {
     keys: Vec<str>
 }
 
-fn lsm_keys(db: LsmDB) -> LsmGetKeys !IO !Time {
+struct LsmDbSize {
+    db: LsmDB,
+    n: i64
+}
+
+// Build live key→raw map (mem + SST fold). Shared by KEYS and DBSIZE (R31).
+fn lsm_live_map(db: LsmDB) -> LsmGetKeys !IO !Time {
     let now = time_now_ms()?
-    let seen: Map<str, bytes> = map_new()  // key → raw val (latest)
+    let seen: Map<str, bytes> = map_new()
     let dead: Map<str, i64> = map_new()
     let mut cur = db.cache
     for i in 0..vec_len(db.gens) {
         let gen = vec_get(db.gens, i)
-        let ld = sst_load(cur, db.dir, gen)?
-        cur = ld.pc
-        if ld.parse.ok == 1 {
-            for j in 0..vec_len(ld.parse.rows) {
-                let r = vec_get(ld.parse.rows, j)
-                if r.op == 2 {
-                    map_del(seen, r.key)
-                    map_set(dead, r.key, 1)
-                } else {
-                    map_set(seen, r.key, r.val)
-                    map_del(dead, r.key)
-                }
-            }
-        }
+        cur = sst_fold_into(cur, db.dir, gen, db.sst_fds, db.sst_sizes, seen, dead)?
     }
     db.cache = cur
     let mk = map_keys(db.mem)
@@ -560,6 +637,7 @@ fn lsm_keys(db: LsmDB) -> LsmGetKeys !IO !Time {
         map_del(seen, k)
         map_set(dead, k, 1)
     }
+    // Drop expired (TTL) without sorting — caller decides order.
     let ks = map_keys(seen)
     let out: Vec<str> = vec_new()
     for i in 0..vec_len(ks) {
@@ -569,6 +647,139 @@ fn lsm_keys(db: LsmDB) -> LsmGetKeys !IO !Time {
             vec_push(out, k)
         }
     }
-    sort_strs(out)
+    drop(seen)
+    drop(dead)
     return LsmGetKeys { db: db, keys: out }
+}
+
+// List live keys (mem + SST). R26: block scan fold. R31: shared live map + sort.
+fn lsm_keys(db: LsmDB) -> LsmGetKeys !IO !Time {
+    let r = lsm_live_map(db)?
+    sort_strs(r.keys)
+    return r
+}
+
+// Live key count without sorting (RESP DBSIZE). Same semantics as KEYS length.
+fn lsm_dbsize(db: LsmDB) -> LsmDbSize !IO !Time {
+    let r = lsm_live_map(db)?
+    let n = vec_len(r.keys)
+    return LsmDbSize { db: r.db, n: n }
+}
+
+// R43: simple glob for SCAN MATCH — supports *, prefix*, *suffix, *mid*, exact.
+// Empty pattern or "*" matches all.
+fn lsm_match_glob(pat: str, s: str) -> i64 {
+    if pat == "" || pat == "*" {
+        return 1
+    }
+    let np = len(pat)
+    let ns = len(s)
+    // find first '*'
+    let mut star: i64 = 0 - 1
+    let mut i: i64 = 0
+    while i < np {
+        if char_at(pat, i) == 42 {
+            star = i
+            i = np
+        } else {
+            i = i + 1
+        }
+    }
+    if star < 0 {
+        // exact
+        if pat == s {
+            return 1
+        }
+        return 0
+    }
+    // prefix before star
+    let pre = substr(pat, 0, star)
+    if str_starts_with(s, pre) == false {
+        return 0
+    }
+    // suffix after star (only one * supported; rest is literal suffix)
+    let suf = substr(pat, star + 1, np)
+    if suf == "" {
+        return 1
+    }
+    // if another * in suf, treat remaining as contains
+    let mut star2: i64 = 0 - 1
+    let mut j: i64 = 0
+    while j < len(suf) {
+        if char_at(suf, j) == 42 {
+            star2 = j
+            j = len(suf)
+        } else {
+            j = j + 1
+        }
+    }
+    if star2 < 0 {
+        if str_ends_with(s, suf) {
+            return 1
+        }
+        return 0
+    }
+    // *a*b form: require contains middle between prefix and suffix
+    let mid = substr(suf, 0, star2)
+    let suf2 = substr(suf, star2 + 1, len(suf))
+    if mid != "" {
+        if str_find(s, mid) < 0 {
+            return 0
+        }
+    }
+    if suf2 != "" {
+        if str_ends_with(s, suf2) == false {
+            return 0
+        }
+    }
+    return 1
+}
+
+struct LsmScan {
+    db: LsmDB,
+    next: i64,
+    keys: Vec<str>
+}
+
+// R43: SCAN-style page over live keys (sorted). Cursor is a 0-based index
+// into the filtered sorted key list; 0 means start/end (Redis-compatible).
+// count is a hint (default 10, clamp 1..1000).
+fn lsm_scan(db: LsmDB, cursor: i64, count: i64, match_pat: str) -> LsmScan !IO !Time {
+    let r = lsm_keys(db)?
+    db = r.db
+    let all = r.keys
+    let filtered: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(all) {
+        let k = vec_get(all, i)
+        if lsm_match_glob(match_pat, k) == 1 {
+            vec_push(filtered, k)
+        }
+        i = i + 1
+    }
+    let n = vec_len(filtered)
+    let mut cur = cursor
+    if cur < 0 {
+        cur = 0
+    }
+    let mut cnt = count
+    if cnt < 1 {
+        cnt = 10
+    }
+    if cnt > 1000 {
+        cnt = 1000
+    }
+    let out: Vec<str> = vec_new()
+    let mut j = cur
+    let mut taken: i64 = 0
+    while j < n && taken < cnt {
+        vec_push(out, vec_get(filtered, j))
+        j = j + 1
+        taken = taken + 1
+    }
+    let mut next: i64 = j
+    if next >= n {
+        next = 0
+    }
+    return LsmScan { db: db, next: next, keys: out }
 }

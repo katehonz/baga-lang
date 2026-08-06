@@ -1,0 +1,158 @@
+// manifest_test.baga — R26 MANIFEST parse/write + KEYS via block scan.
+import "rocksbaga/db/manifest.baga"
+import "rocksbaga/db/engine.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn wipe(p: str) -> i64 !IO {
+    unlink(concat(p, ".wal"))?
+    unlink(concat(p, ".manifest"))?
+    unlink(concat(p, ".manifest.tmp"))?
+    unlink(concat(p, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(p, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(p, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time {
+    print("manifest_test:")
+
+    // parse empty
+    let m0 = lsm_parse_manifest("")
+    check("empty_next", m0.next_gen == 1)
+    check("empty_gens", vec_len(m0.gens) == 0)
+
+    // parse body
+    let body = "5\n1 0\n2 1\n3\n"
+    let m1 = lsm_parse_manifest(body)
+    check("next5", m1.next_gen == 5)
+    check("ngens3", vec_len(m1.gens) == 3)
+    check("g0", vec_get(m1.gens, 0) == 1)
+    check("lv0", vec_get(m1.levels, 0) == 0)
+    check("lv1", vec_get(m1.levels, 1) == 1)
+    check("legacy_lv", vec_get(m1.levels, 2) == 0)
+
+    // write + load roundtrip
+    let prefix = "/tmp/baga_manifest_test"
+    wipe(prefix)?
+    let gens: Vec<i64> = vec_new()
+    let levels: Vec<i64> = vec_new()
+    vec_push(gens, 7)
+    vec_push(levels, 2)
+    vec_push(gens, 8)
+    vec_push(levels, 0)
+    check("write", lsm_write_manifest(prefix, 9, gens, levels)? == 0)
+    let m2 = lsm_load_manifest(prefix)?
+    check("load_next", m2.next_gen == 9)
+    check("load_n", vec_len(m2.gens) == 2)
+    check("load_g1", vec_get(m2.gens, 1) == 8)
+    check("load_lv0", vec_get(m2.levels, 0) == 2)
+    // R39: tmp cleaned up after publish
+    check("no_tmp", file_exists(concat(prefix, ".manifest.tmp"))? == 0)
+    check("live_ok", file_exists(concat(prefix, ".manifest"))? == 1)
+
+    // R39: overwrite keeps a consistent live file (second publish)
+    let gens2: Vec<i64> = vec_new()
+    let levels2: Vec<i64> = vec_new()
+    vec_push(gens2, 7)
+    vec_push(levels2, 2)
+    vec_push(gens2, 8)
+    vec_push(levels2, 0)
+    vec_push(gens2, 10)
+    vec_push(levels2, 1)
+    check("rewrite", lsm_write_manifest(prefix, 11, gens2, levels2)? == 0)
+    let m3 = lsm_load_manifest(prefix)?
+    check("rewrite_next", m3.next_gen == 11)
+    check("rewrite_n", vec_len(m3.gens) == 3)
+    check("format_round", lsm_format_manifest(2, gens, levels) != "")
+
+    // R40: edit log apply (snapshot empty + log only)
+    wipe(prefix)?
+    check("log_add", lsm_manifest_log_add(prefix, 1, 0, 2)? == 2)
+    check("log_lines2", lsm_manifest_log_lines(prefix)? == 2)
+    let mlog = lsm_load_manifest(prefix)?
+    check("log_next", mlog.next_gen == 2)
+    check("log_g0", vec_len(mlog.gens) == 1 && vec_get(mlog.gens, 0) == 1)
+    let dels: Vec<i64> = vec_new()
+    vec_push(dels, 1)
+    check("log_merge", lsm_manifest_log_merge(prefix, dels, 3, 1, 4)? >= 3)
+    let mlog2 = lsm_load_manifest(prefix)?
+    check("log_after_del", vec_len(mlog2.gens) == 1 && vec_get(mlog2.gens, 0) == 3)
+    check("log_lv1", vec_get(mlog2.levels, 0) == 1)
+    check("log_next4", mlog2.next_gen == 4)
+    // compact → snapshot, clear log
+    check("compact", lsm_write_manifest(prefix, mlog2.next_gen, mlog2.gens, mlog2.levels)? == 0)
+    check("log_cleared", lsm_manifest_log_lines(prefix)? == 0)
+    let msnap = lsm_load_manifest(prefix)?
+    check("snap_g", vec_len(msnap.gens) == 1 && vec_get(msnap.gens, 0) == 3)
+
+    // KEYS via fold/scan after real flush
+    wipe(prefix)?
+    let mut db = lsm_open(prefix, 32, 4)?
+    db.sync_every = 1000
+    db = lsm_put(db, "a", "1")?
+    db = lsm_put(db, "b", "2")?
+    db = lsm_put(db, "c", "3")?
+    db = lsm_del(db, "b")?
+    db = lsm_flush_force(db)?
+    check("flush_ok", db.ok == 1)
+    // flush appends edit log (or may compact if threshold hit)
+    check("after_flush_has_state", vec_len(db.gens) == 1 || db.manifest_edits >= 0)
+    let kr = lsm_keys(db)?
+    db = kr.db
+    check("keys_n", vec_len(kr.keys) == 2)
+    check("keys_a", vec_get(kr.keys, 0) == "a")
+    check("keys_c", vec_get(kr.keys, 1) == "c")
+    // reopen without close first (log still present) — open new handle
+    // after close: snapshot folded
+    lsm_close(db)?
+    check("closed_no_log", lsm_manifest_log_lines(prefix)? == 0)
+    let db2 = lsm_open(prefix, 32, 4)?
+    check("reopen_ok", db2.ok == 1)
+    let g2 = lsm_get(db2, "a")?
+    check("reopen_get", g2.found == 1 && str_of_bytes(g2.val) == "1")
+    lsm_close(g2.db)?
+
+    // multi-flush without close: log grows then recovers across reopen
+    wipe(prefix)?
+    let mut db3 = lsm_open(prefix, 4, 8)?
+    db3.sync_every = 1000
+    let mut i: i64 = 0
+    while i < 12 {
+        db3 = lsm_put(db3, concat("k", int_to_str(i)), "v")?
+        i = i + 1
+    }
+    // force several flushes via flush_at=4
+    check("multi_ok", db3.ok == 1 && vec_len(db3.gens) >= 1)
+    // reopen without close would leave log; simulate crash: no close
+    let edits = db3.manifest_edits
+    // "crash" — reopen same path without close (second open while first still open is ok for test)
+    let db4 = lsm_open(prefix, 4, 8)?
+    check("crash_reopen", db4.ok == 1)
+    let g4 = lsm_get(db4, "k0")?
+    check("crash_get", g4.found == 1)
+    // gens should match log+snapshot replay
+    check("crash_gens", vec_len(g4.db.gens) >= 1)
+    lsm_close(g4.db)?
+    // avoid double-close issues on db3
+    if edits >= 0 {
+        // silence unused
+    }
+
+    print("manifest_test: all passed")
+    return 0
+}

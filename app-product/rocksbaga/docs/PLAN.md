@@ -55,4 +55,49 @@ Goal: Track S flagship — durable KV on RESP.
 - **R20 block scan + `table/block.baga`** — record encode/decode module;
   restart-block iterator (`sst_scan_*`); compact fold streams via page
   cache (no full-file copy for v4/v5); legacy full-load fallback — **done**
-- (next) `db/manifest.baga` / tools SST dump / RocksDB feature gaps
+- **R21 flush ROWS** — `sort_strs` quicksort (was O(n²) insertion); flush/
+  compact build rows from `map_keys` in place (no mem-key copy); batch bench
+  `flush_at=N` + end `flush_force` — **done**
+- **R22 WAL/CRC put path** — soft crc32c under 4 KiB; single-buffer
+  `wal_record`; skip empty-tomb `map_del` — **done**
+- **R23 GET path** — `block_find` no-alloc key scan; LsmDB hot restart-block
+  span; defer `time_now` / cheaper TTL magic — **done**
+- **R24 random GET** — single-page `pc_read_at` memcpy path; restart every 8
+  — **done**
+- **R25 page cache scale** — default 8 MiB cache; empty mem/tomb skip; serve
+  flush_at=256; `LSM_CACHE_PAGES` — **done**
+- **R26 manifest + KEYS scan + sst_dump** — `db/manifest.baga`; KEYS via
+  `sst_fold_into`; `tools/sst_dump.baga` — **done**
+- **R27 block CRC** — verify BAGASST5 per-block crc on scan/fold; get path
+  skips (perf); no full-load fallback after CRC fail — **done**
+- **R28 RESP bench** — `tools/serve.baga`, `LSM_SYNC_EVERY`, RESP harness
+  `bench/rocks/run_vs_redis.sh` — **done**
+- **R29 RESP parse** — digit framing parse; `lsm_eq_ci` dispatch; buffer
+  drop on full consume — **done**
+- **R30 RESP pipeline** — NODELAY + 64 KiB reads; `resp_bulk_b` prealloc;
+  `BENCH_PIPE` client pipeline — **done**
+- **R31 scored compact + DBSIZE** — size-score merge pick; `lsm_dbsize`
+  without key sort — **done**
+- **R32 multi-shard** — key-hash `LsmCluster` (`LSM_SHARDS`); RESP on cluster;
+  N=1 path-compat — **done**
+- **R33 per-shard workers** — exclusive shard workers + job channels
+  (`db/workers.baga`) — **done**
+- **R34 RESP → workers** — `LSM_PARALLEL=1` poll hop + ordered replies —
+  **done**
+- **R35 in-memory job mailbox** — cell2-packed payloads on chans; poll
+  spin when jobs outstanding — **done**
+- **R36 multi-conn soak** — `BENCH_CLIENTS` harness; P1→90% of P0 at 8
+  clients (honest: not yet faster) — **done**
+- **R37 cheaper hop** — reply codes, short pack, lock-free id — **done**
+  (modest; P1 still ≤ P0)
+- **R38 reply coalesce** — one write per read batch / dirty fd — **done**
+  (~2× P0 pipeline SET)
+- **R39 atomic MANIFEST** — tmp + fsync + rename publish — **done**
+- **R40 version edit log** — `manifest.log` A/D/N; compact@32 + close — **done**
+- **R41 multi-DB SELECT** — `dir.db{n}` namespaces; RESP SELECT — **done**
+- **R42 FLUSHDB/FLUSHALL** — wipe path + reopen; multi-DB aware — **done**
+- **R43 SCAN** — cursor + MATCH/COUNT; cluster page — **done**
+- **R44 shared-WAL CF** — `db/cf.baga`, WAL op 17/18 — **done**
+- **R45 MT serve** — `LSM_SERVE_MT=1` go_bg conn → shard workers — **done**
+- **R46 durable CF names + RESP CF.*** — `.cfs` map; CF.SET/GET/DEL — **done**
+- (next) MT multi-conn soak; CF polish

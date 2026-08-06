@@ -17,10 +17,24 @@ fn clock_ms(clk: i64) -> i64 !Time {
     return sec * 1000 + nsec / 1000000
 }
 
+// Same clocks, microsecond resolution (for microbench phase splits).
+fn clock_us(clk: i64) -> i64 !Time {
+    let ts = str_repeat(" ", 16)
+    let rc = clock_gettime(clk, ts)?
+    if rc != 0 { return -1 }
+    let sec = mem_i64(ts, 0)
+    let nsec = mem_i64(ts, 8)
+    return sec * 1000000 + nsec / 1000
+}
+
 fn time_now_ms() -> i64 !Time {
     return clock_ms(0)?
 }
 
 fn monotonic_ms() -> i64 !Time {
     return clock_ms(1)?
+}
+
+fn monotonic_us() -> i64 !Time {
+    return clock_us(1)?
 }

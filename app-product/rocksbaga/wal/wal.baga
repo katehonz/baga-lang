@@ -6,7 +6,16 @@ import "std/os/os.baga"
 import "std/crypto/crc32c.baga"
 import "std/str/str.baga"
 
-// op: 1 = Put, 2 = Del
+// op: 1 = Put, 2 = Del (CF 0 / legacy)
+// op: 17 = CF Put, 18 = CF Del — payload includes u32 cf_id after op (R44)
+// Payload layout (no framing):
+//   legacy: op | u32 klen | key | u32 vlen | val
+//   cf:     op | u32 cf_id | u32 klen | key | u32 vlen | val
+fn WAL_OP_PUT() -> i64 { return 1 }
+fn WAL_OP_DEL() -> i64 { return 2 }
+fn WAL_OP_CF_PUT() -> i64 { return 17 }
+fn WAL_OP_CF_DEL() -> i64 { return 18 }
+
 fn wal_payload(op: i64, key: str, val: bytes) -> bytes {
     let kb = bytes_of_str(key)
     let klen = bytes_len(kb)
@@ -29,19 +38,73 @@ fn wal_payload(op: i64, key: str, val: bytes) -> bytes {
     return p
 }
 
-// Encode one WAL record (len | payload | crc) without writing (R14).
+// Encode one WAL record (len | payload | crc) without writing.
+// R14: prealloc. R22: single buffer — write payload at off=4, CRC over that
+// span (no separate payload alloc + full copy into rec).
 fn wal_record(op: i64, key: str, val: bytes) -> bytes {
-    let payload = wal_payload(op, key, val)
-    let plen = bytes_len(payload)
-    let crc = crc32c_b(payload)
+    let kb = bytes_of_str(key)
+    let klen = bytes_len(kb)
+    let vlen = bytes_len(val)
+    let plen = 1 + 4 + klen + 4 + vlen
     let rec = bytes_new(4 + plen + 4)
     put_u32_le(rec, 0, plen)
+    bytes_set(rec, 4, op & 255)
+    put_u32_le(rec, 5, klen)
     let mut i: i64 = 0
-    while i < plen {
-        bytes_set(rec, 4 + i, bytes_at(payload, i))
+    while i < klen {
+        bytes_set(rec, 9 + i, bytes_at(kb, i))
         i = i + 1
     }
+    put_u32_le(rec, 9 + klen, vlen)
+    i = 0
+    while i < vlen {
+        bytes_set(rec, 13 + klen + i, bytes_at(val, i))
+        i = i + 1
+    }
+    // CRC over payload only (bytes [4, 4+plen))
+    let payload_view = bytes_slice(rec, 4, 4 + plen)
+    let crc = crc32c_b(payload_view)
     put_u32_le(rec, 4 + plen, crc)
+    // drop slice view if droppable — slice may share or copy; drop if owned
+    drop(payload_view)
+    return rec
+}
+
+// R44: CF-aware WAL record (op 17/18).
+fn wal_record_cf(op: i64, cf_id: i64, key: str, val: bytes) -> bytes {
+    // Normalize to CF ops
+    let mut o = op
+    if o == 1 {
+        o = WAL_OP_CF_PUT()
+    }
+    if o == 2 {
+        o = WAL_OP_CF_DEL()
+    }
+    let kb = bytes_of_str(key)
+    let klen = bytes_len(kb)
+    let vlen = bytes_len(val)
+    // plen = op + cf_id + klen + key + vlen + val
+    let plen = 1 + 4 + 4 + klen + 4 + vlen
+    let rec = bytes_new(4 + plen + 4)
+    put_u32_le(rec, 0, plen)
+    bytes_set(rec, 4, o & 255)
+    put_u32_le(rec, 5, cf_id)
+    put_u32_le(rec, 9, klen)
+    let mut i: i64 = 0
+    while i < klen {
+        bytes_set(rec, 13 + i, bytes_at(kb, i))
+        i = i + 1
+    }
+    put_u32_le(rec, 13 + klen, vlen)
+    i = 0
+    while i < vlen {
+        bytes_set(rec, 17 + klen + i, bytes_at(val, i))
+        i = i + 1
+    }
+    let payload_view = bytes_slice(rec, 4, 4 + plen)
+    let crc = crc32c_b(payload_view)
+    put_u32_le(rec, 4 + plen, crc)
+    drop(payload_view)
     return rec
 }
 
@@ -55,12 +118,14 @@ fn wal_append(fd: i64, off: i64, op: i64, key: str, val: bytes) -> i64 !IO {
 }
 
 // Replay callback result is accumulated by the engine; this returns a
-// decoded list of ops as parallel vectors (ops, keys, vals).
+// decoded list of ops as parallel vectors (ops, keys, vals, cfs).
+// R44: cfs[i] is column-family id (0 for legacy op 1/2).
 struct WalReplay {
     ok: i64,
     ops: Vec<i64>,
     keys: Vec<str>,
     vals: Vec<bytes>,
+    cfs: Vec<i64>,
     end_off: i64
 }
 
@@ -68,6 +133,7 @@ fn wal_replay(fd: i64) -> WalReplay !IO {
     let ops: Vec<i64> = vec_new()
     let keys: Vec<str> = vec_new()
     let vals: Vec<bytes> = vec_new()
+    let cfs: Vec<i64> = vec_new()
     let mut off: i64 = 0
     let mut running: i64 = 1
     while running == 1 {
@@ -94,23 +160,45 @@ fn wal_replay(fd: i64) -> WalReplay !IO {
                         if bytes_len(payload) < 1 + 4 {
                             running = 0
                         } else {
-                            let op = bytes_at(payload, 0)
-                            let klen = get_u32_le(payload, 1)
-                            let kstart = 5
-                            if bytes_len(payload) < kstart + klen + 4 {
-                                running = 0
-                            } else {
-                                let key = str_of_bytes(bytes_slice(payload, kstart, kstart + klen))
-                                let vlen = get_u32_le(payload, kstart + klen)
-                                let vstart = kstart + klen + 4
-                                if bytes_len(payload) < vstart + vlen {
+                            let op = bytes_at(payload, 0) & 255
+                            let mut cf_id: i64 = 0
+                            let mut koff: i64 = 1
+                            // R44: CF ops carry cf_id before klen
+                            if op == 17 || op == 18 {
+                                if bytes_len(payload) < 1 + 4 + 4 {
                                     running = 0
                                 } else {
-                                    let val = bytes_slice(payload, vstart, vstart + vlen)
-                                    vec_push(ops, op)
-                                    vec_push(keys, key)
-                                    vec_push(vals, val)
-                                    off = off + 4 + plen + 4
+                                    cf_id = get_u32_le(payload, 1)
+                                    koff = 5
+                                }
+                            }
+                            if running == 1 {
+                                let klen = get_u32_le(payload, koff)
+                                let kstart = koff + 4
+                                if bytes_len(payload) < kstart + klen + 4 {
+                                    running = 0
+                                } else {
+                                    let key = str_of_bytes(bytes_slice(payload, kstart, kstart + klen))
+                                    let vlen = get_u32_le(payload, kstart + klen)
+                                    let vstart = kstart + klen + 4
+                                    if bytes_len(payload) < vstart + vlen {
+                                        running = 0
+                                    } else {
+                                        let val = bytes_slice(payload, vstart, vstart + vlen)
+                                        // Normalize CF ops to 1/2 for engine apply
+                                        let mut nop = op
+                                        if op == 17 {
+                                            nop = 1
+                                        }
+                                        if op == 18 {
+                                            nop = 2
+                                        }
+                                        vec_push(ops, nop)
+                                        vec_push(keys, key)
+                                        vec_push(vals, val)
+                                        vec_push(cfs, cf_id)
+                                        off = off + 4 + plen + 4
+                                    }
                                 }
                             }
                         }
@@ -119,5 +207,7 @@ fn wal_replay(fd: i64) -> WalReplay !IO {
             }
         }
     }
-    return WalReplay { ok: 1, ops: ops, keys: keys, vals: vals, end_off: off }
+    return WalReplay {
+        ok: 1, ops: ops, keys: keys, vals: vals, cfs: cfs, end_off: off
+    }
 }

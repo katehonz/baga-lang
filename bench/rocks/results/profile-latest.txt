@@ -1,0 +1,17 @@
+=== rocksbaga engine profile (differential) ===
+n=2000 vlen=100 host=deb1 x86_64
+
+META n=2000 vlen=100
+PHASE name=KEYS us=765 ops=2614379 note=pad_key_only
+PHASE name=VAL_BYTES us=37 ops=54054054 note=bytes_of_str_fixed
+PHASE name=MEM us=9770 ops=204708 note=wal_encode_buf_map_no_fsync_no_flush
+PHASE name=SYNC us=2391804 ops=836 note=fsync_each_put_no_flush
+PHASE name=FLUSH us=267242 ops=7483 note=flush_at_64_rare_fsync
+PHASE name=DURABLE us=2586509 ops=773 note=flush_at_64_sync_every_1
+PHASE name=GET_MEM us=10219 ops=195713 note=before_reopen_mixed_mem_sst
+PHASE name=GET_SEQ us=10192 ops=196232 note=after_reopen_sst_seq
+PHASE name=GET_RND us=9699 ops=206206 note=after_reopen_sst_rnd
+PHASE name=BATCH us=287867 ops=6947 note=sync_every_n_flush_force_end
+DERIVE fsync_tax_us=2382034 flush_tax_us=257472 durable_above_sync_us=194705
+SHARE_OF_DURABLE mem%=0 fsync%=92 flush%=9  (approx; overlapping work not subtracted)
+OK

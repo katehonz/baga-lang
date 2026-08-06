@@ -162,9 +162,142 @@ is the MEM-3-full / str-reclamation roadmap item, not a bug.
   back to `sst_load`.
 - Tests: `tests/sst_scan_test.baga`; `lsm_test` / `lsm_recover_test` green.
 
-**Still open (later):** true block CRC verify on scan path; KEYS without
-full load; `db/manifest.baga` / tools SST dump; RocksDB feature parity
-(not claimed).
+**Shipped (R21 flush ROWS + batch flush_at):**
+- Profile (`bench/rocks/run_profile.sh flush`): single `FLUSH_FORCE` n=2000
+  was **~56% ROWS** (map_keys + sort + SstRow). Root cause: `sort_strs` was
+  full-range **insertion sort O(n²)**.
+- `sort_strs` → quicksort + insertion for slices under 16 (`util/codec.baga`).
+- `lsm_flush` / `lsm_merge_indices`: sort `map_keys` in place (drop mem-key
+  copy); pure-tomb test via `map_has(mem)==0`.
+- `flush_at` sweep (n=2000, no per-put fsync): 64→6.6k, 256→23k, 512→37k,
+  2000→67k ops/s. Batch head-to-head now uses `flush_at=N` (one memtable
+  window + `flush_force`), not 31×64-key flushes.
+- Probe: `./bench/rocks/run_profile.sh flush`.
+
+**Shipped (R22 WAL/CRC put path):**
+- MEM put profile (n=5000): ~90% of time was `wal_record`/`crc32c_b`.
+  `crc32c_table()` rebuilt every call — for 120 B WAL records, soft CRC
+  is ~4× faster; table path kept for ≥4 KiB (SST bodies).
+- `wal_record`: one buffer (payload at off=4 + CRC), no dual alloc.
+- `lsm_put_b`: skip `map_del` when tomb is empty.
+- Batch head-to-head: n=1000 ~50%→~58%; n=5000 PUT **above** RocksDB in
+  this harness (memtable window + soft CRC). Durable still fsync-bound ~93%.
+
+**Shipped (R23 GET path):**
+- Profile: `LOOKUP_META` ~90% of GET; within it `pc_read_at` copy +
+  `block_rec_at`/`str_of_bytes` per record.
+- `block_find`: compare keys in-place (no miss alloc); ~4× faster scan.
+- `LsmDB.hot_*`: last restart-block span for get only (not scan/compact —
+  avoids double-free with R18 drops). Sequential GET reuses the block.
+- Defer `time_now_ms` until resolve; TTL magic byte-compare.
+- n=2000: GET ~213k → ~681k seq / ~373k rnd. vs RocksDB n=5000 batch:
+  GET_SEQ ~parity, GET_RND ~76%.
+
+**Shipped (R24 random GET):**
+- `pc_read_at` cost scaled with span size (byte-loop). Single-page spans now
+  use `bytes_slice` (runtime memcpy).
+- Restart interval 16→8 (~944 B blocks vs ~1888) for new SSTs; halves copy
+  work on cold random hits. LsmDB hot span still covers sequential.
+- GET_RND n=2000 ~373k→~552k; vs RocksDB roughly parity on this harness.
+
+**Shipped (R25 page cache scale):**
+- Default buffer pool **8 MiB** (2048×4 KiB). At n=20k random GET the old
+  1 MiB pool thrashed (ratio ~27% RocksDB); with 8 MiB ~parity+.
+- Empty mem/tomb short-circuit on get; serve `LSM_FLUSH_AT` default 256;
+  `LSM_CACHE_PAGES` override.
+
+**Shipped (R26 manifest + KEYS + dump):**
+- `db/manifest.baga` owns flat MANIFEST parse/write; engine/compact call it.
+- `lsm_keys` / RESP KEYS use `sst_fold_into` (block scan), not full SST load.
+- Offline tool: `app-product/rocksbaga/tools/sst_dump.baga`
+  (`LSMPATH`, optional `SST_GEN`, `SST_KEYS=1`, `SST_MAX`).
+
+**Shipped (R27 block CRC on scan path):**
+- Meta loads `bcrcs` (tag=5). Scan verifies each restart block before use;
+  mismatch → scan closed. Fold/compact never full-loads after v4/v5 CRC fail.
+- Get path intentionally skips per-block CRC (throughput); full body CRC still
+  on legacy full-load.
+
+**Shipped (R28–R30 RESP serve):**
+- Harness: `./bench/rocks/run_vs_redis.sh` (`BENCH_PIPE`, default 64).
+- R29 parse/dispatch; R30 NODELAY + 64 KiB reads + client pipeline.
+- vs **Redis 8.x** (AOF off), n=5000, `LSM_SYNC_EVERY=10000`:
+
+  | mode | PING baga/Redis | SET baga/Redis | GET baga/Redis |
+  |------|----------------:|--------------:|--------------:|
+  | pipe=1 | 26k / 44k (58%) | 25k / 41k (61%) | 26k / 40k (64%) |
+  | pipe=64 | 157k / 574k (27%) | 108k / 326k (33%) | 114k / 315k (36%) |
+
+- Pipeline multiplies absolute ops (~5×); Redis gains more (ratio falls).
+  Artifact: `bench/rocks/results/vs-redis-*.txt`.
+
+**Shipped (R31 scored pick + DBSIZE):**
+- Merge pick with `merge_pick>0` selects k largest SSTs (older wins ties),
+  then folds oldest-first. Reduces rewriting tiny files when sizes diverge.
+- `DBSIZE` uses `lsm_dbsize` (live fold, no sort) vs `KEYS` (sorted list).
+
+**Shipped (R32–R33 multi-shard + workers):**
+- R32 `LsmCluster` + RESP (single-thread poll, all shards).
+- R33 `db/workers.baga`: one exclusive writer thread per shard; jobs via
+  chan(i64). API for parallel SET/GET/DEL.
+- Env for workers test/serve: `LSMPATH`, `LSM_SHARDS`, `LSM_SYNC_EVERY`, …
+
+**Shipped (R34 RESP → workers):**
+- `LSM_PARALLEL=1`: network thread parses RESP, submits jobs, drains `done`
+  with ordered per-fd replies. Supported: PING, SET, GET, DEL, SETEX, SAVE.
+
+**Shipped (R35 in-memory mailbox):**
+- Job req/rep packed as cell2 trees on channels (no `dir.jobs.*` files).
+- Poll timeout 0 while jobs outstanding → single-client ~13k ops/s vs
+  ~20k single-thread (was ~1k with disk hop).
+
+**Shipped (R36 multi-conn soak):**
+- `BENCH_CLIENTS` / `--clients` aggregate throughput. At 8 clients pipe=1,
+  `LSM_PARALLEL=1` reaches ~86–90% of single-thread SET (not faster).
+
+**Shipped (R37 cheaper hop):**
+- Reply kind codes; short-string pack; lock-free job ids; skip unused
+  val/extra unpack. ~0–10% on P1 soaks; ceiling still single-thread poll.
+
+**Shipped (R38 reply coalesce):**
+- Concat ready RESP replies → one `tcp_write_bytes` (writev-like without
+  kernel writev). P0 pipeline ~2× (c4×pipe16 SET ~104k → ~207k).
+- P1 gains less (hop still dominates).
+
+**Shipped (R39 atomic MANIFEST):**
+- Publish via `.manifest.tmp` + fsync + rename. Crash during rewrite no
+  longer truncates the live MANIFEST in place.
+
+**Shipped (R40 version edit log):**
+- `.manifest.log` records A/D/N; open replays onto snapshot. Flush/compact
+  append instead of full rewrite; compact@32 edits or close.
+
+**Shipped (R41 multi-DB / SELECT):**
+- Redis-like logical DBs via `SELECT` (0..15). Each index is a separate
+  on-disk `LsmCluster` (`dir` / `dir.db{n}`). Not RocksDB CF (no shared WAL).
+- Parallel workers: SELECT unsupported (single LSMPATH).
+
+**Shipped (R42 FLUSHDB / FLUSHALL):**
+- Wipe durable files + reopen empty store. FLUSHDB = selected DB; FLUSHALL
+  walks all logical DB indices.
+
+**Shipped (R43 SCAN):**
+- Cursor paging over sorted live keys + MATCH/COUNT. Still full live-set fold
+  per call (honest; not a streaming iterator yet).
+
+**Shipped (R44 shared-WAL CF):**
+- One WAL, many CF memtables/SST trees. Engine API + recover.
+  No per-CF block-cache policy.
+
+**Shipped (R45 MT serve):**
+- `LSM_SERVE_MT=1`: OS thread per connection, shared exclusive shard workers.
+  Real multi-core for multi-conn write/read. Not a free lunch on single-conn
+  (same hop tax as PARALLEL).
+
+**Shipped (R46 durable CF names + RESP):**
+- `.cfs` name map (atomic). `LSM_CF=1` serve: `CF.CREATE/SET/GET/DEL/LIST`.
+
+**Still open (later):** MT multi-conn soak numbers; richer RocksDB CF options.
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

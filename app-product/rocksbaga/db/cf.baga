@@ -1,0 +1,535 @@
+// cf.baga — shared-WAL column families (R44).
+//
+// Model (honest RocksDB-lite):
+//   • One WAL at <dir>.wal shared by all CFs.
+//   • Each CF has its own memtable/tomb/SST/MANIFEST under:
+//       CF 0 → <dir>            (compat with single-store)
+//       CF n → <dir>.cf{n}
+//   • WAL records: legacy op 1/2 = CF 0; op 17/18 = CF put/del + cf_id.
+//   • Not full RocksDB CF (no per-CF options object, no shared block cache
+//     policy). Enough for multi-namespace durability with one fsync stream.
+//
+// API: lsm_cf_open / create / put / get / del / flush / close.
+// R46: durable name map at <dir>.cfs (atomic publish like MANIFEST).
+
+import "engine.baga"
+import "manifest.baga"
+import "../wal/wal.baga"
+import "../table/sstable.baga"
+import "../util/codec.baga"
+import "../util/ttl.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
+
+fn lsm_cf_path(dir: str, cf_id: i64) -> str {
+    if cf_id <= 0 {
+        return dir
+    }
+    return concat(concat(dir, ".cf"), int_to_str(cf_id))
+}
+
+fn lsm_cfs_map_path(dir: str) -> str {
+    return concat(dir, ".cfs")
+}
+
+fn lsm_cfs_map_tmp_path(dir: str) -> str {
+    return concat(dir, ".cfs.tmp")
+}
+
+// Format:
+//   <next_cf_id>\n
+//   <name> <id>\n
+//   ...
+fn lsm_cfs_format(next_id: i64, names: Map<str, i64>) -> str {
+    let mut s = concat(int_to_str(next_id), "\n")
+    let ks = map_keys(names)
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        let name = vec_get(ks, i)
+        let id = map_get(names, name)
+        // skip default — always implied as 0
+        if name != "default" {
+            s = concat(s, concat(name, " "))
+            s = concat(s, concat(int_to_str(id), "\n"))
+        }
+        i = i + 1
+    }
+    return s
+}
+
+struct LsmCfsMap {
+    next_id: i64,
+    names: Map<str, i64>,
+    ok: i64
+}
+
+fn lsm_cfs_load(dir: str) -> LsmCfsMap !IO {
+    let names: Map<str, i64> = map_new()
+    map_set(names, "default", 0)
+    let body = read_file(lsm_cfs_map_path(dir))?
+    if body == "" {
+        return LsmCfsMap { next_id: 1, names: names, ok: 1 }
+    }
+    let lines = str_split(body, "\n")
+    let mut next_id: i64 = 1
+    if vec_len(lines) > 0 && vec_get(lines, 0) != "" {
+        next_id = parse_int(vec_get(lines, 0))
+        if next_id < 1 {
+            next_id = 1
+        }
+    }
+    let mut i: i64 = 1
+    while i < vec_len(lines) {
+        let ln = vec_get(lines, i)
+        if ln != "" {
+            let parts = str_split(ln, " ")
+            if vec_len(parts) >= 2 {
+                let name = vec_get(parts, 0)
+                let id = parse_int(vec_get(parts, 1))
+                if name != "" && id > 0 {
+                    map_set(names, name, id)
+                    if id >= next_id {
+                        next_id = id + 1
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return LsmCfsMap { next_id: next_id, names: names, ok: 1 }
+}
+
+// Atomic publish of name map (tmp + fsync + rename).
+fn lsm_cfs_save(dir: str, next_id: i64, names: Map<str, i64>) -> i64 !IO {
+    let body = lsm_cfs_format(next_id, names)
+    let tmp = lsm_cfs_map_tmp_path(dir)
+    let live = lsm_cfs_map_path(dir)
+    let fd = open(tmp, 577, 420)?
+    if fd < 0 {
+        return 0 - 1
+    }
+    if fd_write(fd, body)? != 0 {
+        close(fd)
+        unlink(tmp)?
+        return 0 - 1
+    }
+    fsync(fd)?
+    close(fd)
+    unlink(live)?
+    if fs_rename(tmp, live)? != 0 {
+        if write_file(live, body)? != 0 {
+            return 0 - 1
+        }
+        unlink(tmp)?
+        let fd2 = open(live, 0, 0)?
+        if fd2 >= 0 {
+            fsync(fd2)?
+            close(fd2)
+        }
+    }
+    return 0
+}
+
+struct LsmCFDB {
+    dir: str,
+    // shared WAL
+    wal_fd: i64,
+    wal_off: i64,
+    wal_buf: bytes,
+    wal_buf_max: i64,
+    wal_buf_len: i64,
+    sync_every: i64,
+    since_sync: i64,
+    flush_at: i64,
+    compact_at: i64,
+    // cf_id → LsmDB (SST path = lsm_cf_path; WAL fields ignored for n>0)
+    families: Map<i64, LsmDB>,
+    names: Map<str, i64>,
+    next_cf_id: i64,
+    ok: i64
+}
+
+fn lsm_cf_ensure(db: LsmCFDB, cf_id: i64) -> LsmCFDB !IO {
+    if map_has(db.families, cf_id) == 1 {
+        return db
+    }
+    let path = lsm_cf_path(db.dir, cf_id)
+    // Open family SST/manifest only — do not open a separate WAL.
+    let mut fam = lsm_read_manifest(path)?
+    fam.dir = path
+    fam.flush_at = db.flush_at
+    fam.compact_at = db.compact_at
+    fam.sync_every = db.sync_every
+    fam.wal_fd = 0 - 1
+    fam.wal_off = 0
+    fam.wal_buf_len = 0
+    fam.ok = 1
+    map_set(db.families, cf_id, fam)
+    return db
+}
+
+fn lsm_cf_open(dir: str, flush_at: i64, compact_at: i64) -> LsmCFDB !IO {
+    let mut fa = flush_at
+    if fa < 1 {
+        fa = 32
+    }
+    let mut ca = compact_at
+    if ca < 1 {
+        ca = 3
+    }
+    let families: Map<i64, LsmDB> = map_new()
+    // R46: load durable name map
+    let nm = lsm_cfs_load(dir)?
+    let names = nm.names
+    let mut next_cf_id = nm.next_id
+    // Shared WAL
+    let wfd = open(concat(dir, ".wal"), 66, 420)?
+    if wfd < 0 {
+        return LsmCFDB {
+            dir: dir, wal_fd: -1, wal_off: 0,
+            wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
+            sync_every: 1, since_sync: 0, flush_at: fa, compact_at: ca,
+            families: families, names: names, next_cf_id: next_cf_id, ok: 0
+        }
+    }
+    let mut db = LsmCFDB {
+        dir: dir, wal_fd: wfd, wal_off: 0,
+        wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
+        sync_every: 1, since_sync: 0, flush_at: fa, compact_at: ca,
+        families: families, names: names, next_cf_id: next_cf_id, ok: 1
+    }
+    // Always ensure default CF 0 (loads its SST manifest)
+    db = lsm_cf_ensure(db, 0)?
+    // Ensure all named CFs from durable map (load their SST manifests)
+    let nks = map_keys(db.names)
+    let mut ni: i64 = 0
+    while ni < vec_len(nks) {
+        let nm0 = vec_get(nks, ni)
+        let id0 = map_get(db.names, nm0)
+        db = lsm_cf_ensure(db, id0)?
+        ni = ni + 1
+    }
+    // Replay shared WAL into CF memtables
+    let rp = wal_replay(wfd)?
+    db.wal_off = rp.end_off
+    let mut i: i64 = 0
+    while i < vec_len(rp.ops) {
+        let mut cf: i64 = 0
+        if i < vec_len(rp.cfs) {
+            cf = vec_get(rp.cfs, i)
+        }
+        db = lsm_cf_ensure(db, cf)?
+        let mut fam = map_get(db.families, cf)
+        let op = vec_get(rp.ops, i)
+        let k = vec_get(rp.keys, i)
+        let v = vec_get(rp.vals, i)
+        if op == 1 {
+            map_set(fam.mem, k, v)
+            map_del(fam.tomb, k)
+        } else {
+            map_del(fam.mem, k)
+            map_set(fam.tomb, k, 1)
+        }
+        fam.mem_n = fam.mem_n + 1
+        map_set(db.families, cf, fam)
+        if cf >= db.next_cf_id {
+            db.next_cf_id = cf + 1
+        }
+        i = i + 1
+    }
+    return db
+}
+
+// Create or lookup named CF. Persists name map (R46).
+fn lsm_cf_create(db: LsmCFDB, name: str) -> LsmCFCreate !IO {
+    if name == "" || name == "default" {
+        return LsmCFCreate { db: db, id: 0 }
+    }
+    if map_has(db.names, name) == 1 {
+        return LsmCFCreate { db: db, id: map_get(db.names, name) }
+    }
+    let id = db.next_cf_id
+    db.next_cf_id = id + 1
+    map_set(db.names, name, id)
+    db = lsm_cf_ensure(db, id)?
+    if lsm_cfs_save(db.dir, db.next_cf_id, db.names)? != 0 {
+        db.ok = 0
+        return LsmCFCreate { db: db, id: 0 - 1 }
+    }
+    return LsmCFCreate { db: db, id: id }
+}
+
+struct LsmCFCreate {
+    db: LsmCFDB,
+    id: i64
+}
+
+fn lsm_cf_id_of(db: LsmCFDB, name: str) -> i64 {
+    if map_has(db.names, name) == 1 {
+        return map_get(db.names, name)
+    }
+    if name == "" || name == "default" {
+        return 0
+    }
+    return 0 - 1
+}
+
+// Resolve name; auto-create if missing (for CF.SET).
+fn lsm_cf_resolve(db: LsmCFDB, name: str, create: i64) -> LsmCFCreate !IO {
+    let id = lsm_cf_id_of(db, name)
+    if id >= 0 {
+        return LsmCFCreate { db: db, id: id }
+    }
+    if create == 0 {
+        return LsmCFCreate { db: db, id: 0 - 1 }
+    }
+    return lsm_cf_create(db, name)?
+}
+
+// List CF names (including "default").
+fn lsm_cf_list(db: LsmCFDB) -> Vec<str> {
+    let ks = map_keys(db.names)
+    sort_strs(ks)
+    return ks
+}
+
+// Shared WAL append (CF-aware record).
+fn lsm_cf_wal_append(db: LsmCFDB, op: i64, cf_id: i64, key: str, val: bytes) -> LsmCFDB !IO {
+    let rec = wal_record_cf(op, cf_id, key, val)
+    let rl = bytes_len(rec)
+    if db.wal_buf_max <= 0 {
+        if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
+            drop(rec)
+            db.ok = 0
+            return db
+        }
+        db.wal_off = db.wal_off + rl
+        drop(rec)
+        return db
+    }
+    if rl >= db.wal_buf_max {
+        db = lsm_cf_wal_flush_buf(db)?
+        if db.ok == 0 {
+            drop(rec)
+            return db
+        }
+        if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
+            drop(rec)
+            db.ok = 0
+            return db
+        }
+        db.wal_off = db.wal_off + rl
+        drop(rec)
+        return db
+    }
+    if db.wal_buf_len + rl > db.wal_buf_max {
+        db = lsm_cf_wal_flush_buf(db)?
+        if db.ok == 0 {
+            drop(rec)
+            return db
+        }
+    }
+    if bytes_len(db.wal_buf) < db.wal_buf_max {
+        db.wal_buf = bytes_new(db.wal_buf_max)
+        db.wal_buf_len = 0
+    }
+    let mut i: i64 = 0
+    while i < rl {
+        bytes_set(db.wal_buf, db.wal_buf_len + i, bytes_at(rec, i))
+        i = i + 1
+    }
+    db.wal_buf_len = db.wal_buf_len + rl
+    drop(rec)
+    return db
+}
+
+fn lsm_cf_wal_flush_buf(db: LsmCFDB) -> LsmCFDB !IO {
+    if db.wal_buf_len <= 0 {
+        return db
+    }
+    let view = bytes_slice(db.wal_buf, 0, db.wal_buf_len)
+    if fd_pwrite_bytes(db.wal_fd, view, db.wal_off) != 0 {
+        drop(view)
+        db.ok = 0
+        return db
+    }
+    drop(view)
+    db.wal_off = db.wal_off + db.wal_buf_len
+    db.wal_buf_len = 0
+    return db
+}
+
+fn lsm_cf_maybe_sync(db: LsmCFDB) -> LsmCFDB !IO {
+    db.since_sync = db.since_sync + 1
+    if db.since_sync >= db.sync_every {
+        db = lsm_cf_wal_flush_buf(db)?
+        if db.ok == 0 {
+            return db
+        }
+        fdatasync(db.wal_fd)?
+        db.since_sync = 0
+    }
+    return db
+}
+
+fn lsm_cf_put(db: LsmCFDB, cf_id: i64, key: str, val: str) -> LsmCFDB !IO !Time {
+    db = lsm_cf_ensure(db, cf_id)?
+    let vb = bytes_of_str(val)
+    db = lsm_cf_wal_append(db, 1, cf_id, key, vb)?
+    if db.ok == 0 {
+        return db
+    }
+    let mut fam = map_get(db.families, cf_id)
+    map_set(fam.mem, key, vb)
+    if map_len(fam.tomb) > 0 {
+        map_del(fam.tomb, key)
+    }
+    fam.mem_n = fam.mem_n + 1
+    map_set(db.families, cf_id, fam)
+    db = lsm_cf_maybe_sync(db)?
+    // Auto-flush this CF when full
+    fam = map_get(db.families, cf_id)
+    if fam.mem_n >= fam.flush_at {
+        db = lsm_cf_flush(db, cf_id)?
+    }
+    return db
+}
+
+struct LsmCFGet {
+    db: LsmCFDB,
+    found: i64,
+    val: bytes
+}
+
+fn lsm_cf_get(db: LsmCFDB, cf_id: i64, key: str) -> LsmCFGet !IO !Time {
+    db = lsm_cf_ensure(db, cf_id)?
+    let mut fam = map_get(db.families, cf_id)
+    // Reuse single-store get on the family LsmDB (SST path only; no WAL on fam)
+    let g = lsm_get(fam, key)?
+    fam = g.db
+    map_set(db.families, cf_id, fam)
+    return LsmCFGet { db: db, found: g.found, val: g.val }
+}
+
+fn lsm_cf_del(db: LsmCFDB, cf_id: i64, key: str) -> LsmCFDB !IO !Time {
+    db = lsm_cf_ensure(db, cf_id)?
+    let empty = bytes_new(0)
+    db = lsm_cf_wal_append(db, 2, cf_id, key, empty)?
+    if db.ok == 0 {
+        return db
+    }
+    let mut fam = map_get(db.families, cf_id)
+    map_del(fam.mem, key)
+    map_set(fam.tomb, key, 1)
+    fam.mem_n = fam.mem_n + 1
+    map_set(db.families, cf_id, fam)
+    db = lsm_cf_maybe_sync(db)?
+    return db
+}
+
+// Flush one CF's memtable to its SST path (does NOT rotate shared WAL).
+fn lsm_cf_flush(db: LsmCFDB, cf_id: i64) -> LsmCFDB !IO !Time {
+    db = lsm_cf_ensure(db, cf_id)?
+    let mut fam = map_get(db.families, cf_id)
+    if fam.mem_n == 0 {
+        return db
+    }
+    db = lsm_cf_wal_flush_buf(db)?
+    if db.ok == 0 {
+        return db
+    }
+    fdatasync(db.wal_fd)?
+    let now = time_now_ms()?
+    let all = map_keys(fam.mem)
+    let tk = map_keys(fam.tomb)
+    let mut ti: i64 = 0
+    while ti < vec_len(tk) {
+        let k = vec_get(tk, ti)
+        if map_has(fam.mem, k) == 0 {
+            vec_push(all, k)
+        }
+        ti = ti + 1
+    }
+    sort_strs(all)
+    let rows: Vec<SstRow> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(all) {
+        let k = vec_get(all, i)
+        if map_has(fam.mem, k) == 0 {
+            vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
+        } else {
+            let raw = map_get(fam.mem, k)
+            let u = ttl_unpack(raw)
+            if ttl_expired(u.expire_at, now) == 1 {
+                vec_push(rows, SstRow { op: 2, key: k, val: bytes_new(0) })
+            } else {
+                vec_push(rows, SstRow { op: 1, key: k, val: raw })
+            }
+        }
+        i = i + 1
+    }
+    let gen = fam.next_gen
+    if vec_len(rows) > 0 {
+        if sst_write(fam.dir, gen, rows)? != 0 {
+            db.ok = 0
+            return db
+        }
+        vec_push(fam.gens, gen)
+        vec_push(fam.levels, 0)
+        fam.next_gen = gen + 1
+        let na = lsm_manifest_log_add(fam.dir, gen, 0, fam.next_gen)?
+        if na < 0 {
+            db.ok = 0
+            return db
+        }
+        fam.manifest_edits = fam.manifest_edits + na
+        let ec = lsm_manifest_maybe_compact(
+            fam.dir, fam.next_gen, fam.gens, fam.levels, fam.manifest_edits
+        )?
+        if ec < 0 {
+            db.ok = 0
+            return db
+        }
+        fam.manifest_edits = ec
+    }
+    drop(rows)
+    fam.mem = map_new()
+    fam.tomb = map_new()
+    fam.mem_n = 0
+    fam.wal_fd = 0 - 1
+    map_set(db.families, cf_id, fam)
+    return db
+}
+
+fn lsm_cf_close(db: LsmCFDB) -> i64 !IO !Time {
+    // Flush all non-empty families
+    let ks = map_keys(db.families)
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        let id = vec_get(ks, i)
+        let fam = map_get(db.families, id)
+        if fam.mem_n > 0 {
+            db = lsm_cf_flush(db, id)?
+        }
+        i = i + 1
+    }
+    db = lsm_cf_wal_flush_buf(db)?
+    if db.wal_fd >= 0 {
+        fdatasync(db.wal_fd)?
+        close(db.wal_fd)
+    }
+    // Persist name map
+    lsm_cfs_save(db.dir, db.next_cf_id, db.names)?
+    // Close family SST caches (no WAL)
+    i = 0
+    while i < vec_len(ks) {
+        let id2 = vec_get(ks, i)
+        let mut fam2 = map_get(db.families, id2)
+        fam2.wal_fd = 0 - 1
+        lsm_close(fam2)?
+        i = i + 1
+    }
+    return 0
+}

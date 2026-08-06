@@ -146,7 +146,8 @@ RESP command loop; maps SET/GET/… to `db`. Env: `LSMPATH`, `LSM_*`.
 
 ```
 <prefix>.wal
-<prefix>.manifest
+<prefix>.manifest          # atomic snapshot (R39)
+<prefix>.manifest.log      # append-only A/D/N edits (R40)
 <prefix>.sst.<gen>
 <prefix>.bloom.<gen>
 ```
@@ -160,8 +161,14 @@ Layers own **code**, not a new disk format.
 | ~~`table/bloom.baga`~~ | **done** |
 | ~~`db/compact.baga` + `types.baga`~~ | **done** |
 | ~~`table/block.baga`~~ | **done (R20)** — record builder + scan |
-| `db/manifest.baga` | version edit log beyond flat MANIFEST |
-| `tools/` | offline SST dump / consistency check |
+| ~~`db/manifest.baga`~~ | **done (R26/R39/R40)** — snapshot + edit log |
+| ~~`db/multidb.baga`~~ | **done (R41)** — Redis SELECT multi-DB namespaces |
+| ~~`db/cf.baga`~~ | **done (R44)** — shared-WAL column families |
+| MT serve | **done (R45)** — `LSM_SERVE_MT=1` + workers |
+| ~~`tools/sst_dump`~~ | **done (R26)** — offline SST/MANIFEST dump |
+| ~~`db/shard.baga`~~ | **done (R32)** — key-hash multi-shard cluster |
+| ~~`db/workers.baga`~~ | **done (R33/R35)** — per-shard workers + in-mem mailbox |
+| (later) version edit log | beyond flat MANIFEST if needed |
 
 ## Tests
 
@@ -171,6 +178,7 @@ Layers own **code**, not a new disk format.
 | `tests/lsm_recover_test.baga` | `rocksbaga/engine` + `page` |
 | `tests/page_cache_test.baga` | `rocksbaga/cache/page` (R19 pins + multi-fd) |
 | `tests/sst_scan_test.baga` | `rocksbaga/table/sstable` (R20 block scan) |
+| `tests/manifest_test.baga` | `rocksbaga/db/manifest` + KEYS fold (R26) |
 | Layer smoke | `import "rocksbaga/db/engine.baga"` |
 
 ## Non-goals of this layout

@@ -1,0 +1,132 @@
+// cf_test.baga — R44 shared-WAL column families.
+import "rocksbaga/db/cf.baga"
+import "rocksbaga/net/server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn wipe(p: str) -> i64 !IO {
+    unlink(concat(p, ".wal"))?
+    unlink(concat(p, ".manifest"))?
+    unlink(concat(p, ".manifest.log"))?
+    unlink(concat(p, ".cfs"))?
+    unlink(concat(p, ".cfs.tmp"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(p, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(p, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    // CF 1..3
+    let mut c: i64 = 1
+    while c <= 3 {
+        let base = concat(concat(p, ".cf"), int_to_str(c))
+        unlink(concat(base, ".wal"))?
+        unlink(concat(base, ".manifest"))?
+        unlink(concat(base, ".manifest.log"))?
+        let mut g2: i64 = 1
+        while g2 <= 40 {
+            unlink(concat(concat(base, ".sst."), int_to_str(g2)))?
+            unlink(concat(concat(base, ".bloom."), int_to_str(g2)))?
+            g2 = g2 + 1
+        }
+        c = c + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time {
+    print("cf_test:")
+    let dir = "/tmp/baga_cf_t"
+    wipe(dir)?
+
+    let mut db = lsm_cf_open(dir, 32, 8)?
+    check("open", db.ok == 1)
+    db.sync_every = 1000
+
+    let cr = lsm_cf_create(db, "users")?
+    db = cr.db
+    let users = cr.id
+    check("create_users", users > 0)
+
+    let cr2 = lsm_cf_create(db, "meta")?
+    db = cr2.db
+    let meta = cr2.id
+    check("create_meta", meta > 0 && meta != users)
+
+    db = lsm_cf_put(db, 0, "k", "default")?
+    db = lsm_cf_put(db, users, "k", "user-val")?
+    db = lsm_cf_put(db, meta, "k", "meta-val")?
+
+    let g0 = lsm_cf_get(db, 0, "k")?
+    db = g0.db
+    check("get_default", g0.found == 1 && str_of_bytes(g0.val) == "default")
+    let gu = lsm_cf_get(db, users, "k")?
+    db = gu.db
+    check("get_users", gu.found == 1 && str_of_bytes(gu.val) == "user-val")
+    let gm = lsm_cf_get(db, meta, "k")?
+    db = gm.db
+    check("get_meta", gm.found == 1 && str_of_bytes(gm.val) == "meta-val")
+
+    // flush users CF only
+    db = lsm_cf_flush(db, users)?
+    check("flush_users", db.ok == 1)
+
+    // reopen — shared WAL + SST + durable names (R46)
+    lsm_cf_close(db)?
+    let db2 = lsm_cf_open(dir, 32, 8)?
+    check("reopen", db2.ok == 1)
+    check("name_users", lsm_cf_id_of(db2, "users") == users)
+    check("name_meta", lsm_cf_id_of(db2, "meta") == meta)
+    let g0b = lsm_cf_get(db2, 0, "k")?
+    check("reopen_def", g0b.found == 1 && str_of_bytes(g0b.val) == "default")
+    let gub = lsm_cf_get(g0b.db, users, "k")?
+    check("reopen_users", gub.found == 1 && str_of_bytes(gub.val) == "user-val")
+    let gmb = lsm_cf_get(gub.db, meta, "k")?
+    check("reopen_meta", gmb.found == 1 && str_of_bytes(gmb.val) == "meta-val")
+
+    // resolve by name after reopen
+    let rx = lsm_cf_resolve(gmb.db, "users", 0)?
+    check("resolve_users", rx.id == users)
+    // CF.SET-style auto create
+    let ry = lsm_cf_resolve(rx.db, "newcf", 1)?
+    check("autocreate", ry.id > 0)
+    let db3 = lsm_cf_put(ry.db, ry.id, "x", "y")?
+    lsm_cf_close(db3)?
+    let db4 = lsm_cf_open(dir, 32, 8)?
+    check("persist_newcf", lsm_cf_id_of(db4, "newcf") == ry.id)
+    let gnew = lsm_cf_get(db4, ry.id, "x")?
+    check("persist_val", gnew.found == 1 && str_of_bytes(gnew.val) == "y")
+
+    // RESP CF.* dispatch (in-process)
+    let args: Vec<str> = vec_new()
+    vec_push(args, "CF.SET")
+    vec_push(args, "users")
+    vec_push(args, "u2")
+    vec_push(args, "v2")
+    let ex = lsm_exec_cf(gnew.db, args)?
+    check("exec_cfset", ex.quit == 0)
+    let args2: Vec<str> = vec_new()
+    vec_push(args2, "CF.GET")
+    vec_push(args2, "users")
+    vec_push(args2, "u2")
+    let ex2 = lsm_exec_cf(ex.db, args2)?
+    check("exec_cfget", ex2.quit == 0 && bytes_len(ex2.reply) > 2)
+    let args3: Vec<str> = vec_new()
+    vec_push(args3, "CF.LIST")
+    let ex3 = lsm_exec_cf(ex2.db, args3)?
+    check("exec_cflist", ex3.quit == 0)
+    lsm_cf_close(ex3.db)?
+
+    print("cf_test: all passed")
+    return 0
+}

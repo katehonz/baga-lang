@@ -52,6 +52,7 @@ fn wipe(prefix: str) -> i64 !IO {
     // best-effort remove known files for gens 1..40
     unlink(concat(prefix, ".wal"))?
     unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
     let mut g: i64 = 1
     while g <= 40 {
         unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
@@ -203,6 +204,27 @@ fn main() -> i64 !Net !IO !Par !Time {
     db6 = gp4.db
     check(fails, "r8_get_p4", gp4.found == 1 && str_of_bytes(gp4.val) == "4")
     lsm_close(db6)?
+
+    // --- R31: size-scored pick prefers larger SST among equals/older ---
+    wipe("/tmp/baga_lsm_score")?
+    let mut db8 = lsm_open("/tmp/baga_lsm_score", 1, 4)?
+    check(fails, "r31_open", db8.ok == 1)
+    db8.merge_pick = 2
+    // Small single-key SST, then a fat multi-put window via flush_at bump...
+    // With flush_at=1 each put is its own SST → equal sizes; score==oldest.
+    db8 = lsm_put(db8, "s1", "1")?
+    db8 = lsm_put(db8, "s2", "2")?
+    db8 = lsm_put(db8, "s3", "3")?
+    db8 = lsm_put(db8, "s4", "4")?  // compact: pick 2, leave 2 L0
+    check(fails, "r31_l0", lsm_count_level(db8.levels, 0) == 2)
+    check(fails, "r31_l1", lsm_count_level(db8.levels, 1) >= 1)
+    let ds = lsm_dbsize(db8)?
+    db8 = ds.db
+    check(fails, "r31_dbsize", ds.n == 4)
+    let kr = lsm_keys(db8)?
+    db8 = kr.db
+    check(fails, "r31_keys_n", vec_len(kr.keys) == 4)
+    lsm_close(db8)?
 
     // --- R9: standalone bloom sidecar (BAGABLM1) ---
     wipe("/tmp/baga_lsm_bloom")?

@@ -37,6 +37,15 @@ docs/           PLAN, gaps
 
 **Bench:** `./bench/rocks/run_vs_rocksdb.sh` — pure engine vs RocksDB.
 
+**Dump:**  
+`LSMPATH=/tmp/baga_lsm ./baga -I . -I app-product app-product/rocksbaga/tools/sst_dump.baga`  
+(`SST_GEN`, `SST_KEYS=1`, `SST_MAX` optional).
+
+**Parallel engine (R33/R35):**  
+`import "rocksbaga/db/workers.baga"` — `lsm_parallel_start(dir, N)` then
+`lsm_parallel_set/get`. Jobs are in-memory (cell2 packs on chans). Requires
+`LSMPATH`/`LSM_SHARDS` in the environment for worker children.
+
 ## Run
 
 ```bash
@@ -49,8 +58,22 @@ LSMPATH=/tmp/baga_rocks_demo LSMPORT=16579 \
 ./baga -I . -I app-product tests/sst_scan_test.baga
 ```
 
-Env: `LSMPATH`, `LSMPORT`, `LSM_FLUSH_AT`, `LSM_COMPACT_AT`,
+Env: `LSMPATH`, `LSMPORT`, `LSM_SHARDS` (default 1; key-hash partition),
+`LSM_PARALLEL=1` (per-shard workers behind RESP poll; default 0),
+`LSM_SERVE_MT=1` (go_bg per connection → same workers; multi-core multi-conn),
+`LSM_CF=1` (shared-WAL CF mode: `CF.SET/GET/DEL/LIST`; plain SET = default CF),
+`LSM_MAX_DB` (default 16; Redis-style `SELECT` 0..N-1 → `dir` / `dir.db{n}`),
+`LSM_FLUSH_AT` (default 256), `LSM_COMPACT_AT` (default 4),
+`LSM_CACHE_PAGES` (default 2048 ≈ 8 MiB, split across shards),
+`LSM_SYNC_EVERY` (default 1 = fsync each put; raise for bulk),
 `LSM_TARGET_BYTES`, `LSM_MERGE_PICK`, `LSM_SERIAL=1` (legacy single-conn).
+
+**RESP serve / bench:**
+```bash
+LSMPATH=/tmp/baga_lsm LSMPORT=16579 ./baga -I . -I app-product \
+  app-product/rocksbaga/tools/serve.baga
+./bench/rocks/run_vs_redis.sh          # baga + Redis if installed
+```
 
 ## API
 

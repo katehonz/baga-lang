@@ -27,19 +27,43 @@ fn resp_find_crlf(buf: bytes, pos: i64) -> i64 {
     return -1
 }
 
+// Parse decimal integer in buf[start, end) without allocating a string (R29).
+// Returns -1 on empty/non-digit (except empty → treat as error).
+fn resp_parse_dec(buf: bytes, start: i64, end: i64) -> i64 {
+    if start >= end {
+        return 0 - 1
+    }
+    let mut n: i64 = 0
+    let mut i = start
+    while i < end {
+        let c = bytes_at(buf, i) & 255
+        if c < 48 || c > 57 {
+            return 0 - 1
+        }
+        n = n * 10 + (c - 48)
+        i = i + 1
+    }
+    return n
+}
+
 // One RESP command: *N followed by N "$len\r\n<bytes>\r\n" frames.
 // ok=0 means "need more data" (or garbage — the connection is dropped then).
+// R29: headers (*N / $len) parsed as digits on the wire — no str_of_bytes/
+// parse_int for framing; only arg payloads become strings.
 fn resp_parse_command(buf: bytes) -> RespParse {
     let none = vec_new()
+    let blen0 = bytes_len(buf)
+    if blen0 < 4 {
+        return RespParse { ok: 0, args: none, consumed: 0 }
+    }
+    if (bytes_at(buf, 0) & 255) != 42 {   // '*'
+        return RespParse { ok: 0, args: none, consumed: 0 }
+    }
     let eol = resp_find_crlf(buf, 0)
-    if eol < 0 {
+    if eol < 1 {
         return RespParse { ok: 0, args: none, consumed: 0 }
     }
-    let head = str_of_bytes(bytes_slice(buf, 0, eol))
-    if len(head) == 0 || char_at(head, 0) != 42 {   // '*'
-        return RespParse { ok: 0, args: none, consumed: 0 }
-    }
-    let n = parse_int(substr(head, 1, len(head)))
+    let n = resp_parse_dec(buf, 1, eol)
     if n <= 0 || n > 64 {
         return RespParse { ok: 0, args: none, consumed: 0 }
     }
@@ -47,24 +71,27 @@ fn resp_parse_command(buf: bytes) -> RespParse {
     let mut pos = eol + 2
     let mut i: i64 = 0
     while i < n {
+        if pos >= blen0 {
+            return RespParse { ok: 0, args: none, consumed: 0 }
+        }
+        if (bytes_at(buf, pos) & 255) != 36 {   // '$'
+            return RespParse { ok: 0, args: none, consumed: 0 }
+        }
         let le = resp_find_crlf(buf, pos)
-        if le < 0 {
+        if le < pos + 1 {
             return RespParse { ok: 0, args: none, consumed: 0 }
         }
-        let hl = str_of_bytes(bytes_slice(buf, pos, le))
-        if len(hl) == 0 || char_at(hl, 0) != 36 {   // '$'
-            return RespParse { ok: 0, args: none, consumed: 0 }
-        }
-        let blen = parse_int(substr(hl, 1, len(hl)))
-        if blen < 0 || blen > 536870912 {
+        let alen = resp_parse_dec(buf, pos + 1, le)
+        if alen < 0 || alen > 536870912 {
             return RespParse { ok: 0, args: none, consumed: 0 }
         }
         let start = le + 2
-        if bytes_len(buf) < start + blen + 2 {
+        if blen0 < start + alen + 2 {
             return RespParse { ok: 0, args: none, consumed: 0 }
         }
-        vec_push(args, str_of_bytes(bytes_slice(buf, start, start + blen)))
-        pos = start + blen + 2
+        // Only payload → str (keys/vals). Framing never became a string.
+        vec_push(args, str_of_bytes(bytes_slice(buf, start, start + alen)))
+        pos = start + alen + 2
         i = i + 1
     }
     return RespParse { ok: 1, args: args, consumed: pos }
@@ -74,6 +101,16 @@ fn resp_parse_command(buf: bytes) -> RespParse {
 
 fn resp_simple(s: str) -> bytes {
     return bytes_of_str(concat(concat("+", s), "\r\n"))
+}
+
+// Hot-path constants (R29) — one string build each call still, but no concat chain
+// for the common fixed replies used by PING/SET.
+fn resp_pong() -> bytes {
+    return bytes_of_str("+PONG\r\n")
+}
+
+fn resp_ok() -> bytes {
+    return bytes_of_str("+OK\r\n")
 }
 
 fn resp_error(msg: str) -> bytes {
@@ -90,10 +127,30 @@ fn resp_bulk(s: str) -> bytes {
 }
 
 // Binary-safe bulk ($N\\r\\n + raw bytes + \\r\\n). Prefer for Map/bytes stores.
+// R30: single prealloc + copy (no double concat of head|body|tail).
 fn resp_bulk_b(b: bytes) -> bytes {
-    let head = bytes_of_str(concat(concat("$", int_to_str(bytes_len(b))), "\r\n"))
-    let tail = bytes_of_str("\r\n")
-    return bytes_concat(bytes_concat(head, b), tail)
+    let n = bytes_len(b)
+    let num = int_to_str(n)
+    // "$" + digits + "\r\n" + body + "\r\n"
+    let hlen = 1 + len(num) + 2
+    let total = hlen + n + 2
+    let out = bytes_new(total)
+    bytes_set(out, 0, 36)  // '$'
+    let mut i: i64 = 0
+    while i < len(num) {
+        bytes_set(out, 1 + i, char_at(num, i))
+        i = i + 1
+    }
+    bytes_set(out, 1 + len(num), 13)
+    bytes_set(out, 1 + len(num) + 1, 10)
+    i = 0
+    while i < n {
+        bytes_set(out, hlen + i, bytes_at(b, i))
+        i = i + 1
+    }
+    bytes_set(out, hlen + n, 13)
+    bytes_set(out, hlen + n + 1, 10)
+    return out
 }
 
 fn resp_null_bulk() -> bytes {

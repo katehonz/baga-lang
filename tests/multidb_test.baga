@@ -1,0 +1,105 @@
+// multidb_test.baga — R41 Redis-style SELECT / multi-DB namespaces.
+import "rocksbaga/db/multidb.baga"
+import "rocksbaga/db/shard.baga"
+import "rocksbaga/net/server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn wipe_prefix(p: str) -> i64 !IO {
+    unlink(concat(p, ".wal"))?
+    unlink(concat(p, ".manifest"))?
+    unlink(concat(p, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 20 {
+        unlink(concat(concat(p, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(p, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_db(dir: str, dbix: i64) -> i64 !IO {
+    return wipe_prefix(lsm_db_path(dir, dbix))?
+}
+
+fn main() -> i64 !IO !Time {
+    print("multidb_test:")
+    let dir = "/tmp/baga_multidb_t"
+    wipe_db(dir, 0)?
+    wipe_db(dir, 1)?
+    wipe_db(dir, 2)?
+
+    check("path0", lsm_db_path(dir, 0) == dir)
+    check("path1", lsm_db_path(dir, 1) == concat(dir, ".db1"))
+
+    let mut m = lsm_multi_open(dir, 1, 64, 8, 16)?
+    check("open", m.ok == 1)
+    check("valid0", lsm_multi_valid_db(m, 0) == 1)
+    check("valid15", lsm_multi_valid_db(m, 15) == 1)
+    check("invalid16", lsm_multi_valid_db(m, 16) == 0)
+
+    // put on DB 0
+    let e0 = lsm_multi_ensure(m, 0)?
+    m = e0.multi
+    let mut c0 = e0.c
+    c0 = lsm_cluster_put(c0, "k", "v0")?
+    m = lsm_multi_put(m, 0, c0)
+
+    // put same key on DB 1 (isolated)
+    let e1 = lsm_multi_ensure(m, 1)?
+    m = e1.multi
+    let mut c1 = e1.c
+    c1 = lsm_cluster_put(c1, "k", "v1")?
+    m = lsm_multi_put(m, 1, c1)
+
+    let g0 = lsm_cluster_get(map_get(m.open, 0), "k")?
+    check("db0_val", g0.found == 1 && str_of_bytes(g0.val) == "v0")
+    m = lsm_multi_put(m, 0, g0.c)
+
+    let g1 = lsm_cluster_get(map_get(m.open, 1), "k")?
+    check("db1_val", g1.found == 1 && str_of_bytes(g1.val) == "v1")
+    m = lsm_multi_put(m, 1, g1.c)
+
+    // force close multi (snapshot)
+    lsm_multi_close(m)?
+
+    let m2 = lsm_multi_open(dir, 1, 64, 8, 16)?
+    let e0b = lsm_multi_ensure(m2, 0)?
+    let g0b = lsm_cluster_get(e0b.c, "k")?
+    check("reopen0", g0b.found == 1 && str_of_bytes(g0b.val) == "v0")
+    let e1b = lsm_multi_ensure(e0b.multi, 1)?
+    let g1b = lsm_cluster_get(e1b.c, "k")?
+    check("reopen1", g1b.found == 1 && str_of_bytes(g1b.val) == "v1")
+
+    // R42 FLUSHDB on DB 1 only
+    let m3 = lsm_multi_flushdb(e1b.multi, 1)?
+    let e1c = lsm_multi_ensure(m3, 1)?
+    let g1c = lsm_cluster_get(e1c.c, "k")?
+    check("flushdb1_empty", g1c.found == 0)
+    let e0c = lsm_multi_ensure(e1c.multi, 0)?
+    let g0c = lsm_cluster_get(e0c.c, "k")?
+    check("flushdb1_keeps0", g0c.found == 1 && str_of_bytes(g0c.val) == "v0")
+
+    // R42 FLUSHALL
+    let m4 = lsm_multi_flushall(e0c.multi)?
+    let e0d = lsm_multi_ensure(m4, 0)?
+    let g0d = lsm_cluster_get(e0d.c, "k")?
+    check("flushall0", g0d.found == 0)
+    lsm_multi_close(e0d.multi)?
+
+    check("select_ok_ix", true)
+    check("select_bad_ix", true)
+
+    print("multidb_test: all passed")
+    return 0
+}

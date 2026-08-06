@@ -1,0 +1,15 @@
+// serve.baga — long-running RESP server (R28 bench entry).
+// Env: LSMPORT (16579), LSMPATH, LSM_FLUSH_AT, LSM_CACHE_PAGES, …
+
+import "../net/server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !Net !IO !Par !Time {
+    let mut port: i64 = 16579
+    let pe = env("LSMPORT")?
+    if pe != "" {
+        port = parse_int(pe)
+    }
+    return lsm_serve(port)?
+}

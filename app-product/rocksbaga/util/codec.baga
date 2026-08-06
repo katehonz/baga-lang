@@ -80,16 +80,15 @@ fn str_cmp(a: str, b: str) -> i64 {
     return 0
 }
 
-// In-place insertion sort of Vec<str> ascending.
-fn sort_strs(v: Vec<str>) {
-    let n = vec_len(v)
-    let mut i: i64 = 1
-    while i < n {
+// In-place insertion sort (small n).
+fn sort_strs_ins(v: Vec<str>, lo: i64, hi: i64) {
+    let mut i = lo + 1
+    while i <= hi {
         let key = vec_get(v, i)
         let mut j = i - 1
         let mut moving = 1
         while moving == 1 {
-            if j < 0 {
+            if j < lo {
                 moving = 0
             } else {
                 if str_cmp(vec_get(v, j), key) <= 0 {
@@ -102,5 +101,49 @@ fn sort_strs(v: Vec<str>) {
         }
         vec_set(v, j + 1, key)
         i = i + 1
+    }
+}
+
+// Quicksort partition (last element pivot).
+fn sort_strs_part(v: Vec<str>, lo: i64, hi: i64) -> i64 {
+    let pivot = vec_get(v, hi)
+    let mut i = lo
+    let mut j = lo
+    while j < hi {
+        if str_cmp(vec_get(v, j), pivot) <= 0 {
+            let tmp = vec_get(v, i)
+            vec_set(v, i, vec_get(v, j))
+            vec_set(v, j, tmp)
+            i = i + 1
+        }
+        j = j + 1
+    }
+    let tmp = vec_get(v, i)
+    vec_set(v, i, vec_get(v, hi))
+    vec_set(v, hi, tmp)
+    return i
+}
+
+fn sort_strs_qs(v: Vec<str>, lo: i64, hi: i64) {
+    if hi - lo < 16 {
+        if lo < hi {
+            sort_strs_ins(v, lo, hi)
+        }
+        return
+    }
+    if lo < hi {
+        let p = sort_strs_part(v, lo, hi)
+        sort_strs_qs(v, lo, p - 1)
+        sort_strs_qs(v, p + 1, hi)
+    }
+}
+
+// In-place sort of Vec<str> ascending.
+// R21: quicksort (O(n log n)) + insertion for small slices. Former full-range
+// insertion sort was O(n²) and dominated flush ROWS at n≥1k (~56% of flush).
+fn sort_strs(v: Vec<str>) {
+    let n = vec_len(v)
+    if n > 1 {
+        sort_strs_qs(v, 0, n - 1)
     }
 }

@@ -1,0 +1,400 @@
+// engine_profile.baga — differential phase probe for rocksbaga.
+// Isolates where put/get time goes without invasive engine counters.
+//
+// Env:
+//   BENCH_N      key count (default 2000)
+//   BENCH_VLEN   value bytes (default 100)
+//
+// Each scenario prints:
+//   PHASE name=… us=… ops=… note=…
+// Plus a derived summary attributing PUT time.
+//
+// Scenarios (PUT):
+//   KEYS       pad_key only
+//   VAL_BYTES  bytes_of_str of fixed payload
+//   MEM        put_b: wal encode+buf + memtable; no fsync, no flush
+//   SYNC       MEM + fsync every put
+//   FLUSH      MEM + flush_at=64 (fsync rare; many small SSTs)
+//   DURABLE    flush_at=64, sync_every=1  (head-to-head default)
+//   BATCH      flush_at=N, sync_every=N + flush_force at end (R21)
+//
+// Scenarios (GET, after durable fill + reopen unless noted):
+//   GET_MEM    sequential get before reopen (hits memtable)
+//   GET_SEQ    sequential get after reopen (SST path)
+//   GET_RND    LCG random get after reopen
+
+import "rocksbaga/db/engine.baga"
+import "std/time/time.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+import "std/bytes/bytes.baga"
+
+fn pad_key(i: i64) -> str {
+    let s = int_to_str(i)
+    let pad = 8 - len(s)
+    if pad <= 0 {
+        return concat("k", s)
+    }
+    return concat("k", concat(str_repeat("0", pad), s))
+}
+
+fn wipe_prefix(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    let mut g: i64 = 1
+    while g <= 400 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn ops_per_s_us(n: i64, us: i64) -> i64 {
+    if us <= 0 {
+        return n * 1000000
+    }
+    return (n * 1000000) / us
+}
+
+fn elapsed_us(t0: i64, t1: i64) -> i64 {
+    let d = t1 - t0
+    if d < 0 {
+        return 0
+    }
+    return d
+}
+
+fn emit(name: str, n: i64, us: i64, note: str) {
+    print(concat(
+        concat(
+            concat(
+                concat(
+                    concat(
+                        concat(
+                            concat(concat("PHASE name=", name), " us="),
+                            int_to_str(us)
+                        ),
+                        " ops="
+                    ),
+                    int_to_str(ops_per_s_us(n, us))
+                ),
+                " note="
+            ),
+            note
+        ),
+        ""
+    ))
+}
+
+fn open_db(prefix: str, flush_at: i64, compact_at: i64) -> LsmDB !IO {
+    wipe_prefix(prefix)?
+    let mut db = lsm_open(prefix, flush_at, compact_at)?
+    return db
+}
+
+fn main() -> i64 !IO !Time {
+    let mut n: i64 = 2000
+    let en = env("BENCH_N")?
+    if en != "" {
+        n = parse_int(en)
+        if n < 100 {
+            n = 100
+        }
+    }
+    let mut vlen: i64 = 100
+    let ev = env("BENCH_VLEN")?
+    if ev != "" {
+        vlen = parse_int(ev)
+        if vlen < 1 {
+            vlen = 1
+        }
+        if vlen > 4096 {
+            vlen = 4096
+        }
+    }
+
+    let prefix = "/tmp/baga_rocks_profile"
+    let val_s = str_repeat("x", vlen)
+    let val_b = bytes_of_str(val_s)
+
+    print(concat(
+        concat(concat("META n=", int_to_str(n)), " vlen="),
+        int_to_str(vlen)
+    ))
+
+    // --- KEYS: pad_key only ---
+    let mut t0 = monotonic_us()?
+    let mut i: i64 = 0
+    let mut sink: i64 = 0
+    while i < n {
+        let k = pad_key(i)
+        sink = sink + len(k)
+        i = i + 1
+    }
+    let mut t1 = monotonic_us()?
+    emit("KEYS", n, elapsed_us(t0, t1), "pad_key_only")
+    if sink < 0 {
+        print("FAIL sink")
+        return 1
+    }
+
+    // --- VAL_BYTES: bytes_of_str cost (same string each time) ---
+    t0 = monotonic_us()?
+    i = 0
+    while i < n {
+        let b = bytes_of_str(val_s)
+        sink = sink + bytes_len(b)
+        drop(b)
+        i = i + 1
+    }
+    t1 = monotonic_us()?
+    emit("VAL_BYTES", n, elapsed_us(t0, t1), "bytes_of_str_fixed")
+
+    // --- MEM: encode+wal_buf+memtable; no fsync, no flush ---
+    let mut db = open_db(prefix, n + 10, 999)?
+    if db.ok == 0 {
+        print("FAIL open mem")
+        return 1
+    }
+    db.sync_every = n + 10
+    t0 = monotonic_us()?
+    i = 0
+    while i < n {
+        db = lsm_put_b(db, pad_key(i), val_b)?
+        if db.ok == 0 {
+            print("FAIL put mem")
+            return 1
+        }
+        i = i + 1
+    }
+    t1 = monotonic_us()?
+    let us_mem = elapsed_us(t0, t1)
+    emit("MEM", n, us_mem, "wal_encode_buf_map_no_fsync_no_flush")
+    lsm_close(db)?
+
+    // --- SYNC: MEM + fsync every put ---
+    db = open_db(prefix, n + 10, 999)?
+    if db.ok == 0 {
+        print("FAIL open sync")
+        return 1
+    }
+    db.sync_every = 1
+    t0 = monotonic_us()?
+    i = 0
+    while i < n {
+        db = lsm_put_b(db, pad_key(i), val_b)?
+        if db.ok == 0 {
+            print("FAIL put sync")
+            return 1
+        }
+        i = i + 1
+    }
+    t1 = monotonic_us()?
+    let us_sync = elapsed_us(t0, t1)
+    emit("SYNC", n, us_sync, "fsync_each_put_no_flush")
+    lsm_close(db)?
+
+    // --- FLUSH: flush_at=64, rare sync ---
+    db = open_db(prefix, 64, 4)?
+    if db.ok == 0 {
+        print("FAIL open flush")
+        return 1
+    }
+    db.sync_every = n + 10
+    t0 = monotonic_us()?
+    i = 0
+    while i < n {
+        db = lsm_put_b(db, pad_key(i), val_b)?
+        if db.ok == 0 {
+            print("FAIL put flush")
+            return 1
+        }
+        i = i + 1
+    }
+    t1 = monotonic_us()?
+    let us_flush = elapsed_us(t0, t1)
+    emit("FLUSH", n, us_flush, "flush_at_64_rare_fsync")
+    lsm_close(db)?
+
+    // --- DURABLE: head-to-head default ---
+    db = open_db(prefix, 64, 4)?
+    if db.ok == 0 {
+        print("FAIL open durable")
+        return 1
+    }
+    db.sync_every = 1
+    t0 = monotonic_us()?
+    i = 0
+    while i < n {
+        db = lsm_put_b(db, pad_key(i), val_b)?
+        if db.ok == 0 {
+            print("FAIL put durable")
+            return 1
+        }
+        i = i + 1
+    }
+    t1 = monotonic_us()?
+    let us_dur = elapsed_us(t0, t1)
+    emit("DURABLE", n, us_dur, "flush_at_64_sync_every_1")
+
+    // GET_MEM while still open (memtable / recent flushes mixed)
+    t0 = monotonic_us()?
+    i = 0
+    let mut hits: i64 = 0
+    while i < n {
+        let g = lsm_get(db, pad_key(i))?
+        db = g.db
+        if g.found == 1 {
+            hits = hits + 1
+        }
+        i = i + 1
+    }
+    t1 = monotonic_us()?
+    emit("GET_MEM", n, elapsed_us(t0, t1), "before_reopen_mixed_mem_sst")
+    if hits != n {
+        print(concat("FAIL get_mem hits=", int_to_str(hits)))
+        return 1
+    }
+    lsm_close(db)?
+
+    // Reopen cold for SST path
+    db = lsm_open(prefix, 64, 4)?
+    if db.ok == 0 {
+        print("FAIL reopen")
+        return 1
+    }
+
+    t0 = monotonic_us()?
+    i = 0
+    hits = 0
+    while i < n {
+        let g2 = lsm_get(db, pad_key(i))?
+        db = g2.db
+        if g2.found == 1 {
+            hits = hits + 1
+        }
+        i = i + 1
+    }
+    t1 = monotonic_us()?
+    emit("GET_SEQ", n, elapsed_us(t0, t1), "after_reopen_sst_seq")
+    if hits != n {
+        print(concat("FAIL get_seq hits=", int_to_str(hits)))
+        return 1
+    }
+
+    t0 = monotonic_us()?
+    i = 0
+    hits = 0
+    let mut x: i64 = 1
+    while i < n {
+        x = (x * 1103515245 + 12345) & 2147483647
+        let mut idx = x % n
+        if idx < 0 {
+            idx = 0 - idx
+        }
+        let g3 = lsm_get(db, pad_key(idx))?
+        db = g3.db
+        if g3.found == 1 {
+            hits = hits + 1
+        }
+        i = i + 1
+    }
+    t1 = monotonic_us()?
+    emit("GET_RND", n, elapsed_us(t0, t1), "after_reopen_sst_rnd")
+    if hits != n {
+        print(concat("FAIL get_rnd hits=", int_to_str(hits)))
+        return 1
+    }
+    lsm_close(db)?
+
+    // --- BATCH (R21: flush_at=N — one memtable window + end flush_force) ---
+    db = open_db(prefix, n + 10, 4)?
+    if db.ok == 0 {
+        print("FAIL open batch")
+        return 1
+    }
+    db.sync_every = n
+    if db.sync_every < 100 {
+        db.sync_every = 100
+    }
+    t0 = monotonic_us()?
+    i = 0
+    while i < n {
+        db = lsm_put_b(db, pad_key(i), val_b)?
+        if db.ok == 0 {
+            print("FAIL put batch")
+            return 1
+        }
+        i = i + 1
+    }
+    fdatasync(db.wal_fd)?
+    db = lsm_flush_force(db)?
+    t1 = monotonic_us()?
+    let us_batch = elapsed_us(t0, t1)
+    emit("BATCH", n, us_batch, "flush_at_n_sync_every_n_flush_force_end")
+    lsm_close(db)?
+
+    // --- derived attribution (us) ---
+    // fsync tax ≈ SYNC - MEM (both no flush)
+    let mut us_fsync = us_sync - us_mem
+    if us_fsync < 0 {
+        us_fsync = 0
+    }
+    // flush tax on top of mem ≈ FLUSH - MEM
+    let mut us_flush_tax = us_flush - us_mem
+    if us_flush_tax < 0 {
+        us_flush_tax = 0
+    }
+    // durable residual after fsync-only estimate
+    let mut us_dur_rest = us_dur - us_sync
+    if us_dur_rest < 0 {
+        us_dur_rest = 0
+    }
+
+    print(concat(
+        concat(
+            concat(
+                concat(
+                    concat(
+                        concat("DERIVE fsync_tax_us=", int_to_str(us_fsync)),
+                        " flush_tax_us="
+                    ),
+                    int_to_str(us_flush_tax)
+                ),
+                " durable_above_sync_us="
+            ),
+            int_to_str(us_dur_rest)
+        ),
+        ""
+    ))
+
+    // percent of DURABLE wall time (integer %)
+    let mut pct_mem: i64 = 0
+    let mut pct_fsync: i64 = 0
+    let mut pct_flush: i64 = 0
+    if us_dur > 0 {
+        pct_mem = (us_mem * 100) / us_dur
+        pct_fsync = (us_fsync * 100) / us_dur
+        pct_flush = (us_flush_tax * 100) / us_dur
+    }
+    print(concat(
+        concat(
+            concat(
+                concat(
+                    concat(
+                        concat("SHARE_OF_DURABLE mem%=", int_to_str(pct_mem)),
+                        " fsync%="
+                    ),
+                    int_to_str(pct_fsync)
+                ),
+                " flush%="
+            ),
+            int_to_str(pct_flush)
+        ),
+        "  (approx; overlapping work not subtracted)"
+    ))
+
+    print("OK")
+    return 0
+}

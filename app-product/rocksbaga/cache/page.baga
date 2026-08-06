@@ -353,6 +353,29 @@ fn pc_read_at(pc: PageCache, fd: i64, file_id: i64, off: i64, n: i64) -> PcRead 
         return PcRead { pc: pc, data: bytes_new(0) }
     }
     let mut cur = pc
+    // R24: single-page span → one pin + C memcpy via bytes_slice (avoids
+    // baga-level per-byte bytes_set; ~2× on random GET block loads).
+    let p0 = off / cur.page_size
+    let po0 = off % cur.page_size
+    if po0 + n <= cur.page_size {
+        let g = pc_get_pin(cur, fd, file_id, p0)?
+        cur = g.pc
+        let page = g.data
+        if bytes_len(page) == 0 {
+            return PcRead { pc: cur, data: bytes_new(0) }
+        }
+        let mut end = po0 + n
+        if end > bytes_len(page) {
+            end = bytes_len(page)
+        }
+        if end <= po0 {
+            pc_unpin(cur, file_id, p0)
+            return PcRead { pc: cur, data: bytes_new(0) }
+        }
+        let out = bytes_slice(page, po0, end)
+        pc_unpin(cur, file_id, p0)
+        return PcRead { pc: cur, data: out }
+    }
     let out = bytes_new(n)
     let mut w: i64 = 0
     let mut left = n
@@ -374,7 +397,27 @@ fn pc_read_at(pc: PageCache, fd: i64, file_id: i64, off: i64, n: i64) -> PcRead 
         if take > left {
             take = left
         }
+        // R25: copy 8-byte words then tail (fewer baga loop iterations).
         let mut i: i64 = 0
+        while i + 8 <= take {
+            let b0 = bytes_at(page, poff + i)
+            let b1 = bytes_at(page, poff + i + 1)
+            let b2 = bytes_at(page, poff + i + 2)
+            let b3 = bytes_at(page, poff + i + 3)
+            let b4 = bytes_at(page, poff + i + 4)
+            let b5 = bytes_at(page, poff + i + 5)
+            let b6 = bytes_at(page, poff + i + 6)
+            let b7 = bytes_at(page, poff + i + 7)
+            bytes_set(out, w + i, b0)
+            bytes_set(out, w + i + 1, b1)
+            bytes_set(out, w + i + 2, b2)
+            bytes_set(out, w + i + 3, b3)
+            bytes_set(out, w + i + 4, b4)
+            bytes_set(out, w + i + 5, b5)
+            bytes_set(out, w + i + 6, b6)
+            bytes_set(out, w + i + 7, b7)
+            i = i + 8
+        }
         while i < take {
             bytes_set(out, w + i, bytes_at(page, poff + i))
             i = i + 1
