@@ -1276,6 +1276,97 @@ static LLVMValueRef build_baga_h_bytes(void) {
     return fn;
 }
 
+/* static void baga_bounds_fail(const char *fn, int64_t i, int64_t len)
+ * — същото съобщение като C бекенда + exit(1) */
+static LLVMValueRef build_baga_bounds_fail(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bounds_fail",
+        LLVMFunctionType(lg.void_ty, p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef err = LLVMBuildLoad2(lg.builder, lg.ptr_ty, lg.stderr_global, "err");
+    LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder,
+        "baga: %s: индекс %lld извън границите [0, %lld)\n", "bfmt");
+    LLVMValueRef args[] = { err, fmt, LLVMGetParam(fn, 0),
+                            LLVMGetParam(fn, 1), LLVMGetParam(fn, 2) };
+    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.fprintf_fn)),
+                   lg.fprintf_fn, args, 5, "");
+    LLVMTypeRef ep[] = { lg.i32_ty };
+    LLVMValueRef ea[] = { LLVMConstInt(lg.i32_ty, 1, 0) };
+    h_call(rt_libc("exit", lg.void_ty, ep, 1), ea, 1, "");
+    LLVMBuildUnreachable(lg.builder);
+    return fn;
+}
+
+/* S2 parity: bytes_new/bytes_set/bytes_push — мутаторите от C бекенда.
+ * bytes_set е bounds-checked и прекъсва със същото съобщение. */
+static LLVMValueRef build_baga_bytes_new(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_new",
+        LLVMFunctionType(baga_bytes_ty(), p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef n = LLVMGetParam(fn, 0);
+    LLVMValueRef neg = LLVMBuildICmp(lg.builder, LLVMIntSLT, n,
+        LLVMConstInt(lg.i64_ty, 0, 0), "neg");
+    n = LLVMBuildSelect(lg.builder, neg, LLVMConstInt(lg.i64_ty, 0, 0), n, "nn");
+    LLVMValueRef dst = bytes_malloc_n(n);
+    LLVMTypeRef mt[] = { lg.ptr_ty, lg.i32_ty, lg.i64_ty };
+    LLVMValueRef ms[] = { dst, LLVMConstInt(lg.i32_ty, 0, 0), n };
+    h_call(rt_libc("memset", lg.ptr_ty, mt, 3), ms, 3, "");
+    LLVMBuildRet(lg.builder, bytes_make(dst, n));
+    return fn;
+}
+static LLVMValueRef build_baga_bytes_set(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty(), lg.i64_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_set",
+        LLVMFunctionType(lg.void_ty, p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef i = LLVMGetParam(fn, 1);
+    LLVMValueRef len = bytes_load_len(a);
+    LLVMValueRef lo = LLVMBuildICmp(lg.builder, LLVMIntSLT, i,
+        LLVMConstInt(lg.i64_ty, 0, 0), "lo");
+    LLVMValueRef hi = LLVMBuildICmp(lg.builder, LLVMIntSGE, i, len, "hi");
+    LLVMValueRef bad = LLVMBuildOr(lg.builder, lo, hi, "bad");
+    LLVMBasicBlockRef fail = LLVMAppendBasicBlockInContext(lg.ctx, fn, "fail");
+    LLVMBasicBlockRef okb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ok");
+    LLVMBuildCondBr(lg.builder, bad, fail, okb);
+    LLVMPositionBuilderAtEnd(lg.builder, fail);
+    LLVMValueRef fname = LLVMBuildGlobalStringPtr(lg.builder, "bytes_set", "bfn");
+    LLVMValueRef fa[] = { fname, i, len };
+    h_call(baga_rt("baga_bounds_fail"), fa, 3, "");
+    LLVMBuildUnreachable(lg.builder);
+    LLVMPositionBuilderAtEnd(lg.builder, okb);
+    LLVMValueRef dst = LLVMBuildGEP2(lg.builder, lg.i8_ty,
+        bytes_load_data(a), &i, 1, "dst");
+    LLVMValueRef v8 = LLVMBuildTrunc(lg.builder,
+        LLVMBuildAnd(lg.builder, LLVMGetParam(fn, 2),
+                     LLVMConstInt(lg.i64_ty, 255, 0), "m"),
+        lg.i8_ty, "v8");
+    LLVMBuildStore(lg.builder, v8, dst);
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+static LLVMValueRef build_baga_bytes_push(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty(), lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_push",
+        LLVMFunctionType(baga_bytes_ty(), p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef len = bytes_load_len(a);
+    LLVMValueRef nl = LLVMBuildAdd(lg.builder, len, LLVMConstInt(lg.i64_ty, 1, 0), "nl");
+    LLVMValueRef dst = bytes_malloc_n(nl);
+    LLVMValueRef mc[] = { dst, bytes_load_data(a), len };
+    h_call(rt_memcpy(), mc, 3, "");
+    LLVMValueRef slot = LLVMBuildGEP2(lg.builder, lg.i8_ty, dst, &len, 1, "slot");
+    LLVMValueRef v8 = LLVMBuildTrunc(lg.builder,
+        LLVMBuildAnd(lg.builder, LLVMGetParam(fn, 1),
+                     LLVMConstInt(lg.i64_ty, 255, 0), "m"),
+        lg.i8_ty, "v8");
+    LLVMBuildStore(lg.builder, v8, slot);
+    LLVMBuildRet(lg.builder, bytes_make(dst, nl));
+    return fn;
+}
+
 static LLVMValueRef build_baga_bytes_from_str(void) {
     LLVMTypeRef p[] = { lg.ptr_ty };
     LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_bytes_from_str",
@@ -1815,6 +1906,10 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_bytes_put") == 0)  fn = build_baga_bytes_put();
     else if (strcmp(name, "baga_bytes_h") == 0)    fn = build_baga_bytes_h();
     else if (strcmp(name, "baga_h_bytes") == 0)    fn = build_baga_h_bytes();
+    else if (strcmp(name, "baga_bounds_fail") == 0) fn = build_baga_bounds_fail();
+    else if (strcmp(name, "baga_bytes_new") == 0)  fn = build_baga_bytes_new();
+    else if (strcmp(name, "baga_bytes_set") == 0)  fn = build_baga_bytes_set();
+    else if (strcmp(name, "baga_bytes_push") == 0) fn = build_baga_bytes_push();
     else if (strcmp(name, "baga_bytes_from_str") == 0) fn = build_baga_bytes_from_str();
     else if (strcmp(name, "baga_bytes_to_str") == 0) fn = build_baga_bytes_to_str();
     else if (strcmp(name, "baga_hex_val") == 0)     fn = build_baga_hex_val();
@@ -2523,6 +2618,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 {"bytes_slice", "baga_bytes_slice"},
                 {"bytes_concat","baga_bytes_concat"},
                 {"bytes_put",   "baga_bytes_put"},
+                {"bytes_new",   "baga_bytes_new"},
+                {"bytes_set",   "baga_bytes_set"},
+                {"bytes_push",  "baga_bytes_push"},
                 {"str_h",       "baga_str_h"},
                 {"h_str",       "baga_h_str"},
                 {"bytes_h",     "baga_bytes_h"},
@@ -2550,11 +2648,13 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                  strcmp(n->callee->name, "vec_slice") == 0 ||
                  strcmp(n->callee->name, "vec_concat") == 0)) {
                 Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
-                /* L4: struct елементи → box helper-и, sizeof от call site-а
-                 * (огледало на codegen_c box пътя; slice/concat включени) */
+                /* L4/S2: struct и bytes елементи → box helper-и, sizeof от
+                 * call site-а (огледало на codegen_c box пътя) */
                 if (vt && vt->kind == TYPE_VEC && vt->elem &&
-                    vt->elem->kind == TYPE_STRUCT && vt->elem->name) {
-                    LLVMTypeRef sty = user_struct_ty(vt->elem->name);
+                    ((vt->elem->kind == TYPE_STRUCT && vt->elem->name) ||
+                     vt->elem->kind == TYPE_BYTES)) {
+                    LLVMTypeRef sty = vt->elem->kind == TYPE_BYTES
+                        ? baga_bytes_ty() : user_struct_ty(vt->elem->name);
                     LLVMValueRef sz = LLVMSizeOf(sty);
                     const char *cn = n->callee->name;
                     LLVMValueRef v = emit_expr_llvm(n->args.data[0]);
@@ -2602,8 +2702,6 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 if (vt && vt->kind == TYPE_VEC && vt->elem) {
                     if (vt->elem->kind == TYPE_STR) suf = "str";
                     else if (vt->elem->kind == TYPE_F64) suf = "f64";
-                    else if (vt->elem->kind == TYPE_BYTES)
-                        llvm_unsupported("Vec<bytes> (само C бекенда; вж. docs/language-en.md)");
                     else if (vt->elem->kind == TYPE_STRUCT)
                         llvm_unsupported("Vec<struct> (анонимен — само C бекенда; вж. docs/language-en.md)");
                 }
