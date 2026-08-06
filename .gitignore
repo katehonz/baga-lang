@@ -17,3 +17,6 @@ lib/
 
 # worktrees
 .worktrees/
+
+# local agent / IDE tool config
+.qwen/
