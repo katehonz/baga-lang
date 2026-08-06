@@ -909,10 +909,13 @@ print(vec_len(v))             // OK — maybe-dropped is not definitely-dropped
 #### Runtime: the free list
 
 `baga_alloc` keeps per-size-class free lists for blocks **≤ 1024 B**
-(16 B granularity, 64 classes, padded allocations, serialized by the
-existing pthread mutex so `go` threads stay safe); freed blocks are
-reused before the bump pointer advances. Proof it works: a 1M-iteration
-alloc+drop loop peaks at ~6.2 MB maxrss vs ~87.6 MB without `drop`.
+(16 B granularity, 64 classes, padded allocations) plus pow2 classes up
+to 32 MiB (R18); freed blocks are reused before the bump pointer
+advances. Since R52 the arena and both free-list tiers are
+**thread-local** (`__thread`) — the old global alloc mutex serialized
+every `go`/`go_bg` thread (a de-facto GIL). Proof it works: a
+1M-iteration alloc+drop loop peaks at ~6.2 MB maxrss vs ~87.6 MB without
+`drop`.
 
 #### MEM-2: verifier obligations (`--verify`)
 
@@ -1565,6 +1568,11 @@ are computed automatically by the **sandak** package manager from the
 | `signal_clear` | `() -> i64` | return and clear pending |
 | `signal_wait` | `(ms: i64) -> i64` | wait up to `ms` (`<0` = forever); signo or 0 |
 | `signal_raise` | `(sig: i64) -> i64` | `raise(sig)` to self (tests) |
+| `bytes_put` | `(dst: bytes, off: i64, src: bytes) -> void` | R54: in-place memcpy append (bounds-checked no-op) |
+| `str_h` | `(s: str) -> i64` | R51: unsafe handle cast (zero-copy chan hop; str is arena-bound) |
+| `h_str` | `(h: i64) -> str` | R51: inverse of `str_h` |
+| `map_h` | `(m: Map) -> i64` | R55: unsafe map handle (go_bg ctx packing); C backend |
+| `h_map` | `(h: i64) -> Map` | R55: inverse of `map_h`; C backend |
 
 ---
 

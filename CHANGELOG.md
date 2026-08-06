@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Language — LLVM parity for R51/R54 builtins
+- `str_h`/`h_str`/`bytes_put` have LLVM builders now (PtrToInt / IntToPtr /
+  bounds-checked memcpy); llvm_oracle green. `map_h`/`h_map` stay C-only
+  (LLVM backend has no `Map`); the R52 thread-local arena is C-runtime
+  only (LLVM allocs are plain `malloc`, already thread-safe).
+- Docs: builtins table + free-list text updated (mutex → `__thread`).
+
 ### RocksDB path R60/R61 — CHECKPOINT over RESP + per-CF options
 - **R60:** `CHECKPOINT dest` command (poll + MT); per-shard copies when
   sharded. Wire-tested end-to-end.

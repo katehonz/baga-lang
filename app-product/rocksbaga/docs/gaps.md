@@ -448,7 +448,7 @@ it already answers.
 - Tests: `r61_*` (auto-flush at per-CF threshold, default CF untouched,
   options survive reopen, RESP path).
 
-**Still open (later):** per-CF block-cache policy; LLVM backend parity for R51/R52/R54/R55 (handle builtins, thread-local arena, bytes_put).
+**Still open (later):** per-CF block-cache policy. LLVM parity status: `str_h`/`h_str`/`bytes_put` now have LLVM builders (oracle green); `map_h`/`h_map` are C-only *by design* (the LLVM backend has no `Map` at all); the thread-local arena is a C-runtime detail (LLVM lowers allocs to plain `malloc`, already thread-safe).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 
