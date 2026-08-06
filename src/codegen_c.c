@@ -614,6 +614,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                          mt->elem->kind == TYPE_ENUM)) {
                         const char *ksuf = "str";
                         if (mt->key && mt->key->kind == TYPE_I64) ksuf = "i64";
+                        else if (mt->key && mt->key->kind == TYPE_BYTES) ksuf = "bytes";
                         char *mn = mangle_name(mt->elem->name);
                         if (strcmp(bn, "map_set") == 0) {
                             fprintf(f, "({ %s _bx = (", mn);
@@ -643,6 +644,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     const char *ksuf = "str", *vsuf = "i64";
                     if (mt && mt->kind == TYPE_MAP) {
                         if (mt->key && mt->key->kind == TYPE_I64) ksuf = "i64";
+                        else if (mt->key && mt->key->kind == TYPE_BYTES) ksuf = "bytes";
                         if (mt->elem) {
                             if (mt->elem->kind == TYPE_STR) vsuf = "str";
                             else if (mt->elem->kind == TYPE_F64) vsuf = "f64";
@@ -661,8 +663,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                     strcmp(bn, "map_keys") == 0) {
                     Type *mt = n->args.len > 0 ? n->args.data[0]->type : NULL;
                     const char *ksuf = "str";
-                    if (mt && mt->kind == TYPE_MAP && mt->key &&
-                        mt->key->kind == TYPE_I64) ksuf = "i64";
+                    if (mt && mt->kind == TYPE_MAP && mt->key) {
+                        if (mt->key->kind == TYPE_I64) ksuf = "i64";
+                        else if (mt->key->kind == TYPE_BYTES) ksuf = "bytes";
+                    }
                     fprintf(f, "baga_%s_%s(", bn, ksuf);
                     for (int i = 0; i < n->args.len; i++) {
                         if (i > 0) fprintf(f, ", ");
@@ -2349,9 +2353,9 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_box(r, v->data[i], size);\n");
     fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_box(r, w->data[i], size);\n");
     fprintf(out, "    return r; }\n");
-    fprintf(out, "\n/* hash map: chaining, key i64/str, value i64/str/f64/bytes (leak-tolerant like baga_Vec) */\n");
+    fprintf(out, "\n/* hash map: chaining, key i64/str/bytes, value i64/str/f64/bytes (leak-tolerant like baga_Vec) */\n");
     fprintf(out, "typedef struct baga_MapEntry {\n");
-    fprintf(out, "    int64_t ik; const char *sk;\n");
+    fprintf(out, "    int64_t ik; const char *sk; baga_bytes bk; int64_t ktag;\n");
     fprintf(out, "    int64_t iv; double fv; const char *sv; baga_bytes bv; void *pv;\n");
     fprintf(out, "    struct baga_MapEntry *next;\n");
     fprintf(out, "} baga_MapEntry;\n");
@@ -2359,6 +2363,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static uint64_t baga_map_hash_str(const char *s) {\n");
     fprintf(out, "    uint64_t h = 1469598103934665603ULL;\n");
     fprintf(out, "    while (*s) { h ^= (unsigned char)*s++; h *= 1099511628211ULL; }\n");
+    fprintf(out, "    return h; }\n");
+    /* R67: bytes ключове — FNV-1a върху data+len (NUL-safe) */
+    fprintf(out, "static uint64_t baga_map_hash_bytes(baga_bytes k) {\n");
+    fprintf(out, "    uint64_t h = 1469598103934665603ULL;\n");
+    fprintf(out, "    for (int64_t i = 0; i < k.len; i++) { h ^= k.data[i]; h *= 1099511628211ULL; }\n");
     fprintf(out, "    return h; }\n");
     fprintf(out, "static uint64_t baga_map_hash_i64(int64_t k) {\n");
     fprintf(out, "    uint64_t x = (uint64_t)k;\n");
@@ -2387,7 +2396,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        baga_MapEntry *e = ob[i];\n");
     fprintf(out, "        while (e) {\n");
     fprintf(out, "            baga_MapEntry *nx = e->next;\n");
-    fprintf(out, "            uint64_t h = e->sk ? baga_map_hash_str(e->sk) : baga_map_hash_i64(e->ik);\n");
+    fprintf(out, "            uint64_t h = e->ktag == 2 ? baga_map_hash_bytes(e->bk)\n");
+    fprintf(out, "                       : e->sk ? baga_map_hash_str(e->sk) : baga_map_hash_i64(e->ik);\n");
     fprintf(out, "            e->next = m->b[h %% (uint64_t)m->nb];\n");
     fprintf(out, "            m->b[h %% (uint64_t)m->nb] = e;\n");
     fprintf(out, "            e = nx; } } }\n");
@@ -2397,6 +2407,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_MapEntry *e = baga_alloc(sizeof(baga_MapEntry));\n");
     fprintf(out, "    e->ik = ik; e->sk = sk; e->iv = 0; e->fv = 0; e->sv = NULL;\n");
     fprintf(out, "    e->bv.data = NULL; e->bv.len = 0; e->pv = NULL; e->next = NULL;\n");
+    fprintf(out, "    e->ktag = sk ? 1 : 0; e->bk.data = NULL; e->bk.len = 0;\n");
     fprintf(out, "    *slot = e; m->len++;\n");
     fprintf(out, "    if (m->len * 4 > m->nb * 3) baga_map_rehash(m);\n");
     fprintf(out, "    return e; }\n");
@@ -2454,6 +2465,65 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         else         fprintf(out, "            baga_vec_push_i64(v, e->ik);\n");
         fprintf(out, "    return v; }\n");
     }
+    /* R67: bytes ключове — отделни slot/put с memcmp (ktag=2 в entry-то);
+     * същият набор typed варианти като str/i64 по-горе */
+    fprintf(out, "static baga_MapEntry **baga_map_slot_b(baga_Map *m, baga_bytes k, uint64_t h) {\n");
+    fprintf(out, "    baga_MapEntry **e = &m->b[h %% (uint64_t)m->nb];\n");
+    fprintf(out, "    while (*e) {\n");
+    fprintf(out, "        if ((*e)->ktag == 2 && (*e)->bk.len == k.len &&\n");
+    fprintf(out, "            (k.len == 0 || memcmp((*e)->bk.data, k.data, (size_t)k.len) == 0)) return e;\n");
+    fprintf(out, "        e = &(*e)->next; }\n");
+    fprintf(out, "    return e; }\n");
+    fprintf(out, "static baga_MapEntry *baga_map_put_b(baga_Map *m, baga_bytes k, uint64_t h) {\n");
+    fprintf(out, "    baga_MapEntry **slot = baga_map_slot_b(m, k, h);\n");
+    fprintf(out, "    if (*slot) return *slot;\n");
+    fprintf(out, "    baga_MapEntry *e = baga_alloc(sizeof(baga_MapEntry));\n");
+    fprintf(out, "    e->ik = 0; e->sk = NULL; e->bk = k; e->ktag = 2;\n");
+    fprintf(out, "    e->iv = 0; e->fv = 0; e->sv = NULL;\n");
+    fprintf(out, "    e->bv.data = NULL; e->bv.len = 0; e->pv = NULL; e->next = NULL;\n");
+    fprintf(out, "    *slot = e; m->len++;\n");
+    fprintf(out, "    if (m->len * 4 > m->nb * 3) baga_map_rehash(m);\n");
+    fprintf(out, "    return e; }\n");
+    for (int vi = 0; vi < 3; vi++) {
+        const char *vn   = vi == 0 ? "i64" : (vi == 1 ? "str" : "f64");
+        const char *varg = vi == 0 ? "int64_t v" : (vi == 1 ? "const char *v" : "double v");
+        const char *fld  = vi == 0 ? "iv" : (vi == 1 ? "sv" : "fv");
+        fprintf(out, "static void baga_map_set_bytes_%s(baga_Map *m, baga_bytes k, %s) {\n", vn, varg);
+        fprintf(out, "    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n");
+        fprintf(out, "    e->%s = v; }\n", fld);
+        const char *ret = vi == 0 ? "int64_t" : (vi == 1 ? "const char *" : "double");
+        fprintf(out, "static %s baga_map_get_bytes_%s(baga_Map *m, baga_bytes k) {\n", ret, vn);
+        fprintf(out, "    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
+        if (vi == 1) fprintf(out, "    return (e && e->sv) ? e->sv : \"\"; }\n");
+        else if (vi == 0) fprintf(out, "    return e ? e->iv : 0; }\n");
+        else fprintf(out, "    return e ? e->fv : 0; }\n");
+    }
+    fprintf(out, "static void baga_map_set_bytes_bytes(baga_Map *m, baga_bytes k, baga_bytes v) {\n");
+    fprintf(out, "    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n");
+    fprintf(out, "    e->bv = v; }\n");
+    fprintf(out, "static baga_bytes baga_map_get_bytes_bytes(baga_Map *m, baga_bytes k) {\n");
+    fprintf(out, "    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
+    fprintf(out, "    if (!e) { baga_bytes z; z.data = NULL; z.len = 0; return z; }\n");
+    fprintf(out, "    return e->bv; }\n");
+    fprintf(out, "static void baga_map_set_bytes_box(baga_Map *m, baga_bytes k, const void *src, int64_t size) {\n");
+    fprintf(out, "    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n");
+    fprintf(out, "    if (!e->pv) e->pv = baga_alloc((size_t)size);\n");
+    fprintf(out, "    memcpy(e->pv, src, (size_t)size); }\n");
+    fprintf(out, "static void *baga_map_get_bytes_box(baga_Map *m, baga_bytes k) {\n");
+    fprintf(out, "    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
+    fprintf(out, "    return e ? e->pv : NULL; }\n");
+    fprintf(out, "static int64_t baga_map_has_bytes(baga_Map *m, baga_bytes k) {\n");
+    fprintf(out, "    return *baga_map_slot_b(m, k, baga_map_hash_bytes(k)) ? 1 : 0; }\n");
+    fprintf(out, "static void baga_map_del_bytes(baga_Map *m, baga_bytes k) {\n");
+    fprintf(out, "    baga_MapEntry **slot = baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
+    fprintf(out, "    if (!*slot) return;\n");
+    fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--; }\n");
+    fprintf(out, "static baga_Vec *baga_map_keys_bytes(baga_Map *m) {\n");
+    fprintf(out, "    baga_Vec *v = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = 0; i < m->nb; i++)\n");
+    fprintf(out, "        for (baga_MapEntry *e = m->b[i]; e; e = e->next)\n");
+    fprintf(out, "            baga_vec_push_bytes(v, e->bk);\n");
+    fprintf(out, "    return v; }\n");
     /* MEM-1: drop walkers — рециклират собствените алокации през baga_free.
      * Вътрешните буфери (bytes.data, str полета, env box-ове на closures)
      * остават в arena-та — споделена собственост, документирано. */

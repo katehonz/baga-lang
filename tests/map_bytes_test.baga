@@ -1,0 +1,81 @@
+// map_bytes_test.baga — R67: Map<bytes, V> ключове (NUL-safe, memcmp сравнение).
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 {
+    // i64 стойности; ключове с вграден NUL и празен ключ
+    let m: Map<bytes, i64> = map_new()
+    map_set(m, x"6162", 1)                    // "ab"
+    map_set(m, x"610062", 2)                  // "a\0b"
+    map_set(m, bytes_of_str(""), 3)           // празен ключ
+    check("len3", map_len(m) == 3)
+    check("get_ab", map_get(m, x"6162") == 1)
+    check("get_nul", map_get(m, x"610062") == 2)
+    check("get_empty", map_get(m, bytes_of_str("")) == 3)
+    check("nul_not_prefix", map_get(m, x"61") == 0)   // "a" != "a\0b"
+    check("nul_not_suffix", map_get(m, x"0062") == 0)
+    check("has", map_has(m, x"610062") == 1)
+    check("has_miss", map_has(m, x"610063") == 0)
+    // overwrite не добавя нов запис
+    map_set(m, x"6162", 10)
+    check("overwrite", map_get(m, x"6162") == 10 && map_len(m) == 3)
+    // del
+    map_del(m, x"610062")
+    check("del", map_has(m, x"610062") == 0 && map_len(m) == 2)
+    check("del_miss", map_get(m, x"610062") == 0)
+
+    // rehash: >12 записа (nb 16 → 32); ключовете остават достъпни
+    let r: Map<bytes, i64> = map_new()
+    let mut i: i64 = 0
+    while i < 40 {
+        map_set(r, bytes_of_str(int_to_str(i)), i * 2)
+        i = i + 1
+    }
+    check("rehash_len", map_len(r) == 40)
+    check("rehash_get", map_get(r, bytes_of_str("17")) == 34)
+    check("rehash_get_last", map_get(r, bytes_of_str("39")) == 78)
+    check("rehash_miss", map_has(r, bytes_of_str("40")) == 0)
+
+    // str стойности
+    let s: Map<bytes, str> = map_new()
+    map_set(s, x"6b", "v")
+    check("str_val", map_get(s, x"6b") == "v")
+    check("str_val_miss", map_get(s, x"78") == "")
+
+    // f64 стойности
+    let f: Map<bytes, f64> = map_new()
+    map_set(f, x"6b", 1.5)
+    check("f64_val", map_get(f, x"6b") == 1.5)
+
+    // bytes стойности (NUL-safe и в двете посоки)
+    let b: Map<bytes, bytes> = map_new()
+    map_set(b, x"6b00", x"00ff")
+    check("bytes_val", hex_encode(map_get(b, x"6b00")) == "00ff")
+    check("bytes_val_miss", bytes_len(map_get(b, x"6b01")) == 0)
+
+    // map_keys → Vec<bytes> (неподредени)
+    let ks = map_keys(m)
+    check("keys_len", vec_len(ks) == 2)
+    let mut found: i64 = 0
+    let mut j: i64 = 0
+    while j < vec_len(ks) {
+        let k = vec_get(ks, j)
+        if hex_encode(k) == "6162" || bytes_len(k) == 0 {
+            found = found + 1
+        }
+        j = j + 1
+    }
+    check("keys_content", found == 2)
+
+    print("map_bytes_test: all passed")
+    return 0
+}

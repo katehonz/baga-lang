@@ -298,12 +298,13 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                             "Map<K, V>: очаквах два типа — ключ и стойност");
                         return t;
                     }
-                    /* Map<K,V>: ключ i64/str; стойност i64/str/f64/bytes */
+                    /* Map<K,V>: ключ i64/str/bytes; стойност i64/str/f64/bytes */
                     Type *kt = resolve_type_node(ctx, ty->inner_type);
                     if (kt->kind == TYPE_I32) kt = type_new(TYPE_I64);
-                    if (kt->kind != TYPE_I64 && kt->kind != TYPE_STR) {
+                    if (kt->kind != TYPE_I64 && kt->kind != TYPE_STR &&
+                        kt->kind != TYPE_BYTES) {
                         check_error(ctx, ty->pos,
-                            "Map<K, V>: неподдържан ключов тип %s (поддържат се i64 и str)",
+                            "Map<K, V>: неподдържан ключов тип %s (поддържат се i64, str и bytes)",
                             type_str(kt));
                     } else {
                         t->key = kt;
@@ -1085,9 +1086,9 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             Type *kt = n->args.data[1]->type;
             if (kt && kt->kind == TYPE_I32) kt = type_new(TYPE_I64);
             if (!kt || (kt->kind != TYPE_I64 && kt->kind != TYPE_STR &&
-                        kt->kind != TYPE_ERROR)) {
+                        kt->kind != TYPE_BYTES && kt->kind != TYPE_ERROR)) {
                 check_error(ctx, n->pos,
-                    "map_set: неподдържан ключов тип %s за Map (поддържат се i64 и str)",
+                    "map_set: неподдържан ключов тип %s за Map (поддържат се i64, str и bytes)",
                     type_str(kt));
                 return type_new(TYPE_ERROR);
             }
@@ -1137,9 +1138,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             Type *kt = n->args.data[1]->type;
             if (kt && kt->kind == TYPE_I32) kt = type_new(TYPE_I64);
             if (kt && kt->kind != TYPE_ERROR) {
-                if (kt->kind != TYPE_I64 && kt->kind != TYPE_STR) {
+                if (kt->kind != TYPE_I64 && kt->kind != TYPE_STR &&
+                    kt->kind != TYPE_BYTES) {
                     check_error(ctx, n->pos,
-                        "%s: неподдържан ключов тип %s за Map (поддържат се i64 и str)",
+                        "%s: неподдържан ключов тип %s за Map (поддържат се i64, str и bytes)",
                         name, type_str(kt));
                     return type_new(TYPE_ERROR);
                 }
