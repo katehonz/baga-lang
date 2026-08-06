@@ -1,0 +1,45 @@
+// csv_test.baga — csvbaga round-trip and quoting
+
+import "csvbaga/csv.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("version", csv_version() == "0.1.0")
+
+    let t0 = csv_parse("a,b,c\r\n1,2,3\r\n")
+    check("simple_ok", t0.ok == 1)
+    check("simple_dims", t0.cols == 3 && csv_nrows(t0) == 2)
+    check("simple_a", csv_get(t0, 0, 0) == "a" && csv_get(t0, 1, 2) == "3")
+
+    let q = csv_parse("name,note\r\n\"Ada\",\"hi, there\"\r\n\"Bob\",\"say \"\"hi\"\"\"\r\n")
+    check("quote_ok", q.ok == 1 && csv_nrows(q) == 3)
+    check("quote_comma", csv_get(q, 1, 1) == "hi, there")
+    check("quote_esc", csv_get(q, 2, 1) == "say \"hi\"")
+
+    let nl = csv_parse("x,y\n\"a\nb\",c\n")
+    check("nl_in_quote", nl.ok == 1 && csv_get(nl, 1, 0) == "a\nb")
+
+    let out = csv_stringify(q)
+    let q2 = csv_parse(out)
+    check("rt_ok", q2.ok == 1 && csv_nrows(q2) == csv_nrows(q))
+    check("rt_cells", csv_get(q2, 1, 1) == "hi, there" && csv_get(q2, 2, 1) == "say \"hi\"")
+
+    let tsv = csv_from_tsv("A\tB\n1\t2")
+    check("from_tsv", tsv.ok == 1 && csv_get(tsv, 0, 0) == "A" && csv_get(tsv, 1, 1) == "2")
+    let lines = csv_to_row_lines(tsv)
+    check("row_lines", vec_len(lines) == 2 && vec_get(lines, 0) == "A\tB")
+
+    let pad = csv_parse("a,b\n1\n")
+    check("pad_cols", pad.ok == 1 && pad.cols == 2 && csv_get(pad, 1, 1) == "")
+
+    print("csv_test: all passed")
+}

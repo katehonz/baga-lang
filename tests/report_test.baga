@@ -1,0 +1,62 @@
+// report_test.baga — HTML table → xlsx/csv + csv round-trip
+
+import "reportbaga/report.baga"
+import "reportbaga/html_table.baga"
+import "csvbaga/csv.baga"
+import "officebaga/office.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn contains(hay: str, needle: str) -> bool {
+    return str_find(hay, needle) >= 0
+}
+
+fn main() -> i64 !IO {
+    check("version", report_version() == "0.2.0")
+
+    let html = str_of_bytes(read_file_bytes("app-product/reportbaga/fixtures/oborotna.html")?)
+    check("fixture_loaded", len(html) > 50)
+    check("title", html_report_title(html) == "Оборотно-салдова ведомост")
+
+    let t = html_table_to_csv(html)
+    check("table_ok", t.ok == 1)
+    check("table_cols", t.cols == 8)
+    check("table_rows", csv_nrows(t) >= 4)
+    check("header_sm", csv_get(t, 0, 0) == "Сметка")
+    check("row_401", csv_get(t, 1, 0) == "401")
+    check("total_label", csv_get(t, 3, 1) == "Общо")
+
+    let x = report_html_to_xlsx(html)
+    check("xlsx_ok", x.ok == 1 && bytes_len(x.data) > 100)
+    let rx = office_open_bytes(x.data)
+    check("xlsx_open", rx.ok == 1 && office_format_of(rx.doc) == "xlsx")
+    let xt = office_plain_text(rx.doc)
+    check("xlsx_text_401", contains(xt, "401") && contains(xt, "Доставчици"))
+    check("xlsx_text_ob", contains(xt, "Общо") || contains(xt, "503"))
+
+    let c = report_html_to_csv(html)
+    check("csv_ok", c.ok == 1)
+    let ct = csv_parse(str_of_bytes(c.data))
+    check("csv_parse_back", ct.ok == 1 && csv_get(ct, 1, 0) == "401")
+
+    let cx = report_csv_to_xlsx(ct)
+    check("csv_to_xlsx", cx.ok == 1 && bytes_len(cx.data) > 50)
+
+    // PDF UTF-8 (Cyrillic) — needs system DejaVu or PDF_FONT
+    let pdf = report_html_to_pdf(html)?
+    check("pdf_ok", pdf.ok == 1 && bytes_len(pdf.data) > 1000)
+    // PDF magic
+    check("pdf_magic", bytes_at(pdf.data, 0) == 37 && bytes_at(pdf.data, 1) == 80)
+
+    print("report_test: all passed")
+    return 0
+}

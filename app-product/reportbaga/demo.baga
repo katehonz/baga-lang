@@ -1,0 +1,70 @@
+// demo.baga — report CLI (HTML/CSV → xlsx|csv|pdf)
+//   baga … demo.baga html-xlsx in.html out.xlsx
+//   baga … demo.baga html-csv  in.html out.csv
+//   baga … demo.baga html-pdf  in.html out.pdf
+//   baga … demo.baga csv-xlsx  in.csv  out.xlsx
+
+import "report.baga"
+import "csvbaga/csv.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 !IO {
+    if arg_count() < 1 {
+        eprintln("usage: demo.baga html-xlsx|html-csv|html-pdf <in.html> <out>")
+        eprintln("       demo.baga csv-xlsx  <in.csv>  <out.xlsx>")
+        return 1
+    }
+    let cmd = arg(0)
+    if cmd == "html-xlsx" || cmd == "html-csv" || cmd == "html-pdf" {
+        if arg_count() < 3 {
+            eprintln("need in.html out")
+            return 1
+        }
+        let html = str_of_bytes(read_file_bytes(arg(1))?)
+        if html == "" {
+            eprintln("empty html")
+            return 1
+        }
+        let mut fmt = "xlsx"
+        if cmd == "html-csv" {
+            fmt = "csv"
+        }
+        if cmd == "html-pdf" {
+            fmt = "pdf"
+        }
+        let out = report_from_html_io(html, fmt)?
+        if out.ok == 0 {
+            eprintln(out.err)
+            return 1
+        }
+        let rc = report_write_path(arg(2), out)?
+        if rc != 0 {
+            eprintln("write failed")
+            return 2
+        }
+        print(concat("wrote ", arg(2)))
+        return 0
+    }
+    if cmd == "csv-xlsx" {
+        if arg_count() < 3 {
+            eprintln("need in.csv out.xlsx")
+            return 1
+        }
+        let t = csv_read_path(arg(1))?
+        let out = report_csv_to_xlsx(t)
+        if out.ok == 0 {
+            eprintln(out.err)
+            return 1
+        }
+        let rc = report_write_path(arg(2), out)?
+        if rc != 0 {
+            eprintln("write failed")
+            return 2
+        }
+        print(concat("wrote ", arg(2)))
+        return 0
+    }
+    eprintln("unknown command")
+    return 1
+}

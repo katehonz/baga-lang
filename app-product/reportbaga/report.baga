@@ -1,0 +1,130 @@
+// report.baga — accounting reports: HTML/CSV → XLSX | CSV | PDF (UTF-8).
+
+import "csvbaga/csv.baga"
+import "officebaga/office.baga"
+import "officebaga/xlsx/write.baga"
+import "pdfbaga/pdf.baga"
+import "html_table.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+
+struct ReportOut {
+    ok: i64,
+    err: str,
+    data: bytes,
+    format: str
+}
+
+fn report_version() -> str {
+    return "0.2.0"
+}
+
+fn report_fail(msg: str) -> ReportOut {
+    return ReportOut { ok: 0, err: msg, data: bytes_new(0), format: "" }
+}
+
+fn report_ok(data: bytes, format: str) -> ReportOut {
+    return ReportOut { ok: 1, err: "", data: data, format: format }
+}
+
+// CsvTable → XLSX bytes
+fn report_csv_to_xlsx(t: CsvTable) -> ReportOut {
+    if t.ok == 0 {
+        return report_fail(t.err)
+    }
+    let lines = csv_to_row_lines(t)
+    if vec_len(lines) == 0 {
+        return report_fail("report: empty table")
+    }
+    return report_ok(xlsx_create_bytes(lines), "xlsx")
+}
+
+fn report_csv_text_to_xlsx(csv_src: str) -> ReportOut {
+    return report_csv_to_xlsx(csv_parse(csv_src))
+}
+
+// Well-formed XHTML with a <table> → XLSX
+fn report_html_to_xlsx(html: str) -> ReportOut {
+    let t = html_table_to_csv(html)
+    if t.ok == 0 {
+        return report_fail(t.err)
+    }
+    return report_csv_to_xlsx(t)
+}
+
+// Same → CSV file bytes (UTF-8)
+fn report_html_to_csv(html: str) -> ReportOut {
+    let t = html_table_to_csv(html)
+    if t.ok == 0 {
+        return report_fail(t.err)
+    }
+    let s = csv_stringify(t)
+    return report_ok(bytes_of_str(s), "csv")
+}
+
+// HTML table → PDF (UTF-8 / Cyrillic via embedded TTF)
+fn report_html_to_pdf_font(html: str, font_path: str) -> ReportOut !IO {
+    let t = html_table_to_csv(html)
+    if t.ok == 0 {
+        return report_fail(t.err)
+    }
+    let title = html_report_title(html)
+    let mut ttl = title
+    if ttl == "" {
+        ttl = "Report"
+    }
+    let lines = csv_to_row_lines(t)
+    let r = pdf_from_table_file(font_path, ttl, lines)?
+    if r.ok == 0 {
+        return report_fail(r.err)
+    }
+    return report_ok(r.data, "pdf")
+}
+
+fn report_html_to_pdf(html: str) -> ReportOut !IO {
+    return report_html_to_pdf_font(html, pdf_default_font_path())?
+}
+
+fn report_csv_to_pdf(t: CsvTable, title: str) -> ReportOut !IO {
+    if t.ok == 0 {
+        return report_fail(t.err)
+    }
+    let lines = csv_to_row_lines(t)
+    let r = pdf_from_table_default(title, lines)?
+    if r.ok == 0 {
+        return report_fail(r.err)
+    }
+    return report_ok(r.data, "pdf")
+}
+
+fn report_write_path(path: str, out: ReportOut) -> i64 !IO {
+    if out.ok == 0 {
+        return -1
+    }
+    return write_file_bytes(path, out.data)?
+}
+
+// Unified pure (no IO): xlsx | csv
+fn report_from_html(html: str, format: str) -> ReportOut {
+    if format == "xlsx" {
+        return report_html_to_xlsx(html)
+    }
+    if format == "csv" {
+        return report_html_to_csv(html)
+    }
+    return report_fail(concat("report: use report_from_html_io for format ", format))
+}
+
+// Unified with IO (pdf needs font file): xlsx | csv | pdf
+fn report_from_html_io(html: str, format: str) -> ReportOut !IO {
+    if format == "xlsx" {
+        return report_html_to_xlsx(html)
+    }
+    if format == "csv" {
+        return report_html_to_csv(html)
+    }
+    if format == "pdf" {
+        return report_html_to_pdf(html)?
+    }
+    return report_fail(concat("report: unsupported format ", format))
+}

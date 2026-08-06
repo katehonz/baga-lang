@@ -1,0 +1,8 @@
+[package]
+name = "pdfbaga"
+version = "0.1.0"
+entry = "pdf.baga"
+
+[dependencies]
+std = { path = "../../std" }
+bufbaga = { path = "../bufbaga" }

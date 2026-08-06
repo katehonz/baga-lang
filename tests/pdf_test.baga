@@ -1,0 +1,41 @@
+// pdf_test.baga — UTF-8 PDF with embedded TTF (Cyrillic)
+
+import "pdfbaga/pdf.baga"
+import "pdfbaga/ttf.baga"
+import "pdfbaga/utf8.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !IO {
+    check("version", pdf_version() == "0.1.0")
+
+    let u = utf8_next("Ж", 0)
+    check("utf8_zh", u.ok == 1 && u.cp == 1046)
+
+    let fb = read_file_bytes(pdf_default_font_path())?
+    check("font_load", bytes_len(fb) > 1000)
+    let font = ttf_open_bytes(fb)
+    check("ttf_ok", font.ok == 1)
+    check("gid_A", ttf_glyph(font, 65) > 0)
+    check("gid_cyr", ttf_glyph(font, 1040) > 0)  // А
+
+    let rows = vec_new()
+    vec_push(rows, "Код\tИме\tСума")
+    vec_push(rows, "401\tДоставчици\t10.00")
+    let r = pdf_from_table(font, "Отчет UTF-8", rows)
+    check("pdf_ok", r.ok == 1)
+    check("pdf_size", bytes_len(r.data) > 1000)
+    check("pdf_hdr", bytes_at(r.data, 0) == 37 && bytes_at(r.data, 1) == 80 && bytes_at(r.data, 2) == 68)
+
+    print("pdf_test: all passed")
+    return 0
+}

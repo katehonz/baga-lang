@@ -1,0 +1,12 @@
+[package]
+name = "reportbaga"
+version = "0.2.0"
+entry = "report.baga"
+
+[dependencies]
+std = { path = "../../std" }
+csvbaga = { path = "../csvbaga" }
+officebaga = { path = "../officebaga" }
+pdfbaga = { path = "../pdfbaga" }
+xmlbaga = { path = "../xmlbaga" }
+bufbaga = { path = "../bufbaga" }

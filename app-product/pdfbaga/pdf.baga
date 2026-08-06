@@ -1,0 +1,281 @@
+// pdf.baga — pure PDF writer with UTF-8 via embedded TrueType (Identity-H).
+// Accounting tables: title + multi-page grid.
+
+import "std/str/str.baga"
+import "std/os/os.baga"
+import "bufbaga/buf.baga"
+import "utf8.baga"
+import "ttf.baga"
+
+struct PdfResult {
+    ok: i64,
+    err: str,
+    data: bytes
+}
+
+fn pdf_fail(msg: str) -> PdfResult {
+    return PdfResult { ok: 0, err: msg, data: bytes_new(0) }
+}
+
+fn pdf_ok(data: bytes) -> PdfResult {
+    return PdfResult { ok: 1, err: "", data: data }
+}
+
+fn pdf_version() -> str {
+    return "0.1.0"
+}
+
+fn pdf_hex_byte(v: i64) -> str {
+    let h = "0123456789ABCDEF"
+    let hi = (v / 16) & 15
+    let lo = v & 15
+    return concat(substr(h, hi, hi + 1), substr(h, lo, lo + 1))
+}
+
+// UTF-8 → PDF hex of BE glyph IDs (CIDToGIDMap /Identity)
+fn pdf_text_hex(font: TtfFont, s: str) -> str {
+    let mut b = buf_new()
+    b = buf_push(b, "<")
+    let mut i: i64 = 0
+    while i < len(s) {
+        let u = utf8_next(s, i)
+        if u.ok == 0 {
+            break
+        }
+        let mut g = ttf_glyph(font, u.cp)
+        if g == 0 && u.cp != 0 {
+            g = ttf_glyph(font, 63)
+        }
+        b = buf_push(b, pdf_hex_byte((g / 256) & 255))
+        b = buf_push(b, pdf_hex_byte(g & 255))
+        i = u.next
+    }
+    b = buf_push(b, ">")
+    return buf_str(b)
+}
+
+fn pdf_pad10(off: i64) -> str {
+    let mut s = int_to_str(off)
+    while len(s) < 10 {
+        s = concat("0", s)
+    }
+    return s
+}
+
+fn pdf_from_table(font: TtfFont, title: str, rows: Vec<str>) -> PdfResult {
+    return pdf_from_table_fs(font, title, rows, 9)
+}
+
+fn pdf_from_table_fs(font: TtfFont, title: str, rows: Vec<str>, font_size: i64) -> PdfResult {
+    if font.ok == 0 {
+        return pdf_fail(font.err)
+    }
+    if vec_len(rows) == 0 {
+        return pdf_fail("pdf: no rows")
+    }
+
+    let page_w: i64 = 595
+    let page_h: i64 = 842
+    let margin: i64 = 36
+    let mut fs = font_size
+    if fs < 7 { fs = 7 }
+    if fs > 12 { fs = 12 }
+    let line_h = fs + 5
+    let usable_w = page_w - 2 * margin
+    let header = vec_get(rows, 0)
+    let hcells = str_split(header, "\t")
+    let ncols = vec_len(hcells)
+    if ncols < 1 {
+        return pdf_fail("pdf: empty header")
+    }
+    let col_w = usable_w / ncols
+    let top0 = page_h - margin
+    let body_rows_fit = (top0 - margin - 2 * line_h) / line_h
+    if body_rows_fit < 2 {
+        return pdf_fail("pdf: layout")
+    }
+
+    let page_streams = vec_new()
+    let mut r: i64 = 0
+    let nrows = vec_len(rows)
+    while r < nrows {
+        let mut cbuf = buf_new()
+        let mut y = top0
+        cbuf = buf_push(cbuf, "BT /F1 ")
+        cbuf = buf_push(cbuf, int_to_str(fs + 2))
+        cbuf = buf_push(cbuf, " Tf 1 0 0 1 ")
+        cbuf = buf_push(cbuf, int_to_str(margin))
+        cbuf = buf_push(cbuf, " ")
+        cbuf = buf_push(cbuf, int_to_str(y))
+        cbuf = buf_push(cbuf, " Tm ")
+        cbuf = buf_push(cbuf, pdf_text_hex(font, title))
+        cbuf = buf_push(cbuf, " Tj ET\n")
+        y = y - (line_h + 8)
+
+        let mut used: i64 = 0
+        while r < nrows && used < body_rows_fit {
+            let line = vec_get(rows, r)
+            let cells = str_split(line, "\t")
+            cbuf = buf_push(cbuf, "0.6 w ")
+            cbuf = buf_push(cbuf, int_to_str(margin))
+            cbuf = buf_push(cbuf, " ")
+            cbuf = buf_push(cbuf, int_to_str(y + fs + 1))
+            cbuf = buf_push(cbuf, " m ")
+            cbuf = buf_push(cbuf, int_to_str(margin + usable_w))
+            cbuf = buf_push(cbuf, " ")
+            cbuf = buf_push(cbuf, int_to_str(y + fs + 1))
+            cbuf = buf_push(cbuf, " l S\n")
+            let mut c: i64 = 0
+            while c < ncols {
+                let mut cell = ""
+                if c < vec_len(cells) {
+                    cell = vec_get(cells, c)
+                }
+                let mut show = cell
+                // rough char limit for narrow cols
+                if len(show) > 48 {
+                    show = concat(substr(show, 0, 45), "...")
+                }
+                let x = margin + c * col_w + 2
+                cbuf = buf_push(cbuf, "BT /F1 ")
+                cbuf = buf_push(cbuf, int_to_str(fs))
+                cbuf = buf_push(cbuf, " Tf 1 0 0 1 ")
+                cbuf = buf_push(cbuf, int_to_str(x))
+                cbuf = buf_push(cbuf, " ")
+                cbuf = buf_push(cbuf, int_to_str(y))
+                cbuf = buf_push(cbuf, " Tm ")
+                cbuf = buf_push(cbuf, pdf_text_hex(font, show))
+                cbuf = buf_push(cbuf, " Tj ET\n")
+                c = c + 1
+            }
+            y = y - line_h
+            r = r + 1
+            used = used + 1
+        }
+        cbuf = buf_push(cbuf, "0.6 w ")
+        cbuf = buf_push(cbuf, int_to_str(margin))
+        cbuf = buf_push(cbuf, " ")
+        cbuf = buf_push(cbuf, int_to_str(y + fs + 1))
+        cbuf = buf_push(cbuf, " m ")
+        cbuf = buf_push(cbuf, int_to_str(margin + usable_w))
+        cbuf = buf_push(cbuf, " ")
+        cbuf = buf_push(cbuf, int_to_str(y + fs + 1))
+        cbuf = buf_push(cbuf, " l S\n")
+        vec_push(page_streams, buf_str(cbuf))
+    }
+
+    let np = vec_len(page_streams)
+    let o_page0 = 3
+    let o_cont0 = 3 + np
+    let o_font0 = 3 + 2 * np
+    let o_cid = o_font0 + 1
+    let o_desc = o_font0 + 2
+    let o_ffile = o_font0 + 3
+    let o_touni = o_font0 + 4
+
+    let mut pdfb = bytes_of_str("%PDF-1.4\n")
+    // binary comment for PDF
+    let mag = bytes_new(5)
+    bytes_set(mag, 0, 37)
+    bytes_set(mag, 1, 226)
+    bytes_set(mag, 2, 227)
+    bytes_set(mag, 3, 207)
+    bytes_set(mag, 4, 211)
+    pdfb = bytes_concat(pdfb, mag)
+    pdfb = bytes_concat(pdfb, bytes_of_str("\n"))
+
+    let offs = vec_new()
+    vec_push(offs, 0)
+
+    vec_push(offs, bytes_len(pdfb))
+    pdfb = bytes_concat(pdfb, bytes_of_str("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"))
+
+    vec_push(offs, bytes_len(pdfb))
+    let mut kids = "[ "
+    let mut i: i64 = 0
+    while i < np {
+        kids = concat(kids, concat(int_to_str(o_page0 + i), " 0 R "))
+        i = i + 1
+    }
+    kids = concat(kids, "]")
+    pdfb = bytes_concat(pdfb, bytes_of_str(concat(concat(concat("2 0 obj\n<< /Type /Pages /Kids ", kids), concat(" /Count ", int_to_str(np))), " >>\nendobj\n")))
+
+    i = 0
+    while i < np {
+        vec_push(offs, bytes_len(pdfb))
+        let pobj = o_page0 + i
+        let cobj = o_cont0 + i
+        let mut po = concat(int_to_str(pobj), " 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents ")
+        po = concat(po, int_to_str(cobj))
+        po = concat(po, " 0 R /Resources << /Font << /F1 ")
+        po = concat(po, int_to_str(o_font0))
+        po = concat(po, " 0 R >> >> >>\nendobj\n")
+        pdfb = bytes_concat(pdfb, bytes_of_str(po))
+        i = i + 1
+    }
+
+    i = 0
+    while i < np {
+        vec_push(offs, bytes_len(pdfb))
+        let stream = vec_get(page_streams, i)
+        let cobj = o_cont0 + i
+        let mut co = concat(int_to_str(cobj), " 0 obj\n<< /Length ")
+        co = concat(co, int_to_str(len(stream)))
+        co = concat(co, " >>\nstream\n")
+        co = concat(co, stream)
+        co = concat(co, "\nendstream\nendobj\n")
+        pdfb = bytes_concat(pdfb, bytes_of_str(co))
+        i = i + 1
+    }
+
+    vec_push(offs, bytes_len(pdfb))
+    pdfb = bytes_concat(pdfb, bytes_of_str(concat(concat(concat(int_to_str(o_font0), " 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /ReportFont /Encoding /Identity-H /DescendantFonts ["), int_to_str(o_cid)), concat(" 0 R] /ToUnicode ", concat(int_to_str(o_touni), " 0 R >>\nendobj\n")))))
+
+    vec_push(offs, bytes_len(pdfb))
+    pdfb = bytes_concat(pdfb, bytes_of_str(concat(concat(int_to_str(o_cid), " 0 obj\n<< /Type /Font /Subtype /CIDFontType2 /BaseFont /ReportFont /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor "), concat(int_to_str(o_desc), " 0 R /CIDToGIDMap /Identity /DW 600 >>\nendobj\n"))))
+
+    vec_push(offs, bytes_len(pdfb))
+    pdfb = bytes_concat(pdfb, bytes_of_str(concat(concat(int_to_str(o_desc), " 0 obj\n<< /Type /FontDescriptor /FontName /ReportFont /Flags 32 /FontBBox [-100 -200 1000 900] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 "), concat(int_to_str(o_ffile), " 0 R >>\nendobj\n"))))
+
+    vec_push(offs, bytes_len(pdfb))
+    let flen = bytes_len(font.data)
+    pdfb = bytes_concat(pdfb, bytes_of_str(concat(concat(concat(int_to_str(o_ffile), " 0 obj\n<< /Length "), int_to_str(flen)), concat(" /Length1 ", concat(int_to_str(flen), " >>\nstream\n")))))
+    pdfb = bytes_concat(pdfb, font.data)
+    pdfb = bytes_concat(pdfb, bytes_of_str("\nendstream\nendobj\n"))
+
+    let touni = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n"
+    vec_push(offs, bytes_len(pdfb))
+    pdfb = bytes_concat(pdfb, bytes_of_str(concat(concat(concat(int_to_str(o_touni), " 0 obj\n<< /Length "), int_to_str(len(touni))), concat(" >>\nstream\n", concat(touni, "\nendstream\nendobj\n")))))
+
+    let xref_pos = bytes_len(pdfb)
+    let nobj = o_touni
+    let mut xref = concat(concat("xref\n0 ", int_to_str(nobj + 1)), "\n0000000000 65535 f \n")
+    i = 1
+    while i <= nobj {
+        xref = concat(xref, concat(pdf_pad10(vec_get(offs, i)), " 00000 n \n"))
+        i = i + 1
+    }
+    pdfb = bytes_concat(pdfb, bytes_of_str(xref))
+    pdfb = bytes_concat(pdfb, bytes_of_str(concat(concat(concat("trailer\n<< /Size ", int_to_str(nobj + 1)), " /Root 1 0 R >>\nstartxref\n"), concat(int_to_str(xref_pos), "\n%%EOF\n"))))
+    return pdf_ok(pdfb)
+}
+
+fn pdf_default_font_path() -> str {
+    return "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+}
+
+fn pdf_from_table_file(font_path: str, title: str, rows: Vec<str>) -> PdfResult !IO {
+    let fb = read_file_bytes(font_path)?
+    if bytes_len(fb) < 100 {
+        return pdf_fail(concat("pdf: cannot read font ", font_path))
+    }
+    let font = ttf_open_bytes(fb)
+    if font.ok == 0 {
+        return pdf_fail(font.err)
+    }
+    return pdf_from_table(font, title, rows)
+}
+
+fn pdf_from_table_default(title: str, rows: Vec<str>) -> PdfResult !IO {
+    return pdf_from_table_file(pdf_default_font_path(), title, rows)?
+}

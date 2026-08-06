@@ -1,0 +1,200 @@
+// ttf.baga — TrueType cmap (format 4) for Unicode → glyph id + full font embed.
+
+import "std/str/str.baga"
+
+struct TtfFont {
+    data: bytes,
+    // parallel arrays for format 4 segments
+    start_code: Vec<i64>,
+    end_code: Vec<i64>,
+    id_delta: Vec<i64>,
+    id_range_off: Vec<i64>,
+    glyph_ids: Vec<i64>,   // glyphIdArray
+    range_base: Vec<i64>,  // byte offset into glyphIdArray region for each segment (index units)
+    ok: i64,
+    err: str
+}
+
+fn ttf_u16(b: bytes, off: i64) -> i64 {
+    return ((bytes_at(b, off) & 255) * 256) + (bytes_at(b, off + 1) & 255)
+}
+
+fn ttf_i16(b: bytes, off: i64) -> i64 {
+    let u = ttf_u16(b, off)
+    if u >= 32768 {
+        return u - 65536
+    }
+    return u
+}
+
+fn ttf_u32(b: bytes, off: i64) -> i64 {
+    return ((bytes_at(b, off) & 255) * 16777216)
+        + ((bytes_at(b, off + 1) & 255) * 65536)
+        + ((bytes_at(b, off + 2) & 255) * 256)
+        + (bytes_at(b, off + 3) & 255)
+}
+
+fn ttf_fail(msg: str) -> TtfFont {
+    return TtfFont {
+        data: bytes_new(0),
+        start_code: vec_new(),
+        end_code: vec_new(),
+        id_delta: vec_new(),
+        id_range_off: vec_new(),
+        glyph_ids: vec_new(),
+        range_base: vec_new(),
+        ok: 0,
+        err: msg
+    }
+}
+
+fn ttf_find_table(data: bytes, tag: str) -> i64 {
+    // returns offset or -1
+    if bytes_len(data) < 12 {
+        return 0 - 1
+    }
+    let ntables = ttf_u16(data, 4)
+    let mut i: i64 = 0
+    while i < ntables {
+        let off = 12 + i * 16
+        if off + 16 > bytes_len(data) {
+            return 0 - 1
+        }
+        let t0 = chr(bytes_at(data, off) & 255)
+        let t1 = chr(bytes_at(data, off + 1) & 255)
+        let t2 = chr(bytes_at(data, off + 2) & 255)
+        let t3 = chr(bytes_at(data, off + 3) & 255)
+        let t = concat(concat(t0, t1), concat(t2, t3))
+        if t == tag {
+            return ttf_u32(data, off + 8)
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+fn ttf_open_bytes(data: bytes) -> TtfFont {
+    if bytes_len(data) < 12 {
+        return ttf_fail("ttf: too short")
+    }
+    let cmap_off = ttf_find_table(data, "cmap")
+    if cmap_off < 0 {
+        return ttf_fail("ttf: no cmap")
+    }
+    let num_tables = ttf_u16(data, cmap_off + 2)
+    let mut enc_off: i64 = 0 - 1
+    let mut ti: i64 = 0
+    while ti < num_tables {
+        let eoff = cmap_off + 4 + ti * 8
+        let plat = ttf_u16(data, eoff)
+        let enc = ttf_u16(data, eoff + 2)
+        let sub = ttf_u32(data, eoff + 4)
+        // prefer Windows BMP (3,1)
+        if plat == 3 && enc == 1 {
+            enc_off = cmap_off + sub
+        }
+        // fallback Unicode (0,*)
+        if enc_off < 0 && plat == 0 {
+            enc_off = cmap_off + sub
+        }
+        ti = ti + 1
+    }
+    if enc_off < 0 {
+        return ttf_fail("ttf: no Unicode cmap")
+    }
+    let format = ttf_u16(data, enc_off)
+    if format != 4 {
+        return ttf_fail(concat("ttf: unsupported cmap format ", int_to_str(format)))
+    }
+    let seg_count = ttf_u16(data, enc_off + 6) / 2
+    let end_codes = enc_off + 14
+    let start_codes = end_codes + seg_count * 2 + 2
+    let id_deltas = start_codes + seg_count * 2
+    let id_range_offs = id_deltas + seg_count * 2
+    let glyph_array = id_range_offs + seg_count * 2
+
+    let start_code = vec_new()
+    let end_code = vec_new()
+    let id_delta = vec_new()
+    let id_range_off = vec_new()
+    let range_base = vec_new()
+    let glyph_ids = vec_new()
+
+    let mut s: i64 = 0
+    while s < seg_count {
+        vec_push(end_code, ttf_u16(data, end_codes + s * 2))
+        vec_push(start_code, ttf_u16(data, start_codes + s * 2))
+        vec_push(id_delta, ttf_i16(data, id_deltas + s * 2))
+        let ro = ttf_u16(data, id_range_offs + s * 2)
+        vec_push(id_range_off, ro)
+        // base index in glyph_ids for this segment when ro != 0
+        // offset in bytes from id_range_offs[s] to glyphIdArray entry
+        vec_push(range_base, 0)
+        s = s + 1
+    }
+    // Load glyphIdArray: from glyph_array to end of subtable
+    let length = ttf_u16(data, enc_off + 2)
+    let end_sub = enc_off + length
+    let mut go = glyph_array
+    while go + 1 < end_sub {
+        vec_push(glyph_ids, ttf_u16(data, go))
+        go = go + 2
+    }
+
+    return TtfFont {
+        data: data,
+        start_code: start_code,
+        end_code: end_code,
+        id_delta: id_delta,
+        id_range_off: id_range_off,
+        glyph_ids: glyph_ids,
+        range_base: range_base,
+        ok: 1,
+        err: ""
+    }
+}
+
+fn ttf_glyph(font: TtfFont, cp: i64) -> i64 {
+    if font.ok == 0 {
+        return 0
+    }
+    let segs = vec_len(font.end_code)
+    let mut s: i64 = 0
+    while s < segs {
+        let endc = vec_get(font.end_code, s)
+        let startc = vec_get(font.start_code, s)
+        if cp >= startc && cp <= endc {
+            let ro = vec_get(font.id_range_off, s)
+            let delta = vec_get(font.id_delta, s)
+            if ro == 0 {
+                let g = (cp + delta) % 65536
+                if g < 0 {
+                    return g + 65536
+                }
+                return g
+            }
+            // glyphIndexAddress = idRangeOffset[i] + 2*(cp - startCode[i]) + offset_of_idRangeOffset[i]
+            // In our storage, glyph_ids starts at glyphIdArray; index =
+            // (idRangeOffset/2 - (seg_count - s)) + (cp - start) roughly...
+            // Standard formula (byte-based from start of idRangeOffset array):
+            // index = ro/2 + (cp - startc) - (seg_count - s)
+            // Because each subsequent segment's idRangeOffset is 2 bytes later.
+            let seg_count = segs
+            let idx = (ro / 2) + (cp - startc) - (seg_count - s)
+            if idx < 0 || idx >= vec_len(font.glyph_ids) {
+                return 0
+            }
+            let g0 = vec_get(font.glyph_ids, idx)
+            if g0 == 0 {
+                return 0
+            }
+            let g = (g0 + delta) % 65536
+            if g < 0 {
+                return g + 65536
+            }
+            return g
+        }
+        s = s + 1
+    }
+    return 0
+}

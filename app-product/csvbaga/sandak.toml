@@ -1,0 +1,8 @@
+[package]
+name = "csvbaga"
+version = "0.1.0"
+entry = "csv.baga"
+
+[dependencies]
+std = { path = "../../std" }
+bufbaga = { path = "../bufbaga" }

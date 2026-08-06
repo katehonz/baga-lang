@@ -1,0 +1,38 @@
+// utf8.baga — UTF-8 codepoint iteration (byte-indexed str).
+
+struct Utf8Next {
+    cp: i64,     // Unicode code point
+    next: i64,   // next byte index
+    ok: i64
+}
+
+fn utf8_next(s: str, i: i64) -> Utf8Next {
+    let n = len(s)
+    if i >= n {
+        return Utf8Next { cp: 0, next: i, ok: 0 }
+    }
+    let b0 = char_at(s, i) & 255
+    if b0 < 128 {
+        return Utf8Next { cp: b0, next: i + 1, ok: 1 }
+    }
+    if (b0 & 224) == 192 && i + 1 < n {
+        let b1 = char_at(s, i + 1) & 255
+        let cp = ((b0 & 31) * 64) + (b1 & 63)
+        return Utf8Next { cp: cp, next: i + 2, ok: 1 }
+    }
+    if (b0 & 240) == 224 && i + 2 < n {
+        let b1 = char_at(s, i + 1) & 255
+        let b2 = char_at(s, i + 2) & 255
+        let cp = ((b0 & 15) * 4096) + ((b1 & 63) * 64) + (b2 & 63)
+        return Utf8Next { cp: cp, next: i + 3, ok: 1 }
+    }
+    if (b0 & 248) == 240 && i + 3 < n {
+        let b1 = char_at(s, i + 1) & 255
+        let b2 = char_at(s, i + 2) & 255
+        let b3 = char_at(s, i + 3) & 255
+        let cp = ((b0 & 7) * 262144) + ((b1 & 63) * 4096) + ((b2 & 63) * 64) + (b3 & 63)
+        return Utf8Next { cp: cp, next: i + 4, ok: 1 }
+    }
+    // invalid → skip one byte
+    return Utf8Next { cp: 63, next: i + 1, ok: 1 }  // '?'
+}
