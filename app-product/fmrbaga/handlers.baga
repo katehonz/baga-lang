@@ -86,13 +86,13 @@ fn h_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return fmr_out(fmr_503("database unavailable"), db)
     }
     let q = orm_query(db, "SELECT 1 AS ok")?
-    if q.ok == 0 {
-        return fmr_out(fmr_503("database ping failed"), q.db)
+    if orm_ok_q(q) == 0 {
+        return fmr_out(fmr_503("database ping failed"), orm_db_q(q))
     }
     let mut o = jobj_new()
     o = jobj_str(o, "status", "ready")
     o = jobj_str(o, "database", "up")
-    return fmr_out(fmr_ok_obj(o), q.db)
+    return fmr_out(fmr_ok_obj(o), orm_db_q(q))
 }
 
 fn h_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
@@ -167,19 +167,19 @@ fn h_users_list(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return fmr_out(fmr_503("database unavailable"), db)
     }
     let q = orm_query(db, "SELECT id, email, name, created_at::text AS created_at FROM users ORDER BY id")?
-    if q.ok == 0 {
-        return fmr_out(fmr_500(q.err), q.db)
+    if orm_ok_q(q) == 0 {
+        return fmr_out(fmr_500(orm_err_q(q)), orm_db_q(q))
     }
     let mut arr = jarr_new()
     let mut i: i64 = 0
-    while i < q.nrows {
+    while i < orm_nrows(q) {
         arr = jarr_obj(arr, user_to_obj(q, i))
         i = i + 1
     }
     let mut o = jobj_new()
     o = jobj_raw(o, "items", jarr_encode(arr))
-    o = jobj_i64(o, "count", q.nrows)
-    return fmr_out(fmr_ok_obj(o), q.db)
+    o = jobj_i64(o, "count", orm_nrows(q))
+    return fmr_out(fmr_ok_obj(o), orm_db_q(q))
 }
 
 fn h_users_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -213,15 +213,15 @@ fn h_users_create(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     vec_push(vals, email.val)
     vec_push(vals, name.val)
     let ins = orm_insert_strs(db, "users", cols, vals)?
-    if ins.ok == 0 {
+    if orm_ok(ins) == 0 {
         // unique violation etc.
-        return fmr_out(fmr_409(ins.err), ins.db)
+        return fmr_out(fmr_409(orm_err_exec(ins)), orm_db_exec(ins))
     }
-    let q = orm_where_eq_str(ins.db, "users", "email", email.val)?
-    if q.ok == 0 || q.nrows < 1 {
-        return fmr_out(fmr_500("insert ok but row missing"), q.db)
+    let q = orm_where_eq_str(orm_db_exec(ins), "users", "email", email.val)?
+    if orm_ok_q(q) == 0 || orm_nrows(q) < 1 {
+        return fmr_out(fmr_500("insert ok but row missing"), orm_db_q(q))
     }
-    return fmr_out(fmr_created_obj(user_to_obj(q, 0)), q.db)
+    return fmr_out(fmr_created_obj(user_to_obj(q, 0)), orm_db_q(q))
 }
 
 fn h_users_get(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -240,13 +240,13 @@ fn h_users_get(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     let nulls = vec_new()
     pg_param_i64(vals, nulls, id)
     let q = orm_query_params(db, "SELECT id, email, name, created_at::text AS created_at FROM users WHERE id = $1", vals, nulls)?
-    if q.ok == 0 {
-        return fmr_out(fmr_500(q.err), q.db)
+    if orm_ok_q(q) == 0 {
+        return fmr_out(fmr_500(orm_err_q(q)), orm_db_q(q))
     }
-    if q.nrows < 1 {
-        return fmr_out(fmr_404("User not found"), q.db)
+    if orm_nrows(q) < 1 {
+        return fmr_out(fmr_404("User not found"), orm_db_q(q))
     }
-    return fmr_out(fmr_ok_obj(user_to_obj(q, 0)), q.db)
+    return fmr_out(fmr_ok_obj(user_to_obj(q, 0)), orm_db_q(q))
 }
 
 fn h_users_patch(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -278,17 +278,17 @@ fn h_users_patch(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     let vals = vec_new()
     vec_push(vals, name.val)
     let upd = orm_update_by_id(db, "users", id, cols, vals)?
-    if upd.ok == 0 {
-        return fmr_out(fmr_500(upd.err), upd.db)
+    if orm_ok(upd) == 0 {
+        return fmr_out(fmr_500(orm_err_exec(upd)), orm_db_exec(upd))
     }
-    let q = orm_query(upd.db, concat(
+    let q = orm_query(orm_db_exec(upd), concat(
         "SELECT id, email, name, created_at::text AS created_at FROM users WHERE id = ",
         sql_i64(id)
     ))?
-    if q.ok == 0 || q.nrows < 1 {
-        return fmr_out(fmr_404("User not found"), q.db)
+    if orm_ok_q(q) == 0 || orm_nrows(q) < 1 {
+        return fmr_out(fmr_404("User not found"), orm_db_q(q))
     }
-    return fmr_out(fmr_ok_obj(user_to_obj(q, 0)), q.db)
+    return fmr_out(fmr_ok_obj(user_to_obj(q, 0)), orm_db_q(q))
 }
 
 fn h_users_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
@@ -304,10 +304,10 @@ fn h_users_delete(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
         return fmr_out(fmr_503("database unavailable"), db)
     }
     let del = orm_delete_by_id(db, "users", id)?
-    if del.ok == 0 {
-        return fmr_out(fmr_500(del.err), del.db)
+    if orm_ok(del) == 0 {
+        return fmr_out(fmr_500(orm_err_exec(del)), orm_db_exec(del))
     }
-    return fmr_out(fmr_no_content(), del.db)
+    return fmr_out(fmr_no_content(), orm_db_exec(del))
 }
 
 // ---------- dispatch ----------
@@ -360,12 +360,12 @@ fn fmr_startup_migrate() -> i64 !Net !IO !Random {
     }
     let set = ormbaga_migrations()
     let up = migrate_up(db, set)?
-    if up.ok == 0 {
-        print(concat("fmrbaga migrate failed: ", up.err))
-        orm_close(up.db)?
+    if migrate_is_ok(up) == 0 {
+        print(concat("fmrbaga migrate failed: ", migrate_err_str(up)))
+        orm_close(migrate_db(up))?
         return 1
     }
-    print(concat("fmrbaga migrate applied=", int_to_str(up.applied)))
-    orm_close(up.db)?
+    print(concat("fmrbaga migrate applied=", int_to_str(migrate_applied_n(up))))
+    orm_close(migrate_db(up))?
     return 0
 }
