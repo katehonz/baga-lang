@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Language R54 — `bytes_put` builtin (bulk in-place append)
+- `bytes_put(dst, off, src)` — memcpy append into a preallocated buffer.
+  rocksbaga MT serve assembles pipelined replies in a persistent per-conn
+  scratch instead of an O(batch²) `bytes_concat` chain: GET pipe=64
+  114k→289k (34→87% of Redis); pipe=16 shards=8 → 99/85/86% PING/SET/GET.
+
+### RocksDB path R53 — worker drain
+- Shard workers drain up to 64 queued jobs per wakeup (`lsm_worker_one` +
+  `chan_try_recv`). Neutral on throughput (R50 already batched).
+
+### Language/runtime R52 — thread-local arena (MT scalability fix)
+- **arena + free lists are `__thread` now.** Before, one global
+  `baga_alloc_mu` serialized every allocation in every thread — a real GIL
+  for `go_bg` workloads. MT RESP soak vs Redis (8 clients, pipe=16):
+  SET 96k→175k (33→70%), GET 71k→189k (31→85%), PING ~99%.
+- Safe because `str` is arena-bound (never freed); free-list blocks are
+  interchangeable raw memory across threads. C backend only.
+
+### Language R51 — `str_h` / `h_str` unsafe handle casts
+- `str_h(str) -> i64`, `h_str(i64) -> str` — zero-copy cross-thread handoff
+  through i64 channels. Used by rocksbaga workers (job/reply payloads no
+  longer byte-loop packed). C backend (LLVM parity TODO).
+
+### RocksDB path R47–R50 — MT serve correctness + CF polish
+- **R47 (fix):** job carries its own reply chan; MT conn threads no longer
+  steal each other's replies from one shared done chan (soak hang at 8
+  clients). `lsm_mt_submit` takes `rc`.
+- **R48:** `lsm_cf_flush` runs the per-family L0..L3 compaction chain;
+  shared WAL rotates once every family is clean (no unbounded WAL/replay).
+- **R49:** `lsm_cf_drop` + RESP `CF.DROP`; WAL replay skips dropped CFs.
+- **R50:** MT conn thread batch-submits a whole pipeline, then waits in
+  order.
+- bench harness: `setsid` + process-group kill; refuse pre-bound ports
+  (orphaned zombie servers were silently benched).
+- Tests: `r48_*`/`r49_*` in `tests/cf_test.baga`.
+
 ### RocksDB path R46 — durable CF names + RESP CF.*
 - **`<dir>.cfs`:** atomic name→id map (`next_id` + lines). Loaded on
   `lsm_cf_open`, saved on create/close.

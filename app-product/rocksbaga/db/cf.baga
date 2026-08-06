@@ -9,11 +9,16 @@
 //   • Not full RocksDB CF (no per-CF options object, no shared block cache
 //     policy). Enough for multi-namespace durability with one fsync stream.
 //
-// API: lsm_cf_open / create / put / get / del / flush / close.
+// API: lsm_cf_open / create / put / get / del / flush / drop / close.
 // R46: durable name map at <dir>.cfs (atomic publish like MANIFEST).
+// R48: per-CF compaction chain on flush + shared WAL rotation once every
+//      family is clean (mem_n == 0) — WAL no longer grows/replays forever.
+// R49: lsm_cf_drop / RESP CF.DROP — unlink family files, forget the name;
+//      WAL replay skips records of dropped families.
 
 import "engine.baga"
 import "manifest.baga"
+import "compact.baga"
 import "../wal/wal.baga"
 import "../table/sstable.baga"
 import "../util/codec.baga"
@@ -220,22 +225,25 @@ fn lsm_cf_open(dir: str, flush_at: i64, compact_at: i64) -> LsmCFDB !IO {
         if i < vec_len(rp.cfs) {
             cf = vec_get(rp.cfs, i)
         }
-        db = lsm_cf_ensure(db, cf)?
-        let mut fam = map_get(db.families, cf)
-        let op = vec_get(rp.ops, i)
-        let k = vec_get(rp.keys, i)
-        let v = vec_get(rp.vals, i)
-        if op == 1 {
-            map_set(fam.mem, k, v)
-            map_del(fam.tomb, k)
-        } else {
-            map_del(fam.mem, k)
-            map_set(fam.tomb, k, 1)
-        }
-        fam.mem_n = fam.mem_n + 1
-        map_set(db.families, cf, fam)
-        if cf >= db.next_cf_id {
-            db.next_cf_id = cf + 1
+        // R49: skip records of dropped families (name no longer in .cfs)
+        if lsm_cf_id_known(db, cf) == 1 {
+            db = lsm_cf_ensure(db, cf)?
+            let mut fam = map_get(db.families, cf)
+            let op = vec_get(rp.ops, i)
+            let k = vec_get(rp.keys, i)
+            let v = vec_get(rp.vals, i)
+            if op == 1 {
+                map_set(fam.mem, k, v)
+                map_del(fam.tomb, k)
+            } else {
+                map_del(fam.mem, k)
+                map_set(fam.tomb, k, 1)
+            }
+            fam.mem_n = fam.mem_n + 1
+            map_set(db.families, cf, fam)
+            if cf >= db.next_cf_id {
+                db.next_cf_id = cf + 1
+            }
         }
         i = i + 1
     }
@@ -293,6 +301,67 @@ fn lsm_cf_list(db: LsmCFDB) -> Vec<str> {
     let ks = map_keys(db.names)
     sort_strs(ks)
     return ks
+}
+
+// R49: is cf_id a live family? 0 = default (always); else must hold a name.
+// WAL replay uses this to skip records of dropped families.
+fn lsm_cf_id_known(db: LsmCFDB, cf_id: i64) -> i64 {
+    if cf_id <= 0 {
+        return 1
+    }
+    let ks = map_keys(db.names)
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        if map_get(db.names, vec_get(ks, i)) == cf_id {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+struct LsmCFDrop {
+    db: LsmCFDB,
+    rc: i64
+}
+
+// R49: drop a named column family — discard memtable, close SST fd caches,
+// unlink its files, forget the name (persisted via .cfs). Default CF cannot
+// be dropped. rc: 1 dropped, 0 not found, -1 refused / io error.
+fn lsm_cf_drop(db: LsmCFDB, name: str) -> LsmCFDrop !IO !Time {
+    if name == "" || name == "default" {
+        return LsmCFDrop { db: db, rc: 0 - 1 }
+    }
+    if map_has(db.names, name) == 0 {
+        return LsmCFDrop { db: db, rc: 0 }
+    }
+    let id = map_get(db.names, name)
+    db = lsm_cf_ensure(db, id)?
+    let mut fam = map_get(db.families, id)
+    // Discard in-memory state; family has no WAL of its own.
+    fam.mem = map_new()
+    fam.tomb = map_new()
+    fam.mem_n = 0
+    fam.wal_fd = 0 - 1
+    lsm_close(fam)?
+    let path = lsm_cf_path(db.dir, id)
+    let mut gi: i64 = 0
+    while gi < vec_len(fam.gens) {
+        let g = vec_get(fam.gens, gi)
+        unlink(concat(concat(path, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(path, ".bloom."), int_to_str(g)))?
+        gi = gi + 1
+    }
+    unlink(concat(path, ".manifest"))?
+    unlink(concat(path, ".manifest.log"))?
+    unlink(concat(path, ".manifest.tmp"))?
+    map_del(db.families, id)
+    map_del(db.names, name)
+    if lsm_cfs_save(db.dir, db.next_cf_id, db.names)? != 0 {
+        db.ok = 0
+        return LsmCFDrop { db: db, rc: 0 - 1 }
+    }
+    return LsmCFDrop { db: db, rc: 1 }
 }
 
 // Shared WAL append (CF-aware record).
@@ -429,7 +498,69 @@ fn lsm_cf_del(db: LsmCFDB, cf_id: i64, key: str) -> LsmCFDB !IO !Time {
     return db
 }
 
-// Flush one CF's memtable to its SST path (does NOT rotate shared WAL).
+// R48: L0..L3 compaction chain for one family (same policy as lsm_flush).
+fn lsm_cf_compact_loop(fam: LsmDB) -> LsmDB !IO !Time {
+    let mut db = fam
+    let mut guard: i64 = 0
+    let mut more: i64 = 1
+    while more == 1 && guard < 32 {
+        let n0 = lsm_count_level(db.levels, 0)
+        let n1 = lsm_count_level(db.levels, 1)
+        let n2 = lsm_count_level(db.levels, 2)
+        let n3 = lsm_count_level(db.levels, 3)
+        let b0 = lsm_level_bytes(db, 0)?
+        let b1 = lsm_level_bytes(db, 1)?
+        let b2 = lsm_level_bytes(db, 2)?
+        let b3 = lsm_level_bytes(db, 3)?
+        let over0 = lsm_level_over(db, 0, n0, b0)
+        let over1 = lsm_level_over(db, 1, n1, b1)
+        let over2 = lsm_level_over(db, 2, n2, b2)
+        let over3 = lsm_level_over(db, 3, n3, b3)
+        let mut pair: i64 = 0
+        if db.target_bytes <= 0 {
+            if n1 >= 2 || n2 >= 2 || n3 >= 2 {
+                pair = 1
+            }
+        }
+        if over0 == 1 || over1 == 1 || over2 == 1 || over3 == 1 || pair == 1 {
+            db = lsm_compact(db)?
+            guard = guard + 1
+        } else {
+            more = 0
+        }
+    }
+    return db
+}
+
+// R48: rotate the shared WAL once every family is clean (all memtables
+// flushed). Before this the shared WAL grew forever and every reopen
+// replayed already-flushed records back into memtables.
+fn lsm_cf_wal_rotate(db: LsmCFDB) -> LsmCFDB !IO {
+    let ks = map_keys(db.families)
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        let fam = map_get(db.families, vec_get(ks, i))
+        if fam.mem_n > 0 {
+            return db
+        }
+        i = i + 1
+    }
+    close(db.wal_fd)
+    unlink(lsm_wal_path(db.dir))?
+    let wfd = open(lsm_wal_path(db.dir), 578, 420)?
+    if wfd < 0 {
+        db.ok = 0
+        return db
+    }
+    db.wal_fd = wfd
+    db.wal_off = 0
+    db.wal_buf_len = 0
+    return db
+}
+
+// Flush one CF's memtable to its SST path. R48: runs the L0..L3 compaction
+// chain on the family afterwards, and rotates the shared WAL when every
+// family is clean.
 fn lsm_cf_flush(db: LsmCFDB, cf_id: i64) -> LsmCFDB !IO !Time {
     db = lsm_cf_ensure(db, cf_id)?
     let mut fam = map_get(db.families, cf_id)
@@ -499,7 +630,15 @@ fn lsm_cf_flush(db: LsmCFDB, cf_id: i64) -> LsmCFDB !IO !Time {
     fam.tomb = map_new()
     fam.mem_n = 0
     fam.wal_fd = 0 - 1
+    // R48: per-CF compaction chain (SSTs no longer pile up per family)
+    if db.ok == 1 {
+        fam = lsm_cf_compact_loop(fam)?
+    }
     map_set(db.families, cf_id, fam)
+    // R48: shared WAL rotation once all families are clean
+    if db.ok == 1 {
+        db = lsm_cf_wal_rotate(db)?
+    }
     return db
 }
 

@@ -16,6 +16,11 @@ PIPE="${BENCH_PIPE:-64}"
 CLIENTS="${BENCH_CLIENTS:-1}"
 # Ephemeral ports avoid TIME_WAIT / leftover listeners between consecutive soaks.
 BAGA_PORT="${BAGA_PORT:-$((16500 + RANDOM % 500))}"
+# Never reuse a port that already answers — a zombie listener would silently
+# be benched instead of the fresh server (bind fails, client hits the stale one).
+while python3 -c "import socket; s=socket.create_connection(('127.0.0.1',$BAGA_PORT),0.2); s.close()" 2>/dev/null; do
+  BAGA_PORT=$((16500 + RANDOM % 500))
+done
 REDIS_PORT="${REDIS_PORT:-$((17000 + RANDOM % 500))}"
 OUTDIR="${BENCH_OUT:-$ROOT/bench/rocks/results}"
 mkdir -p "$OUTDIR"
@@ -31,8 +36,11 @@ fi
 export BENCH_N="$N" BENCH_VLEN="$VLEN" BENCH_PIPE="$PIPE" BENCH_CLIENTS="$CLIENTS"
 
 cleanup() {
+  # Kill the whole process GROUP — "$BAGA" is a driver that spawns the real
+  # server binary (sh -c /tmp/baga_NNN); killing only the driver orphans the
+  # listener and later runs can randomly bind-collide with the zombie.
   if [[ -n "${BAGA_PID:-}" ]] && kill -0 "$BAGA_PID" 2>/dev/null; then
-    kill "$BAGA_PID" 2>/dev/null || true
+    kill -- -"$BAGA_PID" 2>/dev/null || kill "$BAGA_PID" 2>/dev/null || true
     wait "$BAGA_PID" 2>/dev/null || true
   fi
   if [[ -n "${REDIS_PID:-}" ]] && kill -0 "$REDIS_PID" 2>/dev/null; then
@@ -62,7 +70,7 @@ export LSM_SYNC_EVERY="${LSM_SYNC_EVERY:-10000}"
 export LSM_PARALLEL="${LSM_PARALLEL:-0}"
 export LSM_SHARDS="${LSM_SHARDS:-1}"
 
-"$BAGA" -I "$ROOT" -I "$ROOT/app-product" \
+setsid "$BAGA" -I "$ROOT" -I "$ROOT/app-product" \
   "$ROOT/app-product/rocksbaga/tools/serve.baga" \
   >/tmp/baga_resp_server.log 2>&1 &
 BAGA_PID=$!

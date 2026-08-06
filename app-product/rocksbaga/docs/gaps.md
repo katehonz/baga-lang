@@ -297,7 +297,94 @@ is the MEM-3-full / str-reclamation roadmap item, not a bug.
 **Shipped (R46 durable CF names + RESP):**
 - `.cfs` name map (atomic). `LSM_CF=1` serve: `CF.CREATE/SET/GET/DEL/LIST`.
 
-**Still open (later):** MT multi-conn soak numbers; richer RocksDB CF options.
+**Shipped (R47 MT reply routing + soak):**
+- **Bug:** all MT conn threads shared one `done` chan; `lsm_mt_wait` stashed
+  other threads' replies in *thread-local* maps — a stolen reply was lost
+  and the robbed thread blocked forever. 8-client soak hung in SET phase.
+- **Fix:** job carries its own reply chan (`lsm_mb_job` rc field); each conn
+  thread waits on a private chan. Worker ctx done chan now unused legacy.
+- **Soak after fix** (8 clients, n=5000/client, `LSM_SERVE_MT=1 LSM_SHARDS=4`
+  vs p0 poll vs p1 workers, artifacts `vs-redis-20260806T11*.txt`):
+
+  | pipe | mode | PING | SET | GET |
+  |------|------|-----:|----:|----:|
+  | 1  | p0 | 43.0k | 28.7k | 36.7k |
+  | 1  | p1 | 42.7k | 29.0k | 29.2k |
+  | 1  | mt | 41.8k | 30.5k | 32.1k |
+  | 16 | p0 | 134k | 60k | 55k |
+  | 16 | p1 | 136k | 64k | 77k |
+  | 16 | mt | **322k** | **77k** | 67k |
+
+  Read: pipe=1 is RTT-bound (all equal); pipe=16 MT clearly wins PING
+  (2.4×) and SET (1.3×). GET varies run to run (55–86k p0) — noisy.
+
+**Shipped (R48 CF compaction + WAL rotation):**
+- `lsm_cf_flush` now runs the L0..L3 compaction chain per family (SSTs no
+  longer pile up per CF forever).
+- Shared WAL rotates (close/unlink/reopen, reset offsets) once every family
+  is clean. Before: WAL grew forever; every reopen replayed already-flushed
+  records back into memtables (unbounded recovery + duplicate flushes).
+
+**Shipped (R49 CF.DROP):**
+- `lsm_cf_drop(db, name)` + RESP `CF.DROP name` → `:1`/`:0` (default CF
+  refused). Discards memtable, closes SST fd caches, unlinks
+  `.sst.*`/`.bloom.*`/`.manifest*` for live gens, persists `.cfs`.
+- WAL replay skips records whose CF no longer holds a name
+  (`lsm_cf_id_known`) — dropped families stay dropped after crash/reopen.
+- Tests: `r48_*` / `r49_*` in `tests/cf_test.baga`.
+
+**Shipped (R50 MT batch hop):**
+- MT conn thread parses + submits the whole pipelined batch, then waits for
+  replies in request order (kinds/refs/imm vecs). No throughput change —
+  the per-command wait was not the wall.
+
+**Shipped (R51 zero-copy hop):**
+- New builtins `str_h(str) -> i64` / `h_str(i64) -> str` (C backend; LLVM
+  parity TODO). Safe because `str` is arena-bound (never freed) — a handle
+  passed cross-thread stays valid for process life.
+- Job/reply payloads in `db/workers.baga` are raw handles now; the R35/R37
+  byte-loop pack/unpack is legacy (kept, unused). SET 84k→96k — useful but
+  not the wall either.
+
+**Shipped (R52 thread-local arena — the actual GIL):**
+- Micro-bench decomposition (n=20000, 100 B vals): pure engine 540k ops/s
+  (1.9µs), single-submitter hop 77.5k (12.9µs). Aggregate MT never passed
+  ~96k regardless of thread count → serialization, not latency.
+- Root cause: ONE global `baga_alloc_mu` around every `baga_alloc` /
+  `baga_free` — every str/vec/bytes op in every thread serialized.
+- Fix: arena + both free-list tiers are `__thread`. Safe: str is
+  arena-bound; free-list blocks are interchangeable raw memory (a
+  cross-thread free just lands in the freeing thread's list).
+- MT soak vs Redis 8.x (8 clients, n=5000/client, pipe=16, shards=4):
+
+  | metric | before R52 | after R52 | Redis | ratio |
+  |--------|-----------:|----------:|------:|------:|
+  | PING | 348k | 348k | 349–351k | **97–99%** |
+  | SET | 84k | **158–175k** | 249–251k | **62–70%** |
+  | GET | 68k | **189k** | 222k | **84–85%** |
+
+  Artifacts: `vs-redis-20260806T113411Z.txt`, `…113426Z.txt`.
+
+**Bench harness fix (same day):** orphaned `/tmp/baga_*` server zombies
+(driver killed, child survived) held random bench ports; one "failed" run
+had actually benched a stale server. `run_vs_redis.sh` now starts the
+server with `setsid` + kills the process group, and re-rolls the port if
+it already answers.
+
+**Shipped (R53 worker drain):** `lsm_worker_one` + `chan_try_recv` drain
+(≤64 jobs per wakeup). Neutral — R50 batching already kept queues full.
+
+**Shipped (R54 reply assembly, no O(n²) concat):**
+- GET collapsed at pipe=64 (114k vs Redis 329k): replies were appended with
+  `bytes_concat` per command → O(batch²) copies (~230 KB per 64-batch).
+- New builtin `bytes_put(dst, off, src)` (in-place memcpy); MT conn keeps a
+  persistent per-conn scratch buffer, doubling on overflow (old buffer
+  abandoned — checker forbids drop of loop-outer locals).
+- After: pipe=64 GET **289k (87%)**, PING 615k (99%), SET 223k (57%);
+  pipe=16 shards=8 **PING 99% / SET 85% / GET 86%**.
+  Artifacts: `vs-redis-20260806T114833Z.txt`, `…114851Z.txt`.
+
+**Still open (later):** richer RocksDB CF options; TTL ops in MT/P1 worker path; per-CF block-cache policy; LLVM backend parity for R51/R52/R54 (handle builtins, thread-local arena, bytes_put).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

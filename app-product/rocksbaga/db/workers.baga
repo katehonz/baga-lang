@@ -10,6 +10,8 @@
 //   • typed reply codes (no pack of "+OK\r\n" every SET)
 //   • skip unpack val/extra when op does not need them
 //   • id alloc lock-free (single submitter thread)
+// R51: zero-copy hop — job/reply payloads are raw str handles (str_h/h_str,
+// C backend); the byte-loop pack/unpack above is legacy.
 //
 // PING stays on the caller thread. SET/GET/DEL hop to the key's shard worker.
 
@@ -34,7 +36,8 @@ fn LSM_REP_INT1() -> i64 { return 4 }
 fn LSM_REP_BULK() -> i64 { return 5 }
 fn LSM_REP_ERR() -> i64 { return 6 }
 
-// --- R35/R37: pack str ↔ cell2 ---
+// --- R35/R37: pack str ↔ cell2 (LEGACY — superseded by R51 str handles;
+// kept for reference/fallback, not used on the hot path) ---
 // empty → 0
 // n≤8  → cell2(n, word)          (one node; word holds LE bytes)
 // n>8  → cell2(n, cell2(w0, …))  (word list)
@@ -105,19 +108,22 @@ fn lsm_mb_unpack_str(h: i64) -> str {
     return str_of_bytes(b)
 }
 
-// Job: cell2(id, cell2(op, cell2(kh, cell2(vh, eh))))
-// vh/eh may be 0 when unused.
-fn lsm_mb_job(id: i64, op: i64, key: str, val: str, extra: str) -> i64 {
-    let kh = lsm_mb_pack_str(key)
+// Job: cell2(id, cell2(rc, cell2(op, cell2(kh, cell2(vh, eh)))))
+// rc = reply chan (R47: per-submitter reply routing — worker replies on rc,
+// not on one shared done chan; MT conn threads no longer steal each other's
+// replies). R51: kh/vh/eh are raw str handles (str_h) — zero-copy hop, no
+// byte-loop pack/unpack; safe because str is arena-bound. vh/eh may be 0.
+fn lsm_mb_job(rc: i64, id: i64, op: i64, key: str, val: str, extra: str) -> i64 {
+    let kh = str_h(key)
     let mut vh: i64 = 0
     let mut eh: i64 = 0
     if op == LSM_OP_SET() || op == LSM_OP_SETEX() {
-        vh = lsm_mb_pack_str(val)
+        vh = str_h(val)
     }
     if op == LSM_OP_SETEX() {
-        eh = lsm_mb_pack_str(extra)
+        eh = str_h(extra)
     }
-    return cell2(id, cell2(op, cell2(kh, cell2(vh, eh))))
+    return cell2(id, cell2(rc, cell2(op, cell2(kh, cell2(vh, eh)))))
 }
 
 fn lsm_mb_done(id: i64, kind: i64, payload_h: i64) -> i64 {
@@ -139,14 +145,17 @@ fn lsm_mb_rep_to_str(kind: i64, payload_h: i64) -> str {
         return ":1\r\n"
     }
     if kind == LSM_REP_BULK() {
-        let s = lsm_mb_unpack_str(payload_h)
+        let s = h_str(payload_h)
         return concat(
             concat(concat("$", int_to_str(len(s))), "\r\n"),
             concat(s, "\r\n")
         )
     }
     if kind == LSM_REP_ERR() {
-        let e = lsm_mb_unpack_str(payload_h)
+        if payload_h == 0 {
+            return "-ERR worker\r\n"
+        }
+        let e = h_str(payload_h)
         if e == "" {
             return "-ERR worker\r\n"
         }
@@ -169,6 +178,9 @@ fn lsm_job_next_path(dir: str) -> str {
 }
 
 // Worker ctx = cell2(work_ch, cell2(shard_id, done_ch))
+// R47: done_ch in ctx is now only a legacy fallback; each job carries its
+// own reply chan (see lsm_mb_job) so MT conn threads never compete on one
+// shared done chan.
 fn lsm_shard_worker(ctx: i64) -> i64 !IO !Par !Time {
     let work = cell2_0(ctx)
     let pack = cell2_1(ctx)
@@ -217,63 +229,93 @@ fn lsm_shard_worker(ctx: i64) -> i64 !IO !Par !Time {
             if msg < 0 {
                 run = 0
             } else {
-                let id = cell2_0(msg)
-                let body = cell2_1(msg)
-                let op = cell2_0(body)
-                let kv = cell2_1(body)
-                let key = lsm_mb_unpack_str(cell2_0(kv))
-                let ve = cell2_1(kv)
-                let mut kind = LSM_REP_OK()
-                let mut ph: i64 = 0
-                if op == LSM_OP_SET() {
-                    let val = lsm_mb_unpack_str(cell2_0(ve))
-                    db = lsm_put(db, key, val)?
-                    kind = LSM_REP_OK()
-                } else {
-                    if op == LSM_OP_GET() {
-                        let g = lsm_get(db, key)?
-                        db = g.db
-                        if g.found == 0 {
-                            kind = LSM_REP_NIL()
+                db = lsm_worker_one(db, msg)?
+                // R53: drain queued jobs without re-blocking — one wakeup
+                // services the whole batch a conn thread submitted (R50).
+                let mut more: i64 = 1
+                let mut drained: i64 = 0
+                while more == 1 && drained < 64 && run == 1 {
+                    let t = chan_try_recv(work)
+                    let st = cell2_0(t)
+                    if st == 1 {
+                        let m2 = cell2_1(t)
+                        if m2 < 0 {
+                            run = 0
                         } else {
-                            kind = LSM_REP_BULK()
-                            ph = lsm_mb_pack_str(str_of_bytes(g.val))
+                            db = lsm_worker_one(db, m2)?
                         }
+                        drained = drained + 1
                     } else {
-                        if op == LSM_OP_DEL() {
-                            let g2 = lsm_get(db, key)?
-                            db = g2.db
-                            if g2.found == 0 {
-                                kind = LSM_REP_INT0()
-                            } else {
-                                db = lsm_del(db, key)?
-                                kind = LSM_REP_INT1()
-                            }
-                        } else {
-                            if op == LSM_OP_SETEX() {
-                                let val = lsm_mb_unpack_str(cell2_0(ve))
-                                let extra = lsm_mb_unpack_str(cell2_1(ve))
-                                let sec = parse_int(extra)
-                                db = lsm_put_ex(db, key, val, sec)?
-                                kind = LSM_REP_OK()
-                            } else {
-                                if op == LSM_OP_FLUSH() {
-                                    db = lsm_flush_force(db)?
-                                    kind = LSM_REP_OK()
-                                } else {
-                                    kind = LSM_REP_ERR()
-                                    ph = lsm_mb_pack_str("bad job op")
-                                }
-                            }
+                        if st == 2 {
+                            run = 0
                         }
+                        more = 0
                     }
                 }
-                chan_send(done, lsm_mb_done(id, kind, ph))
             }
         }
     }
     lsm_close(db)?
     return 0
+}
+
+// R53: execute one job (unpack handles, engine op, typed reply on rc).
+fn lsm_worker_one(db: LsmDB, msg: i64) -> LsmDB !IO !Par !Time {
+    let id = cell2_0(msg)
+    let body = cell2_1(msg)
+    let rc = cell2_0(body)
+    let ob = cell2_1(body)
+    let op = cell2_0(ob)
+    let kv = cell2_1(ob)
+    let key = h_str(cell2_0(kv))
+    let ve = cell2_1(kv)
+    let mut kind = LSM_REP_OK()
+    let mut ph: i64 = 0
+    if op == LSM_OP_SET() {
+        let val = h_str(cell2_0(ve))
+        db = lsm_put(db, key, val)?
+        kind = LSM_REP_OK()
+    } else {
+        if op == LSM_OP_GET() {
+            let g = lsm_get(db, key)?
+            db = g.db
+            if g.found == 0 {
+                kind = LSM_REP_NIL()
+            } else {
+                kind = LSM_REP_BULK()
+                ph = str_h(str_of_bytes(g.val))
+            }
+        } else {
+            if op == LSM_OP_DEL() {
+                let g2 = lsm_get(db, key)?
+                db = g2.db
+                if g2.found == 0 {
+                    kind = LSM_REP_INT0()
+                } else {
+                    db = lsm_del(db, key)?
+                    kind = LSM_REP_INT1()
+                }
+            } else {
+                if op == LSM_OP_SETEX() {
+                    let val = h_str(cell2_0(ve))
+                    let extra = h_str(cell2_1(ve))
+                    let sec = parse_int(extra)
+                    db = lsm_put_ex(db, key, val, sec)?
+                    kind = LSM_REP_OK()
+                } else {
+                    if op == LSM_OP_FLUSH() {
+                        db = lsm_flush_force(db)?
+                        kind = LSM_REP_OK()
+                    } else {
+                        kind = LSM_REP_ERR()
+                        ph = str_h("bad job op")
+                    }
+                }
+            }
+        }
+    }
+    chan_send(rc, lsm_mb_done(id, kind, ph))
+    return db
 }
 
 struct LsmParallel {
@@ -349,7 +391,7 @@ fn lsm_work_get(pack: i64, i: i64) -> i64 {
 // Submit job; returns id (>0) or -1.
 fn lsm_parallel_submit(p: LsmParallel, op: i64, key: str, val: str, extra: str) -> i64 !Par {
     let id = lsm_parallel_alloc_id(p)?
-    let job = lsm_mb_job(id, op, key, val, extra)
+    let job = lsm_mb_job(p.done, id, op, key, val, extra)
     let sid = lsm_shard_ix(p.n, key)
     let ch = vec_get(p.work, sid)
     chan_send(ch, job)
@@ -361,7 +403,7 @@ fn lsm_parallel_submit_flush_all(p: LsmParallel) -> i64 !Par {
     let mut last: i64 = 0
     while i < p.n {
         let id = lsm_parallel_alloc_id(p)?
-        let job = lsm_mb_job(id, LSM_OP_FLUSH(), "_", "", "")
+        let job = lsm_mb_job(p.done, id, LSM_OP_FLUSH(), "_", "", "")
         let ch = vec_get(p.work, i)
         chan_send(ch, job)
         last = id
@@ -379,7 +421,7 @@ fn lsm_parallel_submit_id(
     val: str,
     extra: str
 ) -> i64 !Par {
-    let job = lsm_mb_job(id, op, key, val, extra)
+    let job = lsm_mb_job(p.done, id, op, key, val, extra)
     let sid = lsm_shard_ix(p.n, key)
     let ch = vec_get(p.work, sid)
     chan_send(ch, job)
@@ -387,16 +429,18 @@ fn lsm_parallel_submit_id(
 }
 
 // Low-level submit by packed work chans (go_bg context).
+// R47: caller passes its own reply chan rc (per-conn in MT serve).
 fn lsm_mt_submit(
     work_pack: i64,
     nshards: i64,
+    rc: i64,
     id: i64,
     op: i64,
     key: str,
     val: str,
     extra: str
 ) -> i64 !Par {
-    let job = lsm_mb_job(id, op, key, val, extra)
+    let job = lsm_mb_job(rc, id, op, key, val, extra)
     let sid = lsm_shard_ix(nshards, key)
     let ch = lsm_work_get(work_pack, sid)
     chan_send(ch, job)

@@ -26,15 +26,16 @@ fn wipe(p: str) -> i64 !IO {
         unlink(concat(concat(p, ".bloom."), int_to_str(g)))?
         g = g + 1
     }
-    // CF 1..3
+    // CF 1..8
     let mut c: i64 = 1
-    while c <= 3 {
+    while c <= 8 {
         let base = concat(concat(p, ".cf"), int_to_str(c))
         unlink(concat(base, ".wal"))?
         unlink(concat(base, ".manifest"))?
         unlink(concat(base, ".manifest.log"))?
+        unlink(concat(base, ".manifest.tmp"))?
         let mut g2: i64 = 1
-        while g2 <= 40 {
+        while g2 <= 64 {
             unlink(concat(concat(base, ".sst."), int_to_str(g2)))?
             unlink(concat(concat(base, ".bloom."), int_to_str(g2)))?
             g2 = g2 + 1
@@ -126,6 +127,66 @@ fn main() -> i64 !IO !Time {
     let ex3 = lsm_exec_cf(ex2.db, args3)?
     check("exec_cflist", ex3.quit == 0)
     lsm_cf_close(ex3.db)?
+
+    // --- R48: per-CF compaction + shared WAL rotation ---
+    wipe(dir)?
+    let mut db5 = lsm_cf_open(dir, 8, 2)?
+    check("r48_open", db5.ok == 1)
+    db5.sync_every = 1000
+    let crh = lsm_cf_create(db5, "hot")?
+    db5 = crh.db
+    let hot = crh.id
+    // 40 puts, flush_at=8 → 5 auto-flushes; compact_at=2 must collapse L0
+    let mut pi: i64 = 0
+    while pi < 40 {
+        db5 = lsm_cf_put(db5, hot, concat("hk", int_to_str(pi)), "v")?
+        pi = pi + 1
+    }
+    let famh = map_get(db5.families, hot)
+    check("r48_compacted", vec_len(famh.gens) < 5)
+    let gh = lsm_cf_get(db5, hot, "hk17")?
+    db5 = gh.db
+    check("r48_get", gh.found == 1 && str_of_bytes(gh.val) == "v")
+    // close flushes everything → shared WAL rotates to empty
+    lsm_cf_close(db5)?
+    let wfd = open(concat(dir, ".wal"), 0, 0)?
+    check("r48_wal_rotated", wfd >= 0 && fd_size(wfd) == 0)
+    if wfd >= 0 {
+        close(wfd)
+    }
+    // reopen: values survive compaction + rotation
+    let db6 = lsm_cf_open(dir, 8, 2)?
+    let gh2 = lsm_cf_get(db6, hot, "hk39")?
+    check("r48_reopen_get", gh2.found == 1 && str_of_bytes(gh2.val) == "v")
+
+    // --- R49: CF.DROP ---
+    let ddef = lsm_cf_drop(gh2.db, "default")?
+    check("r49_drop_default_refused", ddef.rc == 0 - 1)
+    let dmiss = lsm_cf_drop(ddef.db, "nosuch")?
+    check("r49_drop_missing", dmiss.rc == 0)
+    let crt = lsm_cf_create(dmiss.db, "temp")?
+    let mut db7 = crt.db
+    let temp = crt.id
+    db7 = lsm_cf_put(db7, temp, "tk", "tv")?
+    db7 = lsm_cf_flush(db7, temp)?
+    let d1 = lsm_cf_drop(db7, "temp")?
+    check("r49_dropped", d1.rc == 1)
+    check("r49_name_gone", lsm_cf_id_of(d1.db, "temp") == 0 - 1)
+    let tpath = concat(concat(dir, ".cf"), int_to_str(temp))
+    check("r49_files_gone", file_exists(concat(tpath, ".manifest")) == 0)
+    // reopen: dropped CF stays gone; WAL replay must skip its records
+    lsm_cf_close(d1.db)?
+    let db8 = lsm_cf_open(dir, 8, 2)?
+    check("r49_reopen_gone", lsm_cf_id_of(db8, "temp") == 0 - 1)
+    check("r49_reopen_hot_ok", lsm_cf_id_of(db8, "hot") == hot)
+    // RESP CF.DROP dispatch
+    let argsd: Vec<str> = vec_new()
+    vec_push(argsd, "CF.DROP")
+    vec_push(argsd, "hot")
+    let exd = lsm_exec_cf(db8, argsd)?
+    check("r49_resp_drop", exd.quit == 0)
+    check("r49_resp_dropped", lsm_cf_id_of(exd.db, "hot") == 0 - 1)
+    lsm_cf_close(exd.db)?
 
     print("cf_test: all passed")
     return 0
