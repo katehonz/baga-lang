@@ -198,5 +198,7 @@ Goal: Track S flagship — durable KV on RESP.
   CF helpers: `lsm_cluster_*_kb`, `lsm_cf_*_kb`. Wire tests
   `tests/serve_bin{,_mt,_par,_cf}_test.baga`; bench
   `vs-redis-20260806T152425Z.txt` (97/92/98% vs Redis) — **done**
-- (next) optional: LLVM builders for `bytes_h`/`h_bytes` (C backend is
-  the storage flagship; see gaps.md LLVM parity note)
+- **LLVM builders for `bytes_h`/`h_bytes`** — malloc-boxed header +
+  inverse (h=0 → empty); oracle example `examples/bytes_handle.baga`;
+  llvm_oracle green — **done**
+- (next) — nothing queued; P0–P2 + R1–R68 done

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Language — LLVM parity for `bytes_h`/`h_bytes`
+- LLVM builders: `baga_bytes_h` (malloc-boxed `{data,len}` header → i64)
+  and `baga_h_bytes` (inverse; `h=0` → empty bytes), wired into bmap.
+- Oracle example `examples/bytes_handle.baga` diffs both backends.
+- With this, every cross-thread handle builtin has LLVM parity except
+  `map_h`/`h_map`, which stay C-only by design (the LLVM backend has no
+  `Map` at all).
+
 ### RocksDB path R66 — PARALLEL binary job payloads
 - Language: `bytes_h` / `h_bytes` builtins (C backend) — box `baga_bytes`
   header for zero-copy hop on `chan(i64)`.

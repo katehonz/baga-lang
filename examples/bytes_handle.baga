@@ -1,0 +1,11 @@
+// bytes_h / h_bytes (R66): box a bytes header as an i64 handle and back.
+// Zero-copy handoff shape used by PARALLEL workers; here exercised
+// single-threaded so the llvm_oracle can diff both backends.
+fn main() {
+    let b = x"006461ff"
+    let h = bytes_h(b)
+    let r = h_bytes(h)
+    print("len=${bytes_len(r)}")
+    print("hex=${hex_encode(r)}")
+    print("zero=${bytes_len(h_bytes(0))}")
+}

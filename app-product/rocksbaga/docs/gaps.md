@@ -540,11 +540,12 @@ it already answers.
   PING 97% / SET 92% / GET 98% (R67 parity). Artifact:
   `bench/rocks/results/vs-redis-20260806T152425Z.txt`.
 
-**Still open (later):** LLVM builders for `bytes_h`/`h_bytes` (C path
-is the storage flagship). LLVM parity status: `str_h`/`h_str`/`bytes_put`
-now have LLVM builders (oracle green); `map_h`/`h_map` are C-only *by design*
-(the LLVM backend has no `Map` at all); the thread-local arena is a C-runtime
-detail (LLVM lowers allocs to plain `malloc`, already thread-safe).
+**Still open (later):** nothing. LLVM parity status: `str_h`/`h_str`/
+`bytes_put`/`bytes_h`/`h_bytes` all have LLVM builders (oracle green;
+`bytes_h` boxes the header with plain malloc — LLVM allocs are malloc
+anyway); `map_h`/`h_map` are C-only *by design* (the LLVM backend has no
+`Map` at all); the thread-local arena is a C-runtime detail (LLVM lowers
+allocs to plain `malloc`, already thread-safe).
 
 ## L4 — TTL / RESP binary wire / concurrent writers
 

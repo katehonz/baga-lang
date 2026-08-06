@@ -1572,7 +1572,7 @@ are computed automatically by the **sandak** package manager from the
 | `str_h` | `(s: str) -> i64` | R51: unsafe handle cast (zero-copy chan hop; str is arena-bound) |
 | `h_str` | `(h: i64) -> str` | R51: inverse of `str_h` |
 | `bytes_h` | `(b: bytes) -> i64` | R66: box `baga_bytes` header for chan hop (data already arena) |
-| `h_bytes` | `(h: i64) -> bytes` | R66: inverse of `bytes_h`; C backend |
+| `h_bytes` | `(h: i64) -> bytes` | R66: inverse of `bytes_h` |
 | `map_h` | `(m: Map) -> i64` | R55: unsafe map handle (go_bg ctx packing); C backend |
 | `h_map` | `(h: i64) -> Map` | R55: inverse of `map_h`; C backend |
 
