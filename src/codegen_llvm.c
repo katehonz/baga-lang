@@ -19,7 +19,8 @@
  *  потребителски struct-ове (by value, както в C), ефекти
  *  (?, catch — compile-time тагове, pass-through като codegen_c),
  *  sum enum-и (L3: { i64 tag, [N x i64] u } — LLVM няма union, union
- *  областта е i64 масив с размер по ABI на най-тежкия payload).
+ *  областта е i64 масив с размер по ABI на най-тежкия payload),
+ *  Map (верижна хеш-таблица — целият runtime е lazy IR, като C preamble-а).
  *  Builtin helpers са lazy IR функции (baga_rt) — огледало на
  *  C preamble-а в codegen_c.c.
  *
@@ -68,6 +69,7 @@ static void llvm_unsupported_node(Node *n) {
 static LLVMTypeRef llvm_type(Node *ty);
 static LLVMTypeRef baga_vec_ptr_ty(void);
 static LLVMTypeRef baga_bytes_ty(void);
+static LLVMTypeRef baga_map_ptr_ty(void);
 static LLVMTypeRef user_struct_ty(const char *name);
 
 /* 1 ако възелът е L3 sum enum (поне един вариант с payload) */
@@ -111,7 +113,7 @@ static LLVMTypeRef llvm_type_resolved(Type *ty) {
             if (!ty->name) llvm_unsupported("анонимна структура");
             return user_struct_ty(ty->name);
         case TYPE_VEC:    return baga_vec_ptr_ty();
-        case TYPE_MAP:    llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)"); break;
+        case TYPE_MAP:    return baga_map_ptr_ty(); break;
         case TYPE_ENUM:
             /* L3: sum enum → named tagged struct (като user struct) */
             if (!ty->name) llvm_unsupported("анонимен enum");
@@ -136,8 +138,7 @@ static LLVMTypeRef llvm_type(Node *ty) {
         if (strcmp(ty->type_name, "void") == 0) return lg.void_ty;
         if (strcmp(ty->type_name, "bytes") == 0) return baga_bytes_ty();
         if (strcmp(ty->type_name, "Vec") == 0) return baga_vec_ptr_ty();
-        if (strcmp(ty->type_name, "Map") == 0)
-            llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)");
+        if (strcmp(ty->type_name, "Map") == 0) return baga_map_ptr_ty();
         /* user struct или L3 sum enum — и двата са named struct типове */
         return user_struct_ty(ty->type_name);
     }
@@ -1853,6 +1854,820 @@ static LLVMValueRef build_baga_eprintln(void) {
     return fn;
 }
 
+/* ---- Map: baga_Map = { baga_MapEntry **b, i64 nb, i64 len } ----
+ *
+ * Огледало на C preamble-а (codegen_c): вериги от baga_MapEntry,
+ * FNV-1a хеш за str/bytes ключове и splitmix-подобен микс за i64;
+ * rehash с удвояване при load > 3/4. ktag: 0=i64, 1=str, 2=bytes.
+ * Стойности: iv/fv/sv/bv inline; pv е box (malloc копие) за struct/enum.
+ * baga_MapEntry = { i64 ik, i8* sk, baga_bytes bk, i64 ktag,
+ *                   i64 iv, double fv, i8* sv, baga_bytes bv, i8* pv,
+ *                   baga_MapEntry *next } — полета 0..9. */
+
+static LLVMTypeRef baga_map_entry_ty(void) {
+    LLVMTypeRef t = LLVMGetTypeByName(lg.mod, "baga_MapEntry");
+    if (t) return t;
+    t = LLVMStructCreateNamed(lg.ctx, "baga_MapEntry");
+    LLVMTypeRef elems[] = {
+        lg.i64_ty, lg.ptr_ty, baga_bytes_ty(), lg.i64_ty,
+        lg.i64_ty, lg.double_ty, lg.ptr_ty, baga_bytes_ty(), lg.ptr_ty,
+        LLVMPointerType(t, 0),
+    };
+    LLVMStructSetBody(t, elems, 10, 0);
+    return t;
+}
+static LLVMTypeRef baga_map_entry_ptr_ty(void) {
+    return LLVMPointerType(baga_map_entry_ty(), 0);
+}
+static LLVMTypeRef baga_map_entry_slot_ty(void) {
+    return LLVMPointerType(baga_map_entry_ptr_ty(), 0);
+}
+static LLVMTypeRef baga_map_ty(void) {
+    LLVMTypeRef t = LLVMGetTypeByName(lg.mod, "baga_Map");
+    if (t) return t;
+    t = LLVMStructCreateNamed(lg.ctx, "baga_Map");
+    LLVMTypeRef elems[] = {
+        baga_map_entry_slot_ty(), lg.i64_ty, lg.i64_ty,
+    };
+    LLVMStructSetBody(t, elems, 3, 0);
+    return t;
+}
+static LLVMTypeRef baga_map_ptr_ty(void) {
+    return LLVMPointerType(baga_map_ty(), 0);
+}
+
+static LLVMValueRef map_fld(LLVMValueRef m, unsigned idx, const char *nm) {
+    return LLVMBuildStructGEP2(lg.builder, baga_map_ty(), m, idx, nm);
+}
+static LLVMValueRef ent_fld(LLVMValueRef e, unsigned idx, const char *nm) {
+    return LLVMBuildStructGEP2(lg.builder, baga_map_entry_ty(), e, idx, nm);
+}
+static LLVMValueRef map_load_nb(LLVMValueRef m) {
+    return LLVMBuildLoad2(lg.builder, lg.i64_ty, map_fld(m, 1, "nbp"), "nb");
+}
+static LLVMValueRef map_load_b(LLVMValueRef m) {
+    return LLVMBuildLoad2(lg.builder, baga_map_entry_slot_ty(),
+                          map_fld(m, 0, "bp"), "b");
+}
+
+static LLVMValueRef rt_memcmp(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty, lg.ptr_ty, lg.i64_ty };
+    return rt_libc("memcmp", lg.i32_ty, p, 3);
+}
+
+/* static uint64_t baga_map_hash_str(const char *s) — FNV-1a до NUL */
+static LLVMValueRef build_baga_map_hash_str(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_hash_str",
+        LLVMFunctionType(lg.i64_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef h = entry_alloca(lg.i64_ty, "h");
+    LLVMBuildStore(lg.builder,
+        LLVMConstInt(lg.i64_ty, 1469598103934665603ULL, 0), h);
+    LLVMValueRef sp = entry_alloca(lg.ptr_ty, "sp");
+    LLVMBuildStore(lg.builder, LLVMGetParam(fn, 0), sp);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef sv = LLVMBuildLoad2(lg.builder, lg.ptr_ty, sp, "sv");
+    LLVMValueRef c = LLVMBuildLoad2(lg.builder, lg.i8_ty, sv, "c");
+    LLVMValueRef is0 = LLVMBuildICmp(lg.builder, LLVMIntEQ, c,
+        LLVMConstInt(lg.i8_ty, 0, 0), "is0");
+    LLVMBuildCondBr(lg.builder, is0, done, body);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef hv = LLVMBuildLoad2(lg.builder, lg.i64_ty, h, "hv");
+    LLVMValueRef x = LLVMBuildXor(lg.builder, hv,
+        LLVMBuildZExt(lg.builder, c, lg.i64_ty, "cz"), "x");
+    LLVMBuildStore(lg.builder, LLVMBuildMul(lg.builder, x,
+        LLVMConstInt(lg.i64_ty, 1099511628211ULL, 0), "hm"), h);
+    LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
+    LLVMBuildStore(lg.builder,
+        LLVMBuildGEP2(lg.builder, lg.i8_ty, sv, &one, 1, "sn"), sp);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, lg.i64_ty, h, "r"));
+    return fn;
+}
+
+/* static uint64_t baga_map_hash_i64(int64_t k) — splitmix-подобен микс */
+static LLVMValueRef build_baga_map_hash_i64(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_hash_i64",
+        LLVMFunctionType(lg.i64_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef c33 = LLVMConstInt(lg.i64_ty, 33, 0);
+    LLVMValueRef x = LLVMGetParam(fn, 0);
+    x = LLVMBuildXor(lg.builder, x, LLVMBuildLShr(lg.builder, x, c33, "s1"), "x1");
+    x = LLVMBuildMul(lg.builder, x,
+        LLVMConstInt(lg.i64_ty, 0xff51afd7ed558ccdULL, 0), "m1");
+    x = LLVMBuildXor(lg.builder, x, LLVMBuildLShr(lg.builder, x, c33, "s2"), "x2");
+    x = LLVMBuildMul(lg.builder, x,
+        LLVMConstInt(lg.i64_ty, 0xc4ceb9fe1a85ec53ULL, 0), "m2");
+    x = LLVMBuildXor(lg.builder, x, LLVMBuildLShr(lg.builder, x, c33, "s3"), "x3");
+    LLVMBuildRet(lg.builder, x);
+    return fn;
+}
+
+/* static uint64_t baga_map_hash_bytes(baga_bytes k)
+ * — FNV-1a върху data+len (R67, NUL-safe) */
+static LLVMValueRef build_baga_map_hash_bytes(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_hash_bytes",
+        LLVMFunctionType(lg.i64_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef data = bytes_load_data(a);
+    LLVMValueRef len = bytes_load_len(a);
+    LLVMValueRef h = entry_alloca(lg.i64_ty, "h");
+    LLVMBuildStore(lg.builder,
+        LLVMConstInt(lg.i64_ty, 1469598103934665603ULL, 0), h);
+    LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, len, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMValueRef cb = LLVMBuildLoad2(lg.builder, lg.i8_ty,
+        LLVMBuildGEP2(lg.builder, lg.i8_ty, data, &i, 1, "dp"), "cb");
+    LLVMValueRef hv = LLVMBuildLoad2(lg.builder, lg.i64_ty, h, "hv");
+    LLVMValueRef x = LLVMBuildXor(lg.builder, hv,
+        LLVMBuildZExt(lg.builder, cb, lg.i64_ty, "cz"), "x");
+    LLVMBuildStore(lg.builder, LLVMBuildMul(lg.builder, x,
+        LLVMConstInt(lg.i64_ty, 1099511628211ULL, 0), "hm"), h);
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i,
+        LLVMConstInt(lg.i64_ty, 1, 0), "in"), iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, lg.i64_ty, h, "r"));
+    return fn;
+}
+
+/* занулява кофите b[0..nb) */
+static void map_null_buckets(LLVMValueRef fn, LLVMValueRef b, LLVMValueRef nb) {
+    LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), iv);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, nb, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMBuildStore(lg.builder, LLVMConstNull(baga_map_entry_ptr_ty()),
+        LLVMBuildGEP2(lg.builder, baga_map_entry_ptr_ty(), b, &i, 1, "slot"));
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i,
+        LLVMConstInt(lg.i64_ty, 1, 0), "in"), iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+}
+
+/* static baga_Map *baga_map_new(void) — 16 празни кофи */
+static LLVMValueRef build_baga_map_new(void) {
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_new",
+        LLVMFunctionType(baga_map_ptr_ty(), NULL, 0, 0));
+    h_begin(fn);
+    LLVMValueRef msz[] = { LLVMSizeOf(baga_map_ty()) };
+    LLVMValueRef m = LLVMBuildBitCast(lg.builder,
+        h_call(rt_malloc(), msz, 1, "raw"), baga_map_ptr_ty(), "m");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 16, 0),
+                   map_fld(m, 1, "nbp"));
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0),
+                   map_fld(m, 2, "lenp"));
+    LLVMValueRef bsz[] = { LLVMConstInt(lg.i64_ty, 16 * 8, 0) };
+    LLVMValueRef b = LLVMBuildBitCast(lg.builder,
+        h_call(rt_malloc(), bsz, 1, "braw"), baga_map_entry_slot_ty(), "b");
+    LLVMBuildStore(lg.builder, b, map_fld(m, 0, "bp"));
+    map_null_buckets(fn, b, LLVMConstInt(lg.i64_ty, 16, 0));
+    LLVMBuildRet(lg.builder, m);
+    return fn;
+}
+
+/* static baga_MapEntry **baga_map_slot(baga_Map *m, int64_t ik,
+ *     const char *sk, uint64_t h)
+ * Връща слота на записа или NULL връзката (insert point). */
+static LLVMValueRef build_baga_map_slot(void) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty(), lg.i64_ty, lg.ptr_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_slot",
+        LLVMFunctionType(baga_map_entry_slot_ty(), p, 4, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMValueRef ik = LLVMGetParam(fn, 1);
+    LLVMValueRef sk = LLVMGetParam(fn, 2);
+    LLVMValueRef h = LLVMGetParam(fn, 3);
+    LLVMValueRef idx = LLVMBuildURem(lg.builder, h, map_load_nb(m), "idx");
+    LLVMValueRef sp = entry_alloca(baga_map_entry_slot_ty(), "sp");
+    LLVMBuildStore(lg.builder, LLVMBuildGEP2(lg.builder,
+        baga_map_entry_ptr_ty(), map_load_b(m), &idx, 1, "s0"), sp);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef chk  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chk");
+    LLVMBasicBlockRef chks = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chks");
+    LLVMBasicBlockRef chki = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chki");
+    LLVMBasicBlockRef cmps = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cmps");
+    LLVMBasicBlockRef cmpi = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cmpi");
+    LLVMBasicBlockRef nextb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "next");
+    LLVMBasicBlockRef retb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ret");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef s = LLVMBuildLoad2(lg.builder, baga_map_entry_slot_ty(), sp, "s");
+    LLVMValueRef e = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(), s, "e");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, e, "isn"), retb, chk);
+    LLVMPositionBuilderAtEnd(lg.builder, chk);
+    LLVMValueRef esk = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        ent_fld(e, 1, "skp"), "esk");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, sk, "skn"),
+                    chki, chks);
+    /* str ключ: (*e)->sk && strcmp((*e)->sk, sk) == 0 */
+    LLVMPositionBuilderAtEnd(lg.builder, chks);
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, esk, "esn"),
+                    nextb, cmps);
+    LLVMPositionBuilderAtEnd(lg.builder, cmps);
+    LLVMValueRef ca[] = { esk, sk };
+    LLVMValueRef cmp = h_call(rt_strcmp(), ca, 2, "cmp");
+    LLVMValueRef eq = LLVMBuildICmp(lg.builder, LLVMIntEQ, cmp,
+        LLVMConstInt(lg.i32_ty, 0, 0), "eq");
+    LLVMBuildCondBr(lg.builder, eq, retb, nextb);
+    /* i64 ключ: !(*e)->sk && (*e)->ik == ik */
+    LLVMPositionBuilderAtEnd(lg.builder, chki);
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, esk, "esn2"),
+                    cmpi, nextb);
+    LLVMPositionBuilderAtEnd(lg.builder, cmpi);
+    LLVMValueRef eik = LLVMBuildLoad2(lg.builder, lg.i64_ty,
+        ent_fld(e, 0, "ikp"), "eik");
+    LLVMValueRef eqi = LLVMBuildICmp(lg.builder, LLVMIntEQ, eik, ik, "eqi");
+    LLVMBuildCondBr(lg.builder, eqi, retb, nextb);
+    LLVMPositionBuilderAtEnd(lg.builder, nextb);
+    LLVMBuildStore(lg.builder, ent_fld(e, 9, "nxp"), sp);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, retb);
+    LLVMBuildRet(lg.builder,
+        LLVMBuildLoad2(lg.builder, baga_map_entry_slot_ty(), sp, "r"));
+    return fn;
+}
+
+/* static baga_MapEntry **baga_map_slot_b(baga_Map *m, baga_bytes k,
+ *     uint64_t h) — R67: memcmp сравнение, само записи с ktag == 2 */
+static LLVMValueRef build_baga_map_slot_b(void) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty(), baga_bytes_ty(), lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_slot_b",
+        LLVMFunctionType(baga_map_entry_slot_ty(), p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMValueRef ka = bytes_param_alloca(LLVMGetParam(fn, 1));
+    LLVMValueRef kdata = bytes_load_data(ka);
+    LLVMValueRef klen = bytes_load_len(ka);
+    LLVMValueRef h = LLVMGetParam(fn, 2);
+    LLVMValueRef idx = LLVMBuildURem(lg.builder, h, map_load_nb(m), "idx");
+    LLVMValueRef sp = entry_alloca(baga_map_entry_slot_ty(), "sp");
+    LLVMBuildStore(lg.builder, LLVMBuildGEP2(lg.builder,
+        baga_map_entry_ptr_ty(), map_load_b(m), &idx, 1, "s0"), sp);
+    LLVMBasicBlockRef cond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef chk  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chk");
+    LLVMBasicBlockRef chkl = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chkl");
+    LLVMBasicBlockRef chkm = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chkm");
+    LLVMBasicBlockRef cmpm = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cmpm");
+    LLVMBasicBlockRef nextb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "next");
+    LLVMBasicBlockRef retb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ret");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef s = LLVMBuildLoad2(lg.builder, baga_map_entry_slot_ty(), sp, "s");
+    LLVMValueRef e = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(), s, "e");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, e, "isn"), retb, chk);
+    LLVMPositionBuilderAtEnd(lg.builder, chk);
+    LLVMValueRef ktag = LLVMBuildLoad2(lg.builder, lg.i64_ty,
+        ent_fld(e, 3, "ktp"), "ktag");
+    LLVMValueRef is2 = LLVMBuildICmp(lg.builder, LLVMIntEQ, ktag,
+        LLVMConstInt(lg.i64_ty, 2, 0), "is2");
+    LLVMBuildCondBr(lg.builder, is2, chkl, nextb);
+    LLVMPositionBuilderAtEnd(lg.builder, chkl);
+    LLVMValueRef bkp = ent_fld(e, 2, "bkp");
+    LLVMValueRef ebl = LLVMBuildLoad2(lg.builder, lg.i64_ty,
+        LLVMBuildStructGEP2(lg.builder, baga_bytes_ty(), bkp, 1, "blp"), "ebl");
+    LLVMValueRef eql = LLVMBuildICmp(lg.builder, LLVMIntEQ, ebl, klen, "eql");
+    LLVMBuildCondBr(lg.builder, eql, chkm, nextb);
+    /* k.len == 0 || memcmp((*e)->bk.data, k.data, k.len) == 0 */
+    LLVMPositionBuilderAtEnd(lg.builder, chkm);
+    LLVMValueRef isz = LLVMBuildICmp(lg.builder, LLVMIntEQ, klen,
+        LLVMConstInt(lg.i64_ty, 0, 0), "isz");
+    LLVMBuildCondBr(lg.builder, isz, retb, cmpm);
+    LLVMPositionBuilderAtEnd(lg.builder, cmpm);
+    LLVMValueRef ebd = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        LLVMBuildStructGEP2(lg.builder, baga_bytes_ty(), bkp, 0, "bdp"), "ebd");
+    LLVMValueRef ma[] = { ebd, kdata, klen };
+    LLVMValueRef cmp = h_call(rt_memcmp(), ma, 3, "cmp");
+    LLVMValueRef eq = LLVMBuildICmp(lg.builder, LLVMIntEQ, cmp,
+        LLVMConstInt(lg.i32_ty, 0, 0), "eq");
+    LLVMBuildCondBr(lg.builder, eq, retb, nextb);
+    LLVMPositionBuilderAtEnd(lg.builder, nextb);
+    LLVMBuildStore(lg.builder, ent_fld(e, 9, "nxp"), sp);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, retb);
+    LLVMBuildRet(lg.builder,
+        LLVMBuildLoad2(lg.builder, baga_map_entry_slot_ty(), sp, "r"));
+    return fn;
+}
+
+/* static void baga_map_rehash(baga_Map *m) — удвояване; хешът се смята
+ * наново за всеки запис по ktag (0=i64, 1=str, 2=bytes) */
+static LLVMValueRef build_baga_map_rehash(void) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_rehash",
+        LLVMFunctionType(lg.void_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMValueRef onb = map_load_nb(m);
+    LLVMValueRef ob = map_load_b(m);
+    LLVMValueRef nb2 = LLVMBuildMul(lg.builder, onb,
+        LLVMConstInt(lg.i64_ty, 2, 0), "nb2");
+    LLVMBuildStore(lg.builder, nb2, map_fld(m, 1, "nbp"));
+    LLVMValueRef bsz[] = { LLVMBuildMul(lg.builder, nb2,
+        LLVMConstInt(lg.i64_ty, 8, 0), "bsz") };
+    LLVMValueRef nb = LLVMBuildBitCast(lg.builder,
+        h_call(rt_malloc(), bsz, 1, "braw"), baga_map_entry_slot_ty(), "nb");
+    LLVMBuildStore(lg.builder, nb, map_fld(m, 0, "bp"));
+    map_null_buckets(fn, nb, nb2);
+    /* for j in [0, onb): пренареждане на веригата ob[j] */
+    LLVMValueRef jv = entry_alloca(lg.i64_ty, "j");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), jv);
+    LLVMValueRef ev = entry_alloca(baga_map_entry_ptr_ty(), "e");
+    LLVMValueRef hv = entry_alloca(lg.i64_ty, "hv");
+    LLVMBasicBlockRef cond2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ocond");
+    LLVMBasicBlockRef body2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "obody");
+    LLVMBasicBlockRef done2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "odone");
+    LLVMBasicBlockRef wcond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "wcond");
+    LLVMBasicBlockRef wbody = LLVMAppendBasicBlockInContext(lg.ctx, fn, "wbody");
+    LLVMBasicBlockRef wdone = LLVMAppendBasicBlockInContext(lg.ctx, fn, "wdone");
+    LLVMBasicBlockRef hb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "hb");
+    LLVMBasicBlockRef hs  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "hs");
+    LLVMBasicBlockRef hst = LLVMAppendBasicBlockInContext(lg.ctx, fn, "hst");
+    LLVMBasicBlockRef hi  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "hi");
+    LLVMBasicBlockRef hj  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "hj");
+    LLVMBuildBr(lg.builder, cond2);
+    LLVMPositionBuilderAtEnd(lg.builder, cond2);
+    LLVMValueRef j = LLVMBuildLoad2(lg.builder, lg.i64_ty, jv, "j");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, j, onb, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body2, done2);
+    LLVMPositionBuilderAtEnd(lg.builder, body2);
+    LLVMBuildStore(lg.builder, LLVMBuildLoad2(lg.builder,
+        baga_map_entry_ptr_ty(),
+        LLVMBuildGEP2(lg.builder, baga_map_entry_ptr_ty(), ob, &j, 1, "slot"),
+        "e0"), ev);
+    LLVMBuildBr(lg.builder, wcond);
+    LLVMPositionBuilderAtEnd(lg.builder, wcond);
+    LLVMValueRef e = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(), ev, "e");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, e, "isn"),
+                    wdone, wbody);
+    LLVMPositionBuilderAtEnd(lg.builder, wbody);
+    LLVMValueRef nx = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+        ent_fld(e, 9, "nxp"), "nx");
+    LLVMValueRef ktag = LLVMBuildLoad2(lg.builder, lg.i64_ty,
+        ent_fld(e, 3, "ktp"), "ktag");
+    LLVMValueRef is2 = LLVMBuildICmp(lg.builder, LLVMIntEQ, ktag,
+        LLVMConstInt(lg.i64_ty, 2, 0), "is2");
+    LLVMBuildCondBr(lg.builder, is2, hb, hs);
+    /* ktag == 2 → hash_bytes(e->bk) */
+    LLVMPositionBuilderAtEnd(lg.builder, hb);
+    LLVMValueRef bkv = LLVMBuildLoad2(lg.builder, baga_bytes_ty(),
+        ent_fld(e, 2, "bkp"), "bkv");
+    LLVMValueRef ba[] = { bkv };
+    LLVMBuildStore(lg.builder,
+        h_call(baga_rt("baga_map_hash_bytes"), ba, 1, "h"), hv);
+    LLVMBuildBr(lg.builder, hj);
+    /* ktag != 2 → e->sk ? hash_str(e->sk) : hash_i64(e->ik) */
+    LLVMPositionBuilderAtEnd(lg.builder, hs);
+    LLVMValueRef esk = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        ent_fld(e, 1, "skp"), "esk");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, esk, "esn"),
+                    hi, hst);
+    LLVMPositionBuilderAtEnd(lg.builder, hst);
+    LLVMValueRef sa[] = { esk };
+    LLVMBuildStore(lg.builder,
+        h_call(baga_rt("baga_map_hash_str"), sa, 1, "h"), hv);
+    LLVMBuildBr(lg.builder, hj);
+    LLVMPositionBuilderAtEnd(lg.builder, hi);
+    LLVMValueRef eik = LLVMBuildLoad2(lg.builder, lg.i64_ty,
+        ent_fld(e, 0, "ikp"), "eik");
+    LLVMValueRef ia[] = { eik };
+    LLVMBuildStore(lg.builder,
+        h_call(baga_rt("baga_map_hash_i64"), ia, 1, "h"), hv);
+    LLVMBuildBr(lg.builder, hj);
+    /* вмъкване в началото на новата кофа */
+    LLVMPositionBuilderAtEnd(lg.builder, hj);
+    LLVMValueRef h2 = LLVMBuildLoad2(lg.builder, lg.i64_ty, hv, "h2");
+    LLVMValueRef idx = LLVMBuildURem(lg.builder, h2, nb2, "idx");
+    LLVMValueRef slotp = LLVMBuildGEP2(lg.builder, baga_map_entry_ptr_ty(),
+        nb, &idx, 1, "slotp");
+    LLVMValueRef old = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+        slotp, "old");
+    LLVMBuildStore(lg.builder, old, ent_fld(e, 9, "nxp"));
+    LLVMBuildStore(lg.builder, e, slotp);
+    LLVMBuildStore(lg.builder, nx, ev);
+    LLVMBuildBr(lg.builder, wcond);
+    LLVMPositionBuilderAtEnd(lg.builder, wdone);
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, j,
+        LLVMConstInt(lg.i64_ty, 1, 0), "jn"), jv);
+    LLVMBuildBr(lg.builder, cond2);
+    LLVMPositionBuilderAtEnd(lg.builder, done2);
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+/* споделено тяло на put след намиране на слота: създава запис, връзва го,
+ * len++, rehash при load > 3/4. ik/sk/bk/ktag са вече изчислени. */
+static LLVMValueRef map_put_finish(LLVMValueRef fn, LLVMValueRef m,
+                                   LLVMValueRef slot, LLVMValueRef ik,
+                                   LLVMValueRef sk, LLVMValueRef bk,
+                                   LLVMValueRef ktag) {
+    LLVMValueRef found = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+        slot, "found");
+    LLVMBasicBlockRef have = LLVMAppendBasicBlockInContext(lg.ctx, fn, "have");
+    LLVMBasicBlockRef ins  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ins");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, found, "isn"),
+                    ins, have);
+    LLVMPositionBuilderAtEnd(lg.builder, have);
+    LLVMBuildRet(lg.builder, found);
+    LLVMPositionBuilderAtEnd(lg.builder, ins);
+    LLVMValueRef esz[] = { LLVMSizeOf(baga_map_entry_ty()) };
+    LLVMValueRef e = LLVMBuildBitCast(lg.builder,
+        h_call(rt_malloc(), esz, 1, "eraw"), baga_map_entry_ptr_ty(), "e");
+    LLVMBuildStore(lg.builder, ik, ent_fld(e, 0, "ikp"));
+    LLVMBuildStore(lg.builder, sk, ent_fld(e, 1, "skp"));
+    LLVMBuildStore(lg.builder, bk, ent_fld(e, 2, "bkp"));
+    LLVMBuildStore(lg.builder, ktag, ent_fld(e, 3, "ktp"));
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), ent_fld(e, 4, "ivp"));
+    LLVMBuildStore(lg.builder, LLVMConstNull(lg.double_ty), ent_fld(e, 5, "fvp"));
+    LLVMBuildStore(lg.builder, LLVMConstNull(lg.ptr_ty), ent_fld(e, 6, "svp"));
+    LLVMBuildStore(lg.builder, LLVMConstNull(baga_bytes_ty()), ent_fld(e, 7, "bvp"));
+    LLVMBuildStore(lg.builder, LLVMConstNull(lg.ptr_ty), ent_fld(e, 8, "pvp"));
+    LLVMBuildStore(lg.builder, LLVMConstNull(baga_map_entry_ptr_ty()),
+                   ent_fld(e, 9, "nxp"));
+    LLVMBuildStore(lg.builder, e, slot);
+    LLVMValueRef lenp = map_fld(m, 2, "lenp");
+    LLVMValueRef nl = LLVMBuildAdd(lg.builder,
+        LLVMBuildLoad2(lg.builder, lg.i64_ty, lenp, "len"),
+        LLVMConstInt(lg.i64_ty, 1, 0), "nl");
+    LLVMBuildStore(lg.builder, nl, lenp);
+    /* if (m->len * 4 > m->nb * 3) baga_map_rehash(m); */
+    LLVMValueRef l4 = LLVMBuildMul(lg.builder, nl,
+        LLVMConstInt(lg.i64_ty, 4, 0), "l4");
+    LLVMValueRef n3 = LLVMBuildMul(lg.builder, map_load_nb(m),
+        LLVMConstInt(lg.i64_ty, 3, 0), "n3");
+    LLVMValueRef over = LLVMBuildICmp(lg.builder, LLVMIntSGT, l4, n3, "over");
+    LLVMBasicBlockRef rb   = LLVMAppendBasicBlockInContext(lg.ctx, fn, "rb");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildCondBr(lg.builder, over, rb, done);
+    LLVMPositionBuilderAtEnd(lg.builder, rb);
+    LLVMValueRef ra[] = { m };
+    h_call(baga_rt("baga_map_rehash"), ra, 1, "");
+    LLVMBuildBr(lg.builder, done);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMBuildRet(lg.builder, e);
+    return NULL; /* caller-ът не ползва връзката */
+}
+
+/* static baga_MapEntry *baga_map_put(baga_Map *m, int64_t ik,
+ *     const char *sk, uint64_t h) — ktag = sk ? 1 : 0 */
+static LLVMValueRef build_baga_map_put(void) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty(), lg.i64_ty, lg.ptr_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_put",
+        LLVMFunctionType(baga_map_entry_ptr_ty(), p, 4, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMValueRef ik = LLVMGetParam(fn, 1);
+    LLVMValueRef sk = LLVMGetParam(fn, 2);
+    LLVMValueRef sa[] = { m, ik, sk, LLVMGetParam(fn, 3) };
+    LLVMValueRef slot = h_call(baga_rt("baga_map_slot"), sa, 4, "slot");
+    LLVMValueRef ktag = LLVMBuildSelect(lg.builder,
+        LLVMBuildIsNull(lg.builder, sk, "skn"),
+        LLVMConstInt(lg.i64_ty, 0, 0), LLVMConstInt(lg.i64_ty, 1, 0), "ktag");
+    map_put_finish(fn, m, slot, ik, sk,
+                   LLVMConstNull(baga_bytes_ty()), ktag);
+    return fn;
+}
+
+/* static baga_MapEntry *baga_map_put_b(baga_Map *m, baga_bytes k,
+ *     uint64_t h) — R67 bytes ключ, ktag = 2 */
+static LLVMValueRef build_baga_map_put_b(void) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty(), baga_bytes_ty(), lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_put_b",
+        LLVMFunctionType(baga_map_entry_ptr_ty(), p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMValueRef ka = bytes_param_alloca(LLVMGetParam(fn, 1));
+    LLVMValueRef kv = LLVMBuildLoad2(lg.builder, baga_bytes_ty(), ka, "kv");
+    LLVMValueRef sa[] = { m, kv, LLVMGetParam(fn, 2) };
+    LLVMValueRef slot = h_call(baga_rt("baga_map_slot_b"), sa, 3, "slot");
+    map_put_finish(fn, m, slot, LLVMConstInt(lg.i64_ty, 0, 0),
+                   LLVMConstNull(lg.ptr_ty), kv,
+                   LLVMConstInt(lg.i64_ty, 2, 0));
+    return fn;
+}
+
+/* static int64_t baga_map_len(baga_Map *m) { return m ? m->len : 0; } */
+static LLVMValueRef build_baga_map_len(void) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_len",
+        LLVMFunctionType(lg.i64_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMBasicBlockRef nullb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "null");
+    LLVMBasicBlockRef haveb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "have");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, m, "isn"),
+                    nullb, haveb);
+    LLVMPositionBuilderAtEnd(lg.builder, nullb);
+    LLVMBuildRet(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0));
+    LLVMPositionBuilderAtEnd(lg.builder, haveb);
+    LLVMBuildRet(lg.builder,
+        LLVMBuildLoad2(lg.builder, lg.i64_ty, map_fld(m, 2, "lenp"), "len"));
+    return fn;
+}
+
+/* R55: map <-> i64 handle casts (като baga_str_h/baga_h_str) */
+static LLVMValueRef build_baga_map_h(void) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_map_h",
+        LLVMFunctionType(lg.i64_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMBuildRet(lg.builder,
+        LLVMBuildPtrToInt(lg.builder, LLVMGetParam(fn, 0), lg.i64_ty, "h"));
+    return fn;
+}
+static LLVMValueRef build_baga_h_map(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_h_map",
+        LLVMFunctionType(baga_map_ptr_ty(), p, 1, 0));
+    h_begin(fn);
+    LLVMBuildRet(lg.builder, LLVMBuildIntToPtr(lg.builder,
+        LLVMGetParam(fn, 0), baga_map_ptr_ty(), "m"));
+    return fn;
+}
+
+/* ---- typed map ops: baga_map_{set,get}_<key>_<val>,
+ * baga_map_{has,del,keys}_<key>; key: 0=str, 1=i64, 2=bytes;
+ * val: 0=i64, 1=str, 2=f64, 3=bytes, 4=box ---- */
+
+/* "str"→0, "i64"→1, "bytes"→2 (пише дължината в len); -1 при непознат */
+static int map_key_kind(const char *s, int *len) {
+    if (strncmp(s, "str", 3) == 0)   { *len = 3; return 0; }
+    if (strncmp(s, "i64", 3) == 0)   { *len = 3; return 1; }
+    if (strncmp(s, "bytes", 5) == 0) { *len = 5; return 2; }
+    return -1;
+}
+static int map_val_kind(const char *s) {
+    if (strcmp(s, "i64") == 0)   return 0;
+    if (strcmp(s, "str") == 0)   return 1;
+    if (strcmp(s, "f64") == 0)   return 2;
+    if (strcmp(s, "bytes") == 0) return 3;
+    if (strcmp(s, "box") == 0)   return 4;
+    return -1;
+}
+static LLVMTypeRef map_key_ty(int key) {
+    return key == 0 ? lg.ptr_ty : key == 1 ? lg.i64_ty : baga_bytes_ty();
+}
+static LLVMTypeRef map_val_ty(int val) {
+    switch (val) {
+        case 0: return lg.i64_ty;
+        case 1: return lg.ptr_ty;
+        case 2: return lg.double_ty;
+        case 3: return baga_bytes_ty();
+        default: return lg.ptr_ty;   /* box */
+    }
+}
+
+/* e = baga_map_put*(m, k, hash(k)) според вида на ключа */
+static LLVMValueRef map_put_call(LLVMValueRef m, int key, LLVMValueRef k) {
+    if (key == 2) {
+        LLVMValueRef ka = bytes_param_alloca(k);
+        LLVMValueRef kv = LLVMBuildLoad2(lg.builder, baga_bytes_ty(), ka, "kv");
+        LLVMValueRef ha[] = { kv };
+        LLVMValueRef hh = h_call(baga_rt("baga_map_hash_bytes"), ha, 1, "h");
+        LLVMValueRef pa[] = { m, kv, hh };
+        return h_call(baga_rt("baga_map_put_b"), pa, 3, "e");
+    }
+    LLVMValueRef ha[] = { k };
+    LLVMValueRef hh = h_call(baga_rt(key == 0 ? "baga_map_hash_str"
+                                              : "baga_map_hash_i64"), ha, 1, "h");
+    LLVMValueRef ik = key == 1 ? k : LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef sk = key == 0 ? k : LLVMConstNull(lg.ptr_ty);
+    LLVMValueRef pa[] = { m, ik, sk, hh };
+    return h_call(baga_rt("baga_map_put"), pa, 4, "e");
+}
+
+/* slot = baga_map_slot*(m, k, hash(k)) — insert point или слот на записа */
+static LLVMValueRef map_slot_call(LLVMValueRef m, int key, LLVMValueRef k) {
+    if (key == 2) {
+        LLVMValueRef ka = bytes_param_alloca(k);
+        LLVMValueRef kv = LLVMBuildLoad2(lg.builder, baga_bytes_ty(), ka, "kv");
+        LLVMValueRef ha[] = { kv };
+        LLVMValueRef hh = h_call(baga_rt("baga_map_hash_bytes"), ha, 1, "h");
+        LLVMValueRef pa[] = { m, kv, hh };
+        return h_call(baga_rt("baga_map_slot_b"), pa, 3, "slot");
+    }
+    LLVMValueRef ha[] = { k };
+    LLVMValueRef hh = h_call(baga_rt(key == 0 ? "baga_map_hash_str"
+                                              : "baga_map_hash_i64"), ha, 1, "h");
+    LLVMValueRef ik = key == 1 ? k : LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMValueRef sk = key == 0 ? k : LLVMConstNull(lg.ptr_ty);
+    LLVMValueRef pa[] = { m, ik, sk, hh };
+    return h_call(baga_rt("baga_map_slot"), pa, 4, "slot");
+}
+
+/* static void baga_map_set_<key>_<val>(m, k, v[, size]):
+ * e = put(...); e->fld = v; box: e->pv ??= malloc(size); memcpy */
+static LLVMValueRef build_baga_map_set(const char *name, int key, int val) {
+    LLVMTypeRef p[4];
+    int np = 0;
+    p[np++] = baga_map_ptr_ty();
+    p[np++] = map_key_ty(key);
+    p[np++] = map_val_ty(val);
+    if (val == 4) p[np++] = lg.i64_ty;
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, name,
+        LLVMFunctionType(lg.void_ty, p, (unsigned)np, 0));
+    h_begin(fn);
+    LLVMValueRef e = map_put_call(LLVMGetParam(fn, 0), key, LLVMGetParam(fn, 1));
+    if (val != 4) {
+        unsigned fld = val == 0 ? 4 : val == 1 ? 6 : val == 2 ? 5 : 7;
+        LLVMBuildStore(lg.builder, LLVMGetParam(fn, 2), ent_fld(e, fld, "vp"));
+        LLVMBuildRetVoid(lg.builder);
+        return fn;
+    }
+    /* box: if (!e->pv) e->pv = malloc(size); memcpy(e->pv, src, size) */
+    LLVMValueRef size = LLVMGetParam(fn, 3);
+    LLVMValueRef pvp = ent_fld(e, 8, "pvp");
+    LLVMValueRef pv = LLVMBuildLoad2(lg.builder, lg.ptr_ty, pvp, "pv");
+    LLVMBasicBlockRef alb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "alb");
+    LLVMBasicBlockRef cpb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cpb");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, pv, "isn"), alb, cpb);
+    LLVMPositionBuilderAtEnd(lg.builder, alb);
+    LLVMValueRef ma[] = { size };
+    LLVMBuildStore(lg.builder, h_call(rt_malloc(), ma, 1, "box"), pvp);
+    LLVMBuildBr(lg.builder, cpb);
+    LLVMPositionBuilderAtEnd(lg.builder, cpb);
+    LLVMValueRef pv2 = LLVMBuildLoad2(lg.builder, lg.ptr_ty, pvp, "pv2");
+    LLVMValueRef mc[] = { pv2, LLVMGetParam(fn, 2), size };
+    h_call(rt_memcpy(), mc, 3, "");
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+/* static <val> baga_map_get_<key>_<val>(m, k): e = *slot(...);
+ * липсващ ключ → 0 / "" / 0.0 / {NULL,0} / NULL (като codegen_c) */
+static LLVMValueRef build_baga_map_get(const char *name, int key, int val) {
+    LLVMTypeRef rty = map_val_ty(val);
+    LLVMTypeRef p[] = { baga_map_ptr_ty(), map_key_ty(key) };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, name,
+        LLVMFunctionType(rty, p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef slot = map_slot_call(LLVMGetParam(fn, 0), key,
+                                      LLVMGetParam(fn, 1));
+    LLVMValueRef e = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+                                    slot, "e");
+    LLVMValueRef res = entry_alloca(rty, "res");
+    LLVMBuildStore(lg.builder, val == 1
+        ? LLVMBuildGlobalStringPtr(lg.builder, "", "empty")
+        : LLVMConstNull(rty), res);
+    LLVMBasicBlockRef have = LLVMAppendBasicBlockInContext(lg.ctx, fn, "have");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, e, "isn"),
+                    done, have);
+    LLVMPositionBuilderAtEnd(lg.builder, have);
+    unsigned fld = val == 0 ? 4 : val == 1 ? 6 : val == 2 ? 5
+                 : val == 3 ? 7 : 8;
+    LLVMValueRef fv = LLVMBuildLoad2(lg.builder, rty, ent_fld(e, fld, "fp"), "fv");
+    if (val == 1) {
+        /* str: (e && e->sv) ? e->sv : "" */
+        LLVMBasicBlockRef setb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "set");
+        LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, fv, "svn"),
+                        done, setb);
+        LLVMPositionBuilderAtEnd(lg.builder, setb);
+        LLVMBuildStore(lg.builder, fv, res);
+        LLVMBuildBr(lg.builder, done);
+    } else {
+        LLVMBuildStore(lg.builder, fv, res);
+        LLVMBuildBr(lg.builder, done);
+    }
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, rty, res, "r"));
+    return fn;
+}
+
+/* static int64_t baga_map_has_<key>(m, k) { return *slot ? 1 : 0; } */
+static LLVMValueRef build_baga_map_has(const char *name, int key) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty(), map_key_ty(key) };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, name,
+        LLVMFunctionType(lg.i64_ty, p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef slot = map_slot_call(LLVMGetParam(fn, 0), key,
+                                      LLVMGetParam(fn, 1));
+    LLVMValueRef e = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+                                    slot, "e");
+    LLVMBuildRet(lg.builder, LLVMBuildZExt(lg.builder,
+        LLVMBuildIsNotNull(lg.builder, e, "has"), lg.i64_ty, "r"));
+    return fn;
+}
+
+/* static void baga_map_del_<key>(m, k) — извършва записа от веригата */
+static LLVMValueRef build_baga_map_del(const char *name, int key) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty(), map_key_ty(key) };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, name,
+        LLVMFunctionType(lg.void_ty, p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMValueRef slot = map_slot_call(m, key, LLVMGetParam(fn, 1));
+    LLVMValueRef e = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+                                    slot, "e");
+    LLVMBasicBlockRef delb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "del");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, e, "isn"),
+                    done, delb);
+    LLVMPositionBuilderAtEnd(lg.builder, delb);
+    LLVMValueRef nx = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+        ent_fld(e, 9, "nxp"), "nx");
+    LLVMBuildStore(lg.builder, nx, slot);
+    LLVMValueRef lenp = map_fld(m, 2, "lenp");
+    LLVMBuildStore(lg.builder, LLVMBuildSub(lg.builder,
+        LLVMBuildLoad2(lg.builder, lg.i64_ty, lenp, "len"),
+        LLVMConstInt(lg.i64_ty, 1, 0), "nl"), lenp);
+    LLVMBuildBr(lg.builder, done);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+/* static baga_Vec *baga_map_keys_<key>(m) — ключовете в bucket ред
+ * (като C: str → sk ? sk : "", bytes → box-нато baga_bytes) */
+static LLVMValueRef build_baga_map_keys(const char *name, int key) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, name,
+        LLVMFunctionType(baga_vec_ptr_ty(), p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMValueRef v = h_call(baga_rt("baga_vec_new"), NULL, 0, "v");
+    LLVMValueRef nb = map_load_nb(m);
+    LLVMValueRef b = map_load_b(m);
+    LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), iv);
+    LLVMValueRef ev = entry_alloca(baga_map_entry_ptr_ty(), "e");
+    LLVMBasicBlockRef cond  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cond");
+    LLVMBasicBlockRef body  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "body");
+    LLVMBasicBlockRef done  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "done");
+    LLVMBasicBlockRef wcond = LLVMAppendBasicBlockInContext(lg.ctx, fn, "wcond");
+    LLVMBasicBlockRef wbody = LLVMAppendBasicBlockInContext(lg.ctx, fn, "wbody");
+    LLVMBasicBlockRef wdone = LLVMAppendBasicBlockInContext(lg.ctx, fn, "wdone");
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, cond);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMValueRef cc = LLVMBuildICmp(lg.builder, LLVMIntSLT, i, nb, "cc");
+    LLVMBuildCondBr(lg.builder, cc, body, done);
+    LLVMPositionBuilderAtEnd(lg.builder, body);
+    LLVMBuildStore(lg.builder, LLVMBuildLoad2(lg.builder,
+        baga_map_entry_ptr_ty(),
+        LLVMBuildGEP2(lg.builder, baga_map_entry_ptr_ty(), b, &i, 1, "slot"),
+        "e0"), ev);
+    LLVMBuildBr(lg.builder, wcond);
+    LLVMPositionBuilderAtEnd(lg.builder, wcond);
+    LLVMValueRef e = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(), ev, "e");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, e, "isn"),
+                    wdone, wbody);
+    LLVMPositionBuilderAtEnd(lg.builder, wbody);
+    if (key == 0) {
+        LLVMValueRef sk = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+            ent_fld(e, 1, "skp"), "sk");
+        LLVMValueRef s = LLVMBuildSelect(lg.builder,
+            LLVMBuildIsNull(lg.builder, sk, "skn"),
+            LLVMBuildGlobalStringPtr(lg.builder, "", "empty"), sk, "s");
+        LLVMValueRef pa[] = { v, s };
+        h_call(baga_rt("baga_vec_push_str"), pa, 2, "");
+    } else if (key == 1) {
+        LLVMValueRef pa[] = { v, LLVMBuildLoad2(lg.builder, lg.i64_ty,
+            ent_fld(e, 0, "ikp"), "ik") };
+        h_call(baga_rt("baga_vec_push_i64"), pa, 2, "");
+    } else {
+        LLVMValueRef bp = LLVMBuildBitCast(lg.builder, ent_fld(e, 2, "bkp"),
+            lg.ptr_ty, "bp");
+        LLVMValueRef pa[] = { v, bp, LLVMSizeOf(baga_bytes_ty()) };
+        h_call(baga_rt("baga_vec_push_box"), pa, 3, "");
+    }
+    LLVMBuildStore(lg.builder, LLVMBuildLoad2(lg.builder,
+        baga_map_entry_ptr_ty(), ent_fld(e, 9, "nxp"), "nx"), ev);
+    LLVMBuildBr(lg.builder, wcond);
+    LLVMPositionBuilderAtEnd(lg.builder, wdone);
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i,
+        LLVMConstInt(lg.i64_ty, 1, 0), "in"), iv);
+    LLVMBuildBr(lg.builder, cond);
+    LLVMPositionBuilderAtEnd(lg.builder, done);
+    LLVMBuildRet(lg.builder, v);
+    return fn;
+}
+
 /* L4: struct елементи — generic box helper-и; размерът идва от call site-а
  * (sizeof на mangled struct типа). Елементите са box-нати копия (memcpy при
  * push/set/slice/concat) — огледало на C preamble-а. Без bounds check,
@@ -2015,6 +2830,53 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_exit") == 0)        fn = build_baga_exit();
     else if (strcmp(name, "baga_eprintln") == 0)    fn = build_baga_eprintln();
     else if (strcmp(name, "baga_i64_to_str") == 0)  fn = build_baga_i64_to_str();
+    else if (strcmp(name, "baga_map_hash_str") == 0) fn = build_baga_map_hash_str();
+    else if (strcmp(name, "baga_map_hash_i64") == 0) fn = build_baga_map_hash_i64();
+    else if (strcmp(name, "baga_map_hash_bytes") == 0) fn = build_baga_map_hash_bytes();
+    else if (strcmp(name, "baga_map_new") == 0)     fn = build_baga_map_new();
+    else if (strcmp(name, "baga_map_len") == 0)     fn = build_baga_map_len();
+    else if (strcmp(name, "baga_map_slot") == 0)    fn = build_baga_map_slot();
+    else if (strcmp(name, "baga_map_slot_b") == 0)  fn = build_baga_map_slot_b();
+    else if (strcmp(name, "baga_map_put") == 0)     fn = build_baga_map_put();
+    else if (strcmp(name, "baga_map_put_b") == 0)   fn = build_baga_map_put_b();
+    else if (strcmp(name, "baga_map_rehash") == 0)  fn = build_baga_map_rehash();
+    else if (strcmp(name, "baga_map_h") == 0)       fn = build_baga_map_h();
+    else if (strcmp(name, "baga_h_map") == 0)       fn = build_baga_h_map();
+    /* typed ops: baga_map_{set,get}_<key>_<val> — суфиксите се декодират */
+    else if (strncmp(name, "baga_map_set_", 13) == 0 ||
+             strncmp(name, "baga_map_get_", 13) == 0) {
+        int klen = 0, key, val;
+        key = map_key_kind(name + 13, &klen);
+        val = key >= 0 && name[13 + klen] == '_'
+            ? map_val_kind(name + 13 + klen + 1) : -1;
+        if (key < 0 || val < 0) {
+            char buf[128];
+            snprintf(buf, sizeof buf, "runtime helper '%s'", name);
+            llvm_unsupported(buf);
+        }
+        fn = name[9] == 's' ? build_baga_map_set(name, key, val)
+                            : build_baga_map_get(name, key, val);
+    }
+    else if (strncmp(name, "baga_map_has_", 13) == 0 ||
+             strncmp(name, "baga_map_del_", 13) == 0) {
+        int klen = 0, key = map_key_kind(name + 13, &klen);
+        if (key < 0 || name[13 + klen] != '\0') {
+            char buf[128];
+            snprintf(buf, sizeof buf, "runtime helper '%s'", name);
+            llvm_unsupported(buf);
+        }
+        fn = name[9] == 'h' ? build_baga_map_has(name, key)
+                            : build_baga_map_del(name, key);
+    }
+    else if (strncmp(name, "baga_map_keys_", 14) == 0) {
+        int klen = 0, key = map_key_kind(name + 14, &klen);
+        if (key < 0 || name[14 + klen] != '\0') {
+            char buf[128];
+            snprintf(buf, sizeof buf, "runtime helper '%s'", name);
+            llvm_unsupported(buf);
+        }
+        fn = build_baga_map_keys(name, key);
+    }
     else {
         char buf[128];
         snprintf(buf, sizeof buf, "runtime helper '%s'", name);
@@ -2834,6 +3696,10 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 {"arg",         "baga_arg"},
                 {"exit",        "baga_exit"},
                 {"eprintln",    "baga_eprintln"},
+                {"map_new",     "baga_map_new"},
+                {"map_len",     "baga_map_len"},
+                {"map_h",       "baga_map_h"},
+                {"h_map",       "baga_h_map"},
             };
             LLVMValueRef fn = NULL;
             if (ef) fn = LLVMGetNamedFunction(lg.mod, ef->fn_name);
@@ -2906,6 +3772,87 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 char rt_name[64];
                 snprintf(rt_name, sizeof rt_name, "baga_%s_%s",
                          n->callee->name, suf);
+                fn = baga_rt(rt_name);
+            }
+            /* карти: map_set/map_get по ключ+стойност; has/del/keys по ключ
+             * (типовете идват от checker-а; огледало на lowering-а в codegen_c) */
+            if (!ef && (strcmp(n->callee->name, "map_set") == 0 ||
+                        strcmp(n->callee->name, "map_get") == 0)) {
+                Type *mt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+                const char *ksuf = "str";
+                if (mt && mt->kind == TYPE_MAP && mt->key) {
+                    if (mt->key->kind == TYPE_I64) ksuf = "i64";
+                    else if (mt->key->kind == TYPE_BYTES) ksuf = "bytes";
+                }
+                int is_set = strcmp(n->callee->name, "map_set") == 0;
+                /* struct / sum-enum стойности → box path (като codegen_c) */
+                if (mt && mt->kind == TYPE_MAP && mt->elem && mt->elem->name &&
+                    (mt->elem->kind == TYPE_STRUCT ||
+                     mt->elem->kind == TYPE_ENUM)) {
+                    LLVMTypeRef sty = user_struct_ty(mt->elem->name);
+                    char rt_name[64];
+                    snprintf(rt_name, sizeof rt_name, "baga_%s_%s_box",
+                             n->callee->name, ksuf);
+                    LLVMValueRef mv = emit_expr_llvm(n->args.data[0]);
+                    LLVMValueRef k = emit_expr_llvm(n->args.data[1]);
+                    if (!mv || !k) llvm_unsupported("map аргумент");
+                    if (is_set) {
+                        LLVMValueRef v = emit_expr_llvm(n->args.data[2]);
+                        if (!v) llvm_unsupported("map_set стойност");
+                        LLVMValueRef tmp = entry_alloca(sty, "bx");
+                        LLVMBuildStore(lg.builder, coerce(v, sty), tmp);
+                        LLVMValueRef bp = LLVMBuildBitCast(lg.builder, tmp,
+                            lg.ptr_ty, "bp");
+                        LLVMValueRef pa[] = { mv, k, bp, LLVMSizeOf(sty) };
+                        return h_call(baga_rt(rt_name), pa, 4, "");
+                    }
+                    LLVMValueRef pa[] = { mv, k };
+                    LLVMValueRef box = h_call(baga_rt(rt_name), pa, 2, "box");
+                    /* missing key → нулева стойност (zero struct / tag-0 enum),
+                     * като `*(%s){0}` в codegen_c */
+                    LLVMValueRef tmp = entry_alloca(sty, "mg");
+                    LLVMBuildStore(lg.builder, LLVMConstNull(sty), tmp);
+                    LLVMValueRef cfn =
+                        LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+                    LLVMBasicBlockRef have_bb =
+                        LLVMAppendBasicBlockInContext(lg.ctx, cfn, "mg_have");
+                    LLVMBasicBlockRef done_bb =
+                        LLVMAppendBasicBlockInContext(lg.ctx, cfn, "mg_done");
+                    LLVMBuildCondBr(lg.builder,
+                        LLVMBuildIsNull(lg.builder, box, "isn"), done_bb, have_bb);
+                    LLVMPositionBuilderAtEnd(lg.builder, have_bb);
+                    LLVMValueRef sp = LLVMBuildBitCast(lg.builder, box,
+                        LLVMPointerType(sty, 0), "sp");
+                    LLVMBuildStore(lg.builder,
+                        LLVMBuildLoad2(lg.builder, sty, sp, "sv"), tmp);
+                    LLVMBuildBr(lg.builder, done_bb);
+                    LLVMPositionBuilderAtEnd(lg.builder, done_bb);
+                    return LLVMBuildLoad2(lg.builder, sty, tmp, "mv");
+                }
+                const char *vsuf = "i64";
+                if (mt && mt->kind == TYPE_MAP && mt->elem) {
+                    if (mt->elem->kind == TYPE_STR) vsuf = "str";
+                    else if (mt->elem->kind == TYPE_F64) vsuf = "f64";
+                    else if (mt->elem->kind == TYPE_BYTES) vsuf = "bytes";
+                }
+                char rt_name[64];
+                snprintf(rt_name, sizeof rt_name, "baga_%s_%s_%s",
+                         n->callee->name, ksuf, vsuf);
+                fn = baga_rt(rt_name);
+            }
+            if (!ef && !fn &&
+                (strcmp(n->callee->name, "map_has") == 0 ||
+                 strcmp(n->callee->name, "map_del") == 0 ||
+                 strcmp(n->callee->name, "map_keys") == 0)) {
+                Type *mt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+                const char *ksuf = "str";
+                if (mt && mt->kind == TYPE_MAP && mt->key) {
+                    if (mt->key->kind == TYPE_I64) ksuf = "i64";
+                    else if (mt->key->kind == TYPE_BYTES) ksuf = "bytes";
+                }
+                char rt_name[64];
+                snprintf(rt_name, sizeof rt_name, "baga_%s_%s",
+                         n->callee->name, ksuf);
                 fn = baga_rt(rt_name);
             }
             for (int bi = 0; !ef && !fn && bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {

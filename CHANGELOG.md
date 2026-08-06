@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Language — LLVM parity for `Map` (full runtime in IR)
+- The whole chained hash-table runtime is built as lazy IR functions,
+  mirroring the C preamble function by function: `baga_map_hash_{str,i64,
+  bytes}` (FNV-1a / splitmix mix), `baga_map_new`, `baga_map_slot` /
+  `baga_map_slot_b` (memcmp compare for bytes keys, R67), `baga_map_put` /
+  `baga_map_put_b`, `baga_map_rehash` (doubling at load 3/4, rehash per
+  ktag), `baga_map_len`, and the typed ops `baga_map_{set,get}_<key>_<val>`
+  for str/i64/bytes keys × i64/str/f64/bytes/box values plus
+  `baga_map_{has,del,keys}_<key>` — generated from decoded name suffixes.
+  `map_h`/`h_map` (R55) are PtrToInt/IntToPtr casts like `str_h`.
+- `TYPE_MAP`/`Map` lower to `baga_Map*`; the NODE_CALL lowering mirrors
+  codegen_c: key/value suffixes from the checker-fixed `mt->key`/`mt->elem`,
+  struct and sum-enum values ride the box path (`pv` = malloc'd copy;
+  missing key → zero struct / tag-0 enum via a zeroed alloca).
+- Oracle example `examples/map.baga` (str/i64 keys, overwrite, has/del/len,
+  rehash past the 3/4 load factor, struct box values, keys aggregation) —
+  both backends agree byte-for-byte, including bucket iteration order.
+- Docs: the "Map — C backend only" notes are gone (en+bg); the stale
+  "bytes mutators C-only" note (S2) is fixed too. `drop` is now the only
+  documented C-only builtin.
+
 ### Language — LLVM parity for sum enums (L3 closed)
 - Sum enums lower to a named `{ i64 tag, [N x i64] u }` struct (LLVM has
   no unions — `N = max(1, ceil(max payload ABI size / 8))`, sized via a

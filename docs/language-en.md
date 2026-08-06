@@ -765,8 +765,10 @@ Absent-key semantics are zero-values, like Go maps without the `, ok` form —
 use `map_has` to distinguish "missing" from "stored zero". For struct values
 the zero struct is field-wise safe: `str` fields are `""` (printable), not
 NULL; `Vec`/`Map` fields are NULL but `vec_len`/`map_len` tolerate NULL and
-return 0. The C backend implements maps natively (chained hash table, grows
-at load factor 3/4); the LLVM backend does not support `Map` yet.
+return 0. Both backends implement maps natively (chained hash table, grows
+at load factor 3/4): the C backend emits the runtime in its preamble, the
+LLVM backend builds the same functions as lazy IR (oracle:
+`examples/map.baga`).
 
 ### 12.6 Function values and lambdas (L5)
 
@@ -828,8 +830,8 @@ let f = bytes_push(bytes_push(bytes_new(0), 137), 1)
 let g = bytes_push(f, 2)           // f stays len 2; g is a fresh len-3 buffer
 ```
 
-C backend only; the LLVM backend honestly reports `unsupported` for the
-three mutators.
+Both backends support the three mutators (the LLVM backend builds them as
+lazy IR, bounds messages byte-identical to the C backend).
 
 ### 12.8 `drop` and memory (MEM-1)
 

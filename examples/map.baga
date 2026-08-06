@@ -1,0 +1,47 @@
+// Hash maps (Map) — str/i64 keys, struct box values, keys iteration,
+// has/del/len, missing-key defaults. Deterministic output (sums and
+// counts only — bucket order is an implementation detail).
+struct Pt { x: i64, y: i64 }
+
+fn main() {
+    // Map<str,i64>
+    let m = map_new()
+    map_set(m, "едно", 1)
+    map_set(m, "две", 2)
+    map_set(m, "три", 3)
+    map_set(m, "две", 22)              // overwrite
+    print(map_get(m, "две"))
+    print(map_get(m, "липсва"))        // 0
+    print(map_has(m, "три"))
+    print(map_len(m))
+    map_del(m, "три")
+    print(map_has(m, "три"))
+    print(map_len(m))
+
+    // Map<i64,str> + rehash (над 12 записа → удвояване)
+    let t = map_new()
+    for i in 0..20 { map_set(t, i, "n") }
+    let mut total = 0
+    for i in 0..20 { total = total + len(map_get(t, i)) }
+    print(total)
+    print(map_get(t, 100) == "")
+
+    // map_keys: sum + count (order-independent)
+    let ks = map_keys(m)
+    let mut ksum = 0
+    for i in 0..vec_len(ks) { ksum = ksum + map_get(m, vec_get(ks, i)) }
+    print(ksum)
+    print(vec_len(ks))
+
+    // Map<str,Pt> — struct values (box); missing key → zero struct
+    let pts = map_new()
+    map_set(pts, "a", Pt { x: 3, y: 4 })
+    map_set(pts, "b", Pt { x: 1, y: 2 })
+    let pa = map_get(pts, "a")
+    print("${pa.x},${pa.y}")
+    let pz = map_get(pts, "няма")
+    print("${pz.x},${pz.y}")
+    map_set(pts, "a", Pt { x: 30, y: 40 })
+    let pa2 = map_get(pts, "a")
+    print("${pa2.x},${pa2.y}")
+}
