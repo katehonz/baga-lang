@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Language — LLVM parity for function values / closures (L5 closed)
+- fn values are `cell2(code, env)` i64 handles in both backends:
+  `TYPE_FN`/`NODE_TYPE_FN` lower to i64; named refs and module-qualified
+  refs get lazy `__clo` IR wrappers; `NODE_LAMBDA` emits an env struct
+  (by-value captures) + wrapper; calls through fn values are indirect
+  calls through the handle.
+- Oracle example `examples/closures.baga` (named refs, capture-by-value
+  semantics, closure factory, str captures, `Vec<fn>`) — both backends
+  agree.
+
 ### Language — LLVM parity for `Vec<struct>` (L4 closed)
 - LLVM box helpers `baga_vec_{push,get,set,slice,concat}_box` (malloc-boxed
   element copies, size from the call site) mirror the C preamble; the

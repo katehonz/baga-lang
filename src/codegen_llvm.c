@@ -97,6 +97,7 @@ static LLVMTypeRef llvm_type_resolved(Type *ty) {
         case TYPE_MAP:    llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)"); break;
         case TYPE_ENUM:   llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11"); break;
         case TYPE_BYTES:  return baga_bytes_ty();
+        case TYPE_FN:     return lg.i64_ty;   /* L5: cell2(code, env) handle */
         case TYPE_ARRAY:  llvm_unsupported("масиви"); break;
         case TYPE_REF:    llvm_unsupported("референции"); break;
         default:          llvm_unsupported("неизвестен тип"); break;
@@ -121,6 +122,7 @@ static LLVMTypeRef llvm_type(Node *ty) {
         return user_struct_ty(ty->type_name);
     }
     if (ty->kind == NODE_TYPE_EFFECT) return llvm_type(ty->inner_type);
+    if (ty->kind == NODE_TYPE_FN) return lg.i64_ty;   /* L5: cell2 handle */
     if (ty->kind == NODE_TYPE_REF) llvm_unsupported("референции (&T)");
     if (ty->kind == NODE_TYPE_ARRAY) return baga_vec_ptr_ty();   /* [T] == Vec<T> */
     llvm_unsupported_node(ty);
@@ -1840,6 +1842,180 @@ static LLVMValueRef baga_rt(const char *name) {
 /* ---- Expression emission ---- */
 
 static LLVMValueRef emit_expr_llvm(Node *n);
+static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRef cont_bb);
+
+/* ---- L5: fn стойности (closures) ----
+ * Огледало на C бекенда: handle = i64 cell2(code, env); cell2 живее в par
+ * runtime-а (libbaga_par.so). Именувана функция като стойност взима адреса
+ * на лениво генериран wrapper `<mangled>__clo(env, params...)`; ламбдата
+ * получава собствен wrapper + env struct с копия на captures. */
+
+static LLVMValueRef rt_cell2(void) {
+    LLVMTypeRef p[] = { lg.i64_ty, lg.i64_ty };
+    return rt_libc("baga_cell2", lg.i64_ty, p, 2);
+}
+static LLVMValueRef rt_cell2_0(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    return rt_libc("baga_cell2_0", lg.i64_ty, p, 1);
+}
+static LLVMValueRef rt_cell2_1(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    return rt_libc("baga_cell2_1", lg.i64_ty, p, 1);
+}
+
+/* handle = cell2(ptrtoint(code), ptrtoint(env)) */
+static LLVMValueRef closure_handle(LLVMValueRef code, LLVMValueRef env) {
+    LLVMValueRef ci = LLVMBuildPtrToInt(lg.builder, code, lg.i64_ty, "code");
+    LLVMValueRef ei = LLVMBuildPtrToInt(lg.builder, env, lg.i64_ty, "env");
+    LLVMValueRef pa[] = { ci, ei };
+    return h_call(rt_cell2(), pa, 2, "clo");
+}
+
+/* NODE_FN по име (NULL ако липсва) */
+static Node *find_user_fn(const char *name) {
+    if (!lg.program) return NULL;
+    for (int i = 0; i < lg.program->items.len; i++) {
+        Node *it = lg.program->items.data[i];
+        if (it->kind == NODE_FN && !it->is_extern && it->fn_name &&
+            strcmp(it->fn_name, name) == 0)
+            return it;
+    }
+    return NULL;
+}
+
+/* fn pointer тип за closure вик: ret(i8* env, params...) върху Type (TYPE_FN) */
+static LLVMTypeRef closure_fn_ty(Type *ft, LLVMTypeRef **params_out) {
+    int np = ft && ft->kind == TYPE_FN ? ft->nparams : 0;
+    LLVMTypeRef *pt = malloc(sizeof(LLVMTypeRef) * (size_t)(np + 1));
+    pt[0] = lg.ptr_ty;   /* env */
+    for (int i = 0; i < np; i++)
+        pt[i + 1] = ft->params[i] ? llvm_type_resolved(ft->params[i]) : lg.i64_ty;
+    LLVMTypeRef ret = ft && ft->ret ? llvm_type_resolved(ft->ret) : lg.void_ty;
+    if (params_out) *params_out = pt;
+    LLVMTypeRef fty = LLVMFunctionType(ret, pt, (unsigned)(np + 1), 0);
+    if (!params_out) free(pt);
+    return fty;
+}
+
+/* wrapper за именувана fn като стойност: вика публичното име (spec-обвивката,
+ * ако има такава) — като __clo в codegen_c. Ленив, по веднъж на функция. */
+static LLVMValueRef closure_wrapper_named(const char *fn_name) {
+    char *m = llvm_mangle(fn_name);
+    char wn[600];
+    snprintf(wn, sizeof wn, "%s__clo", m);
+    LLVMValueRef ex = LLVMGetNamedFunction(lg.mod, wn);
+    if (ex) { free(m); return ex; }
+    Node *fn = find_user_fn(fn_name);
+    if (!fn) {
+        char buf[256];
+        snprintf(buf, sizeof buf, "fn стойност на непозната функция '%s'", fn_name);
+        llvm_unsupported(buf);
+    }
+    LLVMValueRef target = LLVMGetNamedFunction(lg.mod, m);
+    if (!target) {
+        free(m);
+        llvm_unsupported("fn стойност преди декларация на функцията");
+    }
+    int np = fn->params.len;
+    LLVMTypeRef *pt = malloc(sizeof(LLVMTypeRef) * (size_t)(np + 1));
+    pt[0] = lg.ptr_ty;
+    for (int i = 0; i < np; i++)
+        pt[i + 1] = llvm_type(fn->params.data[i]->param_type);
+    LLVMTypeRef ret = fn->ret_type ? llvm_type(fn->ret_type) : lg.void_ty;
+    LLVMTypeRef fty = LLVMFunctionType(ret, pt, (unsigned)(np + 1), 0);
+    free(pt);
+    LLVMValueRef wrap = LLVMAddFunction(lg.mod, wn, fty);
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(lg.ctx, wrap, "entry");
+    LLVMPositionBuilderAtEnd(lg.builder, entry);
+    LLVMValueRef *args = malloc(sizeof(LLVMValueRef) * (size_t)(np > 0 ? np : 1));
+    for (int i = 0; i < np; i++)
+        args[i] = LLVMGetParam(wrap, (unsigned)(i + 1));   /* env се пропуска */
+    LLVMTypeRef target_ty = LLVMGetElementType(LLVMTypeOf(target));
+    LLVMValueRef r = LLVMBuildCall2(lg.builder, target_ty, target, args,
+                                    (unsigned)np, ret == lg.void_ty ? "" : "r");
+    free(args);
+    if (ret == lg.void_ty) LLVMBuildRetVoid(lg.builder);
+    else                   LLVMBuildRet(lg.builder, r);
+    free(m);
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return wrap;
+}
+
+/* wrapper за ламбда: <mangled>__clo(i8* env, params...); captures се
+ * разопаковат като локални копия от env struct-а. Ленив, по веднъж на възел. */
+static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
+    char *m = llvm_mangle(n->fn_name ? n->fn_name : "__lam_x");
+    char wn[600];
+    snprintf(wn, sizeof wn, "%s__clo", m);
+    free(m);
+    LLVMValueRef ex = LLVMGetNamedFunction(lg.mod, wn);
+    if (ex) return ex;
+    int np = n->params.len;
+    LLVMTypeRef *pt = malloc(sizeof(LLVMTypeRef) * (size_t)(np + 1));
+    pt[0] = lg.ptr_ty;
+    for (int i = 0; i < np; i++)
+        pt[i + 1] = llvm_type(n->params.data[i]->param_type);
+    LLVMTypeRef ret = n->ret_type ? llvm_type(n->ret_type) : lg.void_ty;
+    LLVMTypeRef fty = LLVMFunctionType(ret, pt, (unsigned)(np + 1), 0);
+    free(pt);
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, wn, fty);
+
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    LLVMTypeRef saved_ret = lg.cur_ret_ty;
+    lg.cur_ret_ty = ret;
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(lg.ctx, fn, "entry");
+    LLVMPositionBuilderAtEnd(lg.builder, entry);
+    st_push();
+
+    /* captures → локални копия от env */
+    if (n->captures.len > 0) {
+        LLVMValueRef envp = LLVMBuildBitCast(lg.builder, LLVMGetParam(fn, 0),
+            LLVMPointerType(env_ty, 0), "envp");
+        for (int i = 0; i < n->captures.len; i++) {
+            Node *cap = n->captures.data[i];
+            LLVMTypeRef ct = llvm_type_resolved(cap->type);
+            LLVMValueRef gep = LLVMBuildStructGEP2(lg.builder, env_ty, envp,
+                (unsigned)i, "cp");
+            LLVMValueRef v = LLVMBuildLoad2(lg.builder, ct, gep, "cv");
+            LLVMValueRef alloca = LLVMBuildAlloca(lg.builder, ct, cap->param_name);
+            LLVMBuildStore(lg.builder, v, alloca);
+            st_define(cap->param_name, alloca);
+        }
+    }
+    /* параметри → alloca (като emit_fn_llvm) */
+    for (int i = 0; i < np; i++) {
+        Node *p = n->params.data[i];
+        LLVMValueRef param = LLVMGetParam(fn, (unsigned)(i + 1));
+        LLVMValueRef alloca = LLVMBuildAlloca(lg.builder, LLVMTypeOf(param),
+            p->param_name);
+        LLVMBuildStore(lg.builder, param, alloca);
+        st_define(p->param_name, alloca);
+    }
+    /* тяло — огледало на emit_fn_llvm опашката */
+    int has_ret = n->ret_type != NULL;
+    NodeVec *stmts = n->fn_body ? &n->fn_body->stmts : NULL;
+    for (int i = 0; stmts && i < stmts->len; i++) {
+        Node *s = stmts->data[i];
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
+            break;
+        if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
+            LLVMValueRef v = emit_expr_llvm(s->expr);
+            if (!v) llvm_unsupported("лямбда: неявен return");
+            LLVMBuildRet(lg.builder, coerce(v, ret));
+        } else {
+            emit_stmt_llvm(s, NULL, NULL);
+        }
+    }
+    st_pop();
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
+        if (ret == lg.void_ty) LLVMBuildRetVoid(lg.builder);
+        else                   LLVMBuildRet(lg.builder, LLVMConstNull(ret));
+    }
+    lg.cur_ret_ty = saved_ret;
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
 
 static LLVMValueRef emit_binop_llvm(BinOp op, LLVMValueRef left, LLVMValueRef right) {
     char *name = tmp_name();
@@ -2081,9 +2257,14 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             return LLVMBuildGlobalStringPtr(lg.builder, n->str_val, "str");
 
         case NODE_IDENT: {
-            /* L5: fn стойности (closures) са само в C бекенда */
-            if (n->type && n->type->kind == TYPE_FN)
-                llvm_unsupported("fn стойности/closures (само C бекенда; вж. docs/language-en.md §12.6)");
+            /* L5: глобална fn като стойност → handle към __clo wrapper-а.
+             * Локална fn-typed променлива има type->name == NULL или
+             * различно име и минава през st_lookup (i64 handle). */
+            if (n->type && n->type->kind == TYPE_FN && n->type->name &&
+                strcmp(n->name, n->type->name) == 0) {
+                LLVMValueRef wrap = closure_wrapper_named(n->type->name);
+                return closure_handle(wrap, LLVMConstNull(lg.ptr_ty));
+            }
             /* L3: sum types (payload enums) са само в C бекенда */
             if (n->type && n->type->kind == TYPE_ENUM)
                 llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
@@ -2205,6 +2386,38 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             if (!ef && is_print_call_llvm(n)) {
                 emit_print_llvm(n);
                 return NULL; /* print е void */
+            }
+            /* L5: извикване през fn стойност — handle = cell2(code, env)
+             * (checker маркер: TYPE_FN без име; като codegen_c) */
+            if (!ef && n->callee->type && n->callee->type->kind == TYPE_FN &&
+                !n->callee->type->name) {
+                Type *ft = n->callee->type;
+                LLVMValueRef h = emit_expr_llvm(n->callee);
+                if (!h) llvm_unsupported("fn стойност като callee");
+                h = coerce(h, lg.i64_ty);
+                LLVMValueRef ca[] = { h };
+                LLVMValueRef code = h_call(rt_cell2_0(), ca, 1, "code");
+                LLVMValueRef env  = h_call(rt_cell2_1(), ca, 1, "env");
+                LLVMTypeRef *pt = NULL;
+                LLVMTypeRef fty = closure_fn_ty(ft, &pt);
+                LLVMValueRef fp = LLVMBuildIntToPtr(lg.builder, code,
+                    LLVMPointerType(fty, 0), "fp");
+                int np = ft->nparams;
+                LLVMValueRef *args = malloc(sizeof(LLVMValueRef) * (size_t)(np + 1));
+                args[0] = LLVMBuildIntToPtr(lg.builder, env, lg.ptr_ty, "envp");
+                for (int i = 0; i < np; i++) {
+                    LLVMValueRef a = emit_expr_llvm(n->args.data[i]);
+                    if (!a) llvm_unsupported("fn повикване: аргумент");
+                    args[i + 1] = coerce(a, pt[i + 1]);
+                }
+                free(pt);
+                int is_void = LLVMGetReturnType(fty) == lg.void_ty;
+                char *rn = is_void ? NULL : tmp_name();
+                LLVMValueRef r = LLVMBuildCall2(lg.builder, fty, fp, args,
+                    (unsigned)(np + 1), rn ? rn : "");
+                free(rn);
+                free(args);
+                return r;
             }
             if (n->callee->kind != NODE_IDENT)
                 llvm_unsupported("повикване през израз (не име)");
@@ -2464,6 +2677,11 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         case NODE_IF:       llvm_unsupported("if като израз"); break;
         case NODE_INDEX:    llvm_unsupported("индексиране"); break;
         case NODE_FIELD: {
+            /* L5/L6: модул.функция като стойност → handle към wrapper-а */
+            if (n->type && n->type->kind == TYPE_FN && n->type->name) {
+                LLVMValueRef wrap = closure_wrapper_named(n->type->name);
+                return closure_handle(wrap, LLVMConstNull(lg.ptr_ty));
+            }
             /* obj.field — като в codegen_c (.field); обектът е struct by
              * value, така че адресът е alloca (променлива) или временен spill */
             Node *obj = n->field_obj;
@@ -2546,6 +2764,38 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             return h_call(baga_rt("baga_i64_to_str"), &v, 1, "i2s");
         }
         case NODE_RANGE:    llvm_unsupported("диапазон (a..b) извън for"); break;
+        case NODE_LAMBDA: {
+            /* L5: env struct с копия на captures + wrapper + cell2 handle */
+            int nc = n->captures.len;
+            LLVMTypeRef env_ty = NULL;
+            if (nc > 0) {
+                LLVMTypeRef *elems = malloc(sizeof(LLVMTypeRef) * (size_t)nc);
+                for (int i = 0; i < nc; i++)
+                    elems[i] = llvm_type_resolved(n->captures.data[i]->type);
+                env_ty = LLVMStructTypeInContext(lg.ctx, elems, (unsigned)nc, 0);
+                free(elems);
+            }
+            LLVMValueRef wrap = emit_lambda_wrapper(n, env_ty);
+            LLVMValueRef envp = LLVMConstNull(lg.ptr_ty);
+            if (nc > 0) {
+                LLVMValueRef sz = LLVMSizeOf(env_ty);
+                LLVMValueRef ma[] = { sz };
+                envp = h_call(rt_malloc(), ma, 1, "env");
+                LLVMValueRef typed = LLVMBuildBitCast(lg.builder, envp,
+                    LLVMPointerType(env_ty, 0), "envt");
+                for (int i = 0; i < nc; i++) {
+                    Node *cap = n->captures.data[i];
+                    LLVMValueRef alloca = st_lookup(cap->param_name);
+                    if (!alloca) llvm_unsupported("лямбда: capture не е локална");
+                    LLVMValueRef v = LLVMBuildLoad2(lg.builder,
+                        LLVMGetAllocatedType(alloca), alloca, "cap");
+                    LLVMValueRef gep = LLVMBuildStructGEP2(lg.builder, env_ty,
+                        typed, (unsigned)i, "cp");
+                    LLVMBuildStore(lg.builder, v, gep);
+                }
+            }
+            return closure_handle(wrap, envp);
+        }
         default:            llvm_unsupported_node(n); break;
     }
     return NULL; /* unreachable */

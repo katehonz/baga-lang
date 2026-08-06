@@ -800,8 +800,9 @@ fn main() {
 - Module-qualified references work: `let q = http_client.http_get` (L6).
 - A fn-typed local may not shadow a global function name (keeps `--verify`
   sound); calls through values are opaque to the verifier (honest skip).
-- The LLVM backend reports `unsupported` for function values; the C backend
-  represents them as `(code, env)` handles.
+- Both backends represent fn values as `(code, env)` handles
+  (`cell2` from the par runtime): the C backend emits `__clo` wrappers in
+  the preamble, the LLVM backend builds them as lazy IR functions.
 
 ### 12.7 `bytes` mutators (S2)
 

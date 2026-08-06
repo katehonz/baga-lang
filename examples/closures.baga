@@ -1,0 +1,34 @@
+// Closures (L5): named fn refs, explicit by-value captures, closure
+// factories, fn in Vec. Runs under both backends in the llvm_oracle —
+// the C backend packs closures as cell2(code, env) handles, the LLVM
+// backend mirrors it via the par runtime.
+fn add(a: i64, b: i64) -> i64 { return a + b }
+fn apply(h: fn(i64) -> i64, x: i64) -> i64 { return h(x) }
+
+fn make_adder(k: i64) -> fn(i64) -> i64 {
+    let adder = fn [k] (x: i64) -> i64 { return x + k }
+    return adder
+}
+
+fn main() {
+    let f = add
+    print(f(2, 3))
+    // capture by value: later mutation does not propagate
+    let mut n = 10
+    let lam = fn [n] (x: i64) -> i64 { return x + n }
+    n = 99
+    print(lam(1))
+    print(apply(lam, 5))
+    // closure factory + distinct envs
+    let a5 = make_adder(5)
+    print(apply(a5, 10))
+    // str capture
+    let who = "бага"
+    let greet = fn [who] (x: i64) -> str { return "${who}:${x}" }
+    print(greet(7))
+    // fn values in a Vec
+    let ops: Vec<fn(i64) -> i64> = vec_new()
+    vec_push(ops, lam)
+    vec_push(ops, a5)
+    print(vec_get(ops, 0)(1) + vec_get(ops, 1)(1))
+}
