@@ -725,6 +725,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"bytes_concat","baga_bytes_concat"},
                     {"bytes_new",  "baga_bytes_new"},
                     {"bytes_set",  "baga_bytes_set"},
+                    {"bytes_put",  "baga_bytes_put"},
                     {"bytes_push", "baga_bytes_push"},
                     {"bytes_of_str","baga_bytes_from_str"},
                     {"str_of_bytes","baga_bytes_to_str"},
@@ -757,6 +758,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"cell2",       "baga_cell2"},
                     {"cell2_0",     "baga_cell2_0"},
                     {"cell2_1",     "baga_cell2_1"},
+                    {"str_h",       "baga_str_h"},
+                    {"h_str",       "baga_h_str"},
                 };
                 for (int bi = 0; bi < (int)(sizeof(bmap) / sizeof(bmap[0])); bi++) {
                     if (strcmp(bn, bmap[bi].baga) == 0) {
@@ -2012,18 +2015,21 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <pthread.h>\n\n");
 
     /* arena — всички низови/векторни алокации минават тук (без individual free).
-     * baga_alloc_mu: глобалният arena се ползва от всички нишки (go/go_bg);
-     * без ключ две нишки могат да получат един и същ блок (race → corruption). */
+     * R52: arena + free lists са THREAD-LOCAL (__thread). Преди това един
+     * глобален mutex (baga_alloc_mu) сериализираше ВСЯКА алокация във всички
+     * нишки — реален GIL при MT serve (go_bg per conn + workers). Безопасно,
+     * защото str е arena-bound (не се free-ва), а free-list блоковете са
+     * сменяема сырова памет — cross-thread free попълва списъка на free-ващата
+     * нишка. */
     fprintf(out, "typedef struct baga_ABlk { struct baga_ABlk *next; size_t used, cap; char data[]; } baga_ABlk;\n");
-    fprintf(out, "static baga_ABlk *baga_arena_head = NULL;\n");
-    fprintf(out, "static pthread_mutex_t baga_alloc_mu = PTHREAD_MUTEX_INITIALIZER;\n");
+    fprintf(out, "static __thread baga_ABlk *baga_arena_head = NULL;\n");
     /* MEM-1: free list — 16-байтови класове ≤ 1024 B; R18: + pow2 класове
      * 2 KiB..32 MiB — drop рециклира блокове. Големите класове се bump-ват с
      * ПЪЛНИЯ класов размер, за да е консистентен всеки бъдещ free в класа. */
     fprintf(out, "#define BAGA_FL_CLASSES 64   /* free list: 16-байтови класове ≤ 1024 B */\n");
     fprintf(out, "#define BAGA_FL_BIG 12       /* pow2 класове: 2 KiB .. 32 MiB */\n");
-    fprintf(out, "static void *baga_fl[BAGA_FL_CLASSES];\n");
-    fprintf(out, "static void *baga_fl_big[BAGA_FL_BIG];\n");
+    fprintf(out, "static __thread void *baga_fl[BAGA_FL_CLASSES];\n");
+    fprintf(out, "static __thread void *baga_fl_big[BAGA_FL_BIG];\n");
     fprintf(out, "static int baga_fl_big_idx(int64_t n) {\n");
     fprintf(out, "    int i = 0; int64_t c = 2048;\n");
     fprintf(out, "    while (i < BAGA_FL_BIG) { if (n <= c) return i; c <<= 1; i++; }\n");
@@ -2031,7 +2037,6 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static void baga_free(void *p, int64_t n) {\n");
     fprintf(out, "    if (!p || n <= 0) return;\n");
-    fprintf(out, "    pthread_mutex_lock(&baga_alloc_mu);\n");
     fprintf(out, "    if (n <= 1024) {\n");
     fprintf(out, "        int c = (int)((n + 15) / 16) - 1;\n");
     fprintf(out, "        *(void **)p = baga_fl[c]; baga_fl[c] = p;\n");
@@ -2039,7 +2044,6 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        int i = baga_fl_big_idx(n);\n");
     fprintf(out, "        if (i >= 0) { *(void **)p = baga_fl_big[i]; baga_fl_big[i] = p; }\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    pthread_mutex_unlock(&baga_alloc_mu);\n");
     fprintf(out, "}\n");
     fprintf(out, "static void *baga_alloc(size_t n) {\n");
     fprintf(out, "    size_t rn = (n + 15) & ~(size_t)15;\n");
@@ -2047,18 +2051,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (n == 0) {\n");
     fprintf(out, "        an = 0;\n");
     fprintf(out, "    } else if (rn <= 1024) {\n");
-    fprintf(out, "        pthread_mutex_lock(&baga_alloc_mu);\n");
     fprintf(out, "        void *fb = baga_fl[rn / 16 - 1];\n");
-    fprintf(out, "        if (fb) { baga_fl[rn / 16 - 1] = *(void **)fb; pthread_mutex_unlock(&baga_alloc_mu); return fb; }\n");
-    fprintf(out, "        pthread_mutex_unlock(&baga_alloc_mu);\n");
+    fprintf(out, "        if (fb) { baga_fl[rn / 16 - 1] = *(void **)fb; return fb; }\n");
     fprintf(out, "        an = rn;\n");
     fprintf(out, "    } else {\n");
     fprintf(out, "        int bi = baga_fl_big_idx((int64_t)n);\n");
     fprintf(out, "        if (bi >= 0) {\n");
-    fprintf(out, "            pthread_mutex_lock(&baga_alloc_mu);\n");
     fprintf(out, "            void *fb = baga_fl_big[bi];\n");
-    fprintf(out, "            if (fb) { baga_fl_big[bi] = *(void **)fb; pthread_mutex_unlock(&baga_alloc_mu); return fb; }\n");
-    fprintf(out, "            pthread_mutex_unlock(&baga_alloc_mu);\n");
+    fprintf(out, "            if (fb) { baga_fl_big[bi] = *(void **)fb; return fb; }\n");
     fprintf(out, "            an = ((size_t)2048 << bi);\n");
     fprintf(out, "        } else {\n");
     fprintf(out, "            an = n;\n");
@@ -2068,7 +2068,6 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * иначе free-list блок от по-малка заявка обслужва по-голяма в същия
      * клас и я презаписва съседния блок (segfault при review). Същото и за
      * pow2 класовете (R18): винаги пълен класов размер. */
-    fprintf(out, "    pthread_mutex_lock(&baga_alloc_mu);\n");
     fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
     fprintf(out, "    if (!b || b->used + an > b->cap) {\n");
     fprintf(out, "        size_t cap = an > 8192 ? an : 8192;\n");
@@ -2077,7 +2076,6 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        baga_arena_head = b;\n");
     fprintf(out, "    }\n");
     fprintf(out, "    void *p = b->data + b->used; b->used += an;\n");
-    fprintf(out, "    pthread_mutex_unlock(&baga_alloc_mu);\n");
     fprintf(out, "    return p;\n");
     fprintf(out, "}\n");
 
@@ -2171,6 +2169,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static baga_bytes baga_bytes_concat(baga_bytes a, baga_bytes b) {\n");
     fprintf(out, "    baga_bytes r; r.len = a.len + b.len; r.data = baga_alloc((size_t)(r.len ? r.len : 1));\n");
     fprintf(out, "    memcpy(r.data, a.data, (size_t)a.len); memcpy(r.data + a.len, b.data, (size_t)b.len); return r; }\n");
+    /* R54: in-place bulk append — dst[off..off+src.len) = src. Kills the
+       O(n²) concat chain when assembling pipelined replies. */
+    fprintf(out, "static void baga_bytes_put(baga_bytes d, int64_t off, baga_bytes s) {\n");
+    fprintf(out, "    if (off < 0 || off + s.len > d.len) return;\n");
+    fprintf(out, "    memcpy(d.data + off, s.data, (size_t)s.len); }\n");
     fprintf(out, "static baga_bytes baga_bytes_new(int64_t n) {\n");
     fprintf(out, "    if (n < 0) n = 0;\n");
     fprintf(out, "    baga_bytes b; b.len = n; b.data = baga_alloc(n > 0 ? n : 1);\n");
@@ -2517,6 +2520,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_cell2_free(int64_t h) { if (h) free((void *)(intptr_t)h); }\n");
     fprintf(out, "static int64_t baga_cell2_0(int64_t h) { return ((int64_t *)(intptr_t)h)[0]; }\n");
     fprintf(out, "static int64_t baga_cell2_1(int64_t h) { return ((int64_t *)(intptr_t)h)[1]; }\n");
+    /* R51: unsafe str handle casts — zero-copy cross-thread hop (chan i64).
+       Safe because str is arena-bound (never freed). C backend only. */
+    fprintf(out, "static int64_t baga_str_h(const char *s) { return (int64_t)(intptr_t)s; }\n");
+    fprintf(out, "static const char *baga_h_str(int64_t h) { return (const char *)(intptr_t)h; }\n");
     fprintf(out, "typedef int64_t (*baga_par_fn)(int64_t);\n");
     fprintf(out, "typedef struct {\n");
     fprintf(out, "    uint32_t magic;\n");

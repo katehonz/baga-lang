@@ -1248,6 +1248,7 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"bytes_concat", TYPE_BYTES, 2, 0, 0},
             {"bytes_new",   TYPE_BYTES, 1, 0, 0},
             {"bytes_set",   TYPE_VOID, 3, 0, 0},
+            {"bytes_put",   TYPE_VOID, 3, 0, 0}, /* R54: dst[off..+len)=src memcpy */
             {"bytes_push",  TYPE_BYTES, 2, 0, 0},
             {"bytes_of_str", TYPE_BYTES, 1, 0, 0},
             {"str_of_bytes", TYPE_STR, 1, 0, 0},
@@ -1281,6 +1282,9 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"cell2",       TYPE_I64, 2, 0, 0},
             {"cell2_0",     TYPE_I64, 1, 0, 0},
             {"cell2_1",     TYPE_I64, 1, 0, 0},
+            /* R51: unsafe str handle casts — zero-copy chan hop (C backend) */
+            {"str_h",       TYPE_I64, 1, 0, 0},
+            {"h_str",       TYPE_STR, 1, 0, 0},
         };
         /* bytes_from_vec / vec_from_bytes — typed bridge (not in the flat table) */
         if (strcmp(name, "bytes_from_vec") == 0) {
