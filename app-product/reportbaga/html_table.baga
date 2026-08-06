@@ -134,3 +134,138 @@ fn html_report_title(html: str) -> str {
     }
     return str_trim(buf_str(b))
 }
+
+// First <p> text after title (period / firm line).
+fn html_report_meta(html: str) -> str {
+    let p = xml_parser(html)
+    let mut in_p: i64 = 0
+    let mut seen_h1: i64 = 0
+    let mut b = buf_new()
+    let mut done: i64 = 0
+    while done == 0 {
+        let ev = xml_next(p)
+        if ev.kind == 0 || ev.kind == 0 - 1 {
+            done = 1
+        } else {
+            if ev.kind == 1 {
+                let loc = html_local(ev.name)
+                if loc == "h1" {
+                    seen_h1 = 1
+                }
+                if loc == "p" && seen_h1 == 1 {
+                    in_p = 1
+                    b = buf_clear(b)
+                }
+            } else {
+                if ev.kind == 2 {
+                    if html_local(ev.name) == "p" && in_p == 1 {
+                        done = 1
+                    }
+                } else {
+                    if ev.kind == 3 {
+                        if in_p == 1 {
+                            b = buf_push(b, ev.text)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return str_trim(buf_str(b))
+}
+
+// Escape for HTML cell text.
+fn html_esc_cell(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c = char_at(s, i)
+        if c == 38 {
+            out = concat(out, "&amp;")
+        } else {
+            if c == 60 {
+                out = concat(out, "&lt;")
+            } else {
+                if c == 62 {
+                    out = concat(out, "&gt;")
+                } else {
+                    if c == 34 {
+                        out = concat(out, "&quot;")
+                    } else {
+                        out = concat(out, chr(c))
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// CsvTable → HTML <table> fragment (first row = thead).
+fn report_table_to_html(t: CsvTable) -> str {
+    if t.ok == 0 || t.cols <= 0 {
+        return ""
+    }
+    let nr = csv_nrows(t)
+    let mut b = buf_new()
+    b = buf_push(b, "<table>\n")
+    let mut r: i64 = 0
+    while r < nr {
+        if r == 0 {
+            b = buf_push(b, "<thead><tr>")
+        } else {
+            if r == 1 {
+                b = buf_push(b, "</thead><tbody>\n<tr>")
+            } else {
+                b = buf_push(b, "<tr>")
+            }
+        }
+        let mut c: i64 = 0
+        while c < t.cols {
+            if r == 0 {
+                b = buf_push(b, "<th>")
+                b = buf_push(b, html_esc_cell(csv_get(t, r, c)))
+                b = buf_push(b, "</th>")
+            } else {
+                b = buf_push(b, "<td>")
+                b = buf_push(b, html_esc_cell(csv_get(t, r, c)))
+                b = buf_push(b, "</td>")
+            }
+            c = c + 1
+        }
+        b = buf_push(b, "</tr>\n")
+        r = r + 1
+    }
+    if nr > 1 {
+        b = buf_push(b, "</tbody>\n")
+    } else {
+        if nr == 1 {
+            b = buf_push(b, "</thead>\n")
+        }
+    }
+    b = buf_push(b, "</table>")
+    return buf_str(b)
+}
+
+// Full XHTML document for browser preview.
+fn report_ir_to_html(title: str, meta: str, t: CsvTable) -> str {
+    let mut b = buf_new()
+    b = buf_push(b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+    b = buf_push(b, "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><meta charset=\"utf-8\"/>")
+    b = buf_push(b, "<title>")
+    b = buf_push(b, html_esc_cell(title))
+    b = buf_push(b, "</title></head><body>\n")
+    b = buf_push(b, "<h1>")
+    b = buf_push(b, html_esc_cell(title))
+    b = buf_push(b, "</h1>\n")
+    if meta != "" {
+        b = buf_push(b, "<p>")
+        b = buf_push(b, html_esc_cell(meta))
+        b = buf_push(b, "</p>\n")
+    }
+    b = buf_push(b, report_table_to_html(t))
+    b = buf_push(b, "\n</body></html>\n")
+    return buf_str(b)
+}
+

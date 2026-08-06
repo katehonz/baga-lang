@@ -1,9 +1,11 @@
-// report_test.baga — HTML table → xlsx/csv + csv round-trip
+// report_test.baga — HTML/IR/tpl → xlsx/csv/pdf/html
 
 import "reportbaga/report.baga"
 import "reportbaga/html_table.baga"
+import "reportbaga/ir.baga"
 import "csvbaga/csv.baga"
 import "officebaga/office.baga"
+import "zipbaga/archive.baga"
 import "std/str/str.baga"
 import "std/os/os.baga"
 
@@ -21,7 +23,7 @@ fn contains(hay: str, needle: str) -> bool {
 }
 
 fn main() -> i64 !IO {
-    check("version", report_version() == "0.2.0")
+    check("version", report_version() == "0.3.1")
 
     let html = str_of_bytes(read_file_bytes("app-product/reportbaga/fixtures/oborotna.html")?)
     check("fixture_loaded", len(html) > 50)
@@ -42,6 +44,13 @@ fn main() -> i64 !IO {
     let xt = office_plain_text(rx.doc)
     check("xlsx_text_401", contains(xt, "401") && contains(xt, "Доставчици"))
     check("xlsx_text_ob", contains(xt, "Общо") || contains(xt, "503"))
+    // freeze pane + sheet name in package parts
+    let z = zip_open_bytes(x.data)
+    check("xlsx_zip", z.ok == 1)
+    let sheet = zip_read(z, "xl/worksheets/sheet1.xml")
+    check("xlsx_freeze", sheet.ok == 1 && contains(str_of_bytes(sheet.data), "ySplit"))
+    let wb = zip_read(z, "xl/workbook.xml")
+    check("xlsx_sheet_name", wb.ok == 1 && contains(str_of_bytes(wb.data), "name="))
 
     let c = report_html_to_csv(html)
     check("csv_ok", c.ok == 1)
@@ -51,11 +60,34 @@ fn main() -> i64 !IO {
     let cx = report_csv_to_xlsx(ct)
     check("csv_to_xlsx", cx.ok == 1 && bytes_len(cx.data) > 50)
 
-    // PDF UTF-8 (Cyrillic) — needs system DejaVu or PDF_FONT
+    // PDF UTF-8 (Cyrillic) — needs system DejaVu
     let pdf = report_html_to_pdf(html)?
     check("pdf_ok", pdf.ok == 1 && bytes_len(pdf.data) > 1000)
-    // PDF magic
     check("pdf_magic", bytes_at(pdf.data, 0) == 37 && bytes_at(pdf.data, 1) == 80)
+
+    // ReportIR
+    let ir = report_ir_from_html(html)
+    check("ir_ok", ir.ok == 1 && contains(ir.title, "Оборотно"))
+    check("ir_meta", contains(ir.meta, "2026") || contains(ir.meta, "Демо"))
+    let hx = report_emit(ir, "html")
+    check("ir_html", hx.ok == 1 && contains(str_of_bytes(hx.data), "<table>"))
+
+    // from_table (DB-style)
+    let tsv = "A\tB\n1\t2\n"
+    let ir2 = report_ir_from_tsv("T", "meta", tsv)
+    let x2 = report_from_table("T", "meta", ir2.table, "xlsx")
+    check("from_table_xlsx", x2.ok == 1)
+
+    // tplbaga shell
+    let ctx: Map<str, str> = map_new()
+    map_set(ctx, "title", "Тест отчет")
+    map_set(ctx, "period", "2026-01")
+    map_set(ctx, "firm", "ООД")
+    let th = report_from_template(report_default_tpl(), ctx, t, "html")
+    check("tpl_html", th.ok == 1 && contains(str_of_bytes(th.data), "Тест отчет"))
+    check("tpl_table", contains(str_of_bytes(th.data), "401"))
+    let tx = report_from_template(report_default_tpl(), ctx, t, "xlsx")
+    check("tpl_xlsx", tx.ok == 1 && bytes_len(tx.data) > 100)
 
     print("report_test: all passed")
     return 0

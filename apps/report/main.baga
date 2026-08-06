@@ -1,0 +1,99 @@
+// apps/report — product CLI for accounting reports (HTML5 → xlsx/csv/pdf/html).
+//
+//   baga -I . -I app-product apps/report/main.baga render <in.html> <xlsx|csv|pdf|html> <out>
+//   baga -I . -I app-product apps/report/main.baga sample <xlsx|csv|pdf|html> <out>
+//   baga -I . -I app-product apps/report/main.baga tpl <xlsx|csv|pdf|html> <out>
+
+import "reportbaga/report.baga"
+import "csvbaga/csv.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn usage() {
+    eprintln("apps/report — accounting report export")
+    eprintln("")
+    eprintln("  render <in.html> <xlsx|csv|pdf|html> <out>")
+    eprintln("  sample <xlsx|csv|pdf|html> <out>     # built-in обороти sample")
+    eprintln("  tpl    <xlsx|csv|pdf|html> <out>     # template + sample data")
+    eprintln("")
+    eprintln("Examples:")
+    eprintln("  … main.baga render app-product/reportbaga/fixtures/oborotna.html xlsx /tmp/o.xlsx")
+    eprintln("  … main.baga sample pdf /tmp/o.pdf")
+    eprintln("  … main.baga tpl html /tmp/preview.html")
+}
+
+fn sample_table() -> CsvTable {
+    return csv_from_tsv("Сметка\tНаименование\tНД\tНК\tОД\tОК\tКД\tКК\n401\tДоставчици\t0.00\t1200.00\t500.00\t300.00\t0.00\t1000.00\n503\tРазплащателна сметка\t5000.00\t0.00\t2000.00\t1500.00\t5500.00\t0.00\n\tОбщо\t5000.00\t1200.00\t2500.00\t1800.00\t5500.00\t1000.00")
+}
+
+fn write_out(path: str, out: ReportOut) -> i64 !IO {
+    if out.ok == 0 {
+        eprintln(out.err)
+        return 1
+    }
+    if report_write_path(path, out)? != 0 {
+        eprintln(concat("write failed: ", path))
+        return 2
+    }
+    print(concat("wrote ", path))
+    print(concat("format ", out.format))
+    print(concat("bytes ", int_to_str(bytes_len(out.data))))
+    return 0
+}
+
+fn main() -> i64 !IO {
+    if arg_count() < 1 {
+        usage()
+        return 1
+    }
+    let cmd = arg(0)
+
+    if cmd == "render" {
+        if arg_count() < 4 {
+            usage()
+            return 1
+        }
+        let html = str_of_bytes(read_file_bytes(arg(1))?)
+        if html == "" {
+            eprintln(concat("empty or missing: ", arg(1)))
+            return 1
+        }
+        let out = report_from_html_io(html, arg(2))?
+        return write_out(arg(3), out)?
+    }
+
+    if cmd == "sample" {
+        if arg_count() < 3 {
+            usage()
+            return 1
+        }
+        let t = sample_table()
+        let out = report_from_table_io(
+            "Оборотно-салдова ведомост",
+            "2026-01-01 — 2026-01-31 · Демо ООД",
+            t,
+            arg(1)
+        )?
+        return write_out(arg(2), out)?
+    }
+
+    if cmd == "tpl" {
+        if arg_count() < 3 {
+            usage()
+            return 1
+        }
+        let mut tpl = str_of_bytes(read_file_bytes("app-product/reportbaga/fixtures/oborotna.tpl.html")?)
+        if tpl == "" {
+            tpl = report_default_tpl()
+        }
+        let ctx: Map<str, str> = map_new()
+        map_set(ctx, "title", "Оборотно-салдова ведомост")
+        map_set(ctx, "period", "2026-01-01 — 2026-01-31")
+        map_set(ctx, "firm", "Демо ООД")
+        let out = report_from_template_io(tpl, ctx, sample_table(), arg(1))?
+        return write_out(arg(2), out)?
+    }
+
+    usage()
+    return 1
+}

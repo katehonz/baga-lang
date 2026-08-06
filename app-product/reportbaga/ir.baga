@@ -1,0 +1,54 @@
+// ir.baga — ReportIR: title + optional meta + one data table (accounting P0).
+
+import "csvbaga/csv.baga"
+import "html_table.baga"
+import "std/str/str.baga"
+
+struct ReportIR {
+    title: str,
+    meta: str,       // period / firm line
+    table: CsvTable,
+    ok: i64,
+    err: str
+}
+
+fn report_ir_fail(msg: str) -> ReportIR {
+    return ReportIR {
+        title: "",
+        meta: "",
+        table: csv_fail(msg),
+        ok: 0,
+        err: msg
+    }
+}
+
+fn report_ir_ok(title: str, meta: str, table: CsvTable) -> ReportIR {
+    if table.ok == 0 {
+        return report_ir_fail(table.err)
+    }
+    return ReportIR { title: title, meta: meta, table: table, ok: 1, err: "" }
+}
+
+// From HTML report dialect (first h1, first p as meta, first table).
+fn report_ir_from_html(html: str) -> ReportIR {
+    let title = html_report_title(html)
+    let meta = html_report_meta(html)
+    let t = html_table_to_csv(html)
+    if t.ok == 0 {
+        return report_ir_fail(t.err)
+    }
+    let mut ttl = title
+    if ttl == "" {
+        ttl = "Report"
+    }
+    return report_ir_ok(ttl, meta, t)
+}
+
+// From raw table + labels (app builds rows from DB).
+fn report_ir_from_table(title: str, meta: str, table: CsvTable) -> ReportIR {
+    return report_ir_ok(title, meta, table)
+}
+
+fn report_ir_from_tsv(title: str, meta: str, tsv: str) -> ReportIR {
+    return report_ir_ok(title, meta, csv_from_tsv(tsv))
+}

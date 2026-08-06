@@ -76,18 +76,24 @@ render. DOCX is optional.
 
 ---
 
-## R5 — templates + data
+## R3/R4/R5 — ReportIR + emitters + tpl ✅ (reportbaga 0.3.0)
 
-- [ ] `report_from_template(tpl, Map data, format)` via `tplbaga`
-- [ ] Example: invoice template + sample Map → PDF + DOCX
+- [x] `ReportIR` (title, meta, table)
+- [x] `report_emit` / `report_from_html` / `report_from_table`
+- [x] `report_from_template` + `report_default_tpl` (tplbaga)
+- [x] HTML preview regenerate from IR
+- [x] CLI: data-*, tpl-*, html-*
+- [x] `tests/report_test.baga` IR + tpl
 
 ---
 
-## R6 — product `apps/report`
+## R6 — product `apps/report` ✅ CLI + runbook
 
-- [ ] CLI-first product path documented in `docs/runbooks/`
-- [ ] Optional: `fmrbaga` `POST /v1/render` returning file bytes
-- [ ] Optional: CSV upload → parse → row count / preview JSON
+- [x] `apps/report/main.baga` — render / sample / tpl
+- [x] `docs/runbooks/report.md` product path
+- [x] XLSX freeze header + sheet name from title
+- [ ] Optional later: `fmrbaga` HTTP download
+- [ ] Optional later: CSV upload API
 
 ---
 

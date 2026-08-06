@@ -4,6 +4,8 @@
 hits metrics/ready, and (for registry) a gRPC call; process stops on SIGTERM
 with readiness flipped.
 
+**Reports (accounting HTML → Excel/PDF):** see [report.md](report.md).
+
 ## 1. Product JSON API (`apps/api`)
 
 ```bash

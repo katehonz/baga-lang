@@ -1,6 +1,6 @@
 [package]
 name = "reportbaga"
-version = "0.2.0"
+version = "0.3.1"
 entry = "report.baga"
 
 [dependencies]
@@ -10,3 +10,4 @@ officebaga = { path = "../officebaga" }
 pdfbaga = { path = "../pdfbaga" }
 xmlbaga = { path = "../xmlbaga" }
 bufbaga = { path = "../bufbaga" }
+tplbaga = { path = "../tplbaga" }

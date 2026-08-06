@@ -1,0 +1,10 @@
+[package]
+name = "report"
+version = "0.1.0"
+entry = "main.baga"
+kind = "bin"
+
+[dependencies]
+std = { path = "../../std" }
+reportbaga = { path = "../../app-product/reportbaga" }
+csvbaga = { path = "../../app-product/csvbaga" }
