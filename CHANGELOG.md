@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Language — LLVM parity for sum enums (L3 closed)
+- Sum enums lower to a named `{ i64 tag, [N x i64] u }` struct (LLVM has
+  no unions — `N = max(1, ceil(max payload ABI size / 8))`, sized via a
+  default-layout `TargetData`); payload store/load is a GEP into the
+  array + bitcast to the payload pointer type. Lazy IR constructors
+  `b_Res__b_Ok(payload)` mirror the C `static inline` ones; payload-less
+  variants are `{ tag, 0 }` values; `match` emits the same tag chain as
+  codegen_c with the binding in an arm-scoped alloca. Tags follow
+  declaration order in both backends.
+- Works for `bytes`/`f64`/struct payloads, sum enums as struct fields and
+  fn params/returns, nested `match`, qualified `Enum::Variant` paths
+  (`NODE_PATH` values are new in the LLVM backend), and `Vec<enum>` via
+  the existing box helpers. Enum bodies are set in a fixed-point pass
+  over payload sized-ness, so struct↔enum acyclic graphs just work and
+  by-value cycles are an honest compile error.
+- The five `sum types (L3) — само C бекенда` refusals are gone; oracle
+  example `examples/sum_enum.baga` diffs both backends.
+
 ### oauthbaga — O7: DB connection pool (`OAUTH_WORKERS=N`)
 - PG mode gains a fixed worker pool per node (fmrbaga `FMR_WORKERS`
   idiom): N go_bg workers pull accepted fds from a buffered chan, each

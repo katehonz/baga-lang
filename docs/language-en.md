@@ -586,7 +586,10 @@ Checker rules:
 
 The C backend lowers a sum enum to a tagged struct with a `union` of the
 payloads plus a `static inline` constructor per variant. The LLVM backend
-rejects sum types with an honest `unsupported` error pointing here.
+uses the equivalent `{ i64 tag, [N x i64] }` layout (LLVM has no unions —
+the payload area is an i64 array sized to the largest payload) with lazy
+IR constructor functions; both backends agree byte-for-byte (oracle:
+`examples/sum_enum.baga`).
 
 Honest v1 limits:
 

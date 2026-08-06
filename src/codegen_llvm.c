@@ -4,6 +4,7 @@
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
+#include <llvm-c/Target.h>
 
 /* ============================================================
  *  LLVM IR Codegen — Фаза 3
@@ -16,7 +17,9 @@
  *  str/io builtin-и (len, char_at, substr, concat, str_eq, chr,
  *  ord, read_file), Vec (vec_* builtin-и чрез baga_Vec в IR),
  *  потребителски struct-ове (by value, както в C), ефекти
- *  (?, catch — compile-time тагове, pass-through като codegen_c).
+ *  (?, catch — compile-time тагове, pass-through като codegen_c),
+ *  sum enum-и (L3: { i64 tag, [N x i64] u } — LLVM няма union, union
+ *  областта е i64 масив с размер по ABI на най-тежкия payload).
  *  Builtin helpers са lazy IR функции (baga_rt) — огледало на
  *  C preamble-а в codegen_c.c.
  *
@@ -35,6 +38,7 @@ typedef struct {
     LLVMTypeRef double_ty;
     LLVMTypeRef void_ty;
     LLVMTypeRef ptr_ty;
+    LLVMTargetDataRef td;
     LLVMValueRef printf_fn;
     LLVMValueRef fprintf_fn;
     LLVMValueRef exit_fn;
@@ -66,19 +70,32 @@ static LLVMTypeRef baga_vec_ptr_ty(void);
 static LLVMTypeRef baga_bytes_ty(void);
 static LLVMTypeRef user_struct_ty(const char *name);
 
-/* 1 ако името е L3 sum enum (вариант с payload) — LLVM бекендът ги отказва честно */
-static int is_sum_enum_name(const char *name) {
-    if (!name || !lg.program) return 0;
+/* 1 ако възелът е L3 sum enum (поне един вариант с payload) */
+static int is_sum_enum_item(Node *item) {
+    if (!item || item->kind != NODE_ENUM) return 0;
+    for (int j = 0; j < item->n_variants; j++)
+        if (item->enum_payloads && item->enum_payloads[j]) return 1;
+    return 0;
+}
+
+/* sum enum декларация по име; NULL ако няма такава */
+static Node *find_sum_enum(const char *name) {
+    if (!name || !lg.program) return NULL;
     for (int i = 0; i < lg.program->items.len; i++) {
         Node *item = lg.program->items.data[i];
-        if (item->kind != NODE_ENUM) continue;
-        if (strcmp(item->enum_name, name) != 0) continue;
-        if (!item->enum_payloads) return 0;
-        for (int j = 0; j < item->n_variants; j++)
-            if (item->enum_payloads[j]) return 1;
-        return 0;
+        if (is_sum_enum_item(item) && item->enum_name &&
+            strcmp(item->enum_name, name) == 0)
+            return item;
     }
-    return 0;
+    return NULL;
+}
+
+/* индекс на вариант по име в enum декларация; -1 ако го няма */
+static int sum_variant_index(Node *ed, const char *vname) {
+    if (!ed || !vname) return -1;
+    for (int j = 0; j < ed->n_variants; j++)
+        if (strcmp(ed->enum_variants[j], vname) == 0) return j;
+    return -1;
 }
 
 static LLVMTypeRef llvm_type_resolved(Type *ty) {
@@ -95,7 +112,10 @@ static LLVMTypeRef llvm_type_resolved(Type *ty) {
             return user_struct_ty(ty->name);
         case TYPE_VEC:    return baga_vec_ptr_ty();
         case TYPE_MAP:    llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)"); break;
-        case TYPE_ENUM:   llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11"); break;
+        case TYPE_ENUM:
+            /* L3: sum enum → named tagged struct (като user struct) */
+            if (!ty->name) llvm_unsupported("анонимен enum");
+            return user_struct_ty(ty->name);
         case TYPE_BYTES:  return baga_bytes_ty();
         case TYPE_FN:     return lg.i64_ty;   /* L5: cell2(code, env) handle */
         case TYPE_ARRAY:  llvm_unsupported("масиви"); break;
@@ -114,11 +134,11 @@ static LLVMTypeRef llvm_type(Node *ty) {
         if (strcmp(ty->type_name, "bool") == 0) return lg.i1_ty;
         if (strcmp(ty->type_name, "str") == 0) return lg.ptr_ty;
         if (strcmp(ty->type_name, "void") == 0) return lg.void_ty;
+        if (strcmp(ty->type_name, "bytes") == 0) return baga_bytes_ty();
         if (strcmp(ty->type_name, "Vec") == 0) return baga_vec_ptr_ty();
         if (strcmp(ty->type_name, "Map") == 0)
             llvm_unsupported("Map тип (само C бекенда; вж. docs/language-en.md)");
-        if (is_sum_enum_name(ty->type_name))
-            llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
+        /* user struct или L3 sum enum — и двата са named struct типове */
         return user_struct_ty(ty->type_name);
     }
     if (ty->kind == NODE_TYPE_EFFECT) return llvm_type(ty->inner_type);
@@ -1672,6 +1692,76 @@ static int struct_field_index(Node *decl, const char *fname) {
     return -1;
 }
 
+/* ---- L3: sum enum-и ----
+ *
+ * Named struct b_<E> = { i64 tag, [N x i64] u }, където
+ * N = max(1, ceil(max payload ABI размер / 8)) — LLVM няма union, затова
+ * union областта е i64 масив, а payload store/load е GEP до u + bitcast
+ * към указател към payload типа. Тагът е индексът на варианта в
+ * декларацията (0..n-1) — същият ред като в codegen_c. */
+
+/* тяло на sum enum типа (изисква payload типовете да са sized) */
+static void sum_enum_set_body(Node *ed, LLVMTypeRef st) {
+    unsigned long long maxsz = 0;
+    for (int j = 0; j < ed->n_variants; j++) {
+        if (!ed->enum_payloads || !ed->enum_payloads[j]) continue;
+        unsigned long long sz =
+            LLVMABISizeOfType(lg.td, llvm_type(ed->enum_payloads[j]));
+        if (sz > maxsz) maxsz = sz;
+    }
+    unsigned n = (unsigned)(maxsz / 8) + (maxsz % 8 ? 1 : 0);
+    if (n == 0) n = 1;
+    LLVMTypeRef elems[] = { lg.i64_ty, LLVMArrayType(lg.i64_ty, n) };
+    LLVMStructSetBody(st, elems, 2, 0);
+}
+
+/* GEP до union областта + bitcast към указател към payload типа */
+static LLVMValueRef sum_payload_ptr(LLVMTypeRef ety, LLVMValueRef ea,
+                                    LLVMTypeRef pty) {
+    LLVMValueRef up = LLVMBuildStructGEP2(lg.builder, ety, ea, 1, "up");
+    return LLVMBuildBitCast(lg.builder, up, LLVMPointerType(pty, 0), "pp");
+}
+
+/* lazy IR конструктор b_<E>__b_<V>(payload) — огледало на static inline
+ * конструкторите в codegen_c; тялото се генерира при първа употреба */
+static LLVMValueRef sum_ctor_fn(Node *ed, int vidx) {
+    char *em = llvm_mangle(ed->enum_name);
+    char *vm = llvm_mangle(ed->enum_variants[vidx]);
+    char full[600];
+    snprintf(full, sizeof full, "%s__%s", em, vm);
+    free(em); free(vm);
+    LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, full);
+    if (fn) return fn;
+    LLVMTypeRef ety = user_struct_ty(ed->enum_name);
+    LLVMTypeRef pty = llvm_type(ed->enum_payloads[vidx]);
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    fn = LLVMAddFunction(lg.mod, full, LLVMFunctionType(ety, &pty, 1, 0));
+    h_begin(fn);
+    LLVMValueRef r = LLVMBuildAlloca(lg.builder, ety, "r");
+    LLVMValueRef tagp = LLVMBuildStructGEP2(lg.builder, ety, r, 0, "tagp");
+    LLVMBuildStore(lg.builder,
+        LLVMConstInt(lg.i64_ty, (unsigned long long)vidx, 0), tagp);
+    LLVMBuildStore(lg.builder, LLVMGetParam(fn, 0),
+                   sum_payload_ptr(ety, r, pty));
+    LLVMBuildRet(lg.builder, LLVMBuildLoad2(lg.builder, ety, r, "rv"));
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
+
+/* payload-less вариант на sum enum като стойност: { tag = j, u = 0 } */
+static LLVMValueRef sum_variant_const(Node *ed, int vidx) {
+    LLVMTypeRef ety = user_struct_ty(ed->enum_name);
+    LLVMValueRef tmp = entry_alloca(ety, "ev");
+    LLVMBuildStore(lg.builder, LLVMConstNull(ety), tmp);
+    LLVMValueRef tagp = LLVMBuildStructGEP2(lg.builder, ety, tmp, 0, "tagp");
+    LLVMBuildStore(lg.builder,
+        LLVMConstInt(lg.i64_ty, (unsigned long long)vidx, 0), tagp);
+    char *nm = tmp_name();
+    LLVMValueRef r = LLVMBuildLoad2(lg.builder, ety, tmp, nm);
+    free(nm);
+    return r;
+}
+
 /* ---- Програмни аргументи (argv) ----
  * main(argc, argv) записва стойностите в IR глобални; baga_arg_count/
  * baga_arg ги четат. baga_arg е с bounds check — извън границите връща "". */
@@ -2253,11 +2343,15 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
     for (int j = 0; j < body->stmts.len; j++) {
         Node *s = body->stmts.data[j];
         if (s->kind == NODE_RETURN) {
-            if (s->ret_val && res_alloca) {
+            if (s->ret_val) {
+                /* void match: стойността се оценява за страничния ефект
+                 * (codegen_c emit-ва израза и без _mr присвояване) */
                 LLVMValueRef v = emit_expr_llvm(s->ret_val);
-                if (!v) llvm_unsupported("print в match клон");
-                v = coerce(v, LLVMGetAllocatedType(res_alloca));
-                LLVMBuildStore(lg.builder, v, res_alloca);
+                if (res_alloca) {
+                    if (!v) llvm_unsupported("print в match клон");
+                    v = coerce(v, LLVMGetAllocatedType(res_alloca));
+                    LLVMBuildStore(lg.builder, v, res_alloca);
+                }
             }
             LLVMBuildBr(lg.builder, merge_bb);
             return;
@@ -2270,11 +2364,87 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
     }
 }
 
+/* L3: match върху sum enum — верига от tag сравнения (като codegen_c);
+ * payload binding-ът е alloca в scope-а на клона (st_push/st_pop). */
+static LLVMValueRef emit_match_sum_llvm(Node *n, Node *ed) {
+    LLVMTypeRef ety = user_struct_ty(ed->enum_name);
+    LLVMValueRef mv = emit_expr_llvm(n->match_expr);
+    if (!mv) llvm_unsupported("print като match subject");
+    /* subject-ът се оценява веднъж в temp — тагът и payload-овете се
+     * четат от него (като _mv в codegen_c) */
+    LLVMValueRef mva = entry_alloca(ety, "mv");
+    LLVMBuildStore(lg.builder, mv, mva);
+    LLVMValueRef tagp = LLVMBuildStructGEP2(lg.builder, ety, mva, 0, "tagp");
+    LLVMValueRef tag = LLVMBuildLoad2(lg.builder, lg.i64_ty, tagp, "tag");
+
+    LLVMTypeRef res_ty = n->type ? llvm_type_resolved(n->type) : lg.i64_ty;
+    LLVMValueRef res_alloca = NULL;
+    if (res_ty != lg.void_ty) {
+        res_alloca = entry_alloca(res_ty, "match_res");
+        LLVMBuildStore(lg.builder, LLVMConstNull(res_ty), res_alloca);
+    }
+
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+    LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "match_end");
+
+    for (int i = 0; i < n->match_arms.len; i++) {
+        Node *arm = n->match_arms.data[i];
+        if (arm->arm_pattern) {
+            const char *pvn = arm->arm_pattern->kind == NODE_PATH
+                ? arm->arm_pattern->path_variant
+                : arm->arm_pattern->kind == NODE_IDENT
+                ? arm->arm_pattern->name : NULL;
+            int vidx = sum_variant_index(ed, pvn);
+            if (vidx < 0)
+                llvm_unsupported("match клон, който не е вариант на sum enum");
+            LLVMValueRef cond = LLVMBuildICmp(lg.builder, LLVMIntEQ, tag,
+                LLVMConstInt(lg.i64_ty, (unsigned long long)vidx, 0), "mcond");
+            LLVMBasicBlockRef arm_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "match_arm");
+            LLVMBasicBlockRef next_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "match_next");
+            LLVMBuildCondBr(lg.builder, cond, arm_bb, next_bb);
+            LLVMPositionBuilderAtEnd(lg.builder, arm_bb);
+            st_push();
+            if (arm->arm_binding && ed->enum_payloads && ed->enum_payloads[vidx]) {
+                LLVMTypeRef pty = llvm_type(ed->enum_payloads[vidx]);
+                LLVMValueRef pv = LLVMBuildLoad2(lg.builder, pty,
+                    sum_payload_ptr(ety, mva, pty), "pv");
+                char *bm = llvm_mangle(arm->arm_binding);
+                LLVMValueRef ba = entry_alloca(pty, bm);
+                free(bm);
+                LLVMBuildStore(lg.builder, pv, ba);
+                st_define(arm->arm_binding, ba);
+            }
+            emit_match_arm_llvm(arm, res_alloca, merge_bb);
+            st_pop();
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
+                LLVMBuildBr(lg.builder, merge_bb);
+            LLVMPositionBuilderAtEnd(lg.builder, next_bb);
+        } else {
+            /* wildcard `_` → else клон */
+            emit_match_arm_llvm(arm, res_alloca, merge_bb);
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
+                LLVMBuildBr(lg.builder, merge_bb);
+        }
+    }
+
+    /* без wildcard: последният match_next пада в merge (както codegen_c) */
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
+        LLVMBuildBr(lg.builder, merge_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, merge_bb);
+    if (!res_alloca) return NULL;
+    char *name = tmp_name();
+    LLVMValueRef r = LLVMBuildLoad2(lg.builder, res_ty, res_alloca, name);
+    free(name);
+    return r;
+}
+
 static LLVMValueRef emit_match_llvm(Node *n) {
-    /* L3: match върху sum enum е само в C бекенда */
+    /* L3: match върху sum enum → tag верига с payload bindings */
     if (n->match_expr && n->match_expr->type &&
-        n->match_expr->type->kind == TYPE_ENUM)
-        llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
+        n->match_expr->type->kind == TYPE_ENUM) {
+        Node *ed = find_sum_enum(n->match_expr->type->name);
+        if (ed) return emit_match_sum_llvm(n, ed);
+    }
     LLVMValueRef mv = emit_expr_llvm(n->match_expr);
     if (!mv || LLVMGetTypeKind(LLVMTypeOf(mv)) != LLVMIntegerTypeKind)
         llvm_unsupported("match върху не-целочислена стойност");
@@ -2360,9 +2530,6 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 LLVMValueRef wrap = closure_wrapper_named(n->type->name);
                 return closure_handle(wrap, LLVMConstNull(lg.ptr_ty));
             }
-            /* L3: sum types (payload enums) са само в C бекенда */
-            if (n->type && n->type->kind == TYPE_ENUM)
-                llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
             LLVMValueRef alloca = st_lookup(n->name);
             if (alloca) {
                 char *name = tmp_name();
@@ -2370,6 +2537,12 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     LLVMGetAllocatedType(alloca), alloca, name);
                 free(name);
                 return v;
+            }
+            /* L3: payload-less вариант на sum enum → { tag, 0 } стойност */
+            if (n->type && n->type->kind == TYPE_ENUM) {
+                Node *ed = find_sum_enum(n->type->name);
+                int vidx = ed ? sum_variant_index(ed, n->name) : -1;
+                if (vidx >= 0) return sum_variant_const(ed, vidx);
             }
             int variant = find_enum_variant(n->name);
             if (variant >= 0)
@@ -2462,9 +2635,33 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         }
 
         case NODE_CALL: {
-            /* L3: конструктори на sum enum-и са само в C бекенда */
-            if (n->type && n->type->kind == TYPE_ENUM)
-                llvm_unsupported("sum types (L3) — само C бекенда; вж. docs/language-en.md §11");
+            /* L3: конструктор на sum enum — bare Ok(x) или Res::Ok(x).
+             * Познава се по върнатия тип (TYPE_ENUM) + име на вариант;
+             * обикновена fn, връщаща enum, минава нататък. */
+            if (n->type && n->type->kind == TYPE_ENUM &&
+                (n->callee->kind == NODE_IDENT || n->callee->kind == NODE_PATH)) {
+                Node *ed = find_sum_enum(n->type->name);
+                const char *vn = n->callee->kind == NODE_PATH
+                    ? n->callee->path_variant : n->callee->name;
+                int vidx = ed ? sum_variant_index(ed, vn) : -1;
+                if (vidx >= 0) {
+                    if (ed->enum_payloads && ed->enum_payloads[vidx]) {
+                        if (n->args.len != 1)
+                            llvm_unsupported("sum конструктор с != 1 аргумент");
+                        LLVMValueRef a = emit_expr_llvm(n->args.data[0]);
+                        if (!a) llvm_unsupported("print като payload");
+                        LLVMTypeRef pty = llvm_type(ed->enum_payloads[vidx]);
+                        a = coerce(a, pty);
+                        LLVMValueRef cf = sum_ctor_fn(ed, vidx);
+                        char *cn = tmp_name();
+                        LLVMValueRef r = h_call(cf, &a, 1, cn);
+                        free(cn);
+                        return r;
+                    }
+                    /* payload-less вариант, извикан с () */
+                    if (n->args.len == 0) return sum_variant_const(ed, vidx);
+                }
+            }
             /* extern fn → raw libc symbol, before the print/builtin dispatch
              * (an extern named `write` must not become baga_write) */
             Node *ef = NULL;
@@ -2648,10 +2845,11 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                  strcmp(n->callee->name, "vec_slice") == 0 ||
                  strcmp(n->callee->name, "vec_concat") == 0)) {
                 Type *vt = n->args.len > 0 ? n->args.data[0]->type : NULL;
-                /* L4/S2: struct и bytes елементи → box helper-и, sizeof от
-                 * call site-а (огледало на codegen_c box пътя) */
+                /* L4/S2/L3: struct, bytes и sum enum елементи → box
+                 * helper-и, sizeof от call site-а (огледало на codegen_c) */
                 if (vt && vt->kind == TYPE_VEC && vt->elem &&
                     ((vt->elem->kind == TYPE_STRUCT && vt->elem->name) ||
+                     (vt->elem->kind == TYPE_ENUM && vt->elem->name) ||
                      vt->elem->kind == TYPE_BYTES)) {
                     LLVMTypeRef sty = vt->elem->kind == TYPE_BYTES
                         ? baga_bytes_ty() : user_struct_ty(vt->elem->name);
@@ -2843,6 +3041,30 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             LLVMValueRef r = LLVMBuildLoad2(lg.builder, sty, tmp, name);
             free(name);
             return r;
+        }
+        case NODE_PATH: {
+            /* Enum::Variant — plain enum → i64 таг; L3 sum payload-less
+             * вариант → { tag, 0 } стойност (A1, като codegen_c) */
+            Node *ed = NULL;
+            for (int i = 0; lg.program && i < lg.program->items.len; i++) {
+                Node *item = lg.program->items.data[i];
+                if (item->kind == NODE_ENUM && item->enum_name &&
+                    strcmp(item->enum_name, n->path_enum) == 0) { ed = item; break; }
+            }
+            int vidx = ed ? sum_variant_index(ed, n->path_variant) : -1;
+            if (vidx < 0) {
+                char buf[256];
+                snprintf(buf, sizeof buf, "непознат път '%s::%s'",
+                         n->path_enum ? n->path_enum : "?",
+                         n->path_variant ? n->path_variant : "?");
+                llvm_unsupported(buf);
+            }
+            if (is_sum_enum_item(ed)) {
+                if (ed->enum_payloads && ed->enum_payloads[vidx])
+                    llvm_unsupported("sum вариант с payload без аргумент");
+                return sum_variant_const(ed, vidx);
+            }
+            return LLVMConstInt(lg.i64_ty, (unsigned long long)vidx, 0);
         }
         case NODE_TRY:      return emit_expr_llvm(n->try_expr);
         case NODE_CATCH:    return emit_expr_llvm(n->catch_expr);
@@ -3342,6 +3564,8 @@ void codegen_llvm(Node *program, const char *output_path) {
     lg.void_ty = LLVMVoidTypeInContext(lg.ctx);
     lg.i8_ty = LLVMInt8TypeInContext(lg.ctx);
     lg.ptr_ty = LLVMPointerType(lg.i8_ty, 0);
+    /* default data layout — за ABI размерите на sum enum payload-ите */
+    lg.td = LLVMCreateTargetData("");
 
     /* declare printf / fprintf / exit / stderr */
     {
@@ -3361,11 +3585,13 @@ void codegen_llvm(Node *program, const char *output_path) {
         lg.stderr_global = LLVMAddGlobal(lg.mod, lg.ptr_ty, "stderr");
     }
 
-    /* нулев проход: named struct типове (имена, после тела) */
+    /* нулев проход: named struct типове + sum enum типове (имена, после тела) */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
-        if (item->kind != NODE_STRUCT) continue;
-        char *m = llvm_mangle(item->struct_name);
+        if (item->kind != NODE_STRUCT && !is_sum_enum_item(item)) continue;
+        const char *tn = item->kind == NODE_STRUCT
+            ? item->struct_name : item->enum_name;
+        char *m = llvm_mangle(tn);
         if (!LLVMGetTypeByName(lg.mod, m))
             LLVMStructCreateNamed(lg.ctx, m);
         free(m);
@@ -3382,6 +3608,31 @@ void codegen_llvm(Node *program, const char *output_path) {
             elems[j] = llvm_type(item->fields.data[j]->fld_type);
         LLVMStructSetBody(st, elems, (unsigned)nf, 0);
         free(elems);
+    }
+    /* sum enum тела: fixed-point по sized-ness на payload-ите — payload
+     * може да е struct или друг sum enum; цикъл по стойност е грешка */
+    for (;;) {
+        int remaining = 0, progress = 0;
+        for (int i = 0; i < program->items.len; i++) {
+            Node *item = program->items.data[i];
+            if (!is_sum_enum_item(item)) continue;
+            char *m = llvm_mangle(item->enum_name);
+            LLVMTypeRef st = LLVMGetTypeByName(lg.mod, m);
+            free(m);
+            if (LLVMTypeIsSized(st)) continue;
+            int ready = 1;
+            for (int j = 0; j < item->n_variants && ready; j++) {
+                if (!item->enum_payloads || !item->enum_payloads[j]) continue;
+                if (!LLVMTypeIsSized(llvm_type(item->enum_payloads[j])))
+                    ready = 0;
+            }
+            if (!ready) { remaining++; continue; }
+            sum_enum_set_body(item, st);
+            progress = 1;
+        }
+        if (remaining == 0) break;
+        if (!progress)
+            llvm_unsupported("циклични sum enum типове (по стойност)");
     }
 
     /* първи проход: предекларации */
@@ -3446,6 +3697,7 @@ void codegen_llvm(Node *program, const char *output_path) {
     /* cleanup */
     LLVMDisposeBuilder(lg.builder);
     LLVMDisposeModule(lg.mod);
+    LLVMDisposeTargetData(lg.td);
     LLVMContextDispose(lg.ctx);
 }
 
