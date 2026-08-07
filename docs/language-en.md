@@ -98,7 +98,9 @@ let tiny = 1.0e-9
 | `\r`   | carriage return|
 | `\\`   | backslash      |
 | `\"`   | double quote   |
-| `\0`   | null byte      |
+
+`str` is a C string and cannot hold NUL bytes — `\0` in a string literal
+is a compile error. For raw bytes use the `bytes` type (`x"..."` literals).
 
 ```baga
 let greeting = "Здравей, \"свят\"!\n"

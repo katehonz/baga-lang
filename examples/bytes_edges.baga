@@ -1,0 +1,49 @@
+// LP3 probe: bytes/str edges — chr/ord UTF-8 round trips, the NUL
+// boundary (str cannot hold NUL; str_of_bytes truncates at it), Map<bytes,V>
+// NUL-bearing and prefix keys, functional bytes_push growth, slice/hex
+// edges. Oracle-diffed across both backends.
+fn main() {
+    // chr ≥ 0x80 is UTF-8 (multi-byte); ord round-trips the code point
+    print(len(chr(0x41)))
+    print(len(chr(0x80)))
+    print(len(chr(0x800)))
+    print(len(chr(0x10400)))
+    print(ord(chr(0x80)))
+    print(ord(chr(0x41)))
+    print(ord(chr(0x10400)))
+
+    // bytes↔str: ASCII round-trips; NUL truncates at the str boundary
+    // (documented edge — str is a C string; bytes is the binary-safe type)
+    let b = x"610062"
+    print(bytes_len(b))
+    let s = str_of_bytes(b)
+    print(len(s))
+    print(hex_encode(bytes_of_str(s)))
+
+    // Map<bytes,V>: NUL-bearing keys are distinct; a prefix is not a hit
+    let m = map_new()
+    map_set(m, x"6162", 1)
+    map_set(m, x"610062", 2)
+    map_set(m, x"616200", 3)
+    print(map_get(m, x"6162"))
+    print(map_get(m, x"610062"))
+    print(map_get(m, x"616200"))
+    print(map_get(m, x"61"))
+    print(map_len(m))
+
+    // functional bytes_push (rebind!), growth, bounds-checked bytes_at
+    let mut g = bytes_new(0)
+    for i in 0..1000 {
+        g = bytes_push(g, i % 256)
+    }
+    print(bytes_len(g))
+    print(bytes_at(g, 0))
+    print(bytes_at(g, 999))
+
+    // slice edges + hex decode round-trips (upper/lower/empty)
+    print(hex_encode(bytes_slice(g, 0, 0)))
+    print(hex_encode(bytes_slice(g, 998, 1000)))
+    print(hex_encode(hex_decode("DEADBEEF")))
+    print(bytes_len(hex_decode("")))
+    print(hex_encode(bytes_concat(x"", x"01")))
+}

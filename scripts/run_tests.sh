@@ -363,6 +363,22 @@ printf 'fn main() {\n    let m = map_new()\n    map_set(m, 1.5, 1)\n}\n' > /tmp/
 run /tmp/baga_lp2_mapkey.baga 2>&1 | grep -q "неподдържан ключов тип f64" \
 	&& echo "OK: LP2 — f64 като Map ключ е честен отказ" \
 	|| { echo "FAIL: f64 map ключ трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let s = "a\\0b"\n    print(len(s))\n}\n' > /tmp/baga_lp3_nul.baga
+run /tmp/baga_lp3_nul.baga 2>&1 | grep -q "\\\\0 в str литерал" \
+	&& echo "OK: LP3 — \\0 в str литерал е compile грешка (не тихо отрязване)" \
+	|| { echo "FAIL: \\0 в str трябва да гърми"; exit 1; }
+printf 'fn main() {\n    print(ord(65))\n}\n' > /tmp/baga_lp3_ord.baga
+run /tmp/baga_lp3_ord.baga 2>&1 | grep -q "'ord': аргумент #1 е от тип i64, но параметърът е str" \
+	&& echo "OK: LP3 — builtin arg type check хваща ord(65) преди runtime segfault" \
+	|| { echo "FAIL: ord(65) трябва да гърми в checker-а"; exit 1; }
+printf 'fn main() {\n    print(len())\n}\n' > /tmp/baga_lp3_arity.baga
+run /tmp/baga_lp3_arity.baga 2>&1 | grep -q "'len' очаква 1 аргумент(а), получих 0" \
+	&& echo "OK: LP3 — builtin arity check хваща len() без аргументи" \
+	|| { echo "FAIL: arity-то на builtin-ите трябва да се проверява"; exit 1; }
+printf 'fn main() {\n    print(bytes_len("str"))\n}\n' > /tmp/baga_lp3_bytes_arg.baga
+run /tmp/baga_lp3_bytes_arg.baga 2>&1 | grep -q "'bytes_len': аргумент #1 е от тип str, но параметърът е bytes" \
+	&& echo "OK: LP3 — str към bytes builtin е checker грешка" \
+	|| { echo "FAIL: bytes_len(str) трябва да гърми"; exit 1; }
 printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let f = add\n    print(f("x", 1))\n}\n' > /tmp/baga_fn_bad1.baga
 run /tmp/baga_fn_bad1.baga 2>&1 | grep -q "fn стойност: аргумент #1 е от тип str, но параметърът е i64" \
 	&& echo "OK: L5 — грешен аргумент през fn стойност е отхвърлен" \

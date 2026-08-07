@@ -419,24 +419,79 @@ static LLVMValueRef build_baga_str_eq(void) {
     return fn;
 }
 
-/* static const char *baga_chr(int64_t c)
- * { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; } */
+/* static const char *baga_chr(int64_t c) — UTF-8 encode (1–4 bytes);
+ * оглежда C runtime helper-а. Преди LP3 LLVM версията орязваше до един
+ * байт ((char)c) и се разминаваше с C за code point-ове ≥ 0x80. */
 static LLVMValueRef build_baga_chr(void) {
     LLVMTypeRef p[] = { lg.i64_ty };
     LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_chr",
         LLVMFunctionType(lg.ptr_ty, p, 1, 0));
     h_begin(fn);
     LLVMValueRef c = LLVMGetParam(fn, 0);
-    LLVMValueRef two = LLVMConstInt(lg.i64_ty, 2, 0);
-    LLVMValueRef ma[] = { two };
+    LLVMValueRef five = LLVMConstInt(lg.i64_ty, 5, 0);
+    LLVMValueRef ma[] = { five };
     LLVMValueRef r = h_call(rt_malloc(), ma, 1, "r");
-    LLVMValueRef z = LLVMConstInt(lg.i64_ty, 0, 0);
-    LLVMValueRef r0 = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &z, 1, "r0");
-    LLVMBuildStore(lg.builder, LLVMBuildTrunc(lg.builder, c, lg.i8_ty, "t"), r0);
-    LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
-    LLVMValueRef r1 = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &one, 1, "r1");
-    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 0, 0), r1);
+
+    LLVMBasicBlockRef b1 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "u1");
+    LLVMBasicBlockRef k2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "k2");
+    LLVMBasicBlockRef b2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "u2");
+    LLVMBasicBlockRef k3 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "k3");
+    LLVMBasicBlockRef b3 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "u3");
+    LLVMBasicBlockRef b4 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "u4");
+
+    LLVMValueRef lt1 = LLVMBuildICmp(lg.builder, LLVMIntULT, c,
+        LLVMConstInt(lg.i64_ty, 0x80, 0), "lt1");
+    LLVMBuildCondBr(lg.builder, lt1, b1, k2);
+
+    LLVMPositionBuilderAtEnd(lg.builder, k2);
+    LLVMValueRef lt2 = LLVMBuildICmp(lg.builder, LLVMIntULT, c,
+        LLVMConstInt(lg.i64_ty, 0x800, 0), "lt2");
+    LLVMBuildCondBr(lg.builder, lt2, b2, k3);
+
+    LLVMPositionBuilderAtEnd(lg.builder, k3);
+    LLVMValueRef lt3 = LLVMBuildICmp(lg.builder, LLVMIntULT, c,
+        LLVMConstInt(lg.i64_ty, 0x10000, 0), "lt3");
+    LLVMBuildCondBr(lg.builder, lt3, b3, b4);
+
+    #define CHR_SH(v, n) LLVMBuildLShr(lg.builder, (v), LLVMConstInt(lg.i64_ty, (n), 0), "s")
+    #define CHR_AN(v, m) LLVMBuildAnd(lg.builder, (v), LLVMConstInt(lg.i64_ty, (m), 0), "a")
+    #define CHR_OR(v, m) LLVMBuildOr(lg.builder, (v), LLVMConstInt(lg.i64_ty, (m), 0), "o")
+    #define CHR_ST(idx, val) do { \
+        LLVMValueRef _i = LLVMConstInt(lg.i64_ty, (idx), 0); \
+        LLVMValueRef _p = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &_i, 1, "sp"); \
+        LLVMBuildStore(lg.builder, LLVMBuildTrunc(lg.builder, (val), lg.i8_ty, "st"), _p); \
+    } while (0)
+
+    LLVMPositionBuilderAtEnd(lg.builder, b1);
+    CHR_ST(0, c);
+    CHR_ST(1, LLVMConstInt(lg.i64_ty, 0, 0));
     LLVMBuildRet(lg.builder, r);
+
+    LLVMPositionBuilderAtEnd(lg.builder, b2);
+    CHR_ST(0, CHR_OR(CHR_SH(c, 6), 0xC0));
+    CHR_ST(1, CHR_OR(CHR_AN(c, 0x3F), 0x80));
+    CHR_ST(2, LLVMConstInt(lg.i64_ty, 0, 0));
+    LLVMBuildRet(lg.builder, r);
+
+    LLVMPositionBuilderAtEnd(lg.builder, b3);
+    CHR_ST(0, CHR_OR(CHR_SH(c, 12), 0xE0));
+    CHR_ST(1, CHR_OR(CHR_AN(CHR_SH(c, 6), 0x3F), 0x80));
+    CHR_ST(2, CHR_OR(CHR_AN(c, 0x3F), 0x80));
+    CHR_ST(3, LLVMConstInt(lg.i64_ty, 0, 0));
+    LLVMBuildRet(lg.builder, r);
+
+    LLVMPositionBuilderAtEnd(lg.builder, b4);
+    CHR_ST(0, CHR_OR(CHR_SH(c, 18), 0xF0));
+    CHR_ST(1, CHR_OR(CHR_AN(CHR_SH(c, 12), 0x3F), 0x80));
+    CHR_ST(2, CHR_OR(CHR_AN(CHR_SH(c, 6), 0x3F), 0x80));
+    CHR_ST(3, CHR_OR(CHR_AN(c, 0x3F), 0x80));
+    CHR_ST(4, LLVMConstInt(lg.i64_ty, 0, 0));
+    LLVMBuildRet(lg.builder, r);
+
+    #undef CHR_SH
+    #undef CHR_AN
+    #undef CHR_OR
+    #undef CHR_ST
     return fn;
 }
 

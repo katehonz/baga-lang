@@ -1387,72 +1387,75 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             return ret;
         }
 
-        /* string / io / par builtins */
-        struct { const char *name; TypeKind ret; int nparams; int has_io; int has_par; } builtins[] = {
-            {"len",       TYPE_I64, 1, 0, 0},
-            {"char_at",   TYPE_I64, 2, 0, 0},
-            {"byte_at",   TYPE_I64, 2, 0, 0},
-            {"byte_chr",  TYPE_STR, 1, 0, 0},
-            {"substr",    TYPE_STR, 3, 0, 0},
-            {"concat",    TYPE_STR, 2, 0, 0},
-            {"read_file", TYPE_STR, 1, 1, 0},
-            {"chr",       TYPE_STR, 1, 0, 0},
-            {"ord",       TYPE_I64, 1, 0, 0},
-            {"str_eq",    TYPE_BOOL, 2, 0, 0},
-            {"arg_count", TYPE_I64, 0, 0, 0},
-            {"arg",       TYPE_STR, 1, 0, 0},
-            {"exit",      TYPE_VOID, 1, 0, 0},
-            {"eprintln",  TYPE_VOID, 1, 0, 0},
-            {"arena_new",   TYPE_I64, 0, 0, 0},
-            {"arena_alloc", TYPE_I64, 2, 0, 0},
-            {"arena_reset", TYPE_VOID, 1, 0, 0},
-            {"arena_free",  TYPE_VOID, 1, 0, 0},
-            {"bytes_len",   TYPE_I64, 1, 0, 0},
-            {"bytes_at",    TYPE_I64, 2, 0, 0},
-            {"bytes_slice", TYPE_BYTES, 3, 0, 0},
-            {"bytes_concat", TYPE_BYTES, 2, 0, 0},
-            {"bytes_new",   TYPE_BYTES, 1, 0, 0},
-            {"bytes_set",   TYPE_VOID, 3, 0, 0},
-            {"bytes_put",   TYPE_VOID, 3, 0, 0}, /* R54: dst[off..+len)=src memcpy */
-            {"bytes_push",  TYPE_BYTES, 2, 0, 0},
-            {"bytes_of_str", TYPE_BYTES, 1, 0, 0},
-            {"str_of_bytes", TYPE_STR, 1, 0, 0},
-            {"hex_encode",  TYPE_STR, 1, 0, 0},
-            {"hex_decode",  TYPE_BYTES, 1, 0, 0},
+        /* string / io / par builtins. sig: параметри по позиции —
+         * 's' str, 'i' i64 (bool се приема), 'f' f64, 'b' bytes, 'a' всякакъв.
+         * Преди LP3 таблицата носеше само return тип: грешен тип аргумент
+         * (напр. ord(65)) стигаше до C и гърмеше runtime (segfault). */
+        struct { const char *name; TypeKind ret; const char *sig; int has_io; int has_par; } builtins[] = {
+            {"len",       TYPE_I64, "s", 0, 0},
+            {"char_at",   TYPE_I64, "si", 0, 0},
+            {"byte_at",   TYPE_I64, "si", 0, 0},
+            {"byte_chr",  TYPE_STR, "i", 0, 0},
+            {"substr",    TYPE_STR, "sii", 0, 0},
+            {"concat",    TYPE_STR, "ss", 0, 0},
+            {"read_file", TYPE_STR, "s", 1, 0},
+            {"chr",       TYPE_STR, "i", 0, 0},
+            {"ord",       TYPE_I64, "s", 0, 0},
+            {"str_eq",    TYPE_BOOL, "ss", 0, 0},
+            {"arg_count", TYPE_I64, "", 0, 0},
+            {"arg",       TYPE_STR, "i", 0, 0},
+            {"exit",      TYPE_VOID, "i", 0, 0},
+            {"eprintln",  TYPE_VOID, "s", 0, 0},
+            {"arena_new",   TYPE_I64, "", 0, 0},
+            {"arena_alloc", TYPE_I64, "ii", 0, 0},
+            {"arena_reset", TYPE_VOID, "i", 0, 0},
+            {"arena_free",  TYPE_VOID, "i", 0, 0},
+            {"bytes_len",   TYPE_I64, "b", 0, 0},
+            {"bytes_at",    TYPE_I64, "bi", 0, 0},
+            {"bytes_slice", TYPE_BYTES, "bii", 0, 0},
+            {"bytes_concat", TYPE_BYTES, "bb", 0, 0},
+            {"bytes_new",   TYPE_BYTES, "i", 0, 0},
+            {"bytes_set",   TYPE_VOID, "bii", 0, 0},
+            {"bytes_put",   TYPE_VOID, "bib", 0, 0}, /* R54: dst[off..+len)=src memcpy */
+            {"bytes_push",  TYPE_BYTES, "bi", 0, 0},
+            {"bytes_of_str", TYPE_BYTES, "s", 0, 0},
+            {"str_of_bytes", TYPE_STR, "b", 0, 0},
+            {"hex_encode",  TYPE_STR, "b", 0, 0},
+            {"hex_decode",  TYPE_BYTES, "s", 0, 0},
             /* concurrency (!Par) — cloud-native fan-out / CSP channels */
-            {"join",        TYPE_I64, 1, 0, 1},
-            {"detach",      TYPE_I64, 1, 0, 1},
-            {"chan_new",    TYPE_I64, 1, 0, 1},
-            {"chan_send",   TYPE_I64, 2, 0, 1},
-            {"chan_recv",   TYPE_I64, 1, 0, 1},
-            {"chan_recv2",  TYPE_I64, 1, 0, 1}, /* cell2(ok, value) */
-            {"chan_try_recv", TYPE_I64, 1, 0, 1}, /* cell2(status, value) */
-            {"chan_recv_timeout", TYPE_I64, 2, 0, 1},
-            {"chan_select2", TYPE_I64, 2, 0, 1}, /* cell2(which, value) */
-            {"chan_select2_wait", TYPE_I64, 2, 0, 1},
-            {"chan_select2_timeout", TYPE_I64, 3, 0, 1},
-            {"chan_close",  TYPE_I64, 1, 0, 1},
-            {"chan_len",    TYPE_I64, 1, 0, 1},
-            {"sleep_ms",    TYPE_I64, 1, 0, 1},
-            {"mutex_new",   TYPE_I64, 0, 0, 1},
-            {"mutex_lock",  TYPE_I64, 1, 0, 1},
-            {"mutex_unlock",TYPE_I64, 1, 0, 1},
+            {"join",        TYPE_I64, "i", 0, 1},
+            {"detach",      TYPE_I64, "i", 0, 1},
+            {"chan_new",    TYPE_I64, "i", 0, 1},
+            {"chan_send",   TYPE_I64, "ii", 0, 1},
+            {"chan_recv",   TYPE_I64, "i", 0, 1},
+            {"chan_recv2",  TYPE_I64, "i", 0, 1}, /* cell2(ok, value) */
+            {"chan_try_recv", TYPE_I64, "i", 0, 1}, /* cell2(status, value) */
+            {"chan_recv_timeout", TYPE_I64, "ii", 0, 1},
+            {"chan_select2", TYPE_I64, "ii", 0, 1}, /* cell2(which, value) */
+            {"chan_select2_wait", TYPE_I64, "ii", 0, 1},
+            {"chan_select2_timeout", TYPE_I64, "iii", 0, 1},
+            {"chan_close",  TYPE_I64, "i", 0, 1},
+            {"chan_len",    TYPE_I64, "i", 0, 1},
+            {"sleep_ms",    TYPE_I64, "i", 0, 1},
+            {"mutex_new",   TYPE_I64, "", 0, 1},
+            {"mutex_lock",  TYPE_I64, "i", 0, 1},
+            {"mutex_unlock",TYPE_I64, "i", 0, 1},
             /* C1 signals — graceful shutdown (K8s SIGTERM); process-global */
-            {"signal_watch", TYPE_I64, 1, 0, 0}, /* install handler; 0 ok, -1 err */
-            {"signal_check", TYPE_I64, 0, 0, 0}, /* 0 = none, else signo */
-            {"signal_clear", TYPE_I64, 0, 0, 0}, /* return+clear pending */
-            {"signal_wait",  TYPE_I64, 1, 0, 0}, /* ms; <0 = forever; return signo or 0 */
-            {"signal_raise", TYPE_I64, 1, 0, 0}, /* raise(sig) to self; 0 ok */
+            {"signal_watch", TYPE_I64, "i", 0, 0}, /* install handler; 0 ok, -1 err */
+            {"signal_check", TYPE_I64, "", 0, 0}, /* 0 = none, else signo */
+            {"signal_clear", TYPE_I64, "", 0, 0}, /* return+clear pending */
+            {"signal_wait",  TYPE_I64, "i", 0, 0}, /* ms; <0 = forever; return signo or 0 */
+            {"signal_raise", TYPE_I64, "i", 0, 0}, /* raise(sig) to self; 0 ok */
             /* heap pair — pure context packing for single-arg go workers */
-            {"cell2",       TYPE_I64, 2, 0, 0},
-            {"cell2_0",     TYPE_I64, 1, 0, 0},
-            {"cell2_1",     TYPE_I64, 1, 0, 0},
+            {"cell2",       TYPE_I64, "aa", 0, 0},
+            {"cell2_0",     TYPE_I64, "a", 0, 0},
+            {"cell2_1",     TYPE_I64, "a", 0, 0},
             /* R51: unsafe str handle casts — zero-copy chan hop (C backend) */
-            {"str_h",       TYPE_I64, 1, 0, 0},
-            {"h_str",       TYPE_STR, 1, 0, 0},
+            {"str_h",       TYPE_I64, "s", 0, 0},
+            {"h_str",       TYPE_STR, "i", 0, 0},
             /* R66: also in special-case above for TYPE_BYTES return of h_bytes */
-            {"bytes_h",     TYPE_I64, 1, 0, 0},
-            {"h_bytes",     TYPE_BYTES, 1, 0, 0},
+            {"bytes_h",     TYPE_I64, "b", 0, 0},
+            {"h_bytes",     TYPE_BYTES, "i", 0, 0},
         };
         /* bytes_from_vec / vec_from_bytes — typed bridge (not in the flat table) */
         if (strcmp(name, "bytes_from_vec") == 0) {
@@ -1592,6 +1595,35 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
         for (int bi = 0; bi < (int)(sizeof(builtins) / sizeof(builtins[0])); bi++) {
             if (strcmp(name, builtins[bi].name) == 0) {
                 n->callee->type = type_new(TYPE_VOID);
+                /* LP3: arity + типови подпис — преди това грешен тип
+                 * аргумент стигаше до C и гърмеше runtime (segfault). */
+                const char *sig = builtins[bi].sig;
+                int want = (int)strlen(sig);
+                if (n->args.len != want) {
+                    check_error(ctx, n->pos,
+                        "'%s' очаква %d аргумент(а), получих %d",
+                        name, want, n->args.len);
+                    return type_new(TYPE_ERROR);
+                }
+                for (int ai = 0; ai < want; ai++) {
+                    char wk = sig[ai];
+                    if (wk == 'a') continue;
+                    Type *at = n->args.data[ai]->type;
+                    if (!at || at->kind == TYPE_ERROR) continue;
+                    int ok = 0;
+                    if (wk == 's')      ok = at->kind == TYPE_STR;
+                    else if (wk == 'i') ok = at->kind == TYPE_I64 || at->kind == TYPE_BOOL;
+                    else if (wk == 'f') ok = at->kind == TYPE_F64;
+                    else if (wk == 'b') ok = at->kind == TYPE_BYTES;
+                    if (!ok) {
+                        check_error(ctx, n->pos,
+                            "'%s': аргумент #%d е от тип %s, но параметърът е %s",
+                            name, ai + 1, type_str(at),
+                            wk == 's' ? "str" : wk == 'i' ? "i64" :
+                            wk == 'f' ? "f64" : "bytes");
+                        return type_new(TYPE_ERROR);
+                    }
+                }
                 Type *ret = type_new(builtins[bi].ret);
                 if (builtins[bi].has_io) {
                     type_add_effect(ret, "IO");

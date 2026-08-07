@@ -307,7 +307,12 @@ static Token lex_string(Lexer *l, SrcPos start) {
                 case 'r': c = '\r'; break;
                 case '\\': c = '\\'; break;
                 case '"': c = '"'; break;
-                case '0': c = '\0'; break;
+                case '0':
+                    /* LP3: str е C низ — NUL би отрязал низа тихо. '\0'
+                     * като char литерал (i64 стойност) остава позволен. */
+                    free(buf);
+                    return make_error(l, start,
+                        "\\0 в str литерал — str не понася NUL; за сурови байтове ползвай bytes (x\"...\")");
                 default:
                     free(buf);
                     return make_error(l, start, "непозната escape последователност");
