@@ -18,6 +18,7 @@
  * P2: linear memory export + WASI preview1 (define_wasi + inherit stdio).
  * P3a: wasmtime_wat2wasm + module-from-buffer (buffer handles).
  * P3b: module serialize/deserialize (buffer + file paths).
+ * P3c: extended call shapes — staged args, multi-value, i64/f64.
  */
 #ifndef BAGA_WT_SHIM_H
 #define BAGA_WT_SHIM_H
@@ -95,6 +96,23 @@ int64_t baga_wt_call_i32_1(int64_t store_h, int64_t inst_h, const char *name,
 int64_t baga_wt_call_i32_2(int64_t store_h, int64_t inst_h, const char *name,
                            int64_t a, int64_t b);
 int64_t baga_wt_call_void_0(int64_t store_h, int64_t inst_h, const char *name);
+
+/* Extended call shapes (P3c) — staged args + generic call + results vector.
+ * Stage up to 8 args with baga_wt_args_push_*, then baga_wt_call consumes
+ * them (cleared even on failure). Read results via baga_wt_result_*.
+ * Value kinds (mirror in wasm.baga): 0=i32 1=i64 2=f32 3=f64 */
+void baga_wt_args_clear(void);
+int64_t baga_wt_args_push_i32(int64_t v);
+int64_t baga_wt_args_push_i64(int64_t v);
+int64_t baga_wt_args_push_f64(double v);
+/* Status: 0 ok / 1 error / 2 trap (same convention as call helpers). */
+int64_t baga_wt_call(int64_t store_h, int64_t inst_h, const char *name,
+                     int64_t nresults);
+int64_t baga_wt_result_count(void);        /* count → baga_wt_last_i64 */
+int64_t baga_wt_result_kind(int64_t i);    /* kind → baga_wt_last_i64 */
+int64_t baga_wt_result_i64(int64_t i);     /* i32/i64 → baga_wt_last_i64 */
+int64_t baga_wt_result_f64(int64_t i);     /* f32/f64 → baga_wt_last_f64 */
+double baga_wt_last_f64(void);
 
 /* Host side effects visible to Baga */
 int64_t baga_wt_host_call_count(void);

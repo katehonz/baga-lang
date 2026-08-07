@@ -6,7 +6,7 @@ Run WebAssembly modules inside a Baga process via the official **Wasmtime C API*
 
 ## Status
 
-**P3b** — module serialize/deserialize (buffer + file); WAT→wasm + module from in-memory buffer; Memory + WASI lite; Linker + host registry; gcd / hello / add / mem / wasi / wat / serialize demos.
+**P3 complete** (component model optional) — extended call shapes (multi-value, i64/f64) + multi-memory; module serialize/deserialize; WAT→wasm + module from in-memory buffer; Memory + WASI lite; Linker + host registry.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [PLAN.md](PLAN.md), [gaps.md](gaps.md).
 
@@ -24,6 +24,10 @@ cd app-product/wasmtimebaga
 # wat add(20, 22) = 42
 # deserialized gcd(6, 27) = 3
 # file-cached gcd(48, 18) = 6
+# divmod(7, 3) = (2, 1)
+# norm(3.0, 4.0) = 5.0 (f64)
+# add64(3000000000, 3000000000) = 6000000000
+# multi_memory: mem_a=1 page, mem_b=2 pages, independent
 # wasmtimebaga demo: ok
 ```
 
@@ -115,12 +119,40 @@ wt_module_serialize_file(mod, "target/gcd.serialized")?
 let mod3 = wt_module_deserialize_file(eng, "target/gcd.serialized")?
 ```
 
+### P3c — extended call shapes (multi-value, i64/f64)
+
+```baga
+// Stage args, call, read the results vector. Kinds: WT_I32/WT_I64/WT_F32/WT_F64.
+wt_args_clear()
+wt_arg_i32(7)?
+wt_arg_i32(3)?
+wt_call(store, inst, "divmod", 2)?       // 0 ok / 1 error / 2 trap
+let q = wt_result_i64(0)?                // 2
+let r = wt_result_i64(1)?                // 1
+
+wt_args_clear()
+wt_arg_f64(3.0)?
+wt_arg_f64(4.0)?
+wt_call(store, inst, "norm", 1)?
+wt_result_kind(0)? == WT_F64()           // true
+wt_result_f64(0)?                        // 5.0
+```
+
+### P3d — multi-memory
+
+```baga
+// Wasmtime 47 enables multi-memory by default; each memory is just a
+// named export.
+let ma = wt_memory_get(store, inst, "mem_a")?
+let mb = wt_memory_get(store, inst, "mem_b")?
+```
+
 ## Layout
 
 | Path | Role |
 |------|------|
 | `wasm.baga` | public API + FFI declarations |
-| `demo.baga` | demo binary (P0–P3b paths) |
+| `demo.baga` | demo binary (P0–P3d paths) |
 | `shims/` | C handle bridge → libwasmtime |
 | `fixtures/gcd.wasm` | sample module |
 | `vendor/` | prebuilt C API (fetched) |

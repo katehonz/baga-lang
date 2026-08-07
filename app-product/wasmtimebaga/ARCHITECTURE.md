@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-07  
 **Model:** [wasmtime-go](https://github.com/bytecodealliance/wasmtime-go) (Bytecode Alliance)  
-**Status:** P3b (module serialize/deserialize; WAT→wasm + module-from-buffer; Memory + WASI lite; Linker + host registry)
+**Status:** P3 complete (component model optional) — extended call shapes + multi-memory; serialize/deserialize; WAT→wasm + module-from-buffer; Memory + WASI lite; Linker + host registry
 
 ## Goal
 
@@ -90,6 +90,14 @@ file round trips reproduce `gcd(6,27)→3` / `gcd(48,18)→6`; deserialize
 rejects non-artifact bytes (raw wasm source) with an error, never a
 fake module.
 
+**P3c (call shapes):** staged args + results vector. `divmod(7,3)→(2,1)`
+multi-value; `norm(3.0,4.0)→5.0` f64 params + f64.sqrt result;
+`add64(3e9,3e9)→6e9` i64 beyond i32; arg-type mismatch → error, not trap.
+
+**P3d (multi-memory):** `multi_mem.wasm` (two exported memories, 1+2 pages)
+instantiates on the default engine; per-memory load/store at the same
+offset stay independent.
+
 ## Roadmap sketch
 
 | Phase | Scope |
@@ -99,7 +107,9 @@ fake module.
 | **P2** ✅ | Memory export (load/store/grow), WASI define + inherit stdio (`sched_yield`) |
 | **P3a** ✅ | WAT→wasm in-process + module from buffer (buffer handles) |
 | **P3b** ✅ | Module serialize/deserialize — buffer + binary-safe file paths |
-| **P3** | Fuel/epoch; preopen dirs; multi-value; component model; free Baga host closures |
+| **P3c** ✅ | Extended call shapes — staged args (i32/i64/f64), multi-value results vector (W5 closed) |
+| **P3d** ✅ | Multi-memory — default in Wasmtime 47; named-export API already covers it |
+| **P3** | Optional component model; fuel/epoch; preopen dirs; free Baga host closures |
 
 ## Non-goals
 
@@ -115,7 +125,7 @@ app-product/wasmtimebaga/
   ARCHITECTURE.md   PLAN.md   gaps.md   README.md
   sandak.toml
   wasm.baga         # public API + externs
-  demo.baga         # demo (P0–P3b paths)
+  demo.baga         # demo (P0–P3d paths)
   shims/            # C bridge
   fixtures/         # gcd.wat / gcd.wasm
   vendor/           # C API (fetched)

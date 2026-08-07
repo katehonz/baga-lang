@@ -329,6 +329,154 @@ fn main() -> i64 !IO {
     wt_drop(smod)
     wt_drop(eng5)
 
+    // ── P3c extended call shapes ────────────────────────────────────────
+    let cpath = fixture("callshapes.wasm")?
+    if file_exists(cpath)? == 0 {
+        return fail(concat("missing ", cpath))
+    }
+    let eng6 = wt_engine_new()?
+    let store6 = wt_store_new(eng6)?
+    let mod6 = wt_module_from_file(eng6, cpath)?
+    let inst6 = wt_instance_new(store6, mod6)?
+    if inst6 == 0 {
+        return fail(concat("callshapes instance: ", wt_last_err()?))
+    }
+
+    // divmod(7, 3) → (2, 1) — multi-value
+    wt_args_clear()
+    if wt_arg_i32(7)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_arg_i32(3)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_call(store6, inst6, "divmod", 2)? != 0 {
+        return fail(concat("call divmod: ", wt_last_err()?))
+    }
+    if wt_result_count()? != 2 {
+        return fail("divmod result_count != 2")
+    }
+    if wt_result_kind(0)? != WT_I32() {
+        return fail("divmod kind[0] != i32")
+    }
+    if wt_result_i64(0)? != 2 {
+        return fail("divmod quotient != 2")
+    }
+    if wt_result_i64(1)? != 1 {
+        return fail("divmod remainder != 1")
+    }
+
+    // norm(3.0, 4.0) → 5.0 — f64 params + result
+    wt_args_clear()
+    if wt_arg_f64(3.0)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_arg_f64(4.0)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_call(store6, inst6, "norm", 1)? != 0 {
+        return fail(concat("call norm: ", wt_last_err()?))
+    }
+    if wt_result_kind(0)? != WT_F64() {
+        return fail("norm kind != f64")
+    }
+    if wt_result_f64(0)? != 5.0 {
+        return fail("norm != 5.0")
+    }
+    // typed accessor mismatch: i64 view of an f64 result
+    if wt_result_i64(0)? != -1 {
+        return fail("result_i64 on f64 should be -1")
+    }
+
+    // add64(3000000000, 3000000000) → 6000000000 — i64 beyond i32 range
+    wt_args_clear()
+    if wt_arg_i64(3000000000)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_arg_i64(3000000000)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_call(store6, inst6, "add64", 1)? != 0 {
+        return fail(concat("call add64: ", wt_last_err()?))
+    }
+    if wt_result_kind(0)? != WT_I64() {
+        return fail("add64 kind != i64")
+    }
+    if wt_result_i64(0)? != 6000000000 {
+        return fail(concat("add64 got ", int_to_str(wt_result_i64(0)?)))
+    }
+
+    // arg type mismatch: i32 args into an f64 function → error, not trap
+    wt_args_clear()
+    if wt_arg_i32(1)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    let mm = wt_call(store6, inst6, "norm", 1)?
+    if mm == 0 {
+        return fail("arg type mismatch should fail")
+    }
+    if len(wt_last_err()?) == 0 {
+        return fail("arg type mismatch should set last_err")
+    }
+
+    // result accessors out of bounds
+    if wt_result_i64(5)? != -1 {
+        return fail("result_i64 OOB should be -1")
+    }
+    if wt_result_kind(-1)? != -1 {
+        return fail("result_kind negative should be -1")
+    }
+
+    wt_drop(inst6)
+    wt_drop(mod6)
+    wt_drop(store6)
+    wt_drop(eng6)
+
+    // ── P3d multi-memory ────────────────────────────────────────────────
+    let mpath2 = fixture("multi_mem.wasm")?
+    if file_exists(mpath2)? == 0 {
+        return fail(concat("missing ", mpath2))
+    }
+    let eng7 = wt_engine_new()?
+    let store7 = wt_store_new(eng7)?
+    let mod7 = wt_module_from_file(eng7, mpath2)?
+    let inst7 = wt_instance_new(store7, mod7)?
+    if inst7 == 0 {
+        return fail(concat("multi_mem instance: ", wt_last_err()?))
+    }
+    let ma = wt_memory_get(store7, inst7, "mem_a")?
+    if ma == 0 {
+        return fail(concat("memory_get mem_a: ", wt_last_err()?))
+    }
+    let mb = wt_memory_get(store7, inst7, "mem_b")?
+    if mb == 0 {
+        return fail(concat("memory_get mem_b: ", wt_last_err()?))
+    }
+    if wt_memory_size(store7, ma)? != 1 {
+        return fail("mem_a pages != 1")
+    }
+    if wt_memory_size(store7, mb)? != 2 {
+        return fail("mem_b pages != 2")
+    }
+    if wt_memory_store8(store7, ma, 0, 11)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_memory_store8(store7, mb, 0, 22)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_memory_load8(store7, ma, 0)? != 11 {
+        return fail("mem_a[0] != 11")
+    }
+    if wt_memory_load8(store7, mb, 0)? != 22 {
+        return fail("mem_b[0] != 22")
+    }
+    wt_drop(mb)
+    wt_drop(ma)
+    wt_drop(inst7)
+    wt_drop(mod7)
+    wt_drop(store7)
+    wt_drop(eng7)
+
     print("wasmtime smoke: all passed")
     return 0
 }

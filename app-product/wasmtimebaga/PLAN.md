@@ -1,7 +1,7 @@
 # wasmtimebaga — plan
 
 Date: 2026-08-07
-Status: **P3b done** (module serialize/deserialize — buffer + file)
+Status: **P3c+P3d done** (extended call shapes + multi-memory)
 Goal: Wasmtime host embedding for Baga, modeled on **wasmtime-go**.
 
 ## Why
@@ -53,10 +53,36 @@ Language Support in Wasmtime is about **host embeddings**. Go is an official BA 
 4. Demo `demo_serialize` + smoke P3b: buffer + file round trips, and
    deserialize rejects non-artifact bytes (raw wasm source) with error.
 
+### P3c — extended call shapes ✅ (gap W5 closed)
+
+1. Staged args: `baga_wt_args_push_{i32,i64,f64}` (up to 8) +
+   `baga_wt_call(store, inst, name, nresults)` consumes them; results in a
+   vector: `result_count` / `result_kind` / `result_i64` / `result_f64`
+   (+ `baga_wt_last_f64`). Value kinds 0=i32 1=i64 2=f32 3=f64.
+2. First f64 externs in the repo — baga `extern fn` f64 params/returns
+   verified end-to-end (C backend; LLVM oracle unaffected — lib only).
+3. Fixtures `callshapes.{wat,wasm}`: `divmod` (multi-value), `norm`
+   (f64 params + f64.sqrt), `add64` (i64 beyond i32 range).
+4. Demo `demo_calls` + smoke P3c: all three shapes, arg-type mismatch →
+   error (not trap), typed-accessor and OOB negative checks.
+
+### P3d — multi-memory ✅
+
+1. Wasmtime 47 enables the multi-memory proposal by default — the existing
+   named-export API (`wt_memory_get(store, inst, name)`) already addresses
+   each memory; no shim change needed.
+2. Fixture `multi_mem.{wat,wasm}`: two exported memories (1 + 2 pages).
+3. Demo `demo_multi_mem` + smoke P3d: independent load/store at the same
+   offset, distinct page counts.
+
 ### P3 — polish (remaining)
 
-- Multi-value, multi-memory.
-- Optional component model.
+- Optional component model (needs component fixtures; deferred).
+
+## Fixture build
+
+Checked-in `.wasm` are produced from the sibling `.wat` with
+`wasm-tools parse <name>.wat -o <name>.wasm`.
 
 ## Non-goals (P0)
 
@@ -68,7 +94,7 @@ Host callbacks, WASI, component model, multi-arch vendor in git, pure interprete
 |------|------|
 | `ARCHITECTURE.md` | layer diagram + decisions |
 | `wasm.baga` | public API + externs |
-| `demo.baga` | demo binary (P0–P3b paths) |
+| `demo.baga` | demo binary (P0–P3d paths) |
 | `shims/baga_wt_shim.*` | handle bridge |
 | `fixtures/gcd.*` | wasmtime-go GCD module |
 | `scripts/fetch-wasmtime-c-api.sh` | vendor C API |

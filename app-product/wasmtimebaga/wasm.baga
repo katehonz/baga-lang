@@ -6,6 +6,7 @@
 // P2: Linear memory export + WASI preview1 (define_wasi + inherit).
 // P3a: WAT → wasm (wasmtime_wat2wasm) + module from in-memory buffer.
 // P3b: module serialize/deserialize (buffer + file paths).
+// P3c: extended call shapes — staged args, multi-value results, i64/f64.
 
 // ── FFI (implemented in shims/baga_wt_shim.c) ────────────────────────────
 
@@ -39,6 +40,16 @@ extern fn baga_wt_call_i32_0(store_h: i64, inst_h: i64, name: str) -> i64 !IO
 extern fn baga_wt_call_i32_1(store_h: i64, inst_h: i64, name: str, a: i64) -> i64 !IO
 extern fn baga_wt_call_i32_2(store_h: i64, inst_h: i64, name: str, a: i64, b: i64) -> i64 !IO
 extern fn baga_wt_call_void_0(store_h: i64, inst_h: i64, name: str) -> i64 !IO
+extern fn baga_wt_args_clear() -> void !IO
+extern fn baga_wt_args_push_i32(v: i64) -> i64 !IO
+extern fn baga_wt_args_push_i64(v: i64) -> i64 !IO
+extern fn baga_wt_args_push_f64(v: f64) -> i64 !IO
+extern fn baga_wt_call(store_h: i64, inst_h: i64, name: str, nresults: i64) -> i64 !IO
+extern fn baga_wt_result_count() -> i64 !IO
+extern fn baga_wt_result_kind(i: i64) -> i64 !IO
+extern fn baga_wt_result_i64(i: i64) -> i64 !IO
+extern fn baga_wt_result_f64(i: i64) -> i64 !IO
+extern fn baga_wt_last_f64() -> f64 !IO
 extern fn baga_wt_host_call_count() -> i64 !IO
 extern fn baga_wt_host_log() -> str !IO
 extern fn baga_wt_host_reset() -> void !IO
@@ -56,6 +67,12 @@ fn WT_TRAP() -> i64 { return 2 }
 fn WT_HOST_LOG_VOID0() -> i64 { return 1 }
 fn WT_HOST_I32_ID() -> i64 { return 2 }
 fn WT_HOST_I32_ADD() -> i64 { return 3 }
+
+// Value kinds for wt_result_kind (P3c).
+fn WT_I32() -> i64 { return 0 }
+fn WT_I64() -> i64 { return 1 }
+fn WT_F32() -> i64 { return 2 }
+fn WT_F64() -> i64 { return 3 }
 
 // ── High-level helpers ───────────────────────────────────────────────────
 
@@ -253,6 +270,68 @@ fn wt_call_i32_2_status(store: i64, inst: i64, name: str, a: i64, b: i64) -> i64
 
 fn wt_call_void_0_status(store: i64, inst: i64, name: str) -> i64 !IO {
     return baga_wt_call_void_0(store, inst, name)?
+}
+
+// ── Extended call shapes (P3c) ─────────────────────────────────────────
+
+// Stage args for the next wt_call (up to 8). Each returns status (0 ok).
+fn wt_args_clear() -> void !IO {
+    baga_wt_args_clear()
+}
+
+fn wt_arg_i32(v: i64) -> i64 !IO {
+    return baga_wt_args_push_i32(v)?
+}
+
+fn wt_arg_i64(v: i64) -> i64 !IO {
+    return baga_wt_args_push_i64(v)?
+}
+
+fn wt_arg_f64(v: f64) -> i64 !IO {
+    return baga_wt_args_push_f64(v)?
+}
+
+// Call an export with the staged args (consumed even on failure).
+// Status: 0 ok / 1 error / 2 trap.
+fn wt_call(store: i64, inst: i64, name: str, nresults: i64) -> i64 !IO {
+    return baga_wt_call(store, inst, name, nresults)?
+}
+
+fn wt_result_count() -> i64 !IO {
+    let st = baga_wt_result_count()?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+fn wt_result_kind(i: i64) -> i64 !IO {
+    let st = baga_wt_result_kind(i)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+fn wt_result_i64(i: i64) -> i64 !IO {
+    let st = baga_wt_result_i64(i)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+// 0.0 and last_err on error (bad index or non-float result).
+fn wt_result_f64(i: i64) -> f64 !IO {
+    let st = baga_wt_result_f64(i)?
+    if st != 0 {
+        return 0.0
+    }
+    return baga_wt_last_f64()?
+}
+
+fn wt_last_f64() -> f64 !IO {
+    return baga_wt_last_f64()?
 }
 
 // Load module from path, instantiate (no imports), call gcd-style export.

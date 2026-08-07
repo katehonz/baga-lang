@@ -58,6 +58,22 @@ static int64_t g_last_i64;
 static int64_t g_host_calls;
 static char g_host_log[512];
 
+/* P3c — staged args + results vector */
+enum { WT_MAX_ARGS = 8, WT_MAX_RESULTS = 8 };
+enum { V_I32 = 0, V_I64 = 1, V_F32 = 2, V_F64 = 3 };
+
+typedef struct {
+    int kind;
+    int64_t i;
+    double f;
+} WtVal;
+
+static WtVal g_args[WT_MAX_ARGS];
+static size_t g_nargs;
+static WtVal g_results[WT_MAX_RESULTS];
+static size_t g_nresults;
+static double g_last_f64;
+
 static void set_err(const char *msg) {
     if (!msg) msg = "unknown error";
     snprintf(g_err, sizeof g_err, "%s", msg);
@@ -853,6 +869,180 @@ int64_t baga_wt_call_i32_2(int64_t store_h, int64_t inst_h, const char *name,
 
 int64_t baga_wt_call_void_0(int64_t store_h, int64_t inst_h, const char *name) {
     return call_export(store_h, inst_h, name, NULL, 0, 0);
+}
+
+/* ── extended call shapes (P3c) ──────────────────────────────────────── */
+
+void baga_wt_args_clear(void) { g_nargs = 0; }
+
+static int64_t args_push(int kind, int64_t iv, double fv) {
+    g_err[0] = '\0';
+    if (g_nargs >= WT_MAX_ARGS) {
+        set_err("too many staged args");
+        return 1;
+    }
+    g_args[g_nargs].kind = kind;
+    g_args[g_nargs].i = iv;
+    g_args[g_nargs].f = fv;
+    g_nargs++;
+    return 0;
+}
+
+int64_t baga_wt_args_push_i32(int64_t v) { return args_push(V_I32, v, 0.0); }
+int64_t baga_wt_args_push_i64(int64_t v) { return args_push(V_I64, v, 0.0); }
+int64_t baga_wt_args_push_f64(double v) { return args_push(V_F64, 0, v); }
+
+double baga_wt_last_f64(void) { return g_last_f64; }
+
+int64_t baga_wt_call(int64_t store_h, int64_t inst_h, const char *name,
+                     int64_t nresults) {
+    g_err[0] = '\0';
+    g_last_i64 = 0;
+    g_last_f64 = 0.0;
+    g_nresults = 0;
+
+    Slot *ss = get_slot(store_h, H_STORE);
+    if (!ss) return 1;
+    Slot *is = get_slot(inst_h, H_INSTANCE);
+    if (!is) return 1;
+    if (!name || !name[0]) {
+        set_err("empty export name");
+        return 1;
+    }
+    if (is->u.instance.store_h != store_h) {
+        set_err("instance/store mismatch");
+        return 1;
+    }
+    if (nresults < 0 || nresults > WT_MAX_RESULTS) {
+        set_err("bad nresults");
+        return 1;
+    }
+
+    wasmtime_context_t *ctx = wasmtime_store_context(ss->u.store.store);
+    wasmtime_extern_t item;
+    memset(&item, 0, sizeof item);
+    bool ok = wasmtime_instance_export_get(ctx, &is->u.instance.instance, name,
+                                           strlen(name), &item);
+    if (!ok || item.kind != WASMTIME_EXTERN_FUNC) {
+        set_err("export not found or not a function");
+        return 1;
+    }
+
+    wasmtime_val_t params[WT_MAX_ARGS];
+    for (size_t i = 0; i < g_nargs; i++) {
+        switch (g_args[i].kind) {
+        case V_I32:
+            params[i].kind = WASMTIME_I32;
+            params[i].of.i32 = (int32_t)g_args[i].i;
+            break;
+        case V_I64:
+            params[i].kind = WASMTIME_I64;
+            params[i].of.i64 = g_args[i].i;
+            break;
+        case V_F32:
+            params[i].kind = WASMTIME_F32;
+            params[i].of.f32 = (float)g_args[i].f;
+            break;
+        default:
+            params[i].kind = WASMTIME_F64;
+            params[i].of.f64 = g_args[i].f;
+            break;
+        }
+    }
+    size_t nargs = g_nargs;
+    g_nargs = 0; /* the call consumes the staged args (even on failure) */
+
+    wasmtime_val_t results[WT_MAX_RESULTS];
+    memset(results, 0, sizeof results);
+    wasm_trap_t *trap = NULL;
+    wasmtime_error_t *error = wasmtime_func_call(
+        ctx, &item.of.func, nargs ? params : NULL, nargs,
+        nresults ? results : NULL, (size_t)nresults, &trap);
+    if (error) {
+        set_err_wasmtime("func_call", error, NULL);
+        return 1;
+    }
+    if (trap) {
+        set_err_wasmtime("func_call", NULL, trap);
+        return 2;
+    }
+
+    for (int64_t i = 0; i < nresults; i++) {
+        WtVal *r = &g_results[g_nresults];
+        switch (results[i].kind) {
+        case WASMTIME_I32:
+            r->kind = V_I32;
+            r->i = (int64_t)results[i].of.i32;
+            break;
+        case WASMTIME_I64:
+            r->kind = V_I64;
+            r->i = results[i].of.i64;
+            break;
+        case WASMTIME_F32:
+            r->kind = V_F32;
+            r->f = (double)results[i].of.f32;
+            break;
+        default:
+            r->kind = V_F64;
+            r->f = results[i].of.f64;
+            break;
+        }
+        g_nresults++;
+    }
+    if (g_nresults > 0) {
+        g_last_i64 = g_results[0].i;
+        g_last_f64 = g_results[0].f;
+    }
+    return 0;
+}
+
+int64_t baga_wt_result_count(void) {
+    g_err[0] = '\0';
+    g_last_i64 = (int64_t)g_nresults;
+    return 0;
+}
+
+static WtVal *result_at(int64_t i) {
+    if (i < 0 || (size_t)i >= g_nresults) {
+        set_err("result index out of bounds");
+        return NULL;
+    }
+    return &g_results[(size_t)i];
+}
+
+int64_t baga_wt_result_kind(int64_t i) {
+    g_err[0] = '\0';
+    g_last_i64 = 0;
+    WtVal *r = result_at(i);
+    if (!r) return 1;
+    g_last_i64 = (int64_t)r->kind;
+    return 0;
+}
+
+int64_t baga_wt_result_i64(int64_t i) {
+    g_err[0] = '\0';
+    g_last_i64 = 0;
+    WtVal *r = result_at(i);
+    if (!r) return 1;
+    if (r->kind != V_I32 && r->kind != V_I64) {
+        set_err("result is not i32/i64");
+        return 1;
+    }
+    g_last_i64 = r->i;
+    return 0;
+}
+
+int64_t baga_wt_result_f64(int64_t i) {
+    g_err[0] = '\0';
+    g_last_f64 = 0.0;
+    WtVal *r = result_at(i);
+    if (!r) return 1;
+    if (r->kind != V_F32 && r->kind != V_F64) {
+        set_err("result is not f32/f64");
+        return 1;
+    }
+    g_last_f64 = r->f;
+    return 0;
 }
 
 void baga_wt_drop(int64_t h) {

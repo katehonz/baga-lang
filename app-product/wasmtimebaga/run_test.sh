@@ -11,6 +11,10 @@ grep -q "gcd(48, 18) = 6" /tmp/wasmtimebaga_demo.out
 grep -q "wat add(20, 22) = 42" /tmp/wasmtimebaga_demo.out
 grep -q "deserialized gcd(6, 27) = 3" /tmp/wasmtimebaga_demo.out
 grep -q "file-cached gcd(48, 18) = 6" /tmp/wasmtimebaga_demo.out
+grep -q "divmod(7, 3) = (2, 1)" /tmp/wasmtimebaga_demo.out
+grep -q "norm(3.0, 4.0) = 5.0 (f64)" /tmp/wasmtimebaga_demo.out
+grep -q "add64(3000000000, 3000000000) = 6000000000" /tmp/wasmtimebaga_demo.out
+grep -q "multi_memory: mem_a=1 page, mem_b=2 pages, independent" /tmp/wasmtimebaga_demo.out
 grep -q "wasmtimebaga demo: ok" /tmp/wasmtimebaga_demo.out
 
 # package-local smoke (not under tests/ so make test does not require vendor)

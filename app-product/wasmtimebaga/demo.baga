@@ -444,6 +444,165 @@ fn demo_serialize() -> i64 !IO {
     return 0
 }
 
+fn demo_calls() -> i64 !IO {
+    let path = resolve_fixture("callshapes.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+    let eng = wt_engine_new()?
+    let store = wt_store_new(eng)?
+    let mod = wt_module_from_file(eng, path)?
+    let inst = wt_instance_new(store, mod)?
+    if inst == 0 {
+        eprintln(concat("callshapes instance: ", wt_last_err()?))
+        return 1
+    }
+
+    // divmod(7, 3) → (2, 1) — multi-value
+    wt_args_clear()
+    if wt_arg_i32(7)? != 0 {
+        return 1
+    }
+    if wt_arg_i32(3)? != 0 {
+        return 1
+    }
+    if wt_call(store, inst, "divmod", 2)? != 0 {
+        eprintln(concat("call divmod: ", wt_last_err()?))
+        return 1
+    }
+    if wt_result_count()? != 2 {
+        eprintln("divmod result_count != 2")
+        return 1
+    }
+    let q = wt_result_i64(0)?
+    let rm = wt_result_i64(1)?
+    let mut s = concat("divmod(7, 3) = (", int_to_str(q))
+    s = concat(s, ", ")
+    s = concat(s, int_to_str(rm))
+    s = concat(s, ")")
+    print(s)
+    if q != 2 {
+        eprintln("expected quotient 2")
+        return 1
+    }
+    if rm != 1 {
+        eprintln("expected remainder 1")
+        return 1
+    }
+
+    // norm(3.0, 4.0) → 5.0 — f64 args + result
+    wt_args_clear()
+    if wt_arg_f64(3.0)? != 0 {
+        return 1
+    }
+    if wt_arg_f64(4.0)? != 0 {
+        return 1
+    }
+    if wt_call(store, inst, "norm", 1)? != 0 {
+        eprintln(concat("call norm: ", wt_last_err()?))
+        return 1
+    }
+    if wt_result_kind(0)? != WT_F64() {
+        eprintln("norm result kind != f64")
+        return 1
+    }
+    let nf = wt_result_f64(0)?
+    if nf != 5.0 {
+        eprintln("expected norm 5.0")
+        return 1
+    }
+    print("norm(3.0, 4.0) = 5.0 (f64)")
+
+    // add64(3000000000, 3000000000) → 6000000000 — i64 beyond i32 range
+    wt_args_clear()
+    if wt_arg_i64(3000000000)? != 0 {
+        return 1
+    }
+    if wt_arg_i64(3000000000)? != 0 {
+        return 1
+    }
+    if wt_call(store, inst, "add64", 1)? != 0 {
+        eprintln(concat("call add64: ", wt_last_err()?))
+        return 1
+    }
+    if wt_result_kind(0)? != WT_I64() {
+        eprintln("add64 result kind != i64")
+        return 1
+    }
+    let big = wt_result_i64(0)?
+    print(concat("add64(3000000000, 3000000000) = ", int_to_str(big)))
+    if big != 6000000000 {
+        eprintln("expected 6000000000")
+        return 1
+    }
+
+    wt_drop(inst)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    print("calls: ok")
+    return 0
+}
+
+fn demo_multi_mem() -> i64 !IO {
+    let path = resolve_fixture("multi_mem.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+    let eng = wt_engine_new()?
+    let store = wt_store_new(eng)?
+    let mod = wt_module_from_file(eng, path)?
+    let inst = wt_instance_new(store, mod)?
+    if inst == 0 {
+        eprintln(concat("multi_mem instance: ", wt_last_err()?))
+        return 1
+    }
+    let ma = wt_memory_get(store, inst, "mem_a")?
+    if ma == 0 {
+        eprintln(concat("memory_get mem_a: ", wt_last_err()?))
+        return 1
+    }
+    let mb = wt_memory_get(store, inst, "mem_b")?
+    if mb == 0 {
+        eprintln(concat("memory_get mem_b: ", wt_last_err()?))
+        return 1
+    }
+    if wt_memory_size(store, ma)? != 1 {
+        eprintln("mem_a pages != 1")
+        return 1
+    }
+    if wt_memory_size(store, mb)? != 2 {
+        eprintln("mem_b pages != 2")
+        return 1
+    }
+    // same offset, independent contents
+    if wt_memory_store8(store, ma, 0, 11)? != 0 {
+        return 1
+    }
+    if wt_memory_store8(store, mb, 0, 22)? != 0 {
+        return 1
+    }
+    if wt_memory_load8(store, ma, 0)? != 11 {
+        eprintln("mem_a[0] != 11")
+        return 1
+    }
+    if wt_memory_load8(store, mb, 0)? != 22 {
+        eprintln("mem_b[0] != 22")
+        return 1
+    }
+    print("multi_memory: mem_a=1 page, mem_b=2 pages, independent")
+    wt_drop(mb)
+    wt_drop(ma)
+    wt_drop(inst)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    print("multi_mem: ok")
+    return 0
+}
+
 fn main() -> i64 !IO {
     if wt_available()? == false {
         eprintln("wasmtimebaga: shim not available")
@@ -468,6 +627,12 @@ fn main() -> i64 !IO {
         return 1
     }
     if demo_serialize()? != 0 {
+        return 1
+    }
+    if demo_calls()? != 0 {
+        return 1
+    }
+    if demo_multi_mem()? != 0 {
         return 1
     }
     print("wasmtimebaga demo: ok")

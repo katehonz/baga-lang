@@ -51,11 +51,19 @@ entirely on the C side.
 
 **Residual.** Optional CI job; document version pin (`WASMTIME_VERSION`).
 
-## W5 — multi-value / f32 / f64 call shapes
+## W5 — multi-value / f32 / f64 call shapes — closed (P3c)
 
-**Symptom.** Call helpers are i32×0..2 → i32 / void0.
+**Symptom.** Call helpers were i32×0..2 → i32 / void0.
 
-**Verdict.** Extend call helpers as needed; baga `f64` extern exists for some paths.
+**Resolution.** Staged-args generic call: `baga_wt_args_push_{i32,i64,f64}`
++ `baga_wt_call(..., nresults)` + results vector (`result_count` /
+`result_kind` / `result_i64` / `result_f64`). Multi-value, i64 and f64
+params/results live; arg-type mismatch is an error, not a trap. First
+f64 externs in the repo (`baga_wt_args_push_f64` / `baga_wt_last_f64`).
+
+**Language residual surfaced.** Baga still has no `f64_to_str` (display
+goes through `print` only; see the string-interpolation design non-goal),
+so f64 results cannot be formatted into strings on the Baga side yet.
 
 ## W7 — memory as baga `bytes` (partial)
 
