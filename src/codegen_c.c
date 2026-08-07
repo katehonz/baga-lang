@@ -265,10 +265,18 @@ static void emit_expr(Codegen *cg, Node *n) {
             fprintf(f, "%lldLL", (long long)n->int_val);
             break;
 
-        case NODE_FLOAT_LIT:
-            /* %.17g round-trip-ва IEEE double без загуба на точност */
-            fprintf(f, "%.17g", n->float_val);
+        case NODE_FLOAT_LIT: {
+            /* %.17g round-trip-ва IEEE double без загуба на точност;
+             * резултатът трябва да остане double литерал в C — "7" би
+             * бил int константа и `/` става целочислено (LP2 сонда). */
+            char tmp[40];
+            snprintf(tmp, sizeof tmp, "%.17g", n->float_val);
+            fprintf(f, "%s", tmp);
+            if (!strpbrk(tmp, ".eE") && strcmp(tmp, "inf") != 0 &&
+                strcmp(tmp, "-inf") != 0 && strcmp(tmp, "nan") != 0)
+                fprintf(f, ".0");
             break;
+        }
 
         case NODE_STR_LIT:
             emit_c_string(f, n->str_val);
@@ -379,6 +387,17 @@ static void emit_expr(Codegen *cg, Node *n) {
                 emit_expr(cg, n->right);
                 fprintf(f, "); if (_b == 0) baga_div_zero_fail(); _a %s _b; })",
                         n->bin_op == OP_DIV ? "/" : "%");
+            } else if (n->bin_op == OP_MOD &&
+                       n->left->type && n->right->type &&
+                       n->left->type->kind == TYPE_F64 &&
+                       n->right->type->kind == TYPE_F64) {
+                /* f64 modulo: fmod — C няма `%` за double; LLVM емитува
+                   frem със същата truncating семантика (LP2 сонда). */
+                fprintf(f, "fmod(");
+                emit_expr(cg, n->left);
+                fprintf(f, ", ");
+                emit_expr(cg, n->right);
+                fprintf(f, ")");
             } else {
                 fprintf(f, "(");
                 emit_expr(cg, n->left);
@@ -2023,7 +2042,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <errno.h>\n");
     fprintf(out, "#include <time.h>\n");
     fprintf(out, "#include <signal.h>\n");
-    fprintf(out, "#include <pthread.h>\n\n");
+    fprintf(out, "#include <pthread.h>\n");
+    fprintf(out, "#include <math.h>\n\n");
 
     /* arena — всички низови/векторни алокации минават тук (без individual free).
      * R52: arena + free lists са THREAD-LOCAL (__thread). Преди това един

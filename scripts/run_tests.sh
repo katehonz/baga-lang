@@ -347,6 +347,22 @@ printf 'enum Mode { Add, Mul }\nfn take(m: Mode) -> i64 { return 1 }\nfn main() 
 run /tmp/baga_lp1_enum_i64.baga 2>&1 | grep -q "аргумент #1 е от тип i64, но параметърът е Mode" \
 	&& echo "OK: LP1 — enum без payload-и е old-style i64 константи (gap G2)" \
 	|| { echo "FAIL: old-style enum като sum-тип аргумент трябва да гърми"; exit 1; }
+printf 'fn g(x: i64) -> i64 { return x }\nfn main() { print(g(3.0)) }\n' > /tmp/baga_lp2_mix1.baga
+run /tmp/baga_lp2_mix1.baga 2>&1 | grep -q "аргумент #1 е от тип f64, но параметърът е i64" \
+	&& echo "OK: LP2 — f64 литерал към i64 параметър е checker грешка" \
+	|| { echo "FAIL: f64→i64 аргумент трябва да гърми"; exit 1; }
+printf 'fn f(x: f64) -> f64 { return x }\nfn main() { print(f(3)) }\n' > /tmp/baga_lp2_mix2.baga
+run /tmp/baga_lp2_mix2.baga 2>&1 | grep -q "аргумент #1 е от тип i64, но параметърът е f64" \
+	&& echo "OK: LP2 — i64 литерал към f64 параметър е checker грешка" \
+	|| { echo "FAIL: i64→f64 аргумент трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let x = 1.5\n    print("${x}")\n}\n' > /tmp/baga_lp2_interp.baga
+run /tmp/baga_lp2_interp.baga 2>&1 | grep -q "неподдържан тип за интерполация: f64" \
+	&& echo "OK: LP2 — f64 в интерполация е честен отказ (няма f64_to_str)" \
+	|| { echo "FAIL: f64 интерполацията трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let m = map_new()\n    map_set(m, 1.5, 1)\n}\n' > /tmp/baga_lp2_mapkey.baga
+run /tmp/baga_lp2_mapkey.baga 2>&1 | grep -q "неподдържан ключов тип f64" \
+	&& echo "OK: LP2 — f64 като Map ключ е честен отказ" \
+	|| { echo "FAIL: f64 map ключ трябва да гърми"; exit 1; }
 printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let f = add\n    print(f("x", 1))\n}\n' > /tmp/baga_fn_bad1.baga
 run /tmp/baga_fn_bad1.baga 2>&1 | grep -q "fn стойност: аргумент #1 е от тип str, но параметърът е i64" \
 	&& echo "OK: L5 — грешен аргумент през fn стойност е отхвърлен" \

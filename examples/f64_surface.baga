@@ -1,0 +1,56 @@
+// LP2 probe: f64 surface — arithmetic on whole-valued literals (G1
+// regression: 7.0 must stay a double in C), + - * / %, comparisons,
+// struct fields, Vec<f64>, Map<str,f64>, %g printing. Oracle-diffed
+// across both backends.
+struct Pt { x: f64, y: f64 }
+
+fn dist2(p: Pt) -> f64 {
+    return p.x * p.x + p.y * p.y
+}
+
+fn half(x: f64) -> f64 {
+    return x / 2.0
+}
+
+fn main() {
+    // G1 regression: whole-valued literals must divide as doubles
+    print(7.0 / 2.0)
+    print(5.0 / 2.0)
+    print(10.0 / 4.0)
+
+    // arithmetic incl. f64 modulo and unary minus
+    print(0.25 + 0.25)
+    print(1.0 - 0.25)
+    print(1.5 * 2.0)
+    print(7.5 % 2.0)
+    print(-1.5 * 2.0)
+    print(half(5.0))
+
+    // comparisons
+    print(1.5 < 2.0)
+    print(1.5 >= 1.5)
+    print(1.5 == 1.5)
+    print(1.5 != 1.5)
+
+    // struct fields
+    print(dist2(Pt { x: 3.0, y: 4.0 }))
+
+    // Vec<f64>
+    let v: Vec<f64> = vec_new()
+    vec_push(v, 1.5)
+    vec_push(v, 2.5)
+    vec_set(v, 1, 3.5)
+    print(vec_get(v, 0))
+    print(vec_get(v, 1))
+    print(vec_len(v))
+
+    // Map<str,f64> — missing key renders the 0.0 default
+    let m = map_new()
+    map_set(m, "pi", 3.14)
+    map_set(m, "e", 2.72)
+    print(map_get(m, "pi"))
+    print(map_get(m, "missing"))
+
+    // %g printing: whole values render without a decimal point
+    print(2.0)
+}
