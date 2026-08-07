@@ -21,3 +21,5 @@ PUT                192307       133450       144%
 GET_SEQ            714285       460887       154%
 GET_RND            714285       330290       216%
 
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-rocksdb-20260807T201702Z.txt
+OK
