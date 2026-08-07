@@ -140,6 +140,14 @@ static LLVMTypeRef llvm_type(Node *ty) {
         if (strcmp(ty->type_name, "bytes") == 0) return baga_bytes_ty();
         if (strcmp(ty->type_name, "Vec") == 0) return baga_vec_ptr_ty();
         if (strcmp(ty->type_name, "Map") == 0) return baga_map_ptr_ty();
+        /* LP-final обединяване: enum без payload-и е i64-базиран */
+        for (int i = 0; lg.program && i < lg.program->items.len; i++) {
+            Node *it = lg.program->items.data[i];
+            if (it->kind == NODE_ENUM && it->enum_name &&
+                strcmp(it->enum_name, ty->type_name) == 0 &&
+                !is_sum_enum_item(it))
+                return lg.i64_ty;
+        }
         /* user struct или L3 sum enum — и двата са named struct типове */
         return user_struct_ty(ty->type_name);
     }

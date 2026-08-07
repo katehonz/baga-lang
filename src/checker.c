@@ -36,7 +36,7 @@ const char *type_str(Type *t) {
         case TYPE_VOID:  return "void";
         case TYPE_BOOL:  return "bool";
         case TYPE_I32:   return "i32";
-        case TYPE_I64:   return "i64";
+        case TYPE_I64:   return t->name ? t->name : "i64";
         case TYPE_F64:   return "f64";
         case TYPE_STR:   return "str";
         case TYPE_BYTES: return "bytes";
@@ -340,13 +340,19 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
             }
             {
                 for (int i = 0; i < ctx->n_enums; i++) {
-                    if (strcmp(ctx->enums[i].name, ty->type_name) == 0 &&
-                        ctx->enums[i].decl->type &&
+                    if (strcmp(ctx->enums[i].name, ty->type_name) != 0) continue;
+                    if (ctx->enums[i].decl->type &&
                         ctx->enums[i].decl->type->kind == TYPE_ENUM) {
                         Type *t = type_new(TYPE_ENUM);
                         t->name = strdup(ty->type_name);
                         return t;
                     }
+                    /* LP-final, обединяване: enum без payload-и е i64-базиран —
+                     * вариантите са именувани i64 константи и името е валидна
+                     * типова анотация за i64 (преди падаше в struct lookup). */
+                    Type *t = type_new(TYPE_I64);
+                    t->name = strdup(ty->type_name);
+                    return t;
                 }
                 int amb = 0;
                 Node *sd = find_struct_scoped(ctx, ty->type_name, ty->pos.file, &amb);

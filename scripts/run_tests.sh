@@ -348,10 +348,10 @@ printf 'fn main() {\n    let v: Vec<Vec<i64>> = vec_new()\n    let s: Vec<str> =
 run /tmp/baga_lp1_nested_mix.baga 2>&1 | grep -q "елемент от тип Vec<str>, но векторът е Vec<Vec<i64>>" \
 	&& echo "OK: LP1 — Vec<Vec<i64>> срещу Vec<str> елемент е checker грешка" \
 	|| { echo "FAIL: смесеният вложен елемент трябва да гърми"; exit 1; }
-printf 'enum Mode { Add, Mul }\nfn take(m: Mode) -> i64 { return 1 }\nfn main() {\n    print(take(Add))\n}\n' > /tmp/baga_lp1_enum_i64.baga
-run /tmp/baga_lp1_enum_i64.baga 2>&1 | grep -q "аргумент #1 е от тип i64, но параметърът е Mode" \
-	&& echo "OK: LP1 — enum без payload-и е old-style i64 константи (gap G2)" \
-	|| { echo "FAIL: old-style enum като sum-тип аргумент трябва да гърми"; exit 1; }
+printf 'enum Mode { Add, Mul }\nfn take(m: Mode) -> i64 { return m + 1 }\nfn main() -> i64 {\n    print(take(Add))\n    print(take(Mul))\n    let x: i64 = Mul\n    print(x)\n    return 0\n}\n' > /tmp/baga_lp1_enum_i64.baga
+run /tmp/baga_lp1_enum_i64.baga 2>&1 | grep -q "^1$" \
+	&& echo "OK: LP1 — enum без payload-и е i64-базиран тип (gap G2 затворен, обединени)" \
+	|| { echo "FAIL: old-style enum като типов аргумент трябва да работи"; exit 1; }
 printf 'fn g(x: i64) -> i64 { return x }\nfn main() { print(g(3.0)) }\n' > /tmp/baga_lp2_mix1.baga
 run /tmp/baga_lp2_mix1.baga 2>&1 | grep -q "аргумент #1 е от тип f64, но параметърът е i64" \
 	&& echo "OK: LP2 — f64 литерал към i64 параметър е checker грешка" \

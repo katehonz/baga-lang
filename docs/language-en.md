@@ -531,6 +531,12 @@ fn main() {
 }
 ```
 
+Payload-less enums are `i64`-based, and the enum name itself is a valid
+type annotation (an alias of `i64`): `fn име(ц: Цвят) -> str` is accepted
+and the variants pass as arguments. Sum enums (§11.1) are distinct types
+instead. Mixing the two forms is deliberate and unified: every enum name
+names a type.
+
 ### 11.1 Sum types (L3)
 
 An enum may give a variant a single **payload** type, turning it into a sum
