@@ -379,6 +379,22 @@ printf 'fn main() {\n    print(bytes_len("str"))\n}\n' > /tmp/baga_lp3_bytes_arg
 run /tmp/baga_lp3_bytes_arg.baga 2>&1 | grep -q "'bytes_len': аргумент #1 е от тип str, но параметърът е bytes" \
 	&& echo "OK: LP3 — str към bytes builtin е checker грешка" \
 	|| { echo "FAIL: bytes_len(str) трябва да гърми"; exit 1; }
+printf 'fn r(x: i64) -> i64 !A { return x }\nfn main() -> i64 {\n    let v = r(1) catch !A => 10 catch !A => 20\n    print(v)\n    return 0\n}\n' > /tmp/baga_lp4_dup.baga
+run /tmp/baga_lp4_dup.baga 2>&1 | grep -q "мъртъв catch" \
+	&& echo "OK: LP4 — дублиран catch е грешка (вторият вече е изчистен ефект)" \
+	|| { echo "FAIL: дублираният catch трябва да гърми"; exit 1; }
+printf 'fn r(x: i64) -> i64 !A { return x }\nfn main() -> i64 {\n    let v = r(1) catch !A => 10 catch !C => 20\n    print(v)\n    return 0\n}\n' > /tmp/baga_lp4_phantom.baga
+run /tmp/baga_lp4_phantom.baga 2>&1 | grep -q "мъртъв catch" \
+	&& echo "OK: LP4 — catch на ефект, който изразът няма, е грешка (правопис)" \
+	|| { echo "FAIL: phantom catch трябва да гърми"; exit 1; }
+printf 'fn main() -> i64 {\n    let v = 5 catch !IO => 0\n    print(v)\n    return 0\n}\n' > /tmp/baga_lp4_pure.baga
+run /tmp/baga_lp4_pure.baga 2>&1 | grep -q "мъртъв catch" \
+	&& echo "OK: LP4 — catch върху чист израз е грешка" \
+	|| { echo "FAIL: catch върху чист израз трябва да гърми"; exit 1; }
+printf 'fn w(x: i64) -> i64 !IO { return x }\nfn main() -> i64 !Par {\n    let h = go(w, 1)\n    let r = join(h)?\n    print(r)\n    return 0\n}\n' > /tmp/baga_lp4_go.baga
+run /tmp/baga_lp4_go.baga 2>&1 | grep -q "необработен ефект !IO" \
+	&& echo "OK: LP4 — ефектите на go_bg worker се propagate-ват към callers" \
+	|| { echo "FAIL: worker ефектите трябва да се propagate-ват"; exit 1; }
 printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let f = add\n    print(f("x", 1))\n}\n' > /tmp/baga_fn_bad1.baga
 run /tmp/baga_fn_bad1.baga 2>&1 | grep -q "fn стойност: аргумент #1 е от тип str, но параметърът е i64" \
 	&& echo "OK: L5 — грешен аргумент през fn стойност е отхвърлен" \

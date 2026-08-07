@@ -423,7 +423,7 @@ static Node *parse_interp_string(Parser *p, const char *s, SrcPos pos) {
                 subtoks[nsub++] = t;
                 if (t.kind == TOK_EOF) break;
             }
-            Parser sub; sub.tokens = subtoks; sub.len = nsub; sub.pos = 0; sub.filename = p->filename; sub.n_errors = 0;
+            Parser sub; sub.tokens = subtoks; sub.len = nsub; sub.pos = 0; sub.filename = p->filename; sub.n_errors = 0; sub.in_catch_handler = 0;
             Node *e = parse_expr(&sub);
             int bad = (!e || sub.n_errors > 0 || peek_kind(&sub) != TOK_EOF);
             if (bad) parser_error(p, "невалиден израз в интерполация: %s", exprstr);
@@ -571,7 +571,12 @@ static Node *parse_primary(Parser *p) {
 
     /* parenthesized expression */
     if (match(p, TOK_LPAREN)) {
+        /* скобите възстановяват пълния изразен контекст — catch вътре
+         * в тях се групира вътре (LP4) */
+        int saved_catch = p->in_catch_handler;
+        p->in_catch_handler = 0;
         Node *e = parse_expr(p);
+        p->in_catch_handler = saved_catch;
         expect(p, TOK_RPAREN);
         return e;
     }
@@ -804,13 +809,18 @@ static Node *parse_postfix(Parser *p) {
             continue;
         }
 
-        /* catch !Effect => handler */
+        /* catch !Effect => handler. Веригите се свързват ляво-асоциативно
+         * на postfix ниво (docs §13.3); вътре в handler postfix `catch`
+         * спира — изрично групиране става с скоби (LP4). */
         if (check(p, TOK_CATCH)) {
+            if (p->in_catch_handler) break;
             advance(p);
             expect(p, TOK_BANG);
             Token *eff = expect(p, TOK_IDENT);
             expect(p, TOK_FAT_ARROW);
+            p->in_catch_handler = 1;
             Node *handler = parse_unary(p);
+            p->in_catch_handler = 0;
             Node *cat = node_alloc(NODE_CATCH, pos);
             cat->catch_expr = e;
             cat->catch_effect = eff->text ? strdup(eff->text) : strdup("");
@@ -1479,6 +1489,7 @@ Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename)
     p->pos = 0;
     p->filename = filename;
     p->n_errors = 0;
+    p->in_catch_handler = 0;
 
     SrcPos pos = { 1, 1, filename };
     Node *prog = node_alloc(NODE_PROGRAM, pos);

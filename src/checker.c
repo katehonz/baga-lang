@@ -2058,6 +2058,17 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             drop_lift_from(ctx, log_base);
             infer(ctx, n->catch_handler);
             drop_join2(ctx, log_base, try_end);
+            /* LP4: catch на ефект, който изразът не носи, минаваше тихо —
+             * мъртъв код и прикритие за правописни грешки в името. */
+            if (et->kind != TYPE_ERROR) {
+                int has = 0;
+                for (int i = 0; i < et->n_effects; i++)
+                    if (strcmp(et->effects[i], n->catch_effect) == 0) { has = 1; break; }
+                if (!has)
+                    check_error(ctx, n->pos,
+                        "catch !%s — изразът няма такъв ефект (мъртъв catch; правописна грешка?)",
+                        n->catch_effect);
+            }
             t = type_new(et->kind);
             /* keep Vec elem / struct name, like a plain call result does */
             t->elem = et->elem;

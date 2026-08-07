@@ -455,6 +455,9 @@ typedef struct {
     int     len;
     int     pos;
     const char *filename;
+    /* LP4: while parsing a catch handler, a bare postfix `catch` binds to
+     * the outer chain (left-assoc), not to the handler — parens re-enable. */
+    int     in_catch_handler;
     /* error reporting */
     char   errors[BAGA_MAX_ERRORS][256];
     int    n_errors;

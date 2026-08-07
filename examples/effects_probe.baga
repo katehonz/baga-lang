@@ -1,0 +1,32 @@
+// LP4 probe: the effect system — user-declared effects, left-associative
+// catch chains (order-independent), `?` propagation from nested positions,
+// fn values and closures carrying effect annotations. Effects are static
+// permissions: catch discharges the type dimension; handlers only run for
+// their value. Oracle-diffed across both backends.
+fn risky(x: i64) -> i64 !A !B { return x }
+fn eff() -> i64 !A { return 7 }
+
+fn propagate(x: i64) -> i64 !A !B {
+    let t = 1 + risky(x)?
+    return t * 2
+}
+
+fn main() -> i64 {
+    // catch chains: left-associative, order-independent
+    print(risky(1) catch !A => 10 catch !B => 20)
+    print(risky(2) catch !B => 20 catch !A => 10)
+
+    // every effect caught → main stays pure; ? nested in arithmetic
+    print(propagate(5) catch !B => 0 catch !A => 0)
+
+    // fn value with an effect annotation
+    let f: fn() -> i64 !A = eff
+    print(f()? catch !A => 0)
+
+    // closure with an effect annotation; the effectful call propagates
+    let base = 0
+    let c = fn [base] () -> i64 !A { return eff()? + base }
+    print(c()? catch !A => 0)
+
+    return 0
+}
