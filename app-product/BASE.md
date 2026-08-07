@@ -1,7 +1,6 @@
 # Canonical product stack (base)
 
-**Locked:** 2026-08-03 · **DX model:** Crystal [Lucky](https://luckyframework.org/) —
-small community, real conventions, apps you can ship.
+**Locked:** 2026-08-03 · **Updated package list:** 2026-08-07
 
 **Language role:** Baga is an **educational systems language**. Packages here
 are **ecosystem building blocks to prove the language** — not throwaway demos.
@@ -28,7 +27,7 @@ Long-horizon storage goal: a **RocksDB-like** engine (`rocksbaga`; was `lsmbaga`
 
 | Layer | Path | Role |
 |-------|------|------|
-| **App** | `apps/api` | product code (Lucky-style actions/models) |
+| **App** | `apps/api` | product code (actions, models, routes) |
 | Framework | `app-product/fmrbaga` | router, jsonx, deps, config, workers |
 | HTTP | `httpdbaga` | request/response |
 | Auth | `jwtbaga` | HS256 |
@@ -43,3 +42,94 @@ Long-horizon storage goal: a **RocksDB-like** engine (`rocksbaga`; was `lsmbaga`
 4. Do not fork a second web framework without a strong reason.
 5. Every package carries a `sandak.toml` (name == directory name) and builds
    with `sandak build`; imports use package names, never `../../` paths.
+
+---
+
+## Full package list (`app-product/`)
+
+**41 packages** (directories with `sandak.toml`). Alphabetical.
+
+### Web / API stack
+
+| Package | Role |
+|---------|------|
+| **fmrbaga** | Small web framework — router, JSON (`jsonx`), middleware, OpenAPI, config, serve, workers |
+| **httpdbaga** | HTTP/1.1 + HTTP/2 (h2c, HPACK) server library |
+| **jwtbaga** | JWT/JWS — HS256 sign/verify; RS256/ES256 verify |
+| **oauthbaga** | OAuth2 / OIDC-style flows, proxy, session cookie demo |
+| **ormbaga** | ActiveRecord-style ORM + goose-like migrations + connection pool |
+| **pgbaga** | Native PostgreSQL wire client (SCRAM-SHA-256, Simple + Extended Query) |
+| **querybaga** | URL query / form parse and encode |
+| **wsbaga** | WebSocket RFC 6455 — handshake, frames, echo server/client |
+| **chatbaga** | Multi-room WebSocket chat product (on wsbaga + poll) |
+
+### RPC / protocols
+
+| Package | Role |
+|---------|------|
+| **jsonrpcbaga** | JSON-RPC 2.0 over HTTP (single + batch, name dispatch) |
+| **pbbaga** | Protocol Buffers wire codec + gRPC message framing |
+| **statusbaga** | gRPC status codes + Status (Go `codes`/`status` style) |
+| **ctxbaga** | Context lite — deadlines, cancel, string values (Go `context`) |
+
+### Storage / data plane
+
+| Package | Role |
+|---------|------|
+| **rocksbaga** | Durable LSM-style KV (RocksDB-class path); flagship storage |
+| **lsmbaga** | **Deprecated** → re-exports / points at `rocksbaga` |
+| **kvbaga** | Redis-compatible RESP2 KV server (`Map` store, TTL) |
+| **queuebaga** | Background job queue — disk payloads, worker pool over `chan` |
+| **raftbaga** | Raft fragment — election + single-entry log (3 in-process nodes) |
+| **txnbaga** | 2PC coordinator + MVCC store (distributed transactions probe) |
+
+### Cloud / ops
+
+| Package | Role |
+|---------|------|
+| **cloudbaga** | 12-factor cloud demo — healthz/readyz/metrics, graceful shutdown |
+| **flagbaga** | Typed CLI flags over `arg()` |
+| **logbaga** | Structured JSON lines on stderr |
+| **metbaga** | Prometheus text metrics |
+| **otelbaga** | W3C Trace Context + OTLP/JSON export lite |
+| **relbaga** | Resilience — backoff, retry, circuit breaker, bulkhead |
+
+### Text / documents / reports
+
+| Package | Role |
+|---------|------|
+| **bufbaga** | String builder (push chunks, join once) |
+| **csvbaga** | CSV parse/stringify (RFC 4180-ish) |
+| **mdbaga** | Markdown parser / renderer |
+| **mdtbaga** | Markdown table helpers |
+| **officebaga** | Office docs — DOCX/XLSX/ODT/ODS (+ legacy DOC/XLS probe) |
+| **pdfbaga** | PDF writer with UTF-8/Cyrillic via embedded TTF |
+| **reportbaga** | Accounting reports — data/HTML → Excel · CSV · PDF · HTML |
+| **tplbaga** | HTML template engine (Mustache-ish: if, filters, escape) |
+| **xmlbaga** | XML pull parser + writer (no DOM) |
+| **zipbaga** | ZIP + DEFLATE/inflate + CRC-32 (used by officebaga) |
+
+### Language / tooling utilities
+
+| Package | Role |
+|---------|------|
+| **bagadecimal** | Fixed-precision decimal (money, VAT, rates; Postgres NUMERIC bridge) |
+| **globbaga** | Simple glob matching (`*`, `?`) |
+| **grebaga** | Grep-like line scanner (literal + mini patterns) |
+| **pathbaga** | Path helpers (join, basename, dirname, ext, stem) |
+| **testbaga** | Minimal test assertions (`assert_true`, `assert_eq_*`) |
+| **uuidbaga** | UUID v4 (RFC 4122) |
+
+### Flat inventory (names only)
+
+```
+bagadecimal  bufbaga     chatbaga    cloudbaga   csvbaga     ctxbaga
+flagbaga     fmrbaga     globbaga    grebaga     httpdbaga   jsonrpcbaga
+jwtbaga      kvbaga      logbaga     lsmbaga†    mdbaga      mdtbaga
+metbaga      oauthbaga   officebaga  ormbaga     otelbaga    pathbaga
+pbbaga       pdfbaga     pgbaga      querybaga   queuebaga   raftbaga
+relbaga      reportbaga  rocksbaga   statusbaga  testbaga    tplbaga
+txnbaga      uuidbaga    wsbaga      xmlbaga     zipbaga
+```
+
+† `lsmbaga` — deprecated alias for `rocksbaga`.
