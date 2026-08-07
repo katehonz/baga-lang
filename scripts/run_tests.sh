@@ -6,6 +6,7 @@
 #   sandak            → build every package that has sandak.toml
 #   scripts/baga-test → discover and run tests/**/*_test.baga
 #   scripts/run_verify.sh → --verify oracle (M0–M18)
+#   scripts/self_parity.sh → self-hosting паритет (LP7)
 #
 # `make test` only builds the toolchain and delegates here.
 set -eu
@@ -576,6 +577,9 @@ run /tmp/baga_arena_reg3.baga 2>&1 | grep -q "използване на 'p' сл
 
 # ── 6. Static verifier oracle ────────────────────────────────────────────
 bash "$ROOT/scripts/run_verify.sh"
+
+# ── 6b. Self-hosting parity (LP7) ────────────────────────────────────────
+bash "$ROOT/scripts/self_parity.sh"
 
 # ── 7. Optional LLVM oracle (separate make target; skip if not built) ────
 echo "=== LLVM оракул (C vs lli-14) ==="
