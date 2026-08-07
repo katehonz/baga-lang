@@ -62,6 +62,17 @@ for name in $PARITY_LIST; do
 	fi
 done
 
+# LP7: чисто language-ниво отказване на неподдържания синтаксис
+# (сум enum-и с payload-и, fn стойности/ламбди, !Par concurrency)
+for name in sum_enum.baga closures.baga par.baga; do
+	if /tmp/baga2 "examples/$name" 2>&1 >/dev/null | grep -q "неподдържан конструкт в self компилатора"; then
+		echo "OK: self отказва чисто $name (не счупен C)"
+	else
+		echo "FAIL: $name — очаквах чисто language-ниво отказване"
+		FAIL=1
+	fi
+done
+
 if [ $FAIL -eq 0 ]; then
 	echo "OK: self-hosting паритет — 22 PARITY, без поведенческа дивергенция (LP7)"
 else

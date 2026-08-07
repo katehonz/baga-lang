@@ -215,6 +215,9 @@ fn parse_expr(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
 fn parse_primary(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
     let mut k = vec_get(tk, vec_get(pos, 0))
     let mut t = vec_get_str(tt, vec_get(pos, 0))
+    if k == 1 {
+        self_unsupported("fn стойности / ламбди (L5 closures)")
+    }
     if is_single(tk, tt, vec_get(pos, 0), "-") == 1 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         let mut operand = parse_primary(tk, tt, pos, nk, nt, fc, ns)
@@ -705,6 +708,12 @@ fn parse_struct(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) 
     node
 }
 
+// LP7: честен отказ на language ниво вместо счупен C на изхода.
+fn self_unsupported(what: str) {
+    eprintln(concat(concat("неподдържан конструкт в self компилатора: ", what), " — използвай C bootstrap './baga'"))
+    exit(1)
+}
+
 fn parse_enum(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
     vec_set(pos, 0, vec_get(pos, 0) + 1)
     let mut name = vec_get_str(tt, vec_get(pos, 0))
@@ -715,6 +724,9 @@ fn parse_enum(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         if vec_get(tk, vec_get(pos, 0)) == 999 { break }
         let mut vname = vec_get_str(tt, vec_get(pos, 0))
         vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), "(") == 1 {
+            self_unsupported(concat(concat("сум enum с payload-и (вариант '", vname), "')"))
+        }
         let mut vn = ast_kind(nk, nt, fc, ns, 29, vname)
         ast_child(fc, ns, node, vn)
         if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
@@ -1047,6 +1059,34 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
         let mut cname = ""
         if node_kind(nk, callee) == 2 {
             let mut bn = node_text(nt, callee)
+            // LP7: builtin-и извън подмножеството на self компилатора
+            if str_eq(bn, "drop") == 1 { self_unsupported("drop (MEM-1)") }
+            if str_eq(bn, "go") == 1 { self_unsupported("go/!Par конкурентност") }
+            if str_eq(bn, "join") == 1 { self_unsupported("join/!Par конкурентност") }
+            if str_eq(bn, "detach") == 1 { self_unsupported("detach/!Par конкурентност") }
+            if str_eq(bn, "chan_new") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_send") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_recv") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_recv2") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_try_recv") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_recv_timeout") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_select2") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_select2_wait") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_select2_timeout") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_close") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_len") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "mutex_new") == 1 { self_unsupported("mutex-и (!Par)") }
+            if str_eq(bn, "mutex_lock") == 1 { self_unsupported("mutex-и (!Par)") }
+            if str_eq(bn, "mutex_unlock") == 1 { self_unsupported("mutex-и (!Par)") }
+            if str_eq(bn, "sleep_ms") == 1 { self_unsupported("sleep_ms (!Par)") }
+            if str_eq(bn, "signal_watch") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_check") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_clear") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_wait") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_raise") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "cell2") == 1 { self_unsupported("cell2 heap двойки") }
+            if str_eq(bn, "cell2_0") == 1 { self_unsupported("cell2 heap двойки") }
+            if str_eq(bn, "cell2_1") == 1 { self_unsupported("cell2 heap двойки") }
             let mut a1 = next_sibling(ns, callee)
             if str_eq(bn, "len") == 1 { cname = "baga_len" }
             if str_eq(bn, "char_at") == 1 { cname = "baga_char_at" }
