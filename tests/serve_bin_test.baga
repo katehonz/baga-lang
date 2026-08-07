@@ -197,6 +197,63 @@ fn main() -> i64 !Net !IO !Par !Time {
             bytes_contains(sc2, x"610062")
             && bytes_contains(sc2, bytes_of_str("$1\r\na\r\n")) == false
             && bytes_contains(sc2, resp_bulk_b(x"0062")) == false)
+        // --- R69: INCRBY/DECRBY, GETSET, STRLEN, GETDEL, SETNX, UNLINK ---
+        let sn = bytes_of_str("n69")
+        let s0 = wire_rt(fd, bargs3(bytes_of_str("SET"), sn, bytes_of_str("10")))?
+        check(fails, "r69_set_base", bytes_eq_b(s0, resp_ok()))
+        let ib = wire_rt(fd, bargs3(bytes_of_str("INCRBY"), sn, bytes_of_str("5")))?
+        check(fails, "r69_incrby", bytes_eq_b(ib, resp_int(15)))
+        let db9 = wire_rt(fd, bargs3(bytes_of_str("DECRBY"), sn, bytes_of_str("3")))?
+        check(fails, "r69_decrby", bytes_eq_b(db9, resp_int(12)))
+        let ibm = wire_rt(fd, bargs3(bytes_of_str("INCRBY"), bytes_of_str("n69m"), bytes_of_str("7")))?
+        check(fails, "r69_incrby_missing", bytes_eq_b(ibm, resp_int(7)))
+        // INCRBY on a non-integer value → error
+        let ibe = wire_rt(fd, bargs3(bytes_of_str("INCRBY"), ka, bytes_of_str("1")))?
+        check(fails, "r69_incrby_notint", bytes_contains(ibe, bytes_of_str("not an integer")))
+        // INCRBY over a NUL key
+        let ibn = wire_rt(fd, bargs3(bytes_of_str("SET"), x"0069", bytes_of_str("5")))?
+        let ibn2 = wire_rt(fd, bargs3(bytes_of_str("INCRBY"), x"0069", bytes_of_str("2")))?
+        check(fails, "r69_incrby_nulkey", bytes_eq_b(ibn, resp_ok()) && bytes_eq_b(ibn2, resp_int(7)))
+        // GETSET: nil on first, old value afterwards
+        let gk = bytes_of_str("gk69")
+        let gs1 = wire_rt(fd, bargs3(bytes_of_str("GETSET"), gk, bytes_of_str("v1")))?
+        check(fails, "r69_getset_nil", bytes_eq_b(gs1, resp_null_bulk()))
+        let gs2 = wire_rt(fd, bargs3(bytes_of_str("GETSET"), gk, bytes_of_str("v2")))?
+        check(fails, "r69_getset_old", bytes_eq_b(gs2, resp_bulk_b(bytes_of_str("v1"))))
+        let gs3 = wire_rt(fd, bargs2(bytes_of_str("GET"), gk))?
+        check(fails, "r69_getset_new", bytes_eq_b(gs3, resp_bulk_b(bytes_of_str("v2"))))
+        // STRLEN
+        let sk = bytes_of_str("sk69")
+        let ss0 = wire_rt(fd, bargs3(bytes_of_str("SET"), sk, bytes_of_str("hello")))?
+        let sl = wire_rt(fd, bargs2(bytes_of_str("STRLEN"), sk))?
+        let slm = wire_rt(fd, bargs2(bytes_of_str("STRLEN"), bytes_of_str("nokey69")))?
+        check(fails, "r69_strlen", bytes_eq_b(ss0, resp_ok())
+            && bytes_eq_b(sl, resp_int(5)) && bytes_eq_b(slm, resp_int(0)))
+        // GETDEL: value once, then gone
+        let gdk = bytes_of_str("gd69")
+        let gd0 = wire_rt(fd, bargs3(bytes_of_str("SET"), gdk, bytes_of_str("gv")))?
+        let gd1 = wire_rt(fd, bargs2(bytes_of_str("GETDEL"), gdk))?
+        let gd2 = wire_rt(fd, bargs2(bytes_of_str("GET"), gdk))?
+        check(fails, "r69_getdel", bytes_eq_b(gd0, resp_ok())
+            && bytes_eq_b(gd1, resp_bulk_b(bytes_of_str("gv")))
+            && bytes_eq_b(gd2, resp_null_bulk()))
+        // SETNX: :1 first, :0 when exists, value untouched
+        let nxk = bytes_of_str("nx69")
+        let nx1 = wire_rt(fd, bargs3(bytes_of_str("SETNX"), nxk, bytes_of_str("a")))?
+        let nx2 = wire_rt(fd, bargs3(bytes_of_str("SETNX"), nxk, bytes_of_str("b")))?
+        let nx3 = wire_rt(fd, bargs2(bytes_of_str("GET"), nxk))?
+        check(fails, "r69_setnx", bytes_eq_b(nx1, resp_int(1))
+            && bytes_eq_b(nx2, resp_int(0))
+            && bytes_eq_b(nx3, resp_bulk_b(bytes_of_str("a"))))
+        // UNLINK multi-key (two live + one missing) and multi-key DEL
+        let u1 = wire_rt(fd, bargs3(bytes_of_str("SET"), bytes_of_str("u1"), bytes_of_str("x")))?
+        let u2 = wire_rt(fd, bargs3(bytes_of_str("SET"), bytes_of_str("u2"), bytes_of_str("x")))?
+        let ul = wire_rt(fd, bargs4(bytes_of_str("UNLINK"), bytes_of_str("u1"),
+            bytes_of_str("u2"), bytes_of_str("umiss")))?
+        check(fails, "r69_unlink", bytes_eq_b(u1, resp_ok())
+            && bytes_eq_b(u2, resp_ok()) && bytes_eq_b(ul, resp_int(2)))
+        let dm = wire_rt(fd, bargs4(bytes_of_str("DEL"), gk, sk, bytes_of_str("umiss")))?
+        check(fails, "r69_del_multi", bytes_eq_b(dm, resp_int(2)))
         tcp_close(fd)?
     }
 
@@ -227,6 +284,41 @@ fn main() -> i64 !Net !IO !Par !Time {
     let kk = lsm_exec_c_b(cc, bargs1(bytes_of_str("KEYS")))?
     cc = kk.c
     check(fails, "r68c_keys_bin", bytes_contains(kk.reply, x"610062"))
+    // --- R69 over the sharded exec core (lsm_exec_c_kb) ---
+    let c9a = lsm_exec_c_b(cc, bargs3(bytes_of_str("SET"), bytes_of_str("cn"), bytes_of_str("10")))?
+    cc = c9a.c
+    let c9b = lsm_exec_c_b(cc, bargs3(bytes_of_str("INCRBY"), bytes_of_str("cn"), bytes_of_str("4")))?
+    cc = c9b.c
+    check(fails, "r69c_incrby", bytes_eq_b(c9b.reply, resp_int(14)))
+    let c9c = lsm_exec_c_b(cc, bargs3(bytes_of_str("DECRBY"), bytes_of_str("cn"), bytes_of_str("9")))?
+    cc = c9c.c
+    check(fails, "r69c_decrby", bytes_eq_b(c9c.reply, resp_int(5)))
+    let c9d = lsm_exec_c_b(cc, bargs3(bytes_of_str("GETSET"), bytes_of_str("cgs"), bytes_of_str("o")))?
+    cc = c9d.c
+    let c9e = lsm_exec_c_b(cc, bargs3(bytes_of_str("GETSET"), bytes_of_str("cgs"), bytes_of_str("n")))?
+    cc = c9e.c
+    check(fails, "r69c_getset", bytes_eq_b(c9d.reply, resp_null_bulk())
+        && bytes_eq_b(c9e.reply, resp_bulk_b(bytes_of_str("o"))))
+    let c9f = lsm_exec_c_b(cc, bargs2(bytes_of_str("STRLEN"), bytes_of_str("cgs")))?
+    cc = c9f.c
+    check(fails, "r69c_strlen", bytes_eq_b(c9f.reply, resp_int(1)))
+    let c9g = lsm_exec_c_b(cc, bargs2(bytes_of_str("GETDEL"), bytes_of_str("cgs")))?
+    cc = c9g.c
+    let c9h = lsm_exec_c_b(cc, bargs2(bytes_of_str("GET"), bytes_of_str("cgs")))?
+    cc = c9h.c
+    check(fails, "r69c_getdel", bytes_eq_b(c9g.reply, resp_bulk_b(bytes_of_str("n")))
+        && bytes_eq_b(c9h.reply, resp_null_bulk()))
+    let c9i = lsm_exec_c_b(cc, bargs3(bytes_of_str("SETNX"), x"006e78", bytes_of_str("1")))?
+    cc = c9i.c
+    let c9j = lsm_exec_c_b(cc, bargs3(bytes_of_str("SETNX"), x"006e78", bytes_of_str("2")))?
+    cc = c9j.c
+    check(fails, "r69c_setnx_nulkey", bytes_eq_b(c9i.reply, resp_int(1))
+        && bytes_eq_b(c9j.reply, resp_int(0)))
+    let c9k = lsm_exec_c_b(cc, bargs3(bytes_of_str("SET"), bytes_of_str("cu1"), bytes_of_str("x")))?
+    cc = c9k.c
+    let c9l = lsm_exec_c_b(cc, bargs3(bytes_of_str("UNLINK"), bytes_of_str("cu1"), bytes_of_str("cum")))?
+    cc = c9l.c
+    check(fails, "r69c_unlink", bytes_eq_b(c9l.reply, resp_int(1)))
     lsm_cluster_close(cc)?
 
     if vec_len(fails) == 0 {

@@ -143,6 +143,37 @@ fn main() -> i64 !Net !IO !Par !Time {
         sleep_ms(1400)
         let g5 = wire_rt(fd, bargs2(bytes_of_str("GET"), kp))?
         check(fails, "r68mt_reset_keeps", bytes_eq_b(g5, resp_bulk_b(bytes_of_str("keep"))))
+        // --- R69: MT parity for INCRBY/DECRBY/GETSET/STRLEN/GETDEL/SETNX/UNLINK ---
+        let mn = bytes_of_str("mn69")
+        let m0 = wire_rt(fd, bargs3(bytes_of_str("SET"), mn, bytes_of_str("10")))?
+        let m1 = wire_rt(fd, bargs3(bytes_of_str("INCRBY"), mn, bytes_of_str("5")))?
+        let m2 = wire_rt(fd, bargs3(bytes_of_str("DECRBY"), mn, bytes_of_str("3")))?
+        check(fails, "r69mt_incrby", bytes_eq_b(m0, resp_ok())
+            && bytes_eq_b(m1, resp_int(15)) && bytes_eq_b(m2, resp_int(12)))
+        let mg1 = wire_rt(fd, bargs3(bytes_of_str("GETSET"), bytes_of_str("mgs"), bytes_of_str("o")))?
+        let mg2 = wire_rt(fd, bargs3(bytes_of_str("GETSET"), bytes_of_str("mgs"), bytes_of_str("n")))?
+        let mg3 = wire_rt(fd, bargs2(bytes_of_str("STRLEN"), bytes_of_str("mgs")))?
+        check(fails, "r69mt_getset_strlen", bytes_eq_b(mg1, resp_null_bulk())
+            && bytes_eq_b(mg2, resp_bulk_b(bytes_of_str("o")))
+            && bytes_eq_b(mg3, resp_int(1)))
+        let mgd1 = wire_rt(fd, bargs2(bytes_of_str("GETDEL"), bytes_of_str("mgs")))?
+        let mgd2 = wire_rt(fd, bargs2(bytes_of_str("GETDEL"), bytes_of_str("mgs")))?
+        check(fails, "r69mt_getdel", bytes_eq_b(mgd1, resp_bulk_b(bytes_of_str("n")))
+            && bytes_eq_b(mgd2, resp_null_bulk()))
+        let mnx1 = wire_rt(fd, bargs3(bytes_of_str("SETNX"), x"6d6e78", bytes_of_str("1")))?
+        let mnx2 = wire_rt(fd, bargs3(bytes_of_str("SETNX"), x"6d6e78", bytes_of_str("2")))?
+        let mnx3 = wire_rt(fd, bargs2(bytes_of_str("GET"), x"6d6e78"))?
+        check(fails, "r69mt_setnx_nulkey", bytes_eq_b(mnx1, resp_int(1))
+            && bytes_eq_b(mnx2, resp_int(0))
+            && bytes_eq_b(mnx3, resp_bulk_b(bytes_of_str("1"))))
+        let mu1 = wire_rt(fd, bargs3(bytes_of_str("SET"), bytes_of_str("mu1"), bytes_of_str("x")))?
+        let mu2 = wire_rt(fd, bargs3(bytes_of_str("SET"), bytes_of_str("mu2"), bytes_of_str("x")))?
+        let mul = wire_rt(fd, bargs4(bytes_of_str("UNLINK"), bytes_of_str("mu1"),
+            bytes_of_str("mu2"), bytes_of_str("mum")))?
+        check(fails, "r69mt_unlink", bytes_eq_b(mu1, resp_ok())
+            && bytes_eq_b(mu2, resp_ok()) && bytes_eq_b(mul, resp_int(2)))
+        let mdl = wire_rt(fd, bargs4(bytes_of_str("DEL"), mn, x"6d6e78", bytes_of_str("mum")))?
+        check(fails, "r69mt_del_multi", bytes_eq_b(mdl, resp_int(2)))
         tcp_close(fd)?
     }
 

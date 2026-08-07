@@ -540,6 +540,19 @@ it already answers.
   PING 97% / SET 92% / GET 98% (R67 parity). Artifact:
   `bench/rocks/results/vs-redis-20260806T152425Z.txt`.
 
+**Shipped (R69 string/int command parity):**
+- New RESP commands in all four exec cores (single / poll cluster / MT /
+  CF default family): `INCRBY k d`, `DECRBY k d`, `GETSET k v`,
+  `STRLEN k`, `GETDEL k`, `SETNX k v`, `UNLINK k...` — plus multi-key
+  `DEL k...` (single/MT/CF; the cluster core already had it from R68).
+- MT reuses `lsm_mt_int_op_kb` (mutex + TTL-clear note) for INCRBY/DECRBY;
+  UNLINK/multi-DEL loop `lsm_mt_del_kb` per key.
+- All binary-safe: keys stay raw `bytes` (NUL round-trips) — verified by
+  `r69_*` wire tests (poll), `r69c_*` (sharded exec), `r69mt_*` (MT).
+- Redis semantics kept: GETSET replies old value (nil when new); SETNX
+  :1/:0; GETDEL replies then deletes; UNLINK == DEL (no async path here);
+  INCRBY on non-integer value → same error as INCR.
+
 **Still open (later):** nothing. LLVM parity status: `str_h`/`h_str`/
 `bytes_put`/`bytes_h`/`h_bytes` all have LLVM builders (oracle green;
 `bytes_h` boxes the header with plain malloc — LLVM allocs are malloc

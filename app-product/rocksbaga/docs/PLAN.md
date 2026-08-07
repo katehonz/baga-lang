@@ -201,4 +201,11 @@ Goal: Track S flagship — durable KV on RESP.
 - **LLVM builders for `bytes_h`/`h_bytes`** — malloc-boxed header +
   inverse (h=0 → empty); oracle example `examples/bytes_handle.baga`;
   llvm_oracle green — **done**
-- (next) — nothing queued; P0–P2 + R1–R68 done
+- **R69 string/int command parity** — `INCRBY`/`DECRBY`, `GETSET`,
+  `STRLEN`, `GETDEL`, `SETNX`, `UNLINK` (multi-key) + multi-key `DEL`
+  in all four exec cores (`lsm_exec_kb` / `lsm_exec_c_kb` /
+  `lsm_mt_exec_kb` / `lsm_exec_cf_kb` default CF). Binary-safe keys
+  throughout (NUL keys round-trip in INCRBY/SETNX/UNLINK wire tests);
+  tests `r69_*` (poll wire), `r69c_*` (sharded exec), `r69mt_*` (MT) —
+  **done**
+- (next) — nothing queued; P0–P2 + R1–R69 done
