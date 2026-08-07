@@ -1,0 +1,41 @@
+// LP-final probe: nested vectors — Vec<Vec<T>> and Vec<Vec<Vec<T>>>,
+// push/get/set/slice/concat through the pointer-element path, deep
+// indexing. `>>` in generic position splits C++11-style. Oracle-diffed
+// across both backends. (drop of nested vecs is C-backend only, covered
+// by run_tests.sh negatives/positives, not this oracle.)
+fn main() {
+    let rows: Vec<Vec<i64>> = vec_new()
+    let r0: Vec<i64> = vec_new()
+    vec_push(r0, 1)
+    vec_push(r0, 2)
+    let r1: Vec<i64> = vec_new()
+    vec_push(r1, 3)
+    vec_push(rows, r0)
+    vec_push(rows, r1)
+    print(vec_len(rows))
+
+    let inner = vec_get(rows, 0)
+    print(vec_len(inner))
+    print(vec_get(inner, 1))
+    print(vec_get(vec_get(rows, 1), 0))
+
+    // set through the nested path
+    vec_set(rows, 1, r0)
+    print(vec_get(vec_get(rows, 1), 0))
+
+    // slice + concat on the outer vector
+    let s = vec_slice(rows, 0, 1)
+    print(vec_len(s))
+    let c = vec_concat(rows, rows)
+    print(vec_len(c))
+    print(vec_get(vec_get(c, 3), 1))
+
+    // three levels deep
+    let cube: Vec<Vec<Vec<i64>>> = vec_new()
+    let plane: Vec<Vec<i64>> = vec_new()
+    let line: Vec<i64> = vec_new()
+    vec_push(line, 42)
+    vec_push(plane, line)
+    vec_push(cube, plane)
+    print(vec_get(vec_get(vec_get(cube, 0), 0), 0))
+}

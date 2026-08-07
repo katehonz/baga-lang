@@ -455,6 +455,10 @@ typedef struct {
     int     len;
     int     pos;
     const char *filename;
+    /* LP4-final: `>>` в генерична позиция се цепи на два `>` (C++11);
+     * gt_pending носи втория, type_depth пази нивото на parse_type. */
+    int     gt_pending;
+    int     type_depth;
     /* LP4: while parsing a catch handler, a bare postfix `catch` binds to
      * the outer chain (left-assoc), not to the handler — parens re-enable. */
     int     in_catch_handler;

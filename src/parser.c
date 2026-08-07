@@ -242,7 +242,25 @@ static char *expect_ident(Parser *p) {
  *  Type parsing
  * ============================================================ */
 
-static Node *parse_type(Parser *p);
+static Node *parse_type_rec(Parser *p);
+
+/* Wrapper с дълбочина: изчиства gt_pending след най-външния тип, за да
+ * не изтече в следващ type контекст (LP4-final, `>>` цепене). */
+static Node *parse_type(Parser *p) {
+    p->type_depth++;
+    Node *r = parse_type_rec(p);
+    p->type_depth--;
+    if (p->type_depth == 0) p->gt_pending = 0;
+    return r;
+}
+
+/* Затваряща `>` на генеричен тип. C++11 стил: `>>` затваря ДВА вложени
+ * типа — първият консумира токена и оставя втория `>` като pending. */
+static void expect_gt_split(Parser *p) {
+    if (p->gt_pending) { p->gt_pending = 0; return; }
+    if (cur(p)->kind == TOK_RSHIFT) { advance(p); p->gt_pending = 1; return; }
+    expect(p, TOK_GT);
+}
 
 /* Parse effect list: !IO !NotFound */
 static Node *parse_type_with_effects(Parser *p, Node *base) {
@@ -264,7 +282,7 @@ static Node *parse_type_with_effects(Parser *p, Node *base) {
     return eff;
 }
 
-static Node *parse_type(Parser *p) {
+static Node *parse_type_rec(Parser *p) {
     SrcPos pos = cur(p)->pos;
 
     /* fn(T, ...) -> R [!E ...] — функционален тип (L5) */
@@ -339,14 +357,14 @@ static Node *parse_type(Parser *p) {
     /* Vec<T> — вектор с анотиран елементен тип */
     if (strcmp(ty->type_name, "Vec") == 0 && match(p, TOK_LT)) {
         ty->inner_type = parse_type(p);
-        expect(p, TOK_GT);
+        expect_gt_split(p);
     }
     /* Map<K, V> — хеш-карта с анотирани типове за ключ и стойност */
     if (strcmp(ty->type_name, "Map") == 0 && match(p, TOK_LT)) {
         ty->inner_type = parse_type(p);
         expect(p, TOK_COMMA);
         ty->inner_type2 = parse_type(p);
-        expect(p, TOK_GT);
+        expect_gt_split(p);
     }
     return ty;
 }
@@ -423,7 +441,7 @@ static Node *parse_interp_string(Parser *p, const char *s, SrcPos pos) {
                 subtoks[nsub++] = t;
                 if (t.kind == TOK_EOF) break;
             }
-            Parser sub; sub.tokens = subtoks; sub.len = nsub; sub.pos = 0; sub.filename = p->filename; sub.n_errors = 0; sub.in_catch_handler = 0;
+            Parser sub; sub.tokens = subtoks; sub.len = nsub; sub.pos = 0; sub.filename = p->filename; sub.n_errors = 0; sub.in_catch_handler = 0; sub.gt_pending = 0; sub.type_depth = 0;
             Node *e = parse_expr(&sub);
             int bad = (!e || sub.n_errors > 0 || peek_kind(&sub) != TOK_EOF);
             if (bad) parser_error(p, "невалиден израз в интерполация: %s", exprstr);
@@ -1490,6 +1508,8 @@ Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename)
     p->filename = filename;
     p->n_errors = 0;
     p->in_catch_handler = 0;
+    p->gt_pending = 0;
+    p->type_depth = 0;
 
     SrcPos pos = { 1, 1, filename };
     Node *prog = node_alloc(NODE_PROGRAM, pos);

@@ -515,6 +515,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                                 fprintf(f, "baga_drop_vec(");
                                 emit_expr(cg, n->args.data[0]);
                                 fprintf(f, ", 2, (int64_t)sizeof(baga_bytes))");
+                            } else if (at->elem && at->elem->kind == TYPE_VEC) {
+                                /* вложени: рекурсивно освобождаване на вътрешните vec-ове */
+                                fprintf(f, "baga_drop_vec(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", 3, 0)");
                             } else if (at->elem && at->elem->kind == TYPE_STR) {
                                 fprintf(f, "baga_drop_vec(");
                                 emit_expr(cg, n->args.data[0]);
@@ -584,6 +589,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                         if (vt->elem->kind == TYPE_STR) suf = "str";
                         else if (vt->elem->kind == TYPE_F64) suf = "f64";
                         else if (vt->elem->kind == TYPE_BYTES) suf = "bytes";
+                        else if (vt->elem->kind == TYPE_VEC) suf = "vec";
                     }
                     fprintf(f, "baga_%s_%s(", bn, suf);
                     for (int i = 0; i < n->args.len; i++) {
@@ -614,6 +620,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                         if (vt->elem->kind == TYPE_STR) suf = "str";
                         else if (vt->elem->kind == TYPE_F64) suf = "f64";
                         else if (vt->elem->kind == TYPE_BYTES) suf = "bytes";
+                        else if (vt->elem->kind == TYPE_VEC) suf = "vec";
                     }
                     fprintf(f, "baga_%s_%s(", bn, suf);
                     for (int i = 0; i < n->args.len; i++) {
@@ -2383,6 +2390,27 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_box(r, v->data[i], size);\n");
     fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_box(r, w->data[i], size);\n");
     fprintf(out, "    return r; }\n");
+    /* вложени вектори (Vec<Vec<T>>): елементът е baga_Vec* — съхранява се
+     * като указател; drop(outer) освобождава рекурсивно вътрешните (mode 3) */
+    fprintf(out, "static void baga_vec_push_vec(baga_Vec *v, baga_Vec *x) { baga_vec_grow(v); v->data[v->len++] = (void *)x; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_get_vec(baga_Vec *v, int64_t i) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_get\", i, v->len);\n");
+    fprintf(out, "    return (baga_Vec *)v->data[i];\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_vec_set_vec(baga_Vec *v, int64_t i, baga_Vec *x) {\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+    fprintf(out, "    v->data[i] = (void *)x;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static baga_Vec *baga_vec_slice_vec(baga_Vec *v, int64_t a, int64_t b) {\n");
+    fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = a; i < b; i++) baga_vec_push_vec(r, (baga_Vec *)v->data[i]);\n");
+    fprintf(out, "    return r; }\n");
+    fprintf(out, "static baga_Vec *baga_vec_concat_vec(baga_Vec *v, baga_Vec *w) {\n");
+    fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+    fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_vec(r, (baga_Vec *)v->data[i]);\n");
+    fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_vec(r, (baga_Vec *)w->data[i]);\n");
+    fprintf(out, "    return r; }\n");
     fprintf(out, "\n/* hash map: chaining, key i64/str/bytes, value i64/str/f64/bytes (leak-tolerant like baga_Vec) */\n");
     fprintf(out, "typedef struct baga_MapEntry {\n");
     fprintf(out, "    int64_t ik; const char *sk; baga_bytes bk; int64_t ktag;\n");
@@ -2564,6 +2592,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (!v) return;\n");
     fprintf(out, "    if (elem_kind == 2)\n");
     fprintf(out, "        for (int64_t i = 0; i < v->len; i++) baga_free(v->data[i], elem_size);\n");
+    fprintf(out, "    if (elem_kind == 3)\n");
+    fprintf(out, "        for (int64_t i = 0; i < v->len; i++) baga_drop_vec((baga_Vec *)v->data[i], 0, 0);\n");
     fprintf(out, "    baga_free(v->data, v->cap * 8);\n");
     fprintf(out, "    baga_free(v, (int64_t)sizeof(baga_Vec));\n");
     fprintf(out, "}\n");

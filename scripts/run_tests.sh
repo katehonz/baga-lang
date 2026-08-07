@@ -340,10 +340,14 @@ printf 'struct Pt { x: i64 }\nstruct Pt { y: i64 }\nfn main() {}\n' > /tmp/baga_
 run /tmp/baga_ns_struct_dup.baga 2>&1 | grep -q "повторна дефиниция на struct 'Pt' в модул" \
 	&& echo "OK: L6 — дублиран struct в един модул е checker грешка (не от gcc)" \
 	|| { echo "FAIL: дублираният struct трябва да гърми в checker-а"; exit 1; }
-printf 'fn main() {\n    let v: Vec<Vec<i64> > = vec_new()\n    print(vec_len(v))\n}\n' > /tmp/baga_lp1_nested_vec.baga
-run /tmp/baga_lp1_nested_vec.baga 2>&1 | grep -q "неподдържан елементен тип Vec<i64>" \
-	&& echo "OK: LP1 — Vec<Vec<T>> е честен checker отказ (gap G1)" \
-	|| { echo "FAIL: вложеният Vec трябва да гърми в checker-а"; exit 1; }
+printf 'fn main() {\n    let v: Vec<Vec<i64>> = vec_new()\n    print(vec_len(v))\n}\n' > /tmp/baga_lp1_nested_vec.baga
+run /tmp/baga_lp1_nested_vec.baga 2>&1 | grep -q "^0$" \
+	&& echo "OK: LP1 — Vec<Vec<T>> работи (gap G1 затворен; >> се цепи C++11-стил)" \
+	|| { echo "FAIL: вложеният Vec трябва да работи"; exit 1; }
+printf 'fn main() {\n    let v: Vec<Vec<i64>> = vec_new()\n    let s: Vec<str> = vec_new()\n    vec_push(v, s)\n}\n' > /tmp/baga_lp1_nested_mix.baga
+run /tmp/baga_lp1_nested_mix.baga 2>&1 | grep -q "елемент от тип Vec<str>, но векторът е Vec<Vec<i64>>" \
+	&& echo "OK: LP1 — Vec<Vec<i64>> срещу Vec<str> елемент е checker грешка" \
+	|| { echo "FAIL: смесеният вложен елемент трябва да гърми"; exit 1; }
 printf 'enum Mode { Add, Mul }\nfn take(m: Mode) -> i64 { return 1 }\nfn main() {\n    print(take(Add))\n}\n' > /tmp/baga_lp1_enum_i64.baga
 run /tmp/baga_lp1_enum_i64.baga 2>&1 | grep -q "аргумент #1 е от тип i64, но параметърът е Mode" \
 	&& echo "OK: LP1 — enum без payload-и е old-style i64 константи (gap G2)" \

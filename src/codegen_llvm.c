@@ -228,6 +228,9 @@ static LLVMValueRef coerce(LLVMValueRef v, LLVMTypeRef target) {
                         : LLVMBuildSExt(lg.builder, v, target, name);
         else
             r = LLVMBuildTrunc(lg.builder, v, target, name);
+    } else if (tk == LLVMPointerTypeKind && gk == LLVMPointerTypeKind) {
+        /* указател → указател (напр. baga_Vec* като елемент на Vec, LP-final) */
+        r = LLVMBuildBitCast(lg.builder, v, target, name);
     }
     free(name);
     if (!r) llvm_unsupported("преобразуване между типовете");
@@ -3843,6 +3846,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 if (vt && vt->kind == TYPE_VEC && vt->elem) {
                     if (vt->elem->kind == TYPE_STR) suf = "str";
                     else if (vt->elem->kind == TYPE_F64) suf = "f64";
+                    else if (vt->elem->kind == TYPE_VEC) suf = "str";
                     else if (vt->elem->kind == TYPE_STRUCT)
                         llvm_unsupported("Vec<struct> (анонимен — само C бекенда; вж. docs/language-en.md)");
                 }

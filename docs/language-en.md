@@ -696,14 +696,17 @@ vec_push(v, "грешка")   // ERROR: vec_push: елемент от тип str
 ```
 
 Supported element types: `i64` (and `i32`, accepted as `i64`), `str`, `f64`,
-`bytes` (binary-safe; elements are boxed, like `Map` bytes values), and
-**struct types** — `Vec<Line>` etc. Struct elements are boxed copies:
+`bytes` (binary-safe; elements are boxed, like `Map` bytes values),
+**struct types**, and **nested vectors** (`Vec<Vec<i64>>`,
+`Vec<Vec<Vec<i64>>>`; inner vectors are stored as references — push/get
+alias the same storage, and `>>` in generic position splits C++11-style).
+Struct elements are boxed copies:
 `vec_push`/`vec_set` copy the value in, `vec_get` copies it out (mutating
 the returned copy does not touch the vector; reference-typed fields like
 `Vec`/`Map` stay shared, as usual for struct assignment). Mixing two
 different struct types in one vector is a compile-time error, just like
 mixing scalars. Works in both backends (LLVM uses the same box helpers;
-oracle: `examples/vec_struct.baga`).
+oracle: `examples/vec_struct.baga`, `examples/vec_nested.baga`).
 The element type is a property of the type at the binding site.
 
 `Vec<T>` is a valid type anywhere a type can be written — parameters,

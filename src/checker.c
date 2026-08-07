@@ -80,6 +80,11 @@ static int vec_elem_eq(Type *a, Type *b) {
         return a->name && b->name && strcmp(a->name, b->name) == 0;
     if (a->kind == TYPE_ENUM)
         return a->name && b->name && strcmp(a->name, b->name) == 0;
+    if (a->kind == TYPE_VEC) {
+        /* вложени вектори: рекурсия по елементите */
+        if (a->elem && b->elem) return vec_elem_eq(a->elem, b->elem);
+        return 1;
+    }
     return 1;
 }
 
@@ -282,15 +287,16 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
             if (strcmp(ty->type_name, "Vec") == 0) {
                 Type *t = type_new(TYPE_VEC);
                 if (ty->inner_type) {
-                    /* Vec<T>: i64 (i32 → i64), str, f64, bytes и struct */
+                    /* Vec<T>: i64 (i32 → i64), str, f64, bytes, struct,
+                     * sum enum, fn и вложен Vec */
                     Type *el = resolve_type_node(ctx, ty->inner_type);
                     if (el->kind == TYPE_I32) el = type_new(TYPE_I64);
                     if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
                         el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
                         el->kind != TYPE_STRUCT && el->kind != TYPE_FN &&
-                        el->kind != TYPE_ENUM) {
+                        el->kind != TYPE_VEC && el->kind != TYPE_ENUM) {
                         check_error(ctx, ty->pos,
-                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
+                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum, fn и Vec)",
                             type_str(el));
                     } else {
                         t->elem = el;
@@ -377,9 +383,9 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                 if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
                     el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
                     el->kind != TYPE_STRUCT && el->kind != TYPE_FN &&
-                    el->kind != TYPE_ENUM) {
+                    el->kind != TYPE_VEC && el->kind != TYPE_ENUM) {
                     check_error(ctx, ty->pos,
-                        "[T]: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
+                        "[T]: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum, fn и Vec)",
                         type_str(el));
                 } else {
                     t->elem = el;
@@ -1066,9 +1072,9 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             if (!is_str_alias && xt->kind != TYPE_I64 && xt->kind != TYPE_STR &&
                 xt->kind != TYPE_F64 && xt->kind != TYPE_BYTES &&
                 xt->kind != TYPE_STRUCT && xt->kind != TYPE_FN &&
-                xt->kind != TYPE_ENUM) {
+                xt->kind != TYPE_VEC && xt->kind != TYPE_ENUM) {
                 check_error(ctx, n->pos,
-                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
+                    "%s: неподдържан елементен тип %s за Vec (поддържат се i64, str, f64, bytes, struct, sum enum, fn и Vec)",
                     name, type_str(xt));
                 return type_new(TYPE_ERROR);
             }
