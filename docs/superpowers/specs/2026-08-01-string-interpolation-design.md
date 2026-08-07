@@ -10,10 +10,13 @@ nested `concat("sum: ", concat(int_to_str(s), concat(", done: ", ...)))`. This
 was the #1 friction in the httpdbaga/jwtbaga probes (every JSON body was 8+
 lines of `concat`). Closes gap G1 from `app-product/*/gaps.md`.
 
-**Non-goals (M1).** f64 interpolation (no clean `f64_to_str` builtin yet —
-deferred); format specs (`{x:04d}`); interpolation expressions containing `{`,
+**Non-goals (M1).** Format specs (`{x:04d}`); interpolation expressions containing `{`,
 `}`, or string literals (M1 restricts to brace-free, quote-free expressions:
 idents, calls, field/index access, arithmetic).
+
+> Update 2026-08-07 (LP2/final): f64 interpolation is now supported — the
+> `f64_to_str` builtin (`%g` rendering) landed and the checker accepts f64
+> in `${}` holes (str/i64/f64/bool).
 
 ## 2. Syntax
 

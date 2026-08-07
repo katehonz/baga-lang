@@ -357,9 +357,9 @@ run /tmp/baga_lp2_mix2.baga 2>&1 | grep -q "аргумент #1 е от тип i
 	&& echo "OK: LP2 — i64 литерал към f64 параметър е checker грешка" \
 	|| { echo "FAIL: i64→f64 аргумент трябва да гърми"; exit 1; }
 printf 'fn main() {\n    let x = 1.5\n    print("${x}")\n}\n' > /tmp/baga_lp2_interp.baga
-run /tmp/baga_lp2_interp.baga 2>&1 | grep -q "неподдържан тип за интерполация: f64" \
-	&& echo "OK: LP2 — f64 в интерполация е честен отказ (няма f64_to_str)" \
-	|| { echo "FAIL: f64 интерполацията трябва да гърми"; exit 1; }
+run /tmp/baga_lp2_interp.baga 2>&1 | grep -q "^1.5$" \
+	&& echo "OK: LP2 — f64 в интерполация работи през f64_to_str (%g)" \
+	|| { echo "FAIL: f64 интерполацията трябва да работи"; exit 1; }
 printf 'fn main() {\n    let m = map_new()\n    map_set(m, 1.5, 1)\n}\n' > /tmp/baga_lp2_mapkey.baga
 run /tmp/baga_lp2_mapkey.baga 2>&1 | grep -q "неподдържан ключов тип f64" \
 	&& echo "OK: LP2 — f64 като Map ключ е честен отказ" \

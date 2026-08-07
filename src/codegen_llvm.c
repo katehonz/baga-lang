@@ -42,6 +42,7 @@ typedef struct {
     LLVMTargetDataRef td;
     LLVMValueRef printf_fn;
     LLVMValueRef fprintf_fn;
+    LLVMValueRef snprintf_fn;
     LLVMValueRef exit_fn;
     LLVMValueRef stderr_global;
     LLVMTypeRef cur_ret_ty;   /* върнатият тип на текущата функция */
@@ -692,6 +693,24 @@ static LLVMValueRef build_baga_i64_to_str(void) {
     LLVMBuildStore(lg.builder, LLVMConstInt(lg.i8_ty, 0, 0),
         LLVMBuildGEP2(lg.builder, lg.i8_ty, res, &rpv2, 1, "np"));
     LLVMBuildRet(lg.builder, res);
+    return fn;
+}
+
+/* static const char *baga_f64_to_str(double x) — "%g" като baga_print_f64;
+ * оглежда C runtime helper-а (snprintf в 32-байтов buffer от malloc). */
+static LLVMValueRef build_baga_f64_to_str(void) {
+    LLVMTypeRef p[] = { LLVMDoubleTypeInContext(lg.ctx) };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_f64_to_str",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef x = LLVMGetParam(fn, 0);
+    LLVMValueRef i32 = LLVMConstInt(lg.i64_ty, 32, 0);
+    LLVMValueRef r = h_call(rt_malloc(), (LLVMValueRef[]){ i32 }, 1, "r");
+    LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, "%g", "f64fmt");
+    LLVMValueRef args[] = { r, i32, fmt, x };
+    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.snprintf_fn)),
+                   lg.snprintf_fn, args, 4, "");
+    LLVMBuildRet(lg.builder, r);
     return fn;
 }
 
@@ -2885,6 +2904,7 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_exit") == 0)        fn = build_baga_exit();
     else if (strcmp(name, "baga_eprintln") == 0)    fn = build_baga_eprintln();
     else if (strcmp(name, "baga_i64_to_str") == 0)  fn = build_baga_i64_to_str();
+    else if (strcmp(name, "baga_f64_to_str") == 0)  fn = build_baga_f64_to_str();
     else if (strcmp(name, "baga_map_hash_str") == 0) fn = build_baga_map_hash_str();
     else if (strcmp(name, "baga_map_hash_i64") == 0) fn = build_baga_map_hash_i64();
     else if (strcmp(name, "baga_map_hash_bytes") == 0) fn = build_baga_map_hash_bytes();
@@ -3722,6 +3742,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 {"chr",         "baga_chr"},
                 {"ord",         "baga_ord"},
                 {"str_eq",      "baga_str_eq"},
+                {"i64_to_str",  "baga_i64_to_str"},
+                {"f64_to_str",  "baga_f64_to_str"},
                 {"vec_new",     "baga_vec_new"},
                 {"vec_push_str","baga_vec_push_str"},
                 {"vec_get_str", "baga_vec_get_str"},
@@ -4083,6 +4105,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 LLVMValueRef f = LLVMBuildGlobalStringPtr(lg.builder, "false", "ff");
                 return LLVMBuildSelect(lg.builder, v, t, f, "bs");
             }
+            if (ek == TYPE_F64)
+                return h_call(baga_rt("baga_f64_to_str"), &v, 1, "f2s");
             return h_call(baga_rt("baga_i64_to_str"), &v, 1, "i2s");
         }
         case NODE_RANGE:    llvm_unsupported("диапазон (a..b) извън for"); break;
@@ -4578,6 +4602,11 @@ void codegen_llvm(Node *program, const char *output_path) {
         LLVMTypeRef fprintf_args[] = { lg.ptr_ty, lg.ptr_ty };
         LLVMTypeRef fprintf_ty = LLVMFunctionType(lg.i32_ty, fprintf_args, 2, 1);
         lg.fprintf_fn = LLVMAddFunction(lg.mod, "fprintf", fprintf_ty);
+
+        /* snprintf(buf, size, fmt, ...) — за baga_f64_to_str (%g) */
+        LLVMTypeRef snprintf_args[] = { lg.ptr_ty, lg.i64_ty, lg.ptr_ty };
+        LLVMTypeRef snprintf_ty = LLVMFunctionType(lg.i32_ty, snprintf_args, 3, 1);
+        lg.snprintf_fn = LLVMAddFunction(lg.mod, "snprintf", snprintf_ty);
 
         LLVMTypeRef exit_args[] = { lg.i32_ty };
         LLVMTypeRef exit_ty = LLVMFunctionType(lg.void_ty, exit_args, 1, 0);

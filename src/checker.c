@@ -1401,6 +1401,8 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"read_file", TYPE_STR, "s", 1, 0},
             {"chr",       TYPE_STR, "i", 0, 0},
             {"ord",       TYPE_I64, "s", 0, 0},
+            {"i64_to_str", TYPE_STR, "i", 0, 0},
+            {"f64_to_str", TYPE_STR, "f", 0, 0},
             {"str_eq",    TYPE_BOOL, "ss", 0, 0},
             {"arg_count", TYPE_I64, "", 0, 0},
             {"arg",       TYPE_STR, "i", 0, 0},
@@ -2085,11 +2087,12 @@ static Type *infer(CheckCtx *ctx, Node *n) {
         }
 
         case NODE_TO_STR: {
-            /* interpolation: convert inner expr to str (str/i64/bool) */
+            /* interpolation: convert inner expr to str (str/i64/f64/bool) */
             Type *et = infer(ctx, n->to_str_expr);
             if (et->kind != TYPE_STR && et->kind != TYPE_I64 &&
-                et->kind != TYPE_I32 && et->kind != TYPE_BOOL && et->kind != TYPE_ERROR) {
-                check_error(ctx, n->pos, "неподдържан тип за интерполация: %s (str/i64/bool)", type_str(et));
+                et->kind != TYPE_I32 && et->kind != TYPE_F64 &&
+                et->kind != TYPE_BOOL && et->kind != TYPE_ERROR) {
+                check_error(ctx, n->pos, "неподдържан тип за интерполация: %s (str/i64/f64/bool)", type_str(et));
             }
             t = type_new(TYPE_STR);
             type_merge_effects(t, et);

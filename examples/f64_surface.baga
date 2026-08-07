@@ -53,4 +53,11 @@ fn main() {
 
     // %g printing: whole values render without a decimal point
     print(2.0)
+
+    // f64_to_str + interpolation (%g formatting, C/LLVM parity)
+    print(f64_to_str(3.14))
+    print(f64_to_str(-0.5))
+    let pi = map_get(m, "pi")
+    print("pi=${pi},elem=${vec_get(v, 1)},h=${half(5.0)}")
+    print(i64_to_str(42))
 }

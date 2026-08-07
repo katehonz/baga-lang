@@ -727,6 +727,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"chr",       "baga_chr"},
                     {"ord",       "baga_ord"},
                     {"str_eq",    "baga_str_eq"},
+                    {"i64_to_str","baga_i64_to_str"},
+                    {"f64_to_str","baga_f64_to_str"},
                     {"vec_new",     "baga_vec_new"},
                     {"vec_push_str","baga_vec_push_str"},
                     {"vec_get_str", "baga_vec_get_str"},
@@ -949,6 +951,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, "((");
                 emit_expr(cg, n->to_str_expr);
                 fprintf(f, ") ? \"true\" : \"false\")");
+            } else if (ek == TYPE_F64) {
+                fprintf(f, "baga_f64_to_str(");
+                emit_expr(cg, n->to_str_expr);
+                fprintf(f, ")");
             } else {   /* i64 / i32 */
                 fprintf(f, "baga_i64_to_str(");
                 emit_expr(cg, n->to_str_expr);
@@ -2163,6 +2169,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return ((int64_t)(c&0x07)<<18)|(((int64_t)(unsigned char)s[1]&0x3F)<<12)|(((int64_t)(unsigned char)s[2]&0x3F)<<6)|((int64_t)(unsigned char)s[3]&0x3F);\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = baga_alloc(24); snprintf(r, 24, \"%%lld\", (long long)x); return r; }\n");
+    fprintf(out, "static const char *baga_f64_to_str(double x) { char *r = baga_alloc(32); snprintf(r, 32, \"%%g\", x); return r; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
     fprintf(out, "static int baga_argc = 0;\n");
     fprintf(out, "static char **baga_argv = 0;\n");

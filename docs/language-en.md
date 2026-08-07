@@ -633,6 +633,8 @@ own line.
 | `str_eq(a: str, b: str) -> bool` | True if the strings are byte-equal. |
 | `chr(c: i64) -> str` | One-character string from a byte value. |
 | `ord(s: str) -> i64` | Byte value of the first character of `s` (0 if empty). |
+| `i64_to_str(x: i64) -> str` | Decimal rendering of `x`. |
+| `f64_to_str(x: f64) -> str` | `%g` rendering of `x` (whole values print without a decimal point). |
 
 ### 12.3 File IO
 
@@ -1573,6 +1575,8 @@ are computed automatically by the **sandak** package manager from the
 | `str_eq` | `(a: str, b: str) -> bool` | — |
 | `chr` | `(c: i64) -> str` | — |
 | `ord` | `(s: str) -> i64` | — |
+| `i64_to_str` | `(x: i64) -> str` | decimal rendering |
+| `f64_to_str` | `(x: f64) -> str` | `%g` rendering |
 | `read_file` | `(path: str) -> str` | `!IO` |
 | `arg_count` | `() -> i64` | number of program arguments (excluding the program name) |
 | `arg` | `(i: i64) -> str` | the i-th argument (0-based, excluding the name); `""` out of bounds |
