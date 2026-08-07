@@ -1,0 +1,39 @@
+// LP1 probe: Map with sum-enum values (box path) — missing key gives a
+// tag-0 zero-payload value; overwrite; keys/len stay consistent.
+enum Res { Ok(i64), Err(str) }
+
+fn show(r: Res) -> str {
+    return match r {
+        Ok(v) => "ok ${v}",
+        Err(e) => "err ${e}",
+    }
+}
+
+fn main() {
+    let m = map_new()
+    map_set(m, "a", Ok(10))
+    map_set(m, "b", Err("bad"))
+    print(show(map_get(m, "a")))
+    print(show(map_get(m, "b")))
+    // missing key → tag-0 (Ok) with zero payload
+    print(show(map_get(m, "missing")))
+    // overwrite Ok → Err
+    map_set(m, "a", Err("now"))
+    print(show(map_get(m, "a")))
+    print(map_len(m))
+    print(map_has(m, "b"))
+
+    // rehash with enum values past the 3/4 load factor
+    let t = map_new()
+    for i in 0..20 {
+        map_set(t, i, Ok(i * 2))
+    }
+    let mut sum = 0
+    for i in 0..20 {
+        sum = sum + match map_get(t, i) {
+            Ok(v) => v,
+            Err(e) => 0,
+        }
+    }
+    print(sum)
+}

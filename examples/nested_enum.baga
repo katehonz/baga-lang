@@ -1,0 +1,39 @@
+// LP1 probe: nested sum enums — enum/struct payloads, match in match,
+// Vec<enum> with payloads. Oracle-diffed across both backends.
+struct Pt { x: i64, y: i64 }
+
+enum Inner { Num(i64), Text(str) }
+enum Outer { Wrap(Inner), At(Pt), Empty }
+
+fn depth(o: Outer) -> i64 {
+    return match o {
+        Wrap(i) => match i {
+            Num(n) => n,
+            Text(t) => len(t),
+        },
+        At(p) => p.x * 100 + p.y,
+        Empty => -1,
+    }
+}
+
+fn main() {
+    print(depth(Wrap(Num(7))))
+    print(depth(Wrap(Text("bag"))))
+    print(depth(At(Pt { x: 3, y: 4 })))
+    print(depth(Empty))
+
+    // Vec<enum> with payloads
+    let v: Vec<Outer> = vec_new()
+    vec_push(v, Wrap(Num(1)))
+    vec_push(v, At(Pt { x: 2, y: 5 }))
+    vec_push(v, Empty)
+    let mut total = 0
+    for i in 0..vec_len(v) {
+        total = total + depth(vec_get(v, i))
+    }
+    print(total)
+
+    // qualified constructor path + round-trip through a binding
+    let w: Outer = Outer::Wrap(Text("xyz"))
+    print(depth(w))
+}

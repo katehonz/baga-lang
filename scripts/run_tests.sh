@@ -339,6 +339,14 @@ printf 'struct Pt { x: i64 }\nstruct Pt { y: i64 }\nfn main() {}\n' > /tmp/baga_
 run /tmp/baga_ns_struct_dup.baga 2>&1 | grep -q "повторна дефиниция на struct 'Pt' в модул" \
 	&& echo "OK: L6 — дублиран struct в един модул е checker грешка (не от gcc)" \
 	|| { echo "FAIL: дублираният struct трябва да гърми в checker-а"; exit 1; }
+printf 'fn main() {\n    let v: Vec<Vec<i64> > = vec_new()\n    print(vec_len(v))\n}\n' > /tmp/baga_lp1_nested_vec.baga
+run /tmp/baga_lp1_nested_vec.baga 2>&1 | grep -q "неподдържан елементен тип Vec<i64>" \
+	&& echo "OK: LP1 — Vec<Vec<T>> е честен checker отказ (gap G1)" \
+	|| { echo "FAIL: вложеният Vec трябва да гърми в checker-а"; exit 1; }
+printf 'enum Mode { Add, Mul }\nfn take(m: Mode) -> i64 { return 1 }\nfn main() {\n    print(take(Add))\n}\n' > /tmp/baga_lp1_enum_i64.baga
+run /tmp/baga_lp1_enum_i64.baga 2>&1 | grep -q "аргумент #1 е от тип i64, но параметърът е Mode" \
+	&& echo "OK: LP1 — enum без payload-и е old-style i64 константи (gap G2)" \
+	|| { echo "FAIL: old-style enum като sum-тип аргумент трябва да гърми"; exit 1; }
 printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let f = add\n    print(f("x", 1))\n}\n' > /tmp/baga_fn_bad1.baga
 run /tmp/baga_fn_bad1.baga 2>&1 | grep -q "fn стойност: аргумент #1 е от тип str, но параметърът е i64" \
 	&& echo "OK: L5 — грешен аргумент през fn стойност е отхвърлен" \

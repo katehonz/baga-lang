@@ -1,0 +1,37 @@
+// LP1 probe: closures capturing struct + enum values, closure factory,
+// fn values stored in a Map and called through map_get.
+// NB: Mode carries one payload variant on purpose — all-payload-less
+// enums are old-style i64 constants (LP1 finding G2), not sum values.
+struct Pt { x: i64, y: i64 }
+enum Mode { Add, Mul(i64) }
+
+fn apply_mode(m: Mode, a: i64, b: i64) -> i64 {
+    return match m {
+        Add => a + b,
+        Mul(k) => a * b,
+    }
+}
+
+fn make_op(m: Mode, base: Pt) -> fn(i64) -> i64 {
+    let op = fn [m, base] (v: i64) -> i64 {
+        return apply_mode(m, base.x + base.y, v)
+    }
+    return op
+}
+
+fn main() {
+    let add5 = make_op(Add, Pt { x: 2, y: 3 })
+    let mul5 = make_op(Mul(1), Pt { x: 2, y: 3 })
+    print(add5(10))
+    print(mul5(10))
+
+    // fn values in a Map, called through map_get
+    let ops = map_new()
+    map_set(ops, "add", add5)
+    map_set(ops, "mul", mul5)
+    let f = map_get(ops, "add")
+    print(f(4))
+    let g = map_get(ops, "mul")
+    print(g(4))
+    print(map_len(ops))
+}

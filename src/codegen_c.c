@@ -1659,11 +1659,14 @@ static void emit_struct(Codegen *cg, Node *s) {
     free(m);
 }
 
-/* L3 sum enum → tagged C struct + union + static inline constructors. */
+/* L3 sum enum → tagged C struct + union + static inline constructors.
+ * Tag is int64_t to mirror the LLVM lowering ({ i64 tag, [N x i64] u });
+ * constructors zero-init so the union never carries stack garbage
+ * (LP1 probe: gcc -Wstringop-overread on payload reads). */
 static void emit_sum_enum(Codegen *cg, Node *item) {
     FILE *out = cg->out;
     char *em = mangle_name(item->enum_name);
-    fprintf(out, "typedef struct {\n    int tag;\n    union {\n");
+    fprintf(out, "typedef struct {\n    int64_t tag;\n    union {\n");
     for (int j = 0; j < item->n_variants; j++) {
         if (!item->enum_payloads || !item->enum_payloads[j]) continue;
         char *vm = mangle_name(item->enum_variants[j]);
@@ -1678,10 +1681,10 @@ static void emit_sum_enum(Codegen *cg, Node *item) {
         if (item->enum_payloads && item->enum_payloads[j]) {
             fprintf(out, "static inline %s %s__%s(", em, em, vm);
             emit_type(cg, item->enum_payloads[j]);
-            fprintf(out, " a0) {\n    %s r; r.tag = %d; r.u.v_%s = a0; return r;\n}\n\n",
+            fprintf(out, " a0) {\n    %s r = {0}; r.tag = %d; r.u.v_%s = a0; return r;\n}\n\n",
                     em, j, vm);
         } else {
-            fprintf(out, "static inline %s %s__%s(void) {\n    %s r; r.tag = %d; return r;\n}\n\n",
+            fprintf(out, "static inline %s %s__%s(void) {\n    %s r = {0}; r.tag = %d; return r;\n}\n\n",
                     em, em, vm, em, j);
         }
         free(vm);
