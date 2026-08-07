@@ -1,0 +1,165 @@
+// handlers.baga — universal scaffold (ops + JWT smoke). No product domain.
+// Real products live in apps/* and implement their own fmr_build_app / fmr_dispatch.
+// This file exists so fmrbaga can sandak-build and examples/serve can run without
+// embedding users/posts or any other application schema.
+
+import "../core/app.baga"
+import "../core/ctx.baga"
+import "../core/route.baga"
+import "../core/respond.baga"
+import "../core/deps.baga"
+import "../json/jsonx.baga"
+import "../openapi/openapi.baga"
+import "ormbaga/orm.baga"
+import "httpdbaga/http.baga"
+import "std/str/str.baga"
+
+// ---------- route ids (scaffold only) ----------
+
+fn RID_HEALTH() -> i64 { return 1 }
+fn RID_READY() -> i64 { return 2 }
+fn RID_META() -> i64 { return 3 }
+fn RID_OPENAPI() -> i64 { return 4 }
+fn RID_TOKEN() -> i64 { return 10 }
+fn RID_ME() -> i64 { return 11 }
+
+fn fmr_build_app() -> FmrApp !IO {
+    let mut app = fmr_app_from_env("fmrbaga", "0.1.0")?
+    app = fmr_route(app, "GET", "/health", RID_HEALTH())
+    app = fmr_route(app, "GET", "/ready", RID_READY())
+    app = fmr_route(app, "GET", "/readyz", RID_READY())
+    app = fmr_route(app, "GET", "/v1/meta", RID_META())
+    app = fmr_route(app, "GET", "/openapi.json", RID_OPENAPI())
+    app = fmr_route(app, "POST", "/v1/auth/token", RID_TOKEN())
+    app = fmr_route(app, "GET", "/v1/me", RID_ME())
+    return app
+}
+
+fn fmr_before(ctx: FmrCtx) -> DepResult {
+    return dep_ok(ctx)
+}
+
+// Dual hook default — product apps override when they expose gRPC.
+fn fmr_grpc_handle(path: str, body: bytes, db: OrmDb) -> FmrOut !IO !Net {
+    let mut r = http_response_bytes(200, bytes_new(0))
+    r = http_set_header(r, "Content-Type", "application/grpc")
+    r = http_set_header(r, "grpc-status", "12")
+    r = http_set_header(r, "grpc-message", "UNIMPLEMENTED")
+    return fmr_out(r, db)
+}
+
+// ---------- universal handlers ----------
+
+fn h_health(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut o = jobj_new()
+    o = jobj_str(o, "status", "ok")
+    return fmr_out(fmr_ok_obj(o), db)
+}
+
+fn h_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    if fmr_shutting_down() != 0 {
+        return fmr_out(fmr_503("shutting down"), db)
+    }
+    if orm_ok_db(db) == 0 {
+        return fmr_out(fmr_503("database unavailable"), db)
+    }
+    let q = orm_ping(db)?
+    if orm_ok_q(q) == 0 {
+        return fmr_out(fmr_503("database ping failed"), orm_db_q(q))
+    }
+    let mut o = jobj_new()
+    o = jobj_str(o, "status", "ready")
+    o = jobj_str(o, "database", "up")
+    return fmr_out(fmr_ok_obj(o), orm_db_q(q))
+}
+
+fn h_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
+    let app = fmr_build_app()?
+    let mut o = jobj_new()
+    o = jobj_str(o, "title", app.title)
+    o = jobj_str(o, "version", app.version)
+    o = jobj_str(o, "framework", "fmrbaga")
+    o = jobj_str(o, "openapi", "/openapi.json")
+    o = jobj_str(o, "note", "universal scaffold — product routes live in apps/*")
+    return fmr_out(fmr_ok_obj(o), db)
+}
+
+fn h_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
+    let app = fmr_build_app()?
+    let doc = fmr_openapi_from_router(app.router, app.title, app.version)
+    return fmr_out(fmr_ok_obj(doc), db)
+}
+
+// POST /v1/auth/token — framework JWT smoke (any app can keep or replace).
+fn h_token(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let mut sub = fmr_query(ctx, "sub")
+    if sub == "" {
+        let body = jbody_parse_str(fmr_body(ctx))
+        if body.ok == 1 {
+            let b2 = jbody_require_object(body)
+            if b2.ok == 1 {
+                let f = jreq_str(b2.doc, b2.root, "sub")
+                if f.ok == 1 {
+                    sub = f.val
+                } else {
+                    return fmr_out(fmr_422_jfield("sub", f), db)
+                }
+            } else {
+                if fmr_body(ctx) != "" {
+                    return fmr_out(fmr_400(b2.err), db)
+                }
+            }
+        } else {
+            if fmr_body(ctx) != "" {
+                return fmr_out(fmr_400(body.err), db)
+            }
+        }
+    }
+    if sub == "" {
+        return fmr_out(fmr_422_field("sub", "sub field required", "value_error.missing"), db)
+    }
+    let token = fmr_issue_token(ctx.jwt_secret, sub, "")
+    let mut o = jobj_new()
+    o = jobj_str(o, "access_token", token)
+    o = jobj_str(o, "token_type", "bearer")
+    o = jobj_str(o, "sub", sub)
+    return fmr_out(fmr_ok_obj(o), db)
+}
+
+fn h_me(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    let auth = deps_bearer(ctx)
+    if auth.ok == 0 {
+        return fmr_out(auth.resp, db)
+    }
+    let mut o = jobj_new()
+    o = jobj_str(o, "sub", auth.ctx.user_sub)
+    return fmr_out(fmr_ok_obj(o), db)
+}
+
+fn fmr_dispatch(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
+    let id = ctx.route_id
+    if id == RID_HEALTH() {
+        return h_health(ctx, db)
+    }
+    if id == RID_READY() {
+        return h_ready(ctx, db)?
+    }
+    if id == RID_META() {
+        return h_meta(ctx, db)?
+    }
+    if id == RID_OPENAPI() {
+        return h_openapi(ctx, db)?
+    }
+    if id == RID_TOKEN() {
+        return h_token(ctx, db)
+    }
+    if id == RID_ME() {
+        return h_me(ctx, db)
+    }
+    return fmr_out(fmr_500("unhandled route id"), db)
+}
+
+// Scaffold boot: no product migrations. Apps run their own migrate in start.baga.
+fn fmr_startup_migrate() -> i64 !Net !IO !Random {
+    return 0
+}

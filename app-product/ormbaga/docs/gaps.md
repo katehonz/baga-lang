@@ -23,13 +23,14 @@ always rebind (documented).
 enums; helpers `orm_ok`, `orm_ok_q`, `orm_nrows`, `migrate_is_ok`, …
 Apps and tests use helpers (no `.ok` fields on the enum).
 
-## G3 — No parameterized queries
+## G3 — ~~No parameterized queries~~ — **CLOSED**
 
-**Symptom.** ORM builds SQL strings; must quote with `sql_lit` / `sql_ident`.
+**Was.** ORM built SQL strings only.
 
-**Workaround.** All public helpers quote; raw `orm_exec` is footgun.
+**Now.** `orm_find_*` / `orm_where_eq_*` / `orm_insert_*` / update / delete use
+pgbaga Extended Query (`$1`). Legacy `*_lit` paths remain for trusted SQL.
 
-**Verdict.** Blocked on pgbaga Extended Query (Parse/Bind). High priority for framework.
+**Verdict.** Closed.
 
 ## G4 — No reflection / model macros
 
@@ -55,16 +56,19 @@ Apps and tests use helpers (no `.ok` fields on the enum).
 
 **Severity.** Low.
 
-## G7 — `RETURNING` not used for insert→id
+## G7 — ~~`RETURNING` not used for insert→id~~ — **CLOSED**
 
-**Symptom.** After insert, demo re-queries by unique email to get `id`.
-
-**Workaround.** `orm_where_eq` after insert; or `INSERT … RETURNING *` via `orm_query`.
-
-**Verdict.** Add `orm_insert_returning` helper in P1.
+**Now.** `orm_insert_returning_strs` / `orm_insert_returning_lits` +
+`sql_insert_returning_p`. Covered in `tests/orm_test.baga`.
 
 ## Closed / fine
 
 - goose history table + transactional up/down verified in `tests/orm_test.baga`.
 - Quote escaping for `O'Hara` / `a'b` verified.
 - ON DELETE CASCADE through ORM delete verified.
+
+## Closed recently (2026-08-07)
+
+- `orm_all_page` / `orm_where_eq_*_page` + `sql_page` / `sql_offset`.
+- `orm_ping` for readiness checks.
+- Package layered under `sql/`, `session/`, `migrate/`, `pool/`.

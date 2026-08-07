@@ -1,4 +1,4 @@
-// actions/users.baga — User CRUD (Lucky: Api::Users::*)
+// actions/users.baga — User CRUD handlers.
 
 import "../models/user.baga"
 import "fmrbaga/app.baga"

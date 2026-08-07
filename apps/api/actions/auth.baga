@@ -1,4 +1,4 @@
-// actions/auth.baga — token issue + /me (Lucky: Api::Auth::*)
+// actions/auth.baga — token issue + /me.
 
 import "fmrbaga/app.baga"
 import "fmrbaga/ctx.baga"

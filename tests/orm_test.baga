@@ -1,4 +1,4 @@
-// orm_test.baga — migrations + ActiveRecord CRUD against baga_orm.
+// orm_test.baga — migrations + table CRUD against baga_orm.
 
 import "ormbaga/orm.baga"
 import "ormbaga/migrate.baga"
@@ -116,6 +116,32 @@ fn main() -> i64 !Net !IO !Random !Par {
     db = orm_db_q(q3)
     check("find_quoted", orm_ok_q(q3) == 1 && orm_nrows(q3) == 1)
     check("name_quoted", orm_cell_by(q3, 0, "name") == "O'Hara")
+
+    // INSERT … RETURNING * (id without re-query)
+    let cols3 = vec_new()
+    vec_push(cols3, "email")
+    vec_push(cols3, "name")
+    let vals3 = vec_new()
+    vec_push(vals3, "ret@baga.dev")
+    vec_push(vals3, "Returning")
+    let ret = orm_insert_returning_strs(db, "users", cols3, vals3)?
+    db = orm_db_q(ret)
+    check("insert_returning", orm_ok_q(ret) == 1 && orm_nrows(ret) == 1)
+    let rid = orm_cell_by_i64(ret, 0, "id")
+    check("returning_id", rid > 0)
+    check("returning_name", orm_cell_by(ret, 0, "name") == "Returning")
+    let delr = orm_delete_by_id(db, "users", rid)?
+    db = orm_db_exec(delr)
+    check("delete_returning_row", orm_ok(delr) == 1)
+
+    // pure SQL page helpers
+    check("sql_page", sql_page("SELECT * FROM t", 10, 20) == "SELECT * FROM t LIMIT 10 OFFSET 20")
+    check("sql_offset", sql_offset("SELECT 1", 5) == "SELECT 1 OFFSET 5")
+
+    // ping
+    let ping = orm_ping(db)?
+    db = orm_db_q(ping)
+    check("orm_ping", orm_ok_q(ping) == 1 && orm_cell_i64(ping, 0, 0) == 1)
 
     // raw params API
     let pv = vec_new()

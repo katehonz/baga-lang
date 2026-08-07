@@ -1,4 +1,4 @@
-// schema.baga — registry migrations (embedded, goose-style via ormbaga).
+// schema.baga — registry migrations (embedded registry via ormbaga).
 // Version numbers are monotonic timestamps (YYYYMMDDNNN).
 
 import "ormbaga/migrate.baga"

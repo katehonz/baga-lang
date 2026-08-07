@@ -1,4 +1,4 @@
-// routes.baga — single place for route table + dispatch (Lucky: src/actions + routes).
+// routes.baga — route table + fmr_dispatch for this product.
 // Embeds fmr_build_app / fmr_before / fmr_dispatch for the app binary.
 
 import "actions/system.baga"

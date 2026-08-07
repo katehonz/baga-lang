@@ -1,4 +1,4 @@
-// models/post.baga — posts belong to users (Lucky-style model helpers).
+// models/post.baga — posts table helpers (FK → users).
 
 import "ormbaga/orm.baga"
 import "ormbaga/sql.baga"

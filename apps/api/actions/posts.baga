@@ -1,4 +1,4 @@
-// actions/posts.baga — Post CRUD (Lucky: Api::Posts::*)
+// actions/posts.baga — Post CRUD handlers.
 
 import "../models/post.baga"
 import "../models/user.baga"

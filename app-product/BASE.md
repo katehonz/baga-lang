@@ -7,28 +7,27 @@ are **ecosystem building blocks to prove the language** — not throwaway demos.
 Long-horizon storage goal: a **RocksDB-like** engine (`rocksbaga`; was `lsmbaga`).
 
 ```
-                 apps/api   (your product — actions, models, routes)
-                      │
-                 ┌────▼────┐
-                 │ fmrbaga │   framework (router, JSON, auth, config, serve)
-                 └────┬────┘
-        ┌─────────────┼─────────────┐
-        ▼             ▼             ▼
-   httpdbaga      jwtbaga       ormbaga (+ pool)
-   (HTTP)         (JWT)      (AR + goose migrations)
-                                   │
-                                   ▼
-                                pgbaga
-                           (Postgres wire + $1)
-                                   │
-                                   ▼
-                                Postgres
+        apps/*   (each product is independent — own routes, models, schema)
+           │
+      ┌────▼────┐
+      │ fmrbaga │   universal framework (router, JSON, auth, config, serve)
+      └────┬────┘
+ ┌─────────┼─────────┐
+ ▼         ▼         ▼
+httpdbaga  jwtbaga  ormbaga (+ pool)
+                    (table ORM + migrations)
+                         │
+                         ▼
+                      pgbaga
+                         │
+                         ▼
+                      Postgres
 ```
 
 | Layer | Path | Role |
 |-------|------|------|
-| **App** | `apps/api` | product code (actions, models, routes) |
-| Framework | `app-product/fmrbaga` | router, jsonx, deps, config, workers |
+| **App** | `apps/*` | product code (actions, models, schema, routes) — **universal pattern** |
+| Framework | `app-product/fmrbaga` | universal router/jsonx/deps/workers (no domain) |
 | HTTP | `httpdbaga` | request/response |
 | Auth | `jwtbaga` | HS256 |
 | ORM | `ormbaga` | migrations, CRUD, pool, prepare |
@@ -36,11 +35,12 @@ Long-horizon storage goal: a **RocksDB-like** engine (`rocksbaga`; was `lsmbaga`
 
 **Rules**
 
-1. Business logic lives in `apps/*`, not inside fmrbaga.
-2. Prefer `FMR_WORKERS=N` in production.
-3. Prefer parameterized ORM (`$1`) for user input.
-4. Do not fork a second web framework without a strong reason.
-5. Every package carries a `sandak.toml` (name == directory name) and builds
+1. **Packages stay universal** — no product domain inside `app-product/*`.
+2. **Apps stay independent** — each app owns routes, models, and migrations.
+3. Prefer worker pool in production (`FMR_WORKERS` default 4; often 8).
+4. Prefer parameterized ORM (`$1`) for user input.
+5. Do not fork a second web framework without a strong reason.
+6. Every package carries a `sandak.toml` (name == directory name) and builds
    with `sandak build`; imports use package names, never `../../` paths.
 
 ---
@@ -53,11 +53,11 @@ Long-horizon storage goal: a **RocksDB-like** engine (`rocksbaga`; was `lsmbaga`
 
 | Package | Role |
 |---------|------|
-| **fmrbaga** | Small web framework — router, JSON (`jsonx`), middleware, OpenAPI, config, serve, workers |
+| **fmrbaga** | Baga web framework — router, JSON (`jsonx`), middleware, OpenAPI, config, serve, workers |
 | **httpdbaga** | HTTP/1.1 + HTTP/2 (h2c, HPACK) server library |
 | **jwtbaga** | JWT/JWS — HS256 sign/verify; RS256/ES256 verify |
 | **oauthbaga** | OAuth2 / OIDC-style flows, proxy, session cookie demo |
-| **ormbaga** | ActiveRecord-style ORM + goose-like migrations + connection pool |
+| **ormbaga** | Universal table ORM + versioned migrations + pool (no app domain) |
 | **pgbaga** | Native PostgreSQL wire client (SCRAM-SHA-256, Simple + Extended Query) |
 | **querybaga** | URL query / form parse and encode |
 | **wsbaga** | WebSocket RFC 6455 — handshake, frames, echo server/client |

@@ -1,5 +1,5 @@
-// models/user.baga — User table helpers (Lucky model / query object style).
-// Table schema lives in ormbaga migrations (users).
+// models/user.baga — users table helpers over ormbaga.
+// Table DDL lives in this app's schema.baga (api_migrations).
 
 import "ormbaga/orm.baga"
 import "ormbaga/sql.baga"

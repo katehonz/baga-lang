@@ -1,11 +1,11 @@
-// start.baga — product entrypoint (Lucky: start_server / bin).
-// Boot: migrate → fmr_run (workers / sync / go_bg from env).
+// start.baga — this product's entrypoint: migrate → fmr_run.
+// Domain schema and routes belong to the app; fmrbaga stays universal.
 
 import "routes.baga"
+import "schema.baga"
 import "fmrbaga/app.baga"
 import "ormbaga/orm.baga"
 import "ormbaga/migrate.baga"
-import "ormbaga/schema.baga"
 import "std/str/str.baga"
 
 fn boot_migrate() -> i64 !Net !IO !Random {
@@ -15,7 +15,7 @@ fn boot_migrate() -> i64 !Net !IO !Random {
         print(concat("migrate: db connect failed: ", orm_err_db(db)))
         return 1
     }
-    let up = migrate_up(db, ormbaga_migrations())?
+    let up = migrate_up(db, api_migrations())?
     if migrate_is_ok(up) == 0 {
         print(concat("migrate failed: ", migrate_err_str(up)))
         orm_close(migrate_db(up))?

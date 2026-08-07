@@ -55,11 +55,13 @@ logbaga JSON (when `FMR_LOG=1`) → response headers (`X-Request-Id`,
 **Still open.** Pluggable ordered middleware *ids* / DI graph; only one
 app-defined hook (`fmr_before`) plus the built-in correlation chain.
 
-## G7 — Connection-per-TCP DB session
+## G7 — Connection-per-TCP DB session — **mostly closed**
 
-**Symptom.** SCRAM cost on each new HTTP connection under `go_bg`.
+**Was.** SCRAM cost on each new HTTP connection under `go_bg`.
 
-**Verdict.** P2 pool with `std/par` channels.
+**Now.** Default is `FMR_WORKERS=4` (fixed pool, 1 long-lived DB per OS
+thread). Explicit `FMR_WORKERS=0` keeps go_bg-per-conn. Shared stats track
+inflight/accepted/completed.
 
 ## G8 — Combined program size
 
@@ -67,13 +69,18 @@ app-defined hook (`fmr_before`) plus the built-in correlation chain.
 
 **Verdict.** Acceptable; barrel files + FNS_MAX headroom help.
 
-## G10 — Graceful shutdown (Phase 3 exit)
+## G10 — Graceful shutdown — **improved**
 
 **Shipped.** Accept loop is `poll_wait`-based; SIGTERM/SIGINT stop accepting.
-`/ready` returns 503 when `fmr_shutting_down()`. Workers receive stop fd.
+`/ready` returns 503 when `fmr_shutting_down()`.
 
-**Residual.** In-flight `go_bg` connections are not drained with a deadline;
-no shared request counter across workers (gauges only on `/metrics`).
+**2026-08-07.** Worker pool uses joinable `go` + `join`. After signal:
+stop accept → `chan_close(work)` → `fmr_drain_wait` (`FMR_DRAIN_MS`) →
+join workers. Client sockets use `FMR_IDLE_S` SO_RCVTIMEO so keep-alive does
+not pin workers forever. Runtime gauges via `fmr_rt_*` (shared map_h).
+
+**Residual.** go_bg mode cannot join detached threads (drain waits on inflight
+only). Stats counters are best-effort (no mutex — avoid !Par on every handler).
 
 ## G9 — Dual protocol gRPC (B3.3 partial)
 

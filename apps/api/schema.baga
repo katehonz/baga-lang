@@ -1,0 +1,30 @@
+// schema.baga — this product's migrations (owned by the app, not the framework).
+// Other apps define their own MigrationSet the same way.
+
+import "ormbaga/migrate.baga"
+
+fn api_migrations() -> MigrationSet {
+    let mut set = migrate_set_new()
+    set = migrate_add(
+        set,
+        20260803001,
+        "create_users",
+        "CREATE TABLE users (id BIGSERIAL PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        "DROP TABLE IF EXISTS users"
+    )
+    set = migrate_add(
+        set,
+        20260803002,
+        "create_posts",
+        "CREATE TABLE posts (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        "DROP TABLE IF EXISTS posts"
+    )
+    set = migrate_add(
+        set,
+        20260803003,
+        "index_posts_user_id",
+        "CREATE INDEX index_posts_on_user_id ON posts (user_id)",
+        "DROP INDEX IF EXISTS index_posts_on_user_id"
+    )
+    return set
+}

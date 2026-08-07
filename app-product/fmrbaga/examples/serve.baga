@@ -1,0 +1,12 @@
+// serve.baga — universal scaffold entry (ops + JWT only).
+// Product APIs: apps/api, apps/registry, or your own app under apps/*.
+//
+//   PORT=8080 FMR_JWT_SECRET=... ./baga app-product/fmrbaga/serve.baga
+//   ./scripts/fmr-run   # apps/api product
+
+import "../core/app.baga"
+import "../handlers/handlers.baga"
+
+fn main() -> i64 !Net !IO !Par !Random !Time {
+    return fmr_run()?
+}

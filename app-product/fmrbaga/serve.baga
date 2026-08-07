@@ -1,16 +1,3 @@
-// serve.baga — production entrypoint for fmrbaga API.
-//
-//   PORT=8080 FMR_JWT_SECRET=... ./baga app-product/fmrbaga/serve.baga
-//
-// Boot: migrate schema → listen HTTP/1.1 (go_bg per connection by default).
-
-import "app.baga"
-import "handlers.baga"
-
-fn main() -> i64 !Net !IO !Par !Random !Time {
-    let rc = fmr_startup_migrate()?
-    if rc != 0 {
-        return rc
-    }
-    return fmr_run()?
-}
+// Public re-export — prefer fmrbaga/examples/serve.baga for new code.
+// Stable path: ./baga app-product/fmrbaga/serve.baga
+import "examples/serve.baga"

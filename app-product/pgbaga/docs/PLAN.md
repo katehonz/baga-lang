@@ -69,16 +69,19 @@ TLS, MD5 auth (deprecated), Kerberos/GSS, replication, pipelining, pool, full ty
 
 ## Files
 
-| File | Role |
+| Path | Role |
 |------|------|
-| `pg_proto.baga` | pure encode/decode, message builders/parsers |
-| `pg_scram.baga` | pure PBKDF2 + SCRAM-SHA-256 proofs |
-| `pg.baga` | connect / query / close (effects) |
-| `demo.baga` | CLI demo (`SELECT 1`, create/drop temp) |
+| `wire/proto.baga` | pure encode/decode, message builders/parsers |
+| `auth/scram.baga` | pure PBKDF2 + SCRAM-SHA-256 proofs |
+| `conn/pg.baga` | connect / query / prepare / close (effects) |
+| `examples/demo.baga` | CLI demo (`SELECT 1`, create/drop temp) |
 | `password.txt` | local credentials hint (not imported by library) |
-| `gaps.md` | language + protocol gaps |
+| `docs/gaps.md` | language + protocol gaps |
+| `ARCHITECTURE.md` | layered package map |
 | `README.md` | API + run/test |
 | `tests/pg_test.baga` | live integration test |
+
+Root `pg.baga` / `pg_proto.baga` / `pg_scram.baga` re-export the layered paths.
 
 ## Effects
 

@@ -1,4 +1,4 @@
-// actions/system.baga — health / ready / meta / metrics (Lucky: Api::System::*)
+// actions/system.baga — health / ready / meta / metrics.
 
 import "fmrbaga/app.baga"
 import "fmrbaga/ctx.baga"
@@ -51,12 +51,17 @@ fn act_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
     return act_ok(db, fmr_openapi_from_router(app.router, app.title, app.version))
 }
 
-// Prometheus text (metbaga). process_up / fmr_ready reflect signal drain.
-fn act_metrics(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+// Prometheus text (metbaga). Runtime gauges from fmr_rt_* (worker pool / inflight).
+fn act_metrics(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
     let m = met_new()
     let h_up = met_gauge(m, "process_up", "1 if process accepting work")
     let h_ready = met_gauge(m, "fmr_ready", "1 if /ready would succeed (not shutting down)")
     let h_info = met_gauge(m, "fmr_info", "Constant 1; identify fmrbaga process")
+    let h_inf = met_gauge(m, "fmr_inflight_connections", "HTTP connections currently in handlers")
+    let h_acc = met_gauge(m, "fmr_accepted_connections", "Total accepted TCP connections")
+    let h_done = met_gauge(m, "fmr_completed_connections", "Total completed TCP connections")
+    let h_w = met_gauge(m, "fmr_workers", "Configured worker pool size (0 = go_bg or sync)")
+    let h_mode = met_gauge(m, "fmr_serve_mode", "0=go_bg 1=sync 2=worker_pool")
     if fmr_shutting_down() == 1 {
         met_set(m, h_up, 0)
         met_set(m, h_ready, 0)
@@ -65,6 +70,11 @@ fn act_metrics(ctx: FmrCtx, db: OrmDb) -> FmrOut {
         met_set(m, h_ready, 1)
     }
     met_set(m, h_info, 1)
+    met_set(m, h_inf, fmr_rt_inflight()?)
+    met_set(m, h_acc, fmr_rt_accepted()?)
+    met_set(m, h_done, fmr_rt_completed()?)
+    met_set(m, h_w, fmr_rt_workers()?)
+    met_set(m, h_mode, fmr_rt_mode()?)
     let body = met_render(m)
     let mut r = http_response(200, body)
     r = http_set_header(r, "Content-Type", "text/plain; version=0.0.4; charset=utf-8")

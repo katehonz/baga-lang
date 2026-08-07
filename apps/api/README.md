@@ -1,22 +1,21 @@
-# apps/api — product on fmrbaga (stabilize runbook)
+# apps/api — reference product on fmrbaga
 
-A **small, real** JSON API in the spirit of [Lucky](https://luckyframework.org/)
-(Crystal): conventions, thin actions, models, one entrypoint.
-
-Not a toy demo — the same layout you should use for your own product.
+One **independent product** using the universal stack (fmrbaga + ormbaga +
+pgbaga). Copy this layout for any domain — the framework does not assume
+users/posts or this app.
 
 ```
 apps/api/
-  start.baga           # main: migrate → listen
-  routes.baga          # fmr_build_app + fmr_dispatch (route table)
-  models/user.baga     # table helpers (Lucky model vibe)
-  actions/
-    system.baga        # health, ready, meta, openapi
-    auth.baga          # token, me
-    users.baga         # CRUD
-    posts.baga
+  start.baga           # main: this app's migrate → fmr_run
+  routes.baga          # fmr_build_app + fmr_dispatch
+  schema.baga          # this product's MigrationSet (owned here)
+  models/              # table helpers
+  actions/             # handlers
   .env.example
 ```
+
+Other products (e.g. `apps/registry`) use the same pattern with their own
+schema and routes. Packages under `app-product/` stay universal.
 
 ## Prerequisites
 
@@ -25,7 +24,6 @@ apps/api/
 3. Role/db once (example):
 
 ```bash
-# as superuser
 createuser -h 127.0.0.1 -P bagatest   # password e.g. pas+123
 createdb  -h 127.0.0.1 -O bagatest baga_orm
 ```
@@ -45,38 +43,27 @@ export PGHOST=127.0.0.1 PGPORT=5432 PGUSER=bagatest PGPASSWORD='pas+123' PGDATAB
 ./baga -I . -I app-product apps/api/start.baga
 ```
 
-Migrate runs on boot (`migrate_up`). Re-run after schema changes.
+Migrate runs on boot (`api_migrations()`). Re-run after schema changes.
 
 ## Smoke (after listen)
 
 ```bash
 curl -s localhost:8080/health
 curl -s localhost:8080/ready
-curl -s localhost:8080/metrics | head
-# correlation headers (B2.1 middleware)
-curl -s -D- localhost:8080/health -o /dev/null | grep -iE 'request-id|traceparent'
-# propagate a parent trace
-curl -s -D- localhost:8080/health -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' -o /dev/null
 TOKEN=$(curl -s -X POST localhost:8080/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"sub":"ada"}' | sed 's/.*"access_token":"//;s/".*//')
 curl -s localhost:8080/v1/users -H "Authorization: Bearer $TOKEN"
-curl -s -X POST localhost:8080/v1/posts -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":1,"title":"hi","body":"from fmr"}'
-curl -s 'localhost:8080/v1/posts?limit=10&offset=0' -H "Authorization: Bearer $TOKEN"
-# graceful stop: kill -TERM <pid>  → /ready becomes 503, accept loop exits
 ```
 
-**Full product path** (API + registry gRPC + metrics + SIGTERM):  
-[docs/runbooks/product-path.md](../../docs/runbooks/product-path.md)
+**Full product path:** [docs/runbooks/product-path.md](../../docs/runbooks/product-path.md)
 
 Automated: `tests/api_test.baga` (needs same PG defaults).
 
-## How to add an action (Lucky-style)
+## How to add a route (any product)
 
-1. Pick a free route id in `routes.baga`
-2. Register `fmr_route(app, "GET", "/v1/things", RID_THINGS)`
-3. Implement `act_things_index(ctx, db) -> FmrOut` in `actions/…`
+1. Free route id in `routes.baga`
+2. `fmr_route(app, "GET", "/v1/things", RID_THINGS)`
+3. Handler in `actions/…` → `FmrOut`
 4. Branch in `fmr_dispatch`
 
 Or: `./scripts/fmr-gen-action things index GET /v1/things`
@@ -86,29 +73,13 @@ Or: `./scripts/fmr-gen-action things index GET /v1/things`
 | Var | Default (fmr-run) | Role |
 |-----|-------------------|------|
 | `PORT` | `8080` | listen |
-| `FMR_WORKERS` | `4` | accept workers |
+| `FMR_WORKERS` | `4` | OS-thread pool (1 DB each); try `8` in prod |
+| `FMR_DRAIN_MS` | `10000` | graceful drain after SIGTERM |
+| `FMR_IDLE_S` | `15` | client socket idle timeout |
 | `FMR_LOG` | `1` | request logs |
-| `FMR_CORS` | `*` | CORS |
-| `FMR_JWT_SECRET` | `dev-secret` | HS256 |
-| `PGHOST` / `PGPORT` | `127.0.0.1` / `5432` | Postgres |
-| `PGUSER` / `PGPASSWORD` | `bagatest` / `pas+123` | auth |
-| `PGDATABASE` | `baga_orm` | app DB |
+| `FMR_CORS` | `*` | CORS origin |
+| `FMR_JWT_SECRET` | `dev-secret` | JWT |
+| `PG*` | bagatest / baga_orm | database |
 
-Full framework notes: `app-product/fmrbaga` README.
-
-## Stabilize notes
-
-- Prefer **not** running registry/api on the same `PORT` simultaneously.  
-  Registry live tests force `PORT=8090` (`scripts/run_tests.sh`).  
-- After query work in raw pgbaga, rebind with `pg_conn_of(r)` (L3 `PgResult`).  
-  ORM still uses `db = r.db` / `ok` fields (B1 L3 deferred).  
-- Plan focus: [Phase Stabilize](../../docs/superpowers/plans/2026-08-05-advanced-go-rust.md).
-
-## Framework vs app
-
-| Package | Role |
-|---------|------|
-| `app-product/fmrbaga` | framework (router, JSON, auth, serve) |
-| `apps/api` | **your product** (actions + models + routes) |
-
-Keep business logic in `apps/*`, not inside fmrbaga.
+See [fmrbaga README](../../app-product/fmrbaga/README.md) for concurrency modes
+and `/metrics` gauges (`fmr_workers`, `fmr_inflight_connections`, …).
