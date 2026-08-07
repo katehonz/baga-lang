@@ -6,7 +6,7 @@ Run WebAssembly modules inside a Baga process via the official **Wasmtime C API*
 
 ## Status
 
-**P3a** — WAT→wasm + module from in-memory buffer; Memory + WASI lite; Linker + host registry; gcd / hello / add / mem / wasi / wat demos.
+**P3b** — module serialize/deserialize (buffer + file); WAT→wasm + module from in-memory buffer; Memory + WASI lite; Linker + host registry; gcd / hello / add / mem / wasi / wat / serialize demos.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [PLAN.md](PLAN.md), [gaps.md](gaps.md).
 
@@ -22,6 +22,8 @@ cd app-product/wasmtimebaga
 # gcd(6, 27) = 3
 # gcd(48, 18) = 6
 # wat add(20, 22) = 42
+# deserialized gcd(6, 27) = 3
+# file-cached gcd(48, 18) = 6
 # wasmtimebaga demo: ok
 ```
 
@@ -99,12 +101,26 @@ let mod = wt_module_from_wasm(eng, buf)?
 wt_drop(buf)
 ```
 
+### P3b — module serialize / deserialize
+
+```baga
+// Serialize a compiled module and rebuild it (skip recompilation).
+let buf = wt_module_serialize(mod)?          // buffer handle, 0 on error
+let mod2 = wt_module_deserialize(eng, buf)?
+wt_drop(buf)
+
+// Disk-cache path — binary-safe, stays in the shim (artifacts hold NULs,
+// so baga `str` never carries them).
+wt_module_serialize_file(mod, "target/gcd.serialized")?
+let mod3 = wt_module_deserialize_file(eng, "target/gcd.serialized")?
+```
+
 ## Layout
 
 | Path | Role |
 |------|------|
 | `wasm.baga` | public API + FFI declarations |
-| `demo.baga` | demo binary (P0–P3a paths) |
+| `demo.baga` | demo binary (P0–P3b paths) |
 | `shims/` | C handle bridge → libwasmtime |
 | `fixtures/gcd.wasm` | sample module |
 | `vendor/` | prebuilt C API (fetched) |

@@ -24,7 +24,11 @@ per index (`wt_buf_len` / `wt_buf_get`).
 
 **Next.** Pass baga `bytes`/`Vec` directly to C as data pointer + len
 (bulk copy both directions) once codegen supports extern of `bytes` or a
-pair of i64s (`ptr`, `len` from a builtin).
+pair of i64s (`ptr`, `len` from a builtin). Until then, binary payloads
+that baga `str` cannot carry (NUL bytes) go through buffer handles or
+shim-owned file paths — e.g. P3b `module_serialize_file` /
+`module_deserialize_file` keep serialized artifacts (which hold NULs)
+entirely on the C side.
 
 ## W3 — host callbacks (`WrapFunc`) — partially closed (P1)
 

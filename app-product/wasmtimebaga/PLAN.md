@@ -1,7 +1,7 @@
 # wasmtimebaga — plan
 
 Date: 2026-08-07
-Status: **P3a done** (WAT→wasm + module-from-buffer)
+Status: **P3b done** (module serialize/deserialize — buffer + file)
 Goal: Wasmtime host embedding for Baga, modeled on **wasmtime-go**.
 
 ## Why
@@ -42,9 +42,20 @@ Language Support in Wasmtime is about **host embeddings**. Go is an official BA 
 3. Demo `demo_wat` + smoke P3a cover magic `\0asm`, OOB, bad-WAT, and
    in-memory instantiate. No fixture file needed at runtime.
 
+### P3b — module serialize/deserialize ✅
+
+1. `baga_wt_module_serialize(mod) -> buf`; `baga_wt_module_serialize_file(mod, path)`
+   (binary-safe — serialized artifacts contain NULs, so the file path
+   stays in the shim; baga `str` never carries them).
+2. `baga_wt_module_deserialize(engine, buf)` /
+   `baga_wt_module_deserialize_file(engine, path)`.
+3. Baga wrappers `wt_module_serialize{,_file}` / `wt_module_deserialize{,_file}`.
+4. Demo `demo_serialize` + smoke P3b: buffer + file round trips, and
+   deserialize rejects non-artifact bytes (raw wasm source) with error.
+
 ### P3 — polish (remaining)
 
-- Multi-value, multi-memory, serialize module.
+- Multi-value, multi-memory.
 - Optional component model.
 
 ## Non-goals (P0)
@@ -57,7 +68,7 @@ Host callbacks, WASI, component model, multi-arch vendor in git, pure interprete
 |------|------|
 | `ARCHITECTURE.md` | layer diagram + decisions |
 | `wasm.baga` | public API + externs |
-| `demo.baga` | demo binary (P0–P3a paths) |
+| `demo.baga` | demo binary (P0–P3b paths) |
 | `shims/baga_wt_shim.*` | handle bridge |
 | `fixtures/gcd.*` | wasmtime-go GCD module |
 | `scripts/fetch-wasmtime-c-api.sh` | vendor C API |

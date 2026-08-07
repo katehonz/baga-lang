@@ -252,6 +252,83 @@ fn main() -> i64 !IO {
         return fail(concat("run_wat got ", int_to_str(r)))
     }
 
+    // ── P3b module serialize/deserialize ────────────────────────────────
+    let spath = fixture("gcd.wasm")?
+    let eng5 = wt_engine_new()?
+    let smod = wt_module_from_file(eng5, spath)?
+    if smod == 0 {
+        return fail(concat("serialize setup: ", wt_last_err()?))
+    }
+
+    // serialize → buffer → deserialize → same behaviour
+    let sbuf = wt_module_serialize(smod)?
+    if sbuf == 0 {
+        return fail(concat("module_serialize: ", wt_last_err()?))
+    }
+    if wt_buf_len(sbuf)? <= 0 {
+        return fail("serialized buffer empty")
+    }
+    let smod2 = wt_module_deserialize(eng5, sbuf)?
+    if smod2 == 0 {
+        return fail(concat("module_deserialize: ", wt_last_err()?))
+    }
+    let sstore = wt_store_new(eng5)?
+    let sinst = wt_instance_new(sstore, smod2)?
+    if sinst == 0 {
+        return fail(concat("deserialized instance: ", wt_last_err()?))
+    }
+    if wt_call_i32_2_status(sstore, sinst, "gcd", 6, 27)? != 0 {
+        return fail(concat("deserialized gcd: ", wt_last_err()?))
+    }
+    if wt_last_i64()? != 3 {
+        return fail("deserialized gcd != 3")
+    }
+    wt_drop(sinst)
+    wt_drop(sstore)
+    wt_drop(smod2)
+
+    // deserialize must reject non-artifact bytes (here: raw wasm source)
+    let wbuf = wt_wat2wasm(wat)?
+    if wbuf == 0 {
+        return fail(concat("negative setup wat2wasm: ", wt_last_err()?))
+    }
+    let badmod = wt_module_deserialize(eng5, wbuf)?
+    if badmod != 0 {
+        return fail("deserialize accepted non-artifact bytes")
+    }
+    if len(wt_last_err()?) == 0 {
+        return fail("deserialize should set last_err")
+    }
+    wt_drop(wbuf)
+
+    // serialize_file → deserialize_file (disk-cache round trip)
+    let cache = "/tmp/wtb_smoke.serialized"
+    if wt_module_serialize_file(smod, cache)? != 0 {
+        return fail(concat("serialize_file: ", wt_last_err()?))
+    }
+    let smod3 = wt_module_deserialize_file(eng5, cache)?
+    if smod3 == 0 {
+        return fail(concat("deserialize_file: ", wt_last_err()?))
+    }
+    let sstore3 = wt_store_new(eng5)?
+    let sinst3 = wt_instance_new(sstore3, smod3)?
+    if sinst3 == 0 {
+        return fail(concat("file instance: ", wt_last_err()?))
+    }
+    if wt_call_i32_2_status(sstore3, sinst3, "gcd", 48, 18)? != 0 {
+        return fail(concat("file gcd: ", wt_last_err()?))
+    }
+    if wt_last_i64()? != 6 {
+        return fail("file gcd != 6")
+    }
+    wt_drop(sinst3)
+    wt_drop(sstore3)
+    wt_drop(smod3)
+    unlink(cache)?
+    wt_drop(sbuf)
+    wt_drop(smod)
+    wt_drop(eng5)
+
     print("wasmtime smoke: all passed")
     return 0
 }

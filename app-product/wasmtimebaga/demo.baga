@@ -356,6 +356,94 @@ fn demo_wat() -> i64 !IO {
     return 0
 }
 
+fn demo_serialize() -> i64 !IO {
+    let path = resolve_fixture("gcd.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+    let eng = wt_engine_new()?
+    let mod = wt_module_from_file(eng, path)?
+    if mod == 0 {
+        eprintln(concat("module_from_file: ", wt_last_err()?))
+        wt_drop(eng)
+        return 1
+    }
+
+    // serialize to in-memory buffer
+    let buf = wt_module_serialize(mod)?
+    if buf == 0 {
+        eprintln(concat("module_serialize: ", wt_last_err()?))
+        wt_drop(mod)
+        wt_drop(eng)
+        return 1
+    }
+    let n = wt_buf_len(buf)?
+    print(concat(concat("serialized module: ", int_to_str(n)), " bytes"))
+
+    // deserialize from buffer → fresh store → same behaviour
+    let store = wt_store_new(eng)?
+    let mod2 = wt_module_deserialize(eng, buf)?
+    if mod2 == 0 {
+        eprintln(concat("module_deserialize: ", wt_last_err()?))
+        return 1
+    }
+    let inst = wt_instance_new(store, mod2)?
+    if inst == 0 {
+        eprintln(concat("deserialized instance: ", wt_last_err()?))
+        return 1
+    }
+    if wt_call_i32_2_status(store, inst, "gcd", 6, 27)? != 0 {
+        eprintln(concat("call gcd (deserialized): ", wt_last_err()?))
+        return 1
+    }
+    let g = wt_last_i64()?
+    print(concat("deserialized gcd(6, 27) = ", int_to_str(g)))
+    if g != 3 {
+        eprintln("expected 3")
+        return 1
+    }
+    wt_drop(inst)
+    wt_drop(mod2)
+    wt_drop(store)
+    wt_drop(buf)
+
+    // serialize to file → deserialize from file (disk-cache round trip)
+    let cache = "target/gcd.serialized"
+    if wt_module_serialize_file(mod, cache)? != 0 {
+        eprintln(concat("serialize_file: ", wt_last_err()?))
+        return 1
+    }
+    let mod3 = wt_module_deserialize_file(eng, cache)?
+    if mod3 == 0 {
+        eprintln(concat("deserialize_file: ", wt_last_err()?))
+        return 1
+    }
+    let store3 = wt_store_new(eng)?
+    let inst3 = wt_instance_new(store3, mod3)?
+    if inst3 == 0 {
+        eprintln(concat("file instance: ", wt_last_err()?))
+        return 1
+    }
+    if wt_call_i32_2_status(store3, inst3, "gcd", 48, 18)? != 0 {
+        eprintln(concat("call gcd (file): ", wt_last_err()?))
+        return 1
+    }
+    let g2 = wt_last_i64()?
+    print(concat("file-cached gcd(48, 18) = ", int_to_str(g2)))
+    if g2 != 6 {
+        eprintln("expected 6")
+        return 1
+    }
+    wt_drop(inst3)
+    wt_drop(mod3)
+    wt_drop(store3)
+    wt_drop(mod)
+    wt_drop(eng)
+    print("serialize: ok")
+    return 0
+}
+
 fn main() -> i64 !IO {
     if wt_available()? == false {
         eprintln("wasmtimebaga: shim not available")
@@ -377,6 +465,9 @@ fn main() -> i64 !IO {
         return 1
     }
     if demo_wat()? != 0 {
+        return 1
+    }
+    if demo_serialize()? != 0 {
         return 1
     }
     print("wasmtimebaga demo: ok")

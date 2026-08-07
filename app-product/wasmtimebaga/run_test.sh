@@ -9,6 +9,8 @@ ROOT="$(cd "$PKG/../.." && pwd)"
 grep -q "gcd(6, 27) = 3" /tmp/wasmtimebaga_demo.out
 grep -q "gcd(48, 18) = 6" /tmp/wasmtimebaga_demo.out
 grep -q "wat add(20, 22) = 42" /tmp/wasmtimebaga_demo.out
+grep -q "deserialized gcd(6, 27) = 3" /tmp/wasmtimebaga_demo.out
+grep -q "file-cached gcd(48, 18) = 6" /tmp/wasmtimebaga_demo.out
 grep -q "wasmtimebaga demo: ok" /tmp/wasmtimebaga_demo.out
 
 # package-local smoke (not under tests/ so make test does not require vendor)

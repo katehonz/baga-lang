@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-07  
 **Model:** [wasmtime-go](https://github.com/bytecodealliance/wasmtime-go) (Bytecode Alliance)  
-**Status:** P3a (WAT→wasm + module-from-buffer; Memory + WASI lite; Linker + host registry)
+**Status:** P3b (module serialize/deserialize; WAT→wasm + module-from-buffer; Memory + WASI lite; Linker + host registry)
 
 ## Goal
 
@@ -51,8 +51,8 @@ Host embedding of [Wasmtime](https://github.com/bytecodealliance/wasmtime) in Ba
 |------|--------|------|
 | engine | `baga_wt_engine_new` | `baga_wt_drop` |
 | store | `baga_wt_store_new(eng)` | `baga_wt_drop` |
-| module | `baga_wt_module_from_file(eng, path)` or **P3a** `baga_wt_module_from_buf(eng, buf)` | `baga_wt_drop` |
-| buf | **P3a** `baga_wt_wat2wasm(wat)` | `baga_wt_drop` (frees bytes) |
+| module | `baga_wt_module_from_file(eng, path)`, **P3a** `baga_wt_module_from_buf(eng, buf)`, or **P3b** `baga_wt_module_deserialize{,_file}` | `baga_wt_drop` |
+| buf | **P3a** `baga_wt_wat2wasm(wat)` or **P3b** `baga_wt_module_serialize(mod)` | `baga_wt_drop` (frees bytes) |
 | instance | `baga_wt_instance_new(store, mod)` | `baga_wt_drop` (no Wasmtime dtor) |
 
 Call path: look up store + instance → `wasmtime_instance_export_get` → `wasmtime_func_call`.  
@@ -85,6 +85,11 @@ Default `sandak build` on this package is **lib check only** (`wasm.baga` has no
 magic `\0asm` bytes readable via buffer handle → instantiate from buffer →
 `add(20,22)→42`. Bad WAT → handle 0 + `last_err`.
 
+**P3b (serialize/deserialize):** `serialize(gcd.wasm module)` → buffer +
+file round trips reproduce `gcd(6,27)→3` / `gcd(48,18)→6`; deserialize
+rejects non-artifact bytes (raw wasm source) with an error, never a
+fake module.
+
 ## Roadmap sketch
 
 | Phase | Scope |
@@ -93,6 +98,7 @@ magic `\0asm` bytes readable via buffer handle → instantiate from buffer →
 | **P1** ✅ | Host imports (fixed registry), Linker name-define, Hello + host-add fixtures |
 | **P2** ✅ | Memory export (load/store/grow), WASI define + inherit stdio (`sched_yield`) |
 | **P3a** ✅ | WAT→wasm in-process + module from buffer (buffer handles) |
+| **P3b** ✅ | Module serialize/deserialize — buffer + binary-safe file paths |
 | **P3** | Fuel/epoch; preopen dirs; multi-value; component model; free Baga host closures |
 
 ## Non-goals
@@ -109,7 +115,7 @@ app-product/wasmtimebaga/
   ARCHITECTURE.md   PLAN.md   gaps.md   README.md
   sandak.toml
   wasm.baga         # public API + externs
-  demo.baga         # demo (P0–P3a paths)
+  demo.baga         # demo (P0–P3b paths)
   shims/            # C bridge
   fixtures/         # gcd.wat / gcd.wasm
   vendor/           # C API (fetched)

@@ -5,6 +5,7 @@
 // P1: Linker + fixed host-function registry (LOG / I32_ID / I32_ADD).
 // P2: Linear memory export + WASI preview1 (define_wasi + inherit).
 // P3a: WAT → wasm (wasmtime_wat2wasm) + module from in-memory buffer.
+// P3b: module serialize/deserialize (buffer + file paths).
 
 // ── FFI (implemented in shims/baga_wt_shim.c) ────────────────────────────
 
@@ -16,6 +17,10 @@ extern fn baga_wt_wat2wasm(wat: str) -> i64 !IO
 extern fn baga_wt_buf_len(buf_h: i64) -> i64 !IO
 extern fn baga_wt_buf_get(buf_h: i64, i: i64) -> i64 !IO
 extern fn baga_wt_module_from_buf(engine_h: i64, buf_h: i64) -> i64 !IO
+extern fn baga_wt_module_serialize(module_h: i64) -> i64 !IO
+extern fn baga_wt_module_serialize_file(module_h: i64, path: str) -> i64 !IO
+extern fn baga_wt_module_deserialize(engine_h: i64, buf_h: i64) -> i64 !IO
+extern fn baga_wt_module_deserialize_file(engine_h: i64, path: str) -> i64 !IO
 extern fn baga_wt_instance_new(store_h: i64, module_h: i64) -> i64 !IO
 extern fn baga_wt_linker_new(engine_h: i64) -> i64 !IO
 extern fn baga_wt_linker_define_host(linker_h: i64, module: str, name: str, host_kind: i64) -> i64 !IO
@@ -98,6 +103,29 @@ fn wt_buf_get(buf: i64, i: i64) -> i64 !IO {
 // Compile wasm bytes held in a buffer handle; module handle or 0.
 fn wt_module_from_wasm(engine: i64, buf: i64) -> i64 !IO {
     return baga_wt_module_from_buf(engine, buf)?
+}
+
+// ── Module serialization (P3b) ─────────────────────────────────────────
+
+// Serialize a compiled module to a fresh buffer handle; 0 on error.
+fn wt_module_serialize(mod: i64) -> i64 !IO {
+    return baga_wt_module_serialize(mod)?
+}
+
+// Serialize straight to a file path; 0 ok / 1 error (binary-safe).
+fn wt_module_serialize_file(mod: i64, path: str) -> i64 !IO {
+    return baga_wt_module_serialize_file(mod, path)?
+}
+
+// Rebuild a module from a serialized buffer; module handle or 0.
+// Only safe on output of wt_module_serialize / wt_module_serialize_file.
+fn wt_module_deserialize(engine: i64, buf: i64) -> i64 !IO {
+    return baga_wt_module_deserialize(engine, buf)?
+}
+
+// Rebuild a module from a serialized file; module handle or 0.
+fn wt_module_deserialize_file(engine: i64, path: str) -> i64 !IO {
+    return baga_wt_module_deserialize_file(engine, path)?
 }
 
 fn wt_instance_new(store: i64, module: i64) -> i64 !IO {

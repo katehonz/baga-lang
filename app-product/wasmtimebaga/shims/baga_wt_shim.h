@@ -17,6 +17,7 @@
  *
  * P2: linear memory export + WASI preview1 (define_wasi + inherit stdio).
  * P3a: wasmtime_wat2wasm + module-from-buffer (buffer handles).
+ * P3b: module serialize/deserialize (buffer + file paths).
  */
 #ifndef BAGA_WT_SHIM_H
 #define BAGA_WT_SHIM_H
@@ -46,6 +47,19 @@ int64_t baga_wt_buf_len(int64_t buf_h);
 int64_t baga_wt_buf_get(int64_t buf_h, int64_t i);
 /* Compile wasm bytes from a buffer handle; module handle or 0 */
 int64_t baga_wt_module_from_buf(int64_t engine_h, int64_t buf_h);
+
+/* Module serialization (P3b). Serialized artifacts are arbitrary binary
+ * (NUL bytes), so the file paths stay entirely in the shim — baga `str`
+ * cannot carry them. */
+/* Serialize compiled module into a fresh buffer handle; 0 on error */
+int64_t baga_wt_module_serialize(int64_t module_h);
+/* Serialize straight to a file path; status return (0 ok / 1 err) */
+int64_t baga_wt_module_serialize_file(int64_t module_h, const char *path);
+/* Deserialize from a buffer handle; module handle or 0.
+ * Only safe on output of baga_wt_module_serialize{,_file}. */
+int64_t baga_wt_module_deserialize(int64_t engine_h, int64_t buf_h);
+/* Deserialize from a file path; module handle or 0 */
+int64_t baga_wt_module_deserialize_file(int64_t engine_h, const char *path);
 
 /* Linker (P1) */
 int64_t baga_wt_linker_new(int64_t engine_h);

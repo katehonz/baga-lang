@@ -352,6 +352,122 @@ int64_t baga_wt_module_from_buf(int64_t engine_h, int64_t buf_h) {
     return h;
 }
 
+static int64_t module_slot(wasm_engine_t *engine, wasmtime_module_t *module) {
+    int64_t h = alloc_slot();
+    if (!h) {
+        wasmtime_module_delete(module);
+        return 0;
+    }
+    g_slots[h].kind = H_MODULE;
+    g_slots[h].u.module.module = module;
+    g_slots[h].u.module.engine = engine;
+    return h;
+}
+
+int64_t baga_wt_module_serialize(int64_t module_h) {
+    g_err[0] = '\0';
+    Slot *ms = get_slot(module_h, H_MODULE);
+    if (!ms) return 0;
+
+    wasm_byte_vec_t out;
+    memset(&out, 0, sizeof out);
+    wasmtime_error_t *error =
+        wasmtime_module_serialize(ms->u.module.module, &out);
+    if (error) {
+        set_err_wasmtime("module_serialize", error, NULL);
+        return 0;
+    }
+    uint8_t *data = (uint8_t *)malloc(out.size ? out.size : 1);
+    if (!data) {
+        wasm_byte_vec_delete(&out);
+        set_err("oom copying serialized module");
+        return 0;
+    }
+    memcpy(data, out.data, out.size);
+    size_t len = out.size;
+    wasm_byte_vec_delete(&out);
+
+    int64_t h = alloc_slot();
+    if (!h) {
+        free(data);
+        return 0;
+    }
+    g_slots[h].kind = H_BUF;
+    g_slots[h].u.buf.data = data;
+    g_slots[h].u.buf.len = len;
+    return h;
+}
+
+int64_t baga_wt_module_serialize_file(int64_t module_h, const char *path) {
+    g_err[0] = '\0';
+    Slot *ms = get_slot(module_h, H_MODULE);
+    if (!ms) return 1;
+    if (!path || !path[0]) {
+        set_err("empty serialize path");
+        return 1;
+    }
+
+    wasm_byte_vec_t out;
+    memset(&out, 0, sizeof out);
+    wasmtime_error_t *error =
+        wasmtime_module_serialize(ms->u.module.module, &out);
+    if (error) {
+        set_err_wasmtime("module_serialize", error, NULL);
+        return 1;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        wasm_byte_vec_delete(&out);
+        set_err("open serialize path failed");
+        return 1;
+    }
+    size_t total = out.size;
+    size_t wr = total ? fwrite(out.data, 1, total, f) : 0;
+    int rc = fclose(f);
+    wasm_byte_vec_delete(&out);
+    if (wr != total || rc != 0) {
+        set_err("write serialized module failed");
+        return 1;
+    }
+    return 0;
+}
+
+int64_t baga_wt_module_deserialize(int64_t engine_h, int64_t buf_h) {
+    g_err[0] = '\0';
+    Slot *es = get_slot(engine_h, H_ENGINE);
+    if (!es) return 0;
+    Slot *bs = get_slot(buf_h, H_BUF);
+    if (!bs) return 0;
+
+    wasmtime_module_t *module = NULL;
+    wasmtime_error_t *error = wasmtime_module_deserialize(
+        es->u.engine, bs->u.buf.data, bs->u.buf.len, &module);
+    if (error || !module) {
+        set_err_wasmtime("module_deserialize", error, NULL);
+        return 0;
+    }
+    return module_slot(es->u.engine, module);
+}
+
+int64_t baga_wt_module_deserialize_file(int64_t engine_h, const char *path) {
+    g_err[0] = '\0';
+    Slot *es = get_slot(engine_h, H_ENGINE);
+    if (!es) return 0;
+    if (!path || !path[0]) {
+        set_err("empty deserialize path");
+        return 0;
+    }
+
+    wasmtime_module_t *module = NULL;
+    wasmtime_error_t *error =
+        wasmtime_module_deserialize_file(es->u.engine, path, &module);
+    if (error || !module) {
+        set_err_wasmtime("module_deserialize_file", error, NULL);
+        return 0;
+    }
+    return module_slot(es->u.engine, module);
+}
+
 int64_t baga_wt_instance_new(int64_t store_h, int64_t module_h) {
     g_err[0] = '\0';
     Slot *ss = get_slot(store_h, H_STORE);
