@@ -4,32 +4,6 @@
 
 > *"The question is not 'what is new'. The question is 'what has not been glued together yet'."*
 
-## Positioning (read this first)
-
-**Baga is an educational systems language** — not a commercial product claim,
-and **nothing in this monorepo is a “demo toy” written to look impressive and
-die**. Every package under `std/`, `app-product/`, and `apps/` is meant as a
-**real building block** in a growing **ecosystem used to prove the language**:
-can we ship HTTP, TLS, Postgres, gRPC, consensus, and storage **in Baga
-itself**, with effects and verification visible?
-
-| We are | We are not |
-|--------|------------|
-| A language lab with a **working toolchain** and **product-shaped packages** | A drop-in replacement for Rust/Go today |
-| Building an **ecosystem to exercise and showcase** the language | Shipping one-off snippets that never re-enter the stack |
-| Aiming long-term at a **RocksDB-class embedded DB** in Baga | Claiming production RocksDB parity now |
-
-**End goal (north star):** an **embedded key-value / storage engine** in the
-spirit of **RocksDB** (LSM, durable WAL, SST, compaction, cache) — the
-flagship that forces memory discipline, IO, and engine design. Today that
-path is **`rocksbaga`** (LSM engine on RESP; was `lsmbaga`); the road continues
-through quality work without claiming RocksDB parity.
-
-Direction docs: [`docs/superpowers/plans/2026-08-05-advanced-go-rust.md`](docs/superpowers/plans/2026-08-05-advanced-go-rust.md)
-(**plan DoD met** — [close-out](docs/superpowers/plans/2026-08-05-advanced-plan-dod.md)),
-[`docs/superpowers/plans/2026-08-05-cloud-storage-direction.md`](docs/superpowers/plans/2026-08-05-cloud-storage-direction.md).
-Product smoke path: [`docs/runbooks/product-path.md`](docs/runbooks/product-path.md).
-
 ## What is Baga
 
 **Baga (Бага)** is a **programming language** for systems and product code in the age of AI: you write normal programs; the compiler keeps effects, specs, and proof sketches visible so a human (or an agent) can trust the result.
