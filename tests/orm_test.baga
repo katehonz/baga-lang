@@ -38,10 +38,18 @@ fn main() -> i64 !Net !IO !Random !Par {
     db = migrate_db(down_all)
     check("down_all_ok", migrate_is_ok(down_all) == 1)
 
+    let cur0 = migrate_current(db)?
+    db = orm_db_c(cur0)
+    check("current_empty_0", orm_ok_c(cur0) == 1 && orm_count_n(cur0) == 0)
+
     let up1 = migrate_up(db, set)?
     db = migrate_db(up1)
     check("up_ok", migrate_is_ok(up1) == 1)
     check("up_applied_3", migrate_applied_n(up1) == 3)
+
+    let cur1 = migrate_current(db)?
+    db = orm_db_c(cur1)
+    check("current_max_version", orm_ok_c(cur1) == 1 && orm_count_n(cur1) == 20260803003)
 
     let up2 = migrate_up(db, set)?
     db = migrate_db(up2)
@@ -50,6 +58,27 @@ fn main() -> i64 !Net !IO !Random !Par {
     let st = migrate_status(db, set)?
     db = orm_db_q(st)
     check("status_3", orm_ok_q(st) == 1 && orm_nrows(st) == 3)
+
+    // combined status text (set ∪ history) that keeps the session
+    let stt = migrate_status_text(db, set)?
+    db = stt.db
+    let want_stt = concat("20260803001 create_users [applied]\n",
+        concat("20260803002 create_posts [applied]\n",
+            "20260803003 index_posts_user_id [applied]\n"))
+    check("status_text_all_applied", stt.text == want_stt)
+    check("status_text_keeps_db", orm_ok_db(db) == 1)
+
+    // duplicate versions are rejected before touching the DB
+    let mut dupset = migrate_set_new()
+    dupset = migrate_add(dupset, 1, "a", "SELECT 1", "SELECT 1")
+    dupset = migrate_add(dupset, 1, "b", "SELECT 1", "SELECT 1")
+    let dupup = migrate_up(db, dupset)?
+    db = migrate_db(dupup)
+    check("dup_version_rejected", migrate_is_ok(dupup) == 0)
+    check("dup_version_err", migrate_err_str(dupup) == "duplicate migration version 1")
+    let dupdown = migrate_down(db, dupset, 1)?
+    db = migrate_db(dupdown)
+    check("dup_version_rejected_down", migrate_is_ok(dupdown) == 0)
 
     // CRUD users
     let cols = vec_new()
@@ -165,6 +194,9 @@ fn main() -> i64 !Net !IO !Random !Par {
     let st2 = migrate_status(db, set)?
     db = orm_db_q(st2)
     check("status_after_down", orm_ok_q(st2) == 1 && orm_nrows(st2) == 2)
+    let cur2 = migrate_current(db)?
+    db = orm_db_c(cur2)
+    check("current_after_down", orm_ok_c(cur2) == 1 && orm_count_n(cur2) == 20260803002)
 
     // re-up
     let up3 = migrate_up(db, set)?
@@ -216,6 +248,20 @@ fn main() -> i64 !Net !IO !Random !Par {
     check("pool_idle_after", orm_pool_idle(pool) == 1)
     orm_pool_release(lease2)?
     check("pool_idle_full", orm_pool_idle(pool) == 2)
+    // released slot is reusable: written-back state survives checkout
+    let lease3 = orm_pool_acquire(pool)?
+    check("pool_reacquire", orm_ok_db(lease3.db) == 1)
+    let q3p = orm_query(lease3.db, "SELECT 2 AS n")?
+    check("pool_reacquire_query", orm_ok_q(q3p) == 1 && orm_cell_i64(q3p, 0, 0) == 2)
+    let l3b = OrmLease {
+        db: orm_db_q(q3p),
+        slot: lease3.slot,
+        free_ch: lease3.free_ch,
+        fds: lease3.fds, oks: lease3.oks, pids: lease3.pids, txs: lease3.txs,
+        errs: lease3.errs, versions: lease3.versions
+    }
+    orm_pool_release(l3b)?
+    check("pool_idle_after_re", orm_pool_idle(pool) == 2)
     orm_pool_close(pool)?
     check("pool_closed", true)
 

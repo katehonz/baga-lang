@@ -32,12 +32,21 @@ CREATE TABLE IF NOT EXISTS baga_schema_migrations (
 let mut set = migrate_set_new()
 set = migrate_add(set, 20260803001, "create_users", up_sql, down_sql)
 // …
-let r = migrate_up(db, set)?      // pending only, each in a transaction
-db = r.db
-let d = migrate_down(db, set, 1)? // rollback last N
+let r = migrate_up(db, set)?        // pending only, each in a transaction
+db = migrate_db(r)                  // always rebind (by-value structs)
+let n = migrate_applied_n(r)        // how many versions ran this call
+let d = migrate_down(db, set, 1)?   // rollback last N
+db = migrate_db(d)
+
+let cur = migrate_current(db)?          // highest applied version (0 = empty)
+db = orm_db_c(cur)
+let st = migrate_status_text(db, set)?  // "ver name [applied|pending]" lines
+db = st.db                              // report keeps your session
 ```
 
 Registry is **embedded** (parallel `Vec`s — Baga has no `Vec<struct>`).
+Duplicate versions in a set are rejected before any SQL runs; applied
+versions are fetched once per `migrate_up` and checked in memory.
 
 ## ORM API
 

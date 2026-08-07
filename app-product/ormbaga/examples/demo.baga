@@ -39,6 +39,14 @@ fn main() -> i64 !Net !IO !Random {
         }
     }
 
+    // combined status (applied + pending) — keeps the session
+    let stt = migrate_status_text(db, set)?
+    db = stt.db
+    print(concat("status:\n", stt.text))
+    let cur = migrate_current(db)?
+    db = orm_db_c(cur)
+    print(concat("current version=", sql_i64(orm_count_n(cur))))
+
     // User.create
     let cols = vec_new()
     vec_push(cols, "email")

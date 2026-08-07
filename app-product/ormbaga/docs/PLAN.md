@@ -1,7 +1,7 @@
 # ormbaga — table ORM + versioned migrations
 
-Date: 2026-08-03 · Updated: 2026-08-07  
-Status: layered package  
+Date: 2026-08-03 · Updated: 2026-08-08
+Status: layered package
 Depends on: `pgbaga` (PostgreSQL wire client)
 
 ## Identity
@@ -38,8 +38,11 @@ CREATE TABLE IF NOT EXISTS baga_schema_migrations (
 );
 ```
 
-API: `migrate_ensure_table`, `migrate_up`, `migrate_down`, `migrate_status`,
-`migrate_applied_versions`.
+API: `migrate_ensure_table`, `migrate_up`, `migrate_down`, `migrate_status`
+(raw history rows), `migrate_status_text` (set ∪ history report, keeps the
+session), `migrate_current` (highest applied version), `migrate_applied`.
+Duplicate versions in a set are rejected before any SQL runs; `migrate_up`
+fetches applied versions once and checks membership in memory.
 
 ## ORM
 
@@ -57,6 +60,10 @@ Rows stay as pgbaga cells (`orm_cell_by`) — no codegen struct mapping.
 - **P0:** migrations up/down/status + CRUD helpers + demo + tests ✅
 - **P1:** order/limit page helpers, RETURNING insert ✅
 - **P2:** Extended Query default ✅; pool ✅; associations / file migrations later
+- **P2.1 (2026-08-08):** migration hardening — single-fetch applied set,
+  duplicate-version guard, parameterized history writes, `migrate_current`,
+  `migrate_status_text` keeping the session; pool release writes back all
+  conn fields ✅
 
 ## Success criteria
 

@@ -48,13 +48,15 @@ pgbaga Extended Query (`$1`). Legacy `*_lit` paths remain for trusted SQL.
 
 **Verdict.** Add file-based loader when `std/os` has readdir (or list paths in set).
 
-## G6 — Multi-line string SQL awkward
+## G6 — ~~Multi-line string SQL awkward~~ — **CLOSED**
 
-**Symptom.** Baga string literals are single-line (use `\n` or one long line).
+**Was.** Assumed Baga string literals were single-line.
 
-**Workaround.** Single-line DDL in registry.
+**Now.** The lexer accepts raw newlines inside `"..."` (no rejection path in
+`lex_string`); `migrate_ensure_table` ships multi-line DDL and it round-trips
+through Simple Query unchanged. `\n` escapes remain available.
 
-**Severity.** Low.
+**Verdict.** Closed (2026-08-08).
 
 ## G7 — ~~`RETURNING` not used for insert→id~~ — **CLOSED**
 

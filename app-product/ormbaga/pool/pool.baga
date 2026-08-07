@@ -48,15 +48,6 @@ fn orm_pool_empty() -> OrmPool {
     }
 }
 
-fn orm_pool_put_conn(pool: OrmPool, slot: i64, c: PgConn) -> OrmPool {
-    vec_set(pool.fds, slot, c.fd)
-    vec_set(pool.oks, slot, c.ok)
-    vec_set(pool.pids, slot, c.pid)
-    vec_set(pool.txs, slot, c.tx_status)
-    // errs/versions: rebuild not available as vec_set_str always — use vec_set_str
-    return pool
-}
-
 // Create `size` connections. size clamped to [1, 64].
 fn orm_pool_new(host: str, port: i64, user: str, password: str, database: str, size: i64) -> OrmPool !Net !IO !Random !Par {
     let mut n = size
@@ -124,15 +115,6 @@ fn orm_pool_conn_at(pool: OrmPool, slot: i64) -> PgConn {
     }
 }
 
-fn orm_pool_store(pool: OrmPool, slot: i64, c: PgConn) {
-    vec_set(pool.fds, slot, c.fd)
-    vec_set(pool.oks, slot, c.ok)
-    vec_set(pool.pids, slot, c.pid)
-    vec_set(pool.txs, slot, c.tx_status)
-    // str fields: only update via set if available
-    // baga has vec_set for i64; for str use vec_set_str if typed Vec<str>
-}
-
 // Acquire a session (blocks). Returns lease; check lease.db.conn.ok.
 fn orm_pool_acquire(pool: OrmPool) -> OrmLease !Par {
     let slot = chan_recv(pool.free_ch)
@@ -197,6 +179,8 @@ fn orm_pool_release(lease: OrmLease) -> i64 !IO !Net !Par {
     vec_set(lease.oks, lease.slot, c.ok)
     vec_set(lease.pids, lease.slot, c.pid)
     vec_set(lease.txs, lease.slot, c.tx_status)
+    vec_set_str(lease.errs, lease.slot, c.err)
+    vec_set_str(lease.versions, lease.slot, c.server_version)
     chan_send(lease.free_ch, lease.slot)
     return 0
 }
