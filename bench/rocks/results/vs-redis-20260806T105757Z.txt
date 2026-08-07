@@ -1,0 +1,40 @@
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=5000 vlen=100 pipe=1 clients=8 parallel=0 shards=4 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16642) ---
+META host=127.0.0.1 port=16642 n=5000 vlen=100 pipe=1 clients=8
+PING_MS=1124 PING_OPS=35586
+Traceback (most recent call last):
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 289, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 268, in main
+    set_s = wall_multi(
+            ^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 206, in wall_multi
+    raise errors[0]
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 191, in thr
+    worker(cid, r)
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 272, in <lambda>
+    lambda cid, r: run_phase_set(r, n, pipe, val, cid, clients),
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 148, in run_phase_set
+    if r.call("SET", key_name(cid, i, clients), val) != "OK":
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 102, in call
+    return self.read_reply()
+           ^^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 74, in read_reply
+    line = self._readline()
+           ^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 64, in _readline
+    self._read_more()
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 52, in _read_more
+    chunk = self.s.recv(65536)
+            ^^^^^^^^^^^^^^^^^^
+TimeoutError: timed out
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+FAIL baga_rc=1

@@ -1,0 +1,15 @@
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=5000 vlen=100 pipe=16 clients=8 parallel=1 shards=4 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16964) ---
+META host=127.0.0.1 port=16964 n=5000 vlen=100 pipe=16 clients=8
+PING_MS=309 PING_OPS=129394
+SET_MS=581 SET_OPS=68829
+GET_MS=517 GET_OPS=77362
+OK
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T110011Z.txt
+OK

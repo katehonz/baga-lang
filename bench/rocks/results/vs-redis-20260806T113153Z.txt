@@ -1,0 +1,32 @@
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=5000 vlen=100 pipe=16 clients=8 parallel=0 shards=4 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16767) ---
+META host=127.0.0.1 port=16767 n=5000 vlen=100 pipe=16 clients=8
+Traceback (most recent call last):
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 289, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 260, in main
+    ping_s = wall_multi(
+             ^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 206, in wall_multi
+    raise errors[0]
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 191, in thr
+    worker(cid, r)
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 264, in <lambda>
+    lambda cid, r: run_phase_ping(r, n, pipe),
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 142, in run_phase_ping
+    raise RuntimeError(f"bad PING {rep!r}")
+RuntimeError: bad PING 'OK'
+
+--- Redis RESP (port 17108) ---
+META host=127.0.0.1 port=17108 n=5000 vlen=100 pipe=16 clients=8
+PING_MS=116 PING_OPS=343135
+SET_MS=163 SET_OPS=244539
+GET_MS=182 GET_OPS=218753
+OK
+
+=== comparison (ops/s; higher is better) ===
+metric          rocksbaga        Redis      ratio

@@ -1,0 +1,43 @@
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=5000 vlen=100 pipe=16 clients=8 parallel=0 shards=4 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16896) ---
+META host=127.0.0.1 port=16896 n=5000 vlen=100 pipe=16 clients=8
+PING_MS=116 PING_OPS=344445
+Traceback (most recent call last):
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 289, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 268, in main
+    set_s = wall_multi(
+            ^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 206, in wall_multi
+    raise errors[0]
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 191, in thr
+    worker(cid, r)
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 272, in <lambda>
+    lambda cid, r: run_phase_set(r, n, pipe, val, cid, clients),
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 155, in run_phase_set
+    for rep in r.pipeline(cmds):
+               ^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 110, in pipeline
+    return [self.read_reply() for _ in commands]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 110, in <listcomp>
+    return [self.read_reply() for _ in commands]
+            ^^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 74, in read_reply
+    line = self._readline()
+           ^^^^^^^^^^^^^^^^
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 64, in _readline
+    self._read_more()
+  File "/home/ziko/z-git/baga/bench/rocks/resp_client.py", line 52, in _read_more
+    chunk = self.s.recv(65536)
+            ^^^^^^^^^^^^^^^^^^
+TimeoutError: timed out
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+FAIL baga_rc=1

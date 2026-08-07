@@ -1,0 +1,20 @@
+=== rocksbaga flush/sst/compact profile ===
+n=2000 vlen=100 compact_n=2000 host=deb1 x86_64
+
+META n=2000 vlen=100 compact_n=2000
+PHASE name=ROWS us=11090 ops=180342 note=map_keys_sort_build_SstRow
+PHASE name=BLOOM us=86 ops=23255813 note=bloom_build_bits_only
+PHASE name=SST_BUILD us=1622 ops=1233045 note=sst_build_in_memory_incl_bloom
+PHASE name=SST_DISK us=5230 ops=382409 note=write_fsync_bloom_sidecar
+PHASE name=WAL_SYNC us=1592 ops=1256281 note=wal_flush_buf_plus_fdatasync
+PHASE name=SST_WRITE us=4800 ops=416666 note=full_sst_write_build_plus_disk
+PHASE name=MANIFEST us=1095 ops=1826484 note=write_file_plus_fsync
+PHASE name=WAL_ROTATE us=94 ops=21276595 note=close_unlink_open
+PHASE name=FLUSH_FORCE us=19766 ops=101183 note=lsm_flush_force_no_compact
+PHASE name=MULTI_FLUSH us=275497 ops=7259 note=flush_at_64_compact_at_4_like_bench
+PHASE name=COMPACT us=20909 ops=95652 note=from_l0_files=32 rounds=1
+DERIVE rows_us=11090 bloom_us=86 build_core_us=1536 disk_us=5230 wal_us=1592 man_us=1095 rot_us=94 sum_parts_us=20723 flush_force_us=19766 coverage%=104
+SHARE_OF_FLUSH rows%=56 bloom%=0 build_core%=7 disk%=26 wal%=8 other%=3
+SHARE_OF_MULTI compact_isolated%=7  (compact timed after L0-only fill; multi includes flushes)
+OK
+log: /home/ziko/z-git/baga/bench/rocks/results/flush-profile-20260806T075528Z.txt

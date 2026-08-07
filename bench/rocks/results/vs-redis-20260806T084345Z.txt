@@ -1,0 +1,6 @@
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=10000 vlen=100 pipe=256 host=deb1 x86_64
+
+FAIL: rocksbaga did not listen on 16752
+/home/ziko/z-git/baga/app-product/rocksbaga/tools/serve.baga: 306:29: drop на външна за цикъла променлива 'out' — втората итерация би била use-after-drop
+/home/ziko/z-git/baga/app-product/rocksbaga/tools/serve.baga: 411:21: drop на външна за цикъла променлива 'out' — втората итерация би била use-after-drop

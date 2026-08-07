@@ -1,0 +1,102 @@
+
+######## P0 c1 ########
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=1500 vlen=100 pipe=1 clients=1 parallel=0 shards=1 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16503) ---
+META host=127.0.0.1 port=16503 n=1500 vlen=100 pipe=1 clients=1
+PING_MS=56 PING_OPS=26340
+SET_MS=61 SET_OPS=24516
+GET_MS=59 GET_OPS=25203
+OK
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T092208Z.txt
+OK
+
+######## P1 c1 ########
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=1500 vlen=100 pipe=1 clients=1 parallel=1 shards=4 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16793) ---
+META host=127.0.0.1 port=16793 n=1500 vlen=100 pipe=1 clients=1
+PING_MS=59 PING_OPS=25384
+SET_MS=116 SET_OPS=12847
+GET_MS=126 GET_OPS=11844
+OK
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T092210Z.txt
+OK
+
+######## P0 c8 ########
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=800 vlen=100 pipe=1 clients=8 parallel=0 shards=1 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16737) ---
+META host=127.0.0.1 port=16737 n=800 vlen=100 pipe=1 clients=8
+PING_MS=157 PING_OPS=40534
+SET_MS=171 SET_OPS=37334
+GET_MS=180 GET_OPS=35380
+OK
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T092214Z.txt
+OK
+
+######## P1 c8 ########
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=800 vlen=100 pipe=1 clients=8 parallel=1 shards=4 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16637) ---
+META host=127.0.0.1 port=16637 n=800 vlen=100 pipe=1 clients=8
+PING_MS=152 PING_OPS=41923
+SET_MS=198 SET_OPS=32178
+GET_MS=200 GET_OPS=31978
+OK
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T092217Z.txt
+OK
+
+######## P0 c4p16 ########
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=2000 vlen=100 pipe=16 clients=4 parallel=0 shards=1 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16753) ---
+META host=127.0.0.1 port=16753 n=2000 vlen=100 pipe=16 clients=4
+PING_MS=56 PING_OPS=142620
+SET_MS=76 SET_OPS=104444
+GET_MS=63 GET_OPS=126154
+OK
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T092220Z.txt
+OK
+
+######## P1 c4p16 ########
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=2000 vlen=100 pipe=16 clients=4 parallel=1 shards=4 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16635) ---
+META host=127.0.0.1 port=16635 n=2000 vlen=100 pipe=16 clients=4
+PING_MS=60 PING_OPS=132733
+SET_MS=114 SET_OPS=69801
+GET_MS=111 GET_OPS=71743
+OK
+
+(Redis skipped: redis-server not found or SKIP_REDIS=1)
+Install redis-server for head-to-head, or read rocksbaga absolute ops above.
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T092223Z.txt
+OK

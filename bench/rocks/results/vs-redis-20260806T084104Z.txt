@@ -1,0 +1,25 @@
+=== RESP head-to-head: rocksbaga vs Redis ===
+n=5000 vlen=100 host=deb1 x86_64
+
+--- rocksbaga RESP (port 16526) ---
+META host=127.0.0.1 port=16526 n=5000 vlen=100 mode=mixed
+PING_MS=189 PING_OPS=26336
+SET_MS=235 SET_OPS=21189
+GET_MS=197 GET_OPS=25334
+OK
+
+--- Redis RESP (port 17153) ---
+META host=127.0.0.1 port=17153 n=5000 vlen=100 mode=mixed
+PING_MS=108 PING_OPS=45968
+SET_MS=118 SET_OPS=42269
+GET_MS=117 GET_OPS=42511
+OK
+
+=== comparison (ops/s; higher is better) ===
+metric          rocksbaga        Redis      ratio
+PING                26336        45968        57%
+SET                 21189        42269        50%
+GET                 25334        42511        59%
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-redis-20260806T084104Z.txt
+OK

@@ -1,0 +1,5 @@
+=== rocksbaga flush/sst/compact profile ===
+n=2000 vlen=100 compact_n=2000 host=deb1 x86_64
+
+/home/ziko/z-git/baga/bench/rocks/flush_profile.baga: 256:9: drop очаква локална променлива (let), не израз
+/home/ziko/z-git/baga/bench/rocks/flush_profile.baga: 257:9: drop очаква локална променлива (let), не израз

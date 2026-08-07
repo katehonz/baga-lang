@@ -1,0 +1,25 @@
+=== head-to-head: rocksbaga vs RocksDB ===
+n=5000 vlen=100 mode=batch host=deb1 x86_64
+
+--- rocksbaga (pure engine) ---
+META n=5000 vlen=100 mode=batch
+PUT_MS=26 PUT_OPS=192307
+GET_SEQ_MS=25 GET_SEQ_OPS=200000
+GET_RND_MS=23 GET_RND_OPS=217391
+OK
+
+--- RocksDB (rocksdict) ---
+META n=5000 vlen=100 mode=batch
+PUT_MS=35 PUT_OPS=141892
+GET_SEQ_MS=9 GET_SEQ_OPS=527776
+GET_RND_MS=10 GET_RND_OPS=498811
+OK
+
+=== comparison (ops/s; higher is better) ===
+metric          rocksbaga      RocksDB      ratio
+PUT                192307       141892       135%
+GET_SEQ            200000       527776        37%
+GET_RND            217391       498811        43%
+
+log: /home/ziko/z-git/baga/bench/rocks/results/vs-rocksdb-20260806T080426Z.txt
+OK
