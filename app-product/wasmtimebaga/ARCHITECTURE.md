@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-07  
 **Model:** [wasmtime-go](https://github.com/bytecodealliance/wasmtime-go) (Bytecode Alliance)  
-**Status:** P2 (Memory + WASI lite; Linker + host registry)
+**Status:** P3a (WAT→wasm + module-from-buffer; Memory + WASI lite; Linker + host registry)
 
 ## Goal
 
@@ -51,7 +51,8 @@ Host embedding of [Wasmtime](https://github.com/bytecodealliance/wasmtime) in Ba
 |------|--------|------|
 | engine | `baga_wt_engine_new` | `baga_wt_drop` |
 | store | `baga_wt_store_new(eng)` | `baga_wt_drop` |
-| module | `baga_wt_module_from_file(eng, path)` | `baga_wt_drop` |
+| module | `baga_wt_module_from_file(eng, path)` or **P3a** `baga_wt_module_from_buf(eng, buf)` | `baga_wt_drop` |
+| buf | **P3a** `baga_wt_wat2wasm(wat)` | `baga_wt_drop` (frees bytes) |
 | instance | `baga_wt_instance_new(store, mod)` | `baga_wt_drop` (no Wasmtime dtor) |
 
 Call path: look up store + instance → `wasmtime_instance_export_get` → `wasmtime_func_call`.  
@@ -80,6 +81,10 @@ Default `sandak build` on this package is **lib check only** (`wasm.baga` has no
 1. `fixtures/mem.wasm` — host load/store/grow; guest `load` sees host writes.
 2. `fixtures/wasi_yield.wasm` — WASI `sched_yield` → errno 0 (requires exported `memory`).
 
+**P3a (WAT → wasm):** compile a WAT string in-process (no fixture file) →
+magic `\0asm` bytes readable via buffer handle → instantiate from buffer →
+`add(20,22)→42`. Bad WAT → handle 0 + `last_err`.
+
 ## Roadmap sketch
 
 | Phase | Scope |
@@ -87,7 +92,8 @@ Default `sandak build` on this package is **lib check only** (`wasm.baga` has no
 | **P0** ✅ | Engine/Store/Module/Instance, file load, call i32×2→i32, demo+test, `[native]` sandak, fetch script |
 | **P1** ✅ | Host imports (fixed registry), Linker name-define, Hello + host-add fixtures |
 | **P2** ✅ | Memory export (load/store/grow), WASI define + inherit stdio (`sched_yield`) |
-| **P3** | Fuel/epoch; preopen dirs; component model; free Baga host closures |
+| **P3a** ✅ | WAT→wasm in-process + module from buffer (buffer handles) |
+| **P3** | Fuel/epoch; preopen dirs; multi-value; component model; free Baga host closures |
 
 ## Non-goals
 
@@ -103,7 +109,7 @@ app-product/wasmtimebaga/
   ARCHITECTURE.md   PLAN.md   gaps.md   README.md
   sandak.toml
   wasm.baga         # public API + externs
-  demo.baga         # gcd smoke
+  demo.baga         # demo (P0–P3a paths)
   shims/            # C bridge
   fixtures/         # gcd.wat / gcd.wasm
   vendor/           # C API (fetched)

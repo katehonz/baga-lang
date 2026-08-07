@@ -4,6 +4,7 @@
 // P0: Engine / Store / Module / Instance / call i32 exports.
 // P1: Linker + fixed host-function registry (LOG / I32_ID / I32_ADD).
 // P2: Linear memory export + WASI preview1 (define_wasi + inherit).
+// P3a: WAT → wasm (wasmtime_wat2wasm) + module from in-memory buffer.
 
 // ── FFI (implemented in shims/baga_wt_shim.c) ────────────────────────────
 
@@ -11,6 +12,10 @@ extern fn baga_wt_available() -> i64 !IO
 extern fn baga_wt_engine_new() -> i64 !IO
 extern fn baga_wt_store_new(engine_h: i64) -> i64 !IO
 extern fn baga_wt_module_from_file(engine_h: i64, path: str) -> i64 !IO
+extern fn baga_wt_wat2wasm(wat: str) -> i64 !IO
+extern fn baga_wt_buf_len(buf_h: i64) -> i64 !IO
+extern fn baga_wt_buf_get(buf_h: i64, i: i64) -> i64 !IO
+extern fn baga_wt_module_from_buf(engine_h: i64, buf_h: i64) -> i64 !IO
 extern fn baga_wt_instance_new(store_h: i64, module_h: i64) -> i64 !IO
 extern fn baga_wt_linker_new(engine_h: i64) -> i64 !IO
 extern fn baga_wt_linker_define_host(linker_h: i64, module: str, name: str, host_kind: i64) -> i64 !IO
@@ -63,6 +68,36 @@ fn wt_store_new(engine: i64) -> i64 !IO {
 
 fn wt_module_from_file(engine: i64, path: str) -> i64 !IO {
     return baga_wt_module_from_file(engine, path)?
+}
+
+// ── WAT → wasm (P3a) ───────────────────────────────────────────────────
+
+// Compile WAT text to wasm bytes; buffer handle or 0 (wt_last_err).
+fn wt_wat2wasm(wat: str) -> i64 !IO {
+    return baga_wt_wat2wasm(wat)?
+}
+
+// Byte length of a wasm buffer; -1 on bad handle.
+fn wt_buf_len(buf: i64) -> i64 !IO {
+    let st = baga_wt_buf_len(buf)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+// Byte at index (0..255); -1 on bad handle or out of bounds.
+fn wt_buf_get(buf: i64, i: i64) -> i64 !IO {
+    let st = baga_wt_buf_get(buf, i)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+// Compile wasm bytes held in a buffer handle; module handle or 0.
+fn wt_module_from_wasm(engine: i64, buf: i64) -> i64 !IO {
+    return baga_wt_module_from_buf(engine, buf)?
 }
 
 fn wt_instance_new(store: i64, module: i64) -> i64 !IO {
@@ -223,6 +258,52 @@ fn wt_run_i32_2(wasm_path: str, export_name: str, a: i64, b: i64) -> i64 !IO {
     }
     wt_drop(inst)
     wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    return out
+}
+
+// Compile WAT text at runtime (no fixture file), instantiate (no imports),
+// call an i32 export taking two args. Same error sentinel as wt_run_i32_2.
+fn wt_run_wat_i32_2(wat: str, export_name: str, a: i64, b: i64) -> i64 !IO {
+    let eng = wt_engine_new()?
+    if eng == 0 {
+        return -9223372036854775807
+    }
+    let store = wt_store_new(eng)?
+    if store == 0 {
+        wt_drop(eng)
+        return -9223372036854775807
+    }
+    let buf = wt_wat2wasm(wat)?
+    if buf == 0 {
+        wt_drop(store)
+        wt_drop(eng)
+        return -9223372036854775807
+    }
+    let mod = wt_module_from_wasm(eng, buf)?
+    if mod == 0 {
+        wt_drop(buf)
+        wt_drop(store)
+        wt_drop(eng)
+        return -9223372036854775807
+    }
+    let inst = wt_instance_new(store, mod)?
+    if inst == 0 {
+        wt_drop(mod)
+        wt_drop(buf)
+        wt_drop(store)
+        wt_drop(eng)
+        return -9223372036854775807
+    }
+    let st = wt_call_i32_2_status(store, inst, export_name, a, b)?
+    let mut out = -9223372036854775807
+    if st == 0 {
+        out = wt_last_i64()?
+    }
+    wt_drop(inst)
+    wt_drop(mod)
+    wt_drop(buf)
     wt_drop(store)
     wt_drop(eng)
     return out

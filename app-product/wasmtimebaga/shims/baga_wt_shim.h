@@ -16,6 +16,7 @@
  *   WT_HOST_I32_ADD    (3)  (i32,i32) -> i32  a+b
  *
  * P2: linear memory export + WASI preview1 (define_wasi + inherit stdio).
+ * P3a: wasmtime_wat2wasm + module-from-buffer (buffer handles).
  */
 #ifndef BAGA_WT_SHIM_H
 #define BAGA_WT_SHIM_H
@@ -36,6 +37,15 @@ int64_t baga_wt_engine_new(void);
 int64_t baga_wt_store_new(int64_t engine_h);
 int64_t baga_wt_module_from_file(int64_t engine_h, const char *path);
 int64_t baga_wt_instance_new(int64_t store_h, int64_t module_h);
+
+/* WAT → wasm buffer (P3a). Buffer handle or 0; free via baga_wt_drop. */
+int64_t baga_wt_wat2wasm(const char *wat);
+/* Byte length → baga_wt_last_i64; status return */
+int64_t baga_wt_buf_len(int64_t buf_h);
+/* Byte at index → baga_wt_last_i64; bounds-checked; status return */
+int64_t baga_wt_buf_get(int64_t buf_h, int64_t i);
+/* Compile wasm bytes from a buffer handle; module handle or 0 */
+int64_t baga_wt_module_from_buf(int64_t engine_h, int64_t buf_h);
 
 /* Linker (P1) */
 int64_t baga_wt_linker_new(int64_t engine_h);

@@ -1,7 +1,7 @@
 # wasmtimebaga — plan
 
-Date: 2026-08-07  
-Status: **P2 done** (Memory + WASI lite live)  
+Date: 2026-08-07
+Status: **P3a done** (WAT→wasm + module-from-buffer)
 Goal: Wasmtime host embedding for Baga, modeled on **wasmtime-go**.
 
 ## Why
@@ -33,9 +33,17 @@ Language Support in Wasmtime is about **host embeddings**. Go is an official BA 
 3. Fixtures: `mem.wasm`, `wasi_yield.wasm` (`sched_yield` + `memory` export).
 4. Demo + smoke cover both paths. Fuel/epoch deferred to P3.
 
-### P3 — polish
+### P3a — WAT→wasm + module-from-buffer ✅
 
-- WAT→wasm via shim (`wasmtime_wat2wasm`) optional.
+1. `baga_wt_wat2wasm(wat) -> buf` (buffer handle), `buf_len`, `buf_get`
+   (bounds-checked), `module_from_buf(engine, buf)`.
+2. Baga wrappers: `wt_wat2wasm`, `wt_buf_len`, `wt_buf_get`,
+   `wt_module_from_wasm`, `wt_run_wat_i32_2`.
+3. Demo `demo_wat` + smoke P3a cover magic `\0asm`, OOB, bad-WAT, and
+   in-memory instantiate. No fixture file needed at runtime.
+
+### P3 — polish (remaining)
+
 - Multi-value, multi-memory, serialize module.
 - Optional component model.
 
@@ -49,7 +57,7 @@ Host callbacks, WASI, component model, multi-arch vendor in git, pure interprete
 |------|------|
 | `ARCHITECTURE.md` | layer diagram + decisions |
 | `wasm.baga` | public API + externs |
-| `demo.baga` | gcd smoke binary source |
+| `demo.baga` | demo binary (P0–P3a paths) |
 | `shims/baga_wt_shim.*` | handle bridge |
 | `fixtures/gcd.*` | wasmtime-go GCD module |
 | `scripts/fetch-wasmtime-c-api.sh` | vendor C API |

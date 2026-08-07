@@ -178,6 +178,80 @@ fn main() -> i64 !IO {
     wt_drop(store3)
     wt_drop(eng3)
 
+    // ── P3a WAT → wasm + module from buffer ─────────────────────────────
+    let wat = "(module (func (export \"add\") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))"
+    let buf = wt_wat2wasm(wat)?
+    if buf == 0 {
+        return fail(concat("wat2wasm: ", wt_last_err()?))
+    }
+    let n = wt_buf_len(buf)?
+    if n < 8 {
+        return fail(concat("wat2wasm len ", int_to_str(n)))
+    }
+    // magic "\0asm"
+    if wt_buf_get(buf, 0)? != 0 {
+        return fail("magic byte 0")
+    }
+    if wt_buf_get(buf, 1)? != 97 {
+        return fail("magic byte 1")
+    }
+    if wt_buf_get(buf, 2)? != 115 {
+        return fail("magic byte 2")
+    }
+    if wt_buf_get(buf, 3)? != 109 {
+        return fail("magic byte 3")
+    }
+    // out-of-bounds read
+    if wt_buf_get(buf, n)? != -1 {
+        return fail("buf_get OOB should be -1")
+    }
+    if wt_buf_get(buf, -1)? != -1 {
+        return fail("buf_get negative should be -1")
+    }
+
+    // module from buffer → instance → call
+    let eng4 = wt_engine_new()?
+    let store4 = wt_store_new(eng4)?
+    let mod4 = wt_module_from_wasm(eng4, buf)?
+    if mod4 == 0 {
+        return fail(concat("module_from_wasm: ", wt_last_err()?))
+    }
+    let inst4 = wt_instance_new(store4, mod4)?
+    if inst4 == 0 {
+        return fail(concat("wat instance: ", wt_last_err()?))
+    }
+    if wt_call_i32_2_status(store4, inst4, "add", 7, 5)? != 0 {
+        return fail(concat("wat call add: ", wt_last_err()?))
+    }
+    if wt_last_i64()? != 12 {
+        return fail(concat("wat add got ", int_to_str(wt_last_i64()?)))
+    }
+    wt_drop(inst4)
+    wt_drop(mod4)
+    wt_drop(store4)
+    wt_drop(eng4)
+    wt_drop(buf)
+    wt_drop(buf) // idempotent
+
+    // bad WAT → 0 + error message
+    let bad = wt_wat2wasm("(module (func broken")?
+    if bad != 0 {
+        return fail("bad wat should not compile")
+    }
+    if len(wt_last_err()?) == 0 {
+        return fail("bad wat should set last_err")
+    }
+    // bad handle accessors
+    if wt_buf_len(999)? != -1 {
+        return fail("buf_len bad handle should be -1")
+    }
+
+    // high-level one-shot
+    let r = wt_run_wat_i32_2(wat, "add", 30, 12)?
+    if r != 42 {
+        return fail(concat("run_wat got ", int_to_str(r)))
+    }
+
     print("wasmtime smoke: all passed")
     return 0
 }

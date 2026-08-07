@@ -17,9 +17,14 @@ Probe log for Wasmtime host embedding (wasmtime-go model).
 
 **Symptom.** Wasmtime needs pointers and `uint8_t *` + length. Baga extern only maps `i64`/`str`/`f64`/`void`.
 
-**Mitigation.** Handle table in C shim; module load via **file path** (`wt_module_from_file`), not in-memory `bytes` yet.
+**Mitigation.** Handle table in C shim; module load via **file path**
+(`wt_module_from_file`) or **in-memory buffer** (P3a: `wt_wat2wasm` →
+buffer handle → `wt_module_from_wasm`). Wasm bytes are readable from Baga
+per index (`wt_buf_len` / `wt_buf_get`).
 
-**Next.** Pass `bytes` as data pointer + len once codegen supports extern of `bytes` or a pair of i64s (`ptr`, `len` from a builtin).
+**Next.** Pass baga `bytes`/`Vec` directly to C as data pointer + len
+(bulk copy both directions) once codegen supports extern of `bytes` or a
+pair of i64s (`ptr`, `len` from a builtin).
 
 ## W3 — host callbacks (`WrapFunc`) — partially closed (P1)
 

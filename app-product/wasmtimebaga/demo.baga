@@ -312,6 +312,50 @@ fn demo_wasi() -> i64 !IO {
     return 0
 }
 
+fn demo_wat() -> i64 !IO {
+    // WAT text compiled at runtime — no fixture file on disk.
+    let wat = "(module (func (export \"add\") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))"
+
+    let buf = wt_wat2wasm(wat)?
+    if buf == 0 {
+        eprintln(concat("wat2wasm: ", wt_last_err()?))
+        return 1
+    }
+    let n = wt_buf_len(buf)?
+    print(concat(concat("wat2wasm: ", int_to_str(n)), " bytes"))
+    if n < 8 {
+        eprintln("expected at least 8 wasm bytes")
+        return 1
+    }
+    // magic "\0asm"
+    if wt_buf_get(buf, 0)? != 0 {
+        eprintln("bad magic byte 0")
+        return 1
+    }
+    if wt_buf_get(buf, 1)? != 97 {
+        eprintln("bad magic byte 1")
+        return 1
+    }
+    if wt_buf_get(buf, 2)? != 115 {
+        eprintln("bad magic byte 2")
+        return 1
+    }
+    if wt_buf_get(buf, 3)? != 109 {
+        eprintln("bad magic byte 3")
+        return 1
+    }
+    wt_drop(buf)
+
+    let r = wt_run_wat_i32_2(wat, "add", 20, 22)?
+    print(concat("wat add(20, 22) = ", int_to_str(r)))
+    if r != 42 {
+        eprintln(concat("expected 42, got ", int_to_str(r)))
+        return 1
+    }
+    print("wat: ok")
+    return 0
+}
+
 fn main() -> i64 !IO {
     if wt_available()? == false {
         eprintln("wasmtimebaga: shim not available")
@@ -330,6 +374,9 @@ fn main() -> i64 !IO {
         return 1
     }
     if demo_wasi()? != 0 {
+        return 1
+    }
+    if demo_wat()? != 0 {
         return 1
     }
     print("wasmtimebaga demo: ok")

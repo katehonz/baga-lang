@@ -15,7 +15,8 @@ enum {
     H_MODULE = 3,
     H_INSTANCE = 4,
     H_LINKER = 5,
-    H_MEMORY = 6
+    H_MEMORY = 6,
+    H_BUF = 7
 };
 
 typedef struct {
@@ -42,6 +43,10 @@ typedef struct {
             wasmtime_memory_t memory;
             int64_t store_h;
         } memory;
+        struct {
+            uint8_t *data;
+            size_t len;
+        } buf;
     } u;
 } Slot;
 
@@ -249,6 +254,88 @@ int64_t baga_wt_module_from_file(int64_t engine_h, const char *path) {
     wasmtime_error_t *error =
         wasmtime_module_new(es->u.engine, wasm, (size_t)n, &module);
     free(wasm);
+    if (error || !module) {
+        set_err_wasmtime("module_new", error, NULL);
+        return 0;
+    }
+
+    int64_t h = alloc_slot();
+    if (!h) {
+        wasmtime_module_delete(module);
+        return 0;
+    }
+    g_slots[h].kind = H_MODULE;
+    g_slots[h].u.module.module = module;
+    g_slots[h].u.module.engine = es->u.engine;
+    return h;
+}
+
+int64_t baga_wt_wat2wasm(const char *wat) {
+    g_err[0] = '\0';
+    if (!wat || !wat[0]) {
+        set_err("empty wat source");
+        return 0;
+    }
+    wasm_byte_vec_t out;
+    memset(&out, 0, sizeof out);
+    wasmtime_error_t *error = wasmtime_wat2wasm(wat, strlen(wat), &out);
+    if (error) {
+        set_err_wasmtime("wat2wasm", error, NULL);
+        return 0;
+    }
+    uint8_t *data = (uint8_t *)malloc(out.size ? out.size : 1);
+    if (!data) {
+        wasm_byte_vec_delete(&out);
+        set_err("oom copying wasm bytes");
+        return 0;
+    }
+    memcpy(data, out.data, out.size);
+    size_t len = out.size;
+    wasm_byte_vec_delete(&out);
+
+    int64_t h = alloc_slot();
+    if (!h) {
+        free(data);
+        return 0;
+    }
+    g_slots[h].kind = H_BUF;
+    g_slots[h].u.buf.data = data;
+    g_slots[h].u.buf.len = len;
+    return h;
+}
+
+int64_t baga_wt_buf_len(int64_t buf_h) {
+    g_err[0] = '\0';
+    g_last_i64 = 0;
+    Slot *bs = get_slot(buf_h, H_BUF);
+    if (!bs) return 1;
+    g_last_i64 = (int64_t)bs->u.buf.len;
+    return 0;
+}
+
+int64_t baga_wt_buf_get(int64_t buf_h, int64_t i) {
+    g_err[0] = '\0';
+    g_last_i64 = 0;
+    Slot *bs = get_slot(buf_h, H_BUF);
+    if (!bs) return 1;
+    if (i < 0 || (size_t)i >= bs->u.buf.len) {
+        set_err("buf index out of bounds");
+        return 1;
+    }
+    g_last_i64 = (int64_t)bs->u.buf.data[(size_t)i];
+    return 0;
+}
+
+int64_t baga_wt_module_from_buf(int64_t engine_h, int64_t buf_h) {
+    g_err[0] = '\0';
+    Slot *es = get_slot(engine_h, H_ENGINE);
+    if (!es) return 0;
+    Slot *bs = get_slot(buf_h, H_BUF);
+    if (!bs) return 0;
+
+    wasmtime_module_t *module = NULL;
+    wasmtime_error_t *error = wasmtime_module_new(
+        es->u.engine, bs->u.buf.data, bs->u.buf.len, &module);
     if (error || !module) {
         set_err_wasmtime("module_new", error, NULL);
         return 0;
@@ -670,6 +757,9 @@ void baga_wt_drop(int64_t h) {
         break;
     case H_LINKER:
         if (s->u.linker.linker) wasmtime_linker_delete(s->u.linker.linker);
+        break;
+    case H_BUF:
+        if (s->u.buf.data) free(s->u.buf.data);
         break;
     default:
         break;

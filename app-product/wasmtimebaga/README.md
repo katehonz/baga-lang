@@ -6,7 +6,7 @@ Run WebAssembly modules inside a Baga process via the official **Wasmtime C API*
 
 ## Status
 
-**P2** — Memory + WASI lite; Linker + host registry; gcd / hello / add / mem / wasi demos.
+**P3a** — WAT→wasm + module from in-memory buffer; Memory + WASI lite; Linker + host registry; gcd / hello / add / mem / wasi / wat demos.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [PLAN.md](PLAN.md), [gaps.md](gaps.md).
 
@@ -21,6 +21,7 @@ cd app-product/wasmtimebaga
 ./run_demo.sh
 # gcd(6, 27) = 3
 # gcd(48, 18) = 6
+# wat add(20, 22) = 42
 # wasmtimebaga demo: ok
 ```
 
@@ -83,12 +84,27 @@ wt_linker_define_wasi(linker)?
 let inst = wt_linker_instantiate(linker, store, mod)?
 ```
 
+### P3a — WAT → wasm (no fixture file)
+
+```baga
+// Compile WAT text at runtime and run it — no .wasm on disk.
+let wat = "(module (func (export \"add\") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))"
+let r = wt_run_wat_i32_2(wat, "add", 20, 22)?   // 42
+
+// Or manually (inspect the produced bytes):
+let buf = wt_wat2wasm(wat)?          // buffer handle, 0 on error
+let n = wt_buf_len(buf)?             // 41
+wt_buf_get(buf, 0)?                  // 0 — magic "\0asm"
+let mod = wt_module_from_wasm(eng, buf)?
+wt_drop(buf)
+```
+
 ## Layout
 
 | Path | Role |
 |------|------|
 | `wasm.baga` | public API + FFI declarations |
-| `demo.baga` | gcd smoke |
+| `demo.baga` | demo binary (P0–P3a paths) |
 | `shims/` | C handle bridge → libwasmtime |
 | `fixtures/gcd.wasm` | sample module |
 | `vendor/` | prebuilt C API (fetched) |
