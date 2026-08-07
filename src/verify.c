@@ -4103,6 +4103,7 @@ static int verify_fn(Node *prog, Node *fn) {
                     any_refuted = 1;
                     printf("    контрапример:");
                     for (int k = 0; k < e->wn; k++) printf(" %s = %lld", e->wit_names[k], e->wit_vals[k]);
+                    if (e->wn == 0) printf(" (без свидетел)");
                     printf("\n");
                 }
             }
@@ -4171,6 +4172,7 @@ static int verify_fn(Node *prog, Node *fn) {
                 if (r == R_REFUTED) {
                     printf("    контрапример:");
                     for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+                    if (wn == 0) printf(" (без свидетел)");
                     printf("\n");
                 }
             }
@@ -4242,6 +4244,7 @@ static int verify_fn(Node *prog, Node *fn) {
                 if (r == R_REFUTED) {
                     printf("    контрапример:");
                     for (int k = 0; k < wn; k++) printf(" %s = %lld", wit[k].name, (long long)wit[k].val);
+                    if (wn == 0) printf(" (без свидетел)");
                     printf("\n");
                 }
             }

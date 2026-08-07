@@ -337,3 +337,24 @@ rc=0; "$BIN" $BAGAIFLAGS --verify --json examples/verify/bad_abs.baga > /tmp/bag
 	&& python3 -c "import json; d=json.load(open('/tmp/baga_verify_json_bad.txt')); e=d['functions'][0]['ensures'][0]; assert e['result']=='refuted' and e['counterexample']" \
 	&& echo "OK: --verify --json refuted + контрапример, exit=1" \
 	|| { echo "FAIL: --verify --json refuted"; cat /tmp/baga_verify_json_bad.txt; exit 1; }
+echo "=== LP6 soundness лов (адверсариална батерия) ==="
+"$BIN" $BAGAIFLAGS --verify examples/verify/lp6_hunt.baga > /tmp/baga_lp6_out.txt || true; \
+for s in lp6_div_neg_bad lp6_mod_neg_bad lp6_lsb_mod2_bad lp6_shr_neg_bad lp6_prod_bad lp6_sq_neg_bad; do \
+	grep -A2 "$s:" /tmp/baga_lp6_out.txt | grep -q "ensures #1.*ОБРОЧЕНО" \
+		&& echo "OK: LP6 $s — фалшивото твърдение е оброчено (не ДОКАЗАНО)" \
+		|| { echo "FAIL: LP6 $s — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }; \
+done
+for s in lp6_contra_inv lp6_broken_inv; do \
+	grep -A2 "$s:" /tmp/baga_lp6_out.txt | grep -q "ensures #1.*НЕ МОГА ДА РЕША" \
+		&& echo "OK: LP6 $s — противоречив/неопазен инвариант не доказва нищо (честно UNKNOWN)" \
+		|| { echo "FAIL: LP6 $s — очаквах НЕ МОГА ДА РЕША"; cat /tmp/baga_lp6_out.txt; exit 1; }; \
+done
+grep -A6 "lp6_dec_neg:" /tmp/baga_lp6_out.txt | grep -q "decreases.*>= 0 при входа.*ОБРОЧЕНО" \
+	&& grep -A6 "lp6_dec_neg:" /tmp/baga_lp6_out.txt | grep -q "частична коректност" \
+	&& ! grep -A6 "lp6_dec_neg:" /tmp/baga_lp6_out.txt | grep -q "терминация: доказана" \
+	&& echo "OK: LP6 lp6_dec_neg — неизпълнима decreases мярка е оброчена, без фалшива терминация (M6)" \
+	|| { echo "FAIL: LP6 lp6_dec_neg"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A2 "lp6_elem_drop:" /tmp/baga_lp6_out.txt | grep -q "ensures #1.*ОБРОЧЕНО" \
+	&& grep -A3 "lp6_elem_drop:" /tmp/baga_lp6_out.txt | grep -q "без свидетел" \
+	&& echo "OK: LP6 lp6_elem_drop — нарушен елементен инвариант е оброчен; празен контрапример вече е честен (без свидетел)" \
+	|| { echo "FAIL: LP6 lp6_elem_drop"; cat /tmp/baga_lp6_out.txt; exit 1; }
