@@ -18,5 +18,9 @@ lib/
 # worktrees
 .worktrees/
 
+# Wasmtime C API prebuilts (fetch via app-product/wasmtimebaga/scripts/fetch-wasmtime-c-api.sh)
+app-product/wasmtimebaga/vendor/lib/
+app-product/wasmtimebaga/vendor/include/
+
 # local agent / IDE tool config
 .qwen/

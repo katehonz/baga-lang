@@ -47,7 +47,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 ## Full package list (`app-product/`)
 
-**41 packages** (directories with `sandak.toml`). Alphabetical.
+**42 packages** (directories with `sandak.toml`). Alphabetical.
 
 ### Web / API stack
 
@@ -120,6 +120,12 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **testbaga** | Minimal test assertions (`assert_true`, `assert_eq_*`) |
 | **uuidbaga** | UUID v4 (RFC 4122) |
 
+### Runtime / plugins
+
+| Package | Role |
+|---------|------|
+| **wasmtimebaga** | Wasmtime host embedding (C API + shim; wasmtime-go model) — run wasm in-process |
+
 ### Flat inventory (names only)
 
 ```
@@ -129,7 +135,7 @@ jwtbaga      kvbaga      logbaga     lsmbaga†    mdbaga      mdtbaga
 metbaga      oauthbaga   officebaga  ormbaga     otelbaga    pathbaga
 pbbaga       pdfbaga     pgbaga      querybaga   queuebaga   raftbaga
 relbaga      reportbaga  rocksbaga   statusbaga  testbaga    tplbaga
-txnbaga      uuidbaga    wsbaga      xmlbaga     zipbaga
+txnbaga      uuidbaga    wasmtimebaga wsbaga     xmlbaga     zipbaga
 ```
 
 † `lsmbaga` — deprecated alias for `rocksbaga`.

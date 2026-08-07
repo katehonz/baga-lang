@@ -24,6 +24,10 @@ typedef struct {
     char dir[512];
     char src_git[512];   /* git URL, ако пакетът идва от git dep; "" иначе */
     char src_ref[160];   /* "<ref_kind>:<ref>" за git deps; "" иначе */
+    /* [native] — optional C shim + link flags (wasmtimebaga, future FFI pkgs) */
+    char native_c_source[512];
+    char native_cflags[1024];
+    char native_ldflags[2048];
 } Manifest;
 
 static void die(const char *fmt, ...) {
@@ -121,7 +125,7 @@ void parse_manifest(const char *path, Manifest *m) {
     memset(m, 0, sizeof *m);
     m->is_lib = 1;
     char *src = read_file(path);
-    int section = 0;   /* 0=none, 1=package, 2=dependencies */
+    int section = 0;   /* 0=none, 1=package, 2=dependencies, 3=native */
     int lineno = 0;
     char *save_line;   /* strtok_r — без споделено състояние с parse_dep_inline */
     for (char *line = strtok_r(src, "\n", &save_line); line; line = strtok_r(NULL, "\n", &save_line)) {
@@ -133,6 +137,7 @@ void parse_manifest(const char *path, Manifest *m) {
         if (*s == '[') {
             if (strcmp(s, "[package]") == 0) section = 1;
             else if (strcmp(s, "[dependencies]") == 0) section = 2;
+            else if (strcmp(s, "[native]") == 0) section = 3;
             else die("%s:%d: непозната секция '%s'", path, lineno, s);
             continue;
         }
@@ -160,6 +165,24 @@ void parse_manifest(const char *path, Manifest *m) {
             snprintf(d->name, sizeof d->name, "%s", key);
             check_safe("име на зависимост", key);   /* името влиза в shell командите на fetch_git */
             parse_dep_inline(val, d);
+        } else if (section == 3) {
+            char sv[2048];
+            if (strcmp(key, "c_source") == 0) {
+                parse_string(val, sv, sizeof sv);
+                check_safe("native.c_source", sv);
+                snprintf(m->native_c_source, sizeof m->native_c_source, "%s", sv);
+            } else if (strcmp(key, "cflags") == 0) {
+                parse_string(val, sv, sizeof sv);
+                /* allow -I paths; ban shell metacharacters that break quoting */
+                check_safe("native.cflags", sv);
+                snprintf(m->native_cflags, sizeof m->native_cflags, "%s", sv);
+            } else if (strcmp(key, "ldflags") == 0) {
+                parse_string(val, sv, sizeof sv);
+                check_safe("native.ldflags", sv);
+                snprintf(m->native_ldflags, sizeof m->native_ldflags, "%s", sv);
+            } else {
+                die("%s:%d: непознато поле в [native]: '%s'", path, lineno, key);
+            }
         } else {
             die("%s:%d: key извън секция", path, lineno);
         }
@@ -551,12 +574,35 @@ static void cmd_build(int run_after, int argc, char **argv) {
 
     snprintf(cmd, sizeof cmd, "mkdir -p target");
     run(cmd);
-    char cfile[1024], bin[1024];
+    char cfile[1024], bin[1024], shim_o[1024];
     snprintf(cfile, sizeof cfile, "target/%s.c", root->name);
     snprintf(bin, sizeof bin, "target/%s", root->name);
     snprintf(cmd, sizeof cmd, "'%s'%s --emit-c '%s' > '%s'", baga, inc, entry, cfile);
     run(cmd);
-    snprintf(cmd, sizeof cmd, "gcc -O2 -std=c11 -o '%s' '%s' -lm -pthread", bin, cfile);
+
+    /* optional native C shim (e.g. Wasmtime C API bridge) */
+    shim_o[0] = '\0';
+    if (root->native_c_source[0]) {
+        char src_path[1024];
+        snprintf(src_path, sizeof src_path, "%s/%s", root->dir, root->native_c_source);
+        snprintf(shim_o, sizeof shim_o, "target/%s_native.o", root->name);
+        snprintf(cmd, sizeof cmd,
+                 "gcc -O2 -std=c11 -c -o '%s' '%s' %s",
+                 shim_o, src_path, root->native_cflags[0] ? root->native_cflags : "");
+        run(cmd);
+    }
+
+    if (shim_o[0]) {
+        snprintf(cmd, sizeof cmd,
+                 "gcc -O2 -std=c11 -o '%s' '%s' '%s' -lm -pthread %s",
+                 bin, cfile, shim_o,
+                 root->native_ldflags[0] ? root->native_ldflags : "");
+    } else {
+        snprintf(cmd, sizeof cmd,
+                 "gcc -O2 -std=c11 -o '%s' '%s' -lm -pthread %s",
+                 bin, cfile,
+                 root->native_ldflags[0] ? root->native_ldflags : "");
+    }
     run(cmd);
     /* в stderr, за да не замърсява stdout на `sandak run` (както cargo) */
     fprintf(stderr, "sandak: %s -> %s\n", root->name, bin);

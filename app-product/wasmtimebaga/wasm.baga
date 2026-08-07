@@ -1,0 +1,284 @@
+// wasm.baga — Wasmtime host embedding for Baga (wasmtime-go style).
+//
+// Architecture: Baga wrappers → C shim (handles) → libwasmtime (C API).
+// P0: Engine / Store / Module / Instance / call i32 exports.
+// P1: Linker + fixed host-function registry (LOG / I32_ID / I32_ADD).
+// P2: Linear memory export + WASI preview1 (define_wasi + inherit).
+
+// ── FFI (implemented in shims/baga_wt_shim.c) ────────────────────────────
+
+extern fn baga_wt_available() -> i64 !IO
+extern fn baga_wt_engine_new() -> i64 !IO
+extern fn baga_wt_store_new(engine_h: i64) -> i64 !IO
+extern fn baga_wt_module_from_file(engine_h: i64, path: str) -> i64 !IO
+extern fn baga_wt_instance_new(store_h: i64, module_h: i64) -> i64 !IO
+extern fn baga_wt_linker_new(engine_h: i64) -> i64 !IO
+extern fn baga_wt_linker_define_host(linker_h: i64, module: str, name: str, host_kind: i64) -> i64 !IO
+extern fn baga_wt_linker_define_wasi(linker_h: i64) -> i64 !IO
+extern fn baga_wt_linker_instantiate(linker_h: i64, store_h: i64, module_h: i64) -> i64 !IO
+extern fn baga_wt_store_set_wasi_inherit(store_h: i64) -> i64 !IO
+extern fn baga_wt_memory_get(store_h: i64, inst_h: i64, name: str) -> i64 !IO
+extern fn baga_wt_memory_size(store_h: i64, mem_h: i64) -> i64 !IO
+extern fn baga_wt_memory_data_size(store_h: i64, mem_h: i64) -> i64 !IO
+extern fn baga_wt_memory_load8(store_h: i64, mem_h: i64, offset: i64) -> i64 !IO
+extern fn baga_wt_memory_store8(store_h: i64, mem_h: i64, offset: i64, value: i64) -> i64 !IO
+extern fn baga_wt_memory_load32(store_h: i64, mem_h: i64, offset: i64) -> i64 !IO
+extern fn baga_wt_memory_store32(store_h: i64, mem_h: i64, offset: i64, value: i64) -> i64 !IO
+extern fn baga_wt_memory_grow(store_h: i64, mem_h: i64, delta: i64) -> i64 !IO
+extern fn baga_wt_call_i32_0(store_h: i64, inst_h: i64, name: str) -> i64 !IO
+extern fn baga_wt_call_i32_1(store_h: i64, inst_h: i64, name: str, a: i64) -> i64 !IO
+extern fn baga_wt_call_i32_2(store_h: i64, inst_h: i64, name: str, a: i64, b: i64) -> i64 !IO
+extern fn baga_wt_call_void_0(store_h: i64, inst_h: i64, name: str) -> i64 !IO
+extern fn baga_wt_host_call_count() -> i64 !IO
+extern fn baga_wt_host_log() -> str !IO
+extern fn baga_wt_host_reset() -> void !IO
+extern fn baga_wt_drop(h: i64) -> void !IO
+extern fn baga_wt_last_i64() -> i64 !IO
+extern fn baga_wt_last_err() -> str !IO
+
+// ── Status / host kind constants ─────────────────────────────────────────
+
+fn WT_OK() -> i64 { return 0 }
+fn WT_ERR() -> i64 { return 1 }
+fn WT_TRAP() -> i64 { return 2 }
+
+// Fixed host registry (gap W3 — not free Baga closures yet).
+fn WT_HOST_LOG_VOID0() -> i64 { return 1 }
+fn WT_HOST_I32_ID() -> i64 { return 2 }
+fn WT_HOST_I32_ADD() -> i64 { return 3 }
+
+// ── High-level helpers ───────────────────────────────────────────────────
+
+fn wt_available() -> bool !IO {
+    return baga_wt_available()? != 0
+}
+
+fn wt_engine_new() -> i64 !IO {
+    return baga_wt_engine_new()?
+}
+
+fn wt_store_new(engine: i64) -> i64 !IO {
+    return baga_wt_store_new(engine)?
+}
+
+fn wt_module_from_file(engine: i64, path: str) -> i64 !IO {
+    return baga_wt_module_from_file(engine, path)?
+}
+
+fn wt_instance_new(store: i64, module: i64) -> i64 !IO {
+    return baga_wt_instance_new(store, module)?
+}
+
+fn wt_linker_new(engine: i64) -> i64 !IO {
+    return baga_wt_linker_new(engine)?
+}
+
+// Returns WT_OK / WT_ERR (not a handle).
+fn wt_linker_define_host(linker: i64, module: str, name: str, host_kind: i64) -> i64 !IO {
+    return baga_wt_linker_define_host(linker, module, name, host_kind)?
+}
+
+fn wt_linker_define_wasi(linker: i64) -> i64 !IO {
+    return baga_wt_linker_define_wasi(linker)?
+}
+
+fn wt_store_set_wasi_inherit(store: i64) -> i64 !IO {
+    return baga_wt_store_set_wasi_inherit(store)?
+}
+
+fn wt_linker_instantiate(linker: i64, store: i64, module: i64) -> i64 !IO {
+    return baga_wt_linker_instantiate(linker, store, module)?
+}
+
+// ── Memory (P2) ──────────────────────────────────────────────────────────
+
+fn wt_memory_get(store: i64, inst: i64, name: str) -> i64 !IO {
+    return baga_wt_memory_get(store, inst, name)?
+}
+
+fn wt_memory_size(store: i64, mem: i64) -> i64 !IO {
+    let st = baga_wt_memory_size(store, mem)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+fn wt_memory_data_size(store: i64, mem: i64) -> i64 !IO {
+    let st = baga_wt_memory_data_size(store, mem)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+fn wt_memory_load8(store: i64, mem: i64, offset: i64) -> i64 !IO {
+    let st = baga_wt_memory_load8(store, mem, offset)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+fn wt_memory_store8(store: i64, mem: i64, offset: i64, value: i64) -> i64 !IO {
+    return baga_wt_memory_store8(store, mem, offset, value)?
+}
+
+fn wt_memory_load32(store: i64, mem: i64, offset: i64) -> i64 !IO {
+    let st = baga_wt_memory_load32(store, mem, offset)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+fn wt_memory_store32(store: i64, mem: i64, offset: i64, value: i64) -> i64 !IO {
+    return baga_wt_memory_store32(store, mem, offset, value)?
+}
+
+fn wt_memory_grow(store: i64, mem: i64, delta: i64) -> i64 !IO {
+    let st = baga_wt_memory_grow(store, mem, delta)?
+    if st != 0 {
+        return -1
+    }
+    return baga_wt_last_i64()?
+}
+
+fn wt_call_i32_0_status(store: i64, inst: i64, name: str) -> i64 !IO {
+    return baga_wt_call_i32_0(store, inst, name)?
+}
+
+fn wt_call_i32_1_status(store: i64, inst: i64, name: str, a: i64) -> i64 !IO {
+    return baga_wt_call_i32_1(store, inst, name, a)?
+}
+
+fn wt_drop(h: i64) -> void !IO {
+    baga_wt_drop(h)
+}
+
+fn wt_last_err() -> str !IO {
+    return baga_wt_last_err()?
+}
+
+fn wt_last_i64() -> i64 !IO {
+    return baga_wt_last_i64()?
+}
+
+fn wt_host_call_count() -> i64 !IO {
+    return baga_wt_host_call_count()?
+}
+
+fn wt_host_log() -> str !IO {
+    return baga_wt_host_log()?
+}
+
+fn wt_host_reset() -> void !IO {
+    baga_wt_host_reset()
+}
+
+fn wt_call_i32_2(store: i64, inst: i64, name: str, a: i64, b: i64) -> i64 !IO {
+    let st = baga_wt_call_i32_2(store, inst, name, a, b)?
+    if st != 0 {
+        return -9223372036854775807
+    }
+    return baga_wt_last_i64()?
+}
+
+fn wt_call_i32_2_status(store: i64, inst: i64, name: str, a: i64, b: i64) -> i64 !IO {
+    return baga_wt_call_i32_2(store, inst, name, a, b)?
+}
+
+fn wt_call_void_0_status(store: i64, inst: i64, name: str) -> i64 !IO {
+    return baga_wt_call_void_0(store, inst, name)?
+}
+
+// Load module from path, instantiate (no imports), call gcd-style export.
+fn wt_run_i32_2(wasm_path: str, export_name: str, a: i64, b: i64) -> i64 !IO {
+    let eng = wt_engine_new()?
+    if eng == 0 {
+        return -9223372036854775807
+    }
+    let store = wt_store_new(eng)?
+    if store == 0 {
+        wt_drop(eng)
+        return -9223372036854775807
+    }
+    let mod = wt_module_from_file(eng, wasm_path)?
+    if mod == 0 {
+        wt_drop(store)
+        wt_drop(eng)
+        return -9223372036854775807
+    }
+    let inst = wt_instance_new(store, mod)?
+    if inst == 0 {
+        wt_drop(mod)
+        wt_drop(store)
+        wt_drop(eng)
+        return -9223372036854775807
+    }
+    let st = wt_call_i32_2_status(store, inst, export_name, a, b)?
+    let mut out = -9223372036854775807
+    if st == 0 {
+        out = wt_last_i64()?
+    }
+    wt_drop(inst)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    return out
+}
+
+// Hello path: define host LOG under module/name, instantiate, call void export.
+// On success: host log is "hello from host" and host_call_count >= 1.
+// Returns 0 ok, 1 error.
+fn wt_run_hello(wasm_path: str, import_module: str, import_name: str, export_name: str) -> i64 !IO {
+    wt_host_reset()
+    let eng = wt_engine_new()?
+    if eng == 0 {
+        return 1
+    }
+    let store = wt_store_new(eng)?
+    if store == 0 {
+        wt_drop(eng)
+        return 1
+    }
+    let mod = wt_module_from_file(eng, wasm_path)?
+    if mod == 0 {
+        wt_drop(store)
+        wt_drop(eng)
+        return 1
+    }
+    let linker = wt_linker_new(eng)?
+    if linker == 0 {
+        wt_drop(mod)
+        wt_drop(store)
+        wt_drop(eng)
+        return 1
+    }
+    let def = wt_linker_define_host(linker, import_module, import_name, WT_HOST_LOG_VOID0())?
+    if def != 0 {
+        wt_drop(linker)
+        wt_drop(mod)
+        wt_drop(store)
+        wt_drop(eng)
+        return 1
+    }
+    let inst = wt_linker_instantiate(linker, store, mod)?
+    if inst == 0 {
+        wt_drop(linker)
+        wt_drop(mod)
+        wt_drop(store)
+        wt_drop(eng)
+        return 1
+    }
+    let st = wt_call_void_0_status(store, inst, export_name)?
+    wt_drop(inst)
+    wt_drop(linker)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    if st != 0 {
+        return 1
+    }
+    return 0
+}

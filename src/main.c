@@ -383,15 +383,31 @@ int main(int argc, char **argv) {
         codegen_c(&cg, program, cf);
         fclose(cf);
 
-        /* compile */
-        char cmd[1200];
-        /* -pthread: std concurrency (go/join/chan); harmless when unused */
-        snprintf(cmd, sizeof(cmd), "gcc -O2 -o %s %s -lm -pthread 2>&1", bin_path, c_path);
-        int ret = system(cmd);
-        if (ret != 0) {
-            fprintf(stderr, "baga: компилацията на C кода се провали\n");
-            fprintf(stderr, "baga: C кодът е в %s\n", c_path);
-            return 1;
+        /* compile
+         * Optional env for native shims (wasmtimebaga and similar):
+         *   BAGA_CFLAGS   extra gcc flags when compiling generated C
+         *   BAGA_LDFLAGS  extra link flags (-L/-l/-Wl,-rpath,…)
+         *   BAGA_EXTRA_OBJS  space-separated .o/.c files to link
+         * -pthread: std concurrency (go/join/chan); harmless when unused.
+         */
+        int ret;
+        {
+            const char *extra_c = getenv("BAGA_CFLAGS");
+            const char *extra_ld = getenv("BAGA_LDFLAGS");
+            const char *extra_objs = getenv("BAGA_EXTRA_OBJS");
+            if (!extra_c) extra_c = "";
+            if (!extra_ld) extra_ld = "";
+            if (!extra_objs) extra_objs = "";
+            char cmd[4096];
+            snprintf(cmd, sizeof(cmd),
+                     "gcc -O2 %s -o %s %s %s -lm -pthread %s 2>&1",
+                     extra_c, bin_path, c_path, extra_objs, extra_ld);
+            ret = system(cmd);
+            if (ret != 0) {
+                fprintf(stderr, "baga: компилацията на C кода се провали\n");
+                fprintf(stderr, "baga: C кодът е в %s\n", c_path);
+                return 1;
+            }
         }
 
         /* run — програмните аргументи (след input файла / '--') се подават

@@ -1,0 +1,16 @@
+[package]
+name = "wasmtimebaga"
+version = "0.1.0"
+entry = "wasm.baga"
+# lib: sandak build typechecks only (no link). Full demo/test link via
+# run_demo.sh / run_test.sh which compile [native] shims + libwasmtime.
+
+[dependencies]
+std = { path = "../../std" }
+
+# Used by run_demo.sh / sandak when building demo as bin (see docs).
+# sandak lib build ignores this section for linking.
+[native]
+c_source = "shims/baga_wt_shim.c"
+cflags = "-Ivendor/include -Ishims"
+ldflags = "-Lvendor/lib -lwasmtime -ldl"

@@ -1,0 +1,183 @@
+// smoke.baga — live Wasmtime host checks (needs vendor + BAGA_* link env).
+// Run via: ./run_test.sh (not default baga-test / make test).
+
+import "wasmtimebaga/wasm.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn fail(msg: str) -> i64 !IO {
+    eprintln(concat("wasmtime smoke FAIL: ", msg))
+    return 1
+}
+
+fn fixture(name: str) -> str !IO {
+    let mut path = concat("app-product/wasmtimebaga/fixtures/", name)
+    if file_exists(path)? == 0 {
+        path = concat("fixtures/", name)
+    }
+    return path
+}
+
+fn main() -> i64 !IO {
+    if wt_available()? == false {
+        return fail("shim unavailable")
+    }
+
+    // ── P0 gcd ──────────────────────────────────────────────────────────
+    let path = fixture("gcd.wasm")?
+    if file_exists(path)? == 0 {
+        return fail(concat("missing ", path))
+    }
+
+    let g = wt_run_i32_2(path, "gcd", 6, 27)?
+    if g != 3 {
+        eprintln(wt_last_err()?)
+        return fail(concat("gcd(6,27) got ", int_to_str(g)))
+    }
+
+    let g2 = wt_run_i32_2(path, "gcd", 48, 18)?
+    if g2 != 6 {
+        return fail(concat("gcd(48,18) got ", int_to_str(g2)))
+    }
+
+    // ── P1 hello (host import LOG) ──────────────────────────────────────
+    let hpath = fixture("hello.wasm")?
+    if file_exists(hpath)? == 0 {
+        return fail(concat("missing ", hpath))
+    }
+    if wt_run_hello(hpath, "", "hello", "run")? != 0 {
+        return fail(concat("hello: ", wt_last_err()?))
+    }
+    if wt_host_call_count()? < 1 {
+        return fail("hello host not called")
+    }
+    let log = wt_host_log()?
+    if len(log) < 5 {
+        return fail(concat("bad host log: ", log))
+    }
+
+    // ── P1 linker + host i32 add ────────────────────────────────────────
+    let apath = fixture("add_host.wasm")?
+    if file_exists(apath)? == 0 {
+        return fail(concat("missing ", apath))
+    }
+    wt_host_reset()
+    let eng = wt_engine_new()?
+    if eng == 0 {
+        return fail(wt_last_err()?)
+    }
+    let store = wt_store_new(eng)?
+    if store == 0 {
+        return fail(wt_last_err()?)
+    }
+    let mod = wt_module_from_file(eng, apath)?
+    if mod == 0 {
+        return fail(wt_last_err()?)
+    }
+    let linker = wt_linker_new(eng)?
+    if linker == 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_linker_define_host(linker, "env", "add", WT_HOST_I32_ADD())? != 0 {
+        return fail(wt_last_err()?)
+    }
+    let inst = wt_linker_instantiate(linker, store, mod)?
+    if inst == 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_call_i32_2_status(store, inst, "sum", 7, 5)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_last_i64()? != 12 {
+        return fail(concat("sum got ", int_to_str(wt_last_i64()?)))
+    }
+    if wt_host_call_count()? < 1 {
+        return fail("add host not called")
+    }
+
+    wt_drop(inst)
+    wt_drop(linker)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+
+    // ── P2 memory ───────────────────────────────────────────────────────
+    let mpath = fixture("mem.wasm")?
+    if file_exists(mpath)? == 0 {
+        return fail(concat("missing ", mpath))
+    }
+    let eng2 = wt_engine_new()?
+    let store2 = wt_store_new(eng2)?
+    let mod2 = wt_module_from_file(eng2, mpath)?
+    let inst2 = wt_instance_new(store2, mod2)?
+    if inst2 == 0 {
+        return fail(wt_last_err()?)
+    }
+    let mem = wt_memory_get(store2, inst2, "mem")?
+    if mem == 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_memory_size(store2, mem)? != 1 {
+        return fail("memory pages != 1")
+    }
+    if wt_memory_data_size(store2, mem)? != 65536 {
+        return fail("memory data_size != 65536")
+    }
+    if wt_memory_store8(store2, mem, 10, 7)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_memory_load8(store2, mem, 10)? != 7 {
+        return fail("load8 mismatch")
+    }
+    if wt_call_i32_1_status(store2, inst2, "load", 10)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_last_i64()? != 7 {
+        return fail("guest load mismatch")
+    }
+    if wt_memory_grow(store2, mem, 1)? != 1 {
+        return fail("grow prev != 1")
+    }
+    if wt_memory_size(store2, mem)? != 2 {
+        return fail("pages after grow != 2")
+    }
+    wt_drop(mem)
+    wt_drop(inst2)
+    wt_drop(mod2)
+    wt_drop(store2)
+    wt_drop(eng2)
+
+    // ── P2 WASI ─────────────────────────────────────────────────────────
+    let wpath = fixture("wasi_yield.wasm")?
+    if file_exists(wpath)? == 0 {
+        return fail(concat("missing ", wpath))
+    }
+    let eng3 = wt_engine_new()?
+    let store3 = wt_store_new(eng3)?
+    if wt_store_set_wasi_inherit(store3)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    let mod3 = wt_module_from_file(eng3, wpath)?
+    let linker3 = wt_linker_new(eng3)?
+    if wt_linker_define_wasi(linker3)? != 0 {
+        return fail(wt_last_err()?)
+    }
+    let inst3 = wt_linker_instantiate(linker3, store3, mod3)?
+    if inst3 == 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_call_i32_0_status(store3, inst3, "run")? != 0 {
+        return fail(wt_last_err()?)
+    }
+    if wt_last_i64()? != 0 {
+        return fail("sched_yield errno != 0")
+    }
+    wt_drop(inst3)
+    wt_drop(linker3)
+    wt_drop(mod3)
+    wt_drop(store3)
+    wt_drop(eng3)
+
+    print("wasmtime smoke: all passed")
+    return 0
+}
