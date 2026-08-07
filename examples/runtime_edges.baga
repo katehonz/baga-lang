@@ -1,0 +1,61 @@
+// LP5 probe: runtime/memory edges — vec grow/bounds/aliasing, map rehash
+// across key/value type combos, cell2 packing, deep recursion, arena churn.
+// All behaviors verified live (LP5): vec_get/set abort out of bounds,
+// vec_slice clamps, Vec aliases share storage. Oracle-diffed across both
+// backends.
+struct Pt { x: i64, y: i64 }
+enum St { On(i64), Off }
+
+fn count(n: i64) -> i64 {
+    if n <= 0 { return 0 }
+    return 1 + count(n - 1)
+}
+
+fn main() {
+    // vec grow + set + slice (in-bounds) + aliasing semantics
+    let v: Vec<i64> = vec_new()
+    for i in 0..1000 { vec_push(v, i) }
+    print(vec_len(v))
+    vec_set(v, 500, 777)
+    print(vec_get(v, 500))
+    let s = vec_slice(v, 998, 1000)
+    print(vec_get(s, 1))
+    let b = v
+    vec_push(b, 1)
+    print(vec_len(v))
+
+    // map rehash across value kinds (i64 keys, past the 3/4 load factor)
+    let mf = map_new()
+    for i in 0..20 { map_set(mf, i, 0.5) }
+    let mut sf = 0.0
+    for i in 0..20 { sf = sf + map_get(mf, i) }
+    print(sf)
+    let ms = map_new()
+    for i in 0..20 { map_set(ms, i, Pt { x: i, y: i * 2 }) }
+    let p = map_get(ms, 15)
+    print("${p.x},${p.y}")
+    let me = map_new()
+    for i in 0..20 { map_set(me, i, On(i)) }
+    let mut se = 0
+    for i in 0..20 {
+        se = se + match map_get(me, i) { On(x) => x, Off => 0, }
+    }
+    print(se)
+
+    // cell2 packing: negatives, big values, nesting
+    let c = cell2(-5, 3000000000)
+    print(cell2_0(c))
+    print(cell2_1(c))
+    let nest = cell2(cell2(1, 2), 3)
+    print(cell2_0(cell2_0(nest)))
+    print(cell2_1(nest))
+
+    // deep recursion + arena churn (per-iteration allocs, no accumulation)
+    print(count(20000))
+    let mut acc = 0
+    for i in 0..20000 {
+        let t = concat("k", "${i}")
+        acc = acc + len(t)
+    }
+    print(acc)
+}

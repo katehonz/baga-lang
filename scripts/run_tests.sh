@@ -395,6 +395,14 @@ printf 'fn w(x: i64) -> i64 !IO { return x }\nfn main() -> i64 !Par {\n    let h
 run /tmp/baga_lp4_go.baga 2>&1 | grep -q "необработен ефект !IO" \
 	&& echo "OK: LP4 — ефектите на go_bg worker се propagate-ват към callers" \
 	|| { echo "FAIL: worker ефектите трябва да се propagate-ват"; exit 1; }
+printf 'fn main() {\n    let v: Vec<i64> = vec_new()\n    drop(v)\n    drop(v)\n}\n' > /tmp/baga_lp5_dd.baga
+run /tmp/baga_lp5_dd.baga 2>&1 | grep -q "повторен drop на 'v'" \
+	&& echo "OK: LP5 — двоен drop е compile грешка (MEM-1)" \
+	|| { echo "FAIL: двойният drop трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let v: Vec<i64> = vec_new()\n    drop(v)\n    print(vec_len(v))\n}\n' > /tmp/baga_lp5_du.baga
+run /tmp/baga_lp5_du.baga 2>&1 | grep -q "използване на 'v' след free" \
+	&& echo "OK: LP5 — use-after-drop е compile грешка (MEM-1)" \
+	|| { echo "FAIL: use-after-drop трябва да гърми"; exit 1; }
 printf 'fn add(a: i64, b: i64) -> i64 { return a + b }\nfn main() {\n    let f = add\n    print(f("x", 1))\n}\n' > /tmp/baga_fn_bad1.baga
 run /tmp/baga_fn_bad1.baga 2>&1 | grep -q "fn стойност: аргумент #1 е от тип str, но параметърът е i64" \
 	&& echo "OK: L5 — грешен аргумент през fn стойност е отхвърлен" \

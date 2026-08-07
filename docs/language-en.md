@@ -658,9 +658,14 @@ one vector is a compile-time error.
 | `vec_push(v: Vec, x: i64 \| str \| f64 \| bytes \| struct)` | Append an element; the first push fixes the element type. |
 | `vec_get(v: Vec, i: i64) -> i64 \| str \| f64 \| bytes \| struct` | Read the element at index `i` (the vector's element type). |
 | `vec_set(v: Vec, i: i64, x: i64 \| str \| f64 \| bytes \| struct)` | Overwrite the element at index `i`. |
+| `vec_slice(v: Vec, a: i64, b: i64) -> Vec` | New vector with elements `[a, b)`. Out-of-range bounds are **clamped**, not errors (unlike `vec_get`/`vec_set`, which abort with a bounds message). |
+| `vec_concat(v: Vec, w: Vec) -> Vec` | New vector: `v` followed by `w` (same element type). |
 | `vec_push_str(v: Vec, s: str)` | Alias of `vec_push` for strings (legacy code). |
 | `vec_get_str(v: Vec, i: i64) -> str` | Alias of `vec_get` for strings (legacy code). |
 | `vec_set_str(v: Vec, i: i64, s: str)` | Alias of `vec_set` for strings (legacy code). |
+
+Vectors are reference values: `let b = a` aliases the same storage — pushes
+through `b` are visible through `a` (LP5 probe).
 
 ```baga
 fn main() {
