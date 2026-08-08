@@ -1,234 +1,297 @@
-# boilaDB — Архитектура
+# boilaDB — Архитектура (v2, високо натоварване)
 
 Мултимодална база данни на езика **baga**. Модулен монолит: един бинарник,
 един процес, вътрешно разделен на модули с твърди граници и еднопосочни
-зависимости. Цел: при средно ниво на натоварване (1–100 клиента, GB-данни,
-един възел) да бъде по-бърза, по-издръжлива и по-коректна от barabadb и
-класата ѝ.
+зависимости. Синтаксис: **PostgreSQL-съвместимо SQL подмножество**
+(BoilaSQL). Цел: **високо натоварване** — 1k–10k клиенти, 100 GB–1 TB
+данни, един възел, всички ядра — с плоска p99 и честни benchmark-и.
+
+## Решения спрямо v1 плана
+
+| v1 | v2 (този документ) | Защо |
+|---|---|---|
+| Собствен език BoilaQL (`FIND/NEAR/MATCH/…`) | BoilaSQL — PostgreSQL подмножество (`SELECT/INSERT/UPDATE/DELETE`, `$1`, prepared statements) | екосистемата говори SQL; драйвери и psql работят от ден първи на протокола |
+| Средно натоварване (1–100 клиента, един writer) | Високо натоварване (1k–10k клиенти, N shards, write lanes, bounded pool) | сегашният таван е архитектурен, не хардуерен |
+| Отделен `doc/` JSON модал | JSONB — тип колона в релационното ядро | един value model, по-малка повърхност; документите са редове с JSONB колони |
+| RESP2 фасада за redis-cli | **Postgres wire protocol v3** (simple + extended query) | по-голям ecosystem лост; RESP остава извън v1 |
+| Geo/GPS възможности | **Няма. Изрично извън обхвата и не влизат в roadmap-а.** | потребителско ограничение |
 
 ## 1. Дизайн принципи
 
 1. **Един storage engine, много модали.** Всичко персистентно живее в
-   rocksbaga (LSM). Вектори, графи, FTS индекси, документи, time-series —
-   всички са key-space-ове върху column families. Нищо не е "in-memory със
-   сериализация" — това е главната слабост на barabadb, която бием.
+   rocksbaga (LSM). Редове, вторични индекси, HNSW, FTS, графи — всичко
+   са key-space-ове върху column families/shards. Нищо не е "in-memory
+   със сериализация" — главната слабост на barabadb, която бием.
 2. **Типизирани стойности, не string sentinels.** Коректна NULL семантика
    (three-valued logic), типизиран value codec още на storage границата.
-   (barabadb: `NULL = NULL` връща true — системен проблем при тях.)
-3. **Модулен монолит.** Един процес, един бинарник; модулите комуникират
-   през вътрешни API-та, не през мрежата. Модулът може да се изтръгне в
-   отделен пакет без пренаписване.
-4. **baga-идиоматично.** Struct-ове по стойност (`db = lsm_put(db, k, v)?`),
-   `bytes` навсякъде където е бинарно, ефекти (`!IO !Net !Time !Par`)
-   изрични в сигнатурите, spec-блокове за инвариантите на индексите.
-5. **Предвидима латентност пред пиков товар.** Backpressure, bounded
-   опашки, budget-и на заявка — мишената е средно натоварване с плоска
-   p99, не benchmark маркетинг.
+   (`NULL = NULL` никога не е true.)
+3. **SQL е подмножество, не имитация.** Реализираме честен, документиран
+   диалект на PostgreSQL; всичко извън него връща ясна грешка
+   (`0A000 feature_not_supported`), не тиха грешна семантика.
+4. **Модулен монолит.** Един процес; модулите комуникират през вътрешни
+   API-та, не през мрежата. Всеки модул може да се изтръгне в отделен
+   пакет без пренаписване.
+5. **baga-идиоматично.** Struct-ове по стойност, `bytes` за бинарно,
+   ефекти (`!IO !Net !Time !Par`) изрично в сигнатурите, spec-блокове за
+   индексните инварианти.
+6. **Предвидима латентност пред пиков маркетинг.** Bounded опашки,
+   admission control, budget на заявка — целта е плоска p99 при 10x
+   повече клиенти, не рекорд в един режим.
 
-## 2. Слоеве (еднопосочни зависимости, без нагорни import-и)
+## 2. Целево натоварване (измеримо, не маркетинг)
+
+| Ос | Мишена v1 | Механизъм |
+|---|---|---|
+| Клиенти | 1k–10k едновременни TCP връзки | poll accept + bounded worker pool |
+| Данни | 100 GB – 1 TB | N shards × rocksbaga LSM, page cache по shard |
+| Точки-четения | overhead на SQL слоя ≤ 25% върху суров rocksbaga GET | point-lookup fast path + plan cache |
+| Писания | ≥ 3× throughput спрямо sync-per-write | group commit по lanes (batch fsync) |
+| Латентност | p99 при 10k клиенти ≤ 2× p99 при 1k | admission control + query budget |
+| Възстановяване | WAL replay < 30 s при 1 GB WAL | shard-паралелен replay |
+
+Числата са **гейтове на фаза** (вж. PLAN.md), а не обещания: всяка фаза
+завършва с измерени числа в `bench/`, включително сравнение със суровия
+rocksbaga при същия хардуер (моделът на scorecard-ите в `bench/rocks`).
+
+## 3. Слоеве (еднопосочни зависимости, без нагорни import-и)
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ api/      HTTP (httpdbaga) · RESP2 (kvbaga кодек) · CLI │
-├─────────────────────────────────────────────────────────┤
-│ query/    BoilaQL: lexer → parser → planner → executor  │
-├──────────┬──────────┬──────────┬──────────┬─────────────┤
-│ doc/     │ vector/  │ graph/   │ fts/     │ ts/         │  ← модали
-├──────────┴──────────┴──────────┴──────────┴─────────────┤
-│ index/    общи индексни примитиви върху LSM key-space   │
-├─────────────────────────────────────────────────────────┤
-│ txn/      MVCC snapshot-и, транзакционен мениджър       │
-├─────────────────────────────────────────────────────────┤
-│ storage/  rocksbaga: LSM, WAL, column families, bloom   │
-├─────────────────────────────────────────────────────────┤
-│ core/     types · codec · config · errors · arena цикли │
-└─────────────────────────────────────────────────────────┘
-   cross-cutting: logbaga · metbaga · queuebaga · flagbaga
+┌──────────────────────────────────────────────────────────────┐
+│ api/   PG wire v3 (psql/libpq) · HTTP admin/SQL · CLI        │
+├──────────────────────────────────────────────────────────────┤
+│ sql/    BoilaSQL: lexer → parser → planner → executor        │
+├──────────┬──────────┬──────────┬─────────────────────────────┤
+│ vector/  │ fts/     │ ts/      │ graph/        ← модали      │
+├──────────┴──────────┴──────────┴─────────────────────────────┤
+│ catalog/ схеми·статистики   index/ вторични индекси          │
+├──────────────────────────────────────────────────────────────┤
+│ txn/    MVCC (snapshot LSN), commit sequencer, intents       │
+├──────────────────────────────────────────────────────────────┤
+│ storage/ N shard-а × rocksbaga (LSM, WAL, CF, bloom, cache)  │
+├──────────────────────────────────────────────────────────────┤
+│ core/   types · value codec · key codec · config · errors    │
+└──────────────────────────────────────────────────────────────┘
+   cross-cutting: logbaga · metbaga · queuebaga · ctxbaga · flagbaga
 ```
 
-Зависимостите сочат само надолу. Модалите не се познават помежду си —
-композицията (hybrid search, graph+vector заявки) става в `query/`.
+Модалите не се познават помежду си; композицията (hybrid vector⊕FTS,
+рекурсивни обхождания) става в `sql/` executor-а.
 
-## 3. Модули
+## 4. Модули
 
 ### core/ — фундамент
-- `types.baga` — `BoilaDB` root struct (държи `LsmDB`, config, registry на
-  колекции), резултатни struct-ове по конвенцията на rocksbaga.
 - `value.baga` — типизиран value model: `null | bool | i64 | f64 | bytes |
-  str | vec | json`. LE-кодиран, binary-safe, сортиране съвместимо с
-  byte-order на ключовете (за range scans). Тук живее 3VL логиката.
-- `codec.baga` — key encoding: `<cf> | <колекция> | <вид запис> | <пк>`.
-- `config.baga` — flagbaga + файл; limits (max connections, memtable MB,
-  query budget ms).
-- `errors.baga` — ефекти `!NotFound !Conflict !Corrupt` и др. по моделите
-  на езика.
+  str | json | timestamptz | vector(n)`. LE/binary-safe кодиране,
+  **sort-order съвместим с byte-order** на ключовете (range scans без
+  decode на всяка стойност). Тук живее 3VL логиката.
+- `codec.baga` — key encoding: `<cf> | <shard> | <table_id> | <pk_enc> |
+  <ver_lsn_desc>` (версиите слизат низходящо → snapshot четене е първият
+  запис с `lsn ≤ snapshot`).
+- `config.baga` — flagbaga + файл: `shards`, `max_connections`,
+  `worker_pool`, `commit_window_ms`, `cache_pages`, `query_budget_ms`.
+- `errors.baga` — SQLSTATE кодове (`23505 unique_violation`,
+  `57P03 cannot_connect_now`, `53300 too_many_connections`, `0A000`…).
 
-### storage/ — тънка фасада над rocksbaga
-- Не се пише нов engine. `import "rocksbaga/engine.baga"` + `cf.baga`.
-- Column families: `sys` (метаданни, схеми), `doc`, `vec`, `graph`, `fts`,
-  `ts`, `txn` (write intents).
-- `space.baga` — namespace-нати операции put/get/scan/del върху CF с
-  codec-нати ключове; единственото място, което познава физическия layout.
-- Backup/monitoring: директно `lsm_backup_*`, `lsm_dbsize`.
+### storage/ — N shard-а × rocksbaga
+- Sharding по `fnv(pk) mod N`; всеки shard е собствена rocksbaga инстанция
+  (свой WAL, memtable, compaction, page cache) — моделът, който rocksbaga
+  доказа с `LSM_SHARDS`/parallel workers. N се фиксира при init в `sys`
+  (по подразбиране = ядрата; максимум 64).
+- `shards.baga` — отваряне/затваряне на shard множеството; **всеки shard
+  се притежава от точно една нишка** (struct по стойност → собственост).
+- `space.baga`/`space_scan.baga` — namespace-нати put/get/scan/del;
+  единственото място, което познава физическия layout.
+- `gc.baga` — MVCC version sweep (вж. §6); докато rocksbaga няма
+  compaction filter — background worker, документирано в gaps.md.
+- Backup/monitoring: `lsm_checkpoint`, `lsm_backup_*`, `lsm_dbsize`
+  per shard.
 
-### txn/ — транзакции
-- MVCC върху WAL + write intents в `txn` CF (референция: txnbaga).
-- Snapshot isolation за четене; single-writer сериализация за писане през
-  една вътрешна опашка (queuebaga) — опростява конкурентността при среден
-  товар и дава детерминистичен ред на commit.
-- Първа версия: read-committed + snapshot reads. 2PC/разпределени — извън
-  обхвата (v2+).
+### txn/ — транзакции при много клиенти
+- **Commit sequencer**: една нишка издава монотонни commit LSN-и.
+  Едно-shard транзакции минават fast path (без sequencer) — масовият OLTP
+  случай; multi-shard — през intents в `txn` key-space + commit ticket.
+- **MVCC snapshot isolation**: reader взима `snapshot = текущия committed
+  LSN`; вижда най-новата версия ≤ snapshot. Write-write конфликт →
+  `40001 serialization_failure` на втория commit.
+- Recovery: при replay недоcommit-нати intents се отхвърлят; commit
+  ticket-ът е единственият източник на истина.
+- Serializable, 2PC, разпределени транзакции — извън v1 (честно).
 
-### index/ — общи индексни примитиви
-- Вторични индекси като LSM key-space: `idx|<колекция>|<поле>|<кодирана
-  стойност>|<пк> → ""`. Range scan = префиксен scan (rocksbaga дава
-  `lsm_scan`, bloom филтри и partial get безплатно).
-- Maintenance: индексите се пишат в същата WAL-транзакция като документа —
-  няма дрейф при crash (за разлика от in-memory индекси, които се
-  преизграждат).
+### catalog/ + index/
+- `catalog/` — `sys` key-space: таблици, колони, типове, индекси,
+  статистики (row count, min/max, coarse хистограми) — събират се от
+  background sampler, не при всяко писане.
+- `index/secondary.baga` — вторични индекси **локални за shard-а**
+  (същият hash като таблицата → писането остава едно-shard, в същия
+  WAL batch като реда — няма дрейф при crash). Глобален UNIQUE индекс —
+  отделен sharded key-space с документирана цена (втори write hop).
 
-### Модали (всички дисково-персистентни — ключовото предимство)
+### sql/ — BoilaSQL (PostgreSQL подмножество)
+- Pipeline: lexer → parser (по statement — отделни файлове) → AST →
+  planner (cost model върху catalog статистиките) → executor.
+- **Plan cache**: нормализиран SQL текст → план; инвалидиране при DDL и
+  при смяна на generation-а на статистиките. Trivial PK point-query има
+  специален fast path без пълно планиране.
+- Query budget: deadline (ctxbaga) + max scanned keys + max join build
+  rows; превишение → чиста грешка, не забиване. Това е механизмът за
+  плоска p99 при високо натоварване.
 
-- **doc/** — JSON документи (std/json). Колекции, схема optional,
-  вторични индекси по полета, JSON path заявки. Това е ядрото.
-- **vector/** — `VECTOR(n)` колони. HNSW индекс, чиито възли/ребра са
-  записи в `vec` CF → не се държи в RAM, скалира с диска; горещ слой
-  (top levels на HNSW) се кешира в паметта. Дистанции: cosine, L2, dot.
-  Филтриране по metadata преди/след kNN.
-- **graph/** — adjacency в LSM: `edge|<from>|<label>|<to>` и обратен
-  индекс. BFS/DFS/Dijkstra като scan-ове. Без PageRank/Louvain в v1.
-- **fts/** — inverted index в `fts` CF: `term|<token>|<docid> → positions`.
-  BM25 scoring, tokenizer (EN/BG), фразови и boolean заявки. Индексът е
-  персистентен — не се преизгражда при рестарт.
-- **ts/** — time-series (модал, който barabadb няма). Ключ
-  `ts|<metric>|<timestamp>|<id>` → range scans по време, retention чрез
-  TTL на rocksbaga (`lsm_put_ex`), прости агрегации (sum/avg/min/max/count
-  по прозорец).
-
-### query/ — BoilaQL
-- v1: малък декларативен език (не пълен SQL): `FIND колекция WHERE ...
-  ORDER BY ... LIMIT n`, `NEAR vec_field <-> [..] K 10`,
-  `MATCH text AGAINST "..."`, `TRAVERSE ...`, `TS metric FROM .. TO ..
-  AGG sum 1m`.
-- Pipeline: lexer → parser → AST → planner (избор на индекс) → executor,
-  който вика модалите и merge-ва (Reciprocal Rank Fusion за hybrid).
-- Query budget: max scan keys + deadline на заявка; превишение → грешка,
-  не забиване. Това е механизмът за плоска p99.
+### Модали (всички дисково-персистентни)
+- **vector/** — `VECTOR(n)` колони; HNSW с възли/ребра като записи в
+  `vec` key-space (не в RAM); горните нива се кешират. pgvector-идиоматични
+  оператори: `<->` (L2), `<=>` (cosine), `<#>` (negative inner product),
+  `CREATE INDEX … USING hnsw`, metadata pre-filter през index/.
+- **fts/** — inverted index в `fts` key-space, BM25, tokenizer EN/BG;
+  синтаксис `WHERE body @@ to_tsquery('…')` / `plainto_tsquery`,
+  `ts_rank`. Индексът е персистентен — без rebuild при рестарт.
+- **ts/** — не е отделен език: таблици с `WITH (ttl_days = N)` (PK включва
+  време), `time_bucket('1m', ts)` в GROUP BY, retention през TTL
+  (`lsm_put_ex`) + sweeper. Барбадб няма аналог.
+- **graph/** — adjacency в `graph` key-space (двупосочен); обхожданията
+  се изразяват като `WITH RECURSIVE` (PG-идиоматично), примитивите
+  BFS/DFS/Dijkstra живеят тук. Без PageRank/Louvain в v1.
 
 ### api/ — входни точки
-- **HTTP/JSON** през httpdbaga (thread-per-conn, keepalive) — основният
-  клиентски интерфейс, REST endpoints + `/query` за BoilaQL.
-- **RESP2** през kvbaga кодека — KV-фасада върху doc модала
-  (GET/SET/SCAN съвместими), за да се ползва с redis-cli инструменти.
-- **CLI** — `boiladb serve|shell|backup|restore|sst-dump` (flagbaga,
-  моделът на rocksbaga/tools).
+- **PG wire v3** — simple query + extended (Parse/Bind/Describe/Execute/
+  Sync), ParameterStatus/RowDescription/DataRow/ReadyForQuery,
+  cleartext/token auth. Форматът на съобщенията е познат от pgbaga
+  (клиентската страна) — сървърният кодек се пише в `api/pgwire_*.baga`.
+  Това е основният интерфейс: psql, libpq, всички PG драйвери.
+- **HTTP/JSON** (httpdbaga) — admin, `/sql` за инструменти, `/metrics`
+  (metbaga Prometheus формат), `/health`.
+- **CLI** — `boiladb serve | shell | backup | restore | sst-dump`
+  (flagbaga, моделът на rocksbaga/tools).
+- **Няма WebSocket в v1** (DoS повърхността на barabadb).
 
-### cross-cutting
-- `logbaga` — structured JSON логове; `metbaga` — Prometheus метрики
-  (ops/sec по модал, compaction, p99); `queuebaga` — background задачи
-  (index builds, retention sweeps); `ctxbaga` — deadlines до query budget.
+## 5. BoilaSQL — обхват на подмножеството
 
-## 4. Конкурентност (при средно натоварване)
+**Типове:** `BOOL`, `BIGINT`, `FLOAT8`, `TEXT`, `BYTEA`, `JSONB`,
+`TIMESTAMPTZ`, `VECTOR(n)`. `NULL` с 3VL. (Без `NUMERIC`, `SERIAL`,
+масиви в v1 — документирано.)
 
-baga дава `go/chan` само за `i64` — затова:
-- HTTP слой: thread-per-conn (`go_bg`, моделът на httpdbaga) — достатъчно
-  за стотици клиенти.
-- **Четене**: директно от conn thread (LSM четенията са безопасни,
-  rocksbaga workers моделът го доказва).
-- **Писане**: един writer thread + канал → сериализиран WAL ред, batch
-  group commit (няколко заявки = един fsync). При средно натоварване
-  group commit-ът е по-важен от паралелни писания.
-- Background: compaction е вътрешен в rocksbaga; index build/retention —
-  queuebaga workers.
-- Per-request arena (`arena_new/arena_reset`) — без leak-ове при дългоживеещ
-  сървър.
+**DDL:** `CREATE TABLE … (PRIMARY KEY задължителен — LSM-friendly)`,
+`CREATE [UNIQUE] INDEX ON t (col)`, `CREATE INDEX … USING hnsw`,
+`ALTER TABLE ADD COLUMN` (само nullable/add-only), `DROP TABLE/INDEX`,
+`WITH (ttl_days = N)`.
 
-## 5. Как бием barabadb при средно натоварване
+**DML:** `INSERT … VALUES (…$1…) … [ON CONFLICT DO NOTHING |
+DO UPDATE SET …] [RETURNING …]`, `UPDATE … SET … WHERE … [RETURNING]`,
+`DELETE FROM … WHERE … [RETURNING]`.
+
+**SELECT:** проекции, `WHERE` (`= <> < <= > >= BETWEEN IN LIKE ILIKE
+IS [NOT] NULL AND OR NOT`), `ORDER BY … ASC|DESC`, `LIMIT/OFFSET`,
+`GROUP BY` + `COUNT/SUM/AVG/MIN/MAX` + `HAVING`, `DISTINCT`,
+`JOIN` (`INNER`/`LEFT` — index nested-loop или hash join по cost),
+`WITH RECURSIVE`, `CASE`, аритметика. Без подзаявки/window функции в v1.
+
+**Транзакции:** `BEGIN [READ ONLY] / COMMIT / ROLLBACK`, snapshot
+isolation, `$1..$n` prepared statements през extended protocol-а.
+
+**Всичко извън списъка** → `0A000 feature_not_supported` с името на
+конструкцията. Никога тиха разлика в семантиката спрямо PostgreSQL.
+
+## 6. Конкурентност при високо натоварване
+
+baga дава `go/chan` само за `i64` — цялата комуникация е през канали +
+cell2 пакети (доказаният модел на rocksbaga MT и queuebaga).
+
+- **Accept:** poll loop (моделът rocksbaga R15) приема връзки, чете
+  заявки; bounded **worker pool** (2× ядрата) изпълнява parse/plan/exec.
+  При пълен pool → backpressure: връзката чака в bounded accept опашка,
+  при преливане → `53300` и затваряне. Не thread-per-conn без таван.
+- **Shard нишки:** всеки shard има собствена нишка, която **единствена**
+  държи и мутира неговия `LsmDB` struct (собственост при struct-по-
+  стойност). Worker-ите пращат пакетирани операции (cell2 handle) през
+  канал и получават резултата през cell2 slot — точно `lsm_mt_*` моделът.
+  Четенията се скалират с N, писанията — с N lanes.
+- **Group commit:** във всяка write lane заявките се събират в batch;
+  един `fdatasync` на прозорец (`commit_window_ms` или размер на batch-а).
+  При високо натоварване това е водещият лост — fsync-ът, не CPU-то.
+- **Commit sequencer:** издава LSN-и за multi-shard commit-и; едно-shard
+  commit-и (масовият случай) не го чакат.
+- **MVCC четене:** worker-ите четат без ключалки върху snapshot LSN;
+  GC worker-ът чисти версии под най-стария активен snapshot.
+- **Background:** compaction е вътрешен за rocksbaga per shard; GC,
+  retention sweep, stats sampler, checkpoint scheduler — queuebaga
+  workers с нисък приоритет и собствен budget.
+- **Памет:** per-request arena (`arena_new/arena_reset`); всички кешове
+  (page cache, plan cache, HNSW горни нива) са bounded с clock/LRU
+  eviction. Няма неограничени структури в дългоживеещия процес.
+
+## 7. Как бием barabadb при високо натоварване
 
 | Тяхна слабост | Нашият отговор |
 |---|---|
-| vector/graph/FTS индекси само в RAM | всички индекси са LSM key-space-ове — скалират с диск, оцеляват при рестарт без rebuild |
-| String value model, счупена NULL семантика | типизиран value codec + 3VL от ден първи |
-| MemTable hash + линеен scan; SSTable индекс изцяло в RAM | rocksbaga вече има сортирана memtable (Map<bytes,bytes>), bloom, sparse meta — доказано ~94% от RocksDB durable PUT |
-| Няма time-series | `ts/` модал с retention и агрегации |
-| WebSocket DoS, authz проблеми | няма WS в v1; HTTP с rate limit и auth token (std/crypto HMAC) |
-| Маркетингови benchmarks | честни числа: `bench/` harness срещу barabadb и SQLite при еднакъв client-server режим |
-| ORC/ARC memory компромиси (Nim) | baga → C, без GC/RC цикли, arena per request |
+| Индекси само в RAM, rebuild при рестарт | всички индекси са LSM key-space-ове — скалират с диск, оцеляват при рестарт |
+| String value model, `NULL = NULL` е true | типизиран codec + 3VL от ден първи |
+| Един процес, един writer | N shard-а × N write lanes + group commit |
+| Няма лимити на заявки | query budget + admission control → плоска p99 |
+| Няма time-series | `ts` през TTL + `time_bucket` |
+| WS DoS, authz дупки | без WS в v1; token auth; bounded connections |
+| Маркетингови benchmarks | гейтове на фаза + scorecard срещу суров rocksbaga, barabadb и SQLite при еднакъв режим |
+| ORC/ARC memory компромиси (Nim) | baga → C, без GC, arena per request |
 
-## 6. Граници на v1 (честно)
+## 8. Граници на v1 (честно)
 
-- Един възел. Няма raft/replication/sharding (raftbaga е само фрагмент).
-- BoilaQL не е SQL; няма JOIN-ове между колекции в v1.
-- Graph: само обхождания + най-къс път, без аналитични алгоритми.
-- Auth: един статичен API token; няма per-user ACL.
-- Няма Postgres wire протокол.
+- Един възел. Няма raft/replication/sharding през мрежата (raftbaga е
+  фрагмент). N shard-а са вътрешни, в един процес.
+- **Geo/GPS: няма.** Без geometry типове, без пространствени индекси, без
+  GPS/trajectory ingestion — и не са планирани.
+- SQL подмножество без `NUMERIC`, window функции, подзаявки, serializable.
+- Multi-shard транзакции: snapshot isolation, не 2PC.
+- Auth: cleartext + статичен token по wire; няма per-user ACL/SCRAM в v1.
+- PG wire: само v3, без COPY, без logical replication, без LISTEN/NOTIFY.
 
-## 7. Правила за размер на файловете (урокът от barabadb)
+## 9. Правила за размер на файловете (урокът от barabadb)
 
-При barabadb се стигна до болезнено retroactive делене: `parser.nim` 1957
-реда, `executor.nim` 1832, `raft.nim` 1250, `lsm.nim` 1097. При нас това се
-предотвратява **от ден първи с твърди граници**, а не с "ще го разделим
-после":
+При barabadb се стигна до болезнено retroactive делене (`parser.nim`
+1957 реда, `executor.nim` 1832). Тук — твърди граници от ден първи:
 
-1. **Hard limit: 400 реда на файл.** При доближаване на ~350 се дели
-   превантивно. Изключение няма — дори и "само още една функция".
-2. **Един файл = една отговорност.** Файлът се казва като нещото, което
-   прави (`tokenizer.baga`, не `utils.baga`). Ако името изисква "и" — това
-   са два файла.
-3. **Деленето е по ос, не по произволен размер:** типове/кодеци отделно от
-   алгоритми, четене отделно от писане, всеки operator/statement на
-   езика — свой файл.
-4. **Тестовете следват файла:** `foo.baga` → `tests/foo_test.baga`. Тест
-   файлът също ≤ 400 реда — при повече се дели по сценарий
-   (`foo_crud_test.baga`, `foo_restart_test.baga`).
-5. **Мониторинг:** `scripts/filesize.sh` (wc -l по всички .baga, fail > 400)
-   върви с тестовете. Проверява се още на P0 — преди да има какво да се
-   дели.
-6. **Префикси остават модулни:** при делене символите не се преименуват —
-   `vec_hnsw_insert` си остава такъв, независимо в кой файл от `vector/`
-   живее. Деленето е безболезнено за import-ващите.
+1. **Hard limit: 400 реда на файл.** При ~350 се дели превантивно.
+2. **Един файл = една отговорност.** Името се казва като нещото, което
+   прави; ако изисква "и" — два файла.
+3. **Делене по ос:** типове/кодеци отделно от алгоритми; четене отделно
+   от писане; всеки statement/operator — свой файл.
+4. **Тестовете следват файла:** `foo.baga` → `tests/foo_test.baga`,
+   също ≤ 400 реда (делене по сценарий).
+5. **`scripts/filesize.sh`** (fail > 400) върви с тестовете от P0.
+6. **Префиксите са стабилни:** `vec_hnsw_insert` не се преименува при
+   местене между файлове.
 
-Ориентир за очакваната грануларност по горещите места (където barabadb
-преля):
-
-| Място | Деление от старт |
-|---|---|
-| query/parser | по statement: `parse_find.baga`, `parse_near.baga`, `parse_match.baga`, `parse_traverse.baga`, `parse_ts.baga` + `ast.baga` |
-| query/executor | по модал: `exec_find.baga`, `exec_knn.baga`, `exec_fts.baga`, `exec_graph.baga`, `exec_ts.baga` |
-| vector/hnsw | `hnsw_insert.baga`, `hnsw_search.baga`, `hnsw_store.baga` (LSM layout), `hnsw_cache.baga` |
-| fts/ | `tokenizer.baga`, `stemmer.baga`, `inverted_write.baga`, `inverted_read.baga`, `bm25.baga` |
-| api/http | по ресурс: `http_doc.baga`, `http_query.baga`, `http_admin.baga` + `http_router.baga` |
-
-## 8. Файлова организация (конвенция на app-product)
+## 10. Файлова организация (конвенция на app-product)
 
 ```
 app-product/boilaDB/
 ├── sandak.toml          # name = "boilaDB", entry = "tools/serve.baga"
 ├── README.md  PLAN.md  ARCHITECTURE.md  gaps.md
-├── core/     types.baga value.baga value_cmp.baga codec.baga
-│             config.baga errors.baga
-├── storage/  space.baga space_scan.baga      # фасада над rocksbaga + cf
-├── txn/      mvcc.baga writer.baga intents.baga
-├── index/    secondary.baga index_codec.baga
-├── doc/      doc.baga collection.baga doc_query.baga
-├── vector/   hnsw_insert.baga hnsw_search.baga hnsw_store.baga
-│             hnsw_cache.baga quant.baga distance.baga
-├── graph/    adjacency.baga bfs.baga dfs.baga dijkstra.baga
-├── fts/      tokenizer.baga stemmer.baga inverted_write.baga
-│             inverted_read.baga bm25.baga
-├── ts/       series.baga agg.baga retention.baga
-├── query/    ast.baga lexer.baga parse_find.baga parse_near.baga
-│             parse_match.baga parse_traverse.baga parse_ts.baga
-│             planner.baga exec_find.baga exec_knn.baga exec_fts.baga
-│             exec_graph.baga exec_ts.baga rrf.baga budget.baga
-├── api/      http_router.baga http_doc.baga http_query.baga
-│             http_admin.baga resp.baga auth.baga
-├── tools/    serve.baga shell.baga backup.baga
-├── tests/    <file>_test.baga за всеки сорс файл (≤ 400 реда)
-├── scripts/  filesize.sh                   # hard limit проверка
-└── bench/    vs_barabadb.md harness.baga
+├── core/      types.baga value.baga value_cmp.baga codec.baga
+│              config.baga errors.baga arena.baga
+├── storage/   shards.baga space.baga space_scan.baga gc.baga
+├── txn/       sequencer.baga mvcc.baga intents.baga recovery.baga
+├── catalog/   schema.baga stats.baga stats_hist.baga
+├── index/     secondary.baga index_codec.baga unique.baga
+├── sql/       ast.baga lexer.baga token.baga
+│              parse_select.baga parse_insert.baga parse_update.baga
+│              parse_delete.baga parse_ddl.baga parse_txn.baga
+│              plan.baga planner.baga plan_cache.baga
+│              exec_scan.baga exec_filter.baga exec_sort.baga
+│              exec_agg.baga exec_join.baga exec_dml.baga
+│              exec_recursive.baga budget.baga
+├── vector/    hnsw_insert.baga hnsw_search.baga hnsw_store.baga
+│              hnsw_cache.baga quant.baga distance.baga
+├── fts/       tokenizer.baga stemmer.baga inverted_write.baga
+│              inverted_read.baga bm25.baga tsquery.baga
+├── ts/        retention.baga time_bucket.baga
+├── graph/     adjacency.baga bfs.baga dfs.baga dijkstra.baga
+├── api/       accept.baga worker_pool.baga conn.baga
+│              pgwire_msg.baga pgwire_auth.baga pgwire_query.baga
+│              pgwire_extended.baga http_admin.baga http_sql.baga
+│              auth.baga
+├── tools/     serve.baga shell.baga backup.baga
+├── tests/     <file>_test.baga за всеки сорс файл (≤ 400 реда)
+├── scripts/   filesize.sh
+└── bench/     harness.baga ladder.md vs_barabadb.md
 ```
 
-Root `.baga` shim-ове не са нужни — пакетът е продукт (bin), не библиотека.
-Символен префикс: `boila_*` (подпрефикси `doc_*`, `vec_*`, `fts_*`...),
-стабилен при вътрешно местене на функции между файлове.
+Символен префикс: `boila_*` (подпрефикси `sql_*`, `vec_*`, `fts_*`,
+`txn_*`…), стабилен при вътрешно местене.
