@@ -10,6 +10,7 @@ import "../core/codec.baga"
 import "../core/value.baga"
 import "../core/row.baga"
 import "../catalog/schema.baga"
+import "../index/secondary.baga"
 import "ast.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
@@ -124,19 +125,13 @@ fn boila_exec_select(s: BoilaStore, t: BoilaTable, sel: BoilaSel) -> BoilaExec !
         }
         i = i + 1
     }
-    // WHERE колона(те) трябва да е pk-то (P1)
+    // WHERE: eq — по pk или по индексирана колона (P3); lo/hi — само pk.
     let pkcol = vec_get(t.cols, t.pk_idx)
-    if sel.has_eq == 1 && sel.eq_col != pkcol.name {
-        return boila_exec_fail(s, concat("WHERE по '", concat(sel.eq_col, "' — в P1 само по PRIMARY KEY")), "0A000")
-    }
     if sel.has_lo == 1 && sel.lo_col != pkcol.name {
-        return boila_exec_fail(s, concat("WHERE по '", concat(sel.lo_col, "' — в P1 само по PRIMARY KEY")), "0A000")
+        return boila_exec_fail(s, concat("range по '", concat(sel.lo_col, "' — в P3 само по PRIMARY KEY")), "0A000")
     }
     if sel.has_hi == 1 && sel.hi_col != pkcol.name {
-        return boila_exec_fail(s, concat("WHERE по '", concat(sel.hi_col, "' — в P1 само по PRIMARY KEY")), "0A000")
-    }
-    if sel.has_eq == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_eq) == 0 {
-        return boila_exec_fail(s, "литералът в = не съответства на типа на PRIMARY KEY", "42804")
+        return boila_exec_fail(s, concat("range по '", concat(sel.hi_col, "' — в P3 само по PRIMARY KEY")), "0A000")
     }
     if sel.has_lo == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_lo) == 0 {
         return boila_exec_fail(s, "литералът в >= не съответства на типа на PRIMARY KEY", "42804")
@@ -145,14 +140,48 @@ fn boila_exec_select(s: BoilaStore, t: BoilaTable, sel: BoilaSel) -> BoilaExec !
         return boila_exec_fail(s, "литералът в <= не съответства на типа на PRIMARY KEY", "42804")
     }
 
-    // point fast path
+    // point path: pk директно или индекс по колона
     if sel.has_eq == 1 {
-        let pkenc = boila_val_enc(sel.pk_eq)
-        let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
-        s = g.s
-        if g.found == 1 {
-            let row = boila_row_dec(g.val)
-            vec_push(res.rows, boila_project(row, proj))
+        if sel.eq_col == pkcol.name {
+            if boila_pk_lit_ok(pkcol.typ, sel.pk_eq) == 0 {
+                return boila_exec_fail(s, "литералът в = не съответства на типа на PRIMARY KEY", "42804")
+            }
+            let pkenc = boila_val_enc(sel.pk_eq)
+            let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
+            s = g.s
+            if g.found == 1 {
+                let row = boila_row_dec(g.val)
+                vec_push(res.rows, boila_project(row, proj))
+            }
+            return boila_exec_ok_select(s, res)
+        }
+        // индексирана не-pk колона
+        let cix = boila_col_idx(t, sel.eq_col)
+        if cix < 0 {
+            return boila_exec_fail(s, concat("колона '", concat(sel.eq_col, "' не съществува")), "42703")
+        }
+        let cd = vec_get(t.cols, cix)
+        if boila_pk_lit_ok(cd.typ, sel.pk_eq) == 0 {
+            return boila_exec_fail(s, "литералът в = не съответства на типа на колоната", "42804")
+        }
+        let ixid = boila_ix_by_col_t(t, cix)
+        if ixid < 0 {
+            return boila_exec_fail(s, concat("WHERE по '", concat(sel.eq_col, "' — колона без индекс")), "0A000")
+        }
+        let lk = boila_ix_lookup(s, t, ixid, sel.pk_eq)?
+        s = lk.s
+        let mut li: i64 = 0
+        let mut ldone = false
+        while li < vec_len(lk.pks) && ldone == false {
+            let g = boila_get(s, boila_cf_data(), t.id, vec_get(lk.pks, li))?
+            s = g.s
+            if g.found == 1 {
+                vec_push(res.rows, boila_project(boila_row_dec(g.val), proj))
+                if sel.limit > 0 && vec_len(res.rows) >= sel.limit {
+                    ldone = true
+                }
+            }
+            li = li + 1
         }
         return boila_exec_ok_select(s, res)
     }

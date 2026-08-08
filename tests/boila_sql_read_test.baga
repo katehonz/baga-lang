@@ -134,7 +134,7 @@ fn main() -> i64 !IO !Time {
     check(fails, "err_no_table", e2.ok == 0 && e2.state == "42P01")
     let e3 = boila_exec_sql(s, "INSERT INTO users (id) VALUES (11)")?
     s = e3.s
-    check(fails, "err_insert_p2", e3.ok == 0 && e3.state == "0A000")
+    check(fails, "insert_p3_ok", e3.ok == 1 && e3.kind == 6 && e3.id == 1)
     let e4 = boila_exec_sql(s, "SELECT * FROM users WHERE id = 'текст'")?
     s = e4.s
     check(fails, "err_type_mismatch", e4.ok == 0 && e4.state == "42804")

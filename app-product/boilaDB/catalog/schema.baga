@@ -2,9 +2,14 @@
 //
 // Ключове (cf=sys, table_id=1), pk е bytes:
 //   "n|<име>"        → row [id]
-//   "s|<id ord enc>" → row [id, pk_idx, (col_name, col_typ)*]
+//   "s|<id ord enc>" → row [id, pk_idx, ncols, (col_name, col_typ)*,
+//                            nix, (ix_id, ix_col_idx)*]
 //   "m|next_id"      → row [next_id]
 //
+// Индексните дефиниции живеят в schema row-а (P3 rev.2): зареждането им
+// е point GET, не scan — избягваме SCAN snapshot-а на rocksbaga, който
+// материализира всички ключове при всяка смяна на epoch-а (граница,
+// измерена при 1M bench-а; вж. gaps K7).
 // Персистентен е (същият WAL като данните) — рестарт не губи схеми.
 
 import "../storage/shards.baga"
@@ -15,11 +20,18 @@ import "../sql/ast.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
+struct BoilaIxMeta {
+    id: i64,
+    col_idx: i64,
+    name: str
+}
+
 struct BoilaTable {
     id: i64,
     name: str,
     cols: Vec<BoilaColDef>,
-    pk_idx: i64
+    pk_idx: i64,
+    ixs: Vec<BoilaIxMeta>
 }
 
 struct BoilaCatRes {
@@ -33,7 +45,8 @@ struct BoilaCatRes {
 
 fn boila_cat_empty_table() -> BoilaTable {
     let cols: Vec<BoilaColDef> = vec_new()
-    return BoilaTable { id: 0, name: "", cols: cols, pk_idx: 0 - 1 }
+    let ixs: Vec<BoilaIxMeta> = vec_new()
+    return BoilaTable { id: 0, name: "", cols: cols, pk_idx: 0 - 1, ixs: ixs }
 }
 
 fn boila_cat_pk_name(name: str) -> bytes {
@@ -46,6 +59,31 @@ fn boila_cat_pk_schema(id: i64) -> bytes {
 
 fn boila_cat_pk_meta() -> bytes {
     return bytes_of_str("m|next_id")
+}
+
+// Пълен schema row от BoilaTable (за CREATE TABLE и пренаписване при
+// CREATE INDEX).
+fn boila_cat_schema_row(t: BoilaTable) -> Vec<BoilaVal> {
+    let sch: Vec<BoilaVal> = vec_new()
+    vec_push(sch, boila_val_i64(t.id))
+    vec_push(sch, boila_val_i64(t.pk_idx))
+    vec_push(sch, boila_val_i64(vec_len(t.cols)))
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        let cd = vec_get(t.cols, i)
+        vec_push(sch, boila_val_str(cd.name))
+        vec_push(sch, boila_val_i64(cd.typ))
+        i = i + 1
+    }
+    vec_push(sch, boila_val_i64(vec_len(t.ixs)))
+    i = 0
+    while i < vec_len(t.ixs) {
+        let m = vec_get(t.ixs, i)
+        vec_push(sch, boila_val_i64(m.id))
+        vec_push(sch, boila_val_i64(m.col_idx))
+        i = i + 1
+    }
+    return sch
 }
 
 fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
@@ -66,18 +104,9 @@ fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
             next = z.i
         }
     }
-    // схема: [id, pk_idx, (name, typ)*]
-    let sch: Vec<BoilaVal> = vec_new()
-    vec_push(sch, boila_val_i64(next))
-    vec_push(sch, boila_val_i64(cr.pk_idx))
-    let mut i: i64 = 0
-    while i < vec_len(cr.cols) {
-        let cd = vec_get(cr.cols, i)
-        vec_push(sch, boila_val_str(cd.name))
-        vec_push(sch, boila_val_i64(cd.typ))
-        i = i + 1
-    }
-    s = boila_put(s, boila_cf_sys(), 1, boila_cat_pk_schema(next), boila_row_enc(sch))?
+    let ixs0: Vec<BoilaIxMeta> = vec_new()
+    let t0 = BoilaTable { id: next, name: cr.table, cols: cr.cols, pk_idx: cr.pk_idx, ixs: ixs0 }
+    s = boila_put(s, boila_cf_sys(), 1, boila_cat_pk_schema(next), boila_row_enc(boila_cat_schema_row(t0)))?
     // име → id
     let idrow: Vec<BoilaVal> = vec_new()
     vec_push(idrow, boila_val_i64(next))
@@ -86,7 +115,12 @@ fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
     let mrow2: Vec<BoilaVal> = vec_new()
     vec_push(mrow2, boila_val_i64(next + 1))
     s = boila_put(s, boila_cf_sys(), 1, boila_cat_pk_meta(), boila_row_enc(mrow2))?
-    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: next, name: cr.table, cols: cr.cols, pk_idx: cr.pk_idx }, id: next }
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t0, id: next }
+}
+
+// Пренаписва schema row-а на съществуваща таблица (CREATE INDEX).
+fn boila_cat_schema_rewrite(s: BoilaStore, t: BoilaTable) -> BoilaStore !IO !Time {
+    return boila_put(s, boila_cf_sys(), 1, boila_cat_pk_schema(t.id), boila_row_enc(boila_cat_schema_row(t)))?
 }
 
 fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
@@ -107,7 +141,7 @@ fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
         return BoilaCatRes { s: s, ok: 0, err: "повреден каталог (липсва schema row)", state: "XX000", table: boila_cat_empty_table(), id: 0 }
     }
     let sch = boila_row_dec(ds.val)
-    if vec_len(sch) < 2 {
+    if vec_len(sch) < 3 {
         return BoilaCatRes { s: s, ok: 0, err: "повреден каталог (schema row)", state: "XX000", table: boila_cat_empty_table(), id: 0 }
     }
     let e0 = vec_get(sch, 0)
@@ -115,13 +149,30 @@ fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
     if e0.i != id {
         return BoilaCatRes { s: s, ok: 0, err: "повреден каталог (id mismatch)", state: "XX000", table: boila_cat_empty_table(), id: 0 }
     }
+    let ncols = vec_get(sch, 2).i
     let cols: Vec<BoilaColDef> = vec_new()
-    let mut i: i64 = 2
-    while i + 1 < vec_len(sch) {
+    let mut i: i64 = 3
+    let mut c: i64 = 0
+    while c < ncols && i + 1 < vec_len(sch) {
         let nm = vec_get(sch, i)
         let tp = vec_get(sch, i + 1)
         vec_push(cols, boila_coldef(str_of_bytes(nm.b), tp.i))
         i = i + 2
+        c = c + 1
     }
-    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: id, name: name, cols: cols, pk_idx: e1.i }, id: id }
+    // индексни дефиниции (ако ги има)
+    let ixs: Vec<BoilaIxMeta> = vec_new()
+    if i < vec_len(sch) {
+        let nix = vec_get(sch, i).i
+        i = i + 1
+        let mut k: i64 = 0
+        while k < nix && i + 1 < vec_len(sch) {
+            let xid = vec_get(sch, i)
+            let xcol = vec_get(sch, i + 1)
+            vec_push(ixs, BoilaIxMeta { id: xid.i, col_idx: xcol.i, name: "" })
+            i = i + 2
+            k = k + 1
+        }
+    }
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: id, name: name, cols: cols, pk_idx: e1.i, ixs: ixs }, id: id }
 }

@@ -45,3 +45,72 @@ fn boila_create_empty() -> BoilaCreate {
     let cols: Vec<BoilaColDef> = vec_new()
     return BoilaCreate { table: "", cols: cols, pk_idx: 0 - 1 }
 }
+
+// --- DML (P3) ---
+
+// INSERT: oc = 0 без, 1 DO NOTHING, 2 DO UPDATE SET.
+struct BoilaIns {
+    table: str,
+    cols: Vec<str>,
+    rows: Vec<Vec<BoilaVal>>,
+    oc: i64,
+    oc_cols: Vec<str>,
+    oc_vals: Vec<BoilaVal>,
+    has_ret: i64,
+    ret_star: i64,
+    ret_cols: Vec<str>
+}
+
+fn boila_ins_empty() -> BoilaIns {
+    let cols: Vec<str> = vec_new()
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    let oc_cols: Vec<str> = vec_new()
+    let oc_vals: Vec<BoilaVal> = vec_new()
+    let ret_cols: Vec<str> = vec_new()
+    return BoilaIns { table: "", cols: cols, rows: rows, oc: 0, oc_cols: oc_cols, oc_vals: oc_vals, has_ret: 0, ret_star: 0, ret_cols: ret_cols }
+}
+
+// UPDATE/DELETE: WHERE е pk-only или по индексирана колона (P3),
+// същите has_eq/lo/hi полета като BoilaSel.
+struct BoilaUpd {
+    table: str,
+    set_cols: Vec<str>,
+    set_vals: Vec<BoilaVal>,
+    eq_col: str, has_eq: i64, pk_eq: BoilaVal,
+    lo_col: str, has_lo: i64, pk_lo: BoilaVal,
+    hi_col: str, has_hi: i64, pk_hi: BoilaVal,
+    has_ret: i64,
+    ret_star: i64,
+    ret_cols: Vec<str>
+}
+
+fn boila_upd_empty() -> BoilaUpd {
+    let sc: Vec<str> = vec_new()
+    let sv: Vec<BoilaVal> = vec_new()
+    let rc: Vec<str> = vec_new()
+    let z = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
+    return BoilaUpd { table: "", set_cols: sc, set_vals: sv, eq_col: "", has_eq: 0, pk_eq: z, lo_col: "", has_lo: 0, pk_lo: z, hi_col: "", has_hi: 0, pk_hi: z, has_ret: 0, ret_star: 0, ret_cols: rc }
+}
+
+struct BoilaDel {
+    table: str,
+    eq_col: str, has_eq: i64, pk_eq: BoilaVal,
+    lo_col: str, has_lo: i64, pk_lo: BoilaVal,
+    hi_col: str, has_hi: i64, pk_hi: BoilaVal,
+    has_ret: i64,
+    ret_star: i64,
+    ret_cols: Vec<str>
+}
+
+fn boila_del_empty() -> BoilaDel {
+    let rc: Vec<str> = vec_new()
+    let z = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
+    return BoilaDel { table: "", eq_col: "", has_eq: 0, pk_eq: z, lo_col: "", has_lo: 0, pk_lo: z, hi_col: "", has_hi: 0, pk_hi: z, has_ret: 0, ret_star: 0, ret_cols: rc }
+}
+
+// CREATE INDEX име ON таблица (колона)
+struct BoilaIxDef {
+    ix_name: str,
+    table: str,
+    col: str
+}

@@ -5,9 +5,14 @@ import "lexer.baga"
 import "token.baga"
 import "parse_select.baga"
 import "parse_ddl.baga"
+import "parse_dml.baga"
+import "parse_insert.baga"
 import "exec_scan.baga"
+import "exec_dml.baga"
+import "exec_modify.baga"
 import "../catalog/schema.baga"
 import "../storage/shards.baga"
+import "../index/secondary.baga"
 import "std/str/str.baga"
 
 struct BoilaSqlOut {
@@ -48,19 +53,74 @@ fn boila_exec_sql(s: BoilaStore, sql: str) -> BoilaSqlOut !IO !Time {
     }
     if tok_kw(t0, "create") == 1 {
         let t1 = vec_get(lx.toks, 1)
-        if tok_kw(t1, "table") != 1 {
-            return boila_sql_fail(s, "в P1 се поддържа само CREATE TABLE", "0A000")
+        if tok_kw(t1, "table") == 1 {
+            let pc = boila_parse_create(lx)
+            if pc.ok == 0 {
+                return boila_sql_fail(s, pc.err, pc.state)
+            }
+            let cr = boila_cat_create(s, pc.create)?
+            s = cr.s
+            if cr.ok == 0 {
+                return boila_sql_fail(s, cr.err, cr.state)
+            }
+            return BoilaSqlOut { s: s, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
         }
-        let pc = boila_parse_create(lx)
-        if pc.ok == 0 {
-            return boila_sql_fail(s, pc.err, pc.state)
+        if tok_kw(t1, "index") == 1 {
+            let p = boila_parse_create_ix(lx)
+            if p.ok == 0 {
+                return boila_sql_fail(s, p.err, p.state)
+            }
+            let ct = boila_cat_by_name(s, p.ix.table)?
+            s = ct.s
+            if ct.ok == 0 {
+                return boila_sql_fail(s, ct.err, ct.state)
+            }
+            let ix = boila_ix_create(s, ct.table, p.ix.ix_name, p.ix.col)?
+            if ix.ok == 0 {
+                return boila_sql_fail(ix.s, ix.err, ix.state)
+            }
+            return BoilaSqlOut { s: ix.s, ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
         }
-        let cr = boila_cat_create(s, pc.create)?
-        s = cr.s
-        if cr.ok == 0 {
-            return boila_sql_fail(s, cr.err, cr.state)
-        }
-        return BoilaSqlOut { s: s, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
+        return boila_sql_fail(s, "в P3 се поддържа CREATE TABLE / CREATE INDEX", "0A000")
     }
-    return boila_sql_fail(s, concat("неподдържана конструкция '", concat(t0.txt, "' (P1: SELECT, CREATE TABLE)")), "0A000")
+    if tok_kw(t0, "insert") == 1 {
+        let p = boila_parse_insert(lx)
+        if p.ok == 0 {
+            return boila_sql_fail(s, p.err, p.state)
+        }
+        let ct = boila_cat_by_name(s, p.ins.table)?
+        s = ct.s
+        if ct.ok == 0 {
+            return boila_sql_fail(s, ct.err, ct.state)
+        }
+        let ex = boila_exec_insert(s, ct.table, p.ins)?
+        return BoilaSqlOut { s: ex.s, ok: ex.ok, err: ex.err, state: ex.state, kind: 6, res: ex.res, id: ex.affected }
+    }
+    if tok_kw(t0, "update") == 1 {
+        let p = boila_parse_update(lx)
+        if p.ok == 0 {
+            return boila_sql_fail(s, p.err, p.state)
+        }
+        let ct = boila_cat_by_name(s, p.upd.table)?
+        s = ct.s
+        if ct.ok == 0 {
+            return boila_sql_fail(s, ct.err, ct.state)
+        }
+        let ex = boila_exec_update(s, ct.table, p.upd)?
+        return BoilaSqlOut { s: ex.s, ok: ex.ok, err: ex.err, state: ex.state, kind: 7, res: ex.res, id: ex.affected }
+    }
+    if tok_kw(t0, "delete") == 1 {
+        let p = boila_parse_delete(lx)
+        if p.ok == 0 {
+            return boila_sql_fail(s, p.err, p.state)
+        }
+        let ct = boila_cat_by_name(s, p.del.table)?
+        s = ct.s
+        if ct.ok == 0 {
+            return boila_sql_fail(s, ct.err, ct.state)
+        }
+        let ex = boila_exec_delete(s, ct.table, p.del)?
+        return BoilaSqlOut { s: ex.s, ok: ex.ok, err: ex.err, state: ex.state, kind: 8, res: ex.res, id: ex.affected }
+    }
+    return boila_sql_fail(s, concat("неподдържана конструкция '", concat(t0.txt, "' (P3: SELECT, CREATE TABLE/INDEX, INSERT, UPDATE, DELETE)")), "0A000")
 }

@@ -1,0 +1,129 @@
+// boila_index_test.baga — boilaDB P3: вторични индекси.
+// CREATE INDEX (build върху съществуващи редове), lookup през SELECT,
+// синхронизация при INSERT/UPDATE/DELETE, грешки, restart.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 30 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_index_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_index_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE p (id BIGINT, city TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create_table", c0.ok == 1)
+
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO p (id, city) VALUES (1, 'sofia'), (2, 'varna'), (3, 'sofia')")?
+    srv = i1.srv
+    check(fails, "seed3", i1.ok == 1 && i1.id == 3)
+
+    // без индекс → 0A000
+    let n0 = boila_server_exec(srv, "boila", "SELECT * FROM p WHERE city = 'sofia'")?
+    srv = n0.srv
+    check(fails, "no_index_0A000", n0.ok == 0 && n0.state == "0A000")
+
+    // CREATE INDEX build-ва върху съществуващите редове
+    let x1 = boila_server_exec(srv, "boila", "CREATE INDEX city_ix ON p (city)")?
+    srv = x1.srv
+    check(fails, "create_index", x1.ok == 1 && x1.kind == 9)
+
+    let q1 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'sofia'")?
+    srv = q1.srv
+    check(fails, "lookup2", q1.ok == 1 && vec_len(q1.res.rows) == 2)
+    let q2 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'varna'")?
+    srv = q2.srv
+    check(fails, "lookup1", q2.ok == 1 && vec_len(q2.res.rows) == 1)
+    let q3 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'burgas'")?
+    srv = q3.srv
+    check(fails, "lookup0", q3.ok == 1 && vec_len(q3.res.rows) == 0)
+
+    // INSERT пише entry
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO p (id, city) VALUES (4, 'varna')")?
+    srv = i2.srv
+    let q4 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'varna'")?
+    srv = q4.srv
+    check(fails, "insert_entry", q4.ok == 1 && vec_len(q4.res.rows) == 2)
+
+    // UPDATE мести entry
+    let u1 = boila_server_exec(srv, "boila", "UPDATE p SET city = 'burgas' WHERE id = 3")?
+    srv = u1.srv
+    check(fails, "update_ok", u1.ok == 1 && u1.id == 1)
+    let q5 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'sofia'")?
+    srv = q5.srv
+    check(fails, "update_old_gone", q5.ok == 1 && vec_len(q5.res.rows) == 1)
+    let q6 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'burgas'")?
+    srv = q6.srv
+    check(fails, "update_new_there", q6.ok == 1 && vec_len(q6.res.rows) == 1)
+
+    // DELETE трие entry
+    let d1 = boila_server_exec(srv, "boila", "DELETE FROM p WHERE id = 1")?
+    srv = d1.srv
+    let q7 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'sofia'")?
+    srv = q7.srv
+    check(fails, "delete_entry", q7.ok == 1 && vec_len(q7.res.rows) == 0)
+
+    // --- грешки ---
+    let e1 = boila_server_exec(srv, "boila", "CREATE INDEX city_ix ON p (city)")?
+    srv = e1.srv
+    check(fails, "dup_ix_42710", e1.ok == 0 && e1.state == "42710")
+    let e2 = boila_server_exec(srv, "boila", "CREATE INDEX bad_ix ON p (nope)")?
+    srv = e2.srv
+    check(fails, "bad_col_42703", e2.ok == 0 && e2.state == "42703")
+
+    // --- restart: индексът е персистентен ---
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let r1 = boila_server_exec(srv2, "boila", "SELECT id FROM p WHERE city = 'varna'")?
+    srv2 = r1.srv
+    check(fails, "restart_index", r1.ok == 1 && vec_len(r1.res.rows) == 2)
+    boila_server_close(srv2)?
+
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_index_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_index_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

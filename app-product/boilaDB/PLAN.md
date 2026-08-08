@@ -61,13 +61,21 @@
   CREATE/DROP/USE през HTTP + shell; рестарт → registry-то и всички
   бази четими; DROP чисти файловете на базата.
 
-## P3 — Write lanes + DML + вторични индекси
-- Per-shard write lane (една нишка притежава shard-а) + group commit
-  (`commit_window_ms`/batch размер); `INSERT/UPDATE/DELETE`,
-  `ON CONFLICT`, `RETURNING`; вторични индекси в същия WAL batch.
-- **Гейтове:** (а) group commit ≥ 3× throughput спрямо sync-per-write;
-  (б) 1M INSERT-а без загуба след kill -9, индексите валидни без rebuild
-  (предимство #1 пред barabadb).
+## P3 — DML + вторични индекси + group commit
+- `INSERT` (multi-row, `ON CONFLICT DO NOTHING | DO UPDATE SET`,
+  `RETURNING`), `UPDATE`, `DELETE`; `CREATE INDEX` с build върху
+  съществуващи редове и синхронизация при DML; SELECT по индексирана
+  колона. Индексните дефиниции живеят в schema row-а (O(1) point GET —
+  не scan; урокът K7).
+- Group commit: statement-ниво — `boila_stmt_begin/commit` (един fsync
+  на shard на заявление). Shard-owner нишките остават за wire фазите
+  (P6), където concurrency-то реално се ползва; дотогава sync loop-ът
+  притежава store-а (gaps H2).
+- **Гейтове (измерени, bench/boila/results/insert-write-2026-08-08.md):**
+  (а) group commit ≥ 3× спрямо sync-per-write — **1722%**;
+  (б) durability без close (kill -9 семантика): **100k реда, 0 загубени,
+  индексът валиден без rebuild**. Пълният 1M е блокиран от arena-та на
+  езика (gaps Q2) и се връща с per-request arena управление в P6.
 
 ## P4 — MVCC транзакции
 - Версии `<pk>|<ver_lsn_desc>`, snapshot LSN, commit sequencer за

@@ -1,0 +1,146 @@
+// boila_dml_test.baga — boilaDB P3: INSERT/UPDATE/DELETE, ON CONFLICT,
+// RETURNING, SQLSTATE грешки, restart персистентност.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 30 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() {
+        return int_to_str(v.i)
+    }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_dml_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_dml_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE u (id BIGINT, name TEXT, score BIGINT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create_table", c0.ok == 1)
+
+    // --- INSERT + RETURNING ---
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO u (id, name, score) VALUES (1, 'alice', 10) RETURNING *")?
+    srv = i1.srv
+    check(fails, "insert_one", i1.ok == 1 && i1.kind == 6 && i1.id == 1)
+    check(fails, "insert_ret", vec_len(i1.res.rows) == 1 && cell(vec_get(i1.res.rows, 0), 1) == "alice")
+
+    // multi-row
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO u (id, name, score) VALUES (2, 'boris', 20), (3, 'cveti', 30)")?
+    srv = i2.srv
+    check(fails, "insert_multi", i2.ok == 1 && i2.id == 2)
+
+    // --- ON CONFLICT ---
+    let i3 = boila_server_exec(srv, "boila", "INSERT INTO u (id, name) VALUES (1, 'x')")?
+    srv = i3.srv
+    check(fails, "dup_23505", i3.ok == 0 && i3.state == "23505")
+    let i4 = boila_server_exec(srv, "boila", "INSERT INTO u (id, name) VALUES (1, 'x') ON CONFLICT DO NOTHING")?
+    srv = i4.srv
+    check(fails, "oc_nothing", i4.ok == 1 && i4.id == 0)
+    let i5 = boila_server_exec(srv, "boila", "INSERT INTO u (id, score) VALUES (1, 99) ON CONFLICT DO UPDATE SET score = 99 RETURNING score")?
+    srv = i5.srv
+    check(fails, "oc_update", i5.ok == 1 && i5.id == 1 && vec_len(i5.res.rows) == 1 && cell(vec_get(i5.res.rows, 0), 0) == "99")
+    let i6 = boila_server_exec(srv, "boila", "SELECT name FROM u WHERE id = 1")?
+    srv = i6.srv
+    check(fails, "oc_kept_name", i6.ok == 1 && vec_len(i6.res.rows) == 1 && cell(vec_get(i6.res.rows, 0), 0) == "alice")
+
+    // --- грешки ---
+    let e1 = boila_server_exec(srv, "boila", "INSERT INTO u (name) VALUES ('без pk')")?
+    srv = e1.srv
+    check(fails, "err_pk_missing", e1.ok == 0 && e1.state == "23502")
+    let e2 = boila_server_exec(srv, "boila", "INSERT INTO u (id, nope) VALUES (9, 9)")?
+    srv = e2.srv
+    check(fails, "err_bad_col", e2.ok == 0 && e2.state == "42703")
+    let e3 = boila_server_exec(srv, "boila", "UPDATE u SET id = 5 WHERE id = 1")?
+    srv = e3.srv
+    check(fails, "err_set_pk", e3.ok == 0 && e3.state == "0A000")
+    let e4 = boila_server_exec(srv, "boila", "INSERT INTO u (id, score) VALUES (8, 'текст')")?
+    srv = e4.srv
+    check(fails, "err_type", e4.ok == 0 && e4.state == "42804")
+
+    // --- UPDATE ---
+    let u1 = boila_server_exec(srv, "boila", "UPDATE u SET name = 'boris2' WHERE id = 2 RETURNING name")?
+    srv = u1.srv
+    check(fails, "update_point", u1.ok == 1 && u1.kind == 7 && u1.id == 1 && cell(vec_get(u1.res.rows, 0), 0) == "boris2")
+    let u2 = boila_server_exec(srv, "boila", "UPDATE u SET score = 0 WHERE id >= 2")?
+    srv = u2.srv
+    check(fails, "update_range", u2.ok == 1 && u2.id == 2)
+    let u3 = boila_server_exec(srv, "boila", "SELECT score FROM u WHERE id = 3")?
+    srv = u3.srv
+    check(fails, "update_applied", u3.ok == 1 && cell(vec_get(u3.res.rows, 0), 0) == "0")
+
+    // --- DELETE ---
+    let d1 = boila_server_exec(srv, "boila", "DELETE FROM u WHERE id = 3 RETURNING id")?
+    srv = d1.srv
+    check(fails, "delete_point", d1.ok == 1 && d1.kind == 8 && d1.id == 1 && cell(vec_get(d1.res.rows, 0), 0) == "3")
+    let d2 = boila_server_exec(srv, "boila", "DELETE FROM u")?
+    srv = d2.srv
+    check(fails, "delete_all", d2.ok == 1 && d2.id == 2)
+    let d3 = boila_server_exec(srv, "boila", "SELECT * FROM u")?
+    srv = d3.srv
+    check(fails, "empty_after", d3.ok == 1 && vec_len(d3.res.rows) == 0)
+
+    // --- restart персистентност ---
+    let p1 = boila_server_exec(srv, "boila", "INSERT INTO u (id, name) VALUES (100, 'стойко')")?
+    srv = p1.srv
+    check(fails, "pre_restart", p1.ok == 1)
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let p2 = boila_server_exec(srv2, "boila", "SELECT name FROM u WHERE id = 100")?
+    srv2 = p2.srv
+    check(fails, "restart_durable", p2.ok == 1 && vec_len(p2.res.rows) == 1 && cell(vec_get(p2.res.rows, 0), 0) == "стойко")
+    boila_server_close(srv2)?
+
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_dml_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_dml_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

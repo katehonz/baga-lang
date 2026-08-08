@@ -78,6 +78,29 @@ fn boila_http_sql(srv: BoilaServer, req: Request) -> BoilaHttpSql !IO !Time {
         body = concat(body, "}")
         return BoilaHttpSql { srv: out.srv, resp: http_json_response(200, body) }
     }
+    if out.kind == 9 {
+        body = "{\"ok\":true,\"kind\":\"create_index\",\"id\":"
+        body = concat(body, int_to_str(out.id))
+        body = concat(body, "}")
+        return BoilaHttpSql { srv: out.srv, resp: http_json_response(200, body) }
+    }
+    if out.kind >= 6 && out.kind <= 8 {
+        let mut kname = "insert"
+        if out.kind == 7 {
+            kname = "update"
+        }
+        if out.kind == 8 {
+            kname = "delete"
+        }
+        body = "{\"ok\":true,\"kind\":\""
+        body = concat(body, kname)
+        body = concat(body, "\",\"affected\":")
+        body = concat(body, int_to_str(out.id))
+        body = concat(body, ",\"rows\":")
+        body = concat(body, boila_rows_json(out.res.rows))
+        body = concat(body, "}")
+        return BoilaHttpSql { srv: out.srv, resp: http_json_response(200, body) }
+    }
     if out.kind == 3 {
         body = "{\"ok\":true,\"kind\":\"create_database\",\"db\":"
         body = concat(body, json_escape(out.db))

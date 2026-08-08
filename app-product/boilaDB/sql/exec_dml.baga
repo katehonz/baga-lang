@@ -1,0 +1,223 @@
+// exec_dml.baga — DML общи структури/помощници + INSERT executor (P3).
+// UPDATE/DELETE са в exec_modify.baga (файлова дисциплина, §9).
+//
+// Всяко заявление е statement-level group commit: boila_stmt_begin →
+// puts/dels → boila_stmt_commit (един fsync на shard). Без rollback —
+// при грешка midway написаното дотам остава (гaps T1; транзакциите
+// идват с MVCC в P4). Индексните entries се пишат/трият заедно с реда.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaDml {
+    s: BoilaStore,
+    ok: i64,
+    err: str,
+    state: str,
+    kind: i64,      // 6 insert, 7 update, 8 delete
+    affected: i64,
+    res: BoilaResult
+}
+
+fn boila_dml_fail(s: BoilaStore, kind: i64, msg: str, state: str) -> BoilaDml {
+    return BoilaDml { s: s, ok: 0, err: msg, state: state, kind: kind, affected: 0, res: boila_result_empty() }
+}
+
+fn boila_dml_ok(s: BoilaStore, kind: i64, affected: i64, res: BoilaResult) -> BoilaDml {
+    return BoilaDml { s: s, ok: 1, err: "", state: "", kind: kind, affected: affected, res: res }
+}
+
+fn boila_row_copy(row: Vec<BoilaVal>) -> Vec<BoilaVal> {
+    let out: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(row) {
+        vec_push(out, vec_get(row, i))
+        i = i + 1
+    }
+    return out
+}
+
+// Дали литерал съответства на типа на колона (null минава навсякъде).
+fn boila_dml_val_ok(typ: i64, v: BoilaVal) -> i64 {
+    if v.tag == boila_v_null() {
+        return 1
+    }
+    if typ == boila_v_i64() || typ == boila_v_ts() {
+        if v.tag == boila_v_i64() {
+            return 1
+        }
+        return 0
+    }
+    if v.tag == typ {
+        return 1
+    }
+    return 0
+}
+
+// RETURNING проекция: star → празен proj (всички колони).
+struct BoilaDmlProj {
+    ok: i64,
+    err: str,
+    state: str,
+    proj: Vec<i64>
+}
+
+fn boila_dml_proj(t: BoilaTable, ret_star: i64, ret_cols: Vec<str>) -> BoilaDmlProj {
+    let proj: Vec<i64> = vec_new()
+    if ret_star == 1 {
+        return BoilaDmlProj { ok: 1, err: "", state: "", proj: proj }
+    }
+    let mut i: i64 = 0
+    while i < vec_len(ret_cols) {
+        let ix = boila_col_idx(t, vec_get(ret_cols, i))
+        if ix < 0 {
+            return BoilaDmlProj { ok: 0, err: concat("RETURNING колона '", concat(vec_get(ret_cols, i), "' не съществува")), state: "42703", proj: proj }
+        }
+        vec_push(proj, ix)
+        i = i + 1
+    }
+    return BoilaDmlProj { ok: 1, err: "", state: "", proj: proj }
+}
+
+fn boila_exec_insert(s: BoilaStore, t: BoilaTable, ins: BoilaIns) -> BoilaDml !IO !Time {
+    // колони → индекси
+    let cix: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(ins.cols) {
+        let nm = vec_get(ins.cols, i)
+        let ix = boila_col_idx(t, nm)
+        if ix < 0 {
+            return boila_dml_fail(s, 6, concat("колона '", concat(nm, "' не съществува")), "42703")
+        }
+        let mut j: i64 = 0
+        while j < vec_len(cix) {
+            if vec_get(cix, j) == ix {
+                return boila_dml_fail(s, 6, concat("дублирана колона '", concat(nm, "' в INSERT")), "42701")
+            }
+            j = j + 1
+        }
+        vec_push(cix, ix)
+        i = i + 1
+    }
+    // pk слот
+    let mut pk_slot: i64 = 0 - 1
+    i = 0
+    while i < vec_len(cix) {
+        if vec_get(cix, i) == t.pk_idx {
+            pk_slot = i
+        }
+        i = i + 1
+    }
+    if pk_slot < 0 {
+        return boila_dml_fail(s, 6, "PRIMARY KEY колона липсва в INSERT", "23502")
+    }
+    // ON CONFLICT SET колони
+    let ocix: Vec<i64> = vec_new()
+    i = 0
+    while i < vec_len(ins.oc_cols) {
+        let ix = boila_col_idx(t, vec_get(ins.oc_cols, i))
+        if ix < 0 {
+            return boila_dml_fail(s, 6, concat("DO UPDATE колона '", concat(vec_get(ins.oc_cols, i), "' не съществува")), "42703")
+        }
+        vec_push(ocix, ix)
+        i = i + 1
+    }
+    // RETURNING
+    let mut res = boila_result_empty()
+    if ins.has_ret == 1 {
+        let pj = boila_dml_proj(t, ins.ret_star, ins.ret_cols)
+        if pj.ok == 0 {
+            return boila_dml_fail(s, 6, pj.err, pj.state)
+        }
+        i = 0
+        while i < vec_len(t.cols) {
+            let cd = vec_get(t.cols, i)
+            if ins.ret_star == 1 {
+                vec_push(res.cols, cd.name)
+            } else {
+                let mut k: i64 = 0
+                while k < vec_len(pj.proj) {
+                    if vec_get(pj.proj, k) == i {
+                        vec_push(res.cols, cd.name)
+                    }
+                    k = k + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+    let pj2 = boila_dml_proj(t, ins.ret_star, ins.ret_cols)
+    s = boila_stmt_begin(s)
+    let mut affected: i64 = 0
+    let mut r: i64 = 0
+    while r < vec_len(ins.rows) {
+        let tuple = vec_get(ins.rows, r)
+        // пълен ред: липсващите колони → NULL
+        let full: Vec<BoilaVal> = vec_new()
+        let mut c: i64 = 0
+        while c < vec_len(t.cols) {
+            vec_push(full, boila_val_null())
+            c = c + 1
+        }
+        c = 0
+        while c < vec_len(cix) {
+            let v = vec_get(tuple, c)
+            let cd = vec_get(t.cols, vec_get(cix, c))
+            if boila_dml_val_ok(cd.typ, v) == 0 {
+                s = boila_stmt_commit(s)?
+                return boila_dml_fail(s, 6, concat("стойност за '", concat(cd.name, "' не съответства на типа")), "42804")
+            }
+            vec_set(full, vec_get(cix, c), v)
+            c = c + 1
+        }
+        let pkval = vec_get(tuple, pk_slot)
+        if pkval.tag == boila_v_null() {
+            s = boila_stmt_commit(s)?
+            return boila_dml_fail(s, 6, "NULL в PRIMARY KEY", "23502")
+        }
+        let pkenc = boila_val_enc(pkval)
+        let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
+        s = g.s
+        if g.found == 1 {
+            if ins.oc == 0 {
+                s = boila_stmt_commit(s)?
+                return boila_dml_fail(s, 6, "дублиран PRIMARY KEY (без ON CONFLICT)", "23505")
+            }
+            if ins.oc == 2 {
+                let old = boila_row_dec(g.val)
+                let new = boila_row_copy(old)
+                c = 0
+                while c < vec_len(ocix) {
+                    vec_set(new, vec_get(ocix, c), vec_get(ins.oc_vals, c))
+                    c = c + 1
+                }
+                s = boila_ix_del_all(s, t, old, pkenc)?
+                s = boila_put(s, boila_cf_data(), t.id, pkenc, boila_row_enc(new))?
+                s = boila_ix_put_all(s, t, new, pkenc)?
+                affected = affected + 1
+                if ins.has_ret == 1 {
+                    vec_push(res.rows, boila_project(new, pj2.proj))
+                }
+            }
+            // oc == 1 (DO NOTHING): пропусни реда
+        } else {
+            s = boila_put(s, boila_cf_data(), t.id, pkenc, boila_row_enc(full))?
+            s = boila_ix_put_all(s, t, full, pkenc)?
+            affected = affected + 1
+            if ins.has_ret == 1 {
+                vec_push(res.rows, boila_project(full, pj2.proj))
+            }
+        }
+        r = r + 1
+    }
+    s = boila_stmt_commit(s)?
+    return boila_dml_ok(s, 6, affected, res)
+}

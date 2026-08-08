@@ -4,6 +4,34 @@
 V = value/codec, K = key/scan, S = storage, M = metrics/monitoring,
 H = HTTP/API, Q = SQL (от P1).
 
+## Открити при P3
+
+- **T1 — няма statement atomicity/rollback.** Грешка midway в multi-row
+  INSERT/UPDATE/DELETE персистира редовете дотам (commit-ваме каквото е
+  написано, вместо да губим не-fsync-натия буфер в следващата заявка).
+  Истински rollback идва с MVCC в P4.
+- **K5 — row + index entries са отделни WAL записи.** Една заявка се
+  fsync-ва като група (statement batch), но rocksbaga няма multi-record
+  атомен WAL запис: torn pwrite в рамките на един statement би оставил
+  частични записи при replay (тесен прозорец). Пълна оправия = WAL group
+  record в rocksbaga (бъдеща промяна, вж. ARCHITECTURE §1 принцип 1).
+- **K6 — NULL стойности не се индексират.** PG индексира NULL-и; тук
+  съзнателно се пропускат (по-прост lookup; документирано).
+- **K7 — (FIXED при P3 rev.2) boila_ix_list скенваше sys на всяко DML
+  заявление.** Комбинацията с rocksbaga SCAN snapshot-а (материализира
+  ВСИЧКИ ключове на клъстера при смяна на write epoch) правеше всяко
+  заявление O(общия брой ключове) — измерено: OOM при ~1000 заявления
+  върху 97k реда (~20 MB garbage/заявление). Поправено: индексните
+  дефиниции живеят в schema row-а на таблицата (point GET, O(1));
+  CREATE INDEX build е двупасов (събиране без писания → запис batch).
+  Урок: в rocksbaga никога не се скенва по време на фаза, която пише.
+- **Q2 — baga bump arena-та не reclaims; дългоживеещите тежки процеси
+  OOM-ват.** Измерено при P3 bench: 1M INSERT-а (10×100k) OOM-ва на
+  chunk 2 дори след K7 fix-а; 100k (10×10k) минава чисто и е измереният
+  durability еталон. За сървъра това налага предвиденото в ARCHITECTURE
+  §6: per-request arena (`arena_new/arena_reset`) още с P6 wire фазата —
+  иначе дългият процес ще повтори OOM-а.
+
 ## Открити при P2
 
 - **S4 — mkdir е extern FFI към libc** (езикът няма builtin mkdir/
@@ -29,8 +57,9 @@ H = HTTP/API, Q = SQL (от P1).
   обхожда цялата таблица. Резултатите са коректни, но не са подредени и
   няма early-stop. Истински сортиран range scan идва с P5 planner-а.
 - **H2 — serve е sync (една връзка в даден момент).** SQL пътят мутира
-  store-а (каталог), struct-по-стойност изисква един собственик; P3
-  въвежда shard-owner нишки + канали, P6 — bounded pool. /health и
+  store-а (каталог), struct-по-стойност изисква един собственик. P3
+  добави statement-level group commit; конкурентността (shard-owner
+  нишки + канали, bounded pool) идва с wire фазите (P6). /health и
   /metrics са леки и sync режимът не ги засяга практически.
 
 ## Открити при P0

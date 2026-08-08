@@ -1,0 +1,232 @@
+// exec_modify.baga — executor за UPDATE / DELETE (P3).
+// Помощниците (BoilaDml, row copy, проекции) са в exec_dml.baga.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "exec_dml.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// Събира pk-та по WHERE: point по pk/индекс, range по pk, или всички.
+struct BoilaDmlTgts {
+    s: BoilaStore,
+    ok: i64,
+    err: str,
+    state: str,
+    pks: Vec<bytes>
+}
+
+fn boila_dml_targets(s: BoilaStore, t: BoilaTable, eq_col: str, has_eq: i64, v_eq: BoilaVal, lo_col: str, has_lo: i64, v_lo: BoilaVal, hi_col: str, has_hi: i64, v_hi: BoilaVal) -> BoilaDmlTgts !IO !Time {
+    let pks: Vec<bytes> = vec_new()
+    let pkcol = vec_get(t.cols, t.pk_idx)
+    if has_eq == 1 {
+        if eq_col == pkcol.name {
+            if boila_pk_lit_ok(pkcol.typ, v_eq) == 0 {
+                return BoilaDmlTgts { s: s, ok: 0, err: "литералът в = не съответства на PRIMARY KEY типа", state: "42804", pks: pks }
+            }
+            vec_push(pks, boila_val_enc(v_eq))
+            return BoilaDmlTgts { s: s, ok: 1, err: "", state: "", pks: pks }
+        }
+        // индексирана колона?
+        let cix = boila_col_idx(t, eq_col)
+        if cix < 0 {
+            return BoilaDmlTgts { s: s, ok: 0, err: concat("колона '", concat(eq_col, "' не съществува")), state: "42703", pks: pks }
+        }
+        let cd = vec_get(t.cols, cix)
+        if boila_dml_val_ok(cd.typ, v_eq) == 0 {
+            return BoilaDmlTgts { s: s, ok: 0, err: "литералът в = не съответства на типа на колоната", state: "42804", pks: pks }
+        }
+        let ixid = boila_ix_by_col_t(t, cix)
+        if ixid < 0 {
+            return BoilaDmlTgts { s: s, ok: 0, err: concat("WHERE по '", concat(eq_col, "' — няма индекс (P3)")), state: "0A000", pks: pks }
+        }
+        let lk = boila_ix_lookup(s, t, ixid, v_eq)?
+        return BoilaDmlTgts { s: lk.s, ok: 1, err: "", state: "", pks: lk.pks }
+    }
+    // range само по pk (P3); без WHERE → всички
+    if has_lo == 1 && lo_col != pkcol.name {
+        return BoilaDmlTgts { s: s, ok: 0, err: "range в P3 само по PRIMARY KEY", state: "0A000", pks: pks }
+    }
+    if has_hi == 1 && hi_col != pkcol.name {
+        return BoilaDmlTgts { s: s, ok: 0, err: "range в P3 само по PRIMARY KEY", state: "0A000", pks: pks }
+    }
+    if has_lo == 1 && boila_pk_lit_ok(pkcol.typ, v_lo) == 0 {
+        return BoilaDmlTgts { s: s, ok: 0, err: "литералът в >= не съответства на PRIMARY KEY типа", state: "42804", pks: pks }
+    }
+    if has_hi == 1 && boila_pk_lit_ok(pkcol.typ, v_hi) == 0 {
+        return BoilaDmlTgts { s: s, ok: 0, err: "литералът в <= не съответства на PRIMARY KEY типа", state: "42804", pks: pks }
+    }
+    let mut cursor: i64 = 0
+    let mut rounds: i64 = 0
+    let mut done = false
+    while done == false && rounds < 10000 {
+        let sc = boila_scan(s, boila_cf_data(), t.id, cursor, 64)?
+        let mut j: i64 = 0
+        while j < vec_len(sc.keys) {
+            let k = vec_get(sc.keys, j)
+            let pkenc = bytes_slice(k, 5, bytes_len(k))
+            let pkv = boila_val_dec(pkenc)
+            let mut keep = true
+            if has_lo == 1 {
+                let cmp = boila_val_cmp(pkv, v_lo)
+                if cmp != 1 && cmp != 0 {
+                    keep = false
+                }
+            }
+            if keep && has_hi == 1 {
+                let cmp = boila_val_cmp(pkv, v_hi)
+                if cmp != 0 - 1 && cmp != 0 {
+                    keep = false
+                }
+            }
+            if keep {
+                vec_push(pks, pkenc)
+            }
+            j = j + 1
+        }
+        cursor = sc.next
+        rounds = rounds + 1
+        s = sc.s
+        if cursor == 0 {
+            done = true
+        }
+    }
+    return BoilaDmlTgts { s: s, ok: 1, err: "", state: "", pks: pks }
+}
+
+fn boila_exec_update(s: BoilaStore, t: BoilaTable, upd: BoilaUpd) -> BoilaDml !IO !Time {
+    let six: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(upd.set_cols) {
+        let nm = vec_get(upd.set_cols, i)
+        let ix = boila_col_idx(t, nm)
+        if ix < 0 {
+            return boila_dml_fail(s, 7, concat("SET колона '", concat(nm, "' не съществува")), "42703")
+        }
+        if ix == t.pk_idx {
+            return boila_dml_fail(s, 7, "SET върху PRIMARY KEY не се поддържа в P3", "0A000")
+        }
+        vec_push(six, ix)
+        i = i + 1
+    }
+    let mut res = boila_result_empty()
+    if upd.has_ret == 1 {
+        let pj = boila_dml_proj(t, upd.ret_star, upd.ret_cols)
+        if pj.ok == 0 {
+            return boila_dml_fail(s, 7, pj.err, pj.state)
+        }
+        i = 0
+        while i < vec_len(t.cols) {
+            let cd = vec_get(t.cols, i)
+            if upd.ret_star == 1 {
+                vec_push(res.cols, cd.name)
+            } else {
+                let mut k: i64 = 0
+                while k < vec_len(pj.proj) {
+                    if vec_get(pj.proj, k) == i {
+                        vec_push(res.cols, cd.name)
+                    }
+                    k = k + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+    let pj2 = boila_dml_proj(t, upd.ret_star, upd.ret_cols)
+    let tg = boila_dml_targets(s, t, upd.eq_col, upd.has_eq, upd.pk_eq, upd.lo_col, upd.has_lo, upd.pk_lo, upd.hi_col, upd.has_hi, upd.pk_hi)?
+    s = tg.s
+    if tg.ok == 0 {
+        return boila_dml_fail(s, 7, tg.err, tg.state)
+    }
+    s = boila_stmt_begin(s)
+    let mut affected: i64 = 0
+    let mut r: i64 = 0
+    while r < vec_len(tg.pks) {
+        let pkenc = vec_get(tg.pks, r)
+        let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
+        s = g.s
+        if g.found == 1 {
+            let old = boila_row_dec(g.val)
+            let new = boila_row_copy(old)
+            let mut c: i64 = 0
+            while c < vec_len(six) {
+                let v = vec_get(upd.set_vals, c)
+                let cd = vec_get(t.cols, vec_get(six, c))
+                if boila_dml_val_ok(cd.typ, v) == 0 {
+                    s = boila_stmt_commit(s)?
+                    return boila_dml_fail(s, 7, concat("стойност за '", concat(cd.name, "' не съответства на типа")), "42804")
+                }
+                vec_set(new, vec_get(six, c), v)
+                c = c + 1
+            }
+            s = boila_ix_del_all(s, t, old, pkenc)?
+            s = boila_put(s, boila_cf_data(), t.id, pkenc, boila_row_enc(new))?
+            s = boila_ix_put_all(s, t, new, pkenc)?
+            affected = affected + 1
+            if upd.has_ret == 1 {
+                vec_push(res.rows, boila_project(new, pj2.proj))
+            }
+        }
+        r = r + 1
+    }
+    s = boila_stmt_commit(s)?
+    return boila_dml_ok(s, 7, affected, res)
+}
+
+fn boila_exec_delete(s: BoilaStore, t: BoilaTable, del: BoilaDel) -> BoilaDml !IO !Time {
+    let mut res = boila_result_empty()
+    if del.has_ret == 1 {
+        let pj = boila_dml_proj(t, del.ret_star, del.ret_cols)
+        if pj.ok == 0 {
+            return boila_dml_fail(s, 8, pj.err, pj.state)
+        }
+        let mut i: i64 = 0
+        while i < vec_len(t.cols) {
+            let cd = vec_get(t.cols, i)
+            if del.ret_star == 1 {
+                vec_push(res.cols, cd.name)
+            } else {
+                let mut k: i64 = 0
+                while k < vec_len(pj.proj) {
+                    if vec_get(pj.proj, k) == i {
+                        vec_push(res.cols, cd.name)
+                    }
+                    k = k + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+    let pj2 = boila_dml_proj(t, del.ret_star, del.ret_cols)
+    let tg = boila_dml_targets(s, t, del.eq_col, del.has_eq, del.pk_eq, del.lo_col, del.has_lo, del.pk_lo, del.hi_col, del.has_hi, del.pk_hi)?
+    s = tg.s
+    if tg.ok == 0 {
+        return boila_dml_fail(s, 8, tg.err, tg.state)
+    }
+    s = boila_stmt_begin(s)
+    let mut affected: i64 = 0
+    let mut r: i64 = 0
+    while r < vec_len(tg.pks) {
+        let pkenc = vec_get(tg.pks, r)
+        let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
+        s = g.s
+        if g.found == 1 {
+            let old = boila_row_dec(g.val)
+            s = boila_ix_del_all(s, t, old, pkenc)?
+            s = boila_del(s, boila_cf_data(), t.id, pkenc)?
+            affected = affected + 1
+            if del.has_ret == 1 {
+                vec_push(res.rows, boila_project(old, pj2.proj))
+            }
+        }
+        r = r + 1
+    }
+    s = boila_stmt_commit(s)?
+    return boila_dml_ok(s, 8, affected, res)
+}

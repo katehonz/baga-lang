@@ -229,3 +229,50 @@ fn boila_parse_use(l: BoilaLex) -> BoilaParseDb {
     }
     return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
 }
+
+// --- CREATE INDEX име ON таблица (колона) [;] (P3) ---
+
+struct BoilaParseIx {
+    ok: i64,
+    ix: BoilaIxDef,
+    err: str,
+    state: str
+}
+
+fn boila_pix_fail(msg: str, state: str) -> BoilaParseIx {
+    return BoilaParseIx { ok: 0, ix: BoilaIxDef { ix_name: "", table: "", col: "" }, err: msg, state: state }
+}
+
+fn boila_parse_create_ix(l: BoilaLex) -> BoilaParseIx {
+    // toks: CREATE INDEX ident ON ident ( ident ) [;]
+    let nm = boila_pc_tok(l, 2)
+    if nm.kind != tok_ident() {
+        return boila_pix_fail("очаквах име на индекс след CREATE INDEX", "42601")
+    }
+    if tok_kw(boila_pc_tok(l, 3), "on") != 1 {
+        return boila_pix_fail("очаквах ON след името на индекса", "42601")
+    }
+    let tb = boila_pc_tok(l, 4)
+    if tb.kind != tok_ident() {
+        return boila_pix_fail("очаквах име на таблица след ON", "42601")
+    }
+    if boila_pc_tok(l, 5).kind != tok_lparen() {
+        return boila_pix_fail("очаквах '(' след името на таблицата", "42601")
+    }
+    let col = boila_pc_tok(l, 6)
+    if col.kind != tok_ident() {
+        return boila_pix_fail("очаквах колона в CREATE INDEX", "42601")
+    }
+    if boila_pc_tok(l, 7).kind != tok_rparen() {
+        return boila_pix_fail("P3: индекс върху една колона", "0A000")
+    }
+    let mut i: i64 = 8
+    if boila_pc_tok(l, i).kind == tok_semi() {
+        i = i + 1
+    }
+    if boila_pc_tok(l, i).kind != tok_eof() {
+        let extra = boila_pc_tok(l, i)
+        return boila_pix_fail(concat("неочакван токен '", concat(extra.txt, "' след CREATE INDEX")), "0A000")
+    }
+    return BoilaParseIx { ok: 1, ix: BoilaIxDef { ix_name: nm.txt, table: tb.txt, col: col.txt }, err: "", state: "" }
+}

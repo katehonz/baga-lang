@@ -8,8 +8,13 @@
 // P0 е еднонишков — фасадата не променя това, само го документира.
 
 import "rocksbaga/db/shard.baga"
+import "rocksbaga/db/engine.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
+import "std/bytes/bytes.baga"
+
+// libc fsync примитивът (gaps S4 моделът — extern FFI).
+extern fn fdatasync(fd: i64) -> i64 !IO
 
 struct BoilaStore {
     c: LsmCluster,
@@ -69,4 +74,30 @@ fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) ->
 fn boila_flush(s: BoilaStore) -> BoilaStore !IO !Time {
     let c = lsm_cluster_flush_force(s.c)?
     return BoilaStore { c: c, ok: c.ok }
+}
+
+// --- Group commit (P3): statement-ниво батчиране на fsync ---
+// begin: вдига sync_every, така че puts в заявката не fsync-ват поединично;
+// commit: flush на WAL буферите + един fdatasync на shard, после връща
+// sync_every=1. Една N-редова заявка = един fsync (амортизация N×).
+
+fn boila_stmt_begin(s: BoilaStore) -> BoilaStore {
+    let c = lsm_cluster_apply_sync(s.c, 1000000000)
+    return BoilaStore { c: c, ok: s.ok }
+}
+
+fn boila_stmt_commit(s: BoilaStore) -> BoilaStore !IO {
+    let mut c = s.c
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db = lsm_wal_flush_buf(db)?
+        if db.wal_fd >= 0 {
+            fdatasync(db.wal_fd)?
+        }
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    c = lsm_cluster_apply_sync(c, 1)
+    return BoilaStore { c: c, ok: s.ok }
 }

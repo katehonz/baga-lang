@@ -10,16 +10,18 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 
 ## Статус
 
-**P2 (много бази данни)** — сървърен root с `.meta` registry и flat
-`<db>.db` клъстери; `CREATE/DROP DATABASE`, `USE`; HTTP `POST /sql?db=`,
-shell с текуща база в prompt-а; изолация между бази, FIFO eviction при
-`BOILA_MAX_DB`, default база `boila`; персистентно през рестарт (тествано).
-Предишно: **P1 (SQL read path)** — BoilaSQL lexer/parser за
-`SELECT`/`CREATE TABLE`, каталог в sys key-space, SQLSTATE грешки.
-Perf baseline: SQL point SELECT 6102 ns/op срещу суров GET 1193 ns/op
-(511%) — мишената ≤ 1.25× чака plan cache-а в P5 (gaps Q1).
-**P0 (скелет)** — value codec + 3VL, key layout, sharded storage,
-`/health` + `/metrics`.
+**P3 (DML + индекси + group commit)** — `INSERT` (multi-row, `ON
+CONFLICT DO NOTHING/UPDATE`, `RETURNING`), `UPDATE`, `DELETE`,
+`CREATE INDEX` (build + синхронизация при DML, SELECT по индексирана
+колона); statement-level group commit (един fsync на заявление — гейт
+≥3×: измерено 17×); durability без close: 100k реда, 0 загубени,
+индекс без rebuild (bench/boila/results/insert-write-2026-08-08.md).
+SQLSTATE 23505/23502/42710/42804 и др.
+Предишно: **P2 (много бази данни)** — `.meta` registry, `<db>.db`
+flat клъстери, `CREATE/DROP DATABASE`, `USE`, `?db=`; **P1 (SQL read
+path)**; **P0 (скелет)**. Perf baseline (P1): SQL point SELECT 6102
+ns/op срещу суров GET 1193 ns/op — мишената ≤ 1.25× чака plan cache-а
+в P5 (gaps Q1).
 
 ## Пускане
 

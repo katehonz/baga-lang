@@ -1,0 +1,202 @@
+// insert_write.baga — P3 гейтове: group commit и durable writes.
+//
+// BOILA_PHASE=write   — chunk от durable INSERT-ите; процесът ИЗЛИЗА без
+//   close (kill -9 семантика: WAL е fsync-нат от statement commit-ите).
+//   BOILA_CHUNK=k, BOILA_CHUNKS=10 — процес k пише своя диапазон. chunk 0
+//   прави и bench-а mode A/B. (baga arena-та не reclaims — един процес не
+//   може да смели 10k заявления; парченето е честно решение, gaps Q2.)
+// BOILA_PHASE=verify  — отделен процес: отваря root-а (WAL replay), брои
+//   редове и проверява индекс без rebuild.
+// BOILA_BENCH_ROOT    — root директория (изтрийте я преди chunk 0!).
+// BOILA_ROWS          — общо редове (default 1000000).
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/storage/shards.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/catalog/schema.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn ins_stmt(srv: BoilaServer, lo: i64, n: i64) -> BoilaServer !IO !Time {
+    let mut sql = "INSERT INTO d (id, v) VALUES "
+    let mut i: i64 = 0
+    while i < n {
+        if i > 0 {
+            sql = concat(sql, ", ")
+        }
+        let id = lo + i
+        sql = concat(sql, concat(concat(concat(concat("(", int_to_str(id)), ", 'v_"), int_to_str(id)), "')"))
+        i = i + 1
+    }
+    // ON CONFLICT DO NOTHING прави chunk-овете идемпотентни при повторение
+    sql = concat(sql, " ON CONFLICT DO NOTHING")
+    let out = boila_server_exec(srv, "boila", sql)?
+    if out.ok == 0 {
+        print(concat("INSERT неуспех: ", out.err))
+    }
+    return out.srv
+}
+
+fn bench_stmt(srv: BoilaServer, tbl: str, lo: i64, n: i64) -> BoilaServer !IO !Time {
+    let mut sql = concat(concat("INSERT INTO ", tbl), " (id, v) VALUES ")
+    let mut i: i64 = 0
+    while i < n {
+        if i > 0 {
+            sql = concat(sql, ", ")
+        }
+        let id = lo + i
+        sql = concat(sql, concat(concat(concat(concat("(", int_to_str(id)), ", 'v_"), int_to_str(id)), "')"))
+        i = i + 1
+    }
+    let out = boila_server_exec(srv, "boila", sql)?
+    return out.srv
+}
+
+fn main() -> i64 !IO !Time {
+    let mut phase = env("BOILA_PHASE")
+    if phase == "" {
+        phase = "write"
+    }
+    let mut root = env("BOILA_BENCH_ROOT")
+    if root == "" {
+        root = "/tmp/baga_boila_bench_write"
+    }
+    let mut rows: i64 = 1000000
+    if env("BOILA_ROWS") != "" {
+        rows = parse_int(env("BOILA_ROWS"))
+    }
+
+    if phase == "verify" {
+        let mut srv = boila_server_open(root, 2, 256, 4, 4)?
+        if srv.ok == 0 {
+            print("verify: отварянето се провали")
+            return 1
+        }
+        let st = boila_srv_db(srv, "boila")?
+        srv = st.srv
+        // table id на d през каталога (не се хардкодва)
+        let ct = boila_cat_by_name(st.store, "d")?
+        if ct.ok == 0 {
+            print(concat("verify: таблица d липсва: ", ct.err))
+            return 1
+        }
+        srv = boila_srv_store_putback(srv, "boila", ct.s)
+        // брой редове в data CF за таблица d: scan по страници
+        let mut count: i64 = 0
+        let mut cursor: i64 = 0
+        let mut rounds: i64 = 0
+        let mut done = false
+        let st2 = boila_srv_db(srv, "boila")?
+        srv = st2.srv
+        while done == false && rounds < 100000 {
+            let sc = boila_scan(st2.store, boila_cf_data(), ct.id, cursor, 1000)?
+            count = count + vec_len(sc.keys)
+            cursor = sc.next
+            rounds = rounds + 1
+            if cursor == 0 {
+                done = true
+            }
+        }
+        print(concat("verify: row count = ", int_to_str(count)))
+        // индексна проверка без rebuild
+        let q = boila_server_exec(srv, "boila", concat("SELECT id FROM d WHERE v = 'v_", concat(int_to_str(rows / 2), "'")))?
+        srv = q.srv
+        if q.ok == 0 {
+            print(concat(concat("verify: индексната заявка се провали: ", q.err), concat(" (", concat(q.state, ")"))))
+        }
+        let mut ix_ok: i64 = 0
+        if q.ok == 1 && vec_len(q.res.rows) == 1 {
+            let r0 = vec_get(q.res.rows, 0)
+            let v0 = vec_get(r0, 0)
+            if v0.i == rows / 2 {
+                ix_ok = 1
+            }
+        }
+        print(concat("verify: index lookup ok = ", int_to_str(ix_ok)))
+        if count == rows && ix_ok == 1 {
+            print("verify: DURABLE OK — 0 загубени реда, индексът валиден без rebuild")
+        } else {
+            print("verify: FAIL")
+        }
+        boila_server_close(srv)?
+        return 0
+    }
+
+    // --- write фаза ---
+    let mut srv = boila_server_open(root, 2, 256, 4, 4)?
+    if srv.ok == 0 {
+        print(concat("write: отварянето на ", concat(root, " се провали (изтрийте root-а първо)")))
+        return 1
+    }
+    let mut chunk: i64 = 0
+    if env("BOILA_CHUNK") != "" {
+        chunk = parse_int(env("BOILA_CHUNK"))
+    }
+    let mut chunks: i64 = 10
+    if env("BOILA_CHUNKS") != "" {
+        chunks = parse_int(env("BOILA_CHUNKS"))
+    }
+
+    // bench само в chunk 0: mode A = 1 ред/stmt, mode B = 100 ред/stmt
+    if chunk == 0 {
+        let c0 = boila_server_exec(srv, "boila", "CREATE TABLE w (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+        srv = c0.srv
+        let a_n: i64 = 2000
+        let t0 = monotonic_us()?
+        let mut i: i64 = 0
+        while i < a_n {
+            srv = bench_stmt(srv, "w", i, 1)?
+            i = i + 1
+        }
+        let t1 = monotonic_us()?
+        let b_n: i64 = 200
+        let t2 = monotonic_us()?
+        i = 0
+        while i < b_n {
+            srv = bench_stmt(srv, "w", 100000 + i * 100, 100)?
+            i = i + 1
+        }
+        let t3 = monotonic_us()?
+        let a_us = t1 - t0
+        let b_us = t3 - t2
+        let a_ns = (a_us * 1000) / a_n
+        let b_ns = (b_us * 1000) / (b_n * 100)
+        let mut ratio100: i64 = 0
+        if b_ns > 0 {
+            ratio100 = (a_ns * 100) / b_ns
+        }
+        print(concat("mode A (1 ред/stmt, sync-per-write): ", concat(int_to_str(a_ns), " ns/row")))
+        print(concat("mode B (100 ред/stmt, group commit): ", concat(int_to_str(b_ns), " ns/row")))
+        print(concat(concat("ratio A/B = ", int_to_str(ratio100)), "% — гейт ≥ 300%"))
+    }
+
+    // таблица d + индекс — създават се само веднъж (42P07/42710 се толерират)
+    let d0 = boila_server_exec(srv, "boila", "CREATE TABLE d (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = d0.srv
+    let x0 = boila_server_exec(srv, "boila", "CREATE INDEX d_v_ix ON d (v)")?
+    srv = x0.srv
+    if d0.ok == 0 && d0.state != "42P07" {
+        print(concat("write: CREATE TABLE d се провали: ", d0.err))
+        return 1
+    }
+
+    // durable фаза: chunk-ът пише своя диапазон и излиза БЕЗ close
+    let per = rows / chunks
+    let stmt_rows: i64 = 100
+    let nstmt = per / stmt_rows
+    let lo = chunk * per
+    let t4 = monotonic_us()?
+    let mut i: i64 = 0
+    while i < nstmt {
+        srv = ins_stmt(srv, lo + i * stmt_rows, stmt_rows)?
+        i = i + 1
+    }
+    let t5 = monotonic_us()?
+    let w_ns = ((t5 - t4) * 1000) / (nstmt * stmt_rows)
+    print(concat(concat(concat("chunk ", int_to_str(chunk)), ": "), concat(int_to_str(nstmt * stmt_rows), concat(" реда за ", concat(int_to_str((t5 - t4) / 1000), " ms")))))
+    print(concat("durable write: ", concat(int_to_str(w_ns), " ns/row (group commit, индекс в същия път)")))
+    print("write: излизам БЕЗ close — verify фазата чете през WAL replay")
+    return 0
+}

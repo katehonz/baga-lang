@@ -1,0 +1,235 @@
+// secondary.baga — вторични индекси (P3 rev.2).
+//
+// Дефинициите живеят в schema row-а на таблицата (catalog/schema.baga) —
+// зареждането е point GET, не scan (границата на rocksbaga SCAN snapshot-а,
+// gaps K7). Каталог по име (за duplicate check): pk "x|<table_id>|<име>"
+// → row [index_id, col_idx].
+// Entries (index CF, table_id на таблицата):
+//   pk част = [ix_id u32 BE][value enc][pk enc] → празна стойност
+//
+// NULL стойности не се индексират (gaps K6). Lookup връща pk-та;
+// glob MATCH може да съдържа метазнаци от кодирани байтове — резултатът
+// се филтрира байт-точно (K2).
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaIxRes {
+    s: BoilaStore,
+    ok: i64,
+    err: str,
+    state: str,
+    id: i64
+}
+
+struct BoilaIxLookup {
+    s: BoilaStore,
+    pks: Vec<bytes>
+}
+
+fn boila_ix_fail(s: BoilaStore, msg: str, state: str) -> BoilaIxRes {
+    return BoilaIxRes { s: s, ok: 0, err: msg, state: state, id: 0 }
+}
+
+fn boila_ix_cat_pk(table_id: i64, name: str) -> bytes {
+    return bytes_of_str(concat(concat(concat("x|", int_to_str(table_id)), "|"), name))
+}
+
+fn boila_ix_meta_pk() -> bytes {
+    return bytes_of_str("m|next_ix")
+}
+
+// Entry ключ за стойност на индексирана колона.
+fn boila_ix_entry_pk(ix_id: i64, val: BoilaVal, pk: bytes) -> bytes {
+    let mut out = boila_enc_u32_be(ix_id)
+    out = bytes_concat(out, boila_val_enc(val))
+    return bytes_concat(out, pk)
+}
+
+// Префикс за exact lookup по (ix_id, стойност).
+fn boila_ix_lookup_prefix(ix_id: i64, val: BoilaVal) -> bytes {
+    let mut out = boila_enc_u32_be(ix_id)
+    return bytes_concat(out, boila_val_enc(val))
+}
+
+// Index id по колона — чисто, без IO (дефинициите са в BoilaTable).
+fn boila_ix_by_col_t(t: BoilaTable, col_idx: i64) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(t.ixs) {
+        let m = vec_get(t.ixs, i)
+        if m.col_idx == col_idx {
+            return m.id
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Следващ index id + запис в брояча.
+fn boila_ix_next_id(s: BoilaStore) -> BoilaIxRes !IO !Time {
+    let g = boila_get(s, boila_cf_sys(), 1, boila_ix_meta_pk())?
+    let mut s2 = g.s
+    let mut next: i64 = 1
+    if g.found == 1 {
+        let row = boila_row_dec(g.val)
+        if vec_len(row) > 0 {
+            next = vec_get(row, 0).i
+        }
+    }
+    let row: Vec<BoilaVal> = vec_new()
+    vec_push(row, boila_val_i64(next + 1))
+    s2 = boila_put(s2, boila_cf_sys(), 1, boila_ix_meta_pk(), boila_row_enc(row))?
+    return BoilaIxRes { s: s2, ok: 1, err: "", state: "", id: next }
+}
+
+// Двусъставен pair за build pass 1 (pk + стойност на колоната).
+struct BoilaIxPair {
+    pk: bytes,
+    v: BoilaVal
+}
+
+// CREATE INDEX: каталожен ред + schema rewrite + build върху редовете.
+// Build: pass 1 събира (pk, colval) без писания (SCAN snapshot-ът се
+// строи веднъж), pass 2 пише entries-тата като един statement batch.
+fn boila_ix_create(s: BoilaStore, t: BoilaTable, ix_name: str, col_name: str) -> BoilaIxRes !IO !Time {
+    // колоната съществува ли
+    let mut col_idx: i64 = 0 - 1
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        let cd = vec_get(t.cols, i)
+        if cd.name == col_name {
+            col_idx = i
+        }
+        i = i + 1
+    }
+    if col_idx < 0 {
+        return boila_ix_fail(s, concat("колона '", concat(col_name, "' не съществува")), "42703")
+    }
+    // дубликат по име (point GET)
+    let g = boila_get(s, boila_cf_sys(), 1, boila_ix_cat_pk(t.id, ix_name))?
+    s = g.s
+    if g.found == 1 {
+        return boila_ix_fail(s, concat("индекс '", concat(ix_name, "' вече съществува")), "42710")
+    }
+    let nid = boila_ix_next_id(s)?
+    s = nid.s
+    let cat: Vec<BoilaVal> = vec_new()
+    vec_push(cat, boila_val_i64(nid.id))
+    vec_push(cat, boila_val_i64(col_idx))
+    s = boila_put(s, boila_cf_sys(), 1, boila_ix_cat_pk(t.id, ix_name), boila_row_enc(cat))?
+    // schema rewrite: старите ixs + новият
+    let newixs: Vec<BoilaIxMeta> = vec_new()
+    i = 0
+    while i < vec_len(t.ixs) {
+        vec_push(newixs, vec_get(t.ixs, i))
+        i = i + 1
+    }
+    vec_push(newixs, BoilaIxMeta { id: nid.id, col_idx: col_idx, name: ix_name })
+    let t2 = BoilaTable { id: t.id, name: t.name, cols: t.cols, pk_idx: t.pk_idx, ixs: newixs }
+    s = boila_cat_schema_rewrite(s, t2)?
+    // pass 1: събери (pk, colval) без писания
+    let pairs: Vec<BoilaIxPair> = vec_new()
+    let mut cursor: i64 = 0
+    let mut rounds: i64 = 0
+    let mut done = false
+    while done == false && rounds < 100000 {
+        let sc = boila_scan(s, boila_cf_data(), t.id, cursor, 256)?
+        let mut j: i64 = 0
+        while j < vec_len(sc.keys) {
+            let k = vec_get(sc.keys, j)
+            let pkenc = bytes_slice(k, 5, bytes_len(k))
+            let g2 = boila_get(sc.s, boila_cf_data(), t.id, pkenc)?
+            sc.s = g2.s
+            if g2.found == 1 {
+                let row = boila_row_dec(g2.val)
+                if col_idx < vec_len(row) {
+                    let v = vec_get(row, col_idx)
+                    if v.tag != boila_v_null() {
+                        vec_push(pairs, BoilaIxPair { pk: pkenc, v: v })
+                    }
+                }
+            }
+            j = j + 1
+        }
+        cursor = sc.next
+        rounds = rounds + 1
+        s = sc.s
+        if cursor == 0 {
+            done = true
+        }
+    }
+    // pass 2: запиши entries (statement batch)
+    s = boila_stmt_begin(s)
+    i = 0
+    while i < vec_len(pairs) {
+        let p = vec_get(pairs, i)
+        s = boila_put(s, boila_cf_index(), t.id, boila_ix_entry_pk(nid.id, p.v, p.pk), bytes_new(0))?
+        i = i + 1
+    }
+    s = boila_stmt_commit(s)?
+    return BoilaIxRes { s: s, ok: 1, err: "", state: "", id: nid.id }
+}
+
+// Писане/триене на entries за индексите на таблицата при DML.
+fn boila_ix_put_all(s: BoilaStore, t: BoilaTable, row: Vec<BoilaVal>, pkenc: bytes) -> BoilaStore !IO !Time {
+    let mut i: i64 = 0
+    while i < vec_len(t.ixs) {
+        let m = vec_get(t.ixs, i)
+        if m.col_idx < vec_len(row) {
+            let v = vec_get(row, m.col_idx)
+            if v.tag != boila_v_null() {
+                s = boila_put(s, boila_cf_index(), t.id, boila_ix_entry_pk(m.id, v, pkenc), bytes_new(0))?
+            }
+        }
+        i = i + 1
+    }
+    return s
+}
+
+fn boila_ix_del_all(s: BoilaStore, t: BoilaTable, row: Vec<BoilaVal>, pkenc: bytes) -> BoilaStore !IO !Time {
+    let mut i: i64 = 0
+    while i < vec_len(t.ixs) {
+        let m = vec_get(t.ixs, i)
+        if m.col_idx < vec_len(row) {
+            let v = vec_get(row, m.col_idx)
+            if v.tag != boila_v_null() {
+                s = boila_del(s, boila_cf_index(), t.id, boila_ix_entry_pk(m.id, v, pkenc))?
+            }
+        }
+        i = i + 1
+    }
+    return s
+}
+
+// Exact lookup: всички pk-та, чиято колона има тази стойност.
+fn boila_ix_lookup(s: BoilaStore, t: BoilaTable, ix_id: i64, val: BoilaVal) -> BoilaIxLookup !IO !Time {
+    let pks: Vec<bytes> = vec_new()
+    let pref = boila_ix_lookup_prefix(ix_id, val)
+    let full_pref = boila_key_row(boila_cf_index(), t.id, pref)
+    let mut cursor: i64 = 0
+    let mut rounds: i64 = 0
+    let mut done = false
+    while done == false && rounds < 10000 {
+        let sc = boila_scan(s, boila_cf_index(), t.id, cursor, 64)?
+        let mut j: i64 = 0
+        while j < vec_len(sc.keys) {
+            let k = vec_get(sc.keys, j)
+            if boila_key_has_prefix(k, full_pref) == 1 {
+                vec_push(pks, bytes_slice(k, bytes_len(full_pref), bytes_len(k)))
+            }
+            j = j + 1
+        }
+        cursor = sc.next
+        rounds = rounds + 1
+        s = sc.s
+        if cursor == 0 {
+            done = true
+        }
+    }
+    return BoilaIxLookup { s: s, pks: pks }
+}

@@ -300,12 +300,13 @@ app-product/boilaDB/
 ├── catalog/   schema.baga stats.baga stats_hist.baga
 ├── index/     secondary.baga index_codec.baga unique.baga
 ├── sql/       ast.baga lexer.baga token.baga
-│              parse_select.baga parse_insert.baga parse_update.baga
-│              parse_delete.baga parse_ddl.baga parse_txn.baga
-│              plan.baga planner.baga plan_cache.baga
-│              exec_scan.baga exec_filter.baga exec_sort.baga
-│              exec_agg.baga exec_join.baga exec_dml.baga
-│              exec_recursive.baga budget.baga
+│              parse_select.baga parse_insert.baga parse_dml.baga
+│              parse_ddl.baga parse_txn.baga (P4)
+│              plan.baga planner.baga plan_cache.baga (P5)
+│              exec_scan.baga exec_sql.baga exec_server.baga
+│              exec_dml.baga exec_modify.baga
+│              exec_filter.baga exec_sort.baga exec_agg.baga
+│              exec_join.baga exec_recursive.baga budget.baga (P5+)
 ├── vector/    hnsw_insert.baga hnsw_search.baga hnsw_store.baga
 │              hnsw_cache.baga quant.baga distance.baga
 ├── fts/       tokenizer.baga stemmer.baga inverted_write.baga
