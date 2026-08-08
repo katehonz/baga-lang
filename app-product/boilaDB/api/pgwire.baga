@@ -46,12 +46,12 @@ struct BoilaPgOut {
     err: str
 }
 
-fn pgw_write(fd: i64, b: bytes) -> i64 !Net !IO {
+fn pgw_write(fd: i64, b: bytes) -> i64 !Net !IO !Par {
     return tcp_write_bytes(fd, b)?
 }
 
 // Изпраща ParameterStatus + BackendKeyData + ReadyForQuery.
-fn pgw_send_startup_tail(fd: i64, tx: i64) -> i64 !Net !IO {
+fn pgw_send_startup_tail(fd: i64, tx: i64) -> i64 !Net !IO !Par {
     let mut out = pgw_param_status("server_version", "16.0 (boilaDB P6)")
     out = bytes_concat(out, pgw_param_status("server_encoding", "UTF8"))
     out = bytes_concat(out, pgw_param_status("client_encoding", "UTF8"))
@@ -209,10 +209,16 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
             }
         }
     }
-    // базата съществува ли
-    let chk = boila_srv_db(srv2, db)?
-    srv2 = chk.srv
-    if chk.ok == 0 {
+    // базата съществува ли (pack!=0 → real server under gmu; seed is empty)
+    let mut db_ok: i64 = 0
+    if pack != 0 {
+        db_ok = boila_mt_db_ok(pack, db)?
+    } else {
+        let chk = boila_srv_db(srv2, db)?
+        srv2 = chk.srv
+        db_ok = chk.ok
+    }
+    if db_ok == 0 {
         let w = pgw_write(fd, pgw_error("3D000", concat("database ", concat(db, " does not exist"))))?
         tcp_close(fd)?
         return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "no db" }

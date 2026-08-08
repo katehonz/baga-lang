@@ -1,4 +1,4 @@
-// serve_pg.baga — PG wire go_bg + per-db mutex.
+// serve_pg.baga — PG wire go_bg + per-db parallel + live conn.
 
 import "../api/pgwire.baga"
 import "../api/serve_mt.baga"
@@ -29,6 +29,7 @@ fn boila_pg_conn_mt(ctx: i64) -> i64 !IO !Net !Time !Par {
         session_txn: boila_txn_new(), pc: boila_pc_new(), ok: 0
     }
     let ro = boila_pg_serve_p(fd, pack, seed)?
+    boila_mt_end_conn(pack)?
     return 0
 }
 
@@ -39,26 +40,25 @@ fn main() -> i64 !Net !IO !Time !Par {
     let flush_at = parse_int(boila_env_or("BOILA_FLUSH_AT", "256"))
     let compact_at = parse_int(boila_env_or("BOILA_COMPACT_AT", "4"))
     let max_db = parse_int(boila_env_or("BOILA_MAX_DB", "64"))
-    let max_conn = parse_int(boila_env_or("BOILA_MAX_CONN", "256"))
+    let max_conn = parse_int(boila_env_or("BOILA_MAX_CONN", "64"))
 
     let srv0 = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
     if srv0.ok == 0 {
         print(concat("boiladb-pg: open failed ", root))
         return 1
     }
-    let pack = boila_mt_new(srv0)?
+    let pack = boila_mt_new(srv0, max_conn)?
 
     let mut line = "boiladb-pg wire listening on :"
     line = concat(line, int_to_str(port))
     line = concat(line, " (max_conn=")
     line = concat(line, int_to_str(max_conn))
-    line = concat(line, ", go_bg+per-db-mutex)")
+    line = concat(line, ", go_bg+per-db+live-counter)")
     print(line)
 
     let listener = tcp_listen(port)?
     let pollfds: Vec<i64> = vec_new()
     vec_push(pollfds, listener)
-    let mut nlive: i64 = 0
     while true {
         let pr = poll_wait(pollfds, 200)?
         if pr.ok < 0 {
@@ -67,14 +67,10 @@ fn main() -> i64 !Net !IO !Time !Par {
         if poll_has(pr.ready, listener) == 1 {
             let fd = tcp_accept(listener)?
             if fd >= 0 {
-                if nlive >= max_conn {
+                if boila_mt_try_conn(pack)? == 0 {
                     tcp_close(fd)?
                 } else {
-                    nlive = nlive + 1
                     go_bg(boila_pg_conn_mt, cell2(fd, pack))
-                    if nlive > max_conn * 2 {
-                        nlive = max_conn
-                    }
                 }
             }
         }
