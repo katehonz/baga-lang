@@ -1,7 +1,7 @@
-// serve_pg.baga — PG wire: go_bg per-conn + shared server mutex.
-// Per-conn txn in BoilaPgSess; store under mutex.
+// serve_pg.baga — PG wire go_bg + per-db mutex.
 
 import "../api/pgwire.baga"
+import "../api/serve_mt.baga"
 import "../storage/databases.baga"
 import "../sql/plan_cache.baga"
 import "../txn/mvcc.baga"
@@ -18,15 +18,9 @@ fn boila_env_or(name: str, dflt: str) -> str !IO {
     return v
 }
 
-fn boila_pg_pack(mu: i64, mh: i64) -> i64 {
-    return cell2(mu, mh)
-}
-
-// go_bg: ctx = cell2(fd, pack) — lock only around SQL (pgw_exec_locked).
 fn boila_pg_conn_mt(ctx: i64) -> i64 !IO !Net !Time !Par {
     let fd = cell2_0(ctx)
     let pack = cell2_1(ctx)
-    // seed unused when pack!=0 (each SQL loads srv under mutex)
     let names: Vec<str> = vec_new()
     let stores: Vec<BoilaStore> = vec_new()
     let seed = BoilaServer {
@@ -49,20 +43,16 @@ fn main() -> i64 !Net !IO !Time !Par {
 
     let srv0 = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
     if srv0.ok == 0 {
-        print(concat("boiladb-pg: неуспешно отваряне на root ", root))
+        print(concat("boiladb-pg: open failed ", root))
         return 1
     }
-    let sm: Map<i64, BoilaServer> = map_new()
-    map_set(sm, 0, srv0)
-    let pack = boila_pg_pack(mutex_new(), map_h(sm))
+    let pack = boila_mt_new(srv0)?
 
     let mut line = "boiladb-pg wire listening on :"
     line = concat(line, int_to_str(port))
-    line = concat(line, " (root=")
-    line = concat(line, root)
-    line = concat(line, ", max_conn=")
+    line = concat(line, " (max_conn=")
     line = concat(line, int_to_str(max_conn))
-    line = concat(line, ", go_bg+mutex)")
+    line = concat(line, ", go_bg+per-db-mutex)")
     print(line)
 
     let listener = tcp_listen(port)?

@@ -208,10 +208,10 @@
   `tests/boila_p11_test` (drop, budget constants, restart durability).
 - **Измерено (harness-2026-08-09.md):** point 10k → **156k ops/s**
   (6.4 µs); insert 10k → **524 ops/s**; mix 10k → **2.6k ops/s**.
-- **Сървър harden:** HTTP + PG → `go_bg` per-conn + shared mutex;
-  **per-conn txn** (`exec_tx` / sess.txn); `BOILA_MAX_CONN` backpressure.
-  Store mutate still under one mutex (not per-shard parallel).
-- **Честно residual:** per-shard owner threads; barabadb/SQLite compare;
+- **Сървър harden:** HTTP + PG → `go_bg` + **per-db mutex**
+  (`serve_mt.baga`); per-conn txn; different DBs parallel; same-DB serial.
+  `BOILA_MAX_CONN` backpressure.
+- **Честно residual:** per-shard lanes inside one DB; external DB compare;
   kill -9 chaos automation.
 - Ревизии: ladder е single-thread SQL path, не client fan-out; budget
   е key-count cap, не wall-clock deadline (няма concurrent enforcer).

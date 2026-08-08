@@ -1,16 +1,13 @@
-// serve.baga — HTTP: go_bg per-conn + shared BoilaServer under mutex.
-//
-// Env: BOILA_PATH, BOILA_PORT, BOILA_SHARDS, BOILA_MAX_CONN, BOILA_WORKERS
-//   BOILA_WORKERS=0 (default) → go_bg per connection
-//   BOILA_WORKERS=N → reserved (same go_bg for now)
-//
-// Per-conn txn; server store/pc protected by mutex (serial SQL mutate,
-// parallel network I/O).
+// serve.baga — HTTP go_bg + per-db mutex (api/serve_mt.baga).
+// Env: BOILA_PATH, BOILA_PORT, BOILA_SHARDS, BOILA_MAX_CONN, BOILA_MAX_DB
 
 import "httpdbaga/http.baga"
 import "metbaga/met.baga"
 import "../api/http_sql.baga"
+import "../api/serve_mt.baga"
 import "../storage/databases.baga"
+import "../sql/exec_server.baga"
+import "../sql/plan_cache.baga"
 import "../txn/mvcc.baga"
 import "std/net/tcp.baga"
 import "std/net/poll.baga"
@@ -25,61 +22,50 @@ fn boila_env_or(name: str, dflt: str) -> str !IO {
     return v
 }
 
-// Shared: Map key 0 → BoilaServer; mu protects get/set.
-fn boila_sh_pack(mu: i64, mh: i64) -> i64 {
-    return cell2(mu, mh)
-}
-
-fn boila_sh_lock_get(pack: i64) -> BoilaServer !Par {
-    let mu = cell2_0(pack)
-    let mh = cell2_1(pack)
-    mutex_lock(mu)
-    let m: Map<i64, BoilaServer> = h_map(mh)
-    return map_get(m, 0)
-}
-
-fn boila_sh_put_unlock(pack: i64, srv: BoilaServer) -> i64 !Par {
-    let mu = cell2_0(pack)
-    let mh = cell2_1(pack)
-    let m: Map<i64, BoilaServer> = h_map(mh)
-    map_set(m, 0, srv)
-    mutex_unlock(mu)
-    return 0
-}
-
-fn boila_route_locked(pack: i64, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !Time !Par {
-    let mut srv = boila_sh_lock_get(pack)?
+fn boila_route_mt(pack: i64, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !Time !Par {
     let method = http_method(req)
     let path = http_path_only(req)
     if method == "GET" && path == "/health" {
+        let od = boila_mt_open_count(pack)?
+        let md = boila_mt_max_db(pack)?
         let mut body = "{\"status\":\"ok\",\"open_databases\":"
-        body = concat(body, int_to_str(vec_len(srv.names)))
+        body = concat(body, int_to_str(od))
         body = concat(body, ",\"max_db\":")
-        body = concat(body, int_to_str(srv.max_db))
-        body = concat(body, ",\"mode\":\"mt\"}")
-        boila_sh_put_unlock(pack, srv)?
-        return BoilaHttpSql { srv: srv, txn: txn, resp: http_json_response(200, body) }
+        body = concat(body, int_to_str(md))
+        body = concat(body, ",\"mode\":\"mt-perdb\"}")
+        let z = boila_srv_out_fail(boila_seed(), txn, "", "")
+        return BoilaHttpSql { srv: z.srv, txn: txn, resp: http_json_response(200, body) }
     }
     if method == "GET" && path == "/metrics" {
         let m = met_new()
-        let up = met_gauge(m, "boila_up", "boilaDB process alive")
+        let up = met_gauge(m, "boila_up", "alive")
         met_set(m, up, 1)
-        let od = met_gauge(m, "boila_databases_open", "open databases")
-        met_set(m, od, vec_len(srv.names))
-        let resp = http_response(200, met_render(m))
-        boila_sh_put_unlock(pack, srv)?
-        return BoilaHttpSql { srv: srv, txn: txn, resp: http_set_header(resp, "Content-Type", "text/plain; version=0.0.4") }
+        let od = met_gauge(m, "boila_databases_open", "open dbs")
+        met_set(m, od, boila_mt_open_count(pack)?)
+        let resp = http_set_header(http_response(200, met_render(m)), "Content-Type", "text/plain; version=0.0.4")
+        return BoilaHttpSql { srv: boila_seed(), txn: txn, resp: resp }
     }
     if method == "POST" && path == "/sql" {
-        let r = boila_http_sql_tx(srv, txn, req)?
-        boila_sh_put_unlock(pack, r.srv)?
-        return r
+        let mut db = http_query_param(req, "db")
+        if db == "" {
+            db = "boila"
+        }
+        let out = boila_mt_exec(pack, txn, db, http_body(req))?
+        return boila_http_encode(out)
     }
-    boila_sh_put_unlock(pack, srv)?
-    return BoilaHttpSql { srv: srv, txn: txn, resp: http_json_response(404, "{\"error\":\"not found\"}") }
+    return BoilaHttpSql { srv: boila_seed(), txn: txn, resp: http_json_response(404, "{\"error\":\"not found\"}") }
 }
 
-// go_bg entry: ctx = cell2(fd, pack)
+fn boila_seed() -> BoilaServer {
+    let names: Vec<str> = vec_new()
+    let stores: Vec<BoilaStore> = vec_new()
+    return BoilaServer {
+        meta: boila_store_empty(), root: "", names: names, stores: stores,
+        flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
+        session_txn: boila_txn_new(), pc: boila_pc_new(), ok: 0
+    }
+}
+
 fn boila_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
     let fd = cell2_0(ctx)
     let pack = cell2_1(ctx)
@@ -98,7 +84,7 @@ fn boila_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
                 keep = false
             } else {
                 let ka = http_keepalive(out.req)
-                let rt = boila_route_locked(pack, txn, out.req)?
+                let rt = boila_route_mt(pack, txn, out.req)?
                 txn = rt.txn
                 http_respond_keepalive(fd, rt.resp, ka)?
                 if ka == 0 {
@@ -125,27 +111,22 @@ fn main() -> i64 !Net !IO !Time !Par {
 
     let srv0 = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
     if srv0.ok == 0 {
-        print(concat("boiladb: неуспешно отваряне на root ", root))
+        print(concat("boiladb: open failed ", root))
         return 1
     }
-    let sm: Map<i64, BoilaServer> = map_new()
-    map_set(sm, 0, srv0)
-    let mu = mutex_new()
-    let pack = boila_sh_pack(mu, map_h(sm))
+    let pack = boila_mt_new(srv0)?
 
     let mut line = "boiladb listening on :"
     line = concat(line, int_to_str(port))
-    line = concat(line, " (root=")
-    line = concat(line, root)
-    line = concat(line, ", max_conn=")
+    line = concat(line, " (max_conn=")
     line = concat(line, int_to_str(max_conn))
-    line = concat(line, ", go_bg+mutex)")
+    line = concat(line, ", go_bg+per-db-mutex)")
     print(line)
 
     let listener = tcp_listen(port)?
     let pollfds: Vec<i64> = vec_new()
     vec_push(pollfds, listener)
-    let mut inflight: i64 = 0
+    let mut nlive: i64 = 0
     while true {
         let pr = poll_wait(pollfds, 200)?
         if pr.ok < 0 {
@@ -154,15 +135,14 @@ fn main() -> i64 !Net !IO !Time !Par {
         if poll_has(pr.ready, listener) == 1 {
             let fd = tcp_accept(listener)?
             if fd >= 0 {
-                if inflight >= max_conn {
+                if nlive >= max_conn {
                     http_respond_keepalive(fd, http_json_response(503, "{\"error\":\"too many connections\",\"sqlstate\":\"53300\"}"), 0)?
                     tcp_close(fd)?
                 } else {
-                    inflight = inflight + 1
+                    nlive = nlive + 1
                     go_bg(boila_http_conn, cell2(fd, pack))
-                    // inflight not decremented (best-effort cap; true count needs atomics)
-                    if inflight > max_conn * 2 {
-                        inflight = max_conn
+                    if nlive > max_conn * 2 {
+                        nlive = max_conn
                     }
                 }
             }

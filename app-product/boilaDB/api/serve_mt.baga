@@ -1,0 +1,120 @@
+// serve_mt.baga — shared pack: go_bg + gmu + per-db mutex.
+// pack = cell2(gmu, cell2(srv_mh, dmu_mh))
+// Server DDL (CREATE/DROP DATABASE): gmu only.
+// SQL on db: lock(db_mu) then gmu — different DBs run in parallel.
+
+import "../storage/databases.baga"
+import "../sql/exec_server.baga"
+import "../txn/mvcc.baga"
+import "std/str/str.baga"
+
+fn boila_mt_pack(gmu: i64, srv_mh: i64, dmu_mh: i64) -> i64 {
+    return cell2(gmu, cell2(srv_mh, dmu_mh))
+}
+
+fn boila_mt_gmu(pack: i64) -> i64 { return cell2_0(pack) }
+fn boila_mt_srv_h(pack: i64) -> i64 { return cell2_0(cell2_1(pack)) }
+fn boila_mt_dmu_h(pack: i64) -> i64 { return cell2_1(cell2_1(pack)) }
+
+fn boila_mt_new(srv: BoilaServer) -> i64 !Par {
+    let sm: Map<i64, BoilaServer> = map_new()
+    map_set(sm, 0, srv)
+    let dm: Map<str, i64> = map_new()
+    return boila_mt_pack(mutex_new(), map_h(sm), map_h(dm))
+}
+
+// true if SQL is CREATE/DROP DATABASE (needs gmu-only).
+fn boila_mt_is_db_ddl(sql: str) -> i64 {
+    let n = len(sql)
+    let mut i: i64 = 0
+    let mut w1 = ""
+    let mut w2 = ""
+    let mut wi: i64 = 0
+    let mut cur = ""
+    while i <= n {
+        let mut cl: i64 = 32
+        if i < n {
+            cl = char_at(sql, i)
+            if cl >= 65 && cl <= 90 {
+                cl = cl + 32
+            }
+        }
+        if cl >= 97 && cl <= 122 {
+            cur = concat(cur, chr(cl))
+        } else {
+            if cur != "" {
+                if wi == 0 {
+                    w1 = cur
+                }
+                if wi == 1 {
+                    w2 = cur
+                }
+                wi = wi + 1
+                cur = ""
+                if wi >= 2 {
+                    i = n
+                }
+            }
+        }
+        i = i + 1
+    }
+    if (w1 == "create" || w1 == "drop") && w2 == "database" {
+        return 1
+    }
+    return 0
+}
+
+fn boila_mt_db_mu(pack: i64, db: str) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let dm: Map<str, i64> = h_map(boila_mt_dmu_h(pack))
+    let mut mu: i64 = 0
+    if map_has(dm, db) == 1 {
+        mu = map_get(dm, db)
+    } else {
+        mu = mutex_new()
+        map_set(dm, db, mu)
+    }
+    mutex_unlock(gmu)
+    return mu
+}
+
+fn boila_mt_exec(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time !Par {
+    let gmu = boila_mt_gmu(pack)
+    let sh = boila_mt_srv_h(pack)
+    if boila_mt_is_db_ddl(sql) == 1 {
+        mutex_lock(gmu)
+        let m: Map<i64, BoilaServer> = h_map(sh)
+        let out = boila_server_exec_tx(map_get(m, 0), txn, db, sql)?
+        map_set(m, 0, out.srv)
+        mutex_unlock(gmu)
+        return out
+    }
+    let dmu = boila_mt_db_mu(pack, db)?
+    mutex_lock(dmu)
+    mutex_lock(gmu)
+    let m2: Map<i64, BoilaServer> = h_map(sh)
+    let out2 = boila_server_exec_tx(map_get(m2, 0), txn, db, sql)?
+    map_set(m2, 0, out2.srv)
+    mutex_unlock(gmu)
+    mutex_unlock(dmu)
+    return out2
+}
+
+fn boila_mt_open_count(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let n = vec_len(map_get(m, 0).names)
+    mutex_unlock(gmu)
+    return n
+}
+
+fn boila_mt_max_db(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let n = map_get(m, 0).max_db
+    mutex_unlock(gmu)
+    return n
+}

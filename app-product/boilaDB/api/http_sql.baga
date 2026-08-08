@@ -51,19 +51,13 @@ fn boila_rows_json(rows: Vec<Vec<BoilaVal>>) -> str {
 }
 
 fn boila_http_sql(srv: BoilaServer, req: Request) -> BoilaHttpSql !IO !Time {
-    // single-thread: session_txn on srv
     let r = boila_http_sql_tx(srv, srv.session_txn, req)?
     r.srv.session_txn = r.txn
     return r
 }
 
-fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !Time {
-    let mut db = http_query_param(req, "db")
-    if db == "" {
-        db = "boila"
-    }
-    let sql = http_body(req)
-    let out = boila_server_exec_tx(srv, txn, db, sql)?
+// Encode BoilaSrvOut → JSON response (no re-exec).
+fn boila_http_encode(out: BoilaSrvOut) -> BoilaHttpSql {
     let mut body = ""
     if out.ok == 0 {
         body = "{\"ok\":false,\"error\":"
@@ -81,14 +75,16 @@ fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, req: Request) -> BoilaHttp
         body = concat(body, "}")
         return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
     }
-    if out.kind == 2 {
-        body = "{\"ok\":true,\"kind\":\"create\",\"id\":"
-        body = concat(body, int_to_str(out.id))
-        body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
-    }
-    if out.kind == 9 {
-        body = "{\"ok\":true,\"kind\":\"create_index\",\"id\":"
+    if out.kind == 2 || out.kind == 9 || out.kind == 14 || out.kind == 15 || out.kind == 17 || out.kind == 18 {
+        let mut k = "create"
+        if out.kind == 9 { k = "create_index" }
+        if out.kind == 14 { k = "create_fts" }
+        if out.kind == 15 { k = "create_hnsw" }
+        if out.kind == 17 { k = "create_graph" }
+        if out.kind == 18 { k = "drop_table" }
+        body = "{\"ok\":true,\"kind\":\""
+        body = concat(body, k)
+        body = concat(body, "\",\"id\":")
         body = concat(body, int_to_str(out.id))
         body = concat(body, "}")
         return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
@@ -133,4 +129,13 @@ fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, req: Request) -> BoilaHttp
     body = concat(body, json_escape(out.db))
     body = concat(body, "}")
     return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+}
+
+fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !Time {
+    let mut db = http_query_param(req, "db")
+    if db == "" {
+        db = "boila"
+    }
+    let out = boila_server_exec_tx(srv, txn, db, http_body(req))?
+    return boila_http_encode(out)
 }

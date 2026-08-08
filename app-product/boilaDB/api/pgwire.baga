@@ -12,6 +12,7 @@ import "../storage/databases.baga"
 import "../sql/exec_server.baga"
 import "../sql/exec_scan.baga"
 import "../txn/mvcc.baga"
+import "serve_mt.baga"
 import "../core/value.baga"
 import "std/net/tcp.baga"
 import "std/os/os.baga"
@@ -71,20 +72,12 @@ fn pgw_tx_status(sess: BoilaPgSess) -> i64 {
     return 73       // 'I'
 }
 
-// pack=0 → srv by-value (tests); pack!=0 → mutex cell2(mu, map_h) shared MT.
+// pack=0 → by-value (tests); pack!=0 → serve_mt per-db locks.
 fn pgw_exec_locked(pack: i64, srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time !Par {
     if pack == 0 {
         return boila_server_exec_tx(srv, txn, db, sql)?
     }
-    let mu = cell2_0(pack)
-    let mh = cell2_1(pack)
-    mutex_lock(mu)
-    let m: Map<i64, BoilaServer> = h_map(mh)
-    let s0 = map_get(m, 0)
-    let out = boila_server_exec_tx(s0, txn, db, sql)?
-    map_set(m, 0, out.srv)
-    mutex_unlock(mu)
-    return out
+    return boila_mt_exec(pack, txn, db, sql)?
 }
 
 // Изпълнява SQL и пише резултата. send_ready=1 → ReadyForQuery.
