@@ -1,0 +1,25 @@
+// budget.baga — query budget (P11): max scanned keys / max result rows.
+// Sync сървърът няма concurrent deadline enforcement (gaps C3/W1);
+// budget-ът пази p99 от pathol. scans и OOM от големи seq scan-и.
+
+fn boila_budget_max_scan() -> i64 {
+    // default 100k keys; env override би изисквал !IO на всеки scan
+    return 100000
+}
+
+fn boila_budget_max_rows() -> i64 {
+    return 100000
+}
+
+// SQLSTATE 54000 program_limit_exceeded
+fn boila_budget_state() -> str {
+    return "54000"
+}
+
+fn boila_budget_err_scan(n: i64) -> str {
+    return concat("query budget: max_scan ", concat(int_to_str(boila_budget_max_scan()), concat(" превишен (scanned ", concat(int_to_str(n), ")"))))
+}
+
+fn boila_budget_err_rows(n: i64) -> str {
+    return concat("query budget: max_rows ", concat(int_to_str(boila_budget_max_rows()), concat(" превишен (rows ", concat(int_to_str(n), ")"))))
+}

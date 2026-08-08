@@ -14,6 +14,7 @@ import "../vector/hnsw.baga"
 import "../vector/hnsw_search.baga"
 import "../vector/distance.baga"
 import "../vector/hnsw_store.baga"
+import "../core/budget.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "std/str/str.baga"
@@ -281,9 +282,12 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         }
         return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
-    // range / seq
+    // range / seq (+ P11 budget)
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
+    if vec_len(ks.pks) > boila_budget_max_scan() {
+        return boila_fetch_fail(s, txn, boila_budget_err_scan(vec_len(ks.pks)), boila_budget_state())
+    }
     let mut ki: i64 = 0
     while ki < vec_len(ks.pks) {
         let pkenc = vec_get(ks.pks, ki)
@@ -306,6 +310,9 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             s = g.s
             if g.found == 1 {
                 vec_push(rows, boila_row_dec(g.row))
+                if vec_len(rows) > boila_budget_max_rows() {
+                    return boila_fetch_fail(s, txn, boila_budget_err_rows(vec_len(rows)), boila_budget_state())
+                }
             }
         }
         ki = ki + 1
@@ -317,19 +324,23 @@ fn boila_fetch_all(s: BoilaStore, txn: BoilaTxn, t: BoilaTable) -> BoilaFetch !I
     let rows: Vec<Vec<BoilaVal>> = vec_new()
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
+    if vec_len(ks.pks) > boila_budget_max_scan() {
+        return boila_fetch_fail(s, txn, boila_budget_err_scan(vec_len(ks.pks)), boila_budget_state())
+    }
     let mut ki: i64 = 0
     while ki < vec_len(ks.pks) {
         let g = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
         s = g.s
         if g.found == 1 {
             vec_push(rows, boila_row_dec(g.row))
+            if vec_len(rows) > boila_budget_max_rows() {
+                return boila_fetch_fail(s, txn, boila_budget_err_rows(vec_len(rows)), boila_budget_state())
+            }
         }
         ki = ki + 1
     }
     return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
 }
-
-// --- DISTINCT: нова дедуплицирана копия по сериализиран ред ---
 
 fn boila_row_ser(row: Vec<BoilaVal>) -> bytes {
     let mut out = bytes_new(0)

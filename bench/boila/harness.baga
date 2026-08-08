@@ -1,0 +1,120 @@
+// harness.baga — P11: sequential ladder throughput (честно: sync server).
+// Стълба N=100 / 1k / 10k ops: point SELECT, INSERT, mix 80/20.
+// Не 10k concurrent TCP — gaps W1/H2; измерва single-thread ops/s.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn run_ladder(label: str, n: i64, srv0: BoilaServer, mode: i64, id_base: i64) -> BoilaServer !IO !Time {
+    let mut srv = srv0
+    let t0 = monotonic_us()?
+    let mut i: i64 = 0
+    let mut okc: i64 = 0
+    while i < n {
+        let mut sql = ""
+        if mode == 1 {
+            let id = i % 1000
+            sql = concat("SELECT id FROM t WHERE id = ", int_to_str(id))
+        } else {
+            if mode == 2 {
+                sql = concat(concat("INSERT INTO tw (id, v) VALUES (", int_to_str(id_base + i)), ", 'x')")
+            } else {
+                if (i % 5) == 0 {
+                    sql = concat(concat("INSERT INTO tw (id, v) VALUES (", int_to_str(id_base + i)), ", 'm')")
+                } else {
+                    let id = i % 1000
+                    sql = concat("SELECT id FROM t WHERE id = ", int_to_str(id))
+                }
+            }
+        }
+        let o = exec1(srv, sql)?
+        srv = o.srv
+        if o.ok == 1 {
+            okc = okc + 1
+        }
+        i = i + 1
+    }
+    let t1 = monotonic_us()?
+    let us = t1 - t0
+    let mut ns_op: i64 = 0
+    if n > 0 {
+        ns_op = (us * 1000) / n
+    }
+    let mut ops: i64 = 0
+    if us > 0 {
+        ops = (n * 1000000) / us
+    }
+    print(concat(concat(concat(concat(concat(concat(concat("  ", label), " n="), int_to_str(n)), " ok="), int_to_str(okc)), " ns/op="), int_to_str(ns_op)))
+    print(concat(concat("       ops/s≈", int_to_str(ops)), concat("  wall_us=", int_to_str(us))))
+    return srv
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila harness P11 (sequential ladder, sync path):")
+    let root = "/tmp/baga_boila_harness"
+    wipe_root(root)?
+    let mut srv = boila_server_open(root, 2, 256, 4, 8)?
+
+    let c = exec1(srv, "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c.srv
+    let c2 = exec1(srv, "CREATE TABLE tw (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c2.srv
+    // seed 1000 rows for point reads
+    let mut i: i64 = 0
+    while i < 1000 {
+        let sql = concat(concat(concat("INSERT INTO t (id, v) VALUES (", int_to_str(i)), ", 's')"), "")
+        let o = exec1(srv, sql)?
+        srv = o.srv
+        i = i + 1
+    }
+    print("  seed 1000 rows ok")
+
+    // ladder: 100, 1000, 10000
+    srv = run_ladder("point_read", 100, srv, 1, 0)?
+    srv = run_ladder("point_read", 1000, srv, 1, 0)?
+    srv = run_ladder("point_read", 10000, srv, 1, 0)?
+
+    srv = run_ladder("insert", 100, srv, 2, 100000)?
+    srv = run_ladder("insert", 1000, srv, 2, 200000)?
+    srv = run_ladder("insert", 10000, srv, 2, 300000)?
+
+    srv = run_ladder("mix80_20", 1000, srv, 3, 500000)?
+    srv = run_ladder("mix80_20", 10000, srv, 3, 600000)?
+
+    boila_server_close(srv)?
+    wipe_root(root)?
+    print("boila harness: done")
+    return 0
+}

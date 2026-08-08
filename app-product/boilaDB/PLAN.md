@@ -201,14 +201,18 @@
   без `.` qualifier в lexer (unqualified src/dst); DML sync на graph
   при INSERT след CREATE GRAPH — не (G2; rebuild via re-CREATE).
 
-## P11 — Втвърдяване и честни benchmarks при високо натоварване
-- `bench/harness.baga`: стълба 100 / 1k / 10k клиенти (четене, писане,
-  смес 80/20); сравнение с barabadb (client-server и при двамата),
-  SQLite и суров rocksbaga като таван.
-- Метрики: throughput, p50/p99, memory, fsync batch size, recovery time.
-- Chaos: kill -9 по време на compaction, пълен диск (simulated),
-  backpressure поведение при прелял pool, multi-shard commit под товар.
-- `gaps.md` — честен списък на ограниченията (моделът на rocksbaga).
+## P11 — Втвърдяване и честни benchmarks
+- Реализирано: `core/budget.baga` (max_scan/max_rows → 54000 на seq
+  scan); `DROP TABLE` (catalog + data wipe); `bench/boila/harness.baga`
+  sequential ladder 100/1k/10k (point/insert/mix80-20);
+  `tests/boila_p11_test` (drop, budget constants, restart durability).
+- **Измерено (harness-2026-08-09.md):** point 10k → **156k ops/s**
+  (6.4 µs); insert 10k → **524 ops/s**; mix 10k → **2.6k ops/s**.
+- **Честно не-направени:** 10k concurrent TCP (W1 sync server);
+  barabadb/SQLite head-to-head (външни процеси); kill -9 chaos automation;
+  bounded worker pool. Документирани в gaps P11.
+- Ревизии: ladder е single-thread SQL path, не client fan-out; budget
+  е key-count cap, не wall-clock deadline (няма concurrent enforcer).
 
 ## Решения спрямо v1 плана
 - BoilaQL отпада → PostgreSQL подмножество + PG wire (по-голям ecosystem).

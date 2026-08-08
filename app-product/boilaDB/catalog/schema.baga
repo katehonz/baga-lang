@@ -179,3 +179,57 @@ fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
     s = tg.s
     return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: id, name: name, cols: cols, pk_idx: e1.i, ixs: ixs, ttl_sec: tg.ttl_sec }, id: id }
 }
+
+// DROP TABLE (P11): маха catalog + data/index редове (best-effort scan).
+fn boila_cat_drop(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
+    let ct = boila_cat_by_name(s, name)?
+    s = ct.s
+    if ct.ok == 0 {
+        return ct
+    }
+    let t = ct.table
+    // data rows
+    let ks = boila_txn_keys_raw(s, t.id)?
+    s = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        s = boila_del(s, boila_cf_data(), t.id, vec_get(ks.pks, i))?
+        i = i + 1
+    }
+    // catalog
+    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
+    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_schema(t.id))?
+    if t.ttl_sec > 0 {
+        s = boila_ttl_put(s, t.id, 0)?
+    }
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t, id: t.id }
+}
+
+// keys without txn (direct storage) for DROP
+struct BoilaKeysRaw {
+    s: BoilaStore,
+    pks: Vec<bytes>
+}
+
+fn boila_txn_keys_raw(s: BoilaStore, table_id: i64) -> BoilaKeysRaw !IO !Time {
+    let mut pks: Vec<bytes> = vec_new()
+    let mut cursor: i64 = 0
+    let mut rounds: i64 = 0
+    let mut done = false
+    while done == false && rounds < 20000 {
+        let sc = boila_scan(s, boila_cf_data(), table_id, cursor, 256)?
+        let mut j: i64 = 0
+        while j < vec_len(sc.keys) {
+            let k = vec_get(sc.keys, j)
+            vec_push(pks, bytes_slice(k, 5, bytes_len(k)))
+            j = j + 1
+        }
+        cursor = sc.next
+        rounds = rounds + 1
+        s = sc.s
+        if cursor == 0 {
+            done = true
+        }
+    }
+    return BoilaKeysRaw { s: s, pks: pks }
+}

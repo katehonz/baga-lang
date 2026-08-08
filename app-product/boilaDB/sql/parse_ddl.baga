@@ -298,3 +298,19 @@ fn boila_parse_use(l: BoilaLex) -> BoilaParseDb {
     }
     return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
 }
+
+// DROP TABLE ident [;] (P11)
+fn boila_parse_drop_table(l: BoilaLex) -> BoilaParseDb {
+    let t = boila_pc_tok(l, 2)
+    if t.kind != tok_ident() {
+        return boila_pdb_fail("очаквах име на таблица след DROP TABLE", "42601")
+    }
+    let nx = boila_pc_tok(l, 3)
+    if nx.kind == tok_semi() && boila_pc_tok(l, 4).kind == tok_eof() {
+        return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+    }
+    if nx.kind != tok_eof() {
+        return boila_pdb_fail(concat("неочакван токен '", concat(nx.txt, "' след DROP TABLE")), "0A000")
+    }
+    return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+}

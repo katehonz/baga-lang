@@ -11,9 +11,9 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 
 ## Статус
 
-**P10 (graph)** — `CREATE GRAPH`, `WITH RECURSIVE` BFS/DFS/Dijkstra,
-adjacency в `graph` CF, restart-персистентно.
-Предишно: **P9 (ts)**; **P8 (vector)**; **P7–P0**.
+**P11 (втвърдяване)** — query budget, `DROP TABLE`, sequential harness
+(point 156k ops/s, insert 524 ops/s). **P0–P10** ядро + модали готови.
+Sync server: без 10k concurrent (gaps W1).
 
 ## Пускане
 

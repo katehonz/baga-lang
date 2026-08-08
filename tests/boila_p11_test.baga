@@ -1,0 +1,101 @@
+// boila_p11_test.baga — P11: DROP TABLE, query budget, restart durability.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/core/budget.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_p11_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_p11_test"
+    wipe_root(root)?
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+
+    // DROP TABLE
+    let c1 = exec1(srv, "CREATE TABLE d (id BIGINT, PRIMARY KEY (id))")
+    srv = c1.srv
+    let i1 = exec1(srv, "INSERT INTO d (id) VALUES (1), (2), (3)")
+    srv = i1.srv
+    check(fails, "seed", i1.ok == 1)
+    let dr = exec1(srv, "DROP TABLE d")
+    srv = dr.srv
+    check(fails, "drop_table", dr.ok == 1 && dr.kind == 18)
+    let q1 = exec1(srv, "SELECT id FROM d WHERE id = 1")
+    srv = q1.srv
+    check(fails, "drop_gone", q1.ok == 0 && q1.state == "42P01")
+    let dr2 = exec1(srv, "DROP TABLE d")
+    srv = dr2.srv
+    check(fails, "drop_missing", dr2.ok == 0 && dr2.state == "42P01")
+
+    // recreate ok
+    let c2 = exec1(srv, "CREATE TABLE d (id BIGINT, v TEXT, PRIMARY KEY (id))")
+    srv = c2.srv
+    check(fails, "recreate", c2.ok == 1)
+
+    // budget constants present
+    check(fails, "budget_scan_pos", boila_budget_max_scan() > 0)
+    check(fails, "budget_rows_pos", boila_budget_max_rows() > 0)
+
+    // durability: write, close, reopen, read
+    let i2 = exec1(srv, "INSERT INTO d (id, v) VALUES (10, 'persist')")
+    srv = i2.srv
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let q2 = exec1(srv2, "SELECT id FROM d WHERE id = 10")
+    srv2 = q2.srv
+    check(fails, "restart_durability", q2.ok == 1 && vec_len(q2.res.rows) == 1)
+
+    // DROP after restart
+    let dr3 = exec1(srv2, "DROP TABLE d")
+    srv2 = dr3.srv
+    check(fails, "drop_after_restart", dr3.ok == 1)
+
+    boila_server_close(srv2)?
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_p11_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_p11_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}
