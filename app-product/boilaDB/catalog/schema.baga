@@ -1,0 +1,127 @@
+// schema.baga — каталог на таблиците в sys key-space-а.
+//
+// Ключове (cf=sys, table_id=1), pk е bytes:
+//   "n|<име>"        → row [id]
+//   "s|<id ord enc>" → row [id, pk_idx, (col_name, col_typ)*]
+//   "m|next_id"      → row [next_id]
+//
+// Персистентен е (същият WAL като данните) — рестарт не губи схеми.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../sql/ast.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaTable {
+    id: i64,
+    name: str,
+    cols: Vec<BoilaColDef>,
+    pk_idx: i64
+}
+
+struct BoilaCatRes {
+    s: BoilaStore,
+    ok: i64,
+    err: str,
+    state: str,
+    table: BoilaTable,
+    id: i64
+}
+
+fn boila_cat_empty_table() -> BoilaTable {
+    let cols: Vec<BoilaColDef> = vec_new()
+    return BoilaTable { id: 0, name: "", cols: cols, pk_idx: 0 - 1 }
+}
+
+fn boila_cat_pk_name(name: str) -> bytes {
+    return bytes_of_str(concat("n|", name))
+}
+
+fn boila_cat_pk_schema(id: i64) -> bytes {
+    return bytes_concat(bytes_of_str("s|"), boila_enc_i64_ord(id))
+}
+
+fn boila_cat_pk_meta() -> bytes {
+    return bytes_of_str("m|next_id")
+}
+
+fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
+    // дубликат?
+    let dn = boila_get(s, boila_cf_sys(), 1, boila_cat_pk_name(cr.table))?
+    s = dn.s
+    if dn.found == 1 {
+        return BoilaCatRes { s: s, ok: 0, err: concat("таблица '", concat(cr.table, "' вече съществува")), state: "42P07", table: boila_cat_empty_table(), id: 0 }
+    }
+    // следващо id
+    let dm = boila_get(s, boila_cf_sys(), 1, boila_cat_pk_meta())?
+    s = dm.s
+    let mut next: i64 = 1
+    if dm.found == 1 {
+        let mrow = boila_row_dec(dm.val)
+        if vec_len(mrow) > 0 {
+            let z = vec_get(mrow, 0)
+            next = z.i
+        }
+    }
+    // схема: [id, pk_idx, (name, typ)*]
+    let sch: Vec<BoilaVal> = vec_new()
+    vec_push(sch, boila_val_i64(next))
+    vec_push(sch, boila_val_i64(cr.pk_idx))
+    let mut i: i64 = 0
+    while i < vec_len(cr.cols) {
+        let cd = vec_get(cr.cols, i)
+        vec_push(sch, boila_val_str(cd.name))
+        vec_push(sch, boila_val_i64(cd.typ))
+        i = i + 1
+    }
+    s = boila_put(s, boila_cf_sys(), 1, boila_cat_pk_schema(next), boila_row_enc(sch))?
+    // име → id
+    let idrow: Vec<BoilaVal> = vec_new()
+    vec_push(idrow, boila_val_i64(next))
+    s = boila_put(s, boila_cf_sys(), 1, boila_cat_pk_name(cr.table), boila_row_enc(idrow))?
+    // meta
+    let mrow2: Vec<BoilaVal> = vec_new()
+    vec_push(mrow2, boila_val_i64(next + 1))
+    s = boila_put(s, boila_cf_sys(), 1, boila_cat_pk_meta(), boila_row_enc(mrow2))?
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: next, name: cr.table, cols: cr.cols, pk_idx: cr.pk_idx }, id: next }
+}
+
+fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
+    let dn = boila_get(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
+    s = dn.s
+    if dn.found == 0 {
+        return BoilaCatRes { s: s, ok: 0, err: concat("таблица '", concat(name, "' не съществува")), state: "42P01", table: boila_cat_empty_table(), id: 0 }
+    }
+    let idrow = boila_row_dec(dn.val)
+    if vec_len(idrow) == 0 {
+        return BoilaCatRes { s: s, ok: 0, err: "повреден каталог (name row)", state: "XX000", table: boila_cat_empty_table(), id: 0 }
+    }
+    let z = vec_get(idrow, 0)
+    let id = z.i
+    let ds = boila_get(s, boila_cf_sys(), 1, boila_cat_pk_schema(id))?
+    s = ds.s
+    if ds.found == 0 {
+        return BoilaCatRes { s: s, ok: 0, err: "повреден каталог (липсва schema row)", state: "XX000", table: boila_cat_empty_table(), id: 0 }
+    }
+    let sch = boila_row_dec(ds.val)
+    if vec_len(sch) < 2 {
+        return BoilaCatRes { s: s, ok: 0, err: "повреден каталог (schema row)", state: "XX000", table: boila_cat_empty_table(), id: 0 }
+    }
+    let e0 = vec_get(sch, 0)
+    let e1 = vec_get(sch, 1)
+    if e0.i != id {
+        return BoilaCatRes { s: s, ok: 0, err: "повреден каталог (id mismatch)", state: "XX000", table: boila_cat_empty_table(), id: 0 }
+    }
+    let cols: Vec<BoilaColDef> = vec_new()
+    let mut i: i64 = 2
+    while i + 1 < vec_len(sch) {
+        let nm = vec_get(sch, i)
+        let tp = vec_get(sch, i + 1)
+        vec_push(cols, boila_coldef(str_of_bytes(nm.b), tp.i))
+        i = i + 2
+    }
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: id, name: name, cols: cols, pk_idx: e1.i }, id: id }
+}

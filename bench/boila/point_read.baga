@@ -1,0 +1,113 @@
+// point_read.baga — P1 гейт: SELECT point lookup през SQL слоя срещу
+// суров rocksbaga GET. Мишена от PLAN.md: ratio ≤ 1.25×.
+//
+// Измерва пълния път (lex → parse → catalog → exec → storage) срещу
+// lsm_cluster_get_kb със същия ключ — честният прочит на гейта.
+// Резултатът се печата; вграден в bench резултатите на фазата.
+
+import "boilaDB/storage/shards.baga"
+import "boilaDB/sql/exec_sql.baga"
+import "boilaDB/core/codec.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/core/row.baga"
+import "rocksbaga/db/shard.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
+
+fn wipe_shards(dir: str, n: i64) -> i64 !IO {
+    let mut i: i64 = 0
+    while i < n {
+        let mut p = dir
+        if n > 1 {
+            p = concat(concat(dir, ".s"), int_to_str(i))
+        }
+        unlink(concat(p, ".wal"))?
+        unlink(concat(p, ".manifest"))?
+        unlink(concat(p, ".manifest.log"))?
+        let mut g: i64 = 1
+        while g <= 30 {
+            unlink(concat(concat(p, ".sst."), int_to_str(g)))?
+            unlink(concat(concat(p, ".bloom."), int_to_str(g)))?
+            g = g + 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time {
+    let dir = "/tmp/baga_boila_bench_point"
+    wipe_shards(dir, 4)?
+    let n: i64 = 20000
+    let mut s = boila_open(dir, 4, 10000, 100)?
+
+    // CREATE TABLE + seed (без SQL DML — P2)
+    let cr = boila_exec_sql(s, "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    s = cr.s
+    if cr.ok == 0 {
+        print(concat("bench: CREATE се провали: ", cr.err))
+        return 1
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let row: Vec<BoilaVal> = vec_new()
+        vec_push(row, boila_val_i64(i))
+        vec_push(row, boila_val_str(concat("v", int_to_str(i))))
+        s = boila_put(s, boila_cf_data(), cr.id, boila_val_enc(boila_val_i64(i)), boila_row_enc(row))?
+        i = i + 1
+    }
+    s = boila_flush(s)?
+
+    // --- суров rocksbaga GET (същият ключов формат) ---
+    let t0 = monotonic_us()?
+    let mut found_raw: i64 = 0
+    i = 0
+    let mut c = s.c
+    while i < n {
+        let key = boila_key_row(boila_cf_data(), cr.id, boila_val_enc(boila_val_i64(i)))
+        let g = lsm_cluster_get_kb(c, key)?
+        c = g.c
+        found_raw = found_raw + g.found
+        i = i + 1
+    }
+    let t1 = monotonic_us()?
+    s = BoilaStore { c: c, ok: c.ok }
+
+    // --- SQL слой: пълен lex→parse→catalog→exec ---
+    let t2 = monotonic_us()?
+    let mut found_sql: i64 = 0
+    i = 0
+    while i < n {
+        let q = boila_exec_sql(s, concat("SELECT * FROM t WHERE id = ", int_to_str(i)))?
+        s = q.s
+        if q.ok == 1 {
+            found_sql = found_sql + vec_len(q.res.rows)
+        }
+        i = i + 1
+    }
+    let t3 = monotonic_us()?
+
+    let raw_us = t1 - t0
+    let sql_us = t3 - t2
+    let raw_ns = (raw_us * 1000) / n
+    let sql_ns = (sql_us * 1000) / n
+    // ratio × 100 (i64, без f64 аритметика)
+    let mut ratio100: i64 = 0
+    if raw_us > 0 {
+        ratio100 = (sql_us * 100) / raw_us
+    }
+    print(concat("raw rocksbaga GET: ", concat(int_to_str(raw_ns), " ns/op")))
+    print(concat("SQL point SELECT:  ", concat(int_to_str(sql_ns), " ns/op")))
+    print(concat("found: raw=", concat(int_to_str(found_raw), concat(" sql=", int_to_str(found_sql)))))
+    let mut verdict = "FAIL (мишена ≤ 125)"
+    if ratio100 <= 125 && found_raw == n && found_sql == n {
+        verdict = "OK (≤ 1.25×)"
+    }
+    print(concat(concat("ratio: ", int_to_str(ratio100)), concat("% — ", verdict)))
+
+    boila_close(s)?
+    wipe_shards(dir, 4)?
+    return 0
+}

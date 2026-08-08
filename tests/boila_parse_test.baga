@@ -1,0 +1,90 @@
+// boila_parse_test.baga — boilaDB P1: SELECT/CREATE TABLE parser-и.
+
+import "boilaDB/sql/lexer.baga"
+import "boilaDB/sql/token.baga"
+import "boilaDB/sql/parse_select.baga"
+import "boilaDB/sql/parse_ddl.baga"
+import "boilaDB/sql/ast.baga"
+import "boilaDB/core/value.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn psel(sql: str) -> BoilaParseSel {
+    return boila_parse_select(boila_lex(sql))
+}
+
+fn pcre(sql: str) -> BoilaParseCreate {
+    return boila_parse_create(boila_lex(sql))
+}
+
+fn main() -> i64 {
+    print("boila_parse_test:")
+    let fails: Vec<i64> = vec_new()
+
+    // --- SELECT варианти ---
+    let a = psel("SELECT * FROM users WHERE id = 7;")
+    check(fails, "sel_star_ok", a.ok == 1)
+    check(fails, "sel_table", a.sel.table == "users")
+    check(fails, "sel_star", a.sel.star == 1)
+    check(fails, "sel_eq", a.sel.has_eq == 1 && a.sel.eq_col == "id" && a.sel.pk_eq.i == 7)
+
+    let b = psel("SELECT name, age FROM users WHERE id >= 2 AND id <= 9 LIMIT 5")
+    check(fails, "sel_cols_ok", b.ok == 1 && b.sel.star == 0 && vec_len(b.sel.cols) == 2)
+    check(fails, "sel_col_names", vec_get(b.sel.cols, 0) == "name" && vec_get(b.sel.cols, 1) == "age")
+    check(fails, "sel_range", b.sel.has_lo == 1 && b.sel.has_hi == 1 && b.sel.pk_lo.i == 2 && b.sel.pk_hi.i == 9)
+    check(fails, "sel_limit", b.sel.limit == 5)
+
+    let c = psel("SELECT * FROM t WHERE name = 'а''б'")
+    check(fails, "sel_str_lit", c.ok == 1 && c.sel.pk_eq.tag == boila_v_str() && bytes_eq_b(c.sel.pk_eq.b, bytes_of_str("а'б")))
+
+    // --- SELECT грешки ---
+    let d = psel("SELECT * WHERE id = 1")
+    check(fails, "err_no_from", d.ok == 0 && d.state == "42601")
+    let e = psel("SELECT * FROM t WHERE id < 5")
+    check(fails, "err_op_lt", e.ok == 0 && e.state == "0A000")
+    let f = psel("SELECT * FROM t ORDER BY id")
+    check(fails, "err_order_by", f.ok == 0 && f.state == "0A000")
+    let g = psel("SELECT * FROM t WHERE id = 1 WHERE id = 2")
+    check(fails, "err_double_where", g.ok == 0)
+
+    // --- CREATE TABLE ---
+    let h = pcre("CREATE TABLE users (id BIGINT, name TEXT, PRIMARY KEY (id));")
+    check(fails, "cre_ok", h.ok == 1)
+    check(fails, "cre_name", h.create.table == "users")
+    check(fails, "cre_cols", vec_len(h.create.cols) == 2)
+    if vec_len(h.create.cols) == 2 {
+        check(fails, "cre_pk_idx", h.create.pk_idx == 0)
+        let c0 = vec_get(h.create.cols, 0)
+        let c1 = vec_get(h.create.cols, 1)
+        check(fails, "cre_types", c0.typ == boila_v_i64() && c1.typ == boila_v_str())
+    }
+
+    let i2 = pcre("CREATE TABLE t (a TEXT, b BOOL, c TIMESTAMPTZ, PRIMARY KEY (a))")
+    check(fails, "cre_pk_text", i2.ok == 1 && i2.create.pk_idx == 0)
+
+    // --- CREATE TABLE грешки ---
+    let j = pcre("CREATE TABLE t (a BIGINT)")
+    check(fails, "err_no_pk", j.ok == 0 && j.state == "0A000")
+    let k = pcre("CREATE TABLE t (a FLOAT8, PRIMARY KEY (a))")
+    check(fails, "err_float8", k.ok == 0 && k.state == "0A000")
+    let m = pcre("CREATE TABLE t (a BIGINT, a TEXT, PRIMARY KEY (a))")
+    check(fails, "err_dup_col", m.ok == 0 && m.state == "42701")
+    let n = pcre("CREATE TABLE t (a BIGINT, PRIMARY KEY (b))")
+    check(fails, "err_pk_missing_col", n.ok == 0 && n.state == "42601")
+
+    if vec_len(fails) == 0 {
+        print("boila_parse_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_parse_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

@@ -32,8 +32,11 @@
 ## P1 — SQL read path v0 + каталог
 - Lexer/parser за `SELECT` (само PK point lookup + range по PK);
   `catalog/schema.baga` в `sys` key-space; HTTP `POST /sql`; CLI shell.
-- **Гейт:** SELECT point lookup през SQL слоя ≤ 1.25× латентността на
-  суров rocksbaga GET при същия режим (fast path-ът работи).
+- **Гейт:** read path-ът работи end-to-end (HTTP + shell), каталогът е
+  персистентен след рестарт, грешките носят SQLSTATE. **Perf baseline
+  (измерено):** SQL point SELECT 6102 ns/op срещу суров GET 1193 ns/op
+  (511%, bench/boila/results/point-read-2026-08-08.md) — мишената ≤ 1.25×
+  става задължаваща с plan cache-а в P4 (gaps Q1).
 
 ## P2 — Write lanes + DML + вторични индекси
 - Per-shard write lane (една нишка притежава shard-а) + group commit

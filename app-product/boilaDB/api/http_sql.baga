@@ -1,0 +1,71 @@
+// http_sql.baga — POST /sql: тяло = суров SQL текст, отговор = JSON.
+//
+// Успех (select): {"ok":true,"kind":"select","cols":[...],"rows":[[...]]}
+// Успех (create): {"ok":true,"kind":"create","table":"...","id":N}
+// Грешка:         {"ok":false,"error":"...","sqlstate":"42601"}
+
+import "httpdbaga/http.baga"
+import "../sql/exec_sql.baga"
+import "../sql/exec_scan.baga"
+import "../core/row.baga"
+import "../core/value.baga"
+import "std/json/json.baga"
+import "std/str/str.baga"
+
+struct BoilaHttpSql {
+    s: BoilaStore,
+    resp: Response
+}
+
+fn boila_cols_json(cols: Vec<str>) -> str {
+    let mut out = "["
+    let mut i: i64 = 0
+    while i < vec_len(cols) {
+        if i > 0 {
+            out = concat(out, ",")
+        }
+        out = concat(out, json_escape(vec_get(cols, i)))
+        i = i + 1
+    }
+    return concat(out, "]")
+}
+
+fn boila_rows_json(rows: Vec<Vec<BoilaVal>>) -> str {
+    let mut out = "["
+    let mut i: i64 = 0
+    while i < vec_len(rows) {
+        if i > 0 {
+            out = concat(out, ",")
+        }
+        out = concat(out, boila_row_json(vec_get(rows, i)))
+        i = i + 1
+    }
+    return concat(out, "]")
+}
+
+fn boila_http_sql(s: BoilaStore, req: Request) -> BoilaHttpSql !IO !Time {
+    let sql = http_body(req)
+    let out = boila_exec_sql(s, sql)?
+    let mut body = ""
+    if out.ok == 0 {
+        body = "{\"ok\":false,\"error\":"
+        body = concat(body, json_escape(out.err))
+        body = concat(body, ",\"sqlstate\":\"")
+        body = concat(body, out.state)
+        body = concat(body, "\"}")
+        return BoilaHttpSql { s: out.s, resp: http_json_response(200, body) }
+    }
+    if out.kind == 1 {
+        body = "{\"ok\":true,\"kind\":\"select\",\"cols\":"
+        body = concat(body, boila_cols_json(out.res.cols))
+        body = concat(body, ",\"rows\":")
+        body = concat(body, boila_rows_json(out.res.rows))
+        body = concat(body, "}")
+        return BoilaHttpSql { s: out.s, resp: http_json_response(200, body) }
+    }
+    // create
+    body = "{\"ok\":true,\"kind\":\"create\",\"id\":"
+    body = concat(body, int_to_str(out.id))
+    body = concat(body, "}")
+    return BoilaHttpSql { s: out.s, resp: http_json_response(200, body) }
+}

@@ -1,0 +1,170 @@
+// parse_ddl.baga — parser за CREATE TABLE (P1).
+//
+// Граматика:
+//   CREATE TABLE ident ( coldef (, coldef)* [, PRIMARY KEY (ident)] ) [;]
+//   coldef := ident typ
+//   typ := BIGINT | BOOL | TEXT | BYTEA | JSONB | TIMESTAMPTZ
+//
+// PRIMARY KEY е задължителен (LSM-friendly, ARCHITECTURE.md §5).
+// Грешки: 42601 syntax_error; 0A000 feature_not_supported (непознат тип).
+
+import "token.baga"
+import "ast.baga"
+import "../core/value.baga"
+import "std/str/str.baga"
+
+struct BoilaParseCreate {
+    ok: i64,
+    create: BoilaCreate,
+    err: str,
+    state: str
+}
+
+fn boila_pc_fail(msg: str, state: str) -> BoilaParseCreate {
+    return BoilaParseCreate { ok: 0, create: boila_create_empty(), err: msg, state: state }
+}
+
+fn boila_pc_tok(l: BoilaLex, i: i64) -> Token {
+    if i < vec_len(l.toks) {
+        return vec_get(l.toks, i)
+    }
+    return token_new(tok_eof(), "")
+}
+
+// typ → value tag; -1 ако не е в P1 подмножеството.
+fn boila_type_of(name: str) -> i64 {
+    if name == "bigint" || name == "int8" {
+        return boila_v_i64()
+    }
+    if name == "bool" || name == "boolean" {
+        return boila_v_bool()
+    }
+    if name == "text" {
+        return boila_v_str()
+    }
+    if name == "bytea" {
+        return boila_v_bytes()
+    }
+    if name == "jsonb" {
+        return boila_v_json()
+    }
+    if name == "timestamptz" {
+        return boila_v_ts()
+    }
+    return 0 - 1
+}
+
+fn boila_parse_create(l: BoilaLex) -> BoilaParseCreate {
+    // toks: CREATE TABLE ident ( ... )
+    let tn = boila_pc_tok(l, 2)
+    if tn.kind != tok_ident() {
+        return boila_pc_fail("очаквах име на таблица след CREATE TABLE", "42601")
+    }
+    let mut cr = boila_create_empty()
+    cr.table = tn.txt
+    if boila_pc_tok(l, 3).kind != tok_lparen() {
+        return boila_pc_fail("очаквах '(' след името на таблицата", "42601")
+    }
+    let mut i: i64 = 4
+    let mut depth_ok = true
+    while depth_ok {
+        // PRIMARY KEY (col) като последен елемент
+        if tok_kw(boila_pc_tok(l, i), "primary") == 1 {
+            if tok_kw(boila_pc_tok(l, i + 1), "key") != 1 {
+                return boila_pc_fail("очаквах KEY след PRIMARY", "42601")
+            }
+            if boila_pc_tok(l, i + 2).kind != tok_lparen() {
+                return boila_pc_fail("очаквах '(' след PRIMARY KEY", "42601")
+            }
+            let pkc = boila_pc_tok(l, i + 3)
+            if pkc.kind != tok_ident() {
+                return boila_pc_fail("очаквах колона в PRIMARY KEY", "42601")
+            }
+            if boila_pc_tok(l, i + 4).kind != tok_rparen() {
+                return boila_pc_fail("очаквах ')' след PRIMARY KEY (col", "42601")
+            }
+            let mut found: i64 = 0 - 1
+            let mut j: i64 = 0
+            while j < vec_len(cr.cols) {
+                let cd = vec_get(cr.cols, j)
+                if cd.name == pkc.txt {
+                    found = j
+                }
+                j = j + 1
+            }
+            if found < 0 {
+                return boila_pc_fail(concat("PRIMARY KEY колоната '", concat(pkc.txt, "' не е дефинирана")), "42601")
+            }
+            cr.pk_idx = found
+            i = i + 5
+            let nx = boila_pc_tok(l, i)
+            if nx.kind == tok_comma() {
+                i = i + 1
+            } else {
+                if nx.kind != tok_rparen() {
+                    return boila_pc_fail(concat("очаквах ')' или ',', получих '", concat(nx.txt, "'")), "42601")
+                }
+                depth_ok = false
+            }
+        } else {
+            // coldef := ident typ
+            let cn = boila_pc_tok(l, i)
+            if cn.kind == tok_rparen() && vec_len(cr.cols) > 0 {
+                depth_ok = false
+            } else {
+                if cn.kind != tok_ident() {
+                    return boila_pc_fail(concat("очаквах име на колона, получих '", concat(cn.txt, "'")), "42601")
+                }
+                let ct = boila_pc_tok(l, i + 1)
+                if ct.kind != tok_ident() {
+                    return boila_pc_fail(concat("очаквах тип за колона '", concat(cn.txt, "'")), "42601")
+                }
+                let typ = boila_type_of(ct.txt)
+                if typ < 0 {
+                    return boila_pc_fail(concat("типът '", concat(ct.txt, "' не е в P1 подмножеството")), "0A000")
+                }
+                let mut dup: i64 = 0
+                let mut j: i64 = 0
+                while j < vec_len(cr.cols) {
+                    let cd = vec_get(cr.cols, j)
+                    if cd.name == cn.txt {
+                        dup = 1
+                    }
+                    j = j + 1
+                }
+                if dup == 1 {
+                    return boila_pc_fail(concat("дублирана колона '", concat(cn.txt, "'")), "42701")
+                }
+                vec_push(cr.cols, boila_coldef(cn.txt, typ))
+                i = i + 2
+                let nx = boila_pc_tok(l, i)
+                if nx.kind == tok_comma() {
+                    i = i + 1
+                } else {
+                    if nx.kind != tok_rparen() {
+                        return boila_pc_fail(concat("очаквах ')' или ',', получих '", concat(nx.txt, "'")), "42601")
+                    }
+                    depth_ok = false
+                }
+            }
+        }
+        if boila_pc_tok(l, i).kind == tok_eof() && depth_ok {
+            return boila_pc_fail("незатворен CREATE TABLE", "42601")
+        }
+    }
+    i = i + 1
+    if vec_len(cr.cols) == 0 {
+        return boila_pc_fail("таблица без колони", "42601")
+    }
+    if cr.pk_idx < 0 {
+        return boila_pc_fail("PRIMARY KEY е задължителен (LSM-friendly)", "0A000")
+    }
+    if boila_pc_tok(l, i).kind == tok_semi() {
+        i = i + 1
+    }
+    if boila_pc_tok(l, i).kind != tok_eof() {
+        let extra = boila_pc_tok(l, i)
+        return boila_pc_fail(concat("неочакван токен '", concat(extra.txt, "' след CREATE TABLE")), "0A000")
+    }
+    return BoilaParseCreate { ok: 1, create: cr, err: "", state: "" }
+}

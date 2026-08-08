@@ -1,0 +1,75 @@
+// boila_lex_test.baga — boilaDB P1: SQL lexer (sql/lexer.baga).
+
+import "boilaDB/sql/lexer.baga"
+import "boilaDB/sql/token.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn tk(l: BoilaLex, i: i64) -> Token {
+    if i < vec_len(l.toks) {
+        return vec_get(l.toks, i)
+    }
+    return token_new(tok_eof(), "?")
+}
+
+fn main() -> i64 {
+    print("boila_lex_test:")
+    let fails: Vec<i64> = vec_new()
+
+    // --- пълен SELECT: ключови думи, оператори, отрицателно число,
+    //     кирилица в стринг, '' escape ---
+    let l = boila_lex("SELECT * FROM users WHERE id >= -5 AND name = 'Иван''ов' LIMIT 10;")
+    check(fails, "no_err", l.err == "")
+    check(fails, "kw_lower", tk(l, 0).kind == tok_ident() && tk(l, 0).txt == "select")
+    check(fails, "star", tk(l, 1).kind == tok_star())
+    check(fails, "from", tk(l, 2).txt == "from")
+    check(fails, "table", tk(l, 3).kind == tok_ident() && tk(l, 3).txt == "users")
+    check(fails, "where", tk(l, 4).txt == "where")
+    check(fails, "col", tk(l, 5).txt == "id")
+    check(fails, "op_ge", tk(l, 6).kind == tok_op() && tk(l, 6).txt == ">=")
+    check(fails, "neg_num", tk(l, 7).kind == tok_num() && tk(l, 7).txt == "-5")
+    check(fails, "and", tk(l, 8).txt == "and")
+    check(fails, "op_eq", tk(l, 10).txt == "=")
+    check(fails, "str_bg_escape", tk(l, 11).kind == tok_str() && tk(l, 11).txt == "Иван'ов")
+    check(fails, "limit_kw", tk(l, 12).txt == "limit")
+    check(fails, "limit_num", tk(l, 13).kind == tok_num() && tk(l, 13).txt == "10")
+    check(fails, "semi", tk(l, 14).kind == tok_semi())
+    check(fails, "eof", tk(l, 15).kind == tok_eof())
+
+    // --- case folding на идентификатори ---
+    let l2 = boila_lex("Select NAME From T")
+    check(fails, "fold_select", tk(l2, 0).txt == "select")
+    check(fails, "fold_ident", tk(l2, 1).kind == tok_ident() && tk(l2, 1).txt == "name")
+    check(fails, "fold_from", tk(l2, 2).txt == "from")
+    check(fails, "fold_table", tk(l2, 3).txt == "t")
+
+    // --- всички оператори ---
+    let l3 = boila_lex("= < > <= >= <> ( ) ,")
+    check(fails, "ops", tk(l3, 0).txt == "=" && tk(l3, 1).txt == "<" && tk(l3, 2).txt == ">" && tk(l3, 3).txt == "<=" && tk(l3, 4).txt == ">=" && tk(l3, 5).txt == "<>")
+    check(fails, "punct", tk(l3, 6).kind == tok_lparen() && tk(l3, 7).kind == tok_rparen() && tk(l3, 8).kind == tok_comma())
+
+    // --- грешки ---
+    let l4 = boila_lex("SELECT 'незатворен")
+    check(fails, "unterminated_str", l4.err != "")
+    let l5 = boila_lex("SELECT @")
+    check(fails, "bad_char", l5.err != "")
+
+    // --- UTF-8 стринг остава byte-точен (без chr() ре-енкодиране) ---
+    let l6 = boila_lex("'абв'")
+    check(fails, "utf8_exact", tk(l6, 0).kind == tok_str() && tk(l6, 0).txt == "абв")
+
+    if vec_len(fails) == 0 {
+        print("boila_lex_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_lex_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

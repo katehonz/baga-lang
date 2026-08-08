@@ -4,6 +4,24 @@
 V = value/codec, K = key/scan, S = storage, M = metrics/monitoring,
 H = HTTP/API, Q = SQL (от P1).
 
+## Открити при P1
+
+- **Q1 — SQL слоят е 5.1× по-бавен от суров GET за point заявки.**
+  Измерено (bench/boila/results/point-read-2026-08-08.md): 6102 ns/op
+  срещу 1193 ns/op (511%). Разбивка: lex+parse+catalog GET ≈ 4.9 µs
+  върху 1.2 µs storage. Планът на ARCHITECTURE §4 вече предвижда
+  plan cache + PK fast path; гейтът ≤ 1.25× от PLAN.md се премества
+  като задължаващ при P4 (plan cache) / P5 (prepared statements).
+  Числото от P1 е baseline-ът, срещу който се сравнява всяко подобрение.
+- **K3 — range scan-ът е scan-всичко-и-филтрирай.** rocksbaga SCAN е
+  hash-подреден (не сортиран), затова `WHERE pk >= a AND pk <= b` в P1
+  обхожда цялата таблица. Резултатите са коректни, но не са подредени и
+  няма early-stop. Истински сортиран range scan идва с P4 planner-а.
+- **H2 — serve е sync (една връзка в даден момент).** SQL пътят мутира
+  store-а (каталог), struct-по-стойност изисква един собственик; P2
+  въвежда shard-owner нишки + канали, P5 — bounded pool. /health и
+  /metrics са леки и sync режимът не ги засяга практически.
+
 ## Открити при P0
 
 - **V1 — f64 няма sort-order кодировка.** Езикът още няма f64→i64

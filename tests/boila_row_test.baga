@@ -1,0 +1,70 @@
+// boila_row_test.baga — boilaDB P1: row codec + JSON литерали (core/row.baga).
+
+import "boilaDB/core/row.baga"
+import "boilaDB/core/value.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn main() -> i64 {
+    print("boila_row_test:")
+    let fails: Vec<i64> = vec_new()
+
+    // --- roundtrip на пълен ред (всички P0 типове) ---
+    let row: Vec<BoilaVal> = vec_new()
+    vec_push(row, boila_val_i64(0 - 7))
+    vec_push(row, boila_val_str("здравей, 'свят'"))
+    vec_push(row, boila_val_null())
+    vec_push(row, boila_val_bool(1))
+    vec_push(row, boila_val_ts(1754582400000000))
+    let bb = bytes_new(3)
+    bytes_set(bb, 0, 0)
+    bytes_set(bb, 1, 200)
+    bytes_set(bb, 2, 255)
+    vec_push(row, boila_val_bytes(bb))
+    vec_push(row, boila_val_json(bytes_of_str("{\"k\":[1,2]}")))
+
+    let enc = boila_row_enc(row)
+    let back = boila_row_dec(enc)
+    check(fails, "row_len", vec_len(back) == 7)
+    if vec_len(back) == 7 {
+        check(fails, "rt_i64", boila_val_cmp(vec_get(back, 0), boila_val_i64(0 - 7)) == 0)
+        check(fails, "rt_str_bg", boila_val_cmp(vec_get(back, 1), boila_val_str("здравей, 'свят'")) == 0)
+        check(fails, "rt_null", vec_get(back, 2).tag == boila_v_null())
+        check(fails, "rt_bool", vec_get(back, 3).i == 1)
+        check(fails, "rt_ts", vec_get(back, 4).i == 1754582400000000)
+        check(fails, "rt_bytes", boila_bytes_cmp(vec_get(back, 5).b, bb) == 0)
+        check(fails, "rt_json", str_of_bytes(vec_get(back, 6).b) == "{\"k\":[1,2]}")
+    }
+
+    // --- празен ред ---
+    let empty: Vec<BoilaVal> = vec_new()
+    let e2 = boila_row_dec(boila_row_enc(empty))
+    check(fails, "empty_row", vec_len(e2) == 0)
+
+    // --- JSON литерали ---
+    check(fails, "json_null", boila_val_json_lit(boila_val_null()) == "null")
+    check(fails, "json_true", boila_val_json_lit(boila_val_bool(1)) == "true")
+    check(fails, "json_false", boila_val_json_lit(boila_val_bool(0)) == "false")
+    check(fails, "json_i64", boila_val_json_lit(boila_val_i64(0 - 42)) == "-42")
+    check(fails, "json_str_quote", boila_val_json_lit(boila_val_str("a\"b")) == "\"a\\\"b\"")
+    check(fails, "json_str_bg", boila_val_json_lit(boila_val_str("бг")) == "\"бг\"")
+    check(fails, "json_bytes_hex", boila_val_json_lit(boila_val_bytes(bb)) == "\"\\x00c8ff\"")
+    check(fails, "json_raw_passthrough", boila_val_json_lit(boila_val_json(bytes_of_str("[1,2]"))) == "[1,2]")
+    check(fails, "row_json", boila_row_json(back) != "")
+
+    if vec_len(fails) == 0 {
+        print("boila_row_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_row_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

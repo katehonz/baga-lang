@@ -1,0 +1,66 @@
+// exec_sql.baga — dispatch: SQL текст → лекс → parse → catalog → exec.
+// P1: SELECT и CREATE TABLE. Всичко друго → 0A000 feature_not_supported.
+
+import "lexer.baga"
+import "token.baga"
+import "parse_select.baga"
+import "parse_ddl.baga"
+import "exec_scan.baga"
+import "../catalog/schema.baga"
+import "../storage/shards.baga"
+import "std/str/str.baga"
+
+struct BoilaSqlOut {
+    s: BoilaStore,
+    ok: i64,
+    err: str,
+    state: str,
+    kind: i64,          // 1 = select, 2 = create
+    res: BoilaResult,
+    id: i64
+}
+
+fn boila_sql_fail(s: BoilaStore, msg: str, state: str) -> BoilaSqlOut {
+    return BoilaSqlOut { s: s, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
+}
+
+fn boila_exec_sql(s: BoilaStore, sql: str) -> BoilaSqlOut !IO !Time {
+    let lx = boila_lex(sql)
+    if lx.err != "" {
+        return boila_sql_fail(s, lx.err, "42601")
+    }
+    let t0 = vec_get(lx.toks, 0)
+    if t0.kind == tok_eof() {
+        return boila_sql_fail(s, "празна заявка", "42601")
+    }
+    if tok_kw(t0, "select") == 1 {
+        let ps = boila_parse_select(lx)
+        if ps.ok == 0 {
+            return boila_sql_fail(s, ps.err, ps.state)
+        }
+        let ct = boila_cat_by_name(s, ps.sel.table)?
+        s = ct.s
+        if ct.ok == 0 {
+            return boila_sql_fail(s, ct.err, ct.state)
+        }
+        let ex = boila_exec_select(s, ct.table, ps.sel)?
+        return BoilaSqlOut { s: ex.s, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
+    }
+    if tok_kw(t0, "create") == 1 {
+        let t1 = vec_get(lx.toks, 1)
+        if tok_kw(t1, "table") != 1 {
+            return boila_sql_fail(s, "в P1 се поддържа само CREATE TABLE", "0A000")
+        }
+        let pc = boila_parse_create(lx)
+        if pc.ok == 0 {
+            return boila_sql_fail(s, pc.err, pc.state)
+        }
+        let cr = boila_cat_create(s, pc.create)?
+        s = cr.s
+        if cr.ok == 0 {
+            return boila_sql_fail(s, cr.err, cr.state)
+        }
+        return BoilaSqlOut { s: s, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
+    }
+    return boila_sql_fail(s, concat("неподдържана конструкция '", concat(t0.txt, "' (P1: SELECT, CREATE TABLE)")), "0A000")
+}

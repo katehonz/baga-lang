@@ -1,0 +1,33 @@
+// token.baga — токен типове за BoilaSQL lexer-а.
+
+struct Token {
+    kind: i64,
+    txt: str
+}
+
+fn tok_eof() -> i64 { return 0 }
+fn tok_ident() -> i64 { return 1 }    // идентификатори и ключови думи (lowercase)
+fn tok_num() -> i64 { return 2 }
+fn tok_str() -> i64 { return 3 }      // single-quoted, '' escape
+fn tok_op() -> i64 { return 4 }       // = < > <= >= <>
+fn tok_lparen() -> i64 { return 5 }
+fn tok_rparen() -> i64 { return 6 }
+fn tok_comma() -> i64 { return 7 }
+fn tok_star() -> i64 { return 8 }
+fn tok_semi() -> i64 { return 9 }
+
+fn token_new(kind: i64, txt: str) -> Token {
+    return Token { kind: kind, txt: txt }
+}
+
+// Дали не-quoted идентификатор съвпада с ключова дума (case-insensitive —
+// lexer-ът вече е fold-нал до lowercase).
+fn tok_kw(t: Token, kw_lower: str) -> i64 {
+    if t.kind != tok_ident() {
+        return 0
+    }
+    if t.txt == kw_lower {
+        return 1
+    }
+    return 0
+}

@@ -1,0 +1,90 @@
+// row.baga — редови codec: Vec<BoilaVal> <-> bytes + JSON литерали.
+//
+// Layout: [ncols u32 BE] за всяка стойност [len u32 BE][value enc].
+// Len-префиксите са задължителни — bytes/str/json кодировките нямат
+// собствен делимитър (вж. value.baga).
+
+import "value.baga"
+import "codec.baga"
+import "std/json/json.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn boila_row_enc(vals: Vec<BoilaVal>) -> bytes {
+    let mut out = boila_enc_u32_be(vec_len(vals))
+    let mut i: i64 = 0
+    while i < vec_len(vals) {
+        let enc = boila_val_enc(vec_get(vals, i))
+        out = bytes_concat(out, boila_enc_u32_be(bytes_len(enc)))
+        out = bytes_concat(out, enc)
+        i = i + 1
+    }
+    return out
+}
+
+fn boila_row_dec(b: bytes) -> Vec<BoilaVal> {
+    let out: Vec<BoilaVal> = vec_new()
+    if bytes_len(b) < 4 {
+        return out
+    }
+    let n = boila_dec_u32_be(b, 0)
+    let mut off: i64 = 4
+    let mut i: i64 = 0
+    while i < n && off + 4 <= bytes_len(b) {
+        let ln = boila_dec_u32_be(b, off)
+        off = off + 4
+        if off + ln > bytes_len(b) {
+            return out
+        }
+        vec_push(out, boila_val_dec(bytes_slice(b, off, off + ln)))
+        off = off + ln
+        i = i + 1
+    }
+    return out
+}
+
+// JSON литерал на стойност (за HTTP изхода). bytes → hex стринг,
+// json tag → суровият payload (вече е JSON).
+fn boila_val_json_lit(v: BoilaVal) -> str {
+    if v.tag == boila_v_null() {
+        return "null"
+    }
+    if v.tag == boila_v_bool() {
+        if (v.i & 1) == 1 {
+            return "true"
+        }
+        return "false"
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        return int_to_str(v.i)
+    }
+    if v.tag == boila_v_json() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_bytes() {
+        let mut h = "\\x"
+        let mut i: i64 = 0
+        while i < bytes_len(v.b) {
+            let x = bytes_at(v.b, i) & 255
+            let hi = x / 16
+            let lo = x % 16
+            h = concat(h, concat(json_hex_digit(hi), json_hex_digit(lo)))
+            i = i + 1
+        }
+        return concat("\"", concat(h, "\""))
+    }
+    return json_escape(str_of_bytes(v.b))
+}
+
+fn boila_row_json(row: Vec<BoilaVal>) -> str {
+    let mut out = "["
+    let mut i: i64 = 0
+    while i < vec_len(row) {
+        if i > 0 {
+            out = concat(out, ",")
+        }
+        out = concat(out, boila_val_json_lit(vec_get(row, i)))
+        i = i + 1
+    }
+    return concat(out, "]")
+}

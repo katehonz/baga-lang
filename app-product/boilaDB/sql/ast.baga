@@ -1,0 +1,47 @@
+// ast.baga — AST структури за BoilaSQL P1 (SELECT v0 + CREATE TABLE).
+
+import "../core/value.baga"
+
+// SELECT: WHERE-клаузите са само по PRIMARY KEY (P1), най-много
+// eq + lo + hi, свързани с AND. limit = 0 означава "няма".
+struct BoilaSel {
+    table: str,
+    star: i64,
+    cols: Vec<str>,
+    eq_col: str, has_eq: i64, pk_eq: BoilaVal,
+    lo_col: str, has_lo: i64, pk_lo: BoilaVal,
+    hi_col: str, has_hi: i64, pk_hi: BoilaVal,
+    limit: i64
+}
+
+// Тип на колона = tag от value модела (i64/bool/str/bytes/json/ts).
+struct BoilaColDef {
+    name: str,
+    typ: i64
+}
+
+struct BoilaCreate {
+    table: str,
+    cols: Vec<BoilaColDef>,
+    pk_idx: i64
+}
+
+fn boila_sel_empty() -> BoilaSel {
+    let cols: Vec<str> = vec_new()
+    return BoilaSel {
+        table: "", star: 0, cols: cols,
+        eq_col: "", has_eq: 0, pk_eq: BoilaVal { tag: 0, i: 0, b: bytes_new(0) },
+        lo_col: "", has_lo: 0, pk_lo: BoilaVal { tag: 0, i: 0, b: bytes_new(0) },
+        hi_col: "", has_hi: 0, pk_hi: BoilaVal { tag: 0, i: 0, b: bytes_new(0) },
+        limit: 0
+    }
+}
+
+fn boila_coldef(name: str, typ: i64) -> BoilaColDef {
+    return BoilaColDef { name: name, typ: typ }
+}
+
+fn boila_create_empty() -> BoilaCreate {
+    let cols: Vec<BoilaColDef> = vec_new()
+    return BoilaCreate { table: "", cols: cols, pk_idx: 0 - 1 }
+}

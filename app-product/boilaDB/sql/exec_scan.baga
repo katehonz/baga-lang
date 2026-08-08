@@ -1,0 +1,204 @@
+// exec_scan.baga — executor за SELECT (P1): point lookup по pk и
+// range (lo/hi) през scan + филтър.
+//
+// Честно за P1 (gaps.md K3): range пътят е scan-всичко-и-филтрирай —
+// rocksbaga SCAN е hash-подреден, не сортиран. Истинският range scan с
+// сортирана итерация идва с planner-а (P4).
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "ast.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaResult {
+    cols: Vec<str>,
+    rows: Vec<Vec<BoilaVal>>
+}
+
+struct BoilaExec {
+    s: BoilaStore,
+    ok: i64,
+    err: str,
+    state: str,
+    kind: i64,
+    res: BoilaResult,
+    id: i64
+}
+
+fn boila_result_empty() -> BoilaResult {
+    let cols: Vec<str> = vec_new()
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    return BoilaResult { cols: cols, rows: rows }
+}
+
+fn boila_exec_fail(s: BoilaStore, msg: str, state: str) -> BoilaExec {
+    return BoilaExec { s: s, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
+}
+
+fn boila_exec_ok_select(s: BoilaStore, r: BoilaResult) -> BoilaExec {
+    return BoilaExec { s: s, ok: 1, err: "", state: "", kind: 1, res: r, id: 0 }
+}
+
+// Индекс на колона по име; -1 ако липсва.
+fn boila_col_idx(t: BoilaTable, name: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        let cd = vec_get(t.cols, i)
+        if cd.name == name {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Проекция на ред по индекси; празен proj = всичките колони.
+fn boila_project(row: Vec<BoilaVal>, proj: Vec<i64>) -> Vec<BoilaVal> {
+    if vec_len(proj) == 0 {
+        return row
+    }
+    let out: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(proj) {
+        let ix = vec_get(proj, i)
+        if ix >= 0 && ix < vec_len(row) {
+            vec_push(out, vec_get(row, ix))
+        } else {
+            vec_push(out, boila_val_null())
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Дали литералът съответства на типа на pk колоната (42804 при mismatch).
+fn boila_pk_lit_ok(typ: i64, v: BoilaVal) -> i64 {
+    if v.tag == boila_v_null() {
+        return 1
+    }
+    if typ == boila_v_i64() || typ == boila_v_ts() {
+        if v.tag == boila_v_i64() {
+            return 1
+        }
+        return 0
+    }
+    if v.tag == typ {
+        return 1
+    }
+    return 0
+}
+
+fn boila_exec_select(s: BoilaStore, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time {
+    let mut res = boila_result_empty()
+    // изходни колони
+    let proj: Vec<i64> = vec_new()
+    if sel.star == 0 {
+        let mut i: i64 = 0
+        while i < vec_len(sel.cols) {
+            let nm = vec_get(sel.cols, i)
+            let ix = boila_col_idx(t, nm)
+            if ix < 0 {
+                return boila_exec_fail(s, concat("колона '", concat(nm, "' не съществува")), "42703")
+            }
+            vec_push(proj, ix)
+            i = i + 1
+        }
+    }
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        let cd = vec_get(t.cols, i)
+        if sel.star == 1 {
+            vec_push(res.cols, cd.name)
+        } else {
+            let mut j: i64 = 0
+            while j < vec_len(proj) {
+                if vec_get(proj, j) == i {
+                    vec_push(res.cols, cd.name)
+                }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    // WHERE колона(те) трябва да е pk-то (P1)
+    let pkcol = vec_get(t.cols, t.pk_idx)
+    if sel.has_eq == 1 && sel.eq_col != pkcol.name {
+        return boila_exec_fail(s, concat("WHERE по '", concat(sel.eq_col, "' — в P1 само по PRIMARY KEY")), "0A000")
+    }
+    if sel.has_lo == 1 && sel.lo_col != pkcol.name {
+        return boila_exec_fail(s, concat("WHERE по '", concat(sel.lo_col, "' — в P1 само по PRIMARY KEY")), "0A000")
+    }
+    if sel.has_hi == 1 && sel.hi_col != pkcol.name {
+        return boila_exec_fail(s, concat("WHERE по '", concat(sel.hi_col, "' — в P1 само по PRIMARY KEY")), "0A000")
+    }
+    if sel.has_eq == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_eq) == 0 {
+        return boila_exec_fail(s, "литералът в = не съответства на типа на PRIMARY KEY", "42804")
+    }
+    if sel.has_lo == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_lo) == 0 {
+        return boila_exec_fail(s, "литералът в >= не съответства на типа на PRIMARY KEY", "42804")
+    }
+    if sel.has_hi == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_hi) == 0 {
+        return boila_exec_fail(s, "литералът в <= не съответства на типа на PRIMARY KEY", "42804")
+    }
+
+    // point fast path
+    if sel.has_eq == 1 {
+        let pkenc = boila_val_enc(sel.pk_eq)
+        let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
+        s = g.s
+        if g.found == 1 {
+            let row = boila_row_dec(g.val)
+            vec_push(res.rows, boila_project(row, proj))
+        }
+        return boila_exec_ok_select(s, res)
+    }
+
+    // range: scan + филтър (K3)
+    let mut cursor: i64 = 0
+    let mut rounds: i64 = 0
+    let mut done = false
+    while done == false && rounds < 10000 {
+        let sc = boila_scan(s, boila_cf_data(), t.id, cursor, 64)?
+        s = sc.s
+        let mut j: i64 = 0
+        while j < vec_len(sc.keys) && done == false {
+            let k = vec_get(sc.keys, j)
+            let pkenc = bytes_slice(k, 5, bytes_len(k))
+            let pkv = boila_val_dec(pkenc)
+            let mut keep = true
+            if sel.has_lo == 1 {
+                let c = boila_val_cmp(pkv, sel.pk_lo)
+                if c != 1 && c != 0 {
+                    keep = false
+                }
+            }
+            if keep && sel.has_hi == 1 {
+                let c = boila_val_cmp(pkv, sel.pk_hi)
+                if c != (0 - 1) && c != 0 {
+                    keep = false
+                }
+            }
+            if keep {
+                let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
+                s = g.s
+                if g.found == 1 {
+                    vec_push(res.rows, boila_project(boila_row_dec(g.val), proj))
+                    if sel.limit > 0 && vec_len(res.rows) >= sel.limit {
+                        done = true
+                    }
+                }
+            }
+            j = j + 1
+        }
+        cursor = sc.next
+        rounds = rounds + 1
+        if cursor == 0 {
+            done = true
+        }
+    }
+    return boila_exec_ok_select(s, res)
+}
