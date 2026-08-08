@@ -11,6 +11,7 @@ import "pgwire_enc.baga"
 import "../storage/databases.baga"
 import "../sql/exec_server.baga"
 import "../sql/exec_scan.baga"
+import "../txn/mvcc.baga"
 import "../core/value.baga"
 import "std/net/tcp.baga"
 import "std/os/os.baga"
@@ -26,13 +27,14 @@ struct BoilaPgPortal {
 struct BoilaPgSess {
     stmts: Map<str, str>,
     portals: Map<str, BoilaPgPortal>,
-    db: str
+    db: str,
+    txn: BoilaTxn
 }
 
 fn boila_pg_sess_new(db: str) -> BoilaPgSess {
     let sm: Map<str, str> = map_new()
     let pm: Map<str, BoilaPgPortal> = map_new()
-    return BoilaPgSess { stmts: sm, portals: pm, db: db }
+    return BoilaPgSess { stmts: sm, portals: pm, db: db, txn: boila_txn_new() }
 }
 
 struct BoilaPgOut {
@@ -62,33 +64,48 @@ fn pgw_send_startup_tail(fd: i64, tx: i64) -> i64 !Net !IO {
     return pgw_write(fd, out)
 }
 
-fn pgw_tx_status(srv: BoilaServer) -> i64 {
-    if srv.txn.active == 1 {
+fn pgw_tx_status(sess: BoilaPgSess) -> i64 {
+    if sess.txn.active == 1 {
         return 84   // 'T'
     }
     return 73       // 'I'
 }
 
-// Изпълнява SQL и пише резултата (RowDescription/DataRow*/CommandComplete
-// или ErrorResponse). send_ready=1 (simple query) добавя ReadyForQuery;
-// при extended RFQ идва от Sync (а след грешка се пропуска до Sync).
-fn pgw_run_sql(fd: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str, send_ready: i64) -> BoilaPgOut !IO !Net !Time {
-    let out = boila_server_exec(srv, sess.db, sql)?
+// pack=0 → srv by-value (tests); pack!=0 → mutex cell2(mu, map_h) shared MT.
+fn pgw_exec_locked(pack: i64, srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time !Par {
+    if pack == 0 {
+        return boila_server_exec_tx(srv, txn, db, sql)?
+    }
+    let mu = cell2_0(pack)
+    let mh = cell2_1(pack)
+    mutex_lock(mu)
+    let m: Map<i64, BoilaServer> = h_map(mh)
+    let s0 = map_get(m, 0)
+    let out = boila_server_exec_tx(s0, txn, db, sql)?
+    map_set(m, 0, out.srv)
+    mutex_unlock(mu)
+    return out
+}
+
+// Изпълнява SQL и пише резултата. send_ready=1 → ReadyForQuery.
+fn pgw_run_sql(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    let out = pgw_exec_locked(pack, srv, sess.txn, sess.db, sql)?
     let mut srv2 = out.srv
+    let mut sess2 = sess
+    sess2.txn = out.txn
     if out.ok == 0 {
         let mut buf = pgw_error(out.state, out.err)
         if send_ready == 1 {
-            buf = bytes_concat(buf, pgw_ready(pgw_tx_status(srv2)))
+            buf = bytes_concat(buf, pgw_ready(pgw_tx_status(sess2)))
         }
         let w = pgw_write(fd, buf)?
         if w != 0 {
-            return BoilaPgOut { srv: srv2, sess: sess, ok: 0, sql_err: 1, err: "write error" }
+            return BoilaPgOut { srv: srv2, sess: sess2, ok: 0, sql_err: 1, err: "write error" }
         }
-        return BoilaPgOut { srv: srv2, sess: sess, ok: 1, sql_err: 1, err: "" }
+        return BoilaPgOut { srv: srv2, sess: sess2, ok: 1, sql_err: 1, err: "" }
     }
     let mut buf = bytes_new(0)
     if out.kind == 1 || vec_len(out.res.rows) > 0 {
-        // SELECT или DML с RETURNING редове
         buf = bytes_concat(buf, pgw_row_desc(out.res.cols))
         let mut i: i64 = 0
         while i < vec_len(out.res.rows) {
@@ -98,13 +115,13 @@ fn pgw_run_sql(fd: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str, send_read
     }
     buf = bytes_concat(buf, pgw_command_complete(pgw_tag(out.kind, out.id, vec_len(out.res.rows))))
     if send_ready == 1 {
-        buf = bytes_concat(buf, pgw_ready(pgw_tx_status(srv2)))
+        buf = bytes_concat(buf, pgw_ready(pgw_tx_status(sess2)))
     }
     let w = pgw_write(fd, buf)?
     if w != 0 {
-        return BoilaPgOut { srv: srv2, sess: sess, ok: 0, sql_err: 0, err: "write error" }
+        return BoilaPgOut { srv: srv2, sess: sess2, ok: 0, sql_err: 0, err: "write error" }
     }
-    return BoilaPgOut { srv: srv2, sess: sess, ok: 1, sql_err: 0, err: "" }
+    return BoilaPgOut { srv: srv2, sess: sess2, ok: 1, sql_err: 0, err: "" }
 }
 
 // Parse: 'P' stmt\0 sql\0 int16 nparams + OIDs.
@@ -156,7 +173,12 @@ fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     return s2
 }
 
-fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time {
+// pack=0 for single-threaded tests; pack=cell2(mu,map_h) for MT serve.
+fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time !Par {
+    return boila_pg_serve_p(fd, 0, srv)?
+}
+
+fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time !Par {
     let mut rr = pgw_reader(fd)
     let mut srv2 = srv
     // --- startup: SSL/Cancel/v3 ---
@@ -229,7 +251,7 @@ fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time {
         tcp_close(fd)?
         return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "authok write" }
     }
-    let w3 = pgw_send_startup_tail(fd, pgw_tx_status(srv2))?
+    let w3 = pgw_send_startup_tail(fd, pgw_tx_status(sp))?
     if w3 != 0 {
         tcp_close(fd)?
         return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "tail write" }
@@ -245,7 +267,7 @@ fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time {
         } else {
             if in_err {
                 if m.typ == 83 {                              // 'S' Sync
-                    let w = pgw_write(fd, pgw_ready(pgw_tx_status(srv2)))?
+                    let w = pgw_write(fd, pgw_ready(pgw_tx_status(sp)))?
                     if w != 0 {
                         running = false
                     }
@@ -259,7 +281,7 @@ fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time {
             } else {
             if m.typ == 81 {                                  // 'Q' simple
                 let sql = pgw_cstr_read(m.body, 0)
-                let ro = pgw_run_sql(fd, srv2, sp, sql.s, 1)?
+                let ro = pgw_run_sql(fd, pack, srv2, sp, sql.s, 1)?
                 srv2 = ro.srv
                 sp = ro.sess
                 if ro.ok == 0 {
@@ -299,7 +321,7 @@ fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time {
                                     nulls = portal.nulls
                                 }
                                 let full = pgw_subst_params(sql, vals, nulls)
-                                let ro = pgw_run_sql(fd, srv2, sp, full, 0)?
+                                let ro = pgw_run_sql(fd, pack, srv2, sp, full, 0)?
                                 srv2 = ro.srv
                                 sp = ro.sess
                                 if ro.ok == 0 {
@@ -310,7 +332,7 @@ fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time {
                                 }
                             } else {
                                 if m.typ == 83 {              // 'S' Sync
-                                    let w = pgw_write(fd, pgw_ready(pgw_tx_status(srv2)))?
+                                    let w = pgw_write(fd, pgw_ready(pgw_tx_status(sp)))?
                                     if w != 0 {
                                         running = false
                                     }
@@ -355,8 +377,8 @@ fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time {
         }
     }
     // txn е per-connection: при затваряне — rollback
-    if srv2.txn.active == 1 {
-        srv2.txn = boila_txn_rollback(srv2.txn)
+    if sp.txn.active == 1 {
+        sp.txn = boila_txn_rollback(sp.txn)
     }
     tcp_close(fd)?
     return BoilaPgOut { srv: srv2, sess: sp, ok: 1, sql_err: 0, err: "" }

@@ -1,8 +1,7 @@
-// exec_server.baga — сървърно ниво: CREATE/DROP DATABASE, USE и
-// делегиране на останалите заявления към store-а на текущата база.
+// exec_server.baga — CREATE/DROP DATABASE, USE + store exec.
 //
-// kind кодове: 1 select, 2 create table, 3 create database,
-//              4 drop database, 5 use.
+// boila_server_exec(srv, db, sql) — single-thread: uses srv.session_txn
+// boila_server_exec_tx(srv, txn, db, sql) — MT: external per-conn txn
 
 import "lexer.baga"
 import "token.baga"
@@ -10,11 +9,13 @@ import "parse_ddl.baga"
 import "exec_sql.baga"
 import "exec_scan.baga"
 import "../storage/databases.baga"
+import "../txn/mvcc.baga"
 import "../core/row.baga"
 import "std/str/str.baga"
 
 struct BoilaSrvOut {
     srv: BoilaServer,
+    txn: BoilaTxn,
     ok: i64,
     err: str,
     state: str,
@@ -24,74 +25,76 @@ struct BoilaSrvOut {
     db: str
 }
 
-fn boila_srv_out_fail(srv: BoilaServer, msg: str, state: str) -> BoilaSrvOut {
-    return BoilaSrvOut { srv: srv, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0, db: "" }
+fn boila_srv_out_fail(srv: BoilaServer, txn: BoilaTxn, msg: str, state: str) -> BoilaSrvOut {
+    return BoilaSrvOut { srv: srv, txn: txn, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0, db: "" }
 }
 
+// Single-thread / tests: txn lives on srv.session_txn.
 fn boila_server_exec(srv: BoilaServer, db: str, sql: str) -> BoilaSrvOut !IO !Time {
+    let out = boila_server_exec_tx(srv, srv.session_txn, db, sql)?
+    out.srv.session_txn = out.txn
+    return out
+}
+
+// MT path: caller owns txn.
+fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time {
     let lx = boila_lex(sql)
     if lx.err != "" {
-        return boila_srv_out_fail(srv, lx.err, "42601")
+        return boila_srv_out_fail(srv, txn, lx.err, "42601")
     }
     let t0 = vec_get(lx.toks, 0)
     if t0.kind == tok_eof() {
-        return boila_srv_out_fail(srv, "празна заявка", "42601")
+        return boila_srv_out_fail(srv, txn, "празна заявка", "42601")
     }
 
-    // --- CREATE DATABASE ---
     if tok_kw(t0, "create") == 1 && vec_len(lx.toks) > 1 && tok_kw(vec_get(lx.toks, 1), "database") == 1 {
         let p = boila_parse_create_db(lx)
         if p.ok == 0 {
-            return boila_srv_out_fail(srv, p.err, p.state)
+            return boila_srv_out_fail(srv, txn, p.err, p.state)
         }
         let r = boila_srv_db_create(srv, p.name)?
         if r.ok == 0 {
-            return boila_srv_out_fail(r.srv, r.err, r.state)
+            return boila_srv_out_fail(r.srv, txn, r.err, r.state)
         }
-        return BoilaSrvOut { srv: r.srv, ok: 1, err: "", state: "", kind: 3, res: boila_result_empty(), id: 0, db: p.name }
+        return BoilaSrvOut { srv: r.srv, txn: txn, ok: 1, err: "", state: "", kind: 3, res: boila_result_empty(), id: 0, db: p.name }
     }
 
-    // --- DROP DATABASE ---
     if tok_kw(t0, "drop") == 1 && vec_len(lx.toks) > 1 && tok_kw(vec_get(lx.toks, 1), "database") == 1 {
         let p = boila_parse_drop_db(lx)
         if p.ok == 0 {
-            return boila_srv_out_fail(srv, p.err, p.state)
+            return boila_srv_out_fail(srv, txn, p.err, p.state)
         }
         let r = boila_srv_db_drop(srv, p.name, db)?
         if r.ok == 0 {
-            return boila_srv_out_fail(r.srv, r.err, r.state)
+            return boila_srv_out_fail(r.srv, txn, r.err, r.state)
         }
-        return BoilaSrvOut { srv: r.srv, ok: 1, err: "", state: "", kind: 4, res: boila_result_empty(), id: 0, db: p.name }
+        return BoilaSrvOut { srv: r.srv, txn: txn, ok: 1, err: "", state: "", kind: 4, res: boila_result_empty(), id: 0, db: p.name }
     }
 
-    // --- USE (валидира съществуването; сесията си сменя текущата) ---
     if tok_kw(t0, "use") == 1 {
-        if srv.txn.active == 1 {
-            return boila_srv_out_fail(srv, "USE по време на активна транзакция — COMMIT/ROLLBACK първо", "0A000")
+        if txn.active == 1 {
+            return boila_srv_out_fail(srv, txn, "USE по време на активна транзакция — COMMIT/ROLLBACK първо", "0A000")
         }
         let p = boila_parse_use(lx)
         if p.ok == 0 {
-            return boila_srv_out_fail(srv, p.err, p.state)
+            return boila_srv_out_fail(srv, txn, p.err, p.state)
         }
         let r = boila_srv_db(srv, p.name)?
         if r.ok == 0 {
-            return boila_srv_out_fail(r.srv, r.err, r.state)
+            return boila_srv_out_fail(r.srv, txn, r.err, r.state)
         }
-        return BoilaSrvOut { srv: r.srv, ok: 1, err: "", state: "", kind: 5, res: boila_result_empty(), id: 0, db: p.name }
+        return BoilaSrvOut { srv: r.srv, txn: txn, ok: 1, err: "", state: "", kind: 5, res: boila_result_empty(), id: 0, db: p.name }
     }
 
-    // --- всичко останало е към store-а на текущата база ---
-    // активна транзакция = фиксирана към базата, в която е започната
-    if srv.txn.active == 1 && srv.txn.db != db {
-        return boila_srv_out_fail(srv, "транзакция, започната в друга база — COMMIT/ROLLBACK първо", "0A000")
+    if txn.active == 1 && txn.db != db {
+        return boila_srv_out_fail(srv, txn, "транзакция, започната в друга база — COMMIT/ROLLBACK първо", "0A000")
     }
     let g = boila_srv_db(srv, db)?
     if g.ok == 0 {
-        return boila_srv_out_fail(g.srv, g.err, g.state)
+        return boila_srv_out_fail(g.srv, txn, g.err, g.state)
     }
-    let out = boila_exec_sql(g.store, g.srv.txn, db, sql, g.srv.pc)?
+    let out = boila_exec_sql(g.store, txn, db, sql, g.srv.pc)?
     let mut srv2 = boila_srv_store_putback(g.srv, db, out.s)
-    srv2.txn = out.txn
     srv2.pc = out.pc
-    return BoilaSrvOut { srv: srv2, ok: out.ok, err: out.err, state: out.state, kind: out.kind, res: out.res, id: out.id, db: db }
+    return BoilaSrvOut { srv: srv2, txn: out.txn, ok: out.ok, err: out.err, state: out.state, kind: out.kind, res: out.res, id: out.id, db: db }
 }

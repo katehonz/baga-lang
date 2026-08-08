@@ -22,6 +22,8 @@ import "std/bytes/bytes.baga"
 // extern механизъм (моделът на std/os open/unlink).
 extern fn mkdir(path: str, mode: i64) -> i64 !IO
 
+// session_txn: single-thread/tests convenience. MT go_bg uses external
+// per-conn txn via boila_server_exec_tx (session_txn ignored).
 struct BoilaServer {
     meta: BoilaStore,
     root: str,
@@ -31,7 +33,7 @@ struct BoilaServer {
     compact_at: i64,
     dflt_shards: i64,
     max_db: i64,
-    txn: BoilaTxn,
+    session_txn: BoilaTxn,
     pc: BoilaPlanCache,
     ok: i64
 }
@@ -109,7 +111,7 @@ fn boila_srv_evict(srv: BoilaServer, ix: i64) -> BoilaServer {
         }
         i = i + 1
     }
-    return BoilaServer { meta: srv.meta, root: srv.root, names: names, stores: stores, flush_at: srv.flush_at, compact_at: srv.compact_at, dflt_shards: srv.dflt_shards, max_db: srv.max_db, txn: srv.txn, pc: srv.pc, ok: srv.ok }
+    return BoilaServer { meta: srv.meta, root: srv.root, names: names, stores: stores, flush_at: srv.flush_at, compact_at: srv.compact_at, dflt_shards: srv.dflt_shards, max_db: srv.max_db, session_txn: srv.session_txn, pc: srv.pc, ok: srv.ok }
 }
 
 fn boila_srv_reg_get(srv: BoilaServer, name: str) -> BoilaSrvDb !IO !Time {
@@ -138,7 +140,7 @@ fn boila_server_open(root: str, nshards_default: i64, flush_at: i64, compact_at:
     if cap < 1 {
         cap = 64
     }
-    let mut srv = BoilaServer { meta: meta, root: root, names: names, stores: stores, flush_at: flush_at, compact_at: compact_at, dflt_shards: nshards_default, max_db: cap, txn: boila_txn_new(), pc: boila_pc_new(), ok: meta.ok }
+    let mut srv = BoilaServer { meta: meta, root: root, names: names, stores: stores, flush_at: flush_at, compact_at: compact_at, dflt_shards: nshards_default, max_db: cap, session_txn: boila_txn_new(), pc: boila_pc_new(), ok: meta.ok }
     if meta.ok == 0 {
         return srv
     }

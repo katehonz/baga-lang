@@ -18,12 +18,11 @@ Sync server: без 10k concurrent (gaps W1).
 ## Пускане
 
 ```bash
-# HTTP (poll multi-conn): BOILA_PATH PORT SHARDS MAX_CONN MAX_DB …
+# HTTP go_bg+mutex: BOILA_PATH PORT SHARDS MAX_CONN …
 ./baga -I . -I app-product app-product/boilaDB/tools/serve.baga
-# PG wire: BOILA_PGPORT (6575)
+# PG wire (same model): BOILA_PGPORT=6575
 ./baga -I . -I app-product app-product/boilaDB/tools/serve_pg.baga
-curl localhost:6570/health   # mode=poll
-curl localhost:6570/metrics
+curl localhost:6570/health   # mode=mt
 ```
 
 ## Тестове
