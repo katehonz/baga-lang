@@ -4,12 +4,24 @@
 V = value/codec, K = key/scan, S = storage, M = metrics/monitoring,
 H = HTTP/API, Q = SQL (от P1).
 
+## Открити при P4
+
+- **T2 — MVCC-ът е едно-сесийен buffered модел.** Изолацията идва от
+  buffer-а (storage непроменен до COMMIT), не от multi-version ключове —
+  тях и commit sequencer-ът за конкурентни сесии идват в P6 заедно с
+  wire/pool concurrency-то. Честна ревизия на PLAN текста (вж. PLAN P4).
+- **T5 — DDL извън транзакционния буфер.** `CREATE TABLE` пише директно
+  (не се rollback-ва; в явна транзакция се отказва с 0A000).
+  `CREATE INDEX` е изцяло буфериран (каталог + entries атомно).
+- **T6 — txn buffer-ът е unbounded.** Голяма транзакция трупa RAM
+  (arena-та не reclaims, Q2). Лимит на buffer записите идва с P6.
+
 ## Открити при P3
 
-- **T1 — няма statement atomicity/rollback.** Грешка midway в multi-row
-  INSERT/UPDATE/DELETE персистира редовете дотам (commit-ваме каквото е
-  написано, вместо да губим не-fsync-натия буфер в следващата заявка).
-  Истински rollback идва с MVCC в P4.
+- **T1 — (FIXED при P4) няма statement atomicity/rollback.** Грешка
+  midway в multi-row INSERT/UPDATE/DELETE персистираше редовете дотам.
+  От P4 писанията минават през txn buffer-а и грешка → rollback на целия
+  буфер (за имплицитните auto-commit txn-и и за явните).
 - **K5 — row + index entries са отделни WAL записи.** Една заявка се
   fsync-ва като група (statement batch), но rocksbaga няма multi-record
   атомен WAL запис: torn pwrite в рамките на един statement би оставил

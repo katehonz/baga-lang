@@ -1,0 +1,120 @@
+// parse_txn.baga — parser за транзакционен контрол (P4).
+//
+// Граматика:
+//   BEGIN [WORK|TRANSACTION] [READ ONLY] [;]
+//   START TRANSACTION [READ ONLY] [;]
+//   COMMIT [WORK|TRANSACTION] [;]
+//   ROLLBACK [WORK|TRANSACTION] [;]
+
+import "token.baga"
+import "lexer.baga"
+import "std/str/str.baga"
+
+struct BoilaParseTxn {
+    ok: i64,
+    op: i64,          // 1 begin, 2 commit, 3 rollback
+    read_only: i64,
+    err: str,
+    state: str
+}
+
+fn boila_pt_fail(msg: str, state: str) -> BoilaParseTxn {
+    return BoilaParseTxn { ok: 0, op: 0, read_only: 0, err: msg, state: state }
+}
+
+fn boila_pt_tok(l: BoilaLex, i: i64) -> Token {
+    if i < vec_len(l.toks) {
+        return vec_get(l.toks, i)
+    }
+    return token_new(tok_eof(), "")
+}
+
+// [READ ONLY] → read_only; връща pos след тях.
+fn boila_pt_readonly(l: BoilaLex, i: i64) -> BoilaParseTxn {
+    if tok_kw(boila_pt_tok(l, i), "read") == 1 {
+        if tok_kw(boila_pt_tok(l, i + 1), "only") != 1 {
+            return boila_pt_fail("очаквах ONLY след READ", "42601")
+        }
+        return BoilaParseTxn { ok: 1, op: 0, read_only: 1, err: "", state: "" }
+    }
+    return BoilaParseTxn { ok: 1, op: 0, read_only: 0, err: "", state: "" }
+}
+
+// tail: [;] EOF
+fn boila_pt_tail(l: BoilaLex, i: i64) -> BoilaParseTxn {
+    let mut p = i
+    if boila_pt_tok(l, p).kind == tok_semi() {
+        p = p + 1
+    }
+    if boila_pt_tok(l, p).kind != tok_eof() {
+        let extra = boila_pt_tok(l, p)
+        return boila_pt_fail(concat("неочакван токен '", concat(extra.txt, "'")), "0A000")
+    }
+    return BoilaParseTxn { ok: 1, op: 0, read_only: 0, err: "", state: "" }
+}
+
+fn boila_parse_txn(l: BoilaLex) -> BoilaParseTxn {
+    let t0 = boila_pt_tok(l, 0)
+    let mut i: i64 = 1
+    let mut op: i64 = 0
+    if tok_kw(t0, "begin") == 1 {
+        op = 1
+        if tok_kw(boila_pt_tok(l, i), "work") == 1 || tok_kw(boila_pt_tok(l, i), "transaction") == 1 {
+            i = i + 1
+        }
+        let ro = boila_pt_readonly(l, i)
+        if ro.ok == 0 {
+            return ro
+        }
+        if ro.read_only == 1 {
+            i = i + 2
+        }
+        let tl = boila_pt_tail(l, i)
+        if tl.ok == 0 {
+            return tl
+        }
+        return BoilaParseTxn { ok: 1, op: op, read_only: ro.read_only, err: "", state: "" }
+    }
+    if tok_kw(t0, "start") == 1 {
+        if tok_kw(boila_pt_tok(l, i), "transaction") != 1 {
+            return boila_pt_fail("очаквах TRANSACTION след START", "42601")
+        }
+        op = 1
+        i = i + 1
+        let ro = boila_pt_readonly(l, i)
+        if ro.ok == 0 {
+            return ro
+        }
+        if ro.read_only == 1 {
+            i = i + 2
+        }
+        let tl = boila_pt_tail(l, i)
+        if tl.ok == 0 {
+            return tl
+        }
+        return BoilaParseTxn { ok: 1, op: op, read_only: ro.read_only, err: "", state: "" }
+    }
+    if tok_kw(t0, "commit") == 1 {
+        op = 2
+        if tok_kw(boila_pt_tok(l, i), "work") == 1 || tok_kw(boila_pt_tok(l, i), "transaction") == 1 {
+            i = i + 1
+        }
+        let tl = boila_pt_tail(l, i)
+        if tl.ok == 0 {
+            return tl
+        }
+        return BoilaParseTxn { ok: 1, op: op, read_only: 0, err: "", state: "" }
+    }
+    if tok_kw(t0, "rollback") == 1 {
+        op = 3
+        if tok_kw(boila_pt_tok(l, i), "work") == 1 || tok_kw(boila_pt_tok(l, i), "transaction") == 1 {
+            i = i + 1
+        }
+        let tl = boila_pt_tail(l, i)
+        if tl.ok == 0 {
+            return tl
+        }
+        return BoilaParseTxn { ok: 1, op: op, read_only: 0, err: "", state: "" }
+    }
+    return boila_pt_fail(concat("непознато транзакционно заявление '", concat(t0.txt, "'")), "42601")
+}

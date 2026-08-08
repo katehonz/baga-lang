@@ -10,16 +10,14 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 
 ## Статус
 
-**P3 (DML + индекси + group commit)** — `INSERT` (multi-row, `ON
-CONFLICT DO NOTHING/UPDATE`, `RETURNING`), `UPDATE`, `DELETE`,
-`CREATE INDEX` (build + синхронизация при DML, SELECT по индексирана
-колона); statement-level group commit (един fsync на заявление — гейт
-≥3×: измерено 17×); durability без close: 100k реда, 0 загубени,
-индекс без rebuild (bench/boila/results/insert-write-2026-08-08.md).
-SQLSTATE 23505/23502/42710/42804 и др.
-Предишно: **P2 (много бази данни)** — `.meta` registry, `<db>.db`
-flat клъстери, `CREATE/DROP DATABASE`, `USE`, `?db=`; **P1 (SQL read
-path)**; **P0 (скелет)**. Perf baseline (P1): SQL point SELECT 6102
+**P4 (MVCC транзакции, едно-сесийен buffered модел)** —
+`BEGIN [READ ONLY]/COMMIT/ROLLBACK`, auto-commit на statement, изолация
+(storage непроменен до COMMIT; собствени + committed писания видими),
+грешка → rollback на буфера, монотонни commit LSN, транзакцията
+фиксирана към базата си; envelope `[lsn][row]` в data/index CF.
+Multi-version ключове + sequencer — в P6 с concurrency-то (gaps T2).
+Предишно: **P3 (DML + индекси + group commit)**; **P2 (много бази)**;
+**P1 (SQL read path)**; **P0 (скелет)**. Perf: SQL point SELECT 6102
 ns/op срещу суров GET 1193 ns/op — мишената ≤ 1.25× чака plan cache-а
 в P5 (gaps Q1).
 

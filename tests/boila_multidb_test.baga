@@ -113,21 +113,13 @@ fn main() -> i64 !IO !Time {
     srv = t2.srv
     check(fails, "beta_table", t2.ok == 1 && t2.kind == 2)
 
-    // seed: pk=1 в alpha → "A", в beta → "B" (INSERT е P3 — през storage)
-    let ga = boila_srv_db(srv, "alpha")?
-    srv = ga.srv
-    let rowa: Vec<BoilaVal> = vec_new()
-    vec_push(rowa, boila_val_i64(1))
-    vec_push(rowa, boila_val_str("A"))
-    let sta = boila_put(ga.store, boila_cf_data(), t1.id, boila_val_enc(boila_val_i64(1)), boila_row_enc(rowa))?
-    srv = boila_srv_store_putback(srv, "alpha", sta)
-    let gb = boila_srv_db(srv, "beta")?
-    srv = gb.srv
-    let rowb: Vec<BoilaVal> = vec_new()
-    vec_push(rowb, boila_val_i64(1))
-    vec_push(rowb, boila_val_str("B"))
-    let stb = boila_put(gb.store, boila_cf_data(), t2.id, boila_val_enc(boila_val_i64(1)), boila_row_enc(rowb))?
-    srv = boila_srv_store_putback(srv, "beta", stb)
+    // seed: pk=1 в alpha → "A", в beta → "B" — през SQL (P4)
+    let sa = boila_server_exec(srv, "alpha", "INSERT INTO t (id, v) VALUES (1, 'A')")?
+    srv = sa.srv
+    check(fails, "seed_alpha", sa.ok == 1 && sa.id == 1)
+    let sb = boila_server_exec(srv, "beta", "INSERT INTO t (id, v) VALUES (1, 'B')")?
+    srv = sb.srv
+    check(fails, "seed_beta", sb.ok == 1 && sb.id == 1)
 
     let qa = boila_server_exec(srv, "alpha", "SELECT * FROM t WHERE id = 1")?
     srv = qa.srv

@@ -1,5 +1,10 @@
-// exec_sql.baga — dispatch: SQL текст → лекс → parse → catalog → exec.
-// P1: SELECT и CREATE TABLE. Всичко друго → 0A000 feature_not_supported.
+// exec_sql.baga — dispatch: SQL текст → лекс → parse → catalog → exec (P4).
+//
+// Транзакционен модел: DML/CREATE INDEX се буферизират в txn; извън явна
+// транзакция всяко заявление е имплицитен auto-commit txn (begin → exec →
+// commit; грешка → rollback на буфера). Явните BEGIN/COMMIT/ROLLBACK
+// държат буфера отворен между заявленията. CREATE TABLE е извън txn
+// (директен запис, gaps T5); в явна транзакция се отказва.
 
 import "lexer.baga"
 import "token.baga"
@@ -7,120 +12,235 @@ import "parse_select.baga"
 import "parse_ddl.baga"
 import "parse_dml.baga"
 import "parse_insert.baga"
+import "parse_txn.baga"
 import "exec_scan.baga"
 import "exec_dml.baga"
 import "exec_modify.baga"
 import "../catalog/schema.baga"
 import "../storage/shards.baga"
 import "../index/secondary.baga"
+import "../txn/mvcc.baga"
 import "std/str/str.baga"
 
 struct BoilaSqlOut {
     s: BoilaStore,
+    txn: BoilaTxn,
     ok: i64,
     err: str,
     state: str,
-    kind: i64,          // 1 = select, 2 = create
+    kind: i64,    // 1 select, 2 create table, 6/7/8 DML, 9 create index,
+                  // 10 begin, 11 commit, 12 rollback
     res: BoilaResult,
-    id: i64
+    id: i64       // affected (DML) / table id / index id / commit lsn
 }
 
-fn boila_sql_fail(s: BoilaStore, msg: str, state: str) -> BoilaSqlOut {
-    return BoilaSqlOut { s: s, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
+fn boila_sql_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaSqlOut {
+    return BoilaSqlOut { s: s, txn: txn, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
 }
 
-fn boila_exec_sql(s: BoilaStore, sql: str) -> BoilaSqlOut !IO !Time {
+fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str) -> BoilaSqlOut !IO !Time {
     let lx = boila_lex(sql)
     if lx.err != "" {
-        return boila_sql_fail(s, lx.err, "42601")
+        return boila_sql_fail(s, txn, lx.err, "42601")
     }
     let t0 = vec_get(lx.toks, 0)
     if t0.kind == tok_eof() {
-        return boila_sql_fail(s, "празна заявка", "42601")
+        return boila_sql_fail(s, txn, "празна заявка", "42601")
     }
+
+    // --- транзакционен контрол ---
+    if tok_kw(t0, "begin") == 1 || tok_kw(t0, "start") == 1 || tok_kw(t0, "commit") == 1 || tok_kw(t0, "rollback") == 1 {
+        let p = boila_parse_txn(lx)
+        if p.ok == 0 {
+            return boila_sql_fail(s, txn, p.err, p.state)
+        }
+        if p.op == 1 {
+            let b = boila_txn_begin(s, txn, p.read_only, db)?
+            if b.ok == 0 {
+                return boila_sql_fail(b.s, b.txn, b.err, b.state)
+            }
+            return BoilaSqlOut { s: b.s, txn: b.txn, ok: 1, err: "", state: "", kind: 10, res: boila_result_empty(), id: b.lsn }
+        }
+        if p.op == 2 {
+            let c = boila_txn_commit(s, txn)?
+            if c.ok == 0 {
+                return boila_sql_fail(c.s, c.txn, c.err, c.state)
+            }
+            return BoilaSqlOut { s: c.s, txn: c.txn, ok: 1, err: "", state: "", kind: 11, res: boila_result_empty(), id: c.lsn }
+        }
+        let t2 = boila_txn_rollback(txn)
+        return BoilaSqlOut { s: s, txn: t2, ok: 1, err: "", state: "", kind: 12, res: boila_result_empty(), id: 0 }
+    }
+
     if tok_kw(t0, "select") == 1 {
         let ps = boila_parse_select(lx)
         if ps.ok == 0 {
-            return boila_sql_fail(s, ps.err, ps.state)
+            return boila_sql_fail(s, txn, ps.err, ps.state)
         }
         let ct = boila_cat_by_name(s, ps.sel.table)?
         s = ct.s
         if ct.ok == 0 {
-            return boila_sql_fail(s, ct.err, ct.state)
+            return boila_sql_fail(s, txn, ct.err, ct.state)
         }
-        let ex = boila_exec_select(s, ct.table, ps.sel)?
-        return BoilaSqlOut { s: ex.s, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
+        let ex = boila_exec_select(s, txn, ct.table, ps.sel)?
+        return BoilaSqlOut { s: ex.s, txn: ex.txn, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
     }
     if tok_kw(t0, "create") == 1 {
         let t1 = vec_get(lx.toks, 1)
         if tok_kw(t1, "table") == 1 {
+            if txn.active == 1 {
+                return boila_sql_fail(s, txn, "CREATE TABLE извън транзакционния буфер в P4 (gaps T5)", "0A000")
+            }
             let pc = boila_parse_create(lx)
             if pc.ok == 0 {
-                return boila_sql_fail(s, pc.err, pc.state)
+                return boila_sql_fail(s, txn, pc.err, pc.state)
             }
             let cr = boila_cat_create(s, pc.create)?
             s = cr.s
             if cr.ok == 0 {
-                return boila_sql_fail(s, cr.err, cr.state)
+                return boila_sql_fail(s, txn, cr.err, cr.state)
             }
-            return BoilaSqlOut { s: s, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
+            return BoilaSqlOut { s: s, txn: txn, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
         }
         if tok_kw(t1, "index") == 1 {
             let p = boila_parse_create_ix(lx)
             if p.ok == 0 {
-                return boila_sql_fail(s, p.err, p.state)
+                return boila_sql_fail(s, txn, p.err, p.state)
             }
             let ct = boila_cat_by_name(s, p.ix.table)?
             s = ct.s
             if ct.ok == 0 {
-                return boila_sql_fail(s, ct.err, ct.state)
+                return boila_sql_fail(s, txn, ct.err, ct.state)
             }
-            let ix = boila_ix_create(s, ct.table, p.ix.ix_name, p.ix.col)?
+            // auto-txn wrap (ако няма явна)
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let ix = boila_ix_create(s, txn, ct.table, p.ix.ix_name, p.ix.col)?
+            s = ix.s
+            txn = ix.txn
             if ix.ok == 0 {
-                return boila_sql_fail(ix.s, ix.err, ix.state)
+                if was_active == 0 {
+                    txn = boila_txn_rollback(txn)
+                } else {
+                    txn = boila_txn_rollback(txn)
+                }
+                return boila_sql_fail(s, txn, ix.err, ix.state)
             }
-            return BoilaSqlOut { s: ix.s, ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 {
+                    return boila_sql_fail(s, txn, c.err, c.state)
+                }
+            }
+            return BoilaSqlOut { s: s, txn: txn, ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
         }
-        return boila_sql_fail(s, "в P3 се поддържа CREATE TABLE / CREATE INDEX", "0A000")
+        return boila_sql_fail(s, txn, "в P4 се поддържа CREATE TABLE / CREATE INDEX", "0A000")
     }
     if tok_kw(t0, "insert") == 1 {
         let p = boila_parse_insert(lx)
         if p.ok == 0 {
-            return boila_sql_fail(s, p.err, p.state)
+            return boila_sql_fail(s, txn, p.err, p.state)
         }
         let ct = boila_cat_by_name(s, p.ins.table)?
         s = ct.s
         if ct.ok == 0 {
-            return boila_sql_fail(s, ct.err, ct.state)
+            return boila_sql_fail(s, txn, ct.err, ct.state)
         }
-        let ex = boila_exec_insert(s, ct.table, p.ins)?
-        return BoilaSqlOut { s: ex.s, ok: ex.ok, err: ex.err, state: ex.state, kind: 6, res: ex.res, id: ex.affected }
+        let was_active = txn.active
+        if was_active == 0 {
+            let b = boila_txn_begin(s, txn, 0, db)?
+            s = b.s
+            txn = b.txn
+        }
+        let ex = boila_exec_insert(s, txn, ct.table, p.ins)?
+        s = ex.s
+        txn = ex.txn
+        if ex.ok == 0 {
+            // грешка → rollback на буфера (T1): и за явна, и за имплицитна
+            txn = boila_txn_rollback(txn)
+            return boila_sql_fail(s, txn, ex.err, ex.state)
+        }
+        if was_active == 0 {
+            let c = boila_txn_commit(s, txn)?
+            s = c.s
+            txn = c.txn
+            if c.ok == 0 {
+                return boila_sql_fail(s, txn, c.err, c.state)
+            }
+        }
+        return BoilaSqlOut { s: s, txn: txn, ok: 1, err: "", state: "", kind: 6, res: ex.res, id: ex.affected }
     }
     if tok_kw(t0, "update") == 1 {
         let p = boila_parse_update(lx)
         if p.ok == 0 {
-            return boila_sql_fail(s, p.err, p.state)
+            return boila_sql_fail(s, txn, p.err, p.state)
         }
         let ct = boila_cat_by_name(s, p.upd.table)?
         s = ct.s
         if ct.ok == 0 {
-            return boila_sql_fail(s, ct.err, ct.state)
+            return boila_sql_fail(s, txn, ct.err, ct.state)
         }
-        let ex = boila_exec_update(s, ct.table, p.upd)?
-        return BoilaSqlOut { s: ex.s, ok: ex.ok, err: ex.err, state: ex.state, kind: 7, res: ex.res, id: ex.affected }
+        let was_active = txn.active
+        if was_active == 0 {
+            let b = boila_txn_begin(s, txn, 0, db)?
+            s = b.s
+            txn = b.txn
+        }
+        let ex = boila_exec_update(s, txn, ct.table, p.upd)?
+        s = ex.s
+        txn = ex.txn
+        if ex.ok == 0 {
+            txn = boila_txn_rollback(txn)
+            return boila_sql_fail(s, txn, ex.err, ex.state)
+        }
+        if was_active == 0 {
+            let c = boila_txn_commit(s, txn)?
+            s = c.s
+            txn = c.txn
+            if c.ok == 0 {
+                return boila_sql_fail(s, txn, c.err, c.state)
+            }
+        }
+        return BoilaSqlOut { s: s, txn: txn, ok: 1, err: "", state: "", kind: 7, res: ex.res, id: ex.affected }
     }
     if tok_kw(t0, "delete") == 1 {
         let p = boila_parse_delete(lx)
         if p.ok == 0 {
-            return boila_sql_fail(s, p.err, p.state)
+            return boila_sql_fail(s, txn, p.err, p.state)
         }
         let ct = boila_cat_by_name(s, p.del.table)?
         s = ct.s
         if ct.ok == 0 {
-            return boila_sql_fail(s, ct.err, ct.state)
+            return boila_sql_fail(s, txn, ct.err, ct.state)
         }
-        let ex = boila_exec_delete(s, ct.table, p.del)?
-        return BoilaSqlOut { s: ex.s, ok: ex.ok, err: ex.err, state: ex.state, kind: 8, res: ex.res, id: ex.affected }
+        let was_active = txn.active
+        if was_active == 0 {
+            let b = boila_txn_begin(s, txn, 0, db)?
+            s = b.s
+            txn = b.txn
+        }
+        let ex = boila_exec_delete(s, txn, ct.table, p.del)?
+        s = ex.s
+        txn = ex.txn
+        if ex.ok == 0 {
+            txn = boila_txn_rollback(txn)
+            return boila_sql_fail(s, txn, ex.err, ex.state)
+        }
+        if was_active == 0 {
+            let c = boila_txn_commit(s, txn)?
+            s = c.s
+            txn = c.txn
+            if c.ok == 0 {
+                return boila_sql_fail(s, txn, c.err, c.state)
+            }
+        }
+        return BoilaSqlOut { s: s, txn: txn, ok: 1, err: "", state: "", kind: 8, res: ex.res, id: ex.affected }
     }
-    return boila_sql_fail(s, concat("неподдържана конструкция '", concat(t0.txt, "' (P3: SELECT, CREATE TABLE/INDEX, INSERT, UPDATE, DELETE)")), "0A000")
+    return boila_sql_fail(s, txn, concat("неподдържана конструкция '", concat(t0.txt, "' (P4: SELECT, CREATE TABLE/INDEX, INSERT, UPDATE, DELETE, BEGIN/COMMIT/ROLLBACK)")), "0A000")
 }

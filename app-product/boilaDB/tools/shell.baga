@@ -74,7 +74,15 @@ fn main() -> i64 !IO !Time {
                             if out.kind == 4 {
                                 print(concat("OK (изтрита база ", concat(out.db, ")")))
                             } else {
-                                print(concat("OK (table id ", concat(int_to_str(out.id), ")")))
+                                if out.kind >= 6 && out.kind <= 8 {
+                                    print(concat("OK (засегнати редове: ", concat(int_to_str(out.id), ")")))
+                                } else {
+                                    if out.kind >= 10 && out.kind <= 12 {
+                                        print(concat("OK (lsn ", concat(int_to_str(out.id), ")")))
+                                    } else {
+                                        print(concat("OK (table id ", concat(int_to_str(out.id), ")")))
+                                    }
+                                }
                             }
                         }
                     }

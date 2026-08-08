@@ -1,0 +1,226 @@
+// boila_txn_test.baga — boilaDB P4: транзакции (buffered MVCC модел).
+//
+// Gate-ове по PLAN P4:
+//  - crash mid-transaction → чисто rollback (нищо не е durable преди COMMIT —
+//    буферът се чисти; проверява се: storage празен по време на txn)
+//  - читател с отворен snapshot не вижда междинни писания (storage-ът е
+//    непроменен до COMMIT; собствените писания се виждат от txn)
+//  - детерминистичен commit ред: монотонни LSN-и
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/storage/shards.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/txn/mvcc.baga"
+import "boilaDB/core/codec.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/core/row.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_str(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() {
+        return int_to_str(v.i)
+    }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_txn_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_txn_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE tt (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create_table", c0.ok == 1)
+
+    // --- auto-commit извън транзакция ---
+    let a1 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (1, 'a')")?
+    srv = a1.srv
+    check(fails, "autocommit_ok", a1.ok == 1 && a1.id == 1)
+
+    // --- BEGIN → собствени писания видими, storage непроменен ---
+    let b1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = b1.srv
+    check(fails, "begin_ok", b1.ok == 1 && b1.kind == 10)
+    let b2 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (2, 'b')")?
+    srv = b2.srv
+    check(fails, "txn_insert_ok", b2.ok == 1 && b2.id == 1)
+    let b3 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id = 2")?
+    srv = b3.srv
+    check(fails, "txn_sees_own", b3.ok == 1 && vec_len(b3.res.rows) == 1 && row_str(vec_get(b3.res.rows, 0), 1) == "b")
+    let b3c = boila_server_exec(srv, "boila", "SELECT * FROM tt")?
+    srv = b3c.srv
+    check(fails, "txn_sees_both", b3c.ok == 1 && vec_len(b3c.res.rows) == 2)
+    // storage проверка: ред 2 не е там преди COMMIT
+    let gs = boila_srv_db(srv, "boila")?
+    srv = gs.srv
+    let g2 = boila_get(gs.store, boila_cf_data(), c0.id, boila_val_enc(boila_val_i64(2)))?
+    srv = boila_srv_store_putback(srv, "boila", g2.s)
+    check(fails, "storage_clean_mid_txn", g2.found == 0)
+
+    // --- BEGIN два пъти → 25001 ---
+    let b4 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = b4.srv
+    check(fails, "begin_twice_25001", b4.ok == 0 && b4.state == "25001")
+
+    // --- USE по време на txn → 0A000 ---
+    let u0 = boila_server_exec(srv, "boila", "CREATE DATABASE tx2")?
+    srv = u0.srv
+    let u1 = boila_server_exec(srv, "tx2", "SELECT * FROM tt")?
+    srv = u1.srv
+    check(fails, "other_db_0A000", u1.ok == 0)
+    let u2 = boila_server_exec(srv, "boila", "USE tx2")?
+    srv = u2.srv
+    check(fails, "use_mid_txn_0A000", u2.ok == 0 && u2.state == "0A000")
+
+    // --- COMMIT → durable + LSN ---
+    let c1 = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = c1.srv
+    check(fails, "commit_ok_lsn", c1.ok == 1 && c1.kind == 11 && c1.id >= 1)
+    let c2 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id = 2")?
+    srv = c2.srv
+    check(fails, "committed_visible", c2.ok == 1 && vec_len(c2.res.rows) == 1)
+
+    // --- ROLLBACK → нищо не се пише ---
+    let r1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = r1.srv
+    let r2 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (3, 'c')")?
+    srv = r2.srv
+    let r3 = boila_server_exec(srv, "boila", "UPDATE tt SET v = 'xx' WHERE id = 1")?
+    srv = r3.srv
+    check(fails, "rb_stmts_ok", r2.ok == 1 && r3.ok == 1)
+    let r4 = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = r4.srv
+    check(fails, "rollback_ok", r4.ok == 1 && r4.kind == 12)
+    let r5 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id = 3")?
+    srv = r5.srv
+    check(fails, "rb_insert_gone", r5.ok == 1 && vec_len(r5.res.rows) == 0)
+    let r6 = boila_server_exec(srv, "boila", "SELECT v FROM tt WHERE id = 1")?
+    srv = r6.srv
+    check(fails, "rb_update_gone", r6.ok == 1 && vec_len(r6.res.rows) == 1 && row_str(vec_get(r6.res.rows, 0), 0) == "a")
+
+    // --- COMMIT без txn → no-op ok ---
+    let n1 = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = n1.srv
+    check(fails, "commit_noop", n1.ok == 1)
+
+    // --- грешка в заявление → rollback на целия буфер (T1) ---
+    let e1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = e1.srv
+    let e2 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (4, 'd')")?
+    srv = e2.srv
+    let e3 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (1, 'дубъл')")?
+    srv = e3.srv
+    check(fails, "dup_23505", e3.ok == 0 && e3.state == "23505")
+    let e4 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id = 4")?
+    srv = e4.srv
+    check(fails, "err_rolled_back", e4.ok == 1 && vec_len(e4.res.rows) == 0)
+    // транзакцията е приключена (rollback при грешка) — нов BEGIN работи
+    let e5 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = e5.srv
+    check(fails, "begin_after_err", e5.ok == 1)
+    let e6 = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = e6.srv
+
+    // --- READ ONLY: писане → 25006 ---
+    let ro1 = boila_server_exec(srv, "boila", "BEGIN READ ONLY")?
+    srv = ro1.srv
+    check(fails, "begin_ro", ro1.ok == 1)
+    let ro2 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (5, 'e')")?
+    srv = ro2.srv
+    check(fails, "ro_write_25006", ro2.ok == 0 && ro2.state == "25006")
+    let ro3 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id = 1")?
+    srv = ro3.srv
+    check(fails, "ro_read_ok", ro3.ok == 1 && vec_len(ro3.res.rows) == 1)
+    let ro4 = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = ro4.srv
+
+    // --- монотонни LSN (детерминистичен commit ред) ---
+    let m1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = m1.srv
+    let m2 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (10, 'x')")?
+    srv = m2.srv
+    let m3 = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = m3.srv
+    let m4 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = m4.srv
+    let m5 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (11, 'y')")?
+    srv = m5.srv
+    let m6 = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = m6.srv
+    check(fails, "lsn_monotone", m3.ok == 1 && m6.ok == 1 && m6.id > m3.id)
+
+    // --- UPDATE/DELETE в txn ---
+    let t1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = t1.srv
+    let t2 = boila_server_exec(srv, "boila", "UPDATE tt SET v = 'z' WHERE id = 10")?
+    srv = t2.srv
+    let t3 = boila_server_exec(srv, "boila", "DELETE FROM tt WHERE id = 11")?
+    srv = t3.srv
+    let t4 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id >= 10")?
+    srv = t4.srv
+    check(fails, "txn_upd_del", t2.ok == 1 && t3.ok == 1 && t4.ok == 1 && vec_len(t4.res.rows) == 1 && row_str(vec_get(t4.res.rows, 0), 1) == "z")
+    let t5 = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = t5.srv
+    check(fails, "txn_upd_del_commit", t5.ok == 1)
+
+    // --- restart: commit-натите данни са durable ---
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let d1 = boila_server_exec(srv2, "boila", "SELECT * FROM tt WHERE id = 10")?
+    srv2 = d1.srv
+    check(fails, "restart_durable", d1.ok == 1 && vec_len(d1.res.rows) == 1 && row_str(vec_get(d1.res.rows, 0), 1) == "z")
+    let d2 = boila_server_exec(srv2, "boila", "SELECT * FROM tt WHERE id = 11")?
+    srv2 = d2.srv
+    check(fails, "restart_deleted", d2.ok == 1 && vec_len(d2.res.rows) == 0)
+    boila_server_close(srv2)?
+
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_txn_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_txn_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

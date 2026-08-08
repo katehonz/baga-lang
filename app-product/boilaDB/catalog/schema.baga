@@ -118,11 +118,6 @@ fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
     return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t0, id: next }
 }
 
-// Пренаписва schema row-а на съществуваща таблица (CREATE INDEX).
-fn boila_cat_schema_rewrite(s: BoilaStore, t: BoilaTable) -> BoilaStore !IO !Time {
-    return boila_put(s, boila_cf_sys(), 1, boila_cat_pk_schema(t.id), boila_row_enc(boila_cat_schema_row(t)))?
-}
-
 fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
     let dn = boila_get(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
     s = dn.s

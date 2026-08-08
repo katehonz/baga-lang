@@ -122,10 +122,19 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 - Backup/monitoring: `lsm_checkpoint`, `lsm_backup_*`, `lsm_dbsize`
   per shard.
 
-### txn/ — транзакции при много клиенти
-- **Commit sequencer**: една нишка издава монотонни commit LSN-и.
-  Едно-shard транзакции минават fast path (без sequencer) — масовият OLTP
-  случай; multi-shard — през intents в `txn` key-space + commit ticket.
+### txn/ — транзакции
+- **P4 (едно-сесийен модел, реализиран):** писанията се буферират в
+  `BoilaTxn` и се commit-ват като един fsync batch с монотонен commit LSN
+  (`m|next_lsn` в sys CF); данните в storage носят envelope `[lsn 8B BE]
+  [row]` (data/index CF; sys каталогът е суров). Изолация: storage-ът е
+  непроменен по време на txn → читателите виждат само committed +
+  собствените buffer писания. Crash mid-txn → нищо durable → чисто
+  rollback. Грешка в заявление → rollback на целия buffer.
+- **P6 (конкурентен модел, целеви):** commit sequencer нишка с монотонни
+  LSN-и; multi-version ключове `<pk>|<ver_lsn_desc>`; multi-shard през
+  intents в `txn` key-space + commit ticket; write-write конфликт →
+  `40001 serialization_failure`. В едно-сесийния режим P4–P5 това би било
+  механизъм без потребител (gaps T2).
 - **MVCC snapshot isolation**: reader взима `snapshot = текущия committed
   LSN`; вижда най-новата версия ≤ snapshot. Write-write конфликт →
   `40001 serialization_failure` на втория commit.
@@ -296,7 +305,8 @@ app-product/boilaDB/
 │              config.baga errors.baga arena.baga
 ├── storage/   shards.baga databases.baga space.baga space_scan.baga
 │              gc.baga
-├── txn/       sequencer.baga mvcc.baga intents.baga recovery.baga
+├── txn/       mvcc.baga (P4: buffer + LSN commit)
+│              sequencer.baga intents.baga recovery.baga (P6, конкурентност)
 ├── catalog/   schema.baga stats.baga stats_hist.baga
 ├── index/     secondary.baga index_codec.baga unique.baga
 ├── sql/       ast.baga lexer.baga token.baga

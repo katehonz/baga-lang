@@ -1,9 +1,8 @@
-// exec_scan.baga — executor за SELECT (P1): point lookup по pk и
-// range (lo/hi) през scan + филтър.
+// exec_scan.baga — executor за SELECT (P4: през txn buffer-а).
 //
-// Честно за P1 (gaps.md K3): range пътят е scan-всичко-и-филтрирай —
-// rocksbaga SCAN е hash-подреден, не сортиран. Истинският range scan с
-// сортирана итерация идва с planner-а (P4).
+// Четенията merge-ват storage + собствения txn buffer (изолация:
+// непромененият storage + собствените писания). Range/full скеновете
+// минават през boila_txn_keys (storage pk + buffer puts − buffer dels).
 
 import "../storage/shards.baga"
 import "../core/codec.baga"
@@ -11,6 +10,7 @@ import "../core/value.baga"
 import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../index/secondary.baga"
+import "../txn/mvcc.baga"
 import "ast.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
@@ -22,12 +22,12 @@ struct BoilaResult {
 
 struct BoilaExec {
     s: BoilaStore,
+    txn: BoilaTxn,
     ok: i64,
     err: str,
     state: str,
     kind: i64,
-    res: BoilaResult,
-    id: i64
+    res: BoilaResult
 }
 
 fn boila_result_empty() -> BoilaResult {
@@ -36,12 +36,12 @@ fn boila_result_empty() -> BoilaResult {
     return BoilaResult { cols: cols, rows: rows }
 }
 
-fn boila_exec_fail(s: BoilaStore, msg: str, state: str) -> BoilaExec {
-    return BoilaExec { s: s, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
+fn boila_exec_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaExec {
+    return BoilaExec { s: s, txn: txn, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty() }
 }
 
-fn boila_exec_ok_select(s: BoilaStore, r: BoilaResult) -> BoilaExec {
-    return BoilaExec { s: s, ok: 1, err: "", state: "", kind: 1, res: r, id: 0 }
+fn boila_exec_ok_select(s: BoilaStore, txn: BoilaTxn, r: BoilaResult) -> BoilaExec {
+    return BoilaExec { s: s, txn: txn, ok: 1, err: "", state: "", kind: 1, res: r }
 }
 
 // Индекс на колона по име; -1 ако липсва.
@@ -93,7 +93,35 @@ fn boila_pk_lit_ok(typ: i64, v: BoilaVal) -> i64 {
     return 0
 }
 
-fn boila_exec_select(s: BoilaStore, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time {
+// pk-та от buffer-а, чиято колона col_idx има стойност val (за index merge).
+fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, pks: Vec<bytes>) {
+    let mut i: i64 = 0
+    while i < vec_len(txn.writes) {
+        let w = vec_get(txn.writes, i)
+        if w.cf == boila_cf_data() && w.table_id == t.id && w.is_del == 0 {
+            let row = boila_row_dec(w.row)
+            if col_idx < vec_len(row) {
+                if boila_val_cmp(vec_get(row, col_idx), val) == 0 {
+                    // вече в pks?
+                    let mut dup = false
+                    let mut j: i64 = 0
+                    while j < vec_len(pks) {
+                        if bytes_eq_b(vec_get(pks, j), w.pk) {
+                            dup = true
+                        }
+                        j = j + 1
+                    }
+                    if dup == false {
+                        vec_push(pks, w.pk)
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time {
     let mut res = boila_result_empty()
     // изходни колони
     let proj: Vec<i64> = vec_new()
@@ -103,7 +131,7 @@ fn boila_exec_select(s: BoilaStore, t: BoilaTable, sel: BoilaSel) -> BoilaExec !
             let nm = vec_get(sel.cols, i)
             let ix = boila_col_idx(t, nm)
             if ix < 0 {
-                return boila_exec_fail(s, concat("колона '", concat(nm, "' не съществува")), "42703")
+                return boila_exec_fail(s, txn, concat("колона '", concat(nm, "' не съществува")), "42703")
             }
             vec_push(proj, ix)
             i = i + 1
@@ -125,109 +153,99 @@ fn boila_exec_select(s: BoilaStore, t: BoilaTable, sel: BoilaSel) -> BoilaExec !
         }
         i = i + 1
     }
-    // WHERE: eq — по pk или по индексирана колона (P3); lo/hi — само pk.
+    // WHERE: eq — по pk или по индексирана колона; lo/hi — само pk.
     let pkcol = vec_get(t.cols, t.pk_idx)
     if sel.has_lo == 1 && sel.lo_col != pkcol.name {
-        return boila_exec_fail(s, concat("range по '", concat(sel.lo_col, "' — в P3 само по PRIMARY KEY")), "0A000")
+        return boila_exec_fail(s, txn, concat("range по '", concat(sel.lo_col, "' — в P4 само по PRIMARY KEY")), "0A000")
     }
     if sel.has_hi == 1 && sel.hi_col != pkcol.name {
-        return boila_exec_fail(s, concat("range по '", concat(sel.hi_col, "' — в P3 само по PRIMARY KEY")), "0A000")
+        return boila_exec_fail(s, txn, concat("range по '", concat(sel.hi_col, "' — в P4 само по PRIMARY KEY")), "0A000")
     }
     if sel.has_lo == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_lo) == 0 {
-        return boila_exec_fail(s, "литералът в >= не съответства на типа на PRIMARY KEY", "42804")
+        return boila_exec_fail(s, txn, "литералът в >= не съответства на типа на PRIMARY KEY", "42804")
     }
     if sel.has_hi == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_hi) == 0 {
-        return boila_exec_fail(s, "литералът в <= не съответства на типа на PRIMARY KEY", "42804")
+        return boila_exec_fail(s, txn, "литералът в <= не съответства на типа на PRIMARY KEY", "42804")
     }
 
     // point path: pk директно или индекс по колона
     if sel.has_eq == 1 {
         if sel.eq_col == pkcol.name {
             if boila_pk_lit_ok(pkcol.typ, sel.pk_eq) == 0 {
-                return boila_exec_fail(s, "литералът в = не съответства на типа на PRIMARY KEY", "42804")
+                return boila_exec_fail(s, txn, "литералът в = не съответства на типа на PRIMARY KEY", "42804")
             }
             let pkenc = boila_val_enc(sel.pk_eq)
-            let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
-            s = g.s
+            let g = boila_txn_get(s, txn, t.id, pkenc)?
             if g.found == 1 {
-                let row = boila_row_dec(g.val)
-                vec_push(res.rows, boila_project(row, proj))
+                vec_push(res.rows, boila_project(boila_row_dec(g.row), proj))
             }
-            return boila_exec_ok_select(s, res)
+            return boila_exec_ok_select(g.s, txn, res)
         }
         // индексирана не-pk колона
         let cix = boila_col_idx(t, sel.eq_col)
         if cix < 0 {
-            return boila_exec_fail(s, concat("колона '", concat(sel.eq_col, "' не съществува")), "42703")
+            return boila_exec_fail(s, txn, concat("колона '", concat(sel.eq_col, "' не съществува")), "42703")
         }
         let cd = vec_get(t.cols, cix)
         if boila_pk_lit_ok(cd.typ, sel.pk_eq) == 0 {
-            return boila_exec_fail(s, "литералът в = не съответства на типа на колоната", "42804")
+            return boila_exec_fail(s, txn, "литералът в = не съответства на типа на колоната", "42804")
         }
         let ixid = boila_ix_by_col_t(t, cix)
         if ixid < 0 {
-            return boila_exec_fail(s, concat("WHERE по '", concat(sel.eq_col, "' — колона без индекс")), "0A000")
+            return boila_exec_fail(s, txn, concat("WHERE по '", concat(sel.eq_col, "' — колона без индекс")), "0A000")
         }
         let lk = boila_ix_lookup(s, t, ixid, sel.pk_eq)?
         s = lk.s
+        // + buffer rows със същата стойност (собствените писания на txn)
+        boila_scan_buf_eq(txn, t, cix, sel.pk_eq, lk.pks)
         let mut li: i64 = 0
         let mut ldone = false
         while li < vec_len(lk.pks) && ldone == false {
-            let g = boila_get(s, boila_cf_data(), t.id, vec_get(lk.pks, li))?
+            let g = boila_txn_get(s, txn, t.id, vec_get(lk.pks, li))?
             s = g.s
             if g.found == 1 {
-                vec_push(res.rows, boila_project(boila_row_dec(g.val), proj))
+                vec_push(res.rows, boila_project(boila_row_dec(g.row), proj))
                 if sel.limit > 0 && vec_len(res.rows) >= sel.limit {
                     ldone = true
                 }
             }
             li = li + 1
         }
-        return boila_exec_ok_select(s, res)
+        return boila_exec_ok_select(s, txn, res)
     }
 
-    // range: scan + филтър (K3)
-    let mut cursor: i64 = 0
-    let mut rounds: i64 = 0
-    let mut done = false
-    while done == false && rounds < 10000 {
-        let sc = boila_scan(s, boila_cf_data(), t.id, cursor, 64)?
-        s = sc.s
-        let mut j: i64 = 0
-        while j < vec_len(sc.keys) && done == false {
-            let k = vec_get(sc.keys, j)
-            let pkenc = bytes_slice(k, 5, bytes_len(k))
-            let pkv = boila_val_dec(pkenc)
-            let mut keep = true
-            if sel.has_lo == 1 {
-                let c = boila_val_cmp(pkv, sel.pk_lo)
-                if c != 1 && c != 0 {
-                    keep = false
-                }
+    // range / full: pk списък (storage + buffer), после филтър
+    let ks = boila_txn_keys(s, txn, t.id)?
+    s = ks.s
+    let mut ki: i64 = 0
+    let mut rdone = false
+    while ki < vec_len(ks.pks) && rdone == false {
+        let pkenc = vec_get(ks.pks, ki)
+        let pkv = boila_val_dec(pkenc)
+        let mut keep = true
+        if sel.has_lo == 1 {
+            let c = boila_val_cmp(pkv, sel.pk_lo)
+            if c != 1 && c != 0 {
+                keep = false
             }
-            if keep && sel.has_hi == 1 {
-                let c = boila_val_cmp(pkv, sel.pk_hi)
-                if c != (0 - 1) && c != 0 {
-                    keep = false
-                }
-            }
-            if keep {
-                let g = boila_get(s, boila_cf_data(), t.id, pkenc)?
-                s = g.s
-                if g.found == 1 {
-                    vec_push(res.rows, boila_project(boila_row_dec(g.val), proj))
-                    if sel.limit > 0 && vec_len(res.rows) >= sel.limit {
-                        done = true
-                    }
-                }
-            }
-            j = j + 1
         }
-        cursor = sc.next
-        rounds = rounds + 1
-        if cursor == 0 {
-            done = true
+        if keep && sel.has_hi == 1 {
+            let c = boila_val_cmp(pkv, sel.pk_hi)
+            if c != 0 - 1 && c != 0 {
+                keep = false
+            }
         }
+        if keep {
+            let g = boila_txn_get(s, txn, t.id, pkenc)?
+            s = g.s
+            if g.found == 1 {
+                vec_push(res.rows, boila_project(boila_row_dec(g.row), proj))
+                if sel.limit > 0 && vec_len(res.rows) >= sel.limit {
+                    rdone = true
+                }
+            }
+        }
+        ki = ki + 1
     }
-    return boila_exec_ok_select(s, res)
+    return boila_exec_ok_select(s, txn, res)
 }

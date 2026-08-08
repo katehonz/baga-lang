@@ -77,12 +77,22 @@
   индексът валиден без rebuild**. Пълният 1M е блокиран от arena-та на
   езика (gaps Q2) и се връща с per-request arena управление в P6.
 
-## P4 — MVCC транзакции
-- Версии `<pk>|<ver_lsn_desc>`, snapshot LSN, commit sequencer за
-  multi-shard, intents + recovery; `BEGIN/COMMIT/ROLLBACK`.
-- **Гейт:** конкурентни писачи → детерминистичен commit ред; crash
-  mid-transaction → чист rollback при replay; читател с отворен snapshot
-  не вижда междинни писания.
+## P4 — MVCC транзакции (едно-сесийен buffered модел)
+- `BEGIN [READ ONLY] / COMMIT / ROLLBACK`; писанията се буферират и се
+  commit-ват като един fsync batch с монотонен commit LSN; данните в
+  storage носят `[lsn 8B][row]` envelope (data/index CF). Изолация:
+  storage непроменен до COMMIT; читателите виждат committed + собствените
+  buffer писания; грешка в заявление → rollback на буфера. Транзакцията
+  е фиксирана към базата си (USE/смяна на `?db=` → 0A000).
+- Ревизия (честно): multi-version ключовете `<pk>|<ver_lsn_desc>` и
+  commit sequencer-ът за конкурентни сесии са **преместени в P6** — в
+  едно-сесийния sync режим (P4–P5) те са механизъм без потребител
+  (gaps T2). Директни storage писания (извън SQL) трябва да wrap-ват с
+  `boila_wrap_val`.
+- **Гейтове (boila_txn_test, 29 проверки):** crash mid-transaction →
+  чисто rollback (storage празен преди COMMIT); читател с отворен
+  snapshot не вижда междинни писания; монотонни LSN за commit реда;
+  restart durability; READ ONLY (25006), двоен BEGIN (25001).
 
 ## P5 — Пълен SELECT + planner
 - `WHERE` филтриране, `ORDER BY/LIMIT/OFFSET`, `GROUP BY/HAVING` +
