@@ -1,0 +1,222 @@
+// hnsw.baga — CREATE HNSW INDEX + insert/delete node (P8).
+// Search: hnsw_search.baga. Store: hnsw_store.baga.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "distance.baga"
+import "hnsw_store.baga"
+import "hnsw_search.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+struct BoilaHnswRes {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    id: i64
+}
+
+fn hnsw_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: str, metric: i64) -> BoilaHnswRes !IO !Time {
+    let mut col_idx: i64 = 0 - 1
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        if vec_get(t.cols, i).name == col_name {
+            col_idx = i
+        }
+        i = i + 1
+    }
+    if col_idx < 0 {
+        return BoilaHnswRes { s: s, txn: txn, ok: 0, err: concat("колона '", concat(col_name, "' не съществува")), state: "42703", id: 0 }
+    }
+    let ct = vec_get(t.cols, col_idx).typ
+    if boila_is_vec_typ(ct) == 0 {
+        return BoilaHnswRes { s: s, txn: txn, ok: 0, err: "HNSW изисква VECTOR колона", state: "42804", id: 0 }
+    }
+    let dim = boila_vec_dim_of(ct)
+    let g = boila_get(s, boila_cf_sys(), 1, hnsw_cat_pk(t.id, name))?
+    s = g.s
+    if g.found == 1 {
+        return BoilaHnswRes { s: s, txn: txn, ok: 0, err: concat("hnsw индекс '", concat(name, "' вече съществува")), state: "42710", id: 0 }
+    }
+    let gm = boila_get(s, boila_cf_sys(), 1, hnsw_meta_next_pk())?
+    s = gm.s
+    let mut next: i64 = 1
+    if gm.found == 1 {
+        let row = boila_row_dec(gm.val)
+        if vec_len(row) > 0 {
+            next = vec_get(row, 0).i
+        }
+    }
+    let cnt: Vec<BoilaVal> = vec_new()
+    vec_push(cnt, boila_val_i64(next + 1))
+    let r1 = boila_txn_put(s, txn, boila_cf_sys(), 1, hnsw_meta_next_pk(), boila_row_enc(cnt))
+    if r1.ok == 0 {
+        return BoilaHnswRes { s: s, txn: r1.txn, ok: 0, err: r1.err, state: r1.state, id: 0 }
+    }
+    txn = r1.txn
+    let cat: Vec<BoilaVal> = vec_new()
+    vec_push(cat, boila_val_i64(next))
+    vec_push(cat, boila_val_i64(col_idx))
+    vec_push(cat, boila_val_i64(dim))
+    vec_push(cat, boila_val_i64(metric))
+    let r2 = boila_txn_put(s, txn, boila_cf_sys(), 1, hnsw_cat_pk(t.id, name), boila_row_enc(cat))
+    if r2.ok == 0 {
+        return BoilaHnswRes { s: s, txn: r2.txn, ok: 0, err: r2.err, state: r2.state, id: 0 }
+    }
+    txn = r2.txn
+    let gl = hnsw_list_for_table(s, t.id)?
+    s = gl.s
+    vec_push(gl.defs, BoilaHnswDef { id: next, col_idx: col_idx, name: name, dim: dim, metric: metric })
+    let rl = boila_txn_put(s, txn, boila_cf_sys(), 1, hnsw_list_pk(t.id), hnsw_defs_enc(gl.defs))
+    if rl.ok == 0 {
+        return BoilaHnswRes { s: s, txn: rl.txn, ok: 0, err: rl.err, state: rl.state, id: 0 }
+    }
+    txn = rl.txn
+    let vm = hnsw_vm_put(s, txn, next, 0, 0, 0, bytes_new(0))
+    s = vm.s
+    txn = vm.txn
+    let ks = boila_txn_keys(s, txn, t.id)?
+    s = ks.s
+    let mut ki: i64 = 0
+    while ki < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, ki)
+        let rv = hnsw_row_vec(s, txn, t.id, pk, col_idx, dim)?
+        s = rv.s
+        txn = rv.txn
+        if rv.ok == 1 {
+            let w = hnsw_index_one(s, txn, t.id, next, col_idx, dim, metric, pk, rv.dims)?
+            s = w.s
+            txn = w.txn
+        }
+        ki = ki + 1
+    }
+    return BoilaHnswRes { s: s, txn: txn, ok: 1, err: "", state: "", id: next }
+}
+
+fn hnsw_index_one(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, col_idx: i64, dim: i64, metric: i64, pk: bytes, dims: Vec<f64>) -> BoilaHnswRes !IO !Time {
+    let def = BoilaHnswDef { id: ix_id, col_idx: col_idx, name: "", dim: dim, metric: metric }
+    let vm = hnsw_vm_get(s, txn, ix_id)?
+    s = vm.s
+    txn = vm.txn
+    if vm.has_ep == 0 {
+        let empty: Vec<bytes> = vec_new()
+        let w0 = hnsw_nbrs_put(s, txn, table_id, ix_id, 0, pk, empty)
+        s = w0.s
+        txn = w0.txn
+        let vm2 = hnsw_vm_put(s, txn, ix_id, 1, 1, 0, pk)
+        return BoilaHnswRes { s: vm2.s, txn: vm2.txn, ok: 1, err: "", state: "", id: ix_id }
+    }
+    let lvl = hnsw_level_of(pk, 4)
+    let mut ep = vm.ep
+    let mut lc = vm.max_lvl
+    while lc > lvl {
+        let g = hnsw_greedy(s, txn, table_id, def, dims, ep, lc)?
+        s = g.s
+        txn = g.txn
+        if vec_len(g.pks) > 0 {
+            ep = vec_get(g.pks, 0)
+        }
+        lc = lc - 1
+    }
+    let mut l = lvl
+    if l > vm.max_lvl {
+        l = vm.max_lvl
+    }
+    let mut li: i64 = l
+    let mut going = true
+    while going {
+        let beam = hnsw_beam(s, txn, table_id, def, dims, ep, li, hnsw_ef_c())?
+        s = beam.s
+        txn = beam.txn
+        let mut mmax = hnsw_M()
+        if li == 0 {
+            mmax = hnsw_M() * 2
+        }
+        let sel = hnsw_select_neighbors(s, txn, table_id, def, dims, beam.pks, mmax)?
+        s = sel.s
+        txn = sel.txn
+        let w = hnsw_nbrs_put(s, txn, table_id, ix_id, li, pk, sel.pks)
+        s = w.s
+        txn = w.txn
+        let mut j: i64 = 0
+        while j < vec_len(sel.pks) {
+            let nb = vec_get(sel.pks, j)
+            let ng = hnsw_nbrs_get(s, txn, table_id, ix_id, li, nb)?
+            s = ng.s
+            txn = ng.txn
+            let mut nlist = ng.pks
+            if hnsw_pk_in(nlist, pk) == 0 {
+                vec_push(nlist, pk)
+            }
+            if vec_len(nlist) > mmax {
+                let nv = hnsw_row_vec(s, txn, table_id, nb, col_idx, dim)?
+                s = nv.s
+                txn = nv.txn
+                if nv.ok == 1 {
+                    let tr = hnsw_select_neighbors(s, txn, table_id, def, nv.dims, nlist, mmax)?
+                    s = tr.s
+                    txn = tr.txn
+                    nlist = tr.pks
+                }
+            }
+            let wp = hnsw_nbrs_put(s, txn, table_id, ix_id, li, nb, nlist)
+            s = wp.s
+            txn = wp.txn
+            j = j + 1
+        }
+        if vec_len(sel.pks) > 0 {
+            ep = vec_get(sel.pks, 0)
+        }
+        if li == 0 {
+            going = false
+        } else {
+            li = li - 1
+        }
+    }
+    let mut max_lvl = vm.max_lvl
+    let mut ep2 = vm.ep
+    if lvl > max_lvl {
+        max_lvl = lvl
+        ep2 = pk
+    }
+    let vm3 = hnsw_vm_put(s, txn, ix_id, 1, vm.count + 1, max_lvl, ep2)
+    return BoilaHnswRes { s: vm3.s, txn: vm3.txn, ok: 1, err: "", state: "", id: ix_id }
+}
+
+fn hnsw_index_doc(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, pk: bytes, v: BoilaVal) -> BoilaHnswRes !IO !Time {
+    let c = boila_vec_coerce(v, def.dim)
+    if c.ok == 0 {
+        return BoilaHnswRes { s: s, txn: txn, ok: 1, err: "", state: "", id: def.id }
+    }
+    return hnsw_index_one(s, txn, t.id, def.id, def.col_idx, def.dim, def.metric, pk, boila_vec_from_val(c.v))?
+}
+
+fn hnsw_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, pk: bytes) -> BoilaHnswRes !IO !Time {
+    let mut li: i64 = 0
+    while li <= 4 {
+        let d = boila_txn_del(s, txn, boila_cf_vec(), table_id, hnsw_nbr_pk(def.id, li, pk))
+        txn = d.txn
+        li = li + 1
+    }
+    let vm = hnsw_vm_get(s, txn, def.id)?
+    s = vm.s
+    txn = vm.txn
+    let mut cnt = vm.count - 1
+    if cnt < 0 {
+        cnt = 0
+    }
+    let mut has = vm.has_ep
+    let mut ep = vm.ep
+    if bytes_eq_b(ep, pk) {
+        has = 0
+        ep = bytes_new(0)
+    }
+    let vm2 = hnsw_vm_put(s, txn, def.id, has, cnt, vm.max_lvl, ep)
+    return BoilaHnswRes { s: vm2.s, txn: vm2.txn, ok: 1, err: "", state: "", id: def.id }
+}

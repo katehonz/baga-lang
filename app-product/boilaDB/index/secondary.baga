@@ -135,7 +135,7 @@ fn boila_ix_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str, co
         i = i + 1
     }
     vec_push(newixs, BoilaIxMeta { id: next, col_idx: col_idx, name: ix_name })
-    let t2 = BoilaTable { id: t.id, name: t.name, cols: t.cols, pk_idx: t.pk_idx, ixs: newixs }
+    let t2 = BoilaTable { id: t.id, name: t.name, cols: t.cols, pk_idx: t.pk_idx, ixs: newixs, ttl_sec: t.ttl_sec }
     let r3 = boila_txn_put(s, txn, boila_cf_sys(), 1, boila_cat_pk_schema(t.id), boila_row_enc(boila_cat_schema_row(t2)))
     if r3.ok == 0 {
         return BoilaIxTxnRes { s: s, txn: r3.txn, ok: 0, err: r3.err, state: r3.state, id: 0 }

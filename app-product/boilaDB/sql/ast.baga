@@ -39,7 +39,15 @@ struct BoilaSel {
     has_fts: i64,
     fts_col: str,
     fts_mode: i64,          // 1 AND, 2 OR
-    fts_terms: Vec<str>
+    fts_terms: Vec<str>,
+    // kNN (P8): WHERE col <->|<=>|<#> '[…]'  (+ LIMIT = k)
+    has_knn: i64,
+    knn_col: str,
+    knn_metric: i64,        // 1 L2, 2 cos, 3 ip
+    knn_query: str,         // суров vector литерал
+    // time_bucket (P9): GROUP BY time_bucket('1m', col)
+    bucket_iv: i64,         // 0 = none; else interval seconds
+    bucket_col: str
 }
 
 fn boila_sel_item_col(name: str) -> BoilaSelItem {
@@ -59,7 +67,8 @@ struct BoilaColDef {
 struct BoilaCreate {
     table: str,
     cols: Vec<BoilaColDef>,
-    pk_idx: i64
+    pk_idx: i64,
+    ttl_sec: i64    // P9: 0 = none; FROM WITH (ttl_days|ttl_sec)
 }
 
 fn boila_sel_empty() -> BoilaSel {
@@ -79,7 +88,9 @@ fn boila_sel_empty() -> BoilaSel {
         has_group: 0, group_cols: gc,
         has_having: 0, hav_agg: 0, hav_col: "", hav_op: "", hav_val: 0,
         has_join: 0, join_kind: 0, join_table: "", join_lcol: "", join_rcol: "",
-        has_fts: 0, fts_col: "", fts_mode: 1, fts_terms: ft
+        has_fts: 0, fts_col: "", fts_mode: 1, fts_terms: ft,
+        has_knn: 0, knn_col: "", knn_metric: 1, knn_query: "",
+        bucket_iv: 0, bucket_col: ""
     }
 }
 
@@ -89,7 +100,7 @@ fn boila_coldef(name: str, typ: i64) -> BoilaColDef {
 
 fn boila_create_empty() -> BoilaCreate {
     let cols: Vec<BoilaColDef> = vec_new()
-    return BoilaCreate { table: "", cols: cols, pk_idx: 0 - 1 }
+    return BoilaCreate { table: "", cols: cols, pk_idx: 0 - 1, ttl_sec: 0 }
 }
 
 // --- DML (P3) ---

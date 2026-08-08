@@ -12,6 +12,9 @@ import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../index/secondary.baga"
 import "../fts/fts.baga"
+import "../vector/hnsw.baga"
+import "../vector/hnsw_store.baga"
+import "../vector/distance.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_scan.baga"
@@ -48,9 +51,14 @@ fn boila_row_copy(row: Vec<BoilaVal>) -> Vec<BoilaVal> {
 }
 
 // Дали литерал съответства на типа на колона (null минава навсякъде).
+// VECTOR: приема tag=vector или str '[…]'.
 fn boila_dml_val_ok(typ: i64, v: BoilaVal) -> i64 {
     if v.tag == boila_v_null() {
         return 1
+    }
+    if boila_is_vec_typ(typ) == 1 {
+        let c = boila_vec_coerce(v, boila_vec_dim_of(typ))
+        return c.ok
     }
     if typ == boila_v_i64() || typ == boila_v_ts() {
         if v.tag == boila_v_i64() {
@@ -62,6 +70,16 @@ fn boila_dml_val_ok(typ: i64, v: BoilaVal) -> i64 {
         return 1
     }
     return 0
+}
+
+fn boila_dml_coerce(typ: i64, v: BoilaVal) -> BoilaVal {
+    if boila_is_vec_typ(typ) == 1 && v.tag != boila_v_null() {
+        let c = boila_vec_coerce(v, boila_vec_dim_of(typ))
+        if c.ok == 1 {
+            return c.v
+        }
+    }
+    return v
 }
 
 // RETURNING проекция: star → празен proj (всички колони).
@@ -159,6 +177,8 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
     let pj2 = boila_dml_proj(t, ins.ret_star, ins.ret_cols)
     let ftsl = fts_list_for_table(s, t.id)?
     s = ftsl.s
+    let hnswl = hnsw_list_for_table(s, t.id)?
+    s = hnswl.s
     let mut affected: i64 = 0
     let mut r: i64 = 0
     while r < vec_len(ins.rows) {
@@ -177,7 +197,7 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
             if boila_dml_val_ok(cd.typ, v) == 0 {
                 return boila_dml_fail(s, txn, 6, concat("стойност за '", concat(cd.name, "' не съответства на типа")), "42804")
             }
-            vec_set(full, vec_get(cix, c), v)
+            vec_set(full, vec_get(cix, c), boila_dml_coerce(cd.typ, v))
             c = c + 1
         }
         let pkval = vec_get(tuple, pk_slot)
@@ -232,6 +252,20 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
                     }
                     fi = fi + 1
                 }
+                // hnsw sync
+                let mut hi: i64 = 0
+                while hi < vec_len(hnswl.defs) {
+                    let d = vec_get(hnswl.defs, hi)
+                    let hu = hnsw_unindex_doc(s, txn, t.id, d, pkenc)?
+                    s = hu.s
+                    txn = hu.txn
+                    if d.col_idx < vec_len(new) {
+                        let hw = hnsw_index_doc(s, txn, t, d, pkenc, vec_get(new, d.col_idx))?
+                        s = hw.s
+                        txn = hw.txn
+                    }
+                    hi = hi + 1
+                }
                 affected = affected + 1
                 if ins.has_ret == 1 {
                     vec_push(res.rows, boila_project(new, pj2.proj))
@@ -262,6 +296,16 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
                     }
                 }
                 fi = fi + 1
+            }
+            let mut hi: i64 = 0
+            while hi < vec_len(hnswl.defs) {
+                let d = vec_get(hnswl.defs, hi)
+                if d.col_idx < vec_len(full) {
+                    let hw = hnsw_index_doc(s, txn, t, d, pkenc, vec_get(full, d.col_idx))?
+                    s = hw.s
+                    txn = hw.txn
+                }
+                hi = hi + 1
             }
             affected = affected + 1
             if ins.has_ret == 1 {

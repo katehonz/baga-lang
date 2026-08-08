@@ -1,0 +1,177 @@
+// bfs.baga — BFS / DFS / Dijkstra върху adjacency (P10).
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "adjacency.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaWalk {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    nodes: Vec<bytes>,
+    depths: Vec<i64>,
+    dists: Vec<i64>
+}
+
+fn graph_out(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, node: bytes) -> BoilaNbrGet !IO !Time {
+    return graph_nbrs_get(s, txn, table_id, graph_out_pk(gid, node))?
+}
+
+// BFS: start node_enc, max_depth inclusive; depths[i] за nodes[i].
+fn graph_bfs(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_depth: i64) -> BoilaWalk !IO !Time {
+    let nodes: Vec<bytes> = vec_new()
+    let depths: Vec<i64> = vec_new()
+    let dists: Vec<i64> = vec_new()
+    let vis: Vec<bytes> = vec_new()
+    vec_push(nodes, start)
+    vec_push(depths, 0)
+    vec_push(dists, 0)
+    vec_push(vis, start)
+    let mut qi: i64 = 0
+    while qi < vec_len(nodes) {
+        let cur = vec_get(nodes, qi)
+        let d = vec_get(depths, qi)
+        qi = qi + 1
+        if d < max_depth {
+            let nb = graph_out(s, txn, table_id, gid, cur)?
+            s = nb.s
+            txn = nb.txn
+            let mut j: i64 = 0
+            while j < vec_len(nb.list.pks) {
+                let n = vec_get(nb.list.pks, j)
+                if graph_pk_in(vis, n) == 0 {
+                    vec_push(vis, n)
+                    vec_push(nodes, n)
+                    vec_push(depths, d + 1)
+                    vec_push(dists, d + 1)
+                }
+                j = j + 1
+            }
+        }
+    }
+    return BoilaWalk { s: s, txn: txn, nodes: nodes, depths: depths, dists: dists }
+}
+
+// DFS preorder (stack).
+fn graph_dfs(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_depth: i64) -> BoilaWalk !IO !Time {
+    let nodes: Vec<bytes> = vec_new()
+    let depths: Vec<i64> = vec_new()
+    let dists: Vec<i64> = vec_new()
+    let vis: Vec<bytes> = vec_new()
+    let mut st_n: Vec<bytes> = vec_new()
+    let mut st_d: Vec<i64> = vec_new()
+    vec_push(st_n, start)
+    vec_push(st_d, 0)
+    while vec_len(st_n) > 0 {
+        let ix = vec_len(st_n) - 1
+        let cur = vec_get(st_n, ix)
+        let d = vec_get(st_d, ix)
+        let nn: Vec<bytes> = vec_new()
+        let nd: Vec<i64> = vec_new()
+        let mut k: i64 = 0
+        while k < ix {
+            vec_push(nn, vec_get(st_n, k))
+            vec_push(nd, vec_get(st_d, k))
+            k = k + 1
+        }
+        let mut st_n2 = nn
+        let mut st_d2 = nd
+        if graph_pk_in(vis, cur) == 0 {
+            vec_push(vis, cur)
+            vec_push(nodes, cur)
+            vec_push(depths, d)
+            vec_push(dists, d)
+            if d < max_depth {
+                let nb = graph_out(s, txn, table_id, gid, cur)?
+                s = nb.s
+                txn = nb.txn
+                let mut j = vec_len(nb.list.pks) - 1
+                while j >= 0 {
+                    let n = vec_get(nb.list.pks, j)
+                    if graph_pk_in(vis, n) == 0 {
+                        vec_push(st_n2, n)
+                        vec_push(st_d2, d + 1)
+                    }
+                    j = j - 1
+                }
+            }
+        }
+        st_n = st_n2
+        st_d = st_d2
+    }
+    return BoilaWalk { s: s, txn: txn, nodes: nodes, depths: depths, dists: dists }
+}
+
+// Dijkstra: non-negative weights; max_depth limits hop count (not weight).
+fn graph_dijkstra(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_hops: i64) -> BoilaWalk !IO !Time {
+    let nodes: Vec<bytes> = vec_new()
+    let depths: Vec<i64> = vec_new()
+    let dists: Vec<i64> = vec_new()
+    let hops: Vec<i64> = vec_new()
+    let done: Vec<i64> = vec_new()
+    vec_push(nodes, start)
+    vec_push(depths, 0)
+    vec_push(dists, 0)
+    vec_push(hops, 0)
+    vec_push(done, 0)
+    let mut guard: i64 = 0
+    while guard < 100000 {
+        guard = guard + 1
+        // pick undone min dist
+        let mut best: i64 = 0 - 1
+        let mut bi: i64 = 0
+        while bi < vec_len(nodes) {
+            if vec_get(done, bi) == 0 {
+                if best < 0 || vec_get(dists, bi) < vec_get(dists, best) {
+                    best = bi
+                }
+            }
+            bi = bi + 1
+        }
+        if best < 0 {
+            guard = 100000
+        } else {
+            vec_set(done, best, 1)
+            let cur = vec_get(nodes, best)
+            let cd = vec_get(dists, best)
+            let ch = vec_get(hops, best)
+            if ch < max_hops {
+                let nb = graph_out(s, txn, table_id, gid, cur)?
+                s = nb.s
+                txn = nb.txn
+                let mut j: i64 = 0
+                while j < vec_len(nb.list.pks) {
+                    let n = vec_get(nb.list.pks, j)
+                    let w = vec_get(nb.list.ws, j)
+                    let nd = cd + w
+                    let mut ix: i64 = 0 - 1
+                    let mut t: i64 = 0
+                    while t < vec_len(nodes) {
+                        if bytes_eq_b(vec_get(nodes, t), n) {
+                            ix = t
+                        }
+                        t = t + 1
+                    }
+                    if ix < 0 {
+                        vec_push(nodes, n)
+                        vec_push(depths, ch + 1)
+                        vec_push(dists, nd)
+                        vec_push(hops, ch + 1)
+                        vec_push(done, 0)
+                    } else {
+                        if vec_get(done, ix) == 0 && nd < vec_get(dists, ix) {
+                            vec_set(dists, ix, nd)
+                            vec_set(depths, ix, ch + 1)
+                            vec_set(hops, ix, ch + 1)
+                        }
+                    }
+                    j = j + 1
+                }
+            }
+        }
+    }
+    return BoilaWalk { s: s, txn: txn, nodes: nodes, depths: depths, dists: dists }
+}

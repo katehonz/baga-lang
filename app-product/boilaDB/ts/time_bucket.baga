@@ -1,0 +1,113 @@
+// time_bucket.baga — time_bucket('1m', ts) (P9).
+// Интервали: Ns/Nm/Nh/Nd (секунди/минути/часове/дни). ts е i64
+// (BIGINT unix sec или TIMESTAMPTZ µs — виж boila_tb_norm).
+
+import "../core/value.baga"
+import "std/str/str.baga"
+
+struct BoilaTbParse {
+    ok: i64,
+    sec: i64,
+    err: str,
+    state: str
+}
+
+// '1m' | '5m' | '1h' | '1d' | '30s' → секунди.
+fn boila_tb_parse_iv(s: str) -> BoilaTbParse {
+    let n = len(s)
+    if n < 2 {
+        return BoilaTbParse { ok: 0, sec: 0, err: "празен time_bucket интервал", state: "42601" }
+    }
+    let mut i: i64 = 0
+    let mut num: i64 = 0
+    let mut saw = false
+    while i < n {
+        let c = char_at(s, i)
+        if c >= 48 && c <= 57 {
+            num = num * 10 + (c - 48)
+            saw = true
+            i = i + 1
+        } else {
+            i = n
+        }
+    }
+    if saw == false || num <= 0 {
+        return BoilaTbParse { ok: 0, sec: 0, err: "time_bucket интервал — положително число", state: "42601" }
+    }
+    // unit = rest
+    let mut unit = ""
+    let mut j = 0
+    while j < n {
+        let c = char_at(s, j)
+        if c >= 48 && c <= 57 {
+            j = j + 1
+        } else {
+            while j < n {
+                unit = concat(unit, chr(char_at(s, j)))
+                j = j + 1
+            }
+        }
+    }
+    let mut mul: i64 = 0
+    if unit == "s" || unit == "sec" || unit == "secs" {
+        mul = 1
+    }
+    if unit == "m" || unit == "min" || unit == "mins" {
+        mul = 60
+    }
+    if unit == "h" || unit == "hour" || unit == "hours" {
+        mul = 3600
+    }
+    if unit == "d" || unit == "day" || unit == "days" {
+        mul = 86400
+    }
+    if mul == 0 {
+        return BoilaTbParse { ok: 0, sec: 0, err: concat("непознат time_bucket unit '", concat(unit, "' (s/m/h/d)")), state: "0A000" }
+    }
+    return BoilaTbParse { ok: 1, sec: num * mul, err: "", state: "" }
+}
+
+// Нормализира ts стойност към unix секунди.
+// TIMESTAMPTZ (tag ts) е µs → /1e6; BIGINT се приема като секунди
+// ако |v| < 1e12, иначе µs.
+fn boila_tb_to_sec(v: BoilaVal) -> i64 {
+    if v.tag == boila_v_null() {
+        return 0
+    }
+    let x = v.i
+    if v.tag == boila_v_ts() {
+        return x / 1000000
+    }
+    // i64: heuristic
+    if x > 100000000000 || x < (0 - 100000000000) {
+        return x / 1000000
+    }
+    return x
+}
+
+// floor bucket start (unix sec).
+fn boila_tb_bucket(ts_sec: i64, iv_sec: i64) -> i64 {
+    if iv_sec <= 0 {
+        return ts_sec
+    }
+    if ts_sec >= 0 {
+        return (ts_sec / iv_sec) * iv_sec
+    }
+    // negative: floor toward -inf
+    let q = ts_sec / iv_sec
+    if ts_sec == q * iv_sec {
+        return q * iv_sec
+    }
+    return (q - 1) * iv_sec
+}
+
+fn boila_tb_apply(v: BoilaVal, iv_sec: i64) -> BoilaVal {
+    if v.tag == boila_v_null() {
+        return v
+    }
+    let b = boila_tb_bucket(boila_tb_to_sec(v), iv_sec)
+    if v.tag == boila_v_ts() {
+        return boila_val_ts(b * 1000000)
+    }
+    return boila_val_i64(b)
+}

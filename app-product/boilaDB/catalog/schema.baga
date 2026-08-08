@@ -17,6 +17,7 @@ import "../core/codec.baga"
 import "../core/value.baga"
 import "../core/row.baga"
 import "../sql/ast.baga"
+import "../ts/retention.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
@@ -31,7 +32,8 @@ struct BoilaTable {
     name: str,
     cols: Vec<BoilaColDef>,
     pk_idx: i64,
-    ixs: Vec<BoilaIxMeta>
+    ixs: Vec<BoilaIxMeta>,
+    ttl_sec: i64    // P9; 0 = none
 }
 
 struct BoilaCatRes {
@@ -46,7 +48,7 @@ struct BoilaCatRes {
 fn boila_cat_empty_table() -> BoilaTable {
     let cols: Vec<BoilaColDef> = vec_new()
     let ixs: Vec<BoilaIxMeta> = vec_new()
-    return BoilaTable { id: 0, name: "", cols: cols, pk_idx: 0 - 1, ixs: ixs }
+    return BoilaTable { id: 0, name: "", cols: cols, pk_idx: 0 - 1, ixs: ixs, ttl_sec: 0 }
 }
 
 fn boila_cat_pk_name(name: str) -> bytes {
@@ -105,7 +107,7 @@ fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
         }
     }
     let ixs0: Vec<BoilaIxMeta> = vec_new()
-    let t0 = BoilaTable { id: next, name: cr.table, cols: cr.cols, pk_idx: cr.pk_idx, ixs: ixs0 }
+    let t0 = BoilaTable { id: next, name: cr.table, cols: cr.cols, pk_idx: cr.pk_idx, ixs: ixs0, ttl_sec: cr.ttl_sec }
     s = boila_put(s, boila_cf_sys(), 1, boila_cat_pk_schema(next), boila_row_enc(boila_cat_schema_row(t0)))?
     // име → id
     let idrow: Vec<BoilaVal> = vec_new()
@@ -115,6 +117,10 @@ fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
     let mrow2: Vec<BoilaVal> = vec_new()
     vec_push(mrow2, boila_val_i64(next + 1))
     s = boila_put(s, boila_cf_sys(), 1, boila_cat_pk_meta(), boila_row_enc(mrow2))?
+    // P9 TTL
+    if cr.ttl_sec > 0 {
+        s = boila_ttl_put(s, next, cr.ttl_sec)?
+    }
     return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t0, id: next }
 }
 
@@ -169,5 +175,7 @@ fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
             k = k + 1
         }
     }
-    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: id, name: name, cols: cols, pk_idx: e1.i, ixs: ixs }, id: id }
+    let tg = boila_ttl_get(s, id)?
+    s = tg.s
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: id, name: name, cols: cols, pk_idx: e1.i, ixs: ixs, ttl_sec: tg.ttl_sec }, id: id }
 }

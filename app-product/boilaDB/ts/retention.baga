@@ -1,0 +1,69 @@
+// retention.baga — table TTL + put_ex + sweep (P9).
+// TTL живее в schema (ttl_sec); data put-ите ползват lsm_put_ex_kb.
+// rocksbaga lazy-expire-ва на get/flush/compact (BAGATTL1).
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "rocksbaga/db/shard.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// sys: "td|<table_id>" → [ttl_sec]  (point GET; 0/липса = без TTL)
+fn boila_ttl_pk(table_id: i64) -> bytes {
+    return bytes_of_str(concat("td|", int_to_str(table_id)))
+}
+
+fn boila_ttl_put(s: BoilaStore, table_id: i64, ttl_sec: i64) -> BoilaStore !IO !Time {
+    if ttl_sec <= 0 {
+        return boila_del(s, boila_cf_sys(), 1, boila_ttl_pk(table_id))?
+    }
+    let r: Vec<BoilaVal> = vec_new()
+    vec_push(r, boila_val_i64(ttl_sec))
+    return boila_put(s, boila_cf_sys(), 1, boila_ttl_pk(table_id), boila_row_enc(r))?
+}
+
+struct BoilaTtlGet {
+    s: BoilaStore,
+    ttl_sec: i64
+}
+
+fn boila_ttl_get(s: BoilaStore, table_id: i64) -> BoilaTtlGet !IO !Time {
+    let g = boila_get(s, boila_cf_sys(), 1, boila_ttl_pk(table_id))?
+    s = g.s
+    if g.found == 0 {
+        return BoilaTtlGet { s: s, ttl_sec: 0 }
+    }
+    let row = boila_row_dec(g.val)
+    if vec_len(row) < 1 {
+        return BoilaTtlGet { s: s, ttl_sec: 0 }
+    }
+    return BoilaTtlGet { s: s, ttl_sec: vec_get(row, 0).i }
+}
+
+// put с optional TTL (ttl_sec<=0 → plain put).
+fn boila_put_ex(s: BoilaStore, cf: i64, table_id: i64, pk: bytes, val: bytes, ttl_sec: i64) -> BoilaStore !IO !Time {
+    let key = boila_key_row(cf, table_id, pk)
+    if ttl_sec <= 0 {
+        let c = lsm_cluster_put_kb(s.c, key, val)?
+        return BoilaStore { c: c, ok: c.ok }
+    }
+    let c = lsm_cluster_put_ex_kb(s.c, key, val, ttl_sec)?
+    return BoilaStore { c: c, ok: c.ok }
+}
+
+struct BoilaDbSize {
+    s: BoilaStore,
+    keys: i64
+}
+
+fn boila_dbsize(s: BoilaStore) -> BoilaDbSize !IO !Time {
+    let r = lsm_cluster_dbsize(s.c)?
+    return BoilaDbSize { s: BoilaStore { c: r.c, ok: r.c.ok }, keys: r.n }
+}
+
+// Sweep: flush (TTL lazy drop on flush/compact path in rocksbaga).
+fn boila_ts_sweep(s: BoilaStore) -> BoilaStore !IO !Time {
+    return boila_flush(s)?
+}

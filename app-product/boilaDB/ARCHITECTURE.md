@@ -40,6 +40,12 @@ P2): registry + отделен sharded клъстер на база.
 6. **Предвидима латентност пред пиков маркетинг.** Bounded опашки,
    admission control, budget на заявка — целта е плоска p99 при 10x
    повече клиенти, не рекорд в един режим.
+7. **UTF-8 only.** Единственият текстов encoding на сървъра и по wire.
+   TEXT/JSONB ключове/SQL идентификатори и литерали/FTS terms са
+   byte-точни UTF-8 (без `chr()` re-encode на ≥0x80). PG wire:
+   `server_encoding=UTF8`, `client_encoding=UTF8`. Друг encoding →
+   `0A000`. Без ICU/Unicode case fold в v1 (exact match за не-ASCII;
+   gaps F1).
 
 ## 2. Целево натоварване (измеримо, не маркетинг)
 
@@ -221,6 +227,13 @@ isolation, `$1..$n` prepared statements през extended protocol-а.
 базата в startup съобщението (P6). Cross-database заявки/транзакции —
 извън v1 (`0A000`).
 
+**Encoding:** **UTF-8 only** (стандарт от P0, не фазова опция). Wire
+ParameterStatus `server_encoding`/`client_encoding` = `UTF8`; storage
+payload-ите на TEXT/str са сурови UTF-8 байтове; lexer-ът акумулира
+стринг литерали през `bytes` (не `chr()`). Няма `SET client_encoding`,
+няма conversion tables. Unicode case folding / ICU collation — v2+
+(gaps F1: ASCII fold only).
+
 **Всичко извън списъка** → `0A000 feature_not_supported` с името на
 конструкцията. Никога тиха разлика в семантиката спрямо PostgreSQL.
 
@@ -277,6 +290,7 @@ cell2 пакети (доказаният модел на rocksbaga MT и queueba
 - Multi-shard транзакции: snapshot isolation, не 2PC.
 - Auth: cleartext + статичен token по wire; няма per-user ACL/SCRAM в v1.
 - PG wire: само v3, без COPY, без logical replication, без LISTEN/NOTIFY.
+- Encoding: **само UTF-8**; без `client_encoding` смяна, без ICU collation.
 
 ## 9. Правила за размер на файловете (урокът от barabadb)
 

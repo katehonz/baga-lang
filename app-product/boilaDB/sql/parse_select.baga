@@ -1,16 +1,4 @@
-// parse_select.baga — parser за SELECT (P5).
-//
-// Граматика:
-//   SELECT [DISTINCT] proj FROM ident
-//     [ [INNER | LEFT [OUTER]] JOIN ident ON ident = ident ]
-//     [WHERE cond (AND cond)*]
-//     [GROUP BY ident (, ident)*]
-//     [HAVING agg( * | ident ) op num]
-//     [ORDER BY ident [ASC|DESC] (, ...)*]
-//     [LIMIT num] [OFFSET num] [;]
-//
-// Грешки: 42601 syntax; 0A000 feature_not_supported (смесени колони и
-// агрегати без GROUP BY, HAVING без агрегат, втори JOIN).
+// parse_select.baga — SELECT parser (P5+P7/P8: @@ / kNN ops).
 
 import "token.baga"
 import "lexer.baga"
@@ -18,6 +6,7 @@ import "ast.baga"
 import "parse_common.baga"
 import "tsquery.baga"
 import "../core/value.baga"
+import "../ts/time_bucket.baga"
 import "std/str/str.baga"
 
 struct BoilaParseSel {
@@ -27,8 +16,6 @@ struct BoilaParseSel {
     state: str
 }
 
-// tsquery низ → terms + режим — в tsquery.baga (boila_ts_parse).
-
 fn boila_ps_fail(msg: str, state: str) -> BoilaParseSel {
     return BoilaParseSel { ok: 0, sel: boila_sel_empty(), err: msg, state: state }
 }
@@ -36,14 +23,10 @@ fn boila_ps_fail(msg: str, state: str) -> BoilaParseSel {
 fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     let mut sel = boila_sel_empty()
     let mut i: i64 = 1
-
-    // DISTINCT
     if tok_kw(boila_ps_tok(l, i), "distinct") == 1 {
         sel.distinct = 1
         i = i + 1
     }
-
-    // проекция
     let t = boila_ps_tok(l, i)
     if t.kind == tok_star() {
         sel.star = 1
@@ -152,45 +135,43 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
             }
             i = i + 1
             if op.txt == "@@" {
-                // col @@ to_tsquery('…') | plainto_tsquery('…')
-                if sel.has_fts == 1 {
-                    return boila_ps_fail("повторно @@ условие", "0A000")
-                }
+                if sel.has_fts == 1 { return boila_ps_fail("повторно @@ условие", "0A000") }
+                if sel.has_knn == 1 { return boila_ps_fail("@@ заедно с kNN", "0A000") }
                 let fn_t = boila_ps_tok(l, i)
                 let mut plain: i64 = 0 - 1
-                if fn_t.kind == tok_ident() && fn_t.txt == "to_tsquery" {
-                    plain = 0
-                }
-                if fn_t.kind == tok_ident() && fn_t.txt == "plainto_tsquery" {
-                    plain = 1
-                }
-                if plain < 0 {
-                    return boila_ps_fail("очаквах to_tsquery/plainto_tsquery след @@", "42601")
-                }
-                if boila_ps_tok(l, i + 1).kind != tok_lparen() {
-                    return boila_ps_fail("очаквах '(' след tsquery функция", "42601")
-                }
+                if fn_t.kind == tok_ident() && fn_t.txt == "to_tsquery" { plain = 0 }
+                if fn_t.kind == tok_ident() && fn_t.txt == "plainto_tsquery" { plain = 1 }
+                if plain < 0 { return boila_ps_fail("очаквах to_tsquery/plainto_tsquery след @@", "42601") }
+                if boila_ps_tok(l, i + 1).kind != tok_lparen() { return boila_ps_fail("очаквах '(' след tsquery", "42601") }
                 let lit = boila_ps_tok(l, i + 2)
-                if lit.kind != tok_str() {
-                    return boila_ps_fail("очаквах стринг в tsquery", "42601")
-                }
-                if boila_ps_tok(l, i + 3).kind != tok_rparen() {
-                    return boila_ps_fail("очаквах ')' в tsquery", "42601")
-                }
+                if lit.kind != tok_str() { return boila_ps_fail("очаквах стринг в tsquery", "42601") }
+                if boila_ps_tok(l, i + 3).kind != tok_rparen() { return boila_ps_fail("очаквах ')' в tsquery", "42601") }
                 i = i + 4
                 let tp = boila_ts_parse(lit.txt, plain)
-                if tp.ok == 0 {
-                    return boila_ps_fail(tp.err, tp.state)
-                }
+                if tp.ok == 0 { return boila_ps_fail(tp.err, tp.state) }
                 sel.has_fts = 1
                 sel.fts_col = col.txt
                 sel.fts_mode = tp.mode
                 sel.fts_terms = tp.terms
+                if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
+            } else {
+            if op.txt == "<->" || op.txt == "<=>" || op.txt == "<#>" {
+                if sel.has_knn == 1 { return boila_ps_fail("повторно kNN условие", "0A000") }
+                if sel.has_fts == 1 { return boila_ps_fail("kNN заедно с @@", "0A000") }
+                let lit = boila_ps_tok(l, i)
+                if lit.kind != tok_str() { return boila_ps_fail("очаквах vector литерал '[…]'", "42601") }
+                i = i + 1
+                let mut metric: i64 = 1
+                if op.txt == "<=>" { metric = 2 }
+                if op.txt == "<#>" { metric = 3 }
+                sel.has_knn = 1
+                sel.knn_col = col.txt
+                sel.knn_metric = metric
+                sel.knn_query = lit.txt
                 if tok_kw(boila_ps_tok(l, i), "and") == 1 {
-                    i = i + 1
-                } else {
-                    more = false
+                    return boila_ps_fail("kNN не се комбинира с AND в P8", "0A000")
                 }
+                more = false
             } else {
             let lit = boila_ps_literal(l, i)
             if lit.ok == 0 {
@@ -232,6 +213,7 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
                 more = false
             }
             }
+            }
         }
     }
 
@@ -246,10 +228,42 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         while more {
             let c = boila_ps_tok(l, i)
             if c.kind != tok_ident() {
-                return boila_ps_fail("очаквах колона в GROUP BY", "42601")
+                return boila_ps_fail("очаквах колона/time_bucket в GROUP BY", "42601")
             }
-            vec_push(sel.group_cols, c.txt)
-            i = i + 1
+            // P9: time_bucket('1m', col)
+            if c.txt == "time_bucket" {
+                if boila_ps_tok(l, i + 1).kind != tok_lparen() {
+                    return boila_ps_fail("очаквах '(' след time_bucket", "42601")
+                }
+                let ivt = boila_ps_tok(l, i + 2)
+                if ivt.kind != tok_str() {
+                    return boila_ps_fail("очаквах интервал-стринг в time_bucket", "42601")
+                }
+                if boila_ps_tok(l, i + 3).kind != tok_comma() {
+                    return boila_ps_fail("очаквах ',' в time_bucket", "42601")
+                }
+                let col = boila_ps_tok(l, i + 4)
+                if col.kind != tok_ident() {
+                    return boila_ps_fail("очаквах колона в time_bucket", "42601")
+                }
+                if boila_ps_tok(l, i + 5).kind != tok_rparen() {
+                    return boila_ps_fail("очаквах ')' в time_bucket", "42601")
+                }
+                let iv = boila_tb_parse_iv(ivt.txt)
+                if iv.ok == 0 {
+                    return boila_ps_fail(iv.err, iv.state)
+                }
+                if sel.bucket_iv > 0 {
+                    return boila_ps_fail("повторно time_bucket в GROUP BY", "0A000")
+                }
+                sel.bucket_iv = iv.sec
+                sel.bucket_col = col.txt
+                vec_push(sel.group_cols, "time_bucket")
+                i = i + 6
+            } else {
+                vec_push(sel.group_cols, c.txt)
+                i = i + 1
+            }
             if boila_ps_tok(l, i).kind == tok_comma() {
                 i = i + 1
             } else {
@@ -367,17 +381,11 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         return boila_ps_fail(concat("неочакван токен '", concat(end.txt, "' в SELECT")), "0A000")
     }
 
-    // семантични проверки: колони + агрегати без GROUP BY
     let mut has_agg: i64 = 0
     let mut has_plain: i64 = 0
     let mut k: i64 = 0
     while k < vec_len(sel.items) {
-        let it = vec_get(sel.items, k)
-        if it.agg == 0 {
-            has_plain = 1
-        } else {
-            has_agg = 1
-        }
+        if vec_get(sel.items, k).agg == 0 { has_plain = 1 } else { has_agg = 1 }
         k = k + 1
     }
     if has_agg == 1 && has_plain == 1 && sel.has_group == 0 {

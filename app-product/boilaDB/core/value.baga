@@ -26,6 +26,7 @@ fn boila_v_bytes() -> i64 { return 4 }
 fn boila_v_str() -> i64 { return 5 }
 fn boila_v_json() -> i64 { return 6 }
 fn boila_v_f64_gap() -> i64 { return 7 }
+// tag 8 = VECTOR — payload в b; вж. vector/distance.baga
 
 // 2^63 като i64 — INT64_MIN без непреставим литерал.
 fn boila_sign_bit() -> i64 {

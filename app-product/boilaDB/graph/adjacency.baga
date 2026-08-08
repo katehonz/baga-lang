@@ -1,0 +1,311 @@
+// adjacency.baga — двупосочен adjacency list в graph CF (P10).
+//
+// sys: "gh|<tid>|<name>" → [id, src_idx, dst_idx, w_idx]
+//      "gl|<tid>" → list; "m|next_graph" → next
+// graph CF: "o|<gid u32><node>" / "i|<gid u32><node>" → nbrs enc
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+struct BoilaGraphDef {
+    id: i64,
+    src_idx: i64,
+    dst_idx: i64,
+    w_idx: i64,
+    name: str
+}
+
+struct BoilaGraphList {
+    s: BoilaStore,
+    defs: Vec<BoilaGraphDef>
+}
+
+struct BoilaGraphRes {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    id: i64
+}
+
+struct BoilaNbrList {
+    pks: Vec<bytes>,
+    ws: Vec<i64>
+}
+
+fn graph_cat_pk(table_id: i64, name: str) -> bytes {
+    return bytes_of_str(concat(concat(concat("gh|", int_to_str(table_id)), "|"), name))
+}
+
+fn graph_list_pk(table_id: i64) -> bytes {
+    return bytes_of_str(concat("gl|", int_to_str(table_id)))
+}
+
+fn graph_meta_next_pk() -> bytes {
+    return bytes_of_str("m|next_graph")
+}
+
+fn graph_out_pk(gid: i64, node: bytes) -> bytes {
+    let mut out = bytes_of_str("o|")
+    out = bytes_concat(out, boila_enc_u32_be(gid))
+    return bytes_concat(out, node)
+}
+
+fn graph_in_pk(gid: i64, node: bytes) -> bytes {
+    let mut out = bytes_of_str("i|")
+    out = bytes_concat(out, boila_enc_u32_be(gid))
+    return bytes_concat(out, node)
+}
+
+fn graph_unwrap(val: bytes) -> bytes {
+    if bytes_len(val) > 8 {
+        return bytes_slice(val, 8, bytes_len(val))
+    }
+    return bytes_new(0)
+}
+
+fn graph_nbrs_enc(pks: Vec<bytes>, ws: Vec<i64>) -> bytes {
+    let mut out = boila_enc_u32_be(vec_len(pks))
+    let mut i: i64 = 0
+    while i < vec_len(pks) {
+        let pk = vec_get(pks, i)
+        out = bytes_concat(out, boila_enc_u32_be(bytes_len(pk)))
+        out = bytes_concat(out, pk)
+        out = bytes_concat(out, boila_enc_i64_ord(vec_get(ws, i)))
+        i = i + 1
+    }
+    return out
+}
+
+fn graph_nbrs_dec(b: bytes) -> BoilaNbrList {
+    let pks: Vec<bytes> = vec_new()
+    let ws: Vec<i64> = vec_new()
+    if bytes_len(b) < 4 {
+        return BoilaNbrList { pks: pks, ws: ws }
+    }
+    let n = boila_dec_u32_be(b, 0)
+    let mut off: i64 = 4
+    let mut i: i64 = 0
+    while i < n && off + 4 <= bytes_len(b) {
+        let pl = boila_dec_u32_be(b, off)
+        off = off + 4
+        if off + pl + 8 > bytes_len(b) {
+            i = n
+        } else {
+            vec_push(pks, bytes_slice(b, off, off + pl))
+            off = off + pl
+            vec_push(ws, boila_dec_i64_ord(b, off))
+            off = off + 8
+            i = i + 1
+        }
+    }
+    return BoilaNbrList { pks: pks, ws: ws }
+}
+
+fn graph_defs_enc(defs: Vec<BoilaGraphDef>) -> bytes {
+    let r: Vec<BoilaVal> = vec_new()
+    vec_push(r, boila_val_i64(vec_len(defs)))
+    let mut i: i64 = 0
+    while i < vec_len(defs) {
+        let d = vec_get(defs, i)
+        vec_push(r, boila_val_i64(d.id))
+        vec_push(r, boila_val_i64(d.src_idx))
+        vec_push(r, boila_val_i64(d.dst_idx))
+        vec_push(r, boila_val_i64(d.w_idx))
+        vec_push(r, boila_val_str(d.name))
+        i = i + 1
+    }
+    return boila_row_enc(r)
+}
+
+fn graph_list_for_table(s: BoilaStore, table_id: i64) -> BoilaGraphList !IO !Time {
+    let defs: Vec<BoilaGraphDef> = vec_new()
+    let g = boila_get(s, boila_cf_sys(), 1, graph_list_pk(table_id))?
+    s = g.s
+    if g.found == 0 {
+        return BoilaGraphList { s: s, defs: defs }
+    }
+    let row = boila_row_dec(g.val)
+    if vec_len(row) < 1 {
+        return BoilaGraphList { s: s, defs: defs }
+    }
+    let n = vec_get(row, 0).i
+    let mut off: i64 = 1
+    let mut i: i64 = 0
+    while i < n && off + 5 <= vec_len(row) {
+        vec_push(defs, BoilaGraphDef {
+            id: vec_get(row, off).i,
+            src_idx: vec_get(row, off + 1).i,
+            dst_idx: vec_get(row, off + 2).i,
+            w_idx: vec_get(row, off + 3).i,
+            name: str_of_bytes(vec_get(row, off + 4).b)
+        })
+        off = off + 5
+        i = i + 1
+    }
+    return BoilaGraphList { s: s, defs: defs }
+}
+
+struct BoilaNbrGet {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    list: BoilaNbrList
+}
+
+fn graph_nbrs_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, key: bytes) -> BoilaNbrGet !IO !Time {
+    let bix = boila_txn_find(txn, boila_cf_graph(), table_id, key)
+    if bix >= 0 {
+        let w = vec_get(txn.writes, bix)
+        if w.is_del == 1 {
+            return BoilaNbrGet { s: s, txn: txn, list: graph_nbrs_dec(bytes_new(0)) }
+        }
+        return BoilaNbrGet { s: s, txn: txn, list: graph_nbrs_dec(w.row) }
+    }
+    let g = boila_get(s, boila_cf_graph(), table_id, key)?
+    s = g.s
+    if g.found == 0 {
+        return BoilaNbrGet { s: s, txn: txn, list: graph_nbrs_dec(bytes_new(0)) }
+    }
+    return BoilaNbrGet { s: s, txn: txn, list: graph_nbrs_dec(graph_unwrap(g.val)) }
+}
+
+fn graph_nbrs_put(s: BoilaStore, txn: BoilaTxn, table_id: i64, key: bytes, list: BoilaNbrList) -> BoilaGraphRes {
+    let w = boila_txn_put(s, txn, boila_cf_graph(), table_id, key, graph_nbrs_enc(list.pks, list.ws))
+    return BoilaGraphRes { s: s, txn: w.txn, ok: w.ok, err: w.err, state: w.state, id: 0 }
+}
+
+fn graph_add_edge(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, src: bytes, dst: bytes, w: i64) -> BoilaGraphRes !IO !Time {
+    // outbound
+    let og = graph_nbrs_get(s, txn, table_id, graph_out_pk(gid, src))?
+    s = og.s
+    txn = og.txn
+    let mut ol = og.list
+    if graph_pk_in(ol.pks, dst) == 0 {
+        vec_push(ol.pks, dst)
+        vec_push(ol.ws, w)
+        let r = graph_nbrs_put(s, txn, table_id, graph_out_pk(gid, src), ol)
+        if r.ok == 0 {
+            return r
+        }
+        s = r.s
+        txn = r.txn
+    }
+    // inbound
+    let ig = graph_nbrs_get(s, txn, table_id, graph_in_pk(gid, dst))?
+    s = ig.s
+    txn = ig.txn
+    let mut il = ig.list
+    if graph_pk_in(il.pks, src) == 0 {
+        vec_push(il.pks, src)
+        vec_push(il.ws, w)
+        let r2 = graph_nbrs_put(s, txn, table_id, graph_in_pk(gid, dst), il)
+        if r2.ok == 0 {
+            return r2
+        }
+        s = r2.s
+        txn = r2.txn
+    }
+    return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: gid }
+}
+
+fn graph_pk_in(pks: Vec<bytes>, pk: bytes) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(pks) {
+        if bytes_eq_b(vec_get(pks, i), pk) {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn graph_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, src_col: str, dst_col: str, w_col: str) -> BoilaGraphRes !IO !Time {
+    let mut src_idx: i64 = 0 - 1
+    let mut dst_idx: i64 = 0 - 1
+    let mut w_idx: i64 = 0 - 1
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        let n = vec_get(t.cols, i).name
+        if n == src_col { src_idx = i }
+        if n == dst_col { dst_idx = i }
+        if w_col != "" && n == w_col { w_idx = i }
+        i = i + 1
+    }
+    if src_idx < 0 || dst_idx < 0 {
+        return BoilaGraphRes { s: s, txn: txn, ok: 0, err: "src/dst колона не съществува", state: "42703", id: 0 }
+    }
+    if w_col != "" && w_idx < 0 {
+        return BoilaGraphRes { s: s, txn: txn, ok: 0, err: concat("weight колона '", concat(w_col, "' не съществува")), state: "42703", id: 0 }
+    }
+    let g = boila_get(s, boila_cf_sys(), 1, graph_cat_pk(t.id, name))?
+    s = g.s
+    if g.found == 1 {
+        return BoilaGraphRes { s: s, txn: txn, ok: 0, err: concat("graph '", concat(name, "' вече съществува")), state: "42710", id: 0 }
+    }
+    let gm = boila_get(s, boila_cf_sys(), 1, graph_meta_next_pk())?
+    s = gm.s
+    let mut next: i64 = 1
+    if gm.found == 1 {
+        let row = boila_row_dec(gm.val)
+        if vec_len(row) > 0 { next = vec_get(row, 0).i }
+    }
+    let cnt: Vec<BoilaVal> = vec_new()
+    vec_push(cnt, boila_val_i64(next + 1))
+    let r1 = boila_txn_put(s, txn, boila_cf_sys(), 1, graph_meta_next_pk(), boila_row_enc(cnt))
+    if r1.ok == 0 {
+        return BoilaGraphRes { s: s, txn: r1.txn, ok: 0, err: r1.err, state: r1.state, id: 0 }
+    }
+    txn = r1.txn
+    let cat: Vec<BoilaVal> = vec_new()
+    vec_push(cat, boila_val_i64(next))
+    vec_push(cat, boila_val_i64(src_idx))
+    vec_push(cat, boila_val_i64(dst_idx))
+    vec_push(cat, boila_val_i64(w_idx))
+    let r2 = boila_txn_put(s, txn, boila_cf_sys(), 1, graph_cat_pk(t.id, name), boila_row_enc(cat))
+    if r2.ok == 0 {
+        return BoilaGraphRes { s: s, txn: r2.txn, ok: 0, err: r2.err, state: r2.state, id: 0 }
+    }
+    txn = r2.txn
+    let gl = graph_list_for_table(s, t.id)?
+    s = gl.s
+    vec_push(gl.defs, BoilaGraphDef { id: next, src_idx: src_idx, dst_idx: dst_idx, w_idx: w_idx, name: name })
+    let rl = boila_txn_put(s, txn, boila_cf_sys(), 1, graph_list_pk(t.id), graph_defs_enc(gl.defs))
+    if rl.ok == 0 {
+        return BoilaGraphRes { s: s, txn: rl.txn, ok: 0, err: rl.err, state: rl.state, id: 0 }
+    }
+    txn = rl.txn
+    // build from rows
+    let ks = boila_txn_keys(s, txn, t.id)?
+    s = ks.s
+    let mut ki: i64 = 0
+    while ki < vec_len(ks.pks) {
+        let g2 = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
+        s = g2.s
+        if g2.found == 1 {
+            let row = boila_row_dec(g2.row)
+            if src_idx < vec_len(row) && dst_idx < vec_len(row) {
+                let sv = vec_get(row, src_idx)
+                let dv = vec_get(row, dst_idx)
+                if sv.tag != boila_v_null() && dv.tag != boila_v_null() {
+                    let mut w: i64 = 1
+                    if w_idx >= 0 && w_idx < vec_len(row) {
+                        let wv = vec_get(row, w_idx)
+                        if wv.tag == boila_v_i64() { w = wv.i }
+                    }
+                    let ae = graph_add_edge(s, txn, t.id, next, boila_val_enc(sv), boila_val_enc(dv), w)?
+                    s = ae.s
+                    txn = ae.txn
+                }
+            }
+        }
+        ki = ki + 1
+    }
+    return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: next }
+}

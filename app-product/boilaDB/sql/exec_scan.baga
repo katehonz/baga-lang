@@ -10,6 +10,10 @@ import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../index/secondary.baga"
 import "../fts/fts.baga"
+import "../vector/hnsw.baga"
+import "../vector/hnsw_search.baga"
+import "../vector/distance.baga"
+import "../vector/hnsw_store.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "std/str/str.baga"
@@ -147,6 +151,51 @@ fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, 
 
 fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
+    // kNN път (P8): WHERE col <-> '[…]' LIMIT k
+    if sel.has_knn == 1 {
+        let hl = hnsw_list_for_table(s, t.id)?
+        s = hl.s
+        let col_ix = boila_col_idx(t, sel.knn_col)
+        if col_ix < 0 {
+            return boila_fetch_fail(s, txn, concat("колона '", concat(sel.knn_col, "' не съществува")), "42703")
+        }
+        let mut hdi: i64 = 0 - 1
+        let mut k: i64 = 0
+        while k < vec_len(hl.defs) {
+            let d = vec_get(hl.defs, k)
+            if d.col_idx == col_ix {
+                hdi = k
+            }
+            k = k + 1
+        }
+        if hdi < 0 {
+            return boila_fetch_fail(s, txn, concat("колона '", concat(sel.knn_col, "' няма hnsw индекс")), "0A000")
+        }
+        let def = vec_get(hl.defs, hdi)
+        let qp = boila_vec_parse(sel.knn_query, def.dim)
+        if qp.ok == 0 {
+            return boila_fetch_fail(s, txn, qp.err, "42601")
+        }
+        // metric от WHERE оператора; def.metric е default при create
+        let mut mdef = def
+        mdef.metric = sel.knn_metric
+        let mut kk = sel.limit
+        if kk <= 0 {
+            kk = 10
+        }
+        let hq = hnsw_search(s, txn, t, mdef, boila_vec_from_val(qp.v), kk)?
+        s = hq.s
+        let mut qi: i64 = 0
+        while qi < vec_len(hq.pks) {
+            let g = boila_txn_get(s, txn, t.id, vec_get(hq.pks, qi))?
+            s = g.s
+            if g.found == 1 {
+                vec_push(rows, boila_row_dec(g.row))
+            }
+            qi = qi + 1
+        }
+        return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
+    }
     // FTS път (P7): WHERE col @@ to_tsquery('…')
     if sel.has_fts == 1 {
         let fl = fts_list_for_table(s, t.id)?

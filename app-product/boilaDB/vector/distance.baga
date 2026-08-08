@@ -1,0 +1,264 @@
+// distance.baga — VECTOR codec + L2/cosine/IP (P8).
+//
+// Стойност: tag=8, i=dim, b=[i32 BE × dim] fixed-point ×1e6 (няма f64
+// bit-cast — gaps V1). Литерал: '[1.0, 2, -0.5]' (pgvector). L2 е
+// squared (ред = sqrt). Cosine ползва Newton sqrt.
+
+import "../core/value.baga"
+import "../core/codec.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+import "std/json/json.baga"
+
+fn boila_v_vector() -> i64 { return 8 }
+
+// typ в каталога: 1000+dim → VECTOR(dim).
+fn boila_vec_typ(dim: i64) -> i64 { return 1000 + dim }
+
+fn boila_is_vec_typ(typ: i64) -> i64 {
+    if typ >= 1000 && typ < 1000 + 65536 {
+        return 1
+    }
+    return 0
+}
+
+fn boila_vec_dim_of(typ: i64) -> i64 { return typ - 1000 }
+
+// metric: 1 L2 (<->), 2 cosine (<=>), 3 neg-IP (<#>)
+fn boila_vec_metric_l2() -> i64 { return 1 }
+fn boila_vec_metric_cos() -> i64 { return 2 }
+fn boila_vec_metric_ip() -> i64 { return 3 }
+
+fn boila_enc_i32_be(v: i64) -> bytes {
+    let b = bytes_new(4)
+    bytes_set(b, 0, (v >> 24) & 255)
+    bytes_set(b, 1, (v >> 16) & 255)
+    bytes_set(b, 2, (v >> 8) & 255)
+    bytes_set(b, 3, v & 255)
+    return b
+}
+
+fn boila_dec_i32_be(b: bytes, off: i64) -> i64 {
+    let x = ((bytes_at(b, off) & 255) << 24)
+        | ((bytes_at(b, off + 1) & 255) << 16)
+        | ((bytes_at(b, off + 2) & 255) << 8)
+        | (bytes_at(b, off + 3) & 255)
+    if (x & 2147483648) != 0 {
+        return x - 4294967296
+    }
+    return x
+}
+
+// f64→fixed×1e6 без bit-cast (f64_to_str %g → "1e+06" чупи parse).
+// Digit peel: 13 декади от 1e12 надолу.
+fn boila_f64_to_fp(x: f64) -> i64 {
+    let mut s = x * 1000000.0
+    let mut sign: i64 = 1
+    if s < 0.0 {
+        sign = 0 - 1
+        s = 0.0 - s
+    }
+    s = s + 0.5
+    if s >= 10000000000000.0 {
+        return sign * 10000000000000
+    }
+    let mut n: i64 = 0
+    let mut place = 1000000000000.0
+    let mut k: i64 = 0
+    while k < 13 {
+        let mut digit: i64 = 0
+        while s >= place && digit < 9 {
+            s = s - place
+            digit = digit + 1
+        }
+        n = n * 10 + digit
+        place = place / 10.0
+        k = k + 1
+    }
+    return n * sign
+}
+
+fn boila_fp_to_f64(v: i64) -> f64 {
+    return v * 1.0 / 1000000.0
+}
+
+// payload: [dim u32 BE][i32 BE × dim] — dim в b, защото val_dec нулира i.
+fn boila_val_vector(dim: i64, body: bytes) -> BoilaVal {
+    return BoilaVal { tag: boila_v_vector(), i: dim, b: bytes_concat(boila_enc_u32_be(dim), body) }
+}
+
+fn boila_vec_pack(dims: Vec<f64>) -> bytes {
+    let mut body = bytes_new(0)
+    let mut i: i64 = 0
+    while i < vec_len(dims) {
+        body = bytes_concat(body, boila_enc_i32_be(boila_f64_to_fp(vec_get(dims, i))))
+        i = i + 1
+    }
+    return body
+}
+
+fn boila_vec_dim(v: BoilaVal) -> i64 {
+    if v.tag != boila_v_vector() || bytes_len(v.b) < 4 {
+        return 0
+    }
+    return boila_dec_u32_be(v.b, 0)
+}
+
+fn boila_vec_from_val(v: BoilaVal) -> Vec<f64> {
+    let e: Vec<f64> = vec_new()
+    if v.tag != boila_v_vector() || bytes_len(v.b) < 4 {
+        return e
+    }
+    let dim = boila_dec_u32_be(v.b, 0)
+    let out: Vec<f64> = vec_new()
+    let mut i: i64 = 0
+    while i < dim && (4 + i * 4 + 4) <= bytes_len(v.b) {
+        vec_push(out, boila_fp_to_f64(boila_dec_i32_be(v.b, 4 + i * 4)))
+        i = i + 1
+    }
+    return out
+}
+
+struct BoilaVecParse {
+    ok: i64,
+    v: BoilaVal,
+    err: str
+}
+
+// Parse '[1.0, 2, -3.5]' → vector (expect_dim 0 = any).
+fn boila_vec_parse(s: str, expect_dim: i64) -> BoilaVecParse {
+    let n = len(s)
+    if n < 2 || char_at(s, 0) != 91 || char_at(s, n - 1) != 93 {
+        return BoilaVecParse { ok: 0, v: boila_val_null(), err: "vector литерал очаква […]" }
+    }
+    let dims: Vec<f64> = vec_new()
+    let mut i: i64 = 1
+    while i < n - 1 {
+        while i < n - 1 && (char_at(s, i) == 32 || char_at(s, i) == 9 || char_at(s, i) == 44) {
+            i = i + 1
+        }
+        if i < n - 1 {
+            let st = i
+            let mut j = i
+            let mut go = true
+            while j < n - 1 && go {
+                let c = char_at(s, j)
+                if c == 32 || c == 9 || c == 44 {
+                    go = false
+                } else {
+                    j = j + 1
+                }
+            }
+            if j == st {
+                return BoilaVecParse { ok: 0, v: boila_val_null(), err: "празен елемент във vector" }
+            }
+            let mut tok = ""
+            let mut k = st
+            while k < j {
+                tok = concat(tok, chr(char_at(s, k)))
+                k = k + 1
+            }
+            vec_push(dims, json_atof(tok))
+            i = j
+        }
+    }
+    if vec_len(dims) == 0 {
+        return BoilaVecParse { ok: 0, v: boila_val_null(), err: "празен vector" }
+    }
+    let dim = vec_len(dims)
+    if expect_dim > 0 && dim != expect_dim {
+        return BoilaVecParse {
+            ok: 0, v: boila_val_null(),
+            err: concat("vector dim ", concat(int_to_str(dim), concat(" != ", int_to_str(expect_dim))))
+        }
+    }
+    return BoilaVecParse { ok: 1, v: boila_val_vector(dim, boila_vec_pack(dims)), err: "" }
+}
+
+fn boila_vec_coerce(v: BoilaVal, expect_dim: i64) -> BoilaVecParse {
+    if v.tag == boila_v_vector() {
+        let d = boila_vec_dim(v)
+        if expect_dim > 0 && d != expect_dim {
+            return BoilaVecParse { ok: 0, v: boila_val_null(), err: "vector dim mismatch" }
+        }
+        return BoilaVecParse { ok: 1, v: BoilaVal { tag: v.tag, i: d, b: v.b }, err: "" }
+    }
+    if v.tag == boila_v_str() {
+        return boila_vec_parse(str_of_bytes(v.b), expect_dim)
+    }
+    return BoilaVecParse { ok: 0, v: boila_val_null(), err: "очаквах vector литерал" }
+}
+
+fn boila_f64_sqrt(x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0
+    }
+    let mut g = x
+    if x < 1.0 {
+        g = 1.0
+    }
+    let mut i: i64 = 0
+    while i < 12 {
+        g = 0.5 * (g + x / g)
+        i = i + 1
+    }
+    return g
+}
+
+fn boila_vec_l2sq(a: Vec<f64>, b: Vec<f64>) -> f64 {
+    let mut s = 0.0
+    let mut i: i64 = 0
+    let mut m = vec_len(a)
+    if vec_len(b) < m {
+        m = vec_len(b)
+    }
+    while i < m {
+        let d = vec_get(a, i) - vec_get(b, i)
+        s = s + d * d
+        i = i + 1
+    }
+    return s
+}
+
+fn boila_vec_ip(a: Vec<f64>, b: Vec<f64>) -> f64 {
+    let mut s = 0.0
+    let mut i: i64 = 0
+    let mut m = vec_len(a)
+    if vec_len(b) < m {
+        m = vec_len(b)
+    }
+    while i < m {
+        s = s + vec_get(a, i) * vec_get(b, i)
+        i = i + 1
+    }
+    return s
+}
+
+fn boila_vec_norm_sq(a: Vec<f64>) -> f64 {
+    let mut s = 0.0
+    let mut i: i64 = 0
+    while i < vec_len(a) {
+        let x = vec_get(a, i)
+        s = s + x * x
+        i = i + 1
+    }
+    return s
+}
+
+// По-малко = по-близо (IP → negative).
+fn boila_vec_dist(a: Vec<f64>, b: Vec<f64>, metric: i64) -> f64 {
+    if metric == boila_vec_metric_ip() {
+        return 0.0 - boila_vec_ip(a, b)
+    }
+    if metric == boila_vec_metric_cos() {
+        let ip = boila_vec_ip(a, b)
+        let na = boila_vec_norm_sq(a)
+        let nb = boila_vec_norm_sq(b)
+        let d = boila_f64_sqrt(na) * boila_f64_sqrt(nb)
+        if d <= 0.0 {
+            return 1.0
+        }
+        return 1.0 - ip / d
+    }
+    return boila_vec_l2sq(a, b)
+}

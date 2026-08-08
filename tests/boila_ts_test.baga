@@ -1,0 +1,141 @@
+// boila_ts_test.baga — P9: time_bucket + WITH (ttl_sec) retention.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/ts/retention.baga"
+import "boilaDB/storage/shards.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_i(row: Vec<BoilaVal>, col: i64) -> i64 {
+    let v = vec_get(row, col)
+    return v.i
+}
+
+fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_ts_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_ts_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+
+    // --- time_bucket ---
+    let c1 = exec1(srv, "CREATE TABLE pts (id BIGINT, ts BIGINT, v BIGINT, PRIMARY KEY (id))")
+    srv = c1.srv
+    check(fails, "create_pts", c1.ok == 1)
+
+    // ts in unix seconds: 1000, 1030, 2000, 2060  → buckets of 60s: 960?, 1000→960? 
+    // floor(1000/60)*60 = 16*60 = 960; floor(1030/60)*60 = 1020; floor(2000/60)*60 = 1980
+    let i1 = exec1(srv, "INSERT INTO pts (id, ts, v) VALUES (1, 1000, 10), (2, 1030, 20), (3, 1050, 5), (4, 2000, 7), (5, 2010, 3)")
+    srv = i1.srv
+    check(fails, "insert5", i1.ok == 1 && i1.id == 5)
+
+    // 1000→960, 1030/1050→1020, 2000/2010→1980  → 3 buckets
+    let q1 = exec1(srv, "SELECT count(*), sum(v) FROM pts GROUP BY time_bucket('1m', ts)")
+    srv = q1.srv
+    check(fails, "bucket_ok", q1.ok == 1 && vec_len(q1.res.rows) == 3)
+    if q1.ok == 1 && vec_len(q1.res.rows) == 3 {
+        let mut csum: i64 = 0
+        let mut ssum: i64 = 0
+        let mut r: i64 = 0
+        while r < vec_len(q1.res.rows) {
+            let row = vec_get(q1.res.rows, r)
+            csum = csum + row_i(row, 1)
+            ssum = ssum + row_i(row, 2)
+            r = r + 1
+        }
+        check(fails, "bucket_totals", csum == 5 && ssum == 45)
+    } else {
+        check(fails, "bucket_totals", false)
+    }
+
+    let bad = exec1(srv, "SELECT count(*) FROM pts GROUP BY time_bucket('1x', ts)")
+    srv = bad.srv
+    check(fails, "bad_unit", bad.ok == 0)
+
+    // --- TTL retention ---
+    let c2 = exec1(srv, "CREATE TABLE tmp (id BIGINT, body TEXT, PRIMARY KEY (id)) WITH (ttl_sec = 2)")
+    srv = c2.srv
+    check(fails, "create_ttl", c2.ok == 1)
+
+    let i2 = exec1(srv, "INSERT INTO tmp (id, body) VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+    srv = i2.srv
+    check(fails, "insert_ttl", i2.ok == 1 && i2.id == 3)
+
+    let q2 = exec1(srv, "SELECT id FROM tmp WHERE id = 1")
+    srv = q2.srv
+    check(fails, "ttl_alive", q2.ok == 1 && vec_len(q2.res.rows) == 1)
+
+    // wait > 2s
+    sleep_ms(2500)?
+
+    // sweep/flush so lazy TTL drops
+    let ou = boila_server_exec(srv, "boila", "SELECT id FROM tmp WHERE id = 1")?
+    srv = ou.srv
+    // get may return not found if expired on read
+    check(fails, "ttl_expired_get", ou.ok == 1 && vec_len(ou.res.rows) == 0)
+
+    let c3 = exec1(srv, "CREATE TABLE tdays (id BIGINT, PRIMARY KEY (id)) WITH (ttl_days = 1)")
+    srv = c3.srv
+    check(fails, "ttl_days_ok", c3.ok == 1)
+
+    let c4 = exec1(srv, "CREATE TABLE tbad (id BIGINT, PRIMARY KEY (id)) WITH (ttl_days = 0)")
+    srv = c4.srv
+    check(fails, "ttl_days_zero", c4.ok == 0)
+
+    // restart: time_bucket still works; ttl table gone keys
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let q3 = exec1(srv2, "SELECT count(*) FROM pts GROUP BY time_bucket('1h', ts)")
+    srv2 = q3.srv
+    check(fails, "restart_bucket", q3.ok == 1 && vec_len(q3.res.rows) >= 1)
+
+    boila_server_close(srv2)?
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_ts_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_ts_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

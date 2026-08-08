@@ -61,6 +61,10 @@ fn boila_val_json_lit(v: BoilaVal) -> str {
     if v.tag == boila_v_json() {
         return str_of_bytes(v.b)
     }
+    if v.tag == 8 {
+        // VECTOR — компактен JSON масив
+        return "\"[vector]\""
+    }
     if v.tag == boila_v_bytes() {
         let mut h = "\\x"
         let mut i: i64 = 0

@@ -11,15 +11,21 @@ import "lexer.baga"
 import "token.baga"
 import "parse_select.baga"
 import "parse_ddl.baga"
+import "parse_index.baga"
 import "parse_dml.baga"
 import "parse_insert.baga"
 import "parse_txn.baga"
+import "parse_with.baga"
 import "exec_scan.baga"
 import "exec_select.baga"
 import "exec_dml.baga"
 import "exec_modify.baga"
+import "exec_with.baga"
 import "plan_cache.baga"
 import "../fts/fts.baga"
+import "../vector/hnsw.baga"
+import "../vector/distance.baga"
+import "../graph/adjacency.baga"
 import "../catalog/schema.baga"
 import "../storage/shards.baga"
 import "../index/secondary.baga"
@@ -77,6 +83,14 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
         return BoilaSqlOut { s: s, txn: t2, pc: pc, ok: 1, err: "", state: "", kind: 12, res: boila_result_empty(), id: 0 }
     }
 
+    if tok_kw(t0, "with") == 1 {
+        let p = boila_parse_with(lx)
+        if p.ok == 0 {
+            return boila_sql_fail(s, txn, pc, p.err, p.state)
+        }
+        let ex = boila_exec_with(s, txn, p.w)?
+        return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 16, res: ex.res, id: vec_len(ex.res.rows) }
+    }
     if tok_kw(t0, "select") == 1 {
         // plan cache hit?
         let hit = boila_pc_get(pc, sql)
@@ -118,7 +132,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
         }
         if tok_kw(t1, "index") == 1 {
-            let p = boila_parse_create_ix(lx)
+            let p = boila_parse_create_ix2(lx)
             if p.ok == 0 {
                 return boila_sql_fail(s, txn, pc, p.err, p.state)
             }
@@ -127,12 +141,29 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
             if ct.ok == 0 {
                 return boila_sql_fail(s, txn, pc, ct.err, ct.state)
             }
-            // auto-txn wrap (ако няма явна)
             let was_active = txn.active
             if was_active == 0 {
                 let b = boila_txn_begin(s, txn, 0, db)?
                 s = b.s
                 txn = b.txn
+            }
+            if p.kind == 1 {
+                let hx = hnsw_create(s, txn, ct.table, p.ix.ix_name, p.ix.col, p.metric)?
+                s = hx.s
+                txn = hx.txn
+                if hx.ok == 0 {
+                    txn = boila_txn_rollback(txn)
+                    return boila_sql_fail(s, txn, pc, hx.err, hx.state)
+                }
+                if was_active == 0 {
+                    let c = boila_txn_commit(s, txn)?
+                    s = c.s
+                    txn = c.txn
+                    if c.ok == 0 {
+                        return boila_sql_fail(s, txn, pc, c.err, c.state)
+                    }
+                }
+                return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 15, res: boila_result_empty(), id: hx.id }
             }
             let ix = boila_ix_create(s, txn, ct.table, p.ix.ix_name, p.ix.col)?
             s = ix.s
@@ -150,6 +181,39 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
                 }
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
+        }
+        if tok_kw(t1, "graph") == 1 {
+            let p = boila_parse_create_graph(lx)
+            if p.ok == 0 {
+                return boila_sql_fail(s, txn, pc, p.err, p.state)
+            }
+            let ct = boila_cat_by_name(s, p.table)?
+            s = ct.s
+            if ct.ok == 0 {
+                return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+            }
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let gx = graph_create(s, txn, ct.table, p.name, p.src, p.dst, p.wcol)?
+            s = gx.s
+            txn = gx.txn
+            if gx.ok == 0 {
+                txn = boila_txn_rollback(txn)
+                return boila_sql_fail(s, txn, pc, gx.err, gx.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 {
+                    return boila_sql_fail(s, txn, pc, c.err, c.state)
+                }
+            }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 17, res: boila_result_empty(), id: gx.id }
         }
         if tok_kw(t1, "fts") == 1 {
             let p = boila_parse_create_fts(lx)
@@ -184,7 +248,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: fx.id }
         }
-        return boila_sql_fail(s, txn, pc, "в P7 се поддържа CREATE TABLE / CREATE INDEX / CREATE FTS INDEX", "0A000")
+        return boila_sql_fail(s, txn, pc, "CREATE TABLE / INDEX / FTS INDEX / INDEX USING hnsw", "0A000")
     }
     if tok_kw(t0, "insert") == 1 {
         let p = boila_parse_insert(lx)

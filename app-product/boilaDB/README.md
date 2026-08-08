@@ -2,7 +2,8 @@
 
 Мултимодална база данни на **baga**: модулен монолит върху sharded
 rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (BoilaSQL, от P1),
-високо натоварване като цел. Без Geo/GPS — изрично извън обхвата.
+високо натоварване като цел. **Encoding: UTF-8 only.** Без Geo/GPS —
+изрично извън обхвата.
 
 - **Архитектура:** [ARCHITECTURE.md](ARCHITECTURE.md)
 - **План:** [PLAN.md](PLAN.md) (P0–P11, всяка фаза с benchmark гейт)
@@ -10,14 +11,9 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 
 ## Статус
 
-**P7 (fts модал)** — `CREATE FTS INDEX`, `WHERE col @@ to_tsquery('…')`
-(to_tsquery/plainto_tsquery, '&' AND / '|' OR), BM25 класиране, DML
-синхронизация, EN/BG. 20k документа: AND 73 µs / OR 579 µs / single
-264 µs при гейт < 10 ms (bench/boila/results/fts-2026-08-08.md);
-индексът персистентен без rebuild.
-Предишно: **P6 (PG wire protocol v3)** — psql/libpq; **P5 (пълен
-SELECT + planner)**; **P4 (MVCC транзакции)**; **P3 (DML + индекси)**;
-**P2 (много бази)**; **P1 (SQL read path)**; **P0 (скелет)**.
+**P10 (graph)** — `CREATE GRAPH`, `WITH RECURSIVE` BFS/DFS/Dijkstra,
+adjacency в `graph` CF, restart-персистентно.
+Предишно: **P9 (ts)**; **P8 (vector)**; **P7–P0**.
 
 ## Пускане
 

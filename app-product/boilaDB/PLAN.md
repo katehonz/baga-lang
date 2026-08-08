@@ -14,6 +14,13 @@
   Никога тиха грешна семантика спрямо PostgreSQL.
 - **Geo/GPS не се реализират в нито една фаза** — няма geometry типове,
   пространствени индекси, GPS ingestion.
+- **UTF-8 е единственият текстов encoding** (стандарт, всички фази).
+  TEXT/идентификатори/SQL литерали/FTS terms/PG wire ParameterStatus
+  (`server_encoding`/`client_encoding` = `UTF8`) — byte-точни UTF-8,
+  без re-encode през `chr()` за ≥0x80. Други encodings (LATIN1, WIN1251,
+  …) → `0A000`. Без Unicode case fold / ICU collation в v1 (gaps F1);
+  exact-match за не-ASCII. Всяка нова пътека, която пипа текст, трябва
+  да е UTF-8-safe (тест с кирилица/многобайтов символ).
 
 ## P0 — Скелет (core + sharded storage)
 - `sandak.toml` (path deps: `../../std`, `../rocksbaga`, `../httpdbaga`,
@@ -151,22 +158,48 @@
   комбинира с други WHERE условия (F6); UTF-8 без case folding (F1).
 
 ## P8 — vector/ модал
-- `VECTOR(n)` колони; HNSW с възли/ребра в `vec` key-space + кеш на
-  горните нива; оператори `<->`/`<=>`/`<#>`; `CREATE INDEX … USING hnsw`;
-  metadata pre-filter през index/.
-- **Гейтове:** 100k вектора × 128d, recall@10 ≥ 0.95 спрямо brute force;
-  kNN заявка < 20 ms; рестарт → без rebuild (предимство #2).
+- Реализирано: `VECTOR(n)` (typ=1000+n, payload fixed-point ×1e6 i32 —
+  няма f64 bit-cast, V1); литерал `'[1.0, 2, -0.5]'`; `CREATE INDEX …
+  USING hnsw (col)`; оператори `<->` (L2sq) / `<=>` (cosine) / `<#>`
+  (neg-IP) в `WHERE col op '[…]' LIMIT k`; HNSW граф в `vec` CF
+  (neighbors per level), векторите в data row (без дублиране); DML sync;
+  brute-force exact при ≤512 реда, HNSW над това.
+  Файлове: `vector/distance.baga`, `hnsw_store.baga`, `hnsw.baga`,
+  `hnsw_search.baga`.
+- **Гейтове (минати, functional):** 12 проверки в boila_vec_test (DDL,
+  dim check, L2/cos/IP kNN, DML sync, restart без rebuild, non-vector
+  отказ). **Perf gate 100k×128d recall@10 ≥ 0.95 / <20 ms** — остава
+  bench/ (Q2 arena; seed chunked като FTS 20k) — вж. gaps V2.
+- Ревизии (честно): fixed-point ×1e6 вместо IEEE f64 bits (V1); unindex
+  не чисти orphan backlinks (search skip-ва липсващ vec); kNN не се
+  комбинира с AND/други WHERE (като F6); metadata pre-filter през
+  secondary index/ — не в P8 (V3); upper-level cache в RAM — не (V4).
 
 ## P9 — ts/ (time-series през SQL)
-- `WITH (ttl_days = N)`, `time_bucket('1m', ts)` в GROUP BY, retention
-  през `lsm_put_ex` + sweeper.
-- **Гейт:** 1M точки, range + агрегация по прозорец < 50 ms; TTL реално
-  чисти (dbsize спада). (Модал, който barabadb няма.)
+- Реализирано: `CREATE TABLE … WITH (ttl_days = N | ttl_sec = N)` —
+  TTL в sys `td|<tid>`; data put на COMMIT през `lsm_put_ex_kb`
+  (rocksbaga BAGATTL1 lazy expire); `GROUP BY time_bucket('1m', ts)`
+  (s/m/h/d); `ts/time_bucket.baga`, `ts/retention.baga`; sweep = flush.
+- **Гейтове (минати, functional):** boila_ts_test — bucket 3 групи +
+  totals, bad unit, ttl_sec expire след 2s, ttl_days, restart.
+  **Perf 1M точки < 50 ms** — bench остава (Q2 arena), gaps S5.
+- Ревизии: `ttl_sec` за тестове/фина зърненост (в допълнение на
+  `ttl_days`); time_bucket само в GROUP BY (не в SELECT list сам);
+  sweeper = flush, не background worker (S6).
 
 ## P10 — graph/ през WITH RECURSIVE
-- Adjacency в `graph` key-space (двупосочен), BFS/DFS/Dijkstra примитиви,
-  изпълнение през рекурсивни CTE-та.
-- **Гейт:** 1M ребра, BFS дълбочина 3 < 100 ms, персистентно след рестарт.
+- Реализирано: `CREATE GRAPH name ON edges (src, dst [, w])` — двупосочен
+  adjacency в `graph` CF; `WITH RECURSIVE cte(node, depth) AS (
+  SELECT start, 0 UNION ALL SELECT dst, … FROM edges, cte WHERE src = node
+  AND depth < N) SELECT … FROM cte`; mode по CTE име: default BFS,
+  `*_dfs` → DFS, `*_dij` → Dijkstra (weights). Файлове:
+  `graph/{adjacency,bfs}.baga`, `sql/{parse_with,exec_with}.baga`.
+- **Гейтове (минати, functional):** boila_graph_test 16/16 (create/dup,
+  BFS depth-2, DFS, Dijkstra short path, no-graph, restart).
+  **Perf 1M edges BFS d=3 < 100 ms** — bench остава (Q2), gaps G1.
+- Ревизии: ограничен WITH RECURSIVE pattern (не пълен SQL CTE);
+  без `.` qualifier в lexer (unqualified src/dst); DML sync на graph
+  при INSERT след CREATE GRAPH — не (G2; rebuild via re-CREATE).
 
 ## P11 — Втвърдяване и честни benchmarks при високо натоварване
 - `bench/harness.baga`: стълба 100 / 1k / 10k клиенти (четене, писане,

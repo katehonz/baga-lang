@@ -19,6 +19,7 @@ import "../storage/shards.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
 import "../core/row.baga"
+import "../ts/retention.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
@@ -187,18 +188,40 @@ fn boila_txn_commit(s: BoilaStore, txn: BoilaTxn) -> BoilaTxnRes !IO !Time {
     let cnt: Vec<BoilaVal> = vec_new()
     vec_push(cnt, boila_val_i64(lsn + 1))
     s = boila_put(s, boila_cf_sys(), 1, boila_lsn_pk(), boila_row_enc(cnt))?
+    // P9: cache table TTL (table_id → ttl_sec) за data puts
+    let ttl_ids: Vec<i64> = vec_new()
+    let ttl_secs: Vec<i64> = vec_new()
     let mut i: i64 = 0
     while i < vec_len(txn.writes) {
         let w = vec_get(txn.writes, i)
         if w.is_del == 1 {
             s = boila_del(s, w.cf, w.table_id, w.pk)?
         } else {
-            // envelope само за data/index CF — sys каталогът се чете суров
             let mut val = w.row
             if w.cf != boila_cf_sys() {
                 val = boila_wrap_val(lsn, w.row)
             }
-            s = boila_put(s, w.cf, w.table_id, w.pk, val)?
+            let mut ttl: i64 = 0
+            if w.cf == boila_cf_data() {
+                let mut found: i64 = 0 - 1
+                let mut t: i64 = 0
+                while t < vec_len(ttl_ids) {
+                    if vec_get(ttl_ids, t) == w.table_id {
+                        found = t
+                    }
+                    t = t + 1
+                }
+                if found >= 0 {
+                    ttl = vec_get(ttl_secs, found)
+                } else {
+                    let tg = boila_ttl_get(s, w.table_id)?
+                    s = tg.s
+                    ttl = tg.ttl_sec
+                    vec_push(ttl_ids, w.table_id)
+                    vec_push(ttl_secs, ttl)
+                }
+            }
+            s = boila_put_ex(s, w.cf, w.table_id, w.pk, val, ttl)?
         }
         i = i + 1
     }

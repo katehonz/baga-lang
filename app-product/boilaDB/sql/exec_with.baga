@@ -1,0 +1,90 @@
+// exec_with.baga — WITH RECURSIVE → BFS/DFS/Dijkstra (P10).
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "../graph/adjacency.baga"
+import "../graph/bfs.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "parse_with.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaWithOut {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    res: BoilaResult
+}
+
+fn boila_with_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaWithOut {
+    return BoilaWithOut { s: s, txn: txn, ok: 0, err: msg, state: state, res: boila_result_empty() }
+}
+
+fn boila_exec_with(s: BoilaStore, txn: BoilaTxn, w: BoilaWith) -> BoilaWithOut !IO !Time {
+    let ct = boila_cat_by_name(s, w.edge_table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return boila_with_fail(s, txn, ct.err, ct.state)
+    }
+    let t = ct.table
+    // graph def: by name or first on table
+    let gl = graph_list_for_table(s, t.id)?
+    s = gl.s
+    if vec_len(gl.defs) == 0 {
+        return boila_with_fail(s, txn, concat("таблица '", concat(w.edge_table, "' няма CREATE GRAPH")), "0A000")
+    }
+    let mut def = vec_get(gl.defs, 0)
+    if w.graph_name != "" {
+        let mut found: i64 = 0 - 1
+        let mut i: i64 = 0
+        while i < vec_len(gl.defs) {
+            if vec_get(gl.defs, i).name == w.graph_name {
+                found = i
+            }
+            i = i + 1
+        }
+        if found < 0 {
+            return boila_with_fail(s, txn, concat("graph '", concat(w.graph_name, "' не съществува")), "42704")
+        }
+        def = vec_get(gl.defs, found)
+    }
+    // validate src/dst match graph (or just use graph's cols)
+    let start_enc = boila_val_enc(w.start)
+    let mut walk = BoilaWalk { s: s, txn: txn, nodes: vec_new(), depths: vec_new(), dists: vec_new() }
+    if w.mode == 2 {
+        walk = graph_dfs(s, txn, t.id, def.id, start_enc, w.max_depth)?
+    } else {
+        if w.mode == 3 {
+            walk = graph_dijkstra(s, txn, t.id, def.id, start_enc, w.max_depth)?
+        } else {
+            walk = graph_bfs(s, txn, t.id, def.id, start_enc, w.max_depth)?
+        }
+    }
+    s = walk.s
+    txn = walk.txn
+    let mut res = boila_result_empty()
+    vec_push(res.cols, "node")
+    vec_push(res.cols, "depth")
+    if w.mode == 3 {
+        vec_push(res.cols, "dist")
+    }
+    let mut i: i64 = 0
+    while i < vec_len(walk.nodes) {
+        let row: Vec<BoilaVal> = vec_new()
+        vec_push(row, boila_val_dec(vec_get(walk.nodes, i)))
+        vec_push(row, boila_val_i64(vec_get(walk.depths, i)))
+        if w.mode == 3 {
+            vec_push(row, boila_val_i64(vec_get(walk.dists, i)))
+        }
+        vec_push(res.rows, row)
+        i = i + 1
+    }
+    return BoilaWithOut { s: s, txn: txn, ok: 1, err: "", state: "", res: res }
+}

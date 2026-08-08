@@ -1,15 +1,60 @@
 # boilaDB — gaps (честен списък)
 
 Попълва се с всяка фаза (моделът на rocksbaga/docs/gaps.md). Буквите:
-V = value/codec, K = key/scan, S = storage, M = metrics/monitoring,
+V = value/codec/vector, K = key/scan, S = storage, M = metrics/monitoring,
 H = HTTP/API, Q = SQL (от P1), C = cache/planner, A = агрегати,
 T = транзакции, W = wire protocol, F = FTS.
 
+## Открити при P10
+
+- **G1 — perf gate 1M edges BFS d=3 < 100 ms не е измерен.** Functional
+  P10 е зелен; bulk seed bench чака (Q2 arena).
+- **G2 — няма DML sync за graph adjacency.** INSERT/UPDATE/DELETE след
+  `CREATE GRAPH` не обновяват out/in lists; нужен re-CREATE GRAPH или
+  бъдещ sync (моделът на FTS/HNSW).
+- **G3 — WITH RECURSIVE е фиксиран pattern**, не пълен SQL CTE (без
+  множествени CTE, без произволни JOIN-и в recursive leg, без `.`
+  qualifiers — lexer няма `.`).
+- **G4 — mode (BFS/DFS/Dijkstra) по CTE име** (`*_dfs`, `*_dij`), не
+  SQL hint синтаксис.
+
+## Открити при P9
+
+- **S5 — perf gate 1M точки / <50 ms не е измерен.** Functional P9 е
+  зелен (boila_ts_test); bulk seed + range+bucket bench чака chunked
+  insert (Q2).
+- **S6 — няма background TTL sweeper нишка.** Expire е lazy (get/flush/
+  compact в rocksbaga); `boila_ts_sweep` = flush. Background queuebaga
+  worker — P11.
+- **S7 — time_bucket само в GROUP BY.** `SELECT time_bucket(...)` като
+  проекция без GROUP BY → 0A000 (не е парснат). Alias/ORDER BY по
+  bucket — при нужда.
+- **S8 — `ttl_sec` е разширение** извън чистия PG `ttl_days` (за тестове
+  и фина зърненост); документирано.
+
+## Открити при P8
+
+- **V2 — perf gate 100k×128d още не е измерен.** Functional P8 е зелен
+  (boila_vec_test); 100k seed + recall@10 bench чака chunked seed заради
+  arena OOM (Q2), моделът на FTS 20k.
+- **V3 — metadata pre-filter през secondary index/ няма.** kNN е чист
+  vector path; комбинация с `WHERE meta = …` идва при нужда.
+- **V4 — няма RAM cache на горните HNSW нива.** Всеки search чете
+  neighbors от vec CF (point GET-и); cache е P11/оптимизация.
+- **V5 — unindex не чисти reverse edges.** Orphan pk в чужд neighbor
+  list се skip-ва при search (липсващ row/vec). Пълен graph GC — при
+  нужда.
+- **V6 — kNN WHERE не се комбинира с AND** (като F6 за @@). LIMIT = k;
+  default k=10 ако липсва LIMIT.
+- **V7 — fixed-point ×1e6** вместо IEEE payload (V1 bit-cast липсва).
+  Достатъчно за ranking; не е bit-identical с pgvector float4.
+
 ## Открити при P7
 
-- **F1 — tokenizer-ът няма UTF-8 case folding.** Само ASCII A-Z → a-z;
-  кирилицата се съпоставя едно към едно (нужен езиков builtin или
-  hand-rolled таблица).
+- **F1 — tokenizer-ът няма Unicode case folding** (UTF-8 encoding-ът
+  е стандартът — PLAN/ARCHITECTURE; тук липсва само fold). Само ASCII
+  A-Z → a-z; кирилицата се съпоставя exact (нужен езиков builtin или
+  hand-rolled таблица). Други client encodings не се предлагат.
 - **F3 — BM25 idf е линейна апроксимация** (без ln), целочислена ×1000.
   Реденето е коректно относително, но не е точно PG ts_rank.
 - **F4 — posting списъците са един запис на term (read-modify-write при

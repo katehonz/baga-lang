@@ -9,6 +9,7 @@
 import "../core/value.baga"
 import "../core/row.baga"
 import "../catalog/schema.baga"
+import "../ts/time_bucket.baga"
 import "ast.baga"
 import "exec_scan.baga"
 import "exec_agg_extra.baga"
@@ -27,17 +28,51 @@ fn boila_agg_fail(msg: str, state: str) -> BoilaAggOut {
 }
 
 fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSel) -> BoilaAggOut {
-    // group колони → индекси
+    // group колони → индекси (time_bucket → bucket_col idx)
     let gixs: Vec<i64> = vec_new()
     let mut i: i64 = 0
     while i < vec_len(sel.group_cols) {
         let nm = vec_get(sel.group_cols, i)
-        let ix = boila_col_idx_of(cols, nm)
-        if ix < 0 {
-            return boila_agg_fail(concat("GROUP BY колона '", concat(nm, "' не съществува")), "42703")
+        let mut ix: i64 = 0 - 1
+        if nm == "time_bucket" && sel.bucket_iv > 0 {
+            ix = boila_col_idx_of(cols, sel.bucket_col)
+            if ix < 0 {
+                return boila_agg_fail(concat("time_bucket колона '", concat(sel.bucket_col, "' не съществува")), "42703")
+            }
+        } else {
+            ix = boila_col_idx_of(cols, nm)
+            if ix < 0 {
+                return boila_agg_fail(concat("GROUP BY колона '", concat(nm, "' не съществува")), "42703")
+            }
         }
         vec_push(gixs, ix)
         i = i + 1
+    }
+    // P9: материализирай bucket стойностите в копие на редовете
+    let mut brows = rows
+    if sel.bucket_iv > 0 {
+        let bix = boila_col_idx_of(cols, sel.bucket_col)
+        if bix < 0 {
+            return boila_agg_fail(concat("time_bucket колона '", concat(sel.bucket_col, "' не съществува")), "42703")
+        }
+        let nr: Vec<Vec<BoilaVal>> = vec_new()
+        let mut r0: i64 = 0
+        while r0 < vec_len(rows) {
+            let src = vec_get(rows, r0)
+            let row: Vec<BoilaVal> = vec_new()
+            let mut c: i64 = 0
+            while c < vec_len(src) {
+                if c == bix {
+                    vec_push(row, boila_tb_apply(vec_get(src, c), sel.bucket_iv))
+                } else {
+                    vec_push(row, vec_get(src, c))
+                }
+                c = c + 1
+            }
+            vec_push(nr, row)
+            r0 = r0 + 1
+        }
+        brows = nr
     }
     // агрегатни колони → индекси (+ типова проверка за sum/avg)
     let aixs: Vec<i64> = vec_new()
@@ -82,8 +117,8 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
     let gkeys: Vec<bytes> = vec_new()
     let gaccs: Vec<BoilaAggAcc> = vec_new()
     let mut r: i64 = 0
-    while r < vec_len(rows) {
-        let row = vec_get(rows, r)
+    while r < vec_len(brows) {
+        let row = vec_get(brows, r)
         let key = boila_agg_key(row, gixs)
         let mut gi: i64 = 0 - 1
         let mut k: i64 = 0
@@ -162,7 +197,7 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
                     if vec_len(sel.group_cols) > 0 {
                         return boila_agg_fail("HAVING агрегат извън проекцията — с GROUP BY трябва да е в нея", "0A000")
                     }
-                    let ex = boila_agg_extra(cols, rows, sel.hav_agg, sel.hav_col)
+                    let ex = boila_agg_extra(cols, brows, sel.hav_agg, sel.hav_col)
                     if ex.ok == 0 {
                         return boila_agg_fail(ex.err, ex.state)
                     }

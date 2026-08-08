@@ -1,0 +1,153 @@
+// boila_graph_test.baga — P10: CREATE GRAPH, WITH RECURSIVE BFS/DFS/Dijkstra.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_node(row: Vec<BoilaVal>) -> i64 {
+    return vec_get(row, 0).i
+}
+
+fn has_node(res: BoilaResult, n: i64) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(res.rows) {
+        if row_node(vec_get(res.rows, i)) == n {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_graph_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_graph_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+
+    // graph: 1→2→3→4, 1→5, 2→5; weights for dijkstra
+    let c1 = exec1(srv, "CREATE TABLE edges (id BIGINT, src BIGINT, dst BIGINT, w BIGINT, PRIMARY KEY (id))")
+    srv = c1.srv
+    check(fails, "create_edges", c1.ok == 1)
+
+    let i1 = exec1(srv, "INSERT INTO edges (id, src, dst, w) VALUES (1, 1, 2, 1), (2, 2, 3, 1), (3, 3, 4, 1), (4, 1, 5, 10), (5, 2, 5, 1)")
+    srv = i1.srv
+    check(fails, "insert_edges", i1.ok == 1 && i1.id == 5)
+
+    let g1 = exec1(srv, "CREATE GRAPH g1 ON edges (src, dst, w)")
+    srv = g1.srv
+    check(fails, "create_graph", g1.ok == 1 && g1.kind == 17)
+
+    let g2 = exec1(srv, "CREATE GRAPH g1 ON edges (src, dst)")
+    srv = g2.srv
+    check(fails, "dup_graph", g2.ok == 0 && g2.state == "42710")
+
+    // BFS depth 2 from 1: 1,2,5,3
+    let q1 = exec1(srv, "WITH RECURSIVE reach(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 2) SELECT node, depth FROM reach")
+    srv = q1.srv
+    check(fails, "bfs_ok", q1.ok == 1)
+    if q1.ok == 1 {
+        check(fails, "bfs_has_1", has_node(q1.res, 1) == 1)
+        check(fails, "bfs_has_2", has_node(q1.res, 2) == 1)
+        check(fails, "bfs_has_5", has_node(q1.res, 5) == 1)
+        check(fails, "bfs_has_3", has_node(q1.res, 3) == 1)
+        check(fails, "bfs_no_4", has_node(q1.res, 4) == 0)
+        check(fails, "bfs_count", vec_len(q1.res.rows) == 4)
+    } else {
+        check(fails, "bfs_has_1", false)
+        check(fails, "bfs_has_2", false)
+        check(fails, "bfs_has_5", false)
+        check(fails, "bfs_has_3", false)
+        check(fails, "bfs_no_4", false)
+        check(fails, "bfs_count", false)
+    }
+
+    // DFS
+    let q2 = exec1(srv, "WITH RECURSIVE reach_dfs(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach_dfs WHERE src = node AND depth < 3) SELECT node, depth FROM reach_dfs")
+    srv = q2.srv
+    check(fails, "dfs_ok", q2.ok == 1 && vec_len(q2.res.rows) >= 4)
+
+    // Dijkstra (cte name *_dij)
+    let q3 = exec1(srv, "WITH RECURSIVE reach_dij(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach_dij WHERE src = node AND depth < 5) SELECT node, depth FROM reach_dij")
+    srv = q3.srv
+    check(fails, "dij_ok", q3.ok == 1 && vec_len(q3.res.rows) >= 4)
+    // path 1→2→5 cost 2 vs 1→5 cost 10 — node 5 should have dist 2
+    if q3.ok == 1 {
+        let mut d5: i64 = 0 - 1
+        let mut i: i64 = 0
+        while i < vec_len(q3.res.rows) {
+            let row = vec_get(q3.res.rows, i)
+            if vec_get(row, 0).i == 5 && vec_len(row) >= 3 {
+                d5 = vec_get(row, 2).i
+            }
+            i = i + 1
+        }
+        check(fails, "dij_short_path", d5 == 2)
+    } else {
+        check(fails, "dij_short_path", false)
+    }
+
+    // no graph
+    let c2 = exec1(srv, "CREATE TABLE e2 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
+    srv = c2.srv
+    let q4 = exec1(srv, "WITH RECURSIVE r(node, depth) AS (SELECT 1, 0 UNION ALL SELECT b, 0 FROM e2, r WHERE a = node AND depth < 1) SELECT node, depth FROM r")
+    srv = q4.srv
+    check(fails, "no_graph", q4.ok == 0)
+
+    // restart
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let q5 = exec1(srv2, "WITH RECURSIVE reach(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 1) SELECT node, depth FROM reach")
+    srv2 = q5.srv
+    check(fails, "restart_bfs", q5.ok == 1 && has_node(q5.res, 1) == 1 && has_node(q5.res, 2) == 1)
+
+    boila_server_close(srv2)?
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_graph_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_graph_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

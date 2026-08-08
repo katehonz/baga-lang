@@ -121,16 +121,32 @@ fn boila_lex(src: str) -> BoilaLex {
                             i = i + 1
                         } else {
                             if c == 60 {
-                                if i + 1 < n && char_at(src, i + 1) == 61 {
-                                    vec_push(toks, token_new(tok_op(), "<="))
-                                    i = i + 2
+                                // P8: <-> <=> <#> преди <= / <> / <
+                                if i + 2 < n && char_at(src, i + 1) == 45 && char_at(src, i + 2) == 62 {
+                                    vec_push(toks, token_new(tok_op(), "<->"))
+                                    i = i + 3
                                 } else {
-                                    if i + 1 < n && char_at(src, i + 1) == 62 {
-                                        vec_push(toks, token_new(tok_op(), "<>"))
-                                        i = i + 2
+                                    if i + 2 < n && char_at(src, i + 1) == 61 && char_at(src, i + 2) == 62 {
+                                        vec_push(toks, token_new(tok_op(), "<=>"))
+                                        i = i + 3
                                     } else {
-                                        vec_push(toks, token_new(tok_op(), "<"))
-                                        i = i + 1
+                                        if i + 2 < n && char_at(src, i + 1) == 35 && char_at(src, i + 2) == 62 {
+                                            vec_push(toks, token_new(tok_op(), "<#>"))
+                                            i = i + 3
+                                        } else {
+                                            if i + 1 < n && char_at(src, i + 1) == 61 {
+                                                vec_push(toks, token_new(tok_op(), "<="))
+                                                i = i + 2
+                                            } else {
+                                                if i + 1 < n && char_at(src, i + 1) == 62 {
+                                                    vec_push(toks, token_new(tok_op(), "<>"))
+                                                    i = i + 2
+                                                } else {
+                                                    vec_push(toks, token_new(tok_op(), "<"))
+                                                    i = i + 1
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             } else {
