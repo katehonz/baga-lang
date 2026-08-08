@@ -1,10 +1,12 @@
-// shell.baga — boilaDB CLI REPL: ред от stdin → SQL → JSON резултат.
+// shell.baga — boilaDB CLI REPL (P2: multi-database сесия).
 //
-// Пуска се със същия env като serve.baga (BOILA_PATH и др.). Празен ред
-// или EOF излиза. Използва се за локални проби; \q също излиза.
+// Сесията държи текущата база (default "boila"); `USE <db>` я сменя и
+// prompt-ът я показва. CREATE/DROP DATABASE са сървърни заявления.
+// Env като serve.baga (BOILA_PATH и др.). Празен ред или \q излиза.
 
-import "../storage/shards.baga"
-import "../sql/exec_sql.baga"
+import "../storage/databases.baga"
+import "../sql/exec_server.baga"
+import "../sql/exec_scan.baga"
 import "../core/row.baga"
 import "std/io/io.baga"
 import "std/os/os.baga"
@@ -19,52 +21,67 @@ fn boila_env_or(name: str, dflt: str) -> str !IO {
 }
 
 fn main() -> i64 !IO !Time {
-    let dir = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
+    let root = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
     let nshards = parse_int(boila_env_or("BOILA_SHARDS", "4"))
     let flush_at = parse_int(boila_env_or("BOILA_FLUSH_AT", "256"))
     let compact_at = parse_int(boila_env_or("BOILA_COMPACT_AT", "4"))
-    let mut store = boila_open(dir, nshards, flush_at, compact_at)?
-    if store.ok == 0 {
-        print(concat("boiladb shell: неуспешно отваряне на ", dir))
+    let max_db = parse_int(boila_env_or("BOILA_MAX_DB", "64"))
+    let mut srv = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
+    if srv.ok == 0 {
+        print(concat("boiladb shell: неуспешно отваряне на root ", root))
         return 1
     }
-    print(concat("boiladb shell (dir=", concat(dir, ") — празен ред за изход")))
+    print(concat("boiladb shell (root=", concat(root, ") — празен ред за изход")))
     let mut rd = reader_new(0)
+    let mut cur = "boila"
     let mut running = true
     while running {
-        print("boila> ")
+        print(concat(concat("boila[", cur), "]> "))
         let line = str_trim(read_line(rd)?)
         if line == "" || line == "\\q" {
             running = false
         } else {
-            let out = boila_exec_sql(store, line)?
-            store = out.s
+            let out = boila_server_exec(srv, cur, line)?
+            srv = out.srv
             if out.ok == 0 {
                 print(concat(concat("ГРЕШКА ", out.state), concat(": ", out.err)))
             } else {
-                if out.kind == 1 {
-                    let mut s = "cols: "
-                    let mut i: i64 = 0
-                    while i < vec_len(out.res.cols) {
-                        if i > 0 {
-                            s = concat(s, ", ")
-                        }
-                        s = concat(s, vec_get(out.res.cols, i))
-                        i = i + 1
-                    }
-                    print(s)
-                    let mut j: i64 = 0
-                    while j < vec_len(out.res.rows) {
-                        print(concat("  ", boila_row_json(vec_get(out.res.rows, j))))
-                        j = j + 1
-                    }
-                    print(concat(concat("(", int_to_str(vec_len(out.res.rows))), " ред(а))"))
+                if out.kind == 5 {
+                    cur = out.db
+                    print(concat("OK (текуща база: ", concat(cur, ")")))
                 } else {
-                    print(concat("OK (table id ", concat(int_to_str(out.id), ")")))
+                    if out.kind == 1 {
+                        let mut s = "cols: "
+                        let mut i: i64 = 0
+                        while i < vec_len(out.res.cols) {
+                            if i > 0 {
+                                s = concat(s, ", ")
+                            }
+                            s = concat(s, vec_get(out.res.cols, i))
+                            i = i + 1
+                        }
+                        print(s)
+                        let mut j: i64 = 0
+                        while j < vec_len(out.res.rows) {
+                            print(concat("  ", boila_row_json(vec_get(out.res.rows, j))))
+                            j = j + 1
+                        }
+                        print(concat(concat("(", int_to_str(vec_len(out.res.rows))), " ред(а))"))
+                    } else {
+                        if out.kind == 3 {
+                            print(concat("OK (създадена база ", concat(out.db, ")")))
+                        } else {
+                            if out.kind == 4 {
+                                print(concat("OK (изтрита база ", concat(out.db, ")")))
+                            } else {
+                                print(concat("OK (table id ", concat(int_to_str(out.id), ")")))
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    boila_close(store)?
+    boila_server_close(srv)?
     return 0
 }

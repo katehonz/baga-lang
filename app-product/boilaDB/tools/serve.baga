@@ -1,23 +1,23 @@
-// serve.baga — входната точка на boilaDB.
+// serve.baga — входната точка на boilaDB (P2: multi-database).
 //
-// HTTP сървър върху N shard-а × rocksbaga:
-//   GET  /health  → {"status":"ok","shards":N}
+// HTTP сървър върху сървърен root с много бази данни:
+//   GET  /health  → {"status":"ok","open_databases":N,"max_db":M}
 //   GET  /metrics → Prometheus текст (metbaga)
-//   POST /sql     → BoilaSQL (P1: SELECT, CREATE TABLE), вж. api/http_sql
-//   друго         → 404
+//   POST /sql?db=<име> → BoilaSQL в избраната база (default "boila");
+//                        CREATE/DROP DATABASE, USE са сървърни заявления
 //
-// Env: BOILA_PATH (default /tmp/baga_boila), BOILA_SHARDS (4),
-//      BOILA_PORT (6570), BOILA_FLUSH_AT (256), BOILA_COMPACT_AT (4).
+// Env: BOILA_PATH (root, default /tmp/baga_boila), BOILA_SHARDS (4),
+//      BOILA_PORT (6570), BOILA_FLUSH_AT (256), BOILA_COMPACT_AT (4),
+//      BOILA_MAX_DB (64).
 //
-// Конкурентност (честно за P1, gaps H2): accept loop-ът е SYNC — една
-// връзка се обработва до край, после следващата. Причината: SQL пътят
-// мутира store-а (каталог), а struct-по-стойност изисква един собственик.
-// P2 въвежда shard-owner нишки + канали; P5 — bounded pool за wire-а.
+// Конкурентност (честно, gaps H2): accept loop-ът е SYNC — SQL пътят
+// мутира BoilaServer (registry/каталози), struct-по-стойност изисква
+// един собственик. P3 въвежда shard-owner нишки + канали.
 
 import "httpdbaga/http.baga"
 import "metbaga/met.baga"
 import "../api/http_sql.baga"
-import "../storage/shards.baga"
+import "../storage/databases.baga"
 import "std/net/tcp.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
@@ -31,44 +31,44 @@ fn boila_env_or(name: str, dflt: str) -> str !IO {
 }
 
 struct BoilaRouteOut {
-    s: BoilaStore,
+    srv: BoilaServer,
     resp: Response
 }
 
-fn boila_route(s: BoilaStore, req: Request) -> BoilaRouteOut !IO !Time {
+fn boila_route(srv: BoilaServer, req: Request) -> BoilaRouteOut !IO !Time {
     let method = http_method(req)
     let path = http_path_only(req)
-    let n = boila_shards(s)
     if method == "GET" && path == "/health" {
-        let mut body = "{\"status\":\"ok\",\"shards\":"
-        body = concat(body, int_to_str(n))
+        let mut body = "{\"status\":\"ok\",\"open_databases\":"
+        body = concat(body, int_to_str(vec_len(srv.names)))
+        body = concat(body, ",\"max_db\":")
+        body = concat(body, int_to_str(srv.max_db))
         body = concat(body, "}")
-        return BoilaRouteOut { s: s, resp: http_json_response(200, body) }
+        return BoilaRouteOut { srv: srv, resp: http_json_response(200, body) }
     }
     if method == "GET" && path == "/metrics" {
         let m = met_new()
         let up = met_gauge(m, "boila_up", "boilaDB process alive")
         met_set(m, up, 1)
-        let sh = met_gauge(m, "boila_shards", "rocksbaga shard count")
-        met_set(m, sh, n)
+        let od = met_gauge(m, "boila_databases_open", "open databases")
+        met_set(m, od, vec_len(srv.names))
         let resp = http_response(200, met_render(m))
-        return BoilaRouteOut { s: s, resp: http_set_header(resp, "Content-Type", "text/plain; version=0.0.4") }
+        return BoilaRouteOut { srv: srv, resp: http_set_header(resp, "Content-Type", "text/plain; version=0.0.4") }
     }
     if method == "POST" && path == "/sql" {
-        let r = boila_http_sql(s, req)?
-        return BoilaRouteOut { s: r.s, resp: r.resp }
+        let r = boila_http_sql(srv, req)?
+        return BoilaRouteOut { srv: r.srv, resp: r.resp }
     }
-    return BoilaRouteOut { s: s, resp: http_json_response(404, "{\"error\":\"not found\"}") }
+    return BoilaRouteOut { srv: srv, resp: http_json_response(404, "{\"error\":\"not found\"}") }
 }
 
 struct BoilaConnOut {
-    s: BoilaStore
+    srv: BoilaServer
 }
 
-// HTTP/1.1 keep-alive loop; tcp_close накрая е задължително — клиентите
-// четат до EOF (урокът от oauthbaga P1).
-fn boila_conn(fd: i64, s0: BoilaStore) -> BoilaConnOut !IO !Net !Time {
-    let mut s = s0
+// HTTP/1.1 keep-alive loop; tcp_close накрая (клиентите четат до EOF).
+fn boila_conn(fd: i64, srv0: BoilaServer) -> BoilaConnOut !IO !Net !Time {
+    let mut srv = srv0
     let mut r = http_reader(fd)
     let mut keep = true
     while keep {
@@ -82,8 +82,8 @@ fn boila_conn(fd: i64, s0: BoilaStore) -> BoilaConnOut !IO !Net !Time {
                 keep = false
             } else {
                 let ka = http_keepalive(out.req)
-                let rt = boila_route(s, out.req)?
-                s = rt.s
+                let rt = boila_route(srv, out.req)?
+                srv = rt.srv
                 http_respond_keepalive(fd, rt.resp, ka)?
                 if ka == 0 {
                     keep = false
@@ -92,35 +92,36 @@ fn boila_conn(fd: i64, s0: BoilaStore) -> BoilaConnOut !IO !Net !Time {
         }
     }
     tcp_close(fd)?
-    return BoilaConnOut { s: s }
+    return BoilaConnOut { srv: srv }
 }
 
 fn main() -> i64 !Net !IO !Time {
-    let dir = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
+    let root = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
     let port = parse_int(boila_env_or("BOILA_PORT", "6570"))
     let nshards = parse_int(boila_env_or("BOILA_SHARDS", "4"))
     let flush_at = parse_int(boila_env_or("BOILA_FLUSH_AT", "256"))
     let compact_at = parse_int(boila_env_or("BOILA_COMPACT_AT", "4"))
+    let max_db = parse_int(boila_env_or("BOILA_MAX_DB", "64"))
 
-    let mut store = boila_open(dir, nshards, flush_at, compact_at)?
-    if store.ok == 0 {
-        print(concat("boiladb: неуспешно отваряне на ", dir))
+    let mut srv = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
+    if srv.ok == 0 {
+        print(concat("boiladb: неуспешно отваряне на root ", root))
         return 1
     }
     let mut line = "boiladb listening on :"
     line = concat(line, int_to_str(port))
-    line = concat(line, " (shards=")
-    line = concat(line, int_to_str(boila_shards(store)))
-    line = concat(line, ", dir=")
-    line = concat(line, dir)
-    line = concat(line, ", sync-mode P1)")
+    line = concat(line, " (root=")
+    line = concat(line, root)
+    line = concat(line, ", max_db=")
+    line = concat(line, int_to_str(max_db))
+    line = concat(line, ", sync-mode)")
     print(line)
 
     let listener = tcp_listen(port)?
     while true {
         let fd = tcp_accept(listener)?
-        let co = boila_conn(fd, store)?
-        store = co.s
+        let co = boila_conn(fd, srv)?
+        srv = co.srv
     }
     return 0
 }

@@ -4,6 +4,17 @@
 V = value/codec, K = key/scan, S = storage, M = metrics/monitoring,
 H = HTTP/API, Q = SQL (от P1).
 
+## Открити при P2
+
+- **S4 — mkdir е extern FFI към libc** (езикът няма builtin mkdir/
+  readdir/rmdir). boilaDB го ползва за сървърния root; алтернатива без
+  FFI би била flat layout само в съществуваща директория. DROP DATABASE
+  чисти файлове по известни шаблони, но празни директории не се трият
+  (няма rmdir).
+- **H3 — HTTP е без сесия:** `USE` през HTTP връща ok, но не променя
+  нищо за следващи заявки — базата се избира с `?db=` на всяка заявка.
+  Истинска сесия идва с PG wire-а (P6).
+
 ## Открити при P1
 
 - **Q1 — SQL слоят е 5.1× по-бавен от суров GET за point заявки.**

@@ -1,0 +1,182 @@
+// boila_multidb_test.baga — boilaDB P2: много бази данни на един сървър.
+// Изолация между бази, CREATE/DROP/USE, SQLSTATE грешки, restart,
+// DROP чисти файловете.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/storage/shards.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/codec.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/core/row.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 30 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_db(root: str, name: str, n: i64) -> i64 !IO {
+    let base = concat(concat(root, "/"), concat(name, ".db"))
+    if n <= 1 {
+        wipe_shard_path(base)?
+    } else {
+        let mut i: i64 = 0
+        while i < n {
+            wipe_shard_path(concat(concat(base, ".s"), int_to_str(i)))?
+            i = i + 1
+        }
+    }
+    return 0
+}
+
+fn wipe_root(root: str, dbs: Vec<str>) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < vec_len(dbs) {
+        wipe_db(root, vec_get(dbs, i), 2)?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_str(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() {
+        return int_to_str(v.i)
+    }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_multidb_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_multidb_test"
+    let known: Vec<str> = vec_new()
+    vec_push(known, "boila")
+    vec_push(known, "alpha")
+    vec_push(known, "beta")
+    wipe_root(root, known)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "server_open", srv.ok == 1)
+
+    // --- default база "boila" съществува (заявка стига до каталога) ---
+    let d0 = boila_server_exec(srv, "boila", "SELECT * FROM nope")?
+    srv = d0.srv
+    check(fails, "default_db_exists", d0.ok == 0 && d0.state == "42P01")
+
+    // --- CREATE DATABASE ---
+    let c1 = boila_server_exec(srv, "boila", "CREATE DATABASE alpha;")?
+    srv = c1.srv
+    check(fails, "create_alpha", c1.ok == 1 && c1.kind == 3 && c1.db == "alpha")
+    let c2 = boila_server_exec(srv, "boila", "CREATE DATABASE beta")?
+    srv = c2.srv
+    check(fails, "create_beta", c2.ok == 1 && c2.kind == 3)
+    let c3 = boila_server_exec(srv, "boila", "CREATE DATABASE alpha")?
+    srv = c3.srv
+    check(fails, "dup_42P04", c3.ok == 0 && c3.state == "42P04")
+    let c4 = boila_server_exec(srv, "boila", "CREATE DATABASE 9bad")?
+    srv = c4.srv
+    check(fails, "bad_name_syntax", c4.ok == 0 && c4.state == "42601")
+    let c5 = boila_server_exec(srv, "boila", concat("CREATE DATABASE ", str_repeat("x", 64)))?
+    srv = c5.srv
+    check(fails, "too_long_42602", c5.ok == 0 && c5.state == "42602")
+
+    // --- едноименни таблици в две бази — изолация ---
+    let t1 = boila_server_exec(srv, "alpha", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = t1.srv
+    check(fails, "alpha_table", t1.ok == 1 && t1.kind == 2)
+    let t2 = boila_server_exec(srv, "beta", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = t2.srv
+    check(fails, "beta_table", t2.ok == 1 && t2.kind == 2)
+
+    // seed: pk=1 в alpha → "A", в beta → "B" (INSERT е P3 — през storage)
+    let ga = boila_srv_db(srv, "alpha")?
+    srv = ga.srv
+    let rowa: Vec<BoilaVal> = vec_new()
+    vec_push(rowa, boila_val_i64(1))
+    vec_push(rowa, boila_val_str("A"))
+    let sta = boila_put(ga.store, boila_cf_data(), t1.id, boila_val_enc(boila_val_i64(1)), boila_row_enc(rowa))?
+    srv = boila_srv_store_putback(srv, "alpha", sta)
+    let gb = boila_srv_db(srv, "beta")?
+    srv = gb.srv
+    let rowb: Vec<BoilaVal> = vec_new()
+    vec_push(rowb, boila_val_i64(1))
+    vec_push(rowb, boila_val_str("B"))
+    let stb = boila_put(gb.store, boila_cf_data(), t2.id, boila_val_enc(boila_val_i64(1)), boila_row_enc(rowb))?
+    srv = boila_srv_store_putback(srv, "beta", stb)
+
+    let qa = boila_server_exec(srv, "alpha", "SELECT * FROM t WHERE id = 1")?
+    srv = qa.srv
+    check(fails, "iso_alpha", qa.ok == 1 && vec_len(qa.res.rows) == 1 && row_str(vec_get(qa.res.rows, 0), 1) == "A")
+    let qb = boila_server_exec(srv, "beta", "SELECT * FROM t WHERE id = 1")?
+    srv = qb.srv
+    check(fails, "iso_beta", qb.ok == 1 && vec_len(qb.res.rows) == 1 && row_str(vec_get(qb.res.rows, 0), 1) == "B")
+
+    // --- USE ---
+    let u1 = boila_server_exec(srv, "boila", "USE alpha")?
+    srv = u1.srv
+    check(fails, "use_ok", u1.ok == 1 && u1.kind == 5 && u1.db == "alpha")
+    let u2 = boila_server_exec(srv, "boila", "USE missing")?
+    srv = u2.srv
+    check(fails, "use_missing_3D000", u2.ok == 0 && u2.state == "3D000")
+
+    boila_server_close(srv)?
+
+    // --- restart: registry + базите оцеляват ---
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let r1 = boila_server_exec(srv2, "alpha", "SELECT * FROM t WHERE id = 1")?
+    srv2 = r1.srv
+    check(fails, "restart_alpha", r1.ok == 1 && vec_len(r1.res.rows) == 1 && row_str(vec_get(r1.res.rows, 0), 1) == "A")
+    let r2 = boila_server_exec(srv2, "beta", "SELECT v FROM t WHERE id = 1")?
+    srv2 = r2.srv
+    check(fails, "restart_beta", r2.ok == 1 && vec_len(r2.res.rows) == 1 && row_str(vec_get(r2.res.rows, 0), 0) == "B")
+
+    // --- DROP DATABASE ---
+    let dr0 = boila_server_exec(srv2, "alpha", "DROP DATABASE alpha")?
+    srv2 = dr0.srv
+    check(fails, "drop_current_55006", dr0.ok == 0 && dr0.state == "55006")
+    let dr1 = boila_server_exec(srv2, "beta", "DROP DATABASE alpha")?
+    srv2 = dr1.srv
+    check(fails, "drop_alpha", dr1.ok == 1 && dr1.kind == 4)
+    let dr2 = boila_server_exec(srv2, "beta", "USE alpha")?
+    srv2 = dr2.srv
+    check(fails, "dropped_gone_3D000", dr2.ok == 0 && dr2.state == "3D000")
+    let fe = file_exists(concat(root, "/alpha.db.s0.wal"))?
+    check(fails, "drop_cleaned_files", fe == 0)
+    let dr3 = boila_server_exec(srv2, "beta", "DROP DATABASE alpha")?
+    srv2 = dr3.srv
+    check(fails, "drop_twice_3D000", dr3.ok == 0 && dr3.state == "3D000")
+
+    boila_server_close(srv2)?
+    wipe_root(root, known)?
+    if vec_len(fails) == 0 {
+        print("boila_multidb_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_multidb_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

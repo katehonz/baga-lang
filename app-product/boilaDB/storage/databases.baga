@@ -1,0 +1,278 @@
+// databases.baga — много бази данни на един сървър (P2, PG/MySQL модел).
+//
+// Flat layout под root (baga няма mkdir/readdir — gaps S3):
+//   <root>/.meta            — registry (1 shard): pk "db|<име>" → row [nshards]
+//   <root>/<име>.db         — shard-файлове на базата (<име>.db.s{i} при n>1)
+//
+// BoilaServer държи meta store-а + отворените бази като (име, store)
+// двойки; lazy open при първа употреба; при таван BOILA_MAX_DB се
+// затваря най-старата отворена (FIFO). Default база: "boila".
+
+import "shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// Езикът няма builtin mkdir (gaps S4) — libc FFI през установения
+// extern механизъм (моделът на std/os open/unlink).
+extern fn mkdir(path: str, mode: i64) -> i64 !IO
+
+struct BoilaServer {
+    meta: BoilaStore,
+    root: str,
+    names: Vec<str>,
+    stores: Vec<BoilaStore>,
+    flush_at: i64,
+    compact_at: i64,
+    dflt_shards: i64,
+    max_db: i64,
+    ok: i64
+}
+
+struct BoilaSrvDb {
+    srv: BoilaServer,
+    ok: i64,
+    err: str,
+    state: str,
+    store: BoilaStore,
+    name: str
+}
+
+fn boila_store_empty() -> BoilaStore {
+    let sh: Vec<LsmDB> = vec_new()
+    let sk: Vec<bytes> = vec_new()
+    let c = LsmCluster { shards: sh, n: 0, scan_epoch: 0 - 1, scan_pat: bytes_new(0), scan_keys: sk, ok: 0 }
+    return BoilaStore { c: c, ok: 0 }
+}
+
+fn boila_srv_db_fail(srv: BoilaServer, msg: str, state: str) -> BoilaSrvDb {
+    return BoilaSrvDb { srv: srv, ok: 0, err: msg, state: state, store: boila_store_empty(), name: "" }
+}
+
+fn boila_db_dir(root: str, name: str) -> str {
+    return concat(concat(root, "/"), concat(name, ".db"))
+}
+
+fn boila_db_reg_pk(name: str) -> bytes {
+    return bytes_of_str(concat("db|", name))
+}
+
+// Име на база: [a-z_][a-z0-9_]*, 1..63 знака (lexer-ът е fold-нал).
+fn boila_db_name_ok(name: str) -> i64 {
+    let n = len(name)
+    if n < 1 || n > 63 {
+        return 0
+    }
+    let c0 = char_at(name, 0)
+    if (c0 >= 97 && c0 <= 122) == false && c0 != 95 {
+        return 0
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_at(name, i)
+        let okch = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+        if okch == false {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+fn boila_srv_find(srv: BoilaServer, name: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(srv.names) {
+        if vec_get(srv.names, i) == name {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Премахва елемент ix от две успоредни вектора (връща нови).
+fn boila_srv_evict(srv: BoilaServer, ix: i64) -> BoilaServer {
+    let names: Vec<str> = vec_new()
+    let stores: Vec<BoilaStore> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(srv.names) {
+        if i != ix {
+            vec_push(names, vec_get(srv.names, i))
+            vec_push(stores, vec_get(srv.stores, i))
+        }
+        i = i + 1
+    }
+    return BoilaServer { meta: srv.meta, root: srv.root, names: names, stores: stores, flush_at: srv.flush_at, compact_at: srv.compact_at, dflt_shards: srv.dflt_shards, max_db: srv.max_db, ok: srv.ok }
+}
+
+fn boila_srv_reg_get(srv: BoilaServer, name: str) -> BoilaSrvDb !IO !Time {
+    let g = boila_get(srv.meta, boila_cf_sys(), 1, boila_db_reg_pk(name))?
+    let mut srv2 = srv
+    srv2.meta = g.s
+    if g.found == 0 {
+        return boila_srv_db_fail(srv2, concat("база '", concat(name, "' не съществува")), "3D000")
+    }
+    let row = boila_row_dec(g.val)
+    let mut n: i64 = 1
+    if vec_len(row) > 0 {
+        n = vec_get(row, 0).i
+    }
+    return BoilaSrvDb { srv: srv2, ok: 1, err: "", state: "", store: boila_store_empty(), name: int_to_str(n) }
+}
+
+// Отваря сървъра: mkdir на root, meta registry + default база "boila"
+// (като PG 'postgres'). ok=0 ако meta store-ът не отвори — честно.
+fn boila_server_open(root: str, nshards_default: i64, flush_at: i64, compact_at: i64, max_db: i64) -> BoilaServer !IO !Time {
+    mkdir(root, 493)?   // 0755; EEXIST е безвреден
+    let meta = boila_open(concat(root, "/.meta"), 1, flush_at, compact_at)?
+    let names: Vec<str> = vec_new()
+    let stores: Vec<BoilaStore> = vec_new()
+    let mut cap = max_db
+    if cap < 1 {
+        cap = 64
+    }
+    let mut srv = BoilaServer { meta: meta, root: root, names: names, stores: stores, flush_at: flush_at, compact_at: compact_at, dflt_shards: nshards_default, max_db: cap, ok: meta.ok }
+    if meta.ok == 0 {
+        return srv
+    }
+    let chk = boila_srv_reg_get(srv, "boila")?
+    srv = chk.srv
+    if chk.ok == 0 {
+        let row: Vec<BoilaVal> = vec_new()
+        vec_push(row, boila_val_i64(nshards_default))
+        srv.meta = boila_put(srv.meta, boila_cf_sys(), 1, boila_db_reg_pk("boila"), boila_row_enc(row))?
+    }
+    srv.ok = srv.meta.ok
+    return srv
+}
+
+fn boila_server_close(srv: BoilaServer) -> i64 !IO {
+    let mut i: i64 = 0
+    while i < vec_len(srv.stores) {
+        boila_close(vec_get(srv.stores, i))?
+        i = i + 1
+    }
+    boila_close(srv.meta)?
+    return 0
+}
+
+// Resolve на база: отворена → директно; иначе lazy open от registry-то.
+fn boila_srv_db(srv: BoilaServer, name: str) -> BoilaSrvDb !IO !Time {
+    let ix = boila_srv_find(srv, name)
+    if ix >= 0 {
+        return BoilaSrvDb { srv: srv, ok: 1, err: "", state: "", store: vec_get(srv.stores, ix), name: name }
+    }
+    let reg = boila_srv_reg_get(srv, name)?
+    let mut s2 = reg.srv
+    if reg.ok == 0 {
+        return BoilaSrvDb { srv: s2, ok: 0, err: reg.err, state: reg.state, store: reg.store, name: "" }
+    }
+    let n = parse_int(reg.name)
+    // FIFO eviction при таван
+    if vec_len(s2.names) >= s2.max_db {
+        let old = vec_get(s2.stores, 0)
+        boila_close(old)?
+        s2 = boila_srv_evict(s2, 0)
+    }
+    let st = boila_open(boila_db_dir(s2.root, name), n, s2.flush_at, s2.compact_at)?
+    if st.ok == 0 {
+        return boila_srv_db_fail(s2, concat("неуспешно отваряне на база '", concat(name, "'")), "XX000")
+    }
+    vec_push(s2.names, name)
+    vec_push(s2.stores, st)
+    return BoilaSrvDb { srv: s2, ok: 1, err: "", state: "", store: st, name: name }
+}
+
+// Write-back на мутиран store (каталог/данни) към отворения списък.
+fn boila_srv_store_putback(srv: BoilaServer, name: str, store: BoilaStore) -> BoilaServer {
+    let ix = boila_srv_find(srv, name)
+    if ix >= 0 {
+        vec_set(srv.stores, ix, store)
+    }
+    return srv
+}
+
+fn boila_srv_db_create(srv: BoilaServer, name: str) -> BoilaSrvDb !IO !Time {
+    if boila_db_name_ok(name) == 0 {
+        return boila_srv_db_fail(srv, concat("невалидно име на база '", concat(name, "'")), "42602")
+    }
+    let reg = boila_srv_reg_get(srv, name)?
+    let mut s2 = reg.srv
+    if reg.ok == 1 {
+        return boila_srv_db_fail(s2, concat("база '", concat(name, "' вече съществува")), "42P04")
+    }
+    let mut n = s2.dflt_shards
+    if n < 1 {
+        n = 1
+    }
+    if n > 64 {
+        n = 64
+    }
+    // отварянето създава WAL/manifest файловете (flat layout)
+    let st = boila_open(boila_db_dir(s2.root, name), n, s2.flush_at, s2.compact_at)?
+    if st.ok == 0 {
+        return boila_srv_db_fail(s2, concat("неуспешно създаване на база '", concat(name, "'")), "XX000")
+    }
+    let row: Vec<BoilaVal> = vec_new()
+    vec_push(row, boila_val_i64(n))
+    s2.meta = boila_put(s2.meta, boila_cf_sys(), 1, boila_db_reg_pk(name), boila_row_enc(row))?
+    if vec_len(s2.names) >= s2.max_db {
+        let old = vec_get(s2.stores, 0)
+        boila_close(old)?
+        s2 = boila_srv_evict(s2, 0)
+    }
+    vec_push(s2.names, name)
+    vec_push(s2.stores, st)
+    return BoilaSrvDb { srv: s2, ok: 1, err: "", state: "", store: st, name: name }
+}
+
+// Чисти файлове на shard-път (wal/manifest/sst/bloom; толерантно към
+// липсващи — baga unlink не гърми).
+fn boila_wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 256 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn boila_srv_db_drop(srv: BoilaServer, name: str, current: str) -> BoilaSrvDb !IO !Time {
+    if name == current {
+        return boila_srv_db_fail(srv, concat("база '", concat(name, "' е текуща за сесията")), "55006")
+    }
+    let reg = boila_srv_reg_get(srv, name)?
+    let mut s2 = reg.srv
+    if reg.ok == 0 {
+        return BoilaSrvDb { srv: s2, ok: 0, err: reg.err, state: reg.state, store: reg.store, name: "" }
+    }
+    let n = parse_int(reg.name)
+    // затвори ако е отворена
+    let ix = boila_srv_find(s2, name)
+    if ix >= 0 {
+        let old = vec_get(s2.stores, ix)
+        boila_close(old)?
+        s2 = boila_srv_evict(s2, ix)
+    }
+    // файлове
+    let base = boila_db_dir(s2.root, name)
+    if n <= 1 {
+        boila_wipe_shard_path(base)?
+    } else {
+        let mut i: i64 = 0
+        while i < n {
+            boila_wipe_shard_path(concat(concat(base, ".s"), int_to_str(i)))?
+            i = i + 1
+        }
+    }
+    // registry ред
+    s2.meta = boila_del(s2.meta, boila_cf_sys(), 1, boila_db_reg_pk(name))?
+    return BoilaSrvDb { srv: s2, ok: 1, err: "", state: "", store: boila_store_empty(), name: name }
+}

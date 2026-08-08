@@ -10,11 +10,15 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 
 ## Статус
 
-**P1 (SQL read path)** — BoilaSQL lexer/parser за `SELECT`/`CREATE TABLE`,
-каталог в sys key-space (персистентен), HTTP `POST /sql`, CLI shell,
-SQLSTATE грешки. Perf baseline: SQL point SELECT 6102 ns/op срещу суров
-GET 1193 ns/op (511%) — мишената ≤ 1.25× чака plan cache-а в P5 (gaps Q1).
-Предишно: **P0 (скелет)** — value codec + 3VL, key layout, sharded storage,
+**P2 (много бази данни)** — сървърен root с `.meta` registry и flat
+`<db>.db` клъстери; `CREATE/DROP DATABASE`, `USE`; HTTP `POST /sql?db=`,
+shell с текуща база в prompt-а; изолация между бази, FIFO eviction при
+`BOILA_MAX_DB`, default база `boila`; персистентно през рестарт (тествано).
+Предишно: **P1 (SQL read path)** — BoilaSQL lexer/parser за
+`SELECT`/`CREATE TABLE`, каталог в sys key-space, SQLSTATE грешки.
+Perf baseline: SQL point SELECT 6102 ns/op срещу суров GET 1193 ns/op
+(511%) — мишената ≤ 1.25× чака plan cache-а в P5 (gaps Q1).
+**P0 (скелет)** — value codec + 3VL, key layout, sharded storage,
 `/health` + `/metrics`.
 
 ## Пускане

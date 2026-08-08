@@ -99,13 +99,14 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 
 ### storage/ — N shard-а × rocksbaga
 - **Много бази данни (P2):** `BOILA_PATH` е сървърният root — `.meta`
-  registry (1 shard) и по една директория `<db>/db` на база (shard пътища
-  `<db>/db.s{i}`). `databases.baga` държи `BoilaServer`: meta store +
-  отворените бази като (име, store) двойки, lazy open, таван
-  `BOILA_MAX_DB` (default 64); при init се създава базата по подразбиране
-  `boila` (моделът на `postgres`). Каталозите са per-database;
-  cross-database достъп няма в v1. rocksbaga не се променя — per-dir
-  клъстерите съществуват от R32.
+  registry (1 shard) и flat файлове `<db>.db` на база (shard пътища
+  `<db>.db.s{i}`); root-ът се създава с `mkdir` през extern FFI (gaps
+  S4). `databases.baga` държи `BoilaServer`: meta store + отворените
+  бази като (име, store) двойки, lazy open, таван `BOILA_MAX_DB` с FIFO
+  eviction; при init се създава базата по подразбиране `boila` (моделът
+  на `postgres`). Каталозите са per-database; cross-database достъп
+  няма в v1. rocksbaga не се променя — per-dir клъстерите съществуват
+  от R32.
 - Sharding: hash на целия кодиран ключ (djb2-подобен, моделът на
   rocksbaga) по N shard-а; pk е доминиращо-вариращата част, така че
   разпределението е ефективно по pk. Всеки shard е собствена rocksbaga

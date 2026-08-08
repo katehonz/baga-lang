@@ -40,16 +40,18 @@
 
 ## P2 — Много бази данни (multi-database, PostgreSQL/MySQL модел)
 - Сървърен root: `BOILA_PATH` съдържа `.meta` (registry, 1 rocksbaga
-  shard) и по една директория на база — `<db>/db` (shard пътища
-  `<db>/db.s{i}`). `storage/databases.baga`: `BoilaServer` { meta store,
-  отворени (ime, store) двойки, lazy open, таван `BOILA_MAX_DB`
-  (default 64) }; при пръв init се създава базата по подразбиране
-  `boila` (моделът на `postgres` в PostgreSQL).
+  shard) и flat файлове на база — `<db>.db` (shard пътища
+  `<db>.db.s{i}`); root-ът се създава с `mkdir` през extern FFI, защото
+  езикът няма builtin (gaps S4). `storage/databases.baga`: `BoilaServer`
+  { meta store, отворени (ime, store) двойки, lazy open, таван
+  `BOILA_MAX_DB` (default 64), FIFO eviction }; при пръв init се създава
+  базата по подразбиране `boila` (моделът на `postgres` в PostgreSQL).
 - SQL: `CREATE DATABASE име`, `DROP DATABASE име` (отказ ако е текущата
-  за сесията; чистенето на файлове е по известни shard-шаблони — baga
-  няма readdir), `USE име`. Всички останали заявления се изпълняват в
-  текущата за сесията база; каталозите са per-database. Cross-database
-  заявки/транзакции няма в v1 (`0A000`).
+  за сесията — 55006; чистенето на файлове е по известни shard-шаблони —
+  baga няма readdir), `USE име`. Всички останали заявления се изпълняват
+  в текущата за сесията база; каталозите са per-database. Cross-database
+  заявки/транзакции няма в v1 (`0A000`). HTTP е без сесия — базата идва
+  от `?db=` (default `boila`).
 - Клиенти: HTTP `POST /sql?db=<име>` (default = `boila`); shell — `USE`
   и текущата база в prompt-а. PG wire-ът (P6) ще носи името на базата в
   startup съобщението — точно като Postgres.
