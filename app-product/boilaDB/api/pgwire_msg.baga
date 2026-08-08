@@ -1,0 +1,228 @@
+// pgwire_msg.baga — PostgreSQL wire v3 framing (сървър страна, P6).
+// Формати: https://www.postgresql.org/docs/current/protocol-message-formats.html
+// Регулярни съобщения: Byte1(type) + Int32(len incl. self) + payload.
+// StartupMessage/SSLRequest/CancelRequest нямат type байт.
+
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+import "std/net/tcp.baga"
+
+// --- builders (чисти) ---
+
+fn pgw_one(v: i64) -> bytes {
+    let b = bytes_new(1)
+    bytes_set(b, 0, v & 255)
+    return b
+}
+
+fn pgw_be16(v: i64) -> bytes {
+    let b = bytes_new(2)
+    bytes_set(b, 0, (v >> 8) & 255)
+    bytes_set(b, 1, v & 255)
+    return b
+}
+
+fn pgw_be32(v: i64) -> bytes {
+    let b = bytes_new(4)
+    bytes_set(b, 0, (v >> 24) & 255)
+    bytes_set(b, 1, (v >> 16) & 255)
+    bytes_set(b, 2, (v >> 8) & 255)
+    bytes_set(b, 3, v & 255)
+    return b
+}
+
+fn pgw_cstr(s: str) -> bytes {
+    return bytes_concat(bytes_of_str(s), pgw_one(0))
+}
+
+fn pgw_msg(typ: i64, body: bytes) -> bytes {
+    let mut out = pgw_one(typ)
+    out = bytes_concat(out, pgw_be32(bytes_len(body) + 4))
+    return bytes_concat(out, body)
+}
+
+// --- readers ---
+
+fn pgw_be_read(b: bytes, off: i64, n: i64) -> i64 {
+    let mut v: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        v = v * 256 + (bytes_at(b, off + i) & 255)
+        i = i + 1
+    }
+    return v
+}
+
+struct PgWReader {
+    fd: i64,
+    buf: bytes,
+    pos: i64
+}
+
+fn pgw_reader(fd: i64) -> PgWReader {
+    return PgWReader { fd: fd, buf: bytes_new(0), pos: 0 }
+}
+
+struct PgWFill {
+    r: PgWReader,
+    ok: i64
+}
+
+fn pgw_fill(r: PgWReader, n: i64) -> PgWFill !IO !Net {
+    let mut rr = r
+    while bytes_len(rr.buf) - rr.pos < n {
+        let chunk = tcp_read_bytes(rr.fd, 8192)?
+        if bytes_len(chunk) == 0 {
+            return PgWFill { r: rr, ok: 0 }
+        }
+        if rr.pos > 0 {
+            rr = PgWReader { fd: rr.fd, buf: bytes_concat(bytes_slice(rr.buf, rr.pos, bytes_len(rr.buf)), chunk), pos: 0 }
+        } else {
+            rr = PgWReader { fd: rr.fd, buf: bytes_concat(rr.buf, chunk), pos: rr.pos }
+        }
+    }
+    return PgWFill { r: rr, ok: 1 }
+}
+
+fn pgw_find_nul(b: bytes, off: i64) -> i64 {
+    let n = bytes_len(b)
+    let mut i = off
+    while i < n {
+        if bytes_at(b, i) == 0 {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// cstring от body на pos; връща (стринг, нов pos след NUL).
+struct PgWCstr {
+    s: str,
+    pos: i64
+}
+
+fn pgw_cstr_read(body: bytes, pos: i64) -> PgWCstr {
+    let npos = pgw_find_nul(body, pos)
+    if npos < 0 {
+        return PgWCstr { s: "", pos: bytes_len(body) }
+    }
+    return PgWCstr { s: str_of_bytes(bytes_slice(body, pos, npos)), pos: npos + 1 }
+}
+
+// Регулярно съобщение: type + body.
+struct PgWMsg {
+    r: PgWReader,
+    ok: i64,
+    typ: i64,
+    body: bytes
+}
+
+fn pgw_read_msg(r: PgWReader) -> PgWMsg !IO !Net {
+    let f0 = pgw_fill(r, 5)?
+    if f0.ok == 0 {
+        return PgWMsg { r: f0.r, ok: 0, typ: 0, body: bytes_new(0) }
+    }
+    let mut rr = f0.r
+    let typ = bytes_at(rr.buf, rr.pos) & 255
+    let ln = pgw_be_read(rr.buf, rr.pos + 1, 4) - 4
+    rr.pos = rr.pos + 5
+    if ln < 0 {
+        return PgWMsg { r: rr, ok: 0, typ: typ, body: bytes_new(0) }
+    }
+    let f1 = pgw_fill(rr, ln)?
+    if f1.ok == 0 {
+        return PgWMsg { r: f1.r, ok: 0, typ: typ, body: bytes_new(0) }
+    }
+    rr = f1.r
+    let body = bytes_slice(rr.buf, rr.pos, rr.pos + ln)
+    rr.pos = rr.pos + ln
+    return PgWMsg { r: rr, ok: 1, typ: typ, body: body }
+}
+
+// Startup-family съобщение (без type байт): len + code (+ params).
+struct PgWStartup {
+    r: PgWReader,
+    ok: i64,
+    code: i64,         // 196608 v3; 80877103 SSL; 80877102 cancel
+    user: str,
+    database: str
+}
+
+fn pgw_read_startup(r: PgWReader) -> PgWStartup !IO !Net {
+    let f0 = pgw_fill(r, 8)?
+    if f0.ok == 0 {
+        return PgWStartup { r: f0.r, ok: 0, code: 0, user: "", database: "" }
+    }
+    let mut rr = f0.r
+    let ln = pgw_be_read(rr.buf, rr.pos, 4) - 8
+    let code = pgw_be_read(rr.buf, rr.pos + 4, 4)
+    rr.pos = rr.pos + 8
+    if ln < 0 {
+        return PgWStartup { r: rr, ok: 0, code: code, user: "", database: "" }
+    }
+    if ln == 0 {
+        return PgWStartup { r: rr, ok: 1, code: code, user: "", database: "" }
+    }
+    let f1 = pgw_fill(rr, ln)?
+    if f1.ok == 0 {
+        return PgWStartup { r: f1.r, ok: 0, code: code, user: "", database: "" }
+    }
+    rr = f1.r
+    let body = bytes_slice(rr.buf, rr.pos, rr.pos + ln)
+    rr.pos = rr.pos + ln
+    // params: key\0value\0 ... до двойно NUL
+    let mut user = ""
+    let mut db = ""
+    let mut p: i64 = 0
+    let mut more = true
+    while more && p < bytes_len(body) {
+        let k = pgw_cstr_read(body, p)
+        if k.s == "" {
+            more = false
+        } else {
+            let v = pgw_cstr_read(body, k.pos)
+            if k.s == "user" {
+                user = v.s
+            }
+            if k.s == "database" {
+                db = v.s
+            }
+            p = v.pos
+        }
+    }
+    return PgWStartup { r: rr, ok: 1, code: code, user: user, database: db }
+}
+
+// --- стандартни отговори ---
+
+fn pgw_error(sqlstate: str, msg: str) -> bytes {
+    let mut body = bytes_new(0)
+    body = bytes_concat(body, pgw_one(83))          // 'S' severity
+    body = bytes_concat(body, pgw_cstr("ERROR"))
+    body = bytes_concat(body, pgw_one(86))          // 'V'
+    body = bytes_concat(body, pgw_cstr("ERROR"))
+    body = bytes_concat(body, pgw_one(67))          // 'C' sqlstate
+    body = bytes_concat(body, pgw_cstr(sqlstate))
+    body = bytes_concat(body, pgw_one(77))          // 'M' message
+    body = bytes_concat(body, pgw_cstr(msg))
+    body = bytes_concat(body, pgw_one(0))
+    return pgw_msg(69, body)                        // 'E'
+}
+
+fn pgw_ready(tx: i64) -> bytes {
+    return pgw_msg(90, pgw_one(tx))                 // 'Z' + 'I'/'T'/'E'
+}
+
+fn pgw_param_status(k: str, v: str) -> bytes {
+    let body = bytes_concat(pgw_cstr(k), pgw_cstr(v))
+    return pgw_msg(83, body)                        // 'S'
+}
+
+fn pgw_command_complete(tag: str) -> bytes {
+    return pgw_msg(67, pgw_cstr(tag))               // 'C'
+}
+
+fn pgw_no_data() -> bytes {
+    return pgw_msg(110, bytes_new(0))               // 'n'
+}

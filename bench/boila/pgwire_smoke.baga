@@ -1,0 +1,109 @@
+// smoke клиент: pgbaga → boiladb wire сървър (P6 e2e)
+import "pgbaga/conn/pg.baga"
+import "std/str/str.baga"
+
+fn expect(fails: Vec<i64>, name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn main() -> i64 !Net !IO !Random {
+    let fails: Vec<i64> = vec_new()
+    let mut conn = pg_connect("127.0.0.1", 6575, "boila", "", "boila")?
+    expect(fails, "connect", conn.ok == 1)
+    if conn.ok == 0 {
+        print(conn.err)
+        return 1
+    }
+    print(concat("connected, server=", conn.server_version))
+
+    let r0 = pg_query(conn, "DROP TABLE wtest")?
+    conn = pg_conn_of(r0)
+    let r1 = pg_query(conn, "CREATE TABLE wtest (id BIGINT, name TEXT, PRIMARY KEY (id))")?
+    conn = pg_conn_of(r1)
+    expect(fails, "create_table", pg_ok(r1) == 1)
+
+    let r2 = pg_query(conn, "INSERT INTO wtest (id, name) VALUES (1, 'alfa'), (2, 'бета')")?
+    conn = pg_conn_of(r2)
+    expect(fails, "insert", pg_ok(r2) == 1)
+    expect(fails, "insert_tag", pg_tag(r2) == "INSERT 0 2")
+
+    let r3 = pg_query(conn, "SELECT id, name FROM wtest ORDER BY id")?
+    conn = pg_conn_of(r3)
+    expect(fails, "select_ok", pg_ok(r3) == 1)
+    expect(fails, "select_rows", pg_nrows(r3) == 2)
+    if pg_ok(r3) == 1 && pg_nrows(r3) == 2 {
+        expect(fails, "cell_id", pg_cell(r3, 0, 0) == "1")
+        expect(fails, "cell_bg", pg_cell(r3, 1, 1) == "бета")
+    }
+
+    // extended protocol с int параметър
+    let vals: Vec<str> = vec_new()
+    vec_push(vals, "2")
+    let nulls: Vec<i64> = vec_new()
+    vec_push(nulls, 0)
+    let r4 = pg_query_params(conn, "SELECT name FROM wtest WHERE id = $1", vals, nulls)?
+    conn = pg_conn_of(r4)
+    expect(fails, "params_ok", pg_ok(r4) == 1)
+    if pg_ok(r4) == 1 {
+        expect(fails, "params_row", pg_nrows(r4) == 1 && pg_cell(r4, 0, 0) == "бета")
+    }
+
+    // стринг параметър по индексирана колона
+    let rix = pg_query(conn, "CREATE INDEX wtest_name_ix ON wtest (name)")?
+    conn = pg_conn_of(rix)
+    expect(fails, "create_index", pg_ok(rix) == 1)
+    let vals2: Vec<str> = vec_new()
+    vec_push(vals2, "бета")
+    let nulls2: Vec<i64> = vec_new()
+    vec_push(nulls2, 0)
+    let r5 = pg_query_params(conn, "SELECT id FROM wtest WHERE name = $1", vals2, nulls2)?
+    conn = pg_conn_of(r5)
+    expect(fails, "params_str", pg_ok(r5) == 1 && pg_nrows(r5) == 1 && pg_cell(r5, 0, 0) == "2")
+
+    // грешка със SQLSTATE
+    let r6 = pg_query(conn, "SELECT * FROM nope")?
+    conn = pg_conn_of(r6)
+    expect(fails, "err_42P01", pg_ok(r6) == 0 && pg_sqlstate(r6) == "42P01")
+
+    // extended грешка → in_err до Sync, после връзката е жива
+    let vals3: Vec<str> = vec_new()
+    vec_push(vals3, "x")
+    let nulls3: Vec<i64> = vec_new()
+    vec_push(nulls3, 0)
+    let re = pg_query_params(conn, "SELECT * FROM missing_tbl WHERE id = $1", vals3, nulls3)?
+    conn = pg_conn_of(re)
+    expect(fails, "ext_err", pg_ok(re) == 0 && pg_sqlstate(re) == "42P01")
+    let ra = pg_query(conn, "SELECT count(*) FROM wtest")?
+    conn = pg_conn_of(ra)
+    expect(fails, "alive_after_ext_err", pg_ok(ra) == 1 && pg_cell(ra, 0, 0) == "2")
+
+    // транзакция: BEGIN → INSERT → ROLLBACK → данните ги няма
+    let r7 = pg_query(conn, "BEGIN")?
+    conn = pg_conn_of(r7)
+    expect(fails, "begin", pg_ok(r7) == 1 && conn.tx_status == 84)   // 'T'
+    let r8 = pg_query(conn, "INSERT INTO wtest (id, name) VALUES (3, 'x')")?
+    conn = pg_conn_of(r8)
+    expect(fails, "txn_insert", pg_ok(r8) == 1)
+    let r9 = pg_query(conn, "SELECT count(*) FROM wtest")?
+    conn = pg_conn_of(r9)
+    expect(fails, "txn_sees_3", pg_ok(r9) == 1 && pg_cell(r9, 0, 0) == "3")
+    let r10 = pg_query(conn, "ROLLBACK")?
+    conn = pg_conn_of(r10)
+    expect(fails, "rollback", pg_ok(r10) == 1 && conn.tx_status == 73)   // 'I'
+    let r11 = pg_query(conn, "SELECT count(*) FROM wtest")?
+    conn = pg_conn_of(r11)
+    expect(fails, "rolled_back", pg_ok(r11) == 1 && pg_cell(r11, 0, 0) == "2")
+
+    pg_close(conn)?
+    if vec_len(fails) == 0 {
+        print("pgwire smoke: all passed")
+        return 0
+    }
+    print(concat("pgwire smoke: FAILED (", concat(int_to_str(vec_len(fails)), ")")))
+    return 1
+}

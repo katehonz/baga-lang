@@ -1,0 +1,363 @@
+// pgwire.baga — PG wire v3 сесия (P6): startup/auth, simple query,
+// extended (Parse/Bind/Describe/Execute/Sync), prepared $1..$n.
+//
+// Едно-сесийна точност: сървърът обслужва една връзка в даден момент
+// (sync loop); паралелни клиенти чакат на опашка (gaps W1 — истинският
+// pool идва с concurrency фазата). При затваряне на връзка активната
+// транзакция се rollback-ва (PG семантика: txn е per-connection).
+
+import "pgwire_msg.baga"
+import "pgwire_enc.baga"
+import "../storage/databases.baga"
+import "../sql/exec_server.baga"
+import "../sql/exec_scan.baga"
+import "../core/value.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaPgPortal {
+    sql: str,
+    vals: Vec<str>,
+    nulls: Vec<i64>
+}
+
+struct BoilaPgSess {
+    stmts: Map<str, str>,
+    portals: Map<str, BoilaPgPortal>,
+    db: str
+}
+
+fn boila_pg_sess_new(db: str) -> BoilaPgSess {
+    let sm: Map<str, str> = map_new()
+    let pm: Map<str, BoilaPgPortal> = map_new()
+    return BoilaPgSess { stmts: sm, portals: pm, db: db }
+}
+
+struct BoilaPgOut {
+    srv: BoilaServer,
+    sess: BoilaPgSess,
+    ok: i64,       // 1 = чисто затваряне; 0 = грешка/прекъсване
+    sql_err: i64,  // 1 = изпълнението върна SQL грешка (за extended in_err)
+    err: str
+}
+
+fn pgw_write(fd: i64, b: bytes) -> i64 !Net !IO {
+    return tcp_write_bytes(fd, b)?
+}
+
+// Изпраща ParameterStatus + BackendKeyData + ReadyForQuery.
+fn pgw_send_startup_tail(fd: i64, tx: i64) -> i64 !Net !IO {
+    let mut out = pgw_param_status("server_version", "16.0 (boilaDB P6)")
+    out = bytes_concat(out, pgw_param_status("server_encoding", "UTF8"))
+    out = bytes_concat(out, pgw_param_status("client_encoding", "UTF8"))
+    out = bytes_concat(out, pgw_param_status("integer_datetimes", "on"))
+    out = bytes_concat(out, pgw_param_status("standard_conforming_strings", "on"))
+    // BackendKeyData 'K': pid + key
+    let mut bk = pgw_be32(1)
+    bk = bytes_concat(bk, pgw_be32(0))
+    out = bytes_concat(out, pgw_msg(75, bk))
+    out = bytes_concat(out, pgw_ready(tx))
+    return pgw_write(fd, out)
+}
+
+fn pgw_tx_status(srv: BoilaServer) -> i64 {
+    if srv.txn.active == 1 {
+        return 84   // 'T'
+    }
+    return 73       // 'I'
+}
+
+// Изпълнява SQL и пише резултата (RowDescription/DataRow*/CommandComplete
+// или ErrorResponse). send_ready=1 (simple query) добавя ReadyForQuery;
+// при extended RFQ идва от Sync (а след грешка се пропуска до Sync).
+fn pgw_run_sql(fd: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str, send_ready: i64) -> BoilaPgOut !IO !Net !Time {
+    let out = boila_server_exec(srv, sess.db, sql)?
+    let mut srv2 = out.srv
+    if out.ok == 0 {
+        let mut buf = pgw_error(out.state, out.err)
+        if send_ready == 1 {
+            buf = bytes_concat(buf, pgw_ready(pgw_tx_status(srv2)))
+        }
+        let w = pgw_write(fd, buf)?
+        if w != 0 {
+            return BoilaPgOut { srv: srv2, sess: sess, ok: 0, sql_err: 1, err: "write error" }
+        }
+        return BoilaPgOut { srv: srv2, sess: sess, ok: 1, sql_err: 1, err: "" }
+    }
+    let mut buf = bytes_new(0)
+    if out.kind == 1 || vec_len(out.res.rows) > 0 {
+        // SELECT или DML с RETURNING редове
+        buf = bytes_concat(buf, pgw_row_desc(out.res.cols))
+        let mut i: i64 = 0
+        while i < vec_len(out.res.rows) {
+            buf = bytes_concat(buf, pgw_data_row(vec_get(out.res.rows, i)))
+            i = i + 1
+        }
+    }
+    buf = bytes_concat(buf, pgw_command_complete(pgw_tag(out.kind, out.id, vec_len(out.res.rows))))
+    if send_ready == 1 {
+        buf = bytes_concat(buf, pgw_ready(pgw_tx_status(srv2)))
+    }
+    let w = pgw_write(fd, buf)?
+    if w != 0 {
+        return BoilaPgOut { srv: srv2, sess: sess, ok: 0, sql_err: 0, err: "write error" }
+    }
+    return BoilaPgOut { srv: srv2, sess: sess, ok: 1, sql_err: 0, err: "" }
+}
+
+// Parse: 'P' stmt\0 sql\0 int16 nparams + OIDs.
+fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
+    let nm = pgw_cstr_read(body, 0)
+    let q = pgw_cstr_read(body, nm.pos)
+    // nparams + OIDs: игнорирани (типовете идват от Bind стойностите)
+    let mut s2 = sess
+    map_set(s2.stmts, nm.s, q.s)
+    return s2
+}
+
+// Bind: 'B' portal\0 stmt\0 formats + values + result formats.
+fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
+    let pn = pgw_cstr_read(body, 0)
+    let sn = pgw_cstr_read(body, pn.pos)
+    let mut p = sn.pos
+    // parameter format codes
+    let nf = pgw_be_read(body, p, 2)
+    p = p + 2
+    if nf == 1 {
+        p = p + 2
+    } else {
+        p = p + 2 * nf
+    }
+    let np = pgw_be_read(body, p, 2)
+    p = p + 2
+    let vals: Vec<str> = vec_new()
+    let nulls: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < np {
+        let ln = pgw_be_read(body, p, 4)
+        p = p + 4
+        if ln >= 2147483648 {
+            // -1 → NULL
+            vec_push(vals, "")
+            vec_push(nulls, 1)
+        } else {
+            vec_push(vals, str_of_bytes(bytes_slice(body, p, p + ln)))
+            vec_push(nulls, 0)
+            p = p + ln
+        }
+        i = i + 1
+    }
+    // result format codes — игнорирани (винаги text)
+    let sql: str = map_get(sess.stmts, sn.s)
+    let mut s2 = sess
+    map_set(s2.portals, pn.s, BoilaPgPortal { sql: sql, vals: vals, nulls: nulls })
+    return s2
+}
+
+fn boila_pg_serve(fd: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net !Time {
+    let mut rr = pgw_reader(fd)
+    let mut srv2 = srv
+    // --- startup: SSL/Cancel/v3 ---
+    let mut db = "boila"
+    let mut got = false
+    let mut sp: BoilaPgSess = boila_pg_sess_new("boila")
+    while got == false {
+        let st = pgw_read_startup(rr)?
+        rr = st.r
+        if st.ok == 0 {
+            tcp_close(fd)?
+            return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "startup read" }
+        }
+        if st.code == 80877103 {
+            // SSLRequest → 'N' (няма TLS в P6) и нов startup
+            let w = pgw_write(fd, bytes_of_str("N"))?
+            if w != 0 {
+                tcp_close(fd)?
+                return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "ssl write" }
+            }
+        } else {
+            if st.code == 80877102 {
+                // CancelRequest → затвори
+                tcp_close(fd)?
+                return BoilaPgOut { srv: srv2, sess: sp, ok: 1, sql_err: 0, err: "" }
+            }
+            if st.code == 196608 {
+                if st.database != "" {
+                    db = st.database
+                }
+                got = true
+            } else {
+                tcp_close(fd)?
+                return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "bad startup code" }
+            }
+        }
+    }
+    // базата съществува ли
+    let chk = boila_srv_db(srv2, db)?
+    srv2 = chk.srv
+    if chk.ok == 0 {
+        let w = pgw_write(fd, pgw_error("3D000", concat("database ", concat(db, " does not exist"))))?
+        tcp_close(fd)?
+        return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "no db" }
+    }
+    sp = boila_pg_sess_new(db)
+    // --- auth: cleartext token или trust ---
+    let token = env("BOILA_TOKEN")
+    if token != "" {
+        let w0 = pgw_write(fd, pgw_msg(82, pgw_be32(3)))?     // R kind 3 cleartext
+        if w0 != 0 {
+            tcp_close(fd)?
+            return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "auth write" }
+        }
+        let pm = pgw_read_msg(rr)?
+        rr = pm.r
+        if pm.ok == 0 || pm.typ != 112 {                      // 'p'
+            tcp_close(fd)?
+            return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "no password" }
+        }
+        let pw = pgw_cstr_read(pm.body, 0)
+        if pw.s != token {
+            let w1 = pgw_write(fd, pgw_error("28P01", "password authentication failed"))?
+            tcp_close(fd)?
+            return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "bad token" }
+        }
+    }
+    let w2 = pgw_write(fd, pgw_msg(82, pgw_be32(0)))?         // AuthenticationOk
+    if w2 != 0 {
+        tcp_close(fd)?
+        return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "authok write" }
+    }
+    let w3 = pgw_send_startup_tail(fd, pgw_tx_status(srv2))?
+    if w3 != 0 {
+        tcp_close(fd)?
+        return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "tail write" }
+    }
+    // --- query loop ---
+    let mut running = true
+    let mut in_err = false     // след extended грешка: пропускаме до Sync
+    while running {
+        let m = pgw_read_msg(rr)?
+        rr = m.r
+        if m.ok == 0 {
+            running = false
+        } else {
+            if in_err {
+                if m.typ == 83 {                              // 'S' Sync
+                    let w = pgw_write(fd, pgw_ready(pgw_tx_status(srv2)))?
+                    if w != 0 {
+                        running = false
+                    }
+                    in_err = false
+                } else {
+                    if m.typ == 88 {                          // 'X' по време на грешка
+                        running = false
+                    }
+                    // всичко останало се пропуска до Sync
+                }
+            } else {
+            if m.typ == 81 {                                  // 'Q' simple
+                let sql = pgw_cstr_read(m.body, 0)
+                let ro = pgw_run_sql(fd, srv2, sp, sql.s, 1)?
+                srv2 = ro.srv
+                sp = ro.sess
+                if ro.ok == 0 {
+                    running = false
+                }
+            } else {
+                if m.typ == 80 {                              // 'P' Parse
+                    sp = pgw_do_parse(m.body, sp)
+                    let w = pgw_write(fd, pgw_msg(49, bytes_new(0)))?   // '1'
+                    if w != 0 {
+                        running = false
+                    }
+                } else {
+                    if m.typ == 66 {                          // 'B' Bind
+                        sp = pgw_do_bind(m.body, sp)
+                        let w = pgw_write(fd, pgw_msg(50, bytes_new(0)))?   // '2'
+                        if w != 0 {
+                            running = false
+                        }
+                    } else {
+                        if m.typ == 68 {                      // 'D' Describe
+                            // P5 без metadata cache: NoData за stmt/portal
+                            let w = pgw_write(fd, pgw_no_data())?
+                            if w != 0 {
+                                running = false
+                            }
+                        } else {
+                            if m.typ == 69 {                  // 'E' Execute
+                                let pn = pgw_cstr_read(m.body, 0)
+                                let mut vals: Vec<str> = vec_new()
+                                let mut nulls: Vec<i64> = vec_new()
+                                let mut sql = ""
+                                if map_has(sp.portals, pn.s) == 1 {
+                                    let portal = map_get(sp.portals, pn.s)
+                                    sql = portal.sql
+                                    vals = portal.vals
+                                    nulls = portal.nulls
+                                }
+                                let full = pgw_subst_params(sql, vals, nulls)
+                                let ro = pgw_run_sql(fd, srv2, sp, full, 0)?
+                                srv2 = ro.srv
+                                sp = ro.sess
+                                if ro.ok == 0 {
+                                    running = false
+                                }
+                                if ro.sql_err == 1 {
+                                    in_err = true
+                                }
+                            } else {
+                                if m.typ == 83 {              // 'S' Sync
+                                    let w = pgw_write(fd, pgw_ready(pgw_tx_status(srv2)))?
+                                    if w != 0 {
+                                        running = false
+                                    }
+                                } else {
+                                    if m.typ == 67 {          // 'C' Close
+                                        let nm = pgw_cstr_read(m.body, 1)
+                                        let kind = bytes_at(m.body, 0) & 255
+                                        if kind == 83 {
+                                            map_del(sp.stmts, nm.s)
+                                        } else {
+                                            map_del(sp.portals, nm.s)
+                                        }
+                                        let w = pgw_write(fd, pgw_msg(51, bytes_new(0)))?   // '3'
+                                        if w != 0 {
+                                            running = false
+                                        }
+                                    } else {
+                                        if m.typ == 88 {      // 'X' Terminate
+                                            running = false
+                                        } else {
+                                            if m.typ == 72 {  // 'H' Flush — no-op
+                                                let dummy = 0
+                                                if dummy == 1 {
+                                                    running = false
+                                                }
+                                            } else {
+                                                // непознато → ErrorResponse
+                                                let w = pgw_write(fd, pgw_error("0A000", concat("unsupported message ", int_to_str(m.typ))))?
+                                                if w != 0 {
+                                                    running = false
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            }
+        }
+    }
+    // txn е per-connection: при затваряне — rollback
+    if srv2.txn.active == 1 {
+        srv2.txn = boila_txn_rollback(srv2.txn)
+    }
+    tcp_close(fd)?
+    return BoilaPgOut { srv: srv2, sess: sp, ok: 1, sql_err: 0, err: "" }
+}

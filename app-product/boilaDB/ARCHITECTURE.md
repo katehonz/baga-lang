@@ -323,11 +323,10 @@ app-product/boilaDB/
 │              inverted_read.baga bm25.baga tsquery.baga
 ├── ts/        retention.baga time_bucket.baga
 ├── graph/     adjacency.baga bfs.baga dfs.baga dijkstra.baga
-├── api/       accept.baga worker_pool.baga conn.baga
-│              pgwire_msg.baga pgwire_auth.baga pgwire_query.baga
-│              pgwire_extended.baga http_admin.baga http_sql.baga
-│              auth.baga
-├── tools/     serve.baga shell.baga backup.baga
+├── api/       accept.baga worker_pool.baga conn.baga (P11)
+│              pgwire_msg.baga pgwire_enc.baga pgwire.baga (P6)
+│              http_admin.baga http_sql.baga auth.baga
+├── tools/     serve.baga serve_pg.baga shell.baga backup.baga
 ├── scripts/   filesize.sh
 └── bench/     harness.baga ladder.md vs_barabadb.md
 ```

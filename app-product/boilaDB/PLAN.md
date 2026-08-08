@@ -111,12 +111,22 @@
   parse+plan дял ~0% при повтарящи се заявки (гейт < 5%).
 
 ## P6 — PG wire protocol v3
-- `api/pgwire_*.baga`: startup/auth (cleartext + token), simple query,
-  extended (Parse/Bind/Describe/Execute/Sync), prepared `$1..$n`;
-  accept poll + bounded worker pool + admission control (`53300`/`57P03`).
-- **Гейт:** `psql` и libpq клиент изпълняват целия P1–P5 синтаксис;
-  10k concurrent connections → p99 ≤ 2× p99 при 1k (плоска крива);
-  overhead спрямо HTTP пътя ≤ 10%.
+- Реализирано: `api/pgwire_msg.baga` (framing), `pgwire_enc.baga`
+  ($1..$n substitution quote-aware, text кодиране на стойности,
+  CommandComplete тагове), `pgwire.baga` (startup/SSL 'N'/cancel, auth
+  cleartext token или trust, ParameterStatus/BackendKeyData/RFQ, simple
+  query, extended Parse/Bind/Describe/Execute/Sync с in_err-skip-to-Sync
+  семантика, Close, Terminate; txn е per-connection — rollback при
+  затваряне); `tools/serve_pg.baga` (BOILA_PGPORT, default 6575).
+- **Гейтове (минати):** e2e smoke през pgbaga (20 проверки: simple +
+  extended, int/str/NULL параметри, SQLSTATE, extended-грешка → жива
+  връзка, BEGIN/ROLLBACK); **истински `psql`/libpq** изпълнява P1–P5
+  синтаксис (SELECT/INSERT/RETURNING/агрегати/UTF-8) —
+  bench/boila/pgwire_smoke.baga.
+- Ревизии (честно): sync loop вместо bounded pool — една връзка в даден
+  момент (gaps W1); гейтовете „10k concurrent" и „overhead ≤ 10%" остават
+  за concurrency фазата (P11); Describe → NoData (W5), OID-ите са 25
+  (W3), DROP TABLE липсва (W4), без SCRAM/TLS (W6).
 
 ## P7 — fts/ модал
 - Tokenizer EN/BG, inverted index в `fts` key-space, BM25;

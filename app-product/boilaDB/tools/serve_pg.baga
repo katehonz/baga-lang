@@ -1,0 +1,52 @@
+// serve_pg.baga — PG wire v3 сървър (P6).
+//
+// Env: BOILA_PATH (root), BOILA_SHARDS, BOILA_PGPORT (6575),
+//      BOILA_FLUSH_AT, BOILA_COMPACT_AT, BOILA_MAX_DB,
+//      BOILA_TOKEN (празно = trust; иначе cleartext password).
+//
+// Синхронен accept loop: една връзка се обслужва до край (gaps W1 —
+// pool-ът идва с concurrency фазата). Активна транзакция при затваряне
+// на връзката → rollback (PG семантика).
+
+import "../api/pgwire.baga"
+import "../storage/databases.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn boila_env_or(name: str, dflt: str) -> str !IO {
+    let v = env(name)
+    if v == "" {
+        return dflt
+    }
+    return v
+}
+
+fn main() -> i64 !Net !IO !Time {
+    let root = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
+    let port = parse_int(boila_env_or("BOILA_PGPORT", "6575"))
+    let nshards = parse_int(boila_env_or("BOILA_SHARDS", "4"))
+    let flush_at = parse_int(boila_env_or("BOILA_FLUSH_AT", "256"))
+    let compact_at = parse_int(boila_env_or("BOILA_COMPACT_AT", "4"))
+    let max_db = parse_int(boila_env_or("BOILA_MAX_DB", "64"))
+
+    let mut srv = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
+    if srv.ok == 0 {
+        print(concat("boiladb-pg: неуспешно отваряне на root ", root))
+        return 1
+    }
+    let mut line = "boiladb-pg wire listening on :"
+    line = concat(line, int_to_str(port))
+    line = concat(line, " (root=")
+    line = concat(line, root)
+    line = concat(line, ", sync-mode)")
+    print(line)
+
+    let listener = tcp_listen(port)?
+    while true {
+        let fd = tcp_accept(listener)?
+        let ro = boila_pg_serve(fd, srv)?
+        srv = ro.srv
+    }
+    return 0
+}

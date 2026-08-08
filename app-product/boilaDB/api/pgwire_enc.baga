@@ -1,0 +1,233 @@
+// pgwire_enc.baga — param substitution ($N) + wire кодиране на резултати (P6).
+
+import "pgwire_msg.baga"
+import "../core/value.baga"
+import "../sql/exec_scan.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+// Дали низ е цяло число (по избор водещ '-').
+fn pgw_is_int(s: str) -> i64 {
+    let n = len(s)
+    if n == 0 {
+        return 0
+    }
+    let mut i: i64 = 0
+    if char_at(s, 0) == 45 {
+        if n == 1 {
+            return 0
+        }
+        i = 1
+    }
+    while i < n {
+        let c = char_at(s, i)
+        if c < 48 || c > 57 {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// Екраниране на стринг като SQL литерал ('' doubling). Byte-based —
+// UTF-8 се копира едно към едно (chr() би ре-енкодирал ≥ 0x80).
+fn pgw_quote_lit(s: str) -> str {
+    let sb = bytes_of_str(s)
+    let mut out = bytes_of_str("'")
+    let mut run: i64 = 0
+    let mut i: i64 = 0
+    while i < bytes_len(sb) {
+        let c = bytes_at(sb, i) & 255
+        if c == 39 {
+            if i > run {
+                out = bytes_concat(out, bytes_slice(sb, run, i))
+            }
+            out = bytes_concat(out, bytes_of_str("''"))
+            run = i + 1
+        }
+        i = i + 1
+    }
+    if bytes_len(sb) > run {
+        out = bytes_concat(out, bytes_slice(sb, run, bytes_len(sb)))
+    }
+    out = bytes_concat(out, bytes_of_str("'"))
+    return str_of_bytes(out)
+}
+
+// Замества $1..$n с bind стойностите; следи за кавички ('' escape),
+// за да не пипа $ вътре в литерали. Byte-based (UTF-8 безопасно).
+fn pgw_subst_params(sql: str, vals: Vec<str>, nulls: Vec<i64>) -> str {
+    let sb = bytes_of_str(sql)
+    let n = bytes_len(sb)
+    let mut out = bytes_new(0)
+    let mut run: i64 = 0
+    let mut i: i64 = 0
+    let mut inq = false
+    while i < n {
+        let c = bytes_at(sb, i) & 255
+        if inq {
+            if c == 39 {
+                if i + 1 < n && bytes_at(sb, i + 1) == 39 {
+                    i = i + 2
+                } else {
+                    inq = false
+                    i = i + 1
+                }
+            } else {
+                i = i + 1
+            }
+        } else {
+            if c == 39 {
+                inq = true
+                i = i + 1
+            } else {
+                if c == 36 && i + 1 < n && bytes_at(sb, i + 1) >= 48 && bytes_at(sb, i + 1) <= 57 {
+                    // flush на run-а досега
+                    if i > run {
+                        out = bytes_concat(out, bytes_slice(sb, run, i))
+                    }
+                    let mut j = i + 1
+                    let mut num: i64 = 0
+                    while j < n && bytes_at(sb, j) >= 48 && bytes_at(sb, j) <= 57 {
+                        num = num * 10 + (bytes_at(sb, j) - 48)
+                        j = j + 1
+                    }
+                    let idx = num - 1
+                    if idx >= 0 && idx < vec_len(vals) {
+                        if idx < vec_len(nulls) && vec_get(nulls, idx) == 1 {
+                            out = bytes_concat(out, bytes_of_str("NULL"))
+                        } else {
+                            let v = vec_get(vals, idx)
+                            if pgw_is_int(v) == 1 {
+                                out = bytes_concat(out, bytes_of_str(v))
+                            } else {
+                                out = bytes_concat(out, bytes_of_str(pgw_quote_lit(v)))
+                            }
+                        }
+                    } else {
+                        // липсващ параметър → само '$', parser-ът ще се оплаче
+                        out = bytes_concat(out, bytes_slice(sb, i, i + 1))
+                        j = i + 1
+                    }
+                    i = j
+                    run = i
+                } else {
+                    i = i + 1
+                }
+            }
+        }
+    }
+    if n > run {
+        out = bytes_concat(out, bytes_slice(sb, run, n))
+    }
+    return str_of_bytes(out)
+}
+
+// --- кодиране на резултати (text формат) ---
+
+fn pgw_row_desc(cols: Vec<str>) -> bytes {
+    let mut body = pgw_be16(vec_len(cols))
+    let mut i: i64 = 0
+    while i < vec_len(cols) {
+        body = bytes_concat(body, pgw_cstr(vec_get(cols, i)))
+        body = bytes_concat(body, pgw_be32(0))       // table oid
+        body = bytes_concat(body, pgw_be16(0))       // attnum
+        body = bytes_concat(body, pgw_be32(25))      // type oid: text
+        body = bytes_concat(body, pgw_be16(65535))   // typlen -1
+        body = bytes_concat(body, pgw_be32(4294967295)) // typmod -1
+        body = bytes_concat(body, pgw_be16(0))       // text format
+        i = i + 1
+    }
+    return pgw_msg(84, body)                         // 'T'
+}
+
+// Текстова стойност; връща (bytes, is_null).
+struct PgWText {
+    b: bytes,
+    is_null: i64
+}
+
+fn pgw_val_text(v: BoilaVal) -> PgWText {
+    if v.tag == boila_v_null() {
+        return PgWText { b: bytes_new(0), is_null: 1 }
+    }
+    if v.tag == boila_v_bool() {
+        if (v.i & 1) == 1 {
+            return PgWText { b: bytes_of_str("t"), is_null: 0 }
+        }
+        return PgWText { b: bytes_of_str("f"), is_null: 0 }
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        return PgWText { b: bytes_of_str(int_to_str(v.i)), is_null: 0 }
+    }
+    if v.tag == boila_v_bytes() {
+        // PG bytea hex формат
+        let mut h = "\\x"
+        let mut i: i64 = 0
+        while i < bytes_len(v.b) {
+            let x = bytes_at(v.b, i) & 255
+            let hi = x / 16
+            let lo = x % 16
+            h = concat(h, concat(pgw_hex_digit(hi), pgw_hex_digit(lo)))
+            i = i + 1
+        }
+        return PgWText { b: bytes_of_str(h), is_null: 0 }
+    }
+    // str / json — суров текст
+    return PgWText { b: v.b, is_null: 0 }
+}
+
+fn pgw_hex_digit(x: i64) -> str {
+    if x < 10 {
+        return chr(48 + x)
+    }
+    return chr(87 + x)
+}
+
+fn pgw_data_row(row: Vec<BoilaVal>) -> bytes {
+    let mut body = pgw_be16(vec_len(row))
+    let mut i: i64 = 0
+    while i < vec_len(row) {
+        let t = pgw_val_text(vec_get(row, i))
+        if t.is_null == 1 {
+            body = bytes_concat(body, pgw_be32(4294967295))   // -1 NULL
+        } else {
+            body = bytes_concat(body, pgw_be32(bytes_len(t.b)))
+            body = bytes_concat(body, t.b)
+        }
+        i = i + 1
+    }
+    return pgw_msg(68, body)                         // 'D'
+}
+
+// CommandComplete tag по kind на изпълнение.
+fn pgw_tag(kind: i64, affected: i64, nrows: i64) -> str {
+    if kind == 1 {
+        return concat("SELECT ", int_to_str(nrows))
+    }
+    if kind == 2 {
+        return "CREATE TABLE"
+    }
+    if kind == 6 {
+        return concat("INSERT 0 ", int_to_str(affected))
+    }
+    if kind == 7 {
+        return concat("UPDATE ", int_to_str(affected))
+    }
+    if kind == 8 {
+        return concat("DELETE ", int_to_str(affected))
+    }
+    if kind == 9 {
+        return "CREATE INDEX"
+    }
+    if kind == 10 {
+        return "BEGIN"
+    }
+    if kind == 11 {
+        return "COMMIT"
+    }
+    if kind == 12 {
+        return "ROLLBACK"
+    }
+    return "OK"
+}

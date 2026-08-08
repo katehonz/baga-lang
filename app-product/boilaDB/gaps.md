@@ -2,7 +2,28 @@
 
 Попълва се с всяка фаза (моделът на rocksbaga/docs/gaps.md). Буквите:
 V = value/codec, K = key/scan, S = storage, M = metrics/monitoring,
-H = HTTP/API, Q = SQL (от P1).
+H = HTTP/API, Q = SQL (от P1), C = cache/planner, A = агрегати,
+T = транзакции, W = wire protocol.
+
+## Открити при P6
+
+- **W1 — wire сървърът е sync: една връзка в даден момент.** Паралелни
+  клиенти чакат на опашка. Истинският bounded pool + shard-owner нишки
+  (PLAN P6 гейтът „10k concurrent") идва с concurrency фазата (P11) —
+  изисква rebuild на собствеността върху BoilaServer.
+- **W2 — extended protocol-ът ре-parse-ва на всеки Execute.** $1..$n се
+  заместват текстово в Bind/Execute и заявката минава през пълния
+  pipeline (plan cache-ът хваща само повторения на идентичен текст).
+  Кеширан AST по stmt име идва при нужда.
+- **W3 — RowDescription е винаги OID 25 (text).** pgbaga JSON
+  детекцията по OID не разпознава jsonb колони; стойностите са коректни
+  като текст.
+- **W4 — DROP TABLE не е поддръжан** (0A000). Smoke тестовете ползват
+  fresh root; идва с P7+ или при нужда.
+- **W5 — Describe връща NoData** (няма statement metadata cache).
+- **W6 — auth е cleartext token (BOILA_TOKEN) или trust.** SCRAM не се
+  предлага от сървъра (pgbaga-клиентът го поддържа, но сървърът не го
+  иска); TLS няма (SSLRequest → 'N').
 
 ## Открити при P5
 

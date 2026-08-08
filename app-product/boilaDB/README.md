@@ -10,14 +10,15 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 
 ## Статус
 
-**P5 (пълен SELECT + planner)** — `DISTINCT`, `ORDER BY`/`LIMIT`/
-`OFFSET`, агрегати (count/sum/avg/min/max), `GROUP BY` + `HAVING`,
-`JOIN` (INNER/LEFT, NL + index nested loop), rule-based planner и plan
-cache (cold 11.0 µs → warm 5.8 µs, 1.89×; bench/boila/results/
-select-planner-2026-08-08.md). Hash join, query budget и WITH RECURSIVE
-— P6/P10/P11 (gaps).
-Предишно: **P4 (MVCC транзакции)**; **P3 (DML + индекси + group
-commit)**; **P2 (много бази)**; **P1 (SQL read path)**; **P0 (скелет)**.
+**P6 (PG wire protocol v3)** — `tools/serve_pg.baga` на порт 6575:
+startup/auth (cleartext token или trust), simple query, extended
+Parse/Bind/Describe/Execute/Sync с `$1..$n`, per-connection транзакции.
+Проверено с pgbaga smoke (20/20) и **истински psql/libpq** (SELECT,
+INSERT...RETURNING, агрегати, UTF-8). Sync loop (gaps W1) — pool-ът идва
+в P11.
+Предишно: **P5 (пълен SELECT + planner)**; **P4 (MVCC транзакции)**;
+**P3 (DML + индекси)**; **P2 (много бази)**; **P1 (SQL read path)**;
+**P0 (скелет)**.
 
 ## Пускане
 

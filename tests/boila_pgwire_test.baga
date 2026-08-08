@@ -1,0 +1,97 @@
+// boila_pgwire_test.baga — P6: чисти wire функции (substitution, quoting,
+// value encoding, tags). End-to-end с pgbaga е в live smoke-а (docs).
+
+import "boilaDB/api/pgwire_enc.baga"
+import "boilaDB/api/pgwire_msg.baga"
+import "boilaDB/core/value.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn main() -> i64 {
+    print("boila_pgwire_test:")
+    let fails: Vec<i64> = vec_new()
+
+    // --- pgw_is_int ---
+    check(fails, "is_int", pgw_is_int("123") == 1 && pgw_is_int("-5") == 1 && pgw_is_int("12a") == 0 && pgw_is_int("") == 0 && pgw_is_int("-") == 0)
+
+    // --- quoting ---
+    check(fails, "quote_plain", pgw_quote_lit("abc") == "'abc'")
+    check(fails, "quote_apos", pgw_quote_lit("a'b") == "'a''b'")
+    check(fails, "quote_bg", pgw_quote_lit("бг") == "'бг'")
+
+    // --- param substitution ---
+    let v1: Vec<str> = vec_new()
+    vec_push(v1, "42")
+    vec_push(v1, "sofia")
+    let n1: Vec<i64> = vec_new()
+    vec_push(n1, 0)
+    vec_push(n1, 0)
+    check(fails, "subst_int_str", pgw_subst_params("SELECT * FROM t WHERE id = $1 AND city = $2", v1, n1) == "SELECT * FROM t WHERE id = 42 AND city = 'sofia'")
+    check(fails, "subst_repeat", pgw_subst_params("SELECT $1, $1", v1, n1) == "SELECT 42, 42")
+    // $ в кавички не се пипа
+    check(fails, "subst_in_quotes", pgw_subst_params("SELECT '$1' FROM t WHERE id = $1", v1, n1) == "SELECT '$1' FROM t WHERE id = 42")
+    // '' escape в кавички
+    let vq: Vec<str> = vec_new()
+    vec_push(vq, "x")
+    let nq: Vec<i64> = vec_new()
+    vec_push(nq, 0)
+    check(fails, "subst_escaped_quote", pgw_subst_params("SELECT 'a''b $1' , $1", vq, nq) == "SELECT 'a''b $1' , 'x'")
+    // NULL параметър
+    let vn: Vec<str> = vec_new()
+    vec_push(vn, "")
+    let nn: Vec<i64> = vec_new()
+    vec_push(nn, 1)
+    check(fails, "subst_null", pgw_subst_params("INSERT INTO t (a) VALUES ($1)", vn, nn) == "INSERT INTO t (a) VALUES (NULL)")
+    // стринг с кавичка като параметър → екраниран
+    let ve: Vec<str> = vec_new()
+    vec_push(ve, "a'b")
+    let ne: Vec<i64> = vec_new()
+    vec_push(ne, 0)
+    check(fails, "subst_quote_param", pgw_subst_params("SELECT $1", ve, ne) == "SELECT 'a''b'")
+    // липсващ параметър → '$' остава
+    check(fails, "subst_missing", pgw_subst_params("SELECT $3", v1, n1) == "SELECT $3")
+
+    // --- value encoding ---
+    let tn = pgw_val_text(boila_val_null())
+    check(fails, "enc_null", tn.is_null == 1)
+    let ti = pgw_val_text(boila_val_i64(-7))
+    check(fails, "enc_i64", ti.is_null == 0 && str_of_bytes(ti.b) == "-7")
+    let tb = pgw_val_text(boila_val_bool(1))
+    check(fails, "enc_bool", str_of_bytes(tb.b) == "t")
+    let ts = pgw_val_text(boila_val_str("бг"))
+    check(fails, "enc_str", str_of_bytes(ts.b) == "бг")
+    let by = bytes_new(2)
+    bytes_set(by, 0, 171)
+    bytes_set(by, 1, 205)
+    let tb2 = pgw_val_text(boila_val_bytes(by))
+    check(fails, "enc_bytea_hex", str_of_bytes(tb2.b) == "\\xabcd")
+
+    // --- tags ---
+    check(fails, "tag_select", pgw_tag(1, 0, 5) == "SELECT 5")
+    check(fails, "tag_insert", pgw_tag(6, 3, 0) == "INSERT 0 3")
+    check(fails, "tag_update", pgw_tag(7, 2, 0) == "UPDATE 2")
+    check(fails, "tag_delete", pgw_tag(8, 1, 0) == "DELETE 1")
+    check(fails, "tag_create", pgw_tag(2, 0, 0) == "CREATE TABLE")
+    check(fails, "tag_begin", pgw_tag(10, 0, 0) == "BEGIN")
+
+    // --- framing ---
+    let msg = pgw_msg(81, pgw_cstr("SELECT 1"))
+    check(fails, "frame_type", bytes_at(msg, 0) == 81)
+    check(fails, "frame_len", pgw_be_read(msg, 1, 4) == bytes_len(msg) - 1)
+
+    if vec_len(fails) == 0 {
+        print("boila_pgwire_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_pgwire_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}
