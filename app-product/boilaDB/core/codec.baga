@@ -1,0 +1,70 @@
+// codec.baga — физически key layout на boilaDB.
+//
+// row ключ: [cf u8][table_id u32 BE][pk bytes]
+//   • cf — key-space (sys/data/index/vec/fts/graph/txn)
+//   • table_id — от catalog/ (sys CF)
+//   • pk — value-кодиран primary key (sort-order, вж. value.baga)
+//
+// Shard-маршрутизацията е hash на целия ключ през rocksbaga клъстера —
+// pk е доминиращо-вариращата част, така че разпределението е по pk.
+// Версионен суфикс за MVCC (P3) се добавя тук; pk без суфикс остава
+// еднозначен, защото операциите в P0–P2 са само точка/prefix.
+
+import "value.baga"
+import "std/bytes/bytes.baga"
+
+fn boila_cf_sys() -> i64 { return 1 }
+fn boila_cf_data() -> i64 { return 2 }
+fn boila_cf_index() -> i64 { return 3 }
+fn boila_cf_vec() -> i64 { return 4 }
+fn boila_cf_fts() -> i64 { return 5 }
+fn boila_cf_graph() -> i64 { return 6 }
+fn boila_cf_txn() -> i64 { return 7 }
+
+fn boila_enc_u32_be(v: i64) -> bytes {
+    let b = bytes_new(4)
+    bytes_set(b, 0, (v >> 24) & 255)
+    bytes_set(b, 1, (v >> 16) & 255)
+    bytes_set(b, 2, (v >> 8) & 255)
+    bytes_set(b, 3, v & 255)
+    return b
+}
+
+fn boila_dec_u32_be(b: bytes, off: i64) -> i64 {
+    return ((bytes_at(b, off) & 255) << 24)
+        | ((bytes_at(b, off + 1) & 255) << 16)
+        | ((bytes_at(b, off + 2) & 255) << 8)
+        | (bytes_at(b, off + 3) & 255)
+}
+
+// Prefix за всички редове на таблица в даден CF.
+fn boila_key_prefix(cf: i64, table_id: i64) -> bytes {
+    let b = bytes_new(1)
+    bytes_set(b, 0, cf & 255)
+    return bytes_concat(b, boila_enc_u32_be(table_id))
+}
+
+// Пълен row ключ.
+fn boila_key_row(cf: i64, table_id: i64, pk: bytes) -> bytes {
+    return bytes_concat(boila_key_prefix(cf, table_id), pk)
+}
+
+// Glob за prefix scan през rocksbaga SCAN MATCH.
+// GAP (gaps.md K2): pk, съдържащ '*', може да съвпадне с чужд glob —
+// P1 planner-ът ще ползва истински prefix scan вместо glob.
+fn boila_glob_prefix(p: bytes) -> bytes {
+    return bytes_concat(p, bytes_of_str("*"))
+}
+
+// Дали key започва с prefix (за проверка на scan резултати).
+fn boila_key_has_prefix(key: bytes, p: bytes) -> i64 {
+    let nk = bytes_len(key)
+    let np = bytes_len(p)
+    if nk < np {
+        return 0
+    }
+    if boila_bytes_cmp(bytes_slice(key, 0, np), p) == 0 {
+        return 1
+    }
+    return 0
+}

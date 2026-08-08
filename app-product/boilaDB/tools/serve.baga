@@ -1,0 +1,111 @@
+// serve.baga — входната точка на boilaDB (P0 скелет).
+//
+// Стартира N shard-а × rocksbaga (WAL replay при рестарт) и HTTP сървър:
+//   GET /health  → {"status":"ok","shards":N}
+//   GET /metrics → Prometheus текст (metbaga)
+//   друго        → 404
+//
+// Env: BOILA_PATH (default /tmp/baga_boila), BOILA_SHARDS (4),
+//      BOILA_PORT (6570), BOILA_FLUSH_AT (256), BOILA_COMPACT_AT (4).
+//
+// Модел: thread-per-conn keep-alive (httpdbaga); worker-ите получават
+// cell2(fd, nshards) — storage-ът не се пипа от conn нишките в P0.
+// P2+ ще смени това с bounded pool + write lanes (ARCHITECTURE.md §6).
+
+import "httpdbaga/http.baga"
+import "metbaga/met.baga"
+import "../storage/shards.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn boila_env_or(name: str, dflt: str) -> str !IO {
+    let v = env(name)
+    if v == "" {
+        return dflt
+    }
+    return v
+}
+
+fn boila_route(req: Request, nshards: i64) -> Response {
+    let method = http_method(req)
+    let path = http_path_only(req)
+    if method == "GET" && path == "/health" {
+        let mut body = "{\"status\":\"ok\",\"shards\":"
+        body = concat(body, int_to_str(nshards))
+        body = concat(body, "}")
+        return http_json_response(200, body)
+    }
+    if method == "GET" && path == "/metrics" {
+        let m = met_new()
+        let up = met_gauge(m, "boila_up", "boilaDB process alive")
+        met_set(m, up, 1)
+        let sh = met_gauge(m, "boila_shards", "rocksbaga shard count")
+        met_set(m, sh, nshards)
+        let resp = http_response(200, met_render(m))
+        return http_set_header(resp, "Content-Type", "text/plain; version=0.0.4")
+    }
+    return http_json_response(404, "{\"error\":\"not found\"}")
+}
+
+// HTTP/1.1 keep-alive loop; tcp_close накрая е задължително — клиентите
+// четат до EOF (урокът от oauthbaga P1).
+fn boila_conn(fd: i64, nshards: i64) -> i64 !IO !Net {
+    let mut r = http_reader(fd)
+    let mut keep = true
+    while keep {
+        let out = http_read_request_r(r)?
+        r = out.reader
+        if out.err != 0 {
+            http_respond_keepalive(fd, http_json_response(out.err, "{\"error\":\"bad request\"}"), 0)?
+            keep = false
+        } else {
+            if http_method(out.req) == "" {
+                keep = false
+            } else {
+                let ka = http_keepalive(out.req)
+                http_respond_keepalive(fd, boila_route(out.req, nshards), ka)?
+                if ka == 0 {
+                    keep = false
+                }
+            }
+        }
+    }
+    tcp_close(fd)?
+    return 0
+}
+
+// go_bg вход: ctx = cell2(fd, nshards).
+fn boila_conn_bg(ctx: i64) -> i64 !IO !Net {
+    return boila_conn(cell2_0(ctx), cell2_1(ctx))?
+}
+
+fn main() -> i64 !Net !IO !Par {
+    let dir = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
+    let port = parse_int(boila_env_or("BOILA_PORT", "6570"))
+    let nshards = parse_int(boila_env_or("BOILA_SHARDS", "4"))
+    let flush_at = parse_int(boila_env_or("BOILA_FLUSH_AT", "256"))
+    let compact_at = parse_int(boila_env_or("BOILA_COMPACT_AT", "4"))
+
+    let store = boila_open(dir, nshards, flush_at, compact_at)?
+    if store.ok == 0 {
+        print(concat("boiladb: неуспешно отваряне на ", dir))
+        return 1
+    }
+    let n = boila_shards(store)
+    let mut line = "boiladb listening on :"
+    line = concat(line, int_to_str(port))
+    line = concat(line, " (shards=")
+    line = concat(line, int_to_str(n))
+    line = concat(line, ", dir=")
+    line = concat(line, dir)
+    line = concat(line, ")")
+    print(line)
+
+    let listener = tcp_listen(port)?
+    while true {
+        let fd = tcp_accept(listener)?
+        go_bg(boila_conn_bg, cell2(fd, n))?
+    }
+    return 0
+}

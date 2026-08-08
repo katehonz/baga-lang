@@ -81,22 +81,26 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 
 ### core/ — фундамент
 - `value.baga` — типизиран value model: `null | bool | i64 | f64 | bytes |
-  str | json | timestamptz | vector(n)`. LE/binary-safe кодиране,
-  **sort-order съвместим с byte-order** на ключовете (range scans без
-  decode на всяка стойност). Тук живее 3VL логиката.
-- `codec.baga` — key encoding: `<cf> | <shard> | <table_id> | <pk_enc> |
-  <ver_lsn_desc>` (версиите слизат низходящо → snapshot четене е първият
-  запис с `lsn ≤ snapshot`).
+  str | json | timestamptz | vector(n)`. Binary-safe, **sort-order
+  кодиране** (sign-flip big-endian за числа) — byte-редът съвпада със
+  семантичния, за range scans без decode на всяка стойност. Тук живее
+  3VL логиката. (f64 sort-order чака bit-cast builtin — gaps.md V1.)
+- `codec.baga` — key encoding: `<cf> | <table_id> | <pk_enc>`; shard-ът
+  не е в ключа — маршрутизацията е hash на целия ключ през rocksbaga
+  клъстера. MVCC версионен суфикс (`<ver_lsn_desc>`, низходящо →
+  snapshot четене е първият запис с `lsn ≤ snapshot`) се добавя в P3.
 - `config.baga` — flagbaga + файл: `shards`, `max_connections`,
   `worker_pool`, `commit_window_ms`, `cache_pages`, `query_budget_ms`.
 - `errors.baga` — SQLSTATE кодове (`23505 unique_violation`,
   `57P03 cannot_connect_now`, `53300 too_many_connections`, `0A000`…).
 
 ### storage/ — N shard-а × rocksbaga
-- Sharding по `fnv(pk) mod N`; всеки shard е собствена rocksbaga инстанция
-  (свой WAL, memtable, compaction, page cache) — моделът, който rocksbaga
-  доказа с `LSM_SHARDS`/parallel workers. N се фиксира при init в `sys`
-  (по подразбиране = ядрата; максимум 64).
+- Sharding: hash на целия кодиран ключ (djb2-подобен, моделът на
+  rocksbaga) по N shard-а; pk е доминиращо-вариращата част, така че
+  разпределението е ефективно по pk. Всеки shard е собствена rocksbaga
+  инстанция (свой WAL, memtable, compaction, page cache) — моделът,
+  който rocksbaga доказа с `LSM_SHARDS`/parallel workers. N се фиксира
+  при init в `sys` (по подразбиране = ядрата; максимум 64).
 - `shards.baga` — отваряне/затваряне на shard множеството; **всеки shard
   се притежава от точно една нишка** (struct по стойност → собственост).
 - `space.baga`/`space_scan.baga` — namespace-нати put/get/scan/del;
@@ -252,8 +256,9 @@ cell2 пакети (доказаният модел на rocksbaga MT и queueba
    прави; ако изисква "и" — два файла.
 3. **Делене по ос:** типове/кодеци отделно от алгоритми; четене отделно
    от писане; всеки statement/operator — свой файл.
-4. **Тестовете следват файла:** `foo.baga` → `tests/foo_test.baga`,
-   също ≤ 400 реда (делене по сценарий).
+4. **Тестовете следват файла:** `foo.baga` → `tests/boila_foo_test.baga`
+   в коренната `tests/` (конвенцията на монорепото — `scripts/baga-test`
+   открива там), също ≤ 400 реда (делене по сценарий).
 5. **`scripts/filesize.sh`** (fail > 400) върви с тестовете от P0.
 6. **Префиксите са стабилни:** `vec_hnsw_insert` не се преименува при
    местене между файлове.
@@ -288,10 +293,12 @@ app-product/boilaDB/
 │              pgwire_extended.baga http_admin.baga http_sql.baga
 │              auth.baga
 ├── tools/     serve.baga shell.baga backup.baga
-├── tests/     <file>_test.baga за всеки сорс файл (≤ 400 реда)
 ├── scripts/   filesize.sh
 └── bench/     harness.baga ladder.md vs_barabadb.md
 ```
+
+Тестовете са в коренната `tests/` като `boila_*_test.baga` (откриване
+през `scripts/baga-test`), не в подпапка на пакета.
 
 Символен префикс: `boila_*` (подпрефикси `sql_*`, `vec_*`, `fts_*`,
 `txn_*`…), стабилен при вътрешно местене.

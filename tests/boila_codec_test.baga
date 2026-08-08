@@ -1,0 +1,77 @@
+// boila_codec_test.baga — boilaDB P0: key layout (core/codec.baga).
+// Prefix свойства, u32 BE roundtrip, еднозначност на cf/table границите.
+
+import "boilaDB/core/codec.baga"
+import "boilaDB/core/value.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn u32_rt(fails: Vec<i64>, v: i64) {
+    let b = boila_enc_u32_be(v)
+    let back = boila_dec_u32_be(b, 0)
+    check(fails, concat("u32_rt ", int_to_str(v)), back == v && bytes_len(b) == 4)
+}
+
+fn main() -> i64 {
+    print("boila_codec_test:")
+    let fails: Vec<i64> = vec_new()
+
+    // --- u32 BE roundtrip + sort-order на самия u32 ---
+    u32_rt(fails, 0)
+    u32_rt(fails, 1)
+    u32_rt(fails, 255)
+    u32_rt(fails, 256)
+    u32_rt(fails, 65535)
+    u32_rt(fails, 16777215)
+    u32_rt(fails, 2147483647)
+    check(fails, "u32_ord", boila_bytes_cmp(boila_enc_u32_be(1), boila_enc_u32_be(2)) == (0 - 1))
+
+    // --- key = prefix ++ pk; prefix-ът е 5 байта (cf u8 + table u32) ---
+    let pk = boila_val_enc(boila_val_i64(42))
+    let key = boila_key_row(boila_cf_data(), 7, pk)
+    let pref = boila_key_prefix(boila_cf_data(), 7)
+    check(fails, "prefix_len", bytes_len(pref) == 5)
+    check(fails, "key_len", bytes_len(key) == 5 + bytes_len(pk))
+    check(fails, "key_has_prefix", boila_key_has_prefix(key, pref) == 1)
+    check(fails, "key_body_is_pk", boila_bytes_cmp(bytes_slice(key, 5, bytes_len(key)), pk) == 0)
+
+    // --- разделност: cf и table са еднозначни (няма припокриване) ---
+    let k_cf1 = boila_key_row(boila_cf_sys(), 7, pk)
+    let k_cf2 = boila_key_row(boila_cf_data(), 7, pk)
+    check(fails, "cf_apart", boila_bytes_cmp(k_cf1, k_cf2) != 0)
+    // table 1 pk "x..." не може да съвпадне с ключ на table 2
+    let k_t1 = boila_key_row(boila_cf_data(), 1, pk)
+    let k_t2 = boila_key_row(boila_cf_data(), 2, pk)
+    check(fails, "table_apart", boila_bytes_cmp(k_t1, k_t2) != 0)
+    check(fails, "table_not_prefix_of_other", boila_key_has_prefix(k_t1, boila_key_prefix(boila_cf_data(), 2)) == 0)
+
+    // --- table id 7 и table id 0x07000000-подобни не се смесват ---
+    let k_big = boila_key_row(boila_cf_data(), 117440512, pk)
+    check(fails, "table_wide_apart", boila_key_has_prefix(k_big, boila_key_prefix(boila_cf_data(), 7)) == 0)
+
+    // --- glob за prefix scan завършва на '*' и пази prefix-а ---
+    let g = boila_glob_prefix(pref)
+    check(fails, "glob_len", bytes_len(g) == bytes_len(pref) + 1)
+    check(fails, "glob_star", bytes_at(g, bytes_len(g) - 1) == 42)
+    check(fails, "glob_body", boila_bytes_cmp(bytes_slice(g, 0, bytes_len(pref)), pref) == 0)
+
+    // --- pk ред в ключа: по-малък pk → по-малък ключ (range scan основа) ---
+    let k_lo = boila_key_row(boila_cf_data(), 7, boila_val_enc(boila_val_i64(0 - 5)))
+    let k_hi = boila_key_row(boila_cf_data(), 7, boila_val_enc(boila_val_i64(5)))
+    check(fails, "pk_order_in_key", boila_bytes_cmp(k_lo, k_hi) == (0 - 1))
+
+    if vec_len(fails) == 0 {
+        print("boila_codec_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_codec_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

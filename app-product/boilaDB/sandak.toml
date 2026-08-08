@@ -1,0 +1,10 @@
+[package]
+name = "boilaDB"
+version = "0.1.0"
+entry = "tools/serve.baga"
+
+[dependencies]
+std = { path = "../../std" }
+rocksbaga = { path = "../rocksbaga" }
+httpdbaga = { path = "../httpdbaga" }
+metbaga = { path = "../metbaga" }

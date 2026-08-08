@@ -1,0 +1,154 @@
+// boila_shards_test.baga — boilaDB P0: sharded storage + restart персистентност.
+// 4 shard-а × rocksbaga: put/get/del/scan през фасадата, close → reopen
+// (WAL replay) — данните оцеляват, изтритите остават изтрити.
+
+import "boilaDB/storage/shards.baga"
+import "boilaDB/core/codec.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+// Чисти shard пътища dir[.s{i}] — wal/manifest/sst/bloom за gens 1..30.
+fn wipe_shards(dir: str, n: i64) -> i64 !IO {
+    let mut i: i64 = 0
+    while i < n {
+        let mut p = dir
+        if n > 1 {
+            p = concat(concat(dir, ".s"), int_to_str(i))
+        }
+        unlink(concat(p, ".wal"))?
+        unlink(concat(p, ".manifest"))?
+        unlink(concat(p, ".manifest.log"))?
+        let mut g: i64 = 1
+        while g <= 30 {
+            unlink(concat(concat(p, ".sst."), int_to_str(g)))?
+            unlink(concat(concat(p, ".bloom."), int_to_str(g)))?
+            g = g + 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn pk_of(i: i64) -> bytes {
+    return boila_val_enc(boila_val_i64(i))
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_shards_test:")
+    let fails: Vec<i64> = vec_new()
+    let dir = "/tmp/baga_boila_shards_test"
+    wipe_shards(dir, 4)?
+
+    // --- фаза 1: open 4 shard-а, писане, четене, del, scan ---
+    let mut s = boila_open(dir, 4, 8, 3)?
+    check(fails, "open", s.ok == 1)
+    check(fails, "shard_count", boila_shards(s) == 4)
+
+    let mut i: i64 = 0
+    while i < 100 {
+        let v = bytes_of_str(concat("v", int_to_str(i)))
+        s = boila_put(s, boila_cf_data(), 1, pk_of(i), v)?
+        i = i + 1
+    }
+    check(fails, "writes_ok", s.ok == 1)
+
+    // четения през различни shard-и (hash-ът ги разпределя)
+    let mut ok_reads: i64 = 1
+    i = 0
+    while i < 100 {
+        let g = boila_get(s, boila_cf_data(), 1, pk_of(i))?
+        s = g.s
+        if g.found != 1 || str_of_bytes(g.val) != concat("v", int_to_str(i)) {
+            ok_reads = 0
+        }
+        i = i + 1
+    }
+    check(fails, "reads_100", ok_reads == 1)
+
+    // del на всеки десети
+    i = 0
+    while i < 100 {
+        s = boila_del(s, boila_cf_data(), 1, pk_of(i))?
+        i = i + 10
+    }
+    let gd = boila_get(s, boila_cf_data(), 1, pk_of(30))?
+    s = gd.s
+    check(fails, "del_gone", gd.found == 0)
+    let gk = boila_get(s, boila_cf_data(), 1, pk_of(31))?
+    s = gk.s
+    check(fails, "neighbor_survives", gk.found == 1)
+
+    // prefix scan: само cf=data/table=1 ключове, без del-натите
+    let mut seen: i64 = 0
+    let mut bad_prefix: i64 = 0
+    let mut cursor: i64 = 0
+    let pref = boila_key_prefix(boila_cf_data(), 1)
+    let mut rounds: i64 = 0
+    while rounds < 50 {
+        let sc = boila_scan(s, boila_cf_data(), 1, cursor, 32)?
+        s = sc.s
+        let mut j: i64 = 0
+        while j < vec_len(sc.keys) {
+            let k = vec_get(sc.keys, j)
+            if boila_key_has_prefix(k, pref) == 0 {
+                bad_prefix = 1
+            }
+            seen = seen + 1
+            j = j + 1
+        }
+        cursor = sc.next
+        rounds = rounds + 1
+        if cursor == 0 {
+            rounds = 50
+        }
+    }
+    check(fails, "scan_count_90", seen == 90)
+    check(fails, "scan_prefix_only", bad_prefix == 0)
+
+    // друга таблица в същия CF не се смесва
+    s = boila_put(s, boila_cf_data(), 2, pk_of(1), bytes_of_str("other"))?
+    let go = boila_get(s, boila_cf_data(), 2, pk_of(1))?
+    s = go.s
+    check(fails, "table2_isolated", go.found == 1 && str_of_bytes(go.val) == "other")
+
+    // flush към SST преди затваряне (покрива и WAL, и SST пътя при replay)
+    s = boila_flush(s)?
+    s = boila_put(s, boila_cf_data(), 1, pk_of(999), bytes_of_str("after_flush"))?
+    boila_close(s)?
+
+    // --- фаза 2: reopen (restart) — WAL replay + SST ---
+    let mut s2 = boila_open(dir, 4, 8, 3)?
+    check(fails, "reopen", s2.ok == 1)
+    let r1 = boila_get(s2, boila_cf_data(), 1, pk_of(1))?
+    s2 = r1.s
+    check(fails, "restart_sst_val", r1.found == 1 && str_of_bytes(r1.val) == "v1")
+    let r2 = boila_get(s2, boila_cf_data(), 1, pk_of(999))?
+    s2 = r2.s
+    check(fails, "restart_wal_val", r2.found == 1 && str_of_bytes(r2.val) == "after_flush")
+    let r3 = boila_get(s2, boila_cf_data(), 1, pk_of(50))?
+    s2 = r3.s
+    check(fails, "restart_del_stays", r3.found == 0)
+    let r4 = boila_get(s2, boila_cf_data(), 2, pk_of(1))?
+    s2 = r4.s
+    check(fails, "restart_table2", r4.found == 1)
+    boila_close(s2)?
+
+    wipe_shards(dir, 4)?
+    if vec_len(fails) == 0 {
+        print("boila_shards_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_shards_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

@@ -1,0 +1,199 @@
+// value.baga — типизираният value model на boilaDB: codec + 3VL сравнение.
+//
+// Tag байт (префикс на всяка кодировка): null=0 < bool=1 < i64=2 <
+// timestamptz=3 < bytes=4 < str=5 < json=6. Payload-ите са sort-order
+// кодирани, така че bytes_cmp(enc(a), enc(b)) == семантичното сравнение
+// (ключово за range scans в storage/).
+//
+// 3VL: сравнение, в което участва null, връща 2 = unknown
+// (NULL = NULL НЕ е true — обратното на barabadb).
+//
+// GAP V1 (gaps.md): f64 няма sort-order кодировка — езикът още няма
+// f64→i64 bit-cast builtin. f64 колони се пазят payload-only (tag 7),
+// без подредба по стойност.
+
+struct BoilaVal {
+    tag: i64,   // BOILA_V_* константа
+    i: i64,     // bool / i64 / timestamptz (µs) / f64-заето (вж. V1)
+    b: bytes    // bytes / str / json payload
+}
+
+fn boila_v_null() -> i64 { return 0 }
+fn boila_v_bool() -> i64 { return 1 }
+fn boila_v_i64() -> i64 { return 2 }
+fn boila_v_ts() -> i64 { return 3 }
+fn boila_v_bytes() -> i64 { return 4 }
+fn boila_v_str() -> i64 { return 5 }
+fn boila_v_json() -> i64 { return 6 }
+fn boila_v_f64_gap() -> i64 { return 7 }
+
+// 2^63 като i64 — INT64_MIN без непреставим литерал.
+fn boila_sign_bit() -> i64 {
+    return (0 - 9223372036854775807) - 1
+}
+
+// Лексикографско сравнение на bytes: -1 / 0 / 1.
+fn boila_bytes_cmp(a: bytes, b: bytes) -> i64 {
+    let na = bytes_len(a)
+    let nb = bytes_len(b)
+    let mut n = na
+    if nb < n {
+        n = nb
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let ca = bytes_at(a, i) & 255
+        let cb = bytes_at(b, i) & 255
+        if ca < cb {
+            return 0 - 1
+        }
+        if ca > cb {
+            return 1
+        }
+        i = i + 1
+    }
+    if na < nb {
+        return 0 - 1
+    }
+    if na > nb {
+        return 1
+    }
+    return 0
+}
+
+// Sort-order i64: обръща се знаковият бит и се пише big-endian,
+// така че byte-редът == числовият ред (вкл. отрицателни).
+fn boila_enc_i64_ord(v: i64) -> bytes {
+    let x = v ^ boila_sign_bit()
+    let b = bytes_new(8)
+    let mut i: i64 = 0
+    while i < 8 {
+        bytes_set(b, i, (x >> (56 - 8 * i)) & 255)
+        i = i + 1
+    }
+    return b
+}
+
+fn boila_dec_i64_ord(b: bytes, off: i64) -> i64 {
+    let mut x: i64 = 0
+    let mut i: i64 = 0
+    while i < 8 {
+        x = (x << 8) | (bytes_at(b, off + i) & 255)
+        i = i + 1
+    }
+    return x ^ boila_sign_bit()
+}
+
+fn boila_val_null() -> BoilaVal {
+    return BoilaVal { tag: boila_v_null(), i: 0, b: bytes_new(0) }
+}
+
+fn boila_val_bool(x: i64) -> BoilaVal {
+    let mut v: i64 = 0
+    if x != 0 {
+        v = 1
+    }
+    return BoilaVal { tag: boila_v_bool(), i: v, b: bytes_new(0) }
+}
+
+fn boila_val_i64(x: i64) -> BoilaVal {
+    return BoilaVal { tag: boila_v_i64(), i: x, b: bytes_new(0) }
+}
+
+// timestamptz = i64 микросекунди — същата sort-order кодировка като i64.
+fn boila_val_ts(us: i64) -> BoilaVal {
+    return BoilaVal { tag: boila_v_ts(), i: us, b: bytes_new(0) }
+}
+
+fn boila_val_bytes(x: bytes) -> BoilaVal {
+    return BoilaVal { tag: boila_v_bytes(), i: 0, b: x }
+}
+
+fn boila_val_str(s: str) -> BoilaVal {
+    return BoilaVal { tag: boila_v_str(), i: 0, b: bytes_of_str(s) }
+}
+
+fn boila_val_json(x: bytes) -> BoilaVal {
+    return BoilaVal { tag: boila_v_json(), i: 0, b: x }
+}
+
+// Кодировка: [tag][sort-order payload]. За bytes/str/json payload-ът е
+// суров — делимитацията в съставни ключове е грижа на codec.baga.
+fn boila_val_enc(v: BoilaVal) -> bytes {
+    let t = bytes_new(1)
+    bytes_set(t, 0, v.tag & 255)
+    if v.tag == boila_v_null() {
+        return t
+    }
+    if v.tag == boila_v_bool() {
+        let p = bytes_new(1)
+        bytes_set(p, 0, v.i & 1)
+        return bytes_concat(t, p)
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        return bytes_concat(t, boila_enc_i64_ord(v.i))
+    }
+    return bytes_concat(t, v.b)
+}
+
+// Обратна — очаква цяла кодировка (от boila_val_enc).
+fn boila_val_dec(b: bytes) -> BoilaVal {
+    let n = bytes_len(b)
+    if n < 1 {
+        return boila_val_null()
+    }
+    let tag = bytes_at(b, 0) & 255
+    if tag == boila_v_null() {
+        return boila_val_null()
+    }
+    if tag == boila_v_bool() {
+        let mut x: i64 = 0
+        if n > 1 {
+            x = bytes_at(b, 1) & 1
+        }
+        return BoilaVal { tag: tag, i: x, b: bytes_new(0) }
+    }
+    if tag == boila_v_i64() || tag == boila_v_ts() {
+        let mut x: i64 = 0
+        if n >= 9 {
+            x = boila_dec_i64_ord(b, 1)
+        }
+        return BoilaVal { tag: tag, i: x, b: bytes_new(0) }
+    }
+    let rest = bytes_slice(b, 1, n)
+    return BoilaVal { tag: tag, i: 0, b: rest }
+}
+
+// 3VL compare: -1 / 0 / 1, или 2 = unknown (някоя страна е null).
+fn boila_val_cmp(a: BoilaVal, b: BoilaVal) -> i64 {
+    if a.tag == boila_v_null() || b.tag == boila_v_null() {
+        return 2
+    }
+    if a.tag < b.tag {
+        return 0 - 1
+    }
+    if a.tag > b.tag {
+        return 1
+    }
+    if a.tag == boila_v_i64() || a.tag == boila_v_ts() {
+        if a.i < b.i {
+            return 0 - 1
+        }
+        if a.i > b.i {
+            return 1
+        }
+        return 0
+    }
+    if a.tag == boila_v_bool() {
+        let x = a.i & 1
+        let y = b.i & 1
+        if x < y {
+            return 0 - 1
+        }
+        if x > y {
+            return 1
+        }
+        return 0
+    }
+    return boila_bytes_cmp(a.b, b.b)
+}

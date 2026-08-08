@@ -1,0 +1,104 @@
+// boila_value_test.baga — boilaDB P0: value codec + 3VL (core/value.baga).
+// Sort-order кодировка: byte-редът на enc(a) съвпада с семантичния ред.
+
+import "boilaDB/core/value.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn i64_rt(fails: Vec<i64>, x: i64) {
+    let enc = boila_enc_i64_ord(x)
+    let back = boila_dec_i64_ord(enc, 0)
+    check(fails, concat("i64_rt ", int_to_str(x)), back == x)
+}
+
+fn ord_pair(fails: Vec<i64>, lo: i64, hi: i64) {
+    let a = boila_enc_i64_ord(lo)
+    let b = boila_enc_i64_ord(hi)
+    let name = concat(concat("ord ", int_to_str(lo)), concat(" < ", int_to_str(hi)))
+    check(fails, name, boila_bytes_cmp(a, b) == (0 - 1))
+}
+
+fn val_rt(fails: Vec<i64>, name: str, v: BoilaVal) {
+    let enc = boila_val_enc(v)
+    let back = boila_val_dec(enc)
+    let same_tag = back.tag == v.tag
+    let same_i = back.i == v.i
+    let same_b = boila_bytes_cmp(back.b, v.b) == 0
+    check(fails, concat("val_rt ", name), same_tag && same_i && same_b)
+}
+
+fn main() -> i64 {
+    print("boila_value_test:")
+    let fails: Vec<i64> = vec_new()
+    let imax: i64 = 9223372036854775807
+    let imin: i64 = (0 - 9223372036854775807) - 1
+
+    // --- i64 sort-order roundtrip (вкл. границите) ---
+    i64_rt(fails, 0)
+    i64_rt(fails, 1)
+    i64_rt(fails, 0 - 1)
+    i64_rt(fails, 5)
+    i64_rt(fails, 0 - 5)
+    i64_rt(fails, 123456789)
+    i64_rt(fails, 0 - 987654321)
+    i64_rt(fails, imax)
+    i64_rt(fails, imin)
+
+    // --- byte-ред == числов ред (отрицателни, граници) ---
+    ord_pair(fails, imin, 0 - 5)
+    ord_pair(fails, 0 - 5, 0 - 1)
+    ord_pair(fails, 0 - 1, 0)
+    ord_pair(fails, 0, 1)
+    ord_pair(fails, 1, 5)
+    ord_pair(fails, 5, imax)
+
+    // --- value roundtrip по типове ---
+    val_rt(fails, "null", boila_val_null())
+    val_rt(fails, "bool_false", boila_val_bool(0))
+    val_rt(fails, "bool_true", boila_val_bool(1))
+    val_rt(fails, "i64_neg", boila_val_i64(0 - 42))
+    val_rt(fails, "ts", boila_val_ts(1754582400000000))
+    let bb = bytes_new(3)
+    bytes_set(bb, 0, 0)
+    bytes_set(bb, 1, 255)
+    bytes_set(bb, 2, 7)
+    val_rt(fails, "bytes_nul", boila_val_bytes(bb))
+    val_rt(fails, "str_bg", boila_val_str("здравей, boila"))
+    val_rt(fails, "json", boila_val_json(bytes_of_str("{\"a\":1}")))
+
+    // --- 3VL: null сравнения са unknown (2), не true/false ---
+    let nv = boila_val_null()
+    check(fails, "3vl_null_null", boila_val_cmp(nv, nv) == 2)
+    check(fails, "3vl_null_i64", boila_val_cmp(nv, boila_val_i64(1)) == 2)
+    check(fails, "3vl_i64_null", boila_val_cmp(boila_val_i64(1), nv) == 2)
+
+    // --- семантично compare в рамките на тип ---
+    check(fails, "cmp_i64_lt", boila_val_cmp(boila_val_i64(1), boila_val_i64(2)) == (0 - 1))
+    check(fails, "cmp_i64_eq", boila_val_cmp(boila_val_i64(7), boila_val_i64(7)) == 0)
+    check(fails, "cmp_i64_gt", boila_val_cmp(boila_val_i64(9), boila_val_i64(2)) == 1)
+    check(fails, "cmp_bool", boila_val_cmp(boila_val_bool(0), boila_val_bool(1)) == (0 - 1))
+    check(fails, "cmp_str", boila_val_cmp(boila_val_str("а"), boila_val_str("б")) == (0 - 1))
+
+    // --- tag-ред върху кодировките: null < bool < i64 < ts < bytes < str < json ---
+    check(fails, "tag_null_bool", boila_bytes_cmp(boila_val_enc(nv), boila_val_enc(boila_val_bool(0))) == (0 - 1))
+    check(fails, "tag_bool_i64", boila_bytes_cmp(boila_val_enc(boila_val_bool(1)), boila_val_enc(boila_val_i64(imin))) == (0 - 1))
+    check(fails, "tag_i64_ts", boila_bytes_cmp(boila_val_enc(boila_val_i64(imax)), boila_val_enc(boila_val_ts(imin))) == (0 - 1))
+    check(fails, "tag_ts_bytes", boila_bytes_cmp(boila_val_enc(boila_val_ts(imax)), boila_val_enc(boila_val_bytes(bb))) == (0 - 1))
+    check(fails, "tag_bytes_str", boila_bytes_cmp(boila_val_enc(boila_val_bytes(bb)), boila_val_enc(boila_val_str(""))) == (0 - 1))
+    check(fails, "tag_str_json", boila_bytes_cmp(boila_val_enc(boila_val_str("zzz")), boila_val_enc(boila_val_json(bytes_new(0)))) == (0 - 1))
+
+    if vec_len(fails) == 0 {
+        print("boila_value_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_value_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

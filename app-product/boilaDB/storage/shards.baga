@@ -1,0 +1,72 @@
+// shards.baga — storage фасадата на boilaDB: N shard-а × rocksbaga.
+//
+// Тънка обвивка над lsm_cluster_* (hash-partition, per-shard WAL/SST/
+// MANIFEST, knobs). Единственото място извън codec.baga, което познава
+// физическия layout. Struct-по-стойност: подава се `s = boila_*(s, ...)?`.
+//
+// Конкурентност (P2+): един shard се притежава от една write lane;
+// P0 е еднонишков — фасадата не променя това, само го документира.
+
+import "rocksbaga/db/shard.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+
+struct BoilaStore {
+    c: LsmCluster,
+    ok: i64
+}
+
+struct BoilaGet {
+    s: BoilaStore,
+    found: i64,
+    val: bytes
+}
+
+struct BoilaScan {
+    s: BoilaStore,
+    next: i64,
+    keys: Vec<bytes>
+}
+
+fn boila_open(dir: str, nshards: i64, flush_at: i64, compact_at: i64) -> BoilaStore !IO {
+    let c = lsm_cluster_open(dir, nshards, flush_at, compact_at)?
+    return BoilaStore { c: c, ok: c.ok }
+}
+
+fn boila_close(s: BoilaStore) -> i64 !IO {
+    return lsm_cluster_close(s.c)?
+}
+
+fn boila_shards(s: BoilaStore) -> i64 {
+    return s.c.n
+}
+
+fn boila_put(s: BoilaStore, cf: i64, table_id: i64, pk: bytes, val: bytes) -> BoilaStore !IO !Time {
+    let key = boila_key_row(cf, table_id, pk)
+    let c = lsm_cluster_put_kb(s.c, key, val)?
+    return BoilaStore { c: c, ok: c.ok }
+}
+
+fn boila_get(s: BoilaStore, cf: i64, table_id: i64, pk: bytes) -> BoilaGet !IO !Time {
+    let key = boila_key_row(cf, table_id, pk)
+    let g = lsm_cluster_get_kb(s.c, key)?
+    return BoilaGet { s: BoilaStore { c: g.c, ok: g.c.ok }, found: g.found, val: g.val }
+}
+
+fn boila_del(s: BoilaStore, cf: i64, table_id: i64, pk: bytes) -> BoilaStore !IO !Time {
+    let key = boila_key_row(cf, table_id, pk)
+    let c = lsm_cluster_del_kb(s.c, key)?
+    return BoilaStore { c: c, ok: c.ok }
+}
+
+// Prefix scan по (cf, table) — glob MATCH, cursor пагинация като SCAN.
+fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) -> BoilaScan !IO !Time {
+    let pat = boila_glob_prefix(boila_key_prefix(cf, table_id))
+    let r = lsm_cluster_scan_kb(s.c, cursor, count, pat)?
+    return BoilaScan { s: BoilaStore { c: r.c, ok: r.c.ok }, next: r.next, keys: r.keys }
+}
+
+fn boila_flush(s: BoilaStore) -> BoilaStore !IO !Time {
+    let c = lsm_cluster_flush_force(s.c)?
+    return BoilaStore { c: c, ok: c.ok }
+}
