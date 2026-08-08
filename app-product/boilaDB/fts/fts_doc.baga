@@ -1,0 +1,292 @@
+// fts_doc.baga — posting/doc кодировки + index/unindex + четения (P7).
+// Каталогът, CREATE FTS INDEX и BM25 заявката са в fts.baga.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../txn/mvcc.baga"
+import "tokenizer.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+struct BoilaFtsUpd {
+    s: BoilaStore,
+    txn: BoilaTxn
+}
+
+fn fts_doc_pk(pk_enc: bytes) -> bytes {
+    return bytes_concat(bytes_of_str("d|"), pk_enc)
+}
+
+fn fts_term_pk(term: str) -> bytes {
+    return bytes_concat(bytes_of_str("t|"), bytes_of_str(term))
+}
+
+fn fts_stats_pk(fts_id: i64) -> bytes {
+    return bytes_of_str(concat("fs|", int_to_str(fts_id)))
+}
+
+// MVCC envelope-ът ([lsn 8B][row]) важи за не-sys CF (вж. mvcc.baga) —
+// storage четенията на fts записите трябва да го свалят.
+fn fts_unwrap(val: bytes) -> bytes {
+    if bytes_len(val) > 8 {
+        return bytes_slice(val, 8, bytes_len(val))
+    }
+    return bytes_new(0)
+}
+
+// --- posting сериализация: [n u32] [(pklen u32)(pk)(tf u32)]* ---
+
+fn fts_post_enc(pks: Vec<bytes>, tfs: Vec<i64>) -> bytes {
+    let mut out = boila_enc_u32_be(vec_len(pks))
+    let mut i: i64 = 0
+    while i < vec_len(pks) {
+        let pk = vec_get(pks, i)
+        out = bytes_concat(out, boila_enc_u32_be(bytes_len(pk)))
+        out = bytes_concat(out, pk)
+        out = bytes_concat(out, boila_enc_u32_be(vec_get(tfs, i)))
+        i = i + 1
+    }
+    return out
+}
+
+struct BoilaPostDec {
+    pks: Vec<bytes>,
+    tfs: Vec<i64>
+}
+
+fn fts_post_dec(b: bytes) -> BoilaPostDec {
+    let pks: Vec<bytes> = vec_new()
+    let tfs: Vec<i64> = vec_new()
+    if bytes_len(b) < 4 {
+        return BoilaPostDec { pks: pks, tfs: tfs }
+    }
+    let n = boila_dec_u32_be(b, 0)
+    let mut off: i64 = 4
+    let mut i: i64 = 0
+    while i < n && off + 4 <= bytes_len(b) {
+        let pl = boila_dec_u32_be(b, off)
+        off = off + 4
+        if off + pl + 4 > bytes_len(b) {
+            i = n
+        } else {
+            vec_push(pks, bytes_slice(b, off, off + pl))
+            off = off + pl
+            vec_push(tfs, boila_dec_u32_be(b, off))
+            off = off + 4
+            i = i + 1
+        }
+    }
+    return BoilaPostDec { pks: pks, tfs: tfs }
+}
+
+// doc запис: row [doclen, nterms, term*]
+fn fts_doc_enc(doclen: i64, terms: Vec<str>) -> bytes {
+    let r: Vec<BoilaVal> = vec_new()
+    vec_push(r, boila_val_i64(doclen))
+    vec_push(r, boila_val_i64(vec_len(terms)))
+    let mut i: i64 = 0
+    while i < vec_len(terms) {
+        vec_push(r, boila_val_str(vec_get(terms, i)))
+        i = i + 1
+    }
+    return boila_row_enc(r)
+}
+
+struct BoilaDocDec {
+    doclen: i64,
+    terms: Vec<str>
+}
+
+fn fts_doc_dec(b: bytes) -> BoilaDocDec {
+    let empty: Vec<str> = vec_new()
+    let r = boila_row_dec(b)
+    if vec_len(r) < 2 {
+        return BoilaDocDec { doclen: 0, terms: empty }
+    }
+    let nt = vec_get(r, 1).i
+    let terms: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < nt && 2 + i < vec_len(r) {
+        let v = vec_get(r, 2 + i)
+        vec_push(terms, str_of_bytes(v.b))
+        i = i + 1
+    }
+    return BoilaDocDec { doclen: vec_get(r, 0).i, terms: terms }
+}
+
+// --- четения: buffer-ът на txn първо, после storage ---
+
+struct BoilaPostGet {
+    s: BoilaStore,
+    pks: Vec<bytes>,
+    tfs: Vec<i64>
+}
+
+fn fts_post_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, term: str) -> BoilaPostGet !IO !Time {
+    let bix = boila_txn_find(txn, boila_cf_fts(), table_id, fts_term_pk(term))
+    if bix >= 0 {
+        let w = vec_get(txn.writes, bix)
+        if w.is_del == 0 {
+            let d = fts_post_dec(w.row)
+            return BoilaPostGet { s: s, pks: d.pks, tfs: d.tfs }
+        }
+        let ep: Vec<bytes> = vec_new()
+        let et: Vec<i64> = vec_new()
+        return BoilaPostGet { s: s, pks: ep, tfs: et }
+    }
+    let g = boila_get(s, boila_cf_fts(), table_id, fts_term_pk(term))?
+    if g.found == 0 {
+        let ep: Vec<bytes> = vec_new()
+        let et: Vec<i64> = vec_new()
+        return BoilaPostGet { s: g.s, pks: ep, tfs: et }
+    }
+    let d = fts_post_dec(fts_unwrap(g.val))
+    return BoilaPostGet { s: g.s, pks: d.pks, tfs: d.tfs }
+}
+
+struct BoilaDocGet {
+    s: BoilaStore,
+    doclen: i64,
+    terms: Vec<str>
+}
+
+fn fts_doc_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk_enc: bytes) -> BoilaDocGet !IO !Time {
+    let bix = boila_txn_find(txn, boila_cf_fts(), table_id, fts_doc_pk(pk_enc))
+    if bix >= 0 {
+        let w = vec_get(txn.writes, bix)
+        if w.is_del == 0 {
+            let d = fts_doc_dec(w.row)
+            return BoilaDocGet { s: s, doclen: d.doclen, terms: d.terms }
+        }
+        let empty: Vec<str> = vec_new()
+        return BoilaDocGet { s: s, doclen: 0, terms: empty }
+    }
+    let g = boila_get(s, boila_cf_fts(), table_id, fts_doc_pk(pk_enc))?
+    if g.found == 0 {
+        let empty: Vec<str> = vec_new()
+        return BoilaDocGet { s: g.s, doclen: 0, terms: empty }
+    }
+    let d = fts_doc_dec(fts_unwrap(g.val))
+    return BoilaDocGet { s: g.s, doclen: d.doclen, terms: d.terms }
+}
+
+struct BoilaFtsStats {
+    nd: i64,
+    tl: i64
+}
+
+fn fts_stats_get(s: BoilaStore, txn: BoilaTxn, fts_id: i64) -> BoilaFtsStats !IO !Time {
+    let bix = boila_txn_find(txn, boila_cf_sys(), 1, fts_stats_pk(fts_id))
+    if bix >= 0 {
+        let w = vec_get(txn.writes, bix)
+        if w.is_del == 0 {
+            let r = boila_row_dec(w.row)
+            if vec_len(r) >= 2 {
+                return BoilaFtsStats { nd: vec_get(r, 0).i, tl: vec_get(r, 1).i }
+            }
+        }
+        return BoilaFtsStats { nd: 0, tl: 0 }
+    }
+    let g = boila_get(s, boila_cf_sys(), 1, fts_stats_pk(fts_id))?
+    if g.found == 0 {
+        return BoilaFtsStats { nd: 0, tl: 0 }
+    }
+    // stats са в sys CF — без envelope (mvcc.baga не wrap-ва sys)
+    let r = boila_row_dec(g.val)
+    if vec_len(r) >= 2 {
+        return BoilaFtsStats { nd: vec_get(r, 0).i, tl: vec_get(r, 1).i }
+    }
+    return BoilaFtsStats { nd: 0, tl: 0 }
+}
+
+fn fts_stats_write(s: BoilaStore, txn: BoilaTxn, fts_id: i64, nd: i64, tl: i64) -> BoilaFtsUpd {
+    let r: Vec<BoilaVal> = vec_new()
+    vec_push(r, boila_val_i64(nd))
+    vec_push(r, boila_val_i64(tl))
+    let w1 = boila_txn_put(s, txn, boila_cf_sys(), 1, fts_stats_pk(fts_id), boila_row_enc(r))
+    return BoilaFtsUpd { s: w1.s, txn: w1.txn }
+}
+
+// --- index/unindex на документ ---
+
+fn fts_index_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, fts_id: i64, pk_enc: bytes, text: str) -> BoilaFtsUpd !IO !Time {
+    let terms = fts_tokenize(text)
+    let uniq = fts_unique(terms)
+    let mut tx = txn
+    let w0 = boila_txn_put(s, tx, boila_cf_fts(), table_id, fts_doc_pk(pk_enc), fts_doc_enc(vec_len(terms), uniq))
+    s = w0.s
+    tx = w0.txn
+    let mut i: i64 = 0
+    while i < vec_len(uniq) {
+        let term = vec_get(uniq, i)
+        let tf = fts_tf(terms, term)
+        let pd = fts_post_get(s, tx, table_id, term)?
+        s = pd.s
+        let mut pks = pd.pks
+        let mut tfs = pd.tfs
+        let mut found: i64 = 0 - 1
+        let mut j: i64 = 0
+        while j < vec_len(pks) {
+            if bytes_eq_b(vec_get(pks, j), pk_enc) {
+                found = j
+            }
+            j = j + 1
+        }
+        if found >= 0 {
+            vec_set(tfs, found, tf)
+        } else {
+            vec_push(pks, pk_enc)
+            vec_push(tfs, tf)
+        }
+        let w1 = boila_txn_put(s, tx, boila_cf_fts(), table_id, fts_term_pk(term), fts_post_enc(pks, tfs))
+        s = w1.s
+        tx = w1.txn
+        i = i + 1
+    }
+    let st = fts_stats_get(s, tx, fts_id)?
+    let su = fts_stats_write(s, tx, fts_id, st.nd + 1, st.tl + vec_len(terms))
+    return BoilaFtsUpd { s: su.s, txn: su.txn }
+}
+
+fn fts_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, fts_id: i64, pk_enc: bytes) -> BoilaFtsUpd !IO !Time {
+    let dg = fts_doc_get(s, txn, table_id, pk_enc)?
+    s = dg.s
+    if dg.doclen == 0 && vec_len(dg.terms) == 0 {
+        return BoilaFtsUpd { s: s, txn: txn }
+    }
+    let mut tx = txn
+    let wd = boila_txn_del(s, tx, boila_cf_fts(), table_id, fts_doc_pk(pk_enc))
+    s = wd.s
+    tx = wd.txn
+    let mut i: i64 = 0
+    while i < vec_len(dg.terms) {
+        let term = vec_get(dg.terms, i)
+        let pd = fts_post_get(s, tx, table_id, term)?
+        s = pd.s
+        let np: Vec<bytes> = vec_new()
+        let nt: Vec<i64> = vec_new()
+        let mut j: i64 = 0
+        while j < vec_len(pd.pks) {
+            if bytes_eq_b(vec_get(pd.pks, j), pk_enc) == false {
+                vec_push(np, vec_get(pd.pks, j))
+                vec_push(nt, vec_get(pd.tfs, j))
+            }
+            j = j + 1
+        }
+        if vec_len(np) == 0 {
+            let w1 = boila_txn_del(s, tx, boila_cf_fts(), table_id, fts_term_pk(term))
+            s = w1.s
+            tx = w1.txn
+        } else {
+            let w1 = boila_txn_put(s, tx, boila_cf_fts(), table_id, fts_term_pk(term), fts_post_enc(np, nt))
+            s = w1.s
+            tx = w1.txn
+        }
+        i = i + 1
+    }
+    let st = fts_stats_get(s, tx, fts_id)?
+    let su = fts_stats_write(s, tx, fts_id, st.nd - 1, st.tl - dg.doclen)
+    return BoilaFtsUpd { s: su.s, txn: su.txn }
+}

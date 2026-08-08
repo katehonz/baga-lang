@@ -1,0 +1,155 @@
+// boila_fts_test.baga — P7: FTS — CREATE FTS INDEX, @@ to_tsquery/
+// plainto_tsquery, BM25, DML синхронизация, restart.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_id(row: Vec<BoilaVal>) -> str {
+    let v = vec_get(row, 0)
+    if v.tag == boila_v_i64() {
+        return int_to_str(v.i)
+    }
+    return "?"
+}
+
+fn ids_has(res: BoilaResult, want: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(res.rows) {
+        if row_id(vec_get(res.rows, i)) == want {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_fts_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_fts_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    let c1 = exec1(srv, "CREATE TABLE docs (id BIGINT, body TEXT, PRIMARY KEY (id))")
+    srv = c1.srv
+    check(fails, "create_table", c1.ok == 1)
+    let c2 = exec1(srv, "CREATE FTS INDEX docs_fts ON docs (body)")
+    srv = c2.srv
+    check(fails, "create_fts", c2.ok == 1 && c2.kind == 14)
+    let c3 = exec1(srv, "CREATE FTS INDEX docs_fts ON docs (body)")
+    srv = c3.srv
+    check(fails, "dup_fts_42710", c3.ok == 0 && c3.state == "42710")
+
+    // документи (EN + BG)
+    let i1 = exec1(srv, "INSERT INTO docs (id, body) VALUES (1, 'the quick brown fox jumps'), (2, 'the brown dog sleeps'), (3, 'quick turtle runs slowly'), (4, 'бързата кафява лисица'), (5, 'кафявото куче спи')")
+    srv = i1.srv
+    check(fails, "insert5", i1.ok == 1 && i1.id == 5)
+
+    // AND
+    let q1 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick & fox')")
+    srv = q1.srv
+    check(fails, "and_query", q1.ok == 1 && vec_len(q1.res.rows) == 1 && row_id(vec_get(q1.res.rows, 0)) == "1")
+    // OR
+    let q2 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('dog | turtle')")
+    srv = q2.srv
+    check(fails, "or_query", q2.ok == 1 && vec_len(q2.res.rows) == 2 && ids_has(q2.res, "2") == 1 && ids_has(q2.res, "3") == 1)
+    // plainto
+    let q3 = exec1(srv, "SELECT id FROM docs WHERE body @@ plainto_tsquery('quick turtle')")
+    srv = q3.srv
+    check(fails, "plain_query", q3.ok == 1 && vec_len(q3.res.rows) == 1 && row_id(vec_get(q3.res.rows, 0)) == "3")
+    // BG terms
+    let q4 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('бързата')")
+    srv = q4.srv
+    check(fails, "bg_query", q4.ok == 1 && vec_len(q4.res.rows) == 1 && row_id(vec_get(q4.res.rows, 0)) == "4")
+    // липсваща дума
+    let q5 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('lipsva')")
+    srv = q5.srv
+    check(fails, "no_match", q5.ok == 1 && vec_len(q5.res.rows) == 0)
+    // смесени & | → 0A000
+    let q6 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('a & b | c')")
+    srv = q6.srv
+    check(fails, "mix_err", q6.ok == 0 && q6.state == "0A000")
+    // колона без fts индекс
+    let q7 = exec1(srv, "SELECT id FROM docs WHERE id @@ to_tsquery('x')")
+    srv = q7.srv
+    check(fails, "no_fts_col", q7.ok == 0 && q7.state == "0A000")
+
+    // DML синхронизация: INSERT след CREATE INDEX се вижда
+    let i2 = exec1(srv, "INSERT INTO docs (id, body) VALUES (6, 'quick silver')")
+    srv = i2.srv
+    let q8 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('silver')")
+    srv = q8.srv
+    check(fails, "sync_insert", q8.ok == 1 && vec_len(q8.res.rows) == 1 && row_id(vec_get(q8.res.rows, 0)) == "6")
+    // UPDATE премества текста
+    let u1 = exec1(srv, "UPDATE docs SET body = 'slow silver' WHERE id = 6")
+    srv = u1.srv
+    check(fails, "upd_ok", u1.ok == 1 && u1.id == 1)
+    let q9 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('silver')")
+    srv = q9.srv
+    check(fails, "sync_update", q9.ok == 1 && vec_len(q9.res.rows) == 1 && row_id(vec_get(q9.res.rows, 0)) == "6")
+    let q10 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick & silver')")
+    srv = q10.srv
+    check(fails, "update_removed_old", q10.ok == 1 && vec_len(q10.res.rows) == 0)
+    // DELETE премахва от индекса
+    let d1 = exec1(srv, "DELETE FROM docs WHERE id = 6")
+    srv = d1.srv
+    let q11 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('silver')")
+    srv = q11.srv
+    check(fails, "sync_delete", q11.ok == 1 && vec_len(q11.res.rows) == 0)
+
+    // restart: индексът е персистентен без rebuild
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let r1 = exec1(srv2, "SELECT id FROM docs WHERE body @@ to_tsquery('quick & fox')")
+    srv2 = r1.srv
+    check(fails, "restart_query", r1.ok == 1 && vec_len(r1.res.rows) == 1 && row_id(vec_get(r1.res.rows, 0)) == "1")
+    boila_server_close(srv2)?
+
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_fts_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_fts_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

@@ -19,6 +19,7 @@ import "exec_select.baga"
 import "exec_dml.baga"
 import "exec_modify.baga"
 import "plan_cache.baga"
+import "../fts/fts.baga"
 import "../catalog/schema.baga"
 import "../storage/shards.baga"
 import "../index/secondary.baga"
@@ -150,7 +151,40 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
         }
-        return boila_sql_fail(s, txn, pc, "в P4 се поддържа CREATE TABLE / CREATE INDEX", "0A000")
+        if tok_kw(t1, "fts") == 1 {
+            let p = boila_parse_create_fts(lx)
+            if p.ok == 0 {
+                return boila_sql_fail(s, txn, pc, p.err, p.state)
+            }
+            let ct = boila_cat_by_name(s, p.ix.table)?
+            s = ct.s
+            if ct.ok == 0 {
+                return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+            }
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let fx = fts_create(s, txn, ct.table, p.ix.ix_name, p.ix.col)?
+            s = fx.s
+            txn = fx.txn
+            if fx.ok == 0 {
+                txn = boila_txn_rollback(txn)
+                return boila_sql_fail(s, txn, pc, fx.err, fx.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 {
+                    return boila_sql_fail(s, txn, pc, c.err, c.state)
+                }
+            }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: fx.id }
+        }
+        return boila_sql_fail(s, txn, pc, "в P7 се поддържа CREATE TABLE / CREATE INDEX / CREATE FTS INDEX", "0A000")
     }
     if tok_kw(t0, "insert") == 1 {
         let p = boila_parse_insert(lx)

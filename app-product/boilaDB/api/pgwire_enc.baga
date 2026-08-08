@@ -220,6 +220,9 @@ fn pgw_tag(kind: i64, affected: i64, nrows: i64) -> str {
     if kind == 9 {
         return "CREATE INDEX"
     }
+    if kind == 14 {
+        return "CREATE FTS INDEX"
+    }
     if kind == 10 {
         return "BEGIN"
     }

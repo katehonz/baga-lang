@@ -1,0 +1,94 @@
+// tokenizer.baga — FTS токенизър (P7).
+//
+// Term = поредица от [a-z0-9] или UTF-8 байтове ≥ 0x80. Case folding
+// само за ASCII (A-Z → a-z); кирилицата се запазва както е дошла
+// (gaps F1 — няма lowercase за UTF-8 в езика). Splitting: всичко останало.
+
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+fn fts_is_term_byte(c: i64) -> i64 {
+    if c >= 97 && c <= 122 {
+        return 1
+    }
+    if c >= 48 && c <= 57 {
+        return 1
+    }
+    if c >= 128 {
+        return 1
+    }
+    return 0
+}
+
+fn fts_lower_byte(c: i64) -> i64 {
+    if c >= 65 && c <= 90 {
+        return c + 32
+    }
+    return c
+}
+
+// Текст → terms (дубликатите се пазят — честотата има значение за BM25).
+fn fts_tokenize(text: str) -> Vec<str> {
+    let out: Vec<str> = vec_new()
+    let sb = bytes_of_str(text)
+    let n = bytes_len(sb)
+    let mut run = bytes_new(0)
+    let mut i: i64 = 0
+    while i < n {
+        let c = bytes_at(sb, i) & 255
+        if fts_is_term_byte(c) == 1 {
+            run = bytes_concat(run, pgw_one_b(fts_lower_byte(c)))
+        } else {
+            if bytes_len(run) > 0 {
+                vec_push(out, str_of_bytes(run))
+                run = bytes_new(0)
+            }
+        }
+        i = i + 1
+    }
+    if bytes_len(run) > 0 {
+        vec_push(out, str_of_bytes(run))
+    }
+    return out
+}
+
+fn pgw_one_b(v: i64) -> bytes {
+    let b = bytes_new(1)
+    bytes_set(b, 0, v & 255)
+    return b
+}
+
+// Брой срещания на term в списъка (term frequency).
+fn fts_tf(terms: Vec<str>, term: str) -> i64 {
+    let mut c: i64 = 0
+    let mut i: i64 = 0
+    while i < vec_len(terms) {
+        if vec_get(terms, i) == term {
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// Уникални terms (за индексиране без повторения).
+fn fts_unique(terms: Vec<str>) -> Vec<str> {
+    let out: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(terms) {
+        let t = vec_get(terms, i)
+        let mut dup = false
+        let mut j: i64 = 0
+        while j < vec_len(out) {
+            if vec_get(out, j) == t {
+                dup = true
+            }
+            j = j + 1
+        }
+        if dup == false {
+            vec_push(out, t)
+        }
+        i = i + 1
+    }
+    return out
+}

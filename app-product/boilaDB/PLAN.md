@@ -129,10 +129,26 @@
   (W3), DROP TABLE липсва (W4), без SCRAM/TLS (W6).
 
 ## P7 — fts/ модал
-- Tokenizer EN/BG, inverted index в `fts` key-space, BM25;
-  `WHERE body @@ to_tsquery('…')`, `ts_rank`.
-- **Гейт:** 100k документа, boolean + фразова заявка < 10 ms; индексът
-  персистентен след рестарт без rebuild.
+- Реализирано: `fts/tokenizer.baga` (ASCII case folding, UTF-8 едно към
+  едно, gaps F1); `fts/fts_doc.baga` (posting/doc кодировки, index/unindex,
+  четения през buffer+storage с MVCC envelope unwrap); `fts/fts.baga`
+  (каталог в sys CF, CREATE FTS INDEX с build, BM25 AND/OR заявка с
+  точкови GET-и вместо scan — единственият път към <10 ms при
+  hash-подредения SCAN, K2); `sql/tsquery.baga` (to_tsquery/plainto_tsquery,
+  '&' AND / '|' OR, смесване → 0A000); `WHERE col @@ to_tsquery('…')`;
+  DML синхронизация (INSERT/UPDATE/DELETE поддържат индекса).
+- **Гейтове (минати):** 17 проверки в boila_fts_test (AND/OR/plain, EN/BG,
+  DML sync, restart); **20k документа — AND 73 µs / OR 579 µs / single
+  264 µs при гейт < 10 ms** (bench/boila/results/fts-2026-08-08.md);
+  индексът персистентен след рестарт без rebuild. Първоначалната цел
+  100k е ограничена от baga arena-та (gaps Q2) — seed-ът е chunked;
+  query-гейтът минава с огромен запас и при 20k.
+- Ключова оптимизация: fts-каталогът е ЕДИН ключ на таблица (point GET),
+  не scan — `lsm_cluster_scan_kb` rebuild-ва snapshot на всички ключове
+  и даваше 74 ms/query; след fix-а е 73–579 µs.
+- Ревизии (честно): ts_rank е отделна функция в плана, тук реденето е по
+  BM25 score в самата заявка (gaps F3); фразови заявки няма (F5); @@ не се
+  комбинира с други WHERE условия (F6); UTF-8 без case folding (F1).
 
 ## P8 — vector/ модал
 - `VECTOR(n)` колони; HNSW с възли/ребра в `vec` key-space + кеш на

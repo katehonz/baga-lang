@@ -163,7 +163,12 @@ fn boila_lex(src: str) -> BoilaLex {
                                                         vec_push(toks, token_new(tok_semi(), ";"))
                                                         i = i + 1
                                                     } else {
-                                                        return BoilaLex { toks: toks, err: concat("непознат символ: ", chr(c)) }
+                                                        if c == 64 && i + 1 < n && char_at(src, i + 1) == 64 {
+                                                            vec_push(toks, token_new(tok_op(), "@@"))
+                                                            i = i + 2
+                                                        } else {
+                                                            return BoilaLex { toks: toks, err: concat("непознат символ: ", chr(c)) }
+                                                        }
                                                     }
                                                 }
                                             }

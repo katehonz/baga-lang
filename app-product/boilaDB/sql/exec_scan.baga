@@ -9,6 +9,7 @@ import "../core/value.baga"
 import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../index/secondary.baga"
+import "../fts/fts.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "std/str/str.baga"
@@ -146,6 +147,40 @@ fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, 
 
 fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
+    // FTS път (P7): WHERE col @@ to_tsquery('…')
+    if sel.has_fts == 1 {
+        let fl = fts_list_for_table(s, t.id)?
+        s = fl.s
+        let col_ix = boila_col_idx(t, sel.fts_col)
+        if col_ix < 0 {
+            return boila_fetch_fail(s, txn, concat("колона '", concat(sel.fts_col, "' не съществува")), "42703")
+        }
+        let mut fdi: i64 = 0 - 1
+        let mut k: i64 = 0
+        while k < vec_len(fl.defs) {
+            let d = vec_get(fl.defs, k)
+            if d.col_idx == col_ix {
+                fdi = k
+            }
+            k = k + 1
+        }
+        if fdi < 0 {
+            return boila_fetch_fail(s, txn, concat("колона '", concat(sel.fts_col, "' няма fts индекс")), "0A000")
+        }
+        let def = vec_get(fl.defs, fdi)
+        let fq = fts_query(s, txn, t, def, sel.fts_terms, sel.fts_mode)?
+        s = fq.s
+        let mut qi: i64 = 0
+        while qi < vec_len(fq.pks) {
+            let g = boila_txn_get(s, txn, t.id, vec_get(fq.pks, qi))?
+            s = g.s
+            if g.found == 1 {
+                vec_push(rows, boila_row_dec(g.row))
+            }
+            qi = qi + 1
+        }
+        return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
+    }
     let pkcol = vec_get(t.cols, t.pk_idx)
     if sel.has_lo == 1 && sel.lo_col != pkcol.name {
         return boila_fetch_fail(s, txn, concat("range по '", concat(sel.lo_col, "' — само по PRIMARY KEY")), "0A000")

@@ -1,0 +1,334 @@
+// fts.baga — FTS каталог, CREATE FTS INDEX и BM25 заявка (P7).
+// Posting/doc кодировките и index/unindex логиката са в fts_doc.baga.
+//
+// Дизайн: inverted списъците са ЕДИН стойностен запис на term (point GET
+// вместо scan — единственият начин за <10 ms гейта при hash-подредения
+// SCAN на rocksbaga, вж. K2).
+//
+// Ключове (fts CF, table_id на таблицата):
+//   "d|<pk_enc>"  → doc запис (doclen + terms, за unindex)
+//   "t|<term>"    → posting [(pk_enc, tf)*]
+// Каталог (sys CF): "f|<table_id>|<име>" → row [fts_id, col_idx];
+//                   "m|next_fts" → [next]; "fs|<fts_id>" → [ndocs, total_len]
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "fts_doc.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+struct BoilaFtsDef {
+    id: i64,
+    col_idx: i64,
+    name: str
+}
+
+struct BoilaFtsList {
+    s: BoilaStore,
+    defs: Vec<BoilaFtsDef>
+}
+
+struct BoilaFtsRes {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    id: i64
+}
+
+struct BoilaFtsQuery {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    pks: Vec<bytes>     // сортирани по BM25 score низходящо
+}
+
+fn fts_cat_pk(table_id: i64, name: str) -> bytes {
+    return bytes_of_str(concat(concat(concat("f|", int_to_str(table_id)), "|"), name))
+}
+
+fn fts_meta_pk() -> bytes {
+    return bytes_of_str("m|next_fts")
+}
+
+fn fts_cat_prefix(table_id: i64) -> bytes {
+    return bytes_of_str(concat(concat("f|", int_to_str(table_id)), "|"))
+}
+
+// Per-table списък на fts индексите като ЕДИН ключ → point GET вместо
+// scan на целия клъстер (scan-ът rebuild-ва snapshot на ВСИЧКИ ключове,
+// което беше тясното място на <10 ms гейта).
+fn fts_list_pk(table_id: i64) -> bytes {
+    return bytes_of_str(concat("fl|", int_to_str(table_id)))
+}
+
+// Сериализация на списък от дефиниции: row [n, (id, col_idx, name)*]
+fn fts_defs_enc(defs: Vec<BoilaFtsDef>) -> bytes {
+    let r: Vec<BoilaVal> = vec_new()
+    vec_push(r, boila_val_i64(vec_len(defs)))
+    let mut i: i64 = 0
+    while i < vec_len(defs) {
+        let d = vec_get(defs, i)
+        vec_push(r, boila_val_i64(d.id))
+        vec_push(r, boila_val_i64(d.col_idx))
+        vec_push(r, boila_val_str(d.name))
+        i = i + 1
+    }
+    return boila_row_enc(r)
+}
+
+// --- каталог: fts индексите на таблица (point GET, не scan) ---
+
+fn fts_list_for_table(s: BoilaStore, table_id: i64) -> BoilaFtsList !IO !Time {
+    let defs: Vec<BoilaFtsDef> = vec_new()
+    let g = boila_get(s, boila_cf_sys(), 1, fts_list_pk(table_id))?
+    s = g.s
+    if g.found == 0 {
+        return BoilaFtsList { s: s, defs: defs }
+    }
+    // sys CF не е wrap-нат (вж. mvcc.baga) — без fts_unwrap
+    let row = boila_row_dec(g.val)
+    if vec_len(row) < 1 {
+        return BoilaFtsList { s: s, defs: defs }
+    }
+    let n = vec_get(row, 0).i
+    let mut off: i64 = 1
+    let mut i: i64 = 0
+    while i < n && off + 3 <= vec_len(row) {
+        let id = vec_get(row, off).i
+        let cidx = vec_get(row, off + 1).i
+        let nm = vec_get(row, off + 2)
+        vec_push(defs, BoilaFtsDef { id: id, col_idx: cidx, name: str_of_bytes(nm.b) })
+        off = off + 3
+        i = i + 1
+    }
+    return BoilaFtsList { s: s, defs: defs }
+}
+
+fn fts_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: str) -> BoilaFtsRes !IO !Time {
+    let mut col_idx: i64 = 0 - 1
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        if vec_get(t.cols, i).name == col_name {
+            col_idx = i
+        }
+        i = i + 1
+    }
+    if col_idx < 0 {
+        return BoilaFtsRes { s: s, txn: txn, ok: 0, err: concat("колона '", concat(col_name, "' не съществува")), state: "42703", id: 0 }
+    }
+    let g = boila_get(s, boila_cf_sys(), 1, fts_cat_pk(t.id, name))?
+    s = g.s
+    if g.found == 1 {
+        return BoilaFtsRes { s: s, txn: txn, ok: 0, err: concat("fts индекс '", concat(name, "' вече съществува")), state: "42710", id: 0 }
+    }
+    let gm = boila_get(s, boila_cf_sys(), 1, fts_meta_pk())?
+    s = gm.s
+    let mut next: i64 = 1
+    if gm.found == 1 {
+        let row = boila_row_dec(gm.val)
+        if vec_len(row) > 0 {
+            next = vec_get(row, 0).i
+        }
+    }
+    let cnt: Vec<BoilaVal> = vec_new()
+    vec_push(cnt, boila_val_i64(next + 1))
+    let r1 = boila_txn_put(s, txn, boila_cf_sys(), 1, fts_meta_pk(), boila_row_enc(cnt))
+    if r1.ok == 0 {
+        return BoilaFtsRes { s: s, txn: r1.txn, ok: 0, err: r1.err, state: r1.state, id: 0 }
+    }
+    txn = r1.txn
+    let cat: Vec<BoilaVal> = vec_new()
+    vec_push(cat, boila_val_i64(next))
+    vec_push(cat, boila_val_i64(col_idx))
+    let r2 = boila_txn_put(s, txn, boila_cf_sys(), 1, fts_cat_pk(t.id, name), boila_row_enc(cat))
+    if r2.ok == 0 {
+        return BoilaFtsRes { s: s, txn: r2.txn, ok: 0, err: r2.err, state: r2.state, id: 0 }
+    }
+    txn = r2.txn
+    // обнови per-table списъка (read-modify-write в буфера) — point GET
+    let gl = fts_list_for_table(s, t.id)?
+    s = gl.s
+    vec_push(gl.defs, BoilaFtsDef { id: next, col_idx: col_idx, name: name })
+    let rl = boila_txn_put(s, txn, boila_cf_sys(), 1, fts_list_pk(t.id), fts_defs_enc(gl.defs))
+    if rl.ok == 0 {
+        return BoilaFtsRes { s: s, txn: rl.txn, ok: 0, err: rl.err, state: rl.state, id: 0 }
+    }
+    txn = rl.txn
+    let r3 = fts_stats_write(s, txn, next, 0, 0)
+    s = r3.s
+    txn = r3.txn
+    // build от съществуващите редове
+    let ks = boila_txn_keys(s, txn, t.id)?
+    s = ks.s
+    let mut ki: i64 = 0
+    while ki < vec_len(ks.pks) {
+        let pk_enc = vec_get(ks.pks, ki)
+        let g2 = boila_txn_get(s, txn, t.id, pk_enc)?
+        s = g2.s
+        if g2.found == 1 {
+            let row = boila_row_dec(g2.row)
+            if col_idx < vec_len(row) {
+                let v = vec_get(row, col_idx)
+                if v.tag == boila_v_str() {
+                    let w = fts_index_doc(s, txn, t.id, next, pk_enc, str_of_bytes(v.b))?
+                    s = w.s
+                    txn = w.txn
+                }
+            }
+        }
+        ki = ki + 1
+    }
+    return BoilaFtsRes { s: s, txn: txn, ok: 1, err: "", state: "", id: next }
+}
+
+// --- BM25 заявка (mode 1 = AND, 2 = OR) ---
+
+fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, terms: Vec<str>, mode: i64) -> BoilaFtsQuery !IO !Time {
+    let empty: Vec<bytes> = vec_new()
+    if vec_len(terms) == 0 {
+        return BoilaFtsQuery { s: s, txn: txn, pks: empty }
+    }
+    let st = fts_stats_get(s, txn, def.id)?
+    let N = st.nd
+    let mut avgdl: i64 = 1
+    if N > 0 {
+        avgdl = st.tl / N
+    }
+    if avgdl <= 0 {
+        avgdl = 1
+    }
+    // кеширай posting-ите на ВСИЧКИ заявки-терми с ЕДНО четене всеки
+    // (вместо re-read за всеки кандидат) — ключът за бързина.
+    let cached_pks: Vec<Vec<bytes>> = vec_new()
+    let cached_tfs: Vec<Vec<i64>> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(terms) {
+        let pd = fts_post_get(s, txn, t.id, vec_get(terms, i))?
+        s = pd.s
+        vec_push(cached_pks, pd.pks)
+        vec_push(cached_tfs, pd.tfs)
+        i = i + 1
+    }
+    // кандидати: AND → сечение; OR → обединение (от кеша)
+    let mut cand: Vec<bytes> = vec_new()
+    let mut first = true
+    i = 0
+    while i < vec_len(cached_pks) {
+        let cp = vec_get(cached_pks, i)
+        if mode == 1 {
+            if first {
+                let mut cp2: Vec<bytes> = vec_new()
+                let mut x: i64 = 0
+                while x < vec_len(cp) {
+                    vec_push(cp2, vec_get(cp, x))
+                    x = x + 1
+                }
+                cand = cp2
+                first = false
+            } else {
+                let ni: Vec<bytes> = vec_new()
+                let mut a: i64 = 0
+                while a < vec_len(cand) {
+                    let pk = vec_get(cand, a)
+                    let mut j: i64 = 0
+                    while j < vec_len(cp) {
+                        if bytes_eq_b(vec_get(cp, j), pk) {
+                            vec_push(ni, pk)
+                            j = vec_len(cp)
+                        }
+                        j = j + 1
+                    }
+                    a = a + 1
+                }
+                cand = ni
+            }
+        } else {
+            let mut j: i64 = 0
+            while j < vec_len(cp) {
+                let pk = vec_get(cp, j)
+                let mut dup = false
+                let mut a: i64 = 0
+                while a < vec_len(cand) {
+                    if bytes_eq_b(vec_get(cand, a), pk) {
+                        dup = true
+                    }
+                    a = a + 1
+                }
+                if dup == false {
+                    vec_push(cand, pk)
+                }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    // BM25 score (×1000, целочислено; idf е линейна апроксимация, dl=avgdl
+    // за скорост — без doc GET, gaps F3). Само кеш-четения, без storage GET
+    // в цикъла по кандидатите.
+    let dl = avgdl
+    let scores: Vec<i64> = vec_new()
+    let mut ci: i64 = 0
+    while ci < vec_len(cand) {
+        let pk_enc = vec_get(cand, ci)
+        let mut score: i64 = 0
+        let mut q: i64 = 0
+        while q < vec_len(cached_pks) {
+            let cp = vec_get(cached_pks, q)
+            let ct = vec_get(cached_tfs, q)
+            let df = vec_len(cp)
+            let mut tf: i64 = 0
+            let mut j: i64 = 0
+            while j < vec_len(cp) {
+                if bytes_eq_b(vec_get(cp, j), pk_enc) {
+                    tf = vec_get(ct, j)
+                    j = vec_len(cp)
+                }
+                j = j + 1
+            }
+            if tf > 0 && df > 0 {
+                let mut idf: i64 = ((N - df) * 2000) / (2 * df + 1)
+                if idf < 1 {
+                    idf = 1
+                }
+                let mut d: i64 = (1200 * (250 + (750 * dl) / avgdl)) / 1000
+                if d <= 0 {
+                    d = 1
+                }
+                score = score + (idf * tf * 1000) / d
+            }
+            q = q + 1
+        }
+        vec_push(scores, score)
+        ci = ci + 1
+    }
+    // sort по score низходящо (insertion; кандидатите са малко)
+    let mut a: i64 = 1
+    while a < vec_len(cand) {
+        let kp = vec_get(cand, a)
+        let ks = vec_get(scores, a)
+        let mut b = a - 1
+        let mut moving = 1
+        while moving == 1 {
+            if b < 0 {
+                moving = 0
+            } else {
+                if vec_get(scores, b) >= ks {
+                    moving = 0
+                } else {
+                    vec_set(cand, b + 1, vec_get(cand, b))
+                    vec_set(scores, b + 1, vec_get(scores, b))
+                    b = b - 1
+                }
+            }
+        }
+        vec_set(cand, b + 1, kp)
+        vec_set(scores, b + 1, ks)
+        a = a + 1
+    }
+    return BoilaFtsQuery { s: s, txn: txn, pks: cand }
+}

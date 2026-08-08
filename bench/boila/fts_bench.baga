@@ -1,0 +1,203 @@
+// fts_bench.baga — P7 гейт: 100k документа, boolean заявка < 10 ms.
+// Речник 2000 думи × 8 думи/док → df ≈ 400/term.
+// Пуска се: baga -I . -I app-product bench/boila/fts_bench.baga
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 300 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn word_of(n: i64) -> str {
+    return concat("w", int_to_str(n))
+}
+
+fn main() -> i64 !IO !Time {
+    let root = "/tmp/baga_boila_fts_bench"
+    let mut phase = env("FTS_BENCH_PHASE")
+    if phase == "" {
+        phase = "write"
+    }
+
+    if phase == "query" {
+        // само заявки върху вече натоварените данни
+        let mut srv = boila_server_open(root, 2, 256, 4, 4)?
+        let q1 = boila_server_exec(srv, "boila", "SELECT id FROM docs WHERE body @@ to_tsquery('w5 & w123')")?
+        srv = q1.srv
+        let t0 = monotonic_us()?
+        let mut reps: i64 = 0
+        let mut rows1: i64 = 0
+        while reps < 20 {
+            let q = boila_server_exec(srv, "boila", "SELECT id FROM docs WHERE body @@ to_tsquery('w5 & w123')")?
+            srv = q.srv
+            rows1 = vec_len(q.res.rows)
+            reps = reps + 1
+        }
+        let t1 = monotonic_us()?
+        let and_us = (t1 - t0) / 20
+        let t2 = monotonic_us()?
+        reps = 0
+        let mut rows2: i64 = 0
+        while reps < 20 {
+            let q = boila_server_exec(srv, "boila", "SELECT id FROM docs WHERE body @@ to_tsquery('w5 | w123')")?
+            srv = q.srv
+            rows2 = vec_len(q.res.rows)
+            reps = reps + 1
+        }
+        let t3 = monotonic_us()?
+        let or_us = (t3 - t2) / 20
+        let t4 = monotonic_us()?
+        reps = 0
+        let mut rows3: i64 = 0
+        while reps < 20 {
+            let q = boila_server_exec(srv, "boila", "SELECT id FROM docs WHERE body @@ to_tsquery('w5')")?
+            srv = q.srv
+            rows3 = vec_len(q.res.rows)
+            reps = reps + 1
+        }
+        let t5 = monotonic_us()?
+        let single_us = (t5 - t4) / 20
+        let mut l1 = "AND query: "
+        l1 = concat(l1, int_to_str(and_us))
+        l1 = concat(l1, " us (")
+        l1 = concat(l1, int_to_str(rows1))
+        l1 = concat(l1, " rows)")
+        print(l1)
+        let mut l2 = "OR query:  "
+        l2 = concat(l2, int_to_str(or_us))
+        l2 = concat(l2, " us (")
+        l2 = concat(l2, int_to_str(rows2))
+        l2 = concat(l2, " rows)")
+        print(l2)
+        let mut l3 = "single:    "
+        l3 = concat(l3, int_to_str(single_us))
+        l3 = concat(l3, " us (")
+        l3 = concat(l3, int_to_str(rows3))
+        l3 = concat(l3, " rows)")
+        print(l3)
+        let mut verdict = "FAIL (гейт < 10000 us)"
+        if and_us < 10000 && or_us < 10000 && single_us < 10000 {
+            verdict = "OK — всички < 10 ms"
+        }
+        print(concat("гейт: ", verdict))
+        boila_server_close(srv)?
+        return 0
+    }
+
+    // write фаза: chunked seeding. FTS_BENCH_CHUNK=k от FTS_BENCH_NCHUNKS
+    // сее k-тата отрезка документи и излиза (baga arena-та не се чисти,
+    // затова 100k документа се разпределят в много процеси — gaps Q2).
+    let mut chunk: i64 = 0
+    if env("FTS_BENCH_CHUNK") != "" {
+        chunk = parse_int(env("FTS_BENCH_CHUNK"))
+    }
+    let mut nchunks: i64 = 20
+    if env("FTS_BENCH_NCHUNKS") != "" {
+        nchunks = parse_int(env("FTS_BENCH_NCHUNKS"))
+    }
+    let mut total: i64 = 100000
+    if env("FTS_BENCH_TOTAL") != "" {
+        total = parse_int(env("FTS_BENCH_TOTAL"))
+    }
+    let per = total / nchunks
+    let lo = chunk * per
+    let mut hi = lo + per
+    if chunk == nchunks - 1 {
+        hi = total
+    }
+
+    if chunk == 0 {
+        wipe_root(root)?
+    }
+    let mut srv = boila_server_open(root, 2, 256, 4, 4)?
+    if chunk == 0 {
+        let c1 = boila_server_exec(srv, "boila", "CREATE TABLE docs (id BIGINT, body TEXT, PRIMARY KEY (id))")?
+        srv = c1.srv
+        let c2 = boila_server_exec(srv, "boila", "CREATE FTS INDEX docs_fts ON docs (body)")?
+        srv = c2.srv
+        if c1.ok == 0 || c2.ok == 0 {
+            print(concat("setup fail: ", concat(c1.err, c2.err)))
+            return 1
+        }
+    }
+    let batch: i64 = 200
+    let t0 = monotonic_us()?
+    let mut base = lo
+    while base < hi {
+        let mut n = batch
+        if base + n > hi {
+            n = hi - base
+        }
+        let mut sql = "INSERT INTO docs (id, body) VALUES "
+        let mut i: i64 = 0
+        while i < n {
+            if i > 0 {
+                sql = concat(sql, ", ")
+            }
+            let id = base + i
+            // 8 думи от речник 2000 (псевдо-разпределени)
+            let mut body = ""
+            let mut w: i64 = 0
+            while w < 8 {
+                if w > 0 {
+                    body = concat(body, " ")
+                }
+                body = concat(body, word_of((id * 8 + w * 7919) % 2000))
+                w = w + 1
+            }
+            let mut tup = "("
+            tup = concat(tup, int_to_str(id))
+            tup = concat(tup, ", '")
+            tup = concat(tup, body)
+            tup = concat(tup, "'")
+            tup = concat(tup, ")")
+            sql = concat(sql, tup)
+            i = i + 1
+        }
+        let r = boila_server_exec(srv, "boila", sql)?
+        srv = r.srv
+        if r.ok == 0 {
+            print(concat("insert fail at ", concat(int_to_str(base), concat(": ", r.err))))
+            return 1
+        }
+        base = base + batch
+    }
+    let t1 = monotonic_us()?
+    let mut msg = "chunk "
+    msg = concat(msg, int_to_str(chunk))
+    msg = concat(msg, ": docs ")
+    msg = concat(msg, int_to_str(lo))
+    msg = concat(msg, "..")
+    msg = concat(msg, int_to_str(hi))
+    msg = concat(msg, " за ")
+    msg = concat(msg, int_to_str((t1 - t0) / 1000))
+    msg = concat(msg, " ms")
+    print(msg)
+    boila_server_close(srv)?
+    return 0
+}

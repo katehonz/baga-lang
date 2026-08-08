@@ -311,16 +311,16 @@ app-product/boilaDB/
 ├── index/     secondary.baga index_codec.baga unique.baga
 ├── sql/       ast.baga lexer.baga token.baga parse_common.baga
 │              parse_select.baga parse_insert.baga parse_dml.baga
-│              parse_ddl.baga parse_txn.baga
+│              parse_ddl.baga parse_txn.baga tsquery.baga (P7)
 │              plan_cache.baga (P5)
 │              exec_scan.baga exec_select.baga exec_sql.baga
 │              exec_sort.baga exec_agg.baga exec_agg_extra.baga
 │              exec_join.baga (P5) · exec_dml.baga exec_modify.baga
-│              planner/stats/budget (P6+)
+│              planner/stats/budget (P11+)
 ├── vector/    hnsw_insert.baga hnsw_search.baga hnsw_store.baga
 │              hnsw_cache.baga quant.baga distance.baga
-├── fts/       tokenizer.baga stemmer.baga inverted_write.baga
-│              inverted_read.baga bm25.baga tsquery.baga
+├── fts/       tokenizer.baga fts_doc.baga fts.baga (P7; fts-каталогът
+│              е един ключ на таблица → point GET, не scan)
 ├── ts/        retention.baga time_bucket.baga
 ├── graph/     adjacency.baga bfs.baga dfs.baga dijkstra.baga
 ├── api/       accept.baga worker_pool.baga conn.baga (P11)

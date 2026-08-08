@@ -3,7 +3,21 @@
 Попълва се с всяка фаза (моделът на rocksbaga/docs/gaps.md). Буквите:
 V = value/codec, K = key/scan, S = storage, M = metrics/monitoring,
 H = HTTP/API, Q = SQL (от P1), C = cache/planner, A = агрегати,
-T = транзакции, W = wire protocol.
+T = транзакции, W = wire protocol, F = FTS.
+
+## Открити при P7
+
+- **F1 — tokenizer-ът няма UTF-8 case folding.** Само ASCII A-Z → a-z;
+  кирилицата се съпоставя едно към едно (нужен езиков builtin или
+  hand-rolled таблица).
+- **F3 — BM25 idf е линейна апроксимация** (без ln), целочислена ×1000.
+  Реденето е коректно относително, но не е точно PG ts_rank.
+- **F4 — posting списъците са един запис на term (read-modify-write при
+  индексация).** Алтернативата (append-only + merge) идва при нужда от
+  по-бързо писане; point GET query-тата са целта (K2).
+- **F5 — фразови заявки няма** (to_tsquery е само AND/OR от думи).
+- **F6 — @@ не се комбинира с други WHERE условия** (fts клонът връща
+  редовете директно; комбинацията идва с P5 planner-а при нужда).
 
 ## Открити при P6
 

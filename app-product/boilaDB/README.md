@@ -10,15 +10,14 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 
 ## Статус
 
-**P6 (PG wire protocol v3)** — `tools/serve_pg.baga` на порт 6575:
-startup/auth (cleartext token или trust), simple query, extended
-Parse/Bind/Describe/Execute/Sync с `$1..$n`, per-connection транзакции.
-Проверено с pgbaga smoke (20/20) и **истински psql/libpq** (SELECT,
-INSERT...RETURNING, агрегати, UTF-8). Sync loop (gaps W1) — pool-ът идва
-в P11.
-Предишно: **P5 (пълен SELECT + planner)**; **P4 (MVCC транзакции)**;
-**P3 (DML + индекси)**; **P2 (много бази)**; **P1 (SQL read path)**;
-**P0 (скелет)**.
+**P7 (fts модал)** — `CREATE FTS INDEX`, `WHERE col @@ to_tsquery('…')`
+(to_tsquery/plainto_tsquery, '&' AND / '|' OR), BM25 класиране, DML
+синхронизация, EN/BG. 20k документа: AND 73 µs / OR 579 µs / single
+264 µs при гейт < 10 ms (bench/boila/results/fts-2026-08-08.md);
+индексът персистентен без rebuild.
+Предишно: **P6 (PG wire protocol v3)** — psql/libpq; **P5 (пълен
+SELECT + planner)**; **P4 (MVCC транзакции)**; **P3 (DML + индекси)**;
+**P2 (много бази)**; **P1 (SQL read path)**; **P0 (скелет)**.
 
 ## Пускане
 

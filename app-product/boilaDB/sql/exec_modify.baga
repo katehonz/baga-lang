@@ -7,6 +7,7 @@ import "../core/value.baga"
 import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../index/secondary.baga"
+import "../fts/fts.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_scan.baga"
@@ -140,6 +141,8 @@ fn boila_exec_update(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, upd: BoilaUpd)
     if tg.ok == 0 {
         return boila_dml_fail(s, txn, 7, tg.err, tg.state)
     }
+    let ftsl = fts_list_for_table(s, t.id)?
+    s = ftsl.s
     let mut affected: i64 = 0
     let mut r: i64 = 0
     while r < vec_len(tg.pks) {
@@ -174,6 +177,23 @@ fn boila_exec_update(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, upd: BoilaUpd)
                 return boila_dml_fail(s, txn, 7, pw2.err, pw2.state)
             }
             txn = pw2.txn
+            // fts sync
+            let mut fi: i64 = 0
+            while fi < vec_len(ftsl.defs) {
+                let d = vec_get(ftsl.defs, fi)
+                let fu = fts_unindex_doc(s, txn, t.id, d.id, pkenc)?
+                s = fu.s
+                txn = fu.txn
+                if d.col_idx < vec_len(new) {
+                    let v = vec_get(new, d.col_idx)
+                    if v.tag == boila_v_str() {
+                        let fw = fts_index_doc(s, txn, t.id, d.id, pkenc, str_of_bytes(v.b))?
+                        s = fw.s
+                        txn = fw.txn
+                    }
+                }
+                fi = fi + 1
+            }
             affected = affected + 1
             if upd.has_ret == 1 {
                 vec_push(res.rows, boila_project(new, pj2.proj))
@@ -215,6 +235,8 @@ fn boila_exec_delete(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, del: BoilaDel)
     if tg.ok == 0 {
         return boila_dml_fail(s, txn, 8, tg.err, tg.state)
     }
+    let ftsl = fts_list_for_table(s, t.id)?
+    s = ftsl.s
     let mut affected: i64 = 0
     let mut r: i64 = 0
     while r < vec_len(tg.pks) {
@@ -228,6 +250,15 @@ fn boila_exec_delete(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, del: BoilaDel)
                 return boila_dml_fail(s, txn, 8, xd.err, xd.state)
             }
             txn = xd.txn
+            // fts sync: документът навън
+            let mut fi: i64 = 0
+            while fi < vec_len(ftsl.defs) {
+                let d = vec_get(ftsl.defs, fi)
+                let fu = fts_unindex_doc(s, txn, t.id, d.id, pkenc)?
+                s = fu.s
+                txn = fu.txn
+                fi = fi + 1
+            }
             let dd = boila_txn_del(s, txn, boila_cf_data(), t.id, pkenc)
             if dd.ok == 0 {
                 return boila_dml_fail(s, txn, 8, dd.err, dd.state)
