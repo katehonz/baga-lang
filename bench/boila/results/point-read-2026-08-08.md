@@ -15,8 +15,8 @@ found: raw=20000, sql=20000 (коректност — без загуби).
 
 Гейтът на P1 от PLAN.md (≤ 125%) **не е постигнат** при parse-от-нулата
 за всяка заявка — очаквано: lex+parse+catalog-GET добавят ~4.9 µs върху
-~1.2 µs storage четене. Мишената ≤ 1.25× остава задължаваща за **P4**
-(plan cache) / **P5** (prepared statements през extended protocol-а) —
+~1.2 µs storage четене. Мишената ≤ 1.25× остава задължаваща за **P5**
+(plan cache) / **P6** (prepared statements през extended protocol-а) —
 механизмът е в ARCHITECTURE.md §4 (sql/): „Trivial PK point-query има
 специален fast path без пълно планиране".
 

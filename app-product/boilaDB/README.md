@@ -5,7 +5,7 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 високо натоварване като цел. Без Geo/GPS — изрично извън обхвата.
 
 - **Архитектура:** [ARCHITECTURE.md](ARCHITECTURE.md)
-- **План:** [PLAN.md](PLAN.md) (P0–P10, всяка фаза с benchmark гейт)
+- **План:** [PLAN.md](PLAN.md) (P0–P11, всяка фаза с benchmark гейт)
 - **Ограничения:** [gaps.md](gaps.md)
 
 ## Статус
@@ -13,7 +13,7 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 **P1 (SQL read path)** — BoilaSQL lexer/parser за `SELECT`/`CREATE TABLE`,
 каталог в sys key-space (персистентен), HTTP `POST /sql`, CLI shell,
 SQLSTATE грешки. Perf baseline: SQL point SELECT 6102 ns/op срещу суров
-GET 1193 ns/op (511%) — мишената ≤ 1.25× чака plan cache-а в P4 (gaps Q1).
+GET 1193 ns/op (511%) — мишената ≤ 1.25× чака plan cache-а в P5 (gaps Q1).
 Предишно: **P0 (скелет)** — value codec + 3VL, key layout, sharded storage,
 `/health` + `/metrics`.
 

@@ -36,9 +36,30 @@
   персистентен след рестарт, грешките носят SQLSTATE. **Perf baseline
   (измерено):** SQL point SELECT 6102 ns/op срещу суров GET 1193 ns/op
   (511%, bench/boila/results/point-read-2026-08-08.md) — мишената ≤ 1.25×
-  става задължаваща с plan cache-а в P4 (gaps Q1).
+  става задължаваща с plan cache-а в P5 (gaps Q1).
 
-## P2 — Write lanes + DML + вторични индекси
+## P2 — Много бази данни (multi-database, PostgreSQL/MySQL модел)
+- Сървърен root: `BOILA_PATH` съдържа `.meta` (registry, 1 rocksbaga
+  shard) и по една директория на база — `<db>/db` (shard пътища
+  `<db>/db.s{i}`). `storage/databases.baga`: `BoilaServer` { meta store,
+  отворени (ime, store) двойки, lazy open, таван `BOILA_MAX_DB`
+  (default 64) }; при пръв init се създава базата по подразбиране
+  `boila` (моделът на `postgres` в PostgreSQL).
+- SQL: `CREATE DATABASE име`, `DROP DATABASE име` (отказ ако е текущата
+  за сесията; чистенето на файлове е по известни shard-шаблони — baga
+  няма readdir), `USE име`. Всички останали заявления се изпълняват в
+  текущата за сесията база; каталозите са per-database. Cross-database
+  заявки/транзакции няма в v1 (`0A000`).
+- Клиенти: HTTP `POST /sql?db=<име>` (default = `boila`); shell — `USE`
+  и текущата база в prompt-а. PG wire-ът (P6) ще носи името на базата в
+  startup съобщението — точно като Postgres.
+- **rocksbaga: без промени** — per-dir клъстерите съществуват от R32
+  (проверено при P0); registry-то е обикновен boilaDB key-space.
+- **Гейт:** две бази с едноименни таблици не си смесват данните;
+  CREATE/DROP/USE през HTTP + shell; рестарт → registry-то и всички
+  бази четими; DROP чисти файловете на базата.
+
+## P3 — Write lanes + DML + вторични индекси
 - Per-shard write lane (една нишка притежава shard-а) + group commit
   (`commit_window_ms`/batch размер); `INSERT/UPDATE/DELETE`,
   `ON CONFLICT`, `RETURNING`; вторични индекси в същия WAL batch.
@@ -46,14 +67,14 @@
   (б) 1M INSERT-а без загуба след kill -9, индексите валидни без rebuild
   (предимство #1 пред barabadb).
 
-## P3 — MVCC транзакции
+## P4 — MVCC транзакции
 - Версии `<pk>|<ver_lsn_desc>`, snapshot LSN, commit sequencer за
   multi-shard, intents + recovery; `BEGIN/COMMIT/ROLLBACK`.
 - **Гейт:** конкурентни писачи → детерминистичен commit ред; crash
   mid-transaction → чист rollback при replay; читател с отворен snapshot
   не вижда междинни писания.
 
-## P4 — Пълен SELECT + planner
+## P5 — Пълен SELECT + planner
 - `WHERE` филтриране, `ORDER BY/LIMIT/OFFSET`, `GROUP BY/HAVING` +
   агрегати, `DISTINCT`, `JOIN` (index nested-loop + hash join),
   `WITH RECURSIVE` подготвено; planner върху catalog статистики +
@@ -63,39 +84,39 @@
   1k конкурентни клиента; (в) план-кешът сваля parse+plan дела под 5%
   от латентността при повтарящи се заявки.
 
-## P5 — PG wire protocol v3
+## P6 — PG wire protocol v3
 - `api/pgwire_*.baga`: startup/auth (cleartext + token), simple query,
   extended (Parse/Bind/Describe/Execute/Sync), prepared `$1..$n`;
   accept poll + bounded worker pool + admission control (`53300`/`57P03`).
-- **Гейт:** `psql` и libpq клиент изпълняват целия P1–P4 синтаксис;
+- **Гейт:** `psql` и libpq клиент изпълняват целия P1–P5 синтаксис;
   10k concurrent connections → p99 ≤ 2× p99 при 1k (плоска крива);
   overhead спрямо HTTP пътя ≤ 10%.
 
-## P6 — fts/ модал
+## P7 — fts/ модал
 - Tokenizer EN/BG, inverted index в `fts` key-space, BM25;
   `WHERE body @@ to_tsquery('…')`, `ts_rank`.
 - **Гейт:** 100k документа, boolean + фразова заявка < 10 ms; индексът
   персистентен след рестарт без rebuild.
 
-## P7 — vector/ модал
+## P8 — vector/ модал
 - `VECTOR(n)` колони; HNSW с възли/ребра в `vec` key-space + кеш на
   горните нива; оператори `<->`/`<=>`/`<#>`; `CREATE INDEX … USING hnsw`;
   metadata pre-filter през index/.
 - **Гейтове:** 100k вектора × 128d, recall@10 ≥ 0.95 спрямо brute force;
   kNN заявка < 20 ms; рестарт → без rebuild (предимство #2).
 
-## P8 — ts/ (time-series през SQL)
+## P9 — ts/ (time-series през SQL)
 - `WITH (ttl_days = N)`, `time_bucket('1m', ts)` в GROUP BY, retention
   през `lsm_put_ex` + sweeper.
 - **Гейт:** 1M точки, range + агрегация по прозорец < 50 ms; TTL реално
   чисти (dbsize спада). (Модал, който barabadb няма.)
 
-## P9 — graph/ през WITH RECURSIVE
+## P10 — graph/ през WITH RECURSIVE
 - Adjacency в `graph` key-space (двупосочен), BFS/DFS/Dijkstra примитиви,
   изпълнение през рекурсивни CTE-та.
 - **Гейт:** 1M ребра, BFS дълбочина 3 < 100 ms, персистентно след рестарт.
 
-## P10 — Втвърдяване и честни benchmarks при високо натоварване
+## P11 — Втвърдяване и честни benchmarks при високо натоварване
 - `bench/harness.baga`: стълба 100 / 1k / 10k клиенти (четене, писане,
   смес 80/20); сравнение с barabadb (client-server и при двамата),
   SQLite и суров rocksbaga като таван.
@@ -114,7 +135,8 @@
 
 ## После (v2+, извън плана)
 - raftbaga репликация; serializable; `NUMERIC`; window функции; COPY;
-  SCRAM auth; compaction filter за MVCC GC вместо sweeper.
+  SCRAM auth; compaction filter за MVCC GC вместо sweeper; cross-database
+  заявки/FDW връзки между базите.
 
 ## Рискове
 - **`go/chan` само `i64`** → комуникация с shard нишките през канали +
@@ -123,8 +145,9 @@
   worker-ите никога не мутират storage директно.
 - **MVCC GC** — без compaction filter в rocksbaga v1 версията чисти със
   sweeper; риск от write amplification под тежки update товари →
-  измерва се на P10, не се крие.
+  измерва се на P11, не се крие.
 - **SQL подмножество** — изкушението "още една SQL функция" е scope creep;
   всяко разширение минава през PLAN + gaps.md, не през кода.
-- **Обхват** — P0–P5 са задължителното ядро (storage→SQL→wire); P6–P9 са
-  независими модали и могат да се пренареждат/режат без да чупят ядрото.
+- **Обхват** — P0–P6 са задължителното ядро (storage→SQL→multi-DB→wire);
+  P7–P10 са независими модали и могат да се пренареждат/режат без да
+  чупят ядрото.

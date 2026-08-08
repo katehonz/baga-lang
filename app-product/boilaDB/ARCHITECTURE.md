@@ -5,6 +5,8 @@
 зависимости. Синтаксис: **PostgreSQL-съвместимо SQL подмножество**
 (BoilaSQL). Цел: **високо натоварване** — 1k–10k клиенти, 100 GB–1 TB
 данни, един възел, всички ядра — с плоска p99 и честни benchmark-и.
+Сървърът хоства **множество бази данни** (моделът на PostgreSQL/MySQL,
+P2): registry + отделен sharded клъстер на база.
 
 ## Решения спрямо v1 плана
 
@@ -15,6 +17,7 @@
 | Отделен `doc/` JSON модал | JSONB — тип колона в релационното ядро | един value model, по-малка повърхност; документите са редове с JSONB колони |
 | RESP2 фасада за redis-cli | **Postgres wire protocol v3** (simple + extended query) | по-голям ecosystem лост; RESP остава извън v1 |
 | Geo/GPS възможности | **Няма. Изрично извън обхвата и не влизат в roadmap-а.** | потребителско ограничение |
+| Една база | **Много бази данни на сървър** (registry + per-database клъстери, P2) | PostgreSQL/MySQL модел — изискване |
 
 ## 1. Дизайн принципи
 
@@ -88,13 +91,21 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 - `codec.baga` — key encoding: `<cf> | <table_id> | <pk_enc>`; shard-ът
   не е в ключа — маршрутизацията е hash на целия ключ през rocksbaga
   клъстера. MVCC версионен суфикс (`<ver_lsn_desc>`, низходящо →
-  snapshot четене е първият запис с `lsn ≤ snapshot`) се добавя в P3.
+  snapshot четене е първият запис с `lsn ≤ snapshot`) се добавя в P4.
 - `config.baga` — flagbaga + файл: `shards`, `max_connections`,
   `worker_pool`, `commit_window_ms`, `cache_pages`, `query_budget_ms`.
 - `errors.baga` — SQLSTATE кодове (`23505 unique_violation`,
   `57P03 cannot_connect_now`, `53300 too_many_connections`, `0A000`…).
 
 ### storage/ — N shard-а × rocksbaga
+- **Много бази данни (P2):** `BOILA_PATH` е сървърният root — `.meta`
+  registry (1 shard) и по една директория `<db>/db` на база (shard пътища
+  `<db>/db.s{i}`). `databases.baga` държи `BoilaServer`: meta store +
+  отворените бази като (име, store) двойки, lazy open, таван
+  `BOILA_MAX_DB` (default 64); при init се създава базата по подразбиране
+  `boila` (моделът на `postgres`). Каталозите са per-database;
+  cross-database достъп няма в v1. rocksbaga не се променя — per-dir
+  клъстерите съществуват от R32.
 - Sharding: hash на целия кодиран ключ (djb2-подобен, моделът на
   rocksbaga) по N shard-а; pk е доминиращо-вариращата част, така че
   разпределението е ефективно по pk. Всеки shard е собствена rocksbaga
@@ -159,10 +170,13 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 - **PG wire v3** — simple query + extended (Parse/Bind/Describe/Execute/
   Sync), ParameterStatus/RowDescription/DataRow/ReadyForQuery,
   cleartext/token auth. Форматът на съобщенията е познат от pgbaga
-  (клиентската страна) — сървърният кодек се пише в `api/pgwire_*.baga`.
+  (клиентската страна) — сървърният кодек се пише в `api/pgwire_*.baga`;
+  startup съобщението носи името на базата (както при Postgres, P6).
   Това е основният интерфейс: psql, libpq, всички PG драйвери.
-- **HTTP/JSON** (httpdbaga) — admin, `/sql` за инструменти, `/metrics`
-  (metbaga Prometheus формат), `/health`.
+- **HTTP/JSON** (httpdbaga) — admin, `/sql?db=<име>` за инструменти
+  (default = базата по подразбиране `boila`), `/metrics` (metbaga
+  Prometheus формат), `/health`. До P3 (write lanes) HTTP loop-ът е sync
+  със store-threading (gaps H2), после — thread-per-conn/bounded pool.
 - **CLI** — `boiladb serve | shell | backup | restore | sst-dump`
   (flagbaga, моделът на rocksbaga/tools).
 - **Няма WebSocket в v1** (DoS повърхността на barabadb).
@@ -173,7 +187,8 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 `TIMESTAMPTZ`, `VECTOR(n)`. `NULL` с 3VL. (Без `NUMERIC`, `SERIAL`,
 масиви в v1 — документирано.)
 
-**DDL:** `CREATE TABLE … (PRIMARY KEY задължителен — LSM-friendly)`,
+**DDL:** `CREATE/DROP DATABASE` (сървърно ниво, P2), `CREATE TABLE …
+(PRIMARY KEY задължителен — LSM-friendly)`,
 `CREATE [UNIQUE] INDEX ON t (col)`, `CREATE INDEX … USING hnsw`,
 `ALTER TABLE ADD COLUMN` (само nullable/add-only), `DROP TABLE/INDEX`,
 `WITH (ttl_days = N)`.
@@ -190,6 +205,11 @@ IS [NOT] NULL AND OR NOT`), `ORDER BY … ASC|DESC`, `LIMIT/OFFSET`,
 
 **Транзакции:** `BEGIN [READ ONLY] / COMMIT / ROLLBACK`, snapshot
 isolation, `$1..$n` prepared statements през extended protocol-а.
+
+**Сесия:** една сесия работи с точно една база (PostgreSQL модел);
+`USE <db>` сменя текущата (MySQL удобство); PG wire-ът носи името на
+базата в startup съобщението (P6). Cross-database заявки/транзакции —
+извън v1 (`0A000`).
 
 **Всичко извън списъка** → `0A000 feature_not_supported` с името на
 конструкцията. Никога тиха разлика в семантиката спрямо PostgreSQL.
@@ -239,6 +259,8 @@ cell2 пакети (доказаният модел на rocksbaga MT и queueba
 
 - Един възел. Няма raft/replication/sharding през мрежата (raftbaga е
   фрагмент). N shard-а са вътрешни, в един процес.
+- Много бази данни на сървъра, но **без cross-database достъп**: една
+  сесия = една база; cross-DB заявки/транзакции са v2+ (вж. PLAN.md).
 - **Geo/GPS: няма.** Без geometry типове, без пространствени индекси, без
   GPS/trajectory ingestion — и не са планирани.
 - SQL подмножество без `NUMERIC`, window функции, подзаявки, serializable.
@@ -271,7 +293,8 @@ app-product/boilaDB/
 ├── README.md  PLAN.md  ARCHITECTURE.md  gaps.md
 ├── core/      types.baga value.baga value_cmp.baga codec.baga
 │              config.baga errors.baga arena.baga
-├── storage/   shards.baga space.baga space_scan.baga gc.baga
+├── storage/   shards.baga databases.baga space.baga space_scan.baga
+│              gc.baga
 ├── txn/       sequencer.baga mvcc.baga intents.baga recovery.baga
 ├── catalog/   schema.baga stats.baga stats_hist.baga
 ├── index/     secondary.baga index_codec.baga unique.baga
