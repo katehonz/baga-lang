@@ -38,13 +38,25 @@ fn main() -> i64 {
     check(fails, "sel_eq", a.sel.has_eq == 1 && a.sel.eq_col == "id" && a.sel.pk_eq.i == 7)
 
     let b = psel("SELECT name, age FROM users WHERE id >= 2 AND id <= 9 LIMIT 5")
-    check(fails, "sel_cols_ok", b.ok == 1 && b.sel.star == 0 && vec_len(b.sel.cols) == 2)
-    check(fails, "sel_col_names", vec_get(b.sel.cols, 0) == "name" && vec_get(b.sel.cols, 1) == "age")
+    check(fails, "sel_cols_ok", b.ok == 1 && b.sel.star == 0 && vec_len(b.sel.items) == 2)
+    check(fails, "sel_col_names", vec_get(b.sel.items, 0).col == "name" && vec_get(b.sel.items, 1).col == "age")
     check(fails, "sel_range", b.sel.has_lo == 1 && b.sel.has_hi == 1 && b.sel.pk_lo.i == 2 && b.sel.pk_hi.i == 9)
     check(fails, "sel_limit", b.sel.limit == 5)
 
     let c = psel("SELECT * FROM t WHERE name = 'а''б'")
     check(fails, "sel_str_lit", c.ok == 1 && c.sel.pk_eq.tag == boila_v_str() && bytes_eq_b(c.sel.pk_eq.b, bytes_of_str("а'б")))
+
+    // --- P5 конструкции ---
+    let p5a = psel("SELECT DISTINCT dept FROM emp ORDER BY dept LIMIT 2 OFFSET 1")
+    check(fails, "p5_distinct_order_offset", p5a.ok == 1 && p5a.sel.distinct == 1 && p5a.sel.has_order == 1 && vec_len(p5a.sel.ord_cols) == 1 && p5a.sel.offset == 1)
+    let p5b = psel("SELECT dept, count(*), sum(salary) FROM emp GROUP BY dept HAVING count(*) >= 2")
+    check(fails, "p5_group_having", p5b.ok == 1 && p5b.sel.has_group == 1 && vec_len(p5b.sel.group_cols) == 1 && p5b.sel.has_having == 1 && p5b.sel.hav_agg == 1 && p5b.sel.hav_val == 2)
+    let p5c = psel("SELECT name, loc FROM emp JOIN dep ON dept = code")
+    check(fails, "p5_join", p5c.ok == 1 && p5c.sel.has_join == 1 && p5c.sel.join_kind == 1 && p5c.sel.join_table == "dep" && p5c.sel.join_lcol == "dept" && p5c.sel.join_rcol == "code")
+    let p5d = psel("SELECT name FROM emp LEFT JOIN dep ON dept = code")
+    check(fails, "p5_left_join", p5d.ok == 1 && p5d.sel.join_kind == 2)
+    let p5e = psel("SELECT avg(salary), min(salary), max(salary) FROM emp")
+    check(fails, "p5_aggs", p5e.ok == 1 && vec_len(p5e.sel.items) == 3 && vec_get(p5e.sel.items, 0).agg == 4 && vec_get(p5e.sel.items, 1).agg == 5 && vec_get(p5e.sel.items, 2).agg == 6)
 
     // --- SELECT грешки ---
     let d = psel("SELECT * WHERE id = 1")
@@ -52,7 +64,7 @@ fn main() -> i64 {
     let e = psel("SELECT * FROM t WHERE id < 5")
     check(fails, "err_op_lt", e.ok == 0 && e.state == "0A000")
     let f = psel("SELECT * FROM t ORDER BY id")
-    check(fails, "err_order_by", f.ok == 0 && f.state == "0A000")
+    check(fails, "order_by_ok", f.ok == 1 && f.sel.has_order == 1)
     let g = psel("SELECT * FROM t WHERE id = 1 WHERE id = 2")
     check(fails, "err_double_where", g.ok == 0)
 

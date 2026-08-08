@@ -1,16 +1,21 @@
-// parse_select.baga — parser за SELECT (P1 подмножество).
+// parse_select.baga — parser за SELECT (P5).
 //
 // Граматика:
-//   SELECT ( * | ident (, ident)* ) FROM ident
-//     [WHERE cond (AND cond)*] [LIMIT num] [;]
-//   cond := ident ( = | >= | <= ) literal
-//   literal := num | 'str' | NULL | TRUE | FALSE
+//   SELECT [DISTINCT] proj FROM ident
+//     [ [INNER | LEFT [OUTER]] JOIN ident ON ident = ident ]
+//     [WHERE cond (AND cond)*]
+//     [GROUP BY ident (, ident)*]
+//     [HAVING agg( * | ident ) op num]
+//     [ORDER BY ident [ASC|DESC] (, ...)*]
+//     [LIMIT num] [OFFSET num] [;]
 //
-// Грешки: 42601 syntax_error; 0A000 feature_not_supported (OR, BETWEEN,
-// ORDER BY, != и др. извън подмножеството).
+// Грешки: 42601 syntax; 0A000 feature_not_supported (смесени колони и
+// агрегати без GROUP BY, HAVING без агрегат, втори JOIN).
 
 import "token.baga"
+import "lexer.baga"
 import "ast.baga"
+import "parse_common.baga"
 import "../core/value.baga"
 import "std/str/str.baga"
 
@@ -21,48 +26,19 @@ struct BoilaParseSel {
     state: str
 }
 
-struct BoilaLit {
-    ok: i64,
-    v: BoilaVal,
-    err: str,
-    state: str
-}
-
 fn boila_ps_fail(msg: str, state: str) -> BoilaParseSel {
     return BoilaParseSel { ok: 0, sel: boila_sel_empty(), err: msg, state: state }
 }
 
-fn boila_ps_tok(l: BoilaLex, i: i64) -> Token {
-    if i < vec_len(l.toks) {
-        return vec_get(l.toks, i)
-    }
-    return token_new(tok_eof(), "")
-}
-
-// literal → BoilaVal; ok=0 при не-литерал.
-fn boila_ps_literal(l: BoilaLex, i: i64) -> BoilaLit {
-    let t = boila_ps_tok(l, i)
-    if t.kind == tok_num() {
-        return BoilaLit { ok: 1, v: boila_val_i64(parse_int(t.txt)), err: "", state: "" }
-    }
-    if t.kind == tok_str() {
-        return BoilaLit { ok: 1, v: boila_val_str(t.txt), err: "", state: "" }
-    }
-    if tok_kw(t, "null") == 1 {
-        return BoilaLit { ok: 1, v: boila_val_null(), err: "", state: "" }
-    }
-    if tok_kw(t, "true") == 1 {
-        return BoilaLit { ok: 1, v: boila_val_bool(1), err: "", state: "" }
-    }
-    if tok_kw(t, "false") == 1 {
-        return BoilaLit { ok: 1, v: boila_val_bool(0), err: "", state: "" }
-    }
-    return BoilaLit { ok: 0, v: boila_val_null(), err: concat("очаквах литерал, получих '", concat(t.txt, "'")), state: "42601" }
-}
-
 fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
-    let mut i: i64 = 1   // tok 0 е SELECT (проверено от dispatch)
     let mut sel = boila_sel_empty()
+    let mut i: i64 = 1
+
+    // DISTINCT
+    if tok_kw(boila_ps_tok(l, i), "distinct") == 1 {
+        sel.distinct = 1
+        i = i + 1
+    }
 
     // проекция
     let t = boila_ps_tok(l, i)
@@ -72,14 +48,13 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     } else {
         let mut more = true
         while more {
-            let c = boila_ps_tok(l, i)
-            if c.kind != tok_ident() {
-                return boila_ps_fail(concat("очаквах колона след SELECT, получих '", concat(c.txt, "'")), "42601")
+            let it = boila_ps_item(l, i)
+            if it.ok == 0 {
+                return boila_ps_fail(it.err, it.state)
             }
-            vec_push(sel.cols, c.txt)
-            i = i + 1
-            let nx = boila_ps_tok(l, i)
-            if nx.kind == tok_comma() {
+            vec_push(sel.items, it.item)
+            i = it.pos
+            if boila_ps_tok(l, i).kind == tok_comma() {
                 i = i + 1
             } else {
                 more = false
@@ -100,7 +75,65 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     sel.table = tb.txt
     i = i + 1
 
-    // WHERE (по pk; cond-и с AND)
+    // JOIN (един в P5)
+    let mut jk: i64 = 0
+    if tok_kw(boila_ps_tok(l, i), "inner") == 1 {
+        if tok_kw(boila_ps_tok(l, i + 1), "join") != 1 {
+            return boila_ps_fail("очаквах JOIN след INNER", "42601")
+        }
+        jk = 1
+        i = i + 2
+    } else {
+        if tok_kw(boila_ps_tok(l, i), "left") == 1 {
+            let mut p = i + 1
+            if tok_kw(boila_ps_tok(l, p), "outer") == 1 {
+                p = p + 1
+            }
+            if tok_kw(boila_ps_tok(l, p), "join") != 1 {
+                return boila_ps_fail("очаквах JOIN след LEFT", "42601")
+            }
+            jk = 2
+            i = p + 1
+        } else {
+            if tok_kw(boila_ps_tok(l, i), "join") == 1 {
+                jk = 1
+                i = i + 1
+            }
+        }
+    }
+    if jk > 0 {
+        let jt = boila_ps_tok(l, i)
+        if jt.kind != tok_ident() {
+            return boila_ps_fail("очаквах име на таблица след JOIN", "42601")
+        }
+        sel.has_join = 1
+        sel.join_kind = jk
+        sel.join_table = jt.txt
+        i = i + 1
+        if tok_kw(boila_ps_tok(l, i), "on") != 1 {
+            return boila_ps_fail("очаквах ON след JOIN таблица", "42601")
+        }
+        i = i + 1
+        let lc = boila_ps_tok(l, i)
+        if lc.kind != tok_ident() {
+            return boila_ps_fail("очаквах лява колона в ON", "42601")
+        }
+        if boila_ps_tok(l, i + 1).kind != tok_op() || boila_ps_tok(l, i + 1).txt != "=" {
+            return boila_ps_fail("ON поддържа само '=' в P5", "0A000")
+        }
+        let rc = boila_ps_tok(l, i + 2)
+        if rc.kind != tok_ident() {
+            return boila_ps_fail("очаквах дясна колона в ON", "42601")
+        }
+        sel.join_lcol = lc.txt
+        sel.join_rcol = rc.txt
+        i = i + 3
+        if tok_kw(boila_ps_tok(l, i), "join") == 1 || tok_kw(boila_ps_tok(l, i), "inner") == 1 || tok_kw(boila_ps_tok(l, i), "left") == 1 {
+            return boila_ps_fail("втори JOIN не е в P5", "0A000")
+        }
+    }
+
+    // WHERE
     if tok_kw(boila_ps_tok(l, i), "where") == 1 {
         i = i + 1
         let mut more = true
@@ -123,7 +156,7 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
             let v = lit.v
             if op.txt == "=" {
                 if sel.has_eq == 1 {
-                    return boila_ps_fail("повторно = условие в P1", "0A000")
+                    return boila_ps_fail("повторно = условие", "0A000")
                 }
                 sel.has_eq = 1
                 sel.eq_col = col.txt
@@ -131,7 +164,7 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
             } else {
                 if op.txt == ">=" {
                     if sel.has_lo == 1 {
-                        return boila_ps_fail("повторно >= условие в P1", "0A000")
+                        return boila_ps_fail("повторно >= условие", "0A000")
                     }
                     sel.has_lo = 1
                     sel.lo_col = col.txt
@@ -139,13 +172,13 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
                 } else {
                     if op.txt == "<=" {
                         if sel.has_hi == 1 {
-                            return boila_ps_fail("повторно <= условие в P1", "0A000")
+                            return boila_ps_fail("повторно <= условие", "0A000")
                         }
                         sel.has_hi = 1
                         sel.hi_col = col.txt
                         sel.pk_hi = v
                     } else {
-                        return boila_ps_fail(concat("операторът '", concat(op.txt, "' не е в P1 подмножеството")), "0A000")
+                        return boila_ps_fail(concat("операторът '", concat(op.txt, "' не е в SELECT подмножеството")), "0A000")
                     }
                 }
             }
@@ -157,24 +190,156 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         }
     }
 
-    // LIMIT
-    if tok_kw(boila_ps_tok(l, i), "limit") == 1 {
+    // GROUP BY
+    if tok_kw(boila_ps_tok(l, i), "group") == 1 {
+        if tok_kw(boila_ps_tok(l, i + 1), "by") != 1 {
+            return boila_ps_fail("очаквах BY след GROUP", "42601")
+        }
+        i = i + 2
+        sel.has_group = 1
+        let mut more = true
+        while more {
+            let c = boila_ps_tok(l, i)
+            if c.kind != tok_ident() {
+                return boila_ps_fail("очаквах колона в GROUP BY", "42601")
+            }
+            vec_push(sel.group_cols, c.txt)
+            i = i + 1
+            if boila_ps_tok(l, i).kind == tok_comma() {
+                i = i + 1
+            } else {
+                more = false
+            }
+        }
+    }
+
+    // HAVING agg(col) op num
+    if tok_kw(boila_ps_tok(l, i), "having") == 1 {
         i = i + 1
-        let lt = boila_ps_tok(l, i)
+        let an = boila_ps_tok(l, i)
+        let kind = boila_ps_agg_kind(an.txt)
+        if an.kind != tok_ident() || kind == 0 {
+            return boila_ps_fail("очаквах агрегат в HAVING", "42601")
+        }
+        if boila_ps_tok(l, i + 1).kind != tok_lparen() {
+            return boila_ps_fail("очаквах '(' след агрегата в HAVING", "42601")
+        }
+        let arg = boila_ps_tok(l, i + 2)
+        let mut hcol = ""
+        let mut hkind = kind
+        if arg.kind == tok_star() {
+            if kind != 1 {
+                return boila_ps_fail("HAVING с * — само count", "0A000")
+            }
+        } else {
+            if arg.kind != tok_ident() {
+                return boila_ps_fail("очаквах колона в HAVING агрегата", "42601")
+            }
+            hcol = arg.txt
+            if kind == 1 {
+                hkind = 2
+            }
+        }
+        if boila_ps_tok(l, i + 3).kind != tok_rparen() {
+            return boila_ps_fail("очаквах ')' в HAVING агрегата", "42601")
+        }
+        let op = boila_ps_tok(l, i + 4)
+        if op.kind != tok_op() {
+            return boila_ps_fail("очаквах оператор в HAVING", "42601")
+        }
+        let hv = boila_ps_literal(l, i + 5)
+        if hv.ok == 0 {
+            return boila_ps_fail(hv.err, hv.state)
+        }
+        if hv.v.tag != boila_v_i64() {
+            return boila_ps_fail("HAVING стойност — само цяло число в P5", "0A000")
+        }
+        sel.has_having = 1
+        sel.hav_agg = hkind
+        sel.hav_col = hcol
+        sel.hav_op = op.txt
+        sel.hav_val = hv.v.i
+        i = i + 6
+    }
+
+    // ORDER BY
+    if tok_kw(boila_ps_tok(l, i), "order") == 1 {
+        if tok_kw(boila_ps_tok(l, i + 1), "by") != 1 {
+            return boila_ps_fail("очаквах BY след ORDER", "42601")
+        }
+        i = i + 2
+        sel.has_order = 1
+        let mut more = true
+        while more {
+            let c = boila_ps_tok(l, i)
+            if c.kind != tok_ident() {
+                return boila_ps_fail("очаквах колона в ORDER BY", "42601")
+            }
+            vec_push(sel.ord_cols, c.txt)
+            i = i + 1
+            let mut desc: i64 = 0
+            if tok_kw(boila_ps_tok(l, i), "desc") == 1 {
+                desc = 1
+                i = i + 1
+            } else {
+                if tok_kw(boila_ps_tok(l, i), "asc") == 1 {
+                    i = i + 1
+                }
+            }
+            vec_push(sel.ord_desc, desc)
+            if boila_ps_tok(l, i).kind == tok_comma() {
+                i = i + 1
+            } else {
+                more = false
+            }
+        }
+    }
+
+    // LIMIT / OFFSET
+    if tok_kw(boila_ps_tok(l, i), "limit") == 1 {
+        let lt = boila_ps_tok(l, i + 1)
         if lt.kind != tok_num() {
             return boila_ps_fail("очаквах число след LIMIT", "42601")
         }
         sel.limit = parse_int(lt.txt)
-        i = i + 1
+        i = i + 2
+    }
+    if tok_kw(boila_ps_tok(l, i), "offset") == 1 {
+        let ot = boila_ps_tok(l, i + 1)
+        if ot.kind != tok_num() {
+            return boila_ps_fail("очаквах число след OFFSET", "42601")
+        }
+        sel.offset = parse_int(ot.txt)
+        i = i + 2
     }
 
-    // опционална ; и край
+    // край
     if boila_ps_tok(l, i).kind == tok_semi() {
         i = i + 1
     }
     let end = boila_ps_tok(l, i)
     if end.kind != tok_eof() {
-        return boila_ps_fail(concat("неочакван токен '", concat(end.txt, "' (извън P1 подмножеството)")), "0A000")
+        return boila_ps_fail(concat("неочакван токен '", concat(end.txt, "' в SELECT")), "0A000")
+    }
+
+    // семантични проверки: колони + агрегати без GROUP BY
+    let mut has_agg: i64 = 0
+    let mut has_plain: i64 = 0
+    let mut k: i64 = 0
+    while k < vec_len(sel.items) {
+        let it = vec_get(sel.items, k)
+        if it.agg == 0 {
+            has_plain = 1
+        } else {
+            has_agg = 1
+        }
+        k = k + 1
+    }
+    if has_agg == 1 && has_plain == 1 && sel.has_group == 0 {
+        return boila_ps_fail("колони и агрегати заедно изискват GROUP BY", "0A000")
+    }
+    if sel.has_having == 1 && has_agg == 0 && sel.has_group == 0 {
+        return boila_ps_fail("HAVING изисква агрегат или GROUP BY", "0A000")
     }
     return BoilaParseSel { ok: 1, sel: sel, err: "", state: "" }
 }

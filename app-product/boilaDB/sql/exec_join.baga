@@ -1,0 +1,147 @@
+// exec_join.baga — един JOIN (INNER/LEFT, ON equality) в P5.
+//
+// Стратегия (rule-based planner, gaps P3): индекс по дясната join
+// колона → index nested loop; иначе nested loop с пълен scan на дясната
+// таблица. WHERE се прилага само върху лявата таблица.
+
+import "../storage/shards.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaJoinOut {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    cols: Vec<BoilaColDef>,
+    rows: Vec<Vec<BoilaVal>>
+}
+
+fn boila_join_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaJoinOut {
+    let cols: Vec<BoilaColDef> = vec_new()
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    return BoilaJoinOut { s: s, txn: txn, ok: 0, err: msg, state: state, cols: cols, rows: rows }
+}
+
+fn boila_wide_row(l: Vec<BoilaVal>, r: Vec<BoilaVal>) -> Vec<BoilaVal> {
+    let out: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(l) {
+        vec_push(out, vec_get(l, i))
+        i = i + 1
+    }
+    i = 0
+    while i < vec_len(r) {
+        vec_push(out, vec_get(r, i))
+        i = i + 1
+    }
+    return out
+}
+
+fn boila_null_row(ncols: i64) -> Vec<BoilaVal> {
+    let out: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < ncols {
+        vec_push(out, boila_val_null())
+        i = i + 1
+    }
+    return out
+}
+
+fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaJoinOut !IO !Time {
+    let lidx = boila_col_idx(t, sel.join_lcol)
+    if lidx < 0 {
+        return boila_join_fail(s, txn, concat("JOIN колона '", concat(sel.join_lcol, "' не съществува в лявата таблица")), "42703")
+    }
+    let ct2 = boila_cat_by_name(s, sel.join_table)?
+    s = ct2.s
+    if ct2.ok == 0 {
+        return boila_join_fail(s, txn, ct2.err, ct2.state)
+    }
+    let t2 = ct2.table
+    let ridx = boila_col_idx(t2, sel.join_rcol)
+    if ridx < 0 {
+        return boila_join_fail(s, txn, concat("JOIN колона '", concat(sel.join_rcol, "' не съществува в дясната таблица")), "42703")
+    }
+    // wide схема: ляво + дясно
+    let wcols: Vec<BoilaColDef> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        vec_push(wcols, vec_get(t.cols, i))
+        i = i + 1
+    }
+    i = 0
+    while i < vec_len(t2.cols) {
+        vec_push(wcols, vec_get(t2.cols, i))
+        i = i + 1
+    }
+    // външни редове (лявата таблица с WHERE)
+    let outer = boila_fetch_rows(s, txn, t, sel)?
+    s = outer.s
+    if outer.ok == 0 {
+        return boila_join_fail(s, txn, outer.err, outer.state)
+    }
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    let nullr = boila_null_row(vec_len(t2.cols))
+    // index nested loop?
+    let ixid = boila_ix_by_col_t(t2, ridx)
+    if ixid >= 0 {
+        let mut oi: i64 = 0
+        while oi < vec_len(outer.rows) {
+            let orow = vec_get(outer.rows, oi)
+            let lv = vec_get(orow, lidx)
+            let mut matched = false
+            if lv.tag != boila_v_null() {
+                let lk = boila_ix_lookup(s, t2, ixid, lv)?
+                s = lk.s
+                let mut li: i64 = 0
+                while li < vec_len(lk.pks) {
+                    let g = boila_txn_get(s, txn, t2.id, vec_get(lk.pks, li))?
+                    s = g.s
+                    if g.found == 1 {
+                        vec_push(rows, boila_wide_row(orow, boila_row_dec(g.row)))
+                        matched = true
+                    }
+                    li = li + 1
+                }
+            }
+            if matched == false && sel.join_kind == 2 {
+                vec_push(rows, boila_wide_row(orow, nullr))
+            }
+            oi = oi + 1
+        }
+        return BoilaJoinOut { s: s, txn: txn, ok: 1, err: "", state: "", cols: wcols, rows: rows }
+    }
+    // nested loop с пълен scan на дясната
+    let inner = boila_fetch_all(s, txn, t2)?
+    s = inner.s
+    let mut oi: i64 = 0
+    while oi < vec_len(outer.rows) {
+        let orow = vec_get(outer.rows, oi)
+        let lv = vec_get(orow, lidx)
+        let mut matched = false
+        let mut ii: i64 = 0
+        while ii < vec_len(inner.rows) {
+            let irow = vec_get(inner.rows, ii)
+            let rv = vec_get(irow, ridx)
+            if lv.tag != boila_v_null() && boila_val_cmp(lv, rv) == 0 {
+                vec_push(rows, boila_wide_row(orow, irow))
+                matched = true
+            }
+            ii = ii + 1
+        }
+        if matched == false && sel.join_kind == 2 {
+            vec_push(rows, boila_wide_row(orow, nullr))
+        }
+        oi = oi + 1
+    }
+    return BoilaJoinOut { s: s, txn: txn, ok: 1, err: "", state: "", cols: wcols, rows: rows }
+}

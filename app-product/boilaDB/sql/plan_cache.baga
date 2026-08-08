@@ -1,0 +1,50 @@
+// plan_cache.baga — plan cache за SELECT (P5).
+//
+// Кеш по суров SQL текст на РЕЗОЛВНАТИЯ план (sel + таблица). Покрива
+// само едно-таблични SELECT-и (горещият OLTP point/range път); JOIN
+// заявките плащат parse+catalog (gaps C1). Инвалидация: нова карта при
+// DDL (bump на gen).
+
+import "ast.baga"
+import "../catalog/schema.baga"
+
+struct BoilaSelPlan {
+    sel: BoilaSel,
+    table: BoilaTable
+}
+
+struct BoilaPlanCache {
+    m: Map<str, BoilaSelPlan>,
+    gen: i64
+}
+
+struct BoilaPcGet {
+    hit: i64,
+    plan: BoilaSelPlan
+}
+
+fn boila_pc_new() -> BoilaPlanCache {
+    let m: Map<str, BoilaSelPlan> = map_new()
+    return BoilaPlanCache { m: m, gen: 0 }
+}
+
+fn boila_pc_empty_plan() -> BoilaSelPlan {
+    return BoilaSelPlan { sel: boila_sel_empty(), table: boila_cat_empty_table() }
+}
+
+fn boila_pc_get(pc: BoilaPlanCache, sql: str) -> BoilaPcGet {
+    if map_has(pc.m, sql) == 1 {
+        return BoilaPcGet { hit: 1, plan: map_get(pc.m, sql) }
+    }
+    return BoilaPcGet { hit: 0, plan: boila_pc_empty_plan() }
+}
+
+fn boila_pc_put(pc: BoilaPlanCache, sql: str, plan: BoilaSelPlan) {
+    map_set(pc.m, sql, plan)
+}
+
+// DDL → празна карта, нов generation.
+fn boila_pc_invalidate(pc: BoilaPlanCache) -> BoilaPlanCache {
+    let m: Map<str, BoilaSelPlan> = map_new()
+    return BoilaPlanCache { m: m, gen: pc.gen + 1 }
+}

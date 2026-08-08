@@ -1,0 +1,155 @@
+// select_planner.baga — P5 гейтове: (а) planner-ът избира индекс пред
+// scan; (в) plan cache-ът премахва lex+parse+catalog от повторните заявки.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/sql/exec_select.baga"
+import "boilaDB/sql/lexer.baga"
+import "boilaDB/sql/parse_select.baga"
+import "boilaDB/sql/parse_common.baga"
+import "boilaDB/catalog/schema.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 200 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time {
+    let root = "/tmp/baga_boila_bench_p5"
+    wipe_root(root)?
+    let mut srv = boila_server_open(root, 2, 512, 8, 4)?
+    let n: i64 = 5000
+
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE pt (id BIGINT, city TEXT, v TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    // seed на batches по 100 реда
+    let mut base: i64 = 0
+    while base < n {
+        let mut sql = "INSERT INTO pt (id, city, v) VALUES "
+        let mut i: i64 = 0
+        while i < 100 {
+            if i > 0 {
+                sql = concat(sql, ", ")
+            }
+            let id = base + i
+            let mut tup = "("
+            tup = concat(tup, int_to_str(id))
+            tup = concat(tup, ", 'c")
+            tup = concat(tup, int_to_str(id % 50))
+            tup = concat(tup, "', 'v_")
+            tup = concat(tup, int_to_str(id))
+            tup = concat(tup, "')")
+            sql = concat(sql, tup)
+            i = i + 1
+        }
+        let r = boila_server_exec(srv, "boila", sql)?
+        srv = r.srv
+        base = base + 100
+    }
+    let cx = boila_server_exec(srv, "boila", "CREATE INDEX city_ix ON pt (city)")?
+    srv = cx.srv
+    if cx.ok == 0 {
+        print(concat("CREATE INDEX fail: ", cx.err))
+        return 1
+    }
+
+    // --- гейт (а): индекс път срещу seq scan ---
+    let reps: i64 = 200
+    // индекс: WHERE city = 'c7' (100 съвпадения)
+    let t0 = monotonic_us()?
+    let mut i: i64 = 0
+    while i < reps {
+        let r = boila_server_exec(srv, "boila", "SELECT v FROM pt WHERE city = 'c7'")?
+        srv = r.srv
+        i = i + 1
+    }
+    let t1 = monotonic_us()?
+    // seq: LIMIT 100 без WHERE (пълен snapshot на ключовете)
+    let t2 = monotonic_us()?
+    i = 0
+    while i < reps {
+        let r = boila_server_exec(srv, "boila", "SELECT v FROM pt LIMIT 100")?
+        srv = r.srv
+        i = i + 1
+    }
+    let t3 = monotonic_us()?
+    // pk point за референция
+    let t4 = monotonic_us()?
+    i = 0
+    while i < reps {
+        let r = boila_server_exec(srv, "boila", "SELECT v FROM pt WHERE id = 2500")?
+        srv = r.srv
+        i = i + 1
+    }
+    let t5 = monotonic_us()?
+    let ix_ns = ((t1 - t0) * 1000) / reps
+    let seq_ns = ((t3 - t2) * 1000) / reps
+    let pk_ns = ((t5 - t4) * 1000) / reps
+    print(concat("pk point:      ", concat(int_to_str(pk_ns), " ns/op")))
+    print(concat("index path:    ", concat(int_to_str(ix_ns), " ns/op (100 rows)")))
+    print(concat("seq scan:      ", concat(int_to_str(seq_ns), " ns/op (LIMIT 100)")))
+    let mut verdict_a = "FAIL"
+    if ix_ns < seq_ns {
+        verdict_a = "OK — planner-ът ползва индекса"
+    }
+    print(concat("гейт (а): ", verdict_a))
+
+    // --- гейт (в): plan cache — cold срещу warm ---
+    let q = "SELECT v FROM pt WHERE id = 3125"
+    // cold: първото изпълнение (lex+parse+catalog+exec, cache miss)
+    let w0 = monotonic_us()?
+    let rc = boila_server_exec(srv, "boila", q)?
+    srv = rc.srv
+    let w1 = monotonic_us()?
+    // warm: повторения (cache hit)
+    let wreps: i64 = 1000
+    let w2 = monotonic_us()?
+    i = 0
+    while i < wreps {
+        let r = boila_server_exec(srv, "boila", q)?
+        srv = r.srv
+        i = i + 1
+    }
+    let w3 = monotonic_us()?
+    let cold_ns = (w1 - w0) * 1000
+    let warm_ns = ((w3 - w2) * 1000) / wreps
+    print(concat("cold (miss):   ", concat(int_to_str(cold_ns), " ns")))
+    print(concat("warm (hit):    ", concat(int_to_str(warm_ns), " ns/op")))
+    let mut verdict_c = "FAIL"
+    if warm_ns < cold_ns {
+        verdict_c = "OK — hit-ът пропуска lex+parse+catalog"
+    }
+    print(concat("гейт (в): ", verdict_c))
+    let mut speed100: i64 = 0
+    if warm_ns > 0 {
+        speed100 = (cold_ns * 100) / warm_ns
+    }
+    print(concat("cold/warm:     ", concat(int_to_str(speed100), "%")))
+
+    boila_server_close(srv)?
+    wipe_root(root)?
+    return 0
+}

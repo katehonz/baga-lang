@@ -95,14 +95,20 @@
   restart durability; READ ONLY (25006), двоен BEGIN (25001).
 
 ## P5 — Пълен SELECT + planner
-- `WHERE` филтриране, `ORDER BY/LIMIT/OFFSET`, `GROUP BY/HAVING` +
-  агрегати, `DISTINCT`, `JOIN` (index nested-loop + hash join),
-  `WITH RECURSIVE` подготвено; planner върху catalog статистики +
-  plan cache; query budget (deadline + max scanned keys).
-- **Гейтове:** (а) planner-ът избира индекс пред seq scan при наличие;
-  (б) budget прекъсва тежка заявка с чиста грешка, p99 остава плоска под
-  1k конкурентни клиента; (в) план-кешът сваля parse+plan дела под 5%
-  от латентността при повтарящи се заявки.
+- Реализирано: `DISTINCT`, `ORDER BY` (multi-key, ASC/DESC) `LIMIT`/
+  `OFFSET`, агрегати `count(*)/count(col)/sum/avg/min/max`, `GROUP BY` +
+  `HAVING`, един `JOIN` (INNER/LEFT, ON equality) — nested loop или
+  index nested loop при индекс по вътрешната колона (rule-based избор).
+  Plan cache по суров SQL текст за едно-таблични SELECT-и; инвалидация
+  при DDL. WHERE е само по pk/индексирана колона (от P1/P3).
+- Ревизии (честно): hash join и query budget (deadline + max keys)
+  остават за P6/P11 — при sync сървъра без конкурентност budget-ът няма
+  потребител; `WITH RECURSIVE` идва с graph фазата (P10); avg е
+  целочислено деление (gaps A1); кешът не покрива JOIN-и (gaps C1).
+- **Гейтове (измерени, bench/boila/results/select-planner-2026-08-08.md):**
+  (а) planner-ът избира индекса: index път 8.7 ms срещу seq scan 17.2 ms
+  (5000 реда); (в) plan cache: cold 11.0 µs → warm 5.8 µs (1.89×),
+  parse+plan дял ~0% при повтарящи се заявки (гейт < 5%).
 
 ## P6 — PG wire protocol v3
 - `api/pgwire_*.baga`: startup/auth (cleartext + token), simple query,

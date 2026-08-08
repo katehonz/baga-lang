@@ -4,6 +4,27 @@
 V = value/codec, K = key/scan, S = storage, M = metrics/monitoring,
 H = HTTP/API, Q = SQL (от P1).
 
+## Открити при P5
+
+- **C1 — plan cache-ът покрива само едно-таблични SELECT-и.** JOIN
+  заявките плащат lex+parse+catalog на всяко изпълнение (кеширането на
+  мулти-таблични планове изисква и двете таблики в кеша — идва при
+  нужда).
+- **C2 — planner-ът е rule-based, без статистики/cost model.** Ред:
+  pk point > index eq > seq scan; JOIN: index nested loop при индекс по
+  вътрешната колона, иначе nested loop. Catalog статистики (histograms)
+  и cost-based избор остават за P11 или при реална нужда.
+- **C3 — query budget (deadline + max scanned keys) не е в P5.** При
+  sync сървъра без конкурентност няма кой да го наложи смислено; идва с
+  wire/pool фазата (P6) и се тества в P11.
+- **A1 — avg е целочислено деление** (sum/cnt в i64). f64 резултат чака
+  f64 поддръжка в codec-а (V1).
+- **A2 — hash join няма.** P5 има nested loop + index nested loop; при
+  големите joins ще трябва hash join (изисква Map<bytes, Vec<row>> —
+  възможно, но недоказано в baga за големи обеми).
+- **A3 — JOIN само един на заявка**, WHERE в JOIN-ите филтрира само
+  лявата таблица; `ON` поддържа само `=`.
+
 ## Открити при P4
 
 - **T2 — MVCC-ът е едно-сесийен buffered модел.** Изолацията идва от

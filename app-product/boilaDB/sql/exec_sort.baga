@@ -1,0 +1,111 @@
+// exec_sort.baga — ORDER BY сортиране на редове (P5).
+// NULL-ите винаги накрая (независимо ASC/DESC); multi-key; стабилен
+// insertion sort за малки n, quicksort за големи.
+
+import "../core/value.baga"
+
+fn boila_cmp_vals(a: BoilaVal, b: BoilaVal) -> i64 {
+    // NULL last: null е "по-голям" от всичко
+    if a.tag == boila_v_null() && b.tag == boila_v_null() {
+        return 0
+    }
+    if a.tag == boila_v_null() {
+        return 1
+    }
+    if b.tag == boila_v_null() {
+        return 0 - 1
+    }
+    return boila_val_cmp(a, b)
+}
+
+// Сравнение на два реда по ключовите индекси (desc обръща само не-NULL).
+fn boila_cmp_rows(a: Vec<BoilaVal>, b: Vec<BoilaVal>, idxs: Vec<i64>, desc: Vec<i64>) -> i64 {
+    let mut k: i64 = 0
+    while k < vec_len(idxs) {
+        let ix = vec_get(idxs, k)
+        let mut av = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
+        let mut bv = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
+        if ix >= 0 && ix < vec_len(a) {
+            av = vec_get(a, ix)
+        }
+        if ix >= 0 && ix < vec_len(b) {
+            bv = vec_get(b, ix)
+        }
+        let c = boila_cmp_vals(av, bv)
+        if c != 0 {
+            if vec_get(desc, k) == 1 {
+                if c == 1 {
+                    return 0 - 1
+                }
+                return 1
+            }
+            return c
+        }
+        k = k + 1
+    }
+    return 0
+}
+
+fn boila_sort_ins(rows: Vec<Vec<BoilaVal>>, lo: i64, hi: i64, idxs: Vec<i64>, desc: Vec<i64>) {
+    let mut i = lo + 1
+    while i <= hi {
+        let key = vec_get(rows, i)
+        let mut j = i - 1
+        let mut moving = 1
+        while moving == 1 {
+            if j < lo {
+                moving = 0
+            } else {
+                if boila_cmp_rows(vec_get(rows, j), key, idxs, desc) <= 0 {
+                    moving = 0
+                } else {
+                    vec_set(rows, j + 1, vec_get(rows, j))
+                    j = j - 1
+                }
+            }
+        }
+        vec_set(rows, j + 1, key)
+        i = i + 1
+    }
+}
+
+fn boila_sort_part(rows: Vec<Vec<BoilaVal>>, lo: i64, hi: i64, idxs: Vec<i64>, desc: Vec<i64>) -> i64 {
+    let pivot = vec_get(rows, hi)
+    let mut i = lo
+    let mut j = lo
+    while j < hi {
+        if boila_cmp_rows(vec_get(rows, j), pivot, idxs, desc) <= 0 {
+            let tmp = vec_get(rows, i)
+            vec_set(rows, i, vec_get(rows, j))
+            vec_set(rows, j, tmp)
+            i = i + 1
+        }
+        j = j + 1
+    }
+    let tmp = vec_get(rows, i)
+    vec_set(rows, i, vec_get(rows, hi))
+    vec_set(rows, hi, tmp)
+    return i
+}
+
+fn boila_sort_qs(rows: Vec<Vec<BoilaVal>>, lo: i64, hi: i64, idxs: Vec<i64>, desc: Vec<i64>) {
+    if hi - lo < 16 {
+        if lo < hi {
+            boila_sort_ins(rows, lo, hi, idxs, desc)
+        }
+        return
+    }
+    if lo < hi {
+        let p = boila_sort_part(rows, lo, hi, idxs, desc)
+        boila_sort_qs(rows, lo, p - 1, idxs, desc)
+        boila_sort_qs(rows, p + 1, hi, idxs, desc)
+    }
+}
+
+// in-place сортиране; idxs/desc са успоредни вектори с дължина ≥ 1.
+fn boila_sort_rows(rows: Vec<Vec<BoilaVal>>, idxs: Vec<i64>, desc: Vec<i64>) {
+    let n = vec_len(rows)
+    if n > 1 {
+        boila_sort_qs(rows, 0, n - 1, idxs, desc)
+    }
+}

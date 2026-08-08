@@ -10,16 +10,14 @@ rocksbaga (LSM), **PostgreSQL-съвместим SQL синтаксис** (Boila
 
 ## Статус
 
-**P4 (MVCC транзакции, едно-сесийен buffered модел)** —
-`BEGIN [READ ONLY]/COMMIT/ROLLBACK`, auto-commit на statement, изолация
-(storage непроменен до COMMIT; собствени + committed писания видими),
-грешка → rollback на буфера, монотонни commit LSN, транзакцията
-фиксирана към базата си; envelope `[lsn][row]` в data/index CF.
-Multi-version ключове + sequencer — в P6 с concurrency-то (gaps T2).
-Предишно: **P3 (DML + индекси + group commit)**; **P2 (много бази)**;
-**P1 (SQL read path)**; **P0 (скелет)**. Perf: SQL point SELECT 6102
-ns/op срещу суров GET 1193 ns/op — мишената ≤ 1.25× чака plan cache-а
-в P5 (gaps Q1).
+**P5 (пълен SELECT + planner)** — `DISTINCT`, `ORDER BY`/`LIMIT`/
+`OFFSET`, агрегати (count/sum/avg/min/max), `GROUP BY` + `HAVING`,
+`JOIN` (INNER/LEFT, NL + index nested loop), rule-based planner и plan
+cache (cold 11.0 µs → warm 5.8 µs, 1.89×; bench/boila/results/
+select-planner-2026-08-08.md). Hash join, query budget и WITH RECURSIVE
+— P6/P10/P11 (gaps).
+Предишно: **P4 (MVCC транзакции)**; **P3 (DML + индекси + group
+commit)**; **P2 (много бази)**; **P1 (SQL read path)**; **P0 (скелет)**.
 
 ## Пускане
 

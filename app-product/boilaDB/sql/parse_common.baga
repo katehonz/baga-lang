@@ -1,0 +1,107 @@
+// parse_common.baga — общи parser помощници (токени, литерали, проекция).
+
+import "token.baga"
+import "lexer.baga"
+import "ast.baga"
+import "../core/value.baga"
+import "std/str/str.baga"
+
+struct BoilaLit {
+    ok: i64,
+    v: BoilaVal,
+    err: str,
+    state: str
+}
+
+fn boila_ps_tok(l: BoilaLex, i: i64) -> Token {
+    if i < vec_len(l.toks) {
+        return vec_get(l.toks, i)
+    }
+    return token_new(tok_eof(), "")
+}
+
+// literal → BoilaVal; ok=0 при не-литерал.
+fn boila_ps_literal(l: BoilaLex, i: i64) -> BoilaLit {
+    let t = boila_ps_tok(l, i)
+    if t.kind == tok_num() {
+        return BoilaLit { ok: 1, v: boila_val_i64(parse_int(t.txt)), err: "", state: "" }
+    }
+    if t.kind == tok_str() {
+        return BoilaLit { ok: 1, v: boila_val_str(t.txt), err: "", state: "" }
+    }
+    if tok_kw(t, "null") == 1 {
+        return BoilaLit { ok: 1, v: boila_val_null(), err: "", state: "" }
+    }
+    if tok_kw(t, "true") == 1 {
+        return BoilaLit { ok: 1, v: boila_val_bool(1), err: "", state: "" }
+    }
+    if tok_kw(t, "false") == 1 {
+        return BoilaLit { ok: 1, v: boila_val_bool(0), err: "", state: "" }
+    }
+    return BoilaLit { ok: 0, v: boila_val_null(), err: concat("очаквах литерал, получих '", concat(t.txt, "'")), state: "42601" }
+}
+
+// agg име → kind (1 count, 3 sum, 4 avg, 5 min, 6 max); 0 не е agg.
+fn boila_ps_agg_kind(name: str) -> i64 {
+    if name == "count" {
+        return 1
+    }
+    if name == "sum" {
+        return 3
+    }
+    if name == "avg" {
+        return 4
+    }
+    if name == "min" {
+        return 5
+    }
+    if name == "max" {
+        return 6
+    }
+    return 0
+}
+
+// Проекционен елемент: колона или agg( * | колона ).
+struct BoilaPsItem {
+    ok: i64,
+    item: BoilaSelItem,
+    pos: i64,
+    err: str,
+    state: str
+}
+
+fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
+    let t = boila_ps_tok(l, i)
+    if t.kind != tok_ident() {
+        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: concat("очаквах колона в проекцията, получих '", concat(t.txt, "'")), state: "42601" }
+    }
+    let kind = boila_ps_agg_kind(t.txt)
+    if kind == 0 {
+        return BoilaPsItem { ok: 1, item: boila_sel_item_col(t.txt), pos: i + 1, err: "", state: "" }
+    }
+    // agg( ... )
+    if boila_ps_tok(l, i + 1).kind != tok_lparen() {
+        return BoilaPsItem { ok: 1, item: boila_sel_item_col(t.txt), pos: i + 1, err: "", state: "" }
+    }
+    let arg = boila_ps_tok(l, i + 2)
+    if arg.kind == tok_star() {
+        if kind != 1 {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: concat(t.txt, "(*) — само count поддържа *"), state: "0A000" }
+        }
+        if boila_ps_tok(l, i + 3).kind != tok_rparen() {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах ')' след count(*)", state: "42601" }
+        }
+        return BoilaPsItem { ok: 1, item: boila_sel_item_agg(1, ""), pos: i + 4, err: "", state: "" }
+    }
+    if arg.kind != tok_ident() {
+        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: concat("очаквах колона в ", concat(t.txt, "(...)")), state: "42601" }
+    }
+    if boila_ps_tok(l, i + 3).kind != tok_rparen() {
+        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах ')' след агрегатната колона", state: "42601" }
+    }
+    let mut k = kind
+    if k == 1 {
+        k = 2   // count(col)
+    }
+    return BoilaPsItem { ok: 1, item: boila_sel_item_agg(k, arg.txt), pos: i + 4, err: "", state: "" }
+}

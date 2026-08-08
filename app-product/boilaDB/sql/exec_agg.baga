@@ -1,0 +1,228 @@
+// exec_agg.baga — агрегати + GROUP BY + HAVING exec логика (P5).
+// Структурите и помощниците са в exec_agg_extra.baga.
+//
+// count(*) брой редове; count(col)/sum/avg/min/max върху не-NULL
+// стойности; avg е целочислено деление (gaps A1); sum/avg само за
+// i64-тип колони. Групирането е линеен lookup по сериализиран ключ
+// (тестови обеми; ще стане hash при нужда).
+
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "exec_agg_extra.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaAggOut {
+    ok: i64,
+    err: str,
+    state: str,
+    res: BoilaResult
+}
+
+fn boila_agg_fail(msg: str, state: str) -> BoilaAggOut {
+    return BoilaAggOut { ok: 0, err: msg, state: state, res: boila_result_empty() }
+}
+
+fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSel) -> BoilaAggOut {
+    // group колони → индекси
+    let gixs: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(sel.group_cols) {
+        let nm = vec_get(sel.group_cols, i)
+        let ix = boila_col_idx_of(cols, nm)
+        if ix < 0 {
+            return boila_agg_fail(concat("GROUP BY колона '", concat(nm, "' не съществува")), "42703")
+        }
+        vec_push(gixs, ix)
+        i = i + 1
+    }
+    // агрегатни колони → индекси (+ типова проверка за sum/avg)
+    let aixs: Vec<i64> = vec_new()
+    let agg_items: Vec<BoilaSelItem> = vec_new()
+    i = 0
+    while i < vec_len(sel.items) {
+        let it = vec_get(sel.items, i)
+        if it.agg > 0 {
+            if it.agg == 1 {
+                vec_push(aixs, 0 - 1)   // count(*)
+            } else {
+                let ix = boila_col_idx_of(cols, it.col)
+                if ix < 0 {
+                    return boila_agg_fail(concat("агрегатна колона '", concat(it.col, "' не съществува")), "42703")
+                }
+                if it.agg == 3 || it.agg == 4 {
+                    let cd = vec_get(cols, ix)
+                    if cd.typ != boila_v_i64() && cd.typ != boila_v_ts() {
+                        return boila_agg_fail(concat("sum/avg само върху BIGINT колона ('", concat(it.col, "')")), "0A000")
+                    }
+                }
+                vec_push(aixs, ix)
+            }
+            vec_push(agg_items, it)
+        }
+        i = i + 1
+    }
+    let nitems = vec_len(agg_items)
+    // изходни колони: group + агрегати
+    let mut res = boila_result_empty()
+    i = 0
+    while i < vec_len(sel.group_cols) {
+        vec_push(res.cols, vec_get(sel.group_cols, i))
+        i = i + 1
+    }
+    i = 0
+    while i < nitems {
+        vec_push(res.cols, boila_agg_item_name(vec_get(agg_items, i)))
+        i = i + 1
+    }
+    // групи
+    let gkeys: Vec<bytes> = vec_new()
+    let gaccs: Vec<BoilaAggAcc> = vec_new()
+    let mut r: i64 = 0
+    while r < vec_len(rows) {
+        let row = vec_get(rows, r)
+        let key = boila_agg_key(row, gixs)
+        let mut gi: i64 = 0 - 1
+        let mut k: i64 = 0
+        while k < vec_len(gkeys) {
+            if bytes_eq_b(vec_get(gkeys, k), key) {
+                gi = k
+            }
+            k = k + 1
+        }
+        if gi < 0 {
+            vec_push(gkeys, key)
+            vec_push(gaccs, boila_agg_new_acc(nitems, row))
+            gi = vec_len(gkeys) - 1
+        }
+        let acc = vec_get(gaccs, gi)
+        acc.n = acc.n + 1
+        let mut a: i64 = 0
+        while a < nitems {
+            let it = vec_get(agg_items, a)
+            let cix = vec_get(aixs, a)
+            if it.agg == 1 {
+                vec_set(acc.cnt, a, vec_get(acc.cnt, a) + 1)
+            } else {
+                let v = vec_get(row, cix)
+                if v.tag != boila_v_null() {
+                    vec_set(acc.cnt, a, vec_get(acc.cnt, a) + 1)
+                    if vec_get(acc.hasv, a) == 0 {
+                        vec_set(acc.hasv, a, 1)
+                        vec_set(acc.minv, a, v)
+                        vec_set(acc.maxv, a, v)
+                    } else {
+                        if boila_val_cmp(v, vec_get(acc.minv, a)) == (0 - 1) {
+                            vec_set(acc.minv, a, v)
+                        }
+                        if boila_val_cmp(v, vec_get(acc.maxv, a)) == 1 {
+                            vec_set(acc.maxv, a, v)
+                        }
+                    }
+                    if it.agg == 3 || it.agg == 4 {
+                        vec_set(acc.sum, a, vec_get(acc.sum, a) + v.i)
+                    }
+                }
+            }
+            a = a + 1
+        }
+        vec_set(gaccs, gi, acc)
+        r = r + 1
+    }
+    // празен вход без GROUP BY → една нулева група (PG семантика)
+    if vec_len(gkeys) == 0 && vec_len(sel.group_cols) == 0 && nitems > 0 {
+        let empty_row: Vec<BoilaVal> = vec_new()
+        vec_push(gkeys, bytes_new(0))
+        vec_push(gaccs, boila_agg_new_acc(nitems, empty_row))
+    }
+    // изходни редове + HAVING
+    let mut g: i64 = 0
+    while g < vec_len(gaccs) {
+        let acc = vec_get(gaccs, g)
+        let mut emit = true
+        if sel.has_having == 1 {
+            let mut hv: i64 = 0
+            let mut hok: i64 = 1
+            if sel.hav_agg == 1 {
+                hv = acc.n
+            } else {
+                let mut hix: i64 = 0 - 1
+                let mut a: i64 = 0
+                while a < nitems {
+                    let it = vec_get(agg_items, a)
+                    if it.agg == sel.hav_agg && it.col == sel.hav_col {
+                        hix = a
+                    }
+                    a = a + 1
+                }
+                if hix < 0 {
+                    if vec_len(sel.group_cols) > 0 {
+                        return boila_agg_fail("HAVING агрегат извън проекцията — с GROUP BY трябва да е в нея", "0A000")
+                    }
+                    let ex = boila_agg_extra(cols, rows, sel.hav_agg, sel.hav_col)
+                    if ex.ok == 0 {
+                        return boila_agg_fail(ex.err, ex.state)
+                    }
+                    hv = ex.val
+                    hok = ex.has
+                } else {
+                    if sel.hav_agg == 2 {
+                        hv = vec_get(acc.cnt, hix)
+                    } else {
+                        if vec_get(acc.hasv, hix) == 0 {
+                            hok = 0
+                        } else {
+                            if sel.hav_agg == 3 {
+                                hv = vec_get(acc.sum, hix)
+                            } else {
+                                if sel.hav_agg == 4 {
+                                    let c = vec_get(acc.cnt, hix)
+                                    if c == 0 {
+                                        hok = 0
+                                    } else {
+                                        hv = vec_get(acc.sum, hix) / c
+                                    }
+                                } else {
+                                    if sel.hav_agg == 5 {
+                                        hv = vec_get(acc.minv, hix).i
+                                    } else {
+                                        hv = vec_get(acc.maxv, hix).i
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            emit = false
+            if hok == 1 {
+                if sel.hav_op == "=" && hv == sel.hav_val {
+                    emit = true
+                }
+                if sel.hav_op == ">=" && hv >= sel.hav_val {
+                    emit = true
+                }
+                if sel.hav_op == "<=" && hv <= sel.hav_val {
+                    emit = true
+                }
+                if sel.hav_op == ">" && hv > sel.hav_val {
+                    emit = true
+                }
+                if sel.hav_op == "<" && hv < sel.hav_val {
+                    emit = true
+                }
+                if sel.hav_op == "<>" && hv != sel.hav_val {
+                    emit = true
+                }
+            }
+        }
+        if emit == true {
+            vec_push(res.rows, boila_agg_row(acc, gixs, agg_items, aixs))
+        }
+        g = g + 1
+    }
+    return BoilaAggOut { ok: 1, err: "", state: "", res: res }
+}

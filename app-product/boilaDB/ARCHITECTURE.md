@@ -309,14 +309,14 @@ app-product/boilaDB/
 │              sequencer.baga intents.baga recovery.baga (P6, конкурентност)
 ├── catalog/   schema.baga stats.baga stats_hist.baga
 ├── index/     secondary.baga index_codec.baga unique.baga
-├── sql/       ast.baga lexer.baga token.baga
+├── sql/       ast.baga lexer.baga token.baga parse_common.baga
 │              parse_select.baga parse_insert.baga parse_dml.baga
-│              parse_ddl.baga parse_txn.baga (P4)
-│              plan.baga planner.baga plan_cache.baga (P5)
-│              exec_scan.baga exec_sql.baga exec_server.baga
-│              exec_dml.baga exec_modify.baga
-│              exec_filter.baga exec_sort.baga exec_agg.baga
-│              exec_join.baga exec_recursive.baga budget.baga (P5+)
+│              parse_ddl.baga parse_txn.baga
+│              plan_cache.baga (P5)
+│              exec_scan.baga exec_select.baga exec_sql.baga
+│              exec_sort.baga exec_agg.baga exec_agg_extra.baga
+│              exec_join.baga (P5) · exec_dml.baga exec_modify.baga
+│              planner/stats/budget (P6+)
 ├── vector/    hnsw_insert.baga hnsw_search.baga hnsw_store.baga
 │              hnsw_cache.baga quant.baga distance.baga
 ├── fts/       tokenizer.baga stemmer.baga inverted_write.baga

@@ -89,8 +89,9 @@ fn boila_server_exec(srv: BoilaServer, db: str, sql: str) -> BoilaSrvOut !IO !Ti
     if g.ok == 0 {
         return boila_srv_out_fail(g.srv, g.err, g.state)
     }
-    let out = boila_exec_sql(g.store, g.srv.txn, db, sql)?
+    let out = boila_exec_sql(g.store, g.srv.txn, db, sql, g.srv.pc)?
     let mut srv2 = boila_srv_store_putback(g.srv, db, out.s)
     srv2.txn = out.txn
+    srv2.pc = out.pc
     return BoilaSrvOut { srv: srv2, ok: out.ok, err: out.err, state: out.state, kind: out.kind, res: out.res, id: out.id, db: db }
 }

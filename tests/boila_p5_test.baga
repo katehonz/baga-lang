@@ -1,0 +1,162 @@
+// boila_p5_test.baga — P5: ORDER BY/OFFSET/DISTINCT, агрегати, GROUP BY/
+// HAVING, JOIN (NL + index nested loop + LEFT), семантични грешки.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() {
+        return int_to_str(v.i)
+    }
+    if v.tag == boila_v_null() {
+        return "<null>"
+    }
+    return "?"
+}
+
+fn exec(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time {
+    print("boila_p5_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_p5_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    let c1 = exec(srv, "CREATE TABLE emp (id BIGINT, dept TEXT, salary BIGINT, name TEXT, PRIMARY KEY (id))")?
+    srv = c1.srv
+    let c2 = exec(srv, "INSERT INTO emp (id, dept, salary, name) VALUES (1, 'eng', 100, 'alice'), (2, 'eng', 120, 'boris'), (3, 'hr', 90, 'cveti'), (4, 'hr', 95, 'dana'), (5, 'eng', 110, 'evgeni')")?
+    srv = c2.srv
+    check(fails, "seed_emp", c1.ok == 1 && c2.ok == 1 && c2.id == 5)
+    let c3 = exec(srv, "CREATE TABLE dep (code TEXT, loc TEXT, PRIMARY KEY (code))")?
+    srv = c3.srv
+    let c4 = exec(srv, "INSERT INTO dep (code, loc) VALUES ('eng', 'sofia'), ('hr', 'varna'), ('fin', 'plovdiv')")?
+    srv = c4.srv
+    check(fails, "seed_dep", c3.ok == 1 && c4.ok == 1)
+
+    // --- ORDER BY asc/desc ---
+    let o1 = exec(srv, "SELECT name FROM emp ORDER BY salary DESC LIMIT 2")?
+    srv = o1.srv
+    check(fails, "order_desc", o1.ok == 1 && vec_len(o1.res.rows) == 2 && cell(vec_get(o1.res.rows, 0), 0) == "boris" && cell(vec_get(o1.res.rows, 1), 0) == "evgeni")
+    let o2 = exec(srv, "SELECT id FROM emp ORDER BY dept, salary LIMIT 3")?
+    srv = o2.srv
+    check(fails, "order_multi", o2.ok == 1 && vec_len(o2.res.rows) == 3 && cell(vec_get(o2.res.rows, 0), 0) == "1" && cell(vec_get(o2.res.rows, 1), 0) == "5" && cell(vec_get(o2.res.rows, 2), 0) == "2")
+
+    // --- OFFSET + LIMIT ---
+    let o3 = exec(srv, "SELECT id FROM emp ORDER BY id LIMIT 2 OFFSET 2")?
+    srv = o3.srv
+    check(fails, "offset", o3.ok == 1 && vec_len(o3.res.rows) == 2 && cell(vec_get(o3.res.rows, 0), 0) == "3" && cell(vec_get(o3.res.rows, 1), 0) == "4")
+
+    // --- DISTINCT ---
+    let d1 = exec(srv, "SELECT DISTINCT dept FROM emp ORDER BY dept")?
+    srv = d1.srv
+    check(fails, "distinct", d1.ok == 1 && vec_len(d1.res.rows) == 2 && cell(vec_get(d1.res.rows, 0), 0) == "eng" && cell(vec_get(d1.res.rows, 1), 0) == "hr")
+
+    // --- агрегати без GROUP BY ---
+    let a1 = exec(srv, "SELECT count(*), sum(salary), avg(salary), min(salary), max(salary) FROM emp")?
+    srv = a1.srv
+    check(fails, "agg_all", a1.ok == 1 && vec_len(a1.res.rows) == 1 && cell(vec_get(a1.res.rows, 0), 0) == "5" && cell(vec_get(a1.res.rows, 0), 1) == "515" && cell(vec_get(a1.res.rows, 0), 2) == "103" && cell(vec_get(a1.res.rows, 0), 3) == "90" && cell(vec_get(a1.res.rows, 0), 4) == "120")
+    let a2 = exec(srv, "SELECT count(*) FROM emp WHERE id = 999")?
+    srv = a2.srv
+    check(fails, "agg_empty", a2.ok == 1 && vec_len(a2.res.rows) == 1 && cell(vec_get(a2.res.rows, 0), 0) == "0")
+    let a3 = exec(srv, "SELECT count(salary) FROM emp")?
+    srv = a3.srv
+    check(fails, "agg_count_col", a3.ok == 1 && cell(vec_get(a3.res.rows, 0), 0) == "5")
+
+    // --- GROUP BY ---
+    let g1 = exec(srv, "SELECT dept, count(*), sum(salary) FROM emp GROUP BY dept ORDER BY dept")?
+    srv = g1.srv
+    check(fails, "group_by", g1.ok == 1 && vec_len(g1.res.rows) == 2 && cell(vec_get(g1.res.rows, 0), 0) == "eng" && cell(vec_get(g1.res.rows, 0), 1) == "3" && cell(vec_get(g1.res.rows, 0), 2) == "330" && cell(vec_get(g1.res.rows, 1), 0) == "hr" && cell(vec_get(g1.res.rows, 1), 2) == "185")
+
+    // --- HAVING ---
+    let h1 = exec(srv, "SELECT dept, count(*) FROM emp GROUP BY dept HAVING count(*) >= 3")?
+    srv = h1.srv
+    check(fails, "having", h1.ok == 1 && vec_len(h1.res.rows) == 1 && cell(vec_get(h1.res.rows, 0), 0) == "eng")
+
+    // --- JOIN nested loop ---
+    let j1 = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY id LIMIT 2")?
+    srv = j1.srv
+    check(fails, "join_nl", j1.ok == 1 && vec_len(j1.res.rows) == 2 && cell(vec_get(j1.res.rows, 0), 0) == "alice" && cell(vec_get(j1.res.rows, 0), 1) == "sofia")
+
+    // --- JOIN index nested loop (индекс по вътрешната колона) ---
+    let jx = exec(srv, "CREATE INDEX emp_dept_ix ON emp (dept)")?
+    srv = jx.srv
+    let j2 = exec(srv, "SELECT code, name FROM dep JOIN emp ON code = dept WHERE code = 'hr' ORDER BY id")?
+    srv = j2.srv
+    check(fails, "join_inl", j2.ok == 1 && vec_len(j2.res.rows) == 2 && cell(vec_get(j2.res.rows, 0), 1) == "cveti" && cell(vec_get(j2.res.rows, 1), 1) == "dana")
+
+    // --- LEFT JOIN: dep ред без съвпадение → NULL ---
+    let c5 = exec(srv, "INSERT INTO emp (id, dept, salary, name) VALUES (6, 'ops', 80, 'franko')")?
+    srv = c5.srv
+    let j3 = exec(srv, "SELECT dept, loc FROM emp LEFT JOIN dep ON dept = code WHERE dept = 'ops'")?
+    srv = j3.srv
+    check(fails, "left_join_null", j3.ok == 1 && vec_len(j3.res.rows) == 1 && cell(vec_get(j3.res.rows, 0), 1) == "<null>")
+    let j4 = exec(srv, "SELECT dept, loc FROM emp JOIN dep ON dept = code WHERE dept = 'ops'")?
+    srv = j4.srv
+    check(fails, "inner_join_skip", j4.ok == 1 && vec_len(j4.res.rows) == 0)
+
+    // --- семантични грешки ---
+    let e1 = exec(srv, "SELECT dept, count(*) FROM emp")?
+    srv = e1.srv
+    check(fails, "err_mix_no_group", e1.ok == 0 && e1.state == "0A000")
+    let e2 = exec(srv, "SELECT name FROM emp ORDER BY nope")?
+    srv = e2.srv
+    check(fails, "err_order_col", e2.ok == 0 && e2.state == "42703")
+    let e3 = exec(srv, "SELECT name FROM emp JOIN dep ON dept = code JOIN dep ON dept = code")?
+    srv = e3.srv
+    check(fails, "err_second_join", e3.ok == 0 && e3.state == "0A000")
+    let e4 = exec(srv, "SELECT sum(dept) FROM emp")?
+    srv = e4.srv
+    check(fails, "err_sum_text", e4.ok == 0 && e4.state == "0A000")
+
+    boila_server_close(srv)?
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_p5_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_p5_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

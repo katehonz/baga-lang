@@ -1,0 +1,138 @@
+// exec_select.baga — SELECT оркестраторът (P5): fetch/join → агрегати →
+// ORDER BY → проекция → DISTINCT → OFFSET/LIMIT.
+
+import "../storage/shards.baga"
+import "../core/value.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "exec_agg.baga"
+import "exec_join.baga"
+import "exec_sort.baga"
+import "std/str/str.baga"
+
+fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time {
+    // редове + схема
+    let mut cols = t.cols
+    let mut rows: Vec<Vec<BoilaVal>> = vec_new()
+    if sel.has_join == 1 {
+        let j = boila_join_rows(s, txn, t, sel)?
+        s = j.s
+        txn = j.txn
+        if j.ok == 0 {
+            return boila_exec_fail(s, txn, j.err, j.state)
+        }
+        cols = j.cols
+        rows = j.rows
+    } else {
+        let f = boila_fetch_rows(s, txn, t, sel)?
+        s = f.s
+        if f.ok == 0 {
+            return boila_exec_fail(s, txn, f.err, f.state)
+        }
+        rows = f.rows
+    }
+
+    // има ли агрегати в проекцията
+    let mut has_agg = false
+    let mut k: i64 = 0
+    while k < vec_len(sel.items) {
+        let it = vec_get(sel.items, k)
+        if it.agg > 0 {
+            has_agg = true
+        }
+        k = k + 1
+    }
+
+    if has_agg == true || sel.has_group == 1 {
+        let ag = boila_agg_exec(cols, rows, sel)
+        if ag.ok == 0 {
+            return boila_exec_fail(s, txn, ag.err, ag.state)
+        }
+        let mut res = ag.res
+        // ORDER BY върху изходните колони
+        if sel.has_order == 1 {
+            let idxs: Vec<i64> = vec_new()
+            let mut i: i64 = 0
+            while i < vec_len(sel.ord_cols) {
+                let nm = vec_get(sel.ord_cols, i)
+                let ix = boila_col_name_idx(res.cols, nm)
+                if ix < 0 {
+                    return boila_exec_fail(s, txn, concat("ORDER BY колона '", concat(nm, "' не е в изхода")), "42703")
+                }
+                vec_push(idxs, ix)
+                i = i + 1
+            }
+            boila_sort_rows(res.rows, idxs, sel.ord_desc)
+        }
+        if sel.distinct == 1 {
+            res.rows = boila_distinct_rows(res.rows)
+        }
+        res.rows = boila_apply_offlim(res.rows, sel.offset, sel.limit)
+        return boila_exec_ok_select(s, txn, res)
+    }
+
+    // не-агрегатен път: ORDER BY преди проекция (върху пълната схема)
+    if sel.has_order == 1 {
+        let idxs: Vec<i64> = vec_new()
+        let mut i: i64 = 0
+        while i < vec_len(sel.ord_cols) {
+            let nm = vec_get(sel.ord_cols, i)
+            let ix = boila_col_idx_of(cols, nm)
+            if ix < 0 {
+                return boila_exec_fail(s, txn, concat("ORDER BY колона '", concat(nm, "' не съществува")), "42703")
+            }
+            vec_push(idxs, ix)
+            i = i + 1
+        }
+        boila_sort_rows(rows, idxs, sel.ord_desc)
+    }
+
+    // проекция
+    let mut res = boila_result_empty()
+    let proj: Vec<i64> = vec_new()
+    if sel.star == 1 {
+        let mut i: i64 = 0
+        while i < vec_len(cols) {
+            let cd = vec_get(cols, i)
+            vec_push(res.cols, cd.name)
+            vec_push(proj, i)
+            i = i + 1
+        }
+    } else {
+        let mut i: i64 = 0
+        while i < vec_len(sel.items) {
+            let it = vec_get(sel.items, i)
+            let ix = boila_col_idx_of(cols, it.col)
+            if ix < 0 {
+                return boila_exec_fail(s, txn, concat("колона '", concat(it.col, "' не съществува")), "42703")
+            }
+            vec_push(res.cols, it.col)
+            vec_push(proj, ix)
+            i = i + 1
+        }
+    }
+    let mut r: i64 = 0
+    while r < vec_len(rows) {
+        vec_push(res.rows, boila_project(vec_get(rows, r), proj))
+        r = r + 1
+    }
+    if sel.distinct == 1 {
+        res.rows = boila_distinct_rows(res.rows)
+    }
+    res.rows = boila_apply_offlim(res.rows, sel.offset, sel.limit)
+    return boila_exec_ok_select(s, txn, res)
+}
+
+// Име на колона в изходен списък (за ORDER BY след агрегация).
+fn boila_col_name_idx(names: Vec<str>, name: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(names) {
+        if vec_get(names, i) == name {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}

@@ -1,17 +1,48 @@
-// ast.baga — AST структури за BoilaSQL P1 (SELECT v0 + CREATE TABLE).
+// ast.baga — AST структури за BoilaSQL (P1 → P5).
 
 import "../core/value.baga"
 
-// SELECT: WHERE-клаузите са само по PRIMARY KEY (P1), най-много
-// eq + lo + hi, свързани с AND. limit = 0 означава "няма".
+// SELECT (P5): projection от BoilaSelItem-и (колони/агрегати), WHERE по
+// pk или индексирана колона (eq + lo + hi с AND), DISTINCT, ORDER BY/
+// OFFSET, GROUP BY/HAVING, един JOIN (INNER/LEFT, ON equality).
+struct BoilaSelItem {
+    agg: i64,   // 0 колона, 1 count(*), 2 count(col), 3 sum, 4 avg, 5 min, 6 max
+    col: str
+}
+
 struct BoilaSel {
     table: str,
     star: i64,
-    cols: Vec<str>,
+    items: Vec<BoilaSelItem>,
     eq_col: str, has_eq: i64, pk_eq: BoilaVal,
     lo_col: str, has_lo: i64, pk_lo: BoilaVal,
     hi_col: str, has_hi: i64, pk_hi: BoilaVal,
-    limit: i64
+    limit: i64,
+    offset: i64,
+    has_order: i64,
+    ord_cols: Vec<str>,
+    ord_desc: Vec<i64>,
+    distinct: i64,
+    has_group: i64,
+    group_cols: Vec<str>,
+    has_having: i64,
+    hav_agg: i64,
+    hav_col: str,
+    hav_op: str,
+    hav_val: i64,
+    has_join: i64,
+    join_kind: i64,   // 1 INNER, 2 LEFT
+    join_table: str,
+    join_lcol: str,
+    join_rcol: str
+}
+
+fn boila_sel_item_col(name: str) -> BoilaSelItem {
+    return BoilaSelItem { agg: 0, col: name }
+}
+
+fn boila_sel_item_agg(kind: i64, col: str) -> BoilaSelItem {
+    return BoilaSelItem { agg: kind, col: col }
 }
 
 // Тип на колона = tag от value модела (i64/bool/str/bytes/json/ts).
@@ -27,13 +58,21 @@ struct BoilaCreate {
 }
 
 fn boila_sel_empty() -> BoilaSel {
-    let cols: Vec<str> = vec_new()
+    let items: Vec<BoilaSelItem> = vec_new()
+    let oc: Vec<str> = vec_new()
+    let od: Vec<i64> = vec_new()
+    let gc: Vec<str> = vec_new()
     return BoilaSel {
-        table: "", star: 0, cols: cols,
+        table: "", star: 0, items: items,
         eq_col: "", has_eq: 0, pk_eq: BoilaVal { tag: 0, i: 0, b: bytes_new(0) },
         lo_col: "", has_lo: 0, pk_lo: BoilaVal { tag: 0, i: 0, b: bytes_new(0) },
         hi_col: "", has_hi: 0, pk_hi: BoilaVal { tag: 0, i: 0, b: bytes_new(0) },
-        limit: 0
+        limit: 0, offset: 0,
+        has_order: 0, ord_cols: oc, ord_desc: od,
+        distinct: 0,
+        has_group: 0, group_cols: gc,
+        has_having: 0, hav_agg: 0, hav_col: "", hav_op: "", hav_val: 0,
+        has_join: 0, join_kind: 0, join_table: "", join_lcol: "", join_rcol: ""
     }
 }
 
