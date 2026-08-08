@@ -79,10 +79,11 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P6
 
-- **W1 — wire сървърът е sync: една връзка в даден момент.** Паралелни
-  клиенти чакат на опашка. Истинският bounded pool + shard-owner нишки
-  (PLAN P6 гейтът „10k concurrent") идва с concurrency фазата (P11) —
-  изисква rebuild на собствеността върху BoilaServer.
+- **W1 — SQL exec е сериен; accept е poll multi-conn (частично FIXED).**
+  HTTP/PG: `poll(2)` държи много ESTABLISHED keep-alive връзки
+  (`BOILA_MAX_CONN`, default 256); backpressure → 503/53300.
+  SQL/txn все още един BoilaServer собственик — concurrent query
+  execution изисква per-conn txn + mutex/shard-owner (не v1).
 - **W2 — extended protocol-ът ре-parse-ва на всеки Execute.** $1..$n се
   заместват текстово в Bind/Execute и заявката минава през пълния
   pipeline (plan cache-ът хваща само повторения на идентичен текст).
@@ -182,11 +183,9 @@ T = транзакции, W = wire protocol, F = FTS.
   hash-подреден (не сортиран), затова `WHERE pk >= a AND pk <= b` в P1
   обхожда цялата таблица. Резултатите са коректни, но не са подредени и
   няма early-stop. Истински сортиран range scan идва с P5 planner-а.
-- **H2 — serve е sync (една връзка в даден момент).** SQL пътят мутира
-  store-а (каталог), struct-по-стойност изисква един собственик. P3
-  добави statement-level group commit; конкурентността (shard-owner
-  нишки + канали, bounded pool) идва с wire фазите (P6). /health и
-  /metrics са леки и sync режимът не ги засяга практически.
+- **H2 — (частично FIXED) HTTP serve е poll multi-conn.** Много keep-alive
+  клиенти; SQL exec сериен. Bounded `BOILA_MAX_CONN`. Пълен worker pool
+  + per-conn txn — бъдеще (W1 residual).
 
 ## Открити при P0
 

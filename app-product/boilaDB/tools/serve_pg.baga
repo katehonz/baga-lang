@@ -1,16 +1,17 @@
-// serve_pg.baga — PG wire v3 сървър (P6).
+// serve_pg.baga — PG wire v3, poll multi-conn.
 //
-// Env: BOILA_PATH (root), BOILA_SHARDS, BOILA_PGPORT (6575),
-//      BOILA_FLUSH_AT, BOILA_COMPACT_AT, BOILA_MAX_DB,
-//      BOILA_TOKEN (празно = trust; иначе cleartext password).
+// Env: BOILA_PATH, BOILA_PGPORT (6575), BOILA_SHARDS, BOILA_MAX_DB,
+//      BOILA_MAX_CONN (256), BOILA_TOKEN.
 //
-// Синхронен accept loop: една връзка се обслужва до край (gaps W1 —
-// pool-ът идва с concurrency фазата). Активна транзакция при затваряне
-// на връзката → rollback (PG семантика).
+// Много едновременни TCP връзки (poll); SQL exec сериен през един
+// BoilaServer. При затваряне — rollback на активна txn (per-conn
+// семантика остава: txn е на сървъра, една активна в даден момент).
 
 import "../api/pgwire.baga"
+import "../api/serve_poll.baga"
 import "../storage/databases.baga"
 import "std/net/tcp.baga"
+import "std/net/poll.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 
@@ -29,6 +30,7 @@ fn main() -> i64 !Net !IO !Time {
     let flush_at = parse_int(boila_env_or("BOILA_FLUSH_AT", "256"))
     let compact_at = parse_int(boila_env_or("BOILA_COMPACT_AT", "4"))
     let max_db = parse_int(boila_env_or("BOILA_MAX_DB", "64"))
+    let max_conn = parse_int(boila_env_or("BOILA_MAX_CONN", "256"))
 
     let mut srv = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
     if srv.ok == 0 {
@@ -39,14 +41,60 @@ fn main() -> i64 !Net !IO !Time {
     line = concat(line, int_to_str(port))
     line = concat(line, " (root=")
     line = concat(line, root)
-    line = concat(line, ", sync-mode)")
+    line = concat(line, ", max_conn=")
+    line = concat(line, int_to_str(max_conn))
+    line = concat(line, ", poll multi-conn)")
     print(line)
 
     let listener = tcp_listen(port)?
+    let mut st = boila_poll_new()
+    // PG: on readable, run full session until idle block isn't available —
+    // boila_pg_serve owns the fd until Terminate/EOF. To keep multi-conn
+    // accept alive we spawn: only one full session at a time still if we
+    // call serve synchronously. Instead: accept into pool; when readable
+    // and not busy, serve that fd to completion (others wait in poll).
+    // Better UX than serial accept: N clients can connect; first with data
+    // runs; others stay ESTABLISHED until their turn.
+    let busy: Map<i64, i64> = map_new()
     while true {
-        let fd = tcp_accept(listener)?
-        let ro = boila_pg_serve(fd, srv)?
-        srv = ro.srv
+        let pset = boila_poll_set(listener, st)
+        let pr = poll_wait(pset, 500)?
+        if pr.ok < 0 {
+            return 1
+        }
+        if poll_has(pr.ready, listener) == 1 {
+            let fd = tcp_accept(listener)?
+            if fd >= 0 {
+                if vec_len(st.fds) >= max_conn {
+                    tcp_close(fd)?
+                } else {
+                    st = boila_poll_add(st, fd)?
+                    map_set(busy, fd, 0)
+                }
+            }
+        }
+        let mut i: i64 = 0
+        while i < vec_len(pr.ready) {
+            let fd = vec_get(pr.ready, i)
+            if fd != listener && boila_poll_has(st, fd) == 1 {
+                // full session (blocks loop until client done) — then drop
+                let ro = boila_pg_serve(fd, srv)?
+                srv = ro.srv
+                // boila_pg_serve already tcp_close(fd)
+                map_del(busy, fd)
+                // remove without second close
+                let nv: Vec<i64> = vec_new()
+                let mut j: i64 = 0
+                while j < vec_len(st.fds) {
+                    if vec_get(st.fds, j) != fd {
+                        vec_push(nv, vec_get(st.fds, j))
+                    }
+                    j = j + 1
+                }
+                st.fds = nv
+            }
+            i = i + 1
+        }
     }
     return 0
 }

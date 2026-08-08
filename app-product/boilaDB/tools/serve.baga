@@ -1,24 +1,19 @@
-// serve.baga — входната точка на boilaDB (P2: multi-database).
+// serve.baga — HTTP входна точка (poll multi-conn).
 //
-// HTTP сървър върху сървърен root с много бази данни:
-//   GET  /health  → {"status":"ok","open_databases":N,"max_db":M}
-//   GET  /metrics → Prometheus текст (metbaga)
-//   POST /sql?db=<име> → BoilaSQL в избраната база (default "boila");
-//                        CREATE/DROP DATABASE, USE са сървърни заявления
+// GET  /health  GET /metrics  POST /sql?db=
+// Env: BOILA_PATH, BOILA_PORT (6570), BOILA_SHARDS, BOILA_FLUSH_AT,
+//      BOILA_COMPACT_AT, BOILA_MAX_DB, BOILA_MAX_CONN (default 256).
 //
-// Env: BOILA_PATH (root, default /tmp/baga_boila), BOILA_SHARDS (4),
-//      BOILA_PORT (6570), BOILA_FLUSH_AT (256), BOILA_COMPACT_AT (4),
-//      BOILA_MAX_DB (64).
-//
-// Конкурентност (честно, gaps H2): accept loop-ът е SYNC — SQL пътят
-// мутира BoilaServer (registry/каталози), struct-по-стойност изисква
-// един собственик. P3 въвежда shard-owner нишки + канали.
+// poll(2) multi-conn: много keep-alive клиенти едновременно; SQL exec
+// е сериен (един BoilaServer). По-силно от serial-accept (gaps H2).
 
 import "httpdbaga/http.baga"
 import "metbaga/met.baga"
 import "../api/http_sql.baga"
+import "../api/serve_poll.baga"
 import "../storage/databases.baga"
 import "std/net/tcp.baga"
+import "std/net/poll.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 
@@ -43,7 +38,7 @@ fn boila_route(srv: BoilaServer, req: Request) -> BoilaRouteOut !IO !Time {
         body = concat(body, int_to_str(vec_len(srv.names)))
         body = concat(body, ",\"max_db\":")
         body = concat(body, int_to_str(srv.max_db))
-        body = concat(body, "}")
+        body = concat(body, ",\"mode\":\"poll\"}")
         return BoilaRouteOut { srv: srv, resp: http_json_response(200, body) }
     }
     if method == "GET" && path == "/metrics" {
@@ -62,37 +57,40 @@ fn boila_route(srv: BoilaServer, req: Request) -> BoilaRouteOut !IO !Time {
     return BoilaRouteOut { srv: srv, resp: http_json_response(404, "{\"error\":\"not found\"}") }
 }
 
-struct BoilaConnOut {
-    srv: BoilaServer
+// One readable client: read one HTTP request (or EOF).
+struct BoilaHttpTick {
+    srv: BoilaServer,
+    st: BoilaPollFds,
+    readers: Map<i64, HttpReader>,
+    drop_fd: i64
 }
 
-// HTTP/1.1 keep-alive loop; tcp_close накрая (клиентите четат до EOF).
-fn boila_conn(fd: i64, srv0: BoilaServer) -> BoilaConnOut !IO !Net !Time {
-    let mut srv = srv0
+fn boila_http_on_readable(srv: BoilaServer, st: BoilaPollFds, readers: Map<i64, HttpReader>, fd: i64) -> BoilaHttpTick !IO !Net !Time {
     let mut r = http_reader(fd)
-    let mut keep = true
-    while keep {
-        let out = http_read_request_r(r)?
-        r = out.reader
-        if out.err != 0 {
-            http_respond_keepalive(fd, http_json_response(out.err, "{\"error\":\"bad request\"}"), 0)?
-            keep = false
-        } else {
-            if http_method(out.req) == "" {
-                keep = false
-            } else {
-                let ka = http_keepalive(out.req)
-                let rt = boila_route(srv, out.req)?
-                srv = rt.srv
-                http_respond_keepalive(fd, rt.resp, ka)?
-                if ka == 0 {
-                    keep = false
-                }
-            }
-        }
+    if map_has(readers, fd) == 1 {
+        r = map_get(readers, fd)
     }
-    tcp_close(fd)?
-    return BoilaConnOut { srv: srv }
+    let out = http_read_request_r(r)?
+    r = out.reader
+    if out.err != 0 {
+        http_respond_keepalive(fd, http_json_response(out.err, "{\"error\":\"bad request\"}"), 0)?
+        map_del(readers, fd)
+        return BoilaHttpTick { srv: srv, st: st, readers: readers, drop_fd: fd }
+    }
+    if http_method(out.req) == "" {
+        map_del(readers, fd)
+        return BoilaHttpTick { srv: srv, st: st, readers: readers, drop_fd: fd }
+    }
+    let ka = http_keepalive(out.req)
+    let rt = boila_route(srv, out.req)?
+    srv = rt.srv
+    http_respond_keepalive(fd, rt.resp, ka)?
+    if ka == 0 {
+        map_del(readers, fd)
+        return BoilaHttpTick { srv: srv, st: st, readers: readers, drop_fd: fd }
+    }
+    map_set(readers, fd, r)
+    return BoilaHttpTick { srv: srv, st: st, readers: readers, drop_fd: 0 - 1 }
 }
 
 fn main() -> i64 !Net !IO !Time {
@@ -102,6 +100,7 @@ fn main() -> i64 !Net !IO !Time {
     let flush_at = parse_int(boila_env_or("BOILA_FLUSH_AT", "256"))
     let compact_at = parse_int(boila_env_or("BOILA_COMPACT_AT", "4"))
     let max_db = parse_int(boila_env_or("BOILA_MAX_DB", "64"))
+    let max_conn = parse_int(boila_env_or("BOILA_MAX_CONN", "256"))
 
     let mut srv = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
     if srv.ok == 0 {
@@ -112,16 +111,47 @@ fn main() -> i64 !Net !IO !Time {
     line = concat(line, int_to_str(port))
     line = concat(line, " (root=")
     line = concat(line, root)
-    line = concat(line, ", max_db=")
-    line = concat(line, int_to_str(max_db))
-    line = concat(line, ", sync-mode)")
+    line = concat(line, ", max_conn=")
+    line = concat(line, int_to_str(max_conn))
+    line = concat(line, ", poll multi-conn)")
     print(line)
 
     let listener = tcp_listen(port)?
+    let mut st = boila_poll_new()
+    let mut readers: Map<i64, HttpReader> = map_new()
     while true {
-        let fd = tcp_accept(listener)?
-        let co = boila_conn(fd, srv)?
-        srv = co.srv
+        let pset = boila_poll_set(listener, st)
+        let pr = poll_wait(pset, 500)?
+        if pr.ok < 0 {
+            return 1
+        }
+        if poll_has(pr.ready, listener) == 1 {
+            let fd = tcp_accept(listener)?
+            if fd >= 0 {
+                if vec_len(st.fds) >= max_conn {
+                    // backpressure: reject (53300 too_many_connections)
+                    http_respond_keepalive(fd, http_json_response(503, "{\"error\":\"too many connections\",\"sqlstate\":\"53300\"}"), 0)?
+                    tcp_close(fd)?
+                } else {
+                    st = boila_poll_add(st, fd)?
+                    map_set(readers, fd, http_reader(fd))
+                }
+            }
+        }
+        let mut i: i64 = 0
+        while i < vec_len(pr.ready) {
+            let fd = vec_get(pr.ready, i)
+            if fd != listener && boila_poll_has(st, fd) == 1 {
+                let tk = boila_http_on_readable(srv, st, readers, fd)?
+                srv = tk.srv
+                st = tk.st
+                readers = tk.readers
+                if tk.drop_fd >= 0 {
+                    st = boila_poll_drop(st, tk.drop_fd)?
+                }
+            }
+            i = i + 1
+        }
     }
     return 0
 }

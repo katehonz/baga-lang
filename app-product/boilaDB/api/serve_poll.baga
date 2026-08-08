@@ -1,0 +1,59 @@
+// serve_poll.baga — poll(2) multi-conn loop helpers (P11+ server harden).
+// Една нишка, много fds: accept не чака края на предишната връзка.
+// SQL/exec остава сериен (един BoilaServer собственик) — gaps W1 partial.
+
+import "std/net/tcp.baga"
+import "std/net/poll.baga"
+import "std/str/str.baga"
+
+struct BoilaPollFds {
+    fds: Vec<i64>
+}
+
+fn boila_poll_new() -> BoilaPollFds {
+    return BoilaPollFds { fds: vec_new() }
+}
+
+fn boila_poll_add(st: BoilaPollFds, fd: i64) -> BoilaPollFds !Net {
+    tcp_set_nodelay(fd)?
+    vec_push(st.fds, fd)
+    return st
+}
+
+fn boila_poll_drop(st: BoilaPollFds, fd: i64) -> BoilaPollFds !Net !IO {
+    tcp_close(fd)?
+    let nv: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(st.fds) {
+        let f = vec_get(st.fds, i)
+        if f != fd {
+            vec_push(nv, f)
+        }
+        i = i + 1
+    }
+    st.fds = nv
+    return st
+}
+
+fn boila_poll_has(st: BoilaPollFds, fd: i64) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(st.fds) {
+        if vec_get(st.fds, i) == fd {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Build poll set = listener + clients.
+fn boila_poll_set(listener: i64, st: BoilaPollFds) -> Vec<i64> {
+    let out: Vec<i64> = vec_new()
+    vec_push(out, listener)
+    let mut i: i64 = 0
+    while i < vec_len(st.fds) {
+        vec_push(out, vec_get(st.fds, i))
+        i = i + 1
+    }
+    return out
+}
