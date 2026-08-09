@@ -221,9 +221,13 @@ struct BoilaUpd {
     table: str,
     set_cols: Vec<str>,
     set_vals: Vec<BoilaVal>,
+    // Q-xdml: per-SET expression tokens (parallel to set_cols;
+    // empty vec = literal at set_vals); evaluated on the OLD row.
+    set_xtoks: Vec<Vec<Token>>,
     eq_col: str, has_eq: i64, pk_eq: BoilaVal,
     lo_col: str, has_lo: i64, pk_lo: BoilaVal,
     hi_col: str, has_hi: i64, pk_hi: BoilaVal,
+    has_xw: i64, xw_toks: Vec<Token>,
     has_ret: i64,
     ret_star: i64,
     ret_cols: Vec<str>
@@ -232,9 +236,11 @@ struct BoilaUpd {
 fn boila_upd_empty() -> BoilaUpd {
     let sc: Vec<str> = vec_new()
     let sv: Vec<BoilaVal> = vec_new()
+    let sx: Vec<Vec<Token>> = vec_new()
     let rc: Vec<str> = vec_new()
+    let xw: Vec<Token> = vec_new()
     let z = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
-    return BoilaUpd { table: "", set_cols: sc, set_vals: sv, eq_col: "", has_eq: 0, pk_eq: z, lo_col: "", has_lo: 0, pk_lo: z, hi_col: "", has_hi: 0, pk_hi: z, has_ret: 0, ret_star: 0, ret_cols: rc }
+    return BoilaUpd { table: "", set_cols: sc, set_vals: sv, set_xtoks: sx, eq_col: "", has_eq: 0, pk_eq: z, lo_col: "", has_lo: 0, pk_lo: z, hi_col: "", has_hi: 0, pk_hi: z, has_xw: 0, xw_toks: xw, has_ret: 0, ret_star: 0, ret_cols: rc }
 }
 
 struct BoilaDel {
@@ -242,6 +248,7 @@ struct BoilaDel {
     eq_col: str, has_eq: i64, pk_eq: BoilaVal,
     lo_col: str, has_lo: i64, pk_lo: BoilaVal,
     hi_col: str, has_hi: i64, pk_hi: BoilaVal,
+    has_xw: i64, xw_toks: Vec<Token>,
     has_ret: i64,
     ret_star: i64,
     ret_cols: Vec<str>
@@ -249,8 +256,9 @@ struct BoilaDel {
 
 fn boila_del_empty() -> BoilaDel {
     let rc: Vec<str> = vec_new()
+    let xw: Vec<Token> = vec_new()
     let z = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
-    return BoilaDel { table: "", eq_col: "", has_eq: 0, pk_eq: z, lo_col: "", has_lo: 0, pk_lo: z, hi_col: "", has_hi: 0, pk_hi: z, has_ret: 0, ret_star: 0, ret_cols: rc }
+    return BoilaDel { table: "", eq_col: "", has_eq: 0, pk_eq: z, lo_col: "", has_lo: 0, pk_lo: z, hi_col: "", has_hi: 0, pk_hi: z, has_xw: 0, xw_toks: xw, has_ret: 0, ret_star: 0, ret_cols: rc }
 }
 
 // CREATE INDEX име ON таблица (колона)

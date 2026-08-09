@@ -18,6 +18,25 @@ fn boila_xw_fail(msg: str, state: str) -> BoilaXwOut {
     return BoilaXwOut { ok: 0, err: msg, state: state, rows: rows }
 }
 
+struct BoilaXwEval {
+    ok: i64,
+    val: BoilaVal,
+    err: str,
+    state: str
+}
+
+// Single evaluation with names/vals bound (row of any shape).
+fn boila_xw_eval(names: Vec<str>, xtoks: Vec<Token>, vals: Vec<BoilaVal>) -> BoilaXwEval !Time {
+    let lx = BoilaLex { toks: xtoks, err: "" }
+    let g: Map<str, str> = map_new()
+    let bind = BoilaDualBind { on: 1, names: names, vals: vals }
+    let e = boila_dual_parse_expr(lx, 0, "", g, bind)?
+    if e.ok == 0 {
+        return BoilaXwEval { ok: 0, val: boila_val_null(), err: e.err, state: e.state }
+    }
+    return BoilaXwEval { ok: 1, val: e.val, err: "", state: "" }
+}
+
 // Evaluate the WHERE expression per row; NULL/false/0 rejects the row.
 // The NULL-bound probe surfaces column/fn errors before any row runs.
 fn boila_xw_filter(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, xtoks: Vec<Token>) -> BoilaXwOut !Time {
@@ -46,8 +65,7 @@ fn boila_xw_filter(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, xtoks: Vec<
     let mut r: i64 = 0
     while r < vec_len(rows) {
         let row = vec_get(rows, r)
-        let bind = BoilaDualBind { on: 1, names: names, vals: row }
-        let e = boila_dual_parse_expr(lx, 0, "", g, bind)?
+        let e = boila_xw_eval(names, xtoks, row)?
         if e.ok == 0 {
             return boila_xw_fail(e.err, e.state)
         }

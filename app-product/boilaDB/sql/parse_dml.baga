@@ -11,6 +11,8 @@ import "token.baga"
 import "lexer.baga"
 import "ast.baga"
 import "parse_select.baga"
+import "parse_common.baga"
+import "sfn.baga"
 import "../core/value.baga"
 import "std/str/str.baga"
 
@@ -19,25 +21,109 @@ struct BoilaWh {
     ok: i64, err: str, state: str, pos: i64,
     eq_col: str, has_eq: i64, v_eq: BoilaVal,
     lo_col: str, has_lo: i64, v_lo: BoilaVal,
-    hi_col: str, has_hi: i64, v_hi: BoilaVal
+    hi_col: str, has_hi: i64, v_hi: BoilaVal,
+    // Q-xdml: expression WHERE (dual evaluator post-filter on targets)
+    has_xw: i64, xw_toks: Vec<Token>
 }
 
 fn boila_wh_empty() -> BoilaWh {
     let z = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
-    return BoilaWh { ok: 1, err: "", state: "", pos: 0, eq_col: "", has_eq: 0, v_eq: z, lo_col: "", has_lo: 0, v_lo: z, hi_col: "", has_hi: 0, v_hi: z }
+    let xw: Vec<Token> = vec_new()
+    return BoilaWh { ok: 1, err: "", state: "", pos: 0, eq_col: "", has_eq: 0, v_eq: z, lo_col: "", has_lo: 0, v_lo: z, hi_col: "", has_hi: 0, v_hi: z, has_xw: 0, xw_toks: xw }
 }
 
 fn boila_wh_fail(msg: str, state: str, p: i64) -> BoilaWh {
     let z = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
-    return BoilaWh { ok: 0, err: msg, state: state, pos: p, eq_col: "", has_eq: 0, v_eq: z, lo_col: "", has_lo: 0, v_lo: z, hi_col: "", has_hi: 0, v_hi: z }
+    let xw: Vec<Token> = vec_new()
+    return BoilaWh { ok: 0, err: msg, state: state, pos: p, eq_col: "", has_eq: 0, v_eq: z, lo_col: "", has_lo: 0, v_lo: z, hi_col: "", has_hi: 0, v_hi: z, has_xw: 0, xw_toks: xw }
 }
 
-// Парсва cond-и от i; връща pos след последния cond. Спира при не-cond токен.
+// Q-xdml: guard the expr span (leading unknown fn → 42883, no series).
+fn boila_pd_xw_guard(xtoks: Vec<Token>) -> BoilaWh {
+    if vec_len(xtoks) >= 2 {
+        let f0 = vec_get(xtoks, 0)
+        let f1 = vec_get(xtoks, 1)
+        if f0.kind == tok_ident() && f1.kind == tok_lparen() && f0.txt != "cast" && f0.txt != "time_bucket" && f0.txt != "not" && boila_sfn_known(f0.txt) == 0 {
+            return boila_wh_fail(concat(concat("непозната функция '", f0.txt), "()"), "42883", 0)
+        }
+    }
+    let mut gg: i64 = 0
+    while gg < vec_len(xtoks) {
+        let tg = vec_get(xtoks, gg)
+        if tg.kind == tok_ident() && tg.txt == "generate_series" {
+            return boila_wh_fail("generate_series е само за dual (без FROM)", "0A000", 0)
+        }
+        gg = gg + 1
+    }
+    return boila_wh_empty()
+}
+
+// Парсва cond-и от i; връща pos след последния cond. Non-structural
+// predicate (or top-level OR) → expression WHERE over the rest.
 fn boila_pd_where(l: BoilaLex, i: i64) -> BoilaWh {
     let mut w = boila_wh_empty()
     let mut p = i
+    // Q-xdml pre-scan: top-level OR → whole WHERE is one expression
+    let mut sc = p
+    let mut scd: i64 = 0
+    let mut has_top_or: i64 = 0
+    let mut scm = true
+    while scm {
+        let tc = boila_ps_tok(l, sc)
+        if tc.kind == tok_eof() || tc.kind == tok_semi() {
+            scm = false
+        } else {
+            if scd == 0 && boila_ps_is_clause_kw(tc) == 1 {
+                scm = false
+            } else {
+                if tc.kind == tok_lparen() { scd = scd + 1 }
+                if tc.kind == tok_rparen() { scd = scd - 1 }
+                if scd == 0 && tok_kw(tc, "or") == 1 { has_top_or = 1 }
+                sc = sc + 1
+            }
+        }
+    }
+    if has_top_or == 1 {
+        let xe = boila_ps_expr_item(l, p)
+        if xe.ok == 0 {
+            return boila_wh_fail(xe.err, xe.state, xe.pos)
+        }
+        let gd = boila_pd_xw_guard(xe.item.xtoks)
+        if gd.ok == 0 {
+            return boila_wh_fail(gd.err, gd.state, p)
+        }
+        w.has_xw = 1
+        w.xw_toks = xe.item.xtoks
+        w.pos = xe.pos
+        return w
+    }
     let mut more = true
     while more {
+        // Q-xdml: DML structural set is only col =/>=/<= lit; anything
+        // else (LIKE, IN, >, <, <>, fn(…), expr) → expression filter.
+        let t0 = boila_ps_tok(l, p)
+        let t1 = boila_ps_tok(l, p + 1)
+        let mut dml_struct: i64 = 0
+        if t0.kind == tok_ident() && t1.kind == tok_op() && (t1.txt == "=" || t1.txt == ">=" || t1.txt == "<=") {
+            dml_struct = 1
+        }
+        if dml_struct == 0 {
+            if w.has_xw == 1 {
+                return boila_wh_fail("повторно WHERE-израз условие", "0A000", p)
+            }
+            let xe = boila_ps_expr_item(l, p)
+            if xe.ok == 0 {
+                return boila_wh_fail(xe.err, xe.state, xe.pos)
+            }
+            let gd = boila_pd_xw_guard(xe.item.xtoks)
+            if gd.ok == 0 {
+                return boila_wh_fail(gd.err, gd.state, p)
+            }
+            w.has_xw = 1
+            w.xw_toks = xe.item.xtoks
+            w.pos = xe.pos
+            return w
+        }
         let col = boila_ps_tok(l, p)
         if col.kind != tok_ident() {
             return boila_wh_fail("очаквах колона в WHERE", "42601", p)
@@ -157,13 +243,39 @@ fn boila_parse_update(l: BoilaLex) -> BoilaParseUpd {
         if boila_ps_tok(l, i + 1).kind != tok_op() || boila_ps_tok(l, i + 1).txt != "=" {
             return boila_pu_fail("очаквах '=' в SET", "42601")
         }
-        let lit = boila_ps_literal(l, i + 2)
-        if lit.ok == 0 {
-            return boila_pu_fail(lit.err, lit.state)
+        let vt = boila_ps_tok(l, i + 2)
+        let mut is_lit: i64 = 0
+        if vt.kind == tok_num() || vt.kind == tok_str() || vt.kind == tok_param() {
+            is_lit = 1
         }
-        vec_push(upd.set_cols, c.txt)
-        vec_push(upd.set_vals, lit.v)
-        i = i + 3
+        if vt.kind == tok_ident() && (tok_kw(vt, "null") == 1 || tok_kw(vt, "true") == 1 || tok_kw(vt, "false") == 1) {
+            is_lit = 1
+        }
+        if is_lit == 1 {
+            let lit = boila_ps_literal(l, i + 2)
+            if lit.ok == 0 {
+                return boila_pu_fail(lit.err, lit.state)
+            }
+            vec_push(upd.set_cols, c.txt)
+            vec_push(upd.set_vals, lit.v)
+            let ex0: Vec<Token> = vec_new()
+            vec_push(upd.set_xtoks, ex0)
+            i = i + 3
+        } else {
+            // Q-xdml: SET col = <expr>, evaluated on the OLD row
+            let xe = boila_ps_expr_item(l, i + 2)
+            if xe.ok == 0 {
+                return boila_pu_fail(xe.err, xe.state)
+            }
+            let gd = boila_pd_xw_guard(xe.item.xtoks)
+            if gd.ok == 0 {
+                return boila_pu_fail(gd.err, gd.state)
+            }
+            vec_push(upd.set_cols, c.txt)
+            vec_push(upd.set_vals, boila_val_null())
+            vec_push(upd.set_xtoks, xe.item.xtoks)
+            i = xe.pos
+        }
         if boila_ps_tok(l, i).kind == tok_comma() {
             i = i + 1
         } else {
@@ -184,6 +296,8 @@ fn boila_parse_update(l: BoilaLex) -> BoilaParseUpd {
         upd.hi_col = w.hi_col
         upd.has_hi = w.has_hi
         upd.pk_hi = w.v_hi
+        upd.has_xw = w.has_xw
+        upd.xw_toks = w.xw_toks
         i = w.pos
     }
     let ret = boila_pd_returning(l, i)
@@ -242,6 +356,8 @@ fn boila_parse_delete(l: BoilaLex) -> BoilaParseDel {
         del.hi_col = w.hi_col
         del.has_hi = w.has_hi
         del.pk_hi = w.v_hi
+        del.has_xw = w.has_xw
+        del.xw_toks = w.xw_toks
         i = w.pos
     }
     let ret = boila_pd_returning(l, i)

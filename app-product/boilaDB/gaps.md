@@ -108,7 +108,21 @@ T = транзакции, W = wire protocol, F = FTS.
   Residual: OR-joined WHERE is a seq-filter now (old Q-or IN rewrite
   bypassed — same semantics, no index); no xw in UPDATE/DELETE WHERE;
   `$N` inside xw spans → 0A000 at eval (prepared DML text-subst path
-  unaffected).
+  unaffected). [DML xw landed in P11-25.]
+- **P11-25 — (FIXED) expressions in UPDATE/DELETE (Q-xdml).**
+  `UPDATE t SET col = <expr>` — SET values may be dual expressions
+  (`set_xtoks` in BoilaUpd, parallel to set_cols; evaluated on the OLD
+  row — PG semantics; NULL-bound probe for early errors); literal SETs
+  unchanged, mixing works. `UPDATE/DELETE … WHERE <expr>` — boila_pd_where
+  routes any non-structural predicate (DML structural set stays
+  col =/>=/<= lit) or top-level OR into a dual-expression target filter
+  (`boila_dml_xw_pks` over the collected pks), so LIKE/IN/<>/>/</fn-calls
+  now work in DML WHERE; structural eq/range keep their index/range
+  paths and can be ANDed with an expression tail. Target collection
+  moved to sql/exec_dml_where.baga (filesize §9). 24-check
+  boila_xdml_test. Residual: no expr SET in INSERT … ON CONFLICT DO
+  UPDATE (oc_vals literals only); `$N` inside xw spans → eval error;
+  DML xw is a post-filter (seq fetch when no structural predicate).
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 

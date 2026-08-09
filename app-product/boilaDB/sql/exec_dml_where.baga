@@ -1,0 +1,205 @@
+// exec_dml_where.baga — DML target collection (UPDATE/DELETE WHERE).
+// Structured predicates (PK/index eq, PK/non-PK range) + Q-xdml
+// expression filter over the collected targets.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../txn/mvcc.baga"
+import "token.baga"
+import "exec_scan.baga"
+import "exec_buf.baga"
+import "exec_dml.baga"
+import "exec_xw.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// WHERE targets: PK/index eq; PK or non-PK range (K3b post-filter); all.
+struct BoilaDmlTgts {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    pks: Vec<bytes>
+}
+
+fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, has_eq: i64, v_eq: BoilaVal, lo_col: str, has_lo: i64, v_lo: BoilaVal, hi_col: str, has_hi: i64, v_hi: BoilaVal) -> BoilaDmlTgts !IO !Time !Par {
+    let pks: Vec<bytes> = vec_new()
+    let pkcol = vec_get(t.cols, t.pk_idx)
+    if has_eq == 1 {
+        if eq_col == pkcol.name {
+            if boila_pk_lit_ok(pkcol.typ, v_eq) == 0 {
+                return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в = не съответства на PRIMARY KEY типа", state: "42804", pks: pks }
+            }
+            vec_push(pks, boila_val_enc(v_eq))
+            return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
+        }
+        let cix = boila_col_idx(t, eq_col)
+        if cix < 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: concat("колона '", concat(eq_col, "' не съществува")), state: "42703", pks: pks }
+        }
+        let cd = vec_get(t.cols, cix)
+        if boila_dml_val_ok(cd.typ, v_eq) == 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в = не съответства на типа на колоната", state: "42804", pks: pks }
+        }
+        let ixid = boila_ix_by_col_t(t, cix)
+        if ixid >= 0 {
+            let lk = boila_ix_lookup(s, t, ixid, v_eq)?
+            s = lk.s
+            boila_scan_buf_eq(txn, t, cix, v_eq, lk.pks)
+            return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: lk.pks }
+        }
+        // K3c: no index → scan all keys and filter by col eq below
+        let ks = boila_txn_keys(s, txn, t.id)?
+        s = ks.s
+        let mut ki: i64 = 0
+        while ki < vec_len(ks.pks) {
+            let pkenc = vec_get(ks.pks, ki)
+            let g = boila_txn_get(s, txn, t.id, pkenc)?
+            s = g.s
+            if g.found == 1 {
+                let row = boila_row_dec(g.row)
+                if cix >= 0 && cix < vec_len(row) {
+                    if boila_val_cmp(vec_get(row, cix), v_eq) == 0 {
+                        vec_push(pks, pkenc)
+                    }
+                }
+            }
+            ki = ki + 1
+        }
+        return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
+    }
+    // range: PK cmp on key; non-PK → get row + col cmp (K3b)
+    let mut pk_range: i64 = 1
+    let mut lo_cix: i64 = 0 - 1
+    let mut hi_cix: i64 = 0 - 1
+    if has_lo == 1 {
+        lo_cix = boila_col_idx(t, lo_col)
+        if lo_cix < 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: concat("колона '", concat(lo_col, "' не съществува")), state: "42703", pks: pks }
+        }
+        if boila_dml_val_ok(vec_get(t.cols, lo_cix).typ, v_lo) == 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в >= не съответства на типа на колоната", state: "42804", pks: pks }
+        }
+        if lo_col != pkcol.name { pk_range = 0 }
+    }
+    if has_hi == 1 {
+        hi_cix = boila_col_idx(t, hi_col)
+        if hi_cix < 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: concat("колона '", concat(hi_col, "' не съществува")), state: "42703", pks: pks }
+        }
+        if boila_dml_val_ok(vec_get(t.cols, hi_cix).typ, v_hi) == 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в <= не съответства на типа на колоната", state: "42804", pks: pks }
+        }
+        if hi_col != pkcol.name { pk_range = 0 }
+    }
+    // K3d: secondary index range (fixed-size) before full seq
+    if pk_range == 0 && (has_lo == 1 || has_hi == 1) {
+        let mut rc = lo_col
+        if has_lo == 0 { rc = hi_col }
+        let mut same = 1
+        if has_lo == 1 && has_hi == 1 && lo_col != hi_col { same = 0 }
+        if same == 1 {
+            let cix = boila_col_idx(t, rc)
+            let ixid = boila_ix_by_col_t(t, cix)
+            if cix >= 0 && ixid >= 0 {
+                let xr = boila_ix_range(s, t, ixid, has_lo, v_lo, has_hi, v_hi)?
+                s = xr.s
+                if xr.ok == 0 {
+                    return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: xr.err, state: xr.state, pks: pks }
+                }
+                if xr.has == 1 {
+                    boila_scan_buf_range(txn, t, cix, has_lo, v_lo, has_hi, v_hi, xr.pks)
+                    return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: xr.pks }
+                }
+            }
+        }
+    }
+    let ks = boila_txn_keys(s, txn, t.id)?
+    s = ks.s
+    let mut ki: i64 = 0
+    while ki < vec_len(ks.pks) {
+        let pkenc = vec_get(ks.pks, ki)
+        let mut keep = true
+        if pk_range == 1 && (has_lo == 1 || has_hi == 1) {
+            let pkv = boila_val_dec(pkenc)
+            if has_lo == 1 {
+                let cmp = boila_val_cmp(pkv, v_lo)
+                if cmp != 1 && cmp != 0 { keep = false }
+            }
+            if keep && has_hi == 1 {
+                let cmp = boila_val_cmp(pkv, v_hi)
+                if cmp != 0 - 1 && cmp != 0 { keep = false }
+            }
+        } else {
+            if has_lo == 1 || has_hi == 1 {
+                let g = boila_txn_get(s, txn, t.id, pkenc)?
+                s = g.s
+                if g.found == 0 {
+                    keep = false
+                } else {
+                    let row = boila_row_dec(g.row)
+                    if has_lo == 1 {
+                        if lo_cix < 0 || lo_cix >= vec_len(row) {
+                            keep = false
+                        } else {
+                            let cmp = boila_val_cmp(vec_get(row, lo_cix), v_lo)
+                            if cmp != 1 && cmp != 0 { keep = false }
+                        }
+                    }
+                    if keep && has_hi == 1 {
+                        if hi_cix < 0 || hi_cix >= vec_len(row) {
+                            keep = false
+                        } else {
+                            let cmp = boila_val_cmp(vec_get(row, hi_cix), v_hi)
+                            if cmp != 0 - 1 && cmp != 0 { keep = false }
+                        }
+                    }
+                }
+            }
+        }
+        if keep {
+            vec_push(pks, pkenc)
+        }
+        ki = ki + 1
+    }
+    return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
+}
+
+// Q-xdml: expression WHERE over collected targets (probe + per-row eval).
+fn boila_dml_xw_pks(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, xtoks: Vec<Token>, pks: Vec<bytes>) -> BoilaDmlTgts !IO !Time !Par {
+    let empty: Vec<Vec<BoilaVal>> = vec_new()
+    let pr = boila_xw_filter(t.cols, empty, xtoks)?
+    if pr.ok == 0 {
+        return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: pr.err, state: pr.state, pks: pks }
+    }
+    let names: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        vec_push(names, vec_get(t.cols, i).name)
+        i = i + 1
+    }
+    let out: Vec<bytes> = vec_new()
+    let mut k: i64 = 0
+    while k < vec_len(pks) {
+        let pkenc = vec_get(pks, k)
+        let g = boila_txn_get(s, txn, t.id, pkenc)?
+        s = g.s
+        if g.found == 1 {
+            let row = boila_row_dec(g.row)
+            let ev = boila_xw_eval(names, xtoks, row)?
+            if ev.ok == 0 {
+                return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: ev.err, state: ev.state, pks: pks }
+            }
+            if boila_dual_when_true(ev.val) == 1 {
+                vec_push(out, pkenc)
+            }
+        }
+        k = k + 1
+    }
+    return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: out }
+}

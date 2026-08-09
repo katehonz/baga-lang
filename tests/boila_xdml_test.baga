@@ -1,0 +1,171 @@
+// boila_xdml_test.baga — boilaDB Q-xdml: SET col = <expr> and
+// expression WHERE in UPDATE/DELETE (dual evaluator over old rows).
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_str(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        return int_to_str(v.i)
+    }
+    if v.tag == boila_v_bool() {
+        if v.i == 0 { return "f" }
+        return "t"
+    }
+    if v.tag == boila_v_null() {
+        return "null"
+    }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_xdml_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_xdml_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE u (id BIGINT, name TEXT, nick TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let s0 = boila_server_exec(srv, "boila", "INSERT INTO u (id, name, nick) VALUES (1, 'alice', 'al'), (2, 'bob', NULL), (3, 'carol', 'cc'), (4, 'bob', NULL), (5, 'pad', NULL)")?
+    srv = s0.srv
+    check(fails, "seed", s0.ok == 1 && s0.id == 5)
+
+    // --- errors (no data change) ---
+    let x1 = boila_server_exec(srv, "boila", "UPDATE u SET name = foo(id) WHERE id = 1")?
+    srv = x1.srv
+    check(fails, "err_unknown_fn", x1.ok == 0 && x1.state == "42883")
+    let x2 = boila_server_exec(srv, "boila", "UPDATE u SET name = nosuch WHERE id = 1")?
+    srv = x2.srv
+    check(fails, "err_bad_col", x2.ok == 0 && x2.state == "42703")
+    let x3 = boila_server_exec(srv, "boila", "DELETE FROM u WHERE nosuch > 0")?
+    srv = x3.srv
+    check(fails, "err_del_bad_col", x3.ok == 0 && x3.state == "42703")
+    let x4 = boila_server_exec(srv, "boila", "UPDATE u SET nick = 't' WHERE generate_series(1, 2) > 0")?
+    srv = x4.srv
+    check(fails, "err_series", x4.ok == 0 && x4.state == "0A000")
+    let x5 = boila_server_exec(srv, "boila", "UPDATE u SET name = id + 1 WHERE id = 2")?
+    srv = x5.srv
+    check(fails, "err_type", x5.ok == 0 && x5.state == "42804")
+
+    // --- SET col = <expr> over the OLD row ---
+    let u1 = boila_server_exec(srv, "boila", "UPDATE u SET name = upper(name) WHERE id = 1")?
+    srv = u1.srv
+    check(fails, "set_upper", u1.ok == 1 && u1.id == 1)
+    let v1 = boila_server_exec(srv, "boila", "SELECT name FROM u WHERE id = 1")?
+    srv = v1.srv
+    check(fails, "set_upper_val", v1.ok == 1 && row_str(vec_get(v1.res.rows, 0), 0) == "ALICE")
+    let u2 = boila_server_exec(srv, "boila", "UPDATE u SET nick = name || '!' WHERE id = 2")?
+    srv = u2.srv
+    let v2 = boila_server_exec(srv, "boila", "SELECT nick FROM u WHERE id = 2")?
+    srv = v2.srv
+    check(fails, "set_concat", u2.ok == 1 && row_str(vec_get(v2.res.rows, 0), 0) == "bob!")
+    let u3 = boila_server_exec(srv, "boila", "UPDATE u SET name = substr(name, 1, 3) WHERE id = 3")?
+    srv = u3.srv
+    let v3 = boila_server_exec(srv, "boila", "SELECT name FROM u WHERE id = 3")?
+    srv = v3.srv
+    check(fails, "set_substr", u3.ok == 1 && row_str(vec_get(v3.res.rows, 0), 0) == "car")
+    let u4 = boila_server_exec(srv, "boila", "UPDATE u SET nick = CASE WHEN id > 4 THEN 'big' ELSE 'small' END WHERE id = 5")?
+    srv = u4.srv
+    let v4 = boila_server_exec(srv, "boila", "SELECT nick FROM u WHERE id = 5")?
+    srv = v4.srv
+    check(fails, "set_case", u4.ok == 1 && row_str(vec_get(v4.res.rows, 0), 0) == "big")
+    // SET expr coexisting with a literal SET (both see the OLD row)
+    let u5 = boila_server_exec(srv, "boila", "UPDATE u SET nick = 'lit', name = lower(name) WHERE id = 1")?
+    srv = u5.srv
+    let v5 = boila_server_exec(srv, "boila", "SELECT name, nick FROM u WHERE id = 1")?
+    srv = v5.srv
+    check(fails, "set_mixed", u5.ok == 1 && row_str(vec_get(v5.res.rows, 0), 0) == "alice" && row_str(vec_get(v5.res.rows, 0), 1) == "lit")
+    // RETURNING sees the new value
+    let u6 = boila_server_exec(srv, "boila", "UPDATE u SET name = upper(name) WHERE id = 2 RETURNING name")?
+    srv = u6.srv
+    check(fails, "set_returning", u6.ok == 1 && row_str(vec_get(u6.res.rows, 0), 0) == "BOB")
+
+    // --- expression WHERE in UPDATE ---
+    let w1 = boila_server_exec(srv, "boila", "UPDATE u SET nick = 'x' WHERE id + 0 = 4")?
+    srv = w1.srv
+    check(fails, "upd_xw", w1.ok == 1 && w1.id == 1)
+    let w1v = boila_server_exec(srv, "boila", "SELECT nick FROM u WHERE id = 4")?
+    srv = w1v.srv
+    check(fails, "upd_xw_val", w1v.ok == 1 && row_str(vec_get(w1v.res.rows, 0), 0) == "x")
+    let w2 = boila_server_exec(srv, "boila", "UPDATE u SET nick = 'y' WHERE id = 1 OR id = 3")?
+    srv = w2.srv
+    check(fails, "upd_xw_or", w2.ok == 1 && w2.id == 2)
+    // structural AND expression tail (names: ALICE/BOB/car/bob/pad)
+    let w3 = boila_server_exec(srv, "boila", "UPDATE u SET nick = NULL WHERE id >= 1 AND length(name) = 3")?
+    srv = w3.srv
+    check(fails, "upd_struct_and_expr", w3.ok == 1 && w3.id == 4)
+
+    // --- expression WHERE in DELETE ---
+    let d1 = boila_server_exec(srv, "boila", "DELETE FROM u WHERE length(name) = 3 AND id > 2")?
+    srv = d1.srv
+    check(fails, "del_xw", d1.ok == 1 && d1.id == 3)
+    let d1v = boila_server_exec(srv, "boila", "SELECT count(*) FROM u")?
+    srv = d1v.srv
+    check(fails, "del_xw_left", d1v.ok == 1 && row_str(vec_get(d1v.res.rows, 0), 0) == "2")
+    let d2 = boila_server_exec(srv, "boila", "DELETE FROM u WHERE NOT (id < 2)")?
+    srv = d2.srv
+    check(fails, "del_not_paren", d2.ok == 1 && d2.id == 1)
+    let d3 = boila_server_exec(srv, "boila", "DELETE FROM u WHERE name LIKE 'a%' RETURNING id")?
+    srv = d3.srv
+    check(fails, "del_struct_regression", d3.ok == 1 && d3.id == 1)
+
+    // --- restart ---
+    let rs = boila_server_exec(srv, "boila", "INSERT INTO u (id, name, nick) VALUES (1, 'alice', 'al')")?
+    srv = rs.srv
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let r1 = boila_server_exec(srv2, "boila", "UPDATE u SET nick = name WHERE id = 1 RETURNING nick")?
+    srv2 = r1.srv
+    check(fails, "restart_set_expr", r1.ok == 1 && r1.id == 1 && row_str(vec_get(r1.res.rows, 0), 0) == "alice")
+    boila_server_close(srv2)?
+
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_xdml_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_xdml_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}
