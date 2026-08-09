@@ -129,6 +129,12 @@ fn main() -> i64 !IO !Time !Par {
     let qca = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('CAFÉ')")
     srv = qca.srv
     check(fails, "latin1_fold", qca.ok == 1 && vec_len(qca.res.rows) == 1 && row_id(vec_get(qca.res.rows, 0)) == "21")
+    // F1c: Greek case fold (no tonos — plain Α-Ω)
+    let igr = exec1(srv, "INSERT INTO docs (id, body) VALUES (22, 'καλημερα ελλαδα')")
+    srv = igr.srv
+    let qgr = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('ΕΛΛΑΔΑ')")
+    srv = qgr.srv
+    check(fails, "greek_fold", qgr.ok == 1 && vec_len(qgr.res.rows) == 1 && row_id(vec_get(qgr.res.rows, 0)) == "22")
     // липсваща дума
     let q5 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('lipsva')")
     srv = q5.srv
