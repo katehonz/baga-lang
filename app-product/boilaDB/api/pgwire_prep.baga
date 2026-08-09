@@ -176,12 +176,6 @@ fn boila_pg_sel_meta(s: BoilaStore, sel: BoilaSel) -> BoilaPgMeta !IO !Time !Par
     return BoilaPgMeta { ok: 1, cols: cols, tags: tags, nparams: np, s: s }
 }
 
-// Build Describe response bytes from sel (or NoData).
-fn boila_pg_describe_sel(s: BoilaStore, sel: BoilaSel, is_stmt: i64) -> BoilaPgMeta !IO !Time !Par {
-    let m = boila_pg_sel_meta(s, sel)?
-    return m
-}
-
 fn boila_pg_desc_buf(m: BoilaPgMeta, is_stmt: i64) -> bytes {
     if m.ok == 0 {
         if is_stmt == 1 {
