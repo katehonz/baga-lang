@@ -14,17 +14,60 @@
 import "httpdbaga/http.baga"
 import "../sql/exec_server.baga"
 import "../sql/exec_scan.baga"
+import "../sql/plan_cache.baga"
+import "../storage/databases.baga"
+import "../storage/shards.baga"
 import "../txn/mvcc.baga"
 import "../core/row.baga"
 import "../core/value.baga"
 import "std/json/json.baga"
 import "std/str/str.baga"
+import "std/os/os.baga"
+import "std/crypto/ct.baga"
 
 struct BoilaHttpSql {
     srv: BoilaServer,
     txn: BoilaTxn,
     resp: Response,
     db: str
+}
+
+// W6c: BOILA_TOKEN via Authorization: Bearer … or X-Boila-Token.
+// Empty env → trust (same as PG). Constant-time compare.
+fn boila_http_auth_ok(req: Request) -> i64 !IO {
+    let token = env("BOILA_TOKEN")
+    if token == "" {
+        return 1
+    }
+    let xt = http_header(req, "x-boila-token")
+    if xt != "" {
+        if ct_eq(xt, token) {
+            return 1
+        }
+        return 0
+    }
+    let raw = http_header(req, "authorization")
+    let auth = to_lower(raw)
+    if str_starts_with(auth, "bearer ") && len(raw) >= 7 {
+        if ct_eq(substr(raw, 7, len(raw)), token) {
+            return 1
+        }
+    }
+    return 0
+}
+
+fn boila_http_auth_fail(txn: BoilaTxn, sess_db: str) -> BoilaHttpSql {
+    let body = "{\"ok\":false,\"error\":\"unauthorized\",\"sqlstate\":\"28P01\"}"
+    let names: Vec<str> = vec_new()
+    let stores: Vec<BoilaStore> = vec_new()
+    return BoilaHttpSql {
+        srv: BoilaServer {
+            meta: boila_store_empty(), root: "", names: names, stores: stores,
+            flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
+            session_txn: boila_txn_new(), pc: boila_pc_new(), mt: 0, ok: 0
+        },
+        txn: txn, resp: http_json_response(401, body), db: sess_db
+    }
 }
 
 // H3: ?db= wins; else session db (default "boila").
@@ -163,6 +206,9 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpS
 }
 
 fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, sess_db: str, req: Request) -> BoilaHttpSql !IO !Time !Par {
+    if boila_http_auth_ok(req)? == 0 {
+        return boila_http_auth_fail(txn, sess_db)
+    }
     let db = boila_http_pick_db(sess_db, req)
     let out = boila_server_exec_tx(srv, txn, db, http_body(req))?
     return boila_http_encode(out, sess_db, db)

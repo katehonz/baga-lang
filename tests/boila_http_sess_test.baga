@@ -56,6 +56,8 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "pick_sess", boila_http_pick_db("alpha", r0) == "alpha")
     let r1 = mk_req("/sql?db=beta", "x")
     check(fails, "pick_query", boila_http_pick_db("alpha", r1) == "beta")
+    // W6c: auth ok when BOILA_TOKEN unset
+    check(fails, "auth_trust", boila_http_auth_ok(r0)? == 1)
 
     let root = "/tmp/baga_boila_http_sess_test"
     wipe_root(root)?

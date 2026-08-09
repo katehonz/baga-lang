@@ -26,6 +26,12 @@ fn boila_env_or(name: str, dflt: str) -> str !IO !Par {
 fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> BoilaHttpSql !IO !Time !Par {
     let method = http_method(req)
     let path = http_path_only(req)
+    // W6c: token on /sql and /metrics; /health stays open
+    if path == "/sql" || path == "/metrics" {
+        if boila_http_auth_ok(req)? == 0 {
+            return boila_http_auth_fail(txn, sess_db)
+        }
+    }
     if method == "GET" && path == "/health" {
         boila_mt_stat_inc(pack, boila_st_http())?
         let od = boila_mt_open_count(pack)?
