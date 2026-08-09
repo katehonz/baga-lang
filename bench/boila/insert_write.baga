@@ -10,9 +10,9 @@
 // BOILA_BENCH_ROOT    — root директория (изтрийте я преди chunk 0!).
 // BOILA_ROWS          — общо редове (default 1000000).
 
-import "boilaDB/storage/databases.baga"
+import "boilaDB/server/databases.baga"
 import "boilaDB/storage/shards.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/catalog/schema.baga"
 import "std/os/os.baga"

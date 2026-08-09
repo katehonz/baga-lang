@@ -2,8 +2,8 @@
 // Стълба N=100 / 1k / 10k ops: point SELECT, INSERT, mix 80/20.
 // Не 10k concurrent TCP — gaps W1/H2; измерва single-thread ops/s.
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"

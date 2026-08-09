@@ -1,4 +1,5 @@
-// drop.baga — full DROP TABLE wipe (P11-3) + T5b txn-buffered drop.
+// drop.baga — DROP TABLE core wipe (catalog + data/index CF only).
+// Modal cascade (fts/vec/graph) is orchestrated in sql/exec_drop (kimi-deps D5).
 
 import "schema.baga"
 import "../storage/shards.baga"
@@ -6,11 +7,6 @@ import "../core/codec.baga"
 import "../core/value.baga"
 import "../core/row.baga"
 import "../txn/mvcc.baga"
-import "../fts/fts.baga"
-import "../fts/fts_doc.baga"
-import "../vector/hnsw_store.baga"
-import "../graph/adjacency.baga"
-import "../ts/retention.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
@@ -42,68 +38,6 @@ fn boila_sys_prefix_wipe(s: BoilaStore, prefix: str) -> BoilaStore !IO !Time !Pa
         i = i + 1
     }
     return s
-}
-
-fn boila_table_drop(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par {
-    let ct = boila_cat_by_name(s, name)?
-    s = ct.s
-    if ct.ok == 0 {
-        return ct
-    }
-    let t = ct.table
-    let tid = t.id
-
-    // 1) modality CF payloads (by table_id)
-    s = boila_cf_wipe(s, boila_cf_data(), tid)?
-    s = boila_cf_wipe(s, boila_cf_index(), tid)?
-    s = boila_cf_wipe(s, boila_cf_fts(), tid)?
-    s = boila_cf_wipe(s, boila_cf_vec(), tid)?
-    s = boila_cf_wipe(s, boila_cf_graph(), tid)?
-
-    // 2) FTS catalog: f|<tid>|<name>, fs|<id>, fl|<tid>
-    let ftsl = fts_list_for_table(s, tid)?
-    s = ftsl.s
-    let mut fi: i64 = 0
-    while fi < vec_len(ftsl.defs) {
-        let d = vec_get(ftsl.defs, fi)
-        s = boila_del(s, boila_cf_sys(), 1, fts_cat_pk(tid, d.name))?
-        s = boila_del(s, boila_cf_sys(), 1, fts_stats_pk(d.id))?
-        fi = fi + 1
-    }
-    s = boila_del(s, boila_cf_sys(), 1, fts_list_pk(tid))?
-
-    // 3) HNSW catalog: vh|<tid>|<name>, vm|<id>, vl|<tid>
-    let hnswl = hnsw_list_for_table(s, tid)?
-    s = hnswl.s
-    let mut hi: i64 = 0
-    while hi < vec_len(hnswl.defs) {
-        let d = vec_get(hnswl.defs, hi)
-        s = boila_del(s, boila_cf_sys(), 1, hnsw_cat_pk(tid, d.name))?
-        s = boila_del(s, boila_cf_sys(), 1, hnsw_vm_pk(d.id))?
-        hi = hi + 1
-    }
-    s = boila_del(s, boila_cf_sys(), 1, hnsw_list_pk(tid))?
-
-    // 4) Graph catalog: gh|<tid>|<name>, gl|<tid>
-    let grpl = graph_list_for_table(s, tid)?
-    s = grpl.s
-    let mut gi: i64 = 0
-    while gi < vec_len(grpl.defs) {
-        let d = vec_get(grpl.defs, gi)
-        s = boila_del(s, boila_cf_sys(), 1, graph_cat_pk(tid, d.name))?
-        gi = gi + 1
-    }
-    s = boila_del(s, boila_cf_sys(), 1, graph_list_pk(tid))?
-
-    // 5) secondary name cats x|<tid>|* (names not in schema row)
-    s = boila_sys_prefix_wipe(s, concat(concat("x|", int_to_str(tid)), "|"))?
-
-    // 6) table catalog + ttl
-    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
-    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_schema(tid))?
-    s = boila_ttl_put(s, tid, 0)?
-
-    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t, id: tid }
 }
 
 fn boila_cf_wipe_txn(s: BoilaStore, txn: BoilaTxn, cf: i64, table_id: i64) -> BoilaCatTxnRes !IO !Time !Par {
@@ -150,8 +84,9 @@ fn boila_drop_txn_del(s: BoilaStore, txn: BoilaTxn, pk: bytes) -> BoilaCatTxnRes
     return BoilaCatTxnRes { s: r.s, txn: r.txn, ok: 1, err: "", state: "", table: boila_cat_empty_table(), id: 0 }
 }
 
-// T5b: DROP TABLE via txn buffer (rollback restores table).
-fn boila_table_drop_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCatTxnRes !IO !Time !Par {
+// Core DROP: data + index CF, secondary name cats x|*, name/schema/ttl.
+// Caller must wipe fts/vec/graph first (sql/exec_drop).
+fn boila_table_drop_core_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCatTxnRes !IO !Time !Par {
     let ct = boila_cat_by_name_txn(s, txn, name)?
     s = ct.s
     if ct.ok == 0 {
@@ -168,74 +103,6 @@ fn boila_table_drop_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCatTxnR
     s = w2.s
     txn = w2.txn
     if w2.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: w2.err, state: w2.state, table: t, id: 0 } }
-    let w3 = boila_cf_wipe_txn(s, txn, boila_cf_fts(), tid)?
-    s = w3.s
-    txn = w3.txn
-    if w3.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: w3.err, state: w3.state, table: t, id: 0 } }
-    let w4 = boila_cf_wipe_txn(s, txn, boila_cf_vec(), tid)?
-    s = w4.s
-    txn = w4.txn
-    if w4.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: w4.err, state: w4.state, table: t, id: 0 } }
-    let w5 = boila_cf_wipe_txn(s, txn, boila_cf_graph(), tid)?
-    s = w5.s
-    txn = w5.txn
-    if w5.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: w5.err, state: w5.state, table: t, id: 0 } }
-
-    let ftsl = fts_list_for_table(s, tid)?
-    s = ftsl.s
-    let mut fi: i64 = 0
-    while fi < vec_len(ftsl.defs) {
-        let d = vec_get(ftsl.defs, fi)
-        let a = boila_drop_txn_del(s, txn, fts_cat_pk(tid, d.name))
-        s = a.s
-        txn = a.txn
-        if a.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: a.err, state: a.state, table: t, id: 0 } }
-        let b = boila_drop_txn_del(s, txn, fts_stats_pk(d.id))
-        s = b.s
-        txn = b.txn
-        if b.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: b.err, state: b.state, table: t, id: 0 } }
-        fi = fi + 1
-    }
-    let fl = boila_drop_txn_del(s, txn, fts_list_pk(tid))
-    s = fl.s
-    txn = fl.txn
-    if fl.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: fl.err, state: fl.state, table: t, id: 0 } }
-
-    let hnswl = hnsw_list_for_table(s, tid)?
-    s = hnswl.s
-    let mut hi: i64 = 0
-    while hi < vec_len(hnswl.defs) {
-        let d = vec_get(hnswl.defs, hi)
-        let a = boila_drop_txn_del(s, txn, hnsw_cat_pk(tid, d.name))
-        s = a.s
-        txn = a.txn
-        if a.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: a.err, state: a.state, table: t, id: 0 } }
-        let b = boila_drop_txn_del(s, txn, hnsw_vm_pk(d.id))
-        s = b.s
-        txn = b.txn
-        if b.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: b.err, state: b.state, table: t, id: 0 } }
-        hi = hi + 1
-    }
-    let hl = boila_drop_txn_del(s, txn, hnsw_list_pk(tid))
-    s = hl.s
-    txn = hl.txn
-    if hl.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: hl.err, state: hl.state, table: t, id: 0 } }
-
-    let grpl = graph_list_for_table(s, tid)?
-    s = grpl.s
-    let mut gi: i64 = 0
-    while gi < vec_len(grpl.defs) {
-        let d = vec_get(grpl.defs, gi)
-        let a = boila_drop_txn_del(s, txn, graph_cat_pk(tid, d.name))
-        s = a.s
-        txn = a.txn
-        if a.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: a.err, state: a.state, table: t, id: 0 } }
-        gi = gi + 1
-    }
-    let gl = boila_drop_txn_del(s, txn, graph_list_pk(tid))
-    s = gl.s
-    txn = gl.txn
-    if gl.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: gl.err, state: gl.state, table: t, id: 0 } }
 
     let xp = boila_sys_prefix_wipe_txn(s, txn, concat(concat("x|", int_to_str(tid)), "|"))?
     s = xp.s
@@ -250,7 +117,8 @@ fn boila_table_drop_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCatTxnR
     s = ds.s
     txn = ds.txn
     if ds.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: ds.err, state: ds.state, table: t, id: 0 } }
-    let dt = boila_drop_txn_del(s, txn, boila_ttl_pk(tid))
+    // ttl key: "td|<tid>" — raw del (no ts/ import; same layout as retention)
+    let dt = boila_drop_txn_del(s, txn, bytes_of_str(concat("td|", int_to_str(tid))))
     s = dt.s
     txn = dt.txn
     if dt.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: dt.err, state: dt.state, table: t, id: 0 } }
@@ -258,28 +126,20 @@ fn boila_table_drop_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCatTxnR
     return BoilaCatTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", table: t, id: tid }
 }
 
-// Auto-begin/commit when not in explicit txn.
-fn boila_table_drop_run(s: BoilaStore, txn: BoilaTxn, db: str, name: str) -> BoilaCatTxnRes !IO !Time !Par {
-    let was = txn.active
-    if was == 0 {
-        let b = boila_txn_begin(s, txn, 0, db)?
-        s = b.s
-        txn = b.txn
+// Core non-txn DROP (catalog + data/index only).
+fn boila_table_drop_core(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par {
+    let ct = boila_cat_by_name(s, name)?
+    s = ct.s
+    if ct.ok == 0 {
+        return ct
     }
-    let dr = boila_table_drop_txn(s, txn, name)?
-    s = dr.s
-    txn = dr.txn
-    if dr.ok == 0 {
-        if was == 0 { txn = boila_txn_rollback(txn) }
-        return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: dr.err, state: dr.state, table: boila_cat_empty_table(), id: 0 }
-    }
-    if was == 0 {
-        let c = boila_txn_commit(s, txn)?
-        s = c.s
-        txn = c.txn
-        if c.ok == 0 {
-            return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: c.err, state: c.state, table: boila_cat_empty_table(), id: 0 }
-        }
-    }
-    return BoilaCatTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", table: dr.table, id: dr.id }
+    let t = ct.table
+    let tid = t.id
+    s = boila_cf_wipe(s, boila_cf_data(), tid)?
+    s = boila_cf_wipe(s, boila_cf_index(), tid)?
+    s = boila_sys_prefix_wipe(s, concat(concat("x|", int_to_str(tid)), "|"))?
+    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
+    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_schema(tid))?
+    s = boila_del(s, boila_cf_sys(), 1, bytes_of_str(concat("td|", int_to_str(tid))))?
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t, id: tid }
 }

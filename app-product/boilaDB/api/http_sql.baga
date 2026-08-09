@@ -12,10 +12,10 @@
 //   {"ok":false,"error":"...","sqlstate":"..."}
 
 import "httpdbaga/http.baga"
-import "../sql/exec_server.baga"
+import "../server/exec_server.baga"
 import "../sql/exec_scan.baga"
 import "../sql/plan_cache.baga"
-import "../storage/databases.baga"
+import "../server/databases.baga"
 import "../storage/shards.baga"
 import "../txn/mvcc.baga"
 import "../core/row.baga"

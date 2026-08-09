@@ -135,7 +135,7 @@ fn boila_exec_update(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, upd: BoilaUpd)
                 return boila_dml_fail(s, txn, 7, xd.err, xd.state)
             }
             txn = xd.txn
-            let pw = boila_txn_put(s, txn, boila_cf_data(), t.id, pkenc, boila_row_enc(new))
+            let pw = boila_txn_put_ex(s, txn, boila_cf_data(), t.id, pkenc, boila_row_enc(new), t.ttl_sec)
             if pw.ok == 0 {
                 return boila_dml_fail(s, txn, 7, pw.err, pw.state)
             }

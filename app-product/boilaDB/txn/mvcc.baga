@@ -9,17 +9,19 @@ import "../storage/shards.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
 import "../core/row.baga"
-import "../ts/retention.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 import "std/os/os.baga"
 
+// ttl_sec: set by caller on data puts (table TTL); commit passes to
+// boila_put_ex. Non-data / del → 0. (kimi-deps D3 — no ts/ import.)
 struct BoilaTxnWrite {
     cf: i64,
     table_id: i64,
     pk: bytes,
     is_del: i64,
-    row: bytes      // row enc при put; празно при del/index entry
+    row: bytes,     // row enc при put; празно при del/index entry
+    ttl_sec: i64
 }
 
 struct BoilaTxn {
@@ -141,17 +143,22 @@ fn boila_txn_find(txn: BoilaTxn, cf: i64, table_id: i64, pk: bytes) -> i64 {
 }
 
 fn boila_txn_put(s: BoilaStore, txn: BoilaTxn, cf: i64, table_id: i64, pk: bytes, row: bytes) -> BoilaTxnRes {
+    return boila_txn_put_ex(s, txn, cf, table_id, pk, row, 0)
+}
+
+// Data-row put with table TTL (from BoilaTable.ttl_sec). Other CFs use 0.
+fn boila_txn_put_ex(s: BoilaStore, txn: BoilaTxn, cf: i64, table_id: i64, pk: bytes, row: bytes, ttl_sec: i64) -> BoilaTxnRes {
     if txn.read_only == 1 {
         return boila_txn_res(s, txn, 0, "READ ONLY транзакция", "25006", 0)
     }
     let ix = boila_txn_find(txn, cf, table_id, pk)
     if ix >= 0 {
-        vec_set(txn.writes, ix, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 0, row: row })
+        vec_set(txn.writes, ix, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 0, row: row, ttl_sec: ttl_sec })
     } else {
         if boila_txn_buf_full(txn) == 1 {
             return boila_txn_res(s, txn, 0, concat("txn buffer limit ", concat(int_to_str(txn.max_writes), " (BOILA_TXN_MAX)")), "54000", 0)
         }
-        vec_push(txn.writes, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 0, row: row })
+        vec_push(txn.writes, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 0, row: row, ttl_sec: ttl_sec })
     }
     return boila_txn_res(s, txn, 1, "", "", 0)
 }
@@ -162,12 +169,12 @@ fn boila_txn_del(s: BoilaStore, txn: BoilaTxn, cf: i64, table_id: i64, pk: bytes
     }
     let ix = boila_txn_find(txn, cf, table_id, pk)
     if ix >= 0 {
-        vec_set(txn.writes, ix, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 1, row: bytes_new(0) })
+        vec_set(txn.writes, ix, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 1, row: bytes_new(0), ttl_sec: 0 })
     } else {
         if boila_txn_buf_full(txn) == 1 {
             return boila_txn_res(s, txn, 0, concat("txn buffer limit ", concat(int_to_str(txn.max_writes), " (BOILA_TXN_MAX)")), "54000", 0)
         }
-        vec_push(txn.writes, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 1, row: bytes_new(0) })
+        vec_push(txn.writes, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 1, row: bytes_new(0), ttl_sec: 0 })
     }
     return boila_txn_res(s, txn, 1, "", "", 0)
 }
@@ -214,9 +221,7 @@ fn boila_txn_commit(s: BoilaStore, txn: BoilaTxn) -> BoilaTxnRes !IO !Time !Par 
     let cnt: Vec<BoilaVal> = vec_new()
     vec_push(cnt, boila_val_i64(lsn + 1))
     s = boila_put(s, boila_cf_sys(), 1, boila_lsn_pk(), boila_row_enc(cnt))?
-    // P9: cache table TTL (table_id → ttl_sec) за data puts
-    let ttl_ids: Vec<i64> = vec_new()
-    let ttl_secs: Vec<i64> = vec_new()
+    // TTL comes on the write (caller-filled); commit only forwards it.
     let mut i: i64 = 0
     while i < vec_len(txn.writes) {
         let w = vec_get(txn.writes, i)
@@ -227,27 +232,7 @@ fn boila_txn_commit(s: BoilaStore, txn: BoilaTxn) -> BoilaTxnRes !IO !Time !Par 
             if w.cf != boila_cf_sys() {
                 val = boila_wrap_val(lsn, w.row)
             }
-            let mut ttl: i64 = 0
-            if w.cf == boila_cf_data() {
-                let mut found: i64 = 0 - 1
-                let mut t: i64 = 0
-                while t < vec_len(ttl_ids) {
-                    if vec_get(ttl_ids, t) == w.table_id {
-                        found = t
-                    }
-                    t = t + 1
-                }
-                if found >= 0 {
-                    ttl = vec_get(ttl_secs, found)
-                } else {
-                    let tg = boila_ttl_get(s, w.table_id)?
-                    s = tg.s
-                    ttl = tg.ttl_sec
-                    vec_push(ttl_ids, w.table_id)
-                    vec_push(ttl_secs, ttl)
-                }
-            }
-            s = boila_put_ex(s, w.cf, w.table_id, w.pk, val, ttl)?
+            s = boila_put_ex(s, w.cf, w.table_id, w.pk, val, w.ttl_sec)?
         }
         i = i + 1
     }

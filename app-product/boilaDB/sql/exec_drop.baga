@@ -1,23 +1,201 @@
-// exec_drop.baga — DROP TABLE / INDEX / GRAPH + TRUNCATE dispatch.
+// exec_drop.baga — DROP/TRUNCATE orchestrator (kimi-deps D5).
+// Catalog core + modal wipe APIs; composition lives here only.
+
 import "token.baga"
 import "lexer.baga"
 import "parse_ddl.baga"
 import "parse_index.baga"
 import "plan_cache.baga"
 import "exec_out.baga"
+import "../catalog/schema.baga"
 import "../catalog/drop.baga"
 import "../catalog/truncate.baga"
 import "../index/ix_drop.baga"
+import "../fts/fts_wipe.baga"
+import "../vector/hnsw_wipe.baga"
 import "../graph/g_drop.baga"
 import "../txn/mvcc.baga"
 import "../storage/shards.baga"
+import "std/str/str.baga"
 
 fn boila_exec_truncate(s: BoilaStore, txn: BoilaTxn, db: str, lx: BoilaLex, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
     let p = boila_parse_truncate(lx)
     if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
-    let tr = boila_table_truncate_run(s, txn, db, p.name, p.if_exists)?
-    if tr.ok == 0 { return boila_sql_fail(tr.s, tr.txn, pc, tr.err, tr.state) }
-    return BoilaSqlOut { s: tr.s, txn: tr.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 25, res: boila_result_empty(), id: tr.id }
+    let was = txn.active
+    if was == 0 {
+        let b = boila_txn_begin(s, txn, 0, db)?
+        s = b.s
+        txn = b.txn
+    }
+    let tr = boila_table_truncate_core_txn(s, txn, p.name)?
+    s = tr.s
+    txn = tr.txn
+    if tr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(txn) }
+        if p.if_exists == 1 && tr.state == "42P01" {
+            return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 25, res: boila_result_empty(), id: 0 }
+        }
+        return boila_sql_fail(s, txn, pc, tr.err, tr.state)
+    }
+    let tid = tr.id
+    let fr = fts_reset_table_txn(s, txn, tid)?
+    if fr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(fr.txn) }
+        return boila_sql_fail(fr.s, fr.txn, pc, fr.err, fr.state)
+    }
+    s = fr.s
+    txn = fr.txn
+    let hr = hnsw_reset_table_txn(s, txn, tid)?
+    if hr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(hr.txn) }
+        return boila_sql_fail(hr.s, hr.txn, pc, hr.err, hr.state)
+    }
+    s = hr.s
+    txn = hr.txn
+    let gr = graph_reset_table_txn(s, txn, tid)?
+    if gr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(gr.txn) }
+        return boila_sql_fail(gr.s, gr.txn, pc, gr.err, gr.state)
+    }
+    s = gr.s
+    txn = gr.txn
+    if was == 0 {
+        let c = boila_txn_commit(s, txn)?
+        s = c.s
+        txn = c.txn
+        if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 25, res: boila_result_empty(), id: tid }
+}
+
+// DROP INDEX: secondary → FTS → HNSW cascade.
+fn boila_exec_drop_index(s: BoilaStore, txn: BoilaTxn, db: str, table: str, ix_name: str, if_exists: i64, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
+    let was = txn.active
+    if was == 0 {
+        let b = boila_txn_begin(s, txn, 0, db)?
+        s = b.s
+        txn = b.txn
+    }
+    let ct = boila_cat_by_name_txn(s, txn, table)?
+    s = ct.s
+    if ct.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(txn) }
+        if if_exists == 1 && ct.state == "42P01" {
+            return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 23, res: boila_result_empty(), id: 0 }
+        }
+        return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+    }
+    let t = ct.table
+    let a = boila_ix_drop_sec(s, txn, t, ix_name)?
+    if a.ok == 1 {
+        s = a.s
+        txn = a.txn
+        if was == 0 {
+            let c = boila_txn_commit(s, txn)?
+            s = c.s
+            txn = c.txn
+            if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+        }
+        return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 23, res: boila_result_empty(), id: a.id }
+    }
+    if a.state != "42704" {
+        if was == 0 { txn = boila_txn_rollback(a.txn) }
+        return boila_sql_fail(a.s, a.txn, pc, a.err, a.state)
+    }
+    s = a.s
+    txn = a.txn
+    let b = fts_drop_index_txn(s, txn, t, ix_name)?
+    if b.ok == 1 {
+        s = b.s
+        txn = b.txn
+        if was == 0 {
+            let c = boila_txn_commit(s, txn)?
+            s = c.s
+            txn = c.txn
+            if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+        }
+        return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 23, res: boila_result_empty(), id: b.id }
+    }
+    if b.state != "42704" {
+        if was == 0 { txn = boila_txn_rollback(b.txn) }
+        return boila_sql_fail(b.s, b.txn, pc, b.err, b.state)
+    }
+    s = b.s
+    txn = b.txn
+    let h = hnsw_drop_index_txn(s, txn, t, ix_name)?
+    if h.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(h.txn) }
+        if if_exists == 1 && h.state == "42704" {
+            return BoilaSqlOut { s: h.s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 23, res: boila_result_empty(), id: 0 }
+        }
+        if h.state == "42704" {
+            return boila_sql_fail(h.s, txn, pc, concat("индекс '", concat(ix_name, "' не съществува")), "42704")
+        }
+        return boila_sql_fail(h.s, h.txn, pc, h.err, h.state)
+    }
+    s = h.s
+    txn = h.txn
+    if was == 0 {
+        let c = boila_txn_commit(s, txn)?
+        s = c.s
+        txn = c.txn
+        if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 23, res: boila_result_empty(), id: h.id }
+}
+
+fn boila_exec_drop_table(s: BoilaStore, txn: BoilaTxn, db: str, name: str, if_exists: i64, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
+    let was = txn.active
+    if was == 0 {
+        let b = boila_txn_begin(s, txn, 0, db)?
+        s = b.s
+        txn = b.txn
+    }
+    let ct = boila_cat_by_name_txn(s, txn, name)?
+    s = ct.s
+    if ct.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(txn) }
+        if if_exists == 1 && ct.state == "42P01" {
+            return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: 0 }
+        }
+        return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+    }
+    let tid = ct.table.id
+    let fr = fts_wipe_table_txn(s, txn, tid)?
+    if fr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(fr.txn) }
+        return boila_sql_fail(fr.s, fr.txn, pc, fr.err, fr.state)
+    }
+    s = fr.s
+    txn = fr.txn
+    let hr = hnsw_wipe_table_txn(s, txn, tid)?
+    if hr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(hr.txn) }
+        return boila_sql_fail(hr.s, hr.txn, pc, hr.err, hr.state)
+    }
+    s = hr.s
+    txn = hr.txn
+    let gr = graph_wipe_table_txn(s, txn, tid)?
+    if gr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(gr.txn) }
+        return boila_sql_fail(gr.s, gr.txn, pc, gr.err, gr.state)
+    }
+    s = gr.s
+    txn = gr.txn
+    let dr = boila_table_drop_core_txn(s, txn, name)?
+    s = dr.s
+    txn = dr.txn
+    if dr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(txn) }
+        return boila_sql_fail(s, txn, pc, dr.err, dr.state)
+    }
+    if was == 0 {
+        let c = boila_txn_commit(s, txn)?
+        s = c.s
+        txn = c.txn
+        if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: dr.id }
 }
 
 fn boila_exec_drop(s: BoilaStore, txn: BoilaTxn, db: str, lx: BoilaLex, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
@@ -25,9 +203,7 @@ fn boila_exec_drop(s: BoilaStore, txn: BoilaTxn, db: str, lx: BoilaLex, pc: Boil
     if tok_kw(t1, "index") == 1 {
         let p = boila_parse_drop_index(lx)
         if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
-        let dr = boila_ix_drop_run(s, txn, db, p.table, p.ix_name, p.if_exists)?
-        if dr.ok == 0 { return boila_sql_fail(dr.s, dr.txn, pc, dr.err, dr.state) }
-        return BoilaSqlOut { s: dr.s, txn: dr.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 23, res: boila_result_empty(), id: dr.id }
+        return boila_exec_drop_index(s, txn, db, p.table, p.ix_name, p.if_exists, pc, pc_mu)?
     }
     if tok_kw(t1, "graph") == 1 {
         let p = boila_parse_drop_graph(lx)
@@ -41,12 +217,5 @@ fn boila_exec_drop(s: BoilaStore, txn: BoilaTxn, db: str, lx: BoilaLex, pc: Boil
     }
     let p = boila_parse_drop_table(lx)
     if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
-    let dr = boila_table_drop_run(s, txn, db, p.name)?
-    if dr.ok == 0 {
-        if p.if_exists == 1 && dr.state == "42P01" {
-            return BoilaSqlOut { s: dr.s, txn: dr.txn, pc: pc, ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: 0 }
-        }
-        return boila_sql_fail(dr.s, dr.txn, pc, dr.err, dr.state)
-    }
-    return BoilaSqlOut { s: dr.s, txn: dr.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: dr.id }
+    return boila_exec_drop_table(s, txn, db, p.name, p.if_exists, pc, pc_mu)?
 }

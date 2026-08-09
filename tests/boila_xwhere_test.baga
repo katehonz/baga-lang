@@ -1,8 +1,8 @@
 // boila_xwhere_test.baga — boilaDB Q-xw: dual-expression predicates in
 // WHERE (post-fetch filter; structural predicates keep index paths).
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"

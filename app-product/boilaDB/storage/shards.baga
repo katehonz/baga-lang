@@ -121,6 +121,28 @@ fn boila_put(s: BoilaStore, cf: i64, table_id: i64, pk: bytes, val: bytes) -> Bo
     return BoilaStore { c: s.c, dbs_h: s.dbs_h, mus_h: s.mus_h, n: s.n, ok: ok }
 }
 
+// put with optional TTL (ttl_sec<=0 → plain put). Caller resolves TTL
+// (kimi-deps D3 — txn commit must not import ts/).
+fn boila_put_ex(s: BoilaStore, cf: i64, table_id: i64, pk: bytes, val: bytes, ttl_sec: i64) -> BoilaStore !IO !Time !Par {
+    if ttl_sec <= 0 {
+        return boila_put(s, cf, table_id, pk, val)?
+    }
+    let key = boila_key_row(cf, table_id, pk)
+    if s.dbs_h == 0 {
+        let c = lsm_cluster_put_ex_kb(s.c, key, val, ttl_sec)?
+        return BoilaStore { c: c, dbs_h: 0, mus_h: 0, n: c.n, ok: c.ok }
+    }
+    let ix = lsm_shard_ix_b(s.n, key)
+    let mu = boila_shard_lock(s, ix)?
+    let dbs: Map<i64, LsmDB> = h_map(s.dbs_h)
+    let mut db = map_get(dbs, ix)
+    db = lsm_put_ex_kb(db, key, val, ttl_sec)?
+    map_set(dbs, ix, db)
+    let ok = db.ok
+    mutex_unlock(mu)
+    return BoilaStore { c: s.c, dbs_h: s.dbs_h, mus_h: s.mus_h, n: s.n, ok: ok }
+}
+
 fn boila_get(s: BoilaStore, cf: i64, table_id: i64, pk: bytes) -> BoilaGet !IO !Time !Par {
     let key = boila_key_row(cf, table_id, pk)
     if s.dbs_h == 0 {

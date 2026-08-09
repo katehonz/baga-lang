@@ -8,7 +8,7 @@
 // двойки; lazy open при първа употреба; при таван BOILA_MAX_DB се
 // затваря най-старата отворена (FIFO). Default база: "boila".
 
-import "shards.baga"
+import "../storage/shards.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
 import "../core/row.baga"

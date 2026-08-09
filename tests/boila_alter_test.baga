@@ -1,7 +1,7 @@
 // boila_alter_test.baga — ALTER TABLE ADD COLUMN (nullable + short-row NULL pad).
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/plan_cache.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"

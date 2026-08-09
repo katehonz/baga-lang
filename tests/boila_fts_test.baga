@@ -1,8 +1,8 @@
 // boila_fts_test.baga — P7: FTS — CREATE FTS INDEX, @@ to_tsquery/
 // plainto_tsquery, BM25, DML синхронизация, restart.
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/fts/fts.baga"
 import "boilaDB/core/value.baga"

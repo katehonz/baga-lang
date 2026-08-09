@@ -13,8 +13,8 @@
 
 import "httpdbaga/http.baga"
 import "http_auth.baga"
-import "../storage/databases.baga"
-import "../sql/exec_server.baga"
+import "../server/databases.baga"
+import "../server/exec_server.baga"
 import "../sql/exec_sql.baga"
 import "../sql/exec_select.baga"
 import "../sql/exec_scan.baga"

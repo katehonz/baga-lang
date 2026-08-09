@@ -1,4 +1,6 @@
-// truncate.baga — TRUNCATE TABLE: wipe data CFs, keep schema/indexes defs.
+// truncate.baga — TRUNCATE core: wipe data/index CF only.
+// Modal reset (fts/vec/graph) is orchestrated in sql/exec_drop (kimi-deps D5).
+
 import "schema.baga"
 import "drop.baga"
 import "../storage/shards.baga"
@@ -6,13 +8,10 @@ import "../core/codec.baga"
 import "../core/value.baga"
 import "../core/row.baga"
 import "../txn/mvcc.baga"
-import "../fts/fts.baga"
-import "../fts/fts_doc.baga"
-import "../vector/hnsw_store.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
-fn boila_table_truncate_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCatTxnRes !IO !Time !Par {
+fn boila_table_truncate_core_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCatTxnRes !IO !Time !Par {
     let ct = boila_cat_by_name_txn(s, txn, name)?
     s = ct.s
     if ct.ok == 0 {
@@ -28,67 +27,5 @@ fn boila_table_truncate_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCat
     if w2.ok == 0 { return w2 }
     s = w2.s
     txn = w2.txn
-    let w3 = boila_cf_wipe_txn(s, txn, boila_cf_fts(), tid)?
-    if w3.ok == 0 { return w3 }
-    s = w3.s
-    txn = w3.txn
-    let w4 = boila_cf_wipe_txn(s, txn, boila_cf_vec(), tid)?
-    if w4.ok == 0 { return w4 }
-    s = w4.s
-    txn = w4.txn
-    let w5 = boila_cf_wipe_txn(s, txn, boila_cf_graph(), tid)?
-    if w5.ok == 0 { return w5 }
-    s = w5.s
-    txn = w5.txn
-    // reset FTS stats (defs stay)
-    let ftsl = fts_list_for_table(s, tid)?
-    s = ftsl.s
-    let mut fi: i64 = 0
-    while fi < vec_len(ftsl.defs) {
-        let d = vec_get(ftsl.defs, fi)
-        let su = fts_stats_write(s, txn, d.id, 0, 0)
-        s = su.s
-        txn = su.txn
-        fi = fi + 1
-    }
-    // reset HNSW entrypoints (defs stay)
-    let hnswl = hnsw_list_for_table(s, tid)?
-    s = hnswl.s
-    let mut hi: i64 = 0
-    while hi < vec_len(hnswl.defs) {
-        let d = vec_get(hnswl.defs, hi)
-        let vm = hnsw_vm_put(s, txn, d.id, 0, 0, 0, bytes_new(0))
-        s = vm.s
-        txn = vm.txn
-        hi = hi + 1
-    }
     return BoilaCatTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", table: t, id: tid }
-}
-
-fn boila_table_truncate_run(s: BoilaStore, txn: BoilaTxn, db: str, name: str, if_exists: i64) -> BoilaCatTxnRes !IO !Time !Par {
-    let was = txn.active
-    if was == 0 {
-        let b = boila_txn_begin(s, txn, 0, db)?
-        s = b.s
-        txn = b.txn
-    }
-    let tr = boila_table_truncate_txn(s, txn, name)?
-    s = tr.s
-    txn = tr.txn
-    if tr.ok == 0 {
-        if was == 0 { txn = boila_txn_rollback(txn) }
-        if if_exists == 1 && tr.state == "42P01" {
-            return BoilaCatTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", table: boila_cat_empty_table(), id: 0 }
-        }
-        return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: tr.err, state: tr.state, table: boila_cat_empty_table(), id: 0 }
-    }
-    if was == 0 {
-        let c = boila_txn_commit(s, txn)?
-        s = c.s
-        txn = c.txn
-        if c.ok == 0 {
-            return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: c.err, state: c.state, table: boila_cat_empty_table(), id: 0 }
-        }
-    }
-    return BoilaCatTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", table: tr.table, id: tr.id }
 }

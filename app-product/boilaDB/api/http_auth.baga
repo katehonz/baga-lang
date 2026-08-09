@@ -1,6 +1,6 @@
 // http_auth.baga — Bearer token / Basic user:pass / trust.
 import "httpdbaga/http.baga"
-import "../storage/databases.baga"
+import "../server/databases.baga"
 import "../catalog/acl.baga"
 import "../sql/exec_acl.baga"
 import "std/str/str.baga"

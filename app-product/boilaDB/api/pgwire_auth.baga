@@ -1,7 +1,7 @@
 // pgwire_auth.baga — cleartext auth: users ACL or BOILA_TOKEN.
 import "pgwire_msg.baga"
 import "pgwire_enc.baga"
-import "../storage/databases.baga"
+import "../server/databases.baga"
 import "../catalog/acl.baga"
 import "../sql/exec_acl.baga"
 import "std/net/tcp.baga"

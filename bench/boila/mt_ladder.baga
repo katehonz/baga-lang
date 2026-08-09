@@ -1,8 +1,8 @@
 // mt_ladder.baga — concurrent HTTP ladder vs MT serve (raw TCP client).
 // Ladder clients=1/4/8/16/32 × 200 point SELECTs. Honest: not 10k OS threads.
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/api/serve_mt.baga"
 import "boilaDB/api/http_sql.baga"
 import "boilaDB/txn/mvcc.baga"

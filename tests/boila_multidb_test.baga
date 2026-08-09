@@ -2,9 +2,9 @@
 // Изолация между бази, CREATE/DROP/USE, SQLSTATE грешки, restart,
 // DROP чисти файловете.
 
-import "boilaDB/storage/databases.baga"
+import "boilaDB/server/databases.baga"
 import "boilaDB/storage/shards.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/core/codec.baga"
 import "boilaDB/core/value.baga"

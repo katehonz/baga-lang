@@ -174,6 +174,11 @@ bash "$ROOT/app-product/boilaDB/scripts/filesize.sh" \
 	&& echo "OK: boilaDB filesize" \
 	|| { echo "FAIL: boilaDB filesize"; exit 1; }
 
+echo "=== boilaDB layer gate (one-way dependencies, ARCHITECTURE.md §3) ==="
+bash "$ROOT/app-product/boilaDB/scripts/deps.sh" \
+	&& echo "OK: boilaDB deps" \
+	|| { echo "FAIL: boilaDB deps"; exit 1; }
+
 # ── 4. Package / product / std tests via baga-test discovery ─────────────
 # Specials need env or an external peer; the rest are plain discovery.
 echo "=== tls handshake (openssl s_server live: RSA + ECDSA-P256) ==="

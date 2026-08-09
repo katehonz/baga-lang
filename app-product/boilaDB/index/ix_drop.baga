@@ -1,4 +1,6 @@
-// ix_drop.baga — DROP INDEX name ON table (secondary / FTS / HNSW).
+// ix_drop.baga — DROP secondary INDEX only (kimi-deps D5).
+// FTS/HNSW drop lives in fts_wipe / hnsw_wipe; sql/exec_drop cascades.
+
 import "secondary.baga"
 import "../storage/shards.baga"
 import "../core/codec.baga"
@@ -6,9 +8,6 @@ import "../core/value.baga"
 import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../catalog/drop.baga"
-import "../fts/fts.baga"
-import "../fts/fts_doc.baga"
-import "../vector/hnsw_store.baga"
 import "../txn/mvcc.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
@@ -32,7 +31,7 @@ fn boila_ix_wipe_pref_txn(s: BoilaStore, txn: BoilaTxn, cf: i64, table_id: i64, 
     return BoilaIxTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", id: 0 }
 }
 
-// Secondary btree DROP (no IF EXISTS — caller cascades).
+// Secondary btree DROP.
 fn boila_ix_drop_sec(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str) -> BoilaIxTxnRes !IO !Time !Par {
     let cpk = boila_ix_cat_pk(t.id, ix_name)
     let mut found = 0
@@ -78,113 +77,7 @@ fn boila_ix_drop_sec(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str) 
     return BoilaIxTxnRes { s: w.s, txn: w.txn, ok: 1, err: "", state: "", id: ix_id }
 }
 
-// FTS DROP: cat + list + stats; wipe fts CF if last index on table.
-fn boila_ix_drop_fts(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str) -> BoilaIxTxnRes !IO !Time !Par {
-    let gl = fts_list_for_table(s, t.id)?
-    s = gl.s
-    let mut found = 0
-    let mut fid: i64 = 0
-    let kept: Vec<BoilaFtsDef> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(gl.defs) {
-        let d = vec_get(gl.defs, i)
-        if d.name == ix_name {
-            found = 1
-            fid = d.id
-        } else {
-            vec_push(kept, d)
-        }
-        i = i + 1
-    }
-    if found == 0 {
-        return BoilaIxTxnRes { s: s, txn: txn, ok: 0, err: "miss", state: "42704", id: 0 }
-    }
-    let d1 = boila_txn_del(s, txn, boila_cf_sys(), 1, fts_cat_pk(t.id, ix_name))
-    if d1.ok == 0 { return BoilaIxTxnRes { s: d1.s, txn: d1.txn, ok: 0, err: d1.err, state: d1.state, id: 0 } }
-    s = d1.s
-    txn = d1.txn
-    let d2 = boila_txn_del(s, txn, boila_cf_sys(), 1, fts_stats_pk(fid))
-    if d2.ok == 0 { return BoilaIxTxnRes { s: d2.s, txn: d2.txn, ok: 0, err: d2.err, state: d2.state, id: 0 } }
-    s = d2.s
-    txn = d2.txn
-    if vec_len(kept) == 0 {
-        let d3 = boila_txn_del(s, txn, boila_cf_sys(), 1, fts_list_pk(t.id))
-        if d3.ok == 0 { return BoilaIxTxnRes { s: d3.s, txn: d3.txn, ok: 0, err: d3.err, state: d3.state, id: 0 } }
-        s = d3.s
-        txn = d3.txn
-        let w = boila_cf_wipe_txn(s, txn, boila_cf_fts(), t.id)?
-        if w.ok == 0 { return BoilaIxTxnRes { s: w.s, txn: w.txn, ok: 0, err: w.err, state: w.state, id: 0 } }
-        s = w.s
-        txn = w.txn
-    } else {
-        let rl = boila_txn_put(s, txn, boila_cf_sys(), 1, fts_list_pk(t.id), fts_defs_enc(kept))
-        if rl.ok == 0 { return BoilaIxTxnRes { s: s, txn: rl.txn, ok: 0, err: rl.err, state: rl.state, id: 0 } }
-        s = rl.s
-        txn = rl.txn
-    }
-    return BoilaIxTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", id: fid }
-}
-
-// HNSW DROP: cat + list + vm; wipe vec nbrs with n|<ix_id> prefix.
-fn boila_ix_drop_hnsw(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str) -> BoilaIxTxnRes !IO !Time !Par {
-    let gl = hnsw_list_for_table(s, t.id)?
-    s = gl.s
-    let mut found = 0
-    let mut hid: i64 = 0
-    let kept: Vec<BoilaHnswDef> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(gl.defs) {
-        let d = vec_get(gl.defs, i)
-        if d.name == ix_name {
-            found = 1
-            hid = d.id
-        } else {
-            vec_push(kept, d)
-        }
-        i = i + 1
-    }
-    if found == 0 {
-        return BoilaIxTxnRes { s: s, txn: txn, ok: 0, err: "miss", state: "42704", id: 0 }
-    }
-    let d1 = boila_txn_del(s, txn, boila_cf_sys(), 1, hnsw_cat_pk(t.id, ix_name))
-    if d1.ok == 0 { return BoilaIxTxnRes { s: d1.s, txn: d1.txn, ok: 0, err: d1.err, state: d1.state, id: 0 } }
-    s = d1.s
-    txn = d1.txn
-    let d2 = boila_txn_del(s, txn, boila_cf_sys(), 1, hnsw_vm_pk(hid))
-    if d2.ok == 0 { return BoilaIxTxnRes { s: d2.s, txn: d2.txn, ok: 0, err: d2.err, state: d2.state, id: 0 } }
-    s = d2.s
-    txn = d2.txn
-    if vec_len(kept) == 0 {
-        let d3 = boila_txn_del(s, txn, boila_cf_sys(), 1, hnsw_list_pk(t.id))
-        if d3.ok == 0 { return BoilaIxTxnRes { s: d3.s, txn: d3.txn, ok: 0, err: d3.err, state: d3.state, id: 0 } }
-        s = d3.s
-        txn = d3.txn
-    } else {
-        let rl = boila_txn_put(s, txn, boila_cf_sys(), 1, hnsw_list_pk(t.id), hnsw_defs_enc(kept))
-        if rl.ok == 0 { return BoilaIxTxnRes { s: s, txn: rl.txn, ok: 0, err: rl.err, state: rl.state, id: 0 } }
-        s = rl.s
-        txn = rl.txn
-    }
-    let mut pref = bytes_of_str("n|")
-    pref = bytes_concat(pref, boila_enc_u32_be(hid))
-    let w = boila_ix_wipe_pref_txn(s, txn, boila_cf_vec(), t.id, pref)?
-    if w.ok == 0 { return w }
-    return BoilaIxTxnRes { s: w.s, txn: w.txn, ok: 1, err: "", state: "", id: hid }
-}
-
-fn boila_ix_drop_any(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str) -> BoilaIxTxnRes !IO !Time !Par {
-    let a = boila_ix_drop_sec(s, txn, t, ix_name)?
-    if a.ok == 1 || a.state != "42704" { return a }
-    s = a.s
-    txn = a.txn
-    let b = boila_ix_drop_fts(s, txn, t, ix_name)?
-    if b.ok == 1 || b.state != "42704" { return b }
-    s = b.s
-    txn = b.txn
-    return boila_ix_drop_hnsw(s, txn, t, ix_name)?
-}
-
-fn boila_ix_drop_run(s: BoilaStore, txn: BoilaTxn, db: str, table: str, ix_name: str, if_exists: i64) -> BoilaIxTxnRes !IO !Time !Par {
+fn boila_ix_drop_sec_run(s: BoilaStore, txn: BoilaTxn, db: str, table: str, ix_name: str, if_exists: i64) -> BoilaIxTxnRes !IO !Time !Par {
     let was = txn.active
     if was == 0 {
         let b = boila_txn_begin(s, txn, 0, db)?
@@ -200,7 +93,7 @@ fn boila_ix_drop_run(s: BoilaStore, txn: BoilaTxn, db: str, table: str, ix_name:
         }
         return BoilaIxTxnRes { s: s, txn: txn, ok: 0, err: ct.err, state: ct.state, id: 0 }
     }
-    let dr = boila_ix_drop_any(s, txn, ct.table, ix_name)?
+    let dr = boila_ix_drop_sec(s, txn, ct.table, ix_name)?
     s = dr.s
     txn = dr.txn
     if dr.ok == 0 {

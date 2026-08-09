@@ -1,8 +1,8 @@
 // boila_xdml_test.baga — boilaDB Q-xdml: SET col = <expr> and
 // expression WHERE in UPDATE/DELETE (dual evaluator over old rows).
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"

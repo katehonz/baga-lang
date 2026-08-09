@@ -77,6 +77,48 @@ fn graph_drop(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str) -> BoilaGr
     return graph_wipe_gid_txn(s, txn, t.id, gid)?
 }
 
+// DROP TABLE: wipe graph CF + all graph catalog for table_id.
+fn graph_wipe_table_txn(s: BoilaStore, txn: BoilaTxn, tid: i64) -> BoilaGraphRes !IO !Time !Par {
+    let w = boila_cf_wipe_txn(s, txn, boila_cf_graph(), tid)?
+    if w.ok == 0 { return BoilaGraphRes { s: w.s, txn: w.txn, ok: 0, err: w.err, state: w.state, id: 0 } }
+    s = w.s
+    txn = w.txn
+    let grpl = graph_list_for_table(s, tid)?
+    s = grpl.s
+    let mut gi: i64 = 0
+    while gi < vec_len(grpl.defs) {
+        let d = vec_get(grpl.defs, gi)
+        let a = boila_drop_txn_del(s, txn, graph_cat_pk(tid, d.name))
+        if a.ok == 0 { return BoilaGraphRes { s: a.s, txn: a.txn, ok: 0, err: a.err, state: a.state, id: 0 } }
+        s = a.s
+        txn = a.txn
+        gi = gi + 1
+    }
+    let gl = boila_drop_txn_del(s, txn, graph_list_pk(tid))
+    if gl.ok == 0 { return BoilaGraphRes { s: gl.s, txn: gl.txn, ok: 0, err: gl.err, state: gl.state, id: 0 } }
+    return BoilaGraphRes { s: gl.s, txn: gl.txn, ok: 1, err: "", state: "", id: tid }
+}
+
+fn graph_wipe_table(s: BoilaStore, tid: i64) -> BoilaStore !IO !Time !Par {
+    s = boila_cf_wipe(s, boila_cf_graph(), tid)?
+    let grpl = graph_list_for_table(s, tid)?
+    s = grpl.s
+    let mut gi: i64 = 0
+    while gi < vec_len(grpl.defs) {
+        let d = vec_get(grpl.defs, gi)
+        s = boila_del(s, boila_cf_sys(), 1, graph_cat_pk(tid, d.name))?
+        gi = gi + 1
+    }
+    return boila_del(s, boila_cf_sys(), 1, graph_list_pk(tid))?
+}
+
+// TRUNCATE: wipe graph CF payloads; defs stay.
+fn graph_reset_table_txn(s: BoilaStore, txn: BoilaTxn, tid: i64) -> BoilaGraphRes !IO !Time !Par {
+    let w = boila_cf_wipe_txn(s, txn, boila_cf_graph(), tid)?
+    if w.ok == 0 { return BoilaGraphRes { s: w.s, txn: w.txn, ok: 0, err: w.err, state: w.state, id: 0 } }
+    return BoilaGraphRes { s: w.s, txn: w.txn, ok: 1, err: "", state: "", id: tid }
+}
+
 fn graph_drop_run(s: BoilaStore, txn: BoilaTxn, db: str, table: str, name: str, if_exists: i64) -> BoilaGraphRes !IO !Time !Par {
     let was = txn.active
     if was == 0 {

@@ -1,8 +1,8 @@
 // boila_sql_read_test.baga — boilaDB P1/P4: SQL read path през сървър API.
 // Каталогът е персистентен; point/range/limit; SQLSTATE грешки; restart.
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_sql.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/sql/plan_cache.baga"

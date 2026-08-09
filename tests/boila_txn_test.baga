@@ -7,9 +7,9 @@
 //    непроменен до COMMIT; собствените писания се виждат от txn)
 //  - детерминистичен commit ред: монотонни LSN-и
 
-import "boilaDB/storage/databases.baga"
+import "boilaDB/server/databases.baga"
 import "boilaDB/storage/shards.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/txn/mvcc.baga"
 import "boilaDB/core/codec.baga"

@@ -2,8 +2,8 @@
 // CREATE INDEX (build върху съществуващи редове), lookup през SELECT,
 // синхронизация при INSERT/UPDATE/DELETE, грешки, restart.
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"

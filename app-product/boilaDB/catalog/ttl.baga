@@ -1,0 +1,41 @@
+// ttl.baga — table TTL catalog keys (sys td|<tid>).
+// Lived in ts/retention; catalog owns the metadata (kimi-deps D6 residual).
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// sys: "td|<table_id>" → [ttl_sec]  (point GET; 0/missing = no TTL)
+fn boila_ttl_pk(table_id: i64) -> bytes {
+    return bytes_of_str(concat("td|", int_to_str(table_id)))
+}
+
+fn boila_ttl_put(s: BoilaStore, table_id: i64, ttl_sec: i64) -> BoilaStore !IO !Time !Par {
+    if ttl_sec <= 0 {
+        return boila_del(s, boila_cf_sys(), 1, boila_ttl_pk(table_id))?
+    }
+    let r: Vec<BoilaVal> = vec_new()
+    vec_push(r, boila_val_i64(ttl_sec))
+    return boila_put(s, boila_cf_sys(), 1, boila_ttl_pk(table_id), boila_row_enc(r))?
+}
+
+struct BoilaTtlGet {
+    s: BoilaStore,
+    ttl_sec: i64
+}
+
+fn boila_ttl_get(s: BoilaStore, table_id: i64) -> BoilaTtlGet !IO !Time !Par {
+    let g = boila_get(s, boila_cf_sys(), 1, boila_ttl_pk(table_id))?
+    s = g.s
+    if g.found == 0 {
+        return BoilaTtlGet { s: s, ttl_sec: 0 }
+    }
+    let row = boila_row_dec(g.val)
+    if vec_len(row) < 1 {
+        return BoilaTtlGet { s: s, ttl_sec: 0 }
+    }
+    return BoilaTtlGet { s: s, ttl_sec: vec_get(row, 0).i }
+}

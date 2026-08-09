@@ -4,8 +4,8 @@
 // prompt-ът я показва. CREATE/DROP DATABASE са сървърни заявления.
 // Env като serve.baga (BOILA_PATH и др.). Празен ред или \q излиза.
 
-import "../storage/databases.baga"
-import "../sql/exec_server.baga"
+import "../server/databases.baga"
+import "../server/exec_server.baga"
 import "../sql/exec_scan.baga"
 import "../core/row.baga"
 import "std/io/io.baga"

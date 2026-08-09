@@ -2,8 +2,8 @@
 // Речник 2000 думи × 8 думи/док → df ≈ 400/term.
 // Пуска се: baga -I . -I app-product bench/boila/fts_bench.baga
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"

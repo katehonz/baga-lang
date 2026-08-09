@@ -7,7 +7,7 @@ import "parse_select.baga"
 import "parse_ddl.baga"
 import "parse_alter.baga"
 import "parse_index.baga"
-import "../catalog/alter.baga"
+import "exec_alter.baga"
 import "parse_dml.baga"
 import "parse_insert.baga"
 import "parse_txn.baga"
@@ -125,9 +125,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
     if tok_kw(t0, "alter") == 1 {
         let p = boila_parse_alter(lx)
         if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
-        let ar = boila_alter_run(s, txn, db, p.alt)?
-        if ar.ok == 0 { return boila_sql_fail(ar.s, ar.txn, pc, ar.err, ar.state) }
-        return BoilaSqlOut { s: ar.s, txn: ar.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 22, res: boila_result_empty(), id: ar.id }
+        return boila_exec_alter(s, txn, db, p.alt, pc, pc_mu)?
     }
     if tok_kw(t0, "create") == 1 {
         let t1 = vec_get(lx.toks, 1)

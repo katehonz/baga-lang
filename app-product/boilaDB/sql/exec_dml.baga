@@ -229,7 +229,7 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
                     return boila_dml_fail(s, txn, 6, xd.err, xd.state)
                 }
                 txn = xd.txn
-                let pw = boila_txn_put(s, txn, boila_cf_data(), t.id, pkenc, boila_row_enc(new))
+                let pw = boila_txn_put_ex(s, txn, boila_cf_data(), t.id, pkenc, boila_row_enc(new), t.ttl_sec)
                 if pw.ok == 0 {
                     return boila_dml_fail(s, txn, 6, pw.err, pw.state)
                 }
@@ -283,7 +283,7 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
             }
             // oc == 1 (DO NOTHING): пропусни реда
         } else {
-            let pw = boila_txn_put(s, txn, boila_cf_data(), t.id, pkenc, boila_row_enc(full))
+            let pw = boila_txn_put_ex(s, txn, boila_cf_data(), t.id, pkenc, boila_row_enc(full), t.ttl_sec)
             if pw.ok == 0 {
                 return boila_dml_fail(s, txn, 6, pw.err, pw.state)
             }

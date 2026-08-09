@@ -2,28 +2,17 @@
 import "token.baga"
 import "lexer.baga"
 import "parse_ddl.baga"
-import "ast.baga"
+import "../catalog/ddl_types.baga"
 import "../core/value.baga"
 import "std/str/str.baga"
 
-// kind: 1=add col, 2=rename table, 3=rename column, 4=drop col
-struct BoilaAlter {
-    kind: i64,
-    table: str,
-    col: str,
-    typ: i64,
-    new_name: str
-}
+// BoilaAlter / boila_alter_empty → catalog/ddl_types.baga (kimi-deps D4).
 
 struct BoilaParseAlter {
     ok: i64,
     alt: BoilaAlter,
     err: str,
     state: str
-}
-
-fn boila_alter_empty() -> BoilaAlter {
-    return BoilaAlter { kind: 0, table: "", col: "", typ: 0, new_name: "" }
 }
 
 fn boila_pa_fail(msg: str, state: str) -> BoilaParseAlter {

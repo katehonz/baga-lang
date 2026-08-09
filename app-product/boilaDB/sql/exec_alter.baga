@@ -1,0 +1,160 @@
+// exec_alter.baga — ALTER TABLE orchestrator (kimi-deps D5).
+// DROP COLUMN cascade lives here; catalog only rewrites schema.
+
+import "parse_alter.baga"
+import "plan_cache.baga"
+import "exec_out.baga"
+import "../catalog/schema.baga"
+import "../catalog/alter.baga"
+import "../catalog/drop.baga"
+import "../catalog/ddl_types.baga"
+import "../index/ix_drop.baga"
+import "../fts/fts.baga"
+import "../fts/fts_wipe.baga"
+import "../vector/hnsw_store.baga"
+import "../vector/hnsw_wipe.baga"
+import "../graph/adjacency.baga"
+import "../txn/mvcc.baga"
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// Cascade secondary/FTS/HNSW on column, then schema DROP COLUMN.
+fn boila_exec_drop_col(s: BoilaStore, txn: BoilaTxn, table: str, col: str) -> BoilaCatTxnRes !IO !Time !Par {
+    let ct = boila_cat_by_name_txn(s, txn, table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: ct.err, state: ct.state, table: boila_cat_empty_table(), id: 0 }
+    }
+    let mut t = ct.table
+    let mut cix: i64 = 0 - 1
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        if vec_get(t.cols, i).name == col { cix = i }
+        i = i + 1
+    }
+    if cix < 0 {
+        return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: concat("колона '", concat(col, "' не съществува")), state: "42703", table: boila_cat_empty_table(), id: 0 }
+    }
+    if cix == t.pk_idx {
+        return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: "не може DROP PRIMARY KEY колона", state: "0A000", table: boila_cat_empty_table(), id: 0 }
+    }
+    if cix != vec_len(t.cols) - 1 {
+        return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: "DROP COLUMN само последната колона (позиционни редове)", state: "0A000", table: boila_cat_empty_table(), id: 0 }
+    }
+    let grpl = graph_list_for_table(s, t.id)?
+    s = grpl.s
+    i = 0
+    while i < vec_len(grpl.defs) {
+        let d = vec_get(grpl.defs, i)
+        if d.src_idx == cix || d.dst_idx == cix || d.w_idx == cix {
+            return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: "колоната се ползва от GRAPH — DROP GRAPH първо", state: "2BP01", table: boila_cat_empty_table(), id: 0 }
+        }
+        i = i + 1
+    }
+    let pref = bytes_of_str(concat(concat("x|", int_to_str(t.id)), "|"))
+    let ks = boila_cf_keys_raw(s, boila_cf_sys(), 1)?
+    s = ks.s
+    let names: Vec<str> = vec_new()
+    i = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_bytes_has_prefix(pk, pref) == 1 {
+            let g = boila_get(s, boila_cf_sys(), 1, pk)?
+            s = g.s
+            if g.found == 1 {
+                let row = boila_row_dec(g.val)
+                if vec_len(row) >= 2 && vec_get(row, 1).i == cix {
+                    let full = str_of_bytes(pk)
+                    let pfx = concat(concat("x|", int_to_str(t.id)), "|")
+                    if len(full) > len(pfx) {
+                        vec_push(names, substr(full, len(pfx), len(full)))
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < vec_len(names) {
+        let dr = boila_ix_drop_sec(s, txn, t, vec_get(names, i))?
+        s = dr.s
+        txn = dr.txn
+        if dr.ok == 0 {
+            return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: dr.err, state: dr.state, table: boila_cat_empty_table(), id: 0 }
+        }
+        let ct2 = boila_cat_by_name_txn(s, txn, table)?
+        s = ct2.s
+        if ct2.ok == 1 { t = ct2.table }
+        i = i + 1
+    }
+    let ftsl = fts_list_for_table(s, t.id)?
+    s = ftsl.s
+    i = 0
+    while i < vec_len(ftsl.defs) {
+        let d = vec_get(ftsl.defs, i)
+        if d.col_idx == cix {
+            let dr = fts_drop_index_txn(s, txn, t, d.name)?
+            s = dr.s
+            txn = dr.txn
+            if dr.ok == 0 {
+                return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: dr.err, state: dr.state, table: boila_cat_empty_table(), id: 0 }
+            }
+        }
+        i = i + 1
+    }
+    let hnswl = hnsw_list_for_table(s, t.id)?
+    s = hnswl.s
+    i = 0
+    while i < vec_len(hnswl.defs) {
+        let d = vec_get(hnswl.defs, i)
+        if d.col_idx == cix {
+            let dr = hnsw_drop_index_txn(s, txn, t, d.name)?
+            s = dr.s
+            txn = dr.txn
+            if dr.ok == 0 {
+                return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: dr.err, state: dr.state, table: boila_cat_empty_table(), id: 0 }
+            }
+        }
+        i = i + 1
+    }
+    return boila_cat_drop_col_txn(s, txn, table, col)?
+}
+
+fn boila_exec_alter(s: BoilaStore, txn: BoilaTxn, db: str, alt: BoilaAlter, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
+    let was = txn.active
+    if was == 0 {
+        let b = boila_txn_begin(s, txn, 0, db)?
+        s = b.s
+        txn = b.txn
+    }
+    let mut ar = BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: "unknown alter", state: "XX000", table: boila_cat_empty_table(), id: 0 }
+    if alt.kind == 1 {
+        ar = boila_cat_add_col_txn(s, txn, alt.table, alt.col, alt.typ)?
+    }
+    if alt.kind == 2 {
+        ar = boila_cat_rename_table_txn(s, txn, alt.table, alt.new_name)?
+    }
+    if alt.kind == 3 {
+        ar = boila_cat_rename_col_txn(s, txn, alt.table, alt.col, alt.new_name)?
+    }
+    if alt.kind == 4 {
+        ar = boila_exec_drop_col(s, txn, alt.table, alt.col)?
+    }
+    s = ar.s
+    txn = ar.txn
+    if ar.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(txn) }
+        return boila_sql_fail(s, txn, pc, ar.err, ar.state)
+    }
+    if was == 0 {
+        let c = boila_txn_commit(s, txn)?
+        s = c.s
+        txn = c.txn
+        if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 22, res: boila_result_empty(), id: ar.id }
+}

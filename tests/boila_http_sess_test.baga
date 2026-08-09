@@ -1,10 +1,10 @@
 // boila_http_sess_test.baga — H3: HTTP per-conn session db (USE / ?db=).
 
-import "boilaDB/storage/databases.baga"
+import "boilaDB/server/databases.baga"
 import "boilaDB/api/http_sql.baga"
 import "boilaDB/api/http_auth.baga"
 import "boilaDB/api/http_guc.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/txn/mvcc.baga"
 import "httpdbaga/http.baga"

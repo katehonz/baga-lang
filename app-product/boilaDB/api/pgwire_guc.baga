@@ -1,12 +1,12 @@
 // pgwire_guc.baga — W7b per-conn SET/SHOW/RESET/DISCARD for PG wire.
 import "pgwire_enc.baga"
-import "../sql/exec_server.baga"
+import "../server/exec_server.baga"
 import "../sql/exec_scan.baga"
 import "../sql/exec_out.baga"
 import "../sql/lexer.baga"
 import "../sql/token.baga"
 import "../sql/ast.baga"
-import "../storage/databases.baga"
+import "../server/databases.baga"
 import "../txn/mvcc.baga"
 import "std/str/str.baga"
 

@@ -49,7 +49,7 @@
 - Сървърен root: `BOILA_PATH` съдържа `.meta` (registry, 1 rocksbaga
   shard) и flat файлове на база — `<db>.db` (shard пътища
   `<db>.db.s{i}`); root-ът се създава с `mkdir` през extern FFI, защото
-  езикът няма builtin (gaps S4). `storage/databases.baga`: `BoilaServer`
+  езикът няма builtin (gaps S4). `server/databases.baga`: `BoilaServer`
   { meta store, отворени (ime, store) двойки, lazy open, таван
   `BOILA_MAX_DB` (default 64), FIFO eviction }; при пръв init се създава
   базата по подразбиране `boila` (моделът на `postgres` в PostgreSQL).

@@ -1,0 +1,38 @@
+// ddl_types.baga — shared DDL types (kimi-deps D4).
+// Lived in sql/ast + sql/parse_alter; catalog consumes them so they sit
+// below sql/ (ARCHITECTURE §3 one-way deps).
+
+// Column type = value-model tag (i64/bool/str/bytes/json/ts/vector).
+struct BoilaColDef {
+    name: str,
+    typ: i64
+}
+
+struct BoilaCreate {
+    table: str,
+    cols: Vec<BoilaColDef>,
+    pk_idx: i64,
+    ttl_sec: i64    // P9: 0 = none; FROM WITH (ttl_days|ttl_sec)
+}
+
+// kind: 1=add col, 2=rename table, 3=rename column, 4=drop col
+struct BoilaAlter {
+    kind: i64,
+    table: str,
+    col: str,
+    typ: i64,
+    new_name: str
+}
+
+fn boila_coldef(name: str, typ: i64) -> BoilaColDef {
+    return BoilaColDef { name: name, typ: typ }
+}
+
+fn boila_create_empty() -> BoilaCreate {
+    let cols: Vec<BoilaColDef> = vec_new()
+    return BoilaCreate { table: "", cols: cols, pk_idx: 0 - 1, ttl_sec: 0 }
+}
+
+fn boila_alter_empty() -> BoilaAlter {
+    return BoilaAlter { kind: 0, table: "", col: "", typ: 0, new_name: "" }
+}

@@ -1,8 +1,8 @@
 // boila_p5_test.baga — P5: ORDER BY/OFFSET/DISTINCT, агрегати, GROUP BY/
 // HAVING, JOIN (NL + index nested loop + LEFT), семантични грешки.
 
-import "boilaDB/storage/databases.baga"
-import "boilaDB/sql/exec_server.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/sql/plan_cache.baga"
 import "boilaDB/core/value.baga"

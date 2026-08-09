@@ -68,6 +68,8 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 ┌──────────────────────────────────────────────────────────────┐
 │ api/   PG wire v3 (psql/libpq) · HTTP admin/SQL · CLI        │
 ├──────────────────────────────────────────────────────────────┤
+│ server/ BoilaServer · multi-DB registry · boila_server_exec  │
+├──────────────────────────────────────────────────────────────┤
 │ sql/    BoilaSQL: lexer → parser → planner → executor        │
 ├──────────┬──────────┬──────────┬─────────────────────────────┤
 │ vector/  │ fts/     │ ts/      │ graph/        ← модали      │
@@ -104,15 +106,21 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
   `57P03 cannot_connect_now`, `53300 too_many_connections`, `0A000`…).
 
 ### storage/ — N shard-а × rocksbaga
+- `shards.baga` — N rocksbaga инстанции (put/get/scan/del, MT maps).
+  Физически layout; **без** сесийно състояние.
+
+### server/ — multi-DB registry + session (над sql/)
 - **Много бази данни (P2):** `BOILA_PATH` е сървърният root — `.meta`
   registry (1 shard) и flat файлове `<db>.db` на база (shard пътища
   `<db>.db.s{i}`); root-ът се създава с `mkdir` през extern FFI (gaps
-  S4). `databases.baga` държи `BoilaServer`: meta store + отворените
-  бази като (име, store) двойки, lazy open, таван `BOILA_MAX_DB` с FIFO
-  eviction; при init се създава базата по подразбиране `boila` (моделът
-  на `postgres`). Каталозите са per-database; cross-database достъп
-  няма в v1. rocksbaga не се променя — per-dir клъстерите съществуват
-  от R32.
+  S4). `server/databases.baga` държи `BoilaServer`: meta store +
+  отворените бази като (име, store) двойки, lazy open, таван
+  `BOILA_MAX_DB` с FIFO eviction, plus session_txn / plan cache / guc
+  (сесийно състояние — не storage отговорност; kimi-deps D2). При init
+  се създава базата по подразбиране `boila` (моделът на `postgres`).
+  `server/exec_server.baga` — `boila_server_exec*` входна точка.
+  Каталозите са per-database; cross-database достъп няма в v1.
+  rocksbaga не се променя — per-dir клъстерите съществуват от R32.
 - Sharding: hash на целия кодиран ключ (djb2-подобен, моделът на
   rocksbaga) по N shard-а; pk е доминиращо-вариращата част, така че
   разпределението е ефективно по pk. Всеки shard е собствена rocksbaga
@@ -319,37 +327,26 @@ cell2 пакети (доказаният модел на rocksbaga MT и queueba
 
 ```
 app-product/boilaDB/
-├── sandak.toml          # name = "boilaDB", entry = "tools/serve.baga"
-├── README.md  PLAN.md  ARCHITECTURE.md  gaps.md
-├── core/      types.baga value.baga value_cmp.baga codec.baga
-│              config.baga errors.baga arena.baga
-├── storage/   shards.baga databases.baga space.baga space_scan.baga
-│              gc.baga
-├── txn/       mvcc.baga (P4: buffer + LSN commit)
-│              sequencer.baga intents.baga recovery.baga (P6, конкурентност)
-├── catalog/   schema.baga stats.baga stats_hist.baga
-├── index/     secondary.baga index_codec.baga unique.baga
-├── sql/       ast.baga lexer.baga token.baga parse_common.baga
-│              parse_select.baga parse_insert.baga parse_dml.baga
-│              parse_ddl.baga parse_txn.baga tsquery.baga (P7)
-│              plan_cache.baga (P5)
-│              exec_scan.baga exec_select.baga exec_sql.baga
-│              exec_sort.baga exec_agg.baga exec_agg_extra.baga
-│              exec_join.baga (P5) · exec_dml.baga exec_modify.baga
-│              planner/stats/budget (P11+)
-├── vector/    hnsw_insert.baga hnsw_search.baga hnsw_store.baga
-│              hnsw_cache.baga quant.baga distance.baga
-├── fts/       tokenizer.baga fts_doc.baga fts.baga (P7; fts-каталогът
-│              е един ключ на таблица → point GET, не scan)
-├── ts/        retention.baga time_bucket.baga
-├── graph/     adjacency.baga bfs.baga dfs.baga dijkstra.baga
-├── api/       accept.baga worker_pool.baga conn.baga (P11)
-│              pgwire_msg.baga pgwire_enc.baga pgwire.baga (P6)
-│              http_admin.baga http_sql.baga auth.baga
-├── tools/     serve.baga serve_pg.baga shell.baga backup.baga
-├── scripts/   filesize.sh
-└── bench/     harness.baga ladder.md vs_barabadb.md
+├── sandak.toml  README.md  PLAN.md  ARCHITECTURE.md  gaps.md  kimi-deps.md
+├── core/      value.baga codec.baga row.baga budget.baga
+├── storage/   shards.baga          # BoilaStore only (no session)
+├── txn/       mvcc.baga            # buffer + LSN; write.ttl_sec from caller
+├── catalog/   schema · ddl_types · ttl · drop · alter · truncate · acl
+├── index/     secondary.baga  ix_drop.baga   # secondary only; same layer as catalog
+├── fts/       tokenizer · fts_doc · fts · fts_wipe
+├── vector/    distance · hnsw · hnsw_search · hnsw_store · hnsw_wipe
+├── ts/        retention.baga  time_bucket.baga
+├── graph/     adjacency · bfs · dml · g_drop
+├── sql/       lexer/token/ast · parse_* · plan_cache · exec_* · sfn · tsquery
+│              exec_drop / exec_alter = cascade orchestrators (kimi-deps D5)
+├── server/    databases.baga  exec_server.baga   # BoilaServer + multi-DB
+├── api/       pgwire* · http_* · serve_*
+├── tools/     serve.baga  serve_pg.baga  shell.baga
+├── scripts/   filesize.sh  deps.sh       # §9 + §3 gates
+└── (bench/: repo root bench/boila/)
 ```
+Layer ranks (scripts/deps.sh): core < storage < txn < catalog|index <
+modals < sql < server < api < tools. Zero upward imports.
 
 Тестовете са в коренната `tests/` като `boila_*_test.baga` (откриване
 през `scripts/baga-test`), не в подпапка на пакета.

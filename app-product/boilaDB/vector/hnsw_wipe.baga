@@ -1,0 +1,137 @@
+// hnsw_wipe.baga — table/index wipe + truncate reset (kimi-deps D5).
+
+import "hnsw.baga"
+import "hnsw_store.baga"
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../catalog/drop.baga"
+import "../txn/mvcc.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn hnsw_wipe_pref_txn(s: BoilaStore, txn: BoilaTxn, table_id: i64, pref: bytes) -> BoilaHnswRes !IO !Time !Par {
+    let ks = boila_cf_keys_raw(s, boila_cf_vec(), table_id)?
+    s = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_bytes_has_prefix(pk, pref) == 1 {
+            let r = boila_txn_del(s, txn, boila_cf_vec(), table_id, pk)
+            s = r.s
+            txn = r.txn
+            if r.ok == 0 {
+                return BoilaHnswRes { s: s, txn: txn, ok: 0, err: r.err, state: r.state, id: 0 }
+            }
+        }
+        i = i + 1
+    }
+    return BoilaHnswRes { s: s, txn: txn, ok: 1, err: "", state: "", id: 0 }
+}
+
+// DROP HNSW INDEX: cat + list + vm; wipe vec nbrs with n|<ix_id> prefix.
+fn hnsw_drop_index_txn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str) -> BoilaHnswRes !IO !Time !Par {
+    let gl = hnsw_list_for_table(s, t.id)?
+    s = gl.s
+    let mut found = 0
+    let mut hid: i64 = 0
+    let kept: Vec<BoilaHnswDef> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(gl.defs) {
+        let d = vec_get(gl.defs, i)
+        if d.name == ix_name {
+            found = 1
+            hid = d.id
+        } else {
+            vec_push(kept, d)
+        }
+        i = i + 1
+    }
+    if found == 0 {
+        return BoilaHnswRes { s: s, txn: txn, ok: 0, err: "miss", state: "42704", id: 0 }
+    }
+    let d1 = boila_txn_del(s, txn, boila_cf_sys(), 1, hnsw_cat_pk(t.id, ix_name))
+    if d1.ok == 0 { return BoilaHnswRes { s: d1.s, txn: d1.txn, ok: 0, err: d1.err, state: d1.state, id: 0 } }
+    s = d1.s
+    txn = d1.txn
+    let d2 = boila_txn_del(s, txn, boila_cf_sys(), 1, hnsw_vm_pk(hid))
+    if d2.ok == 0 { return BoilaHnswRes { s: d2.s, txn: d2.txn, ok: 0, err: d2.err, state: d2.state, id: 0 } }
+    s = d2.s
+    txn = d2.txn
+    if vec_len(kept) == 0 {
+        let d3 = boila_txn_del(s, txn, boila_cf_sys(), 1, hnsw_list_pk(t.id))
+        if d3.ok == 0 { return BoilaHnswRes { s: d3.s, txn: d3.txn, ok: 0, err: d3.err, state: d3.state, id: 0 } }
+        s = d3.s
+        txn = d3.txn
+    } else {
+        let rl = boila_txn_put(s, txn, boila_cf_sys(), 1, hnsw_list_pk(t.id), hnsw_defs_enc(kept))
+        if rl.ok == 0 { return BoilaHnswRes { s: s, txn: rl.txn, ok: 0, err: rl.err, state: rl.state, id: 0 } }
+        s = rl.s
+        txn = rl.txn
+    }
+    let mut pref = bytes_of_str("n|")
+    pref = bytes_concat(pref, boila_enc_u32_be(hid))
+    let w = hnsw_wipe_pref_txn(s, txn, t.id, pref)?
+    if w.ok == 0 { return w }
+    return BoilaHnswRes { s: w.s, txn: w.txn, ok: 1, err: "", state: "", id: hid }
+}
+
+fn hnsw_wipe_table_txn(s: BoilaStore, txn: BoilaTxn, tid: i64) -> BoilaHnswRes !IO !Time !Par {
+    let w = boila_cf_wipe_txn(s, txn, boila_cf_vec(), tid)?
+    if w.ok == 0 { return BoilaHnswRes { s: w.s, txn: w.txn, ok: 0, err: w.err, state: w.state, id: 0 } }
+    s = w.s
+    txn = w.txn
+    let hnswl = hnsw_list_for_table(s, tid)?
+    s = hnswl.s
+    let mut hi: i64 = 0
+    while hi < vec_len(hnswl.defs) {
+        let d = vec_get(hnswl.defs, hi)
+        let a = boila_drop_txn_del(s, txn, hnsw_cat_pk(tid, d.name))
+        if a.ok == 0 { return BoilaHnswRes { s: a.s, txn: a.txn, ok: 0, err: a.err, state: a.state, id: 0 } }
+        s = a.s
+        txn = a.txn
+        let b = boila_drop_txn_del(s, txn, hnsw_vm_pk(d.id))
+        if b.ok == 0 { return BoilaHnswRes { s: b.s, txn: b.txn, ok: 0, err: b.err, state: b.state, id: 0 } }
+        s = b.s
+        txn = b.txn
+        hi = hi + 1
+    }
+    let hl = boila_drop_txn_del(s, txn, hnsw_list_pk(tid))
+    if hl.ok == 0 { return BoilaHnswRes { s: hl.s, txn: hl.txn, ok: 0, err: hl.err, state: hl.state, id: 0 } }
+    return BoilaHnswRes { s: hl.s, txn: hl.txn, ok: 1, err: "", state: "", id: tid }
+}
+
+fn hnsw_wipe_table(s: BoilaStore, tid: i64) -> BoilaStore !IO !Time !Par {
+    s = boila_cf_wipe(s, boila_cf_vec(), tid)?
+    let hnswl = hnsw_list_for_table(s, tid)?
+    s = hnswl.s
+    let mut hi: i64 = 0
+    while hi < vec_len(hnswl.defs) {
+        let d = vec_get(hnswl.defs, hi)
+        s = boila_del(s, boila_cf_sys(), 1, hnsw_cat_pk(tid, d.name))?
+        s = boila_del(s, boila_cf_sys(), 1, hnsw_vm_pk(d.id))?
+        hi = hi + 1
+    }
+    return boila_del(s, boila_cf_sys(), 1, hnsw_list_pk(tid))?
+}
+
+// TRUNCATE: keep defs, clear entrypoints, wipe vec CF.
+fn hnsw_reset_table_txn(s: BoilaStore, txn: BoilaTxn, tid: i64) -> BoilaHnswRes !IO !Time !Par {
+    let w = boila_cf_wipe_txn(s, txn, boila_cf_vec(), tid)?
+    if w.ok == 0 { return BoilaHnswRes { s: w.s, txn: w.txn, ok: 0, err: w.err, state: w.state, id: 0 } }
+    s = w.s
+    txn = w.txn
+    let hnswl = hnsw_list_for_table(s, tid)?
+    s = hnswl.s
+    let mut hi: i64 = 0
+    while hi < vec_len(hnswl.defs) {
+        let d = vec_get(hnswl.defs, hi)
+        let vm = hnsw_vm_put(s, txn, d.id, 0, 0, 0, bytes_new(0))
+        s = vm.s
+        txn = vm.txn
+        hi = hi + 1
+    }
+    return BoilaHnswRes { s: s, txn: txn, ok: 1, err: "", state: "", id: tid }
+}
