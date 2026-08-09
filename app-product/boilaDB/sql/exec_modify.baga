@@ -99,6 +99,27 @@ fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, h
         }
         if hi_col != pkcol.name { pk_range = 0 }
     }
+    // K3d: secondary index range (fixed-size) before full seq
+    if pk_range == 0 && (has_lo == 1 || has_hi == 1) {
+        let mut rc = lo_col
+        if has_lo == 0 { rc = hi_col }
+        let mut same = 1
+        if has_lo == 1 && has_hi == 1 && lo_col != hi_col { same = 0 }
+        if same == 1 {
+            let cix = boila_col_idx(t, rc)
+            let ixid = boila_ix_by_col_t(t, cix)
+            if cix >= 0 && ixid >= 0 {
+                let xr = boila_ix_range(s, t, ixid, has_lo, v_lo, has_hi, v_hi)?
+                s = xr.s
+                if xr.ok == 0 {
+                    return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: xr.err, state: xr.state, pks: pks }
+                }
+                if xr.has == 1 {
+                    return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: xr.pks }
+                }
+            }
+        }
+    }
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
     let mut ki: i64 = 0

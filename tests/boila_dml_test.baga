@@ -120,6 +120,12 @@ fn main() -> i64 !IO !Time !Par {
     let u5 = boila_server_exec(srv, "boila", "SELECT score FROM u WHERE id = 1")?
     srv = u5.srv
     check(fails, "update_non_pk_val", u5.ok == 1 && cell(vec_get(u5.res.rows, 0), 0) == "7")
+    // K3d: DML range via secondary index on BIGINT
+    let ixsc = boila_server_exec(srv, "boila", "CREATE INDEX u_score ON u (score)")?
+    srv = ixsc.srv
+    let u6 = boila_server_exec(srv, "boila", "UPDATE u SET name = 'z' WHERE score >= 0 AND score <= 0")?
+    srv = u6.srv
+    check(fails, "update_ix_range", u6.ok == 1 && u6.id >= 1)
 
     // --- DELETE ---
     let d1 = boila_server_exec(srv, "boila", "DELETE FROM u WHERE id = 3 RETURNING id")?
