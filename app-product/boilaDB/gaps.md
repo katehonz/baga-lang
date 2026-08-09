@@ -80,7 +80,10 @@ T = транзакции, W = wire protocol, F = FTS.
 - **F4 — posting списъците са един запис на term (read-modify-write при
   индексация).** Алтернативата (append-only + merge) идва при нужда от
   по-бързо писане; point GET query-тата са целта (K2).
-- **F5 — фразови заявки няма** (to_tsquery е само AND/OR от думи).
+- **F5 — (FIXED) phrase queries.** `to_tsquery('a <-> b')` и
+  `phraseto_tsquery('a b')` → mode 3: AND кандидати + consecutive
+  match в doc terms (`fts_phrase_match`). Смесване с &/| → 0A000.
+  Residual: няма distance `N` (`<2>`/`<3>`); само съседни.
 - **F6 — (FIXED) @@ + AND eq/range.** Post-filter върху FTS hits
   (`boila_row_pass_filters`); parse вече приема AND след @@.
 

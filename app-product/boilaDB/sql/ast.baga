@@ -38,7 +38,7 @@ struct BoilaSel {
     // FTS (P7): WHERE col @@ to_tsquery('…')
     has_fts: i64,
     fts_col: str,
-    fts_mode: i64,          // 1 AND, 2 OR
+    fts_mode: i64,          // 1 AND, 2 OR, 3 PHRASE (F5)
     fts_terms: Vec<str>,
     // kNN (P8): WHERE col <->|<=>|<#> '[…]'  (+ LIMIT = k)
     has_knn: i64,

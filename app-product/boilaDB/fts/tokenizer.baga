@@ -71,6 +71,35 @@ fn fts_tf(terms: Vec<str>, term: str) -> i64 {
     return c
 }
 
+// F5: phrase match — consecutive terms in doc order.
+fn fts_phrase_match(doc: Vec<str>, phrase: Vec<str>) -> i64 {
+    let pn = vec_len(phrase)
+    if pn == 0 {
+        return 1
+    }
+    let dn = vec_len(doc)
+    if pn > dn {
+        return 0
+    }
+    let mut i: i64 = 0
+    while i + pn <= dn {
+        let mut ok = true
+        let mut j: i64 = 0
+        while j < pn {
+            if vec_get(doc, i + j) != vec_get(phrase, j) {
+                ok = false
+                j = pn
+            }
+            j = j + 1
+        }
+        if ok {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 // Уникални terms (за индексиране без повторения).
 fn fts_unique(terms: Vec<str>) -> Vec<str> {
     let out: Vec<str> = vec_new()

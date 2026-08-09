@@ -139,7 +139,8 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
                 let mut plain: i64 = 0 - 1
                 if fn_t.kind == tok_ident() && fn_t.txt == "to_tsquery" { plain = 0 }
                 if fn_t.kind == tok_ident() && fn_t.txt == "plainto_tsquery" { plain = 1 }
-                if plain < 0 { return boila_ps_fail("очаквах to_tsquery/plainto_tsquery след @@", "42601") }
+                if fn_t.kind == tok_ident() && fn_t.txt == "phraseto_tsquery" { plain = 2 }
+                if plain < 0 { return boila_ps_fail("очаквах to_tsquery/plainto/phraseto_tsquery след @@", "42601") }
                 if boila_ps_tok(l, i + 1).kind != tok_lparen() { return boila_ps_fail("очаквах '(' след tsquery", "42601") }
                 let lit = boila_ps_tok(l, i + 2)
                 if lit.kind != tok_str() { return boila_ps_fail("очаквах стринг в tsquery", "42601") }

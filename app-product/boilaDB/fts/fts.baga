@@ -186,7 +186,7 @@ fn fts_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: 
     return BoilaFtsRes { s: s, txn: txn, ok: 1, err: "", state: "", id: next }
 }
 
-// --- BM25 заявка (mode 1 = AND, 2 = OR) ---
+// --- BM25 заявка (mode 1=AND, 2=OR, 3=PHRASE) ---
 
 fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, terms: Vec<str>, mode: i64) -> BoilaFtsQuery !IO !Time !Par {
     let empty: Vec<bytes> = vec_new()
@@ -202,8 +202,6 @@ fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, term
     if avgdl <= 0 {
         avgdl = 1
     }
-    // кеширай posting-ите на ВСИЧКИ заявки-терми с ЕДНО четене всеки
-    // (вместо re-read за всеки кандидат) — ключът за бързина.
     let cached_pks: Vec<Vec<bytes>> = vec_new()
     let cached_tfs: Vec<Vec<i64>> = vec_new()
     let mut i: i64 = 0
@@ -214,13 +212,14 @@ fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, term
         vec_push(cached_tfs, pd.tfs)
         i = i + 1
     }
-    // кандидати: AND → сечение; OR → обединение (от кеша)
+    // кандидати: AND/PHRASE → сечение; OR → обединение
     let mut cand: Vec<bytes> = vec_new()
     let mut first = true
+    let use_and = mode == 1 || mode == 3
     i = 0
     while i < vec_len(cached_pks) {
         let cp = vec_get(cached_pks, i)
-        if mode == 1 {
+        if use_and {
             if first {
                 let mut cp2: Vec<bytes> = vec_new()
                 let mut x: i64 = 0
@@ -266,6 +265,21 @@ fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, term
             }
         }
         i = i + 1
+    }
+    // F5: phrase — consecutive terms in doc order
+    if mode == 3 && vec_len(terms) > 1 {
+        let kept: Vec<bytes> = vec_new()
+        let mut ci: i64 = 0
+        while ci < vec_len(cand) {
+            let pk = vec_get(cand, ci)
+            let dg = fts_doc_get(s, txn, t.id, pk)?
+            s = dg.s
+            if fts_phrase_match(dg.terms, terms) == 1 {
+                vec_push(kept, pk)
+            }
+            ci = ci + 1
+        }
+        cand = kept
     }
     // BM25 score (×1000, целочислено; idf е линейна апроксимация, dl=avgdl
     // за скорост — без doc GET, gaps F3). Само кеш-четения, без storage GET

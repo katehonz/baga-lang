@@ -1,24 +1,26 @@
-// tsquery.baga — парсер за tsquery низове (P7).
-// to_tsquery: tokens разделени с интервал; '&' → AND, '|' → OR
-// (смесване → 0A000). plainto_tsquery: всички думи са terms, режим AND.
+// tsquery.baga — парсер за tsquery низове (P7 + F5 phrase).
+// to_tsquery: '&' AND, '|' OR, '<->' PHRASE (смесване → 0A000).
+// plainto_tsquery: всички думи AND. phraseto_tsquery: всички PHRASE.
 
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
 
 struct BoilaTsParse {
     ok: i64,
-    mode: i64,
+    mode: i64,      // 1 AND, 2 OR, 3 PHRASE
     terms: Vec<str>,
     err: str,
     state: str
 }
 
+// plain: 0=to_tsquery, 1=plainto, 2=phraseto
 fn boila_ts_parse(s: str, plain: i64) -> BoilaTsParse {
     let terms: Vec<str> = vec_new()
     let sb = bytes_of_str(s)
     let n = bytes_len(sb)
     let mut has_and = false
     let mut has_or = false
+    let mut has_ph = false
     let mut run = bytes_new(0)
     let mut i: i64 = 0
     while i <= n {
@@ -38,7 +40,11 @@ fn boila_ts_parse(s: str, plain: i64) -> BoilaTsParse {
                     if plain == 0 && tok == "|" {
                         has_or = true
                     } else {
-                        vec_push(terms, tok)
+                        if plain == 0 && tok == "<->" {
+                            has_ph = true
+                        } else {
+                            vec_push(terms, tok)
+                        }
                     }
                 }
                 run = bytes_new(0)
@@ -50,12 +56,21 @@ fn boila_ts_parse(s: str, plain: i64) -> BoilaTsParse {
         }
         i = i + 1
     }
-    if has_and && has_or {
-        return BoilaTsParse { ok: 0, mode: 1, terms: terms, err: "tsquery: смесване на '&' и '|' не е в P7", state: "0A000" }
+    if plain == 2 {
+        has_ph = true
+    }
+    let mut mix = 0
+    if has_and && has_or { mix = 1 }
+    if has_and && has_ph { mix = 1 }
+    if has_or && has_ph { mix = 1 }
+    if mix == 1 {
+        return BoilaTsParse {
+            ok: 0, mode: 1, terms: terms,
+            err: "tsquery: смесване на '&' / '|' / '<->' не се поддържа", state: "0A000"
+        }
     }
     let mut mode: i64 = 1
-    if has_or {
-        mode = 2
-    }
+    if has_or { mode = 2 }
+    if has_ph { mode = 3 }
     return BoilaTsParse { ok: 1, mode: mode, terms: terms, err: "", state: "" }
 }

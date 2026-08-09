@@ -153,10 +153,9 @@
 - Ключова оптимизация: fts-каталогът е ЕДИН ключ на таблица (point GET),
   не scan — `lsm_cluster_scan_kb` rebuild-ва snapshot на всички ключове
   и даваше 74 ms/query; след fix-а е 73–579 µs.
-- **F6 (post-P11):** `@@ AND eq/range` — post-filter върху FTS hits.
+- **F5/F6 (post-P11):** phrase (`<->` / phraseto); `@@ AND eq/range`.
 - Ревизии (честно): ts_rank е отделна функция в плана, тук реденето е по
-  BM25 score в самата заявка (gaps F3); фразови заявки няма (F5);
-  UTF-8 без case folding (F1).
+  BM25 score в самата заявка (gaps F3); UTF-8 без case folding (F1).
 
 ## P8 — vector/ модал
 - Реализирано: `VECTOR(n)` (typ=1000+n, payload fixed-point ×1e6 i32 —

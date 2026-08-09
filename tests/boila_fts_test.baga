@@ -125,6 +125,20 @@ fn main() -> i64 !IO !Time !Par {
     srv = qf3.srv
     check(fails, "fts_and_range", qf3.ok == 1 && vec_len(qf3.res.rows) == 1 && row_id(vec_get(qf3.res.rows, 0)) == "1")
 
+    // F5: phrase — consecutive terms
+    let qp1 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick <-> brown')")
+    srv = qp1.srv
+    check(fails, "phrase_adj", qp1.ok == 1 && vec_len(qp1.res.rows) == 1 && row_id(vec_get(qp1.res.rows, 0)) == "1")
+    let qp2 = exec1(srv, "SELECT id FROM docs WHERE body @@ phraseto_tsquery('brown dog')")
+    srv = qp2.srv
+    check(fails, "phraseto", qp2.ok == 1 && vec_len(qp2.res.rows) == 1 && row_id(vec_get(qp2.res.rows, 0)) == "2")
+    let qp3 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick <-> dog')")
+    srv = qp3.srv
+    check(fails, "phrase_no", qp3.ok == 1 && vec_len(qp3.res.rows) == 0)
+    let qp4 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick & fox <-> dog')")
+    srv = qp4.srv
+    check(fails, "phrase_mix_err", qp4.ok == 0 && qp4.state == "0A000")
+
     // DML синхронизация: INSERT след CREATE INDEX се вижда
     let i2 = exec1(srv, "INSERT INTO docs (id, body) VALUES (6, 'quick silver')")
     srv = i2.srv
