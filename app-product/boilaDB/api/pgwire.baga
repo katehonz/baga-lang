@@ -139,6 +139,13 @@ fn pgw_run_upd(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, upd: Boi
     return pgw_write_out(fd, srv, sess, boila_mt_exec_upd(pack, sess.txn, sess.db, upd)?, send_ready)?
 }
 
+fn pgw_run_del(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, del: BoilaDel, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    if pack == 0 {
+        return pgw_write_out(fd, srv, sess, boila_server_exec_del(srv, sess.txn, sess.db, del)?, send_ready)?
+    }
+    return pgw_write_out(fd, srv, sess, boila_mt_exec_del(pack, sess.txn, sess.db, del)?, send_ready)?
+}
+
 fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let mut s2 = sess
     s2.stmts = boila_pg_parse_stmt(s2.stmts, body)
@@ -306,8 +313,12 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                                             if portal.kind == 3 {
                                                 ro = pgw_run_upd(fd, pack, srv2, sp, portal.upd, 0)?
                                             } else {
-                                                let full = pgw_subst_params(portal.sql, portal.vals, portal.nulls)
-                                                ro = pgw_run_sql(fd, pack, srv2, sp, full, 0)?
+                                                if portal.kind == 4 {
+                                                    ro = pgw_run_del(fd, pack, srv2, sp, portal.del, 0)?
+                                                } else {
+                                                    let full = pgw_subst_params(portal.sql, portal.vals, portal.nulls)
+                                                    ro = pgw_run_sql(fd, pack, srv2, sp, full, 0)?
+                                                }
                                             }
                                         }
                                     }

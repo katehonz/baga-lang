@@ -22,13 +22,14 @@ import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 import "std/net/tcp.baga"
 
-// kind: 0 text, 1 SELECT, 2 INSERT, 3 UPDATE
+// kind: 0 text, 1 SELECT, 2 INSERT, 3 UPDATE, 4 DELETE
 struct BoilaPgStmt {
     sql: str,
     kind: i64,
     sel: BoilaSel,
     ins: BoilaIns,
-    upd: BoilaUpd
+    upd: BoilaUpd,
+    del: BoilaDel
 }
 
 struct BoilaPgPortal {
@@ -38,11 +39,15 @@ struct BoilaPgPortal {
     kind: i64,
     sel: BoilaSel,
     ins: BoilaIns,
-    upd: BoilaUpd
+    upd: BoilaUpd,
+    del: BoilaDel
 }
 
 fn boila_pg_stmt_text(sql: str) -> BoilaPgStmt {
-    return BoilaPgStmt { sql: sql, kind: 0, sel: boila_sel_empty(), ins: boila_ins_empty(), upd: boila_upd_empty() }
+    return BoilaPgStmt {
+        sql: sql, kind: 0, sel: boila_sel_empty(),
+        ins: boila_ins_empty(), upd: boila_upd_empty(), del: boila_del_empty()
+    }
 }
 
 fn boila_pg_portal_empty() -> BoilaPgPortal {
@@ -50,7 +55,8 @@ fn boila_pg_portal_empty() -> BoilaPgPortal {
     let nulls: Vec<i64> = vec_new()
     return BoilaPgPortal {
         sql: "", vals: vals, nulls: nulls, kind: 0,
-        sel: boila_sel_empty(), ins: boila_ins_empty(), upd: boila_upd_empty()
+        sel: boila_sel_empty(), ins: boila_ins_empty(),
+        upd: boila_upd_empty(), del: boila_del_empty()
     }
 }
 
@@ -107,12 +113,13 @@ fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgP
         if st.kind == 1 { portal.sel = boila_pg_bind_sel(st.sel, vals, nulls) }
         if st.kind == 2 { portal.ins = boila_pg_bind_ins(st.ins, vals, nulls) }
         if st.kind == 3 { portal.upd = boila_pg_bind_upd(st.upd, vals, nulls) }
+        if st.kind == 4 { portal.del = boila_pg_bind_del(st.del, vals, nulls) }
     }
     map_set(portals, pn.s, portal)
     return portals
 }
 
-// Parse-time: SELECT/INSERT/UPDATE AST; else text-only.
+// Parse-time: SELECT/INSERT/UPDATE/DELETE AST; else text-only.
 fn boila_pg_try_sel(sql: str) -> BoilaPgStmt {
     let lx = boila_lex(sql)
     if lx.err != "" {
@@ -124,24 +131,35 @@ fn boila_pg_try_sel(sql: str) -> BoilaPgStmt {
     let t0 = vec_get(lx.toks, 0)
     if tok_kw(t0, "select") == 1 {
         let ps = boila_parse_select(lx)
-        if ps.ok == 0 {
-            return boila_pg_stmt_text(sql)
+        if ps.ok == 0 { return boila_pg_stmt_text(sql) }
+        return BoilaPgStmt {
+            sql: sql, kind: 1, sel: ps.sel,
+            ins: boila_ins_empty(), upd: boila_upd_empty(), del: boila_del_empty()
         }
-        return BoilaPgStmt { sql: sql, kind: 1, sel: ps.sel, ins: boila_ins_empty(), upd: boila_upd_empty() }
     }
     if tok_kw(t0, "insert") == 1 {
         let pi = boila_parse_insert(lx)
-        if pi.ok == 0 {
-            return boila_pg_stmt_text(sql)
+        if pi.ok == 0 { return boila_pg_stmt_text(sql) }
+        return BoilaPgStmt {
+            sql: sql, kind: 2, sel: boila_sel_empty(),
+            ins: pi.ins, upd: boila_upd_empty(), del: boila_del_empty()
         }
-        return BoilaPgStmt { sql: sql, kind: 2, sel: boila_sel_empty(), ins: pi.ins, upd: boila_upd_empty() }
     }
     if tok_kw(t0, "update") == 1 {
         let pu = boila_parse_update(lx)
-        if pu.ok == 0 {
-            return boila_pg_stmt_text(sql)
+        if pu.ok == 0 { return boila_pg_stmt_text(sql) }
+        return BoilaPgStmt {
+            sql: sql, kind: 3, sel: boila_sel_empty(),
+            ins: boila_ins_empty(), upd: pu.upd, del: boila_del_empty()
         }
-        return BoilaPgStmt { sql: sql, kind: 3, sel: boila_sel_empty(), ins: boila_ins_empty(), upd: pu.upd }
+    }
+    if tok_kw(t0, "delete") == 1 {
+        let pd = boila_parse_delete(lx)
+        if pd.ok == 0 { return boila_pg_stmt_text(sql) }
+        return BoilaPgStmt {
+            sql: sql, kind: 4, sel: boila_sel_empty(),
+            ins: boila_ins_empty(), upd: boila_upd_empty(), del: pd.del
+        }
     }
     return boila_pg_stmt_text(sql)
 }
