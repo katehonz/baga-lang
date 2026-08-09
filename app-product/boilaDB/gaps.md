@@ -49,6 +49,8 @@ T = транзакции, W = wire protocol, F = FTS.
   list (n| / x| + FTS/HNSW/GRAPH). GUC SHOW unchanged.
 - **P11-15 — (FIXED) SHOW COLUMNS / DESCRIBE / DESC.** column_name,
   data_type (incl vector(n)), is_nullable, is_primary_key.
+- **P11-16 — (FIXED) SHOW CREATE TABLE.** Reconstructs CREATE TABLE
+  + PK + ttl_sec WITH clause from catalog.
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 
@@ -168,7 +170,7 @@ T = транзакции, W = wire protocol, F = FTS.
   `[NOT] BETWEEN` / `[NOT] IN` / `[NOT] LIKE|ILIKE` / `IS [NOT] NULL`.
   `repeat`/`lpad`/`rpad`/`sign`/`starts_with`/`ends_with`; dual
   `IS [NOT] DISTINCT FROM`; dual `generate_series` + `DISTINCT` /
-  `ORDER BY` / `LIMIT` / `OFFSET`; bare `VALUES (…),…` multi-row.
+  `ORDER BY` [NULLS FIRST|LAST] / `LIMIT` / `OFFSET`; bare `VALUES` multi-row.
   dual `UNION`/`INTERSECT`/`EXCEPT`; dual `WHERE` (bind col aliases).
   `FETCH FIRST/NEXT`; dual `power`/`current_date`/`pg_typeof`/
   `quote_literal`/`quote_ident`/`quote_nullable`; `EXPLAIN` /
@@ -183,7 +185,7 @@ T = транзакции, W = wire protocol, F = FTS.
   `<>`/`!=`; `col = a OR col = b` → IN. Residual: one IN/ne/between;
   OR only same-col equality; no subquery.
 - **Q-cmp — (FIXED) WHERE `<` / `>` exclusive.** `lo_excl`/`hi_excl` on
-  Sel; PK range early-stop + post-filter. Residual: no `<=`/`>=` mix
+  Sel; PK range early-stop + post-filter. Mixed-col range → 0A000. Residual: no
   conflict beyond one lo/one hi.
 
 ## Открити при P5

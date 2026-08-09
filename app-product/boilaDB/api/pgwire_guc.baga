@@ -58,7 +58,7 @@ fn pgw_try_sess_guc(srv: BoilaServer, txn: BoilaTxn, db: str, guc: Map<str, str>
     if tok_kw(t0, "show") == 1 {
         if vec_len(lx.toks) > 1 {
             let t1 = vec_get(lx.toks, 1)
-            if tok_kw(t1, "tables") == 1 || tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 || tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 || tok_kw(t1, "databases") == 1 || tok_kw(t1, "database") == 1 || tok_kw(t1, "users") == 1 || tok_kw(t1, "roles") == 1 || tok_kw(t1, "grants") == 1 {
+            if tok_kw(t1, "tables") == 1 || tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 || tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 || tok_kw(t1, "databases") == 1 || tok_kw(t1, "database") == 1 || tok_kw(t1, "users") == 1 || tok_kw(t1, "roles") == 1 || tok_kw(t1, "grants") == 1 || tok_kw(t1, "create") == 1 {
                 return pgw_guc_miss(srv, txn, guc)
             }
         }

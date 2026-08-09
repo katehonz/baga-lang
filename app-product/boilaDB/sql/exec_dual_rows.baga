@@ -197,22 +197,36 @@ fn boila_dual_rows_append(a: Vec<Vec<BoilaVal>>, b: Vec<Vec<BoilaVal>>) -> Vec<V
     return out
 }
 
+// desc packed: bit0=DESC, bits1..=nulls (0 default, 1 FIRST, 2 LAST) — same as exec_sort
 fn boila_dual_rows_sort(rows: Vec<Vec<BoilaVal>>, col: i64, desc: i64) -> Vec<Vec<BoilaVal>> {
     let n = vec_len(rows)
     let mut a = rows
+    let is_desc = desc & 1
+    let mut nf = is_desc
+    let nm = desc / 2
+    if nm == 1 { nf = 1 }
+    if nm == 2 { nf = 0 }
     let mut i: i64 = 0
     while i < n {
         let mut j: i64 = 0
         while j + 1 < n - i {
             let r0 = vec_get(a, j)
             let r1 = vec_get(a, j + 1)
-            let c = boila_val_cmp(vec_get(r0, col), vec_get(r1, col))
+            let v0 = vec_get(r0, col)
+            let v1 = vec_get(r1, col)
             let mut swap: i64 = 0
-            if desc == 0 && c == 1 { swap = 1 }
-            if desc == 1 && c == 0 - 1 { swap = 1 }
-            // nulls last
-            if vec_get(r0, col).tag == boila_v_null() && vec_get(r1, col).tag != boila_v_null() { swap = 1 }
-            if vec_get(r0, col).tag != boila_v_null() && vec_get(r1, col).tag == boila_v_null() { swap = 0 }
+            if v0.tag == boila_v_null() || v1.tag == boila_v_null() {
+                if v0.tag == boila_v_null() && v1.tag != boila_v_null() {
+                    if nf == 0 { swap = 1 }
+                }
+                if v0.tag != boila_v_null() && v1.tag == boila_v_null() {
+                    if nf == 1 { swap = 1 }
+                }
+            } else {
+                let c = boila_val_cmp(v0, v1)
+                if is_desc == 0 && c == 1 { swap = 1 }
+                if is_desc == 1 && c == 0 - 1 { swap = 1 }
+            }
             if swap == 1 {
                 vec_set(a, j, r1)
                 vec_set(a, j + 1, r0)

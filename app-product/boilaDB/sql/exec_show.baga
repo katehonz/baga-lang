@@ -236,9 +236,49 @@ fn boila_show_databases(meta: BoilaStore, pc: BoilaPlanCache) -> BoilaSqlOut !IO
     return BoilaSqlOut { s: meta, txn: boila_txn_new(), pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
 }
 
+fn boila_show_create_table(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, table: str) -> BoilaSqlOut !IO !Time !Par {
+    let ct = boila_cat_by_name_txn(s, txn, table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+    }
+    let t = ct.table
+    let mut ddl = concat(concat("CREATE TABLE ", t.name), " (")
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        if i > 0 { ddl = concat(ddl, ", ") }
+        let c = vec_get(t.cols, i)
+        ddl = concat(ddl, concat(concat(c.name, " "), boila_type_name(c.typ)))
+        i = i + 1
+    }
+    if t.pk_idx >= 0 && t.pk_idx < vec_len(t.cols) {
+        ddl = concat(ddl, concat(concat(", PRIMARY KEY (", vec_get(t.cols, t.pk_idx).name), ")"))
+    }
+    ddl = concat(ddl, ")")
+    if t.ttl_sec > 0 {
+        ddl = concat(ddl, concat(concat(" WITH (ttl_sec = ", int_to_str(t.ttl_sec)), ")"))
+    }
+    let mut res = boila_result_empty()
+    boila_result_add_col(res, "table_name", boila_v_str())
+    boila_result_add_col(res, "create_statement", boila_v_str())
+    let row: Vec<BoilaVal> = vec_new()
+    vec_push(row, boila_val_str(t.name))
+    vec_push(row, boila_val_str(ddl))
+    vec_push(res.rows, row)
+    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
+}
+
 fn boila_exec_show_ex(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, lx: BoilaLex, guc: Map<str, str>) -> BoilaSqlOut !IO !Time !Par {
     if vec_len(lx.toks) > 1 && tok_kw(vec_get(lx.toks, 1), "tables") == 1 {
         return boila_show_tables(s, txn, pc)?
+    }
+    // SHOW CREATE TABLE name
+    if vec_len(lx.toks) > 3 && tok_kw(vec_get(lx.toks, 1), "create") == 1 && tok_kw(vec_get(lx.toks, 2), "table") == 1 {
+        let tb = vec_get(lx.toks, 3)
+        if tb.kind != tok_ident() {
+            return boila_sql_fail(s, txn, pc, "SHOW CREATE TABLE name", "42601")
+        }
+        return boila_show_create_table(s, txn, pc, tb.txt)?
     }
     if vec_len(lx.toks) > 1 && (tok_kw(vec_get(lx.toks, 1), "databases") == 1 || tok_kw(vec_get(lx.toks, 1), "database") == 1) {
         // caller should use boila_show_databases(meta); fallback empty

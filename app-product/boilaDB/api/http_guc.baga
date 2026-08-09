@@ -54,7 +54,7 @@ fn boila_http_try_guc(txn: BoilaTxn, db: str, guc: Map<str, str>, sql: str) -> B
         // SHOW TABLES / INDEX → fall through to SQL store path
         if vec_len(lx.toks) > 1 {
             let t1 = vec_get(lx.toks, 1)
-            if tok_kw(t1, "tables") == 1 || tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 || tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 || tok_kw(t1, "databases") == 1 || tok_kw(t1, "database") == 1 || tok_kw(t1, "users") == 1 || tok_kw(t1, "roles") == 1 || tok_kw(t1, "grants") == 1 {
+            if tok_kw(t1, "tables") == 1 || tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 || tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 || tok_kw(t1, "databases") == 1 || tok_kw(t1, "database") == 1 || tok_kw(t1, "users") == 1 || tok_kw(t1, "roles") == 1 || tok_kw(t1, "grants") == 1 || tok_kw(t1, "create") == 1 {
                 return BoilaHttpGucTry { hit: 0, r: boila_http_guc_err(txn, db, guc, "", "") }
             }
         }

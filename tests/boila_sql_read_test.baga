@@ -288,6 +288,12 @@ fn main() -> i64 !IO !Time !Par {
     srv = dlk.srv
     check(fails, "dual_like_null", dlk.ok == 1 && row_str(vec_get(dlk.res.rows, 0), 0) == "t" && row_str(vec_get(dlk.res.rows, 0), 1) == "t" && row_str(vec_get(dlk.res.rows, 0), 2) == "t" && row_str(vec_get(dlk.res.rows, 0), 3) == "t" && row_str(vec_get(dlk.res.rows, 0), 4) == "t")
     // LIKE ESCAPE: \% is literal %
+    let dnf1 = boila_server_exec(srv, "boila", "VALUES (1, 10), (2, NULL), (3, 5) ORDER BY column2 NULLS FIRST")?
+    srv = dnf1.srv
+    check(fails, "dual_nulls_first", dnf1.ok == 1 && vec_len(dnf1.res.rows) == 3 && row_str(vec_get(dnf1.res.rows, 0), 0) == "2")
+    let dnf2 = boila_server_exec(srv, "boila", "VALUES (1, 10), (2, NULL), (3, 5) ORDER BY column2 DESC NULLS LAST")?
+    srv = dnf2.srv
+    check(fails, "dual_nulls_last", dnf2.ok == 1 && vec_len(dnf2.res.rows) == 3 && row_str(vec_get(dnf2.res.rows, 2), 0) == "2")
     let dle = boila_server_exec(srv, "boila", "SELECT 'a%b' LIKE 'a\\%b' ESCAPE '\\', 'a%b' LIKE 'a%b' ESCAPE '\\', 'axb' LIKE 'a_b' ESCAPE '\\', 'a_b' LIKE 'a\\_b' ESCAPE '\\'")?
     srv = dle.srv
     check(fails, "dual_like_escape", dle.ok == 1 && row_str(vec_get(dle.res.rows, 0), 0) == "t" && row_str(vec_get(dle.res.rows, 0), 1) == "t" && row_str(vec_get(dle.res.rows, 0), 2) == "t" && row_str(vec_get(dle.res.rows, 0), 3) == "t")

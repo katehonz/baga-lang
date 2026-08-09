@@ -214,7 +214,8 @@ DO UPDATE SET …] [RETURNING …]`, `UPDATE … SET … WHERE … [RETURNING]`,
 `DELETE FROM … WHERE … [RETURNING]`.
 
 **SELECT:** проекции, `WHERE` (`= <> < <= > >= BETWEEN IN LIKE ILIKE
-IS [NOT] NULL AND OR NOT`), `ORDER BY … ASC|DESC`, `LIMIT/OFFSET`,
+IS [NOT] NULL AND OR NOT`), `ORDER BY … ASC|DESC [NULLS FIRST|LAST]`,
+`LIMIT/OFFSET`,
 `GROUP BY` + `COUNT/SUM/AVG/MIN/MAX` + `HAVING`, `DISTINCT`,
 `JOIN` (`INNER`/`LEFT` — index nested-loop или hash join по cost),
 `WITH RECURSIVE`, `CASE`, аритметика. Dual (без FROM): литерали

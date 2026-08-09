@@ -121,6 +121,18 @@ fn main() -> i64 !IO !Time !Par {
     srv = sf.srv
     check(fails, "cols_missing", sf.ok == 0 && sf.state == "42P01")
 
+    let sc2 = exec(srv, "SHOW CREATE TABLE alpha")?
+    srv = sc2.srv
+    check(fails, "show_create", sc2.ok == 1 && vec_len(sc2.res.rows) == 1)
+    if sc2.ok == 1 && vec_len(sc2.res.rows) == 1 {
+        let ddl = str_of_bytes(vec_get(vec_get(sc2.res.rows, 0), 1).b)
+        check(fails, "show_create_has_pk", str_find(ddl, "PRIMARY KEY") >= 0 && str_find(ddl, "CREATE TABLE alpha") >= 0)
+        check(fails, "show_create_cols", str_find(ddl, "id bigint") >= 0 && str_find(ddl, "city text") >= 0)
+    }
+    let sc3 = exec(srv, "SHOW CREATE TABLE nope")?
+    srv = sc3.srv
+    check(fails, "show_create_miss", sc3.ok == 0 && sc3.state == "42P01")
+
     // VECTOR type name
     let cv = exec(srv, "CREATE TABLE vecs (id BIGINT, emb VECTOR(3), PRIMARY KEY (id))")?
     srv = cv.srv

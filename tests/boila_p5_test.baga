@@ -90,6 +90,22 @@ fn main() -> i64 !IO !Time !Par {
     srv = o3.srv
     check(fails, "offset", o3.ok == 1 && vec_len(o3.res.rows) == 2 && cell(vec_get(o3.res.rows, 0), 0) == "3" && cell(vec_get(o3.res.rows, 1), 0) == "4")
 
+    // --- NULLS FIRST / LAST ---
+    let n0 = exec(srv, "CREATE TABLE nu (id BIGINT, v BIGINT, PRIMARY KEY (id))")?
+    srv = n0.srv
+    let n1 = exec(srv, "INSERT INTO nu (id, v) VALUES (1, 10), (2, NULL), (3, 5)")?
+    srv = n1.srv
+    let nf = exec(srv, "SELECT id FROM nu ORDER BY v ASC NULLS FIRST")?
+    srv = nf.srv
+    check(fails, "nulls_first", nf.ok == 1 && vec_len(nf.res.rows) == 3 && cell(vec_get(nf.res.rows, 0), 0) == "2" && cell(vec_get(nf.res.rows, 1), 0) == "3" && cell(vec_get(nf.res.rows, 2), 0) == "1")
+    let nl = exec(srv, "SELECT id FROM nu ORDER BY v DESC NULLS LAST")?
+    srv = nl.srv
+    check(fails, "nulls_last_desc", nl.ok == 1 && cell(vec_get(nl.res.rows, 0), 0) == "1" && cell(vec_get(nl.res.rows, 1), 0) == "3" && cell(vec_get(nl.res.rows, 2), 0) == "2")
+    let nd = exec(srv, "SELECT id FROM nu ORDER BY v DESC")?
+    srv = nd.srv
+    // PG default DESC → NULLS FIRST
+    check(fails, "nulls_desc_default", nd.ok == 1 && cell(vec_get(nd.res.rows, 0), 0) == "2")
+
     // --- DISTINCT ---
     let d1 = exec(srv, "SELECT DISTINCT dept FROM emp ORDER BY dept")?
     srv = d1.srv
@@ -250,6 +266,9 @@ fn main() -> i64 !IO !Time !Par {
     let e4 = exec(srv, "SELECT sum(dept) FROM emp")?
     srv = e4.srv
     check(fails, "err_sum_text", e4.ok == 0 && e4.state == "0A000")
+    let e5 = exec(srv, "SELECT id FROM emp WHERE id >= 1 AND salary <= 100")?
+    srv = e5.srv
+    check(fails, "err_range_mixed_cols", e5.ok == 0 && e5.state == "0A000")
 
     boila_server_close(srv)?
     wipe_root(root)?

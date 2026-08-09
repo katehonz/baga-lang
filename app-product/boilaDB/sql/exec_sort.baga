@@ -1,45 +1,65 @@
-// exec_sort.baga — ORDER BY сортиране на редове (P5).
-// NULL-ите винаги накрая (независимо ASC/DESC); multi-key; стабилен
-// insertion sort за малки n, quicksort за големи.
+// exec_sort.baga — ORDER BY (P5). multi-key; NULLS FIRST/LAST.
+// ord_desc packed: bit0=DESC, bits1.. = nulls mode (0=PG default, 1=FIRST, 2=LAST).
+// PG default: ASC → NULLS LAST, DESC → NULLS FIRST.
 
 import "../core/value.baga"
 
-fn boila_cmp_vals(a: BoilaVal, b: BoilaVal) -> i64 {
-    // NULL last: null е "по-голям" от всичко
+fn boila_ord_is_desc(packed: i64) -> i64 {
+    return packed & 1
+}
+
+// 1 = nulls first, 0 = nulls last
+fn boila_ord_nulls_first(packed: i64) -> i64 {
+    let nm = packed / 2
+    if nm == 1 { return 1 }
+    if nm == 2 { return 0 }
+    // default: same as DESC bit (PG)
+    return packed & 1
+}
+
+fn boila_cmp_vals_nf(a: BoilaVal, b: BoilaVal, nulls_first: i64) -> i64 {
     if a.tag == boila_v_null() && b.tag == boila_v_null() {
         return 0
     }
     if a.tag == boila_v_null() {
+        if nulls_first == 1 { return 0 - 1 }
         return 1
     }
     if b.tag == boila_v_null() {
+        if nulls_first == 1 { return 1 }
         return 0 - 1
     }
     return boila_val_cmp(a, b)
 }
 
-// Сравнение на два реда по ключовите индекси (desc обръща само не-NULL).
+fn boila_cmp_vals(a: BoilaVal, b: BoilaVal) -> i64 {
+    return boila_cmp_vals_nf(a, b, 0)
+}
+
+// Сравнение по ключове; DESC обръща само non-NULL cmp.
 fn boila_cmp_rows(a: Vec<BoilaVal>, b: Vec<BoilaVal>, idxs: Vec<i64>, desc: Vec<i64>) -> i64 {
     let mut k: i64 = 0
     while k < vec_len(idxs) {
         let ix = vec_get(idxs, k)
+        let pk = vec_get(desc, k)
         let mut av = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
         let mut bv = BoilaVal { tag: 0, i: 0, b: bytes_new(0) }
-        if ix >= 0 && ix < vec_len(a) {
-            av = vec_get(a, ix)
-        }
-        if ix >= 0 && ix < vec_len(b) {
-            bv = vec_get(b, ix)
-        }
-        let c = boila_cmp_vals(av, bv)
-        if c != 0 {
-            if vec_get(desc, k) == 1 {
-                if c == 1 {
-                    return 0 - 1
+        if ix >= 0 && ix < vec_len(a) { av = vec_get(a, ix) }
+        if ix >= 0 && ix < vec_len(b) { bv = vec_get(b, ix) }
+        let nf = boila_ord_nulls_first(pk)
+        // null vs non-null: respect NULLS FIRST/LAST only
+        if av.tag == boila_v_null() || bv.tag == boila_v_null() {
+            let c = boila_cmp_vals_nf(av, bv, nf)
+            if c != 0 { return c }
+        } else {
+            let c = boila_val_cmp(av, bv)
+            if c != 0 {
+                if boila_ord_is_desc(pk) == 1 {
+                    if c == 1 { return 0 - 1 }
+                    return 1
                 }
-                return 1
+                return c
             }
-            return c
         }
         k = k + 1
     }

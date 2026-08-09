@@ -229,7 +229,7 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
             if tok_kw(t1, "grants") == 1 {
                 is_grants = 1
             }
-            if tok_kw(t1, "tables") == 1 || tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 || tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 {
+            if tok_kw(t1, "tables") == 1 || tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 || tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 || tok_kw(t1, "create") == 1 {
                 is_meta = 1
             }
         }

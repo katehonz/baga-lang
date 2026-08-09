@@ -103,6 +103,17 @@ fn boila_dual_finish(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str, 
         }
         if tok_kw(boila_dual_tok(lx, i), "desc") == 1 { ord_desc = 1; i = i + 1 }
         else { if tok_kw(boila_dual_tok(lx, i), "asc") == 1 { i = i + 1 } }
+        let mut nm: i64 = 0
+        if tok_kw(boila_dual_tok(lx, i), "nulls") == 1 {
+            if tok_kw(boila_dual_tok(lx, i + 1), "first") == 1 { nm = 1; i = i + 2 }
+            else {
+                if tok_kw(boila_dual_tok(lx, i + 1), "last") == 1 { nm = 2; i = i + 2 }
+                else {
+                    return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах FIRST|LAST след NULLS", "42601") }
+                }
+            }
+        }
+        ord_desc = ord_desc + nm * 2
     }
     let mut lim: i64 = 0 - 1
     let mut off: i64 = 0

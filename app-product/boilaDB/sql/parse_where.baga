@@ -265,6 +265,10 @@ fn boila_parse_where(l: BoilaLex, sel: BoilaSel, i: i64) -> BoilaParseWhere {
                 }
             }
             }
+            // range lo+hi must be same column
+            if sel.has_lo == 1 && sel.has_hi == 1 && sel.lo_col != sel.hi_col {
+                return boila_pw_fail(sel, i, "range >/</>=/<= трябва да е върху една колона", "0A000")
+            }
         }
         // Q-or: col = a OR col = b → IN (same column only)
         if tok_kw(boila_ps_tok(l, i), "or") == 1 {
