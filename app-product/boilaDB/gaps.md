@@ -69,7 +69,8 @@ T = транзакции, W = wire protocol, F = FTS.
   cache (invalidate при DML); cache живее за една search/index op.
 - **V5 — (FIXED) unindex strips reverse edges + ep reassign.** Strip pk
   from nbr lists L0..4; if deleted node was ep, reassign to an L0
-  neighbor (else clear). Residual: ep pick is first L0 nbr, not best.
+  neighbor (else clear). V5c: ep = L0 nbr with highest degree. Residual:
+  degree-only heuristic (not distance-to-centroid).
 - **V6 — (FIXED) kNN + AND eq/range.** Parse приема AND; V3 pre-filter
   при indexed eq; иначе overfetch + post-filter; LIMIT = k на offlim.
 - **V7 — fixed-point ×1e6** вместо IEEE payload (V1 bit-cast липсва).

@@ -234,10 +234,25 @@ fn hnsw_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswD
     let mut ep = vm.ep
     let mut max_lvl = vm.max_lvl
     if bytes_eq_b(ep, pk) {
+        // V5c: pick L0 neighbor with highest remaining degree
         if vec_len(l0_nbs) > 0 {
+            let mut best = vec_get(l0_nbs, 0)
+            let mut best_d: i64 = 0 - 1
+            let mut bi: i64 = 0
+            while bi < vec_len(l0_nbs) {
+                let nb = vec_get(l0_nbs, bi)
+                let ng = hnsw_nbrs_get(s, txn, table_id, def.id, 0, nb)?
+                s = ng.s
+                txn = ng.txn
+                let d = vec_len(ng.pks)
+                if d > best_d {
+                    best_d = d
+                    best = nb
+                }
+                bi = bi + 1
+            }
             has = 1
-            ep = vec_get(l0_nbs, 0)
-            // keep max_lvl; graph still has other nodes
+            ep = best
         } else {
             has = 0
             ep = bytes_new(0)
