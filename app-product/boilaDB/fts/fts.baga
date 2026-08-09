@@ -287,13 +287,17 @@ fn fts_query_gaps(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef,
         }
         cand = kept
     }
-    // BM25 score (×1000). F3: idf = ln(1+(N-df+0.5)/(df+0.5)) via
-    // integer ln; dl=avgdl (no per-doc GET). Cache-only in cand loop.
-    let dl = avgdl
+    // BM25 score (×1000). F3: integer-ln idf; F3b: real doclen per cand.
     let scores: Vec<i64> = vec_new()
     let mut ci: i64 = 0
     while ci < vec_len(cand) {
         let pk_enc = vec_get(cand, ci)
+        let dg = fts_doc_get(s, txn, t.id, pk_enc)?
+        s = dg.s
+        let mut dl = dg.doclen
+        if dl <= 0 {
+            dl = avgdl
+        }
         let mut score: i64 = 0
         let mut q: i64 = 0
         while q < vec_len(cached_pks) {

@@ -97,6 +97,12 @@ fn main() -> i64 !IO !Time !Par {
     let q2 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('dog | turtle')")
     srv = q2.srv
     check(fails, "or_query", q2.ok == 1 && vec_len(q2.res.rows) == 2 && ids_has(q2.res, "2") == 1 && ids_has(q2.res, "3") == 1)
+    // F3b: same tf=1, shorter doc ranks above padded long doc (dl norm)
+    let ilong = exec1(srv, "INSERT INTO docs (id, body) VALUES (30, 'zebranoise padding padding padding padding padding padding padding padding padding'), (31, 'zebranoise')")
+    srv = ilong.srv
+    let qdl = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('zebranoise')")
+    srv = qdl.srv
+    check(fails, "bm25_dl_short_first", qdl.ok == 1 && vec_len(qdl.res.rows) == 2 && row_id(vec_get(qdl.res.rows, 0)) == "31" && row_id(vec_get(qdl.res.rows, 1)) == "30")
     // plainto
     let q3 = exec1(srv, "SELECT id FROM docs WHERE body @@ plainto_tsquery('quick turtle')")
     srv = q3.srv
