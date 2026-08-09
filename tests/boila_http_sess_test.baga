@@ -1,0 +1,143 @@
+// boila_http_sess_test.baga — H3: HTTP per-conn session db (USE / ?db=).
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/api/http_sql.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/txn/mvcc.baga"
+import "httpdbaga/http.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 30 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    wipe_shard_path(concat(root, "/boila.db"))?
+    wipe_shard_path(concat(root, "/alpha.db"))?
+    return 0
+}
+
+fn mk_req(path: str, body: str) -> Request {
+    let bb = bytes_of_str(body)
+    return Request {
+        method: "POST", path: path, version: "HTTP/1.1",
+        hkeys: vec_new(), hvals: vec_new(), body: body, body_bytes: bb
+    }
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_http_sess_test:")
+    let fails: Vec<i64> = vec_new()
+
+    let r0 = mk_req("/sql", "x")
+    check(fails, "pick_default", boila_http_pick_db("", r0) == "boila")
+    check(fails, "pick_sess", boila_http_pick_db("alpha", r0) == "alpha")
+    let r1 = mk_req("/sql?db=beta", "x")
+    check(fails, "pick_query", boila_http_pick_db("alpha", r1) == "beta")
+
+    let root = "/tmp/baga_boila_http_sess_test"
+    wipe_root(root)?
+    let mut srv = boila_server_open(root, 1, 8, 3, 4)?
+    let mut txn = boila_txn_new()
+    let mut sess = "boila"
+
+    let fail_out = BoilaSrvOut {
+        srv: srv, txn: txn, ok: 0, err: "e", state: "XX000", kind: 0,
+        res: boila_result_empty(), id: 0, db: ""
+    }
+    check(fails, "next_fail_keep", boila_http_next_db("alpha", "beta", fail_out) == "alpha")
+    let use_out = BoilaSrvOut {
+        srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 5,
+        res: boila_result_empty(), id: 0, db: "gamma"
+    }
+    check(fails, "next_use", boila_http_next_db("alpha", "alpha", use_out) == "gamma")
+    let cdb_out = BoilaSrvOut {
+        srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 3,
+        res: boila_result_empty(), id: 0, db: "newdb"
+    }
+    check(fails, "next_create_db_keep", boila_http_next_db("alpha", "alpha", cdb_out) == "alpha")
+
+    let cdb = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "CREATE DATABASE alpha"))?
+    srv = cdb.srv
+    txn = cdb.txn
+    sess = cdb.db
+    check(fails, "create_db_ok", str_find(cdb.resp.body, "\"ok\":true") >= 0)
+    check(fails, "create_keeps_sess", sess == "boila")
+
+    let usea = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "USE alpha"))?
+    srv = usea.srv
+    txn = usea.txn
+    sess = usea.db
+    check(fails, "use_switches", sess == "alpha" && str_find(usea.resp.body, "\"kind\":\"use\"") >= 0)
+
+    let ct = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))"))?
+    srv = ct.srv
+    txn = ct.txn
+    sess = ct.db
+    check(fails, "create_on_alpha", str_find(ct.resp.body, "\"ok\":true") >= 0 && sess == "alpha")
+
+    let ins = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "INSERT INTO t (id) VALUES (1)"))?
+    srv = ins.srv
+    txn = ins.txn
+    sess = ins.db
+    check(fails, "insert_sess", str_find(ins.resp.body, "\"ok\":true") >= 0 && sess == "alpha")
+
+    let q = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "SELECT id FROM t WHERE id = 1"))?
+    srv = q.srv
+    txn = q.txn
+    sess = q.db
+    check(fails, "select_sess_alpha", sess == "alpha" && str_find(q.resp.body, "\"ok\":true") >= 0)
+    check(fails, "select_has_row", str_find(q.resp.body, "1") >= 0)
+
+    // USE boila switches back; table t is only on alpha
+    let ub = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "USE boila"))?
+    srv = ub.srv
+    txn = ub.txn
+    sess = ub.db
+    check(fails, "use_boila", sess == "boila")
+
+    let miss = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "SELECT id FROM t WHERE id = 1"))?
+    srv = miss.srv
+    txn = miss.txn
+    sess = miss.db
+    // isolation: after USE boila, alpha's row must not appear (empty or error)
+    check(fails, "boila_no_alpha_row", sess == "boila" && str_find(miss.resp.body, "[[1]]") < 0)
+
+    // ?db=alpha override then session follows used_db on ok
+    let qa = boila_http_sql_tx(srv, txn, sess, mk_req("/sql?db=alpha", "SELECT id FROM t WHERE id = 1"))?
+    srv = qa.srv
+    txn = qa.txn
+    sess = qa.db
+    check(fails, "query_db_override", sess == "alpha" && str_find(qa.resp.body, "\"ok\":true") >= 0)
+
+    boila_server_close(srv)?
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_http_sess_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_http_sess_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

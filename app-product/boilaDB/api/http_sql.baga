@@ -1,5 +1,7 @@
-// http_sql.baga — POST /sql?db=<име>: сървърно ниво (P2 multi-database).
-// Тяло = суров SQL текст; db параметърът избира базата (default "boila").
+// http_sql.baga — POST /sql[?db=]: сървърно ниво (P2 multi-database).
+// Тяло = суров SQL. H3: per-conn session db (default "boila");
+// ?db= overrides for the request and updates session on ok;
+// USE updates session (like PG sess.db). Keepalive reuses session.
 //
 // Отговор:
 //   {"ok":true,"kind":"select","cols":[...],"rows":[[...]]}
@@ -21,7 +23,35 @@ import "std/str/str.baga"
 struct BoilaHttpSql {
     srv: BoilaServer,
     txn: BoilaTxn,
-    resp: Response
+    resp: Response,
+    db: str
+}
+
+// H3: ?db= wins; else session db (default "boila").
+fn boila_http_pick_db(sess_db: str, req: Request) -> str {
+    let q = http_query_param(req, "db")
+    if q != "" {
+        return q
+    }
+    if sess_db != "" {
+        return sess_db
+    }
+    return "boila"
+}
+
+// After request: USE (kind 5) → out.db; else keep used_db (pick result).
+// CREATE/DROP DATABASE put the target name in out.db — do not switch.
+fn boila_http_next_db(sess_db: str, used_db: str, out: BoilaSrvOut) -> str {
+    if out.ok == 1 && out.kind == 5 && out.db != "" {
+        return out.db
+    }
+    if out.ok == 1 && used_db != "" {
+        return used_db
+    }
+    if sess_db != "" {
+        return sess_db
+    }
+    return "boila"
 }
 
 fn boila_cols_json(cols: Vec<str>) -> str {
@@ -51,13 +81,14 @@ fn boila_rows_json(rows: Vec<Vec<BoilaVal>>) -> str {
 }
 
 fn boila_http_sql(srv: BoilaServer, req: Request) -> BoilaHttpSql !IO !Time !Par {
-    let r = boila_http_sql_tx(srv, srv.session_txn, req)?
+    let r = boila_http_sql_tx(srv, srv.session_txn, "boila", req)?
     r.srv.session_txn = r.txn
     return r
 }
 
-// Encode BoilaSrvOut → JSON response (no re-exec).
-fn boila_http_encode(out: BoilaSrvOut) -> BoilaHttpSql {
+// Encode BoilaSrvOut → JSON response (no re-exec). db = session after.
+fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpSql {
+    let ndb = boila_http_next_db(sess_db, used_db, out)
     let mut body = ""
     if out.ok == 0 {
         body = "{\"ok\":false,\"error\":"
@@ -65,7 +96,7 @@ fn boila_http_encode(out: BoilaSrvOut) -> BoilaHttpSql {
         body = concat(body, ",\"sqlstate\":\"")
         body = concat(body, out.state)
         body = concat(body, "\"}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
     }
     if out.kind == 1 {
         body = "{\"ok\":true,\"kind\":\"select\",\"cols\":"
@@ -73,7 +104,7 @@ fn boila_http_encode(out: BoilaSrvOut) -> BoilaHttpSql {
         body = concat(body, ",\"rows\":")
         body = concat(body, boila_rows_json(out.res.rows))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
     }
     if out.kind == 2 || out.kind == 9 || out.kind == 14 || out.kind == 15 || out.kind == 17 || out.kind == 18 {
         let mut k = "create"
@@ -87,7 +118,7 @@ fn boila_http_encode(out: BoilaSrvOut) -> BoilaHttpSql {
         body = concat(body, "\",\"id\":")
         body = concat(body, int_to_str(out.id))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
     }
     if out.kind >= 6 && out.kind <= 8 {
         let mut kname = "insert"
@@ -100,7 +131,7 @@ fn boila_http_encode(out: BoilaSrvOut) -> BoilaHttpSql {
         body = concat(body, ",\"rows\":")
         body = concat(body, boila_rows_json(out.res.rows))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
     }
     if out.kind >= 10 && out.kind <= 12 {
         let mut kname = "begin"
@@ -111,31 +142,28 @@ fn boila_http_encode(out: BoilaSrvOut) -> BoilaHttpSql {
         body = concat(body, "\",\"lsn\":")
         body = concat(body, int_to_str(out.id))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
     }
     if out.kind == 3 {
         body = "{\"ok\":true,\"kind\":\"create_database\",\"db\":"
         body = concat(body, json_escape(out.db))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
     }
     if out.kind == 4 {
         body = "{\"ok\":true,\"kind\":\"drop_database\",\"db\":"
         body = concat(body, json_escape(out.db))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
     }
     body = "{\"ok\":true,\"kind\":\"use\",\"db\":"
     body = concat(body, json_escape(out.db))
     body = concat(body, "}")
-    return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
+    return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
 }
 
-fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !Time !Par {
-    let mut db = http_query_param(req, "db")
-    if db == "" {
-        db = "boila"
-    }
+fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, sess_db: str, req: Request) -> BoilaHttpSql !IO !Time !Par {
+    let db = boila_http_pick_db(sess_db, req)
     let out = boila_server_exec_tx(srv, txn, db, http_body(req))?
-    return boila_http_encode(out)
+    return boila_http_encode(out, sess_db, db)
 }

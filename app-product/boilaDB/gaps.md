@@ -186,9 +186,10 @@ T = транзакции, W = wire protocol, F = FTS.
   FFI би била flat layout само в съществуваща директория. DROP DATABASE
   чисти файлове по известни шаблони, но празни директории не се трият
   (няма rmdir).
-- **H3 — HTTP е без сесия:** `USE` през HTTP връща ok, но не променя
-  нищо за следващи заявки — базата се избира с `?db=` на всяка заявка.
-  Истинска сесия идва с PG wire-а (P6).
+- **H3 — (FIXED) HTTP per-conn session db.** Keepalive `boila_http_conn`
+  tracks `sess_db` (default `boila`); `USE` / successful `?db=` update it;
+  bare `/sql` uses session. CREATE/DROP DATABASE do not switch session.
+  Residual: no cookie/cross-conn session; new TCP conn resets to `boila`.
 
 ## Открити при P1
 
