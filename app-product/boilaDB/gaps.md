@@ -10,8 +10,10 @@ T = транзакции, W = wire protocol, F = FTS.
 - **P11-1 — няма 10k concurrent client ladder.** Wire/HTTP са sync
   (W1/H2); harness-ът мери sequential ops/s. True pool = rebuild на
   BoilaServer ownership + shard-owner threads.
-- **P11-2 — budget е max_scan/max_rows, не wall deadline.** Без
-  concurrent workers deadline няма кой да enforce-не mid-query.
+- **P11-2 — (FIXED) wall deadline + max_scan/max_rows.** `BoilaBudget`
+  begin at fetch; cooperative `boila_budget_tick` every 64 keys →
+  57014 on timeout. Env `BOILA_BUDGET_MS` (default 5000; 0 = immediate).
+  Residual: not a preemptive mid-op kill inside rocksbaga get.
 - **P11-3 — (FIXED) DROP TABLE full wipe.** `catalog/drop.baga`
   `boila_table_drop`: wipe data/index/fts/vec/graph CFs + modality
   catalog (f/fl/fs, vh/vl/vm, gh/gl, x|<tid>|*) + name/schema/ttl.

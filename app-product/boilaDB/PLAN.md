@@ -202,8 +202,8 @@
   при INSERT след CREATE GRAPH — не (G2; rebuild via re-CREATE).
 
 ## P11 — Втвърдяване и честни benchmarks
-- Реализирано: `core/budget.baga` (max_scan/max_rows → 54000 на seq
-  scan); `DROP TABLE` (catalog + data wipe); `bench/boila/harness.baga`
+- Реализирано: `core/budget.baga` (max_scan/max_rows + wall deadline
+  `BOILA_BUDGET_MS` → 54000/57014); full `DROP TABLE` wipe; harness
   sequential ladder 100/1k/10k (point/insert/mix80-20);
   `tests/boila_p11_test` (drop, budget constants, restart durability).
 - **Измерено (harness-2026-08-09.md):** point 10k → **156k ops/s**

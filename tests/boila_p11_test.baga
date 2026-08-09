@@ -5,6 +5,7 @@ import "boilaDB/sql/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/core/value.baga"
 import "boilaDB/core/budget.baga"
+// boila_budget_begin_ex / tick
 import "std/os/os.baga"
 import "std/str/str.baga"
 
@@ -108,6 +109,14 @@ fn main() -> i64 !IO !Time !Par {
     // budget constants present
     check(fails, "budget_scan_pos", boila_budget_max_scan() > 0)
     check(fails, "budget_rows_pos", boila_budget_max_rows() > 0)
+    check(fails, "budget_ms_pos", boila_budget_max_ms() > 0)
+
+    // wall deadline: BOILA_BUDGET_MS=0 → already expired on first tick
+    let b0 = boila_budget_begin_ex(0)?
+    check(fails, "deadline_tick0", boila_budget_tick(b0, 0)? == 0)
+    let b1 = boila_budget_begin_ex(60000)?
+    check(fails, "deadline_ok", boila_budget_tick(b1, 0)? == 1)
+    check(fails, "deadline_skip63", boila_budget_tick(b1, 63)? == 1)
 
     // durability: write, close, reopen, read
     let i2 = exec1(srv, "INSERT INTO d (id, v) VALUES (10, 'persist')")
