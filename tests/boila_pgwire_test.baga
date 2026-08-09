@@ -5,6 +5,7 @@ import "boilaDB/api/pgwire_enc.baga"
 import "boilaDB/api/pgwire_msg.baga"
 import "boilaDB/api/pgwire_prep.baga"
 import "boilaDB/sql/ast.baga"
+import "boilaDB/storage/databases.baga"
 import "boilaDB/core/value.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
@@ -104,6 +105,38 @@ fn main() -> i64 !Par {
     let bound = boila_pg_bind_sel(st.sel, bv, bn)
     check(fails, "bind_eq", bound.pk_eq.tag == boila_v_i64() && bound.pk_eq.i == 42)
     check(fails, "bind_lim", bound.limit == 3)
+
+    // --- W3/W5: OIDs + ParameterDescription + typed RowDescription ---
+    check(fails, "oid_bool", pgw_oid_of(boila_v_bool()) == 16)
+    check(fails, "oid_i64", pgw_oid_of(boila_v_i64()) == 20)
+    check(fails, "oid_text", pgw_oid_of(boila_v_str()) == 25)
+    check(fails, "oid_ts", pgw_oid_of(boila_v_ts()) == 1184)
+    check(fails, "nparams", boila_pg_nparams(st.sel) == 2)
+    let pd = pgw_param_desc(2)
+    check(fails, "param_desc_t", bytes_at(pd, 0) == 116)
+    let cn: Vec<str> = vec_new()
+    vec_push(cn, "id")
+    vec_push(cn, "name")
+    let tg: Vec<i64> = vec_new()
+    vec_push(tg, boila_v_i64())
+    vec_push(tg, boila_v_str())
+    let rd = pgw_row_desc_typed(cn, tg)
+    check(fails, "row_desc_T", bytes_at(rd, 0) == 84)
+    // OID int8 at first column field (after name\0 + tableoid4 + attnum2)
+    // spot-check: message contains be32(20) for int8
+    let mut found20 = 0
+    let mut bi: i64 = 0
+    while bi + 4 <= bytes_len(rd) {
+        if pgw_be_read(rd, bi, 4) == 20 { found20 = 1 }
+        bi = bi + 1
+    }
+    check(fails, "row_desc_oid20", found20 == 1)
+    let m0 = BoilaPgMeta { ok: 0, cols: cn, tags: tg, nparams: 1, s: boila_store_empty() }
+    let nd = boila_pg_desc_buf(m0, 1)
+    check(fails, "desc_nodata_stmt", bytes_at(nd, 0) == 116)
+    let m1 = BoilaPgMeta { ok: 1, cols: cn, tags: tg, nparams: 2, s: boila_store_empty() }
+    let db = boila_pg_desc_buf(m1, 1)
+    check(fails, "desc_stmt_row", bytes_at(db, 0) == 116)
 
     if vec_len(fails) == 0 {
         print("boila_pgwire_test: all passed")

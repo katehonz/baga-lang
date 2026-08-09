@@ -125,20 +125,54 @@ fn pgw_subst_params(sql: str, vals: Vec<str>, nulls: Vec<i64>) -> str {
 
 // --- кодиране на резултати (text формат) ---
 
-fn pgw_row_desc(cols: Vec<str>) -> bytes {
+// PG type OIDs (W3): bool=16 int8=20 text=25 bytea=17 json=114 timestamptz=1184
+fn pgw_oid_of(tag: i64) -> i64 {
+    if tag == boila_v_bool() { return 16 }
+    if tag == boila_v_i64() { return 20 }
+    if tag == boila_v_ts() { return 1184 }
+    if tag == boila_v_bytes() { return 17 }
+    if tag == boila_v_json() { return 114 }
+    return 25
+}
+
+fn pgw_typlen_of(tag: i64) -> i64 {
+    if tag == boila_v_bool() { return 1 }
+    if tag == boila_v_i64() || tag == boila_v_ts() { return 8 }
+    return 65535
+}
+
+fn pgw_row_desc_typed(cols: Vec<str>, tags: Vec<i64>) -> bytes {
     let mut body = pgw_be16(vec_len(cols))
     let mut i: i64 = 0
     while i < vec_len(cols) {
+        let mut tag: i64 = boila_v_str()
+        if i < vec_len(tags) { tag = vec_get(tags, i) }
         body = bytes_concat(body, pgw_cstr(vec_get(cols, i)))
-        body = bytes_concat(body, pgw_be32(0))       // table oid
-        body = bytes_concat(body, pgw_be16(0))       // attnum
-        body = bytes_concat(body, pgw_be32(25))      // type oid: text
-        body = bytes_concat(body, pgw_be16(65535))   // typlen -1
-        body = bytes_concat(body, pgw_be32(4294967295)) // typmod -1
-        body = bytes_concat(body, pgw_be16(0))       // text format
+        body = bytes_concat(body, pgw_be32(0))
+        body = bytes_concat(body, pgw_be16((i + 1) & 65535))
+        body = bytes_concat(body, pgw_be32(pgw_oid_of(tag)))
+        body = bytes_concat(body, pgw_be16(pgw_typlen_of(tag)))
+        body = bytes_concat(body, pgw_be32(4294967295))
+        body = bytes_concat(body, pgw_be16(0))
         i = i + 1
     }
-    return pgw_msg(84, body)                         // 'T'
+    return pgw_msg(84, body)
+}
+
+fn pgw_row_desc(cols: Vec<str>) -> bytes {
+    let tags: Vec<i64> = vec_new()
+    return pgw_row_desc_typed(cols, tags)
+}
+
+// ParameterDescription 't': nparams + OID* (unknown=0 → client infers)
+fn pgw_param_desc(n: i64) -> bytes {
+    let mut body = pgw_be16(n)
+    let mut i: i64 = 0
+    while i < n {
+        body = bytes_concat(body, pgw_be32(0))
+        i = i + 1
+    }
+    return pgw_msg(116, body)
 }
 
 // Текстова стойност; връща (bytes, is_null).

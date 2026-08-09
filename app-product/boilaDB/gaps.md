@@ -101,12 +101,15 @@ T = транзакции, W = wire protocol, F = FTS.
   Non-SELECT / parse fail → text subst fallback. Residual: INSERT/
   UPDATE/DELETE params still text; FTS/kNN `$N` в tsquery/vector lit
   не са AST slots.
-- **W3 — RowDescription е винаги OID 25 (text).** pgbaga JSON
-  детекцията по OID не разпознава jsonb колони; стойностите са коректни
-  като текст.
+- **W3 — (PARTIAL FIXED) typed OIDs on Describe.** `pgw_oid_of`:
+  bool=16 int8=20 text=25 bytea=17 json=114 timestamptz=1184.
+  Describe RowDescription ползва реални типове; Execute path още text
+  OID 25 (BoilaResult няма type vector). Residual: Execute OIDs.
 - **W4 — (FIXED при P11-3) DROP TABLE full wipe.** `catalog/drop.baga`
   + parse/exec; modality CF + name/schema/ttl.
-- **W5 — Describe връща NoData** (няма statement metadata cache).
+- **W5 — (FIXED) Describe → ParameterDescription + RowDescription.**
+  Prepared SELECT: catalog resolve cols/types; stmt → 't'+'T', portal →
+  'T'; non-SELECT / JOIN/GROUP → NoData (+ empty param desc за stmt).
 - **W6 — auth е cleartext token (BOILA_TOKEN) или trust.** SCRAM не се
   предлага от сървъра (pgbaga-клиентът го поддържа, но сървърът не го
   иска); TLS няма (SSLRequest → 'N').

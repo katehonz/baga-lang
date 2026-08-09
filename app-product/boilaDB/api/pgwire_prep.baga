@@ -1,11 +1,7 @@
-// pgwire_prep.baga — W2: prepared SELECT AST по stmt име + $N bind.
-//
-// Parse: lex+parse SELECT (без catalog); кешира BoilaSel с param slots.
-// Bind: попълва $N → concrete vals в копие на sel.
-// Execute: catalog resolve + exec_select — без re-lex/parse.
-// Non-SELECT / parse fail → text subst fallback.
+// pgwire_prep.baga — W2 prepared AST + W5 Describe metadata.
 
 import "pgwire_enc.baga"
+import "pgwire_msg.baga"
 import "../sql/lexer.baga"
 import "../sql/token.baga"
 import "../sql/parse_select.baga"
@@ -18,7 +14,10 @@ import "../storage/shards.baga"
 import "../storage/databases.baga"
 import "../txn/mvcc.baga"
 import "../core/value.baga"
+import "serve_mt.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/net/tcp.baga"
 
 struct BoilaPgStmt {
     sql: str,
@@ -113,4 +112,161 @@ fn boila_pg_exec_sel(s: BoilaStore, txn: BoilaTxn, sel: BoilaSel) -> BoilaExec !
         return boila_exec_fail(s, txn, ct.err, ct.state)
     }
     return boila_exec_select(s, txn, ct.table, sel)?
+}
+
+// Max $N index referenced by sel (0 = none).
+fn boila_pg_nparams(sel: BoilaSel) -> i64 {
+    let mut n: i64 = 0
+    if sel.eq_param > n { n = sel.eq_param }
+    if sel.lo_param > n { n = sel.lo_param }
+    if sel.hi_param > n { n = sel.hi_param }
+    if sel.lim_param > n { n = sel.lim_param }
+    return n
+}
+
+// W5: column names+tags from SELECT + table (no JOIN / agg → empty ok=0).
+struct BoilaPgMeta {
+    ok: i64,
+    cols: Vec<str>,
+    tags: Vec<i64>,
+    nparams: i64,
+    s: BoilaStore
+}
+
+fn boila_pg_sel_meta(s: BoilaStore, sel: BoilaSel) -> BoilaPgMeta !IO !Time !Par {
+    let cols: Vec<str> = vec_new()
+    let tags: Vec<i64> = vec_new()
+    let np = boila_pg_nparams(sel)
+    if sel.has_join == 1 || sel.has_group == 1 {
+        return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }
+    }
+    let ct = boila_cat_by_name(s, sel.table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }
+    }
+    let t = ct.table
+    if sel.star == 1 {
+        let mut i: i64 = 0
+        while i < vec_len(t.cols) {
+            let cd = vec_get(t.cols, i)
+            vec_push(cols, cd.name)
+            vec_push(tags, cd.typ)
+            i = i + 1
+        }
+        return BoilaPgMeta { ok: 1, cols: cols, tags: tags, nparams: np, s: s }
+    }
+    let mut k: i64 = 0
+    while k < vec_len(sel.items) {
+        let it = vec_get(sel.items, k)
+        if it.agg > 0 {
+            vec_push(cols, it.col)
+            vec_push(tags, boila_v_i64())
+        } else {
+            let cix = boila_col_idx(t, it.col)
+            if cix < 0 {
+                return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }
+            }
+            let cd = vec_get(t.cols, cix)
+            vec_push(cols, cd.name)
+            vec_push(tags, cd.typ)
+        }
+        k = k + 1
+    }
+    return BoilaPgMeta { ok: 1, cols: cols, tags: tags, nparams: np, s: s }
+}
+
+// Build Describe response bytes from sel (or NoData).
+fn boila_pg_describe_sel(s: BoilaStore, sel: BoilaSel, is_stmt: i64) -> BoilaPgMeta !IO !Time !Par {
+    let m = boila_pg_sel_meta(s, sel)?
+    return m
+}
+
+fn boila_pg_desc_buf(m: BoilaPgMeta, is_stmt: i64) -> bytes {
+    if m.ok == 0 {
+        if is_stmt == 1 {
+            return bytes_concat(pgw_param_desc(m.nparams), pgw_no_data())
+        }
+        return pgw_no_data()
+    }
+    let mut buf = bytes_new(0)
+    if is_stmt == 1 {
+        buf = pgw_param_desc(m.nparams)
+    }
+    buf = bytes_concat(buf, pgw_row_desc_typed(m.cols, m.tags))
+    return buf
+}
+
+// Resolve Describe body → (has_sel, sel, is_stmt).
+struct BoilaPgDescReq {
+    is_stmt: i64,
+    has_sel: i64,
+    sel: BoilaSel
+}
+
+fn boila_pg_desc_req(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes) -> BoilaPgDescReq {
+    let kind = bytes_at(body, 0) & 255
+    let nm = pgw_cstr_read(body, 1)
+    let mut is_stmt: i64 = 0
+    if kind == 83 { is_stmt = 1 }
+    let mut has: i64 = 0
+    let mut sel = boila_sel_empty()
+    if is_stmt == 1 {
+        if map_has(stmts, nm.s) == 1 {
+            let st = map_get(stmts, nm.s)
+            has = st.has_sel
+            sel = st.sel
+        }
+    } else {
+        if map_has(portals, nm.s) == 1 {
+            let p = map_get(portals, nm.s)
+            has = p.has_sel
+            sel = p.sel
+        }
+    }
+    return BoilaPgDescReq { is_stmt: is_stmt, has_sel: has, sel: sel }
+}
+
+// Describe bytes given a store (caller checks store in/out).
+fn boila_pg_describe_on(s: BoilaStore, req: BoilaPgDescReq) -> BoilaPgMeta !IO !Time !Par {
+    if req.has_sel == 0 {
+        let cols: Vec<str> = vec_new()
+        let tags: Vec<i64> = vec_new()
+        return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: 0, s: s }
+    }
+    return boila_pg_sel_meta(s, req.sel)?
+}
+
+struct BoilaPgDescBuf {
+    srv: BoilaServer,
+    buf: bytes
+}
+
+// W5: full Describe response (pack=0 by-value srv; pack!=0 mt checkout).
+fn boila_pg_describe_buf(pack: i64, srv: BoilaServer, db: str, stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes) -> BoilaPgDescBuf !IO !Time !Par {
+    let req = boila_pg_desc_req(stmts, portals, body)
+    let mut buf = pgw_no_data()
+    let mut srv2 = srv
+    if req.has_sel == 1 {
+        if pack == 0 {
+            let g = boila_srv_db(srv2, db)?
+            if g.ok == 1 {
+                let m = boila_pg_describe_on(g.store, req)?
+                srv2 = boila_srv_store_putback(g.srv, db, m.s)
+                buf = boila_pg_desc_buf(m, req.is_stmt)
+            }
+        } else {
+            let g = boila_mt_checkout(pack, db)?
+            if g.ok == 1 {
+                let m = boila_pg_describe_on(g.store, req)?
+                boila_mt_checkin(pack, db, m.s)?
+                buf = boila_pg_desc_buf(m, req.is_stmt)
+            }
+        }
+    } else {
+        if req.is_stmt == 1 {
+            buf = bytes_concat(pgw_param_desc(0), pgw_no_data())
+        }
+    }
+    return BoilaPgDescBuf { srv: srv2, buf: buf }
 }

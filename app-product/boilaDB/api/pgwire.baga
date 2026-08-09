@@ -314,12 +314,11 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                             running = false
                         }
                     } else {
-                        if m.typ == 68 {                      // 'D' Describe
-                            // P5 без metadata cache: NoData за stmt/portal
-                            let w = pgw_write(fd, pgw_no_data())?
-                            if w != 0 {
-                                running = false
-                            }
+                        if m.typ == 68 {                      // 'D' Describe (W5)
+                            let dbuf = boila_pg_describe_buf(pack, srv2, sp.db, sp.stmts, sp.portals, m.body)?
+                            srv2 = dbuf.srv
+                            let w = pgw_write(fd, dbuf.buf)?
+                            if w != 0 { running = false }
                         } else {
                             if m.typ == 69 {                  // 'E' Execute
                                 let pn = pgw_cstr_read(m.body, 0)

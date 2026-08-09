@@ -132,8 +132,9 @@
   bench/boila/pgwire_smoke.baga.
 - **W2 (post-P11):** prepared SELECT AST по stmt име — Parse кешира sel
   с `$N` slots; Bind попълва; Execute без re-parse (DML params = text).
-- Ревизии (честно): concurrency residual (W1/P11); Describe → NoData
-  (W5), OID-ите са 25 (W3), без SCRAM/TLS (W6).
+- **W5/W3 (post-P11):** Describe metadata + typed OIDs; Execute OIDs
+  residual text.
+- Ревизии (честно): concurrency residual (W1/P11); без SCRAM/TLS (W6).
 
 ## P7 — fts/ модал
 - Реализирано: `fts/tokenizer.baga` (ASCII case folding, UTF-8 едно към
