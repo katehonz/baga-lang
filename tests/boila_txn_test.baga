@@ -205,6 +205,32 @@ fn main() -> i64 !IO !Time !Par {
     srv = t5.srv
     check(fails, "txn_upd_del_commit", t5.ok == 1)
 
+    // --- T5: CREATE TABLE in txn rolls back ---
+    let ct1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = ct1.srv
+    let ct2 = boila_server_exec(srv, "boila", "CREATE TABLE t5tmp (id BIGINT, PRIMARY KEY (id))")?
+    srv = ct2.srv
+    check(fails, "t5_create_in_txn", ct2.ok == 1)
+    let ct3 = boila_server_exec(srv, "boila", "INSERT INTO t5tmp (id) VALUES (1)")?
+    srv = ct3.srv
+    check(fails, "t5_insert_ok", ct3.ok == 1)
+    let ct4 = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = ct4.srv
+    check(fails, "t5_rollback", ct4.ok == 1)
+    let ct5 = boila_server_exec(srv, "boila", "SELECT id FROM t5tmp WHERE id = 1")?
+    srv = ct5.srv
+    check(fails, "t5_gone", ct5.ok == 0 && ct5.state == "42P01")
+    // CREATE + COMMIT persists
+    let ct6 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = ct6.srv
+    let ct7 = boila_server_exec(srv, "boila", "CREATE TABLE t5ok (id BIGINT, PRIMARY KEY (id))")?
+    srv = ct7.srv
+    let ct8 = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = ct8.srv
+    let ct9 = boila_server_exec(srv, "boila", "INSERT INTO t5ok (id) VALUES (9)")?
+    srv = ct9.srv
+    check(fails, "t5_commit_ok", ct8.ok == 1 && ct9.ok == 1)
+
     // --- T6: txn buffer limit ---
     let wempty: Vec<BoilaTxnWrite> = vec_new()
     let mut lim = BoilaTxn { active: 1, read_only: 0, snapshot_lsn: 0, db: "boila", writes: wempty, max_writes: 2 }

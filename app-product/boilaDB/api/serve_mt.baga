@@ -280,7 +280,7 @@ fn boila_mt_exec_sel(pack: i64, txn: BoilaTxn, db: str, sel: BoilaSel) -> BoilaS
     if g.ok == 0 {
         return boila_srv_out_fail(boila_mt_seed_srv(), txn, g.err, g.state)
     }
-    let ct = boila_cat_by_name(g.store, sel.table)?
+    let ct = boila_cat_by_name_txn(g.store, txn, sel.table)?
     let mut s = ct.s
     if ct.ok == 0 {
         boila_mt_checkin(pack, db, s)?

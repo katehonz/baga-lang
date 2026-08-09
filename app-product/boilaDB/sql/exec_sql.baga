@@ -107,7 +107,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         if ps.ok == 0 {
             return boila_sql_fail(s, txn, pc, ps.err, ps.state)
         }
-        let ct = boila_cat_by_name(s, ps.sel.table)?
+        let ct = boila_cat_by_name_txn(s, txn, ps.sel.table)?
         s = ct.s
         if ct.ok == 0 {
             return boila_sql_fail(s, txn, pc, ct.err, ct.state)
@@ -139,17 +139,33 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
     if tok_kw(t0, "create") == 1 {
         let t1 = vec_get(lx.toks, 1)
         if tok_kw(t1, "table") == 1 {
-            if txn.active == 1 {
-                return boila_sql_fail(s, txn, pc, "CREATE TABLE извън транзакционния буфер в P4 (gaps T5)", "0A000")
-            }
             let pc2 = boila_parse_create(lx)
             if pc2.ok == 0 {
                 return boila_sql_fail(s, txn, pc, pc2.err, pc2.state)
             }
-            let cr = boila_cat_create(s, pc2.create)?
+            // T5: CREATE TABLE през txn buffer (rollback-able)
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let cr = boila_cat_create_txn(s, txn, pc2.create)?
             s = cr.s
+            txn = cr.txn
             if cr.ok == 0 {
+                if was_active == 0 {
+                    txn = boila_txn_rollback(txn)
+                }
                 return boila_sql_fail(s, txn, pc, cr.err, cr.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 {
+                    return boila_sql_fail(s, txn, pc, c.err, c.state)
+                }
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
         }
@@ -158,7 +174,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             if p.ok == 0 {
                 return boila_sql_fail(s, txn, pc, p.err, p.state)
             }
-            let ct = boila_cat_by_name(s, p.ix.table)?
+            let ct = boila_cat_by_name_txn(s, txn, p.ix.table)?
             s = ct.s
             if ct.ok == 0 {
                 return boila_sql_fail(s, txn, pc, ct.err, ct.state)
@@ -209,7 +225,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             if p.ok == 0 {
                 return boila_sql_fail(s, txn, pc, p.err, p.state)
             }
-            let ct = boila_cat_by_name(s, p.table)?
+            let ct = boila_cat_by_name_txn(s, txn, p.table)?
             s = ct.s
             if ct.ok == 0 {
                 return boila_sql_fail(s, txn, pc, ct.err, ct.state)
@@ -242,7 +258,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             if p.ok == 0 {
                 return boila_sql_fail(s, txn, pc, p.err, p.state)
             }
-            let ct = boila_cat_by_name(s, p.ix.table)?
+            let ct = boila_cat_by_name_txn(s, txn, p.ix.table)?
             s = ct.s
             if ct.ok == 0 {
                 return boila_sql_fail(s, txn, pc, ct.err, ct.state)
@@ -277,7 +293,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         if p.ok == 0 {
             return boila_sql_fail(s, txn, pc, p.err, p.state)
         }
-        let ct = boila_cat_by_name(s, p.ins.table)?
+        let ct = boila_cat_by_name_txn(s, txn, p.ins.table)?
         s = ct.s
         if ct.ok == 0 {
             return boila_sql_fail(s, txn, pc, ct.err, ct.state)
@@ -311,7 +327,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         if p.ok == 0 {
             return boila_sql_fail(s, txn, pc, p.err, p.state)
         }
-        let ct = boila_cat_by_name(s, p.upd.table)?
+        let ct = boila_cat_by_name_txn(s, txn, p.upd.table)?
         s = ct.s
         if ct.ok == 0 {
             return boila_sql_fail(s, txn, pc, ct.err, ct.state)
@@ -344,7 +360,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         if p.ok == 0 {
             return boila_sql_fail(s, txn, pc, p.err, p.state)
         }
-        let ct = boila_cat_by_name(s, p.del.table)?
+        let ct = boila_cat_by_name_txn(s, txn, p.del.table)?
         s = ct.s
         if ct.ok == 0 {
             return boila_sql_fail(s, txn, pc, ct.err, ct.state)

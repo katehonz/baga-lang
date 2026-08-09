@@ -166,7 +166,7 @@ fn boila_pg_try_sel(sql: str) -> BoilaPgStmt {
 
 // Run bound SELECT on a store (catalog resolve each Execute).
 fn boila_pg_exec_sel(s: BoilaStore, txn: BoilaTxn, sel: BoilaSel) -> BoilaExec !IO !Time !Par {
-    let ct = boila_cat_by_name(s, sel.table)?
+    let ct = boila_cat_by_name_txn(s, txn, sel.table)?
     s = ct.s
     if ct.ok == 0 {
         return boila_exec_fail(s, txn, ct.err, ct.state)
@@ -200,7 +200,7 @@ fn boila_pg_sel_meta(s: BoilaStore, sel: BoilaSel) -> BoilaPgMeta !IO !Time !Par
     if sel.has_join == 1 || sel.has_group == 1 {
         return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }
     }
-    let ct = boila_cat_by_name(s, sel.table)?
+    let ct = boila_cat_by_name_txn(s, txn, sel.table)?
     s = ct.s
     if ct.ok == 0 {
         return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }

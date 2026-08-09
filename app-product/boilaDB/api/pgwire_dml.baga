@@ -75,7 +75,7 @@ fn boila_pg_bind_del(del: BoilaDel, vals: Vec<str>, nulls: Vec<i64>) -> BoilaDel
 }
 
 fn boila_pg_run_del(s: BoilaStore, txn: BoilaTxn, db: str, del: BoilaDel) -> BoilaSqlOut !IO !Time !Par {
-    let ct = boila_cat_by_name(s, del.table)?
+    let ct = boila_cat_by_name_txn(s, txn, del.table)?
     s = ct.s
     if ct.ok == 0 {
         return boila_sql_fail(s, txn, boila_pc_new(), ct.err, ct.state)
@@ -136,7 +136,7 @@ fn boila_mt_exec_del(pack: i64, txn: BoilaTxn, db: str, del: BoilaDel) -> BoilaS
 
 // Run INSERT with auto-commit if needed (same as exec_sql insert path).
 fn boila_pg_run_ins(s: BoilaStore, txn: BoilaTxn, db: str, ins: BoilaIns) -> BoilaSqlOut !IO !Time !Par {
-    let ct = boila_cat_by_name(s, ins.table)?
+    let ct = boila_cat_by_name_txn(s, txn, ins.table)?
     s = ct.s
     if ct.ok == 0 {
         return boila_sql_fail(s, txn, boila_pc_new(), ct.err, ct.state)
@@ -166,7 +166,7 @@ fn boila_pg_run_ins(s: BoilaStore, txn: BoilaTxn, db: str, ins: BoilaIns) -> Boi
 }
 
 fn boila_pg_run_upd(s: BoilaStore, txn: BoilaTxn, db: str, upd: BoilaUpd) -> BoilaSqlOut !IO !Time !Par {
-    let ct = boila_cat_by_name(s, upd.table)?
+    let ct = boila_cat_by_name_txn(s, txn, upd.table)?
     s = ct.s
     if ct.ok == 0 {
         return boila_sql_fail(s, txn, boila_pc_new(), ct.err, ct.state)

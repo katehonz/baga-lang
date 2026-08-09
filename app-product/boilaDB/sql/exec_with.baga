@@ -28,7 +28,7 @@ fn boila_with_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaW
 }
 
 fn boila_exec_with(s: BoilaStore, txn: BoilaTxn, w: BoilaWith) -> BoilaWithOut !IO !Time !Par {
-    let ct = boila_cat_by_name(s, w.edge_table)?
+    let ct = boila_cat_by_name_txn(s, txn, w.edge_table)?
     s = ct.s
     if ct.ok == 0 {
         return boila_with_fail(s, txn, ct.err, ct.state)

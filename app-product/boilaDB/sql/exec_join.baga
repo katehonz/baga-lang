@@ -105,7 +105,7 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
     if lidx < 0 {
         return boila_join_fail(s, txn, concat("JOIN колона '", concat(sel.join_lcol, "' не съществува в лявата таблица")), "42703")
     }
-    let ct2 = boila_cat_by_name(s, sel.join_table)?
+    let ct2 = boila_cat_by_name_txn(s, txn, sel.join_table)?
     s = ct2.s
     if ct2.ok == 0 {
         return boila_join_fail(s, txn, ct2.err, ct2.state)
