@@ -1,0 +1,213 @@
+// boila_expr_test.baga — boilaDB Q-expr: dual-expression projection
+// items (arith, ||, cmp, CASE, nested fns) over real tables.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_str(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        return int_to_str(v.i)
+    }
+    if v.tag == boila_v_bool() {
+        if v.i == 0 { return "f" }
+        return "t"
+    }
+    if v.tag == boila_v_null() {
+        return "null"
+    }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_expr_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_expr_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE u (id BIGINT, name TEXT, nick TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let s0 = boila_server_exec(srv, "boila", "INSERT INTO u (id, name, nick) VALUES (1, 'alice', 'al'), (2, 'bob', NULL), (3, 'carol', 'cc'), (4, 'bob', NULL), (5, '  pad  ', NULL)")?
+    srv = s0.srv
+    check(fails, "seed", s0.ok == 1 && s0.id == 5)
+
+    // --- arithmetic + precedence + parens + unary minus ---
+    let a1 = boila_server_exec(srv, "boila", "SELECT id + 1, id * 2, id - 1, id / 2 FROM u WHERE id = 5")?
+    srv = a1.srv
+    check(fails, "arith", a1.ok == 1 && row_str(vec_get(a1.res.rows, 0), 0) == "6" && row_str(vec_get(a1.res.rows, 0), 1) == "10" && row_str(vec_get(a1.res.rows, 0), 2) == "4" && row_str(vec_get(a1.res.rows, 0), 3) == "2")
+    check(fails, "arith_tags", vec_get(a1.res.tags, 0) == boila_v_i64())
+    let a2 = boila_server_exec(srv, "boila", "SELECT id + 2 * 3 FROM u WHERE id = 1")?
+    srv = a2.srv
+    check(fails, "precedence", a2.ok == 1 && row_str(vec_get(a2.res.rows, 0), 0) == "7")
+    let a3 = boila_server_exec(srv, "boila", "SELECT (id + 2) * 3 FROM u WHERE id = 1")?
+    srv = a3.srv
+    check(fails, "parens", a3.ok == 1 && row_str(vec_get(a3.res.rows, 0), 0) == "9")
+    let a4 = boila_server_exec(srv, "boila", "SELECT 0 - id FROM u WHERE id = 3")?
+    srv = a4.srv
+    check(fails, "neg", a4.ok == 1 && row_str(vec_get(a4.res.rows, 0), 0) == "-3")
+    let a5 = boila_server_exec(srv, "boila", "SELECT id + NULL FROM u WHERE id = 1")?
+    srv = a5.srv
+    check(fails, "null_prop", a5.ok == 1 && row_str(vec_get(a5.res.rows, 0), 0) == "null")
+    let a6 = boila_server_exec(srv, "boila", "SELECT 1 + 2 FROM u WHERE id = 1")?
+    srv = a6.srv
+    check(fails, "const_expr", a6.ok == 1 && row_str(vec_get(a6.res.rows, 0), 0) == "3")
+
+    // --- concat ---
+    let s1 = boila_server_exec(srv, "boila", "SELECT name || '!' FROM u WHERE id = 2")?
+    srv = s1.srv
+    check(fails, "concat_lit", s1.ok == 1 && row_str(vec_get(s1.res.rows, 0), 0) == "bob!")
+    let s2 = boila_server_exec(srv, "boila", "SELECT name || nick FROM u WHERE id = 1")?
+    srv = s2.srv
+    check(fails, "concat_cols", s2.ok == 1 && row_str(vec_get(s2.res.rows, 0), 0) == "aliceal")
+    let s3 = boila_server_exec(srv, "boila", "SELECT name || nick FROM u WHERE id = 2")?
+    srv = s3.srv
+    check(fails, "concat_null", s3.ok == 1 && row_str(vec_get(s3.res.rows, 0), 0) == "null")
+
+    // --- comparisons / predicates as projection ---
+    let p1 = boila_server_exec(srv, "boila", "SELECT id > 2 FROM u WHERE id = 3")?
+    srv = p1.srv
+    check(fails, "cmp_gt", p1.ok == 1 && row_str(vec_get(p1.res.rows, 0), 0) == "t" && vec_get(p1.res.tags, 0) == boila_v_bool())
+    let p2 = boila_server_exec(srv, "boila", "SELECT id BETWEEN 1 AND 2 FROM u WHERE id = 2")?
+    srv = p2.srv
+    check(fails, "between", p2.ok == 1 && row_str(vec_get(p2.res.rows, 0), 0) == "t")
+    let p3 = boila_server_exec(srv, "boila", "SELECT id IN (1, 3) FROM u WHERE id = 1")?
+    srv = p3.srv
+    check(fails, "in_list", p3.ok == 1 && row_str(vec_get(p3.res.rows, 0), 0) == "t")
+    let p4 = boila_server_exec(srv, "boila", "SELECT nick IS NULL FROM u WHERE id = 2")?
+    srv = p4.srv
+    check(fails, "is_null", p4.ok == 1 && row_str(vec_get(p4.res.rows, 0), 0) == "t")
+    let p5 = boila_server_exec(srv, "boila", "SELECT name LIKE 'a%' FROM u WHERE id = 1")?
+    srv = p5.srv
+    check(fails, "like_pred", p5.ok == 1 && row_str(vec_get(p5.res.rows, 0), 0) == "t")
+
+    // --- CASE ---
+    let cs1 = boila_server_exec(srv, "boila", "SELECT CASE WHEN id > 2 THEN 'big' ELSE 'small' END FROM u WHERE id = 3")?
+    srv = cs1.srv
+    check(fails, "case_searched", cs1.ok == 1 && row_str(vec_get(cs1.res.rows, 0), 0) == "big")
+    let cs2 = boila_server_exec(srv, "boila", "SELECT CASE id WHEN 1 THEN 'one' ELSE 'x' END FROM u WHERE id = 1")?
+    srv = cs2.srv
+    check(fails, "case_simple", cs2.ok == 1 && row_str(vec_get(cs2.res.rows, 0), 0) == "one")
+
+    // --- nested fns with expression args (sfn fallback → expr) ---
+    let n1 = boila_server_exec(srv, "boila", "SELECT upper(name || '!') FROM u WHERE id = 2")?
+    srv = n1.srv
+    check(fails, "fn_of_expr", n1.ok == 1 && row_str(vec_get(n1.res.rows, 0), 0) == "BOB!")
+    let n2 = boila_server_exec(srv, "boila", "SELECT coalesce(nick, name || '?') FROM u WHERE id = 2")?
+    srv = n2.srv
+    check(fails, "coalesce_expr", n2.ok == 1 && row_str(vec_get(n2.res.rows, 0), 0) == "bob?")
+
+    // --- CAST ---
+    let k1 = boila_server_exec(srv, "boila", "SELECT CAST(id AS text), id::text FROM u WHERE id = 1")?
+    srv = k1.srv
+    check(fails, "cast", k1.ok == 1 && row_str(vec_get(k1.res.rows, 0), 0) == "1" && row_str(vec_get(k1.res.rows, 0), 1) == "1")
+
+    // --- output names: ?column? default, AS alias, ORDER BY alias ---
+    check(fails, "out_name", vec_get(a6.res.cols, 0) == "?column?")
+    let al = boila_server_exec(srv, "boila", "SELECT id + 1 AS plus FROM u WHERE id = 1")?
+    srv = al.srv
+    check(fails, "alias", al.ok == 1 && vec_get(al.res.cols, 0) == "plus" && row_str(vec_get(al.res.rows, 0), 0) == "2")
+    let ob = boila_server_exec(srv, "boila", "SELECT id, id + 10 AS p FROM u ORDER BY p DESC LIMIT 1")?
+    srv = ob.srv
+    check(fails, "order_alias", ob.ok == 1 && row_str(vec_get(ob.res.rows, 0), 0) == "5")
+
+    // --- DISTINCT / empty result / JOIN ---
+    let d1 = boila_server_exec(srv, "boila", "SELECT DISTINCT name || nick FROM u")?
+    srv = d1.srv
+    check(fails, "distinct", d1.ok == 1 && vec_len(d1.res.rows) == 3)
+    let e1 = boila_server_exec(srv, "boila", "SELECT id + 1 FROM u WHERE id = 999")?
+    srv = e1.srv
+    check(fails, "empty_type", e1.ok == 1 && vec_len(e1.res.rows) == 0 && vec_get(e1.res.tags, 0) == boila_v_i64())
+    let c2 = boila_server_exec(srv, "boila", "CREATE TABLE o (oid BIGINT, uid BIGINT, item TEXT, PRIMARY KEY (oid))")?
+    srv = c2.srv
+    let s5 = boila_server_exec(srv, "boila", "INSERT INTO o (oid, uid, item) VALUES (10, 1, 'hat')")?
+    srv = s5.srv
+    let j1 = boila_server_exec(srv, "boila", "SELECT item || '?', id + oid FROM u INNER JOIN o ON id = uid WHERE id = 1")?
+    srv = j1.srv
+    check(fails, "join_expr", j1.ok == 1 && row_str(vec_get(j1.res.rows, 0), 0) == "hat?" && row_str(vec_get(j1.res.rows, 0), 1) == "11")
+
+    // --- regression: plain sfn keeps fn-name output column ---
+    let sf = boila_server_exec(srv, "boila", "SELECT upper(name) FROM u WHERE id = 1")?
+    srv = sf.srv
+    check(fails, "sfn_unchanged", sf.ok == 1 && vec_get(sf.res.cols, 0) == "upper")
+
+    // --- errors ---
+    let x1 = boila_server_exec(srv, "boila", "SELECT 1 / 0 FROM u")?
+    srv = x1.srv
+    check(fails, "err_div0", x1.ok == 0 && x1.state == "22012")
+    let x2 = boila_server_exec(srv, "boila", "SELECT foo(id) FROM u")?
+    srv = x2.srv
+    check(fails, "err_unknown_fn", x2.ok == 0 && x2.state == "42883")
+    let x3 = boila_server_exec(srv, "boila", "SELECT nosuch + 1 FROM u")?
+    srv = x3.srv
+    check(fails, "err_bad_col", x3.ok == 0 && x3.state == "42703")
+    let x4 = boila_server_exec(srv, "boila", "SELECT id + FROM u")?
+    srv = x4.srv
+    check(fails, "err_dangling", x4.ok == 0)
+    let x5 = boila_server_exec(srv, "boila", "SELECT id + 1, count(*) FROM u")?
+    srv = x5.srv
+    check(fails, "err_expr_agg", x5.ok == 0 && x5.state == "0A000")
+    let x6 = boila_server_exec(srv, "boila", "SELECT id + 1 FROM u GROUP BY id")?
+    srv = x6.srv
+    check(fails, "err_expr_group", x6.ok == 0 && x6.state == "0A000")
+    let x7 = boila_server_exec(srv, "boila", "SELECT 1 + generate_series(1, 2) FROM u")?
+    srv = x7.srv
+    check(fails, "err_series_expr", x7.ok == 0 && x7.state == "0A000")
+
+    boila_server_close(srv)?
+
+    // --- restart ---
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let r1 = boila_server_exec(srv2, "boila", "SELECT id * 10 FROM u WHERE id = 2")?
+    srv2 = r1.srv
+    check(fails, "restart_expr", r1.ok == 1 && row_str(vec_get(r1.res.rows, 0), 0) == "20")
+    boila_server_close(srv2)?
+
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_expr_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_expr_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

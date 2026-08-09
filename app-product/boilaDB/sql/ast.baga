@@ -1,6 +1,7 @@
 // ast.baga — AST структури за BoilaSQL (P1 → P5).
 
 import "../core/value.baga"
+import "token.baga"
 
 // SELECT (P5): projection от BoilaSelItem-и (колони/агрегати), WHERE по
 // pk или индексирана колона (eq + lo + hi с AND), DISTINCT, ORDER BY/
@@ -14,7 +15,10 @@ struct BoilaSelItem {
     // sfn_cols[k] != "" → column; else literal at sfn_vals[k].
     sfn: str,
     sfn_cols: Vec<str>,
-    sfn_vals: Vec<BoilaVal>
+    sfn_vals: Vec<BoilaVal>,
+    // Q-expr: full dual-expression item (xtoks non-empty); evaluated
+    // per row with columns bound by name.
+    xtoks: Vec<Token>
 }
 
 struct BoilaSel {
@@ -81,29 +85,42 @@ struct BoilaSel {
 fn boila_sel_item_col(name: str) -> BoilaSelItem {
     let fc: Vec<str> = vec_new()
     let fv: Vec<BoilaVal> = vec_new()
-    return BoilaSelItem { agg: 0, col: name, biv: 0, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv }
+    let xt: Vec<Token> = vec_new()
+    return BoilaSelItem { agg: 0, col: name, biv: 0, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv, xtoks: xt }
 }
 
 fn boila_sel_item_agg(kind: i64, col: str) -> BoilaSelItem {
     let fc: Vec<str> = vec_new()
     let fv: Vec<BoilaVal> = vec_new()
-    return BoilaSelItem { agg: kind, col: col, biv: 0, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv }
+    let xt: Vec<Token> = vec_new()
+    return BoilaSelItem { agg: kind, col: col, biv: 0, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv, xtoks: xt }
 }
 
 fn boila_sel_item_bucket(col: str, iv: i64) -> BoilaSelItem {
     let fc: Vec<str> = vec_new()
     let fv: Vec<BoilaVal> = vec_new()
-    return BoilaSelItem { agg: 0, col: col, biv: iv, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv }
+    let xt: Vec<Token> = vec_new()
+    return BoilaSelItem { agg: 0, col: col, biv: iv, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv, xtoks: xt }
 }
 
 fn boila_sel_item_sfn(fnm: str, cols: Vec<str>, vals: Vec<BoilaVal>) -> BoilaSelItem {
-    return BoilaSelItem { agg: 0, col: "", biv: 0, alias: "", sfn: fnm, sfn_cols: cols, sfn_vals: vals }
+    let xt: Vec<Token> = vec_new()
+    return BoilaSelItem { agg: 0, col: "", biv: 0, alias: "", sfn: fnm, sfn_cols: cols, sfn_vals: vals, xtoks: xt }
 }
 
-// Output column name: alias > sfn name > time_bucket > col.
+fn boila_sel_item_expr(toks: Vec<Token>) -> BoilaSelItem {
+    let fc: Vec<str> = vec_new()
+    let fv: Vec<BoilaVal> = vec_new()
+    return BoilaSelItem { agg: 0, col: "", biv: 0, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv, xtoks: toks }
+}
+
+// Output column name: alias > expr > sfn name > time_bucket > col.
 fn boila_sel_item_out_name(it: BoilaSelItem) -> str {
     if it.alias != "" {
         return it.alias
+    }
+    if vec_len(it.xtoks) > 0 {
+        return "?column?"
     }
     if it.sfn != "" {
         return it.sfn

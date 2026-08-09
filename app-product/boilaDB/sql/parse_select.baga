@@ -302,6 +302,7 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     let mut has_agg: i64 = 0
     let mut has_plain: i64 = 0
     let mut has_sfn: i64 = 0
+    let mut has_expr: i64 = 0
     let mut plain_bucket: i64 = 1
     let mut ab_iv: i64 = 0
     let mut ab_col = ""
@@ -317,11 +318,12 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
             }
         } else { has_agg = 1 }
         if it.sfn != "" { has_sfn = 1 }
+        if vec_len(it.xtoks) > 0 { has_expr = 1 }
         k = k + 1
     }
-    // Q-sfn: scalar fns are projection-only (no agg/GROUP BY path yet)
-    if has_sfn == 1 && (has_agg == 1 || sel.has_group == 1) {
-        return boila_ps_fail("скаларна функция с агрегат/GROUP BY не се поддържа", "0A000")
+    // Q-sfn/Q-expr: fns/expressions are projection-only (no agg/GROUP BY)
+    if (has_sfn == 1 || has_expr == 1) && (has_agg == 1 || sel.has_group == 1) {
+        return boila_ps_fail("скаларна функция/израз с агрегат/GROUP BY не се поддържа", "0A000")
     }
     // S7d: time_bucket + agg → auto GROUP BY time_bucket
     if has_agg == 1 && has_plain == 1 && sel.has_group == 0 {

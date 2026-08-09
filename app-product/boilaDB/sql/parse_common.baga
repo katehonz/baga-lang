@@ -126,8 +126,16 @@ fn boila_ps_item_alias(l: BoilaLex, item: BoilaSelItem, pos: i64) -> BoilaPsItem
 
 fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
     let t = boila_ps_tok(l, i)
+    // Q-expr: literal / paren / unary-op start → dual-expression item
+    if t.kind == tok_num() || t.kind == tok_str() || t.kind == tok_lparen() || t.kind == tok_op() || t.kind == tok_star() {
+        return boila_ps_expr_item(l, i)
+    }
     if t.kind != tok_ident() {
         return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: concat("очаквах колона в проекцията, получих '", concat(t.txt, "'")), state: "42601" }
+    }
+    // Q-expr: CASE / NOT / TRUE / FALSE / NULL start an expression
+    if tok_kw(t, "case") == 1 || tok_kw(t, "not") == 1 || tok_kw(t, "true") == 1 || tok_kw(t, "false") == 1 || tok_kw(t, "null") == 1 {
+        return boila_ps_expr_item(l, i)
     }
     // S7: time_bucket('1m', col) in SELECT list
     if t.txt == "time_bucket" {
@@ -156,9 +164,27 @@ fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
     }
     let kind = boila_ps_agg_kind(t.txt)
     if kind == 0 {
-        // Q-sfn: scalar fn call over columns/literals in projection
         if boila_ps_tok(l, i + 1).kind == tok_lparen() {
-            return boila_ps_sfn_item(l, t.txt, i)
+            // Q-sfn: scalar fn over columns/literals; on arg-shape
+            // mismatch (expression args) fall back to a full Q-expr
+            // item. Arity errors (42883) stay strict.
+            if boila_sfn_known(t.txt) == 1 {
+                let sf = boila_ps_sfn_item(l, t.txt, i)
+                if sf.ok == 1 || sf.state == "42883" {
+                    return sf
+                }
+                return boila_ps_expr_item(l, i)
+            }
+            // unknown fn(…) → 42883 (CAST is an evaluator special form)
+            if t.txt != "cast" {
+                return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: concat(concat("непозната функция '", t.txt), "()"), state: "42883" }
+            }
+            return boila_ps_expr_item(l, i)
+        }
+        // Q-expr: ident followed by operator / predicate keyword
+        let nx = boila_ps_tok(l, i + 1)
+        if nx.kind == tok_op() || nx.kind == tok_star() || boila_ps_is_pred_kw(nx) == 1 {
+            return boila_ps_expr_item(l, i)
         }
         return boila_ps_item_alias(l, boila_sel_item_col(t.txt), i + 1)
     }
@@ -260,4 +286,80 @@ fn boila_ps_sfn_arity(fnm: str, n: i64) -> i64 {
     }
     if n >= 1 { return 1 }
     return 0
+}
+
+// Q-expr: predicate keywords that turn `col …` into an expression item.
+fn boila_ps_is_pred_kw(t: Token) -> i64 {
+    if t.kind != tok_ident() {
+        return 0
+    }
+    if tok_kw(t, "like") == 1 || tok_kw(t, "ilike") == 1 || tok_kw(t, "between") == 1 || tok_kw(t, "in") == 1 || tok_kw(t, "is") == 1 || tok_kw(t, "not") == 1 {
+        return 1
+    }
+    return 0
+}
+
+// Q-expr: keywords that continue an expression (not bare aliases).
+fn boila_ps_expr_cont_kw(t: Token) -> i64 {
+    if tok_kw(t, "and") == 1 || tok_kw(t, "or") == 1 || tok_kw(t, "not") == 1 || tok_kw(t, "like") == 1 || tok_kw(t, "ilike") == 1 || tok_kw(t, "between") == 1 || tok_kw(t, "in") == 1 || tok_kw(t, "is") == 1 || tok_kw(t, "escape") == 1 || tok_kw(t, "then") == 1 || tok_kw(t, "when") == 1 || tok_kw(t, "else") == 1 || tok_kw(t, "end") == 1 || tok_kw(t, "case") == 1 {
+        return 1
+    }
+    return 0
+}
+
+// Q-expr: capture a dual-expression token span as a projection item.
+// Ends at top-level comma / clause keyword / AS / bare alias / ; / EOF.
+fn boila_ps_expr_item(l: BoilaLex, i: i64) -> BoilaPsItem {
+    let xtoks: Vec<Token> = vec_new()
+    let mut j = i
+    let mut depth: i64 = 0
+    let mut prev_term: i64 = 0
+    let mut more = true
+    while more {
+        let tj = boila_ps_tok(l, j)
+        if tj.kind == tok_eof() || tj.kind == tok_semi() {
+            more = false
+        } else {
+            if depth == 0 && tj.kind == tok_comma() {
+                more = false
+            } else {
+                if depth == 0 && tj.kind == tok_rparen() {
+                    more = false
+                } else {
+                    if depth == 0 && (tok_kw(tj, "as") == 1 || boila_ps_is_clause_kw(tj) == 1) {
+                        more = false
+                    } else {
+                        if depth == 0 && prev_term == 1 && tj.kind == tok_ident() && boila_ps_expr_cont_kw(tj) == 0 {
+                            more = false   // bare alias
+                        } else {
+                            if tj.kind == tok_lparen() { depth = depth + 1 }
+                            if tj.kind == tok_rparen() { depth = depth - 1 }
+                            vec_push(xtoks, tj)
+                            prev_term = 0
+                            if tj.kind == tok_ident() || tj.kind == tok_num() || tj.kind == tok_str() || tj.kind == tok_rparen() {
+                                prev_term = 1
+                            }
+                            // operand-expecting keywords keep the expr open
+                            if tj.kind == tok_ident() && boila_ps_expr_cont_kw(tj) == 1 && tok_kw(tj, "end") != 1 {
+                                prev_term = 0
+                            }
+                            j = j + 1
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if vec_len(xtoks) == 0 {
+        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах израз в проекцията", state: "42601" }
+    }
+    let mut g: i64 = 0
+    while g < vec_len(xtoks) {
+        let tg = vec_get(xtoks, g)
+        if tg.kind == tok_ident() && tg.txt == "generate_series" {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "generate_series е само за dual (без FROM)", state: "0A000" }
+        }
+        g = g + 1
+    }
+    return boila_ps_item_alias(l, boila_sel_item_expr(xtoks), j)
 }

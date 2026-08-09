@@ -78,6 +78,23 @@ T = транзакции, W = wire protocol, F = FTS.
   referenced a never-landed `boila_http_auth_ok` (suite failed at
   compile since W6c); now exercises the real `boila_http_auth(srv,
   guc, req)` trust path.
+- **P11-23 — (FIXED) dual-expression projections (Q-expr).**
+  `SELECT id + 1, name || '!', CASE … END, upper(name || '!') FROM t` —
+  projection items carry a token span (`BoilaSelItem.xtoks`), evaluated
+  per row by the dual recursive evaluator with columns bound by name
+  (`boila_expr_eval`); NULL-bound probe (`boila_expr_probe`) at setup
+  gives early errors + static output type (`boila_expr_type_guess`
+  fallback when the probe yields NULL); PG Describe metadata in
+  pgwire_prep. Full dual grammar: arith (*/ over +-), `||`, parens,
+  unary `-`, cmp/BETWEEN/IN/IS [NOT] NULL/LIKE/IS DISTINCT FROM,
+  AND/OR/NOT, CASE searched+simple, CAST/`::`, nested fn calls with
+  expression args (sfn fast path falls back on arg-shape mismatch;
+  arity errors stay 42883). Output name `?column?` unless aliased;
+  ORDER BY on alias. 37-check boila_expr_test. Residual: session fns
+  (current_database/current_setting) run with empty db/guc in table
+  exprs — dual-only; no expr in WHERE/GROUP BY/agg projections yet
+  (0A000); no floats; bare alias right after an expr is scanned
+  greedily (AS always works).
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 
