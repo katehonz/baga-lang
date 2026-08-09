@@ -13,9 +13,7 @@ import "std/str/str.baga"
 import "std/time/time.baga"
 // cmp: arith [BETWEEN|IN|cmpop …]
 fn boila_dual_tok(lx: BoilaLex, i: i64) -> Token {
-    if i >= vec_len(lx.toks) {
-        return token_new(tok_eof(), "")
-    }
+    if i >= vec_len(lx.toks) { return token_new(tok_eof(), "") }
     return vec_get(lx.toks, i)
 }
 fn boila_dual_parse_primary(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
@@ -261,7 +259,14 @@ fn boila_dual_parse_cmp(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind:
     if pk.mode >= 7 && pk.mode <= 10 {
         let pat = boila_dual_parse_arith(lx, j, db, guc, bind)?
         if pat.ok == 0 { return pat }
-        return boila_dual_like(left.val, pat.val, pk.mode - 6, pat.pos)
+        let mut esc = ""
+        let mut epos = pat.pos
+        if tok_kw(boila_dual_tok(lx, epos), "escape") == 1 {
+            let et = boila_dual_tok(lx, epos + 1)
+            if et.kind != tok_str() || len(et.txt) != 1 { return boila_dual_fail_ex(epos, "ESCAPE очаква един знак", "42601") }
+            esc = et.txt; epos = epos + 2
+        }
+        return boila_dual_like(left.val, pat.val, pk.mode - 6, esc, epos)
     }
     let mut more = true
     while more {

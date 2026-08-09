@@ -15,6 +15,7 @@ import "../core/row.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 import "std/crypto/ct.baga"
+import "std/crypto/hmac.baga"
 
 fn boila_priv_connect() -> i64 { return 1 }
 fn boila_priv_select() -> i64 { return 2 }
@@ -43,8 +44,12 @@ fn boila_acl_grant_pk(user: str, db: str, table: str) -> bytes {
     return bytes_of_str(concat(concat(concat(concat("a|", user), "|"), db), concat("|", table)))
 }
 
-// Lightweight salted hash (hex). Residual: not scrypt/bcrypt — enough for v1 ACL.
+// h2: HMAC-SHA256 (preferred). h1: legacy djb2 for old rows.
 fn boila_acl_hash_pw(pw: str) -> str {
+    return concat("h2:", hmac_sha256_hex("boila$pw$v2", pw))
+}
+
+fn boila_acl_hash_pw_h1(pw: str) -> str {
     let mut h: i64 = 5381
     let salt = "boila$pw$v1"
     let mut i: i64 = 0
@@ -57,9 +62,22 @@ fn boila_acl_hash_pw(pw: str) -> str {
         h = ((h * 33) + char_at(pw, i)) & 2147483647
         i = i + 1
     }
-    // mix length
     h = ((h * 33) + len(pw)) & 2147483647
     return concat("h1:", int_to_str(h))
+}
+
+fn boila_acl_pw_ok(stored: str, pw: str) -> i64 {
+    if str_starts_with(stored, "h2:") {
+        if ct_eq(stored, boila_acl_hash_pw(pw)) { return 1 }
+        return 0
+    }
+    if str_starts_with(stored, "h1:") {
+        if ct_eq(stored, boila_acl_hash_pw_h1(pw)) { return 1 }
+        return 0
+    }
+    // bare legacy
+    if ct_eq(stored, boila_acl_hash_pw_h1(pw)) { return 1 }
+    return 0
 }
 
 fn boila_acl_user_get(s: BoilaStore, name: str) -> BoilaAclRes !IO !Time !Par {
@@ -154,9 +172,12 @@ fn boila_acl_auth(s: BoilaStore, name: str, pw: str) -> BoilaAclRes !IO !Time !P
     if g.ok == 0 {
         return BoilaAclRes { s: s, ok: 0, err: "password authentication failed", state: "28P01", super: 0, hash: "" }
     }
-    let want = boila_acl_hash_pw(pw)
-    if ct_eq(want, g.hash) == false {
+    if boila_acl_pw_ok(g.hash, pw) == 0 {
         return BoilaAclRes { s: s, ok: 0, err: "password authentication failed", state: "28P01", super: 0, hash: "" }
+    }
+    // upgrade h1 → h2 on successful login
+    if str_starts_with(g.hash, "h2:") == false {
+        s = boila_acl_user_put(s, name, g.super, boila_acl_hash_pw(pw))?
     }
     return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: g.super, hash: "" }
 }

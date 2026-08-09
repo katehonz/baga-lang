@@ -64,7 +64,7 @@ fn boila_row_pass_filters(row: Vec<BoilaVal>, t: BoilaTable, sel: BoilaSel) -> i
         if v.tag == boila_v_str() { s = str_of_bytes(v.b) }
         let mut ic: i64 = 0
         if sel.has_like == 2 || sel.has_like == 4 { ic = 1 }
-        let m = boila_like_match(s, sel.like_pat, ic)
+        let m = boila_like_match_esc(s, sel.like_pat, ic, sel.like_esc)
         if sel.has_like <= 2 && m == 0 { return 0 }
         if sel.has_like >= 3 && m == 1 { return 0 }
     }

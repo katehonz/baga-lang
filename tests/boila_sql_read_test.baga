@@ -287,6 +287,17 @@ fn main() -> i64 !IO !Time !Par {
     let dlk = boila_server_exec(srv, "boila", "SELECT 'abc' LIKE 'a%', 'Ab' ILIKE 'a%', 'x' NOT LIKE 'y%', NULL IS NULL, 1 IS NOT NULL")?
     srv = dlk.srv
     check(fails, "dual_like_null", dlk.ok == 1 && row_str(vec_get(dlk.res.rows, 0), 0) == "t" && row_str(vec_get(dlk.res.rows, 0), 1) == "t" && row_str(vec_get(dlk.res.rows, 0), 2) == "t" && row_str(vec_get(dlk.res.rows, 0), 3) == "t" && row_str(vec_get(dlk.res.rows, 0), 4) == "t")
+    // LIKE ESCAPE: \% is literal %
+    let dle = boila_server_exec(srv, "boila", "SELECT 'a%b' LIKE 'a\\%b' ESCAPE '\\', 'a%b' LIKE 'a%b' ESCAPE '\\', 'axb' LIKE 'a_b' ESCAPE '\\', 'a_b' LIKE 'a\\_b' ESCAPE '\\'")?
+    srv = dle.srv
+    check(fails, "dual_like_escape", dle.ok == 1 && row_str(vec_get(dle.res.rows, 0), 0) == "t" && row_str(vec_get(dle.res.rows, 0), 1) == "t" && row_str(vec_get(dle.res.rows, 0), 2) == "t" && row_str(vec_get(dle.res.rows, 0), 3) == "t")
+    let dleb = boila_server_exec(srv, "boila", "SELECT '100%' LIKE '100!%' ESCAPE '!'")?
+    srv = dleb.srv
+    check(fails, "dual_like_escape_bang", dleb.ok == 1 && row_str(vec_get(dleb.res.rows, 0), 0) == "t")
+    // table LIKE ESCAPE
+    let tlk = boila_server_exec(srv, "boila", "SELECT id FROM users WHERE name LIKE '%\\%%' ESCAPE '\\'")?
+    srv = tlk.srv
+    check(fails, "table_like_escape_ok", tlk.ok == 1)
     let dpad = boila_server_exec(srv, "boila", "SELECT repeat('ab', 3), lpad('x', 4, '0'), rpad('x', 4, '0'), sign(0 - 3), sign(5)")?
     srv = dpad.srv
     check(fails, "dual_pad_sign", dpad.ok == 1 && row_str(vec_get(dpad.res.rows, 0), 0) == "ababab" && row_str(vec_get(dpad.res.rows, 0), 1) == "000x" && row_str(vec_get(dpad.res.rows, 0), 2) == "x000" && row_str(vec_get(dpad.res.rows, 0), 3) == "-1" && row_str(vec_get(dpad.res.rows, 0), 4) == "1")

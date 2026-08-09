@@ -66,6 +66,15 @@ fn boila_parse_where(l: BoilaLex, sel: BoilaSel, i: i64) -> BoilaParseWhere {
             sel.has_like = lm
             sel.like_col = col.txt
             sel.like_pat = lit.txt
+            sel.like_esc = ""
+            if tok_kw(boila_ps_tok(l, i), "escape") == 1 {
+                let es = boila_ps_tok(l, i + 1)
+                if es.kind != tok_str() || len(es.txt) != 1 {
+                    return boila_pw_fail(sel, i, "ESCAPE очаква един знак", "42601")
+                }
+                sel.like_esc = es.txt
+                i = i + 2
+            }
             if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
         } else {
         if tok_kw(boila_ps_tok(l, i), "is") == 1 {

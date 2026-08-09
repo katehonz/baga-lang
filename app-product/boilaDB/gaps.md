@@ -43,8 +43,8 @@ T = транзакции, W = wire protocol, F = FTS.
   key swap); `RENAME [COLUMN] a TO b` (schema only, positional data).
   kind=22.
 - **P11-13 — (FIXED) ALTER TABLE DROP COLUMN.** Last non-PK only
-  (positional rows). Blocked if secondary/FTS/HNSW/GRAPH on col
-  (2BP01). kind=22.
+  (positional rows). CASCADE drops secondary/FTS/HNSW on col; GRAPH
+  still 2BP01. kind=22.
 - **P11-14 — (FIXED) SHOW TABLES / SHOW INDEX[ES] FROM t.** Catalog
   list (n| / x| + FTS/HNSW/GRAPH). GUC SHOW unchanged.
 - **P11-15 — (FIXED) SHOW COLUMNS / DESCRIBE / DESC.** column_name,
@@ -148,8 +148,7 @@ T = транзакции, W = wire protocol, F = FTS.
   SELECT/INSERT/UPDATE/DELETE/CREATE/DROP/ALTER/CONNECT/ALL on TABLE/`*`/
   DATABASE. Meta `u|`/`a|`. Empty catalog = open. PG: user+pw or token.
   HTTP: Basic user:pass + Bearer/X-Boila-Token. FNS_MAX raised 1024→2048.
-  Residual: no SCRAM/TLS; pw hash is lightweight (not bcrypt); SET ROLE
-  without re-auth (local).
+  Residual: no SCRAM/TLS; SET ROLE without pw only for superuser.
 - **W7 — (FIXED) SET/SHOW/RESET/DISCARD session GUC.** SET name {TO|=}
   value → store in `srv.guc` (ST) / `BoilaPgSess.guc` (PG) /
   HTTP-MT `sess_guc` (`http_guc.baga` + keepalive). SHOW reads map then
@@ -177,7 +176,7 @@ T = транзакции, W = wire protocol, F = FTS.
   length=bytes; upper ASCII-only; no INTERSECT/EXCEPT ALL;
   series cap 100k; one ORDER col; VALUES cols columnN; unknown fn → 42883.
 - **Q-like — (FIXED) WHERE col [NOT] LIKE|ILIKE 'pat'.** `%`/`_`;
-  ILIKE fold; NOT LIKE/ILIKE; post-filter. Residual: no ESCAPE; no
+  ILIKE fold; NOT LIKE/ILIKE; ESCAPE 'c'; post-filter. Residual: no
   index acceleration; one LIKE per query.
 - **Q-between/IN — (FIXED).** `col [NOT] BETWEEN lo AND hi` → lo/hi
   (PK early-stop; NOT BETWEEN = full scan+invert). `col IN|NOT IN`;

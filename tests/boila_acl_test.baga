@@ -63,7 +63,11 @@ fn main() -> i64 !IO !Time !Par {
     srv = i0.srv
     check(fails, "open_insert", i0.ok == 1)
 
-    let s1 = exec(srv, "SET ROLE admin")?
+    // open mode must use PASSWORD to assume a role
+    let s0 = exec(srv, "SET ROLE admin")?
+    srv = s0.srv
+    check(fails, "set_role_needs_pw", s0.ok == 0 && s0.state == "42501")
+    let s1 = exec(srv, "SET ROLE admin PASSWORD 'secret'")?
     srv = s1.srv
     check(fails, "set_role_admin", s1.ok == 1)
 
@@ -79,9 +83,20 @@ fn main() -> i64 !IO !Time !Par {
     srv = g1.srv
     check(fails, "grant_select", g1.ok == 1 && g1.kind == 29)
 
+    // super may switch without password
     let s2 = exec(srv, "SET ROLE app")?
     srv = s2.srv
-    check(fails, "set_role_app", s2.ok == 1)
+    check(fails, "set_role_app_as_super", s2.ok == 1)
+    // non-super needs password to become admin
+    let s2b = exec(srv, "SET ROLE admin")?
+    srv = s2b.srv
+    check(fails, "app_to_admin_denied", s2b.ok == 0 && s2b.state == "42501")
+    let s2c = exec(srv, "SET ROLE admin PASSWORD 'secret'")?
+    srv = s2c.srv
+    check(fails, "app_to_admin_pw", s2c.ok == 1)
+    let s2d = exec(srv, "SET ROLE app PASSWORD 'app'")?
+    srv = s2d.srv
+    check(fails, "set_role_app", s2d.ok == 1)
 
     let q1 = exec(srv, "SELECT * FROM t")?
     srv = q1.srv
@@ -91,7 +106,7 @@ fn main() -> i64 !IO !Time !Par {
     srv = q2.srv
     check(fails, "app_insert_denied", q2.ok == 0 && q2.state == "42501")
 
-    let s3 = exec(srv, "SET ROLE admin")?
+    let s3 = exec(srv, "SET ROLE admin PASSWORD 'secret'")?
     srv = s3.srv
     let g2 = exec(srv, "GRANT INSERT ON t TO app")?
     srv = g2.srv
@@ -103,7 +118,7 @@ fn main() -> i64 !IO !Time !Par {
     srv = q3.srv
     check(fails, "app_insert_ok", q3.ok == 1)
 
-    let s5 = exec(srv, "SET ROLE admin")?
+    let s5 = exec(srv, "SET ROLE admin PASSWORD 'secret'")?
     srv = s5.srv
     let rv = exec(srv, "REVOKE INSERT ON t FROM app")?
     srv = rv.srv
@@ -115,7 +130,7 @@ fn main() -> i64 !IO !Time !Par {
     srv = q4.srv
     check(fails, "app_insert_revoked", q4.ok == 0 && q4.state == "42501")
 
-    let s7 = exec(srv, "SET ROLE admin")?
+    let s7 = exec(srv, "SET ROLE admin PASSWORD 'secret'")?
     srv = s7.srv
     let g3 = exec(srv, "GRANT ALL ON DATABASE boila TO app")?
     srv = g3.srv
@@ -127,7 +142,7 @@ fn main() -> i64 !IO !Time !Par {
     srv = q5.srv
     check(fails, "app_db_all", q5.ok == 1)
 
-    let s9 = exec(srv, "SET ROLE admin")?
+    let s9 = exec(srv, "SET ROLE admin PASSWORD 'secret'")?
     srv = s9.srv
     let d1 = exec(srv, "DROP USER app")?
     srv = d1.srv
@@ -150,7 +165,7 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "set_role_none", sn.ok == 1)
 
     // SHOW USERS / GRANTS
-    let s10 = exec(srv, "SET ROLE admin")?
+    let s10 = exec(srv, "SET ROLE admin PASSWORD 'newsecret'")?
     srv = s10.srv
     let su = exec(srv, "SHOW USERS")?
     srv = su.srv

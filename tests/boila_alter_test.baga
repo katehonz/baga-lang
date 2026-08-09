@@ -154,17 +154,15 @@ fn main() -> i64 !IO !Time !Par {
     srv2 = dc4.srv
     check(fails, "drop_miss_42703", dc4.ok == 0 && dc4.state == "42703")
 
-    // index blocks drop
+    // index on column is CASCADE-dropped with column
     let x1 = exec(srv2, "CREATE INDEX age_ix ON t (age)")?
     srv2 = x1.srv
     let dc5 = exec(srv2, "ALTER TABLE t DROP COLUMN age")?
     srv2 = dc5.srv
-    check(fails, "drop_with_ix_2BP01", dc5.ok == 0 && dc5.state == "2BP01")
+    check(fails, "drop_cascades_ix", dc5.ok == 1)
     let xd = exec(srv2, "DROP INDEX age_ix ON t")?
     srv2 = xd.srv
-    let dc6 = exec(srv2, "ALTER TABLE t DROP age")?
-    srv2 = dc6.srv
-    check(fails, "drop_after_ix", xd.ok == 1 && dc6.ok == 1)
+    check(fails, "ix_gone", xd.ok == 0 && xd.state == "42704")
     let s6 = exec(srv2, "SELECT * FROM t WHERE id = 3")?
     srv2 = s6.srv
     check(fails, "two_cols_left", s6.ok == 1 && vec_len(s6.res.cols) == 2)

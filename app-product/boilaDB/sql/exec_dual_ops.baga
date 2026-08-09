@@ -320,8 +320,8 @@ fn boila_dual_peek_pred(lx: BoilaLex, j: i64) -> BoilaDualPeek {
     }
     return BoilaDualPeek { mode: 0, pos: j }
 }
-// LIKE mode: 1 LIKE 2 ILIKE 3 NOT LIKE 4 NOT ILIKE
-fn boila_dual_like(v: BoilaVal, pat: BoilaVal, mode: i64, pos: i64) -> BoilaDualExpr {
+// LIKE mode: 1 LIKE 2 ILIKE 3 NOT LIKE 4 NOT ILIKE; esc "" = none
+fn boila_dual_like(v: BoilaVal, pat: BoilaVal, mode: i64, esc: str, pos: i64) -> BoilaDualExpr {
     if v.tag == boila_v_null() || pat.tag == boila_v_null() {
         return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
     }
@@ -331,7 +331,7 @@ fn boila_dual_like(v: BoilaVal, pat: BoilaVal, mode: i64, pos: i64) -> BoilaDual
     if pat.tag == boila_v_str() { p = str_of_bytes(pat.b) }
     let mut ic: i64 = 0
     if mode == 2 || mode == 4 { ic = 1 }
-    let m = boila_like_match(s, p, ic)
+    let m = boila_like_match_esc(s, p, ic, esc)
     let mut r: i64 = m
     if mode >= 3 {
         r = 1 - m

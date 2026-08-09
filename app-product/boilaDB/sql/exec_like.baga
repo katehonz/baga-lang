@@ -1,20 +1,31 @@
-// exec_like.baga — LIKE / ILIKE matcher (% and _; Q-like).
+// exec_like.baga — LIKE / ILIKE matcher (% _ + optional ESCAPE).
 import "lexer.baga"
 import "std/str/str.baga"
 
-// Match s against pat. icase=1 → fold both via boila_fold_lower.
-// Returns 1 match, 0 no.
+// esc: empty = no escape; else first char is escape (escapes %, _, and itself).
 fn boila_like_match(s: str, pat: str, icase: i64) -> i64 {
+    return boila_like_match_esc(s, pat, icase, "")
+}
+
+fn boila_like_match_esc(s: str, pat: str, icase: i64, esc: str) -> i64 {
     let mut a = s
     let mut p = pat
     if icase == 1 {
         a = boila_fold_lower(s)
         p = boila_fold_lower(pat)
+        // escape char is case-sensitive as written; fold only if single letter
+        if len(esc) == 1 {
+            esc = boila_fold_lower(esc)
+        }
     }
-    return boila_like_rec(a, 0, p, 0)
+    let mut ec: i64 = 0 - 1
+    if len(esc) >= 1 {
+        ec = char_at(esc, 0)
+    }
+    return boila_like_rec(a, 0, p, 0, ec)
 }
 
-fn boila_like_rec(s: str, si: i64, p: str, pi: i64) -> i64 {
+fn boila_like_rec(s: str, si: i64, p: str, pi: i64, esc: i64) -> i64 {
     let sn = len(s)
     let pn = len(p)
     if pi >= pn {
@@ -22,12 +33,21 @@ fn boila_like_rec(s: str, si: i64, p: str, pi: i64) -> i64 {
         return 0
     }
     let pc = char_at(p, pi)
+    // escape: next char is literal
+    if esc >= 0 && pc == esc {
+        if pi + 1 >= pn {
+            // trailing escape → no match (invalid pattern)
+            return 0
+        }
+        if si >= sn { return 0 }
+        if char_at(s, si) != char_at(p, pi + 1) { return 0 }
+        return boila_like_rec(s, si + 1, p, pi + 2, esc)
+    }
     // %
     if pc == 37 {
-        // greedy backtrack: try match rest at each s position
         let mut k = si
         while k <= sn {
-            if boila_like_rec(s, k, p, pi + 1) == 1 {
+            if boila_like_rec(s, k, p, pi + 1, esc) == 1 {
                 return 1
             }
             k = k + 1
@@ -39,10 +59,10 @@ fn boila_like_rec(s: str, si: i64, p: str, pi: i64) -> i64 {
     }
     // _
     if pc == 95 {
-        return boila_like_rec(s, si + 1, p, pi + 1)
+        return boila_like_rec(s, si + 1, p, pi + 1, esc)
     }
     if char_at(s, si) != pc {
         return 0
     }
-    return boila_like_rec(s, si + 1, p, pi + 1)
+    return boila_like_rec(s, si + 1, p, pi + 1, esc)
 }

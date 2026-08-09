@@ -57,10 +57,11 @@ struct BoilaSel {
     // time_bucket (P9): GROUP BY time_bucket('1m', col)
     bucket_iv: i64,         // 0 = none; else interval seconds
     bucket_col: str,
-    // Q-like: WHERE col LIKE|ILIKE 'pat' (post-filter; % _)
+    // Q-like: WHERE col LIKE|ILIKE 'pat' [ESCAPE 'e'] (post-filter; % _)
     has_like: i64,          // 0 none, 1 LIKE, 2 ILIKE
     like_col: str,
     like_pat: str,
+    like_esc: str,          // "" = none; else single-char escape
     // Q-in: WHERE col IN|NOT IN (lit,…) — 1 IN, 2 NOT IN
     has_in: i64,
     in_col: str,
@@ -135,7 +136,7 @@ fn boila_sel_empty() -> BoilaSel {
         has_fts: 0, fts_col: "", fts_mode: 1, fts_terms: ft, fts_gaps: fg,
         has_knn: 0, knn_col: "", knn_metric: 1, knn_query: "",
         bucket_iv: 0, bucket_col: "",
-        has_like: 0, like_col: "", like_pat: "",
+        has_like: 0, like_col: "", like_pat: "", like_esc: "",
         has_in: 0, in_col: "", in_vals: iv,
         has_ne: 0, ne_col: "", pk_ne: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, ne_param: 0
     }

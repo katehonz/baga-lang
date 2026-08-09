@@ -151,8 +151,8 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
         return BoilaSrvOut { srv: r.srv, txn: txn, ok: 1, err: "", state: "", kind: 5, res: boila_result_empty(), id: 0, db: p.name }
     }
 
-    // W7b: session GUC on srv.guc (SET/SHOW/RESET/DISCARD)
-    // SET ROLE name | NONE — switch session ACL user (looks up super flag)
+    // W7b: session GUC; SET ROLE name [PASSWORD 'pw'] | NONE
+    // Superuser may switch without password; others must supply PASSWORD.
     if tok_kw(t0, "set") == 1 && vec_len(lx.toks) > 1 && tok_kw(vec_get(lx.toks, 1), "role") == 1 {
         let t2 = vec_get(lx.toks, 2)
         if tok_kw(t2, "none") == 1 {
@@ -162,14 +162,47 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
             return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 19, res: boila_result_empty(), id: 0, db: db }
         }
         if t2.kind != tok_ident() {
-            return boila_srv_out_fail(srv, txn, "SET ROLE name | NONE", "42601")
+            return boila_srv_out_fail(srv, txn, "SET ROLE name [PASSWORD '…'] | NONE", "42601")
         }
-        let ug = boila_acl_user_get(srv.meta, t2.txt)?
+        let target = t2.txt
+        let mut i: i64 = 3
+        let mut pw = ""
+        let mut has_pw: i64 = 0
+        if tok_kw(vec_get(lx.toks, i), "password") == 1 || (tok_kw(vec_get(lx.toks, i), "with") == 1 && tok_kw(vec_get(lx.toks, i + 1), "password") == 1) {
+            if tok_kw(vec_get(lx.toks, i), "with") == 1 { i = i + 1 }
+            i = i + 1
+            let pt = vec_get(lx.toks, i)
+            if pt.kind != tok_str() {
+                return boila_srv_out_fail(srv, txn, "очаквах string след PASSWORD", "42601")
+            }
+            pw = pt.txt
+            has_pw = 1
+        }
+        let cur = boila_sess_user(srv.guc)
+        let cur_sup = boila_sess_super(srv.guc)
+        // need password unless current is superuser (or open mode switching with pw)
+        if has_pw == 1 {
+            let ar = boila_acl_auth(srv.meta, target, pw)?
+            srv.meta = ar.s
+            if ar.ok == 0 {
+                return boila_srv_out_fail(srv, txn, ar.err, ar.state)
+            }
+            srv.guc = boila_sess_set_user(srv.guc, target, ar.super)
+            return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 19, res: boila_result_empty(), id: 0, db: db }
+        }
+        // no password: only superuser (or same role) may switch
+        if cur_sup == 0 && cur != target {
+            return boila_srv_out_fail(srv, txn, "SET ROLE изисква PASSWORD (или superuser)", "42501")
+        }
+        if cur_sup == 0 && cur == "" {
+            return boila_srv_out_fail(srv, txn, "SET ROLE изисква PASSWORD", "42501")
+        }
+        let ug = boila_acl_user_get(srv.meta, target)?
         srv.meta = ug.s
         if ug.ok == 0 {
             return boila_srv_out_fail(srv, txn, ug.err, ug.state)
         }
-        srv.guc = boila_sess_set_user(srv.guc, t2.txt, ug.super)
+        srv.guc = boila_sess_set_user(srv.guc, target, ug.super)
         return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 19, res: boila_result_empty(), id: 0, db: db }
     }
     if tok_kw(t0, "set") == 1 {
