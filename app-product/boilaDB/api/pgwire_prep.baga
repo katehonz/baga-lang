@@ -5,11 +5,14 @@ import "pgwire_msg.baga"
 import "../sql/lexer.baga"
 import "../sql/token.baga"
 import "../sql/parse_select.baga"
+import "../sql/parse_insert.baga"
+import "../sql/parse_dml.baga"
 import "../sql/plan_cache.baga"
 import "../sql/ast.baga"
 import "../sql/exec_select.baga"
 import "../sql/exec_scan.baga"
 import "../catalog/schema.baga"
+import "pgwire_dml.baga"
 import "../storage/shards.baga"
 import "../storage/databases.baga"
 import "../txn/mvcc.baga"
@@ -19,73 +22,97 @@ import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 import "std/net/tcp.baga"
 
+// kind: 0 text, 1 SELECT, 2 INSERT, 3 UPDATE
 struct BoilaPgStmt {
     sql: str,
-    has_sel: i64,
-    sel: BoilaSel
+    kind: i64,
+    sel: BoilaSel,
+    ins: BoilaIns,
+    upd: BoilaUpd
 }
 
 struct BoilaPgPortal {
     sql: str,
     vals: Vec<str>,
     nulls: Vec<i64>,
-    has_sel: i64,
-    sel: BoilaSel
+    kind: i64,
+    sel: BoilaSel,
+    ins: BoilaIns,
+    upd: BoilaUpd
 }
 
 fn boila_pg_stmt_text(sql: str) -> BoilaPgStmt {
-    return BoilaPgStmt { sql: sql, has_sel: 0, sel: boila_sel_empty() }
+    return BoilaPgStmt { sql: sql, kind: 0, sel: boila_sel_empty(), ins: boila_ins_empty(), upd: boila_upd_empty() }
 }
 
 fn boila_pg_portal_empty() -> BoilaPgPortal {
     let vals: Vec<str> = vec_new()
     let nulls: Vec<i64> = vec_new()
-    return BoilaPgPortal { sql: "", vals: vals, nulls: nulls, has_sel: 0, sel: boila_sel_empty() }
-}
-
-fn boila_pg_bind_val(s: str, is_null: i64) -> BoilaVal {
-    if is_null == 1 {
-        return boila_val_null()
+    return BoilaPgPortal {
+        sql: "", vals: vals, nulls: nulls, kind: 0,
+        sel: boila_sel_empty(), ins: boila_ins_empty(), upd: boila_upd_empty()
     }
-    if pgw_is_int(s) == 1 {
-        return boila_val_i64(parse_int(s))
-    }
-    return boila_val_str(s)
-}
-
-fn boila_pg_pick(vals: Vec<str>, nulls: Vec<i64>, n: i64) -> BoilaVal {
-    let idx = n - 1
-    if idx < 0 || idx >= vec_len(vals) {
-        return boila_val_null()
-    }
-    let mut isn: i64 = 0
-    if idx < vec_len(nulls) {
-        isn = vec_get(nulls, idx)
-    }
-    return boila_pg_bind_val(vec_get(vals, idx), isn)
 }
 
 fn boila_pg_bind_sel(sel: BoilaSel, vals: Vec<str>, nulls: Vec<i64>) -> BoilaSel {
     let mut s = sel
-    if s.eq_param > 0 {
-        s.pk_eq = boila_pg_pick(vals, nulls, s.eq_param)
-    }
-    if s.lo_param > 0 {
-        s.pk_lo = boila_pg_pick(vals, nulls, s.lo_param)
-    }
-    if s.hi_param > 0 {
-        s.pk_hi = boila_pg_pick(vals, nulls, s.hi_param)
-    }
+    if s.eq_param > 0 { s.pk_eq = boila_pg_pick(vals, nulls, s.eq_param) }
+    if s.lo_param > 0 { s.pk_lo = boila_pg_pick(vals, nulls, s.lo_param) }
+    if s.hi_param > 0 { s.pk_hi = boila_pg_pick(vals, nulls, s.hi_param) }
     if s.lim_param > 0 {
         let v = boila_pg_pick(vals, nulls, s.lim_param)
-        if v.tag == boila_v_i64() {
-            s.limit = v.i
-        }
+        if v.tag == boila_v_i64() { s.limit = v.i }
     }
     return s
 }
 
-// Parse-time: SELECT → has_sel=1; else text-only.
+fn boila_pg_parse_stmt(stmts: Map<str, BoilaPgStmt>, body: bytes) -> Map<str, BoilaPgStmt> {
+    let nm = pgw_cstr_read(body, 0)
+    let q = pgw_cstr_read(body, nm.pos)
+    map_set(stmts, nm.s, boila_pg_try_sel(q.s))
+    return stmts
+}
+
+fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes) -> Map<str, BoilaPgPortal> {
+    let pn = pgw_cstr_read(body, 0)
+    let sn = pgw_cstr_read(body, pn.pos)
+    let mut p = sn.pos
+    let nf = pgw_be_read(body, p, 2)
+    p = p + 2
+    if nf == 1 { p = p + 2 } else { p = p + 2 * nf }
+    let np = pgw_be_read(body, p, 2)
+    p = p + 2
+    let vals: Vec<str> = vec_new()
+    let nulls: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < np {
+        let ln = pgw_be_read(body, p, 4)
+        p = p + 4
+        if ln >= 2147483648 {
+            vec_push(vals, ""); vec_push(nulls, 1)
+        } else {
+            vec_push(vals, str_of_bytes(bytes_slice(body, p, p + ln)))
+            vec_push(nulls, 0)
+            p = p + ln
+        }
+        i = i + 1
+    }
+    let mut portal = boila_pg_portal_empty()
+    if map_has(stmts, sn.s) == 1 {
+        let st = map_get(stmts, sn.s)
+        portal.sql = st.sql
+        portal.vals = vals
+        portal.nulls = nulls
+        portal.kind = st.kind
+        if st.kind == 1 { portal.sel = boila_pg_bind_sel(st.sel, vals, nulls) }
+        if st.kind == 2 { portal.ins = boila_pg_bind_ins(st.ins, vals, nulls) }
+        if st.kind == 3 { portal.upd = boila_pg_bind_upd(st.upd, vals, nulls) }
+    }
+    map_set(portals, pn.s, portal)
+    return portals
+}
+
+// Parse-time: SELECT/INSERT/UPDATE AST; else text-only.
 fn boila_pg_try_sel(sql: str) -> BoilaPgStmt {
     let lx = boila_lex(sql)
     if lx.err != "" {
@@ -94,14 +121,29 @@ fn boila_pg_try_sel(sql: str) -> BoilaPgStmt {
     if vec_len(lx.toks) < 1 {
         return boila_pg_stmt_text(sql)
     }
-    if tok_kw(vec_get(lx.toks, 0), "select") != 1 {
-        return boila_pg_stmt_text(sql)
+    let t0 = vec_get(lx.toks, 0)
+    if tok_kw(t0, "select") == 1 {
+        let ps = boila_parse_select(lx)
+        if ps.ok == 0 {
+            return boila_pg_stmt_text(sql)
+        }
+        return BoilaPgStmt { sql: sql, kind: 1, sel: ps.sel, ins: boila_ins_empty(), upd: boila_upd_empty() }
     }
-    let ps = boila_parse_select(lx)
-    if ps.ok == 0 {
-        return boila_pg_stmt_text(sql)
+    if tok_kw(t0, "insert") == 1 {
+        let pi = boila_parse_insert(lx)
+        if pi.ok == 0 {
+            return boila_pg_stmt_text(sql)
+        }
+        return BoilaPgStmt { sql: sql, kind: 2, sel: boila_sel_empty(), ins: pi.ins, upd: boila_upd_empty() }
     }
-    return BoilaPgStmt { sql: sql, has_sel: 1, sel: ps.sel }
+    if tok_kw(t0, "update") == 1 {
+        let pu = boila_parse_update(lx)
+        if pu.ok == 0 {
+            return boila_pg_stmt_text(sql)
+        }
+        return BoilaPgStmt { sql: sql, kind: 3, sel: boila_sel_empty(), ins: boila_ins_empty(), upd: pu.upd }
+    }
+    return boila_pg_stmt_text(sql)
 }
 
 // Run bound SELECT on a store (catalog resolve each Execute).
@@ -191,7 +233,7 @@ fn boila_pg_desc_buf(m: BoilaPgMeta, is_stmt: i64) -> bytes {
     return buf
 }
 
-// Resolve Describe body → (has_sel, sel, is_stmt).
+// Resolve Describe body → (kind==1 sel, is_stmt).
 struct BoilaPgDescReq {
     is_stmt: i64,
     has_sel: i64,
@@ -208,20 +250,17 @@ fn boila_pg_desc_req(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPort
     if is_stmt == 1 {
         if map_has(stmts, nm.s) == 1 {
             let st = map_get(stmts, nm.s)
-            has = st.has_sel
-            sel = st.sel
+            if st.kind == 1 { has = 1; sel = st.sel }
         }
     } else {
         if map_has(portals, nm.s) == 1 {
             let p = map_get(portals, nm.s)
-            has = p.has_sel
-            sel = p.sel
+            if p.kind == 1 { has = 1; sel = p.sel }
         }
     }
     return BoilaPgDescReq { is_stmt: is_stmt, has_sel: has, sel: sel }
 }
 
-// Describe bytes given a store (caller checks store in/out).
 fn boila_pg_describe_on(s: BoilaStore, req: BoilaPgDescReq) -> BoilaPgMeta !IO !Time !Par {
     if req.has_sel == 0 {
         let cols: Vec<str> = vec_new()

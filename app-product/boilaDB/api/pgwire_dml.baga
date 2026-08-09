@@ -1,0 +1,186 @@
+// pgwire_dml.baga — W2 prepared INSERT/UPDATE AST bind + exec.
+
+import "pgwire_enc.baga"
+import "../sql/lexer.baga"
+import "../sql/token.baga"
+import "../sql/parse_insert.baga"
+import "../sql/parse_dml.baga"
+import "../sql/ast.baga"
+import "../sql/exec_dml.baga"
+import "../sql/exec_modify.baga"
+import "../sql/exec_scan.baga"
+import "../sql/exec_server.baga"
+import "../catalog/schema.baga"
+import "../storage/shards.baga"
+import "../storage/databases.baga"
+import "../txn/mvcc.baga"
+import "../core/value.baga"
+import "serve_mt.baga"
+import "std/str/str.baga"
+
+fn boila_pg_bind_one(v: BoilaVal, vals: Vec<str>, nulls: Vec<i64>) -> BoilaVal {
+    if boila_is_param(v) == 1 {
+        return boila_pg_pick(vals, nulls, v.i)
+    }
+    return v
+}
+
+fn boila_pg_bind_ins(ins: BoilaIns, vals: Vec<str>, nulls: Vec<i64>) -> BoilaIns {
+    let mut out = ins
+    let nrows: Vec<Vec<BoilaVal>> = vec_new()
+    let mut r: i64 = 0
+    while r < vec_len(ins.rows) {
+        let src = vec_get(ins.rows, r)
+        let row: Vec<BoilaVal> = vec_new()
+        let mut c: i64 = 0
+        while c < vec_len(src) {
+            vec_push(row, boila_pg_bind_one(vec_get(src, c), vals, nulls))
+            c = c + 1
+        }
+        vec_push(nrows, row)
+        r = r + 1
+    }
+    out.rows = nrows
+    let ocv: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(ins.oc_vals) {
+        vec_push(ocv, boila_pg_bind_one(vec_get(ins.oc_vals, i), vals, nulls))
+        i = i + 1
+    }
+    out.oc_vals = ocv
+    return out
+}
+
+fn boila_pg_bind_upd(upd: BoilaUpd, vals: Vec<str>, nulls: Vec<i64>) -> BoilaUpd {
+    let mut out = upd
+    let sv: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(upd.set_vals) {
+        vec_push(sv, boila_pg_bind_one(vec_get(upd.set_vals, i), vals, nulls))
+        i = i + 1
+    }
+    out.set_vals = sv
+    out.pk_eq = boila_pg_bind_one(upd.pk_eq, vals, nulls)
+    out.pk_lo = boila_pg_bind_one(upd.pk_lo, vals, nulls)
+    out.pk_hi = boila_pg_bind_one(upd.pk_hi, vals, nulls)
+    return out
+}
+
+// Run INSERT with auto-commit if needed (same as exec_sql insert path).
+fn boila_pg_run_ins(s: BoilaStore, txn: BoilaTxn, db: str, ins: BoilaIns) -> BoilaSqlOut !IO !Time !Par {
+    let ct = boila_cat_by_name(s, ins.table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return boila_sql_fail(s, txn, boila_pc_new(), ct.err, ct.state)
+    }
+    let was_active = txn.active
+    if was_active == 0 {
+        let b = boila_txn_begin(s, txn, 0, db)?
+        s = b.s
+        txn = b.txn
+    }
+    let ex = boila_exec_insert(s, txn, ct.table, ins)?
+    s = ex.s
+    txn = ex.txn
+    if ex.ok == 0 {
+        txn = boila_txn_rollback(txn)
+        return boila_sql_fail(s, txn, boila_pc_new(), ex.err, ex.state)
+    }
+    if was_active == 0 {
+        let c = boila_txn_commit(s, txn)?
+        s = c.s
+        txn = c.txn
+        if c.ok == 0 {
+            return boila_sql_fail(s, txn, boila_pc_new(), c.err, c.state)
+        }
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_new(), ok: 1, err: "", state: "", kind: 6, res: ex.res, id: ex.affected }
+}
+
+fn boila_pg_run_upd(s: BoilaStore, txn: BoilaTxn, db: str, upd: BoilaUpd) -> BoilaSqlOut !IO !Time !Par {
+    let ct = boila_cat_by_name(s, upd.table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return boila_sql_fail(s, txn, boila_pc_new(), ct.err, ct.state)
+    }
+    let was_active = txn.active
+    if was_active == 0 {
+        let b = boila_txn_begin(s, txn, 0, db)?
+        s = b.s
+        txn = b.txn
+    }
+    let ex = boila_exec_update(s, txn, ct.table, upd)?
+    s = ex.s
+    txn = ex.txn
+    if ex.ok == 0 {
+        txn = boila_txn_rollback(txn)
+        return boila_sql_fail(s, txn, boila_pc_new(), ex.err, ex.state)
+    }
+    if was_active == 0 {
+        let c = boila_txn_commit(s, txn)?
+        s = c.s
+        txn = c.txn
+        if c.ok == 0 {
+            return boila_sql_fail(s, txn, boila_pc_new(), c.err, c.state)
+        }
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_new(), ok: 1, err: "", state: "", kind: 7, res: ex.res, id: ex.affected }
+}
+
+fn boila_server_exec_ins(srv: BoilaServer, txn: BoilaTxn, db: str, ins: BoilaIns) -> BoilaSrvOut !IO !Time !Par {
+    if txn.active == 1 && txn.db != db {
+        return boila_srv_out_fail(srv, txn, "транзакция, започната в друга база — COMMIT/ROLLBACK първо", "0A000")
+    }
+    let g = boila_srv_db(srv, db)?
+    if g.ok == 0 {
+        return boila_srv_out_fail(g.srv, txn, g.err, g.state)
+    }
+    let out = boila_pg_run_ins(g.store, txn, db, ins)?
+    let srv2 = boila_srv_store_putback(g.srv, db, out.s)
+    return BoilaSrvOut {
+        srv: srv2, txn: out.txn, ok: out.ok, err: out.err, state: out.state,
+        kind: out.kind, res: out.res, id: out.id, db: db
+    }
+}
+
+fn boila_server_exec_upd(srv: BoilaServer, txn: BoilaTxn, db: str, upd: BoilaUpd) -> BoilaSrvOut !IO !Time !Par {
+    if txn.active == 1 && txn.db != db {
+        return boila_srv_out_fail(srv, txn, "транзакция, започната в друга база — COMMIT/ROLLBACK първо", "0A000")
+    }
+    let g = boila_srv_db(srv, db)?
+    if g.ok == 0 {
+        return boila_srv_out_fail(g.srv, txn, g.err, g.state)
+    }
+    let out = boila_pg_run_upd(g.store, txn, db, upd)?
+    let srv2 = boila_srv_store_putback(g.srv, db, out.s)
+    return BoilaSrvOut {
+        srv: srv2, txn: out.txn, ok: out.ok, err: out.err, state: out.state,
+        kind: out.kind, res: out.res, id: out.id, db: db
+    }
+}
+
+fn boila_mt_exec_ins(pack: i64, txn: BoilaTxn, db: str, ins: BoilaIns) -> BoilaSrvOut !IO !Time !Par {
+    let g = boila_mt_checkout(pack, db)?
+    if g.ok == 0 {
+        return boila_srv_out_fail(boila_mt_seed_srv(), txn, g.err, g.state)
+    }
+    let out = boila_pg_run_ins(g.store, txn, db, ins)?
+    boila_mt_checkin(pack, db, out.s)?
+    return BoilaSrvOut {
+        srv: boila_mt_seed_srv(), txn: out.txn, ok: out.ok, err: out.err,
+        state: out.state, kind: out.kind, res: out.res, id: out.id, db: db
+    }
+}
+
+fn boila_mt_exec_upd(pack: i64, txn: BoilaTxn, db: str, upd: BoilaUpd) -> BoilaSrvOut !IO !Time !Par {
+    let g = boila_mt_checkout(pack, db)?
+    if g.ok == 0 {
+        return boila_srv_out_fail(boila_mt_seed_srv(), txn, g.err, g.state)
+    }
+    let out = boila_pg_run_upd(g.store, txn, db, upd)?
+    boila_mt_checkin(pack, db, out.s)?
+    return BoilaSrvOut {
+        srv: boila_mt_seed_srv(), txn: out.txn, ok: out.ok, err: out.err,
+        state: out.state, kind: out.kind, res: out.res, id: out.id, db: db
+    }
+}

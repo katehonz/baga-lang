@@ -95,12 +95,9 @@ T = транзакции, W = wire protocol, F = FTS.
   scan, no all_lock). Shared per-db plan cache (pc_mu off — baga mutex
   owner-flag races under fan-out; puts rare after warmup). Schema DDL
   serial per-db. Residual: SELECT vs DROP race.
-- **W2 — (FIXED) prepared SELECT AST по stmt име.** Parse →
-  `boila_pg_try_sel` (lex+parse, param slots `eq/lo/hi/lim_param`);
-  Bind → `boila_pg_bind_sel`; Execute → `exec_select` без re-parse.
-  Non-SELECT / parse fail → text subst fallback. Residual: INSERT/
-  UPDATE/DELETE params still text; FTS/kNN `$N` в tsquery/vector lit
-  не са AST slots.
+- **W2 — (FIXED) prepared SELECT/INSERT/UPDATE AST.** kind 1/2/3;
+  `$N` = tag 100 placeholder; Bind fills; Execute без re-parse.
+  DELETE / FTS/kNN `$N` lit / parse fail → text subst fallback.
 - **W3 — (FIXED) typed OIDs on Describe + Execute.** `BoilaResult.tags`
   + `pgw_oid_of` (bool=16 int8=20 text=25 bytea=17 json=114 tstz=1184).
   RowDescription на Execute ползва `pgw_row_desc_typed`.

@@ -4,6 +4,7 @@
 import "pgwire_msg.baga"
 import "pgwire_enc.baga"
 import "pgwire_prep.baga"
+import "pgwire_dml.baga"
 import "../storage/databases.baga"
 import "../sql/exec_server.baga"
 import "../sql/exec_scan.baga"
@@ -124,58 +125,29 @@ fn pgw_run_sel(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sel: Boi
     return pgw_write_out(fd, srv, sess, out, send_ready)?
 }
 
-// Parse: 'P' stmt\0 sql\0 int16 nparams + OIDs. W2: try SELECT AST cache.
+fn pgw_run_ins(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, ins: BoilaIns, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    if pack == 0 {
+        return pgw_write_out(fd, srv, sess, boila_server_exec_ins(srv, sess.txn, sess.db, ins)?, send_ready)?
+    }
+    return pgw_write_out(fd, srv, sess, boila_mt_exec_ins(pack, sess.txn, sess.db, ins)?, send_ready)?
+}
+
+fn pgw_run_upd(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, upd: BoilaUpd, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    if pack == 0 {
+        return pgw_write_out(fd, srv, sess, boila_server_exec_upd(srv, sess.txn, sess.db, upd)?, send_ready)?
+    }
+    return pgw_write_out(fd, srv, sess, boila_mt_exec_upd(pack, sess.txn, sess.db, upd)?, send_ready)?
+}
+
 fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
-    let nm = pgw_cstr_read(body, 0)
-    let q = pgw_cstr_read(body, nm.pos)
     let mut s2 = sess
-    map_set(s2.stmts, nm.s, boila_pg_try_sel(q.s))
+    s2.stmts = boila_pg_parse_stmt(s2.stmts, body)
     return s2
 }
 
-// Bind: 'B' portal\0 stmt\0 formats + values + result formats.
 fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
-    let pn = pgw_cstr_read(body, 0)
-    let sn = pgw_cstr_read(body, pn.pos)
-    let mut p = sn.pos
-    let nf = pgw_be_read(body, p, 2)
-    p = p + 2
-    if nf == 1 {
-        p = p + 2
-    } else {
-        p = p + 2 * nf
-    }
-    let np = pgw_be_read(body, p, 2)
-    p = p + 2
-    let vals: Vec<str> = vec_new()
-    let nulls: Vec<i64> = vec_new()
-    let mut i: i64 = 0
-    while i < np {
-        let ln = pgw_be_read(body, p, 4)
-        p = p + 4
-        if ln >= 2147483648 {
-            vec_push(vals, "")
-            vec_push(nulls, 1)
-        } else {
-            vec_push(vals, str_of_bytes(bytes_slice(body, p, p + ln)))
-            vec_push(nulls, 0)
-            p = p + ln
-        }
-        i = i + 1
-    }
-    let mut portal = boila_pg_portal_empty()
-    if map_has(sess.stmts, sn.s) == 1 {
-        let st = map_get(sess.stmts, sn.s)
-        portal.sql = st.sql
-        portal.vals = vals
-        portal.nulls = nulls
-        if st.has_sel == 1 {
-            portal.has_sel = 1
-            portal.sel = boila_pg_bind_sel(st.sel, vals, nulls)
-        }
-    }
     let mut s2 = sess
-    map_set(s2.portals, pn.s, portal)
+    s2.portals = boila_pg_bind_portal(s2.stmts, s2.portals, body)
     return s2
 }
 
@@ -325,11 +297,19 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                                 let mut ro = BoilaPgOut { srv: srv2, sess: sp, ok: 1, sql_err: 0, err: "" }
                                 if map_has(sp.portals, pn.s) == 1 {
                                     let portal = map_get(sp.portals, pn.s)
-                                    if portal.has_sel == 1 {
+                                    if portal.kind == 1 {
                                         ro = pgw_run_sel(fd, pack, srv2, sp, portal.sel, 0)?
                                     } else {
-                                        let full = pgw_subst_params(portal.sql, portal.vals, portal.nulls)
-                                        ro = pgw_run_sql(fd, pack, srv2, sp, full, 0)?
+                                        if portal.kind == 2 {
+                                            ro = pgw_run_ins(fd, pack, srv2, sp, portal.ins, 0)?
+                                        } else {
+                                            if portal.kind == 3 {
+                                                ro = pgw_run_upd(fd, pack, srv2, sp, portal.upd, 0)?
+                                            } else {
+                                                let full = pgw_subst_params(portal.sql, portal.vals, portal.nulls)
+                                                ro = pgw_run_sql(fd, pack, srv2, sp, full, 0)?
+                                            }
+                                        }
                                     }
                                 } else {
                                     ro = pgw_run_sql(fd, pack, srv2, sp, "", 0)?

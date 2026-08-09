@@ -30,7 +30,7 @@ fn boila_ps_literal(l: BoilaLex, i: i64) -> BoilaLit {
         if n < 1 {
             return BoilaLit { ok: 0, v: boila_val_null(), param: 0, err: "параметър $N — N≥1", state: "42601" }
         }
-        return BoilaLit { ok: 1, v: boila_val_null(), param: n, err: "", state: "" }
+        return BoilaLit { ok: 1, v: boila_val_param(n), param: n, err: "", state: "" }
     }
     if t.kind == tok_num() {
         return BoilaLit { ok: 1, v: boila_val_i64(parse_int(t.txt)), param: 0, err: "", state: "" }

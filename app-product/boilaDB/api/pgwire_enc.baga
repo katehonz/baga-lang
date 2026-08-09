@@ -6,6 +6,29 @@ import "../sql/exec_scan.baga"
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
 
+// Bind text param → BoilaVal (W2).
+fn boila_pg_bind_val(s: str, is_null: i64) -> BoilaVal {
+    if is_null == 1 {
+        return boila_val_null()
+    }
+    if pgw_is_int(s) == 1 {
+        return boila_val_i64(parse_int(s))
+    }
+    return boila_val_str(s)
+}
+
+fn boila_pg_pick(vals: Vec<str>, nulls: Vec<i64>, n: i64) -> BoilaVal {
+    let idx = n - 1
+    if idx < 0 || idx >= vec_len(vals) {
+        return boila_val_null()
+    }
+    let mut isn: i64 = 0
+    if idx < vec_len(nulls) {
+        isn = vec_get(nulls, idx)
+    }
+    return boila_pg_bind_val(vec_get(vals, idx), isn)
+}
+
 // Дали низ е цяло число (по избор водещ '-').
 fn pgw_is_int(s: str) -> i64 {
     let n = len(s)

@@ -55,7 +55,7 @@ fn boila_row_copy(row: Vec<BoilaVal>) -> Vec<BoilaVal> {
 // Дали литерал съответства на типа на колона (null минава навсякъде).
 // VECTOR: приема tag=vector или str '[…]'.
 fn boila_dml_val_ok(typ: i64, v: BoilaVal) -> i64 {
-    if v.tag == boila_v_null() {
+    if v.tag == boila_v_null() || boila_is_param(v) == 1 {
         return 1
     }
     if boila_is_vec_typ(typ) == 1 {

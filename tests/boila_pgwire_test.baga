@@ -4,6 +4,7 @@
 import "boilaDB/api/pgwire_enc.baga"
 import "boilaDB/api/pgwire_msg.baga"
 import "boilaDB/api/pgwire_prep.baga"
+import "boilaDB/api/pgwire_dml.baga"
 import "boilaDB/sql/ast.baga"
 import "boilaDB/storage/databases.baga"
 import "boilaDB/core/value.baga"
@@ -92,16 +93,30 @@ fn main() -> i64 !Par {
     check(fails, "frame_len", pgw_be_read(msg, 1, 4) == bytes_len(msg) - 1)
 
     // --- W2: prep AST + bind ---
-    let st = boila_pg_try_sel("SELECT * FROM t WHERE id = $1 LIMIT $2")
-    check(fails, "try_sel", st.has_sel == 1 && st.sel.eq_param == 1 && st.sel.lim_param == 2)
-    let st2 = boila_pg_try_sel("INSERT INTO t VALUES (1)")
-    check(fails, "try_non_sel", st2.has_sel == 0)
     let bv: Vec<str> = vec_new()
     vec_push(bv, "42")
     vec_push(bv, "3")
     let bn: Vec<i64> = vec_new()
     vec_push(bn, 0)
     vec_push(bn, 0)
+    let st = boila_pg_try_sel("SELECT * FROM t WHERE id = $1 LIMIT $2")
+    check(fails, "try_sel", st.kind == 1 && st.sel.eq_param == 1 && st.sel.lim_param == 2)
+    let st2 = boila_pg_try_sel("DELETE FROM t WHERE id = 1")
+    check(fails, "try_text", st2.kind == 0)
+    let sti = boila_pg_try_sel("INSERT INTO t (id, name) VALUES ($1, $2)")
+    check(fails, "try_ins", sti.kind == 2 && vec_len(sti.ins.rows) == 1)
+    let bins = boila_pg_bind_ins(sti.ins, bv, bn)
+    check(fails, "bind_ins", boila_is_param(vec_get(vec_get(sti.ins.rows, 0), 0)) == 1 && vec_get(vec_get(bins.rows, 0), 0).i == 42)
+    let stu = boila_pg_try_sel("UPDATE t SET name = $1 WHERE id = $2")
+    check(fails, "try_upd", stu.kind == 3)
+    let uv: Vec<str> = vec_new()
+    vec_push(uv, "alice")
+    vec_push(uv, "7")
+    let un: Vec<i64> = vec_new()
+    vec_push(un, 0)
+    vec_push(un, 0)
+    let bu = boila_pg_bind_upd(stu.upd, uv, un)
+    check(fails, "bind_upd", vec_get(bu.set_vals, 0).tag == boila_v_str() && bu.pk_eq.i == 7)
     let bound = boila_pg_bind_sel(st.sel, bv, bn)
     check(fails, "bind_eq", bound.pk_eq.tag == boila_v_i64() && bound.pk_eq.i == 42)
     check(fails, "bind_lim", bound.limit == 3)

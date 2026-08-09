@@ -27,6 +27,19 @@ fn boila_v_str() -> i64 { return 5 }
 fn boila_v_json() -> i64 { return 6 }
 fn boila_v_f64_gap() -> i64 { return 7 }
 // tag 8 = VECTOR — payload в b; вж. vector/distance.baga
+// tag 100 = prepared $N placeholder (W2 DML); i = 1-based param index
+fn boila_v_param() -> i64 { return 100 }
+
+fn boila_val_param(n: i64) -> BoilaVal {
+    return BoilaVal { tag: boila_v_param(), i: n, b: bytes_new(0) }
+}
+
+fn boila_is_param(v: BoilaVal) -> i64 {
+    if v.tag == boila_v_param() {
+        return 1
+    }
+    return 0
+}
 
 // 2^63 като i64 — INT64_MIN без непреставим литерал.
 fn boila_sign_bit() -> i64 {

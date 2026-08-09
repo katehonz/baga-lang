@@ -79,7 +79,7 @@ fn boila_project(row: Vec<BoilaVal>, proj: Vec<i64>) -> Vec<BoilaVal> {
 
 // Дали литералът съответства на типа на колоната (null минава).
 fn boila_pk_lit_ok(typ: i64, v: BoilaVal) -> i64 {
-    if v.tag == boila_v_null() {
+    if v.tag == boila_v_null() || boila_is_param(v) == 1 {
         return 1
     }
     if typ == boila_v_i64() || typ == boila_v_ts() {
