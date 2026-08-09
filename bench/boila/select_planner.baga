@@ -37,7 +37,7 @@ fn wipe_root(root: str) -> i64 !IO {
     return 0
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     let root = "/tmp/baga_boila_bench_p5"
     wipe_root(root)?
     let mut srv = boila_server_open(root, 2, 512, 8, 4)?

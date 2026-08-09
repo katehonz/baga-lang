@@ -14,13 +14,13 @@ fn boila_poll_new() -> BoilaPollFds {
     return BoilaPollFds { fds: vec_new() }
 }
 
-fn boila_poll_add(st: BoilaPollFds, fd: i64) -> BoilaPollFds !Net {
+fn boila_poll_add(st: BoilaPollFds, fd: i64) -> BoilaPollFds !Net !Par {
     tcp_set_nodelay(fd)?
     vec_push(st.fds, fd)
     return st
 }
 
-fn boila_poll_drop(st: BoilaPollFds, fd: i64) -> BoilaPollFds !Net !IO {
+fn boila_poll_drop(st: BoilaPollFds, fd: i64) -> BoilaPollFds !Net !IO !Par {
     tcp_close(fd)?
     let nv: Vec<i64> = vec_new()
     let mut i: i64 = 0

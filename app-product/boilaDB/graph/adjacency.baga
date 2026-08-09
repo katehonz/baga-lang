@@ -125,7 +125,7 @@ fn graph_defs_enc(defs: Vec<BoilaGraphDef>) -> bytes {
     return boila_row_enc(r)
 }
 
-fn graph_list_for_table(s: BoilaStore, table_id: i64) -> BoilaGraphList !IO !Time {
+fn graph_list_for_table(s: BoilaStore, table_id: i64) -> BoilaGraphList !IO !Time !Par {
     let defs: Vec<BoilaGraphDef> = vec_new()
     let g = boila_get(s, boila_cf_sys(), 1, graph_list_pk(table_id))?
     s = g.s
@@ -159,7 +159,7 @@ struct BoilaNbrGet {
     list: BoilaNbrList
 }
 
-fn graph_nbrs_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, key: bytes) -> BoilaNbrGet !IO !Time {
+fn graph_nbrs_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, key: bytes) -> BoilaNbrGet !IO !Time !Par {
     let bix = boila_txn_find(txn, boila_cf_graph(), table_id, key)
     if bix >= 0 {
         let w = vec_get(txn.writes, bix)
@@ -181,7 +181,7 @@ fn graph_nbrs_put(s: BoilaStore, txn: BoilaTxn, table_id: i64, key: bytes, list:
     return BoilaGraphRes { s: s, txn: w.txn, ok: w.ok, err: w.err, state: w.state, id: 0 }
 }
 
-fn graph_add_edge(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, src: bytes, dst: bytes, w: i64) -> BoilaGraphRes !IO !Time {
+fn graph_add_edge(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, src: bytes, dst: bytes, w: i64) -> BoilaGraphRes !IO !Time !Par {
     // outbound
     let og = graph_nbrs_get(s, txn, table_id, graph_out_pk(gid, src))?
     s = og.s
@@ -226,7 +226,7 @@ fn graph_pk_in(pks: Vec<bytes>, pk: bytes) -> i64 {
     return 0
 }
 
-fn graph_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, src_col: str, dst_col: str, w_col: str) -> BoilaGraphRes !IO !Time {
+fn graph_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, src_col: str, dst_col: str, w_col: str) -> BoilaGraphRes !IO !Time !Par {
     let mut src_idx: i64 = 0 - 1
     let mut dst_idx: i64 = 0 - 1
     let mut w_idx: i64 = 0 - 1

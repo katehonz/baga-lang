@@ -18,7 +18,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
     }
 }
 
-fn wipe_shard_path(prefix: str) -> i64 !IO {
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
     unlink(concat(prefix, ".wal"))?
     unlink(concat(prefix, ".manifest"))?
     unlink(concat(prefix, ".manifest.log"))?
@@ -31,7 +31,7 @@ fn wipe_shard_path(prefix: str) -> i64 !IO {
     return 0
 }
 
-fn wipe_root(root: str) -> i64 !IO {
+fn wipe_root(root: str) -> i64 !IO !Par {
     wipe_shard_path(concat(root, "/.meta"))?
     let mut i: i64 = 0
     while i < 2 {
@@ -41,7 +41,7 @@ fn wipe_root(root: str) -> i64 !IO {
     return 0
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     print("boila_index_test:")
     let fails: Vec<i64> = vec_new()
     let root = "/tmp/baga_boila_index_test"

@@ -16,7 +16,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
     }
 }
 
-fn main() -> i64 {
+fn main() -> i64 !Par {
     print("boila_pgwire_test:")
     let fails: Vec<i64> = vec_new()
 

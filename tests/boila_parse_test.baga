@@ -26,7 +26,7 @@ fn pcre(sql: str) -> BoilaParseCreate {
     return boila_parse_create(boila_lex(sql))
 }
 
-fn main() -> i64 {
+fn main() -> i64 !Par {
     print("boila_parse_test:")
     let fails: Vec<i64> = vec_new()
 

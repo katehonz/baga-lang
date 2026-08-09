@@ -22,7 +22,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
     }
 }
 
-fn wipe_shard_path(prefix: str) -> i64 !IO {
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
     unlink(concat(prefix, ".wal"))?
     unlink(concat(prefix, ".manifest"))?
     unlink(concat(prefix, ".manifest.log"))?
@@ -35,7 +35,7 @@ fn wipe_shard_path(prefix: str) -> i64 !IO {
     return 0
 }
 
-fn wipe_db(root: str, name: str, n: i64) -> i64 !IO {
+fn wipe_db(root: str, name: str, n: i64) -> i64 !IO !Par {
     let base = concat(concat(root, "/"), concat(name, ".db"))
     if n <= 1 {
         wipe_shard_path(base)?
@@ -49,7 +49,7 @@ fn wipe_db(root: str, name: str, n: i64) -> i64 !IO {
     return 0
 }
 
-fn wipe_root(root: str, dbs: Vec<str>) -> i64 !IO {
+fn wipe_root(root: str, dbs: Vec<str>) -> i64 !IO !Par {
     wipe_shard_path(concat(root, "/.meta"))?
     let mut i: i64 = 0
     while i < vec_len(dbs) {
@@ -70,7 +70,7 @@ fn row_str(row: Vec<BoilaVal>, ix: i64) -> str {
     return "?"
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     print("boila_multidb_test:")
     let fails: Vec<i64> = vec_new()
     let root = "/tmp/baga_boila_multidb_test"

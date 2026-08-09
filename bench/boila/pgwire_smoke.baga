@@ -11,7 +11,7 @@ fn expect(fails: Vec<i64>, name: str, ok: bool) {
     }
 }
 
-fn main() -> i64 !Net !IO !Random {
+fn main() -> i64 !Net !IO !Random !Par {
     let fails: Vec<i64> = vec_new()
     let mut conn = pg_connect("127.0.0.1", 6575, "boila", "", "boila")?
     expect(fails, "connect", conn.ok == 1)

@@ -19,7 +19,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
 }
 
 // Чисти shard пътища dir[.s{i}] — wal/manifest/sst/bloom за gens 1..30.
-fn wipe_shards(dir: str, n: i64) -> i64 !IO {
+fn wipe_shards(dir: str, n: i64) -> i64 !IO !Par {
     let mut i: i64 = 0
     while i < n {
         let mut p = dir
@@ -44,7 +44,7 @@ fn pk_of(i: i64) -> bytes {
     return boila_val_enc(boila_val_i64(i))
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     print("boila_shards_test:")
     let fails: Vec<i64> = vec_new()
     let dir = "/tmp/baga_boila_shards_test"

@@ -1,14 +1,14 @@
-// serve_mt.baga — go_bg pack: gmu + per-db mutex + live conn + per-db plan cache.
+// serve_mt.baga — go_bg pack: multi-DB + per-shard hop-less + live conn.
 //
 // pack = cell2(gmu, cell2(srv_mh, cell2(dmu_mh, cell2(live_mh, pcs_mh))))
-// live: 0=nlive 1=max_conn
-// pcs:  Map<db, BoilaPlanCache>  (per-db so parallel DBs never share a Map)
 //
-// Lock order: dmu(db) → gmu.
-//   CREATE/DROP DATABASE, USE: gmu only (registry).
-//   SQL: lock dmu; brief gmu checkout store+pc; exec WITHOUT gmu;
-//        brief gmu checkin. Different DBs run in parallel. Same-DB serial.
-// No !Par on BoilaStore (typechecker OOM) — rocksbaga R55: locks only here.
+// Locking:
+//   CREATE/DROP DATABASE, USE → gmu (registry).
+//   Schema DDL (CREATE/DROP TABLE/INDEX/…) → dmu(db) + brief gmu.
+//   Data SQL (SELECT/DML/txn) → brief gmu checkout; exec under per-shard
+//     mutexes only (same-DB parallel across shards). Fresh plan cache
+//     per request (no shared Map race). Multi-DB always parallel.
+// No !Par on BoilaStore struct.
 
 import "../storage/databases.baga"
 import "../sql/exec_server.baga"
@@ -33,7 +33,7 @@ fn boila_mt_seed_srv() -> BoilaServer {
     return BoilaServer {
         meta: boila_store_empty(), root: "", names: names, stores: stores,
         flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
-        session_txn: boila_txn_new(), pc: boila_pc_new(), ok: 0
+        session_txn: boila_txn_new(), pc: boila_pc_new(), mt: 0, ok: 0
     }
 }
 
@@ -88,7 +88,7 @@ fn boila_mt_live(pack: i64) -> i64 !Par {
     return n
 }
 
-// First two keywords, lowercased (CREATE DATABASE / DROP DATABASE / USE).
+// 1=db DDL, 2=USE, 3=schema DDL, 0=data (SELECT/DML/txn).
 fn boila_mt_kw2(sql: str) -> i64 {
     let n = len(sql)
     let mut i: i64 = 0
@@ -123,11 +123,14 @@ fn boila_mt_kw2(sql: str) -> i64 {
         }
         i = i + 1
     }
-    if (w1 == "create" || w1 == "drop") && w2 == "database" {
-        return 1
-    }
     if w1 == "use" {
         return 2
+    }
+    if w1 == "create" || w1 == "drop" {
+        if w2 == "database" {
+            return 1
+        }
+        return 3
     }
     return 0
 }
@@ -169,45 +172,73 @@ fn boila_mt_exec_reg(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut
     return out
 }
 
-// SQL path: dmu serializes same DB; gmu only for store/pc checkout+checkin.
+// Checkout store under gmu; caller holds dmu if schema_ddl==1.
+fn boila_mt_checkout(pack: i64, db: str) -> BoilaSrvDb !IO !Time !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let g = boila_srv_db(map_get(m, 0), db)?
+    map_set(m, 0, g.srv)
+    mutex_unlock(gmu)
+    return g
+}
+
+fn boila_mt_checkin(pack: i64, db: str, store: BoilaStore) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let mut srv = map_get(m, 0)
+    srv = boila_srv_store_putback(srv, db, store)
+    map_set(m, 0, srv)
+    mutex_unlock(gmu)
+    return 0
+}
+
 fn boila_mt_exec(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time !Par {
     let k = boila_mt_kw2(sql)
     if k == 1 || k == 2 {
         return boila_mt_exec_reg(pack, txn, db, sql)?
     }
 
-    let dmu = boila_mt_db_mu(pack, db)?
-    mutex_lock(dmu)
-    let gmu = boila_mt_gmu(pack)
-    mutex_lock(gmu)
-    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
-    let g = boila_srv_db(map_get(m, 0), db)?
-    map_set(m, 0, g.srv)
+    // Schema DDL: serialize per-db (catalog). Data: hop-less per-shard.
+    let mut dmu: i64 = 0
+    if k == 3 {
+        dmu = boila_mt_db_mu(pack, db)?
+        mutex_lock(dmu)
+    }
+
+    let g = boila_mt_checkout(pack, db)?
     if g.ok == 0 {
-        mutex_unlock(gmu)
-        mutex_unlock(dmu)
+        if dmu != 0 {
+            mutex_unlock(dmu)
+        }
         return boila_srv_out_fail(boila_mt_seed_srv(), txn, g.err, g.state)
     }
-    let store0 = g.store
-    let pcs: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
+
+    // Fresh pc on data path (avoid shared Map races under parallel same-DB).
+    // Schema DDL may use per-db pc (serialized by dmu).
     let mut pc = boila_pc_new()
-    if map_has(pcs, db) == 1 {
-        pc = map_get(pcs, db)
+    if k == 3 {
+        let gmu = boila_mt_gmu(pack)
+        mutex_lock(gmu)
+        let pcs: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
+        if map_has(pcs, db) == 1 {
+            pc = map_get(pcs, db)
+        }
+        mutex_unlock(gmu)
     }
-    mutex_unlock(gmu)
 
-    // --- parallel region: other DBs may run here ---
-    let out = boila_exec_sql(store0, txn, db, sql, pc)?
+    let out = boila_exec_sql(g.store, txn, db, sql, pc)?
+    boila_mt_checkin(pack, db, out.s)?
 
-    mutex_lock(gmu)
-    let m2: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
-    let mut srv2 = map_get(m2, 0)
-    srv2 = boila_srv_store_putback(srv2, db, out.s)
-    map_set(m2, 0, srv2)
-    let pcs2: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
-    map_set(pcs2, db, out.pc)
-    mutex_unlock(gmu)
-    mutex_unlock(dmu)
+    if k == 3 {
+        let gmu2 = boila_mt_gmu(pack)
+        mutex_lock(gmu2)
+        let pcs2: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
+        map_set(pcs2, db, out.pc)
+        mutex_unlock(gmu2)
+        mutex_unlock(dmu)
+    }
 
     return BoilaSrvOut {
         srv: boila_mt_seed_srv(), txn: out.txn, ok: out.ok, err: out.err,

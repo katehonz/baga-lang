@@ -50,7 +50,7 @@ fn boila_rows_json(rows: Vec<Vec<BoilaVal>>) -> str {
     return concat(out, "]")
 }
 
-fn boila_http_sql(srv: BoilaServer, req: Request) -> BoilaHttpSql !IO !Time {
+fn boila_http_sql(srv: BoilaServer, req: Request) -> BoilaHttpSql !IO !Time !Par {
     let r = boila_http_sql_tx(srv, srv.session_txn, req)?
     r.srv.session_txn = r.txn
     return r
@@ -131,7 +131,7 @@ fn boila_http_encode(out: BoilaSrvOut) -> BoilaHttpSql {
     return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body) }
 }
 
-fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !Time {
+fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !Time !Par {
     let mut db = http_query_param(req, "db")
     if db == "" {
         db = "boila"

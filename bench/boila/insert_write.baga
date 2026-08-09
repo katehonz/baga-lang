@@ -54,7 +54,7 @@ fn bench_stmt(srv: BoilaServer, tbl: str, lo: i64, n: i64) -> BoilaServer !IO !T
     return out.srv
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     let mut phase = env("BOILA_PHASE")
     if phase == "" {
         phase = "write"

@@ -35,7 +35,7 @@ fn val_rt(fails: Vec<i64>, name: str, v: BoilaVal) {
     check(fails, concat("val_rt ", name), same_tag && same_i && same_b)
 }
 
-fn main() -> i64 {
+fn main() -> i64 !Par {
     print("boila_value_test:")
     let fails: Vec<i64> = vec_new()
     let imax: i64 = 9223372036854775807

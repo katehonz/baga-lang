@@ -30,14 +30,14 @@ fn boila_srv_out_fail(srv: BoilaServer, txn: BoilaTxn, msg: str, state: str) -> 
 }
 
 // Single-thread / tests: txn lives on srv.session_txn.
-fn boila_server_exec(srv: BoilaServer, db: str, sql: str) -> BoilaSrvOut !IO !Time {
+fn boila_server_exec(srv: BoilaServer, db: str, sql: str) -> BoilaSrvOut !IO !Time !Par {
     let out = boila_server_exec_tx(srv, srv.session_txn, db, sql)?
     out.srv.session_txn = out.txn
     return out
 }
 
 // MT path: caller owns txn.
-fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time {
+fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time !Par {
     let lx = boila_lex(sql)
     if lx.err != "" {
         return boila_srv_out_fail(srv, txn, lx.err, "42601")

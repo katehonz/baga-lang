@@ -68,7 +68,7 @@ struct PgWFill {
     ok: i64
 }
 
-fn pgw_fill(r: PgWReader, n: i64) -> PgWFill !IO !Net {
+fn pgw_fill(r: PgWReader, n: i64) -> PgWFill !IO !Net !Par {
     let mut rr = r
     while bytes_len(rr.buf) - rr.pos < n {
         let chunk = tcp_read_bytes(rr.fd, 8192)?
@@ -118,7 +118,7 @@ struct PgWMsg {
     body: bytes
 }
 
-fn pgw_read_msg(r: PgWReader) -> PgWMsg !IO !Net {
+fn pgw_read_msg(r: PgWReader) -> PgWMsg !IO !Net !Par {
     let f0 = pgw_fill(r, 5)?
     if f0.ok == 0 {
         return PgWMsg { r: f0.r, ok: 0, typ: 0, body: bytes_new(0) }
@@ -149,7 +149,7 @@ struct PgWStartup {
     database: str
 }
 
-fn pgw_read_startup(r: PgWReader) -> PgWStartup !IO !Net {
+fn pgw_read_startup(r: PgWReader) -> PgWStartup !IO !Net !Par {
     let f0 = pgw_fill(r, 8)?
     if f0.ok == 0 {
         return PgWStartup { r: f0.r, ok: 0, code: 0, user: "", database: "" }

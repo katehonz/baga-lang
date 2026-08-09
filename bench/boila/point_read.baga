@@ -37,7 +37,7 @@ fn wipe_shards(dir: str, n: i64) -> i64 !IO {
     return 0
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     let dir = "/tmp/baga_boila_bench_point"
     wipe_shards(dir, 4)?
     let n: i64 = 20000

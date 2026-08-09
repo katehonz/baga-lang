@@ -16,12 +16,12 @@ struct BoilaWalk {
     dists: Vec<i64>
 }
 
-fn graph_out(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, node: bytes) -> BoilaNbrGet !IO !Time {
+fn graph_out(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, node: bytes) -> BoilaNbrGet !IO !Time !Par {
     return graph_nbrs_get(s, txn, table_id, graph_out_pk(gid, node))?
 }
 
 // BFS: start node_enc, max_depth inclusive; depths[i] за nodes[i].
-fn graph_bfs(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_depth: i64) -> BoilaWalk !IO !Time {
+fn graph_bfs(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_depth: i64) -> BoilaWalk !IO !Time !Par {
     let nodes: Vec<bytes> = vec_new()
     let depths: Vec<i64> = vec_new()
     let dists: Vec<i64> = vec_new()
@@ -56,7 +56,7 @@ fn graph_bfs(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes
 }
 
 // DFS preorder (stack).
-fn graph_dfs(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_depth: i64) -> BoilaWalk !IO !Time {
+fn graph_dfs(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_depth: i64) -> BoilaWalk !IO !Time !Par {
     let nodes: Vec<bytes> = vec_new()
     let depths: Vec<i64> = vec_new()
     let dists: Vec<i64> = vec_new()
@@ -106,7 +106,7 @@ fn graph_dfs(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes
 }
 
 // Dijkstra: non-negative weights; max_depth limits hop count (not weight).
-fn graph_dijkstra(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_hops: i64) -> BoilaWalk !IO !Time {
+fn graph_dijkstra(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, start: bytes, max_hops: i64) -> BoilaWalk !IO !Time !Par {
     let nodes: Vec<bytes> = vec_new()
     let depths: Vec<i64> = vec_new()
     let dists: Vec<i64> = vec_new()

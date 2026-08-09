@@ -18,11 +18,11 @@ Sync server: без 10k concurrent (gaps W1).
 ## Пускане
 
 ```bash
-# HTTP go_bg + per-db parallel + live conn (BOILA_MAX_CONN default 64)
+# HTTP go_bg + per-shard hop-less + multi-DB (BOILA_MAX_CONN default 64)
 ./baga -I . -I app-product app-product/boilaDB/tools/serve.baga
 # PG wire (same): BOILA_PGPORT=6575
 ./baga -I . -I app-product app-product/boilaDB/tools/serve_pg.baga
-curl localhost:6570/health   # mode=mt-perdb, live_conn
+curl localhost:6570/health   # mode=mt-shard, live_conn
 ```
 
 ## Тестове

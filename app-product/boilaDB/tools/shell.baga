@@ -12,7 +12,7 @@ import "std/io/io.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 
-fn boila_env_or(name: str, dflt: str) -> str !IO {
+fn boila_env_or(name: str, dflt: str) -> str !IO !Par {
     let v = env(name)
     if v == "" {
         return dflt
@@ -20,7 +20,7 @@ fn boila_env_or(name: str, dflt: str) -> str !IO {
     return v
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     let root = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
     let nshards = parse_int(boila_env_or("BOILA_SHARDS", "4"))
     let flush_at = parse_int(boila_env_or("BOILA_FLUSH_AT", "256"))

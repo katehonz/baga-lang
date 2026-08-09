@@ -49,7 +49,7 @@ fn boila_sql_fail(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, msg: str, st
     return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
 }
 
-fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlanCache) -> BoilaSqlOut !IO !Time {
+fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlanCache) -> BoilaSqlOut !IO !Time !Par {
     let lx = boila_lex(sql)
     if lx.err != "" {
         return boila_sql_fail(s, txn, pc, lx.err, "42601")

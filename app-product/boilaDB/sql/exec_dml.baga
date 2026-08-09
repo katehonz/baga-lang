@@ -107,7 +107,7 @@ fn boila_dml_proj(t: BoilaTable, ret_star: i64, ret_cols: Vec<str>) -> BoilaDmlP
     return BoilaDmlProj { ok: 1, err: "", state: "", proj: proj }
 }
 
-fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns) -> BoilaDml !IO !Time {
+fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns) -> BoilaDml !IO !Time !Par {
     // колони → индекси
     let cix: Vec<i64> = vec_new()
     let mut i: i64 = 0

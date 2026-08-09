@@ -10,7 +10,7 @@ import "std/net/poll.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 
-fn boila_env_or(name: str, dflt: str) -> str !IO {
+fn boila_env_or(name: str, dflt: str) -> str !IO !Par {
     let v = env(name)
     if v == "" {
         return dflt
@@ -26,7 +26,7 @@ fn boila_pg_conn_mt(ctx: i64) -> i64 !IO !Net !Time !Par {
     let seed = BoilaServer {
         meta: boila_store_empty(), root: "", names: names, stores: stores,
         flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
-        session_txn: boila_txn_new(), pc: boila_pc_new(), ok: 0
+        session_txn: boila_txn_new(), pc: boila_pc_new(), mt: 0, ok: 0
     }
     let ro = boila_pg_serve_p(fd, pack, seed)?
     boila_mt_end_conn(pack)?
@@ -42,7 +42,7 @@ fn main() -> i64 !Net !IO !Time !Par {
     let max_db = parse_int(boila_env_or("BOILA_MAX_DB", "64"))
     let max_conn = parse_int(boila_env_or("BOILA_MAX_CONN", "64"))
 
-    let srv0 = boila_server_open(root, nshards, flush_at, compact_at, max_db)?
+    let srv0 = boila_server_open_mt(root, nshards, flush_at, compact_at, max_db)?
     if srv0.ok == 0 {
         print(concat("boiladb-pg: open failed ", root))
         return 1
@@ -53,7 +53,7 @@ fn main() -> i64 !Net !IO !Time !Par {
     line = concat(line, int_to_str(port))
     line = concat(line, " (max_conn=")
     line = concat(line, int_to_str(max_conn))
-    line = concat(line, ", go_bg+per-db+live-counter)")
+    line = concat(line, ", go_bg+per-shard+multi-db)")
     print(line)
 
     let listener = tcp_listen(port)?

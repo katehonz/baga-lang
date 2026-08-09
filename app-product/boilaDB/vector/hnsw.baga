@@ -22,7 +22,7 @@ struct BoilaHnswRes {
     id: i64
 }
 
-fn hnsw_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: str, metric: i64) -> BoilaHnswRes !IO !Time {
+fn hnsw_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: str, metric: i64) -> BoilaHnswRes !IO !Time !Par {
     let mut col_idx: i64 = 0 - 1
     let mut i: i64 = 0
     while i < vec_len(t.cols) {
@@ -99,7 +99,7 @@ fn hnsw_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name:
     return BoilaHnswRes { s: s, txn: txn, ok: 1, err: "", state: "", id: next }
 }
 
-fn hnsw_index_one(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, col_idx: i64, dim: i64, metric: i64, pk: bytes, dims: Vec<f64>) -> BoilaHnswRes !IO !Time {
+fn hnsw_index_one(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, col_idx: i64, dim: i64, metric: i64, pk: bytes, dims: Vec<f64>) -> BoilaHnswRes !IO !Time !Par {
     let def = BoilaHnswDef { id: ix_id, col_idx: col_idx, name: "", dim: dim, metric: metric }
     let vm = hnsw_vm_get(s, txn, ix_id)?
     s = vm.s
@@ -189,7 +189,7 @@ fn hnsw_index_one(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, col_i
     return BoilaHnswRes { s: vm3.s, txn: vm3.txn, ok: 1, err: "", state: "", id: ix_id }
 }
 
-fn hnsw_index_doc(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, pk: bytes, v: BoilaVal) -> BoilaHnswRes !IO !Time {
+fn hnsw_index_doc(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, pk: bytes, v: BoilaVal) -> BoilaHnswRes !IO !Time !Par {
     let c = boila_vec_coerce(v, def.dim)
     if c.ok == 0 {
         return BoilaHnswRes { s: s, txn: txn, ok: 1, err: "", state: "", id: def.id }
@@ -197,7 +197,7 @@ fn hnsw_index_doc(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef
     return hnsw_index_one(s, txn, t.id, def.id, def.col_idx, def.dim, def.metric, pk, boila_vec_from_val(c.v))?
 }
 
-fn hnsw_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, pk: bytes) -> BoilaHnswRes !IO !Time {
+fn hnsw_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, pk: bytes) -> BoilaHnswRes !IO !Time !Par {
     let mut li: i64 = 0
     while li <= 4 {
         let d = boila_txn_del(s, txn, boila_cf_vec(), table_id, hnsw_nbr_pk(def.id, li, pk))

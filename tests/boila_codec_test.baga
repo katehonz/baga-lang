@@ -20,7 +20,7 @@ fn u32_rt(fails: Vec<i64>, v: i64) {
     check(fails, concat("u32_rt ", int_to_str(v)), back == v && bytes_len(b) == 4)
 }
 
-fn main() -> i64 {
+fn main() -> i64 !Par {
     print("boila_codec_test:")
     let fails: Vec<i64> = vec_new()
 

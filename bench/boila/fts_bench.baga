@@ -37,7 +37,7 @@ fn word_of(n: i64) -> str {
     return concat("w", int_to_str(n))
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     let root = "/tmp/baga_boila_fts_bench"
     let mut phase = env("FTS_BENCH_PHASE")
     if phase == "" {

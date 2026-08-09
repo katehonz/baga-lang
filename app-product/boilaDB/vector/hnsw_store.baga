@@ -130,7 +130,7 @@ fn hnsw_defs_enc(defs: Vec<BoilaHnswDef>) -> bytes {
     return boila_row_enc(r)
 }
 
-fn hnsw_list_for_table(s: BoilaStore, table_id: i64) -> BoilaHnswList !IO !Time {
+fn hnsw_list_for_table(s: BoilaStore, table_id: i64) -> BoilaHnswList !IO !Time !Par {
     let defs: Vec<BoilaHnswDef> = vec_new()
     let g = boila_get(s, boila_cf_sys(), 1, hnsw_list_pk(table_id))?
     s = g.s
@@ -158,7 +158,7 @@ fn hnsw_list_for_table(s: BoilaStore, table_id: i64) -> BoilaHnswList !IO !Time 
     return BoilaHnswList { s: s, defs: defs }
 }
 
-fn hnsw_vm_get(s: BoilaStore, txn: BoilaTxn, id: i64) -> BoilaHnswMeta !IO !Time {
+fn hnsw_vm_get(s: BoilaStore, txn: BoilaTxn, id: i64) -> BoilaHnswMeta !IO !Time !Par {
     let z = bytes_new(0)
     let bix = boila_txn_find(txn, boila_cf_sys(), 1, hnsw_vm_pk(id))
     if bix >= 0 {
@@ -201,7 +201,7 @@ fn hnsw_vm_put(s: BoilaStore, txn: BoilaTxn, id: i64, has_ep: i64, count: i64, m
     return BoilaHnswMeta { s: s, txn: w.txn, has_ep: has_ep, count: count, max_lvl: max_lvl, ep: ep }
 }
 
-fn hnsw_nbrs_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes) -> BoilaHnswNbrs !IO !Time {
+fn hnsw_nbrs_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes) -> BoilaHnswNbrs !IO !Time !Par {
     let empty: Vec<bytes> = vec_new()
     let key = hnsw_nbr_pk(ix_id, level, pk)
     let bix = boila_txn_find(txn, boila_cf_vec(), table_id, key)
@@ -233,7 +233,7 @@ struct BoilaHnswVec {
     dims: Vec<f64>
 }
 
-fn hnsw_row_vec(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx: i64, dim: i64) -> BoilaHnswVec !IO !Time {
+fn hnsw_row_vec(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx: i64, dim: i64) -> BoilaHnswVec !IO !Time !Par {
     let empty: Vec<f64> = vec_new()
     let g = boila_txn_get(s, txn, table_id, pk)?
     s = g.s

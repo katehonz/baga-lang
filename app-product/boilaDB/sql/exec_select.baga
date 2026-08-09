@@ -12,7 +12,7 @@ import "exec_join.baga"
 import "exec_sort.baga"
 import "std/str/str.baga"
 
-fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time {
+fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time !Par {
     // редове + схема
     let mut cols = t.cols
     let mut rows: Vec<Vec<BoilaVal>> = vec_new()

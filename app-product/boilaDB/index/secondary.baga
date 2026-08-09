@@ -72,7 +72,7 @@ fn boila_ix_by_col_t(t: BoilaTable, col_idx: i64) -> i64 {
 // брояч и build entries се commit-ват атомно заедно (auto-txn в exec_sql).
 // Build: pk списък през boila_txn_keys (storage + buffer), без писания
 // по време на събирането.
-fn boila_ix_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str, col_name: str) -> BoilaIxTxnRes !IO !Time {
+fn boila_ix_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str, col_name: str) -> BoilaIxTxnRes !IO !Time !Par {
     // колоната съществува ли
     let mut col_idx: i64 = 0 - 1
     let mut i: i64 = 0
@@ -208,7 +208,7 @@ fn boila_ix_del_all_txn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, row: Vec<Bo
 }
 
 // Exact lookup: всички pk-та, чиято колона има тази стойност.
-fn boila_ix_lookup(s: BoilaStore, t: BoilaTable, ix_id: i64, val: BoilaVal) -> BoilaIxLookup !IO !Time {
+fn boila_ix_lookup(s: BoilaStore, t: BoilaTable, ix_id: i64, val: BoilaVal) -> BoilaIxLookup !IO !Time !Par {
     let pks: Vec<bytes> = vec_new()
     let pref = boila_ix_lookup_prefix(ix_id, val)
     let full_pref = boila_key_row(boila_cf_index(), t.id, pref)

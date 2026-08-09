@@ -28,7 +28,7 @@ struct BoilaDmlTgts {
     pks: Vec<bytes>
 }
 
-fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, has_eq: i64, v_eq: BoilaVal, lo_col: str, has_lo: i64, v_lo: BoilaVal, hi_col: str, has_hi: i64, v_hi: BoilaVal) -> BoilaDmlTgts !IO !Time {
+fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, has_eq: i64, v_eq: BoilaVal, lo_col: str, has_lo: i64, v_lo: BoilaVal, hi_col: str, has_hi: i64, v_hi: BoilaVal) -> BoilaDmlTgts !IO !Time !Par {
     let pks: Vec<bytes> = vec_new()
     let pkcol = vec_get(t.cols, t.pk_idx)
     if has_eq == 1 {
@@ -98,7 +98,7 @@ fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, h
     return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
 }
 
-fn boila_exec_update(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, upd: BoilaUpd) -> BoilaDml !IO !Time {
+fn boila_exec_update(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, upd: BoilaUpd) -> BoilaDml !IO !Time !Par {
     let six: Vec<i64> = vec_new()
     let mut i: i64 = 0
     while i < vec_len(upd.set_cols) {
@@ -220,7 +220,7 @@ fn boila_exec_update(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, upd: BoilaUpd)
     return boila_dml_ok(s, txn, 7, affected, res)
 }
 
-fn boila_exec_delete(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, del: BoilaDel) -> BoilaDml !IO !Time {
+fn boila_exec_delete(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, del: BoilaDel) -> BoilaDml !IO !Time !Par {
     let mut res = boila_result_empty()
     if del.has_ret == 1 {
         let pj = boila_dml_proj(t, del.ret_star, del.ret_cols)

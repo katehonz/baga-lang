@@ -124,7 +124,7 @@ struct BoilaPostGet {
     tfs: Vec<i64>
 }
 
-fn fts_post_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, term: str) -> BoilaPostGet !IO !Time {
+fn fts_post_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, term: str) -> BoilaPostGet !IO !Time !Par {
     let bix = boila_txn_find(txn, boila_cf_fts(), table_id, fts_term_pk(term))
     if bix >= 0 {
         let w = vec_get(txn.writes, bix)
@@ -152,7 +152,7 @@ struct BoilaDocGet {
     terms: Vec<str>
 }
 
-fn fts_doc_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk_enc: bytes) -> BoilaDocGet !IO !Time {
+fn fts_doc_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk_enc: bytes) -> BoilaDocGet !IO !Time !Par {
     let bix = boila_txn_find(txn, boila_cf_fts(), table_id, fts_doc_pk(pk_enc))
     if bix >= 0 {
         let w = vec_get(txn.writes, bix)
@@ -177,7 +177,7 @@ struct BoilaFtsStats {
     tl: i64
 }
 
-fn fts_stats_get(s: BoilaStore, txn: BoilaTxn, fts_id: i64) -> BoilaFtsStats !IO !Time {
+fn fts_stats_get(s: BoilaStore, txn: BoilaTxn, fts_id: i64) -> BoilaFtsStats !IO !Time !Par {
     let bix = boila_txn_find(txn, boila_cf_sys(), 1, fts_stats_pk(fts_id))
     if bix >= 0 {
         let w = vec_get(txn.writes, bix)
@@ -211,7 +211,7 @@ fn fts_stats_write(s: BoilaStore, txn: BoilaTxn, fts_id: i64, nd: i64, tl: i64) 
 
 // --- index/unindex на документ ---
 
-fn fts_index_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, fts_id: i64, pk_enc: bytes, text: str) -> BoilaFtsUpd !IO !Time {
+fn fts_index_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, fts_id: i64, pk_enc: bytes, text: str) -> BoilaFtsUpd !IO !Time !Par {
     let terms = fts_tokenize(text)
     let uniq = fts_unique(terms)
     let mut tx = txn
@@ -250,7 +250,7 @@ fn fts_index_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, fts_id: i64, pk_en
     return BoilaFtsUpd { s: su.s, txn: su.txn }
 }
 
-fn fts_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, fts_id: i64, pk_enc: bytes) -> BoilaFtsUpd !IO !Time {
+fn fts_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, fts_id: i64, pk_enc: bytes) -> BoilaFtsUpd !IO !Time !Par {
     let dg = fts_doc_get(s, txn, table_id, pk_enc)?
     s = dg.s
     if dg.doclen == 0 && vec_len(dg.terms) == 0 {

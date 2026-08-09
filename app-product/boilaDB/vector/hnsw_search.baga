@@ -15,7 +15,7 @@ struct BoilaHnswQuery {
     pks: Vec<bytes>
 }
 
-fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, ep: bytes, level: i64) -> BoilaHnswQuery !IO !Time {
+fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, ep: bytes, level: i64) -> BoilaHnswQuery !IO !Time !Par {
     let mut cur = ep
     let mut improved = true
     let mut guard: i64 = 0
@@ -54,7 +54,7 @@ fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q
     return BoilaHnswQuery { s: s, txn: txn, pks: one }
 }
 
-fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, entry: bytes, level: i64, ef: i64) -> BoilaHnswQuery !IO !Time {
+fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, entry: bytes, level: i64, ef: i64) -> BoilaHnswQuery !IO !Time !Par {
     let mut cand: Vec<bytes> = vec_new()
     let mut cds: Vec<f64> = vec_new()
     let vis: Vec<bytes> = vec_new()
@@ -124,7 +124,7 @@ fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: 
     return BoilaHnswQuery { s: s, txn: txn, pks: cand }
 }
 
-fn hnsw_select_neighbors(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, cands: Vec<bytes>, m: i64) -> BoilaHnswQuery !IO !Time {
+fn hnsw_select_neighbors(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, cands: Vec<bytes>, m: i64) -> BoilaHnswQuery !IO !Time !Par {
     let out: Vec<bytes> = vec_new()
     let ds: Vec<f64> = vec_new()
     let mut i: i64 = 0
@@ -173,7 +173,7 @@ fn hnsw_select_neighbors(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: Boila
 }
 
 // Brute-force top-k (малки таблици / exact gate).
-fn hnsw_brute(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time {
+fn hnsw_brute(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time !Par {
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
     let pks: Vec<bytes> = vec_new()
@@ -223,7 +223,7 @@ fn hnsw_brute(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q:
     return BoilaHnswQuery { s: s, txn: txn, pks: top }
 }
 
-fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time {
+fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time !Par {
     let empty: Vec<bytes> = vec_new()
     if k <= 0 {
         return BoilaHnswQuery { s: s, txn: txn, pks: empty }

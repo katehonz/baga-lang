@@ -83,7 +83,7 @@ fn fts_defs_enc(defs: Vec<BoilaFtsDef>) -> bytes {
 
 // --- каталог: fts индексите на таблица (point GET, не scan) ---
 
-fn fts_list_for_table(s: BoilaStore, table_id: i64) -> BoilaFtsList !IO !Time {
+fn fts_list_for_table(s: BoilaStore, table_id: i64) -> BoilaFtsList !IO !Time !Par {
     let defs: Vec<BoilaFtsDef> = vec_new()
     let g = boila_get(s, boila_cf_sys(), 1, fts_list_pk(table_id))?
     s = g.s
@@ -109,7 +109,7 @@ fn fts_list_for_table(s: BoilaStore, table_id: i64) -> BoilaFtsList !IO !Time {
     return BoilaFtsList { s: s, defs: defs }
 }
 
-fn fts_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: str) -> BoilaFtsRes !IO !Time {
+fn fts_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: str) -> BoilaFtsRes !IO !Time !Par {
     let mut col_idx: i64 = 0 - 1
     let mut i: i64 = 0
     while i < vec_len(t.cols) {
@@ -188,7 +188,7 @@ fn fts_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: 
 
 // --- BM25 заявка (mode 1 = AND, 2 = OR) ---
 
-fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, terms: Vec<str>, mode: i64) -> BoilaFtsQuery !IO !Time {
+fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, terms: Vec<str>, mode: i64) -> BoilaFtsQuery !IO !Time !Par {
     let empty: Vec<bytes> = vec_new()
     if vec_len(terms) == 0 {
         return BoilaFtsQuery { s: s, txn: txn, pks: empty }

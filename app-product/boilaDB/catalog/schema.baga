@@ -88,7 +88,7 @@ fn boila_cat_schema_row(t: BoilaTable) -> Vec<BoilaVal> {
     return sch
 }
 
-fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
+fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time !Par {
     // дубликат?
     let dn = boila_get(s, boila_cf_sys(), 1, boila_cat_pk_name(cr.table))?
     s = dn.s
@@ -124,7 +124,7 @@ fn boila_cat_create(s: BoilaStore, cr: BoilaCreate) -> BoilaCatRes !IO !Time {
     return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t0, id: next }
 }
 
-fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
+fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par {
     let dn = boila_get(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
     s = dn.s
     if dn.found == 0 {
@@ -181,7 +181,7 @@ fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
 }
 
 // DROP TABLE (P11): маха catalog + data/index редове (best-effort scan).
-fn boila_cat_drop(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time {
+fn boila_cat_drop(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par {
     let ct = boila_cat_by_name(s, name)?
     s = ct.s
     if ct.ok == 0 {
@@ -211,7 +211,7 @@ struct BoilaKeysRaw {
     pks: Vec<bytes>
 }
 
-fn boila_txn_keys_raw(s: BoilaStore, table_id: i64) -> BoilaKeysRaw !IO !Time {
+fn boila_txn_keys_raw(s: BoilaStore, table_id: i64) -> BoilaKeysRaw !IO !Time !Par {
     let mut pks: Vec<bytes> = vec_new()
     let mut cursor: i64 = 0
     let mut rounds: i64 = 0

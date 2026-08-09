@@ -7,6 +7,7 @@ import "../core/codec.baga"
 import "../core/value.baga"
 import "../core/row.baga"
 import "rocksbaga/db/shard.baga"
+import "rocksbaga/db/engine.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
@@ -15,7 +16,7 @@ fn boila_ttl_pk(table_id: i64) -> bytes {
     return bytes_of_str(concat("td|", int_to_str(table_id)))
 }
 
-fn boila_ttl_put(s: BoilaStore, table_id: i64, ttl_sec: i64) -> BoilaStore !IO !Time {
+fn boila_ttl_put(s: BoilaStore, table_id: i64, ttl_sec: i64) -> BoilaStore !IO !Time !Par {
     if ttl_sec <= 0 {
         return boila_del(s, boila_cf_sys(), 1, boila_ttl_pk(table_id))?
     }
@@ -29,7 +30,7 @@ struct BoilaTtlGet {
     ttl_sec: i64
 }
 
-fn boila_ttl_get(s: BoilaStore, table_id: i64) -> BoilaTtlGet !IO !Time {
+fn boila_ttl_get(s: BoilaStore, table_id: i64) -> BoilaTtlGet !IO !Time !Par {
     let g = boila_get(s, boila_cf_sys(), 1, boila_ttl_pk(table_id))?
     s = g.s
     if g.found == 0 {
@@ -43,14 +44,24 @@ fn boila_ttl_get(s: BoilaStore, table_id: i64) -> BoilaTtlGet !IO !Time {
 }
 
 // put с optional TTL (ttl_sec<=0 → plain put).
-fn boila_put_ex(s: BoilaStore, cf: i64, table_id: i64, pk: bytes, val: bytes, ttl_sec: i64) -> BoilaStore !IO !Time {
-    let key = boila_key_row(cf, table_id, pk)
+fn boila_put_ex(s: BoilaStore, cf: i64, table_id: i64, pk: bytes, val: bytes, ttl_sec: i64) -> BoilaStore !IO !Time !Par {
     if ttl_sec <= 0 {
-        let c = lsm_cluster_put_kb(s.c, key, val)?
-        return BoilaStore { c: c, ok: c.ok }
+        return boila_put(s, cf, table_id, pk, val)?
     }
-    let c = lsm_cluster_put_ex_kb(s.c, key, val, ttl_sec)?
-    return BoilaStore { c: c, ok: c.ok }
+    let key = boila_key_row(cf, table_id, pk)
+    if s.dbs_h == 0 {
+        let c = lsm_cluster_put_ex_kb(s.c, key, val, ttl_sec)?
+        return BoilaStore { c: c, dbs_h: 0, mus_h: 0, n: c.n, ok: c.ok }
+    }
+    let ix = lsm_shard_ix_b(s.n, key)
+    let mu = boila_shard_lock(s, ix)?
+    let dbs: Map<i64, LsmDB> = h_map(s.dbs_h)
+    let mut db = map_get(dbs, ix)
+    db = lsm_put_ex_kb(db, key, val, ttl_sec)?
+    map_set(dbs, ix, db)
+    let ok = db.ok
+    mutex_unlock(mu)
+    return BoilaStore { c: s.c, dbs_h: s.dbs_h, mus_h: s.mus_h, n: s.n, ok: ok }
 }
 
 struct BoilaDbSize {
@@ -58,12 +69,29 @@ struct BoilaDbSize {
     keys: i64
 }
 
-fn boila_dbsize(s: BoilaStore) -> BoilaDbSize !IO !Time {
-    let r = lsm_cluster_dbsize(s.c)?
-    return BoilaDbSize { s: BoilaStore { c: r.c, ok: r.c.ok }, keys: r.n }
+fn boila_dbsize(s: BoilaStore) -> BoilaDbSize !IO !Time !Par {
+    if s.dbs_h == 0 {
+        let r = lsm_cluster_dbsize(s.c)?
+        return BoilaDbSize {
+            s: BoilaStore { c: r.c, dbs_h: 0, mus_h: 0, n: r.c.n, ok: r.c.ok },
+            keys: r.n
+        }
+    }
+    boila_all_lock(s)?
+    let dbs: Map<i64, LsmDB> = h_map(s.dbs_h)
+    let mut n: i64 = 0
+    let mut i: i64 = 0
+    while i < s.n {
+        let ds = lsm_dbsize(map_get(dbs, i))?
+        map_set(dbs, i, ds.db)
+        n = n + ds.n
+        i = i + 1
+    }
+    boila_all_unlock(s)?
+    return BoilaDbSize { s: s, keys: n }
 }
 
 // Sweep: flush (TTL lazy drop on flush/compact path in rocksbaga).
-fn boila_ts_sweep(s: BoilaStore) -> BoilaStore !IO !Time {
+fn boila_ts_sweep(s: BoilaStore) -> BoilaStore !IO !Time !Par {
     return boila_flush(s)?
 }

@@ -56,7 +56,7 @@ fn boila_null_row(ncols: i64) -> Vec<BoilaVal> {
     return out
 }
 
-fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaJoinOut !IO !Time {
+fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaJoinOut !IO !Time !Par {
     let lidx = boila_col_idx(t, sel.join_lcol)
     if lidx < 0 {
         return boila_join_fail(s, txn, concat("JOIN колона '", concat(sel.join_lcol, "' не съществува в лявата таблица")), "42703")

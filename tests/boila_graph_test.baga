@@ -16,7 +16,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
     }
 }
 
-fn wipe_shard_path(prefix: str) -> i64 !IO {
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
     unlink(concat(prefix, ".wal"))?
     unlink(concat(prefix, ".manifest"))?
     unlink(concat(prefix, ".manifest.log"))?
@@ -29,7 +29,7 @@ fn wipe_shard_path(prefix: str) -> i64 !IO {
     return 0
 }
 
-fn wipe_root(root: str) -> i64 !IO {
+fn wipe_root(root: str) -> i64 !IO !Par {
     wipe_shard_path(concat(root, "/.meta"))?
     let mut i: i64 = 0
     while i < 2 {
@@ -54,11 +54,11 @@ fn has_node(res: BoilaResult, n: i64) -> i64 {
     return 0
 }
 
-fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time {
+fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
     return boila_server_exec(srv, "boila", sql)?
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     print("boila_graph_test:")
     let fails: Vec<i64> = vec_new()
     let root = "/tmp/baga_boila_graph_test"

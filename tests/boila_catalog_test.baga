@@ -16,7 +16,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
     }
 }
 
-fn wipe_shards(dir: str, n: i64) -> i64 !IO {
+fn wipe_shards(dir: str, n: i64) -> i64 !IO !Par {
     let mut i: i64 = 0
     while i < n {
         let mut p = dir
@@ -41,17 +41,17 @@ fn cr_users() -> BoilaCreate {
     let cols: Vec<BoilaColDef> = vec_new()
     vec_push(cols, boila_coldef("id", boila_v_i64()))
     vec_push(cols, boila_coldef("name", boila_v_str()))
-    return BoilaCreate { table: "users", cols: cols, pk_idx: 0 }
+    return BoilaCreate { table: "users", cols: cols, pk_idx: 0, ttl_sec: 0 }
 }
 
 fn cr_orders() -> BoilaCreate {
     let cols: Vec<BoilaColDef> = vec_new()
     vec_push(cols, boila_coldef("oid", boila_v_str()))
     vec_push(cols, boila_coldef("amount", boila_v_i64()))
-    return BoilaCreate { table: "orders", cols: cols, pk_idx: 0 }
+    return BoilaCreate { table: "orders", cols: cols, pk_idx: 0, ttl_sec: 0 }
 }
 
-fn main() -> i64 !IO !Time {
+fn main() -> i64 !IO !Time !Par {
     print("boila_catalog_test:")
     let fails: Vec<i64> = vec_new()
     let dir = "/tmp/baga_boila_catalog_test"
@@ -96,7 +96,7 @@ fn main() -> i64 !IO !Time {
     s2 = r7.s
     check(fails, "restart_orders", r7.ok == 1 && r7.table.id == 2)
     // следващото id продължава от 3
-    let r8 = boila_cat_create(s2, BoilaCreate { table: "t3", cols: cr_orders().cols, pk_idx: 0 })?
+    let r8 = boila_cat_create(s2, BoilaCreate { table: "t3", cols: cr_orders().cols, pk_idx: 0, ttl_sec: 0 })?
     s2 = r8.s
     check(fails, "restart_next_id", r8.ok == 1 && r8.id == 3)
     boila_close(s2)?

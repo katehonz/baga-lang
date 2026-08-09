@@ -63,7 +63,7 @@ fn boila_lsn_pk() -> bytes {
     return bytes_of_str("m|next_lsn")
 }
 
-fn boila_lsn_current(s: BoilaStore) -> BoilaTxnRes !IO !Time {
+fn boila_lsn_current(s: BoilaStore) -> BoilaTxnRes !IO !Time !Par {
     let g = boila_get(s, boila_cf_sys(), 1, boila_lsn_pk())?
     let mut cur: i64 = 0
     if g.found == 1 {
@@ -149,7 +149,7 @@ fn boila_txn_del(s: BoilaStore, txn: BoilaTxn, cf: i64, table_id: i64, pk: bytes
 
 // --- BEGIN / COMMIT / ROLLBACK ---
 
-fn boila_txn_begin(s: BoilaStore, txn: BoilaTxn, read_only: i64, db: str) -> BoilaTxnRes !IO !Time {
+fn boila_txn_begin(s: BoilaStore, txn: BoilaTxn, read_only: i64, db: str) -> BoilaTxnRes !IO !Time !Par {
     if txn.active == 1 {
         return boila_txn_res(s, txn, 0, "вече има активна транзакция", "25001", 0)
     }
@@ -165,7 +165,7 @@ fn boila_txn_rollback(txn: BoilaTxn) -> BoilaTxn {
 }
 
 // COMMIT: LSN alloc + всички buffer записи в един fsync batch.
-fn boila_txn_commit(s: BoilaStore, txn: BoilaTxn) -> BoilaTxnRes !IO !Time {
+fn boila_txn_commit(s: BoilaStore, txn: BoilaTxn) -> BoilaTxnRes !IO !Time !Par {
     if txn.active == 0 {
         // PG: COMMIT без txn е no-op (warning)
         return boila_txn_res(s, txn, 1, "", "", 0)
@@ -239,7 +239,7 @@ struct BoilaTxnGet {
     lsn: i64        // 0 = собствен buffer запис (uncommitted)
 }
 
-fn boila_txn_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes) -> BoilaTxnGet !IO !Time {
+fn boila_txn_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes) -> BoilaTxnGet !IO !Time !Par {
     let ix = boila_txn_find(txn, boila_cf_data(), table_id, pk)
     if ix >= 0 {
         let w = vec_get(txn.writes, ix)
@@ -262,7 +262,7 @@ struct BoilaTxnKeys {
 
 // pk списък на таблица: storage + buffer put-ове − buffer del-ове.
 // (Линеен merge — buffer-ът е малък; документно ограничение, не hot path.)
-fn boila_txn_keys(s: BoilaStore, txn: BoilaTxn, table_id: i64) -> BoilaTxnKeys !IO !Time {
+fn boila_txn_keys(s: BoilaStore, txn: BoilaTxn, table_id: i64) -> BoilaTxnKeys !IO !Time !Par {
     let mut pks: Vec<bytes> = vec_new()
     let mut cursor: i64 = 0
     let mut rounds: i64 = 0

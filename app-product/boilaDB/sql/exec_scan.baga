@@ -150,7 +150,7 @@ fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, 
 
 // --- fetch: редовете на таблица с WHERE (point/index/range/seq) ---
 
-fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time {
+fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
     // kNN път (P8): WHERE col <-> '[…]' LIMIT k
     if sel.has_knn == 1 {
@@ -320,7 +320,7 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
     return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
 }
 
-fn boila_fetch_all(s: BoilaStore, txn: BoilaTxn, t: BoilaTable) -> BoilaFetch !IO !Time {
+fn boila_fetch_all(s: BoilaStore, txn: BoilaTxn, t: BoilaTable) -> BoilaFetch !IO !Time !Par {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
