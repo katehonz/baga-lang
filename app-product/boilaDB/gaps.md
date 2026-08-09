@@ -92,9 +92,23 @@ T = транзакции, W = wire protocol, F = FTS.
   arity errors stay 42883). Output name `?column?` unless aliased;
   ORDER BY on alias. 37-check boila_expr_test. Residual: session fns
   (current_database/current_setting) run with empty db/guc in table
-  exprs — dual-only; no expr in WHERE/GROUP BY/agg projections yet
+  exprs — dual-only; no expr in GROUP BY/agg projections yet
   (0A000); no floats; bare alias right after an expr is scanned
-  greedily (AS always works).
+  greedily (AS always works). [WHERE exprs landed in P11-24.]
+- **P11-24 — (FIXED) expression predicates in WHERE (Q-xw).**
+  `WHERE id + 1 > 4`, `WHERE upper(name) = 'BOB'`, `WHERE NOT (…)`,
+  arbitrary AND/OR/parens — parse_where pre-scans for top-level OR or a
+  non-structural first predicate (`boila_ps_is_struct_pred`) and captures
+  the rest of WHERE as a token span (`sel.xw_toks`); exec_xw.baga
+  evaluates it per row with the dual evaluator (NULL-bound probe for
+  early errors, `boila_dual_when_true` keeps rows). Structural
+  predicates keep their index/range paths; a structural predicate ANDed
+  with an expression tail mixes both (`id >= 1 AND length(name) = 3`).
+  25-check boila_xwhere_test (incl. JOIN + xw, agg over xw, restart).
+  Residual: OR-joined WHERE is a seq-filter now (old Q-or IN rewrite
+  bypassed — same semantics, no index); no xw in UPDATE/DELETE WHERE;
+  `$N` inside xw spans → 0A000 at eval (prepared DML text-subst path
+  unaffected).
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 

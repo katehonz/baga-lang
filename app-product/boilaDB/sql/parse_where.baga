@@ -3,6 +3,7 @@ import "token.baga"
 import "lexer.baga"
 import "ast.baga"
 import "parse_common.baga"
+import "sfn.baga"
 import "tsquery.baga"
 import "../core/value.baga"
 import "std/str/str.baga"
@@ -24,8 +25,58 @@ fn boila_parse_where(l: BoilaLex, sel: BoilaSel, i: i64) -> BoilaParseWhere {
         return BoilaParseWhere { ok: 1, sel: sel, pos: i, err: "", state: "" }
     }
     i = i + 1
+    // Q-xw pre-scan: a top-level OR makes the whole WHERE one
+    // dual expression (the structural loop has no general OR).
+    let mut sc = i
+    let mut scd: i64 = 0
+    let mut has_top_or: i64 = 0
+    let mut scm = true
+    while scm {
+        let tc = boila_ps_tok(l, sc)
+        if tc.kind == tok_eof() || tc.kind == tok_semi() {
+            scm = false
+        } else {
+            if scd == 0 && boila_ps_is_clause_kw(tc) == 1 {
+                scm = false
+            } else {
+                if tc.kind == tok_lparen() { scd = scd + 1 }
+                if tc.kind == tok_rparen() { scd = scd - 1 }
+                if scd == 0 && tok_kw(tc, "or") == 1 { has_top_or = 1 }
+                sc = sc + 1
+            }
+        }
+    }
     let mut more = true
     while more {
+        // Q-xw: non-structural predicate (or any OR-joined WHERE) →
+        // expression filter; the span consumes the rest of WHERE.
+        if has_top_or == 1 || boila_ps_is_struct_pred(l, i) == 0 {
+            if sel.has_xw == 1 {
+                return boila_pw_fail(sel, i, "повторно WHERE-израз условие", "0A000")
+            }
+            let xe = boila_ps_expr_item(l, i)
+            if xe.ok == 0 {
+                return boila_pw_fail(sel, xe.pos, xe.err, xe.state)
+            }
+            if vec_len(xe.item.xtoks) >= 2 {
+                let f0 = vec_get(xe.item.xtoks, 0)
+                let f1 = vec_get(xe.item.xtoks, 1)
+                if f0.kind == tok_ident() && f1.kind == tok_lparen() && f0.txt != "cast" && f0.txt != "time_bucket" && f0.txt != "not" && boila_sfn_known(f0.txt) == 0 {
+                    return boila_pw_fail(sel, i, concat(concat("непозната функция '", f0.txt), "()"), "42883")
+                }
+            }
+            let mut gg: i64 = 0
+            while gg < vec_len(xe.item.xtoks) {
+                let tg = vec_get(xe.item.xtoks, gg)
+                if tg.kind == tok_ident() && tg.txt == "generate_series" {
+                    return boila_pw_fail(sel, i, "generate_series е само за dual (без FROM)", "0A000")
+                }
+                gg = gg + 1
+            }
+            sel.has_xw = 1
+            sel.xw_toks = xe.item.xtoks
+            return BoilaParseWhere { ok: 1, sel: sel, pos: xe.pos, err: "", state: "" }
+        }
         let col = boila_ps_tok(l, i)
         if col.kind != tok_ident() {
             return boila_pw_fail(sel, i, "очаквах колона в WHERE", "42601")

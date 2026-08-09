@@ -1,0 +1,60 @@
+// exec_xw.baga — Q-xw: WHERE <expr> post-fetch filter (dual evaluator).
+import "../core/value.baga"
+import "../catalog/schema.baga"
+import "token.baga"
+import "lexer.baga"
+import "exec_dual_ops.baga"
+import "exec_dual_parse.baga"
+
+struct BoilaXwOut {
+    ok: i64,
+    err: str,
+    state: str,
+    rows: Vec<Vec<BoilaVal>>
+}
+
+fn boila_xw_fail(msg: str, state: str) -> BoilaXwOut {
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    return BoilaXwOut { ok: 0, err: msg, state: state, rows: rows }
+}
+
+// Evaluate the WHERE expression per row; NULL/false/0 rejects the row.
+// The NULL-bound probe surfaces column/fn errors before any row runs.
+fn boila_xw_filter(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, xtoks: Vec<Token>) -> BoilaXwOut !Time {
+    let names: Vec<str> = vec_new()
+    let nulls: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(cols) {
+        vec_push(names, vec_get(cols, i).name)
+        vec_push(nulls, boila_val_null())
+        i = i + 1
+    }
+    let g: Map<str, str> = map_new()
+    let lx = BoilaLex { toks: xtoks, err: "" }
+    let pb = BoilaDualBind { on: 1, names: names, vals: nulls }
+    let pr = boila_dual_parse_expr(lx, 0, "", g, pb)?
+    if pr.ok == 0 {
+        return boila_xw_fail(pr.err, pr.state)
+    }
+    if pr.pos < vec_len(xtoks) {
+        return boila_xw_fail(concat("неочакван токен '", concat(vec_get(xtoks, pr.pos).txt, "' в WHERE израз")), "42601")
+    }
+    if pr.series == 1 {
+        return boila_xw_fail("generate_series е само за dual (без FROM)", "0A000")
+    }
+    let out: Vec<Vec<BoilaVal>> = vec_new()
+    let mut r: i64 = 0
+    while r < vec_len(rows) {
+        let row = vec_get(rows, r)
+        let bind = BoilaDualBind { on: 1, names: names, vals: row }
+        let e = boila_dual_parse_expr(lx, 0, "", g, bind)?
+        if e.ok == 0 {
+            return boila_xw_fail(e.err, e.state)
+        }
+        if boila_dual_when_true(e.val) == 1 {
+            vec_push(out, row)
+        }
+        r = r + 1
+    }
+    return BoilaXwOut { ok: 1, err: "", state: "", rows: out }
+}

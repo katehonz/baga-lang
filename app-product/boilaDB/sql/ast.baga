@@ -79,7 +79,10 @@ struct BoilaSel {
     has_ne: i64,
     ne_col: str,
     pk_ne: BoilaVal,
-    ne_param: i64
+    ne_param: i64,
+    // Q-xw: WHERE <expr> — dual-expression predicate, post-fetch filter
+    has_xw: i64,
+    xw_toks: Vec<Token>
 }
 
 fn boila_sel_item_col(name: str) -> BoilaSelItem {
@@ -154,6 +157,7 @@ fn boila_sel_empty() -> BoilaSel {
     let jl: Vec<str> = vec_new()
     let jr: Vec<str> = vec_new()
     let iv: Vec<BoilaVal> = vec_new()
+    let xw: Vec<Token> = vec_new()
     return BoilaSel {
         table: "", star: 0, items: items,
         eq_col: "", has_eq: 0, pk_eq: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, eq_param: 0,
@@ -173,7 +177,8 @@ fn boila_sel_empty() -> BoilaSel {
         bucket_iv: 0, bucket_col: "",
         has_like: 0, like_col: "", like_pat: "", like_esc: "",
         has_in: 0, in_col: "", in_vals: iv,
-        has_ne: 0, ne_col: "", pk_ne: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, ne_param: 0
+        has_ne: 0, ne_col: "", pk_ne: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, ne_param: 0,
+        has_xw: 0, xw_toks: xw
     }
 }
 

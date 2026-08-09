@@ -1,0 +1,179 @@
+// boila_xwhere_test.baga — boilaDB Q-xw: dual-expression predicates in
+// WHERE (post-fetch filter; structural predicates keep index paths).
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_str(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        return int_to_str(v.i)
+    }
+    if v.tag == boila_v_bool() {
+        if v.i == 0 { return "f" }
+        return "t"
+    }
+    if v.tag == boila_v_null() {
+        return "null"
+    }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_xwhere_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_xwhere_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE u (id BIGINT, name TEXT, nick TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let s0 = boila_server_exec(srv, "boila", "INSERT INTO u (id, name, nick) VALUES (1, 'alice', 'al'), (2, 'bob', NULL), (3, 'carol', 'cc'), (4, 'bob', NULL), (5, '  pad  ', NULL)")?
+    srv = s0.srv
+    check(fails, "seed", s0.ok == 1 && s0.id == 5)
+
+    // --- arithmetic predicate ---
+    let w1 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE id + 1 > 4 ORDER BY id")?
+    srv = w1.srv
+    check(fails, "arith", w1.ok == 1 && vec_len(w1.res.rows) == 2 && row_str(vec_get(w1.res.rows, 0), 0) == "4" && row_str(vec_get(w1.res.rows, 1), 0) == "5")
+
+    // --- fn call predicate ---
+    let w2 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE upper(name) = 'BOB' ORDER BY id")?
+    srv = w2.srv
+    check(fails, "fn_eq", w2.ok == 1 && vec_len(w2.res.rows) == 2 && row_str(vec_get(w2.res.rows, 0), 0) == "2" && row_str(vec_get(w2.res.rows, 1), 0) == "4")
+
+    // --- AND / OR / NOT / parens inside one expression ---
+    let w3 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE name LIKE 'b%' AND id > 2 ORDER BY id")?
+    srv = w3.srv
+    check(fails, "and_mix", w3.ok == 1 && vec_len(w3.res.rows) == 1 && row_str(vec_get(w3.res.rows, 0), 0) == "4")
+    let w4 = boila_server_exec(srv, "boila", "SELECT count(*) FROM u WHERE NOT (id = 1)")?
+    srv = w4.srv
+    check(fails, "not_paren", w4.ok == 1 && row_str(vec_get(w4.res.rows, 0), 0) == "4")
+    let w5 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE id BETWEEN 2 AND 3 OR id = 5 ORDER BY id")?
+    srv = w5.srv
+    check(fails, "between_or", w5.ok == 1 && vec_len(w5.res.rows) == 3 && row_str(vec_get(w5.res.rows, 2), 0) == "5")
+    let w6 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE id + 0 = 2 OR nick = 'cc' ORDER BY id")?
+    srv = w6.srv
+    check(fails, "or_null_safe", w6.ok == 1 && vec_len(w6.res.rows) == 2 && row_str(vec_get(w6.res.rows, 0), 0) == "2" && row_str(vec_get(w6.res.rows, 1), 0) == "3")
+
+    // --- structural predicate first, expression after AND ---
+    let w7 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE id >= 1 AND length(name) = 3 ORDER BY id")?
+    srv = w7.srv
+    check(fails, "struct_then_expr", w7.ok == 1 && vec_len(w7.res.rows) == 2 && row_str(vec_get(w7.res.rows, 0), 0) == "2" && row_str(vec_get(w7.res.rows, 1), 0) == "4")
+    let w8 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE nick IS NULL AND id + 0 < 3")?
+    srv = w8.srv
+    check(fails, "isnull_then_expr", w8.ok == 1 && vec_len(w8.res.rows) == 1 && row_str(vec_get(w8.res.rows, 0), 0) == "2")
+
+    // --- constants / CASE / concat predicates ---
+    let w9 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE true")?
+    srv = w9.srv
+    check(fails, "const_true", w9.ok == 1 && vec_len(w9.res.rows) == 5)
+    let w10 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE false")?
+    srv = w10.srv
+    check(fails, "const_false", w10.ok == 1 && vec_len(w10.res.rows) == 0)
+    let w11 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE CASE WHEN id > 3 THEN true ELSE false END ORDER BY id")?
+    srv = w11.srv
+    check(fails, "case_pred", w11.ok == 1 && vec_len(w11.res.rows) == 2 && row_str(vec_get(w11.res.rows, 0), 0) == "4")
+    let w12 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE name || nick = 'aliceal'")?
+    srv = w12.srv
+    check(fails, "concat_cmp", w12.ok == 1 && vec_len(w12.res.rows) == 1 && row_str(vec_get(w12.res.rows, 0), 0) == "1")
+
+    // --- xw + aggregates / projection exprs / ORDER+LIMIT ---
+    let w13 = boila_server_exec(srv, "boila", "SELECT count(*) FROM u WHERE id * 2 > 6")?
+    srv = w13.srv
+    check(fails, "agg_over_xw", w13.ok == 1 && row_str(vec_get(w13.res.rows, 0), 0) == "2")
+    let w14 = boila_server_exec(srv, "boila", "SELECT id + 100 FROM u WHERE id - 4 = 0")?
+    srv = w14.srv
+    check(fails, "proj_plus_xw", w14.ok == 1 && vec_len(w14.res.rows) == 1 && row_str(vec_get(w14.res.rows, 0), 0) == "104")
+    let w15 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE id > 0 ORDER BY id DESC LIMIT 2")?
+    srv = w15.srv
+    check(fails, "order_limit", w15.ok == 1 && vec_len(w15.res.rows) == 2 && row_str(vec_get(w15.res.rows, 0), 0) == "5" && row_str(vec_get(w15.res.rows, 1), 0) == "4")
+
+    // --- JOIN + xw ---
+    let c2 = boila_server_exec(srv, "boila", "CREATE TABLE o (oid BIGINT, uid BIGINT, item TEXT, PRIMARY KEY (oid))")?
+    srv = c2.srv
+    let s2 = boila_server_exec(srv, "boila", "INSERT INTO o (oid, uid, item) VALUES (10, 1, 'hat'), (11, 2, 'cup')")?
+    srv = s2.srv
+    let w16 = boila_server_exec(srv, "boila", "SELECT item FROM u INNER JOIN o ON id = uid WHERE id + oid > 10 ORDER BY item")?
+    srv = w16.srv
+    check(fails, "join_xw", w16.ok == 1 && vec_len(w16.res.rows) == 2 && row_str(vec_get(w16.res.rows, 0), 0) == "cup" && row_str(vec_get(w16.res.rows, 1), 0) == "hat")
+
+    // --- structural regressions untouched ---
+    let r1 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE id = 1")?
+    srv = r1.srv
+    check(fails, "struct_pk", r1.ok == 1 && vec_len(r1.res.rows) == 1 && row_str(vec_get(r1.res.rows, 0), 0) == "1")
+    let r2 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE name LIKE 'a%'")?
+    srv = r2.srv
+    check(fails, "struct_like", r2.ok == 1 && vec_len(r2.res.rows) == 1 && row_str(vec_get(r2.res.rows, 0), 0) == "1")
+
+    // --- errors ---
+    let x1 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE nosuch + 1 > 0")?
+    srv = x1.srv
+    check(fails, "err_bad_col", x1.ok == 0 && x1.state == "42703")
+    let x2 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE foo(id)")?
+    srv = x2.srv
+    check(fails, "err_unknown_fn", x2.ok == 0 && x2.state == "42883")
+    let x3 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE id +")?
+    srv = x3.srv
+    check(fails, "err_dangling", x3.ok == 0)
+    let x4 = boila_server_exec(srv, "boila", "SELECT id FROM u WHERE 1 / 0 > 0")?
+    srv = x4.srv
+    check(fails, "err_div0", x4.ok == 0 && x4.state == "22012")
+
+    boila_server_close(srv)?
+
+    // --- restart ---
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let rr = boila_server_exec(srv2, "boila", "SELECT id FROM u WHERE id * id = 9")?
+    srv2 = rr.srv
+    check(fails, "restart_xw", rr.ok == 1 && vec_len(rr.res.rows) == 1 && row_str(vec_get(rr.res.rows, 0), 0) == "3")
+    boila_server_close(srv2)?
+
+    wipe_root(root)?
+    if vec_len(fails) == 0 {
+        print("boila_xwhere_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_xwhere_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

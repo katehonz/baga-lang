@@ -18,6 +18,7 @@ import "exec_sort.baga"
 import "exec_dual_ops.baga"
 import "exec_dual_fn.baga"
 import "exec_dual_parse.baga"
+import "exec_xw.baga"
 import "../ts/time_bucket.baga"
 import "std/str/str.baga"
 
@@ -50,6 +51,15 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
             return boila_exec_fail(s, txn, f.err, f.state)
         }
         rows = f.rows
+    }
+
+    // Q-xw: expression WHERE predicate — post-fetch filter
+    if sel.has_xw == 1 {
+        let xf = boila_xw_filter(cols, rows, sel.xw_toks)?
+        if xf.ok == 0 {
+            return boila_exec_fail(s, txn, xf.err, xf.state)
+        }
+        rows = xf.rows
     }
 
     // има ли агрегати в проекцията

@@ -299,6 +299,26 @@ fn boila_ps_is_pred_kw(t: Token) -> i64 {
     return 0
 }
 
+// Q-xw: 1 = `col <pred>` structural WHERE predicate (index/range path
+// keeps its acceleration); 0 = anything else → expression filter.
+fn boila_ps_is_struct_pred(l: BoilaLex, i: i64) -> i64 {
+    let t0 = boila_ps_tok(l, i)
+    if t0.kind != tok_ident() {
+        return 0
+    }
+    let t1 = boila_ps_tok(l, i + 1)
+    if t1.kind == tok_op() {
+        if t1.txt == "=" || t1.txt == "<>" || t1.txt == "!=" || t1.txt == "<" || t1.txt == ">" || t1.txt == "<=" || t1.txt == ">=" || t1.txt == "@@" || t1.txt == "<->" || t1.txt == "<=>" || t1.txt == "<#>" {
+            return 1
+        }
+        return 0
+    }
+    if tok_kw(t1, "like") == 1 || tok_kw(t1, "ilike") == 1 || tok_kw(t1, "is") == 1 || tok_kw(t1, "in") == 1 || tok_kw(t1, "between") == 1 || tok_kw(t1, "not") == 1 {
+        return 1
+    }
+    return 0
+}
+
 // Q-expr: keywords that continue an expression (not bare aliases).
 fn boila_ps_expr_cont_kw(t: Token) -> i64 {
     if tok_kw(t, "and") == 1 || tok_kw(t, "or") == 1 || tok_kw(t, "not") == 1 || tok_kw(t, "like") == 1 || tok_kw(t, "ilike") == 1 || tok_kw(t, "between") == 1 || tok_kw(t, "in") == 1 || tok_kw(t, "is") == 1 || tok_kw(t, "escape") == 1 || tok_kw(t, "then") == 1 || tok_kw(t, "when") == 1 || tok_kw(t, "else") == 1 || tok_kw(t, "end") == 1 || tok_kw(t, "case") == 1 {
