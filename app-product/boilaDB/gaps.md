@@ -194,8 +194,8 @@ T = транзакции, W = wire protocol, F = FTS.
   tracks `sess_db` (default `boila`); `USE` / successful `?db=` update it;
   bare `/sql` uses session. CREATE/DROP DATABASE do not switch session.
   H3b/c: `Set-Cookie: boila_db=` on USE (HMAC-signed when BOILA_TOKEN
-  set); pick `?db=` > `X-Boila-Db` > Cookie > conn sess. Residual:
-  no CSRF double-submit; header X-Boila-Db not signed.
+  set); `X-Boila-Db` same signed form. pick `?db=` > header > Cookie >
+  conn sess. Residual: no CSRF double-submit; `?db=` query still plain.
 
 ## Открити при P1
 

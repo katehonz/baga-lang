@@ -107,9 +107,15 @@ fn boila_http_cookie_db(req: Request) -> str !IO {
     if end <= start {
         return ""
     }
-    let raw = substr(c, start, end)
+    return boila_http_verify_db_val(substr(c, start, end))?
+}
+
+// Verify plain-or-signed db name (name or name.sig). Empty → reject when token set.
+fn boila_http_verify_db_val(raw: str) -> str !IO {
+    if raw == "" {
+        return ""
+    }
     let token = env("BOILA_TOKEN")
-    // find last '.'
     let mut dot: i64 = 0 - 1
     let mut i = 0
     while i < len(raw) {
@@ -142,7 +148,7 @@ fn boila_http_pick_db(sess_db: str, req: Request) -> str !IO {
     if q != "" {
         return q
     }
-    let h = http_header(req, "x-boila-db")
+    let h = boila_http_verify_db_val(http_header(req, "x-boila-db"))?
     if h != "" {
         return h
     }

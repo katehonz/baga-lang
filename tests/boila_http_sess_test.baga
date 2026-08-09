@@ -75,6 +75,7 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "pick_header", boila_http_pick_db("boila", rh)? == "beta")
     // H3c: signed cookie val format when token unset is plain
     check(fails, "cookie_val_plain", boila_http_db_cookie_val("gamma")? == "gamma")
+    check(fails, "verify_plain", boila_http_verify_db_val("delta")? == "delta")
 
     let root = "/tmp/baga_boila_http_sess_test"
     wipe_root(root)?
