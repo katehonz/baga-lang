@@ -128,10 +128,9 @@ T = транзакции, W = wire protocol, F = FTS.
   max_scan/max_rows; cooperative tick.
 - **A1 — avg е целочислено деление** (sum/cnt в i64). f64 резултат чака
   f64 поддръжка в codec-а (V1).
-- **A2 — (FIXED) hash join.** Без индекс по inner join col → build
-  `Map<bytes, BoilaHJBucket>` на inner (`boila_val_enc` key) + probe outer.
-  С индекс → index nested loop (както преди). Residual: няма cost model
-  (винаги hash ако няма ix); build държи целия inner в RAM.
+- **A2 — (FIXED) hash join + light cost.** Index → NL; no ix → hash if
+  outer > 8 else nested loop over fetched inner; empty outer short-circuit.
+  Residual: no stats/histograms; threshold fixed 8; build still full inner.
 - **A3 — (FIXED) WHERE eq/range на дясната JOIN таблица.** Eq +
   `>=`/`<=` на right col → post-filter (`boila_join_filter_right` /
   `_range`); left pushdown when col is left. LEFT+WHERE right →

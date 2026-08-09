@@ -1,5 +1,5 @@
-// exec_join.baga — JOIN: index NL | hash join (A2) | nested loop.
-// WHERE eq/range: left pushdown (PK); right post-filter (A3/A3b). ON '='.
+// exec_join.baga — JOIN: index NL | hash | nested loop (A2 cost).
+// WHERE eq/range: left pushdown; right post-filter (A3). ON '='.
 
 import "../storage/shards.baga"
 import "../core/value.baga"
@@ -219,11 +219,15 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
     }
     let mut rows: Vec<Vec<BoilaVal>> = vec_new()
     let nullr = boila_null_row(vec_len(t2.cols))
+    let on = vec_len(outer.rows)
+    if on == 0 {
+        return BoilaJoinOut { s: s, txn: txn, ok: 1, err: "", state: "", cols: wcols, rows: rows }
+    }
     let ixid = boila_ix_by_col_t(t2, ridx)
     if ixid >= 0 {
         // index nested loop
         let mut oi: i64 = 0
-        while oi < vec_len(outer.rows) {
+        while oi < on {
             let orow = vec_get(outer.rows, oi)
             let lv = vec_get(orow, lidx)
             let mut matched = false
@@ -247,32 +251,58 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
             oi = oi + 1
         }
     } else {
-        // A2: hash join on inner (no secondary index)
+        // A2b: no ix — hash if outer large; nested loop if outer small (≤8)
         let inner = boila_fetch_all(s, txn, t2)?
         s = inner.s
-        let ht = boila_hj_build(inner.rows, ridx)
-        let mut oi: i64 = 0
-        while oi < vec_len(outer.rows) {
-            let orow = vec_get(outer.rows, oi)
-            let lv = vec_get(orow, lidx)
-            let mut matched = false
-            if lv.tag != boila_v_null() {
-                let k = boila_val_enc(lv)
-                if map_has(ht, k) == 1 {
-                    let b = map_get(ht, k)
+        let inn = vec_len(inner.rows)
+        if on <= 8 {
+            let mut oi: i64 = 0
+            while oi < on {
+                let orow = vec_get(outer.rows, oi)
+                let lv = vec_get(orow, lidx)
+                let mut matched = false
+                if lv.tag != boila_v_null() {
                     let mut j: i64 = 0
-                    while j < vec_len(b.idxs) {
-                        let irow = vec_get(inner.rows, vec_get(b.idxs, j))
-                        vec_push(rows, boila_wide_row(orow, irow))
-                        matched = true
+                    while j < inn {
+                        let irow = vec_get(inner.rows, j)
+                        if ridx >= 0 && ridx < vec_len(irow) {
+                            if boila_val_cmp(lv, vec_get(irow, ridx)) == 0 {
+                                vec_push(rows, boila_wide_row(orow, irow))
+                                matched = true
+                            }
+                        }
                         j = j + 1
                     }
                 }
+                if matched == false && sel.join_kind == 2 {
+                    vec_push(rows, boila_wide_row(orow, nullr))
+                }
+                oi = oi + 1
             }
-            if matched == false && sel.join_kind == 2 {
-                vec_push(rows, boila_wide_row(orow, nullr))
+        } else {
+            let ht = boila_hj_build(inner.rows, ridx)
+            let mut oi: i64 = 0
+            while oi < on {
+                let orow = vec_get(outer.rows, oi)
+                let lv = vec_get(orow, lidx)
+                let mut matched = false
+                if lv.tag != boila_v_null() {
+                    let k = boila_val_enc(lv)
+                    if map_has(ht, k) == 1 {
+                        let b = map_get(ht, k)
+                        let mut j: i64 = 0
+                        while j < vec_len(b.idxs) {
+                            vec_push(rows, boila_wide_row(orow, vec_get(inner.rows, vec_get(b.idxs, j))))
+                            matched = true
+                            j = j + 1
+                        }
+                    }
+                }
+                if matched == false && sel.join_kind == 2 {
+                    vec_push(rows, boila_wide_row(orow, nullr))
+                }
+                oi = oi + 1
             }
-            oi = oi + 1
         }
     }
     if r_eq == 1 {
