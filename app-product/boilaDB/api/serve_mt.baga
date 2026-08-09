@@ -135,6 +135,16 @@ fn boila_mt_live(pack: i64) -> i64 !Par {
     return n
 }
 
+// max_conn cap stored at live[1] (see boila_mt_new).
+fn boila_mt_max_conn(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let live: Map<i64, i64> = h_map(boila_mt_live_h(pack))
+    let n = map_get(live, 1)
+    mutex_unlock(gmu)
+    return n
+}
+
 // 1=db DDL, 2=USE, 3=schema DDL, 0=data (SELECT/DML/txn).
 fn boila_mt_kw2(sql: str) -> i64 {
     let n = len(sql)

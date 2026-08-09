@@ -30,7 +30,7 @@ fn boila_env_or(name: str, dflt: str) -> str !IO !Par {
 fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> BoilaHttpSql !IO !Time !Par {
     let method = http_method(req)
     let path = http_path_only(req)
-    // W6c: token on /sql and /metrics; /health stays open
+    // W6c: token on /sql and /metrics; /health and /ready stay open
     if path == "/sql" || path == "/metrics" {
         if boila_http_auth_ok(req)? == 0 {
             return boila_http_auth_fail(txn, sess_db)
@@ -52,6 +52,32 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> Boila
         body = concat(body, "\"}")
         let z = boila_srv_out_fail(boila_seed(), txn, "", "")
         return BoilaHttpSql { srv: z.srv, txn: txn, resp: http_json_response(200, body), db: sess_db }
+    }
+    // M2: readiness — 503 if at connection cap (no room for new work)
+    if method == "GET" && path == "/ready" {
+        boila_mt_stat_inc(pack, boila_st_http())?
+        let lv = boila_mt_live(pack)?
+        let mc = boila_mt_max_conn(pack)?
+        let mut body = "{\"status\":"
+        let mut code: i64 = 200
+        if mc > 0 && lv >= mc {
+            body = concat(body, "\"not_ready\",\"reason\":\"max_conn\",\"live_conn\":")
+            body = concat(body, int_to_str(lv))
+            body = concat(body, ",\"max_conn\":")
+            body = concat(body, int_to_str(mc))
+            body = concat(body, "}")
+            code = 503
+        } else {
+            body = concat(body, "\"ready\",\"live_conn\":")
+            body = concat(body, int_to_str(lv))
+            body = concat(body, ",\"max_conn\":")
+            body = concat(body, int_to_str(mc))
+            body = concat(body, ",\"version\":\"")
+            body = concat(body, boila_version())
+            body = concat(body, "\"}")
+        }
+        let z = boila_srv_out_fail(boila_seed(), txn, "", "")
+        return BoilaHttpSql { srv: z.srv, txn: txn, resp: http_json_response(code, body), db: sess_db }
     }
     if method == "GET" && path == "/metrics" {
         let m = met_new()

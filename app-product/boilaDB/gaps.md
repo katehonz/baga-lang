@@ -239,9 +239,9 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S2 — MVCC GC (P4+) ще е background sweeper**, докато rocksbaga няма
   compaction filter. Риск от write amplification под тежки update товари
   — измерва се на P11, не се крие.
-- **M1 — (FIXED) request counters + build info.** `boila_mt_stat_*` +
-  `/health` `version`, `/metrics` `boila_build_info`, PG `server_version`
-  includes boilaDB 0.1.0.
+- **M1 — (FIXED) request counters + build info + /ready.** `boila_mt_stat_*`
+  + `/health` version, `/ready` (503 at max_conn), `/metrics`
+  `boila_build_info`, PG `server_version` boilaDB 0.1.0.
 - **H1 — (FIXED) go_bg + BOILA_MAX_CONN admission.** HTTP/PG:
   `boila_mt_try_conn` → 503/53300 when over cap (default 64). Residual:
   still OS-thread-per-conn (not fiber pool); P11-1 ladder not 10k clients.
