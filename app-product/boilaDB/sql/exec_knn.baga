@@ -16,7 +16,7 @@ import "exec_scan.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
-// V3: collect candidate pks from PK point or secondary index eq.
+// V3/V3b: candidate pks from PK eq/range or secondary index eq.
 // has=0 → no pre-filter; has=1 → use cands (may be empty = no hits).
 struct BoilaKnnPref {
     s: BoilaStore,
@@ -28,41 +28,106 @@ struct BoilaKnnPref {
     cands: Vec<bytes>
 }
 
+// Keep cands whose decoded PK is within [lo, hi] (sort-order cmp).
+fn boila_knn_cands_in_range(cands: Vec<bytes>, has_lo: i64, lo: BoilaVal, has_hi: i64, hi: BoilaVal) -> Vec<bytes> {
+    let out: Vec<bytes> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(cands) {
+        let pk = vec_get(cands, i)
+        let pkv = boila_val_dec(pk)
+        let mut keep = true
+        if has_lo == 1 {
+            let c = boila_val_cmp(pkv, lo)
+            if c != 0 && c != 1 {
+                keep = false
+            }
+        }
+        if keep && has_hi == 1 {
+            let c = boila_val_cmp(pkv, hi)
+            if c != 0 && c != 0 - 1 {
+                keep = false
+            }
+        }
+        if keep {
+            vec_push(out, pk)
+        }
+        i = i + 1
+    }
+    return out
+}
+
 fn boila_knn_pref(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaKnnPref !IO !Time !Par {
-    let cands: Vec<bytes> = vec_new()
-    if sel.has_eq == 0 {
-        return BoilaKnnPref { s: s, txn: txn, ok: 1, err: "", state: "", has: 0, cands: cands }
-    }
+    let mut cands: Vec<bytes> = vec_new()
+    let mut has: i64 = 0
     let pkcol = vec_get(t.cols, t.pk_idx)
-    if sel.eq_col == pkcol.name {
-        if boila_pk_lit_ok(pkcol.typ, sel.pk_eq) == 0 {
-            return BoilaKnnPref { s: s, txn: txn, ok: 0, err: "литералът в = не съответства на типа на PRIMARY KEY", state: "42804", has: 0, cands: cands }
+    if sel.has_eq == 1 {
+        if sel.eq_col == pkcol.name {
+            if boila_pk_lit_ok(pkcol.typ, sel.pk_eq) == 0 {
+                return BoilaKnnPref { s: s, txn: txn, ok: 0, err: "литералът в = не съответства на типа на PRIMARY KEY", state: "42804", has: 0, cands: cands }
+            }
+            let pkenc = boila_val_enc(sel.pk_eq)
+            let g = boila_txn_get(s, txn, t.id, pkenc)?
+            s = g.s
+            if g.found == 1 {
+                vec_push(cands, pkenc)
+            }
+            has = 1
+        } else {
+            let cix = boila_col_idx(t, sel.eq_col)
+            if cix < 0 {
+                return BoilaKnnPref { s: s, txn: txn, ok: 0, err: concat("колона '", concat(sel.eq_col, "' не съществува")), state: "42703", has: 0, cands: cands }
+            }
+            let cd = vec_get(t.cols, cix)
+            if boila_pk_lit_ok(cd.typ, sel.pk_eq) == 0 {
+                return BoilaKnnPref { s: s, txn: txn, ok: 0, err: "литералът в = не съответства на типа на колоната", state: "42804", has: 0, cands: cands }
+            }
+            let ixid = boila_ix_by_col_t(t, cix)
+            if ixid >= 0 {
+                let lk = boila_ix_lookup(s, t, ixid, sel.pk_eq)?
+                s = lk.s
+                boila_scan_buf_eq(txn, t, cix, sel.pk_eq, lk.pks)
+                cands = lk.pks
+                has = 1
+            }
+            // unindexed meta eq → has=0 (HNSW + V6 post)
         }
-        let pkenc = boila_val_enc(sel.pk_eq)
-        let g = boila_txn_get(s, txn, t.id, pkenc)?
-        s = g.s
-        if g.found == 1 {
-            vec_push(cands, pkenc)
+    }
+    // V3b: PK range pre-filter (or narrow eq cands)
+    let pk_range = sel.has_lo == 1 || sel.has_hi == 1
+    let mut lo_ok = 1
+    let mut hi_ok = 1
+    if sel.has_lo == 1 && sel.lo_col != pkcol.name {
+        lo_ok = 0
+    }
+    if sel.has_hi == 1 && sel.hi_col != pkcol.name {
+        hi_ok = 0
+    }
+    if pk_range && lo_ok == 1 && hi_ok == 1 {
+        if has == 1 {
+            cands = boila_knn_cands_in_range(cands, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi)
+        } else {
+            let mut rsel = sel
+            rsel.has_eq = 0
+            rsel.has_knn = 0
+            rsel.has_fts = 0
+            let fr = boila_fetch_rows(s, txn, t, rsel)?
+            s = fr.s
+            txn = fr.txn
+            if fr.ok == 0 {
+                return BoilaKnnPref { s: s, txn: txn, ok: 0, err: fr.err, state: fr.state, has: 0, cands: cands }
+            }
+            let mut i: i64 = 0
+            while i < vec_len(fr.rows) {
+                let row = vec_get(fr.rows, i)
+                if t.pk_idx >= 0 && t.pk_idx < vec_len(row) {
+                    vec_push(cands, boila_val_enc(vec_get(row, t.pk_idx)))
+                }
+                i = i + 1
+            }
+            has = 1
         }
-        return BoilaKnnPref { s: s, txn: txn, ok: 1, err: "", state: "", has: 1, cands: cands }
     }
-    let cix = boila_col_idx(t, sel.eq_col)
-    if cix < 0 {
-        return BoilaKnnPref { s: s, txn: txn, ok: 0, err: concat("колона '", concat(sel.eq_col, "' не съществува")), state: "42703", has: 0, cands: cands }
-    }
-    let cd = vec_get(t.cols, cix)
-    if boila_pk_lit_ok(cd.typ, sel.pk_eq) == 0 {
-        return BoilaKnnPref { s: s, txn: txn, ok: 0, err: "литералът в = не съответства на типа на колоната", state: "42804", has: 0, cands: cands }
-    }
-    let ixid = boila_ix_by_col_t(t, cix)
-    if ixid < 0 {
-        // unindexed meta → HNSW + V6 post-filter
-        return BoilaKnnPref { s: s, txn: txn, ok: 1, err: "", state: "", has: 0, cands: cands }
-    }
-    let lk = boila_ix_lookup(s, t, ixid, sel.pk_eq)?
-    s = lk.s
-    boila_scan_buf_eq(txn, t, cix, sel.pk_eq, lk.pks)
-    return BoilaKnnPref { s: s, txn: txn, ok: 1, err: "", state: "", has: 1, cands: lk.pks }
+    return BoilaKnnPref { s: s, txn: txn, ok: 1, err: "", state: "", has: has, cands: cands }
 }
 
 fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
@@ -106,8 +171,8 @@ fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         txn = hq.txn
         hq_pks = hq.pks
     } else {
-        // full HNSW; overfetch if residual filters (range)
-        if sel.has_lo == 1 || sel.has_hi == 1 {
+        // full HNSW; overfetch if residual non-PK filters remain
+        if sel.has_lo == 1 || sel.has_hi == 1 || sel.has_eq == 1 {
             kk = kk * 16
             if kk < 64 { kk = 64 }
         }

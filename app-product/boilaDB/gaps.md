@@ -59,10 +59,10 @@ T = транзакции, W = wire protocol, F = FTS.
 - **V2 — perf gate 100k×128d още не е измерен.** Functional P8 е зелен
   (boila_vec_test); 100k seed + recall@10 bench чака chunked seed заради
   arena OOM (Q2), моделът на FTS 20k.
-- **V3 — (FIXED) metadata pre-filter преди kNN.** `eq` по PK или
-  secondary index → `hnsw_brute_cands` само върху кандидатите
-  (`exec_knn.baga`). Без индекс → HNSW + V6 post-filter. Range-only
-  pre-filter няма (остава overfetch+post).
+- **V3 — (FIXED) metadata + PK-range pre-filter преди kNN.** `eq` по
+  PK/secondary → cands; PK `>=`/`<=` → range scan cands or narrow eq
+  set (`boila_knn_pref` / V3b). Non-PK range/eq → HNSW overfetch + V6
+  post-filter.
 - **V4 — (FIXED) RAM neighbor cache per search.** `hnsw_nbrs_get_c` +
   `hnsw_warm_upper` (ep + 1-hop levels max..1) в `Map<bytes,bytes>`;
   greedy/beam ползват cache. Residual: няма process-global cross-query

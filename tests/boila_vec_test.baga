@@ -112,6 +112,22 @@ fn main() -> i64 !IO !Time !Par {
     let qv3 = exec1(srv, "SELECT id FROM items WHERE emb <-> '[0,1,0]' AND id >= 2 AND id <= 5 LIMIT 10")
     srv = qv3.srv
     check(fails, "knn_and_range", qv3.ok == 1 && vec_len(qv3.res.rows) >= 1 && ids_has(qv3.res, "2") == 1)
+    // V3b: PK range pre-filter — no id outside [2,3]
+    let qv3b = exec1(srv, "SELECT id FROM items WHERE emb <-> '[0,1,0]' AND id >= 2 AND id <= 3 LIMIT 10")
+    srv = qv3b.srv
+    let mut range_ok: i64 = 0
+    if qv3b.ok == 1 && vec_len(qv3b.res.rows) >= 1 {
+        range_ok = 1
+        let mut ri: i64 = 0
+        while ri < vec_len(qv3b.res.rows) {
+            let id = row_id(vec_get(qv3b.res.rows, ri))
+            if id != "2" && id != "3" {
+                range_ok = 0
+            }
+            ri = ri + 1
+        }
+    }
+    check(fails, "knn_pref_range", range_ok == 1 && ids_has(qv3b.res, "1") == 0)
 
     // V3: secondary index pre-filter before distance rank
     let ctag = exec1(srv, "CREATE TABLE tagged (id BIGINT, tag TEXT, emb VECTOR(3), PRIMARY KEY (id))")
