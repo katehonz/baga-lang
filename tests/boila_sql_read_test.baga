@@ -120,6 +120,13 @@ fn main() -> i64 !IO !Time !Par {
         }
     }
     check(fails, "range_ordered", ord_ok == 1)
+    // K3b: non-PK range via seq + post-filter
+    let qn = boila_server_exec(srv, "boila", "SELECT name FROM users WHERE name >= 'pet' AND name <= 'pet'")?
+    srv = qn.srv
+    check(fails, "range_non_pk", qn.ok == 1 && vec_len(qn.res.rows) == 1 && row_str(vec_get(qn.res.rows, 0), 0) == "pet")
+    let qn2 = boila_server_exec(srv, "boila", "SELECT name FROM users WHERE name >= 'deset' AND name <= 'edin'")?
+    srv = qn2.srv
+    check(fails, "range_non_pk_multi", qn2.ok == 1 && vec_len(qn2.res.rows) >= 2)
 
     // --- LIMIT ---
     let q3 = boila_server_exec(srv, "boila", "SELECT * FROM users LIMIT 3")?

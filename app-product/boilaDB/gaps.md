@@ -137,7 +137,7 @@ T = транзакции, W = wire protocol, F = FTS.
   `>=`/`<=` на right col → post-filter (`boila_join_filter_right` /
   `_range`); left pushdown when col is left. LEFT+WHERE right →
   null-elimination. Residual: един JOIN; `ON` само `=`; lo/hi must
-  target same right col; left non-PK range still 0A000.
+  target same right col.
 
 ## Открити при P4
 
@@ -203,11 +203,10 @@ T = транзакции, W = wire protocol, F = FTS.
   plan cache + PK fast path; гейтът ≤ 1.25× от PLAN.md се премества
   като задължаващ при P5 (plan cache) / P6 (prepared statements).
   Числото от P1 е baseline-ът, срещу който се сравнява всяко подобрение.
-- **K3 — (FIXED) range: sort PK bytes + lb + early-stop.** rocksbaga SCAN
-  остава hash-подреден; след `boila_txn_keys` PK-тата се сортират по
-  sort-order encoding (`boila_pk_sort`), lower-bound (`boila_pk_lb`) и
-  early-stop при `> hi`. Резултатът е подреден. Residual: still materializes
-  full key list (no storage-level sorted iterator).
+- **K3 — (FIXED) PK range sort+lb+early-stop; non-PK range post-filter.**
+  PK: `boila_pk_sort`/`boila_pk_lb`/early-stop. Non-PK (K3b): seq scan +
+  `boila_row_pass_filters`. Residual: full key list materialize; DML range
+  still PK-only; no secondary-index range scan.
 - **H2 — (FIXED) HTTP go_bg + per-shard hop-less + multi-DB + live conn.**
   `BOILA_MAX_CONN` → 503/53300. mode=`mt-shard`.
 

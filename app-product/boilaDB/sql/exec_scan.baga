@@ -1,4 +1,4 @@
-// exec_scan.baga — SELECT fetch + pipeline (P5), txn buffer reads (P4).
+// exec_scan.baga — SELECT fetch + pipeline (P5), txn reads (P4).
 import "../storage/shards.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
@@ -12,8 +12,6 @@ import "ast.baga"
 import "exec_sort.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
-
-// tags = boila_v_* per col (W3 RowDescription OIDs on Execute).
 struct BoilaResult { cols: Vec<str>, tags: Vec<i64>, rows: Vec<Vec<BoilaVal>> }
 struct BoilaExec { s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, kind: i64, res: BoilaResult }
 struct BoilaFetch { s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, rows: Vec<Vec<BoilaVal>> }
@@ -194,17 +192,23 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
     let pkcol = vec_get(t.cols, t.pk_idx)
-    if sel.has_lo == 1 && sel.lo_col != pkcol.name {
-        return boila_fetch_fail(s, txn, concat("range по '", concat(sel.lo_col, "' — само по PRIMARY KEY")), "0A000")
+    // K3b: PK range → sorted early-stop; non-PK → seq + post-filter
+    let mut pk_range: i64 = 1
+    if sel.has_lo == 1 {
+        let cix = boila_col_idx(t, sel.lo_col)
+        if cix < 0 { return boila_fetch_fail(s, txn, concat("колона '", concat(sel.lo_col, "' не съществува")), "42703") }
+        if boila_pk_lit_ok(vec_get(t.cols, cix).typ, sel.pk_lo) == 0 {
+            return boila_fetch_fail(s, txn, "литералът в >= не съответства на типа на колоната", "42804")
+        }
+        if sel.lo_col != pkcol.name { pk_range = 0 }
     }
-    if sel.has_hi == 1 && sel.hi_col != pkcol.name {
-        return boila_fetch_fail(s, txn, concat("range по '", concat(sel.hi_col, "' — само по PRIMARY KEY")), "0A000")
-    }
-    if sel.has_lo == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_lo) == 0 {
-        return boila_fetch_fail(s, txn, "литералът в >= не съответства на типа на PRIMARY KEY", "42804")
-    }
-    if sel.has_hi == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_hi) == 0 {
-        return boila_fetch_fail(s, txn, "литералът в <= не съответства на типа на PRIMARY KEY", "42804")
+    if sel.has_hi == 1 {
+        let cix = boila_col_idx(t, sel.hi_col)
+        if cix < 0 { return boila_fetch_fail(s, txn, concat("колона '", concat(sel.hi_col, "' не съществува")), "42703") }
+        if boila_pk_lit_ok(vec_get(t.cols, cix).typ, sel.pk_hi) == 0 {
+            return boila_fetch_fail(s, txn, "литералът в <= не съответства на типа на колоната", "42804")
+        }
+        if sel.hi_col != pkcol.name { pk_range = 0 }
     }
     // K6: IS [NOT] NULL → exec_isnull (dispatched from exec_select)
     if sel.has_eq == 1 {
@@ -260,7 +264,7 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
     }
     let pks = ks.pks
     let n = vec_len(pks)
-    if sel.has_lo == 1 || sel.has_hi == 1 {
+    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 1 {
         boila_pk_sort(pks)
         let mut ki: i64 = 0
         if sel.has_lo == 1 {
@@ -278,7 +282,6 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             let pkenc = vec_get(pks, ki)
             if sel.has_hi == 1 {
                 if boila_bytes_cmp(pkenc, hi_enc) > 0 {
-                    // early-stop: sorted past upper bound
                     ki = n
                 }
             }
@@ -293,6 +296,11 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         }
         return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
+    // seq / non-PK range: scan all; post-filter when range not pure-PK
+    let mut need_f = 0
+    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 0 {
+        need_f = 1
+    }
     let mut ki: i64 = 0
     while ki < n {
         let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?
@@ -302,7 +310,10 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         let g = boila_txn_get(s, txn, t.id, vec_get(pks, ki))?
         s = g.s
         if g.found == 1 {
-            vec_push(rows, boila_row_dec(g.row))
+            let row = boila_row_dec(g.row)
+            if need_f == 0 || boila_row_pass_filters(row, t, sel) == 1 {
+                vec_push(rows, row)
+            }
         }
         ki = ki + 1
     }
