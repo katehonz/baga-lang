@@ -217,7 +217,10 @@ DO UPDATE SET …] [RETURNING …]`, `UPDATE … SET … WHERE … [RETURNING]`,
 IS [NOT] NULL AND OR NOT`), `ORDER BY … ASC|DESC`, `LIMIT/OFFSET`,
 `GROUP BY` + `COUNT/SUM/AVG/MIN/MAX` + `HAVING`, `DISTINCT`,
 `JOIN` (`INNER`/`LEFT` — index nested-loop или hash join по cost),
-`WITH RECURSIVE`, `CASE`, аритметика. Без подзаявки/window функции в v1.
+`WITH RECURSIVE`, `CASE`, аритметика. Dual (без FROM): литерали
+(bool/NULL), builtins (`version`/`current_*`/`now`/`current_setting`/
+`pg_*`/`COALESCE`/`NULLIF`), `+ - * /` (*/> +-), `||`, `CAST`/`::`.
+  Без подзаявки/window в v1.
 
 **Транзакции:** `BEGIN [READ ONLY] / COMMIT / ROLLBACK`, snapshot
 isolation, `$1..$n` prepared statements през extended protocol-а.
@@ -230,9 +233,11 @@ isolation, `$1..$n` prepared statements през extended protocol-а.
 **Encoding:** **UTF-8 only** (стандарт от P0, не фазова опция). Wire
 ParameterStatus `server_encoding`/`client_encoding` = `UTF8`; storage
 payload-ите на TEXT/str са сурови UTF-8 байтове; lexer-ът акумулира
-стринг литерали през `bytes` (не `chr()`). Няма `SET client_encoding`,
-няма conversion tables. Unicode case folding / ICU collation — v2+
-(gaps F1: ASCII fold only).
+стринг литерали през `bytes` (не `chr()`). `SET`/`SHOW`/`RESET`/
+`DISCARD ALL` — session GUC map (ST: `srv.guc`, PG: per-conn); defaults
+for `server_version`/encodings/DateStyle/TimeZone. Без conversion tables
+и без side-effects върху encoding. Unicode case folding / ICU — v2+
+(gaps F1).
 
 **Всичко извън списъка** → `0A000 feature_not_supported` с името на
 конструкцията. Никога тиха разлика в семантиката спрямо PostgreSQL.

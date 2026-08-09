@@ -1,0 +1,93 @@
+// exec_filter.baga — row post-filters (eq/range/LIKE/IN/ne).
+import "../core/value.baga"
+import "../catalog/schema.baga"
+import "ast.baga"
+import "exec_like.baga"
+import "std/str/str.baga"
+
+fn boila_col_idx_f(t: BoilaTable, name: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        if vec_get(t.cols, i).name == name { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+fn boila_row_pass_filters(row: Vec<BoilaVal>, t: BoilaTable, sel: BoilaSel) -> i64 {
+    if sel.has_eq == 1 {
+        let cix = boila_col_idx_f(t, sel.eq_col)
+        if cix < 0 || cix >= vec_len(row) { return 0 }
+        if boila_val_cmp(vec_get(row, cix), sel.pk_eq) != 0 { return 0 }
+    }
+    if sel.between_not == 1 && sel.has_lo == 1 && sel.has_hi == 1 {
+        // NOT BETWEEN lo AND hi: reject if lo <= v <= hi
+        let cix = boila_col_idx_f(t, sel.lo_col)
+        if cix < 0 || cix >= vec_len(row) { return 0 }
+        let v = vec_get(row, cix)
+        if v.tag == boila_v_null() { return 0 }
+        let cl = boila_val_cmp(v, sel.pk_lo)
+        let ch = boila_val_cmp(v, sel.pk_hi)
+        let mut ge_lo: i64 = 0
+        if cl == 1 || cl == 0 { ge_lo = 1 }
+        let mut le_hi: i64 = 0
+        if ch == 0 - 1 || ch == 0 { le_hi = 1 }
+        if ge_lo == 1 && le_hi == 1 { return 0 }
+    } else {
+        if sel.has_lo == 1 {
+            let cix = boila_col_idx_f(t, sel.lo_col)
+            if cix < 0 || cix >= vec_len(row) { return 0 }
+            let c = boila_val_cmp(vec_get(row, cix), sel.pk_lo)
+            if sel.lo_excl == 1 {
+                if c != 1 { return 0 }
+            } else {
+                if c != 1 && c != 0 { return 0 }
+            }
+        }
+        if sel.has_hi == 1 {
+            let cix = boila_col_idx_f(t, sel.hi_col)
+            if cix < 0 || cix >= vec_len(row) { return 0 }
+            let c = boila_val_cmp(vec_get(row, cix), sel.pk_hi)
+            if sel.hi_excl == 1 {
+                if c != 0 - 1 { return 0 }
+            } else {
+                if c != 0 - 1 && c != 0 { return 0 }
+            }
+        }
+    }
+    if sel.has_like > 0 {
+        let cix = boila_col_idx_f(t, sel.like_col)
+        if cix < 0 || cix >= vec_len(row) { return 0 }
+        let v = vec_get(row, cix)
+        if v.tag == boila_v_null() { return 0 }
+        let mut s = int_to_str(v.i)
+        if v.tag == boila_v_str() { s = str_of_bytes(v.b) }
+        let mut ic: i64 = 0
+        if sel.has_like == 2 || sel.has_like == 4 { ic = 1 }
+        let m = boila_like_match(s, sel.like_pat, ic)
+        if sel.has_like <= 2 && m == 0 { return 0 }
+        if sel.has_like >= 3 && m == 1 { return 0 }
+    }
+    if sel.has_in > 0 {
+        let cix = boila_col_idx_f(t, sel.in_col)
+        if cix < 0 || cix >= vec_len(row) { return 0 }
+        let v = vec_get(row, cix)
+        if v.tag == boila_v_null() { return 0 }
+        let mut hit: i64 = 0
+        let mut j: i64 = 0
+        while j < vec_len(sel.in_vals) {
+            if boila_val_cmp(v, vec_get(sel.in_vals, j)) == 0 { hit = 1 }
+            j = j + 1
+        }
+        if sel.has_in == 1 && hit == 0 { return 0 }
+        if sel.has_in == 2 && hit == 1 { return 0 }
+    }
+    if sel.has_ne == 1 {
+        let cix = boila_col_idx_f(t, sel.ne_col)
+        if cix < 0 || cix >= vec_len(row) { return 0 }
+        let v = vec_get(row, cix)
+        if v.tag == boila_v_null() { return 0 }
+        if boila_val_cmp(v, sel.pk_ne) == 0 { return 0 }
+    }
+    return 1
+}

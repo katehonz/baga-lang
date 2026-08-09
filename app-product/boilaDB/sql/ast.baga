@@ -20,8 +20,9 @@ struct BoilaSel {
     // K6: IS [NOT] NULL — 0 none, 1 IS NULL, 2 IS NOT NULL
     isnull_mode: i64,
     isnull_col: str,
-    lo_col: str, has_lo: i64, pk_lo: BoilaVal, lo_param: i64,
-    hi_col: str, has_hi: i64, pk_hi: BoilaVal, hi_param: i64,
+    lo_col: str, has_lo: i64, pk_lo: BoilaVal, lo_param: i64, lo_excl: i64,
+    hi_col: str, has_hi: i64, pk_hi: BoilaVal, hi_param: i64, hi_excl: i64,
+    between_not: i64,       // 1 = NOT BETWEEN (invert inclusive lo/hi)
     limit: i64, lim_param: i64,
     offset: i64,
     has_order: i64,
@@ -55,7 +56,20 @@ struct BoilaSel {
     knn_query: str,         // суров vector литерал
     // time_bucket (P9): GROUP BY time_bucket('1m', col)
     bucket_iv: i64,         // 0 = none; else interval seconds
-    bucket_col: str
+    bucket_col: str,
+    // Q-like: WHERE col LIKE|ILIKE 'pat' (post-filter; % _)
+    has_like: i64,          // 0 none, 1 LIKE, 2 ILIKE
+    like_col: str,
+    like_pat: str,
+    // Q-in: WHERE col IN|NOT IN (lit,…) — 1 IN, 2 NOT IN
+    has_in: i64,
+    in_col: str,
+    in_vals: Vec<BoilaVal>,
+    // Q-ne: WHERE col <>|!= lit (post-filter)
+    has_ne: i64,
+    ne_col: str,
+    pk_ne: BoilaVal,
+    ne_param: i64
 }
 
 fn boila_sel_item_col(name: str) -> BoilaSelItem {
@@ -103,12 +117,14 @@ fn boila_sel_empty() -> BoilaSel {
     let fg: Vec<i64> = vec_new()
     let jl: Vec<str> = vec_new()
     let jr: Vec<str> = vec_new()
+    let iv: Vec<BoilaVal> = vec_new()
     return BoilaSel {
         table: "", star: 0, items: items,
         eq_col: "", has_eq: 0, pk_eq: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, eq_param: 0,
         isnull_mode: 0, isnull_col: "",
-        lo_col: "", has_lo: 0, pk_lo: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, lo_param: 0,
-        hi_col: "", has_hi: 0, pk_hi: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, hi_param: 0,
+        lo_col: "", has_lo: 0, pk_lo: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, lo_param: 0, lo_excl: 0,
+        hi_col: "", has_hi: 0, pk_hi: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, hi_param: 0, hi_excl: 0,
+        between_not: 0,
         limit: 0, lim_param: 0, offset: 0,
         has_order: 0, ord_cols: oc, ord_desc: od,
         distinct: 0,
@@ -118,7 +134,10 @@ fn boila_sel_empty() -> BoilaSel {
         join_lcols: jl, join_rcols: jr,
         has_fts: 0, fts_col: "", fts_mode: 1, fts_terms: ft, fts_gaps: fg,
         has_knn: 0, knn_col: "", knn_metric: 1, knn_query: "",
-        bucket_iv: 0, bucket_col: ""
+        bucket_iv: 0, bucket_col: "",
+        has_like: 0, like_col: "", like_pat: "",
+        has_in: 0, in_col: "", in_vals: iv,
+        has_ne: 0, ne_col: "", pk_ne: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, ne_param: 0
     }
 }
 

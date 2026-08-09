@@ -116,6 +116,42 @@ T = транзакции, W = wire protocol, F = FTS.
 - **W6 — auth cleartext token (BOILA_TOKEN) или trust.** W6b: `ct_eq`.
   W6c: HTTP Bearer / X-Boila-Token. W3b: more ParameterStatus
   (DateStyle/TimeZone/…). Residual: no SCRAM; no TLS (SSLRequest→'N').
+- **W7 — (FIXED) SET/SHOW/RESET/DISCARD session GUC.** SET name {TO|=}
+  value → store in `srv.guc` (ST) / `BoilaPgSess.guc` (PG) /
+  HTTP-MT `sess_guc` (`http_guc.baga` + keepalive). SHOW reads map then
+  defaults. RESET [ALL|name]; DISCARD ALL clears GUC (+ prep on PG).
+  kind 19/20/21. Residual: no real GUC side-effects (encoding etc.).
+- **Q-dual — (FIXED) SELECT without FROM.** `exec_dual.baga`: literals
+  (i64/str/bool/NULL), `version()`, `current_database()`, `current_schema()`,
+  `current_user`/`session_user`/`user()`, `now()`/`current_timestamp`,
+  `pg_is_in_recovery()`, `pg_backend_pid()`, `current_setting(name)` (via
+  session guc), AS/bare alias, multi-col. W7d: `boila_mt_exec_guc` +
+  PG/HTTP pass per-conn guc into dual. Arith `+ - * /` (*/ over +-),
+  `||` concat, `CAST(x AS t)` / `x::t`, unary `-`, parens. Residual:
+  no floats; `COALESCE`/`NULLIF`/`GREATEST`/`LEAST`/`CONCAT`;
+  `length`/`upper`/`lower`/`trim`/`abs`/`substr`/`strpos`/`mod`/
+  `left`/`right`/`reverse`/`replace`; dual cmp (`=<>…`) + searched
+  `CASE [x] WHEN…THEN…ELSE…END`; dual `AND`/`OR`/`NOT`; dual
+  `[NOT] BETWEEN` / `[NOT] IN` / `[NOT] LIKE|ILIKE` / `IS [NOT] NULL`.
+  `repeat`/`lpad`/`rpad`/`sign`/`starts_with`/`ends_with`; dual
+  `IS [NOT] DISTINCT FROM`; dual `generate_series` + `DISTINCT` /
+  `ORDER BY` / `LIMIT` / `OFFSET`; bare `VALUES (…),…` multi-row.
+  dual `UNION`/`INTERSECT`/`EXCEPT`; dual `WHERE` (bind col aliases).
+  `FETCH FIRST/NEXT`; dual `power`/`current_date`/`pg_typeof`/
+  `quote_literal`/`quote_ident`/`quote_nullable`; `EXPLAIN`. Residual:
+  length=bytes; upper ASCII-only; no INTERSECT/EXCEPT ALL; EXPLAIN no
+  ANALYZE timings;
+  series cap 100k; one ORDER col; VALUES cols columnN; unknown fn → 42883.
+- **Q-like — (FIXED) WHERE col [NOT] LIKE|ILIKE 'pat'.** `%`/`_`;
+  ILIKE fold; NOT LIKE/ILIKE; post-filter. Residual: no ESCAPE; no
+  index acceleration; one LIKE per query.
+- **Q-between/IN — (FIXED).** `col [NOT] BETWEEN lo AND hi` → lo/hi
+  (PK early-stop; NOT BETWEEN = full scan+invert). `col IN|NOT IN`;
+  `<>`/`!=`; `col = a OR col = b` → IN. Residual: one IN/ne/between;
+  OR only same-col equality; no subquery.
+- **Q-cmp — (FIXED) WHERE `<` / `>` exclusive.** `lo_excl`/`hi_excl` on
+  Sel; PK range early-stop + post-filter. Residual: no `<=`/`>=` mix
+  conflict beyond one lo/one hi.
 
 ## Открити при P5
 

@@ -11,6 +11,9 @@ import "parse_insert.baga"
 import "parse_txn.baga"
 import "parse_with.baga"
 import "exec_scan.baga"
+import "exec_out.baga"
+import "exec_dual.baga"
+import "exec_explain.baga"
 import "exec_select.baga"
 import "exec_dml.baga"
 import "exec_modify.baga"
@@ -27,29 +30,17 @@ import "../index/secondary.baga"
 import "../txn/mvcc.baga"
 import "std/str/str.baga"
 
-struct BoilaSqlOut {
-    s: BoilaStore,
-    txn: BoilaTxn,
-    pc: BoilaPlanCache,
-    ok: i64,
-    err: str,
-    state: str,
-    kind: i64,    // 1 select, 2 create table, 6/7/8 DML, 9 create index,
-                  // 10 begin, 11 commit, 12 rollback
-    res: BoilaResult,
-    id: i64       // affected (DML) / table id / index id / commit lsn
-}
-
-fn boila_sql_fail(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, msg: str, state: str) -> BoilaSqlOut {
-    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
-}
-
 // pc_mu=0 → unlocked (tests / single-thread). Serve passes per-db mutex.
 fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlanCache) -> BoilaSqlOut !IO !Time !Par {
-    return boila_exec_sql_mu(s, txn, db, sql, pc, 0)?
+    let guc: Map<str, str> = map_new()
+    return boila_exec_sql_mu(s, txn, db, sql, pc, 0, guc)?
 }
 
-fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
+fn boila_exec_sql_guc(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlanCache, guc: Map<str, str>) -> BoilaSqlOut !IO !Time !Par {
+    return boila_exec_sql_mu(s, txn, db, sql, pc, 0, guc)?
+}
+
+fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlanCache, pc_mu: i64, guc: Map<str, str>) -> BoilaSqlOut !IO !Time !Par {
     let lx = boila_lex(sql)
     if lx.err != "" {
         return boila_sql_fail(s, txn, pc, lx.err, "42601")
@@ -83,6 +74,9 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         return BoilaSqlOut { s: s, txn: t2, pc: pc, ok: 1, err: "", state: "", kind: 12, res: boila_result_empty(), id: 0 }
     }
 
+    if tok_kw(t0, "explain") == 1 {
+        return boila_exec_explain(s, txn, pc, db, lx, guc, sql)?
+    }
     if tok_kw(t0, "with") == 1 {
         let p = boila_parse_with(lx)
         if p.ok == 0 {
@@ -91,22 +85,22 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         let ex = boila_exec_with(s, txn, p.w)?
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 16, res: ex.res, id: vec_len(ex.res.rows) }
     }
-    if tok_kw(t0, "select") == 1 {
+    if tok_kw(t0, "select") == 1 || tok_kw(t0, "values") == 1 {
+        let du = boila_try_exec_dual(s, txn, pc, db, lx, guc)?
+        if du.hit == 1 { return du.out }
+        if tok_kw(t0, "values") == 1 {
+            return boila_sql_fail(s, txn, pc, "невалиден VALUES", "42601")
+        }
         let hit = boila_pc_get_mu(pc, sql, pc_mu)?
         if hit.hit == 1 {
             let ex = boila_exec_select(s, txn, hit.plan.table, hit.plan.sel)?
             return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
         }
         let ps = boila_parse_select(lx)
-        if ps.ok == 0 {
-            return boila_sql_fail(s, txn, pc, ps.err, ps.state)
-        }
+        if ps.ok == 0 { return boila_sql_fail(s, txn, pc, ps.err, ps.state) }
         let ct = boila_cat_by_name_txn(s, txn, ps.sel.table)?
         s = ct.s
-        if ct.ok == 0 {
-            return boila_sql_fail(s, txn, pc, ct.err, ct.state)
-        }
-        // C1: cache JOIN too (right table resolved at exec via sel.join_table)
+        if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
         boila_pc_put_mu(pc, sql, BoilaSelPlan { sel: ps.sel, table: ct.table }, pc_mu)?
         let ex = boila_exec_select(s, txn, ct.table, ps.sel)?
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
@@ -392,5 +386,14 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         }
         return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 8, res: ex.res, id: ex.affected }
     }
-    return boila_sql_fail(s, txn, pc, concat("неподдържана конструкция '", concat(t0.txt, "' (P5: SELECT, CREATE TABLE/INDEX, INSERT, UPDATE, DELETE, BEGIN/COMMIT/ROLLBACK)")), "0A000")
+    // W7 fallback (no session map — mt_exec path); server_exec intercepts first
+    if tok_kw(t0, "set") == 1 { return boila_exec_set_ok(s, txn, pc) }
+    if tok_kw(t0, "show") == 1 { return boila_exec_show(s, txn, pc, lx) }
+    if tok_kw(t0, "reset") == 1 {
+        return boila_sql_ok(s, txn, pc, 20, boila_result_empty(), 0)
+    }
+    if tok_kw(t0, "discard") == 1 {
+        return boila_sql_ok(s, txn, pc, 21, boila_result_empty(), 0)
+    }
+    return boila_sql_fail(s, txn, pc, concat("неподдържана конструкция '", concat(t0.txt, "'")), "0A000")
 }

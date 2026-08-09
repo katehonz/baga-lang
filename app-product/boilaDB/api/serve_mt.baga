@@ -46,7 +46,7 @@ fn boila_mt_seed_srv() -> BoilaServer {
     return BoilaServer {
         meta: boila_store_empty(), root: "", names: names, stores: stores,
         flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
-        session_txn: boila_txn_new(), pc: boila_pc_new(), mt: 0, ok: 0
+        session_txn: boila_txn_new(), pc: boila_pc_new(), guc: map_new(), mt: 0, ok: 0
     }
 }
 
@@ -311,6 +311,12 @@ fn boila_mt_exec_sel(pack: i64, txn: BoilaTxn, db: str, sel: BoilaSel) -> BoilaS
 }
 
 fn boila_mt_exec(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time !Par {
+    let guc: Map<str, str> = map_new()
+    return boila_mt_exec_guc(pack, txn, db, sql, guc)?
+}
+
+// W7d: guc for dual current_setting / session-aware dual on MT paths.
+fn boila_mt_exec_guc(pack: i64, txn: BoilaTxn, db: str, sql: str, guc: Map<str, str>) -> BoilaSrvOut !IO !Time !Par {
     let k = boila_mt_kw2(sql)
     if k == 1 || k == 2 {
         return boila_mt_exec_reg(pack, txn, db, sql)?
@@ -327,7 +333,7 @@ fn boila_mt_exec(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO
     }
 
     let pc = boila_mt_pc_take(pack, db)?
-    let out = boila_exec_sql_mu(g.store, txn, db, sql, pc, 0)?
+    let out = boila_exec_sql_mu(g.store, txn, db, sql, pc, 0, guc)?
     boila_mt_checkin(pack, db, out.s)?
     boila_mt_pc_putback(pack, db, out.pc)?
     mutex_unlock(dmu)

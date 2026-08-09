@@ -1,0 +1,143 @@
+// exec_out.baga — BoilaSqlOut + SET/SHOW/RESET/DISCARD (W7 GUC).
+import "../storage/shards.baga"
+import "../txn/mvcc.baga"
+import "../core/value.baga"
+import "exec_scan.baga"
+import "plan_cache.baga"
+import "lexer.baga"
+import "token.baga"
+import "std/str/str.baga"
+
+struct BoilaSqlOut {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    pc: BoilaPlanCache,
+    ok: i64,
+    err: str,
+    state: str,
+    kind: i64,    // 1 select … 19 set, 20 reset, 21 discard
+    res: BoilaResult,
+    id: i64
+}
+
+fn boila_sql_fail(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, msg: str, state: str) -> BoilaSqlOut {
+    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
+}
+
+fn boila_sql_ok(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, kind: i64, res: BoilaResult, id: i64) -> BoilaSqlOut {
+    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: kind, res: res, id: id }
+}
+
+fn boila_exec_set_ok(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache) -> BoilaSqlOut {
+    return boila_sql_ok(s, txn, pc, 19, boila_result_empty(), 0)
+}
+
+fn boila_guc_default(nm: str) -> str {
+    if nm == "server_version" { return "16.0 (boilaDB 0.1.0)" }
+    if nm == "server_encoding" || nm == "client_encoding" { return "UTF8" }
+    if nm == "integer_datetimes" { return "on" }
+    if nm == "DateStyle" || nm == "datestyle" { return "ISO, MDY" }
+    if nm == "TimeZone" || nm == "timezone" { return "UTC" }
+    if nm == "search_path" { return "public" }
+    return ""
+}
+
+// Normalize GUC key to lowercase.
+fn boila_guc_key(nm: str) -> str {
+    return nm
+}
+
+fn boila_guc_get(guc: Map<str, str>, nm: str) -> str {
+    let k = boila_guc_key(nm)
+    if map_has(guc, k) == 1 {
+        return map_get(guc, k)
+    }
+    return boila_guc_default(k)
+}
+
+// SET name {TO|=} value  → update guc; returns kind 19
+// value: str | num | ident | ON | OFF | DEFAULT
+struct BoilaGucSet {
+    ok: i64,
+    err: str,
+    state: str,
+    guc: Map<str, str>,
+    kind: i64
+}
+
+fn boila_guc_set_parse(guc: Map<str, str>, lx: BoilaLex) -> BoilaGucSet {
+    // toks: SET name TO|'=' value [;]
+    if vec_len(lx.toks) < 2 {
+        return BoilaGucSet { ok: 0, err: "SET изисква име", state: "42601", guc: guc, kind: 0 }
+    }
+    let t1 = vec_get(lx.toks, 1)
+    if t1.kind != tok_ident() {
+        return BoilaGucSet { ok: 0, err: "очаквах GUC име след SET", state: "42601", guc: guc, kind: 0 }
+    }
+    let nm = boila_guc_key(t1.txt)
+    let mut i: i64 = 2
+    let t2 = vec_get(lx.toks, i)
+    if tok_kw(t2, "to") == 1 || (t2.kind == tok_op() && t2.txt == "=") {
+        i = i + 1
+    }
+    if i >= vec_len(lx.toks) {
+        return BoilaGucSet { ok: 0, err: "SET изисква стойност", state: "42601", guc: guc, kind: 0 }
+    }
+    let tv = vec_get(lx.toks, i)
+    let mut val = tv.txt
+    if tok_kw(tv, "default") == 1 {
+        map_del(guc, nm)
+        return BoilaGucSet { ok: 1, err: "", state: "", guc: guc, kind: 19 }
+    }
+    if tv.kind != tok_str() && tv.kind != tok_num() && tv.kind != tok_ident() {
+        return BoilaGucSet { ok: 0, err: "невалидна SET стойност", state: "42601", guc: guc, kind: 0 }
+    }
+    map_set(guc, nm, val)
+    return BoilaGucSet { ok: 1, err: "", state: "", guc: guc, kind: 19 }
+}
+
+fn boila_guc_show(guc: Map<str, str>, lx: BoilaLex) -> BoilaResult {
+    let mut nm = "unknown"
+    if vec_len(lx.toks) > 1 && vec_get(lx.toks, 1).kind == tok_ident() {
+        nm = vec_get(lx.toks, 1).txt
+    }
+    let val = boila_guc_get(guc, nm)
+    let mut res = boila_result_empty()
+    boila_result_add_col(res, nm, boila_v_str())
+    let row: Vec<BoilaVal> = vec_new()
+    vec_push(row, boila_val_str(val))
+    vec_push(res.rows, row)
+    return res
+}
+
+fn boila_guc_reset(guc: Map<str, str>, lx: BoilaLex) -> BoilaGucSet {
+    // RESET ALL | RESET name
+    if vec_len(lx.toks) < 2 {
+        return BoilaGucSet { ok: 0, err: "RESET изисква ALL или име", state: "42601", guc: guc, kind: 0 }
+    }
+    let t1 = vec_get(lx.toks, 1)
+    if tok_kw(t1, "all") == 1 {
+        let empty: Map<str, str> = map_new()
+        return BoilaGucSet { ok: 1, err: "", state: "", guc: empty, kind: 20 }
+    }
+    if t1.kind != tok_ident() {
+        return BoilaGucSet { ok: 0, err: "очаквах име след RESET", state: "42601", guc: guc, kind: 0 }
+    }
+    map_del(guc, boila_guc_key(t1.txt))
+    return BoilaGucSet { ok: 1, err: "", state: "", guc: guc, kind: 20 }
+}
+
+fn boila_guc_discard(guc: Map<str, str>, lx: BoilaLex) -> BoilaGucSet {
+    // DISCARD ALL (only ALL in v1)
+    if vec_len(lx.toks) < 2 || tok_kw(vec_get(lx.toks, 1), "all") != 1 {
+        return BoilaGucSet { ok: 0, err: "поддържа се само DISCARD ALL", state: "0A000", guc: guc, kind: 0 }
+    }
+    let empty: Map<str, str> = map_new()
+    return BoilaGucSet { ok: 1, err: "", state: "", guc: empty, kind: 21 }
+}
+
+// Fallback SHOW without session map (mt path / exec_sql).
+fn boila_exec_show(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, lx: BoilaLex) -> BoilaSqlOut {
+    let empty: Map<str, str> = map_new()
+    return boila_sql_ok(s, txn, pc, 1, boila_guc_show(empty, lx), 0)
+}

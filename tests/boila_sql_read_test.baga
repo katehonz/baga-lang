@@ -2,9 +2,11 @@
 // Каталогът е персистентен; point/range/limit; SQLSTATE грешки; restart.
 
 import "boilaDB/storage/databases.baga"
-import "boilaDB/storage/shards.baga"
 import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/exec_sql.baga"
 import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/sql/plan_cache.baga"
+import "boilaDB/txn/mvcc.baga"
 import "boilaDB/core/codec.baga"
 import "boilaDB/core/value.baga"
 import "boilaDB/core/row.baga"
@@ -49,8 +51,15 @@ fn row_str(row: Vec<BoilaVal>, ix: i64) -> str {
     if v.tag == boila_v_str() {
         return str_of_bytes(v.b)
     }
-    if v.tag == boila_v_i64() {
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
         return int_to_str(v.i)
+    }
+    if v.tag == boila_v_bool() {
+        if v.i == 0 { return "f" }
+        return "t"
+    }
+    if v.tag == boila_v_null() {
+        return "null"
     }
     return "?"
 }
@@ -169,6 +178,181 @@ fn main() -> i64 !IO !Time !Par {
     let q5 = boila_server_exec(srv, "boila", "SELECT v FROM kv WHERE k = 'ключ'")?
     srv = q5.srv
     check(fails, "str_pk_lookup", q5.ok == 1 && vec_len(q5.res.rows) == 1 && row_str(vec_get(q5.res.rows, 0), 0) == "42")
+
+    // W7b: SET stores → SHOW reads; RESET/DISCARD
+    let st = boila_server_exec(srv, "boila", "SET application_name TO 't1'")?
+    srv = st.srv
+    check(fails, "set_store", st.ok == 1 && st.kind == 19)
+    let sh = boila_server_exec(srv, "boila", "SHOW application_name")?
+    srv = sh.srv
+    check(fails, "show_stored", sh.ok == 1 && row_str(vec_get(sh.res.rows, 0), 0) == "t1")
+    let sh2 = boila_server_exec(srv, "boila", "SHOW server_version")?
+    srv = sh2.srv
+    check(fails, "show_version", sh2.ok == 1 && str_find(row_str(vec_get(sh2.res.rows, 0), 0), "boilaDB") >= 0)
+    let rs = boila_server_exec(srv, "boila", "RESET application_name")?
+    srv = rs.srv
+    check(fails, "reset_one", rs.ok == 1 && rs.kind == 20)
+    let sh3 = boila_server_exec(srv, "boila", "SHOW application_name")?
+    srv = sh3.srv
+    check(fails, "show_after_reset", sh3.ok == 1 && row_str(vec_get(sh3.res.rows, 0), 0) == "")
+    let st2 = boila_server_exec(srv, "boila", "SET application_name = 'x'")?
+    srv = st2.srv
+    let da = boila_server_exec(srv, "boila", "DISCARD ALL")?
+    srv = da.srv
+    check(fails, "discard_all", da.ok == 1 && da.kind == 21)
+    let sh4 = boila_server_exec(srv, "boila", "SHOW application_name")?
+    srv = sh4.srv
+    check(fails, "show_after_discard", sh4.ok == 1 && row_str(vec_get(sh4.res.rows, 0), 0) == "")
+
+    // Q-dual: SELECT without FROM
+    let d0 = boila_server_exec(srv, "boila", "SELECT 1")?
+    srv = d0.srv
+    check(fails, "dual_lit", d0.ok == 1 && vec_len(d0.res.rows) == 1 && row_str(vec_get(d0.res.rows, 0), 0) == "1")
+    let d1 = boila_server_exec(srv, "boila", "SELECT version()")?
+    srv = d1.srv
+    check(fails, "dual_version", d1.ok == 1 && str_find(row_str(vec_get(d1.res.rows, 0), 0), "boilaDB") >= 0)
+    let d2 = boila_server_exec(srv, "boila", "SELECT current_database() AS d")?
+    srv = d2.srv
+    check(fails, "dual_db", d2.ok == 1 && row_str(vec_get(d2.res.rows, 0), 0) == "boila" && vec_get(d2.res.cols, 0) == "d")
+    let d3 = boila_server_exec(srv, "boila", "SELECT 1 AS n, current_schema()")?
+    srv = d3.srv
+    check(fails, "dual_multi", d3.ok == 1 && vec_len(d3.res.cols) == 2 && row_str(vec_get(d3.res.rows, 0), 1) == "public")
+    let d4 = boila_server_exec(srv, "boila", "SELECT true, false, NULL")?
+    srv = d4.srv
+    check(fails, "dual_bool_null", d4.ok == 1 && row_str(vec_get(d4.res.rows, 0), 0) == "t" && row_str(vec_get(d4.res.rows, 0), 1) == "f" && row_str(vec_get(d4.res.rows, 0), 2) == "null")
+    let d5 = boila_server_exec(srv, "boila", "SELECT pg_is_in_recovery(), pg_backend_pid()")?
+    srv = d5.srv
+    check(fails, "dual_pg_meta", d5.ok == 1 && row_str(vec_get(d5.res.rows, 0), 0) == "f" && row_str(vec_get(d5.res.rows, 0), 1) == "1")
+    let d6 = boila_server_exec(srv, "boila", "SELECT now() AS t")?
+    srv = d6.srv
+    check(fails, "dual_now", d6.ok == 1 && vec_get(d6.res.tags, 0) == boila_v_ts() && vec_get(vec_get(d6.res.rows, 0), 0).i > 0)
+    let d7 = boila_server_exec(srv, "boila", "SET application_name TO 'dual'")?
+    srv = d7.srv
+    let d8 = boila_server_exec(srv, "boila", "SELECT current_setting('application_name')")?
+    srv = d8.srv
+    check(fails, "dual_cur_setting", d8.ok == 1 && row_str(vec_get(d8.res.rows, 0), 0) == "dual")
+    // W7d: dual current_setting via explicit guc map (MT path shape)
+    let gd = boila_srv_db(srv, "boila")?
+    srv = gd.srv
+    let mut mg: Map<str, str> = map_new()
+    map_set(mg, "application_name", "mtguc")
+    let d9 = boila_exec_sql_guc(gd.store, boila_txn_new(), "boila", "SELECT current_setting('application_name')", boila_pc_new(), mg)?
+    check(fails, "dual_guc_map", d9.ok == 1 && row_str(vec_get(d9.res.rows, 0), 0) == "mtguc")
+    // Q-dual arith + CAST + concat
+    let a0 = boila_server_exec(srv, "boila", "SELECT 1 + 2 * 3, 10 / 2, 7 - 4")?
+    srv = a0.srv
+    check(fails, "dual_arith", a0.ok == 1 && row_str(vec_get(a0.res.rows, 0), 0) == "7" && row_str(vec_get(a0.res.rows, 0), 1) == "5" && row_str(vec_get(a0.res.rows, 0), 2) == "3")
+    let a1 = boila_server_exec(srv, "boila", "SELECT 'a' || 'b' AS c")?
+    srv = a1.srv
+    check(fails, "dual_concat", a1.ok == 1 && row_str(vec_get(a1.res.rows, 0), 0) == "ab" && vec_get(a1.res.cols, 0) == "c")
+    let a2 = boila_server_exec(srv, "boila", "SELECT CAST(1 AS text), 2::bigint, 't'::bool")?
+    srv = a2.srv
+    check(fails, "dual_cast", a2.ok == 1 && row_str(vec_get(a2.res.rows, 0), 0) == "1" && row_str(vec_get(a2.res.rows, 0), 1) == "2" && row_str(vec_get(a2.res.rows, 0), 2) == "t")
+    let a3 = boila_server_exec(srv, "boila", "SELECT 1 / 0")?
+    srv = a3.srv
+    check(fails, "dual_div0", a3.ok == 0 && a3.state == "22012")
+    let dc0 = boila_server_exec(srv, "boila", "SELECT COALESCE(NULL, NULL, 42)")?
+    srv = dc0.srv
+    check(fails, "dual_coalesce", dc0.ok == 1 && row_str(vec_get(dc0.res.rows, 0), 0) == "42")
+    let dc1 = boila_server_exec(srv, "boila", "SELECT COALESCE(NULL, 'x' || 'y')")?
+    srv = dc1.srv
+    check(fails, "dual_coalesce_expr", dc1.ok == 1 && row_str(vec_get(dc1.res.rows, 0), 0) == "xy")
+    let dn0 = boila_server_exec(srv, "boila", "SELECT NULLIF(1, 1), NULLIF(1, 2)")?
+    srv = dn0.srv
+    check(fails, "dual_nullif", dn0.ok == 1 && row_str(vec_get(dn0.res.rows, 0), 0) == "null" && row_str(vec_get(dn0.res.rows, 0), 1) == "1")
+    let ds0 = boila_server_exec(srv, "boila", "SELECT length('abc'), upper('Ab'), lower('Ab'), trim('  x  '), abs(0 - 5)")?
+    srv = ds0.srv
+    check(fails, "dual_str_math", ds0.ok == 1 && row_str(vec_get(ds0.res.rows, 0), 0) == "3" && row_str(vec_get(ds0.res.rows, 0), 1) == "AB" && row_str(vec_get(ds0.res.rows, 0), 2) == "ab" && row_str(vec_get(ds0.res.rows, 0), 3) == "x" && row_str(vec_get(ds0.res.rows, 0), 4) == "5")
+    let ds1 = boila_server_exec(srv, "boila", "SELECT substr('abcdef', 2, 3), strpos('hello', 'll'), greatest(1, 5, 3), least(1, 5, 3), mod(10, 3), concat('a', 1, NULL, 'b')")?
+    srv = ds1.srv
+    check(fails, "dual_multi_fn", ds1.ok == 1 && row_str(vec_get(ds1.res.rows, 0), 0) == "bcd" && row_str(vec_get(ds1.res.rows, 0), 1) == "3" && row_str(vec_get(ds1.res.rows, 0), 2) == "5" && row_str(vec_get(ds1.res.rows, 0), 3) == "1" && row_str(vec_get(ds1.res.rows, 0), 4) == "1" && row_str(vec_get(ds1.res.rows, 0), 5) == "a1b")
+    let ds2 = boila_server_exec(srv, "boila", "SELECT left('hello', 2), right('hello', 3), reverse('ab'), replace('ababa', 'ba', 'X')")?
+    srv = ds2.srv
+    check(fails, "dual_str2", ds2.ok == 1 && row_str(vec_get(ds2.res.rows, 0), 0) == "he" && row_str(vec_get(ds2.res.rows, 0), 1) == "llo" && row_str(vec_get(ds2.res.rows, 0), 2) == "ba" && row_str(vec_get(ds2.res.rows, 0), 3) == "aXX")
+    let dcmp = boila_server_exec(srv, "boila", "SELECT 1 < 2, 3 = 3, 4 <> 5, 2 >= 2")?
+    srv = dcmp.srv
+    check(fails, "dual_cmp", dcmp.ok == 1 && row_str(vec_get(dcmp.res.rows, 0), 0) == "t" && row_str(vec_get(dcmp.res.rows, 0), 1) == "t" && row_str(vec_get(dcmp.res.rows, 0), 2) == "t" && row_str(vec_get(dcmp.res.rows, 0), 3) == "t")
+    let dcase = boila_server_exec(srv, "boila", "SELECT CASE WHEN 1 < 2 THEN 'yes' WHEN false THEN 'no' ELSE 'maybe' END, CASE WHEN 0 THEN 1 ELSE 2 END")?
+    srv = dcase.srv
+    check(fails, "dual_case", dcase.ok == 1 && row_str(vec_get(dcase.res.rows, 0), 0) == "yes" && row_str(vec_get(dcase.res.rows, 0), 1) == "2")
+    let dbool = boila_server_exec(srv, "boila", "SELECT true AND false, true OR false, NOT false, 1 < 2 AND 3 > 1")?
+    srv = dbool.srv
+    check(fails, "dual_bool", dbool.ok == 1 && row_str(vec_get(dbool.res.rows, 0), 0) == "f" && row_str(vec_get(dbool.res.rows, 0), 1) == "t" && row_str(vec_get(dbool.res.rows, 0), 2) == "t" && row_str(vec_get(dbool.res.rows, 0), 3) == "t")
+    let dcs = boila_server_exec(srv, "boila", "SELECT CASE 2 WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END")?
+    srv = dcs.srv
+    check(fails, "dual_case_simple", dcs.ok == 1 && row_str(vec_get(dcs.res.rows, 0), 0) == "b")
+    let dbi = boila_server_exec(srv, "boila", "SELECT 5 BETWEEN 1 AND 10, 5 NOT BETWEEN 1 AND 3, 2 IN (1, 2, 3), 4 NOT IN (1, 2)")?
+    srv = dbi.srv
+    check(fails, "dual_between_in", dbi.ok == 1 && row_str(vec_get(dbi.res.rows, 0), 0) == "t" && row_str(vec_get(dbi.res.rows, 0), 1) == "t" && row_str(vec_get(dbi.res.rows, 0), 2) == "t" && row_str(vec_get(dbi.res.rows, 0), 3) == "t")
+    let dlk = boila_server_exec(srv, "boila", "SELECT 'abc' LIKE 'a%', 'Ab' ILIKE 'a%', 'x' NOT LIKE 'y%', NULL IS NULL, 1 IS NOT NULL")?
+    srv = dlk.srv
+    check(fails, "dual_like_null", dlk.ok == 1 && row_str(vec_get(dlk.res.rows, 0), 0) == "t" && row_str(vec_get(dlk.res.rows, 0), 1) == "t" && row_str(vec_get(dlk.res.rows, 0), 2) == "t" && row_str(vec_get(dlk.res.rows, 0), 3) == "t" && row_str(vec_get(dlk.res.rows, 0), 4) == "t")
+    let dpad = boila_server_exec(srv, "boila", "SELECT repeat('ab', 3), lpad('x', 4, '0'), rpad('x', 4, '0'), sign(0 - 3), sign(5)")?
+    srv = dpad.srv
+    check(fails, "dual_pad_sign", dpad.ok == 1 && row_str(vec_get(dpad.res.rows, 0), 0) == "ababab" && row_str(vec_get(dpad.res.rows, 0), 1) == "000x" && row_str(vec_get(dpad.res.rows, 0), 2) == "x000" && row_str(vec_get(dpad.res.rows, 0), 3) == "-1" && row_str(vec_get(dpad.res.rows, 0), 4) == "1")
+    let dsw = boila_server_exec(srv, "boila", "SELECT starts_with('hello', 'he'), ends_with('hello', 'lo'), NULL IS DISTINCT FROM 1, NULL IS NOT DISTINCT FROM NULL, 1 IS DISTINCT FROM 2")?
+    srv = dsw.srv
+    check(fails, "dual_starts_dist", dsw.ok == 1 && row_str(vec_get(dsw.res.rows, 0), 0) == "t" && row_str(vec_get(dsw.res.rows, 0), 1) == "t" && row_str(vec_get(dsw.res.rows, 0), 2) == "t" && row_str(vec_get(dsw.res.rows, 0), 3) == "t" && row_str(vec_get(dsw.res.rows, 0), 4) == "t")
+    let dgs = boila_server_exec(srv, "boila", "SELECT generate_series(1, 3)")?
+    srv = dgs.srv
+    check(fails, "dual_genseries", dgs.ok == 1 && vec_len(dgs.res.rows) == 3 && row_str(vec_get(dgs.res.rows, 0), 0) == "1" && row_str(vec_get(dgs.res.rows, 2), 0) == "3")
+    let dgs2 = boila_server_exec(srv, "boila", "SELECT generate_series(1, 5, 2) AS n, 'x' AS t")?
+    srv = dgs2.srv
+    check(fails, "dual_genseries_step", dgs2.ok == 1 && vec_len(dgs2.res.rows) == 3 && row_str(vec_get(dgs2.res.rows, 1), 0) == "3" && row_str(vec_get(dgs2.res.rows, 0), 1) == "x")
+    let dgs3 = boila_server_exec(srv, "boila", "SELECT generate_series(5, 1, 0 - 2)")?
+    srv = dgs3.srv
+    check(fails, "dual_genseries_down", dgs3.ok == 1 && vec_len(dgs3.res.rows) == 3 && row_str(vec_get(dgs3.res.rows, 0), 0) == "5")
+    let dord = boila_server_exec(srv, "boila", "SELECT generate_series(1, 5) AS n ORDER BY n DESC LIMIT 2 OFFSET 1")?
+    srv = dord.srv
+    check(fails, "dual_order_lim", dord.ok == 1 && vec_len(dord.res.rows) == 2 && row_str(vec_get(dord.res.rows, 0), 0) == "4" && row_str(vec_get(dord.res.rows, 1), 0) == "3")
+    let ddist = boila_server_exec(srv, "boila", "SELECT DISTINCT generate_series(1, 2) AS n, 'a'")?
+    srv = ddist.srv
+    check(fails, "dual_distinct", ddist.ok == 1 && vec_len(ddist.res.rows) == 2)
+    let dv = boila_server_exec(srv, "boila", "VALUES (1, 'a'), (2, 'b'), (3, 'c') ORDER BY 1 DESC LIMIT 2")?
+    srv = dv.srv
+    check(fails, "dual_values", dv.ok == 1 && vec_len(dv.res.rows) == 2 && row_str(vec_get(dv.res.rows, 0), 0) == "3" && row_str(vec_get(dv.res.rows, 0), 1) == "c")
+    let du = boila_server_exec(srv, "boila", "SELECT 1 AS n UNION SELECT 2 UNION ALL SELECT 2 ORDER BY 1")?
+    srv = du.srv
+    check(fails, "dual_union", du.ok == 1 && vec_len(du.res.rows) == 3 && row_str(vec_get(du.res.rows, 0), 0) == "1")
+    let du2 = boila_server_exec(srv, "boila", "VALUES (1), (2) UNION VALUES (2), (3)")?
+    srv = du2.srv
+    check(fails, "dual_union_vals", du2.ok == 1 && vec_len(du2.res.rows) == 3)
+    let di = boila_server_exec(srv, "boila", "VALUES (1), (2), (3) INTERSECT VALUES (2), (3), (4)")?
+    srv = di.srv
+    check(fails, "dual_intersect", di.ok == 1 && vec_len(di.res.rows) == 2)
+    let de = boila_server_exec(srv, "boila", "VALUES (1), (2), (3) EXCEPT VALUES (2)")?
+    srv = de.srv
+    check(fails, "dual_except", de.ok == 1 && vec_len(de.res.rows) == 2)
+    let dw = boila_server_exec(srv, "boila", "SELECT generate_series(1, 10) AS n WHERE n > 7 ORDER BY n")?
+    srv = dw.srv
+    check(fails, "dual_where", dw.ok == 1 && vec_len(dw.res.rows) == 3 && row_str(vec_get(dw.res.rows, 0), 0) == "8")
+    let dw2 = boila_server_exec(srv, "boila", "VALUES (1, 'a'), (2, 'b'), (3, 'c') WHERE column1 >= 2")?
+    srv = dw2.srv
+    check(fails, "dual_where_vals", dw2.ok == 1 && vec_len(dw2.res.rows) == 2)
+    let dfe = boila_server_exec(srv, "boila", "SELECT generate_series(1, 10) AS n ORDER BY n OFFSET 2 ROWS FETCH FIRST 3 ROWS ONLY")?
+    srv = dfe.srv
+    check(fails, "dual_fetch", dfe.ok == 1 && vec_len(dfe.res.rows) == 3 && row_str(vec_get(dfe.res.rows, 0), 0) == "3" && row_str(vec_get(dfe.res.rows, 2), 0) == "5")
+    let dpw = boila_server_exec(srv, "boila", "SELECT power(2, 10), pow(3, 3)")?
+    srv = dpw.srv
+    check(fails, "dual_power", dpw.ok == 1 && row_str(vec_get(dpw.res.rows, 0), 0) == "1024" && row_str(vec_get(dpw.res.rows, 0), 1) == "27")
+    let dex = boila_server_exec(srv, "boila", "EXPLAIN SELECT 1 + 2")?
+    srv = dex.srv
+    check(fails, "explain_dual", dex.ok == 1 && vec_len(dex.res.rows) >= 1 && str_find(row_str(vec_get(dex.res.rows, 0), 0), "Dual") >= 0)
+    let dex2 = boila_server_exec(srv, "boila", "EXPLAIN SELECT id FROM users WHERE id = 7")?
+    srv = dex2.srv
+    check(fails, "explain_pk", dex2.ok == 1 && str_find(row_str(vec_get(dex2.res.rows, 0), 0), "PK") >= 0)
+    let dcd = boila_server_exec(srv, "boila", "SELECT current_date")?
+    srv = dcd.srv
+    check(fails, "dual_current_date", dcd.ok == 1 && vec_len(dcd.res.rows) == 1 && vec_get(dcd.res.tags, 0) == boila_v_i64())
+    let dcd2 = boila_server_exec(srv, "boila", "SELECT current_date()")?
+    srv = dcd2.srv
+    check(fails, "dual_current_date_fn", dcd2.ok == 1 && vec_len(dcd2.res.rows) == 1)
+    let dty = boila_server_exec(srv, "boila", "SELECT pg_typeof(1), pg_typeof('x'), pg_typeof(true), pg_typeof(NULL)")?
+    srv = dty.srv
+    check(fails, "dual_typeof", dty.ok == 1 && row_str(vec_get(dty.res.rows, 0), 0) == "bigint" && row_str(vec_get(dty.res.rows, 0), 1) == "text" && row_str(vec_get(dty.res.rows, 0), 2) == "boolean" && row_str(vec_get(dty.res.rows, 0), 3) == "unknown")
+    let dqu = boila_server_exec(srv, "boila", "SELECT quote_literal('a''b'), quote_ident('MyTab'), quote_nullable(NULL)")?
+    srv = dqu.srv
+    check(fails, "dual_quote", dqu.ok == 1 && row_str(vec_get(dqu.res.rows, 0), 0) == "'a''b'" && row_str(vec_get(dqu.res.rows, 0), 1) == "\"MyTab\"" && row_str(vec_get(dqu.res.rows, 0), 2) == "NULL")
 
     boila_server_close(srv)?
 

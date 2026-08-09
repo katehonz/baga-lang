@@ -1,0 +1,76 @@
+// pgwire_guc.baga — W7b per-conn SET/SHOW/RESET/DISCARD for PG wire.
+import "pgwire_enc.baga"
+import "../sql/exec_server.baga"
+import "../sql/exec_scan.baga"
+import "../sql/exec_out.baga"
+import "../sql/lexer.baga"
+import "../sql/token.baga"
+import "../sql/ast.baga"
+import "../storage/databases.baga"
+import "../txn/mvcc.baga"
+import "std/str/str.baga"
+
+// Minimal sess view — keep in sync with BoilaPgSess fields used here.
+// Callers pass stmts/portals/guc via BoilaPgSess from pgwire.baga.
+
+struct BoilaPgGucHit {
+    hit: i64,
+    sess_guc: Map<str, str>,
+    clear_prep: i64,
+    out: BoilaSrvOut
+}
+
+fn pgw_guc_miss(srv: BoilaServer, txn: BoilaTxn, guc: Map<str, str>) -> BoilaPgGucHit {
+    return BoilaPgGucHit {
+        hit: 0, sess_guc: guc, clear_prep: 0,
+        out: boila_srv_out_fail(srv, txn, "", "")
+    }
+}
+
+fn pgw_guc_ok(srv: BoilaServer, txn: BoilaTxn, db: str, guc: Map<str, str>, kind: i64, res: BoilaResult, clear_prep: i64) -> BoilaPgGucHit {
+    let out = BoilaSrvOut {
+        srv: srv, txn: txn, ok: 1, err: "", state: "", kind: kind,
+        res: res, id: 0, db: db
+    }
+    return BoilaPgGucHit { hit: 1, sess_guc: guc, clear_prep: clear_prep, out: out }
+}
+
+fn pgw_guc_fail(srv: BoilaServer, txn: BoilaTxn, guc: Map<str, str>, err: str, state: str) -> BoilaPgGucHit {
+    return BoilaPgGucHit {
+        hit: 1, sess_guc: guc, clear_prep: 0,
+        out: boila_srv_out_fail(srv, txn, err, state)
+    }
+}
+
+fn pgw_try_sess_guc(srv: BoilaServer, txn: BoilaTxn, db: str, guc: Map<str, str>, sql: str) -> BoilaPgGucHit {
+    let lx = boila_lex(sql)
+    if lx.err != "" || vec_len(lx.toks) == 0 {
+        return pgw_guc_miss(srv, txn, guc)
+    }
+    let t0 = vec_get(lx.toks, 0)
+    if tok_kw(t0, "set") == 1 {
+        let gs = boila_guc_set_parse(guc, lx)
+        if gs.ok == 0 {
+            return pgw_guc_fail(srv, txn, guc, gs.err, gs.state)
+        }
+        return pgw_guc_ok(srv, txn, db, gs.guc, 19, boila_result_empty(), 0)
+    }
+    if tok_kw(t0, "show") == 1 {
+        return pgw_guc_ok(srv, txn, db, guc, 1, boila_guc_show(guc, lx), 0)
+    }
+    if tok_kw(t0, "reset") == 1 {
+        let gs = boila_guc_reset(guc, lx)
+        if gs.ok == 0 {
+            return pgw_guc_fail(srv, txn, guc, gs.err, gs.state)
+        }
+        return pgw_guc_ok(srv, txn, db, gs.guc, 20, boila_result_empty(), 0)
+    }
+    if tok_kw(t0, "discard") == 1 {
+        let gs = boila_guc_discard(guc, lx)
+        if gs.ok == 0 {
+            return pgw_guc_fail(srv, txn, guc, gs.err, gs.state)
+        }
+        return pgw_guc_ok(srv, txn, db, gs.guc, 21, boila_result_empty(), 1)
+    }
+    return pgw_guc_miss(srv, txn, guc)
+}

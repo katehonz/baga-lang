@@ -2,6 +2,7 @@
 
 import "boilaDB/storage/databases.baga"
 import "boilaDB/api/http_sql.baga"
+import "boilaDB/api/http_guc.baga"
 import "boilaDB/sql/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/txn/mvcc.baga"
@@ -156,6 +157,25 @@ fn main() -> i64 !IO !Time !Par {
     txn = qa.txn
     sess = qa.db
     check(fails, "query_db_override", sess == "alpha" && str_find(qa.resp.body, "\"ok\":true") >= 0)
+
+    // W7c: ST SET/SHOW via http_sql_tx (srv.guc)
+    let gs = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "SET application_name TO 'http1'"))?
+    srv = gs.srv
+    txn = gs.txn
+    check(fails, "http_set", str_find(gs.resp.body, "\"kind\":\"set\"") >= 0)
+    let gsh = boila_http_sql_tx(srv, txn, sess, mk_req("/sql", "SHOW application_name"))?
+    srv = gsh.srv
+    txn = gsh.txn
+    check(fails, "http_show_stored", str_find(gsh.resp.body, "http1") >= 0)
+    // MT-style per-conn guc try
+    let mut mg: Map<str, str> = map_new()
+    let t1 = boila_http_try_guc(txn, "boila", mg, "SET application_name TO 'mt'")
+    check(fails, "mt_guc_set", t1.hit == 1 && str_find(t1.r.resp.body, "set") >= 0)
+    mg = t1.r.guc
+    let t2 = boila_http_try_guc(txn, "boila", mg, "SHOW application_name")
+    check(fails, "mt_guc_show", t2.hit == 1 && str_find(t2.r.resp.body, "mt") >= 0)
+    let t3 = boila_http_try_guc(txn, "boila", mg, "SELECT 1")
+    check(fails, "mt_guc_miss", t3.hit == 0)
 
     boila_server_close(srv)?
     wipe_root(root)?

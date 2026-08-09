@@ -1,0 +1,292 @@
+// exec_dual.baga — dual SELECT/VALUES entry (no FROM) + UNION.
+import "../storage/shards.baga"
+import "../txn/mvcc.baga"
+import "../core/value.baga"
+import "exec_scan.baga"
+import "exec_out.baga"
+import "exec_dual_parse.baga"
+import "exec_dual_ops.baga"
+import "exec_dual_rows.baga"
+import "plan_cache.baga"
+import "lexer.baga"
+import "token.baga"
+import "std/str/str.baga"
+
+fn boila_try_exec_dual_from(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str, lx: BoilaLex, guc: Map<str, str>, start: i64) -> BoilaDualTry !Time {
+    let end = boila_dual_branch_end(lx, start)
+    let sql = boila_dual_tokens_sql(lx, start, end)
+    let lx2 = boila_lex(sql)
+    if lx2.err != "" {
+        return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, lx2.err, "42601") }
+    }
+    let r = boila_try_exec_dual(s, txn, pc, db, lx2, guc)?
+    if r.hit == 1 && r.out.ok == 1 {
+        let mut out = r.out
+        out.id = end
+        return BoilaDualTry { hit: 1, out: out }
+    }
+    return r
+}
+
+fn boila_dual_finish(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str, lx: BoilaLex, guc: Map<str, str>, base: BoilaResult, start_i: i64) -> BoilaDualTry !Time {
+    let mut acc = base
+    let mut i = start_i
+    let mut more_u = true
+    while more_u {
+        let op = boila_dual_tok(lx, i)
+        let mut kind: i64 = 0
+        if tok_kw(op, "union") == 1 { kind = 1 }
+        if tok_kw(op, "intersect") == 1 { kind = 2 }
+        if tok_kw(op, "except") == 1 { kind = 3 }
+        if kind == 0 {
+            more_u = false
+        } else {
+            i = i + 1
+            let mut allu: i64 = 0
+            if tok_kw(boila_dual_tok(lx, i), "all") == 1 {
+                if kind != 1 {
+                    return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "INTERSECT/EXCEPT ALL не се поддържа", "0A000") }
+                }
+                allu = 1
+                i = i + 1
+            }
+            let rest = boila_dual_tok(lx, i)
+            if tok_kw(rest, "select") != 1 && tok_kw(rest, "values") != 1 {
+                return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах SELECT/VALUES след set-op", "42601") }
+            }
+            let sub = boila_try_exec_dual_from(s, txn, pc, db, lx, guc, i)?
+            if sub.hit == 0 || sub.out.ok == 0 {
+                if sub.hit == 1 { return sub }
+                return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "невалиден клон на set-op", "42601") }
+            }
+            if vec_len(sub.out.res.cols) != vec_len(acc.cols) {
+                return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "set-op: различен брой колони", "42601") }
+            }
+            if kind == 1 {
+                acc.rows = boila_dual_rows_append(acc.rows, sub.out.res.rows)
+                if allu == 0 { acc.rows = boila_dual_rows_distinct(acc.rows) }
+            } else {
+                if kind == 2 {
+                    acc.rows = boila_dual_rows_intersect(acc.rows, sub.out.res.rows)
+                } else {
+                    acc.rows = boila_dual_rows_except(acc.rows, sub.out.res.rows)
+                }
+            }
+            i = sub.out.id
+        }
+    }
+    let mut ord_col: i64 = 0 - 1
+    let mut ord_desc: i64 = 0
+    if tok_kw(boila_dual_tok(lx, i), "order") == 1 {
+        if tok_kw(boila_dual_tok(lx, i + 1), "by") != 1 {
+            return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах BY след ORDER", "42601") }
+        }
+        i = i + 2
+        let oc = boila_dual_tok(lx, i)
+        if oc.kind == tok_num() {
+            ord_col = parse_int(oc.txt) - 1
+            i = i + 1
+        } else {
+            if oc.kind == tok_ident() {
+                let mut ci: i64 = 0
+                while ci < vec_len(acc.cols) {
+                    if vec_get(acc.cols, ci) == oc.txt { ord_col = ci }
+                    ci = ci + 1
+                }
+                i = i + 1
+            } else {
+                return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах колона в ORDER BY", "42601") }
+            }
+        }
+        if ord_col < 0 || ord_col >= vec_len(acc.cols) {
+            return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "ORDER BY колона не съществува", "42703") }
+        }
+        if tok_kw(boila_dual_tok(lx, i), "desc") == 1 { ord_desc = 1; i = i + 1 }
+        else { if tok_kw(boila_dual_tok(lx, i), "asc") == 1 { i = i + 1 } }
+    }
+    let mut lim: i64 = 0 - 1
+    let mut off: i64 = 0
+    if tok_kw(boila_dual_tok(lx, i), "limit") == 1 {
+        i = i + 1
+        if boila_dual_tok(lx, i).kind != tok_num() {
+            return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах число след LIMIT", "42601") }
+        }
+        lim = parse_int(boila_dual_tok(lx, i).txt)
+        i = i + 1
+    }
+    if tok_kw(boila_dual_tok(lx, i), "offset") == 1 {
+        i = i + 1
+        if boila_dual_tok(lx, i).kind != tok_num() {
+            return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах число след OFFSET", "42601") }
+        }
+        off = parse_int(boila_dual_tok(lx, i).txt)
+        i = i + 1
+        // optional ROW|ROWS
+        if tok_kw(boila_dual_tok(lx, i), "row") == 1 || tok_kw(boila_dual_tok(lx, i), "rows") == 1 {
+            i = i + 1
+        }
+    }
+    // FETCH FIRST|NEXT n ROW|ROWS ONLY
+    if tok_kw(boila_dual_tok(lx, i), "fetch") == 1 {
+        i = i + 1
+        if tok_kw(boila_dual_tok(lx, i), "first") != 1 && tok_kw(boila_dual_tok(lx, i), "next") != 1 {
+            return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах FIRST/NEXT след FETCH", "42601") }
+        }
+        i = i + 1
+        if boila_dual_tok(lx, i).kind != tok_num() {
+            return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах число в FETCH", "42601") }
+        }
+        lim = parse_int(boila_dual_tok(lx, i).txt)
+        i = i + 1
+        if tok_kw(boila_dual_tok(lx, i), "row") != 1 && tok_kw(boila_dual_tok(lx, i), "rows") != 1 {
+            return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах ROW/ROWS в FETCH", "42601") }
+        }
+        i = i + 1
+        if tok_kw(boila_dual_tok(lx, i), "only") == 1 { i = i + 1 }
+    }
+    let end = boila_dual_tok(lx, i)
+    if end.kind != tok_eof() && end.kind != tok_semi() {
+        return BoilaDualTry {
+            hit: 1, out: boila_sql_fail(s, txn, pc, concat("неочакван токен '", concat(end.txt, "'")), "42601")
+        }
+    }
+    if ord_col >= 0 { acc.rows = boila_dual_rows_sort(acc.rows, ord_col, ord_desc) }
+    if off > 0 || lim >= 0 {
+        let sliced: Vec<Vec<BoilaVal>> = vec_new()
+        let mut ri: i64 = off
+        let n = vec_len(acc.rows)
+        let mut taken: i64 = 0
+        while ri < n {
+            if lim >= 0 && taken >= lim { break }
+            vec_push(sliced, vec_get(acc.rows, ri))
+            ri = ri + 1
+            taken = taken + 1
+        }
+        acc.rows = sliced
+    }
+    return BoilaDualTry { hit: 1, out: boila_sql_ok(s, txn, pc, 1, acc, 0) }
+}
+
+fn boila_try_exec_dual(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str, lx: BoilaLex, guc: Map<str, str>) -> BoilaDualTry !Time {
+    let t0 = boila_dual_tok(lx, 0)
+    if tok_kw(t0, "values") == 1 {
+        let vr = boila_try_exec_values(s, txn, pc, db, lx, guc)?
+        if vr.hit == 0 || vr.out.ok == 0 { return vr }
+        let wr = boila_dual_apply_where(s, txn, pc, db, lx, guc, vr.out.res, vr.out.id)?
+        if wr.hit == 0 || wr.out.ok == 0 { return wr }
+        return boila_dual_finish(s, txn, pc, db, lx, guc, wr.out.res, wr.out.id)?
+    }
+    if tok_kw(t0, "select") != 1 {
+        return boila_dual_miss(s, txn, pc)
+    }
+    let mut i: i64 = 1
+    let mut distinct: i64 = 0
+    if tok_kw(boila_dual_tok(lx, i), "distinct") == 1 {
+        distinct = 1
+        i = i + 1
+    }
+    let mut p: i64 = i
+    while p < vec_len(lx.toks) {
+        let t = boila_dual_tok(lx, p)
+        if t.kind == tok_eof() || t.kind == tok_semi() { break }
+        if tok_kw(t, "from") == 1 {
+            if p > 0 && tok_kw(boila_dual_tok(lx, p - 1), "distinct") == 1 {
+                p = p + 1
+            } else {
+                return boila_dual_miss(s, txn, pc)
+            }
+        } else {
+            p = p + 1
+        }
+    }
+    if boila_dual_tok(lx, i).kind == tok_star() {
+        return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "SELECT * изисква FROM", "42601") }
+    }
+    let mut res = boila_result_empty()
+    let cols_ex: Vec<BoilaDualExpr> = vec_new()
+    let mut col_i: i64 = 1
+    let mut more = true
+    while more {
+        let t = boila_dual_tok(lx, i)
+        if t.kind == tok_eof() || t.kind == tok_semi() || boila_dual_is_tail_kw(t) == 1 {
+            if col_i == 1 {
+                return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "празен SELECT", "42601") }
+            }
+            more = false
+        } else {
+            let ex = boila_dual_parse_expr(lx, i, db, guc, boila_dual_bind_off())?
+            if ex.ok == 0 {
+                return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, ex.err, ex.state) }
+            }
+            i = ex.pos
+            let mut cname = ex.cname
+            if tok_kw(boila_dual_tok(lx, i), "as") == 1 {
+                i = i + 1
+                let al = boila_dual_tok(lx, i)
+                if al.kind != tok_ident() {
+                    return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах alias след AS", "42601") }
+                }
+                cname = al.txt
+                i = i + 1
+            } else {
+                if boila_dual_tok(lx, i).kind == tok_ident() {
+                    let al2 = boila_dual_tok(lx, i)
+                    if boila_dual_is_tail_kw(al2) == 0 && tok_kw(al2, "as") == 0 {
+                        cname = al2.txt
+                        i = i + 1
+                    }
+                }
+            }
+            let mut ex2 = ex
+            ex2.cname = cname
+            boila_result_add_col(res, cname, ex.tag)
+            vec_push(cols_ex, ex2)
+            col_i = col_i + 1
+            if boila_dual_tok(lx, i).kind == tok_comma() { i = i + 1 } else { more = false }
+        }
+    }
+    let mut sidx: i64 = 0 - 1
+    let mut k: i64 = 0
+    while k < vec_len(cols_ex) {
+        if vec_get(cols_ex, k).series == 1 {
+            if sidx >= 0 {
+                return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, "само един generate_series на dual SELECT", "0A000") }
+            }
+            sidx = k
+        }
+        k = k + 1
+    }
+    if sidx < 0 {
+        let row: Vec<BoilaVal> = vec_new()
+        k = 0
+        while k < vec_len(cols_ex) {
+            vec_push(row, vec_get(cols_ex, k).val)
+            k = k + 1
+        }
+        vec_push(res.rows, row)
+    } else {
+        let se = vec_get(cols_ex, sidx)
+        let mut v = se.series_lo
+        let step = se.series_step
+        let hi = se.series_hi
+        let mut guard: i64 = 0
+        while guard < 100001 {
+            if step > 0 && v > hi { break }
+            if step < 0 && v < hi { break }
+            let row: Vec<BoilaVal> = vec_new()
+            k = 0
+            while k < vec_len(cols_ex) {
+                if k == sidx { vec_push(row, boila_val_i64(v)) }
+                else { vec_push(row, vec_get(cols_ex, k).val) }
+                k = k + 1
+            }
+            vec_push(res.rows, row)
+            v = v + step
+            guard = guard + 1
+        }
+    }
+    if distinct == 1 { res.rows = boila_dual_rows_distinct(res.rows) }
+    let wr = boila_dual_apply_where(s, txn, pc, db, lx, guc, res, i)?
+    if wr.hit == 0 || wr.out.ok == 0 { return wr }
+    return boila_dual_finish(s, txn, pc, db, lx, guc, wr.out.res, wr.out.id)?
+}

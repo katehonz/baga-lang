@@ -1,4 +1,4 @@
-// exec_scan.baga — SELECT fetch (P5) + txn reads (P4).
+// exec_scan.baga — SELECT fetch + txn reads.
 import "../storage/shards.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
@@ -11,19 +11,18 @@ import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_sort.baga"
 import "exec_buf.baga"
+import "exec_filter.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 struct BoilaResult { cols: Vec<str>, tags: Vec<i64>, rows: Vec<Vec<BoilaVal>> }
 struct BoilaExec { s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, kind: i64, res: BoilaResult }
 struct BoilaFetch { s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, rows: Vec<Vec<BoilaVal>> }
-
 fn boila_result_empty() -> BoilaResult {
     let cols: Vec<str> = vec_new()
     let tags: Vec<i64> = vec_new()
     let rows: Vec<Vec<BoilaVal>> = vec_new()
     return BoilaResult { cols: cols, tags: tags, rows: rows }
 }
-
 fn boila_result_add_col(res: BoilaResult, name: str, tag: i64) {
     vec_push(res.cols, name)
     vec_push(res.tags, tag)
@@ -92,28 +91,6 @@ fn boila_pk_lit_ok(typ: i64, v: BoilaVal) -> i64 {
         return 1
     }
     return 0
-}
-
-// F6/V6: post-filter eq/lo/hi on modal hits.
-fn boila_row_pass_filters(row: Vec<BoilaVal>, t: BoilaTable, sel: BoilaSel) -> i64 {
-    if sel.has_eq == 1 {
-        let cix = boila_col_idx(t, sel.eq_col)
-        if cix < 0 || cix >= vec_len(row) { return 0 }
-        if boila_val_cmp(vec_get(row, cix), sel.pk_eq) != 0 { return 0 }
-    }
-    if sel.has_lo == 1 {
-        let cix = boila_col_idx(t, sel.lo_col)
-        if cix < 0 || cix >= vec_len(row) { return 0 }
-        let c = boila_val_cmp(vec_get(row, cix), sel.pk_lo)
-        if c != 1 && c != 0 { return 0 }
-    }
-    if sel.has_hi == 1 {
-        let cix = boila_col_idx(t, sel.hi_col)
-        if cix < 0 || cix >= vec_len(row) { return 0 }
-        let c = boila_val_cmp(vec_get(row, cix), sel.pk_hi)
-        if c != 0 - 1 && c != 0 { return 0 }
-    }
-    return 1
 }
 
 fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
@@ -249,28 +226,51 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
     if g0 != "" { return boila_fetch_fail(s, txn, g0, boila_budget_gate_state(g0)) }
     let pks = ks.pks
     let n = vec_len(pks)
-    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 1 {
+    // NOT BETWEEN is not a contiguous PK range — use full scan + filter
+    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 1 && sel.between_not == 0 {
         boila_pk_sort(pks)
         let mut ki: i64 = 0
-        if sel.has_lo == 1 { ki = boila_pk_lb(pks, boila_val_enc(sel.pk_lo)) }
+        let mut lo_enc = bytes_new(0)
+        if sel.has_lo == 1 {
+            lo_enc = boila_val_enc(sel.pk_lo)
+            ki = boila_pk_lb(pks, lo_enc)
+            if sel.lo_excl == 1 && ki < n && boila_bytes_cmp(vec_get(pks, ki), lo_enc) == 0 {
+                ki = ki + 1
+            }
+        }
         let mut hi_enc = bytes_new(0)
         if sel.has_hi == 1 { hi_enc = boila_val_enc(sel.pk_hi) }
         while ki < n {
             let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?
             if ge != "" { return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge)) }
             let pkenc = vec_get(pks, ki)
-            if sel.has_hi == 1 && boila_bytes_cmp(pkenc, hi_enc) > 0 { ki = n }
+            if sel.has_hi == 1 {
+                let hc = boila_bytes_cmp(pkenc, hi_enc)
+                if sel.hi_excl == 1 {
+                    if hc >= 0 { ki = n }
+                } else {
+                    if hc > 0 { ki = n }
+                }
+            }
             if ki < n {
                 let g = boila_txn_get(s, txn, t.id, pkenc)?
                 s = g.s
-                if g.found == 1 { vec_push(rows, boila_row_dec(g.row)) }
+                if g.found == 1 {
+                    let row = boila_row_dec(g.row)
+                    if (sel.has_like == 0 && sel.has_in == 0 && sel.has_ne == 0) || boila_row_pass_filters(row, t, sel) == 1 {
+                        vec_push(rows, row)
+                    }
+                }
                 ki = ki + 1
             }
         }
         return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
     let mut need_f = sel.has_eq
-    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 0 { need_f = 1 }
+    if (sel.has_lo == 1 || sel.has_hi == 1) && (pk_range == 0 || sel.between_not == 1) { need_f = 1 }
+    if sel.has_like > 0 { need_f = 1 }
+    if sel.has_in > 0 { need_f = 1 }
+    if sel.has_ne == 1 { need_f = 1 }
     let mut ki: i64 = 0
     while ki < n {
         let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?

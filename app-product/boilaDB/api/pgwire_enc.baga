@@ -289,5 +289,14 @@ fn pgw_tag(kind: i64, affected: i64, nrows: i64) -> str {
     if kind == 12 {
         return "ROLLBACK"
     }
+    if kind == 19 {
+        return "SET"
+    }
+    if kind == 20 {
+        return "RESET"
+    }
+    if kind == 21 {
+        return "DISCARD ALL"
+    }
     return "OK"
 }

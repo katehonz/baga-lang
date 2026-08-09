@@ -191,7 +191,38 @@ fn boila_lex(src: str) -> BoilaLex {
                                                                 }
                                                                 vec_push(toks, token_new(tok_param(), boila_substr(src, st, i)))
                                                             } else {
-                                                                return BoilaLex { toks: toks, err: concat("непознат символ: ", chr(c)) }
+                                                                // Q-dual: + - / || ::  (* already tok_star)
+                                                                if c == 43 {
+                                                                    vec_push(toks, token_new(tok_op(), "+"))
+                                                                    i = i + 1
+                                                                } else {
+                                                                    if c == 45 {
+                                                                        vec_push(toks, token_new(tok_op(), "-"))
+                                                                        i = i + 1
+                                                                    } else {
+                                                                        if c == 47 {
+                                                                            vec_push(toks, token_new(tok_op(), "/"))
+                                                                            i = i + 1
+                                                                        } else {
+                                                                            if c == 124 && i + 1 < n && char_at(src, i + 1) == 124 {
+                                                                                vec_push(toks, token_new(tok_op(), "||"))
+                                                                                i = i + 2
+                                                                            } else {
+                                                                                if c == 58 && i + 1 < n && char_at(src, i + 1) == 58 {
+                                                                                    vec_push(toks, token_new(tok_op(), "::"))
+                                                                                    i = i + 2
+                                                                                } else {
+                                                                                    if c == 33 && i + 1 < n && char_at(src, i + 1) == 61 {
+                                                                                        vec_push(toks, token_new(tok_op(), "!="))
+                                                                                        i = i + 2
+                                                                                    } else {
+                                                                                        return BoilaLex { toks: toks, err: concat("непознат символ: ", chr(c)) }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }

@@ -1,0 +1,80 @@
+// http_guc.baga — W7c HTTP per-conn SET/SHOW/RESET/DISCARD.
+import "httpdbaga/http.baga"
+import "http_sql.baga"
+import "../sql/exec_server.baga"
+import "../sql/exec_scan.baga"
+import "../sql/exec_out.baga"
+import "../sql/lexer.baga"
+import "../sql/token.baga"
+import "../storage/databases.baga"
+import "../txn/mvcc.baga"
+import "std/json/json.baga"
+import "std/str/str.baga"
+
+struct BoilaHttpGucTry {
+    hit: i64,
+    r: BoilaHttpSql
+}
+
+fn boila_http_guc_seed() -> BoilaServer {
+    let names: Vec<str> = vec_new()
+    let stores: Vec<BoilaStore> = vec_new()
+    return BoilaServer {
+        meta: boila_store_empty(), root: "", names: names, stores: stores,
+        flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
+        session_txn: boila_txn_new(), pc: boila_pc_new(), guc: map_new(), mt: 0, ok: 0
+    }
+}
+
+fn boila_http_guc_err(txn: BoilaTxn, db: str, guc: Map<str, str>, err: str, state: str) -> BoilaHttpSql {
+    let mut body = "{\"ok\":false,\"error\":"
+    body = concat(body, json_escape(err))
+    body = concat(body, ",\"sqlstate\":\"")
+    body = concat(body, state)
+    body = concat(body, "\"}")
+    return boila_http_pack(boila_http_guc_seed(), txn, http_json_response(200, body), db, guc)
+}
+
+fn boila_http_try_guc(txn: BoilaTxn, db: str, guc: Map<str, str>, sql: str) -> BoilaHttpGucTry {
+    let lx = boila_lex(sql)
+    if lx.err != "" || vec_len(lx.toks) == 0 {
+        return BoilaHttpGucTry { hit: 0, r: boila_http_pack(boila_http_guc_seed(), txn, http_json_response(200, ""), db, guc) }
+    }
+    let t0 = vec_get(lx.toks, 0)
+    let seed = boila_http_guc_seed()
+    if tok_kw(t0, "set") == 1 {
+        let gs = boila_guc_set_parse(guc, lx)
+        if gs.ok == 0 {
+            return BoilaHttpGucTry { hit: 1, r: boila_http_guc_err(txn, db, guc, gs.err, gs.state) }
+        }
+        let r = boila_http_pack(seed, txn, http_json_response(200, "{\"ok\":true,\"kind\":\"set\"}"), db, gs.guc)
+        return BoilaHttpGucTry { hit: 1, r: r }
+    }
+    if tok_kw(t0, "show") == 1 {
+        let res = boila_guc_show(guc, lx)
+        let mut body = "{\"ok\":true,\"kind\":\"select\",\"cols\":"
+        body = concat(body, boila_cols_json(res.cols))
+        body = concat(body, ",\"rows\":")
+        body = concat(body, boila_rows_json(res.rows))
+        body = concat(body, "}")
+        let r = boila_http_pack(seed, txn, http_json_response(200, body), db, guc)
+        return BoilaHttpGucTry { hit: 1, r: r }
+    }
+    if tok_kw(t0, "reset") == 1 {
+        let gs = boila_guc_reset(guc, lx)
+        if gs.ok == 0 {
+            return BoilaHttpGucTry { hit: 1, r: boila_http_guc_err(txn, db, guc, gs.err, gs.state) }
+        }
+        let r = boila_http_pack(seed, txn, http_json_response(200, "{\"ok\":true,\"kind\":\"reset\"}"), db, gs.guc)
+        return BoilaHttpGucTry { hit: 1, r: r }
+    }
+    if tok_kw(t0, "discard") == 1 {
+        let gs = boila_guc_discard(guc, lx)
+        if gs.ok == 0 {
+            return BoilaHttpGucTry { hit: 1, r: boila_http_guc_err(txn, db, guc, gs.err, gs.state) }
+        }
+        let r = boila_http_pack(seed, txn, http_json_response(200, "{\"ok\":true,\"kind\":\"discard\"}"), db, gs.guc)
+        return BoilaHttpGucTry { hit: 1, r: r }
+    }
+    return BoilaHttpGucTry { hit: 0, r: boila_http_pack(seed, txn, http_json_response(200, ""), db, guc) }
+}

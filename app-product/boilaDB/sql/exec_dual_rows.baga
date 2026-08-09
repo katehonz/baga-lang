@@ -1,0 +1,287 @@
+// exec_dual_rows.baga — dual VALUES + row helpers + DualTry.
+import "../storage/shards.baga"
+import "../txn/mvcc.baga"
+import "../core/value.baga"
+import "exec_scan.baga"
+import "exec_out.baga"
+import "exec_dual_parse.baga"
+import "exec_dual_ops.baga"
+import "plan_cache.baga"
+import "lexer.baga"
+import "token.baga"
+import "std/str/str.baga"
+
+struct BoilaDualTry {
+    hit: i64,
+    out: BoilaSqlOut
+}
+
+fn boila_dual_miss(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache) -> BoilaDualTry {
+    return BoilaDualTry { hit: 0, out: boila_sql_fail(s, txn, pc, "", "") }
+}
+fn boila_dual_is_tail_kw(t: Token) -> i64 {
+    if tok_kw(t, "order") == 1 || tok_kw(t, "limit") == 1 || tok_kw(t, "offset") == 1 || tok_kw(t, "fetch") == 1 {
+        return 1
+    }
+    if tok_kw(t, "union") == 1 || tok_kw(t, "intersect") == 1 || tok_kw(t, "except") == 1 {
+        return 1
+    }
+    if tok_kw(t, "where") == 1 || tok_kw(t, "from") == 1 || tok_kw(t, "group") == 1 {
+        return 1
+    }
+    return 0
+}
+
+// Filter dual rows with WHERE expr (column names bound per row).
+fn boila_dual_apply_where(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str, lx: BoilaLex, guc: Map<str, str>, res: BoilaResult, start_i: i64) -> BoilaDualTry !Time {
+    let mut i = start_i
+    if tok_kw(boila_dual_tok(lx, i), "where") != 1 {
+        let out = boila_sql_ok(s, txn, pc, 1, res, i)
+        return BoilaDualTry { hit: 1, out: out }
+    }
+    i = i + 1
+    let where_start = i
+    // find end of where expr: until set-op / order / limit / offset / eof
+    let wend = boila_dual_branch_end(lx, i)
+    let wsql = boila_dual_tokens_sql(lx, where_start, wend)
+    let wlx = boila_lex(wsql)
+    if wlx.err != "" {
+        return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, wlx.err, "42601") }
+    }
+    let kept: Vec<Vec<BoilaVal>> = vec_new()
+    let mut ri: i64 = 0
+    while ri < vec_len(res.rows) {
+        let row = vec_get(res.rows, ri)
+        let bind = BoilaDualBind { on: 1, names: res.cols, vals: row }
+        let ex = boila_dual_parse_expr(wlx, 0, db, guc, bind)?
+        if ex.ok == 0 {
+            return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, ex.err, ex.state) }
+        }
+        if boila_dual_when_true(ex.val) == 1 {
+            vec_push(kept, row)
+        }
+        ri = ri + 1
+    }
+    let mut outr = res
+    outr.rows = kept
+    let out = boila_sql_ok(s, txn, pc, 1, outr, wend)
+    return BoilaDualTry { hit: 1, out: out }
+}
+
+fn boila_dual_rows_intersect(a: Vec<Vec<BoilaVal>>, b: Vec<Vec<BoilaVal>>) -> Vec<Vec<BoilaVal>> {
+    let out: Vec<Vec<BoilaVal>> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(a) {
+        let r = vec_get(a, i)
+        let mut in_b: i64 = 0
+        let mut j: i64 = 0
+        while j < vec_len(b) {
+            if boila_dual_row_eq(r, vec_get(b, j)) == 1 { in_b = 1 }
+            j = j + 1
+        }
+        let mut dup: i64 = 0
+        j = 0
+        while j < vec_len(out) {
+            if boila_dual_row_eq(r, vec_get(out, j)) == 1 { dup = 1 }
+            j = j + 1
+        }
+        if in_b == 1 && dup == 0 { vec_push(out, r) }
+        i = i + 1
+    }
+    return out
+}
+
+fn boila_dual_rows_except(a: Vec<Vec<BoilaVal>>, b: Vec<Vec<BoilaVal>>) -> Vec<Vec<BoilaVal>> {
+    let out: Vec<Vec<BoilaVal>> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(a) {
+        let r = vec_get(a, i)
+        let mut in_b: i64 = 0
+        let mut j: i64 = 0
+        while j < vec_len(b) {
+            if boila_dual_row_eq(r, vec_get(b, j)) == 1 { in_b = 1 }
+            j = j + 1
+        }
+        let mut dup: i64 = 0
+        j = 0
+        while j < vec_len(out) {
+            if boila_dual_row_eq(r, vec_get(out, j)) == 1 { dup = 1 }
+            j = j + 1
+        }
+        if in_b == 0 && dup == 0 { vec_push(out, r) }
+        i = i + 1
+    }
+    return out
+}
+
+// End index of one dual branch (stops before UNION/ORDER/LIMIT/OFFSET at depth 0).
+fn boila_dual_branch_end(lx: BoilaLex, start: i64) -> i64 {
+    let mut i = start
+    let mut depth: i64 = 0
+    while i < vec_len(lx.toks) {
+        let t = boila_dual_tok(lx, i)
+        if t.kind == tok_eof() || t.kind == tok_semi() { return i }
+        if t.kind == tok_lparen() { depth = depth + 1 }
+        if t.kind == tok_rparen() { depth = depth - 1 }
+        if depth == 0 {
+            if tok_kw(t, "union") == 1 || tok_kw(t, "intersect") == 1 || tok_kw(t, "except") == 1 {
+                return i
+            }
+            if tok_kw(t, "order") == 1 || tok_kw(t, "limit") == 1 || tok_kw(t, "offset") == 1 || tok_kw(t, "fetch") == 1 {
+                return i
+            }
+        }
+        i = i + 1
+    }
+    return i
+}
+
+fn boila_dual_tokens_sql(lx: BoilaLex, lo: i64, hi: i64) -> str {
+    let mut out = ""
+    let mut i = lo
+    while i < hi {
+        let t = boila_dual_tok(lx, i)
+        if i > lo { out = concat(out, " ") }
+        if t.kind == tok_str() {
+            out = concat(out, concat("'", concat(t.txt, "'")))
+        } else {
+            out = concat(out, t.txt)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Run dual on tokens [start, end); returns result; id unused.
+fn boila_dual_row_eq(a: Vec<BoilaVal>, b: Vec<BoilaVal>) -> i64 {
+    if vec_len(a) != vec_len(b) { return 0 }
+    let mut i: i64 = 0
+    while i < vec_len(a) {
+        let va = vec_get(a, i)
+        let vb = vec_get(b, i)
+        if va.tag == boila_v_null() && vb.tag == boila_v_null() {
+            i = i + 1
+        } else {
+            if va.tag == boila_v_null() || vb.tag == boila_v_null() { return 0 }
+            if boila_val_cmp(va, vb) != 0 { return 0 }
+            i = i + 1
+        }
+    }
+    return 1
+}
+
+fn boila_dual_rows_distinct(rows: Vec<Vec<BoilaVal>>) -> Vec<Vec<BoilaVal>> {
+    let out: Vec<Vec<BoilaVal>> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(rows) {
+        let r = vec_get(rows, i)
+        let mut dup: i64 = 0
+        let mut j: i64 = 0
+        while j < vec_len(out) {
+            if boila_dual_row_eq(r, vec_get(out, j)) == 1 { dup = 1 }
+            j = j + 1
+        }
+        if dup == 0 { vec_push(out, r) }
+        i = i + 1
+    }
+    return out
+}
+
+fn boila_dual_rows_append(a: Vec<Vec<BoilaVal>>, b: Vec<Vec<BoilaVal>>) -> Vec<Vec<BoilaVal>> {
+    let mut out = a
+    let mut i: i64 = 0
+    while i < vec_len(b) {
+        vec_push(out, vec_get(b, i))
+        i = i + 1
+    }
+    return out
+}
+
+fn boila_dual_rows_sort(rows: Vec<Vec<BoilaVal>>, col: i64, desc: i64) -> Vec<Vec<BoilaVal>> {
+    let n = vec_len(rows)
+    let mut a = rows
+    let mut i: i64 = 0
+    while i < n {
+        let mut j: i64 = 0
+        while j + 1 < n - i {
+            let r0 = vec_get(a, j)
+            let r1 = vec_get(a, j + 1)
+            let c = boila_val_cmp(vec_get(r0, col), vec_get(r1, col))
+            let mut swap: i64 = 0
+            if desc == 0 && c == 1 { swap = 1 }
+            if desc == 1 && c == 0 - 1 { swap = 1 }
+            // nulls last
+            if vec_get(r0, col).tag == boila_v_null() && vec_get(r1, col).tag != boila_v_null() { swap = 1 }
+            if vec_get(r0, col).tag != boila_v_null() && vec_get(r1, col).tag == boila_v_null() { swap = 0 }
+            if swap == 1 {
+                vec_set(a, j, r1)
+                vec_set(a, j + 1, r0)
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return a
+}
+
+fn boila_try_exec_values(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str, lx: BoilaLex, guc: Map<str, str>) -> BoilaDualTry !Time {
+    let mut i: i64 = 1
+    let mut res = boila_result_empty()
+    let mut ncols: i64 = 0 - 1
+    let mut more_r = true
+    while more_r {
+        if boila_dual_tok(lx, i).kind != tok_lparen() {
+            return BoilaDualTry {
+                hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах ( в VALUES", "42601")
+            }
+        }
+        i = i + 1
+        let row: Vec<BoilaVal> = vec_new()
+        let tags: Vec<i64> = vec_new()
+        let mut more_c = true
+        while more_c {
+            let ex = boila_dual_parse_expr(lx, i, db, guc, boila_dual_bind_off())?
+            if ex.ok == 0 {
+                return BoilaDualTry { hit: 1, out: boila_sql_fail(s, txn, pc, ex.err, ex.state) }
+            }
+            i = ex.pos
+            vec_push(row, ex.val)
+            vec_push(tags, ex.tag)
+            if boila_dual_tok(lx, i).kind == tok_comma() {
+                i = i + 1
+            } else {
+                more_c = false
+            }
+        }
+        if boila_dual_tok(lx, i).kind != tok_rparen() {
+            return BoilaDualTry {
+                hit: 1, out: boila_sql_fail(s, txn, pc, "очаквах ) в VALUES", "42601")
+            }
+        }
+        i = i + 1
+        if ncols < 0 {
+            ncols = vec_len(row)
+            let mut c: i64 = 0
+            while c < ncols {
+                boila_result_add_col(res, concat("column", int_to_str(c + 1)), vec_get(tags, c))
+                c = c + 1
+            }
+        } else {
+            if vec_len(row) != ncols {
+                return BoilaDualTry {
+                    hit: 1, out: boila_sql_fail(s, txn, pc, "VALUES редове с различен брой колони", "42601")
+                }
+            }
+        }
+        vec_push(res.rows, row)
+        if boila_dual_tok(lx, i).kind == tok_comma() {
+            i = i + 1
+        } else {
+            more_r = false
+        }
+    }
+    // stop before UNION/ORDER/LIMIT; id = resume pos
+    let out = boila_sql_ok(s, txn, pc, 1, res, i)
+    return BoilaDualTry { hit: 1, out: out }
+}
+

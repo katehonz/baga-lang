@@ -3,6 +3,7 @@ import "token.baga"
 import "lexer.baga"
 import "ast.baga"
 import "parse_common.baga"
+import "parse_where.baga"
 import "tsquery.baga"
 import "../core/value.baga"
 import "../ts/time_bucket.baga"
@@ -101,120 +102,13 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         }
     }
 
-    // WHERE
-    if tok_kw(boila_ps_tok(l, i), "where") == 1 {
-        i = i + 1
-        let mut more = true
-        while more {
-            let col = boila_ps_tok(l, i)
-            if col.kind != tok_ident() {
-                return boila_ps_fail("очаквах колона в WHERE", "42601")
-            }
-            i = i + 1
-            // K6: IS [NOT] NULL
-            if tok_kw(boila_ps_tok(l, i), "is") == 1 {
-                i = i + 1
-                let mut notn: i64 = 0
-                if tok_kw(boila_ps_tok(l, i), "not") == 1 { notn = 1; i = i + 1 }
-                if tok_kw(boila_ps_tok(l, i), "null") != 1 {
-                    return boila_ps_fail("очаквах NULL след IS", "42601")
-                }
-                i = i + 1
-                if sel.isnull_mode != 0 { return boila_ps_fail("повторно IS NULL", "0A000") }
-                if notn == 1 { sel.isnull_mode = 2 } else { sel.isnull_mode = 1 }
-                sel.isnull_col = col.txt
-                if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
-            } else {
-            let op = boila_ps_tok(l, i)
-            if op.kind != tok_op() {
-                return boila_ps_fail(concat("очаквах оператор в WHERE, получих '", concat(op.txt, "'")), "42601")
-            }
-            i = i + 1
-            if op.txt == "@@" {
-                if sel.has_fts == 1 { return boila_ps_fail("повторно @@ условие", "0A000") }
-                if sel.has_knn == 1 { return boila_ps_fail("@@ заедно с kNN", "0A000") }
-                let fn_t = boila_ps_tok(l, i)
-                let mut plain: i64 = 0 - 1
-                if fn_t.kind == tok_ident() && fn_t.txt == "to_tsquery" { plain = 0 }
-                if fn_t.kind == tok_ident() && fn_t.txt == "plainto_tsquery" { plain = 1 }
-                if fn_t.kind == tok_ident() && fn_t.txt == "phraseto_tsquery" { plain = 2 }
-                if plain < 0 { return boila_ps_fail("очаквах to_tsquery/plainto/phraseto_tsquery след @@", "42601") }
-                if boila_ps_tok(l, i + 1).kind != tok_lparen() { return boila_ps_fail("очаквах '(' след tsquery", "42601") }
-                let lit = boila_ps_tok(l, i + 2)
-                if lit.kind != tok_str() { return boila_ps_fail("очаквах стринг в tsquery", "42601") }
-                if boila_ps_tok(l, i + 3).kind != tok_rparen() { return boila_ps_fail("очаквах ')' в tsquery", "42601") }
-                i = i + 4
-                let tp = boila_ts_parse(lit.txt, plain)
-                if tp.ok == 0 { return boila_ps_fail(tp.err, tp.state) }
-                sel.has_fts = 1
-                sel.fts_col = col.txt
-                sel.fts_mode = tp.mode
-                sel.fts_terms = tp.terms
-                sel.fts_gaps = tp.gaps
-                if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
-            } else {
-            if op.txt == "<->" || op.txt == "<=>" || op.txt == "<#>" {
-                if sel.has_knn == 1 { return boila_ps_fail("повторно kNN условие", "0A000") }
-                if sel.has_fts == 1 { return boila_ps_fail("kNN заедно с @@", "0A000") }
-                let lit = boila_ps_tok(l, i)
-                if lit.kind != tok_str() { return boila_ps_fail("очаквах vector литерал '[…]'", "42601") }
-                i = i + 1
-                let mut metric: i64 = 1
-                if op.txt == "<=>" { metric = 2 }
-                if op.txt == "<#>" { metric = 3 }
-                sel.has_knn = 1
-                sel.knn_col = col.txt
-                sel.knn_metric = metric
-                sel.knn_query = lit.txt
-                if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
-            } else {
-            let lit = boila_ps_literal(l, i)
-            if lit.ok == 0 {
-                return boila_ps_fail(lit.err, lit.state)
-            }
-            i = i + 1
-            let v = lit.v
-            if op.txt == "=" {
-                if sel.has_eq == 1 {
-                    return boila_ps_fail("повторно = условие", "0A000")
-                }
-                sel.has_eq = 1
-                sel.eq_col = col.txt
-                sel.pk_eq = v
-                sel.eq_param = lit.param
-            } else {
-                if op.txt == ">=" {
-                    if sel.has_lo == 1 {
-                        return boila_ps_fail("повторно >= условие", "0A000")
-                    }
-                    sel.has_lo = 1
-                    sel.lo_col = col.txt
-                    sel.pk_lo = v
-                    sel.lo_param = lit.param
-                } else {
-                    if op.txt == "<=" {
-                        if sel.has_hi == 1 {
-                            return boila_ps_fail("повторно <= условие", "0A000")
-                        }
-                        sel.has_hi = 1
-                        sel.hi_col = col.txt
-                        sel.pk_hi = v
-                        sel.hi_param = lit.param
-                    } else {
-                        return boila_ps_fail(concat("операторът '", concat(op.txt, "' не е в SELECT подмножеството")), "0A000")
-                    }
-                }
-            }
-            if tok_kw(boila_ps_tok(l, i), "and") == 1 {
-                i = i + 1
-            } else {
-                more = false
-            }
-            }
-            }
-            }
-        }
+    // WHERE (eq/range/IS NULL/FTS/kNN/LIKE)
+    let wh = boila_parse_where(l, sel, i)
+    if wh.ok == 0 {
+        return boila_ps_fail(wh.err, wh.state)
     }
+    sel = wh.sel
+    i = wh.pos
 
     // GROUP BY
     if tok_kw(boila_ps_tok(l, i), "group") == 1 {

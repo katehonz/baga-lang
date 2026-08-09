@@ -65,6 +65,7 @@ fn boila_pg_bind_sel(sel: BoilaSel, vals: Vec<str>, nulls: Vec<i64>) -> BoilaSel
     if s.eq_param > 0 { s.pk_eq = boila_pg_pick(vals, nulls, s.eq_param) }
     if s.lo_param > 0 { s.pk_lo = boila_pg_pick(vals, nulls, s.lo_param) }
     if s.hi_param > 0 { s.pk_hi = boila_pg_pick(vals, nulls, s.hi_param) }
+    if s.ne_param > 0 { s.pk_ne = boila_pg_pick(vals, nulls, s.ne_param) }
     if s.lim_param > 0 {
         let v = boila_pg_pick(vals, nulls, s.lim_param)
         if v.tag == boila_v_i64() { s.limit = v.i }
@@ -180,6 +181,7 @@ fn boila_pg_nparams(sel: BoilaSel) -> i64 {
     if sel.eq_param > n { n = sel.eq_param }
     if sel.lo_param > n { n = sel.lo_param }
     if sel.hi_param > n { n = sel.hi_param }
+    if sel.ne_param > n { n = sel.ne_param }
     if sel.lim_param > n { n = sel.lim_param }
     return n
 }
@@ -200,7 +202,8 @@ fn boila_pg_sel_meta(s: BoilaStore, sel: BoilaSel) -> BoilaPgMeta !IO !Time !Par
     if sel.has_join == 1 || sel.has_group == 1 {
         return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }
     }
-    let ct = boila_cat_by_name_txn(s, txn, sel.table)?
+    // Describe uses committed catalog (no session txn on this path)
+    let ct = boila_cat_by_name(s, sel.table)?
     s = ct.s
     if ct.ok == 0 {
         return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }

@@ -27,7 +27,7 @@ fn boila_pg_conn_mt(ctx: i64) -> i64 !IO !Net !Time !Par {
     let seed = BoilaServer {
         meta: boila_store_empty(), root: "", names: names, stores: stores,
         flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
-        session_txn: boila_txn_new(), pc: boila_pc_new(), mt: 0, ok: 0
+        session_txn: boila_txn_new(), pc: boila_pc_new(), guc: map_new(), mt: 0, ok: 0
     }
     let ro = boila_pg_serve_p(fd, pack, seed)?
     boila_mt_end_conn(pack)?

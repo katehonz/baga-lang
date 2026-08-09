@@ -171,6 +171,72 @@ fn main() -> i64 !IO !Time !Par {
     srv = jc2.srv
     check(fails, "join_pc_warm", jc2.ok == 1 && vec_len(jc2.res.rows) == 2 && cell(vec_get(jc2.res.rows, 0), 0) == "alice")
 
+    // --- Q-like: LIKE / ILIKE ---
+    let lk = exec(srv, "SELECT name FROM emp WHERE name LIKE 'a%' ORDER BY id")?
+    srv = lk.srv
+    check(fails, "like_prefix", lk.ok == 1 && vec_len(lk.res.rows) == 1 && cell(vec_get(lk.res.rows, 0), 0) == "alice")
+    let lk2 = exec(srv, "SELECT name FROM emp WHERE name LIKE '%is' ORDER BY id")?
+    srv = lk2.srv
+    check(fails, "like_suffix", lk2.ok == 1 && vec_len(lk2.res.rows) == 1 && cell(vec_get(lk2.res.rows, 0), 0) == "boris")
+    let lk3 = exec(srv, "SELECT name FROM emp WHERE name LIKE '_veti'")?
+    srv = lk3.srv
+    check(fails, "like_under", lk3.ok == 1 && vec_len(lk3.res.rows) == 1 && cell(vec_get(lk3.res.rows, 0), 0) == "cveti")
+    let lk4 = exec(srv, "SELECT name FROM emp WHERE name ILIKE 'AL%'")?
+    srv = lk4.srv
+    check(fails, "ilike_fold", lk4.ok == 1 && vec_len(lk4.res.rows) == 1 && cell(vec_get(lk4.res.rows, 0), 0) == "alice")
+    let lk5 = exec(srv, "SELECT name FROM emp WHERE name LIKE '%a%' AND dept = 'eng' ORDER BY id")?
+    srv = lk5.srv
+    check(fails, "like_and_eq", lk5.ok == 1 && vec_len(lk5.res.rows) >= 1)
+    let lk6 = exec(srv, "SELECT name FROM emp WHERE name NOT LIKE 'a%' ORDER BY id")?
+    srv = lk6.srv
+    check(fails, "not_like", lk6.ok == 1 && vec_len(lk6.res.rows) >= 4)
+    let lk7 = exec(srv, "SELECT name FROM emp WHERE name NOT ILIKE 'AL%' ORDER BY id")?
+    srv = lk7.srv
+    check(fails, "not_ilike", lk7.ok == 1 && vec_len(lk7.res.rows) >= 4)
+
+    // --- Q-lt/gt exclusive ---
+    let gt = exec(srv, "SELECT id FROM emp WHERE id > 4 ORDER BY id")?
+    srv = gt.srv
+    check(fails, "gt_pk", gt.ok == 1 && vec_len(gt.res.rows) >= 1 && cell(vec_get(gt.res.rows, 0), 0) == "5")
+    let lt = exec(srv, "SELECT id FROM emp WHERE id < 3 ORDER BY id")?
+    srv = lt.srv
+    check(fails, "lt_pk", lt.ok == 1 && vec_len(lt.res.rows) == 2 && cell(vec_get(lt.res.rows, 1), 0) == "2")
+    let gt2 = exec(srv, "SELECT name FROM emp WHERE salary > 100 ORDER BY id")?
+    srv = gt2.srv
+    check(fails, "gt_nonpk", gt2.ok == 1 && vec_len(gt2.res.rows) >= 1)
+
+    // --- Q-between / Q-in ---
+    let bt = exec(srv, "SELECT id FROM emp WHERE id BETWEEN 2 AND 4 ORDER BY id")?
+    srv = bt.srv
+    check(fails, "between_pk", bt.ok == 1 && vec_len(bt.res.rows) == 3 && cell(vec_get(bt.res.rows, 0), 0) == "2")
+    let bt2 = exec(srv, "SELECT name FROM emp WHERE salary BETWEEN 95 AND 110 ORDER BY id")?
+    srv = bt2.srv
+    check(fails, "between_nonpk", bt2.ok == 1 && vec_len(bt2.res.rows) >= 2)
+    let nbt = exec(srv, "SELECT id FROM emp WHERE id NOT BETWEEN 2 AND 5 ORDER BY id")?
+    srv = nbt.srv
+    check(fails, "not_between", nbt.ok == 1 && vec_len(nbt.res.rows) == 2 && cell(vec_get(nbt.res.rows, 0), 0) == "1" && cell(vec_get(nbt.res.rows, 1), 0) == "6")
+    let inn = exec(srv, "SELECT name FROM emp WHERE id IN (1, 3, 5) ORDER BY id")?
+    srv = inn.srv
+    check(fails, "in_pk", inn.ok == 1 && vec_len(inn.res.rows) == 3 && cell(vec_get(inn.res.rows, 0), 0) == "alice")
+    let inn2 = exec(srv, "SELECT name FROM emp WHERE dept IN ('hr', 'ops') ORDER BY id")?
+    srv = inn2.srv
+    check(fails, "in_text", inn2.ok == 1 && vec_len(inn2.res.rows) >= 2)
+    let nin = exec(srv, "SELECT name FROM emp WHERE id NOT IN (1, 2, 3, 4, 6) ORDER BY id")?
+    srv = nin.srv
+    check(fails, "not_in", nin.ok == 1 && vec_len(nin.res.rows) == 1 && cell(vec_get(nin.res.rows, 0), 0) == "evgeni")
+    let or1 = exec(srv, "SELECT name FROM emp WHERE id = 1 OR id = 3 OR id = 5 ORDER BY id")?
+    srv = or1.srv
+    check(fails, "or_eq_in", or1.ok == 1 && vec_len(or1.res.rows) == 3 && cell(vec_get(or1.res.rows, 0), 0) == "alice")
+    let or2 = exec(srv, "SELECT name FROM emp WHERE dept = 'hr' OR dept = 'ops' ORDER BY id")?
+    srv = or2.srv
+    check(fails, "or_eq_text", or2.ok == 1 && vec_len(or2.res.rows) >= 2)
+    let ne = exec(srv, "SELECT name FROM emp WHERE dept <> 'eng' ORDER BY id")?
+    srv = ne.srv
+    check(fails, "ne_dept", ne.ok == 1 && vec_len(ne.res.rows) >= 2)
+    let ne2 = exec(srv, "SELECT name FROM emp WHERE id != 1 ORDER BY id LIMIT 1")?
+    srv = ne2.srv
+    check(fails, "ne_bang", ne2.ok == 1 && vec_len(ne2.res.rows) == 1 && cell(vec_get(ne2.res.rows, 0), 0) == "boris")
+
     // --- семантични грешки ---
     let e1 = exec(srv, "SELECT dept, count(*) FROM emp")?
     srv = e1.srv

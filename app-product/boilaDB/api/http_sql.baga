@@ -30,7 +30,12 @@ struct BoilaHttpSql {
     srv: BoilaServer,
     txn: BoilaTxn,
     resp: Response,
-    db: str
+    db: str,
+    guc: Map<str, str>
+}
+
+fn boila_http_pack(srv: BoilaServer, txn: BoilaTxn, resp: Response, db: str, guc: Map<str, str>) -> BoilaHttpSql {
+    return BoilaHttpSql { srv: srv, txn: txn, resp: resp, db: db, guc: guc }
 }
 
 // W6c: BOILA_TOKEN via Authorization: Bearer … or X-Boila-Token.
@@ -58,17 +63,19 @@ fn boila_http_auth_ok(req: Request) -> i64 !IO {
 }
 
 fn boila_http_auth_fail(txn: BoilaTxn, sess_db: str) -> BoilaHttpSql {
+    return boila_http_auth_fail_guc(txn, sess_db, map_new())
+}
+
+fn boila_http_auth_fail_guc(txn: BoilaTxn, sess_db: str, guc: Map<str, str>) -> BoilaHttpSql {
     let body = "{\"ok\":false,\"error\":\"unauthorized\",\"sqlstate\":\"28P01\"}"
     let names: Vec<str> = vec_new()
     let stores: Vec<BoilaStore> = vec_new()
-    return BoilaHttpSql {
-        srv: BoilaServer {
-            meta: boila_store_empty(), root: "", names: names, stores: stores,
-            flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
-            session_txn: boila_txn_new(), pc: boila_pc_new(), mt: 0, ok: 0
-        },
-        txn: txn, resp: http_json_response(401, body), db: sess_db
+    let srv = BoilaServer {
+        meta: boila_store_empty(), root: "", names: names, stores: stores,
+        flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
+        session_txn: boila_txn_new(), pc: boila_pc_new(), guc: map_new(), mt: 0, ok: 0
     }
+    return boila_http_pack(srv, txn, http_json_response(401, body), sess_db, guc)
 }
 
 // H3c: HMAC-SHA256 prefix (16 hex) of db name under BOILA_TOKEN.
@@ -222,8 +229,8 @@ fn boila_http_sql(srv: BoilaServer, req: Request) -> BoilaHttpSql !IO !Time !Par
     return r
 }
 
-// Encode BoilaSrvOut → JSON response (no re-exec). db = session after.
-fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpSql !IO {
+// Encode BoilaSrvOut → JSON. guc = session map to echo back.
+fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str, guc: Map<str, str>) -> BoilaHttpSql !IO {
     let ndb = boila_http_next_db(sess_db, used_db, out)
     let mut body = ""
     if out.ok == 0 {
@@ -232,7 +239,7 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpS
         body = concat(body, ",\"sqlstate\":\"")
         body = concat(body, out.state)
         body = concat(body, "\"}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, body), ndb, guc)
     }
     if out.kind == 1 {
         body = "{\"ok\":true,\"kind\":\"select\",\"cols\":"
@@ -240,7 +247,7 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpS
         body = concat(body, ",\"rows\":")
         body = concat(body, boila_rows_json(out.res.rows))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, body), ndb, guc)
     }
     if out.kind == 2 || out.kind == 9 || out.kind == 14 || out.kind == 15 || out.kind == 17 || out.kind == 18 {
         let mut k = "create"
@@ -254,7 +261,7 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpS
         body = concat(body, "\",\"id\":")
         body = concat(body, int_to_str(out.id))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, body), ndb, guc)
     }
     if out.kind >= 6 && out.kind <= 8 {
         let mut kname = "insert"
@@ -267,7 +274,7 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpS
         body = concat(body, ",\"rows\":")
         body = concat(body, boila_rows_json(out.res.rows))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, body), ndb, guc)
     }
     if out.kind >= 10 && out.kind <= 12 {
         let mut kname = "begin"
@@ -278,30 +285,43 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpS
         body = concat(body, "\",\"lsn\":")
         body = concat(body, int_to_str(out.id))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, body), ndb, guc)
+    }
+    if out.kind == 19 {
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, "{\"ok\":true,\"kind\":\"set\"}"), ndb, guc)
+    }
+    if out.kind == 20 {
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, "{\"ok\":true,\"kind\":\"reset\"}"), ndb, guc)
+    }
+    if out.kind == 21 {
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, "{\"ok\":true,\"kind\":\"discard\"}"), ndb, guc)
     }
     if out.kind == 3 {
         body = "{\"ok\":true,\"kind\":\"create_database\",\"db\":"
         body = concat(body, json_escape(out.db))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, body), ndb, guc)
     }
     if out.kind == 4 {
         body = "{\"ok\":true,\"kind\":\"drop_database\",\"db\":"
         body = concat(body, json_escape(out.db))
         body = concat(body, "}")
-        return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
+        return boila_http_pack(out.srv, out.txn, http_json_response(200, body), ndb, guc)
     }
     body = "{\"ok\":true,\"kind\":\"use\",\"db\":"
     body = concat(body, json_escape(out.db))
     body = concat(body, "}")
-    // H3c: Set-Cookie (signed when BOILA_TOKEN set)
     let mut resp = http_json_response(200, body)
     if out.ok == 1 && out.kind == 5 && out.db != "" {
         let cv = boila_http_db_cookie_val(out.db)?
         resp = http_set_header(resp, "Set-Cookie", concat(concat("boila_db=", cv), "; Path=/; HttpOnly"))
     }
-    return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: resp, db: ndb }
+    return boila_http_pack(out.srv, out.txn, resp, ndb, guc)
+}
+
+// Compat wrapper — guc from srv after ST exec.
+fn boila_http_encode_st(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpSql !IO {
+    return boila_http_encode(out, sess_db, used_db, out.srv.guc)?
 }
 
 fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, sess_db: str, req: Request) -> BoilaHttpSql !IO !Time !Par {
@@ -310,5 +330,5 @@ fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, sess_db: str, req: Request
     }
     let db = boila_http_pick_db(sess_db, req)?
     let out = boila_server_exec_tx(srv, txn, db, http_body(req))?
-    return boila_http_encode(out, sess_db, db)?
+    return boila_http_encode_st(out, sess_db, db)?
 }

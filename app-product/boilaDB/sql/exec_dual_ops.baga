@@ -1,0 +1,389 @@
+// exec_dual_ops.baga — dual CAST / binop helpers (Q-dual arith).
+import "../core/value.baga"
+import "lexer.baga"
+import "token.baga"
+import "exec_like.baga"
+import "std/str/str.baga"
+// boila_substr / boila_fold_lower from lexer
+struct BoilaDualExpr {
+    ok: i64,
+    err: str,
+    state: str,
+    val: BoilaVal,
+    cname: str,
+    tag: i64,
+    pos: i64,
+    // generate_series: series=1, val unused for expansion
+    series: i64,
+    series_lo: i64,
+    series_hi: i64,
+    series_step: i64
+}
+struct BoilaDualBind {
+    on: i64,
+    names: Vec<str>,
+    vals: Vec<BoilaVal>
+}
+fn boila_dual_bind_off() -> BoilaDualBind {
+    let names: Vec<str> = vec_new()
+    let vals: Vec<BoilaVal> = vec_new()
+    return BoilaDualBind { on: 0, names: names, vals: vals }
+}
+fn boila_dual_bind_get(b: BoilaDualBind, name: str) -> BoilaDualExpr {
+    if b.on == 0 {
+        return boila_dual_fail_ex(0, concat("колона без FROM: '", concat(name, "'")), "42601")
+    }
+    let mut i: i64 = 0
+    while i < vec_len(b.names) {
+        if vec_get(b.names, i) == name {
+            let v = vec_get(b.vals, i)
+            return boila_dual_ok(v, v.tag, name, 0)
+        }
+        i = i + 1
+    }
+    return boila_dual_fail_ex(0, concat("непозната колона '", concat(name, "'")), "42703")
+}
+fn boila_dual_fail_ex(pos: i64, err: str, state: str) -> BoilaDualExpr {
+    return BoilaDualExpr {
+        ok: 0, err: err, state: state,
+        val: boila_val_str(""), cname: "", tag: 0, pos: pos,
+        series: 0, series_lo: 0, series_hi: 0, series_step: 1
+    }
+}
+fn boila_dual_ok(val: BoilaVal, tag: i64, cname: str, pos: i64) -> BoilaDualExpr {
+    return BoilaDualExpr {
+        ok: 1, err: "", state: "", val: val, cname: cname, tag: tag, pos: pos,
+        series: 0, series_lo: 0, series_hi: 0, series_step: 1
+    }
+}
+fn boila_dual_ok_series(lo: i64, hi: i64, step: i64, cname: str, pos: i64) -> BoilaDualExpr {
+    return BoilaDualExpr {
+        ok: 1, err: "", state: "", val: boila_val_i64(lo), cname: cname, tag: boila_v_i64(), pos: pos,
+        series: 1, series_lo: lo, series_hi: hi, series_step: step
+    }
+}
+fn boila_dual_gen_series(args: Vec<BoilaVal>, n: i64, pos: i64) -> BoilaDualExpr {
+    if n < 2 || n > 3 {
+        return boila_dual_fail_ex(pos, "generate_series(start,stop[,step])", "42883")
+    }
+    let a0 = vec_get(args, 0)
+    let a1 = vec_get(args, 1)
+    if a0.tag == boila_v_null() || a1.tag == boila_v_null() {
+        return boila_dual_fail_ex(pos, "generate_series аргументи NULL", "22004")
+    }
+    let mut step: i64 = 1
+    if n == 3 {
+        if vec_get(args, 2).tag == boila_v_null() {
+            return boila_dual_fail_ex(pos, "generate_series step NULL", "22004")
+        }
+        step = vec_get(args, 2).i
+    }
+    if step == 0 {
+        return boila_dual_fail_ex(pos, "generate_series step = 0", "22023")
+    }
+    let lo = a0.i
+    let hi = a1.i
+    if (step > 0 && lo > hi) || (step < 0 && lo < hi) {
+        return boila_dual_ok_series(lo, hi, step, "generate_series", pos)
+    }
+    let mut nsteps = (hi - lo) / step
+    if nsteps < 0 { nsteps = 0 - nsteps }
+    if nsteps > 100000 {
+        return boila_dual_fail_ex(pos, "generate_series твърде голям (>100000)", "54000")
+    }
+    return boila_dual_ok_series(lo, hi, step, "generate_series", pos)
+}
+fn boila_dual_type_tag(nm: str) -> i64 {
+    if nm == "bigint" || nm == "int8" || nm == "int" || nm == "integer" { return boila_v_i64() }
+    if nm == "bool" || nm == "boolean" { return boila_v_bool() }
+    if nm == "text" || nm == "varchar" || nm == "name" { return boila_v_str() }
+    if nm == "timestamptz" || nm == "timestamp" { return boila_v_ts() }
+    return 0 - 1
+}
+fn boila_dual_as_str(v: BoilaVal) -> str {
+    if v.tag == boila_v_null() { return "" }
+    if v.tag == boila_v_str() { return str_of_bytes(v.b) }
+    if v.tag == boila_v_bool() {
+        if v.i == 0 { return "f" }
+        return "t"
+    }
+    return int_to_str(v.i)
+}
+fn boila_dual_lower1(s: str) -> str {
+    if s == "T" || s == "TRUE" || s == "True" { return "true" }
+    if s == "F" || s == "FALSE" || s == "False" { return "false" }
+    return s
+}
+fn boila_dual_cast(v: BoilaVal, want: i64, pos: i64) -> BoilaDualExpr {
+    if want < 0 {
+        return boila_dual_fail_ex(pos, "непознат CAST тип", "42704")
+    }
+    if v.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    if want == boila_v_str() {
+        return boila_dual_ok(boila_val_str(boila_dual_as_str(v)), boila_v_str(), "?column?", pos)
+    }
+    if want == boila_v_i64() || want == boila_v_ts() {
+        if v.tag == boila_v_i64() || v.tag == boila_v_ts() || v.tag == boila_v_bool() {
+            if want == boila_v_ts() {
+                return boila_dual_ok(boila_val_ts(v.i), boila_v_ts(), "?column?", pos)
+            }
+            return boila_dual_ok(boila_val_i64(v.i), boila_v_i64(), "?column?", pos)
+        }
+        if v.tag == boila_v_str() {
+            let n = parse_int(str_of_bytes(v.b))
+            if want == boila_v_ts() {
+                return boila_dual_ok(boila_val_ts(n), boila_v_ts(), "?column?", pos)
+            }
+            return boila_dual_ok(boila_val_i64(n), boila_v_i64(), "?column?", pos)
+        }
+        return boila_dual_fail_ex(pos, "невалиден CAST към bigint", "22P02")
+    }
+    if want == boila_v_bool() {
+        if v.tag == boila_v_bool() {
+            return boila_dual_ok(v, boila_v_bool(), "?column?", pos)
+        }
+        if v.tag == boila_v_i64() {
+            let mut b: i64 = 0
+            if v.i != 0 { b = 1 }
+            return boila_dual_ok(boila_val_bool(b), boila_v_bool(), "?column?", pos)
+        }
+        if v.tag == boila_v_str() {
+            let s = boila_dual_lower1(str_of_bytes(v.b))
+            if s == "t" || s == "true" || s == "1" {
+                return boila_dual_ok(boila_val_bool(1), boila_v_bool(), "?column?", pos)
+            }
+            if s == "f" || s == "false" || s == "0" {
+                return boila_dual_ok(boila_val_bool(0), boila_v_bool(), "?column?", pos)
+            }
+        }
+        return boila_dual_fail_ex(pos, "невалиден CAST към bool", "22P02")
+    }
+    return boila_dual_fail_ex(pos, "CAST тип не се поддържа", "0A000")
+}
+fn boila_dual_binop(a: BoilaVal, op: str, b: BoilaVal, pos: i64) -> BoilaDualExpr {
+    if a.tag == boila_v_null() || b.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    if op == "||" {
+        return boila_dual_ok(boila_val_str(concat(boila_dual_as_str(a), boila_dual_as_str(b))), boila_v_str(), "?column?", pos)
+    }
+    if a.tag != boila_v_i64() && a.tag != boila_v_ts() && a.tag != boila_v_bool() {
+        return boila_dual_fail_ex(pos, "аритметика изисква числа", "42883")
+    }
+    if b.tag != boila_v_i64() && b.tag != boila_v_ts() && b.tag != boila_v_bool() {
+        return boila_dual_fail_ex(pos, "аритметика изисква числа", "42883")
+    }
+    let x = a.i
+    let y = b.i
+    if op == "+" { return boila_dual_ok(boila_val_i64(x + y), boila_v_i64(), "?column?", pos) }
+    if op == "-" { return boila_dual_ok(boila_val_i64(x - y), boila_v_i64(), "?column?", pos) }
+    if op == "*" { return boila_dual_ok(boila_val_i64(x * y), boila_v_i64(), "?column?", pos) }
+    if op == "/" {
+        if y == 0 {
+            return boila_dual_fail_ex(pos, "деление на нула", "22012")
+        }
+        return boila_dual_ok(boila_val_i64(x / y), boila_v_i64(), "?column?", pos)
+    }
+    return boila_dual_fail_ex(pos, concat("непознат оператор ", op), "42883")
+}
+fn boila_dual_is_binop(t: Token) -> str {
+    if t.kind == tok_op() {
+        if t.txt == "+" || t.txt == "-" || t.txt == "/" || t.txt == "||" {
+            return t.txt
+        }
+    }
+    if t.kind == tok_star() {
+        return "*"
+    }
+    return ""
+}
+fn boila_dual_is_cmpop(t: Token) -> str {
+    if t.kind != tok_op() { return "" }
+    if t.txt == "=" || t.txt == "<>" || t.txt == "!=" || t.txt == "<" || t.txt == ">" || t.txt == "<=" || t.txt == ">=" {
+        return t.txt
+    }
+    return ""
+}
+fn boila_dual_cmp(a: BoilaVal, op: str, b: BoilaVal, pos: i64) -> BoilaDualExpr {
+    if a.tag == boila_v_null() || b.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    let c = boila_val_cmp(a, b)
+    let mut r: i64 = 0
+    if op == "=" && c == 0 { r = 1 }
+    if (op == "<>" || op == "!=") && c != 0 { r = 1 }
+    if op == "<" && c == 0 - 1 { r = 1 }
+    if op == ">" && c == 1 { r = 1 }
+    if op == "<=" && (c == 0 - 1 || c == 0) { r = 1 }
+    if op == ">=" && (c == 1 || c == 0) { r = 1 }
+    return boila_dual_ok(boila_val_bool(r), boila_v_bool(), "?column?", pos)
+}
+// WHEN truth: bool true, or non-null non-zero number; NULL/false/0 → skip
+fn boila_dual_when_true(v: BoilaVal) -> i64 {
+    if v.tag == boila_v_null() { return 0 }
+    if v.tag == boila_v_bool() {
+        if v.i != 0 { return 1 }
+        return 0
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        if v.i != 0 { return 1 }
+        return 0
+    }
+    return 1
+}
+fn boila_dual_bool_and(a: BoilaVal, b: BoilaVal, pos: i64) -> BoilaDualExpr {
+    if a.tag == boila_v_null() || b.tag == boila_v_null() {
+        if boila_dual_when_true(a) == 0 && a.tag != boila_v_null() {
+            return boila_dual_ok(boila_val_bool(0), boila_v_bool(), "?column?", pos)
+        }
+        if boila_dual_when_true(b) == 0 && b.tag != boila_v_null() {
+            return boila_dual_ok(boila_val_bool(0), boila_v_bool(), "?column?", pos)
+        }
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    let mut r: i64 = 0
+    if boila_dual_when_true(a) == 1 && boila_dual_when_true(b) == 1 { r = 1 }
+    return boila_dual_ok(boila_val_bool(r), boila_v_bool(), "?column?", pos)
+}
+fn boila_dual_bool_or(a: BoilaVal, b: BoilaVal, pos: i64) -> BoilaDualExpr {
+    if boila_dual_when_true(a) == 1 {
+        return boila_dual_ok(boila_val_bool(1), boila_v_bool(), "?column?", pos)
+    }
+    if boila_dual_when_true(b) == 1 {
+        return boila_dual_ok(boila_val_bool(1), boila_v_bool(), "?column?", pos)
+    }
+    if a.tag == boila_v_null() || b.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    return boila_dual_ok(boila_val_bool(0), boila_v_bool(), "?column?", pos)
+}
+fn boila_dual_bool_not(a: BoilaVal, pos: i64) -> BoilaDualExpr {
+    if a.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    let mut r: i64 = 1
+    if boila_dual_when_true(a) == 1 { r = 0 }
+    return boila_dual_ok(boila_val_bool(r), boila_v_bool(), "?column?", pos)
+}
+// BETWEEN / NOT BETWEEN → bool (NULL if any side NULL)
+fn boila_dual_between(v: BoilaVal, lo: BoilaVal, hi: BoilaVal, notb: i64, pos: i64) -> BoilaDualExpr {
+    if v.tag == boila_v_null() || lo.tag == boila_v_null() || hi.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    let cl = boila_val_cmp(v, lo)
+    let ch = boila_val_cmp(v, hi)
+    let mut inside: i64 = 0
+    if (cl == 1 || cl == 0) && (ch == 0 - 1 || ch == 0) { inside = 1 }
+    let mut r = inside
+    if notb == 1 {
+        r = 1 - inside
+    }
+    return boila_dual_ok(boila_val_bool(r), boila_v_bool(), "?column?", pos)
+}
+fn boila_dual_ptok(lx: BoilaLex, i: i64) -> Token {
+    if i >= vec_len(lx.toks) { return token_new(tok_eof(), "") }
+    return vec_get(lx.toks, i)
+}
+// Peek postfix: 0 none, 1/2 BETWEEN, 3/4 IN, 5/6 IS NULL, 7-10 LIKE family.
+struct BoilaDualPeek { mode: i64, pos: i64 }
+fn boila_dual_peek_pred(lx: BoilaLex, j: i64) -> BoilaDualPeek {
+    if tok_kw(boila_dual_ptok(lx, j), "between") == 1 { return BoilaDualPeek { mode: 1, pos: j + 1 } }
+    if tok_kw(boila_dual_ptok(lx, j), "not") == 1 && tok_kw(boila_dual_ptok(lx, j + 1), "between") == 1 {
+        return BoilaDualPeek { mode: 2, pos: j + 2 }
+    }
+    if tok_kw(boila_dual_ptok(lx, j), "in") == 1 { return BoilaDualPeek { mode: 3, pos: j + 1 } }
+    if tok_kw(boila_dual_ptok(lx, j), "not") == 1 && tok_kw(boila_dual_ptok(lx, j + 1), "in") == 1 {
+        return BoilaDualPeek { mode: 4, pos: j + 2 }
+    }
+    if tok_kw(boila_dual_ptok(lx, j), "is") == 1 {
+        if tok_kw(boila_dual_ptok(lx, j + 1), "null") == 1 { return BoilaDualPeek { mode: 5, pos: j + 2 } }
+        if tok_kw(boila_dual_ptok(lx, j + 1), "not") == 1 && tok_kw(boila_dual_ptok(lx, j + 2), "null") == 1 {
+            return BoilaDualPeek { mode: 6, pos: j + 3 }
+        }
+        // IS [NOT] DISTINCT FROM
+        if tok_kw(boila_dual_ptok(lx, j + 1), "distinct") == 1 && tok_kw(boila_dual_ptok(lx, j + 2), "from") == 1 {
+            return BoilaDualPeek { mode: 11, pos: j + 3 }
+        }
+        if tok_kw(boila_dual_ptok(lx, j + 1), "not") == 1 && tok_kw(boila_dual_ptok(lx, j + 2), "distinct") == 1 && tok_kw(boila_dual_ptok(lx, j + 3), "from") == 1 {
+            return BoilaDualPeek { mode: 12, pos: j + 4 }
+        }
+    }
+    if tok_kw(boila_dual_ptok(lx, j), "like") == 1 { return BoilaDualPeek { mode: 7, pos: j + 1 } }
+    if tok_kw(boila_dual_ptok(lx, j), "ilike") == 1 { return BoilaDualPeek { mode: 8, pos: j + 1 } }
+    if tok_kw(boila_dual_ptok(lx, j), "not") == 1 && tok_kw(boila_dual_ptok(lx, j + 1), "like") == 1 {
+        return BoilaDualPeek { mode: 9, pos: j + 2 }
+    }
+    if tok_kw(boila_dual_ptok(lx, j), "not") == 1 && tok_kw(boila_dual_ptok(lx, j + 1), "ilike") == 1 {
+        return BoilaDualPeek { mode: 10, pos: j + 2 }
+    }
+    return BoilaDualPeek { mode: 0, pos: j }
+}
+// LIKE mode: 1 LIKE 2 ILIKE 3 NOT LIKE 4 NOT ILIKE
+fn boila_dual_like(v: BoilaVal, pat: BoilaVal, mode: i64, pos: i64) -> BoilaDualExpr {
+    if v.tag == boila_v_null() || pat.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    let mut s = int_to_str(v.i)
+    if v.tag == boila_v_str() { s = str_of_bytes(v.b) }
+    let mut p = int_to_str(pat.i)
+    if pat.tag == boila_v_str() { p = str_of_bytes(pat.b) }
+    let mut ic: i64 = 0
+    if mode == 2 || mode == 4 { ic = 1 }
+    let m = boila_like_match(s, p, ic)
+    let mut r: i64 = m
+    if mode >= 3 {
+        r = 1 - m
+    }
+    return boila_dual_ok(boila_val_bool(r), boila_v_bool(), "?column?", pos)
+}
+fn boila_dual_isnull(v: BoilaVal, is_not: i64, pos: i64) -> BoilaDualExpr {
+    let mut r: i64 = 0
+    if v.tag == boila_v_null() { r = 1 }
+    if is_not == 1 { r = 1 - r }
+    return boila_dual_ok(boila_val_bool(r), boila_v_bool(), "?column?", pos)
+}
+// IS DISTINCT FROM / IS NOT DISTINCT FROM (NULL-safe eq)
+fn boila_dual_distinct_from(a: BoilaVal, b: BoilaVal, is_not: i64, pos: i64) -> BoilaDualExpr {
+    let mut dist: i64 = 0
+    if a.tag == boila_v_null() && b.tag == boila_v_null() {
+        dist = 0
+    } else {
+        if a.tag == boila_v_null() || b.tag == boila_v_null() {
+            dist = 1
+        } else {
+            if boila_val_cmp(a, b) != 0 { dist = 1 }
+        }
+    }
+    let mut r = dist
+    if is_not == 1 { r = 1 - dist }
+    return boila_dual_ok(boila_val_bool(r), boila_v_bool(), "?column?", pos)
+}
+// IN / NOT IN → bool
+fn boila_dual_in(v: BoilaVal, vals: Vec<BoilaVal>, mode: i64, pos: i64) -> BoilaDualExpr {
+    if v.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos)
+    }
+    let mut hit: i64 = 0
+    let mut saw_null: i64 = 0
+    let mut j: i64 = 0
+    while j < vec_len(vals) {
+        let a = vec_get(vals, j)
+        if a.tag == boila_v_null() {
+            saw_null = 1
+        } else {
+            if boila_val_cmp(v, a) == 0 { hit = 1 }
+        }
+        j = j + 1
+    }
+    if mode == 1 {
+        if hit == 1 { return boila_dual_ok(boila_val_bool(1), boila_v_bool(), "?column?", pos) }
+        if saw_null == 1 { return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos) }
+        return boila_dual_ok(boila_val_bool(0), boila_v_bool(), "?column?", pos)
+    }
+    // NOT IN
+    if hit == 1 { return boila_dual_ok(boila_val_bool(0), boila_v_bool(), "?column?", pos) }
+    if saw_null == 1 { return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", pos) }
+    return boila_dual_ok(boila_val_bool(1), boila_v_bool(), "?column?", pos)
+}

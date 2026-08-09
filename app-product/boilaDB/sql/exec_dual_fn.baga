@@ -1,0 +1,374 @@
+// exec_dual_fn.baga — dual call_simple / call_multi / string helpers.
+import "../core/value.baga"
+import "lexer.baga"
+import "token.baga"
+import "exec_dual_ops.baga"
+import "exec_out.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+fn boila_dual_is_unary_fn(fnm: str) -> i64 {
+    if fnm == "length" || fnm == "char_length" || fnm == "character_length" || fnm == "upper" || fnm == "lower" || fnm == "trim" || fnm == "btrim" || fnm == "abs" || fnm == "reverse" || fnm == "sign" || fnm == "pg_typeof" || fnm == "quote_literal" || fnm == "quote_ident" || fnm == "quote_nullable" {
+        return 1
+    }
+    return 0
+}
+fn boila_dual_is_multi_fn(fnm: str) -> i64 {
+    if fnm == "coalesce" || fnm == "nullif" || fnm == "greatest" || fnm == "least" || fnm == "concat" || fnm == "substr" || fnm == "substring" || fnm == "strpos" || fnm == "mod" || fnm == "left" || fnm == "right" || fnm == "replace" || fnm == "repeat" || fnm == "lpad" || fnm == "rpad" || fnm == "starts_with" || fnm == "ends_with" || fnm == "generate_series" || fnm == "power" || fnm == "pow" || fnm == "pg_typeof" {
+        return 1
+    }
+    return 0
+}
+fn boila_dual_type_name(tag: i64) -> str {
+    if tag == boila_v_null() { return "unknown" }
+    if tag == boila_v_bool() { return "boolean" }
+    if tag == boila_v_i64() { return "bigint" }
+    if tag == boila_v_ts() { return "timestamp with time zone" }
+    if tag == boila_v_bytes() { return "bytea" }
+    if tag == boila_v_str() { return "text" }
+    if tag == boila_v_json() { return "jsonb" }
+    return "unknown"
+}
+fn boila_dual_call_unary(fnm: str, v: BoilaVal, tag: i64, pos: i64) -> BoilaDualExpr {
+    if fnm == "pg_typeof" {
+        return boila_dual_ok(boila_val_str(boila_dual_type_name(v.tag)), boila_v_str(), fnm, pos)
+    }
+    if fnm == "quote_literal" || fnm == "quote_nullable" {
+        if v.tag == boila_v_null() {
+            if fnm == "quote_nullable" {
+                return boila_dual_ok(boila_val_str("NULL"), boila_v_str(), fnm, pos)
+            }
+            return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+        }
+        let s = boila_dual_as_text(v)
+        let q = concat("'", concat(str_replace(s, "'", "''"), "'"))
+        return boila_dual_ok(boila_val_str(q), boila_v_str(), fnm, pos)
+    }
+    if fnm == "quote_ident" {
+        if v.tag == boila_v_null() {
+            return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+        }
+        let s = boila_dual_as_text(v)
+        let q = concat("\"", concat(str_replace(s, "\"", "\"\""), "\""))
+        return boila_dual_ok(boila_val_str(q), boila_v_str(), fnm, pos)
+    }
+    if v.tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+    }
+    if fnm == "abs" || fnm == "sign" {
+        if tag != boila_v_i64() && tag != boila_v_ts() && tag != boila_v_bool() {
+            return boila_dual_fail_ex(pos, concat(fnm, "() изисква число"), "42883")
+        }
+        if fnm == "sign" {
+            let mut s: i64 = 0
+            if v.i > 0 { s = 1 }
+            if v.i < 0 { s = 0 - 1 }
+            return boila_dual_ok(boila_val_i64(s), boila_v_i64(), fnm, pos)
+        }
+        let mut x = v.i
+        if x < 0 { x = 0 - x }
+        return boila_dual_ok(boila_val_i64(x), boila_v_i64(), fnm, pos)
+    }
+    let mut s = int_to_str(v.i)
+    if v.tag == boila_v_str() { s = str_of_bytes(v.b) }
+    if fnm == "length" || fnm == "char_length" || fnm == "character_length" {
+        return boila_dual_ok(boila_val_i64(len(s)), boila_v_i64(), fnm, pos)
+    }
+    if fnm == "upper" {
+        return boila_dual_ok(boila_val_str(boila_dual_upper(s)), boila_v_str(), fnm, pos)
+    }
+    if fnm == "lower" {
+        return boila_dual_ok(boila_val_str(boila_fold_lower(s)), boila_v_str(), fnm, pos)
+    }
+    if fnm == "reverse" {
+        return boila_dual_ok(boila_val_str(boila_dual_reverse(s)), boila_v_str(), fnm, pos)
+    }
+    return boila_dual_ok(boila_val_str(str_trim(s)), boila_v_str(), fnm, pos)
+}
+fn boila_dual_call_simple(fnm: str, has_arg: i64, arg: str, db: str, guc: Map<str, str>, pos: i64) -> BoilaDualExpr !Time {
+    if fnm == "version" {
+        if has_arg == 1 { return boila_dual_fail_ex(pos, "version() без аргументи", "42883") }
+        return boila_dual_ok(boila_val_str("boilaDB 0.1.0 (PostgreSQL 16.0 compatible)"), boila_v_str(), fnm, pos)
+    }
+    if fnm == "current_date" {
+        if has_arg == 1 { return boila_dual_fail_ex(pos, "current_date без аргументи", "42883") }
+        let day = time_now_ms()? / 86400000
+        return boila_dual_ok(boila_val_i64(day), boila_v_i64(), fnm, pos)
+    }
+    if fnm == "current_database" {
+        if has_arg == 1 { return boila_dual_fail_ex(pos, "current_database() без аргументи", "42883") }
+        return boila_dual_ok(boila_val_str(db), boila_v_str(), fnm, pos)
+    }
+    if fnm == "current_schema" {
+        if has_arg == 1 { return boila_dual_fail_ex(pos, "current_schema() без аргументи", "42883") }
+        return boila_dual_ok(boila_val_str("public"), boila_v_str(), fnm, pos)
+    }
+    if fnm == "current_user" || fnm == "session_user" || fnm == "user" {
+        if has_arg == 1 { return boila_dual_fail_ex(pos, concat(fnm, "() без аргументи"), "42883") }
+        return boila_dual_ok(boila_val_str("boila"), boila_v_str(), fnm, pos)
+    }
+    if fnm == "now" || fnm == "current_timestamp" {
+        if has_arg == 1 { return boila_dual_fail_ex(pos, concat(fnm, "() без аргументи"), "42883") }
+        return boila_dual_ok(boila_val_ts(time_now_ms()? * 1000), boila_v_ts(), fnm, pos)
+    }
+    if fnm == "pg_is_in_recovery" {
+        if has_arg == 1 { return boila_dual_fail_ex(pos, "pg_is_in_recovery() без аргументи", "42883") }
+        return boila_dual_ok(boila_val_bool(0), boila_v_bool(), fnm, pos)
+    }
+    if fnm == "pg_backend_pid" {
+        if has_arg == 1 { return boila_dual_fail_ex(pos, "pg_backend_pid() без аргументи", "42883") }
+        return boila_dual_ok(boila_val_i64(1), boila_v_i64(), fnm, pos)
+    }
+    if fnm == "current_setting" {
+        if has_arg == 0 { return boila_dual_fail_ex(pos, "current_setting(name) изисква аргумент", "42883") }
+        return boila_dual_ok(boila_val_str(boila_guc_get(guc, arg)), boila_v_str(), fnm, pos)
+    }
+    return boila_dual_fail_ex(pos, concat("непозната функция '", concat(fnm, "()")), "42883")
+}
+fn boila_dual_upper(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c = char_at(s, i)
+        if c >= 97 && c <= 122 {
+            out = concat(out, chr(c - 32))
+        } else {
+            out = concat(out, chr(c))
+        }
+        i = i + 1
+    }
+    return out
+}
+fn boila_dual_reverse(s: str) -> str {
+    let mut out = ""
+    let mut i = len(s)
+    while i > 0 {
+        i = i - 1
+        out = concat(out, chr(char_at(s, i)))
+    }
+    return out
+}
+fn boila_dual_as_text(v: BoilaVal) -> str {
+    if v.tag == boila_v_null() { return "" }
+    if v.tag == boila_v_str() { return str_of_bytes(v.b) }
+    if v.tag == boila_v_bool() {
+        if v.i == 0 { return "f" }
+        return "t"
+    }
+    return int_to_str(v.i)
+}
+fn boila_dual_call_multi(fnm: str, args: Vec<BoilaVal>, tags: Vec<i64>, pos: i64) -> BoilaDualExpr {
+    let n = vec_len(args)
+    if fnm == "nullif" {
+        if n != 2 { return boila_dual_fail_ex(pos, "NULLIF(a,b) — точно 2 аргумента", "42883") }
+        let a0 = vec_get(args, 0)
+        let a1 = vec_get(args, 1)
+        if a0.tag != boila_v_null() && a1.tag != boila_v_null() && boila_val_cmp(a0, a1) == 0 {
+            return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+        }
+        return boila_dual_ok(a0, vec_get(tags, 0), fnm, pos)
+    }
+    if fnm == "coalesce" {
+        let mut k: i64 = 0
+        while k < n {
+            let v = vec_get(args, k)
+            if v.tag != boila_v_null() {
+                return boila_dual_ok(v, vec_get(tags, k), fnm, pos)
+            }
+            k = k + 1
+        }
+        return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+    }
+    if fnm == "concat" {
+        let mut out = ""
+        let mut k: i64 = 0
+        while k < n {
+            let v = vec_get(args, k)
+            if v.tag != boila_v_null() {
+                out = concat(out, boila_dual_as_text(v))
+            }
+            k = k + 1
+        }
+        return boila_dual_ok(boila_val_str(out), boila_v_str(), fnm, pos)
+    }
+    if fnm == "greatest" || fnm == "least" {
+        if n < 1 { return boila_dual_fail_ex(pos, concat(fnm, " изисква аргумент"), "42883") }
+        let mut best = vec_get(args, 0)
+        let mut bt = vec_get(tags, 0)
+        let mut k: i64 = 1
+        while k < n {
+            let v = vec_get(args, k)
+            if best.tag == boila_v_null() {
+                best = v
+                bt = vec_get(tags, k)
+            } else {
+                if v.tag != boila_v_null() {
+                    let c = boila_val_cmp(v, best)
+                    if fnm == "greatest" && c == 1 {
+                        best = v
+                        bt = vec_get(tags, k)
+                    }
+                    if fnm == "least" && c == 0 - 1 {
+                        best = v
+                        bt = vec_get(tags, k)
+                    }
+                }
+            }
+            k = k + 1
+        }
+        return boila_dual_ok(best, bt, fnm, pos)
+    }
+    if fnm == "mod" || fnm == "power" || fnm == "pow" {
+        if n != 2 { return boila_dual_fail_ex(pos, concat(fnm, "(a,b) — 2 аргумента"), "42883") }
+        let a = vec_get(args, 0)
+        let b = vec_get(args, 1)
+        if a.tag == boila_v_null() || b.tag == boila_v_null() {
+            return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+        }
+        if fnm == "mod" {
+            if b.i == 0 { return boila_dual_fail_ex(pos, "деление на нула", "22012") }
+            return boila_dual_ok(boila_val_i64(a.i - (a.i / b.i) * b.i), boila_v_i64(), fnm, pos)
+        }
+        if b.i < 0 {
+            return boila_dual_fail_ex(pos, "power: отрицателен експонент не се поддържа", "0A000")
+        }
+        if b.i > 62 {
+            return boila_dual_fail_ex(pos, "power: експонент твърде голям", "22003")
+        }
+        let mut r: i64 = 1
+        let mut e = b.i
+        let mut base = a.i
+        while e > 0 {
+            if e - (e / 2) * 2 == 1 { r = r * base }
+            base = base * base
+            e = e / 2
+        }
+        return boila_dual_ok(boila_val_i64(r), boila_v_i64(), fnm, pos)
+    }
+    if fnm == "strpos" || fnm == "starts_with" || fnm == "ends_with" {
+        if n != 2 { return boila_dual_fail_ex(pos, concat(fnm, " — 2 аргумента"), "42883") }
+        if vec_get(args, 0).tag == boila_v_null() || vec_get(args, 1).tag == boila_v_null() {
+            return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+        }
+        let hay = boila_dual_as_text(vec_get(args, 0))
+        let needle = boila_dual_as_text(vec_get(args, 1))
+        if fnm == "starts_with" {
+            let mut r: i64 = 0
+            if str_starts_with(hay, needle) { r = 1 }
+            return boila_dual_ok(boila_val_bool(r), boila_v_bool(), fnm, pos)
+        }
+        if fnm == "ends_with" {
+            let mut r: i64 = 0
+            if str_ends_with(hay, needle) { r = 1 }
+            return boila_dual_ok(boila_val_bool(r), boila_v_bool(), fnm, pos)
+        }
+        if needle == "" { return boila_dual_ok(boila_val_i64(1), boila_v_i64(), fnm, pos) }
+        let mut p: i64 = 0
+        let hn = len(hay)
+        let nn = len(needle)
+        while p + nn <= hn {
+            if boila_substr(hay, p, p + nn) == needle {
+                return boila_dual_ok(boila_val_i64(p + 1), boila_v_i64(), fnm, pos)
+            }
+            p = p + 1
+        }
+        return boila_dual_ok(boila_val_i64(0), boila_v_i64(), fnm, pos)
+    }
+    if fnm == "left" || fnm == "right" || fnm == "repeat" {
+        if n != 2 { return boila_dual_fail_ex(pos, concat(fnm, " — 2 аргумента"), "42883") }
+        let s0 = vec_get(args, 0)
+        let n0 = vec_get(args, 1)
+        if s0.tag == boila_v_null() || n0.tag == boila_v_null() {
+            return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+        }
+        let s = boila_dual_as_text(s0)
+        if fnm == "repeat" {
+            let mut cnt = n0.i
+            if cnt < 0 { cnt = 0 }
+            if cnt > 10000 { cnt = 10000 }
+            return boila_dual_ok(boila_val_str(str_repeat(s, cnt)), boila_v_str(), fnm, pos)
+        }
+        let mut cnt = n0.i
+        if cnt < 0 { cnt = 0 }
+        let sn = len(s)
+        if cnt > sn { cnt = sn }
+        if fnm == "left" {
+            return boila_dual_ok(boila_val_str(boila_substr(s, 0, cnt)), boila_v_str(), fnm, pos)
+        }
+        return boila_dual_ok(boila_val_str(boila_substr(s, sn - cnt, sn)), boila_v_str(), fnm, pos)
+    }
+    if fnm == "lpad" || fnm == "rpad" {
+        if n < 2 || n > 3 { return boila_dual_fail_ex(pos, concat(fnm, "(s,len[,fill])"), "42883") }
+        let s0 = vec_get(args, 0)
+        let n0 = vec_get(args, 1)
+        if s0.tag == boila_v_null() || n0.tag == boila_v_null() {
+            return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+        }
+        let mut fill = " "
+        if n == 3 {
+            if vec_get(args, 2).tag == boila_v_null() {
+                return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+            }
+            fill = boila_dual_as_text(vec_get(args, 2))
+            if fill == "" { fill = " " }
+        }
+        let s = boila_dual_as_text(s0)
+        let mut want = n0.i
+        if want < 0 { want = 0 }
+        if want > 10000 { want = 10000 }
+        let sn = len(s)
+        if sn >= want {
+            return boila_dual_ok(boila_val_str(boila_substr(s, 0, want)), boila_v_str(), fnm, pos)
+        }
+        let mut pad = ""
+        let need = want - sn
+        while len(pad) < need {
+            pad = concat(pad, fill)
+        }
+        pad = boila_substr(pad, 0, need)
+        if fnm == "lpad" {
+            return boila_dual_ok(boila_val_str(concat(pad, s)), boila_v_str(), fnm, pos)
+        }
+        return boila_dual_ok(boila_val_str(concat(s, pad)), boila_v_str(), fnm, pos)
+    }
+    if fnm == "replace" {
+        if n != 3 { return boila_dual_fail_ex(pos, "replace(s,from,to) — 3 аргумента", "42883") }
+        let s0 = vec_get(args, 0)
+        let f0 = vec_get(args, 1)
+        let t0 = vec_get(args, 2)
+        if s0.tag == boila_v_null() || f0.tag == boila_v_null() || t0.tag == boila_v_null() {
+            return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+        }
+        return boila_dual_ok(boila_val_str(str_replace(boila_dual_as_text(s0), boila_dual_as_text(f0), boila_dual_as_text(t0))), boila_v_str(), fnm, pos)
+    }
+    if fnm == "pg_typeof" {
+        if n != 1 { return boila_dual_fail_ex(pos, "pg_typeof(x) — 1 аргумент", "42883") }
+        return boila_dual_ok(boila_val_str(boila_dual_type_name(vec_get(args, 0).tag)), boila_v_str(), fnm, pos)
+    }
+    if fnm == "generate_series" {
+        return boila_dual_gen_series(args, n, pos)
+    }
+    if n < 2 || n > 3 {
+        return boila_dual_fail_ex(pos, "substr(s,start[,len]) — 2 или 3 аргумента", "42883")
+    }
+    let s0 = vec_get(args, 0)
+    if s0.tag == boila_v_null() || vec_get(args, 1).tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+    }
+    if n == 3 && vec_get(args, 2).tag == boila_v_null() {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), fnm, pos)
+    }
+    let s = boila_dual_as_text(s0)
+    let mut start = vec_get(args, 1).i
+    if start < 1 { start = 1 }
+    let lo = start - 1
+    let sn = len(s)
+    if lo >= sn { return boila_dual_ok(boila_val_str(""), boila_v_str(), fnm, pos) }
+    let mut hi = sn
+    if n == 3 {
+        let ln = vec_get(args, 2).i
+        if ln < 0 { return boila_dual_fail_ex(pos, "substr len < 0", "22011") }
+        hi = lo + ln
+        if hi > sn { hi = sn }
+    }
+    return boila_dual_ok(boila_val_str(boila_substr(s, lo, hi)), boila_v_str(), fnm, pos)
+}

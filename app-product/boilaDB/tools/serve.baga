@@ -4,6 +4,7 @@
 import "httpdbaga/http.baga"
 import "metbaga/met.baga"
 import "../api/http_sql.baga"
+import "../api/http_guc.baga"
 import "../api/serve_mt.baga"
 import "../api/serve_stats.baga"
 import "../storage/databases.baga"
@@ -27,13 +28,12 @@ fn boila_env_or(name: str, dflt: str) -> str !IO !Par {
     return v
 }
 
-fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> BoilaHttpSql !IO !Time !Par {
+fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, guc: Map<str, str>, req: Request) -> BoilaHttpSql !IO !Time !Par {
     let method = http_method(req)
     let path = http_path_only(req)
-    // W6c: token on /sql and /metrics; /health and /ready stay open
     if path == "/sql" || path == "/metrics" {
         if boila_http_auth_ok(req)? == 0 {
-            return boila_http_auth_fail(txn, sess_db)
+            return boila_http_auth_fail_guc(txn, sess_db, guc)
         }
     }
     if method == "GET" && path == "/health" {
@@ -50,10 +50,8 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> Boila
         body = concat(body, ",\"mode\":\"mt-shard\",\"version\":\"")
         body = concat(body, boila_version())
         body = concat(body, "\"}")
-        let z = boila_srv_out_fail(boila_seed(), txn, "", "")
-        return BoilaHttpSql { srv: z.srv, txn: txn, resp: http_json_response(200, body), db: sess_db }
+        return boila_http_pack(boila_seed(), txn, http_json_response(200, body), sess_db, guc)
     }
-    // M2: readiness — 503 if at connection cap (no room for new work)
     if method == "GET" && path == "/ready" {
         boila_mt_stat_inc(pack, boila_st_http())?
         let lv = boila_mt_live(pack)?
@@ -76,8 +74,7 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> Boila
             body = concat(body, boila_version())
             body = concat(body, "\"}")
         }
-        let z = boila_srv_out_fail(boila_seed(), txn, "", "")
-        return BoilaHttpSql { srv: z.srv, txn: txn, resp: http_json_response(code, body), db: sess_db }
+        return boila_http_pack(boila_seed(), txn, http_json_response(code, body), sess_db, guc)
     }
     if method == "GET" && path == "/metrics" {
         let m = met_new()
@@ -100,15 +97,20 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> Boila
         let pg = met_counter(m, "boila_pg_queries", "PG wire query executions")
         met_set(m, pg, boila_mt_stat_get(pack, boila_st_pg())?)
         let resp = http_set_header(http_response(200, met_render(m)), "Content-Type", "text/plain; version=0.0.4")
-        return BoilaHttpSql { srv: boila_seed(), txn: txn, resp: resp, db: sess_db }
+        return boila_http_pack(boila_seed(), txn, resp, sess_db, guc)
     }
     if method == "POST" && path == "/sql" {
         boila_mt_stat_inc(pack, boila_st_http())?
         let db = boila_http_pick_db(sess_db, req)?
-        let out = boila_mt_exec(pack, txn, db, http_body(req))?
-        return boila_http_encode(out, sess_db, db)?
+        let sql = http_body(req)
+        let gt = boila_http_try_guc(txn, db, guc, sql)
+        if gt.hit == 1 {
+            return gt.r
+        }
+        let out = boila_mt_exec_guc(pack, txn, db, sql, guc)?
+        return boila_http_encode(out, sess_db, db, guc)?
     }
-    return BoilaHttpSql { srv: boila_seed(), txn: txn, resp: http_json_response(404, "{\"error\":\"not found\"}"), db: sess_db }
+    return boila_http_pack(boila_seed(), txn, http_json_response(404, "{\"error\":\"not found\"}"), sess_db, guc)
 }
 
 fn boila_seed() -> BoilaServer {
@@ -117,7 +119,7 @@ fn boila_seed() -> BoilaServer {
     return BoilaServer {
         meta: boila_store_empty(), root: "", names: names, stores: stores,
         flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
-        session_txn: boila_txn_new(), pc: boila_pc_new(), mt: 0, ok: 0
+        session_txn: boila_txn_new(), pc: boila_pc_new(), guc: map_new(), mt: 0, ok: 0
     }
 }
 
@@ -127,6 +129,7 @@ fn boila_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
     tcp_set_nodelay(fd)?
     let mut txn = boila_txn_new()
     let mut sess_db = "boila"
+    let mut sess_guc: Map<str, str> = map_new()
     let mut r = http_reader(fd)
     let mut keep = true
     while keep {
@@ -140,9 +143,10 @@ fn boila_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
                 keep = false
             } else {
                 let ka = http_keepalive(out.req)
-                let rt = boila_route_mt(pack, txn, sess_db, out.req)?
+                let rt = boila_route_mt(pack, txn, sess_db, sess_guc, out.req)?
                 txn = rt.txn
                 sess_db = rt.db
+                sess_guc = rt.guc
                 http_respond_keepalive(fd, rt.resp, ka)?
                 if ka == 0 {
                     keep = false

@@ -1,0 +1,395 @@
+// exec_dual_parse.baga — dual SELECT parse/eval (no FROM).
+import "../storage/shards.baga"
+import "../txn/mvcc.baga"
+import "../core/value.baga"
+import "exec_scan.baga"
+import "exec_out.baga"
+import "exec_dual_ops.baga"
+import "exec_dual_fn.baga"
+import "plan_cache.baga"
+import "lexer.baga"
+import "token.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+// cmp: arith [BETWEEN|IN|cmpop …]
+fn boila_dual_tok(lx: BoilaLex, i: i64) -> Token {
+    if i >= vec_len(lx.toks) {
+        return token_new(tok_eof(), "")
+    }
+    return vec_get(lx.toks, i)
+}
+fn boila_dual_parse_primary(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    let t = boila_dual_tok(lx, i)
+    if t.kind == tok_op() && t.txt == "-" {
+        let r = boila_dual_parse_primary(lx, i + 1, db, guc, bind)?
+        if r.ok == 0 { return r }
+        if r.tag == boila_v_null() {
+            return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", r.pos)
+        }
+        if r.tag != boila_v_i64() && r.tag != boila_v_ts() && r.tag != boila_v_bool() {
+            return boila_dual_fail_ex(i, "унарен - изисква число", "42883")
+        }
+        return boila_dual_ok(boila_val_i64(0 - r.val.i), boila_v_i64(), "?column?", r.pos)
+    }
+    if t.kind == tok_lparen() {
+        let inner = boila_dual_parse_expr(lx, i + 1, db, guc, bind)?
+        if inner.ok == 0 { return inner }
+        if boila_dual_tok(lx, inner.pos).kind != tok_rparen() {
+            return boila_dual_fail_ex(inner.pos, "очаквах ')'", "42601")
+        }
+        return boila_dual_ok(inner.val, inner.tag, "?column?", inner.pos + 1)
+    }
+    if t.kind == tok_num() {
+        return boila_dual_ok(boila_val_i64(parse_int(t.txt)), boila_v_i64(), "?column?", i + 1)
+    }
+    if t.kind == tok_str() {
+        return boila_dual_ok(boila_val_str(t.txt), boila_v_str(), "?column?", i + 1)
+    }
+    if t.kind != tok_ident() {
+        return boila_dual_fail_ex(i, concat("неподдържан dual израз '", concat(t.txt, "'")), "0A000")
+    }
+    if tok_kw(t, "true") == 1 {
+        return boila_dual_ok(boila_val_bool(1), boila_v_bool(), "?column?", i + 1)
+    }
+    if tok_kw(t, "false") == 1 {
+        return boila_dual_ok(boila_val_bool(0), boila_v_bool(), "?column?", i + 1)
+    }
+    if tok_kw(t, "null") == 1 {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "?column?", i + 1)
+    }
+    if tok_kw(t, "case") == 1 {
+        return boila_dual_parse_case(lx, i + 1, db, guc, bind)?
+    }
+    if (tok_kw(t, "current_timestamp") == 1 || tok_kw(t, "localtimestamp") == 1) && boila_dual_tok(lx, i + 1).kind != tok_lparen() {
+        let us = time_now_ms()? * 1000
+        return boila_dual_ok(boila_val_ts(us), boila_v_ts(), t.txt, i + 1)
+    }
+    if tok_kw(t, "current_date") == 1 && boila_dual_tok(lx, i + 1).kind != tok_lparen() {
+        let day = time_now_ms()? / 86400000
+        return boila_dual_ok(boila_val_i64(day), boila_v_i64(), "current_date", i + 1)
+    }
+    if tok_kw(t, "cast") == 1 {
+        if boila_dual_tok(lx, i + 1).kind != tok_lparen() {
+            return boila_dual_fail_ex(i, "очаквах ( след CAST", "42601")
+        }
+        let inner = boila_dual_parse_expr(lx, i + 2, db, guc, bind)?
+        if inner.ok == 0 { return inner }
+        let mut j = inner.pos
+        if tok_kw(boila_dual_tok(lx, j), "as") != 1 {
+            return boila_dual_fail_ex(j, "очаквах AS в CAST", "42601")
+        }
+        j = j + 1
+        let tn = boila_dual_tok(lx, j)
+        if tn.kind != tok_ident() {
+            return boila_dual_fail_ex(j, "очаквах тип след AS", "42601")
+        }
+        j = j + 1
+        if boila_dual_tok(lx, j).kind != tok_rparen() {
+            return boila_dual_fail_ex(j, "очаквах ) след CAST", "42601")
+        }
+        let c = boila_dual_cast(inner.val, boila_dual_type_tag(tn.txt), j + 1)
+        if c.ok == 1 { c.cname = "cast" }
+        return c
+    }
+    let fnm = t.txt
+    let mut j = i + 1
+    if boila_dual_tok(lx, j).kind != tok_lparen() {
+        // dual WHERE bind: bare column ref
+        if bind.on == 1 {
+            let b = boila_dual_bind_get(bind, fnm)
+            if b.ok == 1 {
+                b.pos = i + 1
+                return b
+            }
+            return boila_dual_fail_ex(i, b.err, b.state)
+        }
+        return boila_dual_fail_ex(i, concat("колона без FROM: '", concat(fnm, "'")), "42601")
+    }
+    j = j + 1
+    if boila_dual_is_unary_fn(fnm) == 1 {
+        let a = boila_dual_parse_expr(lx, j, db, guc, bind)?
+        if a.ok == 0 { return a }
+        j = a.pos
+        if boila_dual_tok(lx, j).kind != tok_rparen() {
+            return boila_dual_fail_ex(j, concat("очаквах ) след ", fnm), "42601")
+        }
+        j = j + 1
+        return boila_dual_call_unary(fnm, a.val, a.tag, j)
+    }
+    if boila_dual_is_multi_fn(fnm) == 1 {
+        let args: Vec<BoilaVal> = vec_new()
+        let tags: Vec<i64> = vec_new()
+        if boila_dual_tok(lx, j).kind == tok_rparen() {
+            return boila_dual_fail_ex(i, concat(fnm, "() изисква аргументи"), "42883")
+        }
+        let mut more_a = true
+        while more_a {
+            let a = boila_dual_parse_expr(lx, j, db, guc, bind)?
+            if a.ok == 0 { return a }
+            vec_push(args, a.val)
+            vec_push(tags, a.tag)
+            j = a.pos
+            if boila_dual_tok(lx, j).kind == tok_comma() {
+                j = j + 1
+            } else {
+                more_a = false
+            }
+        }
+        if boila_dual_tok(lx, j).kind != tok_rparen() {
+            return boila_dual_fail_ex(j, concat("очаквах ) след ", fnm), "42601")
+        }
+        j = j + 1
+        return boila_dual_call_multi(fnm, args, tags, j)
+    }
+    let t_arg = boila_dual_tok(lx, j)
+    let mut arg = ""
+    let mut has_arg: i64 = 0
+    if t_arg.kind == tok_str() {
+        arg = t_arg.txt
+        has_arg = 1
+        j = j + 1
+    }
+    if boila_dual_tok(lx, j).kind != tok_rparen() {
+        return boila_dual_fail_ex(i, concat(fnm, "() — невалидни аргументи"), "0A000")
+    }
+    j = j + 1
+    return boila_dual_call_simple(fnm, has_arg, arg, db, guc, j)?
+}
+fn boila_dual_apply_cast_suffix(lx: BoilaLex, left: BoilaDualExpr) -> BoilaDualExpr {
+    if left.ok == 0 { return left }
+    let tcast = boila_dual_tok(lx, left.pos)
+    if tcast.kind == tok_op() && tcast.txt == "::" {
+        let tn = boila_dual_tok(lx, left.pos + 1)
+        if tn.kind != tok_ident() {
+            return boila_dual_fail_ex(left.pos, "очаквах тип след ::", "42601")
+        }
+        return boila_dual_cast(left.val, boila_dual_type_tag(tn.txt), left.pos + 2)
+    }
+    return left
+}
+fn boila_dual_parse_factor(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    let p = boila_dual_parse_primary(lx, i, db, guc, bind)?
+    return boila_dual_apply_cast_suffix(lx, p)
+}
+fn boila_dual_parse_term(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    let mut left = boila_dual_parse_factor(lx, i, db, guc, bind)?
+    if left.ok == 0 { return left }
+    let mut more = true
+    while more {
+        let op = boila_dual_is_binop(boila_dual_tok(lx, left.pos))
+        if op != "*" && op != "/" {
+            more = false
+        } else {
+            let right = boila_dual_parse_factor(lx, left.pos + 1, db, guc, bind)?
+            if right.ok == 0 { return right }
+            let folded = boila_dual_binop(left.val, op, right.val, right.pos)
+            if folded.ok == 0 { return folded }
+            left = folded
+        }
+    }
+    return left
+}
+fn boila_dual_parse_arith(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    let mut left = boila_dual_parse_term(lx, i, db, guc, bind)?
+    if left.ok == 0 { return left }
+    let mut more = true
+    while more {
+        let op = boila_dual_is_binop(boila_dual_tok(lx, left.pos))
+        if op != "+" && op != "-" && op != "||" {
+            more = false
+        } else {
+            let right = boila_dual_parse_term(lx, left.pos + 1, db, guc, bind)?
+            if right.ok == 0 { return right }
+            let folded = boila_dual_binop(left.val, op, right.val, right.pos)
+            if folded.ok == 0 { return folded }
+            left = folded
+        }
+    }
+    return left
+}
+fn boila_dual_parse_cmp(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    let mut left = boila_dual_parse_arith(lx, i, db, guc, bind)?
+    if left.ok == 0 { return left }
+    let pk = boila_dual_peek_pred(lx, left.pos)
+    let mut j = pk.pos
+    if pk.mode == 1 || pk.mode == 2 {
+        let lo = boila_dual_parse_arith(lx, j, db, guc, bind)?
+        if lo.ok == 0 { return lo }
+        j = lo.pos
+        if tok_kw(boila_dual_tok(lx, j), "and") != 1 {
+            return boila_dual_fail_ex(j, "очаквах AND в BETWEEN", "42601")
+        }
+        let hi = boila_dual_parse_arith(lx, j + 1, db, guc, bind)?
+        if hi.ok == 0 { return hi }
+        let mut bn: i64 = 0
+        if pk.mode == 2 { bn = 1 }
+        return boila_dual_between(left.val, lo.val, hi.val, bn, hi.pos)
+    }
+    if pk.mode == 3 || pk.mode == 4 {
+        if boila_dual_tok(lx, j).kind != tok_lparen() {
+            return boila_dual_fail_ex(j, "очаквах ( след IN", "42601")
+        }
+        j = j + 1
+        let vals: Vec<BoilaVal> = vec_new()
+        let mut more_v = true
+        while more_v {
+            let a = boila_dual_parse_arith(lx, j, db, guc, bind)?
+            if a.ok == 0 { return a }
+            vec_push(vals, a.val)
+            j = a.pos
+            if boila_dual_tok(lx, j).kind == tok_comma() { j = j + 1 } else { more_v = false }
+        }
+        if boila_dual_tok(lx, j).kind != tok_rparen() {
+            return boila_dual_fail_ex(j, "очаквах ) след IN", "42601")
+        }
+        let mut im: i64 = 1
+        if pk.mode == 4 { im = 2 }
+        return boila_dual_in(left.val, vals, im, j + 1)
+    }
+    if pk.mode == 5 || pk.mode == 6 {
+        let mut isn: i64 = 0
+        if pk.mode == 6 { isn = 1 }
+        return boila_dual_isnull(left.val, isn, j)
+    }
+    if pk.mode == 11 || pk.mode == 12 {
+        let right = boila_dual_parse_arith(lx, j, db, guc, bind)?
+        if right.ok == 0 { return right }
+        let mut isn: i64 = 0
+        if pk.mode == 12 { isn = 1 }
+        return boila_dual_distinct_from(left.val, right.val, isn, right.pos)
+    }
+    if pk.mode >= 7 && pk.mode <= 10 {
+        let pat = boila_dual_parse_arith(lx, j, db, guc, bind)?
+        if pat.ok == 0 { return pat }
+        return boila_dual_like(left.val, pat.val, pk.mode - 6, pat.pos)
+    }
+    let mut more = true
+    while more {
+        let op = boila_dual_is_cmpop(boila_dual_tok(lx, left.pos))
+        if op == "" {
+            more = false
+        } else {
+            let right = boila_dual_parse_arith(lx, left.pos + 1, db, guc, bind)?
+            if right.ok == 0 { return right }
+            let folded = boila_dual_cmp(left.val, op, right.val, right.pos)
+            if folded.ok == 0 { return folded }
+            left = folded
+        }
+    }
+    return left
+}
+// NOT cmp | cmp
+fn boila_dual_parse_not(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    if tok_kw(boila_dual_tok(lx, i), "not") == 1 {
+        let inner = boila_dual_parse_not(lx, i + 1, db, guc, bind)?
+        if inner.ok == 0 { return inner }
+        return boila_dual_bool_not(inner.val, inner.pos)
+    }
+    return boila_dual_parse_cmp(lx, i, db, guc, bind)?
+}
+// and: not { AND not }
+fn boila_dual_parse_and(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    let mut left = boila_dual_parse_not(lx, i, db, guc, bind)?
+    if left.ok == 0 { return left }
+    let mut more = true
+    while more {
+        if tok_kw(boila_dual_tok(lx, left.pos), "and") != 1 {
+            more = false
+        } else {
+            let right = boila_dual_parse_not(lx, left.pos + 1, db, guc, bind)?
+            if right.ok == 0 { return right }
+            left = boila_dual_bool_and(left.val, right.val, right.pos)
+            if left.ok == 0 { return left }
+        }
+    }
+    return left
+}
+// or: and { OR and }
+fn boila_dual_parse_or(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    let mut left = boila_dual_parse_and(lx, i, db, guc, bind)?
+    if left.ok == 0 { return left }
+    let mut more = true
+    while more {
+        if tok_kw(boila_dual_tok(lx, left.pos), "or") != 1 {
+            more = false
+        } else {
+            let right = boila_dual_parse_and(lx, left.pos + 1, db, guc, bind)?
+            if right.ok == 0 { return right }
+            left = boila_dual_bool_or(left.val, right.val, right.pos)
+            if left.ok == 0 { return left }
+        }
+    }
+    return left
+}
+fn boila_dual_parse_expr(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    return boila_dual_parse_or(lx, i, db, guc, bind)?
+}
+// CASE [expr] WHEN … THEN … [ELSE …] END
+fn boila_dual_parse_case(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, bind: BoilaDualBind) -> BoilaDualExpr !Time {
+    let mut j = i
+    let mut simple: i64 = 0
+    let mut base = boila_val_null()
+    if tok_kw(boila_dual_tok(lx, j), "when") != 1 {
+        let b = boila_dual_parse_expr(lx, j, db, guc, bind)?
+        if b.ok == 0 { return b }
+        simple = 1
+        base = b.val
+        j = b.pos
+    }
+    let mut got: i64 = 0
+    let mut outv = boila_val_null()
+    let mut outt = boila_v_null()
+    let mut more = true
+    while more {
+        if tok_kw(boila_dual_tok(lx, j), "when") != 1 {
+            more = false
+        } else {
+            j = j + 1
+            let cond = boila_dual_parse_expr(lx, j, db, guc, bind)?
+            if cond.ok == 0 { return cond }
+            j = cond.pos
+            if tok_kw(boila_dual_tok(lx, j), "then") != 1 {
+                return boila_dual_fail_ex(j, "очаквах THEN в CASE", "42601")
+            }
+            j = j + 1
+            let th = boila_dual_parse_expr(lx, j, db, guc, bind)?
+            if th.ok == 0 { return th }
+            j = th.pos
+            if got == 0 {
+                let mut hit: i64 = 0
+                if simple == 1 {
+                    if base.tag != boila_v_null() && cond.val.tag != boila_v_null() && boila_val_cmp(base, cond.val) == 0 {
+                        hit = 1
+                    }
+                } else {
+                    hit = boila_dual_when_true(cond.val)
+                }
+                if hit == 1 {
+                    got = 1
+                    outv = th.val
+                    outt = th.tag
+                }
+            }
+        }
+    }
+    if tok_kw(boila_dual_tok(lx, j), "else") == 1 {
+        j = j + 1
+        let el = boila_dual_parse_expr(lx, j, db, guc, bind)?
+        if el.ok == 0 { return el }
+        j = el.pos
+        if got == 0 {
+            got = 1
+            outv = el.val
+            outt = el.tag
+        }
+    }
+    if tok_kw(boila_dual_tok(lx, j), "end") != 1 {
+        return boila_dual_fail_ex(j, "очаквах END в CASE", "42601")
+    }
+    j = j + 1
+    if got == 0 {
+        return boila_dual_ok(boila_val_null(), boila_v_null(), "case", j)
+    }
+    return boila_dual_ok(outv, outt, "case", j)
+}
+

@@ -1,0 +1,321 @@
+// parse_where.baga — SELECT WHERE (eq/range/IS NULL/FTS/kNN/LIKE).
+import "token.baga"
+import "lexer.baga"
+import "ast.baga"
+import "parse_common.baga"
+import "tsquery.baga"
+import "../core/value.baga"
+import "std/str/str.baga"
+
+struct BoilaParseWhere {
+    ok: i64,
+    sel: BoilaSel,
+    pos: i64,
+    err: str,
+    state: str
+}
+
+fn boila_pw_fail(sel: BoilaSel, pos: i64, msg: str, state: str) -> BoilaParseWhere {
+    return BoilaParseWhere { ok: 0, sel: sel, pos: pos, err: msg, state: state }
+}
+
+fn boila_parse_where(l: BoilaLex, sel: BoilaSel, i: i64) -> BoilaParseWhere {
+    if tok_kw(boila_ps_tok(l, i), "where") != 1 {
+        return BoilaParseWhere { ok: 1, sel: sel, pos: i, err: "", state: "" }
+    }
+    i = i + 1
+    let mut more = true
+    while more {
+        let col = boila_ps_tok(l, i)
+        if col.kind != tok_ident() {
+            return boila_pw_fail(sel, i, "очаквах колона в WHERE", "42601")
+        }
+        i = i + 1
+        // Q-like: [NOT] LIKE / [NOT] ILIKE 'pattern'  (1/2/3/4)
+        let mut lm: i64 = 0
+        if tok_kw(boila_ps_tok(l, i), "like") == 1 {
+            lm = 1
+            i = i + 1
+        } else {
+            if tok_kw(boila_ps_tok(l, i), "ilike") == 1 {
+                lm = 2
+                i = i + 1
+            } else {
+                if tok_kw(boila_ps_tok(l, i), "not") == 1 {
+                    if tok_kw(boila_ps_tok(l, i + 1), "like") == 1 {
+                        lm = 3
+                        i = i + 2
+                    } else {
+                        if tok_kw(boila_ps_tok(l, i + 1), "ilike") == 1 {
+                            lm = 4
+                            i = i + 2
+                        }
+                    }
+                }
+            }
+        }
+        if lm > 0 {
+            let lit = boila_ps_tok(l, i)
+            if lit.kind != tok_str() {
+                return boila_pw_fail(sel, i, "очаквах стринг след LIKE/ILIKE", "42601")
+            }
+            i = i + 1
+            if sel.has_like != 0 {
+                return boila_pw_fail(sel, i, "повторно LIKE/ILIKE", "0A000")
+            }
+            sel.has_like = lm
+            sel.like_col = col.txt
+            sel.like_pat = lit.txt
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
+        } else {
+        if tok_kw(boila_ps_tok(l, i), "is") == 1 {
+            i = i + 1
+            let mut notn: i64 = 0
+            if tok_kw(boila_ps_tok(l, i), "not") == 1 { notn = 1; i = i + 1 }
+            if tok_kw(boila_ps_tok(l, i), "null") != 1 {
+                return boila_pw_fail(sel, i, "очаквах NULL след IS", "42601")
+            }
+            i = i + 1
+            if sel.isnull_mode != 0 { return boila_pw_fail(sel, i, "повторно IS NULL", "0A000") }
+            if notn == 1 { sel.isnull_mode = 2 } else { sel.isnull_mode = 1 }
+            sel.isnull_col = col.txt
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
+        } else {
+        // Q-between: col [NOT] BETWEEN lo AND hi → lo/hi range
+        let mut bnot: i64 = 0
+        let mut is_bt: i64 = 0
+        if tok_kw(boila_ps_tok(l, i), "between") == 1 {
+            is_bt = 1
+            i = i + 1
+        } else {
+            if tok_kw(boila_ps_tok(l, i), "not") == 1 && tok_kw(boila_ps_tok(l, i + 1), "between") == 1 {
+                is_bt = 1
+                bnot = 1
+                i = i + 2
+            }
+        }
+        if is_bt == 1 {
+            let lo = boila_ps_literal(l, i)
+            if lo.ok == 0 { return boila_pw_fail(sel, i, lo.err, lo.state) }
+            i = i + 1
+            if tok_kw(boila_ps_tok(l, i), "and") != 1 {
+                return boila_pw_fail(sel, i, "очаквах AND в BETWEEN", "42601")
+            }
+            i = i + 1
+            let hi = boila_ps_literal(l, i)
+            if hi.ok == 0 { return boila_pw_fail(sel, i, hi.err, hi.state) }
+            i = i + 1
+            if sel.has_lo == 1 || sel.has_hi == 1 {
+                return boila_pw_fail(sel, i, "BETWEEN заедно с >=/<=", "0A000")
+            }
+            sel.has_lo = 1
+            sel.lo_col = col.txt
+            sel.pk_lo = lo.v
+            sel.lo_param = lo.param
+            sel.lo_excl = 0
+            sel.has_hi = 1
+            sel.hi_col = col.txt
+            sel.pk_hi = hi.v
+            sel.hi_param = hi.param
+            sel.hi_excl = 0
+            sel.between_not = bnot
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
+        } else {
+        // Q-in: col [NOT] IN (lit, …)
+        let mut in_mode: i64 = 0
+        if tok_kw(boila_ps_tok(l, i), "not") == 1 && tok_kw(boila_ps_tok(l, i + 1), "in") == 1 {
+            in_mode = 2
+            i = i + 2
+        } else {
+            if tok_kw(boila_ps_tok(l, i), "in") == 1 {
+                in_mode = 1
+                i = i + 1
+            }
+        }
+        if in_mode > 0 {
+            if boila_ps_tok(l, i).kind != tok_lparen() {
+                return boila_pw_fail(sel, i, "очаквах ( след IN", "42601")
+            }
+            i = i + 1
+            if sel.has_in != 0 {
+                return boila_pw_fail(sel, i, "повторно IN/NOT IN", "0A000")
+            }
+            let vals: Vec<BoilaVal> = vec_new()
+            let mut more_v = true
+            while more_v {
+                let lit = boila_ps_literal(l, i)
+                if lit.ok == 0 { return boila_pw_fail(sel, i, lit.err, lit.state) }
+                i = i + 1
+                vec_push(vals, lit.v)
+                if boila_ps_tok(l, i).kind == tok_comma() {
+                    i = i + 1
+                } else {
+                    more_v = false
+                }
+            }
+            if boila_ps_tok(l, i).kind != tok_rparen() {
+                return boila_pw_fail(sel, i, "очаквах ) след IN списък", "42601")
+            }
+            i = i + 1
+            if vec_len(vals) == 0 {
+                return boila_pw_fail(sel, i, "IN списъкът е празен", "42601")
+            }
+            sel.has_in = in_mode
+            sel.in_col = col.txt
+            sel.in_vals = vals
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
+        } else {
+        let op = boila_ps_tok(l, i)
+        if op.kind != tok_op() {
+            return boila_pw_fail(sel, i, concat("очаквах оператор в WHERE, получих '", concat(op.txt, "'")), "42601")
+        }
+        i = i + 1
+        if op.txt == "@@" {
+            if sel.has_fts == 1 { return boila_pw_fail(sel, i, "повторно @@ условие", "0A000") }
+            if sel.has_knn == 1 { return boila_pw_fail(sel, i, "@@ заедно с kNN", "0A000") }
+            let fn_t = boila_ps_tok(l, i)
+            let mut plain: i64 = 0 - 1
+            if fn_t.kind == tok_ident() && fn_t.txt == "to_tsquery" { plain = 0 }
+            if fn_t.kind == tok_ident() && fn_t.txt == "plainto_tsquery" { plain = 1 }
+            if fn_t.kind == tok_ident() && fn_t.txt == "phraseto_tsquery" { plain = 2 }
+            if plain < 0 { return boila_pw_fail(sel, i, "очаквах to_tsquery/plainto/phraseto_tsquery след @@", "42601") }
+            if boila_ps_tok(l, i + 1).kind != tok_lparen() { return boila_pw_fail(sel, i, "очаквах '(' след tsquery", "42601") }
+            let lit = boila_ps_tok(l, i + 2)
+            if lit.kind != tok_str() { return boila_pw_fail(sel, i, "очаквах стринг в tsquery", "42601") }
+            if boila_ps_tok(l, i + 3).kind != tok_rparen() { return boila_pw_fail(sel, i, "очаквах ')' в tsquery", "42601") }
+            i = i + 4
+            let tp = boila_ts_parse(lit.txt, plain)
+            if tp.ok == 0 { return boila_pw_fail(sel, i, tp.err, tp.state) }
+            sel.has_fts = 1
+            sel.fts_col = col.txt
+            sel.fts_mode = tp.mode
+            sel.fts_terms = tp.terms
+            sel.fts_gaps = tp.gaps
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
+        } else {
+        if op.txt == "<->" || op.txt == "<=>" || op.txt == "<#>" {
+            if sel.has_knn == 1 { return boila_pw_fail(sel, i, "повторно kNN условие", "0A000") }
+            if sel.has_fts == 1 { return boila_pw_fail(sel, i, "kNN заедно с @@", "0A000") }
+            let lit = boila_ps_tok(l, i)
+            if lit.kind != tok_str() { return boila_pw_fail(sel, i, "очаквах vector литерал '[…]'", "42601") }
+            i = i + 1
+            let mut metric: i64 = 1
+            if op.txt == "<=>" { metric = 2 }
+            if op.txt == "<#>" { metric = 3 }
+            sel.has_knn = 1
+            sel.knn_col = col.txt
+            sel.knn_metric = metric
+            sel.knn_query = lit.txt
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
+        } else {
+        let lit = boila_ps_literal(l, i)
+        if lit.ok == 0 {
+            return boila_pw_fail(sel, i, lit.err, lit.state)
+        }
+        i = i + 1
+        let v = lit.v
+        if op.txt == "=" {
+            if sel.has_eq == 1 {
+                return boila_pw_fail(sel, i, "повторно = условие", "0A000")
+            }
+            sel.has_eq = 1
+            sel.eq_col = col.txt
+            sel.pk_eq = v
+            sel.eq_param = lit.param
+        } else {
+            if op.txt == "<>" || op.txt == "!=" {
+                if sel.has_ne == 1 {
+                    return boila_pw_fail(sel, i, "повторно <> условие", "0A000")
+                }
+                sel.has_ne = 1
+                sel.ne_col = col.txt
+                sel.pk_ne = v
+                sel.ne_param = lit.param
+            } else {
+            if op.txt == ">=" || op.txt == ">" {
+                if sel.has_lo == 1 {
+                    return boila_pw_fail(sel, i, "повторно >/>= условие", "0A000")
+                }
+                sel.has_lo = 1
+                sel.lo_col = col.txt
+                sel.pk_lo = v
+                sel.lo_param = lit.param
+                if op.txt == ">" { sel.lo_excl = 1 } else { sel.lo_excl = 0 }
+            } else {
+                if op.txt == "<=" || op.txt == "<" {
+                    if sel.has_hi == 1 {
+                        return boila_pw_fail(sel, i, "повторно </<= условие", "0A000")
+                    }
+                    sel.has_hi = 1
+                    sel.hi_col = col.txt
+                    sel.pk_hi = v
+                    sel.hi_param = lit.param
+                    if op.txt == "<" { sel.hi_excl = 1 } else { sel.hi_excl = 0 }
+                } else {
+                    return boila_pw_fail(sel, i, concat("операторът '", concat(op.txt, "' не е в SELECT подмножеството")), "0A000")
+                }
+            }
+            }
+        }
+        // Q-or: col = a OR col = b → IN (same column only)
+        if tok_kw(boila_ps_tok(l, i), "or") == 1 {
+            let mut or_col = ""
+            if sel.has_eq == 1 {
+                or_col = sel.eq_col
+                let vals: Vec<BoilaVal> = vec_new()
+                vec_push(vals, sel.pk_eq)
+                sel.has_eq = 0
+                sel.eq_col = ""
+                sel.has_in = 1
+                sel.in_col = or_col
+                sel.in_vals = vals
+            } else {
+                if sel.has_in == 1 {
+                    or_col = sel.in_col
+                } else {
+                    return boila_pw_fail(sel, i, "OR поддържа само equality върху една колона (→ IN)", "0A000")
+                }
+            }
+            let mut more_or = true
+            while more_or {
+                if tok_kw(boila_ps_tok(l, i), "or") != 1 {
+                    more_or = false
+                } else {
+                    i = i + 1
+                    let c2 = boila_ps_tok(l, i)
+                    if c2.kind != tok_ident() || c2.txt != or_col {
+                        return boila_pw_fail(sel, i, "OR: очаквах същата колона", "0A000")
+                    }
+                    i = i + 1
+                    let op2 = boila_ps_tok(l, i)
+                    if op2.kind != tok_op() || op2.txt != "=" {
+                        return boila_pw_fail(sel, i, "OR: очаквах = ", "0A000")
+                    }
+                    i = i + 1
+                    let lit2 = boila_ps_literal(l, i)
+                    if lit2.ok == 0 { return boila_pw_fail(sel, i, lit2.err, lit2.state) }
+                    i = i + 1
+                    vec_push(sel.in_vals, lit2.v)
+                }
+            }
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 {
+                i = i + 1
+            } else {
+                more = false
+            }
+        } else {
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 {
+                i = i + 1
+            } else {
+                more = false
+            }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+    }
+    return BoilaParseWhere { ok: 1, sel: sel, pos: i, err: "", state: "" }
+}
