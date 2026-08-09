@@ -116,10 +116,10 @@ fn main() -> i64 !IO !Time !Par {
     srv = h1.srv
     check(fails, "having", h1.ok == 1 && vec_len(h1.res.rows) == 1 && cell(vec_get(h1.res.rows, 0), 0) == "eng")
 
-    // --- JOIN nested loop ---
+    // --- A2: hash join (no index on inner join col yet) ---
     let j1 = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY id LIMIT 2")?
     srv = j1.srv
-    check(fails, "join_nl", j1.ok == 1 && vec_len(j1.res.rows) == 2 && cell(vec_get(j1.res.rows, 0), 0) == "alice" && cell(vec_get(j1.res.rows, 0), 1) == "sofia")
+    check(fails, "join_hash", j1.ok == 1 && vec_len(j1.res.rows) == 2 && cell(vec_get(j1.res.rows, 0), 0) == "alice" && cell(vec_get(j1.res.rows, 0), 1) == "sofia")
 
     // --- JOIN index nested loop (индекс по вътрешната колона) ---
     let jx = exec(srv, "CREATE INDEX emp_dept_ix ON emp (dept)")?

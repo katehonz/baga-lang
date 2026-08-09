@@ -1,5 +1,5 @@
-// exec_join.baga — един JOIN (INNER/LEFT, ON equality).
-// WHERE eq: left → pushdown; right → post-filter (A3). ON само '='.
+// exec_join.baga — JOIN: index NL | hash join (A2) | nested loop.
+// WHERE eq: left pushdown; right post-filter (A3). ON only '='.
 
 import "../storage/shards.baga"
 import "../core/value.baga"
@@ -20,6 +20,11 @@ struct BoilaJoinOut {
     state: str,
     cols: Vec<BoilaColDef>,
     rows: Vec<Vec<BoilaVal>>
+}
+
+// A2: Map value wrapper (Map cannot hold bare Vec).
+struct BoilaHJBucket {
+    idxs: Vec<i64>
 }
 
 fn boila_join_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaJoinOut {
@@ -53,7 +58,6 @@ fn boila_null_row(ncols: i64) -> Vec<BoilaVal> {
     return out
 }
 
-// A3: filter wide rows by right-table eq (col at offset + cix).
 fn boila_join_filter_right(rows: Vec<Vec<BoilaVal>>, off: i64, cix: i64, val: BoilaVal) -> Vec<Vec<BoilaVal>> {
     let out: Vec<Vec<BoilaVal>> = vec_new()
     let mut i: i64 = 0
@@ -68,6 +72,32 @@ fn boila_join_filter_right(rows: Vec<Vec<BoilaVal>>, off: i64, cix: i64, val: Bo
         i = i + 1
     }
     return out
+}
+
+// A2: build hash on inner join key → row indices (null keys skipped).
+fn boila_hj_build(inner: Vec<Vec<BoilaVal>>, ridx: i64) -> Map<bytes, BoilaHJBucket> {
+    let m: Map<bytes, BoilaHJBucket> = map_new()
+    let mut i: i64 = 0
+    while i < vec_len(inner) {
+        let row = vec_get(inner, i)
+        if ridx >= 0 && ridx < vec_len(row) {
+            let v = vec_get(row, ridx)
+            if v.tag != boila_v_null() {
+                let k = boila_val_enc(v)
+                if map_has(m, k) == 1 {
+                    let b = map_get(m, k)
+                    vec_push(b.idxs, i)
+                    map_set(m, k, b)
+                } else {
+                    let idxs: Vec<i64> = vec_new()
+                    vec_push(idxs, i)
+                    map_set(m, k, BoilaHJBucket { idxs: idxs })
+                }
+            }
+        }
+        i = i + 1
+    }
+    return m
 }
 
 fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaJoinOut !IO !Time !Par {
@@ -85,7 +115,6 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
     if ridx < 0 {
         return boila_join_fail(s, txn, concat("JOIN колона '", concat(sel.join_rcol, "' не съществува в дясната таблица")), "42703")
     }
-    // A3: split WHERE eq left (pushdown) vs right (post-filter)
     let mut left_sel = sel
     let mut r_eq: i64 = 0
     let mut r_cix: i64 = 0 - 1
@@ -106,7 +135,6 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
             }
         }
     }
-    // range still left-PK only (left_sel keeps lo/hi)
     let wcols: Vec<BoilaColDef> = vec_new()
     let mut i: i64 = 0
     while i < vec_len(t.cols) {
@@ -127,6 +155,7 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
     let nullr = boila_null_row(vec_len(t2.cols))
     let ixid = boila_ix_by_col_t(t2, ridx)
     if ixid >= 0 {
+        // index nested loop
         let mut oi: i64 = 0
         while oi < vec_len(outer.rows) {
             let orow = vec_get(outer.rows, oi)
@@ -152,22 +181,27 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
             oi = oi + 1
         }
     } else {
+        // A2: hash join on inner (no secondary index)
         let inner = boila_fetch_all(s, txn, t2)?
         s = inner.s
+        let ht = boila_hj_build(inner.rows, ridx)
         let mut oi: i64 = 0
         while oi < vec_len(outer.rows) {
             let orow = vec_get(outer.rows, oi)
             let lv = vec_get(orow, lidx)
             let mut matched = false
-            let mut ii: i64 = 0
-            while ii < vec_len(inner.rows) {
-                let irow = vec_get(inner.rows, ii)
-                let rv = vec_get(irow, ridx)
-                if lv.tag != boila_v_null() && boila_val_cmp(lv, rv) == 0 {
-                    vec_push(rows, boila_wide_row(orow, irow))
-                    matched = true
+            if lv.tag != boila_v_null() {
+                let k = boila_val_enc(lv)
+                if map_has(ht, k) == 1 {
+                    let b = map_get(ht, k)
+                    let mut j: i64 = 0
+                    while j < vec_len(b.idxs) {
+                        let irow = vec_get(inner.rows, vec_get(b.idxs, j))
+                        vec_push(rows, boila_wide_row(orow, irow))
+                        matched = true
+                        j = j + 1
+                    }
                 }
-                ii = ii + 1
             }
             if matched == false && sel.join_kind == 2 {
                 vec_push(rows, boila_wide_row(orow, nullr))
