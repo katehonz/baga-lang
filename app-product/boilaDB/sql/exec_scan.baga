@@ -94,6 +94,17 @@ fn boila_pk_lit_ok(typ: i64, v: BoilaVal) -> i64 {
     return 0
 }
 
+// Match eq including NULL==NULL for IS NULL index merge (K6).
+fn boila_val_eq_ix(a: BoilaVal, b: BoilaVal) -> i64 {
+    if a.tag == boila_v_null() && b.tag == boila_v_null() {
+        return 1
+    }
+    if boila_val_cmp(a, b) == 0 {
+        return 1
+    }
+    return 0
+}
+
 // pk-та от buffer-а, чиято колона col_idx има стойност val (index merge).
 fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, pks: Vec<bytes>) {
     let mut i: i64 = 0
@@ -102,7 +113,7 @@ fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, 
         if w.cf == boila_cf_data() && w.table_id == t.id && w.is_del == 0 {
             let row = boila_row_dec(w.row)
             if col_idx < vec_len(row) {
-                if boila_val_cmp(vec_get(row, col_idx), val) == 0 {
+                if boila_val_eq_ix(vec_get(row, col_idx), val) == 1 {
                     let mut dup = false
                     let mut j: i64 = 0
                     while j < vec_len(pks) {
@@ -194,7 +205,12 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
     if sel.has_hi == 1 && boila_pk_lit_ok(pkcol.typ, sel.pk_hi) == 0 {
         return boila_fetch_fail(s, txn, "литералът в <= не съответства на типа на PRIMARY KEY", "42804")
     }
+    // K6: IS [NOT] NULL → exec_isnull (dispatched from exec_select)
     if sel.has_eq == 1 {
+        // SQL 3VL: col = NULL never matches (use IS NULL)
+        if sel.pk_eq.tag == boila_v_null() {
+            return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
+        }
         if sel.eq_col == pkcol.name {
             if boila_pk_lit_ok(pkcol.typ, sel.pk_eq) == 0 {
                 return boila_fetch_fail(s, txn, "литералът в = не съответства на типа на PRIMARY KEY", "42804")

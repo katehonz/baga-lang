@@ -16,6 +16,9 @@ struct BoilaSel {
     star: i64,
     items: Vec<BoilaSelItem>,
     eq_col: str, has_eq: i64, pk_eq: BoilaVal, eq_param: i64,
+    // K6: IS [NOT] NULL — 0 none, 1 IS NULL, 2 IS NOT NULL
+    isnull_mode: i64,
+    isnull_col: str,
     lo_col: str, has_lo: i64, pk_lo: BoilaVal, lo_param: i64,
     hi_col: str, has_hi: i64, pk_hi: BoilaVal, hi_param: i64,
     limit: i64, lim_param: i64,
@@ -85,6 +88,7 @@ fn boila_sel_empty() -> BoilaSel {
     return BoilaSel {
         table: "", star: 0, items: items,
         eq_col: "", has_eq: 0, pk_eq: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, eq_param: 0,
+        isnull_mode: 0, isnull_col: "",
         lo_col: "", has_lo: 0, pk_lo: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, lo_param: 0,
         hi_col: "", has_hi: 0, pk_hi: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, hi_param: 0,
         limit: 0, lim_param: 0, offset: 0,

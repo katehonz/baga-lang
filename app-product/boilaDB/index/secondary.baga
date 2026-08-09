@@ -7,9 +7,8 @@
 // Entries (index CF, table_id на таблицата):
 //   pk част = [ix_id u32 BE][value enc][pk enc] → празна стойност
 //
-// NULL стойности не се индексират (gaps K6). Lookup връща pk-та;
-// glob MATCH може да съдържа метазнаци от кодирани байтове — резултатът
-// се филтрира байт-точно (K2).
+// K6: NULL се индексира (като PG). Lookup с null val → IS NULL path.
+// glob MATCH: резултатът се филтрира байт-точно (K2).
 
 import "../storage/shards.baga"
 import "../core/codec.baga"
@@ -153,13 +152,11 @@ fn boila_ix_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ix_name: str, co
             let row = boila_row_dec(g3.row)
             if col_idx < vec_len(row) {
                 let v = vec_get(row, col_idx)
-                if v.tag != boila_v_null() {
-                    let r4 = boila_txn_put(s, txn, boila_cf_index(), t.id, boila_ix_entry_pk(next, v, pkenc), bytes_new(0))
-                    if r4.ok == 0 {
-                        return BoilaIxTxnRes { s: s, txn: r4.txn, ok: 0, err: r4.err, state: r4.state, id: 0 }
-                    }
-                    txn = r4.txn
+                let r4 = boila_txn_put(s, txn, boila_cf_index(), t.id, boila_ix_entry_pk(next, v, pkenc), bytes_new(0))
+                if r4.ok == 0 {
+                    return BoilaIxTxnRes { s: s, txn: r4.txn, ok: 0, err: r4.err, state: r4.state, id: 0 }
                 }
+                txn = r4.txn
             }
         }
         ki = ki + 1
@@ -175,13 +172,11 @@ fn boila_ix_put_all_txn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, row: Vec<Bo
         let m = vec_get(t.ixs, i)
         if m.col_idx < vec_len(row) {
             let v = vec_get(row, m.col_idx)
-            if v.tag != boila_v_null() {
-                let r = boila_txn_put(s, txn, boila_cf_index(), t.id, boila_ix_entry_pk(m.id, v, pkenc), bytes_new(0))
-                if r.ok == 0 {
-                    return r
-                }
-                txn = r.txn
+            let r = boila_txn_put(s, txn, boila_cf_index(), t.id, boila_ix_entry_pk(m.id, v, pkenc), bytes_new(0))
+            if r.ok == 0 {
+                return r
             }
+            txn = r.txn
         }
         i = i + 1
     }
@@ -194,13 +189,11 @@ fn boila_ix_del_all_txn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, row: Vec<Bo
         let m = vec_get(t.ixs, i)
         if m.col_idx < vec_len(row) {
             let v = vec_get(row, m.col_idx)
-            if v.tag != boila_v_null() {
-                let r = boila_txn_del(s, txn, boila_cf_index(), t.id, boila_ix_entry_pk(m.id, v, pkenc))
-                if r.ok == 0 {
-                    return r
-                }
-                txn = r.txn
+            let r = boila_txn_del(s, txn, boila_cf_index(), t.id, boila_ix_entry_pk(m.id, v, pkenc))
+            if r.ok == 0 {
+                return r
             }
+            txn = r.txn
         }
         i = i + 1
     }

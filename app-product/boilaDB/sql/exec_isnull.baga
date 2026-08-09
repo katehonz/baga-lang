@@ -1,0 +1,60 @@
+// exec_isnull.baga — K6: IS [NOT] NULL fetch (+ index null lookup).
+
+import "../storage/shards.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn boila_fetch_isnull(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    let cix = boila_col_idx(t, sel.isnull_col)
+    if cix < 0 {
+        return boila_fetch_fail(s, txn, concat("колона '", concat(sel.isnull_col, "' не съществува")), "42703")
+    }
+    if sel.isnull_mode == 1 {
+        let ixid = boila_ix_by_col_t(t, cix)
+        if ixid >= 0 {
+            let nv = boila_val_null()
+            let lk = boila_ix_lookup(s, t, ixid, nv)?
+            s = lk.s
+            boila_scan_buf_eq(txn, t, cix, nv, lk.pks)
+            let mut li: i64 = 0
+            while li < vec_len(lk.pks) {
+                let g = boila_txn_get(s, txn, t.id, vec_get(lk.pks, li))?
+                s = g.s
+                if g.found == 1 {
+                    vec_push(rows, boila_row_dec(g.row))
+                }
+                li = li + 1
+            }
+            return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
+        }
+    }
+    let ks = boila_txn_keys(s, txn, t.id)?
+    s = ks.s
+    let mut ki: i64 = 0
+    while ki < vec_len(ks.pks) {
+        let g = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
+        s = g.s
+        if g.found == 1 {
+            let row = boila_row_dec(g.row)
+            if cix < vec_len(row) {
+                let isn = vec_get(row, cix).tag == boila_v_null()
+                if sel.isnull_mode == 1 && isn {
+                    vec_push(rows, row)
+                }
+                if sel.isnull_mode == 2 && isn == false {
+                    vec_push(rows, row)
+                }
+            }
+        }
+        ki = ki + 1
+    }
+    return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
+}

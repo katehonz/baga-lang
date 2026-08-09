@@ -103,6 +103,20 @@ fn main() -> i64 !IO !Time !Par {
     srv = q7.srv
     check(fails, "delete_entry", q7.ok == 1 && vec_len(q7.res.rows) == 0)
 
+    // K6: NULL indexed + IS NULL / IS NOT NULL; col = NULL is 3VL empty
+    let inull = boila_server_exec(srv, "boila", "INSERT INTO p (id, city) VALUES (10, NULL), (11, NULL), (12, 'plovdiv')")?
+    srv = inull.srv
+    check(fails, "insert_null", inull.ok == 1)
+    let qn1 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city IS NULL")?
+    srv = qn1.srv
+    check(fails, "is_null", qn1.ok == 1 && vec_len(qn1.res.rows) == 2)
+    let qn2 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city IS NOT NULL")?
+    srv = qn2.srv
+    check(fails, "is_not_null", qn2.ok == 1 && vec_len(qn2.res.rows) >= 2)
+    let qn3 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = NULL")?
+    srv = qn3.srv
+    check(fails, "eq_null_empty", qn3.ok == 1 && vec_len(qn3.res.rows) == 0)
+
     // --- грешки ---
     let e1 = boila_server_exec(srv, "boila", "CREATE INDEX city_ix ON p (city)")?
     srv = e1.srv

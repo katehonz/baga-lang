@@ -158,8 +158,9 @@ T = транзакции, W = wire protocol, F = FTS.
   атомен WAL запис: torn pwrite в рамките на един statement би оставил
   частични записи при replay (тесен прозорец). Пълна оправия = WAL group
   record в rocksbaga (бъдеща промяна, вж. ARCHITECTURE §1 принцип 1).
-- **K6 — NULL стойности не се индексират.** PG индексира NULL-и; тук
-  съзнателно се пропускат (по-прост lookup; документирано).
+- **K6 — (FIXED) NULL се индексира + IS [NOT] NULL.** Index build/DML
+  пишат null entries; `IS NULL` → index lookup; `IS NOT NULL` → scan
+  filter; `col = NULL` → празен (SQL 3VL).
 - **K7 — (FIXED при P3 rev.2) boila_ix_list скенваше sys на всяко DML
   заявление.** Комбинацията с rocksbaga SCAN snapshot-а (материализира
   ВСИЧКИ ключове на клъстера при смяна на write epoch) правеше всяко
