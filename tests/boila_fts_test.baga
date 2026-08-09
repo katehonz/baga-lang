@@ -4,6 +4,7 @@
 import "boilaDB/storage/databases.baga"
 import "boilaDB/sql/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/fts/fts.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
@@ -66,6 +67,9 @@ fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
 fn main() -> i64 !IO !Time !Par {
     print("boila_fts_test:")
     let fails: Vec<i64> = vec_new()
+    // F3: idf decreases as df grows; rare term >> common
+    check(fails, "idf_mono", fts_bm25_idf(1000, 1) > fts_bm25_idf(1000, 100) && fts_bm25_idf(1000, 100) > fts_bm25_idf(1000, 500))
+    check(fails, "idf_pos", fts_bm25_idf(100, 10) > 0 && fts_ln_x1000(1000) > fts_ln_x1000(100))
     let root = "/tmp/baga_boila_fts_test"
     wipe_root(root)?
 

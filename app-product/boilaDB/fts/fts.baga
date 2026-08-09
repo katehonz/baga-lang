@@ -18,6 +18,7 @@ import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../txn/mvcc.baga"
 import "fts_doc.baga"
+import "tokenizer.baga"
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
 
@@ -186,7 +187,7 @@ fn fts_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: 
     return BoilaFtsRes { s: s, txn: txn, ok: 1, err: "", state: "", id: next }
 }
 
-// --- BM25 заявка (mode 1=AND, 2=OR, 3=PHRASE with gaps) ---
+// --- BM25 заявка (mode 1=AND, 2=OR, 3=PHRASE with gaps); idf in tokenizer ---
 
 fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, terms: Vec<str>, mode: i64) -> BoilaFtsQuery !IO !Time !Par {
     let gaps: Vec<i64> = vec_new()
@@ -286,9 +287,8 @@ fn fts_query_gaps(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef,
         }
         cand = kept
     }
-    // BM25 score (×1000, целочислено; idf е линейна апроксимация, dl=avgdl
-    // за скорост — без doc GET, gaps F3). Само кеш-четения, без storage GET
-    // в цикъла по кандидатите.
+    // BM25 score (×1000). F3: idf = ln(1+(N-df+0.5)/(df+0.5)) via
+    // integer ln; dl=avgdl (no per-doc GET). Cache-only in cand loop.
     let dl = avgdl
     let scores: Vec<i64> = vec_new()
     let mut ci: i64 = 0
@@ -310,7 +310,7 @@ fn fts_query_gaps(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef,
                 j = j + 1
             }
             if tf > 0 && df > 0 {
-                let mut idf: i64 = ((N - df) * 2000) / (2 * df + 1)
+                let mut idf = fts_bm25_idf(N, df)
                 if idf < 1 {
                     idf = 1
                 }

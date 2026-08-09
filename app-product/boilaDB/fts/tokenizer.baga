@@ -194,6 +194,58 @@ fn fts_phrase_match(doc: Vec<str>, phrase: Vec<str>) -> i64 {
     return fts_phrase_match_gaps(doc, phrase, gaps)
 }
 
+// F3: BM25 idf via integer ln (×1000).
+fn fts_ilog2(x: i64) -> i64 {
+    if x <= 1 {
+        return 0
+    }
+    let mut n: i64 = 0
+    let mut v = x
+    while v > 1 {
+        v = v / 2
+        n = n + 1
+    }
+    return n
+}
+
+fn fts_ln_x1000(x: i64) -> i64 {
+    if x <= 1 {
+        return 0
+    }
+    let e = fts_ilog2(x)
+    let mut p2: i64 = 1
+    let mut i: i64 = 0
+    while i < e {
+        p2 = p2 * 2
+        i = i + 1
+    }
+    let m = (x * 1000) / p2
+    let y = m - 1000
+    let y2 = (y * y) / 1000
+    let y3 = (y2 * y) / 1000
+    let ln_m = y - y2 / 2 + y3 / 3
+    return e * 693 + ln_m
+}
+
+// idf ×1000 = ln(1 + (N-df+0.5)/(df+0.5))
+fn fts_bm25_idf(n: i64, df: i64) -> i64 {
+    let mut d = df
+    if d < 1 {
+        d = 1
+    }
+    let mut nn = n
+    if nn < d {
+        nn = d
+    }
+    let num = (nn - d) * 2 + 1
+    let den = d * 2 + 1
+    let mut idf = fts_ln_x1000(den + num) - fts_ln_x1000(den)
+    if idf < 0 {
+        idf = 0
+    }
+    return idf
+}
+
 // Уникални terms (за индексиране без повторения).
 fn fts_unique(terms: Vec<str>) -> Vec<str> {
     let out: Vec<str> = vec_new()

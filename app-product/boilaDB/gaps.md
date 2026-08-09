@@ -81,8 +81,9 @@ T = транзакции, W = wire protocol, F = FTS.
   Cyrillic А-Я/Ё → а-я/ё (UTF-8 2-byte). Residual: full Unicode casefold
   (Latin-1/Greek/σ-ς, Turkic i) not tabled; non-Cyrillic multibyte kept
   as-is.
-- **F3 — BM25 idf е линейна апроксимация** (без ln), целочислена ×1000.
-  Реденето е коректно относително, но не е точно PG ts_rank.
+- **F3 — (FIXED) BM25 idf via integer ln.** `fts_bm25_idf` =
+  ln(1+(N-df+0.5)/(df+0.5))×1000 (`fts_ln_x1000` log2+Taylor). Residual:
+  dl still avgdl (no per-doc GET); not bit-identical to PG ts_rank float.
 - **F4 — posting списъците са един запис на term (read-modify-write при
   индексация).** Алтернативата (append-only + merge) идва при нужда от
   по-бързо писане; point GET query-тата са целта (K2).
