@@ -5,7 +5,9 @@ import "lexer.baga"
 import "token.baga"
 import "parse_select.baga"
 import "parse_ddl.baga"
+import "parse_alter.baga"
 import "parse_index.baga"
+import "../catalog/alter.baga"
 import "parse_dml.baga"
 import "parse_insert.baga"
 import "parse_txn.baga"
@@ -24,10 +26,11 @@ import "../vector/hnsw.baga"
 import "../vector/distance.baga"
 import "../graph/adjacency.baga"
 import "../catalog/schema.baga"
-import "../catalog/drop.baga"
 import "../storage/shards.baga"
 import "../index/secondary.baga"
 import "../txn/mvcc.baga"
+import "exec_drop.baga"
+import "exec_show.baga"
 import "std/str/str.baga"
 
 // pc_mu=0 → unlocked (tests / single-thread). Serve passes per-db mutex.
@@ -106,33 +109,17 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
     }
     if tok_kw(t0, "drop") == 1 {
-        let t1 = vec_get(lx.toks, 1)
-        if tok_kw(t1, "table") != 1 {
-            return boila_sql_fail(s, txn, pc, "DROP TABLE / DROP DATABASE (сърверно)", "0A000")
-        }
-        let p = boila_parse_drop_table(lx)
+        return boila_exec_drop(s, txn, db, lx, pc, pc_mu)?
+    }
+    if tok_kw(t0, "truncate") == 1 {
+        return boila_exec_truncate(s, txn, db, lx, pc, pc_mu)?
+    }
+    if tok_kw(t0, "alter") == 1 {
+        let p = boila_parse_alter(lx)
         if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
-        // T5b: DROP via txn buffer; auto-commit when not in explicit txn
-        let was_active = txn.active
-        if was_active == 0 {
-            let b = boila_txn_begin(s, txn, 0, db)?
-            s = b.s
-            txn = b.txn
-        }
-        let dr = boila_table_drop_txn(s, txn, p.name)?
-        s = dr.s
-        txn = dr.txn
-        if dr.ok == 0 {
-            if was_active == 0 { txn = boila_txn_rollback(txn) }
-            return boila_sql_fail(s, txn, pc, dr.err, dr.state)
-        }
-        if was_active == 0 {
-            let c = boila_txn_commit(s, txn)?
-            s = c.s
-            txn = c.txn
-            if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
-        }
-        return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: dr.id }
+        let ar = boila_alter_run(s, txn, db, p.alt)?
+        if ar.ok == 0 { return boila_sql_fail(ar.s, ar.txn, pc, ar.err, ar.state) }
+        return BoilaSqlOut { s: ar.s, txn: ar.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 22, res: boila_result_empty(), id: ar.id }
     }
     if tok_kw(t0, "create") == 1 {
         let t1 = vec_get(lx.toks, 1)
@@ -152,8 +139,9 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             s = cr.s
             txn = cr.txn
             if cr.ok == 0 {
-                if was_active == 0 {
-                    txn = boila_txn_rollback(txn)
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if pc2.if_not_exists == 1 && cr.state == "42P07" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: 0 }
                 }
                 return boila_sql_fail(s, txn, pc, cr.err, cr.state)
             }
@@ -161,9 +149,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
                 let c = boila_txn_commit(s, txn)?
                 s = c.s
                 txn = c.txn
-                if c.ok == 0 {
-                    return boila_sql_fail(s, txn, pc, c.err, c.state)
-                }
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
         }
@@ -188,16 +174,18 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
                 s = hx.s
                 txn = hx.txn
                 if hx.ok == 0 {
-                    txn = boila_txn_rollback(txn)
+                    if was_active == 0 { txn = boila_txn_rollback(txn) }
+                    if p.if_not_exists == 1 && hx.state == "42710" {
+                        return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 15, res: boila_result_empty(), id: 0 }
+                    }
+                    if was_active == 1 { txn = boila_txn_rollback(txn) }
                     return boila_sql_fail(s, txn, pc, hx.err, hx.state)
                 }
                 if was_active == 0 {
                     let c = boila_txn_commit(s, txn)?
                     s = c.s
                     txn = c.txn
-                    if c.ok == 0 {
-                        return boila_sql_fail(s, txn, pc, c.err, c.state)
-                    }
+                    if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
                 }
                 return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 15, res: boila_result_empty(), id: hx.id }
             }
@@ -205,29 +193,27 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             s = ix.s
             txn = ix.txn
             if ix.ok == 0 {
-                txn = boila_txn_rollback(txn)
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if p.if_not_exists == 1 && ix.state == "42710" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: 0 }
+                }
+                if was_active == 1 { txn = boila_txn_rollback(txn) }
                 return boila_sql_fail(s, txn, pc, ix.err, ix.state)
             }
             if was_active == 0 {
                 let c = boila_txn_commit(s, txn)?
                 s = c.s
                 txn = c.txn
-                if c.ok == 0 {
-                    return boila_sql_fail(s, txn, pc, c.err, c.state)
-                }
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
         }
         if tok_kw(t1, "graph") == 1 {
             let p = boila_parse_create_graph(lx)
-            if p.ok == 0 {
-                return boila_sql_fail(s, txn, pc, p.err, p.state)
-            }
+            if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
             let ct = boila_cat_by_name_txn(s, txn, p.table)?
             s = ct.s
-            if ct.ok == 0 {
-                return boila_sql_fail(s, txn, pc, ct.err, ct.state)
-            }
+            if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
             let was_active = txn.active
             if was_active == 0 {
                 let b = boila_txn_begin(s, txn, 0, db)?
@@ -238,29 +224,27 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             s = gx.s
             txn = gx.txn
             if gx.ok == 0 {
-                txn = boila_txn_rollback(txn)
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if p.if_not_exists == 1 && gx.state == "42710" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 17, res: boila_result_empty(), id: 0 }
+                }
+                if was_active == 1 { txn = boila_txn_rollback(txn) }
                 return boila_sql_fail(s, txn, pc, gx.err, gx.state)
             }
             if was_active == 0 {
                 let c = boila_txn_commit(s, txn)?
                 s = c.s
                 txn = c.txn
-                if c.ok == 0 {
-                    return boila_sql_fail(s, txn, pc, c.err, c.state)
-                }
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 17, res: boila_result_empty(), id: gx.id }
         }
         if tok_kw(t1, "fts") == 1 {
             let p = boila_parse_create_fts(lx)
-            if p.ok == 0 {
-                return boila_sql_fail(s, txn, pc, p.err, p.state)
-            }
+            if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
             let ct = boila_cat_by_name_txn(s, txn, p.ix.table)?
             s = ct.s
-            if ct.ok == 0 {
-                return boila_sql_fail(s, txn, pc, ct.err, ct.state)
-            }
+            if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
             let was_active = txn.active
             if was_active == 0 {
                 let b = boila_txn_begin(s, txn, 0, db)?
@@ -271,16 +255,18 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             s = fx.s
             txn = fx.txn
             if fx.ok == 0 {
-                txn = boila_txn_rollback(txn)
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if p.if_not_exists == 1 && fx.state == "42710" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: 0 }
+                }
+                if was_active == 1 { txn = boila_txn_rollback(txn) }
                 return boila_sql_fail(s, txn, pc, fx.err, fx.state)
             }
             if was_active == 0 {
                 let c = boila_txn_commit(s, txn)?
                 s = c.s
                 txn = c.txn
-                if c.ok == 0 {
-                    return boila_sql_fail(s, txn, pc, c.err, c.state)
-                }
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: fx.id }
         }
@@ -388,12 +374,11 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
     }
     // W7 fallback (no session map — mt_exec path); server_exec intercepts first
     if tok_kw(t0, "set") == 1 { return boila_exec_set_ok(s, txn, pc) }
-    if tok_kw(t0, "show") == 1 { return boila_exec_show(s, txn, pc, lx) }
-    if tok_kw(t0, "reset") == 1 {
-        return boila_sql_ok(s, txn, pc, 20, boila_result_empty(), 0)
+    if tok_kw(t0, "show") == 1 { return boila_exec_show(s, txn, pc, lx)? }
+    if tok_kw(t0, "describe") == 1 || tok_kw(t0, "desc") == 1 {
+        return boila_exec_describe(s, txn, pc, lx)?
     }
-    if tok_kw(t0, "discard") == 1 {
-        return boila_sql_ok(s, txn, pc, 21, boila_result_empty(), 0)
-    }
+    if tok_kw(t0, "reset") == 1 { return boila_sql_ok(s, txn, pc, 20, boila_result_empty(), 0) }
+    if tok_kw(t0, "discard") == 1 { return boila_sql_ok(s, txn, pc, 21, boila_result_empty(), 0) }
     return boila_sql_fail(s, txn, pc, concat("неподдържана конструкция '", concat(t0.txt, "'")), "0A000")
 }

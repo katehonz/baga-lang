@@ -17,12 +17,13 @@ import "std/str/str.baga"
 struct BoilaParseCreate {
     ok: i64,
     create: BoilaCreate,
+    if_not_exists: i64,
     err: str,
     state: str
 }
 
 fn boila_pc_fail(msg: str, state: str) -> BoilaParseCreate {
-    return BoilaParseCreate { ok: 0, create: boila_create_empty(), err: msg, state: state }
+    return BoilaParseCreate { ok: 0, create: boila_create_empty(), if_not_exists: 0, err: msg, state: state }
 }
 
 fn boila_pc_tok(l: BoilaLex, i: i64) -> Token {
@@ -57,17 +58,26 @@ fn boila_type_of(name: str) -> i64 {
 }
 
 fn boila_parse_create(l: BoilaLex) -> BoilaParseCreate {
-    // toks: CREATE TABLE ident ( ... )
-    let tn = boila_pc_tok(l, 2)
+    // toks: CREATE TABLE [IF NOT EXISTS] ident ( ... )
+    let mut i0: i64 = 2
+    let mut ifne: i64 = 0
+    if tok_kw(boila_pc_tok(l, 2), "if") == 1 {
+        if tok_kw(boila_pc_tok(l, 3), "not") != 1 || tok_kw(boila_pc_tok(l, 4), "exists") != 1 {
+            return boila_pc_fail("очаквах IF NOT EXISTS", "42601")
+        }
+        ifne = 1
+        i0 = 5
+    }
+    let tn = boila_pc_tok(l, i0)
     if tn.kind != tok_ident() {
         return boila_pc_fail("очаквах име на таблица след CREATE TABLE", "42601")
     }
     let mut cr = boila_create_empty()
     cr.table = tn.txt
-    if boila_pc_tok(l, 3).kind != tok_lparen() {
+    if boila_pc_tok(l, i0 + 1).kind != tok_lparen() {
         return boila_pc_fail("очаквах '(' след името на таблицата", "42601")
     }
-    let mut i: i64 = 4
+    let mut i: i64 = i0 + 2
     let mut depth_ok = true
     while depth_ok {
         // PRIMARY KEY (col) като последен елемент
@@ -235,7 +245,7 @@ fn boila_parse_create(l: BoilaLex) -> BoilaParseCreate {
         let extra = boila_pc_tok(l, i)
         return boila_pc_fail(concat("неочакван токен '", concat(extra.txt, "' след CREATE TABLE")), "0A000")
     }
-    return BoilaParseCreate { ok: 1, create: cr, err: "", state: "" }
+    return BoilaParseCreate { ok: 1, create: cr, if_not_exists: ifne, err: "", state: "" }
 }
 
 // --- CREATE/DROP DATABASE, USE (сървърни/сесийни заявления, P2) ---
@@ -243,44 +253,67 @@ fn boila_parse_create(l: BoilaLex) -> BoilaParseCreate {
 struct BoilaParseDb {
     ok: i64,
     name: str,
+    if_exists: i64,
     err: str,
     state: str
 }
 
 fn boila_pdb_fail(msg: str, state: str) -> BoilaParseDb {
-    return BoilaParseDb { ok: 0, name: "", err: msg, state: state }
+    return BoilaParseDb { ok: 0, name: "", if_exists: 0, err: msg, state: state }
 }
 
-// CREATE DATABASE ident [;] — toks 0/1 проверени от dispatch.
+fn boila_pdb_ok(name: str, if_ex: i64) -> BoilaParseDb {
+    return BoilaParseDb { ok: 1, name: name, if_exists: if_ex, err: "", state: "" }
+}
+
+// CREATE DATABASE [IF NOT EXISTS] ident [;] — if_exists flag = IF NOT EXISTS
 fn boila_parse_create_db(l: BoilaLex) -> BoilaParseDb {
-    let t = boila_pc_tok(l, 2)
+    let mut i: i64 = 2
+    let mut ifne: i64 = 0
+    if tok_kw(boila_pc_tok(l, i), "if") == 1 {
+        if tok_kw(boila_pc_tok(l, i + 1), "not") != 1 || tok_kw(boila_pc_tok(l, i + 2), "exists") != 1 {
+            return boila_pdb_fail("очаквах IF NOT EXISTS", "42601")
+        }
+        ifne = 1
+        i = i + 3
+    }
+    let t = boila_pc_tok(l, i)
     if t.kind != tok_ident() {
         return boila_pdb_fail("очаквах име на база след CREATE DATABASE", "42601")
     }
-    let nx = boila_pc_tok(l, 3)
-    if nx.kind == tok_semi() && boila_pc_tok(l, 4).kind == tok_eof() {
-        return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+    let nx = boila_pc_tok(l, i + 1)
+    if nx.kind == tok_semi() && boila_pc_tok(l, i + 2).kind == tok_eof() {
+        return boila_pdb_ok(t.txt, ifne)
     }
     if nx.kind != tok_eof() {
         return boila_pdb_fail(concat("неочакван токен '", concat(nx.txt, "' след CREATE DATABASE")), "0A000")
     }
-    return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+    return boila_pdb_ok(t.txt, ifne)
 }
 
-// DROP DATABASE ident [;]
+// DROP DATABASE [IF EXISTS] ident [;]
 fn boila_parse_drop_db(l: BoilaLex) -> BoilaParseDb {
-    let t = boila_pc_tok(l, 2)
+    let mut i: i64 = 2
+    let mut if_ex: i64 = 0
+    if tok_kw(boila_pc_tok(l, i), "if") == 1 {
+        if tok_kw(boila_pc_tok(l, i + 1), "exists") != 1 {
+            return boila_pdb_fail("очаквах EXISTS след IF", "42601")
+        }
+        if_ex = 1
+        i = i + 2
+    }
+    let t = boila_pc_tok(l, i)
     if t.kind != tok_ident() {
         return boila_pdb_fail("очаквах име на база след DROP DATABASE", "42601")
     }
-    let nx = boila_pc_tok(l, 3)
-    if nx.kind == tok_semi() && boila_pc_tok(l, 4).kind == tok_eof() {
-        return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+    let nx = boila_pc_tok(l, i + 1)
+    if nx.kind == tok_semi() && boila_pc_tok(l, i + 2).kind == tok_eof() {
+        return boila_pdb_ok(t.txt, if_ex)
     }
     if nx.kind != tok_eof() {
         return boila_pdb_fail(concat("неочакван токен '", concat(nx.txt, "' след DROP DATABASE")), "0A000")
     }
-    return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+    return boila_pdb_ok(t.txt, if_ex)
 }
 
 // USE ident [;]
@@ -291,26 +324,66 @@ fn boila_parse_use(l: BoilaLex) -> BoilaParseDb {
     }
     let nx = boila_pc_tok(l, 2)
     if nx.kind == tok_semi() && boila_pc_tok(l, 3).kind == tok_eof() {
-        return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+        return boila_pdb_ok(t.txt, 0)
     }
     if nx.kind != tok_eof() {
         return boila_pdb_fail(concat("неочакван токен '", concat(nx.txt, "' след USE")), "0A000")
     }
-    return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+    return boila_pdb_ok(t.txt, 0)
 }
 
-// DROP TABLE ident [;] (P11)
+// DROP TABLE [IF EXISTS] ident [;]
 fn boila_parse_drop_table(l: BoilaLex) -> BoilaParseDb {
-    let t = boila_pc_tok(l, 2)
+    let mut i: i64 = 2
+    let mut if_ex: i64 = 0
+    if tok_kw(boila_pc_tok(l, i), "if") == 1 {
+        if tok_kw(boila_pc_tok(l, i + 1), "exists") != 1 {
+            return boila_pdb_fail("очаквах EXISTS след IF", "42601")
+        }
+        if_ex = 1
+        i = i + 2
+    }
+    let t = boila_pc_tok(l, i)
     if t.kind != tok_ident() {
         return boila_pdb_fail("очаквах име на таблица след DROP TABLE", "42601")
     }
-    let nx = boila_pc_tok(l, 3)
-    if nx.kind == tok_semi() && boila_pc_tok(l, 4).kind == tok_eof() {
-        return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+    let nx = boila_pc_tok(l, i + 1)
+    if nx.kind == tok_semi() && boila_pc_tok(l, i + 2).kind == tok_eof() {
+        return boila_pdb_ok(t.txt, if_ex)
     }
     if nx.kind != tok_eof() {
         return boila_pdb_fail(concat("неочакван токен '", concat(nx.txt, "' след DROP TABLE")), "0A000")
     }
-    return BoilaParseDb { ok: 1, name: t.txt, err: "", state: "" }
+    return boila_pdb_ok(t.txt, if_ex)
+}
+
+// TRUNCATE [TABLE] [IF EXISTS] ident [;]
+fn boila_parse_truncate(l: BoilaLex) -> BoilaParseDb {
+    if tok_kw(boila_pc_tok(l, 0), "truncate") != 1 {
+        return boila_pdb_fail("очаквах TRUNCATE", "42601")
+    }
+    let mut i: i64 = 1
+    if tok_kw(boila_pc_tok(l, i), "table") == 1 {
+        i = i + 1
+    }
+    let mut if_ex: i64 = 0
+    if tok_kw(boila_pc_tok(l, i), "if") == 1 {
+        if tok_kw(boila_pc_tok(l, i + 1), "exists") != 1 {
+            return boila_pdb_fail("очаквах EXISTS след IF", "42601")
+        }
+        if_ex = 1
+        i = i + 2
+    }
+    let t = boila_pc_tok(l, i)
+    if t.kind != tok_ident() {
+        return boila_pdb_fail("очаквах име на таблица след TRUNCATE", "42601")
+    }
+    let nx = boila_pc_tok(l, i + 1)
+    if nx.kind == tok_semi() && boila_pc_tok(l, i + 2).kind == tok_eof() {
+        return boila_pdb_ok(t.txt, if_ex)
+    }
+    if nx.kind != tok_eof() {
+        return boila_pdb_fail(concat("неочакван токен '", concat(nx.txt, "' след TRUNCATE")), "42601")
+    }
+    return boila_pdb_ok(t.txt, if_ex)
 }

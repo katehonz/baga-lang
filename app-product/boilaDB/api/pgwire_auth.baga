@@ -1,0 +1,63 @@
+// pgwire_auth.baga — cleartext auth: users ACL or BOILA_TOKEN.
+import "pgwire_msg.baga"
+import "pgwire_enc.baga"
+import "../storage/databases.baga"
+import "../catalog/acl.baga"
+import "../sql/exec_acl.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/crypto/ct.baga"
+
+struct BoilaPgAuth {
+    srv: BoilaServer,
+    sess: BoilaPgSess,
+    r: PgWReader,
+    ok: i64,
+    err: str
+}
+
+fn pgw_write_a(fd: i64, b: bytes) -> i64 !Net !IO !Par { return tcp_write_bytes(fd, b)? }
+
+// After startup: authenticate and set sess.guc user. ok=0 → caller closes.
+fn pgw_authenticate(fd: i64, rr: PgWReader, srv: BoilaServer, sess: BoilaPgSess, login_user: str) -> BoilaPgAuth !IO !Net !Time !Par {
+    let token = env("BOILA_TOKEN")
+    let uc = boila_acl_user_count(srv.meta)?
+    srv.meta = uc.s
+    let mut need_pw = 0
+    if uc.super > 0 { need_pw = 1 }
+    if token != "" { need_pw = 1 }
+    if need_pw == 1 {
+        let w0 = pgw_write_a(fd, pgw_msg(82, pgw_be32(3)))?
+        if w0 != 0 {
+            return BoilaPgAuth { srv: srv, sess: sess, r: rr, ok: 0, err: "auth write" }
+        }
+        let pm = pgw_read_msg(rr)?
+        rr = pm.r
+        if pm.ok == 0 || pm.typ != 112 {
+            return BoilaPgAuth { srv: srv, sess: sess, r: rr, ok: 0, err: "no password" }
+        }
+        let pw = pgw_cstr_read(pm.body, 0)
+        let mut auth_ok = 0
+        if uc.super > 0 && login_user != "" {
+            let ar = boila_acl_auth(srv.meta, login_user, pw.s)?
+            srv.meta = ar.s
+            if ar.ok == 1 {
+                auth_ok = 1
+                sess.guc = boila_sess_set_user(sess.guc, login_user, ar.super)
+            }
+        }
+        if auth_ok == 0 && token != "" && ct_eq(pw.s, token) {
+            auth_ok = 1
+            let mut un = login_user
+            if un == "" { un = "boila" }
+            sess.guc = boila_sess_set_user(sess.guc, un, 1)
+        }
+        if auth_ok == 0 {
+            let w1 = pgw_write_a(fd, pgw_error("28P01", "password authentication failed"))?
+            return BoilaPgAuth { srv: srv, sess: sess, r: rr, ok: 0, err: "bad auth" }
+        }
+    }
+    return BoilaPgAuth { srv: srv, sess: sess, r: rr, ok: 1, err: "" }
+}

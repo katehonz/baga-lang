@@ -1,0 +1,115 @@
+// g_drop.baga — DROP GRAPH name ON table.
+import "adjacency.baga"
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../catalog/drop.baga"
+import "../txn/mvcc.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn graph_wipe_gid_txn(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64) -> BoilaGraphRes !IO !Time !Par {
+    let mut po = bytes_of_str("o|")
+    po = bytes_concat(po, boila_enc_u32_be(gid))
+    let mut pi = bytes_of_str("i|")
+    pi = bytes_concat(pi, boila_enc_u32_be(gid))
+    let ks = boila_cf_keys_raw(s, boila_cf_graph(), table_id)?
+    s = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_bytes_has_prefix(pk, po) == 1 || boila_bytes_has_prefix(pk, pi) == 1 {
+            let r = boila_txn_del(s, txn, boila_cf_graph(), table_id, pk)
+            s = r.s
+            txn = r.txn
+            if r.ok == 0 {
+                return BoilaGraphRes { s: s, txn: txn, ok: 0, err: r.err, state: r.state, id: 0 }
+            }
+        }
+        i = i + 1
+    }
+    return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: gid }
+}
+
+fn graph_drop(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str) -> BoilaGraphRes !IO !Time !Par {
+    let gl = graph_list_for_table(s, t.id)?
+    s = gl.s
+    let mut found = 0
+    let mut gid: i64 = 0
+    let kept: Vec<BoilaGraphDef> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(gl.defs) {
+        let d = vec_get(gl.defs, i)
+        if d.name == name {
+            found = 1
+            gid = d.id
+        } else {
+            vec_push(kept, d)
+        }
+        i = i + 1
+    }
+    if found == 0 {
+        return BoilaGraphRes { s: s, txn: txn, ok: 0, err: concat("graph '", concat(name, "' не съществува")), state: "42704", id: 0 }
+    }
+    let d1 = boila_txn_del(s, txn, boila_cf_sys(), 1, graph_cat_pk(t.id, name))
+    if d1.ok == 0 {
+        return BoilaGraphRes { s: d1.s, txn: d1.txn, ok: 0, err: d1.err, state: d1.state, id: 0 }
+    }
+    s = d1.s
+    txn = d1.txn
+    if vec_len(kept) == 0 {
+        let d2 = boila_txn_del(s, txn, boila_cf_sys(), 1, graph_list_pk(t.id))
+        if d2.ok == 0 {
+            return BoilaGraphRes { s: d2.s, txn: d2.txn, ok: 0, err: d2.err, state: d2.state, id: 0 }
+        }
+        s = d2.s
+        txn = d2.txn
+    } else {
+        let rl = boila_txn_put(s, txn, boila_cf_sys(), 1, graph_list_pk(t.id), graph_defs_enc(kept))
+        if rl.ok == 0 {
+            return BoilaGraphRes { s: s, txn: rl.txn, ok: 0, err: rl.err, state: rl.state, id: 0 }
+        }
+        s = rl.s
+        txn = rl.txn
+    }
+    return graph_wipe_gid_txn(s, txn, t.id, gid)?
+}
+
+fn graph_drop_run(s: BoilaStore, txn: BoilaTxn, db: str, table: str, name: str, if_exists: i64) -> BoilaGraphRes !IO !Time !Par {
+    let was = txn.active
+    if was == 0 {
+        let b = boila_txn_begin(s, txn, 0, db)?
+        s = b.s
+        txn = b.txn
+    }
+    let ct = boila_cat_by_name_txn(s, txn, table)?
+    s = ct.s
+    if ct.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(txn) }
+        if if_exists == 1 && ct.state == "42P01" {
+            return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: 0 }
+        }
+        return BoilaGraphRes { s: s, txn: txn, ok: 0, err: ct.err, state: ct.state, id: 0 }
+    }
+    let dr = graph_drop(s, txn, ct.table, name)?
+    s = dr.s
+    txn = dr.txn
+    if dr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(txn) }
+        if if_exists == 1 && dr.state == "42704" {
+            return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: 0 }
+        }
+        return BoilaGraphRes { s: s, txn: txn, ok: 0, err: dr.err, state: dr.state, id: 0 }
+    }
+    if was == 0 {
+        let c = boila_txn_commit(s, txn)?
+        s = c.s
+        txn = c.txn
+        if c.ok == 0 {
+            return BoilaGraphRes { s: s, txn: txn, ok: 0, err: c.err, state: c.state, id: 0 }
+        }
+    }
+    return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: dr.id }
+}

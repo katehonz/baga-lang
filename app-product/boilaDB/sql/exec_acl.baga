@@ -1,0 +1,182 @@
+// exec_acl.baga — CREATE/DROP/ALTER USER, GRANT/REVOKE + session helpers.
+import "token.baga"
+import "lexer.baga"
+import "parse_acl.baga"
+import "../catalog/acl.baga"
+import "../storage/shards.baga"
+import "../core/row.baga"
+import "std/str/str.baga"
+
+struct BoilaAclCmdOut {
+    meta: BoilaStore,
+    guc: Map<str, str>,
+    ok: i64,
+    err: str,
+    state: str,
+    kind: i64,
+    name: str
+}
+
+fn boila_acl_cmd_fail(meta: BoilaStore, guc: Map<str, str>, msg: str, state: str) -> BoilaAclCmdOut {
+    return BoilaAclCmdOut { meta: meta, guc: guc, ok: 0, err: msg, state: state, kind: 0, name: "" }
+}
+
+fn boila_sess_user(guc: Map<str, str>) -> str {
+    let v = map_get(guc, "boila.user")
+    if v != "" { return v }
+    return ""
+}
+
+fn boila_sess_super(guc: Map<str, str>) -> i64 {
+    if map_get(guc, "boila.super") == "1" { return 1 }
+    return 0
+}
+
+fn boila_sess_set_user(guc: Map<str, str>, user: str, super: i64) -> Map<str, str> {
+    map_set(guc, "boila.user", user)
+    if super == 1 {
+        map_set(guc, "boila.super", "1")
+    } else {
+        map_set(guc, "boila.super", "0")
+    }
+    return guc
+}
+
+fn boila_acl_require(meta: BoilaStore, guc: Map<str, str>, db: str, table: str, need: i64) -> BoilaAclRes !IO !Time !Par {
+    return boila_acl_check(meta, boila_sess_user(guc), boila_sess_super(guc), db, table, need)?
+}
+
+fn boila_exec_create_user(meta: BoilaStore, guc: Map<str, str>, lx: BoilaLex) -> BoilaAclCmdOut !IO !Time !Par {
+    let p = boila_parse_create_user(lx)
+    if p.ok == 0 { return boila_acl_cmd_fail(meta, guc, p.err, p.state) }
+    let cnt = boila_acl_user_count(meta)?
+    meta = cnt.s
+    if cnt.super > 0 && boila_sess_super(guc) == 0 {
+        return boila_acl_cmd_fail(meta, guc, "permission denied to create user", "42501")
+    }
+    let mut sup = p.super
+    if cnt.super == 0 { sup = 1 }
+    let r = boila_acl_user_create(meta, p.name, p.pw, sup)?
+    meta = r.s
+    if r.ok == 0 {
+        if p.if_not_exists == 1 && r.state == "42710" {
+            return BoilaAclCmdOut { meta: meta, guc: guc, ok: 1, err: "", state: "", kind: 26, name: p.name }
+        }
+        return boila_acl_cmd_fail(meta, guc, r.err, r.state)
+    }
+    return BoilaAclCmdOut { meta: meta, guc: guc, ok: 1, err: "", state: "", kind: 26, name: p.name }
+}
+
+fn boila_exec_drop_user(meta: BoilaStore, guc: Map<str, str>, lx: BoilaLex) -> BoilaAclCmdOut !IO !Time !Par {
+    let p = boila_parse_drop_user(lx)
+    if p.ok == 0 { return boila_acl_cmd_fail(meta, guc, p.err, p.state) }
+    if boila_sess_user(guc) != "" && boila_sess_super(guc) == 0 {
+        return boila_acl_cmd_fail(meta, guc, "permission denied to drop user", "42501")
+    }
+    let r = boila_acl_user_drop(meta, p.name)?
+    meta = r.s
+    if r.ok == 0 {
+        if p.if_exists == 1 && r.state == "42704" {
+            return BoilaAclCmdOut { meta: meta, guc: guc, ok: 1, err: "", state: "", kind: 27, name: p.name }
+        }
+        return boila_acl_cmd_fail(meta, guc, r.err, r.state)
+    }
+    return BoilaAclCmdOut { meta: meta, guc: guc, ok: 1, err: "", state: "", kind: 27, name: p.name }
+}
+
+fn boila_exec_alter_user(meta: BoilaStore, guc: Map<str, str>, lx: BoilaLex) -> BoilaAclCmdOut !IO !Time !Par {
+    let p = boila_parse_alter_user(lx)
+    if p.ok == 0 { return boila_acl_cmd_fail(meta, guc, p.err, p.state) }
+    let me = boila_sess_user(guc)
+    if me != "" && boila_sess_super(guc) == 0 && me != p.name {
+        return boila_acl_cmd_fail(meta, guc, "permission denied", "42501")
+    }
+    let r = boila_acl_set_pw(meta, p.name, p.pw)?
+    meta = r.s
+    if r.ok == 0 { return boila_acl_cmd_fail(meta, guc, r.err, r.state) }
+    return BoilaAclCmdOut { meta: meta, guc: guc, ok: 1, err: "", state: "", kind: 28, name: p.name }
+}
+
+fn boila_exec_grant_rev(meta: BoilaStore, guc: Map<str, str>, db: str, lx: BoilaLex, is_rev: i64) -> BoilaAclCmdOut !IO !Time !Par {
+    let mut p = boila_parse_grant(lx)
+    if is_rev == 1 { p = boila_parse_revoke(lx) }
+    if p.ok == 0 { return boila_acl_cmd_fail(meta, guc, p.err, p.state) }
+    if boila_sess_user(guc) != "" && boila_sess_super(guc) == 0 {
+        return boila_acl_cmd_fail(meta, guc, "permission denied to grant/revoke", "42501")
+    }
+    let mut gdb = p.db
+    if gdb == "" { gdb = db }
+    let mut r = BoilaAclRes { s: meta, ok: 0, err: "", state: "", super: 0, hash: "" }
+    if is_rev == 1 {
+        r = boila_acl_revoke(meta, p.grantee, gdb, p.table, p.bits)?
+    } else {
+        r = boila_acl_grant(meta, p.grantee, gdb, p.table, p.bits)?
+    }
+    meta = r.s
+    if r.ok == 0 { return boila_acl_cmd_fail(meta, guc, r.err, r.state) }
+    let mut k: i64 = 29
+    if is_rev == 1 { k = 30 }
+    return BoilaAclCmdOut { meta: meta, guc: guc, ok: 1, err: "", state: "", kind: k, name: p.grantee }
+}
+
+struct BoilaAclNeed {
+    table: str,
+    need: i64,
+    skip: i64
+}
+
+fn boila_acl_need_sql(lx: BoilaLex) -> BoilaAclNeed {
+    if vec_len(lx.toks) < 1 {
+        return BoilaAclNeed { table: "", need: 0, skip: 1 }
+    }
+    let t0 = vec_get(lx.toks, 0)
+    if tok_kw(t0, "begin") == 1 || tok_kw(t0, "commit") == 1 || tok_kw(t0, "rollback") == 1 || tok_kw(t0, "start") == 1 {
+        return BoilaAclNeed { table: "", need: 0, skip: 1 }
+    }
+    if tok_kw(t0, "set") == 1 || tok_kw(t0, "show") == 1 || tok_kw(t0, "reset") == 1 || tok_kw(t0, "discard") == 1 {
+        return BoilaAclNeed { table: "", need: 0, skip: 1 }
+    }
+    if tok_kw(t0, "use") == 1 {
+        return BoilaAclNeed { table: "*", need: boila_priv_connect(), skip: 0 }
+    }
+    if tok_kw(t0, "create") == 1 {
+        if vec_len(lx.toks) > 1 {
+            let t1 = vec_get(lx.toks, 1)
+            if tok_kw(t1, "user") == 1 || tok_kw(t1, "role") == 1 {
+                return BoilaAclNeed { table: "", need: 0, skip: 1 }
+            }
+        }
+        return BoilaAclNeed { table: "*", need: boila_priv_create(), skip: 0 }
+    }
+    if tok_kw(t0, "drop") == 1 {
+        if vec_len(lx.toks) > 1 {
+            let t1 = vec_get(lx.toks, 1)
+            if tok_kw(t1, "user") == 1 || tok_kw(t1, "role") == 1 {
+                return BoilaAclNeed { table: "", need: 0, skip: 1 }
+            }
+        }
+        return BoilaAclNeed { table: "*", need: boila_priv_drop(), skip: 0 }
+    }
+    if tok_kw(t0, "alter") == 1 {
+        if vec_len(lx.toks) > 1 && (tok_kw(vec_get(lx.toks, 1), "user") == 1 || tok_kw(vec_get(lx.toks, 1), "role") == 1) {
+            return BoilaAclNeed { table: "", need: 0, skip: 1 }
+        }
+        return BoilaAclNeed { table: "*", need: boila_priv_alter(), skip: 0 }
+    }
+    if tok_kw(t0, "truncate") == 1 {
+        return BoilaAclNeed { table: "*", need: boila_priv_delete(), skip: 0 }
+    }
+    if tok_kw(t0, "grant") == 1 || tok_kw(t0, "revoke") == 1 {
+        return BoilaAclNeed { table: "", need: 0, skip: 1 }
+    }
+    if tok_kw(t0, "insert") == 1 {
+        return BoilaAclNeed { table: "*", need: boila_priv_insert(), skip: 0 }
+    }
+    if tok_kw(t0, "update") == 1 {
+        return BoilaAclNeed { table: "*", need: boila_priv_update(), skip: 0 }
+    }
+    if tok_kw(t0, "delete") == 1 {
+        return BoilaAclNeed { table: "*", need: boila_priv_delete(), skip: 0 }
+    }
+    return BoilaAclNeed { table: "*", need: boila_priv_select(), skip: 0 }
+}

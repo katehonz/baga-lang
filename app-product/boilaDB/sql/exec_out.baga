@@ -67,12 +67,17 @@ struct BoilaGucSet {
 
 fn boila_guc_set_parse(guc: Map<str, str>, lx: BoilaLex) -> BoilaGucSet {
     // toks: SET name TO|'=' value [;]
+    // also: SET ROLE name | SET ROLE NONE  (session user switch for ACL tests/admin)
     if vec_len(lx.toks) < 2 {
         return BoilaGucSet { ok: 0, err: "SET изисква име", state: "42601", guc: guc, kind: 0 }
     }
     let t1 = vec_get(lx.toks, 1)
     if t1.kind != tok_ident() {
         return BoilaGucSet { ok: 0, err: "очаквах GUC име след SET", state: "42601", guc: guc, kind: 0 }
+    }
+    if tok_kw(t1, "role") == 1 {
+        // handled in exec_server with meta lookup
+        return BoilaGucSet { ok: 0, err: "SET ROLE — server path", state: "XX000", guc: guc, kind: 0 }
     }
     let nm = boila_guc_key(t1.txt)
     let mut i: i64 = 2
@@ -136,8 +141,4 @@ fn boila_guc_discard(guc: Map<str, str>, lx: BoilaLex) -> BoilaGucSet {
     return BoilaGucSet { ok: 1, err: "", state: "", guc: empty, kind: 21 }
 }
 
-// Fallback SHOW without session map (mt path / exec_sql).
-fn boila_exec_show(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, lx: BoilaLex) -> BoilaSqlOut {
-    let empty: Map<str, str> = map_new()
-    return boila_sql_ok(s, txn, pc, 1, boila_guc_show(empty, lx), 0)
-}
+

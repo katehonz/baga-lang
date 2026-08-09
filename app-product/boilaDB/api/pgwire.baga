@@ -8,6 +8,7 @@ import "../sql/exec_server.baga"
 import "../sql/exec_scan.baga"
 import "../sql/ast.baga"
 import "pgwire_guc.baga"
+import "pgwire_auth.baga"
 import "../txn/mvcc.baga"
 import "serve_mt.baga"
 import "../core/value.baga"
@@ -59,7 +60,12 @@ fn pgw_tx_status(sess: BoilaPgSess) -> i64 {
     return 73
 }
 fn pgw_exec_locked(pack: i64, srv: BoilaServer, txn: BoilaTxn, db: str, sql: str, guc: Map<str, str>) -> BoilaSrvOut !IO !Time !Par {
-    if pack == 0 { return boila_server_exec_tx(srv, txn, db, sql)? }
+    if pack == 0 {
+        srv.guc = guc
+        let out = boila_server_exec_tx(srv, txn, db, sql)?
+        // keep session guc keys (user/super) if exec replaced guc map
+        return out
+    }
     return boila_mt_exec_guc(pack, txn, db, sql, guc)?
 }
 fn pgw_exec_sel_locked(pack: i64, srv: BoilaServer, txn: BoilaTxn, db: str, sel: BoilaSel) -> BoilaSrvOut !IO !Time !Par {
@@ -109,7 +115,9 @@ fn pgw_run_sql(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str
         return pgw_write_out(fd, srv, sess, gh.out, send_ready)?
     }
     let out = pgw_exec_locked(pack, srv, sess.txn, sess.db, sql, sess.guc)?
-    return pgw_write_out(fd, srv, sess, out, send_ready)?
+    // session guc (incl. boila.user) follows server after exec
+    if pack == 0 { sess.guc = out.srv.guc }
+    return pgw_write_out(fd, out.srv, sess, out, send_ready)?
 }
 
 fn pgw_run_sel(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sel: BoilaSel, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
@@ -164,6 +172,7 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
     let mut srv2 = srv
     // --- startup: SSL/Cancel/v3 ---
     let mut db = "boila"
+    let mut login_user = ""
     let mut got = false
     let mut sp: BoilaPgSess = boila_pg_sess_new("boila")
     while got == false {
@@ -190,6 +199,7 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                 if st.database != "" {
                     db = st.database
                 }
+                login_user = st.user
                 got = true
             } else {
                 tcp_close(fd)?
@@ -212,27 +222,13 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
         return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "no db" }
     }
     sp = boila_pg_sess_new(db)
-    // --- auth: cleartext token или trust ---
-    let token = env("BOILA_TOKEN")
-    if token != "" {
-        let w0 = pgw_write(fd, pgw_msg(82, pgw_be32(3)))?     // R kind 3 cleartext
-        if w0 != 0 {
-            tcp_close(fd)?
-            return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "auth write" }
-        }
-        let pm = pgw_read_msg(rr)?
-        rr = pm.r
-        if pm.ok == 0 || pm.typ != 112 {                      // 'p'
-            tcp_close(fd)?
-            return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "no password" }
-        }
-        let pw = pgw_cstr_read(pm.body, 0)
-        // W6b: constant-time compare (timing-safe token check)
-        if ct_eq(pw.s, token) == false {
-            let w1 = pgw_write(fd, pgw_error("28P01", "password authentication failed"))?
-            tcp_close(fd)?
-            return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "bad token" }
-        }
+    let au = pgw_authenticate(fd, rr, srv2, sp, login_user)?
+    srv2 = au.srv
+    sp = au.sess
+    rr = au.r
+    if au.ok == 0 {
+        tcp_close(fd)?
+        return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: au.err }
     }
     let w2 = pgw_write(fd, pgw_msg(82, pgw_be32(0)))?         // AuthenticationOk
     if w2 != 0 {

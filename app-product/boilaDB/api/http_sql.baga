@@ -25,6 +25,8 @@ import "std/str/str.baga"
 import "std/os/os.baga"
 import "std/crypto/ct.baga"
 import "std/crypto/hmac.baga"
+import "http_auth.baga"
+import "../sql/exec_acl.baga"
 
 struct BoilaHttpSql {
     srv: BoilaServer,
@@ -36,30 +38,6 @@ struct BoilaHttpSql {
 
 fn boila_http_pack(srv: BoilaServer, txn: BoilaTxn, resp: Response, db: str, guc: Map<str, str>) -> BoilaHttpSql {
     return BoilaHttpSql { srv: srv, txn: txn, resp: resp, db: db, guc: guc }
-}
-
-// W6c: BOILA_TOKEN via Authorization: Bearer … or X-Boila-Token.
-// Empty env → trust (same as PG). Constant-time compare.
-fn boila_http_auth_ok(req: Request) -> i64 !IO {
-    let token = env("BOILA_TOKEN")
-    if token == "" {
-        return 1
-    }
-    let xt = http_header(req, "x-boila-token")
-    if xt != "" {
-        if ct_eq(xt, token) {
-            return 1
-        }
-        return 0
-    }
-    let raw = http_header(req, "authorization")
-    let auth = to_lower(raw)
-    if str_starts_with(auth, "bearer ") && len(raw) >= 7 {
-        if ct_eq(substr(raw, 7, len(raw)), token) {
-            return 1
-        }
-    }
-    return 0
 }
 
 fn boila_http_auth_fail(txn: BoilaTxn, sess_db: str) -> BoilaHttpSql {
@@ -75,7 +53,9 @@ fn boila_http_auth_fail_guc(txn: BoilaTxn, sess_db: str, guc: Map<str, str>) -> 
         flush_at: 0, compact_at: 0, dflt_shards: 1, max_db: 1,
         session_txn: boila_txn_new(), pc: boila_pc_new(), guc: map_new(), mt: 0, ok: 0
     }
-    return boila_http_pack(srv, txn, http_json_response(401, body), sess_db, guc)
+    let mut resp = http_json_response(401, body)
+    resp = http_set_header(resp, "WWW-Authenticate", "Basic realm=\"boilaDB\", Bearer")
+    return boila_http_pack(srv, txn, resp, sess_db, guc)
 }
 
 // H3c: HMAC-SHA256 prefix (16 hex) of db name under BOILA_TOKEN.
@@ -249,13 +229,22 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str, guc: Map<str,
         body = concat(body, "}")
         return boila_http_pack(out.srv, out.txn, http_json_response(200, body), ndb, guc)
     }
-    if out.kind == 2 || out.kind == 9 || out.kind == 14 || out.kind == 15 || out.kind == 17 || out.kind == 18 {
+    if out.kind == 2 || out.kind == 9 || out.kind == 14 || out.kind == 15 || out.kind == 17 || out.kind == 18 || out.kind == 22 || out.kind == 23 || out.kind == 24 || out.kind == 25 || out.kind == 26 || out.kind == 27 || out.kind == 28 || out.kind == 29 || out.kind == 30 {
         let mut k = "create"
         if out.kind == 9 { k = "create_index" }
         if out.kind == 14 { k = "create_fts" }
         if out.kind == 15 { k = "create_hnsw" }
         if out.kind == 17 { k = "create_graph" }
         if out.kind == 18 { k = "drop_table" }
+        if out.kind == 22 { k = "alter_table" }
+        if out.kind == 23 { k = "drop_index" }
+        if out.kind == 24 { k = "drop_graph" }
+        if out.kind == 25 { k = "truncate" }
+        if out.kind == 26 { k = "create_user" }
+        if out.kind == 27 { k = "drop_user" }
+        if out.kind == 28 { k = "alter_user" }
+        if out.kind == 29 { k = "grant" }
+        if out.kind == 30 { k = "revoke" }
         body = "{\"ok\":true,\"kind\":\""
         body = concat(body, k)
         body = concat(body, "\",\"id\":")
@@ -325,10 +314,18 @@ fn boila_http_encode_st(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHt
 }
 
 fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, sess_db: str, req: Request) -> BoilaHttpSql !IO !Time !Par {
-    if boila_http_auth_ok(req)? == 0 {
-        return boila_http_auth_fail(txn, sess_db)
+    return boila_http_sql_tx_guc(srv, txn, sess_db, srv.guc, req)?
+}
+
+fn boila_http_sql_tx_guc(srv: BoilaServer, txn: BoilaTxn, sess_db: str, guc: Map<str, str>, req: Request) -> BoilaHttpSql !IO !Time !Par {
+    let au = boila_http_auth(srv, guc, req)?
+    srv = au.srv
+    guc = au.guc
+    if au.ok == 0 {
+        return boila_http_auth_fail_guc(txn, sess_db, guc)
     }
+    srv.guc = guc
     let db = boila_http_pick_db(sess_db, req)?
     let out = boila_server_exec_tx(srv, txn, db, http_body(req))?
-    return boila_http_encode_st(out, sess_db, db)?
+    return boila_http_encode(out, sess_db, db, out.srv.guc)?
 }

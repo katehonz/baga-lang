@@ -298,5 +298,22 @@ fn pgw_tag(kind: i64, affected: i64, nrows: i64) -> str {
     if kind == 21 {
         return "DISCARD ALL"
     }
+    if kind == 22 {
+        return "ALTER TABLE"
+    }
+    if kind == 23 {
+        return "DROP INDEX"
+    }
+    if kind == 24 {
+        return "DROP GRAPH"
+    }
+    if kind == 25 {
+        return "TRUNCATE TABLE"
+    }
+    if kind == 26 { return "CREATE ROLE" }
+    if kind == 27 { return "DROP ROLE" }
+    if kind == 28 { return "ALTER ROLE" }
+    if kind == 29 { return "GRANT" }
+    if kind == 30 { return "REVOKE" }
     return "OK"
 }

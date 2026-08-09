@@ -1,0 +1,143 @@
+// exec_show_acl.baga — SHOW USERS | SHOW GRANTS [FOR user]
+import "plan_cache.baga"
+import "exec_out.baga"
+import "../catalog/schema.baga"
+import "../catalog/acl.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../txn/mvcc.baga"
+import "../storage/shards.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn boila_show_acl_pref(pk: bytes, pre: bytes) -> i64 {
+    if bytes_len(pk) < bytes_len(pre) { return 0 }
+    let mut i: i64 = 0
+    while i < bytes_len(pre) {
+        if bytes_at(pk, i) != bytes_at(pre, i) { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+fn boila_show_acl_after(pk: bytes, pre: bytes) -> str {
+    let np = bytes_len(pre)
+    if bytes_len(pk) <= np { return "" }
+    return str_of_bytes(bytes_slice(pk, np, bytes_len(pk)))
+}
+
+fn boila_priv_names(mask: i64) -> str {
+    if mask == boila_priv_all() || (mask & boila_priv_all()) == boila_priv_all() {
+        return "ALL"
+    }
+    let mut out = ""
+    if (mask & boila_priv_connect()) != 0 {
+        if out != "" { out = concat(out, ",") }
+        out = concat(out, "CONNECT")
+    }
+    if (mask & boila_priv_select()) != 0 {
+        if out != "" { out = concat(out, ",") }
+        out = concat(out, "SELECT")
+    }
+    if (mask & boila_priv_insert()) != 0 {
+        if out != "" { out = concat(out, ",") }
+        out = concat(out, "INSERT")
+    }
+    if (mask & boila_priv_update()) != 0 {
+        if out != "" { out = concat(out, ",") }
+        out = concat(out, "UPDATE")
+    }
+    if (mask & boila_priv_delete()) != 0 {
+        if out != "" { out = concat(out, ",") }
+        out = concat(out, "DELETE")
+    }
+    if (mask & boila_priv_create()) != 0 {
+        if out != "" { out = concat(out, ",") }
+        out = concat(out, "CREATE")
+    }
+    if (mask & boila_priv_drop()) != 0 {
+        if out != "" { out = concat(out, ",") }
+        out = concat(out, "DROP")
+    }
+    if (mask & boila_priv_alter()) != 0 {
+        if out != "" { out = concat(out, ",") }
+        out = concat(out, "ALTER")
+    }
+    if out == "" { out = "NONE" }
+    return out
+}
+
+// SHOW USERS | SHOW ROLES
+fn boila_show_users(meta: BoilaStore, pc: BoilaPlanCache) -> BoilaSqlOut !IO !Time !Par {
+    let mut res = boila_result_empty()
+    boila_result_add_col(res, "user_name", boila_v_str())
+    boila_result_add_col(res, "is_superuser", boila_v_str())
+    let pre = bytes_of_str("u|")
+    let ks = boila_cf_keys_raw(meta, boila_cf_sys(), 1)?
+    meta = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_show_acl_pref(pk, pre) == 1 {
+            let nm = boila_show_acl_after(pk, pre)
+            if nm != "" {
+                let ug = boila_acl_user_get(meta, nm)?
+                meta = ug.s
+                let mut sup = "NO"
+                if ug.ok == 1 && ug.super == 1 { sup = "YES" }
+                let row: Vec<BoilaVal> = vec_new()
+                vec_push(row, boila_val_str(nm))
+                vec_push(row, boila_val_str(sup))
+                vec_push(res.rows, row)
+            }
+        }
+        i = i + 1
+    }
+    return BoilaSqlOut { s: meta, txn: boila_txn_new(), pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
+}
+
+// SHOW GRANTS [FOR user]  — all grants or one user
+fn boila_show_grants(meta: BoilaStore, pc: BoilaPlanCache, for_user: str) -> BoilaSqlOut !IO !Time !Par {
+    let mut res = boila_result_empty()
+    boila_result_add_col(res, "grantee", boila_v_str())
+    boila_result_add_col(res, "database_name", boila_v_str())
+    boila_result_add_col(res, "table_name", boila_v_str())
+    boila_result_add_col(res, "privileges", boila_v_str())
+    let pre = bytes_of_str("a|")
+    let ks = boila_cf_keys_raw(meta, boila_cf_sys(), 1)?
+    meta = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_show_acl_pref(pk, pre) == 1 {
+            let rest = boila_show_acl_after(pk, pre)
+            // rest = user|db|table
+            let parts = str_split(rest, "|")
+            if vec_len(parts) >= 3 {
+                let user = vec_get(parts, 0)
+                let dbn = vec_get(parts, 1)
+                let tbn = vec_get(parts, 2)
+                let mut ok_u = 1
+                if for_user != "" && user != for_user { ok_u = 0 }
+                if ok_u == 1 {
+                    let g = boila_get(meta, boila_cf_sys(), 1, pk)?
+                    meta = g.s
+                    let mut mask: i64 = 0
+                    if g.found == 1 {
+                        let row = boila_row_dec(g.val)
+                        if vec_len(row) > 0 { mask = vec_get(row, 0).i }
+                    }
+                    let row: Vec<BoilaVal> = vec_new()
+                    vec_push(row, boila_val_str(user))
+                    vec_push(row, boila_val_str(dbn))
+                    vec_push(row, boila_val_str(tbn))
+                    vec_push(row, boila_val_str(boila_priv_names(mask)))
+                    vec_push(res.rows, row)
+                }
+            }
+        }
+        i = i + 1
+    }
+    return BoilaSqlOut { s: meta, txn: boila_txn_new(), pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
+}

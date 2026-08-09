@@ -104,7 +104,12 @@ fn boila_dual_call_simple(fnm: str, has_arg: i64, arg: str, db: str, guc: Map<st
     }
     if fnm == "current_user" || fnm == "session_user" || fnm == "user" {
         if has_arg == 1 { return boila_dual_fail_ex(pos, concat(fnm, "() без аргументи"), "42883") }
-        return boila_dual_ok(boila_val_str("boila"), boila_v_str(), fnm, pos)
+        let mut un = ""
+        if map_has(guc, "boila.user") == 1 {
+            un = map_get(guc, "boila.user")
+        }
+        if un == "" { un = "boila" }
+        return boila_dual_ok(boila_val_str(un), boila_v_str(), fnm, pos)
     }
     if fnm == "now" || fnm == "current_timestamp" {
         if has_arg == 1 { return boila_dual_fail_ex(pos, concat(fnm, "() без аргументи"), "42883") }

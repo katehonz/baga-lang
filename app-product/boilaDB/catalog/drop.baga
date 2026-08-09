@@ -257,3 +257,29 @@ fn boila_table_drop_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCatTxnR
 
     return BoilaCatTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", table: t, id: tid }
 }
+
+// Auto-begin/commit when not in explicit txn.
+fn boila_table_drop_run(s: BoilaStore, txn: BoilaTxn, db: str, name: str) -> BoilaCatTxnRes !IO !Time !Par {
+    let was = txn.active
+    if was == 0 {
+        let b = boila_txn_begin(s, txn, 0, db)?
+        s = b.s
+        txn = b.txn
+    }
+    let dr = boila_table_drop_txn(s, txn, name)?
+    s = dr.s
+    txn = dr.txn
+    if dr.ok == 0 {
+        if was == 0 { txn = boila_txn_rollback(txn) }
+        return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: dr.err, state: dr.state, table: boila_cat_empty_table(), id: 0 }
+    }
+    if was == 0 {
+        let c = boila_txn_commit(s, txn)?
+        s = c.s
+        txn = c.txn
+        if c.ok == 0 {
+            return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: c.err, state: c.state, table: boila_cat_empty_table(), id: 0 }
+        }
+    }
+    return BoilaCatTxnRes { s: s, txn: txn, ok: 1, err: "", state: "", table: dr.table, id: dr.id }
+}

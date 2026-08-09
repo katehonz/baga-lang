@@ -1,0 +1,181 @@
+// boila_acl_test.baga — CREATE USER, GRANT/REVOKE, SET ROLE, privileges.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/catalog/acl.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn exec(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_acl_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_acl_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+
+    let c0 = exec(srv, "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "open_create", c0.ok == 1)
+
+    let u1 = exec(srv, "CREATE USER admin PASSWORD 'secret' SUPERUSER")?
+    srv = u1.srv
+    check(fails, "create_admin", u1.ok == 1 && u1.kind == 26)
+
+    let i0 = exec(srv, "INSERT INTO t (id, v) VALUES (1, 'a')")?
+    srv = i0.srv
+    check(fails, "open_insert", i0.ok == 1)
+
+    let s1 = exec(srv, "SET ROLE admin")?
+    srv = s1.srv
+    check(fails, "set_role_admin", s1.ok == 1)
+
+    let cu = exec(srv, "SELECT current_user()")?
+    srv = cu.srv
+    check(fails, "current_user", cu.ok == 1 && vec_len(cu.res.rows) == 1 && str_of_bytes(vec_get(vec_get(cu.res.rows, 0), 0).b) == "admin")
+
+    let u2 = exec(srv, "CREATE USER app PASSWORD 'app' NOSUPERUSER")?
+    srv = u2.srv
+    check(fails, "create_app", u2.ok == 1)
+
+    let g1 = exec(srv, "GRANT SELECT ON t TO app")?
+    srv = g1.srv
+    check(fails, "grant_select", g1.ok == 1 && g1.kind == 29)
+
+    let s2 = exec(srv, "SET ROLE app")?
+    srv = s2.srv
+    check(fails, "set_role_app", s2.ok == 1)
+
+    let q1 = exec(srv, "SELECT * FROM t")?
+    srv = q1.srv
+    check(fails, "app_select_ok", q1.ok == 1)
+
+    let q2 = exec(srv, "INSERT INTO t (id, v) VALUES (2, 'b')")?
+    srv = q2.srv
+    check(fails, "app_insert_denied", q2.ok == 0 && q2.state == "42501")
+
+    let s3 = exec(srv, "SET ROLE admin")?
+    srv = s3.srv
+    let g2 = exec(srv, "GRANT INSERT ON t TO app")?
+    srv = g2.srv
+    check(fails, "grant_insert", g2.ok == 1)
+
+    let s4 = exec(srv, "SET ROLE app")?
+    srv = s4.srv
+    let q3 = exec(srv, "INSERT INTO t (id, v) VALUES (2, 'b')")?
+    srv = q3.srv
+    check(fails, "app_insert_ok", q3.ok == 1)
+
+    let s5 = exec(srv, "SET ROLE admin")?
+    srv = s5.srv
+    let rv = exec(srv, "REVOKE INSERT ON t FROM app")?
+    srv = rv.srv
+    check(fails, "revoke", rv.ok == 1 && rv.kind == 30)
+
+    let s6 = exec(srv, "SET ROLE app")?
+    srv = s6.srv
+    let q4 = exec(srv, "INSERT INTO t (id, v) VALUES (3, 'c')")?
+    srv = q4.srv
+    check(fails, "app_insert_revoked", q4.ok == 0 && q4.state == "42501")
+
+    let s7 = exec(srv, "SET ROLE admin")?
+    srv = s7.srv
+    let g3 = exec(srv, "GRANT ALL ON DATABASE boila TO app")?
+    srv = g3.srv
+    check(fails, "grant_db", g3.ok == 1)
+
+    let s8 = exec(srv, "SET ROLE app")?
+    srv = s8.srv
+    let q5 = exec(srv, "INSERT INTO t (id, v) VALUES (3, 'c')")?
+    srv = q5.srv
+    check(fails, "app_db_all", q5.ok == 1)
+
+    let s9 = exec(srv, "SET ROLE admin")?
+    srv = s9.srv
+    let d1 = exec(srv, "DROP USER app")?
+    srv = d1.srv
+    check(fails, "drop_user", d1.ok == 1 && d1.kind == 27)
+
+    let d2 = exec(srv, "DROP USER IF EXISTS app")?
+    srv = d2.srv
+    check(fails, "drop_if_exists", d2.ok == 1)
+
+    let a1 = exec(srv, "ALTER USER admin PASSWORD 'newsecret'")?
+    srv = a1.srv
+    check(fails, "alter_pw", a1.ok == 1 && a1.kind == 28)
+
+    let r1 = exec(srv, "CREATE ROLE reader PASSWORD 'r'")?
+    srv = r1.srv
+    check(fails, "create_role", r1.ok == 1)
+
+    let sn = exec(srv, "SET ROLE NONE")?
+    srv = sn.srv
+    check(fails, "set_role_none", sn.ok == 1)
+
+    // SHOW USERS / GRANTS
+    let s10 = exec(srv, "SET ROLE admin")?
+    srv = s10.srv
+    let su = exec(srv, "SHOW USERS")?
+    srv = su.srv
+    check(fails, "show_users", su.ok == 1 && vec_len(su.res.rows) >= 2)
+    let sg = exec(srv, "SHOW GRANTS")?
+    srv = sg.srv
+    check(fails, "show_grants", sg.ok == 1)
+    let sg2 = exec(srv, "SHOW GRANTS FOR reader")?
+    srv = sg2.srv
+    check(fails, "show_grants_for", sg2.ok == 1)
+
+    // password auth (HTTP Basic / PG cleartext use same path)
+    let ar = boila_acl_auth(srv.meta, "admin", "newsecret")?
+    srv.meta = ar.s
+    check(fails, "pw_auth_ok", ar.ok == 1 && ar.super == 1)
+    let ar2 = boila_acl_auth(srv.meta, "admin", "wrong")?
+    srv.meta = ar2.s
+    check(fails, "pw_auth_fail", ar2.ok == 0 && ar2.state == "28P01")
+
+    boila_server_close(srv)?
+
+    if vec_len(fails) == 0 {
+        print("boila_acl_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_acl_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

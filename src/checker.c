@@ -178,7 +178,7 @@ void type_merge_effects(Type *dst, Type *src) {
 #define ENV_VARS 256
 /* Per translation unit. http+jsonx+orm+pg already exceeds 256; frameworks
  * (fmrbaga) and multi-product apps need headroom. Silent drop when full. */
-#define FNS_MAX  1024
+#define FNS_MAX  2048
 
 typedef struct EnvEntry EnvEntry;
 struct EnvEntry {

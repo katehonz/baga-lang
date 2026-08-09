@@ -1,0 +1,114 @@
+// http_auth.baga — Bearer token / Basic user:pass / trust.
+import "httpdbaga/http.baga"
+import "../storage/databases.baga"
+import "../catalog/acl.baga"
+import "../sql/exec_acl.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+import "std/crypto/ct.baga"
+import "std/bytes/bytes.baga"
+
+struct BoilaHttpAuth {
+    ok: i64,
+    srv: BoilaServer,
+    guc: Map<str, str>
+}
+
+fn boila_http_bytes_str(v: Vec<i64>) -> str {
+    let mut s = ""
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        s = concat(s, chr(vec_get(v, i)))
+        i = i + 1
+    }
+    return s
+}
+
+// Parse "user:pass" from Basic base64 payload.
+fn boila_http_basic_user_pw(b64: str) -> Vec<str> {
+    let out: Vec<str> = vec_new()
+    let raw = boila_http_bytes_str(base64_decode(b64))
+    let mut i: i64 = 0
+    let n = len(raw)
+    while i < n {
+        if char_at(raw, i) == 58 {  // ':'
+            vec_push(out, substr(raw, 0, i))
+            vec_push(out, substr(raw, i + 1, n))
+            return out
+        }
+        i = i + 1
+    }
+    vec_push(out, raw)
+    vec_push(out, "")
+    return out
+}
+
+// Auth against meta users and/or BOILA_TOKEN. Sets boila.user/super on guc.
+fn boila_http_auth(srv: BoilaServer, guc: Map<str, str>, req: Request) -> BoilaHttpAuth !IO !Time !Par {
+    let token = env("BOILA_TOKEN")
+    let uc = boila_acl_user_count(srv.meta)?
+    srv.meta = uc.s
+    let mut has_users = 0
+    if uc.super > 0 { has_users = 1 }
+
+    // no users + no token → trust (open)
+    if has_users == 0 && token == "" {
+        return BoilaHttpAuth { ok: 1, srv: srv, guc: guc }
+    }
+
+    let xt = http_header(req, "x-boila-token")
+    let raw = http_header(req, "authorization")
+    let auth_l = to_lower(raw)
+
+    // Bearer / X-Boila-Token → superuser when matches BOILA_TOKEN
+    if token != "" {
+        if xt != "" && ct_eq(xt, token) {
+            guc = boila_sess_set_user(guc, "boila", 1)
+            return BoilaHttpAuth { ok: 1, srv: srv, guc: guc }
+        }
+        if str_starts_with(auth_l, "bearer ") && len(raw) >= 7 {
+            if ct_eq(substr(raw, 7, len(raw)), token) {
+                guc = boila_sess_set_user(guc, "boila", 1)
+                return BoilaHttpAuth { ok: 1, srv: srv, guc: guc }
+            }
+        }
+    }
+
+    // Basic user:password
+    if str_starts_with(auth_l, "basic ") && len(raw) >= 6 {
+        let mut b64 = substr(raw, 6, len(raw))
+        while len(b64) > 0 && char_at(b64, 0) == 32 {
+            b64 = substr(b64, 1, len(b64))
+        }
+        let up = boila_http_basic_user_pw(b64)
+        if vec_len(up) >= 2 {
+            let user = vec_get(up, 0)
+            let pw = vec_get(up, 1)
+            if has_users == 1 && user != "" {
+                let ar = boila_acl_auth(srv.meta, user, pw)?
+                srv.meta = ar.s
+                if ar.ok == 1 {
+                    guc = boila_sess_set_user(guc, user, ar.super)
+                    return BoilaHttpAuth { ok: 1, srv: srv, guc: guc }
+                }
+            }
+            // Basic with token password as user boila when no users
+            if has_users == 0 && token != "" && ct_eq(pw, token) {
+                guc = boila_sess_set_user(guc, "boila", 1)
+                return BoilaHttpAuth { ok: 1, srv: srv, guc: guc }
+            }
+        }
+    }
+
+    // users exist but no valid credentials
+    if has_users == 1 {
+        return BoilaHttpAuth { ok: 0, srv: srv, guc: guc }
+    }
+    // token required but missing/wrong
+    if token != "" {
+        return BoilaHttpAuth { ok: 0, srv: srv, guc: guc }
+    }
+    return BoilaHttpAuth { ok: 1, srv: srv, guc: guc }
+}
+
+

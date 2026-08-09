@@ -1,0 +1,130 @@
+// boila_rename_test.baga — ALTER TABLE RENAME TO / RENAME COLUMN.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn exec(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() { return str_of_bytes(v.b) }
+    if v.tag == boila_v_i64() { return int_to_str(v.i) }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_rename_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_rename_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    let c1 = exec(srv, "CREATE TABLE t (id BIGINT, name TEXT, PRIMARY KEY (id))")?
+    srv = c1.srv
+    let c2 = exec(srv, "INSERT INTO t (id, name) VALUES (1, 'a'), (2, 'b')")?
+    srv = c2.srv
+    check(fails, "seed", c1.ok == 1 && c2.ok == 1)
+
+    // rename column
+    let r1 = exec(srv, "ALTER TABLE t RENAME COLUMN name TO title")?
+    srv = r1.srv
+    check(fails, "rename_col", r1.ok == 1 && r1.kind == 22)
+    let s1 = exec(srv, "SELECT title FROM t WHERE id = 1")?
+    srv = s1.srv
+    check(fails, "col_new_name", s1.ok == 1 && vec_len(s1.res.rows) == 1 && cell(vec_get(s1.res.rows, 0), 0) == "a")
+    let s2 = exec(srv, "SELECT name FROM t")?
+    srv = s2.srv
+    check(fails, "old_col_gone", s2.ok == 0 && s2.state == "42703")
+
+    // rename without COLUMN keyword
+    let r2 = exec(srv, "ALTER TABLE t RENAME title TO name")?
+    srv = r2.srv
+    check(fails, "rename_col_short", r2.ok == 1)
+    let s3 = exec(srv, "SELECT name FROM t WHERE id = 2")?
+    srv = s3.srv
+    check(fails, "col_back", s3.ok == 1 && cell(vec_get(s3.res.rows, 0), 0) == "b")
+
+    // rename table
+    let r3 = exec(srv, "ALTER TABLE t RENAME TO users")?
+    srv = r3.srv
+    check(fails, "rename_table", r3.ok == 1)
+    let s4 = exec(srv, "SELECT id FROM users WHERE id = 1")?
+    srv = s4.srv
+    check(fails, "new_table", s4.ok == 1 && vec_len(s4.res.rows) == 1)
+    let s5 = exec(srv, "SELECT * FROM t")?
+    srv = s5.srv
+    check(fails, "old_table_gone", s5.ok == 0 && s5.state == "42P01")
+
+    // errors
+    let e1 = exec(srv, "ALTER TABLE users RENAME TO users")?
+    srv = e1.srv
+    check(fails, "rename_same_ok", e1.ok == 1)
+    let e2 = exec(srv, "CREATE TABLE other (id BIGINT, PRIMARY KEY (id))")?
+    srv = e2.srv
+    let e3 = exec(srv, "ALTER TABLE users RENAME TO other")?
+    srv = e3.srv
+    check(fails, "rename_dup_42P07", e3.ok == 0 && e3.state == "42P07")
+    let e4 = exec(srv, "ALTER TABLE users RENAME COLUMN nope TO x")?
+    srv = e4.srv
+    check(fails, "rename_miss_col_42703", e4.ok == 0 && e4.state == "42703")
+    let e5 = exec(srv, "ALTER TABLE users RENAME COLUMN name TO id")?
+    srv = e5.srv
+    check(fails, "rename_col_dup_42701", e5.ok == 0 && e5.state == "42701")
+
+    // add still works
+    let a1 = exec(srv, "ALTER TABLE users ADD COLUMN age BIGINT")?
+    srv = a1.srv
+    check(fails, "add_still", a1.ok == 1)
+
+    // restart
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let s6 = exec(srv2, "SELECT name, age FROM users WHERE id = 1")?
+    srv2 = s6.srv
+    check(fails, "restart", s6.ok == 1 && vec_len(s6.res.cols) == 2)
+    boila_server_close(srv2)?
+
+    if vec_len(fails) == 0 {
+        print("boila_rename_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_rename_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

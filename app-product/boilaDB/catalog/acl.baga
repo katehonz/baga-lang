@@ -1,0 +1,272 @@
+// acl.baga — users + privileges (meta store). PG/MySQL-like subset.
+//
+// meta sys keys:
+//   u|<user>              → [super i64, pw_hash str]
+//   a|<user>|<db>|*       → [mask]   database-wide
+//   a|<user>|<db>|<table> → [mask]   table-level
+//
+// mask bits: CONNECT=1 SELECT=2 INSERT=4 UPDATE=8 DELETE=16 CREATE=32 DROP=64 ALTER=128
+// ALL = 255
+import "schema.baga"
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/crypto/ct.baga"
+
+fn boila_priv_connect() -> i64 { return 1 }
+fn boila_priv_select() -> i64 { return 2 }
+fn boila_priv_insert() -> i64 { return 4 }
+fn boila_priv_update() -> i64 { return 8 }
+fn boila_priv_delete() -> i64 { return 16 }
+fn boila_priv_create() -> i64 { return 32 }
+fn boila_priv_drop() -> i64 { return 64 }
+fn boila_priv_alter() -> i64 { return 128 }
+fn boila_priv_all() -> i64 { return 255 }
+
+struct BoilaAclRes {
+    s: BoilaStore,
+    ok: i64,
+    err: str,
+    state: str,
+    super: i64,
+    hash: str
+}
+
+fn boila_acl_user_pk(name: str) -> bytes {
+    return bytes_of_str(concat("u|", name))
+}
+
+fn boila_acl_grant_pk(user: str, db: str, table: str) -> bytes {
+    return bytes_of_str(concat(concat(concat(concat("a|", user), "|"), db), concat("|", table)))
+}
+
+// Lightweight salted hash (hex). Residual: not scrypt/bcrypt — enough for v1 ACL.
+fn boila_acl_hash_pw(pw: str) -> str {
+    let mut h: i64 = 5381
+    let salt = "boila$pw$v1"
+    let mut i: i64 = 0
+    while i < len(salt) {
+        h = ((h * 33) + char_at(salt, i)) & 2147483647
+        i = i + 1
+    }
+    i = 0
+    while i < len(pw) {
+        h = ((h * 33) + char_at(pw, i)) & 2147483647
+        i = i + 1
+    }
+    // mix length
+    h = ((h * 33) + len(pw)) & 2147483647
+    return concat("h1:", int_to_str(h))
+}
+
+fn boila_acl_user_get(s: BoilaStore, name: str) -> BoilaAclRes !IO !Time !Par {
+    let g = boila_get(s, boila_cf_sys(), 1, boila_acl_user_pk(name))?
+    s = g.s
+    if g.found == 0 {
+        return BoilaAclRes { s: s, ok: 0, err: concat("роля \"", concat(name, "\" не съществува")), state: "42704", super: 0, hash: "" }
+    }
+    let row = boila_row_dec(g.val)
+    let mut sup: i64 = 0
+    let mut hash = ""
+    if vec_len(row) > 0 { sup = vec_get(row, 0).i }
+    if vec_len(row) > 1 && vec_get(row, 1).tag == boila_v_str() {
+        hash = str_of_bytes(vec_get(row, 1).b)
+    }
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: sup, hash: hash }
+}
+
+fn boila_acl_user_count(s: BoilaStore) -> BoilaAclRes !IO !Time !Par {
+    let pre = bytes_of_str("u|")
+    let ks = boila_cf_keys_raw(s, boila_cf_sys(), 1)?
+    s = ks.s
+    let mut n: i64 = 0
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        if boila_bytes_has_prefix_acl(vec_get(ks.pks, i), pre) == 1 {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: n, hash: "" }
+}
+
+fn boila_bytes_has_prefix_acl(pk: bytes, pre: bytes) -> i64 {
+    if bytes_len(pk) < bytes_len(pre) { return 0 }
+    let mut i: i64 = 0
+    while i < bytes_len(pre) {
+        if bytes_at(pk, i) != bytes_at(pre, i) { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+fn boila_acl_user_put(s: BoilaStore, name: str, super: i64, hash: str) -> BoilaStore !IO !Time !Par {
+    let row: Vec<BoilaVal> = vec_new()
+    vec_push(row, boila_val_i64(super))
+    vec_push(row, boila_val_str(hash))
+    return boila_put(s, boila_cf_sys(), 1, boila_acl_user_pk(name), boila_row_enc(row))?
+}
+
+fn boila_acl_user_create(s: BoilaStore, name: str, pw: str, super: i64) -> BoilaAclRes !IO !Time !Par {
+    let g = boila_acl_user_get(s, name)?
+    s = g.s
+    if g.ok == 1 {
+        return BoilaAclRes { s: s, ok: 0, err: concat("роля \"", concat(name, "\" вече съществува")), state: "42710", super: 0, hash: "" }
+    }
+    s = boila_acl_user_put(s, name, super, boila_acl_hash_pw(pw))?
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: super, hash: "" }
+}
+
+fn boila_acl_user_drop(s: BoilaStore, name: str) -> BoilaAclRes !IO !Time !Par {
+    let g = boila_acl_user_get(s, name)?
+    s = g.s
+    if g.ok == 0 { return g }
+    s = boila_del(s, boila_cf_sys(), 1, boila_acl_user_pk(name))?
+    // wipe grants for user
+    let pre = bytes_of_str(concat(concat("a|", name), "|"))
+    let ks = boila_cf_keys_raw(s, boila_cf_sys(), 1)?
+    s = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_bytes_has_prefix_acl(pk, pre) == 1 {
+            s = boila_del(s, boila_cf_sys(), 1, pk)?
+        }
+        i = i + 1
+    }
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: 0, hash: "" }
+}
+
+fn boila_acl_set_pw(s: BoilaStore, name: str, pw: str) -> BoilaAclRes !IO !Time !Par {
+    let g = boila_acl_user_get(s, name)?
+    s = g.s
+    if g.ok == 0 { return g }
+    s = boila_acl_user_put(s, name, g.super, boila_acl_hash_pw(pw))?
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: g.super, hash: "" }
+}
+
+fn boila_acl_auth(s: BoilaStore, name: str, pw: str) -> BoilaAclRes !IO !Time !Par {
+    let g = boila_acl_user_get(s, name)?
+    s = g.s
+    if g.ok == 0 {
+        return BoilaAclRes { s: s, ok: 0, err: "password authentication failed", state: "28P01", super: 0, hash: "" }
+    }
+    let want = boila_acl_hash_pw(pw)
+    if ct_eq(want, g.hash) == false {
+        return BoilaAclRes { s: s, ok: 0, err: "password authentication failed", state: "28P01", super: 0, hash: "" }
+    }
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: g.super, hash: "" }
+}
+
+fn boila_acl_grant_get(s: BoilaStore, user: str, db: str, table: str) -> BoilaAclRes !IO !Time !Par {
+    let g = boila_get(s, boila_cf_sys(), 1, boila_acl_grant_pk(user, db, table))?
+    s = g.s
+    if g.found == 0 {
+        return BoilaAclRes { s: s, ok: 0, err: "", state: "", super: 0, hash: "" }
+    }
+    let row = boila_row_dec(g.val)
+    let mut m: i64 = 0
+    if vec_len(row) > 0 { m = vec_get(row, 0).i }
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: m, hash: "" }
+}
+
+fn boila_acl_grant_put(s: BoilaStore, user: str, db: str, table: str, mask: i64) -> BoilaStore !IO !Time !Par {
+    let row: Vec<BoilaVal> = vec_new()
+    vec_push(row, boila_val_i64(mask))
+    return boila_put(s, boila_cf_sys(), 1, boila_acl_grant_pk(user, db, table), boila_row_enc(row))?
+}
+
+// OR bits into existing grant.
+fn boila_acl_grant(s: BoilaStore, user: str, db: str, table: str, bits: i64) -> BoilaAclRes !IO !Time !Par {
+    let ug = boila_acl_user_get(s, user)?
+    s = ug.s
+    if ug.ok == 0 { return ug }
+    let cur = boila_acl_grant_get(s, user, db, table)?
+    s = cur.s
+    let mut m = 0
+    if cur.ok == 1 { m = cur.super }
+    m = m | bits
+    s = boila_acl_grant_put(s, user, db, table, m)?
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: m, hash: "" }
+}
+
+fn boila_acl_revoke(s: BoilaStore, user: str, db: str, table: str, bits: i64) -> BoilaAclRes !IO !Time !Par {
+    let ug = boila_acl_user_get(s, user)?
+    s = ug.s
+    if ug.ok == 0 { return ug }
+    let cur = boila_acl_grant_get(s, user, db, table)?
+    s = cur.s
+    if cur.ok == 0 {
+        return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: 0, hash: "" }
+    }
+    // clear bits: m = cur & ~bits
+    let m2 = cur.super - (cur.super & bits)
+    if m2 == 0 {
+        s = boila_del(s, boila_cf_sys(), 1, boila_acl_grant_pk(user, db, table))?
+    } else {
+        s = boila_acl_grant_put(s, user, db, table, m2)?
+    }
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: m2, hash: "" }
+}
+
+// Effective mask: super → ALL; else db|* OR db|table.
+// table="*" → OR all table grants under a|user|db| (DML without resolved name).
+fn boila_acl_mask(s: BoilaStore, user: str, super: i64, db: str, table: str) -> BoilaAclRes !IO !Time !Par {
+    if super == 1 {
+        return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: boila_priv_all(), hash: "" }
+    }
+    let d = boila_acl_grant_get(s, user, db, "*")?
+    s = d.s
+    let mut m = 0
+    if d.ok == 1 { m = d.super }
+    if table != "" && table != "*" {
+        let t = boila_acl_grant_get(s, user, db, table)?
+        s = t.s
+        if t.ok == 1 { m = m | t.super }
+    } else {
+        // union every a|user|db|<table>
+        let pre = bytes_of_str(concat(concat(concat(concat("a|", user), "|"), db), "|"))
+        let ks = boila_cf_keys_raw(s, boila_cf_sys(), 1)?
+        s = ks.s
+        let mut i: i64 = 0
+        while i < vec_len(ks.pks) {
+            let pk = vec_get(ks.pks, i)
+            if boila_bytes_has_prefix_acl(pk, pre) == 1 {
+                let g = boila_get(s, boila_cf_sys(), 1, pk)?
+                s = g.s
+                if g.found == 1 {
+                    let row = boila_row_dec(g.val)
+                    if vec_len(row) > 0 { m = m | vec_get(row, 0).i }
+                }
+            }
+            i = i + 1
+        }
+    }
+    return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: m, hash: "" }
+}
+
+fn boila_acl_check(s: BoilaStore, user: str, super: i64, db: str, table: str, need: i64) -> BoilaAclRes !IO !Time !Par {
+    if user == "" {
+        // legacy: no session user → allow (no ACL mode)
+        return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: boila_priv_all(), hash: "" }
+    }
+    let m = boila_acl_mask(s, user, super, db, table)?
+    s = m.s
+    if (m.super & need) == need {
+        return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: m.super, hash: "" }
+    }
+    return BoilaAclRes { s: s, ok: 0, err: "permission denied", state: "42501", super: m.super, hash: "" }
+}
+
+// Ensure bootstrap superuser exists when ACL first enabled.
+fn boila_acl_bootstrap(s: BoilaStore, admin: str, pw: str) -> BoilaAclRes !IO !Time !Par {
+    let c = boila_acl_user_count(s)?
+    s = c.s
+    if c.super > 0 {
+        return BoilaAclRes { s: s, ok: 1, err: "", state: "", super: 0, hash: "" }
+    }
+    return boila_acl_user_create(s, admin, pw, 1)?
+}

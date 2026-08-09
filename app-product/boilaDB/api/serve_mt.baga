@@ -11,6 +11,8 @@
 // Stats (M1): counters under gmu — safe multi-conn inc.
 // No !Par on BoilaStore struct.
 
+import "httpdbaga/http.baga"
+import "http_auth.baga"
 import "../storage/databases.baga"
 import "../sql/exec_server.baga"
 import "../sql/exec_sql.baga"
@@ -216,6 +218,17 @@ fn boila_mt_db_ok(pack: i64, db: str) -> i64 !IO !Time !Par {
     let ok = r.ok
     mutex_unlock(gmu)
     return ok
+}
+
+// HTTP auth under gmu (needs meta users). Returns updated guc with session user.
+fn boila_mt_http_auth(pack: i64, guc: Map<str, str>, req: Request) -> BoilaHttpAuth !IO !Time !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let au = boila_http_auth(map_get(m, 0), guc, req)?
+    map_set(m, 0, au.srv)
+    mutex_unlock(gmu)
+    return au
 }
 
 // Registry-only path (DDL db / USE): whole server_exec under gmu.

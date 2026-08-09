@@ -19,6 +19,36 @@ T = транзакции, W = wire protocol, F = FTS.
   `boila_table_drop`: wipe data/index/fts/vec/graph CFs + modality
   catalog (f/fl/fs, vh/vl/vm, gh/gl, x|<tid>|*) + name/schema/ttl.
   Global `m|next_*` counters untouched.
+- **P11-5 — (FIXED) ALTER TABLE ADD COLUMN (nullable).** `parse_alter.baga`
+  + `catalog/alter.baga` rewrite schema row; short rows pad NULL on
+  project. No DEFAULT / NOT NULL / DROP COLUMN / VECTOR. kind=22.
+- **P11-6 — (FIXED) DROP INDEX name ON table.** `parse_index` +
+  `index/ix_drop.baga`: cascade secondary → FTS → HNSW. Cat/list/stats
+  rewrite; wipe ix entries (index CF / fts CF if last / vec n|prefix).
+  `IF EXISTS`. kind=23. Residual: multi-FTS same table shares CF keys.
+- **P11-7 — (FIXED) DROP GRAPH name ON table.** `graph/g_drop.baga` +
+  `exec_drop.baga`: cat/list rewrite, wipe `o|`/`i|` gid prefixes.
+  `IF EXISTS`. kind=24.
+- **P11-8 — (FIXED) IF [NOT] EXISTS on TABLE.** `CREATE TABLE IF NOT
+  EXISTS` (42P07 → no-op ok); `DROP TABLE IF EXISTS` (42P01 → no-op).
+  Schema not replaced on IF NOT EXISTS.
+- **P11-9 — (FIXED) CREATE … IF NOT EXISTS for INDEX/FTS/HNSW/GRAPH.**
+  42710 → no-op ok. Same for `CREATE INDEX IF NOT EXISTS … USING hnsw`.
+- **P11-10 — (FIXED) TRUNCATE [TABLE] [IF EXISTS] name.** Wipe data/
+  index/fts/vec/graph CFs; keep schema + modality defs; reset FTS
+  stats + HNSW ep. kind=25.
+- **P11-11 — (FIXED) CREATE/DROP DATABASE IF [NOT] EXISTS.** 42P04 /
+  3D000 → no-op ok.
+- **P11-12 — (FIXED) ALTER TABLE RENAME.** `RENAME TO` (table name
+  key swap); `RENAME [COLUMN] a TO b` (schema only, positional data).
+  kind=22.
+- **P11-13 — (FIXED) ALTER TABLE DROP COLUMN.** Last non-PK only
+  (positional rows). Blocked if secondary/FTS/HNSW/GRAPH on col
+  (2BP01). kind=22.
+- **P11-14 — (FIXED) SHOW TABLES / SHOW INDEX[ES] FROM t.** Catalog
+  list (n| / x| + FTS/HNSW/GRAPH). GUC SHOW unchanged.
+- **P11-15 — (FIXED) SHOW COLUMNS / DESCRIBE / DESC.** column_name,
+  data_type (incl vector(n)), is_nullable, is_primary_key.
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 
@@ -113,9 +143,13 @@ T = транзакции, W = wire protocol, F = FTS.
 - **W5 — (FIXED) Describe → ParameterDescription + RowDescription.**
   Prepared SELECT: catalog resolve cols/types; stmt → 't'+'T', portal →
   'T'; non-SELECT / JOIN/GROUP → NoData (+ empty param desc за stmt).
-- **W6 — auth cleartext token (BOILA_TOKEN) или trust.** W6b: `ct_eq`.
-  W6c: HTTP Bearer / X-Boila-Token. W3b: more ParameterStatus
-  (DateStyle/TimeZone/…). Residual: no SCRAM; no TLS (SSLRequest→'N').
+- **W6 — (FIXED users) ACL + token/trust.** `CREATE/DROP/ALTER USER|ROLE`,
+  `GRANT/REVOKE`, `SET ROLE`, `SHOW USERS|ROLES|GRANTS [FOR u]`. Privs:
+  SELECT/INSERT/UPDATE/DELETE/CREATE/DROP/ALTER/CONNECT/ALL on TABLE/`*`/
+  DATABASE. Meta `u|`/`a|`. Empty catalog = open. PG: user+pw or token.
+  HTTP: Basic user:pass + Bearer/X-Boila-Token. FNS_MAX raised 1024→2048.
+  Residual: no SCRAM/TLS; pw hash is lightweight (not bcrypt); SET ROLE
+  without re-auth (local).
 - **W7 — (FIXED) SET/SHOW/RESET/DISCARD session GUC.** SET name {TO|=}
   value → store in `srv.guc` (ST) / `BoilaPgSess.guc` (PG) /
   HTTP-MT `sess_guc` (`http_guc.baga` + keepalive). SHOW reads map then
@@ -138,9 +172,9 @@ T = транзакции, W = wire protocol, F = FTS.
   `ORDER BY` / `LIMIT` / `OFFSET`; bare `VALUES (…),…` multi-row.
   dual `UNION`/`INTERSECT`/`EXCEPT`; dual `WHERE` (bind col aliases).
   `FETCH FIRST/NEXT`; dual `power`/`current_date`/`pg_typeof`/
-  `quote_literal`/`quote_ident`/`quote_nullable`; `EXPLAIN`. Residual:
-  length=bytes; upper ASCII-only; no INTERSECT/EXCEPT ALL; EXPLAIN no
-  ANALYZE timings;
+  `quote_literal`/`quote_ident`/`quote_nullable`; `EXPLAIN` /
+  `EXPLAIN ANALYZE` (actual rows + Execution Time ms). Residual:
+  length=bytes; upper ASCII-only; no INTERSECT/EXCEPT ALL;
   series cap 100k; one ORDER col; VALUES cols columnN; unknown fn → 42883.
 - **Q-like — (FIXED) WHERE col [NOT] LIKE|ILIKE 'pat'.** `%`/`_`;
   ILIKE fold; NOT LIKE/ILIKE; post-filter. Residual: no ESCAPE; no

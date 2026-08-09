@@ -1,0 +1,141 @@
+// boila_if_exists_test.baga — CREATE TABLE IF NOT EXISTS + DROP TABLE IF EXISTS.
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn exec(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_if_exists_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_if_exists_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+
+    let c1 = exec(srv, "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")?
+    srv = c1.srv
+    check(fails, "create", c1.ok == 1)
+
+    let c2 = exec(srv, "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")?
+    srv = c2.srv
+    check(fails, "dup_42P07", c2.ok == 0 && c2.state == "42P07")
+
+    let c3 = exec(srv, "CREATE TABLE IF NOT EXISTS t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c3.srv
+    check(fails, "if_not_exists_ok", c3.ok == 1 && c3.kind == 2)
+
+    // schema unchanged (still 1 col)
+    let i1 = exec(srv, "INSERT INTO t (id) VALUES (1)")?
+    srv = i1.srv
+    check(fails, "insert_orig_schema", i1.ok == 1)
+    let i2 = exec(srv, "INSERT INTO t (id, v) VALUES (2, 'x')")?
+    srv = i2.srv
+    check(fails, "no_new_col", i2.ok == 0)
+
+    let c4 = exec(srv, "CREATE TABLE IF NOT EXISTS u (id BIGINT, PRIMARY KEY (id))")?
+    srv = c4.srv
+    check(fails, "if_not_exists_new", c4.ok == 1 && c4.id > 0)
+
+    let d1 = exec(srv, "DROP TABLE nope")?
+    srv = d1.srv
+    check(fails, "drop_missing_42P01", d1.ok == 0 && d1.state == "42P01")
+
+    let d2 = exec(srv, "DROP TABLE IF EXISTS nope")?
+    srv = d2.srv
+    check(fails, "drop_if_exists_miss", d2.ok == 1 && d2.kind == 18)
+
+    let d3 = exec(srv, "DROP TABLE IF EXISTS t")?
+    srv = d3.srv
+    check(fails, "drop_if_exists_hit", d3.ok == 1)
+
+    let s1 = exec(srv, "SELECT * FROM t")?
+    srv = s1.srv
+    check(fails, "gone", s1.ok == 0 && s1.state == "42P01")
+
+    let d4 = exec(srv, "DROP TABLE IF EXISTS t")?
+    srv = d4.srv
+    check(fails, "drop_again_ok", d4.ok == 1)
+
+    // INDEX / FTS / HNSW / GRAPH IF NOT EXISTS
+    let c5 = exec(srv, "CREATE TABLE p (id BIGINT, city TEXT, body TEXT, emb VECTOR(2), src BIGINT, dst BIGINT, PRIMARY KEY (id))")?
+    srv = c5.srv
+    let i3 = exec(srv, "INSERT INTO p (id, city, body, emb, src, dst) VALUES (1, 'sf', 'hello', '[1,0]', 1, 2)")?
+    srv = i3.srv
+    check(fails, "mod_seed", c5.ok == 1 && i3.ok == 1)
+
+    let x1 = exec(srv, "CREATE INDEX city_ix ON p (city)")?
+    srv = x1.srv
+    let x2 = exec(srv, "CREATE INDEX IF NOT EXISTS city_ix ON p (city)")?
+    srv = x2.srv
+    check(fails, "ix_ifne", x1.ok == 1 && x2.ok == 1)
+
+    let f1 = exec(srv, "CREATE FTS INDEX body_fts ON p (body)")?
+    srv = f1.srv
+    let f2 = exec(srv, "CREATE FTS INDEX IF NOT EXISTS body_fts ON p (body)")?
+    srv = f2.srv
+    check(fails, "fts_ifne", f1.ok == 1 && f2.ok == 1)
+
+    let h1 = exec(srv, "CREATE INDEX emb_h ON p USING hnsw (emb)")?
+    srv = h1.srv
+    let h2 = exec(srv, "CREATE INDEX IF NOT EXISTS emb_h ON p USING hnsw (emb)")?
+    srv = h2.srv
+    check(fails, "hnsw_ifne", h1.ok == 1 && h2.ok == 1)
+
+    let g1 = exec(srv, "CREATE GRAPH g1 ON p (src, dst)")?
+    srv = g1.srv
+    let g2 = exec(srv, "CREATE GRAPH IF NOT EXISTS g1 ON p (src, dst)")?
+    srv = g2.srv
+    check(fails, "graph_ifne", g1.ok == 1 && g2.ok == 1)
+
+    // plain dup still errors
+    let x3 = exec(srv, "CREATE INDEX city_ix ON p (city)")?
+    srv = x3.srv
+    check(fails, "ix_dup_42710", x3.ok == 0 && x3.state == "42710")
+
+    boila_server_close(srv)?
+
+    if vec_len(fails) == 0 {
+        print("boila_if_exists_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_if_exists_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

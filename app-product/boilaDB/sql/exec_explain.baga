@@ -1,15 +1,17 @@
-// exec_explain.baga — EXPLAIN text plan (dual + simple SELECT).
+// exec_explain.baga — EXPLAIN [ANALYZE] text plan (+ timing when ANALYZE).
 import "../storage/shards.baga"
 import "../txn/mvcc.baga"
 import "../catalog/schema.baga"
 import "exec_scan.baga"
 import "exec_out.baga"
 import "exec_dual.baga"
+import "exec_select.baga"
 import "parse_select.baga"
 import "plan_cache.baga"
 import "lexer.baga"
 import "token.baga"
 import "std/str/str.baga"
+import "std/time/time.baga"
 
 fn boila_explain_line(res: BoilaResult, s: str) {
     let row: Vec<BoilaVal> = vec_new()
@@ -17,14 +19,22 @@ fn boila_explain_line(res: BoilaResult, s: str) {
     vec_push(res.rows, row)
 }
 
+fn boila_explain_ms(t0: i64, t1: i64) -> str {
+    let mut d = t1 - t0
+    if d < 0 { d = 0 }
+    return concat(int_to_str(d), " ms")
+}
+
 fn boila_exec_explain(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str, lx: BoilaLex, guc: Map<str, str>, sql: str) -> BoilaSqlOut !IO !Time !Par {
-    // skip EXPLAIN [ANALYZE] — ANALYZE ignored (no timing)
     let mut i: i64 = 1
-    if tok_kw(vec_get(lx.toks, i), "analyze") == 1 { i = i + 1 }
+    let mut do_an: i64 = 0
+    if tok_kw(vec_get(lx.toks, i), "analyze") == 1 {
+        do_an = 1
+        i = i + 1
+    }
     if i >= vec_len(lx.toks) || vec_get(lx.toks, i).kind == tok_eof() {
         return boila_sql_fail(s, txn, pc, "EXPLAIN без заявка", "42601")
     }
-    // rebuild SQL after EXPLAIN
     let mut rest = ""
     let mut j = i
     while j < vec_len(lx.toks) {
@@ -52,13 +62,25 @@ fn boila_exec_explain(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str,
             if du.out.ok == 0 {
                 return du.out
             }
-            boila_explain_line(res, "Dual Result")
-            if tok_kw(t0, "values") == 1 {
-                boila_explain_line(res, concat("  Values Scan  (rows=", concat(int_to_str(vec_len(du.out.res.rows)), ")")))
+            let nrows = vec_len(du.out.res.rows)
+            if do_an == 1 {
+                // already executed by try_exec_dual
+                boila_explain_line(res, "Dual Result")
+                if tok_kw(t0, "values") == 1 {
+                    boila_explain_line(res, concat("  Values Scan  (actual rows=", concat(int_to_str(nrows), ")")))
+                } else {
+                    boila_explain_line(res, concat("  Dual Project  (actual rows=", concat(int_to_str(nrows), ")")))
+                }
+                boila_explain_line(res, "  Planning/Execution: included above")
             } else {
-                boila_explain_line(res, concat("  Dual Project  (rows=", concat(int_to_str(vec_len(du.out.res.rows)), ")")))
+                boila_explain_line(res, "Dual Result")
+                if tok_kw(t0, "values") == 1 {
+                    boila_explain_line(res, concat("  Values Scan  (rows=", concat(int_to_str(nrows), ")")))
+                } else {
+                    boila_explain_line(res, concat("  Dual Project  (rows=", concat(int_to_str(nrows), ")")))
+                }
             }
-            return boila_sql_ok(s, txn, pc, 1, res, 0)
+            return BoilaSqlOut { s: du.out.s, txn: du.out.txn, pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
         }
     }
     if tok_kw(t0, "select") == 1 {
@@ -72,33 +94,67 @@ fn boila_exec_explain(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, db: str,
             return boila_sql_fail(s, txn, pc, ct.err, ct.state)
         }
         let tname = ps.sel.table
+        let mut plan = "Seq Scan"
         if ps.sel.has_knn == 1 {
-            boila_explain_line(res, concat("kNN Scan on ", tname))
+            plan = "kNN Scan"
         } else {
             if ps.sel.has_fts == 1 {
-                boila_explain_line(res, concat("FTS Scan on ", tname))
+                plan = "FTS Scan"
             } else {
                 if ps.sel.has_eq == 1 {
                     let pk = vec_get(ct.table.cols, ct.table.pk_idx).name
                     if ps.sel.eq_col == pk {
-                        boila_explain_line(res, concat("PK Point Lookup on ", tname))
+                        plan = "PK Point Lookup"
                     } else {
-                        boila_explain_line(res, concat("Index/Filter Scan on ", tname))
-                        boila_explain_line(res, concat("  Filter: ", concat(ps.sel.eq_col, " = ?")))
+                        plan = "Index/Filter Scan"
                     }
                 } else {
                     if ps.sel.has_lo == 1 || ps.sel.has_hi == 1 {
-                        boila_explain_line(res, concat("Range Scan on ", tname))
-                    } else {
-                        if ps.sel.has_in == 1 {
-                            boila_explain_line(res, concat("Seq Scan on ", tname))
-                            boila_explain_line(res, concat("  Filter: ", concat(ps.sel.in_col, " IN (...)")))
-                        } else {
-                            boila_explain_line(res, concat("Seq Scan on ", tname))
-                        }
+                        plan = "Range Scan"
                     }
                 }
             }
+        }
+        if do_an == 1 {
+            let t_start = monotonic_ms()?
+            let ex = boila_exec_select(s, txn, ct.table, ps.sel)?
+            s = ex.s
+            txn = ex.txn
+            let t_end = monotonic_ms()?
+            if ex.ok == 0 {
+                return boila_sql_fail(s, txn, pc, ex.err, ex.state)
+            }
+            let nrows = vec_len(ex.res.rows)
+            boila_explain_line(res, concat(concat(plan, " on "), tname))
+            if ps.sel.has_eq == 1 && plan == "Index/Filter Scan" {
+                boila_explain_line(res, concat("  Filter: ", concat(ps.sel.eq_col, " = ?")))
+            }
+            if ps.sel.has_in == 1 {
+                boila_explain_line(res, concat("  Filter: ", concat(ps.sel.in_col, " IN (...)")))
+            }
+            if ps.sel.has_join == 1 {
+                boila_explain_line(res, concat("  Join ", ps.sel.join_table))
+            }
+            if ps.sel.has_group == 1 {
+                boila_explain_line(res, "  Aggregate / Group")
+            }
+            if ps.sel.has_order == 1 {
+                boila_explain_line(res, "  Sort")
+            }
+            if ps.sel.limit > 0 {
+                boila_explain_line(res, concat("  Limit ", int_to_str(ps.sel.limit)))
+            }
+            boila_explain_line(res, concat("  actual rows=", int_to_str(nrows)))
+            boila_explain_line(res, concat("  Execution Time: ", boila_explain_ms(t_start, t_end)))
+            return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
+        }
+        // plain EXPLAIN (no execute)
+        boila_explain_line(res, concat(concat(plan, " on "), tname))
+        if ps.sel.has_eq == 1 && plan == "Index/Filter Scan" {
+            boila_explain_line(res, concat("  Filter: ", concat(ps.sel.eq_col, " = ?")))
+        }
+        if ps.sel.has_in == 1 {
+            boila_explain_line(res, concat("  Filter: ", concat(ps.sel.in_col, " IN (...)")))
         }
         if ps.sel.has_join == 1 {
             boila_explain_line(res, concat("  Join ", ps.sel.join_table))

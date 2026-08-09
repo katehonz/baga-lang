@@ -341,6 +341,22 @@ fn main() -> i64 !IO !Time !Par {
     let dex2 = boila_server_exec(srv, "boila", "EXPLAIN SELECT id FROM users WHERE id = 7")?
     srv = dex2.srv
     check(fails, "explain_pk", dex2.ok == 1 && str_find(row_str(vec_get(dex2.res.rows, 0), 0), "PK") >= 0)
+    let dea = boila_server_exec(srv, "boila", "EXPLAIN ANALYZE SELECT id FROM users WHERE id = 7")?
+    srv = dea.srv
+    check(fails, "explain_analyze_ok", dea.ok == 1 && vec_len(dea.res.rows) >= 2)
+    if dea.ok == 1 {
+        let mut has_actual = 0
+        let mut has_time = 0
+        let mut ri: i64 = 0
+        while ri < vec_len(dea.res.rows) {
+            let line = row_str(vec_get(dea.res.rows, ri), 0)
+            if str_find(line, "actual rows=") >= 0 { has_actual = 1 }
+            if str_find(line, "Execution Time:") >= 0 { has_time = 1 }
+            ri = ri + 1
+        }
+        check(fails, "explain_analyze_actual", has_actual == 1)
+        check(fails, "explain_analyze_time", has_time == 1)
+    }
     let dcd = boila_server_exec(srv, "boila", "SELECT current_date")?
     srv = dcd.srv
     check(fails, "dual_current_date", dcd.ok == 1 && vec_len(dcd.res.rows) == 1 && vec_get(dcd.res.tags, 0) == boila_v_i64())

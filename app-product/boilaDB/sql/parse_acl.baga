@@ -1,0 +1,238 @@
+// parse_acl.baga — CREATE/DROP USER, GRANT/REVOKE.
+import "token.baga"
+import "lexer.baga"
+import "parse_ddl.baga"
+import "../catalog/acl.baga"
+import "std/str/str.baga"
+
+struct BoilaParseUser {
+    ok: i64,
+    name: str,
+    pw: str,
+    super: i64,
+    if_exists: i64,
+    if_not_exists: i64,
+    err: str,
+    state: str
+}
+
+fn boila_pu_fail(msg: str, state: str) -> BoilaParseUser {
+    return BoilaParseUser { ok: 0, name: "", pw: "", super: 0, if_exists: 0, if_not_exists: 0, err: msg, state: state }
+}
+
+// CREATE USER name [WITH] PASSWORD 'pw' | IDENTIFIED BY 'pw' [SUPERUSER]
+// CREATE ROLE name ... (alias)
+fn boila_parse_create_user(l: BoilaLex) -> BoilaParseUser {
+    // CREATE USER|ROLE [IF NOT EXISTS] name ...
+    let mut i: i64 = 2
+    let mut ifne: i64 = 0
+    if tok_kw(boila_pc_tok(l, i), "if") == 1 {
+        if tok_kw(boila_pc_tok(l, i + 1), "not") != 1 || tok_kw(boila_pc_tok(l, i + 2), "exists") != 1 {
+            return boila_pu_fail("очаквах IF NOT EXISTS", "42601")
+        }
+        ifne = 1
+        i = i + 3
+    }
+    let nm = boila_pc_tok(l, i)
+    if nm.kind != tok_ident() {
+        return boila_pu_fail("очаквах име на user/role", "42601")
+    }
+    i = i + 1
+    if tok_kw(boila_pc_tok(l, i), "with") == 1 { i = i + 1 }
+    let mut pw = ""
+    let mut super: i64 = 0
+    let mut more = true
+    while more && boila_pc_tok(l, i).kind != tok_eof() && boila_pc_tok(l, i).kind != tok_semi() {
+        if tok_kw(boila_pc_tok(l, i), "password") == 1 {
+            let p = boila_pc_tok(l, i + 1)
+            if p.kind != tok_str() {
+                return boila_pu_fail("очаквах string след PASSWORD", "42601")
+            }
+            pw = p.txt
+            i = i + 2
+        } else {
+            if tok_kw(boila_pc_tok(l, i), "identified") == 1 {
+                if tok_kw(boila_pc_tok(l, i + 1), "by") != 1 {
+                    return boila_pu_fail("очаквах BY след IDENTIFIED", "42601")
+                }
+                let p = boila_pc_tok(l, i + 2)
+                if p.kind != tok_str() {
+                    return boila_pu_fail("очаквах string след IDENTIFIED BY", "42601")
+                }
+                pw = p.txt
+                i = i + 3
+            } else {
+                if tok_kw(boila_pc_tok(l, i), "superuser") == 1 {
+                    super = 1
+                    i = i + 1
+                } else {
+                    if tok_kw(boila_pc_tok(l, i), "nosuperuser") == 1 {
+                        super = 0
+                        i = i + 1
+                    } else {
+                        return boila_pu_fail(concat("неочакван токен '", concat(boila_pc_tok(l, i).txt, "'")), "42601")
+                    }
+                }
+            }
+        }
+    }
+    return BoilaParseUser { ok: 1, name: nm.txt, pw: pw, super: super, if_exists: 0, if_not_exists: ifne, err: "", state: "" }
+}
+
+// DROP USER|ROLE [IF EXISTS] name
+fn boila_parse_drop_user(l: BoilaLex) -> BoilaParseUser {
+    let mut i: i64 = 2
+    let mut if_ex: i64 = 0
+    if tok_kw(boila_pc_tok(l, i), "if") == 1 {
+        if tok_kw(boila_pc_tok(l, i + 1), "exists") != 1 {
+            return boila_pu_fail("очаквах EXISTS след IF", "42601")
+        }
+        if_ex = 1
+        i = i + 2
+    }
+    let nm = boila_pc_tok(l, i)
+    if nm.kind != tok_ident() {
+        return boila_pu_fail("очаквах име след DROP USER", "42601")
+    }
+    return BoilaParseUser { ok: 1, name: nm.txt, pw: "", super: 0, if_exists: if_ex, if_not_exists: 0, err: "", state: "" }
+}
+
+// ALTER USER name PASSWORD 'pw' | WITH PASSWORD 'pw'
+fn boila_parse_alter_user(l: BoilaLex) -> BoilaParseUser {
+    let nm = boila_pc_tok(l, 2)
+    if nm.kind != tok_ident() {
+        return boila_pu_fail("очаквах име след ALTER USER", "42601")
+    }
+    let mut i: i64 = 3
+    if tok_kw(boila_pc_tok(l, i), "with") == 1 { i = i + 1 }
+    if tok_kw(boila_pc_tok(l, i), "password") != 1 {
+        return boila_pu_fail("поддържа се ALTER USER … PASSWORD", "0A000")
+    }
+    let p = boila_pc_tok(l, i + 1)
+    if p.kind != tok_str() {
+        return boila_pu_fail("очаквах string парола", "42601")
+    }
+    return BoilaParseUser { ok: 1, name: nm.txt, pw: p.txt, super: 0, if_exists: 0, if_not_exists: 0, err: "", state: "" }
+}
+
+struct BoilaParseGrant {
+    ok: i64,
+    bits: i64,
+    db: str,
+    table: str,   // "*" = all tables in db
+    grantee: str,
+    is_revoke: i64,
+    err: str,
+    state: str
+}
+
+fn boila_pgnt_fail(msg: str, state: str) -> BoilaParseGrant {
+    return BoilaParseGrant { ok: 0, bits: 0, db: "", table: "", grantee: "", is_revoke: 0, err: msg, state: state }
+}
+
+fn boila_priv_bit(name: str) -> i64 {
+    if name == "select" { return boila_priv_select() }
+    if name == "insert" { return boila_priv_insert() }
+    if name == "update" { return boila_priv_update() }
+    if name == "delete" { return boila_priv_delete() }
+    if name == "create" { return boila_priv_create() }
+    if name == "drop" { return boila_priv_drop() }
+    if name == "alter" { return boila_priv_alter() }
+    if name == "connect" { return boila_priv_connect() }
+    if name == "all" || name == "all privileges" { return boila_priv_all() }
+    return 0 - 1
+}
+
+// GRANT {priv[,…]|ALL} ON [TABLE] db.table|db.*|* TO user
+// GRANT {priv} ON DATABASE db TO user
+fn boila_parse_grant(l: BoilaLex) -> BoilaParseGrant {
+    return boila_parse_grant_rev(l, 0)
+}
+
+fn boila_parse_revoke(l: BoilaLex) -> BoilaParseGrant {
+    return boila_parse_grant_rev(l, 1)
+}
+
+fn boila_parse_grant_rev(l: BoilaLex, is_rev: i64) -> BoilaParseGrant {
+    let mut i: i64 = 1
+    let mut bits: i64 = 0
+    // privilege list until ON
+    if tok_kw(boila_pc_tok(l, i), "all") == 1 {
+        bits = boila_priv_all()
+        i = i + 1
+        if tok_kw(boila_pc_tok(l, i), "privileges") == 1 { i = i + 1 }
+    } else {
+        let mut more = true
+        while more {
+            let t = boila_pc_tok(l, i)
+            if t.kind != tok_ident() && t.kind != 0 {
+                if tok_kw(t, "on") == 1 { more = false } else {
+                    return boila_pgnt_fail("очаквах privilege или ON", "42601")
+                }
+            } else {
+                if tok_kw(t, "on") == 1 {
+                    more = false
+                } else {
+                    let b = boila_priv_bit(t.txt)
+                    if b < 0 {
+                        return boila_pgnt_fail(concat("непознато privilege '", concat(t.txt, "'")), "42601")
+                    }
+                    bits = bits | b
+                    i = i + 1
+                    if boila_pc_tok(l, i).kind == tok_comma() { i = i + 1 }
+                }
+            }
+        }
+    }
+    if bits == 0 {
+        return boila_pgnt_fail("очаквах privileges", "42601")
+    }
+    if tok_kw(boila_pc_tok(l, i), "on") != 1 {
+        return boila_pgnt_fail("очаквах ON", "42601")
+    }
+    i = i + 1
+    let mut db = ""
+    let mut table = "*"
+    // ON DATABASE db | ON [TABLE] name | ON *
+    // (no db.table — lexer няма '.'; current db for table grants)
+    if tok_kw(boila_pc_tok(l, i), "database") == 1 {
+        i = i + 1
+        let d = boila_pc_tok(l, i)
+        if d.kind != tok_ident() {
+            return boila_pgnt_fail("очаквах database name", "42601")
+        }
+        db = d.txt
+        table = "*"
+        bits = bits | boila_priv_connect()
+        i = i + 1
+    } else {
+        if tok_kw(boila_pc_tok(l, i), "table") == 1 { i = i + 1 }
+        let a = boila_pc_tok(l, i)
+        if a.kind == tok_star() || a.txt == "*" {
+            db = ""
+            table = "*"
+            i = i + 1
+        } else {
+            if a.kind != tok_ident() {
+                return boila_pgnt_fail("очаквах table или *", "42601")
+            }
+            db = ""
+            table = a.txt
+            i = i + 1
+        }
+    }
+    if is_rev == 1 {
+        if tok_kw(boila_pc_tok(l, i), "from") != 1 {
+            return boila_pgnt_fail("очаквах FROM", "42601")
+        }
+    } else {
+        if tok_kw(boila_pc_tok(l, i), "to") != 1 {
+            return boila_pgnt_fail("очаквах TO", "42601")
+        }
+    }
+    let gr = boila_pc_tok(l, i + 1)
+    if gr.kind != tok_ident() {
+        return boila_pgnt_fail("очаквах grantee", "42601")
+    }
+    return BoilaParseGrant { ok: 1, bits: bits, db: db, table: table, grantee: gr.txt, is_revoke: is_rev, err: "", state: "" }
+}

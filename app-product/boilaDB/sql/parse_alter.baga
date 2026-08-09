@@ -1,0 +1,150 @@
+// parse_alter.baga — ALTER TABLE ADD COLUMN | RENAME TO | RENAME COLUMN.
+import "token.baga"
+import "lexer.baga"
+import "parse_ddl.baga"
+import "ast.baga"
+import "../core/value.baga"
+import "std/str/str.baga"
+
+// kind: 1=add col, 2=rename table, 3=rename column, 4=drop col
+struct BoilaAlter {
+    kind: i64,
+    table: str,
+    col: str,
+    typ: i64,
+    new_name: str
+}
+
+struct BoilaParseAlter {
+    ok: i64,
+    alt: BoilaAlter,
+    err: str,
+    state: str
+}
+
+fn boila_alter_empty() -> BoilaAlter {
+    return BoilaAlter { kind: 0, table: "", col: "", typ: 0, new_name: "" }
+}
+
+fn boila_pa_fail(msg: str, state: str) -> BoilaParseAlter {
+    return BoilaParseAlter { ok: 0, alt: boila_alter_empty(), err: msg, state: state }
+}
+
+fn boila_pa_ok(a: BoilaAlter) -> BoilaParseAlter {
+    return BoilaParseAlter { ok: 1, alt: a, err: "", state: "" }
+}
+
+// ALTER TABLE ident { ADD … | RENAME … }
+fn boila_parse_alter(l: BoilaLex) -> BoilaParseAlter {
+    if tok_kw(boila_pc_tok(l, 0), "alter") != 1 {
+        return boila_pa_fail("очаквах ALTER", "42601")
+    }
+    if tok_kw(boila_pc_tok(l, 1), "table") != 1 {
+        return boila_pa_fail("очаквах TABLE след ALTER", "42601")
+    }
+    let tn = boila_pc_tok(l, 2)
+    if tn.kind != tok_ident() {
+        return boila_pa_fail("очаквах име на таблица", "42601")
+    }
+    let op = boila_pc_tok(l, 3)
+    if tok_kw(op, "add") == 1 {
+        return boila_parse_alter_add_body(l, tn.txt, 4)
+    }
+    if tok_kw(op, "rename") == 1 {
+        return boila_parse_alter_rename_body(l, tn.txt, 4)
+    }
+    if tok_kw(op, "drop") == 1 {
+        return boila_parse_alter_drop_body(l, tn.txt, 4)
+    }
+    return boila_pa_fail("ALTER TABLE: ADD/DROP COLUMN | RENAME TO|COLUMN", "0A000")
+}
+
+// DROP [COLUMN] ident [;] — last non-PK only (exec enforces)
+fn boila_parse_alter_drop_body(l: BoilaLex, table: str, i: i64) -> BoilaParseAlter {
+    if tok_kw(boila_pc_tok(l, i), "column") == 1 {
+        i = i + 1
+    }
+    let cn = boila_pc_tok(l, i)
+    if cn.kind != tok_ident() {
+        return boila_pa_fail("очаквах име на колона след DROP", "42601")
+    }
+    i = i + 1
+    if boila_pc_tok(l, i).kind == tok_semi() { i = i + 1 }
+    if boila_pc_tok(l, i).kind != tok_eof() {
+        return boila_pa_fail("неочакван токен след DROP COLUMN", "42601")
+    }
+    return boila_pa_ok(BoilaAlter { kind: 4, table: table, col: cn.txt, typ: 0, new_name: "" })
+}
+
+fn boila_parse_alter_add_body(l: BoilaLex, table: str, i: i64) -> BoilaParseAlter {
+    if tok_kw(boila_pc_tok(l, i), "column") == 1 {
+        i = i + 1
+    }
+    let cn = boila_pc_tok(l, i)
+    if cn.kind != tok_ident() {
+        return boila_pa_fail("очаквах име на колона", "42601")
+    }
+    i = i + 1
+    let ct = boila_pc_tok(l, i)
+    if ct.kind != tok_ident() {
+        return boila_pa_fail("очаквах тип на колоната", "42601")
+    }
+    if ct.txt == "vector" {
+        return boila_pa_fail("ALTER ADD VECTOR — още не се поддържа", "0A000")
+    }
+    let typ = boila_type_of(ct.txt)
+    if typ < 0 {
+        return boila_pa_fail(concat("непознат тип '", concat(ct.txt, "'")), "0A000")
+    }
+    i = i + 1
+    if tok_kw(boila_pc_tok(l, i), "not") == 1 || tok_kw(boila_pc_tok(l, i), "primary") == 1 || tok_kw(boila_pc_tok(l, i), "default") == 1 {
+        return boila_pa_fail("ADD COLUMN само nullable без DEFAULT/PK", "0A000")
+    }
+    if boila_pc_tok(l, i).kind != tok_eof() && boila_pc_tok(l, i).kind != tok_semi() {
+        return boila_pa_fail(concat("неочакван токен '", concat(boila_pc_tok(l, i).txt, "'")), "42601")
+    }
+    return boila_pa_ok(BoilaAlter { kind: 1, table: table, col: cn.txt, typ: typ, new_name: "" })
+}
+
+fn boila_parse_alter_rename_body(l: BoilaLex, table: str, i: i64) -> BoilaParseAlter {
+    // RENAME TO new_table
+    if tok_kw(boila_pc_tok(l, i), "to") == 1 {
+        let nn = boila_pc_tok(l, i + 1)
+        if nn.kind != tok_ident() {
+            return boila_pa_fail("очаквах ново име на таблица", "42601")
+        }
+        i = i + 2
+        if boila_pc_tok(l, i).kind == tok_semi() { i = i + 1 }
+        if boila_pc_tok(l, i).kind != tok_eof() {
+            return boila_pa_fail("неочакван токен след RENAME TO", "42601")
+        }
+        return boila_pa_ok(BoilaAlter { kind: 2, table: table, col: "", typ: 0, new_name: nn.txt })
+    }
+    // RENAME [COLUMN] old TO new
+    if tok_kw(boila_pc_tok(l, i), "column") == 1 {
+        i = i + 1
+    }
+    let oldc = boila_pc_tok(l, i)
+    if oldc.kind != tok_ident() {
+        return boila_pa_fail("очаквах име на колона след RENAME", "42601")
+    }
+    i = i + 1
+    if tok_kw(boila_pc_tok(l, i), "to") != 1 {
+        return boila_pa_fail("очаквах TO след старото име", "42601")
+    }
+    let newc = boila_pc_tok(l, i + 1)
+    if newc.kind != tok_ident() {
+        return boila_pa_fail("очаквах ново име на колона", "42601")
+    }
+    i = i + 2
+    if boila_pc_tok(l, i).kind == tok_semi() { i = i + 1 }
+    if boila_pc_tok(l, i).kind != tok_eof() {
+        return boila_pa_fail("неочакван токен след RENAME COLUMN", "42601")
+    }
+    return boila_pa_ok(BoilaAlter { kind: 3, table: table, col: oldc.txt, typ: 0, new_name: newc.txt })
+}
+
+// legacy name used by older call sites
+fn boila_parse_alter_add(l: BoilaLex) -> BoilaParseAlter {
+    return boila_parse_alter(l)
+}

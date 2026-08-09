@@ -163,6 +163,23 @@ fn main() -> i64 !IO !Time !Par {
     srv2 = dr3.srv
     check(fails, "drop_twice_3D000", dr3.ok == 0 && dr3.state == "3D000")
 
+    // IF [NOT] EXISTS
+    let ie1 = boila_server_exec(srv2, "beta", "CREATE DATABASE IF NOT EXISTS beta")?
+    srv2 = ie1.srv
+    check(fails, "create_ifne_dup", ie1.ok == 1 && ie1.kind == 3)
+    let ie2 = boila_server_exec(srv2, "beta", "CREATE DATABASE IF NOT EXISTS gamma")?
+    srv2 = ie2.srv
+    check(fails, "create_ifne_new", ie2.ok == 1)
+    let ie3 = boila_server_exec(srv2, "beta", "DROP DATABASE IF EXISTS alpha")?
+    srv2 = ie3.srv
+    check(fails, "drop_if_exists_miss", ie3.ok == 1 && ie3.kind == 4)
+    let ie4 = boila_server_exec(srv2, "beta", "DROP DATABASE IF EXISTS gamma")?
+    srv2 = ie4.srv
+    check(fails, "drop_if_exists_hit", ie4.ok == 1)
+    let ie5 = boila_server_exec(srv2, "beta", "CREATE DATABASE beta")?
+    srv2 = ie5.srv
+    check(fails, "create_still_42P04", ie5.ok == 0 && ie5.state == "42P04")
+
     boila_server_close(srv2)?
     wipe_root(root, known)?
     if vec_len(fails) == 0 {

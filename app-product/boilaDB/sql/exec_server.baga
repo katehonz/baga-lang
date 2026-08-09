@@ -9,7 +9,12 @@ import "token.baga"
 import "parse_ddl.baga"
 import "exec_sql.baga"
 import "exec_out.baga"
+import "exec_show.baga"
+import "exec_show_acl.baga"
+import "exec_acl.baga"
 import "exec_select.baga"
+import "plan_cache.baga"
+import "../catalog/acl.baga"
 import "exec_scan.baga"
 import "ast.baga"
 import "../catalog/schema.baga"
@@ -52,6 +57,55 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
         return boila_srv_out_fail(srv, txn, "празна заявка", "42601")
     }
 
+    // --- users / roles / grants (meta ACL) ---
+    if tok_kw(t0, "create") == 1 && vec_len(lx.toks) > 1 && (tok_kw(vec_get(lx.toks, 1), "user") == 1 || tok_kw(vec_get(lx.toks, 1), "role") == 1) {
+        let r = boila_exec_create_user(srv.meta, srv.guc, lx)?
+        srv.meta = r.meta
+        srv.guc = r.guc
+        if r.ok == 0 { return boila_srv_out_fail(srv, txn, r.err, r.state) }
+        return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: r.kind, res: boila_result_empty(), id: 0, db: r.name }
+    }
+    if tok_kw(t0, "drop") == 1 && vec_len(lx.toks) > 1 && (tok_kw(vec_get(lx.toks, 1), "user") == 1 || tok_kw(vec_get(lx.toks, 1), "role") == 1) {
+        let r = boila_exec_drop_user(srv.meta, srv.guc, lx)?
+        srv.meta = r.meta
+        srv.guc = r.guc
+        if r.ok == 0 { return boila_srv_out_fail(srv, txn, r.err, r.state) }
+        return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: r.kind, res: boila_result_empty(), id: 0, db: r.name }
+    }
+    if tok_kw(t0, "alter") == 1 && vec_len(lx.toks) > 1 && (tok_kw(vec_get(lx.toks, 1), "user") == 1 || tok_kw(vec_get(lx.toks, 1), "role") == 1) {
+        let r = boila_exec_alter_user(srv.meta, srv.guc, lx)?
+        srv.meta = r.meta
+        srv.guc = r.guc
+        if r.ok == 0 { return boila_srv_out_fail(srv, txn, r.err, r.state) }
+        return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: r.kind, res: boila_result_empty(), id: 0, db: r.name }
+    }
+    if tok_kw(t0, "grant") == 1 {
+        let r = boila_exec_grant_rev(srv.meta, srv.guc, db, lx, 0)?
+        srv.meta = r.meta
+        srv.guc = r.guc
+        if r.ok == 0 { return boila_srv_out_fail(srv, txn, r.err, r.state) }
+        return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: r.kind, res: boila_result_empty(), id: 0, db: r.name }
+    }
+    if tok_kw(t0, "revoke") == 1 {
+        let r = boila_exec_grant_rev(srv.meta, srv.guc, db, lx, 1)?
+        srv.meta = r.meta
+        srv.guc = r.guc
+        if r.ok == 0 { return boila_srv_out_fail(srv, txn, r.err, r.state) }
+        return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: r.kind, res: boila_result_empty(), id: 0, db: r.name }
+    }
+
+    // ACL gate (empty session user = open/legacy mode)
+    if boila_sess_user(srv.guc) != "" {
+        let need = boila_acl_need_sql(lx)
+        if need.skip == 0 {
+            let chk = boila_acl_require(srv.meta, srv.guc, db, need.table, need.need)?
+            srv.meta = chk.s
+            if chk.ok == 0 {
+                return boila_srv_out_fail(srv, txn, chk.err, chk.state)
+            }
+        }
+    }
+
     if tok_kw(t0, "create") == 1 && vec_len(lx.toks) > 1 && tok_kw(vec_get(lx.toks, 1), "database") == 1 {
         let p = boila_parse_create_db(lx)
         if p.ok == 0 {
@@ -59,6 +113,9 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
         }
         let r = boila_srv_db_create(srv, p.name)?
         if r.ok == 0 {
+            if p.if_exists == 1 && r.state == "42P04" {
+                return BoilaSrvOut { srv: r.srv, txn: txn, ok: 1, err: "", state: "", kind: 3, res: boila_result_empty(), id: 0, db: p.name }
+            }
             return boila_srv_out_fail(r.srv, txn, r.err, r.state)
         }
         return BoilaSrvOut { srv: r.srv, txn: txn, ok: 1, err: "", state: "", kind: 3, res: boila_result_empty(), id: 0, db: p.name }
@@ -71,6 +128,9 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
         }
         let r = boila_srv_db_drop(srv, p.name, db)?
         if r.ok == 0 {
+            if p.if_exists == 1 && r.state == "3D000" {
+                return BoilaSrvOut { srv: r.srv, txn: txn, ok: 1, err: "", state: "", kind: 4, res: boila_result_empty(), id: 0, db: p.name }
+            }
             return boila_srv_out_fail(r.srv, txn, r.err, r.state)
         }
         return BoilaSrvOut { srv: r.srv, txn: txn, ok: 1, err: "", state: "", kind: 4, res: boila_result_empty(), id: 0, db: p.name }
@@ -92,6 +152,26 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
     }
 
     // W7b: session GUC on srv.guc (SET/SHOW/RESET/DISCARD)
+    // SET ROLE name | NONE — switch session ACL user (looks up super flag)
+    if tok_kw(t0, "set") == 1 && vec_len(lx.toks) > 1 && tok_kw(vec_get(lx.toks, 1), "role") == 1 {
+        let t2 = vec_get(lx.toks, 2)
+        if tok_kw(t2, "none") == 1 {
+            srv.guc = boila_sess_set_user(srv.guc, "", 0)
+            map_del(srv.guc, "boila.user")
+            map_del(srv.guc, "boila.super")
+            return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 19, res: boila_result_empty(), id: 0, db: db }
+        }
+        if t2.kind != tok_ident() {
+            return boila_srv_out_fail(srv, txn, "SET ROLE name | NONE", "42601")
+        }
+        let ug = boila_acl_user_get(srv.meta, t2.txt)?
+        srv.meta = ug.s
+        if ug.ok == 0 {
+            return boila_srv_out_fail(srv, txn, ug.err, ug.state)
+        }
+        srv.guc = boila_sess_set_user(srv.guc, t2.txt, ug.super)
+        return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 19, res: boila_result_empty(), id: 0, db: db }
+    }
     if tok_kw(t0, "set") == 1 {
         let gs = boila_guc_set_parse(srv.guc, lx)
         if gs.ok == 0 {
@@ -101,6 +181,59 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
         return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 19, res: boila_result_empty(), id: 0, db: db }
     }
     if tok_kw(t0, "show") == 1 {
+        let mut is_meta = 0
+        let mut is_dbs = 0
+        let mut is_users = 0
+        let mut is_grants = 0
+        if vec_len(lx.toks) > 1 {
+            let t1 = vec_get(lx.toks, 1)
+            if tok_kw(t1, "databases") == 1 || tok_kw(t1, "database") == 1 {
+                is_dbs = 1
+            }
+            if tok_kw(t1, "users") == 1 || tok_kw(t1, "roles") == 1 {
+                is_users = 1
+            }
+            if tok_kw(t1, "grants") == 1 {
+                is_grants = 1
+            }
+            if tok_kw(t1, "tables") == 1 || tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 || tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 {
+                is_meta = 1
+            }
+        }
+        if is_dbs == 1 {
+            let out = boila_show_databases(srv.meta, srv.pc)?
+            srv.meta = out.s
+            return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 1, res: out.res, id: 0, db: db }
+        }
+        if is_users == 1 {
+            let out = boila_show_users(srv.meta, srv.pc)?
+            srv.meta = out.s
+            return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 1, res: out.res, id: 0, db: db }
+        }
+        if is_grants == 1 {
+            let mut fu = ""
+            // SHOW GRANTS FOR user
+            if vec_len(lx.toks) > 3 && tok_kw(vec_get(lx.toks, 2), "for") == 1 && vec_get(lx.toks, 3).kind == tok_ident() {
+                fu = vec_get(lx.toks, 3).txt
+            }
+            let out = boila_show_grants(srv.meta, srv.pc, fu)?
+            srv.meta = out.s
+            return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 1, res: out.res, id: 0, db: db }
+        }
+        if is_meta == 1 {
+            let g = boila_srv_db(srv, db)?
+            if g.ok == 0 {
+                return boila_srv_out_fail(g.srv, txn, g.err, g.state)
+            }
+            srv = g.srv
+            let out = boila_exec_show_ex(g.store, txn, srv.pc, lx, srv.guc)?
+            srv = boila_srv_store_putback(srv, db, out.s)
+            srv.pc = out.pc
+            if out.ok == 0 {
+                return boila_srv_out_fail(srv, out.txn, out.err, out.state)
+            }
+            return BoilaSrvOut { srv: srv, txn: out.txn, ok: 1, err: "", state: "", kind: 1, res: out.res, id: 0, db: db }
+        }
         let res = boila_guc_show(srv.guc, lx)
         return BoilaSrvOut { srv: srv, txn: txn, ok: 1, err: "", state: "", kind: 1, res: res, id: 0, db: db }
     }

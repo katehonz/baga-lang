@@ -51,6 +51,13 @@ fn boila_http_try_guc(txn: BoilaTxn, db: str, guc: Map<str, str>, sql: str) -> B
         return BoilaHttpGucTry { hit: 1, r: r }
     }
     if tok_kw(t0, "show") == 1 {
+        // SHOW TABLES / INDEX → fall through to SQL store path
+        if vec_len(lx.toks) > 1 {
+            let t1 = vec_get(lx.toks, 1)
+            if tok_kw(t1, "tables") == 1 || tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 || tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 || tok_kw(t1, "databases") == 1 || tok_kw(t1, "database") == 1 || tok_kw(t1, "users") == 1 || tok_kw(t1, "roles") == 1 || tok_kw(t1, "grants") == 1 {
+                return BoilaHttpGucTry { hit: 0, r: boila_http_guc_err(txn, db, guc, "", "") }
+            }
+        }
         let res = boila_guc_show(guc, lx)
         let mut body = "{\"ok\":true,\"kind\":\"select\",\"cols\":"
         body = concat(body, boila_cols_json(res.cols))

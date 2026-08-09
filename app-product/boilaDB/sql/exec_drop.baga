@@ -1,0 +1,52 @@
+// exec_drop.baga — DROP TABLE / INDEX / GRAPH + TRUNCATE dispatch.
+import "token.baga"
+import "lexer.baga"
+import "parse_ddl.baga"
+import "parse_index.baga"
+import "plan_cache.baga"
+import "exec_out.baga"
+import "../catalog/drop.baga"
+import "../catalog/truncate.baga"
+import "../index/ix_drop.baga"
+import "../graph/g_drop.baga"
+import "../txn/mvcc.baga"
+import "../storage/shards.baga"
+
+fn boila_exec_truncate(s: BoilaStore, txn: BoilaTxn, db: str, lx: BoilaLex, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
+    let p = boila_parse_truncate(lx)
+    if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
+    let tr = boila_table_truncate_run(s, txn, db, p.name, p.if_exists)?
+    if tr.ok == 0 { return boila_sql_fail(tr.s, tr.txn, pc, tr.err, tr.state) }
+    return BoilaSqlOut { s: tr.s, txn: tr.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 25, res: boila_result_empty(), id: tr.id }
+}
+
+fn boila_exec_drop(s: BoilaStore, txn: BoilaTxn, db: str, lx: BoilaLex, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
+    let t1 = vec_get(lx.toks, 1)
+    if tok_kw(t1, "index") == 1 {
+        let p = boila_parse_drop_index(lx)
+        if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
+        let dr = boila_ix_drop_run(s, txn, db, p.table, p.ix_name, p.if_exists)?
+        if dr.ok == 0 { return boila_sql_fail(dr.s, dr.txn, pc, dr.err, dr.state) }
+        return BoilaSqlOut { s: dr.s, txn: dr.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 23, res: boila_result_empty(), id: dr.id }
+    }
+    if tok_kw(t1, "graph") == 1 {
+        let p = boila_parse_drop_graph(lx)
+        if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
+        let dr = graph_drop_run(s, txn, db, p.table, p.ix_name, p.if_exists)?
+        if dr.ok == 0 { return boila_sql_fail(dr.s, dr.txn, pc, dr.err, dr.state) }
+        return BoilaSqlOut { s: dr.s, txn: dr.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 24, res: boila_result_empty(), id: dr.id }
+    }
+    if tok_kw(t1, "table") != 1 {
+        return boila_sql_fail(s, txn, pc, "DROP TABLE/INDEX/GRAPH / DROP DATABASE", "0A000")
+    }
+    let p = boila_parse_drop_table(lx)
+    if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
+    let dr = boila_table_drop_run(s, txn, db, p.name)?
+    if dr.ok == 0 {
+        if p.if_exists == 1 && dr.state == "42P01" {
+            return BoilaSqlOut { s: dr.s, txn: dr.txn, pc: pc, ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: 0 }
+        }
+        return boila_sql_fail(dr.s, dr.txn, pc, dr.err, dr.state)
+    }
+    return BoilaSqlOut { s: dr.s, txn: dr.txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: dr.id }
+}

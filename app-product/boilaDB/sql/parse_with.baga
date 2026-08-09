@@ -319,7 +319,7 @@ fn boila_parse_with(l: BoilaLex) -> BoilaParseWith {
     return BoilaParseWith { ok: 1, w: w, err: "", state: "" }
 }
 
-// CREATE GRAPH name ON table (src, dst [, weight])
+// CREATE GRAPH [IF NOT EXISTS] name ON table (src, dst [, weight])
 struct BoilaParseGraph {
     ok: i64,
     name: str,
@@ -327,42 +327,52 @@ struct BoilaParseGraph {
     src: str,
     dst: str,
     wcol: str,
+    if_not_exists: i64,
     err: str,
     state: str
 }
 
 fn boila_pg_fail(msg: str, state: str) -> BoilaParseGraph {
-    return BoilaParseGraph { ok: 0, name: "", table: "", src: "", dst: "", wcol: "", err: msg, state: state }
+    return BoilaParseGraph { ok: 0, name: "", table: "", src: "", dst: "", wcol: "", if_not_exists: 0, err: msg, state: state }
 }
 
 fn boila_parse_create_graph(l: BoilaLex) -> BoilaParseGraph {
-    // CREATE GRAPH name ON table ( src , dst [, w ] )
-    let nm = boila_pw_tok(l, 2)
+    let mut i: i64 = 2
+    let mut ifne: i64 = 0
+    if tok_kw(boila_pw_tok(l, i), "if") == 1 {
+        if tok_kw(boila_pw_tok(l, i + 1), "not") != 1 || tok_kw(boila_pw_tok(l, i + 2), "exists") != 1 {
+            return boila_pg_fail("очаквах IF NOT EXISTS", "42601")
+        }
+        ifne = 1
+        i = i + 3
+    }
+    let nm = boila_pw_tok(l, i)
     if nm.kind != tok_ident() {
         return boila_pg_fail("очаквах име след CREATE GRAPH", "42601")
     }
-    if tok_kw(boila_pw_tok(l, 3), "on") != 1 {
+    i = i + 1
+    if tok_kw(boila_pw_tok(l, i), "on") != 1 {
         return boila_pg_fail("очаквах ON", "42601")
     }
-    let tb = boila_pw_tok(l, 4)
+    let tb = boila_pw_tok(l, i + 1)
     if tb.kind != tok_ident() {
         return boila_pg_fail("очаквах таблица", "42601")
     }
-    if boila_pw_tok(l, 5).kind != tok_lparen() {
+    if boila_pw_tok(l, i + 2).kind != tok_lparen() {
         return boila_pg_fail("очаквах '('", "42601")
     }
-    let s = boila_pw_tok(l, 6)
+    let s = boila_pw_tok(l, i + 3)
     if s.kind != tok_ident() {
         return boila_pg_fail("очаквах src колона", "42601")
     }
-    if boila_pw_tok(l, 7).kind != tok_comma() {
+    if boila_pw_tok(l, i + 4).kind != tok_comma() {
         return boila_pg_fail("очаквах ','", "42601")
     }
-    let d = boila_pw_tok(l, 8)
+    let d = boila_pw_tok(l, i + 5)
     if d.kind != tok_ident() {
         return boila_pg_fail("очаквах dst колона", "42601")
     }
-    let mut i: i64 = 9
+    i = i + 6
     let mut wcol = ""
     if boila_pw_tok(l, i).kind == tok_comma() {
         let w = boila_pw_tok(l, i + 1)
@@ -376,11 +386,9 @@ fn boila_parse_create_graph(l: BoilaLex) -> BoilaParseGraph {
         return boila_pg_fail("очаквах ')'", "42601")
     }
     i = i + 1
-    if boila_pw_tok(l, i).kind == tok_semi() {
-        i = i + 1
-    }
+    if boila_pw_tok(l, i).kind == tok_semi() { i = i + 1 }
     if boila_pw_tok(l, i).kind != tok_eof() {
         return boila_pg_fail("неочакван токен след CREATE GRAPH", "0A000")
     }
-    return BoilaParseGraph { ok: 1, name: nm.txt, table: tb.txt, src: s.txt, dst: d.txt, wcol: wcol, err: "", state: "" }
+    return BoilaParseGraph { ok: 1, name: nm.txt, table: tb.txt, src: s.txt, dst: d.txt, wcol: wcol, if_not_exists: ifne, err: "", state: "" }
 }

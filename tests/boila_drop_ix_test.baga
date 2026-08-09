@@ -1,0 +1,146 @@
+// boila_drop_ix_test.baga — DROP INDEX name ON table (+ IF EXISTS).
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn exec(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_drop_ix_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_drop_ix_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    let c1 = exec(srv, "CREATE TABLE p (id BIGINT, city TEXT, PRIMARY KEY (id))")?
+    srv = c1.srv
+    let c2 = exec(srv, "INSERT INTO p (id, city) VALUES (1, 'sofia'), (2, 'varna'), (3, 'sofia')")?
+    srv = c2.srv
+    let x1 = exec(srv, "CREATE INDEX city_ix ON p (city)")?
+    srv = x1.srv
+    check(fails, "seed", c1.ok == 1 && c2.ok == 1 && x1.ok == 1)
+
+    // index used for lookup
+    let s1 = exec(srv, "SELECT id FROM p WHERE city = 'sofia'")?
+    srv = s1.srv
+    check(fails, "ix_lookup", s1.ok == 1 && vec_len(s1.res.rows) == 2)
+
+    let d1 = exec(srv, "DROP INDEX city_ix ON p")?
+    srv = d1.srv
+    check(fails, "drop_ix", d1.ok == 1 && d1.kind == 23)
+
+    // still correct via scan
+    let s2 = exec(srv, "SELECT id FROM p WHERE city = 'sofia'")?
+    srv = s2.srv
+    check(fails, "after_drop_scan", s2.ok == 1 && vec_len(s2.res.rows) == 2)
+
+    // missing → 42704
+    let d2 = exec(srv, "DROP INDEX city_ix ON p")?
+    srv = d2.srv
+    check(fails, "drop_missing_42704", d2.ok == 0 && d2.state == "42704")
+
+    // IF EXISTS ok
+    let d3 = exec(srv, "DROP INDEX IF EXISTS city_ix ON p")?
+    srv = d3.srv
+    check(fails, "if_exists", d3.ok == 1)
+
+    // recreate + drop again
+    let x2 = exec(srv, "CREATE INDEX city_ix ON p (city)")?
+    srv = x2.srv
+    let d4 = exec(srv, "DROP INDEX city_ix ON p")?
+    srv = d4.srv
+    check(fails, "recreate_drop", x2.ok == 1 && d4.ok == 1)
+
+    // bad table
+    let d5 = exec(srv, "DROP INDEX x ON nope")?
+    srv = d5.srv
+    check(fails, "bad_table_42P01", d5.ok == 0 && d5.state == "42P01")
+
+    // FTS drop
+    let ft = exec(srv, "CREATE TABLE docs (id BIGINT, body TEXT, PRIMARY KEY (id))")?
+    srv = ft.srv
+    let fi = exec(srv, "INSERT INTO docs (id, body) VALUES (1, 'hello world'), (2, 'hello baga')")?
+    srv = fi.srv
+    let fx = exec(srv, "CREATE FTS INDEX docs_fts ON docs (body)")?
+    srv = fx.srv
+    check(fails, "fts_seed", ft.ok == 1 && fi.ok == 1 && fx.ok == 1)
+    let fq = exec(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('hello')")?
+    srv = fq.srv
+    check(fails, "fts_before", fq.ok == 1 && vec_len(fq.res.rows) == 2)
+    let fd = exec(srv, "DROP INDEX docs_fts ON docs")?
+    srv = fd.srv
+    check(fails, "fts_drop", fd.ok == 1)
+    let fd2 = exec(srv, "DROP INDEX docs_fts ON docs")?
+    srv = fd2.srv
+    check(fails, "fts_drop_again_42704", fd2.ok == 0 && fd2.state == "42704")
+    let fr = exec(srv, "CREATE FTS INDEX docs_fts ON docs (body)")?
+    srv = fr.srv
+    check(fails, "fts_recreate", fr.ok == 1)
+    let fq2 = exec(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('hello')")?
+    srv = fq2.srv
+    check(fails, "fts_after_recreate", fq2.ok == 1 && vec_len(fq2.res.rows) == 2)
+
+    // HNSW drop
+    let vt = exec(srv, "CREATE TABLE items (id BIGINT, emb VECTOR(2), PRIMARY KEY (id))")?
+    srv = vt.srv
+    let vi = exec(srv, "INSERT INTO items (id, emb) VALUES (1, '[1,0]'), (2, '[0,1]')")?
+    srv = vi.srv
+    let vx = exec(srv, "CREATE INDEX items_hnsw ON items USING hnsw (emb)")?
+    srv = vx.srv
+    check(fails, "hnsw_seed", vt.ok == 1 && vi.ok == 1 && vx.ok == 1)
+    let vd = exec(srv, "DROP INDEX items_hnsw ON items")?
+    srv = vd.srv
+    check(fails, "hnsw_drop", vd.ok == 1)
+    let vd2 = exec(srv, "DROP INDEX items_hnsw ON items")?
+    srv = vd2.srv
+    check(fails, "hnsw_drop_again_42704", vd2.ok == 0 && vd2.state == "42704")
+    let vr = exec(srv, "CREATE INDEX items_hnsw ON items USING hnsw (emb)")?
+    srv = vr.srv
+    check(fails, "hnsw_recreate", vr.ok == 1)
+
+    boila_server_close(srv)?
+
+    if vec_len(fails) == 0 {
+        print("boila_drop_ix_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_drop_ix_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

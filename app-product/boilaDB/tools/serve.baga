@@ -4,6 +4,7 @@
 import "httpdbaga/http.baga"
 import "metbaga/met.baga"
 import "../api/http_sql.baga"
+import "../api/http_auth.baga"
 import "../api/http_guc.baga"
 import "../api/serve_mt.baga"
 import "../api/serve_stats.baga"
@@ -32,7 +33,9 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, guc: Map<str, str>, re
     let method = http_method(req)
     let path = http_path_only(req)
     if path == "/sql" || path == "/metrics" {
-        if boila_http_auth_ok(req)? == 0 {
+        let au = boila_mt_http_auth(pack, guc, req)?
+        guc = au.guc
+        if au.ok == 0 {
             return boila_http_auth_fail_guc(txn, sess_db, guc)
         }
     }
@@ -108,6 +111,7 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, guc: Map<str, str>, re
             return gt.r
         }
         let out = boila_mt_exec_guc(pack, txn, db, sql, guc)?
+        // keep session user across requests
         return boila_http_encode(out, sess_db, db, guc)?
     }
     return boila_http_pack(boila_seed(), txn, http_json_response(404, "{\"error\":\"not found\"}"), sess_db, guc)

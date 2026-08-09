@@ -1,0 +1,180 @@
+// boila_alter_test.baga — ALTER TABLE ADD COLUMN (nullable + short-row NULL pad).
+
+import "boilaDB/storage/databases.baga"
+import "boilaDB/sql/exec_server.baga"
+import "boilaDB/sql/plan_cache.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() {
+        return int_to_str(v.i)
+    }
+    if v.tag == boila_v_null() {
+        return "<null>"
+    }
+    return "?"
+}
+
+fn exec(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
+    return boila_server_exec(srv, "boila", sql)?
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_alter_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_alter_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    let c1 = exec(srv, "CREATE TABLE t (id BIGINT, name TEXT, PRIMARY KEY (id))")?
+    srv = c1.srv
+    let c2 = exec(srv, "INSERT INTO t (id, name) VALUES (1, 'a'), (2, 'b')")?
+    srv = c2.srv
+    check(fails, "seed", c1.ok == 1 && c2.ok == 1)
+
+    let a1 = exec(srv, "ALTER TABLE t ADD COLUMN age BIGINT")?
+    srv = a1.srv
+    check(fails, "alter_add", a1.ok == 1 && a1.kind == 22)
+
+    // short rows → NULL for new col
+    let s1 = exec(srv, "SELECT * FROM t WHERE id = 1")?
+    srv = s1.srv
+    check(fails, "select_star_ncols", s1.ok == 1 && vec_len(s1.res.cols) == 3)
+    if s1.ok == 1 && vec_len(s1.res.rows) == 1 {
+        let row = vec_get(s1.res.rows, 0)
+        check(fails, "old_row_null_pad", vec_len(row) == 3 && cell(row, 2) == "<null>")
+        check(fails, "old_row_name", cell(row, 1) == "a")
+    }
+
+    let s2 = exec(srv, "SELECT age FROM t WHERE id = 2")?
+    srv = s2.srv
+    if s2.ok == 1 && vec_len(s2.res.rows) == 1 {
+        check(fails, "proj_null", cell(vec_get(s2.res.rows, 0), 0) == "<null>")
+    } else {
+        check(fails, "proj_null", false)
+    }
+
+    // new inserts include the column
+    let i3 = exec(srv, "INSERT INTO t (id, name, age) VALUES (3, 'c', 30)")?
+    srv = i3.srv
+    check(fails, "insert_new_col", i3.ok == 1)
+    let s3 = exec(srv, "SELECT age FROM t WHERE id = 3")?
+    srv = s3.srv
+    if s3.ok == 1 && vec_len(s3.res.rows) == 1 {
+        check(fails, "new_row_age", cell(vec_get(s3.res.rows, 0), 0) == "30")
+    } else {
+        check(fails, "new_row_age", false)
+    }
+
+    // duplicate column
+    let d1 = exec(srv, "ALTER TABLE t ADD COLUMN age TEXT")?
+    srv = d1.srv
+    check(fails, "dup_col_42701", d1.ok == 0 && d1.state == "42701")
+
+    // missing table
+    let m1 = exec(srv, "ALTER TABLE nope ADD COLUMN x TEXT")?
+    srv = m1.srv
+    check(fails, "missing_42P01", m1.ok == 0 && m1.state == "42P01")
+
+    // NOT NULL rejected
+    let n1 = exec(srv, "ALTER TABLE t ADD COLUMN z TEXT NOT NULL")?
+    srv = n1.srv
+    check(fails, "not_null_reject", n1.ok == 0 && n1.state == "0A000")
+
+    // optional COLUMN keyword
+    let a2 = exec(srv, "ALTER TABLE t ADD note TEXT")?
+    srv = a2.srv
+    check(fails, "add_without_column_kw", a2.ok == 1)
+
+    // restart persists schema
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    let s4 = exec(srv2, "SELECT * FROM t WHERE id = 1")?
+    srv2 = s4.srv
+    check(fails, "restart_ncols", s4.ok == 1 && vec_len(s4.res.cols) == 4)
+    if s4.ok == 1 && vec_len(s4.res.rows) == 1 {
+        check(fails, "restart_null", cell(vec_get(s4.res.rows, 0), 2) == "<null>")
+    }
+
+    // DROP COLUMN last only
+    let dc1 = exec(srv2, "ALTER TABLE t DROP COLUMN note")?
+    srv2 = dc1.srv
+    check(fails, "drop_last", dc1.ok == 1 && dc1.kind == 22)
+    let s5 = exec(srv2, "SELECT * FROM t WHERE id = 1")?
+    srv2 = s5.srv
+    check(fails, "after_drop_ncols", s5.ok == 1 && vec_len(s5.res.cols) == 3)
+
+    let dc2 = exec(srv2, "ALTER TABLE t DROP COLUMN name")?
+    srv2 = dc2.srv
+    check(fails, "drop_non_last_0A000", dc2.ok == 0 && dc2.state == "0A000")
+
+    let dc3 = exec(srv2, "ALTER TABLE t DROP COLUMN id")?
+    srv2 = dc3.srv
+    check(fails, "drop_pk_0A000", dc3.ok == 0 && dc3.state == "0A000")
+
+    let dc4 = exec(srv2, "ALTER TABLE t DROP COLUMN nope")?
+    srv2 = dc4.srv
+    check(fails, "drop_miss_42703", dc4.ok == 0 && dc4.state == "42703")
+
+    // index blocks drop
+    let x1 = exec(srv2, "CREATE INDEX age_ix ON t (age)")?
+    srv2 = x1.srv
+    let dc5 = exec(srv2, "ALTER TABLE t DROP COLUMN age")?
+    srv2 = dc5.srv
+    check(fails, "drop_with_ix_2BP01", dc5.ok == 0 && dc5.state == "2BP01")
+    let xd = exec(srv2, "DROP INDEX age_ix ON t")?
+    srv2 = xd.srv
+    let dc6 = exec(srv2, "ALTER TABLE t DROP age")?
+    srv2 = dc6.srv
+    check(fails, "drop_after_ix", xd.ok == 1 && dc6.ok == 1)
+    let s6 = exec(srv2, "SELECT * FROM t WHERE id = 3")?
+    srv2 = s6.srv
+    check(fails, "two_cols_left", s6.ok == 1 && vec_len(s6.res.cols) == 2)
+
+    boila_server_close(srv2)?
+
+    if vec_len(fails) == 0 {
+        print("boila_alter_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_alter_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

@@ -1,0 +1,282 @@
+// exec_show.baga — SHOW TABLES | SHOW INDEX[ES] FROM t | GUC fallback.
+import "token.baga"
+import "lexer.baga"
+import "plan_cache.baga"
+import "exec_out.baga"
+import "../catalog/schema.baga"
+import "../catalog/drop.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../fts/fts.baga"
+import "../vector/hnsw_store.baga"
+import "../txn/mvcc.baga"
+import "../storage/shards.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn boila_type_name(typ: i64) -> str {
+    if typ == boila_v_bool() { return "boolean" }
+    if typ == boila_v_i64() { return "bigint" }
+    if typ == boila_v_ts() { return "timestamptz" }
+    if typ == boila_v_bytes() { return "bytea" }
+    if typ == boila_v_str() { return "text" }
+    if typ == boila_v_json() { return "jsonb" }
+    // VECTOR(n) catalog pack: 1000+dim (vector/distance.baga)
+    if typ >= 1000 {
+        return concat(concat("vector(", int_to_str(typ - 1000)), ")")
+    }
+    return concat("type_", int_to_str(typ))
+}
+
+fn boila_show_columns(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, table: str) -> BoilaSqlOut !IO !Time !Par {
+    let ct = boila_cat_by_name_txn(s, txn, table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+    }
+    let t = ct.table
+    let mut res = boila_result_empty()
+    boila_result_add_col(res, "column_name", boila_v_str())
+    boila_result_add_col(res, "data_type", boila_v_str())
+    boila_result_add_col(res, "is_nullable", boila_v_str())
+    boila_result_add_col(res, "is_primary_key", boila_v_str())
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        let c = vec_get(t.cols, i)
+        let row: Vec<BoilaVal> = vec_new()
+        vec_push(row, boila_val_str(c.name))
+        vec_push(row, boila_val_str(boila_type_name(c.typ)))
+        // all cols nullable except we don't track NOT NULL; PK still "YES" nullable flag false-ish
+        if i == t.pk_idx {
+            vec_push(row, boila_val_str("NO"))
+            vec_push(row, boila_val_str("YES"))
+        } else {
+            vec_push(row, boila_val_str("YES"))
+            vec_push(row, boila_val_str("NO"))
+        }
+        vec_push(res.rows, row)
+        i = i + 1
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
+}
+
+fn boila_bytes_after_pref(pk: bytes, pref: bytes) -> str {
+    let np = bytes_len(pref)
+    if bytes_len(pk) <= np {
+        return ""
+    }
+    return str_of_bytes(bytes_slice(pk, np, bytes_len(pk)))
+}
+
+fn boila_show_tables(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache) -> BoilaSqlOut !IO !Time !Par {
+    let mut res = boila_result_empty()
+    boila_result_add_col(res, "table_name", boila_v_str())
+    let pre = bytes_of_str("n|")
+    let ks = boila_cf_keys_raw(s, boila_cf_sys(), 1)?
+    s = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_bytes_has_prefix(pk, pre) == 1 {
+            let mut skip = 0
+            if txn.active == 1 {
+                let bix = boila_txn_find(txn, boila_cf_sys(), 1, pk)
+                if bix >= 0 && vec_get(txn.writes, bix).is_del == 1 {
+                    skip = 1
+                }
+            }
+            if skip == 0 {
+                let nm = boila_bytes_after_pref(pk, pre)
+                if nm != "" {
+                    let row: Vec<BoilaVal> = vec_new()
+                    vec_push(row, boila_val_str(nm))
+                    vec_push(res.rows, row)
+                }
+            }
+        }
+        i = i + 1
+    }
+    if txn.active == 1 {
+        let mut j: i64 = 0
+        while j < vec_len(txn.writes) {
+            let w = vec_get(txn.writes, j)
+            if w.cf == boila_cf_sys() && w.table_id == 1 && w.is_del == 0 {
+                if boila_bytes_has_prefix(w.pk, pre) == 1 {
+                    let nm = boila_bytes_after_pref(w.pk, pre)
+                    if nm != "" {
+                        let mut have = 0
+                        let mut r: i64 = 0
+                        while r < vec_len(res.rows) {
+                            let v = vec_get(vec_get(res.rows, r), 0)
+                            if v.tag == boila_v_str() && str_of_bytes(v.b) == nm {
+                                have = 1
+                            }
+                            r = r + 1
+                        }
+                        if have == 0 {
+                            let row: Vec<BoilaVal> = vec_new()
+                            vec_push(row, boila_val_str(nm))
+                            vec_push(res.rows, row)
+                        }
+                    }
+                }
+            }
+            j = j + 1
+        }
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
+}
+
+fn boila_show_push_ix(res: BoilaResult, name: str, col: str, kind: str) {
+    let row: Vec<BoilaVal> = vec_new()
+    vec_push(row, boila_val_str(name))
+    vec_push(row, boila_val_str(col))
+    vec_push(row, boila_val_str(kind))
+    vec_push(res.rows, row)
+}
+
+fn boila_show_col_name(t: BoilaTable, cix: i64) -> str {
+    if cix >= 0 && cix < vec_len(t.cols) {
+        return vec_get(t.cols, cix).name
+    }
+    return ""
+}
+
+fn boila_show_indexes(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, table: str) -> BoilaSqlOut !IO !Time !Par {
+    let ct = boila_cat_by_name_txn(s, txn, table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+    }
+    let t = ct.table
+    let mut res = boila_result_empty()
+    boila_result_add_col(res, "index_name", boila_v_str())
+    boila_result_add_col(res, "column_name", boila_v_str())
+    boila_result_add_col(res, "index_type", boila_v_str())
+    let pref = bytes_of_str(concat(concat("x|", int_to_str(t.id)), "|"))
+    let ks = boila_cf_keys_raw(s, boila_cf_sys(), 1)?
+    s = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_bytes_has_prefix(pk, pref) == 1 {
+            let nm = boila_bytes_after_pref(pk, pref)
+            let g = boila_get(s, boila_cf_sys(), 1, pk)?
+            s = g.s
+            let mut cname = ""
+            if g.found == 1 {
+                let row = boila_row_dec(g.val)
+                if vec_len(row) >= 2 {
+                    cname = boila_show_col_name(t, vec_get(row, 1).i)
+                }
+            }
+            boila_show_push_ix(res, nm, cname, "btree")
+        }
+        i = i + 1
+    }
+    let ftsl = fts_list_for_table(s, t.id)?
+    s = ftsl.s
+    i = 0
+    while i < vec_len(ftsl.defs) {
+        let d = vec_get(ftsl.defs, i)
+        boila_show_push_ix(res, d.name, boila_show_col_name(t, d.col_idx), "fts")
+        i = i + 1
+    }
+    let hnswl = hnsw_list_for_table(s, t.id)?
+    s = hnswl.s
+    i = 0
+    while i < vec_len(hnswl.defs) {
+        let d = vec_get(hnswl.defs, i)
+        boila_show_push_ix(res, d.name, boila_show_col_name(t, d.col_idx), "hnsw")
+        i = i + 1
+    }
+    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
+}
+
+fn boila_show_table_arg(lx: BoilaLex, from_ix: i64) -> str {
+    // FROM|ON|ident at from_ix; table name follows FROM/ON or is at from_ix
+    if from_ix >= vec_len(lx.toks) {
+        return ""
+    }
+    let t = vec_get(lx.toks, from_ix)
+    if tok_kw(t, "from") == 1 || tok_kw(t, "on") == 1 {
+        if from_ix + 1 < vec_len(lx.toks) && vec_get(lx.toks, from_ix + 1).kind == tok_ident() {
+            return vec_get(lx.toks, from_ix + 1).txt
+        }
+        return ""
+    }
+    if t.kind == tok_ident() {
+        return t.txt
+    }
+    return ""
+}
+
+// SHOW DATABASES — scan meta store keys "db|<name>".
+fn boila_show_databases(meta: BoilaStore, pc: BoilaPlanCache) -> BoilaSqlOut !IO !Time !Par {
+    let mut res = boila_result_empty()
+    boila_result_add_col(res, "database_name", boila_v_str())
+    let pre = bytes_of_str("db|")
+    let ks = boila_cf_keys_raw(meta, boila_cf_sys(), 1)?
+    meta = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_bytes_has_prefix(pk, pre) == 1 {
+            let nm = boila_bytes_after_pref(pk, pre)
+            if nm != "" {
+                let row: Vec<BoilaVal> = vec_new()
+                vec_push(row, boila_val_str(nm))
+                vec_push(res.rows, row)
+            }
+        }
+        i = i + 1
+    }
+    // empty txn for return shape
+    return BoilaSqlOut { s: meta, txn: boila_txn_new(), pc: pc, ok: 1, err: "", state: "", kind: 1, res: res, id: 0 }
+}
+
+fn boila_exec_show_ex(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, lx: BoilaLex, guc: Map<str, str>) -> BoilaSqlOut !IO !Time !Par {
+    if vec_len(lx.toks) > 1 && tok_kw(vec_get(lx.toks, 1), "tables") == 1 {
+        return boila_show_tables(s, txn, pc)?
+    }
+    if vec_len(lx.toks) > 1 && (tok_kw(vec_get(lx.toks, 1), "databases") == 1 || tok_kw(vec_get(lx.toks, 1), "database") == 1) {
+        // caller should use boila_show_databases(meta); fallback empty
+        return boila_sql_fail(s, txn, pc, "SHOW DATABASES — сърверно (session path)", "0A000")
+    }
+    if vec_len(lx.toks) > 1 {
+        let t1 = vec_get(lx.toks, 1)
+        if tok_kw(t1, "index") == 1 || tok_kw(t1, "indexes") == 1 {
+            let tb = boila_show_table_arg(lx, 2)
+            if tb == "" {
+                return boila_sql_fail(s, txn, pc, "SHOW INDEX FROM table", "42601")
+            }
+            return boila_show_indexes(s, txn, pc, tb)?
+        }
+        if tok_kw(t1, "columns") == 1 || tok_kw(t1, "fields") == 1 {
+            let tb = boila_show_table_arg(lx, 2)
+            if tb == "" {
+                return boila_sql_fail(s, txn, pc, "SHOW COLUMNS FROM table", "42601")
+            }
+            return boila_show_columns(s, txn, pc, tb)?
+        }
+    }
+    return boila_sql_ok(s, txn, pc, 1, boila_guc_show(guc, lx), 0)
+}
+
+// DESCRIBE table | DESC table  (MySQL-style alias of SHOW COLUMNS)
+fn boila_exec_describe(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, lx: BoilaLex) -> BoilaSqlOut !IO !Time !Par {
+    let mut i: i64 = 1
+    if vec_len(lx.toks) > 1 && tok_kw(vec_get(lx.toks, 1), "table") == 1 {
+        i = 2
+    }
+    if i >= vec_len(lx.toks) || vec_get(lx.toks, i).kind != tok_ident() {
+        return boila_sql_fail(s, txn, pc, "DESCRIBE table", "42601")
+    }
+    return boila_show_columns(s, txn, pc, vec_get(lx.toks, i).txt)?
+}
+
+fn boila_exec_show(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, lx: BoilaLex) -> BoilaSqlOut !IO !Time !Par {
+    let empty: Map<str, str> = map_new()
+    return boila_exec_show_ex(s, txn, pc, lx, empty)?
+}
