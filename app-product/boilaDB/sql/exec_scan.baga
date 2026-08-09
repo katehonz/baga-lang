@@ -1,4 +1,4 @@
-// exec_scan.baga — SELECT fetch + pipeline (P5), txn reads (P4).
+// exec_scan.baga — SELECT fetch (P5) + txn reads (P4).
 import "../storage/shards.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
@@ -252,65 +252,70 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
         }
     }
-    // range / seq + budget
-    // K3: PK sort-order bytes → sort + lb + early-stop (ordered range)
+    // K3d: secondary index range (fixed-size col); else seq
+    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 0 && sel.has_eq == 0 {
+        let mut rc = sel.lo_col
+        if sel.has_lo == 0 { rc = sel.hi_col }
+        let mut okc = 1
+        if sel.has_lo == 1 && sel.has_hi == 1 && sel.lo_col != sel.hi_col { okc = 0 }
+        if okc == 1 {
+            let cix = boila_col_idx(t, rc)
+            let ixid = boila_ix_by_col_t(t, cix)
+            if cix >= 0 && ixid >= 0 {
+                let xr = boila_ix_range(s, t, ixid, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi)?
+                s = xr.s
+                if xr.ok == 0 { return boila_fetch_fail(s, txn, xr.err, xr.state) }
+                if xr.has == 1 {
+                    let mut li: i64 = 0
+                    while li < vec_len(xr.pks) {
+                        let g = boila_txn_get(s, txn, t.id, vec_get(xr.pks, li))?
+                        s = g.s
+                        if g.found == 1 { vec_push(rows, boila_row_dec(g.row)) }
+                        li = li + 1
+                    }
+                    return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
+                }
+            }
+        }
+    }
     let bud = boila_budget_begin()?
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
     let g0 = boila_budget_gate(bud, 0, vec_len(ks.pks), 0)?
-    if g0 != "" {
-        return boila_fetch_fail(s, txn, g0, boila_budget_gate_state(g0))
-    }
+    if g0 != "" { return boila_fetch_fail(s, txn, g0, boila_budget_gate_state(g0)) }
     let pks = ks.pks
     let n = vec_len(pks)
     if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 1 {
         boila_pk_sort(pks)
         let mut ki: i64 = 0
-        if sel.has_lo == 1 {
-            ki = boila_pk_lb(pks, boila_val_enc(sel.pk_lo))
-        }
+        if sel.has_lo == 1 { ki = boila_pk_lb(pks, boila_val_enc(sel.pk_lo)) }
         let mut hi_enc = bytes_new(0)
-        if sel.has_hi == 1 {
-            hi_enc = boila_val_enc(sel.pk_hi)
-        }
+        if sel.has_hi == 1 { hi_enc = boila_val_enc(sel.pk_hi) }
         while ki < n {
             let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?
-            if ge != "" {
-                return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge))
-            }
+            if ge != "" { return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge)) }
             let pkenc = vec_get(pks, ki)
-            if sel.has_hi == 1 {
-                if boila_bytes_cmp(pkenc, hi_enc) > 0 {
-                    ki = n
-                }
-            }
+            if sel.has_hi == 1 && boila_bytes_cmp(pkenc, hi_enc) > 0 { ki = n }
             if ki < n {
                 let g = boila_txn_get(s, txn, t.id, pkenc)?
                 s = g.s
-                if g.found == 1 {
-                    vec_push(rows, boila_row_dec(g.row))
-                }
+                if g.found == 1 { vec_push(rows, boila_row_dec(g.row)) }
                 ki = ki + 1
             }
         }
         return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
-    // seq + filter for unindexed eq / non-PK range
     let mut need_f = sel.has_eq
     if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 0 { need_f = 1 }
     let mut ki: i64 = 0
     while ki < n {
         let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?
-        if ge != "" {
-            return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge))
-        }
+        if ge != "" { return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge)) }
         let g = boila_txn_get(s, txn, t.id, vec_get(pks, ki))?
         s = g.s
         if g.found == 1 {
             let row = boila_row_dec(g.row)
-            if need_f == 0 || boila_row_pass_filters(row, t, sel) == 1 {
-                vec_push(rows, row)
-            }
+            if need_f == 0 || boila_row_pass_filters(row, t, sel) == 1 { vec_push(rows, row) }
         }
         ki = ki + 1
     }
@@ -323,20 +328,14 @@ fn boila_fetch_all(s: BoilaStore, txn: BoilaTxn, t: BoilaTable) -> BoilaFetch !I
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
     let g0 = boila_budget_gate(bud, 0, vec_len(ks.pks), 0)?
-    if g0 != "" {
-        return boila_fetch_fail(s, txn, g0, boila_budget_gate_state(g0))
-    }
+    if g0 != "" { return boila_fetch_fail(s, txn, g0, boila_budget_gate_state(g0)) }
     let mut ki: i64 = 0
     while ki < vec_len(ks.pks) {
         let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?
-        if ge != "" {
-            return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge))
-        }
+        if ge != "" { return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge)) }
         let g = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
         s = g.s
-        if g.found == 1 {
-            vec_push(rows, boila_row_dec(g.row))
-        }
+        if g.found == 1 { vec_push(rows, boila_row_dec(g.row)) }
         ki = ki + 1
     }
     return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }

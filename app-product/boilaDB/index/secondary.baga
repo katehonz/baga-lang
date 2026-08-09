@@ -227,3 +227,75 @@ fn boila_ix_lookup(s: BoilaStore, t: BoilaTable, ix_id: i64, val: BoilaVal) -> B
     }
     return BoilaIxLookup { s: s, pks: pks }
 }
+
+// Fixed-width val_enc size from tag (str/bytes/json → -1, use seq filter).
+fn boila_ix_val_width(tag: i64) -> i64 {
+    if tag == boila_v_null() { return 1 }
+    if tag == boila_v_bool() { return 2 }
+    if tag == boila_v_i64() { return 9 }
+    if tag == boila_v_ts() { return 9 }
+    return 0 - 1
+}
+
+// K3d: range on secondary index (fixed-size col types only).
+// has=0 → caller should seq-filter; has=1 → pks are matches.
+struct BoilaIxRange {
+    s: BoilaStore,
+    ok: i64,
+    err: str,
+    state: str,
+    has: i64,
+    pks: Vec<bytes>
+}
+
+fn boila_ix_range(s: BoilaStore, t: BoilaTable, ix_id: i64, has_lo: i64, lo: BoilaVal, has_hi: i64, hi: BoilaVal) -> BoilaIxRange !IO !Time !Par {
+    let pks: Vec<bytes> = vec_new()
+    let mut tag: i64 = 0 - 1
+    if has_lo == 1 { tag = lo.tag }
+    if has_hi == 1 {
+        if tag >= 0 && hi.tag != tag {
+            return BoilaIxRange { s: s, ok: 0, err: "range lo/hi — различен тип", state: "42804", has: 0, pks: pks }
+        }
+        tag = hi.tag
+    }
+    let vw = boila_ix_val_width(tag)
+    if vw < 0 {
+        return BoilaIxRange { s: s, ok: 1, err: "", state: "", has: 0, pks: pks }
+    }
+    let pref = boila_enc_u32_be(ix_id)
+    let full_pref = boila_key_row(boila_cf_index(), t.id, pref)
+    let plen = bytes_len(full_pref)
+    let mut cursor: i64 = 0
+    let mut rounds: i64 = 0
+    let mut done = false
+    while done == false && rounds < 10000 {
+        let sc = boila_scan_pref(s, full_pref, cursor, 64)?
+        let mut j: i64 = 0
+        while j < vec_len(sc.keys) {
+            let k = vec_get(sc.keys, j)
+            let body = bytes_slice(k, plen, bytes_len(k))
+            if bytes_len(body) >= vw {
+                let venc = bytes_slice(body, 0, vw)
+                let pkv = boila_val_dec(venc)
+                let mut keep = true
+                if has_lo == 1 {
+                    let c = boila_val_cmp(pkv, lo)
+                    if c != 0 && c != 1 { keep = false }
+                }
+                if keep && has_hi == 1 {
+                    let c = boila_val_cmp(pkv, hi)
+                    if c != 0 && c != 0 - 1 { keep = false }
+                }
+                if keep {
+                    vec_push(pks, bytes_slice(body, vw, bytes_len(body)))
+                }
+            }
+            j = j + 1
+        }
+        cursor = sc.next
+        rounds = rounds + 1
+        s = sc.s
+        if cursor == 0 { done = true }
+    }
+    return BoilaIxRange { s: s, ok: 1, err: "", state: "", has: 1, pks: pks }
+}

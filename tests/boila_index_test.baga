@@ -67,6 +67,16 @@ fn main() -> i64 !IO !Time !Par {
     let x1 = boila_server_exec(srv, "boila", "CREATE INDEX city_ix ON p (city)")?
     srv = x1.srv
     check(fails, "create_index", x1.ok == 1 && x1.kind == 9)
+    // K3d: range on i64 secondary index
+    let cs = boila_server_exec(srv, "boila", "CREATE TABLE s (id BIGINT, n BIGINT, PRIMARY KEY (id))")?
+    srv = cs.srv
+    let is0 = boila_server_exec(srv, "boila", "INSERT INTO s (id, n) VALUES (1, 10), (2, 20), (3, 30), (4, 40)")?
+    srv = is0.srv
+    let ixn = boila_server_exec(srv, "boila", "CREATE INDEX s_n ON s (n)")?
+    srv = ixn.srv
+    let qr = boila_server_exec(srv, "boila", "SELECT id FROM s WHERE n >= 20 AND n <= 30")?
+    srv = qr.srv
+    check(fails, "ix_range", qr.ok == 1 && vec_len(qr.res.rows) == 2)
 
     let q1 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'sofia'")?
     srv = q1.srv

@@ -205,9 +205,10 @@ T = транзакции, W = wire protocol, F = FTS.
   като задължаващ при P5 (plan cache) / P6 (prepared statements).
   Числото от P1 е baseline-ът, срещу който се сравнява всяко подобрение.
 - **K3 — (FIXED) PK range sort+lb+early-stop; non-PK range post-filter.**
-  PK range: sort+lb+early-stop. Non-PK range/unindexed eq (K3b/c): seq +
-  post-filter (SELECT + DML). Residual: full key list; no secondary-index
-  range scan (eq still prefers index when present).
+  PK range: sort+lb+early-stop. Non-PK/unindexed eq: seq filter. K3d:
+  secondary index range for fixed-size types (i64/bool/ts) via
+  `boila_ix_range`. Residual: str/bytes index range still seq; txn-buffer
+  rows may miss index-range path until commit.
 - **H2 — (FIXED) HTTP go_bg + per-shard hop-less + multi-DB + live conn.**
   `BOILA_MAX_CONN` → 503/53300. mode=`mt-shard`.
 
