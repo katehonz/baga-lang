@@ -112,9 +112,8 @@ T = транзакции, W = wire protocol, F = FTS.
 - **W5 — (FIXED) Describe → ParameterDescription + RowDescription.**
   Prepared SELECT: catalog resolve cols/types; stmt → 't'+'T', portal →
   'T'; non-SELECT / JOIN/GROUP → NoData (+ empty param desc за stmt).
-- **W6 — auth е cleartext token (BOILA_TOKEN) или trust.** SCRAM не се
-  предлага от сървъра (pgbaga-клиентът го поддържа, но сървърът не го
-  иска); TLS няма (SSLRequest → 'N').
+- **W6 — auth cleartext token (BOILA_TOKEN) или trust.** W6b: `ct_eq`
+  constant-time token compare. Residual: no SCRAM; no TLS (SSLRequest→'N').
 
 ## Открити при P5
 

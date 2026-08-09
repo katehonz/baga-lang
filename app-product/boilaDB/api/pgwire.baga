@@ -1,6 +1,4 @@
-// pgwire.baga — PG wire v3 сесия (P6): startup/auth, simple query,
-// extended (Parse/Bind/Describe/Execute/Sync), prepared $1..$n (W2 AST).
-
+// pgwire.baga — PG wire v3 (P6): startup/auth, simple+extended, $N prep.
 import "pgwire_msg.baga"
 import "pgwire_enc.baga"
 import "pgwire_prep.baga"
@@ -16,6 +14,7 @@ import "std/net/tcp.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
+import "std/crypto/ct.baga"
 
 struct BoilaPgSess {
     stmts: Map<str, BoilaPgStmt>,
@@ -243,7 +242,8 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
             return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "no password" }
         }
         let pw = pgw_cstr_read(pm.body, 0)
-        if pw.s != token {
+        // W6b: constant-time compare (timing-safe token check)
+        if ct_eq(pw.s, token) == false {
             let w1 = pgw_write(fd, pgw_error("28P01", "password authentication failed"))?
             tcp_close(fd)?
             return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "bad token" }
