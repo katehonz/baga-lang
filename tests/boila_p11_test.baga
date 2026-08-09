@@ -72,6 +72,39 @@ fn main() -> i64 !IO !Time !Par {
     srv = c2.srv
     check(fails, "recreate", c2.ok == 1)
 
+    // P11-3: indexes/fts/graph cleaned — recreate same names after DROP
+    let c3 = exec1(srv, "CREATE TABLE e (id BIGINT, body TEXT, src BIGINT, dst BIGINT, PRIMARY KEY (id))")
+    srv = c3.srv
+    let ix1 = exec1(srv, "CREATE INDEX e_body ON e (body)")
+    srv = ix1.srv
+    check(fails, "seed_ix", ix1.ok == 1)
+    let f1 = exec1(srv, "CREATE FTS INDEX e_fts ON e (body)")
+    srv = f1.srv
+    check(fails, "seed_fts", f1.ok == 1)
+    let g1 = exec1(srv, "CREATE GRAPH e_g ON e (src, dst)")
+    srv = g1.srv
+    check(fails, "seed_graph", g1.ok == 1)
+    let i3 = exec1(srv, "INSERT INTO e (id, body, src, dst) VALUES (1, 'hello world', 1, 2)")
+    srv = i3.srv
+    let dr4 = exec1(srv, "DROP TABLE e")
+    srv = dr4.srv
+    check(fails, "drop_with_mods", dr4.ok == 1)
+    let c4 = exec1(srv, "CREATE TABLE e (id BIGINT, body TEXT, src BIGINT, dst BIGINT, PRIMARY KEY (id))")
+    srv = c4.srv
+    check(fails, "recreate_e", c4.ok == 1)
+    let ix2 = exec1(srv, "CREATE INDEX e_body ON e (body)")
+    srv = ix2.srv
+    check(fails, "recreate_ix", ix2.ok == 1)
+    let f2 = exec1(srv, "CREATE FTS INDEX e_fts ON e (body)")
+    srv = f2.srv
+    check(fails, "recreate_fts", f2.ok == 1)
+    let g2 = exec1(srv, "CREATE GRAPH e_g ON e (src, dst)")
+    srv = g2.srv
+    check(fails, "recreate_graph", g2.ok == 1)
+    let dr5 = exec1(srv, "DROP TABLE e")
+    srv = dr5.srv
+    check(fails, "drop_e_clean", dr5.ok == 1)
+
     // budget constants present
     check(fails, "budget_scan_pos", boila_budget_max_scan() > 0)
     check(fails, "budget_rows_pos", boila_budget_max_rows() > 0)

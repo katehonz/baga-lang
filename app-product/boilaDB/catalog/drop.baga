@@ -1,0 +1,107 @@
+// drop.baga — full DROP TABLE wipe (P11-3).
+// CFs data/index/fts/vec/graph + modality catalog lists/names/stats.
+
+import "schema.baga"
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../fts/fts.baga"
+import "../fts/fts_doc.baga"
+import "../vector/hnsw_store.baga"
+import "../graph/adjacency.baga"
+import "../ts/retention.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn boila_bytes_has_prefix(pk: bytes, pre: bytes) -> i64 {
+    if bytes_len(pk) < bytes_len(pre) {
+        return 0
+    }
+    let mut i: i64 = 0
+    while i < bytes_len(pre) {
+        if bytes_at(pk, i) != bytes_at(pre, i) {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// Delete sys (table_id=1) keys whose pk starts with prefix.
+fn boila_sys_prefix_wipe(s: BoilaStore, prefix: str) -> BoilaStore !IO !Time !Par {
+    let pre = bytes_of_str(prefix)
+    let ks = boila_cf_keys_raw(s, boila_cf_sys(), 1)?
+    s = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        let pk = vec_get(ks.pks, i)
+        if boila_bytes_has_prefix(pk, pre) == 1 {
+            s = boila_del(s, boila_cf_sys(), 1, pk)?
+        }
+        i = i + 1
+    }
+    return s
+}
+
+fn boila_table_drop(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par {
+    let ct = boila_cat_by_name(s, name)?
+    s = ct.s
+    if ct.ok == 0 {
+        return ct
+    }
+    let t = ct.table
+    let tid = t.id
+
+    // 1) modality CF payloads (by table_id)
+    s = boila_cf_wipe(s, boila_cf_data(), tid)?
+    s = boila_cf_wipe(s, boila_cf_index(), tid)?
+    s = boila_cf_wipe(s, boila_cf_fts(), tid)?
+    s = boila_cf_wipe(s, boila_cf_vec(), tid)?
+    s = boila_cf_wipe(s, boila_cf_graph(), tid)?
+
+    // 2) FTS catalog: f|<tid>|<name>, fs|<id>, fl|<tid>
+    let ftsl = fts_list_for_table(s, tid)?
+    s = ftsl.s
+    let mut fi: i64 = 0
+    while fi < vec_len(ftsl.defs) {
+        let d = vec_get(ftsl.defs, fi)
+        s = boila_del(s, boila_cf_sys(), 1, fts_cat_pk(tid, d.name))?
+        s = boila_del(s, boila_cf_sys(), 1, fts_stats_pk(d.id))?
+        fi = fi + 1
+    }
+    s = boila_del(s, boila_cf_sys(), 1, fts_list_pk(tid))?
+
+    // 3) HNSW catalog: vh|<tid>|<name>, vm|<id>, vl|<tid>
+    let hnswl = hnsw_list_for_table(s, tid)?
+    s = hnswl.s
+    let mut hi: i64 = 0
+    while hi < vec_len(hnswl.defs) {
+        let d = vec_get(hnswl.defs, hi)
+        s = boila_del(s, boila_cf_sys(), 1, hnsw_cat_pk(tid, d.name))?
+        s = boila_del(s, boila_cf_sys(), 1, hnsw_vm_pk(d.id))?
+        hi = hi + 1
+    }
+    s = boila_del(s, boila_cf_sys(), 1, hnsw_list_pk(tid))?
+
+    // 4) Graph catalog: gh|<tid>|<name>, gl|<tid>
+    let grpl = graph_list_for_table(s, tid)?
+    s = grpl.s
+    let mut gi: i64 = 0
+    while gi < vec_len(grpl.defs) {
+        let d = vec_get(grpl.defs, gi)
+        s = boila_del(s, boila_cf_sys(), 1, graph_cat_pk(tid, d.name))?
+        gi = gi + 1
+    }
+    s = boila_del(s, boila_cf_sys(), 1, graph_list_pk(tid))?
+
+    // 5) secondary name cats x|<tid>|* (names not in schema row)
+    s = boila_sys_prefix_wipe(s, concat(concat("x|", int_to_str(tid)), "|"))?
+
+    // 6) table catalog + ttl
+    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
+    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_schema(tid))?
+    s = boila_ttl_put(s, tid, 0)?
+
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t, id: tid }
+}

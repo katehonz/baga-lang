@@ -180,44 +180,19 @@ fn boila_cat_by_name(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par {
     return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: BoilaTable { id: id, name: name, cols: cols, pk_idx: e1.i, ixs: ixs, ttl_sec: tg.ttl_sec }, id: id }
 }
 
-// DROP TABLE (P11): маха catalog + data/index редове (best-effort scan).
-fn boila_cat_drop(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par {
-    let ct = boila_cat_by_name(s, name)?
-    s = ct.s
-    if ct.ok == 0 {
-        return ct
-    }
-    let t = ct.table
-    // data rows
-    let ks = boila_txn_keys_raw(s, t.id)?
-    s = ks.s
-    let mut i: i64 = 0
-    while i < vec_len(ks.pks) {
-        s = boila_del(s, boila_cf_data(), t.id, vec_get(ks.pks, i))?
-        i = i + 1
-    }
-    // catalog
-    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
-    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_schema(t.id))?
-    if t.ttl_sec > 0 {
-        s = boila_ttl_put(s, t.id, 0)?
-    }
-    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t, id: t.id }
-}
-
-// keys without txn (direct storage) for DROP
+// keys without txn (direct storage) for DROP / CF wipe.
 struct BoilaKeysRaw {
     s: BoilaStore,
     pks: Vec<bytes>
 }
 
-fn boila_txn_keys_raw(s: BoilaStore, table_id: i64) -> BoilaKeysRaw !IO !Time !Par {
+fn boila_cf_keys_raw(s: BoilaStore, cf: i64, table_id: i64) -> BoilaKeysRaw !IO !Time !Par {
     let mut pks: Vec<bytes> = vec_new()
     let mut cursor: i64 = 0
     let mut rounds: i64 = 0
     let mut done = false
     while done == false && rounds < 20000 {
-        let sc = boila_scan(s, boila_cf_data(), table_id, cursor, 256)?
+        let sc = boila_scan(s, cf, table_id, cursor, 256)?
         let mut j: i64 = 0
         while j < vec_len(sc.keys) {
             let k = vec_get(sc.keys, j)
@@ -232,4 +207,36 @@ fn boila_txn_keys_raw(s: BoilaStore, table_id: i64) -> BoilaKeysRaw !IO !Time !P
         }
     }
     return BoilaKeysRaw { s: s, pks: pks }
+}
+
+fn boila_txn_keys_raw(s: BoilaStore, table_id: i64) -> BoilaKeysRaw !IO !Time !Par {
+    return boila_cf_keys_raw(s, boila_cf_data(), table_id)?
+}
+
+fn boila_cf_wipe(s: BoilaStore, cf: i64, table_id: i64) -> BoilaStore !IO !Time !Par {
+    let ks = boila_cf_keys_raw(s, cf, table_id)?
+    s = ks.s
+    let mut i: i64 = 0
+    while i < vec_len(ks.pks) {
+        s = boila_del(s, cf, table_id, vec_get(ks.pks, i))?
+        i = i + 1
+    }
+    return s
+}
+
+// Legacy data+name/schema only. Full wipe: catalog/drop.baga boila_table_drop.
+fn boila_cat_drop(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par {
+    let ct = boila_cat_by_name(s, name)?
+    s = ct.s
+    if ct.ok == 0 {
+        return ct
+    }
+    let t = ct.table
+    s = boila_cf_wipe(s, boila_cf_data(), t.id)?
+    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
+    s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_schema(t.id))?
+    if t.ttl_sec > 0 {
+        s = boila_ttl_put(s, t.id, 0)?
+    }
+    return BoilaCatRes { s: s, ok: 1, err: "", state: "", table: t, id: t.id }
 }

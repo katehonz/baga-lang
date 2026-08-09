@@ -12,9 +12,10 @@ T = транзакции, W = wire protocol, F = FTS.
   BoilaServer ownership + shard-owner threads.
 - **P11-2 — budget е max_scan/max_rows, не wall deadline.** Без
   concurrent workers deadline няма кой да enforce-не mid-query.
-- **P11-3 — DROP TABLE не чисти secondary/fts/hnsw/graph CF ключове**
-  (само data + catalog name/schema). Orphan index entries harmless
-  след drop на schema; full wipe — при нужда.
+- **P11-3 — (FIXED) DROP TABLE full wipe.** `catalog/drop.baga`
+  `boila_table_drop`: wipe data/index/fts/vec/graph CFs + modality
+  catalog (f/fl/fs, vh/vl/vm, gh/gl, x|<tid>|*) + name/schema/ttl.
+  Global `m|next_*` counters untouched.
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 

@@ -27,6 +27,7 @@ import "../vector/hnsw.baga"
 import "../vector/distance.baga"
 import "../graph/adjacency.baga"
 import "../catalog/schema.baga"
+import "../catalog/drop.baga"
 import "../storage/shards.baga"
 import "../index/secondary.baga"
 import "../txn/mvcc.baga"
@@ -127,7 +128,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             if p.ok == 0 {
                 return boila_sql_fail(s, txn, pc, p.err, p.state)
             }
-            let dr = boila_cat_drop(s, p.name)?
+            let dr = boila_table_drop(s, p.name)?
             s = dr.s
             if dr.ok == 0 {
                 return boila_sql_fail(s, txn, pc, dr.err, dr.state)
