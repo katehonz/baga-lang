@@ -125,12 +125,12 @@ fn boila_exec_update(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, upd: BoilaUpd)
         while i < vec_len(t.cols) {
             let cd = vec_get(t.cols, i)
             if upd.ret_star == 1 {
-                vec_push(res.cols, cd.name)
+                boila_result_add_col(res, cd.name, cd.typ)
             } else {
                 let mut k: i64 = 0
                 while k < vec_len(pj.proj) {
                     if vec_get(pj.proj, k) == i {
-                        vec_push(res.cols, cd.name)
+                        boila_result_add_col(res, cd.name, cd.typ)
                     }
                     k = k + 1
                 }
@@ -241,12 +241,12 @@ fn boila_exec_delete(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, del: BoilaDel)
         while i < vec_len(t.cols) {
             let cd = vec_get(t.cols, i)
             if del.ret_star == 1 {
-                vec_push(res.cols, cd.name)
+                boila_result_add_col(res, cd.name, cd.typ)
             } else {
                 let mut k: i64 = 0
                 while k < vec_len(pj.proj) {
                     if vec_get(pj.proj, k) == i {
-                        vec_push(res.cols, cd.name)
+                        boila_result_add_col(res, cd.name, cd.typ)
                     }
                     k = k + 1
                 }

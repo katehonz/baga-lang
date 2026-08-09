@@ -12,14 +12,21 @@ import "ast.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
-struct BoilaResult { cols: Vec<str>, rows: Vec<Vec<BoilaVal>> }
+// tags = boila_v_* per col (W3 RowDescription OIDs on Execute).
+struct BoilaResult { cols: Vec<str>, tags: Vec<i64>, rows: Vec<Vec<BoilaVal>> }
 struct BoilaExec { s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, kind: i64, res: BoilaResult }
 struct BoilaFetch { s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, rows: Vec<Vec<BoilaVal>> }
 
 fn boila_result_empty() -> BoilaResult {
     let cols: Vec<str> = vec_new()
+    let tags: Vec<i64> = vec_new()
     let rows: Vec<Vec<BoilaVal>> = vec_new()
-    return BoilaResult { cols: cols, rows: rows }
+    return BoilaResult { cols: cols, tags: tags, rows: rows }
+}
+
+fn boila_result_add_col(res: BoilaResult, name: str, tag: i64) {
+    vec_push(res.cols, name)
+    vec_push(res.tags, tag)
 }
 fn boila_fetch_empty(s: BoilaStore, txn: BoilaTxn) -> BoilaFetch {
     let rows: Vec<Vec<BoilaVal>> = vec_new()

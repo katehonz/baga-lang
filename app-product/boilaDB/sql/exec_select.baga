@@ -104,7 +104,7 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
         let mut i: i64 = 0
         while i < vec_len(cols) {
             let cd = vec_get(cols, i)
-            vec_push(res.cols, cd.name)
+            boila_result_add_col(res, cd.name, cd.typ)
             vec_push(proj, i)
             vec_push(bivs, 0)
             i = i + 1
@@ -117,10 +117,11 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
             if ix < 0 {
                 return boila_exec_fail(s, txn, concat("колона '", concat(it.col, "' не съществува")), "42703")
             }
+            let cd = vec_get(cols, ix)
             if it.biv > 0 {
-                vec_push(res.cols, "time_bucket")
+                boila_result_add_col(res, "time_bucket", cd.typ)
             } else {
-                vec_push(res.cols, it.col)
+                boila_result_add_col(res, it.col, cd.typ)
             }
             vec_push(proj, ix)
             vec_push(bivs, it.biv)

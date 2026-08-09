@@ -70,10 +70,10 @@ fn boila_exec_with(s: BoilaStore, txn: BoilaTxn, w: BoilaWith) -> BoilaWithOut !
     s = walk.s
     txn = walk.txn
     let mut res = boila_result_empty()
-    vec_push(res.cols, "node")
-    vec_push(res.cols, "depth")
+    boila_result_add_col(res, "node", boila_v_i64())
+    boila_result_add_col(res, "depth", boila_v_i64())
     if w.mode == 3 {
-        vec_push(res.cols, "dist")
+        boila_result_add_col(res, "dist", boila_v_i64())
     }
     let mut i: i64 = 0
     while i < vec_len(walk.nodes) {

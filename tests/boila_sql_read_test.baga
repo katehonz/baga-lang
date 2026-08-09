@@ -77,6 +77,7 @@ fn main() -> i64 !IO !Time !Par {
     srv = q1.srv
     check(fails, "point_ok", q1.ok == 1 && q1.kind == 1)
     check(fails, "point_cols", vec_len(q1.res.cols) == 2 && vec_get(q1.res.cols, 0) == "id" && vec_get(q1.res.cols, 1) == "name")
+    check(fails, "point_tags", vec_len(q1.res.tags) == 2 && vec_get(q1.res.tags, 0) == boila_v_i64() && vec_get(q1.res.tags, 1) == boila_v_str())
     check(fails, "point_row", vec_len(q1.res.rows) == 1 && row_str(vec_get(q1.res.rows, 0), 0) == "7" && row_str(vec_get(q1.res.rows, 0), 1) == "sedem")
 
     // --- range + проекция ---

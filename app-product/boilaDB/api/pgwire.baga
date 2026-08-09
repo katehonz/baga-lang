@@ -96,7 +96,7 @@ fn pgw_write_out(fd: i64, srv: BoilaServer, sess: BoilaPgSess, out: BoilaSrvOut,
     }
     let mut buf = bytes_new(0)
     if out.kind == 1 || vec_len(out.res.rows) > 0 {
-        buf = bytes_concat(buf, pgw_row_desc(out.res.cols))
+        buf = bytes_concat(buf, pgw_row_desc_typed(out.res.cols, out.res.tags))
         let mut i: i64 = 0
         while i < vec_len(out.res.rows) {
             buf = bytes_concat(buf, pgw_data_row(vec_get(out.res.rows, i)))

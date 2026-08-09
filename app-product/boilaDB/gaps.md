@@ -102,10 +102,9 @@ T = транзакции, W = wire protocol, F = FTS.
   Non-SELECT / parse fail → text subst fallback. Residual: INSERT/
   UPDATE/DELETE params still text; FTS/kNN `$N` в tsquery/vector lit
   не са AST slots.
-- **W3 — (PARTIAL FIXED) typed OIDs on Describe.** `pgw_oid_of`:
-  bool=16 int8=20 text=25 bytea=17 json=114 timestamptz=1184.
-  Describe RowDescription ползва реални типове; Execute path още text
-  OID 25 (BoilaResult няма type vector). Residual: Execute OIDs.
+- **W3 — (FIXED) typed OIDs on Describe + Execute.** `BoilaResult.tags`
+  + `pgw_oid_of` (bool=16 int8=20 text=25 bytea=17 json=114 tstz=1184).
+  RowDescription на Execute ползва `pgw_row_desc_typed`.
 - **W4 — (FIXED при P11-3) DROP TABLE full wipe.** `catalog/drop.baga`
   + parse/exec; modality CF + name/schema/ttl.
 - **W5 — (FIXED) Describe → ParameterDescription + RowDescription.**
@@ -125,9 +124,8 @@ T = транзакции, W = wire protocol, F = FTS.
   pk point > index eq > seq scan; JOIN: index nested loop при индекс по
   вътрешната колона, иначе nested loop. Catalog статистики (histograms)
   и cost-based избор остават за P11 или при реална нужда.
-- **C3 — query budget (deadline + max scanned keys) не е в P5.** При
-  sync сървъра без конкурентност няма кой да го наложи смислено; идва с
-  wire/pool фазата (P6) и се тества в P11.
+- **C3 — (FIXED при P11-2) query budget.** `BoilaBudget` wall deadline +
+  max_scan/max_rows; cooperative tick.
 - **A1 — avg е целочислено деление** (sum/cnt в i64). f64 резултат чака
   f64 поддръжка в codec-а (V1).
 - **A2 — hash join няма.** P5 има nested loop + index nested loop; при
