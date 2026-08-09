@@ -199,7 +199,11 @@ fn hnsw_index_doc(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef
 }
 
 fn hnsw_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, pk: bytes) -> BoilaHnswRes !IO !Time !Par {
-    // V5: strip pk from reverse neighbor lists before dropping own lists.
+    // V5: strip reverse edges; V5b: if pk is ep, reassign to L0 neighbor.
+    let l0 = hnsw_nbrs_get(s, txn, table_id, def.id, 0, pk)?
+    s = l0.s
+    txn = l0.txn
+    let l0_nbs = l0.pks
     let mut li: i64 = 0
     while li <= 4 {
         let own = hnsw_nbrs_get(s, txn, table_id, def.id, li, pk)?
@@ -225,17 +229,20 @@ fn hnsw_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswD
     s = vm.s
     txn = vm.txn
     let mut cnt = vm.count - 1
-    if cnt < 0 {
-        cnt = 0
-    }
+    if cnt < 0 { cnt = 0 }
     let mut has = vm.has_ep
     let mut ep = vm.ep
     let mut max_lvl = vm.max_lvl
     if bytes_eq_b(ep, pk) {
-        // clear ep; next insert/search with has_ep==0 re-seeds
-        has = 0
-        ep = bytes_new(0)
-        max_lvl = 0
+        if vec_len(l0_nbs) > 0 {
+            has = 1
+            ep = vec_get(l0_nbs, 0)
+            // keep max_lvl; graph still has other nodes
+        } else {
+            has = 0
+            ep = bytes_new(0)
+            max_lvl = 0
+        }
     }
     let vm2 = hnsw_vm_put(s, txn, def.id, has, cnt, max_lvl, ep)
     return BoilaHnswRes { s: vm2.s, txn: vm2.txn, ok: 1, err: "", state: "", id: def.id }

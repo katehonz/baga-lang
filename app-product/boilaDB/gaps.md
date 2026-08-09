@@ -67,10 +67,9 @@ T = транзакции, W = wire protocol, F = FTS.
   `hnsw_warm_upper` (ep + 1-hop levels max..1) в `Map<bytes,bytes>`;
   greedy/beam ползват cache. Residual: няма process-global cross-query
   cache (invalidate при DML); cache живее за една search/index op.
-- **V5 — (FIXED) unindex strips reverse edges.** Before deleting own
-  nbr lists, remove pk from each neighbor's list at levels 0..4. Ep
-  cleared if deleted (re-seed on next insert). Residual: ep not
-  reassigned to another live node mid-unindex.
+- **V5 — (FIXED) unindex strips reverse edges + ep reassign.** Strip pk
+  from nbr lists L0..4; if deleted node was ep, reassign to an L0
+  neighbor (else clear). Residual: ep pick is first L0 nbr, not best.
 - **V6 — (FIXED) kNN + AND eq/range.** Parse приема AND; V3 pre-filter
   при indexed eq; иначе overfetch + post-filter; LIMIT = k на offlim.
 - **V7 — fixed-point ×1e6** вместо IEEE payload (V1 bit-cast липсва).
