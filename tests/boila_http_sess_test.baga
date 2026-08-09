@@ -2,6 +2,7 @@
 
 import "boilaDB/storage/databases.baga"
 import "boilaDB/api/http_sql.baga"
+import "boilaDB/api/http_auth.baga"
 import "boilaDB/api/http_guc.baga"
 import "boilaDB/sql/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
@@ -57,8 +58,6 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "pick_sess", boila_http_pick_db("alpha", r0)? == "alpha")
     let r1 = mk_req("/sql?db=beta", "x")
     check(fails, "pick_query", boila_http_pick_db("alpha", r1)? == "beta")
-    // W6c: auth ok when BOILA_TOKEN unset
-    check(fails, "auth_trust", boila_http_auth_ok(r0)? == 1)
     // H3b: cookie / header db pick
     let rc = Request {
         method: "POST", path: "/sql", version: "HTTP/1.1",
@@ -86,6 +85,11 @@ fn main() -> i64 !IO !Time !Par {
     let root = "/tmp/baga_boila_http_sess_test"
     wipe_root(root)?
     let mut srv = boila_server_open(root, 1, 8, 3, 4)?
+    // W6c: no users + no BOILA_TOKEN → trust (open)
+    let ag: Map<str, str> = map_new()
+    let au = boila_http_auth(srv, ag, mk_req("/sql", "x"))?
+    srv = au.srv
+    check(fails, "auth_trust", au.ok == 1)
     let mut txn = boila_txn_new()
     let mut sess = "boila"
 

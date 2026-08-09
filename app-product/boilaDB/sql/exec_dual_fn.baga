@@ -2,22 +2,11 @@
 import "../core/value.baga"
 import "lexer.baga"
 import "token.baga"
+import "sfn.baga"
 import "exec_dual_ops.baga"
 import "exec_out.baga"
 import "std/str/str.baga"
 import "std/time/time.baga"
-fn boila_dual_is_unary_fn(fnm: str) -> i64 {
-    if fnm == "length" || fnm == "char_length" || fnm == "character_length" || fnm == "upper" || fnm == "lower" || fnm == "trim" || fnm == "btrim" || fnm == "abs" || fnm == "reverse" || fnm == "sign" || fnm == "pg_typeof" || fnm == "quote_literal" || fnm == "quote_ident" || fnm == "quote_nullable" {
-        return 1
-    }
-    return 0
-}
-fn boila_dual_is_multi_fn(fnm: str) -> i64 {
-    if fnm == "coalesce" || fnm == "nullif" || fnm == "greatest" || fnm == "least" || fnm == "concat" || fnm == "substr" || fnm == "substring" || fnm == "strpos" || fnm == "mod" || fnm == "left" || fnm == "right" || fnm == "replace" || fnm == "repeat" || fnm == "lpad" || fnm == "rpad" || fnm == "starts_with" || fnm == "ends_with" || fnm == "generate_series" || fnm == "power" || fnm == "pow" || fnm == "pg_typeof" {
-        return 1
-    }
-    return 0
-}
 fn boila_dual_type_name(tag: i64) -> str {
     if tag == boila_v_null() { return "unknown" }
     if tag == boila_v_bool() { return "boolean" }

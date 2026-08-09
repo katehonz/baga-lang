@@ -9,6 +9,7 @@ import "../sql/parse_insert.baga"
 import "../sql/parse_dml.baga"
 import "../sql/plan_cache.baga"
 import "../sql/ast.baga"
+import "../sql/sfn.baga"
 import "../sql/exec_select.baga"
 import "../sql/exec_scan.baga"
 import "../catalog/schema.baga"
@@ -222,17 +223,36 @@ fn boila_pg_sel_meta(s: BoilaStore, sel: BoilaSel) -> BoilaPgMeta !IO !Time !Par
     let mut k: i64 = 0
     while k < vec_len(sel.items) {
         let it = vec_get(sel.items, k)
-        if it.agg > 0 {
-            vec_push(cols, it.col)
-            vec_push(tags, boila_v_i64())
-        } else {
-            let cix = boila_col_idx(t, it.col)
-            if cix < 0 {
-                return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }
+        if it.sfn != "" {
+            // Q-sfn: name + static type from the first argument
+            let mut t0: i64 = boila_v_str()
+            if vec_len(it.sfn_cols) > 0 {
+                let cn = vec_get(it.sfn_cols, 0)
+                if cn != "" {
+                    let cix0 = boila_col_idx(t, cn)
+                    if cix0 < 0 {
+                        return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }
+                    }
+                    t0 = vec_get(t.cols, cix0).typ
+                } else {
+                    t0 = vec_get(it.sfn_vals, 0).tag
+                }
             }
-            let cd = vec_get(t.cols, cix)
-            vec_push(cols, cd.name)
-            vec_push(tags, cd.typ)
+            vec_push(cols, boila_sel_item_out_name(it))
+            vec_push(tags, boila_sfn_out_type(it.sfn, t0))
+        } else {
+            if it.agg > 0 {
+                vec_push(cols, it.col)
+                vec_push(tags, boila_v_i64())
+            } else {
+                let cix = boila_col_idx(t, it.col)
+                if cix < 0 {
+                    return BoilaPgMeta { ok: 0, cols: cols, tags: tags, nparams: np, s: s }
+                }
+                let cd = vec_get(t.cols, cix)
+                vec_push(cols, cd.name)
+                vec_push(tags, cd.typ)
+            }
         }
         k = k + 1
     }

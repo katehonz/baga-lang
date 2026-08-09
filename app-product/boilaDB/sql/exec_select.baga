@@ -6,12 +6,15 @@ import "../core/value.baga"
 import "../catalog/schema.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
+import "sfn.baga"
 import "exec_scan.baga"
 import "exec_knn.baga"
 import "exec_isnull.baga"
 import "exec_agg.baga"
 import "exec_join.baga"
 import "exec_sort.baga"
+import "exec_dual_ops.baga"
+import "exec_dual_fn.baga"
 import "../ts/time_bucket.baga"
 import "std/str/str.baga"
 
@@ -108,10 +111,11 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
         }
     }
 
-    // проекция (S7: time_bucket + AS alias)
+    // проекция (S7: time_bucket + AS alias; Q-sfn: scalar fn items)
     let mut res = boila_result_empty()
     let proj: Vec<i64> = vec_new()
     let bivs: Vec<i64> = vec_new()
+    let sitems: Vec<BoilaSelItem> = vec_new()
     if sel.star == 1 {
         let mut i: i64 = 0
         while i < vec_len(cols) {
@@ -119,20 +123,52 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
             boila_result_add_col(res, cd.name, cd.typ)
             vec_push(proj, i)
             vec_push(bivs, 0)
+            vec_push(sitems, boila_sel_item_col(""))
             i = i + 1
         }
     } else {
         let mut i: i64 = 0
         while i < vec_len(sel.items) {
             let it = vec_get(sel.items, i)
-            let ix = boila_col_idx_of(cols, it.col)
-            if ix < 0 {
-                return boila_exec_fail(s, txn, concat("колона '", concat(it.col, "' не съществува")), "42703")
+            if it.sfn != "" {
+                // Q-sfn: resolve arg cols, static output type
+                let mut t0: i64 = boila_v_str()
+                let mut have_t0: i64 = 0
+                let mut a: i64 = 0
+                while a < vec_len(it.sfn_cols) {
+                    let cn = vec_get(it.sfn_cols, a)
+                    if cn != "" {
+                        let ax = boila_col_idx_of(cols, cn)
+                        if ax < 0 {
+                            return boila_exec_fail(s, txn, concat("колона '", concat(cn, "' не съществува")), "42703")
+                        }
+                        if have_t0 == 0 {
+                            t0 = vec_get(cols, ax).typ
+                            have_t0 = 1
+                        }
+                    } else {
+                        if have_t0 == 0 {
+                            t0 = vec_get(it.sfn_vals, a).tag
+                            have_t0 = 1
+                        }
+                    }
+                    a = a + 1
+                }
+                boila_result_add_col(res, boila_sel_item_out_name(it), boila_sfn_out_type(it.sfn, t0))
+                vec_push(proj, 0 - 1)
+                vec_push(bivs, 0)
+                vec_push(sitems, it)
+            } else {
+                let ix = boila_col_idx_of(cols, it.col)
+                if ix < 0 {
+                    return boila_exec_fail(s, txn, concat("колона '", concat(it.col, "' не съществува")), "42703")
+                }
+                let cd = vec_get(cols, ix)
+                boila_result_add_col(res, boila_sel_item_out_name(it), cd.typ)
+                vec_push(proj, ix)
+                vec_push(bivs, it.biv)
+                vec_push(sitems, boila_sel_item_col(""))
             }
-            let cd = vec_get(cols, ix)
-            boila_result_add_col(res, boila_sel_item_out_name(it), cd.typ)
-            vec_push(proj, ix)
-            vec_push(bivs, it.biv)
             i = i + 1
         }
     }
@@ -142,14 +178,39 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
         let out: Vec<BoilaVal> = vec_new()
         let mut j: i64 = 0
         while j < vec_len(proj) {
-            let ix = vec_get(proj, j)
+            let sit = vec_get(sitems, j)
             let mut v = boila_val_null()
-            if ix >= 0 && ix < vec_len(src) {
-                v = vec_get(src, ix)
-            }
-            let bv = vec_get(bivs, j)
-            if bv > 0 {
-                v = boila_tb_apply(v, bv)
+            if sit.sfn != "" {
+                let args: Vec<BoilaVal> = vec_new()
+                let tags: Vec<i64> = vec_new()
+                let mut a: i64 = 0
+                while a < vec_len(sit.sfn_cols) {
+                    let cn = vec_get(sit.sfn_cols, a)
+                    let mut av = vec_get(sit.sfn_vals, a)
+                    if cn != "" {
+                        let ax = boila_col_idx_of(cols, cn)
+                        if ax >= 0 && ax < vec_len(src) {
+                            av = vec_get(src, ax)
+                        }
+                    }
+                    vec_push(args, av)
+                    vec_push(tags, av.tag)
+                    a = a + 1
+                }
+                let fr = boila_sfn_call(sit.sfn, args, tags)
+                if fr.ok == 0 {
+                    return boila_exec_fail(s, txn, fr.err, fr.state)
+                }
+                v = fr.val
+            } else {
+                let ix = vec_get(proj, j)
+                if ix >= 0 && ix < vec_len(src) {
+                    v = vec_get(src, ix)
+                }
+                let bv = vec_get(bivs, j)
+                if bv > 0 {
+                    v = boila_tb_apply(v, bv)
+                }
             }
             vec_push(out, v)
             j = j + 1
@@ -188,4 +249,12 @@ fn boila_col_name_idx(names: Vec<str>, name: str) -> i64 {
         i = i + 1
     }
     return 0 - 1
+}
+
+// Q-sfn: dispatch to the dual scalar-fn machinery (shared semantics).
+fn boila_sfn_call(fnm: str, args: Vec<BoilaVal>, tags: Vec<i64>) -> BoilaDualExpr {
+    if vec_len(args) == 1 {
+        return boila_dual_call_unary(fnm, vec_get(args, 0), vec_get(tags, 0), 0)
+    }
+    return boila_dual_call_multi(fnm, args, tags, 0)
 }

@@ -3,6 +3,7 @@
 import "token.baga"
 import "lexer.baga"
 import "ast.baga"
+import "sfn.baga"
 import "../core/value.baga"
 import "../ts/time_bucket.baga"
 import "std/str/str.baga"
@@ -155,6 +156,10 @@ fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
     }
     let kind = boila_ps_agg_kind(t.txt)
     if kind == 0 {
+        // Q-sfn: scalar fn call over columns/literals in projection
+        if boila_ps_tok(l, i + 1).kind == tok_lparen() {
+            return boila_ps_sfn_item(l, t.txt, i)
+        }
         return boila_ps_item_alias(l, boila_sel_item_col(t.txt), i + 1)
     }
     // agg( ... )
@@ -182,4 +187,77 @@ fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
         k = 2   // count(col)
     }
     return boila_ps_item_alias(l, boila_sel_item_agg(k, arg.txt), i + 4)
+}
+
+// Q-sfn: fn(col|lit, …) projection item. Args are columns and literals
+// only — no nested calls, no $N; generate_series is dual-only.
+fn boila_ps_sfn_item(l: BoilaLex, fnm: str, i: i64) -> BoilaPsItem {
+    let z = boila_sel_item_col("")
+    if boila_sfn_known(fnm) == 0 {
+        return BoilaPsItem { ok: 0, item: z, pos: i, err: concat(concat("непозната функция '", fnm), "()"), state: "42883" }
+    }
+    if fnm == "generate_series" {
+        return BoilaPsItem { ok: 0, item: z, pos: i, err: "generate_series е само за dual (без FROM)", state: "0A000" }
+    }
+    let cols: Vec<str> = vec_new()
+    let vals: Vec<BoilaVal> = vec_new()
+    let mut p = i + 2
+    if boila_ps_tok(l, p).kind == tok_rparen() {
+        return BoilaPsItem { ok: 0, item: z, pos: i, err: concat(fnm, "() изисква аргументи в проекция"), state: "42883" }
+    }
+    let mut more = true
+    while more {
+        let at = boila_ps_tok(l, p)
+        if at.kind == tok_param() {
+            return BoilaPsItem { ok: 0, item: z, pos: i, err: "$N в аргумент на функция не се поддържа", state: "0A000" }
+        }
+        if at.kind == tok_ident() && tok_kw(at, "null") != 1 && tok_kw(at, "true") != 1 && tok_kw(at, "false") != 1 {
+            vec_push(cols, at.txt)
+            vec_push(vals, boila_val_null())
+            p = p + 1
+        } else {
+            let lit = boila_ps_literal(l, p)
+            if lit.ok == 0 {
+                return BoilaPsItem { ok: 0, item: z, pos: i, err: concat("очаквах колона или литерал в ", concat(fnm, "(...)")), state: "42601" }
+            }
+            vec_push(cols, "")
+            vec_push(vals, lit.v)
+            p = p + 1
+        }
+        if boila_ps_tok(l, p).kind == tok_comma() {
+            p = p + 1
+        } else {
+            more = false
+        }
+    }
+    if boila_ps_tok(l, p).kind != tok_rparen() {
+        return BoilaPsItem { ok: 0, item: z, pos: i, err: concat("очаквах ')' в ", concat(fnm, "(...)")), state: "42601" }
+    }
+    let na = vec_len(cols)
+    if boila_ps_sfn_arity(fnm, na) == 0 {
+        return BoilaPsItem { ok: 0, item: z, pos: i, err: concat(concat(concat(fnm, " — "), concat(int_to_str(na), " аргумента")), " не се поддържа"), state: "42883" }
+    }
+    return boila_ps_item_alias(l, boila_sel_item_sfn(fnm, cols, vals), p + 1)
+}
+
+// Q-sfn arity check: 1 ok, 0 wrong count.
+fn boila_ps_sfn_arity(fnm: str, n: i64) -> i64 {
+    if fnm == "nullif" || fnm == "mod" || fnm == "power" || fnm == "pow" || fnm == "strpos" || fnm == "starts_with" || fnm == "ends_with" || fnm == "left" || fnm == "right" || fnm == "repeat" {
+        if n == 2 { return 1 }
+        return 0
+    }
+    if fnm == "replace" {
+        if n == 3 { return 1 }
+        return 0
+    }
+    if fnm == "substr" || fnm == "substring" || fnm == "lpad" || fnm == "rpad" {
+        if n == 2 || n == 3 { return 1 }
+        return 0
+    }
+    if boila_dual_is_unary_fn(fnm) == 1 {
+        if n == 1 { return 1 }
+        return 0
+    }
+    if n >= 1 { return 1 }
+    return 0
 }

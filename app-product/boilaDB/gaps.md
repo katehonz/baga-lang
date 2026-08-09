@@ -60,6 +60,24 @@ T = транзакции, W = wire protocol, F = FTS.
 - **P11-20 — (FIXED) bare PG keywords in dual.** `current_user` /
   `session_user` / `user` / `current_database` / `current_schema` /
   `version` / `current_date` / `now` without `()`.
+- **P11-21 — (FIXED) scalar functions in table projections (Q-sfn).**
+  `SELECT fn(col|lit, …) FROM t` — `BoilaSelItem` sfn items (parallel
+  sfn_cols/sfn_vals args: columns + literals only); parse_common
+  `boila_ps_sfn_item` (arity at parse, unknown fn → 42883, `$N` /
+  nested calls → 0A000); exec_select evaluates via the dual call
+  machinery (`boila_sfn_call` → call_unary/call_multi); static output
+  type via `boila_sfn_out_type` (length/strpos/abs/sign/mod/power →
+  bigint, starts_with/ends_with → boolean, coalesce/nullif/greatest/
+  least → first-arg type, rest text); PG Describe metadata in
+  pgwire_prep. Name registry moved to sql/sfn.baga (single source;
+  dual path uses it too). Works with WHERE / ORDER BY alias /
+  DISTINCT / LIMIT/OFFSET / JOIN; 35-check boila_sfn_test. Residual:
+  no sfn with aggregates/GROUP BY (0A000); no nested calls or
+  arithmetic expr args; generate_series stays dual-only.
+- **P11-22 — (FIXED) boila_http_sess_test stale call.** The H3 test
+  referenced a never-landed `boila_http_auth_ok` (suite failed at
+  compile since W6c); now exercises the real `boila_http_auth(srv,
+  guc, req)` trust path.
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 
@@ -172,7 +190,7 @@ T = транзакции, W = wire protocol, F = FTS.
   session guc), AS/bare alias, multi-col. W7d: `boila_mt_exec_guc` +
   PG/HTTP pass per-conn guc into dual. Arith `+ - * /` (*/ over +-),
   `||` concat, `CAST(x AS t)` / `x::t`, unary `-`, parens. Residual:
-  no floats; `COALESCE`/`NULLIF`/`GREATEST`/`LEAST`/`CONCAT`;
+  no floats. Implemented since: `COALESCE`/`NULLIF`/`GREATEST`/`LEAST`/`CONCAT`;
   `length`/`upper`/`lower`/`trim`/`abs`/`substr`/`strpos`/`mod`/
   `left`/`right`/`reverse`/`replace`; dual cmp (`=<>…`) + searched
   `CASE [x] WHEN…THEN…ELSE…END`; dual `AND`/`OR`/`NOT`; dual

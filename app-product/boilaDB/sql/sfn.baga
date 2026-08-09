@@ -1,0 +1,43 @@
+// sfn.baga — scalar function registry (Q-sfn).
+//
+// Single source of truth for the scalar-fn name lists: the dual path
+// (exec_dual_parse) and table projection items (parse_common) both use
+// them. boila_sfn_out_type gives the static output column type of a
+// fn(col|lit, …) projection item.
+import "../core/value.baga"
+
+fn boila_dual_is_unary_fn(fnm: str) -> i64 {
+    if fnm == "length" || fnm == "char_length" || fnm == "character_length" || fnm == "upper" || fnm == "lower" || fnm == "trim" || fnm == "btrim" || fnm == "abs" || fnm == "reverse" || fnm == "sign" || fnm == "pg_typeof" || fnm == "quote_literal" || fnm == "quote_ident" || fnm == "quote_nullable" {
+        return 1
+    }
+    return 0
+}
+
+fn boila_dual_is_multi_fn(fnm: str) -> i64 {
+    if fnm == "coalesce" || fnm == "nullif" || fnm == "greatest" || fnm == "least" || fnm == "concat" || fnm == "substr" || fnm == "substring" || fnm == "strpos" || fnm == "mod" || fnm == "left" || fnm == "right" || fnm == "replace" || fnm == "repeat" || fnm == "lpad" || fnm == "rpad" || fnm == "starts_with" || fnm == "ends_with" || fnm == "generate_series" || fnm == "power" || fnm == "pow" || fnm == "pg_typeof" {
+        return 1
+    }
+    return 0
+}
+
+fn boila_sfn_known(fnm: str) -> i64 {
+    if boila_dual_is_unary_fn(fnm) == 1 {
+        return 1
+    }
+    return boila_dual_is_multi_fn(fnm)
+}
+
+// Static output type of fn(arg0, …) in a table projection.
+// t0 = tag of the first argument (column type or literal tag).
+fn boila_sfn_out_type(fnm: str, t0: i64) -> i64 {
+    if fnm == "length" || fnm == "char_length" || fnm == "character_length" || fnm == "strpos" || fnm == "abs" || fnm == "sign" || fnm == "mod" || fnm == "power" || fnm == "pow" {
+        return boila_v_i64()
+    }
+    if fnm == "starts_with" || fnm == "ends_with" {
+        return boila_v_bool()
+    }
+    if fnm == "coalesce" || fnm == "nullif" || fnm == "greatest" || fnm == "least" {
+        return t0
+    }
+    return boila_v_str()
+}
