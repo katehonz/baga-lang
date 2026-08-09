@@ -160,6 +160,7 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
                 sel.fts_col = col.txt
                 sel.fts_mode = tp.mode
                 sel.fts_terms = tp.terms
+                sel.fts_gaps = tp.gaps
                 if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more = false }
             } else {
             if op.txt == "<->" || op.txt == "<=>" || op.txt == "<#>" {

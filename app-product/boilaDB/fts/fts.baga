@@ -186,9 +186,14 @@ fn fts_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, col_name: 
     return BoilaFtsRes { s: s, txn: txn, ok: 1, err: "", state: "", id: next }
 }
 
-// --- BM25 заявка (mode 1=AND, 2=OR, 3=PHRASE) ---
+// --- BM25 заявка (mode 1=AND, 2=OR, 3=PHRASE with gaps) ---
 
 fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, terms: Vec<str>, mode: i64) -> BoilaFtsQuery !IO !Time !Par {
+    let gaps: Vec<i64> = vec_new()
+    return fts_query_gaps(s, txn, t, def, terms, mode, gaps)?
+}
+
+fn fts_query_gaps(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, terms: Vec<str>, mode: i64, gaps: Vec<i64>) -> BoilaFtsQuery !IO !Time !Par {
     let empty: Vec<bytes> = vec_new()
     if vec_len(terms) == 0 {
         return BoilaFtsQuery { s: s, txn: txn, pks: empty }
@@ -266,7 +271,7 @@ fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, term
         }
         i = i + 1
     }
-    // F5: phrase — consecutive terms in doc order
+    // F5: phrase with <N> gaps (default gap 1 = adjacent)
     if mode == 3 && vec_len(terms) > 1 {
         let kept: Vec<bytes> = vec_new()
         let mut ci: i64 = 0
@@ -274,7 +279,7 @@ fn fts_query(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaFtsDef, term
             let pk = vec_get(cand, ci)
             let dg = fts_doc_get(s, txn, t.id, pk)?
             s = dg.s
-            if fts_phrase_match(dg.terms, terms) == 1 {
+            if fts_phrase_match_gaps(dg.terms, terms, gaps) == 1 {
                 vec_push(kept, pk)
             }
             ci = ci + 1

@@ -138,6 +138,16 @@ fn main() -> i64 !IO !Time !Par {
     let qp4 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick & fox <-> dog')")
     srv = qp4.srv
     check(fails, "phrase_mix_err", qp4.ok == 0 && qp4.state == "0A000")
+    // F5 residual: <N> distance — 'quick brown fox' has fox at +2 from quick
+    let qp5 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick <2> fox')")
+    srv = qp5.srv
+    check(fails, "phrase_dist2", qp5.ok == 1 && vec_len(qp5.res.rows) == 1 && row_id(vec_get(qp5.res.rows, 0)) == "1")
+    let qp6 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick <1> fox')")
+    srv = qp6.srv
+    check(fails, "phrase_dist1_no", qp6.ok == 1 && vec_len(qp6.res.rows) == 0)
+    let qp7 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('brown <1> fox')")
+    srv = qp7.srv
+    check(fails, "phrase_dist1_yes", qp7.ok == 1 && vec_len(qp7.res.rows) == 1)
 
     // DML синхронизация: INSERT след CREATE INDEX се вижда
     let i2 = exec1(srv, "INSERT INTO docs (id, body) VALUES (6, 'quick silver')")

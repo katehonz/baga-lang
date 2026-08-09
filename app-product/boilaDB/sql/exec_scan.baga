@@ -176,7 +176,7 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             return boila_fetch_fail(s, txn, concat("колона '", concat(sel.fts_col, "' няма fts индекс")), "0A000")
         }
         let def = vec_get(fl.defs, fdi)
-        let fq = fts_query(s, txn, t, def, sel.fts_terms, sel.fts_mode)?
+        let fq = fts_query_gaps(s, txn, t, def, sel.fts_terms, sel.fts_mode, sel.fts_gaps)?
         s = fq.s
         let mut qi: i64 = 0
         while qi < vec_len(fq.pks) {

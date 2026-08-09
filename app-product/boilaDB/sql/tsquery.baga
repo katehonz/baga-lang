@@ -1,49 +1,87 @@
-// tsquery.baga — парсер за tsquery низове (P7 + F5 phrase).
-// to_tsquery: '&' AND, '|' OR, '<->' PHRASE (смесване → 0A000).
-// plainto_tsquery: всички думи AND. phraseto_tsquery: всички PHRASE.
+// tsquery.baga — to_tsquery: '&' AND, '|' OR, '<->' / '<N>' PHRASE.
+// plainto → AND; phraseto → PHRASE gaps=1. Смесване mode → 0A000.
 
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
 
 struct BoilaTsParse {
     ok: i64,
-    mode: i64,      // 1 AND, 2 OR, 3 PHRASE
+    mode: i64,          // 1 AND, 2 OR, 3 PHRASE
     terms: Vec<str>,
+    gaps: Vec<i64>,     // between terms[i] and terms[i+1]; PHRASE only
     err: str,
     state: str
+}
+
+// Parse '<N>' → N; '<->' handled separately. 0 = not a gap token.
+fn boila_ts_gap_tok(tok: str) -> i64 {
+    let n = len(tok)
+    if n < 3 { return 0 }
+    if char_at(tok, 0) != 60 || char_at(tok, n - 1) != 62 { return 0 }
+    // <->
+    if n == 3 && char_at(tok, 1) == 45 { return 1 }
+    // <digits>
+    let mut i: i64 = 1
+    let mut num: i64 = 0
+    let mut saw = false
+    while i < n - 1 {
+        let c = char_at(tok, i)
+        if c < 48 || c > 57 { return 0 }
+        num = num * 10 + (c - 48)
+        saw = true
+        i = i + 1
+    }
+    if saw == false || num < 1 { return 0 }
+    return num
 }
 
 // plain: 0=to_tsquery, 1=plainto, 2=phraseto
 fn boila_ts_parse(s: str, plain: i64) -> BoilaTsParse {
     let terms: Vec<str> = vec_new()
+    let gaps: Vec<i64> = vec_new()
     let sb = bytes_of_str(s)
     let n = bytes_len(sb)
     let mut has_and = false
     let mut has_or = false
     let mut has_ph = false
+    let mut expect_gap = false
     let mut run = bytes_new(0)
     let mut i: i64 = 0
     while i <= n {
         let mut is_sep = i == n
         if is_sep == false {
             let c = bytes_at(sb, i) & 255
-            if c == 32 || c == 9 {
-                is_sep = true
-            }
+            if c == 32 || c == 9 { is_sep = true }
         }
         if is_sep {
             if bytes_len(run) > 0 {
                 let tok = str_of_bytes(run)
                 if plain == 0 && tok == "&" {
                     has_and = true
+                    expect_gap = false
                 } else {
                     if plain == 0 && tok == "|" {
                         has_or = true
+                        expect_gap = false
                     } else {
-                        if plain == 0 && tok == "<->" {
+                        let g = boila_ts_gap_tok(tok)
+                        if plain == 0 && g > 0 {
                             has_ph = true
+                            if vec_len(terms) == 0 {
+                                return BoilaTsParse {
+                                    ok: 0, mode: 3, terms: terms, gaps: gaps,
+                                    err: "tsquery: '<N>' без ляв term", state: "42601"
+                                }
+                            }
+                            vec_push(gaps, g)
+                            expect_gap = false
                         } else {
+                            if has_ph && expect_gap && vec_len(terms) > 0 {
+                                // two terms in a row in phrase → implicit <->
+                                vec_push(gaps, 1)
+                            }
                             vec_push(terms, tok)
+                            expect_gap = true
                         }
                     }
                 }
@@ -58,6 +96,18 @@ fn boila_ts_parse(s: str, plain: i64) -> BoilaTsParse {
     }
     if plain == 2 {
         has_ph = true
+        // phraseto: gap 1 between every pair
+        let mut g: i64 = 0
+        while g + 1 < vec_len(terms) {
+            vec_push(gaps, 1)
+            g = g + 1
+        }
+    }
+    if has_ph && plain != 2 {
+        // ensure gaps len == terms-1 (fill missing with 1)
+        while vec_len(gaps) + 1 < vec_len(terms) {
+            vec_push(gaps, 1)
+        }
     }
     let mut mix = 0
     if has_and && has_or { mix = 1 }
@@ -65,12 +115,12 @@ fn boila_ts_parse(s: str, plain: i64) -> BoilaTsParse {
     if has_or && has_ph { mix = 1 }
     if mix == 1 {
         return BoilaTsParse {
-            ok: 0, mode: 1, terms: terms,
-            err: "tsquery: смесване на '&' / '|' / '<->' не се поддържа", state: "0A000"
+            ok: 0, mode: 1, terms: terms, gaps: gaps,
+            err: "tsquery: смесване на '&' / '|' / '<N>' не се поддържа", state: "0A000"
         }
     }
     let mut mode: i64 = 1
     if has_or { mode = 2 }
     if has_ph { mode = 3 }
-    return BoilaTsParse { ok: 1, mode: mode, terms: terms, err: "", state: "" }
+    return BoilaTsParse { ok: 1, mode: mode, terms: terms, gaps: gaps, err: "", state: "" }
 }

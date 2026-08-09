@@ -71,33 +71,56 @@ fn fts_tf(terms: Vec<str>, term: str) -> i64 {
     return c
 }
 
-// F5: phrase match — consecutive terms in doc order.
-fn fts_phrase_match(doc: Vec<str>, phrase: Vec<str>) -> i64 {
+// F5: phrase match with gaps (PG: a <-> b ≡ a <1> b; a <N> b → b at i+N).
+fn fts_phrase_match_gaps(doc: Vec<str>, phrase: Vec<str>, gaps: Vec<i64>) -> i64 {
     let pn = vec_len(phrase)
-    if pn == 0 {
-        return 1
-    }
+    if pn == 0 { return 1 }
     let dn = vec_len(doc)
-    if pn > dn {
+    if pn == 1 {
+        let mut i: i64 = 0
+        while i < dn {
+            if vec_get(doc, i) == vec_get(phrase, 0) { return 1 }
+            i = i + 1
+        }
         return 0
     }
     let mut i: i64 = 0
-    while i + pn <= dn {
-        let mut ok = true
-        let mut j: i64 = 0
-        while j < pn {
-            if vec_get(doc, i + j) != vec_get(phrase, j) {
-                ok = false
-                j = pn
+    while i < dn {
+        if vec_get(doc, i) == vec_get(phrase, 0) {
+            let mut pos = i
+            let mut ok = true
+            let mut j: i64 = 0
+            while j + 1 < pn {
+                let mut g: i64 = 1
+                if j < vec_len(gaps) { g = vec_get(gaps, j) }
+                if g < 1 { g = 1 }
+                pos = pos + g
+                if pos >= dn {
+                    ok = false
+                    j = pn
+                } else {
+                    if vec_get(doc, pos) != vec_get(phrase, j + 1) {
+                        ok = false
+                        j = pn
+                    }
+                }
+                j = j + 1
             }
-            j = j + 1
-        }
-        if ok {
-            return 1
+            if ok { return 1 }
         }
         i = i + 1
     }
     return 0
+}
+
+fn fts_phrase_match(doc: Vec<str>, phrase: Vec<str>) -> i64 {
+    let gaps: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i + 1 < vec_len(phrase) {
+        vec_push(gaps, 1)
+        i = i + 1
+    }
+    return fts_phrase_match_gaps(doc, phrase, gaps)
 }
 
 // Уникални terms (за индексиране без повторения).
