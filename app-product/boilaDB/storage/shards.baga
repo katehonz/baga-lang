@@ -157,9 +157,10 @@ fn boila_del(s: BoilaStore, cf: i64, table_id: i64, pk: bytes) -> BoilaStore !IO
 }
 
 fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) -> BoilaScan !IO !Time !Par {
-    let pat = boila_glob_prefix(boila_key_prefix(cf, table_id))
+    // K2: true byte-prefix (no glob) — safe when table_id bytes contain * ? [
+    let pref = boila_key_prefix(cf, table_id)
     if s.dbs_h == 0 {
-        let r = lsm_cluster_scan_kb(s.c, cursor, count, pat)?
+        let r = lsm_cluster_scan_prefix_kb(s.c, cursor, count, pref)?
         return BoilaScan {
             s: BoilaStore { c: r.c, dbs_h: 0, mus_h: 0, n: r.c.n, ok: r.c.ok },
             next: r.next, keys: r.keys
@@ -176,7 +177,7 @@ fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) ->
         let mut sc = 0
         let mut done = false
         while done == false {
-            let r = lsm_scan_kb(db, sc, 256, pat)?
+            let r = lsm_scan_prefix_kb(db, sc, 256, pref)?
             db = r.db
             let mut j: i64 = 0
             while j < vec_len(r.keys) {

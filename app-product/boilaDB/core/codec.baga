@@ -49,9 +49,7 @@ fn boila_key_row(cf: i64, table_id: i64, pk: bytes) -> bytes {
     return bytes_concat(boila_key_prefix(cf, table_id), pk)
 }
 
-// Glob за prefix scan през rocksbaga SCAN MATCH.
-// GAP (gaps.md K2): pk, съдържащ '*', може да съвпадне с чужд glob —
-// P1 planner-ът ще ползва истински prefix scan вместо glob.
+// Legacy glob helper (unused by boila_scan — K2 uses lsm_*_scan_prefix_kb).
 fn boila_glob_prefix(p: bytes) -> bytes {
     return bytes_concat(p, bytes_of_str("*"))
 }

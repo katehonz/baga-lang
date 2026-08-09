@@ -1068,6 +1068,73 @@ fn lsm_scan_rebuild_b(db: LsmDB, match_pat: bytes) -> LsmDB !IO !Time {
     return db
 }
 
+// True prefix filter (no glob meta) — boilaDB K2.
+fn lsm_scan_rebuild_prefix_b(db: LsmDB, prefix: bytes) -> LsmDB !IO !Time {
+    let r = lsm_live_map_kb(db)?
+    db = r.db
+    let all = r.keys
+    let filtered: Vec<bytes> = vec_new()
+    let np = bytes_len(prefix)
+    let mut i: i64 = 0
+    while i < vec_len(all) {
+        let k = vec_get(all, i)
+        if lsm_bytes_has_prefix(k, prefix, np) == 1 {
+            vec_push(filtered, k)
+        }
+        i = i + 1
+    }
+    if vec_len(db.scan_keys) > 0 {
+        let old = db.scan_keys
+        db.scan_keys = filtered
+        drop(old)
+    } else {
+        db.scan_keys = filtered
+    }
+    // tag prefix mode: pat = 0x01 ‖ prefix (won't collide with glob pats that
+    // are bare keys or * patterns from RESP)
+    let mut tag = bytes_new(1)
+    bytes_set(tag, 0, 1)
+    db.scan_pat = bytes_concat(tag, prefix)
+    db.scan_epoch = db.write_epoch
+    return db
+}
+
+fn lsm_scan_prefix_kb(db: LsmDB, cursor: i64, count: i64, prefix: bytes) -> LsmScanB !IO !Time {
+    let mut tag = bytes_new(1)
+    bytes_set(tag, 0, 1)
+    let pat = bytes_concat(tag, prefix)
+    if db.scan_epoch != db.write_epoch || bytes_eq_b(db.scan_pat, pat) == false {
+        db = lsm_scan_rebuild_prefix_b(db, prefix)?
+    }
+    let n = vec_len(db.scan_keys)
+    let mut cur = cursor
+    if cur < 0 { cur = 0 }
+    if cur > n { cur = n }
+    let mut cnt = count
+    if cnt < 1 { cnt = 10 }
+    if cnt > 1000 { cnt = 1000 }
+    let out: Vec<bytes> = vec_new()
+    let mut j = cur
+    let mut taken: i64 = 0
+    while j < n && taken < cnt {
+        vec_push(out, vec_get(db.scan_keys, j))
+        j = j + 1
+        taken = taken + 1
+    }
+    let mut next: i64 = j
+    if next >= n {
+        next = 0
+        if vec_len(db.scan_keys) > 0 {
+            let old = db.scan_keys
+            db.scan_keys = vec_new()
+            drop(old)
+        }
+        db.scan_epoch = 0 - 1
+        db.scan_pat = bytes_new(0)
+    }
+    return LsmScanB { db: db, next: next, keys: out }
+}
+
 // R43 + R63 + R68: SCAN page over live keys, raw-bytes pattern and results.
 // Cursor is a 0-based index into the filtered snapshot; 0 = start/end
 // (Redis-compatible). count is a page size hint (default 10, clamp 1..1000).

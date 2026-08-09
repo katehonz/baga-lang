@@ -216,9 +216,11 @@ T = транзакции, W = wire protocol, F = FTS.
 - **K1 — MVCC версионен суфикс липсва (до P4).** Ключът е
   `[cf][table][pk]`; P4 добавя суфикса тук (дизайнът е в codec.baga
   коментара). Операциите дотгава са точка/prefix — еднозначни са.
-- **K2 — prefix scan е през glob MATCH.** `boila_scan` ползва
-  `SCAN MATCH prefix*` на rocksbaga; pk, съдържащ `*`/`?`/`[`, може да
-  даде фалшиви съвпадения. P5 planner-ът минава на истински prefix scan.
+- **K2 — (FIXED) true prefix scan.** `lsm_scan_prefix_kb` /
+  `lsm_cluster_scan_prefix_kb` filter with `lsm_bytes_has_prefix` (no
+  glob). `boila_scan` uses cf|table_id byte prefix. Residual: index
+  lookup still pages full table scan then has_prefix filter (same as
+  before, but table scan itself is prefix-safe).
 - **S1 — shard-маршрутизация по hash на целия ключ** (djb2-подобен на
   rocksbaga), не само по pk. pk е доминиращо-вариращата част, така че
   разпределението е ефективно по pk — но не е гарантирано перфектно
