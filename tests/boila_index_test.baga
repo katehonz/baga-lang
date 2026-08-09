@@ -77,6 +77,16 @@ fn main() -> i64 !IO !Time !Par {
     let qr = boila_server_exec(srv, "boila", "SELECT id FROM s WHERE n >= 20 AND n <= 30")?
     srv = qr.srv
     check(fails, "ix_range", qr.ok == 1 && vec_len(qr.res.rows) == 2)
+    // K3e: uncommitted insert visible in index range
+    let b1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = b1.srv
+    let bi = boila_server_exec(srv, "boila", "INSERT INTO s (id, n) VALUES (5, 25)")?
+    srv = bi.srv
+    let qr2 = boila_server_exec(srv, "boila", "SELECT id FROM s WHERE n >= 20 AND n <= 30")?
+    srv = qr2.srv
+    check(fails, "ix_range_buf", qr2.ok == 1 && vec_len(qr2.res.rows) == 3)
+    let br = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = br.srv
 
     let q1 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = 'sofia'")?
     srv = q1.srv

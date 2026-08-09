@@ -10,6 +10,7 @@ import "../core/budget.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_sort.baga"
+import "exec_buf.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 struct BoilaResult { cols: Vec<str>, tags: Vec<i64>, rows: Vec<Vec<BoilaVal>> }
@@ -91,44 +92,6 @@ fn boila_pk_lit_ok(typ: i64, v: BoilaVal) -> i64 {
         return 1
     }
     return 0
-}
-
-// Match eq including NULL==NULL for IS NULL index merge (K6).
-fn boila_val_eq_ix(a: BoilaVal, b: BoilaVal) -> i64 {
-    if a.tag == boila_v_null() && b.tag == boila_v_null() {
-        return 1
-    }
-    if boila_val_cmp(a, b) == 0 {
-        return 1
-    }
-    return 0
-}
-
-// pk-та от buffer-а, чиято колона col_idx има стойност val (index merge).
-fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, pks: Vec<bytes>) {
-    let mut i: i64 = 0
-    while i < vec_len(txn.writes) {
-        let w = vec_get(txn.writes, i)
-        if w.cf == boila_cf_data() && w.table_id == t.id && w.is_del == 0 {
-            let row = boila_row_dec(w.row)
-            if col_idx < vec_len(row) {
-                if boila_val_eq_ix(vec_get(row, col_idx), val) == 1 {
-                    let mut dup = false
-                    let mut j: i64 = 0
-                    while j < vec_len(pks) {
-                        if bytes_eq_b(vec_get(pks, j), w.pk) {
-                            dup = true
-                        }
-                        j = j + 1
-                    }
-                    if dup == false {
-                        vec_push(pks, w.pk)
-                    }
-                }
-            }
-        }
-        i = i + 1
-    }
 }
 
 // F6/V6: post-filter eq/lo/hi on modal hits.
@@ -266,6 +229,7 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
                 s = xr.s
                 if xr.ok == 0 { return boila_fetch_fail(s, txn, xr.err, xr.state) }
                 if xr.has == 1 {
+                    boila_scan_buf_range(txn, t, cix, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi, xr.pks)
                     let mut li: i64 = 0
                     while li < vec_len(xr.pks) {
                         let g = boila_txn_get(s, txn, t.id, vec_get(xr.pks, li))?

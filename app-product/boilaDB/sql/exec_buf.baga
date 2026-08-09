@@ -1,0 +1,69 @@
+// exec_buf.baga — merge uncommitted txn rows into index lookup pk lists.
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "std/bytes/bytes.baga"
+
+// Match eq including NULL==NULL for IS NULL index merge (K6).
+fn boila_val_eq_ix(a: BoilaVal, b: BoilaVal) -> i64 {
+    if a.tag == boila_v_null() && b.tag == boila_v_null() { return 1 }
+    if boila_val_cmp(a, b) == 0 { return 1 }
+    return 0
+}
+
+fn boila_scan_buf_has_pk(pks: Vec<bytes>, pk: bytes) -> i64 {
+    let mut j: i64 = 0
+    while j < vec_len(pks) {
+        if bytes_eq_b(vec_get(pks, j), pk) { return 1 }
+        j = j + 1
+    }
+    return 0
+}
+
+fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, pks: Vec<bytes>) {
+    let mut i: i64 = 0
+    while i < vec_len(txn.writes) {
+        let w = vec_get(txn.writes, i)
+        if w.cf == boila_cf_data() && w.table_id == t.id && w.is_del == 0 {
+            let row = boila_row_dec(w.row)
+            if col_idx < vec_len(row) {
+                if boila_val_eq_ix(vec_get(row, col_idx), val) == 1 {
+                    if boila_scan_buf_has_pk(pks, w.pk) == 0 {
+                        vec_push(pks, w.pk)
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+// K3e: uncommitted rows matching col range into index-range pks.
+fn boila_scan_buf_range(txn: BoilaTxn, t: BoilaTable, col_idx: i64, has_lo: i64, lo: BoilaVal, has_hi: i64, hi: BoilaVal, pks: Vec<bytes>) {
+    let mut i: i64 = 0
+    while i < vec_len(txn.writes) {
+        let w = vec_get(txn.writes, i)
+        if w.cf == boila_cf_data() && w.table_id == t.id && w.is_del == 0 {
+            let row = boila_row_dec(w.row)
+            if col_idx >= 0 && col_idx < vec_len(row) {
+                let v = vec_get(row, col_idx)
+                let mut keep = true
+                if has_lo == 1 {
+                    let c = boila_val_cmp(v, lo)
+                    if c != 0 && c != 1 { keep = false }
+                }
+                if keep && has_hi == 1 {
+                    let c = boila_val_cmp(v, hi)
+                    if c != 0 && c != 0 - 1 { keep = false }
+                }
+                if keep && boila_scan_buf_has_pk(pks, w.pk) == 0 {
+                    vec_push(pks, w.pk)
+                }
+            }
+        }
+        i = i + 1
+    }
+}

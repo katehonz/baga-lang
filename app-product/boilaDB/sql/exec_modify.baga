@@ -15,6 +15,7 @@ import "../graph/dml.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_scan.baga"
+import "exec_buf.baga"
 import "exec_dml.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
@@ -115,6 +116,7 @@ fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, h
                     return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: xr.err, state: xr.state, pks: pks }
                 }
                 if xr.has == 1 {
+                    boila_scan_buf_range(txn, t, cix, has_lo, v_lo, has_hi, v_hi, xr.pks)
                     return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: xr.pks }
                 }
             }
