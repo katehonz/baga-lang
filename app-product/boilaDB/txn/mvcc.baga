@@ -1,17 +1,7 @@
 // mvcc.baga — транзакции (P4, едно-сесийен модел).
 //
-// Дизайн (честна ревизия на PLAN текста; gaps T2):
-//   • Писанията в транзакция се буферират в паметта (per-session).
-//   • COMMIT = един statement batch (всички puts/dels + един fsync на
-//     shard) + монотонен commit LSN; ROLLBACK изхвърля буфера.
-//   • Crash mid-transaction → нищо не е durable → чисто rollback
-//     (recovery-то е тривиално коректно; intents не са нужни).
-//   • Изолация: транзакцията вижда storage-а (непроменен по време на
-//     txn) + собствения си буфер. Multi-version ключове (<pk>|<ver lsn
-//     desc>) + commit sequencer за конкурентни сесии идват с P6 wire —
-//     в едно-сесийния режим биха били механизъм без потребител.
-//   • Грешка в заявление → rollback на целия буфер (T1 затворен за
-//     буферизираните писания).
+// T6: BOILA_TXN_MAX (default 100000) caps buffer entries; 0 = unlimited.
+// SQLSTATE 54000 program_limit_exceeded.
 //
 // Committed value формат v2: [lsn 8B BE][row enc].
 
@@ -22,6 +12,7 @@ import "../core/row.baga"
 import "../ts/retention.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
+import "std/os/os.baga"
 
 struct BoilaTxnWrite {
     cf: i64,
@@ -36,7 +27,35 @@ struct BoilaTxn {
     read_only: i64,
     snapshot_lsn: i64,
     db: str,        // базата, в която е започната (една транзакция = една база)
-    writes: Vec<BoilaTxnWrite>
+    writes: Vec<BoilaTxnWrite>,
+    max_writes: i64 // T6; 0 = unlimited
+}
+
+fn boila_txn_max_default() -> i64 {
+    return 100000
+}
+
+// Read BOILA_TXN_MAX once per BEGIN (0 = unlimited).
+fn boila_txn_max_from_env() -> i64 !IO {
+    let e = env("BOILA_TXN_MAX")
+    if e == "" {
+        return boila_txn_max_default()
+    }
+    let n = parse_int(e)
+    if n < 0 {
+        return boila_txn_max_default()
+    }
+    return n
+}
+
+fn boila_txn_buf_full(txn: BoilaTxn) -> i64 {
+    if txn.max_writes <= 0 {
+        return 0
+    }
+    if vec_len(txn.writes) >= txn.max_writes {
+        return 1
+    }
+    return 0
 }
 
 struct BoilaTxnRes {
@@ -50,7 +69,7 @@ struct BoilaTxnRes {
 
 fn boila_txn_new() -> BoilaTxn {
     let w: Vec<BoilaTxnWrite> = vec_new()
-    return BoilaTxn { active: 0, read_only: 0, snapshot_lsn: 0, db: "", writes: w }
+    return BoilaTxn { active: 0, read_only: 0, snapshot_lsn: 0, db: "", writes: w, max_writes: boila_txn_max_default() }
 }
 
 fn boila_txn_res(s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, lsn: i64) -> BoilaTxnRes {
@@ -129,6 +148,9 @@ fn boila_txn_put(s: BoilaStore, txn: BoilaTxn, cf: i64, table_id: i64, pk: bytes
     if ix >= 0 {
         vec_set(txn.writes, ix, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 0, row: row })
     } else {
+        if boila_txn_buf_full(txn) == 1 {
+            return boila_txn_res(s, txn, 0, concat("txn buffer limit ", concat(int_to_str(txn.max_writes), " (BOILA_TXN_MAX)")), "54000", 0)
+        }
         vec_push(txn.writes, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 0, row: row })
     }
     return boila_txn_res(s, txn, 1, "", "", 0)
@@ -142,6 +164,9 @@ fn boila_txn_del(s: BoilaStore, txn: BoilaTxn, cf: i64, table_id: i64, pk: bytes
     if ix >= 0 {
         vec_set(txn.writes, ix, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 1, row: bytes_new(0) })
     } else {
+        if boila_txn_buf_full(txn) == 1 {
+            return boila_txn_res(s, txn, 0, concat("txn buffer limit ", concat(int_to_str(txn.max_writes), " (BOILA_TXN_MAX)")), "54000", 0)
+        }
         vec_push(txn.writes, BoilaTxnWrite { cf: cf, table_id: table_id, pk: pk, is_del: 1, row: bytes_new(0) })
     }
     return boila_txn_res(s, txn, 1, "", "", 0)
@@ -155,13 +180,14 @@ fn boila_txn_begin(s: BoilaStore, txn: BoilaTxn, read_only: i64, db: str) -> Boi
     }
     let cur = boila_lsn_current(s)?
     let w: Vec<BoilaTxnWrite> = vec_new()
-    let t2 = BoilaTxn { active: 1, read_only: read_only, snapshot_lsn: cur.lsn, db: db, writes: w }
+    let maxw = boila_txn_max_from_env()?
+    let t2 = BoilaTxn { active: 1, read_only: read_only, snapshot_lsn: cur.lsn, db: db, writes: w, max_writes: maxw }
     return boila_txn_res(cur.s, t2, 1, "", "", cur.lsn)
 }
 
 fn boila_txn_rollback(txn: BoilaTxn) -> BoilaTxn {
     let w: Vec<BoilaTxnWrite> = vec_new()
-    return BoilaTxn { active: 0, read_only: 0, snapshot_lsn: 0, db: "", writes: w }
+    return BoilaTxn { active: 0, read_only: 0, snapshot_lsn: 0, db: "", writes: w, max_writes: txn.max_writes }
 }
 
 // COMMIT: LSN alloc + всички buffer записи в един fsync batch.

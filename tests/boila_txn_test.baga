@@ -205,6 +205,22 @@ fn main() -> i64 !IO !Time !Par {
     srv = t5.srv
     check(fails, "txn_upd_del_commit", t5.ok == 1)
 
+    // --- T6: txn buffer limit ---
+    let wempty: Vec<BoilaTxnWrite> = vec_new()
+    let mut lim = BoilaTxn { active: 1, read_only: 0, snapshot_lsn: 0, db: "boila", writes: wempty, max_writes: 2 }
+    let p1 = boila_txn_put(boila_store_empty(), lim, 1, 1, bytes_of_str("a"), bytes_of_str("1"))
+    lim = p1.txn
+    check(fails, "t6_put1", p1.ok == 1)
+    let p2 = boila_txn_put(boila_store_empty(), lim, 1, 1, bytes_of_str("b"), bytes_of_str("2"))
+    lim = p2.txn
+    check(fails, "t6_put2", p2.ok == 1)
+    let p3 = boila_txn_put(boila_store_empty(), lim, 1, 1, bytes_of_str("c"), bytes_of_str("3"))
+    lim = p3.txn
+    check(fails, "t6_limit", p3.ok == 0 && p3.state == "54000")
+    // overwrite existing key does not count as new entry
+    let p4 = boila_txn_put(boila_store_empty(), lim, 1, 1, bytes_of_str("a"), bytes_of_str("9"))
+    check(fails, "t6_overwrite_ok", p4.ok == 1)
+
     // --- restart: commit-натите данни са durable ---
     boila_server_close(srv)?
     let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?

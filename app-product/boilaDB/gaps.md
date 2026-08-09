@@ -143,8 +143,9 @@ T = транзакции, W = wire protocol, F = FTS.
 - **T5 — DDL извън транзакционния буфер.** `CREATE TABLE` пише директно
   (не се rollback-ва; в явна транзакция се отказва с 0A000).
   `CREATE INDEX` е изцяло буфериран (каталог + entries атомно).
-- **T6 — txn buffer-ът е unbounded.** Голяма транзакция трупa RAM
-  (arena-та не reclaims, Q2). Лимит на buffer записите идва с P6.
+- **T6 — (FIXED) txn buffer cap.** `BOILA_TXN_MAX` (default 100000;
+  0=unlimited) на BEGIN; put/del на нов ключ → 54000 при превишаване.
+  Overwrite на съществуващ buffer entry не брои.
 
 ## Открити при P3
 
