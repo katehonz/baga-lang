@@ -9,12 +9,16 @@ import "../core/row.baga"
 import "../txn/mvcc.baga"
 import "std/bytes/bytes.baga"
 
+// Remove first matching pk (simple graph: one edge per src→dst).
 fn graph_nbrs_remove(list: BoilaNbrList, pk: bytes) -> BoilaNbrList {
     let pks: Vec<bytes> = vec_new()
     let ws: Vec<i64> = vec_new()
+    let mut skipped = 0
     let mut i: i64 = 0
     while i < vec_len(list.pks) {
-        if bytes_eq_b(vec_get(list.pks, i), pk) == 0 {
+        if skipped == 0 && bytes_eq_b(vec_get(list.pks, i), pk) == 1 {
+            skipped = 1
+        } else {
             vec_push(pks, vec_get(list.pks, i))
             vec_push(ws, vec_get(list.ws, i))
         }

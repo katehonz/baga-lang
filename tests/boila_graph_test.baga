@@ -152,6 +152,13 @@ fn main() -> i64 !IO !Time !Par {
     let q6 = exec1(srv, "WITH RECURSIVE reach(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 3) SELECT node, depth FROM reach")
     srv = q6.srv
     check(fails, "dml_insert_bfs6", q6.ok == 1 && has_node(q6.res, 6) == 1)
+    // G2b: same src→dst upserts weight (simple graph, no multi-edge)
+    let i3 = exec1(srv, "INSERT INTO edges (id, src, dst, w) VALUES (8, 5, 6, 99)")
+    srv = i3.srv
+    check(fails, "dml_upsert_edge", i3.ok == 1)
+    let q6b = exec1(srv, "WITH RECURSIVE reach(node, depth) AS (SELECT 5, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 1) SELECT node, depth FROM reach")
+    srv = q6b.srv
+    check(fails, "dml_upsert_still6", q6b.ok == 1 && has_node(q6b.res, 6) == 1)
 
     // DELETE edge 1→2: depth-1 from 1 should not include 2 via that edge
     // (2 still reachable? only via 1→2; after delete: 1→5→6 and no 2)

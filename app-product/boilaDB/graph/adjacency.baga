@@ -181,49 +181,60 @@ fn graph_nbrs_put(s: BoilaStore, txn: BoilaTxn, table_id: i64, key: bytes, list:
     return BoilaGraphRes { s: s, txn: w.txn, ok: w.ok, err: w.err, state: w.state, id: 0 }
 }
 
+// index of pk in list, or -1
+fn graph_pk_idx(pks: Vec<bytes>, pk: bytes) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(pks) {
+        if bytes_eq_b(vec_get(pks, i), pk) {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+fn graph_pk_in(pks: Vec<bytes>, pk: bytes) -> i64 {
+    if graph_pk_idx(pks, pk) >= 0 {
+        return 1
+    }
+    return 0
+}
+
+// G2b: upsert edge — new link or update weight on same src→dst
 fn graph_add_edge(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, src: bytes, dst: bytes, w: i64) -> BoilaGraphRes !IO !Time !Par {
-    // outbound
     let og = graph_nbrs_get(s, txn, table_id, graph_out_pk(gid, src))?
     s = og.s
     txn = og.txn
     let mut ol = og.list
-    if graph_pk_in(ol.pks, dst) == 0 {
+    let ox = graph_pk_idx(ol.pks, dst)
+    if ox < 0 {
         vec_push(ol.pks, dst)
         vec_push(ol.ws, w)
-        let r = graph_nbrs_put(s, txn, table_id, graph_out_pk(gid, src), ol)
-        if r.ok == 0 {
-            return r
-        }
-        s = r.s
-        txn = r.txn
+    } else {
+        vec_set(ol.ws, ox, w)
     }
-    // inbound
+    let r = graph_nbrs_put(s, txn, table_id, graph_out_pk(gid, src), ol)
+    if r.ok == 0 {
+        return r
+    }
+    s = r.s
+    txn = r.txn
     let ig = graph_nbrs_get(s, txn, table_id, graph_in_pk(gid, dst))?
     s = ig.s
     txn = ig.txn
     let mut il = ig.list
-    if graph_pk_in(il.pks, src) == 0 {
+    let ix = graph_pk_idx(il.pks, src)
+    if ix < 0 {
         vec_push(il.pks, src)
         vec_push(il.ws, w)
-        let r2 = graph_nbrs_put(s, txn, table_id, graph_in_pk(gid, dst), il)
-        if r2.ok == 0 {
-            return r2
-        }
-        s = r2.s
-        txn = r2.txn
+    } else {
+        vec_set(il.ws, ix, w)
     }
-    return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: gid }
-}
-
-fn graph_pk_in(pks: Vec<bytes>, pk: bytes) -> i64 {
-    let mut i: i64 = 0
-    while i < vec_len(pks) {
-        if bytes_eq_b(vec_get(pks, i), pk) {
-            return 1
-        }
-        i = i + 1
+    let r2 = graph_nbrs_put(s, txn, table_id, graph_in_pk(gid, dst), il)
+    if r2.ok == 0 {
+        return r2
     }
-    return 0
+    return BoilaGraphRes { s: r2.s, txn: r2.txn, ok: 1, err: "", state: "", id: gid }
 }
 
 fn graph_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, src_col: str, dst_col: str, w_col: str) -> BoilaGraphRes !IO !Time !Par {

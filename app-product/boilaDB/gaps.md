@@ -26,10 +26,10 @@ T = транзакции, W = wire protocol, F = FTS.
 
 - **G1 — perf gate 1M edges BFS d=3 < 100 ms не е измерен.** Functional
   P10 е зелен; bulk seed bench чака (Q2 arena).
-- **G2 — (FIXED) DML sync за graph adjacency.** INSERT/UPDATE/DELETE
-  викат `graph_sync_row` (`graph/dml.baga`) — unindex old + index new
-  в txn buffer-а (моделът на FTS/HNSW). Residual: multi-edge same
-  src→dst (add skips dup; del removes one).
+- **G2 — (FIXED) DML sync + edge weight upsert.** `graph_sync_row`;
+  G2b: same src→dst updates weight (simple graph). del removes first
+  match. Residual: no true multi-edges; two data rows same endpoints
+  share one adjacency slot.
 - **G3 — WITH RECURSIVE е фиксиран pattern**, не пълен SQL CTE (без
   множествени CTE, без произволни JOIN-и в recursive leg, без `.`
   qualifiers — lexer няма `.`).
