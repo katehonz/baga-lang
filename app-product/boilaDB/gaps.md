@@ -49,8 +49,8 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S7 — (FIXED) time_bucket + [AS] alias + ORDER BY out names.** `biv` +
   `alias` on `BoilaSelItem`; parse `AS ident` or bare alias (not clause
   kw); out name via `boila_sel_item_out_name`. ORDER BY after projection
-  when needed. Residual: bucket+agg without GROUP BY still 0A000;
-  GROUP BY out name stays `time_bucket` (not SELECT alias).
+  when needed. S7d: `time_bucket`+agg without GROUP BY auto-groups.
+  Residual: GROUP BY out name stays `time_bucket` (not SELECT alias).
 - **S8 — `ttl_sec` е разширение** извън чистия PG `ttl_days` (за тестове
   и фина зърненост); документирано.
 

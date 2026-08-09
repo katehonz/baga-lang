@@ -11,7 +11,6 @@ struct BoilaParseSel { ok: i64, sel: BoilaSel, err: str, state: str }
 fn boila_ps_fail(msg: str, state: str) -> BoilaParseSel {
     return BoilaParseSel { ok: 0, sel: boila_sel_empty(), err: msg, state: state }
 }
-
 fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     let mut sel = boila_sel_empty()
     let mut i: i64 = 1
@@ -56,27 +55,18 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     // JOIN (един в P5)
     let mut jk: i64 = 0
     if tok_kw(boila_ps_tok(l, i), "inner") == 1 {
-        if tok_kw(boila_ps_tok(l, i + 1), "join") != 1 {
-            return boila_ps_fail("очаквах JOIN след INNER", "42601")
-        }
+        if tok_kw(boila_ps_tok(l, i + 1), "join") != 1 { return boila_ps_fail("очаквах JOIN след INNER", "42601") }
         jk = 1
         i = i + 2
     } else {
         if tok_kw(boila_ps_tok(l, i), "left") == 1 {
             let mut p = i + 1
-            if tok_kw(boila_ps_tok(l, p), "outer") == 1 {
-                p = p + 1
-            }
-            if tok_kw(boila_ps_tok(l, p), "join") != 1 {
-                return boila_ps_fail("очаквах JOIN след LEFT", "42601")
-            }
+            if tok_kw(boila_ps_tok(l, p), "outer") == 1 { p = p + 1 }
+            if tok_kw(boila_ps_tok(l, p), "join") != 1 { return boila_ps_fail("очаквах JOIN след LEFT", "42601") }
             jk = 2
             i = p + 1
         } else {
-            if tok_kw(boila_ps_tok(l, i), "join") == 1 {
-                jk = 1
-                i = i + 1
-            }
+            if tok_kw(boila_ps_tok(l, i), "join") == 1 { jk = 1; i = i + 1 }
         }
     }
     if jk > 0 {
@@ -373,13 +363,32 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     }
     let mut has_agg: i64 = 0
     let mut has_plain: i64 = 0
+    let mut plain_bucket: i64 = 1
+    let mut ab_iv: i64 = 0
+    let mut ab_col = ""
     let mut k: i64 = 0
     while k < vec_len(sel.items) {
-        if vec_get(sel.items, k).agg == 0 { has_plain = 1 } else { has_agg = 1 }
+        let it = vec_get(sel.items, k)
+        if it.agg == 0 {
+            has_plain = 1
+            if it.biv <= 0 { plain_bucket = 0 }
+            else {
+                if ab_iv == 0 { ab_iv = it.biv; ab_col = it.col }
+                else { if it.biv != ab_iv || it.col != ab_col { plain_bucket = 0 } }
+            }
+        } else { has_agg = 1 }
         k = k + 1
     }
+    // S7d: time_bucket + agg → auto GROUP BY time_bucket
     if has_agg == 1 && has_plain == 1 && sel.has_group == 0 {
-        return boila_ps_fail("колони и агрегати заедно изискват GROUP BY", "0A000")
+        if plain_bucket == 1 && ab_iv > 0 {
+            sel.has_group = 1
+            sel.bucket_iv = ab_iv
+            sel.bucket_col = ab_col
+            vec_push(sel.group_cols, "time_bucket")
+        } else {
+            return boila_ps_fail("колони и агрегати заедно изискват GROUP BY", "0A000")
+        }
     }
     if sel.has_having == 1 && has_agg == 0 && sel.has_group == 0 {
         return boila_ps_fail("HAVING изисква агрегат или GROUP BY", "0A000")
