@@ -76,10 +76,10 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P7
 
-- **F1 — tokenizer-ът няма Unicode case folding** (UTF-8 encoding-ът
-  е стандартът — PLAN/ARCHITECTURE; тук липсва само fold). Само ASCII
-  A-Z → a-z; кирилицата се съпоставя exact (нужен езиков builtin или
-  hand-rolled таблица). Други client encodings не се предлагат.
+- **F1 — (FIXED) ASCII + Cyrillic case fold.** Tokenizer folds A-Z and
+  Cyrillic А-Я/Ё → а-я/ё (UTF-8 2-byte). Residual: full Unicode casefold
+  (Latin-1/Greek/σ-ς, Turkic i) not tabled; non-Cyrillic multibyte kept
+  as-is.
 - **F3 — BM25 idf е линейна апроксимация** (без ln), целочислена ×1000.
   Реденето е коректно относително, но не е точно PG ts_rank.
 - **F4 — posting списъците са един запис на term (read-modify-write при

@@ -101,6 +101,18 @@ fn main() -> i64 !IO !Time !Par {
     let q4 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('бързата')")
     srv = q4.srv
     check(fails, "bg_query", q4.ok == 1 && vec_len(q4.res.rows) == 1 && row_id(vec_get(q4.res.rows, 0)) == "4")
+    // F1: Cyrillic case fold — upper query hits lower body; Ё/ё
+    let q4a = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('БЪРЗАТА')")
+    srv = q4a.srv
+    check(fails, "bg_fold_upper", q4a.ok == 1 && vec_len(q4a.res.rows) == 1 && row_id(vec_get(q4a.res.rows, 0)) == "4")
+    let q4b = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('КАФЯВА')")
+    srv = q4b.srv
+    check(fails, "bg_fold_stem", q4b.ok == 1 && ids_has(q4b.res, "4") == 1)
+    let iyo = exec1(srv, "INSERT INTO docs (id, body) VALUES (20, 'ёлка расте')")
+    srv = iyo.srv
+    let qyo = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('ЁЛКА')")
+    srv = qyo.srv
+    check(fails, "yo_fold", qyo.ok == 1 && vec_len(qyo.res.rows) == 1 && row_id(vec_get(qyo.res.rows, 0)) == "20")
     // липсваща дума
     let q5 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('lipsva')")
     srv = q5.srv

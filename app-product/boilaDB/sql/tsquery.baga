@@ -3,6 +3,7 @@
 
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
+import "../fts/tokenizer.baga"
 
 struct BoilaTsParse {
     ok: i64,
@@ -76,12 +77,17 @@ fn boila_ts_parse(s: str, plain: i64) -> BoilaTsParse {
                             vec_push(gaps, g)
                             expect_gap = false
                         } else {
-                            if has_ph && expect_gap && vec_len(terms) > 0 {
-                                // two terms in a row in phrase → implicit <->
-                                vec_push(gaps, 1)
+                            // F1: same fold as index (ASCII + Cyrillic)
+                            let folded = fts_tokenize(tok)
+                            let mut fi: i64 = 0
+                            while fi < vec_len(folded) {
+                                if has_ph && expect_gap && vec_len(terms) > 0 {
+                                    vec_push(gaps, 1)
+                                }
+                                vec_push(terms, vec_get(folded, fi))
+                                expect_gap = true
+                                fi = fi + 1
                             }
-                            vec_push(terms, tok)
-                            expect_gap = true
                         }
                     }
                 }
