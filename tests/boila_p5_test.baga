@@ -138,6 +138,18 @@ fn main() -> i64 !IO !Time !Par {
     srv = j4.srv
     check(fails, "inner_join_skip", j4.ok == 1 && vec_len(j4.res.rows) == 0)
 
+    // --- A3: WHERE on right table column (post-filter) ---
+    let jr = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code WHERE loc = 'sofia' ORDER BY id")?
+    srv = jr.srv
+    check(fails, "join_where_right", jr.ok == 1 && vec_len(jr.res.rows) >= 1 && cell(vec_get(jr.res.rows, 0), 1) == "sofia")
+    let jrl = exec(srv, "SELECT dept, loc FROM emp LEFT JOIN dep ON dept = code WHERE loc = 'sofia'")?
+    srv = jrl.srv
+    check(fails, "left_where_right", jrl.ok == 1 && vec_len(jrl.res.rows) >= 1)
+    // WHERE on right null-eliminates LEFT unmatched (SQL semantics)
+    let jrn = exec(srv, "SELECT dept, loc FROM emp LEFT JOIN dep ON dept = code WHERE loc = 'nowhere'")?
+    srv = jrn.srv
+    check(fails, "left_where_right_empty", jrn.ok == 1 && vec_len(jrn.res.rows) == 0)
+
     // --- C1: JOIN plan cache hit + same result on warm path ---
     let jsql = "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY id LIMIT 2"
     let jc1 = exec(srv, jsql)?

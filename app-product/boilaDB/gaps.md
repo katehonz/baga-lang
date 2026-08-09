@@ -127,8 +127,10 @@ T = транзакции, W = wire protocol, F = FTS.
 - **A2 — hash join няма.** P5 има nested loop + index nested loop; при
   големите joins ще трябва hash join (изисква Map<bytes, Vec<row>> —
   възможно, но недоказано в baga за големи обеми).
-- **A3 — JOIN само един на заявка**, WHERE в JOIN-ите филтрира само
-  лявата таблица; `ON` поддържа само `=`.
+- **A3 — (PARTIAL) WHERE на дясната JOIN таблица.** Eq на right col →
+  post-filter на wide rows (`boila_join_filter_right`); left eq остава
+  pushdown. LEFT+WHERE right → SQL null-elimination. Residual: само
+  един JOIN; `ON` само `=`; range WHERE още left-PK.
 
 ## Открити при P4
 
