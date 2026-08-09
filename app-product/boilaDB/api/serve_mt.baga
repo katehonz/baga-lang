@@ -1,6 +1,6 @@
 // serve_mt.baga — go_bg pack: multi-DB + per-shard hop-less + live conn.
 //
-// pack = cell2(gmu, cell2(srv_mh, cell2(dmu_mh, cell2(live_mh, pcs_mh))))
+// pack = cell2(gmu, cell2(srv, cell2(dmu, cell2(live, cell2(pcs, stats)))))
 //
 // Locking:
 //   CREATE/DROP DATABASE, USE → gmu (registry).
@@ -8,6 +8,7 @@
 //   Data SQL → brief gmu checkout; per-shard storage locks; shared
 //     per-db plan cache without pcmu (warmup makes puts rare; baga
 //     mutex owner-flag races under rapid lock/unlock fan-out).
+// Stats (M1): counters under gmu — safe multi-conn inc.
 // No !Par on BoilaStore struct.
 
 import "../storage/databases.baga"
@@ -19,19 +20,25 @@ import "../sql/plan_cache.baga"
 import "../sql/ast.baga"
 import "../catalog/schema.baga"
 import "../txn/mvcc.baga"
-import "../ts/retention.baga"
 import "std/str/str.baga"
-import "std/os/os.baga"
 
-fn boila_mt_pack(gmu: i64, srv_mh: i64, dmu_mh: i64, live_mh: i64, pcs_mh: i64) -> i64 {
-    return cell2(gmu, cell2(srv_mh, cell2(dmu_mh, cell2(live_mh, pcs_mh))))
+fn boila_mt_pack(gmu: i64, srv_mh: i64, dmu_mh: i64, live_mh: i64, pcs_mh: i64, stats_mh: i64) -> i64 {
+    return cell2(gmu, cell2(srv_mh, cell2(dmu_mh, cell2(live_mh, cell2(pcs_mh, stats_mh)))))
 }
 
 fn boila_mt_gmu(pack: i64) -> i64 { return cell2_0(pack) }
 fn boila_mt_srv_h(pack: i64) -> i64 { return cell2_0(cell2_1(pack)) }
 fn boila_mt_dmu_h(pack: i64) -> i64 { return cell2_0(cell2_1(cell2_1(pack))) }
 fn boila_mt_live_h(pack: i64) -> i64 { return cell2_0(cell2_1(cell2_1(cell2_1(pack)))) }
-fn boila_mt_pcs_h(pack: i64) -> i64 { return cell2_1(cell2_1(cell2_1(cell2_1(pack)))) }
+fn boila_mt_pcs_h(pack: i64) -> i64 { return cell2_0(cell2_1(cell2_1(cell2_1(cell2_1(pack))))) }
+fn boila_mt_stats_h(pack: i64) -> i64 { return cell2_1(cell2_1(cell2_1(cell2_1(cell2_1(pack))))) }
+
+// stats map keys
+fn boila_st_sql() -> i64 { return 0 }
+fn boila_st_sql_ok() -> i64 { return 1 }
+fn boila_st_sql_err() -> i64 { return 2 }
+fn boila_st_http() -> i64 { return 3 }
+fn boila_st_pg() -> i64 { return 4 }
 
 fn boila_mt_seed_srv() -> BoilaServer {
     let names: Vec<str> = vec_new()
@@ -55,7 +62,41 @@ fn boila_mt_new(srv: BoilaServer, max_conn: i64) -> i64 !Par {
     }
     map_set(live, 1, mc)
     let pcs: Map<str, BoilaPlanCache> = map_new()
-    return boila_mt_pack(mutex_new(), map_h(sm), map_h(dm), map_h(live), map_h(pcs))
+    let st: Map<i64, i64> = map_new()
+    map_set(st, boila_st_sql(), 0)
+    map_set(st, boila_st_sql_ok(), 0)
+    map_set(st, boila_st_sql_err(), 0)
+    map_set(st, boila_st_http(), 0)
+    map_set(st, boila_st_pg(), 0)
+    return boila_mt_pack(mutex_new(), map_h(sm), map_h(dm), map_h(live), map_h(pcs), map_h(st))
+}
+
+fn boila_mt_stat_inc(pack: i64, key: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let st: Map<i64, i64> = h_map(boila_mt_stats_h(pack))
+    let mut n: i64 = 0
+    if map_has(st, key) == 1 { n = map_get(st, key) }
+    map_set(st, key, n + 1)
+    mutex_unlock(gmu)
+    return 0
+}
+
+fn boila_mt_stat_get(pack: i64, key: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let st: Map<i64, i64> = h_map(boila_mt_stats_h(pack))
+    let mut n: i64 = 0
+    if map_has(st, key) == 1 { n = map_get(st, key) }
+    mutex_unlock(gmu)
+    return n
+}
+
+fn boila_mt_note_sql(pack: i64, ok: i64) -> i64 !Par {
+    boila_mt_stat_inc(pack, boila_st_sql())?
+    if ok == 1 { boila_mt_stat_inc(pack, boila_st_sql_ok())? }
+    else { boila_mt_stat_inc(pack, boila_st_sql_err())? }
+    return 0
 }
 
 fn boila_mt_try_conn(pack: i64) -> i64 !Par {
@@ -175,6 +216,7 @@ fn boila_mt_exec_reg(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut
     let out = boila_server_exec_tx(map_get(m, 0), txn, db, sql)?
     map_set(m, 0, out.srv)
     mutex_unlock(gmu)
+    boila_mt_note_sql(pack, out.ok)?
     return out
 }
 
@@ -246,6 +288,7 @@ fn boila_mt_exec_sel(pack: i64, txn: BoilaTxn, db: str, sel: BoilaSel) -> BoilaS
     }
     let ex = boila_exec_select(s, txn, ct.table, sel)?
     boila_mt_checkin(pack, db, ex.s)?
+    boila_mt_note_sql(pack, ex.ok)?
     return BoilaSrvOut {
         srv: boila_mt_seed_srv(), txn: ex.txn, ok: ex.ok, err: ex.err,
         state: ex.state, kind: 1, res: ex.res, id: 0, db: db
@@ -285,6 +328,7 @@ fn boila_mt_exec(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO
         mutex_unlock(dmu)
     }
 
+    boila_mt_note_sql(pack, out.ok)?
     return BoilaSrvOut {
         srv: boila_mt_seed_srv(), txn: out.txn, ok: out.ok, err: out.err,
         state: out.state, kind: out.kind, res: out.res, id: out.id, db: db
@@ -307,64 +351,4 @@ fn boila_mt_max_db(pack: i64) -> i64 !Par {
     let n = map_get(m, 0).max_db
     mutex_unlock(gmu)
     return n
-}
-
-// S6: flush all open DBs (rocksbaga lazy TTL drops on flush).
-fn boila_mt_sweep_once(pack: i64) -> i64 !IO !Time !Par {
-    let gmu = boila_mt_gmu(pack)
-    mutex_lock(gmu)
-    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
-    let srv = map_get(m, 0)
-    let names: Vec<str> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(srv.names) {
-        vec_push(names, vec_get(srv.names, i))
-        i = i + 1
-    }
-    mutex_unlock(gmu)
-    i = 0
-    while i < vec_len(names) {
-        let db = vec_get(names, i)
-        let g = boila_mt_checkout(pack, db)?
-        if g.ok == 1 {
-            let s2 = boila_ts_sweep(g.store)?
-            boila_mt_checkin(pack, db, s2)?
-        }
-        i = i + 1
-    }
-    return 0
-}
-
-fn boila_sweep_ms() -> i64 !IO {
-    let e = env("BOILA_SWEEP_MS")
-    if e == "" {
-        return 5000
-    }
-    let n = parse_int(e)
-    if n < 0 {
-        return 5000
-    }
-    return n
-}
-
-// Background loop: sleep BOILA_SWEEP_MS (0 = exit / disabled).
-fn boila_ttl_sweeper(pack: i64) -> i64 !IO !Time !Par {
-    while true {
-        let ms = boila_sweep_ms()?
-        if ms <= 0 {
-            return 0
-        }
-        sleep_ms(ms)?
-        boila_mt_sweep_once(pack)?
-    }
-    return 0
-}
-
-fn boila_mt_start_sweeper(pack: i64) -> i64 !IO !Time !Par {
-    let ms = boila_sweep_ms()?
-    if ms <= 0 {
-        return 0
-    }
-    go_bg(boila_ttl_sweeper, pack)
-    return 1
 }

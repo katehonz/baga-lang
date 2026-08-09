@@ -127,6 +127,7 @@ fn boila_mt_exec_del(pack: i64, txn: BoilaTxn, db: str, del: BoilaDel) -> BoilaS
     }
     let out = boila_pg_run_del(g.store, txn, db, del)?
     boila_mt_checkin(pack, db, out.s)?
+    boila_mt_note_sql(pack, out.ok)?
     return BoilaSrvOut {
         srv: boila_mt_seed_srv(), txn: out.txn, ok: out.ok, err: out.err,
         state: out.state, kind: out.kind, res: out.res, id: out.id, db: db
@@ -233,6 +234,7 @@ fn boila_mt_exec_ins(pack: i64, txn: BoilaTxn, db: str, ins: BoilaIns) -> BoilaS
     }
     let out = boila_pg_run_ins(g.store, txn, db, ins)?
     boila_mt_checkin(pack, db, out.s)?
+    boila_mt_note_sql(pack, out.ok)?
     return BoilaSrvOut {
         srv: boila_mt_seed_srv(), txn: out.txn, ok: out.ok, err: out.err,
         state: out.state, kind: out.kind, res: out.res, id: out.id, db: db
@@ -246,6 +248,7 @@ fn boila_mt_exec_upd(pack: i64, txn: BoilaTxn, db: str, upd: BoilaUpd) -> BoilaS
     }
     let out = boila_pg_run_upd(g.store, txn, db, upd)?
     boila_mt_checkin(pack, db, out.s)?
+    boila_mt_note_sql(pack, out.ok)?
     return BoilaSrvOut {
         srv: boila_mt_seed_srv(), txn: out.txn, ok: out.ok, err: out.err,
         state: out.state, kind: out.kind, res: out.res, id: out.id, db: db

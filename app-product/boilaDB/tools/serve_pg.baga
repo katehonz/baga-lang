@@ -2,6 +2,7 @@
 
 import "../api/pgwire.baga"
 import "../api/serve_mt.baga"
+import "../api/serve_stats.baga"
 import "../storage/databases.baga"
 import "../sql/plan_cache.baga"
 import "../txn/mvcc.baga"

@@ -5,6 +5,7 @@ import "httpdbaga/http.baga"
 import "metbaga/met.baga"
 import "../api/http_sql.baga"
 import "../api/serve_mt.baga"
+import "../api/serve_stats.baga"
 import "../storage/databases.baga"
 import "../sql/exec_server.baga"
 import "../sql/plan_cache.baga"
@@ -26,6 +27,7 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !T
     let method = http_method(req)
     let path = http_path_only(req)
     if method == "GET" && path == "/health" {
+        boila_mt_stat_inc(pack, boila_st_http())?
         let od = boila_mt_open_count(pack)?
         let md = boila_mt_max_db(pack)?
         let lv = boila_mt_live(pack)?
@@ -47,10 +49,21 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, req: Request) -> BoilaHttpSql !IO !T
         met_set(m, od, boila_mt_open_count(pack)?)
         let lc = met_gauge(m, "boila_conn_live", "live go_bg conns")
         met_set(m, lc, boila_mt_live(pack)?)
+        let st = met_counter(m, "boila_sql_total", "SQL statements executed")
+        met_set(m, st, boila_mt_stat_get(pack, boila_st_sql())?)
+        let so = met_counter(m, "boila_sql_ok", "SQL statements ok")
+        met_set(m, so, boila_mt_stat_get(pack, boila_st_sql_ok())?)
+        let se = met_counter(m, "boila_sql_err", "SQL statements error")
+        met_set(m, se, boila_mt_stat_get(pack, boila_st_sql_err())?)
+        let hr = met_counter(m, "boila_http_requests", "HTTP requests")
+        met_set(m, hr, boila_mt_stat_get(pack, boila_st_http())?)
+        let pg = met_counter(m, "boila_pg_queries", "PG wire query executions")
+        met_set(m, pg, boila_mt_stat_get(pack, boila_st_pg())?)
         let resp = http_set_header(http_response(200, met_render(m)), "Content-Type", "text/plain; version=0.0.4")
         return BoilaHttpSql { srv: boila_seed(), txn: txn, resp: resp }
     }
     if method == "POST" && path == "/sql" {
+        boila_mt_stat_inc(pack, boila_st_http())?
         let mut db = http_query_param(req, "db")
         if db == "" {
             db = "boila"

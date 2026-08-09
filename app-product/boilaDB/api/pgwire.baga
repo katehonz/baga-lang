@@ -115,17 +115,27 @@ fn pgw_write_out(fd: i64, srv: BoilaServer, sess: BoilaPgSess, out: BoilaSrvOut,
     return BoilaPgOut { srv: srv2, sess: sess2, ok: 1, sql_err: 0, err: "" }
 }
 
+fn pgw_note_pg(pack: i64) -> i64 !Par {
+    if pack != 0 {
+        boila_mt_stat_inc(pack, boila_st_pg())?
+    }
+    return 0
+}
+
 fn pgw_run_sql(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    pgw_note_pg(pack)?
     let out = pgw_exec_locked(pack, srv, sess.txn, sess.db, sql)?
     return pgw_write_out(fd, srv, sess, out, send_ready)?
 }
 
 fn pgw_run_sel(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sel: BoilaSel, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    pgw_note_pg(pack)?
     let out = pgw_exec_sel_locked(pack, srv, sess.txn, sess.db, sel)?
     return pgw_write_out(fd, srv, sess, out, send_ready)?
 }
 
 fn pgw_run_ins(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, ins: BoilaIns, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    pgw_note_pg(pack)?
     if pack == 0 {
         return pgw_write_out(fd, srv, sess, boila_server_exec_ins(srv, sess.txn, sess.db, ins)?, send_ready)?
     }
@@ -133,6 +143,7 @@ fn pgw_run_ins(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, ins: Boi
 }
 
 fn pgw_run_upd(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, upd: BoilaUpd, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    pgw_note_pg(pack)?
     if pack == 0 {
         return pgw_write_out(fd, srv, sess, boila_server_exec_upd(srv, sess.txn, sess.db, upd)?, send_ready)?
     }
@@ -140,6 +151,7 @@ fn pgw_run_upd(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, upd: Boi
 }
 
 fn pgw_run_del(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, del: BoilaDel, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    pgw_note_pg(pack)?
     if pack == 0 {
         return pgw_write_out(fd, srv, sess, boila_server_exec_del(srv, sess.txn, sess.db, del)?, send_ready)?
     }

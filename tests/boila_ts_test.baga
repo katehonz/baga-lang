@@ -7,6 +7,7 @@ import "boilaDB/core/value.baga"
 import "boilaDB/ts/retention.baga"
 import "boilaDB/storage/shards.baga"
 import "boilaDB/api/serve_mt.baga"
+import "boilaDB/api/serve_stats.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 
@@ -149,6 +150,14 @@ fn main() -> i64 !IO !Time !Par {
     let pack = boila_mt_new(srv3, 8)?
     let sw = boila_mt_sweep_once(pack)?
     check(fails, "sweep_once", sw == 0)
+    // M1: counters under gmu
+    boila_mt_note_sql(pack, 1)?
+    boila_mt_note_sql(pack, 0)?
+    boila_mt_stat_inc(pack, boila_st_http())?
+    check(fails, "stat_sql", boila_mt_stat_get(pack, boila_st_sql())? == 2)
+    check(fails, "stat_ok", boila_mt_stat_get(pack, boila_st_sql_ok())? == 1)
+    check(fails, "stat_err", boila_mt_stat_get(pack, boila_st_sql_err())? == 1)
+    check(fails, "stat_http", boila_mt_stat_get(pack, boila_st_http())? == 1)
 
     wipe_root(root)?
     if vec_len(fails) == 0 {

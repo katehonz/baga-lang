@@ -1,0 +1,65 @@
+// serve_stats.baga — S6 TTL sweeper (uses serve_mt pack).
+
+import "serve_mt.baga"
+import "../storage/databases.baga"
+import "../ts/retention.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn boila_mt_sweep_once(pack: i64) -> i64 !IO !Time !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let srv = map_get(m, 0)
+    let names: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(srv.names) {
+        vec_push(names, vec_get(srv.names, i))
+        i = i + 1
+    }
+    mutex_unlock(gmu)
+    i = 0
+    while i < vec_len(names) {
+        let db = vec_get(names, i)
+        let g = boila_mt_checkout(pack, db)?
+        if g.ok == 1 {
+            let s2 = boila_ts_sweep(g.store)?
+            boila_mt_checkin(pack, db, s2)?
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn boila_sweep_ms() -> i64 !IO {
+    let e = env("BOILA_SWEEP_MS")
+    if e == "" {
+        return 5000
+    }
+    let n = parse_int(e)
+    if n < 0 {
+        return 5000
+    }
+    return n
+}
+
+fn boila_ttl_sweeper(pack: i64) -> i64 !IO !Time !Par {
+    while true {
+        let ms = boila_sweep_ms()?
+        if ms <= 0 {
+            return 0
+        }
+        sleep_ms(ms)?
+        boila_mt_sweep_once(pack)?
+    }
+    return 0
+}
+
+fn boila_mt_start_sweeper(pack: i64) -> i64 !IO !Time !Par {
+    let ms = boila_sweep_ms()?
+    if ms <= 0 {
+        return 0
+    }
+    go_bg(boila_ttl_sweeper, pack)
+    return 1
+}
