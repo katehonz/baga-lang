@@ -131,7 +131,8 @@ T = транзакции, W = wire protocol, F = FTS.
   f64 поддръжка в codec-а (V1).
 - **A2 — (FIXED) hash join + light cost.** Index → NL; no ix → hash if
   outer > 8 else nested loop over fetched inner; empty outer short-circuit.
-  Residual: no stats/histograms; threshold fixed 8; build still full inner.
+  A2c: `BOILA_JOIN_NL_MAX` (default 8). Residual: no stats/histograms;
+  build still full inner.
 - **A3 — (FIXED) WHERE eq/range на дясната JOIN таблица.** Eq +
   `>=`/`<=` на right col → post-filter (`boila_join_filter_right` /
   `_range`); left pushdown when col is left. LEFT+WHERE right →

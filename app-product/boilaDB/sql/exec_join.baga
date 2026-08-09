@@ -12,6 +12,16 @@ import "exec_scan.baga"
 import "exec_buf.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
+import "std/os/os.baga"
+
+// A2c: outer rows ≤ this → nested loop (no ix); else hash. Default 8.
+fn boila_join_nl_max() -> i64 !IO {
+    let e = env("BOILA_JOIN_NL_MAX")
+    if e == "" { return 8 }
+    let n = parse_int(e)
+    if n < 0 { return 8 }
+    return n
+}
 
 struct BoilaJoinOut {
     s: BoilaStore,
@@ -300,7 +310,8 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         let inner = boila_fetch_all(s, txn, t2)?
         s = inner.s
         let inn = vec_len(inner.rows)
-        if on <= 8 {
+        let nlmax = boila_join_nl_max()?
+        if on <= nlmax {
             let mut oi: i64 = 0
             while oi < on {
                 let orow = vec_get(outer.rows, oi)
