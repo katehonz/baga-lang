@@ -6,10 +6,6 @@ import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../index/secondary.baga"
 import "../fts/fts.baga"
-import "../vector/hnsw.baga"
-import "../vector/hnsw_search.baga"
-import "../vector/distance.baga"
-import "../vector/hnsw_store.baga"
 import "../core/budget.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
@@ -142,53 +138,7 @@ fn boila_row_pass_filters(row: Vec<BoilaVal>, t: BoilaTable, sel: BoilaSel) -> i
 
 fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
-    // kNN + AND (V6); LIMIT=k, overfetch when filtered
-    if sel.has_knn == 1 {
-        let hl = hnsw_list_for_table(s, t.id)?
-        s = hl.s
-        let col_ix = boila_col_idx(t, sel.knn_col)
-        if col_ix < 0 {
-            return boila_fetch_fail(s, txn, concat("колона '", concat(sel.knn_col, "' не съществува")), "42703")
-        }
-        let mut hdi: i64 = 0 - 1
-        let mut k: i64 = 0
-        while k < vec_len(hl.defs) {
-            let d = vec_get(hl.defs, k)
-            if d.col_idx == col_ix { hdi = k }
-            k = k + 1
-        }
-        if hdi < 0 {
-            return boila_fetch_fail(s, txn, concat("колона '", concat(sel.knn_col, "' няма hnsw индекс")), "0A000")
-        }
-        let def = vec_get(hl.defs, hdi)
-        let qp = boila_vec_parse(sel.knn_query, def.dim)
-        if qp.ok == 0 {
-            return boila_fetch_fail(s, txn, qp.err, "42601")
-        }
-        let mut mdef = def
-        mdef.metric = sel.knn_metric
-        let mut kk = sel.limit
-        if kk <= 0 { kk = 10 }
-        if sel.has_eq == 1 || sel.has_lo == 1 || sel.has_hi == 1 {
-            kk = kk * 16
-            if kk < 64 { kk = 64 }
-        }
-        let hq = hnsw_search(s, txn, t, mdef, boila_vec_from_val(qp.v), kk)?
-        s = hq.s
-        let mut qi: i64 = 0
-        while qi < vec_len(hq.pks) {
-            let g = boila_txn_get(s, txn, t.id, vec_get(hq.pks, qi))?
-            s = g.s
-            if g.found == 1 {
-                let row = boila_row_dec(g.row)
-                if boila_row_pass_filters(row, t, sel) == 1 {
-                    vec_push(rows, row)
-                }
-            }
-            qi = qi + 1
-        }
-        return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
-    }
+    // kNN: see exec_knn.baga (dispatched from exec_select)
     // FTS + AND (F6)
     if sel.has_fts == 1 {
         let fl = fts_list_for_table(s, t.id)?

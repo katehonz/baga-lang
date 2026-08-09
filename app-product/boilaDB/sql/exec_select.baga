@@ -7,6 +7,7 @@ import "../catalog/schema.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_scan.baga"
+import "exec_knn.baga"
 import "exec_agg.baga"
 import "exec_join.baga"
 import "exec_sort.baga"
@@ -26,7 +27,12 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
         cols = j.cols
         rows = j.rows
     } else {
-        let f = boila_fetch_rows(s, txn, t, sel)?
+        let mut f = boila_fetch_empty(s, txn)
+        if sel.has_knn == 1 {
+            f = boila_fetch_knn(s, txn, t, sel)?
+        } else {
+            f = boila_fetch_rows(s, txn, t, sel)?
+        }
         s = f.s
         if f.ok == 0 {
             return boila_exec_fail(s, txn, f.err, f.state)

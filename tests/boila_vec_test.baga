@@ -102,7 +102,7 @@ fn main() -> i64 !IO !Time !Par {
     srv = q3.srv
     check(fails, "knn_ip", q3.ok == 1 && vec_len(q3.res.rows) >= 1)
 
-    // V6: kNN AND eq/range post-filter (overfetch then filter)
+    // V6: kNN AND eq/range; V3: eq on PK → pre-filter candidates
     let qv1 = exec1(srv, "SELECT id FROM items WHERE emb <-> '[1,0,0]' AND id = 4 LIMIT 5")
     srv = qv1.srv
     check(fails, "knn_and_eq", qv1.ok == 1 && vec_len(qv1.res.rows) == 1 && row_id(vec_get(qv1.res.rows, 0)) == "4")
@@ -112,6 +112,22 @@ fn main() -> i64 !IO !Time !Par {
     let qv3 = exec1(srv, "SELECT id FROM items WHERE emb <-> '[0,1,0]' AND id >= 2 AND id <= 5 LIMIT 10")
     srv = qv3.srv
     check(fails, "knn_and_range", qv3.ok == 1 && vec_len(qv3.res.rows) >= 1 && ids_has(qv3.res, "2") == 1)
+
+    // V3: secondary index pre-filter before distance rank
+    let ctag = exec1(srv, "CREATE TABLE tagged (id BIGINT, tag TEXT, emb VECTOR(3), PRIMARY KEY (id))")
+    srv = ctag.srv
+    let itag = exec1(srv, "INSERT INTO tagged (id, tag, emb) VALUES (1, 'a', '[1,0,0]'), (2, 'b', '[0,1,0]'), (3, 'a', '[0.9,0.1,0]'), (4, 'a', '[0,0,1]')")
+    srv = itag.srv
+    let ixt = exec1(srv, "CREATE INDEX tagged_tag ON tagged (tag)")
+    srv = ixt.srv
+    let ixh = exec1(srv, "CREATE INDEX tagged_hnsw ON tagged USING hnsw (emb)")
+    srv = ixh.srv
+    let qv4 = exec1(srv, "SELECT id FROM tagged WHERE emb <-> '[1,0,0]' AND tag = 'a' LIMIT 2")
+    srv = qv4.srv
+    check(fails, "knn_pref_ix", qv4.ok == 1 && vec_len(qv4.res.rows) == 2 && row_id(vec_get(qv4.res.rows, 0)) == "1")
+    let qv5 = exec1(srv, "SELECT id FROM tagged WHERE emb <-> '[1,0,0]' AND tag = 'b' LIMIT 5")
+    srv = qv5.srv
+    check(fails, "knn_pref_ix_one", qv5.ok == 1 && vec_len(qv5.res.rows) == 1 && row_id(vec_get(qv5.res.rows, 0)) == "2")
 
     // DML sync: new row searchable
     let i2 = exec1(srv, "INSERT INTO items (id, emb) VALUES (10, '[0,0,0.95]')")

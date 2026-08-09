@@ -170,7 +170,8 @@
   dim check, L2/cos/IP kNN, DML sync, restart без rebuild, non-vector
   отказ). **Perf gate 100k×128d recall@10 ≥ 0.95 / <20 ms** — остава
   bench/ (Q2 arena; seed chunked като FTS 20k) — вж. gaps V2.
-- **V6 (post-P11):** kNN `AND eq/range` — overfetch + post-filter.
+- **V3/V6 (post-P11):** kNN `AND eq` → index/PK pre-filter + exact
+  distance; range → overfetch + post-filter.
 - Ревизии (честно): fixed-point ×1e6 вместо IEEE f64 bits (V1); unindex
   strips reverse edges (V5); metadata pre-filter през secondary index
   преди HNSW — не (V3); upper-level cache в RAM — не (V4).

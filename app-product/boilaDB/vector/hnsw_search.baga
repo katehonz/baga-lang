@@ -172,25 +172,8 @@ fn hnsw_select_neighbors(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: Boila
     return BoilaHnswQuery { s: s, txn: txn, pks: top }
 }
 
-// Brute-force top-k (малки таблици / exact gate).
-fn hnsw_brute(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time !Par {
-    let ks = boila_txn_keys(s, txn, t.id)?
-    s = ks.s
-    let pks: Vec<bytes> = vec_new()
-    let ds: Vec<f64> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(ks.pks) {
-        let pk = vec_get(ks.pks, i)
-        let rv = hnsw_row_vec(s, txn, t.id, pk, def.col_idx, def.dim)?
-        s = rv.s
-        txn = rv.txn
-        if rv.ok == 1 {
-            let d = boila_vec_dist(q, rv.dims, def.metric)
-            vec_push(pks, pk)
-            vec_push(ds, d)
-        }
-        i = i + 1
-    }
+// Sort (pk,dist) ascending by dist; return top-k pks.
+fn hnsw_top_k(pks: Vec<bytes>, ds: Vec<f64>, k: i64) -> Vec<bytes> {
     let mut a: i64 = 1
     while a < vec_len(pks) {
         let kp = vec_get(pks, a)
@@ -220,7 +203,32 @@ fn hnsw_brute(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q:
         vec_push(top, vec_get(pks, t2))
         t2 = t2 + 1
     }
-    return BoilaHnswQuery { s: s, txn: txn, pks: top }
+    return top
+}
+
+// Brute-force top-k over explicit candidate pks (V3 metadata pre-filter).
+fn hnsw_brute_cands(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64, cands: Vec<bytes>) -> BoilaHnswQuery !IO !Time !Par {
+    let pks: Vec<bytes> = vec_new()
+    let ds: Vec<f64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(cands) {
+        let pk = vec_get(cands, i)
+        let rv = hnsw_row_vec(s, txn, t.id, pk, def.col_idx, def.dim)?
+        s = rv.s
+        txn = rv.txn
+        if rv.ok == 1 {
+            vec_push(pks, pk)
+            vec_push(ds, boila_vec_dist(q, rv.dims, def.metric))
+        }
+        i = i + 1
+    }
+    return BoilaHnswQuery { s: s, txn: txn, pks: hnsw_top_k(pks, ds, k) }
+}
+
+// Brute-force top-k (малки таблици / exact gate).
+fn hnsw_brute(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time !Par {
+    let ks = boila_txn_keys(s, txn, t.id)?
+    return hnsw_brute_cands(ks.s, txn, t, def, q, k, ks.pks)?
 }
 
 fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time !Par {

@@ -55,17 +55,18 @@ T = транзакции, W = wire protocol, F = FTS.
 - **V2 — perf gate 100k×128d още не е измерен.** Functional P8 е зелен
   (boila_vec_test); 100k seed + recall@10 bench чака chunked seed заради
   arena OOM (Q2), моделът на FTS 20k.
-- **V3 — metadata pre-filter през secondary index/ няма.** kNN е чист
-  vector path; комбинация с `WHERE meta = …` идва при нужда.
+- **V3 — (FIXED) metadata pre-filter преди kNN.** `eq` по PK или
+  secondary index → `hnsw_brute_cands` само върху кандидатите
+  (`exec_knn.baga`). Без индекс → HNSW + V6 post-filter. Range-only
+  pre-filter няма (остава overfetch+post).
 - **V4 — няма RAM cache на горните HNSW нива.** Всеки search чете
   neighbors от vec CF (point GET-и); cache е P11/оптимизация.
 - **V5 — (FIXED) unindex strips reverse edges.** Before deleting own
   nbr lists, remove pk from each neighbor's list at levels 0..4. Ep
   cleared if deleted (re-seed on next insert). Residual: ep not
   reassigned to another live node mid-unindex.
-- **V6 — (FIXED) kNN + AND eq/range.** Parse приема AND; overfetch
-  (k×16, min 64) + `boila_row_pass_filters`; LIMIT остава k на offlim.
-  Residual: няма index pre-filter преди HNSW (V3).
+- **V6 — (FIXED) kNN + AND eq/range.** Parse приема AND; V3 pre-filter
+  при indexed eq; иначе overfetch + post-filter; LIMIT = k на offlim.
 - **V7 — fixed-point ×1e6** вместо IEEE payload (V1 bit-cast липсва).
   Достатъчно за ranking; не е bit-identical с pgvector float4.
 
@@ -93,7 +94,7 @@ T = транзакции, W = wire protocol, F = FTS.
   `go_bg` per-conn; live conn; `boila_open_mt` hop-less shards (per-shard
   scan, no all_lock). Shared per-db plan cache (pc_mu off — baga mutex
   owner-flag races under fan-out; puts rare after warmup). Schema DDL
-  serial per-db. Residual: SELECT vs DROP race; JOIN uncached (C1).
+  serial per-db. Residual: SELECT vs DROP race.
 - **W2 — (FIXED) prepared SELECT AST по stmt име.** Parse →
   `boila_pg_try_sel` (lex+parse, param slots `eq/lo/hi/lim_param`);
   Bind → `boila_pg_bind_sel`; Execute → `exec_select` без re-parse.
