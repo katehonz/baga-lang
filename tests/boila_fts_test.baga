@@ -123,6 +123,12 @@ fn main() -> i64 !IO !Time !Par {
     let qyo = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('ЁЛКА')")
     srv = qyo.srv
     check(fails, "yo_fold", qyo.ok == 1 && vec_len(qyo.res.rows) == 1 && row_id(vec_get(qyo.res.rows, 0)) == "20")
+    // F1b: Latin-1 case fold (Café / CAFÉ)
+    let ica = exec1(srv, "INSERT INTO docs (id, body) VALUES (21, 'café latte')")
+    srv = ica.srv
+    let qca = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('CAFÉ')")
+    srv = qca.srv
+    check(fails, "latin1_fold", qca.ok == 1 && vec_len(qca.res.rows) == 1 && row_id(vec_get(qca.res.rows, 0)) == "21")
     // липсваща дума
     let q5 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('lipsva')")
     srv = q5.srv
