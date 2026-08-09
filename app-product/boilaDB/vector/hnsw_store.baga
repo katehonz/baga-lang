@@ -220,6 +220,40 @@ fn hnsw_nbrs_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level:
     return BoilaHnswNbrs { s: s, txn: txn, pks: hnsw_nbrs_dec(hnsw_unwrap(g.val)) }
 }
 
+// V4: per-search RAM cache of neighbor lists (esp. upper levels).
+// cache: Map key = hnsw_nbr_pk → encoded nbr list.
+fn hnsw_nbrs_get_c(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes, cache: Map<bytes, bytes>) -> BoilaHnswNbrs !IO !Time !Par {
+    let key = hnsw_nbr_pk(ix_id, level, pk)
+    if map_has(cache, key) == 1 {
+        return BoilaHnswNbrs { s: s, txn: txn, pks: hnsw_nbrs_dec(map_get(cache, key)) }
+    }
+    let nb = hnsw_nbrs_get(s, txn, table_id, ix_id, level, pk)?
+    map_set(cache, key, hnsw_nbrs_enc(nb.pks))
+    return BoilaHnswNbrs { s: nb.s, txn: nb.txn, pks: nb.pks }
+}
+
+// Prefetch ep + 1-hop at levels max_lvl..1 into cache.
+fn hnsw_warm_upper(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, ep: bytes, max_lvl: i64, cache: Map<bytes, bytes>) -> BoilaHnswNbrs !IO !Time !Par {
+    let mut lvl = max_lvl
+    let mut ss = s
+    let mut tt = txn
+    while lvl > 0 {
+        let nb = hnsw_nbrs_get_c(ss, tt, table_id, ix_id, lvl, ep, cache)?
+        ss = nb.s
+        tt = nb.txn
+        let mut j: i64 = 0
+        while j < vec_len(nb.pks) {
+            let n2 = hnsw_nbrs_get_c(ss, tt, table_id, ix_id, lvl, vec_get(nb.pks, j), cache)?
+            ss = n2.s
+            tt = n2.txn
+            j = j + 1
+        }
+        lvl = lvl - 1
+    }
+    let empty: Vec<bytes> = vec_new()
+    return BoilaHnswNbrs { s: ss, txn: tt, pks: empty }
+}
+
 fn hnsw_nbrs_put(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes, pks: Vec<bytes>) -> BoilaHnswNbrs {
     let w = boila_txn_put(s, txn, boila_cf_vec(), table_id, hnsw_nbr_pk(ix_id, level, pk), hnsw_nbrs_enc(pks))
     return BoilaHnswNbrs { s: s, txn: w.txn, pks: pks }

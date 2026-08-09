@@ -15,7 +15,7 @@ struct BoilaHnswQuery {
     pks: Vec<bytes>
 }
 
-fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, ep: bytes, level: i64) -> BoilaHnswQuery !IO !Time !Par {
+fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, ep: bytes, level: i64, cache: Map<bytes, bytes>) -> BoilaHnswQuery !IO !Time !Par {
     let mut cur = ep
     let mut improved = true
     let mut guard: i64 = 0
@@ -29,7 +29,7 @@ fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q
         if cv.ok == 1 {
             best_d = boila_vec_dist(q, cv.dims, def.metric)
         }
-        let nb = hnsw_nbrs_get(s, txn, table_id, def.id, level, cur)?
+        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, cache)?
         s = nb.s
         txn = nb.txn
         let mut j: i64 = 0
@@ -54,7 +54,7 @@ fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q
     return BoilaHnswQuery { s: s, txn: txn, pks: one }
 }
 
-fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, entry: bytes, level: i64, ef: i64) -> BoilaHnswQuery !IO !Time !Par {
+fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, entry: bytes, level: i64, ef: i64, cache: Map<bytes, bytes>) -> BoilaHnswQuery !IO !Time !Par {
     let mut cand: Vec<bytes> = vec_new()
     let mut cds: Vec<f64> = vec_new()
     let vis: Vec<bytes> = vec_new()
@@ -72,7 +72,7 @@ fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: 
     while expanded < vec_len(cand) && expanded < ef * 4 {
         let cur = vec_get(cand, expanded)
         expanded = expanded + 1
-        let nb = hnsw_nbrs_get(s, txn, table_id, def.id, level, cur)?
+        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, cache)?
         s = nb.s
         txn = nb.txn
         let mut j: i64 = 0
@@ -246,10 +246,15 @@ fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q
     if vm.count <= 512 {
         return hnsw_brute(s, txn, t, def, q, k)?
     }
+    // V4: RAM neighbor cache for this search; warm upper levels from ep
+    let cache: Map<bytes, bytes> = map_new()
+    let warm = hnsw_warm_upper(s, txn, t.id, def.id, vm.ep, vm.max_lvl, cache)?
+    s = warm.s
+    txn = warm.txn
     let mut ep = vm.ep
     let mut lc = vm.max_lvl
     while lc > 0 {
-        let g = hnsw_greedy(s, txn, t.id, def, q, ep, lc)?
+        let g = hnsw_greedy(s, txn, t.id, def, q, ep, lc, cache)?
         s = g.s
         txn = g.txn
         if vec_len(g.pks) > 0 {
@@ -261,7 +266,7 @@ fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q
     if k * 2 > ef {
         ef = k * 2
     }
-    let beam = hnsw_beam(s, txn, t.id, def, q, ep, 0, ef)?
+    let beam = hnsw_beam(s, txn, t.id, def, q, ep, 0, ef, cache)?
     s = beam.s
     txn = beam.txn
     let top: Vec<bytes> = vec_new()

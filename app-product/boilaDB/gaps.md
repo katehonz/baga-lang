@@ -60,8 +60,10 @@ T = транзакции, W = wire protocol, F = FTS.
   secondary index → `hnsw_brute_cands` само върху кандидатите
   (`exec_knn.baga`). Без индекс → HNSW + V6 post-filter. Range-only
   pre-filter няма (остава overfetch+post).
-- **V4 — няма RAM cache на горните HNSW нива.** Всеки search чете
-  neighbors от vec CF (point GET-и); cache е P11/оптимизация.
+- **V4 — (FIXED) RAM neighbor cache per search.** `hnsw_nbrs_get_c` +
+  `hnsw_warm_upper` (ep + 1-hop levels max..1) в `Map<bytes,bytes>`;
+  greedy/beam ползват cache. Residual: няма process-global cross-query
+  cache (invalidate при DML); cache живее за една search/index op.
 - **V5 — (FIXED) unindex strips reverse edges.** Before deleting own
   nbr lists, remove pk from each neighbor's list at levels 0..4. Ep
   cleared if deleted (re-seed on next insert). Residual: ep not
