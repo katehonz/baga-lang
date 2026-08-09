@@ -231,6 +231,36 @@ fn main() -> i64 !IO !Time !Par {
     srv = ct9.srv
     check(fails, "t5_commit_ok", ct8.ok == 1 && ct9.ok == 1)
 
+    // --- T5b: DROP TABLE in txn rolls back / commits ---
+    let td0 = boila_server_exec(srv, "boila", "CREATE TABLE tdrop (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = td0.srv
+    let td0i = boila_server_exec(srv, "boila", "INSERT INTO tdrop (id, v) VALUES (1, 'x')")?
+    srv = td0i.srv
+    let td1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = td1.srv
+    let td2 = boila_server_exec(srv, "boila", "DROP TABLE tdrop")?
+    srv = td2.srv
+    check(fails, "t5b_drop_in_txn", td2.ok == 1 && td2.kind == 18)
+    let td3 = boila_server_exec(srv, "boila", "SELECT id FROM tdrop WHERE id = 1")?
+    srv = td3.srv
+    check(fails, "t5b_gone_in_txn", td3.ok == 0 && td3.state == "42P01")
+    let td4 = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = td4.srv
+    check(fails, "t5b_rb", td4.ok == 1)
+    let td5 = boila_server_exec(srv, "boila", "SELECT v FROM tdrop WHERE id = 1")?
+    srv = td5.srv
+    check(fails, "t5b_restored", td5.ok == 1 && vec_len(td5.res.rows) == 1 && row_str(vec_get(td5.res.rows, 0), 0) == "x")
+    let td6 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = td6.srv
+    let td7 = boila_server_exec(srv, "boila", "DROP TABLE tdrop")?
+    srv = td7.srv
+    let td8 = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = td8.srv
+    check(fails, "t5b_commit_drop", td7.ok == 1 && td8.ok == 1)
+    let td9 = boila_server_exec(srv, "boila", "SELECT id FROM tdrop WHERE id = 1")?
+    srv = td9.srv
+    check(fails, "t5b_committed_gone", td9.ok == 0 && td9.state == "42P01")
+
     // --- T6: txn buffer limit ---
     let wempty: Vec<BoilaTxnWrite> = vec_new()
     let mut lim = BoilaTxn { active: 1, read_only: 0, snapshot_lsn: 0, db: "boila", writes: wempty, max_writes: 2 }

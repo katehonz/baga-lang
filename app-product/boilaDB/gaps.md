@@ -144,9 +144,9 @@ T = транзакции, W = wire protocol, F = FTS.
   buffer-а (storage непроменен до COMMIT), не от multi-version ключове —
   тях и commit sequencer-ът за конкурентни сесии идват в P6 заедно с
   wire/pool concurrency-то. Честна ревизия на PLAN текста (вж. PLAN P4).
-- **T5 — (FIXED) CREATE TABLE през txn buffer.** `boila_cat_create_txn`
-  + auto-commit path; ROLLBACK маха таблицата. Residual: DROP TABLE
-  още 0A000 в явна txn (full wipe трудно буферира); CREATE INDEX беше
+- **T5 — (FIXED) CREATE + DROP TABLE през txn buffer.** `boila_cat_create_txn`
+  / `boila_table_drop_txn` + auto-commit; ROLLBACK възстановява DROP.
+  Residual: large DROP may hit `BOILA_TXN_MAX` (54000); CREATE INDEX
   buffered от P4.
 - **T6 — (FIXED) txn buffer cap.** `BOILA_TXN_MAX` (default 100000;
   0=unlimited) на BEGIN; put/del на нов ключ → 54000 при превишаване.
