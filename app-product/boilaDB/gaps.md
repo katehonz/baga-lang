@@ -135,8 +135,8 @@ T = транзакции, W = wire protocol, F = FTS.
 - **A3 — (FIXED) WHERE eq/range на дясната JOIN таблица.** Eq +
   `>=`/`<=` на right col → post-filter (`boila_join_filter_right` /
   `_range`); left pushdown when col is left. LEFT+WHERE right →
-  null-elimination. Residual: един JOIN; `ON` само `=`; lo/hi must
-  target same right col.
+  null-elimination. A3c: `ON a=b AND c=d` multi-eq. Residual: един
+  JOIN; ON still equality-only; lo/hi must target same right col.
 
 ## Открити при P4
 

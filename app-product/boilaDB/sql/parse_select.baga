@@ -78,24 +78,24 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         sel.join_kind = jk
         sel.join_table = jt.txt
         i = i + 1
-        if tok_kw(boila_ps_tok(l, i), "on") != 1 {
-            return boila_ps_fail("очаквах ON след JOIN таблица", "42601")
-        }
+        if tok_kw(boila_ps_tok(l, i), "on") != 1 { return boila_ps_fail("очаквах ON след JOIN таблица", "42601") }
         i = i + 1
-        let lc = boila_ps_tok(l, i)
-        if lc.kind != tok_ident() {
-            return boila_ps_fail("очаквах лява колона в ON", "42601")
+        // A3c: ON a = b [AND c = d …]
+        let mut more_on = true
+        while more_on {
+            let lc = boila_ps_tok(l, i)
+            if lc.kind != tok_ident() { return boila_ps_fail("очаквах лява колона в ON", "42601") }
+            if boila_ps_tok(l, i + 1).kind != tok_op() || boila_ps_tok(l, i + 1).txt != "=" {
+                return boila_ps_fail("ON поддържа само '=' ", "0A000")
+            }
+            let rc = boila_ps_tok(l, i + 2)
+            if rc.kind != tok_ident() { return boila_ps_fail("очаквах дясна колона в ON", "42601") }
+            if vec_len(sel.join_lcols) == 0 { sel.join_lcol = lc.txt; sel.join_rcol = rc.txt }
+            vec_push(sel.join_lcols, lc.txt)
+            vec_push(sel.join_rcols, rc.txt)
+            i = i + 3
+            if tok_kw(boila_ps_tok(l, i), "and") == 1 { i = i + 1 } else { more_on = false }
         }
-        if boila_ps_tok(l, i + 1).kind != tok_op() || boila_ps_tok(l, i + 1).txt != "=" {
-            return boila_ps_fail("ON поддържа само '=' в P5", "0A000")
-        }
-        let rc = boila_ps_tok(l, i + 2)
-        if rc.kind != tok_ident() {
-            return boila_ps_fail("очаквах дясна колона в ON", "42601")
-        }
-        sel.join_lcol = lc.txt
-        sel.join_rcol = rc.txt
-        i = i + 3
         if tok_kw(boila_ps_tok(l, i), "join") == 1 || tok_kw(boila_ps_tok(l, i), "inner") == 1 || tok_kw(boila_ps_tok(l, i), "left") == 1 {
             return boila_ps_fail("втори JOIN не е в P5", "0A000")
         }

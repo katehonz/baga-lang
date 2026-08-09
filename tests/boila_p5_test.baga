@@ -127,6 +127,10 @@ fn main() -> i64 !IO !Time !Par {
     let j2 = exec(srv, "SELECT code, name FROM dep JOIN emp ON code = dept WHERE code = 'hr' ORDER BY id")?
     srv = j2.srv
     check(fails, "join_inl", j2.ok == 1 && vec_len(j2.res.rows) == 2 && cell(vec_get(j2.res.rows, 0), 1) == "cveti" && cell(vec_get(j2.res.rows, 1), 1) == "dana")
+    // A3c: multi-eq ON
+    let jm = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code AND dept = code WHERE name = 'alice'")?
+    srv = jm.srv
+    check(fails, "join_on_and", jm.ok == 1 && vec_len(jm.res.rows) == 1 && cell(vec_get(jm.res.rows, 0), 0) == "alice")
 
     // --- LEFT JOIN: dep ред без съвпадение → NULL ---
     let c5 = exec(srv, "INSERT INTO emp (id, dept, salary, name) VALUES (6, 'ops', 80, 'franko')")?

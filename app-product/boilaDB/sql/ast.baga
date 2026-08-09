@@ -38,8 +38,10 @@ struct BoilaSel {
     has_join: i64,
     join_kind: i64,   // 1 INNER, 2 LEFT
     join_table: str,
-    join_lcol: str,
+    join_lcol: str,   // first ON pair (compat)
     join_rcol: str,
+    join_lcols: Vec<str>, // A3c: ON a=b AND c=d …
+    join_rcols: Vec<str>,
     // FTS (P7): WHERE col @@ to_tsquery('…')
     has_fts: i64,
     fts_col: str,
@@ -99,6 +101,8 @@ fn boila_sel_empty() -> BoilaSel {
     let gc: Vec<str> = vec_new()
     let ft: Vec<str> = vec_new()
     let fg: Vec<i64> = vec_new()
+    let jl: Vec<str> = vec_new()
+    let jr: Vec<str> = vec_new()
     return BoilaSel {
         table: "", star: 0, items: items,
         eq_col: "", has_eq: 0, pk_eq: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, eq_param: 0,
@@ -111,6 +115,7 @@ fn boila_sel_empty() -> BoilaSel {
         has_group: 0, group_cols: gc,
         has_having: 0, hav_agg: 0, hav_col: "", hav_op: "", hav_val: 0,
         has_join: 0, join_kind: 0, join_table: "", join_lcol: "", join_rcol: "",
+        join_lcols: jl, join_rcols: jr,
         has_fts: 0, fts_col: "", fts_mode: 1, fts_terms: ft, fts_gaps: fg,
         has_knn: 0, knn_col: "", knn_metric: 1, knn_query: "",
         bucket_iv: 0, bucket_col: ""
