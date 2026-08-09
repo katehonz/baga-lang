@@ -79,6 +79,8 @@ fn main() -> i64 !IO !Time !Par {
     // signed value round-trip (token unset → plain)
     let cv = boila_http_db_cookie_val("eps")?
     check(fails, "verify_cookie_val", boila_http_verify_db_val(cv)? == "eps")
+    // H3d CSRF off by default: header alone ok
+    check(fails, "csrf_off_header", boila_http_pick_db("boila", rh)? == "beta")
 
     let root = "/tmp/baga_boila_http_sess_test"
     wipe_root(root)?
