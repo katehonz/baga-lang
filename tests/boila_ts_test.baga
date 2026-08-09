@@ -6,6 +6,7 @@ import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/core/value.baga"
 import "boilaDB/ts/retention.baga"
 import "boilaDB/storage/shards.baga"
+import "boilaDB/api/serve_mt.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 
@@ -141,7 +142,14 @@ fn main() -> i64 !IO !Time !Par {
     srv2 = q3.srv
     check(fails, "restart_bucket", q3.ok == 1 && vec_len(q3.res.rows) >= 1)
 
+    // S6: MT sweep_once flushes open DBs (background sweeper path)
     boila_server_close(srv2)?
+    let srv3 = boila_server_open_mt(root, 2, 8, 3, 4)?
+    check(fails, "open_mt", srv3.ok == 1)
+    let pack = boila_mt_new(srv3, 8)?
+    let sw = boila_mt_sweep_once(pack)?
+    check(fails, "sweep_once", sw == 0)
+
     wipe_root(root)?
     if vec_len(fails) == 0 {
         print("boila_ts_test: ALL PASS")

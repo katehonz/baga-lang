@@ -48,12 +48,17 @@ fn main() -> i64 !Net !IO !Time !Par {
         return 1
     }
     let pack = boila_mt_new(srv0, max_conn)?
+    let sw = boila_mt_start_sweeper(pack)?
 
     let mut line = "boiladb-pg wire listening on :"
     line = concat(line, int_to_str(port))
     line = concat(line, " (max_conn=")
     line = concat(line, int_to_str(max_conn))
-    line = concat(line, ", go_bg+per-shard+multi-db)")
+    line = concat(line, ", go_bg+per-shard+multi-db")
+    if sw == 1 {
+        line = concat(line, "+ttl-sweep")
+    }
+    line = concat(line, ")")
     print(line)
 
     let listener = tcp_listen(port)?

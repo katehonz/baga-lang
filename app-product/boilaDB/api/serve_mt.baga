@@ -19,7 +19,9 @@ import "../sql/plan_cache.baga"
 import "../sql/ast.baga"
 import "../catalog/schema.baga"
 import "../txn/mvcc.baga"
+import "../ts/retention.baga"
 import "std/str/str.baga"
+import "std/os/os.baga"
 
 fn boila_mt_pack(gmu: i64, srv_mh: i64, dmu_mh: i64, live_mh: i64, pcs_mh: i64) -> i64 {
     return cell2(gmu, cell2(srv_mh, cell2(dmu_mh, cell2(live_mh, pcs_mh))))
@@ -305,4 +307,64 @@ fn boila_mt_max_db(pack: i64) -> i64 !Par {
     let n = map_get(m, 0).max_db
     mutex_unlock(gmu)
     return n
+}
+
+// S6: flush all open DBs (rocksbaga lazy TTL drops on flush).
+fn boila_mt_sweep_once(pack: i64) -> i64 !IO !Time !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let srv = map_get(m, 0)
+    let names: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(srv.names) {
+        vec_push(names, vec_get(srv.names, i))
+        i = i + 1
+    }
+    mutex_unlock(gmu)
+    i = 0
+    while i < vec_len(names) {
+        let db = vec_get(names, i)
+        let g = boila_mt_checkout(pack, db)?
+        if g.ok == 1 {
+            let s2 = boila_ts_sweep(g.store)?
+            boila_mt_checkin(pack, db, s2)?
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn boila_sweep_ms() -> i64 !IO {
+    let e = env("BOILA_SWEEP_MS")
+    if e == "" {
+        return 5000
+    }
+    let n = parse_int(e)
+    if n < 0 {
+        return 5000
+    }
+    return n
+}
+
+// Background loop: sleep BOILA_SWEEP_MS (0 = exit / disabled).
+fn boila_ttl_sweeper(pack: i64) -> i64 !IO !Time !Par {
+    while true {
+        let ms = boila_sweep_ms()?
+        if ms <= 0 {
+            return 0
+        }
+        sleep_ms(ms)?
+        boila_mt_sweep_once(pack)?
+    }
+    return 0
+}
+
+fn boila_mt_start_sweeper(pack: i64) -> i64 !IO !Time !Par {
+    let ms = boila_sweep_ms()?
+    if ms <= 0 {
+        return 0
+    }
+    go_bg(boila_ttl_sweeper, pack)
+    return 1
 }

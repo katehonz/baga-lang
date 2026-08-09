@@ -92,6 +92,7 @@ fn boila_dbsize(s: BoilaStore) -> BoilaDbSize !IO !Time !Par {
 }
 
 // Sweep: flush (TTL lazy drop on flush/compact path in rocksbaga).
+// Background: api/serve_mt.baga boila_ttl_sweeper (S6).
 fn boila_ts_sweep(s: BoilaStore) -> BoilaStore !IO !Time !Par {
     return boila_flush(s)?
 }
