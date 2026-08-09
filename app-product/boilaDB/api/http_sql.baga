@@ -143,8 +143,9 @@ fn boila_http_verify_db_val(raw: str) -> str !IO {
 }
 
 // H3: ?db= > X-Boila-Db > Cookie > conn sess > "boila"
+// With BOILA_TOKEN, ?db=/header/cookie all use name.sig (plain rejected).
 fn boila_http_pick_db(sess_db: str, req: Request) -> str !IO {
-    let q = http_query_param(req, "db")
+    let q = boila_http_verify_db_val(http_query_param(req, "db"))?
     if q != "" {
         return q
     }
