@@ -2,12 +2,16 @@
 //
 // boila_server_exec(srv, db, sql) — single-thread: uses srv.session_txn
 // boila_server_exec_tx(srv, txn, db, sql) — MT: external per-conn txn
+// boila_server_exec_sel — W2 prepared SELECT (bound AST, no re-parse)
 
 import "lexer.baga"
 import "token.baga"
 import "parse_ddl.baga"
 import "exec_sql.baga"
+import "exec_select.baga"
 import "exec_scan.baga"
+import "ast.baga"
+import "../catalog/schema.baga"
 import "../storage/databases.baga"
 import "../txn/mvcc.baga"
 import "../core/row.baga"
@@ -97,4 +101,27 @@ fn boila_server_exec_tx(srv: BoilaServer, txn: BoilaTxn, db: str, sql: str) -> B
     let mut srv2 = boila_srv_store_putback(g.srv, db, out.s)
     srv2.pc = out.pc
     return BoilaSrvOut { srv: srv2, txn: out.txn, ok: out.ok, err: out.err, state: out.state, kind: out.kind, res: out.res, id: out.id, db: db }
+}
+
+// W2: execute a bound SELECT AST (params already filled).
+fn boila_server_exec_sel(srv: BoilaServer, txn: BoilaTxn, db: str, sel: BoilaSel) -> BoilaSrvOut !IO !Time !Par {
+    if txn.active == 1 && txn.db != db {
+        return boila_srv_out_fail(srv, txn, "транзакция, започната в друга база — COMMIT/ROLLBACK първо", "0A000")
+    }
+    let g = boila_srv_db(srv, db)?
+    if g.ok == 0 {
+        return boila_srv_out_fail(g.srv, txn, g.err, g.state)
+    }
+    let ct = boila_cat_by_name(g.store, sel.table)?
+    let mut s = ct.s
+    if ct.ok == 0 {
+        let srv2 = boila_srv_store_putback(g.srv, db, s)
+        return boila_srv_out_fail(srv2, txn, ct.err, ct.state)
+    }
+    let ex = boila_exec_select(s, txn, ct.table, sel)?
+    let srv2 = boila_srv_store_putback(g.srv, db, ex.s)
+    return BoilaSrvOut {
+        srv: srv2, txn: ex.txn, ok: ex.ok, err: ex.err, state: ex.state,
+        kind: 1, res: ex.res, id: 0, db: db
+    }
 }

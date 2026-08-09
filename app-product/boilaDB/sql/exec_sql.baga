@@ -112,9 +112,8 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         if ct.ok == 0 {
             return boila_sql_fail(s, txn, pc, ct.err, ct.state)
         }
-        if ps.sel.has_join == 0 {
-            boila_pc_put_mu(pc, sql, BoilaSelPlan { sel: ps.sel, table: ct.table }, pc_mu)?
-        }
+        // C1: cache JOIN too (right table resolved at exec via sel.join_table)
+        boila_pc_put_mu(pc, sql, BoilaSelPlan { sel: ps.sel, table: ct.table }, pc_mu)?
         let ex = boila_exec_select(s, txn, ct.table, ps.sel)?
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
     }

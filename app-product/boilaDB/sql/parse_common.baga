@@ -9,6 +9,7 @@ import "std/str/str.baga"
 struct BoilaLit {
     ok: i64,
     v: BoilaVal,
+    param: i64,   // 0 = concrete; N = $N (W2)
     err: str,
     state: str
 }
@@ -20,25 +21,32 @@ fn boila_ps_tok(l: BoilaLex, i: i64) -> Token {
     return token_new(tok_eof(), "")
 }
 
-// literal → BoilaVal; ok=0 при не-литерал.
+// literal → BoilaVal; ok=0 при не-литерал. $N → ok=1, param=N.
 fn boila_ps_literal(l: BoilaLex, i: i64) -> BoilaLit {
     let t = boila_ps_tok(l, i)
+    if t.kind == tok_param() {
+        let n = parse_int(t.txt)
+        if n < 1 {
+            return BoilaLit { ok: 0, v: boila_val_null(), param: 0, err: "параметър $N — N≥1", state: "42601" }
+        }
+        return BoilaLit { ok: 1, v: boila_val_null(), param: n, err: "", state: "" }
+    }
     if t.kind == tok_num() {
-        return BoilaLit { ok: 1, v: boila_val_i64(parse_int(t.txt)), err: "", state: "" }
+        return BoilaLit { ok: 1, v: boila_val_i64(parse_int(t.txt)), param: 0, err: "", state: "" }
     }
     if t.kind == tok_str() {
-        return BoilaLit { ok: 1, v: boila_val_str(t.txt), err: "", state: "" }
+        return BoilaLit { ok: 1, v: boila_val_str(t.txt), param: 0, err: "", state: "" }
     }
     if tok_kw(t, "null") == 1 {
-        return BoilaLit { ok: 1, v: boila_val_null(), err: "", state: "" }
+        return BoilaLit { ok: 1, v: boila_val_null(), param: 0, err: "", state: "" }
     }
     if tok_kw(t, "true") == 1 {
-        return BoilaLit { ok: 1, v: boila_val_bool(1), err: "", state: "" }
+        return BoilaLit { ok: 1, v: boila_val_bool(1), param: 0, err: "", state: "" }
     }
     if tok_kw(t, "false") == 1 {
-        return BoilaLit { ok: 1, v: boila_val_bool(0), err: "", state: "" }
+        return BoilaLit { ok: 1, v: boila_val_bool(0), param: 0, err: "", state: "" }
     }
-    return BoilaLit { ok: 0, v: boila_val_null(), err: concat("очаквах литерал, получих '", concat(t.txt, "'")), state: "42601" }
+    return BoilaLit { ok: 0, v: boila_val_null(), param: 0, err: concat("очаквах литерал, получих '", concat(t.txt, "'")), state: "42601" }
 }
 
 // agg име → kind (1 count, 3 sum, 4 avg, 5 min, 6 max); 0 не е agg.

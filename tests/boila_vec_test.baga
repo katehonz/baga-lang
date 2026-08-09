@@ -47,6 +47,17 @@ fn row_id(row: Vec<BoilaVal>) -> str {
     return "?"
 }
 
+fn ids_has(res: BoilaResult, want: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(res.rows) {
+        if row_id(vec_get(res.rows, i)) == want {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
     return boila_server_exec(srv, "boila", sql)?
 }
@@ -90,6 +101,17 @@ fn main() -> i64 !IO !Time !Par {
     let q3 = exec1(srv, "SELECT id FROM items WHERE emb <#> '[0,0,1]' LIMIT 1")
     srv = q3.srv
     check(fails, "knn_ip", q3.ok == 1 && vec_len(q3.res.rows) >= 1)
+
+    // V6: kNN AND eq/range post-filter (overfetch then filter)
+    let qv1 = exec1(srv, "SELECT id FROM items WHERE emb <-> '[1,0,0]' AND id = 4 LIMIT 5")
+    srv = qv1.srv
+    check(fails, "knn_and_eq", qv1.ok == 1 && vec_len(qv1.res.rows) == 1 && row_id(vec_get(qv1.res.rows, 0)) == "4")
+    let qv2 = exec1(srv, "SELECT id FROM items WHERE emb <-> '[1,0,0]' AND id = 99 LIMIT 5")
+    srv = qv2.srv
+    check(fails, "knn_and_eq_none", qv2.ok == 1 && vec_len(qv2.res.rows) == 0)
+    let qv3 = exec1(srv, "SELECT id FROM items WHERE emb <-> '[0,1,0]' AND id >= 2 AND id <= 5 LIMIT 10")
+    srv = qv3.srv
+    check(fails, "knn_and_range", qv3.ok == 1 && vec_len(qv3.res.rows) >= 1 && ids_has(qv3.res, "2") == 1)
 
     // DML sync: new row searchable
     let i2 = exec1(srv, "INSERT INTO items (id, emb) VALUES (10, '[0,0,0.95]')")

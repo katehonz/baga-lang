@@ -63,8 +63,9 @@ T = транзакции, W = wire protocol, F = FTS.
   nbr lists, remove pk from each neighbor's list at levels 0..4. Ep
   cleared if deleted (re-seed on next insert). Residual: ep not
   reassigned to another live node mid-unindex.
-- **V6 — kNN WHERE не се комбинира с AND** (като F6 за @@). LIMIT = k;
-  default k=10 ако липсва LIMIT.
+- **V6 — (FIXED) kNN + AND eq/range.** Parse приема AND; overfetch
+  (k×16, min 64) + `boila_row_pass_filters`; LIMIT остава k на offlim.
+  Residual: няма index pre-filter преди HNSW (V3).
 - **V7 — fixed-point ×1e6** вместо IEEE payload (V1 bit-cast липсва).
   Достатъчно за ranking; не е bit-identical с pgvector float4.
 
@@ -80,8 +81,8 @@ T = транзакции, W = wire protocol, F = FTS.
   индексация).** Алтернативата (append-only + merge) идва при нужда от
   по-бързо писане; point GET query-тата са целта (K2).
 - **F5 — фразови заявки няма** (to_tsquery е само AND/OR от думи).
-- **F6 — @@ не се комбинира с други WHERE условия** (fts клонът връща
-  редовете директно; комбинацията идва с P5 planner-а при нужда).
+- **F6 — (FIXED) @@ + AND eq/range.** Post-filter върху FTS hits
+  (`boila_row_pass_filters`); parse вече приема AND след @@.
 
 ## Открити при P6
 
@@ -90,15 +91,17 @@ T = транзакции, W = wire protocol, F = FTS.
   scan, no all_lock). Shared per-db plan cache (pc_mu off — baga mutex
   owner-flag races under fan-out; puts rare after warmup). Schema DDL
   serial per-db. Residual: SELECT vs DROP race; JOIN uncached (C1).
-- **W2 — extended protocol-ът ре-parse-ва на всеки Execute.** $1..$n се
-  заместват текстово в Bind/Execute и заявката минава през пълния
-  pipeline (plan cache-ът хваща само повторения на идентичен текст).
-  Кеширан AST по stmt име идва при нужда.
+- **W2 — (FIXED) prepared SELECT AST по stmt име.** Parse →
+  `boila_pg_try_sel` (lex+parse, param slots `eq/lo/hi/lim_param`);
+  Bind → `boila_pg_bind_sel`; Execute → `exec_select` без re-parse.
+  Non-SELECT / parse fail → text subst fallback. Residual: INSERT/
+  UPDATE/DELETE params still text; FTS/kNN `$N` в tsquery/vector lit
+  не са AST slots.
 - **W3 — RowDescription е винаги OID 25 (text).** pgbaga JSON
   детекцията по OID не разпознава jsonb колони; стойностите са коректни
   като текст.
-- **W4 — DROP TABLE не е поддръжан** (0A000). Smoke тестовете ползват
-  fresh root; идва с P7+ или при нужда.
+- **W4 — (FIXED при P11-3) DROP TABLE full wipe.** `catalog/drop.baga`
+  + parse/exec; modality CF + name/schema/ttl.
 - **W5 — Describe връща NoData** (няма statement metadata cache).
 - **W6 — auth е cleartext token (BOILA_TOKEN) или trust.** SCRAM не се
   предлага от сървъра (pgbaga-клиентът го поддържа, но сървърът не го
@@ -106,10 +109,10 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P5
 
-- **C1 — plan cache-ът покрива само едно-таблични SELECT-и.** JOIN
-  заявките плащат lex+parse+catalog на всяко изпълнение (кеширането на
-  мулти-таблични планове изисква и двете таблики в кеша — идва при
-  нужда).
+- **C1 — (FIXED) plan cache покрива и JOIN.** Кешира се sel + лява
+  таблица; дясната се резолва при exec (`sel.join_table`). DDL → invalidate.
+  Residual: wide schema / right-table schema drift без DDL на left — ok
+  докато CREATE INDEX/TABLE invalid-ва.
 - **C2 — planner-ът е rule-based, без статистики/cost model.** Ред:
   pk point > index eq > seq scan; JOIN: index nested loop при индекс по
   вътрешната колона, иначе nested loop. Catalog статистики (histograms)

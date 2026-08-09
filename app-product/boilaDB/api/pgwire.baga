@@ -1,16 +1,13 @@
 // pgwire.baga — PG wire v3 сесия (P6): startup/auth, simple query,
-// extended (Parse/Bind/Describe/Execute/Sync), prepared $1..$n.
-//
-// Едно-сесийна точност: сървърът обслужва една връзка в даден момент
-// (sync loop); паралелни клиенти чакат на опашка (gaps W1 — истинският
-// pool идва с concurrency фазата). При затваряне на връзка активната
-// транзакция се rollback-ва (PG семантика: txn е per-connection).
+// extended (Parse/Bind/Describe/Execute/Sync), prepared $1..$n (W2 AST).
 
 import "pgwire_msg.baga"
 import "pgwire_enc.baga"
+import "pgwire_prep.baga"
 import "../storage/databases.baga"
 import "../sql/exec_server.baga"
 import "../sql/exec_scan.baga"
+import "../sql/ast.baga"
 import "../txn/mvcc.baga"
 import "serve_mt.baga"
 import "../core/value.baga"
@@ -19,21 +16,15 @@ import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
-struct BoilaPgPortal {
-    sql: str,
-    vals: Vec<str>,
-    nulls: Vec<i64>
-}
-
 struct BoilaPgSess {
-    stmts: Map<str, str>,
+    stmts: Map<str, BoilaPgStmt>,
     portals: Map<str, BoilaPgPortal>,
     db: str,
     txn: BoilaTxn
 }
 
 fn boila_pg_sess_new(db: str) -> BoilaPgSess {
-    let sm: Map<str, str> = map_new()
+    let sm: Map<str, BoilaPgStmt> = map_new()
     let pm: Map<str, BoilaPgPortal> = map_new()
     return BoilaPgSess { stmts: sm, portals: pm, db: db, txn: boila_txn_new() }
 }
@@ -80,9 +71,15 @@ fn pgw_exec_locked(pack: i64, srv: BoilaServer, txn: BoilaTxn, db: str, sql: str
     return boila_mt_exec(pack, txn, db, sql)?
 }
 
-// Изпълнява SQL и пише резултата. send_ready=1 → ReadyForQuery.
-fn pgw_run_sql(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
-    let out = pgw_exec_locked(pack, srv, sess.txn, sess.db, sql)?
+fn pgw_exec_sel_locked(pack: i64, srv: BoilaServer, txn: BoilaTxn, db: str, sel: BoilaSel) -> BoilaSrvOut !IO !Time !Par {
+    if pack == 0 {
+        return boila_server_exec_sel(srv, txn, db, sel)?
+    }
+    return boila_mt_exec_sel(pack, txn, db, sel)?
+}
+
+// Write BoilaSrvOut to wire. send_ready=1 → ReadyForQuery.
+fn pgw_write_out(fd: i64, srv: BoilaServer, sess: BoilaPgSess, out: BoilaSrvOut, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
     let mut srv2 = out.srv
     let mut sess2 = sess
     sess2.txn = out.txn
@@ -117,13 +114,22 @@ fn pgw_run_sql(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str
     return BoilaPgOut { srv: srv2, sess: sess2, ok: 1, sql_err: 0, err: "" }
 }
 
-// Parse: 'P' stmt\0 sql\0 int16 nparams + OIDs.
+fn pgw_run_sql(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    let out = pgw_exec_locked(pack, srv, sess.txn, sess.db, sql)?
+    return pgw_write_out(fd, srv, sess, out, send_ready)?
+}
+
+fn pgw_run_sel(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sel: BoilaSel, send_ready: i64) -> BoilaPgOut !IO !Net !Time !Par {
+    let out = pgw_exec_sel_locked(pack, srv, sess.txn, sess.db, sel)?
+    return pgw_write_out(fd, srv, sess, out, send_ready)?
+}
+
+// Parse: 'P' stmt\0 sql\0 int16 nparams + OIDs. W2: try SELECT AST cache.
 fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let nm = pgw_cstr_read(body, 0)
     let q = pgw_cstr_read(body, nm.pos)
-    // nparams + OIDs: игнорирани (типовете идват от Bind стойностите)
     let mut s2 = sess
-    map_set(s2.stmts, nm.s, q.s)
+    map_set(s2.stmts, nm.s, boila_pg_try_sel(q.s))
     return s2
 }
 
@@ -132,7 +138,6 @@ fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let pn = pgw_cstr_read(body, 0)
     let sn = pgw_cstr_read(body, pn.pos)
     let mut p = sn.pos
-    // parameter format codes
     let nf = pgw_be_read(body, p, 2)
     p = p + 2
     if nf == 1 {
@@ -149,7 +154,6 @@ fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
         let ln = pgw_be_read(body, p, 4)
         p = p + 4
         if ln >= 2147483648 {
-            // -1 → NULL
             vec_push(vals, "")
             vec_push(nulls, 1)
         } else {
@@ -159,10 +163,19 @@ fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
         }
         i = i + 1
     }
-    // result format codes — игнорирани (винаги text)
-    let sql: str = map_get(sess.stmts, sn.s)
+    let mut portal = boila_pg_portal_empty()
+    if map_has(sess.stmts, sn.s) == 1 {
+        let st = map_get(sess.stmts, sn.s)
+        portal.sql = st.sql
+        portal.vals = vals
+        portal.nulls = nulls
+        if st.has_sel == 1 {
+            portal.has_sel = 1
+            portal.sel = boila_pg_bind_sel(st.sel, vals, nulls)
+        }
+    }
     let mut s2 = sess
-    map_set(s2.portals, pn.s, BoilaPgPortal { sql: sql, vals: vals, nulls: nulls })
+    map_set(s2.portals, pn.s, portal)
     return s2
 }
 
@@ -310,17 +323,18 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                         } else {
                             if m.typ == 69 {                  // 'E' Execute
                                 let pn = pgw_cstr_read(m.body, 0)
-                                let mut vals: Vec<str> = vec_new()
-                                let mut nulls: Vec<i64> = vec_new()
-                                let mut sql = ""
+                                let mut ro = BoilaPgOut { srv: srv2, sess: sp, ok: 1, sql_err: 0, err: "" }
                                 if map_has(sp.portals, pn.s) == 1 {
                                     let portal = map_get(sp.portals, pn.s)
-                                    sql = portal.sql
-                                    vals = portal.vals
-                                    nulls = portal.nulls
+                                    if portal.has_sel == 1 {
+                                        ro = pgw_run_sel(fd, pack, srv2, sp, portal.sel, 0)?
+                                    } else {
+                                        let full = pgw_subst_params(portal.sql, portal.vals, portal.nulls)
+                                        ro = pgw_run_sql(fd, pack, srv2, sp, full, 0)?
+                                    }
+                                } else {
+                                    ro = pgw_run_sql(fd, pack, srv2, sp, "", 0)?
                                 }
-                                let full = pgw_subst_params(sql, vals, nulls)
-                                let ro = pgw_run_sql(fd, pack, srv2, sp, full, 0)?
                                 srv2 = ro.srv
                                 sp = ro.sess
                                 if ro.ok == 0 {

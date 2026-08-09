@@ -4,6 +4,7 @@
 import "boilaDB/storage/databases.baga"
 import "boilaDB/sql/exec_server.baga"
 import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/sql/plan_cache.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
@@ -136,6 +137,16 @@ fn main() -> i64 !IO !Time !Par {
     let j4 = exec(srv, "SELECT dept, loc FROM emp JOIN dep ON dept = code WHERE dept = 'ops'")?
     srv = j4.srv
     check(fails, "inner_join_skip", j4.ok == 1 && vec_len(j4.res.rows) == 0)
+
+    // --- C1: JOIN plan cache hit + same result on warm path ---
+    let jsql = "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY id LIMIT 2"
+    let jc1 = exec(srv, jsql)?
+    srv = jc1.srv
+    let hit = boila_pc_get(srv.pc, jsql)
+    check(fails, "join_pc_hit", hit.hit == 1 && hit.plan.sel.has_join == 1)
+    let jc2 = exec(srv, jsql)?
+    srv = jc2.srv
+    check(fails, "join_pc_warm", jc2.ok == 1 && vec_len(jc2.res.rows) == 2 && cell(vec_get(jc2.res.rows, 0), 0) == "alice")
 
     // --- семантични грешки ---
     let e1 = exec(srv, "SELECT dept, count(*) FROM emp")?

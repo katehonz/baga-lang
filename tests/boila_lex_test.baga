@@ -66,6 +66,11 @@ fn main() -> i64 !Par {
     let l6 = boila_lex("'абв'")
     check(fails, "utf8_exact", tk(l6, 0).kind == tok_str() && tk(l6, 0).txt == "абв")
 
+    // --- W2: $N params ---
+    let l7 = boila_lex("SELECT * FROM t WHERE id = $1 AND name = $12")
+    check(fails, "param_tok", tk(l7, 7).kind == tok_param() && tk(l7, 7).txt == "1")
+    check(fails, "param_12", tk(l7, 11).kind == tok_param() && tk(l7, 11).txt == "12")
+
     if vec_len(fails) == 0 {
         print("boila_lex_test: all passed")
         return 0

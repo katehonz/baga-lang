@@ -3,6 +3,8 @@
 
 import "boilaDB/api/pgwire_enc.baga"
 import "boilaDB/api/pgwire_msg.baga"
+import "boilaDB/api/pgwire_prep.baga"
+import "boilaDB/sql/ast.baga"
 import "boilaDB/core/value.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
@@ -87,6 +89,21 @@ fn main() -> i64 !Par {
     let msg = pgw_msg(81, pgw_cstr("SELECT 1"))
     check(fails, "frame_type", bytes_at(msg, 0) == 81)
     check(fails, "frame_len", pgw_be_read(msg, 1, 4) == bytes_len(msg) - 1)
+
+    // --- W2: prep AST + bind ---
+    let st = boila_pg_try_sel("SELECT * FROM t WHERE id = $1 LIMIT $2")
+    check(fails, "try_sel", st.has_sel == 1 && st.sel.eq_param == 1 && st.sel.lim_param == 2)
+    let st2 = boila_pg_try_sel("INSERT INTO t VALUES (1)")
+    check(fails, "try_non_sel", st2.has_sel == 0)
+    let bv: Vec<str> = vec_new()
+    vec_push(bv, "42")
+    vec_push(bv, "3")
+    let bn: Vec<i64> = vec_new()
+    vec_push(bn, 0)
+    vec_push(bn, 0)
+    let bound = boila_pg_bind_sel(st.sel, bv, bn)
+    check(fails, "bind_eq", bound.pk_eq.tag == boila_v_i64() && bound.pk_eq.i == 42)
+    check(fails, "bind_lim", bound.limit == 3)
 
     if vec_len(fails) == 0 {
         print("boila_pgwire_test: all passed")

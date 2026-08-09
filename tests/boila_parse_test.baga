@@ -68,6 +68,11 @@ fn main() -> i64 !Par {
     let g = psel("SELECT * FROM t WHERE id = 1 WHERE id = 2")
     check(fails, "err_double_where", g.ok == 0)
 
+    // --- W2: $N param slots ---
+    let w2 = psel("SELECT * FROM t WHERE id = $1 LIMIT $2")
+    check(fails, "param_eq", w2.ok == 1 && w2.sel.has_eq == 1 && w2.sel.eq_param == 1)
+    check(fails, "param_lim", w2.ok == 1 && w2.sel.lim_param == 2)
+
     // --- CREATE TABLE ---
     let h = pcre("CREATE TABLE users (id BIGINT, name TEXT, PRIMARY KEY (id));")
     check(fails, "cre_ok", h.ok == 1)

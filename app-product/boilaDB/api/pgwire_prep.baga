@@ -1,0 +1,116 @@
+// pgwire_prep.baga — W2: prepared SELECT AST по stmt име + $N bind.
+//
+// Parse: lex+parse SELECT (без catalog); кешира BoilaSel с param slots.
+// Bind: попълва $N → concrete vals в копие на sel.
+// Execute: catalog resolve + exec_select — без re-lex/parse.
+// Non-SELECT / parse fail → text subst fallback.
+
+import "pgwire_enc.baga"
+import "../sql/lexer.baga"
+import "../sql/token.baga"
+import "../sql/parse_select.baga"
+import "../sql/plan_cache.baga"
+import "../sql/ast.baga"
+import "../sql/exec_select.baga"
+import "../sql/exec_scan.baga"
+import "../catalog/schema.baga"
+import "../storage/shards.baga"
+import "../storage/databases.baga"
+import "../txn/mvcc.baga"
+import "../core/value.baga"
+import "std/str/str.baga"
+
+struct BoilaPgStmt {
+    sql: str,
+    has_sel: i64,
+    sel: BoilaSel
+}
+
+struct BoilaPgPortal {
+    sql: str,
+    vals: Vec<str>,
+    nulls: Vec<i64>,
+    has_sel: i64,
+    sel: BoilaSel
+}
+
+fn boila_pg_stmt_text(sql: str) -> BoilaPgStmt {
+    return BoilaPgStmt { sql: sql, has_sel: 0, sel: boila_sel_empty() }
+}
+
+fn boila_pg_portal_empty() -> BoilaPgPortal {
+    let vals: Vec<str> = vec_new()
+    let nulls: Vec<i64> = vec_new()
+    return BoilaPgPortal { sql: "", vals: vals, nulls: nulls, has_sel: 0, sel: boila_sel_empty() }
+}
+
+fn boila_pg_bind_val(s: str, is_null: i64) -> BoilaVal {
+    if is_null == 1 {
+        return boila_val_null()
+    }
+    if pgw_is_int(s) == 1 {
+        return boila_val_i64(parse_int(s))
+    }
+    return boila_val_str(s)
+}
+
+fn boila_pg_pick(vals: Vec<str>, nulls: Vec<i64>, n: i64) -> BoilaVal {
+    let idx = n - 1
+    if idx < 0 || idx >= vec_len(vals) {
+        return boila_val_null()
+    }
+    let mut isn: i64 = 0
+    if idx < vec_len(nulls) {
+        isn = vec_get(nulls, idx)
+    }
+    return boila_pg_bind_val(vec_get(vals, idx), isn)
+}
+
+fn boila_pg_bind_sel(sel: BoilaSel, vals: Vec<str>, nulls: Vec<i64>) -> BoilaSel {
+    let mut s = sel
+    if s.eq_param > 0 {
+        s.pk_eq = boila_pg_pick(vals, nulls, s.eq_param)
+    }
+    if s.lo_param > 0 {
+        s.pk_lo = boila_pg_pick(vals, nulls, s.lo_param)
+    }
+    if s.hi_param > 0 {
+        s.pk_hi = boila_pg_pick(vals, nulls, s.hi_param)
+    }
+    if s.lim_param > 0 {
+        let v = boila_pg_pick(vals, nulls, s.lim_param)
+        if v.tag == boila_v_i64() {
+            s.limit = v.i
+        }
+    }
+    return s
+}
+
+// Parse-time: SELECT → has_sel=1; else text-only.
+fn boila_pg_try_sel(sql: str) -> BoilaPgStmt {
+    let lx = boila_lex(sql)
+    if lx.err != "" {
+        return boila_pg_stmt_text(sql)
+    }
+    if vec_len(lx.toks) < 1 {
+        return boila_pg_stmt_text(sql)
+    }
+    if tok_kw(vec_get(lx.toks, 0), "select") != 1 {
+        return boila_pg_stmt_text(sql)
+    }
+    let ps = boila_parse_select(lx)
+    if ps.ok == 0 {
+        return boila_pg_stmt_text(sql)
+    }
+    return BoilaPgStmt { sql: sql, has_sel: 1, sel: ps.sel }
+}
+
+// Run bound SELECT on a store (catalog resolve each Execute).
+fn boila_pg_exec_sel(s: BoilaStore, txn: BoilaTxn, sel: BoilaSel) -> BoilaExec !IO !Time !Par {
+    let ct = boila_cat_by_name(s, sel.table)?
+    s = ct.s
+    if ct.ok == 0 {
+        return boila_exec_fail(s, txn, ct.err, ct.state)
+    }
+    return boila_exec_select(s, txn, ct.table, sel)?
+}

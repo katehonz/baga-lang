@@ -15,6 +15,7 @@ fn tok_rparen() -> i64 { return 6 }
 fn tok_comma() -> i64 { return 7 }
 fn tok_star() -> i64 { return 8 }
 fn tok_semi() -> i64 { return 9 }
+fn tok_param() -> i64 { return 10 }   // $1..$n (W2)
 
 fn token_new(kind: i64, txt: str) -> Token {
     return Token { kind: kind, txt: txt }

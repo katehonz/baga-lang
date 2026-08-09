@@ -106,12 +106,12 @@
   `OFFSET`, агрегати `count(*)/count(col)/sum/avg/min/max`, `GROUP BY` +
   `HAVING`, един `JOIN` (INNER/LEFT, ON equality) — nested loop или
   index nested loop при индекс по вътрешната колона (rule-based избор).
-  Plan cache по суров SQL текст за едно-таблични SELECT-и; инвалидация
+  Plan cache по суров SQL текст (едно-таблични + JOIN — C1); инвалидация
   при DDL. WHERE е само по pk/индексирана колона (от P1/P3).
 - Ревизии (честно): hash join и query budget (deadline + max keys)
   остават за P6/P11 — при sync сървъра без конкурентност budget-ът няма
   потребител; `WITH RECURSIVE` идва с graph фазата (P10); avg е
-  целочислено деление (gaps A1); кешът не покрива JOIN-и (gaps C1).
+  целочислено деление (gaps A1).
 - **Гейтове (измерени, bench/boila/results/select-planner-2026-08-08.md):**
   (а) planner-ът избира индекса: index път 8.7 ms срещу seq scan 17.2 ms
   (5000 реда); (в) plan cache: cold 11.0 µs → warm 5.8 µs (1.89×),
@@ -130,10 +130,10 @@
   връзка, BEGIN/ROLLBACK); **истински `psql`/libpq** изпълнява P1–P5
   синтаксис (SELECT/INSERT/RETURNING/агрегати/UTF-8) —
   bench/boila/pgwire_smoke.baga.
-- Ревизии (честно): sync loop вместо bounded pool — една връзка в даден
-  момент (gaps W1); гейтовете „10k concurrent" и „overhead ≤ 10%" остават
-  за concurrency фазата (P11); Describe → NoData (W5), OID-ите са 25
-  (W3), DROP TABLE липсва (W4), без SCRAM/TLS (W6).
+- **W2 (post-P11):** prepared SELECT AST по stmt име — Parse кешира sel
+  с `$N` slots; Bind попълва; Execute без re-parse (DML params = text).
+- Ревизии (честно): concurrency residual (W1/P11); Describe → NoData
+  (W5), OID-ите са 25 (W3), без SCRAM/TLS (W6).
 
 ## P7 — fts/ модал
 - Реализирано: `fts/tokenizer.baga` (ASCII case folding, UTF-8 едно към
@@ -153,9 +153,10 @@
 - Ключова оптимизация: fts-каталогът е ЕДИН ключ на таблица (point GET),
   не scan — `lsm_cluster_scan_kb` rebuild-ва snapshot на всички ключове
   и даваше 74 ms/query; след fix-а е 73–579 µs.
+- **F6 (post-P11):** `@@ AND eq/range` — post-filter върху FTS hits.
 - Ревизии (честно): ts_rank е отделна функция в плана, тук реденето е по
-  BM25 score в самата заявка (gaps F3); фразови заявки няма (F5); @@ не се
-  комбинира с други WHERE условия (F6); UTF-8 без case folding (F1).
+  BM25 score в самата заявка (gaps F3); фразови заявки няма (F5);
+  UTF-8 без case folding (F1).
 
 ## P8 — vector/ модал
 - Реализирано: `VECTOR(n)` (typ=1000+n, payload fixed-point ×1e6 i32 —
@@ -170,10 +171,10 @@
   dim check, L2/cos/IP kNN, DML sync, restart без rebuild, non-vector
   отказ). **Perf gate 100k×128d recall@10 ≥ 0.95 / <20 ms** — остава
   bench/ (Q2 arena; seed chunked като FTS 20k) — вж. gaps V2.
+- **V6 (post-P11):** kNN `AND eq/range` — overfetch + post-filter.
 - Ревизии (честно): fixed-point ×1e6 вместо IEEE f64 bits (V1); unindex
-  не чисти orphan backlinks (search skip-ва липсващ vec); kNN не се
-  комбинира с AND/други WHERE (като F6); metadata pre-filter през
-  secondary index/ — не в P8 (V3); upper-level cache в RAM — не (V4).
+  strips reverse edges (V5); metadata pre-filter през secondary index
+  преди HNSW — не (V3); upper-level cache в RAM — не (V4).
 
 ## P9 — ts/ (time-series през SQL)
 - Реализирано: `CREATE TABLE … WITH (ttl_days = N | ttl_sec = N)` —

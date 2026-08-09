@@ -114,6 +114,17 @@ fn main() -> i64 !IO !Time !Par {
     srv = q7.srv
     check(fails, "no_fts_col", q7.ok == 0 && q7.state == "0A000")
 
+    // F6: @@ AND eq/range post-filter
+    let qf1 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('brown') AND id = 2")
+    srv = qf1.srv
+    check(fails, "fts_and_eq", qf1.ok == 1 && vec_len(qf1.res.rows) == 1 && row_id(vec_get(qf1.res.rows, 0)) == "2")
+    let qf2 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('brown') AND id = 99")
+    srv = qf2.srv
+    check(fails, "fts_and_eq_none", qf2.ok == 1 && vec_len(qf2.res.rows) == 0)
+    let qf3 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick') AND id >= 1 AND id <= 2")
+    srv = qf3.srv
+    check(fails, "fts_and_range", qf3.ok == 1 && vec_len(qf3.res.rows) == 1 && row_id(vec_get(qf3.res.rows, 0)) == "1")
+
     // DML синхронизация: INSERT след CREATE INDEX се вижда
     let i2 = exec1(srv, "INSERT INTO docs (id, body) VALUES (6, 'quick silver')")
     srv = i2.srv

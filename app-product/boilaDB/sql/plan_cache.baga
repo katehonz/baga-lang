@@ -1,8 +1,7 @@
 // plan_cache.baga — plan cache за SELECT (P5).
 //
-// Кеш по суров SQL текст на РЕЗОЛВНАТИЯ план (sel + таблица). Покрива
-// само едно-таблични SELECT-и (горещият OLTP point/range път); JOIN
-// заявките плащат parse+catalog (gaps C1). Инвалидация: нова карта при
+// Кеш по суров SQL текст: sel + лява таблица (вкл. JOIN — C1; дясната
+// се резолва при exec по sel.join_table). Инвалидация: нова карта при
 // DDL (bump на gen).
 
 import "ast.baga"

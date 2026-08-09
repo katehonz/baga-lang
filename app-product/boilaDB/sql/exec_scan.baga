@@ -1,5 +1,4 @@
 // exec_scan.baga — SELECT fetch + pipeline (P5), txn buffer reads (P4).
-
 import "../storage/shards.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
@@ -26,26 +25,20 @@ fn boila_result_empty() -> BoilaResult {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
     return BoilaResult { cols: cols, rows: rows }
 }
-
 fn boila_fetch_empty(s: BoilaStore, txn: BoilaTxn) -> BoilaFetch {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
     return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
 }
-
 fn boila_fetch_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaFetch {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
     return BoilaFetch { s: s, txn: txn, ok: 0, err: msg, state: state, rows: rows }
 }
-
 fn boila_exec_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaExec {
     return BoilaExec { s: s, txn: txn, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty() }
 }
-
 fn boila_exec_ok_select(s: BoilaStore, txn: BoilaTxn, r: BoilaResult) -> BoilaExec {
     return BoilaExec { s: s, txn: txn, ok: 1, err: "", state: "", kind: 1, res: r }
 }
-
-// Индекс на колона в таблица; -1 ако липсва.
 fn boila_col_idx(t: BoilaTable, name: str) -> i64 {
     return boila_col_idx_of(t.cols, name)
 }
@@ -125,11 +118,31 @@ fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, 
     }
 }
 
-// --- fetch: редовете на таблица с WHERE (point/index/range/seq) ---
+// F6/V6: post-filter eq/lo/hi on modal hits.
+fn boila_row_pass_filters(row: Vec<BoilaVal>, t: BoilaTable, sel: BoilaSel) -> i64 {
+    if sel.has_eq == 1 {
+        let cix = boila_col_idx(t, sel.eq_col)
+        if cix < 0 || cix >= vec_len(row) { return 0 }
+        if boila_val_cmp(vec_get(row, cix), sel.pk_eq) != 0 { return 0 }
+    }
+    if sel.has_lo == 1 {
+        let cix = boila_col_idx(t, sel.lo_col)
+        if cix < 0 || cix >= vec_len(row) { return 0 }
+        let c = boila_val_cmp(vec_get(row, cix), sel.pk_lo)
+        if c != 1 && c != 0 { return 0 }
+    }
+    if sel.has_hi == 1 {
+        let cix = boila_col_idx(t, sel.hi_col)
+        if cix < 0 || cix >= vec_len(row) { return 0 }
+        let c = boila_val_cmp(vec_get(row, cix), sel.pk_hi)
+        if c != 0 - 1 && c != 0 { return 0 }
+    }
+    return 1
+}
 
 fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
-    // kNN път (P8): WHERE col <-> '[…]' LIMIT k
+    // kNN + AND (V6); LIMIT=k, overfetch when filtered
     if sel.has_knn == 1 {
         let hl = hnsw_list_for_table(s, t.id)?
         s = hl.s
@@ -141,9 +154,7 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         let mut k: i64 = 0
         while k < vec_len(hl.defs) {
             let d = vec_get(hl.defs, k)
-            if d.col_idx == col_ix {
-                hdi = k
-            }
+            if d.col_idx == col_ix { hdi = k }
             k = k + 1
         }
         if hdi < 0 {
@@ -154,12 +165,13 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         if qp.ok == 0 {
             return boila_fetch_fail(s, txn, qp.err, "42601")
         }
-        // metric от WHERE оператора; def.metric е default при create
         let mut mdef = def
         mdef.metric = sel.knn_metric
         let mut kk = sel.limit
-        if kk <= 0 {
-            kk = 10
+        if kk <= 0 { kk = 10 }
+        if sel.has_eq == 1 || sel.has_lo == 1 || sel.has_hi == 1 {
+            kk = kk * 16
+            if kk < 64 { kk = 64 }
         }
         let hq = hnsw_search(s, txn, t, mdef, boila_vec_from_val(qp.v), kk)?
         s = hq.s
@@ -168,13 +180,16 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             let g = boila_txn_get(s, txn, t.id, vec_get(hq.pks, qi))?
             s = g.s
             if g.found == 1 {
-                vec_push(rows, boila_row_dec(g.row))
+                let row = boila_row_dec(g.row)
+                if boila_row_pass_filters(row, t, sel) == 1 {
+                    vec_push(rows, row)
+                }
             }
             qi = qi + 1
         }
         return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
-    // FTS път (P7): WHERE col @@ to_tsquery('…')
+    // FTS + AND (F6)
     if sel.has_fts == 1 {
         let fl = fts_list_for_table(s, t.id)?
         s = fl.s
@@ -186,9 +201,7 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         let mut k: i64 = 0
         while k < vec_len(fl.defs) {
             let d = vec_get(fl.defs, k)
-            if d.col_idx == col_ix {
-                fdi = k
-            }
+            if d.col_idx == col_ix { fdi = k }
             k = k + 1
         }
         if fdi < 0 {
@@ -202,7 +215,10 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             let g = boila_txn_get(s, txn, t.id, vec_get(fq.pks, qi))?
             s = g.s
             if g.found == 1 {
-                vec_push(rows, boila_row_dec(g.row))
+                let row = boila_row_dec(g.row)
+                if boila_row_pass_filters(row, t, sel) == 1 {
+                    vec_push(rows, row)
+                }
             }
             qi = qi + 1
         }
@@ -358,8 +374,6 @@ fn boila_distinct_rows(rows: Vec<Vec<BoilaVal>>) -> Vec<Vec<BoilaVal>> {
     }
     return out
 }
-
-// --- OFFSET/LIMIT връща нов списък ---
 
 fn boila_apply_offlim(rows: Vec<Vec<BoilaVal>>, off: i64, lim: i64) -> Vec<Vec<BoilaVal>> {
     let out: Vec<Vec<BoilaVal>> = vec_new()
