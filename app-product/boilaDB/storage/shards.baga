@@ -165,27 +165,49 @@ fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) ->
             next: r.next, keys: r.keys
         }
     }
-    boila_all_lock(s)?
+    // Per-shard lock (no all_lock): collect matches, paginate by cursor index.
     let dbs: Map<i64, LsmDB> = h_map(s.dbs_h)
-    let shards: Vec<LsmDB> = vec_new()
-    let mut i: i64 = 0
-    while i < s.n {
-        vec_push(shards, map_get(dbs, i))
-        i = i + 1
+    let all: Vec<bytes> = vec_new()
+    let mut si: i64 = 0
+    let mut ok: i64 = 1
+    while si < s.n {
+        let mu = boila_shard_lock(s, si)?
+        let mut db = map_get(dbs, si)
+        let mut sc = 0
+        let mut done = false
+        while done == false {
+            let r = lsm_scan_kb(db, sc, 256, pat)?
+            db = r.db
+            let mut j: i64 = 0
+            while j < vec_len(r.keys) {
+                vec_push(all, vec_get(r.keys, j))
+                j = j + 1
+            }
+            sc = r.next
+            if sc == 0 {
+                done = true
+            }
+        }
+        ok = db.ok
+        map_set(dbs, si, db)
+        mutex_unlock(mu)
+        si = si + 1
     }
-    let mut c = s.c
-    c.shards = shards
-    c.n = s.n
-    let r = lsm_cluster_scan_kb(c, cursor, count, pat)?
-    i = 0
-    while i < s.n {
-        map_set(dbs, i, vec_get(r.c.shards, i))
+    let keys: Vec<bytes> = vec_new()
+    let mut i = cursor
+    let mut nout: i64 = 0
+    while i < vec_len(all) && nout < count {
+        vec_push(keys, vec_get(all, i))
         i = i + 1
+        nout = nout + 1
     }
-    boila_all_unlock(s)?
+    let mut next: i64 = 0
+    if i < vec_len(all) {
+        next = i
+    }
     return BoilaScan {
-        s: BoilaStore { c: r.c, dbs_h: s.dbs_h, mus_h: s.mus_h, n: s.n, ok: r.c.ok },
-        next: r.next, keys: r.keys
+        s: BoilaStore { c: s.c, dbs_h: s.dbs_h, mus_h: s.mus_h, n: s.n, ok: ok },
+        next: next, keys: keys
     }
 }
 

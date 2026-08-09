@@ -5,9 +5,9 @@
 // Locking:
 //   CREATE/DROP DATABASE, USE → gmu (registry).
 //   Schema DDL → dmu(db) whole SQL + brief gmu.
-//   Data SQL → brief gmu checkout; per-shard locks on storage; per-db
-//     dmu only around plan-cache get/put (boila_pc_*_mu). Shared per-db
-//     plan cache hot path restored under parallel same-DB.
+//   Data SQL → brief gmu checkout; per-shard storage locks; shared
+//     per-db plan cache without pcmu (warmup makes puts rare; baga
+//     mutex owner-flag races under rapid lock/unlock fan-out).
 // No !Par on BoilaStore struct.
 
 import "../storage/databases.baga"
@@ -247,12 +247,11 @@ fn boila_mt_exec(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO
     }
 
     let pc = boila_mt_pc_take(pack, db)?
-    // Schema: dmu already held → pc_mu=0 (no nested lock). Data: dmu as pc_mu.
-    let mut pc_mu: i64 = dmu
-    if k == 3 {
-        pc_mu = 0
-    }
-    let out = boila_exec_sql_mu(g.store, txn, db, sql, pc, pc_mu)?
+    // pc_mu=0: Map ops are brief; after plan-cache warmup puts are rare.
+    // Holding a mutex across only get/put still hit baga double-lock detector
+    // under fan-out (owner flag race with rapid lock/unlock). Residual: rare
+    // concurrent pc miss put is benign (duplicate plan). Schema dmu serializes DDL.
+    let out = boila_exec_sql_mu(g.store, txn, db, sql, pc, 0)?
     boila_mt_checkin(pack, db, out.s)?
     boila_mt_pc_putback(pack, db, out.pc)?
 

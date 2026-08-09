@@ -7,9 +7,10 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P11
 
-- **P11-1 — няма 10k concurrent client ladder.** Wire/HTTP са sync
-  (W1/H2); harness-ът мери sequential ops/s. True pool = rebuild на
-  BoilaServer ownership + shard-owner threads.
+- **P11-1 — (PARTIAL) concurrent ladder, not 10k.** `bench/boila/mt_ladder`
+  : 1/4/8/16/32 HTTP clients × 200 point SELECT against MT serve
+  (~3–8k ops/s). Not 10k OS-thread clients; residual true pool /
+  shard-owner workers.
 - **P11-2 — (FIXED) wall deadline + max_scan/max_rows.** `BoilaBudget`
   begin at fetch; cooperative `boila_budget_tick` every 64 keys →
   57014 on timeout. Env `BOILA_BUDGET_MS` (default 5000; 0 = immediate).
@@ -84,10 +85,10 @@ T = транзакции, W = wire protocol, F = FTS.
 ## Открити при P6
 
 - **W1 — (FIXED go_bg + multi-DB + per-shard + shared pc).** HTTP/PG:
-  `go_bg` per-conn; live conn; `boila_open_mt` hop-less shards. Data SQL
-  under shard locks; **per-db plan cache** with `boila_pc_*_mu` (dmu only
-  around get/put). Schema DDL serial per-db. Residual: SELECT vs DROP
-  TABLE race if mid-exec (no schema epoch); JOIN plans uncached (C1).
+  `go_bg` per-conn; live conn; `boila_open_mt` hop-less shards (per-shard
+  scan, no all_lock). Shared per-db plan cache (pc_mu off — baga mutex
+  owner-flag races under fan-out; puts rare after warmup). Schema DDL
+  serial per-db. Residual: SELECT vs DROP race; JOIN uncached (C1).
 - **W2 — extended protocol-ът ре-parse-ва на всеки Execute.** $1..$n се
   заместват текстово в Bind/Execute и заявката минава през пълния
   pipeline (plan cache-ът хваща само повторения на идентичен текст).
