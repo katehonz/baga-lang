@@ -114,8 +114,8 @@ T = транзакции, W = wire protocol, F = FTS.
   Prepared SELECT: catalog resolve cols/types; stmt → 't'+'T', portal →
   'T'; non-SELECT / JOIN/GROUP → NoData (+ empty param desc за stmt).
 - **W6 — auth cleartext token (BOILA_TOKEN) или trust.** W6b: `ct_eq`.
-  W6c: HTTP `Authorization: Bearer` / `X-Boila-Token` (same env; /health
-  open). Residual: no SCRAM; no TLS (SSLRequest→'N').
+  W6c: HTTP Bearer / X-Boila-Token. W3b: more ParameterStatus
+  (DateStyle/TimeZone/…). Residual: no SCRAM; no TLS (SSLRequest→'N').
 
 ## Открити при P5
 
