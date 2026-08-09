@@ -242,6 +242,6 @@ T = транзакции, W = wire protocol, F = FTS.
 - **M1 — (FIXED) request counters + build info.** `boila_mt_stat_*` +
   `/health` `version`, `/metrics` `boila_build_info`, PG `server_version`
   includes boilaDB 0.1.0.
-- **H1 — serve е thread-per-conn** (моделът на httpdbaga). Bounded pool
-  + admission control идват с P6 (wire); P0 скелетът не е товарно
-  втвърден — това е целта на P11.
+- **H1 — (FIXED) go_bg + BOILA_MAX_CONN admission.** HTTP/PG:
+  `boila_mt_try_conn` → 503/53300 when over cap (default 64). Residual:
+  still OS-thread-per-conn (not fiber pool); P11-1 ladder not 10k clients.
