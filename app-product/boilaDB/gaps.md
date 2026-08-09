@@ -199,10 +199,11 @@ T = транзакции, W = wire protocol, F = FTS.
   plan cache + PK fast path; гейтът ≤ 1.25× от PLAN.md се премества
   като задължаващ при P5 (plan cache) / P6 (prepared statements).
   Числото от P1 е baseline-ът, срещу който се сравнява всяко подобрение.
-- **K3 — range scan-ът е scan-всичко-и-филтрирай.** rocksbaga SCAN е
-  hash-подреден (не сортиран), затова `WHERE pk >= a AND pk <= b` в P1
-  обхожда цялата таблица. Резултатите са коректни, но не са подредени и
-  няма early-stop. Истински сортиран range scan идва с P5 planner-а.
+- **K3 — (FIXED) range: sort PK bytes + lb + early-stop.** rocksbaga SCAN
+  остава hash-подреден; след `boila_txn_keys` PK-тата се сортират по
+  sort-order encoding (`boila_pk_sort`), lower-bound (`boila_pk_lb`) и
+  early-stop при `> hi`. Резултатът е подреден. Residual: still materializes
+  full key list (no storage-level sorted iterator).
 - **H2 — (FIXED) HTTP go_bg + per-shard hop-less + multi-DB + live conn.**
   `BOILA_MAX_CONN` → 503/53300. mode=`mt-shard`.
 

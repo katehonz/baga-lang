@@ -109,3 +109,78 @@ fn boila_sort_rows(rows: Vec<Vec<BoilaVal>>, idxs: Vec<i64>, desc: Vec<i64>) {
         boila_sort_qs(rows, 0, n - 1, idxs, desc)
     }
 }
+
+// K3: sort-order PK bytes (boila_val_enc) — in-place insertion sort.
+fn boila_pk_sort_ins(pks: Vec<bytes>, lo: i64, hi: i64) {
+    let mut i = lo + 1
+    while i <= hi {
+        let key = vec_get(pks, i)
+        let mut j = i - 1
+        let mut done = false
+        while done == false && j >= lo {
+            if boila_bytes_cmp(vec_get(pks, j), key) <= 0 {
+                done = true
+            } else {
+                vec_set(pks, j + 1, vec_get(pks, j))
+                j = j - 1
+            }
+        }
+        vec_set(pks, j + 1, key)
+        i = i + 1
+    }
+}
+
+fn boila_pk_sort_part(pks: Vec<bytes>, lo: i64, hi: i64) -> i64 {
+    let piv = vec_get(pks, hi)
+    let mut i = lo
+    let mut j = lo
+    while j < hi {
+        if boila_bytes_cmp(vec_get(pks, j), piv) <= 0 {
+            let t = vec_get(pks, i)
+            vec_set(pks, i, vec_get(pks, j))
+            vec_set(pks, j, t)
+            i = i + 1
+        }
+        j = j + 1
+    }
+    let t = vec_get(pks, i)
+    vec_set(pks, i, vec_get(pks, hi))
+    vec_set(pks, hi, t)
+    return i
+}
+
+fn boila_pk_sort_qs(pks: Vec<bytes>, lo: i64, hi: i64) {
+    if hi - lo < 16 {
+        if lo < hi {
+            boila_pk_sort_ins(pks, lo, hi)
+        }
+        return
+    }
+    if lo < hi {
+        let p = boila_pk_sort_part(pks, lo, hi)
+        boila_pk_sort_qs(pks, lo, p - 1)
+        boila_pk_sort_qs(pks, p + 1, hi)
+    }
+}
+
+fn boila_pk_sort(pks: Vec<bytes>) {
+    let n = vec_len(pks)
+    if n > 1 {
+        boila_pk_sort_qs(pks, 0, n - 1)
+    }
+}
+
+// first index i where pks[i] >= target; n if all < target (sorted pks).
+fn boila_pk_lb(pks: Vec<bytes>, target: bytes) -> i64 {
+    let mut lo: i64 = 0
+    let mut hi = vec_len(pks)
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2
+        if boila_bytes_cmp(vec_get(pks, mid), target) < 0 {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return lo
+}

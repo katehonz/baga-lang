@@ -106,6 +106,20 @@ fn main() -> i64 !IO !Time !Par {
         j = j + 1
     }
     check(fails, "range_set", seen3 + seen4 + seen5 + seen6 == 4)
+    // K3: range rows ordered by PK asc (id 3..6 → names tri..shest)
+    let q2o = boila_server_exec(srv, "boila", "SELECT id FROM users WHERE id >= 3 AND id <= 6")?
+    srv = q2o.srv
+    let mut ord_ok: i64 = 0
+    if q2o.ok == 1 && vec_len(q2o.res.rows) == 4 {
+        let a = row_str(vec_get(q2o.res.rows, 0), 0)
+        let b = row_str(vec_get(q2o.res.rows, 1), 0)
+        let c = row_str(vec_get(q2o.res.rows, 2), 0)
+        let d = row_str(vec_get(q2o.res.rows, 3), 0)
+        if a == "3" && b == "4" && c == "5" && d == "6" {
+            ord_ok = 1
+        }
+    }
+    check(fails, "range_ordered", ord_ok == 1)
 
     // --- LIMIT ---
     let q3 = boila_server_exec(srv, "boila", "SELECT * FROM users LIMIT 3")?
