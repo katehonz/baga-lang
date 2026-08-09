@@ -149,6 +149,13 @@ fn main() -> i64 !IO !Time !Par {
     let jrn = exec(srv, "SELECT dept, loc FROM emp LEFT JOIN dep ON dept = code WHERE loc = 'nowhere'")?
     srv = jrn.srv
     check(fails, "left_where_right_empty", jrn.ok == 1 && vec_len(jrn.res.rows) == 0)
+    // A3b: range WHERE on right table column
+    let jrr = exec(srv, "SELECT name, code FROM emp JOIN dep ON dept = code WHERE code >= 'hr' AND code <= 'hr' ORDER BY id")?
+    srv = jrr.srv
+    check(fails, "join_range_right", jrr.ok == 1 && vec_len(jrr.res.rows) == 2 && cell(vec_get(jrr.res.rows, 0), 1) == "hr")
+    let jrr2 = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code WHERE loc >= 'sof' AND loc <= 'soz' ORDER BY id")?
+    srv = jrr2.srv
+    check(fails, "join_range_right_loc", jrr2.ok == 1 && vec_len(jrr2.res.rows) >= 1 && cell(vec_get(jrr2.res.rows, 0), 1) == "sofia")
 
     // --- C1: JOIN plan cache hit + same result on warm path ---
     let jsql = "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY id LIMIT 2"

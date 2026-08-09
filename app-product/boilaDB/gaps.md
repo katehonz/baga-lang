@@ -133,10 +133,11 @@ T = транзакции, W = wire protocol, F = FTS.
   `Map<bytes, BoilaHJBucket>` на inner (`boila_val_enc` key) + probe outer.
   С индекс → index nested loop (както преди). Residual: няма cost model
   (винаги hash ако няма ix); build държи целия inner в RAM.
-- **A3 — (PARTIAL) WHERE на дясната JOIN таблица.** Eq на right col →
-  post-filter на wide rows (`boila_join_filter_right`); left eq остава
-  pushdown. LEFT+WHERE right → SQL null-elimination. Residual: само
-  един JOIN; `ON` само `=`; range WHERE още left-PK.
+- **A3 — (FIXED) WHERE eq/range на дясната JOIN таблица.** Eq +
+  `>=`/`<=` на right col → post-filter (`boila_join_filter_right` /
+  `_range`); left pushdown when col is left. LEFT+WHERE right →
+  null-elimination. Residual: един JOIN; `ON` само `=`; lo/hi must
+  target same right col; left non-PK range still 0A000.
 
 ## Открити при P4
 
