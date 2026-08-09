@@ -49,13 +49,31 @@ fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, h
             return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в = не съответства на типа на колоната", state: "42804", pks: pks }
         }
         let ixid = boila_ix_by_col_t(t, cix)
-        if ixid < 0 {
-            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: concat("WHERE по '", concat(eq_col, "' — няма индекс (P4)")), state: "0A000", pks: pks }
+        if ixid >= 0 {
+            let lk = boila_ix_lookup(s, t, ixid, v_eq)?
+            s = lk.s
+            boila_scan_buf_eq(txn, t, cix, v_eq, lk.pks)
+            return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: lk.pks }
         }
-        let lk = boila_ix_lookup(s, t, ixid, v_eq)?
-        s = lk.s
-        boila_scan_buf_eq(txn, t, cix, v_eq, lk.pks)
-        return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: lk.pks }
+        // K3c: no index → scan all keys and filter by col eq below
+        let ks = boila_txn_keys(s, txn, t.id)?
+        s = ks.s
+        let mut ki: i64 = 0
+        while ki < vec_len(ks.pks) {
+            let pkenc = vec_get(ks.pks, ki)
+            let g = boila_txn_get(s, txn, t.id, pkenc)?
+            s = g.s
+            if g.found == 1 {
+                let row = boila_row_dec(g.row)
+                if cix >= 0 && cix < vec_len(row) {
+                    if boila_val_cmp(vec_get(row, cix), v_eq) == 0 {
+                        vec_push(pks, pkenc)
+                    }
+                }
+            }
+            ki = ki + 1
+        }
+        return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
     }
     // range: PK cmp on key; non-PK → get row + col cmp (K3b)
     let mut pk_range: i64 = 1

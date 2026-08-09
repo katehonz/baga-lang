@@ -236,22 +236,21 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             return boila_fetch_fail(s, txn, "литералът в = не съответства на типа на колоната", "42804")
         }
         let ixid = boila_ix_by_col_t(t, cix)
-        if ixid < 0 {
-            return boila_fetch_fail(s, txn, concat("WHERE по '", concat(sel.eq_col, "' — колона без индекс")), "0A000")
-        }
-        let lk = boila_ix_lookup(s, t, ixid, sel.pk_eq)?
-        s = lk.s
-        boila_scan_buf_eq(txn, t, cix, sel.pk_eq, lk.pks)
-        let mut li: i64 = 0
-        while li < vec_len(lk.pks) {
-            let g = boila_txn_get(s, txn, t.id, vec_get(lk.pks, li))?
-            s = g.s
-            if g.found == 1 {
-                vec_push(rows, boila_row_dec(g.row))
+        if ixid >= 0 {
+            let lk = boila_ix_lookup(s, t, ixid, sel.pk_eq)?
+            s = lk.s
+            boila_scan_buf_eq(txn, t, cix, sel.pk_eq, lk.pks)
+            let mut li: i64 = 0
+            while li < vec_len(lk.pks) {
+                let g = boila_txn_get(s, txn, t.id, vec_get(lk.pks, li))?
+                s = g.s
+                if g.found == 1 {
+                    vec_push(rows, boila_row_dec(g.row))
+                }
+                li = li + 1
             }
-            li = li + 1
+            return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
         }
-        return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
     // range / seq + budget
     // K3: PK sort-order bytes → sort + lb + early-stop (ordered range)
@@ -296,11 +295,9 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         }
         return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
-    // seq / non-PK range: scan all; post-filter when range not pure-PK
-    let mut need_f = 0
-    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 0 {
-        need_f = 1
-    }
+    // seq + filter for unindexed eq / non-PK range
+    let mut need_f = sel.has_eq
+    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 0 { need_f = 1 }
     let mut ki: i64 = 0
     while ki < n {
         let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?

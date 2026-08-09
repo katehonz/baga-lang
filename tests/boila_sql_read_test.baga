@@ -139,9 +139,13 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "missing_empty", q4.ok == 1 && vec_len(q4.res.rows) == 0)
 
     // --- грешки с SQLSTATE ---
+    // K3c: unindexed eq → seq filter (empty), not 0A000
     let e1 = boila_server_exec(srv, "boila", "SELECT * FROM users WHERE name = 'x'")?
     srv = e1.srv
-    check(fails, "err_where_not_pk", e1.ok == 0 && e1.state == "0A000")
+    check(fails, "eq_no_ix_empty", e1.ok == 1 && vec_len(e1.res.rows) == 0)
+    let e1b = boila_server_exec(srv, "boila", "SELECT id FROM users WHERE name = 'sedem'")?
+    srv = e1b.srv
+    check(fails, "eq_no_ix_hit", e1b.ok == 1 && vec_len(e1b.res.rows) == 1 && row_str(vec_get(e1b.res.rows, 0), 0) == "7")
     let e2 = boila_server_exec(srv, "boila", "SELECT * FROM nope")?
     srv = e2.srv
     check(fails, "err_no_table", e2.ok == 0 && e2.state == "42P01")

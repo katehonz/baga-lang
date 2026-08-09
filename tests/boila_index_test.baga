@@ -58,10 +58,10 @@ fn main() -> i64 !IO !Time !Par {
     srv = i1.srv
     check(fails, "seed3", i1.ok == 1 && i1.id == 3)
 
-    // без индекс → 0A000
+    // без индекс → seq filter (K3c), still finds rows
     let n0 = boila_server_exec(srv, "boila", "SELECT * FROM p WHERE city = 'sofia'")?
     srv = n0.srv
-    check(fails, "no_index_0A000", n0.ok == 0 && n0.state == "0A000")
+    check(fails, "no_index_scan", n0.ok == 1 && vec_len(n0.res.rows) == 2)
 
     // CREATE INDEX build-ва върху съществуващите редове
     let x1 = boila_server_exec(srv, "boila", "CREATE INDEX city_ix ON p (city)")?
