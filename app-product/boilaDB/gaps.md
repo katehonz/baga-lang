@@ -98,7 +98,8 @@ T = транзакции, W = wire protocol, F = FTS.
   `go_bg` per-conn; live conn; `boila_open_mt` hop-less shards (per-shard
   scan, no all_lock). Shared per-db plan cache (pc_mu off — baga mutex
   owner-flag races under fan-out; puts rare after warmup). Schema DDL
-  serial per-db. Residual: SELECT vs DROP race.
+  serial per-db. W1b: dmu held for all store SQL (SELECT/DML/DDL) so
+  no SELECT vs DROP race. Residual: per-db full serialize (no shared lock).
 - **W2 — (FIXED) prepared SELECT/INSERT/UPDATE/DELETE AST.** kind 1–4;
   `$N` = tag 100 placeholder; Bind fills; Execute без re-parse.
   FTS/kNN `$N` lit / parse fail → text subst fallback.

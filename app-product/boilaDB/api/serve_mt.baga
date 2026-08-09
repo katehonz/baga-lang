@@ -4,7 +4,7 @@
 //
 // Locking:
 //   CREATE/DROP DATABASE, USE → gmu (registry).
-//   Schema DDL → dmu(db) whole SQL + brief gmu.
+//   Store SQL (data+schema DDL) → dmu(db) whole stmt (W1b: no SELECT/DROP race).
 //   Data SQL → brief gmu checkout; per-shard storage locks; shared
 //     per-db plan cache without pcmu (warmup makes puts rare; baga
 //     mutex owner-flag races under rapid lock/unlock fan-out).
@@ -274,20 +274,25 @@ fn boila_mt_pc_putback(pack: i64, db: str, pc: BoilaPlanCache) -> i64 !Par {
     return 0
 }
 
-// W2: bound SELECT AST path (no re-parse).
+// W2: bound SELECT AST path (no re-parse). W1b: hold dmu for whole stmt.
 fn boila_mt_exec_sel(pack: i64, txn: BoilaTxn, db: str, sel: BoilaSel) -> BoilaSrvOut !IO !Time !Par {
+    let dmu = boila_mt_db_mu(pack, db)?
+    mutex_lock(dmu)
     let g = boila_mt_checkout(pack, db)?
     if g.ok == 0 {
+        mutex_unlock(dmu)
         return boila_srv_out_fail(boila_mt_seed_srv(), txn, g.err, g.state)
     }
     let ct = boila_cat_by_name_txn(g.store, txn, sel.table)?
     let mut s = ct.s
     if ct.ok == 0 {
         boila_mt_checkin(pack, db, s)?
+        mutex_unlock(dmu)
         return boila_srv_out_fail(boila_mt_seed_srv(), txn, ct.err, ct.state)
     }
     let ex = boila_exec_select(s, txn, ct.table, sel)?
     boila_mt_checkin(pack, db, ex.s)?
+    mutex_unlock(dmu)
     boila_mt_note_sql(pack, ex.ok)?
     return BoilaSrvOut {
         srv: boila_mt_seed_srv(), txn: ex.txn, ok: ex.ok, err: ex.err,
@@ -301,32 +306,21 @@ fn boila_mt_exec(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO
         return boila_mt_exec_reg(pack, txn, db, sql)?
     }
 
-    // dmu: whole schema DDL; data path only for brief pc get/put (pc_mu).
+    // W1b: dmu for all store SQL (data + schema) — blocks SELECT||DROP race.
     let dmu = boila_mt_db_mu(pack, db)?
-    if k == 3 {
-        mutex_lock(dmu)
-    }
+    mutex_lock(dmu)
 
     let g = boila_mt_checkout(pack, db)?
     if g.ok == 0 {
-        if k == 3 {
-            mutex_unlock(dmu)
-        }
+        mutex_unlock(dmu)
         return boila_srv_out_fail(boila_mt_seed_srv(), txn, g.err, g.state)
     }
 
     let pc = boila_mt_pc_take(pack, db)?
-    // pc_mu=0: Map ops are brief; after plan-cache warmup puts are rare.
-    // Holding a mutex across only get/put still hit baga double-lock detector
-    // under fan-out (owner flag race with rapid lock/unlock). Residual: rare
-    // concurrent pc miss put is benign (duplicate plan). Schema dmu serializes DDL.
     let out = boila_exec_sql_mu(g.store, txn, db, sql, pc, 0)?
     boila_mt_checkin(pack, db, out.s)?
     boila_mt_pc_putback(pack, db, out.pc)?
-
-    if k == 3 {
-        mutex_unlock(dmu)
-    }
+    mutex_unlock(dmu)
 
     boila_mt_note_sql(pack, out.ok)?
     return BoilaSrvOut {
