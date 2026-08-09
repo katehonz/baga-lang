@@ -208,10 +208,9 @@
   `tests/boila_p11_test` (drop, budget constants, restart durability).
 - **Измерено (harness-2026-08-09.md):** point 10k → **156k ops/s**
   (6.4 µs); insert 10k → **524 ops/s**; mix 10k → **2.6k ops/s**.
-- **Сървър harden:** HTTP + PG → `go_bg` + **per-shard hop-less**
-  (`boila_open_mt`) + multi-DB + live counter (`BOILA_MAX_CONN=64`).
-  Data SQL parallel across shards (and DBs); schema DDL serial per-db.
-  No `!Par` on `BoilaStore` struct.
+- **Сървър harden:** HTTP + PG → `go_bg` + **per-shard hop-less** +
+  multi-DB + **shared per-db plan cache** (`boila_pc_*_mu`) + live
+  counter. Data SQL parallel; schema DDL serial per-db.
 - **Честно residual:** per-shard lanes inside one DB; external DB compare;
   kill -9 chaos automation.
 - Ревизии: ladder е single-thread SQL path, не client fan-out; budget

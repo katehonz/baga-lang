@@ -4,10 +4,10 @@
 //
 // Locking:
 //   CREATE/DROP DATABASE, USE → gmu (registry).
-//   Schema DDL (CREATE/DROP TABLE/INDEX/…) → dmu(db) + brief gmu.
-//   Data SQL (SELECT/DML/txn) → brief gmu checkout; exec under per-shard
-//     mutexes only (same-DB parallel across shards). Fresh plan cache
-//     per request (no shared Map race). Multi-DB always parallel.
+//   Schema DDL → dmu(db) whole SQL + brief gmu.
+//   Data SQL → brief gmu checkout; per-shard locks on storage; per-db
+//     dmu only around plan-cache get/put (boila_pc_*_mu). Shared per-db
+//     plan cache hot path restored under parallel same-DB.
 // No !Par on BoilaStore struct.
 
 import "../storage/databases.baga"
@@ -194,49 +194,69 @@ fn boila_mt_checkin(pack: i64, db: str, store: BoilaStore) -> i64 !Par {
     return 0
 }
 
+// Per-db plan cache: ensure entry exists under gmu, return pc (+ mu handle).
+fn boila_mt_pc_take(pack: i64, db: str) -> BoilaPlanCache !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let pcs: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
+    let mut pc = boila_pc_new()
+    if map_has(pcs, db) == 1 {
+        pc = map_get(pcs, db)
+    } else {
+        map_set(pcs, db, pc)
+    }
+    mutex_unlock(gmu)
+    return pc
+}
+
+// Keep newer generation (DDL invalidate must not be clobbered by stale put).
+fn boila_mt_pc_putback(pack: i64, db: str, pc: BoilaPlanCache) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let pcs: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
+    if map_has(pcs, db) == 1 {
+        let cur = map_get(pcs, db)
+        if pc.gen >= cur.gen {
+            map_set(pcs, db, pc)
+        }
+    } else {
+        map_set(pcs, db, pc)
+    }
+    mutex_unlock(gmu)
+    return 0
+}
+
 fn boila_mt_exec(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut !IO !Time !Par {
     let k = boila_mt_kw2(sql)
     if k == 1 || k == 2 {
         return boila_mt_exec_reg(pack, txn, db, sql)?
     }
 
-    // Schema DDL: serialize per-db (catalog). Data: hop-less per-shard.
-    let mut dmu: i64 = 0
+    // dmu: whole schema DDL; data path only for brief pc get/put (pc_mu).
+    let dmu = boila_mt_db_mu(pack, db)?
     if k == 3 {
-        dmu = boila_mt_db_mu(pack, db)?
         mutex_lock(dmu)
     }
 
     let g = boila_mt_checkout(pack, db)?
     if g.ok == 0 {
-        if dmu != 0 {
+        if k == 3 {
             mutex_unlock(dmu)
         }
         return boila_srv_out_fail(boila_mt_seed_srv(), txn, g.err, g.state)
     }
 
-    // Fresh pc on data path (avoid shared Map races under parallel same-DB).
-    // Schema DDL may use per-db pc (serialized by dmu).
-    let mut pc = boila_pc_new()
+    let pc = boila_mt_pc_take(pack, db)?
+    // Schema: dmu already held → pc_mu=0 (no nested lock). Data: dmu as pc_mu.
+    let mut pc_mu: i64 = dmu
     if k == 3 {
-        let gmu = boila_mt_gmu(pack)
-        mutex_lock(gmu)
-        let pcs: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
-        if map_has(pcs, db) == 1 {
-            pc = map_get(pcs, db)
-        }
-        mutex_unlock(gmu)
+        pc_mu = 0
     }
-
-    let out = boila_exec_sql(g.store, txn, db, sql, pc)?
+    let out = boila_exec_sql_mu(g.store, txn, db, sql, pc, pc_mu)?
     boila_mt_checkin(pack, db, out.s)?
+    boila_mt_pc_putback(pack, db, out.pc)?
 
     if k == 3 {
-        let gmu2 = boila_mt_gmu(pack)
-        mutex_lock(gmu2)
-        let pcs2: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
-        map_set(pcs2, db, out.pc)
-        mutex_unlock(gmu2)
         mutex_unlock(dmu)
     }
 

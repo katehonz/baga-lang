@@ -79,13 +79,11 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P6
 
-- **W1 — (FIXED go_bg + multi-DB + per-shard hop-less).** HTTP/PG: `go_bg`
-  per-conn; per-conn txn; live conn counter (`BOILA_MAX_CONN=64`).
-  Serve opens stores via `boila_open_mt` (Map + per-shard mutex, R55).
-  Data SQL: brief gmu checkout, exec under shard locks only → same-DB
-  parallel across shards + multi-DB parallel. Schema DDL serial per-db
-  (dmu). No `!Par` on `BoilaStore` struct (typechecker OOM). Residual:
-  shared plan cache under parallel same-DB (fresh pc per data request).
+- **W1 — (FIXED go_bg + multi-DB + per-shard + shared pc).** HTTP/PG:
+  `go_bg` per-conn; live conn; `boila_open_mt` hop-less shards. Data SQL
+  under shard locks; **per-db plan cache** with `boila_pc_*_mu` (dmu only
+  around get/put). Schema DDL serial per-db. Residual: SELECT vs DROP
+  TABLE race if mid-exec (no schema epoch); JOIN plans uncached (C1).
 - **W2 — extended protocol-ът ре-parse-ва на всеки Execute.** $1..$n се
   заместват текстово в Bind/Execute и заявката минава през пълния
   pipeline (plan cache-ът хваща само повторения на идентичен текст).

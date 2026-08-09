@@ -49,7 +49,12 @@ fn boila_sql_fail(s: BoilaStore, txn: BoilaTxn, pc: BoilaPlanCache, msg: str, st
     return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 0, err: msg, state: state, kind: 0, res: boila_result_empty(), id: 0 }
 }
 
+// pc_mu=0 → unlocked (tests / single-thread). Serve passes per-db mutex.
 fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlanCache) -> BoilaSqlOut !IO !Time !Par {
+    return boila_exec_sql_mu(s, txn, db, sql, pc, 0)?
+}
+
+fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlanCache, pc_mu: i64) -> BoilaSqlOut !IO !Time !Par {
     let lx = boila_lex(sql)
     if lx.err != "" {
         return boila_sql_fail(s, txn, pc, lx.err, "42601")
@@ -92,8 +97,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 16, res: ex.res, id: vec_len(ex.res.rows) }
     }
     if tok_kw(t0, "select") == 1 {
-        // plan cache hit?
-        let hit = boila_pc_get(pc, sql)
+        let hit = boila_pc_get_mu(pc, sql, pc_mu)?
         if hit.hit == 1 {
             let ex = boila_exec_select(s, txn, hit.plan.table, hit.plan.sel)?
             return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
@@ -107,9 +111,8 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
         if ct.ok == 0 {
             return boila_sql_fail(s, txn, pc, ct.err, ct.state)
         }
-        // кеширай само едно-табличните (join-ите плащат parse, gaps C1)
         if ps.sel.has_join == 0 {
-            boila_pc_put(pc, sql, BoilaSelPlan { sel: ps.sel, table: ct.table })
+            boila_pc_put_mu(pc, sql, BoilaSelPlan { sel: ps.sel, table: ct.table }, pc_mu)?
         }
         let ex = boila_exec_select(s, txn, ct.table, ps.sel)?
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
@@ -129,7 +132,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
             if dr.ok == 0 {
                 return boila_sql_fail(s, txn, pc, dr.err, dr.state)
             }
-            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: dr.id }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 18, res: boila_result_empty(), id: dr.id }
         }
         return boila_sql_fail(s, txn, pc, "DROP TABLE / DROP DATABASE (сърверно)", "0A000")
     }
@@ -148,7 +151,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
             if cr.ok == 0 {
                 return boila_sql_fail(s, txn, pc, cr.err, cr.state)
             }
-            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
         }
         if tok_kw(t1, "index") == 1 {
             let p = boila_parse_create_ix2(lx)
@@ -182,7 +185,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
                         return boila_sql_fail(s, txn, pc, c.err, c.state)
                     }
                 }
-                return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 15, res: boila_result_empty(), id: hx.id }
+                return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 15, res: boila_result_empty(), id: hx.id }
             }
             let ix = boila_ix_create(s, txn, ct.table, p.ix.ix_name, p.ix.col)?
             s = ix.s
@@ -199,7 +202,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
                     return boila_sql_fail(s, txn, pc, c.err, c.state)
                 }
             }
-            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
         }
         if tok_kw(t1, "graph") == 1 {
             let p = boila_parse_create_graph(lx)
@@ -232,7 +235,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
                     return boila_sql_fail(s, txn, pc, c.err, c.state)
                 }
             }
-            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 17, res: boila_result_empty(), id: gx.id }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 17, res: boila_result_empty(), id: gx.id }
         }
         if tok_kw(t1, "fts") == 1 {
             let p = boila_parse_create_fts(lx)
@@ -265,7 +268,7 @@ fn boila_exec_sql(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaPlan
                     return boila_sql_fail(s, txn, pc, c.err, c.state)
                 }
             }
-            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate(pc), ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: fx.id }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: fx.id }
         }
         return boila_sql_fail(s, txn, pc, "CREATE TABLE / INDEX / FTS INDEX / INDEX USING hnsw", "0A000")
     }

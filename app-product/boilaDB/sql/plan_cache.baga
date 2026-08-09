@@ -48,3 +48,37 @@ fn boila_pc_invalidate(pc: BoilaPlanCache) -> BoilaPlanCache {
     let m: Map<str, BoilaSelPlan> = map_new()
     return BoilaPlanCache { m: m, gen: pc.gen + 1 }
 }
+
+// MT: brief lock around Map touch (mu=0 → unlocked / tests).
+fn boila_pc_get_mu(pc: BoilaPlanCache, sql: str, mu: i64) -> BoilaPcGet !Par {
+    if mu != 0 {
+        mutex_lock(mu)
+    }
+    let r = boila_pc_get(pc, sql)
+    if mu != 0 {
+        mutex_unlock(mu)
+    }
+    return r
+}
+
+fn boila_pc_put_mu(pc: BoilaPlanCache, sql: str, plan: BoilaSelPlan, mu: i64) -> i64 !Par {
+    if mu != 0 {
+        mutex_lock(mu)
+    }
+    boila_pc_put(pc, sql, plan)
+    if mu != 0 {
+        mutex_unlock(mu)
+    }
+    return 0
+}
+
+fn boila_pc_invalidate_mu(pc: BoilaPlanCache, mu: i64) -> BoilaPlanCache !Par {
+    if mu != 0 {
+        mutex_lock(mu)
+    }
+    let r = boila_pc_invalidate(pc)
+    if mu != 0 {
+        mutex_unlock(mu)
+    }
+    return r
+}
