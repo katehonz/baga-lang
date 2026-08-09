@@ -11,6 +11,7 @@ import "exec_knn.baga"
 import "exec_agg.baga"
 import "exec_join.baga"
 import "exec_sort.baga"
+import "../ts/time_bucket.baga"
 import "std/str/str.baga"
 
 fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time !Par {
@@ -95,15 +96,17 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
         boila_sort_rows(rows, idxs, sel.ord_desc)
     }
 
-    // проекция
+    // проекция (S7: time_bucket items get biv transform)
     let mut res = boila_result_empty()
     let proj: Vec<i64> = vec_new()
+    let bivs: Vec<i64> = vec_new()
     if sel.star == 1 {
         let mut i: i64 = 0
         while i < vec_len(cols) {
             let cd = vec_get(cols, i)
             vec_push(res.cols, cd.name)
             vec_push(proj, i)
+            vec_push(bivs, 0)
             i = i + 1
         }
     } else {
@@ -114,14 +117,35 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
             if ix < 0 {
                 return boila_exec_fail(s, txn, concat("колона '", concat(it.col, "' не съществува")), "42703")
             }
-            vec_push(res.cols, it.col)
+            if it.biv > 0 {
+                vec_push(res.cols, "time_bucket")
+            } else {
+                vec_push(res.cols, it.col)
+            }
             vec_push(proj, ix)
+            vec_push(bivs, it.biv)
             i = i + 1
         }
     }
     let mut r: i64 = 0
     while r < vec_len(rows) {
-        vec_push(res.rows, boila_project(vec_get(rows, r), proj))
+        let src = vec_get(rows, r)
+        let out: Vec<BoilaVal> = vec_new()
+        let mut j: i64 = 0
+        while j < vec_len(proj) {
+            let ix = vec_get(proj, j)
+            let mut v = boila_val_null()
+            if ix >= 0 && ix < vec_len(src) {
+                v = vec_get(src, ix)
+            }
+            let bv = vec_get(bivs, j)
+            if bv > 0 {
+                v = boila_tb_apply(v, bv)
+            }
+            vec_push(out, v)
+            j = j + 1
+        }
+        vec_push(res.rows, out)
         r = r + 1
     }
     if sel.distinct == 1 {

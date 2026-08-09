@@ -93,6 +93,17 @@ fn main() -> i64 !IO !Time !Par {
     srv = bad.srv
     check(fails, "bad_unit", bad.ok == 0)
 
+    // S7: time_bucket in SELECT list (no GROUP BY)
+    let qs = exec1(srv, "SELECT time_bucket('1m', ts), v FROM pts WHERE id = 1")
+    srv = qs.srv
+    check(fails, "sel_bucket", qs.ok == 1 && vec_len(qs.res.rows) == 1 && row_i(vec_get(qs.res.rows, 0), 0) == 960 && row_i(vec_get(qs.res.rows, 0), 1) == 10)
+    let qs2 = exec1(srv, "SELECT time_bucket('1m', ts) FROM pts WHERE id = 2")
+    srv = qs2.srv
+    check(fails, "sel_bucket_only", qs2.ok == 1 && vec_len(qs2.res.rows) == 1 && row_i(vec_get(qs2.res.rows, 0), 0) == 1020)
+    let qs3 = exec1(srv, "SELECT time_bucket('1x', ts) FROM pts WHERE id = 1")
+    srv = qs3.srv
+    check(fails, "sel_bucket_bad", qs3.ok == 0)
+
     // --- TTL retention ---
     let c2 = exec1(srv, "CREATE TABLE tmp (id BIGINT, body TEXT, PRIMARY KEY (id)) WITH (ttl_sec = 2)")
     srv = c2.srv

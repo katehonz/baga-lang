@@ -4,6 +4,7 @@ import "token.baga"
 import "lexer.baga"
 import "ast.baga"
 import "../core/value.baga"
+import "../ts/time_bucket.baga"
 import "std/str/str.baga"
 
 struct BoilaLit {
@@ -82,6 +83,31 @@ fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
     let t = boila_ps_tok(l, i)
     if t.kind != tok_ident() {
         return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: concat("очаквах колона в проекцията, получих '", concat(t.txt, "'")), state: "42601" }
+    }
+    // S7: time_bucket('1m', col) in SELECT list
+    if t.txt == "time_bucket" {
+        if boila_ps_tok(l, i + 1).kind != tok_lparen() {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах '(' след time_bucket", state: "42601" }
+        }
+        let ivt = boila_ps_tok(l, i + 2)
+        if ivt.kind != tok_str() {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах интервал-стринг в time_bucket", state: "42601" }
+        }
+        if boila_ps_tok(l, i + 3).kind != tok_comma() {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах ',' в time_bucket", state: "42601" }
+        }
+        let col = boila_ps_tok(l, i + 4)
+        if col.kind != tok_ident() {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах колона в time_bucket", state: "42601" }
+        }
+        if boila_ps_tok(l, i + 5).kind != tok_rparen() {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах ')' в time_bucket", state: "42601" }
+        }
+        let iv = boila_tb_parse_iv(ivt.txt)
+        if iv.ok == 0 {
+            return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: iv.err, state: iv.state }
+        }
+        return BoilaPsItem { ok: 1, item: boila_sel_item_bucket(col.txt, iv.sec), pos: i + 6, err: "", state: "" }
     }
     let kind = boila_ps_agg_kind(t.txt)
     if kind == 0 {

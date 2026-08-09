@@ -186,8 +186,8 @@
   totals, bad unit, ttl_sec expire след 2s, ttl_days, restart.
   **Perf 1M точки < 50 ms** — bench остава (Q2 arena), gaps S5.
 - Ревизии: `ttl_sec` за тестове/фина зърненост (в допълнение на
-  `ttl_days`); time_bucket само в GROUP BY (не в SELECT list сам);
-  sweeper = flush, не background worker (S6).
+  `ttl_days`); **S7:** time_bucket и в SELECT list; sweeper = flush,
+  не background worker (S6).
 
 ## P10 — graph/ през WITH RECURSIVE
 - Реализирано: `CREATE GRAPH name ON edges (src, dst [, w])` — двупосочен

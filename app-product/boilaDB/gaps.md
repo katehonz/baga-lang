@@ -44,9 +44,10 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S6 — няма background TTL sweeper нишка.** Expire е lazy (get/flush/
   compact в rocksbaga); `boila_ts_sweep` = flush. Background queuebaga
   worker — P11.
-- **S7 — time_bucket само в GROUP BY.** `SELECT time_bucket(...)` като
-  проекция без GROUP BY → 0A000 (не е парснат). Alias/ORDER BY по
-  bucket — при нужда.
+- **S7 — (FIXED) time_bucket в SELECT list.** `BoilaSelItem.biv` +
+  `boila_sel_item_bucket`; parse `time_bucket('1m', col)` в проекция;
+  exec_select прилага `boila_tb_apply`. Residual: alias/ORDER BY по
+  bucket име; bucket+agg без GROUP BY още 0A000.
 - **S8 — `ttl_sec` е разширение** извън чистия PG `ttl_days` (за тестове
   и фина зърненост); документирано.
 
