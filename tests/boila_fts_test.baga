@@ -135,6 +135,15 @@ fn main() -> i64 !IO !Time !Par {
     let qgr = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('ΕΛΛΑΔΑ')")
     srv = qgr.srv
     check(fails, "greek_fold", qgr.ok == 1 && vec_len(qgr.res.rows) == 1 && row_id(vec_get(qgr.res.rows, 0)) == "22")
+    // F1d: Turkic İ→i, Şş
+    let itr = exec1(srv, "INSERT INTO docs (id, body) VALUES (23, 'İstanbul ve Şişli')")
+    srv = itr.srv
+    let qtr = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('istanbul')")
+    srv = qtr.srv
+    check(fails, "turkic_i", qtr.ok == 1 && vec_len(qtr.res.rows) == 1 && row_id(vec_get(qtr.res.rows, 0)) == "23")
+    let qtr2 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('ŞİŞLİ')")
+    srv = qtr2.srv
+    check(fails, "turkic_s", qtr2.ok == 1 && ids_has(qtr2.res, "23") == 1)
     // липсваща дума
     let q5 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('lipsva')")
     srv = q5.srv

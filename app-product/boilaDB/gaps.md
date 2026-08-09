@@ -77,9 +77,9 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P7
 
-- **F1 — (FIXED) ASCII + Latin-1 + Greek + Cyrillic case fold.** A-Z;
-  Latin-1 À-Ö/Ø-Þ; Greek Α-Ω; Cyrillic А-Я/Ё. Residual: Turkic İ/i,
-  full Unicode casefold; ς/σ not unified.
+- **F1 — (FIXED) multi-script case fold.** ASCII; Latin-1; Latin-Ext
+  (İ→i, Ğğ Şş…); Greek Α-Ω; Cyrillic А-Я/Ё. Residual: full Unicode
+  casefold tables; ς/σ not unified; locale-Turkish I→ı not applied.
 - **F3 — (FIXED) BM25 idf + per-doc dl.** `fts_bm25_idf` integer ln;
   F3b: `fts_doc_get` doclen in score loop (k1/b length norm). Residual:
   not bit-identical to PG ts_rank float; one GET per candidate.

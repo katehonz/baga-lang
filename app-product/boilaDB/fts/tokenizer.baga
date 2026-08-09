@@ -1,7 +1,7 @@
 // tokenizer.baga — FTS токенизър (P7).
 //
-// Term = [a-z0-9] + UTF-8 letters. Case fold: ASCII; Latin-1; Greek Α-Ω;
-// Cyrillic А-Я/Ё. Residual: Turkic İ/i, full Unicode tables.
+// Term = [a-z0-9] + UTF-8 letters. Case fold: ASCII; Latin-1; Latin-Ext
+// (İ→i, Ğğ Şş…); Greek Α-Ω; Cyrillic. Residual: full Unicode tables.
 
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
@@ -89,10 +89,33 @@ fn fts_is_greek_pair(b0: i64, b1: i64) -> i64 {
 
 fn fts_fold_greek(b0: i64, b1: i64) -> bytes {
     if b0 == 206 {
-        // Α-Ο CE 91-9F → α-ο CE B1-BF
         if b1 >= 145 && b1 <= 159 { return fts_two_b(206, b1 + 32) }
-        // Π-Ω CE A0-A9 → π-ω CF 80-89
         if b1 >= 160 && b1 <= 169 { return fts_two_b(207, b1 - 32) }
+    }
+    return fts_two_b(b0, b1)
+}
+
+// F1d: Latin Extended-A/B in C4/C5 (Ğğ Şş…); İ (C4 B0) → ASCII i
+fn fts_is_latinext_pair(b0: i64, b1: i64) -> i64 {
+    if b0 == 196 {
+        if b1 >= 128 && b1 <= 191 { return 1 }
+        return 0
+    }
+    if b0 == 197 {
+        if b1 >= 128 && b1 <= 191 { return 1 }
+        return 0
+    }
+    return 0
+}
+
+fn fts_fold_latinext(b0: i64, b1: i64) -> bytes {
+    // İ U+0130 → i (locale-independent FTS fold)
+    if b0 == 196 && b1 == 176 {
+        return fts_one_b(105)
+    }
+    // paired capitals are even second byte in much of Latin-Ext-A
+    if (b1 & 1) == 0 {
+        return fts_two_b(b0, b1 + 1)
     }
     return fts_two_b(b0, b1)
 }
@@ -141,15 +164,20 @@ fn fts_tokenize(text: str) -> Vec<str> {
                             run = bytes_concat(run, fts_fold_greek(c, b1))
                             i = i + 2
                         } else {
-                            if c >= 128 {
-                                run = bytes_concat(run, fts_one_b(c))
-                                i = i + 1
+                            if fts_is_latinext_pair(c, b1) == 1 {
+                                run = bytes_concat(run, fts_fold_latinext(c, b1))
+                                i = i + 2
                             } else {
-                                if bytes_len(run) > 0 {
-                                    vec_push(out, str_of_bytes(run))
-                                    run = bytes_new(0)
+                                if c >= 128 {
+                                    run = bytes_concat(run, fts_one_b(c))
+                                    i = i + 1
+                                } else {
+                                    if bytes_len(run) > 0 {
+                                        vec_push(out, str_of_bytes(run))
+                                        run = bytes_new(0)
+                                    }
+                                    i = i + 1
                                 }
-                                i = i + 1
                             }
                         }
                     }
