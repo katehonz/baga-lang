@@ -156,9 +156,9 @@ fn boila_del(s: BoilaStore, cf: i64, table_id: i64, pk: bytes) -> BoilaStore !IO
     return BoilaStore { c: s.c, dbs_h: s.dbs_h, mus_h: s.mus_h, n: s.n, ok: ok }
 }
 
-fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) -> BoilaScan !IO !Time !Par {
-    // K2: true byte-prefix (no glob) — safe when table_id bytes contain * ? [
-    let pref = boila_key_prefix(cf, table_id)
+// K2/K2b: true byte-prefix scan (no glob). pref = full key prefix
+// (cf|table, or cf|table|ix|val for secondary exact lookup).
+fn boila_scan_pref(s: BoilaStore, pref: bytes, cursor: i64, count: i64) -> BoilaScan !IO !Time !Par {
     if s.dbs_h == 0 {
         let r = lsm_cluster_scan_prefix_kb(s.c, cursor, count, pref)?
         return BoilaScan {
@@ -210,6 +210,10 @@ fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) ->
         s: BoilaStore { c: s.c, dbs_h: s.dbs_h, mus_h: s.mus_h, n: s.n, ok: ok },
         next: next, keys: keys
     }
+}
+
+fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) -> BoilaScan !IO !Time !Par {
+    return boila_scan_pref(s, boila_key_prefix(cf, table_id), cursor, count)?
 }
 
 fn boila_flush(s: BoilaStore) -> BoilaStore !IO !Time !Par {

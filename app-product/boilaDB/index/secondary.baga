@@ -8,7 +8,7 @@
 //   pk част = [ix_id u32 BE][value enc][pk enc] → празна стойност
 //
 // K6: NULL се индексира (като PG). Lookup с null val → IS NULL path.
-// glob MATCH: резултатът се филтрира байт-точно (K2).
+// K2b: lookup via boila_scan_pref(cf|table|ix|val) — no full CF page.
 
 import "../storage/shards.baga"
 import "../core/codec.baga"
@@ -201,21 +201,21 @@ fn boila_ix_del_all_txn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, row: Vec<Bo
 }
 
 // Exact lookup: всички pk-та, чиято колона има тази стойност.
+// K2b: scan only cf|table|ix_id|val prefix (not full table index CF).
 fn boila_ix_lookup(s: BoilaStore, t: BoilaTable, ix_id: i64, val: BoilaVal) -> BoilaIxLookup !IO !Time !Par {
     let pks: Vec<bytes> = vec_new()
     let pref = boila_ix_lookup_prefix(ix_id, val)
     let full_pref = boila_key_row(boila_cf_index(), t.id, pref)
+    let plen = bytes_len(full_pref)
     let mut cursor: i64 = 0
     let mut rounds: i64 = 0
     let mut done = false
     while done == false && rounds < 10000 {
-        let sc = boila_scan(s, boila_cf_index(), t.id, cursor, 64)?
+        let sc = boila_scan_pref(s, full_pref, cursor, 64)?
         let mut j: i64 = 0
         while j < vec_len(sc.keys) {
             let k = vec_get(sc.keys, j)
-            if boila_key_has_prefix(k, full_pref) == 1 {
-                vec_push(pks, bytes_slice(k, bytes_len(full_pref), bytes_len(k)))
-            }
+            vec_push(pks, bytes_slice(k, plen, bytes_len(k)))
             j = j + 1
         }
         cursor = sc.next
