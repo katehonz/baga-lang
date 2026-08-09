@@ -8,7 +8,8 @@ import "../core/value.baga"
 struct BoilaSelItem {
     agg: i64,   // 0 колона, 1 count(*), 2 count(col), 3 sum, 4 avg, 5 min, 6 max
     col: str,
-    biv: i64    // S7: time_bucket interval sec (0 = plain col/agg)
+    biv: i64,   // S7: time_bucket interval sec (0 = plain col/agg)
+    alias: str  // S7b: AS alias ("" = default name)
 }
 
 struct BoilaSel {
@@ -56,15 +57,26 @@ struct BoilaSel {
 }
 
 fn boila_sel_item_col(name: str) -> BoilaSelItem {
-    return BoilaSelItem { agg: 0, col: name, biv: 0 }
+    return BoilaSelItem { agg: 0, col: name, biv: 0, alias: "" }
 }
 
 fn boila_sel_item_agg(kind: i64, col: str) -> BoilaSelItem {
-    return BoilaSelItem { agg: kind, col: col, biv: 0 }
+    return BoilaSelItem { agg: kind, col: col, biv: 0, alias: "" }
 }
 
 fn boila_sel_item_bucket(col: str, iv: i64) -> BoilaSelItem {
-    return BoilaSelItem { agg: 0, col: col, biv: iv }
+    return BoilaSelItem { agg: 0, col: col, biv: iv, alias: "" }
+}
+
+// Output column name: alias > time_bucket > col (agg names via exec_agg).
+fn boila_sel_item_out_name(it: BoilaSelItem) -> str {
+    if it.alias != "" {
+        return it.alias
+    }
+    if it.biv > 0 {
+        return "time_bucket"
+    }
+    return it.col
 }
 
 // Тип на колона = tag от value модела (i64/bool/str/bytes/json/ts).

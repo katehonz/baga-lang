@@ -105,6 +105,21 @@ fn main() -> i64 !IO !Time !Par {
     let qs3 = exec1(srv, "SELECT time_bucket('1x', ts) FROM pts WHERE id = 1")
     srv = qs3.srv
     check(fails, "sel_bucket_bad", qs3.ok == 0)
+    // S7b: AS alias + ORDER BY time_bucket / alias
+    let qa = exec1(srv, "SELECT time_bucket('1m', ts) AS bkt, id FROM pts WHERE id >= 1 AND id <= 3 ORDER BY bkt DESC, id")
+    srv = qa.srv
+    check(fails, "alias_cols", qa.ok == 1 && vec_len(qa.res.cols) == 2 && vec_get(qa.res.cols, 0) == "bkt" && vec_get(qa.res.cols, 1) == "id")
+    check(fails, "order_alias", qa.ok == 1 && vec_len(qa.res.rows) == 3)
+    let qo = exec1(srv, "SELECT time_bucket('1m', ts), id FROM pts WHERE id >= 1 AND id <= 3 ORDER BY time_bucket DESC")
+    srv = qo.srv
+    check(fails, "order_bucket", qo.ok == 1 && vec_len(qo.res.rows) == 3 && vec_get(qo.res.cols, 0) == "time_bucket")
+    if qo.ok == 1 && vec_len(qo.res.rows) >= 2 {
+        let b0 = row_i(vec_get(qo.res.rows, 0), 0)
+        let b1 = row_i(vec_get(qo.res.rows, 1), 0)
+        check(fails, "order_bucket_desc", b0 >= b1)
+    } else {
+        check(fails, "order_bucket_desc", false)
+    }
 
     // --- TTL retention ---
     let c2 = exec1(srv, "CREATE TABLE tmp (id BIGINT, body TEXT, PRIMARY KEY (id)) WITH (ttl_sec = 2)")

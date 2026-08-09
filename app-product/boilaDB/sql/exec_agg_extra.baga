@@ -53,6 +53,9 @@ fn boila_agg_key(row: Vec<BoilaVal>, gixs: Vec<i64>) -> bytes {
 }
 
 fn boila_agg_item_name(it: BoilaSelItem) -> str {
+    if it.alias != "" {
+        return it.alias
+    }
     if it.agg == 1 {
         return "count"
     }

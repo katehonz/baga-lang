@@ -79,6 +79,19 @@ struct BoilaPsItem {
     state: str
 }
 
+// S7b: optional AS alias after a projection item.
+fn boila_ps_item_alias(l: BoilaLex, item: BoilaSelItem, pos: i64) -> BoilaPsItem {
+    if tok_kw(boila_ps_tok(l, pos), "as") == 1 {
+        let a = boila_ps_tok(l, pos + 1)
+        if a.kind != tok_ident() {
+            return BoilaPsItem { ok: 0, item: item, pos: pos, err: "очаквах идентификатор след AS", state: "42601" }
+        }
+        item.alias = a.txt
+        return BoilaPsItem { ok: 1, item: item, pos: pos + 2, err: "", state: "" }
+    }
+    return BoilaPsItem { ok: 1, item: item, pos: pos, err: "", state: "" }
+}
+
 fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
     let t = boila_ps_tok(l, i)
     if t.kind != tok_ident() {
@@ -107,15 +120,15 @@ fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
         if iv.ok == 0 {
             return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: iv.err, state: iv.state }
         }
-        return BoilaPsItem { ok: 1, item: boila_sel_item_bucket(col.txt, iv.sec), pos: i + 6, err: "", state: "" }
+        return boila_ps_item_alias(l, boila_sel_item_bucket(col.txt, iv.sec), i + 6)
     }
     let kind = boila_ps_agg_kind(t.txt)
     if kind == 0 {
-        return BoilaPsItem { ok: 1, item: boila_sel_item_col(t.txt), pos: i + 1, err: "", state: "" }
+        return boila_ps_item_alias(l, boila_sel_item_col(t.txt), i + 1)
     }
     // agg( ... )
     if boila_ps_tok(l, i + 1).kind != tok_lparen() {
-        return BoilaPsItem { ok: 1, item: boila_sel_item_col(t.txt), pos: i + 1, err: "", state: "" }
+        return boila_ps_item_alias(l, boila_sel_item_col(t.txt), i + 1)
     }
     let arg = boila_ps_tok(l, i + 2)
     if arg.kind == tok_star() {
@@ -125,7 +138,7 @@ fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
         if boila_ps_tok(l, i + 3).kind != tok_rparen() {
             return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах ')' след count(*)", state: "42601" }
         }
-        return BoilaPsItem { ok: 1, item: boila_sel_item_agg(1, ""), pos: i + 4, err: "", state: "" }
+        return boila_ps_item_alias(l, boila_sel_item_agg(1, ""), i + 4)
     }
     if arg.kind != tok_ident() {
         return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: concat("очаквах колона в ", concat(t.txt, "(...)")), state: "42601" }
@@ -137,5 +150,5 @@ fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
     if k == 1 {
         k = 2   // count(col)
     }
-    return BoilaPsItem { ok: 1, item: boila_sel_item_agg(k, arg.txt), pos: i + 4, err: "", state: "" }
+    return boila_ps_item_alias(l, boila_sel_item_agg(k, arg.txt), i + 4)
 }
