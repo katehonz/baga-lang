@@ -1,16 +1,5 @@
-// parse_with.baga — WITH RECURSIVE (P10, ограничен BFS/DFS/Dijkstra pattern)
-// и CREATE GRAPH.
-//
-// WITH RECURSIVE cte(node, depth) AS (
-//   SELECT <lit>, 0
-//   UNION ALL
-//   SELECT e.<dst>, cte.depth + 1 FROM <edges> e, cte
-//   WHERE e.<src> = cte.node AND cte.depth < <N>
-// )
-// SELECT node, depth FROM cte
-//
-// Опционално: SELECT … FROM cte  — mode bfs (default) |
-//   /* hint в CTE име: cte_dfs / cte_dijkstra */
+// parse_with.baga — WITH RECURSIVE BFS/DFS/Dijkstra (P10) + CREATE GRAPH.
+// Mode: *_dfs/*_dij name suffix, or MODE BFS|DFS|DIJ[KSTRA] after CTE name.
 
 import "token.baga"
 import "lexer.baga"
@@ -57,7 +46,6 @@ fn boila_pw_tok(l: BoilaLex, i: i64) -> Token {
 fn boila_with_mode(name: str) -> i64 {
     let n = len(name)
     if n >= 4 {
-        // ends with _dfs
         if char_at(name, n - 4) == 95 && char_at(name, n - 3) == 100 && char_at(name, n - 2) == 102 && char_at(name, n - 1) == 115 {
             return 2
         }
@@ -70,8 +58,17 @@ fn boila_with_mode(name: str) -> i64 {
     return 1
 }
 
+// G4: MODE BFS|DFS|DIJ|DIJKSTRA → 1|2|3; 0 = unknown
+fn boila_with_mode_kw(t: Token) -> i64 {
+    if tok_kw(t, "bfs") == 1 { return 1 }
+    if tok_kw(t, "dfs") == 1 { return 2 }
+    if tok_kw(t, "dij") == 1 { return 3 }
+    if tok_kw(t, "dijkstra") == 1 { return 3 }
+    return 0
+}
+
 fn boila_parse_with(l: BoilaLex) -> BoilaParseWith {
-    // WITH RECURSIVE ident ( ident , ident ) AS ( ... ) SELECT ... FROM ident
+    // WITH RECURSIVE ident [MODE bfs|dfs|dij] (node, depth) AS ( ... ) SELECT ... FROM cte
     if tok_kw(boila_pw_tok(l, 0), "with") != 1 {
         return boila_pw_fail("очаквах WITH", "42601")
     }
@@ -85,45 +82,55 @@ fn boila_parse_with(l: BoilaLex) -> BoilaParseWith {
     let mut w = boila_with_empty()
     w.cte = cn.txt
     w.mode = boila_with_mode(cn.txt)
-    if boila_pw_tok(l, 3).kind != tok_lparen() {
+    let mut b: i64 = 3
+    // G4: optional MODE keyword overrides name suffix
+    if tok_kw(boila_pw_tok(l, b), "mode") == 1 {
+        let mk = boila_with_mode_kw(boila_pw_tok(l, b + 1))
+        if mk == 0 {
+            return boila_pw_fail("MODE очаква BFS, DFS или DIJKSTRA/DIJ", "42601")
+        }
+        w.mode = mk
+        b = b + 2
+    }
+    if boila_pw_tok(l, b).kind != tok_lparen() {
         return boila_pw_fail("очаквах '(' след CTE име", "42601")
     }
     // (node, depth) — exactly 2 cols
-    let c0 = boila_pw_tok(l, 4)
-    let c1 = boila_pw_tok(l, 6)
-    if c0.kind != tok_ident() || boila_pw_tok(l, 5).kind != tok_comma() || c1.kind != tok_ident() {
+    let c0 = boila_pw_tok(l, b + 1)
+    let c1 = boila_pw_tok(l, b + 3)
+    if c0.kind != tok_ident() || boila_pw_tok(l, b + 2).kind != tok_comma() || c1.kind != tok_ident() {
         return boila_pw_fail("P10: CTE колони (node, depth)", "0A000")
     }
-    if boila_pw_tok(l, 7).kind != tok_rparen() {
+    if boila_pw_tok(l, b + 4).kind != tok_rparen() {
         return boila_pw_fail("очаквах ')' след CTE колони", "42601")
     }
-    if tok_kw(boila_pw_tok(l, 8), "as") != 1 {
+    if tok_kw(boila_pw_tok(l, b + 5), "as") != 1 {
         return boila_pw_fail("очаквах AS", "42601")
     }
-    if boila_pw_tok(l, 9).kind != tok_lparen() {
+    if boila_pw_tok(l, b + 6).kind != tok_lparen() {
         return boila_pw_fail("очаквах '(' след AS", "42601")
     }
     // base: SELECT lit , 0
-    if tok_kw(boila_pw_tok(l, 10), "select") != 1 {
+    if tok_kw(boila_pw_tok(l, b + 7), "select") != 1 {
         return boila_pw_fail("очаквах SELECT в base CTE", "42601")
     }
-    let lit = boila_ps_literal(l, 11)
+    let lit = boila_ps_literal(l, b + 8)
     if lit.ok == 0 {
         return boila_pw_fail(lit.err, lit.state)
     }
     w.start = lit.v
-    if boila_pw_tok(l, 12).kind != tok_comma() {
+    if boila_pw_tok(l, b + 9).kind != tok_comma() {
         return boila_pw_fail("очаквах ',' след start lit", "42601")
     }
-    let z = boila_pw_tok(l, 13)
+    let z = boila_pw_tok(l, b + 10)
     if z.kind != tok_num() || z.txt != "0" {
         return boila_pw_fail("P10: base depth трябва 0", "0A000")
     }
     // UNION ALL
-    if tok_kw(boila_pw_tok(l, 14), "union") != 1 {
+    if tok_kw(boila_pw_tok(l, b + 11), "union") != 1 {
         return boila_pw_fail("очаквах UNION", "42601")
     }
-    let mut i: i64 = 15
+    let mut i: i64 = b + 12
     if tok_kw(boila_pw_tok(l, i), "all") == 1 {
         i = i + 1
     }

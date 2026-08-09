@@ -33,8 +33,9 @@ T = транзакции, W = wire protocol, F = FTS.
 - **G3 — WITH RECURSIVE е фиксиран pattern**, не пълен SQL CTE (без
   множествени CTE, без произволни JOIN-и в recursive leg, без `.`
   qualifiers — lexer няма `.`).
-- **G4 — mode (BFS/DFS/Dijkstra) по CTE име** (`*_dfs`, `*_dij`), не
-  SQL hint синтаксис.
+- **G4 — (FIXED) MODE BFS|DFS|DIJ[KSTRA] + CTE name suffix.** Explicit
+  `WITH RECURSIVE cte MODE DFS (...)` overrides; name `*_dfs`/`*_dij`
+  still works. Residual: no SEARCH clause / PG cycle syntax.
 
 ## Открити при P9
 

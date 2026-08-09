@@ -107,6 +107,16 @@ fn main() -> i64 !IO !Time !Par {
     let q2 = exec1(srv, "WITH RECURSIVE reach_dfs(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach_dfs WHERE src = node AND depth < 3) SELECT node, depth FROM reach_dfs")
     srv = q2.srv
     check(fails, "dfs_ok", q2.ok == 1 && vec_len(q2.res.rows) >= 4)
+    // G4: explicit MODE DFS (overrides plain CTE name)
+    let q2m = exec1(srv, "WITH RECURSIVE reach MODE DFS (node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 3) SELECT node, depth FROM reach")
+    srv = q2m.srv
+    check(fails, "mode_dfs", q2m.ok == 1 && vec_len(q2m.res.rows) >= 4)
+    let q2b = exec1(srv, "WITH RECURSIVE walk MODE BFS (node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, walk WHERE src = node AND depth < 2) SELECT node, depth FROM walk")
+    srv = q2b.srv
+    check(fails, "mode_bfs", q2b.ok == 1 && vec_len(q2b.res.rows) >= 1)
+    let q2e = exec1(srv, "WITH RECURSIVE walk MODE NOPE (node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, walk WHERE src = node AND depth < 1) SELECT node FROM walk")
+    srv = q2e.srv
+    check(fails, "mode_bad", q2e.ok == 0 && q2e.state == "42601")
 
     // Dijkstra (cte name *_dij)
     let q3 = exec1(srv, "WITH RECURSIVE reach_dij(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach_dij WHERE src = node AND depth < 5) SELECT node, depth FROM reach_dij")
