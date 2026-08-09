@@ -198,8 +198,24 @@ fn hnsw_index_doc(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef
 }
 
 fn hnsw_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, pk: bytes) -> BoilaHnswRes !IO !Time !Par {
+    // V5: strip pk from reverse neighbor lists before dropping own lists.
     let mut li: i64 = 0
     while li <= 4 {
+        let own = hnsw_nbrs_get(s, txn, table_id, def.id, li, pk)?
+        s = own.s
+        txn = own.txn
+        let mut j: i64 = 0
+        while j < vec_len(own.pks) {
+            let nb = vec_get(own.pks, j)
+            let ng = hnsw_nbrs_get(s, txn, table_id, def.id, li, nb)?
+            s = ng.s
+            txn = ng.txn
+            let cleaned = hnsw_nbrs_remove(ng.pks, pk)
+            let wp = hnsw_nbrs_put(s, txn, table_id, def.id, li, nb, cleaned)
+            s = wp.s
+            txn = wp.txn
+            j = j + 1
+        }
         let d = boila_txn_del(s, txn, boila_cf_vec(), table_id, hnsw_nbr_pk(def.id, li, pk))
         txn = d.txn
         li = li + 1
@@ -213,10 +229,13 @@ fn hnsw_unindex_doc(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswD
     }
     let mut has = vm.has_ep
     let mut ep = vm.ep
+    let mut max_lvl = vm.max_lvl
     if bytes_eq_b(ep, pk) {
+        // clear ep; next insert/search with has_ep==0 re-seeds
         has = 0
         ep = bytes_new(0)
+        max_lvl = 0
     }
-    let vm2 = hnsw_vm_put(s, txn, def.id, has, cnt, vm.max_lvl, ep)
+    let vm2 = hnsw_vm_put(s, txn, def.id, has, cnt, max_lvl, ep)
     return BoilaHnswRes { s: vm2.s, txn: vm2.txn, ok: 1, err: "", state: "", id: def.id }
 }

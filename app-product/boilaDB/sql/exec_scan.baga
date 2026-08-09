@@ -1,7 +1,4 @@
-// exec_scan.baga — SELECT executor (P5): fetch (point/index/seq + WHERE),
-// pipeline (agg/join → ORDER BY → проекция → DISTINCT → OFFSET/LIMIT).
-//
-// Писанията/четенията минават през txn buffer-а (P4).
+// exec_scan.baga — SELECT fetch + pipeline (P5), txn buffer reads (P4).
 
 import "../storage/shards.baga"
 import "../core/codec.baga"
@@ -20,29 +17,9 @@ import "ast.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
-struct BoilaResult {
-    cols: Vec<str>,
-    rows: Vec<Vec<BoilaVal>>
-}
-
-struct BoilaExec {
-    s: BoilaStore,
-    txn: BoilaTxn,
-    ok: i64,
-    err: str,
-    state: str,
-    kind: i64,
-    res: BoilaResult
-}
-
-struct BoilaFetch {
-    s: BoilaStore,
-    txn: BoilaTxn,
-    ok: i64,
-    err: str,
-    state: str,
-    rows: Vec<Vec<BoilaVal>>
-}
+struct BoilaResult { cols: Vec<str>, rows: Vec<Vec<BoilaVal>> }
+struct BoilaExec { s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, kind: i64, res: BoilaResult }
+struct BoilaFetch { s: BoilaStore, txn: BoilaTxn, ok: i64, err: str, state: str, rows: Vec<Vec<BoilaVal>> }
 
 fn boila_result_empty() -> BoilaResult {
     let cols: Vec<str> = vec_new()
@@ -282,20 +259,19 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
         }
         return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
     }
-    // range / seq (+ P11 budget: scan/rows/deadline)
+    // range / seq + budget
     let bud = boila_budget_begin()?
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
-    if boila_budget_tick(bud, 0)? == 0 {
-        return boila_fetch_fail(s, txn, boila_budget_err_deadline(boila_budget_elapsed(bud)?), boila_budget_state_timeout())
-    }
-    if vec_len(ks.pks) > bud.max_scan {
-        return boila_fetch_fail(s, txn, boila_budget_err_scan(vec_len(ks.pks)), boila_budget_state())
+    let g0 = boila_budget_gate(bud, 0, vec_len(ks.pks), 0)?
+    if g0 != "" {
+        return boila_fetch_fail(s, txn, g0, boila_budget_gate_state(g0))
     }
     let mut ki: i64 = 0
     while ki < vec_len(ks.pks) {
-        if boila_budget_tick(bud, ki)? == 0 {
-            return boila_fetch_fail(s, txn, boila_budget_err_deadline(boila_budget_elapsed(bud)?), boila_budget_state_timeout())
+        let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?
+        if ge != "" {
+            return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge))
         }
         let pkenc = vec_get(ks.pks, ki)
         let pkv = boila_val_dec(pkenc)
@@ -317,9 +293,6 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             s = g.s
             if g.found == 1 {
                 vec_push(rows, boila_row_dec(g.row))
-                if vec_len(rows) > bud.max_rows {
-                    return boila_fetch_fail(s, txn, boila_budget_err_rows(vec_len(rows)), boila_budget_state())
-                }
             }
         }
         ki = ki + 1
@@ -332,24 +305,20 @@ fn boila_fetch_all(s: BoilaStore, txn: BoilaTxn, t: BoilaTable) -> BoilaFetch !I
     let bud = boila_budget_begin()?
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
-    if boila_budget_tick(bud, 0)? == 0 {
-        return boila_fetch_fail(s, txn, boila_budget_err_deadline(boila_budget_elapsed(bud)?), boila_budget_state_timeout())
-    }
-    if vec_len(ks.pks) > bud.max_scan {
-        return boila_fetch_fail(s, txn, boila_budget_err_scan(vec_len(ks.pks)), boila_budget_state())
+    let g0 = boila_budget_gate(bud, 0, vec_len(ks.pks), 0)?
+    if g0 != "" {
+        return boila_fetch_fail(s, txn, g0, boila_budget_gate_state(g0))
     }
     let mut ki: i64 = 0
     while ki < vec_len(ks.pks) {
-        if boila_budget_tick(bud, ki)? == 0 {
-            return boila_fetch_fail(s, txn, boila_budget_err_deadline(boila_budget_elapsed(bud)?), boila_budget_state_timeout())
+        let ge = boila_budget_gate(bud, ki, 0, vec_len(rows))?
+        if ge != "" {
+            return boila_fetch_fail(s, txn, ge, boila_budget_gate_state(ge))
         }
         let g = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
         s = g.s
         if g.found == 1 {
             vec_push(rows, boila_row_dec(g.row))
-            if vec_len(rows) > bud.max_rows {
-                return boila_fetch_fail(s, txn, boila_budget_err_rows(vec_len(rows)), boila_budget_state())
-            }
         }
         ki = ki + 1
     }

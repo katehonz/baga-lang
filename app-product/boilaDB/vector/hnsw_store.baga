@@ -278,3 +278,15 @@ fn hnsw_pk_in(pks: Vec<bytes>, pk: bytes) -> i64 {
     }
     return 0
 }
+
+fn hnsw_nbrs_remove(pks: Vec<bytes>, pk: bytes) -> Vec<bytes> {
+    let out: Vec<bytes> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(pks) {
+        if bytes_eq_b(vec_get(pks, i), pk) == 0 {
+            vec_push(out, vec_get(pks, i))
+        }
+        i = i + 1
+    }
+    return out
+}

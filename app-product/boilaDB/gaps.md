@@ -59,9 +59,10 @@ T = транзакции, W = wire protocol, F = FTS.
   vector path; комбинация с `WHERE meta = …` идва при нужда.
 - **V4 — няма RAM cache на горните HNSW нива.** Всеки search чете
   neighbors от vec CF (point GET-и); cache е P11/оптимизация.
-- **V5 — unindex не чисти reverse edges.** Orphan pk в чужд neighbor
-  list се skip-ва при search (липсващ row/vec). Пълен graph GC — при
-  нужда.
+- **V5 — (FIXED) unindex strips reverse edges.** Before deleting own
+  nbr lists, remove pk from each neighbor's list at levels 0..4. Ep
+  cleared if deleted (re-seed on next insert). Residual: ep not
+  reassigned to another live node mid-unindex.
 - **V6 — kNN WHERE не се комбинира с AND** (като F6 за @@). LIMIT = k;
   default k=10 ако липсва LIMIT.
 - **V7 — fixed-point ×1e6** вместо IEEE payload (V1 bit-cast липсва).

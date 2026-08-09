@@ -89,3 +89,24 @@ fn boila_budget_elapsed(b: BoilaBudget) -> i64 !Time {
     let now = time_now_ms()?
     return now - b.start_ms
 }
+
+// "" = ok; else error message (caller maps state).
+fn boila_budget_gate(b: BoilaBudget, step: i64, nscan: i64, nrows: i64) -> str !Time {
+    if boila_budget_tick(b, step)? == 0 {
+        return boila_budget_err_deadline(boila_budget_elapsed(b)?)
+    }
+    if nscan > b.max_scan {
+        return boila_budget_err_scan(nscan)
+    }
+    if nrows > b.max_rows {
+        return boila_budget_err_rows(nrows)
+    }
+    return ""
+}
+
+fn boila_budget_gate_state(msg: str) -> str {
+    if str_find(msg, "deadline") >= 0 {
+        return boila_budget_state_timeout()
+    }
+    return boila_budget_state()
+}
