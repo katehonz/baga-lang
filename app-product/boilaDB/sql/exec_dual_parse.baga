@@ -58,13 +58,9 @@ fn boila_dual_parse_primary(lx: BoilaLex, i: i64, db: str, guc: Map<str, str>, b
     if tok_kw(t, "case") == 1 {
         return boila_dual_parse_case(lx, i + 1, db, guc, bind)?
     }
-    if (tok_kw(t, "current_timestamp") == 1 || tok_kw(t, "localtimestamp") == 1) && boila_dual_tok(lx, i + 1).kind != tok_lparen() {
-        let us = time_now_ms()? * 1000
-        return boila_dual_ok(boila_val_ts(us), boila_v_ts(), t.txt, i + 1)
-    }
-    if tok_kw(t, "current_date") == 1 && boila_dual_tok(lx, i + 1).kind != tok_lparen() {
-        let day = time_now_ms()? / 86400000
-        return boila_dual_ok(boila_val_i64(day), boila_v_i64(), "current_date", i + 1)
+    if boila_dual_tok(lx, i + 1).kind != tok_lparen() {
+        let bk = boila_dual_bare_kw(t.txt, db, guc, i + 1)?
+        if bk.ok == 1 { return bk }
     }
     if tok_kw(t, "cast") == 1 {
         if boila_dual_tok(lx, i + 1).kind != tok_lparen() {

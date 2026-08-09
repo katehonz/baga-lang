@@ -84,6 +84,21 @@ fn boila_dual_call_unary(fnm: str, v: BoilaVal, tag: i64, pos: i64) -> BoilaDual
     }
     return boila_dual_ok(boila_val_str(str_trim(s)), boila_v_str(), fnm, pos)
 }
+// PG keyword builtins without (): hit=1 in ok field via non-empty name match.
+// Returns ok=0, err="" if name is not a bare keyword (caller continues).
+fn boila_dual_bare_kw(fnm: str, db: str, guc: Map<str, str>, pos: i64) -> BoilaDualExpr !Time {
+    if fnm == "current_user" || fnm == "session_user" || fnm == "user" {
+        return boila_dual_call_simple(fnm, 0, "", db, guc, pos)?
+    }
+    if fnm == "current_database" || fnm == "current_schema" || fnm == "version" {
+        return boila_dual_call_simple(fnm, 0, "", db, guc, pos)?
+    }
+    if fnm == "current_date" || fnm == "current_timestamp" || fnm == "localtimestamp" || fnm == "now" {
+        return boila_dual_call_simple(fnm, 0, "", db, guc, pos)?
+    }
+    return BoilaDualExpr { ok: 0, err: "", state: "", val: boila_val_null(), cname: "", tag: 0, pos: pos, series: 0, series_lo: 0, series_hi: 0, series_step: 0 }
+}
+
 fn boila_dual_call_simple(fnm: str, has_arg: i64, arg: str, db: str, guc: Map<str, str>, pos: i64) -> BoilaDualExpr !Time {
     if fnm == "version" {
         if has_arg == 1 { return boila_dual_fail_ex(pos, "version() без аргументи", "42883") }

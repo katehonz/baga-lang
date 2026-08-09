@@ -163,6 +163,17 @@ fn main() -> i64 !IO !Time !Par {
     let sn = exec(srv, "SET ROLE NONE")?
     srv = sn.srv
     check(fails, "set_role_none", sn.ok == 1)
+    let sn2 = exec(srv, "SET ROLE admin PASSWORD 'newsecret'")?
+    srv = sn2.srv
+    let sn3 = exec(srv, "RESET ROLE")?
+    srv = sn3.srv
+    check(fails, "reset_role", sn3.ok == 1 && sn3.kind == 20)
+    let sn4 = exec(srv, "SET SESSION AUTHORIZATION admin PASSWORD 'newsecret'")?
+    srv = sn4.srv
+    check(fails, "session_auth", sn4.ok == 1)
+    let sn5 = exec(srv, "SET SESSION AUTHORIZATION DEFAULT")?
+    srv = sn5.srv
+    check(fails, "session_auth_default", sn5.ok == 1)
 
     // SHOW USERS / GRANTS
     let s10 = exec(srv, "SET ROLE admin PASSWORD 'newsecret'")?

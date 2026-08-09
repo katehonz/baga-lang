@@ -82,6 +82,18 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "seed10", s0.ok == 1 && s0.id == 10)
 
     // --- point lookup ---
+    let tb = boila_server_exec(srv, "boila", "TABLE users ORDER BY id LIMIT 2")?
+    srv = tb.srv
+    check(fails, "table_stmt", tb.ok == 1 && vec_len(tb.res.rows) == 2 && row_str(vec_get(tb.res.rows, 0), 0) == "1")
+    let sall = boila_server_exec(srv, "boila", "SELECT ALL id FROM users WHERE id = 1")?
+    srv = sall.srv
+    check(fails, "select_all", sall.ok == 1 && vec_len(sall.res.rows) == 1)
+    let limall = boila_server_exec(srv, "boila", "SELECT id FROM users ORDER BY id LIMIT ALL")?
+    srv = limall.srv
+    check(fails, "limit_all", limall.ok == 1 && vec_len(limall.res.rows) >= 10)
+    let tb2 = boila_server_exec(srv, "boila", "TABLE users WHERE id = 7")?
+    srv = tb2.srv
+    check(fails, "table_where", tb2.ok == 1 && vec_len(tb2.res.rows) == 1 && row_str(vec_get(tb2.res.rows, 0), 1) == "sedem")
     let q1 = boila_server_exec(srv, "boila", "SELECT * FROM users WHERE id = 7")?
     srv = q1.srv
     check(fails, "point_ok", q1.ok == 1 && q1.kind == 1)
@@ -377,6 +389,9 @@ fn main() -> i64 !IO !Time !Par {
     let dcd = boila_server_exec(srv, "boila", "SELECT current_date")?
     srv = dcd.srv
     check(fails, "dual_current_date", dcd.ok == 1 && vec_len(dcd.res.rows) == 1 && vec_get(dcd.res.tags, 0) == boila_v_i64())
+    let dcu = boila_server_exec(srv, "boila", "SELECT current_user, session_user, current_database, current_schema")?
+    srv = dcu.srv
+    check(fails, "dual_kw_bare", dcu.ok == 1 && vec_len(dcu.res.cols) == 4 && row_str(vec_get(dcu.res.rows, 0), 0) == "boila" && row_str(vec_get(dcu.res.rows, 0), 2) == "boila" && row_str(vec_get(dcu.res.rows, 0), 3) == "public")
     let dcd2 = boila_server_exec(srv, "boila", "SELECT current_date()")?
     srv = dcd2.srv
     check(fails, "dual_current_date_fn", dcd2.ok == 1 && vec_len(dcd2.res.rows) == 1)

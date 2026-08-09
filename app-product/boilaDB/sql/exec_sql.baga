@@ -54,7 +54,7 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
     }
 
     // --- транзакционен контрол ---
-    if tok_kw(t0, "begin") == 1 || tok_kw(t0, "start") == 1 || tok_kw(t0, "commit") == 1 || tok_kw(t0, "rollback") == 1 {
+    if tok_kw(t0, "begin") == 1 || tok_kw(t0, "start") == 1 || tok_kw(t0, "commit") == 1 || tok_kw(t0, "end") == 1 || tok_kw(t0, "rollback") == 1 || tok_kw(t0, "abort") == 1 {
         let p = boila_parse_txn(lx)
         if p.ok == 0 {
             return boila_sql_fail(s, txn, pc, p.err, p.state)
@@ -87,6 +87,14 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         }
         let ex = boila_exec_with(s, txn, p.w)?
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 16, res: ex.res, id: vec_len(ex.res.rows) }
+    }
+    // PG: TABLE name … ≡ SELECT * FROM name …
+    if tok_kw(t0, "table") == 1 {
+        let sql2 = boila_table_stmt_to_select(lx)
+        if sql2 == "" {
+            return boila_sql_fail(s, txn, pc, "очаквах име на таблица след TABLE", "42601")
+        }
+        return boila_exec_sql_mu(s, txn, db, sql2, pc, pc_mu, guc)?
     }
     if tok_kw(t0, "select") == 1 || tok_kw(t0, "values") == 1 {
         let du = boila_try_exec_dual(s, txn, pc, db, lx, guc)?

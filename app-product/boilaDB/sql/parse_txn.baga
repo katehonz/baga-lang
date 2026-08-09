@@ -3,8 +3,8 @@
 // Граматика:
 //   BEGIN [WORK|TRANSACTION] [READ ONLY] [;]
 //   START TRANSACTION [READ ONLY] [;]
-//   COMMIT [WORK|TRANSACTION] [;]
-//   ROLLBACK [WORK|TRANSACTION] [;]
+//   COMMIT|END [WORK|TRANSACTION] [;]
+//   ROLLBACK|ABORT [WORK|TRANSACTION] [;]
 
 import "token.baga"
 import "lexer.baga"
@@ -94,7 +94,7 @@ fn boila_parse_txn(l: BoilaLex) -> BoilaParseTxn {
         }
         return BoilaParseTxn { ok: 1, op: op, read_only: ro.read_only, err: "", state: "" }
     }
-    if tok_kw(t0, "commit") == 1 {
+    if tok_kw(t0, "commit") == 1 || tok_kw(t0, "end") == 1 {
         op = 2
         if tok_kw(boila_pt_tok(l, i), "work") == 1 || tok_kw(boila_pt_tok(l, i), "transaction") == 1 {
             i = i + 1
@@ -105,7 +105,7 @@ fn boila_parse_txn(l: BoilaLex) -> BoilaParseTxn {
         }
         return BoilaParseTxn { ok: 1, op: op, read_only: 0, err: "", state: "" }
     }
-    if tok_kw(t0, "rollback") == 1 {
+    if tok_kw(t0, "rollback") == 1 || tok_kw(t0, "abort") == 1 {
         op = 3
         if tok_kw(boila_pt_tok(l, i), "work") == 1 || tok_kw(boila_pt_tok(l, i), "transaction") == 1 {
             i = i + 1

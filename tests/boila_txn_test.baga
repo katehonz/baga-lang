@@ -145,6 +145,28 @@ fn main() -> i64 !IO !Time !Par {
     srv = n1.srv
     check(fails, "commit_noop", n1.ok == 1)
 
+    // END ≡ COMMIT, ABORT ≡ ROLLBACK (ids 90+ avoid later id>=10 checks)
+    let en1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = en1.srv
+    let en2 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (90, 'end')")?
+    srv = en2.srv
+    let en3 = boila_server_exec(srv, "boila", "END")?
+    srv = en3.srv
+    check(fails, "end_commit", en3.ok == 1 && en3.kind == 11)
+    let en4 = boila_server_exec(srv, "boila", "SELECT v FROM tt WHERE id = 90")?
+    srv = en4.srv
+    check(fails, "end_durable", en4.ok == 1 && vec_len(en4.res.rows) == 1)
+    let ab1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = ab1.srv
+    let ab2 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (91, 'abort')")?
+    srv = ab2.srv
+    let ab3 = boila_server_exec(srv, "boila", "ABORT")?
+    srv = ab3.srv
+    check(fails, "abort_rb", ab3.ok == 1 && ab3.kind == 12)
+    let ab4 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id = 91")?
+    srv = ab4.srv
+    check(fails, "abort_gone", ab4.ok == 1 && vec_len(ab4.res.rows) == 0)
+
     // --- грешка в заявление → rollback на целия буфер (T1) ---
     let e1 = boila_server_exec(srv, "boila", "BEGIN")?
     srv = e1.srv
@@ -198,7 +220,7 @@ fn main() -> i64 !IO !Time !Par {
     srv = t2.srv
     let t3 = boila_server_exec(srv, "boila", "DELETE FROM tt WHERE id = 11")?
     srv = t3.srv
-    let t4 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id >= 10")?
+    let t4 = boila_server_exec(srv, "boila", "SELECT * FROM tt WHERE id >= 10 AND id < 20")?
     srv = t4.srv
     check(fails, "txn_upd_del", t2.ok == 1 && t3.ok == 1 && t4.ok == 1 && vec_len(t4.res.rows) == 1 && row_str(vec_get(t4.res.rows, 0), 1) == "z")
     let t5 = boila_server_exec(srv, "boila", "COMMIT")?

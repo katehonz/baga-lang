@@ -12,9 +12,34 @@ struct BoilaParseSel { ok: i64, sel: BoilaSel, err: str, state: str }
 fn boila_ps_fail(msg: str, state: str) -> BoilaParseSel {
     return BoilaParseSel { ok: 0, sel: boila_sel_empty(), err: msg, state: state }
 }
+// PG TABLE t … → SELECT * FROM t …
+fn boila_table_stmt_to_select(l: BoilaLex) -> str {
+    if tok_kw(boila_ps_tok(l, 0), "table") != 1 { return "" }
+    let tn = boila_ps_tok(l, 1)
+    if tn.kind != tok_ident() { return "" }
+    let mut rest = ""
+    let mut j: i64 = 2
+    while j < vec_len(l.toks) {
+        let t = boila_ps_tok(l, j)
+        if t.kind == tok_eof() || t.kind == tok_semi() { break }
+        if rest != "" { rest = concat(rest, " ") }
+        if t.kind == tok_str() {
+            rest = concat(rest, concat("'", concat(t.txt, "'")))
+        } else {
+            rest = concat(rest, t.txt)
+        }
+        j = j + 1
+    }
+    return concat(concat(concat("SELECT * FROM ", tn.txt), " "), rest)
+}
+
 fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     let mut sel = boila_sel_empty()
     let mut i: i64 = 1
+    // SELECT ALL … is a no-op (default); DISTINCT still sets flag
+    if tok_kw(boila_ps_tok(l, i), "all") == 1 {
+        i = i + 1
+    }
     if tok_kw(boila_ps_tok(l, i), "distinct") == 1 {
         sel.distinct = 1
         i = i + 1
@@ -247,16 +272,20 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
             if boila_ps_tok(l, i).kind == tok_comma() { i = i + 1 } else { more = false }
         }
     }
-    // LIMIT / OFFSET ($N ok for LIMIT — W2)
+    // LIMIT / OFFSET ($N ok for LIMIT — W2); LIMIT ALL = no limit
     if tok_kw(boila_ps_tok(l, i), "limit") == 1 {
         let lt = boila_ps_tok(l, i + 1)
-        if lt.kind == tok_param() {
-            sel.lim_param = parse_int(lt.txt)
+        if tok_kw(lt, "all") == 1 {
             i = i + 2
         } else {
-            if lt.kind != tok_num() { return boila_ps_fail("очаквах число след LIMIT", "42601") }
-            sel.limit = parse_int(lt.txt)
-            i = i + 2
+            if lt.kind == tok_param() {
+                sel.lim_param = parse_int(lt.txt)
+                i = i + 2
+            } else {
+                if lt.kind != tok_num() { return boila_ps_fail("очаквах число|ALL след LIMIT", "42601") }
+                sel.limit = parse_int(lt.txt)
+                i = i + 2
+            }
         }
     }
     if tok_kw(boila_ps_tok(l, i), "offset") == 1 {

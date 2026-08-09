@@ -51,6 +51,15 @@ T = транзакции, W = wire protocol, F = FTS.
   data_type (incl vector(n)), is_nullable, is_primary_key.
 - **P11-16 — (FIXED) SHOW CREATE TABLE.** Reconstructs CREATE TABLE
   + PK + ttl_sec WITH clause from catalog.
+- **P11-17 — (FIXED) TABLE name [WHERE|ORDER|LIMIT…].** PG sugar →
+  `SELECT * FROM name …` rewrite in exec_sql.
+- **P11-18 — (FIXED) RESET ROLE / SET SESSION AUTHORIZATION.** Aliases
+  of SET ROLE NONE / SET ROLE name [PASSWORD].
+- **P11-19 — (FIXED) END/ABORT txn aliases; SELECT ALL; LIMIT ALL.**
+  END≡COMMIT, ABORT≡ROLLBACK; ALL no-ops where SQL allows.
+- **P11-20 — (FIXED) bare PG keywords in dual.** `current_user` /
+  `session_user` / `user` / `current_database` / `current_schema` /
+  `version` / `current_date` / `now` without `()`.
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 
