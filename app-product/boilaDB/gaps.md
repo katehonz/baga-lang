@@ -44,8 +44,8 @@ T = транзакции, W = wire protocol, F = FTS.
   insert (Q2).
 - **S6 — (FIXED) TTL sweeper flush + per-key purge.** `boila_ts_sweep`:
   flush then GET every data key of TTL tables (rocksbaga lazy-del on get).
-  `boila_ttl_sweeper` / `BOILA_SWEEP_MS`. Residual: capped scan rounds;
-  no separate expires index (unlike rocksbaga MT sweeper).
+  `boila_ttl_sweeper` / `BOILA_SWEEP_MS`. S6c: `BOILA_SWEEP_SYS_ROUNDS`
+  (500) / `BOILA_SWEEP_DATA_ROUNDS` (2000). Residual: no expires index.
 - **S7 — (FIXED) time_bucket + [AS] alias + ORDER BY out names.** `biv` +
   `alias` on `BoilaSelItem`; parse `AS ident` or bare alias (not clause
   kw); out name via `boila_sel_item_out_name`. ORDER BY after projection

@@ -10,6 +10,24 @@ import "rocksbaga/db/shard.baga"
 import "rocksbaga/db/engine.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
+import "std/os/os.baga"
+
+// S6c: max scan pages per sweep (sys catalog / per-table data).
+fn boila_sweep_sys_rounds() -> i64 !IO {
+    let e = env("BOILA_SWEEP_SYS_ROUNDS")
+    if e == "" { return 500 }
+    let n = parse_int(e)
+    if n < 1 { return 500 }
+    return n
+}
+
+fn boila_sweep_data_rounds() -> i64 !IO {
+    let e = env("BOILA_SWEEP_DATA_ROUNDS")
+    if e == "" { return 2000 }
+    let n = parse_int(e)
+    if n < 1 { return 2000 }
+    return n
+}
 
 // sys: "td|<table_id>" → [ttl_sec]  (point GET; 0/липса = без TTL)
 fn boila_ttl_pk(table_id: i64) -> bytes {
@@ -91,22 +109,22 @@ fn boila_dbsize(s: BoilaStore) -> BoilaDbSize !IO !Time !Par {
     return BoilaDbSize { s: s, keys: n }
 }
 
-// S6b: flush + per-key GET on TTL tables (lazy-delete via rocksbaga get).
-// Background: api/serve_mt.baga boila_ttl_sweeper.
+// S6b/c: flush + per-key GET on TTL tables. Caps via
+// BOILA_SWEEP_SYS_ROUNDS (default 500), BOILA_SWEEP_DATA_ROUNDS (2000).
 fn boila_ts_sweep(s: BoilaStore) -> BoilaStore !IO !Time !Par {
     s = boila_flush(s)?
-    // collect table ids with ttl_sec > 0 from sys td|* keys
+    let sys_max = boila_sweep_sys_rounds()?
+    let data_max = boila_sweep_data_rounds()?
     let tids: Vec<i64> = vec_new()
     let mut cursor: i64 = 0
     let mut rounds: i64 = 0
     let mut done = false
-    while done == false && rounds < 500 {
+    while done == false && rounds < sys_max {
         let sc = boila_scan(s, boila_cf_sys(), 1, cursor, 64)?
         s = sc.s
         let mut j: i64 = 0
         while j < vec_len(sc.keys) {
             let k = vec_get(sc.keys, j)
-            // full key = cf(1)+tid(4)+pk; pk starts at 5
             if bytes_len(k) > 8 {
                 let pk = bytes_slice(k, 5, bytes_len(k))
                 let pks = str_of_bytes(pk)
@@ -129,14 +147,13 @@ fn boila_ts_sweep(s: BoilaStore) -> BoilaStore !IO !Time !Par {
         rounds = rounds + 1
         if cursor == 0 { done = true }
     }
-    // touch every data key → get path deletes expired values
     let mut ti: i64 = 0
     while ti < vec_len(tids) {
         let tid = vec_get(tids, ti)
         let mut c2: i64 = 0
         let mut r2: i64 = 0
         let mut d2 = false
-        while d2 == false && r2 < 2000 {
+        while d2 == false && r2 < data_max {
             let sc = boila_scan(s, boila_cf_data(), tid, c2, 64)?
             s = sc.s
             let mut j: i64 = 0
