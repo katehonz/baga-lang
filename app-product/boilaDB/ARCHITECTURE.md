@@ -175,9 +175,9 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 - **fts/** — inverted index в `fts` key-space, BM25, tokenizer EN/BG;
   синтаксис `WHERE body @@ to_tsquery('…')` / `plainto_tsquery`,
   `ts_rank`. Индексът е персистентен — без rebuild при рестарт.
-- **ts/** — не е отделен език: таблици с `WITH (ttl_days = N)` (PK включва
-  време), `time_bucket('1m', ts)` в GROUP BY, retention през TTL
-  (`lsm_put_ex`) + sweeper. Барбадб няма аналог.
+- **ts/** — не е отделен език: таблици с `WITH (ttl_days = N | ttl_sec = N)`
+  (boila extension for sub-day TTL), `time_bucket('1m', ts)` в GROUP BY,
+  retention през TTL (`lsm_put_ex`) + sweeper. Барбадб няма аналог.
 - **graph/** — adjacency в `graph` key-space (двупосочен); обхожданията
   се изразяват като `WITH RECURSIVE` (PG-идиоматично), примитивите
   BFS/DFS/Dijkstra живеят тук. Без PageRank/Louvain в v1.
@@ -207,7 +207,7 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
 (PRIMARY KEY задължителен — LSM-friendly)`,
 `CREATE [UNIQUE] INDEX ON t (col)`, `CREATE INDEX … USING hnsw`,
 `ALTER TABLE ADD COLUMN` (само nullable/add-only), `DROP TABLE/INDEX`,
-`WITH (ttl_days = N)`.
+`WITH (ttl_days = N | ttl_sec = N)`.
 
 **DML:** `INSERT … VALUES (…$1…) … [ON CONFLICT DO NOTHING |
 DO UPDATE SET …] [RETURNING …]`, `UPDATE … SET … WHERE … [RETURNING]`,

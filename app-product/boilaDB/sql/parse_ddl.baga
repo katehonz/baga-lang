@@ -181,7 +181,7 @@ fn boila_parse_create(l: BoilaLex) -> BoilaParseCreate {
     if cr.pk_idx < 0 {
         return boila_pc_fail("PRIMARY KEY е задължителен (LSM-friendly)", "0A000")
     }
-    // P9: WITH ( ttl_days = N | ttl_sec = N )
+    // P9/S8: WITH (ttl_days=N | ttl_sec=N); ttl_sec is boila extension
     if tok_kw(boila_pc_tok(l, i), "with") == 1 {
         if boila_pc_tok(l, i + 1).kind != tok_lparen() {
             return boila_pc_fail("очаквах '(' след WITH", "42601")

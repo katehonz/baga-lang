@@ -51,8 +51,9 @@ T = транзакции, W = wire protocol, F = FTS.
   kw); out name via `boila_sel_item_out_name`. ORDER BY after projection
   when needed. S7d: `time_bucket`+agg without GROUP BY auto-groups.
   S7e: GROUP BY out names use SELECT aliases (`bkt`, `d`, …).
-- **S8 — `ttl_sec` е разширение** извън чистия PG `ttl_days` (за тестове
-  и фина зърненост); документирано.
+- **S8 — (FIXED intentional) `ttl_sec` extension.** `WITH (ttl_days|ttl_sec)`
+  both accepted; `ttl_sec` is boila-native fine grain (tests + sub-day TTL).
+  Documented in PLAN/ARCHITECTURE; not a PG dialect gap to close.
 
 ## Открити при P8
 
