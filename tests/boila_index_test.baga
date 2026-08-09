@@ -77,6 +77,10 @@ fn main() -> i64 !IO !Time !Par {
     let qr = boila_server_exec(srv, "boila", "SELECT id FROM s WHERE n >= 20 AND n <= 30")?
     srv = qr.srv
     check(fails, "ix_range", qr.ok == 1 && vec_len(qr.res.rows) == 2)
+    // K3f: TEXT index range when PK is fixed-width i64
+    let qtr = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city >= 'sofia' AND city <= 'sofia'")?
+    srv = qtr.srv
+    check(fails, "ix_range_str", qtr.ok == 1 && vec_len(qtr.res.rows) == 2)
     // K3e: uncommitted insert visible in index range
     let b1 = boila_server_exec(srv, "boila", "BEGIN")?
     srv = b1.srv

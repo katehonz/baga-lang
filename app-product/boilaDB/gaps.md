@@ -205,7 +205,9 @@ T = транзакции, W = wire protocol, F = FTS.
 - **K3 — (FIXED) PK range sort+lb+early-stop; non-PK range post-filter.**
   PK range: sort+lb+early-stop. Non-PK/unindexed eq: seq filter. K3d:
   `boila_ix_range` for SELECT+DML on i64/bool/ts secondary indexes.
-  Residual: str/bytes index range still seq. K3e: txn buf merge on ix range.
+  K3e: txn buf merge on ix range. K3f: var-width col range when PK is
+  fixed-width (i64/ts/bool) — pk is key tail. Residual: str PK + str
+  index still seq.
 - **H2 — (FIXED) HTTP go_bg + per-shard hop-less + multi-DB + live conn.**
   `BOILA_MAX_CONN` → 503/53300. mode=`mt-shard`.
 
