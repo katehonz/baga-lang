@@ -43,7 +43,7 @@ fn pgw_write(fd: i64, b: bytes) -> i64 !Net !IO !Par {
 
 // Изпраща ParameterStatus + BackendKeyData + ReadyForQuery.
 fn pgw_send_startup_tail(fd: i64, tx: i64) -> i64 !Net !IO !Par {
-    let mut out = pgw_param_status("server_version", "16.0 (boilaDB P6)")
+    let mut out = pgw_param_status("server_version", "16.0 (boilaDB 0.1.0)")
     out = bytes_concat(out, pgw_param_status("server_encoding", "UTF8"))
     out = bytes_concat(out, pgw_param_status("client_encoding", "UTF8"))
     out = bytes_concat(out, pgw_param_status("integer_datetimes", "on"))

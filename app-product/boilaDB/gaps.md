@@ -239,9 +239,9 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S2 — MVCC GC (P4+) ще е background sweeper**, докато rocksbaga няма
   compaction filter. Риск от write amplification под тежки update товари
   — измерва се на P11, не се крие.
-- **M1 — (FIXED) request counters under gmu.** `boila_mt_stat_*` map in
-  pack: sql_total/ok/err, http_requests, pg_queries. `/metrics` renders
-  them as Prometheus counters. Inc from mt_exec + HTTP/PG paths (mutex).
+- **M1 — (FIXED) request counters + build info.** `boila_mt_stat_*` +
+  `/health` `version`, `/metrics` `boila_build_info`, PG `server_version`
+  includes boilaDB 0.1.0.
 - **H1 — serve е thread-per-conn** (моделът на httpdbaga). Bounded pool
   + admission control идват с P6 (wire); P0 скелетът не е товарно
   втвърден — това е целта на P11.

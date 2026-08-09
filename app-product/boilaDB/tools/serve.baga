@@ -15,6 +15,10 @@ import "std/net/poll.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 
+fn boila_version() -> str {
+    return "0.1.0"
+}
+
 fn boila_env_or(name: str, dflt: str) -> str !IO !Par {
     let v = env(name)
     if v == "" {
@@ -43,7 +47,9 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> Boila
         body = concat(body, int_to_str(md))
         body = concat(body, ",\"live_conn\":")
         body = concat(body, int_to_str(lv))
-        body = concat(body, ",\"mode\":\"mt-shard\"}")
+        body = concat(body, ",\"mode\":\"mt-shard\",\"version\":\"")
+        body = concat(body, boila_version())
+        body = concat(body, "\"}")
         let z = boila_srv_out_fail(boila_seed(), txn, "", "")
         return BoilaHttpSql { srv: z.srv, txn: txn, resp: http_json_response(200, body), db: sess_db }
     }
@@ -51,6 +57,8 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> Boila
         let m = met_new()
         let up = met_gauge(m, "boila_up", "alive")
         met_set(m, up, 1)
+        let bi = met_gauge(m, "boila_build_info", concat("boilaDB build info version=", boila_version()))
+        met_set(m, bi, 1)
         let od = met_gauge(m, "boila_databases_open", "open dbs")
         met_set(m, od, boila_mt_open_count(pack)?)
         let lc = met_gauge(m, "boila_conn_live", "live go_bg conns")
