@@ -58,6 +58,21 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "pick_query", boila_http_pick_db("alpha", r1) == "beta")
     // W6c: auth ok when BOILA_TOKEN unset
     check(fails, "auth_trust", boila_http_auth_ok(r0)? == 1)
+    // H3b: cookie / header db pick
+    let rc = Request {
+        method: "POST", path: "/sql", version: "HTTP/1.1",
+        hkeys: vec_new(), hvals: vec_new(), body: "x", body_bytes: bytes_of_str("x")
+    }
+    vec_push(rc.hkeys, "Cookie")
+    vec_push(rc.hvals, "boila_db=alpha; other=1")
+    check(fails, "pick_cookie", boila_http_pick_db("boila", rc) == "alpha")
+    let rh = Request {
+        method: "POST", path: "/sql", version: "HTTP/1.1",
+        hkeys: vec_new(), hvals: vec_new(), body: "x", body_bytes: bytes_of_str("x")
+    }
+    vec_push(rh.hkeys, "X-Boila-Db")
+    vec_push(rh.hvals, "beta")
+    check(fails, "pick_header", boila_http_pick_db("boila", rh) == "beta")
 
     let root = "/tmp/baga_boila_http_sess_test"
     wipe_root(root)?

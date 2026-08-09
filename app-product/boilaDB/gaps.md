@@ -193,7 +193,8 @@ T = транзакции, W = wire protocol, F = FTS.
 - **H3 — (FIXED) HTTP per-conn session db.** Keepalive `boila_http_conn`
   tracks `sess_db` (default `boila`); `USE` / successful `?db=` update it;
   bare `/sql` uses session. CREATE/DROP DATABASE do not switch session.
-  Residual: no cookie/cross-conn session; new TCP conn resets to `boila`.
+  H3b: `Set-Cookie: boila_db=` on USE; pick `?db=` > `X-Boila-Db` >
+  Cookie > conn sess. Residual: no signed cookie / CSRF.
 
 ## Открити при P1
 

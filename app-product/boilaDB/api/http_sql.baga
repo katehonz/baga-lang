@@ -70,11 +70,37 @@ fn boila_http_auth_fail(txn: BoilaTxn, sess_db: str) -> BoilaHttpSql {
     }
 }
 
-// H3: ?db= wins; else session db (default "boila").
+// H3b: Cookie boila_db=<name>
+fn boila_http_cookie_db(req: Request) -> str {
+    let c = http_header(req, "cookie")
+    let p = str_find(c, "boila_db=")
+    if p < 0 {
+        return ""
+    }
+    let start = p + 9
+    let mut end = start
+    while end < len(c) && char_at(c, end) != 59 {
+        end = end + 1
+    }
+    if end <= start {
+        return ""
+    }
+    return substr(c, start, end)
+}
+
+// H3: ?db= > X-Boila-Db > Cookie > conn sess > "boila"
 fn boila_http_pick_db(sess_db: str, req: Request) -> str {
     let q = http_query_param(req, "db")
     if q != "" {
         return q
+    }
+    let h = http_header(req, "x-boila-db")
+    if h != "" {
+        return h
+    }
+    let ck = boila_http_cookie_db(req)
+    if ck != "" {
+        return ck
     }
     if sess_db != "" {
         return sess_db
@@ -202,7 +228,12 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpS
     body = "{\"ok\":true,\"kind\":\"use\",\"db\":"
     body = concat(body, json_escape(out.db))
     body = concat(body, "}")
-    return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: http_json_response(200, body), db: ndb }
+    // H3b: Set-Cookie so new TCP conns can resume db without ?db=
+    let mut resp = http_json_response(200, body)
+    if out.ok == 1 && out.kind == 5 && out.db != "" {
+        resp = http_set_header(resp, "Set-Cookie", concat(concat("boila_db=", out.db), "; Path=/; HttpOnly"))
+    }
+    return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: resp, db: ndb }
 }
 
 fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, sess_db: str, req: Request) -> BoilaHttpSql !IO !Time !Par {
