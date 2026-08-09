@@ -45,12 +45,11 @@ T = транзакции, W = wire protocol, F = FTS.
   loop: sleep `BOILA_SWEEP_MS` (default 5000; 0=off) → `boila_mt_sweep_once`
   flush-ва всички open DB. HTTP/PG serve start-ват sweeper. Residual:
   expire още lazy в rocksbaga (flush trigger); няма per-key delete pass.
-- **S7 — (FIXED) time_bucket + AS alias + ORDER BY out names.** `biv` +
-  `alias` on `BoilaSelItem`; parse `AS ident`; out name via
-  `boila_sel_item_out_name`. ORDER BY: source cols if all resolve, else
-  after projection (time_bucket/alias). Residual: bare alias without AS;
-  bucket+agg without GROUP BY still 0A000; GROUP BY out name stays
-  `time_bucket` (not SELECT alias).
+- **S7 — (FIXED) time_bucket + [AS] alias + ORDER BY out names.** `biv` +
+  `alias` on `BoilaSelItem`; parse `AS ident` or bare alias (not clause
+  kw); out name via `boila_sel_item_out_name`. ORDER BY after projection
+  when needed. Residual: bucket+agg without GROUP BY still 0A000;
+  GROUP BY out name stays `time_bucket` (not SELECT alias).
 - **S8 — `ttl_sec` е разширение** извън чистия PG `ttl_days` (за тестове
   и фина зърненост); документирано.
 

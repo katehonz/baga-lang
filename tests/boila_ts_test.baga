@@ -110,6 +110,10 @@ fn main() -> i64 !IO !Time !Par {
     srv = qa.srv
     check(fails, "alias_cols", qa.ok == 1 && vec_len(qa.res.cols) == 2 && vec_get(qa.res.cols, 0) == "bkt" && vec_get(qa.res.cols, 1) == "id")
     check(fails, "order_alias", qa.ok == 1 && vec_len(qa.res.rows) == 3)
+    // S7c: bare alias without AS
+    let qb = exec1(srv, "SELECT time_bucket('1m', ts) bkt, v val FROM pts WHERE id = 1")
+    srv = qb.srv
+    check(fails, "bare_alias", qb.ok == 1 && vec_len(qb.res.cols) == 2 && vec_get(qb.res.cols, 0) == "bkt" && vec_get(qb.res.cols, 1) == "val")
     let qo = exec1(srv, "SELECT time_bucket('1m', ts), id FROM pts WHERE id >= 1 AND id <= 3 ORDER BY time_bucket DESC")
     srv = qo.srv
     check(fails, "order_bucket", qo.ok == 1 && vec_len(qo.res.rows) == 3 && vec_get(qo.res.cols, 0) == "time_bucket")
