@@ -42,10 +42,10 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S5 — perf gate 1M точки / <50 ms не е измерен.** Functional P9 е
   зелен (boila_ts_test); bulk seed + range+bucket bench чака chunked
   insert (Q2).
-- **S6 — (FIXED) background TTL sweeper.** `boila_ttl_sweeper` go_bg
-  loop: sleep `BOILA_SWEEP_MS` (default 5000; 0=off) → `boila_mt_sweep_once`
-  flush-ва всички open DB. HTTP/PG serve start-ват sweeper. Residual:
-  expire още lazy в rocksbaga (flush trigger); няма per-key delete pass.
+- **S6 — (FIXED) TTL sweeper flush + per-key purge.** `boila_ts_sweep`:
+  flush then GET every data key of TTL tables (rocksbaga lazy-del on get).
+  `boila_ttl_sweeper` / `BOILA_SWEEP_MS`. Residual: capped scan rounds;
+  no separate expires index (unlike rocksbaga MT sweeper).
 - **S7 — (FIXED) time_bucket + [AS] alias + ORDER BY out names.** `biv` +
   `alias` on `BoilaSelItem`; parse `AS ident` or bare alias (not clause
   kw); out name via `boila_sel_item_out_name`. ORDER BY after projection

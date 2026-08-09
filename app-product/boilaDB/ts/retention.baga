@@ -91,8 +91,69 @@ fn boila_dbsize(s: BoilaStore) -> BoilaDbSize !IO !Time !Par {
     return BoilaDbSize { s: s, keys: n }
 }
 
-// Sweep: flush (TTL lazy drop on flush/compact path in rocksbaga).
-// Background: api/serve_mt.baga boila_ttl_sweeper (S6).
+// S6b: flush + per-key GET on TTL tables (lazy-delete via rocksbaga get).
+// Background: api/serve_mt.baga boila_ttl_sweeper.
 fn boila_ts_sweep(s: BoilaStore) -> BoilaStore !IO !Time !Par {
-    return boila_flush(s)?
+    s = boila_flush(s)?
+    // collect table ids with ttl_sec > 0 from sys td|* keys
+    let tids: Vec<i64> = vec_new()
+    let mut cursor: i64 = 0
+    let mut rounds: i64 = 0
+    let mut done = false
+    while done == false && rounds < 500 {
+        let sc = boila_scan(s, boila_cf_sys(), 1, cursor, 64)?
+        s = sc.s
+        let mut j: i64 = 0
+        while j < vec_len(sc.keys) {
+            let k = vec_get(sc.keys, j)
+            // full key = cf(1)+tid(4)+pk; pk starts at 5
+            if bytes_len(k) > 8 {
+                let pk = bytes_slice(k, 5, bytes_len(k))
+                let pks = str_of_bytes(pk)
+                if len(pks) > 3 {
+                    if char_at(pks, 0) == 116 && char_at(pks, 1) == 100 && char_at(pks, 2) == 124 {
+                        let tid = parse_int(substr(pks, 3, len(pks)))
+                        if tid > 0 {
+                            let tg = boila_ttl_get(s, tid)?
+                            s = tg.s
+                            if tg.ttl_sec > 0 {
+                                vec_push(tids, tid)
+                            }
+                        }
+                    }
+                }
+            }
+            j = j + 1
+        }
+        cursor = sc.next
+        rounds = rounds + 1
+        if cursor == 0 { done = true }
+    }
+    // touch every data key → get path deletes expired values
+    let mut ti: i64 = 0
+    while ti < vec_len(tids) {
+        let tid = vec_get(tids, ti)
+        let mut c2: i64 = 0
+        let mut r2: i64 = 0
+        let mut d2 = false
+        while d2 == false && r2 < 2000 {
+            let sc = boila_scan(s, boila_cf_data(), tid, c2, 64)?
+            s = sc.s
+            let mut j: i64 = 0
+            while j < vec_len(sc.keys) {
+                let k = vec_get(sc.keys, j)
+                if bytes_len(k) > 5 {
+                    let dpk = bytes_slice(k, 5, bytes_len(k))
+                    let g = boila_get(s, boila_cf_data(), tid, dpk)?
+                    s = g.s
+                }
+                j = j + 1
+            }
+            c2 = sc.next
+            r2 = r2 + 1
+            if c2 == 0 { d2 = true }
+        }
+        ti = ti + 1
+    }
+    return s
 }
