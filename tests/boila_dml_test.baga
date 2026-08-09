@@ -113,6 +113,13 @@ fn main() -> i64 !IO !Time !Par {
     let u3 = boila_server_exec(srv, "boila", "SELECT score FROM u WHERE id = 3")?
     srv = u3.srv
     check(fails, "update_applied", u3.ok == 1 && cell(vec_get(u3.res.rows, 0), 0) == "0")
+    // K3b: non-PK range UPDATE/DELETE
+    let u4 = boila_server_exec(srv, "boila", "UPDATE u SET score = 7 WHERE name >= 'alice' AND name <= 'alice'")?
+    srv = u4.srv
+    check(fails, "update_range_non_pk", u4.ok == 1 && u4.id == 1)
+    let u5 = boila_server_exec(srv, "boila", "SELECT score FROM u WHERE id = 1")?
+    srv = u5.srv
+    check(fails, "update_non_pk_val", u5.ok == 1 && cell(vec_get(u5.res.rows, 0), 0) == "7")
 
     // --- DELETE ---
     let d1 = boila_server_exec(srv, "boila", "DELETE FROM u WHERE id = 3 RETURNING id")?

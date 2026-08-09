@@ -19,8 +19,7 @@ import "exec_dml.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
-// Събира pk-та по WHERE: point по pk/индекс (+ buffer merge), range по pk,
-// или всички (storage + buffer).
+// WHERE targets: PK/index eq; PK or non-PK range (K3b post-filter); all.
 struct BoilaDmlTgts {
     s: BoilaStore,
     txn: BoilaTxn,
@@ -41,7 +40,6 @@ fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, h
             vec_push(pks, boila_val_enc(v_eq))
             return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
         }
-        // индексирана колона?
         let cix = boila_col_idx(t, eq_col)
         if cix < 0 {
             return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: concat("колона '", concat(eq_col, "' не съществува")), state: "42703", pks: pks }
@@ -56,40 +54,74 @@ fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, h
         }
         let lk = boila_ix_lookup(s, t, ixid, v_eq)?
         s = lk.s
-        // + собствените buffer писания със същата стойност
         boila_scan_buf_eq(txn, t, cix, v_eq, lk.pks)
         return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: lk.pks }
     }
-    // range само по pk (P4); без WHERE → всички (storage + buffer)
-    if has_lo == 1 && lo_col != pkcol.name {
-        return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "range в P4 само по PRIMARY KEY", state: "0A000", pks: pks }
+    // range: PK cmp on key; non-PK → get row + col cmp (K3b)
+    let mut pk_range: i64 = 1
+    let mut lo_cix: i64 = 0 - 1
+    let mut hi_cix: i64 = 0 - 1
+    if has_lo == 1 {
+        lo_cix = boila_col_idx(t, lo_col)
+        if lo_cix < 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: concat("колона '", concat(lo_col, "' не съществува")), state: "42703", pks: pks }
+        }
+        if boila_dml_val_ok(vec_get(t.cols, lo_cix).typ, v_lo) == 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в >= не съответства на типа на колоната", state: "42804", pks: pks }
+        }
+        if lo_col != pkcol.name { pk_range = 0 }
     }
-    if has_hi == 1 && hi_col != pkcol.name {
-        return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "range в P4 само по PRIMARY KEY", state: "0A000", pks: pks }
-    }
-    if has_lo == 1 && boila_pk_lit_ok(pkcol.typ, v_lo) == 0 {
-        return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в >= не съответства на PRIMARY KEY типа", state: "42804", pks: pks }
-    }
-    if has_hi == 1 && boila_pk_lit_ok(pkcol.typ, v_hi) == 0 {
-        return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в <= не съответства на PRIMARY KEY типа", state: "42804", pks: pks }
+    if has_hi == 1 {
+        hi_cix = boila_col_idx(t, hi_col)
+        if hi_cix < 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: concat("колона '", concat(hi_col, "' не съществува")), state: "42703", pks: pks }
+        }
+        if boila_dml_val_ok(vec_get(t.cols, hi_cix).typ, v_hi) == 0 {
+            return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: "литералът в <= не съответства на типа на колоната", state: "42804", pks: pks }
+        }
+        if hi_col != pkcol.name { pk_range = 0 }
     }
     let ks = boila_txn_keys(s, txn, t.id)?
     s = ks.s
     let mut ki: i64 = 0
     while ki < vec_len(ks.pks) {
         let pkenc = vec_get(ks.pks, ki)
-        let pkv = boila_val_dec(pkenc)
         let mut keep = true
-        if has_lo == 1 {
-            let cmp = boila_val_cmp(pkv, v_lo)
-            if cmp != 1 && cmp != 0 {
-                keep = false
+        if pk_range == 1 && (has_lo == 1 || has_hi == 1) {
+            let pkv = boila_val_dec(pkenc)
+            if has_lo == 1 {
+                let cmp = boila_val_cmp(pkv, v_lo)
+                if cmp != 1 && cmp != 0 { keep = false }
             }
-        }
-        if keep && has_hi == 1 {
-            let cmp = boila_val_cmp(pkv, v_hi)
-            if cmp != 0 - 1 && cmp != 0 {
-                keep = false
+            if keep && has_hi == 1 {
+                let cmp = boila_val_cmp(pkv, v_hi)
+                if cmp != 0 - 1 && cmp != 0 { keep = false }
+            }
+        } else {
+            if has_lo == 1 || has_hi == 1 {
+                let g = boila_txn_get(s, txn, t.id, pkenc)?
+                s = g.s
+                if g.found == 0 {
+                    keep = false
+                } else {
+                    let row = boila_row_dec(g.row)
+                    if has_lo == 1 {
+                        if lo_cix < 0 || lo_cix >= vec_len(row) {
+                            keep = false
+                        } else {
+                            let cmp = boila_val_cmp(vec_get(row, lo_cix), v_lo)
+                            if cmp != 1 && cmp != 0 { keep = false }
+                        }
+                    }
+                    if keep && has_hi == 1 {
+                        if hi_cix < 0 || hi_cix >= vec_len(row) {
+                            keep = false
+                        } else {
+                            let cmp = boila_val_cmp(vec_get(row, hi_cix), v_hi)
+                            if cmp != 0 - 1 && cmp != 0 { keep = false }
+                        }
+                    }
+                }
             }
         }
         if keep {
