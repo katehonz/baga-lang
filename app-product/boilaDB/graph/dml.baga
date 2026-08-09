@@ -1,0 +1,117 @@
+// dml.baga — graph adjacency sync on INSERT/UPDATE/DELETE (G2).
+// Mirrors FTS/HNSW: list once, unindex old / index new via txn buffer.
+
+import "adjacency.baga"
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../txn/mvcc.baga"
+import "std/bytes/bytes.baga"
+
+fn graph_nbrs_remove(list: BoilaNbrList, pk: bytes) -> BoilaNbrList {
+    let pks: Vec<bytes> = vec_new()
+    let ws: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(list.pks) {
+        if bytes_eq_b(vec_get(list.pks, i), pk) == 0 {
+            vec_push(pks, vec_get(list.pks, i))
+            vec_push(ws, vec_get(list.ws, i))
+        }
+        i = i + 1
+    }
+    return BoilaNbrList { pks: pks, ws: ws }
+}
+
+fn graph_del_edge(s: BoilaStore, txn: BoilaTxn, table_id: i64, gid: i64, src: bytes, dst: bytes) -> BoilaGraphRes !IO !Time !Par {
+    let og = graph_nbrs_get(s, txn, table_id, graph_out_pk(gid, src))?
+    s = og.s
+    txn = og.txn
+    let ol = graph_nbrs_remove(og.list, dst)
+    let r = graph_nbrs_put(s, txn, table_id, graph_out_pk(gid, src), ol)
+    if r.ok == 0 {
+        return r
+    }
+    s = r.s
+    txn = r.txn
+    let ig = graph_nbrs_get(s, txn, table_id, graph_in_pk(gid, dst))?
+    s = ig.s
+    txn = ig.txn
+    let il = graph_nbrs_remove(ig.list, src)
+    let r2 = graph_nbrs_put(s, txn, table_id, graph_in_pk(gid, dst), il)
+    if r2.ok == 0 {
+        return r2
+    }
+    return BoilaGraphRes { s: r2.s, txn: r2.txn, ok: 1, err: "", state: "", id: gid }
+}
+
+// Extract edge endpoints from a data row; no-op if src/dst NULL.
+fn graph_row_edge(def: BoilaGraphDef, row: Vec<BoilaVal>) -> i64 {
+    if def.src_idx < 0 || def.dst_idx < 0 {
+        return 0
+    }
+    if def.src_idx >= vec_len(row) || def.dst_idx >= vec_len(row) {
+        return 0
+    }
+    let sv = vec_get(row, def.src_idx)
+    let dv = vec_get(row, def.dst_idx)
+    if sv.tag == boila_v_null() || dv.tag == boila_v_null() {
+        return 0
+    }
+    return 1
+}
+
+fn graph_row_weight(def: BoilaGraphDef, row: Vec<BoilaVal>) -> i64 {
+    if def.w_idx >= 0 && def.w_idx < vec_len(row) {
+        let wv = vec_get(row, def.w_idx)
+        if wv.tag == boila_v_i64() {
+            return wv.i
+        }
+    }
+    return 1
+}
+
+fn graph_index_row(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaGraphDef, row: Vec<BoilaVal>) -> BoilaGraphRes !IO !Time !Par {
+    if graph_row_edge(def, row) == 0 {
+        return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: def.id }
+    }
+    let src = boila_val_enc(vec_get(row, def.src_idx))
+    let dst = boila_val_enc(vec_get(row, def.dst_idx))
+    let w = graph_row_weight(def, row)
+    return graph_add_edge(s, txn, table_id, def.id, src, dst, w)?
+}
+
+fn graph_unindex_row(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaGraphDef, row: Vec<BoilaVal>) -> BoilaGraphRes !IO !Time !Par {
+    if graph_row_edge(def, row) == 0 {
+        return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: def.id }
+    }
+    let src = boila_val_enc(vec_get(row, def.src_idx))
+    let dst = boila_val_enc(vec_get(row, def.dst_idx))
+    return graph_del_edge(s, txn, table_id, def.id, src, dst)?
+}
+
+// Apply all graphs for table: unindex old (if any) then index new (if any).
+fn graph_sync_row(s: BoilaStore, txn: BoilaTxn, table_id: i64, defs: Vec<BoilaGraphDef>, old_row: Vec<BoilaVal>, has_old: i64, new_row: Vec<BoilaVal>, has_new: i64) -> BoilaGraphRes !IO !Time !Par {
+    let mut gi: i64 = 0
+    while gi < vec_len(defs) {
+        let d = vec_get(defs, gi)
+        if has_old == 1 {
+            let u = graph_unindex_row(s, txn, table_id, d, old_row)?
+            s = u.s
+            txn = u.txn
+            if u.ok == 0 {
+                return u
+            }
+        }
+        if has_new == 1 {
+            let x = graph_index_row(s, txn, table_id, d, new_row)?
+            s = x.s
+            txn = x.txn
+            if x.ok == 0 {
+                return x
+            }
+        }
+        gi = gi + 1
+    }
+    return BoilaGraphRes { s: s, txn: txn, ok: 1, err: "", state: "", id: 0 }
+}

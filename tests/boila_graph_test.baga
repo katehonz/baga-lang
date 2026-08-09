@@ -135,12 +135,38 @@ fn main() -> i64 !IO !Time !Par {
     srv = q4.srv
     check(fails, "no_graph", q4.ok == 0)
 
+    // G2 DML sync: INSERT edge 5→6 after CREATE GRAPH → BFS sees 6
+    let i2 = exec1(srv, "INSERT INTO edges (id, src, dst, w) VALUES (6, 5, 6, 1)")
+    srv = i2.srv
+    check(fails, "dml_insert_edge", i2.ok == 1)
+    let q6 = exec1(srv, "WITH RECURSIVE reach(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 3) SELECT node, depth FROM reach")
+    srv = q6.srv
+    check(fails, "dml_insert_bfs6", q6.ok == 1 && has_node(q6.res, 6) == 1)
+
+    // DELETE edge 1→2: depth-1 from 1 should not include 2 via that edge
+    // (2 still reachable? only via 1→2; after delete: 1→5→6 and no 2)
+    let d1 = exec1(srv, "DELETE FROM edges WHERE id = 1")
+    srv = d1.srv
+    check(fails, "dml_delete_edge", d1.ok == 1 && d1.id == 1)
+    let q7 = exec1(srv, "WITH RECURSIVE reach(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 2) SELECT node, depth FROM reach")
+    srv = q7.srv
+    check(fails, "dml_delete_no2", q7.ok == 1 && has_node(q7.res, 1) == 1 && has_node(q7.res, 5) == 1 && has_node(q7.res, 2) == 0)
+
+    // UPDATE edge 4 (1→5) to 1→7
+    let u1 = exec1(srv, "UPDATE edges SET dst = 7 WHERE id = 4")
+    srv = u1.srv
+    check(fails, "dml_update_edge", u1.ok == 1)
+    let q8 = exec1(srv, "WITH RECURSIVE reach(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 1) SELECT node, depth FROM reach")
+    srv = q8.srv
+    check(fails, "dml_update_has7", q8.ok == 1 && has_node(q8.res, 7) == 1)
+    check(fails, "dml_update_no5", q8.ok == 1 && has_node(q8.res, 5) == 0)
+
     // restart
     boila_server_close(srv)?
     let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
     let q5 = exec1(srv2, "WITH RECURSIVE reach(node, depth) AS (SELECT 1, 0 UNION ALL SELECT dst, 0 FROM edges, reach WHERE src = node AND depth < 1) SELECT node, depth FROM reach")
     srv2 = q5.srv
-    check(fails, "restart_bfs", q5.ok == 1 && has_node(q5.res, 1) == 1 && has_node(q5.res, 2) == 1)
+    check(fails, "restart_bfs", q5.ok == 1 && has_node(q5.res, 1) == 1 && has_node(q5.res, 7) == 1)
 
     boila_server_close(srv2)?
     wipe_root(root)?
