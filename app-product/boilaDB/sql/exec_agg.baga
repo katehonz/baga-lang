@@ -101,7 +101,7 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
         i = i + 1
     }
     let nitems = vec_len(agg_items)
-    // изходни колони: group + агрегати (tags за W3)
+    // изходни колони: group + агрегати (S7e: SELECT alias on group cols)
     let mut res = boila_result_empty()
     i = 0
     while i < vec_len(sel.group_cols) {
@@ -114,7 +114,24 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
             let gix = boila_col_idx_of(cols, nm)
             if gix >= 0 { tag = vec_get(cols, gix).typ }
         }
-        boila_result_add_col(res, nm, tag)
+        let mut onm = nm
+        let mut j: i64 = 0
+        while j < vec_len(sel.items) {
+            let it = vec_get(sel.items, j)
+            if it.agg == 0 {
+                if nm == "time_bucket" && it.biv > 0 {
+                    onm = boila_sel_item_out_name(it)
+                    j = vec_len(sel.items)
+                } else {
+                    if it.biv == 0 && it.col == nm {
+                        onm = boila_sel_item_out_name(it)
+                        j = vec_len(sel.items)
+                    }
+                }
+            }
+            j = j + 1
+        }
+        boila_result_add_col(res, onm, tag)
         i = i + 1
     }
     i = 0
