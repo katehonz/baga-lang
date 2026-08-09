@@ -92,6 +92,10 @@ fn fts_fold_greek(b0: i64, b1: i64) -> bytes {
         if b1 >= 145 && b1 <= 159 { return fts_two_b(206, b1 + 32) }
         if b1 >= 160 && b1 <= 169 { return fts_two_b(207, b1 - 32) }
     }
+    // F1e: final sigma ς (CF 82) → σ (CF 83) for match
+    if b0 == 207 && b1 == 130 {
+        return fts_two_b(207, 131)
+    }
     return fts_two_b(b0, b1)
 }
 
