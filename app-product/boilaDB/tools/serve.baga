@@ -70,9 +70,9 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, req: Request) -> Boila
     }
     if method == "POST" && path == "/sql" {
         boila_mt_stat_inc(pack, boila_st_http())?
-        let db = boila_http_pick_db(sess_db, req)
+        let db = boila_http_pick_db(sess_db, req)?
         let out = boila_mt_exec(pack, txn, db, http_body(req))?
-        return boila_http_encode(out, sess_db, db)
+        return boila_http_encode(out, sess_db, db)?
     }
     return BoilaHttpSql { srv: boila_seed(), txn: txn, resp: http_json_response(404, "{\"error\":\"not found\"}"), db: sess_db }
 }

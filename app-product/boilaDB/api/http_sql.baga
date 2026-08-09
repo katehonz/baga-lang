@@ -24,6 +24,7 @@ import "std/json/json.baga"
 import "std/str/str.baga"
 import "std/os/os.baga"
 import "std/crypto/ct.baga"
+import "std/crypto/hmac.baga"
 
 struct BoilaHttpSql {
     srv: BoilaServer,
@@ -70,8 +71,29 @@ fn boila_http_auth_fail(txn: BoilaTxn, sess_db: str) -> BoilaHttpSql {
     }
 }
 
-// H3b: Cookie boila_db=<name>
-fn boila_http_cookie_db(req: Request) -> str {
+// H3c: HMAC-SHA256 prefix (16 hex) of db name under BOILA_TOKEN.
+fn boila_http_db_sig(db: str) -> str !IO {
+    let token = env("BOILA_TOKEN")
+    if token == "" {
+        return ""
+    }
+    let h = hmac_sha256_hex(token, concat("boila_db:", db))
+    if len(h) > 16 {
+        return substr(h, 0, 16)
+    }
+    return h
+}
+
+fn boila_http_db_cookie_val(db: str) -> str !IO {
+    let sig = boila_http_db_sig(db)?
+    if sig == "" {
+        return db
+    }
+    return concat(concat(db, "."), sig)
+}
+
+// Parse cookie value; verify sig when BOILA_TOKEN set.
+fn boila_http_cookie_db(req: Request) -> str !IO {
     let c = http_header(req, "cookie")
     let p = str_find(c, "boila_db=")
     if p < 0 {
@@ -85,11 +107,37 @@ fn boila_http_cookie_db(req: Request) -> str {
     if end <= start {
         return ""
     }
-    return substr(c, start, end)
+    let raw = substr(c, start, end)
+    let token = env("BOILA_TOKEN")
+    // find last '.'
+    let mut dot: i64 = 0 - 1
+    let mut i = 0
+    while i < len(raw) {
+        if char_at(raw, i) == 46 {
+            dot = i
+        }
+        i = i + 1
+    }
+    if token == "" {
+        if dot > 0 {
+            return substr(raw, 0, dot)
+        }
+        return raw
+    }
+    if dot <= 0 {
+        return ""
+    }
+    let name = substr(raw, 0, dot)
+    let sig = substr(raw, dot + 1, len(raw))
+    let want = boila_http_db_sig(name)?
+    if want != "" && ct_eq(sig, want) {
+        return name
+    }
+    return ""
 }
 
 // H3: ?db= > X-Boila-Db > Cookie > conn sess > "boila"
-fn boila_http_pick_db(sess_db: str, req: Request) -> str {
+fn boila_http_pick_db(sess_db: str, req: Request) -> str !IO {
     let q = http_query_param(req, "db")
     if q != "" {
         return q
@@ -98,7 +146,7 @@ fn boila_http_pick_db(sess_db: str, req: Request) -> str {
     if h != "" {
         return h
     }
-    let ck = boila_http_cookie_db(req)
+    let ck = boila_http_cookie_db(req)?
     if ck != "" {
         return ck
     }
@@ -156,7 +204,7 @@ fn boila_http_sql(srv: BoilaServer, req: Request) -> BoilaHttpSql !IO !Time !Par
 }
 
 // Encode BoilaSrvOut → JSON response (no re-exec). db = session after.
-fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpSql {
+fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpSql !IO {
     let ndb = boila_http_next_db(sess_db, used_db, out)
     let mut body = ""
     if out.ok == 0 {
@@ -228,10 +276,11 @@ fn boila_http_encode(out: BoilaSrvOut, sess_db: str, used_db: str) -> BoilaHttpS
     body = "{\"ok\":true,\"kind\":\"use\",\"db\":"
     body = concat(body, json_escape(out.db))
     body = concat(body, "}")
-    // H3b: Set-Cookie so new TCP conns can resume db without ?db=
+    // H3c: Set-Cookie (signed when BOILA_TOKEN set)
     let mut resp = http_json_response(200, body)
     if out.ok == 1 && out.kind == 5 && out.db != "" {
-        resp = http_set_header(resp, "Set-Cookie", concat(concat("boila_db=", out.db), "; Path=/; HttpOnly"))
+        let cv = boila_http_db_cookie_val(out.db)?
+        resp = http_set_header(resp, "Set-Cookie", concat(concat("boila_db=", cv), "; Path=/; HttpOnly"))
     }
     return BoilaHttpSql { srv: out.srv, txn: out.txn, resp: resp, db: ndb }
 }
@@ -240,7 +289,7 @@ fn boila_http_sql_tx(srv: BoilaServer, txn: BoilaTxn, sess_db: str, req: Request
     if boila_http_auth_ok(req)? == 0 {
         return boila_http_auth_fail(txn, sess_db)
     }
-    let db = boila_http_pick_db(sess_db, req)
+    let db = boila_http_pick_db(sess_db, req)?
     let out = boila_server_exec_tx(srv, txn, db, http_body(req))?
-    return boila_http_encode(out, sess_db, db)
+    return boila_http_encode(out, sess_db, db)?
 }

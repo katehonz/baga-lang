@@ -52,10 +52,10 @@ fn main() -> i64 !IO !Time !Par {
     let fails: Vec<i64> = vec_new()
 
     let r0 = mk_req("/sql", "x")
-    check(fails, "pick_default", boila_http_pick_db("", r0) == "boila")
-    check(fails, "pick_sess", boila_http_pick_db("alpha", r0) == "alpha")
+    check(fails, "pick_default", boila_http_pick_db("", r0)? == "boila")
+    check(fails, "pick_sess", boila_http_pick_db("alpha", r0)? == "alpha")
     let r1 = mk_req("/sql?db=beta", "x")
-    check(fails, "pick_query", boila_http_pick_db("alpha", r1) == "beta")
+    check(fails, "pick_query", boila_http_pick_db("alpha", r1)? == "beta")
     // W6c: auth ok when BOILA_TOKEN unset
     check(fails, "auth_trust", boila_http_auth_ok(r0)? == 1)
     // H3b: cookie / header db pick
@@ -65,14 +65,16 @@ fn main() -> i64 !IO !Time !Par {
     }
     vec_push(rc.hkeys, "Cookie")
     vec_push(rc.hvals, "boila_db=alpha; other=1")
-    check(fails, "pick_cookie", boila_http_pick_db("boila", rc) == "alpha")
+    check(fails, "pick_cookie", boila_http_pick_db("boila", rc)? == "alpha")
     let rh = Request {
         method: "POST", path: "/sql", version: "HTTP/1.1",
         hkeys: vec_new(), hvals: vec_new(), body: "x", body_bytes: bytes_of_str("x")
     }
     vec_push(rh.hkeys, "X-Boila-Db")
     vec_push(rh.hvals, "beta")
-    check(fails, "pick_header", boila_http_pick_db("boila", rh) == "beta")
+    check(fails, "pick_header", boila_http_pick_db("boila", rh)? == "beta")
+    // H3c: signed cookie val format when token unset is plain
+    check(fails, "cookie_val_plain", boila_http_db_cookie_val("gamma")? == "gamma")
 
     let root = "/tmp/baga_boila_http_sess_test"
     wipe_root(root)?
