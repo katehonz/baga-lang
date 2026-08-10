@@ -3,8 +3,7 @@
 //
 // count(*) брой редове; count(col)/sum/avg/min/max върху не-NULL
 // стойности; avg е целочислено деление (gaps A1); sum/avg само за
-// i64-тип колони. Групирането е линеен lookup по сериализиран ключ
-// (тестови обеми; ще стане hash при нужда).
+// i64-тип колони. Групиране: Map<str,i64> hash lookup (S5 / Q-ghash).
 
 import "../core/value.baga"
 import "../core/row.baga"
@@ -67,31 +66,14 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
         vec_push(xnames, vec_get(cols, i).name)
         i = i + 1
     }
-    // P9: материализирай bucket стойностите в копие на редовете
-    let mut brows = rows
+    // P9: bucket on the fly (no full-table materialize — S5)
+    let brows = rows
+    let mut bucket_ix: i64 = 0 - 1
     if sel.bucket_iv > 0 {
-        let bix = boila_col_idx_of(cols, sel.bucket_col)
-        if bix < 0 {
+        bucket_ix = boila_col_idx_of(cols, sel.bucket_col)
+        if bucket_ix < 0 {
             return boila_agg_fail(concat("time_bucket колона '", concat(sel.bucket_col, "' не съществува")), "42703")
         }
-        let nr: Vec<Vec<BoilaVal>> = vec_new()
-        let mut r0: i64 = 0
-        while r0 < vec_len(rows) {
-            let src = vec_get(rows, r0)
-            let row: Vec<BoilaVal> = vec_new()
-            let mut c: i64 = 0
-            while c < vec_len(src) {
-                if c == bix {
-                    vec_push(row, boila_tb_apply(vec_get(src, c), sel.bucket_iv))
-                } else {
-                    vec_push(row, vec_get(src, c))
-                }
-                c = c + 1
-            }
-            vec_push(nr, row)
-            r0 = r0 + 1
-        }
-        brows = nr
     }
     // агрегатни колони → индекси (-2 = Q-aexpr; -1 = count(*))
     let mut aixs: Vec<i64> = vec_new()
@@ -200,51 +182,103 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
             i = i + 1
         }
     }
-    // групи
+    // групи — Map hash: i64 fast path only for single numeric/ts group
+    // (time_bucket / BIGINT). TEXT/bytes groups stay on Map<str,i64> hex.
     let gkeys: Vec<bytes> = vec_new()
     let gaccs: Vec<BoilaAggAcc> = vec_new()
+    let gmap: Map<str, i64> = map_new()
+    let gimap: Map<i64, i64> = map_new()
+    let mut single_i64 = 0
+    if vec_len(gixs) == 1 {
+        if sel.bucket_iv > 0 {
+            single_i64 = 1
+        } else {
+            let g0 = vec_get(gixs, 0)
+            if g0 >= 0 && g0 < vec_len(cols) {
+                let gt = vec_get(cols, g0).typ
+                if gt == boila_v_i64() || gt == boila_v_ts() {
+                    single_i64 = 1
+                }
+            }
+        }
+    }
     let mut r: i64 = 0
     while r < vec_len(brows) {
         let row = vec_get(brows, r)
-        // group key: cols and/or Q-gbyx expressions
-        let mut key = bytes_new(0)
-        let mut gi0: i64 = 0
-        while gi0 < vec_len(gixs) {
-            let gix = vec_get(gixs, gi0)
-            let mut gv = boila_val_null()
-            if gix >= 0 {
-                if gix < vec_len(row) {
-                    gv = vec_get(row, gix)
-                }
-            } else {
-                let mut gxt: Vec<Token> = vec_new()
-                if gi0 < vec_len(sel.group_xtoks) {
-                    gxt = vec_get(sel.group_xtoks, gi0)
-                }
-                if vec_len(gxt) > 0 {
-                    let ev = boila_xw_eval(xnames, gxt, row)?
-                    if ev.ok == 0 {
-                        return boila_agg_fail(ev.err, ev.state)
-                    }
-                    gv = ev.val
-                }
-            }
-            key = bytes_concat(key, boila_val_enc(gv))
-            key = bytes_concat(key, bytes_of_str("|"))
-            gi0 = gi0 + 1
-        }
         let mut gi: i64 = 0 - 1
-        let mut k: i64 = 0
-        while k < vec_len(gkeys) {
-            if bytes_eq_b(vec_get(gkeys, k), key) {
-                gi = k
+        if single_i64 == 1 {
+            // fast path: single BIGINT/ts/time_bucket key → Map<i64,i64>
+            // (no bytes encode; gkeys only tracks group count)
+            let gix = vec_get(gixs, 0)
+            let mut gvi: i64 = 0
+            if gix >= 0 && gix < vec_len(row) {
+                let mut gv = vec_get(row, gix)
+                if sel.bucket_iv > 0 && gix == bucket_ix {
+                    gv = boila_tb_apply(gv, sel.bucket_iv)
+                }
+                gvi = gv.i
             }
-            k = k + 1
-        }
-        if gi < 0 {
-            vec_push(gkeys, key)
-            vec_push(gaccs, boila_agg_new_acc(nitems, row))
-            gi = vec_len(gkeys) - 1
+            if map_has(gimap, gvi) == 1 {
+                gi = map_get(gimap, gvi)
+            } else {
+                gi = vec_len(gaccs)
+                map_set(gimap, gvi, gi)
+                let mut first = row
+                if sel.bucket_iv > 0 && bucket_ix >= 0 && bucket_ix < vec_len(row) {
+                    first = vec_new()
+                    let mut c: i64 = 0
+                    while c < vec_len(row) {
+                        if c == bucket_ix {
+                            vec_push(first, boila_tb_apply(vec_get(row, c), sel.bucket_iv))
+                        } else {
+                            vec_push(first, vec_get(row, c))
+                        }
+                        c = c + 1
+                    }
+                }
+                vec_push(gkeys, bytes_new(0))
+                vec_push(gaccs, boila_agg_new_acc(nitems, first))
+            }
+        } else {
+            // multi-col / text / expr groups: encode key → hex → Map
+            let mut key = bytes_new(0)
+            let mut gi0: i64 = 0
+            while gi0 < vec_len(gixs) {
+                let gix = vec_get(gixs, gi0)
+                let mut gv = boila_val_null()
+                if gix >= 0 {
+                    if gix < vec_len(row) {
+                        gv = vec_get(row, gix)
+                        if sel.bucket_iv > 0 && gix == bucket_ix {
+                            gv = boila_tb_apply(gv, sel.bucket_iv)
+                        }
+                    }
+                } else {
+                    let mut gxt: Vec<Token> = vec_new()
+                    if gi0 < vec_len(sel.group_xtoks) {
+                        gxt = vec_get(sel.group_xtoks, gi0)
+                    }
+                    if vec_len(gxt) > 0 {
+                        let ev = boila_xw_eval(xnames, gxt, row)?
+                        if ev.ok == 0 {
+                            return boila_agg_fail(ev.err, ev.state)
+                        }
+                        gv = ev.val
+                    }
+                }
+                key = bytes_concat(key, boila_val_enc(gv))
+                key = bytes_concat(key, bytes_of_str("|"))
+                gi0 = gi0 + 1
+            }
+            let kh = boila_bytes_hex(key)
+            if map_has(gmap, kh) == 1 {
+                gi = map_get(gmap, kh)
+            } else {
+                gi = vec_len(gaccs)
+                map_set(gmap, kh, gi)
+                vec_push(gkeys, key)
+                vec_push(gaccs, boila_agg_new_acc(nitems, row))
+            }
         }
         let acc = vec_get(gaccs, gi)
         acc.n = acc.n + 1

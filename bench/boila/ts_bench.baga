@@ -109,6 +109,13 @@ fn main() -> i64 !IO !Time !Par {
             print(concat("setup fail: ", c1.err))
             return 1
         }
+        // secondary on ts (range + sort-order for time scans)
+        let c2 = boila_server_exec(srv, "boila", "CREATE INDEX pts_ts_ix ON pts (ts)")?
+        srv = c2.srv
+        if c2.ok == 0 {
+            print(concat("ix fail: ", c2.err))
+            return 1
+        }
     }
     let batch: i64 = 500
     let t0 = monotonic_us()?

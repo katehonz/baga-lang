@@ -143,12 +143,12 @@ fn main() -> i64 !IO !Time !Par {
             print(concat("setup fail: ", c1.err))
             return 1
         }
-        let c2 = boila_server_exec(srv, "boila", "CREATE INDEX items_hnsw ON items USING hnsw (emb)")?
-        srv = c2.srv
-        if c2.ok == 0 {
-            print(concat("hnsw fail: ", c2.err))
-            return 1
-        }
+        // HNSW built after seed (last chunk) — bulk insert without per-row graph
+    }
+    // last write chunk: build HNSW once over all rows
+    let mut build_ix = 0
+    if chunk == nchunks - 1 {
+        build_ix = 1
     }
     // small batches — vector literals are large
     let batch: i64 = 20
@@ -179,6 +179,17 @@ fn main() -> i64 !IO !Time !Par {
     }
     let t1 = monotonic_us()?
     print(concat(concat(concat(concat(concat("chunk ", int_to_str(chunk)), concat(": items ", int_to_str(lo))), concat("..", int_to_str(hi))), concat(" in ", int_to_str((t1 - t0) / 1000))), " ms"))
+    if build_ix == 1 {
+        let t2 = monotonic_us()?
+        let c2 = boila_server_exec(srv, "boila", "CREATE INDEX items_hnsw ON items USING hnsw (emb)")?
+        srv = c2.srv
+        if c2.ok == 0 {
+            print(concat("hnsw fail: ", c2.err))
+            return 1
+        }
+        let t3 = monotonic_us()?
+        print(concat(concat("hnsw build: ", int_to_str((t3 - t2) / 1000)), " ms"))
+    }
     boila_server_close(srv)?
     return 0
 }

@@ -52,6 +52,30 @@ fn boila_agg_key(row: Vec<BoilaVal>, gixs: Vec<i64>) -> bytes {
     return out
 }
 
+// Hex of bytes for Map<str,i64> group-index lookup (hash agg, S5).
+fn boila_bytes_hex(b: bytes) -> str {
+    let mut s = ""
+    let mut i: i64 = 0
+    let n = bytes_len(b)
+    while i < n {
+        let c = bytes_at(b, i) & 255
+        let hi = c / 16
+        let lo = c % 16
+        if hi < 10 {
+            s = concat(s, int_to_str(hi))
+        } else {
+            s = concat(s, chr(87 + hi))
+        }
+        if lo < 10 {
+            s = concat(s, int_to_str(lo))
+        } else {
+            s = concat(s, chr(87 + lo))
+        }
+        i = i + 1
+    }
+    return s
+}
+
 fn boila_agg_item_name(it: BoilaSelItem) -> str {
     if it.alias != "" {
         return it.alias

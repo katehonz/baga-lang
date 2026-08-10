@@ -186,11 +186,14 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P9
 
-- **S5 — (MEASURED) time_bucket gate.** `bench/boila/ts_bench.baga`:
-  full-table `GROUP BY time_bucket` — **OK &lt; 50 ms up to ~10k pts**
-  (39 ms @10k); **FAIL @20k** (98 ms), **@100k 1.68 s**. PLAN 1M &lt; 50 ms
-  not met without time index. Results:
-  `bench/boila/results/modality-2026-08-10.md`.
+- **S5 — (MEASURED + Q-ghash) time_bucket gate.** Hash GROUP BY:
+  `Map<i64,i64>` for single BIGINT/ts/`time_bucket`, `Map<str,i64>` hex
+  otherwise; on-the-fly bucket (no full-table rewrite). **@10k 36 ms OK**;
+  **@20k 81 ms FAIL**; **@100k 441 ms** (was 1.68 s linear, ~3.8×). PLAN
+  1M &lt; 50 ms not met — scan/materialize dominates. Secondary
+  `pts_ts_ix` created in bench but unused without `WHERE ts …`. Results:
+  `bench/boila/results/modality-2026-08-10.md`. Residual: stream agg;
+  ts-range index plans; pre-agg buckets.
 - **S6 — (FIXED) TTL sweeper flush + per-key purge.** `boila_ts_sweep`:
   flush then GET every data key of TTL tables (rocksbaga lazy-del on get).
   `boila_ttl_sweeper` / `BOILA_SWEEP_MS`. S6c: `BOILA_SWEEP_SYS_ROUNDS`
