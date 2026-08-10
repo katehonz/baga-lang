@@ -1069,6 +1069,7 @@ fn lsm_scan_rebuild_b(db: LsmDB, match_pat: bytes) -> LsmDB !IO !Time {
 }
 
 // True prefix filter (no glob meta) — boilaDB K2.
+// Sorted for secondary index range seek (boilaDB K3h).
 fn lsm_scan_rebuild_prefix_b(db: LsmDB, prefix: bytes) -> LsmDB !IO !Time {
     let r = lsm_live_map_kb(db)?
     db = r.db
@@ -1083,6 +1084,7 @@ fn lsm_scan_rebuild_prefix_b(db: LsmDB, prefix: bytes) -> LsmDB !IO !Time {
         }
         i = i + 1
     }
+    sort_bytes(filtered)
     if vec_len(db.scan_keys) > 0 {
         let old = db.scan_keys
         db.scan_keys = filtered
@@ -1121,18 +1123,30 @@ fn lsm_scan_prefix_kb(db: LsmDB, cursor: i64, count: i64, prefix: bytes) -> LsmS
         j = j + 1
         taken = taken + 1
     }
+    // Keep sorted prefix cache for reuse (secondary range seek / warm queries).
+    // Invalidated on write_epoch or prefix change in the rebuild check above.
     let mut next: i64 = j
     if next >= n {
         next = 0
-        if vec_len(db.scan_keys) > 0 {
-            let old = db.scan_keys
-            db.scan_keys = vec_new()
-            drop(old)
-        }
-        db.scan_epoch = 0 - 1
-        db.scan_pat = bytes_new(0)
     }
     return LsmScanB { db: db, next: next, keys: out }
+}
+
+// Full sorted prefix snapshot (one live fold; cache kept). boilaDB K3h.
+fn lsm_scan_prefix_all_kb(db: LsmDB, prefix: bytes) -> LsmScanB !IO !Time {
+    let mut tag = bytes_new(1)
+    bytes_set(tag, 0, 1)
+    let pat = bytes_concat(tag, prefix)
+    if db.scan_epoch != db.write_epoch || bytes_eq_b(db.scan_pat, pat) == false {
+        db = lsm_scan_rebuild_prefix_b(db, prefix)?
+    }
+    let out: Vec<bytes> = vec_new()
+    let mut j: i64 = 0
+    while j < vec_len(db.scan_keys) {
+        vec_push(out, vec_get(db.scan_keys, j))
+        j = j + 1
+    }
+    return LsmScanB { db: db, next: 0, keys: out }
 }
 
 // R43 + R63 + R68: SCAN page over live keys, raw-bytes pattern and results.

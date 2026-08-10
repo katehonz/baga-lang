@@ -151,6 +151,12 @@ fn boila_pk_sort_ins(pks: Vec<bytes>, lo: i64, hi: i64) {
 }
 
 fn boila_pk_sort_part(pks: Vec<bytes>, lo: i64, hi: i64) -> i64 {
+    // middle pivot — last-element pivot is O(n²) on already-sorted keys
+    // (prefix scans return sorted full keys since K3h)
+    let mid = lo + (hi - lo) / 2
+    let t0 = vec_get(pks, mid)
+    vec_set(pks, mid, vec_get(pks, hi))
+    vec_set(pks, hi, t0)
     let piv = vec_get(pks, hi)
     let mut i = lo
     let mut j = lo

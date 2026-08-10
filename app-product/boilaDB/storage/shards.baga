@@ -9,6 +9,7 @@
 
 import "rocksbaga/db/shard.baga"
 import "rocksbaga/db/engine.baga"
+import "rocksbaga/util/codec.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
 import "std/bytes/bytes.baga"
@@ -236,6 +237,48 @@ fn boila_scan_pref(s: BoilaStore, pref: bytes, cursor: i64, count: i64) -> Boila
 
 fn boila_scan(s: BoilaStore, cf: i64, table_id: i64, cursor: i64, count: i64) -> BoilaScan !IO !Time !Par {
     return boila_scan_pref(s, boila_key_prefix(cf, table_id), cursor, count)?
+}
+
+// One-shot prefix collect (avoids multi-shard O(N²) re-fold per page).
+// Used by secondary range seek (K3h) and bulk index walks.
+struct BoilaScanAll {
+    s: BoilaStore,
+    keys: Vec<bytes>
+}
+
+fn boila_scan_pref_all(s: BoilaStore, pref: bytes) -> BoilaScanAll !IO !Time !Par {
+    if s.dbs_h == 0 {
+        let r = lsm_cluster_scan_prefix_all_kb(s.c, pref)?
+        return BoilaScanAll {
+            s: BoilaStore { c: r.c, dbs_h: 0, mus_h: 0, n: r.c.n, ok: r.c.ok },
+            keys: r.keys
+        }
+    }
+    let all: Vec<bytes> = vec_new()
+    let dbs: Map<i64, LsmDB> = h_map(s.dbs_h)
+    let mut si: i64 = 0
+    let mut ok: i64 = 1
+    while si < s.n {
+        let mu = boila_shard_lock(s, si)?
+        let mut db = map_get(dbs, si)
+        let r = lsm_scan_prefix_all_kb(db, pref)?
+        db = r.db
+        let mut j: i64 = 0
+        while j < vec_len(r.keys) {
+            vec_push(all, vec_get(r.keys, j))
+            j = j + 1
+        }
+        ok = db.ok
+        map_set(dbs, si, db)
+        mutex_unlock(mu)
+        si = si + 1
+    }
+    // mt: keys from shards interleave — sort for index range lower_bound
+    sort_bytes(all)
+    return BoilaScanAll {
+        s: BoilaStore { c: s.c, dbs_h: s.dbs_h, mus_h: s.mus_h, n: s.n, ok: ok },
+        keys: all
+    }
 }
 
 fn boila_flush(s: BoilaStore) -> BoilaStore !IO !Time !Par {
