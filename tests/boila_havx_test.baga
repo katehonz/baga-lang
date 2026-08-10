@@ -146,6 +146,26 @@ fn main() -> i64 !IO !Time !Par {
     srv = a8.srv
     check(fails, "hav_and_over_or", a8.ok == 1 && vec_len(a8.res.rows) == 2)
 
+    // --- Q-havxrow: non-agg expressions on group first-row ---
+    let n1 = boila_server_exec(srv, "boila", "SELECT dept, count(*) FROM e GROUP BY dept HAVING upper(dept) = 'ENG' ORDER BY dept")?
+    srv = n1.srv
+    check(fails, "hav_upper", n1.ok == 1 && vec_len(n1.res.rows) == 1 && cell(vec_get(n1.res.rows, 0), 0) == "eng")
+
+    let n2 = boila_server_exec(srv, "boila", "SELECT dept, sum(sal) FROM e GROUP BY dept HAVING length(dept) >= 2 AND sum(sal) > 100 ORDER BY dept")?
+    srv = n2.srv
+    // eng len 3, hr len 2; both sum > 100
+    check(fails, "hav_len_and_sum", n2.ok == 1 && vec_len(n2.res.rows) == 2)
+
+    let n3 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING dept = 'hr' OR sum(sal) > 200 ORDER BY dept")?
+    srv = n3.srv
+    // eng via sum, hr via col → both
+    check(fails, "hav_col_or_sum", n3.ok == 1 && vec_len(n3.res.rows) == 2)
+
+    let n4 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING (upper(dept) = 'HR' OR sum(sal) > 300) AND count(*) = 2 ORDER BY dept")?
+    srv = n4.srv
+    // eng: (F OR F) AND T = F; hr: (T OR F) AND T = T → hr
+    check(fails, "hav_xrow_paren", n4.ok == 1 && vec_len(n4.res.rows) == 1 && cell(vec_get(n4.res.rows, 0), 0) == "hr")
+
     boila_server_close(srv)?
     wipe_root(root)?
 

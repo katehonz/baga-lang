@@ -6,6 +6,8 @@ import "ast.baga"
 import "token.baga"
 import "exec_scan.baga"
 import "exec_agg_extra.baga"
+import "exec_xw.baga"
+import "exec_dual_ops.baga"
 import "std/str/str.baga"
 
 // Token-span equality (HAVING expr-agg ↔ projection match).
@@ -89,7 +91,8 @@ fn boila_hav_setup(cols: Vec<BoilaColDef>, sel: BoilaSel, items0: Vec<BoilaSelIt
     while hi < vec_len(sel.hav_preds) {
         let hp = vec_get(sel.hav_preds, hi)
         let mut slot: i64 = 0 - 1
-        if hp.agg != 1 {
+        // agg==0 → non-agg first-row expr (no accumulate slot)
+        if hp.agg > 1 || (hp.agg == 2) {
             let mut a: i64 = 0
             while a < vec_len(items) {
                 let it = vec_get(items, a)
@@ -127,6 +130,7 @@ fn boila_hav_setup(cols: Vec<BoilaColDef>, sel: BoilaSel, items0: Vec<BoilaSelIt
                 slot = vec_len(items) - 1
             }
         }
+        // count(*) → slot -1; non-agg expr → slot -1 (leaf uses xtoks)
         vec_push(slots, slot)
         hi = hi + 1
     }
@@ -140,10 +144,36 @@ struct BoilaHavEmit {
     emit: i64
 }
 
-// Evaluate one leaf predicate (returns -1 on error; state via out).
-fn boila_hav_leaf_val(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, leaf: i64, cols: Vec<BoilaColDef>, brows: Vec<Vec<BoilaVal>>) -> BoilaHavEmit {
+// Evaluate one leaf predicate.
+fn boila_hav_leaf_val(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, leaf: i64, cols: Vec<BoilaColDef>, brows: Vec<Vec<BoilaVal>>) -> BoilaHavEmit !Time {
     let hp = vec_get(sel.hav_preds, leaf)
     let slot = vec_get(slots, leaf)
+    // Q-havxrow: non-agg expression on group first-row
+    if hp.agg == 0 {
+        if vec_len(acc.first) == 0 && vec_len(sel.group_cols) > 0 {
+            return BoilaHavEmit { ok: 1, err: "", state: "", emit: 0 }
+        }
+        let names: Vec<str> = vec_new()
+        let mut ci: i64 = 0
+        while ci < vec_len(cols) {
+            vec_push(names, vec_get(cols, ci).name)
+            ci = ci + 1
+        }
+        // pad first row if empty (no-group zero rows)
+        let mut row = acc.first
+        if vec_len(row) == 0 {
+            ci = 0
+            while ci < vec_len(cols) {
+                vec_push(row, boila_val_null())
+                ci = ci + 1
+            }
+        }
+        let ev = boila_xw_eval(names, hp.xtoks, row)?
+        if ev.ok == 0 {
+            return BoilaHavEmit { ok: 0, err: ev.err, state: ev.state, emit: 0 }
+        }
+        return BoilaHavEmit { ok: 1, err: "", state: "", emit: boila_dual_when_true(ev.val) }
+    }
     if hp.agg == 1 {
         return BoilaHavEmit { ok: 1, err: "", state: "", emit: boila_hav_pass(hp.op, acc.n, hp.val) }
     }
@@ -173,7 +203,7 @@ fn boila_hav_leaf_val(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, leaf: i6
 }
 
 // Tree walk: post-order via push-only stack (no vec_pop).
-fn boila_hav_eval(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, cols: Vec<BoilaColDef>, brows: Vec<Vec<BoilaVal>>) -> BoilaHavEmit {
+fn boila_hav_eval(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, cols: Vec<BoilaColDef>, brows: Vec<Vec<BoilaVal>>) -> BoilaHavEmit !Time {
     if sel.has_having == 0 {
         return BoilaHavEmit { ok: 1, err: "", state: "", emit: 1 }
     }
@@ -219,7 +249,7 @@ fn boila_hav_eval(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, cols: Vec<Bo
         let n = vec_get(out, oi)
         let node = vec_get(sel.hav_nodes, n)
         if node.kind == 0 {
-            let lv = boila_hav_leaf_val(acc, sel, slots, node.leaf, cols, brows)
+            let lv = boila_hav_leaf_val(acc, sel, slots, node.leaf, cols, brows)?
             if lv.ok == 0 {
                 return lv
             }

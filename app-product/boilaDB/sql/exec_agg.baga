@@ -307,7 +307,7 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
         let acc = vec_get(gaccs, g)
         let mut emit = true
         if sel.has_having == 1 {
-            let he = boila_hav_eval(acc, sel, hav_slots, cols, brows)
+            let he = boila_hav_eval(acc, sel, hav_slots, cols, brows)?
             if he.ok == 0 {
                 return boila_agg_fail(he.err, he.state)
             }

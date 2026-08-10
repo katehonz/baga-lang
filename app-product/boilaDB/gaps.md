@@ -158,10 +158,12 @@ T = транзакции, W = wire protocol, F = FTS.
 - **P11-31 — (FIXED) HAVING … AND|OR … (Q-havand).** Multi-pred
   with accumulate slots. [precedence + parens → P11-32.]
 - **P11-32 — (FIXED) HAVING precedence + parentheses (Q-havprec).**
-  Boolean tree (`BoilaHavNode`): AND binds tighter than OR; `(…)`
-  primary. Recursive-descent parse + post-order eval. boila_havx_test
-  covers prec/paren cases. Residual: no non-agg HAVING exprs;
-  whole-table HAVING expr-agg without projection still 0A000.
+  Boolean tree (`BoilaHavNode`): AND binds tighter than OR; `(…)`.
+- **P11-33 — (FIXED) non-agg HAVING expressions (Q-havxrow).** Leaf
+  with `agg=0` + full boolean `xtoks` evaluated on group first-row
+  (`upper(dept)='ENG'`, mix with agg preds). boila_havx_test covers
+  xrow cases. Residual: whole-table HAVING expr-agg without
+  projection still 0A000; first-row only (not PG functional dep).
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 

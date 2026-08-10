@@ -1,8 +1,11 @@
-// parse_having.baga — HAVING with AND/OR precedence + parentheses (Q-havprec).
+// parse_having.baga — HAVING with AND/OR precedence + parentheses (Q-havprec)
+// and non-agg group expressions (Q-havxrow).
 // Grammar:  or  := and (OR and)*
 //           and := primary (AND primary)*
-//           primary := '(' or ')' | agg_pred
+//           primary := '(' or ')' | agg_pred | bool_expr
 // AND binds tighter than OR (PG). Leaves collected in order into preds.
+// Non-agg leaf: BoilaHavPred.agg == 0, xtoks = full boolean expression
+// evaluated on the group first-row.
 
 import "token.baga"
 import "lexer.baga"
@@ -42,11 +45,57 @@ fn boila_ph_leaf_fail(msg: str, state: str, pos: i64, preds: Vec<BoilaHavPred>, 
     return BoilaPhLeaf { ok: 0, root: 0 - 1, preds: preds, nodes: nodes, pos: pos, err: msg, state: state }
 }
 
+// Capture a boolean expression span that stops at top-level AND/OR
+// (so multi-pred HAVING can chain them outside the leaf).
+fn boila_ph_xspan(l: BoilaLex, i: i64) -> BoilaPsItem {
+    let xtoks: Vec<Token> = vec_new()
+    let mut j = i
+    let mut depth: i64 = 0
+    let mut more = true
+    while more {
+        let tj = boila_ps_tok(l, j)
+        if tj.kind == tok_eof() || tj.kind == tok_semi() {
+            more = false
+        } else {
+            if depth == 0 && (tok_kw(tj, "and") == 1 || tok_kw(tj, "or") == 1) {
+                more = false
+            } else {
+                if depth == 0 && tj.kind == tok_rparen() {
+                    more = false
+                } else {
+                    if depth == 0 && boila_ps_is_clause_kw(tj) == 1 {
+                        more = false
+                    } else {
+                        if tj.kind == tok_lparen() { depth = depth + 1 }
+                        if tj.kind == tok_rparen() { depth = depth - 1 }
+                        vec_push(xtoks, tj)
+                        j = j + 1
+                    }
+                }
+            }
+        }
+    }
+    if vec_len(xtoks) == 0 {
+        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах израз в HAVING", state: "42601" }
+    }
+    return BoilaPsItem { ok: 1, item: boila_sel_item_expr(xtoks), pos: j, err: "", state: "" }
+}
+
 fn boila_ph_one(l: BoilaLex, i: i64, preds: Vec<BoilaHavPred>, nodes: Vec<BoilaHavNode>) -> BoilaPhLeaf {
     let an = boila_ps_tok(l, i)
     let kind = boila_ps_agg_kind(an.txt)
-    if an.kind != tok_ident() || kind == 0 {
-        return boila_ph_leaf_fail("очаквах агрегат в HAVING", "42601", i, preds, nodes)
+    // Q-havxrow: non-agg expression leaf (not sum/count/… call)
+    if an.kind != tok_ident() || kind == 0 || boila_ps_tok(l, i + 1).kind != tok_lparen() {
+        let xe = boila_ph_xspan(l, i)
+        if xe.ok == 0 {
+            return boila_ph_leaf_fail(xe.err, xe.state, i, preds, nodes)
+        }
+        let pred = boila_hav_pred(0, "", xe.item.xtoks, "", 0)
+        let leaf_ix = vec_len(preds)
+        vec_push(preds, pred)
+        let node_ix = vec_len(nodes)
+        vec_push(nodes, boila_hav_leaf(leaf_ix))
+        return BoilaPhLeaf { ok: 1, root: node_ix, preds: preds, nodes: nodes, pos: xe.pos, err: "", state: "" }
     }
     if boila_ps_tok(l, i + 1).kind != tok_lparen() {
         return boila_ph_leaf_fail("очаквах '(' след агрегата в HAVING", "42601", i, preds, nodes)
