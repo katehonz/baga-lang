@@ -186,12 +186,15 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P9
 
-- **S5 — (MEASURED + Q-ghash + K3h) time_bucket gate.** Hash GROUP BY +
-  sorted prefix seek. **@10k 16 ms OK**; **@20k 34 ms OK**; **@100k
-  167 ms FAIL** (was 1.68 s → 431 ms hash). **ts-ix window last 10k
-  @100k = 45 ms** (was 283 ms). PLAN 1M &lt; 50 ms not met for full scan.
-  Results: `bench/boila/results/modality-2026-08-10.md`. Residual: stream
-  agg; LSM fold without full live_map; pre-agg buckets.
+- **S5 — (MEASURED + Q-ghash + K3h + stream) time_bucket gate.** Hash
+  GROUP BY + sorted prefix seek + stream fold (no full source-row Vec).
+  **@10k 16 ms OK**; **@20k 34 ms OK**; **@100k ~166 ms FAIL**. **ts-ix
+  window last 10k @100k ~46 ms**. PLAN 1M &lt; 50 ms not met (keys+GETs).
+  Results: `bench/boila/results/modality-2026-08-10.md`. Residual: LSM
+  without full live_map; pre-agg; stream join/xw.
+- **Q-stream — (FIXED) stream hash-agg.** `exec_agg_fold`/`feed` +
+  `exec_agg_stream`: plain table SELECT agg/GROUP BY folds during GET
+  (no materialize of N rows). Join/knn/fts/isnull/xw still materialize.
 - **K3g — (FIXED) secondary range exclusive bounds.** `lo_excl`/`hi_excl`
   on SELECT secondary path. DML WHERE still inclusive-only.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild

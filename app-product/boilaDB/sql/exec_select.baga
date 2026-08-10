@@ -13,6 +13,7 @@ import "exec_scan.baga"
 import "exec_knn.baga"
 import "exec_isnull.baga"
 import "exec_agg.baga"
+import "exec_agg_stream.baga"
 import "exec_join.baga"
 import "exec_sort.baga"
 import "exec_dual_ops.baga"
@@ -26,6 +27,45 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
     // редове + схема
     let mut cols = t.cols
     let mut rows: Vec<Vec<BoilaVal>> = vec_new()
+    // има ли агрегати / GROUP BY
+    let mut has_agg = false
+    let mut k: i64 = 0
+    while k < vec_len(sel.items) {
+        let it = vec_get(sel.items, k)
+        if it.agg > 0 {
+            has_agg = true
+        }
+        k = k + 1
+    }
+    // S5 stream: GET → fold without materializing full row Vec
+    if (has_agg == true || sel.has_group == 1) && boila_agg_streamable(sel) == 1 {
+        let mut ex = boila_agg_scan(s, txn, t, sel)?
+        s = ex.s
+        txn = ex.txn
+        if ex.ok == 0 {
+            return ex
+        }
+        let mut res = ex.res
+        if sel.has_order == 1 {
+            let idxs: Vec<i64> = vec_new()
+            let mut i: i64 = 0
+            while i < vec_len(sel.ord_cols) {
+                let nm = vec_get(sel.ord_cols, i)
+                let ix = boila_col_name_idx(res.cols, nm)
+                if ix < 0 {
+                    return boila_exec_fail(s, txn, concat("ORDER BY колона '", concat(nm, "' не е в изхода")), "42703")
+                }
+                vec_push(idxs, ix)
+                i = i + 1
+            }
+            boila_sort_rows(res.rows, idxs, sel.ord_desc)
+        }
+        if sel.distinct == 1 {
+            res.rows = boila_distinct_rows(res.rows)
+        }
+        res.rows = boila_apply_offlim(res.rows, sel.offset, sel.limit)
+        return boila_exec_ok_select(s, txn, res)
+    }
     if sel.has_join == 1 {
         let j = boila_join_rows(s, txn, t, sel)?
         s = j.s
@@ -60,17 +100,6 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
             return boila_exec_fail(s, txn, xf.err, xf.state)
         }
         rows = xf.rows
-    }
-
-    // има ли агрегати в проекцията
-    let mut has_agg = false
-    let mut k: i64 = 0
-    while k < vec_len(sel.items) {
-        let it = vec_get(sel.items, k)
-        if it.agg > 0 {
-            has_agg = true
-        }
-        k = k + 1
     }
 
     if has_agg == true || sel.has_group == 1 {

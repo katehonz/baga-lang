@@ -1,0 +1,195 @@
+// exec_agg_feed.baga — feed one row + finish emit for hash-agg fold.
+
+import "../core/value.baga"
+import "../ts/time_bucket.baga"
+import "ast.baga"
+import "token.baga"
+import "exec_scan.baga"
+import "exec_agg_extra.baga"
+import "exec_agg_gexpr.baga"
+import "exec_agg_hav.baga"
+import "exec_agg_fold.baga"
+import "exec_xw.baga"
+import "std/bytes/bytes.baga"
+
+// Feed one source row into the fold. Mutates fold maps/accs.
+fn boila_agg_fold_row(st: BoilaAggFold, sel: BoilaSel, row: Vec<BoilaVal>) -> BoilaAggFold !Time {
+    if st.ok == 0 {
+        return st
+    }
+    let mut gi: i64 = 0 - 1
+    if st.single_i64 == 1 {
+        let gix = vec_get(st.gixs, 0)
+        let mut gvi: i64 = 0
+        if gix >= 0 && gix < vec_len(row) {
+            let mut gv = vec_get(row, gix)
+            if sel.bucket_iv > 0 && gix == st.bucket_ix {
+                gv = boila_tb_apply(gv, sel.bucket_iv)
+            }
+            gvi = gv.i
+        }
+        if map_has(st.gimap, gvi) == 1 {
+            gi = map_get(st.gimap, gvi)
+        } else {
+            gi = vec_len(st.gaccs)
+            map_set(st.gimap, gvi, gi)
+            let mut first = row
+            if sel.bucket_iv > 0 && st.bucket_ix >= 0 && st.bucket_ix < vec_len(row) {
+                first = vec_new()
+                let mut c: i64 = 0
+                while c < vec_len(row) {
+                    if c == st.bucket_ix {
+                        vec_push(first, boila_tb_apply(vec_get(row, c), sel.bucket_iv))
+                    } else {
+                        vec_push(first, vec_get(row, c))
+                    }
+                    c = c + 1
+                }
+            }
+            vec_push(st.gkeys, bytes_new(0))
+            vec_push(st.gaccs, boila_agg_new_acc(st.nitems, first))
+        }
+    } else {
+        let mut key = bytes_new(0)
+        let mut gi0: i64 = 0
+        while gi0 < vec_len(st.gixs) {
+            let gix = vec_get(st.gixs, gi0)
+            let mut gv = boila_val_null()
+            if gix >= 0 {
+                if gix < vec_len(row) {
+                    gv = vec_get(row, gix)
+                    if sel.bucket_iv > 0 && gix == st.bucket_ix {
+                        gv = boila_tb_apply(gv, sel.bucket_iv)
+                    }
+                }
+            } else {
+                let mut gxt: Vec<Token> = vec_new()
+                if gi0 < vec_len(sel.group_xtoks) {
+                    gxt = vec_get(sel.group_xtoks, gi0)
+                }
+                if vec_len(gxt) > 0 {
+                    let ev = boila_xw_eval(st.xnames, gxt, row)?
+                    if ev.ok == 0 {
+                        st.ok = 0
+                        st.err = ev.err
+                        st.state = ev.state
+                        return st
+                    }
+                    gv = ev.val
+                }
+            }
+            key = bytes_concat(key, boila_val_enc(gv))
+            key = bytes_concat(key, bytes_of_str("|"))
+            gi0 = gi0 + 1
+        }
+        let kh = boila_bytes_hex(key)
+        if map_has(st.gmap, kh) == 1 {
+            gi = map_get(st.gmap, kh)
+        } else {
+            gi = vec_len(st.gaccs)
+            map_set(st.gmap, kh, gi)
+            vec_push(st.gkeys, key)
+            vec_push(st.gaccs, boila_agg_new_acc(st.nitems, row))
+        }
+    }
+    let acc = vec_get(st.gaccs, gi)
+    acc.n = acc.n + 1
+    let mut a: i64 = 0
+    while a < st.nitems {
+        let it = vec_get(st.agg_items, a)
+        let cix = vec_get(st.aixs, a)
+        if it.agg == 1 {
+            vec_set(acc.cnt, a, vec_get(acc.cnt, a) + 1)
+        } else {
+            let mut v = boila_val_null()
+            if cix == 0 - 2 {
+                let ev = boila_xw_eval(st.xnames, it.xtoks, row)?
+                if ev.ok == 0 {
+                    st.ok = 0
+                    st.err = ev.err
+                    st.state = ev.state
+                    return st
+                }
+                v = ev.val
+                if (it.agg == 3 || it.agg == 4) && v.tag != boila_v_null() {
+                    if v.tag != boila_v_i64() && v.tag != boila_v_ts() && v.tag != boila_v_bool() {
+                        st.ok = 0
+                        st.err = "sum/avg изисква числов израз"
+                        st.state = "0A000"
+                        return st
+                    }
+                }
+            } else {
+                v = vec_get(row, cix)
+            }
+            if v.tag != boila_v_null() {
+                vec_set(acc.cnt, a, vec_get(acc.cnt, a) + 1)
+                if vec_get(acc.hasv, a) == 0 {
+                    vec_set(acc.hasv, a, 1)
+                    vec_set(acc.minv, a, v)
+                    vec_set(acc.maxv, a, v)
+                } else {
+                    if boila_val_cmp(v, vec_get(acc.minv, a)) == (0 - 1) {
+                        vec_set(acc.minv, a, v)
+                    }
+                    if boila_val_cmp(v, vec_get(acc.maxv, a)) == 1 {
+                        vec_set(acc.maxv, a, v)
+                    }
+                }
+                if it.agg == 3 || it.agg == 4 {
+                    vec_set(acc.sum, a, vec_get(acc.sum, a) + v.i)
+                }
+            }
+        }
+        a = a + 1
+    }
+    vec_set(st.gaccs, gi, acc)
+    return st
+}
+
+fn boila_agg_fold_end(st: BoilaAggFold, sel: BoilaSel) -> BoilaAggOut !Time {
+    if st.ok == 0 {
+        return boila_agg_out_fail(st.err, st.state)
+    }
+    if vec_len(st.gkeys) == 0 && vec_len(sel.group_cols) == 0 && st.nitems > 0 {
+        let empty_row: Vec<BoilaVal> = vec_new()
+        vec_push(st.gkeys, bytes_new(0))
+        vec_push(st.gaccs, boila_agg_new_acc(st.nitems, empty_row))
+    }
+    let brows: Vec<Vec<BoilaVal>> = vec_new()
+    let mut res = st.res
+    let mut g: i64 = 0
+    while g < vec_len(st.gaccs) {
+        let acc = vec_get(st.gaccs, g)
+        let mut emit = true
+        if sel.has_having == 1 {
+            let he = boila_hav_eval(acc, sel, st.hav_slots, st.cols, brows)?
+            if he.ok == 0 {
+                return boila_agg_out_fail(he.err, he.state)
+            }
+            emit = false
+            if he.emit == 1 {
+                emit = true
+            }
+        }
+        if emit == true {
+            if st.use_proj == 0 {
+                let pagg: Vec<BoilaSelItem> = vec_new()
+                let mut pa: i64 = 0
+                while pa < st.n_proj {
+                    vec_push(pagg, vec_get(st.agg_items, pa))
+                    pa = pa + 1
+                }
+                vec_push(res.rows, boila_agg_row(acc, st.gixs, pagg, st.aixs))
+            } else {
+                let gr = boila_agg_gexpr_row(st.cols, sel, acc, st.agg_items, st.xnames)?
+                if gr.ok == 0 {
+                    return boila_agg_out_fail(gr.err, gr.state)
+                }
+                vec_push(res.rows, gr.row)
+            }
+        }
+        g = g + 1
+    }
+    return BoilaAggOut { ok: 1, err: "", state: "", res: res }
+}
