@@ -1,5 +1,5 @@
 // exec_agg_stream.baga — stream hash-agg: GET rows → fold, no full row Vec.
-// K3j: unfiltered time_bucket GROUP BY may use continuous rollup (O(buckets)).
+// K3j: time_bucket GROUP BY via continuous rollup (full + partial windows).
 
 import "../storage/shards.baga"
 import "../core/codec.baga"
@@ -9,6 +9,7 @@ import "../core/budget.baga"
 import "../catalog/schema.baga"
 import "../index/secondary.baga"
 import "../ts/rollup.baga"
+import "../ts/time_bucket.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_scan.baga"
@@ -30,7 +31,60 @@ fn boila_agg_streamable(sel: BoilaSel) -> i64 {
     return 1
 }
 
-// K3j: try continuous rollup for unfiltered GROUP BY time_bucket.
+// Read one rollup cell (txn buffer + storage). found=0 if missing/deleted.
+fn boila_ru_cell_read(s: BoilaStore, txn: BoilaTxn, table_id: i64, epk: bytes) -> BoilaTxnGet !IO !Time !Par {
+    let tix = boila_txn_find(txn, boila_cf_index(), table_id, epk)
+    if tix >= 0 {
+        let w = vec_get(txn.writes, tix)
+        if w.is_del == 1 {
+            return BoilaTxnGet { s: s, found: 0, row: bytes_new(0), lsn: 0 }
+        }
+        return BoilaTxnGet { s: s, found: 1, row: w.row, lsn: 0 }
+    }
+    let g = boila_get(s, boila_cf_index(), table_id, epk)?
+    if g.found == 0 {
+        return BoilaTxnGet { s: g.s, found: 0, row: bytes_new(0), lsn: 0 }
+    }
+    return BoilaTxnGet { s: g.s, found: 1, row: boila_unwrap_row(g.val), lsn: 0 }
+}
+
+// Append one output row from bucket cell (count/sum/avg items).
+fn boila_ru_push_row(res: BoilaResult, sel: BoilaSel, ts_typ: i64, bsec: i64, cnt: i64, sum: i64) {
+    if cnt <= 0 {
+        return
+    }
+    let row: Vec<BoilaVal> = vec_new()
+    if ts_typ == boila_v_ts() {
+        vec_push(row, boila_val_ts(bsec * 1000000))
+    } else {
+        vec_push(row, boila_val_i64(bsec))
+    }
+    let mut a: i64 = 0
+    while a < vec_len(sel.items) {
+        let it = vec_get(sel.items, a)
+        if it.agg == 1 {
+            vec_push(row, boila_val_i64(cnt))
+        } else {
+            if it.agg == 3 {
+                vec_push(row, boila_val_i64(sum))
+            } else {
+                if it.agg == 4 {
+                    if cnt == 0 {
+                        vec_push(row, boila_val_null())
+                    } else {
+                        vec_push(row, boila_val_i64(sum / cnt))
+                    }
+                }
+            }
+        }
+        a = a + 1
+    }
+    vec_push(res.rows, row)
+}
+
+// K3j/K3k: continuous rollup for GROUP BY time_bucket.
+// Unfiltered: all cells. Partial window on bucket_col: complete buckets
+// from rollup + raw secondary scan on left/right partial edges.
 fn boila_agg_scan_rollup(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time !Par {
     if sel.bucket_iv <= 0 || sel.has_group == 0 {
         return boila_exec_fail(s, txn, "", "RU0")
@@ -38,11 +92,25 @@ fn boila_agg_scan_rollup(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: Boila
     if vec_len(sel.group_cols) != 1 || vec_get(sel.group_cols, 0) != "time_bucket" {
         return boila_exec_fail(s, txn, "", "RU0")
     }
-    if sel.has_eq == 1 || sel.has_lo == 1 || sel.has_hi == 1 {
+    if sel.has_eq == 1 {
         return boila_exec_fail(s, txn, "", "RU0")
     }
     if sel.has_like > 0 || sel.has_in > 0 || sel.has_ne == 1 || sel.has_xw == 1 || sel.has_having == 1 {
         return boila_exec_fail(s, txn, "", "RU0")
+    }
+    // Range filters only on bucket_col (or none).
+    let mut has_win: i64 = 0
+    if sel.has_lo == 1 || sel.has_hi == 1 {
+        has_win = 1
+        if sel.has_lo == 1 && sel.lo_col != sel.bucket_col {
+            return boila_exec_fail(s, txn, "", "RU0")
+        }
+        if sel.has_hi == 1 && sel.hi_col != sel.bucket_col {
+            return boila_exec_fail(s, txn, "", "RU0")
+        }
+        if sel.has_lo == 1 && sel.has_hi == 1 && sel.lo_col != sel.hi_col {
+            return boila_exec_fail(s, txn, "", "RU0")
+        }
     }
     let ts_idx = boila_col_idx(t, sel.bucket_col)
     if ts_idx < 0 {
@@ -93,8 +161,9 @@ fn boila_agg_scan_rollup(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: Boila
         return boila_exec_fail(s, txn, "", "RU0")
     }
     let d = vec_get(gl.defs, mi)
-    let mut res = boila_result_empty()
+    let iv = sel.bucket_iv
     let ts_typ = vec_get(t.cols, ts_idx).typ
+    let mut res = boila_result_empty()
     let mut gnm = "time_bucket"
     i = 0
     while i < vec_len(sel.items) {
@@ -114,74 +183,264 @@ fn boila_agg_scan_rollup(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: Boila
         }
         i = i + 1
     }
-    let pref = boila_ru_prefix(d.id)
-    let full_pref = boila_key_row(boila_cf_index(), t.id, pref)
-    let plen = bytes_len(full_pref)
-    let sa = boila_scan_pref_all(s, full_pref)?
-    s = sa.s
-    // full key = [cf|table 5B] ‖ R ‖ u32(rid) ‖ i64_ord(bucket)
-    // full_pref already ends after rid; bucket is the next 8 bytes.
-    let mut j: i64 = 0
-    while j < vec_len(sa.keys) {
-        let k = vec_get(sa.keys, j)
-        if bytes_len(k) >= plen + 8 {
-            let bsec = boila_dec_i64_ord(k, plen)
-            // local entry pk = after cf|table prefix (5 bytes)
-            let epk = bytes_slice(k, 5, bytes_len(k))
-            // storage + txn buffer
-            let mut cnt: i64 = 0
-            let mut sum: i64 = 0
-            let mut found: i64 = 0
-            let tix = boila_txn_find(txn, boila_cf_index(), t.id, epk)
-            if tix >= 0 {
-                let w = vec_get(txn.writes, tix)
-                if w.is_del == 0 {
-                    let cell = boila_row_dec(w.row)
-                    if vec_len(cell) > 0 { cnt = vec_get(cell, 0).i }
-                    if vec_len(cell) > 1 { sum = vec_get(cell, 1).i }
-                    found = 1
-                }
-            } else {
-                let g = boila_get(s, boila_cf_index(), t.id, epk)?
-                s = g.s
-                if g.found == 1 {
-                    let cell = boila_row_dec(boila_unwrap_row(g.val))
-                    if vec_len(cell) > 0 { cnt = vec_get(cell, 0).i }
-                    if vec_len(cell) > 1 { sum = vec_get(cell, 1).i }
-                    found = 1
+
+    // --- full table: scan all rollup cells ---
+    if has_win == 0 {
+        let pref = boila_ru_prefix(d.id)
+        let full_pref = boila_key_row(boila_cf_index(), t.id, pref)
+        let plen = bytes_len(full_pref)
+        let sa = boila_scan_pref_all(s, full_pref)?
+        s = sa.s
+        let mut j: i64 = 0
+        while j < vec_len(sa.keys) {
+            let k = vec_get(sa.keys, j)
+            if bytes_len(k) >= plen + 8 {
+                let bsec = boila_dec_i64_ord(k, plen)
+                let epk = bytes_slice(k, 5, bytes_len(k))
+                let cell = boila_ru_cell_read(s, txn, t.id, epk)?
+                s = cell.s
+                if cell.found == 1 {
+                    let r = boila_row_dec(cell.row)
+                    let mut cnt: i64 = 0
+                    let mut sum: i64 = 0
+                    if vec_len(r) > 0 { cnt = vec_get(r, 0).i }
+                    if vec_len(r) > 1 { sum = vec_get(r, 1).i }
+                    boila_ru_push_row(res, sel, ts_typ, bsec, cnt, sum)
                 }
             }
-            if found == 1 && cnt > 0 {
-                let row: Vec<BoilaVal> = vec_new()
-                if ts_typ == boila_v_ts() {
-                    vec_push(row, boila_val_ts(bsec * 1000000))
-                } else {
-                    vec_push(row, boila_val_i64(bsec))
-                }
-                let mut a: i64 = 0
-                while a < vec_len(sel.items) {
-                    let it = vec_get(sel.items, a)
-                    if it.agg == 1 {
-                        vec_push(row, boila_val_i64(cnt))
-                    } else {
-                        if it.agg == 3 {
-                            vec_push(row, boila_val_i64(sum))
-                        } else {
-                            if it.agg == 4 {
-                                if cnt == 0 {
-                                    vec_push(row, boila_val_null())
-                                } else {
-                                    vec_push(row, boila_val_i64(sum / cnt))
-                                }
-                            }
+            j = j + 1
+        }
+        return boila_exec_ok_select(s, txn, res)
+    }
+
+    // --- partial window on bucket_col (K3k) ---
+    // [lo, hi) with inclusive/exclusive flags from sel.
+    let mut lo_sec: i64 = 0
+    let mut hi_sec: i64 = 0
+    let mut have_lo: i64 = 0
+    let mut have_hi: i64 = 0
+    if sel.has_lo == 1 {
+        lo_sec = boila_tb_to_sec(sel.pk_lo)
+        have_lo = 1
+        if sel.lo_excl == 1 {
+            lo_sec = lo_sec + 1
+        }
+    }
+    if sel.has_hi == 1 {
+        hi_sec = boila_tb_to_sec(sel.pk_hi)
+        have_hi = 1
+        if sel.hi_excl == 0 {
+            // inclusive hi → half-open end = hi+1 (seconds)
+            hi_sec = hi_sec + 1
+        }
+    }
+    // first/last complete bucket starts
+    let mut first_full: i64 = 0
+    let mut last_full: i64 = 0
+    let mut has_full: i64 = 0
+    let mut left_partial: i64 = 0
+    let mut has_left: i64 = 0
+    let mut right_partial: i64 = 0
+    let mut has_right: i64 = 0
+    if have_lo == 1 && have_hi == 1 {
+        if lo_sec >= hi_sec {
+            return boila_exec_ok_select(s, txn, res)
+        }
+        let lc = boila_tb_bucket(lo_sec, iv)
+        let hc = boila_tb_bucket(hi_sec, iv)
+        if lo_sec > lc {
+            has_left = 1
+            left_partial = lc
+            first_full = lc + iv
+        } else {
+            first_full = lc
+        }
+        if hi_sec > hc {
+            has_right = 1
+            right_partial = hc
+            last_full = hc - iv
+        } else {
+            // hi aligned: last complete ends at hi
+            last_full = hc - iv
+        }
+        if first_full <= last_full {
+            has_full = 1
+        }
+        // window inside one partial bucket
+        if has_full == 0 && has_left == 1 && has_right == 1 && left_partial == right_partial {
+            has_right = 0
+        }
+        if has_full == 0 && has_left == 0 && has_right == 0 {
+            // lo and hi aligned to same boundary with empty interior
+            return boila_exec_ok_select(s, txn, res)
+        }
+    } else {
+        if have_lo == 1 {
+            let lc = boila_tb_bucket(lo_sec, iv)
+            if lo_sec > lc {
+                has_left = 1
+                left_partial = lc
+                first_full = lc + iv
+            } else {
+                first_full = lc
+            }
+            has_full = 1
+            last_full = 9223372036854775807  // scan all cells >= first_full
+        } else {
+            // only hi
+            let hc = boila_tb_bucket(hi_sec, iv)
+            if hi_sec > hc {
+                has_right = 1
+                right_partial = hc
+                last_full = hc - iv
+            } else {
+                last_full = hc - iv
+            }
+            has_full = 1
+            first_full = (0 - 9223372036854775807)  // all cells <= last_full
+        }
+    }
+
+    // Edges first (secondary ix prefix cache shared); complete via point GETs.
+    let mut need_edge = has_left
+    if has_right == 1 { need_edge = 1 }
+    if need_edge == 1 {
+        let ixid = boila_ix_by_col_t(t, ts_idx)
+        if ixid < 0 {
+            return boila_exec_fail(s, txn, "", "RU0")
+        }
+        let mut st = boila_agg_fold_start(t.cols, sel)?
+        if st.ok == 0 {
+            return boila_exec_fail(s, txn, st.err, st.state)
+        }
+        if has_left == 1 {
+            let mut ehi = first_full
+            if have_hi == 1 && ehi > hi_sec { ehi = hi_sec }
+            let mut lo_v = boila_val_i64(lo_sec)
+            let mut hi_v = boila_val_i64(ehi)
+            if ts_typ == boila_v_ts() {
+                lo_v = boila_val_ts(lo_sec * 1000000)
+                hi_v = boila_val_ts(ehi * 1000000)
+            }
+            let xr = boila_ix_range(s, t, ixid, 1, lo_v, 1, hi_v, 0, 1)?
+            s = xr.s
+            if xr.ok == 0 {
+                return boila_exec_fail(s, txn, xr.err, xr.state)
+            }
+            if xr.has == 1 {
+                boila_scan_buf_range(txn, t, ts_idx, 1, lo_v, 1, hi_v, 0, 1, xr.pks)
+                let mut li: i64 = 0
+                while li < vec_len(xr.pks) {
+                    let g = boila_txn_get(s, txn, t.id, vec_get(xr.pks, li))?
+                    s = g.s
+                    if g.found == 1 {
+                        st = boila_agg_fold_row(st, sel, boila_row_dec(g.row))?
+                        if st.ok == 0 {
+                            return boila_exec_fail(s, txn, st.err, st.state)
                         }
                     }
-                    a = a + 1
+                    li = li + 1
                 }
-                vec_push(res.rows, row)
             }
         }
-        j = j + 1
+        if has_right == 1 {
+            let mut elo = right_partial
+            if have_lo == 1 && elo < lo_sec { elo = lo_sec }
+            let mut lo_v = boila_val_i64(elo)
+            let mut hi_v = boila_val_i64(hi_sec)
+            if ts_typ == boila_v_ts() {
+                lo_v = boila_val_ts(elo * 1000000)
+                hi_v = boila_val_ts(hi_sec * 1000000)
+            }
+            let xr = boila_ix_range(s, t, ixid, 1, lo_v, 1, hi_v, 0, 1)?
+            s = xr.s
+            if xr.ok == 0 {
+                return boila_exec_fail(s, txn, xr.err, xr.state)
+            }
+            if xr.has == 1 {
+                boila_scan_buf_range(txn, t, ts_idx, 1, lo_v, 1, hi_v, 0, 1, xr.pks)
+                let mut li: i64 = 0
+                while li < vec_len(xr.pks) {
+                    let g = boila_txn_get(s, txn, t.id, vec_get(xr.pks, li))?
+                    s = g.s
+                    if g.found == 1 {
+                        st = boila_agg_fold_row(st, sel, boila_row_dec(g.row))?
+                        if st.ok == 0 {
+                            return boila_exec_fail(s, txn, st.err, st.state)
+                        }
+                    }
+                    li = li + 1
+                }
+            }
+        }
+        if has_full == 0 {
+            let ag = boila_agg_fold_end(st, sel)?
+            if ag.ok == 0 {
+                return boila_exec_fail(s, txn, ag.err, ag.state)
+            }
+            return boila_exec_ok_select(s, txn, ag.res)
+        }
+        let ag = boila_agg_fold_end(st, sel)?
+        if ag.ok == 0 {
+            return boila_exec_fail(s, txn, ag.err, ag.state)
+        }
+        let mut ei: i64 = 0
+        while ei < vec_len(ag.res.rows) {
+            vec_push(res.rows, vec_get(ag.res.rows, ei))
+            ei = ei + 1
+        }
+    }
+
+    // complete buckets: direct cell GETs (no full rollup prefix rebuild)
+    if has_full == 1 {
+        if have_lo == 1 && have_hi == 1 {
+            let mut bsec = first_full
+            while bsec <= last_full {
+                let epk = boila_ru_entry_pk(d.id, bsec)
+                let cell = boila_ru_cell_read(s, txn, t.id, epk)?
+                s = cell.s
+                if cell.found == 1 {
+                    let r = boila_row_dec(cell.row)
+                    let mut cnt: i64 = 0
+                    let mut sum: i64 = 0
+                    if vec_len(r) > 0 { cnt = vec_get(r, 0).i }
+                    if vec_len(r) > 1 { sum = vec_get(r, 1).i }
+                    boila_ru_push_row(res, sel, ts_typ, bsec, cnt, sum)
+                }
+                bsec = bsec + iv
+            }
+        } else {
+            // open-ended lo or hi: prefix scan + filter
+            let pref = boila_ru_prefix(d.id)
+            let full_pref = boila_key_row(boila_cf_index(), t.id, pref)
+            let plen = bytes_len(full_pref)
+            let sa = boila_scan_pref_all(s, full_pref)?
+            s = sa.s
+            let mut j: i64 = 0
+            while j < vec_len(sa.keys) {
+                let k = vec_get(sa.keys, j)
+                if bytes_len(k) >= plen + 8 {
+                    let bsec = boila_dec_i64_ord(k, plen)
+                    let mut keep = 1
+                    if have_lo == 1 && bsec < first_full { keep = 0 }
+                    if have_hi == 1 && bsec > last_full { keep = 0 }
+                    if keep == 1 {
+                        let epk = bytes_slice(k, 5, bytes_len(k))
+                        let cell = boila_ru_cell_read(s, txn, t.id, epk)?
+                        s = cell.s
+                        if cell.found == 1 {
+                            let r = boila_row_dec(cell.row)
+                            let mut cnt: i64 = 0
+                            let mut sum: i64 = 0
+                            if vec_len(r) > 0 { cnt = vec_get(r, 0).i }
+                            if vec_len(r) > 1 { sum = vec_get(r, 1).i }
+                            boila_ru_push_row(res, sel, ts_typ, bsec, cnt, sum)
+                        }
+                    }
+                }
+                j = j + 1
+            }
+        }
     }
     return boila_exec_ok_select(s, txn, res)
 }

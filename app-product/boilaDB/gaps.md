@@ -186,15 +186,16 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P9
 
-- **S5 — (MEASURED + K3j rollup + K3h/i + stream) time_bucket gate.**
-  Continuous `CREATE ROLLUP` pre-agg: **@10k ~0.3 ms**; **@20k ~0.7 ms**;
-  **@100k ~2.8 ms OK** (gate &lt; 50 ms). ts-ix window ~38 ms @100k (raw).
-  Results: `bench/boila/results/modality-2026-08-10.md`. Residual:
-  partial-window rollup; stream join/xw.
+- **S5 — (MEASURED + K3j/k rollup + K3h/i + stream) time_bucket gate.**
+  Continuous rollup: **@100k full ~2.9 ms**; **window last-10k ~21 ms**
+  (K3k). Gate &lt; 50 ms OK. Results:
+  `bench/boila/results/modality-2026-08-10.md`. Residual: stream join/xw.
 - **K3j — (FIXED) continuous rollup pre-agg.** DDL
   `CREATE ROLLUP name ON t USING time_bucket('1m', ts) [SUM(col)]`;
-  DML maintains count(*)+sum cells in index CF; unfiltered GROUP BY
-  time_bucket matching iv/col → O(buckets). Tests: `boila_rollup_test`.
+  DML maintains count(*)+sum; unfiltered GROUP BY → O(buckets).
+- **K3k — (FIXED) partial-window rollup.** `WHERE ts` range: complete
+  buckets via rollup cell GETs; left/right partial bands via tight
+  secondary ix + fold. Tests: `boila_rollup_test` win_*.
 - **Q-stream — (FIXED) stream hash-agg.** `exec_agg_fold`/`feed` +
   `exec_agg_stream`: plain table SELECT agg/GROUP BY folds during GET
   (no materialize of N rows). Join/knn/fts/isnull/xw still materialize.

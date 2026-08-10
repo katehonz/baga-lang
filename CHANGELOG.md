@@ -2,13 +2,14 @@
 
 ## [Unreleased]
 
-### boilaDB — K3j continuous ROLLUP (S5 pre-agg)
+### boilaDB — K3j/K3k continuous ROLLUP (S5 pre-agg)
 - `CREATE ROLLUP name ON t USING time_bucket('1m', ts) [SUM(col)]`
   maintains per-bucket count(*) + optional sum on INSERT/UPDATE/DELETE.
-- Unfiltered `GROUP BY time_bucket` matching interval/col reads rollup
-  cells (O(buckets)), not N row GETs. Storage: index CF `R‖id‖bucket`.
-- S5 rebench: 100k full-table **~2.8 ms** (was ~174 ms); gate OK.
-  Window queries still use row path. Tests: `tests/boila_rollup_test.baga`.
+- Unfiltered `GROUP BY time_bucket` → rollup cells (O(buckets)).
+- **K3k partial window:** complete buckets via point GETs; partial
+  edge bands via tight secondary range + fold.
+- S5 @100k: full **~2.9 ms**; ts window last-10k **~21 ms** (was ~38 ms
+  raw). Tests: `tests/boila_rollup_test.baga`.
 
 ### rocksbaga / boilaDB — K3i prefix live fold (S5 cold path)
 - Prefix SCAN rebuild no longer builds a full-shard live map then

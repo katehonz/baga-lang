@@ -44,6 +44,9 @@ fn main() -> i64 !IO !Time !Par {
     let c = boila_server_exec(srv, "boila", "CREATE TABLE pts (id BIGINT, ts BIGINT, v BIGINT, PRIMARY KEY (id))")?
     srv = c.srv
     check(fails, "create", c.ok == 1)
+    let ix = boila_server_exec(srv, "boila", "CREATE INDEX pts_ts_ix ON pts (ts)")?
+    srv = ix.srv
+    check(fails, "ix", ix.ok == 1)
     let r = boila_server_exec(srv, "boila", "CREATE ROLLUP pts_1m ON pts USING time_bucket('1m', ts) SUM(v)")?
     srv = r.srv
     check(fails, "rollup", r.ok == 1)
@@ -94,6 +97,46 @@ fn main() -> i64 !IO !Time !Par {
     let r2 = boila_server_exec(srv, "boila", "CREATE ROLLUP pts_1m ON pts USING time_bucket('1m', ts) SUM(v)")?
     srv = r2.srv
     check(fails, "dup_42710", r2.ok == 0 && r2.state == "42710")
+    // K3k partial window: re-seed
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO pts (id, ts, v) VALUES (2, 1000030, 20)")?
+    srv = i2.srv
+    check(fails, "reins", i2.ok == 1)
+    // window [1000000, 1000060) → pts 1@999960 + 2@1000020; not pt 3 @1000060
+    let qw = boila_server_exec(srv, "boila", "SELECT count(*), sum(v) FROM pts WHERE ts >= 1000000 AND ts < 1000060 GROUP BY time_bucket('1m', ts)")?
+    srv = qw.srv
+    check(fails, "win_ok", qw.ok == 1)
+    check(fails, "win_nb", vec_len(qw.res.rows) == 2)
+    total_c = 0
+    total_s = 0
+    i = 0
+    while i < vec_len(qw.res.rows) {
+        let row = vec_get(qw.res.rows, i)
+        if vec_len(row) >= 3 {
+            total_c = total_c + vec_get(row, 1).i
+            total_s = total_s + vec_get(row, 2).i
+        }
+        i = i + 1
+    }
+    check(fails, "win_count", total_c == 2)
+    check(fails, "win_sum", total_s == 30)
+    // wider window covering both buckets fully for mid + partial edges
+    // [999960, 1000080): all 3 points
+    let qw2 = boila_server_exec(srv, "boila", "SELECT count(*), sum(v) FROM pts WHERE ts >= 999960 AND ts < 1000080 GROUP BY time_bucket('1m', ts)")?
+    srv = qw2.srv
+    check(fails, "win2_ok", qw2.ok == 1)
+    total_c = 0
+    total_s = 0
+    i = 0
+    while i < vec_len(qw2.res.rows) {
+        let row = vec_get(qw2.res.rows, i)
+        if vec_len(row) >= 3 {
+            total_c = total_c + vec_get(row, 1).i
+            total_s = total_s + vec_get(row, 2).i
+        }
+        i = i + 1
+    }
+    check(fails, "win2_count", total_c == 3)
+    check(fails, "win2_sum", total_s == 35)
     boila_server_close(srv)?
     if vec_len(fails) == 0 {
         print("boila_rollup_test: ALL PASS")
