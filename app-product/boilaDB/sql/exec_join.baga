@@ -30,7 +30,7 @@ fn boila_join_nl_max() -> i64 !IO {
 }
 
 // Emit kept wide row: top-N window, or plain push (+ optional LIMIT stop).
-// Returns 1 if probe should stop (unordered LIMIT full).
+// Returns 1 if probe should stop (unordered / sorted-outer LIMIT full).
 fn boila_join_emit(rows: Vec<Vec<BoilaVal>>, wide: Vec<BoilaVal>, need: i64, topn: i64, oidxs: Vec<i64>, odesc: Vec<i64>) -> i64 {
     if topn > 0 {
         boila_topn_offer(rows, wide, oidxs, odesc, topn)
@@ -41,6 +41,76 @@ fn boila_join_emit(rows: Vec<Vec<BoilaVal>>, wide: Vec<BoilaVal>, need: i64, top
         return 1
     }
     return 0
+}
+
+// Q-join-sorted-outer: sort outer pks by left ORDER BY keys (one GET each).
+// idxs = column indices on left table; desc = sel.ord_desc.
+fn boila_join_sort_outer_pks(s: BoilaStore, txn: BoilaTxn, table_id: i64, pks: Vec<bytes>, idxs: Vec<i64>, desc: Vec<i64>) -> BoilaPksOut !IO !Time !Par {
+    let n = vec_len(pks)
+    if n <= 1 {
+        return BoilaPksOut { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
+    }
+    // keyrows[i] = order-key projection of pks[i]
+    let keyrows: Vec<Vec<BoilaVal>> = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        let g = boila_txn_get(s, txn, table_id, vec_get(pks, i))?
+        s = g.s
+        let kr: Vec<BoilaVal> = vec_new()
+        if g.found == 1 {
+            let row = boila_row_dec(g.row)
+            let mut k: i64 = 0
+            while k < vec_len(idxs) {
+                let ix = vec_get(idxs, k)
+                if ix >= 0 && ix < vec_len(row) {
+                    vec_push(kr, vec_get(row, ix))
+                } else {
+                    vec_push(kr, boila_val_null())
+                }
+                k = k + 1
+            }
+        } else {
+            let mut k2: i64 = 0
+            while k2 < vec_len(idxs) {
+                vec_push(kr, boila_val_null())
+                k2 = k2 + 1
+            }
+        }
+        vec_push(keyrows, kr)
+        i = i + 1
+    }
+    // identity column idxs for keyrows
+    let kid: Vec<i64> = vec_new()
+    let mut ki: i64 = 0
+    while ki < vec_len(idxs) {
+        vec_push(kid, ki)
+        ki = ki + 1
+    }
+    // insertion sort pks + keyrows together
+    i = 1
+    while i < n {
+        let pk = vec_get(pks, i)
+        let kr = vec_get(keyrows, i)
+        let mut j = i - 1
+        let mut moving = 1
+        while moving == 1 {
+            if j < 0 {
+                moving = 0
+            } else {
+                if boila_cmp_rows(vec_get(keyrows, j), kr, kid, desc) <= 0 {
+                    moving = 0
+                } else {
+                    vec_set(pks, j + 1, vec_get(pks, j))
+                    vec_set(keyrows, j + 1, vec_get(keyrows, j))
+                    j = j - 1
+                }
+            }
+        }
+        vec_set(pks, j + 1, pk)
+        vec_set(keyrows, j + 1, kr)
+        i = i + 1
+    }
+    return BoilaPksOut { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
 }
 
 struct BoilaJoinOut {
@@ -285,7 +355,7 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         i = i + 1
     }
     // Outer: pks first (stream GET during probe) — Q-stream-join-outer
-    let op = boila_fetch_pks(s, txn, t, left_sel)?
+    let mut op = boila_fetch_pks(s, txn, t, left_sel)?
     s = op.s
     txn = op.txn
     if op.ok == 0 {
@@ -293,8 +363,7 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
     }
     let mut rows: Vec<Vec<BoilaVal>> = vec_new()
     let nullr = boila_null_row(vec_len(t2.cols))
-    let on = vec_len(op.pks)
-    if on == 0 {
+    if vec_len(op.pks) == 0 {
         return BoilaJoinOut { s: s, txn: txn, ok: 1, err: "", state: "", cols: wcols, rows: rows }
     }
     let loff = vec_len(t.cols)
@@ -307,23 +376,52 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         need = sel.offset + sel.limit
         if need < 1 { need = sel.limit }
     }
-    // Q-join-topn: ORDER BY + LIMIT → keep only offset+limit best wide rows
+    // Q-join-topn / Q-join-sorted-outer for ORDER BY + LIMIT
     let mut topn: i64 = 0
     let oidxs: Vec<i64> = vec_new()
     if sel.limit > 0 && sel.has_order == 1 && sel.distinct == 0 && sel.has_xw == 0 {
-        let mut ok_ord = 1
+        let mut left_only: i64 = 1
+        let lidxs: Vec<i64> = vec_new()
         let mut oi: i64 = 0
         while oi < vec_len(sel.ord_cols) {
-            let ix = boila_col_idx_of(wcols, vec_get(sel.ord_cols, oi))
-            if ix < 0 { ok_ord = 0 }
-            vec_push(oidxs, ix)
+            let nm = vec_get(sel.ord_cols, oi)
+            let lx = boila_col_idx(t, nm)
+            if lx < 0 {
+                left_only = 0
+            } else {
+                vec_push(lidxs, lx)
+            }
+            let wx = boila_col_idx_of(wcols, nm)
+            if wx < 0 {
+                left_only = 0
+            }
+            vec_push(oidxs, wx)
             oi = oi + 1
         }
-        if ok_ord == 1 && vec_len(oidxs) > 0 {
-            topn = sel.offset + sel.limit
-            if topn < 1 { topn = sel.limit }
+        if left_only == 1 && vec_len(lidxs) == vec_len(sel.ord_cols) && vec_len(lidxs) > 0 {
+            // Sort outer by ORDER BY left keys → stream in order → early-stop
+            let so = boila_join_sort_outer_pks(s, txn, t.id, op.pks, lidxs, sel.ord_desc)?
+            s = so.s
+            txn = so.txn
+            op.pks = so.pks
+            need = sel.offset + sel.limit
+            if need < 1 { need = sel.limit }
+            topn = 0
+        } else {
+            // Mixed/right ORDER BY: full probe + top-N heap
+            let mut ok_ord = 1
+            oi = 0
+            while oi < vec_len(oidxs) {
+                if vec_get(oidxs, oi) < 0 { ok_ord = 0 }
+                oi = oi + 1
+            }
+            if ok_ord == 1 && vec_len(oidxs) > 0 {
+                topn = sel.offset + sel.limit
+                if topn < 1 { topn = sel.limit }
+            }
         }
     }
+    let on = vec_len(op.pks)
     let ixid = boila_ix_by_col_t(t2, ridx)
     if ixid >= 0 {
         // index nested loop on first ON pair; filter remaining pairs

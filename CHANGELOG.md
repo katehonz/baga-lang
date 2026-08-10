@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-join-sorted-outer: left ORDER BY + LIMIT early-stop
+- When `ORDER BY` is only outer-table cols: sort outer pks by those keys,
+  probe in order, stop after `offset+limit` kept rows (no full join output).
+- Mixed/right ORDER BY still uses top-N heap (`boila_topn_offer`).
+- Tests: `join_sorted_outer`, `join_topn_right`.
+
 ### boilaDB — Q-join-topn: ORDER BY + LIMIT bounded join output
 - `JOIN … ORDER BY … LIMIT n` keeps only `offset+n` best wide rows via
   `boila_topn_offer` (sorted window); avoids materializing full join output.

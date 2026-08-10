@@ -162,6 +162,14 @@ fn main() -> i64 !IO !Time !Par {
     let jtd = exec(srv, "SELECT name FROM emp JOIN dep ON dept = code ORDER BY id DESC LIMIT 1")?
     srv = jtd.srv
     check(fails, "join_topn_desc", jtd.ok == 1 && vec_len(jtd.res.rows) == 1 && cell(vec_get(jtd.res.rows, 0), 0) == "evgeni")
+    // Q-join-sorted-outer: left ORDER BY ASC LIMIT (sorted probe + early-stop)
+    let jsa = exec(srv, "SELECT name FROM emp JOIN dep ON dept = code ORDER BY id ASC LIMIT 2")?
+    srv = jsa.srv
+    check(fails, "join_sorted_outer", jsa.ok == 1 && vec_len(jsa.res.rows) == 2 && cell(vec_get(jsa.res.rows, 0), 0) == "alice" && cell(vec_get(jsa.res.rows, 1), 0) == "boris")
+    // right-only ORDER BY still top-N heap (not sorted-outer)
+    let jtr = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY loc LIMIT 1")?
+    srv = jtr.srv
+    check(fails, "join_topn_right", jtr.ok == 1 && vec_len(jtr.res.rows) == 1)
 
     // --- JOIN index nested loop (индекс по вътрешната колона) ---
     let jx = exec(srv, "CREATE INDEX emp_dept_ix ON emp (dept)")?

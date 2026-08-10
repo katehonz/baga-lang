@@ -214,9 +214,12 @@ T = транзакции, W = wire protocol, F = FTS.
   DISTINCT / xw), probe stops after `offset+limit` kept rows; right WHERE
   applied during emit.
 - **Q-join-topn — (FIXED) ORDER BY + LIMIT top-N.** Bounded buffer of
-  `offset+limit` best wide rows (`boila_topn_offer`); full outer probe
-  still runs, output memory O(limit). Residual: cannot skip outer once
-  top-N full (no sorted-outer guarantee); right inner still materializes.
+  `offset+limit` best wide rows (`boila_topn_offer`) when ORDER uses
+  right/mixed cols; full outer probe, output O(limit).
+- **Q-join-sorted-outer — (FIXED) left ORDER BY early-stop.** When all
+  ORDER BY cols are on the outer table: sort outer pks by those keys,
+  probe in order, stop after `offset+limit` kept rows. Residual: right
+  inner still materializes for hash; mixed ORDER BY uses top-N not stop.
 - **K3g — (FIXED) secondary range exclusive bounds.** `lo_excl`/`hi_excl`
   on SELECT secondary path. DML WHERE still inclusive-only.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild
