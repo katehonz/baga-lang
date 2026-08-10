@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-join-topn: ORDER BY + LIMIT bounded join output
+- `JOIN … ORDER BY … LIMIT n` keeps only `offset+n` best wide rows via
+  `boila_topn_offer` (sorted window); avoids materializing full join output.
+- Tests: existing `join_hash` LIMIT 2; `join_topn_desc`.
+
 ### boilaDB — Q-join-limit: early-stop JOIN probe
 - Non-agg `JOIN … LIMIT n` (no ORDER/DISTINCT/expression WHERE) stops
   the outer probe after `offset+n` kept rows (right filters during emit).

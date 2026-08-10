@@ -155,9 +155,13 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "join_limit_off", jlo.ok == 1 && vec_len(jlo.res.rows) == 1)
 
     // --- A2: hash join (no index on inner join col yet) ---
+    // also Q-join-topn: ORDER BY + LIMIT keeps only top-N wide rows
     let j1 = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY id LIMIT 2")?
     srv = j1.srv
     check(fails, "join_hash", j1.ok == 1 && vec_len(j1.res.rows) == 2 && cell(vec_get(j1.res.rows, 0), 0) == "alice" && cell(vec_get(j1.res.rows, 0), 1) == "sofia")
+    let jtd = exec(srv, "SELECT name FROM emp JOIN dep ON dept = code ORDER BY id DESC LIMIT 1")?
+    srv = jtd.srv
+    check(fails, "join_topn_desc", jtd.ok == 1 && vec_len(jtd.res.rows) == 1 && cell(vec_get(jtd.res.rows, 0), 0) == "evgeni")
 
     // --- JOIN index nested loop (индекс по вътрешната колона) ---
     let jx = exec(srv, "CREATE INDEX emp_dept_ix ON emp (dept)")?

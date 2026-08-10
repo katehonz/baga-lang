@@ -130,6 +130,48 @@ fn boila_sort_rows(rows: Vec<Vec<BoilaVal>>, idxs: Vec<i64>, desc: Vec<i64>) {
     }
 }
 
+// Q-join-topn: keep at most `need` best rows (sorted best-first by idxs/desc).
+// cmp < 0 ⇒ a before b (better). Worst is last when full.
+fn boila_topn_offer(rows: Vec<Vec<BoilaVal>>, row: Vec<BoilaVal>, idxs: Vec<i64>, desc: Vec<i64>, need: i64) {
+    if need <= 0 {
+        vec_push(rows, row)
+        return
+    }
+    let n = vec_len(rows)
+    if n < need {
+        vec_push(rows, row)
+        // bubble left into sorted place
+        let mut i = n
+        while i > 0 {
+            if boila_cmp_rows(vec_get(rows, i), vec_get(rows, i - 1), idxs, desc) < 0 {
+                let tmp = vec_get(rows, i)
+                vec_set(rows, i, vec_get(rows, i - 1))
+                vec_set(rows, i - 1, tmp)
+                i = i - 1
+            } else {
+                i = 0
+            }
+        }
+        return
+    }
+    // full: discard if not better than worst
+    if boila_cmp_rows(row, vec_get(rows, n - 1), idxs, desc) >= 0 {
+        return
+    }
+    vec_set(rows, n - 1, row)
+    let mut i2 = n - 1
+    while i2 > 0 {
+        if boila_cmp_rows(vec_get(rows, i2), vec_get(rows, i2 - 1), idxs, desc) < 0 {
+            let tmp = vec_get(rows, i2)
+            vec_set(rows, i2, vec_get(rows, i2 - 1))
+            vec_set(rows, i2 - 1, tmp)
+            i2 = i2 - 1
+        } else {
+            i2 = 0
+        }
+    }
+}
+
 // K3: sort-order PK bytes (boila_val_enc) — in-place insertion sort.
 fn boila_pk_sort_ins(pks: Vec<bytes>, lo: i64, hi: i64) {
     let mut i = lo + 1
