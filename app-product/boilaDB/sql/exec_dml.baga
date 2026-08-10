@@ -20,6 +20,7 @@ import "../graph/dml.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_scan.baga"
+import "exec_xw.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
@@ -152,6 +153,32 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
         vec_push(ocix, ix)
         i = i + 1
     }
+    // Q-oc-expr: bind names = table cols + excluded$col; NULL probe
+    let xnames: Vec<str> = vec_new()
+    i = 0
+    while i < vec_len(t.cols) {
+        let nm = vec_get(t.cols, i).name
+        vec_push(xnames, nm)
+        vec_push(xnames, concat("excluded$", nm))
+        i = i + 1
+    }
+    let xnulls: Vec<BoilaVal> = vec_new()
+    i = 0
+    while i < vec_len(xnames) {
+        vec_push(xnulls, boila_val_null())
+        i = i + 1
+    }
+    i = 0
+    while i < vec_len(ins.oc_xtoks) {
+        let sx = vec_get(ins.oc_xtoks, i)
+        if vec_len(sx) > 0 {
+            let pr = boila_xw_eval(xnames, sx, xnulls)?
+            if pr.ok == 0 {
+                return boila_dml_fail(s, txn, 6, pr.err, pr.state)
+            }
+        }
+        i = i + 1
+    }
     // RETURNING
     let mut res = boila_result_empty()
     if ins.has_ret == 1 {
@@ -218,9 +245,30 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
             if ins.oc == 2 {
                 let old = boila_row_dec(g.row)
                 let new = boila_row_copy(old)
+                // bind OLD + EXCLUDED (proposed insert row `full`)
+                let xvals: Vec<BoilaVal> = vec_new()
+                c = 0
+                while c < vec_len(t.cols) {
+                    vec_push(xvals, vec_get(old, c))
+                    vec_push(xvals, vec_get(full, c))
+                    c = c + 1
+                }
                 c = 0
                 while c < vec_len(ocix) {
-                    vec_set(new, vec_get(ocix, c), vec_get(ins.oc_vals, c))
+                    let mut v = vec_get(ins.oc_vals, c)
+                    let sx = vec_get(ins.oc_xtoks, c)
+                    if vec_len(sx) > 0 {
+                        let ev = boila_xw_eval(xnames, sx, xvals)?
+                        if ev.ok == 0 {
+                            return boila_dml_fail(s, txn, 6, ev.err, ev.state)
+                        }
+                        v = ev.val
+                    }
+                    let cd = vec_get(t.cols, vec_get(ocix, c))
+                    if boila_dml_val_ok(cd.typ, v) == 0 {
+                        return boila_dml_fail(s, txn, 6, concat("стойност за '", concat(cd.name, "' не съответства на типа")), "42804")
+                    }
+                    vec_set(new, vec_get(ocix, c), boila_dml_coerce(cd.typ, v))
                     c = c + 1
                 }
                 // стари index entries навън

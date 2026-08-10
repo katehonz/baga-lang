@@ -7,8 +7,23 @@ import "token.baga"
 // SELECT (P5): projection от BoilaSelItem-и (колони/агрегати), WHERE по
 // pk или индексирана колона (eq + lo + hi с AND), DISTINCT, ORDER BY/
 // OFFSET, GROUP BY/HAVING, един JOIN (INNER/LEFT, ON equality).
+
+// One HAVING predicate: agg(*) | agg(col) | agg(<expr>) op lit.
+// next_join is not stored here — see BoilaSel.hav_joins.
+struct BoilaHavPred {
+    agg: i64,       // 1 count(*), 2 count(col|expr), 3 sum, …
+    col: str,       // "" if count(*) or expr-arg
+    xtoks: Vec<Token>, // empty = bare col / *
+    op: str,
+    val: i64
+}
+
+fn boila_hav_pred(agg: i64, col: str, xtoks: Vec<Token>, op: str, val: i64) -> BoilaHavPred {
+    return BoilaHavPred { agg: agg, col: col, xtoks: xtoks, op: op, val: val }
+}
+
 struct BoilaSelItem {
-    agg: i64,   // 0 колона, 1 count(*), 2 count(col), 3 sum, 4 avg, 5 min, 6 max
+    agg: i64,   // 0 колона, 1 count(*), 2 count(col|expr), 3 sum, 4 avg, 5 min, 6 max
     col: str,
     biv: i64,   // S7: time_bucket interval sec (0 = plain col/agg)
     alias: str, // S7b: AS alias ("" = default name)
@@ -17,8 +32,8 @@ struct BoilaSelItem {
     sfn: str,
     sfn_cols: Vec<str>,
     sfn_vals: Vec<BoilaVal>,
-    // Q-expr: full dual-expression item (xtoks non-empty); evaluated
-    // per row with columns bound by name.
+    // Q-expr / Q-aexpr: when agg==0 → projection expr; when agg>0 →
+    // aggregate argument expression (sum(sal+1)); bare col uses col.
     xtoks: Vec<Token>
 }
 
@@ -41,11 +56,14 @@ struct BoilaSel {
     distinct: i64,
     has_group: i64,
     group_cols: Vec<str>,
+    // Q-gbyx: parallel to group_cols; empty vec = bare column name in
+    // group_cols[i]; non-empty = GROUP BY <expr> (key = eval on row).
+    group_xtoks: Vec<Vec<Token>>,
     has_having: i64,
-    hav_agg: i64,
-    hav_col: str,
-    hav_op: str,
-    hav_val: i64,
+    // Q-havx / Q-havand: list of HAVING predicates; joins between them
+    // (1=AND, 2=OR) left-associative. Empty xtoks = bare col / count(*).
+    hav_preds: Vec<BoilaHavPred>,
+    hav_joins: Vec<i64>,
     has_join: i64,
     join_kind: i64,   // 1 INNER, 2 LEFT
     join_table: str,
@@ -100,6 +118,13 @@ fn boila_sel_item_agg(kind: i64, col: str) -> BoilaSelItem {
     return BoilaSelItem { agg: kind, col: col, biv: 0, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv, xtoks: xt }
 }
 
+// Q-aexpr: aggregate over an expression argument (sum(a+1), count(upper(c))).
+fn boila_sel_item_agg_x(kind: i64, xtoks: Vec<Token>) -> BoilaSelItem {
+    let fc: Vec<str> = vec_new()
+    let fv: Vec<BoilaVal> = vec_new()
+    return BoilaSelItem { agg: kind, col: "", biv: 0, alias: "", sfn: "", sfn_cols: fc, sfn_vals: fv, xtoks: xtoks }
+}
+
 fn boila_sel_item_bucket(col: str, iv: i64) -> BoilaSelItem {
     let fc: Vec<str> = vec_new()
     let fv: Vec<BoilaVal> = vec_new()
@@ -123,6 +148,9 @@ fn boila_sel_item_out_name(it: BoilaSelItem) -> str {
     if it.alias != "" {
         return it.alias
     }
+    if it.agg > 0 && vec_len(it.xtoks) > 0 {
+        return boila_agg_item_name_base(it.agg)
+    }
     if vec_len(it.xtoks) > 0 {
         return "?column?"
     }
@@ -135,6 +163,15 @@ fn boila_sel_item_out_name(it: BoilaSelItem) -> str {
     return it.col
 }
 
+// Default agg output name without column suffix (expr args).
+fn boila_agg_item_name_base(agg: i64) -> str {
+    if agg == 1 || agg == 2 { return "count" }
+    if agg == 3 { return "sum" }
+    if agg == 4 { return "avg" }
+    if agg == 5 { return "min" }
+    return "max"
+}
+
 // BoilaColDef / BoilaCreate / boila_coldef / boila_create_empty →
 // catalog/ddl_types.baga (kimi-deps D4).
 
@@ -143,12 +180,15 @@ fn boila_sel_empty() -> BoilaSel {
     let oc: Vec<str> = vec_new()
     let od: Vec<i64> = vec_new()
     let gc: Vec<str> = vec_new()
+    let gx: Vec<Vec<Token>> = vec_new()
     let ft: Vec<str> = vec_new()
     let fg: Vec<i64> = vec_new()
     let jl: Vec<str> = vec_new()
     let jr: Vec<str> = vec_new()
     let iv: Vec<BoilaVal> = vec_new()
     let xw: Vec<Token> = vec_new()
+    let hp: Vec<BoilaHavPred> = vec_new()
+    let hj: Vec<i64> = vec_new()
     return BoilaSel {
         table: "", star: 0, items: items,
         eq_col: "", has_eq: 0, pk_eq: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, eq_param: 0,
@@ -159,8 +199,8 @@ fn boila_sel_empty() -> BoilaSel {
         limit: 0, lim_param: 0, offset: 0,
         has_order: 0, ord_cols: oc, ord_desc: od,
         distinct: 0,
-        has_group: 0, group_cols: gc,
-        has_having: 0, hav_agg: 0, hav_col: "", hav_op: "", hav_val: 0,
+        has_group: 0, group_cols: gc, group_xtoks: gx,
+        has_having: 0, hav_preds: hp, hav_joins: hj,
         has_join: 0, join_kind: 0, join_table: "", join_lcol: "", join_rcol: "",
         join_lcols: jl, join_rcols: jr,
         has_fts: 0, fts_col: "", fts_mode: 1, fts_terms: ft, fts_gaps: fg,
@@ -183,6 +223,10 @@ struct BoilaIns {
     oc: i64,
     oc_cols: Vec<str>,
     oc_vals: Vec<BoilaVal>,
+    // Q-oc-expr: per-SET expression tokens (parallel to oc_cols;
+    // empty vec = literal at oc_vals). Unqualified names = OLD row;
+    // EXCLUDED.col rewritten to excluded$col at parse.
+    oc_xtoks: Vec<Vec<Token>>,
     has_ret: i64,
     ret_star: i64,
     ret_cols: Vec<str>
@@ -193,8 +237,9 @@ fn boila_ins_empty() -> BoilaIns {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
     let oc_cols: Vec<str> = vec_new()
     let oc_vals: Vec<BoilaVal> = vec_new()
+    let oc_xtoks: Vec<Vec<Token>> = vec_new()
     let ret_cols: Vec<str> = vec_new()
-    return BoilaIns { table: "", cols: cols, rows: rows, oc: 0, oc_cols: oc_cols, oc_vals: oc_vals, has_ret: 0, ret_star: 0, ret_cols: ret_cols }
+    return BoilaIns { table: "", cols: cols, rows: rows, oc: 0, oc_cols: oc_cols, oc_vals: oc_vals, oc_xtoks: oc_xtoks, has_ret: 0, ret_star: 0, ret_cols: ret_cols }
 }
 
 // UPDATE/DELETE: WHERE е pk-only или по индексирана колона (P3),

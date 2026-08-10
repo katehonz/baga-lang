@@ -1,0 +1,208 @@
+// pgwire_bind.baga — W2 Bind: fill $N placeholders on AST + Q-xparam
+// rewrite of $N tokens inside expression spans into literal tokens.
+
+import "pgwire_enc.baga"
+import "../sql/token.baga"
+import "../sql/ast.baga"
+import "../core/value.baga"
+import "std/str/str.baga"
+
+fn boila_pg_bind_one(v: BoilaVal, vals: Vec<str>, nulls: Vec<i64>) -> BoilaVal {
+    if boila_is_param(v) == 1 {
+        return boila_pg_pick(vals, nulls, v.i)
+    }
+    return v
+}
+
+// Bound value → dual-evaluator literal token.
+fn boila_pg_val_tok(v: BoilaVal) -> Token {
+    if v.tag == boila_v_null() {
+        return token_new(tok_ident(), "null")
+    }
+    if v.tag == boila_v_bool() {
+        if v.i == 0 {
+            return token_new(tok_ident(), "false")
+        }
+        return token_new(tok_ident(), "true")
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        return token_new(tok_num(), int_to_str(v.i))
+    }
+    if v.tag == boila_v_str() {
+        return token_new(tok_str(), str_of_bytes(v.b))
+    }
+    return token_new(tok_str(), "")
+}
+
+// Q-xparam: $N tokens → bound literals (leaves other tokens intact).
+fn boila_pg_subst_xtoks(xtoks: Vec<Token>, vals: Vec<str>, nulls: Vec<i64>) -> Vec<Token> {
+    let out: Vec<Token> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(xtoks) {
+        let t = vec_get(xtoks, i)
+        if t.kind == tok_param() {
+            let n = parse_int(t.txt)
+            vec_push(out, boila_pg_val_tok(boila_pg_pick(vals, nulls, n)))
+        } else {
+            vec_push(out, t)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn boila_pg_xtoks_max_param(xtoks: Vec<Token>, n0: i64) -> i64 {
+    let mut n = n0
+    let mut i: i64 = 0
+    while i < vec_len(xtoks) {
+        let t = vec_get(xtoks, i)
+        if t.kind == tok_param() {
+            let p = parse_int(t.txt)
+            if p > n {
+                n = p
+            }
+        }
+        i = i + 1
+    }
+    return n
+}
+
+fn boila_pg_bind_ins(ins: BoilaIns, vals: Vec<str>, nulls: Vec<i64>) -> BoilaIns {
+    let mut out = ins
+    let nrows: Vec<Vec<BoilaVal>> = vec_new()
+    let mut r: i64 = 0
+    while r < vec_len(ins.rows) {
+        let src = vec_get(ins.rows, r)
+        let row: Vec<BoilaVal> = vec_new()
+        let mut c: i64 = 0
+        while c < vec_len(src) {
+            vec_push(row, boila_pg_bind_one(vec_get(src, c), vals, nulls))
+            c = c + 1
+        }
+        vec_push(nrows, row)
+        r = r + 1
+    }
+    out.rows = nrows
+    let ocv: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(ins.oc_vals) {
+        vec_push(ocv, boila_pg_bind_one(vec_get(ins.oc_vals, i), vals, nulls))
+        i = i + 1
+    }
+    out.oc_vals = ocv
+    let oxt: Vec<Vec<Token>> = vec_new()
+    i = 0
+    while i < vec_len(ins.oc_xtoks) {
+        vec_push(oxt, boila_pg_subst_xtoks(vec_get(ins.oc_xtoks, i), vals, nulls))
+        i = i + 1
+    }
+    out.oc_xtoks = oxt
+    return out
+}
+
+fn boila_pg_bind_upd(upd: BoilaUpd, vals: Vec<str>, nulls: Vec<i64>) -> BoilaUpd {
+    let mut out = upd
+    let sv: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(upd.set_vals) {
+        vec_push(sv, boila_pg_bind_one(vec_get(upd.set_vals, i), vals, nulls))
+        i = i + 1
+    }
+    out.set_vals = sv
+    out.pk_eq = boila_pg_bind_one(upd.pk_eq, vals, nulls)
+    out.pk_lo = boila_pg_bind_one(upd.pk_lo, vals, nulls)
+    out.pk_hi = boila_pg_bind_one(upd.pk_hi, vals, nulls)
+    let sxt: Vec<Vec<Token>> = vec_new()
+    i = 0
+    while i < vec_len(upd.set_xtoks) {
+        vec_push(sxt, boila_pg_subst_xtoks(vec_get(upd.set_xtoks, i), vals, nulls))
+        i = i + 1
+    }
+    out.set_xtoks = sxt
+    out.xw_toks = boila_pg_subst_xtoks(upd.xw_toks, vals, nulls)
+    return out
+}
+
+fn boila_pg_bind_del(del: BoilaDel, vals: Vec<str>, nulls: Vec<i64>) -> BoilaDel {
+    let mut out = del
+    out.pk_eq = boila_pg_bind_one(del.pk_eq, vals, nulls)
+    out.pk_lo = boila_pg_bind_one(del.pk_lo, vals, nulls)
+    out.pk_hi = boila_pg_bind_one(del.pk_hi, vals, nulls)
+    out.xw_toks = boila_pg_subst_xtoks(del.xw_toks, vals, nulls)
+    return out
+}
+
+fn boila_pg_bind_sel(sel: BoilaSel, vals: Vec<str>, nulls: Vec<i64>) -> BoilaSel {
+    let mut s = sel
+    if s.eq_param > 0 { s.pk_eq = boila_pg_pick(vals, nulls, s.eq_param) }
+    if s.lo_param > 0 { s.pk_lo = boila_pg_pick(vals, nulls, s.lo_param) }
+    if s.hi_param > 0 { s.pk_hi = boila_pg_pick(vals, nulls, s.hi_param) }
+    if s.ne_param > 0 { s.pk_ne = boila_pg_pick(vals, nulls, s.ne_param) }
+    if s.lim_param > 0 {
+        let v = boila_pg_pick(vals, nulls, s.lim_param)
+        if v.tag == boila_v_i64() { s.limit = v.i }
+    }
+    let items: Vec<BoilaSelItem> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(sel.items) {
+        let mut it = vec_get(sel.items, i)
+        if vec_len(it.xtoks) > 0 {
+            it.xtoks = boila_pg_subst_xtoks(it.xtoks, vals, nulls)
+        }
+        if it.sfn != "" {
+            let sv: Vec<BoilaVal> = vec_new()
+            let mut a: i64 = 0
+            while a < vec_len(it.sfn_vals) {
+                vec_push(sv, boila_pg_bind_one(vec_get(it.sfn_vals, a), vals, nulls))
+                a = a + 1
+            }
+            it.sfn_vals = sv
+        }
+        vec_push(items, it)
+        i = i + 1
+    }
+    s.items = items
+    if s.has_xw == 1 {
+        s.xw_toks = boila_pg_subst_xtoks(s.xw_toks, vals, nulls)
+    }
+    let iv: Vec<BoilaVal> = vec_new()
+    i = 0
+    while i < vec_len(sel.in_vals) {
+        vec_push(iv, boila_pg_bind_one(vec_get(sel.in_vals, i), vals, nulls))
+        i = i + 1
+    }
+    s.in_vals = iv
+    return s
+}
+
+// Max $N on sel (structural + Q-xparam spans + sfn/IN placeholders).
+fn boila_pg_nparams(sel: BoilaSel) -> i64 {
+    let mut n: i64 = 0
+    if sel.eq_param > n { n = sel.eq_param }
+    if sel.lo_param > n { n = sel.lo_param }
+    if sel.hi_param > n { n = sel.hi_param }
+    if sel.ne_param > n { n = sel.ne_param }
+    if sel.lim_param > n { n = sel.lim_param }
+    let mut i: i64 = 0
+    while i < vec_len(sel.items) {
+        let it = vec_get(sel.items, i)
+        n = boila_pg_xtoks_max_param(it.xtoks, n)
+        let mut a: i64 = 0
+        while a < vec_len(it.sfn_vals) {
+            let v = vec_get(it.sfn_vals, a)
+            if boila_is_param(v) == 1 && v.i > n { n = v.i }
+            a = a + 1
+        }
+        i = i + 1
+    }
+    if sel.has_xw == 1 {
+        n = boila_pg_xtoks_max_param(sel.xw_toks, n)
+    }
+    i = 0
+    while i < vec_len(sel.in_vals) {
+        let v = vec_get(sel.in_vals, i)
+        if boila_is_param(v) == 1 && v.i > n { n = v.i }
+        i = i + 1
+    }
+    return n
+}

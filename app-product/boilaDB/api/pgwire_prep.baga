@@ -2,6 +2,7 @@
 
 import "pgwire_enc.baga"
 import "pgwire_msg.baga"
+import "pgwire_bind.baga"
 import "../sql/lexer.baga"
 import "../sql/token.baga"
 import "../sql/parse_select.baga"
@@ -59,19 +60,6 @@ fn boila_pg_portal_empty() -> BoilaPgPortal {
         sel: boila_sel_empty(), ins: boila_ins_empty(),
         upd: boila_upd_empty(), del: boila_del_empty()
     }
-}
-
-fn boila_pg_bind_sel(sel: BoilaSel, vals: Vec<str>, nulls: Vec<i64>) -> BoilaSel {
-    let mut s = sel
-    if s.eq_param > 0 { s.pk_eq = boila_pg_pick(vals, nulls, s.eq_param) }
-    if s.lo_param > 0 { s.pk_lo = boila_pg_pick(vals, nulls, s.lo_param) }
-    if s.hi_param > 0 { s.pk_hi = boila_pg_pick(vals, nulls, s.hi_param) }
-    if s.ne_param > 0 { s.pk_ne = boila_pg_pick(vals, nulls, s.ne_param) }
-    if s.lim_param > 0 {
-        let v = boila_pg_pick(vals, nulls, s.lim_param)
-        if v.tag == boila_v_i64() { s.limit = v.i }
-    }
-    return s
 }
 
 fn boila_pg_parse_stmt(stmts: Map<str, BoilaPgStmt>, body: bytes) -> Map<str, BoilaPgStmt> {
@@ -174,17 +162,6 @@ fn boila_pg_exec_sel(s: BoilaStore, txn: BoilaTxn, sel: BoilaSel) -> BoilaExec !
         return boila_exec_fail(s, txn, ct.err, ct.state)
     }
     return boila_exec_select(s, txn, ct.table, sel)?
-}
-
-// Max $N index referenced by sel (0 = none).
-fn boila_pg_nparams(sel: BoilaSel) -> i64 {
-    let mut n: i64 = 0
-    if sel.eq_param > n { n = sel.eq_param }
-    if sel.lo_param > n { n = sel.lo_param }
-    if sel.hi_param > n { n = sel.hi_param }
-    if sel.ne_param > n { n = sel.ne_param }
-    if sel.lim_param > n { n = sel.lim_param }
-    return n
 }
 
 // W5: column names+tags from SELECT + table (no JOIN / agg → empty ok=0).

@@ -1,0 +1,128 @@
+// boila_aexpr_test.baga — Q-aexpr / Q-gbyx:
+//   sum(sal + 1), count(upper(dept)), GROUP BY upper(dept)
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() { return str_of_bytes(v.b) }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() { return int_to_str(v.i) }
+    if v.tag == boila_v_null() { return "null" }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_aexpr_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_aexpr_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE e (id BIGINT, dept TEXT, sal BIGINT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let s0 = boila_server_exec(srv, "boila", "INSERT INTO e (id, dept, sal) VALUES (1, 'eng', 100), (2, 'eng', 120), (3, 'hr', 90), (4, 'hr', 95)")?
+    srv = s0.srv
+    check(fails, "seed", s0.ok == 1 && s0.id == 4)
+
+    // --- Q-aexpr: aggregate over expression ---
+    let a1 = boila_server_exec(srv, "boila", "SELECT sum(sal + 1) FROM e")?
+    srv = a1.srv
+    // (100+1)+(120+1)+(90+1)+(95+1) = 409
+    check(fails, "sum_expr", a1.ok == 1 && vec_len(a1.res.rows) == 1 && cell(vec_get(a1.res.rows, 0), 0) == "409")
+
+    let a2 = boila_server_exec(srv, "boila", "SELECT count(sal + 1), avg(sal / 10) FROM e")?
+    srv = a2.srv
+    check(fails, "count_avg_expr", a2.ok == 1 && cell(vec_get(a2.res.rows, 0), 0) == "4")
+
+    let a3 = boila_server_exec(srv, "boila", "SELECT min(id * 10), max(id * 10) FROM e")?
+    srv = a3.srv
+    check(fails, "minmax_expr", a3.ok == 1 && cell(vec_get(a3.res.rows, 0), 0) == "10" && cell(vec_get(a3.res.rows, 0), 1) == "40")
+
+    let a4 = boila_server_exec(srv, "boila", "SELECT dept, sum(sal + 1) AS s FROM e GROUP BY dept ORDER BY s")?
+    srv = a4.srv
+    // hr: 90+1+95+1=187; eng: 100+1+120+1=222 — legacy layout group+agg
+    check(fails, "sum_expr_group", a4.ok == 1 && vec_len(a4.res.rows) == 2 && cell(vec_get(a4.res.rows, 0), 0) == "hr" && cell(vec_get(a4.res.rows, 0), 1) == "187" && cell(vec_get(a4.res.rows, 1), 1) == "222")
+
+    // --- Q-gbyx: GROUP BY expression ---
+    let g1 = boila_server_exec(srv, "boila", "SELECT upper(dept) AS d, count(*) AS c FROM e GROUP BY upper(dept) ORDER BY d")?
+    srv = g1.srv
+    check(fails, "gby_upper", g1.ok == 1 && vec_len(g1.res.rows) == 2)
+    check(fails, "gby_eng", cell(vec_get(g1.res.rows, 0), 0) == "ENG" && cell(vec_get(g1.res.rows, 0), 1) == "2")
+    check(fails, "gby_hr", cell(vec_get(g1.res.rows, 1), 0) == "HR" && cell(vec_get(g1.res.rows, 1), 1) == "2")
+
+    let g2 = boila_server_exec(srv, "boila", "SELECT id / 2 AS b, count(*) AS c FROM e GROUP BY id / 2 ORDER BY b")?
+    srv = g2.srv
+    // id 1,2 → 0; id 3,4 → 1 (integer div) wait: 1/2=0, 2/2=1, 3/2=1, 4/2=2
+    check(fails, "gby_arith", g2.ok == 1 && vec_len(g2.res.rows) == 3)
+
+    let g3 = boila_server_exec(srv, "boila", "SELECT dept || 'x' AS d, sum(sal) AS s FROM e GROUP BY dept || 'x' ORDER BY d")?
+    srv = g3.srv
+    check(fails, "gby_concat", g3.ok == 1 && vec_len(g3.res.rows) == 2 && cell(vec_get(g3.res.rows, 0), 0) == "engx")
+
+    // mixed: GROUP BY expr + agg expr
+    let m1 = boila_server_exec(srv, "boila", "SELECT upper(dept) AS d, sum(sal + 10) AS s FROM e GROUP BY upper(dept) ORDER BY d")?
+    srv = m1.srv
+    // eng: 110+130=240; hr: 100+105=205
+    check(fails, "mixed", m1.ok == 1 && cell(vec_get(m1.res.rows, 0), 0) == "ENG" && cell(vec_get(m1.res.rows, 0), 1) == "240")
+
+    // errors
+    let e1 = boila_server_exec(srv, "boila", "SELECT sum(dept) FROM e")?
+    srv = e1.srv
+    check(fails, "err_sum_text", e1.ok == 0)
+    let e2 = boila_server_exec(srv, "boila", "SELECT sum(upper(dept)) FROM e")?
+    srv = e2.srv
+    check(fails, "err_sum_str_expr", e2.ok == 0 && e2.state == "0A000")
+
+    // legacy still works
+    let L = boila_server_exec(srv, "boila", "SELECT dept, sum(sal) FROM e GROUP BY dept ORDER BY dept")?
+    srv = L.srv
+    check(fails, "legacy", L.ok == 1 && cell(vec_get(L.res.rows, 0), 0) == "eng" && cell(vec_get(L.res.rows, 0), 1) == "220")
+
+    boila_server_close(srv)?
+    wipe_root(root)?
+
+    if vec_len(fails) == 0 {
+        print("boila_aexpr_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_aexpr_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

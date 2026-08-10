@@ -184,12 +184,17 @@ fn main() -> i64 !IO !Time !Par {
     let x4 = boila_server_exec(srv, "boila", "SELECT id + FROM u")?
     srv = x4.srv
     check(fails, "err_dangling", x4.ok == 0)
+    // Q-gexpr: expr + agg without GROUP BY still rejected
     let x5 = boila_server_exec(srv, "boila", "SELECT id + 1, count(*) FROM u")?
     srv = x5.srv
-    check(fails, "err_expr_agg", x5.ok == 0 && x5.state == "0A000")
-    let x6 = boila_server_exec(srv, "boila", "SELECT id + 1 FROM u GROUP BY id")?
+    check(fails, "err_expr_agg_no_group", x5.ok == 0 && x5.state == "0A000")
+    // Q-gexpr: expr with GROUP BY works
+    let x6 = boila_server_exec(srv, "boila", "SELECT id + 1 AS x FROM u GROUP BY id ORDER BY x")?
     srv = x6.srv
-    check(fails, "err_expr_group", x6.ok == 0 && x6.state == "0A000")
+    check(fails, "expr_group", x6.ok == 1 && vec_len(x6.res.rows) >= 2 && row_str(vec_get(x6.res.rows, 0), 0) == "2")
+    let x6b = boila_server_exec(srv, "boila", "SELECT id + 1 AS x, count(*) AS c FROM u GROUP BY id ORDER BY x")?
+    srv = x6b.srv
+    check(fails, "expr_agg_group", x6b.ok == 1 && vec_len(x6b.res.rows) >= 1 && row_str(vec_get(x6b.res.rows, 0), 1) == "1")
     let x7 = boila_server_exec(srv, "boila", "SELECT 1 + generate_series(1, 2) FROM u")?
     srv = x7.srv
     check(fails, "err_series_expr", x7.ok == 0 && x7.state == "0A000")

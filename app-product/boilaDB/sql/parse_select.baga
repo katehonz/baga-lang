@@ -4,6 +4,7 @@ import "lexer.baga"
 import "ast.baga"
 import "parse_common.baga"
 import "parse_where.baga"
+import "parse_having.baga"
 import "tsquery.baga"
 import "../core/value.baga"
 import "../ts/time_bucket.baga"
@@ -135,7 +136,7 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
     sel = wh.sel
     i = wh.pos
 
-    // GROUP BY
+    // GROUP BY col | time_bucket(...) | <expr>
     if tok_kw(boila_ps_tok(l, i), "group") == 1 {
         if tok_kw(boila_ps_tok(l, i + 1), "by") != 1 {
             return boila_ps_fail("очаквах BY след GROUP", "42601")
@@ -143,16 +144,12 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         i = i + 2
         sel.has_group = 1
         let mut more = true
+        let mut gni: i64 = 0
         while more {
             let c = boila_ps_tok(l, i)
-            if c.kind != tok_ident() {
-                return boila_ps_fail("очаквах колона/time_bucket в GROUP BY", "42601")
-            }
+            let empty_x: Vec<Token> = vec_new()
             // P9: time_bucket('1m', col)
-            if c.txt == "time_bucket" {
-                if boila_ps_tok(l, i + 1).kind != tok_lparen() {
-                    return boila_ps_fail("очаквах '(' след time_bucket", "42601")
-                }
+            if c.kind == tok_ident() && c.txt == "time_bucket" && boila_ps_tok(l, i + 1).kind == tok_lparen() {
                 let ivt = boila_ps_tok(l, i + 2)
                 if ivt.kind != tok_str() {
                     return boila_ps_fail("очаквах интервал-стринг в time_bucket", "42601")
@@ -177,10 +174,37 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
                 sel.bucket_iv = iv.sec
                 sel.bucket_col = col.txt
                 vec_push(sel.group_cols, "time_bucket")
+                vec_push(sel.group_xtoks, empty_x)
                 i = i + 6
             } else {
-                vec_push(sel.group_cols, c.txt)
-                i = i + 1
+                // bare column: ident not continuing as expression
+                let mut bare = 0
+                if c.kind == tok_ident() {
+                    let nx = boila_ps_tok(l, i + 1)
+                    if nx.kind != tok_op() && nx.kind != tok_star() && nx.kind != tok_lparen() && nx.kind != tok_dot() {
+                        if nx.kind != tok_ident() || (tok_kw(nx, "and") != 1 && tok_kw(nx, "or") != 1 && tok_kw(nx, "between") != 1 && tok_kw(nx, "in") != 1 && tok_kw(nx, "like") != 1 && tok_kw(nx, "ilike") != 1 && tok_kw(nx, "is") != 1 && tok_kw(nx, "not") != 1) {
+                            bare = 1
+                        }
+                    }
+                }
+                if bare == 1 {
+                    vec_push(sel.group_cols, c.txt)
+                    vec_push(sel.group_xtoks, empty_x)
+                    i = i + 1
+                } else {
+                    // Q-gbyx: GROUP BY <expr>
+                    let xe = boila_ps_expr_item(l, i)
+                    if xe.ok == 0 {
+                        return boila_ps_fail(xe.err, xe.state)
+                    }
+                    if vec_len(xe.item.xtoks) == 0 {
+                        return boila_ps_fail("очаквах колона/израз в GROUP BY", "42601")
+                    }
+                    gni = gni + 1
+                    vec_push(sel.group_cols, concat("?g", int_to_str(gni)))
+                    vec_push(sel.group_xtoks, xe.item.xtoks)
+                    i = xe.pos
+                }
             }
             if boila_ps_tok(l, i).kind == tok_comma() {
                 i = i + 1
@@ -190,53 +214,16 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         }
     }
 
-    // HAVING agg(col) op num
+    // HAVING pred [AND|OR pred]*  (Q-havx + Q-havand)
     if tok_kw(boila_ps_tok(l, i), "having") == 1 {
-        i = i + 1
-        let an = boila_ps_tok(l, i)
-        let kind = boila_ps_agg_kind(an.txt)
-        if an.kind != tok_ident() || kind == 0 {
-            return boila_ps_fail("очаквах агрегат в HAVING", "42601")
-        }
-        if boila_ps_tok(l, i + 1).kind != tok_lparen() {
-            return boila_ps_fail("очаквах '(' след агрегата в HAVING", "42601")
-        }
-        let arg = boila_ps_tok(l, i + 2)
-        let mut hcol = ""
-        let mut hkind = kind
-        if arg.kind == tok_star() {
-            if kind != 1 {
-                return boila_ps_fail("HAVING с * — само count", "0A000")
-            }
-        } else {
-            if arg.kind != tok_ident() {
-                return boila_ps_fail("очаквах колона в HAVING агрегата", "42601")
-            }
-            hcol = arg.txt
-            if kind == 1 {
-                hkind = 2
-            }
-        }
-        if boila_ps_tok(l, i + 3).kind != tok_rparen() {
-            return boila_ps_fail("очаквах ')' в HAVING агрегата", "42601")
-        }
-        let op = boila_ps_tok(l, i + 4)
-        if op.kind != tok_op() {
-            return boila_ps_fail("очаквах оператор в HAVING", "42601")
-        }
-        let hv = boila_ps_literal(l, i + 5)
+        let hv = boila_parse_having(l, i + 1)
         if hv.ok == 0 {
             return boila_ps_fail(hv.err, hv.state)
         }
-        if hv.v.tag != boila_v_i64() {
-            return boila_ps_fail("HAVING стойност — само цяло число в P5", "0A000")
-        }
         sel.has_having = 1
-        sel.hav_agg = hkind
-        sel.hav_col = hcol
-        sel.hav_op = op.txt
-        sel.hav_val = hv.v.i
-        i = i + 6
+        sel.hav_preds = hv.preds
+        sel.hav_joins = hv.joins
+        i = hv.pos
     }
 
     // ORDER BY
@@ -317,25 +304,34 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
                 else { if it.biv != ab_iv || it.col != ab_col { plain_bucket = 0 } }
             }
         } else { has_agg = 1 }
-        if it.sfn != "" { has_sfn = 1 }
-        if vec_len(it.xtoks) > 0 { has_expr = 1 }
+        if it.agg == 0 && it.sfn != "" { has_sfn = 1 }
+        // projection expr only (agg xtoks = Q-aexpr argument, not proj)
+        if it.agg == 0 && vec_len(it.xtoks) > 0 { has_expr = 1 }
         k = k + 1
     }
-    // Q-sfn/Q-expr: fns/expressions are projection-only (no agg/GROUP BY)
-    if (has_sfn == 1 || has_expr == 1) && (has_agg == 1 || sel.has_group == 1) {
-        return boila_ps_fail("скаларна функция/израз с агрегат/GROUP BY не се поддържа", "0A000")
+    // Q-gexpr: sfn/expr + aggregates require GROUP BY (eval on group row).
+    // Bare sfn/expr without agg still allowed without GROUP BY (row path).
+    if (has_sfn == 1 || has_expr == 1) && has_agg == 1 && sel.has_group == 0 {
+        // auto-group only for pure time_bucket plains (S7d); mixed expr+agg → err
+        if !(has_plain == 1 && plain_bucket == 1 && ab_iv > 0 && has_sfn == 0 && has_expr == 0) {
+            return boila_ps_fail("скаларна функция/израз с агрегат изисква GROUP BY", "0A000")
+        }
     }
     // S7d: time_bucket + agg → auto GROUP BY time_bucket
+    // (also plain col + agg without group → error, unless pure bucket plains)
     if has_agg == 1 && has_plain == 1 && sel.has_group == 0 {
-        if plain_bucket == 1 && ab_iv > 0 {
+        if plain_bucket == 1 && ab_iv > 0 && has_sfn == 0 && has_expr == 0 {
             sel.has_group = 1
             sel.bucket_iv = ab_iv
             sel.bucket_col = ab_col
             vec_push(sel.group_cols, "time_bucket")
+            let empty_gx: Vec<Token> = vec_new()
+            vec_push(sel.group_xtoks, empty_gx)
         } else {
             return boila_ps_fail("колони и агрегати заедно изискват GROUP BY", "0A000")
         }
     }
+    // Q-gexpr: sfn/expr-only SELECT with GROUP BY is ok (no agg required)
     if sel.has_having == 1 && has_agg == 0 && sel.has_group == 0 {
         return boila_ps_fail("HAVING изисква агрегат или GROUP BY", "0A000")
     }

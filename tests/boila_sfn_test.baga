@@ -166,12 +166,17 @@ fn main() -> i64 !IO !Time !Par {
     let x2 = boila_server_exec(srv, "boila", "SELECT generate_series(1, 3) FROM u")?
     srv = x2.srv
     check(fails, "err_genseries", x2.ok == 0 && x2.state == "0A000")
+    // Q-gexpr: sfn + agg without GROUP BY still rejected
     let x3 = boila_server_exec(srv, "boila", "SELECT upper(name), count(*) FROM u")?
     srv = x3.srv
-    check(fails, "err_sfn_agg", x3.ok == 0 && x3.state == "0A000")
-    let x4 = boila_server_exec(srv, "boila", "SELECT upper(name) FROM u GROUP BY name")?
+    check(fails, "err_sfn_agg_no_group", x3.ok == 0 && x3.state == "0A000")
+    // Q-gexpr: sfn with GROUP BY
+    let x4 = boila_server_exec(srv, "boila", "SELECT upper(name) AS u FROM u GROUP BY name ORDER BY u")?
     srv = x4.srv
-    check(fails, "err_sfn_group", x4.ok == 0 && x4.state == "0A000")
+    check(fails, "sfn_group", x4.ok == 1 && vec_len(x4.res.rows) >= 1)
+    let x4b = boila_server_exec(srv, "boila", "SELECT upper(name) AS u, count(*) AS c FROM u GROUP BY name ORDER BY u")?
+    srv = x4b.srv
+    check(fails, "sfn_agg_group", x4b.ok == 1 && vec_len(x4b.res.rows) >= 1)
     let x5 = boila_server_exec(srv, "boila", "SELECT upper(missing) FROM u")?
     srv = x5.srv
     check(fails, "err_bad_col", x5.ok == 0 && x5.state == "42703")

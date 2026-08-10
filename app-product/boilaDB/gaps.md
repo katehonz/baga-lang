@@ -120,16 +120,56 @@ T = транзакции, W = wire protocol, F = FTS.
   now work in DML WHERE; structural eq/range keep their index/range
   paths and can be ANDed with an expression tail. Target collection
   moved to sql/exec_dml_where.baga (filesize §9). 24-check
-  boila_xdml_test. Residual: no expr SET in INSERT … ON CONFLICT DO
-  UPDATE (oc_vals literals only); `$N` inside xw spans → eval error;
-  DML xw is a post-filter (seq fetch when no structural predicate).
+  boila_xdml_test. Residual: DML xw is a post-filter (seq fetch when
+  no structural predicate). [ON CONFLICT expr SET → P11-26; $N in
+  expr spans → P11-27.]
+- **P11-26 — (FIXED) ON CONFLICT DO UPDATE SET col = <expr> (Q-oc-expr).**
+  `parse_insert` accepts dual expressions (same path as UPDATE SET);
+  `EXCLUDED.col` via lexer `tok_dot` + rewrite to bind name
+  `excluded$col`; exec binds OLD row cols + proposed insert row.
+  Literals unchanged; mix works. 19-check boila_oc_expr_test.
+  Residual: no table.col qualifiers beyond EXCLUDED.
+- **P11-27 — (FIXED) $N in expression spans (Q-xparam).** Bind rewrites
+  `tok_param` inside SELECT item/WHERE xw, UPDATE SET/WHERE, DELETE
+  WHERE, ON CONFLICT SET spans to concrete literal tokens
+  (`api/pgwire_bind.baga`); structural params + sfn/IN placeholders
+  still filled as BoilaVal. `boila_pg_nparams` counts span `$N` for
+  Describe. 20-check boila_xparam_test. Residual: simple-query text
+  with bare `$N` still needs extended Bind; dual-only prepared
+  without FROM uses text fallback when table-less.
+- **P11-28 — (FIXED) sfn/expr with GROUP BY + aggregates (Q-gexpr).**
+  Parse allows scalar fns/expressions alongside aggregates when
+  GROUP BY is present; without GROUP BY still 0A000. Exec projects
+  SELECT-list order evaluating sfn/expr on the group first-row
+  (`sql/exec_agg_gexpr.baga`); plain cols not in GROUP BY → 42803.
+  Legacy group+agg layout unchanged when no sfn/expr. 16-check
+  boila_gexpr_test. Residual: first-row eval is not full PG
+  functional-dependency. [agg-arg + GROUP BY expr → P11-29.]
+- **P11-29 — (FIXED) agg(expr) + GROUP BY expr (Q-aexpr / Q-gbyx).**
+  `sum/avg/min/max/count(<expr>)` via `BoilaSelItem` xtoks on agg
+  items; `GROUP BY <expr>` via parallel `group_xtoks` (keys
+  `?gN`). Bare columns unchanged. sum/avg require numeric result
+  (0A000 on text). 18-check boila_aexpr_test. Residual: no
+  DISTINCT in agg; GROUP BY expr vs SELECT expr matching is
+  value-based (first-row), not AST-identity. [HAVING expr → P11-30.]
+- **P11-30 — (FIXED) HAVING agg(expr) (Q-havx).** Parse accepts
+  `HAVING sum(sal+1) op lit`; exec matches projection slot or
+  synthetic HAVING-only slot. [multi-predicate → P11-31.]
+- **P11-31 — (FIXED) HAVING … AND|OR … (Q-havand).** `BoilaHavPred`
+  list + `hav_joins` (1=AND, 2=OR), left-associative; each pred
+  gets its own accumulate slot. `parse_having.baga`. boila_havx_test
+  covers AND/OR/expr mixes. Residual: no PG AND-over-OR precedence
+  (left-assoc only); no parentheses in HAVING; no non-agg HAVING
+  exprs; whole-table HAVING expr-agg without projection still 0A000.
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 
 ## Открити при P10
 
-- **G1 — perf gate 1M edges BFS d=3 < 100 ms не е измерен.** Functional
-  P10 е зелен; bulk seed bench чака (Q2 arena).
+- **G1 — (MEASURED) BFS d=3 gate.** `bench/boila/graph_bench.baga` +
+  `run_modality_benches.sh`: 100k chain + 100k skip edges — BFS d=3
+  **42 µs** (9 nodes) → **&lt; 100 ms OK**. Topology is shallow; 1M edge
+  seed not run (wall time). Residual: no dense high-branch 1M graph.
 - **G2 — (FIXED) DML sync + edge weight upsert.** `graph_sync_row`;
   G2b: same src→dst updates weight (simple graph). del removes first
   match. Residual: no true multi-edges; two data rows same endpoints
@@ -143,9 +183,11 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P9
 
-- **S5 — perf gate 1M точки / <50 ms не е измерен.** Functional P9 е
-  зелен (boila_ts_test); bulk seed + range+bucket bench чака chunked
-  insert (Q2).
+- **S5 — (MEASURED) time_bucket gate.** `bench/boila/ts_bench.baga`:
+  full-table `GROUP BY time_bucket` — **OK &lt; 50 ms up to ~10k pts**
+  (39 ms @10k); **FAIL @20k** (98 ms), **@100k 1.68 s**. PLAN 1M &lt; 50 ms
+  not met without time index. Results:
+  `bench/boila/results/modality-2026-08-10.md`.
 - **S6 — (FIXED) TTL sweeper flush + per-key purge.** `boila_ts_sweep`:
   flush then GET every data key of TTL tables (rocksbaga lazy-del on get).
   `boila_ttl_sweeper` / `BOILA_SWEEP_MS`. S6c: `BOILA_SWEEP_SYS_ROUNDS`
@@ -161,9 +203,10 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P8
 
-- **V2 — perf gate 100k×128d още не е измерен.** Functional P8 е зелен
-  (boila_vec_test); 100k seed + recall@10 bench чака chunked seed заради
-  arena OOM (Q2), моделът на FTS 20k.
+- **V2 — (MEASURED partial) kNN latency.** `bench/boila/vec_bench.baga`:
+  **10k×16d kNN L2 LIMIT 10 = 1.7 ms** (gate &lt; 20 ms **OK**). PLAN
+  100k×128d + recall@10 not measured (128d SQL literals + Q2 arena).
+  Residual: recall oracle; dim=128 bulk seed.
 - **V3 — (FIXED) metadata + PK-range pre-filter преди kNN.** `eq` по
   PK/secondary → cands; PK `>=`/`<=` → range scan cands or narrow eq
   set (`boila_knn_pref` / V3b). Non-PK range/eq → HNSW overfetch + V6

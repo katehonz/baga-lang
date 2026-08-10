@@ -1,0 +1,123 @@
+// parse_having.baga — HAVING clause: one or more agg predicates with AND/OR.
+// Q-havx + Q-havand (left-associative joins).
+
+import "token.baga"
+import "lexer.baga"
+import "ast.baga"
+import "parse_common.baga"
+import "../core/value.baga"
+import "std/str/str.baga"
+
+struct BoilaParseHav {
+    ok: i64,
+    preds: Vec<BoilaHavPred>,
+    joins: Vec<i64>,
+    pos: i64,
+    err: str,
+    state: str
+}
+
+fn boila_ph_fail(msg: str, state: str, pos: i64) -> BoilaParseHav {
+    let p: Vec<BoilaHavPred> = vec_new()
+    let j: Vec<i64> = vec_new()
+    return BoilaParseHav { ok: 0, preds: p, joins: j, pos: pos, err: msg, state: state }
+}
+
+// Parse one: agg(*) | agg(col) | agg(<expr>) op lit  starting at i (on agg name).
+// Returns pred + pos after the literal.
+fn boila_ph_one(l: BoilaLex, i: i64) -> BoilaParseHav {
+    let empty: Vec<BoilaHavPred> = vec_new()
+    let emptyj: Vec<i64> = vec_new()
+    let an = boila_ps_tok(l, i)
+    let kind = boila_ps_agg_kind(an.txt)
+    if an.kind != tok_ident() || kind == 0 {
+        return boila_ph_fail("очаквах агрегат в HAVING", "42601", i)
+    }
+    if boila_ps_tok(l, i + 1).kind != tok_lparen() {
+        return boila_ph_fail("очаквах '(' след агрегата в HAVING", "42601", i)
+    }
+    let arg = boila_ps_tok(l, i + 2)
+    let mut hcol = ""
+    let mut hkind = kind
+    let mut hxt: Vec<Token> = vec_new()
+    let mut p = i + 2
+    if arg.kind == tok_star() {
+        if kind != 1 {
+            return boila_ph_fail("HAVING с * — само count", "0A000", i)
+        }
+        p = i + 3
+    } else {
+        let nxt = boila_ps_tok(l, i + 3)
+        if arg.kind == tok_ident() && nxt.kind == tok_rparen() {
+            hcol = arg.txt
+            if kind == 1 {
+                hkind = 2
+            }
+            p = i + 3
+        } else {
+            let xe = boila_ps_expr_item(l, i + 2)
+            if xe.ok == 0 {
+                return boila_ph_fail(xe.err, xe.state, i)
+            }
+            hxt = xe.item.xtoks
+            if kind == 1 {
+                hkind = 2
+            }
+            p = xe.pos
+        }
+    }
+    if boila_ps_tok(l, p).kind != tok_rparen() {
+        return boila_ph_fail("очаквах ')' в HAVING агрегата", "42601", p)
+    }
+    p = p + 1
+    let op = boila_ps_tok(l, p)
+    if op.kind != tok_op() {
+        return boila_ph_fail("очаквах оператор в HAVING", "42601", p)
+    }
+    let hv = boila_ps_literal(l, p + 1)
+    if hv.ok == 0 {
+        return boila_ph_fail(hv.err, hv.state, p + 1)
+    }
+    if hv.v.tag != boila_v_i64() {
+        return boila_ph_fail("HAVING стойност — само цяло число", "0A000", p + 1)
+    }
+    let pred = boila_hav_pred(hkind, hcol, hxt, op.txt, hv.v.i)
+    let preds: Vec<BoilaHavPred> = vec_new()
+    vec_push(preds, pred)
+    return BoilaParseHav { ok: 1, preds: preds, joins: emptyj, pos: p + 2, err: "", state: "" }
+}
+
+// HAVING … [AND|OR HAVING-pred]*  — i is on first token after HAVING keyword.
+fn boila_parse_having(l: BoilaLex, i: i64) -> BoilaParseHav {
+    let first = boila_ph_one(l, i)
+    if first.ok == 0 {
+        return first
+    }
+    let mut preds = first.preds
+    let joins: Vec<i64> = vec_new()
+    let mut p = first.pos
+    let mut more = true
+    while more {
+        let jn = boila_ps_tok(l, p)
+        let mut join: i64 = 0
+        if tok_kw(jn, "and") == 1 {
+            join = 1
+        } else {
+            if tok_kw(jn, "or") == 1 {
+                join = 2
+            } else {
+                more = false
+            }
+        }
+        if more == true {
+            let nxt = boila_ph_one(l, p + 1)
+            if nxt.ok == 0 {
+                return nxt
+            }
+            vec_push(joins, join)
+            vec_push(preds, vec_get(nxt.preds, 0))
+            p = nxt.pos
+        }
+    }
+    return BoilaParseHav { ok: 1, preds: preds, joins: joins, pos: p, err: "", state: "" }
+}

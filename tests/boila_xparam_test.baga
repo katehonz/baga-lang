@@ -1,0 +1,205 @@
+// boila_xparam_test.baga — Q-xparam: $N inside expression spans
+// after prepared Bind (SELECT proj/WHERE, UPDATE SET/WHERE, ON CONFLICT).
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/api/pgwire_prep.baga"
+import "boilaDB/api/pgwire_bind.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() { return str_of_bytes(v.b) }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() { return int_to_str(v.i) }
+    if v.tag == boila_v_null() { return "null" }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_xparam_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_xparam_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, name TEXT, score BIGINT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let s0 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'alice', 10), (2, 'bob', 20), (3, 'carol', 30)")?
+    srv = s0.srv
+    check(fails, "seed", s0.ok == 1 && s0.id == 3)
+
+    // --- unit: subst + nparams ---
+    let st0 = boila_pg_try_sel("SELECT id + $1 FROM t WHERE upper(name) = $2")
+    check(fails, "try_sel_x", st0.kind == 1)
+    check(fails, "nparams_x", boila_pg_nparams(st0.sel) >= 2)
+    let v0: Vec<str> = vec_new()
+    vec_push(v0, "5")
+    vec_push(v0, "ALICE")
+    let n0: Vec<i64> = vec_new()
+    vec_push(n0, 0)
+    vec_push(n0, 0)
+    let b0 = boila_pg_bind_sel(st0.sel, v0, n0)
+    check(fails, "bind_no_param_tok", boila_pg_xtoks_max_param(vec_get(b0.items, 0).xtoks, 0) == 0)
+    check(fails, "bind_xw_clean", boila_pg_xtoks_max_param(b0.xw_toks, 0) == 0)
+
+    // --- SELECT projection expr + structural WHERE ---
+    let st1 = boila_pg_try_sel("SELECT id + $1 AS s FROM t WHERE id = $2")
+    check(fails, "try_proj", st1.kind == 1 && st1.sel.eq_param == 2)
+    let v1: Vec<str> = vec_new()
+    vec_push(v1, "100")
+    vec_push(v1, "1")
+    let n1: Vec<i64> = vec_new()
+    vec_push(n1, 0)
+    vec_push(n1, 0)
+    let sel1 = boila_pg_bind_sel(st1.sel, v1, n1)
+    let e1 = boila_server_exec_sel(srv, srv.session_txn, "boila", sel1)?
+    srv = e1.srv
+    srv.session_txn = e1.txn
+    check(fails, "sel_proj", e1.ok == 1 && vec_len(e1.res.rows) == 1 && cell(vec_get(e1.res.rows, 0), 0) == "101")
+
+    // --- SELECT WHERE expression (fn + param) ---
+    let st2 = boila_pg_try_sel("SELECT id, name FROM t WHERE length(name) = $1 ORDER BY id")
+    check(fails, "try_xw", st2.kind == 1 && st2.sel.has_xw == 1)
+    let v2: Vec<str> = vec_new()
+    vec_push(v2, "3")
+    let n2: Vec<i64> = vec_new()
+    vec_push(n2, 0)
+    let sel2 = boila_pg_bind_sel(st2.sel, v2, n2)
+    let e2 = boila_server_exec_sel(srv, srv.session_txn, "boila", sel2)?
+    srv = e2.srv
+    srv.session_txn = e2.txn
+    check(fails, "sel_xw", e2.ok == 1 && vec_len(e2.res.rows) == 1)
+    check(fails, "sel_xw_ids", cell(vec_get(e2.res.rows, 0), 0) == "2" && cell(vec_get(e2.res.rows, 0), 1) == "bob")
+
+    // --- UPDATE SET expr + structural WHERE ---
+    let stu = boila_pg_try_sel("UPDATE t SET score = score + $1, name = $2 || name WHERE id = $3")
+    check(fails, "try_upd", stu.kind == 3)
+    let vu: Vec<str> = vec_new()
+    vec_push(vu, "7")
+    vec_push(vu, "X-")
+    vec_push(vu, "1")
+    let nu: Vec<i64> = vec_new()
+    vec_push(nu, 0)
+    vec_push(nu, 0)
+    vec_push(nu, 0)
+    let upd = boila_pg_bind_upd(stu.upd, vu, nu)
+    let eu = boila_server_exec_upd(srv, srv.session_txn, "boila", upd)?
+    srv = eu.srv
+    srv.session_txn = eu.txn
+    check(fails, "upd_set", eu.ok == 1 && eu.id == 1)
+    let qu = boila_server_exec(srv, "boila", "SELECT name, score FROM t WHERE id = 1")?
+    srv = qu.srv
+    check(fails, "upd_val", qu.ok == 1 && cell(vec_get(qu.res.rows, 0), 0) == "X-alice" && cell(vec_get(qu.res.rows, 0), 1) == "17")
+
+    // --- UPDATE WHERE expr ---
+    let stu2 = boila_pg_try_sel("UPDATE t SET score = 0 WHERE upper(name) = $1")
+    let vu2: Vec<str> = vec_new()
+    vec_push(vu2, "BOB")
+    let nu2: Vec<i64> = vec_new()
+    vec_push(nu2, 0)
+    let upd2 = boila_pg_bind_upd(stu2.upd, vu2, nu2)
+    let eu2 = boila_server_exec_upd(srv, srv.session_txn, "boila", upd2)?
+    srv = eu2.srv
+    srv.session_txn = eu2.txn
+    check(fails, "upd_xw", eu2.ok == 1 && eu2.id == 1)
+    let qu2 = boila_server_exec(srv, "boila", "SELECT score FROM t WHERE id = 2")?
+    srv = qu2.srv
+    check(fails, "upd_xw_val", qu2.ok == 1 && cell(vec_get(qu2.res.rows, 0), 0) == "0")
+
+    // --- DELETE WHERE expr ---
+    let std = boila_pg_try_sel("DELETE FROM t WHERE score < $1 AND id > $2")
+    let vd: Vec<str> = vec_new()
+    vec_push(vd, "5")
+    vec_push(vd, "1")
+    let nd: Vec<i64> = vec_new()
+    vec_push(nd, 0)
+    vec_push(nd, 0)
+    let del = boila_pg_bind_del(std.del, vd, nd)
+    let ed = boila_server_exec_del(srv, srv.session_txn, "boila", del)?
+    srv = ed.srv
+    srv.session_txn = ed.txn
+    check(fails, "del_xw", ed.ok == 1 && ed.id == 1)
+    let qd = boila_server_exec(srv, "boila", "SELECT count(*) FROM t")?
+    srv = qd.srv
+    check(fails, "del_left", qd.ok == 1 && cell(vec_get(qd.res.rows, 0), 0) == "2")
+
+    // --- ON CONFLICT SET expr with $N ---
+    let sti = boila_pg_try_sel("INSERT INTO t (id, name, score) VALUES ($1, $2, $3) ON CONFLICT DO UPDATE SET score = score + $4, name = EXCLUDED.name")
+    check(fails, "try_oc", sti.kind == 2)
+    let vi: Vec<str> = vec_new()
+    vec_push(vi, "1")
+    vec_push(vi, "zara")
+    vec_push(vi, "0")
+    vec_push(vi, "3")
+    let ni: Vec<i64> = vec_new()
+    vec_push(ni, 0)
+    vec_push(ni, 0)
+    vec_push(ni, 0)
+    vec_push(ni, 0)
+    let ins = boila_pg_bind_ins(sti.ins, vi, ni)
+    let ei = boila_server_exec_ins(srv, srv.session_txn, "boila", ins)?
+    srv = ei.srv
+    srv.session_txn = ei.txn
+    check(fails, "oc_expr", ei.ok == 1 && ei.id == 1)
+    let qi = boila_server_exec(srv, "boila", "SELECT name, score FROM t WHERE id = 1")?
+    srv = qi.srv
+    check(fails, "oc_val", qi.ok == 1 && cell(vec_get(qi.res.rows, 0), 0) == "zara" && cell(vec_get(qi.res.rows, 0), 1) == "20")
+
+    // NULL param in expr
+    let stn = boila_pg_try_sel("SELECT coalesce(name, $1) FROM t WHERE id = 3")
+    let vn: Vec<str> = vec_new()
+    vec_push(vn, "")
+    let nn: Vec<i64> = vec_new()
+    vec_push(nn, 1)
+    let seln = boila_pg_bind_sel(stn.sel, vn, nn)
+    let en = boila_server_exec_sel(srv, srv.session_txn, "boila", seln)?
+    srv = en.srv
+    srv.session_txn = en.txn
+    check(fails, "null_param", en.ok == 1 && vec_len(en.res.rows) == 1 && cell(vec_get(en.res.rows, 0), 0) == "carol")
+
+    boila_server_close(srv)?
+    wipe_root(root)?
+
+    if vec_len(fails) == 0 {
+        print("boila_xparam_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_xparam_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

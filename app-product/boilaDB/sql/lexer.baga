@@ -216,7 +216,13 @@ fn boila_lex(src: str) -> BoilaLex {
                                                                                         vec_push(toks, token_new(tok_op(), "!="))
                                                                                         i = i + 2
                                                                                     } else {
-                                                                                        return BoilaLex { toks: toks, err: concat("непознат символ: ", chr(c)) }
+                                                                                        if c == 46 {
+                                                                                            // Q-oc-expr: EXCLUDED.col (and future qualifiers)
+                                                                                            vec_push(toks, token_new(tok_dot(), "."))
+                                                                                            i = i + 1
+                                                                                        } else {
+                                                                                            return BoilaLex { toks: toks, err: concat("непознат символ: ", chr(c)) }
+                                                                                        }
                                                                                     }
                                                                                 }
                                                                             }

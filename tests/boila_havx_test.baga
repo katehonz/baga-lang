@@ -1,0 +1,141 @@
+// boila_havx_test.baga — Q-havx: HAVING sum(expr) / HAVING outside SELECT.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() { return str_of_bytes(v.b) }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() { return int_to_str(v.i) }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_havx_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_havx_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE e (id BIGINT, dept TEXT, sal BIGINT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let s0 = boila_server_exec(srv, "boila", "INSERT INTO e (id, dept, sal) VALUES (1, 'eng', 100), (2, 'eng', 120), (3, 'hr', 90), (4, 'hr', 95)")?
+    srv = s0.srv
+    check(fails, "seed", s0.ok == 1 && s0.id == 4)
+
+    // legacy HAVING still works
+    let h0 = boila_server_exec(srv, "boila", "SELECT dept, count(*) FROM e GROUP BY dept HAVING count(*) >= 2 ORDER BY dept")?
+    srv = h0.srv
+    check(fails, "legacy_count", h0.ok == 1 && vec_len(h0.res.rows) == 2)
+
+    // HAVING sum(col) matching projection
+    let h1 = boila_server_exec(srv, "boila", "SELECT dept, sum(sal) AS s FROM e GROUP BY dept HAVING sum(sal) > 200 ORDER BY dept")?
+    srv = h1.srv
+    check(fails, "hav_sum_match", h1.ok == 1 && vec_len(h1.res.rows) == 1 && cell(vec_get(h1.res.rows, 0), 0) == "eng")
+
+    // HAVING sum(expr) matching projection sum(expr)
+    let h2 = boila_server_exec(srv, "boila", "SELECT dept, sum(sal + 1) AS s FROM e GROUP BY dept HAVING sum(sal + 1) >= 220 ORDER BY dept")?
+    srv = h2.srv
+    // eng: 222, hr: 187 → only eng
+    check(fails, "hav_expr_match", h2.ok == 1 && vec_len(h2.res.rows) == 1 && cell(vec_get(h2.res.rows, 0), 0) == "eng" && cell(vec_get(h2.res.rows, 0), 1) == "222")
+
+    // HAVING sum(expr) NOT in SELECT — extra accumulate slot
+    let h3 = boila_server_exec(srv, "boila", "SELECT dept, count(*) AS c FROM e GROUP BY dept HAVING sum(sal + 10) > 230 ORDER BY dept")?
+    srv = h3.srv
+    // eng: 110+130=240 > 230; hr: 100+105=205 — only eng
+    check(fails, "hav_expr_extra", h3.ok == 1 && vec_len(h3.res.rows) == 1 && cell(vec_get(h3.res.rows, 0), 0) == "eng" && cell(vec_get(h3.res.rows, 0), 1) == "2")
+
+    // HAVING min/max expr
+    let h4 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING max(id * 10) >= 40 ORDER BY dept")?
+    srv = h4.srv
+    // eng max id 2 → 20; hr max id 4 → 40 → only hr
+    check(fails, "hav_max_expr", h4.ok == 1 && vec_len(h4.res.rows) == 1 && cell(vec_get(h4.res.rows, 0), 0) == "hr")
+
+    // no groups pass
+    let h5 = boila_server_exec(srv, "boila", "SELECT dept, count(*) FROM e GROUP BY dept HAVING count(*) > 10")?
+    srv = h5.srv
+    check(fails, "hav_none", h5.ok == 1 && vec_len(h5.res.rows) == 0)
+
+    // errors
+    let e1 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING sum(nosuch) > 1")?
+    srv = e1.srv
+    check(fails, "err_bad_col", e1.ok == 0 && e1.state == "42703")
+
+    // HAVING without GROUP BY (whole table) — bare col still works
+    let h6 = boila_server_exec(srv, "boila", "SELECT count(*) FROM e HAVING count(*) = 4")?
+    srv = h6.srv
+    check(fails, "hav_no_group", h6.ok == 1 && vec_len(h6.res.rows) == 1 && cell(vec_get(h6.res.rows, 0), 0) == "4")
+
+    // --- Q-havand: multi-predicate AND / OR ---
+    // eng: count=2,sum=220; hr: count=2,sum=185
+    let a1 = boila_server_exec(srv, "boila", "SELECT dept, count(*), sum(sal) FROM e GROUP BY dept HAVING count(*) = 2 AND sum(sal) > 200 ORDER BY dept")?
+    srv = a1.srv
+    check(fails, "hav_and", a1.ok == 1 && vec_len(a1.res.rows) == 1 && cell(vec_get(a1.res.rows, 0), 0) == "eng")
+
+    let a2 = boila_server_exec(srv, "boila", "SELECT dept, sum(sal) FROM e GROUP BY dept HAVING sum(sal) > 210 OR sum(sal) < 190 ORDER BY dept")?
+    srv = a2.srv
+    // eng 220, hr 185 — both
+    check(fails, "hav_or", a2.ok == 1 && vec_len(a2.res.rows) == 2)
+
+    let a3 = boila_server_exec(srv, "boila", "SELECT dept, count(*) FROM e GROUP BY dept HAVING count(*) = 2 AND sum(sal + 1) >= 220 ORDER BY dept")?
+    srv = a3.srv
+    // eng 222, hr 187 — only eng
+    check(fails, "hav_and_expr", a3.ok == 1 && vec_len(a3.res.rows) == 1 && cell(vec_get(a3.res.rows, 0), 0) == "eng")
+
+    let a4 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING count(*) > 5 OR sum(sal) > 200 ORDER BY dept")?
+    srv = a4.srv
+    check(fails, "hav_or_mix", a4.ok == 1 && vec_len(a4.res.rows) == 1 && cell(vec_get(a4.res.rows, 0), 0) == "eng")
+
+    // three preds: left-assoc ((a AND b) OR c)
+    let a5 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING count(*) = 2 AND sum(sal) < 100 OR sum(sal) > 210 ORDER BY dept")?
+    srv = a5.srv
+    // eng: (T AND F) OR T = T; hr: (T AND F) OR F = F → only eng
+    check(fails, "hav_three", a5.ok == 1 && vec_len(a5.res.rows) == 1 && cell(vec_get(a5.res.rows, 0), 0) == "eng")
+
+    boila_server_close(srv)?
+    wipe_root(root)?
+
+    if vec_len(fails) == 0 {
+        print("boila_havx_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_havx_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

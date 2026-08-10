@@ -56,6 +56,10 @@ fn boila_agg_item_name(it: BoilaSelItem) -> str {
     if it.alias != "" {
         return it.alias
     }
+    // Q-aexpr: sum(sal+1) → "sum" (no column suffix)
+    if vec_len(it.xtoks) > 0 && it.col == "" {
+        return boila_agg_item_name_base(it.agg)
+    }
     if it.agg == 1 {
         return "count"
     }
@@ -74,6 +78,89 @@ fn boila_agg_item_name(it: BoilaSelItem) -> str {
     return concat("max_", it.col)
 }
 
+// Q-gexpr: SELECT list has scalar fn or projection-expression items
+// (not aggregate-argument xtoks).
+fn boila_agg_has_gexpr(sel: BoilaSel) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(sel.items) {
+        let it = vec_get(sel.items, i)
+        if it.agg == 0 && (it.sfn != "" || vec_len(it.xtoks) > 0) {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Q-gbyx: any GROUP BY expression keys?
+fn boila_agg_has_gbyx(sel: BoilaSel) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(sel.group_xtoks) {
+        if vec_len(vec_get(sel.group_xtoks, i)) > 0 {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// HAVING helpers → exec_agg_hav.baga (Q-havx / Q-havand).
+
+// Single aggregate cell from an accumulator slot.
+fn boila_agg_cell(acc: BoilaAggAcc, it: BoilaSelItem, a: i64) -> BoilaVal {
+    if it.agg == 1 || it.agg == 2 {
+        return boila_val_i64(vec_get(acc.cnt, a))
+    }
+    if it.agg == 3 {
+        if vec_get(acc.hasv, a) == 0 {
+            return boila_val_null()
+        }
+        return boila_val_i64(vec_get(acc.sum, a))
+    }
+    if it.agg == 4 {
+        let c = vec_get(acc.cnt, a)
+        if c == 0 {
+            return boila_val_null()
+        }
+        return boila_val_i64(vec_get(acc.sum, a) / c)
+    }
+    if it.agg == 5 {
+        if vec_get(acc.hasv, a) == 0 {
+            return boila_val_null()
+        }
+        return vec_get(acc.minv, a)
+    }
+    if vec_get(acc.hasv, a) == 0 {
+        return boila_val_null()
+    }
+    return vec_get(acc.maxv, a)
+}
+
+// Index of this agg item among agg_items (order of appearance).
+fn boila_agg_slot(agg_items: Vec<BoilaSelItem>, it: BoilaSelItem) -> i64 {
+    let mut a: i64 = 0
+    while a < vec_len(agg_items) {
+        let x = vec_get(agg_items, a)
+        if x.agg == it.agg && x.col == it.col && vec_len(x.xtoks) == vec_len(it.xtoks) {
+            return a
+        }
+        a = a + 1
+    }
+    return 0 - 1
+}
+
+// Дали group_col е в group_cols.
+fn boila_agg_in_group(sel: BoilaSel, col: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(sel.group_cols) {
+        if vec_get(sel.group_cols, i) == col {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 // Изходен ред на група: group стойности + агрегати.
 fn boila_agg_row(acc: BoilaAggAcc, gixs: Vec<i64>, agg_items: Vec<BoilaSelItem>, aixs: Vec<i64>) -> Vec<BoilaVal> {
     let out: Vec<BoilaVal> = vec_new()
@@ -89,41 +176,7 @@ fn boila_agg_row(acc: BoilaAggAcc, gixs: Vec<i64>, agg_items: Vec<BoilaSelItem>,
     }
     let mut a: i64 = 0
     while a < vec_len(agg_items) {
-        let it = vec_get(agg_items, a)
-        if it.agg == 1 || it.agg == 2 {
-            vec_push(out, boila_val_i64(vec_get(acc.cnt, a)))
-        } else {
-            if it.agg == 3 {
-                if vec_get(acc.hasv, a) == 0 {
-                    vec_push(out, boila_val_null())
-                } else {
-                    vec_push(out, boila_val_i64(vec_get(acc.sum, a)))
-                }
-            } else {
-                if it.agg == 4 {
-                    let c = vec_get(acc.cnt, a)
-                    if c == 0 {
-                        vec_push(out, boila_val_null())
-                    } else {
-                        vec_push(out, boila_val_i64(vec_get(acc.sum, a) / c))
-                    }
-                } else {
-                    if it.agg == 5 {
-                        if vec_get(acc.hasv, a) == 0 {
-                            vec_push(out, boila_val_null())
-                        } else {
-                            vec_push(out, vec_get(acc.minv, a))
-                        }
-                    } else {
-                        if vec_get(acc.hasv, a) == 0 {
-                            vec_push(out, boila_val_null())
-                        } else {
-                            vec_push(out, vec_get(acc.maxv, a))
-                        }
-                    }
-                }
-            }
-        }
+        vec_push(out, boila_agg_cell(acc, vec_get(agg_items, a), a))
         a = a + 1
     }
     return out

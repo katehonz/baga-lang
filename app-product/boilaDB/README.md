@@ -35,6 +35,13 @@ curl localhost:6570/health   # mode=mt-shard, live_conn; /ready, /metrics
 ## Tests
 
 ```bash
-./scripts/baga-test                                # discovers tests/**/*_test.baga (boila: 29 files)
+./scripts/baga-test                                # discovers tests/**/*_test.baga
 bash app-product/boilaDB/scripts/filesize.sh       # ≤ 400 lines per source file
+```
+
+## Modality benches (chunked seed — Q2 arena)
+
+```bash
+bash bench/boila/run_modality_benches.sh all       # ts / graph / vec
+# results: bench/boila/results/modality-2026-08-10.md
 ```

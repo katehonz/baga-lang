@@ -1,0 +1,176 @@
+// graph_bench.baga — P10/G1: bulk edges seed + BFS depth-3 gate.
+// Env: GR_BENCH_PHASE=write|query  GR_BENCH_TOTAL  GR_BENCH_CHUNK  GR_BENCH_NCHUNKS
+// Graph: chain i→i+1 plus skip edges i→i+3 (dense enough for d=3 BFS).
+// Gate (PLAN): 1M edges BFS d=3 < 100 ms.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn wipe_shard_path(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 400 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    let root = "/tmp/baga_boila_graph_bench"
+    let mut phase = env("GR_BENCH_PHASE")
+    if phase == "" {
+        phase = "write"
+    }
+
+    if phase == "query" {
+        let mut srv = boila_server_open(root, 2, 256, 4, 4)?
+        // warm
+        let w = boila_server_exec(srv, "boila", "WITH RECURSIVE cte(node, depth) AS (SELECT 0, 0 UNION ALL SELECT dst, depth + 1 FROM edges, cte WHERE src = node AND depth < 3) SELECT node FROM cte")?
+        srv = w.srv
+        if w.ok == 0 {
+            print(concat("query setup fail: ", w.err))
+            return 1
+        }
+        let t0 = monotonic_us()?
+        let mut reps: i64 = 0
+        let mut nrows: i64 = 0
+        while reps < 10 {
+            let q = boila_server_exec(srv, "boila", "WITH RECURSIVE cte(node, depth) AS (SELECT 0, 0 UNION ALL SELECT dst, depth + 1 FROM edges, cte WHERE src = node AND depth < 3) SELECT node FROM cte")?
+            srv = q.srv
+            nrows = vec_len(q.res.rows)
+            reps = reps + 1
+        }
+        let t1 = monotonic_us()?
+        let us = (t1 - t0) / 10
+        print(concat(concat("BFS d=3 from 0: ", int_to_str(us)), concat(" us (", concat(int_to_str(nrows), " nodes)"))))
+        let mut verdict = "FAIL (gate < 100000 us)"
+        if us < 100000 {
+            verdict = "OK — < 100 ms"
+        }
+        print(concat("gate: ", verdict))
+        boila_server_close(srv)?
+        return 0
+    }
+
+    let mut chunk: i64 = 0
+    if env("GR_BENCH_CHUNK") != "" {
+        chunk = parse_int(env("GR_BENCH_CHUNK"))
+    }
+    let mut nchunks: i64 = 20
+    if env("GR_BENCH_NCHUNKS") != "" {
+        nchunks = parse_int(env("GR_BENCH_NCHUNKS"))
+    }
+    // total = number of chain edges (nodes ≈ total+1); +skip edges in same pass
+    let mut total: i64 = 100000
+    if env("GR_BENCH_TOTAL") != "" {
+        total = parse_int(env("GR_BENCH_TOTAL"))
+    }
+    let per = total / nchunks
+    let lo = chunk * per
+    let mut hi = lo + per
+    if chunk == nchunks - 1 {
+        hi = total
+    }
+
+    if chunk == 0 {
+        wipe_root(root)?
+    }
+    let mut srv = boila_server_open(root, 2, 256, 4, 4)?
+    if chunk == 0 {
+        let c1 = boila_server_exec(srv, "boila", "CREATE TABLE edges (id BIGINT, src BIGINT, dst BIGINT, w BIGINT, PRIMARY KEY (id))")?
+        srv = c1.srv
+        if c1.ok == 0 {
+            print(concat("setup fail: ", c1.err))
+            return 1
+        }
+        // GRAPH after full seed (chunk nchunks): create in last write or separate; create empty then DML sync
+        let g1 = boila_server_exec(srv, "boila", "CREATE GRAPH g1 ON edges (src, dst, w)")?
+        srv = g1.srv
+        if g1.ok == 0 {
+            print(concat("graph fail: ", g1.err))
+            return 1
+        }
+    }
+    let batch: i64 = 200
+    let t0 = monotonic_us()?
+    let mut base = lo
+    // edge id: chain uses id=base, skip uses id=total+base
+    while base < hi {
+        let mut n = batch
+        if base + n > hi {
+            n = hi - base
+        }
+        let mut sql = "INSERT INTO edges (id, src, dst, w) VALUES "
+        let mut i: i64 = 0
+        while i < n {
+            if i > 0 {
+                sql = concat(sql, ", ")
+            }
+            let e = base + i
+            let src = e
+            let dst = e + 1
+            sql = concat(sql, "(")
+            sql = concat(sql, int_to_str(e))
+            sql = concat(sql, ", ")
+            sql = concat(sql, int_to_str(src))
+            sql = concat(sql, ", ")
+            sql = concat(sql, int_to_str(dst))
+            sql = concat(sql, ", 1)")
+            i = i + 1
+        }
+        let r = boila_server_exec(srv, "boila", sql)?
+        srv = r.srv
+        if r.ok == 0 {
+            print(concat("insert chain fail at ", concat(int_to_str(base), concat(": ", r.err))))
+            return 1
+        }
+        // skip edges: id = total + e
+        sql = "INSERT INTO edges (id, src, dst, w) VALUES "
+        i = 0
+        while i < n {
+            if i > 0 {
+                sql = concat(sql, ", ")
+            }
+            let e = base + i
+            let src = e
+            let dst = e + 3
+            let eid = total + e
+            sql = concat(sql, "(")
+            sql = concat(sql, int_to_str(eid))
+            sql = concat(sql, ", ")
+            sql = concat(sql, int_to_str(src))
+            sql = concat(sql, ", ")
+            sql = concat(sql, int_to_str(dst))
+            sql = concat(sql, ", 1)")
+            i = i + 1
+        }
+        let r2 = boila_server_exec(srv, "boila", sql)?
+        srv = r2.srv
+        if r2.ok == 0 {
+            print(concat("insert skip fail at ", concat(int_to_str(base), concat(": ", r2.err))))
+            return 1
+        }
+        base = base + batch
+    }
+    let t1 = monotonic_us()?
+    print(concat(concat(concat(concat(concat("chunk ", int_to_str(chunk)), concat(": edges ", int_to_str(lo))), concat("..", int_to_str(hi))), concat(" (+skip) in ", int_to_str((t1 - t0) / 1000))), " ms"))
+    boila_server_close(srv)?
+    return 0
+}

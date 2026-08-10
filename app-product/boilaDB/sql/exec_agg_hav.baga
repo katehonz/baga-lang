@@ -1,0 +1,190 @@
+// exec_agg_hav.baga — Q-havx / Q-havand: HAVING slots + multi-pred eval.
+
+import "../core/value.baga"
+import "../catalog/schema.baga"
+import "ast.baga"
+import "token.baga"
+import "exec_scan.baga"
+import "exec_agg_extra.baga"
+import "std/str/str.baga"
+
+// Token-span equality (HAVING expr-agg ↔ projection match).
+fn boila_xtoks_eq(a: Vec<Token>, b: Vec<Token>) -> i64 {
+    if vec_len(a) != vec_len(b) {
+        return 0
+    }
+    let mut i: i64 = 0
+    while i < vec_len(a) {
+        let ta = vec_get(a, i)
+        let tb = vec_get(b, i)
+        if ta.kind != tb.kind || ta.txt != tb.txt {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+struct BoilaHavVal {
+    ok: i64,
+    v: i64
+}
+
+fn boila_hav_pass(op: str, hv: i64, want: i64) -> i64 {
+    if op == "=" && hv == want { return 1 }
+    if op == ">=" && hv >= want { return 1 }
+    if op == "<=" && hv <= want { return 1 }
+    if op == ">" && hv > want { return 1 }
+    if op == "<" && hv < want { return 1 }
+    if op == "<>" && hv != want { return 1 }
+    if op == "!=" && hv != want { return 1 }
+    return 0
+}
+
+fn boila_hav_slot_val(acc: BoilaAggAcc, hkind: i64, hix: i64) -> BoilaHavVal {
+    if hkind == 1 {
+        return BoilaHavVal { ok: 1, v: acc.n }
+    }
+    if hkind == 2 {
+        return BoilaHavVal { ok: 1, v: vec_get(acc.cnt, hix) }
+    }
+    if vec_get(acc.hasv, hix) == 0 {
+        return BoilaHavVal { ok: 0, v: 0 }
+    }
+    if hkind == 3 {
+        return BoilaHavVal { ok: 1, v: vec_get(acc.sum, hix) }
+    }
+    if hkind == 4 {
+        let c = vec_get(acc.cnt, hix)
+        if c == 0 {
+            return BoilaHavVal { ok: 0, v: 0 }
+        }
+        return BoilaHavVal { ok: 1, v: vec_get(acc.sum, hix) / c }
+    }
+    if hkind == 5 {
+        return BoilaHavVal { ok: 1, v: vec_get(acc.minv, hix).i }
+    }
+    return BoilaHavVal { ok: 1, v: vec_get(acc.maxv, hix).i }
+}
+
+struct BoilaHavSetup {
+    ok: i64,
+    err: str,
+    state: str,
+    items: Vec<BoilaSelItem>,
+    aixs: Vec<i64>,
+    slots: Vec<i64>,
+    n_proj: i64
+}
+
+fn boila_hav_setup(cols: Vec<BoilaColDef>, sel: BoilaSel, items0: Vec<BoilaSelItem>, aixs0: Vec<i64>) -> BoilaHavSetup {
+    let n_proj = vec_len(items0)
+    let mut items = items0
+    let mut aixs = aixs0
+    let slots: Vec<i64> = vec_new()
+    if sel.has_having == 0 {
+        return BoilaHavSetup { ok: 1, err: "", state: "", items: items, aixs: aixs, slots: slots, n_proj: n_proj }
+    }
+    let mut hi: i64 = 0
+    while hi < vec_len(sel.hav_preds) {
+        let hp = vec_get(sel.hav_preds, hi)
+        let mut slot: i64 = 0 - 1
+        if hp.agg != 1 {
+            let mut a: i64 = 0
+            while a < vec_len(items) {
+                let it = vec_get(items, a)
+                if it.agg == hp.agg {
+                    if vec_len(hp.xtoks) > 0 {
+                        if boila_xtoks_eq(it.xtoks, hp.xtoks) == 1 {
+                            slot = a
+                        }
+                    } else {
+                        if it.col == hp.col && vec_len(it.xtoks) == 0 {
+                            slot = a
+                        }
+                    }
+                }
+                a = a + 1
+            }
+            if slot < 0 {
+                if vec_len(hp.xtoks) > 0 {
+                    vec_push(items, boila_sel_item_agg_x(hp.agg, hp.xtoks))
+                    vec_push(aixs, 0 - 2)
+                } else {
+                    let ix = boila_col_idx_of(cols, hp.col)
+                    if ix < 0 {
+                        return BoilaHavSetup { ok: 0, err: concat("HAVING колона '", concat(hp.col, "' не съществува")), state: "42703", items: items, aixs: aixs, slots: slots, n_proj: n_proj }
+                    }
+                    if hp.agg == 3 || hp.agg == 4 {
+                        let cd = vec_get(cols, ix)
+                        if cd.typ != boila_v_i64() && cd.typ != boila_v_ts() {
+                            return BoilaHavSetup { ok: 0, err: "HAVING sum/avg само върху BIGINT", state: "0A000", items: items, aixs: aixs, slots: slots, n_proj: n_proj }
+                        }
+                    }
+                    vec_push(items, boila_sel_item_agg(hp.agg, hp.col))
+                    vec_push(aixs, ix)
+                }
+                slot = vec_len(items) - 1
+            }
+        }
+        vec_push(slots, slot)
+        hi = hi + 1
+    }
+    return BoilaHavSetup { ok: 1, err: "", state: "", items: items, aixs: aixs, slots: slots, n_proj: n_proj }
+}
+
+struct BoilaHavEmit {
+    ok: i64,
+    err: str,
+    state: str,
+    emit: i64
+}
+
+fn boila_hav_eval(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, cols: Vec<BoilaColDef>, brows: Vec<Vec<BoilaVal>>) -> BoilaHavEmit {
+    if sel.has_having == 0 {
+        return BoilaHavEmit { ok: 1, err: "", state: "", emit: 1 }
+    }
+    let mut acc_pass: i64 = 0
+    let mut hi: i64 = 0
+    while hi < vec_len(sel.hav_preds) {
+        let hp = vec_get(sel.hav_preds, hi)
+        let slot = vec_get(slots, hi)
+        let mut one: i64 = 0
+        if hp.agg == 1 {
+            one = boila_hav_pass(hp.op, acc.n, hp.val)
+        } else {
+            if slot < 0 {
+                if vec_len(sel.group_cols) > 0 {
+                    return BoilaHavEmit { ok: 0, err: "HAVING агрегат извън проекцията", state: "0A000", emit: 0 }
+                }
+                if vec_len(hp.xtoks) > 0 {
+                    return BoilaHavEmit { ok: 0, err: "HAVING expr-agg без GROUP BY изисква проекция", state: "0A000", emit: 0 }
+                }
+                let ex = boila_agg_extra(cols, brows, hp.agg, hp.col)
+                if ex.ok == 0 {
+                    return BoilaHavEmit { ok: 0, err: ex.err, state: ex.state, emit: 0 }
+                }
+                if ex.has == 1 {
+                    one = boila_hav_pass(hp.op, ex.val, hp.val)
+                }
+            } else {
+                let hv = boila_hav_slot_val(acc, hp.agg, slot)
+                if hv.ok == 1 {
+                    one = boila_hav_pass(hp.op, hv.v, hp.val)
+                }
+            }
+        }
+        if hi == 0 {
+            acc_pass = one
+        } else {
+            let jn = vec_get(sel.hav_joins, hi - 1)
+            if jn == 1 {
+                if acc_pass == 1 && one == 1 { acc_pass = 1 } else { acc_pass = 0 }
+            } else {
+                if acc_pass == 1 || one == 1 { acc_pass = 1 } else { acc_pass = 0 }
+            }
+        }
+        hi = hi + 1
+    }
+    return BoilaHavEmit { ok: 1, err: "", state: "", emit: acc_pass }
+}

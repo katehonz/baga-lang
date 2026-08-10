@@ -1,0 +1,146 @@
+// boila_oc_expr_test.baga — Q-oc-expr: ON CONFLICT DO UPDATE SET
+// col = <expr> over OLD row, plus EXCLUDED.col from the proposed insert.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() || v.tag == boila_v_ts() {
+        return int_to_str(v.i)
+    }
+    if v.tag == boila_v_bool() {
+        if v.i == 0 { return "f" }
+        return "t"
+    }
+    if v.tag == boila_v_null() {
+        return "null"
+    }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_oc_expr_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_oc_expr_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, name TEXT, score BIGINT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let s0 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'alice', 10), (2, 'bob', 20)")?
+    srv = s0.srv
+    check(fails, "seed", s0.ok == 1 && s0.id == 2)
+
+    // literal SET still works
+    let l1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'x', 0) ON CONFLICT DO UPDATE SET score = 99 RETURNING score")?
+    srv = l1.srv
+    check(fails, "lit_set", l1.ok == 1 && l1.id == 1 && cell(vec_get(l1.res.rows, 0), 0) == "99")
+
+    // OLD-row arithmetic
+    let e1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'x', 0) ON CONFLICT DO UPDATE SET score = score + 1 RETURNING score")?
+    srv = e1.srv
+    check(fails, "old_arith", e1.ok == 1 && e1.id == 1 && cell(vec_get(e1.res.rows, 0), 0) == "100")
+
+    // OLD-row scalar fn
+    let e2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (2, 'x', 0) ON CONFLICT DO UPDATE SET name = upper(name) RETURNING name")?
+    srv = e2.srv
+    check(fails, "old_upper", e2.ok == 1 && e2.id == 1 && cell(vec_get(e2.res.rows, 0), 0) == "BOB")
+
+    // EXCLUDED.col — take proposed insert values
+    let e3 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'zara', 7) ON CONFLICT DO UPDATE SET name = EXCLUDED.name, score = EXCLUDED.score RETURNING name, score")?
+    srv = e3.srv
+    check(fails, "excluded_cols", e3.ok == 1 && e3.id == 1 && cell(vec_get(e3.res.rows, 0), 0) == "zara" && cell(vec_get(e3.res.rows, 0), 1) == "7")
+
+    // mix: EXCLUDED + OLD
+    let e4 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (2, 'pat', 5) ON CONFLICT DO UPDATE SET name = EXCLUDED.name || '-' || name, score = score + EXCLUDED.score RETURNING name, score")?
+    srv = e4.srv
+    check(fails, "mix_excl_old", e4.ok == 1 && e4.id == 1 && cell(vec_get(e4.res.rows, 0), 0) == "pat-BOB" && cell(vec_get(e4.res.rows, 0), 1) == "25")
+
+    // CASE on OLD (score is 7 → ELSE branch keeps 7)
+    let e5 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'x', 0) ON CONFLICT DO UPDATE SET score = CASE WHEN score < 5 THEN 0 ELSE score END RETURNING score")?
+    srv = e5.srv
+    check(fails, "case_old", e5.ok == 1 && e5.id == 1 && cell(vec_get(e5.res.rows, 0), 0) == "7")
+
+    // multi-row: one insert, one conflict update (id=1 score 7→8)
+    let e6 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (3, 'carol', 30), (1, 'nope', 1) ON CONFLICT DO UPDATE SET score = score + 1 RETURNING id, score")?
+    srv = e6.srv
+    check(fails, "multi_affected", e6.ok == 1 && e6.id == 2)
+
+    // persistence
+    let q1 = boila_server_exec(srv, "boila", "SELECT id, name, score FROM t ORDER BY id")?
+    srv = q1.srv
+    check(fails, "select_n", q1.ok == 1 && vec_len(q1.res.rows) == 3)
+    check(fails, "row1", cell(vec_get(q1.res.rows, 0), 0) == "1" && cell(vec_get(q1.res.rows, 0), 1) == "zara" && cell(vec_get(q1.res.rows, 0), 2) == "8")
+    check(fails, "row2", cell(vec_get(q1.res.rows, 1), 0) == "2" && cell(vec_get(q1.res.rows, 1), 1) == "pat-BOB" && cell(vec_get(q1.res.rows, 1), 2) == "25")
+    check(fails, "row3", cell(vec_get(q1.res.rows, 2), 0) == "3" && cell(vec_get(q1.res.rows, 2), 1) == "carol" && cell(vec_get(q1.res.rows, 2), 2) == "30")
+
+    // errors
+    let x1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'a', 1) ON CONFLICT DO UPDATE SET name = foo(name)")?
+    srv = x1.srv
+    check(fails, "err_unknown_fn", x1.ok == 0 && x1.state == "42883")
+    let x2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'a', 1) ON CONFLICT DO UPDATE SET score = name")?
+    srv = x2.srv
+    check(fails, "err_type", x2.ok == 0 && x2.state == "42804")
+    // bare EXCLUDED without .col is not rewritten → unknown column
+    let x3 = boila_server_exec(srv, "boila", "INSERT INTO t (id, name, score) VALUES (1, 'a', 1) ON CONFLICT DO UPDATE SET name = EXCLUDED")?
+    srv = x3.srv
+    check(fails, "err_bare_excluded", x3.ok == 0)
+
+    // restart durability
+    boila_server_close(srv)?
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "reopen", srv2.ok == 1)
+    let q2 = boila_server_exec(srv2, "boila", "SELECT score FROM t WHERE id = 2")?
+    srv2 = q2.srv
+    check(fails, "restart", q2.ok == 1 && vec_len(q2.res.rows) == 1 && cell(vec_get(q2.res.rows, 0), 0) == "25")
+    boila_server_close(srv2)?
+    wipe_root(root)?
+
+    if vec_len(fails) == 0 {
+        print("boila_oc_expr_test: all passed")
+        return 0
+    }
+    print(concat(concat("boila_oc_expr_test: FAILED (", int_to_str(vec_len(fails))), ")"))
+    return 1
+}

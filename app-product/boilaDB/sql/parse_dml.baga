@@ -251,6 +251,17 @@ fn boila_parse_update(l: BoilaLex) -> BoilaParseUpd {
         if vt.kind == tok_ident() && (tok_kw(vt, "null") == 1 || tok_kw(vt, "true") == 1 || tok_kw(vt, "false") == 1) {
             is_lit = 1
         }
+        // Q-xparam: bare lit only if nothing continues the expression
+        // (so `$1 || name` / `1 + col` take the expr path).
+        if is_lit == 1 {
+            let aft = boila_ps_tok(l, i + 3)
+            if aft.kind == tok_op() || aft.kind == tok_star() || aft.kind == tok_lparen() {
+                is_lit = 0
+            }
+            if aft.kind == tok_ident() && (tok_kw(aft, "and") == 1 || tok_kw(aft, "or") == 1 || tok_kw(aft, "between") == 1 || tok_kw(aft, "in") == 1 || tok_kw(aft, "like") == 1 || tok_kw(aft, "ilike") == 1 || tok_kw(aft, "is") == 1 || tok_kw(aft, "not") == 1) {
+                is_lit = 0
+            }
+        }
         if is_lit == 1 {
             let lit = boila_ps_literal(l, i + 2)
             if lit.ok == 0 {

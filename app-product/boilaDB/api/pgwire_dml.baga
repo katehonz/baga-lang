@@ -1,10 +1,8 @@
-// pgwire_dml.baga — W2 prepared INSERT/UPDATE/DELETE AST bind + exec.
+// pgwire_dml.baga — W2 prepared INSERT/UPDATE/DELETE execute (auto-commit).
+// Bind helpers live in pgwire_bind.baga (Q-xparam + filesize §9).
 
 import "pgwire_enc.baga"
-import "../sql/lexer.baga"
-import "../sql/token.baga"
-import "../sql/parse_insert.baga"
-import "../sql/parse_dml.baga"
+import "pgwire_bind.baga"
 import "../sql/ast.baga"
 import "../sql/exec_dml.baga"
 import "../sql/exec_modify.baga"
@@ -19,62 +17,6 @@ import "../txn/mvcc.baga"
 import "../core/value.baga"
 import "serve_mt.baga"
 import "std/str/str.baga"
-
-fn boila_pg_bind_one(v: BoilaVal, vals: Vec<str>, nulls: Vec<i64>) -> BoilaVal {
-    if boila_is_param(v) == 1 {
-        return boila_pg_pick(vals, nulls, v.i)
-    }
-    return v
-}
-
-fn boila_pg_bind_ins(ins: BoilaIns, vals: Vec<str>, nulls: Vec<i64>) -> BoilaIns {
-    let mut out = ins
-    let nrows: Vec<Vec<BoilaVal>> = vec_new()
-    let mut r: i64 = 0
-    while r < vec_len(ins.rows) {
-        let src = vec_get(ins.rows, r)
-        let row: Vec<BoilaVal> = vec_new()
-        let mut c: i64 = 0
-        while c < vec_len(src) {
-            vec_push(row, boila_pg_bind_one(vec_get(src, c), vals, nulls))
-            c = c + 1
-        }
-        vec_push(nrows, row)
-        r = r + 1
-    }
-    out.rows = nrows
-    let ocv: Vec<BoilaVal> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(ins.oc_vals) {
-        vec_push(ocv, boila_pg_bind_one(vec_get(ins.oc_vals, i), vals, nulls))
-        i = i + 1
-    }
-    out.oc_vals = ocv
-    return out
-}
-
-fn boila_pg_bind_upd(upd: BoilaUpd, vals: Vec<str>, nulls: Vec<i64>) -> BoilaUpd {
-    let mut out = upd
-    let sv: Vec<BoilaVal> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(upd.set_vals) {
-        vec_push(sv, boila_pg_bind_one(vec_get(upd.set_vals, i), vals, nulls))
-        i = i + 1
-    }
-    out.set_vals = sv
-    out.pk_eq = boila_pg_bind_one(upd.pk_eq, vals, nulls)
-    out.pk_lo = boila_pg_bind_one(upd.pk_lo, vals, nulls)
-    out.pk_hi = boila_pg_bind_one(upd.pk_hi, vals, nulls)
-    return out
-}
-
-fn boila_pg_bind_del(del: BoilaDel, vals: Vec<str>, nulls: Vec<i64>) -> BoilaDel {
-    let mut out = del
-    out.pk_eq = boila_pg_bind_one(del.pk_eq, vals, nulls)
-    out.pk_lo = boila_pg_bind_one(del.pk_lo, vals, nulls)
-    out.pk_hi = boila_pg_bind_one(del.pk_hi, vals, nulls)
-    return out
-}
 
 fn boila_pg_run_del(s: BoilaStore, txn: BoilaTxn, db: str, del: BoilaDel) -> BoilaSqlOut !IO !Time !Par {
     let ct = boila_cat_by_name_txn(s, txn, del.table)?
@@ -140,7 +82,6 @@ fn boila_mt_exec_del(pack: i64, txn: BoilaTxn, db: str, del: BoilaDel) -> BoilaS
     }
 }
 
-// Run INSERT with auto-commit if needed (same as exec_sql insert path).
 fn boila_pg_run_ins(s: BoilaStore, txn: BoilaTxn, db: str, ins: BoilaIns) -> BoilaSqlOut !IO !Time !Par {
     let ct = boila_cat_by_name_txn(s, txn, ins.table)?
     s = ct.s

@@ -74,7 +74,7 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
     }
 
     if has_agg == true || sel.has_group == 1 {
-        let ag = boila_agg_exec(cols, rows, sel)
+        let ag = boila_agg_exec(cols, rows, sel)?
         if ag.ok == 0 {
             return boila_exec_fail(s, txn, ag.err, ag.state)
         }

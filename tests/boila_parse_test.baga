@@ -50,7 +50,7 @@ fn main() -> i64 !Par {
     let p5a = psel("SELECT DISTINCT dept FROM emp ORDER BY dept LIMIT 2 OFFSET 1")
     check(fails, "p5_distinct_order_offset", p5a.ok == 1 && p5a.sel.distinct == 1 && p5a.sel.has_order == 1 && vec_len(p5a.sel.ord_cols) == 1 && p5a.sel.offset == 1)
     let p5b = psel("SELECT dept, count(*), sum(salary) FROM emp GROUP BY dept HAVING count(*) >= 2")
-    check(fails, "p5_group_having", p5b.ok == 1 && p5b.sel.has_group == 1 && vec_len(p5b.sel.group_cols) == 1 && p5b.sel.has_having == 1 && p5b.sel.hav_agg == 1 && p5b.sel.hav_val == 2)
+    check(fails, "p5_group_having", p5b.ok == 1 && p5b.sel.has_group == 1 && vec_len(p5b.sel.group_cols) == 1 && p5b.sel.has_having == 1 && vec_len(p5b.sel.hav_preds) == 1 && vec_get(p5b.sel.hav_preds, 0).agg == 1 && vec_get(p5b.sel.hav_preds, 0).val == 2)
     let p5c = psel("SELECT name, loc FROM emp JOIN dep ON dept = code")
     check(fails, "p5_join", p5c.ok == 1 && p5c.sel.has_join == 1 && p5c.sel.join_kind == 1 && p5c.sel.join_table == "dep" && p5c.sel.join_lcol == "dept" && p5c.sel.join_rcol == "code")
     let p5d = psel("SELECT name FROM emp LEFT JOIN dep ON dept = code")

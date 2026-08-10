@@ -11,8 +11,12 @@ import "../core/row.baga"
 import "../catalog/schema.baga"
 import "../ts/time_bucket.baga"
 import "ast.baga"
+import "token.baga"
 import "exec_scan.baga"
 import "exec_agg_extra.baga"
+import "exec_agg_gexpr.baga"
+import "exec_agg_hav.baga"
+import "exec_xw.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
@@ -27,25 +31,40 @@ fn boila_agg_fail(msg: str, state: str) -> BoilaAggOut {
     return BoilaAggOut { ok: 0, err: msg, state: state, res: boila_result_empty() }
 }
 
-fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSel) -> BoilaAggOut {
-    // group колони → индекси (time_bucket → bucket_col idx)
+fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSel) -> BoilaAggOut !Time {
+    // group колони → индекси; -1 = Q-gbyx expression key
     let gixs: Vec<i64> = vec_new()
     let mut i: i64 = 0
     while i < vec_len(sel.group_cols) {
         let nm = vec_get(sel.group_cols, i)
+        let mut gxt: Vec<Token> = vec_new()
+        if i < vec_len(sel.group_xtoks) {
+            gxt = vec_get(sel.group_xtoks, i)
+        }
         let mut ix: i64 = 0 - 1
-        if nm == "time_bucket" && sel.bucket_iv > 0 {
-            ix = boila_col_idx_of(cols, sel.bucket_col)
-            if ix < 0 {
-                return boila_agg_fail(concat("time_bucket колона '", concat(sel.bucket_col, "' не съществува")), "42703")
-            }
+        if vec_len(gxt) > 0 {
+            ix = 0 - 1
         } else {
-            ix = boila_col_idx_of(cols, nm)
-            if ix < 0 {
-                return boila_agg_fail(concat("GROUP BY колона '", concat(nm, "' не съществува")), "42703")
+            if nm == "time_bucket" && sel.bucket_iv > 0 {
+                ix = boila_col_idx_of(cols, sel.bucket_col)
+                if ix < 0 {
+                    return boila_agg_fail(concat("time_bucket колона '", concat(sel.bucket_col, "' не съществува")), "42703")
+                }
+            } else {
+                ix = boila_col_idx_of(cols, nm)
+                if ix < 0 {
+                    return boila_agg_fail(concat("GROUP BY колона '", concat(nm, "' не съществува")), "42703")
+                }
             }
         }
         vec_push(gixs, ix)
+        i = i + 1
+    }
+    // bind names for group/agg expressions
+    let xnames: Vec<str> = vec_new()
+    i = 0
+    while i < vec_len(cols) {
+        vec_push(xnames, vec_get(cols, i).name)
         i = i + 1
     }
     // P9: материализирай bucket стойностите в копие на редовете
@@ -74,9 +93,9 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
         }
         brows = nr
     }
-    // агрегатни колони → индекси (+ типова проверка за sum/avg)
-    let aixs: Vec<i64> = vec_new()
-    let agg_items: Vec<BoilaSelItem> = vec_new()
+    // агрегатни колони → индекси (-2 = Q-aexpr; -1 = count(*))
+    let mut aixs: Vec<i64> = vec_new()
+    let mut agg_items: Vec<BoilaSelItem> = vec_new()
     i = 0
     while i < vec_len(sel.items) {
         let it = vec_get(sel.items, i)
@@ -84,60 +103,102 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
             if it.agg == 1 {
                 vec_push(aixs, 0 - 1)   // count(*)
             } else {
-                let ix = boila_col_idx_of(cols, it.col)
-                if ix < 0 {
-                    return boila_agg_fail(concat("агрегатна колона '", concat(it.col, "' не съществува")), "42703")
-                }
-                if it.agg == 3 || it.agg == 4 {
-                    let cd = vec_get(cols, ix)
-                    if cd.typ != boila_v_i64() && cd.typ != boila_v_ts() {
-                        return boila_agg_fail(concat("sum/avg само върху BIGINT колона ('", concat(it.col, "')")), "0A000")
+                if vec_len(it.xtoks) > 0 {
+                    // Q-aexpr: sum(expr) / count(expr) / …
+                    vec_push(aixs, 0 - 2)
+                } else {
+                    let ix = boila_col_idx_of(cols, it.col)
+                    if ix < 0 {
+                        return boila_agg_fail(concat("агрегатна колона '", concat(it.col, "' не съществува")), "42703")
                     }
+                    if it.agg == 3 || it.agg == 4 {
+                        let cd = vec_get(cols, ix)
+                        if cd.typ != boila_v_i64() && cd.typ != boila_v_ts() {
+                            return boila_agg_fail(concat("sum/avg само върху BIGINT колона ('", concat(it.col, "')")), "0A000")
+                        }
+                    }
+                    vec_push(aixs, ix)
                 }
-                vec_push(aixs, ix)
             }
             vec_push(agg_items, it)
         }
         i = i + 1
     }
+    // Q-havx/Q-havand: attach HAVING-only slots
+    let hs = boila_hav_setup(cols, sel, agg_items, aixs)
+    if hs.ok == 0 {
+        return boila_agg_fail(hs.err, hs.state)
+    }
+    agg_items = hs.items
+    aixs = hs.aixs
+    let hav_slots = hs.slots
+    let n_proj_aggs = hs.n_proj
     let nitems = vec_len(agg_items)
-    // изходни колони: group + агрегати (S7e: SELECT alias on group cols)
-    let mut res = boila_result_empty()
-    i = 0
-    while i < vec_len(sel.group_cols) {
-        let nm = vec_get(sel.group_cols, i)
-        let mut tag = boila_v_i64()
-        if nm == "time_bucket" && sel.bucket_iv > 0 {
-            let bix = boila_col_idx_of(cols, sel.bucket_col)
-            if bix >= 0 { tag = vec_get(cols, bix).typ }
-        } else {
-            let gix = boila_col_idx_of(cols, nm)
-            if gix >= 0 { tag = vec_get(cols, gix).typ }
-        }
-        let mut onm = nm
-        let mut j: i64 = 0
-        while j < vec_len(sel.items) {
-            let it = vec_get(sel.items, j)
-            if it.agg == 0 {
-                if nm == "time_bucket" && it.biv > 0 {
-                    onm = boila_sel_item_out_name(it)
-                    j = vec_len(sel.items)
-                } else {
-                    if it.biv == 0 && it.col == nm {
-                        onm = boila_sel_item_out_name(it)
-                        j = vec_len(sel.items)
-                    }
+    // 42803: bare SELECT cols must be in GROUP BY (both legacy + gexpr)
+    if sel.has_group == 1 {
+        let mut pi: i64 = 0
+        while pi < vec_len(sel.items) {
+            let it = vec_get(sel.items, pi)
+            if it.agg == 0 && it.sfn == "" && vec_len(it.xtoks) == 0 && it.biv == 0 {
+                if boila_agg_in_group(sel, it.col) == 0 {
+                    return boila_agg_fail(concat("колона '", concat(it.col, "' трябва да е в GROUP BY или агрегат")), "42803")
                 }
             }
-            j = j + 1
+            pi = pi + 1
         }
-        boila_result_add_col(res, onm, tag)
-        i = i + 1
     }
-    i = 0
-    while i < nitems {
-        boila_result_add_col(res, boila_agg_item_name(vec_get(agg_items, i)), boila_v_i64())
-        i = i + 1
+    let use_gexpr = boila_agg_has_gexpr(sel)
+    // GROUP BY expr also needs SELECT-list projection when keys are not plain cols
+    let mut use_proj = use_gexpr
+    if boila_agg_has_gbyx(sel) == 1 {
+        use_proj = 1
+    }
+    let mut res = boila_result_empty()
+    if use_gexpr == 1 || use_proj == 1 {
+        let gs = boila_agg_gexpr_schema(cols, sel)?
+        if gs.ok == 0 {
+            return boila_agg_fail(gs.err, gs.state)
+        }
+        res = gs.res
+        // xnames already built above
+    } else {
+        // legacy: group + агрегати (S7e: SELECT alias on group cols)
+        i = 0
+        while i < vec_len(sel.group_cols) {
+            let nm = vec_get(sel.group_cols, i)
+            let mut tag = boila_v_i64()
+            if nm == "time_bucket" && sel.bucket_iv > 0 {
+                let bix = boila_col_idx_of(cols, sel.bucket_col)
+                if bix >= 0 { tag = vec_get(cols, bix).typ }
+            } else {
+                let gix = boila_col_idx_of(cols, nm)
+                if gix >= 0 { tag = vec_get(cols, gix).typ }
+            }
+            let mut onm = nm
+            let mut j: i64 = 0
+            while j < vec_len(sel.items) {
+                let it = vec_get(sel.items, j)
+                if it.agg == 0 {
+                    if nm == "time_bucket" && it.biv > 0 {
+                        onm = boila_sel_item_out_name(it)
+                        j = vec_len(sel.items)
+                    } else {
+                        if it.biv == 0 && it.col == nm {
+                            onm = boila_sel_item_out_name(it)
+                            j = vec_len(sel.items)
+                        }
+                    }
+                }
+                j = j + 1
+            }
+            boila_result_add_col(res, onm, tag)
+            i = i + 1
+        }
+        i = 0
+        while i < n_proj_aggs {
+            boila_result_add_col(res, boila_agg_item_name(vec_get(agg_items, i)), boila_v_i64())
+            i = i + 1
+        }
     }
     // групи
     let gkeys: Vec<bytes> = vec_new()
@@ -145,7 +206,33 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
     let mut r: i64 = 0
     while r < vec_len(brows) {
         let row = vec_get(brows, r)
-        let key = boila_agg_key(row, gixs)
+        // group key: cols and/or Q-gbyx expressions
+        let mut key = bytes_new(0)
+        let mut gi0: i64 = 0
+        while gi0 < vec_len(gixs) {
+            let gix = vec_get(gixs, gi0)
+            let mut gv = boila_val_null()
+            if gix >= 0 {
+                if gix < vec_len(row) {
+                    gv = vec_get(row, gix)
+                }
+            } else {
+                let mut gxt: Vec<Token> = vec_new()
+                if gi0 < vec_len(sel.group_xtoks) {
+                    gxt = vec_get(sel.group_xtoks, gi0)
+                }
+                if vec_len(gxt) > 0 {
+                    let ev = boila_xw_eval(xnames, gxt, row)?
+                    if ev.ok == 0 {
+                        return boila_agg_fail(ev.err, ev.state)
+                    }
+                    gv = ev.val
+                }
+            }
+            key = bytes_concat(key, boila_val_enc(gv))
+            key = bytes_concat(key, bytes_of_str("|"))
+            gi0 = gi0 + 1
+        }
         let mut gi: i64 = 0 - 1
         let mut k: i64 = 0
         while k < vec_len(gkeys) {
@@ -168,7 +255,22 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
             if it.agg == 1 {
                 vec_set(acc.cnt, a, vec_get(acc.cnt, a) + 1)
             } else {
-                let v = vec_get(row, cix)
+                let mut v = boila_val_null()
+                if cix == 0 - 2 {
+                    // Q-aexpr: evaluate argument expression
+                    let ev = boila_xw_eval(xnames, it.xtoks, row)?
+                    if ev.ok == 0 {
+                        return boila_agg_fail(ev.err, ev.state)
+                    }
+                    v = ev.val
+                    if (it.agg == 3 || it.agg == 4) && v.tag != boila_v_null() {
+                        if v.tag != boila_v_i64() && v.tag != boila_v_ts() && v.tag != boila_v_bool() {
+                            return boila_agg_fail("sum/avg изисква числов израз", "0A000")
+                        }
+                    }
+                } else {
+                    v = vec_get(row, cix)
+                }
                 if v.tag != boila_v_null() {
                     vec_set(acc.cnt, a, vec_get(acc.cnt, a) + 1)
                     if vec_get(acc.hasv, a) == 0 {
@@ -205,83 +307,32 @@ fn boila_agg_exec(cols: Vec<BoilaColDef>, rows: Vec<Vec<BoilaVal>>, sel: BoilaSe
         let acc = vec_get(gaccs, g)
         let mut emit = true
         if sel.has_having == 1 {
-            let mut hv: i64 = 0
-            let mut hok: i64 = 1
-            if sel.hav_agg == 1 {
-                hv = acc.n
-            } else {
-                let mut hix: i64 = 0 - 1
-                let mut a: i64 = 0
-                while a < nitems {
-                    let it = vec_get(agg_items, a)
-                    if it.agg == sel.hav_agg && it.col == sel.hav_col {
-                        hix = a
-                    }
-                    a = a + 1
-                }
-                if hix < 0 {
-                    if vec_len(sel.group_cols) > 0 {
-                        return boila_agg_fail("HAVING агрегат извън проекцията — с GROUP BY трябва да е в нея", "0A000")
-                    }
-                    let ex = boila_agg_extra(cols, brows, sel.hav_agg, sel.hav_col)
-                    if ex.ok == 0 {
-                        return boila_agg_fail(ex.err, ex.state)
-                    }
-                    hv = ex.val
-                    hok = ex.has
-                } else {
-                    if sel.hav_agg == 2 {
-                        hv = vec_get(acc.cnt, hix)
-                    } else {
-                        if vec_get(acc.hasv, hix) == 0 {
-                            hok = 0
-                        } else {
-                            if sel.hav_agg == 3 {
-                                hv = vec_get(acc.sum, hix)
-                            } else {
-                                if sel.hav_agg == 4 {
-                                    let c = vec_get(acc.cnt, hix)
-                                    if c == 0 {
-                                        hok = 0
-                                    } else {
-                                        hv = vec_get(acc.sum, hix) / c
-                                    }
-                                } else {
-                                    if sel.hav_agg == 5 {
-                                        hv = vec_get(acc.minv, hix).i
-                                    } else {
-                                        hv = vec_get(acc.maxv, hix).i
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            let he = boila_hav_eval(acc, sel, hav_slots, cols, brows)
+            if he.ok == 0 {
+                return boila_agg_fail(he.err, he.state)
             }
             emit = false
-            if hok == 1 {
-                if sel.hav_op == "=" && hv == sel.hav_val {
-                    emit = true
-                }
-                if sel.hav_op == ">=" && hv >= sel.hav_val {
-                    emit = true
-                }
-                if sel.hav_op == "<=" && hv <= sel.hav_val {
-                    emit = true
-                }
-                if sel.hav_op == ">" && hv > sel.hav_val {
-                    emit = true
-                }
-                if sel.hav_op == "<" && hv < sel.hav_val {
-                    emit = true
-                }
-                if sel.hav_op == "<>" && hv != sel.hav_val {
-                    emit = true
-                }
+            if he.emit == 1 {
+                emit = true
             }
         }
         if emit == true {
-            vec_push(res.rows, boila_agg_row(acc, gixs, agg_items, aixs))
+            if use_proj == 0 {
+                // only project SELECT aggs (not HAVING-only extra slot)
+                let pagg: Vec<BoilaSelItem> = vec_new()
+                let mut pa: i64 = 0
+                while pa < n_proj_aggs {
+                    vec_push(pagg, vec_get(agg_items, pa))
+                    pa = pa + 1
+                }
+                vec_push(res.rows, boila_agg_row(acc, gixs, pagg, aixs))
+            } else {
+                let gr = boila_agg_gexpr_row(cols, sel, acc, agg_items, xnames)?
+                if gr.ok == 0 {
+                    return boila_agg_fail(gr.err, gr.state)
+                }
+                vec_push(res.rows, gr.row)
+            }
         }
         g = g + 1
     }

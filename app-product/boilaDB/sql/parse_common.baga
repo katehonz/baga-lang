@@ -203,17 +203,28 @@ fn boila_ps_item(l: BoilaLex, i: i64) -> BoilaPsItem {
         }
         return boila_ps_item_alias(l, boila_sel_item_agg(1, ""), i + 4)
     }
-    if arg.kind != tok_ident() {
-        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: concat("очаквах колона в ", concat(t.txt, "(...)")), state: "42601" }
+    // bare col: sum(sal) / count(name)
+    let nxt = boila_ps_tok(l, i + 3)
+    if arg.kind == tok_ident() && nxt.kind == tok_rparen() {
+        let mut k = kind
+        if k == 1 {
+            k = 2   // count(col)
+        }
+        return boila_ps_item_alias(l, boila_sel_item_agg(k, arg.txt), i + 4)
     }
-    if boila_ps_tok(l, i + 3).kind != tok_rparen() {
-        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: "очаквах ')' след агрегатната колона", state: "42601" }
+    // Q-aexpr: sum(sal + 1), count(upper(name)), min(id * 2)
+    let xe = boila_ps_expr_item(l, i + 2)
+    if xe.ok == 0 {
+        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: i, err: xe.err, state: xe.state }
     }
-    let mut k = kind
-    if k == 1 {
-        k = 2   // count(col)
+    if boila_ps_tok(l, xe.pos).kind != tok_rparen() {
+        return BoilaPsItem { ok: 0, item: boila_sel_item_col(""), pos: xe.pos, err: concat("очаквах ')' след ", t.txt), state: "42601" }
     }
-    return boila_ps_item_alias(l, boila_sel_item_agg(k, arg.txt), i + 4)
+    let mut k2 = kind
+    if k2 == 1 {
+        k2 = 2
+    }
+    return boila_ps_item_alias(l, boila_sel_item_agg_x(k2, xe.item.xtoks), xe.pos + 1)
 }
 
 // Q-sfn: fn(col|lit, …) projection item. Args are columns and literals

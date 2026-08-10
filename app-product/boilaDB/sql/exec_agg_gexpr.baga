@@ -1,0 +1,201 @@
+// exec_agg_gexpr.baga — Q-gexpr: SELECT-list projection of sfn/expr
+// items alongside aggregates (evaluated on the group's first row).
+
+import "../core/value.baga"
+import "../catalog/schema.baga"
+import "ast.baga"
+import "sfn.baga"
+import "exec_scan.baga"
+import "exec_agg_extra.baga"
+import "exec_xw.baga"
+import "exec_dual_fn.baga"
+import "exec_dual_ops.baga"
+import "std/str/str.baga"
+
+struct BoilaAggSchema {
+    ok: i64,
+    err: str,
+    state: str,
+    res: BoilaResult,
+    xnames: Vec<str>,
+    xtypes: Vec<i64>
+}
+
+fn boila_agg_schema_fail(msg: str, state: str) -> BoilaAggSchema {
+    let xn: Vec<str> = vec_new()
+    let xt: Vec<i64> = vec_new()
+    return BoilaAggSchema { ok: 0, err: msg, state: state, res: boila_result_empty(), xnames: xn, xtypes: xt }
+}
+
+fn boila_agg_sfn_call(fnm: str, args: Vec<BoilaVal>, tags: Vec<i64>) -> BoilaDualExpr {
+    if vec_len(args) == 1 {
+        return boila_dual_call_unary(fnm, vec_get(args, 0), vec_get(tags, 0), 0)
+    }
+    return boila_dual_call_multi(fnm, args, tags, 0)
+}
+
+// Build result columns in SELECT-list order; probe expr types.
+fn boila_agg_gexpr_schema(cols: Vec<BoilaColDef>, sel: BoilaSel) -> BoilaAggSchema !Time {
+    let xnames: Vec<str> = vec_new()
+    let xnulls: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(cols) {
+        vec_push(xnames, vec_get(cols, i).name)
+        vec_push(xnulls, boila_val_null())
+        i = i + 1
+    }
+    let xtypes: Vec<i64> = vec_new()
+    i = 0
+    while i < vec_len(sel.items) {
+        let it = vec_get(sel.items, i)
+        let mut ty = boila_v_i64()
+        // projection expr only (agg xtoks are argument expressions)
+        if it.agg == 0 && vec_len(it.xtoks) > 0 {
+            let pr = boila_xw_eval(xnames, it.xtoks, xnulls)?
+            if pr.ok == 0 {
+                return boila_agg_schema_fail(pr.err, pr.state)
+            }
+            ty = pr.val.tag
+            if ty == boila_v_null() {
+                ty = boila_v_i64()
+            }
+        }
+        vec_push(xtypes, ty)
+        i = i + 1
+    }
+    let mut res = boila_result_empty()
+    i = 0
+    while i < vec_len(sel.items) {
+        let it = vec_get(sel.items, i)
+        if it.agg > 0 {
+            boila_result_add_col(res, boila_agg_item_name(it), boila_v_i64())
+        } else {
+            if it.sfn != "" {
+                let mut t0 = boila_v_str()
+                let mut a: i64 = 0
+                let mut got = 0
+                while a < vec_len(it.sfn_cols) {
+                    let cn = vec_get(it.sfn_cols, a)
+                    if cn != "" {
+                        let ax = boila_col_idx_of(cols, cn)
+                        if ax < 0 {
+                            return boila_agg_schema_fail(concat("колона '", concat(cn, "' не съществува")), "42703")
+                        }
+                        if got == 0 {
+                            t0 = vec_get(cols, ax).typ
+                            got = 1
+                        }
+                    } else {
+                        if got == 0 {
+                            t0 = vec_get(it.sfn_vals, a).tag
+                            got = 1
+                        }
+                    }
+                    a = a + 1
+                }
+                boila_result_add_col(res, boila_sel_item_out_name(it), boila_sfn_out_type(it.sfn, t0))
+            } else {
+                if it.agg == 0 && vec_len(it.xtoks) > 0 {
+                    boila_result_add_col(res, boila_sel_item_out_name(it), vec_get(xtypes, i))
+                } else {
+                    if it.biv > 0 {
+                        let bix = boila_col_idx_of(cols, it.col)
+                        let mut tag = boila_v_i64()
+                        if bix >= 0 { tag = vec_get(cols, bix).typ }
+                        boila_result_add_col(res, boila_sel_item_out_name(it), tag)
+                    } else {
+                        let ix = boila_col_idx_of(cols, it.col)
+                        if ix < 0 {
+                            return boila_agg_schema_fail(concat("колона '", concat(it.col, "' не съществува")), "42703")
+                        }
+                        if sel.has_group == 1 && boila_agg_in_group(sel, it.col) == 0 {
+                            return boila_agg_schema_fail(concat("колона '", concat(it.col, "' трябва да е в GROUP BY или агрегат")), "42803")
+                        }
+                        boila_result_add_col(res, boila_sel_item_out_name(it), vec_get(cols, ix).typ)
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return BoilaAggSchema { ok: 1, err: "", state: "", res: res, xnames: xnames, xtypes: xtypes }
+}
+
+struct BoilaAggRowOut {
+    ok: i64,
+    err: str,
+    state: str,
+    row: Vec<BoilaVal>
+}
+
+fn boila_agg_row_fail(msg: str, state: str) -> BoilaAggRowOut {
+    let row: Vec<BoilaVal> = vec_new()
+    return BoilaAggRowOut { ok: 0, err: msg, state: state, row: row }
+}
+
+// One group → SELECT-list row (sfn/expr over acc.first).
+fn boila_agg_gexpr_row(cols: Vec<BoilaColDef>, sel: BoilaSel, acc: BoilaAggAcc, agg_items: Vec<BoilaSelItem>, xnames: Vec<str>) -> BoilaAggRowOut !Time {
+    let out: Vec<BoilaVal> = vec_new()
+    let mut slot: i64 = 0
+    let mut j: i64 = 0
+    while j < vec_len(sel.items) {
+        let it = vec_get(sel.items, j)
+        if it.agg > 0 {
+            if slot >= vec_len(agg_items) {
+                return boila_agg_row_fail("вътрешна грешка: agg slot", "XX000")
+            }
+            vec_push(out, boila_agg_cell(acc, it, slot))
+            slot = slot + 1
+        } else {
+            if it.sfn != "" {
+                let args: Vec<BoilaVal> = vec_new()
+                let tags: Vec<i64> = vec_new()
+                let mut a: i64 = 0
+                while a < vec_len(it.sfn_cols) {
+                    let cn = vec_get(it.sfn_cols, a)
+                    if cn != "" {
+                        let ax = boila_col_idx_of(cols, cn)
+                        if ax < 0 || ax >= vec_len(acc.first) {
+                            return boila_agg_row_fail(concat("колона '", concat(cn, "' не съществува")), "42703")
+                        }
+                        vec_push(args, vec_get(acc.first, ax))
+                        vec_push(tags, vec_get(cols, ax).typ)
+                    } else {
+                        vec_push(args, vec_get(it.sfn_vals, a))
+                        vec_push(tags, vec_get(it.sfn_vals, a).tag)
+                    }
+                    a = a + 1
+                }
+                let fr = boila_agg_sfn_call(it.sfn, args, tags)
+                if fr.ok == 0 {
+                    return boila_agg_row_fail(fr.err, fr.state)
+                }
+                vec_push(out, fr.val)
+            } else {
+                if it.agg == 0 && vec_len(it.xtoks) > 0 {
+                    let ev = boila_xw_eval(xnames, it.xtoks, acc.first)?
+                    if ev.ok == 0 {
+                        return boila_agg_row_fail(ev.err, ev.state)
+                    }
+                    vec_push(out, ev.val)
+                } else {
+                    if it.biv > 0 {
+                        let bix = boila_col_idx_of(cols, it.col)
+                        if bix < 0 || bix >= vec_len(acc.first) {
+                            return boila_agg_row_fail(concat("time_bucket колона '", concat(it.col, "' не съществува")), "42703")
+                        }
+                        vec_push(out, vec_get(acc.first, bix))
+                    } else {
+                        let ix = boila_col_idx_of(cols, it.col)
+                        if ix < 0 || ix >= vec_len(acc.first) {
+                            return boila_agg_row_fail(concat("колона '", concat(it.col, "' не съществува")), "42703")
+                        }
+                        vec_push(out, vec_get(acc.first, ix))
+                    }
+                }
+            }
+        }
+        j = j + 1
+    }
+    return BoilaAggRowOut { ok: 1, err: "", state: "", row: out }
+}

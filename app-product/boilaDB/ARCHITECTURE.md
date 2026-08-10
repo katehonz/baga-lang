@@ -338,9 +338,9 @@ app-product/boilaDB/
 ├── ts/        retention.baga  time_bucket.baga
 ├── graph/     adjacency · bfs · dml · g_drop
 ├── sql/       lexer/token/ast · parse_* · plan_cache · exec_* · sfn · tsquery
-│              exec_drop / exec_alter = cascade orchestrators (kimi-deps D5)
+│              exec_agg_gexpr · exec_drop / exec_alter (kimi-deps D5)
 ├── server/    databases.baga  exec_server.baga   # BoilaServer + multi-DB
-├── api/       pgwire* · http_* · serve_*
+├── api/       pgwire* · pgwire_bind · http_* · serve_*
 ├── tools/     serve.baga  serve_pg.baga  shell.baga
 ├── scripts/   filesize.sh  deps.sh       # §9 + §3 gates
 └── (bench/: repo root bench/boila/)
