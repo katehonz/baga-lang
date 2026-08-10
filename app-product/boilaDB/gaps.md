@@ -217,10 +217,11 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P8
 
-- **V2 — (MEASURED partial) kNN latency.** `bench/boila/vec_bench.baga`:
-  **10k×16d kNN L2 LIMIT 10 = 1.7 ms** (gate &lt; 20 ms **OK**). PLAN
-  100k×128d + recall@10 not measured (128d SQL literals + Q2 arena).
-  Residual: recall oracle; dim=128 bulk seed.
+- **V2 — (MEASURED + bulk seed) kNN latency.** `vec_bench` bulk
+  `boila_put` + packed vectors (no SQL literals). **5k×128d kNN = 12 ms
+  OK**; 10k×16d 14 ms OK; 10k×128d 25 ms FAIL; 50k×32d 80 ms FAIL. PLAN
+  100k×128d + recall@10 not measured. Residual: recall oracle; larger
+  N×128d gate; HNSW tune.
 - **V3 — (FIXED) metadata + PK-range pre-filter преди kNN.** `eq` по
   PK/secondary → cands; PK `>=`/`<=` → range scan cands or narrow eq
   set (`boila_knn_pref` / V3b). Non-PK range/eq → HNSW overfetch + V6

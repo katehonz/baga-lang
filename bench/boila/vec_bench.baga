@@ -1,13 +1,23 @@
 // vec_bench.baga — P8/V2: bulk VECTOR seed + kNN latency gate.
 // Env: VEC_BENCH_PHASE=write|query  VEC_BENCH_TOTAL  VEC_BENCH_CHUNK
-//      VEC_BENCH_NCHUNKS  VEC_BENCH_DIM (default 16; 128d SQL literals are huge)
+//      VEC_BENCH_NCHUNKS  VEC_BENCH_DIM (default 16; bulk path supports 128d)
 // Gate (PLAN): 100k×128d recall@10≥0.95 / <20 ms — measured at feasible scale.
+//
+// Write path: SQL CREATE only; data rows via boila_put + packed fixed-point
+// vectors (no SQL string literals — Q2 arena residual for 128d).
 
 import "boilaDB/server/databases.baga"
 import "boilaDB/server/exec_server.baga"
+import "boilaDB/storage/shards.baga"
+import "boilaDB/catalog/schema.baga"
+import "boilaDB/core/codec.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/core/row.baga"
+import "boilaDB/vector/distance.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/time/time.baga"
+import "std/bytes/bytes.baga"
 
 fn wipe_shard_path(prefix: str) -> i64 !IO {
     unlink(concat(prefix, ".wal"))?
@@ -32,7 +42,7 @@ fn wipe_root(root: str) -> i64 !IO {
     return 0
 }
 
-// Deterministic unit-ish vector as fixed-point string for dim dims.
+// Deterministic unit-ish vector as fixed-point string for dim dims (query SQL).
 // Component d of id: ((id * 17 + d * 31) % 200 - 100) / 100.0
 fn vec_lit(id: i64, dim: i64) -> str {
     let mut s = "["
@@ -42,7 +52,6 @@ fn vec_lit(id: i64, dim: i64) -> str {
             s = concat(s, ",")
         }
         let raw = (id * 17 + d * 31) % 200 - 100
-        // fixed-point string without floats: "0.XX" or "-0.XX"
         let mut abs = raw
         let mut neg = 0
         if abs < 0 {
@@ -63,6 +72,19 @@ fn vec_lit(id: i64, dim: i64) -> str {
         d = d + 1
     }
     return concat(s, "]")
+}
+
+// Packed VECTOR val: same components as vec_lit, fixed-point ×1e6 (raw*10000).
+fn vec_val(id: i64, dim: i64) -> BoilaVal {
+    let mut body = bytes_new(0)
+    let mut d: i64 = 0
+    while d < dim {
+        let raw = (id * 17 + d * 31) % 200 - 100
+        // raw/100.0 as f64 → ×1e6 fp = raw * 10000
+        body = bytes_concat(body, boila_enc_i32_be(raw * 10000))
+        d = d + 1
+    }
+    return boila_val_vector(dim, body)
 }
 
 fn main() -> i64 !IO !Time !Par {
@@ -105,7 +127,7 @@ fn main() -> i64 !IO !Time !Par {
             verdict = "OK — < 20 ms"
         }
         print(concat("gate: ", verdict))
-        print(concat(concat("dim=", int_to_str(dim)), " (PLAN target 128d — residual if dim<128)"))
+        print(concat(concat("dim=", int_to_str(dim)), " (PLAN target 128d)"))
         boila_server_close(srv)?
         return 0
     }
@@ -143,43 +165,37 @@ fn main() -> i64 !IO !Time !Par {
             print(concat("setup fail: ", c1.err))
             return 1
         }
-        // HNSW built after seed (last chunk) — bulk insert without per-row graph
     }
-    // last write chunk: build HNSW once over all rows
-    let mut build_ix = 0
-    if chunk == nchunks - 1 {
-        build_ix = 1
+    // resolve table id for bulk put
+    let db = boila_srv_db(srv, "boila")?
+    srv = db.srv
+    if db.ok == 0 {
+        print(concat("open db fail: ", db.err))
+        return 1
     }
-    // small batches — vector literals are large
-    let batch: i64 = 20
+    let mut s = db.store
+    let cat = boila_cat_by_name(s, "items")?
+    s = cat.s
+    if cat.ok == 0 {
+        print(concat("cat fail: ", cat.err))
+        return 1
+    }
+    let tid = cat.table.id
     let t0 = monotonic_us()?
-    let mut base = lo
-    while base < hi {
-        let mut n = batch
-        if base + n > hi {
-            n = hi - base
-        }
-        let mut sql = "INSERT INTO items (id, emb) VALUES "
-        let mut i: i64 = 0
-        while i < n {
-            if i > 0 {
-                sql = concat(sql, ", ")
-            }
-            let id = base + i
-            sql = concat(sql, concat(concat("(", int_to_str(id)), concat(", '", concat(vec_lit(id, dim), "')"))))
-            i = i + 1
-        }
-        let r = boila_server_exec(srv, "boila", sql)?
-        srv = r.srv
-        if r.ok == 0 {
-            print(concat("insert fail at ", concat(int_to_str(base), concat(": ", r.err))))
-            return 1
-        }
-        base = base + batch
+    let mut id = lo
+    while id < hi {
+        let row: Vec<BoilaVal> = vec_new()
+        vec_push(row, boila_val_i64(id))
+        vec_push(row, vec_val(id, dim))
+        s = boila_put(s, boila_cf_data(), tid, boila_val_enc(boila_val_i64(id)), boila_row_enc(row))?
+        id = id + 1
     }
+    // periodic flush every 2k to bound memtable
+    s = boila_flush(s)?
+    srv = boila_srv_store_putback(srv, "boila", s)
     let t1 = monotonic_us()?
-    print(concat(concat(concat(concat(concat("chunk ", int_to_str(chunk)), concat(": items ", int_to_str(lo))), concat("..", int_to_str(hi))), concat(" in ", int_to_str((t1 - t0) / 1000))), " ms"))
-    if build_ix == 1 {
+    print(concat(concat(concat(concat(concat("chunk ", int_to_str(chunk)), concat(": items ", int_to_str(lo))), concat("..", int_to_str(hi))), concat(" bulk ", int_to_str((t1 - t0) / 1000))), " ms"))
+    if chunk == nchunks - 1 {
         let t2 = monotonic_us()?
         let c2 = boila_server_exec(srv, "boila", "CREATE INDEX items_hnsw ON items USING hnsw (emb)")?
         srv = c2.srv
