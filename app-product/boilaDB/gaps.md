@@ -205,8 +205,12 @@ T = транзакции, W = wire protocol, F = FTS.
   path also applies `has_xw` per row.
 - **Q-stream-ix — (FIXED) isnull/fts/knn into fold.** IS [NOT] NULL,
   `@@`, and kNN hit pks GET+fold without result row Vec. Tests:
-  `isnull_agg`, `fts_agg`, `knn_agg`. Residual: join left fetch Vec;
-  knn still ranks a pk list of size k (not full table).
+  `isnull_agg`, `fts_agg`, `knn_agg`.
+- **Q-stream-join-outer — (FIXED) outer pks stream.** `boila_fetch_pks`
+  + GET-one-outer during probe for both `join_rows` and `join_into_fold`
+  (unfiltered left = live key list only). Fold path always hashes when
+  no right ix. Residual: join output Vec for non-agg SELECT; right
+  inner still materializes for hash/NL.
 - **K3g — (FIXED) secondary range exclusive bounds.** `lo_excl`/`hi_excl`
   on SELECT secondary path. DML WHERE still inclusive-only.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild
