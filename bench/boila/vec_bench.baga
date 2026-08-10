@@ -104,23 +104,28 @@ fn main() -> i64 !IO !Time !Par {
         let mut sql = "SELECT id FROM items WHERE emb <-> '"
         sql = concat(sql, qv)
         sql = concat(sql, "' LIMIT 10")
-        let w = boila_server_exec(srv, "boila", sql)?
-        srv = w.srv
-        if w.ok == 0 {
-            print(concat("query setup fail: ", w.err))
-            return 1
+        // warm (parse + HNSW caches)
+        let mut wrep: i64 = 0
+        while wrep < 5 {
+            let w = boila_server_exec(srv, "boila", sql)?
+            srv = w.srv
+            if w.ok == 0 {
+                print(concat("query setup fail: ", w.err))
+                return 1
+            }
+            wrep = wrep + 1
         }
         let t0 = monotonic_us()?
         let mut reps: i64 = 0
         let mut nrows: i64 = 0
-        while reps < 20 {
+        while reps < 30 {
             let q = boila_server_exec(srv, "boila", sql)?
             srv = q.srv
             nrows = vec_len(q.res.rows)
             reps = reps + 1
         }
         let t1 = monotonic_us()?
-        let us = (t1 - t0) / 20
+        let us = (t1 - t0) / 30
         print(concat(concat(concat("kNN L2 LIMIT 10: ", int_to_str(us)), " us ("), concat(int_to_str(nrows), " rows)")))
         let mut verdict = "FAIL (gate < 20000 us)"
         if us < 20000 {

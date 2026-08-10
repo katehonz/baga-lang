@@ -1,4 +1,5 @@
 // hnsw_search.baga — greedy/beam/select + kNN search (P8).
+// V4b: vector payload cache + L2 on fixed-point; Map visited in beam.
 
 import "../storage/shards.baga"
 import "../core/codec.baga"
@@ -15,31 +16,39 @@ struct BoilaHnswQuery {
     pks: Vec<bytes>
 }
 
-fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, ep: bytes, level: i64, cache: Map<bytes, bytes>) -> BoilaHnswQuery !IO !Time !Par {
+// Distance: L2 uses packed payload (fast); other metrics unpack to f64.
+fn hnsw_dist_pay(q_pay: bytes, q_f: Vec<f64>, c_pay: bytes, metric: i64) -> f64 {
+    if metric == boila_vec_metric_l2() {
+        return boila_vec_l2sq_payload(q_pay, c_pay)
+    }
+    return boila_vec_dist(q_f, boila_vec_from_val(BoilaVal { tag: boila_v_vector(), i: 0, b: c_pay }), metric)
+}
+
+fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q_pay: bytes, q_f: Vec<f64>, ep: bytes, level: i64, ncache: Map<bytes, bytes>, vcache: Map<bytes, bytes>) -> BoilaHnswQuery !IO !Time !Par {
     let mut cur = ep
     let mut improved = true
     let mut guard: i64 = 0
     while improved && guard < 256 {
         improved = false
         guard = guard + 1
-        let cv = hnsw_row_vec(s, txn, table_id, cur, def.col_idx, def.dim)?
+        let cv = hnsw_row_payload_c(s, txn, table_id, cur, def.col_idx, def.dim, vcache)?
         s = cv.s
         txn = cv.txn
         let mut best_d = 1.0e300
         if cv.ok == 1 {
-            best_d = boila_vec_dist(q, cv.dims, def.metric)
+            best_d = hnsw_dist_pay(q_pay, q_f, cv.pay, def.metric)
         }
-        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, cache)?
+        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, ncache)?
         s = nb.s
         txn = nb.txn
         let mut j: i64 = 0
         while j < vec_len(nb.pks) {
             let cand = vec_get(nb.pks, j)
-            let rv = hnsw_row_vec(s, txn, table_id, cand, def.col_idx, def.dim)?
+            let rv = hnsw_row_payload_c(s, txn, table_id, cand, def.col_idx, def.dim, vcache)?
             s = rv.s
             txn = rv.txn
             if rv.ok == 1 {
-                let d = boila_vec_dist(q, rv.dims, def.metric)
+                let d = hnsw_dist_pay(q_pay, q_f, rv.pay, def.metric)
                 if d < best_d {
                     best_d = d
                     cur = cand
@@ -54,67 +63,78 @@ fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q
     return BoilaHnswQuery { s: s, txn: txn, pks: one }
 }
 
-fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q: Vec<f64>, entry: bytes, level: i64, ef: i64, cache: Map<bytes, bytes>) -> BoilaHnswQuery !IO !Time !Par {
+fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q_pay: bytes, q_f: Vec<f64>, entry: bytes, level: i64, ef: i64, ncache: Map<bytes, bytes>, vcache: Map<bytes, bytes>) -> BoilaHnswQuery !IO !Time !Par {
     let mut cand: Vec<bytes> = vec_new()
     let mut cds: Vec<f64> = vec_new()
-    let vis: Vec<bytes> = vec_new()
+    let vis: Map<bytes, i64> = map_new()
     vec_push(cand, entry)
-    let ev = hnsw_row_vec(s, txn, table_id, entry, def.col_idx, def.dim)?
+    let ev = hnsw_row_payload_c(s, txn, table_id, entry, def.col_idx, def.dim, vcache)?
     s = ev.s
     txn = ev.txn
     let mut ed = 1.0e300
     if ev.ok == 1 {
-        ed = boila_vec_dist(q, ev.dims, def.metric)
+        ed = hnsw_dist_pay(q_pay, q_f, ev.pay, def.metric)
     }
     vec_push(cds, ed)
-    vec_push(vis, entry)
+    map_set(vis, entry, 1)
     let mut expanded: i64 = 0
-    while expanded < vec_len(cand) && expanded < ef * 4 {
+    // ef*2 expansions: enough for k≈10; was ef*4 (V2 latency).
+    while expanded < vec_len(cand) && expanded < ef * 2 {
         let cur = vec_get(cand, expanded)
         expanded = expanded + 1
-        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, cache)?
+        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, ncache)?
         s = nb.s
         txn = nb.txn
         let mut j: i64 = 0
         while j < vec_len(nb.pks) {
             let pk = vec_get(nb.pks, j)
-            if hnsw_pk_in(vis, pk) == 0 {
-                vec_push(vis, pk)
-                let rv = hnsw_row_vec(s, txn, table_id, pk, def.col_idx, def.dim)?
+            if map_has(vis, pk) == 0 {
+                map_set(vis, pk, 1)
+                let rv = hnsw_row_payload_c(s, txn, table_id, pk, def.col_idx, def.dim, vcache)?
                 s = rv.s
                 txn = rv.txn
                 if rv.ok == 1 {
-                    let d = boila_vec_dist(q, rv.dims, def.metric)
-                    let mut pos = vec_len(cand)
-                    let mut a: i64 = 0
-                    while a < vec_len(cds) {
-                        if d < vec_get(cds, a) {
-                            pos = a
-                            a = vec_len(cds)
+                    let d = hnsw_dist_pay(q_pay, q_f, rv.pay, def.metric)
+                    // skip if worse than worst in full ef-set
+                    let mut take = 1
+                    if vec_len(cand) >= ef {
+                        if d >= vec_get(cds, ef - 1) {
+                            take = 0
                         }
-                        a = a + 1
                     }
-                    vec_push(cand, pk)
-                    vec_push(cds, d)
-                    let mut b = vec_len(cand) - 1
-                    while b > pos {
-                        vec_set(cand, b, vec_get(cand, b - 1))
-                        vec_set(cds, b, vec_get(cds, b - 1))
-                        b = b - 1
-                    }
-                    vec_set(cand, pos, pk)
-                    vec_set(cds, pos, d)
-                    while vec_len(cand) > ef {
-                        let nc: Vec<bytes> = vec_new()
-                        let nd: Vec<f64> = vec_new()
-                        let mut t: i64 = 0
-                        while t < ef {
-                            vec_push(nc, vec_get(cand, t))
-                            vec_push(nd, vec_get(cds, t))
-                            t = t + 1
+                    if take == 1 {
+                        let mut pos = vec_len(cand)
+                        let mut a: i64 = 0
+                        while a < vec_len(cds) {
+                            if d < vec_get(cds, a) {
+                                pos = a
+                                a = vec_len(cds)
+                            }
+                            a = a + 1
                         }
-                        cand = nc
-                        cds = nd
+                        vec_push(cand, pk)
+                        vec_push(cds, d)
+                        let mut b = vec_len(cand) - 1
+                        while b > pos {
+                            vec_set(cand, b, vec_get(cand, b - 1))
+                            vec_set(cds, b, vec_get(cds, b - 1))
+                            b = b - 1
+                        }
+                        vec_set(cand, pos, pk)
+                        vec_set(cds, pos, d)
+                        if vec_len(cand) > ef {
+                            // drop tail in place (no full rebuild)
+                            let mut nc: Vec<bytes> = vec_new()
+                            let mut nd: Vec<f64> = vec_new()
+                            let mut t: i64 = 0
+                            while t < ef {
+                                vec_push(nc, vec_get(cand, t))
+                                vec_push(nd, vec_get(cds, t))
+                                t = t + 1
+                            }
+                            cand = nc
+                            cds = nd
+                        }
                     }
                 }
             }
@@ -172,7 +192,6 @@ fn hnsw_select_neighbors(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: Boila
     return BoilaHnswQuery { s: s, txn: txn, pks: top }
 }
 
-// Sort (pk,dist) ascending by dist; return top-k pks.
 fn hnsw_top_k(pks: Vec<bytes>, ds: Vec<f64>, k: i64) -> Vec<bytes> {
     let mut a: i64 = 1
     while a < vec_len(pks) {
@@ -206,7 +225,6 @@ fn hnsw_top_k(pks: Vec<bytes>, ds: Vec<f64>, k: i64) -> Vec<bytes> {
     return top
 }
 
-// Brute-force top-k over explicit candidate pks (V3 metadata pre-filter).
 fn hnsw_brute_cands(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64, cands: Vec<bytes>) -> BoilaHnswQuery !IO !Time !Par {
     let pks: Vec<bytes> = vec_new()
     let ds: Vec<f64> = vec_new()
@@ -225,7 +243,6 @@ fn hnsw_brute_cands(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswD
     return BoilaHnswQuery { s: s, txn: txn, pks: hnsw_top_k(pks, ds, k) }
 }
 
-// Brute-force top-k (малки таблици / exact gate).
 fn hnsw_brute(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time !Par {
     let ks = boila_txn_keys(s, txn, t.id)?
     return hnsw_brute_cands(ks.s, txn, t, def, q, k, ks.pks)?
@@ -242,19 +259,19 @@ fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q
     if vm.has_ep == 0 || vm.count == 0 {
         return BoilaHnswQuery { s: s, txn: txn, pks: empty }
     }
-    // exact при ≤512 реда (гейт/малки таблици); иначе HNSW
     if vm.count <= 512 {
         return hnsw_brute(s, txn, t, def, q, k)?
     }
-    // V4: RAM neighbor cache for this search; warm upper levels from ep
-    let cache: Map<bytes, bytes> = map_new()
-    let warm = hnsw_warm_upper(s, txn, t.id, def.id, vm.ep, vm.max_lvl, cache)?
+    let ncache: Map<bytes, bytes> = map_new()
+    let vcache: Map<bytes, bytes> = map_new()
+    let q_pay = boila_vec_pack_payload(q)
+    let warm = hnsw_warm_upper(s, txn, t.id, def.id, vm.ep, vm.max_lvl, ncache)?
     s = warm.s
     txn = warm.txn
     let mut ep = vm.ep
     let mut lc = vm.max_lvl
     while lc > 0 {
-        let g = hnsw_greedy(s, txn, t.id, def, q, ep, lc, cache)?
+        let g = hnsw_greedy(s, txn, t.id, def, q_pay, q, ep, lc, ncache, vcache)?
         s = g.s
         txn = g.txn
         if vec_len(g.pks) > 0 {
@@ -266,7 +283,7 @@ fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q
     if k * 2 > ef {
         ef = k * 2
     }
-    let beam = hnsw_beam(s, txn, t.id, def, q, ep, 0, ef, cache)?
+    let beam = hnsw_beam(s, txn, t.id, def, q_pay, q, ep, 0, ef, ncache, vcache)?
     s = beam.s
     txn = beam.txn
     let top: Vec<bytes> = vec_new()

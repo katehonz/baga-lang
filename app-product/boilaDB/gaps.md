@@ -217,19 +217,18 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P8
 
-- **V2 — (MEASURED + bulk seed) kNN latency.** `vec_bench` bulk
-  `boila_put` + packed vectors (no SQL literals). **5k×128d kNN = 12 ms
-  OK**; 10k×16d 14 ms OK; 10k×128d 25 ms FAIL; 50k×32d 80 ms FAIL. PLAN
-  100k×128d + recall@10 not measured. Residual: recall oracle; larger
-  N×128d gate; HNSW tune.
+- **V2 — (MEASURED + bulk + V4b) kNN latency.** Bulk seed + search
+  tune. **5k×128d = 12 ms OK**; 10k×16d 14 ms OK; **10k×128d ~23 ms
+  FAIL** (near gate); 50k×32d 80 ms FAIL. PLAN 100k×128d + recall not
+  measured. Residual: GET/locality; recall oracle; larger N×128d.
 - **V3 — (FIXED) metadata + PK-range pre-filter преди kNN.** `eq` по
   PK/secondary → cands; PK `>=`/`<=` → range scan cands or narrow eq
   set (`boila_knn_pref` / V3b). Non-PK range/eq → HNSW overfetch + V6
   post-filter.
 - **V4 — (FIXED) RAM neighbor cache per search.** `hnsw_nbrs_get_c` +
-  `hnsw_warm_upper` (ep + 1-hop levels max..1) в `Map<bytes,bytes>`;
-  greedy/beam ползват cache. Residual: няма process-global cross-query
-  cache (invalidate при DML); cache живее за една search/index op.
+  `hnsw_warm_upper`. **V4b:** vector payload cache + L2 on fixed-point
+  payload; Map visited; beam skip-if-worse; `ef_s=20`; faster
+  `f64_to_fp` / `substr` parse. Residual: no process-global cache.
 - **V5 — (FIXED) unindex strips reverse edges + ep reassign.** Strip pk
   from nbr lists L0..4; if deleted node was ep, reassign to an L0
   neighbor (else clear). V5c: ep = L0 nbr with highest degree. Residual:

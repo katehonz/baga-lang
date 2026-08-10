@@ -50,7 +50,7 @@ fn boila_dec_i32_be(b: bytes, off: i64) -> i64 {
 }
 
 // f64→fixed×1e6 без bit-cast (f64_to_str %g → "1e+06" чупи parse).
-// Digit peel: 13 декади от 1e12 надолу.
+// Fast path for |x| ≲ 1e6 (typical VECTOR components); wide peel only if needed.
 fn boila_f64_to_fp(x: f64) -> i64 {
     let mut s = x * 1000000.0
     let mut sign: i64 = 1
@@ -59,13 +59,20 @@ fn boila_f64_to_fp(x: f64) -> i64 {
         s = 0.0 - s
     }
     s = s + 0.5
+    // clamp extreme
     if s >= 10000000000000.0 {
         return sign * 10000000000000
     }
+    // common: |fp| < 1e9 (components well under 1e3)
+    let mut place = 100000000.0
+    let mut digs: i64 = 9
+    if s >= 1000000000.0 {
+        place = 1000000000000.0
+        digs = 13
+    }
     let mut n: i64 = 0
-    let mut place = 1000000000000.0
     let mut k: i64 = 0
-    while k < 13 {
+    while k < digs {
         let mut digit: i64 = 0
         while s >= place && digit < 9 {
             s = s - place
@@ -152,13 +159,8 @@ fn boila_vec_parse(s: str, expect_dim: i64) -> BoilaVecParse {
             if j == st {
                 return BoilaVecParse { ok: 0, v: boila_val_null(), err: "празен елемент във vector" }
             }
-            let mut tok = ""
-            let mut k = st
-            while k < j {
-                tok = concat(tok, chr(char_at(s, k)))
-                k = k + 1
-            }
-            vec_push(dims, json_atof(tok))
+            // substr — avoid O(n²) per-component char concat (128d query)
+            vec_push(dims, json_atof(substr(s, st, j)))
             i = j
         }
     }
@@ -261,4 +263,37 @@ fn boila_vec_dist(a: Vec<f64>, b: Vec<f64>, metric: i64) -> f64 {
         return 1.0 - ip / d
     }
     return boila_vec_l2sq(a, b)
+}
+
+// L2² on packed VECTOR payload [dim u32 BE][i32 BE × dim] (fixed×1e6).
+// Ranking-identical to f64 L2² for same scale; avoids per-dim f64 decode.
+fn boila_vec_l2sq_payload(a: bytes, b: bytes) -> f64 {
+    if bytes_len(a) < 4 || bytes_len(b) < 4 {
+        return 1.0e300
+    }
+    let da = boila_dec_u32_be(a, 0)
+    let db = boila_dec_u32_be(b, 0)
+    let mut m = da
+    if db < m {
+        m = db
+    }
+    let mut s: i64 = 0
+    let mut i: i64 = 0
+    while i < m {
+        let off = 4 + i * 4
+        if off + 4 > bytes_len(a) || off + 4 > bytes_len(b) {
+            i = m
+        } else {
+            let d = boila_dec_i32_be(a, off) - boila_dec_i32_be(b, off)
+            s = s + d * d
+            i = i + 1
+        }
+    }
+    return s * 1.0
+}
+
+// Pack query f64 dims → same payload layout as stored VECTOR values.
+fn boila_vec_pack_payload(dims: Vec<f64>) -> bytes {
+    let dim = vec_len(dims)
+    return bytes_concat(boila_enc_u32_be(dim), boila_vec_pack(dims))
 }

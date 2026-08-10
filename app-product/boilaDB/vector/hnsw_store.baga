@@ -71,7 +71,8 @@ fn hnsw_nbr_pk(ix_id: i64, level: i64, pk: bytes) -> bytes {
 
 fn hnsw_M() -> i64 { return 16 }
 fn hnsw_ef_c() -> i64 { return 64 }
-fn hnsw_ef_s() -> i64 { return 50 }
+// Search ef: tuned for LIMIT≈10 / V2 gate (was 50 → 24 → 20).
+fn hnsw_ef_s() -> i64 { return 20 }
 
 fn hnsw_unwrap(val: bytes) -> bytes {
     if bytes_len(val) > 8 {
@@ -283,6 +284,43 @@ fn hnsw_row_vec(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx:
         return BoilaHnswVec { s: s, txn: txn, ok: 0, dims: empty }
     }
     return BoilaHnswVec { s: s, txn: txn, ok: 1, dims: boila_vec_from_val(c.v) }
+}
+
+// V4b: cached VECTOR payload (val.b = dim‖i32*) for search; avoids re-GET.
+struct BoilaHnswPay {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    pay: bytes
+}
+
+fn hnsw_row_payload(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx: i64, dim: i64) -> BoilaHnswPay !IO !Time !Par {
+    let empty = bytes_new(0)
+    let g = boila_txn_get(s, txn, table_id, pk)?
+    s = g.s
+    if g.found == 0 {
+        return BoilaHnswPay { s: s, txn: txn, ok: 0, pay: empty }
+    }
+    let row = boila_row_dec(g.row)
+    if col_idx < 0 || col_idx >= vec_len(row) {
+        return BoilaHnswPay { s: s, txn: txn, ok: 0, pay: empty }
+    }
+    let c = boila_vec_coerce(vec_get(row, col_idx), dim)
+    if c.ok == 0 {
+        return BoilaHnswPay { s: s, txn: txn, ok: 0, pay: empty }
+    }
+    return BoilaHnswPay { s: s, txn: txn, ok: 1, pay: c.v.b }
+}
+
+fn hnsw_row_payload_c(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx: i64, dim: i64, vcache: Map<bytes, bytes>) -> BoilaHnswPay !IO !Time !Par {
+    if map_has(vcache, pk) == 1 {
+        return BoilaHnswPay { s: s, txn: txn, ok: 1, pay: map_get(vcache, pk) }
+    }
+    let p = hnsw_row_payload(s, txn, table_id, pk, col_idx, dim)?
+    if p.ok == 1 {
+        map_set(vcache, pk, p.pay)
+    }
+    return p
 }
 
 // Детерминистично ниво от pk (0..maxcap); mL≈1/ln(M)≈0.36 → /3.

@@ -113,11 +113,13 @@ fn hnsw_index_one(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, col_i
         return BoilaHnswRes { s: vm2.s, txn: vm2.txn, ok: 1, err: "", state: "", id: ix_id }
     }
     let lvl = hnsw_level_of(pk, 4)
-    let cache: Map<bytes, bytes> = map_new()
+    let ncache: Map<bytes, bytes> = map_new()
+    let vcache: Map<bytes, bytes> = map_new()
+    let dims_pay = boila_vec_pack_payload(dims)
     let mut ep = vm.ep
     let mut lc = vm.max_lvl
     while lc > lvl {
-        let g = hnsw_greedy(s, txn, table_id, def, dims, ep, lc, cache)?
+        let g = hnsw_greedy(s, txn, table_id, def, dims_pay, dims, ep, lc, ncache, vcache)?
         s = g.s
         txn = g.txn
         if vec_len(g.pks) > 0 {
@@ -132,7 +134,7 @@ fn hnsw_index_one(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, col_i
     let mut li: i64 = l
     let mut going = true
     while going {
-        let beam = hnsw_beam(s, txn, table_id, def, dims, ep, li, hnsw_ef_c(), cache)?
+        let beam = hnsw_beam(s, txn, table_id, def, dims_pay, dims, ep, li, hnsw_ef_c(), ncache, vcache)?
         s = beam.s
         txn = beam.txn
         let mut mmax = hnsw_M()
