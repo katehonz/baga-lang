@@ -189,8 +189,8 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S5 — (MEASURED + K3j/k rollup + K3h/i + stream) time_bucket gate.**
   Continuous rollup: **@100k full ~2.9 ms**; **window last-10k ~21 ms**
   (K3k). Gate &lt; 50 ms OK. Results:
-  `bench/boila/results/modality-2026-08-10.md`. Residual: join outer
-  materialize; knn pref path may still build cand lists.
+  `bench/boila/results/modality-2026-08-10.md`. Residual: join output
+  Vec for non-agg SELECT; knn pref cand lists.
 - **K3j — (FIXED) continuous rollup pre-agg.** DDL
   `CREATE ROLLUP name ON t USING time_bucket('1m', ts) [SUM(col)]`;
   DML maintains count(*)+sum; unfiltered GROUP BY → O(buckets).

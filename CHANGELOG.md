@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-stream-join-outer: stream left probe
+- `boila_fetch_pks` collects matching outer pks (no row Vec); join probe
+  GETs one outer row at a time (index NL + hash).
+- Agg fold path uses the same outer stream; no-ix always hashes on inner.
+- Unfiltered left scan is live keys only until probe.
+
 ### boilaDB — Q-stream-ix: isnull / fts / knn into hash-agg
 - Stream path folds `IS [NOT] NULL`, FTS `@@`, and kNN hits without
   building a full result `Vec` (kNN via `boila_knn_hit_pks` + GET+fold).
