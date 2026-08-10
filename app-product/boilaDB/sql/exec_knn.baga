@@ -17,6 +17,28 @@ import "exec_buf.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
 
+// V4e: pack kNN query into sel.knn_pay for plan cache warm path.
+fn boila_knn_prep_sel(t: BoilaTable, sel: BoilaSel) -> BoilaSel {
+    if sel.has_knn == 0 {
+        return sel
+    }
+    let cix = boila_col_idx(t, sel.knn_col)
+    if cix < 0 {
+        return sel
+    }
+    let dim = boila_vec_dim_of(vec_get(t.cols, cix).typ)
+    if dim <= 0 {
+        return sel
+    }
+    let qp = boila_vec_parse(sel.knn_query, dim)
+    if qp.ok == 0 {
+        return sel
+    }
+    let mut out = sel
+    out.knn_pay = qp.v.b
+    return out
+}
+
 // V3/V3b: candidate pks from PK eq/range or secondary index eq.
 // has=0 → no pre-filter; has=1 → use cands (may be empty = no hits).
 struct BoilaKnnPref {
@@ -150,9 +172,22 @@ fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         return boila_fetch_fail(s, txn, concat("колона '", concat(sel.knn_col, "' няма hnsw индекс")), "0A000")
     }
     let def = vec_get(hl.defs, hdi)
-    let qp = boila_vec_parse(sel.knn_query, def.dim)
-    if qp.ok == 0 {
-        return boila_fetch_fail(s, txn, qp.err, "42601")
+    // V4e: plan-cache may already hold packed query payload
+    let mut q_pay = sel.knn_pay
+    let mut q_f: Vec<f64> = vec_new()
+    if bytes_len(q_pay) < 4 {
+        let qp = boila_vec_parse(sel.knn_query, def.dim)
+        if qp.ok == 0 {
+            return boila_fetch_fail(s, txn, qp.err, "42601")
+        }
+        q_pay = qp.v.b
+        if sel.knn_metric != boila_vec_metric_l2() {
+            q_f = boila_vec_from_val(qp.v)
+        }
+    } else {
+        if sel.knn_metric != boila_vec_metric_l2() {
+            q_f = boila_vec_from_val(BoilaVal { tag: boila_v_vector(), i: def.dim, b: q_pay })
+        }
     }
     let mut mdef = def
     mdef.metric = sel.knn_metric
@@ -167,17 +202,20 @@ fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
     let mut hq_pks: Vec<bytes> = vec_new()
     if pref.has == 1 {
         // V3: exact kNN only on index/pk candidates
-        let hq = hnsw_brute_cands(s, txn, t, mdef, boila_vec_from_val(qp.v), kk, pref.cands)?
+        if vec_len(q_f) == 0 {
+            q_f = boila_vec_from_val(BoilaVal { tag: boila_v_vector(), i: def.dim, b: q_pay })
+        }
+        let hq = hnsw_brute_cands(s, txn, t, mdef, q_f, kk, pref.cands)?
         s = hq.s
         txn = hq.txn
         hq_pks = hq.pks
     } else {
-        // full HNSW; overfetch if residual non-PK filters remain
         if sel.has_lo == 1 || sel.has_hi == 1 || sel.has_eq == 1 {
             kk = kk * 16
             if kk < 64 { kk = 64 }
         }
-        let hq = hnsw_search(s, txn, t, mdef, boila_vec_from_val(qp.v), kk)?
+        // L2: search from packed payload (no f64 unpack/repack)
+        let hq = hnsw_search_pay(s, txn, t, mdef, q_pay, q_f, kk)?
         s = hq.s
         txn = hq.txn
         hq_pks = hq.pks

@@ -217,10 +217,11 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P8
 
-- **V2 — (MEASURED + bulk + V4b) kNN latency.** Bulk seed + search
-  tune. **5k×128d = 12 ms OK**; 10k×16d 14 ms OK; **10k×128d ~23 ms
-  FAIL** (near gate); 50k×32d 80 ms FAIL. PLAN 100k×128d + recall not
-  measured. Residual: GET/locality; recall oracle; larger N×128d.
+- **V2 — (MEASURED + bulk + V4b–e) kNN latency.** Bulk seed + search
+  tune + plan-cache knn_pay. **5k×128d ~12 ms OK**; 10k×16d ~14 ms OK;
+  **10k×128d ~22–23 ms FAIL** (near 20 ms). PLAN 100k×128d + recall not
+  measured. Residual: storage GET bound; recall oracle. Honest scope:
+  multimodal SQL vectors, not dedicated ANN (Qdrant-class).
 - **V3 — (FIXED) metadata + PK-range pre-filter преди kNN.** `eq` по
   PK/secondary → cands; PK `>=`/`<=` → range scan cands or narrow eq
   set (`boila_knn_pref` / V3b). Non-PK range/eq → HNSW overfetch + V6

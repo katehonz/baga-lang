@@ -99,6 +99,7 @@ struct BoilaSel {
     knn_col: str,
     knn_metric: i64,        // 1 L2, 2 cos, 3 ip
     knn_query: str,         // суров vector литерал
+    knn_pay: bytes,         // V4e: packed VECTOR payload (plan-cache warm)
     // time_bucket (P9): GROUP BY time_bucket('1m', col)
     bucket_iv: i64,         // 0 = none; else interval seconds
     bucket_col: str,
@@ -221,7 +222,7 @@ fn boila_sel_empty() -> BoilaSel {
         has_join: 0, join_kind: 0, join_table: "", join_lcol: "", join_rcol: "",
         join_lcols: jl, join_rcols: jr,
         has_fts: 0, fts_col: "", fts_mode: 1, fts_terms: ft, fts_gaps: fg,
-        has_knn: 0, knn_col: "", knn_metric: 1, knn_query: "",
+        has_knn: 0, knn_col: "", knn_metric: 1, knn_query: "", knn_pay: bytes_new(0),
         bucket_iv: 0, bucket_col: "",
         has_like: 0, like_col: "", like_pat: "", like_esc: "",
         has_in: 0, in_col: "", in_vals: iv,

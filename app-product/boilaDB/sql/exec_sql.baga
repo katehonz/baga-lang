@@ -17,6 +17,7 @@ import "exec_out.baga"
 import "exec_dual.baga"
 import "exec_explain.baga"
 import "exec_select.baga"
+import "exec_knn.baga"
 import "exec_dml.baga"
 import "exec_modify.baga"
 import "exec_with.baga"
@@ -112,8 +113,9 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         let ct = boila_cat_by_name_txn(s, txn, ps.sel.table)?
         s = ct.s
         if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
-        boila_pc_put_mu(pc, sql, BoilaSelPlan { sel: ps.sel, table: ct.table }, pc_mu)?
-        let ex = boila_exec_select(s, txn, ct.table, ps.sel)?
+        let sel = boila_knn_prep_sel(ct.table, ps.sel)
+        boila_pc_put_mu(pc, sql, BoilaSelPlan { sel: sel, table: ct.table }, pc_mu)?
+        let ex = boila_exec_select(s, txn, ct.table, sel)?
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
     }
     if tok_kw(t0, "drop") == 1 {
