@@ -28,7 +28,7 @@ fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q
     let mut cur = ep
     let mut improved = true
     let mut guard: i64 = 0
-    while improved && guard < 256 {
+    while improved && guard < 48 {
         improved = false
         guard = guard + 1
         let cv = hnsw_row_payload_c(s, txn, table_id, cur, def.col_idx, def.dim, def.id, vcache, ncache)?
@@ -78,15 +78,20 @@ fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q_p
     vec_push(cds, ed)
     map_set(vis, entry, 1)
     let mut expanded: i64 = 0
-    // ef*2 expansions: enough for k≈10; was ef*4 (V2 latency).
-    while expanded < vec_len(cand) && expanded < ef * 2 {
+    // Expand at most `ef` nodes (was ef*2 / ef*4) — fewer GETs for k≈10.
+    while expanded < vec_len(cand) && expanded < ef {
         let cur = vec_get(cand, expanded)
         expanded = expanded + 1
         let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, ncache, vcache)?
         s = nb.s
         txn = nb.txn
+        // Cap edges examined per node (M=16; first half often enough)
+        let mut jmax = vec_len(nb.pks)
+        if jmax > 12 {
+            jmax = 12
+        }
         let mut j: i64 = 0
-        while j < vec_len(nb.pks) {
+        while j < jmax {
             let pk = vec_get(nb.pks, j)
             if map_has(vis, pk) == 0 {
                 map_set(vis, pk, 1)
@@ -95,7 +100,6 @@ fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q_p
                 txn = rv.txn
                 if rv.ok == 1 {
                     let d = hnsw_dist_pay(q_pay, q_f, rv.pay, def.metric)
-                    // skip if worse than worst in full ef-set
                     let mut take = 1
                     if vec_len(cand) >= ef {
                         if d >= vec_get(cds, ef - 1) {
@@ -123,7 +127,6 @@ fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q_p
                         vec_set(cand, pos, pk)
                         vec_set(cds, pos, d)
                         if vec_len(cand) > ef {
-                            // drop tail in place (no full rebuild)
                             let mut nc: Vec<bytes> = vec_new()
                             let mut nd: Vec<f64> = vec_new()
                             let mut t: i64 = 0
@@ -265,9 +268,7 @@ fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q
     let ncache: Map<bytes, bytes> = map_new()
     let vcache: Map<bytes, bytes> = map_new()
     let q_pay = boila_vec_pack_payload(q)
-    let warm = hnsw_warm_upper(s, txn, t.id, def.id, vm.ep, vm.max_lvl, ncache, vcache)?
-    s = warm.s
-    txn = warm.txn
+    // No warm_upper: greedy loads upper levels on demand (fewer GETs).
     let mut ep = vm.ep
     let mut lc = vm.max_lvl
     while lc > 0 {
@@ -279,9 +280,13 @@ fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q
         }
         lc = lc - 1
     }
-    let mut ef = hnsw_ef_s()
-    if k * 2 > ef {
-        ef = k * 2
+    // Tight adaptive ef for LIMIT-k (V2 gate): max(k+2, 10) cap ef_s
+    let mut ef = k + 2
+    if ef < 10 {
+        ef = 10
+    }
+    if ef > hnsw_ef_s() {
+        ef = hnsw_ef_s()
     }
     let beam = hnsw_beam(s, txn, t.id, def, q_pay, q, ep, 0, ef, ncache, vcache)?
     s = beam.s

@@ -65,8 +65,8 @@ fn hnsw_nbr_pk(ix_id: i64, level: i64, pk: bytes) -> bytes {
 
 fn hnsw_M() -> i64 { return 16 }
 fn hnsw_ef_c() -> i64 { return 64 }
-// Search ef: tuned for LIMIT≈10 / V2 gate (was 50 → 24 → 20).
-fn hnsw_ef_s() -> i64 { return 20 }
+// Search ef cap (V2 gate): adaptive max(k*2, 12) then clamp to this.
+fn hnsw_ef_s() -> i64 { return 16 }
 
 fn hnsw_unwrap(val: bytes) -> bytes {
     if bytes_len(val) > 8 {
