@@ -214,7 +214,7 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         }
     }
 
-    // HAVING pred [AND|OR pred]*  (Q-havx + Q-havand)
+    // HAVING with AND>OR + parentheses (Q-havprec)
     if tok_kw(boila_ps_tok(l, i), "having") == 1 {
         let hv = boila_parse_having(l, i + 1)
         if hv.ok == 0 {
@@ -222,7 +222,8 @@ fn boila_parse_select(l: BoilaLex) -> BoilaParseSel {
         }
         sel.has_having = 1
         sel.hav_preds = hv.preds
-        sel.hav_joins = hv.joins
+        sel.hav_nodes = hv.nodes
+        sel.hav_root = hv.root
         i = hv.pos
     }
 

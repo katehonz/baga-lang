@@ -140,51 +140,108 @@ struct BoilaHavEmit {
     emit: i64
 }
 
+// Evaluate one leaf predicate (returns -1 on error; state via out).
+fn boila_hav_leaf_val(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, leaf: i64, cols: Vec<BoilaColDef>, brows: Vec<Vec<BoilaVal>>) -> BoilaHavEmit {
+    let hp = vec_get(sel.hav_preds, leaf)
+    let slot = vec_get(slots, leaf)
+    if hp.agg == 1 {
+        return BoilaHavEmit { ok: 1, err: "", state: "", emit: boila_hav_pass(hp.op, acc.n, hp.val) }
+    }
+    if slot < 0 {
+        if vec_len(sel.group_cols) > 0 {
+            return BoilaHavEmit { ok: 0, err: "HAVING агрегат извън проекцията", state: "0A000", emit: 0 }
+        }
+        if vec_len(hp.xtoks) > 0 {
+            return BoilaHavEmit { ok: 0, err: "HAVING expr-agg без GROUP BY изисква проекция", state: "0A000", emit: 0 }
+        }
+        let ex = boila_agg_extra(cols, brows, hp.agg, hp.col)
+        if ex.ok == 0 {
+            return BoilaHavEmit { ok: 0, err: ex.err, state: ex.state, emit: 0 }
+        }
+        let mut one: i64 = 0
+        if ex.has == 1 {
+            one = boila_hav_pass(hp.op, ex.val, hp.val)
+        }
+        return BoilaHavEmit { ok: 1, err: "", state: "", emit: one }
+    }
+    let hv = boila_hav_slot_val(acc, hp.agg, slot)
+    let mut one2: i64 = 0
+    if hv.ok == 1 {
+        one2 = boila_hav_pass(hp.op, hv.v, hp.val)
+    }
+    return BoilaHavEmit { ok: 1, err: "", state: "", emit: one2 }
+}
+
+// Tree walk: post-order via push-only stack (no vec_pop).
 fn boila_hav_eval(acc: BoilaAggAcc, sel: BoilaSel, slots: Vec<i64>, cols: Vec<BoilaColDef>, brows: Vec<Vec<BoilaVal>>) -> BoilaHavEmit {
     if sel.has_having == 0 {
         return BoilaHavEmit { ok: 1, err: "", state: "", emit: 1 }
     }
-    let mut acc_pass: i64 = 0
-    let mut hi: i64 = 0
-    while hi < vec_len(sel.hav_preds) {
-        let hp = vec_get(sel.hav_preds, hi)
-        let slot = vec_get(slots, hi)
-        let mut one: i64 = 0
-        if hp.agg == 1 {
-            one = boila_hav_pass(hp.op, acc.n, hp.val)
-        } else {
-            if slot < 0 {
-                if vec_len(sel.group_cols) > 0 {
-                    return BoilaHavEmit { ok: 0, err: "HAVING агрегат извън проекцията", state: "0A000", emit: 0 }
-                }
-                if vec_len(hp.xtoks) > 0 {
-                    return BoilaHavEmit { ok: 0, err: "HAVING expr-agg без GROUP BY изисква проекция", state: "0A000", emit: 0 }
-                }
-                let ex = boila_agg_extra(cols, brows, hp.agg, hp.col)
-                if ex.ok == 0 {
-                    return BoilaHavEmit { ok: 0, err: ex.err, state: ex.state, emit: 0 }
-                }
-                if ex.has == 1 {
-                    one = boila_hav_pass(hp.op, ex.val, hp.val)
-                }
-            } else {
-                let hv = boila_hav_slot_val(acc, hp.agg, slot)
-                if hv.ok == 1 {
-                    one = boila_hav_pass(hp.op, hv.v, hp.val)
-                }
-            }
-        }
-        if hi == 0 {
-            acc_pass = one
-        } else {
-            let jn = vec_get(sel.hav_joins, hi - 1)
-            if jn == 1 {
-                if acc_pass == 1 && one == 1 { acc_pass = 1 } else { acc_pass = 0 }
-            } else {
-                if acc_pass == 1 || one == 1 { acc_pass = 1 } else { acc_pass = 0 }
-            }
-        }
-        hi = hi + 1
+    if sel.hav_root < 0 || vec_len(sel.hav_nodes) == 0 {
+        return BoilaHavEmit { ok: 1, err: "", state: "", emit: 1 }
     }
-    return BoilaHavEmit { ok: 1, err: "", state: "", emit: acc_pass }
+    let st: Vec<i64> = vec_new()
+    let out: Vec<i64> = vec_new()
+    vec_push(st, sel.hav_root)
+    let mut sp: i64 = 1
+    while sp > 0 {
+        sp = sp - 1
+        let n = vec_get(st, sp)
+        vec_push(out, n)
+        let node = vec_get(sel.hav_nodes, n)
+        if node.kind != 0 {
+            if node.a >= 0 {
+                if sp < vec_len(st) {
+                    vec_set(st, sp, node.a)
+                } else {
+                    vec_push(st, node.a)
+                }
+                sp = sp + 1
+            }
+            if node.b >= 0 {
+                if sp < vec_len(st) {
+                    vec_set(st, sp, node.b)
+                } else {
+                    vec_push(st, node.b)
+                }
+                sp = sp + 1
+            }
+        }
+    }
+    let vals: Vec<i64> = vec_new()
+    let mut vi: i64 = 0
+    while vi < vec_len(sel.hav_nodes) {
+        vec_push(vals, 0)
+        vi = vi + 1
+    }
+    let mut oi = vec_len(out) - 1
+    while oi >= 0 {
+        let n = vec_get(out, oi)
+        let node = vec_get(sel.hav_nodes, n)
+        if node.kind == 0 {
+            let lv = boila_hav_leaf_val(acc, sel, slots, node.leaf, cols, brows)
+            if lv.ok == 0 {
+                return lv
+            }
+            vec_set(vals, n, lv.emit)
+        } else {
+            let va = vec_get(vals, node.a)
+            let vb = vec_get(vals, node.b)
+            if node.kind == 1 {
+                if va == 1 && vb == 1 {
+                    vec_set(vals, n, 1)
+                } else {
+                    vec_set(vals, n, 0)
+                }
+            } else {
+                if va == 1 || vb == 1 {
+                    vec_set(vals, n, 1)
+                } else {
+                    vec_set(vals, n, 0)
+                }
+            }
+        }
+        oi = oi - 1
+    }
+    return BoilaHavEmit { ok: 1, err: "", state: "", emit: vec_get(vals, sel.hav_root) }
 }

@@ -9,7 +9,6 @@ import "token.baga"
 // OFFSET, GROUP BY/HAVING, един JOIN (INNER/LEFT, ON equality).
 
 // One HAVING predicate: agg(*) | agg(col) | agg(<expr>) op lit.
-// next_join is not stored here — see BoilaSel.hav_joins.
 struct BoilaHavPred {
     agg: i64,       // 1 count(*), 2 count(col|expr), 3 sum, …
     col: str,       // "" if count(*) or expr-arg
@@ -20,6 +19,23 @@ struct BoilaHavPred {
 
 fn boila_hav_pred(agg: i64, col: str, xtoks: Vec<Token>, op: str, val: i64) -> BoilaHavPred {
     return BoilaHavPred { agg: agg, col: col, xtoks: xtoks, op: op, val: val }
+}
+
+// Boolean tree over leaf preds (Q-havprec): kind 0=leaf, 1=AND, 2=OR.
+// a/b are child node indices; leaf is index into hav_preds.
+struct BoilaHavNode {
+    kind: i64,
+    leaf: i64,
+    a: i64,
+    b: i64
+}
+
+fn boila_hav_leaf(leaf: i64) -> BoilaHavNode {
+    return BoilaHavNode { kind: 0, leaf: leaf, a: 0 - 1, b: 0 - 1 }
+}
+
+fn boila_hav_bin(kind: i64, a: i64, b: i64) -> BoilaHavNode {
+    return BoilaHavNode { kind: kind, leaf: 0 - 1, a: a, b: b }
 }
 
 struct BoilaSelItem {
@@ -60,10 +76,11 @@ struct BoilaSel {
     // group_cols[i]; non-empty = GROUP BY <expr> (key = eval on row).
     group_xtoks: Vec<Vec<Token>>,
     has_having: i64,
-    // Q-havx / Q-havand: list of HAVING predicates; joins between them
-    // (1=AND, 2=OR) left-associative. Empty xtoks = bare col / count(*).
+    // Q-havx / Q-havand / Q-havprec: leaf preds + boolean tree
+    // (AND binds tighter than OR; parentheses supported).
     hav_preds: Vec<BoilaHavPred>,
-    hav_joins: Vec<i64>,
+    hav_nodes: Vec<BoilaHavNode>,
+    hav_root: i64,
     has_join: i64,
     join_kind: i64,   // 1 INNER, 2 LEFT
     join_table: str,
@@ -188,7 +205,7 @@ fn boila_sel_empty() -> BoilaSel {
     let iv: Vec<BoilaVal> = vec_new()
     let xw: Vec<Token> = vec_new()
     let hp: Vec<BoilaHavPred> = vec_new()
-    let hj: Vec<i64> = vec_new()
+    let hn: Vec<BoilaHavNode> = vec_new()
     return BoilaSel {
         table: "", star: 0, items: items,
         eq_col: "", has_eq: 0, pk_eq: BoilaVal { tag: 0, i: 0, b: bytes_new(0) }, eq_param: 0,
@@ -200,7 +217,7 @@ fn boila_sel_empty() -> BoilaSel {
         has_order: 0, ord_cols: oc, ord_desc: od,
         distinct: 0,
         has_group: 0, group_cols: gc, group_xtoks: gx,
-        has_having: 0, hav_preds: hp, hav_joins: hj,
+        has_having: 0, hav_preds: hp, hav_nodes: hn, hav_root: 0 - 1,
         has_join: 0, join_kind: 0, join_table: "", join_lcol: "", join_rcol: "",
         join_lcols: jl, join_rcols: jr,
         has_fts: 0, fts_col: "", fts_mode: 1, fts_terms: ft, fts_gaps: fg,

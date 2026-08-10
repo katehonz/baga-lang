@@ -155,12 +155,13 @@ T = транзакции, W = wire protocol, F = FTS.
 - **P11-30 — (FIXED) HAVING agg(expr) (Q-havx).** Parse accepts
   `HAVING sum(sal+1) op lit`; exec matches projection slot or
   synthetic HAVING-only slot. [multi-predicate → P11-31.]
-- **P11-31 — (FIXED) HAVING … AND|OR … (Q-havand).** `BoilaHavPred`
-  list + `hav_joins` (1=AND, 2=OR), left-associative; each pred
-  gets its own accumulate slot. `parse_having.baga`. boila_havx_test
-  covers AND/OR/expr mixes. Residual: no PG AND-over-OR precedence
-  (left-assoc only); no parentheses in HAVING; no non-agg HAVING
-  exprs; whole-table HAVING expr-agg without projection still 0A000.
+- **P11-31 — (FIXED) HAVING … AND|OR … (Q-havand).** Multi-pred
+  with accumulate slots. [precedence + parens → P11-32.]
+- **P11-32 — (FIXED) HAVING precedence + parentheses (Q-havprec).**
+  Boolean tree (`BoilaHavNode`): AND binds tighter than OR; `(…)`
+  primary. Recursive-descent parse + post-order eval. boila_havx_test
+  covers prec/paren cases. Residual: no non-agg HAVING exprs;
+  whole-table HAVING expr-agg without projection still 0A000.
 - **P11-4 — barabadb/SQLite сравнение не е в repo run.** Изисква
   външни бинарници; суров rocksbaga baseline остава P1 scorecard.
 

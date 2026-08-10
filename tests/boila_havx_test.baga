@@ -123,11 +123,28 @@ fn main() -> i64 !IO !Time !Par {
     srv = a4.srv
     check(fails, "hav_or_mix", a4.ok == 1 && vec_len(a4.res.rows) == 1 && cell(vec_get(a4.res.rows, 0), 0) == "eng")
 
-    // three preds: left-assoc ((a AND b) OR c)
+    // three preds: AND binds tighter — (count=2 AND sum<100) OR sum>210
     let a5 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING count(*) = 2 AND sum(sal) < 100 OR sum(sal) > 210 ORDER BY dept")?
     srv = a5.srv
     // eng: (T AND F) OR T = T; hr: (T AND F) OR F = F → only eng
-    check(fails, "hav_three", a5.ok == 1 && vec_len(a5.res.rows) == 1 && cell(vec_get(a5.res.rows, 0), 0) == "eng")
+    check(fails, "hav_prec", a5.ok == 1 && vec_len(a5.res.rows) == 1 && cell(vec_get(a5.res.rows, 0), 0) == "eng")
+
+    // parentheses flip: count=2 AND (sum<100 OR sum>210)
+    // eng: T AND (F OR T) = T; hr: T AND (F OR F) = F → eng only
+    let a6 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING count(*) = 2 AND (sum(sal) < 100 OR sum(sal) > 210) ORDER BY dept")?
+    srv = a6.srv
+    check(fails, "hav_paren", a6.ok == 1 && vec_len(a6.res.rows) == 1 && cell(vec_get(a6.res.rows, 0), 0) == "eng")
+
+    // (count=1 OR sum>180) AND count=2 → both depts (hr sum 185, eng 220)
+    let a7 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING (count(*) = 1 OR sum(sal) > 180) AND count(*) = 2 ORDER BY dept")?
+    srv = a7.srv
+    check(fails, "hav_paren_or_and", a7.ok == 1 && vec_len(a7.res.rows) == 2)
+
+    // without paren: count=1 OR sum>180 AND count=2 = count=1 OR (sum>180 AND count=2)
+    // eng: F OR (T AND T)=T; hr: F OR (T AND T)=T → both
+    let a8 = boila_server_exec(srv, "boila", "SELECT dept FROM e GROUP BY dept HAVING count(*) = 1 OR sum(sal) > 180 AND count(*) = 2 ORDER BY dept")?
+    srv = a8.srv
+    check(fails, "hav_and_over_or", a8.ok == 1 && vec_len(a8.res.rows) == 2)
 
     boila_server_close(srv)?
     wipe_root(root)?
