@@ -123,9 +123,9 @@ struct BoilaJoinOut {
     rows: Vec<Vec<BoilaVal>>
 }
 
-// A2: Map value wrapper (Map cannot hold bare Vec).
+// A2 / Q-join-inner-pks: hash join key → inner pks (not full rows).
 struct BoilaHJBucket {
-    idxs: Vec<i64>
+    pks: Vec<bytes>
 }
 
 fn boila_join_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaJoinOut {
@@ -212,30 +212,45 @@ fn boila_join_filter_range(rows: Vec<Vec<BoilaVal>>, off: i64, cix: i64, has_lo:
     return out
 }
 
-// A2: build hash on inner join key → row indices (null keys skipped).
-fn boila_hj_build(inner: Vec<Vec<BoilaVal>>, ridx: i64) -> Map<bytes, BoilaHJBucket> {
+// Q-join-inner-pks: build hash join key → inner pks (GET once, drop row).
+struct BoilaHJBuild {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ht: Map<bytes, BoilaHJBucket>
+}
+
+fn boila_hj_build_pks(s: BoilaStore, txn: BoilaTxn, t2: BoilaTable, ridx: i64) -> BoilaHJBuild !IO !Time !Par {
     let m: Map<bytes, BoilaHJBucket> = map_new()
+    let empty_sel = boila_sel_empty()
+    let ip = boila_fetch_pks(s, txn, t2, empty_sel)?
+    s = ip.s
+    txn = ip.txn
     let mut i: i64 = 0
-    while i < vec_len(inner) {
-        let row = vec_get(inner, i)
-        if ridx >= 0 && ridx < vec_len(row) {
-            let v = vec_get(row, ridx)
-            if v.tag != boila_v_null() {
-                let k = boila_val_enc(v)
-                if map_has(m, k) == 1 {
-                    let b = map_get(m, k)
-                    vec_push(b.idxs, i)
-                    map_set(m, k, b)
-                } else {
-                    let idxs: Vec<i64> = vec_new()
-                    vec_push(idxs, i)
-                    map_set(m, k, BoilaHJBucket { idxs: idxs })
+    while i < vec_len(ip.pks) {
+        let pk = vec_get(ip.pks, i)
+        let g = boila_txn_get(s, txn, t2.id, pk)?
+        s = g.s
+        if g.found == 1 {
+            let row = boila_row_dec(g.row)
+            if ridx >= 0 && ridx < vec_len(row) {
+                let v = vec_get(row, ridx)
+                if v.tag != boila_v_null() {
+                    let k = boila_val_enc(v)
+                    if map_has(m, k) == 1 {
+                        let b = map_get(m, k)
+                        vec_push(b.pks, pk)
+                        map_set(m, k, b)
+                    } else {
+                        let bp: Vec<bytes> = vec_new()
+                        vec_push(bp, pk)
+                        map_set(m, k, BoilaHJBucket { pks: bp })
+                    }
                 }
             }
         }
         i = i + 1
     }
-    return m
+    return BoilaHJBuild { s: s, txn: txn, ht: m }
 }
 
 // A3c: all ON pairs match (lrow left table, rrow right table).
@@ -468,63 +483,30 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
             oi = oi + 1
         }
     } else {
-        // A2b: no ix — hash if outer large; nested loop if outer small (≤8)
-        let inner = boila_fetch_all(s, txn, t2)?
-        s = inner.s
-        let inn = vec_len(inner.rows)
-        let nlmax = boila_join_nl_max()?
-        if on <= nlmax {
-            let mut oi: i64 = 0
-            let mut done = false
-            while oi < on && done == false {
-                let g0 = boila_txn_get(s, txn, t.id, vec_get(op.pks, oi))?
-                s = g0.s
-                if g0.found == 1 {
-                    let orow = boila_row_dec(g0.row)
-                    let mut matched = false
-                    let mut j: i64 = 0
-                    while j < inn && done == false {
-                        let irow = vec_get(inner.rows, j)
-                        if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
-                            matched = true
-                            let wide = boila_wide_row(orow, irow)
-                            if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
-                                if boila_join_emit(rows, wide, need, topn, oidxs, sel.ord_desc) == 1 {
-                                    done = true
-                                }
-                            }
-                        }
-                        j = j + 1
-                    }
-                    if done == false && matched == false && sel.join_kind == 2 {
-                        let wide = boila_wide_row(orow, nullr)
-                        if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
-                            if boila_join_emit(rows, wide, need, topn, oidxs, sel.ord_desc) == 1 {
-                                done = true
-                            }
-                        }
-                    }
-                }
-                oi = oi + 1
-            }
-        } else {
-            let ht = boila_hj_build(inner.rows, ridx)
-            let mut oi: i64 = 0
-            let mut done = false
-            while oi < on && done == false {
-                let g0 = boila_txn_get(s, txn, t.id, vec_get(op.pks, oi))?
-                s = g0.s
-                if g0.found == 1 {
-                    let orow = boila_row_dec(g0.row)
-                    let lv = vec_get(orow, lidx)
-                    let mut matched = false
-                    if lv.tag != boila_v_null() {
-                        let k = boila_val_enc(lv)
-                        if map_has(ht, k) == 1 {
-                            let b = map_get(ht, k)
-                            let mut j: i64 = 0
-                            while j < vec_len(b.idxs) && done == false {
-                                let irow = vec_get(inner.rows, vec_get(b.idxs, j))
+        // Q-join-inner-pks: hash key→pks (no full inner row Vec)
+        let hb = boila_hj_build_pks(s, txn, t2, ridx)?
+        s = hb.s
+        txn = hb.txn
+        let ht = hb.ht
+        let mut oi: i64 = 0
+        let mut done = false
+        while oi < on && done == false {
+            let g0 = boila_txn_get(s, txn, t.id, vec_get(op.pks, oi))?
+            s = g0.s
+            if g0.found == 1 {
+                let orow = boila_row_dec(g0.row)
+                let lv = vec_get(orow, lidx)
+                let mut matched = false
+                if lv.tag != boila_v_null() {
+                    let k = boila_val_enc(lv)
+                    if map_has(ht, k) == 1 {
+                        let b = map_get(ht, k)
+                        let mut j: i64 = 0
+                        while j < vec_len(b.pks) && done == false {
+                            let g = boila_txn_get(s, txn, t2.id, vec_get(b.pks, j))?
+                            s = g.s
+                            if g.found == 1 {
+                                let irow = boila_row_dec(g.row)
                                 if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
                                     matched = true
                                     let wide = boila_wide_row(orow, irow)
@@ -534,21 +516,21 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
                                         }
                                     }
                                 }
-                                j = j + 1
                             }
-                        }
-                    }
-                    if done == false && matched == false && sel.join_kind == 2 {
-                        let wide = boila_wide_row(orow, nullr)
-                        if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
-                            if boila_join_emit(rows, wide, need, topn, oidxs, sel.ord_desc) == 1 {
-                                done = true
-                            }
+                            j = j + 1
                         }
                     }
                 }
-                oi = oi + 1
+                if done == false && matched == false && sel.join_kind == 2 {
+                    let wide = boila_wide_row(orow, nullr)
+                    if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                        if boila_join_emit(rows, wide, need, topn, oidxs, sel.ord_desc) == 1 {
+                            done = true
+                        }
+                    }
+                }
             }
+            oi = oi + 1
         }
     }
     // right WHERE already applied via wide_keep during probe
@@ -786,10 +768,11 @@ fn boila_join_into_fold(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaS
             oi = oi + 1
         }
     } else {
-        // no right ix: always hash on inner (stream outer) — avoids materializing outer for NL size check
-        let inner = boila_fetch_all(s, txn, t2)?
-        s = inner.s
-        let ht = boila_hj_build(inner.rows, ridx)
+        // Q-join-inner-pks: hash key→pks, GET on probe
+        let hb = boila_hj_build_pks(s, txn, t2, ridx)?
+        s = hb.s
+        txn = hb.txn
+        let ht = hb.ht
         let mut oi: i64 = 0
         while oi < on {
             let g0 = boila_txn_get(s, txn, t.id, vec_get(op.pks, oi))?
@@ -803,17 +786,21 @@ fn boila_join_into_fold(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaS
                     if map_has(ht, k) == 1 {
                         let b = map_get(ht, k)
                         let mut j: i64 = 0
-                        while j < vec_len(b.idxs) {
-                            let irow = vec_get(inner.rows, vec_get(b.idxs, j))
-                            if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
-                                let wide = boila_wide_row(orow, irow)
-                                if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
-                                    st = boila_join_fold_match(st, sel, xnames, wide)?
-                                    if st.ok == 0 {
-                                        return boila_join_fold_fail(s, txn, st.err, st.state)
+                        while j < vec_len(b.pks) {
+                            let g = boila_txn_get(s, txn, t2.id, vec_get(b.pks, j))?
+                            s = g.s
+                            if g.found == 1 {
+                                let irow = boila_row_dec(g.row)
+                                if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
+                                    let wide = boila_wide_row(orow, irow)
+                                    if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                                        st = boila_join_fold_match(st, sel, xnames, wide)?
+                                        if st.ok == 0 {
+                                            return boila_join_fold_fail(s, txn, st.err, st.state)
+                                        }
                                     }
+                                    matched = true
                                 }
-                                matched = true
                             }
                             j = j + 1
                         }

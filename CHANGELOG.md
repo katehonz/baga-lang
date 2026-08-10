@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-join-inner-pks: hash without full inner rows
+- No-right-index JOIN builds `key → Vec<pks>` (`boila_hj_build_pks`);
+  probe GETs each matching pk (no `fetch_all` row materialize).
+- Applies to both `join_rows` and `join_into_fold`.
+
 ### boilaDB — Q-join-sorted-outer: left ORDER BY + LIMIT early-stop
 - When `ORDER BY` is only outer-table cols: sort outer pks by those keys,
   probe in order, stop after `offset+limit` kept rows (no full join output).

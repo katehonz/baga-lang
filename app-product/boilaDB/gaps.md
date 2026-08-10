@@ -218,8 +218,10 @@ T = транзакции, W = wire protocol, F = FTS.
   right/mixed cols; full outer probe, output O(limit).
 - **Q-join-sorted-outer — (FIXED) left ORDER BY early-stop.** When all
   ORDER BY cols are on the outer table: sort outer pks by those keys,
-  probe in order, stop after `offset+limit` kept rows. Residual: right
-  inner still materializes for hash; mixed ORDER BY uses top-N not stop.
+  probe in order, stop after `offset+limit` kept rows.
+- **Q-join-inner-pks — (FIXED) hash key→pks.** No-ix join builds
+  `Map<key, pks>` via `boila_hj_build_pks` (GET+drop row); probe GETs
+  matches. Residual: hash still O(inner keys); mixed ORDER BY top-N.
 - **K3g — (FIXED) secondary range exclusive bounds.** `lo_excl`/`hi_excl`
   on SELECT secondary path. DML WHERE still inclusive-only.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild
