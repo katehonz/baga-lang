@@ -41,6 +41,20 @@ fn wipe_root(root: str) -> i64 !IO !Par {
     return 0
 }
 
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == boila_v_str() {
+        return str_of_bytes(v.b)
+    }
+    if v.tag == boila_v_i64() {
+        return int_to_str(v.i)
+    }
+    if v.tag == boila_v_null() {
+        return "<null>"
+    }
+    return "?"
+}
+
 fn main() -> i64 !IO !Time !Par {
     print("boila_index_test:")
     let fails: Vec<i64> = vec_new()
@@ -77,6 +91,13 @@ fn main() -> i64 !IO !Time !Par {
     let qr = boila_server_exec(srv, "boila", "SELECT id FROM s WHERE n >= 20 AND n <= 30")?
     srv = qr.srv
     check(fails, "ix_range", qr.ok == 1 && vec_len(qr.res.rows) == 2)
+    // exclusive bounds on secondary (half-open window)
+    let qe = boila_server_exec(srv, "boila", "SELECT id FROM s WHERE n > 20 AND n < 40 ORDER BY id")?
+    srv = qe.srv
+    check(fails, "ix_range_excl", qe.ok == 1 && vec_len(qe.res.rows) == 1 && cell(vec_get(qe.res.rows, 0), 0) == "3")
+    let qh = boila_server_exec(srv, "boila", "SELECT id FROM s WHERE n >= 20 AND n < 30 ORDER BY id")?
+    srv = qh.srv
+    check(fails, "ix_range_half", qh.ok == 1 && vec_len(qh.res.rows) == 1 && cell(vec_get(qh.res.rows, 0), 0) == "2")
     // K3f: TEXT index range when PK is fixed-width i64
     let qtr = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city >= 'sofia' AND city <= 'sofia'")?
     srv = qtr.srv

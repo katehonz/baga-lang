@@ -189,11 +189,17 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S5 — (MEASURED + Q-ghash) time_bucket gate.** Hash GROUP BY:
   `Map<i64,i64>` for single BIGINT/ts/`time_bucket`, `Map<str,i64>` hex
   otherwise; on-the-fly bucket (no full-table rewrite). **@10k 36 ms OK**;
-  **@20k 81 ms FAIL**; **@100k 441 ms** (was 1.68 s linear, ~3.8×). PLAN
-  1M &lt; 50 ms not met — scan/materialize dominates. Secondary
-  `pts_ts_ix` created in bench but unused without `WHERE ts …`. Results:
+  **@20k ~76 ms FAIL**; **@100k ~431 ms** (was 1.68 s linear, ~3.8×). PLAN
+  1M &lt; 50 ms not met — scan/materialize dominates. Results:
   `bench/boila/results/modality-2026-08-10.md`. Residual: stream agg;
-  ts-range index plans; pre-agg buckets.
+  true ix seek; pre-agg buckets.
+- **K3g — (FIXED) secondary range exclusive bounds.** `boila_ix_range` /
+  `boila_scan_buf_range` honor `lo_excl`/`hi_excl` (`>` / `<` half-open
+  windows). SELECT path passes `sel.lo_excl`/`hi_excl`. DML WHERE still
+  inclusive-only (no excl fields on Upd/Del). Residual: ix range still
+  scans full `ix_id` prefix (no sort-order seek); measured **ts-ix
+  window (last 10k)** @100k table = **283 ms** (fewer GETs, still O(N)
+  ix scan).
 - **S6 — (FIXED) TTL sweeper flush + per-key purge.** `boila_ts_sweep`:
   flush then GET every data key of TTL tables (rocksbaga lazy-del on get).
   `boila_ttl_sweeper` / `BOILA_SWEEP_MS`. S6c: `BOILA_SWEEP_SYS_ROUNDS`

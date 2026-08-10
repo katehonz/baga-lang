@@ -107,13 +107,14 @@ fn boila_dml_targets(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, eq_col: str, h
             let cix = boila_col_idx(t, rc)
             let ixid = boila_ix_by_col_t(t, cix)
             if cix >= 0 && ixid >= 0 {
-                let xr = boila_ix_range(s, t, ixid, has_lo, v_lo, has_hi, v_hi)?
+                // DML WHERE has no excl flags yet — inclusive bounds only
+                let xr = boila_ix_range(s, t, ixid, has_lo, v_lo, has_hi, v_hi, 0, 0)?
                 s = xr.s
                 if xr.ok == 0 {
                     return BoilaDmlTgts { s: s, txn: txn, ok: 0, err: xr.err, state: xr.state, pks: pks }
                 }
                 if xr.has == 1 {
-                    boila_scan_buf_range(txn, t, cix, has_lo, v_lo, has_hi, v_hi, xr.pks)
+                    boila_scan_buf_range(txn, t, cix, has_lo, v_lo, has_hi, v_hi, 0, 0, xr.pks)
                     return BoilaDmlTgts { s: s, txn: txn, ok: 1, err: "", state: "", pks: xr.pks }
                 }
             }

@@ -22,7 +22,7 @@ run_chunked() {
   done
   echo "=== $name query ==="
   # shellcheck disable=SC2086
-  env ${prefix}_PHASE=query $extra_env \
+  env ${prefix}_PHASE=query ${prefix}_TOTAL="$total" $extra_env \
     "$BAGA" "${I[@]}" "$src" || return 1
 }
 

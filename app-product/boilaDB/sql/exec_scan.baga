@@ -202,11 +202,11 @@ fn boila_fetch_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) 
             let cix = boila_col_idx(t, rc)
             let ixid = boila_ix_by_col_t(t, cix)
             if cix >= 0 && ixid >= 0 {
-                let xr = boila_ix_range(s, t, ixid, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi)?
+                let xr = boila_ix_range(s, t, ixid, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi, sel.lo_excl, sel.hi_excl)?
                 s = xr.s
                 if xr.ok == 0 { return boila_fetch_fail(s, txn, xr.err, xr.state) }
                 if xr.has == 1 {
-                    boila_scan_buf_range(txn, t, cix, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi, xr.pks)
+                    boila_scan_buf_range(txn, t, cix, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi, sel.lo_excl, sel.hi_excl, xr.pks)
                     let mut li: i64 = 0
                     while li < vec_len(xr.pks) {
                         let g = boila_txn_get(s, txn, t.id, vec_get(xr.pks, li))?

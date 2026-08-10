@@ -248,7 +248,8 @@ struct BoilaIxRange {
     pks: Vec<bytes>
 }
 
-fn boila_ix_range(s: BoilaStore, t: BoilaTable, ix_id: i64, has_lo: i64, lo: BoilaVal, has_hi: i64, hi: BoilaVal) -> BoilaIxRange !IO !Time !Par {
+// lo_excl/hi_excl: 1 = strict (col > lo / col < hi); 0 = inclusive (>= / <=).
+fn boila_ix_range(s: BoilaStore, t: BoilaTable, ix_id: i64, has_lo: i64, lo: BoilaVal, has_hi: i64, hi: BoilaVal, lo_excl: i64, hi_excl: i64) -> BoilaIxRange !IO !Time !Par {
     let pks: Vec<bytes> = vec_new()
     let mut tag: i64 = 0 - 1
     if has_lo == 1 { tag = lo.tag }
@@ -300,11 +301,19 @@ fn boila_ix_range(s: BoilaStore, t: BoilaTable, ix_id: i64, has_lo: i64, lo: Boi
                 let mut keep = true
                 if has_lo == 1 {
                     let c = boila_val_cmp(pkv, lo)
-                    if c != 0 && c != 1 { keep = false }
+                    if lo_excl == 1 {
+                        if c != 1 { keep = false }
+                    } else {
+                        if c != 0 && c != 1 { keep = false }
+                    }
                 }
                 if keep && has_hi == 1 {
                     let c = boila_val_cmp(pkv, hi)
-                    if c != 0 && c != 0 - 1 { keep = false }
+                    if hi_excl == 1 {
+                        if c != 0 - 1 { keep = false }
+                    } else {
+                        if c != 0 && c != 0 - 1 { keep = false }
+                    }
                 }
                 if keep { vec_push(pks, pkpart) }
             }

@@ -42,7 +42,8 @@ fn boila_scan_buf_eq(txn: BoilaTxn, t: BoilaTable, col_idx: i64, val: BoilaVal, 
 }
 
 // K3e: uncommitted rows matching col range into index-range pks.
-fn boila_scan_buf_range(txn: BoilaTxn, t: BoilaTable, col_idx: i64, has_lo: i64, lo: BoilaVal, has_hi: i64, hi: BoilaVal, pks: Vec<bytes>) {
+// lo_excl/hi_excl: 1 = strict (> / <); 0 = inclusive (>= / <=).
+fn boila_scan_buf_range(txn: BoilaTxn, t: BoilaTable, col_idx: i64, has_lo: i64, lo: BoilaVal, has_hi: i64, hi: BoilaVal, lo_excl: i64, hi_excl: i64, pks: Vec<bytes>) {
     let mut i: i64 = 0
     while i < vec_len(txn.writes) {
         let w = vec_get(txn.writes, i)
@@ -53,11 +54,19 @@ fn boila_scan_buf_range(txn: BoilaTxn, t: BoilaTable, col_idx: i64, has_lo: i64,
                 let mut keep = true
                 if has_lo == 1 {
                     let c = boila_val_cmp(v, lo)
-                    if c != 0 && c != 1 { keep = false }
+                    if lo_excl == 1 {
+                        if c != 1 { keep = false }
+                    } else {
+                        if c != 0 && c != 1 { keep = false }
+                    }
                 }
                 if keep && has_hi == 1 {
                     let c = boila_val_cmp(v, hi)
-                    if c != 0 && c != 0 - 1 { keep = false }
+                    if hi_excl == 1 {
+                        if c != 0 - 1 { keep = false }
+                    } else {
+                        if c != 0 && c != 0 - 1 { keep = false }
+                    }
                 }
                 if keep && boila_scan_buf_has_pk(pks, w.pk) == 0 {
                     vec_push(pks, w.pk)
