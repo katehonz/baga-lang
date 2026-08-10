@@ -228,9 +228,14 @@ fn hnsw_top_k(pks: Vec<bytes>, ds: Vec<f64>, k: i64) -> Vec<bytes> {
     return top
 }
 
+// Q-knn-pref-topk: score cands into a size-k window (no O(|cands|) ds/pks).
 fn hnsw_brute_cands(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64, cands: Vec<bytes>) -> BoilaHnswQuery !IO !Time !Par {
-    let pks: Vec<bytes> = vec_new()
-    let ds: Vec<f64> = vec_new()
+    let empty: Vec<bytes> = vec_new()
+    if k <= 0 {
+        return BoilaHnswQuery { s: s, txn: txn, pks: empty }
+    }
+    let top_pks: Vec<bytes> = vec_new()
+    let top_ds: Vec<f64> = vec_new()
     let mut i: i64 = 0
     while i < vec_len(cands) {
         let pk = vec_get(cands, i)
@@ -238,12 +243,51 @@ fn hnsw_brute_cands(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswD
         s = rv.s
         txn = rv.txn
         if rv.ok == 1 {
-            vec_push(pks, pk)
-            vec_push(ds, boila_vec_dist(q, rv.dims, def.metric))
+            let d = boila_vec_dist(q, rv.dims, def.metric)
+            let n = vec_len(top_pks)
+            if n < k {
+                vec_push(top_pks, pk)
+                vec_push(top_ds, d)
+                // bubble left (asc dist = better)
+                let mut a = n
+                while a > 0 {
+                    if vec_get(top_ds, a) < vec_get(top_ds, a - 1) {
+                        let tp = vec_get(top_pks, a)
+                        let td = vec_get(top_ds, a)
+                        vec_set(top_pks, a, vec_get(top_pks, a - 1))
+                        vec_set(top_ds, a, vec_get(top_ds, a - 1))
+                        vec_set(top_pks, a - 1, tp)
+                        vec_set(top_ds, a - 1, td)
+                        a = a - 1
+                    } else {
+                        a = 0
+                    }
+                }
+            } else {
+                // full: worse or equal to worst (last) → skip
+                if d < vec_get(top_ds, n - 1) {
+                    vec_set(top_pks, n - 1, pk)
+                    vec_set(top_ds, n - 1, d)
+                    let mut a2 = n - 1
+                    while a2 > 0 {
+                        if vec_get(top_ds, a2) < vec_get(top_ds, a2 - 1) {
+                            let tp = vec_get(top_pks, a2)
+                            let td = vec_get(top_ds, a2)
+                            vec_set(top_pks, a2, vec_get(top_pks, a2 - 1))
+                            vec_set(top_ds, a2, vec_get(top_ds, a2 - 1))
+                            vec_set(top_pks, a2 - 1, tp)
+                            vec_set(top_ds, a2 - 1, td)
+                            a2 = a2 - 1
+                        } else {
+                            a2 = 0
+                        }
+                    }
+                }
+            }
         }
         i = i + 1
     }
-    return BoilaHnswQuery { s: s, txn: txn, pks: hnsw_top_k(pks, ds, k) }
+    return BoilaHnswQuery { s: s, txn: txn, pks: top_pks }
 }
 
 fn hnsw_brute(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q: Vec<f64>, k: i64) -> BoilaHnswQuery !IO !Time !Par {

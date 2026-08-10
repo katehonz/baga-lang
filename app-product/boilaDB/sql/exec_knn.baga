@@ -129,24 +129,19 @@ fn boila_knn_pref(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) ->
         if has == 1 {
             cands = boila_knn_cands_in_range(cands, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi)
         } else {
+            // Q-knn-pref-pks: range candidates as pks only (no full row Vec)
             let mut rsel = sel
             rsel.has_eq = 0
             rsel.has_knn = 0
             rsel.has_fts = 0
-            let fr = boila_fetch_rows(s, txn, t, rsel)?
+            rsel.has_xw = 0
+            let fr = boila_fetch_pks(s, txn, t, rsel)?
             s = fr.s
             txn = fr.txn
             if fr.ok == 0 {
                 return BoilaKnnPref { s: s, txn: txn, ok: 0, err: fr.err, state: fr.state, has: 0, cands: cands }
             }
-            let mut i: i64 = 0
-            while i < vec_len(fr.rows) {
-                let row = vec_get(fr.rows, i)
-                if t.pk_idx >= 0 && t.pk_idx < vec_len(row) {
-                    vec_push(cands, boila_val_enc(vec_get(row, t.pk_idx)))
-                }
-                i = i + 1
-            }
+            cands = fr.pks
             has = 1
         }
     }

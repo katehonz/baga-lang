@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-knn-pref-pks: lighter kNN pre-filter cands
+- PK-range pre-filter builds cand pks via `boila_fetch_pks` (no row Vec).
+- `hnsw_brute_cands` scores into a size-k top window (not full score lists).
+
 ### boilaDB — Q-join-inner-pks: hash without full inner rows
 - No-right-index JOIN builds `key → Vec<pks>` (`boila_hj_build_pks`);
   probe GETs each matching pk (no `fetch_all` row materialize).
