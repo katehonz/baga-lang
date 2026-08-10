@@ -19,16 +19,15 @@ import "exec_buf.baga"
 import "exec_join.baga"
 import "exec_xw.baga"
 import "exec_dual_ops.baga"
+import "exec_knn.baga"
 import "exec_agg_fold.baga"
 import "exec_agg_feed.baga"
 import "exec_agg_extra.baga"
+import "../fts/fts.baga"
 import "std/bytes/bytes.baga"
 
-// Stream fold when possible: plain / join / xw. Not knn/fts/isnull.
+// Stream fold for plain / join / xw / isnull / fts / knn (+ filters).
 fn boila_agg_streamable(sel: BoilaSel) -> i64 {
-    if sel.has_knn == 1 { return 0 }
-    if sel.has_fts == 1 { return 0 }
-    if sel.isnull_mode != 0 { return 0 }
     return 1
 }
 
@@ -498,6 +497,142 @@ fn boila_agg_scan(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) ->
         vec_push(xnames, vec_get(cols, xi).name)
         xi = xi + 1
     }
+
+    // Q-stream-isnull: IS [NOT] NULL → fold without row Vec
+    if sel.isnull_mode != 0 {
+        let cix = boila_col_idx(t, sel.isnull_col)
+        if cix < 0 {
+            return boila_exec_fail(s, txn, concat("колона '", concat(sel.isnull_col, "' не съществува")), "42703")
+        }
+        if sel.isnull_mode == 1 {
+            let ixid = boila_ix_by_col_t(t, cix)
+            if ixid >= 0 {
+                let nv = boila_val_null()
+                let lk = boila_ix_lookup(s, t, ixid, nv)?
+                s = lk.s
+                boila_scan_buf_eq(txn, t, cix, nv, lk.pks)
+                let mut li: i64 = 0
+                while li < vec_len(lk.pks) {
+                    let g = boila_txn_get(s, txn, t.id, vec_get(lk.pks, li))?
+                    s = g.s
+                    if g.found == 1 {
+                        st = boila_agg_fold_row_xw(st, sel, xnames, boila_row_dec(g.row))?
+                        if st.ok == 0 {
+                            return boila_exec_fail(s, txn, st.err, st.state)
+                        }
+                    }
+                    li = li + 1
+                }
+                let ag = boila_agg_fold_end(st, sel)?
+                if ag.ok == 0 {
+                    return boila_exec_fail(s, txn, ag.err, ag.state)
+                }
+                return boila_exec_ok_select(s, txn, ag.res)
+            }
+        }
+        let ks = boila_txn_keys(s, txn, t.id)?
+        s = ks.s
+        let mut ki: i64 = 0
+        while ki < vec_len(ks.pks) {
+            let g = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
+            s = g.s
+            if g.found == 1 {
+                let row = boila_row_dec(g.row)
+                if cix < vec_len(row) {
+                    let isn = vec_get(row, cix).tag == boila_v_null()
+                    let mut take = false
+                    if sel.isnull_mode == 1 && isn { take = true }
+                    if sel.isnull_mode == 2 && isn == false { take = true }
+                    if take {
+                        st = boila_agg_fold_row_xw(st, sel, xnames, row)?
+                        if st.ok == 0 {
+                            return boila_exec_fail(s, txn, st.err, st.state)
+                        }
+                    }
+                }
+            }
+            ki = ki + 1
+        }
+        let ag = boila_agg_fold_end(st, sel)?
+        if ag.ok == 0 {
+            return boila_exec_fail(s, txn, ag.err, ag.state)
+        }
+        return boila_exec_ok_select(s, txn, ag.res)
+    }
+
+    // Q-stream-fts: @@ candidates → fold
+    if sel.has_fts == 1 {
+        let fl = fts_list_for_table(s, t.id)?
+        s = fl.s
+        let col_ix = boila_col_idx(t, sel.fts_col)
+        if col_ix < 0 {
+            return boila_exec_fail(s, txn, concat("колона '", concat(sel.fts_col, "' не съществува")), "42703")
+        }
+        let mut fdi: i64 = 0 - 1
+        let mut k: i64 = 0
+        while k < vec_len(fl.defs) {
+            let d = vec_get(fl.defs, k)
+            if d.col_idx == col_ix { fdi = k }
+            k = k + 1
+        }
+        if fdi < 0 {
+            return boila_exec_fail(s, txn, concat("колона '", concat(sel.fts_col, "' няма fts индекс")), "0A000")
+        }
+        let def = vec_get(fl.defs, fdi)
+        let fq = fts_query_gaps(s, txn, t, def, sel.fts_terms, sel.fts_mode, sel.fts_gaps)?
+        s = fq.s
+        let mut qi: i64 = 0
+        while qi < vec_len(fq.pks) {
+            let g = boila_txn_get(s, txn, t.id, vec_get(fq.pks, qi))?
+            s = g.s
+            if g.found == 1 {
+                let row = boila_row_dec(g.row)
+                if boila_row_pass_filters(row, t, sel) == 1 {
+                    st = boila_agg_fold_row_xw(st, sel, xnames, row)?
+                    if st.ok == 0 {
+                        return boila_exec_fail(s, txn, st.err, st.state)
+                    }
+                }
+            }
+            qi = qi + 1
+        }
+        let ag = boila_agg_fold_end(st, sel)?
+        if ag.ok == 0 {
+            return boila_exec_fail(s, txn, ag.err, ag.state)
+        }
+        return boila_exec_ok_select(s, txn, ag.res)
+    }
+
+    // Q-stream-knn: HNSW hit pks → GET+fold (no result Vec)
+    if sel.has_knn == 1 {
+        let hits = boila_knn_hit_pks(s, txn, t, sel)?
+        s = hits.s
+        txn = hits.txn
+        if hits.ok == 0 {
+            return boila_exec_fail(s, txn, hits.err, hits.state)
+        }
+        let mut qi: i64 = 0
+        while qi < vec_len(hits.pks) {
+            let g = boila_txn_get(s, txn, t.id, vec_get(hits.pks, qi))?
+            s = g.s
+            if g.found == 1 {
+                let row = boila_row_dec(g.row)
+                if boila_row_pass_filters(row, t, sel) == 1 {
+                    st = boila_agg_fold_row_xw(st, sel, xnames, row)?
+                    if st.ok == 0 {
+                        return boila_exec_fail(s, txn, st.err, st.state)
+                    }
+                }
+            }
+            qi = qi + 1
+        }
+        let ag = boila_agg_fold_end(st, sel)?
+        if ag.ok == 0 {
+            return boila_exec_fail(s, txn, ag.err, ag.state)
+        }
+        return boila_exec_ok_select(s, txn, ag.res)
+    }
+
     let pkcol = vec_get(t.cols, t.pk_idx)
     let mut pk_range: i64 = 1
     if sel.has_lo == 1 {

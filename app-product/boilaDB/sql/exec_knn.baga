@@ -153,13 +153,23 @@ fn boila_knn_pref(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) ->
     return BoilaKnnPref { s: s, txn: txn, ok: 1, err: "", state: "", has: has, cands: cands }
 }
 
-fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
-    let rows: Vec<Vec<BoilaVal>> = vec_new()
+struct BoilaKnnHits {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    pks: Vec<bytes>
+}
+
+// Ranked candidate pks (post-filter applied at GET time by callers).
+fn boila_knn_hit_pks(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaKnnHits !IO !Time !Par {
+    let empty: Vec<bytes> = vec_new()
     let hl = hnsw_list_for_table(s, t.id)?
     s = hl.s
     let col_ix = boila_col_idx(t, sel.knn_col)
     if col_ix < 0 {
-        return boila_fetch_fail(s, txn, concat("колона '", concat(sel.knn_col, "' не съществува")), "42703")
+        return BoilaKnnHits { s: s, txn: txn, ok: 0, err: concat("колона '", concat(sel.knn_col, "' не съществува")), state: "42703", pks: empty }
     }
     let mut hdi: i64 = 0 - 1
     let mut k: i64 = 0
@@ -169,16 +179,15 @@ fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         k = k + 1
     }
     if hdi < 0 {
-        return boila_fetch_fail(s, txn, concat("колона '", concat(sel.knn_col, "' няма hnsw индекс")), "0A000")
+        return BoilaKnnHits { s: s, txn: txn, ok: 0, err: concat("колона '", concat(sel.knn_col, "' няма hnsw индекс")), state: "0A000", pks: empty }
     }
     let def = vec_get(hl.defs, hdi)
-    // V4e: plan-cache may already hold packed query payload
     let mut q_pay = sel.knn_pay
     let mut q_f: Vec<f64> = vec_new()
     if bytes_len(q_pay) < 4 {
         let qp = boila_vec_parse(sel.knn_query, def.dim)
         if qp.ok == 0 {
-            return boila_fetch_fail(s, txn, qp.err, "42601")
+            return BoilaKnnHits { s: s, txn: txn, ok: 0, err: qp.err, state: "42601", pks: empty }
         }
         q_pay = qp.v.b
         if sel.knn_metric != boila_vec_metric_l2() {
@@ -197,11 +206,10 @@ fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
     s = pref.s
     txn = pref.txn
     if pref.ok == 0 {
-        return boila_fetch_fail(s, txn, pref.err, pref.state)
+        return BoilaKnnHits { s: s, txn: txn, ok: 0, err: pref.err, state: pref.state, pks: empty }
     }
     let mut hq_pks: Vec<bytes> = vec_new()
     if pref.has == 1 {
-        // V3: exact kNN only on index/pk candidates
         if vec_len(q_f) == 0 {
             q_f = boila_vec_from_val(BoilaVal { tag: boila_v_vector(), i: def.dim, b: q_pay })
         }
@@ -214,15 +222,25 @@ fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
             kk = kk * 16
             if kk < 64 { kk = 64 }
         }
-        // L2: search from packed payload (no f64 unpack/repack)
         let hq = hnsw_search_pay(s, txn, t, mdef, q_pay, q_f, kk)?
         s = hq.s
         txn = hq.txn
         hq_pks = hq.pks
     }
+    return BoilaKnnHits { s: s, txn: txn, ok: 1, err: "", state: "", pks: hq_pks }
+}
+
+fn boila_fetch_knn(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    let hits = boila_knn_hit_pks(s, txn, t, sel)?
+    s = hits.s
+    txn = hits.txn
+    if hits.ok == 0 {
+        return boila_fetch_fail(s, txn, hits.err, hits.state)
+    }
     let mut qi: i64 = 0
-    while qi < vec_len(hq_pks) {
-        let g = boila_txn_get(s, txn, t.id, vec_get(hq_pks, qi))?
+    while qi < vec_len(hits.pks) {
+        let g = boila_txn_get(s, txn, t.id, vec_get(hits.pks, qi))?
         s = g.s
         if g.found == 1 {
             let row = boila_row_dec(g.row)

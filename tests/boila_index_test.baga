@@ -161,6 +161,10 @@ fn main() -> i64 !IO !Time !Par {
     let qn3 = boila_server_exec(srv, "boila", "SELECT id FROM p WHERE city = NULL")?
     srv = qn3.srv
     check(fails, "eq_null_empty", qn3.ok == 1 && vec_len(qn3.res.rows) == 0)
+    // Q-stream-isnull: agg without materializing null-match rows
+    let qna = boila_server_exec(srv, "boila", "SELECT count(*) FROM p WHERE city IS NULL")?
+    srv = qna.srv
+    check(fails, "isnull_agg", qna.ok == 1 && vec_len(qna.res.rows) == 1 && vec_get(vec_get(qna.res.rows, 0), 0).i == 2)
 
     // --- грешки ---
     let e1 = boila_server_exec(srv, "boila", "CREATE INDEX city_ix ON p (city)")?

@@ -173,6 +173,10 @@ fn main() -> i64 !IO !Time !Par {
     let qf3 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick') AND id >= 1 AND id <= 2")
     srv = qf3.srv
     check(fails, "fts_and_range", qf3.ok == 1 && vec_len(qf3.res.rows) == 1 && row_id(vec_get(qf3.res.rows, 0)) == "1")
+    // Q-stream-fts: count without materializing hit rows
+    let qfa = exec1(srv, "SELECT count(*) FROM docs WHERE body @@ to_tsquery('quick')")
+    srv = qfa.srv
+    check(fails, "fts_agg", qfa.ok == 1 && vec_len(qfa.res.rows) == 1 && vec_get(vec_get(qfa.res.rows, 0), 0).i >= 1)
 
     // F5: phrase — consecutive terms
     let qp1 = exec1(srv, "SELECT id FROM docs WHERE body @@ to_tsquery('quick <-> brown')")

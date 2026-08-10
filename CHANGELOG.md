@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-stream-ix: isnull / fts / knn into hash-agg
+- Stream path folds `IS [NOT] NULL`, FTS `@@`, and kNN hits without
+  building a full result `Vec` (kNN via `boila_knn_hit_pks` + GET+fold).
+- Tests: `isnull_agg`, `fts_agg`, `knn_agg`.
+
 ### boilaDB — Q-stream-join / stream xw for agg
 - `JOIN` + `GROUP BY`/agg folds matches during probe (`boila_join_into_fold`)
   without materializing the join output row set.

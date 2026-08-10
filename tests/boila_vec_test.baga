@@ -93,6 +93,10 @@ fn main() -> i64 !IO !Time !Par {
     let q1 = exec1(srv, "SELECT id FROM items WHERE emb <-> '[1,0,0]' LIMIT 2")
     srv = q1.srv
     check(fails, "knn_l2", q1.ok == 1 && vec_len(q1.res.rows) == 2 && row_id(vec_get(q1.res.rows, 0)) == "1")
+    // Q-stream-knn: agg over kNN hits (GET+fold, no hit Vec)
+    let qa = exec1(srv, "SELECT count(*) FROM items WHERE emb <-> '[1,0,0]' LIMIT 2")
+    srv = qa.srv
+    check(fails, "knn_agg", qa.ok == 1 && vec_len(qa.res.rows) == 1 && vec_get(vec_get(qa.res.rows, 0), 0).i == 2)
 
     let q2 = exec1(srv, "SELECT id FROM items WHERE emb <=> '[0,1,0]' LIMIT 1")
     srv = q2.srv

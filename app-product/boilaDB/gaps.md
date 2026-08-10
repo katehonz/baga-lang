@@ -189,8 +189,8 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S5 — (MEASURED + K3j/k rollup + K3h/i + stream) time_bucket gate.**
   Continuous rollup: **@100k full ~2.9 ms**; **window last-10k ~21 ms**
   (K3k). Gate &lt; 50 ms OK. Results:
-  `bench/boila/results/modality-2026-08-10.md`. Residual: knn/fts/isnull
-  stream-agg; join still materializes outer/inner for probe (not output).
+  `bench/boila/results/modality-2026-08-10.md`. Residual: join outer
+  materialize; knn pref path may still build cand lists.
 - **K3j — (FIXED) continuous rollup pre-agg.** DDL
   `CREATE ROLLUP name ON t USING time_bucket('1m', ts) [SUM(col)]`;
   DML maintains count(*)+sum; unfiltered GROUP BY → O(buckets).
@@ -202,8 +202,11 @@ T = транзакции, W = wire protocol, F = FTS.
   (no materialize of N rows).
 - **Q-stream-join — (FIXED) JOIN/xw into fold.** `boila_join_into_fold`
   probes and folds wide rows immediately (no join-output Vec). Stream
-  path also applies `has_xw` per row. Residual: knn/fts/isnull still
-  materialize; outer fetch still materializes left side.
+  path also applies `has_xw` per row.
+- **Q-stream-ix — (FIXED) isnull/fts/knn into fold.** IS [NOT] NULL,
+  `@@`, and kNN hit pks GET+fold without result row Vec. Tests:
+  `isnull_agg`, `fts_agg`, `knn_agg`. Residual: join left fetch Vec;
+  knn still ranks a pk list of size k (not full table).
 - **K3g — (FIXED) secondary range exclusive bounds.** `lo_excl`/`hi_excl`
   on SELECT secondary path. DML WHERE still inclusive-only.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild
