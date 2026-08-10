@@ -228,8 +228,8 @@ T = транзакции, W = wire protocol, F = FTS.
   post-filter.
 - **V4 — (FIXED) RAM neighbor cache per search.** **V4b:** payload
   cache + L2 fixed-point. **V4c:** L0 embeds VECTOR. **V4d:** smaller
-  walk — no warm_upper, adaptive ef cap 16, expand≤ef, ≤12 edges/node.
-  Residual: 10k×128d ~22 ms; process-global cache; SQL query-vector cost.
+  walk. **V4e:** plan-cache `knn_pay` + `hnsw_search_pay` (L2 skips
+  f64 unpack/repack). Residual: 10k×128d ~22 ms (GET-bound).
 - **V5 — (FIXED) unindex strips reverse edges + ep reassign.** Strip pk
   from nbr lists L0..4; if deleted node was ep, reassign to an L0
   neighbor (else clear). V5c: ep = L0 nbr with highest degree. Residual:
