@@ -797,6 +797,53 @@ fn lsm_live_map_kb(db: LsmDB) -> LsmGetKeysB !IO !Time {
     return LsmGetKeysB { db: db, keys: out }
 }
 
+// K3i: live keys matching a raw byte prefix only (no full-shard map).
+// SST: range skip + seek + early-stop; mem/tomb filtered by prefix.
+// Empty prefix → same as full live_map.
+fn lsm_live_map_prefix_kb(db: LsmDB, prefix: bytes) -> LsmGetKeysB !IO !Time {
+    let np = bytes_len(prefix)
+    if np <= 0 {
+        return lsm_live_map_kb(db)?
+    }
+    let now = time_now_ms()?
+    let seen: Map<bytes, bytes> = map_new()
+    let dead: Map<bytes, i64> = map_new()
+    let mut cur = db.cache
+    for i in 0..vec_len(db.gens) {
+        let gen = vec_get(db.gens, i)
+        cur = sst_fold_prefix_into(cur, db.dir, gen, db.sst_fds, db.sst_sizes, seen, dead, prefix)?
+    }
+    db.cache = cur
+    let mk = map_keys(db.mem)
+    for i in 0..vec_len(mk) {
+        let k = vec_get(mk, i)
+        if lsm_bytes_has_prefix(k, prefix, np) == 1 {
+            map_set(seen, k, map_get(db.mem, k))
+            map_del(dead, k)
+        }
+    }
+    let tk = map_keys(db.tomb)
+    for i in 0..vec_len(tk) {
+        let k = vec_get(tk, i)
+        if lsm_bytes_has_prefix(k, prefix, np) == 1 {
+            map_del(seen, k)
+            map_set(dead, k, 1)
+        }
+    }
+    let ks = map_keys(seen)
+    let out: Vec<bytes> = vec_new()
+    for i in 0..vec_len(ks) {
+        let k = vec_get(ks, i)
+        let u = ttl_unpack(map_get(seen, k))
+        if ttl_expired(u.expire_at, now) == 0 {
+            vec_push(out, k)
+        }
+    }
+    drop(seen)
+    drop(dead)
+    return LsmGetKeysB { db: db, keys: out }
+}
+
 // Build live key list as str (mem + SST fold). R26: block scan fold.
 // R67: keys live as bytes internally; converting to str here is LOSSY for
 // keys with embedded NUL (str can't hold 0x00) — binary KEYS/MATCH is R68.
@@ -1070,20 +1117,11 @@ fn lsm_scan_rebuild_b(db: LsmDB, match_pat: bytes) -> LsmDB !IO !Time {
 
 // True prefix filter (no glob meta) — boilaDB K2.
 // Sorted for secondary index range seek (boilaDB K3h).
+// K3i: prefix fold (no full live_map + post-filter).
 fn lsm_scan_rebuild_prefix_b(db: LsmDB, prefix: bytes) -> LsmDB !IO !Time {
-    let r = lsm_live_map_kb(db)?
+    let r = lsm_live_map_prefix_kb(db, prefix)?
     db = r.db
-    let all = r.keys
-    let filtered: Vec<bytes> = vec_new()
-    let np = bytes_len(prefix)
-    let mut i: i64 = 0
-    while i < vec_len(all) {
-        let k = vec_get(all, i)
-        if lsm_bytes_has_prefix(k, prefix, np) == 1 {
-            vec_push(filtered, k)
-        }
-        i = i + 1
-    }
+    let filtered = r.keys
     sort_bytes(filtered)
     if vec_len(db.scan_keys) > 0 {
         let old = db.scan_keys

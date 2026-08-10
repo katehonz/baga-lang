@@ -296,6 +296,15 @@ is the MEM-3-full / str-reclamation roadmap item, not a bug.
   live fold; mid-loop concurrent writes may see Redis-class
   duplicates/skips after rebuild.
 
+**Shipped (K3i prefix live fold — boilaDB cold path):**
+- `lsm_live_map_prefix_kb` + `sst_fold_prefix_into` (+
+  `sst_scan_begin_seek`, `sst_range_overlaps_prefix`).
+- True prefix SCAN rebuild (`lsm_scan_rebuild_prefix_b` /
+  cluster twin) folds only prefix-matching keys — no full live map +
+  post-filter. Sorted SSTs: seek + early-stop; disjoint files skipped.
+- Glob MATCH SCAN still uses full live fold (unchanged).
+- Residual: not a multi-SST merge iterator; KEYS/DBSIZE still full fold.
+
 **Shipped (R44 shared-WAL CF):**
 - One WAL, many CF memtables/SST trees. Engine API + recover.
   Per-CF page-cache size: R64.

@@ -186,12 +186,12 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P9
 
-- **S5 — (MEASURED + Q-ghash + K3h + stream) time_bucket gate.** Hash
-  GROUP BY + sorted prefix seek + stream fold (no full source-row Vec).
-  **@10k 16 ms OK**; **@20k 34 ms OK**; **@100k ~166 ms FAIL**. **ts-ix
-  window last 10k @100k ~46 ms**. PLAN 1M &lt; 50 ms not met (keys+GETs).
-  Results: `bench/boila/results/modality-2026-08-10.md`. Residual: LSM
-  without full live_map; pre-agg; stream join/xw.
+- **S5 — (MEASURED + Q-ghash + K3h + K3i + stream) time_bucket gate.**
+  Hash GROUP BY + sorted prefix seek + prefix live fold + stream fold.
+  **@10k 16 ms OK**; **@20k 34 ms OK**; **@100k ~174 ms FAIL**. **ts-ix
+  window last 10k @100k ~45 ms**. PLAN 1M &lt; 50 ms not met (N GETs).
+  Results: `bench/boila/results/modality-2026-08-10.md`. Residual:
+  pre-agg; stream join/xw.
 - **Q-stream — (FIXED) stream hash-agg.** `exec_agg_fold`/`feed` +
   `exec_agg_stream`: plain table SELECT agg/GROUP BY folds during GET
   (no materialize of N rows). Join/knn/fts/isnull/xw still materialize.
@@ -200,8 +200,11 @@ T = транзакции, W = wire protocol, F = FTS.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild
   sorts keys; cache kept for warm reuse; `boila_scan_pref_all` +
   lower_bound/early-stop in `boila_ix_range`. Middle pivot in
-  `boila_pk_sort` (sorted input was O(n²) with last pivot). Residual:
-  first query still pays full live_map of shard.
+  `boila_pk_sort` (sorted input was O(n²) with last pivot).
+- **K3i — (FIXED) prefix live fold (no full-shard live_map).** rocksbaga
+  `lsm_live_map_prefix_kb` / `sst_fold_prefix_into`: SST first/last skip,
+  restart seek, early-stop past prefix; mem/tomb filtered. Cluster +
+  single-DB rebuild paths. Residual: full-table still N GETs after keys.
 - **S6 — (FIXED) TTL sweeper flush + per-key purge.** `boila_ts_sweep`:
   flush then GET every data key of TTL tables (rocksbaga lazy-del on get).
   `boila_ttl_sweeper` / `BOILA_SWEEP_MS`. S6c: `BOILA_SWEEP_SYS_ROUNDS`
@@ -415,7 +418,7 @@ T = транзакции, W = wire protocol, F = FTS.
   K3e: txn buf merge on ix range. K3f: var-width col range when PK is
   fixed-width (i64/ts/bool) — pk is key tail. K3g: exclusive `>`/`<` on
   secondary range (SELECT). K3h: sorted prefix + seek/early-stop.
-  Residual: str PK + str index still seq; cold path full live_map.
+  Residual: str PK + str index still seq.
 - **H2 — (FIXED) HTTP go_bg + per-shard hop-less + multi-DB + live conn.**
   `BOILA_MAX_CONN` → 503/53300. mode=`mt-shard`.
 

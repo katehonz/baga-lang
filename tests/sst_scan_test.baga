@@ -86,6 +86,10 @@ fn main() -> i64 !IO {
     check(fails, "fold_val", str_of_bytes(map_get(acc, bytes_of_str("k10"))) == "v10")
     check(fails, "fold_n_acc", vec_len(map_keys(acc)) == 39)
 
+    // Overlap helper
+    check(fails, "overlap_yes", sst_range_overlaps_prefix(bytes_of_str("k0"), bytes_of_str("k9"), bytes_of_str("k1")) == 1)
+    check(fails, "overlap_no", sst_range_overlaps_prefix(bytes_of_str("a"), bytes_of_str("b"), bytes_of_str("z")) == 0)
+
     // block.baga round-trip
     let body = bytes_new(64)
     let end = block_rec_put(body, 0, 1, bytes_of_str("ab"), bytes_of_str("xy"))
@@ -108,6 +112,50 @@ fn main() -> i64 !IO {
     check(fails, "crc_ok", sst_block_crc_ok(ml.meta, 0, br0.data) == 1)
 
     sst_fd_drop(pc, fds, sizes, 1)?
+
+    // --- K3i: prefix fold needs sorted SST (same as lsm_flush) ---
+    let prefix2 = "/tmp/baga_sst_scan_k3i"
+    unlink(concat(prefix2, ".sst.2"))?
+    unlink(concat(prefix2, ".bloom.2"))?
+    let rows2: Vec<SstRow> = vec_new()
+    // Lexicographic: a0..a9, b0..b9, c0..c9 (sorted)
+    let mut r2: i64 = 0
+    while r2 < 30 {
+        let mut letter = "a"
+        let mut n = r2
+        if r2 >= 10 {
+            letter = "b"
+            n = r2 - 10
+        }
+        if r2 >= 20 {
+            letter = "c"
+            n = r2 - 20
+        }
+        let k = bytes_of_str(concat(letter, int_to_str(n)))
+        vec_push(rows2, SstRow { op: 1, key: k, val: bytes_of_str("v") })
+        r2 = r2 + 1
+    }
+    check(fails, "k3i_write", sst_write(prefix2, 2, rows2)? == 0)
+    let mut pc3 = pc_new(4096, 8)
+    let fds3: Map<i64, i64> = map_new()
+    let sizes3: Map<i64, i64> = map_new()
+    let fd3 = sst_fd_get(pc3, fds3, sizes3, prefix2, 2)?
+    check(fails, "k3i_fd", fd3 >= 0)
+    let acc_p: Map<bytes, bytes> = map_new()
+    let tomb_p: Map<bytes, i64> = map_new()
+    pc3 = sst_fold_prefix_into(pc3, prefix2, 2, fds3, sizes3, acc_p, tomb_p, bytes_of_str("b"))?
+    check(fails, "prefix_fold_n", vec_len(map_keys(acc_p)) == 10)
+    check(fails, "prefix_fold_b0", map_has(acc_p, bytes_of_str("b0")) == 1)
+    check(fails, "prefix_fold_b9", map_has(acc_p, bytes_of_str("b9")) == 1)
+    check(fails, "prefix_fold_no_a", map_has(acc_p, bytes_of_str("a0")) == 0)
+    check(fails, "prefix_fold_no_c", map_has(acc_p, bytes_of_str("c0")) == 0)
+    let acc_z: Map<bytes, bytes> = map_new()
+    let tomb_z: Map<bytes, i64> = map_new()
+    pc3 = sst_fold_prefix_into(pc3, prefix2, 2, fds3, sizes3, acc_z, tomb_z, bytes_of_str("z"))?
+    check(fails, "prefix_disjoint", map_len(acc_z) == 0 && map_len(tomb_z) == 0)
+    sst_fd_drop(pc3, fds3, sizes3, 2)?
+    unlink(concat(prefix2, ".sst.2"))?
+    unlink(concat(prefix2, ".bloom.2"))?
 
     // Corrupt first data byte after magic → block CRC fails → scan closed
     let path = concat(prefix, ".sst.1")

@@ -383,21 +383,18 @@ fn lsm_cluster_scan_rebuild_b(c: LsmCluster, match_pat: bytes) -> LsmCluster !IO
 
 // True byte-prefix rebuild (no glob) — boilaDB K2.
 // Sorted for secondary index range seek (boilaDB K3h).
+// K3i: per-shard prefix fold (no full live_map + post-filter).
 fn lsm_cluster_scan_rebuild_prefix_b(c: LsmCluster, prefix: bytes) -> LsmCluster !IO !Time {
     let filtered: Vec<bytes> = vec_new()
-    let np = bytes_len(prefix)
     let mut i: i64 = 0
     while i < c.n {
         let mut db = vec_get(c.shards, i)
-        let r = lsm_live_map_kb(db)?
+        let r = lsm_live_map_prefix_kb(db, prefix)?
         db = r.db
         vec_set(c.shards, i, db)
         let mut j: i64 = 0
         while j < vec_len(r.keys) {
-            let k = vec_get(r.keys, j)
-            if lsm_bytes_has_prefix(k, prefix, np) == 1 {
-                vec_push(filtered, k)
-            }
+            vec_push(filtered, vec_get(r.keys, j))
             j = j + 1
         }
         i = i + 1

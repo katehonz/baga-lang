@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### rocksbaga / boilaDB — K3i prefix live fold (S5 cold path)
+- Prefix SCAN rebuild no longer builds a full-shard live map then
+  filters: `lsm_live_map_prefix_kb` folds only matching keys.
+- SST path (`sst_fold_prefix_into`): skip disjoint files via
+  first/last key, restart-block seek to prefix, early-stop once keys
+  pass the prefix range; mem/tomb filtered by prefix. Cluster rebuild
+  uses the same per-shard fold.
+- boilaDB table / secondary scans (`boila_scan_pref*`) inherit the
+  cheaper cold rebuild when index/sys keys share the shard.
+- S5 rebench: full-table still ~GET-bound (~174 ms @100k); ts-ix window
+  ~45 ms OK. Tests: `sst_scan_test` K3i, `lsm_test` k3i_prefix_*.
+
 ### Language — LLVM parity for `Map` (full runtime in IR)
 - The whole chained hash-table runtime is built as lazy IR functions,
   mirroring the C preamble function by function: `baga_map_hash_{str,i64,

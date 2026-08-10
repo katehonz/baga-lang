@@ -479,6 +479,37 @@ fn main() -> i64 !Net !IO !Par !Time {
     let sc6 = lsm_scan(scandb, sc5.next, 10, "")?
     scandb = sc6.db
     check(fails, "r63_page3", vec_len(sc6.keys) == 6 && sc6.next == 0)
+    // K3i: true prefix scan (no full live_map post-filter)
+    wipe("/tmp/baga_lsm_pref")?
+    let mut prefdb = lsm_open("/tmp/baga_lsm_pref", 8, 3)?
+    prefdb.sync_every = 1000
+    let mut pi: i64 = 0
+    while pi < 30 {
+        if pi < 10 {
+            prefdb = lsm_put(prefdb, concat("a", int_to_str(pi)), "va")?
+        } else {
+            if pi < 20 {
+                prefdb = lsm_put(prefdb, concat("b", int_to_str(pi)), "vb")?
+            } else {
+                prefdb = lsm_put(prefdb, concat("c", int_to_str(pi)), "vc")?
+            }
+        }
+        pi = pi + 1
+    }
+    prefdb = lsm_flush_force(prefdb)?
+    let sp = lsm_scan_prefix_kb(prefdb, 0, 1000, bytes_of_str("b"))?
+    prefdb = sp.db
+    check(fails, "k3i_prefix_n", vec_len(sp.keys) == 10)
+    check(fails, "k3i_prefix_first", str_of_bytes(vec_get(sp.keys, 0)) == "b10")
+    check(fails, "k3i_prefix_last", str_of_bytes(vec_get(sp.keys, 9)) == "b19")
+    // warm cache same prefix
+    let sp2 = lsm_scan_prefix_all_kb(prefdb, bytes_of_str("a"))?
+    prefdb = sp2.db
+    check(fails, "k3i_prefix_a", vec_len(sp2.keys) == 10)
+    let sp3 = lsm_scan_prefix_all_kb(prefdb, bytes_of_str("z"))?
+    prefdb = sp3.db
+    check(fails, "k3i_prefix_empty", vec_len(sp3.keys) == 0)
+    lsm_close(prefdb)?
     lsm_close(scandb)?
 
     // --- R65: binary RESP values (embedded NUL) ---
