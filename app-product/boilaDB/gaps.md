@@ -222,6 +222,10 @@ T = транзакции, W = wire protocol, F = FTS.
 - **Q-join-inner-pks — (FIXED) hash key→pks.** No-ix join builds
   `Map<key, pks>` via `boila_hj_build_pks` (GET+drop row); probe GETs
   matches. Residual: hash still O(inner keys); mixed ORDER BY top-N.
+- **Q-knn-pref-pks — (FIXED) pref cands without full rows.** PK-range
+  pre-filter uses `boila_fetch_pks`; `hnsw_brute_cands` keeps a size-k
+  distance window (not O(|cands|) score arrays). Residual: cand pk
+  list for large ranges still O(range).
 - **K3g — (FIXED) secondary range exclusive bounds.** `lo_excl`/`hi_excl`
   on SELECT secondary path. DML WHERE still inclusive-only.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild
