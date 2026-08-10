@@ -269,7 +269,7 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         vec_push(wcols, vec_get(t2.cols, i))
         i = i + 1
     }
-    // Outer: pks first (stream GET during probe) — Q-stream-join-outer
+        // Outer: pks first (stream GET during probe) — Q-stream-join-outer
     let op = boila_fetch_pks(s, txn, t, left_sel)?
     s = op.s
     txn = op.txn
@@ -282,11 +282,23 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
     if on == 0 {
         return BoilaJoinOut { s: s, txn: txn, ok: 1, err: "", state: "", cols: wcols, rows: rows }
     }
+    let loff = vec_len(t.cols)
+    if r_lo == 1 && r_hi == 1 && r_lo_cix != r_hi_cix {
+        return boila_join_fail(s, txn, "range WHERE на JOIN — lo/hi трябва да са една дясна колона", "0A000")
+    }
+    // Q-join-limit: stop probe when enough kept rows (no ORDER/DISTINCT/xw).
+    // need = offset + limit; offlim still applied in exec_select.
+    let mut need: i64 = 0
+    if sel.limit > 0 && sel.has_order == 0 && sel.distinct == 0 && sel.has_xw == 0 {
+        need = sel.offset + sel.limit
+        if need < 1 { need = sel.limit }
+    }
     let ixid = boila_ix_by_col_t(t2, ridx)
     if ixid >= 0 {
         // index nested loop on first ON pair; filter remaining pairs
         let mut oi: i64 = 0
-        while oi < on {
+        let mut done = false
+        while oi < on && done == false {
             let g0 = boila_txn_get(s, txn, t.id, vec_get(op.pks, oi))?
             s = g0.s
             if g0.found == 1 {
@@ -297,21 +309,33 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
                     let lk = boila_ix_lookup(s, t2, ixid, lv)?
                     s = lk.s
                     let mut li: i64 = 0
-                    while li < vec_len(lk.pks) {
+                    while li < vec_len(lk.pks) && done == false {
                         let g = boila_txn_get(s, txn, t2.id, vec_get(lk.pks, li))?
                         s = g.s
                         if g.found == 1 {
                             let irow = boila_row_dec(g.row)
                             if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
-                                vec_push(rows, boila_wide_row(orow, irow))
                                 matched = true
+                                let wide = boila_wide_row(orow, irow)
+                                if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                                    vec_push(rows, wide)
+                                    if need > 0 && vec_len(rows) >= need {
+                                        done = true
+                                    }
+                                }
                             }
                         }
                         li = li + 1
                     }
                 }
-                if matched == false && sel.join_kind == 2 {
-                    vec_push(rows, boila_wide_row(orow, nullr))
+                if done == false && matched == false && sel.join_kind == 2 {
+                    let wide = boila_wide_row(orow, nullr)
+                    if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                        vec_push(rows, wide)
+                        if need > 0 && vec_len(rows) >= need {
+                            done = true
+                        }
+                    }
                 }
             }
             oi = oi + 1
@@ -324,23 +348,36 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         let nlmax = boila_join_nl_max()?
         if on <= nlmax {
             let mut oi: i64 = 0
-            while oi < on {
+            let mut done = false
+            while oi < on && done == false {
                 let g0 = boila_txn_get(s, txn, t.id, vec_get(op.pks, oi))?
                 s = g0.s
                 if g0.found == 1 {
                     let orow = boila_row_dec(g0.row)
                     let mut matched = false
                     let mut j: i64 = 0
-                    while j < inn {
+                    while j < inn && done == false {
                         let irow = vec_get(inner.rows, j)
                         if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
-                            vec_push(rows, boila_wide_row(orow, irow))
                             matched = true
+                            let wide = boila_wide_row(orow, irow)
+                            if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                                vec_push(rows, wide)
+                                if need > 0 && vec_len(rows) >= need {
+                                    done = true
+                                }
+                            }
                         }
                         j = j + 1
                     }
-                    if matched == false && sel.join_kind == 2 {
-                        vec_push(rows, boila_wide_row(orow, nullr))
+                    if done == false && matched == false && sel.join_kind == 2 {
+                        let wide = boila_wide_row(orow, nullr)
+                        if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                            vec_push(rows, wide)
+                            if need > 0 && vec_len(rows) >= need {
+                                done = true
+                            }
+                        }
                     }
                 }
                 oi = oi + 1
@@ -348,7 +385,8 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
         } else {
             let ht = boila_hj_build(inner.rows, ridx)
             let mut oi: i64 = 0
-            while oi < on {
+            let mut done = false
+            while oi < on && done == false {
                 let g0 = boila_txn_get(s, txn, t.id, vec_get(op.pks, oi))?
                 s = g0.s
                 if g0.found == 1 {
@@ -360,38 +398,37 @@ fn boila_join_rows(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -
                         if map_has(ht, k) == 1 {
                             let b = map_get(ht, k)
                             let mut j: i64 = 0
-                            while j < vec_len(b.idxs) {
+                            while j < vec_len(b.idxs) && done == false {
                                 let irow = vec_get(inner.rows, vec_get(b.idxs, j))
                                 if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
-                                    vec_push(rows, boila_wide_row(orow, irow))
                                     matched = true
+                                    let wide = boila_wide_row(orow, irow)
+                                    if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                                        vec_push(rows, wide)
+                                        if need > 0 && vec_len(rows) >= need {
+                                            done = true
+                                        }
+                                    }
                                 }
                                 j = j + 1
                             }
                         }
                     }
-                    if matched == false && sel.join_kind == 2 {
-                        vec_push(rows, boila_wide_row(orow, nullr))
+                    if done == false && matched == false && sel.join_kind == 2 {
+                        let wide = boila_wide_row(orow, nullr)
+                        if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                            vec_push(rows, wide)
+                            if need > 0 && vec_len(rows) >= need {
+                                done = true
+                            }
+                        }
                     }
                 }
                 oi = oi + 1
             }
         }
     }
-    if r_eq == 1 {
-        rows = boila_join_filter_right(rows, vec_len(t.cols), r_cix, r_val)
-    }
-    if r_lo == 1 || r_hi == 1 {
-        let mut cix = r_lo_cix
-        if r_lo == 0 {
-            cix = r_hi_cix
-        }
-        // lo and hi must target same right col when both set
-        if r_lo == 1 && r_hi == 1 && r_lo_cix != r_hi_cix {
-            return boila_join_fail(s, txn, "range WHERE на JOIN — lo/hi трябва да са една дясна колона", "0A000")
-        }
-        rows = boila_join_filter_range(rows, vec_len(t.cols), cix, r_lo, sel.pk_lo, r_hi, sel.pk_hi)
-    }
+    // right WHERE already applied via wide_keep during probe
     return BoilaJoinOut { s: s, txn: txn, ok: 1, err: "", state: "", cols: wcols, rows: rows }
 }
 

@@ -145,6 +145,15 @@ fn main() -> i64 !IO !Time !Par {
     // 5 emp rows that join (franko/ops has no dep until later insert)
     check(fails, "join_agg_total", jsum == 5)
 
+    // --- Q-join-limit: LIMIT without ORDER BY (early-stop probe) ---
+    let jl = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code LIMIT 2")?
+    srv = jl.srv
+    check(fails, "join_limit", jl.ok == 1 && vec_len(jl.res.rows) == 2)
+    // OFFSET + LIMIT without ORDER (need offset+limit kept rows then offlim)
+    let jlo = exec(srv, "SELECT name FROM emp JOIN dep ON dept = code LIMIT 1 OFFSET 1")?
+    srv = jlo.srv
+    check(fails, "join_limit_off", jlo.ok == 1 && vec_len(jlo.res.rows) == 1)
+
     // --- A2: hash join (no index on inner join col yet) ---
     let j1 = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY id LIMIT 2")?
     srv = j1.srv

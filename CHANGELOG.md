@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-join-limit: early-stop JOIN probe
+- Non-agg `JOIN … LIMIT n` (no ORDER/DISTINCT/expression WHERE) stops
+  the outer probe after `offset+n` kept rows (right filters during emit).
+- Tests: `join_limit`, `join_limit_off` in `boila_p5_test`.
+
 ### boilaDB — Q-stream-join-outer: stream left probe
 - `boila_fetch_pks` collects matching outer pks (no row Vec); join probe
   GETs one outer row at a time (index NL + hash).

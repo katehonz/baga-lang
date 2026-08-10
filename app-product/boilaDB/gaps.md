@@ -189,8 +189,8 @@ T = транзакции, W = wire protocol, F = FTS.
 - **S5 — (MEASURED + K3j/k rollup + K3h/i + stream) time_bucket gate.**
   Continuous rollup: **@100k full ~2.9 ms**; **window last-10k ~21 ms**
   (K3k). Gate &lt; 50 ms OK. Results:
-  `bench/boila/results/modality-2026-08-10.md`. Residual: join output
-  Vec for non-agg SELECT; knn pref cand lists.
+  `bench/boila/results/modality-2026-08-10.md`. Residual: join + ORDER BY
+  still full probe; knn pref cand lists.
 - **K3j — (FIXED) continuous rollup pre-agg.** DDL
   `CREATE ROLLUP name ON t USING time_bucket('1m', ts) [SUM(col)]`;
   DML maintains count(*)+sum; unfiltered GROUP BY → O(buckets).
@@ -209,8 +209,11 @@ T = транзакции, W = wire protocol, F = FTS.
 - **Q-stream-join-outer — (FIXED) outer pks stream.** `boila_fetch_pks`
   + GET-one-outer during probe for both `join_rows` and `join_into_fold`
   (unfiltered left = live key list only). Fold path always hashes when
-  no right ix. Residual: join output Vec for non-agg SELECT; right
-  inner still materializes for hash/NL.
+  no right ix.
+- **Q-join-limit — (FIXED) LIMIT early-stop.** When `LIMIT` (no ORDER /
+  DISTINCT / xw), probe stops after `offset+limit` kept rows; right WHERE
+  applied during emit. Residual: ORDER BY still full join; right inner
+  hash build still materializes.
 - **K3g — (FIXED) secondary range exclusive bounds.** `lo_excl`/`hi_excl`
   on SELECT secondary path. DML WHERE still inclusive-only.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild
