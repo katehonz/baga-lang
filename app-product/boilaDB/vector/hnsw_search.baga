@@ -31,20 +31,20 @@ fn hnsw_greedy(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q
     while improved && guard < 256 {
         improved = false
         guard = guard + 1
-        let cv = hnsw_row_payload_c(s, txn, table_id, cur, def.col_idx, def.dim, vcache)?
+        let cv = hnsw_row_payload_c(s, txn, table_id, cur, def.col_idx, def.dim, def.id, vcache, ncache)?
         s = cv.s
         txn = cv.txn
         let mut best_d = 1.0e300
         if cv.ok == 1 {
             best_d = hnsw_dist_pay(q_pay, q_f, cv.pay, def.metric)
         }
-        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, ncache)?
+        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, ncache, vcache)?
         s = nb.s
         txn = nb.txn
         let mut j: i64 = 0
         while j < vec_len(nb.pks) {
             let cand = vec_get(nb.pks, j)
-            let rv = hnsw_row_payload_c(s, txn, table_id, cand, def.col_idx, def.dim, vcache)?
+            let rv = hnsw_row_payload_c(s, txn, table_id, cand, def.col_idx, def.dim, def.id, vcache, ncache)?
             s = rv.s
             txn = rv.txn
             if rv.ok == 1 {
@@ -68,7 +68,7 @@ fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q_p
     let mut cds: Vec<f64> = vec_new()
     let vis: Map<bytes, i64> = map_new()
     vec_push(cand, entry)
-    let ev = hnsw_row_payload_c(s, txn, table_id, entry, def.col_idx, def.dim, vcache)?
+    let ev = hnsw_row_payload_c(s, txn, table_id, entry, def.col_idx, def.dim, def.id, vcache, ncache)?
     s = ev.s
     txn = ev.txn
     let mut ed = 1.0e300
@@ -82,7 +82,7 @@ fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q_p
     while expanded < vec_len(cand) && expanded < ef * 2 {
         let cur = vec_get(cand, expanded)
         expanded = expanded + 1
-        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, ncache)?
+        let nb = hnsw_nbrs_get_c(s, txn, table_id, def.id, level, cur, ncache, vcache)?
         s = nb.s
         txn = nb.txn
         let mut j: i64 = 0
@@ -90,7 +90,7 @@ fn hnsw_beam(s: BoilaStore, txn: BoilaTxn, table_id: i64, def: BoilaHnswDef, q_p
             let pk = vec_get(nb.pks, j)
             if map_has(vis, pk) == 0 {
                 map_set(vis, pk, 1)
-                let rv = hnsw_row_payload_c(s, txn, table_id, pk, def.col_idx, def.dim, vcache)?
+                let rv = hnsw_row_payload_c(s, txn, table_id, pk, def.col_idx, def.dim, def.id, vcache, ncache)?
                 s = rv.s
                 txn = rv.txn
                 if rv.ok == 1 {
@@ -265,7 +265,7 @@ fn hnsw_search(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, def: BoilaHnswDef, q
     let ncache: Map<bytes, bytes> = map_new()
     let vcache: Map<bytes, bytes> = map_new()
     let q_pay = boila_vec_pack_payload(q)
-    let warm = hnsw_warm_upper(s, txn, t.id, def.id, vm.ep, vm.max_lvl, ncache)?
+    let warm = hnsw_warm_upper(s, txn, t.id, def.id, vm.ep, vm.max_lvl, ncache, vcache)?
     s = warm.s
     txn = warm.txn
     let mut ep = vm.ep

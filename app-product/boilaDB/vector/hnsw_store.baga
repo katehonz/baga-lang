@@ -1,11 +1,4 @@
-// hnsw_store.baga — HNSW каталог, ключове, neighbors R/W (P8).
-// Графът е в vec CF; векторите живеят в data row-а (без дублиране).
-//
-// sys: "vh|<tid>|<name>" → [id, col_idx, dim, metric]
-//      "vl|<tid>" → list [n, (id,col,name,dim,metric)*]
-//      "m|next_hnsw" → [next]; "vm|<id>" → [has_ep, count, max_lvl, ep_pk]
-// vec: "n|<ix u32><lvl u8><pk>" → [n u32][(pklen u32)(pk)]*
-
+// hnsw_store.baga — HNSW cat/keys/nbrs; L0 embeds VECTOR pay (V4c).
 import "../storage/shards.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
@@ -41,7 +34,8 @@ struct BoilaHnswMeta {
 struct BoilaHnswNbrs {
     s: BoilaStore,
     txn: BoilaTxn,
-    pks: Vec<bytes>
+    pks: Vec<bytes>,
+    pay: bytes
 }
 
 fn hnsw_cat_pk(table_id: i64, name: str) -> bytes {
@@ -81,8 +75,21 @@ fn hnsw_unwrap(val: bytes) -> bytes {
     return bytes_new(0)
 }
 
+// magic 0xFFFFFFFE → extended with VECTOR pay before nbr list
+fn hnsw_nbrs_magic() -> i64 { return 4294967294 }
+
 fn hnsw_nbrs_enc(pks: Vec<bytes>) -> bytes {
-    let mut out = boila_enc_u32_be(vec_len(pks))
+    return hnsw_nbrs_enc_ex(bytes_new(0), pks)
+}
+
+fn hnsw_nbrs_enc_ex(pay: bytes, pks: Vec<bytes>) -> bytes {
+    let mut out = bytes_new(0)
+    if bytes_len(pay) > 0 {
+        out = boila_enc_u32_be(hnsw_nbrs_magic())
+        out = bytes_concat(out, boila_enc_u32_be(bytes_len(pay)))
+        out = bytes_concat(out, pay)
+    }
+    out = bytes_concat(out, boila_enc_u32_be(vec_len(pks)))
     let mut i: i64 = 0
     while i < vec_len(pks) {
         let pk = vec_get(pks, i)
@@ -93,13 +100,27 @@ fn hnsw_nbrs_enc(pks: Vec<bytes>) -> bytes {
     return out
 }
 
+fn hnsw_nbrs_dec_pay(b: bytes) -> bytes {
+    if bytes_len(b) < 8 { return bytes_new(0) }
+    if boila_dec_u32_be(b, 0) != hnsw_nbrs_magic() { return bytes_new(0) }
+    let plen = boila_dec_u32_be(b, 4)
+    if 8 + plen > bytes_len(b) { return bytes_new(0) }
+    return bytes_slice(b, 8, 8 + plen)
+}
+
 fn hnsw_nbrs_dec(b: bytes) -> Vec<bytes> {
     let pks: Vec<bytes> = vec_new()
-    if bytes_len(b) < 4 {
-        return pks
+    let mut off: i64 = 0
+    if bytes_len(b) < 4 { return pks }
+    if boila_dec_u32_be(b, 0) == hnsw_nbrs_magic() {
+        if bytes_len(b) < 8 { return pks }
+        let plen = boila_dec_u32_be(b, 4)
+        off = 8 + plen
+        if off > bytes_len(b) { return pks }
     }
-    let n = boila_dec_u32_be(b, 0)
-    let mut off: i64 = 4
+    if off + 4 > bytes_len(b) { return pks }
+    let n = boila_dec_u32_be(b, off)
+    off = off + 4
     let mut i: i64 = 0
     while i < n && off + 4 <= bytes_len(b) {
         let pl = boila_dec_u32_be(b, off)
@@ -204,47 +225,53 @@ fn hnsw_vm_put(s: BoilaStore, txn: BoilaTxn, id: i64, has_ep: i64, count: i64, m
 
 fn hnsw_nbrs_get(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes) -> BoilaHnswNbrs !IO !Time !Par {
     let empty: Vec<bytes> = vec_new()
+    let z = bytes_new(0)
     let key = hnsw_nbr_pk(ix_id, level, pk)
     let bix = boila_txn_find(txn, boila_cf_vec(), table_id, key)
     if bix >= 0 {
         let w = vec_get(txn.writes, bix)
         if w.is_del == 1 {
-            return BoilaHnswNbrs { s: s, txn: txn, pks: empty }
+            return BoilaHnswNbrs { s: s, txn: txn, pks: empty, pay: z }
         }
-        return BoilaHnswNbrs { s: s, txn: txn, pks: hnsw_nbrs_dec(w.row) }
+        return BoilaHnswNbrs { s: s, txn: txn, pks: hnsw_nbrs_dec(w.row), pay: hnsw_nbrs_dec_pay(w.row) }
     }
     let g = boila_get(s, boila_cf_vec(), table_id, key)?
     s = g.s
     if g.found == 0 {
-        return BoilaHnswNbrs { s: s, txn: txn, pks: empty }
+        return BoilaHnswNbrs { s: s, txn: txn, pks: empty, pay: z }
     }
-    return BoilaHnswNbrs { s: s, txn: txn, pks: hnsw_nbrs_dec(hnsw_unwrap(g.val)) }
+    let raw = hnsw_unwrap(g.val)
+    return BoilaHnswNbrs { s: s, txn: txn, pks: hnsw_nbrs_dec(raw), pay: hnsw_nbrs_dec_pay(raw) }
 }
 
-// V4: per-search RAM cache of neighbor lists (esp. upper levels).
-// cache: Map key = hnsw_nbr_pk → encoded nbr list.
-fn hnsw_nbrs_get_c(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes, cache: Map<bytes, bytes>) -> BoilaHnswNbrs !IO !Time !Par {
+// V4/V4c: cache raw encoding; seed vcache from L0-embedded pay.
+fn hnsw_nbrs_get_c(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes, cache: Map<bytes, bytes>, vcache: Map<bytes, bytes>) -> BoilaHnswNbrs !IO !Time !Par {
     let key = hnsw_nbr_pk(ix_id, level, pk)
     if map_has(cache, key) == 1 {
-        return BoilaHnswNbrs { s: s, txn: txn, pks: hnsw_nbrs_dec(map_get(cache, key)) }
+        let raw = map_get(cache, key)
+        let pay = hnsw_nbrs_dec_pay(raw)
+        if bytes_len(pay) >= 4 { map_set(vcache, pk, pay) }
+        return BoilaHnswNbrs { s: s, txn: txn, pks: hnsw_nbrs_dec(raw), pay: pay }
     }
     let nb = hnsw_nbrs_get(s, txn, table_id, ix_id, level, pk)?
-    map_set(cache, key, hnsw_nbrs_enc(nb.pks))
-    return BoilaHnswNbrs { s: nb.s, txn: nb.txn, pks: nb.pks }
+    let raw = hnsw_nbrs_enc_ex(nb.pay, nb.pks)
+    map_set(cache, key, raw)
+    if bytes_len(nb.pay) >= 4 { map_set(vcache, pk, nb.pay) }
+    return BoilaHnswNbrs { s: nb.s, txn: nb.txn, pks: nb.pks, pay: nb.pay }
 }
 
 // Prefetch ep + 1-hop at levels max_lvl..1 into cache.
-fn hnsw_warm_upper(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, ep: bytes, max_lvl: i64, cache: Map<bytes, bytes>) -> BoilaHnswNbrs !IO !Time !Par {
+fn hnsw_warm_upper(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, ep: bytes, max_lvl: i64, cache: Map<bytes, bytes>, vcache: Map<bytes, bytes>) -> BoilaHnswNbrs !IO !Time !Par {
     let mut lvl = max_lvl
     let mut ss = s
     let mut tt = txn
     while lvl > 0 {
-        let nb = hnsw_nbrs_get_c(ss, tt, table_id, ix_id, lvl, ep, cache)?
+        let nb = hnsw_nbrs_get_c(ss, tt, table_id, ix_id, lvl, ep, cache, vcache)?
         ss = nb.s
         tt = nb.txn
         let mut j: i64 = 0
         while j < vec_len(nb.pks) {
-            let n2 = hnsw_nbrs_get_c(ss, tt, table_id, ix_id, lvl, vec_get(nb.pks, j), cache)?
+            let n2 = hnsw_nbrs_get_c(ss, tt, table_id, ix_id, lvl, vec_get(nb.pks, j), cache, vcache)?
             ss = n2.s
             tt = n2.txn
             j = j + 1
@@ -252,12 +279,16 @@ fn hnsw_warm_upper(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, ep: 
         lvl = lvl - 1
     }
     let empty: Vec<bytes> = vec_new()
-    return BoilaHnswNbrs { s: ss, txn: tt, pks: empty }
+    return BoilaHnswNbrs { s: ss, txn: tt, pks: empty, pay: bytes_new(0) }
 }
 
 fn hnsw_nbrs_put(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes, pks: Vec<bytes>) -> BoilaHnswNbrs {
-    let w = boila_txn_put(s, txn, boila_cf_vec(), table_id, hnsw_nbr_pk(ix_id, level, pk), hnsw_nbrs_enc(pks))
-    return BoilaHnswNbrs { s: s, txn: w.txn, pks: pks }
+    return hnsw_nbrs_put_ex(s, txn, table_id, ix_id, level, pk, pks, bytes_new(0))
+}
+
+fn hnsw_nbrs_put_ex(s: BoilaStore, txn: BoilaTxn, table_id: i64, ix_id: i64, level: i64, pk: bytes, pks: Vec<bytes>, pay: bytes) -> BoilaHnswNbrs {
+    let w = boila_txn_put(s, txn, boila_cf_vec(), table_id, hnsw_nbr_pk(ix_id, level, pk), hnsw_nbrs_enc_ex(pay, pks))
+    return BoilaHnswNbrs { s: s, txn: w.txn, pks: pks, pay: pay }
 }
 
 // Вектор от data row (col_idx); coerce str→vector.
@@ -286,7 +317,7 @@ fn hnsw_row_vec(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx:
     return BoilaHnswVec { s: s, txn: txn, ok: 1, dims: boila_vec_from_val(c.v) }
 }
 
-// V4b: cached VECTOR payload (val.b = dim‖i32*) for search; avoids re-GET.
+// V4c: payload cache; L0-embedded pay preferred (fills ncache too).
 struct BoilaHnswPay {
     s: BoilaStore,
     txn: BoilaTxn,
@@ -294,8 +325,41 @@ struct BoilaHnswPay {
     pay: bytes
 }
 
-fn hnsw_row_payload(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx: i64, dim: i64) -> BoilaHnswPay !IO !Time !Par {
+fn hnsw_row_payload_c(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx: i64, dim: i64, ix_id: i64, vcache: Map<bytes, bytes>, ncache: Map<bytes, bytes>) -> BoilaHnswPay !IO !Time !Par {
     let empty = bytes_new(0)
+    if map_has(vcache, pk) == 1 {
+        return BoilaHnswPay { s: s, txn: txn, ok: 1, pay: map_get(vcache, pk) }
+    }
+    if ix_id > 0 {
+        let key = hnsw_nbr_pk(ix_id, 0, pk)
+        let mut raw = bytes_new(0)
+        let mut got = 0
+        if map_has(ncache, key) == 1 {
+            raw = map_get(ncache, key)
+            got = 1
+        } else {
+            let bix = boila_txn_find(txn, boila_cf_vec(), table_id, key)
+            if bix >= 0 {
+                let w = vec_get(txn.writes, bix)
+                if w.is_del == 0 { raw = w.row; got = 1; map_set(ncache, key, raw) }
+            } else {
+                let g0 = boila_get(s, boila_cf_vec(), table_id, key)?
+                s = g0.s
+                if g0.found == 1 {
+                    raw = hnsw_unwrap(g0.val)
+                    got = 1
+                    map_set(ncache, key, raw)
+                }
+            }
+        }
+        if got == 1 {
+            let pay = hnsw_nbrs_dec_pay(raw)
+            if bytes_len(pay) >= 4 {
+                map_set(vcache, pk, pay)
+                return BoilaHnswPay { s: s, txn: txn, ok: 1, pay: pay }
+            }
+        }
+    }
     let g = boila_txn_get(s, txn, table_id, pk)?
     s = g.s
     if g.found == 0 {
@@ -309,56 +373,7 @@ fn hnsw_row_payload(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_
     if c.ok == 0 {
         return BoilaHnswPay { s: s, txn: txn, ok: 0, pay: empty }
     }
+    map_set(vcache, pk, c.v.b)
     return BoilaHnswPay { s: s, txn: txn, ok: 1, pay: c.v.b }
 }
 
-fn hnsw_row_payload_c(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes, col_idx: i64, dim: i64, vcache: Map<bytes, bytes>) -> BoilaHnswPay !IO !Time !Par {
-    if map_has(vcache, pk) == 1 {
-        return BoilaHnswPay { s: s, txn: txn, ok: 1, pay: map_get(vcache, pk) }
-    }
-    let p = hnsw_row_payload(s, txn, table_id, pk, col_idx, dim)?
-    if p.ok == 1 {
-        map_set(vcache, pk, p.pay)
-    }
-    return p
-}
-
-// Детерминистично ниво от pk (0..maxcap); mL≈1/ln(M)≈0.36 → /3.
-fn hnsw_level_of(pk: bytes, maxcap: i64) -> i64 {
-    let mut h: i64 = 5381
-    let mut i: i64 = 0
-    while i < bytes_len(pk) {
-        h = ((h * 33) + (bytes_at(pk, i) & 255)) & 2147483647
-        i = i + 1
-    }
-    let mut lvl: i64 = 0
-    let mut x = h
-    while lvl < maxcap && (x % 3) == 0 {
-        lvl = lvl + 1
-        x = x / 3
-    }
-    return lvl
-}
-
-fn hnsw_pk_in(pks: Vec<bytes>, pk: bytes) -> i64 {
-    let mut i: i64 = 0
-    while i < vec_len(pks) {
-        if bytes_eq_b(vec_get(pks, i), pk) {
-            return 1
-        }
-        i = i + 1
-    }
-    return 0
-}
-
-fn hnsw_nbrs_remove(pks: Vec<bytes>, pk: bytes) -> Vec<bytes> {
-    let out: Vec<bytes> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(pks) {
-        if bytes_eq_b(vec_get(pks, i), pk) == 0 {
-            vec_push(out, vec_get(pks, i))
-        }
-        i = i + 1
-    }
-    return out
-}

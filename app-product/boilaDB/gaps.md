@@ -226,9 +226,10 @@ T = транзакции, W = wire protocol, F = FTS.
   set (`boila_knn_pref` / V3b). Non-PK range/eq → HNSW overfetch + V6
   post-filter.
 - **V4 — (FIXED) RAM neighbor cache per search.** `hnsw_nbrs_get_c` +
-  `hnsw_warm_upper`. **V4b:** vector payload cache + L2 on fixed-point
-  payload; Map visited; beam skip-if-worse; `ef_s=20`; faster
-  `f64_to_fp` / `substr` parse. Residual: no process-global cache.
+  `hnsw_warm_upper`. **V4b:** vector payload cache + L2 fixed-point;
+  Map visited; beam skip-if-worse; `ef_s=20`. **V4c:** L0 neighbor
+  record embeds VECTOR payload (score+expand share GET/cache). Residual:
+  10k×128d ~23 ms; no process-global cache.
 - **V5 — (FIXED) unindex strips reverse edges + ep reassign.** Strip pk
   from nbr lists L0..4; if deleted node was ep, reassign to an L0
   neighbor (else clear). V5c: ep = L0 nbr with highest degree. Residual:
