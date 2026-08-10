@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-stream-join / stream xw for agg
+- `JOIN` + `GROUP BY`/agg folds matches during probe (`boila_join_into_fold`)
+  without materializing the join output row set.
+- Stream agg also applies expression `WHERE` (`has_xw`) per source row.
+- Tests: `boila_p5_test` join_agg_*; `boila_xwhere_test` agg_over_xw.
+
 ### boilaDB — K3j/K3k continuous ROLLUP (S5 pre-agg)
 - `CREATE ROLLUP name ON t USING time_bucket('1m', ts) [SUM(col)]`
   maintains per-bucket count(*) + optional sum on INSERT/UPDATE/DELETE.

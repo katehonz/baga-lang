@@ -132,6 +132,19 @@ fn main() -> i64 !IO !Time !Par {
     srv = h1.srv
     check(fails, "having", h1.ok == 1 && vec_len(h1.res.rows) == 1 && cell(vec_get(h1.res.rows, 0), 0) == "eng")
 
+    // --- Q-stream-join: JOIN + GROUP BY without materializing join rows ---
+    let ja = exec(srv, "SELECT loc, count(*) FROM emp JOIN dep ON dept = code GROUP BY loc")?
+    srv = ja.srv
+    check(fails, "join_agg_ok", ja.ok == 1 && vec_len(ja.res.rows) >= 1)
+    let mut jsum: i64 = 0
+    let mut ji: i64 = 0
+    while ji < vec_len(ja.res.rows) {
+        jsum = jsum + vec_get(vec_get(ja.res.rows, ji), 1).i
+        ji = ji + 1
+    }
+    // 5 emp rows that join (franko/ops has no dep until later insert)
+    check(fails, "join_agg_total", jsum == 5)
+
     // --- A2: hash join (no index on inner join col yet) ---
     let j1 = exec(srv, "SELECT name, loc FROM emp JOIN dep ON dept = code ORDER BY id LIMIT 2")?
     srv = j1.srv

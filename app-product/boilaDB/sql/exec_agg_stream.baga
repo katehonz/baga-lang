@@ -16,19 +16,37 @@ import "exec_scan.baga"
 import "exec_sort.baga"
 import "exec_filter.baga"
 import "exec_buf.baga"
+import "exec_join.baga"
+import "exec_xw.baga"
+import "exec_dual_ops.baga"
 import "exec_agg_fold.baga"
 import "exec_agg_feed.baga"
 import "exec_agg_extra.baga"
 import "std/bytes/bytes.baga"
 
-// Stream when fold can replace materialize+agg (no join/knn/fts/isnull/xw).
+// Stream fold when possible: plain / join / xw. Not knn/fts/isnull.
 fn boila_agg_streamable(sel: BoilaSel) -> i64 {
-    if sel.has_join == 1 { return 0 }
     if sel.has_knn == 1 { return 0 }
     if sel.has_fts == 1 { return 0 }
     if sel.isnull_mode != 0 { return 0 }
-    if sel.has_xw == 1 { return 0 }
     return 1
+}
+
+// Optional xw gate before fold (stream path).
+fn boila_agg_fold_row_xw(st: BoilaAggFold, sel: BoilaSel, names: Vec<str>, row: Vec<BoilaVal>) -> BoilaAggFold !Time {
+    if sel.has_xw == 1 {
+        let e = boila_xw_eval(names, sel.xw_toks, row)?
+        if e.ok == 0 {
+            st.ok = 0
+            st.err = e.err
+            st.state = e.state
+            return st
+        }
+        if boila_dual_when_true(e.val) == 0 {
+            return st
+        }
+    }
+    return boila_agg_fold_row(st, sel, row)?
 }
 
 // Read one rollup cell (txn buffer + storage). found=0 if missing/deleted.
@@ -447,21 +465,38 @@ fn boila_agg_scan_rollup(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: Boila
 
 // Fused fetch+fold for plain table (filters applied per row).
 fn boila_agg_scan(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time !Par {
-    // K3j pre-agg path (unfiltered time_bucket)
-    let ru = boila_agg_scan_rollup(s, txn, t, sel)?
-    if ru.ok == 1 {
-        return ru
+    // Q-stream-join: JOIN + agg without materializing wide rows
+    if sel.has_join == 1 {
+        let jf = boila_join_into_fold(s, txn, t, sel)?
+        s = jf.s
+        txn = jf.txn
+        if jf.ok == 0 {
+            return boila_exec_fail(s, txn, jf.err, jf.state)
+        }
+        return boila_exec_ok_select(s, txn, jf.res)
     }
-    // RU0 sentinel = shape/catalog miss → fall through
-    if ru.state != "RU0" {
-        return ru
+    // K3j pre-agg path (unfiltered time_bucket) — not with xw
+    if sel.has_xw == 0 {
+        let ru = boila_agg_scan_rollup(s, txn, t, sel)?
+        if ru.ok == 1 {
+            return ru
+        }
+        if ru.state != "RU0" {
+            return ru
+        }
+        s = ru.s
+        txn = ru.txn
     }
-    s = ru.s
-    txn = ru.txn
     let cols = t.cols
     let mut st = boila_agg_fold_start(cols, sel)?
     if st.ok == 0 {
         return boila_exec_fail(s, txn, st.err, st.state)
+    }
+    let xnames: Vec<str> = vec_new()
+    let mut xi: i64 = 0
+    while xi < vec_len(cols) {
+        vec_push(xnames, vec_get(cols, xi).name)
+        xi = xi + 1
     }
     let pkcol = vec_get(t.cols, t.pk_idx)
     let mut pk_range: i64 = 1
@@ -494,7 +529,7 @@ fn boila_agg_scan(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) ->
         }
         let mut r: i64 = 0
         while r < vec_len(f.rows) {
-            st = boila_agg_fold_row(st, sel, vec_get(f.rows, r))?
+            st = boila_agg_fold_row_xw(st, sel, xnames, vec_get(f.rows, r))?
             if st.ok == 0 {
                 return boila_exec_fail(s, txn, st.err, st.state)
             }
@@ -534,7 +569,7 @@ fn boila_agg_scan(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) ->
                         s = g.s
                         if g.found == 1 {
                             let row = boila_row_dec(g.row)
-                            st = boila_agg_fold_row(st, sel, row)?
+                            st = boila_agg_fold_row_xw(st, sel, xnames, row)?
                             if st.ok == 0 {
                                 return boila_exec_fail(s, txn, st.err, st.state)
                             }
@@ -593,7 +628,7 @@ fn boila_agg_scan(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) ->
                 if g.found == 1 {
                     let row = boila_row_dec(g.row)
                     if (sel.has_like == 0 && sel.has_in == 0 && sel.has_ne == 0) || boila_row_pass_filters(row, t, sel) == 1 {
-                        st = boila_agg_fold_row(st, sel, row)?
+                        st = boila_agg_fold_row_xw(st, sel, xnames, row)?
                         if st.ok == 0 {
                             return boila_exec_fail(s, txn, st.err, st.state)
                         }
@@ -624,7 +659,7 @@ fn boila_agg_scan(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) ->
         if g.found == 1 {
             let row = boila_row_dec(g.row)
             if need_f == 0 || boila_row_pass_filters(row, t, sel) == 1 {
-                st = boila_agg_fold_row(st, sel, row)?
+                st = boila_agg_fold_row_xw(st, sel, xnames, row)?
                 if st.ok == 0 {
                     return boila_exec_fail(s, txn, st.err, st.state)
                 }
