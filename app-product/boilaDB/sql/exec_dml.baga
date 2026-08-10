@@ -17,6 +17,7 @@ import "../vector/hnsw_store.baga"
 import "../vector/distance.baga"
 import "../graph/adjacency.baga"
 import "../graph/dml.baga"
+import "../ts/rollup.baga"
 import "../txn/mvcc.baga"
 import "ast.baga"
 import "exec_scan.baga"
@@ -210,6 +211,8 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
     s = hnswl.s
     let grpl = graph_list_for_table(s, t.id)?
     s = grpl.s
+    let rul = boila_ru_list_for_table(s, t.id)?
+    s = rul.s
     let mut affected: i64 = 0
     let mut r: i64 = 0
     while r < vec_len(ins.rows) {
@@ -324,6 +327,14 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
                 if gs.ok == 0 {
                     return boila_dml_fail(s, txn, 6, gs.err, gs.state)
                 }
+                if vec_len(rul.defs) > 0 {
+                    let rs = boila_ru_sync_row(s, txn, t.id, rul.defs, old, 1, new, 1)?
+                    s = rs.s
+                    txn = rs.txn
+                    if rs.ok == 0 {
+                        return boila_dml_fail(s, txn, 6, rs.err, rs.state)
+                    }
+                }
                 affected = affected + 1
                 if ins.has_ret == 1 {
                     vec_push(res.rows, boila_project(new, pj2.proj))
@@ -371,6 +382,14 @@ fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns)
             txn = gs.txn
             if gs.ok == 0 {
                 return boila_dml_fail(s, txn, 6, gs.err, gs.state)
+            }
+            if vec_len(rul.defs) > 0 {
+                let rs = boila_ru_sync_row(s, txn, t.id, rul.defs, empty, 0, full, 1)?
+                s = rs.s
+                txn = rs.txn
+                if rs.ok == 0 {
+                    return boila_dml_fail(s, txn, 6, rs.err, rs.state)
+                }
             }
             affected = affected + 1
             if ins.has_ret == 1 {

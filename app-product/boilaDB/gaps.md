@@ -186,12 +186,15 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P9
 
-- **S5 — (MEASURED + Q-ghash + K3h + K3i + stream) time_bucket gate.**
-  Hash GROUP BY + sorted prefix seek + prefix live fold + stream fold.
-  **@10k 16 ms OK**; **@20k 34 ms OK**; **@100k ~174 ms FAIL**. **ts-ix
-  window last 10k @100k ~45 ms**. PLAN 1M &lt; 50 ms not met (N GETs).
+- **S5 — (MEASURED + K3j rollup + K3h/i + stream) time_bucket gate.**
+  Continuous `CREATE ROLLUP` pre-agg: **@10k ~0.3 ms**; **@20k ~0.7 ms**;
+  **@100k ~2.8 ms OK** (gate &lt; 50 ms). ts-ix window ~38 ms @100k (raw).
   Results: `bench/boila/results/modality-2026-08-10.md`. Residual:
-  pre-agg; stream join/xw.
+  partial-window rollup; stream join/xw.
+- **K3j — (FIXED) continuous rollup pre-agg.** DDL
+  `CREATE ROLLUP name ON t USING time_bucket('1m', ts) [SUM(col)]`;
+  DML maintains count(*)+sum cells in index CF; unfiltered GROUP BY
+  time_bucket matching iv/col → O(buckets). Tests: `boila_rollup_test`.
 - **Q-stream — (FIXED) stream hash-agg.** `exec_agg_fold`/`feed` +
   `exec_agg_stream`: plain table SELECT agg/GROUP BY folds during GET
   (no materialize of N rows). Join/knn/fts/isnull/xw still materialize.

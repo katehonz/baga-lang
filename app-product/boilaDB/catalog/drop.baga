@@ -108,6 +108,15 @@ fn boila_table_drop_core_txn(s: BoilaStore, txn: BoilaTxn, name: str) -> BoilaCa
     s = xp.s
     txn = xp.txn
     if xp.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: xp.err, state: xp.state, table: t, id: 0 } }
+    // K3j rollup catalog: ru|<tid>|* and list rul|<tid>
+    let rp = boila_sys_prefix_wipe_txn(s, txn, concat(concat("ru|", int_to_str(tid)), "|"))?
+    s = rp.s
+    txn = rp.txn
+    if rp.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: rp.err, state: rp.state, table: t, id: 0 } }
+    let rld = boila_drop_txn_del(s, txn, bytes_of_str(concat("rul|", int_to_str(tid))))
+    s = rld.s
+    txn = rld.txn
+    if rld.ok == 0 { return BoilaCatTxnRes { s: s, txn: txn, ok: 0, err: rld.err, state: rld.state, table: t, id: 0 } }
 
     let dn = boila_drop_txn_del(s, txn, boila_cat_pk_name(name))
     s = dn.s
@@ -138,6 +147,8 @@ fn boila_table_drop_core(s: BoilaStore, name: str) -> BoilaCatRes !IO !Time !Par
     s = boila_cf_wipe(s, boila_cf_data(), tid)?
     s = boila_cf_wipe(s, boila_cf_index(), tid)?
     s = boila_sys_prefix_wipe(s, concat(concat("x|", int_to_str(tid)), "|"))?
+    s = boila_sys_prefix_wipe(s, concat(concat("ru|", int_to_str(tid)), "|"))?
+    s = boila_del(s, boila_cf_sys(), 1, bytes_of_str(concat("rul|", int_to_str(tid))))?
     s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_name(name))?
     s = boila_del(s, boila_cf_sys(), 1, boila_cat_pk_schema(tid))?
     s = boila_del(s, boila_cf_sys(), 1, bytes_of_str(concat("td|", int_to_str(tid))))?

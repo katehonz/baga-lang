@@ -1,11 +1,105 @@
-// parse_index.baga — CREATE INDEX / FTS INDEX / USING hnsw (P3/P7/P8).
+// parse_index.baga — CREATE INDEX / FTS INDEX / USING hnsw / ROLLUP (P3/P7/P8/K3j).
 
 import "token.baga"
 import "lexer.baga"
 import "ast.baga"
 import "parse_ddl.baga"
 import "../vector/distance.baga"
+import "../ts/time_bucket.baga"
 import "std/str/str.baga"
+
+struct BoilaParseRu {
+    ok: i64,
+    name: str,
+    table: str,
+    ts_col: str,
+    iv_sec: i64,
+    sum_col: str,   // "" = count only
+    if_not_exists: i64,
+    err: str,
+    state: str
+}
+
+fn boila_pru_fail(msg: str, state: str) -> BoilaParseRu {
+    return BoilaParseRu {
+        ok: 0, name: "", table: "", ts_col: "", iv_sec: 0, sum_col: "",
+        if_not_exists: 0, err: msg, state: state
+    }
+}
+
+// CREATE ROLLUP [IF NOT EXISTS] name ON table USING time_bucket('1m', col) [SUM(col)]
+fn boila_parse_create_rollup(l: BoilaLex) -> BoilaParseRu {
+    let mut i: i64 = 2
+    let mut ifne: i64 = 0
+    let sk = boila_parse_if_not_exists(l, i)
+    if sk > 0 { ifne = 1; i = i + sk }
+    let nm = boila_pc_tok(l, i)
+    if nm.kind != tok_ident() {
+        return boila_pru_fail("очаквах име след CREATE ROLLUP", "42601")
+    }
+    i = i + 1
+    if tok_kw(boila_pc_tok(l, i), "on") != 1 {
+        return boila_pru_fail("очаквах ON след името на rollup", "42601")
+    }
+    let tb = boila_pc_tok(l, i + 1)
+    if tb.kind != tok_ident() {
+        return boila_pru_fail("очаквах таблица след ON", "42601")
+    }
+    i = i + 2
+    if tok_kw(boila_pc_tok(l, i), "using") != 1 {
+        return boila_pru_fail("очаквах USING time_bucket(...)", "42601")
+    }
+    i = i + 1
+    let tbk = boila_pc_tok(l, i)
+    if tbk.kind != tok_ident() || tbk.txt != "time_bucket" {
+        return boila_pru_fail("очаквах time_bucket след USING", "42601")
+    }
+    if boila_pc_tok(l, i + 1).kind != tok_lparen() {
+        return boila_pru_fail("очаквах '(' след time_bucket", "42601")
+    }
+    let ivt = boila_pc_tok(l, i + 2)
+    if ivt.kind != tok_str() {
+        return boila_pru_fail("очаквах интервал-стринг в time_bucket", "42601")
+    }
+    let iv = boila_tb_parse_iv(ivt.txt)
+    if iv.ok == 0 {
+        return boila_pru_fail(iv.err, iv.state)
+    }
+    if boila_pc_tok(l, i + 3).kind != tok_comma() {
+        return boila_pru_fail("очаквах ',' в time_bucket", "42601")
+    }
+    let col = boila_pc_tok(l, i + 4)
+    if col.kind != tok_ident() {
+        return boila_pru_fail("очаквах колона в time_bucket", "42601")
+    }
+    if boila_pc_tok(l, i + 5).kind != tok_rparen() {
+        return boila_pru_fail("очаквах ')' в time_bucket", "42601")
+    }
+    i = i + 6
+    let mut sum_col = ""
+    if tok_kw(boila_pc_tok(l, i), "sum") == 1 || (boila_pc_tok(l, i).kind == tok_ident() && boila_pc_tok(l, i).txt == "sum") {
+        if boila_pc_tok(l, i + 1).kind != tok_lparen() {
+            return boila_pru_fail("очаквах '(' след SUM", "42601")
+        }
+        let sc = boila_pc_tok(l, i + 2)
+        if sc.kind != tok_ident() {
+            return boila_pru_fail("очаквах колона в SUM", "42601")
+        }
+        if boila_pc_tok(l, i + 3).kind != tok_rparen() {
+            return boila_pru_fail("очаквах ')' след SUM колона", "42601")
+        }
+        sum_col = sc.txt
+        i = i + 4
+    }
+    if boila_pc_tok(l, i).kind == tok_semi() { i = i + 1 }
+    if boila_pc_tok(l, i).kind != tok_eof() {
+        return boila_pru_fail(concat("неочакван токен '", concat(boila_pc_tok(l, i).txt, "' след CREATE ROLLUP")), "0A000")
+    }
+    return BoilaParseRu {
+        ok: 1, name: nm.txt, table: tb.txt, ts_col: col.txt, iv_sec: iv.sec,
+        sum_col: sum_col, if_not_exists: ifne, err: "", state: ""
+    }
+}
 
 struct BoilaParseIx {
     ok: i64,

@@ -1,0 +1,313 @@
+// rollup.baga — continuous pre-agg for time_bucket (S5 / K3j).
+//
+// CREATE ROLLUP name ON t USING time_bucket('1m', ts) [SUM(v)]
+// Maintains per-bucket count(*) + optional sum on DML.
+// Query: unfiltered GROUP BY time_bucket matching iv/col → O(buckets).
+//
+// sys: "ru|<tid>|<name>" → [id, ts_idx, iv_sec, sum_idx]
+//      "rul|<tid>" list; "m|next_ru" counter
+// index CF (table_id): pk "R"‖u32(id)‖i64_ord(bucket) → row [cnt, sum]
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "time_bucket.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+struct BoilaRuDef {
+    id: i64,
+    ts_idx: i64,
+    iv_sec: i64,
+    sum_idx: i64,   // -1 = count only
+    name: str
+}
+
+struct BoilaRuList {
+    s: BoilaStore,
+    defs: Vec<BoilaRuDef>
+}
+
+struct BoilaRuRes {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    id: i64
+}
+
+fn boila_ru_cat_pk(table_id: i64, name: str) -> bytes {
+    return bytes_of_str(concat(concat(concat("ru|", int_to_str(table_id)), "|"), name))
+}
+
+fn boila_ru_list_pk(table_id: i64) -> bytes {
+    return bytes_of_str(concat("rul|", int_to_str(table_id)))
+}
+
+fn boila_ru_meta_pk() -> bytes {
+    return bytes_of_str("m|next_ru")
+}
+
+// Entry pk: R ‖ rid ‖ sort-order bucket seconds.
+fn boila_ru_entry_pk(rid: i64, bucket_sec: i64) -> bytes {
+    let mut out = bytes_of_str("R")
+    out = bytes_concat(out, boila_enc_u32_be(rid))
+    return bytes_concat(out, boila_enc_i64_ord(bucket_sec))
+}
+
+fn boila_ru_prefix(rid: i64) -> bytes {
+    let mut out = bytes_of_str("R")
+    return bytes_concat(out, boila_enc_u32_be(rid))
+}
+
+fn boila_ru_defs_enc(defs: Vec<BoilaRuDef>) -> bytes {
+    let r: Vec<BoilaVal> = vec_new()
+    vec_push(r, boila_val_i64(vec_len(defs)))
+    let mut i: i64 = 0
+    while i < vec_len(defs) {
+        let d = vec_get(defs, i)
+        vec_push(r, boila_val_i64(d.id))
+        vec_push(r, boila_val_i64(d.ts_idx))
+        vec_push(r, boila_val_i64(d.iv_sec))
+        vec_push(r, boila_val_i64(d.sum_idx))
+        vec_push(r, boila_val_str(d.name))
+        i = i + 1
+    }
+    return boila_row_enc(r)
+}
+
+fn boila_ru_list_for_table(s: BoilaStore, table_id: i64) -> BoilaRuList !IO !Time !Par {
+    let defs: Vec<BoilaRuDef> = vec_new()
+    let g = boila_get(s, boila_cf_sys(), 1, boila_ru_list_pk(table_id))?
+    s = g.s
+    if g.found == 0 {
+        return BoilaRuList { s: s, defs: defs }
+    }
+    let row = boila_row_dec(g.val)
+    if vec_len(row) < 1 {
+        return BoilaRuList { s: s, defs: defs }
+    }
+    let n = vec_get(row, 0).i
+    let mut off: i64 = 1
+    let mut i: i64 = 0
+    while i < n && off + 4 < vec_len(row) {
+        let id = vec_get(row, off).i
+        let ts_idx = vec_get(row, off + 1).i
+        let iv = vec_get(row, off + 2).i
+        let sx = vec_get(row, off + 3).i
+        let mut nm = ""
+        if vec_get(row, off + 4).tag == boila_v_str() {
+            nm = str_of_bytes(vec_get(row, off + 4).b)
+        }
+        vec_push(defs, BoilaRuDef { id: id, ts_idx: ts_idx, iv_sec: iv, sum_idx: sx, name: nm })
+        off = off + 5
+        i = i + 1
+    }
+    return BoilaRuList { s: s, defs: defs }
+}
+
+// GET bucket cell (index CF) through txn buffer.
+fn boila_ru_get_cell(s: BoilaStore, txn: BoilaTxn, table_id: i64, pk: bytes) -> BoilaTxnGet !IO !Time !Par {
+    let ix = boila_txn_find(txn, boila_cf_index(), table_id, pk)
+    if ix >= 0 {
+        let w = vec_get(txn.writes, ix)
+        if w.is_del == 1 {
+            return BoilaTxnGet { s: s, found: 0, row: bytes_new(0), lsn: 0 }
+        }
+        return BoilaTxnGet { s: s, found: 1, row: w.row, lsn: 0 }
+    }
+    let g = boila_get(s, boila_cf_index(), table_id, pk)?
+    if g.found == 0 {
+        return BoilaTxnGet { s: g.s, found: 0, row: bytes_new(0), lsn: 0 }
+    }
+    // commit wraps non-sys CFs with LSN prefix
+    return BoilaTxnGet { s: g.s, found: 1, row: boila_unwrap_row(g.val), lsn: boila_unwrap_lsn(g.val) }
+}
+
+// Apply ±1 row into rollup buckets (sign: +1 insert, -1 delete).
+fn boila_ru_apply_row(s: BoilaStore, txn: BoilaTxn, table_id: i64, defs: Vec<BoilaRuDef>, row: Vec<BoilaVal>, sign: i64) -> BoilaRuRes !IO !Time !Par {
+    let mut di: i64 = 0
+    while di < vec_len(defs) {
+        let d = vec_get(defs, di)
+        if d.ts_idx < 0 || d.ts_idx >= vec_len(row) {
+            di = di + 1
+        } else {
+            let tv = vec_get(row, d.ts_idx)
+            if tv.tag == boila_v_null() {
+                di = di + 1
+            } else {
+                let bsec = boila_tb_bucket(boila_tb_to_sec(tv), d.iv_sec)
+                let pk = boila_ru_entry_pk(d.id, bsec)
+                let g = boila_ru_get_cell(s, txn, table_id, pk)?
+                s = g.s
+                let mut cnt: i64 = 0
+                let mut sum: i64 = 0
+                if g.found == 1 {
+                    let cell = boila_row_dec(g.row)
+                    if vec_len(cell) > 0 { cnt = vec_get(cell, 0).i }
+                    if vec_len(cell) > 1 { sum = vec_get(cell, 1).i }
+                }
+                cnt = cnt + sign
+                if d.sum_idx >= 0 && d.sum_idx < vec_len(row) {
+                    let sv = vec_get(row, d.sum_idx)
+                    if sv.tag == boila_v_i64() || sv.tag == boila_v_ts() {
+                        sum = sum + sign * sv.i
+                    }
+                }
+                if cnt <= 0 {
+                    let r = boila_txn_del(s, txn, boila_cf_index(), table_id, pk)
+                    if r.ok == 0 {
+                        return BoilaRuRes { s: s, txn: r.txn, ok: 0, err: r.err, state: r.state, id: 0 }
+                    }
+                    txn = r.txn
+                } else {
+                    let cell2: Vec<BoilaVal> = vec_new()
+                    vec_push(cell2, boila_val_i64(cnt))
+                    vec_push(cell2, boila_val_i64(sum))
+                    let r2 = boila_txn_put(s, txn, boila_cf_index(), table_id, pk, boila_row_enc(cell2))
+                    if r2.ok == 0 {
+                        return BoilaRuRes { s: s, txn: r2.txn, ok: 0, err: r2.err, state: r2.state, id: 0 }
+                    }
+                    txn = r2.txn
+                }
+                di = di + 1
+            }
+        }
+    }
+    return BoilaRuRes { s: s, txn: txn, ok: 1, err: "", state: "", id: 0 }
+}
+
+fn boila_ru_sync_row(s: BoilaStore, txn: BoilaTxn, table_id: i64, defs: Vec<BoilaRuDef>, old: Vec<BoilaVal>, has_old: i64, new: Vec<BoilaVal>, has_new: i64) -> BoilaRuRes !IO !Time !Par {
+    if has_old == 1 {
+        let a = boila_ru_apply_row(s, txn, table_id, defs, old, 0 - 1)?
+        s = a.s
+        txn = a.txn
+        if a.ok == 0 {
+            return a
+        }
+    }
+    if has_new == 1 {
+        return boila_ru_apply_row(s, txn, table_id, defs, new, 1)?
+    }
+    return BoilaRuRes { s: s, txn: txn, ok: 1, err: "", state: "", id: 0 }
+}
+
+fn boila_ru_create(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, name: str, ts_col: str, iv_sec: i64, sum_col: str) -> BoilaRuRes !IO !Time !Par {
+    if iv_sec <= 0 {
+        return BoilaRuRes { s: s, txn: txn, ok: 0, err: "rollup interval трябва да е > 0", state: "42601", id: 0 }
+    }
+    let mut ts_idx: i64 = 0 - 1
+    let mut sum_idx: i64 = 0 - 1
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        let n = vec_get(t.cols, i).name
+        if n == ts_col { ts_idx = i }
+        if sum_col != "" && n == sum_col { sum_idx = i }
+        i = i + 1
+    }
+    if ts_idx < 0 {
+        return BoilaRuRes { s: s, txn: txn, ok: 0, err: concat("колона '", concat(ts_col, "' не съществува")), state: "42703", id: 0 }
+    }
+    let tt = vec_get(t.cols, ts_idx).typ
+    if tt != boila_v_i64() && tt != boila_v_ts() {
+        return BoilaRuRes { s: s, txn: txn, ok: 0, err: "time_bucket колоната трябва да е BIGINT/TIMESTAMPTZ", state: "42804", id: 0 }
+    }
+    if sum_col != "" && sum_idx < 0 {
+        return BoilaRuRes { s: s, txn: txn, ok: 0, err: concat("SUM колона '", concat(sum_col, "' не съществува")), state: "42703", id: 0 }
+    }
+    if sum_idx >= 0 {
+        let st = vec_get(t.cols, sum_idx).typ
+        if st != boila_v_i64() && st != boila_v_ts() {
+            return BoilaRuRes { s: s, txn: txn, ok: 0, err: "SUM колоната трябва да е BIGINT", state: "42804", id: 0 }
+        }
+    }
+    let g = boila_get(s, boila_cf_sys(), 1, boila_ru_cat_pk(t.id, name))?
+    s = g.s
+    if g.found == 1 {
+        return BoilaRuRes { s: s, txn: txn, ok: 0, err: concat("rollup '", concat(name, "' вече съществува")), state: "42710", id: 0 }
+    }
+    let mut next: i64 = 1
+    let cix = boila_txn_find(txn, boila_cf_sys(), 1, boila_ru_meta_pk())
+    if cix >= 0 {
+        let w = vec_get(txn.writes, cix)
+        let row = boila_row_dec(w.row)
+        if vec_len(row) > 0 { next = vec_get(row, 0).i }
+    } else {
+        let gm = boila_get(s, boila_cf_sys(), 1, boila_ru_meta_pk())?
+        s = gm.s
+        if gm.found == 1 {
+            let row = boila_row_dec(gm.val)
+            if vec_len(row) > 0 { next = vec_get(row, 0).i }
+        }
+    }
+    let cnt: Vec<BoilaVal> = vec_new()
+    vec_push(cnt, boila_val_i64(next + 1))
+    let r1 = boila_txn_put(s, txn, boila_cf_sys(), 1, boila_ru_meta_pk(), boila_row_enc(cnt))
+    if r1.ok == 0 {
+        return BoilaRuRes { s: s, txn: r1.txn, ok: 0, err: r1.err, state: r1.state, id: 0 }
+    }
+    txn = r1.txn
+    let cat: Vec<BoilaVal> = vec_new()
+    vec_push(cat, boila_val_i64(next))
+    vec_push(cat, boila_val_i64(ts_idx))
+    vec_push(cat, boila_val_i64(iv_sec))
+    vec_push(cat, boila_val_i64(sum_idx))
+    let r2 = boila_txn_put(s, txn, boila_cf_sys(), 1, boila_ru_cat_pk(t.id, name), boila_row_enc(cat))
+    if r2.ok == 0 {
+        return BoilaRuRes { s: s, txn: r2.txn, ok: 0, err: r2.err, state: r2.state, id: 0 }
+    }
+    txn = r2.txn
+    let gl = boila_ru_list_for_table(s, t.id)?
+    s = gl.s
+    vec_push(gl.defs, BoilaRuDef { id: next, ts_idx: ts_idx, iv_sec: iv_sec, sum_idx: sum_idx, name: name })
+    let rl = boila_txn_put(s, txn, boila_cf_sys(), 1, boila_ru_list_pk(t.id), boila_ru_defs_enc(gl.defs))
+    if rl.ok == 0 {
+        return BoilaRuRes { s: s, txn: rl.txn, ok: 0, err: rl.err, state: rl.state, id: 0 }
+    }
+    txn = rl.txn
+    // build from existing rows
+    let one: Vec<BoilaRuDef> = vec_new()
+    vec_push(one, BoilaRuDef { id: next, ts_idx: ts_idx, iv_sec: iv_sec, sum_idx: sum_idx, name: name })
+    let ks = boila_txn_keys(s, txn, t.id)?
+    s = ks.s
+    let mut ki: i64 = 0
+    while ki < vec_len(ks.pks) {
+        let g2 = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
+        s = g2.s
+        if g2.found == 1 {
+            let row = boila_row_dec(g2.row)
+            let a = boila_ru_apply_row(s, txn, t.id, one, row, 1)?
+            s = a.s
+            txn = a.txn
+            if a.ok == 0 {
+                return a
+            }
+        }
+        ki = ki + 1
+    }
+    return BoilaRuRes { s: s, txn: txn, ok: 1, err: "", state: "", id: next }
+}
+
+// Find rollup matching time_bucket iv + col (+ optional sum col for query).
+fn boila_ru_match(defs: Vec<BoilaRuDef>, ts_idx: i64, iv_sec: i64, need_sum: i64, sum_idx: i64) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(defs) {
+        let d = vec_get(defs, i)
+        if d.ts_idx == ts_idx && d.iv_sec == iv_sec {
+            if need_sum == 0 {
+                return i
+            }
+            if d.sum_idx == sum_idx {
+                return i
+            }
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+

@@ -26,6 +26,7 @@ import "../fts/fts.baga"
 import "../vector/hnsw.baga"
 import "../vector/distance.baga"
 import "../graph/adjacency.baga"
+import "../ts/rollup.baga"
 import "../catalog/schema.baga"
 import "../storage/shards.baga"
 import "../index/secondary.baga"
@@ -278,7 +279,38 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
             }
             return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: fx.id }
         }
-        return boila_sql_fail(s, txn, pc, "CREATE TABLE / INDEX / FTS INDEX / INDEX USING hnsw", "0A000")
+        if tok_kw(t1, "rollup") == 1 || (t1.kind == tok_ident() && t1.txt == "rollup") {
+            let p = boila_parse_create_rollup(lx)
+            if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
+            let ct = boila_cat_by_name_txn(s, txn, p.table)?
+            s = ct.s
+            if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let rx = boila_ru_create(s, txn, ct.table, p.name, p.ts_col, p.iv_sec, p.sum_col)?
+            s = rx.s
+            txn = rx.txn
+            if rx.ok == 0 {
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if p.if_not_exists == 1 && rx.state == "42710" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 22, res: boila_result_empty(), id: 0 }
+                }
+                if was_active == 1 { txn = boila_txn_rollback(txn) }
+                return boila_sql_fail(s, txn, pc, rx.err, rx.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+            }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 22, res: boila_result_empty(), id: rx.id }
+        }
+        return boila_sql_fail(s, txn, pc, "CREATE TABLE / INDEX / FTS / GRAPH / ROLLUP", "0A000")
     }
     if tok_kw(t0, "insert") == 1 {
         let p = boila_parse_insert(lx)

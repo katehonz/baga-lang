@@ -185,6 +185,7 @@ rocksbaga при същия хардуер (моделът на scorecard-ите
   `ts_rank`. Индексът е персистентен — без rebuild при рестарт.
 - **ts/** — не е отделен език: таблици с `WITH (ttl_days = N | ttl_sec = N)`
   (boila extension for sub-day TTL), `time_bucket('1m', ts)` в GROUP BY,
+  continuous `CREATE ROLLUP … USING time_bucket` pre-agg (K3j),
   retention през TTL (`lsm_put_ex`) + sweeper. Барбадб няма аналог.
 - **graph/** — adjacency в `graph` key-space (двупосочен); обхожданията
   се изразяват като `WITH RECURSIVE` (PG-идиоматично), примитивите

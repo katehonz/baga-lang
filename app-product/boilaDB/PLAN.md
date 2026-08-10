@@ -181,13 +181,16 @@
 - Реализирано: `CREATE TABLE … WITH (ttl_days = N | ttl_sec = N)` —
   TTL в sys `td|<tid>`; data put на COMMIT през `lsm_put_ex_kb`
   (rocksbaga BAGATTL1 lazy expire); `GROUP BY time_bucket('1m', ts)`
-  (s/m/h/d); `ts/time_bucket.baga`, `ts/retention.baga`; sweep = flush.
+  (s/m/h/d); **K3j** `CREATE ROLLUP … USING time_bucket … [SUM(col)]`
+  continuous pre-agg; `ts/{time_bucket,retention,rollup}.baga`; sweep =
+  flush.
 - **Гейтове (минати, functional):** boila_ts_test — bucket 3 групи +
-  totals, bad unit, ttl_sec expire след 2s, ttl_days, restart.
-  **Perf 1M точки < 50 ms** — bench остава (Q2 arena), gaps S5.
+  totals, bad unit, ttl_sec expire след 2s, ttl_days, restart;
+  boila_rollup_test. **Perf 100k points rollup GROUP BY ~2.8 ms**
+  (gate &lt; 50 ms OK); 1M not re-seeded (scales with #buckets).
 - Ревизии: `ttl_sec` за тестове/фина зърненост (в допълнение на
   `ttl_days`); **S7:** time_bucket и в SELECT list; sweeper = flush,
-  не background worker (S6).
+  не background worker (S6); rollup unfiltered only (window residual).
 
 ## P10 — graph/ през WITH RECURSIVE
 - Реализирано: `CREATE GRAPH name ON edges (src, dst [, w])` — двупосочен
