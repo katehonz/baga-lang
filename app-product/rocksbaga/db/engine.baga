@@ -331,6 +331,20 @@ fn lsm_wal_append(db: LsmDB, op: i64, key: bytes, val: bytes) -> LsmDB !IO {
     return db
 }
 
+// MEM-4: scan snapshot ключовете са СОБСТВЕНИ persist копии (rebuild прави
+// deep-copy — live_map връща alias-и към memtable persist ключове или
+// ephemeral fold temporaries). При замяна/инвалидация данните се free-ват
+// тук, а vec-ът (box-овете) — с drop(old) на мястото на извикване
+// (drop на параметър е забранен — споделя буфера на извикващия).
+fn lsm_scan_keys_free_data(ks: Vec<bytes>) {
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        let k = vec_get(ks, i)
+        drop(k)
+        i = i + 1
+    }
+}
+
 // R63: invalidate SCAN snapshot after a write/flush that changes the live set.
 fn lsm_scan_touch(db: LsmDB) -> LsmDB {
     db.write_epoch = db.write_epoch + 1
@@ -340,12 +354,15 @@ fn lsm_scan_touch(db: LsmDB) -> LsmDB {
         mem_persist_begin()
         db.scan_keys = vec_new()
         mem_persist_end()
+        lsm_scan_keys_free_data(old)
         drop(old)
     }
     db.scan_epoch = 0 - 1
+    let opat = db.scan_pat
     mem_persist_begin()
     db.scan_pat = bytes_new(0)
     mem_persist_end()
+    drop(opat)
     return db
 }
 
@@ -1124,14 +1141,30 @@ fn lsm_scan_rebuild_b(db: LsmDB, match_pat: bytes) -> LsmDB !IO !Time {
         }
         i = i + 1
     }
+    // MEM-4: snapshot-ът е cross-request state на store-а (boilaDB serve
+    // rewind-ва ephemeral arena-та на заявката) — deep-copy в persist,
+    // иначе drop(old)/четене след rewind е use-after-free.
+    mem_persist_begin()
+    let pf: Vec<bytes> = vec_new()
+    i = 0
+    while i < vec_len(filtered) {
+        let k2 = vec_get(filtered, i)
+        vec_push(pf, bytes_slice(k2, 0, bytes_len(k2)))
+        i = i + 1
+    }
+    let ppat = bytes_slice(match_pat, 0, bytes_len(match_pat))
+    mem_persist_end()
     if vec_len(db.scan_keys) > 0 {
         let old = db.scan_keys
-        db.scan_keys = filtered
+        db.scan_keys = pf
+        lsm_scan_keys_free_data(old)
         drop(old)
     } else {
-        db.scan_keys = filtered
+        db.scan_keys = pf
     }
-    db.scan_pat = match_pat
+    let opat = db.scan_pat
+    db.scan_pat = ppat
+    drop(opat)
     db.scan_epoch = db.write_epoch
     return db
 }
@@ -1144,18 +1177,34 @@ fn lsm_scan_rebuild_prefix_b(db: LsmDB, prefix: bytes) -> LsmDB !IO !Time {
     db = r.db
     let filtered = r.keys
     sort_bytes(filtered)
-    if vec_len(db.scan_keys) > 0 {
-        let old = db.scan_keys
-        db.scan_keys = filtered
-        drop(old)
-    } else {
-        db.scan_keys = filtered
+    // MEM-4: snapshot-ът е cross-request state на store-а (boilaDB serve
+    // rewind-ва ephemeral arena-та на заявката) — deep-copy в persist,
+    // иначе drop(old)/четене след rewind е use-after-free.
+    mem_persist_begin()
+    let pf: Vec<bytes> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(filtered) {
+        let k = vec_get(filtered, i)
+        vec_push(pf, bytes_slice(k, 0, bytes_len(k)))
+        i = i + 1
     }
     // tag prefix mode: pat = 0x01 ‖ prefix (won't collide with glob pats that
     // are bare keys or * patterns from RESP)
     let mut tag = bytes_new(1)
     bytes_set(tag, 0, 1)
-    db.scan_pat = bytes_concat(tag, prefix)
+    let ppat = bytes_concat(tag, prefix)
+    mem_persist_end()
+    if vec_len(db.scan_keys) > 0 {
+        let old = db.scan_keys
+        db.scan_keys = pf
+        lsm_scan_keys_free_data(old)
+        drop(old)
+    } else {
+        db.scan_keys = pf
+    }
+    let opat = db.scan_pat
+    db.scan_pat = ppat
+    drop(opat)
     db.scan_epoch = db.write_epoch
     return db
 }
@@ -1251,11 +1300,20 @@ fn lsm_scan_kb(db: LsmDB, cursor: i64, count: i64, match_pat: bytes) -> LsmScanB
         // Full iteration done — free snapshot until next SCAN 0.
         if vec_len(db.scan_keys) > 0 {
             let old = db.scan_keys
+            // MEM-4: заместващият vec/pat остават в shared store след rewind
+            // → persist. Ключовите ДАННИ тук не се free-ват нарочно: out
+            // по-горе alias-ва същите байтове и се сериализира след return.
+            mem_persist_begin()
             db.scan_keys = vec_new()
+            mem_persist_end()
             drop(old)
         }
         db.scan_epoch = 0 - 1
+        let opat = db.scan_pat
+        mem_persist_begin()
         db.scan_pat = bytes_new(0)
+        mem_persist_end()
+        drop(opat)
     }
     return LsmScanB { db: db, next: next, keys: out }
 }
