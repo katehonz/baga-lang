@@ -73,6 +73,10 @@ fn main() -> i64 !Net !IO !Time !Par {
         if poll_has(pr.ready, listener) == 1 {
             let fd = tcp_accept(listener)?
             if fd >= 0 {
+                // TCP_NODELAY — extended протоколът отговаря с няколко малки
+                // съобщения (ParseComplete/BindComplete/…/RFQ); без него
+                // server-side Nagle + client delayed ACK = ~40 ms/заявка.
+                tcp_set_nodelay(fd)?
                 if boila_mt_try_conn(pack)? == 0 {
                     tcp_close(fd)?
                 } else {

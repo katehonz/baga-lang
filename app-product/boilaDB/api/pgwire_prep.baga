@@ -36,6 +36,7 @@ struct BoilaPgStmt {
 
 struct BoilaPgPortal {
     sql: str,
+    src: str,   // името на stmt-а, от който е bound (MEM-4 reclaim гард)
     vals: Vec<str>,
     nulls: Vec<i64>,
     kind: i64,
@@ -52,24 +53,220 @@ fn boila_pg_stmt_text(sql: str) -> BoilaPgStmt {
     }
 }
 
-fn boila_pg_portal_empty() -> BoilaPgPortal {
-    let vals: Vec<str> = vec_new()
-    let nulls: Vec<i64> = vec_new()
-    return BoilaPgPortal {
-        sql: "", vals: vals, nulls: nulls, kind: 0,
-        sel: boila_sel_empty(), ins: boila_ins_empty(),
-        upd: boila_upd_empty(), del: boila_del_empty()
+// MEM-4: пълен free на AST vec полета — само за ОБЕКТИ, които ги притежават
+// (stmt от parse; използва се от stmt_free през orphaned гарда).
+fn boila_pg_sel_free_all(sel: BoilaSel) {
+    let mut i: i64 = 0
+    while i < vec_len(sel.items) {
+        let it = vec_get(sel.items, i)
+        let sc = it.sfn_cols
+        drop(sc)
+        let sv = it.sfn_vals
+        drop(sv)
+        let xt = it.xtoks
+        drop(xt)
+        i = i + 1
+    }
+    let items = sel.items
+    drop(items)
+    let oc = sel.ord_cols
+    drop(oc)
+    let od = sel.ord_desc
+    drop(od)
+    let gc = sel.group_cols
+    drop(gc)
+    let gx = sel.group_xtoks
+    drop(gx)
+    let mut h: i64 = 0
+    while h < vec_len(sel.hav_preds) {
+        let hp = vec_get(sel.hav_preds, h)
+        let hxt = hp.xtoks
+        drop(hxt)
+        h = h + 1
+    }
+    let hpreds = sel.hav_preds
+    drop(hpreds)
+    let hnodes = sel.hav_nodes
+    drop(hnodes)
+    let jl = sel.join_lcols
+    drop(jl)
+    let jr = sel.join_rcols
+    drop(jr)
+    let ft = sel.fts_terms
+    drop(ft)
+    let fg = sel.fts_gaps
+    drop(fg)
+    let kp = sel.knn_pay
+    drop(kp)
+    let iv = sel.in_vals
+    drop(iv)
+    let xw = sel.xw_toks
+    drop(xw)
+}
+
+fn boila_pg_ins_free_all(ins: BoilaIns) {
+    let cols = ins.cols
+    drop(cols)
+    let rows = ins.rows
+    drop(rows)
+    let occ = ins.oc_cols
+    drop(occ)
+    let ocv = ins.oc_vals
+    drop(ocv)
+    let ocx = ins.oc_xtoks
+    drop(ocx)
+    let rc = ins.ret_cols
+    drop(rc)
+}
+
+fn boila_pg_upd_free_all(upd: BoilaUpd) {
+    let setc = upd.set_cols
+    drop(setc)
+    let setv = upd.set_vals
+    drop(setv)
+    let setx = upd.set_xtoks
+    drop(setx)
+    let xw = upd.xw_toks
+    drop(xw)
+    let rc = upd.ret_cols
+    drop(rc)
+}
+
+fn boila_pg_del_free_all(del: BoilaDel) {
+    let xw = del.xw_toks
+    drop(xw)
+    let rc = del.ret_cols
+    drop(rc)
+}
+
+// Частичен free на PORTAL AST: само полетата, които boila_pg_bind_*
+// пресъздават fresh при Bind. Останалите vec полета са shallow копия,
+// СПОДЕЛЕНИ с кеширания prepared stmt — не се пипат.
+fn boila_pg_sel_free_bound(sel: BoilaSel) {
+    let mut i: i64 = 0
+    while i < vec_len(sel.items) {
+        let it = vec_get(sel.items, i)
+        if vec_len(it.xtoks) > 0 {
+            let xt = it.xtoks
+            drop(xt)
+        }
+        if it.sfn != "" {
+            let sv = it.sfn_vals
+            drop(sv)
+        }
+        i = i + 1
+    }
+    let items = sel.items
+    drop(items)
+    let iv = sel.in_vals
+    drop(iv)
+    if sel.has_xw == 1 {
+        let xw = sel.xw_toks
+        drop(xw)
     }
 }
 
-fn boila_pg_parse_stmt(stmts: Map<str, BoilaPgStmt>, body: bytes) -> Map<str, BoilaPgStmt> {
+fn boila_pg_ins_free_bound(ins: BoilaIns) {
+    let rows = ins.rows
+    drop(rows)
+    let ocv = ins.oc_vals
+    drop(ocv)
+    let ocx = ins.oc_xtoks
+    drop(ocx)
+}
+
+fn boila_pg_upd_free_bound(upd: BoilaUpd) {
+    let setv = upd.set_vals
+    drop(setv)
+    let setx = upd.set_xtoks
+    drop(setx)
+    let xw = upd.xw_toks
+    drop(xw)
+}
+
+fn boila_pg_del_free_bound(del: BoilaDel) {
+    let xw = del.xw_toks
+    drop(xw)
+}
+
+// MEM-4: reclaim на persist паметта на заместван/затварян portal. Free-ва
+// vals/nulls + САМО използвания kind (bind_* го пресъздава fresh); другите
+// три AST-та са споделените session празни — НЕ се пипат. kind == -1 =
+// вече reclaim-нат (Sync kill) — no-op против double free. Vec<Vec<…>> drop
+// е рекурсивен (mode 3): box-овете на вътрешните остават (документиран drip).
+fn boila_pg_portal_free(p: BoilaPgPortal) {
+    if p.kind == 0 - 1 {
+        return
+    }
+    let vals = p.vals
+    drop(vals)
+    let nulls = p.nulls
+    drop(nulls)
+    if p.kind == 1 {
+        boila_pg_sel_free_bound(p.sel)
+    }
+    if p.kind == 2 {
+        boila_pg_ins_free_bound(p.ins)
+    }
+    if p.kind == 3 {
+        boila_pg_upd_free_bound(p.upd)
+    }
+    if p.kind == 4 {
+        boila_pg_del_free_bound(p.del)
+    }
+}
+
+fn boila_pg_parse_stmt(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes) -> Map<str, BoilaPgStmt> {
     let nm = pgw_cstr_read(body, 0)
     let q = pgw_cstr_read(body, nm.pos)
+    if map_has(stmts, nm.s) == 1 {
+        let old = map_get(stmts, nm.s)
+        // MEM-4: същият SQL под същото име → пазим кешираното AST и НЕ
+        // parse-ваме наново (0 алокации на Parse — драйверите с extended
+        // протокол пращат един и същ unnamed stmt в цикъл).
+        if old.sql == q.s {
+            return stmts
+        }
+        // Подмяна с нов SQL: reclaim на старото AST, но САМО ако никой жив
+        // portal не е bound от него (portal-ите споделят нerebuild-натите
+        // vec полета със stmt-а — shallow copy в bind_*).
+        if boila_pg_stmt_orphaned(portals, nm.s) == 1 {
+            boila_pg_stmt_free(old)
+        }
+    }
     map_set(stmts, nm.s, boila_pg_try_sel(q.s))
     return stmts
 }
 
-fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes) -> Map<str, BoilaPgPortal> {
+// 1 ако никой portal не е bound от stmt `name` (безопасно за stmt_free).
+// kind == -1 (reclaim-нат на Sync) не брои — мъртвият запис е inert.
+fn boila_pg_stmt_orphaned(portals: Map<str, BoilaPgPortal>, name: str) -> i64 {
+    let ks = map_keys(portals)
+    let mut i: i64 = 0
+    while i < vec_len(ks) {
+        let p = map_get(portals, vec_get(ks, i))
+        if p.kind != 0 - 1 {
+            if p.src == name {
+                return 0
+            }
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// MEM-4: пълен reclaim на prepared stmt AST (за разлика от portal-а, stmt-ът
+// притежава всичките си vec полета — parse ги гради fresh). Вика се само
+// през orphaned гарда. Drip: str payload-и и вложени Vec<Token> box-ове не
+// се free-ват (drop е по дълбочина 1; str е immortal в рантайма).
+fn boila_pg_stmt_free(st: BoilaPgStmt) {
+    boila_pg_sel_free_all(st.sel)
+    boila_pg_ins_free_all(st.ins)
+    boila_pg_upd_free_all(st.upd)
+    boila_pg_del_free_all(st.del)
+}
+
+fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes, e_sel: BoilaSel, e_ins: BoilaIns, e_upd: BoilaUpd, e_del: BoilaDel) -> Map<str, BoilaPgPortal> {
     let pn = pgw_cstr_read(body, 0)
     let sn = pgw_cstr_read(body, pn.pos)
     let mut p = sn.pos
@@ -93,10 +290,16 @@ fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgP
         }
         i = i + 1
     }
-    let mut portal = boila_pg_portal_empty()
+    // MEM-4: неизползваните kind-ове ползват споделените session празни
+    // AST-та (0 алокации); portal_free ги пропуска.
+    let mut portal = BoilaPgPortal {
+        sql: "", src: "", vals: vals, nulls: nulls, kind: 0,
+        sel: e_sel, ins: e_ins, upd: e_upd, del: e_del
+    }
     if map_has(stmts, sn.s) == 1 {
         let st = map_get(stmts, sn.s)
         portal.sql = st.sql
+        portal.src = sn.s
         portal.vals = vals
         portal.nulls = nulls
         portal.kind = st.kind
@@ -104,6 +307,12 @@ fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgP
         if st.kind == 2 { portal.ins = boila_pg_bind_ins(st.ins, vals, nulls) }
         if st.kind == 3 { portal.upd = boila_pg_bind_upd(st.upd, vals, nulls) }
         if st.kind == 4 { portal.del = boila_pg_bind_del(st.del, vals, nulls) }
+    }
+    // MEM-4: подмяната на съществуващ portal (типично unnamed при extended
+    // протокол) reclaim-ва стария преди overwrite — иначе persist регионът
+    // расте с по един portal на Bind (gaps Q2 residual).
+    if map_has(portals, pn.s) == 1 {
+        boila_pg_portal_free(map_get(portals, pn.s))
     }
     map_set(portals, pn.s, portal)
     return portals

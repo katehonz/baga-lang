@@ -2104,16 +2104,17 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    while (i < BAGA_FL_BIG) { if (n <= c) return i; c <<= 1; i++; }\n");
     fprintf(out, "    return -1;\n");
     fprintf(out, "}\n");
-    fprintf(out, "static int baga_ptr_in_persist(void *p) {\n");
-    fprintf(out, "    for (baga_ABlk *b = baga_persist_head; b; b = b->next) {\n");
-    fprintf(out, "        char *lo = b->data, *hi = b->data + b->cap;\n");
-    fprintf(out, "        if ((char *)p >= lo && (char *)p < hi) return 1;\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "    return 0;\n");
-    fprintf(out, "}\n");
+    /* MEM-4b: per-alloc header (16 B: magic + persist флаг) → O(1) регион
+     * детекция в baga_free. Предишният baga_ptr_in_persist обхождаше веригата
+     * persist блокове на ВСЯКО free — O(блокове) на free → квадратичен колапс
+     * при compaction/rewind върху голям persist регион (измерено: 1M insert
+     * bench спираше да пише — CPU в baga_drop_map/baga_ptr_in_persist). */
+    fprintf(out, "#define BAGA_HDR_MAGIC 0xBA6A4D454D344848ULL\n");
+    fprintf(out, "typedef struct { uint64_t magic; uint64_t persist; } baga_Hdr;\n");
     fprintf(out, "static void baga_free(void *p, int64_t n) {\n");
     fprintf(out, "    if (!p || n <= 0) return;\n");
-    fprintf(out, "    int persist = baga_ptr_in_persist(p);\n");
+    fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)p - 16);\n");
+    fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)h->persist : 0;\n");
     fprintf(out, "    if (n <= 1024) {\n");
     fprintf(out, "        int c = (int)((n + 15) / 16) - 1;\n");
     fprintf(out, "        void **fl = persist ? &baga_fl_p[c] : &baga_fl[c];\n");
@@ -2154,36 +2155,19 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * pow2 класовете (R18): винаги пълен класов размер. */
     fprintf(out, "    baga_ABlk **hp = persist ? &baga_persist_head : &baga_arena_head;\n");
     fprintf(out, "    baga_ABlk *b = *hp;\n");
-    fprintf(out, "    if (!b || b->used + an > b->cap) {\n");
-    fprintf(out, "        size_t cap = an > 8192 ? an : 8192;\n");
+    fprintf(out, "    if (!b || b->used + an + 16 > b->cap) {\n");
+    fprintf(out, "        size_t cap = an + 16 > 8192 ? an + 16 : 8192;\n");
     fprintf(out, "        b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
     fprintf(out, "        b->next = *hp; b->used = 0; b->cap = cap;\n");
     fprintf(out, "        *hp = b;\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    void *p = b->data + b->used; b->used += an;\n");
-    fprintf(out, "    return p;\n");
+    fprintf(out, "    void *p = b->data + b->used; b->used += an + 16;\n");
+    fprintf(out, "    baga_Hdr *hh = (baga_Hdr *)p; hh->magic = BAGA_HDR_MAGIC; hh->persist = (uint64_t)persist;\n");
+    fprintf(out, "    return (char *)p + 16;\n");
     fprintf(out, "}\n");
     /* MEM-4: mark/rewind върху ephemeral веригата. persist веригата не се
      * пипа — затова shared state отива там през mem_persist_begin/end. */
     fprintf(out, "typedef struct { baga_ABlk *head; size_t used; } baga_MMark;\n");
-    fprintf(out, "static void baga_fl_scrub(char *lo, char *hi) {\n");
-    fprintf(out, "    for (int c = 0; c < BAGA_FL_CLASSES; c++) {\n");
-    fprintf(out, "        void **pp = &baga_fl[c];\n");
-    fprintf(out, "        while (*pp) {\n");
-    fprintf(out, "            char *p = (char *)*pp;\n");
-    fprintf(out, "            if (p >= lo && p < hi) *pp = *(void **)p;\n");
-    fprintf(out, "            else pp = (void **)*pp;\n");
-    fprintf(out, "        }\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "    for (int c = 0; c < BAGA_FL_BIG; c++) {\n");
-    fprintf(out, "        void **pp = &baga_fl_big[c];\n");
-    fprintf(out, "        while (*pp) {\n");
-    fprintf(out, "            char *p = (char *)*pp;\n");
-    fprintf(out, "            if (p >= lo && p < hi) *pp = *(void **)p;\n");
-    fprintf(out, "            else pp = (void **)*pp;\n");
-    fprintf(out, "        }\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_mem_mark(void) {\n");
     fprintf(out, "    baga_MMark *m = (baga_MMark *)malloc(sizeof(baga_MMark));\n");
     fprintf(out, "    if (!m) { fprintf(stderr, \"baga: mem_mark: няма памет\\n\"); exit(1); }\n");
@@ -2197,7 +2181,6 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
     fprintf(out, "    while (b && b != m->head) {\n");
     fprintf(out, "        baga_ABlk *nx = b->next;\n");
-    fprintf(out, "        baga_fl_scrub(b->data, b->data + b->cap);\n");
     fprintf(out, "        free(b);\n");
     fprintf(out, "        b = nx;\n");
     fprintf(out, "    }\n");
@@ -2207,9 +2190,17 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    }\n");
     fprintf(out, "    baga_arena_head = m->head;\n");
     fprintf(out, "    if (m->head) {\n");
-    fprintf(out, "        baga_fl_scrub(m->head->data + m->used, m->head->data + m->head->cap);\n");
     fprintf(out, "        m->head->used = m->used;\n");
     fprintf(out, "    }\n");
+    /* MEM-4c: вместо per-блок freelist scrub (O(блокове × freelist записи) —
+     * измерен колапс при 1M insert bench: rewind > statement работа), двете
+     * ephemeral freelist таблици се ЧИСТЯТ изцяло за O(1). Записи към
+     * върнатите блокове са задължително премахнати; записи към оцелелия под
+     * mark-а регион също падат — загуба на recycling, не корупция (freelist
+     * е чист кеш; пълни се наново от бъдещи drop-ове). persist freelist-ите
+     * не се пипат — persist блокове не се връщат от rewind. */
+    fprintf(out, "    memset(baga_fl, 0, sizeof(baga_fl));\n");
+    fprintf(out, "    memset(baga_fl_big, 0, sizeof(baga_fl_big));\n");
     fprintf(out, "    free(m);\n");
     fprintf(out, "}\n");
 

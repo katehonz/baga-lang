@@ -23,13 +23,23 @@ struct BoilaPgSess {
     portals: Map<str, BoilaPgPortal>,
     db: str,
     txn: BoilaTxn,
-    guc: Map<str, str>
+    guc: Map<str, str>,
+    // MEM-4: споделени празни AST-та за неизползваните kind-ове във всеки
+    // portal (иначе boila_pg_portal_empty пускаше ~45 vec-а на Bind, които
+    // после се free-ваха — чист churn в persist региона). Само за четене;
+    // никога не се drop-ват (portal_free пипа само използвания kind).
+    e_sel: BoilaSel,
+    e_ins: BoilaIns,
+    e_upd: BoilaUpd,
+    e_del: BoilaDel
 }
 fn boila_pg_sess_new(db: str) -> BoilaPgSess {
     let sm: Map<str, BoilaPgStmt> = map_new()
     let pm: Map<str, BoilaPgPortal> = map_new()
     let guc: Map<str, str> = map_new()
-    return BoilaPgSess { stmts: sm, portals: pm, db: db, txn: boila_txn_new(), guc: guc }
+    return BoilaPgSess { stmts: sm, portals: pm, db: db, txn: boila_txn_new(), guc: guc,
+        e_sel: boila_sel_empty(), e_ins: boila_ins_empty(),
+        e_upd: boila_upd_empty(), e_del: boila_del_empty() }
 }
 struct BoilaPgOut {
     srv: BoilaServer,
@@ -156,9 +166,10 @@ fn pgw_run_del(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, del: Boi
 fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let mut s2 = sess
     // MEM-4: prepared stmt AST + име живеят в сесията след rewind-а на
-    // заявката → persist регион (един път на distinct stmt — това е кеш).
+    // заявката → persist регион. Подмяната reclaim-ва стария, когато никой
+    // portal не го реферира (boila_pg_stmt_orphaned гард).
     mem_persist_begin()
-    s2.stmts = boila_pg_parse_stmt(s2.stmts, body)
+    s2.stmts = boila_pg_parse_stmt(s2.stmts, s2.portals, body)
     mem_persist_end()
     return s2
 }
@@ -166,9 +177,9 @@ fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
 fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let mut s2 = sess
     // MEM-4: portal-ът може да се Execute-не в по-късен batch → persist.
-    // Residual: подмяната на unnamed portal не reclaim-ва стария (gaps Q2).
+    // Подмяната/Close/Sync-kill reclaim-ват стария (boila_pg_portal_free).
     mem_persist_begin()
-    s2.portals = boila_pg_bind_portal(s2.stmts, s2.portals, body)
+    s2.portals = boila_pg_bind_portal(s2.stmts, s2.portals, body, s2.e_sel, s2.e_ins, s2.e_upd, s2.e_del)
     mem_persist_end()
     return s2
 }
@@ -324,6 +335,10 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                                 let mut ro = BoilaPgOut { srv: srv2, sess: sp, ok: 1, sql_err: 0, err: "" }
                                 if map_has(sp.portals, pn.s) == 1 {
                                     let portal = map_get(sp.portals, pn.s)
+                                    if portal.kind == 0 - 1 {
+                                        // MEM-4: reclaim-нат (Sync kill) — като липсващ
+                                        ro = pgw_run_sql(fd, pack, srv2, sp, "", 0)?
+                                    } else {
                                     if portal.kind == 1 {
                                         ro = pgw_run_sel(fd, pack, srv2, sp, portal.sel, 0)?
                                     } else {
@@ -342,6 +357,7 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                                             }
                                         }
                                     }
+                                    }
                                 } else {
                                     ro = pgw_run_sql(fd, pack, srv2, sp, "", 0)?
                                 }
@@ -355,6 +371,24 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                                 }
                             } else {
                                 if m.typ == 83 {              // 'S' Sync
+                                    // MEM-4: извън explicit txn unnamed
+                                    // portal-ът умира на Sync (PG: край на
+                                    // implicit txn). Съдържанието се free-ва,
+                                    // но map записът ОСТАВА като inert
+                                    // (kind=-1): box-ът (~2 KB) се reuse-ва от
+                                    // следващия Bind, вместо del+нов alloc.
+                                    if sp.txn.active == 0 {
+                                        if map_has(sp.portals, "") == 1 {
+                                            let dp = map_get(sp.portals, "")
+                                            if dp.kind != 0 - 1 {
+                                                boila_pg_portal_free(dp)
+                                                let mut dp2 = dp
+                                                dp2.kind = 0 - 1
+                                                dp2.sql = ""
+                                                map_set(sp.portals, "", dp2)
+                                            }
+                                        }
+                                    }
                                     let w = pgw_write(fd, pgw_ready(pgw_tx_status(sp)))?
                                     if w != 0 {
                                         running = false
@@ -364,8 +398,19 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                                         let nm = pgw_cstr_read(m.body, 1)
                                         let kind = bytes_at(m.body, 0) & 255
                                         if kind == 83 {
+                                            // MEM-4: Close на stmt — reclaim,
+                                            // ако никой portal не го реферира
+                                            if map_has(sp.stmts, nm.s) == 1 {
+                                                if boila_pg_stmt_orphaned(sp.portals, nm.s) == 1 {
+                                                    boila_pg_stmt_free(map_get(sp.stmts, nm.s))
+                                                }
+                                            }
                                             map_del(sp.stmts, nm.s)
                                         } else {
+                                            // MEM-4: Close reclaim-ва portal-а
+                                            if map_has(sp.portals, nm.s) == 1 {
+                                                boila_pg_portal_free(map_get(sp.portals, nm.s))
+                                            }
                                             map_del(sp.portals, nm.s)
                                         }
                                         let w = pgw_write(fd, pgw_msg(51, bytes_new(0)))?   // '3'

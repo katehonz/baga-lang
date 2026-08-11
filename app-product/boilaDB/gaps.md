@@ -434,18 +434,40 @@ T = транзакции, W = wire protocol, F = FTS.
   CREATE INDEX build е двупасов (събиране без писания → запис batch).
   Урок: в rocksbaga никога не се скенва по време на фаза, която пише.
 - **Q2 — baga bump arena-та не reclaims; дългоживеещите тежки процеси
-  OOM-ват. (MEM-4 partial — 2026-08-11)** Измерено при P3 bench: 1M
-  INSERT-а (10×100k) OOM-ва на chunk 2; 100k chunked беше еталонът.
+  OOM-ват. (MEM-4 partial — 2026-08-11; MEM-4b/c — 2026-08-12)**
+  Измерено при P3 bench: 1M INSERT-а (10×100k) OOM-ваше на chunk 2.
   **MEM-4:** C runtime `mem_mark`/`mem_rewind` + `mem_persist_begin/end`
-  (отделна persist arena + отделни free lists; ephemeral freelist не
-  пипа persist блокове). Serve loops (HTTP/PG MT) + insert_write
-  per-stmt rewind; rocksbaga put/tomb/page/bloom/sst caches wrap-ват
-  shared state в persist (deep-copy на bytes ключове в memtable).
-  Доказано: `tests/mem_rewind_test` RSS reclaim; 10k INSERT+index в
-  един процес с rewind без OOM; boila fts/vec/dml зелени. Residual:
-  persist регионът расте с store state (flush не връща memtable
-  bytes на ОС); unnamed PG portal подмяна; 1M single-process bench
-  още не е приземен като gate (бавен fsync path, не OOM).
+  (отделна persist arena + отделни free lists). Serve loops (HTTP/PG MT) +
+  insert_write per-stmt rewind; rocksbaga put/tomb/page/bloom/sst caches
+  wrap-ват shared state в persist. **MEM-4б (2026-08-12):** scan snapshot
+  (scan_keys/scan_pat) беше пропуснат — deep-copy в persist + собствен
+  free при замяна/инвалидация (`lsm_scan_keys_free_data`); преди това
+  първият INSERT след SELECT през PG wire = SIGSEGV (use-after-free след
+  rewind). **MEM-4в:** runtime per-alloc header (magic+persist флаг) →
+  O(1) регион детекция в `baga_free` (преди: O(persist блокове) обход на
+  всяко free — колапс в `baga_drop_map` при compaction); rewind вече
+  чисти ephemeral freelist-ите изцяло за O(1) вместо per-блок scrub
+  (O(блокове×записи) — rewind беше > от самата statement работа).
+  **W7 — TCP_NODELAY на serve_pg:** extended протоколът отговаряше с
+  няколко малки съобщения; server Nagle × client delayed ACK = ~44 ms на
+  Parse+Bind+Describe+Execute+Sync. С `tcp_set_nodelay` при accept:
+  ~87 µs/заявка (500×). **Portal/stmt reclaim:** unnamed portal умира на
+  Sync извън txn (inert kind=-1 запис — box-ът се reuse-ва от следващия
+  Bind); Parse със същия SQL под същото име е no-op (0 алокации); подмяна
+  с нов SQL free-ва старото AST, когато никой portal не го реферира
+  (`boila_pg_stmt_orphaned` гард; portal-ите носят `src`). Измерено:
+  20k extended заявки в една сесия — persist растеж от ~10 KB на ~0.4 KB
+  на заявка. **Доказано отново след промените: пълен пакет 150/150**
+  (4-те с външни peer-ове — tls/https/registry/oauth_pg — минават с
+  run_tests.sh env). **Residual (измерено 2026-08-12):** 1M single-process
+  bench стигна ~250k реда преди OOM — persist регионът експлодира
+  (3.7M×8 KB блока ≈ 29 GB): всеки persist alloc без explicit drop е
+  вечен — `baga_map_rehash` стари bucket масиви, vec-push doubling
+  intermediate-и, per-flush/compact churn (ng/nl, bloom/sst meta на gen),
+  page-cache fill 4 KB страници. ~86 tiny + ~2.7 doubling-стълбички на
+  ред. Следваща стъпка: или drop-дисциплина в rocksbaga кешовете, или
+  runtime ниво (persist compaction/генерации). Дребен drip и при пълен
+  reclaim: immortal str-ове + vec-growth intermediate-и (~0.4 KB/заявка).
 
 ## Открити при P2
 

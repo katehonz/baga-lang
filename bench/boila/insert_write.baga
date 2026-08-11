@@ -208,6 +208,10 @@ fn main() -> i64 !IO !Time !Par {
         srv = ins_stmt(srv, lo + i * stmt_rows, stmt_rows)?
         mem_rewind(m)
         srv.session_txn = idle_txn
+        if i % 1000 == 999 {
+            let now = monotonic_us()?
+            print(concat(concat("progress: ", int_to_str((i + 1) * stmt_rows)), concat(" реда, ", concat(int_to_str((now - t4) / 1000), " ms"))))
+        }
         i = i + 1
     }
     let t5 = monotonic_us()?
