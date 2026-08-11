@@ -97,12 +97,14 @@ fn boila_guc_set_parse(guc: Map<str, str>, lx: BoilaLex) -> BoilaGucSet {
     if tv.kind != tok_str() && tv.kind != tok_num() && tv.kind != tok_ident() {
         return BoilaGucSet { ok: 0, err: "невалидна SET стойност", state: "42601", guc: guc, kind: 0 }
     }
-    map_set(guc, nm, val)
+    // MEM-4: session guc преживява per-request rewind — persist копия.
+    mem_persist_begin()
+    map_set(guc, substr(nm, 0, len(nm)), substr(val, 0, len(val)))
+    mem_persist_end()
     return BoilaGucSet { ok: 1, err: "", state: "", guc: guc, kind: 19 }
 }
 
-fn boila_guc_show(guc: Map<str, str>, lx: BoilaLex) -> BoilaResult {
-    let mut nm = "unknown"
+fn boila_guc_show(guc: Map<str, str>, lx: BoilaLex) -> BoilaResult {    let mut nm = "unknown"
     if vec_len(lx.toks) > 1 && vec_get(lx.toks, 1).kind == tok_ident() {
         nm = vec_get(lx.toks, 1).txt
     }
@@ -122,7 +124,10 @@ fn boila_guc_reset(guc: Map<str, str>, lx: BoilaLex) -> BoilaGucSet {
     }
     let t1 = vec_get(lx.toks, 1)
     if tok_kw(t1, "all") == 1 {
+        // MEM-4: заместващата session map трябва да преживее rewind
+        mem_persist_begin()
         let empty: Map<str, str> = map_new()
+        mem_persist_end()
         return BoilaGucSet { ok: 1, err: "", state: "", guc: empty, kind: 20 }
     }
     if t1.kind != tok_ident() {
@@ -137,7 +142,10 @@ fn boila_guc_discard(guc: Map<str, str>, lx: BoilaLex) -> BoilaGucSet {
     if vec_len(lx.toks) < 2 || tok_kw(vec_get(lx.toks, 1), "all") != 1 {
         return BoilaGucSet { ok: 0, err: "поддържа се само DISCARD ALL", state: "0A000", guc: guc, kind: 0 }
     }
+    // MEM-4: заместващата session map трябва да преживее rewind
+    mem_persist_begin()
     let empty: Map<str, str> = map_new()
+    mem_persist_end()
     return BoilaGucSet { ok: 1, err: "", state: "", guc: empty, kind: 21 }
 }
 

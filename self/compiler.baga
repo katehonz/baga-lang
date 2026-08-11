@@ -1162,6 +1162,11 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "arena_alloc") == 1 { cname = "baga_arena_alloc" }
             if str_eq(bn, "arena_reset") == 1 { cname = "baga_arena_reset" }
             if str_eq(bn, "arena_free") == 1 { cname = "baga_arena_free" }
+            // MEM-4: bump arena има само C bootstrap-ът; тук runtime-ът е malloc
+            if str_eq(bn, "mem_mark") == 1 { self_unsupported("mem_mark") }
+            if str_eq(bn, "mem_rewind") == 1 { self_unsupported("mem_rewind") }
+            if str_eq(bn, "mem_persist_begin") == 1 { self_unsupported("mem_persist_begin") }
+            if str_eq(bn, "mem_persist_end") == 1 { self_unsupported("mem_persist_end") }
             // extern fn (FFI) — директно име, без builtin диспеч (последен печели)
             if is_extern_fn(nk, nt, fc, ns, prog, bn) == 1 { cname = bn }
         }

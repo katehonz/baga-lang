@@ -109,8 +109,11 @@ fn pgw_run_sql(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, sql: str
     if gh.hit == 1 {
         sess.guc = gh.sess_guc
         if gh.clear_prep == 1 {
+            // MEM-4: заместващите session maps трябва да преживеят rewind
+            mem_persist_begin()
             sess.stmts = map_new()
             sess.portals = map_new()
+            mem_persist_end()
         }
         return pgw_write_out(fd, srv, sess, gh.out, send_ready)?
     }
@@ -152,13 +155,21 @@ fn pgw_run_del(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, del: Boi
 
 fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let mut s2 = sess
+    // MEM-4: prepared stmt AST + име живеят в сесията след rewind-а на
+    // заявката → persist регион (един път на distinct stmt — това е кеш).
+    mem_persist_begin()
     s2.stmts = boila_pg_parse_stmt(s2.stmts, body)
+    mem_persist_end()
     return s2
 }
 
 fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let mut s2 = sess
+    // MEM-4: portal-ът може да се Execute-не в по-късен batch → persist.
+    // Residual: подмяната на unnamed portal не reclaim-ва стария (gaps Q2).
+    mem_persist_begin()
     s2.portals = boila_pg_bind_portal(s2.stmts, s2.portals, body)
+    mem_persist_end()
     return s2
 }
 
@@ -241,9 +252,25 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
         return BoilaPgOut { srv: srv2, sess: sp, ok: 0, sql_err: 0, err: "tail write" }
     }
     // --- query loop ---
+    // MEM-4 (Q2): per-request arena rewind (само MT serve, pack != 0).
+    // Mark се взема в началото на итерация, в която няма отворена txn;
+    // rewind — в края, когато txn е затворена (mark-ът оцелява през цялата
+    // txn). Session state (stmts/portals/guc/db) е persist-алокиран на
+    // съответните места; тук се пази само leftover-ът на reader-а и
+    // idle txn обвивката.
+    mem_persist_begin()
+    let idle_txn = boila_txn_new()
+    let pempty = bytes_new(0)
+    mem_persist_end()
+    let mut rmark: i64 = 0
+    let mut have_mark = false
     let mut running = true
     let mut in_err = false     // след extended грешка: пропускаме до Sync
     while running {
+        if pack != 0 && sp.txn.active == 0 {
+            rmark = mem_mark()
+            have_mark = true
+        }
         let m = pgw_read_msg(rr)?
         rr = m.r
         if m.ok == 0 {
@@ -370,6 +397,20 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                 }
             }
             }
+        }
+        // MEM-4: rewind на заявката — само при затворена txn; mark-ът
+        // (и have_mark) оцелява през отворена транзакция до COMMIT/ROLLBACK.
+        if have_mark && sp.txn.active == 0 {
+            mem_persist_begin()
+            let mut nb = pempty
+            if rr.pos < bytes_len(rr.buf) {
+                nb = bytes_slice(rr.buf, rr.pos, bytes_len(rr.buf))
+            }
+            mem_persist_end()
+            rr = PgWReader { fd: fd, buf: nb, pos: 0 }
+            sp.txn = idle_txn
+            mem_rewind(rmark)
+            have_mark = false
         }
     }
     // txn е per-connection: при затваряне — rollback

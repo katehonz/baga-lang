@@ -3958,6 +3958,13 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             /* MEM-1: drop е само за C бекенда; user fn 'drop' е намерена по-горе */
             if (!fn && strcmp(n->callee->name, "drop") == 0)
                 llvm_unsupported("drop — само C бекенда; вж. docs/language-en.md");
+            /* MEM-4: mark/rewind/persist работят върху bump arena-та, която
+             * съществува само в C бекенда (LLVM runtime-ът е plain malloc) */
+            if (!fn && (strcmp(n->callee->name, "mem_mark") == 0 ||
+                        strcmp(n->callee->name, "mem_rewind") == 0 ||
+                        strcmp(n->callee->name, "mem_persist_begin") == 0 ||
+                        strcmp(n->callee->name, "mem_persist_end") == 0))
+                llvm_unsupported("mem_mark/mem_rewind/mem_persist_* — само C бекенда; вж. docs/language-en.md");
             if (!fn) {
                 char buf[256];
                 snprintf(buf, sizeof buf, "вградена функция '%s'", n->callee->name);

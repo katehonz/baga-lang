@@ -367,8 +367,11 @@ fn sst_fd_get(pc: PageCache, fds: Map<i64, i64>, sizes: Map<i64, i64>, dir: str,
         return 0 - 1
     }
     let fsize = fd_size(fd)?
+    // MEM-4: fd/sizes кешът е cross-request state — persist entry-та
+    mem_persist_begin()
     map_set(fds, gen, fd)
     map_set(sizes, gen, fsize)
+    mem_persist_end()
     pc_register_file(pc, gen, fd)
     return fd
 }
@@ -886,6 +889,9 @@ fn sst_lookup_with_meta(pc: PageCache, fd: i64, gen: i64, meta: SstMeta, key: by
     if hg == gen && ho == file_off && hn == bspan && bytes_len(hd) == bspan {
         block = hd
     } else {
+        // MEM-4: hot span-ът остава в LsmDB (cross-request state) — четенето
+        // и новият hot блок в persist регион, иначе след rewind hd виси.
+        mem_persist_begin()
         let br2 = pc_read_at(cur, fd, gen, file_off, bspan)?
         cur = br2.pc
         // replace hot span
@@ -896,6 +902,7 @@ fn sst_lookup_with_meta(pc: PageCache, fd: i64, gen: i64, meta: SstMeta, key: by
         } else {
             hd = br2.data
         }
+        mem_persist_end()
         hg = gen
         ho = file_off
         hn = bspan
@@ -953,11 +960,16 @@ fn sst_get(pc: PageCache, blooms: BloomCache, fds: Map<i64, i64>, sizes: Map<i64
             } else {
                 let fsize = map_get(sizes, gen)
                 if map_has(meta, gen) == 0 {
+                    // MEM-4: SstMeta кешът (rkeys/idx/entry) е cross-request
+                    // state — целият load + insert в persist регион
+                    mem_persist_begin()
                     let ml = sst_meta_load(cur, fd, gen, fsize)?
                     cur = ml.pc
                     if ml.meta.ok == 1 {
                         map_set(meta, gen, ml.meta)
+                        mem_persist_end()
                     } else {
+                        mem_persist_end()
                         // Not v4/v5: full-file path once.
                         sst_fd_drop(cur, fds, sizes, gen)?
                         let raw = sst_read_raw(cur, dir, gen)?

@@ -16,6 +16,7 @@ import "std/net/tcp.baga"
 import "std/net/poll.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
 
 fn boila_version() -> str {
     return "0.1.0"
@@ -133,10 +134,26 @@ fn boila_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
     tcp_set_nodelay(fd)?
     let mut txn = boila_txn_new()
     let mut sess_db = "boila"
+    let mut sess_db_p = "boila"
     let mut sess_guc: Map<str, str> = map_new()
     let mut r = http_reader(fd)
+    // MEM-4 (Q2): per-request arena rewind. Session state, който трябва да
+    // преживее rewind-а, е persist-алокиран (guc maps, plan cache, lazy
+    // open — на съответните места); тук се пазят само idle txn обвивката,
+    // празният reader буфер и (при промяна) session db името. Mark-ът
+    // оцелява през отворена транзакция — rewind е след COMMIT/ROLLBACK.
+    mem_persist_begin()
+    let idle_txn = boila_txn_new()
+    let hempty = empty_bytes()
+    mem_persist_end()
+    let mut rmark: i64 = 0
+    let mut have_mark = false
     let mut keep = true
     while keep {
+        if txn.active == 0 {
+            rmark = mem_mark()
+            have_mark = true
+        }
         let out = http_read_request_r(r)?
         r = out.reader
         if out.err != 0 {
@@ -156,6 +173,24 @@ fn boila_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
                     keep = false
                 }
             }
+        }
+        if have_mark && txn.active == 0 {
+            mem_persist_begin()
+            let mut sdb = sess_db_p
+            if sess_db != sess_db_p {
+                sdb = substr(sess_db, 0, len(sess_db))
+            }
+            let mut nb = hempty
+            if r.pos < bytes_len(r.buf) {
+                nb = bytes_slice(r.buf, r.pos, bytes_len(r.buf))
+            }
+            mem_persist_end()
+            sess_db_p = sdb
+            sess_db = sdb
+            r = HttpReader { fd: fd, buf: nb, pos: 0 }
+            txn = idle_txn
+            mem_rewind(rmark)
+            have_mark = false
         }
     }
     if txn.active == 1 {

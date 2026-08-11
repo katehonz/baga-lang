@@ -103,7 +103,9 @@ fn boila_srv_find(srv: BoilaServer, name: str) -> i64 {
 }
 
 // Премахва елемент ix от две успоредни вектора (връща нови).
+// MEM-4: новите вектори са shared — persist, за да преживеят rewind.
 fn boila_srv_evict(srv: BoilaServer, ix: i64) -> BoilaServer {
+    mem_persist_begin()
     let names: Vec<str> = vec_new()
     let stores: Vec<BoilaStore> = vec_new()
     let mut i: i64 = 0
@@ -114,6 +116,7 @@ fn boila_srv_evict(srv: BoilaServer, ix: i64) -> BoilaServer {
         }
         i = i + 1
     }
+    mem_persist_end()
     return BoilaServer { meta: srv.meta, root: srv.root, names: names, stores: stores, flush_at: srv.flush_at, compact_at: srv.compact_at, dflt_shards: srv.dflt_shards, max_db: srv.max_db, session_txn: srv.session_txn, pc: srv.pc, guc: srv.guc, mt: srv.mt, ok: srv.ok }
 }
 
@@ -209,8 +212,12 @@ fn boila_srv_db(srv: BoilaServer, name: str) -> BoilaSrvDb !IO !Time !Par {
     if st.ok == 0 {
         return boila_srv_db_fail(s2, concat("неуспешно отваряне на база '", concat(name, "'")), "XX000")
     }
-    vec_push(s2.names, name)
+    // MEM-4: името идва от заявката (ephemeral), а списъкът е shared —
+    // persist копие + vec grow в persist региона (буферите са arena-bound).
+    mem_persist_begin()
+    vec_push(s2.names, substr(name, 0, len(name)))
     vec_push(s2.stores, st)
+    mem_persist_end()
     return BoilaSrvDb { srv: s2, ok: 1, err: "", state: "", store: st, name: name }
 }
 
@@ -251,8 +258,11 @@ fn boila_srv_db_create(srv: BoilaServer, name: str) -> BoilaSrvDb !IO !Time !Par
         boila_close(old)?
         s2 = boila_srv_evict(s2, 0)
     }
-    vec_push(s2.names, name)
+    // MEM-4: persist име + grow (списъкът е shared, името е от заявката)
+    mem_persist_begin()
+    vec_push(s2.names, substr(name, 0, len(name)))
     vec_push(s2.stores, st)
+    mem_persist_end()
     return BoilaSrvDb { srv: s2, ok: 1, err: "", state: "", store: st, name: name }
 }
 

@@ -61,7 +61,10 @@ fn pc_new(page_size: i64, cap: i64) -> PageCache {
 
 fn pc_register_file(pc: PageCache, file_id: i64, fd: i64) {
     if fd >= 0 {
+        // MEM-4: pc.fds is cross-request cache state (survives serve rewind).
+        mem_persist_begin()
         map_set(pc.fds, file_id, fd)
+        mem_persist_end()
     }
 }
 
@@ -90,6 +93,7 @@ fn pc_pin_count(pc: PageCache, key: i64) -> i64 {
 fn pc_pin(pc: PageCache, file_id: i64, page_no: i64) {
     let key = pc_key(file_id, page_no)
     let n = pc_pin_count(pc, key)
+    // Pins are request-scoped (pc_read_at unpins before return); ephemeral.
     map_set(pc.pins, key, n + 1)
 }
 
@@ -235,17 +239,25 @@ struct PcGet {
 // Load page on miss; return page bytes (page_size, zero-padded on short read).
 // Does not pin — use pc_pin after if the caller will hold the bytes across
 // further cache mutations.
+// MEM-4: cache съдържанието е cross-request state (boilaDB serve rewind) —
+// fill/eviction пътят е в persist регион; evicted страници се drop-ват и
+// рециклират през споделените free lists (безопасна посока).
 fn pc_get(pc: PageCache, fd: i64, file_id: i64, page_no: i64) -> PcGet !IO {
     let key = pc_key(file_id, page_no)
     if map_has(pc.data, key) == 1 {
+        // MEM-4: refbit entry may be new (persist) or update of existing.
+        mem_persist_begin()
         map_set(pc.refbit, key, 1)
+        mem_persist_end()
         return PcGet { pc: pc, data: map_get(pc.data, key) }
     }
+    mem_persist_begin()
     // Prefer registered fd for this file when reading (shared multi-file).
     let rfd = pc_fd_for(pc, file_id, fd)
     let e = pc_ensure_cap(pc, rfd)?
     let mut cur = e.pc
     if e.rc != 0 {
+        mem_persist_end()
         return PcGet { pc: cur, data: bytes_new(0) }
     }
     let off = page_no * cur.page_size
@@ -262,6 +274,7 @@ fn pc_get(pc: PageCache, fd: i64, file_id: i64, page_no: i64) -> PcGet !IO {
     map_set(cur.dirty, key, 0)
     map_set(cur.refbit, key, 1)
     vec_push(cur.keys, key)
+    mem_persist_end()
     return PcGet { pc: cur, data: page }
 }
 
@@ -282,18 +295,23 @@ struct PcPut {
 fn pc_put_page(pc: PageCache, fd: i64, file_id: i64, page_no: i64, page: bytes) -> PcPut !IO {
     let key = pc_key(file_id, page_no)
     let mut cur = pc
+    // MEM-4: cache state в persist регион (cross-request при boilaDB serve)
+    mem_persist_begin()
     if map_has(cur.data, key) == 0 {
         let rfd = pc_fd_for(cur, file_id, fd)
         let e = pc_ensure_cap(cur, rfd)?
         cur = e.pc
         if e.rc != 0 {
+            mem_persist_end()
             return PcPut { pc: cur, rc: e.rc }
         }
         vec_push(cur.keys, key)
     }
-    map_set(cur.data, key, page)
+    // MEM-4: page идва от caller-а (може ephemeral) — persist копие
+    map_set(cur.data, key, bytes_slice(page, 0, bytes_len(page)))
     map_set(cur.dirty, key, 1)
     map_set(cur.refbit, key, 1)
+    mem_persist_end()
     return PcPut { pc: cur, rc: 0 }
 }
 
@@ -318,6 +336,8 @@ fn pc_flush_file(pc: PageCache, fd: i64, file_id: i64) -> i64 !IO {
 fn pc_invalidate_file(pc: PageCache, file_id: i64) -> PageCache {
     let lo = file_id * 1000000000
     let hi = lo + 1000000000
+    // MEM-4: nk е cross-request cache state — persist регион
+    mem_persist_begin()
     let mut nk: Vec<i64> = vec_new()
     for i in 0..vec_len(pc.keys) {
         let key = vec_get(pc.keys, i)
@@ -336,6 +356,7 @@ fn pc_invalidate_file(pc: PageCache, file_id: i64) -> PageCache {
     pc.keys = nk
     pc.hand = 0
     pc_unregister_file(pc, file_id)
+    mem_persist_end()
     return pc
 }
 

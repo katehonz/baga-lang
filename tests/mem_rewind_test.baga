@@ -1,0 +1,120 @@
+// mem_rewind_test — MEM-4: per-request rewind + persist регион върху
+// thread-local bump arena-та (boilaDB Q2).
+//
+// Доказателството за reclaim е RSS-базирано: без rewind цикълът държи
+// ~600 MB; с rewind растежът трябва да е под 64 MB (големите блокове са
+// mmap-нати и free() ги връща на ОС; малките се рециклират от malloc).
+
+import "std/str/str.baga"
+import "std/os/os.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn vmrss_kb() -> i64 !IO {
+    // НЕ read_file: тя е language builtin с fseek/ftell (0 за /proc) и
+    // засенчва os.read_file; четем с open+fd_read на парчета.
+    let fd = open("/proc/self/status", 0, 0)?
+    if fd < 0 { return -1 }
+    let mut s = ""
+    let mut running = true
+    while running {
+        let chunk = fd_read(fd, 4096)?
+        if len(chunk) == 0 {
+            running = false
+        } else {
+            s = concat(s, chunk)
+        }
+    }
+    close(fd)
+    let i = str_find(s, "VmRSS:")
+    let mut j = i + 6
+    while char_at(s, j) == 32 || char_at(s, j) == 9 { j = j + 1 }
+    let mut e = j
+    while char_at(s, e) >= 48 && char_at(s, e) <= 57 { e = e + 1 }
+    return parse_int(substr(s, j, e))
+}
+
+fn junk_alloc() -> i64 {
+    // ~3 MB свежа памет на извикване (2 × 1 MB repeat + 2 MB concat)
+    let a = str_repeat("a", 1048576)
+    let b = str_repeat("b", 1048576)
+    let c = concat(a, b)
+    return len(c)
+}
+
+fn main() -> i64 !IO {
+    let keeper = concat("keep", "-me")
+
+    // 1. mark/rewind reclaim: 200 итерации × 3 MB ≈ 600 MB без rewind
+    let base = vmrss_kb()?
+    let mut i: i64 = 0
+    let mut total: i64 = 0
+    while i < 200 {
+        let m = mem_mark()
+        total = total + junk_alloc()
+        mem_rewind(m)
+        i = i + 1
+    }
+    let after = vmrss_kb()?
+    check("rewind_reclaim_rss", after - base < 65536)
+    check("rewind_did_alloc", total == 200 * 2097152)
+
+    // 2. стойностите преди mark оцеляват след rewind цикли
+    check("pre_mark_survives", keeper == "keep-me")
+
+    // 3. persist регион: стойността преживява rewind-ове
+    mem_persist_begin()
+    let keep2 = concat("persist", "-ok")
+    mem_persist_end()
+    i = 0
+    while i < 50 {
+        let m = mem_mark()
+        total = total + junk_alloc()
+        mem_rewind(m)
+        i = i + 1
+    }
+    check("persist_survives_rewind", keep2 == "persist-ok")
+    check("pre_mark_survives_2", keeper == "keep-me")
+
+    // 4. free-list scrub: drop в маркиран регион + rewind + нови алокации.
+    // Без scrub free-list сочи във върната памет → двойна употреба/счупване.
+    let m4 = mem_mark()
+    let v: Vec<i64> = vec_new()
+    vec_push(v, 11)
+    vec_push(v, 22)
+    drop(v)
+    let s4 = concat("dropped", "-region")
+    mem_rewind(m4)
+    let w: Vec<i64> = vec_new()
+    vec_push(w, 33)
+    vec_push(w, 44)
+    let s5 = concat("fresh", "-alloc")
+    check("scrub_vec_ok", vec_get(w, 0) == 33 && vec_get(w, 1) == 44 && vec_len(w) == 2)
+    check("scrub_str_ok", s5 == "fresh-alloc")
+
+    // 5. LIFO вложени mark-ове (проверяваме ПРЕДИ rewind — след него
+    // маркираните стойности са върната памет и не се пипат)
+    let m1 = mem_mark()
+    let inner1 = concat("lifo", "-1")
+    let m2 = mem_mark()
+    let inner2 = concat("lifo", "-2")
+    check("lifo_inner", inner1 == "lifo-1" && inner2 == "lifo-2")
+    mem_rewind(m2)
+    check("lifo_outer_alive", inner1 == "lifo-1")
+    mem_rewind(m1)
+
+    // 6. rewind без нова алокация е no-op
+    let m6 = mem_mark()
+    mem_rewind(m6)
+    check("rewind_noop", keeper == "keep-me")
+
+    print("mem_rewind_test: all passed")
+    return 0
+}

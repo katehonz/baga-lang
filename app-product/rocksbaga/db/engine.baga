@@ -315,7 +315,10 @@ fn lsm_wal_append(db: LsmDB, op: i64, key: bytes, val: bytes) -> LsmDB !IO {
         }
     }
     if bytes_len(db.wal_buf) < db.wal_buf_max {
+        // MEM-4: WAL буферът е дълготрайно състояние на store-а — persist
+        mem_persist_begin()
         db.wal_buf = bytes_new(db.wal_buf_max)
+        mem_persist_end()
         db.wal_buf_len = 0
     }
     let mut i: i64 = 0
@@ -333,11 +336,16 @@ fn lsm_scan_touch(db: LsmDB) -> LsmDB {
     db.write_epoch = db.write_epoch + 1
     if vec_len(db.scan_keys) > 0 {
         let old = db.scan_keys
+        // MEM-4: заместващият vec остава в shared store след rewind
+        mem_persist_begin()
         db.scan_keys = vec_new()
+        mem_persist_end()
         drop(old)
     }
     db.scan_epoch = 0 - 1
+    mem_persist_begin()
     db.scan_pat = bytes_new(0)
+    mem_persist_end()
     return db
 }
 
@@ -348,7 +356,11 @@ fn lsm_put_kb(db: LsmDB, key: bytes, val: bytes) -> LsmDB !IO !Time {
     if db.ok == 0 {
         return db
     }
-    map_set(db.mem, key, val)
+    // MEM-4: memtable-ът е cross-request state; map_set пази указатели
+    // (без deep-copy) → bytes_slice в persist регион.
+    mem_persist_begin()
+    map_set(db.mem, bytes_slice(key, 0, bytes_len(key)), bytes_slice(val, 0, bytes_len(val)))
+    mem_persist_end()
     // R22: skip tomb probe when empty (hot put path).
     if map_len(db.tomb) > 0 {
         map_del(db.tomb, key)
@@ -402,7 +414,10 @@ fn lsm_del_kb(db: LsmDB, key: bytes) -> LsmDB !IO !Time {
         return db
     }
     map_del(db.mem, key)
-    map_set(db.tomb, key, 1)
+    // MEM-4: tomb ключът е cross-request state — deep-copy в persist
+    mem_persist_begin()
+    map_set(db.tomb, bytes_slice(key, 0, bytes_len(key)), 1)
+    mem_persist_end()
     db.mem_n = db.mem_n + 1
     db = lsm_scan_touch(db)
     db = lsm_maybe_sync(db)?
@@ -657,8 +672,11 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
             db.ok = 0
             return db
         }
+        // MEM-4: gens/levels са cross-request state — grow в persist
+        mem_persist_begin()
         vec_push(db.gens, gen)
         vec_push(db.levels, 0)   // L0
+        mem_persist_end()
         db.next_gen = gen + 1
     }
     drop(rows)  // R18: on disk; vals stay with db.mem until it is replaced
@@ -698,8 +716,11 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
     db.wal_fd = wfd
     db.wal_off = 0
     db.wal_buf_len = 0  // R18: keep the allocated buffer
+    // MEM-4: свежите memtable maps живеят в shared store след rewind
+    mem_persist_begin()
     db.mem = map_new()
     db.tomb = map_new()
+    mem_persist_end()
     db.mem_n = 0
     db.since_sync = 0
     // L0..L3 compaction (chain while any level is over file or byte threshold)

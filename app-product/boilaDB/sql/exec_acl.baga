@@ -33,12 +33,18 @@ fn boila_sess_super(guc: Map<str, str>) -> i64 {
 }
 
 fn boila_sess_set_user(guc: Map<str, str>, user: str, super: i64) -> Map<str, str> {
-    map_set(guc, "boila.user", user)
-    if super == 1 {
-        map_set(guc, "boila.super", "1")
-    } else {
-        map_set(guc, "boila.super", "0")
+    let mut sup = "0"
+    if super == 1 { sup = "1" }
+    // идемпотентно: същата сесия → без запис (без нова памет на заявка)
+    if map_get(guc, "boila.user") == user && map_get(guc, "boila.super") == sup {
+        return guc
     }
+    // MEM-4: session map-ът преживява per-request rewind — стойностите
+    // (и новите entry-та) трябва да са в persist региона.
+    mem_persist_begin()
+    map_set(guc, "boila.user", substr(user, 0, len(user)))
+    map_set(guc, "boila.super", substr(sup, 0, len(sup)))
+    mem_persist_end()
     return guc
 }
 

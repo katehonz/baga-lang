@@ -23,6 +23,7 @@ import "../sql/ast.baga"
 import "../catalog/schema.baga"
 import "../txn/mvcc.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
 
 fn boila_mt_pack(gmu: i64, srv_mh: i64, dmu_mh: i64, live_mh: i64, pcs_mh: i64, stats_mh: i64) -> i64 {
     return cell2(gmu, cell2(srv_mh, cell2(dmu_mh, cell2(live_mh, cell2(pcs_mh, stats_mh)))))
@@ -73,8 +74,38 @@ fn boila_mt_new(srv: BoilaServer, max_conn: i64) -> i64 !Par {
     return boila_mt_pack(mutex_new(), map_h(sm), map_h(dm), map_h(live), map_h(pcs), map_h(st))
 }
 
-fn boila_mt_stat_inc(pack: i64, key: i64) -> i64 !Par {
-    let gmu = boila_mt_gmu(pack)
+// MEM-4: rocksbaga scan snapshotът (scan_keys, K3h) е per-request кеш в
+// ephemeral памет — след rewind на заявката би висял в shared store-а,
+// а при съвпадащ epoch следващ scan би го ПРОЧЕЛ (use-after-free).
+// Нулираме го преди write-back; следващият scan rebuild-ва (epoch = -1).
+// Празният vec е persist (~112 B само при scan-ната заявка — point
+// GET/DML hot path-ът не минава през тук).
+fn boila_store_snap_off(s: BoilaStore) -> BoilaStore {
+    let mut c = s.c
+    if vec_len(c.scan_keys) > 0 {
+        mem_persist_begin()
+        let sk: Vec<bytes> = vec_new()
+        mem_persist_end()
+        c.scan_keys = sk
+        c.scan_epoch = 0 - 1
+    }
+    let mut s2 = s
+    s2.c = c
+    return s2
+}
+
+fn boila_mt_srv_snap_off(srv: BoilaServer) -> BoilaServer {
+    let mut s2 = srv
+    s2.meta = boila_store_snap_off(s2.meta)
+    let mut i: i64 = 0
+    while i < vec_len(s2.stores) {
+        vec_set(s2.stores, i, boila_store_snap_off(vec_get(s2.stores, i)))
+        i = i + 1
+    }
+    return s2
+}
+
+fn boila_mt_stat_inc(pack: i64, key: i64) -> i64 !Par {    let gmu = boila_mt_gmu(pack)
     mutex_lock(gmu)
     let st: Map<i64, i64> = h_map(boila_mt_stats_h(pack))
     let mut n: i64 = 0
@@ -203,7 +234,10 @@ fn boila_mt_db_mu(pack: i64, db: str) -> i64 !Par {
         mu = map_get(dm, db)
     } else {
         mu = mutex_new()
-        map_set(dm, db, mu)
+        // MEM-4: ключът е от заявката (ephemeral) — persist копие + entry
+        mem_persist_begin()
+        map_set(dm, substr(db, 0, len(db)), mu)
+        mem_persist_end()
     }
     mutex_unlock(gmu)
     return mu
@@ -214,7 +248,7 @@ fn boila_mt_db_ok(pack: i64, db: str) -> i64 !IO !Time !Par {
     mutex_lock(gmu)
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let r = boila_srv_db(map_get(m, 0), db)?
-    map_set(m, 0, r.srv)
+    map_set(m, 0, boila_mt_srv_snap_off(r.srv))
     let ok = r.ok
     mutex_unlock(gmu)
     return ok
@@ -226,7 +260,7 @@ fn boila_mt_http_auth(pack: i64, guc: Map<str, str>, req: Request) -> BoilaHttpA
     mutex_lock(gmu)
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let au = boila_http_auth(map_get(m, 0), guc, req)?
-    map_set(m, 0, au.srv)
+    map_set(m, 0, boila_mt_srv_snap_off(au.srv))
     mutex_unlock(gmu)
     return au
 }
@@ -237,7 +271,7 @@ fn boila_mt_exec_reg(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut
     mutex_lock(gmu)
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let out = boila_server_exec_tx(map_get(m, 0), txn, db, sql)?
-    map_set(m, 0, out.srv)
+    map_set(m, 0, boila_mt_srv_snap_off(out.srv))
     mutex_unlock(gmu)
     boila_mt_note_sql(pack, out.ok)?
     return out
@@ -249,7 +283,7 @@ fn boila_mt_checkout(pack: i64, db: str) -> BoilaSrvDb !IO !Time !Par {
     mutex_lock(gmu)
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let g = boila_srv_db(map_get(m, 0), db)?
-    map_set(m, 0, g.srv)
+    map_set(m, 0, boila_mt_srv_snap_off(g.srv))
     mutex_unlock(gmu)
     return g
 }
@@ -260,7 +294,7 @@ fn boila_mt_checkin(pack: i64, db: str, store: BoilaStore) -> i64 !Par {
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let mut srv = map_get(m, 0)
     srv = boila_srv_store_putback(srv, db, store)
-    map_set(m, 0, srv)
+    map_set(m, 0, boila_mt_srv_snap_off(srv))
     mutex_unlock(gmu)
     return 0
 }
@@ -274,7 +308,11 @@ fn boila_mt_pc_take(pack: i64, db: str) -> BoilaPlanCache !Par {
     if map_has(pcs, db) == 1 {
         pc = map_get(pcs, db)
     } else {
-        map_set(pcs, db, pc)
+        // MEM-4: новият pc + ключ от заявката са shared — persist регион
+        mem_persist_begin()
+        pc = boila_pc_new()
+        map_set(pcs, substr(db, 0, len(db)), pc)
+        mem_persist_end()
     }
     mutex_unlock(gmu)
     return pc

@@ -747,6 +747,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                     {"arena_alloc", "baga_arena_alloc"},
                     {"arena_reset", "baga_arena_reset"},
                     {"arena_free",  "baga_arena_free"},
+                    {"mem_mark",    "baga_mem_mark"},
+                    {"mem_rewind",  "baga_mem_rewind"},
+                    {"mem_persist_begin", "baga_mem_persist_begin"},
+                    {"mem_persist_end",   "baga_mem_persist_end"},
                     {"arg_count",   "baga_arg_count"},
                     {"arg",         "baga_arg"},
                     {"exit",        "baga_exit"},
@@ -2074,35 +2078,71 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#define BAGA_FL_BIG 12       /* pow2 класове: 2 KiB .. 32 MiB */\n");
     fprintf(out, "static __thread void *baga_fl[BAGA_FL_CLASSES];\n");
     fprintf(out, "static __thread void *baga_fl_big[BAGA_FL_BIG];\n");
+    /* MEM-4 (boilaDB Q2): per-request rewind + persist регион.
+     * mem_mark/mem_rewind: mark пази (head блок, used); rewind освобождава
+     * всички блокове над mark-а и връща used — паметта на заявката се
+     * връща към malloc. Free-list записи, сочещи във върнатата памет, се
+     * изчистват (иначе двойна употреба). LIFO нарушение/двоен rewind →
+     * чиста грешка, не UB.
+     * mem_persist_begin/end: докато depth > 0, baga_alloc bump-ва в
+     * ОТДЕЛНА верига, която rewind не пипа. Persist и ephemeral имат
+     * РАЗДЕЛНИ free lists — иначе drop() на persist страница я слага в
+     * ephemeral freelist и следващ ephemeral alloc презаписва live
+     * shared state (page cache / memtable) → catalog „таблица липсва".
+     * За shared state, който преживява заявката (plan cache, session maps). */
+    fprintf(out, "static __thread baga_ABlk *baga_persist_head = NULL;\n");
+    fprintf(out, "static __thread int64_t baga_persist_depth = 0;\n");
+    fprintf(out, "static __thread void *baga_fl_p[BAGA_FL_CLASSES];\n");
+    fprintf(out, "static __thread void *baga_fl_big_p[BAGA_FL_BIG];\n");
+    fprintf(out, "static void baga_mem_persist_begin(void) { baga_persist_depth++; }\n");
+    fprintf(out, "static void baga_mem_persist_end(void) {\n");
+    fprintf(out, "    if (baga_persist_depth <= 0) { fprintf(stderr, \"baga: mem_persist_end без mem_persist_begin\\n\"); exit(1); }\n");
+    fprintf(out, "    baga_persist_depth--;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int baga_fl_big_idx(int64_t n) {\n");
     fprintf(out, "    int i = 0; int64_t c = 2048;\n");
     fprintf(out, "    while (i < BAGA_FL_BIG) { if (n <= c) return i; c <<= 1; i++; }\n");
     fprintf(out, "    return -1;\n");
     fprintf(out, "}\n");
+    fprintf(out, "static int baga_ptr_in_persist(void *p) {\n");
+    fprintf(out, "    for (baga_ABlk *b = baga_persist_head; b; b = b->next) {\n");
+    fprintf(out, "        char *lo = b->data, *hi = b->data + b->cap;\n");
+    fprintf(out, "        if ((char *)p >= lo && (char *)p < hi) return 1;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
     fprintf(out, "static void baga_free(void *p, int64_t n) {\n");
     fprintf(out, "    if (!p || n <= 0) return;\n");
+    fprintf(out, "    int persist = baga_ptr_in_persist(p);\n");
     fprintf(out, "    if (n <= 1024) {\n");
     fprintf(out, "        int c = (int)((n + 15) / 16) - 1;\n");
-    fprintf(out, "        *(void **)p = baga_fl[c]; baga_fl[c] = p;\n");
+    fprintf(out, "        void **fl = persist ? &baga_fl_p[c] : &baga_fl[c];\n");
+    fprintf(out, "        *(void **)p = *fl; *fl = p;\n");
     fprintf(out, "    } else {\n");
     fprintf(out, "        int i = baga_fl_big_idx(n);\n");
-    fprintf(out, "        if (i >= 0) { *(void **)p = baga_fl_big[i]; baga_fl_big[i] = p; }\n");
+    fprintf(out, "        if (i >= 0) {\n");
+    fprintf(out, "            void **fl = persist ? &baga_fl_big_p[i] : &baga_fl_big[i];\n");
+    fprintf(out, "            *(void **)p = *fl; *fl = p;\n");
+    fprintf(out, "        }\n");
     fprintf(out, "    }\n");
     fprintf(out, "}\n");
     fprintf(out, "static void *baga_alloc(size_t n) {\n");
     fprintf(out, "    size_t rn = (n + 15) & ~(size_t)15;\n");
     fprintf(out, "    size_t an;\n");
+    fprintf(out, "    int persist = baga_persist_depth > 0;\n");
     fprintf(out, "    if (n == 0) {\n");
     fprintf(out, "        an = 0;\n");
     fprintf(out, "    } else if (rn <= 1024) {\n");
-    fprintf(out, "        void *fb = baga_fl[rn / 16 - 1];\n");
-    fprintf(out, "        if (fb) { baga_fl[rn / 16 - 1] = *(void **)fb; return fb; }\n");
+    fprintf(out, "        void **fl = persist ? &baga_fl_p[rn / 16 - 1] : &baga_fl[rn / 16 - 1];\n");
+    fprintf(out, "        void *fb = *fl;\n");
+    fprintf(out, "        if (fb) { *fl = *(void **)fb; return fb; }\n");
     fprintf(out, "        an = rn;\n");
     fprintf(out, "    } else {\n");
     fprintf(out, "        int bi = baga_fl_big_idx((int64_t)n);\n");
     fprintf(out, "        if (bi >= 0) {\n");
-    fprintf(out, "            void *fb = baga_fl_big[bi];\n");
-    fprintf(out, "            if (fb) { baga_fl_big[bi] = *(void **)fb; return fb; }\n");
+    fprintf(out, "            void **fl = persist ? &baga_fl_big_p[bi] : &baga_fl_big[bi];\n");
+    fprintf(out, "            void *fb = *fl;\n");
+    fprintf(out, "            if (fb) { *fl = *(void **)fb; return fb; }\n");
     fprintf(out, "            an = ((size_t)2048 << bi);\n");
     fprintf(out, "        } else {\n");
     fprintf(out, "            an = n;\n");
@@ -2112,15 +2152,65 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * иначе free-list блок от по-малка заявка обслужва по-голяма в същия
      * клас и я презаписва съседния блок (segfault при review). Същото и за
      * pow2 класовете (R18): винаги пълен класов размер. */
-    fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
+    fprintf(out, "    baga_ABlk **hp = persist ? &baga_persist_head : &baga_arena_head;\n");
+    fprintf(out, "    baga_ABlk *b = *hp;\n");
     fprintf(out, "    if (!b || b->used + an > b->cap) {\n");
     fprintf(out, "        size_t cap = an > 8192 ? an : 8192;\n");
     fprintf(out, "        b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
-    fprintf(out, "        b->next = baga_arena_head; b->used = 0; b->cap = cap;\n");
-    fprintf(out, "        baga_arena_head = b;\n");
+    fprintf(out, "        b->next = *hp; b->used = 0; b->cap = cap;\n");
+    fprintf(out, "        *hp = b;\n");
     fprintf(out, "    }\n");
     fprintf(out, "    void *p = b->data + b->used; b->used += an;\n");
     fprintf(out, "    return p;\n");
+    fprintf(out, "}\n");
+    /* MEM-4: mark/rewind върху ephemeral веригата. persist веригата не се
+     * пипа — затова shared state отива там през mem_persist_begin/end. */
+    fprintf(out, "typedef struct { baga_ABlk *head; size_t used; } baga_MMark;\n");
+    fprintf(out, "static void baga_fl_scrub(char *lo, char *hi) {\n");
+    fprintf(out, "    for (int c = 0; c < BAGA_FL_CLASSES; c++) {\n");
+    fprintf(out, "        void **pp = &baga_fl[c];\n");
+    fprintf(out, "        while (*pp) {\n");
+    fprintf(out, "            char *p = (char *)*pp;\n");
+    fprintf(out, "            if (p >= lo && p < hi) *pp = *(void **)p;\n");
+    fprintf(out, "            else pp = (void **)*pp;\n");
+    fprintf(out, "        }\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    for (int c = 0; c < BAGA_FL_BIG; c++) {\n");
+    fprintf(out, "        void **pp = &baga_fl_big[c];\n");
+    fprintf(out, "        while (*pp) {\n");
+    fprintf(out, "            char *p = (char *)*pp;\n");
+    fprintf(out, "            if (p >= lo && p < hi) *pp = *(void **)p;\n");
+    fprintf(out, "            else pp = (void **)*pp;\n");
+    fprintf(out, "        }\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_mem_mark(void) {\n");
+    fprintf(out, "    baga_MMark *m = (baga_MMark *)malloc(sizeof(baga_MMark));\n");
+    fprintf(out, "    if (!m) { fprintf(stderr, \"baga: mem_mark: няма памет\\n\"); exit(1); }\n");
+    fprintf(out, "    m->head = baga_arena_head;\n");
+    fprintf(out, "    m->used = baga_arena_head ? baga_arena_head->used : 0;\n");
+    fprintf(out, "    return (int64_t)(intptr_t)m;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_mem_rewind(int64_t h) {\n");
+    fprintf(out, "    baga_MMark *m = (baga_MMark *)(intptr_t)h;\n");
+    fprintf(out, "    if (!m) { fprintf(stderr, \"baga: mem_rewind: невалиден mark\\n\"); exit(1); }\n");
+    fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
+    fprintf(out, "    while (b && b != m->head) {\n");
+    fprintf(out, "        baga_ABlk *nx = b->next;\n");
+    fprintf(out, "        baga_fl_scrub(b->data, b->data + b->cap);\n");
+    fprintf(out, "        free(b);\n");
+    fprintf(out, "        b = nx;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    if (b != m->head) {\n");
+    fprintf(out, "        fprintf(stderr, \"baga: mem_rewind: mark не е в arena веригата (двоен rewind или нарушен LIFO ред)\\n\");\n");
+    fprintf(out, "        exit(1);\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    baga_arena_head = m->head;\n");
+    fprintf(out, "    if (m->head) {\n");
+    fprintf(out, "        baga_fl_scrub(m->head->data + m->used, m->head->data + m->head->cap);\n");
+    fprintf(out, "        m->head->used = m->used;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    free(m);\n");
     fprintf(out, "}\n");
 
     /* runtime helpers */

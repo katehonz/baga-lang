@@ -106,7 +106,12 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         }
         let hit = boila_pc_get_mu(pc, sql, pc_mu)?
         if hit.hit == 1 {
-            let ex = boila_exec_select(s, txn, hit.plan.table, hit.plan.sel)?
+            // MEM-4: кеширан е само sel (persist регион); таблицата се
+            // resolve-ва прясно от каталога всяка заявка (ephemeral).
+            let cth = boila_cat_by_name_txn(s, txn, hit.plan.sel.table)?
+            s = cth.s
+            if cth.ok == 0 { return boila_sql_fail(s, txn, pc, cth.err, cth.state) }
+            let ex = boila_exec_select(s, txn, cth.table, hit.plan.sel)?
             return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
         }
         let ps = boila_parse_select(lx)
@@ -115,7 +120,17 @@ fn boila_exec_sql_mu(s: BoilaStore, txn: BoilaTxn, db: str, sql: str, pc: BoilaP
         s = ct.s
         if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
         let sel = boila_knn_prep_sel(ct.table, ps.sel)
-        boila_pc_put_mu(pc, sql, BoilaSelPlan { sel: sel, table: ct.table }, pc_mu)?
+        // MEM-4: кешът преживява per-request rewind — кешираната копия е
+        // re-parse + ключ в persist региона (чисти операции, без ?);
+        // изпълнението на тази заявка ползва ephemeral копието (sel).
+        mem_persist_begin()
+        let lx2 = boila_lex(sql)
+        let ps2 = boila_parse_select(lx2)
+        if ps2.ok == 1 {
+            let sel2 = boila_knn_prep_sel(ct.table, ps2.sel)
+            boila_pc_put(pc, substr(sql, 0, len(sql)), BoilaSelPlan { sel: sel2, table: boila_cat_empty_table() })
+        }
+        mem_persist_end()
         let ex = boila_exec_select(s, txn, ct.table, sel)?
         return BoilaSqlOut { s: ex.s, txn: ex.txn, pc: pc, ok: ex.ok, err: ex.err, state: ex.state, kind: 1, res: ex.res, id: 0 }
     }

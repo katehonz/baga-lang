@@ -434,11 +434,18 @@ T = транзакции, W = wire protocol, F = FTS.
   CREATE INDEX build е двупасов (събиране без писания → запис batch).
   Урок: в rocksbaga никога не се скенва по време на фаза, която пише.
 - **Q2 — baga bump arena-та не reclaims; дългоживеещите тежки процеси
-  OOM-ват.** Измерено при P3 bench: 1M INSERT-а (10×100k) OOM-ва на
-  chunk 2 дори след K7 fix-а; 100k (10×10k) минава чисто и е измереният
-  durability еталон. За сървъра това налага предвиденото в ARCHITECTURE
-  §6: per-request arena (`arena_new/arena_reset`) още с P6 wire фазата —
-  иначе дългият процес ще повтори OOM-а.
+  OOM-ват. (MEM-4 partial — 2026-08-11)** Измерено при P3 bench: 1M
+  INSERT-а (10×100k) OOM-ва на chunk 2; 100k chunked беше еталонът.
+  **MEM-4:** C runtime `mem_mark`/`mem_rewind` + `mem_persist_begin/end`
+  (отделна persist arena + отделни free lists; ephemeral freelist не
+  пипа persist блокове). Serve loops (HTTP/PG MT) + insert_write
+  per-stmt rewind; rocksbaga put/tomb/page/bloom/sst caches wrap-ват
+  shared state в persist (deep-copy на bytes ключове в memtable).
+  Доказано: `tests/mem_rewind_test` RSS reclaim; 10k INSERT+index в
+  един процес с rewind без OOM; boila fts/vec/dml зелени. Residual:
+  persist регионът расте с store state (flush не връща memtable
+  bytes на ОС); unnamed PG portal подмяна; 1M single-process bench
+  още не е приземен като gate (бавен fsync path, не OOM).
 
 ## Открити при P2
 

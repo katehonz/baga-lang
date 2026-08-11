@@ -75,7 +75,10 @@ fn boila_pc_invalidate_mu(pc: BoilaPlanCache, mu: i64) -> BoilaPlanCache !Par {
     if mu != 0 {
         mutex_lock(mu)
     }
+    // MEM-4: новата (празна) map е shared — persist, за да преживее rewind
+    mem_persist_begin()
     let r = boila_pc_invalidate(pc)
+    mem_persist_end()
     if mu != 0 {
         mutex_unlock(mu)
     }

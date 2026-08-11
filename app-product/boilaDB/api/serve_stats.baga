@@ -50,7 +50,10 @@ fn boila_ttl_sweeper(pack: i64) -> i64 !IO !Time !Par {
             return 0
         }
         sleep_ms(ms)?
+        // MEM-4: sweep round-ът е като заявка — rewind след всяка обиколка
+        let m = mem_mark()
         boila_mt_sweep_once(pack)?
+        mem_rewind(m)
     }
     return 0
 }

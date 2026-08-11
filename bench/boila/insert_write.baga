@@ -3,8 +3,8 @@
 // BOILA_PHASE=write   — chunk от durable INSERT-ите; процесът ИЗЛИЗА без
 //   close (kill -9 семантика: WAL е fsync-нат от statement commit-ите).
 //   BOILA_CHUNK=k, BOILA_CHUNKS=10 — процес k пише своя диапазон. chunk 0
-//   прави и bench-а mode A/B. (baga arena-та не reclaims — един процес не
-//   може да смели 10k заявления; парченето е честно решение, gaps Q2.)
+//   прави и bench-а mode A/B. MEM-4: per-stmt mem_mark/rewind reclaim-ва
+//   SQL garbage — 1M в един процес (CHUNKS=1) е възможен (gaps Q2).
 // BOILA_PHASE=verify  — отделен процес: отваря root-а (WAL replay), брои
 //   редове и проверява индекс без rebuild.
 // BOILA_BENCH_ROOT    — root директория (изтрийте я преди chunk 0!).
@@ -19,7 +19,7 @@ import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/time/time.baga"
 
-fn ins_stmt(srv: BoilaServer, lo: i64, n: i64) -> BoilaServer !IO !Time {
+fn ins_stmt(srv: BoilaServer, lo: i64, n: i64) -> BoilaServer !IO !Time !Par {
     let mut sql = "INSERT INTO d (id, v) VALUES "
     let mut i: i64 = 0
     while i < n {
@@ -39,7 +39,7 @@ fn ins_stmt(srv: BoilaServer, lo: i64, n: i64) -> BoilaServer !IO !Time {
     return out.srv
 }
 
-fn bench_stmt(srv: BoilaServer, tbl: str, lo: i64, n: i64) -> BoilaServer !IO !Time {
+fn bench_stmt(srv: BoilaServer, tbl: str, lo: i64, n: i64) -> BoilaServer !IO !Time !Par {
     let mut sql = concat(concat("INSERT INTO ", tbl), " (id, v) VALUES ")
     let mut i: i64 = 0
     while i < n {
@@ -138,6 +138,11 @@ fn main() -> i64 !IO !Time !Par {
     if env("BOILA_CHUNKS") != "" {
         chunks = parse_int(env("BOILA_CHUNKS"))
     }
+    // MEM-4: persist idle txn обвивка — session_txn след rewind сочи към
+    // нея (post-commit shell-ите са ephemeral и се reclaim-ват)
+    mem_persist_begin()
+    let idle_txn = boila_txn_new()
+    mem_persist_end()
 
     // bench само в chunk 0: mode A = 1 ред/stmt, mode B = 100 ред/stmt
     if chunk == 0 {
@@ -147,7 +152,10 @@ fn main() -> i64 !IO !Time !Par {
         let t0 = monotonic_us()?
         let mut i: i64 = 0
         while i < a_n {
+            let m = mem_mark()
             srv = bench_stmt(srv, "w", i, 1)?
+            mem_rewind(m)
+            srv.session_txn = idle_txn
             i = i + 1
         }
         let t1 = monotonic_us()?
@@ -155,7 +163,10 @@ fn main() -> i64 !IO !Time !Par {
         let t2 = monotonic_us()?
         i = 0
         while i < b_n {
+            let m = mem_mark()
             srv = bench_stmt(srv, "w", 100000 + i * 100, 100)?
+            mem_rewind(m)
+            srv.session_txn = idle_txn
             i = i + 1
         }
         let t3 = monotonic_us()?
@@ -183,6 +194,9 @@ fn main() -> i64 !IO !Time !Par {
     }
 
     // durable фаза: chunk-ът пише своя диапазон и излиза БЕЗ close
+    // MEM-4 (Q2): per-statement rewind — SQL garbage-ът се reclaim-ва,
+    // store state-ът оцелява (persist регион в rocksbaga); затова 1M
+    // редове в ЕДИН процес вече не OOM-ва.
     let per = rows / chunks
     let stmt_rows: i64 = 100
     let nstmt = per / stmt_rows
@@ -190,7 +204,10 @@ fn main() -> i64 !IO !Time !Par {
     let t4 = monotonic_us()?
     let mut i: i64 = 0
     while i < nstmt {
+        let m = mem_mark()
         srv = ins_stmt(srv, lo + i * stmt_rows, stmt_rows)?
+        mem_rewind(m)
+        srv.session_txn = idle_txn
         i = i + 1
     }
     let t5 = monotonic_us()?

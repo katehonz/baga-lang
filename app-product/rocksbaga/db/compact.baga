@@ -299,6 +299,8 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
         db.blooms = bloom_cache_drop(db.blooms, g)
     }
     // Rebuild oldest-first: L3 … L0; append new file at end of its level.
+    // MEM-4: ng/nl стават cross-request state на store-а — persist регион
+    mem_persist_begin()
     let ng: Vec<i64> = vec_new()
     let nl: Vec<i64> = vec_new()
     let mut target_lv: i64 = 3
@@ -319,6 +321,7 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
     }
     db.gens = ng
     db.levels = nl
+    mem_persist_end()
     let mut add_g: i64 = 0
     if vec_len(rows) > 0 {
         add_g = new_gen
