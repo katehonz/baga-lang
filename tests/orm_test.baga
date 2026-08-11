@@ -20,7 +20,8 @@ fn main() -> i64 !Net !IO !Random !Par {
 
     // pure SQL quoting
     check("sql_lit_escape", sql_lit("a'b") == "'a''b'")
-    check("sql_ident", sql_ident("users") == "\"users\"")
+    check("sql_ident", sql_ident("users") == "users")
+    check("sql_ident_q", sql_ident_q("users") == "\"users\"")
     check("sql_i64_neg", sql_i64(0 - 42) == "-42")
 
     let db0 = orm_connect_env()?

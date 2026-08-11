@@ -1,14 +1,28 @@
 // models/user.baga — users table helpers over ormbaga.
-// Table DDL lives in this app's schema.baga (api_migrations).
+// Table DDL lives in this app's schema.baga (api_migrations / api_boila_migrations).
 
 import "ormbaga/orm.baga"
 import "ormbaga/sql.baga"
 import "fmrbaga/jsonx.baga"
 import "pgbaga/pg.baga"
 import "std/str/str.baga"
+import "std/os/os.baga"
 
 fn user_table() -> str {
     return "users"
+}
+
+fn user_backend_boila() -> i64 !IO {
+    let be = env("ORM_BACKEND")?
+    if be == "boila" || be == "boiladb" || be == "boilaDB" {
+        return 1
+    }
+    return 0
+}
+
+// Next PK for backends without SERIAL (boila). NULL max → 0.
+fn user_next_id(db: OrmDb) -> OrmCount !IO !Net {
+    return orm_count_sql(db, "SELECT MAX(id) AS count FROM users")?
 }
 
 fn user_to_json(q: OrmQuery, row: i64) -> JObj {
@@ -23,8 +37,9 @@ fn user_to_json(q: OrmQuery, row: i64) -> JObj {
     return o
 }
 
+// Dual-safe: no ::text cast (boila cast grammar is narrower).
 fn user_select_sql() -> str {
-    return "SELECT id, email, name, created_at::text AS created_at FROM users"
+    return "SELECT id, email, name, created_at FROM users"
 }
 
 fn user_find(db: OrmDb, id: i64) -> OrmQuery !IO !Net {
@@ -44,6 +59,23 @@ fn user_find_by_email(db: OrmDb, email: str) -> OrmQuery !IO !Net {
 }
 
 fn user_create(db: OrmDb, email: str, name: str) -> OrmExec !IO !Net {
+    if user_backend_boila()? == 1 {
+        let c = user_next_id(db)?
+        if orm_ok_c(c) == 0 {
+            return OrmEErr(OrmExecFail { err: orm_err_c(c), tag: "", db: orm_db_c(c) })
+        }
+        let nid = orm_count_n(c) + 1
+        let mut d = orm_db_c(c)
+        let cols = vec_new()
+        vec_push(cols, "id")
+        vec_push(cols, "email")
+        vec_push(cols, "name")
+        let vals = vec_new()
+        vec_push(vals, int_to_str(nid))
+        vec_push(vals, email)
+        vec_push(vals, name)
+        return orm_insert_strs(d, user_table(), cols, vals)?
+    }
     let cols = vec_new()
     vec_push(cols, "email")
     vec_push(cols, "name")

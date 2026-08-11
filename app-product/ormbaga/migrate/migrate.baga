@@ -35,14 +35,11 @@ fn migrate_len(set: MigrationSet) -> i64 {
     return vec_len(set.versions)
 }
 
-// Ensure history table exists (idempotent). Multi-line DDL is fine — the
-// Simple Query protocol passes it through unchanged.
+// Ensure history table exists (idempotent).
+// Dual-backend DDL: bare idents, PRIMARY KEY required, no DEFAULT/NOT NULL
+// so the same statement works on Postgres and boilaDB (BoilaSQL subset).
 fn migrate_ensure_table(db: OrmDb) -> OrmExec !IO !Net {
-    let sql = "CREATE TABLE IF NOT EXISTS baga_schema_migrations (
-  version BIGINT PRIMARY KEY,
-  name TEXT NOT NULL,
-  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)"
+    let sql = "CREATE TABLE IF NOT EXISTS baga_schema_migrations (version BIGINT, name TEXT, applied_at TIMESTAMPTZ, PRIMARY KEY (version))"
     return orm_exec(db, sql)?
 }
 
@@ -69,8 +66,9 @@ fn migrate_applied(db: OrmDb) -> OrmQuery !IO !Net {
 }
 
 // Highest applied version (0 on empty history) — readiness/health checks.
+// MAX alone (no COALESCE/::cast): dual Postgres + boilaDB; NULL → 0 via i64 cell.
 fn migrate_current(db: OrmDb) -> OrmCount !IO !Net {
-    return orm_count_sql(db, "SELECT COALESCE(MAX(version), 0)::bigint AS count FROM baga_schema_migrations")?
+    return orm_count_sql(db, "SELECT MAX(version) AS count FROM baga_schema_migrations")?
 }
 
 // Parse a migrate_applied result into an in-memory Vec<i64> (membership

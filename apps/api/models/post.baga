@@ -1,13 +1,26 @@
-// models/post.baga — posts table helpers (FK → users).
+// models/post.baga — posts table helpers (FK → users on Postgres; app-level on boila).
 
 import "ormbaga/orm.baga"
 import "ormbaga/sql.baga"
 import "fmrbaga/jsonx.baga"
 import "pgbaga/pg.baga"
 import "std/str/str.baga"
+import "std/os/os.baga"
 
 fn post_table() -> str {
     return "posts"
+}
+
+fn post_backend_boila() -> i64 !IO {
+    let be = env("ORM_BACKEND")?
+    if be == "boila" || be == "boiladb" || be == "boilaDB" {
+        return 1
+    }
+    return 0
+}
+
+fn post_next_id(db: OrmDb) -> OrmCount !IO !Net {
+    return orm_count_sql(db, "SELECT MAX(id) AS count FROM posts")?
 }
 
 fn post_to_json(q: OrmQuery, row: i64) -> JObj {
@@ -24,7 +37,7 @@ fn post_to_json(q: OrmQuery, row: i64) -> JObj {
 }
 
 fn post_select_sql() -> str {
-    return "SELECT id, user_id, title, body, created_at::text AS created_at FROM posts"
+    return "SELECT id, user_id, title, body, created_at FROM posts"
 }
 
 fn post_find(db: OrmDb, id: i64) -> OrmQuery !IO !Net {
@@ -55,6 +68,28 @@ fn post_all(db: OrmDb, limit: i64, offset: i64) -> OrmQuery !IO !Net {
 }
 
 fn post_create(db: OrmDb, user_id: i64, title: str, body: str) -> OrmExec !IO !Net {
+    if post_backend_boila()? == 1 {
+        let c = post_next_id(db)?
+        if orm_ok_c(c) == 0 {
+            return OrmEErr(OrmExecFail { err: orm_err_c(c), tag: "", db: orm_db_c(c) })
+        }
+        let nid = orm_count_n(c) + 1
+        let mut d = orm_db_c(c)
+        let cols = vec_new()
+        vec_push(cols, "id")
+        vec_push(cols, "user_id")
+        vec_push(cols, "title")
+        vec_push(cols, "body")
+        let vals = vec_new()
+        let nulls = vec_new()
+        pg_param_i64(vals, nulls, nid)
+        pg_param_i64(vals, nulls, user_id)
+        vec_push(vals, title)
+        vec_push(nulls, 0)
+        vec_push(vals, body)
+        vec_push(nulls, 0)
+        return orm_exec_params(d, sql_insert_p(post_table(), cols), vals, nulls)?
+    }
     let cols = vec_new()
     vec_push(cols, "user_id")
     vec_push(cols, "title")

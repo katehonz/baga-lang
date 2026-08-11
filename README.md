@@ -41,7 +41,8 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **httpdbaga** | HTTP/1.1 + HTTP/2 + HPACK |
 | **jwtbaga** | JWT HS256 / RS256 / ES256 |
 | **pgbaga** | PostgreSQL wire client (SCRAM, `$1` params) |
-| **ormbaga** | ActiveRecord-style ORM + goose migrations |
+| **boilabaga** | Client adapter to boilaDB over PG wire (`:6575`) |
+| **ormbaga** | ActiveRecord-style ORM + goose migrations (Postgres or boila) |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired |
 | **kvbaga** | RESP KV server (`Map` probe) |
 | **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) |
@@ -59,7 +60,8 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **mdbaga**, **tplbaga**, **queuebaga**, **jsonrpcbaga**, **grebaga**, **testbaga** | Markdown, templates, jobs, RPC, grep CLI, asserts |
 | **apps/api**, **apps/registry** | Sample product + sandak package registry |
 
-Canonical stack: `apps/*` → **fmrbaga** → httpdbaga / jwtbaga / ormbaga → **pgbaga** → Postgres. See [`app-product/BASE.md`](app-product/BASE.md).
+Canonical stack: `apps/*` → **fmrbaga** → httpdbaga / jwtbaga / ormbaga → **pgbaga** → Postgres  
+(or ormbaga → **boilabaga** → pgbaga → **boilaDB** PG wire). See [`app-product/BASE.md`](app-product/BASE.md).
 
 ## Quick Start
 

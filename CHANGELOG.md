@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### boilabaga + ormbaga — boilaDB PG-wire adapter
+- New package `app-product/boilabaga`: client adapter to boilaDB over
+  PostgreSQL wire (`boila_connect_env`, dialect DDL helpers).
+- ormbaga: `orm_from_conn`, `orm_connect_boila_env`, `orm_connect_auto_env`
+  (`ORM_BACKEND=boila|pg`), dual-safe `sql_ident` + history DDL,
+  `ormbaga_boila_migrations`, `orm_pool_from_boila_env` /
+  `orm_pool_from_auto_env`, `examples/demo_boila.baga`.
+- fmrbaga: `fmr_open_db` + config honor `ORM_BACKEND=boila` (BOILA_* DSN).
+- apps/api: `api_migrations_auto`, boila-safe models (MAX id), `fmr-run`
+  + `.env.example` document dual backend.
+- Live test: `tests/orm_boila_test.baga` (needs `serve_pg` on :6575).
+
 ### boilaDB — Q-distinct-limit: DISTINCT during project + LIMIT stop
 - Projection keeps uniques via `boila_distinct_offer` (no full project
   then `distinct_rows`).

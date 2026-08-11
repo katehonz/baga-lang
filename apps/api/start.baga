@@ -15,7 +15,9 @@ fn boot_migrate() -> i64 !Net !IO !Random {
         print(concat("migrate: db connect failed: ", orm_err_db(db)))
         return 1
     }
-    let up = migrate_up(db, api_migrations())?
+    // api_migrations_auto: Postgres SERIAL/FK or boila BoilaSQL (ORM_BACKEND=).
+    let set = api_migrations_auto()?
+    let up = migrate_up(db, set)?
     if migrate_is_ok(up) == 0 {
         print(concat("migrate failed: ", migrate_err_str(up)))
         orm_close(migrate_db(up))?

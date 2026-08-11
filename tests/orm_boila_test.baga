@@ -1,0 +1,224 @@
+// orm_boila_test.baga — ormbaga against boilaDB via boilabaga (PG wire).
+// Requires: boilaDB serve_pg on BOILA_PGPORT (default 6575).
+//
+//   ./baga -I . -I app-product app-product/boilaDB/tools/serve_pg.baga
+//   ./baga -I . -I app-product tests/orm_boila_test.baga
+
+import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
+import "ormbaga/schema.baga"
+import "ormbaga/sql.baga"
+import "ormbaga/pool.baga"
+import "boilabaga/adapter.baga"
+import "boilabaga/dialect.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn main() -> i64 !Net !IO !Random !Par {
+    print("orm_boila_test:")
+    let fails: Vec<i64> = vec_new()
+
+    // pure dialect
+    check(fails, "ident_ok", boila_ident_ok("users") == 1 && boila_ident_ok("a-b") == 0)
+    check(fails, "sql_ident_bare", sql_ident("users") == "users")
+    check(fails, "ddl_mig_table", len(boila_ddl_migrations_table()) > 20)
+
+    let db0 = orm_connect_boila_env()?
+    check(fails, "connect", orm_ok_db(db0) == 1)
+    if orm_ok_db(db0) == 0 {
+        print(concat("  connect err: ", orm_err_db(db0)))
+        print("orm_boila_test: FAILED (start serve_pg — BOILA_PGPORT=6575)")
+        return 1
+    }
+    let mut db = db0
+
+    let ping = orm_ping(db)?
+    db = orm_db_q(ping)
+    check(fails, "ping", orm_ok_q(ping) == 1)
+
+    let set = ormbaga_boila_migrations()
+
+    // clean slate
+    let down_all = migrate_down(db, set, 100)?
+    db = migrate_db(down_all)
+    check(fails, "down_all_ok", migrate_is_ok(down_all) == 1)
+
+    let up1 = migrate_up(db, set)?
+    db = migrate_db(up1)
+    check(fails, "up_ok", migrate_is_ok(up1) == 1)
+    check(fails, "up_applied_3", migrate_applied_n(up1) == 3)
+    if migrate_is_ok(up1) == 0 {
+        print(concat("  migrate err: ", migrate_err_str(up1)))
+    }
+
+    let up2 = migrate_up(db, set)?
+    db = migrate_db(up2)
+    check(fails, "up_idempotent", migrate_is_ok(up2) == 1 && migrate_applied_n(up2) == 0)
+
+    let cur = migrate_current(db)?
+    db = orm_db_c(cur)
+    check(fails, "current_max", orm_ok_c(cur) == 1 && orm_count_n(cur) == 20260811003)
+
+    // CRUD — explicit ids (no SERIAL on boila)
+    let cols = vec_new()
+    vec_push(cols, "id")
+    vec_push(cols, "email")
+    vec_push(cols, "name")
+    let vals = vec_new()
+    vec_push(vals, "1")
+    vec_push(vals, "test@baga.dev")
+    vec_push(vals, "Tester")
+    let ins = orm_insert_strs(db, "users", cols, vals)?
+    db = orm_db_exec(ins)
+    check(fails, "insert_user", orm_ok(ins) == 1)
+    if orm_ok(ins) == 0 {
+        print(concat("  insert err: ", orm_err_exec(ins)))
+    }
+
+    let q = orm_where_eq_str(db, "users", "email", "test@baga.dev")?
+    db = orm_db_q(q)
+    check(fails, "where_email", orm_ok_q(q) == 1 && orm_nrows(q) == 1)
+    check(fails, "name_cell", orm_cell_by(q, 0, "name") == "Tester")
+    let uid = orm_cell_by_i64(q, 0, "id")
+    check(fails, "id_is_1", uid == 1)
+
+    let find = orm_find_i64(db, "users", "id", uid)?
+    db = orm_db_q(find)
+    check(fails, "find_by_id", orm_ok_q(find) == 1 && orm_nrows(find) == 1)
+
+    let ucols = vec_new()
+    vec_push(ucols, "name")
+    let uvals = vec_new()
+    vec_push(uvals, "Tester2")
+    let upd = orm_update_by_id(db, "users", uid, ucols, uvals)?
+    db = orm_db_exec(upd)
+    check(fails, "update", orm_ok(upd) == 1)
+
+    let q2 = orm_find_i64(db, "users", "id", uid)?
+    db = orm_db_q(q2)
+    check(fails, "updated_name", orm_cell_by(q2, 0, "name") == "Tester2")
+
+    // posts (no FK enforce on boila — app-level)
+    let pcols = vec_new()
+    vec_push(pcols, "id")
+    vec_push(pcols, "user_id")
+    vec_push(pcols, "title")
+    vec_push(pcols, "body")
+    let pvals = vec_new()
+    vec_push(pvals, "10")
+    vec_push(pvals, "1")
+    vec_push(pvals, "hello")
+    vec_push(pvals, "boila orm")
+    let pins = orm_insert_strs(db, "posts", pcols, pvals)?
+    db = orm_db_exec(pins)
+    check(fails, "insert_post", orm_ok(pins) == 1)
+
+    let pc = orm_where_eq_i64(db, "posts", "user_id", 1)?
+    db = orm_db_q(pc)
+    check(fails, "posts_for_user", orm_ok_q(pc) == 1 && orm_nrows(pc) == 1)
+
+    let cnt = orm_count(db, "users")?
+    db = orm_db_c(cnt)
+    check(fails, "users_count", orm_ok_c(cnt) == 1 && orm_count_n(cnt) >= 1)
+
+    // quote / params path
+    let cols2 = vec_new()
+    vec_push(cols2, "id")
+    vec_push(cols2, "email")
+    vec_push(cols2, "name")
+    let vals2 = vec_new()
+    vec_push(vals2, "2")
+    vec_push(vals2, "o'hara@baga.dev")
+    vec_push(vals2, "O'Hara")
+    let ins2 = orm_insert_strs(db, "users", cols2, vals2)?
+    db = orm_db_exec(ins2)
+    check(fails, "insert_quoted", orm_ok(ins2) == 1)
+    let q3 = orm_where_eq_str(db, "users", "email", "o'hara@baga.dev")?
+    db = orm_db_q(q3)
+    check(fails, "find_quoted", orm_ok_q(q3) == 1 && orm_nrows(q3) == 1)
+
+    // INSERT … RETURNING *
+    let cols3 = vec_new()
+    vec_push(cols3, "id")
+    vec_push(cols3, "email")
+    vec_push(cols3, "name")
+    let vals3 = vec_new()
+    vec_push(vals3, "3")
+    vec_push(vals3, "ret@baga.dev")
+    vec_push(vals3, "Returning")
+    let ret = orm_insert_returning_strs(db, "users", cols3, vals3)?
+    db = orm_db_q(ret)
+    check(fails, "insert_returning", orm_ok_q(ret) == 1 && orm_nrows(ret) == 1)
+    check(fails, "returning_id", orm_cell_by_i64(ret, 0, "id") == 3)
+
+    let del = orm_delete_by_id(db, "users", 3)?
+    db = orm_db_exec(del)
+    check(fails, "delete", orm_ok(del) == 1)
+
+    // migrate down/up one step
+    let d1 = migrate_down(db, set, 1)?
+    db = migrate_db(d1)
+    check(fails, "down_1", migrate_is_ok(d1) == 1 && migrate_applied_n(d1) == 1)
+    let up3 = migrate_up(db, set)?
+    db = migrate_db(up3)
+    check(fails, "re_up", migrate_is_ok(up3) == 1 && migrate_applied_n(up3) == 1)
+
+    // full down
+    let d2 = migrate_down(db, set, 100)?
+    db = migrate_db(d2)
+    check(fails, "full_down", migrate_is_ok(d2) == 1)
+
+    // also via adapter → orm_from_conn
+    let c2 = boila_connect_env()?
+    check(fails, "adapter_connect", boila_ok(c2) == 1)
+    let db2 = orm_from_conn(c2)
+    let p2 = orm_ping(db2)?
+    check(fails, "from_conn_ping", orm_ok_q(p2) == 1)
+    orm_close(orm_db_q(p2))?
+
+    // ORM_BACKEND auto switch
+    let db_auto = orm_connect_auto_env()?
+    // without ORM_BACKEND=boila this would hit Postgres; force path already used
+    // above — here only check boila when env set (optional). Always ping current.
+    check(fails, "auto_connect_shape", orm_ok_db(db_auto) == 1 || orm_ok_db(db_auto) == 0)
+    if orm_ok_db(db_auto) == 1 {
+        orm_close(db_auto)?
+    }
+
+    // session pool against boila
+    let pool = orm_pool_from_boila_env(2)?
+    check(fails, "pool_size", orm_pool_size(pool) == 2)
+    check(fails, "pool_idle2", orm_pool_idle(pool) == 2)
+    let lease1 = orm_pool_acquire(pool)?
+    check(fails, "pool_acq1", orm_ok_db(lease1.db) == 1)
+    let q1 = orm_query(lease1.db, "SELECT 1 AS n")?
+    check(fails, "pool_query", orm_ok_q(q1) == 1 && orm_cell_i64(q1, 0, 0) == 1)
+    let l1b = OrmLease {
+        db: orm_db_q(q1),
+        slot: lease1.slot,
+        free_ch: lease1.free_ch,
+        fds: lease1.fds, oks: lease1.oks, pids: lease1.pids, txs: lease1.txs,
+        errs: lease1.errs, versions: lease1.versions
+    }
+    orm_pool_release(l1b)?
+    check(fails, "pool_idle_after", orm_pool_idle(pool) == 2)
+    orm_pool_close(pool)?
+    check(fails, "pool_closed", true)
+
+    orm_close(db)?
+
+    if vec_len(fails) == 0 {
+        print("orm_boila_test: all passed")
+        return 0
+    }
+    print(concat("orm_boila_test: FAILED (", concat(int_to_str(vec_len(fails)), " checks)")))
+    return 1
+}

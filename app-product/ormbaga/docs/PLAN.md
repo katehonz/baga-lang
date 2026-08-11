@@ -21,9 +21,9 @@ Rails/GORM/goose; the public surface and package layout are native to Baga.
     ├── sql/       — pure quote/escape/builders
     └── pool/      — optional session pool
         ↓
-  pgbaga (Simple + Extended Query)
-        ↓
-  PostgreSQL
+  pgbaga (Simple + Extended Query)     boilabaga adapter
+        ↓                                     ↓
+  PostgreSQL :5432                      boilaDB PG wire :6575
 ```
 
 ## Migrations
@@ -64,9 +64,13 @@ Rows stay as pgbaga cells (`orm_cell_by`) — no codegen struct mapping.
   duplicate-version guard, parameterized history writes, `migrate_current`,
   `migrate_status_text` keeping the session; pool release writes back all
   conn fields ✅
+- **P2.2 (2026-08-11):** boilabaga adapter — `orm_from_conn` /
+  `orm_connect_boila_env`, dual-safe `sql_ident` + history DDL,
+  `ormbaga_boila_migrations`, `tests/orm_boila_test.baga` ✅
 
 ## Success criteria
 
 1. `migrate_up` then `migrate_down` is reversible on empty DB.  
 2. Insert/find/update/delete users works through ORM helpers.  
 3. `tests/orm_test.baga` prints `orm_test: all passed`.  
+4. With `serve_pg` up, `tests/orm_boila_test.baga` prints `orm_boila_test: all passed`. 

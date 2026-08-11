@@ -4,6 +4,7 @@
 // always rebind:  db = orm_db_q(r) / orm_db_exec(r).
 
 import "pgbaga/pg.baga"
+import "boilabaga/adapter.baga"
 import "../sql/sql.baga"
 import "std/str/str.baga"
 import "std/os/os.baga"
@@ -18,9 +19,14 @@ fn orm_db_bad(err: str) -> OrmDb {
     return OrmDb { conn: pg_conn_bad(err) }
 }
 
+// Wrap an existing PgConn (Postgres or boilaDB over PG wire).
+fn orm_from_conn(c: PgConn) -> OrmDb {
+    return OrmDb { conn: c }
+}
+
 fn orm_connect(host: str, port: i64, user: str, password: str, database: str) -> OrmDb !Net !IO !Random {
     let c = pg_connect(host, port, user, password, database)?
-    return OrmDb { conn: c }
+    return orm_from_conn(c)
 }
 
 fn orm_close(db: OrmDb) -> i64 !IO !Net {
@@ -520,4 +526,27 @@ fn orm_connect_env() -> OrmDb !Net !IO !Random {
     let password = orm_cfg("PGPASSWORD", "pas+123")?
     let database = orm_cfg("PGDATABASE", "baga_orm")?
     return orm_connect(host, port, user, password, database)?
+}
+
+// ---------- boilaDB (PG wire adapter) ----------
+// Same OrmDb / CRUD / migrate surface; server is boilaDB via boilabaga.
+
+fn orm_connect_boila(host: str, port: i64, user: str, password: str, database: str) -> OrmDb !Net !IO !Random {
+    let c = boila_connect(host, port, user, password, database)?
+    return orm_from_conn(c)
+}
+
+// Defaults: 127.0.0.1:6575 user=boila db=boila (see boilabaga README).
+fn orm_connect_boila_env() -> OrmDb !Net !IO !Random {
+    let c = boila_connect_env()?
+    return orm_from_conn(c)
+}
+
+// Backend switch: ORM_BACKEND=boila|boiladb → boilabaga; else Postgres PG*.
+fn orm_connect_auto_env() -> OrmDb !Net !IO !Random {
+    let be = orm_cfg("ORM_BACKEND", "pg")?
+    if be == "boila" || be == "boiladb" || be == "boilaDB" {
+        return orm_connect_boila_env()?
+    }
+    return orm_connect_env()?
 }

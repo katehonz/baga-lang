@@ -24,16 +24,63 @@ fn sql_null() -> str {
     return "NULL"
 }
 
-// Quote an identifier: "name" with internal " doubled.
+// Safe bare identifier? [A-Za-z_][A-Za-z0-9_]* — works on Postgres and
+// boilaDB (boila has no double-quoted idents; PG folds unquoted to lower).
+fn sql_ident_is_bare(name: str) -> i64 {
+    let n = len(name)
+    if n == 0 {
+        return 0
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_at(name, i)
+        let letter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+        let digit = c >= 48 && c <= 57
+        if i == 0 {
+            if letter == false {
+                return 0
+            }
+        } else {
+            if letter == false && digit == false {
+                return 0
+            }
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// Identifier for SQL builders. Bare when safe (dual Postgres + boila);
+// otherwise double-quoted for Postgres reserved/special names.
 // Rejects empty names (returns empty string — callers should check).
 fn sql_ident(name: str) -> str {
+    if len(name) == 0 {
+        return ""
+    }
+    if sql_ident_is_bare(name) == 1 {
+        return name
+    }
+    let mut out = "\""
+    for i in 0..len(name) {
+        let c = char_at(name, i)
+        if c == 34 {   // "
+            out = concat(out, "\"\"")
+        } else {
+            out = concat(out, chr(c))
+        }
+    }
+    return concat(out, "\"")
+}
+
+// Always double-quote (Postgres-only path when reserved words needed).
+fn sql_ident_q(name: str) -> str {
     if len(name) == 0 {
         return ""
     }
     let mut out = "\""
     for i in 0..len(name) {
         let c = char_at(name, i)
-        if c == 34 {   // "
+        if c == 34 {
             out = concat(out, "\"\"")
         } else {
             out = concat(out, chr(c))
@@ -138,9 +185,10 @@ fn sql_select_where_eq(table: str, col: str, lit: str) -> str {
     )
 }
 
-// SELECT COUNT(*)::bigint AS count FROM "t"
+// SELECT COUNT(*) AS count FROM t
+// Bare COUNT(*) (no ::bigint) so the same SQL works on Postgres and boilaDB.
 fn sql_count(table: str) -> str {
-    return concat("SELECT COUNT(*)::bigint AS count FROM ", sql_ident(table))
+    return concat("SELECT COUNT(*) AS count FROM ", sql_ident(table))
 }
 
 // INSERT INTO "t" ("c1","c2") VALUES (...)

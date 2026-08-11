@@ -39,8 +39,13 @@ ormbaga/
         ▼
   migrate/  ──►  session/orm  ──►  sql/
         │              │
+        │         ┌────┴────┐
+        │         ▼         ▼
+        │      pgbaga   boilabaga
+        │         │         │
+        │         └────┬────┘
         │              ▼
-        │           pgbaga
+        │         PgConn (wire)
         ▼
      (DDL via session)
 ```
@@ -48,7 +53,9 @@ ormbaga/
 | Rule | Meaning |
 |------|---------|
 | `sql/` is pure | no IO, no pgbaga |
-| `session` owns `OrmDb` | only layer that talks to pgbaga |
+| `session` owns `OrmDb` | only layer that talks to drivers |
+| `orm_from_conn` | wrap any `PgConn` (Postgres or boila) |
+| `orm_connect_boila_env` | boilabaga defaults (:6575) |
 | `migrate` uses session | never opens its own sockets |
 | `pool` wraps session | optional; HTTP prefers FMR_WORKERS |
 | Root re-exports stable | `import "ormbaga/orm.baga"` keeps working |

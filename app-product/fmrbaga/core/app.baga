@@ -340,7 +340,13 @@ fn fmr_listen_port() -> i64 !IO {
     return cfg.port
 }
 
+// Open a session. ORM_BACKEND=boila|boiladb → boilabaga (PG wire :6575);
+// otherwise use app DSN (Postgres PG* / fmr_app_db).
 fn fmr_open_db(app: FmrApp) -> OrmDb !Net !IO !Random {
+    let be = fmr_cfg_or("ORM_BACKEND", "pg")?
+    if be == "boila" || be == "boiladb" || be == "boilaDB" {
+        return orm_connect_boila_env()?
+    }
     return orm_connect(app.pg_host, app.pg_port, app.pg_user, app.pg_password, app.pg_database)?
 }
 

@@ -11,12 +11,23 @@ export FMR_WORKERS="${FMR_WORKERS:-4}"
 export FMR_LOG="${FMR_LOG:-1}"
 export FMR_CORS="${FMR_CORS:-*}"
 export FMR_JWT_SECRET="${FMR_JWT_SECRET:-dev-secret}"
+export ORM_BACKEND="${ORM_BACKEND:-pg}"
 export PGHOST="${PGHOST:-127.0.0.1}"
 export PGPORT="${PGPORT:-5432}"
 export PGUSER="${PGUSER:-bagatest}"
 export PGPASSWORD="${PGPASSWORD:-pas+123}"
 export PGDATABASE="${PGDATABASE:-baga_orm}"
+# boilaDB defaults (used when ORM_BACKEND=boila); do not override PGPORT
+export BOILA_PGHOST="${BOILA_PGHOST:-127.0.0.1}"
+export BOILA_PGPORT="${BOILA_PGPORT:-6575}"
+export BOILA_PGUSER="${BOILA_PGUSER:-boila}"
+export BOILA_PGDATABASE="${BOILA_PGDATABASE:-boila}"
 
 echo "fmr-run → $APP"
-echo "  PORT=$PORT FMR_WORKERS=$FMR_WORKERS PGUSER=$PGUSER PGDATABASE=$PGDATABASE"
+echo "  PORT=$PORT FMR_WORKERS=$FMR_WORKERS ORM_BACKEND=$ORM_BACKEND"
+if [[ "$ORM_BACKEND" == "boila" || "$ORM_BACKEND" == "boiladb" || "$ORM_BACKEND" == "boilaDB" ]]; then
+  echo "  boila $BOILA_PGHOST:$BOILA_PGPORT user=$BOILA_PGUSER db=$BOILA_PGDATABASE"
+else
+  echo "  PGUSER=$PGUSER PGDATABASE=$PGDATABASE"
+fi
 exec ./baga -I . -I app-product "$APP"

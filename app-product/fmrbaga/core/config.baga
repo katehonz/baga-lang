@@ -36,7 +36,17 @@ fn fmr_cfg_flag(name: str) -> i64 !IO {
     return 0
 }
 
+// True when ORM_BACKEND targets boilaDB (PG wire via boilabaga).
+fn fmr_backend_is_boila() -> i64 !IO {
+    let be = fmr_cfg_or("ORM_BACKEND", "pg")?
+    if be == "boila" || be == "boiladb" || be == "boilaDB" {
+        return 1
+    }
+    return 0
+}
+
 // Load config from environment. Defaults match local bagatest/baga_orm.
+// With ORM_BACKEND=boila, DSN defaults follow boilabaga (host/port/user/db).
 fn fmr_config_load() -> FmrConfig !IO {
     // Empty FMR_WORKERS → 4 (fixed pool). Explicit 0 → go_bg per connection.
     let raw_w = env("FMR_WORKERS")?
@@ -58,6 +68,49 @@ fn fmr_config_load() -> FmrConfig !IO {
     if j2 != "" {
         secret = j2
     }
+    let mut host = fmr_cfg_or("PGHOST", "127.0.0.1")?
+    let mut port = parse_int(fmr_cfg_or("PGPORT", "5432")?)
+    let mut user = fmr_cfg_or("PGUSER", "bagatest")?
+    let mut password = fmr_cfg_or("PGPASSWORD", "pas+123")?
+    let mut database = fmr_cfg_or("PGDATABASE", "baga_orm")?
+    if fmr_backend_is_boila()? == 1 {
+        // BOILA_* preferred; never inherit PGPORT=5432 as boila listen port.
+        let bh = env("BOILA_PGHOST")?
+        if bh != "" {
+            host = bh
+        } else {
+            host = fmr_cfg_or("PGHOST", "127.0.0.1")?
+        }
+        let bp = env("BOILA_PGPORT")?
+        if bp != "" {
+            port = parse_int(bp)
+        } else {
+            port = 6575
+        }
+        let bu = env("BOILA_PGUSER")?
+        if bu != "" {
+            user = bu
+        } else {
+            user = fmr_cfg_or("PGUSER", "boila")?
+        }
+        let tok = env("BOILA_TOKEN")?
+        if tok != "" {
+            password = tok
+        } else {
+            let bpw = env("BOILA_PGPASSWORD")?
+            if bpw != "" {
+                password = bpw
+            } else {
+                password = fmr_cfg_or("PGPASSWORD", "")?
+            }
+        }
+        let bd = env("BOILA_PGDATABASE")?
+        if bd != "" {
+            database = bd
+        } else {
+            database = fmr_cfg_or("PGDATABASE", "boila")?
+        }
+    }
     return FmrConfig {
         port: parse_int(fmr_cfg_or("PORT", "8080")?),
         workers: workers,
@@ -65,11 +118,11 @@ fn fmr_config_load() -> FmrConfig !IO {
         jwt_secret: secret,
         cors_origin: fmr_cfg_or("FMR_CORS", "")?,
         log_requests: fmr_cfg_flag("FMR_LOG")?,
-        pg_host: fmr_cfg_or("PGHOST", "127.0.0.1")?,
-        pg_port: parse_int(fmr_cfg_or("PGPORT", "5432")?),
-        pg_user: fmr_cfg_or("PGUSER", "bagatest")?,
-        pg_password: fmr_cfg_or("PGPASSWORD", "pas+123")?,
-        pg_database: fmr_cfg_or("PGDATABASE", "baga_orm")?,
+        pg_host: host,
+        pg_port: port,
+        pg_user: user,
+        pg_password: password,
+        pg_database: database,
         title: fmr_cfg_or("FMR_TITLE", "fmrbaga-api")?,
         version: fmr_cfg_or("FMR_VERSION", "1.0.0")?
     }

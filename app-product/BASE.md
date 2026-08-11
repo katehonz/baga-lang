@@ -17,11 +17,13 @@ Long-horizon storage goal: a **RocksDB-like** engine (`rocksbaga`; was `lsmbaga`
 httpdbaga  jwtbaga  ormbaga (+ pool)
                     (table ORM + migrations)
                          │
-                         ▼
-                      pgbaga
-                         │
-                         ▼
-                      Postgres
+              ┌──────────┴──────────┐
+              ▼                     ▼
+           pgbaga              boilabaga
+              │               (boila adapter)
+              ▼                     │
+           Postgres                 ▼
+                              pgbaga → boilaDB :6575
 ```
 
 | Layer | Path | Role |
@@ -32,6 +34,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | Auth | `jwtbaga` | HS256 |
 | ORM | `ormbaga` | migrations, CRUD, pool, prepare |
 | Driver | `pgbaga` | SCRAM, Simple + Extended Query |
+| Adapter | `boilabaga` | connect + dialect defaults for boilaDB PG wire |
 
 **Rules**
 
@@ -47,7 +50,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 ## Full package list (`app-product/`)
 
-**42 packages** (directories with `sandak.toml`). Alphabetical.
+**43+ packages** (directories with `sandak.toml`; plus **boilaDB** server). Alphabetical.
 
 ### Web / API stack
 
@@ -59,6 +62,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **oauthbaga** | OAuth2 / OIDC-style flows, proxy, session cookie demo |
 | **ormbaga** | Universal table ORM + versioned migrations + pool (no app domain) |
 | **pgbaga** | Native PostgreSQL wire client (SCRAM-SHA-256, Simple + Extended Query) |
+| **boilabaga** | Client adapter to boilaDB over PG wire (defaults :6575 + BoilaSQL dialect) |
 | **querybaga** | URL query / form parse and encode |
 | **wsbaga** | WebSocket RFC 6455 — handshake, frames, echo server/client |
 | **chatbaga** | Multi-room WebSocket chat product (on wsbaga + poll) |
@@ -129,13 +133,14 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 ### Flat inventory (names only)
 
 ```
-bagadecimal  bufbaga     chatbaga    cloudbaga   csvbaga     ctxbaga
-flagbaga     fmrbaga     globbaga    grebaga     httpdbaga   jsonrpcbaga
-jwtbaga      kvbaga      logbaga     lsmbaga†    mdbaga      mdtbaga
-metbaga      oauthbaga   officebaga  ormbaga     otelbaga    pathbaga
-pbbaga       pdfbaga     pgbaga      querybaga   queuebaga   raftbaga
-relbaga      reportbaga  rocksbaga   statusbaga  testbaga    tplbaga
-txnbaga      uuidbaga    wasmtimebaga wsbaga     xmlbaga     zipbaga
+bagadecimal  boilabaga   bufbaga     chatbaga    cloudbaga   csvbaga
+ctxbaga      flagbaga    fmrbaga     globbaga    grebaga     httpdbaga
+jsonrpcbaga  jwtbaga     kvbaga      logbaga     lsmbaga†    mdbaga
+mdtbaga      metbaga     oauthbaga   officebaga  ormbaga     otelbaga
+pathbaga     pbbaga      pdfbaga     pgbaga      querybaga   queuebaga
+raftbaga     relbaga     reportbaga  rocksbaga   statusbaga  testbaga
+tplbaga      txnbaga     uuidbaga    wasmtimebaga wsbaga     xmlbaga
+zipbaga
 ```
 
-† `lsmbaga` — deprecated alias for `rocksbaga`.
+† `lsmbaga` — deprecated alias for `rocksbaga`. Also: **boilaDB** (server).

@@ -1,7 +1,8 @@
 # ormbaga
 
 **Table ORM + versioned migrations** for Baga, on top of
-[`../pgbaga`](../pgbaga/README.md).
+[`../pgbaga`](../pgbaga/README.md). Same session can target **PostgreSQL** or
+**boilaDB** (PG wire) via [`../boilabaga`](../boilabaga/README.md).
 
 Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
@@ -10,9 +11,9 @@ Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 | Path | Role |
 |------|------|
 | `sql/sql.baga` | pure quote/escape/SQL builders + `$1` placeholders |
-| `session/orm.baga` | `OrmDb` session + table CRUD over pgbaga |
+| `session/orm.baga` | `OrmDb` session + table CRUD over pgbaga / boilabaga |
 | `migrate/migrate.baga` | migration registry + `up` / `down` / `status` |
-| `migrate/schema.baga` | **sample only** migrations for demos/tests — apps own their schema |
+| `migrate/schema.baga` | **sample only** migrations (Postgres + boila) — apps own schema |
 | `pool/pool.baga` | shared session pool (sync/batch) |
 | `examples/demo.baga` | migrate + CRUD demo |
 
@@ -52,6 +53,11 @@ versions are fetched once per `migrate_up` and checked in memory.
 
 ```baga
 let db = orm_connect_env()?   // PG* env, default baga_orm / bagatest
+// or boilaDB (PG wire, boilabaga defaults :6575):
+// let db = orm_connect_boila_env()?
+// or ORM_BACKEND=boila|pg:
+// let db = orm_connect_auto_env()?
+// or wrap any PgConn:  let db = orm_from_conn(pg_or_boila_conn)
 
 let cols = vec_new(); vec_push(cols, "email"); vec_push(cols, "name")
 let vals = vec_new(); vec_push(vals, "a@b.c"); vec_push(vals, "Ada")
@@ -86,11 +92,28 @@ psql -h 127.0.0.1 -U postgres -d baga_orm -c "GRANT ALL ON SCHEMA public TO baga
 
 Defaults: `PGHOST=127.0.0.1` `PGUSER=bagatest` `PGPASSWORD=pas+123` `PGDATABASE=baga_orm`.
 
+## Setup (boilaDB)
+
+```bash
+# terminal 1
+./baga -I . -I app-product app-product/boilaDB/tools/serve_pg.baga
+# terminal 2 — ORM over PG wire
+./baga -I . -I app-product tests/orm_boila_test.baga
+./baga -I . -I app-product app-product/ormbaga/examples/demo_boila.baga
+```
+
+Use `ormbaga_boila_migrations()` (BoilaSQL: explicit `id`, no SERIAL/FK) or
+your own set that stays inside the boila subset. See boilabaga dialect notes.
+
+Env: `ORM_BACKEND=boila` makes `orm_connect_auto_env` / `orm_pool_from_auto_env`
+target boilaDB; default is Postgres (`PG*`).
+
 ## Run
 
 ```bash
 ./baga app-product/ormbaga/demo.baga
-./baga tests/orm_test.baga
+./baga tests/orm_test.baga              # real Postgres
+./baga tests/orm_boila_test.baga        # boilaDB PG wire
 ```
 
 ## Parameterized queries (default)
@@ -104,7 +127,9 @@ Legacy `orm_*_lit` / `sql_lit` paths remain for migrations and trusted SQL.
 ## Pool + prepared statements
 
 ```baga
-let pool = orm_pool_from_env(4)?
+let pool = orm_pool_from_env(4)?            // Postgres
+// let pool = orm_pool_from_boila_env(4)?   // boilaDB
+// let pool = orm_pool_from_auto_env(4)?    // ORM_BACKEND=
 let lease = orm_pool_acquire(pool)?
 // ... use lease.db ...
 orm_pool_release(lease)?
@@ -122,10 +147,12 @@ HTTP servers should prefer **`FMR_WORKERS=N`** (one DB per worker).
 - No model codegen — rows are dynamic cells (`orm_cell_by`).
 - No associations API yet (`has_many` is a `where` on FK).
 - No auto-migrate — prefer explicit versioned migrations.
+- boilaDB has no SERIAL/FK/DEFAULT — use `ormbaga_boila_migrations` or own subset.
 
 ## Path to framework
 
 ```
 fmrbaga routes → ormbaga session → pgbaga → PostgreSQL
-                     ↑ migrations at boot
+                     │               ↑ migrations at boot
+                     └→ boilabaga → pgbaga → boilaDB :6575
 ```

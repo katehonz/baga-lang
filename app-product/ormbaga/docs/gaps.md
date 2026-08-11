@@ -74,3 +74,14 @@ through Simple Query unchanged. `\n` escapes remain available.
 - `orm_all_page` / `orm_where_eq_*_page` + `sql_page` / `sql_offset`.
 - `orm_ping` for readiness checks.
 - Package layered under `sql/`, `session/`, `migrate/`, `pool/`.
+
+## G8 — boilaDB dialect vs Postgres sample schema
+
+**Symptom.** Full Postgres sample migrations (`BIGSERIAL`, `REFERENCES`,
+`DEFAULT NOW()`, double-quoted idents) fail on boilaDB.
+
+**Workaround.** `orm_connect_boila_env` + `ormbaga_boila_migrations()`;
+`sql_ident` emits bare names when safe; history DDL is dual-backend.
+Apps that need FK/SERIAL stay on real Postgres.
+
+**Verdict.** Expected; boilabaga documents the subset.

@@ -5,7 +5,8 @@
 
 import "migrate.baga"
 
-// Sample registry (users + posts). Alias kept for tests/demo.
+// Sample registry (users + posts) for real PostgreSQL.
+// Alias kept for tests/demo.
 fn ormbaga_sample_migrations() -> MigrationSet {
     let mut set = migrate_set_new()
     set = migrate_add(
@@ -32,7 +33,35 @@ fn ormbaga_sample_migrations() -> MigrationSet {
     return set
 }
 
-// Back-compat alias for demos/tests.
+// Back-compat alias for demos/tests (Postgres).
 fn ormbaga_migrations() -> MigrationSet {
     return ormbaga_sample_migrations()
+}
+
+// BoilaSQL sample: no SERIAL/DEFAULT/NOT NULL/FK; explicit PK; DROP INDEX ON t.
+// App inserts must supply id (no autoincrement). Used by tests/orm_boila_test.
+fn ormbaga_boila_migrations() -> MigrationSet {
+    let mut set = migrate_set_new()
+    set = migrate_add(
+        set,
+        20260811001,
+        "create_users",
+        "CREATE TABLE IF NOT EXISTS users (id BIGINT, email TEXT, name TEXT, created_at TIMESTAMPTZ, PRIMARY KEY (id))",
+        "DROP TABLE IF EXISTS users"
+    )
+    set = migrate_add(
+        set,
+        20260811002,
+        "create_posts",
+        "CREATE TABLE IF NOT EXISTS posts (id BIGINT, user_id BIGINT, title TEXT, body TEXT, created_at TIMESTAMPTZ, PRIMARY KEY (id))",
+        "DROP TABLE IF EXISTS posts"
+    )
+    set = migrate_add(
+        set,
+        20260811003,
+        "index_posts_user_id",
+        "CREATE INDEX index_posts_on_user_id ON posts (user_id)",
+        "DROP INDEX IF EXISTS index_posts_on_user_id ON posts"
+    )
+    return set
 }

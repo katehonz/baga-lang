@@ -9,6 +9,7 @@
 
 import "../session/orm.baga"
 import "pgbaga/pg.baga"
+import "boilabaga/adapter.baga"
 import "std/str/str.baga"
 
 struct OrmPool {
@@ -98,6 +99,25 @@ fn orm_pool_from_env(size: i64) -> OrmPool !Net !IO !Random !Par {
     return orm_pool_new(host, port, user, password, database, size)?
 }
 
+// Pool of boilaDB sessions (PG wire defaults via boilabaga).
+fn orm_pool_from_boila_env(size: i64) -> OrmPool !Net !IO !Random !Par {
+    let host = boila_host()?
+    let port = boila_port()?
+    let user = boila_user()?
+    let password = boila_password()?
+    let database = boila_database()?
+    return orm_pool_new(host, port, user, password, database, size)?
+}
+
+// ORM_BACKEND=boila|boiladb → boila pool; else Postgres PG* pool.
+fn orm_pool_from_auto_env(size: i64) -> OrmPool !Net !IO !Random !Par {
+    let be = orm_cfg("ORM_BACKEND", "pg")?
+    if be == "boila" || be == "boiladb" || be == "boilaDB" {
+        return orm_pool_from_boila_env(size)?
+    }
+    return orm_pool_from_env(size)?
+}
+
 fn orm_pool_conn_at(pool: OrmPool, slot: i64) -> PgConn {
     // Reader is rebuilt on acquire: parallel Vecs cannot hold the PgReader
     // struct, and release leaves the socket drained at ReadyForQuery, so no
@@ -120,7 +140,7 @@ fn orm_pool_acquire(pool: OrmPool) -> OrmLease !Par {
     let slot = chan_recv(pool.free_ch)
     let c = orm_pool_conn_at(pool, slot)
     return OrmLease {
-        db: OrmDb { conn: c },
+        db: orm_from_conn(c),
         slot: slot,
         free_ch: pool.free_ch,
         fds: pool.fds,
@@ -156,7 +176,7 @@ fn orm_pool_try_acquire(pool: OrmPool) -> OrmTryLease !Par {
     return OrmTryLease {
         ok: 1,
         lease: OrmLease {
-            db: OrmDb { conn: c },
+            db: orm_from_conn(c),
             slot: slot,
             free_ch: pool.free_ch,
             fds: pool.fds, oks: pool.oks, pids: pool.pids, txs: pool.txs,
