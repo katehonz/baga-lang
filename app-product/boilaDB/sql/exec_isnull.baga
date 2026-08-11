@@ -14,6 +14,10 @@ import "std/bytes/bytes.baga"
 
 fn boila_fetch_isnull(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaFetch !IO !Time !Par {
     let rows: Vec<Vec<BoilaVal>> = vec_new()
+    let need = boila_fetch_need(sel)
+    let oidxs: Vec<i64> = vec_new()
+    let topn = boila_fetch_topn(sel, t, oidxs)
+    let odesc = sel.ord_desc
     let cix = boila_col_idx(t, sel.isnull_col)
     if cix < 0 {
         return boila_fetch_fail(s, txn, concat("колона '", concat(sel.isnull_col, "' не съществува")), "42703")
@@ -27,12 +31,16 @@ fn boila_fetch_isnull(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel
             boila_scan_buf_eq(txn, t, cix, nv, lk.pks)
             let mut li: i64 = 0
             while li < vec_len(lk.pks) {
-                let g = boila_txn_get(s, txn, t.id, vec_get(lk.pks, li))?
-                s = g.s
-                if g.found == 1 {
-                    vec_push(rows, boila_row_dec(g.row))
+                if need > 0 && vec_len(rows) >= need {
+                    li = vec_len(lk.pks)
+                } else {
+                    let g = boila_txn_get(s, txn, t.id, vec_get(lk.pks, li))?
+                    s = g.s
+                    if g.found == 1 {
+                        boila_fetch_emit(rows, boila_row_dec(g.row), topn, oidxs, odesc)
+                    }
+                    li = li + 1
                 }
-                li = li + 1
             }
             return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
         }
@@ -41,21 +49,25 @@ fn boila_fetch_isnull(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel
     s = ks.s
     let mut ki: i64 = 0
     while ki < vec_len(ks.pks) {
-        let g = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
-        s = g.s
-        if g.found == 1 {
-            let row = boila_row_dec(g.row)
-            if cix < vec_len(row) {
-                let isn = vec_get(row, cix).tag == boila_v_null()
-                if sel.isnull_mode == 1 && isn {
-                    vec_push(rows, row)
-                }
-                if sel.isnull_mode == 2 && isn == false {
-                    vec_push(rows, row)
+        if need > 0 && vec_len(rows) >= need {
+            ki = vec_len(ks.pks)
+        } else {
+            let g = boila_txn_get(s, txn, t.id, vec_get(ks.pks, ki))?
+            s = g.s
+            if g.found == 1 {
+                let row = boila_row_dec(g.row)
+                if cix < vec_len(row) {
+                    let isn = vec_get(row, cix).tag == boila_v_null()
+                    if sel.isnull_mode == 1 && isn {
+                        boila_fetch_emit(rows, row, topn, oidxs, odesc)
+                    }
+                    if sel.isnull_mode == 2 && isn == false {
+                        boila_fetch_emit(rows, row, topn, oidxs, odesc)
+                    }
                 }
             }
+            ki = ki + 1
         }
-        ki = ki + 1
     }
     return BoilaFetch { s: s, txn: txn, ok: 1, err: "", state: "", rows: rows }
 }

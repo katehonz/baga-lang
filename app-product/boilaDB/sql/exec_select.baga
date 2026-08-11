@@ -242,60 +242,72 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
         vec_push(xnames, vec_get(cols, xn).name)
         xn = xn + 1
     }
+    // Q-distinct-limit: unique during project; stop at offset+limit when
+    // LIMIT without order_after (source ORDER already applied if any).
+    let dneed = boila_distinct_need(sel, order_after)
+    let seen: Vec<bytes> = vec_new()
     let eguc: Map<str, str> = map_new()
     let mut r: i64 = 0
     while r < vec_len(rows) {
-        let src = vec_get(rows, r)
-        let out: Vec<BoilaVal> = vec_new()
-        let mut j: i64 = 0
-        while j < vec_len(proj) {
-            let sit = vec_get(sitems, j)
-            let mut v = boila_val_null()
-            if vec_len(sit.xtoks) > 0 {
-                let fx = boila_expr_eval(xnames, sit.xtoks, src, "", eguc)?
-                if fx.ok == 0 {
-                    return boila_exec_fail(s, txn, fx.err, fx.state)
-                }
-                v = fx.val
-            } else {
-                if sit.sfn != "" {
-                    let args: Vec<BoilaVal> = vec_new()
-                    let tags: Vec<i64> = vec_new()
-                    let mut a: i64 = 0
-                    while a < vec_len(sit.sfn_cols) {
-                        let cn = vec_get(sit.sfn_cols, a)
-                        let mut av = vec_get(sit.sfn_vals, a)
-                        if cn != "" {
-                            let ax = boila_col_idx_of(cols, cn)
-                            if ax >= 0 && ax < vec_len(src) {
-                                av = vec_get(src, ax)
-                            }
-                        }
-                        vec_push(args, av)
-                        vec_push(tags, av.tag)
-                        a = a + 1
+        if dneed > 0 && vec_len(res.rows) >= dneed {
+            r = vec_len(rows)
+        } else {
+            let src = vec_get(rows, r)
+            let out: Vec<BoilaVal> = vec_new()
+            let mut j: i64 = 0
+            while j < vec_len(proj) {
+                let sit = vec_get(sitems, j)
+                let mut v = boila_val_null()
+                if vec_len(sit.xtoks) > 0 {
+                    let fx = boila_expr_eval(xnames, sit.xtoks, src, "", eguc)?
+                    if fx.ok == 0 {
+                        return boila_exec_fail(s, txn, fx.err, fx.state)
                     }
-                    let fr = boila_sfn_call(sit.sfn, args, tags)
-                    if fr.ok == 0 {
-                        return boila_exec_fail(s, txn, fr.err, fr.state)
-                    }
-                    v = fr.val
+                    v = fx.val
                 } else {
-                    let ix = vec_get(proj, j)
-                    if ix >= 0 && ix < vec_len(src) {
-                        v = vec_get(src, ix)
-                    }
-                    let bv = vec_get(bivs, j)
-                    if bv > 0 {
-                        v = boila_tb_apply(v, bv)
+                    if sit.sfn != "" {
+                        let args: Vec<BoilaVal> = vec_new()
+                        let tags: Vec<i64> = vec_new()
+                        let mut a: i64 = 0
+                        while a < vec_len(sit.sfn_cols) {
+                            let cn = vec_get(sit.sfn_cols, a)
+                            let mut av = vec_get(sit.sfn_vals, a)
+                            if cn != "" {
+                                let ax = boila_col_idx_of(cols, cn)
+                                if ax >= 0 && ax < vec_len(src) {
+                                    av = vec_get(src, ax)
+                                }
+                            }
+                            vec_push(args, av)
+                            vec_push(tags, av.tag)
+                            a = a + 1
+                        }
+                        let fr = boila_sfn_call(sit.sfn, args, tags)
+                        if fr.ok == 0 {
+                            return boila_exec_fail(s, txn, fr.err, fr.state)
+                        }
+                        v = fr.val
+                    } else {
+                        let ix = vec_get(proj, j)
+                        if ix >= 0 && ix < vec_len(src) {
+                            v = vec_get(src, ix)
+                        }
+                        let bv = vec_get(bivs, j)
+                        if bv > 0 {
+                            v = boila_tb_apply(v, bv)
+                        }
                     }
                 }
+                vec_push(out, v)
+                j = j + 1
             }
-            vec_push(out, v)
-            j = j + 1
+            if sel.distinct == 1 {
+                boila_distinct_offer(res.rows, seen, out)
+            } else {
+                vec_push(res.rows, out)
+            }
+            r = r + 1
         }
-        vec_push(res.rows, out)
-        r = r + 1
     }
     if order_after == 1 {
         let idxs: Vec<i64> = vec_new()
@@ -311,23 +323,9 @@ fn boila_exec_select(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel)
         }
         boila_sort_rows(res.rows, idxs, sel.ord_desc)
     }
-    if sel.distinct == 1 {
-        res.rows = boila_distinct_rows(res.rows)
-    }
+    // distinct already applied during project (Q-distinct-limit)
     res.rows = boila_apply_offlim(res.rows, sel.offset, sel.limit)
     return boila_exec_ok_select(s, txn, res)
-}
-
-// Име на колона в изходен списък (за ORDER BY след агрегация).
-fn boila_col_name_idx(names: Vec<str>, name: str) -> i64 {
-    let mut i: i64 = 0
-    while i < vec_len(names) {
-        if vec_get(names, i) == name {
-            return i
-        }
-        i = i + 1
-    }
-    return 0 - 1
 }
 
 // Q-sfn: dispatch to the dual scalar-fn machinery (shared semantics).

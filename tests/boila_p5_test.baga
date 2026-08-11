@@ -90,6 +90,29 @@ fn main() -> i64 !IO !Time !Par {
     srv = o3.srv
     check(fails, "offset", o3.ok == 1 && vec_len(o3.res.rows) == 2 && cell(vec_get(o3.res.rows, 0), 0) == "3" && cell(vec_get(o3.res.rows, 1), 0) == "4")
 
+    // --- Q-fetch-limit: LIMIT without ORDER BY (early-stop GET) ---
+    let fl = exec(srv, "SELECT name FROM emp LIMIT 2")?
+    srv = fl.srv
+    check(fails, "fetch_limit", fl.ok == 1 && vec_len(fl.res.rows) == 2)
+    let flo = exec(srv, "SELECT name FROM emp LIMIT 1 OFFSET 1")?
+    srv = flo.srv
+    check(fails, "fetch_limit_off", flo.ok == 1 && vec_len(flo.res.rows) == 1)
+    // structural WHERE + LIMIT still early-stops after enough kept
+    let flw = exec(srv, "SELECT name FROM emp WHERE id >= 1 LIMIT 2")?
+    srv = flw.srv
+    check(fails, "fetch_limit_where", flw.ok == 1 && vec_len(flw.res.rows) == 2)
+
+    // --- Q-fetch-topn: ORDER BY + LIMIT bounded buffer (not full N sort) ---
+    let ft = exec(srv, "SELECT name FROM emp ORDER BY salary DESC LIMIT 2")?
+    srv = ft.srv
+    check(fails, "fetch_topn", ft.ok == 1 && vec_len(ft.res.rows) == 2 && cell(vec_get(ft.res.rows, 0), 0) == "boris" && cell(vec_get(ft.res.rows, 1), 0) == "evgeni")
+    let fto = exec(srv, "SELECT name FROM emp ORDER BY salary ASC LIMIT 1 OFFSET 1")?
+    srv = fto.srv
+    check(fails, "fetch_topn_off", fto.ok == 1 && vec_len(fto.res.rows) == 1 && cell(vec_get(fto.res.rows, 0), 0) == "dana")
+    let ftm = exec(srv, "SELECT name FROM emp ORDER BY dept ASC, salary DESC LIMIT 2")?
+    srv = ftm.srv
+    check(fails, "fetch_topn_multi", ftm.ok == 1 && vec_len(ftm.res.rows) == 2 && cell(vec_get(ftm.res.rows, 0), 0) == "boris" && cell(vec_get(ftm.res.rows, 1), 0) == "evgeni")
+
     // --- NULLS FIRST / LAST ---
     let n0 = exec(srv, "CREATE TABLE nu (id BIGINT, v BIGINT, PRIMARY KEY (id))")?
     srv = n0.srv
@@ -110,6 +133,17 @@ fn main() -> i64 !IO !Time !Par {
     let d1 = exec(srv, "SELECT DISTINCT dept FROM emp ORDER BY dept")?
     srv = d1.srv
     check(fails, "distinct", d1.ok == 1 && vec_len(d1.res.rows) == 2 && cell(vec_get(d1.res.rows, 0), 0) == "eng" && cell(vec_get(d1.res.rows, 1), 0) == "hr")
+    // Q-distinct-limit: early-stop after enough unique (no ORDER)
+    let dl = exec(srv, "SELECT DISTINCT dept FROM emp LIMIT 1")?
+    srv = dl.srv
+    check(fails, "distinct_limit", dl.ok == 1 && vec_len(dl.res.rows) == 1)
+    let dlo = exec(srv, "SELECT DISTINCT dept FROM emp LIMIT 1 OFFSET 1")?
+    srv = dlo.srv
+    check(fails, "distinct_limit_off", dlo.ok == 1 && vec_len(dlo.res.rows) == 1)
+    // ORDER BY + DISTINCT + LIMIT still correct (no early-stop before sort key)
+    let dlo2 = exec(srv, "SELECT DISTINCT dept FROM emp ORDER BY dept DESC LIMIT 1")?
+    srv = dlo2.srv
+    check(fails, "distinct_order_lim", dlo2.ok == 1 && vec_len(dlo2.res.rows) == 1 && cell(vec_get(dlo2.res.rows, 0), 0) == "hr")
 
     // --- агрегати без GROUP BY ---
     let a1 = exec(srv, "SELECT count(*), sum(salary), avg(salary), min(salary), max(salary) FROM emp")?

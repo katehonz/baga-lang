@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### boilaDB — Q-distinct-limit: DISTINCT during project + LIMIT stop
+- Projection keeps uniques via `boila_distinct_offer` (no full project
+  then `distinct_rows`).
+- `DISTINCT … LIMIT n` without order_after stops after `offset+n` uniques.
+- Tests: `distinct_limit`, `distinct_limit_off`, `distinct_order_lim`.
+
+### boilaDB — Q-fetch-topn: ORDER BY + LIMIT bounded fetch
+- Plain `SELECT … ORDER BY col … LIMIT n` keeps only `offset+n` best
+  source rows via `boila_topn_offer` during GET (no full-table sort).
+- Same path for IS [NOT] NULL fetch; ORDER BY alias/expr still order_after.
+- Tests: `fetch_topn`, `fetch_topn_off`, `fetch_topn_multi`.
+
+### boilaDB — Q-fetch-limit: early-stop plain SELECT LIMIT
+- `SELECT … LIMIT n` without ORDER BY / DISTINCT / expression WHERE stops
+  GETs after `offset+n` kept rows (`boila_fetch_need` in fetch + isnull).
+- `boila_fetch_pks` unchanged (JOIN outer / kNN cands need the full set).
+- Tests: `fetch_limit`, `fetch_limit_off`, `fetch_limit_where` in
+  `boila_p5_test`.
+
 ### boilaDB — Q-knn-pref-pks: lighter kNN pre-filter cands
 - PK-range pre-filter builds cand pks via `boila_fetch_pks` (no row Vec).
 - `hnsw_brute_cands` scores into a size-k top window (not full score lists).

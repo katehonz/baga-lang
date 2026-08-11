@@ -226,6 +226,27 @@ T = транзакции, W = wire protocol, F = FTS.
   pre-filter uses `boila_fetch_pks`; `hnsw_brute_cands` keeps a size-k
   distance window (not O(|cands|) score arrays). Residual: cand pk
   list for large ranges still O(range).
+- **Q-fetch-limit — (FIXED) plain SELECT LIMIT early-stop.**
+  `boila_fetch_need` + GET stop after `offset+limit` kept rows when
+  LIMIT without ORDER BY / DISTINCT / xw (same gate as Q-join-limit).
+  Covers FTS, secondary eq/range, PK range, full scan, IS [NOT] NULL.
+  Residual: still lists all live keys first (`boila_txn_keys`).
+  Tests: `fetch_limit`, `fetch_limit_off`, `fetch_limit_where`.
+- **Q-fetch-topn — (FIXED) ORDER BY + LIMIT top-N buffer.**
+  When ORDER BY source cols + LIMIT (no DISTINCT/xw): keep at most
+  `offset+limit` best rows via `boila_topn_offer` during fetch/isnull
+  (no materialize of full table then sort). Output still offlim for
+  OFFSET. Residual: ORDER BY alias/expr still full fetch + order_after;
+  key list still O(table).
+  Tests: `fetch_topn`, `fetch_topn_off`, `fetch_topn_multi`.
+- **Q-distinct-limit — (FIXED) DISTINCT during project + LIMIT stop.**
+  Projection folds uniques via `boila_distinct_offer` (no full projected
+  set then `distinct_rows`). With LIMIT and no order_after, stops after
+  `offset+limit` unique rows. Source ORDER BY already applied → early-stop
+  still correct. Residual: source fetch still full before project;
+  order_after (alias ORDER BY) collects all uniques before sort;
+  agg path still post-distinct.
+  Tests: `distinct_limit`, `distinct_limit_off`, `distinct_order_lim`.
 - **K3g — (FIXED) secondary range exclusive bounds.** `lo_excl`/`hi_excl`
   on SELECT secondary path. DML WHERE still inclusive-only.
 - **K3h — (FIXED) sorted prefix scan + ix range seek.** Prefix rebuild
