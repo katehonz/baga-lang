@@ -53,6 +53,23 @@ fn ret_param(p: str) -> str {
     return p
 }
 
+// RC1.4: handle escape — картата/низът/буферът трябва да живеят след
+// scope exit на собственика (map_h/str_h/bytes_h retain-ват).
+fn map_h_escape() -> i64 {
+    let m: Map<i64, i64> = map_new()
+    map_set(m, 0, 42)
+    map_set(m, 1, 99)
+    return map_h(m)
+}
+
+fn str_h_escape() -> i64 {
+    return str_h(concat("handle", "-str"))
+}
+
+fn bytes_h_escape() -> i64 {
+    return bytes_h(bytes_of_str("handle-b"))
+}
+
 fn main() -> i64 !IO {
     // 1. aliasing let x = y / x = y през scope граница
     check("alias_let", alias_let() == "alias-ok")
@@ -174,6 +191,16 @@ fn main() -> i64 !IO {
     }
     check("persist_survives_rewind", p == "persist-rc")
     check("persist_vec_survives", vec_get(pv, 0) == "shared-lit" && vec_get(pv, 1) == "shared-heap")
+
+    // 12. RC1.4: map_h/str_h/bytes_h са immortal escape — картата/низът/
+    //     буферът оцеляват след scope release на източника (handle-ът
+    //     държи retain; иначе boila_open_mt → shard_lock FPE върху nb=0).
+    let mh = map_h_escape()
+    let hm: Map<i64, i64> = h_map(mh)
+    check("map_h_survives", map_get(hm, 0) == 42 && map_get(hm, 1) == 99)
+    check("str_h_survives", h_str(str_h_escape()) == "handle-str")
+    let bh = bytes_h_escape()
+    check("bytes_h_survives", bytes_len(h_bytes(bh)) == 8 && bytes_at(h_bytes(bh), 0) == 104)
 
     print("rc_test: all passed")
     return 0

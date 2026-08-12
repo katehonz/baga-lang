@@ -34,9 +34,9 @@
 6. Пълна tests/ батерия с --rc (~40 мин):
    `printf '#!/bin/sh\nexec '$PWD'/baga --rc "$@"\n' > /tmp/baga_rc &&
     chmod +x /tmp/baga_rc && BAGA=/tmp/baga_rc bash scripts/baga-test tests`
-   Базова линия: **149/155**; 6-те FAIL са pre-existing (5 external peers:
-   oauth_pg, orm_boila, registry, https, tls_handshake + boila_ts FPE).
-   Никой нов FAIL не е приемлив.
+   Базова линия: **150/155**; 5-те FAIL са pre-existing external peers
+   (oauth_pg, orm_boila, registry, https, tls_handshake).
+   Никой нов FAIL не е приемлив. (`boila_ts_test` е зелен след RC1.4.)
 7. Bench (само ако пипаш retain/release пътеките): boilaDB 100k insert —
    `BOILA_PHASE=write BOILA_CHUNKS=1 BOILA_ROWS=100000
    BOILA_BENCH_ROOT=/tmp/boila_x ./baga --rc -I . -I app-product
@@ -47,12 +47,13 @@
 
 ## Задачи (по приоритет)
 
-### 1. boila_ts_test FPE под --rc (диагностика + фикс) — малка, самостоятелна
-`./baga --rc -I . -I app-product tests/boila_ts_test.baga` → Floating point
-exception. Пада и на HEAD — pre-existing, не е регресия. Подозиция: деление
-по нула в ts кода, зависеща от rc пътя, или rc-променена семантика някъде в
-ts агрегациите. Дебъгвай с ASan/gdb върху `--emit-c` изхода. Критерий:
-тестът минава с --rc и без флаг; пълният чеклист по-горе.
+### 1. boila_ts_test FPE под --rc — ГОТОВО (RC1.4)
+Не беше деление в time_bucket. `boila_open_mt` прави `map_h(mus)` /
+`map_h(dbs)` и връща само i64 handle в struct-а; под --rc scope exit
+release-ваше картата → `h_map` върху труп с `nb=0` → SIGFPE в
+`baga_map_slot` при `boila_shard_lock`. Фикс: `map_h`/`str_h`/`bytes_h`
+retain-ват (immortal escape, leak-safe). Тест: `map_h_survives` в
+`rc_test`. Пълна --rc батерия: **150/155** (само 5-те external peers).
 
 ### 2. v0.3: temp-ове в условия и for_iter (RC4 довършване)
 RC4 не покрива temp-ове в `while`/`for`/`if` условия и `for x in <expr>`

@@ -250,6 +250,14 @@ NODE_TO_STR). Преди statement-а се emit-ват `__auto_type __rc_tmpN = 
   (латентен пропуск, излязъл наяве чак когато RC4 temp release-ите
   пренаредиха freelist-а: http_test segfault; тест
   `struct_lit_borrow_alive` в temp_test).
+  **RC1.4:** `map_h`/`str_h`/`bytes_h` са immortal escape (i64 handle
+  през go_bg/struct поле). Без --rc обектът е arena-bound и никога не
+  се free-ва; под --rc scope release на източника обесваше handle-а
+  (`boila_open_mt` → `map_h(mus)` → `boila_shard_lock` → `m->nb==0`
+  SIGFPE в `baga_map_slot`). Handle helper-ите retain-ват (картата /
+  низа / bytes data) — handle-ът държи референцията, локалът си
+  release-ва своята. Leak-safe: handle-ите никога не release-ват
+  (същата семантика като без флаг). Тест: `map_h_survives` в rc_test.
 - **Borrowed стойности (vec_get/map_get/struct поле/h_\*) се RETAIN-ват
   при връзване** (let/assign/return), не се пропускат — всяка binding
   референция е owned и балансирана. Първоначалният „skip borrowed"

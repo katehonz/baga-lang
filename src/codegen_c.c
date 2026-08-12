@@ -4398,11 +4398,19 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static int64_t baga_cell2_0(int64_t h) { return ((int64_t *)(intptr_t)h)[0]; }\n");
     fprintf(out, "static int64_t baga_cell2_1(int64_t h) { return ((int64_t *)(intptr_t)h)[1]; }\n");
     /* R51: unsafe str handle casts — zero-copy cross-thread hop (chan i64).
-       Safe because str is arena-bound (never freed). C backend only. */
-    fprintf(out, "static int64_t baga_str_h(const char *s) { return (int64_t)(intptr_t)s; }\n");
+       Без --rc str е arena-bound (никога не се free-ва). RC1.4: под --rc
+       handle-ът е immortal escape — retain, иначе scope release на
+       източника обесва handle-а (boila_ts_test FPE: map_h(mus) →
+       boila_shard_lock върху освободена карта с nb=0). */
+    if (cg->rc)
+        fprintf(out, "static int64_t baga_str_h(const char *s) { baga_rc_retain((void *)s); return (int64_t)(intptr_t)s; }\n");
+    else
+        fprintf(out, "static int64_t baga_str_h(const char *s) { return (int64_t)(intptr_t)s; }\n");
     fprintf(out, "static const char *baga_h_str(int64_t h) { return (const char *)(intptr_t)h; }\n");
     /* R66: box baga_bytes header on arena for chan hop; data ptr already arena. */
     fprintf(out, "static int64_t baga_bytes_h(baga_bytes b) {\n");
+    if (cg->rc)
+        fprintf(out, "    baga_rc_retain((void *)b.data);\n");
     fprintf(out, "    baga_bytes *p = (baga_bytes *)baga_alloc(sizeof(baga_bytes));\n");
     fprintf(out, "    p->data = b.data; p->len = b.len; return (int64_t)(intptr_t)p;\n");
     fprintf(out, "}\n");
@@ -4411,7 +4419,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (!h) return z; return *(baga_bytes *)(intptr_t)h;\n");
     fprintf(out, "}\n");
     /* R55: unsafe map handle casts — shared map through a go_bg i64 ctx. */
-    fprintf(out, "static int64_t baga_map_h(baga_Map *m) { return (int64_t)(intptr_t)m; }\n");
+    if (cg->rc)
+        fprintf(out, "static int64_t baga_map_h(baga_Map *m) { baga_rc_retain((void *)m); return (int64_t)(intptr_t)m; }\n");
+    else
+        fprintf(out, "static int64_t baga_map_h(baga_Map *m) { return (int64_t)(intptr_t)m; }\n");
     fprintf(out, "static baga_Map *baga_h_map(int64_t h) { return (baga_Map *)(intptr_t)h; }\n");
     fprintf(out, "typedef int64_t (*baga_par_fn)(int64_t);\n");
     fprintf(out, "typedef struct {\n");

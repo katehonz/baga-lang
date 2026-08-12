@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### runtime — RC1.4 handle-escape retain (зад `--rc`)
+- `map_h`/`str_h`/`bytes_h` retain-ват обекта: handle-ът е immortal escape,
+  иначе scope release обесва картата (`boila_open_mt` → `nb=0` SIGFPE).
+- `tests/boila_ts_test.baga` минава с `--rc`. Пълна батерия: 150/155.
+
 ### boilabaga + ormbaga — boilaDB PG-wire adapter
 - New package `app-product/boilabaga`: client adapter to boilaDB over
   PostgreSQL wire (`boila_connect_env`, dialect DDL helpers).
