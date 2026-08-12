@@ -1,0 +1,64 @@
+// struct_rc_test — RC5: struct полета като собственици (docs/memory-rc-struct-bg.md).
+// Минава с и без --rc.
+
+import "std/str/str.baga"
+
+struct Wrap {
+    n: i64,
+    s: str
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn bump(w: Wrap) -> Wrap {
+    return Wrap { n: w.n + 1, s: w.s }
+}
+
+fn make_w() -> Wrap {
+    return Wrap { n: 1, s: concat("ma", "de") }
+}
+
+fn main() -> i64 !IO {
+    // 1. локален struct — полето оцелява в borrowed binding след drop
+    let mut acc = ""
+    if true {
+        let w = Wrap { n: 1, s: concat("drop", "-me") }
+        acc = w.s
+    }
+    check("local_field_bind", acc == "drop-me")
+
+    // 2. let alias — двете копия четат едно и също
+    let a = Wrap { n: 2, s: concat("al", "ias") }
+    let b = a
+    check("alias", a.s == "alias" && b.s == "alias" && a.n == 2)
+
+    // 3. threading s = f(s) — не dangling
+    let mut d = Wrap { n: 3, s: concat("th", "read") }
+    d = bump(d)
+    check("thread", d.n == 4 && d.s == "thread")
+
+    // 4. return на свеж литерал
+    let r = make_w()
+    check("ret", r.s == "made" && r.n == 1)
+
+    // 5. vec_push на struct — локалът се пуска, vec държи копие
+    let vs: Vec<Wrap> = vec_new()
+    if true {
+        let p = Wrap { n: 9, s: concat("in", "-vec") }
+        vec_push(vs, p)
+    }
+    check("vec_push_s", vec_len(vs) == 1 && vec_get(vs, 0).s == "in-vec" && vec_get(vs, 0).n == 9)
+    let g = vec_get(vs, 0)
+    check("vec_get_s", g.s == "in-vec")
+    check("vec_after_get", vec_get(vs, 0).s == "in-vec")
+
+    print("struct_rc_test: all passed")
+    return 0
+}

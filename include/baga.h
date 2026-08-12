@@ -493,7 +493,7 @@ const char *baga_note_import_alias(const char *canon_path, const char *alias);
  * Дизайн: docs/memory-rc-bg.md. Само C backend; без --rc е неактивно. */
 typedef struct {
     char *name;     /* mangled C име (собственост на записа) */
-    int   tag;      /* 1=str, 2=bytes, 3=Vec, 4=Map */
+    int   tag;      /* 1=str, 2=bytes, 3=Vec, 4=Map, 5=struct с heap полета */
     Type *type;     /* inferred тип (borrowed — AST живее до края на codegen) */
     Node *type_node;/* RC1: анотацията `let x: Vec<str>` — резервен източник
                      * на elem тип, когато inferred Type няма elem (vec_new) */

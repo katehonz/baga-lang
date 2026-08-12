@@ -34,9 +34,9 @@
 6. Пълна tests/ батерия с --rc (~40 мин):
    `printf '#!/bin/sh\nexec '$PWD'/baga --rc "$@"\n' > /tmp/baga_rc &&
     chmod +x /tmp/baga_rc && BAGA=/tmp/baga_rc bash scripts/baga-test tests`
-   Базова линия: **150/155**; 5-те FAIL са pre-existing external peers
+   Базова линия: **151/156**; 5-те FAIL са pre-existing external peers
    (oauth_pg, orm_boila, registry, https, tls_handshake).
-   Никой нов FAIL не е приемлив. (`boila_ts_test` е зелен след RC1.4.)
+   Никой нов FAIL не е приемлив. (`struct_rc_test` е в пакета след RC5.)
 7. Bench (само ако пипаш retain/release пътеките): boilaDB 100k insert —
    `BOILA_PHASE=write BOILA_CHUNKS=1 BOILA_ROWS=100000
    BOILA_BENCH_ROOT=/tmp/boila_x ./baga --rc -I . -I app-product
@@ -67,11 +67,12 @@ str_find(concat(...))`: 10 MB с --rc vs 141 MB без. Тестове в temp_t
 **A:** без нова работа. B/C отложени — пипат типове/capture без печалба
 за v0.x (leak > корупция вече е спазено).
 
-### 4. Struct полета като собственици (голяма, само ако 1-3 са готови)
-Struct полетата не се track-ват (shared-pointer семантика) — това е
-фундаменталната оставаща граница. Изисква drop-ове за struct-ове по
-стойност при scope exit + retain дисциплина при копиране. Не започвай без
-отделен design документ и без да са зелени 1-3.
+### 4. Struct полета като собственици — ГОТОВО v0.1 (RC5)
+Design: `docs/memory-rc-struct-bg.md`. Tag 5 + `retain_S`/`release_S` за
+преки heap полета. Регистрира се само свеж литерал или alias на track-нат
+struct (`vec_get`/`f()` не — иначе commit underflow). `s = f(s)` не
+пуска стария. Тест: `tests/struct_rc_test.baga`. Останало: вложени
+struct-и, enum payload, drop на `Vec<S>` полета.
 
 ## Забранено / внимание
 

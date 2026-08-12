@@ -235,8 +235,10 @@ NODE_TO_STR). Преди statement-а се emit-ват `__auto_type __rc_tmpN = 
   overhead е самата retain/release честота на НЕ-temp трафика (alias-и на
   параметри, borrowed връзвания, контейнерни retain-ове на не-last-use
   стойности).
-- **Struct полета не се track-ват като собственици.** Struct по стойност
-  копията споделят полета-указатели (днешна семантика). Затова pък
+- **Struct полета — RC5 v0.1** (`docs/memory-rc-struct-bg.md`): преките
+  heap полета на свеж литерал / alias се release-ват при scope exit.
+  `vec_get`/`f()` копия не се track-ват. Вложени struct-и и `Vec<S>`
+  още текат. Затова pък
   вградените в struct литерал/field assign heap локали и параметри се
   RETAIN-ват — иначе `return S { v: v }` обесва полето при scope exit
   (намерено по трудния път: lsm_cluster_open, boila_sel_empty, txn.writes).

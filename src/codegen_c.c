@@ -92,7 +92,8 @@ static void emit_indent(Codegen *cg) {
  * Дизайн: docs/memory-rc-bg.md. Всички helper-и са no-op без cg->rc, така че
  * без флага изходът е бит-идентичен с предишния codegen. */
 
-/* heap tag на inferred тип: 0 = не се track-ва, 1=str, 2=bytes, 3=Vec, 4=Map */
+/* heap tag на inferred тип: 0 = не се track-ва, 1=str, 2=bytes, 3=Vec, 4=Map
+ * (tag 5 = struct с heap полета — през rc_heap_tag, иска Codegen) */
 static int rc_type_tag(Type *t) {
     if (!t) return 0;
     switch (t->kind) {
@@ -114,6 +115,98 @@ static int rc_type_node_tag(Node *ty) {
     if (strcmp(ty->type_name, "Vec") == 0)   return 3;
     if (strcmp(ty->type_name, "Map") == 0)   return 4;
     return 0;
+}
+
+static Node *find_struct_decl(Codegen *cg, const char *name);
+
+/* RC5: struct с поне едно пряко str/bytes/Vec/Map поле. */
+static int rc_struct_has_heap(Codegen *cg, const char *name) {
+    Node *d = find_struct_decl(cg, name);
+    if (!d) return 0;
+    for (int i = 0; i < d->fields.len; i++) {
+        Node *ft = d->fields.data[i]->fld_type;
+        if (rc_type_node_tag(ft)) return 1;
+    }
+    return 0;
+}
+
+static int rc_heap_tag(Codegen *cg, Type *t) {
+    int tag = rc_type_tag(t);
+    if (tag) return tag;
+    if (t && t->kind == TYPE_STRUCT && t->name && rc_struct_has_heap(cg, t->name))
+        return 5;
+    return 0;
+}
+
+static int rc_heap_tag_node(Codegen *cg, Node *ty) {
+    int tag = rc_type_node_tag(ty);
+    if (tag) return tag;
+    while (ty && (ty->kind == NODE_TYPE_EFFECT || ty->kind == NODE_TYPE_REF))
+        ty = ty->inner_type;
+    if (ty && ty->kind == NODE_TYPE && ty->type_name &&
+        rc_struct_has_heap(cg, ty->type_name))
+        return 5;
+    return 0;
+}
+
+/* копие ли е целият ident (не поле-четене s.x) някъде в израза? */
+static int rc_expr_copies_ident(Node *n, const char *name) {
+    if (!n || !name) return 0;
+    if (n->kind == NODE_IDENT)
+        return n->name && strcmp(n->name, name) == 0;
+    if (n->kind == NODE_FIELD) {
+        if (n->field_obj && n->field_obj->kind == NODE_IDENT &&
+            n->field_obj->name && strcmp(n->field_obj->name, name) == 0)
+            return 0;
+        return rc_expr_copies_ident(n->field_obj, name);
+    }
+    switch (n->kind) {
+        case NODE_BINARY:
+            return rc_expr_copies_ident(n->left, name) ||
+                   rc_expr_copies_ident(n->right, name);
+        case NODE_UNARY:
+            return rc_expr_copies_ident(n->operand, name);
+        case NODE_CALL: {
+            if (rc_expr_copies_ident(n->callee, name)) return 1;
+            for (int i = 0; i < n->args.len; i++)
+                if (rc_expr_copies_ident(n->args.data[i], name)) return 1;
+            return 0;
+        }
+        case NODE_INDEX:
+            return rc_expr_copies_ident(n->obj, name) ||
+                   rc_expr_copies_ident(n->index, name);
+        case NODE_STRUCT_LIT:
+            for (int i = 0; i < n->n_lit_fields; i++)
+                if (rc_expr_copies_ident(n->lit_values.data[i], name)) return 1;
+            return 0;
+        case NODE_ASSIGN:
+            return rc_expr_copies_ident(n->assign_val, name);
+        case NODE_TO_STR:
+            return rc_expr_copies_ident(n->to_str_expr, name);
+        default:
+            return 0;
+    }
+}
+
+static void rc_emit_retain_val(Codegen *cg, int tag, Type *ty, Node *tnode,
+                               const char *cname) {
+    FILE *f = cg->out;
+    if (tag == 5) {
+        const char *sn = (ty && ty->name) ? ty->name : NULL;
+        if (!sn && tnode) {
+            Node *t = tnode;
+            while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+                t = t->inner_type;
+            if (t && t->kind == NODE_TYPE) sn = t->type_name;
+        }
+        if (!sn) return;
+        char *sm = mangle_name(sn);
+        fprintf(f, "baga_rc_retain_%s(%s); ", sm, cname);
+        free(sm);
+    } else if (tag == 2)
+        fprintf(f, "baga_rc_retain((void *)%s.data); ", cname);
+    else if (tag)
+        fprintf(f, "baga_rc_retain((void *)%s); ", cname);
 }
 
 /* намира track-нат локал по baga име; връща индекс (-1 = няма).
@@ -248,6 +341,16 @@ static void rc_emit_release(Codegen *cg, RcLocal *e) {
                         rc_vec_kind_of(e, sz, sizeof sz), sz); break;
         case 4: fprintf(f, "baga_rc_release_map(%s, %d, %s);\n", e->name,
                         rc_map_tag_of(e, sz, sizeof sz), sz); break;
+        case 5: {
+            const char *sn = (e->type && e->type->name) ? e->type->name :
+                (e->type_node && e->type_node->type_name) ? e->type_node->type_name : NULL;
+            if (sn) {
+                char *sm = mangle_name(sn);
+                fprintf(f, "baga_rc_release_%s(%s);\n", sm, e->name);
+                free(sm);
+            }
+            break;
+        }
     }
 }
 
@@ -1453,6 +1556,13 @@ static void emit_expr(Codegen *cg, Node *n) {
                             fprintf(f, "baga_rc_release_map(");
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ", %d, %s)", vt, sz);
+                        } else if (cg->rc && at && at->kind == TYPE_STRUCT &&
+                                   at->name && rc_struct_has_heap(cg, at->name)) {
+                            char *sm = mangle_name(at->name);
+                            fprintf(f, "baga_rc_release_%s(", sm);
+                            emit_expr(cg, n->args.data[0]);
+                            fprintf(f, ")");
+                            free(sm);
                         } else if (at && at->kind == TYPE_BYTES) {
                             fprintf(f, "baga_drop_bytes(");
                             emit_expr(cg, n->args.data[0]);
@@ -1534,13 +1644,47 @@ static void emit_expr(Codegen *cg, Node *n) {
                         } else if (strcmp(bn, "vec_push") == 0) {
                             fprintf(f, "({ %s _bx = (", mn);
                             emit_expr(cg, n->args.data[1]);
-                            fprintf(f, "); baga_vec_push_box(");
+                            fprintf(f, "); ");
+                            if (cg->rc && vt->elem->kind == TYPE_STRUCT &&
+                                rc_struct_has_heap(cg, vt->elem->name)) {
+                                Node *va = n->args.data[1];
+                                int mv = 0;
+                                if (va->kind == NODE_IDENT) {
+                                    int si = rc_find(cg, va->name);
+                                    if (si >= 0 && !cg->rc_locals.data[si].dead &&
+                                        rc_is_move(cg, va, si)) {
+                                        cg->rc_locals.data[si].dead = 1;
+                                        cg->rc_cmoves++;
+                                        mv = 1;
+                                    }
+                                }
+                                if (!mv)
+                                    fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
+                            }
+                            fprintf(f, "baga_vec_push_box(");
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
                         } else {
                             fprintf(f, "({ %s _bx = (", mn);
                             emit_expr(cg, n->args.data[2]);
-                            fprintf(f, "); baga_vec_set_box(");
+                            fprintf(f, "); ");
+                            if (cg->rc && vt->elem->kind == TYPE_STRUCT &&
+                                rc_struct_has_heap(cg, vt->elem->name)) {
+                                Node *va = n->args.data[2];
+                                int mv = 0;
+                                if (va->kind == NODE_IDENT) {
+                                    int si = rc_find(cg, va->name);
+                                    if (si >= 0 && !cg->rc_locals.data[si].dead &&
+                                        rc_is_move(cg, va, si)) {
+                                        cg->rc_locals.data[si].dead = 1;
+                                        cg->rc_cmoves++;
+                                        mv = 1;
+                                    }
+                                }
+                                if (!mv)
+                                    fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
+                            }
+                            fprintf(f, "baga_vec_set_box(");
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ", ");
                             emit_expr(cg, n->args.data[1]);
@@ -1630,7 +1774,24 @@ static void emit_expr(Codegen *cg, Node *n) {
                         if (strcmp(bn, "map_set") == 0) {
                             fprintf(f, "({ %s _bx = (", mn);
                             emit_expr(cg, n->args.data[2]);
-                            fprintf(f, "); baga_map_set_%s_box(", ksuf);
+                            fprintf(f, "); ");
+                            if (cg->rc && mt->elem->kind == TYPE_STRUCT &&
+                                rc_struct_has_heap(cg, mt->elem->name)) {
+                                Node *va = n->args.data[2];
+                                int mv = 0;
+                                if (va->kind == NODE_IDENT) {
+                                    int si = rc_find(cg, va->name);
+                                    if (si >= 0 && !cg->rc_locals.data[si].dead &&
+                                        rc_is_move(cg, va, si)) {
+                                        cg->rc_locals.data[si].dead = 1;
+                                        cg->rc_cmoves++;
+                                        mv = 1;
+                                    }
+                                }
+                                if (!mv)
+                                    fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
+                            }
+                            fprintf(f, "baga_map_set_%s_box(", ksuf);
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ", ");
                             emit_expr(cg, n->args.data[1]);
@@ -1951,22 +2112,30 @@ static void emit_expr(Codegen *cg, Node *n) {
                              * `x = x` не е move — release-ът би я обесил. */
                             if (si != idx && rc_is_move(cg, n->assign_val, si)) {
                                 rc_do_move(cg, si);
-                            } else if (e.tag == 2)
-                                fprintf(f, "baga_rc_retain((void *)__rc_asn.data); ");
-                            else
-                                fprintf(f, "baga_rc_retain((void *)__rc_asn); ");
+                            } else
+                                rc_emit_retain_val(cg, e.tag, e.type, e.type_node, "__rc_asn");
                         }
                     } else if (keep) {
-                        if (e.tag == 2)
-                            fprintf(f, "baga_rc_retain((void *)__rc_asn.data); ");
-                        else
-                            fprintf(f, "baga_rc_retain((void *)__rc_asn); ");
+                        rc_emit_retain_val(cg, e.tag, e.type, e.type_node, "__rc_asn");
                     }
-                    switch (e.tag) {
+                    /* RC5: s = f(s) — резултатът алиасира полетата; не пускай */
+                    int thru = e.tag == 5 &&
+                        rc_expr_copies_ident(n->assign_val, n->assign_target->name);
+                    if (!thru) switch (e.tag) {
                         case 1: fprintf(f, "baga_rc_release_str(%s); ", e.name); break;
                         case 2: fprintf(f, "baga_rc_release_bytes(%s); ", e.name); break;
                         case 3: fprintf(f, "baga_rc_release_vec(%s, %d, %s); ", e.name, vkind, sz); break;
                         case 4: fprintf(f, "baga_rc_release_map(%s, %d, %s); ", e.name, vtag, sz); break;
+                        case 5: {
+                            const char *sn = (e.type && e.type->name) ? e.type->name :
+                                (e.type_node && e.type_node->type_name) ? e.type_node->type_name : NULL;
+                            if (sn) {
+                                char *sm = mangle_name(sn);
+                                fprintf(f, "baga_rc_release_%s(%s); ", sm, e.name);
+                                free(sm);
+                            }
+                            break;
+                        }
                     }
                     fprintf(f, "%s = __rc_asn; })", e.name);
                     break;
@@ -1994,10 +2163,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     fprintf(f, "; ");
                     emit_expr(cg, n->assign_target);
                     fprintf(f, " = __rc_fa; ");
-                    if (src.tag == 2)
-                        fprintf(f, "baga_rc_retain((void *)__rc_fa.data); ");
-                    else
-                        fprintf(f, "baga_rc_retain((void *)__rc_fa); ");
+                    rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
                     fprintf(f, "__rc_fa; })");
                     break;
                 }
@@ -2073,12 +2239,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (si < 0 || cg->rc_locals.data[si].dead ||
                         rc_is_move(cg, val, si))
                         continue;
-                    if (cg->rc_locals.data[si].tag == 2)
-                        fprintf(f, "baga_rc_retain((void *)%s.data); ",
-                                cg->rc_locals.data[si].name);
-                    else
-                        fprintf(f, "baga_rc_retain((void *)%s); ",
-                                cg->rc_locals.data[si].name);
+                    rc_emit_retain_val(cg, cg->rc_locals.data[si].tag,
+                                       cg->rc_locals.data[si].type,
+                                       cg->rc_locals.data[si].type_node,
+                                       cg->rc_locals.data[si].name);
                 }
                 fprintf(f, "__rc_sl; })");
             }
@@ -2435,10 +2599,10 @@ static void emit_return_val(Codegen *cg, Node *val) {
                 !cg->rc_locals.data[idx].dead) {
                 /* заеманият параметър става собственост на caller-а */
                 char *mm = mangle_name(val->name);
-                if (cg->rc_locals.data[idx].tag == 2)
-                    fprintf(f, "baga_rc_retain((void *)%s.data);\n", mm);
-                else
-                    fprintf(f, "baga_rc_retain((void *)%s);\n", mm);
+                rc_emit_retain_val(cg, cg->rc_locals.data[idx].tag,
+                                   cg->rc_locals.data[idx].type,
+                                   cg->rc_locals.data[idx].type_node, mm);
+                fprintf(f, "\n");
                 free(mm);
                 emit_indent(cg);
             }
@@ -2568,9 +2732,19 @@ static void emit_stmt(Codegen *cg, Node *n) {
              * (vec_get/map_get/поле/h_* — референцията става собствена). */
             if (cg->rc && n->let_name) {
                 Type *lt = n->let_init ? n->let_init->type : NULL;
-                int tag = rc_type_tag(lt);
+                int tag = rc_heap_tag(cg, lt);
                 if (tag == 0 && n->let_type)
-                    tag = rc_type_node_tag(n->let_type);
+                    tag = rc_heap_tag_node(cg, n->let_type);
+                if (tag == 5) {
+                    int fresh = n->let_init && n->let_init->kind == NODE_STRUCT_LIT;
+                    int from_tr = 0;
+                    if (n->let_init && n->let_init->kind == NODE_IDENT) {
+                        int si = rc_find(cg, n->let_init->name);
+                        if (si >= 0 && !cg->rc_locals.data[si].dead)
+                            from_tr = 1;
+                    }
+                    if (!fresh && !from_tr) tag = 0;
+                }
                 if (tag) {
                     int elide = 0;
                     char *mself = mangle_name(n->let_name);
@@ -2583,15 +2757,22 @@ static void emit_stmt(Codegen *cg, Node *n) {
                                 rc_do_move(cg, si);
                             } else {
                                 emit_indent(cg);
-                                if (cg->rc_locals.data[si].tag == 2)
-                                    fprintf(f, "baga_rc_retain((void *)%s.data);\n",
-                                            cg->rc_locals.data[si].name);
-                                else
-                                    fprintf(f, "baga_rc_retain((void *)%s);\n",
-                                            cg->rc_locals.data[si].name);
+                                rc_emit_retain_val(cg, cg->rc_locals.data[si].tag,
+                                                   cg->rc_locals.data[si].type,
+                                                   cg->rc_locals.data[si].type_node,
+                                                   cg->rc_locals.data[si].name);
+                                fprintf(f, "\n");
                             }
                         }
                     } else if (rc_borrowed_init(n->let_init)) {
+                        /* RC5: borrowed struct (vec_get/поле) споделя полета —
+                         * трябва retain_S, иначе scope release обесва
+                         * контейнера (boila_txn_commit underflow). */
+                        if (tag == 5) {
+                            emit_indent(cg);
+                            rc_emit_retain_val(cg, tag, lt, n->let_type, mself);
+                            fprintf(f, "\n");
+                        } else {
                         /* RC2.1: ако x не escape-ва и източникът не се мутира
                          * в scope-а — нито retain, нито регистрация (двойката
                          * retain+release е чиста загуба) */
@@ -2605,6 +2786,7 @@ static void emit_stmt(Codegen *cg, Node *n) {
                                 fprintf(f, "baga_rc_retain((void *)%s.data);\n", mself);
                             else
                                 fprintf(f, "baga_rc_retain((void *)%s);\n", mself);
+                        }
                         }
                     }
                     free(mself);
@@ -2955,8 +3137,9 @@ static void emit_fn(Codegen *cg, Node *fn) {
         if (cg->rc) {
             for (int i = 0; i < fn->params.len; i++) {
                 Node *p = fn->params.data[i];
-                rc_register(cg, p->param_name,
-                            rc_type_node_tag(p->param_type), NULL, 1);
+                rc_register_node(cg, p->param_name,
+                            rc_heap_tag_node(cg, p->param_type),
+                            p->type, p->param_type, 1);
             }
         }
         NodeVec *stmts = &fn->fn_body->stmts;
@@ -3146,6 +3329,49 @@ static void emit_struct(Codegen *cg, Node *s) {
     free(m);
 }
 
+/* RC5: retain/release на преките heap полета. След typedef-а. */
+static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
+    if (!cg->rc || !rc_struct_has_heap(cg, s->struct_name)) return;
+    FILE *f = cg->out;
+    char *m = mangle_name(s->struct_name);
+    fprintf(f, "static inline void baga_rc_retain_%s(%s s) {\n", m, m);
+    for (int i = 0; i < s->fields.len; i++) {
+        Node *fld = s->fields.data[i];
+        int tag = rc_type_node_tag(fld->fld_type);
+        if (!tag) continue;
+        char *fm = mangle_name(fld->fld_name);
+        if (tag == 2)
+            fprintf(f, "    baga_rc_retain((void *)s.%s.data);\n", fm);
+        else
+            fprintf(f, "    baga_rc_retain((void *)s.%s);\n", fm);
+        free(fm);
+    }
+    fprintf(f, "}\n");
+    fprintf(f, "static inline void baga_rc_release_%s(%s s) {\n", m, m);
+    for (int i = 0; i < s->fields.len; i++) {
+        Node *fld = s->fields.data[i];
+        int tag = rc_type_node_tag(fld->fld_type);
+        if (!tag) continue;
+        char *fm = mangle_name(fld->fld_name);
+        if (tag == 1)
+            fprintf(f, "    baga_rc_release_str(s.%s);\n", fm);
+        else if (tag == 2)
+            fprintf(f, "    baga_rc_release_bytes(s.%s);\n", fm);
+        else if (tag == 3) {
+            char sz[160];
+            int k = rc_vec_elem_kind_node(fld->fld_type, sz, sizeof sz);
+            fprintf(f, "    baga_rc_release_vec(s.%s, %d, %s);\n", fm, k, sz);
+        } else if (tag == 4) {
+            char sz[160];
+            int k = rc_map_val_tag_node(fld->fld_type, sz, sizeof sz);
+            fprintf(f, "    baga_rc_release_map(s.%s, %d, %s);\n", fm, k, sz);
+        }
+        free(fm);
+    }
+    fprintf(f, "}\n\n");
+    free(m);
+}
+
 /* L3 sum enum → tagged C struct + union + static inline constructors.
  * Tag is int64_t to mirror the LLVM lowering ({ i64 tag, [N x i64] u });
  * constructors zero-init so the union never carries stack garbage
@@ -3275,6 +3501,13 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
             emit_struct(cg, it);
         else
             emit_sum_enum(cg, it);
+    }
+    if (cg->rc) {
+        for (int i = 0; i < on; i++) {
+            Node *it = nodes[order[i]];
+            if (it->kind == NODE_STRUCT)
+                emit_rc_struct_helpers(cg, it);
+        }
     }
 
     for (int i = 0; i < n; i++) free(adj[i]);

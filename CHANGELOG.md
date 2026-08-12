@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.1 struct field owners (зад `--rc`)
+- Локален struct със `str`/`bytes`/`Vec`/`Map` полета се пуска при scope
+  exit. Само свеж литерал + alias. `tests/struct_rc_test.baga`.
+
 ### runtime — go/chan heap: решение A
 - Без tag-нат payload и без `go` capture retain. Hop-ът остава през
   `*_h` + RC1.4 immortal retain (`docs/memory-rc-chan-bg.md`).
