@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.2 container drop на struct полета (зад `--rc`)
+- Drop/release на `Vec<S>`/`Map<K,S>` release-ва полетата на box
+  елементите: destructor fn pointer в `baga_rc_release_vec`/`_map` +
+  shim `baga_rc_relf_<S>` (forward-declared). Leak repro 500k push+drop:
+  RSS 64 MB → 10.9 MB.
+- `vec_push`/`vec_set`/`map_set` на свеж struct литерал е move в box-а
+  (без втори retain — литералният temp няма кой да го пусне).
+- `vec_slice`/`vec_concat` на `Vec<S>` под `--rc`: `*_box_rc` с retain shim
+  `baga_rc_retp_<S>` — shallow box копията споделят полетата, иначе drop на
+  двата вектора пуска два пъти (`std/vec_struct_test` underflow).
+- Без флаг: бит-идентичен emit-c. Пълна батерия `--rc`: 151/156 (база).
+
 ### runtime — RC5 v0.1 struct field owners (зад `--rc`)
 - Локален struct със `str`/`bytes`/`Vec`/`Map` полета се пуска при scope
   exit. Само свеж литерал + alias. `tests/struct_rc_test.baga`.

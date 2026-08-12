@@ -68,12 +68,16 @@ str_find(concat(...))`: 10 MB с --rc vs 141 MB без. Тестове в temp_t
 **A:** без нова работа. B/C отложени — пипат типове/capture без печалба
 за v0.x (leak > корупция вече е спазено).
 
-### 4. Struct полета като собственици — ГОТОВО v0.1 (RC5)
+### 4. Struct полета като собственици — ГОТОВО v0.1 (RC5) + v0.2
 Design: `docs/memory-rc-struct-bg.md`. Tag 5 + `retain_S`/`release_S` за
 преки heap полета. Регистрира се само свеж литерал или alias на track-нат
 struct (`vec_get`/`f()` не — иначе commit underflow). `s = f(s)` не
-пуска стария. Тест: `tests/struct_rc_test.baga`. Останало: вложени
-struct-и, enum payload, drop на `Vec<S>` полета.
+пуска стария. Тест: `tests/struct_rc_test.baga`. v0.2: drop на
+`Vec<S>`/`Map<K,S>` release-ва полетата на box елементите (destructor fn
+pointer `elem_rel`/`val_rel` + shim `baga_rc_relf_S`); push/set на свеж
+struct литерал е move (RSS 64 MB → 10.9 MB на 500k push+drop). Останало:
+вложени struct-и, enum payload, overwrite/del пътеки на box-ове, call
+аргумент temp-ове в box push.
 
 ## Забранено / внимание
 

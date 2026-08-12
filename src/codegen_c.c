@@ -314,6 +314,35 @@ static int rc_map_val_tag_node(Node *ty, char *sz, size_t szn) {
     return 3;
 }
 
+/* RC5 v0.2: box destructor за struct елементи/стойности с heap полета —
+ * "baga_rc_relf_<S>" или "0" (няма heap полета / не е struct → само free).
+ * Container release не знае типа статично, затова получава fn pointer. */
+static void rc_box_rel(Codegen *cg, const char *type_name, char *rel, size_t reln) {
+    snprintf(rel, reln, "0");
+    if (!cg->rc || !type_name) return;
+    if (!rc_struct_has_heap(cg, type_name)) return;
+    char *m = mangle_name(type_name);
+    snprintf(rel, reln, "baga_rc_relf_%s", m);
+    free(m);
+}
+
+/* елементен/стойностен тип на Vec/Map локал (inferred Type, после анотация) */
+static const char *rc_vec_elem_name(RcLocal *e) {
+    if (e->type && e->type->elem && e->type->elem->name)
+        return e->type->elem->name;
+    Node *it = e->type_node ? e->type_node->inner_type : NULL;
+    if (it && it->kind == NODE_TYPE) return it->type_name;
+    return NULL;
+}
+
+static const char *rc_map_val_name(RcLocal *e) {
+    if (e->type && e->type->elem && e->type->elem->name)
+        return e->type->elem->name;
+    Node *it = e->type_node ? e->type_node->inner_type2 : NULL;
+    if (it && it->kind == NODE_TYPE) return it->type_name;
+    return NULL;
+}
+
 /* комбинирани resolver-и: inferred Type първо, анотация като резерва */
 static int rc_vec_kind_of(RcLocal *e, char *sz, size_t szn) {
     int k = rc_vec_elem_kind(e->type, sz, szn);
@@ -337,10 +366,20 @@ static void rc_emit_release(Codegen *cg, RcLocal *e) {
     switch (e->tag) {
         case 1: fprintf(f, "baga_rc_release_str(%s);\n", e->name); break;
         case 2: fprintf(f, "baga_rc_release_bytes(%s);\n", e->name); break;
-        case 3: fprintf(f, "baga_rc_release_vec(%s, %d, %s);\n", e->name,
-                        rc_vec_kind_of(e, sz, sizeof sz), sz); break;
-        case 4: fprintf(f, "baga_rc_release_map(%s, %d, %s);\n", e->name,
-                        rc_map_tag_of(e, sz, sizeof sz), sz); break;
+        case 3: {
+            char rel[160];
+            rc_box_rel(cg, rc_vec_elem_name(e), rel, sizeof rel);
+            fprintf(f, "baga_rc_release_vec(%s, %d, %s, %s);\n", e->name,
+                    rc_vec_kind_of(e, sz, sizeof sz), sz, rel);
+            break;
+        }
+        case 4: {
+            char rel[160];
+            rc_box_rel(cg, rc_map_val_name(e), rel, sizeof rel);
+            fprintf(f, "baga_rc_release_map(%s, %d, %s, %s);\n", e->name,
+                    rc_map_tag_of(e, sz, sizeof sz), sz, rel);
+            break;
+        }
         case 5: {
             const char *sn = (e->type && e->type->name) ? e->type->name :
                 (e->type_node && e->type_node->type_name) ? e->type_node->type_name : NULL;
@@ -1545,17 +1584,21 @@ static void emit_expr(Codegen *cg, Node *n) {
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ")");
                         } else if (cg->rc && at && at->kind == TYPE_VEC) {
-                            char sz[160];
+                            char sz[160], rel[160];
                             int vk = rc_vec_elem_kind(at, sz, sizeof sz);
+                            rc_box_rel(cg, (at->elem && at->elem->name) ?
+                                       at->elem->name : NULL, rel, sizeof rel);
                             fprintf(f, "baga_rc_release_vec(");
                             emit_expr(cg, n->args.data[0]);
-                            fprintf(f, ", %d, %s)", vk, sz);
+                            fprintf(f, ", %d, %s, %s)", vk, sz, rel);
                         } else if (cg->rc && at && at->kind == TYPE_MAP) {
-                            char sz[160];
+                            char sz[160], rel[160];
                             int vt = rc_map_val_tag(at, sz, sizeof sz);
+                            rc_box_rel(cg, (at->elem && at->elem->name) ?
+                                       at->elem->name : NULL, rel, sizeof rel);
                             fprintf(f, "baga_rc_release_map(");
                             emit_expr(cg, n->args.data[0]);
-                            fprintf(f, ", %d, %s)", vt, sz);
+                            fprintf(f, ", %d, %s, %s)", vt, sz, rel);
                         } else if (cg->rc && at && at->kind == TYPE_STRUCT &&
                                    at->name && rc_struct_has_heap(cg, at->name)) {
                             char *sm = mangle_name(at->name);
@@ -1657,6 +1700,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                                         cg->rc_cmoves++;
                                         mv = 1;
                                     }
+                                } else if (va->kind == NODE_STRUCT_LIT) {
+                                    /* RC5 v0.2: свеж литерал притежава полетата си
+                                     * (fresh или вече retain-нати borrowed) — move в
+                                     * box-а, без втори retain (иначе temp-ът тече) */
+                                    mv = 1;
                                 }
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
@@ -1680,6 +1728,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                                         cg->rc_cmoves++;
                                         mv = 1;
                                     }
+                                } else if (va->kind == NODE_STRUCT_LIT) {
+                                    /* RC5 v0.2: свеж литерал — move в box-а (виж vec_push) */
+                                    mv = 1;
                                 }
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
@@ -1735,12 +1786,25 @@ static void emit_expr(Codegen *cg, Node *n) {
                         (vt->elem->kind == TYPE_STRUCT ||
                          vt->elem->kind == TYPE_ENUM)) {
                         char *mn = mangle_name(vt->elem->name);
-                        fprintf(f, "baga_%s_box(", bn);
-                        for (int i = 0; i < n->args.len; i++) {
-                            if (i > 0) fprintf(f, ", ");
-                            emit_expr(cg, n->args.data[i]);
+                        if (cg->rc && vt->elem->kind == TYPE_STRUCT &&
+                            rc_struct_has_heap(cg, vt->elem->name)) {
+                            /* RC5 v0.2: box копието споделя полетата — retain
+                             * (иначе drop на двата вектора пуска два пъти) */
+                            fprintf(f, "baga_%s_box_rc(", bn);
+                            for (int i = 0; i < n->args.len; i++) {
+                                if (i > 0) fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[i]);
+                            }
+                            fprintf(f, ", (int64_t)sizeof(%s), baga_rc_retp_%s)",
+                                    mn, mn);
+                        } else {
+                            fprintf(f, "baga_%s_box(", bn);
+                            for (int i = 0; i < n->args.len; i++) {
+                                if (i > 0) fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[i]);
+                            }
+                            fprintf(f, ", (int64_t)sizeof(%s))", mn);
                         }
-                        fprintf(f, ", (int64_t)sizeof(%s))", mn);
                         free(mn);
                         goto call_done;
                     }
@@ -1787,6 +1851,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                                         cg->rc_cmoves++;
                                         mv = 1;
                                     }
+                                } else if (va->kind == NODE_STRUCT_LIT) {
+                                    /* RC5 v0.2: свеж литерал — move в box-а (виж vec_push) */
+                                    mv = 1;
                                 }
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
@@ -2124,8 +2191,20 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (!thru) switch (e.tag) {
                         case 1: fprintf(f, "baga_rc_release_str(%s); ", e.name); break;
                         case 2: fprintf(f, "baga_rc_release_bytes(%s); ", e.name); break;
-                        case 3: fprintf(f, "baga_rc_release_vec(%s, %d, %s); ", e.name, vkind, sz); break;
-                        case 4: fprintf(f, "baga_rc_release_map(%s, %d, %s); ", e.name, vtag, sz); break;
+                        case 3: {
+                            char rel[160];
+                            rc_box_rel(cg, rc_vec_elem_name(&e), rel, sizeof rel);
+                            fprintf(f, "baga_rc_release_vec(%s, %d, %s, %s); ",
+                                    e.name, vkind, sz, rel);
+                            break;
+                        }
+                        case 4: {
+                            char rel[160];
+                            rc_box_rel(cg, rc_map_val_name(&e), rel, sizeof rel);
+                            fprintf(f, "baga_rc_release_map(%s, %d, %s, %s); ",
+                                    e.name, vtag, sz, rel);
+                            break;
+                        }
                         case 5: {
                             const char *sn = (e.type && e.type->name) ? e.type->name :
                                 (e.type_node && e.type_node->type_name) ? e.type_node->type_name : NULL;
@@ -3358,17 +3437,30 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
         else if (tag == 2)
             fprintf(f, "    baga_rc_release_bytes(s.%s);\n", fm);
         else if (tag == 3) {
-            char sz[160];
+            char sz[160], rel[160];
             int k = rc_vec_elem_kind_node(fld->fld_type, sz, sizeof sz);
-            fprintf(f, "    baga_rc_release_vec(s.%s, %d, %s);\n", fm, k, sz);
+            Node *et = fld->fld_type->inner_type;
+            rc_box_rel(cg, (et && et->kind == NODE_TYPE) ? et->type_name : NULL,
+                       rel, sizeof rel);
+            fprintf(f, "    baga_rc_release_vec(s.%s, %d, %s, %s);\n", fm, k, sz, rel);
         } else if (tag == 4) {
-            char sz[160];
+            char sz[160], rel[160];
             int k = rc_map_val_tag_node(fld->fld_type, sz, sizeof sz);
-            fprintf(f, "    baga_rc_release_map(s.%s, %d, %s);\n", fm, k, sz);
+            Node *vt = fld->fld_type->inner_type2;
+            rc_box_rel(cg, (vt && vt->kind == NODE_TYPE) ? vt->type_name : NULL,
+                       rel, sizeof rel);
+            fprintf(f, "    baga_rc_release_map(s.%s, %d, %s, %s);\n", fm, k, sz, rel);
         }
         free(fm);
     }
-    fprintf(f, "}\n\n");
+    fprintf(f, "}\n");
+    /* RC5 v0.2: shim-ове за box елементи във Vec/Map — release/retain на
+     * полетата през указател (container drop/slice/concat не знаят типа
+     * статично). */
+    fprintf(f, "static void baga_rc_relf_%s(void *p) { baga_rc_release_%s(*(%s *)p); }\n",
+            m, m, m);
+    fprintf(f, "static void baga_rc_retp_%s(void *p) { baga_rc_retain_%s(*(%s *)p); }\n\n",
+            m, m, m);
     free(m);
 }
 
@@ -3503,6 +3595,17 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
             emit_sum_enum(cg, it);
     }
     if (cg->rc) {
+        /* RC5 v0.2: forward decls на box shims — release_S на по-ранен
+         * struct реферира relf на по-късен (Vec<S>/Map<K,S> поле). */
+        for (int i = 0; i < on; i++) {
+            Node *it = nodes[order[i]];
+            if (it->kind == NODE_STRUCT &&
+                rc_struct_has_heap(cg, it->struct_name)) {
+                char *m = mangle_name(it->struct_name);
+                fprintf(cg->out, "static void baga_rc_relf_%s(void *p);\n", m);
+                free(m);
+            }
+        }
         for (int i = 0; i < on; i++) {
             Node *it = nodes[order[i]];
             if (it->kind == NODE_STRUCT)
@@ -4153,9 +4256,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * притежаван 1:1 от структурата). При rc→0: release на елементите според
      * elem_kind (0 inline, 1 str, 2 struct box, 3 nested vec, 4 bytes box),
      * после free на data + struct. Nested (3) release-ва вътрешните като
-     * kind 0 — елементният им тип не е известен по време на изпълнение. */
+     * kind 0 — елементният им тип не е известен по време на изпълнение.
+     * RC5 v0.2: elem_rel е destructor на box полетата (NULL → само free). */
     if (cg->rc) {
-        fprintf(out, "static void baga_rc_release_vec(baga_Vec *v, int elem_kind, int64_t elem_size) {\n");
+        fprintf(out, "static void baga_rc_release_vec(baga_Vec *v, int elem_kind, int64_t elem_size, void (*elem_rel)(void *)) {\n");
         fprintf(out, "    if (!v) return;\n");
         fprintf(out, "    baga_Hdr *h = baga_rc_hdr((void *)v);\n");
         fprintf(out, "    if (!h) return;\n");
@@ -4164,9 +4268,9 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    if (elem_kind == 1)\n");
         fprintf(out, "        for (int64_t i = 0; i < v->len; i++) baga_rc_release_str((const char *)v->data[i]);\n");
         fprintf(out, "    else if (elem_kind == 2)\n");
-        fprintf(out, "        for (int64_t i = 0; i < v->len; i++) baga_free(v->data[i], elem_size);\n");
+        fprintf(out, "        for (int64_t i = 0; i < v->len; i++) { if (elem_rel) elem_rel(v->data[i]); baga_free(v->data[i], elem_size); }\n");
         fprintf(out, "    else if (elem_kind == 3)\n");
-        fprintf(out, "        for (int64_t i = 0; i < v->len; i++) baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0);\n");
+        fprintf(out, "        for (int64_t i = 0; i < v->len; i++) baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0, NULL);\n");
         fprintf(out, "    else if (elem_kind == 4)\n");
         fprintf(out, "        for (int64_t i = 0; i < v->len; i++) { baga_bytes *bb = (baga_bytes *)v->data[i]; baga_rc_release_bytes(*bb); baga_free(bb, elem_size); }\n");
         fprintf(out, "    baga_free(v->data, v->cap * 8);\n");
@@ -4328,6 +4432,21 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    for (int64_t i = 0; i < v->len; i++) baga_vec_push_box(r, v->data[i], size);\n");
     fprintf(out, "    for (int64_t i = 0; i < w->len; i++) baga_vec_push_box(r, w->data[i], size);\n");
     fprintf(out, "    return r; }\n");
+    /* RC5 v0.2: rc варианти — box копието споделя полетата с източника
+     * (shallow), затова ги retain-ва; симетрично с release при drop на
+     * контейнера. Пътеката без флаг остава бит-идентична. */
+    if (cg->rc) {
+        fprintf(out, "static baga_Vec *baga_vec_slice_box_rc(baga_Vec *v, int64_t a, int64_t b, int64_t size, void (*elem_retain)(void *)) {\n");
+        fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
+        fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+        fprintf(out, "    for (int64_t i = a; i < b; i++) { baga_vec_push_box(r, v->data[i], size); if (elem_retain) elem_retain(v->data[i]); }\n");
+        fprintf(out, "    return r; }\n");
+        fprintf(out, "static baga_Vec *baga_vec_concat_box_rc(baga_Vec *v, baga_Vec *w, int64_t size, void (*elem_retain)(void *)) {\n");
+        fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
+        fprintf(out, "    for (int64_t i = 0; i < v->len; i++) { baga_vec_push_box(r, v->data[i], size); if (elem_retain) elem_retain(v->data[i]); }\n");
+        fprintf(out, "    for (int64_t i = 0; i < w->len; i++) { baga_vec_push_box(r, w->data[i], size); if (elem_retain) elem_retain(w->data[i]); }\n");
+        fprintf(out, "    return r; }\n");
+    }
     /* вложени вектори (Vec<Vec<T>>): елементът е baga_Vec* — съхранява се
      * като указател; drop(outer) освобождава рекурсивно вътрешните (mode 3) */
     if (cg->rc)
@@ -4341,7 +4460,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_vec_set_vec(baga_Vec *v, int64_t i, baga_Vec *x) {\n");
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
     if (cg->rc)
-        fprintf(out, "    baga_rc_retain((void *)x); baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0);\n");
+        fprintf(out, "    baga_rc_retain((void *)x); baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0, NULL);\n");
     fprintf(out, "    v->data[i] = (void *)x;\n");
     fprintf(out, "}\n");
     /* RC3: move варианти — без retain (виж str по-горе) */
@@ -4349,7 +4468,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "static void baga_vec_push_vec_move(baga_Vec *v, baga_Vec *x) { baga_vec_grow(v); v->data[v->len++] = (void *)x; }\n");
         fprintf(out, "static void baga_vec_set_vec_move(baga_Vec *v, int64_t i, baga_Vec *x) {\n");
         fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
-        fprintf(out, "    baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0); v->data[i] = (void *)x; }\n");
+        fprintf(out, "    baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0, NULL); v->data[i] = (void *)x; }\n");
     }
     fprintf(out, "static baga_Vec *baga_vec_slice_vec(baga_Vec *v, int64_t a, int64_t b) {\n");
     fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
@@ -4606,9 +4725,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     /* RC1: release на Map — rc върху STRUCT алокацията. При rc→0 release-ва
      * ключовете (по ktag/sk на entry-то) и стойностите според val_tag
      * (0 inline, 1 str, 2 bytes, 3 struct box), после free на entries,
-     * buckets и struct. */
+     * buckets и struct. RC5 v0.2: val_rel е destructor на box полетата
+     * (NULL → само free). */
     if (cg->rc) {
-        fprintf(out, "static void baga_rc_release_map(baga_Map *m, int val_tag, int64_t val_size) {\n");
+        fprintf(out, "static void baga_rc_release_map(baga_Map *m, int val_tag, int64_t val_size, void (*val_rel)(void *)) {\n");
         fprintf(out, "    if (!m) return;\n");
         fprintf(out, "    baga_Hdr *h = baga_rc_hdr((void *)m);\n");
         fprintf(out, "    if (!h) return;\n");
@@ -4622,7 +4742,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "            else if (e->sk) baga_rc_release_str(e->sk);\n");
         fprintf(out, "            if (val_tag == 1) baga_rc_release_str(e->sv);\n");
         fprintf(out, "            else if (val_tag == 2) baga_rc_release_bytes(e->bv);\n");
-        fprintf(out, "            else if (val_tag == 3 && e->pv) baga_free(e->pv, val_size);\n");
+        fprintf(out, "            else if (val_tag == 3 && e->pv) { if (val_rel) val_rel(e->pv); baga_free(e->pv, val_size); }\n");
         fprintf(out, "            baga_free(e, (int64_t)sizeof(baga_MapEntry));\n");
         fprintf(out, "            e = nx;\n");
         fprintf(out, "        }\n");
@@ -4641,7 +4761,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * free-ват директно (може да са retain-нати от друг собственик) */
     if (cg->rc) {
         fprintf(out, "static void baga_drop_vec(baga_Vec *v, int elem_kind, int64_t elem_size) {\n");
-        fprintf(out, "    baga_rc_release_vec(v, elem_kind, elem_size);\n");
+        fprintf(out, "    baga_rc_release_vec(v, elem_kind, elem_size, NULL);\n");
         fprintf(out, "}\n");
     } else {
         fprintf(out, "static void baga_drop_vec(baga_Vec *v, int elem_kind, int64_t elem_size) {\n");
@@ -4658,7 +4778,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * release-ват по entry съдържание, затова key tag не е нужен */
     if (cg->rc) {
         fprintf(out, "static void baga_drop_map(baga_Map *m, int val_is_box, int64_t val_size) {\n");
-        fprintf(out, "    baga_rc_release_map(m, val_is_box ? 3 : 0, val_size);\n");
+        fprintf(out, "    baga_rc_release_map(m, val_is_box ? 3 : 0, val_size, NULL);\n");
         fprintf(out, "}\n");
     } else {
     fprintf(out, "static void baga_drop_map(baga_Map *m, int val_is_box, int64_t val_size) {\n");

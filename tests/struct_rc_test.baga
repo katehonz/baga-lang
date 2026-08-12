@@ -59,6 +59,35 @@ fn main() -> i64 !IO {
     check("vec_get_s", g.s == "in-vec")
     check("vec_after_get", vec_get(vs, 0).s == "in-vec")
 
+    // 6. drop на Vec<S> — полетата на box елементите се release-ват (RC5 v0.2)
+    let ws: Vec<Wrap> = vec_new()
+    for i in 0..3 {
+        vec_push(ws, Wrap { n: i, s: concat("vec", "-elem") })
+    }
+    drop(ws)
+    check("vec_drop_s", true)
+
+    // 7. scope exit на Vec<S> — същото през release на локала
+    if true {
+        let ws2: Vec<Wrap> = vec_new()
+        vec_push(ws2, Wrap { n: 7, s: concat("sc", "ope") })
+    }
+    check("vec_scope_s", true)
+
+    // 8. drop на Map<str, S> — полетата на стойностите се release-ват
+    let mw: Map<str, Wrap> = map_new()
+    map_set(mw, "k", Wrap { n: 5, s: concat("map", "-val") })
+    drop(mw)
+    check("map_drop_s", true)
+
+    // 9. vec елементът оцелява след drop на ДРУГ vec — няма споделен release
+    let keep: Vec<Wrap> = vec_new()
+    vec_push(keep, Wrap { n: 1, s: concat("ke", "ep") })
+    let tmp: Vec<Wrap> = vec_new()
+    vec_push(tmp, Wrap { n: 2, s: concat("tm", "p") })
+    drop(tmp)
+    check("vec_drop_isolated", vec_get(keep, 0).s == "keep")
+
     print("struct_rc_test: all passed")
     return 0
 }

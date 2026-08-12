@@ -1,6 +1,6 @@
-# Struct полета като собственици — design (RC5 v0.1)
+# Struct полета като собственици — design (RC5 v0.1/v0.2)
 
-Статус: **имплементиран v0.1 зад `--rc`** (C backend). Дизайн преди код,
+Статус: **v0.1 + v0.2 имплементирани зад `--rc`** (C backend). Дизайн преди код,
 както `grok-12-08-plan.md` §4. Зависи от RC1–RC4 + RC1.4.
 
 ## Проблемът
@@ -18,10 +18,41 @@ s: concat("a","b") }` → concat rc=1 в полето → scope exit тече.
 
 - Вложени struct полета (не рекурсираме).
 - Enum payload-и.
-- Полета вътре в `Vec<S>` / `Map<K,S>` при drop на контейнера
-  (elem_kind 2 още само `free` на box-а).
+- ~~Полета вътре в `Vec<S>` / `Map<K,S>` при drop на контейнера~~ —
+  **РЕШЕНО в v0.2 (виж по-долу).**
 - Closure capture на struct.
 - Release на старото поле при `s.f = x` (старото тече — leak-safe).
+
+## v0.2: drop на Vec<S> / Map<K,S> полета
+
+Container release не знае елементния тип статично, затова
+`baga_rc_release_vec`/`baga_rc_release_map` получават destructor fn pointer
+(`elem_rel`/`val_rel`, NULL → старото поведение: само `free` на box-а).
+За struct с heap полета се генерира shim `baga_rc_relf_<S>(void *p)` →
+`release_S(*p)`. Call site-овете (scope exit, temp release, reassign,
+`drop()`, Vec/Map полета в release_S) го подават чрез `rc_box_rel`
+(NULL за enum/без heap полета — поведението им е непроменено).
+
+Втори фикс в същата стъпка: `vec_push`/`vec_set`/`map_set` на **свеж struct
+литерал** вече е move в box-а (без втори retain) — литералът притежава
+полетата си (fresh или вече retain-нати borrowed) и temp-ът няма кой да го
+release-не, та retain-ът беше чист теч. Call аргумент (`vec_push(v, f())`)
+остава с retain — резултатът може да е borrowed, посоката е leak-safe.
+
+Трети фикс: `vec_slice`/`vec_concat` на `Vec<S>` правят shallow box копия
+(споделят полетата с източника). Под `--rc` вървят през
+`baga_vec_slice_box_rc`/`baga_vec_concat_box_rc` с retain shim
+`baga_rc_retp_<S>` — иначе drop на двата вектора release-ва полетата два
+пъти (rc underflow, хванато от `std/vec_struct_test`: `Line{tags: Vec<str>}`
++ slice/concat). Без флаг пътеката е непроменена (бит-идентичен emit-c).
+
+Измерено: 500k итерации vec_push+drop и map_set+drop на `Wrap{ s: str }` —
+RSS 64 MB → 10.9 MB (като leak-free базата).
+
+Останало (leak-safe, не корупция): overwrite пътеки (`vec_set`/`map_set`
+върху съществуващ slot/ключ и `map_del` пускат стария box без release на
+полетата), call-аргумент temp-ове в box push, enum payload-и, вложени
+struct-и, `Vec<S>` вътре в `Vec` (kind 3 няма тип по време на изпълнение).
 
 ## Правила
 
