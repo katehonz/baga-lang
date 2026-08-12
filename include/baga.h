@@ -502,6 +502,21 @@ typedef struct {
 } RcLocal;
 typedef struct { int top; int is_loop; } RcScope;
 
+/* RC2 (move elision, docs/move-semantics-bg.md): last-use запис за едно
+ * binding име в текущата функция. Попълва се от pre-pass обход преди
+ * emission на всяка fn/ламбда. Имената са borrowed AST указатели. */
+typedef struct {
+    const char *name;    /* baga име (borrowed от AST) */
+    Node *site;          /* Node* на последната текстуална употреба */
+    Node *decl_loop;     /* loop, в чието тяло е деклариран (NULL = извън) */
+    Node *site_loop;     /* loop, в чието тяло е последната употреба */
+    int   site_in_cond;  /* последната употреба е в if/match клон */
+    int   n_lets;        /* брой let декларации с името (shadowing → изкл.) */
+    int   captured;      /* capture-нат от ламбда във fn → изключва move */
+    int   in_match;      /* има употреба в match arm → изключва move */
+} RcUse;
+typedef VEC(RcUse) RcUseVec;
+
 typedef struct {
     FILE *out;
     int   indent;
@@ -515,6 +530,15 @@ typedef struct {
     int   rc_fn_base;   /* RC1: scope индекс на текущата fn/ламбда (return
                          * release-ва само до тук — ламбдите са отделни C
                          * функции и не пипат enclosing локалите) */
+    RcUseVec rc_lus;    /* RC2: last-use записи на текущата fn/ламбда */
+    int   rc_moves;     /* RC2: брой елиминирани retain-ове (move сайтове) */
+    /* RC2.1: borrowed-retain elision — контекст на текущия block statement
+     * (за сканиране на опашката на scope-а) + брояч на елиминираните двойки */
+    Node *rc_cur_blk;
+    int   rc_cur_idx;
+    Node *rc_cur_fn;    /* тялото на текущата fn/ламбда (за глобалния
+                         * alias scan на източника) */
+    int   rc_elided_pairs;
 } Codegen;
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);

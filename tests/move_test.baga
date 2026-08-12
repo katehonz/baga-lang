@@ -1,0 +1,121 @@
+// move_test — RC2: move elision за struct threading (етап 2,
+// docs/move-semantics-bg.md). Самата оптимизация е невидима семантично —
+// тестът доказва коректност: стойностите са верни и няма underflow/crash
+// при last-use копия (move), срещу употреби след клона (без move).
+// Минава и без --rc (baga-test го пуска без флага), и с --rc.
+
+import "std/str/str.baga"
+
+struct Wrap {
+    n: i64,
+    s: str,
+    s2: str,
+    v: Vec<str>
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// struct-lit embed: s и v са last-use в return литерала → move
+fn make_pair(tag: str) -> Wrap {
+    let s = concat("pair-", tag)
+    let v: Vec<str> = vec_new()
+    vec_push(v, s)
+    vec_push(v, "lit-elem")
+    return Wrap { n: 1, s: s, s2: "", v: v }
+}
+
+// threading: полетата на параметъра са borrowed (не move), стойността върви
+fn rewrap(w: Wrap) -> Wrap {
+    return Wrap { n: w.n + 1, s: w.s, s2: w.s2, v: w.v }
+}
+
+// move в if клон (ранен return — RC1 move, не RC2)
+fn cond_early(c: bool) -> str {
+    let s = concat("early", "-ok")
+    if c {
+        return s
+    }
+    return "other"
+}
+
+// употреба в клон + след клона → НЯМА move; стойността остава жива
+fn cond_use_after(c: bool) -> str {
+    let s = concat("after", "-ok")
+    if c {
+        print(concat("  (branch saw ", concat(s, ")")))
+    }
+    return s
+}
+
+// field assign last-use → move: t преминава в полето без retain
+fn field_move() -> Wrap {
+    let mut w = make_pair("fld")
+    let t = concat("field-", "moved")
+    w.s2 = t
+    return w
+}
+
+fn main() -> i64 !IO {
+    // 1. threading верига x = f(x): heap полета вървят през копията
+    let mut x = make_pair("a")
+    x = rewrap(x)
+    x = rewrap(x)
+    x = rewrap(x)
+    check("threading_chain", x.n == 4 && x.s == "pair-a" && vec_get(x.v, 0) == "pair-a")
+
+    // 2. struct-lit embed last-use: стойностите са във финалния struct
+    let p = make_pair("embed")
+    check("struct_lit_embed", p.s == "pair-embed" && vec_len(p.v) == 2 && vec_get(p.v, 1) == "lit-elem")
+
+    // 3. move в if клон (ранен return) — двата пътя
+    check("if_branch_move_true", cond_early(true) == "early-ok")
+    check("if_branch_move_false", cond_early(false) == "other")
+
+    // 4. употреба след клона → без move, стойността жива
+    check("use_after_branch", cond_use_after(true) == "after-ok")
+    check("use_after_branch_false", cond_use_after(false) == "after-ok")
+
+    // 5. цикъл: loop-carried binding (acc) НЕ се move-ва; iteration-local
+    // alias (it2) се move-ва на последната си употреба — и двете коректни
+    let acc: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    let mut total: i64 = 0
+    while i < 200 {
+        let it = concat("it", int_to_str(i))
+        let it2 = it
+        vec_push(acc, it2)
+        i = i + 1
+    }
+    i = 0
+    while i < 200 {
+        total = total + len(vec_get(acc, i))
+        i = i + 1
+    }
+    check("loop_carried_alive", vec_len(acc) == 200 && vec_get(acc, 0) == "it0" && vec_get(acc, 199) == "it199")
+    check("loop_values", total > 0)
+
+    // 6. struct-lit embed last-use в цикъл (iteration-local)
+    let mut j: i64 = 0
+    let mut sum: i64 = 0
+    while j < 100 {
+        let s = concat("s", int_to_str(j))
+        let w = Wrap { n: j, s: s, s2: "", v: vec_new() }
+        sum = sum + len(w.s)
+        j = j + 1
+    }
+    check("loop_embed_move", sum > 0)
+
+    // 7. field assign last-use → move
+    let fm = field_move()
+    check("field_assign_move", fm.s2 == "field-moved" && fm.s == "pair-fld")
+
+    print("move_test: all passed")
+    return 0
+}

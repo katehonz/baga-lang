@@ -1,0 +1,135 @@
+// borrow_test — RC2.1: elision на borrowed-retain двойки
+// (docs/memory-rc-bg.md §v2.1). Elision-ът е невидим семантично — тестът
+// доказва: (1) чисто заеманият локал чете правилно и умира в scope-а;
+// (2) НЕ-elided случаите (escape чрез push/return, мутация на източника
+// след заемане) ЗАПАЗВАТ retain-а и стойността оцелява.
+// Минава и без --rc (baga-test го пуска без флага), и с --rc.
+
+import "std/str/str.baga"
+
+struct Holder {
+    name: str,
+    data: Vec<str>
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// (1) elided: k само се чете (args на pure повиквания) и умира в scope-а
+fn read_only(v: Vec<str>, i: i64) -> str {
+    let k = vec_get(v, i)
+    if len(k) > 100 {
+        return "big"
+    }
+    return concat("[", concat(k, "]"))
+}
+
+// (2a) НЕ elided: escape чрез push — retain пази стойността в новия vec
+fn escape_push(v: Vec<str>) -> Vec<str> {
+    let w: Vec<str> = vec_new()
+    let k = vec_get(v, 0)
+    vec_push(w, k)
+    return w
+}
+
+// (2б) НЕ elided: escape чрез return
+fn escape_return(v: Vec<str>) -> str {
+    let k = vec_get(v, 0)
+    return k
+}
+
+// (2в) НЕ elided: мутация на източника СЛЕД заемане — retain пази старата
+// стойност (vec_set release-ва стария елемент във vec-а)
+fn mutate_source_vec(v: Vec<str>) -> str {
+    let k = vec_get(v, 0)
+    vec_set(v, 0, "replaced")
+    return k
+}
+
+fn mutate_source_map(m: Map<str, str>) -> str {
+    let k = map_get(m, "a")
+    map_set(m, "a", "new-a")
+    return k
+}
+
+// (2г) НЕ elided: мутация на struct източник след field заемане
+fn mutate_struct() -> str {
+    let mut h = Holder { name: "orig-name", data: vec_new() }
+    let f = h.name
+    h.name = "changed"
+    return f
+}
+
+// (2д) НЕ elided: алиас на източника — мутацията през него е невидима;
+// консервативно retain-ът остава
+fn alias_mutation(m: Map<str, str>) -> str {
+    let m2 = m
+    let k = map_get(m, "a")
+    map_set(m2, "a", "via-alias")
+    return k
+}
+
+// (2е) НЕ elided: drop на заеманата стойност (drop е release път — трябва
+// нашата retain референция, иначе underflow при release на vec-а)
+fn drop_borrowed(v: Vec<bytes>) -> i64 {
+    let k = vec_get(v, 1)
+    drop(k)
+    return vec_len(v)
+}
+
+fn main() -> i64 !IO {
+    let v: Vec<str> = vec_new()
+    vec_push(v, "orig")
+    vec_push(v, "second")
+
+    // elided случаи — четенето е вярно по всички пътища
+    check("elided_read_0", read_only(v, 0) == "[orig]")
+    check("elided_read_1", read_only(v, 1) == "[second]")
+
+    // не-elided: стойностите оцеляват escape/мутация
+    check("escape_push", vec_len(escape_push(v)) == 1 && vec_get(escape_push(v), 0) == "orig")
+    check("escape_return", escape_return(v) == "orig")
+
+    let v2: Vec<str> = vec_new()
+    vec_push(v2, "keep-me")
+    vec_push(v2, "other")
+    check("mutate_source_vec", mutate_source_vec(v2) == "keep-me")
+    check("mutated_vec_now", vec_get(v2, 0) == "replaced")
+
+    let m: Map<str, str> = map_new()
+    map_set(m, "a", "old-a")
+    check("mutate_source_map", mutate_source_map(m) == "old-a")
+    check("mutated_map_now", map_get(m, "a") == "new-a")
+
+    check("mutate_struct", mutate_struct() == "orig-name")
+
+    let m3: Map<str, str> = map_new()
+    map_set(m3, "a", "alias-old")
+    check("alias_mutation", alias_mutation(m3) == "alias-old")
+    check("alias_mutated_now", map_get(m3, "a") == "via-alias")
+
+    let vb: Vec<bytes> = vec_new()
+    vec_push(vb, bytes_of_str("bb0"))
+    vec_push(vb, bytes_of_str("bb1"))
+    check("drop_borrowed", drop_borrowed(vb) == 2)
+
+    // заемане от field верига (база ident) + loop: per-итерация borrow
+    let h = Holder { name: "h", data: v }
+    let mut i: i64 = 0
+    let mut total: i64 = 0
+    while i < vec_len(h.data) {
+        let e = vec_get(h.data, i)
+        total = total + len(e)
+        i = i + 1
+    }
+    check("field_chain_loop", total == len("orig") + len("second"))
+
+    print("borrow_test: all passed")
+    return 0
+}

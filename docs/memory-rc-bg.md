@@ -51,6 +51,54 @@ codegen) или move-семантика за struct threading (етап 2).
 - Struct полета и closure capture — v0.2+ (виж §Ограничения).
 - LLVM backend — не поддържа persist изобщо; RC е C backend само.
 
+## v2.1: elision на borrowed-retain двойки
+
+Контекст: остатъчният --rc overhead след RC1+RC2 (~×1.20 user на boilaDB
+insert bench) е предимно retain/release трафик от `let x = <borrowed>`
+връзвания (`vec_get`/`map_get`/struct поле → retain при връзване +
+release при scope exit). Когато локалът само се чете и умира в scope-а,
+двойката е чиста загуба.
+
+**Правило:** за `let x = <borrowed израз>` двойката се ЕЛИМИНИРА (нито
+retain при връзване, нито регистрация за scope release — локалът е чисто
+заеман) САМО ако са изпълнени и двете условия в прозореца от let-а до
+края на enclosing блока (scope-а на x):
+
+- **(а) x не escape-ва:** не е аргумент на drop/vec_push/vec_set/map_set/
+  map_del, не е пряк `return x`, не е вграден в struct литерал, не е
+  присвоен на друго име (`let y = x` или `y = x`), не е capture-нат от
+  ламбда, не е преприсвоен (`x = …`). Извиквания с x като аргумент са ОК
+  (параметрите са borrowed по конвенция).
+- **(б) източникът не се мутира и не се алиасира:** източният
+  контейнер/struct (базов ident на field верига — `v`, `m`, `sel` в
+  `sel.group_cols`) не е в цялата функция: алиасиран под друго име
+  (`let m2 = m`, `s.f = m`, struct литерал, lambda capture, аргумент на
+  vec_push/vec_set/map_set/map_del/drop или на не-pure повикване), а в
+  прозореца след let-а също: цел на присвояване или field/index assign.
+  Алиасите се изключват глобално, защото мутация през тях в прозореца е
+  невидима за локален анализ.
+
+Несигурно → днешното поведение (retain при връзване + регистрация).
+Брояч: `/* RC2.1: borrowed pair elisions: N */` в края на изхода.
+Assign-формата (`x = <borrowed>` в съществуващ локал) НЕ се елиминира в
+v2.1 (flow-sensitive dead маркиране — отложено).
+
+**Резултати (v2.1, boilaDB 100k insert bench, същата машина):**
+- Елиминирани двойки: **42** в insert_write компилацията (първоначално 84
+  преди whole-fn alias scan-а — консервативната цена), 2 в borrow_test.
+- Bench: wall 47.7 s (без промяна), user 33.0 s (×1.19 спрямо 27.7 s
+  baseline — в шума на RC2 build-а, целта ≤ ×1.05 отново не е
+  постигната), peak RSS 1.88 GB, verify DURABLE OK.
+- Извод: механизмът е коректен и безопасен, но elidable сайтовете са
+  малко и извън горещите пътеки на този bench. Остатъчният трафик:
+  container retains при push/set, alias-и на параметри (borrowed — не
+  подлежат на elision), и borrowed връзвания, които escape-ват в
+  struct/контейнер (самата threading идиома). Верификация: 24/24 --rc
+  батерия (с borrow_test), ASan чист, 148/153 пакет без флаг,
+  бит-идентичен emit-c без флаг. Следваща цел: container move варианти
+  (push/set без retain при last-use аргумент — по-горещите пътеки) или
+  param-alias pair elision.
+
 ## Механика
 
 ### Header

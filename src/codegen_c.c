@@ -308,6 +308,436 @@ static void rc_register(Codegen *cg, const char *name, int tag, Type *ty,
     rc_register_node(cg, name, tag, ty, NULL, is_param);
 }
 
+/* ---- RC2 (move elision): last-use pre-pass + copy-site проверка ----
+ * Дизайн: docs/move-semantics-bg.md. Per функция def-use обход на AST-то;
+ * move сайт е копие (let alias / struct-lit embed / field assign / assign),
+ * чийто източник е при ПОСЛЕДНАТА си текстуална употреба — retain-ът се
+ * пропуска, binding-ът се маркира dead (scope release отпада).
+ * Консервативно: shadowing, lambda capture, match arm, loop-carried
+ * (употреба в/след цикъл при binding извън него) изключват move. */
+
+/* флагове на обхода: bit0 = в if/match клон, bit1 = в match arm */
+#define RC_LU_COND  1
+#define RC_LU_MATCH 2
+
+static RcUse *rc_lu_rec(Codegen *cg, const char *name) {
+    for (int i = 0; i < cg->rc_lus.len; i++)
+        if (strcmp(cg->rc_lus.data[i].name, name) == 0)
+            return &cg->rc_lus.data[i];
+    vec_push(cg->rc_lus, ((RcUse){ name, NULL, NULL, NULL, 0, 0, 0, 0 }));
+    return &cg->rc_lus.data[cg->rc_lus.len - 1];
+}
+
+/* употреба на ident в израз — последната текстуална печели (презаписва) */
+static void rc_lu_use(Codegen *cg, Node *ident, Node *loop, int flags) {
+    RcUse *u = rc_lu_rec(cg, ident->name);
+    u->site = ident;
+    u->site_loop = loop;
+    u->site_in_cond = (flags & RC_LU_COND) != 0;
+    if (flags & RC_LU_MATCH) u->in_match = 1;
+}
+
+static void rc_lu_stmts(Codegen *cg, NodeVec *stmts, Node *loop, int flags);
+
+static void rc_lu_expr(Codegen *cg, Node *n, Node *loop, int flags) {
+    if (!n) return;
+    switch (n->kind) {
+        case NODE_IDENT:
+            rc_lu_use(cg, n, loop, flags);
+            break;
+        case NODE_BINARY:
+            rc_lu_expr(cg, n->left, loop, flags);
+            rc_lu_expr(cg, n->right, loop, flags);
+            break;
+        case NODE_UNARY:
+            rc_lu_expr(cg, n->operand, loop, flags);
+            break;
+        case NODE_CALL:
+            /* callee ident (fn име) — брои се като употреба (консервативно) */
+            rc_lu_expr(cg, n->callee, loop, flags);
+            for (int i = 0; i < n->args.len; i++)
+                rc_lu_expr(cg, n->args.data[i], loop, flags);
+            break;
+        case NODE_IF:
+            rc_lu_expr(cg, n->cond, loop, flags);
+            if (n->then_br && n->then_br->kind == NODE_BLOCK)
+                rc_lu_stmts(cg, &n->then_br->stmts, loop, flags | RC_LU_COND);
+            if (n->else_br && n->else_br->kind == NODE_BLOCK)
+                rc_lu_stmts(cg, &n->else_br->stmts, loop, flags | RC_LU_COND);
+            break;
+        case NODE_BLOCK:
+            rc_lu_stmts(cg, &n->stmts, loop, flags);
+            break;
+        case NODE_INDEX:
+            rc_lu_expr(cg, n->obj, loop, flags);
+            rc_lu_expr(cg, n->index, loop, flags);
+            break;
+        case NODE_ELEM_REF:
+            rc_lu_expr(cg, n->elem_obj, loop, flags);
+            break;
+        case NODE_FIELD:
+            rc_lu_expr(cg, n->field_obj, loop, flags);
+            break;
+        case NODE_ASSIGN:
+            /* target-ът е запис, не употреба; само сложни цели четат обекта */
+            if (n->assign_target && n->assign_target->kind == NODE_FIELD)
+                rc_lu_expr(cg, n->assign_target->field_obj, loop, flags);
+            else if (n->assign_target && n->assign_target->kind == NODE_INDEX) {
+                rc_lu_expr(cg, n->assign_target->obj, loop, flags);
+                rc_lu_expr(cg, n->assign_target->index, loop, flags);
+            }
+            rc_lu_expr(cg, n->assign_val, loop, flags);
+            break;
+        case NODE_RANGE:
+            rc_lu_expr(cg, n->range_lo, loop, flags);
+            rc_lu_expr(cg, n->range_hi, loop, flags);
+            break;
+        case NODE_STRUCT_LIT:
+            for (int i = 0; i < n->n_lit_fields; i++)
+                rc_lu_expr(cg, n->lit_values.data[i], loop, flags);
+            break;
+        case NODE_TRY:
+            rc_lu_expr(cg, n->try_expr, loop, flags);
+            break;
+        case NODE_CATCH:
+            rc_lu_expr(cg, n->catch_expr, loop, flags);
+            rc_lu_expr(cg, n->catch_handler, loop, flags);
+            break;
+        case NODE_TO_STR:
+            rc_lu_expr(cg, n->to_str_expr, loop, flags);
+            break;
+        case NODE_LAMBDA:
+            /* capture = употреба, която изключва move (env изживява scope-а);
+             * тялото е отделна функция — анализира се при нейния emission */
+            for (int i = 0; i < n->captures.len; i++)
+                rc_lu_rec(cg, n->captures.data[i]->param_name)->captured = 1;
+            break;
+        case NODE_MATCH:
+            rc_lu_expr(cg, n->match_expr, loop, flags);
+            for (int i = 0; i < n->match_arms.len; i++) {
+                Node *arm = n->match_arms.data[i];
+                if (arm->arm_pattern)
+                    rc_lu_expr(cg, arm->arm_pattern, loop, flags);
+                if (arm->arm_body && arm->arm_body->kind == NODE_BLOCK)
+                    rc_lu_stmts(cg, &arm->arm_body->stmts, loop,
+                                flags | RC_LU_COND | RC_LU_MATCH);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static void rc_lu_stmt(Codegen *cg, Node *n, Node *loop, int flags) {
+    if (!n) return;
+    switch (n->kind) {
+        case NODE_LET:
+            {
+                RcUse *u = rc_lu_rec(cg, n->let_name);
+                if (u->n_lets == 0) u->decl_loop = loop;
+                u->n_lets++;
+            }
+            if (n->let_init) rc_lu_expr(cg, n->let_init, loop, flags);
+            break;
+        case NODE_RETURN:
+            if (n->ret_val) rc_lu_expr(cg, n->ret_val, loop, flags);
+            break;
+        case NODE_WHILE:
+            rc_lu_expr(cg, n->while_cond, loop, flags);
+            if (n->while_body && n->while_body->kind == NODE_BLOCK)
+                rc_lu_stmts(cg, &n->while_body->stmts, n, flags);
+            break;
+        case NODE_FOR:
+            if (n->for_iter) rc_lu_expr(cg, n->for_iter, loop, flags);
+            if (n->for_body && n->for_body->kind == NODE_BLOCK)
+                rc_lu_stmts(cg, &n->for_body->stmts, n, flags);
+            break;
+        case NODE_IF:
+            rc_lu_expr(cg, n->cond, loop, flags);
+            if (n->then_br && n->then_br->kind == NODE_BLOCK)
+                rc_lu_stmts(cg, &n->then_br->stmts, loop, flags | RC_LU_COND);
+            if (n->else_br && n->else_br->kind == NODE_BLOCK)
+                rc_lu_stmts(cg, &n->else_br->stmts, loop, flags | RC_LU_COND);
+            break;
+        case NODE_EXPR_STMT:
+            rc_lu_expr(cg, n->expr, loop, flags);
+            break;
+        case NODE_BLOCK:
+            rc_lu_stmts(cg, &n->stmts, loop, flags);
+            break;
+        default:
+            break;
+    }
+}
+
+static void rc_lu_stmts(Codegen *cg, NodeVec *stmts, Node *loop, int flags) {
+    for (int i = 0; i < stmts->len; i++)
+        rc_lu_stmt(cg, stmts->data[i], loop, flags);
+}
+
+/* move сайт ли е тази употреба? ident е Node* на конкретната употреба,
+ * src_idx — записът на източника в rc_locals (или -1). */
+static int rc_is_move(Codegen *cg, Node *ident, int src_idx) {
+    if (!cg->rc || !ident || ident->kind != NODE_IDENT) return 0;
+    if (src_idx < 0 || cg->rc_locals.data[src_idx].is_param) return 0;
+    for (int i = 0; i < cg->rc_lus.len; i++) {
+        RcUse *u = &cg->rc_lus.data[i];
+        if (strcmp(u->name, ident->name) != 0) continue;
+        if (u->site != ident || u->n_lets != 1 || u->captured || u->in_match)
+            return 0;
+        /* loop правило: move в цикъл само ако bindingът е от същата итерация;
+         * в клон на if/match вътре в цикъл — не (другият път тече всяка итер.) */
+        if (u->site_loop != u->decl_loop) return 0;
+        if (u->site_loop && u->site_in_cond) return 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* move сайт: пропусни retain-а, маркирай източника dead (site е текстуално
+ * последната употреба → текстуалното маркиране е безопасно) */
+static void rc_do_move(Codegen *cg, int src_idx) {
+    cg->rc_locals.data[src_idx].dead = 1;
+    cg->rc_moves++;
+}
+
+/* ---- RC2.1: elision на borrowed-retain двойки ----
+ * `let x = <borrowed>` (vec_get/map_get/struct поле): ако x не escape-ва
+ * от scope-а и източникът не се мутира в него, retain-ът при връзване и
+ * scope release-ът са чиста загуба — пропускаме и двете (локалът е чисто
+ * заеман, невидим за rc). Правила: docs/memory-rc-bg.md §v2.1. */
+
+typedef struct {
+    const char *x;    /* името на заемания локал */
+    const char *src;  /* базовото име на източника (контейнер/struct) */
+    int   bad;
+} RcBe;
+
+/* чисти builtin-и: повикване с източника като аргумент не го мутира */
+static int rc_be_pure_call(const char *bn) {
+    static const char *pure[] = {
+        "len", "char_at", "byte_at", "byte_chr", "substr", "concat",
+        "chr", "ord", "str_eq", "i64_to_str", "f64_to_str",
+        "print", "println", "write", "eprintln",
+        "vec_get", "vec_len", "vec_slice", "vec_concat",
+        "map_get", "map_len", "map_has",
+        "bytes_len", "bytes_at", "bytes_slice", "bytes_concat",
+        "bytes_of_str", "str_of_bytes", "hex_encode", "hex_decode",
+        "bytes_from_vec", "vec_from_bytes",
+    };
+    for (size_t i = 0; i < sizeof(pure) / sizeof(pure[0]); i++)
+        if (strcmp(bn, pure[i]) == 0) return 1;
+    return 0;
+}
+
+/* базов ident на верига полета (sel в sel.group_cols); NULL = неразпознат */
+static const char *rc_be_base_ident(Node *e) {
+    while (e) {
+        if (e->kind == NODE_IDENT) return e->name;
+        if (e->kind == NODE_FIELD) { e = e->field_obj; continue; }
+        return NULL;
+    }
+    return NULL;
+}
+
+/* името на източника на заемането (контейнер/struct), или NULL */
+static const char *rc_borrow_src_name(Node *init) {
+    if (init->kind == NODE_CALL && init->callee &&
+        init->callee->kind == NODE_IDENT &&
+        (strncmp(init->callee->name, "vec_get", 7) == 0 ||
+         strncmp(init->callee->name, "map_get", 7) == 0) &&
+        init->args.len >= 1)
+        return rc_be_base_ident(init->args.data[0]);
+    if (init->kind == NODE_FIELD)
+        return rc_be_base_ident(init);
+    return NULL;
+}
+
+static int rc_be_is(Node *n, const char *name) {
+    return n && n->kind == NODE_IDENT && strcmp(n->name, name) == 0;
+}
+
+static void rc_be_expr(RcBe *be, Node *n);
+static void rc_be_stmts(RcBe *be, NodeVec *stmts);
+
+static void rc_be_call(RcBe *be, Node *n) {
+    const char *bn = (n->callee && n->callee->kind == NODE_IDENT)
+                     ? n->callee->name : NULL;
+    if (bn && strcmp(bn, "drop") == 0) {
+        /* drop на x = release път (трябва нашата референция); на src — мутация */
+        for (int i = 0; i < n->args.len; i++)
+            if (rc_be_is(n->args.data[i], be->x) ||
+                rc_be_is(n->args.data[i], be->src))
+                be->bad = 1;
+        return;
+    }
+    if (bn && (strncmp(bn, "vec_push", 8) == 0 || strncmp(bn, "vec_set", 7) == 0 ||
+               strncmp(bn, "map_set", 7) == 0 || strncmp(bn, "map_del", 7) == 0 ||
+               strncmp(bn, "sort", 4) == 0)) {
+        /* x в контейнерна операция = escape (правило а);
+         * src (вкл. по база на field) в нея = мутация (правило б) */
+        for (int i = 0; i < n->args.len; i++) {
+            if (rc_be_is(n->args.data[i], be->x)) be->bad = 1;
+            const char *b = rc_be_base_ident(n->args.data[i]);
+            if (b && strcmp(b, be->src) == 0) be->bad = 1;
+        }
+    } else if (bn && !rc_be_pure_call(bn)) {
+        /* консервативно: src в не-pure повикване = възможна мутация */
+        for (int i = 0; i < n->args.len; i++) {
+            const char *b = rc_be_base_ident(n->args.data[i]);
+            if (b && strcmp(b, be->src) == 0) be->bad = 1;
+        }
+    }
+    /* x като аргумент на pure/друго повикване = четене (params са borrowed) */
+    if (n->callee && n->callee->kind != NODE_IDENT) rc_be_expr(be, n->callee);
+    for (int i = 0; i < n->args.len; i++) rc_be_expr(be, n->args.data[i]);
+}
+
+static void rc_be_expr(RcBe *be, Node *n) {
+    if (!n || be->bad) return;
+    switch (n->kind) {
+        case NODE_CALL: rc_be_call(be, n); break;
+        case NODE_BINARY:
+            rc_be_expr(be, n->left); rc_be_expr(be, n->right); break;
+        case NODE_UNARY: rc_be_expr(be, n->operand); break;
+        case NODE_IF:
+            rc_be_expr(be, n->cond);
+            if (n->then_br && n->then_br->kind == NODE_BLOCK)
+                rc_be_stmts(be, &n->then_br->stmts);
+            if (n->else_br && n->else_br->kind == NODE_BLOCK)
+                rc_be_stmts(be, &n->else_br->stmts);
+            break;
+        case NODE_BLOCK: rc_be_stmts(be, &n->stmts); break;
+        case NODE_INDEX:
+            rc_be_expr(be, n->obj); rc_be_expr(be, n->index); break;
+        case NODE_ELEM_REF: rc_be_expr(be, n->elem_obj); break;
+        case NODE_FIELD: rc_be_expr(be, n->field_obj); break;
+        case NODE_ASSIGN:
+            /* преприсвояване на x = прекъсва borrow-а; мутация на src;
+             * x/src като стойност = escape/алиас */
+            if (rc_be_is(n->assign_target, be->x) ||
+                rc_be_is(n->assign_target, be->src))
+                be->bad = 1;
+            if (n->assign_target && n->assign_target->kind == NODE_FIELD) {
+                const char *b = rc_be_base_ident(n->assign_target->field_obj);
+                if (b && strcmp(b, be->src) == 0) be->bad = 1;
+                rc_be_expr(be, n->assign_target->field_obj);
+            } else if (n->assign_target && n->assign_target->kind == NODE_INDEX) {
+                const char *b = rc_be_base_ident(n->assign_target->obj);
+                if (b && strcmp(b, be->src) == 0) be->bad = 1;
+                rc_be_expr(be, n->assign_target->obj);
+                rc_be_expr(be, n->assign_target->index);
+            }
+            if (rc_be_is(n->assign_val, be->x) ||
+                rc_be_is(n->assign_val, be->src))
+                be->bad = 1;
+            else
+                rc_be_expr(be, n->assign_val);
+            break;
+        case NODE_STRUCT_LIT:
+            for (int i = 0; i < n->n_lit_fields; i++) {
+                Node *val = n->lit_values.data[i];
+                /* x embed = escape (правило а); src embed = алиас път —
+                 * мутацията през него е невидима за анализа (правило б) */
+                if (rc_be_is(val, be->x) || rc_be_is(val, be->src))
+                    be->bad = 1;
+                else
+                    rc_be_expr(be, val);
+            }
+            break;
+        case NODE_LAMBDA:
+            /* capture на x (escape) или src (консервативно) */
+            for (int i = 0; i < n->captures.len; i++) {
+                const char *cn = n->captures.data[i]->param_name;
+                if (strcmp(cn, be->x) == 0 || strcmp(cn, be->src) == 0)
+                    be->bad = 1;
+            }
+            break;
+        case NODE_RANGE:
+            rc_be_expr(be, n->range_lo); rc_be_expr(be, n->range_hi); break;
+        case NODE_TRY: rc_be_expr(be, n->try_expr); break;
+        case NODE_CATCH:
+            rc_be_expr(be, n->catch_expr); rc_be_expr(be, n->catch_handler); break;
+        case NODE_TO_STR: rc_be_expr(be, n->to_str_expr); break;
+        case NODE_MATCH:
+            rc_be_expr(be, n->match_expr);
+            for (int i = 0; i < n->match_arms.len; i++) {
+                Node *arm = n->match_arms.data[i];
+                if (arm->arm_pattern) rc_be_expr(be, arm->arm_pattern);
+                if (arm->arm_body && arm->arm_body->kind == NODE_BLOCK)
+                    rc_be_stmts(be, &arm->arm_body->stmts);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static void rc_be_stmt(RcBe *be, Node *n) {
+    if (!n || be->bad) return;
+    switch (n->kind) {
+        case NODE_LET:
+            /* alias на x (escape) или на src (скрита мутация по-късно) */
+            if (rc_be_is(n->let_init, be->x) || rc_be_is(n->let_init, be->src))
+                be->bad = 1;
+            else
+                rc_be_expr(be, n->let_init);
+            break;
+        case NODE_RETURN:
+            /* return x = escape; return <израз с x> = четене */
+            if (rc_be_is(n->ret_val, be->x)) be->bad = 1;
+            else rc_be_expr(be, n->ret_val);
+            break;
+        case NODE_WHILE:
+            rc_be_expr(be, n->while_cond);
+            if (n->while_body && n->while_body->kind == NODE_BLOCK)
+                rc_be_stmts(be, &n->while_body->stmts);
+            break;
+        case NODE_FOR:
+            if (n->for_iter) rc_be_expr(be, n->for_iter);
+            if (n->for_body && n->for_body->kind == NODE_BLOCK)
+                rc_be_stmts(be, &n->for_body->stmts);
+            break;
+        case NODE_IF:
+            rc_be_expr(be, n->cond);
+            if (n->then_br && n->then_br->kind == NODE_BLOCK)
+                rc_be_stmts(be, &n->then_br->stmts);
+            if (n->else_br && n->else_br->kind == NODE_BLOCK)
+                rc_be_stmts(be, &n->else_br->stmts);
+            break;
+        case NODE_EXPR_STMT: rc_be_expr(be, n->expr); break;
+        case NODE_BLOCK: rc_be_stmts(be, &n->stmts); break;
+        default: break;
+    }
+}
+
+static void rc_be_stmts(RcBe *be, NodeVec *stmts) {
+    for (int i = 0; i < stmts->len && !be->bad; i++)
+        rc_be_stmt(be, stmts->data[i]);
+}
+
+/* допустимо ли е elision за `let x = <borrowed от src>` — (а) опашката на
+ * текущия block след let-а (escape/мутация в scope-а), (б) цялата функция
+ * (алиас/складиране на src — мутация през тях би била невидима) */
+static int rc_be_ok(Codegen *cg, const char *x, const char *src) {
+    if (!cg->rc || !cg->rc_cur_blk || cg->rc_cur_idx < 0) return 0;
+    if (strcmp(x, src) == 0) return 0;
+    /* (б) глобален scan: src не бива да излиза от binding-а си никъде във fn */
+    if (cg->rc_cur_fn) {
+        RcBe whole = { "", src, 0 };
+        rc_be_stmts(&whole, &cg->rc_cur_fn->stmts);
+        if (whole.bad) return 0;
+    } else {
+        return 0;
+    }
+    /* (а) опашка на scope-а: x не escape-ва, src не се мутира */
+    RcBe be = { x, src, 0 };
+    NodeVec *stmts = &cg->rc_cur_blk->stmts;
+    for (int i = cg->rc_cur_idx + 1; i < stmts->len && !be.bad; i++)
+        rc_be_stmt(&be, stmts->data[i]);
+    return !be.bad;
+}
+
 
 /* ---- type mapping ---- */
 
@@ -1188,7 +1618,13 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (keep && n->assign_val->kind == NODE_IDENT) {
                         int si = rc_find(cg, n->assign_val->name);
                         if (si >= 0 && !cg->rc_locals.data[si].dead) {
-                            if (e.tag == 2)
+                            /* RC2: последна употреба на източника → move:
+                             * старата стойност се release-ва, новата идва
+                             * като преместена референция (без retain).
+                             * `x = x` не е move — release-ът би я обесил. */
+                            if (si != idx && rc_is_move(cg, n->assign_val, si)) {
+                                rc_do_move(cg, si);
+                            } else if (e.tag == 2)
                                 fprintf(f, "baga_rc_retain((void *)__rc_asn.data); ");
                             else
                                 fprintf(f, "baga_rc_retain((void *)__rc_asn); ");
@@ -1216,6 +1652,15 @@ static void emit_expr(Codegen *cg, Node *n) {
                 n->assign_val->kind == NODE_IDENT) {
                 int si = rc_find(cg, n->assign_val->name);
                 if (si >= 0 && !cg->rc_locals.data[si].dead) {
+                    /* RC2: последна употреба → move (обикновено присвояване,
+                     * без retain; източникът умира тук) */
+                    if (rc_is_move(cg, n->assign_val, si)) {
+                        rc_do_move(cg, si);
+                        emit_expr(cg, n->assign_target);
+                        fprintf(f, " = ");
+                        emit_expr(cg, n->assign_val);
+                        break;
+                    }
                     RcLocal src = cg->rc_locals.data[si];
                     fprintf(f, "({ __auto_type __rc_fa = ");
                     emit_expr(cg, n->assign_val);
@@ -1254,7 +1699,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                     Node *val = n->lit_values.data[i];
                     if (val->kind != NODE_IDENT) continue;
                     int si = rc_find(cg, val->name);
-                    if (si >= 0 && !cg->rc_locals.data[si].dead) nemb++;
+                    /* RC2: move сайтовете не се retain-ват (виж втория проход) */
+                    if (si >= 0 && !cg->rc_locals.data[si].dead &&
+                        !rc_is_move(cg, val, si))
+                        nemb++;
                 }
             }
             if (nemb > 0) fprintf(f, "({ %s __rc_sl = ", sm);
@@ -1273,7 +1721,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                     Node *val = n->lit_values.data[i];
                     if (val->kind != NODE_IDENT) continue;
                     int si = rc_find(cg, val->name);
-                    if (si < 0 || cg->rc_locals.data[si].dead) continue;
+                    if (si < 0 || cg->rc_locals.data[si].dead ||
+                        rc_is_move(cg, val, si))
+                        continue;
                     if (cg->rc_locals.data[si].tag == 2)
                         fprintf(f, "baga_rc_retain((void *)%s.data); ",
                                 cg->rc_locals.data[si].name);
@@ -1282,6 +1732,18 @@ static void emit_expr(Codegen *cg, Node *n) {
                                 cg->rc_locals.data[si].name);
                 }
                 fprintf(f, "__rc_sl; })");
+            }
+            /* RC2: move сайтове — маркирай СЛЕД литерала (стойността вече е
+             * прочетена); референцията преминава към полето без retain */
+            if (cg->rc) {
+                for (int i = 0; i < n->n_lit_fields; i++) {
+                    Node *val = n->lit_values.data[i];
+                    if (val->kind != NODE_IDENT) continue;
+                    int si = rc_find(cg, val->name);
+                    if (si >= 0 && !cg->rc_locals.data[si].dead &&
+                        rc_is_move(cg, val, si))
+                        rc_do_move(cg, si);
+                }
             }
             free(sm);
             break;
@@ -1378,6 +1840,16 @@ static void emit_expr(Codegen *cg, Node *n) {
                 int has_ret = n->ret_type != NULL;
                 NodeVec *stmts = &n->fn_body->stmts;
                 cg->indent++;
+                /* RC2: last-use pre-pass за тялото на ламбдата; save/restore —
+                 * emission-ът на enclosing fn продължава след тази ламбда */
+                RcUseVec saved_lus = {0};
+                Node *saved_fn = cg->rc_cur_fn;
+                if (cg->rc) {
+                    saved_lus = cg->rc_lus;
+                    cg->rc_lus.data = NULL; cg->rc_lus.len = 0; cg->rc_lus.cap = 0;
+                    rc_lu_stmts(cg, stmts, NULL, 0);
+                    cg->rc_cur_fn = n->fn_body;
+                }
                 /* RC1: wrapper-ът на ламбдата е отделна C функция — собствен
                  * scope; параметрите и capture-ите са заемани (is_param=1) */
                 rc_push_scope(cg, 0);
@@ -1395,6 +1867,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                 }
                 for (int i = 0; i < stmts->len; i++) {
                     Node *s = stmts->data[i];
+                    /* RC2.1: контекст за borrowed-pair анализа */
+                    cg->rc_cur_blk = n->fn_body; cg->rc_cur_idx = i;
                     if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
                         if (cg->rc) {
                             emit_return_val(cg, s->expr);
@@ -1412,6 +1886,12 @@ static void emit_expr(Codegen *cg, Node *n) {
                 }
                 rc_pop_scope(cg);
                 cg->rc_fn_base = saved_fn_base;
+                if (cg->rc) {
+                    /* RC2: възстанови last-use записите на enclosing fn */
+                    vec_free(cg->rc_lus);
+                    cg->rc_lus = saved_lus;
+                    cg->rc_cur_fn = saved_fn;
+                }
                 cg->indent--;
             }
             fprintf(mb, "}\n\n");
@@ -1645,8 +2125,15 @@ static void emit_block_scoped(Codegen *cg, Node *block, int is_loop) {
     fprintf(f, "{\n");
     cg->indent++;
     rc_push_scope(cg, is_loop);
-    for (int i = 0; i < block->stmts.len; i++)
+    for (int i = 0; i < block->stmts.len; i++) {
+        /* RC2.1: контекст на текущия statement за borrowed-pair анализа
+         * (сканира се опашката на този block след let-а) */
+        Node *saved_blk = cg->rc_cur_blk;
+        int saved_idx = cg->rc_cur_idx;
+        cg->rc_cur_blk = block; cg->rc_cur_idx = i;
         emit_stmt(cg, block->stmts.data[i]);
+        cg->rc_cur_blk = saved_blk; cg->rc_cur_idx = saved_idx;
+    }
     /* RC1: release на heap локалите на scope-а преди затварящата скоба;
      * без --rc rc_pop_scope не emit-ва нищо */
     rc_pop_scope(cg);
@@ -1718,27 +2205,44 @@ static void emit_stmt(Codegen *cg, Node *n) {
                 if (tag == 0 && n->let_type)
                     tag = rc_type_node_tag(n->let_type);
                 if (tag) {
+                    int elide = 0;
                     char *mself = mangle_name(n->let_name);
                     if (n->let_init && n->let_init->kind == NODE_IDENT) {
                         int si = rc_find(cg, n->let_init->name);
                         if (si >= 0 && !cg->rc_locals.data[si].dead) {
-                            emit_indent(cg);
-                            if (cg->rc_locals.data[si].tag == 2)
-                                fprintf(f, "baga_rc_retain((void *)%s.data);\n",
-                                        cg->rc_locals.data[si].name);
-                            else
-                                fprintf(f, "baga_rc_retain((void *)%s);\n",
-                                        cg->rc_locals.data[si].name);
+                            /* RC2: последна употреба на източника → move
+                             * (без retain; източникът умира тук) */
+                            if (rc_is_move(cg, n->let_init, si)) {
+                                rc_do_move(cg, si);
+                            } else {
+                                emit_indent(cg);
+                                if (cg->rc_locals.data[si].tag == 2)
+                                    fprintf(f, "baga_rc_retain((void *)%s.data);\n",
+                                            cg->rc_locals.data[si].name);
+                                else
+                                    fprintf(f, "baga_rc_retain((void *)%s);\n",
+                                            cg->rc_locals.data[si].name);
+                            }
                         }
                     } else if (rc_borrowed_init(n->let_init)) {
-                        emit_indent(cg);
-                        if (tag == 2)
-                            fprintf(f, "baga_rc_retain((void *)%s.data);\n", mself);
-                        else
-                            fprintf(f, "baga_rc_retain((void *)%s);\n", mself);
+                        /* RC2.1: ако x не escape-ва и източникът не се мутира
+                         * в scope-а — нито retain, нито регистрация (двойката
+                         * retain+release е чиста загуба) */
+                        const char *srcn = rc_borrow_src_name(n->let_init);
+                        if (srcn && rc_be_ok(cg, n->let_name, srcn)) {
+                            cg->rc_elided_pairs++;
+                            elide = 1;
+                        } else {
+                            emit_indent(cg);
+                            if (tag == 2)
+                                fprintf(f, "baga_rc_retain((void *)%s.data);\n", mself);
+                            else
+                                fprintf(f, "baga_rc_retain((void *)%s);\n", mself);
+                        }
                     }
                     free(mself);
-                    rc_register_node(cg, n->let_name, tag, lt, n->let_type, 0);
+                    if (!elide)
+                        rc_register_node(cg, n->let_name, tag, lt, n->let_type, 0);
                 }
             }
             break;
@@ -2016,6 +2520,13 @@ static void emit_fn(Codegen *cg, Node *fn) {
         int has_ret = fn->ret_type != NULL;
         fprintf(f, "{\n");
         cg->indent++;
+        /* RC2: last-use pre-pass за move elision (преди emission на тялото) */
+        if (cg->rc) {
+            cg->rc_lus.len = 0;
+            rc_lu_stmts(cg, &fn->fn_body->stmts, NULL, 0);
+        }
+        /* RC2.1: тялото на текущата fn за глобалния alias scan */
+        cg->rc_cur_fn = fn->fn_body;
         /* RC1: fn scope — параметрите са заемани (is_param=1): регистрират
          * се за retain при `let x = p` / `return p`, но не се release-ват */
         rc_push_scope(cg, 0);
@@ -2031,12 +2542,17 @@ static void emit_fn(Codegen *cg, Node *fn) {
         NodeVec *stmts = &fn->fn_body->stmts;
         for (int i = 0; i < stmts->len; i++) {
             Node *s = stmts->data[i];
+            /* RC2.1: контекст за borrowed-pair анализа (fn body = scope) */
+            Node *saved_blk = cg->rc_cur_blk;
+            int saved_idx = cg->rc_cur_idx;
+            cg->rc_cur_blk = fn->fn_body; cg->rc_cur_idx = i;
             /* implicit return: last expr stmt in non-void fn */
             if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
                 emit_return_val(cg, s->expr);
             } else {
                 emit_stmt(cg, s);
             }
+            cg->rc_cur_blk = saved_blk; cg->rc_cur_idx = saved_idx;
         }
         rc_pop_scope(cg);
         cg->rc_fn_base = saved_fn_base;
@@ -2559,6 +3075,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     cg->rc_locals.data = NULL; cg->rc_locals.len = 0; cg->rc_locals.cap = 0;
     cg->rc_scopes.data = NULL; cg->rc_scopes.len = 0; cg->rc_scopes.cap = 0;
     cg->rc_fn_base = -1;
+    cg->rc_lus.data = NULL; cg->rc_lus.len = 0; cg->rc_lus.cap = 0;
+    cg->rc_moves = 0;
+    cg->rc_cur_blk = NULL; cg->rc_cur_idx = -1;
+    cg->rc_cur_fn = NULL;
+    cg->rc_elided_pairs = 0;
     /* RC1: размер на per-alloc header-а — 24 B с rc поле, 16 B без */
     int hs = cg->rc ? 32 : 16;
 
@@ -3947,8 +4468,15 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         }
     }
 
+    /* RC2/RC2.1: броячи на елиминациите — коментар в края на изхода */
+    if (cg->rc) {
+        fprintf(out, "/* RC2: move elisions: %d */\n", cg->rc_moves);
+        fprintf(out, "/* RC2.1: borrowed pair elisions: %d */\n", cg->rc_elided_pairs);
+    }
+
     /* RC1: освободи scope стековете на компилатора */
     for (int i = 0; i < cg->rc_locals.len; i++) free(cg->rc_locals.data[i].name);
     vec_free(cg->rc_locals);
     vec_free(cg->rc_scopes);
+    vec_free(cg->rc_lus);
 }
