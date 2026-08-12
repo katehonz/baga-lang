@@ -75,9 +75,11 @@ struct (`vec_get`/`f()` не — иначе commit underflow). `s = f(s)` не
 пуска стария. Тест: `tests/struct_rc_test.baga`. v0.2: drop на
 `Vec<S>`/`Map<K,S>` release-ва полетата на box елементите (destructor fn
 pointer `elem_rel`/`val_rel` + shim `baga_rc_relf_S`); push/set на свеж
-struct литерал е move (RSS 64 MB → 10.9 MB на 500k push+drop). Останало:
-вложени struct-и, enum payload, overwrite/del пътеки на box-ове, call
-аргумент temp-ове в box push.
+struct литерал е move (RSS 64 MB → 10.9 MB на 500k push+drop). v0.3:
+`vec_set`/`map_set` overwrite и `map_del` release-ват стария box
+(`*_box_rc`/`baga_map_del_*_rc` с destructor fn pointer; RSS 72 MB →
+10.9 MB на 300k overwrite+del). Останало:
+вложени struct-и, enum payload, call аргумент temp-ове в box push.
 
 ## Забранено / внимание
 

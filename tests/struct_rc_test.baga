@@ -88,6 +88,30 @@ fn main() -> i64 !IO {
     drop(tmp)
     check("vec_drop_isolated", vec_get(keep, 0).s == "keep")
 
+    // 10. vec_set overwrite release-ва полетата на стария box (RC5 v0.3)
+    let ovs: Vec<Wrap> = vec_new()
+    vec_push(ovs, Wrap { n: 1, s: concat("ov", "-old") })
+    vec_set(ovs, 0, Wrap { n: 2, s: concat("ov", "-new") })
+    check("vec_set_ovw", vec_get(ovs, 0).s == "ov-new" && vec_get(ovs, 0).n == 2)
+
+    // 11. alias-safe: overwrite със собствен елемент — няма underflow
+    vec_set(ovs, 0, vec_get(ovs, 0))
+    check("vec_set_self", vec_get(ovs, 0).s == "ov-new" && vec_get(ovs, 0).n == 2)
+
+    // 12. map_set overwrite release-ва стария box; alias-safe със собствената стойност
+    let ovm: Map<str, Wrap> = map_new()
+    map_set(ovm, "k", Wrap { n: 1, s: concat("mo", "-ld") })
+    map_set(ovm, "k", Wrap { n: 2, s: concat("mn", "-ew") })
+    check("map_set_ovw", map_get(ovm, "k").s == "mn-ew" && map_get(ovm, "k").n == 2)
+    map_set(ovm, "k", map_get(ovm, "k"))
+    check("map_set_self", map_get(ovm, "k").s == "mn-ew")
+
+    // 13. map_del release-ва полетата + box на откаченото entry
+    let dm: Map<str, Wrap> = map_new()
+    map_set(dm, "d", Wrap { n: 3, s: concat("de", "l") })
+    map_del(dm, "d")
+    check("map_del_s", map_len(dm) == 0)
+
     print("struct_rc_test: all passed")
     return 0
 }

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.3 overwrite/del на box елементи (зад `--rc`)
+- `vec_set`/`map_set` върху съществуващ slot/ключ release-ват полетата на
+  стария box преди memcpy; `map_del` release-ва полетата + free-ва pv на
+  откаченото entry. `*_box_rc`/`baga_map_del_*_rc` варианти с destructor
+  fn pointer; без флаг пътеките са непроменени.
+- Alias-safe ред (retain преди release): `vec_set(v, 0, vec_get(v, 0))` и
+  `map_set(m, k, map_get(m, k))` не underflow-ват — случаи 10-13 в
+  `tests/struct_rc_test.baga`. Leak repro 300k overwrite+del: RSS
+  72 MB → 10.9 MB.
+
 ### runtime — RC5 v0.2 container drop на struct полета (зад `--rc`)
 - Drop/release на `Vec<S>`/`Map<K,S>` release-ва полетата на box
   елементите: destructor fn pointer в `baga_rc_release_vec`/`_map` +

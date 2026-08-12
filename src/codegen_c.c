@@ -1735,11 +1735,22 @@ static void emit_expr(Codegen *cg, Node *n) {
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
                             }
-                            fprintf(f, "baga_vec_set_box(");
-                            emit_expr(cg, n->args.data[0]);
-                            fprintf(f, ", ");
-                            emit_expr(cg, n->args.data[1]);
-                            fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
+                            if (cg->rc && vt->elem->kind == TYPE_STRUCT &&
+                                rc_struct_has_heap(cg, vt->elem->name)) {
+                                /* RC5 v0.3: release на стария box при overwrite */
+                                fprintf(f, "baga_vec_set_box_rc(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[1]);
+                                fprintf(f, ", &_bx, (int64_t)sizeof(%s), baga_rc_relf_%s); })",
+                                        mn, mn);
+                            } else {
+                                fprintf(f, "baga_vec_set_box(");
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[1]);
+                                fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
+                            }
                         }
                         free(mn);
                         goto call_done;
@@ -1858,11 +1869,22 @@ static void emit_expr(Codegen *cg, Node *n) {
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
                             }
-                            fprintf(f, "baga_map_set_%s_box(", ksuf);
-                            emit_expr(cg, n->args.data[0]);
-                            fprintf(f, ", ");
-                            emit_expr(cg, n->args.data[1]);
-                            fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
+                            if (cg->rc && mt->elem->kind == TYPE_STRUCT &&
+                                rc_struct_has_heap(cg, mt->elem->name)) {
+                                /* RC5 v0.3: release на стария box при overwrite */
+                                fprintf(f, "baga_map_set_%s_box_rc(", ksuf);
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[1]);
+                                fprintf(f, ", &_bx, (int64_t)sizeof(%s), baga_rc_relf_%s); })",
+                                        mn, mn);
+                            } else {
+                                fprintf(f, "baga_map_set_%s_box(", ksuf);
+                                emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[1]);
+                                fprintf(f, ", &_bx, (int64_t)sizeof(%s)); })", mn);
+                            }
                         } else {
                             /* missing key → zero struct, or zero tagged union */
                             fprintf(f, "({ void *_bp = baga_map_get_%s_box(", ksuf);
@@ -1923,6 +1945,22 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (mt && mt->kind == TYPE_MAP && mt->key) {
                         if (mt->key->kind == TYPE_I64) ksuf = "i64";
                         else if (mt->key->kind == TYPE_BYTES) ksuf = "bytes";
+                    }
+                    /* RC5 v0.3: del на Map<K, S с heap полета> — release на
+                     * полетата + free на pv (иначе откаченото entry тече) */
+                    if (cg->rc && strcmp(bn, "map_del") == 0 && mt &&
+                        mt->kind == TYPE_MAP && mt->elem && mt->elem->name &&
+                        mt->elem->kind == TYPE_STRUCT &&
+                        rc_struct_has_heap(cg, mt->elem->name)) {
+                        char *mn = mangle_name(mt->elem->name);
+                        fprintf(f, "baga_map_del_%s_rc(", ksuf);
+                        emit_expr(cg, n->args.data[0]);
+                        fprintf(f, ", ");
+                        emit_expr(cg, n->args.data[1]);
+                        fprintf(f, ", (int64_t)sizeof(%s), baga_rc_relf_%s)",
+                                mn, mn);
+                        free(mn);
+                        goto call_done;
                     }
                     fprintf(f, "baga_%s_%s(", bn, ksuf);
                     for (int i = 0; i < n->args.len; i++) {
@@ -4371,6 +4409,15 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
     fprintf(out, "    memcpy(v->data[i], src, (size_t)size);\n");
     fprintf(out, "}\n");
+    /* RC5 v0.3: overwrite release-ва полетата на стария box преди memcpy
+     * (call site-ът вече е retain-нал новото — alias-safe ред). */
+    if (cg->rc) {
+        fprintf(out, "static void baga_vec_set_box_rc(baga_Vec *v, int64_t i, const void *src, int64_t size, void (*elem_rel)(void *)) {\n");
+        fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+        fprintf(out, "    if (elem_rel) elem_rel(v->data[i]);\n");
+        fprintf(out, "    memcpy(v->data[i], src, (size_t)size);\n");
+        fprintf(out, "}\n");
+    }
     fprintf(out, "static int64_t baga_vec_len(baga_Vec *v) { return v ? v->len : 0; }\n");
     /* bridge: native bytes <-> Vec<i64> (crypto migration path) */
     fprintf(out, "static baga_bytes baga_bytes_from_vec(baga_Vec *v) {\n");
@@ -4605,6 +4652,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    baga_MapEntry *e = baga_map_put(m, %s, %s, %s);\n", ikv, skv, hk);
         fprintf(out, "    if (!e->pv) e->pv = baga_alloc((size_t)size);\n");
         fprintf(out, "    memcpy(e->pv, src, (size_t)size); }\n");
+        /* RC5 v0.3: overwrite release-ва полетата на стария box преди memcpy */
+        if (cg->rc) {
+            fprintf(out, "static void baga_map_set_%s_box_rc(baga_Map *m, %s, const void *src, int64_t size, void (*val_rel)(void *)) {\n", kn, karg);
+            fprintf(out, "    baga_MapEntry *e = baga_map_put(m, %s, %s, %s);\n", ikv, skv, hk);
+            fprintf(out, "    if (e->pv && val_rel) val_rel(e->pv);\n");
+            fprintf(out, "    if (!e->pv) e->pv = baga_alloc((size_t)size);\n");
+            fprintf(out, "    memcpy(e->pv, src, (size_t)size); }\n");
+        }
         fprintf(out, "static void *baga_map_get_%s_box(baga_Map *m, %s) {\n", kn, karg);
         fprintf(out, "    baga_MapEntry *e = *baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
         fprintf(out, "    return e ? e->pv : NULL; }\n");
@@ -4625,6 +4680,17 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
             fprintf(out, "    baga_rc_release_str(e->sv); baga_rc_release_bytes(e->bv);\n");
         }
         fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
+        /* RC5 v0.3: del с box стойност — release на полетата + free на pv
+         * (откаченото entry не се вижда от release_map при drop). */
+        if (cg->rc) {
+            fprintf(out, "static void baga_map_del_%s_rc(baga_Map *m, %s, int64_t val_size, void (*val_rel)(void *)) {\n", kn, karg);
+            fprintf(out, "    baga_MapEntry **slot = baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
+            fprintf(out, "    if (!*slot) return;\n");
+            fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n");
+            fprintf(out, "    if (e->ktag == 2) baga_rc_release_bytes(e->bk); else baga_rc_release_str(e->sk);\n");
+            fprintf(out, "    if (e->pv) { if (val_rel) val_rel(e->pv); baga_free(e->pv, val_size); }\n");
+            fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
+        }
         fprintf(out, "static baga_Vec *baga_map_keys_%s(baga_Map *m) {\n", kn);
         fprintf(out, "    baga_Vec *v = baga_vec_new();\n");
         fprintf(out, "    for (int64_t i = 0; i < m->nb; i++)\n");
@@ -4700,6 +4766,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n");
     fprintf(out, "    if (!e->pv) e->pv = baga_alloc((size_t)size);\n");
     fprintf(out, "    memcpy(e->pv, src, (size_t)size); }\n");
+    /* RC5 v0.3: overwrite release-ва полетата на стария box преди memcpy */
+    if (cg->rc) {
+        fprintf(out, "static void baga_map_set_bytes_box_rc(baga_Map *m, baga_bytes k, const void *src, int64_t size, void (*val_rel)(void *)) {\n");
+        fprintf(out, "    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n");
+        fprintf(out, "    if (e->pv && val_rel) val_rel(e->pv);\n");
+        fprintf(out, "    if (!e->pv) e->pv = baga_alloc((size_t)size);\n");
+        fprintf(out, "    memcpy(e->pv, src, (size_t)size); }\n");
+    }
     fprintf(out, "static void *baga_map_get_bytes_box(baga_Map *m, baga_bytes k) {\n");
     fprintf(out, "    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
     fprintf(out, "    return e ? e->pv : NULL; }\n");
@@ -4716,6 +4790,16 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    baga_rc_release_str(e->sv); baga_rc_release_bytes(e->bv);\n");
     }
     fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
+    /* RC5 v0.3: del с box стойност — release на полетата + free на pv */
+    if (cg->rc) {
+        fprintf(out, "static void baga_map_del_bytes_rc(baga_Map *m, baga_bytes k, int64_t val_size, void (*val_rel)(void *)) {\n");
+        fprintf(out, "    baga_MapEntry **slot = baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
+        fprintf(out, "    if (!*slot) return;\n");
+        fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n");
+        fprintf(out, "    baga_rc_release_bytes(e->bk);\n");
+        fprintf(out, "    if (e->pv) { if (val_rel) val_rel(e->pv); baga_free(e->pv, val_size); }\n");
+        fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
+    }
     fprintf(out, "static baga_Vec *baga_map_keys_bytes(baga_Map *m) {\n");
     fprintf(out, "    baga_Vec *v = baga_vec_new();\n");
     fprintf(out, "    for (int64_t i = 0; i < m->nb; i++)\n");

@@ -49,10 +49,24 @@ release-не, та retain-ът беше чист теч. Call аргумент (
 Измерено: 500k итерации vec_push+drop и map_set+drop на `Wrap{ s: str }` —
 RSS 64 MB → 10.9 MB (като leak-free базата).
 
-Останало (leak-safe, не корупция): overwrite пътеки (`vec_set`/`map_set`
-върху съществуващ slot/ключ и `map_del` пускат стария box без release на
-полетата), call-аргумент temp-ове в box push, enum payload-и, вложени
+Останало (leak-safe, не корупция): ~~overwrite пътеки~~ — **РЕШЕНО в v0.3
+(виж по-долу)**; call-аргумент temp-ове в box push, enum payload-и, вложени
 struct-и, `Vec<S>` вътре в `Vec` (kind 3 няма тип по време на изпълнение).
+
+## v0.3: overwrite/del на box елементи
+
+`vec_set`/`map_set` върху съществуващ slot/ключ и `map_del` пускаха стария
+box без release на полетата (а `map_del` и без free на pv — откаченото
+entry не се вижда от `release_map`). Под `--rc` тези пътеки вървят през
+`*_rc` варианти с destructor fn pointer (`baga_vec_set_box_rc`,
+`baga_map_set_{str,i64,bytes}_box_rc`, `baga_map_del_{str,i64,bytes}_rc`) —
+release на старите полета преди memcpy/free. Alias-safe ред: call site-ът
+retain-ва новото преди set, така че `vec_set(v, 0, vec_get(v, 0))` и
+`map_set(m, k, map_get(m, k))` не underflow-ват (тествано). Без флаг
+пътеките са непроменени (бит-идентичен emit-c).
+
+Измерено: 300k итерации map_set/vec_set overwrite + map_del — RSS
+72 MB → 10.9 MB.
 
 ## Правила
 
