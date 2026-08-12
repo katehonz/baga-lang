@@ -61,12 +61,11 @@ hi (lo — hoist веднъж). Release веднага след оценката
 break/continue не пипат cond temp-ове. Leak repro 200k `while
 str_find(concat(...))`: 10 MB с --rc vs 141 MB без. Тестове в temp_test.
 
-### 3. go/chan прехвърляне на heap стойности — DESIGN (обсъждане)
+### 3. go/chan прехвърляне на heap стойности — РЕШЕНО A
 Бележка: `docs/memory-rc-chan-bg.md`. Каналът е i64-only; heap минава
-през `*_h`. RC1.4 вече retain-ва handle-а (immortal, leak-safe) —
-днешният hop идиом не UAF-ва. Препоръка: остави A (без нова работа).
-B (tag-нат payload + балансиран recv) и C (go capture retain) — само
-след решение. Не имплементирай без зелена светлина.
+през `*_h`. RC1.4 вече retain-ва handle-а (immortal, leak-safe).
+**A:** без нова работа. B/C отложени — пипат типове/capture без печалба
+за v0.x (leak > корупция вече е спазено).
 
 ### 4. Struct полета като собственици (голяма, само ако 1-3 са готови)
 Struct полетата не се track-ват (shared-pointer семантика) — това е

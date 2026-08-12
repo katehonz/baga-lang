@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### runtime — go/chan heap: решение A
+- Без tag-нат payload и без `go` capture retain. Hop-ът остава през
+  `*_h` + RC1.4 immortal retain (`docs/memory-rc-chan-bg.md`).
+
 ### runtime — RC4 v0.3 cond temps (зад `--rc`)
 - Temp-ове в `if`/`while` условия и `for`-range hi се release-ват на всяка
   оценка (GNU statement-expression). Leak repro 200k итерации: 10 MB vs 141 MB.

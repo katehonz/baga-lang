@@ -279,7 +279,8 @@ NODE_TO_STR). Преди statement-а се emit-ват `__auto_type __rc_tmpN = 
 - **Ранни `return`/`break` в дълбоко вложени блокове** — покрити чрез
   scope стека (loop-body scopes се маркират; `rc_fn_base` ограничава
   return-release до текущата функция — ламбдите са отделни C функции);
-  `go`/chan прехвърляне на heap стойности — v0.2.
+  `go`/chan прехвърляне на heap стойности — решено A
+  (`docs/memory-rc-chan-bg.md`: RC1.4 immortal handles; B/C отложени).
 - **rc + rewind в същия scope** — epoch прави release на pre-rewind
   стойности no-op (leak-safe). **RC1.3:** при `mem_rewind(m)` statement
   codegen маркира dead всички track-нати локали, регистрирани след
