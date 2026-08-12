@@ -1,0 +1,117 @@
+// temp_test — RC4: per-statement temp release (docs/memory-rc-bg.md §v0.2).
+// Fresh heap temp-ове (concat/int_to_str/vec_slice/... резултати, които не се
+// връзват в локал) се release-ват в края на statement-а. Оптимизацията е
+// семантично невидима — тестът доказва коректност: стойностите са верни и
+// няма underflow/dangling при temp в аргументи, вложени temp-ове, ключ+стойност
+// temp-ове в map_set, и при escape-ващи temp-ове (struct литерал — НЕ се
+// release-ва). Минава и без --rc, и с --rc.
+
+import "std/str/str.baga"
+
+struct Wrap {
+    n: i64,
+    s: str
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// вложени temp-ове: вътрешният concat е temp, външният се връзва (root)
+fn nested_temp(a: str, b: str) -> str {
+    let x = concat(concat(a, "-"), b)
+    return x
+}
+
+// temp в return: root-ът отива на caller-а (move), вътрешният е temp
+fn return_temp(x: str) -> str {
+    return concat(concat(x, "+"), "r")
+}
+
+// struct литерал с temp поле: temp-ът НЕ се release-ва (escape в полето)
+fn struct_lit_temp(tag: str) -> Wrap {
+    let w = Wrap { n: 1, s: concat("st-", tag) }
+    return w
+}
+
+// struct литерал с borrowed (vec_get) поле: полето трябва да оцелее
+// release на източника (struct-lit retain на borrowed стойности —
+// латентен RC1 пропуск, излязъл наяве с RC4)
+fn borrow_field_alive() -> str {
+    let v: Vec<str> = vec_new()
+    vec_push(v, concat("survive", "-me"))
+    let w = Wrap { n: 1, s: vec_get(v, 0) }
+    drop(v)
+    // churn: рециклирай освободеният блок преди четенето на полето
+    let mut k: i64 = 0
+    let mut acc = ""
+    while k < 50 {
+        acc = concat(acc, "churn-churn-churn-churn")
+        k = k + 1
+    }
+    return concat(w.s, int_to_str(len(acc)))
+}
+
+fn main() -> i64 !IO {
+    // 1. temp като аргумент на vec_push — контейнерът retain-ва, temp-ът се
+    // release-ва след statement-а; стойностите са верни
+    let v: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < 100 {
+        vec_push(v, concat("el", int_to_str(i)))
+        i = i + 1
+    }
+    check("push_temp", vec_len(v) == 100 && vec_get(v, 0) == "el0" && vec_get(v, 99) == "el99")
+
+    // 2. temp ключ + temp стойност в map_set — и двата се release-ват след
+    // statement-а; картата държи собствените си референции
+    let m: Map<str, str> = map_new()
+    let mut j: i64 = 0
+    while j < 100 {
+        map_set(m, concat("k", int_to_str(j)), concat("v", int_to_str(j)))
+        j = j + 1
+    }
+    check("map_temp_kv", map_len(m) == 100 && map_get(m, "k0") == "v0" && map_get(m, "k99") == "v99")
+
+    // 3. overwrite с temp стойност — старата се release-ва, temp-ът също
+    map_set(m, "k0", concat("new", "-v"))
+    check("map_temp_overwrite", map_get(m, "k0") == "new-v" && map_len(m) == 100)
+
+    // 4. temp като аргумент на print (bare statement — дискарднат резултат)
+    print(concat("  (temp print ", int_to_str(42)))
+
+    // 5. вложени temp-ове: вътрешният е temp, външният е bound
+    check("nested_temp", nested_temp("a", "b") == "a-b")
+
+    // 6. temp в return израз
+    check("return_temp", return_temp("x") == "x+r")
+
+    // 7. assign с temp в дясната страна: root е bound, int_to_str е temp
+    let mut s = "n="
+    s = concat(s, int_to_str(7))
+    check("assign_temp", s == "n=7")
+
+    // 8. struct литерал с temp поле — НЕ се release-ва; полето остава валидно
+    let w8 = struct_lit_temp("ok")
+    check("struct_lit_temp_alive", w8.s == "st-ok" && len(w8.s) == 5)
+
+    // 9. borrowed НЕ е temp: vec_get резултат не се release-ва като temp
+    let b = vec_get(v, 5)
+    check("borrowed_not_temp", b == "el5" && vec_get(v, 5) == "el5")
+
+    // 10. temp vec от vec_slice като аргумент (heap Vec temp)
+    let sl = concat("first:", vec_get(vec_slice(v, 0, 1), 0))
+    check("vec_slice_temp", sl == "first:el0")
+
+    // 11. struct литерал с borrowed (vec_get) поле — оцелява след drop на
+    // източника (struct-lit retain на borrowed стойности)
+    check("struct_lit_borrow_alive", borrow_field_alive() == "survive-me1150")
+
+    print("temp_test: all passed")
+    return 0
+}

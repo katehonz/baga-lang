@@ -502,6 +502,17 @@ typedef struct {
 } RcLocal;
 typedef struct { int top; int is_loop; } RcScope;
 
+/* RC4 (temporaries tracking, docs/memory-rc-bg.md §v0.2): запис за един
+ * fresh heap temp на текущия statement. Стойността се изчислява веднъж в
+ * __rc_tmpN преди statement-а и се release-ва в края му. */
+typedef struct {
+    Node *site;      /* AST възелът на temp извикването (borrowed) */
+    int   tag;       /* 1=str, 2=bytes, 3=Vec, 4=Map */
+    Type *type;      /* inferred тип (за elem kind при Vec/Map release) */
+    char  name[24];  /* __rc_tmpN */
+} RcTmp;
+typedef VEC(RcTmp) RcTmpVec;
+
 /* RC2 (move elision, docs/move-semantics-bg.md): last-use запис за едно
  * binding име в текущата функция. Попълва се от pre-pass обход преди
  * emission на всяка fn/ламбда. Имената са borrowed AST указатели. */
@@ -534,6 +545,18 @@ typedef struct {
     int   rc_moves;     /* RC2: брой елиминирани retain-ове (move сайтове) */
     int   rc_cmoves;    /* RC3: брой container move-ове (push/set без retain
                          * при last-use аргумент — docs/move-semantics-bg.md) */
+    /* RC4: per-statement temp регистър — активните temp-ове, флаг за
+     * заместването в emit_expr и брояч на release-натите temp-ове */
+    RcTmpVec rc_tmps;
+    int   rc_tmps_on;
+    int   rc_tmp_count;
+    Node *rc_tmp_decl;  /* temp възелът, чиято декларация се emit-ва в момента
+                         * (без самозаместване) */
+    /* RC1.3: watermark-ове на mem_mark (rc_locals.len по време на mark
+     * statement-а), LIFO стек за текущата fn. При mem_rewind локалите над
+     * watermark-а държат върната памет — маркират се dead, за да не
+     * release-нат overwrite-нат header (bump reuse след rewind). */
+    VEC(int) rc_marks;
     /* RC2.1: borrowed-retain elision — контекст на текущия block statement
      * (за сканиране на опашката на scope-а) + брояч на елиминираните двойки */
     Node *rc_cur_blk;

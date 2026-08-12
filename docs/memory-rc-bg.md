@@ -157,19 +157,99 @@ Release на Vec/Map използва rc на STRUCT алокацията, не 
 
 ## Ограничения v0.1 (честно)
 
-- **Temporaries не се track-ват** (остава главният leak в temp-тежки
-  изрази, ~250-500 B/извикване: `vec_push(v, concat(...))`,
-  `int_to_str` вътре в изрази). Подход за v0.2: per-statement temp
-  регистър в codegen — всеки fresh heap temp се записва в скрит списък
-  на statement-а и се release-ва в края му; temps, които escape-ват
-  (стойност на `return`, присвоени в long-lived контейнер без retain),
-  се изключват. Цената е още retain/release трафик, затова е отложено
-  след perf критерия.
+- **Temporaries не се track-ват** ~~(остава главният leak в temp-тежки
+  изрази)~~ — **РЕШЕНО в v0.2 (RC4), виж §v0.2 по-долу.** Остават
+  непокрити само temp-овете в условия на while/for/if, for_iter, match,
+  try/catch и десен операнд на &&/|| (условна/повтаряща се оценка —
+  консервативно изключени).
+
+## v0.2 (RC4): per-statement temp регистър
+
+Контекст: след RC1–RC3 главният оставащ leak са fresh heap temp-ове —
+резултати от `concat`/`int_to_str`/`vec_slice`/user fn с heap return,
+които не се връзват в локал, а отиват директно като аргументи
+(`vec_push(v, concat(...))`, `map_set(m, k, int_to_str(i))`). Контейнерът
+retain-ва своята референция, но собствената rc=1 на temp-а никой не
+release-ва (~370 B/итерация в типичен insert цикъл).
+
+**Механика:** за statement-ите LET / EXPR_STMT (вкл. assign) / RETURN
+codegen прави pre-pass обход на root израза и събира fresh heap temp-овете
+(NODE_CALL с heap тип, който не е borrowed по `rc_borrowed_init`, плюс
+NODE_TO_STR). Преди statement-а се emit-ват `__auto_type __rc_tmpN = …`
+декларации (вътрешните temp-ове първи — обратен ред на pre-order
+събирането), в основния израз temp възлите се заместват с имената
+(choke point в `emit_expr`), а след statement-а temp-овете се release-ват
+типосъобразно. За return release-ът е вътре в `__rc_ret` блока, преди
+самия `return`. Root-ът на let/assign/return е bound (собствеността се
+предава на локала/caller-а) — не е temp; root на bare EXPR_STMT с heap
+резултат е дискарднат — temp е.
+
+**Консервативни изключвания (не се слиза в тях):**
+- struct литерал — полетата споделят указателя без retain (release би
+  обесил полето);
+- ламбда (отделна C функция), try/catch (ранен return), match, if-израз;
+- десен операнд на `&&`/`||` (условна оценка — hoisting би я направил
+  безусловна);
+- аргументи на `drop()` (самият drop е release пътят);
+- условия на while/for/if и for_iter (повтаряща се оценка — hoisted temp
+  би бил мъртва стойност; тези temp-ове още текат, v0.3);
+- borrowed производни (vec_get/map_get/поле/h_*) — не са собствени.
+
+Вложени statement-и (if-изрази, ламбди в temp-тежки изрази) save/restore-ват
+регистъра — per-statement дисциплината се пази. Брояч:
+`/* RC4: temp releases: N */`. Тест: `tests/temp_test.baga` (10 проверки).
+
+**Резултати (v0.2):**
+- Leak repro (2M итерации `map_set(m, "fixed", concat("v", int_to_str(i)))`
+  — 2 temp-а/итерация): **41 MB** maxrss с RC4 срещу **780 MB** без
+  (~370 B/итерация leak елиминиран).
+- temp releases: 24 в temp_test, **857** в boilaDB insert_write (за
+  сравнение: RC2 254, RC2.1 42, RC3 23 — temp-овете са порядък повече
+  от всички move сайтове, това е горещият път).
+- Bench (boilaDB 100k insert, същата машина): **415 µs/ред** (RC3: 431,
+  RC1 финал: 425 — ~3% под финала; RC1.3 dead-marking-ът спестява и
+  release работата по per-request rewind пътя), peak RSS **1.76 GB**
+  (RC3: 1.80, RC2: 1.83 — temp-овете вече не се задържат), verify
+  **DURABLE OK**. Wall/user не са 1:1 сравними с предишните рънове
+  (различна измервателна верига).
+- Верификация: temp_test (11 проверки) PASS без флаг, с --rc и под
+  ASan+UBSan (както rc_test/move_test/borrow_test/cmove_test/http_test/
+  pg_test/sumtype_test/mem_rewind_test); emit-c без флаг бит-идентичен с
+  HEAD (7 файла diff); пълен пакет без флаг — само pre-existing boilaDB
+  filesize гейт; пълна tests/ батерия с --rc: **149/155** — 6-те FAIL са
+  pre-existing и на HEAD (5 external peers + boila_ts FPE). RC4 извади
+  наяве три латентни RC1 пропуска, фикснати в хода: RC1.1 (borrowed поле
+  директно в struct литерал → http_test segfault), RC1.2 (borrowed/ident
+  match arm стойност без retain → pg_test underflow, sumtype_test
+  грешен payload — плюс забрана за temp-ове в enum конструктор),
+  RC1.3 (stale release на локали след mem_rewind — dead-marking по
+  mark watermark).
+- Извод: цел ≤ ×1.05 user пак не е документирано постигната (ns/ред е в
+  шума на RC1 финал), но главният leak източник е затворен, а RSS трендът
+  е надолу (1.87 → 1.83 → 1.80 → 1.76 GB през RC1→RC4). Остатъчен
+  overhead е самата retain/release честота на НЕ-temp трафика (alias-и на
+  параметри, borrowed връзвания, контейнерни retain-ове на не-last-use
+  стойности).
 - **Struct полета не се track-ват като собственици.** Struct по стойност
   копията споделят полета-указатели (днешна семантика). Затова pък
   вградените в struct литерал/field assign heap локали и параметри се
   RETAIN-ват — иначе `return S { v: v }` обесва полето при scope exit
   (намерено по трудния път: lsm_cluster_open, boila_sel_empty, txn.writes).
+  **RC1.2:** match-израз, произвеждащ heap стойност от borrowed arm
+  (поле на binding, vec_get/map_get резултат) или от ident (binding-ът е
+  копие-алиас на payload), retain-ва arm стойността — резултатът е owned
+  по конвенцията. Латентен пропуск, маскиран от temp течовете преди RC4
+  (pg_err → sqlstate underflow). Enum конструкторите копират payload по
+  стойност БЕЗ retain (като struct литерал преди RC1.1) — `Raw(local)`
+  дели референцията; това е документирана граница (payload-ите не се
+  track-ват), а RC4 не release-ва temp-ове в аргументите им.
+  **RC1.1:** borrowed стойности (vec_get/map_get/поле/h_*), вградени
+  ДИРЕКТНО в struct литерал (`Request { method: vec_get(parts, 0) }`),
+  също се retain-ват (през `__rc_sl.<field>`) — преди това полето
+  алиасираше източника без retain и release на контейнера го обесваше
+  (латентен пропуск, излязъл наяве чак когато RC4 temp release-ите
+  пренаредиха freelist-а: http_test segfault; тест
+  `struct_lit_borrow_alive` в temp_test).
 - **Borrowed стойности (vec_get/map_get/struct поле/h_\*) се RETAIN-ват
   при връзване** (let/assign/return), не се пропускат — всяка binding
   референция е owned и балансирана. Първоначалният „skip borrowed"
@@ -188,10 +268,16 @@ Release на Vec/Map използва rc на STRUCT алокацията, не 
   return-release до текущата функция — ламбдите са отделни C функции);
   `go`/chan прехвърляне на heap стойности — v0.2.
 - **rc + rewind в същия scope** — epoch прави release на pre-rewind
-  стойности no-op (leak-safe). Остатъчен състезателен случай: stale
-  локал, чийто header адрес е презаписан от нова алокация с текуща
-  epoch след reuse на опашката на оцелелия блок — теоретично възможен,
-  непокрит (същият като в dead-zone варианта).
+  стойности no-op (leak-safe). **RC1.3:** при `mem_rewind(m)` statement
+  codegen маркира dead всички track-нати локали, регистрирани след
+  watermark-а на съответния `mem_mark` (LIFO стек от watermark-ове per
+  fn) — техните header-и са във върнатата памет и bump reuse би ги
+  overwrite-нал с валидна текуща epoch (stale release → underflow/
+  чужд free; излязло с RC4 в mem_rewind_test/pg_test). Покритият случай
+  е локали, ДЕКЛАРИРАНИ след mark-а; pre-mark локал, преприсвоен на
+  post-mark стойност, остава теоретично непокрит (както преди). Посоката
+  е leak-safe: алиас на pre-mark стойност, деклариран след mark-а, губи
+  release-а си (leak, не корупция).
 - Цикли текат (Map↔Map). Няма weak refs.
 
 ## Рискове и проверка
