@@ -20,8 +20,9 @@
 Пълен чеклист — не commit-вай без всичките:
 
 1. `make` — чист build.
-2. RC батерия: `rc_test move_test borrow_test cmove_test temp_test http_test
-   pg_test std/sumtype_test mem_rewind_test` — всички с `--rc` PASS:
+2. RC батерия: `rc_test move_test borrow_test cmove_test temp_test
+   struct_rc_test http_test pg_test std/sumtype_test mem_rewind_test` —
+   всички с `--rc` PASS:
    `./baga --rc -I . -I app-product tests/<t>.baga`
 3. ASan+UBSan върху същите: `--emit-c` → `gcc -g -O1
    -fsanitize=address,undefined -std=c11 -Iinclude -o /tmp/x out.c
