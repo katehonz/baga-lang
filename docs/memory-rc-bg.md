@@ -97,7 +97,8 @@ v2.1 (flow-sensitive dead маркиране — отложено).
   батерия (с borrow_test), ASan чист, 148/153 пакет без флаг,
   бит-идентичен emit-c без флаг. Следваща цел: container move варианти
   (push/set без retain при last-use аргумент — по-горещите пътеки) или
-  param-alias pair elision.
+  param-alias pair elision. [Container move е реализиран — RC3, вж.
+  docs/move-semantics-bg.md §v3.]
 
 ## Механика
 

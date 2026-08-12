@@ -1,6 +1,8 @@
 # Move семантика за struct threading — design (етап 2)
 
-Статус: **имплементиран v2.0 зад `--rc` флага** (C backend само), 2026-08.
+Статус: **имплементиран v2.0 зад `--rc` флага** (C backend само), 2026-08;
+допълнен с **v2.1** (borrowed-pair elision, docs/memory-rc-bg.md) и **v3**
+(container move — §v3 по-долу).
 Реализация: `src/codegen_c.c` (RC2 маркери: last-use pre-pass +
 copy-site elision), `include/baga.h` (`RcUse`, `rc_lus`, `rc_moves`),
 тест `tests/move_test.baga`. Брояч: коментар `/* RC2: move elisions: N */`
@@ -95,3 +97,51 @@ Per функция, per struct binding: def-use обход на AST-то.
   обесил стойността), enum variant сайтове (не се различават в анализа),
   shadowing (n_lets > 1), lambda capture, match arms, loop-carried
   bindings, move в if/match клон вътре в цикъл (студеният път тече).
+
+## v3: container move (push/set без retain при last-use аргумент)
+
+Контекст: след RC2/RC2.1 остатъчният retain/release трафик е предимно на
+контейнерните вмъквания — `vec_push`/`vec_set`/`map_set` retain-ват
+стойността в helper-а дори когато аргументът е last-use локал, който умира
+веднага след (scope exit release). Двойката retain+release е чиста загуба:
+референцията може да *премине* в контейнера.
+
+**Правило:** за `vec_push(c, x)` / `vec_set(c, i, x)` / `map_set(m, k, x)`,
+където `x` е heap-typed локал (str/bytes/Vec), чиято употреба е last-use
+по RC2 анализа (същите консервативни изключвания: не параметър, не
+shadowing, не capture, не match, loop само iteration-local), codegen
+emit-ва `_move` вариант на helper-а (без retain на стойността) и маркира
+`x` dead. `vec_set`/`map_set` overwrite пак release-ват старата стойност.
+Ключът на `map_set` остава retain-нат (отделен живот — put може да го
+отхвърли при съществуващ entry). i64/f64/box (struct/enum) сайтове нямат
+retain изобщо — извън играта.
+
+Реализация: `_move` runtime helper-и (`baga_vec_push/set_{str,bytes,vec}_move`,
+`baga_map_set_{str,i64,bytes}_{str,bytes}_move`) + call-site детекция в
+`src/codegen_c.c` (vec/map клоновете на emit_call). Брояч:
+`/* RC3: container move elisions: N */`. Тест: `tests/cmove_test.baga`.
+
+**Резултати (v3, boilaDB 100k insert bench, същата машина):**
+- Елиминации: **23** в insert_write компилацията (при 254 RC2 + 42 RC2.1),
+  6 в cmove_test (точно на очакваните сайтове; no-move случаите — употреба
+  след push/set, borrowed параметър — остават retain-нати).
+- Bench: 431 µs/ред (RC1 финал: 425; в шума), peak RSS **1.80 GB** (RC2:
+  1.83 GB), verify **DURABLE OK** (0 загубени реда, индекс валиден).
+  Wall/user от този рън не са сравними 1:1 с предишните (различна
+  измервателна верига — python wrapper, включва gcc компилацията);
+  ns/ред е вътрешната метрика на bench-а и е без промяна.
+- Извод: механизмът пак е коректен, но и контейнерните move сайтове са
+  извън горещия път — 23 елиминации върху милиони вмъквания. Горещите
+  вмъквания в boilaDB получават стойността си от temp изрази
+  (concat/int_to_str — RC1 temporaries лимитацията, v0.2) или от borrowed
+  източници (vec_get/map_get резултати), не от last-use локали. Остатъкът
+  до цел ≤ ×1.05 user изисква temporaries tracking (v0.2) — той е и
+  главният остатъчен leak източник (~250-500 B/извикване).
+- Верификация: cmove_test (9 проверки) PASS без флаг, с --rc и под
+  ASan+UBSan (както rc_test/move_test/borrow_test); пълен пакет без флаг
+  без нови FAIL-ове (boilaDB filesize гейтът пада и на HEAD —
+  pre-existing); emit-c без флаг бит-идентичен с HEAD (8 файла diff);
+  пълна tests/ батерия с --rc: **148/154** — 6-те FAIL са pre-existing
+  и на HEAD (5 external peers: oauth_pg, orm_boila, registry, https,
+  tls_handshake; + boila_ts_test пада с --rc и на HEAD — FPE, known
+  --rc issue извън обхвата на v3).

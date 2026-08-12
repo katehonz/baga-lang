@@ -1267,7 +1267,27 @@ static void emit_expr(Codegen *cg, Node *n) {
                         else if (vt->elem->kind == TYPE_BYTES) suf = "bytes";
                         else if (vt->elem->kind == TYPE_VEC) suf = "vec";
                     }
-                    fprintf(f, "baga_%s_%s(", bn, suf);
+                    /* RC3: last-use стойност в push/set → move вариант без
+                     * retain; референцията преминава в контейнера, binding-ът
+                     * умира тук (scope exit го пропуска). i64/f64 — без rc. */
+                    int mv = 0;
+                    if (cg->rc && strcmp(bn, "vec_get") != 0 &&
+                        (strcmp(suf, "str") == 0 ||
+                         strcmp(suf, "bytes") == 0 ||
+                         strcmp(suf, "vec") == 0)) {
+                        Node *va = n->args.data[
+                            strcmp(bn, "vec_push") == 0 ? 1 : 2];
+                        if (va->kind == NODE_IDENT) {
+                            int si = rc_find(cg, va->name);
+                            if (si >= 0 && !cg->rc_locals.data[si].dead &&
+                                rc_is_move(cg, va, si)) {
+                                cg->rc_locals.data[si].dead = 1;
+                                cg->rc_cmoves++;
+                                mv = 1;
+                            }
+                        }
+                    }
+                    fprintf(f, "baga_%s_%s%s(", bn, suf, mv ? "_move" : "");
                     for (int i = 0; i < n->args.len; i++) {
                         if (i > 0) fprintf(f, ", ");
                         emit_expr(cg, n->args.data[i]);
@@ -1353,7 +1373,25 @@ static void emit_expr(Codegen *cg, Node *n) {
                             else if (mt->elem->kind == TYPE_BYTES) vsuf = "bytes";
                         }
                     }
-                    fprintf(f, "baga_%s_%s_%s(", bn, ksuf, vsuf);
+                    /* RC3: map_set с last-use стойност → move вариант без
+                     * retain (ключът остава retain-нат — отделен живот) */
+                    int mv = 0;
+                    if (cg->rc && strcmp(bn, "map_set") == 0 &&
+                        (strcmp(vsuf, "str") == 0 ||
+                         strcmp(vsuf, "bytes") == 0) &&
+                        n->args.len >= 3 &&
+                        n->args.data[2]->kind == NODE_IDENT) {
+                        Node *va = n->args.data[2];
+                        int si = rc_find(cg, va->name);
+                        if (si >= 0 && !cg->rc_locals.data[si].dead &&
+                            rc_is_move(cg, va, si)) {
+                            cg->rc_locals.data[si].dead = 1;
+                            cg->rc_cmoves++;
+                            mv = 1;
+                        }
+                    }
+                    fprintf(f, "baga_%s_%s_%s%s(", bn, ksuf, vsuf,
+                            mv ? "_move" : "");
                     for (int i = 0; i < n->args.len; i++) {
                         if (i > 0) fprintf(f, ", ");
                         emit_expr(cg, n->args.data[i]);
@@ -3077,6 +3115,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     cg->rc_fn_base = -1;
     cg->rc_lus.data = NULL; cg->rc_lus.len = 0; cg->rc_lus.cap = 0;
     cg->rc_moves = 0;
+    cg->rc_cmoves = 0;
     cg->rc_cur_blk = NULL; cg->rc_cur_idx = -1;
     cg->rc_cur_fn = NULL;
     cg->rc_elided_pairs = 0;
@@ -3538,6 +3577,15 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     if (cg->rc) fprintf(out, "    baga_rc_retain((void *)s); baga_rc_release_str((const char *)v->data[i]);\n");
     fprintf(out, "    v->data[i] = (void *)s;\n");
     fprintf(out, "}\n");
+    /* RC3: move варианти — без retain на новия; източникът е last-use локал,
+     * чиято референция преминава в контейнера (codegen го маркира dead).
+     * set release-ва стария елемент както обикновено. */
+    if (cg->rc) {
+        fprintf(out, "static void baga_vec_push_str_move(baga_Vec *v, const char *s) { baga_vec_grow(v); v->data[v->len++] = (void *)s; }\n");
+        fprintf(out, "static void baga_vec_set_str_move(baga_Vec *v, int64_t i, const char *s) {\n");
+        fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+        fprintf(out, "    baga_rc_release_str((const char *)v->data[i]); v->data[i] = (void *)s; }\n");
+    }
     fprintf(out, "static void baga_vec_push_f64(baga_Vec *v, double x) { union { double d; void *p; } u; u.d = x; baga_vec_grow(v); v->data[v->len++] = u.p; }\n");
     fprintf(out, "static double baga_vec_get_f64(baga_Vec *v, int64_t i) {\n");
     fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_get\", i, v->len);\n");
@@ -3564,6 +3612,16 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    baga_rc_retain((void *)b.data); baga_rc_release_bytes(*(baga_bytes *)v->data[i]);\n");
     fprintf(out, "    *(baga_bytes *)v->data[i] = b;\n");
     fprintf(out, "}\n");
+    /* RC3: move варианти — без retain на data (виж str по-горе) */
+    if (cg->rc) {
+        fprintf(out, "static void baga_vec_push_bytes_move(baga_Vec *v, baga_bytes b) {\n");
+        fprintf(out, "    baga_vec_grow(v);\n");
+        fprintf(out, "    baga_bytes *p = baga_alloc(sizeof(baga_bytes)); *p = b;\n");
+        fprintf(out, "    v->data[v->len++] = p; }\n");
+        fprintf(out, "static void baga_vec_set_bytes_move(baga_Vec *v, int64_t i, baga_bytes b) {\n");
+        fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+        fprintf(out, "    baga_rc_release_bytes(*(baga_bytes *)v->data[i]); *(baga_bytes *)v->data[i] = b; }\n");
+    }
     /* struct елементи (L4): generic box helper-и; размерът идва от call site-а,
      * елементите са box-нати копия (memcpy при push/set/slice/concat) */
     fprintf(out, "static void baga_vec_push_box(baga_Vec *v, const void *src, int64_t size) {\n");
@@ -3656,6 +3714,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    baga_rc_retain((void *)x); baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0);\n");
     fprintf(out, "    v->data[i] = (void *)x;\n");
     fprintf(out, "}\n");
+    /* RC3: move варианти — без retain (виж str по-горе) */
+    if (cg->rc) {
+        fprintf(out, "static void baga_vec_push_vec_move(baga_Vec *v, baga_Vec *x) { baga_vec_grow(v); v->data[v->len++] = (void *)x; }\n");
+        fprintf(out, "static void baga_vec_set_vec_move(baga_Vec *v, int64_t i, baga_Vec *x) {\n");
+        fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+        fprintf(out, "    baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0); v->data[i] = (void *)x; }\n");
+    }
     fprintf(out, "static baga_Vec *baga_vec_slice_vec(baga_Vec *v, int64_t a, int64_t b) {\n");
     fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");
     fprintf(out, "    baga_Vec *r = baga_vec_new();\n");
@@ -3754,6 +3819,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
             if (cg->rc && vi == 1)
                 fprintf(out, "    baga_rc_retain((void *)v); baga_rc_release_str(e->sv);\n");
             fprintf(out, "    e->%s = v; }\n", fld);
+            /* RC3: move вариант — без retain на стойността (last-use локал);
+             * release на старата при overwrite както обикновено */
+            if (cg->rc && vi == 1) {
+                fprintf(out, "static void baga_map_set_%s_str_move(baga_Map *m, %s, const char *v) {\n", kn, karg);
+                fprintf(out, "    baga_MapEntry *e = baga_map_put(m, %s, %s, %s);\n", ikv, skv, hk);
+                fprintf(out, "    baga_rc_release_str(e->sv); e->sv = v; }\n");
+            }
             const char *ret = vi == 0 ? "int64_t" : (vi == 1 ? "const char *" : "double");
             fprintf(out, "static %s baga_map_get_%s_%s(baga_Map *m, %s) {\n", ret, kn, vn, karg);
             fprintf(out, "    baga_MapEntry *e = *baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
@@ -3768,6 +3840,12 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         if (cg->rc)
             fprintf(out, "    baga_rc_retain((void *)v.data); baga_rc_release_bytes(e->bv);\n");
         fprintf(out, "    e->bv = v; }\n");
+        /* RC3: move вариант — без retain на data (виж str по-горе) */
+        if (cg->rc) {
+            fprintf(out, "static void baga_map_set_%s_bytes_move(baga_Map *m, %s, baga_bytes v) {\n", kn, karg);
+            fprintf(out, "    baga_MapEntry *e = baga_map_put(m, %s, %s, %s);\n", ikv, skv, hk);
+            fprintf(out, "    baga_rc_release_bytes(e->bv); e->bv = v; }\n");
+        }
         fprintf(out, "static baga_bytes baga_map_get_%s_bytes(baga_Map *m, %s) {\n", kn, karg);
         fprintf(out, "    baga_MapEntry *e = *baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
         fprintf(out, "    if (!e) { baga_bytes z; z.data = NULL; z.len = 0; return z; }\n");
@@ -3841,6 +3919,12 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         if (cg->rc && vi == 1)
             fprintf(out, "    baga_rc_retain((void *)v); baga_rc_release_str(e->sv);\n");
         fprintf(out, "    e->%s = v; }\n", fld);
+        /* RC3: move вариант — без retain на стойността (виж str ключове) */
+        if (cg->rc && vi == 1) {
+            fprintf(out, "static void baga_map_set_bytes_str_move(baga_Map *m, baga_bytes k, const char *v) {\n");
+            fprintf(out, "    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n");
+            fprintf(out, "    baga_rc_release_str(e->sv); e->sv = v; }\n");
+        }
         const char *ret = vi == 0 ? "int64_t" : (vi == 1 ? "const char *" : "double");
         fprintf(out, "static %s baga_map_get_bytes_%s(baga_Map *m, baga_bytes k) {\n", ret, vn);
         fprintf(out, "    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
@@ -3853,6 +3937,12 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     if (cg->rc)
         fprintf(out, "    baga_rc_retain((void *)v.data); baga_rc_release_bytes(e->bv);\n");
     fprintf(out, "    e->bv = v; }\n");
+    /* RC3: move вариант — без retain на data */
+    if (cg->rc) {
+        fprintf(out, "static void baga_map_set_bytes_bytes_move(baga_Map *m, baga_bytes k, baga_bytes v) {\n");
+        fprintf(out, "    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n");
+        fprintf(out, "    baga_rc_release_bytes(e->bv); e->bv = v; }\n");
+    }
     fprintf(out, "static baga_bytes baga_map_get_bytes_bytes(baga_Map *m, baga_bytes k) {\n");
     fprintf(out, "    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
     fprintf(out, "    if (!e) { baga_bytes z; z.data = NULL; z.len = 0; return z; }\n");
@@ -4468,10 +4558,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         }
     }
 
-    /* RC2/RC2.1: броячи на елиминациите — коментар в края на изхода */
+    /* RC2/RC2.1/RC3: броячи на елиминациите — коментар в края на изхода */
     if (cg->rc) {
         fprintf(out, "/* RC2: move elisions: %d */\n", cg->rc_moves);
         fprintf(out, "/* RC2.1: borrowed pair elisions: %d */\n", cg->rc_elided_pairs);
+        fprintf(out, "/* RC3: container move elisions: %d */\n", cg->rc_cmoves);
     }
 
     /* RC1: освободи scope стековете на компилатора */

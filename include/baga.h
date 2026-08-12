@@ -532,6 +532,8 @@ typedef struct {
                          * функции и не пипат enclosing локалите) */
     RcUseVec rc_lus;    /* RC2: last-use записи на текущата fn/ламбда */
     int   rc_moves;     /* RC2: брой елиминирани retain-ове (move сайтове) */
+    int   rc_cmoves;    /* RC3: брой container move-ове (push/set без retain
+                         * при last-use аргумент — docs/move-semantics-bg.md) */
     /* RC2.1: borrowed-retain elision — контекст на текущия block statement
      * (за сканиране на опашката на scope-а) + брояч на елиминираните двойки */
     Node *rc_cur_blk;

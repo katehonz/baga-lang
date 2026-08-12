@@ -1,0 +1,125 @@
+// cmove_test — RC3: container move elision (push/set без retain при last-use
+// аргумент — docs/move-semantics-bg.md §v3). Оптимизацията е невидима
+// семантично — тестът доказва коректност: стойностите в контейнерите са верни
+// и няма underflow/crash при move на last-use локал в vec_push/vec_set/map_set,
+// срещу употреби след вмъкването (без move — източникът остава жив).
+// Минава и без --rc, и с --rc.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// vec_push с last-use локал → move (референцията преминава във вектора)
+fn push_lastuse() -> Vec<str> {
+    let v: Vec<str> = vec_new()
+    let a = concat("mv-", "a")
+    vec_push(v, a)
+    vec_push(v, "lit")
+    return v
+}
+
+// vec_push, след което източникът се ползва → НЯМА move; и двете референции живи
+fn push_keep() -> str {
+    let v: Vec<str> = vec_new()
+    let b = concat("keep-", "b")
+    vec_push(v, b)
+    return concat(vec_get(v, 0), b)
+}
+
+// vec_set с last-use локал → move; старият елемент се release-ва коректно
+fn set_lastuse() -> Vec<str> {
+    let v: Vec<str> = vec_new()
+    vec_push(v, "old0")
+    vec_push(v, "old1")
+    let c = concat("set-", "c")
+    vec_set(v, 1, c)
+    return v
+}
+
+// map_set със стойност last-use → move
+fn map_value_move() -> Map<str, str> {
+    let m: Map<str, str> = map_new()
+    let val = concat("val-", "m")
+    map_set(m, "k1", val)
+    return m
+}
+
+// map_set, след което стойността се ползва → НЯМА move
+fn map_value_keep() -> str {
+    let m: Map<str, str> = map_new()
+    let val = concat("kv-", "w")
+    map_set(m, "k", val)
+    return concat(map_get(m, "k"), val)
+}
+
+// map_set overwrite с move на новата стойност → старата се release-ва
+fn map_overwrite_move() -> Map<str, str> {
+    let m: Map<str, str> = map_new()
+    map_set(m, "k", "first")
+    let nv = concat("second-", "x")
+    map_set(m, "k", nv)
+    return m
+}
+
+// параметър в push — borrowed, НЕ move; контейнерът retain-ва и оцелява
+fn push_param(p: str) -> Vec<str> {
+    let v: Vec<str> = vec_new()
+    vec_push(v, p)
+    return v
+}
+
+fn main() -> i64 !IO {
+    // 1. vec_push last-use → move; стойностите са във вектора
+    let v1 = push_lastuse()
+    check("vec_push_move", vec_len(v1) == 2 && vec_get(v1, 0) == "mv-a" && vec_get(v1, 1) == "lit")
+
+    // 2. push + употреба след → без move; и двете референции валидни
+    check("vec_push_no_move", push_keep() == "keep-bkeep-b")
+
+    // 3. vec_set last-use → move; старият елемент заменен коректно
+    let v3 = set_lastuse()
+    check("vec_set_move", vec_get(v3, 0) == "old0" && vec_get(v3, 1) == "set-c")
+
+    // 4. map_set стойност last-use → move
+    let m4 = map_value_move()
+    check("map_set_move", map_get(m4, "k1") == "val-m")
+
+    // 5. map_set + употреба след → без move
+    check("map_set_no_move", map_value_keep() == "kv-wkv-w")
+
+    // 6. map_set overwrite с move → новата стойност е на мястото
+    let m6 = map_overwrite_move()
+    check("map_overwrite_move", map_get(m6, "k") == "second-x" && map_len(m6) == 1)
+
+    // 7. параметър в push — borrowed; върнатият вектор е жив след края на fn
+    let v7 = push_param("param-x")
+    check("push_param_borrowed", vec_get(v7, 0) == "param-x")
+
+    // 8. цикъл: iteration-local push (decl и site в същото тяло) → move всяка
+    // итерация; loop-carried контейнер натрупва коректните стойности
+    let acc: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < 300 {
+        let s = concat("el", int_to_str(i))
+        vec_push(acc, s)
+        i = i + 1
+    }
+    check("loop_push_move", vec_len(acc) == 300 && vec_get(acc, 0) == "el0" && vec_get(acc, 299) == "el299")
+
+    // 9. Vec<Vec<str>>: push на last-use вложен вектор → move
+    let outer: Vec<Vec<str>> = vec_new()
+    let inner: Vec<str> = vec_new()
+    vec_push(inner, "deep")
+    vec_push(outer, inner)
+    check("vec_vec_move", vec_get(vec_get(outer, 0), 0) == "deep")
+
+    print("cmove_test: all passed")
+    return 0
+}
