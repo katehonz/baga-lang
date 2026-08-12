@@ -2560,7 +2560,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     cg->rc_scopes.data = NULL; cg->rc_scopes.len = 0; cg->rc_scopes.cap = 0;
     cg->rc_fn_base = -1;
     /* RC1: размер на per-alloc header-а — 24 B с rc поле, 16 B без */
-    int hs = cg->rc ? 40 : 16;
+    int hs = cg->rc ? 32 : 16;
 
     /* header */
     fprintf(out, "/* Генериран от компилатора на Бага. Фаза 1. */\n");
@@ -2625,49 +2625,33 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     /* RC1: под --rc header-ът получава трето поле rc (24 B); без --rc
      * layout-ът и offset-ите са непроменени (16 B) */
     if (cg->rc) {
-        fprintf(out, "typedef struct { uint64_t magic; uint64_t persist; uint64_t rc; uint64_t epoch; uint64_t an; } baga_Hdr;\n");
+        /* RC1-perf: persist битът и epoch са пакетирани в едно поле pe
+         * (pe = epoch<<1 | persist) — 32 B header (payload пак 16-подравнен),
+         * един запис по-малко на алокация, едно зареждане в rc_hdr. */
+        fprintf(out, "typedef struct { uint64_t magic; uint64_t pe; uint64_t rc; uint64_t an; } baga_Hdr;\n");
         /* RC1: обхват на arena блоковете — range guard преди magic check.
          * epoch: mem_rewind я бутва; release на ephemeral стойност от преди
          * rewind е no-op (паметта ѝ е върната — иначе UAF при scope exit
-         * след rewind в същия scope). persist стойности са извън epoch. */
+         * след rewind в същия scope). persist стойности са извън epoch.
+         * baga_rc_spare: rewind НЕ връща блоковете на malloc, а ги пази в
+         * spare веригата за следващи алокации — header-ите остават mapped
+         * (epoch е достатъчна защита), а malloc/free обажданията на заявка
+         * изчезват (бел. RC1-perf: dead-zone логът отпадна — is_dead беше
+         * O(ndead) на всеки retain/release и беше доминиращият overhead). */
         fprintf(out, "static __thread char *baga_rc_lo = (char *)(intptr_t)-1;\n");
         fprintf(out, "static __thread char *baga_rc_hi = NULL;\n");
         fprintf(out, "static __thread uint64_t baga_rc_epoch = 0;\n");
-        /* RC1: мъртви зони — памет, върната от mem_rewind. rc_hdr проверява
-         * тук ПЪРВО (без дереференция — зоната може да е unmapped). При
-         * bump reuse зоната се свива отляво (reuse е монотонен в блока);
-         * частично припокриване в средата → записът пада (leak, не корупция).
-         * Фиксиран лог от 64; при препълване най-старият пада (leak-safe). */
-        fprintf(out, "typedef struct { char *lo, *hi; } baga_RcDead;\n");
-        fprintf(out, "static __thread baga_RcDead baga_rc_dead[64];\n");
-        fprintf(out, "static __thread int baga_rc_ndead = 0;\n");
-        fprintf(out, "static int baga_rc_is_dead(void *p) {\n");
-        fprintf(out, "    for (int i = 0; i < baga_rc_ndead; i++)\n");
-        fprintf(out, "        if ((char *)p >= baga_rc_dead[i].lo && (char *)p < baga_rc_dead[i].hi) return 1;\n");
-        fprintf(out, "    return 0;\n");
-        fprintf(out, "}\n");
-        fprintf(out, "static void baga_rc_dead_add(char *lo, char *hi) {\n");
-        fprintf(out, "    if (lo >= hi) return;\n");
-        fprintf(out, "    if (baga_rc_ndead == 64) { memmove(baga_rc_dead, baga_rc_dead + 1, 63 * sizeof(baga_RcDead)); baga_rc_ndead = 63; }\n");
-        fprintf(out, "    baga_rc_dead[baga_rc_ndead].lo = lo; baga_rc_dead[baga_rc_ndead].hi = hi; baga_rc_ndead++;\n");
-        fprintf(out, "}\n");
-        fprintf(out, "static void baga_rc_dead_reuse(char *lo, char *hi) {\n");
-        fprintf(out, "    for (int i = 0; i < baga_rc_ndead; i++) {\n");
-        fprintf(out, "        if (lo < baga_rc_dead[i].hi && hi > baga_rc_dead[i].lo) {\n");
-        fprintf(out, "            if (lo <= baga_rc_dead[i].lo) {\n");
-        fprintf(out, "                if (hi > baga_rc_dead[i].lo) baga_rc_dead[i].lo = hi < baga_rc_dead[i].hi ? hi : baga_rc_dead[i].hi;\n");
-        fprintf(out, "            } else { baga_rc_dead[i] = baga_rc_dead[--baga_rc_ndead]; i--; continue; }\n");
-        fprintf(out, "            if (baga_rc_dead[i].lo >= baga_rc_dead[i].hi) { baga_rc_dead[i] = baga_rc_dead[--baga_rc_ndead]; i--; }\n");
-        fprintf(out, "        }\n");
-        fprintf(out, "    }\n");
-        fprintf(out, "}\n");
+        fprintf(out, "static __thread baga_ABlk *baga_rc_spare = NULL;\n");
     }
     else
         fprintf(out, "typedef struct { uint64_t magic; uint64_t persist; } baga_Hdr;\n");
     fprintf(out, "static void baga_free(void *p, int64_t n) {\n");
     fprintf(out, "    if (!p || n <= 0) return;\n");
     fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)p - %d);\n", hs);
-    fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)h->persist : 0;\n");
+    if (cg->rc)
+        fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)(h->pe & 1) : 0;\n");
+    else
+        fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)h->persist : 0;\n");
     fprintf(out, "    if (n <= 1024) {\n");
     fprintf(out, "        int c = (int)((n + 15) / 16) - 1;\n");
     fprintf(out, "        void **fl = persist ? &baga_fl_p[c] : &baga_fl[c];\n");
@@ -2691,7 +2675,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        void *fb = *fl;\n");
     /* RC1: freelist блок пази стара rc стойност (0 при release-нат) — reset */
     if (cg->rc)
-        fprintf(out, "        if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->epoch = baga_rc_epoch; } return fb; }\n", hs);
+        fprintf(out, "        if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->pe = ((uint64_t)baga_rc_epoch << 1) | (_h->pe & 1); } return fb; }\n", hs);
     else
         fprintf(out, "        if (fb) { *fl = *(void **)fb; return fb; }\n");
     fprintf(out, "        an = rn;\n");
@@ -2701,7 +2685,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "            void **fl = persist ? &baga_fl_big_p[bi] : &baga_fl_big[bi];\n");
     fprintf(out, "            void *fb = *fl;\n");
     if (cg->rc)
-        fprintf(out, "            if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->epoch = baga_rc_epoch; } return fb; }\n", hs);
+        fprintf(out, "            if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->pe = ((uint64_t)baga_rc_epoch << 1) | (_h->pe & 1); } return fb; }\n", hs);
     else
         fprintf(out, "            if (fb) { *fl = *(void **)fb; return fb; }\n");
     fprintf(out, "            an = ((size_t)2048 << bi);\n");
@@ -2717,22 +2701,30 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_ABlk *b = *hp;\n");
     fprintf(out, "    if (!b || b->used + an + %d > b->cap) {\n", hs);
     fprintf(out, "        size_t cap = an + %d > 8192 ? an + %d : 8192;\n", hs, hs);
-    fprintf(out, "        b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
-    fprintf(out, "        b->next = *hp; b->used = 0; b->cap = cap;\n");
-    fprintf(out, "        *hp = b;\n");
-    /* RC1: разширява obхвата на собствените блокове (range guard в rc_hdr) */
+    /* RC1: първо spare веригата (блокове, върнати от rewind) — без malloc
+     * на всяка заявка; cap стига само ако покрива заявката. Новите адреси
+     * вече са в [lo,hi] — range guard не се обновява при spare reuse. */
     if (cg->rc) {
-        fprintf(out, "        if ((char *)b->data < baga_rc_lo) baga_rc_lo = (char *)b->data;\n");
-        fprintf(out, "        if ((char *)b->data + cap > baga_rc_hi) baga_rc_hi = (char *)b->data + cap;\n");
+        fprintf(out, "        if (baga_rc_spare && baga_rc_spare->cap >= cap) {\n");
+        fprintf(out, "            b = baga_rc_spare; baga_rc_spare = b->next;\n");
+        fprintf(out, "            b->next = *hp; b->used = 0;\n");
+        fprintf(out, "        } else {\n");
+        fprintf(out, "            b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
+        fprintf(out, "            b->next = *hp; b->used = 0; b->cap = cap;\n");
+        fprintf(out, "            if ((char *)b->data < baga_rc_lo) baga_rc_lo = (char *)b->data;\n");
+        fprintf(out, "            if ((char *)b->data + cap > baga_rc_hi) baga_rc_hi = (char *)b->data + cap;\n");
+        fprintf(out, "        }\n");
+        fprintf(out, "        *hp = b;\n");
+    } else {
+        fprintf(out, "        b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
+        fprintf(out, "        b->next = *hp; b->used = 0; b->cap = cap;\n");
+        fprintf(out, "        *hp = b;\n");
     }
     fprintf(out, "    }\n");
     fprintf(out, "    void *p = b->data + b->used; b->used += an + %d;\n", hs);
-    /* RC1: bump-ът reuse-ва памет — свий мъртвите зони, които покрива */
-    if (cg->rc)
-        fprintf(out, "    baga_rc_dead_reuse((char *)p, (char *)p + an + %d);\n", hs);
     /* RC1: собственикът на нова алокация е първият binding → rc=1 */
     if (cg->rc)
-        fprintf(out, "    baga_Hdr *hh = (baga_Hdr *)p; hh->magic = BAGA_HDR_MAGIC; hh->persist = (uint64_t)persist; hh->rc = 1; hh->epoch = baga_rc_epoch; hh->an = an;\n");
+        fprintf(out, "    baga_Hdr *hh = (baga_Hdr *)p; hh->magic = BAGA_HDR_MAGIC; hh->pe = ((uint64_t)baga_rc_epoch << 1) | (uint64_t)persist; hh->rc = 1; hh->an = an;\n");
     else
         fprintf(out, "    baga_Hdr *hh = (baga_Hdr *)p; hh->magic = BAGA_HDR_MAGIC; hh->persist = (uint64_t)persist;\n");
     fprintf(out, "    return (char *)p + %d;\n", hs);
@@ -2744,19 +2736,18 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * блоковете — литерал/външен буфер никога не се дереференцира (четенето
      * на p-24 пред чужд литерал може да е неподравнена страница). */
     if (cg->rc) {
-        fprintf(out, "static baga_Hdr *baga_rc_hdr(void *p) {\n");
+        fprintf(out, "static inline __attribute__((always_inline)) baga_Hdr *baga_rc_hdr(void *p) {\n");
         fprintf(out, "    if (!p || (char *)p < baga_rc_lo + %d || (char *)p >= baga_rc_hi) return NULL;\n", hs);
-        fprintf(out, "    if (baga_rc_is_dead(p)) return NULL;\n");
         fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)p - %d);\n", hs);
         fprintf(out, "    if (h->magic != BAGA_HDR_MAGIC) return NULL;\n");
-        fprintf(out, "    if (!h->persist && h->epoch != baga_rc_epoch) return NULL;\n");
+        fprintf(out, "    if (!(h->pe & 1) && (h->pe >> 1) != baga_rc_epoch) return NULL;\n");
         fprintf(out, "    return h;\n");
         fprintf(out, "}\n");
-        fprintf(out, "static void baga_rc_retain(void *p) {\n");
+        fprintf(out, "static inline __attribute__((always_inline)) void baga_rc_retain(void *p) {\n");
         fprintf(out, "    baga_Hdr *h = baga_rc_hdr(p);\n");
         fprintf(out, "    if (h) h->rc++;\n");
         fprintf(out, "}\n");
-        fprintf(out, "static void baga_rc_release_str(const char *s) {\n");
+        fprintf(out, "static inline __attribute__((always_inline)) void baga_rc_release_str(const char *s) {\n");
         fprintf(out, "    baga_Hdr *h = baga_rc_hdr((void *)s);\n");
         fprintf(out, "    if (!h) return;\n");
         fprintf(out, "    if (h->rc == 0) { fprintf(stderr, \"baga: rc underflow (str — двоен release)\\n\"); exit(1); }\n");
@@ -2786,11 +2777,12 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
     fprintf(out, "    while (b && b != m->head) {\n");
     fprintf(out, "        baga_ABlk *nx = b->next;\n");
-    /* RC1: блокът се връща на malloc — маркирай го като мъртва зона за
-     * rc_hdr ПРЕДИ free (после адресът може да е unmapped) */
+    /* RC1: в spare веригата вместо free() — паметта остава mapped (epoch
+     * я прави мъртва за rc_hdr) и се reuse-ва от следващите алокации. */
     if (cg->rc)
-        fprintf(out, "        baga_rc_dead_add((char *)b->data, (char *)b->data + b->used);\n");
-    fprintf(out, "        free(b);\n");
+        fprintf(out, "        b->next = baga_rc_spare; baga_rc_spare = b;\n");
+    else
+        fprintf(out, "        free(b);\n");
     fprintf(out, "        b = nx;\n");
     fprintf(out, "    }\n");
     fprintf(out, "    if (b != m->head) {\n");
@@ -2799,10 +2791,6 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    }\n");
     fprintf(out, "    baga_arena_head = m->head;\n");
     fprintf(out, "    if (m->head) {\n");
-    /* RC1: опашката на оцелелия блок също е мъртва зона (ще се reuse-ва
-     * монотонно от m->used нагоре — dead_reuse я свива при bump) */
-    if (cg->rc)
-        fprintf(out, "        baga_rc_dead_add((char *)m->head->data + m->used, (char *)m->head->data + m->head->used);\n");
     fprintf(out, "        m->head->used = m->used;\n");
     fprintf(out, "    }\n");
     /* MEM-4c: вместо per-блок freelist scrub (O(блокове × freelist записи) —
@@ -2898,7 +2886,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "typedef struct { unsigned char *data; int64_t len; } baga_bytes;\n");
     /* RC1: release на bytes — rc живее върху data алокацията */
     if (cg->rc) {
-        fprintf(out, "static void baga_rc_release_bytes(baga_bytes b) {\n");
+        fprintf(out, "static inline __attribute__((always_inline)) void baga_rc_release_bytes(baga_bytes b) {\n");
         fprintf(out, "    baga_Hdr *h = baga_rc_hdr((void *)b.data);\n");
         fprintf(out, "    if (!h) return;\n");
         fprintf(out, "    if (h->rc == 0) { fprintf(stderr, \"baga: rc underflow (bytes — двоен release)\\n\"); exit(1); }\n");
