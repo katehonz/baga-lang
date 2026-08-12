@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### runtime — RC4 v0.3 cond temps (зад `--rc`)
+- Temp-ове в `if`/`while` условия и `for`-range hi се release-ват на всяка
+  оценка (GNU statement-expression). Leak repro 200k итерации: 10 MB vs 141 MB.
+- Тестове: `while_cond_temp`, `if_cond_temp`, `for_hi_temp` в temp_test.
+
 ### runtime — RC1.4 handle-escape retain (зад `--rc`)
 - `map_h`/`str_h`/`bytes_h` retain-ват обекта: handle-ът е immortal escape,
   иначе scope release обесва картата (`boila_open_mt` → `nb=0` SIGFPE).

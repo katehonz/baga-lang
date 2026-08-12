@@ -755,10 +755,14 @@ static int rc_be_ok(Codegen *cg, const char *x, const char *src) {
  * ламбда (отделна fn), try/catch (ранен return), match, if-израз и десния
  * операнд на &&/|| (условна оценка), drop(…) аргументи (самият drop е
  * release пътят). Root-ът на let/assign/return е bound (собствеността се
- * предава) — само вложените му temp-ове се събират. */
+ * предава) — само вложените му temp-ове се събират.
+ * v0.3: условия на if/while и for-range hi се wrap-ват в GNU ({…}) —
+ * temp-овете се оценяват на всяка оценка на условието и се release-ват
+ * веднага след нея (преди тялото / клоновете). continue/break не ги пипат. */
 
 static void rc_tmp_release_all(Codegen *cg);
 static void emit_expr(Codegen *cg, Node *n); /* fwd — пълната fwd декларация е по-долу */
+static void emit_rc_stmt_expr(Codegen *cg, Node *n);
 
 /* fresh heap temp ли е този възел? (owned rc=1 резултат по конвенция) */
 static int rc_tmp_fresh(Node *n) {
@@ -925,6 +929,69 @@ static void rc_tmp_end(Codegen *cg, RcTmpVec *saved, int saved_on) {
     rc_tmp_release_all(cg);
     vec_free(cg->rc_tmps);
     cg->rc_tmps = *saved;
+    cg->rc_tmps_on = saved_on;
+}
+
+/* peek: cond/expr има ли fresh heap temp-ове? Не пипа броячите. */
+static int rc_tmp_would_collect(Codegen *cg, Node *n) {
+    if (!cg->rc || !n) return 0;
+    RcTmpVec saved = cg->rc_tmps;
+    int saved_on = cg->rc_tmps_on;
+    int saved_tc = cg->tmp_counter;
+    cg->rc_tmps.data = NULL; cg->rc_tmps.len = 0; cg->rc_tmps.cap = 0;
+    rc_tmp_collect(cg, n, 0);
+    int ntmp = cg->rc_tmps.len;
+    vec_free(cg->rc_tmps);
+    cg->rc_tmps = saved;
+    cg->rc_tmps_on = saved_on;
+    cg->tmp_counter = saved_tc;
+    return ntmp;
+}
+
+/* RC4 v0.3: израз в условие. Ако има temp-ове — GNU statement-expression
+ * `({ decls; __auto_type __rc_cN = expr; releases; __rc_cN; })`, така че
+ * оценката е на всяко влизане (while/for hi) и release-ът е преди тялото.
+ * Без temp-ове — обикновен emit_expr. */
+static void emit_rc_stmt_expr(Codegen *cg, Node *n) {
+    if (!n) { fprintf(cg->out, "0"); return; }
+    if (!cg->rc) { emit_expr(cg, n); return; }
+    RcTmpVec saved = cg->rc_tmps;
+    int saved_on = cg->rc_tmps_on;
+    cg->rc_tmps.data = NULL; cg->rc_tmps.len = 0; cg->rc_tmps.cap = 0;
+    cg->rc_tmps_on = 0;
+    rc_tmp_collect(cg, n, 0);
+    if (cg->rc_tmps.len == 0) {
+        vec_free(cg->rc_tmps);
+        cg->rc_tmps = saved;
+        cg->rc_tmps_on = saved_on;
+        emit_expr(cg, n);
+        return;
+    }
+    cg->rc_tmps_on = 1;
+    FILE *f = cg->out;
+    fprintf(f, "({\n");
+    cg->indent++;
+    for (int i = cg->rc_tmps.len - 1; i >= 0; i--) {
+        emit_indent(cg);
+        fprintf(f, "__auto_type %s = ", cg->rc_tmps.data[i].name);
+        cg->rc_tmp_decl = cg->rc_tmps.data[i].site;
+        emit_expr(cg, cg->rc_tmps.data[i].site);
+        cg->rc_tmp_decl = NULL;
+        fprintf(f, ";\n");
+    }
+    emit_indent(cg);
+    int cnum = cg->tmp_counter++;
+    fprintf(f, "__auto_type __rc_c%d = ", cnum);
+    emit_expr(cg, n);
+    fprintf(f, ";\n");
+    rc_tmp_release_all(cg);
+    emit_indent(cg);
+    fprintf(f, "__rc_c%d;\n", cnum);
+    cg->indent--;
+    emit_indent(cg);
+    fprintf(f, "})");
+    vec_free(cg->rc_tmps);
+    cg->rc_tmps = saved;
     cg->rc_tmps_on = saved_on;
 }
 
@@ -1793,7 +1860,7 @@ static void emit_expr(Codegen *cg, Node *n) {
             /* if as expression → GCC statement expression */
             fprintf(f, "({");
             fprintf(f, "if (");
-            emit_expr(cg, n->cond);
+            emit_rc_stmt_expr(cg, n->cond);
             fprintf(f, ") { ");
             /* emit then block inline */
             if (n->then_br && n->then_br->kind == NODE_BLOCK) {
@@ -2583,7 +2650,7 @@ static void emit_stmt(Codegen *cg, Node *n) {
         case NODE_WHILE:
             emit_indent(cg);
             fprintf(f, "while (");
-            emit_expr(cg, n->while_cond);
+            emit_rc_stmt_expr(cg, n->while_cond);
             fprintf(f, ") ");
             /* RC1: loop тялото е маркиран scope — release на всяка итерация,
              * break/continue release-ват до тук */
@@ -2592,20 +2659,42 @@ static void emit_stmt(Codegen *cg, Node *n) {
             break;
 
         case NODE_FOR: {
-            /* for x in lo..hi { } → for (int64_t x = lo; x < hi; x++) */
+            /* for x in lo..hi { } → for (int64_t x = lo; x < hi; x++)
+             * RC4 v0.3: lo temp-ове се hoist-ват веднъж (init); hi — на
+             * всяка итерация през emit_rc_stmt_expr (C for cond се преоценява). */
+            Node *lo = NULL, *hi = NULL;
+            if (n->for_iter && n->for_iter->kind == NODE_RANGE) {
+                lo = n->for_iter->range_lo;
+                hi = n->for_iter->range_hi;
+            }
+            RcTmpVec saved_lo = {0};
+            int saved_lo_on = 0;
+            int wrap_lo = cg->rc && lo && rc_tmp_would_collect(cg, lo);
+            if (wrap_lo) {
+                emit_indent(cg);
+                fprintf(f, "{\n");
+                cg->indent++;
+                rc_tmp_begin(cg, lo, 0, &saved_lo, &saved_lo_on);
+            }
             emit_indent(cg);
             char *m = mangle_name(n->for_var);
             fprintf(f, "for (int64_t %s = ", m);
-            if (n->for_iter && n->for_iter->kind == NODE_RANGE) {
-                emit_expr(cg, n->for_iter->range_lo);
+            if (lo) {
+                emit_expr(cg, lo);
                 fprintf(f, "; %s < ", m);
-                emit_expr(cg, n->for_iter->range_hi);
+                emit_rc_stmt_expr(cg, hi);
                 fprintf(f, "; %s++) ", m);
             } else {
                 fprintf(f, "0; %s < 0; %s++) ", m, m);
             }
             emit_block_scoped(cg, n->for_body, 1);
             fprintf(f, "\n");
+            if (wrap_lo) {
+                rc_tmp_end(cg, &saved_lo, saved_lo_on);
+                cg->indent--;
+                emit_indent(cg);
+                fprintf(f, "}\n");
+            }
             free(m);
             break;
         }
@@ -2613,7 +2702,7 @@ static void emit_stmt(Codegen *cg, Node *n) {
         case NODE_IF:
             emit_indent(cg);
             fprintf(f, "if (");
-            emit_expr(cg, n->cond);
+            emit_rc_stmt_expr(cg, n->cond);
             fprintf(f, ") ");
             emit_block(cg, n->then_br);
             if (n->else_br) {

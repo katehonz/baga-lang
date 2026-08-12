@@ -55,25 +55,18 @@ release-ваше картата → `h_map` върху труп с `nb=0` → SI
 retain-ват (immortal escape, leak-safe). Тест: `map_h_survives` в
 `rc_test`. Пълна --rc батерия: **150/155** (само 5-те external peers).
 
-### 2. v0.3: temp-ове в условия и for_iter (RC4 довършване)
-RC4 не покрива temp-ове в `while`/`for`/`if` условия и `for x in <expr>`
-(консервативно изключени — hoisting над цикъл би оценил веднъж вместо на
-итерация). Това е оставащият leak в cond-тежки цикли
-(`while str_find(...) >= 0` с temp в аргументите). Подход: temp-овете в
-условие на цикъл се release-ват В КРАЯ НА ВСЯКА итерация (не преди цикъла) —
-демек декларациите отиват вътре в тялото/края на итерацията, не преди
-while-а. За `if` условия — след оценката, преди клоновете. Внимавай с
-`break`/`continue` (release преди скока, както rc_release_to_loop).
-Критерий: leak repro с temp в while-условие дава равен RSS; чеклистът.
-Дизайнът се дописва в `docs/memory-rc-bg.md` §v0.2 (в момента пише, че е
-изключено — обнови текста).
+### 2. v0.3: temp-ове в условия и for_iter — ГОТОВО
+GNU `({ tmp; c = cond; release; c; })` wrap на if/while cond и for-range
+hi (lo — hoist веднъж). Release веднага след оценката, преди тялото —
+break/continue не пипат cond temp-ове. Leak repro 200k `while
+str_find(concat(...))`: 10 MB с --rc vs 141 MB без. Тестове в temp_test.
 
-### 3. go/chan прехвърляне на heap стойности
-`go`/chan на heap стойности е изрично непокрито (docs/memory-rc-bg.md
-§Ограничения). Проучи `baga_chan_send/recv` пътя в codegen_c.c (~линия
-4560+ в runtime emission-а) и направи retain при send / release при recv
-след консумация. По-малко ясна задача — първо напиши design бележка в
-docs/ и я обсъди преди имплементация.
+### 3. go/chan прехвърляне на heap стойности — DESIGN (обсъждане)
+Бележка: `docs/memory-rc-chan-bg.md`. Каналът е i64-only; heap минава
+през `*_h`. RC1.4 вече retain-ва handle-а (immortal, leak-safe) —
+днешният hop идиом не UAF-ва. Препоръка: остави A (без нова работа).
+B (tag-нат payload + балансиран recv) и C (go capture retain) — само
+след решение. Не имплементирай без зелена светлина.
 
 ### 4. Struct полета като собственици (голяма, само ако 1-3 са готови)
 Struct полетата не се track-ват (shared-pointer семантика) — това е

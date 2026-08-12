@@ -1,4 +1,5 @@
-// temp_test — RC4: per-statement temp release (docs/memory-rc-bg.md §v0.2).
+// temp_test — RC4: per-statement + v0.3 cond temp release
+// (docs/memory-rc-bg.md §v0.2 / §v0.3).
 // Fresh heap temp-ове (concat/int_to_str/vec_slice/... резултати, които не се
 // връзват в локал) се release-ват в края на statement-а. Оптимизацията е
 // семантично невидима — тестът доказва коректност: стойностите са верни и
@@ -111,6 +112,49 @@ fn main() -> i64 !IO {
     // 11. struct литерал с borrowed (vec_get) поле — оцелява след drop на
     // източника (struct-lit retain на borrowed стойности)
     check("struct_lit_borrow_alive", borrow_field_alive() == "survive-me1150")
+
+    // 12. v0.3: temp в while условие — оценява се на всяка итерация и се
+    // release-ва преди тялото (break/continue не държат cond temp)
+    let mut hay = ""
+    let mut wn: i64 = 0
+    while str_find(hay, concat("ab", "c")) < 0 {
+        if wn == 0 { hay = concat(hay, "a") }
+        if wn == 1 { hay = concat(hay, "b") }
+        if wn == 2 { hay = concat(hay, "c") }
+        wn = wn + 1
+        if wn > 5 { break }
+    }
+    check("while_cond_temp", wn == 3 && hay == "abc")
+
+    let mut br: i64 = 0
+    while str_find(concat("keep", int_to_str(br)), "z") < 0 {
+        br = br + 1
+        if br == 2 { break }
+    }
+    check("while_cond_temp_break", br == 2)
+
+    // 13. v0.3: temp в if условие — release след оценката, преди клоновете
+    if len(concat("if", "-temp")) == 7 {
+        check("if_cond_temp", true)
+    } else {
+        check("if_cond_temp", false)
+    }
+
+    // 14. v0.3: temp в for-range hi (преоценява се) и continue стига increment
+    let mut fsum: i64 = 0
+    for k in 0..len(concat("abcd", "")) {
+        fsum = fsum + k
+    }
+    check("for_hi_temp", fsum == 6)
+
+    let mut seen: i64 = 0
+    let mut last: i64 = 0
+    for k in 0..len(concat("wwww", "")) {
+        if k == 1 { continue }
+        seen = seen + 1
+        last = k
+    }
+    check("for_hi_temp_continue", seen == 3 && last == 3)
 
     print("temp_test: all passed")
     return 0
