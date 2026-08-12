@@ -169,7 +169,13 @@ fn pc_evict_one(pc: PageCache, fallback_fd: i64) -> PcEvict !IO {
                         vec_push(nk, vec_get(pc.keys, i))
                     }
                 }
+                // MEM-4д: старият keys vec се drop-ва — иначе в persist
+                // региона всяка eviction оставя ~cap×8 B завинаги (8.7 GB
+                // при 200k реда на insert bench-а). Масивът се рециклира
+                // през persist freelist-а за следващата eviction.
+                let oldk = pc.keys
                 pc.keys = nk
+                drop(oldk)
                 let pb = map_get(pc.data, key)
                 drop(pb)  // R18: recycle the page block
                 map_del(pc.data, key)
@@ -199,7 +205,10 @@ fn pc_evict_one(pc: PageCache, fallback_fd: i64) -> PcEvict !IO {
                     vec_push(nk2, vec_get(pc.keys, i))
                 }
             }
+            // MEM-4д: drop на стария keys vec (вж. clock пътя по-горе).
+            let oldk2 = pc.keys
             pc.keys = nk2
+            drop(oldk2)
             let pb2 = map_get(pc.data, key)
             drop(pb2)
             map_del(pc.data, key)

@@ -2350,9 +2350,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    v->cap = 8; v->len = 0; v->data = baga_alloc(8 * sizeof(void *)); return v;\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_vec_grow(baga_Vec *v) {\n");
-    fprintf(out, "    if (v->len == v->cap) { v->cap *= 2;\n");
+    /* MEM-4д: старият data буфер се free-ва при doubling — иначе в persist
+     * региона всяко vec растене оставя завинаги стълбичка от intermediate
+     * буфери (измерено: ~2.7 doubling-стълбички/ред → 29 GB при 250k реда). */
+    fprintf(out, "    if (v->len == v->cap) { int64_t ocap = v->cap; void **od = v->data; v->cap *= 2;\n");
     fprintf(out, "        void **nd = (void **)baga_alloc((size_t)v->cap * sizeof(void *));\n");
-    fprintf(out, "        memcpy(nd, v->data, (size_t)v->len * sizeof(void *)); v->data = nd; }\n");
+    fprintf(out, "        memcpy(nd, od, (size_t)v->len * sizeof(void *)); v->data = nd;\n");
+    fprintf(out, "        baga_free(od, ocap * (int64_t)sizeof(void *)); }\n");
     fprintf(out, "}\n");
     fprintf(out, "static void baga_vec_push_i64(baga_Vec *v, int64_t x) { baga_vec_grow(v); v->data[v->len++] = (void *)(intptr_t)x; }\n");
     fprintf(out, "static int64_t baga_vec_get_i64(baga_Vec *v, int64_t i) {\n");
@@ -2539,7 +2543,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "                       : e->sk ? baga_map_hash_str(e->sk) : baga_map_hash_i64(e->ik);\n");
     fprintf(out, "            e->next = m->b[h %% (uint64_t)m->nb];\n");
     fprintf(out, "            m->b[h %% (uint64_t)m->nb] = e;\n");
-    fprintf(out, "            e = nx; } } }\n");
+    fprintf(out, "            e = nx; } }\n");
+    /* MEM-4д: старият bucket масив се free-ва след rehash — иначе в persist
+     * региона всяко удвояване оставя стария масив завинаги (вж. vec_grow). */
+    fprintf(out, "    baga_free(ob, onb * (int64_t)sizeof(baga_MapEntry *)); }\n");
     fprintf(out, "static baga_MapEntry *baga_map_put(baga_Map *m, int64_t ik, const char *sk, uint64_t h) {\n");
     fprintf(out, "    baga_MapEntry **slot = baga_map_slot(m, ik, sk, h);\n");
     fprintf(out, "    if (*slot) return *slot;\n");
@@ -2595,7 +2602,12 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "static void baga_map_del_%s(baga_Map *m, %s) {\n", kn, karg);
         fprintf(out, "    baga_MapEntry **slot = baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
         fprintf(out, "    if (!*slot) return;\n");
-        fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--; }\n");
+        /* MEM-4д: del без free беше вечен leak в persist региона (pin/unpin
+         * churn = 112 B на цикъл — 2.4 KB/ред на boilaDB insert bench).
+         * Box стойността (pv) остава — del не знае val_size (drop_map я
+         * чисти); shell-ът на entry-то се рециклира през baga_free. */
+        fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n");
+        fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
         fprintf(out, "static baga_Vec *baga_map_keys_%s(baga_Map *m) {\n", kn);
         fprintf(out, "    baga_Vec *v = baga_vec_new();\n");
         fprintf(out, "    for (int64_t i = 0; i < m->nb; i++)\n");
@@ -2656,7 +2668,9 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_map_del_bytes(baga_Map *m, baga_bytes k) {\n");
     fprintf(out, "    baga_MapEntry **slot = baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
     fprintf(out, "    if (!*slot) return;\n");
-    fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--; }\n");
+    /* MEM-4д: същото като str/i64 del — entry-то се free-ва (вж. горе). */
+    fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n");
+    fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
     fprintf(out, "static baga_Vec *baga_map_keys_bytes(baga_Map *m) {\n");
     fprintf(out, "    baga_Vec *v = baga_vec_new();\n");
     fprintf(out, "    for (int64_t i = 0; i < m->nb; i++)\n");

@@ -7,6 +7,14 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P11
 
+- **P11-FS — filesize gate-ът е червен и блокира run_tests.sh.** 8 файла
+  > 400 реда (streaming комитите P9–P11: exec_join 827, exec_agg_stream
+  810, exec_scan 666, pgwire_prep 546, pgwire 467, exec_sql 439,
+  serve_mt 415, exec_dml 402). run_tests.sh спира на gate-а (ред 173)
+  ПРЕДИ baga-test discovery-то — „пълен пакет" през run_tests.sh в
+  момента не върви; `scripts/baga-test` директно дава 145/150 (5 =
+  external peers). Деленето е дълг по ARCHITECTURE §9.
+
 - **P11-1 — (PARTIAL) concurrent ladder, not 10k.** `bench/boila/mt_ladder`
   : 1/4/8/16/32 HTTP clients × 200 point SELECT against MT serve
   (~3–8k ops/s). Not 10k OS-thread clients; residual true pool /
@@ -434,7 +442,8 @@ T = транзакции, W = wire protocol, F = FTS.
   CREATE INDEX build е двупасов (събиране без писания → запис batch).
   Урок: в rocksbaga никога не се скенва по време на фаза, която пише.
 - **Q2 — baga bump arena-та не reclaims; дългоживеещите тежки процеси
-  OOM-ват. (MEM-4 partial — 2026-08-11; MEM-4b/c — 2026-08-12)**
+  OOM-ват. (MEM-4 partial — 2026-08-11; MEM-4b/c — 2026-08-12;
+  MEM-4д — 2026-08-12)**
   Измерено при P3 bench: 1M INSERT-а (10×100k) OOM-ваше на chunk 2.
   **MEM-4:** C runtime `mem_mark`/`mem_rewind` + `mem_persist_begin/end`
   (отделна persist arena + отделни free lists). Serve loops (HTTP/PG MT) +
@@ -448,6 +457,16 @@ T = транзакции, W = wire protocol, F = FTS.
   всяко free — колапс в `baga_drop_map` при compaction); rewind вече
   чисти ephemeral freelist-ите изцяло за O(1) вместо per-блок scrub
   (O(блокове×записи) — rewind беше > от самата statement работа).
+  **MEM-4д (2026-08-12):** recycling fix-ове по return-address attribution
+  профил на persist bump алокациите: (1) runtime `baga_vec_grow` free-ва
+  стария data буфер при doubling; (2) runtime `baga_map_rehash` free-ва
+  стария bucket масив; (3) runtime `baga_map_del_*` free-ва unlinked
+  entry (pin/unpin churn в page cache = 112 B/цикъл → 1.86 GB при 200k;
+  box pv остава — del не знае val_size); (4) `pc_evict_one` drop-ва
+  стария keys vec (~16 KB/eviction → 8.7 GB при 200k — 70% от растежа).
+  **Резултат: 200k реда в един процес с 1.9 GB RSS + verify DURABLE OK
+  (преди: OOM при ~250k с 29 GB); group commit гейт 3133%. 1M стигна
+  ~900k при 28 GB — гейтът пак не е приземен, таванът +3.6×.**
   **W7 — TCP_NODELAY на serve_pg:** extended протоколът отговаряше с
   няколко малки съобщения; server Nagle × client delayed ACK = ~44 ms на
   Parse+Bind+Describe+Execute+Sync. С `tcp_set_nodelay` при accept:
@@ -457,17 +476,21 @@ T = транзакции, W = wire protocol, F = FTS.
   с нов SQL free-ва старото AST, когато никой portal не го реферира
   (`boila_pg_stmt_orphaned` гард; portal-ите носят `src`). Измерено:
   20k extended заявки в една сесия — persist растеж от ~10 KB на ~0.4 KB
-  на заявка. **Доказано отново след промените: пълен пакет 150/150**
-  (4-те с външни peer-ове — tls/https/registry/oauth_pg — минават с
-  run_tests.sh env). **Residual (измерено 2026-08-12):** 1M single-process
-  bench стигна ~250k реда преди OOM — persist регионът експлодира
-  (3.7M×8 KB блока ≈ 29 GB): всеки persist alloc без explicit drop е
-  вечен — `baga_map_rehash` стари bucket масиви, vec-push doubling
-  intermediate-и, per-flush/compact churn (ng/nl, bloom/sst meta на gen),
-  page-cache fill 4 KB страници. ~86 tiny + ~2.7 doubling-стълбички на
-  ред. Следваща стъпка: или drop-дисциплина в rocksbaga кешовете, или
-  runtime ниво (persist compaction/генерации). Дребен drip и при пълен
-  reclaim: immortal str-ове + vec-growth intermediate-и (~0.4 KB/заявка).
+  на заявка. **Тестове след MEM-4д: 145/150 със scripts/baga-test**
+  (5-те „fail" са external-peer: tls/https/registry/oauth_pg/orm_boila —
+  orm_boila минава с live serve_pg; run_tests.sh спира по-рано на
+  filesize gate-а — 8 файла > 400 реда от streaming комитите,
+  pre-existing дълг, вж. долу). **Residual след MEM-4д (измерено
+  2026-08-12):** ~9.5 KB/ред при 200k, суперлинеен (∝ брой SST-та).
+  Attribution (owner = `lsm_get_kb`/`sst_get` wrap-ове): SstMeta cache
+  churn при compaction — `map_del(db.sst_meta, g)` free-ва само entry-то,
+  не съдържанието (rkeys vec ~780 ключа + idx + box pv ≈ 32 KB на
+  compact-нат gen); meta_set churn за gens с ok=0 (full-read път не се
+  кешира). Следваща стъпка: (а) explicit free на SstMeta съдържанието
+  при compaction del; (б) meta кеш и за scan пътя (sst_scan_begin/_seek
+  зареждат uncached); (в) live-byte профил — cumulative bump числата
+  надценяват чрез freelist reuse. Дребен drip и при пълен reclaim:
+  immortal str-ове + vec-growth intermediate-и (~0.4 KB/заявка).
 
 ## Открити при P2
 
