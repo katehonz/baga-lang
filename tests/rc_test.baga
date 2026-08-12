@@ -1,0 +1,180 @@
+// rc_test — RC1: refcount паметов модел v0.1 зад opt-in флага --rc
+// (docs/memory-rc-bg.md).
+//
+// Тестът е семантичен: минава и БЕЗ --rc (arena моделът е leak-толерантен),
+// и С --rc (retain/release балансът не трябва да доведе до crash, underflow
+// или счупени стойности). Пуска се с:
+//   ./baga --rc -I . -I app-product tests/rc_test.baga
+
+import "std/str/str.baga"
+import "std/os/os.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// aliasing: let x = y retain-ва; стойността живее след края на y-scope
+fn alias_let() -> str {
+    let y = concat("alias", "-ok")
+    let x = y
+    return x
+}
+
+fn alias_block() -> str {
+    let mut x = ""
+    if true {
+        let y = concat("block", "-alive")
+        x = y
+    }
+    return x
+}
+
+// ранен return: move на локал vs release на останалите
+fn early_move(cond: bool) -> str {
+    let a = concat("kept", "-a")
+    let b = concat("kept", "-b")
+    if cond {
+        return a
+    }
+    return b
+}
+
+// return на заеман параметър: retain + release на локалите
+fn ret_param(p: str) -> str {
+    let local = concat("tmp", "-local")
+    if len(local) > 1000 {
+        return local
+    }
+    return p
+}
+
+fn main() -> i64 !IO {
+    // 1. aliasing let x = y / x = y през scope граница
+    check("alias_let", alias_let() == "alias-ok")
+    check("alias_block", alias_block() == "block-alive")
+
+    // 2. ранен return: move семантика по двата пътя
+    check("early_return_true", early_move(true) == "kept-a")
+    check("early_return_false", early_move(false) == "kept-b")
+    check("return_param", ret_param("param-ok") == "param-ok")
+
+    // 3. str литерали са immortal — aliasing + scope exit без underflow
+    if true {
+        let lit = "pure-literal"
+        let lit2 = lit
+        let litv: Vec<str> = vec_new()
+        vec_push(litv, lit)
+        vec_push(litv, "other-literal")
+        check("literals_immortal", lit2 == "pure-literal" && vec_len(litv) == 2)
+    }
+
+    // 4. вложени scopes — вътрешните се release-ват, външните оцеляват
+    let outer = concat("out", "er")
+    if true {
+        let mid = concat("mid", "1")
+        if true {
+            let inner = concat("in", "1")
+            check("nested_inner", inner == "in1")
+        }
+        check("nested_mid_alive", mid == "mid1")
+    }
+    check("nested_outer_alive", outer == "outer")
+
+    // 5. vec/map в loop — per-итерация release, без crash и без underflow
+    let mut i: i64 = 0
+    let mut total: i64 = 0
+    while i < 2000 {
+        let v: Vec<str> = vec_new()
+        vec_push(v, concat("item", int_to_str(i)))
+        vec_push(v, "lit")
+        let m: Map<str, str> = map_new()
+        map_set(m, "k", concat("val", int_to_str(i)))
+        map_set(m, "k", concat("ovr", int_to_str(i)))   // overwrite: release на старото
+        total = total + vec_len(v) + map_len(m)
+        i = i + 1
+    }
+    check("loop_vec_map", total == 2000 * 3)
+
+    // 6. break/continue — release на напуснатите scopes
+    let mut found = ""
+    let mut j: i64 = 0
+    while j < 100 {
+        let tmp = concat("iter", int_to_str(j))
+        if j == 7 {
+            found = tmp
+            break
+        }
+        if j % 2 == 0 {
+            j = j + 1
+            continue
+        }
+        j = j + 1
+    }
+    check("break_alias", found == "iter7")
+    check("break_loop_done", j == 7)
+
+    // 7. vec_set release-ва стария елемент
+    let vs: Vec<str> = vec_new()
+    vec_push(vs, concat("old", "-elem"))
+    vec_set(vs, 0, concat("new", "-elem"))
+    check("vec_set_release", vec_get(vs, 0) == "new-elem")
+
+    // 8. map_del release-ва ключ+стойност; drop ≡ release (без underflow
+    //    при scope exit — bindingът умира с drop)
+    let md: Map<str, str> = map_new()
+    map_set(md, "a", concat("va", ""))
+    map_set(md, "b", "vb-lit")
+    map_del(md, "a")
+    check("map_del", map_len(md) == 1 && map_has(md, "a") == 0)
+    drop(md)
+    let dd: Vec<str> = vec_new()
+    vec_push(dd, concat("drop", "-me"))
+    drop(dd)
+    check("drop_then_scope_exit", 1 == 1)
+
+    // 9. map_keys — ключовете в новия Vec са retain-нати собственици
+    let mk: Map<str, i64> = map_new()
+    map_set(mk, concat("key", "1"), 11)
+    map_set(mk, "key2", 22)
+    let keys = map_keys(mk)
+    check("map_keys", vec_len(keys) == 2)
+    drop(mk)
+    check("map_keys_survive_drop", vec_len(keys) == 2)
+
+    // 10. bytes пътеки: retain на data при push/set в контейнер
+    let b1 = bytes_of_str("data-1")
+    let vb: Vec<bytes> = vec_new()
+    vec_push(vb, b1)
+    check("bytes_after_push", bytes_len(b1) == 6)
+    let mb: Map<str, bytes> = map_new()
+    map_set(mb, "key", b1)
+    check("bytes_in_map", bytes_len(map_get(mb, "key")) == 6)
+
+    // 11. persist регион: rc работи и там; стойностите преживяват rewind-ове
+    mem_persist_begin()
+    let p = concat("persist", "-rc")
+    let pv: Vec<str> = vec_new()
+    vec_push(pv, "shared-lit")
+    vec_push(pv, concat("shared", "-heap"))
+    mem_persist_end()
+    let mut k: i64 = 0
+    while k < 30 {
+        let mm = mem_mark()
+        let junk = concat(str_repeat("x", 65536), "y")
+        if len(junk) < 0 {
+            print("unreachable")
+        }
+        mem_rewind(mm)
+        k = k + 1
+    }
+    check("persist_survives_rewind", p == "persist-rc")
+    check("persist_vec_survives", vec_get(pv, 0) == "shared-lit" && vec_get(pv, 1) == "shared-heap")
+
+    print("rc_test: all passed")
+    return 0
+}

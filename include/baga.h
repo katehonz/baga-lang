@@ -489,6 +489,19 @@ const char *baga_note_import_alias(const char *canon_path, const char *alias);
  *  Codegen (C transpiler)
  * ============================================================ */
 
+/* RC1 (--rc): scope tracking на heap локали за refcount release при изход.
+ * Дизайн: docs/memory-rc-bg.md. Само C backend; без --rc е неактивно. */
+typedef struct {
+    char *name;     /* mangled C име (собственост на записа) */
+    int   tag;      /* 1=str, 2=bytes, 3=Vec, 4=Map */
+    Type *type;     /* inferred тип (borrowed — AST живее до края на codegen) */
+    Node *type_node;/* RC1: анотацията `let x: Vec<str>` — резервен източник
+                     * на elem тип, когато inferred Type няма elem (vec_new) */
+    int   is_param; /* заеман параметър/capture — не се release-ва */
+    int   dead;     /* drop()нат binding — scope exit го пропуска */
+} RcLocal;
+typedef struct { int top; int is_loop; } RcScope;
+
 typedef struct {
     FILE *out;
     int   indent;
@@ -496,6 +509,12 @@ typedef struct {
     Node *program;   /* for enum variant lookup */
     int   test_specs;   /* --test-specs: генерирай тестов драйвър вместо main */
     FILE *lambda_out;   /* L5: env struct-ове + ламбда wrapper-и (преди телата) */
+    int   rc;           /* RC1: --rc refcount паметов модел (opt-in) */
+    VEC(RcLocal) rc_locals;  /* RC1: стек от track-нати локали */
+    VEC(RcScope) rc_scopes;  /* RC1: scope граници (индекс + loop флаг) */
+    int   rc_fn_base;   /* RC1: scope индекс на текущата fn/ламбда (return
+                         * release-ва само до тук — ламбдите са отделни C
+                         * функции и не пипат enclosing локалите) */
 } Codegen;
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);

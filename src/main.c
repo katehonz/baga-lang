@@ -38,6 +38,7 @@ static void usage(void) {
         "  --check     Само parse + typecheck (без main, без codegen) — за библиотеки\n"
         "  --emit-c    Генерирай C код на stdout, не компилирай\n"
         "  --test-specs  Property-based тестване на ensures/requires договорите\n"
+        "  --rc        Refcount паметов модел v0.1 (opt-in, само C backend)\n"
         "  --verify    Статична верификация на requires/ensures (M0–M13 fragment)\n"
         "  --json      Машинно-четим JSON изход (с --verify)\n"
         "  -I <dir>    Директория за търсене на import (повтаряем)\n"
@@ -176,6 +177,7 @@ static void collect_tokens(const char *path, TokenVec *out,
 int main(int argc, char **argv) {
     const char *input_path = NULL;
     int emit_c = 0;
+    int rc = 0;
     int dump_ast = 0;
     int dump_tokens = 0;
     int dump_specs = 0;
@@ -195,6 +197,7 @@ int main(int argc, char **argv) {
         if (dashdash) { vec_push(prog_args, argv[i]); continue; }
         if (strcmp(argv[i], "--") == 0) { dashdash = 1; continue; }
         if (strcmp(argv[i], "--emit-c") == 0) { emit_c = 1; }
+        else if (strcmp(argv[i], "--rc") == 0) { rc = 1; }
         else if (strcmp(argv[i], "--check") == 0 || strcmp(argv[i], "--lib") == 0) {
             check_only = 1;
         }
@@ -365,6 +368,7 @@ int main(int argc, char **argv) {
     if (emit_c) {
         Codegen cg;
         cg.test_specs = test_specs;
+        cg.rc = rc;
         codegen_c(&cg, program, stdout);
     } else {
         /* generate C to temp file, compile, run */
@@ -380,6 +384,7 @@ int main(int argc, char **argv) {
         }
         Codegen cg;
         cg.test_specs = test_specs;
+        cg.rc = rc;
         codegen_c(&cg, program, cf);
         fclose(cf);
 
