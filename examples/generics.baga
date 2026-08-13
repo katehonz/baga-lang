@@ -1,0 +1,39 @@
+// generics.baga — M21: типови параметри <T, U> + мономорфизация.
+// Изводът работи от аргументите; явни типови аргументи: f<i64, str>(…).
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+fn first<T>(v: Vec<T>) -> T {
+    return vec_get(v, 0)
+}
+
+fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U> {
+    let out: Vec<U> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        vec_push(out, f(vec_get(v, i)))
+        i = i + 1
+    }
+    return out
+}
+
+fn twice(x: i64) -> i64 { return x * 2 }
+
+struct Pt { x: i64, y: i64 }
+
+fn get_x<T>(p: T) -> i64 {
+    return p.x
+}
+
+fn main() {
+    print(identity(42))
+    print(identity("здравей"))
+    let v: Vec<i64> = vec_new()
+    vec_push(v, 7)
+    print(first(v))
+    let w = map<i64, i64>(v, twice)
+    print(vec_get(w, 0))
+    let p = Pt { x: 3, y: 4 }
+    print(get_x(p))
+}

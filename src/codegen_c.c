@@ -1540,9 +1540,19 @@ static void rc_emit_match_arm_val(Codegen *cg, Node *rv, int tmp,
 
 /* ---- type mapping ---- */
 
+static void emit_ctype(Codegen *cg, Type *t);
 static void emit_type(Codegen *cg, Node *ty) {
     FILE *f = cg->out;
     if (!ty) { fprintf(f, "void"); return; }
+    /* M21: типова променлива на текущата generic инстанция — checked типът
+     * (конкретен след checker_recheck_inst) печели */
+    if (cg->gen_fn && ty->type && ty->kind == NODE_TYPE) {
+        for (int i = 0; i < cg->gen_fn->n_type_params; i++)
+            if (strcmp(cg->gen_fn->type_params[i], ty->type_name) == 0) {
+                emit_ctype(cg, ty->type);
+                return;
+            }
+    }
 
     switch (ty->kind) {
         case NODE_TYPE:
@@ -4165,7 +4175,9 @@ static void emit_fn(Codegen *cg, Node *fn) {
     fprintf(f, " ");
 
     /* name */
-    char *m = mangle_name(ensures_spec ? impl_name_buf : fn->fn_name);
+    char *m = mangle_name(ensures_spec ? impl_name_buf
+                         : (cg->gen_emit_name ? cg->gen_emit_name
+                                              : fn->fn_name));
     fprintf(f, "%s", m);
     free(m);
 
@@ -4251,12 +4263,14 @@ static void emit_fn(Codegen *cg, Node *fn) {
     }
     fprintf(f, "\n\n");
 
-    if (!ensures_spec) {
+    if (!ensures_spec && !cg->gen_emit_name) {
         /* L5: closure wrapper — fn стойностите вземат адреса му; в
-         * lambda_out (преди телата на функциите в изхода) */
+         * lambda_out (преди телата на функциите в изхода).
+         * M21: generic инстанции нямат wrapper (не са fn стойности) */
         emit_clo_wrapper(cg, fn);
         return;
     }
+    if (!ensures_spec) return;  /* M21: generic инстанция — без spec wrapper */
 
     /* wrapper: публичното име, проверява requires преди и ensures след повикването */
     if (fn->ret_type) {
@@ -4852,6 +4866,39 @@ static void emit_forward_decls(Codegen *cg, Node *program) {
                 }
             }
             fprintf(f, ");\n");
+            continue;
+        }
+
+        /* M21: generic fn — декларация per инстанция (мономорфизация) */
+        if (item->n_type_params > 0 && item->inst_count > 0) {
+            for (int k = 0; k < item->inst_count; k++) {
+                char nm[512];
+                snprintf(nm, sizeof nm, "%s__i%d", item->fn_name, k);
+                if (cg->chk) checker_recheck_inst(cg->chk, item, k);
+                cg->gen_fn = item; cg->gen_inst = k; cg->gen_emit_name = nm;
+                if (item->ret_type) emit_type(cg, item->ret_type);
+                else fprintf(f, "void");
+                fprintf(f, " ");
+                char *m = mangle_name(nm);
+                fprintf(f, "%s", m);
+                free(m);
+                fprintf(f, "(");
+                if (item->params.len == 0) {
+                    fprintf(f, "void");
+                } else {
+                    for (int j = 0; j < item->params.len; j++) {
+                        if (j > 0) fprintf(f, ", ");
+                        Node *p = item->params.data[j];
+                        emit_type(cg, p->param_type);
+                        fprintf(f, " ");
+                        char *pm = mangle_name(p->param_name);
+                        fprintf(f, "%s", pm);
+                        free(pm);
+                    }
+                }
+                fprintf(f, ");\n");
+                cg->gen_fn = NULL; cg->gen_inst = -1; cg->gen_emit_name = NULL;
+            }
             continue;
         }
 
@@ -6490,8 +6537,21 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     cg->out = fa;
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
-        if (item->kind == NODE_FN && item->fn_body)
+        if (item->kind == NODE_FN && item->fn_body) {
+            /* M21: generic fn — вариант per инстанция */
+            if (item->n_type_params > 0) {
+                for (int k = 0; k < item->inst_count; k++) {
+                    char nm[512];
+                    snprintf(nm, sizeof nm, "%s__i%d", item->fn_name, k);
+                    if (cg->chk) checker_recheck_inst(cg->chk, item, k);
+                    cg->gen_fn = item; cg->gen_inst = k; cg->gen_emit_name = nm;
+                    emit_fn(cg, item);
+                    cg->gen_fn = NULL; cg->gen_inst = -1; cg->gen_emit_name = NULL;
+                }
+                continue;
+            }
             emit_fn(cg, item);
+        }
     }
     fclose(fa);
     fclose(cg->lambda_out);

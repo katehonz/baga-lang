@@ -771,6 +771,50 @@ static Node *parse_postfix(Parser *p) {
     for (;;) {
         SrcPos pos = cur(p)->pos;
 
+        /* M21: явни типови аргументи — f<T, U>(...). Lookahead: консумирай
+         * <types> само ако след затварящото `>` стои `(` (иначе е сравнение). */
+        if (e->kind == NODE_IDENT && check(p, TOK_LT)) {
+            int save = p->pos;
+            int depth = 0, k = p->pos, ok = 0;
+            while (k < p->len) {
+                TokenKind tk = p->tokens[k].kind;
+                if (tk == TOK_LT) depth++;
+                else if (tk == TOK_GT) {
+                    depth--;
+                    if (depth == 0) {
+                        if (k + 1 < p->len && p->tokens[k + 1].kind == TOK_LPAREN)
+                            ok = 1;
+                        break;
+                    }
+                } else if (tk == TOK_EOF || tk == TOK_LBRACE ||
+                           (tk != TOK_IDENT && tk != TOK_COMMA && tk != TOK_GT))
+                    break;
+                k++;
+            }
+            if (ok) {
+                advance(p);  /* < */
+                Node *call = node_alloc(NODE_CALL, pos);
+                call->callee = e;
+                call->args.len = 0; call->args.cap = 0; call->args.data = NULL;
+                call->type_args.len = 0; call->type_args.cap = 0; call->type_args.data = NULL;
+                do {
+                    vec_push(call->type_args, parse_type(p));
+                } while (match(p, TOK_COMMA));
+                expect_gt_split(p);
+                expect(p, TOK_LPAREN);
+                if (!check(p, TOK_RPAREN)) {
+                    vec_push(call->args, parse_expr(p));
+                    while (match(p, TOK_COMMA)) {
+                        vec_push(call->args, parse_expr(p));
+                    }
+                }
+                expect(p, TOK_RPAREN);
+                e = call;
+                continue;
+            }
+            p->pos = save;
+        }
+
         /* function call */
         if (check(p, TOK_LPAREN)) {
             advance(p);
@@ -1302,6 +1346,16 @@ static Node *parse_fn(Parser *p) {
     expect(p, TOK_FN);
     char *name = expect_ident(p);
 
+    /* M21: типови параметри — fn f<T, U>(...) */
+    VEC(char *) type_params = {0};
+    if (match(p, TOK_LT)) {
+        do {
+            Token *tp = expect(p, TOK_IDENT);
+            vec_push(type_params, tp->text ? strdup(tp->text) : strdup("T"));
+        } while (match(p, TOK_COMMA));
+        expect_gt_split(p);
+    }
+
     expect(p, TOK_LPAREN);
     NodeVec params = {0};
     if (!check(p, TOK_RPAREN)) {
@@ -1331,6 +1385,8 @@ static Node *parse_fn(Parser *p) {
         fn->params = params;
         fn->ret_type = ret_type;
         fn->fn_body = NULL;
+        fn->type_params = type_params.data;
+        fn->n_type_params = type_params.len;
         return fn;
     }
 
@@ -1341,6 +1397,8 @@ static Node *parse_fn(Parser *p) {
     fn->params = params;
     fn->ret_type = ret_type;
     fn->fn_body = body;
+    fn->type_params = type_params.data;
+    fn->n_type_params = type_params.len;
     return fn;
 }
 

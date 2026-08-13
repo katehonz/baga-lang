@@ -44,6 +44,12 @@ echo "=== match ==="
 run examples/match.baga
 echo "=== effects ==="
 run examples/effects.baga
+echo "=== generics (M21: мономорфизация) ==="
+run examples/generics.baga > /tmp/baga_gen_out.txt
+grep -q "^здравей$" /tmp/baga_gen_out.txt \
+	&& grep -q "^14$" /tmp/baga_gen_out.txt \
+	&& echo "OK: generics (извод + явни типови аргументи + транзитивни инстанции)" \
+	|| { echo "FAIL: generics"; exit 1; }
 echo "=== effects_payload (M20: raise/catch с payload) ==="
 run examples/effects_payload.baga > /tmp/baga_effp_out.txt
 grep -q "празно име" /tmp/baga_effp_out.txt \

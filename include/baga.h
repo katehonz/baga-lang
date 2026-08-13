@@ -256,7 +256,7 @@ struct Node {
         struct { UnOp un_op; Node *operand; };
 
         /* NODE_CALL */
-        struct { Node *callee; NodeVec args; };
+        struct { Node *callee; NodeVec args; NodeVec type_args; /* M21: явни типови аргументи f<T>(…) */ };
 
         /* NODE_IF (expression or statement) */
         struct { Node *cond; Node *then_br; Node *else_br; };
@@ -331,6 +331,13 @@ struct Node {
             Node *fn_body;      /* NODE_BLOCK */
             int is_extern;      /* extern fn — no body, links against libc */
             NodeVec captures;   /* NODE_LAMBDA: NODE_PARAM с checked ->type */
+            /* M21 generics: типови параметри + инстанции (от checker-а,
+             * консумират се от codegen — мономорфизация) */
+            char **type_params;
+            int n_type_params;
+            Type **inst_types;  /* inst_count × n_type_params конкретни типове */
+            int inst_count;
+            int inst_cap;
         };
 
         /* NODE_PARAM */
@@ -399,6 +406,7 @@ typedef enum {
     TYPE_MAP,      /* hash map (baga_Map *); key = Type->key, value = Type->elem */
     TYPE_BYTES,    /* binary-safe byte buffer (baga_bytes, by value) */
     TYPE_ENUM,     /* sum enum with payloads — L3; nominal by name */
+    TYPE_VAR,      /* M21: типова променлива на generic fn (name = параметъра) */
     TYPE_ERROR,    /* sentinel for error recovery */
 } TypeKind;
 
@@ -486,9 +494,13 @@ typedef struct {
     char errors[BAGA_MAX_ERRORS][256];
     int  n_errors;
     int  allow_no_main; /* 1 = library / --check mode: do not require main */
+    void *gen_snap;     /* M21: opaque — snapshot на регистрите (checker.c) */
 } Checker;
 
 void check_program(Checker *c, Node *program);
+/* M21: преди emit на инстанция k на generic fn — re-infer на тялото под
+ * substitution (node->type полетата стават конкретни за тази инстанция). */
+void checker_recheck_inst(Checker *c, Node *fn, int k);
 
 /* L6: import alias — регистрира се от main.c при `import "p" as a`.
  * Връща NULL при успех, или съществуващия alias при конфликт. */
@@ -578,6 +590,11 @@ typedef struct {
     Node *eff_cur_ret;     /* M20: ret type node на текущата fn (за ZERO на propagate) */
     const char *eff_binding;   /* M20: catch binding име (baga) в handler */
     const char *eff_binding_c; /* M20: C име на payload temp-а */
+    /* M21 generics: мономорфизация */
+    Checker *chk;          /* за checker_recheck_inst преди emit на вариант */
+    Node *gen_fn;          /* текущата generic fn при emit на вариант */
+    int   gen_inst;        /* текущият индекс на инстанцията */
+    const char *gen_emit_name; /* синтетичното C-преди-mangle име */
 } Codegen;
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);

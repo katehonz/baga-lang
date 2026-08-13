@@ -40,6 +40,7 @@ const char *type_str(Type *t) {
         case TYPE_F64:   return "f64";
         case TYPE_STR:   return "str";
         case TYPE_BYTES: return "bytes";
+        case TYPE_VAR:   return t->name ? t->name : "T";
         case TYPE_ERROR: return "<грешка>";
         case TYPE_ARRAY: return "[T]";
         case TYPE_REF:   return "&T";
@@ -91,6 +92,11 @@ static int vec_elem_eq(Type *a, Type *b) {
 int type_eq(Type *a, Type *b) {
     if (!a || !b) return a == b;
     if (a->kind == TYPE_ERROR || b->kind == TYPE_ERROR) return 1;
+    /* M21: типови променливи са равни по име */
+    if (a->kind == TYPE_VAR && b->kind == TYPE_VAR) {
+        if (!a->name || !b->name) return 1;
+        return strcmp(a->name, b->name) == 0;
+    }
     if (a->kind != b->kind) return 0;
     if (a->kind == TYPE_STRUCT) {
         return a->name && b->name && strcmp(a->name, b->name) == 0;
@@ -233,40 +239,40 @@ typedef struct {
     int count;
 } EnvScope;
 
+/* M21: регистърни записи (споделени между CheckCtx и snapshot-а) */
+typedef struct {
+    char *name;          /* късо име (както е в източника) */
+    const char *origin;  /* модул: basename на файла без .baga ("" = неизвестен) */
+    Type *fn_type;   /* TYPE_FN */
+    Node *decl;      /* NODE_FN */
+} FnRec;
+typedef struct { char *name; Node *decl; } StructRec;
+typedef struct { char *name; Node *decl; } EnumRec;
+typedef struct {
+    char *variant;
+    char *enum_name;
+    int value;
+    Type *payload;       /* L3: NULL = plain variant */
+} VariantRec;
+
 typedef struct {
     EnvScope scopes[ENV_MAX];
     int depth;
 
     /* function registry */
-    struct {
-        char *name;          /* късо име (както е в източника) */
-        const char *origin;  /* модул: basename на файла без .baga ("" = неизвестен) */
-        Type *fn_type;   /* TYPE_FN */
-        Node *decl;      /* NODE_FN */
-    } fns[FNS_MAX];
+    FnRec fns[FNS_MAX];
     int n_fns;
 
     /* struct registry */
-    struct {
-        char *name;
-        Node *decl;
-    } structs[FNS_MAX];
+    StructRec structs[FNS_MAX];
     int n_structs;
 
     /* enum registry */
-    struct {
-        char *name;
-        Node *decl;
-    } enums[FNS_MAX];
+    EnumRec enums[FNS_MAX];
     int n_enums;
 
     /* enum variant → value mapping */
-    struct {
-        char *variant;
-        char *enum_name;
-        int value;
-        Type *payload;       /* L3: NULL = plain variant */
-    } variants[FNS_MAX * 4];
+    VariantRec variants[FNS_MAX * 4];
     int n_variants;
 
     Checker *chk;
@@ -281,6 +287,12 @@ typedef struct {
     int n_drop_log;
     int drop_log_overflowed; /* логът се е препълнил — join деградира консервативно */
     int loop_depth;   /* 0 = извън цикъл; иначе depth-а на обграждащия цикъл */
+    /* M21 generics: активна substitution (имена → конкретни типове) и
+     * типовите параметри на текущо-декларираната fn (за TYPE_VAR) */
+    VEC(char *) g_names;
+    VEC(Type *) g_types;
+    const char **cur_type_params;
+    int cur_n_type_params;
 } CheckCtx;
 
 /* L6 forward декларации — дефинициите са след import alias таблицата. */
@@ -290,10 +302,24 @@ static Node *find_struct_scoped(CheckCtx *ctx, const char *name,
 static void struct_amb_hint(CheckCtx *ctx, const char *name,
                             char *m1, char *m2, size_t cap);
 
+/* M21: forward — дефиницията е преди check_fn */
+static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call);
+static void check_fn(CheckCtx *ctx, Node *fn);
+
+/* M21: snapshot на регистрите за re-check на инстанции от codegen */
+typedef struct {
+    Node *program;
+    const char *main_base;
+    FnRec fns[FNS_MAX]; int n_fns;
+    StructRec structs[FNS_MAX]; int n_structs;
+    EnumRec enums[FNS_MAX]; int n_enums;
+    VariantRec variants[FNS_MAX * 4]; int n_variants;
+    int n_lambdas;
+} CheckCtxSnap;
+
 static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
     if (ctx->chk->n_errors >= BAGA_MAX_ERRORS) return;
-    char *e = ctx->chk->errors[ctx->chk->n_errors++];
-    int off = snprintf(e, 256, "%d:%d: ", pos.line, pos.col);
+    char *e = ctx->chk->errors[ctx->chk->n_errors++];    int off = snprintf(e, 256, "%d:%d: ", pos.line, pos.col);
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(e + off, 256 - (size_t)off, fmt, ap);
@@ -305,10 +331,22 @@ static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
 }
 
 /* Map a type AST node to a Type */
-static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
+static Type *resolve_type_node(CheckCtx *ctx, Node *ty);
+static Type *resolve_type_node_inner(CheckCtx *ctx, Node *ty) {
     if (!ty) return type_new(TYPE_VOID);
     switch (ty->kind) {
         case NODE_TYPE:
+            /* M21: активна substitution или типова променлива на текущата
+             * generic fn? */
+            for (int gi = 0; gi < ctx->g_names.len; gi++)
+                if (strcmp(ctx->g_names.data[gi], ty->type_name) == 0)
+                    return ctx->g_types.data[gi];
+            for (int ti = 0; ti < ctx->cur_n_type_params; ti++)
+                if (strcmp(ctx->cur_type_params[ti], ty->type_name) == 0) {
+                    Type *v = type_new(TYPE_VAR);
+                    v->name = strdup(ty->type_name);
+                    return v;
+                }
             if (strcmp(ty->type_name, "i32") == 0)  return type_new(TYPE_I32);
             if (strcmp(ty->type_name, "i64") == 0)  return type_new(TYPE_I64);
             if (strcmp(ty->type_name, "f64") == 0)  return type_new(TYPE_F64);
@@ -326,9 +364,10 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     if (el->kind != TYPE_I64 && el->kind != TYPE_STR &&
                         el->kind != TYPE_F64 && el->kind != TYPE_BYTES &&
                         el->kind != TYPE_STRUCT && el->kind != TYPE_FN &&
-                        el->kind != TYPE_VEC && el->kind != TYPE_ENUM) {
+                        el->kind != TYPE_VEC && el->kind != TYPE_ENUM &&
+                        el->kind != TYPE_VAR) {
                         check_error(ctx, ty->pos,
-                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum, fn и Vec)",
+                            "Vec<T>: неподдържан елементен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum, fn, Vec и типови параметри)",
                             type_str(el));
                     } else {
                         t->elem = el;
@@ -348,7 +387,7 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     Type *kt = resolve_type_node(ctx, ty->inner_type);
                     if (kt->kind == TYPE_I32) kt = type_new(TYPE_I64);
                     if (kt->kind != TYPE_I64 && kt->kind != TYPE_STR &&
-                        kt->kind != TYPE_BYTES) {
+                        kt->kind != TYPE_BYTES && kt->kind != TYPE_VAR) {
                         check_error(ctx, ty->pos,
                             "Map<K, V>: неподдържан ключов тип %s (поддържат се i64, str и bytes)",
                             type_str(kt));
@@ -360,9 +399,9 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
                     if (vt->kind != TYPE_I64 && vt->kind != TYPE_STR &&
                         vt->kind != TYPE_F64 && vt->kind != TYPE_BYTES &&
                         vt->kind != TYPE_STRUCT && vt->kind != TYPE_FN &&
-                        vt->kind != TYPE_ENUM) {
+                        vt->kind != TYPE_ENUM && vt->kind != TYPE_VAR) {
                         check_error(ctx, ty->pos,
-                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum и fn)",
+                            "Map<K, V>: неподдържан стойностен тип %s (поддържат се i64, str, f64, bytes, struct, sum enum, fn и типови параметри)",
                             type_str(vt));
                     } else {
                         t->elem = vt;
@@ -462,6 +501,14 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
         default:
             return type_new(TYPE_ERROR);
     }
+}
+
+/* M21: обвивка — резултатът се пази на ty->type (codegen при
+ * мономорфизация чете конкретния тип на типовите параметри) */
+static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
+    Type *t = resolve_type_node_inner(ctx, ty);
+    if (ty) ty->type = t;
+    return t;
 }
 
 static void push_scope(CheckCtx *ctx) {
@@ -1019,6 +1066,7 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                 else if (!o2 && strcmp(o1, ctx->fns[i].origin) != 0) o2 = ctx->fns[i].origin;
             }
             int chosen = -1;
+            Node *chosen_decl = NULL;
             if (ownidx >= 0) chosen = ownidx;
             else if (!o2) chosen = first_body >= 0 ? first_body : first;
             else {
@@ -1031,13 +1079,56 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                 ft_user = (fwd >= 0 && ctx->fns[chosen].decl->fn_body)
                     ? ctx->fns[fwd].fn_type      /* контрактът на декларацията */
                     : ctx->fns[chosen].fn_type;
+                chosen_decl = ctx->fns[chosen].decl;
                 /* уникалният вътрешен символ (преименуван при дубликати);
-                 * strdup — node_free освобождава callee->name */
-                n->callee->name = strdup(ctx->fns[chosen].decl->fn_name);
+                 * strdup — node_free освобождава callee->name.
+                 * M21: за generic извикване името се слага от инстанцията */
+                if (!chosen_decl || chosen_decl->n_type_params == 0)
+                    n->callee->name = strdup(chosen_decl->fn_name);
             }
         }
         if (ft_user && ft_user->kind == TYPE_FN) {
             n->callee->type = ft_user;
+            /* M21: generic извикване — инстанция + substituted проверка */
+            {
+                Node *gfn = NULL;
+                for (int gi = 0; gi < ctx->n_fns; gi++)
+                    if (ctx->fns[gi].fn_type == ft_user &&
+                        ctx->fns[gi].decl->n_type_params > 0)
+                        { gfn = ctx->fns[gi].decl; break; }
+                if (gfn) {
+                    Type *gret = generic_instantiate(ctx, gfn, n);
+                    /* generic_instantiate оставя substitution активна —
+                     * резолвай params под нея, после чисти */
+                    int np2 = gfn->params.len;
+                    if (n->args.len != np2) {
+                        check_error(ctx, n->pos, "'%s' очаква %d аргумента, получих %d",
+                                    name, np2, n->args.len);
+                    }
+                    int check_n = n->args.len < np2 ? n->args.len : np2;
+                    for (int i = 0; i < check_n; i++) {
+                        Type *at = n->args.data[i]->type;
+                        Type *pt = resolve_type_node(ctx, gfn->params.data[i]->param_type);
+                        if (!type_assignable(at, pt)) {
+                            check_error(ctx, n->pos,
+                                "'%s': аргумент #%d е от тип %s, но параметърът е %s",
+                                name, i + 1, type_str(at), type_str(pt));
+                        }
+                    }
+                    ctx->g_names.len = 0; ctx->g_types.len = 0;
+                    /* резултат от substituted ret */
+                    Type *result = type_new(gret->kind);
+                    result->elem = gret->elem;
+                    result->name = gret->name;
+                    result->ret = gret->ret;
+                    result->params = gret->params;
+                    result->nparams = gret->nparams;
+                    type_merge_effects(result, gret);
+                    if (ctx->cur_effects)
+                        type_merge_effects(ctx->cur_effects, gret);
+                    return result;
+                }
+            }
             if (n->args.len != ft_user->nparams) {
                 check_error(ctx, n->pos, "'%s' очаква %d аргумента, получих %d",
                             name, ft_user->nparams, n->args.len);
@@ -1794,6 +1885,14 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             /* check function registry */
             Type *ft = find_fn(ctx, n->name);
             if (ft) {
+                /* M21: generic fn като стойност — не се поддържа (v1):
+                 * мономорфизацията няма един wrapper-адрес */
+                for (int gi = 0; gi < ctx->n_fns; gi++)
+                    if (ctx->fns[gi].fn_type == ft &&
+                        ctx->fns[gi].decl->n_type_params > 0)
+                        check_error(ctx, n->pos,
+                            "generic fn '%s' не може да се ползва като стойност (v1) — обвий я в конкретна функция",
+                            n->name);
                 /* L5: fn като стойност — codegen-ът взема адреса на wrapper-а
                  * по ПЪЛНОТО (евент. преименувано) име; при дубликати от
                  * няколко модула печели собственият модул, иначе грешка */
@@ -2650,6 +2749,130 @@ static int fn_body_falls_through(Node *body) {
     return stmt_falls_through(last);
 }
 
+/* M21: свързва типови параметри от типовия възел на параметър с типа на
+ * аргумента (извод). Vec/Map/fn структурата се обхожда. */
+static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
+                             char **tps, int np, Type **bind,
+                             SrcPos pos, const char *fnname) {
+    if (!tn || !at) return;
+    if (tn->kind == NODE_TYPE_EFFECT) {
+        bind_type_params(ctx, tn->inner_type, at, tps, np, bind, pos, fnname);
+        return;
+    }
+    if (tn->kind == NODE_TYPE_REF || tn->kind == NODE_TYPE_ARRAY) {
+        bind_type_params(ctx, tn->inner_type, at, tps, np, bind, pos, fnname);
+        return;
+    }
+    if (tn->kind != NODE_TYPE) return;
+    for (int i = 0; i < np; i++) {
+        if (strcmp(tps[i], tn->type_name) == 0) {
+            if (bind[i] && !type_eq(bind[i], at)) {
+                check_error(ctx, pos,
+                    "'%s': типовият параметър '%s' е изведен и като %s, и като %s — нееднозначно",
+                    fnname, tps[i], type_str(bind[i]), type_str(at));
+            } else {
+                bind[i] = at;
+            }
+            return;
+        }
+    }
+    if (strcmp(tn->type_name, "Vec") == 0 && at->kind == TYPE_VEC)
+        bind_type_params(ctx, tn->inner_type, at->elem, tps, np, bind, pos, fnname);
+    if (strcmp(tn->type_name, "Map") == 0 && at->kind == TYPE_MAP) {
+        bind_type_params(ctx, tn->inner_type, at->key, tps, np, bind, pos, fnname);
+        bind_type_params(ctx, tn->inner_type2, at->elem, tps, np, bind, pos, fnname);
+    }
+}
+
+/* M21: инстанциране на generic fn при извикване. Връща substituted ret
+ * тип; пренаписва callee->name към синтетичното инстанционно име;
+ * оставя ctx->g_names/g_types = избраната substitution (извикващият чисти). */
+static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call) {
+    int np = fn->n_type_params;
+    Type **bind = calloc((size_t)(np ? np : 1), sizeof(Type *));
+
+    /* явни типови аргументи: f<i64, str>(…) */
+    if (call->type_args.len > 0 && call->type_args.len != np) {
+        check_error(ctx, call->pos,
+            "'%s' очаква %d типови аргумента, получих %d",
+            fn->fn_name, np, call->type_args.len);
+    }
+    for (int i = 0; i < call->type_args.len && i < np; i++)
+        bind[i] = resolve_type_node(ctx, call->type_args.data[i]);
+
+    /* извод от стойностните аргументи */
+    for (int i = 0; i < call->args.len && i < fn->params.len; i++) {
+        Type *at = call->args.data[i]->type;
+        bind_type_params(ctx, fn->params.data[i]->param_type, at,
+                         fn->type_params, np, bind, call->pos, fn->fn_name);
+    }
+    for (int i = 0; i < np; i++) {
+        if (!bind[i]) {
+            check_error(ctx, call->pos,
+                "'%s': не мога да изведа типовия параметър '%s' — дай изричен: %s<%s>(…)",
+                fn->fn_name, fn->type_params[i], fn->fn_name, fn->type_params[i]);
+            bind[i] = type_new(TYPE_ERROR);
+        }
+    }
+
+    /* потърси/добави инстанция */
+    int idx = -1;
+    for (int k = 0; k < fn->inst_count; k++) {
+        int same = 1;
+        for (int i = 0; i < np; i++)
+            if (!type_eq(fn->inst_types[k * np + i], bind[i])) { same = 0; break; }
+        if (same) { idx = k; break; }
+    }
+    if (idx < 0) {
+        idx = fn->inst_count;
+        fn->inst_types = realloc(fn->inst_types,
+            sizeof(Type *) * (size_t)((idx + 1) * (np ? np : 1)));
+        for (int i = 0; i < np; i++)
+            fn->inst_types[idx * np + i] = bind[i];
+        fn->inst_count = idx + 1;
+        /* проверка на тялото под substitution (веднъж per инстанция) —
+         * M21: пази/възстанови състоянието на обграждащия infer */
+        const char *saved_fn = ctx->cur_fn;
+        Type *saved_ret = ctx->cur_ret;
+        Type *saved_eff = ctx->cur_effects;
+        int saved_loop = ctx->loop_depth;
+        int saved_dlog = ctx->n_drop_log;
+        int saved_ovf = ctx->drop_log_overflowed;
+        ctx->g_names.len = 0; ctx->g_types.len = 0;
+        for (int i = 0; i < np; i++) {
+            vec_push(ctx->g_names, fn->type_params[i]);
+            vec_push(ctx->g_types, bind[i]);
+        }
+        check_fn(ctx, fn);
+        ctx->cur_fn = saved_fn;
+        ctx->cur_ret = saved_ret;
+        ctx->cur_effects = saved_eff;
+        ctx->loop_depth = saved_loop;
+        ctx->n_drop_log = saved_dlog;
+        ctx->drop_log_overflowed = saved_ovf;
+    } else {
+        free(bind);
+    }
+
+    /* синтетичното име — codegen емитва варианта с него */
+    size_t need = strlen(fn->fn_name) + 16;
+    char *nn = malloc(need);
+    if (!nn) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    snprintf(nn, need, "%s__i%d", fn->fn_name, idx);
+    /* старото име НЕ се free-ва — извикващият път може още да го държи
+     * за съобщения за грешка (leak-safe: node_free пипа само новото) */
+    call->callee->name = nn;
+
+    /* substitution активна за извикващия (params/ret резолване) */
+    ctx->g_names.len = 0; ctx->g_types.len = 0;
+    for (int i = 0; i < np; i++) {
+        vec_push(ctx->g_names, fn->type_params[i]);
+        vec_push(ctx->g_types, fn->inst_types[idx * np + i]);
+    }
+    return fn->ret_type ? resolve_type_node(ctx, fn->ret_type)
+                        : type_new(TYPE_VOID);
+}
+
 static void check_fn(CheckCtx *ctx, Node *fn) {
     ctx->cur_fn = fn->fn_name;
     ctx->cur_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type) : type_new(TYPE_VOID);
@@ -2822,7 +3045,10 @@ void check_program(Checker *c, Node *program) {
         Node *item = program->items.data[i];
 
         if (item->kind == NODE_FN) {
-            /* build function type */
+            /* build function type — M21: типовите параметри се виждат като
+             * TYPE_VAR при резолване на сигнатурата */
+            ctx.cur_type_params = (const char **)item->type_params;
+            ctx.cur_n_type_params = item->n_type_params;
             Type *ret = item->ret_type ? resolve_type_node(&ctx, item->ret_type) : type_new(TYPE_VOID);
             int np = item->params.len;
             Type **params = NULL;
@@ -2833,6 +3059,8 @@ void check_program(Checker *c, Node *program) {
             }
             Type *ft = type_fn(ret, params, np);
             ft->name = strdup(item->fn_name);
+            ctx.cur_type_params = NULL;
+            ctx.cur_n_type_params = 0;
 
             if (ctx.n_fns < FNS_MAX) {
                 ctx.fns[ctx.n_fns].name = ft->name;  /* strdup-натото късо име */
@@ -3074,10 +3302,11 @@ void check_program(Checker *c, Node *program) {
         }
     }
 
-    /* pass 3: check function bodies */
+    /* pass 3: check function bodies — M21: generic fns се проверяват
+     * мързеливо при инстанциране (всяко извикване с конкретни типове) */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
-        if (item->kind == NODE_FN)
+        if (item->kind == NODE_FN && item->n_type_params == 0)
             check_fn(&ctx, item);
     }
 
@@ -3088,4 +3317,49 @@ void check_program(Checker *c, Node *program) {
     }
 
     pop_scope(&ctx);
+
+    /* M21: snapshot на регистрите — checker_recheck_inst (codegen при
+     * мономорфизация) възстановява ctx от него */
+    {
+        CheckCtxSnap *s = calloc(1, sizeof(CheckCtxSnap));
+        if (!s) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+        s->program = program;
+        s->main_base = ctx.main_base;
+        s->n_fns = ctx.n_fns;
+        memcpy(s->fns, ctx.fns, sizeof(ctx.fns));
+        s->n_structs = ctx.n_structs;
+        memcpy(s->structs, ctx.structs, sizeof(ctx.structs));
+        s->n_enums = ctx.n_enums;
+        memcpy(s->enums, ctx.enums, sizeof(ctx.enums));
+        s->n_variants = ctx.n_variants;
+        memcpy(s->variants, ctx.variants, sizeof(ctx.variants));
+        s->n_lambdas = ctx.n_lambdas;
+        c->gen_snap = s;
+    }
+}
+
+/* M21: re-infer тялото на generic fn под инстанция k (преди codegen emit) */
+void checker_recheck_inst(Checker *chk, Node *fn, int k) {
+    CheckCtxSnap *s = chk->gen_snap;
+    if (!s) return;
+    CheckCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.chk = chk;
+    ctx.program = s->program;
+    ctx.main_base = s->main_base;
+    ctx.n_fns = s->n_fns;
+    memcpy(ctx.fns, s->fns, sizeof(ctx.fns));
+    ctx.n_structs = s->n_structs;
+    memcpy(ctx.structs, s->structs, sizeof(ctx.structs));
+    ctx.n_enums = s->n_enums;
+    memcpy(ctx.enums, s->enums, sizeof(ctx.enums));
+    ctx.n_variants = s->n_variants;
+    memcpy(ctx.variants, s->variants, sizeof(ctx.variants));
+    ctx.n_lambdas = s->n_lambdas;
+    int np = fn->n_type_params;
+    for (int i = 0; i < np; i++) {
+        vec_push(ctx.g_names, fn->type_params[i]);
+        vec_push(ctx.g_types, fn->inst_types[k * np + i]);
+    }
+    check_fn(&ctx, fn);
 }

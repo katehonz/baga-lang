@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### generics — M21 типови параметри (мономорфизация)
+- `fn identity<T>(x: T) -> T`, `fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U>`.
+  Извод от аргументите + явни типови аргументи `map<i64, i64>(…)`.
+- Проверка на тялото веднъж per инстанция (checker snapshot + re-infer);
+  codegen емитва специализирани варианти `<име>__iN`. Транзитивни инстанции,
+  ефекти (вкл. payload), struct полета през `T`, `Vec<T>`/`Map<K,V>`.
+- v1: без generic fn като стойност / ламбди в тялото / spec / LLVM backend.
+  Пример: `examples/generics.baga`.
+
 ### checker — M19 missing-return (не-void fn не може да падне от края)
 - Fallthrough анализ: return/break/continue не падат; block → последен
   stmt; `if` без `else` пада; `while` пада, освен literal `while true` без

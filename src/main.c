@@ -369,6 +369,7 @@ int main(int argc, char **argv) {
         Codegen cg;
         cg.test_specs = test_specs;
         cg.rc = rc;
+        cg.chk = &checker;
         codegen_c(&cg, program, stdout);
     } else {
         /* generate C to temp file, compile, run */
@@ -385,6 +386,7 @@ int main(int argc, char **argv) {
         Codegen cg;
         cg.test_specs = test_specs;
         cg.rc = rc;
+        cg.chk = &checker;
         codegen_c(&cg, program, cf);
         fclose(cf);
 

@@ -4600,6 +4600,16 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
 /* ---- Public API ---- */
 
 void codegen_llvm(Node *program, const char *output_path) {
+    /* M21: generics са C-only (v1) — мономорфизацията не е пренесена */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *it = program->items.data[i];
+        if (it->kind == NODE_FN && it->n_type_params > 0 && it->inst_count > 0) {
+            fprintf(stderr, "baga: generics не се поддържат в LLVM backend-а (v1) — "
+                            "fn '%s' има %d инстанции; ползвай C backend-а\n",
+                    it->fn_name, it->inst_count);
+            return;
+        }
+    }
     lg.ctx = LLVMContextCreate();
     lg.mod = LLVMModuleCreateWithNameInContext("baga_module", lg.ctx);
     lg.builder = LLVMCreateBuilderInContext(lg.ctx);
