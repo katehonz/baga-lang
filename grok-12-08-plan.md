@@ -78,7 +78,9 @@ pointer `elem_rel`/`val_rel` + shim `baga_rc_relf_S`); push/set на свеж
 struct литерал е move (RSS 64 MB → 10.9 MB на 500k push+drop). v0.3:
 `vec_set`/`map_set` overwrite и `map_del` release-ват стария box
 (`*_box_rc`/`baga_map_del_*_rc` с destructor fn pointer; RSS 72 MB →
-10.9 MB на 300k overwrite+del). Останало:
+10.9 MB на 300k overwrite+del). v0.4: release на старото heap поле при
+`s.f = x` (alias-safe: retain преди release; RSS 39 MB → 10.9 MB на 500k
+field overwrite). Останало:
 вложени struct-и, enum payload, call аргумент temp-ове в box push.
 
 ## Забранено / внимание

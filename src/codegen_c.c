@@ -906,6 +906,66 @@ static void rc_tmp_release_all(Codegen *cg);
 static void emit_expr(Codegen *cg, Node *n); /* fwd — пълната fwd декларация е по-долу */
 static void emit_rc_stmt_expr(Codegen *cg, Node *n);
 
+/* RC5 v0.4: цел `ident.field`, където ident е track-нат struct локал (tag 5,
+ * не param/dead), а field е пряко heap поле. Връща tag-а на полето (1-4) или
+ * 0; за Vec/Map полета пълни kind (elem_kind/val_tag), sz и rel. Само плоско
+ * ident.field — по-дълбоки пътеки биха се оценили два пъти. */
+static int rc_field_assign_tag(Codegen *cg, Node *target, int *kind,
+                               char *sz, size_t szn, char *rel, size_t reln) {
+    *kind = 0;
+    snprintf(sz, szn, "0");
+    snprintf(rel, reln, "0");
+    if (!cg->rc || !target || target->kind != NODE_FIELD) return 0;
+    Node *obj = target->field_obj;
+    if (!obj || obj->kind != NODE_IDENT || !target->field_name) return 0;
+    int idx = rc_find(cg, obj->name);
+    if (idx < 0) return 0;
+    RcLocal *e = &cg->rc_locals.data[idx];
+    if (e->tag != 5 || e->is_param || e->dead) return 0;
+    const char *sn = (e->type && e->type->name) ? e->type->name :
+        (e->type_node && e->type_node->type_name) ? e->type_node->type_name : NULL;
+    if (!sn) return 0;
+    Node *d = find_struct_decl(cg, sn);
+    if (!d) return 0;
+    for (int i = 0; i < d->fields.len; i++) {
+        Node *fld = d->fields.data[i];
+        if (!fld->fld_name ||
+            strcmp(fld->fld_name, target->field_name) != 0)
+            continue;
+        int tag = rc_type_node_tag(fld->fld_type);
+        if (tag == 3) {
+            *kind = rc_vec_elem_kind_node(fld->fld_type, sz, szn);
+            Node *et = fld->fld_type->inner_type;
+            rc_box_rel(cg, (et && et->kind == NODE_TYPE) ? et->type_name : NULL,
+                       rel, reln);
+        } else if (tag == 4) {
+            *kind = rc_map_val_tag_node(fld->fld_type, sz, szn);
+            Node *vt = fld->fld_type->inner_type2;
+            rc_box_rel(cg, (vt && vt->kind == NODE_TYPE) ? vt->type_name : NULL,
+                       rel, reln);
+        }
+        return tag;
+    }
+    return 0;
+}
+
+/* release на старото поле (в alias-safe ред: след retain на новото) */
+static void rc_emit_field_release(Codegen *cg, int tag, Node *target, int kind,
+                                  const char *sz, const char *rel) {
+    FILE *f = cg->out;
+    switch (tag) {
+        case 1: fprintf(f, "baga_rc_release_str("); break;
+        case 2: fprintf(f, "baga_rc_release_bytes("); break;
+        case 3: fprintf(f, "baga_rc_release_vec("); break;
+        case 4: fprintf(f, "baga_rc_release_map("); break;
+        default: return;
+    }
+    emit_expr(cg, target);
+    if (tag == 3 || tag == 4)
+        fprintf(f, ", %d, %s, %s", kind, sz, rel);
+    fprintf(f, "); ");
+}
+
 /* fresh heap temp ли е този възел? (owned rc=1 резултат по конвенция) */
 static int rc_tmp_fresh(Node *n) {
     if (!n) return 0;
@@ -2265,23 +2325,68 @@ static void emit_expr(Codegen *cg, Node *n) {
                 n->assign_val->kind == NODE_IDENT) {
                 int si = rc_find(cg, n->assign_val->name);
                 if (si >= 0 && !cg->rc_locals.data[si].dead) {
+                    char sz[160], rel[160];
+                    int fkind = 0;
+                    int ftag = rc_field_assign_tag(cg, n->assign_target, &fkind,
+                                                   sz, sizeof sz, rel, sizeof rel);
                     /* RC2: последна употреба → move (обикновено присвояване,
                      * без retain; източникът умира тук) */
                     if (rc_is_move(cg, n->assign_val, si)) {
                         rc_do_move(cg, si);
-                        emit_expr(cg, n->assign_target);
-                        fprintf(f, " = ");
-                        emit_expr(cg, n->assign_val);
+                        if (ftag) {
+                            /* RC5 v0.4: release на старото поле преди assign */
+                            fprintf(f, "({ __auto_type __rc_fa = ");
+                            emit_expr(cg, n->assign_val);
+                            fprintf(f, "; ");
+                            rc_emit_field_release(cg, ftag, n->assign_target,
+                                                  fkind, sz, rel);
+                            emit_expr(cg, n->assign_target);
+                            fprintf(f, " = __rc_fa; __rc_fa; })");
+                        } else {
+                            emit_expr(cg, n->assign_target);
+                            fprintf(f, " = ");
+                            emit_expr(cg, n->assign_val);
+                        }
                         break;
                     }
                     RcLocal src = cg->rc_locals.data[si];
                     fprintf(f, "({ __auto_type __rc_fa = ");
                     emit_expr(cg, n->assign_val);
                     fprintf(f, "; ");
+                    if (ftag) {
+                        /* RC5 v0.4: retain на новото ПРЕДИ release на старото
+                         * (alias-safe: `w.s = w2.s` със споделена стойност) */
+                        rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
+                        rc_emit_field_release(cg, ftag, n->assign_target,
+                                              fkind, sz, rel);
+                    }
                     emit_expr(cg, n->assign_target);
                     fprintf(f, " = __rc_fa; ");
-                    rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
+                    if (!ftag)
+                        rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
                     fprintf(f, "__rc_fa; })");
+                    break;
+                }
+            }
+            /* RC5 v0.4: не-ident дясно в heap поле на track-нат struct —
+             * fresh е owned (без retain), borrowed се retain-ва; старото
+             * поле се release-ва (retain преди release — alias-safe). */
+            if (cg->rc) {
+                char sz[160], rel[160];
+                int fkind = 0;
+                int ftag = rc_field_assign_tag(cg, n->assign_target, &fkind,
+                                               sz, sizeof sz, rel, sizeof rel);
+                if (ftag) {
+                    fprintf(f, "({ __auto_type __rc_fa = ");
+                    emit_expr(cg, n->assign_val);
+                    fprintf(f, "; ");
+                    if (rc_borrowed_init(n->assign_val))
+                        rc_emit_retain_val(cg, ftag, n->assign_val->type, NULL,
+                                           "__rc_fa");
+                    rc_emit_field_release(cg, ftag, n->assign_target,
+                                          fkind, sz, rel);
+                    emit_expr(cg, n->assign_target);
+                    fprintf(f, " = __rc_fa; __rc_fa; })");
                     break;
                 }
             }

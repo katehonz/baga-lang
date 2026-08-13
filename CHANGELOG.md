@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.4 release на старото поле при `s.f = x` (зад `--rc`)
+- Heap поле (str/bytes/Vec/Map) на track-нат struct локал се release-ва
+  преди overwrite. Alias-safe ред (retain преди release): `w.s = v.s` и
+  `w.s = w.s` не underflow-ват. Fresh дясно — owned, без retain. Само
+  плоско `ident.field` (по-дълбоки пътеки = двойна оценка).
+- Случаи 14-17 в `tests/struct_rc_test.baga`. Leak repro 500k field
+  overwrite: RSS 39 MB → 10.9 MB.
+
 ### runtime — RC5 v0.3 overwrite/del на box елементи (зад `--rc`)
 - `vec_set`/`map_set` върху съществуващ slot/ключ release-ват полетата на
   стария box преди memcpy; `map_del` release-ва полетата + free-ва pv на

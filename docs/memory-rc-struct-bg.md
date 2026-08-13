@@ -21,7 +21,20 @@ s: concat("a","b") }` → concat rc=1 в полето → scope exit тече.
 - ~~Полета вътре в `Vec<S>` / `Map<K,S>` при drop на контейнера~~ —
   **РЕШЕНО в v0.2 (виж по-долу).**
 - Closure capture на struct.
-- Release на старото поле при `s.f = x` (старото тече — leak-safe).
+- ~~Release на старото поле при `s.f = x`~~ — **РЕШЕНО в v0.4 (виж по-долу).**
+
+## v0.4: release на старото поле при `s.f = x`
+
+Цел `ident.field`, където ident е track-нат struct локал (tag 5, не
+param/dead), а полето е пряко heap поле (str/bytes/Vec/Map): старото поле се
+release-ва преди assign. Alias-safe ред — новото се retain-ва преди release
+(`w.s = w2.s`, self-assign `w.s = w.s` не underflow-ват; тествано). Fresh
+дясно (concat/call резултат) е owned — без retain; borrowed дясно
+(`w.s = v.s`, `vec_get(...)`) се retain-ва. Move на last-use ident също
+release-ва старото поле. Само плоско `ident.field` — по-дълбоки пътеки
+(`a.b.c = x`) биха оценили целта два пъти (странични ефекти).
+
+Измерено: 500k итерации `w.s = concat(...)` — RSS 39 MB → 10.9 MB.
 
 ## v0.2: drop на Vec<S> / Map<K,S> полета
 

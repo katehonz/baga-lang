@@ -8,6 +8,10 @@ struct Wrap {
     s: str
 }
 
+struct Bucket {
+    items: Vec<str>
+}
+
 fn check(name: str, ok: bool) {
     if ok {
         print(concat("  ok  ", name))
@@ -111,6 +115,27 @@ fn main() -> i64 !IO {
     map_set(dm, "d", Wrap { n: 3, s: concat("de", "l") })
     map_del(dm, "d")
     check("map_del_s", map_len(dm) == 0)
+
+    // 14. field overwrite release-ва старото поле (RC5 v0.4)
+    let mut fw = Wrap { n: 1, s: concat("fi", "-old") }
+    fw.s = concat("fi", "-new")
+    check("field_ovw", fw.s == "fi-new" && fw.n == 1)
+
+    // 15. field assign от borrowed поле — retain; двамата четат
+    let src = Wrap { n: 5, s: concat("sr", "c") }
+    fw.s = src.s
+    check("field_borrowed", fw.s == "src" && src.s == "src")
+
+    // 16. self-assign не underflow-ва
+    fw.s = fw.s
+    check("field_self", fw.s == "src")
+
+    // 17. Vec поле overwrite release-ва стария vec
+    let mut bk = Bucket { items: vec_new() }
+    vec_push(bk.items, "а")
+    bk.items = vec_new()
+    vec_push(bk.items, "б")
+    check("field_vec_ovw", vec_len(bk.items) == 1 && vec_get(bk.items, 0) == "б")
 
     print("struct_rc_test: all passed")
     return 0
