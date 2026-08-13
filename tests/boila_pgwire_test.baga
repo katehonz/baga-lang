@@ -4,6 +4,7 @@
 import "boilaDB/api/pgwire_enc.baga"
 import "boilaDB/api/pgwire_msg.baga"
 import "boilaDB/api/pgwire_prep.baga"
+import "boilaDB/api/pgwire_desc.baga"
 import "boilaDB/api/pgwire_dml.baga"
 import "boilaDB/sql/ast.baga"
 import "boilaDB/server/databases.baga"

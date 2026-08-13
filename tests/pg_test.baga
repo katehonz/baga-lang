@@ -8,6 +8,8 @@ import "std/os/os.baga"
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
 import "std/json/json.baga"
+import "std/json/json_write.baga"
+import "std/json/json_strict.baga"
 
 fn check(fails: Vec<i64>, name: str, cond: bool) {
     if cond {

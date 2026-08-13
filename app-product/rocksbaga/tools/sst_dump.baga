@@ -10,6 +10,10 @@
 
 import "rocksbaga/db/manifest.baga"
 import "rocksbaga/table/sstable.baga"
+import "rocksbaga/table/sstable_parse.baga"
+import "rocksbaga/table/sstable_lookup.baga"
+import "rocksbaga/table/sstable_meta.baga"
+import "rocksbaga/table/sstable_scan.baga"
 import "rocksbaga/table/bloom.baga"
 import "rocksbaga/cache/page.baga"
 import "rocksbaga/util/codec.baga"

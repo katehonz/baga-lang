@@ -1,0 +1,454 @@
+// serve.baga — fmrbaga serve loop: conn accept (h1), worker pool, runtime
+// stats, graceful drain, fmr_run entry. App/handle типовете са в
+// core/app.baga.
+
+import "app.baga"
+
+struct FmrConnOut {
+    code: i64,
+    db: OrmDb
+}
+
+// Idle read/write timeout on client sockets (seconds). Keep-alive loops exit
+// when the peer goes quiet — without this, workers block forever in read and
+// graceful join hangs after SIGTERM.
+fn fmr_idle_s() -> i64 !IO {
+    let s = fmr_env_or("FMR_IDLE_S", "15")?
+    let n = parse_int(s)
+    if n < 0 {
+        return 0
+    }
+    if n > 600 {
+        return 600
+    }
+    return n
+}
+
+// Apply idle timeout + TCP_NODELAY on an accepted client fd.
+fn fmr_tune_client(fd: i64) -> i64 !IO !Net {
+    let idle = fmr_idle_s()?
+    if idle > 0 {
+        tcp_set_timeouts(fd, idle)?
+    }
+    tcp_set_nodelay(fd)?
+    return 0
+}
+
+// close_db=1 → orm_close when the HTTP connection ends (per-conn DB mode).
+// close_db=0 → keep DB open (worker-pool mode; one DB per worker).
+fn fmr_h1_conn(app: FmrApp, fd: i64, r0: HttpReader, db0: OrmDb, close_db: i64) -> FmrConnOut !IO !Net !Random !Time {
+    let mut r = r0
+    let mut db = db0
+    let mut keep = true
+    while keep {
+        let out = http_read_request_r(r)?
+        r = out.reader
+        if out.err != 0 {
+            // err or idle timeout / peer closed → end connection
+            keep = false
+        } else {
+            if http_method(out.req) == "" {
+                keep = false
+            } else {
+                let ka = http_keepalive(out.req)
+                let ho = fmr_handle(app, out.req, db)?
+                db = ho.db
+                http_respond_keepalive(fd, ho.resp, ka)?
+                if ka == 0 {
+                    keep = false
+                }
+            }
+        }
+    }
+    if close_db == 1 {
+        if orm_ok_db(db) == 1 {
+            orm_close(db)?
+        }
+    }
+    tcp_close(fd)?
+    return FmrConnOut { code: 0, db: db }
+}
+
+fn fmr_env_or(name: str, def: str) -> str !IO {
+    return fmr_cfg_or(name, def)?
+}
+
+fn fmr_app_from_env(title: str, version: str) -> FmrApp !IO {
+    let cfg = fmr_config_load()?
+    let mut app = fmr_app_new(title, version)
+    if title != "" {
+        app = fmr_app_copy(app, app.router, app.jwt_secret, title, version,
+            app.pg_host, app.pg_port, app.pg_user, app.pg_password, app.pg_database,
+            app.cors_origin, app.log_requests)
+    }
+    return fmr_app_with_config(app, cfg)
+}
+
+fn fmr_listen_port() -> i64 !IO {
+    let cfg = fmr_config_load()?
+    return cfg.port
+}
+
+// Open a session. ORM_BACKEND=boila|boiladb → boilabaga (PG wire :6575);
+// otherwise use app DSN (Postgres PG* / fmr_app_db).
+fn fmr_open_db(app: FmrApp) -> OrmDb !Net !IO !Random {
+    let be = fmr_cfg_or("ORM_BACKEND", "pg")?
+    if be == "boila" || be == "boiladb" || be == "boilaDB" {
+        return orm_connect_boila_env()?
+    }
+    return orm_connect(app.pg_host, app.pg_port, app.pg_user, app.pg_password, app.pg_database)?
+}
+
+// ---------- shared runtime stats (Map via map_h; process-local) ----------
+// Keys: 0=inflight  1=accepted  2=completed  3=workers  4=mode(0=gobg,1=sync,2=pool)
+// No mutex: counters are best-effort gauges (drain waits for inflight≈0).
+// Avoids forcing !Par onto every request handler.
+
+fn FMR_ST_INFLIGHT() -> i64 { return 0 }
+fn FMR_ST_ACCEPTED() -> i64 { return 1 }
+fn FMR_ST_DONE() -> i64 { return 2 }
+fn FMR_ST_WORKERS() -> i64 { return 3 }
+fn FMR_ST_MODE() -> i64 { return 4 }
+
+// Handle = map_h(Map<i64,i64>)
+fn fmr_st_new(workers: i64, mode: i64) -> i64 {
+    let m: Map<i64, i64> = map_new()
+    map_set(m, FMR_ST_INFLIGHT(), 0)
+    map_set(m, FMR_ST_ACCEPTED(), 0)
+    map_set(m, FMR_ST_DONE(), 0)
+    map_set(m, FMR_ST_WORKERS(), workers)
+    map_set(m, FMR_ST_MODE(), mode)
+    return map_h(m)
+}
+
+fn fmr_st_get(st: i64, key: i64) -> i64 {
+    if st == 0 {
+        return 0
+    }
+    let m: Map<i64, i64> = h_map(st)
+    return map_get(m, key)
+}
+
+fn fmr_st_add(st: i64, key: i64, delta: i64) -> i64 {
+    if st == 0 {
+        return 0
+    }
+    let m: Map<i64, i64> = h_map(st)
+    map_set(m, key, map_get(m, key) + delta)
+    return 0
+}
+
+fn fmr_st_inc(st: i64, key: i64) -> i64 {
+    return fmr_st_add(st, key, 1)
+}
+
+fn fmr_st_dec(st: i64, key: i64) -> i64 {
+    return fmr_st_add(st, key, 0 - 1)
+}
+
+// Publish stats handle for /metrics (pid-scoped file; no language globals).
+fn fmr_st_path() -> str !IO {
+    return concat("/tmp/fmrbaga.rt.", int_to_str(getpid()))
+}
+
+fn fmr_st_publish(st: i64) -> i64 !IO {
+    return write_file(fmr_st_path()?, int_to_str(st))?
+}
+
+fn fmr_st_unpublish() -> i64 !IO {
+    let p = fmr_st_path()?
+    if file_exists(p)? == 1 {
+        return unlink(p)?
+    }
+    return 0
+}
+
+// Load published handle (0 if missing / not running under fmr_run).
+fn fmr_st_load() -> i64 !IO {
+    let p = fmr_st_path()?
+    if file_exists(p)? == 0 {
+        return 0
+    }
+    let s = read_file(p)?
+    if s == "" {
+        return 0
+    }
+    return parse_int(s)
+}
+
+// Public accessors for apps (e.g. /metrics).
+fn fmr_rt_inflight() -> i64 !IO {
+    return fmr_st_get(fmr_st_load()?, FMR_ST_INFLIGHT())
+}
+
+fn fmr_rt_accepted() -> i64 !IO {
+    return fmr_st_get(fmr_st_load()?, FMR_ST_ACCEPTED())
+}
+
+fn fmr_rt_completed() -> i64 !IO {
+    return fmr_st_get(fmr_st_load()?, FMR_ST_DONE())
+}
+
+fn fmr_rt_workers() -> i64 !IO {
+    return fmr_st_get(fmr_st_load()?, FMR_ST_WORKERS())
+}
+
+fn fmr_rt_mode() -> i64 !IO {
+    return fmr_st_get(fmr_st_load()?, FMR_ST_MODE())
+}
+
+fn fmr_conn_begin(st: i64) -> i64 {
+    fmr_st_inc(st, FMR_ST_INFLIGHT())
+    fmr_st_inc(st, FMR_ST_ACCEPTED())
+    return 0
+}
+
+fn fmr_conn_end(st: i64) -> i64 {
+    fmr_st_dec(st, FMR_ST_INFLIGHT())
+    fmr_st_inc(st, FMR_ST_DONE())
+    return 0
+}
+
+// Wait until inflight==0 or timeout_ms. Returns 1 if drained, 0 on timeout.
+fn fmr_drain_wait(st: i64, timeout_ms: i64) -> i64 !Par {
+    let mut waited: i64 = 0
+    let step: i64 = 50
+    while waited < timeout_ms {
+        if fmr_st_get(st, FMR_ST_INFLIGHT()) <= 0 {
+            return 1
+        }
+        sleep_ms(step)
+        waited = waited + step
+    }
+    if fmr_st_get(st, FMR_ST_INFLIGHT()) <= 0 {
+        return 1
+    }
+    return 0
+}
+
+fn fmr_drain_ms() -> i64 !IO {
+    let s = fmr_env_or("FMR_DRAIN_MS", "10000")?
+    let n = parse_int(s)
+    if n < 0 {
+        return 0
+    }
+    if n > 300000 {
+        return 300000
+    }
+    return n
+}
+
+// Per-HTTP-connection DB (go_bg / sync modes).
+fn fmr_serve_conn(fd: i64) -> i64 !IO !Net !Random !Time {
+    fmr_tune_client(fd)?
+    let app = fmr_build_app()?
+    let db = fmr_open_db(app)?
+    let r = http_reader(fd)
+    let out = fmr_h1_conn(app, fd, r, db, 1)?
+    return out.code
+}
+
+// go_bg entry: ctx = cell2(fd, stats_handle)
+fn fmr_serve_conn_st(ctx: i64) -> i64 !IO !Net !Par !Random !Time {
+    let fd = cell2_0(ctx)
+    let st = cell2_1(ctx)
+    fmr_conn_begin(st)
+    let code = fmr_serve_conn(fd)?
+    fmr_conn_end(st)
+    return code
+}
+
+// Fixed worker: one long-lived DB + pull accepted fds from channel.
+// ctx = cell2(fd_chan, cell2(worker_id, stats_handle))
+fn fmr_pool_worker(ctx: i64) -> i64 !IO !Net !Par !Random !Time {
+    let ch = cell2_0(ctx)
+    let pack = cell2_1(ctx)
+    let wid = cell2_0(pack)
+    let st = cell2_1(pack)
+    let app = fmr_build_app()?
+    let db0 = fmr_open_db(app)?
+    if orm_ok_db(db0) == 0 {
+        print(concat(concat("fmrbaga worker ", int_to_str(wid)), concat(" db fail: ", orm_err_db(db0))))
+    } else {
+        print(concat(concat("fmrbaga worker ", int_to_str(wid)), " ready"))
+    }
+    let mut db = db0
+    let mut running: i64 = 1
+    while running == 1 {
+        let p = chan_recv2(ch)
+        if cell2_0(p) == 0 {
+            running = 0
+        } else {
+            let fd = cell2_1(p)
+            if fd < 0 {
+                running = 0
+            } else {
+                fmr_tune_client(fd)?
+                fmr_conn_begin(st)
+                let co = fmr_h1_conn(app, fd, http_reader(fd), db, 0)?
+                db = co.db
+                fmr_conn_end(st)
+            }
+        }
+    }
+    if orm_ok_db(db) == 1 {
+        orm_close(db)?
+    }
+    return 0
+}
+
+// Default: 4 workers (fixed pool). Explicit FMR_WORKERS=0 → go_bg per conn.
+// Cap 64. FMR_SYNC=1 forces serial regardless.
+fn fmr_workers_n() -> i64 !IO {
+    let raw = env("FMR_WORKERS")?
+    if raw == "" {
+        return 4
+    }
+    let n = parse_int(raw)
+    if n < 0 {
+        return 0
+    }
+    if n > 64 {
+        return 64
+    }
+    return n
+}
+
+fn fmr_run() -> i64 !Net !IO !Par !Random !Time {
+    signal_watch(FMR_SIGTERM())
+    signal_watch(FMR_SIGINT())
+
+    let port = fmr_listen_port()?
+    let sync_s = fmr_env_or("FMR_SYNC", "0")?
+    let bsync = env("BAGA_SYNC")?
+    let mut sync_mode = sync_s
+    if bsync == "1" {
+        sync_mode = "1"
+    }
+    let mut workers = fmr_workers_n()?
+    // FMR_SYNC wins: single-threaded accept+handle (debug / tests).
+    if sync_mode == "1" {
+        workers = 0
+    }
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        print(concat("fmrbaga: listen failed on :", int_to_str(port)))
+        return 1
+    }
+    let app = fmr_build_app()?
+    print(concat(concat("fmrbaga ", app.title), concat(" v", app.version)))
+
+    let pollfds: Vec<i64> = vec_new()
+    vec_push(pollfds, listener)
+    let drain_ms = fmr_drain_ms()?
+
+    // Mode: workers>0 → fixed pool (joinable); sync → serial; else go_bg/conn.
+    // Accept loop always uses poll so SIGTERM/SIGINT are observed.
+    if workers > 0 {
+        let st = fmr_st_new(workers, 2)
+        fmr_st_publish(st)?
+        let ch = chan_new(workers * 8)
+        let mut handles = vec_new()
+        let mut i: i64 = 0
+        while i < workers {
+            let h = go(fmr_pool_worker, cell2(ch, cell2(i, st)))
+            vec_push(handles, h)
+            i = i + 1
+        }
+        print(concat(concat("listening on :", int_to_str(port)),
+            concat(concat(concat(" (workers=", int_to_str(workers)),
+                concat(", 1 DB each, drain_ms=", int_to_str(drain_ms))), ")")))
+        let mut run_w: i64 = 1
+        while run_w == 1 {
+            if fmr_shutting_down() == 1 {
+                let sig = signal_clear()
+                log_warn(concat("fmrbaga shutdown signal ", int_to_str(sig)))?
+                run_w = 0
+            } else {
+                let pr = poll_wait(pollfds, 200)?
+                if pr.ok < 0 {
+                    run_w = 0
+                } else {
+                    if poll_has(pr.ready, listener) == 1 {
+                        let fd = tcp_accept(listener)?
+                        if fd >= 0 {
+                            // Backpressure: blocks if work queue is full (all workers busy).
+                            chan_send(ch, fd)
+                        }
+                    }
+                }
+            }
+        }
+        // Stop accepting; close work queue so idle workers exit; drain busy ones.
+        // (Do not only send -1: if the queue is full, chan_send blocks forever.)
+        tcp_close(listener)?
+        chan_close(ch)
+        let drained = fmr_drain_wait(st, drain_ms)?
+        if drained == 0 {
+            log_warn(concat(concat(concat("fmrbaga drain timeout (", int_to_str(drain_ms)),
+                concat("ms), inflight=", int_to_str(fmr_st_get(st, FMR_ST_INFLIGHT())))),
+                " — waiting for idle socket timeout (FMR_IDLE_S)"))?
+        } else {
+            log_info("fmrbaga drain complete")?
+        }
+        // Join workers (idle already exited via chan_close; busy exit when
+        // SO_RCVTIMEO fires on keep-alive read — FMR_IDLE_S).
+        let mut k: i64 = 0
+        while k < vec_len(handles) {
+            join(vec_get(handles, k))
+            k = k + 1
+        }
+        fmr_st_unpublish()?
+        log_info(concat(concat("fmrbaga stopped accepted=", int_to_str(fmr_st_get(st, FMR_ST_ACCEPTED()))),
+            concat(" completed=", int_to_str(fmr_st_get(st, FMR_ST_DONE())))))?
+        return 0
+    }
+
+    // Serial or go_bg-per-connection modes.
+    let mut mode: i64 = 0
+    if sync_mode == "1" {
+        mode = 1
+        print(concat("listening on :", concat(int_to_str(port), " (sync, graceful)")))
+    } else {
+        print(concat("listening on :", concat(int_to_str(port), " (go_bg, graceful)")))
+    }
+    let st2 = fmr_st_new(0, mode)
+    fmr_st_publish(st2)?
+    let mut running: i64 = 1
+    while running == 1 {
+        if fmr_shutting_down() == 1 {
+            let sig = signal_clear()
+            log_warn(concat("fmrbaga shutdown signal ", int_to_str(sig)))?
+            running = 0
+        } else {
+            let pr = poll_wait(pollfds, 200)?
+            if pr.ok < 0 {
+                running = 0
+            } else {
+                if poll_has(pr.ready, listener) == 1 {
+                    let fd = tcp_accept(listener)?
+                    if fd >= 0 {
+                        if sync_mode == "1" {
+                            fmr_conn_begin(st2)
+                            fmr_serve_conn(fd)?
+                            fmr_conn_end(st2)
+                        } else {
+                            go_bg(fmr_serve_conn_st, cell2(fd, st2))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tcp_close(listener)?
+    let drained2 = fmr_drain_wait(st2, drain_ms)?
+    if drained2 == 0 {
+        log_warn(concat(concat("fmrbaga drain timeout (", int_to_str(drain_ms)),
+            concat("ms), inflight=", int_to_str(fmr_st_get(st2, FMR_ST_INFLIGHT())))))?
+    } else {
+        log_info("fmrbaga drain complete")?
+    }
+    fmr_st_unpublish()?
+    log_info("fmrbaga stopped")?
+    return 0
+}

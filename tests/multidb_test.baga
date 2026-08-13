@@ -1,6 +1,8 @@
 // multidb_test.baga — R41 Redis-style SELECT / multi-DB namespaces.
 import "rocksbaga/db/multidb.baga"
 import "rocksbaga/db/shard.baga"
+import "rocksbaga/db/shard_read.baga"
+import "rocksbaga/db/shard_ttl.baga"
 import "rocksbaga/net/server.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"

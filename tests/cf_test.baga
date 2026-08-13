@@ -1,6 +1,8 @@
 // cf_test.baga — R44 shared-WAL column families.
 import "rocksbaga/db/cf.baga"
+import "rocksbaga/db/cf_io.baga"
 import "rocksbaga/net/server.baga"
+import "rocksbaga/net/server_cf.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"

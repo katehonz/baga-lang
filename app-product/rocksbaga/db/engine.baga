@@ -1,27 +1,25 @@
-// engine.baga — open/put/get/flush/recovery (orchestration).
-// Compaction: compact.baga. Types: types.baga. Manifest: manifest.baga.
-// R67: engine core holds keys as raw bytes end-to-end (Map<bytes, …>, WAL
-// record/replay, SST rows). Every public str-keyed API (lsm_put, lsm_get, …)
-// is unchanged — a thin wrapper doing bytes_of_str(key) into the *_kb core.
-// On-disk formats are unchanged (WAL/SST records were already
-// length-prefixed, so they were binary-safe all along).
+// engine.baga — LsmDB ядро: open/close (MANIFEST via manifest.baga),
+// flushdb, checkpoint, put/del, get/exists, flush/flush_force (memtable →
+// SST + compact gate). WAL кодекът е в engine_wal.baga; TTL — в
+// engine_ttl.baga; keys/glob — в engine_keys.baga; scan — в engine_scan.baga.
 
 import "types.baga"
 import "manifest.baga"
+import "engine_wal.baga"
 import "compact.baga"
 import "../util/codec.baga"
 import "../util/ttl.baga"
 import "../cache/page.baga"
 import "../wal/wal.baga"
 import "../table/sstable.baga"
+import "../table/sstable_parse.baga"
+import "../table/sstable_lookup.baga"
+import "../table/sstable_meta.baga"
+import "../table/sstable_scan.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/time/time.baga"
-
-fn lsm_wal_path(dir: str) -> str {
-    return concat(dir, ".wal")
-}
-
+import "std/bytes/bytes.baga"
 
 fn lsm_empty_db(dir: str) -> LsmDB {
     let gens: Vec<i64> = vec_new()
@@ -46,6 +44,7 @@ fn lsm_empty_db(dir: str) -> LsmDB {
 
 // Build LsmDB skeleton from on-disk MANIFEST (R26 via manifest.baga).
 // R40: snapshot + edit log replay.
+
 fn lsm_read_manifest(dir: str) -> LsmDB !IO {
     let m = lsm_load_manifest(dir)?
     if vec_len(m.gens) == 0 && m.next_gen == 1 {
@@ -74,6 +73,7 @@ fn lsm_read_manifest(dir: str) -> LsmDB !IO {
         ok: 1
     }
 }
+
 
 fn lsm_open(dir: str, flush_at: i64, compact_at: i64) -> LsmDB !IO {
     let mut db = lsm_read_manifest(dir)?
@@ -117,20 +117,6 @@ fn lsm_open(dir: str, flush_at: i64, compact_at: i64) -> LsmDB !IO {
 }
 
 // Flush pending WAL buffer to the fd (no fdatasync).
-fn lsm_wal_flush_buf(db: LsmDB) -> LsmDB !IO {
-    if db.wal_buf_len <= 0 {
-        return db
-    }
-    let view = bytes_slice(db.wal_buf, 0, db.wal_buf_len)
-    if fd_pwrite_bytes(db.wal_fd, view, db.wal_off) != 0 {
-        db.ok = 0
-        return db
-    }
-    drop(view)
-    db.wal_off = db.wal_off + db.wal_buf_len
-    db.wal_buf_len = 0  // buffer stays allocated, reused next window
-    return db
-}
 
 fn lsm_close(db: LsmDB) -> i64 !IO {
     let mut d = db
@@ -165,21 +151,7 @@ fn lsm_close(db: LsmDB) -> i64 !IO {
 
 // R42: delete all durable files for one store path (after close).
 // WAL, MANIFEST(+log/tmp), SST/bloom gens 1..512.
-fn lsm_path_wipe(path: str) -> i64 !IO {
-    unlink(concat(path, ".wal"))?
-    unlink(concat(path, ".manifest"))?
-    unlink(concat(path, ".manifest.log"))?
-    unlink(concat(path, ".manifest.tmp"))?
-    let mut g: i64 = 1
-    while g <= 512 {
-        unlink(concat(concat(path, ".sst."), int_to_str(g)))?
-        unlink(concat(concat(path, ".bloom."), int_to_str(g)))?
-        g = g + 1
-    }
-    return 0
-}
 
-// R42: close, wipe files, reopen empty store (preserves path + knobs).
 fn lsm_flushdb(db: LsmDB) -> LsmDB !IO {
     let path = db.dir
     let flush_at = db.flush_at
@@ -199,39 +171,7 @@ fn lsm_flushdb(db: LsmDB) -> LsmDB !IO {
 }
 
 // R58: binary file copy (1 MiB chunks; O_RDONLY → O_CREAT|O_TRUNC).
-fn lsm_copy_file(src: str, dst: str) -> i64 !IO {
-    let fd = open(src, 0, 0)?
-    if fd < 0 {
-        return 0 - 1
-    }
-    let sz = fd_size(fd)?
-    let out = open(dst, 578, 420)?
-    if out < 0 {
-        close(fd)
-        return 0 - 1
-    }
-    let mut off: i64 = 0
-    while off < sz {
-        let chunk = fd_pread_bytes(fd, 1048576, off)?
-        let n = bytes_len(chunk)
-        if n == 0 {
-            off = sz
-        } else {
-            fd_write_bytes(out, chunk)?
-            drop(chunk)
-            off = off + n
-        }
-    }
-    close(fd)
-    close(out)
-    return 0
-}
 
-// R58: RocksDB-style checkpoint — durable point-in-time copy of the store
-// at `dest`. Flushes the memtable first (WAL rotates empty), then copies
-// every live SST + bloom sidecar and writes a fresh MANIFEST. The source
-// store stays usable (in MT mode call under the shard mutex). Recovery
-// path for the copy is the ordinary lsm_open(dest).
 fn lsm_checkpoint(db: LsmDB, dest: str) -> LsmDB !IO !Time {
     db = lsm_flush_force(db)?
     if db.ok == 0 {
@@ -260,82 +200,7 @@ fn lsm_checkpoint(db: LsmDB, dest: str) -> LsmDB !IO !Time {
     return db
 }
 
-fn lsm_maybe_sync(db: LsmDB) -> LsmDB !IO {
-    db.since_sync = db.since_sync + 1
-    if db.since_sync >= db.sync_every {
-        db = lsm_wal_flush_buf(db)?
-        if db.ok == 0 {
-            return db
-        }
-        fdatasync(db.wal_fd)?
-        db.since_sync = 0
-    }
-    return db
-}
 
-// Append WAL record into buffer (or direct write if buf disabled).
-// R18: offset append into a preallocated buffer (wal_buf_len) — the old
-// push_bytes concat leaked the whole accumulated buffer per append, and
-// blocks >1 KiB never reach the free list (~12 KB/PUT in the soak test).
-// R67: key arrives as raw bytes (written into the record without conversion).
-fn lsm_wal_append(db: LsmDB, op: i64, key: bytes, val: bytes) -> LsmDB !IO {
-    let rec = wal_record_b(op, key, val)
-    let rl = bytes_len(rec)
-    if db.wal_buf_max <= 0 {
-        if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
-            drop(rec)
-            db.ok = 0
-            return db
-        }
-        db.wal_off = db.wal_off + rl
-        drop(rec)
-        return db
-    }
-    if rl >= db.wal_buf_max {
-        // oversized record: drain pending, then write directly
-        db = lsm_wal_flush_buf(db)?
-        if db.ok == 0 {
-            drop(rec)
-            return db
-        }
-        if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
-            drop(rec)
-            db.ok = 0
-            return db
-        }
-        db.wal_off = db.wal_off + rl
-        drop(rec)
-        return db
-    }
-    if db.wal_buf_len + rl > db.wal_buf_max {
-        db = lsm_wal_flush_buf(db)?
-        if db.ok == 0 {
-            drop(rec)
-            return db
-        }
-    }
-    if bytes_len(db.wal_buf) < db.wal_buf_max {
-        // MEM-4: WAL буферът е дълготрайно състояние на store-а — persist
-        mem_persist_begin()
-        db.wal_buf = bytes_new(db.wal_buf_max)
-        mem_persist_end()
-        db.wal_buf_len = 0
-    }
-    let mut i: i64 = 0
-    while i < rl {
-        bytes_set(db.wal_buf, db.wal_buf_len + i, bytes_at(rec, i))
-        i = i + 1
-    }
-    db.wal_buf_len = db.wal_buf_len + rl
-    drop(rec)
-    return db
-}
-
-// MEM-4: scan snapshot ключовете са СОБСТВЕНИ persist копии (rebuild прави
-// deep-copy — live_map връща alias-и към memtable persist ключове или
-// ephemeral fold temporaries). При замяна/инвалидация данните се free-ват
-// тук, а vec-ът (box-овете) — с drop(old) на мястото на извикване
-// (drop на параметър е забранен — споделя буфера на извикващия).
 fn lsm_scan_keys_free_data(ks: Vec<bytes>) {
     let mut i: i64 = 0
     while i < vec_len(ks) {
@@ -346,6 +211,7 @@ fn lsm_scan_keys_free_data(ks: Vec<bytes>) {
 }
 
 // R63: invalidate SCAN snapshot after a write/flush that changes the live set.
+
 fn lsm_scan_touch(db: LsmDB) -> LsmDB {
     db.write_epoch = db.write_epoch + 1
     if vec_len(db.scan_keys) > 0 {
@@ -368,6 +234,7 @@ fn lsm_scan_touch(db: LsmDB) -> LsmDB {
 
 // R67: bytes-key core — put raw value bytes under a raw key (no TTL envelope).
 // Clears any previous TTL.
+
 fn lsm_put_kb(db: LsmDB, key: bytes, val: bytes) -> LsmDB !IO !Time {
     db = lsm_wal_append(db, 1, key, val)?
     if db.ok == 0 {
@@ -392,15 +259,18 @@ fn lsm_put_kb(db: LsmDB, key: bytes, val: bytes) -> LsmDB !IO !Time {
 }
 
 // Put raw value bytes (no TTL envelope). Clears any previous TTL.
+
 fn lsm_put_b(db: LsmDB, key: str, val: bytes) -> LsmDB !IO !Time {
     return lsm_put_kb(db, bytes_of_str(key), val)?
 }
+
 
 fn lsm_put(db: LsmDB, key: str, val: str) -> LsmDB !IO !Time {
     return lsm_put_b(db, key, bytes_of_str(val))?
 }
 
 // Put with TTL seconds from now (Redis SETEX). ttl_sec <= 0 → plain put.
+
 fn lsm_put_ex(db: LsmDB, key: str, val: str, ttl_sec: i64) -> LsmDB !IO !Time {
     if ttl_sec <= 0 {
         return lsm_put(db, key, val)?
@@ -409,11 +279,13 @@ fn lsm_put_ex(db: LsmDB, key: str, val: str, ttl_sec: i64) -> LsmDB !IO !Time {
 }
 
 // R65: binary-safe SETEX (value bytes, may contain NUL).
+
 fn lsm_put_ex_b(db: LsmDB, key: str, val: bytes, ttl_sec: i64) -> LsmDB !IO !Time {
     return lsm_put_ex_kb(db, bytes_of_str(key), val, ttl_sec)?
 }
 
 // R67: bytes-key SETEX core.
+
 fn lsm_put_ex_kb(db: LsmDB, key: bytes, val: bytes, ttl_sec: i64) -> LsmDB !IO !Time {
     if ttl_sec <= 0 {
         return lsm_put_kb(db, key, val)?
@@ -425,6 +297,7 @@ fn lsm_put_ex_kb(db: LsmDB, key: bytes, val: bytes, ttl_sec: i64) -> LsmDB !IO !
 }
 
 // R67: bytes-key delete core.
+
 fn lsm_del_kb(db: LsmDB, key: bytes) -> LsmDB !IO !Time {
     db = lsm_wal_append(db, 2, key, bytes_new(0))?
     if db.ok == 0 {
@@ -444,9 +317,11 @@ fn lsm_del_kb(db: LsmDB, key: bytes) -> LsmDB !IO !Time {
     return db
 }
 
+
 fn lsm_del(db: LsmDB, key: str) -> LsmDB !IO !Time {
     return lsm_del_kb(db, bytes_of_str(key))?
 }
+
 
 struct LsmGet {
     db: LsmDB,
@@ -455,6 +330,7 @@ struct LsmGet {
 }
 
 // Internal: resolve raw stored bytes → user val, lazy-delete if expired.
+
 fn lsm_resolve(db: LsmDB, key: bytes, raw: bytes, now: i64) -> LsmGet !IO !Time {
     let u = ttl_unpack(raw)
     if ttl_expired(u.expire_at, now) == 1 {
@@ -465,6 +341,7 @@ fn lsm_resolve(db: LsmDB, key: bytes, raw: bytes, now: i64) -> LsmGet !IO !Time 
 }
 
 // R67: bytes-key get core.
+
 fn lsm_get_kb(db: LsmDB, key: bytes) -> LsmGet !IO !Time {
     // R23: defer time_now until a live value needs TTL check.
     // R25: skip map probes when empty (post-flush SST-only path).
@@ -501,144 +378,22 @@ fn lsm_get_kb(db: LsmDB, key: bytes) -> LsmGet !IO !Time {
     return LsmGet { db: db, found: 0, val: bytes_new(0) }
 }
 
+
 fn lsm_get(db: LsmDB, key: str) -> LsmGet !IO !Time {
     return lsm_get_kb(db, bytes_of_str(key))?
 }
 
+
 fn lsm_exists_kb(db: LsmDB, key: bytes) -> LsmGet !IO !Time {
     return lsm_get_kb(db, key)?
 }
+
 
 fn lsm_exists(db: LsmDB, key: str) -> LsmGet !IO !Time {
     return lsm_get(db, key)?
 }
 
 // EXPIRE key seconds — Redis: 1 if timeout set, 0 if key missing.
-struct LsmExpire {
-    db: LsmDB,
-    ok: i64
-}
-
-// R67: bytes-key EXPIRE core.
-fn lsm_expire_kb(db: LsmDB, key: bytes, ttl_sec: i64) -> LsmExpire !IO !Time {
-    let g = lsm_get_kb(db, key)?
-    db = g.db
-    if g.found == 0 {
-        return LsmExpire { db: db, ok: 0 }
-    }
-    if ttl_sec <= 0 {
-        // Redis EXPIRE 0 → delete
-        db = lsm_del_kb(db, key)?
-        return LsmExpire { db: db, ok: 1 }
-    }
-    let now = time_now_ms()?
-    let packed = ttl_pack(g.val, now + ttl_sec * 1000)
-    db = lsm_put_kb(db, key, packed)?
-    return LsmExpire { db: db, ok: 1 }
-}
-
-fn lsm_expire(db: LsmDB, key: str, ttl_sec: i64) -> LsmExpire !IO !Time {
-    return lsm_expire_kb(db, bytes_of_str(key), ttl_sec)?
-}
-
-// TTL key — Redis: -2 missing, -1 no expire, else remaining seconds.
-struct LsmTtl {
-    db: LsmDB,
-    n: i64
-}
-
-// R67: bytes-key TTL core.
-fn lsm_ttl_kb(db: LsmDB, key: bytes) -> LsmTtl !IO !Time {
-    let now = time_now_ms()?
-    if map_has(db.tomb, key) == 1 {
-        return LsmTtl { db: db, n: 0 - 2 }
-    }
-    let mut raw = bytes_new(0)
-    let mut have: i64 = 0
-    if map_has(db.mem, key) == 1 {
-        raw = map_get(db.mem, key)
-        have = 1
-    } else {
-        let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.sst_meta,
-                         db.dir, db.gens, key,
-                         db.hot_gen, db.hot_off, db.hot_n, db.hot_data)?
-        db.cache = lk.pc
-        db.blooms = lk.blooms
-        db.sst_fds = lk.sst_fds
-        db.sst_sizes = lk.sst_sizes
-        db.sst_meta = lk.sst_meta
-        db.hot_gen = lk.hot_gen
-        db.hot_off = lk.hot_off
-        db.hot_n = lk.hot_n
-        db.hot_data = lk.hot_data
-        if lk.found == 1 && lk.alive == 1 {
-            raw = lk.val
-            have = 1
-        }
-    }
-    if have == 0 {
-        return LsmTtl { db: db, n: 0 - 2 }
-    }
-    let u = ttl_unpack(raw)
-    if ttl_expired(u.expire_at, now) == 1 {
-        db = lsm_del_kb(db, key)?
-        return LsmTtl { db: db, n: 0 - 2 }
-    }
-    return LsmTtl { db: db, n: ttl_remaining_sec(u.expire_at, now) }
-}
-
-fn lsm_ttl(db: LsmDB, key: str) -> LsmTtl !IO !Time {
-    return lsm_ttl_kb(db, bytes_of_str(key))?
-}
-
-// R67: bytes-key PERSIST core — remove TTL, keep value. 1 if removed, 0 if none/missing.
-fn lsm_persist_kb(db: LsmDB, key: bytes) -> LsmExpire !IO !Time {
-    let now = time_now_ms()?
-    if map_has(db.tomb, key) == 1 {
-        return LsmExpire { db: db, ok: 0 }
-    }
-    let mut raw = bytes_new(0)
-    let mut have: i64 = 0
-    if map_has(db.mem, key) == 1 {
-        raw = map_get(db.mem, key)
-        have = 1
-    } else {
-        let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.sst_meta,
-                         db.dir, db.gens, key,
-                         db.hot_gen, db.hot_off, db.hot_n, db.hot_data)?
-        db.cache = lk.pc
-        db.blooms = lk.blooms
-        db.sst_fds = lk.sst_fds
-        db.sst_sizes = lk.sst_sizes
-        db.sst_meta = lk.sst_meta
-        db.hot_gen = lk.hot_gen
-        db.hot_off = lk.hot_off
-        db.hot_n = lk.hot_n
-        db.hot_data = lk.hot_data
-        if lk.found == 1 && lk.alive == 1 {
-            raw = lk.val
-            have = 1
-        }
-    }
-    if have == 0 {
-        return LsmExpire { db: db, ok: 0 }
-    }
-    let u = ttl_unpack(raw)
-    if ttl_expired(u.expire_at, now) == 1 {
-        db = lsm_del_kb(db, key)?
-        return LsmExpire { db: db, ok: 0 }
-    }
-    if u.expire_at <= 0 {
-        return LsmExpire { db: db, ok: 0 }
-    }
-    db = lsm_put_kb(db, key, u.val)?
-    return LsmExpire { db: db, ok: 1 }
-}
-
-// PERSIST key — remove TTL, keep value. 1 if removed, 0 if none/missing.
-fn lsm_persist(db: LsmDB, key: str) -> LsmExpire !IO !Time {
-    return lsm_persist_kb(db, bytes_of_str(key))?
-}
 
 fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
     let now = time_now_ms()?
@@ -773,6 +528,7 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
     return db
 }
 
+
 fn lsm_flush_force(db: LsmDB) -> LsmDB !IO !Time {
     if db.mem_n == 0 {
         return db
@@ -780,552 +536,3 @@ fn lsm_flush_force(db: LsmDB) -> LsmDB !IO !Time {
     return lsm_flush(db)?
 }
 
-struct LsmGetKeys {
-    db: LsmDB,
-    keys: Vec<str>
-}
-
-// R67: bytes-key sibling of LsmGetKeys (internal fold result).
-struct LsmGetKeysB {
-    db: LsmDB,
-    keys: Vec<bytes>
-}
-
-struct LsmDbSize {
-    db: LsmDB,
-    n: i64
-}
-
-// R67: build live key→raw map (mem + SST fold) keyed by raw bytes.
-// Shared by KEYS / DBSIZE / SCAN (R31).
-fn lsm_live_map_kb(db: LsmDB) -> LsmGetKeysB !IO !Time {
-    let now = time_now_ms()?
-    let seen: Map<bytes, bytes> = map_new()
-    let dead: Map<bytes, i64> = map_new()
-    let mut cur = db.cache
-    for i in 0..vec_len(db.gens) {
-        let gen = vec_get(db.gens, i)
-        cur = sst_fold_into(cur, db.dir, gen, db.sst_fds, db.sst_sizes, seen, dead)?
-    }
-    db.cache = cur
-    let mk = map_keys(db.mem)
-    for i in 0..vec_len(mk) {
-        let k = vec_get(mk, i)
-        map_set(seen, k, map_get(db.mem, k))
-        map_del(dead, k)
-    }
-    let tk = map_keys(db.tomb)
-    for i in 0..vec_len(tk) {
-        let k = vec_get(tk, i)
-        map_del(seen, k)
-        map_set(dead, k, 1)
-    }
-    // Drop expired (TTL) without sorting — caller decides order.
-    let ks = map_keys(seen)
-    let out: Vec<bytes> = vec_new()
-    for i in 0..vec_len(ks) {
-        let k = vec_get(ks, i)
-        let u = ttl_unpack(map_get(seen, k))
-        if ttl_expired(u.expire_at, now) == 0 {
-            vec_push(out, k)
-        }
-    }
-    drop(seen)
-    drop(dead)
-    return LsmGetKeysB { db: db, keys: out }
-}
-
-// K3i: live keys matching a raw byte prefix only (no full-shard map).
-// SST: range skip + seek + early-stop; mem/tomb filtered by prefix.
-// Empty prefix → same as full live_map.
-fn lsm_live_map_prefix_kb(db: LsmDB, prefix: bytes) -> LsmGetKeysB !IO !Time {
-    let np = bytes_len(prefix)
-    if np <= 0 {
-        return lsm_live_map_kb(db)?
-    }
-    let now = time_now_ms()?
-    let seen: Map<bytes, bytes> = map_new()
-    let dead: Map<bytes, i64> = map_new()
-    let mut cur = db.cache
-    for i in 0..vec_len(db.gens) {
-        let gen = vec_get(db.gens, i)
-        cur = sst_fold_prefix_into(cur, db.dir, gen, db.sst_fds, db.sst_sizes, seen, dead, prefix)?
-    }
-    db.cache = cur
-    let mk = map_keys(db.mem)
-    for i in 0..vec_len(mk) {
-        let k = vec_get(mk, i)
-        if lsm_bytes_has_prefix(k, prefix, np) == 1 {
-            map_set(seen, k, map_get(db.mem, k))
-            map_del(dead, k)
-        }
-    }
-    let tk = map_keys(db.tomb)
-    for i in 0..vec_len(tk) {
-        let k = vec_get(tk, i)
-        if lsm_bytes_has_prefix(k, prefix, np) == 1 {
-            map_del(seen, k)
-            map_set(dead, k, 1)
-        }
-    }
-    let ks = map_keys(seen)
-    let out: Vec<bytes> = vec_new()
-    for i in 0..vec_len(ks) {
-        let k = vec_get(ks, i)
-        let u = ttl_unpack(map_get(seen, k))
-        if ttl_expired(u.expire_at, now) == 0 {
-            vec_push(out, k)
-        }
-    }
-    drop(seen)
-    drop(dead)
-    return LsmGetKeysB { db: db, keys: out }
-}
-
-// Build live key list as str (mem + SST fold). R26: block scan fold.
-// R67: keys live as bytes internally; converting to str here is LOSSY for
-// keys with embedded NUL (str can't hold 0x00) — binary KEYS/MATCH is R68.
-fn lsm_live_map(db: LsmDB) -> LsmGetKeys !IO !Time {
-    let r = lsm_live_map_kb(db)?
-    let out: Vec<str> = vec_new()
-    for i in 0..vec_len(r.keys) {
-        vec_push(out, str_of_bytes(vec_get(r.keys, i)))
-    }
-    return LsmGetKeys { db: r.db, keys: out }
-}
-
-// List live keys (mem + SST). R26: block scan fold. R31: shared live map + sort.
-fn lsm_keys(db: LsmDB) -> LsmGetKeys !IO !Time {
-    let r = lsm_live_map(db)?
-    sort_strs(r.keys)
-    return r
-}
-
-// R68: bytes-key KEYS core — raw live keys sorted via bytes_cmp (wire path).
-fn lsm_keys_kb(db: LsmDB) -> LsmGetKeysB !IO !Time {
-    let r = lsm_live_map_kb(db)?
-    sort_bytes(r.keys)
-    return r
-}
-
-// Live key count without sorting (RESP DBSIZE). Same semantics as KEYS length.
-fn lsm_dbsize(db: LsmDB) -> LsmDbSize !IO !Time {
-    let r = lsm_live_map_kb(db)?
-    let n = vec_len(r.keys)
-    return LsmDbSize { db: r.db, n: n }
-}
-
-// R43: simple glob for SCAN MATCH — supports *, prefix*, *suffix, *mid*, exact.
-// Empty pattern or "*" matches all.
-fn lsm_match_glob(pat: str, s: str) -> i64 {
-    if pat == "" || pat == "*" {
-        return 1
-    }
-    let np = len(pat)
-    let ns = len(s)
-    // find first '*'
-    let mut star: i64 = 0 - 1
-    let mut i: i64 = 0
-    while i < np {
-        if char_at(pat, i) == 42 {
-            star = i
-            i = np
-        } else {
-            i = i + 1
-        }
-    }
-    if star < 0 {
-        // exact
-        if pat == s {
-            return 1
-        }
-        return 0
-    }
-    // prefix before star
-    let pre = substr(pat, 0, star)
-    if str_starts_with(s, pre) == false {
-        return 0
-    }
-    // suffix after star (only one * supported; rest is literal suffix)
-    let suf = substr(pat, star + 1, np)
-    if suf == "" {
-        return 1
-    }
-    // if another * in suf, treat remaining as contains
-    let mut star2: i64 = 0 - 1
-    let mut j: i64 = 0
-    while j < len(suf) {
-        if char_at(suf, j) == 42 {
-            star2 = j
-            j = len(suf)
-        } else {
-            j = j + 1
-        }
-    }
-    if star2 < 0 {
-        if str_ends_with(s, suf) {
-            return 1
-        }
-        return 0
-    }
-    // *a*b form: require contains middle between prefix and suffix
-    let mid = substr(suf, 0, star2)
-    let suf2 = substr(suf, star2 + 1, len(suf))
-    if mid != "" {
-        if str_find(s, mid) < 0 {
-            return 0
-        }
-    }
-    if suf2 != "" {
-        if str_ends_with(s, suf2) == false {
-            return 0
-        }
-    }
-    return 1
-}
-
-// --- R68: bytes glob helpers (SCAN MATCH over raw key bytes) ---
-
-// s starts with pat[0, n).
-fn lsm_bytes_has_prefix(s: bytes, pat: bytes, n: i64) -> i64 {
-    if bytes_len(s) < n {
-        return 0
-    }
-    let mut i: i64 = 0
-    while i < n {
-        if bytes_at(s, i) != bytes_at(pat, i) {
-            return 0
-        }
-        i = i + 1
-    }
-    return 1
-}
-
-// s ends with pat[poff, poff+n).
-fn lsm_bytes_has_suffix(s: bytes, pat: bytes, poff: i64, n: i64) -> i64 {
-    let ns = bytes_len(s)
-    if ns < n {
-        return 0
-    }
-    let base = ns - n
-    let mut i: i64 = 0
-    while i < n {
-        if bytes_at(s, base + i) != bytes_at(pat, poff + i) {
-            return 0
-        }
-        i = i + 1
-    }
-    return 1
-}
-
-// Index of pat[poff, poff+n) inside s, or -1.
-fn lsm_bytes_find(s: bytes, pat: bytes, poff: i64, n: i64) -> i64 {
-    let ns = bytes_len(s)
-    if n <= 0 {
-        return 0
-    }
-    let mut i: i64 = 0
-    while i + n <= ns {
-        let mut j: i64 = 0
-        let mut same: i64 = 1
-        while j < n && same == 1 {
-            if bytes_at(s, i + j) != bytes_at(pat, poff + j) {
-                same = 0
-            }
-            j = j + 1
-        }
-        if same == 1 {
-            return i
-        }
-        i = i + 1
-    }
-    return 0 - 1
-}
-
-// R68: bytes glob for SCAN MATCH — same grammar as lsm_match_glob
-// (*, prefix*, *suffix, *mid*, exact) but NUL-safe over raw bytes.
-fn lsm_match_glob_b(pat: bytes, s: bytes) -> i64 {
-    let np = bytes_len(pat)
-    if np == 0 {
-        return 1
-    }
-    if np == 1 && bytes_at(pat, 0) == 42 {
-        return 1
-    }
-    // find first '*'
-    let mut star: i64 = 0 - 1
-    let mut i: i64 = 0
-    while i < np {
-        if bytes_at(pat, i) == 42 {
-            star = i
-            i = np
-        } else {
-            i = i + 1
-        }
-    }
-    if star < 0 {
-        // exact
-        if bytes_eq_b(pat, s) {
-            return 1
-        }
-        return 0
-    }
-    // prefix before star
-    if lsm_bytes_has_prefix(s, pat, star) == 0 {
-        return 0
-    }
-    // suffix after star (only one * supported; rest is literal suffix)
-    let nsuf = np - star - 1
-    if nsuf == 0 {
-        return 1
-    }
-    // if another * in suffix, treat remaining as contains
-    let mut star2: i64 = 0 - 1
-    let mut j: i64 = 0
-    while j < nsuf {
-        if bytes_at(pat, star + 1 + j) == 42 {
-            star2 = j
-            j = nsuf
-        } else {
-            j = j + 1
-        }
-    }
-    if star2 < 0 {
-        if lsm_bytes_has_suffix(s, pat, star + 1, nsuf) == 1 {
-            return 1
-        }
-        return 0
-    }
-    // *a*b form: require contains middle between prefix and suffix
-    if star2 > 0 {
-        if lsm_bytes_find(s, pat, star + 1, star2) < 0 {
-            return 0
-        }
-    }
-    let nsuf2 = nsuf - star2 - 1
-    if nsuf2 > 0 {
-        if lsm_bytes_has_suffix(s, pat, star + 1 + star2 + 1, nsuf2) == 0 {
-            return 0
-        }
-    }
-    return 1
-}
-
-struct LsmScan {
-    db: LsmDB,
-    next: i64,
-    keys: Vec<str>
-}
-
-// R68: bytes-key sibling of LsmScan (wire path emits raw key bytes).
-struct LsmScanB {
-    db: LsmDB,
-    next: i64,
-    keys: Vec<bytes>
-}
-
-// R68: (re)build SCAN snapshot from a raw-bytes MATCH pattern.
-// Unordered live keys + MATCH filter — Redis SCAN does not promise order
-// (KEYS remains sorted via lsm_keys). Snapshot and pattern stay raw bytes;
-// the glob never sees a lossy str conversion.
-fn lsm_scan_rebuild_b(db: LsmDB, match_pat: bytes) -> LsmDB !IO !Time {
-    let r = lsm_live_map_kb(db)?
-    db = r.db
-    let all = r.keys
-    let filtered: Vec<bytes> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(all) {
-        let k = vec_get(all, i)
-        if lsm_match_glob_b(match_pat, k) == 1 {
-            vec_push(filtered, k)
-        }
-        i = i + 1
-    }
-    // MEM-4: snapshot-ът е cross-request state на store-а (boilaDB serve
-    // rewind-ва ephemeral arena-та на заявката) — deep-copy в persist,
-    // иначе drop(old)/четене след rewind е use-after-free.
-    mem_persist_begin()
-    let pf: Vec<bytes> = vec_new()
-    i = 0
-    while i < vec_len(filtered) {
-        let k2 = vec_get(filtered, i)
-        vec_push(pf, bytes_slice(k2, 0, bytes_len(k2)))
-        i = i + 1
-    }
-    let ppat = bytes_slice(match_pat, 0, bytes_len(match_pat))
-    mem_persist_end()
-    if vec_len(db.scan_keys) > 0 {
-        let old = db.scan_keys
-        db.scan_keys = pf
-        lsm_scan_keys_free_data(old)
-        drop(old)
-    } else {
-        db.scan_keys = pf
-    }
-    let opat = db.scan_pat
-    db.scan_pat = ppat
-    drop(opat)
-    db.scan_epoch = db.write_epoch
-    return db
-}
-
-// True prefix filter (no glob meta) — boilaDB K2.
-// Sorted for secondary index range seek (boilaDB K3h).
-// K3i: prefix fold (no full live_map + post-filter).
-fn lsm_scan_rebuild_prefix_b(db: LsmDB, prefix: bytes) -> LsmDB !IO !Time {
-    let r = lsm_live_map_prefix_kb(db, prefix)?
-    db = r.db
-    let filtered = r.keys
-    sort_bytes(filtered)
-    // MEM-4: snapshot-ът е cross-request state на store-а (boilaDB serve
-    // rewind-ва ephemeral arena-та на заявката) — deep-copy в persist,
-    // иначе drop(old)/четене след rewind е use-after-free.
-    mem_persist_begin()
-    let pf: Vec<bytes> = vec_new()
-    let mut i: i64 = 0
-    while i < vec_len(filtered) {
-        let k = vec_get(filtered, i)
-        vec_push(pf, bytes_slice(k, 0, bytes_len(k)))
-        i = i + 1
-    }
-    // tag prefix mode: pat = 0x01 ‖ prefix (won't collide with glob pats that
-    // are bare keys or * patterns from RESP)
-    let mut tag = bytes_new(1)
-    bytes_set(tag, 0, 1)
-    let ppat = bytes_concat(tag, prefix)
-    mem_persist_end()
-    if vec_len(db.scan_keys) > 0 {
-        let old = db.scan_keys
-        db.scan_keys = pf
-        lsm_scan_keys_free_data(old)
-        drop(old)
-    } else {
-        db.scan_keys = pf
-    }
-    let opat = db.scan_pat
-    db.scan_pat = ppat
-    drop(opat)
-    db.scan_epoch = db.write_epoch
-    return db
-}
-
-fn lsm_scan_prefix_kb(db: LsmDB, cursor: i64, count: i64, prefix: bytes) -> LsmScanB !IO !Time {
-    let mut tag = bytes_new(1)
-    bytes_set(tag, 0, 1)
-    let pat = bytes_concat(tag, prefix)
-    if db.scan_epoch != db.write_epoch || bytes_eq_b(db.scan_pat, pat) == false {
-        db = lsm_scan_rebuild_prefix_b(db, prefix)?
-    }
-    let n = vec_len(db.scan_keys)
-    let mut cur = cursor
-    if cur < 0 { cur = 0 }
-    if cur > n { cur = n }
-    let mut cnt = count
-    if cnt < 1 { cnt = 10 }
-    if cnt > 1000 { cnt = 1000 }
-    let out: Vec<bytes> = vec_new()
-    let mut j = cur
-    let mut taken: i64 = 0
-    while j < n && taken < cnt {
-        vec_push(out, vec_get(db.scan_keys, j))
-        j = j + 1
-        taken = taken + 1
-    }
-    // Keep sorted prefix cache for reuse (secondary range seek / warm queries).
-    // Invalidated on write_epoch or prefix change in the rebuild check above.
-    let mut next: i64 = j
-    if next >= n {
-        next = 0
-    }
-    return LsmScanB { db: db, next: next, keys: out }
-}
-
-// Full sorted prefix snapshot (one live fold; cache kept). boilaDB K3h.
-fn lsm_scan_prefix_all_kb(db: LsmDB, prefix: bytes) -> LsmScanB !IO !Time {
-    let mut tag = bytes_new(1)
-    bytes_set(tag, 0, 1)
-    let pat = bytes_concat(tag, prefix)
-    if db.scan_epoch != db.write_epoch || bytes_eq_b(db.scan_pat, pat) == false {
-        db = lsm_scan_rebuild_prefix_b(db, prefix)?
-    }
-    let out: Vec<bytes> = vec_new()
-    let mut j: i64 = 0
-    while j < vec_len(db.scan_keys) {
-        vec_push(out, vec_get(db.scan_keys, j))
-        j = j + 1
-    }
-    return LsmScanB { db: db, next: 0, keys: out }
-}
-
-// R43 + R63 + R68: SCAN page over live keys, raw-bytes pattern and results.
-// Cursor is a 0-based index into the filtered snapshot; 0 = start/end
-// (Redis-compatible). count is a page size hint (default 10, clamp 1..1000).
-// R63: the live fold runs once per write_epoch×MATCH; later pages are
-// O(count) slices of the cached snapshot (no per-page full re-fold).
-fn lsm_scan_kb(db: LsmDB, cursor: i64, count: i64, match_pat: bytes) -> LsmScanB !IO !Time {
-    // Rebuild when: no cache, write since last build, or MATCH changed.
-    // Cursor 0 always accepts a rebuild if cache is stale; mid-cursor with
-    // a stale cache also rebuilds (caller may see duplicates / skips —
-    // same honesty class as Redis under concurrent writes).
-    if db.scan_epoch != db.write_epoch || bytes_eq_b(db.scan_pat, match_pat) == false {
-        db = lsm_scan_rebuild_b(db, match_pat)?
-    }
-    let n = vec_len(db.scan_keys)
-    let mut cur = cursor
-    if cur < 0 {
-        cur = 0
-    }
-    // Cursor past end after a rebuild → treat as finished (next=0).
-    if cur > n {
-        cur = n
-    }
-    let mut cnt = count
-    if cnt < 1 {
-        cnt = 10
-    }
-    if cnt > 1000 {
-        cnt = 1000
-    }
-    let out: Vec<bytes> = vec_new()
-    let mut j = cur
-    let mut taken: i64 = 0
-    while j < n && taken < cnt {
-        vec_push(out, vec_get(db.scan_keys, j))
-        j = j + 1
-        taken = taken + 1
-    }
-    let mut next: i64 = j
-    if next >= n {
-        next = 0
-        // Full iteration done — free snapshot until next SCAN 0.
-        if vec_len(db.scan_keys) > 0 {
-            let old = db.scan_keys
-            // MEM-4: заместващият vec/pat остават в shared store след rewind
-            // → persist. Ключовите ДАННИ тук не се free-ват нарочно: out
-            // по-горе alias-ва същите байтове и се сериализира след return.
-            mem_persist_begin()
-            db.scan_keys = vec_new()
-            mem_persist_end()
-            drop(old)
-        }
-        db.scan_epoch = 0 - 1
-        let opat = db.scan_pat
-        mem_persist_begin()
-        db.scan_pat = bytes_new(0)
-        mem_persist_end()
-        drop(opat)
-    }
-    return LsmScanB { db: db, next: next, keys: out }
-}
-
-// str-keyed compat wrapper: pattern converts losslessly (bytes_of_str);
-// returned keys convert via str_of_bytes — NUL keys truncate (use
-// lsm_scan_kb on the wire path, R68).
-fn lsm_scan(db: LsmDB, cursor: i64, count: i64, match_pat: str) -> LsmScan !IO !Time {
-    let r = lsm_scan_kb(db, cursor, count, bytes_of_str(match_pat))?
-    let out: Vec<str> = vec_new()
-    for i in 0..vec_len(r.keys) {
-        vec_push(out, str_of_bytes(vec_get(r.keys, i)))
-    }
-    return LsmScan { db: r.db, next: r.next, keys: out }
-}

@@ -1,0 +1,244 @@
+// exec_agg_scan.baga — fused fetch+fold за plain таблица (филтрите се
+// прилагат per row). JOIN+agg стриймва през exec_join_fold; rollup-ът е
+// в exec_agg_rollup; модалните пътеки — в exec_agg_modal.baga.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../core/budget.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "exec_sort.baga"
+import "exec_filter.baga"
+import "exec_buf.baga"
+import "exec_join_fold.baga"
+import "exec_agg_rollup.baga"
+import "exec_agg_modal.baga"
+import "exec_agg_stream.baga"
+import "exec_agg_feed.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn boila_agg_scan(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaExec !IO !Time !Par {
+    // Q-stream-join: JOIN + agg without materializing wide rows
+    if sel.has_join == 1 {
+        let jf = boila_join_into_fold(s, txn, t, sel)?
+        s = jf.s
+        txn = jf.txn
+        if jf.ok == 0 {
+            return boila_exec_fail(s, txn, jf.err, jf.state)
+        }
+        return boila_exec_ok_select(s, txn, jf.res)
+    }
+    // K3j pre-agg path (unfiltered time_bucket) — not with xw
+    if sel.has_xw == 0 {
+        let ru = boila_agg_scan_rollup(s, txn, t, sel)?
+        if ru.ok == 1 {
+            return ru
+        }
+        if ru.state != "RU0" {
+            return ru
+        }
+        s = ru.s
+        txn = ru.txn
+    }
+    let cols = t.cols
+    let mut st = boila_agg_fold_start(cols, sel)?
+    if st.ok == 0 {
+        return boila_exec_fail(s, txn, st.err, st.state)
+    }
+    let xnames: Vec<str> = vec_new()
+    let mut xi: i64 = 0
+    while xi < vec_len(cols) {
+        vec_push(xnames, vec_get(cols, xi).name)
+        xi = xi + 1
+    }
+
+    if sel.isnull_mode != 0 {
+        return boila_agg_scan_isnull(s, txn, t, sel, st, xnames)?
+    }
+    if sel.has_fts == 1 {
+        return boila_agg_scan_fts(s, txn, t, sel, st, xnames)?
+    }
+    if sel.has_knn == 1 {
+        return boila_agg_scan_knn(s, txn, t, sel, st, xnames)?
+    }
+    let pkcol = vec_get(t.cols, t.pk_idx)
+    let mut pk_range: i64 = 1
+    if sel.has_lo == 1 {
+        let cix = boila_col_idx(t, sel.lo_col)
+        if cix < 0 {
+            return boila_exec_fail(s, txn, concat("колона '", concat(sel.lo_col, "' не съществува")), "42703")
+        }
+        if boila_pk_lit_ok(vec_get(t.cols, cix).typ, sel.pk_lo) == 0 {
+            return boila_exec_fail(s, txn, "литералът в >= не съответства на типа на колоната", "42804")
+        }
+        if sel.lo_col != pkcol.name { pk_range = 0 }
+    }
+    if sel.has_hi == 1 {
+        let cix = boila_col_idx(t, sel.hi_col)
+        if cix < 0 {
+            return boila_exec_fail(s, txn, concat("колона '", concat(sel.hi_col, "' не съществува")), "42703")
+        }
+        if boila_pk_lit_ok(vec_get(t.cols, cix).typ, sel.pk_hi) == 0 {
+            return boila_exec_fail(s, txn, "литералът в <= не съответства на типа на колоната", "42804")
+        }
+        if sel.hi_col != pkcol.name { pk_range = 0 }
+    }
+    // eq point / secondary — small results; use materialize path via empty skip
+    if sel.has_eq == 1 {
+        let f = boila_fetch_rows(s, txn, t, sel)?
+        s = f.s
+        if f.ok == 0 {
+            return boila_exec_fail(s, txn, f.err, f.state)
+        }
+        let mut r: i64 = 0
+        while r < vec_len(f.rows) {
+            st = boila_agg_fold_row_xw(st, sel, xnames, vec_get(f.rows, r))?
+            if st.ok == 0 {
+                return boila_exec_fail(s, txn, st.err, st.state)
+            }
+            r = r + 1
+        }
+        let ag = boila_agg_fold_end(st, sel)?
+        if ag.ok == 0 {
+            return boila_exec_fail(s, txn, ag.err, ag.state)
+        }
+        return boila_exec_ok_select(s, txn, ag.res)
+    }
+    // secondary index range → pks then fold (no full row Vec)
+    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 0 && sel.has_eq == 0 {
+        let mut rc = sel.lo_col
+        if sel.has_lo == 0 { rc = sel.hi_col }
+        let mut okc = 1
+        if sel.has_lo == 1 && sel.has_hi == 1 && sel.lo_col != sel.hi_col { okc = 0 }
+        if okc == 1 {
+            let cix = boila_col_idx(t, rc)
+            let ixid = boila_ix_by_col_t(t, cix)
+            if cix >= 0 && ixid >= 0 {
+                let xr = boila_ix_range(s, t, ixid, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi, sel.lo_excl, sel.hi_excl)?
+                s = xr.s
+                if xr.ok == 0 {
+                    return boila_exec_fail(s, txn, xr.err, xr.state)
+                }
+                if xr.has == 1 {
+                    boila_scan_buf_range(txn, t, cix, sel.has_lo, sel.pk_lo, sel.has_hi, sel.pk_hi, sel.lo_excl, sel.hi_excl, xr.pks)
+                    let bud = boila_budget_begin()?
+                    let mut li: i64 = 0
+                    while li < vec_len(xr.pks) {
+                        let ge = boila_budget_gate(bud, li, 0, 0)?
+                        if ge != "" {
+                            return boila_exec_fail(s, txn, ge, boila_budget_gate_state(ge))
+                        }
+                        let g = boila_txn_get(s, txn, t.id, vec_get(xr.pks, li))?
+                        s = g.s
+                        if g.found == 1 {
+                            let row = boila_row_dec(g.row)
+                            st = boila_agg_fold_row_xw(st, sel, xnames, row)?
+                            if st.ok == 0 {
+                                return boila_exec_fail(s, txn, st.err, st.state)
+                            }
+                        }
+                        li = li + 1
+                    }
+                    let ag = boila_agg_fold_end(st, sel)?
+                    if ag.ok == 0 {
+                        return boila_exec_fail(s, txn, ag.err, ag.state)
+                    }
+                    return boila_exec_ok_select(s, txn, ag.res)
+                }
+            }
+        }
+    }
+    // full keys / PK range
+    let bud = boila_budget_begin()?
+    let ks = boila_txn_keys(s, txn, t.id)?
+    s = ks.s
+    let g0 = boila_budget_gate(bud, 0, vec_len(ks.pks), 0)?
+    if g0 != "" {
+        return boila_exec_fail(s, txn, g0, boila_budget_gate_state(g0))
+    }
+    let pks = ks.pks
+    let n = vec_len(pks)
+    if (sel.has_lo == 1 || sel.has_hi == 1) && pk_range == 1 && sel.between_not == 0 {
+        boila_pk_sort(pks)
+        let mut ki: i64 = 0
+        let mut lo_enc = bytes_new(0)
+        if sel.has_lo == 1 {
+            lo_enc = boila_val_enc(sel.pk_lo)
+            ki = boila_pk_lb(pks, lo_enc)
+            if sel.lo_excl == 1 && ki < n && boila_bytes_cmp(vec_get(pks, ki), lo_enc) == 0 {
+                ki = ki + 1
+            }
+        }
+        let mut hi_enc = bytes_new(0)
+        if sel.has_hi == 1 { hi_enc = boila_val_enc(sel.pk_hi) }
+        while ki < n {
+            let ge = boila_budget_gate(bud, ki, 0, 0)?
+            if ge != "" {
+                return boila_exec_fail(s, txn, ge, boila_budget_gate_state(ge))
+            }
+            let pkenc = vec_get(pks, ki)
+            if sel.has_hi == 1 {
+                let hc = boila_bytes_cmp(pkenc, hi_enc)
+                if sel.hi_excl == 1 {
+                    if hc >= 0 { ki = n }
+                } else {
+                    if hc > 0 { ki = n }
+                }
+            }
+            if ki < n {
+                let g = boila_txn_get(s, txn, t.id, pkenc)?
+                s = g.s
+                if g.found == 1 {
+                    let row = boila_row_dec(g.row)
+                    if (sel.has_like == 0 && sel.has_in == 0 && sel.has_ne == 0) || boila_row_pass_filters(row, t, sel) == 1 {
+                        st = boila_agg_fold_row_xw(st, sel, xnames, row)?
+                        if st.ok == 0 {
+                            return boila_exec_fail(s, txn, st.err, st.state)
+                        }
+                    }
+                }
+                ki = ki + 1
+            }
+        }
+        let ag = boila_agg_fold_end(st, sel)?
+        if ag.ok == 0 {
+            return boila_exec_fail(s, txn, ag.err, ag.state)
+        }
+        return boila_exec_ok_select(s, txn, ag.res)
+    }
+    let mut need_f = sel.has_eq
+    if (sel.has_lo == 1 || sel.has_hi == 1) && (pk_range == 0 || sel.between_not == 1) { need_f = 1 }
+    if sel.has_like > 0 { need_f = 1 }
+    if sel.has_in > 0 { need_f = 1 }
+    if sel.has_ne == 1 { need_f = 1 }
+    let mut ki: i64 = 0
+    while ki < n {
+        let ge = boila_budget_gate(bud, ki, 0, 0)?
+        if ge != "" {
+            return boila_exec_fail(s, txn, ge, boila_budget_gate_state(ge))
+        }
+        let g = boila_txn_get(s, txn, t.id, vec_get(pks, ki))?
+        s = g.s
+        if g.found == 1 {
+            let row = boila_row_dec(g.row)
+            if need_f == 0 || boila_row_pass_filters(row, t, sel) == 1 {
+                st = boila_agg_fold_row_xw(st, sel, xnames, row)?
+                if st.ok == 0 {
+                    return boila_exec_fail(s, txn, st.err, st.state)
+                }
+            }
+        }
+        ki = ki + 1
+    }
+    let ag = boila_agg_fold_end(st, sel)?
+    if ag.ok == 0 {
+        return boila_exec_fail(s, txn, ag.err, ag.state)
+    }
+    return boila_exec_ok_select(s, txn, ag.res)
+}

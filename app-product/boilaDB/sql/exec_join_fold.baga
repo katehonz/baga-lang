@@ -1,0 +1,318 @@
+// exec_join_fold.baga — Q-stream-join: същите join планове като
+// boila_join_rows, но всеки match се fold-ва веднага (без материални
+// wide rows). Пробните пътеки fold-ват директно в BoilaAggFold.
+
+import "../storage/shards.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "exec_scan_pks.baga"
+import "exec_join_common.baga"
+import "exec_join_filter.baga"
+import "exec_join_hash.baga"
+import "exec_agg_fold.baga"
+import "exec_agg_feed.baga"
+import "exec_xw.baga"
+import "exec_dual_ops.baga"
+import "std/str/str.baga"
+
+// Стъпка от stream probe: st се връща обратно (или грешка от fold/xw).
+struct BoilaJoinFoldStep {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    st: BoilaAggFold
+}
+
+// Feed one join match into fold (optional xw on wide row).
+fn boila_join_fold_match(st: BoilaAggFold, sel: BoilaSel, xnames: Vec<str>, wide: Vec<BoilaVal>) -> BoilaAggFold !Time {
+    if sel.has_xw == 1 {
+        let e = boila_xw_eval(xnames, sel.xw_toks, wide)?
+        if e.ok == 0 {
+            st.ok = 0
+            st.err = e.err
+            st.state = e.state
+            return st
+        }
+        if boila_dual_when_true(e.val) == 0 {
+            return st
+        }
+    }
+    return boila_agg_fold_row(st, sel, wide)?
+}
+
+
+struct BoilaJoinFoldOut {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    res: BoilaResult
+}
+
+
+fn boila_join_fold_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaJoinFoldOut {
+    return BoilaJoinFoldOut { s: s, txn: txn, ok: 0, err: msg, state: state, res: boila_result_empty() }
+}
+
+
+// Index nested loop (stream): ix lookup → GET → fold.
+fn boila_join_fold_probe_ix(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, t2: BoilaTable, sel: BoilaSel, op_pks: Vec<bytes>, lidx: i64, lixs: Vec<i64>, rixs: Vec<i64>, ixid: i64, nullr: Vec<BoilaVal>, loff: i64, r_eq: i64, r_cix: i64, r_val: BoilaVal, r_lo: i64, r_lo_cix: i64, r_hi: i64, r_hi_cix: i64, st: BoilaAggFold, xnames: Vec<str>) -> BoilaJoinFoldStep !IO !Time !Par {
+    let on = vec_len(op_pks)
+    let mut oi: i64 = 0
+    while oi < on {
+        let g0 = boila_txn_get(s, txn, t.id, vec_get(op_pks, oi))?
+        s = g0.s
+        if g0.found == 1 {
+            let orow = boila_row_dec(g0.row)
+            let lv = vec_get(orow, lidx)
+            let mut matched = false
+            if lv.tag != boila_v_null() {
+                let lk = boila_ix_lookup(s, t2, ixid, lv)?
+                s = lk.s
+                let mut li: i64 = 0
+                while li < vec_len(lk.pks) {
+                    let g = boila_txn_get(s, txn, t2.id, vec_get(lk.pks, li))?
+                    s = g.s
+                    if g.found == 1 {
+                        let irow = boila_row_dec(g.row)
+                        if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
+                            let wide = boila_wide_row(orow, irow)
+                            if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                                st = boila_join_fold_match(st, sel, xnames, wide)?
+                                if st.ok == 0 {
+                                    return BoilaJoinFoldStep { s: s, txn: txn, ok: 0, err: st.err, state: st.state, st: st }
+                                }
+                            }
+                            matched = true
+                        }
+                    }
+                    li = li + 1
+                }
+            }
+            if matched == false && sel.join_kind == 2 {
+                let wide = boila_wide_row(orow, nullr)
+                if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                    st = boila_join_fold_match(st, sel, xnames, wide)?
+                    if st.ok == 0 {
+                        return BoilaJoinFoldStep { s: s, txn: txn, ok: 0, err: st.err, state: st.state, st: st }
+                    }
+                }
+            }
+        }
+        oi = oi + 1
+    }
+    return BoilaJoinFoldStep { s: s, txn: txn, ok: 1, err: "", state: "", st: st }
+}
+
+// Hash probe (stream): key → inner pks → GET → fold.
+fn boila_join_fold_probe_hj(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, t2: BoilaTable, sel: BoilaSel, op_pks: Vec<bytes>, lidx: i64, lixs: Vec<i64>, rixs: Vec<i64>, nullr: Vec<BoilaVal>, loff: i64, r_eq: i64, r_cix: i64, r_val: BoilaVal, r_lo: i64, r_lo_cix: i64, r_hi: i64, r_hi_cix: i64, st: BoilaAggFold, xnames: Vec<str>, ht: Map<bytes, BoilaHJBucket>) -> BoilaJoinFoldStep !IO !Time !Par {
+    let on = vec_len(op_pks)
+    let mut oi: i64 = 0
+    while oi < on {
+        let g0 = boila_txn_get(s, txn, t.id, vec_get(op_pks, oi))?
+        s = g0.s
+        if g0.found == 1 {
+            let orow = boila_row_dec(g0.row)
+            let lv = vec_get(orow, lidx)
+            let mut matched = false
+            if lv.tag != boila_v_null() {
+                let k = boila_val_enc(lv)
+                if map_has(ht, k) == 1 {
+                    let b = map_get(ht, k)
+                    let mut j: i64 = 0
+                    while j < vec_len(b.pks) {
+                        let g = boila_txn_get(s, txn, t2.id, vec_get(b.pks, j))?
+                        s = g.s
+                        if g.found == 1 {
+                            let irow = boila_row_dec(g.row)
+                            if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
+                                let wide = boila_wide_row(orow, irow)
+                                if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                                    st = boila_join_fold_match(st, sel, xnames, wide)?
+                                    if st.ok == 0 {
+                                        return BoilaJoinFoldStep { s: s, txn: txn, ok: 0, err: st.err, state: st.state, st: st }
+                                    }
+                                }
+                                matched = true
+                            }
+                        }
+                        j = j + 1
+                    }
+                }
+            }
+            if matched == false && sel.join_kind == 2 {
+                let wide = boila_wide_row(orow, nullr)
+                if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                    st = boila_join_fold_match(st, sel, xnames, wide)?
+                    if st.ok == 0 {
+                        return BoilaJoinFoldStep { s: s, txn: txn, ok: 0, err: st.err, state: st.state, st: st }
+                    }
+                }
+            }
+        }
+        oi = oi + 1
+    }
+    return BoilaJoinFoldStep { s: s, txn: txn, ok: 1, err: "", state: "", st: st }
+}
+
+fn boila_join_into_fold(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, sel: BoilaSel) -> BoilaJoinFoldOut !IO !Time !Par {
+    let mut lnames = sel.join_lcols
+    let mut rnames = sel.join_rcols
+    if vec_len(lnames) == 0 {
+        vec_push(lnames, sel.join_lcol)
+        vec_push(rnames, sel.join_rcol)
+    }
+    let lixs: Vec<i64> = vec_new()
+    let rixs: Vec<i64> = vec_new()
+    let mut pi: i64 = 0
+    while pi < vec_len(lnames) {
+        let ln = vec_get(lnames, pi)
+        let li = boila_col_idx(t, ln)
+        if li < 0 {
+            return boila_join_fold_fail(s, txn, concat("JOIN колона '", concat(ln, "' не съществува в лявата таблица")), "42703")
+        }
+        vec_push(lixs, li)
+        pi = pi + 1
+    }
+    let ct2 = boila_cat_by_name_txn(s, txn, sel.join_table)?
+    s = ct2.s
+    if ct2.ok == 0 {
+        return boila_join_fold_fail(s, txn, ct2.err, ct2.state)
+    }
+    let t2 = ct2.table
+    pi = 0
+    while pi < vec_len(rnames) {
+        let rn = vec_get(rnames, pi)
+        let ri = boila_col_idx(t2, rn)
+        if ri < 0 {
+            return boila_join_fold_fail(s, txn, concat("JOIN колона '", concat(rn, "' не съществува в дясната таблица")), "42703")
+        }
+        vec_push(rixs, ri)
+        pi = pi + 1
+    }
+    let lidx = vec_get(lixs, 0)
+    let ridx = vec_get(rixs, 0)
+    let mut left_sel = sel
+    let mut r_eq: i64 = 0
+    let mut r_cix: i64 = 0 - 1
+    let mut r_val = boila_val_null()
+    let mut r_lo: i64 = 0
+    let mut r_lo_cix: i64 = 0 - 1
+    let mut r_hi: i64 = 0
+    let mut r_hi_cix: i64 = 0 - 1
+    if sel.has_eq == 1 {
+        let on_l = boila_col_idx(t, sel.eq_col)
+        let on_r = boila_col_idx(t2, sel.eq_col)
+        if on_l < 0 {
+            if on_r >= 0 {
+                left_sel.has_eq = 0
+                r_eq = 1
+                r_cix = on_r
+                r_val = sel.pk_eq
+            } else {
+                return boila_join_fold_fail(s, txn, concat("WHERE колона '", concat(sel.eq_col, "' не е в JOIN таблиците")), "42703")
+            }
+        }
+    }
+    if sel.has_lo == 1 {
+        let on_l = boila_col_idx(t, sel.lo_col)
+        let on_r = boila_col_idx(t2, sel.lo_col)
+        if on_l < 0 {
+            if on_r < 0 {
+                return boila_join_fold_fail(s, txn, concat("WHERE колона '", concat(sel.lo_col, "' не е в JOIN таблиците")), "42703")
+            }
+            left_sel.has_lo = 0
+            r_lo = 1
+            r_lo_cix = on_r
+        }
+    }
+    if sel.has_hi == 1 {
+        let on_l = boila_col_idx(t, sel.hi_col)
+        let on_r = boila_col_idx(t2, sel.hi_col)
+        if on_l < 0 {
+            if on_r < 0 {
+                return boila_join_fold_fail(s, txn, concat("WHERE колона '", concat(sel.hi_col, "' не е в JOIN таблиците")), "42703")
+            }
+            left_sel.has_hi = 0
+            r_hi = 1
+            r_hi_cix = on_r
+        }
+    }
+    if r_lo == 1 && r_hi == 1 && r_lo_cix != r_hi_cix {
+        return boila_join_fold_fail(s, txn, "range WHERE на JOIN — lo/hi трябва да са една дясна колона", "0A000")
+    }
+    let wcols: Vec<BoilaColDef> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(t.cols) {
+        vec_push(wcols, vec_get(t.cols, i))
+        i = i + 1
+    }
+    i = 0
+    while i < vec_len(t2.cols) {
+        vec_push(wcols, vec_get(t2.cols, i))
+        i = i + 1
+    }
+    let loff = vec_len(t.cols)
+    let mut st = boila_agg_fold_start(wcols, sel)?
+    if st.ok == 0 {
+        return boila_join_fold_fail(s, txn, st.err, st.state)
+    }
+    let xnames: Vec<str> = vec_new()
+    i = 0
+    while i < vec_len(wcols) {
+        vec_push(xnames, vec_get(wcols, i).name)
+        i = i + 1
+    }
+    // Q-stream-join-outer: pks only (GET one outer row at a time during probe)
+    let op = boila_fetch_pks(s, txn, t, left_sel)?
+    s = op.s
+    txn = op.txn
+    if op.ok == 0 {
+        return boila_join_fold_fail(s, txn, op.err, op.state)
+    }
+    let nullr = boila_null_row(vec_len(t2.cols))
+    let on = vec_len(op.pks)
+    if on == 0 {
+        let ag0 = boila_agg_fold_end(st, sel)?
+        if ag0.ok == 0 {
+            return boila_join_fold_fail(s, txn, ag0.err, ag0.state)
+        }
+        return BoilaJoinFoldOut { s: s, txn: txn, ok: 1, err: "", state: "", res: ag0.res }
+    }
+    let ixid = boila_ix_by_col_t(t2, ridx)
+    if ixid >= 0 {
+        let step = boila_join_fold_probe_ix(s, txn, t, t2, sel, op.pks, lidx, lixs, rixs, ixid, nullr, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, st, xnames)?
+        s = step.s
+        txn = step.txn
+        if step.ok == 0 {
+            return boila_join_fold_fail(s, txn, step.err, step.state)
+        }
+        st = step.st
+    } else {
+        let hb = boila_hj_build_pks(s, txn, t2, ridx)?
+        s = hb.s
+        txn = hb.txn
+        let step = boila_join_fold_probe_hj(s, txn, t, t2, sel, op.pks, lidx, lixs, rixs, nullr, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, st, xnames, hb.ht)?
+        s = step.s
+        txn = step.txn
+        if step.ok == 0 {
+            return boila_join_fold_fail(s, txn, step.err, step.state)
+        }
+        st = step.st
+    }
+    let ag = boila_agg_fold_end(st, sel)?
+    if ag.ok == 0 {
+        return boila_join_fold_fail(s, txn, ag.err, ag.state)
+    }
+    return BoilaJoinFoldOut { s: s, txn: txn, ok: 1, err: "", state: "", res: ag.res }
+}
+
+

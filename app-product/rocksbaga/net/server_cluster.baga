@@ -1,0 +1,434 @@
+// server_cluster.baga — R32 cluster exec (key-hash shards): LsmExecC —
+// изпълнител на команди върху LsmCluster (рутиране по shard_ix).
+// Единичният shard изпълнител е в server.baga.
+
+import "server.baga"
+import "../db/shard.baga"
+import "../db/shard_read.baga"
+import "../db/shard_ttl.baga"
+import "kvbaga/resp.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct LsmExecC {
+    c: LsmCluster,
+    reply: bytes,
+    quit: i64
+}
+
+// R68: bytes-key cluster exec core — raw RESP args; keys route via
+// lsm_shard_ix_b into the engine _kb APIs (NUL-safe). Only command names,
+// options and numbers parse via str_of_bytes (ASCII).
+fn lsm_exec_c_kb(c: LsmCluster, args: Vec<bytes>) -> LsmExecC !IO !Time {
+    let n = vec_len(args)
+    if n < 1 {
+        return LsmExecC { c: c, reply: resp_error("ERR empty command"), quit: 0 }
+    }
+    let c0 = str_of_bytes(vec_get(args, 0))
+
+    if lsm_eq_ci(c0, "PING") == 1 {
+        return LsmExecC { c: c, reply: resp_pong(), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "QUIT") == 1 {
+        return LsmExecC { c: c, reply: resp_ok(), quit: 1 }
+    }
+    if lsm_eq_ci(c0, "SET") == 1 {
+        if n < 3 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("set"), quit: 0 }
+        }
+        if n == 5 {
+            if lsm_eq_ci(str_of_bytes(vec_get(args, 3)), "EX") == 1 {
+                let sec_s = str_of_bytes(vec_get(args, 4))
+                if lsm_is_int(sec_s) == 0 {
+                    return LsmExecC {
+                        c: c, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+                    }
+                }
+                c = lsm_cluster_put_ex_kb(c, vec_get(args, 1), vec_get(args, 2), parse_int(sec_s))?
+                return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+            }
+            return LsmExecC {
+                c: c,
+                reply: resp_error("ERR rocksbaga: SET options other than EX not supported"),
+                quit: 0
+            }
+        }
+        if n != 3 {
+            return LsmExecC {
+                c: c, reply: resp_error("ERR rocksbaga: SET syntax"), quit: 0
+            }
+        }
+        c = lsm_cluster_put_kb(c, vec_get(args, 1), vec_get(args, 2))?
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "SETEX") == 1 {
+        if n != 4 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("setex"), quit: 0 }
+        }
+        let sec_s = str_of_bytes(vec_get(args, 2))
+        if lsm_is_int(sec_s) == 0 {
+            return LsmExecC {
+                c: c, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+            }
+        }
+        c = lsm_cluster_put_ex_kb(c, vec_get(args, 1), vec_get(args, 3), parse_int(sec_s))?
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "GET") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("get"), quit: 0 }
+        }
+        let g = lsm_cluster_get_kb(c, vec_get(args, 1))?
+        c = g.c
+        if g.found == 0 {
+            return LsmExecC { c: c, reply: resp_null_bulk(), quit: 0 }
+        }
+        return LsmExecC { c: c, reply: resp_bulk_b(g.val), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "DEL") == 1 {
+        if n < 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("del"), quit: 0 }
+        }
+        // R68: multi-arg DEL sums removed count over raw bytes keys.
+        let mut ndel: i64 = 0
+        let mut di: i64 = 1
+        while di < n {
+            let g = lsm_cluster_get_kb(c, vec_get(args, di))?
+            c = g.c
+            if g.found == 1 {
+                c = lsm_cluster_del_kb(c, vec_get(args, di))?
+                ndel = ndel + 1
+            }
+            di = di + 1
+        }
+        return LsmExecC { c: c, reply: resp_int(ndel), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "EXISTS") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("exists"), quit: 0 }
+        }
+        let g = lsm_cluster_get_kb(c, vec_get(args, 1))?
+        c = g.c
+        return LsmExecC { c: c, reply: resp_int(g.found), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "INCR") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("incr"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get_kb(c, k)?
+        c = g.c
+        let mut base: i64 = 0
+        if g.found == 1 {
+            let vs = str_of_bytes(g.val)
+            if lsm_is_int(vs) == 0 {
+                return LsmExecC {
+                    c: c,
+                    reply: resp_error("ERR value is not an integer or out of range"),
+                    quit: 0
+                }
+            }
+            base = parse_int(vs)
+        }
+        let nv = base + 1
+        c = lsm_cluster_put_kb(c, k, bytes_of_str(int_to_str(nv)))?
+        return LsmExecC { c: c, reply: resp_int(nv), quit: 0 }
+    }
+    // R59: DECR / APPEND / TYPE / MGET / MSET — poll-path parity with MT.
+    if lsm_eq_ci(c0, "DECR") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("decr"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get_kb(c, k)?
+        c = g.c
+        let mut base: i64 = 0
+        if g.found == 1 {
+            let vs = str_of_bytes(g.val)
+            if lsm_is_int(vs) == 0 {
+                return LsmExecC {
+                    c: c,
+                    reply: resp_error("ERR value is not an integer or out of range"),
+                    quit: 0
+                }
+            }
+            base = parse_int(vs)
+        }
+        let nv = base - 1
+        c = lsm_cluster_put_kb(c, k, bytes_of_str(int_to_str(nv)))?
+        return LsmExecC { c: c, reply: resp_int(nv), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "APPEND") == 1 {
+        if n != 3 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("append"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get_kb(c, k)?
+        c = g.c
+        let mut cur = bytes_new(0)
+        if g.found == 1 {
+            cur = g.val
+        }
+        let nv = bytes_concat(cur, vec_get(args, 2))
+        c = lsm_cluster_put_kb(c, k, nv)?
+        return LsmExecC { c: c, reply: resp_int(bytes_len(nv)), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "TYPE") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("type"), quit: 0 }
+        }
+        let g = lsm_cluster_get_kb(c, vec_get(args, 1))?
+        c = g.c
+        if g.found == 1 {
+            return LsmExecC { c: c, reply: resp_simple("string"), quit: 0 }
+        }
+        return LsmExecC { c: c, reply: resp_simple("none"), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "MGET") == 1 {
+        if n < 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("mget"), quit: 0 }
+        }
+        let mut r = resp_array(n - 1)
+        let mut i: i64 = 1
+        while i < n {
+            let g = lsm_cluster_get_kb(c, vec_get(args, i))?
+            c = g.c
+            if g.found == 1 {
+                r = bytes_concat(r, resp_bulk_b(g.val))
+            } else {
+                r = bytes_concat(r, resp_null_bulk())
+            }
+            i = i + 1
+        }
+        return LsmExecC { c: c, reply: r, quit: 0 }
+    }
+    if lsm_eq_ci(c0, "MSET") == 1 {
+        if n < 3 || n % 2 == 0 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("mset"), quit: 0 }
+        }
+        let mut i: i64 = 1
+        while i + 1 < n + 1 {
+            c = lsm_cluster_put_kb(c, vec_get(args, i), vec_get(args, i + 1))?
+            i = i + 2
+        }
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "KEYS") == 1 {
+        if n != 1 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("keys"), quit: 0 }
+        }
+        // R68: keys reply with binary-safe bulks (raw key bytes).
+        let kg = lsm_cluster_keys_kb(c)?
+        c = kg.c
+        let alive = kg.keys
+        let mut r = resp_array(vec_len(alive))
+        for i in 0..vec_len(alive) {
+            r = bytes_concat(r, resp_bulk_b(vec_get(alive, i)))
+        }
+        return LsmExecC { c: c, reply: r, quit: 0 }
+    }
+    if lsm_eq_ci(c0, "SCAN") == 1 {
+        // R43: SCAN cursor [MATCH pat] [COUNT n]
+        if n < 2 || lsm_is_int(str_of_bytes(vec_get(args, 1))) == 0 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("scan"), quit: 0 }
+        }
+        let cursor = parse_int(str_of_bytes(vec_get(args, 1)))
+        let opts = lsm_parse_scan_opts_b(args, 2)
+        if opts.ok == 0 {
+            return LsmExecC {
+                c: c, reply: resp_error("ERR syntax error"), quit: 0
+            }
+        }
+        let sc = lsm_cluster_scan_kb(c, cursor, opts.count, opts.match_pat)?
+        c = sc.c
+        return LsmExecC { c: c, reply: lsm_resp_scan_b(sc.next, sc.keys), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "DBSIZE") == 1 {
+        if n != 1 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("dbsize"), quit: 0 }
+        }
+        let ds = lsm_cluster_dbsize(c)?
+        c = ds.c
+        return LsmExecC { c: c, reply: resp_int(ds.n), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "SAVE") == 1 || lsm_eq_ci(c0, "BGSAVE") == 1 {
+        c = lsm_cluster_flush_force(c)?
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "FLUSHDB") == 1 {
+        // R42: wipe selected logical DB (current cluster).
+        c = lsm_cluster_flushdb(c)?
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
+    // FLUSHALL is handled at multi-DB serve layer (needs LsmMulti).
+    if lsm_eq_ci(c0, "EXPIRE") == 1 {
+        if n != 3 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("expire"), quit: 0 }
+        }
+        let sec_s = str_of_bytes(vec_get(args, 2))
+        if lsm_is_int(sec_s) == 0 {
+            return LsmExecC {
+                c: c, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+            }
+        }
+        let e = lsm_cluster_expire_kb(c, vec_get(args, 1), parse_int(sec_s))?
+        c = e.c
+        return LsmExecC { c: c, reply: resp_int(e.ok), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "TTL") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("ttl"), quit: 0 }
+        }
+        let t = lsm_cluster_ttl_kb(c, vec_get(args, 1))?
+        c = t.c
+        return LsmExecC { c: c, reply: resp_int(t.n), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "PERSIST") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("persist"), quit: 0 }
+        }
+        let p = lsm_cluster_persist_kb(c, vec_get(args, 1))?
+        c = p.c
+        return LsmExecC { c: c, reply: resp_int(p.ok), quit: 0 }
+    }
+    // R69: INCRBY / DECRBY — poll-path parity.
+    if lsm_eq_ci(c0, "INCRBY") == 1 || lsm_eq_ci(c0, "DECRBY") == 1 {
+        if n != 3 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("incrby"), quit: 0 }
+        }
+        let d_s = str_of_bytes(vec_get(args, 2))
+        if lsm_is_int(d_s) == 0 {
+            return LsmExecC {
+                c: c, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+            }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get_kb(c, k)?
+        c = g.c
+        let mut base: i64 = 0
+        if g.found == 1 {
+            let vs = str_of_bytes(g.val)
+            if lsm_is_int(vs) == 0 {
+                return LsmExecC {
+                    c: c, reply: resp_error("ERR value is not an integer or out of range"), quit: 0
+                }
+            }
+            base = parse_int(vs)
+        }
+        let mut nv = base + parse_int(d_s)
+        if lsm_eq_ci(c0, "DECRBY") == 1 {
+            nv = base - parse_int(d_s)
+        }
+        c = lsm_cluster_put_kb(c, k, bytes_of_str(int_to_str(nv)))?
+        return LsmExecC { c: c, reply: resp_int(nv), quit: 0 }
+    }
+    // R69: GETSET / STRLEN / GETDEL / SETNX / UNLINK — poll-path parity.
+    if lsm_eq_ci(c0, "GETSET") == 1 {
+        if n != 3 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("getset"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get_kb(c, k)?
+        c = g.c
+        c = lsm_cluster_put_kb(c, k, vec_get(args, 2))?
+        if g.found == 0 {
+            return LsmExecC { c: c, reply: resp_null_bulk(), quit: 0 }
+        }
+        return LsmExecC { c: c, reply: resp_bulk_b(g.val), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "STRLEN") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("strlen"), quit: 0 }
+        }
+        let g = lsm_cluster_get_kb(c, vec_get(args, 1))?
+        c = g.c
+        let mut vl: i64 = 0
+        if g.found == 1 {
+            vl = bytes_len(g.val)
+        }
+        return LsmExecC { c: c, reply: resp_int(vl), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "GETDEL") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("getdel"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get_kb(c, k)?
+        c = g.c
+        if g.found == 0 {
+            return LsmExecC { c: c, reply: resp_null_bulk(), quit: 0 }
+        }
+        c = lsm_cluster_del_kb(c, k)?
+        return LsmExecC { c: c, reply: resp_bulk_b(g.val), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "SETNX") == 1 {
+        if n != 3 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("setnx"), quit: 0 }
+        }
+        let k = vec_get(args, 1)
+        let g = lsm_cluster_get_kb(c, k)?
+        c = g.c
+        if g.found == 1 {
+            return LsmExecC { c: c, reply: resp_int(0), quit: 0 }
+        }
+        c = lsm_cluster_put_kb(c, k, vec_get(args, 2))?
+        return LsmExecC { c: c, reply: resp_int(1), quit: 0 }
+    }
+    if lsm_eq_ci(c0, "UNLINK") == 1 {
+        if n < 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("unlink"), quit: 0 }
+        }
+        let mut ndel: i64 = 0
+        let mut di: i64 = 1
+        while di < n {
+            let g = lsm_cluster_get_kb(c, vec_get(args, di))?
+            c = g.c
+            if g.found == 1 {
+                c = lsm_cluster_del_kb(c, vec_get(args, di))?
+                ndel = ndel + 1
+            }
+            di = di + 1
+        }
+        return LsmExecC { c: c, reply: resp_int(ndel), quit: 0 }
+    }
+    // R60: CHECKPOINT dest — durable point-in-time copy (all shards)
+    if lsm_eq_ci(c0, "CHECKPOINT") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("checkpoint"), quit: 0 }
+        }
+        c = lsm_cluster_checkpoint(c, str_of_bytes(vec_get(args, 1)))?
+        if c.ok == 0 {
+            return LsmExecC { c: c, reply: resp_error("ERR checkpoint failed"), quit: 0 }
+        }
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
+    // R62: BACKUP dest — checkpoint + BAGABK1 inventory (sizes + crc)
+    if lsm_eq_ci(c0, "BACKUP") == 1 {
+        if n != 2 {
+            return LsmExecC { c: c, reply: lsm_wrongnum("backup"), quit: 0 }
+        }
+        let bc = lsm_cluster_backup_create(c, str_of_bytes(vec_get(args, 1)))?
+        c = bc.c
+        if c.ok == 0 || bc.stat.ok == 0 {
+            return LsmExecC { c: c, reply: resp_error("ERR backup failed"), quit: 0 }
+        }
+        return LsmExecC { c: c, reply: resp_ok(), quit: 0 }
+    }
+    return LsmExecC {
+        c: c,
+        reply: resp_error(concat(concat("ERR unknown command '", c0), "'")),
+        quit: 0
+    }
+}
+
+// str-arg compat wrapper (tests / legacy callers) — args convert losslessly.
+fn lsm_exec_c(c: LsmCluster, args: Vec<str>) -> LsmExecC !IO !Time {
+    return lsm_exec_c_kb(c, lsm_args_bytes(args))?
+}
+
+// R65/R68 wire entry: binary parse args → bytes-key cluster core.
+fn lsm_exec_c_b(c: LsmCluster, args: Vec<bytes>) -> LsmExecC !IO !Time {
+    return lsm_exec_c_kb(c, args)?
+}
+
+// Single-connection drain (legacy / tests). Blocks on read until EOF.

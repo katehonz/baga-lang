@@ -1,3 +1,11 @@
 // Public re-export — prefer pgbaga/conn/pg.baga for new code.
 // Stable path: import "pgbaga/pg.baga"
 import "conn/pg.baga"
+import "conn/pg_auth.baga"
+import "conn/pg_connect.baga"
+import "conn/pg_params.baga"
+import "conn/pg_txn.baga"
+import "conn/pg_auth.baga"
+import "conn/pg_connect.baga"
+import "conn/pg_params.baga"
+import "conn/pg_txn.baga"

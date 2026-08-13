@@ -1,0 +1,132 @@
+// pg_auth.baga — PostgreSQL auth: SCRAM-SHA-256 handshake
+// (AuthenticationSASL → client-first → server-first → final).
+
+import "pg.baga"
+import "../wire/proto.baga"
+import "../auth/scram.baga"
+import "std/random/random.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+struct PgAuthOut {
+    reader: PgReader,
+    conn: PgConn
+}
+
+fn pg_authenticate(r: PgReader, fd: i64, user: str, password: str) -> PgAuthOut !IO !Net !Random {
+    let mut reader = r
+    let mut running: i64 = 1
+    let mut expected_sig = ""
+    let mut client_first_bare = ""
+    while running == 1 {
+        let mr = pg_read_msg(reader)?
+        reader = mr.reader
+        if mr.ok == 0 {
+            return PgAuthOut {
+                reader: reader,
+                conn: pg_conn_bad("eof during authentication")
+            }
+        }
+        let t = mr.msg.typ
+        if t == 69 {   // ErrorResponse
+            return PgAuthOut {
+                reader: reader,
+                conn: pg_conn_bad(pg_error_fields(mr.msg.body))
+            }
+        }
+        if t != 82 {   // expect 'R' Authentication*
+            // ParameterStatus / Notice can appear? Usually not before AuthOk.
+            if t == 78 {
+                // continue
+                reader = reader
+            } else {
+                return PgAuthOut {
+                    reader: reader,
+                    conn: pg_conn_bad(concat("unexpected auth message type ", parse_int_to_str_dummy(t)))
+                }
+            }
+        } else {
+            let kind = pg_auth_kind(mr.msg.body)
+            if kind == 0 {
+                // AuthenticationOk — then ParameterStatus / Key / Ready
+                let base = PgConn {
+                    fd: fd, ok: 0, err: "", pid: 0, key: pg_empty(),
+                    tx_status: 0, server_version: "",
+                    reader: reader
+                }
+                let tail = pg_finish_startup(reader, base)?
+                return PgAuthOut { reader: tail.reader, conn: tail.conn }
+            }
+            if kind == 3 {
+                // cleartext
+                let w = pg_write(fd, pg_cleartext_password(password))?
+                if w != 0 {
+                    return PgAuthOut { reader: reader, conn: pg_conn_bad("write password failed") }
+                }
+            } else {
+                if kind == 10 {
+                    // SASL — require SCRAM-SHA-256
+                    let mechs = pg_auth_sasl_mechs(mr.msg.body)
+                    if str_find(mechs, "SCRAM-SHA-256") < 0 {
+                        return PgAuthOut {
+                            reader: reader,
+                            conn: pg_conn_bad(concat("no SCRAM-SHA-256 in ", mechs))
+                        }
+                    }
+                    let raw = random_bytes(18)?
+                    let nonce = scram_nonce_from_bytes(raw)
+                    client_first_bare = scram_client_first_bare(nonce)
+                    let cfirst = scram_client_first(nonce)
+                    let w = pg_write(fd, pg_sasl_initial("SCRAM-SHA-256", bytes_of_str(cfirst)))?
+                    if w != 0 {
+                        return PgAuthOut { reader: reader, conn: pg_conn_bad("write SASL initial failed") }
+                    }
+                } else {
+                    if kind == 11 {
+                        // SASL continue — server-first
+                        let server_first = str_of_bytes(pg_auth_payload(mr.msg.body))
+                        let fin = scram_build_final(password, client_first_bare, server_first)
+                        if fin.message == "" {
+                            return PgAuthOut {
+                                reader: reader,
+                                conn: pg_conn_bad("SCRAM final build failed")
+                            }
+                        }
+                        expected_sig = fin.server_sig
+                        let w = pg_write(fd, pg_sasl_response(bytes_of_str(fin.message)))?
+                        if w != 0 {
+                            return PgAuthOut { reader: reader, conn: pg_conn_bad("write SASL response failed") }
+                        }
+                    } else {
+                        if kind == 12 {
+                            // SASL final — verify server signature
+                            let server_final = str_of_bytes(pg_auth_payload(mr.msg.body))
+                            if scram_check_server_final(server_final, expected_sig) == 0 {
+                                return PgAuthOut {
+                                    reader: reader,
+                                    conn: pg_conn_bad(concat("SCRAM server signature mismatch: ", server_final))
+                                }
+                            }
+                            // AuthenticationOk follows
+                        } else {
+                            if kind == 5 {
+                                return PgAuthOut {
+                                    reader: reader,
+                                    conn: pg_conn_bad("MD5 auth not supported (use SCRAM or trust)")
+                                }
+                            } else {
+                                return PgAuthOut {
+                                    reader: reader,
+                                    conn: pg_conn_bad(concat("unsupported auth kind ", i64_to_dec(kind)))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return PgAuthOut { reader: reader, conn: pg_conn_bad("auth loop exit") }
+}
+
+// i64 → decimal (kept for callers; std/str int_to_str is the source).

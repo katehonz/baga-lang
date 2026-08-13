@@ -1,0 +1,125 @@
+// tls_crypto.baga — TLS 1.3 крипто помощници: hash/hmac/hkdf за
+// cipher suite-ите, key schedule, nonce (IV^seq), AES-GCM record кодек.
+
+import "tls.baga"
+import "../bytes/bytes.baga"
+import "../str/str.baga"
+import "../crypto/sha256.baga"
+import "../crypto/sha512.baga"
+import "../crypto/hmac.baga"
+import "../crypto/hkdf.baga"
+import "../crypto/aes.baga"
+import "../crypto/gcm.baga"
+
+fn tls_hash_len(cipher: i64) -> i64 {
+    if cipher == 4866 {
+        return 48
+    }
+    return 32
+}
+
+fn tls_key_len(cipher: i64) -> i64 {
+    if cipher == 4866 {
+        return 32
+    }
+    return 16
+}
+
+fn tls_hash_b(cipher: i64, data: bytes) -> bytes {
+    if cipher == 4866 {
+        return sha384_b(data)
+    }
+    return sha256_b(data)
+}
+
+fn tls_hmac_b(cipher: i64, key: bytes, msg: bytes) -> bytes {
+    if cipher == 4866 {
+        return hmac_sha384_b(key, msg)
+    }
+    return hmac_sha256_b(key, msg)
+}
+
+fn tls_hkdf_extract(cipher: i64, salt: bytes, ikm: bytes) -> bytes {
+    if cipher == 4866 {
+        return hkdf384_extract(salt, ikm)
+    }
+    return hkdf_extract(salt, ikm)
+}
+
+fn tls_hkdf_expand(cipher: i64, prk: bytes, info: bytes, out_len: i64) -> bytes {
+    if cipher == 4866 {
+        return hkdf384_expand(prk, info, out_len)
+    }
+    return hkdf_expand(prk, info, out_len)
+}
+
+// HkdfLabel (RFC 8446 §7.1): u16 len | u8 |"tls13 "+label| | u8 |ctx|
+fn tls_hkdf_label(cipher: i64, secret: bytes, label: str, ctx: bytes, out_len: i64) -> bytes {
+    let lab = bytes_concat(tls_ascii("tls13 "), tls_ascii(label))
+    let v = vec_new()
+    tls_push_u16(v, out_len)
+    tls_push_u8(v, bytes_len(lab))
+    tls_push_bytes(v, lab)
+    tls_push_u8(v, bytes_len(ctx))
+    tls_push_bytes(v, ctx)
+    return tls_hkdf_expand(cipher, secret, bytes_from_vec(v), out_len)
+}
+
+// The "derived" step's context is the transcript hash of zero messages —
+// H of the empty string, NOT an empty context (RFC 8446 §7.1).
+fn tls_derive(cipher: i64, secret: bytes) -> bytes {
+    return tls_hkdf_label(cipher, secret, "derived", tls_hash_b(cipher, bytes_from_vec(vec_new())), tls_hash_len(cipher))
+}
+
+struct TlsSchedule {
+    ok: i64,
+    err: str,
+    cipher: i64,          // negotiated suite (4865 / 4866)
+    hs_secret: bytes,     // handshake secret (for master derivation, T8)
+    server_hs: bytes,     // server_handshake_traffic_secret
+    client_hs: bytes,     // client_handshake_traffic_secret
+    sh_hash: bytes        // H(ClientHello || ServerHello)
+}
+
+fn tls_schedule_bad(err: str) -> TlsSchedule {
+    return TlsSchedule { ok: 0, err: err, cipher: 4865,
+        hs_secret: bytes_from_vec(vec_new()),
+        server_hs: bytes_from_vec(vec_new()),
+        client_hs: bytes_from_vec(vec_new()), sh_hash: bytes_from_vec(vec_new()) }
+}
+
+// The handshake key schedule up to the handshake traffic secrets.
+fn tls_schedule(cipher: i64, ch_msg: bytes, sh_msg: bytes, shared: bytes) -> TlsSchedule {
+    if bytes_len(shared) != 32 {
+        return tls_schedule_bad("bad shared secret length")
+    }
+    let hl = tls_hash_len(cipher)
+    let zero = tls_zeros(hl)
+    let early = tls_hkdf_extract(cipher, zero, zero)
+    let d0 = tls_derive(cipher, early)
+    let hs_secret = tls_hkdf_extract(cipher, d0, shared)
+    let sh_hash = tls_hash_b(cipher, bytes_concat(ch_msg, sh_msg))
+    let server_hs = tls_hkdf_label(cipher, hs_secret, "s hs traffic", sh_hash, hl)
+    let client_hs = tls_hkdf_label(cipher, hs_secret, "c hs traffic", sh_hash, hl)
+    return TlsSchedule { ok: 1, err: "", cipher: cipher, hs_secret: hs_secret,
+        server_hs: server_hs, client_hs: client_hs, sh_hash: sh_hash }
+}
+
+// nonce = iv XOR 64-bit sequence (in the last 8 bytes of the 12-byte iv).
+fn tls_nonce(iv: bytes, seq: i64) -> bytes {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < 12 {
+        vec_push(v, bytes_at(iv, i))
+        i = i + 1
+    }
+    let mut s = seq
+    let mut j: i64 = 11
+    while j >= 4 {
+        vec_set(v, j, vec_get(v, j) ^ (s & 255))
+        s = s >> 8
+        j = j - 1
+    }
+    return bytes_from_vec(v)
+}
+

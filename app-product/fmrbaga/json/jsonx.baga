@@ -2,6 +2,8 @@
 // jobj/jarr builders, jreq/jopt extractors, 422 detail shape. Pure.
 
 import "std/json/json.baga"
+import "std/json/json_write.baga"
+import "std/json/json_strict.baga"
 import "std/str/str.baga"
 
 // ---------- object builder (values pre-encoded as JSON text) ----------

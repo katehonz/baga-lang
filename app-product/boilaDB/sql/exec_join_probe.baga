@@ -1,0 +1,115 @@
+// exec_join_probe.baga — probe пътеки на материализирания JOIN:
+// index nested loop (външни pk-и → ix lookup на първата ON двойка,
+// останалите двойки се филтрират) и hash probe (key → inner pks).
+// Извикват се от boila_join_rows (exec_join.baga).
+
+import "../storage/shards.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_join_common.baga"
+import "exec_join_filter.baga"
+import "exec_join_hash.baga"
+
+// Index nested loop: ix lookup на lv → GET inner → ON eq → wide_keep.
+fn boila_join_probe_ix(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, t2: BoilaTable, sel: BoilaSel, op_pks: Vec<bytes>, lidx: i64, lixs: Vec<i64>, rixs: Vec<i64>, ixid: i64, nullr: Vec<BoilaVal>, loff: i64, r_eq: i64, r_cix: i64, r_val: BoilaVal, r_lo: i64, r_lo_cix: i64, r_hi: i64, r_hi_cix: i64, need: i64, topn: i64, oidxs: Vec<i64>, wcols: Vec<BoilaColDef>) -> BoilaJoinOut !IO !Time !Par {
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    let on = vec_len(op_pks)
+    let mut oi: i64 = 0
+    let mut done = false
+    while oi < on && done == false {
+        let g0 = boila_txn_get(s, txn, t.id, vec_get(op_pks, oi))?
+        s = g0.s
+        if g0.found == 1 {
+            let orow = boila_row_dec(g0.row)
+            let lv = vec_get(orow, lidx)
+            let mut matched = false
+            if lv.tag != boila_v_null() {
+                let lk = boila_ix_lookup(s, t2, ixid, lv)?
+                s = lk.s
+                let mut li: i64 = 0
+                while li < vec_len(lk.pks) && done == false {
+                    let g = boila_txn_get(s, txn, t2.id, vec_get(lk.pks, li))?
+                    s = g.s
+                    if g.found == 1 {
+                        let irow = boila_row_dec(g.row)
+                        if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
+                            matched = true
+                            let wide = boila_wide_row(orow, irow)
+                            if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                                if boila_join_emit(rows, wide, need, topn, oidxs, sel.ord_desc) == 1 {
+                                    done = true
+                                }
+                            }
+                        }
+                    }
+                    li = li + 1
+                }
+            }
+            if done == false && matched == false && sel.join_kind == 2 {
+                let wide = boila_wide_row(orow, nullr)
+                if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                    if boila_join_emit(rows, wide, need, topn, oidxs, sel.ord_desc) == 1 {
+                        done = true
+                    }
+                }
+            }
+        }
+        oi = oi + 1
+    }
+    return BoilaJoinOut { s: s, txn: txn, ok: 1, err: "", state: "", cols: wcols, rows: rows }
+}
+
+// Hash probe: key → inner pks → GET → ON eq → wide_keep.
+fn boila_join_probe_hj(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, t2: BoilaTable, sel: BoilaSel, op_pks: Vec<bytes>, lidx: i64, lixs: Vec<i64>, rixs: Vec<i64>, nullr: Vec<BoilaVal>, loff: i64, r_eq: i64, r_cix: i64, r_val: BoilaVal, r_lo: i64, r_lo_cix: i64, r_hi: i64, r_hi_cix: i64, need: i64, topn: i64, oidxs: Vec<i64>, wcols: Vec<BoilaColDef>, ht: Map<bytes, BoilaHJBucket>) -> BoilaJoinOut !IO !Time !Par {
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    let on = vec_len(op_pks)
+    let mut oi: i64 = 0
+    let mut done = false
+    while oi < on && done == false {
+        let g0 = boila_txn_get(s, txn, t.id, vec_get(op_pks, oi))?
+        s = g0.s
+        if g0.found == 1 {
+            let orow = boila_row_dec(g0.row)
+            let lv = vec_get(orow, lidx)
+            let mut matched = false
+            if lv.tag != boila_v_null() {
+                let k = boila_val_enc(lv)
+                if map_has(ht, k) == 1 {
+                    let b = map_get(ht, k)
+                    let mut j: i64 = 0
+                    while j < vec_len(b.pks) && done == false {
+                        let g = boila_txn_get(s, txn, t2.id, vec_get(b.pks, j))?
+                        s = g.s
+                        if g.found == 1 {
+                            let irow = boila_row_dec(g.row)
+                            if boila_join_eq_all(orow, irow, lixs, rixs) == 1 {
+                                matched = true
+                                let wide = boila_wide_row(orow, irow)
+                                if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                                    if boila_join_emit(rows, wide, need, topn, oidxs, sel.ord_desc) == 1 {
+                                        done = true
+                                    }
+                                }
+                            }
+                        }
+                        j = j + 1
+                    }
+                }
+            }
+            if done == false && matched == false && sel.join_kind == 2 {
+                let wide = boila_wide_row(orow, nullr)
+                if boila_join_wide_keep(wide, loff, r_eq, r_cix, r_val, r_lo, r_lo_cix, r_hi, r_hi_cix, sel.pk_lo, sel.pk_hi) == 1 {
+                    if boila_join_emit(rows, wide, need, topn, oidxs, sel.ord_desc) == 1 {
+                        done = true
+                    }
+                }
+            }
+        }
+        oi = oi + 1
+    }
+    return BoilaJoinOut { s: s, txn: txn, ok: 1, err: "", state: "", cols: wcols, rows: rows }
+}

@@ -1,0 +1,96 @@
+// serve_mt_stats.baga — M1 stats + live conn + open/max db counters.
+// Всичко под gmu; pack accessors-те са в serve_mt_pack.baga.
+
+import "serve_mt_pack.baga"
+import "../server/databases.baga"
+
+fn boila_mt_stat_inc(pack: i64, key: i64) -> i64 !Par {    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let st: Map<i64, i64> = h_map(boila_mt_stats_h(pack))
+    let mut n: i64 = 0
+    if map_has(st, key) == 1 { n = map_get(st, key) }
+    map_set(st, key, n + 1)
+    mutex_unlock(gmu)
+    return 0
+}
+
+fn boila_mt_stat_get(pack: i64, key: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let st: Map<i64, i64> = h_map(boila_mt_stats_h(pack))
+    let mut n: i64 = 0
+    if map_has(st, key) == 1 { n = map_get(st, key) }
+    mutex_unlock(gmu)
+    return n
+}
+
+fn boila_mt_note_sql(pack: i64, ok: i64) -> i64 !Par {
+    boila_mt_stat_inc(pack, boila_st_sql())?
+    if ok == 1 { boila_mt_stat_inc(pack, boila_st_sql_ok())? }
+    else { boila_mt_stat_inc(pack, boila_st_sql_err())? }
+    return 0
+}
+
+fn boila_mt_try_conn(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let live: Map<i64, i64> = h_map(boila_mt_live_h(pack))
+    let n = map_get(live, 0)
+    let maxc = map_get(live, 1)
+    let mut ok: i64 = 0
+    if n < maxc {
+        map_set(live, 0, n + 1)
+        ok = 1
+    }
+    mutex_unlock(gmu)
+    return ok
+}
+
+fn boila_mt_end_conn(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let live: Map<i64, i64> = h_map(boila_mt_live_h(pack))
+    let n = map_get(live, 0)
+    if n > 0 {
+        map_set(live, 0, n - 1)
+    }
+    mutex_unlock(gmu)
+    return 0
+}
+
+fn boila_mt_live(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let live: Map<i64, i64> = h_map(boila_mt_live_h(pack))
+    let n = map_get(live, 0)
+    mutex_unlock(gmu)
+    return n
+}
+
+// max_conn cap stored at live[1] (see boila_mt_new).
+fn boila_mt_max_conn(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let live: Map<i64, i64> = h_map(boila_mt_live_h(pack))
+    let n = map_get(live, 1)
+    mutex_unlock(gmu)
+    return n
+}
+
+fn boila_mt_open_count(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let n = vec_len(map_get(m, 0).names)
+    mutex_unlock(gmu)
+    return n
+}
+
+fn boila_mt_max_db(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
+    let n = map_get(m, 0).max_db
+    mutex_unlock(gmu)
+    return n
+}

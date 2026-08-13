@@ -1,0 +1,118 @@
+// exec_sql_dml.baga — DML dispatch (P5): INSERT / UPDATE / DELETE през
+// txn buffer (T1: грешка → rollback на буфера). Извиква се от
+// exec_sql.baga при първи токен insert/update/delete.
+
+import "exec_out.baga"
+import "parse_insert.baga"
+import "parse_dml.baga"
+import "exec_insert.baga"
+import "exec_modify.baga"
+import "exec_scan.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "../storage/shards.baga"
+import "token.baga"
+
+fn boila_exec_sql_dml(s: BoilaStore, txn: BoilaTxn, db: str, pc: BoilaPlanCache, pc_mu: i64, lx: BoilaLex) -> BoilaSqlOut !IO !Time !Par {
+    let t0 = vec_get(lx.toks, 0)
+    if tok_kw(t0, "insert") == 1 {
+        let p = boila_parse_insert(lx)
+        if p.ok == 0 {
+            return boila_sql_fail(s, txn, pc, p.err, p.state)
+        }
+        let ct = boila_cat_by_name_txn(s, txn, p.ins.table)?
+        s = ct.s
+        if ct.ok == 0 {
+            return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+        }
+        let was_active = txn.active
+        if was_active == 0 {
+            let b = boila_txn_begin(s, txn, 0, db)?
+            s = b.s
+            txn = b.txn
+        }
+        let ex = boila_exec_insert(s, txn, ct.table, p.ins)?
+        s = ex.s
+        txn = ex.txn
+        if ex.ok == 0 {
+            // грешка → rollback на буфера (T1): и за явна, и за имплицитна
+            txn = boila_txn_rollback(txn)
+            return boila_sql_fail(s, txn, pc, ex.err, ex.state)
+        }
+        if was_active == 0 {
+            let c = boila_txn_commit(s, txn)?
+            s = c.s
+            txn = c.txn
+            if c.ok == 0 {
+                return boila_sql_fail(s, txn, pc, c.err, c.state)
+            }
+        }
+        return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 6, res: ex.res, id: ex.affected }
+    }
+    if tok_kw(t0, "update") == 1 {
+        let p = boila_parse_update(lx)
+        if p.ok == 0 {
+            return boila_sql_fail(s, txn, pc, p.err, p.state)
+        }
+        let ct = boila_cat_by_name_txn(s, txn, p.upd.table)?
+        s = ct.s
+        if ct.ok == 0 {
+            return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+        }
+        let was_active = txn.active
+        if was_active == 0 {
+            let b = boila_txn_begin(s, txn, 0, db)?
+            s = b.s
+            txn = b.txn
+        }
+        let ex = boila_exec_update(s, txn, ct.table, p.upd)?
+        s = ex.s
+        txn = ex.txn
+        if ex.ok == 0 {
+            txn = boila_txn_rollback(txn)
+            return boila_sql_fail(s, txn, pc, ex.err, ex.state)
+        }
+        if was_active == 0 {
+            let c = boila_txn_commit(s, txn)?
+            s = c.s
+            txn = c.txn
+            if c.ok == 0 {
+                return boila_sql_fail(s, txn, pc, c.err, c.state)
+            }
+        }
+        return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 7, res: ex.res, id: ex.affected }
+    }
+    if tok_kw(t0, "delete") == 1 {
+        let p = boila_parse_delete(lx)
+        if p.ok == 0 {
+            return boila_sql_fail(s, txn, pc, p.err, p.state)
+        }
+        let ct = boila_cat_by_name_txn(s, txn, p.del.table)?
+        s = ct.s
+        if ct.ok == 0 {
+            return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+        }
+        let was_active = txn.active
+        if was_active == 0 {
+            let b = boila_txn_begin(s, txn, 0, db)?
+            s = b.s
+            txn = b.txn
+        }
+        let ex = boila_exec_delete(s, txn, ct.table, p.del)?
+        s = ex.s
+        txn = ex.txn
+        if ex.ok == 0 {
+            txn = boila_txn_rollback(txn)
+            return boila_sql_fail(s, txn, pc, ex.err, ex.state)
+        }
+        if was_active == 0 {
+            let c = boila_txn_commit(s, txn)?
+            s = c.s
+            txn = c.txn
+            if c.ok == 0 {
+                return boila_sql_fail(s, txn, pc, c.err, c.state)
+            }
+        }
+        return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 8, res: ex.res, id: ex.affected }
+    }
+}

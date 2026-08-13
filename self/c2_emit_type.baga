@@ -1,0 +1,319 @@
+// c2_emit_type.baga — типови предикати на емитера (expr_is_*/vec_is_*):
+// рекурсивни проверки върху AST за str/f64/bool на изрази и vec елементи.
+// Кодогенерацията им е в c2_emit_expr.baga.
+
+import "c2_ast.baga"
+
+fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let mut k = node_kind(nk, idx)
+    if k == 1 { return 1 }
+    if k == 4 {
+        let mut cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let mut bn = node_text(nt, cal)
+            if str_eq(bn, "concat") == 1 { return 1 }
+            if str_eq(bn, "substr") == 1 { return 1 }
+            if str_eq(bn, "chr") == 1 { return 1 }
+            if str_eq(bn, "read_file") == 1 { return 1 }
+            if str_eq(bn, "arg") == 1 { return 1 }
+            if str_eq(bn, "vec_get_str") == 1 { return 1 }
+            if str_eq(bn, "hex_encode") == 1 { return 1 }
+            if str_eq(bn, "str_of_bytes") == 1 { return 1 }
+            if str_eq(bn, "vec_get") == 1 {
+                let mut va1 = next_sibling(ns, cal)
+                if va1 >= 0 {
+                    if vec_is_str(nk, nt, fc, ns, prog, va1) == 1 { return 1 }
+                }
+            }
+            let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "const char *") == 1 { return 1 }
+        }
+    }
+    if k == 2 {
+        let mut vname = node_text(nt, idx)
+        let mut f = first_child(fc, prog)
+        while f >= 0 {
+            if node_kind(nk, f) == 11 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 5 {
+                        let mut s = first_child(fc, c)
+                        while s >= 0 {
+                            if node_kind(nk, s) == 6 {
+                                if str_eq(node_text(nt, s), vname) == 1 {
+                                    let mut init = first_child(fc, s)
+                                    return expr_is_str(nk, nt, fc, ns, prog, init)
+                                }
+                            }
+                            s = next_sibling(ns, s)
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+            f = next_sibling(ns, f)
+        }
+    }
+    0
+}
+
+fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let mut k = node_kind(nk, idx)
+    if k == 19 { return 1 }
+    if k == 3 {
+        let mut left = first_child(fc, idx)
+        let mut right = next_sibling(ns, left)
+        if expr_is_float(nk, nt, fc, ns, prog, left) == 1 { return 1 }
+        if expr_is_float(nk, nt, fc, ns, prog, right) == 1 { return 1 }
+        return 0
+    }
+    if k == 4 {
+        let mut cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let mut bn = node_text(nt, cal)
+            if str_eq(bn, "vec_get") == 1 {
+                let mut a1 = next_sibling(ns, cal)
+                if a1 >= 0 {
+                    if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { return 1 }
+                }
+            }
+            let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "double") == 1 { return 1 }
+        }
+        return 0
+    }
+    if k == 2 {
+        let mut vname = node_text(nt, idx)
+        let mut f = first_child(fc, prog)
+        while f >= 0 {
+            if node_kind(nk, f) == 11 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 5 {
+                        let mut s = first_child(fc, c)
+                        while s >= 0 {
+                            if node_kind(nk, s) == 6 {
+                                if str_eq(node_text(nt, s), vname) == 1 {
+                                    let mut init = first_child(fc, s)
+                                    return expr_is_float(nk, nt, fc, ns, prog, init)
+                                }
+                            }
+                            s = next_sibling(ns, s)
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+            f = next_sibling(ns, f)
+        }
+    }
+    0
+}
+
+// Като expr_is_float, но НЕ разрешава vec_get (няма vec_is_f64). Ползва се от
+// vec_is_f64 за класификация на push-елемент, за да не се получи безкрайна
+// взаимна рекурсия expr_is_float ↔ vec_is_f64 при vec_push(v, ... vec_get(v) ...).
+fn expr_is_float_shallow(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let mut k = node_kind(nk, idx)
+    if k == 19 { return 1 }
+    if k == 3 {
+        let mut left = first_child(fc, idx)
+        let mut right = next_sibling(ns, left)
+        if expr_is_float_shallow(nk, nt, fc, ns, prog, left) == 1 { return 1 }
+        if expr_is_float_shallow(nk, nt, fc, ns, prog, right) == 1 { return 1 }
+        return 0
+    }
+    if k == 4 {
+        let mut cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let mut bn = node_text(nt, cal)
+            let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "double") == 1 { return 1 }
+        }
+        return 0
+    }
+    if k == 2 {
+        let mut vname = node_text(nt, idx)
+        let mut f = first_child(fc, prog)
+        while f >= 0 {
+            if node_kind(nk, f) == 11 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 5 {
+                        let mut s = first_child(fc, c)
+                        while s >= 0 {
+                            if node_kind(nk, s) == 6 {
+                                if str_eq(node_text(nt, s), vname) == 1 {
+                                    let mut init = first_child(fc, s)
+                                    return expr_is_float_shallow(nk, nt, fc, ns, prog, init)
+                                }
+                            }
+                            s = next_sibling(ns, s)
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+            f = next_sibling(ns, f)
+        }
+    }
+    0
+}
+
+fn expr_is_bool(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
+    let mut k = node_kind(nk, idx)
+    if k == 20 { return 1 }
+    if k == 3 {
+        let mut op = node_text(nt, idx)
+        if str_eq(op, "==") == 1 { return 1 }
+        if str_eq(op, "!=") == 1 { return 1 }
+        if str_eq(op, "<") == 1 { return 1 }
+        if str_eq(op, ">") == 1 { return 1 }
+        if str_eq(op, "<=") == 1 { return 1 }
+        if str_eq(op, ">=") == 1 { return 1 }
+        if str_eq(op, "&&") == 1 { return 1 }
+        if str_eq(op, "||") == 1 { return 1 }
+        return 0
+    }
+    if k == 4 {
+        let mut cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let mut bn = node_text(nt, cal)
+            if str_eq(bn, "str_eq") == 1 { return 1 }
+            let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "int") == 1 { return 1 }
+        }
+        return 0
+    }
+    if k == 2 {
+        let mut vname = node_text(nt, idx)
+        let mut f = first_child(fc, prog)
+        while f >= 0 {
+            if node_kind(nk, f) == 11 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 5 {
+                        let mut s = first_child(fc, c)
+                        while s >= 0 {
+                            if node_kind(nk, s) == 6 {
+                                if str_eq(node_text(nt, s), vname) == 1 {
+                                    let mut init = first_child(fc, s)
+                                    return expr_is_bool(nk, nt, fc, ns, prog, init)
+                                }
+                            }
+                            s = next_sibling(ns, s)
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+            }
+            f = next_sibling(ns, f)
+        }
+    }
+    0
+}
+
+fn vec_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vnode: i64) -> i64 {
+    if node_kind(nk, vnode) != 2 { return 0 }
+    let mut vname = node_text(nt, vnode)
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            let mut c = first_child(fc, f)
+            while c >= 0 {
+                if node_kind(nk, c) == 5 {
+                    let mut s = first_child(fc, c)
+                    while s >= 0 {
+                        if node_kind(nk, s) == 10 {
+                            let mut e = first_child(fc, s)
+                            if node_kind(nk, e) == 4 {
+                                let mut cal = first_child(fc, e)
+                                if node_kind(nk, cal) == 2 {
+                                    let mut bn = node_text(nt, cal)
+                                    let mut a1 = next_sibling(ns, cal)
+                                    if a1 >= 0 {
+                                        if node_kind(nk, a1) == 2 {
+                                            if str_eq(node_text(nt, a1), vname) == 1 {
+                                                if str_eq(bn, "vec_push_str") == 1 { return 1 }
+                                                if str_eq(bn, "vec_set_str") == 1 { return 1 }
+                                                if str_eq(bn, "vec_push") == 1 {
+                                                    let elem = next_sibling(ns, a1)
+                                                    if elem >= 0 {
+                                                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
+                                                    }
+                                                }
+                                                if str_eq(bn, "vec_set") == 1 {
+                                                    let mut ai = next_sibling(ns, a1)
+                                                    let mut elem = next_sibling(ns, ai)
+                                                    if elem >= 0 {
+                                                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        s = next_sibling(ns, s)
+                    }
+                }
+                c = next_sibling(ns, c)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    0
+}
+
+fn vec_is_f64(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vnode: i64) -> i64 {
+    if node_kind(nk, vnode) != 2 { return 0 }
+    let mut vname = node_text(nt, vnode)
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            let mut c = first_child(fc, f)
+            while c >= 0 {
+                if node_kind(nk, c) == 5 {
+                    let mut s = first_child(fc, c)
+                    while s >= 0 {
+                        if node_kind(nk, s) == 10 {
+                            let mut e = first_child(fc, s)
+                            if node_kind(nk, e) == 4 {
+                                let mut cal = first_child(fc, e)
+                                if node_kind(nk, cal) == 2 {
+                                    let mut bn = node_text(nt, cal)
+                                    let mut a1 = next_sibling(ns, cal)
+                                    if a1 >= 0 {
+                                        if node_kind(nk, a1) == 2 {
+                                            if str_eq(node_text(nt, a1), vname) == 1 {
+                                                if str_eq(bn, "vec_push") == 1 {
+                                                    let elem = next_sibling(ns, a1)
+                                                    if elem >= 0 {
+                                                        if expr_is_float_shallow(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
+                                                    }
+                                                }
+                                                if str_eq(bn, "vec_set") == 1 {
+                                                    let mut ai = next_sibling(ns, a1)
+                                                    let mut elem = next_sibling(ns, ai)
+                                                    if elem >= 0 {
+                                                        if expr_is_float_shallow(nk, nt, fc, ns, prog, elem) == 1 { return 1 }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        s = next_sibling(ns, s)
+                    }
+                }
+                c = next_sibling(ns, c)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    0
+}
+

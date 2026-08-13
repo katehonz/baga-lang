@@ -1,0 +1,83 @@
+// json_write.baga — JSON serialize: hex digit, escape, рекурсивен
+// serialize на DOM възел. Парсерът е в json.baga.
+
+import "json.baga"
+import "../str/str.baga"
+
+fn json_hex_digit(v: i64) -> str {
+    if v < 10 { return chr(48 + v) }
+    return chr(87 + v)
+}
+
+fn json_escape(s: str) -> str {
+    let mut out = "\""
+    for i in 0..len(s) {
+        let c = char_at(s, i)
+        if c == 34 {
+            out = concat(out, "\\\"")
+        } else {
+            if c == 92 {
+                out = concat(out, "\\\\")
+            } else {
+                if c == 10 {
+                    out = concat(out, "\\n")
+                } else {
+                    if c == 9 {
+                        out = concat(out, "\\t")
+                    } else {
+                        if c == 13 {
+                            out = concat(out, "\\r")
+                        } else {
+                            if c < 32 {
+                                // останалите контролни знаци → \u00XX (валиден JSON)
+                                out = concat(out, "\\u00")
+                                out = concat(out, json_hex_digit((c >> 4) & 15))
+                                out = concat(out, json_hex_digit(c & 15))
+                            } else {
+                                out = concat(out, substr(s, i, i + 1))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return concat(out, "\"")
+}
+
+fn json_serialize(d: JsonDoc, n: i64) -> str {
+    let tag = vec_get(d.tags, n)
+    if tag == 0 { return "null" }
+    if tag == 1 { return "false" }
+    if tag == 2 { return "true" }
+    if tag == 3 { return vec_get(d.strs, n) }       // raw number text
+    if tag == 4 { return json_escape(vec_get(d.strs, n)) }
+    if tag == 5 {
+        let mut out = "["
+        let cnt = vec_get(d.klen, n)
+        for i in 0..cnt {
+            if i > 0 { out = concat(out, ",") }
+            out = concat(out, json_serialize(d, json_at(d, n, i)))
+        }
+        return concat(out, "]")
+    }
+    if tag == 6 {
+        let mut out = "{"
+        let cnt = json_count(d, n)
+        for i in 0..cnt {
+            if i > 0 { out = concat(out, ",") }
+            out = concat(out, json_escape(json_key(d, n, i)))
+            out = concat(out, ":")
+            out = concat(out, json_serialize(d, json_val(d, n, i)))
+        }
+        return concat(out, "}")
+    }
+    return "null"   // error node serializes as null
+}
+
+// ---------- strict validation (RFC 8259) ----------
+// json_parse above is lenient (best-effort shape recovery). json_strict_valid
+// accepts exactly one well-formed JSON document with no trailing input —
+// the check to run before sending user JSON to a database or another peer.
+// Returns pos past the construct, or -1 on error (mutually recursive).
+

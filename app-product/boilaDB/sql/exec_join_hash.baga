@@ -1,0 +1,134 @@
+// exec_join_hash.baga — hash join build (Q-join-inner-pks: key → inner
+// pks, GET веднъж, редът се пуска) + sorted outer (ORDER BY наляво →
+// сортирани pk-и → ранно спиране). BoilaHJBucket/BoilaHJBuild тук.
+
+import "../storage/shards.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "exec_scan_pks.baga"
+import "exec_sort.baga"
+
+// A2 / Q-join-inner-pks: hash join key → inner pks (not full rows).
+struct BoilaHJBucket {
+    pks: Vec<bytes>
+}
+
+
+// Q-join-inner-pks: build hash join key → inner pks (GET once, drop row).
+struct BoilaHJBuild {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ht: Map<bytes, BoilaHJBucket>
+}
+
+
+fn boila_hj_build_pks(s: BoilaStore, txn: BoilaTxn, t2: BoilaTable, ridx: i64) -> BoilaHJBuild !IO !Time !Par {
+    let m: Map<bytes, BoilaHJBucket> = map_new()
+    let empty_sel = boila_sel_empty()
+    let ip = boila_fetch_pks(s, txn, t2, empty_sel)?
+    s = ip.s
+    txn = ip.txn
+    let mut i: i64 = 0
+    while i < vec_len(ip.pks) {
+        let pk = vec_get(ip.pks, i)
+        let g = boila_txn_get(s, txn, t2.id, pk)?
+        s = g.s
+        if g.found == 1 {
+            let row = boila_row_dec(g.row)
+            if ridx >= 0 && ridx < vec_len(row) {
+                let v = vec_get(row, ridx)
+                if v.tag != boila_v_null() {
+                    let k = boila_val_enc(v)
+                    if map_has(m, k) == 1 {
+                        let b = map_get(m, k)
+                        vec_push(b.pks, pk)
+                        map_set(m, k, b)
+                    } else {
+                        let bp: Vec<bytes> = vec_new()
+                        vec_push(bp, pk)
+                        map_set(m, k, BoilaHJBucket { pks: bp })
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return BoilaHJBuild { s: s, txn: txn, ht: m }
+}
+
+
+// Q-join-sorted-outer: sort outer pks by left ORDER BY keys (one GET each).
+// idxs = column indices on left table; desc = sel.ord_desc.
+fn boila_join_sort_outer_pks(s: BoilaStore, txn: BoilaTxn, table_id: i64, pks: Vec<bytes>, idxs: Vec<i64>, desc: Vec<i64>) -> BoilaPksOut !IO !Time !Par {
+    let n = vec_len(pks)
+    if n <= 1 {
+        return BoilaPksOut { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
+    }
+    // keyrows[i] = order-key projection of pks[i]
+    let keyrows: Vec<Vec<BoilaVal>> = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        let g = boila_txn_get(s, txn, table_id, vec_get(pks, i))?
+        s = g.s
+        let kr: Vec<BoilaVal> = vec_new()
+        if g.found == 1 {
+            let row = boila_row_dec(g.row)
+            let mut k: i64 = 0
+            while k < vec_len(idxs) {
+                let ix = vec_get(idxs, k)
+                if ix >= 0 && ix < vec_len(row) {
+                    vec_push(kr, vec_get(row, ix))
+                } else {
+                    vec_push(kr, boila_val_null())
+                }
+                k = k + 1
+            }
+        } else {
+            let mut k2: i64 = 0
+            while k2 < vec_len(idxs) {
+                vec_push(kr, boila_val_null())
+                k2 = k2 + 1
+            }
+        }
+        vec_push(keyrows, kr)
+        i = i + 1
+    }
+    // identity column idxs for keyrows
+    let kid: Vec<i64> = vec_new()
+    let mut ki: i64 = 0
+    while ki < vec_len(idxs) {
+        vec_push(kid, ki)
+        ki = ki + 1
+    }
+    // insertion sort pks + keyrows together
+    i = 1
+    while i < n {
+        let pk = vec_get(pks, i)
+        let kr = vec_get(keyrows, i)
+        let mut j = i - 1
+        let mut moving = 1
+        while moving == 1 {
+            if j < 0 {
+                moving = 0
+            } else {
+                if boila_cmp_rows(vec_get(keyrows, j), kr, kid, desc) <= 0 {
+                    moving = 0
+                } else {
+                    vec_set(pks, j + 1, vec_get(pks, j))
+                    vec_set(keyrows, j + 1, vec_get(keyrows, j))
+                    j = j - 1
+                }
+            }
+        }
+        vec_set(pks, j + 1, pk)
+        vec_set(keyrows, j + 1, kr)
+        i = i + 1
+    }
+    return BoilaPksOut { s: s, txn: txn, ok: 1, err: "", state: "", pks: pks }
+}
+

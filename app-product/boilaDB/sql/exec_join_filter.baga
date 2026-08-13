@@ -1,0 +1,107 @@
+// exec_join_filter.baga — JOIN предикати: right-table post-filters
+// (eq / range по A3b), ON multi-eq (A3c), wide row keep (същите правила
+// като join post-filter). Pure — няма зависимости от exec_join.
+
+import "../core/value.baga"
+import "exec_buf.baga"
+
+fn boila_join_filter_right(rows: Vec<Vec<BoilaVal>>, off: i64, cix: i64, val: BoilaVal) -> Vec<Vec<BoilaVal>> {
+    let out: Vec<Vec<BoilaVal>> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(rows) {
+        let row = vec_get(rows, i)
+        let ix = off + cix
+        if ix >= 0 && ix < vec_len(row) {
+            if boila_val_eq_ix(vec_get(row, ix), val) == 1 {
+                vec_push(out, row)
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+
+// A3b: post-filter wide rows by >= lo and/or <= hi on column at off+cix.
+fn boila_join_filter_range(rows: Vec<Vec<BoilaVal>>, off: i64, cix: i64, has_lo: i64, lo: BoilaVal, has_hi: i64, hi: BoilaVal) -> Vec<Vec<BoilaVal>> {
+    let out: Vec<Vec<BoilaVal>> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(rows) {
+        let row = vec_get(rows, i)
+        let ix = off + cix
+        let mut keep = true
+        if ix < 0 || ix >= vec_len(row) {
+            keep = false
+        } else {
+            let v = vec_get(row, ix)
+            if v.tag == boila_v_null() {
+                keep = false
+            } else {
+                if has_lo == 1 {
+                    let c = boila_val_cmp(v, lo)
+                    if c != 0 && c != 1 {
+                        keep = false
+                    }
+                }
+                if keep && has_hi == 1 {
+                    let c = boila_val_cmp(v, hi)
+                    if c != 0 && c != 0 - 1 {
+                        keep = false
+                    }
+                }
+            }
+        }
+        if keep {
+            vec_push(out, row)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+
+// A3c: all ON pairs match (lrow left table, rrow right table).
+fn boila_join_eq_all(lrow: Vec<BoilaVal>, rrow: Vec<BoilaVal>, lixs: Vec<i64>, rixs: Vec<i64>) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(lixs) {
+        let li = vec_get(lixs, i)
+        let ri = vec_get(rixs, i)
+        if li < 0 || li >= vec_len(lrow) || ri < 0 || ri >= vec_len(rrow) {
+            return 0
+        }
+        if boila_val_cmp(vec_get(lrow, li), vec_get(rrow, ri)) != 0 {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+
+// Right-side filters on a wide row (same rules as join post-filter).
+fn boila_join_wide_keep(wide: Vec<BoilaVal>, loff: i64, r_eq: i64, r_cix: i64, r_val: BoilaVal, r_lo: i64, r_lo_cix: i64, r_hi: i64, r_hi_cix: i64, pk_lo: BoilaVal, pk_hi: BoilaVal) -> i64 {
+    if r_eq == 1 {
+        let ix = loff + r_cix
+        if ix < 0 || ix >= vec_len(wide) { return 0 }
+        if boila_val_eq_ix(vec_get(wide, ix), r_val) == 0 { return 0 }
+    }
+    if r_lo == 1 || r_hi == 1 {
+        let mut cix = r_lo_cix
+        if r_lo == 0 { cix = r_hi_cix }
+        if r_lo == 1 && r_hi == 1 && r_lo_cix != r_hi_cix { return 0 }
+        let ix = loff + cix
+        if ix < 0 || ix >= vec_len(wide) { return 0 }
+        let v = vec_get(wide, ix)
+        if v.tag == boila_v_null() { return 0 }
+        if r_lo == 1 {
+            let c = boila_val_cmp(v, pk_lo)
+            if c != 0 && c != 1 { return 0 }
+        }
+        if r_hi == 1 {
+            let c = boila_val_cmp(v, pk_hi)
+            if c != 0 && c != 0 - 1 { return 0 }
+        }
+    }
+    return 1
+}
+

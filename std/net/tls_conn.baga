@@ -1,0 +1,319 @@
+// tls_conn.baga — TLS 1.3 връзка: TlsConn, app secrets, record seal/read,
+// tls_handshake (пълен), tls_connect (TCP + SNI + host check), close.
+// Wire кодекът е в tls.baga; крипто — tls_crypto; flight/verify —
+// tls_flight.baga.
+
+import "tls.baga"
+import "tls_crypto.baga"
+import "tls_flight.baga"
+import "tcp.baga"
+import "../bytes/bytes.baga"
+import "../str/str.baga"
+import "../crypto/sha256.baga"
+import "../crypto/sha512.baga"
+import "../crypto/hmac.baga"
+import "../crypto/hkdf.baga"
+import "../crypto/aes.baga"
+import "../crypto/gcm.baga"
+import "../crypto/x25519.baga"
+import "../random/random.baga"
+
+struct TlsConn {
+    ok: i64,
+    err: str,
+    fd: i64,
+    c_key: bytes,
+    c_iv: bytes,
+    s_key: bytes,
+    s_iv: bytes,
+    c_seq: i64,
+    s_seq: i64
+}
+
+fn tls_conn_bad(err: str) -> TlsConn {
+    return TlsConn {
+        ok: 0, err: err, fd: -1,
+        c_key: bytes_from_vec(vec_new()), c_iv: bytes_from_vec(vec_new()),
+        s_key: bytes_from_vec(vec_new()), s_iv: bytes_from_vec(vec_new()),
+        c_seq: 0, s_seq: 0
+    }
+}
+
+// Derive application traffic secrets from the handshake secret + app_hash
+// (transcript through server Finished).
+fn tls_app_secrets(sched: TlsSchedule, app_hash: bytes) -> TlsConn {
+    let hl = tls_hash_len(sched.cipher)
+    let zero = tls_zeros(hl)
+    let d1 = tls_derive(sched.cipher, sched.hs_secret)
+    let master = tls_hkdf_extract(sched.cipher, d1, zero)
+    let c_app = tls_hkdf_label(sched.cipher, master, "c ap traffic", app_hash, hl)
+    let s_app = tls_hkdf_label(sched.cipher, master, "s ap traffic", app_hash, hl)
+    return TlsConn {
+        ok: 1, err: "", fd: -1,
+        c_key: tls_hkdf_label(sched.cipher, c_app, "key", bytes_from_vec(vec_new()), tls_key_len(sched.cipher)),
+        c_iv: tls_hkdf_label(sched.cipher, c_app, "iv", bytes_from_vec(vec_new()), 12),
+        s_key: tls_hkdf_label(sched.cipher, s_app, "key", bytes_from_vec(vec_new()), tls_key_len(sched.cipher)),
+        s_iv: tls_hkdf_label(sched.cipher, s_app, "iv", bytes_from_vec(vec_new()), 12),
+        c_seq: 0, s_seq: 0
+    }
+}
+
+// Strip TLSInnerPlaintext padding: zeros then content-type byte.
+struct TlsInner {
+    ok: i64,
+    typ: i64,
+    data: bytes
+}
+
+fn tls_inner_open(pt: bytes) -> TlsInner {
+    let n = bytes_len(pt)
+    if n == 0 {
+        return TlsInner { ok: 0, typ: 0, data: bytes_from_vec(vec_new()) }
+    }
+    let mut i = n - 1
+    while i >= 0 && bytes_at(pt, i) == 0 {
+        i = i - 1
+    }
+    if i < 0 {
+        return TlsInner { ok: 0, typ: 0, data: bytes_from_vec(vec_new()) }
+    }
+    return TlsInner { ok: 1, typ: bytes_at(pt, i), data: bytes_slice(pt, 0, i) }
+}
+
+// Encrypt one application-data record (inner type 23).
+fn tls_conn_seal(conn: TlsConn, plain: bytes) -> bytes {
+    let typed = bytes_concat(plain, hex_decode("17"))
+    let aead = aes_expand(conn.c_key)
+    let aad = tls_hdr_bytes(23, bytes_len(typed) + 16)
+    let sealed = gcm_seal(aead, tls_nonce(conn.c_iv, conn.c_seq), aad, typed)
+    return bytes_concat(tls_hdr_bytes(23, bytes_len(sealed)), sealed)
+}
+
+fn tls_conn_write(conn: TlsConn, plain: bytes) -> TlsConn !Net !IO {
+    if conn.ok == 0 {
+        return conn
+    }
+    let rec = tls_conn_seal(conn, plain)
+    let w = tcp_write_bytes(conn.fd, rec)?
+    if w != 0 {
+        return TlsConn {
+            ok: 0, err: "tls write failed", fd: conn.fd,
+            c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
+            c_seq: conn.c_seq, s_seq: conn.s_seq
+        }
+    }
+    return TlsConn {
+        ok: 1, err: "", fd: conn.fd,
+        c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
+        c_seq: conn.c_seq + 1, s_seq: conn.s_seq
+    }
+}
+
+// Decrypt one inbound record. Skips CCS (type 20). Returns data + type
+// for application (23) or post-handshake (22); empty data on skip/error.
+struct TlsRead {
+    conn: TlsConn,
+    typ: i64,        // inner content type (23 app, 22 hs, 21 alert, 0 skip/eof)
+    data: bytes
+}
+
+fn tls_conn_read(conn: TlsConn) -> TlsRead !Net !IO {
+    if conn.ok == 0 {
+        return TlsRead { conn: conn, typ: 0, data: bytes_from_vec(vec_new()) }
+    }
+    let r = tls_read_record(conn.fd)?
+    if r.ok == 0 {
+        // EOF / read error — treat as clean end when payload empty
+        return TlsRead {
+            conn: TlsConn {
+                ok: 0, err: r.err, fd: conn.fd,
+                c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
+                c_seq: conn.c_seq, s_seq: conn.s_seq
+            },
+            typ: 0, data: bytes_from_vec(vec_new())
+        }
+    }
+    if r.typ == 20 {
+        // ChangeCipherSpec — middlebox compat, ignore
+        return TlsRead { conn: conn, typ: 0, data: bytes_from_vec(vec_new()) }
+    }
+    if r.typ != 23 {
+        return TlsRead { conn: conn, typ: r.typ, data: r.payload }
+    }
+    let aead = aes_expand(conn.s_key)
+    let aad = tls_hdr_bytes(23, bytes_len(r.payload))
+    let open = gcm_open(aead, tls_nonce(conn.s_iv, conn.s_seq), aad, r.payload)
+    let next = TlsConn {
+        ok: 1, err: "", fd: conn.fd,
+        c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
+        c_seq: conn.c_seq, s_seq: conn.s_seq + 1
+    }
+    if open.ok == 0 {
+        return TlsRead {
+            conn: TlsConn {
+                ok: 0, err: "tls decrypt failed", fd: conn.fd,
+                c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
+                c_seq: conn.c_seq, s_seq: conn.s_seq
+            },
+            typ: 0, data: bytes_from_vec(vec_new())
+        }
+    }
+    let inner = tls_inner_open(open.pt)
+    if inner.ok == 0 {
+        return TlsRead { conn: next, typ: 0, data: bytes_from_vec(vec_new()) }
+    }
+    return TlsRead { conn: next, typ: inner.typ, data: inner.data }
+}
+
+// Read application data until the peer closes (or alert). Skips
+// NewSessionTicket / other post-handshake messages.
+fn tls_conn_read_app(conn: TlsConn) -> TlsRead !Net !IO {
+    let mut c = conn
+    let mut acc = bytes_from_vec(vec_new())
+    let mut running: i64 = 1
+    while running == 1 {
+        let r = tls_conn_read(c)?
+        c = r.conn
+        if r.typ == 0 {
+            // eof / skip — if we already have data, stop; else keep going once
+            if bytes_len(acc) > 0 || c.ok == 0 {
+                running = 0
+            }
+        } else {
+            if r.typ == 23 {
+                acc = bytes_concat(acc, r.data)
+                // HTTP is complete when we see \r\n\r\n and either
+                // Content-Length is satisfied or Connection: close with body.
+                // For the mock we read until EOF; keep looping until close.
+            } else {
+                if r.typ == 21 {
+                    // alert
+                    running = 0
+                }
+                // typ 22 = post-handshake (NewSessionTicket) — skip
+            }
+        }
+    }
+    return TlsRead { conn: c, typ: 23, data: acc }
+}
+
+// Full client handshake on an already-connected fd.
+// trust_anchor: empty bytes → accept self-signed leaf (dev/mock).
+fn tls_handshake(fd: i64, sni: str, trust_anchor: bytes) -> TlsConn !Net !IO !Random {
+    let scalar = bytes_from_vec(random_bytes(32))
+    let sid = bytes_from_vec(random_bytes(32))
+    let rnd = bytes_from_vec(random_bytes(32))
+    let pub = x25519_public(scalar)
+    let rec0 = tls_client_hello(pub, rnd, sid, sni)
+    let w = tcp_write_bytes(fd, rec0)?
+    if w != 0 {
+        return tls_conn_bad("ClientHello write failed")
+    }
+    let ch_msg = bytes_slice(rec0, 5, bytes_len(rec0))
+
+    let sh_rec = tls_read_record(fd)?
+    if sh_rec.ok == 0 {
+        return tls_conn_bad("ServerHello read failed")
+    }
+    let sh_msg = sh_rec.payload
+    let shello = tls_parse_server_hello(sh_msg)
+    if shello.ok == 0 {
+        return tls_conn_bad(shello.err)
+    }
+    if shello.cipher != 4865 && shello.cipher != 4866 {
+        return tls_conn_bad("unsupported cipher (want TLS_AES_128_GCM_SHA256 or TLS_AES_256_GCM_SHA384)")
+    }
+    let shared = x25519(scalar, shello.server_pub)
+    let sched = tls_schedule(shello.cipher, ch_msg, sh_msg, shared)
+    if sched.ok == 0 {
+        return tls_conn_bad(sched.err)
+    }
+
+    // Collect encrypted handshake flight (skip CCS). openssl s_server
+    // typically splits EE | Cert | CV+Fin across 3–4 type-23 records and
+    // may send a middlebox CCS. Match the live probe: take 4 app records.
+    let mut chunked = bytes_from_vec(vec_new())
+    let mut recs: i64 = 0
+    while recs < 4 {
+        let r = tls_read_record(fd)?
+        if r.ok == 0 {
+            return tls_conn_bad("flight record failed")
+        }
+        if r.typ == 23 {
+            let ln = bytes_len(r.payload)
+            let hd = vec_new()
+            vec_push(hd, (ln >> 16) & 255)
+            vec_push(hd, (ln >> 8) & 255)
+            vec_push(hd, ln & 255)
+            chunked = bytes_concat(bytes_concat(chunked, bytes_from_vec(hd)), r.payload)
+            recs = recs + 1
+        }
+        // typ 20 CCS ignored (does not count)
+    }
+    let flight = tls_open_handshake(sched, ch_msg, sh_msg, chunked)
+    if flight.ok == 0 || flight.finished_ok == 0 {
+        return tls_conn_bad(concat("handshake flight: ", flight.err))
+    }
+    let ver = tls_verify_server(flight, trust_anchor)
+    if ver.ok == 0 {
+        return tls_conn_bad(concat("cert/CV: ", ver.err))
+    }
+
+    // client Finished (handshake keys)
+    let fin = tls_finished_record(sched, flight.flight_hash)
+    let w2 = tcp_write_bytes(fd, fin)?
+    if w2 != 0 {
+        return tls_conn_bad("client Finished write failed")
+    }
+
+    // application traffic keys
+    let mut conn = tls_app_secrets(sched, flight.app_hash)
+    conn = TlsConn {
+        ok: 1, err: "", fd: fd,
+        c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
+        c_seq: 0, s_seq: 0
+    }
+    return conn
+}
+
+// True when host is dotted IPv4 (no SNI — many servers reject IP names).
+fn tls_host_is_ipv4(host: str) -> i64 {
+    let mut i: i64 = 0
+    let mut dots: i64 = 0
+    while i < len(host) {
+        let c = char_at(host, i)
+        if c == 46 {
+            dots = dots + 1
+        } else {
+            if c < 48 || c > 57 {
+                return 0
+            }
+        }
+        i = i + 1
+    }
+    if dots == 3 {
+        return 1
+    }
+    return 0
+}
+
+// Connect + handshake. Host is used for TCP; SNI is the host name unless
+// it is a dotted IPv4 address (then SNI is omitted).
+fn tls_connect(host: str, port: i64, timeout_s: i64, trust_anchor: bytes) -> TlsConn !Net !IO !Random {
+    let fd = tcp_connect_to(host, port, timeout_s)?
+    if fd < 0 {
+        return tls_conn_bad("tcp connect failed")
+    }
+    let mut sni = host
+    if tls_host_is_ipv4(host) == 1 {
+        sni = ""
+    }
+    return tls_handshake(fd, sni, trust_anchor)?
+}
+
+fn tls_conn_close(conn: TlsConn) -> i64 !Net !IO {
+    if conn.fd >= 0 {
+        tcp_close(conn.fd)?
+    }
+    return 0
+}

@@ -8,6 +8,8 @@
 
 import "httpdbaga/http.baga"
 import "std/json/json.baga"
+import "std/json/json_write.baga"
+import "std/json/json_strict.baga"
 import "std/str/str.baga"
 import "std/net/tcp.baga"
 

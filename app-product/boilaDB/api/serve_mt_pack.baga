@@ -1,0 +1,22 @@
+// serve_mt_pack.baga — go_bg pack кодек (cell2) + keys на stats map-а.
+// pack = cell2(gmu, cell2(srv, cell2(dmu, cell2(live, cell2(pcs, stats)))))
+// Pure accessors — нула зависимости.
+
+fn boila_mt_pack(gmu: i64, srv_mh: i64, dmu_mh: i64, live_mh: i64, pcs_mh: i64, stats_mh: i64) -> i64 {
+    return cell2(gmu, cell2(srv_mh, cell2(dmu_mh, cell2(live_mh, cell2(pcs_mh, stats_mh)))))
+}
+
+fn boila_mt_gmu(pack: i64) -> i64 { return cell2_0(pack) }
+fn boila_mt_srv_h(pack: i64) -> i64 { return cell2_0(cell2_1(pack)) }
+fn boila_mt_dmu_h(pack: i64) -> i64 { return cell2_0(cell2_1(cell2_1(pack))) }
+fn boila_mt_live_h(pack: i64) -> i64 { return cell2_0(cell2_1(cell2_1(cell2_1(pack)))) }
+fn boila_mt_pcs_h(pack: i64) -> i64 { return cell2_0(cell2_1(cell2_1(cell2_1(cell2_1(pack))))) }
+fn boila_mt_stats_h(pack: i64) -> i64 { return cell2_1(cell2_1(cell2_1(cell2_1(cell2_1(pack))))) }
+
+// stats map keys
+fn boila_st_sql() -> i64 { return 0 }
+fn boila_st_sql_ok() -> i64 { return 1 }
+fn boila_st_sql_err() -> i64 { return 2 }
+fn boila_st_http() -> i64 { return 3 }
+fn boila_st_pg() -> i64 { return 4 }
+

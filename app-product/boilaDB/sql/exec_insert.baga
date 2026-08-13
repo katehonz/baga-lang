@@ -1,0 +1,194 @@
+// exec_insert.baga — INSERT executor (P4, през txn buffer-а): подготовка
+// на колоните (prep), един ред наведнъж (one), write пътеките са в
+// exec_insert_write.baga. UPDATE/DELETE — в exec_modify.baga.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../fts/fts.baga"
+import "../vector/hnsw.baga"
+import "../vector/hnsw_store.baga"
+import "../graph/adjacency.baga"
+import "../graph/dml.baga"
+import "../ts/rollup.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_dml.baga"
+import "exec_insert_write.baga"
+import "exec_proj.baga"
+import "exec_xw.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// Колони → индекси (+ дубликат гард), pk слот, ON CONFLICT SET колони,
+// Q-oc-expr bind names (cols + excluded$col), RETURNING проекция.
+fn boila_insert_prep(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns) -> BoilaInsPrep !IO !Time !Par {
+    let cix: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(ins.cols) {
+        let nm = vec_get(ins.cols, i)
+        let ix = boila_col_idx(t, nm)
+        if ix < 0 {
+            return boila_insert_prep_fail(s, txn, concat("колона '", concat(nm, "' не съществува")), "42703")
+        }
+        let mut j: i64 = 0
+        while j < vec_len(cix) {
+            if vec_get(cix, j) == ix {
+                return boila_insert_prep_fail(s, txn, concat("дублирана колона '", concat(nm, "' в INSERT")), "42701")
+            }
+            j = j + 1
+        }
+        vec_push(cix, ix)
+        i = i + 1
+    }
+    // pk слот
+    let mut pk_slot: i64 = 0 - 1
+    i = 0
+    while i < vec_len(cix) {
+        if vec_get(cix, i) == t.pk_idx {
+            pk_slot = i
+        }
+        i = i + 1
+    }
+    if pk_slot < 0 {
+        return boila_insert_prep_fail(s, txn, "PRIMARY KEY колона липсва в INSERT", "23502")
+    }
+    // ON CONFLICT SET колони
+    let ocix: Vec<i64> = vec_new()
+    i = 0
+    while i < vec_len(ins.oc_cols) {
+        let ix = boila_col_idx(t, vec_get(ins.oc_cols, i))
+        if ix < 0 {
+            return boila_insert_prep_fail(s, txn, concat("DO UPDATE колона '", concat(vec_get(ins.oc_cols, i), "' не съществува")), "42703")
+        }
+        vec_push(ocix, ix)
+        i = i + 1
+    }
+    // Q-oc-expr: bind names = table cols + excluded$col; NULL probe
+    let xnames: Vec<str> = vec_new()
+    i = 0
+    while i < vec_len(t.cols) {
+        let nm = vec_get(t.cols, i).name
+        vec_push(xnames, nm)
+        vec_push(xnames, concat("excluded$", nm))
+        i = i + 1
+    }
+    let xnulls: Vec<BoilaVal> = vec_new()
+    i = 0
+    while i < vec_len(xnames) {
+        vec_push(xnulls, boila_val_null())
+        i = i + 1
+    }
+    i = 0
+    while i < vec_len(ins.oc_xtoks) {
+        let sx = vec_get(ins.oc_xtoks, i)
+        if vec_len(sx) > 0 {
+            let pr = boila_xw_eval(xnames, sx, xnulls)?
+            if pr.ok == 0 {
+                return boila_insert_prep_fail(s, txn, pr.err, pr.state)
+            }
+        }
+        i = i + 1
+    }
+    // RETURNING
+    let mut res = boila_result_empty()
+    if ins.has_ret == 1 {
+        let pj = boila_dml_proj(t, ins.ret_star, ins.ret_cols)
+        if pj.ok == 0 {
+            return boila_insert_prep_fail(s, txn, pj.err, pj.state)
+        }
+        i = 0
+        while i < vec_len(t.cols) {
+            let cd = vec_get(t.cols, i)
+            if ins.ret_star == 1 {
+                boila_result_add_col(res, cd.name, cd.typ)
+            } else {
+                let mut k: i64 = 0
+                while k < vec_len(pj.proj) {
+                    if vec_get(pj.proj, k) == i {
+                        boila_result_add_col(res, cd.name, cd.typ)
+                    }
+                    k = k + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+    let pj2 = boila_dml_proj(t, ins.ret_star, ins.ret_cols)
+    return BoilaInsPrep { s: s, txn: txn, ok: 1, err: "", state: "", cix: cix, ocix: ocix, xnames: xnames, xnulls: xnulls, res: res, pj2: pj2, pk_slot: pk_slot }
+}
+
+// Един INSERT ред: пълен ред (липсващите → NULL), типова валидация,
+// pk проверка, GET + dispatch (upsert / plain put / DO NOTHING).
+fn boila_insert_one(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns, prep: BoilaInsPrep, ftsl: BoilaFtsList, hnswl: BoilaHnswList, grpl: BoilaGraphList, rul: BoilaRuList, tuple: Vec<BoilaVal>) -> BoilaInsOne !IO !Time !Par {
+    let full: Vec<BoilaVal> = vec_new()
+    let mut c: i64 = 0
+    while c < vec_len(t.cols) {
+        vec_push(full, boila_val_null())
+        c = c + 1
+    }
+    c = 0
+    while c < vec_len(prep.cix) {
+        let v = vec_get(tuple, c)
+        let cd = vec_get(t.cols, vec_get(prep.cix, c))
+        if boila_dml_val_ok(cd.typ, v) == 0 {
+            return boila_insert_one_fail(s, txn, concat("стойност за '", concat(cd.name, "' не съответства на типа")), "42804")
+        }
+        vec_set(full, vec_get(prep.cix, c), boila_dml_coerce(cd.typ, v))
+        c = c + 1
+    }
+    let pkval = vec_get(tuple, prep.pk_slot)
+    if pkval.tag == boila_v_null() {
+        return boila_insert_one_fail(s, txn, "NULL в PRIMARY KEY", "23502")
+    }
+    let pkenc = boila_val_enc(pkval)
+    let g = boila_txn_get(s, txn, t.id, pkenc)?
+    s = g.s
+    if g.found == 1 {
+        if ins.oc == 0 {
+            return boila_insert_one_fail(s, txn, "дублиран PRIMARY KEY (без ON CONFLICT)", "23505")
+        }
+        if ins.oc == 2 {
+            let old = boila_row_dec(g.row)
+            return boila_insert_upsert(s, txn, t, ins, prep, ftsl, hnswl, grpl, rul, full, pkenc, old)?
+        }
+        // oc == 1 (DO NOTHING): пропусни реда
+        return BoilaInsOne { s: s, txn: txn, ok: 1, err: "", state: "", affected: 0, res: prep.res }
+    }
+    return boila_insert_put(s, txn, t, ins, prep, ftsl, hnswl, grpl, rul, full, pkenc)?
+}
+
+fn boila_exec_insert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns) -> BoilaDml !IO !Time !Par {
+    let prep = boila_insert_prep(s, txn, t, ins)?
+    if prep.ok == 0 {
+        return boila_dml_fail(prep.s, prep.txn, 6, prep.err, prep.state)
+    }
+    let mut cs = prep.s
+    let mut ctxn = prep.txn
+    let ftsl = fts_list_for_table(cs, t.id)?
+    cs = ftsl.s
+    let hnswl = hnsw_list_for_table(cs, t.id)?
+    cs = hnswl.s
+    let grpl = graph_list_for_table(cs, t.id)?
+    cs = grpl.s
+    let rul = boila_ru_list_for_table(cs, t.id)?
+    cs = rul.s
+    let mut affected: i64 = 0
+    let mut res = prep.res
+    let mut r: i64 = 0
+    while r < vec_len(ins.rows) {
+        let one = boila_insert_one(cs, ctxn, t, ins, prep, ftsl, hnswl, grpl, rul, vec_get(ins.rows, r))?
+        if one.ok == 0 {
+            return boila_dml_fail(one.s, one.txn, 6, one.err, one.state)
+        }
+        cs = one.s
+        ctxn = one.txn
+        affected = affected + one.affected
+        res = one.res
+        r = r + 1
+    }
+    return boila_dml_ok(cs, ctxn, 6, affected, res)
+}

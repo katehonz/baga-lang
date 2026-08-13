@@ -16,6 +16,8 @@
 import "rocksbaga/db/backup.baga"
 import "rocksbaga/db/engine.baga"
 import "rocksbaga/db/shard.baga"
+import "rocksbaga/db/shard_read.baga"
+import "rocksbaga/db/shard_ttl.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 

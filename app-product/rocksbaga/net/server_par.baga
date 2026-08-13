@@ -1,0 +1,366 @@
+// server_par.baga — R34 RESP poll → per-shard workers (подредени
+// replies per fd): LsmParSrv, submit/drain, on_readable, serve_parallel_to.
+
+import "server.baga"
+import "../db/shard.baga"
+import "../db/workers.baga"
+import "../db/workers_par.baga"
+import "../db/workers_api.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/net/poll.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+import "std/bytes/bytes.baga"
+
+// --- R34: RESP poll → per-shard workers (ordered replies per fd) ---
+
+struct LsmParSrv {
+    p: LsmParallel,
+    listener: i64,
+    fds: Vec<i64>,
+    bufs: Map<i64, bytes>,
+    // job_id → client fd
+    job_fd: Map<i64, i64>,
+    // job_id → sequence on that fd
+    job_seq: Map<i64, i64>,
+    // pack(fd,seq) → reply bytes (R66: binary-safe bulk)
+    reps: Map<i64, bytes>,
+    // fd → next seq to assign / next seq to write
+    fd_alloc: Map<i64, i64>,
+    fd_next: Map<i64, i64>,
+    scratch: str
+}
+
+fn lsm_pack_fs(fd: i64, seq: i64) -> i64 {
+    // fd is small; seq per-connection. 1e9 slots per fd.
+    return fd * 1000000000 + seq
+}
+
+fn lsm_par_srv_add(st: LsmParSrv, fd: i64) -> LsmParSrv !Net {
+    tcp_set_nodelay(fd)?
+    vec_push(st.fds, fd)
+    map_set(st.bufs, fd, bytes_from_vec(vec_new()))
+    map_set(st.fd_alloc, fd, 0)
+    map_set(st.fd_next, fd, 0)
+    return st
+}
+
+fn lsm_par_srv_drop(st: LsmParSrv, fd: i64) -> LsmParSrv !Net !IO {
+    tcp_close(fd)?
+    map_del(st.bufs, fd)
+    map_del(st.fd_alloc, fd)
+    map_del(st.fd_next, fd)
+    let nv: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(st.fds) {
+        if vec_get(st.fds, i) != fd {
+            vec_push(nv, vec_get(st.fds, i))
+        }
+        i = i + 1
+    }
+    st.fds = nv
+    return st
+}
+
+// R38: flush in-order replies for one fd — coalesce into a single write
+// (writev-like). Intermediate concat buffers are not dropped in the loop
+// (baga rule); one drop after the write.
+fn lsm_par_flush_fd(st: LsmParSrv, fd: i64) -> LsmParSrv !Net !IO {
+    let mut next = 0
+    if map_has(st.fd_next, fd) == 1 {
+        next = map_get(st.fd_next, fd)
+    }
+    let mut out = bytes_new(0)
+    let mut n_out: i64 = 0
+    let mut go: i64 = 1
+    while go == 1 {
+        let pk = lsm_pack_fs(fd, next)
+        if map_has(st.reps, pk) == 0 {
+            go = 0
+        } else {
+            let rep = map_get(st.reps, pk)
+            map_del(st.reps, pk)
+            out = bytes_concat(out, rep)
+            drop(rep)
+            n_out = n_out + 1
+            next = next + 1
+        }
+    }
+    if n_out > 0 {
+        let w = tcp_write_bytes(fd, out)?
+        drop(out)
+        if w != 0 {
+            // write failed — leave next advanced; client will drop
+        }
+    }
+    map_set(st.fd_next, fd, next)
+    return st
+}
+
+// Drain completed worker jobs into ordered reply map, then flush dirty fds
+// once each (R38: batch flush, not per-job write).
+fn lsm_par_drain(st: LsmParSrv) -> LsmParSrv !IO !Net !Par {
+    let dirty: Map<i64, i64> = map_new()
+    let mut guard: i64 = 0
+    while guard < 256 {
+        let id = lsm_parallel_try_done(st.p)?
+        if id == 0 {
+            guard = 256
+        } else {
+            if id < 0 {
+                guard = 256
+            } else {
+                if map_has(st.job_fd, id) == 1 {
+                    let fd = map_get(st.job_fd, id)
+                    let seq = map_get(st.job_seq, id)
+                    let rep_b = lsm_parallel_take_rep_b(st.p, id)
+                    map_set(st.reps, lsm_pack_fs(fd, seq), rep_b)
+                    map_del(st.job_fd, id)
+                    map_del(st.job_seq, id)
+                    map_set(dirty, fd, 1)
+                } else {
+                    // orphan (e.g. intermediate SAVE flush jobs)
+                    let _or = lsm_parallel_take_rep_b(st.p, id)
+                    if bytes_len(_or) < 0 {
+                    }
+                }
+                guard = guard + 1
+            }
+        }
+    }
+    let fds = map_keys(dirty)
+    let mut i: i64 = 0
+    while i < vec_len(fds) {
+        st = lsm_par_flush_fd(st, vec_get(fds, i))?
+        i = i + 1
+    }
+    return st
+}
+
+// R66/R68: enqueue key-op with binary key + value; reply deferred.
+fn lsm_par_submit_cmd_b(st: LsmParSrv, fd: i64, op: i64, key: bytes, val: bytes, extra: str) -> LsmParSrv !IO !Par !Net {
+    let id = lsm_parallel_submit_kb(st.p, op, key, val, extra)?
+    if id < 0 {
+        let err = bytes_of_str("-ERR enqueue failed\r\n")
+        tcp_write_bytes(fd, err)?
+        drop(err)
+        return st
+    }
+    let mut seq = 0
+    if map_has(st.fd_alloc, fd) == 1 {
+        seq = map_get(st.fd_alloc, fd)
+    }
+    map_set(st.fd_alloc, fd, seq + 1)
+    map_set(st.job_fd, id, fd)
+    map_set(st.job_seq, id, seq)
+    return st
+}
+
+fn lsm_par_submit_cmd(st: LsmParSrv, fd: i64, op: i64, key: str, val: str, extra: str) -> LsmParSrv !IO !Par !Net {
+    return lsm_par_submit_cmd_b(st, fd, op, bytes_of_str(key), bytes_of_str(val), extra)?
+}
+
+fn lsm_par_on_readable(st: LsmParSrv, fd: i64) -> LsmParSrv !IO !Net !Time !Par {
+    let chunk = tcp_read_into(fd, st.scratch, 65536)?
+    if bytes_len(chunk) == 0 {
+        return lsm_par_srv_drop(st, fd)?
+    }
+    let mut buf = map_get(st.bufs, fd)
+    if bytes_len(buf) > 0 {
+        let joined = bytes_concat(buf, chunk)
+        drop(chunk)
+        buf = joined
+    } else {
+        buf = chunk
+    }
+    let mut drop_me: i64 = 0
+    let mut again: i64 = 1
+    while again == 1 && drop_me == 0 {
+        let p = resp_parse_command_b(buf)
+        if p.ok == 0 {
+            again = 0
+        } else {
+            let old = buf
+            if p.consumed >= bytes_len(old) {
+                buf = bytes_new(0)
+            } else {
+                buf = bytes_slice(old, p.consumed, bytes_len(old))
+            }
+            drop(old)
+            let args = p.args
+            let n = vec_len(args)
+            if n < 1 {
+                drop(args)
+            } else {
+                // R68: job keys hop as raw bytes (bytes_h) into _kb workers.
+                let c0 = str_of_bytes(vec_get(args, 0))
+                if lsm_eq_ci(c0, "PING") == 1 {
+                    // immediate ordered reply
+                    let mut seq = 0
+                    if map_has(st.fd_alloc, fd) == 1 {
+                        seq = map_get(st.fd_alloc, fd)
+                    }
+                    map_set(st.fd_alloc, fd, seq + 1)
+                    map_set(st.reps, lsm_pack_fs(fd, seq), bytes_of_str("+PONG\r\n"))
+                    st = lsm_par_flush_fd(st, fd)?
+                } else {
+                    if lsm_eq_ci(c0, "QUIT") == 1 {
+                        let mut seq2 = 0
+                        if map_has(st.fd_alloc, fd) == 1 {
+                            seq2 = map_get(st.fd_alloc, fd)
+                        }
+                        map_set(st.fd_alloc, fd, seq2 + 1)
+                        map_set(st.reps, lsm_pack_fs(fd, seq2), bytes_of_str("+OK\r\n"))
+                        st = lsm_par_flush_fd(st, fd)?
+                        drop_me = 1
+                    } else {
+                        if lsm_eq_ci(c0, "SET") == 1 && n == 3 {
+                            st = lsm_par_submit_cmd_b(
+                                st, fd, LSM_OP_SET(),
+                                vec_get(args, 1),
+                                vec_get(args, 2),
+                                ""
+                            )?
+                        } else {
+                            if lsm_eq_ci(c0, "GET") == 1 && n == 2 {
+                                st = lsm_par_submit_cmd_b(
+                                    st, fd, LSM_OP_GET(),
+                                    vec_get(args, 1),
+                                    bytes_new(0),
+                                    ""
+                                )?
+                            } else {
+                                if lsm_eq_ci(c0, "DEL") == 1 && n == 2 {
+                                    st = lsm_par_submit_cmd_b(
+                                        st, fd, LSM_OP_DEL(),
+                                        vec_get(args, 1),
+                                        bytes_new(0),
+                                        ""
+                                    )?
+                                } else {
+                                    if lsm_eq_ci(c0, "SETEX") == 1 && n == 4 {
+                                        st = lsm_par_submit_cmd_b(
+                                            st, fd, LSM_OP_SETEX(),
+                                            vec_get(args, 1),
+                                            vec_get(args, 3),
+                                            str_of_bytes(vec_get(args, 2))
+                                        )?
+                                    } else {
+                                        if lsm_eq_ci(c0, "SAVE") == 1 || lsm_eq_ci(c0, "BGSAVE") == 1 {
+                                            // broadcast flush; one ordered OK after last job
+                                            let last = lsm_parallel_submit_flush_all(st.p)?
+                                            let mut seq3 = 0
+                                            if map_has(st.fd_alloc, fd) == 1 {
+                                                seq3 = map_get(st.fd_alloc, fd)
+                                            }
+                                            map_set(st.fd_alloc, fd, seq3 + 1)
+                                            // track only last flush job for this fd's OK
+                                            map_set(st.job_fd, last, fd)
+                                            map_set(st.job_seq, last, seq3)
+                                        } else {
+                                            let mut seq4 = 0
+                                            if map_has(st.fd_alloc, fd) == 1 {
+                                                seq4 = map_get(st.fd_alloc, fd)
+                                            }
+                                            map_set(st.fd_alloc, fd, seq4 + 1)
+                                            if lsm_eq_ci(c0, "SELECT") == 1 {
+                                                map_set(st.reps, lsm_pack_fs(fd, seq4),
+                                                    bytes_of_str("-ERR parallel mode: SELECT unsupported (use LSM_PARALLEL=0)\r\n"))
+                                            } else {
+                                                map_set(st.reps, lsm_pack_fs(fd, seq4),
+                                                    bytes_of_str("-ERR parallel mode: unsupported cmd (use SET/GET/DEL/PING)\r\n"))
+                                            }
+                                            st = lsm_par_flush_fd(st, fd)?
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                drop(args)
+            }
+            // opportunistically drain workers after each cmd
+            st = lsm_par_drain(st)?
+        }
+    }
+    if drop_me == 1 {
+        return lsm_par_srv_drop(st, fd)?
+    }
+    map_set(st.bufs, fd, buf)
+    return st
+}
+
+fn lsm_serve_parallel_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
+    let mut dir = env("LSMPATH")?
+    if dir == "" {
+        dir = "/tmp/baga_lsm"
+    }
+    let mut nshards: i64 = 4
+    let ns = env("LSM_SHARDS")?
+    if ns != "" {
+        nshards = parse_int(ns)
+        if nshards < 1 {
+            nshards = 1
+        }
+    }
+    let p = lsm_parallel_start(dir, nshards)?
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        lsm_parallel_stop(p)?
+        return -1
+    }
+    let mut st = LsmParSrv {
+        p: p, listener: listener, fds: vec_new(), bufs: map_new(),
+        job_fd: map_new(), job_seq: map_new(), reps: map_new(),
+        fd_alloc: map_new(), fd_next: map_new(),
+        scratch: str_repeat(" ", 65536)
+    }
+    while true {
+        // always drain worker completions
+        st = lsm_par_drain(st)?
+        let pollfds: Vec<i64> = vec_new()
+        vec_push(pollfds, st.listener)
+        let mut i: i64 = 0
+        while i < vec_len(st.fds) {
+            vec_push(pollfds, vec_get(st.fds, i))
+            i = i + 1
+        }
+        // R35: outstanding worker jobs → poll timeout 0 so single-client
+        // RTT is not capped by the idle 50ms tick (was ~20 ops/s).
+        let mut pto: i64 = 50
+        if map_len(st.job_fd) > 0 {
+            pto = 0
+        }
+        let pr = poll_wait(pollfds, pto)?
+        if pr.ok == 1 {
+            if poll_has(pr.ready, st.listener) == 1 {
+                let fd = tcp_accept(st.listener)?
+                if fd >= 0 {
+                    if timeout_s > 0 {
+                        tcp_set_timeouts(fd, timeout_s)?
+                    }
+                    st = lsm_par_srv_add(st, fd)?
+                }
+            }
+            let snapshot: Vec<i64> = vec_new()
+            let mut j: i64 = 0
+            while j < vec_len(st.fds) {
+                vec_push(snapshot, vec_get(st.fds, j))
+                j = j + 1
+            }
+            let mut k: i64 = 0
+            while k < vec_len(snapshot) {
+                let fd = vec_get(snapshot, k)
+                if poll_has(pr.ready, fd) == 1 {
+                    st = lsm_par_on_readable(st, fd)?
+                }
+                k = k + 1
+            }
+        }
+    }
+    return 0
+}
+

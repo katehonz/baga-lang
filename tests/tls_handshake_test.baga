@@ -10,6 +10,9 @@
 // self-signed certificate before running this test.
 
 import "std/net/tls.baga"
+import "std/net/tls_crypto.baga"
+import "std/net/tls_flight.baga"
+import "std/net/tls_conn.baga"
 import "std/net/tcp.baga"
 import "std/crypto/x25519.baga"
 import "std/crypto/x509.baga"

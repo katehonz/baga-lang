@@ -1,0 +1,141 @@
+// engine_ttl.baga — TTL на engine-а: EXPIRE (0 → delete), TTL (остатък),
+// PERSIST (разопаковане), bytes-key ядра. Put/get са в engine.baga.
+
+import "engine.baga"
+import "../util/ttl.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
+
+struct LsmExpire {
+    db: LsmDB,
+    ok: i64
+}
+
+// R67: bytes-key EXPIRE core.
+
+fn lsm_expire_kb(db: LsmDB, key: bytes, ttl_sec: i64) -> LsmExpire !IO !Time {
+    let g = lsm_get_kb(db, key)?
+    db = g.db
+    if g.found == 0 {
+        return LsmExpire { db: db, ok: 0 }
+    }
+    if ttl_sec <= 0 {
+        // Redis EXPIRE 0 → delete
+        db = lsm_del_kb(db, key)?
+        return LsmExpire { db: db, ok: 1 }
+    }
+    let now = time_now_ms()?
+    let packed = ttl_pack(g.val, now + ttl_sec * 1000)
+    db = lsm_put_kb(db, key, packed)?
+    return LsmExpire { db: db, ok: 1 }
+}
+
+
+fn lsm_expire(db: LsmDB, key: str, ttl_sec: i64) -> LsmExpire !IO !Time {
+    return lsm_expire_kb(db, bytes_of_str(key), ttl_sec)?
+}
+
+// TTL key — Redis: -2 missing, -1 no expire, else remaining seconds.
+
+struct LsmTtl {
+    db: LsmDB,
+    n: i64
+}
+
+// R67: bytes-key TTL core.
+
+fn lsm_ttl_kb(db: LsmDB, key: bytes) -> LsmTtl !IO !Time {
+    let now = time_now_ms()?
+    if map_has(db.tomb, key) == 1 {
+        return LsmTtl { db: db, n: 0 - 2 }
+    }
+    let mut raw = bytes_new(0)
+    let mut have: i64 = 0
+    if map_has(db.mem, key) == 1 {
+        raw = map_get(db.mem, key)
+        have = 1
+    } else {
+        let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.sst_meta,
+                         db.dir, db.gens, key,
+                         db.hot_gen, db.hot_off, db.hot_n, db.hot_data)?
+        db.cache = lk.pc
+        db.blooms = lk.blooms
+        db.sst_fds = lk.sst_fds
+        db.sst_sizes = lk.sst_sizes
+        db.sst_meta = lk.sst_meta
+        db.hot_gen = lk.hot_gen
+        db.hot_off = lk.hot_off
+        db.hot_n = lk.hot_n
+        db.hot_data = lk.hot_data
+        if lk.found == 1 && lk.alive == 1 {
+            raw = lk.val
+            have = 1
+        }
+    }
+    if have == 0 {
+        return LsmTtl { db: db, n: 0 - 2 }
+    }
+    let u = ttl_unpack(raw)
+    if ttl_expired(u.expire_at, now) == 1 {
+        db = lsm_del_kb(db, key)?
+        return LsmTtl { db: db, n: 0 - 2 }
+    }
+    return LsmTtl { db: db, n: ttl_remaining_sec(u.expire_at, now) }
+}
+
+
+fn lsm_ttl(db: LsmDB, key: str) -> LsmTtl !IO !Time {
+    return lsm_ttl_kb(db, bytes_of_str(key))?
+}
+
+// R67: bytes-key PERSIST core — remove TTL, keep value. 1 if removed, 0 if none/missing.
+
+fn lsm_persist_kb(db: LsmDB, key: bytes) -> LsmExpire !IO !Time {
+    let now = time_now_ms()?
+    if map_has(db.tomb, key) == 1 {
+        return LsmExpire { db: db, ok: 0 }
+    }
+    let mut raw = bytes_new(0)
+    let mut have: i64 = 0
+    if map_has(db.mem, key) == 1 {
+        raw = map_get(db.mem, key)
+        have = 1
+    } else {
+        let lk = sst_get(db.cache, db.blooms, db.sst_fds, db.sst_sizes, db.sst_meta,
+                         db.dir, db.gens, key,
+                         db.hot_gen, db.hot_off, db.hot_n, db.hot_data)?
+        db.cache = lk.pc
+        db.blooms = lk.blooms
+        db.sst_fds = lk.sst_fds
+        db.sst_sizes = lk.sst_sizes
+        db.sst_meta = lk.sst_meta
+        db.hot_gen = lk.hot_gen
+        db.hot_off = lk.hot_off
+        db.hot_n = lk.hot_n
+        db.hot_data = lk.hot_data
+        if lk.found == 1 && lk.alive == 1 {
+            raw = lk.val
+            have = 1
+        }
+    }
+    if have == 0 {
+        return LsmExpire { db: db, ok: 0 }
+    }
+    let u = ttl_unpack(raw)
+    if ttl_expired(u.expire_at, now) == 1 {
+        db = lsm_del_kb(db, key)?
+        return LsmExpire { db: db, ok: 0 }
+    }
+    if u.expire_at <= 0 {
+        return LsmExpire { db: db, ok: 0 }
+    }
+    db = lsm_put_kb(db, key, u.val)?
+    return LsmExpire { db: db, ok: 1 }
+}
+
+// PERSIST key — remove TTL, keep value. 1 if removed, 0 if none/missing.
+
+fn lsm_persist(db: LsmDB, key: str) -> LsmExpire !IO !Time {
+    return lsm_persist_kb(db, bytes_of_str(key))?
+}
+

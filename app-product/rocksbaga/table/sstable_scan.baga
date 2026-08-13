@@ -1,0 +1,419 @@
+// sstable_scan.baga — block-level SST scan (R20) + fold: затворени
+// скан стъпки (begin/next), prefix seek, fold в live-map / агрегати.
+// Мета-та и lookups — в sstable_meta.baga.
+
+import "../util/codec.baga"
+import "../cache/page.baga"
+import "sstable.baga"
+import "sstable_parse.baga"
+import "sstable_lookup.baga"
+import "sstable_meta.baga"
+import "block.baga"
+import "bloom.baga"
+import "std/os/os.baga"
+import "std/crypto/crc32c.baga"
+import "std/str/str.baga"
+
+struct SstScan {
+    pc: PageCache,
+    fd: i64,
+    gen: i64,
+    meta: SstMeta,
+    bi: i64,       // current restart block index
+    pos: i64,      // offset inside current block bytes
+    block: bytes,  // current restart-block payload
+    open: i64      // 1 = usable (v4/v5 meta ok)
+}
+
+struct SstScanStep {
+    scan: SstScan,
+    ok: i64,    // 1 = yielded a row
+    done: i64,  // 1 = end of file (or not open)
+    row: SstRow
+}
+
+fn sst_scan_closed(pc: PageCache) -> SstScan {
+    return SstScan {
+        pc: pc, fd: 0 - 1, gen: 0, meta: sst_meta_empty(),
+        bi: 0, pos: 0, block: bytes_new(0), open: 0
+    }
+}
+
+// Load restart block `bi` into scan.block. Returns updated scan; open=0 on error.
+fn sst_scan_load_block(sc: SstScan) -> SstScan !IO {
+    let mut s = sc
+    if s.open == 0 {
+        return s
+    }
+    if s.bi >= s.meta.n_restarts {
+        return s
+    }
+    let start = get_u32_le(s.meta.idx, s.bi * 4)
+    let mut end = s.meta.idx_base
+    if s.bi + 1 < s.meta.n_restarts {
+        end = get_u32_le(s.meta.idx, (s.bi + 1) * 4)
+    }
+    let bspan = end - start
+    if bspan < 0 || bspan > 16777216 {
+        s.open = 0
+        return s
+    }
+    // drop previous block payload before replace (R18 free-list)
+    if bytes_len(s.block) > 0 {
+        let oldb = s.block
+        s.block = bytes_new(0)
+        drop(oldb)
+    }
+    let br = pc_read_at(s.pc, s.fd, s.gen, 8 + start, bspan)?
+    s.pc = br.pc
+    if bytes_len(br.data) < bspan {
+        s.open = 0
+        s.block = bytes_new(0)
+        return s
+    }
+    // R27: per-block crc32c (BAGASST5) — fail closed on mismatch.
+    let blk = br.data
+    if sst_block_crc_ok(s.meta, s.bi, blk) == 0 {
+        drop(blk)
+        s.open = 0
+        s.block = bytes_new(0)
+        return s
+    }
+    s.block = blk
+    s.pos = 0
+    return s
+}
+
+// Begin a block-level scan. open=0 if file is not v4/v5 (caller may fall back
+// to sst_load). Does not take ownership of fd — caller keeps it open.
+fn sst_scan_begin(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstScan !IO {
+    if fd < 0 || fsize <= 0 {
+        return sst_scan_closed(pc)
+    }
+    let ml = sst_meta_load(pc, fd, gen, fsize)?
+    if ml.meta.ok == 0 {
+        return sst_scan_closed(ml.pc)
+    }
+    let mut sc = SstScan {
+        pc: ml.pc, fd: fd, gen: gen, meta: ml.meta,
+        bi: 0, pos: 0, block: bytes_new(0), open: 1
+    }
+    if sc.meta.n_restarts <= 0 {
+        sc.open = 0
+        return sc
+    }
+    return sst_scan_load_block(sc)?
+}
+
+// True if sorted key range [first, last] may contain any key with prefix.
+// (K3i cold-path: skip whole SST when range is disjoint.)
+fn sst_range_overlaps_prefix(first: bytes, last: bytes, prefix: bytes) -> i64 {
+    let np = bytes_len(prefix)
+    if np <= 0 {
+        return 1
+    }
+    // All keys strictly before prefix.
+    if bytes_cmp(last, prefix) < 0 {
+        return 0
+    }
+    // first has prefix → yes; last has prefix → yes.
+    if bytes_len(first) >= np {
+        let mut i: i64 = 0
+        let mut ok: i64 = 1
+        while i < np && ok == 1 {
+            if bytes_at(first, i) != bytes_at(prefix, i) {
+                ok = 0
+            }
+            i = i + 1
+        }
+        if ok == 1 {
+            return 1
+        }
+    }
+    if bytes_len(last) >= np {
+        let mut j: i64 = 0
+        let mut ok2: i64 = 1
+        while j < np && ok2 == 1 {
+            if bytes_at(last, j) != bytes_at(prefix, j) {
+                ok2 = 0
+            }
+            j = j + 1
+        }
+        if ok2 == 1 {
+            return 1
+        }
+    }
+    // first < prefix < last (range spans the prefix cut).
+    if bytes_cmp(first, prefix) < 0 && bytes_cmp(last, prefix) > 0 {
+        return 1
+    }
+    return 0
+}
+
+// Begin scan at first restart block that may hold keys >= seek (rkeys bsearch).
+// Falls back to block 0 when seek is empty or meta unusable.
+fn sst_scan_begin_seek(pc: PageCache, fd: i64, gen: i64, fsize: i64, seek: bytes) -> SstScan !IO {
+    if fd < 0 || fsize <= 0 {
+        return sst_scan_closed(pc)
+    }
+    let ml = sst_meta_load(pc, fd, gen, fsize)?
+    if ml.meta.ok == 0 {
+        return sst_scan_closed(ml.pc)
+    }
+    let mut bi: i64 = 0
+    let n_restarts = ml.meta.n_restarts
+    if n_restarts <= 0 {
+        return sst_scan_closed(ml.pc)
+    }
+    if bytes_len(seek) > 0 {
+        let rkeys = ml.meta.rkeys
+        let mut lo: i64 = 0
+        let mut hi = n_restarts - 1
+        let mut best: i64 = 0
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2
+            let c = bytes_cmp(vec_get(rkeys, mid), seek)
+            if c == 0 {
+                best = mid
+                lo = mid + 1
+                hi = mid - 1
+            } else {
+                if c < 0 {
+                    best = mid
+                    lo = mid + 1
+                } else {
+                    hi = mid - 1
+                }
+            }
+        }
+        bi = best
+    }
+    let mut sc = SstScan {
+        pc: ml.pc, fd: fd, gen: gen, meta: ml.meta,
+        bi: bi, pos: 0, block: bytes_new(0), open: 1
+    }
+    return sst_scan_load_block(sc)?
+}
+
+// Yield next record in key order. When done=1, scan is finished (block freed).
+fn sst_scan_next(sc: SstScan) -> SstScanStep !IO {
+    let empty = SstRow { op: 0, key: bytes_new(0), val: bytes_new(0) }
+    let mut s = sc
+    if s.open == 0 {
+        return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+    }
+    let mut guard: i64 = 0
+    while guard < 100000000 {
+        guard = guard + 1
+        if s.bi >= s.meta.n_restarts {
+            if bytes_len(s.block) > 0 {
+                let oldb = s.block
+                s.block = bytes_new(0)
+                drop(oldb)
+            }
+            s.open = 0
+            return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+        }
+        if s.pos >= bytes_len(s.block) {
+            s.bi = s.bi + 1
+            if s.bi >= s.meta.n_restarts {
+                if bytes_len(s.block) > 0 {
+                    let oldb2 = s.block
+                    s.block = bytes_new(0)
+                    drop(oldb2)
+                }
+                s.open = 0
+                return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+            }
+            s = sst_scan_load_block(s)?
+            if s.open == 0 {
+                return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+            }
+        } else {
+            let rec = block_rec_at(s.block, s.pos)
+            if rec.ok == 0 {
+                s.open = 0
+                return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+            }
+            s.pos = rec.next
+            return SstScanStep {
+                scan: s, ok: 1, done: 0,
+                row: SstRow { op: rec.op, key: rec.key, val: rec.val }
+            }
+        }
+    }
+    s.open = 0
+    return SstScanStep { scan: s, ok: 0, done: 1, row: empty }
+}
+
+// Fold every row of one SST into acc/tomb maps (R20 compact path).
+// Returns updated page cache. Uses block scan when v4/v5; else full sst_load.
+// R27: if meta is v4/v5, never fall back to full load after CRC fail mid-scan
+// (fail closed — leave acc/tomb partially updated from prior blocks only).
+// R67: acc/tomb are keyed by raw bytes.
+fn sst_fold_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, sizes: Map<i64, i64>,
+                 acc: Map<bytes, bytes>, tomb: Map<bytes, i64>) -> PageCache !IO {
+    let fd = sst_fd_get(pc, fds, sizes, dir, gen)?
+    if fd < 0 {
+        return pc
+    }
+    let fsize = map_get(sizes, gen)
+    let mut sc = sst_scan_begin(pc, fd, gen, fsize)?
+    // v4/v5: meta.ok=1 even if first block CRC fails (open=0).
+    if sc.meta.ok == 1 {
+        if sc.open == 0 {
+            return sc.pc
+        }
+        let mut go: i64 = 1
+        while go == 1 {
+            let st = sst_scan_next(sc)?
+            sc = st.scan
+            if st.done == 1 {
+                go = 0
+            } else {
+                if st.ok == 1 {
+                    let r = st.row
+                    if r.op == 2 {
+                        map_del(acc, r.key)
+                        map_set(tomb, r.key, 1)
+                    } else {
+                        map_set(acc, r.key, r.val)
+                        map_del(tomb, r.key)
+                    }
+                }
+            }
+        }
+        return sc.pc
+    }
+    // Legacy formats only: full-file parse (same as pre-R20).
+    let ld = sst_load(sc.pc, dir, gen)?
+    let prows = ld.parse.rows
+    if ld.parse.ok == 1 {
+        for j in 0..vec_len(prows) {
+            let r = vec_get(prows, j)
+            if r.op == 2 {
+                map_del(acc, r.key)
+                map_set(tomb, r.key, 1)
+            } else {
+                map_set(acc, r.key, r.val)
+                map_del(tomb, r.key)
+            }
+        }
+    }
+    drop(prows)
+    return ld.pc
+}
+
+// K3i: fold only keys with `prefix` into acc/tomb.
+// v4/v5: skip disjoint SST via first/last; seek to prefix; early-stop past range.
+// Legacy: full load + filter (same honesty as full fold).
+fn sst_fold_prefix_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, sizes: Map<i64, i64>,
+                        acc: Map<bytes, bytes>, tomb: Map<bytes, i64>, prefix: bytes) -> PageCache !IO {
+    let np = bytes_len(prefix)
+    if np <= 0 {
+        return sst_fold_into(pc, dir, gen, fds, sizes, acc, tomb)?
+    }
+    let fd = sst_fd_get(pc, fds, sizes, dir, gen)?
+    if fd < 0 {
+        return pc
+    }
+    let fsize = map_get(sizes, gen)
+    let mut sc = sst_scan_begin_seek(pc, fd, gen, fsize, prefix)?
+    if sc.meta.ok == 1 {
+        if sst_range_overlaps_prefix(sc.meta.first_key, sc.meta.last_key, prefix) == 0 {
+            if sc.open == 1 {
+                if bytes_len(sc.block) > 0 {
+                    let old0 = sc.block
+                    sc.block = bytes_new(0)
+                    drop(old0)
+                }
+                sc.open = 0
+            }
+            return sc.pc
+        }
+        if sc.open == 0 {
+            return sc.pc
+        }
+        let mut go: i64 = 1
+        while go == 1 {
+            let st = sst_scan_next(sc)?
+            sc = st.scan
+            if st.done == 1 {
+                go = 0
+            } else {
+                if st.ok == 1 {
+                    let r = st.row
+                    let k = r.key
+                    // past all keys with this prefix → stop (SST is sorted)
+                    if bytes_len(k) < np {
+                        if bytes_cmp(k, prefix) > 0 {
+                            go = 0
+                        }
+                    } else {
+                        let mut i: i64 = 0
+                        let mut matchp: i64 = 1
+                        while i < np && matchp == 1 {
+                            if bytes_at(k, i) != bytes_at(prefix, i) {
+                                matchp = 0
+                            }
+                            i = i + 1
+                        }
+                        if matchp == 1 {
+                            if r.op == 2 {
+                                map_del(acc, k)
+                                map_set(tomb, k, 1)
+                            } else {
+                                map_set(acc, k, r.val)
+                                map_del(tomb, k)
+                            }
+                        } else {
+                            if bytes_cmp(k, prefix) > 0 {
+                                go = 0
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // free residual block if we early-stopped with scan still open
+        if sc.open == 1 {
+            if bytes_len(sc.block) > 0 {
+                let oldb = sc.block
+                sc.block = bytes_new(0)
+                drop(oldb)
+            }
+            sc.open = 0
+        }
+        return sc.pc
+    }
+    // Legacy formats: full parse + prefix filter.
+    let ld = sst_load(sc.pc, dir, gen)?
+    let prows = ld.parse.rows
+    if ld.parse.ok == 1 {
+        for j in 0..vec_len(prows) {
+            let r = vec_get(prows, j)
+            let k = r.key
+            if bytes_len(k) >= np {
+                let mut i2: i64 = 0
+                let mut matchp2: i64 = 1
+                while i2 < np && matchp2 == 1 {
+                    if bytes_at(k, i2) != bytes_at(prefix, i2) {
+                        matchp2 = 0
+                    }
+                    i2 = i2 + 1
+                }
+                if matchp2 == 1 {
+                    if r.op == 2 {
+                        map_del(acc, k)
+                        map_set(tomb, k, 1)
+                    } else {
+                        map_set(acc, k, r.val)
+                        map_del(tomb, k)
+                    }
+                }
+            }
+        }
+    }
+    drop(prows)
+    return ld.pc
+}

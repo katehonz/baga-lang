@@ -1,0 +1,203 @@
+// exec_sql_ddl.baga — DDL dispatch (P5): CREATE TABLE / INDEX / FTS /
+// GRAPH / ROLLUP през txn buffer (rollback-able, T5). Извиква се от
+// exec_sql.baga при първи токен "create".
+
+import "exec_out.baga"
+import "parse_ddl.baga"
+import "parse_index.baga"
+import "parse_with.baga"
+import "exec_scan.baga"
+import "plan_cache.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "../storage/shards.baga"
+import "../index/secondary.baga"
+import "../fts/fts.baga"
+import "../vector/hnsw.baga"
+import "../graph/adjacency.baga"
+import "../ts/rollup.baga"
+import "token.baga"
+import "std/str/str.baga"
+
+fn boila_exec_sql_ddl(s: BoilaStore, txn: BoilaTxn, db: str, pc: BoilaPlanCache, pc_mu: i64, lx: BoilaLex) -> BoilaSqlOut !IO !Time !Par {
+    let t1 = vec_get(lx.toks, 1)
+        if tok_kw(t1, "table") == 1 {
+            let pc2 = boila_parse_create(lx)
+            if pc2.ok == 0 {
+                return boila_sql_fail(s, txn, pc, pc2.err, pc2.state)
+            }
+            // T5: CREATE TABLE през txn buffer (rollback-able)
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let cr = boila_cat_create_txn(s, txn, pc2.create)?
+            s = cr.s
+            txn = cr.txn
+            if cr.ok == 0 {
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if pc2.if_not_exists == 1 && cr.state == "42P07" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: 0 }
+                }
+                return boila_sql_fail(s, txn, pc, cr.err, cr.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+            }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 2, res: boila_result_empty(), id: cr.id }
+        }
+        if tok_kw(t1, "index") == 1 {
+            let p = boila_parse_create_ix2(lx)
+            if p.ok == 0 {
+                return boila_sql_fail(s, txn, pc, p.err, p.state)
+            }
+            let ct = boila_cat_by_name_txn(s, txn, p.ix.table)?
+            s = ct.s
+            if ct.ok == 0 {
+                return boila_sql_fail(s, txn, pc, ct.err, ct.state)
+            }
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            if p.kind == 1 {
+                let hx = hnsw_create(s, txn, ct.table, p.ix.ix_name, p.ix.col, p.metric)?
+                s = hx.s
+                txn = hx.txn
+                if hx.ok == 0 {
+                    if was_active == 0 { txn = boila_txn_rollback(txn) }
+                    if p.if_not_exists == 1 && hx.state == "42710" {
+                        return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 15, res: boila_result_empty(), id: 0 }
+                    }
+                    if was_active == 1 { txn = boila_txn_rollback(txn) }
+                    return boila_sql_fail(s, txn, pc, hx.err, hx.state)
+                }
+                if was_active == 0 {
+                    let c = boila_txn_commit(s, txn)?
+                    s = c.s
+                    txn = c.txn
+                    if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+                }
+                return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 15, res: boila_result_empty(), id: hx.id }
+            }
+            let ix = boila_ix_create(s, txn, ct.table, p.ix.ix_name, p.ix.col)?
+            s = ix.s
+            txn = ix.txn
+            if ix.ok == 0 {
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if p.if_not_exists == 1 && ix.state == "42710" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: 0 }
+                }
+                if was_active == 1 { txn = boila_txn_rollback(txn) }
+                return boila_sql_fail(s, txn, pc, ix.err, ix.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+            }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 9, res: boila_result_empty(), id: ix.id }
+        }
+        if tok_kw(t1, "graph") == 1 {
+            let p = boila_parse_create_graph(lx)
+            if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
+            let ct = boila_cat_by_name_txn(s, txn, p.table)?
+            s = ct.s
+            if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let gx = graph_create(s, txn, ct.table, p.name, p.src, p.dst, p.wcol)?
+            s = gx.s
+            txn = gx.txn
+            if gx.ok == 0 {
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if p.if_not_exists == 1 && gx.state == "42710" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 17, res: boila_result_empty(), id: 0 }
+                }
+                if was_active == 1 { txn = boila_txn_rollback(txn) }
+                return boila_sql_fail(s, txn, pc, gx.err, gx.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+            }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 17, res: boila_result_empty(), id: gx.id }
+        }
+        if tok_kw(t1, "fts") == 1 {
+            let p = boila_parse_create_fts(lx)
+            if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
+            let ct = boila_cat_by_name_txn(s, txn, p.ix.table)?
+            s = ct.s
+            if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let fx = fts_create(s, txn, ct.table, p.ix.ix_name, p.ix.col)?
+            s = fx.s
+            txn = fx.txn
+            if fx.ok == 0 {
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if p.if_not_exists == 1 && fx.state == "42710" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: 0 }
+                }
+                if was_active == 1 { txn = boila_txn_rollback(txn) }
+                return boila_sql_fail(s, txn, pc, fx.err, fx.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+            }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 14, res: boila_result_empty(), id: fx.id }
+        }
+        if tok_kw(t1, "rollup") == 1 || (t1.kind == tok_ident() && t1.txt == "rollup") {
+            let p = boila_parse_create_rollup(lx)
+            if p.ok == 0 { return boila_sql_fail(s, txn, pc, p.err, p.state) }
+            let ct = boila_cat_by_name_txn(s, txn, p.table)?
+            s = ct.s
+            if ct.ok == 0 { return boila_sql_fail(s, txn, pc, ct.err, ct.state) }
+            let was_active = txn.active
+            if was_active == 0 {
+                let b = boila_txn_begin(s, txn, 0, db)?
+                s = b.s
+                txn = b.txn
+            }
+            let rx = boila_ru_create(s, txn, ct.table, p.name, p.ts_col, p.iv_sec, p.sum_col)?
+            s = rx.s
+            txn = rx.txn
+            if rx.ok == 0 {
+                if was_active == 0 { txn = boila_txn_rollback(txn) }
+                if p.if_not_exists == 1 && rx.state == "42710" {
+                    return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 22, res: boila_result_empty(), id: 0 }
+                }
+                if was_active == 1 { txn = boila_txn_rollback(txn) }
+                return boila_sql_fail(s, txn, pc, rx.err, rx.state)
+            }
+            if was_active == 0 {
+                let c = boila_txn_commit(s, txn)?
+                s = c.s
+                txn = c.txn
+                if c.ok == 0 { return boila_sql_fail(s, txn, pc, c.err, c.state) }
+            }
+            return BoilaSqlOut { s: s, txn: txn, pc: boila_pc_invalidate_mu(pc, pc_mu)?, ok: 1, err: "", state: "", kind: 22, res: boila_result_empty(), id: rx.id }
+        }
+        return boila_sql_fail(s, txn, pc, "CREATE TABLE / INDEX / FTS / GRAPH / ROLLUP", "0A000")
+}

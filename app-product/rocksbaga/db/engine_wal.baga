@@ -1,0 +1,162 @@
+// engine_wal.baga — WAL на engine-а: пътища, buf flush (fdatasync gate),
+// append на op записи (buffered / direct), path_wipe, copy_file (за
+// checkpoint/ship). Ядрото (open/put/flush) е в engine.baga.
+
+import "types.baga"
+import "manifest.baga"
+import "../util/codec.baga"
+import "../wal/wal.baga"
+import "std/os/os.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn lsm_wal_path(dir: str) -> str {
+    return concat(dir, ".wal")
+}
+
+
+
+fn lsm_wal_flush_buf(db: LsmDB) -> LsmDB !IO {
+    if db.wal_buf_len <= 0 {
+        return db
+    }
+    let view = bytes_slice(db.wal_buf, 0, db.wal_buf_len)
+    if fd_pwrite_bytes(db.wal_fd, view, db.wal_off) != 0 {
+        db.ok = 0
+        return db
+    }
+    drop(view)
+    db.wal_off = db.wal_off + db.wal_buf_len
+    db.wal_buf_len = 0  // buffer stays allocated, reused next window
+    return db
+}
+
+
+fn lsm_path_wipe(path: str) -> i64 !IO {
+    unlink(concat(path, ".wal"))?
+    unlink(concat(path, ".manifest"))?
+    unlink(concat(path, ".manifest.log"))?
+    unlink(concat(path, ".manifest.tmp"))?
+    let mut g: i64 = 1
+    while g <= 512 {
+        unlink(concat(concat(path, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(path, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+// R42: close, wipe files, reopen empty store (preserves path + knobs).
+
+fn lsm_copy_file(src: str, dst: str) -> i64 !IO {
+    let fd = open(src, 0, 0)?
+    if fd < 0 {
+        return 0 - 1
+    }
+    let sz = fd_size(fd)?
+    let out = open(dst, 578, 420)?
+    if out < 0 {
+        close(fd)
+        return 0 - 1
+    }
+    let mut off: i64 = 0
+    while off < sz {
+        let chunk = fd_pread_bytes(fd, 1048576, off)?
+        let n = bytes_len(chunk)
+        if n == 0 {
+            off = sz
+        } else {
+            fd_write_bytes(out, chunk)?
+            drop(chunk)
+            off = off + n
+        }
+    }
+    close(fd)
+    close(out)
+    return 0
+}
+
+// R58: RocksDB-style checkpoint — durable point-in-time copy of the store
+// at `dest`. Flushes the memtable first (WAL rotates empty), then copies
+// every live SST + bloom sidecar and writes a fresh MANIFEST. The source
+// store stays usable (in MT mode call under the shard mutex). Recovery
+// path for the copy is the ordinary lsm_open(dest).
+
+fn lsm_maybe_sync(db: LsmDB) -> LsmDB !IO {
+    db.since_sync = db.since_sync + 1
+    if db.since_sync >= db.sync_every {
+        db = lsm_wal_flush_buf(db)?
+        if db.ok == 0 {
+            return db
+        }
+        fdatasync(db.wal_fd)?
+        db.since_sync = 0
+    }
+    return db
+}
+
+// Append WAL record into buffer (or direct write if buf disabled).
+// R18: offset append into a preallocated buffer (wal_buf_len) — the old
+// push_bytes concat leaked the whole accumulated buffer per append, and
+// blocks >1 KiB never reach the free list (~12 KB/PUT in the soak test).
+// R67: key arrives as raw bytes (written into the record without conversion).
+
+fn lsm_wal_append(db: LsmDB, op: i64, key: bytes, val: bytes) -> LsmDB !IO {
+    let rec = wal_record_b(op, key, val)
+    let rl = bytes_len(rec)
+    if db.wal_buf_max <= 0 {
+        if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
+            drop(rec)
+            db.ok = 0
+            return db
+        }
+        db.wal_off = db.wal_off + rl
+        drop(rec)
+        return db
+    }
+    if rl >= db.wal_buf_max {
+        // oversized record: drain pending, then write directly
+        db = lsm_wal_flush_buf(db)?
+        if db.ok == 0 {
+            drop(rec)
+            return db
+        }
+        if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
+            drop(rec)
+            db.ok = 0
+            return db
+        }
+        db.wal_off = db.wal_off + rl
+        drop(rec)
+        return db
+    }
+    if db.wal_buf_len + rl > db.wal_buf_max {
+        db = lsm_wal_flush_buf(db)?
+        if db.ok == 0 {
+            drop(rec)
+            return db
+        }
+    }
+    if bytes_len(db.wal_buf) < db.wal_buf_max {
+        // MEM-4: WAL буферът е дълготрайно състояние на store-а — persist
+        mem_persist_begin()
+        db.wal_buf = bytes_new(db.wal_buf_max)
+        mem_persist_end()
+        db.wal_buf_len = 0
+    }
+    let mut i: i64 = 0
+    while i < rl {
+        bytes_set(db.wal_buf, db.wal_buf_len + i, bytes_at(rec, i))
+        i = i + 1
+    }
+    db.wal_buf_len = db.wal_buf_len + rl
+    drop(rec)
+    return db
+}
+
+// MEM-4: scan snapshot ключовете са СОБСТВЕНИ persist копии (rebuild прави
+// deep-copy — live_map връща alias-и към memtable persist ключове или
+// ephemeral fold temporaries). При замяна/инвалидация данните се free-ват
+// тук, а vec-ът (box-овете) — с drop(old) на мястото на извикване
+// (drop на параметър е забранен — споделя буфера на извикващия).

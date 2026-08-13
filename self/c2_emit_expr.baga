@@ -1,0 +1,327 @@
+// c2_emit_expr.baga — кодогенерация: помощници (int_to_str/mangle/
+// indent/c_escape), emit_expr + fn_ret_c_type + enum variant C-имена.
+// Типовите предикати са в c2_emit_type.baga.
+
+import "c2_ast.baga"
+import "c2_emit_type.baga"
+
+fn int_to_str(n: i64) -> str {
+    if n == 0 { return "0" }
+    let mut result = ""
+    let mut v = n
+    while v > 0 {
+        let mut d = v - (v / 10) * 10
+        result = concat(byte_chr(48 + d), result)
+        v = v / 10
+    }
+    result
+}
+
+fn mangle(name: str) -> str {
+    let mut result = "b_"
+    let mut i: i64 = 0
+    let mut n = len(name)
+    while i < n {
+        let mut c = char_at(name, i)
+        if c >= 97 { if c <= 122 { result = concat(result, byte_chr(c)); i = i + 1; continue } }
+        if c >= 65 { if c <= 90 { result = concat(result, byte_chr(c)); i = i + 1; continue } }
+        if c >= 48 { if c <= 57 { result = concat(result, byte_chr(c)); i = i + 1; continue } }
+        if c == 95 { result = concat(result, "_"); i = i + 1; continue }
+        result = concat(result, concat("_", int_to_str(c)))
+        i = i + 1
+    }
+    result
+}
+
+fn indent_str(depth: i64) -> str {
+    let mut s = ""
+    let mut i: i64 = 0
+    while i < depth {
+        s = concat(s, "    ")
+        i = i + 1
+    }
+    s
+}
+
+fn c_escape(s: str) -> str {
+    let mut result = ""
+    let mut i: i64 = 0
+    let mut n = len(s)
+    let mut bs = byte_chr(92)
+    while i < n {
+        let mut c = char_at(s, i)
+        let mut handled: i64 = 0
+        if c == 34 { result = concat(result, concat(bs, byte_chr(34))); handled = 1 }
+        if c == 92 { result = concat(result, concat(bs, bs)); handled = 1 }
+        if c == 10 { result = concat(result, concat(bs, "x0a")); handled = 1 }
+        if c == 9 { result = concat(result, concat(bs, "x09")); handled = 1 }
+        if handled == 0 { result = concat(result, byte_chr(c)) }
+        i = i + 1
+    }
+    result
+}
+
+fn enum_variant_cname(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
+    let mut e = first_child(fc, prog)
+    while e >= 0 {
+        if node_kind(nk, e) == 28 {
+            let mut v = first_child(fc, e)
+            while v >= 0 {
+                if str_eq(node_text(nt, v), name) == 1 {
+                    return concat(concat(mangle(node_text(nt, e)), "_"), mangle(name))
+                }
+                v = next_sibling(ns, v)
+            }
+        }
+        e = next_sibling(ns, e)
+    }
+    ""
+}
+
+fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
+    let mut k = node_kind(nk, idx)
+    let mut t = node_text(nt, idx)
+
+    // INT
+    if k == 0 { return concat(t, "LL") }
+    // FLOAT (суров текст — валиден C double литерал)
+    if k == 19 { return t }
+    // BOOL (1/0 като C int)
+    if k == 20 { return t }
+    // STRUCT LIT: (b_Име){ .b_поле = стойност, ... }
+    if k == 22 {
+        let mut r = concat(concat("(", mangle(t)), "){ ")
+        let mut fi = first_child(fc, idx)
+        let mut first_f: i64 = 1
+        while fi >= 0 {
+            if first_f == 0 { r = concat(r, ", ") }
+            let mut val = first_child(fc, fi)
+            r = concat(concat(concat(r, "."), concat(mangle(node_text(nt, fi)), " = ")), emit_expr(nk, nt, fc, ns, prog, val))
+            first_f = 0
+            fi = next_sibling(ns, fi)
+        }
+        return concat(r, " }")
+    }
+    // FIELD ACCESS: obj.b_поле
+    if k == 23 {
+        let mut obj = first_child(fc, idx)
+        return concat(concat(emit_expr(nk, nt, fc, ns, prog, obj), "."), mangle(t))
+    }
+    // MATCH: GCC statement expression ({ T _mrN=0; int64_t _mvN=e; if..else..; _mrN; })
+    if k == 26 {
+        let mut mexpr = first_child(fc, idx)
+        let mut arm1 = next_sibling(ns, mexpr)
+        let mut ctype = "int64_t"
+        if arm1 >= 0 {
+            let mut b1 = first_child(fc, arm1)
+            if str_eq(node_text(nt, arm1), "_") == 0 { b1 = next_sibling(ns, b1) }
+            if b1 >= 0 {
+                if expr_is_str(nk, nt, fc, ns, prog, b1) == 1 { ctype = "const char *" }
+                else {
+                    if expr_is_float(nk, nt, fc, ns, prog, b1) == 1 { ctype = "double" }
+                    else { if expr_is_bool(nk, nt, fc, ns, prog, b1) == 1 { ctype = "int" } }
+                }
+            }
+        }
+        let mut suf = int_to_str(idx)
+        let mut r = concat(concat(concat(concat(concat("({ ", ctype), concat(" _mr", suf)), concat(" = 0; int64_t _mv", suf)), " = "), concat(emit_expr(nk, nt, fc, ns, prog, mexpr), "; "))
+        let mut arm = arm1
+        let mut first_arm: i64 = 1
+        while arm >= 0 {
+            let mut abody = first_child(fc, arm)
+            if str_eq(node_text(nt, arm), "_") == 1 {
+                r = concat(r, "else { ")
+            } else {
+                let mut pat = abody
+                abody = next_sibling(ns, pat)
+                if first_arm == 0 { r = concat(r, "else ") }
+                r = concat(concat(concat(concat(concat(r, "if (_mv"), suf), " == "), emit_expr(nk, nt, fc, ns, prog, pat)), ") { ")
+            }
+            r = concat(concat(concat(concat(r, "_mr"), suf), " = "), concat(emit_expr(nk, nt, fc, ns, prog, abody), "; } "))
+            first_arm = 0
+            arm = next_sibling(ns, arm)
+        }
+        return concat(concat(concat(r, "_mr"), suf), "; })")
+    }
+    // TO_STR (интерполация): конверсия според типа (heuristic)
+    if k == 33 {
+        let mut e = first_child(fc, idx)
+        if expr_is_str(nk, nt, fc, ns, prog, e) == 1 {
+            return emit_expr(nk, nt, fc, ns, prog, e)
+        }
+        if expr_is_bool(nk, nt, fc, ns, prog, e) == 1 {
+            return concat(concat(concat("((", emit_expr(nk, nt, fc, ns, prog, e)), ") ? \"true\" : \"false\")"), "")
+        }
+        return concat("baga_i64_to_str(", concat(emit_expr(nk, nt, fc, ns, prog, e), ")"))
+    }
+    // STR
+    if k == 1 { return concat(concat("\"", c_escape(t)), "\"") }
+    // BYTES LIT (x"deadbeef")
+    if k == 34 { return concat("baga_bytes_from_hex(", concat(concat("\"", c_escape(t)), "\")")) }
+    // IDENT (enum вариант → константа, иначе mangle)
+    if k == 2 {
+        let mut ev = enum_variant_cname(nk, nt, fc, ns, prog, t)
+        if str_eq(ev, "") == 0 { return ev }
+        return mangle(t)
+    }
+    // BINARY
+    if k == 3 {
+        let mut left = first_child(fc, idx)
+        let mut right = next_sibling(ns, left)
+        return concat(concat(concat("(", emit_expr(nk, nt, fc, ns, prog, left)), concat(" ", t)), concat(" ", concat(emit_expr(nk, nt, fc, ns, prog, right), ")")))
+    }
+    // CALL
+    if k == 4 {
+        let mut callee = first_child(fc, idx)
+        // check for builtin
+        let mut cname = ""
+        if node_kind(nk, callee) == 2 {
+            let mut bn = node_text(nt, callee)
+            // LP7: builtin-и извън подмножеството на self компилатора
+            if str_eq(bn, "drop") == 1 { self_unsupported("drop (MEM-1)") }
+            if str_eq(bn, "go") == 1 { self_unsupported("go/!Par конкурентност") }
+            if str_eq(bn, "join") == 1 { self_unsupported("join/!Par конкурентност") }
+            if str_eq(bn, "detach") == 1 { self_unsupported("detach/!Par конкурентност") }
+            if str_eq(bn, "chan_new") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_send") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_recv") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_recv2") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_try_recv") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_recv_timeout") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_select2") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_select2_wait") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_select2_timeout") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_close") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "chan_len") == 1 { self_unsupported("канали (!Par)") }
+            if str_eq(bn, "mutex_new") == 1 { self_unsupported("mutex-и (!Par)") }
+            if str_eq(bn, "mutex_lock") == 1 { self_unsupported("mutex-и (!Par)") }
+            if str_eq(bn, "mutex_unlock") == 1 { self_unsupported("mutex-и (!Par)") }
+            if str_eq(bn, "sleep_ms") == 1 { self_unsupported("sleep_ms (!Par)") }
+            if str_eq(bn, "signal_watch") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_check") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_clear") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_wait") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_raise") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "cell2") == 1 { self_unsupported("cell2 heap двойки") }
+            if str_eq(bn, "cell2_0") == 1 { self_unsupported("cell2 heap двойки") }
+            if str_eq(bn, "cell2_1") == 1 { self_unsupported("cell2 heap двойки") }
+            let mut a1 = next_sibling(ns, callee)
+            if str_eq(bn, "len") == 1 { cname = "baga_len" }
+            if str_eq(bn, "char_at") == 1 { cname = "baga_char_at" }
+            if str_eq(bn, "byte_at") == 1 { cname = "baga_byte_at" }
+            if str_eq(bn, "byte_chr") == 1 { cname = "baga_byte_chr" }
+            if str_eq(bn, "substr") == 1 { cname = "baga_substr" }
+            if str_eq(bn, "concat") == 1 { cname = "baga_concat" }
+            if str_eq(bn, "str_eq") == 1 { cname = "baga_str_eq" }
+            if str_eq(bn, "chr") == 1 { cname = "baga_chr" }
+            if str_eq(bn, "ord") == 1 { cname = "baga_ord" }
+            if str_eq(bn, "bytes_len") == 1 { cname = "baga_bytes_len" }
+            if str_eq(bn, "bytes_at") == 1 { cname = "baga_bytes_at" }
+            if str_eq(bn, "bytes_slice") == 1 { cname = "baga_bytes_slice" }
+            if str_eq(bn, "bytes_concat") == 1 { cname = "baga_bytes_concat" }
+            if str_eq(bn, "bytes_of_str") == 1 { cname = "baga_bytes_from_str" }
+            if str_eq(bn, "str_of_bytes") == 1 { cname = "baga_bytes_to_str" }
+            if str_eq(bn, "hex_encode") == 1 { cname = "baga_hex_encode" }
+            if str_eq(bn, "hex_decode") == 1 { cname = "baga_hex_decode" }
+            if str_eq(bn, "read_file") == 1 { cname = "baga_read_file" }
+            if str_eq(bn, "write") == 1 { cname = "baga_write" }
+            if str_eq(bn, "vec_new") == 1 { cname = "baga_vec_new" }
+            if str_eq(bn, "vec_push") == 1 {
+                cname = "baga_vec_push_i64"
+                if a1 >= 0 {
+                    let elem = next_sibling(ns, a1)
+                    if elem >= 0 {
+                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_push_str" }
+                        if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_push_f64" }
+                    }
+                }
+            }
+            if str_eq(bn, "vec_push_str") == 1 { cname = "baga_vec_push_str" }
+            if str_eq(bn, "vec_get") == 1 {
+                cname = "baga_vec_get_i64"
+                if a1 >= 0 {
+                    if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_get_str" }
+                    if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_get_f64" }
+                }
+            }
+            if str_eq(bn, "vec_get_str") == 1 { cname = "baga_vec_get_str" }
+            if str_eq(bn, "vec_set") == 1 {
+                cname = "baga_vec_set_i64"
+                if a1 >= 0 {
+                    let mut ai = next_sibling(ns, a1)
+                    let mut elem = next_sibling(ns, ai)
+                    if elem >= 0 {
+                        if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_set_str" }
+                        if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_set_f64" }
+                    }
+                }
+            }
+            if str_eq(bn, "vec_set_str") == 1 { cname = "baga_vec_set_str" }
+            if str_eq(bn, "vec_len") == 1 { cname = "baga_vec_len" }
+            if str_eq(bn, "vec_slice") == 1 {
+                cname = "baga_vec_slice_i64"
+                if a1 >= 0 {
+                    if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_slice_str" }
+                    if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_slice_f64" }
+                }
+            }
+            if str_eq(bn, "vec_concat") == 1 {
+                cname = "baga_vec_concat_i64"
+                if a1 >= 0 {
+                    if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_concat_str" }
+                    if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_concat_f64" }
+                }
+            }
+            if str_eq(bn, "arg_count") == 1 { cname = "baga_arg_count" }
+            if str_eq(bn, "arg") == 1 { cname = "baga_arg" }
+            if str_eq(bn, "exit") == 1 { cname = "baga_exit" }
+            if str_eq(bn, "eprintln") == 1 { cname = "baga_eprintln" }
+            if str_eq(bn, "arena_new") == 1 { cname = "baga_arena_new" }
+            if str_eq(bn, "arena_alloc") == 1 { cname = "baga_arena_alloc" }
+            if str_eq(bn, "arena_reset") == 1 { cname = "baga_arena_reset" }
+            if str_eq(bn, "arena_free") == 1 { cname = "baga_arena_free" }
+            // MEM-4: bump arena има само C bootstrap-ът; тук runtime-ът е malloc
+            if str_eq(bn, "mem_mark") == 1 { self_unsupported("mem_mark") }
+            if str_eq(bn, "mem_rewind") == 1 { self_unsupported("mem_rewind") }
+            if str_eq(bn, "mem_persist_begin") == 1 { self_unsupported("mem_persist_begin") }
+            if str_eq(bn, "mem_persist_end") == 1 { self_unsupported("mem_persist_end") }
+            // extern fn (FFI) — директно име, без builtin диспеч (последен печели)
+            if is_extern_fn(nk, nt, fc, ns, prog, bn) == 1 { cname = bn }
+        }
+        let mut result = ""
+        if str_eq(cname, "") == 0 {
+            result = concat(cname, "(")
+        } else {
+            result = concat(emit_expr(nk, nt, fc, ns, prog, callee), "(")
+        }
+        let mut arg = next_sibling(ns, callee)
+        let mut first_arg: i64 = 1
+        while arg >= 0 {
+            if first_arg == 0 { result = concat(result, ", ") }
+            result = concat(result, emit_expr(nk, nt, fc, ns, prog, arg))
+            first_arg = 0
+            arg = next_sibling(ns, arg)
+        }
+        return concat(result, ")")
+    }
+    "0"
+}
+
+fn fn_ret_c_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, fname: str) -> str {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), fname) == 1 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 16 { return c_type(node_text(nt, c)) }
+                    c = next_sibling(ns, c)
+                }
+                return "int64_t"
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    "int64_t"
+}
+

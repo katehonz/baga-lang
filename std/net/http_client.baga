@@ -10,6 +10,7 @@
 
 import "tcp.baga"
 import "tls.baga"
+import "tls_conn.baga"
 import "../str/str.baga"
 import "../bytes/bytes.baga"
 

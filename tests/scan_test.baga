@@ -1,5 +1,9 @@
 // scan_test.baga — R43 SCAN cursor + MATCH.
 import "rocksbaga/db/engine.baga"
+import "rocksbaga/db/engine_wal.baga"
+import "rocksbaga/db/engine_ttl.baga"
+import "rocksbaga/db/engine_keys.baga"
+import "rocksbaga/db/engine_scan.baga"
 import "rocksbaga/net/server.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"

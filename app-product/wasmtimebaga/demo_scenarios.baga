@@ -1,0 +1,597 @@
+// demo_scenarios.baga — wasmtimebaga демо сценарии (P0/P1 портове на
+// wasmtime-go): GCD, Hello, host add, memory, WASI, WAT, serialize,
+// calls, multi-memory. Рънърът е в demo.baga.
+
+import "wasmtimebaga/wasm.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn demo_gcd() -> i64 !IO {
+    let path = resolve_fixture("gcd.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+
+    let eng = wt_engine_new()?
+    if eng == 0 {
+        eprintln(concat("engine_new: ", wt_last_err()?))
+        return 1
+    }
+    let store = wt_store_new(eng)?
+    if store == 0 {
+        eprintln(concat("store_new: ", wt_last_err()?))
+        wt_drop(eng)
+        return 1
+    }
+    let mod = wt_module_from_file(eng, path)?
+    if mod == 0 {
+        eprintln(concat("module_from_file: ", wt_last_err()?))
+        wt_drop(store)
+        wt_drop(eng)
+        return 1
+    }
+    let inst = wt_instance_new(store, mod)?
+    if inst == 0 {
+        eprintln(concat("instance_new: ", wt_last_err()?))
+        wt_drop(mod)
+        wt_drop(store)
+        wt_drop(eng)
+        return 1
+    }
+
+    let st = wt_call_i32_2_status(store, inst, "gcd", 6, 27)?
+    if st != 0 {
+        eprintln(concat("call gcd: ", wt_last_err()?))
+        return 1
+    }
+    let g = wt_last_i64()?
+    print(concat("gcd(6, 27) = ", int_to_str(g)))
+
+    let st2 = wt_call_i32_2_status(store, inst, "gcd", 48, 18)?
+    if st2 != 0 {
+        eprintln(concat("call gcd#2: ", wt_last_err()?))
+        return 1
+    }
+    let g2 = wt_last_i64()?
+    print(concat("gcd(48, 18) = ", int_to_str(g2)))
+
+    wt_drop(inst)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+
+    if g != 3 {
+        eprintln("expected gcd(6,27)=3")
+        return 1
+    }
+    if g2 != 6 {
+        eprintln("expected gcd(48,18)=6")
+        return 1
+    }
+    print("gcd: ok")
+    return 0
+}
+
+fn demo_hello() -> i64 !IO {
+    let path = resolve_fixture("hello.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+
+    // import "" "hello"  →  WT_HOST_LOG_VOID0; export "run"
+    let rc = wt_run_hello(path, "", "hello", "run")?
+    if rc != 0 {
+        eprintln(concat("hello: ", wt_last_err()?))
+        return 1
+    }
+    let log = wt_host_log()?
+    let n = wt_host_call_count()?
+    print(concat("host log: ", log))
+    print(concat("host calls: ", int_to_str(n)))
+    if n < 1 {
+        eprintln("expected host_call_count >= 1")
+        return 1
+    }
+    // "hello from host"
+    if len(log) < 5 {
+        eprintln("expected host log message")
+        return 1
+    }
+    print("hello: ok")
+    return 0
+}
+
+fn demo_add_host() -> i64 !IO {
+    let path = resolve_fixture("add_host.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+
+    wt_host_reset()
+    let eng = wt_engine_new()?
+    if eng == 0 {
+        return 1
+    }
+    let store = wt_store_new(eng)?
+    if store == 0 {
+        wt_drop(eng)
+        return 1
+    }
+    let mod = wt_module_from_file(eng, path)?
+    if mod == 0 {
+        eprintln(concat("add_host module: ", wt_last_err()?))
+        wt_drop(store)
+        wt_drop(eng)
+        return 1
+    }
+    let linker = wt_linker_new(eng)?
+    if linker == 0 {
+        return 1
+    }
+    // import "env" "add"
+    if wt_linker_define_host(linker, "env", "add", WT_HOST_I32_ADD())? != 0 {
+        eprintln(concat("define add: ", wt_last_err()?))
+        return 1
+    }
+    let inst = wt_linker_instantiate(linker, store, mod)?
+    if inst == 0 {
+        eprintln(concat("instantiate add_host: ", wt_last_err()?))
+        return 1
+    }
+    let st = wt_call_i32_2_status(store, inst, "sum", 20, 22)?
+    if st != 0 {
+        eprintln(concat("call sum: ", wt_last_err()?))
+        return 1
+    }
+    let s = wt_last_i64()?
+    print(concat("sum via host add(20,22) = ", int_to_str(s)))
+    if s != 42 {
+        eprintln("expected 42")
+        return 1
+    }
+    if wt_host_call_count()? < 1 {
+        eprintln("expected host call for add")
+        return 1
+    }
+
+    wt_drop(inst)
+    wt_drop(linker)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    print("add_host: ok")
+    return 0
+}
+
+fn demo_memory() -> i64 !IO {
+    let path = resolve_fixture("mem.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("missing ", path))
+        return 1
+    }
+    let eng = wt_engine_new()?
+    let store = wt_store_new(eng)?
+    let mod = wt_module_from_file(eng, path)?
+    let inst = wt_instance_new(store, mod)?
+    if inst == 0 {
+        eprintln(concat("mem instance: ", wt_last_err()?))
+        return 1
+    }
+    let mem = wt_memory_get(store, inst, "mem")?
+    if mem == 0 {
+        eprintln(concat("memory_get: ", wt_last_err()?))
+        return 1
+    }
+    let pages = wt_memory_size(store, mem)?
+    let bytes = wt_memory_data_size(store, mem)?
+    print(concat("mem pages=", int_to_str(pages)))
+    print(concat("mem bytes=", int_to_str(bytes)))
+    if pages != 1 {
+        eprintln("expected 1 page")
+        return 1
+    }
+    if bytes != 65536 {
+        eprintln("expected 65536 data bytes")
+        return 1
+    }
+
+    if wt_memory_store8(store, mem, 100, 42)? != 0 {
+        eprintln(wt_last_err()?)
+        return 1
+    }
+    let v = wt_memory_load8(store, mem, 100)?
+    print(concat("mem[100]=", int_to_str(v)))
+    if v != 42 {
+        eprintln("expected 42 at offset 100")
+        return 1
+    }
+
+    // host write + guest load export
+    if wt_memory_store8(store, mem, 200, 99)? != 0 {
+        return 1
+    }
+    if wt_call_i32_1_status(store, inst, "load", 200)? != 0 {
+        eprintln(wt_last_err()?)
+        return 1
+    }
+    let g = wt_last_i64()?
+    print(concat("guest load(200)=", int_to_str(g)))
+    if g != 99 {
+        eprintln("expected guest load 99")
+        return 1
+    }
+
+    if wt_memory_store32(store, mem, 300, 0x01020304)? != 0 {
+        return 1
+    }
+    let w = wt_memory_load32(store, mem, 300)?
+    if w != 0x01020304 {
+        eprintln(concat("load32 got ", int_to_str(w)))
+        return 1
+    }
+
+    if wt_call_i32_0_status(store, inst, "size")? != 0 {
+        eprintln(wt_last_err()?)
+        return 1
+    }
+    if wt_last_i64()? != 1 {
+        eprintln("guest size expected 1 page")
+        return 1
+    }
+
+    let prev = wt_memory_grow(store, mem, 1)?
+    if prev != 1 {
+        eprintln(concat("grow prev pages=", int_to_str(prev)))
+        return 1
+    }
+    let pages2 = wt_memory_size(store, mem)?
+    print(concat("after grow pages=", int_to_str(pages2)))
+    if pages2 != 2 {
+        return 1
+    }
+
+    wt_drop(mem)
+    wt_drop(inst)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    print("memory: ok")
+    return 0
+}
+
+fn demo_wasi() -> i64 !IO {
+    let path = resolve_fixture("wasi_yield.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("missing ", path))
+        return 1
+    }
+    let eng = wt_engine_new()?
+    let store = wt_store_new(eng)?
+    if wt_store_set_wasi_inherit(store)? != 0 {
+        eprintln(concat("set_wasi: ", wt_last_err()?))
+        return 1
+    }
+    let mod = wt_module_from_file(eng, path)?
+    let linker = wt_linker_new(eng)?
+    if wt_linker_define_wasi(linker)? != 0 {
+        eprintln(concat("define_wasi: ", wt_last_err()?))
+        return 1
+    }
+    let inst = wt_linker_instantiate(linker, store, mod)?
+    if inst == 0 {
+        eprintln(concat("wasi instantiate: ", wt_last_err()?))
+        return 1
+    }
+    if wt_call_i32_0_status(store, inst, "run")? != 0 {
+        eprintln(concat("wasi run: ", wt_last_err()?))
+        return 1
+    }
+    let errno = wt_last_i64()?
+    print(concat("wasi sched_yield errno=", int_to_str(errno)))
+    if errno != 0 {
+        eprintln("expected errno 0 from sched_yield")
+        return 1
+    }
+    wt_drop(inst)
+    wt_drop(linker)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    print("wasi: ok")
+    return 0
+}
+
+fn demo_wat() -> i64 !IO {
+    // WAT text compiled at runtime — no fixture file on disk.
+    let wat = "(module (func (export \"add\") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))"
+
+    let buf = wt_wat2wasm(wat)?
+    if buf == 0 {
+        eprintln(concat("wat2wasm: ", wt_last_err()?))
+        return 1
+    }
+    let n = wt_buf_len(buf)?
+    print(concat(concat("wat2wasm: ", int_to_str(n)), " bytes"))
+    if n < 8 {
+        eprintln("expected at least 8 wasm bytes")
+        return 1
+    }
+    // magic "\0asm"
+    if wt_buf_get(buf, 0)? != 0 {
+        eprintln("bad magic byte 0")
+        return 1
+    }
+    if wt_buf_get(buf, 1)? != 97 {
+        eprintln("bad magic byte 1")
+        return 1
+    }
+    if wt_buf_get(buf, 2)? != 115 {
+        eprintln("bad magic byte 2")
+        return 1
+    }
+    if wt_buf_get(buf, 3)? != 109 {
+        eprintln("bad magic byte 3")
+        return 1
+    }
+    wt_drop(buf)
+
+    let r = wt_run_wat_i32_2(wat, "add", 20, 22)?
+    print(concat("wat add(20, 22) = ", int_to_str(r)))
+    if r != 42 {
+        eprintln(concat("expected 42, got ", int_to_str(r)))
+        return 1
+    }
+    print("wat: ok")
+    return 0
+}
+
+fn demo_serialize() -> i64 !IO {
+    let path = resolve_fixture("gcd.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+    let eng = wt_engine_new()?
+    let mod = wt_module_from_file(eng, path)?
+    if mod == 0 {
+        eprintln(concat("module_from_file: ", wt_last_err()?))
+        wt_drop(eng)
+        return 1
+    }
+
+    // serialize to in-memory buffer
+    let buf = wt_module_serialize(mod)?
+    if buf == 0 {
+        eprintln(concat("module_serialize: ", wt_last_err()?))
+        wt_drop(mod)
+        wt_drop(eng)
+        return 1
+    }
+    let n = wt_buf_len(buf)?
+    print(concat(concat("serialized module: ", int_to_str(n)), " bytes"))
+
+    // deserialize from buffer → fresh store → same behaviour
+    let store = wt_store_new(eng)?
+    let mod2 = wt_module_deserialize(eng, buf)?
+    if mod2 == 0 {
+        eprintln(concat("module_deserialize: ", wt_last_err()?))
+        return 1
+    }
+    let inst = wt_instance_new(store, mod2)?
+    if inst == 0 {
+        eprintln(concat("deserialized instance: ", wt_last_err()?))
+        return 1
+    }
+    if wt_call_i32_2_status(store, inst, "gcd", 6, 27)? != 0 {
+        eprintln(concat("call gcd (deserialized): ", wt_last_err()?))
+        return 1
+    }
+    let g = wt_last_i64()?
+    print(concat("deserialized gcd(6, 27) = ", int_to_str(g)))
+    if g != 3 {
+        eprintln("expected 3")
+        return 1
+    }
+    wt_drop(inst)
+    wt_drop(mod2)
+    wt_drop(store)
+    wt_drop(buf)
+
+    // serialize to file → deserialize from file (disk-cache round trip)
+    let cache = "target/gcd.serialized"
+    if wt_module_serialize_file(mod, cache)? != 0 {
+        eprintln(concat("serialize_file: ", wt_last_err()?))
+        return 1
+    }
+    let mod3 = wt_module_deserialize_file(eng, cache)?
+    if mod3 == 0 {
+        eprintln(concat("deserialize_file: ", wt_last_err()?))
+        return 1
+    }
+    let store3 = wt_store_new(eng)?
+    let inst3 = wt_instance_new(store3, mod3)?
+    if inst3 == 0 {
+        eprintln(concat("file instance: ", wt_last_err()?))
+        return 1
+    }
+    if wt_call_i32_2_status(store3, inst3, "gcd", 48, 18)? != 0 {
+        eprintln(concat("call gcd (file): ", wt_last_err()?))
+        return 1
+    }
+    let g2 = wt_last_i64()?
+    print(concat("file-cached gcd(48, 18) = ", int_to_str(g2)))
+    if g2 != 6 {
+        eprintln("expected 6")
+        return 1
+    }
+    wt_drop(inst3)
+    wt_drop(mod3)
+    wt_drop(store3)
+    wt_drop(mod)
+    wt_drop(eng)
+    print("serialize: ok")
+    return 0
+}
+
+fn demo_calls() -> i64 !IO {
+    let path = resolve_fixture("callshapes.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+    let eng = wt_engine_new()?
+    let store = wt_store_new(eng)?
+    let mod = wt_module_from_file(eng, path)?
+    let inst = wt_instance_new(store, mod)?
+    if inst == 0 {
+        eprintln(concat("callshapes instance: ", wt_last_err()?))
+        return 1
+    }
+
+    // divmod(7, 3) → (2, 1) — multi-value
+    wt_args_clear()
+    if wt_arg_i32(7)? != 0 {
+        return 1
+    }
+    if wt_arg_i32(3)? != 0 {
+        return 1
+    }
+    if wt_call(store, inst, "divmod", 2)? != 0 {
+        eprintln(concat("call divmod: ", wt_last_err()?))
+        return 1
+    }
+    if wt_result_count()? != 2 {
+        eprintln("divmod result_count != 2")
+        return 1
+    }
+    let q = wt_result_i64(0)?
+    let rm = wt_result_i64(1)?
+    let mut s = concat("divmod(7, 3) = (", int_to_str(q))
+    s = concat(s, ", ")
+    s = concat(s, int_to_str(rm))
+    s = concat(s, ")")
+    print(s)
+    if q != 2 {
+        eprintln("expected quotient 2")
+        return 1
+    }
+    if rm != 1 {
+        eprintln("expected remainder 1")
+        return 1
+    }
+
+    // norm(3.0, 4.0) → 5.0 — f64 args + result
+    wt_args_clear()
+    if wt_arg_f64(3.0)? != 0 {
+        return 1
+    }
+    if wt_arg_f64(4.0)? != 0 {
+        return 1
+    }
+    if wt_call(store, inst, "norm", 1)? != 0 {
+        eprintln(concat("call norm: ", wt_last_err()?))
+        return 1
+    }
+    if wt_result_kind(0)? != WT_F64() {
+        eprintln("norm result kind != f64")
+        return 1
+    }
+    let nf = wt_result_f64(0)?
+    if nf != 5.0 {
+        eprintln("expected norm 5.0")
+        return 1
+    }
+    print("norm(3.0, 4.0) = 5.0 (f64)")
+
+    // add64(3000000000, 3000000000) → 6000000000 — i64 beyond i32 range
+    wt_args_clear()
+    if wt_arg_i64(3000000000)? != 0 {
+        return 1
+    }
+    if wt_arg_i64(3000000000)? != 0 {
+        return 1
+    }
+    if wt_call(store, inst, "add64", 1)? != 0 {
+        eprintln(concat("call add64: ", wt_last_err()?))
+        return 1
+    }
+    if wt_result_kind(0)? != WT_I64() {
+        eprintln("add64 result kind != i64")
+        return 1
+    }
+    let big = wt_result_i64(0)?
+    print(concat("add64(3000000000, 3000000000) = ", int_to_str(big)))
+    if big != 6000000000 {
+        eprintln("expected 6000000000")
+        return 1
+    }
+
+    wt_drop(inst)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    print("calls: ok")
+    return 0
+}
+
+fn demo_multi_mem() -> i64 !IO {
+    let path = resolve_fixture("multi_mem.wasm")?
+    if file_exists(path)? == 0 {
+        eprintln(concat("wasmtimebaga demo: missing ", path))
+        return 1
+    }
+    let eng = wt_engine_new()?
+    let store = wt_store_new(eng)?
+    let mod = wt_module_from_file(eng, path)?
+    let inst = wt_instance_new(store, mod)?
+    if inst == 0 {
+        eprintln(concat("multi_mem instance: ", wt_last_err()?))
+        return 1
+    }
+    let ma = wt_memory_get(store, inst, "mem_a")?
+    if ma == 0 {
+        eprintln(concat("memory_get mem_a: ", wt_last_err()?))
+        return 1
+    }
+    let mb = wt_memory_get(store, inst, "mem_b")?
+    if mb == 0 {
+        eprintln(concat("memory_get mem_b: ", wt_last_err()?))
+        return 1
+    }
+    if wt_memory_size(store, ma)? != 1 {
+        eprintln("mem_a pages != 1")
+        return 1
+    }
+    if wt_memory_size(store, mb)? != 2 {
+        eprintln("mem_b pages != 2")
+        return 1
+    }
+    // same offset, independent contents
+    if wt_memory_store8(store, ma, 0, 11)? != 0 {
+        return 1
+    }
+    if wt_memory_store8(store, mb, 0, 22)? != 0 {
+        return 1
+    }
+    if wt_memory_load8(store, ma, 0)? != 11 {
+        eprintln("mem_a[0] != 11")
+        return 1
+    }
+    if wt_memory_load8(store, mb, 0)? != 22 {
+        eprintln("mem_b[0] != 22")
+        return 1
+    }
+    print("multi_memory: mem_a=1 page, mem_b=2 pages, independent")
+    wt_drop(mb)
+    wt_drop(ma)
+    wt_drop(inst)
+    wt_drop(mod)
+    wt_drop(store)
+    wt_drop(eng)
+    print("multi_mem: ok")
+    return 0
+}
+

@@ -9,6 +9,8 @@ import "testbaga/assert.baga"
 import "std/str/str.baga"
 import "std/net/http_client.baga"
 import "std/json/json.baga"
+import "std/json/json_write.baga"
+import "std/json/json_strict.baga"
 
 fn has(s: str, n: str) -> bool {
     return str_find(s, n) >= 0

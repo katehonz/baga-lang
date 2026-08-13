@@ -4,6 +4,7 @@
 // embedding users/posts or any other application schema.
 
 import "../core/app.baga"
+import "../core/serve.baga"
 import "../core/ctx.baga"
 import "../core/route.baga"
 import "../core/respond.baga"

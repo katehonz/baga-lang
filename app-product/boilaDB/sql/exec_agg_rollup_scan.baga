@@ -1,0 +1,148 @@
+// exec_agg_rollup_scan.baga — K3j/K3k rollup клетки: четене на cell
+// (txn buffer + storage), emit на ред от bucket cell (count/sum/avg),
+// пълен prefix scan и точкови GET-ове на пълни/частични прозорци.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../ts/rollup.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_scan.baga"
+import "std/bytes/bytes.baga"
+
+fn boila_ru_cell_read(s: BoilaStore, txn: BoilaTxn, table_id: i64, epk: bytes) -> BoilaTxnGet !IO !Time !Par {
+    let tix = boila_txn_find(txn, boila_cf_index(), table_id, epk)
+    if tix >= 0 {
+        let w = vec_get(txn.writes, tix)
+        if w.is_del == 1 {
+            return BoilaTxnGet { s: s, found: 0, row: bytes_new(0), lsn: 0 }
+        }
+        return BoilaTxnGet { s: s, found: 1, row: w.row, lsn: 0 }
+    }
+    let g = boila_get(s, boila_cf_index(), table_id, epk)?
+    if g.found == 0 {
+        return BoilaTxnGet { s: g.s, found: 0, row: bytes_new(0), lsn: 0 }
+    }
+    return BoilaTxnGet { s: g.s, found: 1, row: boila_unwrap_row(g.val), lsn: 0 }
+}
+
+
+fn boila_ru_push_row(res: BoilaResult, sel: BoilaSel, ts_typ: i64, bsec: i64, cnt: i64, sum: i64) {
+    if cnt <= 0 {
+        return
+    }
+    let row: Vec<BoilaVal> = vec_new()
+    if ts_typ == boila_v_ts() {
+        vec_push(row, boila_val_ts(bsec * 1000000))
+    } else {
+        vec_push(row, boila_val_i64(bsec))
+    }
+    let mut a: i64 = 0
+    while a < vec_len(sel.items) {
+        let it = vec_get(sel.items, a)
+        if it.agg == 1 {
+            vec_push(row, boila_val_i64(cnt))
+        } else {
+            if it.agg == 3 {
+                vec_push(row, boila_val_i64(sum))
+            } else {
+                if it.agg == 4 {
+                    if cnt == 0 {
+                        vec_push(row, boila_val_null())
+                    } else {
+                        vec_push(row, boila_val_i64(sum / cnt))
+                    }
+                }
+            }
+        }
+        a = a + 1
+    }
+    vec_push(res.rows, row)
+}
+
+
+// Пълен prefix scan на rollup клетките (без прозорец).
+fn boila_ru_scan_all(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, res: BoilaResult, sel: BoilaSel, d: BoilaRuDef, iv: i64, ts_typ: i64) -> BoilaExec !IO !Time !Par {
+        let pref = boila_ru_prefix(d.id)
+        let full_pref = boila_key_row(boila_cf_index(), t.id, pref)
+        let plen = bytes_len(full_pref)
+        let sa = boila_scan_pref_all(s, full_pref)?
+        s = sa.s
+        let mut j: i64 = 0
+        while j < vec_len(sa.keys) {
+            let k = vec_get(sa.keys, j)
+            if bytes_len(k) >= plen + 8 {
+                let bsec = boila_dec_i64_ord(k, plen)
+                let epk = bytes_slice(k, 5, bytes_len(k))
+                let cell = boila_ru_cell_read(s, txn, t.id, epk)?
+                s = cell.s
+                if cell.found == 1 {
+                    let r = boila_row_dec(cell.row)
+                    let mut cnt: i64 = 0
+                    let mut sum: i64 = 0
+                    if vec_len(r) > 0 { cnt = vec_get(r, 0).i }
+                    if vec_len(r) > 1 { sum = vec_get(r, 1).i }
+                    boila_ru_push_row(res, sel, ts_typ, bsec, cnt, sum)
+                }
+            }
+            j = j + 1
+        }
+        return boila_exec_ok_select(s, txn, res)
+}
+
+// Пълни прозорци: точкови GET-ове (затворен диапазон) или open-ended
+// prefix scan + филтър по first_full/last_full.
+fn boila_ru_scan_wins(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, res: BoilaResult, sel: BoilaSel, d: BoilaRuDef, iv: i64, ts_typ: i64, first_full: i64, last_full: i64, have_lo: i64, have_hi: i64) -> BoilaExec !IO !Time !Par {
+        if have_lo == 1 && have_hi == 1 {
+            let mut bsec = first_full
+            while bsec <= last_full {
+                let epk = boila_ru_entry_pk(d.id, bsec)
+                let cell = boila_ru_cell_read(s, txn, t.id, epk)?
+                s = cell.s
+                if cell.found == 1 {
+                    let r = boila_row_dec(cell.row)
+                    let mut cnt: i64 = 0
+                    let mut sum: i64 = 0
+                    if vec_len(r) > 0 { cnt = vec_get(r, 0).i }
+                    if vec_len(r) > 1 { sum = vec_get(r, 1).i }
+                    boila_ru_push_row(res, sel, ts_typ, bsec, cnt, sum)
+                }
+                bsec = bsec + iv
+            }
+        } else {
+            // open-ended lo or hi: prefix scan + filter
+            let pref = boila_ru_prefix(d.id)
+            let full_pref = boila_key_row(boila_cf_index(), t.id, pref)
+            let plen = bytes_len(full_pref)
+            let sa = boila_scan_pref_all(s, full_pref)?
+            s = sa.s
+            let mut j: i64 = 0
+            while j < vec_len(sa.keys) {
+                let k = vec_get(sa.keys, j)
+                if bytes_len(k) >= plen + 8 {
+                    let bsec = boila_dec_i64_ord(k, plen)
+                    let mut keep = 1
+                    if have_lo == 1 && bsec < first_full { keep = 0 }
+                    if have_hi == 1 && bsec > last_full { keep = 0 }
+                    if keep == 1 {
+                        let epk = bytes_slice(k, 5, bytes_len(k))
+                        let cell = boila_ru_cell_read(s, txn, t.id, epk)?
+                        s = cell.s
+                        if cell.found == 1 {
+                            let r = boila_row_dec(cell.row)
+                            let mut cnt: i64 = 0
+                            let mut sum: i64 = 0
+                            if vec_len(r) > 0 { cnt = vec_get(r, 0).i }
+                            if vec_len(r) > 1 { sum = vec_get(r, 1).i }
+                            boila_ru_push_row(res, sel, ts_typ, bsec, cnt, sum)
+                        }
+                    }
+                }
+                j = j + 1
+            }
+        }
+    return boila_exec_ok_select(s, txn, res)
+}

@@ -1,0 +1,180 @@
+// exec_insert_write.baga — INSERT write path (P4): ON CONFLICT DO UPDATE
+// (upsert) и plain put през txn buffer-а, със sync на вторични индекси,
+// fts, hnsw, graph и rollup. Подготовката е в exec_insert.baga;
+// типовете/помощниците (BoilaDml, BoilaInsPrep/One) — в exec_dml.baga.
+
+import "../storage/shards.baga"
+import "../core/codec.baga"
+import "../core/value.baga"
+import "../core/row.baga"
+import "../catalog/schema.baga"
+import "../index/secondary.baga"
+import "../fts/fts.baga"
+import "../vector/hnsw.baga"
+import "../vector/hnsw_store.baga"
+import "../graph/adjacency.baga"
+import "../graph/dml.baga"
+import "../ts/rollup.baga"
+import "../txn/mvcc.baga"
+import "ast.baga"
+import "exec_dml.baga"
+import "exec_proj.baga"
+import "exec_xw.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// ON CONFLICT SET: bind OLD + EXCLUDED (предложеният ред `full`), изчисли
+// новите стойности, изкарай старите index entries, запиши новия ред +
+// sync на модалите. affected = 1; res.rows += RETURNING проекция.
+fn boila_insert_upsert(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns, prep: BoilaInsPrep, ftsl: BoilaFtsList, hnswl: BoilaHnswList, grpl: BoilaGraphList, rul: BoilaRuList, full: Vec<BoilaVal>, pkenc: bytes, old: Vec<BoilaVal>) -> BoilaInsOne !IO !Time !Par {
+    let new = boila_row_copy(old)
+    let xvals: Vec<BoilaVal> = vec_new()
+    let mut c: i64 = 0
+    while c < vec_len(t.cols) {
+        vec_push(xvals, vec_get(old, c))
+        vec_push(xvals, vec_get(full, c))
+        c = c + 1
+    }
+    c = 0
+    while c < vec_len(prep.ocix) {
+        let mut v = vec_get(ins.oc_vals, c)
+        let sx = vec_get(ins.oc_xtoks, c)
+        if vec_len(sx) > 0 {
+            let ev = boila_xw_eval(prep.xnames, sx, xvals)?
+            if ev.ok == 0 {
+                return boila_insert_one_fail(s, txn, ev.err, ev.state)
+            }
+            v = ev.val
+        }
+        let cd = vec_get(t.cols, vec_get(prep.ocix, c))
+        if boila_dml_val_ok(cd.typ, v) == 0 {
+            return boila_insert_one_fail(s, txn, concat("стойност за '", concat(cd.name, "' не съответства на типа")), "42804")
+        }
+        vec_set(new, vec_get(prep.ocix, c), boila_dml_coerce(cd.typ, v))
+        c = c + 1
+    }
+    // стари index entries навън
+    let xd = boila_ix_del_all_txn(s, txn, t, old, pkenc)
+    if xd.ok == 0 {
+        return boila_insert_one_fail(s, txn, xd.err, xd.state)
+    }
+    txn = xd.txn
+    let pw = boila_txn_put_ex(s, txn, boila_cf_data(), t.id, pkenc, boila_row_enc(new), t.ttl_sec)
+    if pw.ok == 0 {
+        return boila_insert_one_fail(s, txn, pw.err, pw.state)
+    }
+    txn = pw.txn
+    let pw2 = boila_ix_put_all_txn(s, txn, t, new, pkenc)
+    if pw2.ok == 0 {
+        return boila_insert_one_fail(s, txn, pw2.err, pw2.state)
+    }
+    txn = pw2.txn
+    // fts sync: старият документ навън, новият вътре
+    let mut fi: i64 = 0
+    while fi < vec_len(ftsl.defs) {
+        let d = vec_get(ftsl.defs, fi)
+        let fu = fts_unindex_doc(s, txn, t.id, d.id, pkenc)?
+        s = fu.s
+        txn = fu.txn
+        if d.col_idx < vec_len(new) {
+            let v = vec_get(new, d.col_idx)
+            if v.tag == boila_v_str() {
+                let fw = fts_index_doc(s, txn, t.id, d.id, pkenc, str_of_bytes(v.b))?
+                s = fw.s
+                txn = fw.txn
+            }
+        }
+        fi = fi + 1
+    }
+    // hnsw sync
+    let mut hi: i64 = 0
+    while hi < vec_len(hnswl.defs) {
+        let d = vec_get(hnswl.defs, hi)
+        let hu = hnsw_unindex_doc(s, txn, t.id, d, pkenc)?
+        s = hu.s
+        txn = hu.txn
+        if d.col_idx < vec_len(new) {
+            let hw = hnsw_index_doc(s, txn, t, d, pkenc, vec_get(new, d.col_idx))?
+            s = hw.s
+            txn = hw.txn
+        }
+        hi = hi + 1
+    }
+    let gs = graph_sync_row(s, txn, t.id, grpl.defs, old, 1, new, 1)?
+    s = gs.s
+    txn = gs.txn
+    if gs.ok == 0 {
+        return boila_insert_one_fail(s, txn, gs.err, gs.state)
+    }
+    let mut res = prep.res
+    if vec_len(rul.defs) > 0 {
+        let rs = boila_ru_sync_row(s, txn, t.id, rul.defs, old, 1, new, 1)?
+        s = rs.s
+        txn = rs.txn
+        if rs.ok == 0 {
+            return boila_insert_one_fail(s, txn, rs.err, rs.state)
+        }
+    }
+    if ins.has_ret == 1 {
+        vec_push(res.rows, boila_project(new, prep.pj2.proj))
+    }
+    return BoilaInsOne { s: s, txn: txn, ok: 1, err: "", state: "", affected: 1, res: res }
+}
+
+// Plain INSERT (без конфликт): нов ред + index entries + sync на модалите.
+fn boila_insert_put(s: BoilaStore, txn: BoilaTxn, t: BoilaTable, ins: BoilaIns, prep: BoilaInsPrep, ftsl: BoilaFtsList, hnswl: BoilaHnswList, grpl: BoilaGraphList, rul: BoilaRuList, full: Vec<BoilaVal>, pkenc: bytes) -> BoilaInsOne !IO !Time !Par {
+    let pw = boila_txn_put_ex(s, txn, boila_cf_data(), t.id, pkenc, boila_row_enc(full), t.ttl_sec)
+    if pw.ok == 0 {
+        return boila_insert_one_fail(s, txn, pw.err, pw.state)
+    }
+    txn = pw.txn
+    let pw2 = boila_ix_put_all_txn(s, txn, t, full, pkenc)
+    if pw2.ok == 0 {
+        return boila_insert_one_fail(s, txn, pw2.err, pw2.state)
+    }
+    txn = pw2.txn
+    // fts sync за новия документ
+    let mut fi: i64 = 0
+    while fi < vec_len(ftsl.defs) {
+        let d = vec_get(ftsl.defs, fi)
+        if d.col_idx < vec_len(full) {
+            let v = vec_get(full, d.col_idx)
+            if v.tag == boila_v_str() {
+                let fw = fts_index_doc(s, txn, t.id, d.id, pkenc, str_of_bytes(v.b))?
+                s = fw.s
+                txn = fw.txn
+            }
+        }
+        fi = fi + 1
+    }
+    let mut hi: i64 = 0
+    while hi < vec_len(hnswl.defs) {
+        let d = vec_get(hnswl.defs, hi)
+        if d.col_idx < vec_len(full) {
+            let hw = hnsw_index_doc(s, txn, t, d, pkenc, vec_get(full, d.col_idx))?
+            s = hw.s
+            txn = hw.txn
+        }
+        hi = hi + 1
+    }
+    let empty: Vec<BoilaVal> = vec_new()
+    let gs = graph_sync_row(s, txn, t.id, grpl.defs, empty, 0, full, 1)?
+    s = gs.s
+    txn = gs.txn
+    if gs.ok == 0 {
+        return boila_insert_one_fail(s, txn, gs.err, gs.state)
+    }
+    let mut res = prep.res
+    if vec_len(rul.defs) > 0 {
+        let rs = boila_ru_sync_row(s, txn, t.id, rul.defs, empty, 0, full, 1)?
+        s = rs.s
+        txn = rs.txn
+        if rs.ok == 0 {
+            return boila_insert_one_fail(s, txn, rs.err, rs.state)
+        }
+    }
+    if ins.has_ret == 1 {
+        vec_push(res.rows, boila_project(full, prep.pj2.proj))
+    }
+    return BoilaInsOne { s: s, txn: txn, ok: 1, err: "", state: "", affected: 1, res: res }
+}

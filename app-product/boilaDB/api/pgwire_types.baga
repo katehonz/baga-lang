@@ -1,0 +1,35 @@
+// pgwire_types.baga — PG prepared-statement типове (W2): BoilaPgStmt /
+// BoilaPgPortal + text stmt конструктор. Споделени от pgwire_prep
+// (parse/bind), pgwire_free (reclaim) и pgwire_desc (W5 metadata).
+// kind: 0 text, 1 SELECT, 2 INSERT, 3 UPDATE, 4 DELETE.
+
+import "../sql/ast.baga"
+
+// kind: 0 text, 1 SELECT, 2 INSERT, 3 UPDATE, 4 DELETE
+struct BoilaPgStmt {
+    sql: str,
+    kind: i64,
+    sel: BoilaSel,
+    ins: BoilaIns,
+    upd: BoilaUpd,
+    del: BoilaDel
+}
+
+struct BoilaPgPortal {
+    sql: str,
+    src: str,   // името на stmt-а, от който е bound (MEM-4 reclaim гард)
+    vals: Vec<str>,
+    nulls: Vec<i64>,
+    kind: i64,
+    sel: BoilaSel,
+    ins: BoilaIns,
+    upd: BoilaUpd,
+    del: BoilaDel
+}
+
+fn boila_pg_stmt_text(sql: str) -> BoilaPgStmt {
+    return BoilaPgStmt {
+        sql: sql, kind: 0, sel: boila_sel_empty(),
+        ins: boila_ins_empty(), upd: boila_upd_empty(), del: boila_del_empty()
+    }
+}

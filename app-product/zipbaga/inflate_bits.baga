@@ -1,0 +1,135 @@
+// inflate_bits.baga — LSB-first bit reader за raw DEFLATE (RFC 1951):
+// InfBit пакетира байтове в bitbuf; take/get/align/drop четат битове.
+// Няма зависимости — ползва се от inflate_huff и inflate.
+
+import "std/bytes/bytes.baga"
+
+struct InfBit {
+    data: bytes,
+    pos: i64,
+    bitbuf: i64,
+    bitcnt: i64,
+    ok: i64,
+    err: str
+}
+
+struct InfResult {
+    ok: i64,
+    err: str,
+    data: bytes
+}
+
+fn inf_ok(data: bytes) -> InfResult {
+    return InfResult { ok: 1, err: "", data: data }
+}
+
+fn inf_err(msg: str) -> InfResult {
+    return InfResult { ok: 0, err: msg, data: bytes_new(0) }
+}
+
+fn inf_br(data: bytes) -> InfBit {
+    return InfBit { data: data, pos: 0, bitbuf: 0, bitcnt: 0, ok: 1, err: "" }
+}
+
+fn inf_br_fail(br: InfBit, msg: str) -> InfBit {
+    return InfBit {
+        data: br.data, pos: br.pos, bitbuf: br.bitbuf, bitcnt: br.bitcnt,
+        ok: 0, err: msg
+    }
+}
+
+// Align to next byte boundary (drop partial bits).
+fn inf_align(br: InfBit) -> InfBit {
+    let drop = br.bitcnt % 8
+    if drop == 0 {
+        return br
+    }
+    return InfBit {
+        data: br.data, pos: br.pos,
+        bitbuf: br.bitbuf >> drop,
+        bitcnt: br.bitcnt - drop,
+        ok: br.ok, err: br.err
+    }
+}
+
+fn inf_bits(br: InfBit, n: i64) -> InfBit {
+    if br.ok == 0 {
+        return br
+    }
+    let mut bitbuf = br.bitbuf
+    let mut bitcnt = br.bitcnt
+    let mut pos = br.pos
+    let data = br.data
+    let dn = bytes_len(data)
+    while bitcnt < n {
+        if pos >= dn {
+            return inf_br_fail(br, "deflate: truncated input")
+        }
+        bitbuf = bitbuf | ((bytes_at(data, pos) & 255) << bitcnt)
+        bitcnt = bitcnt + 8
+        pos = pos + 1
+    }
+    // value lives in low n bits of bitbuf — caller uses inf_val
+    return InfBit {
+        data: data, pos: pos, bitbuf: bitbuf, bitcnt: bitcnt, ok: 1, err: ""
+    }
+}
+
+fn inf_val(br: InfBit, n: i64) -> i64 {
+    let mask = (1 << n) - 1
+    return br.bitbuf & mask
+}
+
+fn inf_drop(br: InfBit, n: i64) -> InfBit {
+    return InfBit {
+        data: br.data, pos: br.pos,
+        bitbuf: br.bitbuf >> n,
+        bitcnt: br.bitcnt - n,
+        ok: br.ok, err: br.err
+    }
+}
+
+fn inf_get(br: InfBit, n: i64) -> InfBit {
+    let b2 = inf_bits(br, n)
+    if b2.ok == 0 {
+        return b2
+    }
+    return inf_drop(b2, n)
+}
+
+// Return (updated br with bits consumed, value). Value in InfBit.bitbuf low
+// is wrong after drop — use a pair pattern via InfBit.err? Better: store
+// last value in bitbuf temporarily... Use InfBit with ok=2 for "has val".
+// Simpler: return value via side channel struct.
+
+struct InfGet {
+    br: InfBit,
+    v: i64
+}
+
+fn inf_take(br: InfBit, n: i64) -> InfGet {
+    let b2 = inf_bits(br, n)
+    if b2.ok == 0 {
+        return InfGet { br: b2, v: 0 }
+    }
+    let v = inf_val(b2, n)
+    return InfGet { br: inf_drop(b2, n), v: v }
+}
+
+// ---------- Huffman: codes from lengths; decode bit-by-bit ----------
+// lens: Vec of code lengths for symbols 0..nsyms-1
+// codes: assigned bit-reversed codes (DEFLATE LSB-first stream)
+
+fn inf_rev_bits(c: i64, n: i64) -> i64 {
+    let mut x = c
+    let mut r: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        r = (r << 1) | (x & 1)
+        x = x >> 1
+        i = i + 1
+    }
+    return r
+}
+
+// Build codes vector same length as lens; unused symbols get -1.

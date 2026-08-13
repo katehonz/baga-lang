@@ -1,6 +1,7 @@
 // serve_pg.baga — PG wire go_bg + per-db parallel + live conn.
 
 import "../api/pgwire.baga"
+import "../api/pgwire_serve.baga"
 import "../api/serve_mt.baga"
 import "../api/serve_stats.baga"
 import "../server/databases.baga"

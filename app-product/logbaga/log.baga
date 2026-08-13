@@ -3,6 +3,8 @@
 
 import "std/str/str.baga"
 import "std/json/json.baga"
+import "std/json/json_write.baga"
+import "std/json/json_strict.baga"
 import "std/time/time.baga"
 
 // Escape a string value for embedding in a JSON object (uses json_escape

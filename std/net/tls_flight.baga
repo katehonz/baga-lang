@@ -1,0 +1,259 @@
+// tls_flight.baga — TLS 1.3 flight: отваряне на Client Flight (Encrypted
+// Extensions + Certificate + CertificateVerify + Finished), verify на
+// server-ския сертификат (anchor + SAN), Finished record.
+
+import "tls.baga"
+import "tls_crypto.baga"
+import "../bytes/bytes.baga"
+import "../str/str.baga"
+import "../crypto/sha256.baga"
+import "../crypto/sha512.baga"
+import "../crypto/hmac.baga"
+import "../crypto/hkdf.baga"
+import "../crypto/aes.baga"
+import "../crypto/gcm.baga"
+import "../crypto/x509.baga"
+import "../crypto/rsa.baga"
+import "../crypto/p256.baga"
+import "../crypto/ct.baga"
+
+fn tls_hdr_bytes(typ: i64, plen: i64) -> bytes {
+    let v = vec_new()
+    tls_push_u8(v, typ)
+    tls_push_u16(v, 771)
+    tls_push_u16(v, plen)
+    return bytes_from_vec(v)
+}
+
+// ---------- T5: encrypted server flight ----------
+
+struct TlsFlight {
+    ok: i64,
+    err: str,
+    types: Vec<i64>,       // handshake message types, in order
+    cert_der: bytes,       // first certificate (T6 input)
+    cv_sig: bytes,         // CertificateVerify signature
+    cv_algo: i64,          // SignatureScheme (e.g. 0x0804 = rsa_pss_rsae_sha256)
+    cv_hash: bytes,        // H(CH||SH||EE||Cert) — signed by CertificateVerify
+    finished_ok: i64,      // server Finished HMAC verified
+    flight_hash: bytes,    // H(CH…server Finished) — client Finished + app traffic
+    app_hash: bytes        // same as flight_hash (alias for T8 call sites)
+}
+
+fn tls_flight_bad(err: str) -> TlsFlight {
+    return TlsFlight { ok: 0, err: err, types: vec_new(),
+        cert_der: bytes_from_vec(vec_new()), cv_sig: bytes_from_vec(vec_new()),
+        cv_algo: 0, cv_hash: bytes_from_vec(vec_new()),
+        finished_ok: 0, flight_hash: bytes_from_vec(vec_new()),
+        app_hash: bytes_from_vec(vec_new()) }
+}
+
+// Decrypt the application-data records carrying the server handshake
+// flight and verify the server Finished. `chunked` is the concatenation
+// of (u24 length || record payload)* for each type-23 record in order —
+// record i has GCM sequence i (openssl splits EncryptedExtensions into
+// its own record; the RFC allows any split). The flat u24 shape predates
+// Vec<bytes> (L4, since closed); it is kept because the GCM sequence
+// numbers must stay aligned with the record order anyway.
+fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked: bytes) -> TlsFlight {
+    let key = tls_hkdf_label(sched.cipher, sched.server_hs, "key", bytes_from_vec(vec_new()), tls_key_len(sched.cipher))
+    let iv = tls_hkdf_label(sched.cipher, sched.server_hs, "iv", bytes_from_vec(vec_new()), 12)
+    let aead = aes_expand(key)
+    let mut pt = bytes_from_vec(vec_new())
+    let mut seq: i64 = 0
+    let mut c: i64 = 0
+    let cn = bytes_len(chunked)
+    while c + 3 <= cn {
+        let plen = (bytes_at(chunked, c) << 16) | (bytes_at(chunked, c + 1) << 8) | bytes_at(chunked, c + 2)
+        c = c + 3
+        if c + plen > cn {
+            return tls_flight_bad("truncated chunked flight")
+        }
+        let payload = bytes_slice(chunked, c, c + plen)
+        c = c + plen
+        let aad = tls_hdr_bytes(23, plen)
+        let open = gcm_open(aead, tls_nonce(iv, seq), aad, payload)
+        if open.ok == 0 {
+            return tls_flight_bad(concat("flight decrypt failed at record ", int_to_str(seq)))
+        }
+        // RFC 8446 §5.2: inner plaintext ends with a content-type byte
+        // (22 = handshake); strip it, keep only handshake records.
+        let in_len = bytes_len(open.pt)
+        if in_len == 0 {
+            return tls_flight_bad("empty flight record")
+        }
+        if bytes_at(open.pt, in_len - 1) == 22 {
+            pt = bytes_concat(pt, bytes_slice(open.pt, 0, in_len - 1))
+        }
+        seq = seq + 1
+    }
+    let n = bytes_len(pt)
+    // walk the handshake messages; transcript = CH || SH || flight-so-far
+    let mut acc = bytes_concat(ch_msg, sh_msg)
+    let types = vec_new()
+    let mut cert_der = bytes_from_vec(vec_new())
+    let mut cv_sig = bytes_from_vec(vec_new())
+    let mut cv_algo: i64 = 0
+    let mut cv_hash = bytes_from_vec(vec_new())
+    let mut finished_ok: i64 = 0
+    let mut flight_hash = bytes_from_vec(vec_new())
+    let mut app_hash = bytes_from_vec(vec_new())
+    let mut p: i64 = 0
+    while p + 4 <= n {
+        let mt = bytes_at(pt, p)
+        let ml = (bytes_at(pt, p + 1) << 16) | (bytes_at(pt, p + 2) << 8) | bytes_at(pt, p + 3)
+        if p + 4 + ml > n {
+            return tls_flight_bad("truncated flight message")
+        }
+        let msg = bytes_slice(pt, p, p + 4 + ml)
+        let body = bytes_slice(pt, p + 4, p + 4 + ml)
+        vec_push(types, mt)
+        if mt == 11 {
+            // Certificate: ctx(1) list_len(3) cert_len(3) cert...
+            if bytes_len(body) >= 7 {
+                let clen = (bytes_at(body, 4) << 16) | (bytes_at(body, 5) << 8) | bytes_at(body, 6)
+                if 7 + clen <= bytes_len(body) {
+                    cert_der = bytes_slice(body, 7, 7 + clen)
+                }
+            }
+        }
+        if mt == 15 {
+            // CertificateVerify: algo(2) sig_len(2) sig...
+            // Signed content is H(transcript before this message).
+            cv_hash = tls_hash_b(sched.cipher, acc)
+            if bytes_len(body) >= 4 {
+                cv_algo = (bytes_at(body, 0) << 8) | bytes_at(body, 1)
+                let sl = (bytes_at(body, 2) << 8) | bytes_at(body, 3)
+                if 4 + sl <= bytes_len(body) {
+                    cv_sig = bytes_slice(body, 4, 4 + sl)
+                }
+            }
+        }
+        if mt == 20 {
+            // Finished: HMAC over the transcript BEFORE this message
+            let fin_key = tls_hkdf_label(sched.cipher, sched.server_hs, "finished", bytes_from_vec(vec_new()), tls_hash_len(sched.cipher))
+            let expect = tls_hmac_b(sched.cipher, fin_key, tls_hash_b(sched.cipher, acc))
+            if bytes_len(body) == tls_hash_len(sched.cipher) {
+                if ct_eq_b(body, expect) {
+                    finished_ok = 1
+                }
+            }
+            // Server Finished verify_data covers the transcript BEFORE this
+            // message (acc). Client Finished and application traffic secrets
+            // cover the transcript THROUGH server Finished (RFC 8446 §4.4.4
+            // and §7.1). T5's live probe only checked outer record type ≠ 21
+            // and missed encrypted decrypt_error alerts (outer type 23).
+            app_hash = tls_hash_b(sched.cipher, bytes_concat(acc, msg))
+            flight_hash = app_hash
+        } else {
+            acc = bytes_concat(acc, msg)
+        }
+        p = p + 4 + ml
+    }
+    return TlsFlight { ok: 1, err: "", types: types, cert_der: cert_der,
+        cv_sig: cv_sig, cv_algo: cv_algo, cv_hash: cv_hash,
+        finished_ok: finished_ok, flight_hash: flight_hash, app_hash: app_hash }
+}
+
+// ---------- T6: certificate + CertificateVerify ----------
+
+// RFC 8446 §4.4.3: 64 spaces || context || 0x00 || transcript_hash
+fn tls_cv_signed_content(transcript_hash: bytes) -> bytes {
+    let pad = vec_new()
+    let mut i: i64 = 0
+    while i < 64 {
+        vec_push(pad, 32)
+        i = i + 1
+    }
+    let ctx = tls_ascii("TLS 1.3, server CertificateVerify")
+    let z = vec_new()
+    vec_push(z, 0)
+    return bytes_concat(bytes_concat(bytes_concat(bytes_from_vec(pad), ctx), bytes_from_vec(z)), transcript_hash)
+}
+
+struct TlsVerify {
+    ok: i64,
+    err: str,
+    cert_ok: i64,
+    cv_ok: i64
+}
+
+fn tls_verify_bad(err: str) -> TlsVerify {
+    return TlsVerify { ok: 0, err: err, cert_ok: 0, cv_ok: 0 }
+}
+
+// Verify the leaf certificate against a caller-supplied trust anchor DER
+// (self-signed openssl peers: empty anchor accepts self-signed) and the
+// CertificateVerify signature:
+//   0x0804 rsa_pss_rsae_sha256  (T6)
+//   0x0403 ecdsa_secp256r1_sha256 (T7)
+fn tls_verify_server(flight: TlsFlight, anchor_der: bytes) -> TlsVerify {
+    if flight.ok == 0 {
+        return tls_verify_bad(flight.err)
+    }
+    let cert = x509_parse(flight.cert_der)
+    if cert.ok == 0 {
+        return tls_verify_bad(cert.err)
+    }
+    let mut cert_ok: i64 = 0
+    if bytes_len(anchor_der) == 0 {
+        if x509_verify_self_signed(cert) == 1 {
+            cert_ok = 1
+        }
+    } else {
+        if x509_trust_anchor(flight.cert_der, anchor_der) == 1 {
+            cert_ok = 1
+        }
+    }
+    if cert_ok == 0 {
+        return TlsVerify { ok: 0, err: "certificate not trusted", cert_ok: 0, cv_ok: 0 }
+    }
+    let content = tls_cv_signed_content(flight.cv_hash)
+    let mut cv_ok: i64 = 0
+    if flight.cv_algo == 2052 {   // 0x0804 rsa_pss_rsae_sha256
+        if cert.is_rsa == 1 {
+            cv_ok = rsa_pss_sha256_verify(cert.n, cert.e, content, flight.cv_sig)
+        }
+        if cv_ok == 0 {
+            return TlsVerify { ok: 0, err: "CertificateVerify RSA-PSS failed",
+                cert_ok: 1, cv_ok: 0 }
+        }
+    } else {
+        if flight.cv_algo == 1027 {   // 0x0403 ecdsa_secp256r1_sha256
+            if cert.is_ec == 1 {
+                cv_ok = ecdsa_p256_verify_sha256(cert.qx, cert.qy, content, flight.cv_sig)
+            }
+            if cv_ok == 0 {
+                return TlsVerify { ok: 0, err: "CertificateVerify ECDSA-P256 failed",
+                    cert_ok: 1, cv_ok: 0 }
+            }
+        } else {
+            return TlsVerify { ok: 0, err: "unsupported CertificateVerify algorithm",
+                cert_ok: 1, cv_ok: 0 }
+        }
+    }
+    return TlsVerify { ok: 1, err: "", cert_ok: 1, cv_ok: 1 }
+}
+
+// ---------- T5: client Finished record ----------
+
+// The encrypted record carrying the client Finished (handshake seq 0).
+fn tls_finished_record(sched: TlsSchedule, flight_hash: bytes) -> bytes {
+    let fin_key = tls_hkdf_label(sched.cipher, sched.client_hs, "finished", bytes_from_vec(vec_new()), tls_hash_len(sched.cipher))
+    let body = tls_hmac_b(sched.cipher, fin_key, flight_hash)
+    let hs = vec_new()
+    tls_push_u8(hs, 20)
+    tls_push_u24(hs, bytes_len(body))
+    tls_push_bytes(hs, body)
+    let plain = bytes_from_vec(hs)
+    let key = tls_hkdf_label(sched.cipher, sched.client_hs, "key", bytes_from_vec(vec_new()), tls_key_len(sched.cipher))
+    let iv = tls_hkdf_label(sched.cipher, sched.client_hs, "iv", bytes_from_vec(vec_new()), 12)
+    let aead = aes_expand(key)
+    // TLSInnerPlaintext = content || content_type (22 = handshake)
+    let plain_typed = bytes_concat(plain, hex_decode("16"))
+    let aad = tls_hdr_bytes(23, bytes_len(plain_typed) + 16)
+    let sealed = gcm_seal(aead, tls_nonce(iv, 0), aad, plain_typed)
+    return bytes_concat(tls_hdr_bytes(23, bytes_len(sealed)), sealed)
+}
+
+// ---------- T8: application traffic + TlsConn ----------

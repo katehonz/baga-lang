@@ -9,6 +9,8 @@ import "../core/codec.baga"
 import "std/bytes/bytes.baga"
 import "std/str/str.baga"
 import "std/json/json.baga"
+import "std/json/json_write.baga"
+import "std/json/json_strict.baga"
 
 fn boila_v_vector() -> i64 { return 8 }
 

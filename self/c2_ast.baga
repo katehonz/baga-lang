@@ -1,0 +1,32 @@
+// c2_ast.baga — AST builder на само-компилатора (linked list:
+// kinds/texts/first-child/next-sibling). Фаза 2: компилира се от
+// ./baga self/compiler.baga.
+
+fn ast_kind(nk: Vec, nt: Vec, fc: Vec, ns: Vec, kind: i64, text: str) -> i64 {
+    let mut idx = vec_len(nk)
+    vec_push(nk, kind)
+    vec_push_str(nt, text)
+    vec_push(fc, 0 - 1)
+    vec_push(ns, 0 - 1)
+    idx
+}
+
+fn ast_child(fc: Vec, ns: Vec, parent: i64, child: i64) {
+    vec_set(ns, child, 0 - 1)
+    if vec_get(fc, parent) < 0 {
+        vec_set(fc, parent, child)
+    } else {
+        let mut last = vec_get(fc, parent)
+        while vec_get(ns, last) >= 0 {
+            last = vec_get(ns, last)
+        }
+        vec_set(ns, last, child)
+    }
+}
+
+fn first_child(fc: Vec, idx: i64) -> i64 { vec_get(fc, idx) }
+fn next_sibling(ns: Vec, idx: i64) -> i64 { vec_get(ns, idx) }
+fn node_kind(nk: Vec, idx: i64) -> i64 { vec_get(nk, idx) }
+fn node_text(nt: Vec, idx: i64) -> str { vec_get_str(nt, idx) }
+
+// index of the first occurrence of byte ch in s at or after position from, or -1

@@ -1,0 +1,409 @@
+// server_poll.baga — R15 poll(2) multi-conn serve (сериен accept):
+// LsmSrv FD сет, on_readable, lsm_serve_conn(_multi), serve_serial_to.
+
+import "server.baga"
+import "../db/shard.baga"
+import "../db/shard_read.baga"
+import "../db/multidb.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/net/poll.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+import "std/bytes/bytes.baga"
+
+fn lsm_serve_conn(fd: i64, db: LsmDB) -> LsmDB !IO !Net !Time {
+    let mut buf = bytes_from_vec(vec_new())
+    let scratch = str_repeat(" ", 4096)  // reused read buffer — never a string
+    let mut running: i64 = 1
+    let mut cur = db
+    while running == 1 {
+        let chunk = tcp_read_into(fd, scratch, 4096)?
+        if bytes_len(chunk) == 0 {
+            running = 0
+        } else {
+            if bytes_len(buf) > 0 {
+                let joined = bytes_concat(buf, chunk)
+                drop(chunk)
+                buf = joined
+            } else {
+                buf = chunk
+            }
+            let mut again: i64 = 1
+            // R38: coalesce replies for this read batch into one write.
+            let mut out = bytes_new(0)
+            let mut n_out: i64 = 0
+            while again == 1 {
+                let p = resp_parse_command_b(buf)
+                if p.ok == 0 {
+                    again = 0
+                } else {
+                    // R29: drop consumed prefix without always slicing a copy.
+                    let old = buf
+                    if p.consumed >= bytes_len(old) {
+                        buf = bytes_new(0)
+                    } else {
+                        buf = bytes_slice(old, p.consumed, bytes_len(old))
+                    }
+                    drop(old)
+                    let pargs = p.args
+                    let ex = lsm_exec_b(cur, pargs)?
+                    cur = ex.db
+                    drop(pargs)
+                    let rep = ex.reply
+                    out = bytes_concat(out, rep)
+                    drop(rep)
+                    n_out = n_out + 1
+                    if ex.quit == 1 {
+                        running = 0
+                        again = 0
+                    }
+                }
+            }
+            if n_out > 0 {
+                let w = tcp_write_bytes(fd, out)?
+                drop(out)
+                if w != 0 {
+                    running = 0
+                }
+            }
+        }
+    }
+    return cur
+}
+
+// --- R15: poll(2) multi-conn (closes serial-accept limit / kvbaga K1 path) ---
+
+struct LsmSrv {
+    multi: LsmMulti,  // R41: multi-DB (SELECT); each is an LsmCluster
+    listener: i64,
+    fds: Vec<i64>,
+    bufs: Map<i64, bytes>,
+    // fd → selected logical DB index (default 0)
+    fd_db: Map<i64, i64>,
+    scratch: str  // shared read buffer (single-threaded loop) — never a string
+}
+
+fn lsm_srv_add(st: LsmSrv, fd: i64) -> LsmSrv !Net {
+    // R30: TCP_NODELAY on accepted clients (pipeline / chatty RESP).
+    tcp_set_nodelay(fd)?
+    vec_push(st.fds, fd)
+    map_set(st.bufs, fd, bytes_from_vec(vec_new()))
+    map_set(st.fd_db, fd, 0)
+    return st
+}
+
+fn lsm_srv_drop(st: LsmSrv, fd: i64) -> LsmSrv !Net !IO {
+    tcp_close(fd)?
+    map_del(st.bufs, fd)
+    map_del(st.fd_db, fd)
+    let nv: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(st.fds) {
+        let f = vec_get(st.fds, i)
+        if f != fd {
+            vec_push(nv, f)
+        }
+        i = i + 1
+    }
+    st.fds = nv
+    return st
+}
+
+// Handle one readable client fd: non-blocking-ish (called after poll).
+// Returns updated state; drops conn on EOF / QUIT / write error.
+fn lsm_srv_on_readable(st: LsmSrv, fd: i64) -> LsmSrv !IO !Net !Time {
+    // R30: larger read window so a full client pipeline batch lands in one read.
+    let chunk = tcp_read_into(fd, st.scratch, 65536)?
+    if bytes_len(chunk) == 0 {
+        return lsm_srv_drop(st, fd)?
+    }
+    let mut buf = map_get(st.bufs, fd)
+    if bytes_len(buf) > 0 {
+        // pipelined residue — join; the copy consumes chunk's contents
+        let joined = bytes_concat(buf, chunk)
+        drop(chunk)
+        buf = joined
+    } else {
+        // fast path: adopt the read buffer zero-copy
+        buf = chunk
+    }
+    let mut dbix: i64 = 0
+    if map_has(st.fd_db, fd) == 1 {
+        dbix = map_get(st.fd_db, fd)
+    }
+    let mut drop_me: i64 = 0
+    let mut again: i64 = 1
+    // R38: coalesce all replies from this read into one write (writev-like).
+    // Intermediate `out` concats are not dropped in-loop (baga rule).
+    let mut out = bytes_new(0)
+    let mut n_out: i64 = 0
+    while again == 1 && drop_me == 0 {
+        let p = resp_parse_command_b(buf)
+        if p.ok == 0 {
+            again = 0
+        } else {
+            // R29: free full buffer when command consumed the whole read.
+            let old = buf
+            if p.consumed >= bytes_len(old) {
+                buf = bytes_new(0)
+            } else {
+                buf = bytes_slice(old, p.consumed, bytes_len(old))
+            }
+            drop(old)
+            let pargs = p.args
+            let narg = vec_len(pargs)
+            // R41/R42: SELECT / FLUSHALL need LsmMulti (not a single cluster).
+            if narg >= 1 && lsm_eq_ci(str_of_bytes(vec_get(pargs, 0)), "SELECT") == 1 {
+                if narg != 2 || lsm_is_int(str_of_bytes(vec_get(pargs, 1))) == 0 {
+                    let er = resp_error("ERR invalid DB index")
+                    out = bytes_concat(out, er)
+                    drop(er)
+                    n_out = n_out + 1
+                } else {
+                    let ix = parse_int(str_of_bytes(vec_get(pargs, 1)))
+                    if lsm_multi_valid_db(st.multi, ix) == 0 {
+                        let er2 = resp_error("ERR DB index is out of range")
+                        out = bytes_concat(out, er2)
+                        drop(er2)
+                        n_out = n_out + 1
+                    } else {
+                        map_set(st.fd_db, fd, ix)
+                        dbix = ix
+                        let okb = resp_ok()
+                        out = bytes_concat(out, okb)
+                        drop(okb)
+                        n_out = n_out + 1
+                    }
+                }
+                drop(pargs)
+            } else {
+                if narg >= 1 && lsm_eq_ci(str_of_bytes(vec_get(pargs, 0)), "FLUSHALL") == 1 {
+                    st.multi = lsm_multi_flushall(st.multi)?
+                    let okb2 = resp_ok()
+                    out = bytes_concat(out, okb2)
+                    drop(okb2)
+                    n_out = n_out + 1
+                    drop(pargs)
+                } else {
+                    let eg = lsm_multi_ensure(st.multi, dbix)?
+                    st.multi = eg.multi
+                    let ex = lsm_exec_c_b(eg.c, pargs)?
+                    st.multi = lsm_multi_put(st.multi, dbix, ex.c)
+                    drop(pargs)
+                    let rep = ex.reply
+                    out = bytes_concat(out, rep)
+                    drop(rep)
+                    n_out = n_out + 1
+                    if ex.quit == 1 {
+                        drop_me = 1
+                    }
+                }
+            }
+        }
+    }
+    if n_out > 0 {
+        let w = tcp_write_bytes(fd, out)?
+        drop(out)
+        if w != 0 {
+            drop_me = 1
+        }
+    }
+    if drop_me == 1 {
+        return lsm_srv_drop(st, fd)?
+    }
+    map_set(st.bufs, fd, buf)
+    return st
+}
+
+// R32/R41: open multi-DB (each entry is a sharded cluster).
+fn lsm_open_for_serve() -> LsmMulti !IO {
+    let mut dir = env("LSMPATH")?
+    if dir == "" {
+        dir = "/tmp/baga_lsm"
+    }
+    let mut flush_at: i64 = 256
+    let fe = env("LSM_FLUSH_AT")?
+    if fe != "" {
+        flush_at = parse_int(fe)
+    }
+    let mut compact_at: i64 = 4
+    let ce = env("LSM_COMPACT_AT")?
+    if ce != "" {
+        compact_at = parse_int(ce)
+    }
+    let mut nshards: i64 = 1
+    let se_sh = env("LSM_SHARDS")?
+    if se_sh != "" {
+        nshards = parse_int(se_sh)
+        if nshards < 1 {
+            nshards = 1
+        }
+    }
+    let mut max_db: i64 = 16
+    let mde = env("LSM_MAX_DB")?
+    if mde != "" {
+        max_db = parse_int(mde)
+    }
+    let mut multi = lsm_multi_open(dir, nshards, flush_at, compact_at, max_db)?
+    if multi.ok == 0 {
+        return multi
+    }
+    let cpe = env("LSM_CACHE_PAGES")?
+    if cpe != "" {
+        let cp = parse_int(cpe)
+        if cp >= 16 {
+            multi.cache_pages = cp
+        }
+    }
+    let te = env("LSM_TARGET_BYTES")?
+    if te != "" {
+        let tb = parse_int(te)
+        if tb > 0 {
+            multi.target_bytes = tb
+        }
+    }
+    let me = env("LSM_MERGE_PICK")?
+    if me != "" {
+        let mp = parse_int(me)
+        if mp > 0 {
+            multi.merge_pick = mp
+        }
+    }
+    let se = env("LSM_SYNC_EVERY")?
+    if se != "" {
+        let sv = parse_int(se)
+        if sv > 0 {
+            multi.sync_every = sv
+        }
+    }
+    // Retune already-open DB 0 with env knobs.
+    if map_has(multi.open, 0) == 1 {
+        let c0 = map_get(multi.open, 0)
+        let ct = lsm_multi_tune_cluster(multi, c0)
+        multi = lsm_multi_put(multi, 0, ct)
+    }
+    return multi
+}
+
+// Serial single-conn drain on multi-DB (R32/R41).
+fn lsm_serve_conn_multi(fd: i64, multi: LsmMulti) -> LsmMulti !IO !Net !Time {
+    let mut buf = bytes_from_vec(vec_new())
+    let scratch = str_repeat(" ", 65536)
+    let mut running: i64 = 1
+    let mut m = multi
+    let mut dbix: i64 = 0
+    while running == 1 {
+        let chunk = tcp_read_into(fd, scratch, 65536)?
+        if bytes_len(chunk) == 0 {
+            running = 0
+        } else {
+            if bytes_len(buf) > 0 {
+                let joined = bytes_concat(buf, chunk)
+                drop(chunk)
+                buf = joined
+            } else {
+                buf = chunk
+            }
+            let mut again: i64 = 1
+            // R38: coalesce replies for this read batch into one write.
+            let mut out = bytes_new(0)
+            let mut n_out: i64 = 0
+            while again == 1 {
+                let p = resp_parse_command_b(buf)
+                if p.ok == 0 {
+                    again = 0
+                } else {
+                    let old = buf
+                    if p.consumed >= bytes_len(old) {
+                        buf = bytes_new(0)
+                    } else {
+                        buf = bytes_slice(old, p.consumed, bytes_len(old))
+                    }
+                    drop(old)
+                    let pargs = p.args
+                    let narg = vec_len(pargs)
+                    if narg >= 1 && lsm_eq_ci(str_of_bytes(vec_get(pargs, 0)), "SELECT") == 1 {
+                        if narg != 2 || lsm_is_int(str_of_bytes(vec_get(pargs, 1))) == 0 {
+                            let er = resp_error("ERR invalid DB index")
+                            out = bytes_concat(out, er)
+                            drop(er)
+                        } else {
+                            let ix = parse_int(str_of_bytes(vec_get(pargs, 1)))
+                            if lsm_multi_valid_db(m, ix) == 0 {
+                                let er2 = resp_error("ERR DB index is out of range")
+                                out = bytes_concat(out, er2)
+                                drop(er2)
+                            } else {
+                                dbix = ix
+                                let okb = resp_ok()
+                                out = bytes_concat(out, okb)
+                                drop(okb)
+                            }
+                        }
+                        n_out = n_out + 1
+                        drop(pargs)
+                    } else {
+                        if narg >= 1 && lsm_eq_ci(str_of_bytes(vec_get(pargs, 0)), "FLUSHALL") == 1 {
+                            m = lsm_multi_flushall(m)?
+                            let okb2 = resp_ok()
+                            out = bytes_concat(out, okb2)
+                            drop(okb2)
+                            n_out = n_out + 1
+                            drop(pargs)
+                        } else {
+                            let eg = lsm_multi_ensure(m, dbix)?
+                            m = eg.multi
+                            let ex = lsm_exec_c_b(eg.c, pargs)?
+                            m = lsm_multi_put(m, dbix, ex.c)
+                            drop(pargs)
+                            let rep = ex.reply
+                            out = bytes_concat(out, rep)
+                            drop(rep)
+                            n_out = n_out + 1
+                            if ex.quit == 1 {
+                                running = 0
+                                again = 0
+                            }
+                        }
+                    }
+                }
+            }
+            if n_out > 0 {
+                let w = tcp_write_bytes(fd, out)?
+                drop(out)
+                if w != 0 {
+                    running = 0
+                }
+            }
+        }
+    }
+    return m
+}
+
+// Serial accept: one conn at a time (R32/R41 multi-DB).
+fn lsm_serve_serial_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
+    let mut multi = lsm_open_for_serve()?
+    if multi.ok == 0 {
+        return -1
+    }
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        lsm_multi_close(multi)?
+        return -1
+    }
+    while true {
+        let fd = tcp_accept(listener)?
+        if fd >= 0 {
+            if timeout_s > 0 {
+                tcp_set_timeouts(fd, timeout_s)?
+            }
+            tcp_set_nodelay(fd)?
+            multi = lsm_serve_conn_multi(fd, multi)?
+            tcp_close(fd)?
+        }
+    }
+    return 0
+}
+

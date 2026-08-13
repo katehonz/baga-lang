@@ -1,0 +1,117 @@
+// shard_ttl.baga — LsmCluster TTL: EXPIRE/TTL/PERSIST (bytes-key cores)
+// + apply на open-time knobs (sync_every, merge_pick, target_bytes,
+// page cache) към всеки shard.
+
+import "shard.baga"
+import "engine.baga"
+import "engine_ttl.baga"
+import "../cache/page.baga"
+import "std/bytes/bytes.baga"
+
+struct LsmClusterExpire {
+    c: LsmCluster,
+    ok: i64
+}
+
+fn lsm_cluster_expire(c: LsmCluster, key: str, ttl_sec: i64) -> LsmClusterExpire !IO !Time {
+    return lsm_cluster_expire_kb(c, bytes_of_str(key), ttl_sec)?
+}
+
+// R68: bytes-key EXPIRE core.
+fn lsm_cluster_expire_kb(c: LsmCluster, key: bytes, ttl_sec: i64) -> LsmClusterExpire !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    let e = lsm_expire_kb(db, key, ttl_sec)?
+    db = e.db
+    vec_set(c.shards, i, db)
+    return LsmClusterExpire { c: c, ok: e.ok }
+}
+
+struct LsmClusterTtl {
+    c: LsmCluster,
+    n: i64
+}
+
+fn lsm_cluster_ttl(c: LsmCluster, key: str) -> LsmClusterTtl !IO !Time {
+    return lsm_cluster_ttl_kb(c, bytes_of_str(key))?
+}
+
+// R68: bytes-key TTL core.
+fn lsm_cluster_ttl_kb(c: LsmCluster, key: bytes) -> LsmClusterTtl !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    let t = lsm_ttl_kb(db, key)?
+    db = t.db
+    vec_set(c.shards, i, db)
+    return LsmClusterTtl { c: c, n: t.n }
+}
+
+fn lsm_cluster_persist(c: LsmCluster, key: str) -> LsmClusterExpire !IO !Time {
+    return lsm_cluster_persist_kb(c, bytes_of_str(key))?
+}
+
+// R68: bytes-key PERSIST core.
+fn lsm_cluster_persist_kb(c: LsmCluster, key: bytes) -> LsmClusterExpire !IO !Time {
+    let i = lsm_shard_ix_b(c.n, key)
+    let mut db = vec_get(c.shards, i)
+    let p = lsm_persist_kb(db, key)?
+    db = p.db
+    vec_set(c.shards, i, db)
+    return LsmClusterExpire { c: c, ok: p.ok }
+}
+
+// Apply open-time knobs (sync_every, merge_pick, target_bytes, cache) to every shard.
+fn lsm_cluster_apply_sync(c: LsmCluster, sync_every: i64) -> LsmCluster {
+    if sync_every <= 0 {
+        return c
+    }
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db.sync_every = sync_every
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    return c
+}
+
+fn lsm_cluster_apply_merge_pick(c: LsmCluster, mp: i64) -> LsmCluster {
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db.merge_pick = mp
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    return c
+}
+
+fn lsm_cluster_apply_target_bytes(c: LsmCluster, tb: i64) -> LsmCluster {
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db.target_bytes = tb
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    return c
+}
+
+fn lsm_cluster_apply_cache(c: LsmCluster, pages: i64) -> LsmCluster {
+    if pages < 16 {
+        return c
+    }
+    // Split cache budget across shards (min 16 pages each).
+    let mut per = pages / c.n
+    if per < 16 {
+        per = 16
+    }
+    let mut i: i64 = 0
+    while i < c.n {
+        let mut db = vec_get(c.shards, i)
+        db.cache = pc_new(4096, per)
+        vec_set(c.shards, i, db)
+        i = i + 1
+    }
+    return c
+}

@@ -1,0 +1,107 @@
+// pg_params.baga — PostgreSQL подготвени изявления: param builders,
+// Parse/Bind/Execute/Describe (simple protocol), deallocate.
+
+import "pg.baga"
+import "../wire/proto.baga"
+import "std/str/str.baga"
+
+fn pg_query_params_str(conn: PgConn, sql: str, vals: Vec<str>) -> PgResult !IO !Net {
+    let nulls = vec_new()
+    for i in 0..vec_len(vals) {
+        vec_push(nulls, 0)
+    }
+    return pg_query_params(conn, sql, vals, nulls)?
+}
+
+// Helper: push a text param onto vals/nulls builders (returns nothing — mutate via push).
+fn pg_param_str(vals: Vec<str>, nulls: Vec<i64>, s: str) -> i64 {
+    vec_push(vals, s)
+    vec_push(nulls, 0)
+    return 0
+}
+
+fn pg_param_i64(vals: Vec<str>, nulls: Vec<i64>, n: i64) -> i64 {
+    vec_push(vals, int_to_str(n))
+    vec_push(nulls, 0)
+    return 0
+}
+
+fn pg_param_null(vals: Vec<str>, nulls: Vec<i64>) -> i64 {
+    vec_push(vals, "")
+    vec_push(nulls, 1)
+    return 0
+}
+
+// JSON document as a text parameter (bind into json/jsonb columns, e.g. $1::jsonb).
+// The text is sent as-is — validate with pg_json_valid first when it is user input.
+fn pg_param_json(vals: Vec<str>, nulls: Vec<i64>, json_text: str) -> i64 {
+    vec_push(vals, json_text)
+    vec_push(nulls, 0)
+    return 0
+}
+
+// ---------- named prepared statements ----------
+// Parse once (named), then Bind/Execute many times. Survives until Close or session end.
+// Simple Query destroys the unnamed statement only — named ones stay.
+
+// PREPARE: Parse(name) + Sync. ok=1 on success.
+fn pg_prepare(conn: PgConn, name: str, sql: str, nparams: i64) -> PgResult !IO !Net {
+    if conn.ok == 0 || conn.fd < 0 {
+        return pg_result_err(conn, "not connected")
+    }
+    if name == "" {
+        return pg_result_err(conn, "prepared name must be non-empty")
+    }
+    let mut pkt = pg_parse_msg(name, sql, nparams)
+    pkt = bytes_concat(pkt, pg_sync_msg())
+    let w = pg_write(conn.fd, pkt)?
+    if w != 0 {
+        return pg_result_err(conn, "write Parse failed")
+    }
+    return pg_collect_result(conn, conn.reader)?
+}
+
+// EXECUTE named statement with text params (Bind unnamed portal + Describe + Execute + Sync).
+fn pg_exec_prepared(conn: PgConn, name: str, vals: Vec<str>, nulls: Vec<i64>) -> PgResult !IO !Net {
+    if conn.ok == 0 || conn.fd < 0 {
+        return pg_result_err(conn, "not connected")
+    }
+    if name == "" {
+        return pg_result_err(conn, "prepared name must be non-empty")
+    }
+    let mut pkt = pg_bind_msg("", name, vals, nulls)
+    pkt = bytes_concat(pkt, pg_describe_portal_msg(""))
+    pkt = bytes_concat(pkt, pg_execute_msg("", 0))
+    pkt = bytes_concat(pkt, pg_sync_msg())
+    let w = pg_write(conn.fd, pkt)?
+    if w != 0 {
+        return pg_result_err(conn, "write Bind/Execute failed")
+    }
+    return pg_collect_result(conn, conn.reader)?
+}
+
+fn pg_exec_prepared_str(conn: PgConn, name: str, vals: Vec<str>) -> PgResult !IO !Net {
+    let nulls = vec_new()
+    for i in 0..vec_len(vals) {
+        vec_push(nulls, 0)
+    }
+    return pg_exec_prepared(conn, name, vals, nulls)?
+}
+
+// DEALLOCATE: Close statement + Sync.
+fn pg_deallocate(conn: PgConn, name: str) -> PgResult !IO !Net {
+    if conn.ok == 0 || conn.fd < 0 {
+        return pg_result_err(conn, "not connected")
+    }
+    let mut pkt = pg_close_msg(83, name)   // 'S' statement
+    pkt = bytes_concat(pkt, pg_sync_msg())
+    let w = pg_write(conn.fd, pkt)?
+    if w != 0 {
+        return pg_result_err(conn, "write Close failed")
+    }
+    return pg_collect_result(conn, conn.reader)?
+}
+
+// ---------- transactions ----------
+// Thin wrappers; tx_status on the connection tracks every ReadyForQuery.
+

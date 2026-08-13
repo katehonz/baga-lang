@@ -1,0 +1,70 @@
+// pg_connect.baga — PostgreSQL connect: startup (user/db), auth,
+// timeout, cancel request, close. Wire/query — в pg.baga.
+
+import "pg.baga"
+import "pg_auth.baga"
+import "../wire/proto.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn pg_connect_to(host: str, port: i64, user: str, password: str, database: str, timeout_s: i64) -> PgConn !Net !IO !Random {
+    let fd = tcp_connect_to(host, port, timeout_s)?
+    if fd < 0 {
+        return pg_conn_bad(concat("tcp_connect failed: ", host))
+    }
+    let w = pg_write(fd, pg_startup(user, database))?
+    if w != 0 {
+        tcp_close(fd)
+        return pg_conn_bad("write StartupMessage failed")
+    }
+    let auth = pg_authenticate(pg_reader(fd), fd, user, password)?
+    if auth.conn.ok == 0 {
+        tcp_close(fd)
+        return auth.conn
+    }
+    return auth.conn
+}
+
+// Classic connect (dotted IPv4, no timeouts) — same as timeout_s = 0.
+fn pg_connect(host: str, port: i64, user: str, password: str, database: str) -> PgConn !Net !IO !Random {
+    return pg_connect_to(host, port, user, password, database, 0)?
+}
+
+// Change the socket timeouts (seconds) on a live connection; 0 clears them.
+fn pg_set_timeout(conn: PgConn, secs: i64) -> i64 !Net {
+    if conn.fd < 0 {
+        return -1
+    }
+    return tcp_set_timeouts(conn.fd, secs)?
+}
+
+// CancelRequest: open a fresh connection and send pid + secret key
+// (BackendKeyData, captured at startup) — the server cancels the query
+// running on the target backend. Fire-and-forget: no reply on this socket.
+// 0 = delivered, -1 = could not send.
+fn pg_cancel(conn: PgConn, host: str, port: i64) -> i64 !Net !IO {
+    if conn.pid == 0 || bytes_len(conn.key) < 4 {
+        return -1
+    }
+    let fd = tcp_connect_to(host, port, 5)?
+    if fd < 0 {
+        return -1
+    }
+    let w = tcp_write_bytes(fd, pg_cancel_msg(conn.pid, conn.key))?
+    tcp_close(fd)?
+    return w
+}
+
+// Graceful Terminate + close.
+fn pg_close(conn: PgConn) -> i64 !IO !Net {
+    if conn.fd < 0 {
+        return -1
+    }
+    pg_write(conn.fd, pg_terminate_msg())?
+    return tcp_close(conn.fd)
+}
+
+// ---------- query result (B1: L3 sum — no ok:i64 stand-in) ----------
+
+// Successful query buffer + threaded connection.

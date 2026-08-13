@@ -13,6 +13,8 @@
 // Known-answer vectors: tests/hpack_test.baga (RFC 7541 C.1/C.2/C.3/C.4).
 
 import "hpack_tables.baga"
+import "hpack_huff.baga"
+import "hpack_huff_dec.baga"
 import "std/str/str.baga"
 
 struct HpackCtx {

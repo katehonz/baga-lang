@@ -1,0 +1,82 @@
+// exec_join_common.baga — JOIN типове + row helpers: BoilaJoinOut,
+// wide row конструиране, emit gate (top-N / plain push), NL threshold.
+// Споделени от exec_join (материализиран) и exec_join_fold (stream) —
+// няма обратни импорти, затова няма цикли.
+
+import "../storage/shards.baga"
+import "../core/value.baga"
+import "../catalog/schema.baga"
+import "../txn/mvcc.baga"
+import "exec_sort.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+// A2c: outer rows ≤ this → nested loop (no ix); else hash. Default 8.
+fn boila_join_nl_max() -> i64 !IO {
+    let e = env("BOILA_JOIN_NL_MAX")
+    if e == "" { return 8 }
+    let n = parse_int(e)
+    if n < 0 { return 8 }
+    return n
+}
+
+
+// Emit kept wide row: top-N window, or plain push (+ optional LIMIT stop).
+// Returns 1 if probe should stop (unordered / sorted-outer LIMIT full).
+fn boila_join_emit(rows: Vec<Vec<BoilaVal>>, wide: Vec<BoilaVal>, need: i64, topn: i64, oidxs: Vec<i64>, odesc: Vec<i64>) -> i64 {
+    if topn > 0 {
+        boila_topn_offer(rows, wide, oidxs, odesc, topn)
+        return 0
+    }
+    vec_push(rows, wide)
+    if need > 0 && vec_len(rows) >= need {
+        return 1
+    }
+    return 0
+}
+
+
+struct BoilaJoinOut {
+    s: BoilaStore,
+    txn: BoilaTxn,
+    ok: i64,
+    err: str,
+    state: str,
+    cols: Vec<BoilaColDef>,
+    rows: Vec<Vec<BoilaVal>>
+}
+
+
+fn boila_join_fail(s: BoilaStore, txn: BoilaTxn, msg: str, state: str) -> BoilaJoinOut {
+    let cols: Vec<BoilaColDef> = vec_new()
+    let rows: Vec<Vec<BoilaVal>> = vec_new()
+    return BoilaJoinOut { s: s, txn: txn, ok: 0, err: msg, state: state, cols: cols, rows: rows }
+}
+
+
+fn boila_wide_row(l: Vec<BoilaVal>, r: Vec<BoilaVal>) -> Vec<BoilaVal> {
+    let out: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(l) {
+        vec_push(out, vec_get(l, i))
+        i = i + 1
+    }
+    i = 0
+    while i < vec_len(r) {
+        vec_push(out, vec_get(r, i))
+        i = i + 1
+    }
+    return out
+}
+
+
+fn boila_null_row(ncols: i64) -> Vec<BoilaVal> {
+    let out: Vec<BoilaVal> = vec_new()
+    let mut i: i64 = 0
+    while i < ncols {
+        vec_push(out, boila_val_null())
+        i = i + 1
+    }
+    return out
+}
+

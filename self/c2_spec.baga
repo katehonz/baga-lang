@@ -1,0 +1,191 @@
+// c2_spec.baga — spec тест драйвер (--test-specs): requires/ensures
+// предикати, emit на тестове, test driver.
+
+import "c2_ast.baga"
+import "c2_emit_expr.baga"
+
+// ============================================================
+//  --test-specs (property-based)
+// ============================================================
+
+fn spec_has_checks(nk: Vec, nt: Vec, fc: Vec, ns: Vec, spc: i64) -> i64 {
+    let mut c = first_child(fc, spc)
+    while c >= 0 {
+        let mut ck = node_kind(nk, c)
+        if ck == 31 { return 1 }
+        if ck == 32 { return 1 }
+        c = next_sibling(ns, c)
+    }
+    0
+}
+
+fn spec_inputs_testable(nk: Vec, nt: Vec, fc: Vec, ns: Vec, spc: i64) -> i64 {
+    let mut c = first_child(fc, spc)
+    while c >= 0 {
+        if node_kind(nk, c) == 12 {
+            let mut ptext = node_text(nt, c)
+            let mut ci: i64 = 0
+            let mut pn = len(ptext)
+            while ci < pn {
+                if char_at(ptext, ci) == 58 { break }
+                ci = ci + 1
+            }
+            let mut ptype = ""
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
+            if str_eq(ptype, "i64") == 0 {
+                if str_eq(ptype, "bool") == 0 { return 0 }
+            }
+        }
+        c = next_sibling(ns, c)
+    }
+    1
+}
+
+fn emit_requires_predicate(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, spc: i64) {
+    let mut mn = mangle(node_text(nt, spc))
+    let mut req_name = concat("b__req_", substr(mn, 2, len(mn)))
+    let mut params = ""
+    let mut c = first_child(fc, spc)
+    while c >= 0 {
+        if node_kind(nk, c) == 12 {
+            let mut ptext = node_text(nt, c)
+            let mut ci: i64 = 0
+            let mut pn = len(ptext)
+            while ci < pn {
+                if char_at(ptext, ci) == 58 { break }
+                ci = ci + 1
+            }
+            let mut pname = substr(ptext, 0, ci)
+            let mut ptype = "i64"
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
+            if str_eq(params, "") == 0 { params = concat(params, ", ") }
+            params = concat(params, concat(c_type(ptype), concat(" ", mangle(pname))))
+        }
+        c = next_sibling(ns, c)
+    }
+    if str_eq(params, "") == 1 { params = "void" }
+    write(concat(concat(concat("static int ", req_name), "("), concat(params, ") {\n")))
+    let mut body = ""
+    let mut c2 = first_child(fc, spc)
+    while c2 >= 0 {
+        if node_kind(nk, c2) == 31 {
+            let mut expr = first_child(fc, c2)
+            if str_eq(body, "") == 0 { body = concat(body, " && ") }
+            body = concat(body, concat("(", concat(emit_expr(nk, nt, fc, ns, prog, expr), ")")))
+        }
+        c2 = next_sibling(ns, c2)
+    }
+    if str_eq(body, "") == 1 { body = "1" }
+    write(concat(concat("    return ", body), ";\n}\n\n"))
+}
+
+fn emit_spec_test(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, spc: i64) {
+    let mut spec_name = node_text(nt, spc)
+    let mut mn = mangle(spec_name)
+    let mut req_name = concat("b__req_", substr(mn, 2, len(mn)))
+    let mut fn_name = mn
+    let mut np: i64 = 0
+    let mut c = first_child(fc, spc)
+    while c >= 0 {
+        if node_kind(nk, c) == 12 { np = np + 1 }
+        c = next_sibling(ns, c)
+    }
+    let mut arr_n = np
+    if arr_n == 0 { arr_n = 1 }
+    let mut callargs = ""
+    let mut j: i64 = 0
+    while j < np {
+        if str_eq(callargs, "") == 0 { callargs = concat(callargs, ", ") }
+        callargs = concat(callargs, concat("args[", concat(int_to_str(j), "]")))
+        j = j + 1
+    }
+    write("    { int passed = 0, skipped = 0;\n")
+    write("      for (int t = 0; t < 100; t++) {\n")
+    write(concat(concat("          int64_t args[", int_to_str(arr_n)), "];\n"))
+    write("          int ok = 0;\n")
+    write("          for (long tr = 0; tr < 1000000 && !ok; tr++) {\n")
+    let mut c2 = first_child(fc, spc)
+    let mut idx: i64 = 0
+    while c2 >= 0 {
+        if node_kind(nk, c2) == 12 {
+            let mut ptext = node_text(nt, c2)
+            let mut ci: i64 = 0
+            let mut pn = len(ptext)
+            while ci < pn {
+                if char_at(ptext, ci) == 58 { break }
+                ci = ci + 1
+            }
+            let mut ptype = "i64"
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
+            if str_eq(ptype, "bool") == 1 {
+                write(concat(concat("              args[", int_to_str(idx)), "] = baga_rand_i64(0, 1);\n"))
+            } else {
+                write(concat(concat("              args[", int_to_str(idx)), "] = baga_rand_i64(-1000, 1000);\n"))
+            }
+            idx = idx + 1
+        }
+        c2 = next_sibling(ns, c2)
+    }
+    write(concat(concat(concat(concat("              ok = ", req_name), "("), callargs), ");\n"))
+    write("              if (!ok) skipped++;\n")
+    write("          }\n")
+    write("          if (!ok) continue;\n")
+    write(concat(concat("          baga_cur_nargs = ", int_to_str(np)), ";\n"))
+    let mut k: i64 = 0
+    while k < np {
+        write(concat(concat(concat(concat("          baga_cur_args[", int_to_str(k)), "] = args["), int_to_str(k)), "];\n"))
+        k = k + 1
+    }
+    write(concat(concat(concat(concat("          (void)", fn_name), "("), callargs), ");\n"))
+    write("          passed++;\n      }\n")
+    write(concat(concat("      printf(\"", c_escape(spec_name)), ": %d/100 теста минаха (%d пропуснати от requires)\\n\", passed, skipped);\n"))
+    write("    }\n")
+}
+
+fn emit_test_driver(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut s = first_child(fc, prog)
+    while s >= 0 {
+        if node_kind(nk, s) == 30 {
+            if spec_has_checks(nk, nt, fc, ns, s) == 1 {
+                if spec_inputs_testable(nk, nt, fc, ns, s) == 1 {
+                    emit_requires_predicate(nk, nt, fc, ns, prog, s)
+                }
+            }
+        }
+        s = next_sibling(ns, s)
+    }
+    let mut n_tested: i64 = 0
+    s = first_child(fc, prog)
+    while s >= 0 {
+        if node_kind(nk, s) == 30 {
+            if spec_has_checks(nk, nt, fc, ns, s) == 1 {
+                if spec_inputs_testable(nk, nt, fc, ns, s) == 1 { n_tested = n_tested + 1 }
+            }
+        }
+        s = next_sibling(ns, s)
+    }
+    write("int main(int argc, char **argv) {\n")
+    write("    baga_argc = argc; baga_argv = argv;\n")
+    if n_tested == 0 {
+        write("    printf(\"няма spec-ове за тестване\\n\");\n")
+        write("    return 0;\n}\n")
+        return
+    }
+    s = first_child(fc, prog)
+    while s >= 0 {
+        if node_kind(nk, s) == 30 {
+            if spec_has_checks(nk, nt, fc, ns, s) == 1 {
+                let mut spec_name = node_text(nt, s)
+                if spec_inputs_testable(nk, nt, fc, ns, s) == 0 {
+                    write(concat(concat("    printf(\"", c_escape(spec_name)), ": пропусната (неподдържан тип за --test-specs)\\n\");\n"))
+                } else {
+                    emit_spec_test(nk, nt, fc, ns, prog, s)
+                }
+            }
+        }
+        s = next_sibling(ns, s)
+    }
+    write("    printf(\"Всички spec тестове минаха. ⚔️\\n\");\n")
+    write("    return 0;\n}\n")
+}
+

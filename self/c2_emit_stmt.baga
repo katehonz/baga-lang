@@ -1,0 +1,355 @@
+// c2_emit_stmt.baga — кодогенерация: emit_stmt (всички statement
+// видове), c_type, emit_fn / emit_extern_fn / emit_fn_def.
+
+import "c2_ast.baga"
+import "c2_emit_expr.baga"
+
+fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64) {
+    let mut k = node_kind(nk, idx)
+    let mut ind = indent_str(depth)
+
+    // BLOCK
+    if k == 5 {
+        write(concat(ind, "{\n"))
+        let mut child = first_child(fc, idx)
+        while child >= 0 {
+            emit_stmt(nk, nt, fc, ns, prog, child, depth + 1)
+            child = next_sibling(ns, child)
+        }
+        write(concat(ind, "}\n"))
+        return
+    }
+    // LET
+    if k == 6 {
+        let mut init = first_child(fc, idx)
+        // detect type from init expression
+        let mut ctype = "int64_t"
+        if node_kind(nk, init) == 1 { ctype = "const char *" }
+        if node_kind(nk, init) == 34 { ctype = "baga_bytes" }
+        if node_kind(nk, init) == 22 { ctype = mangle(node_text(nt, init)) }
+        if node_kind(nk, init) == 4 {
+            let mut cal = first_child(fc, init)
+            if node_kind(nk, cal) == 2 {
+                let mut bn = node_text(nt, cal)
+                if str_eq(bn, "concat") == 1 { ctype = "const char *" }
+                if str_eq(bn, "substr") == 1 { ctype = "const char *" }
+                if str_eq(bn, "chr") == 1 { ctype = "const char *" }
+                if str_eq(bn, "read_file") == 1 { ctype = "const char *" }
+                if str_eq(bn, "arg") == 1 { ctype = "const char *" }
+                if str_eq(bn, "vec_get_str") == 1 { ctype = "const char *" }
+                if str_eq(bn, "vec_new") == 1 { ctype = "baga_Vec *" }
+                if str_eq(bn, "bytes_of_str") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "bytes_slice") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "bytes_concat") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "hex_decode") == 1 { ctype = "baga_bytes" }
+                // user function: look up return type
+                let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+                if str_eq(rt, "const char *") == 1 { ctype = "const char *" }
+                if str_eq(rt, "baga_Vec *") == 1 { ctype = "baga_Vec *" }
+                if str_eq(rt, "baga_bytes") == 1 { ctype = "baga_bytes" }
+            }
+        }
+        if expr_is_float(nk, nt, fc, ns, prog, init) == 1 { ctype = "double" }
+        write(concat(concat(concat(concat(ind, concat(ctype, " ")), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, prog, init), ";\n")))
+        return
+    }
+    // RETURN
+    if k == 7 {
+        let val = first_child(fc, idx)
+        if val >= 0 {
+            write(concat(concat(ind, "return "), concat(emit_expr(nk, nt, fc, ns, prog, val), ";\n")))
+        } else {
+            write(concat(ind, "return;\n"))
+        }
+        return
+    }
+    // IF
+    if k == 8 {
+        let cond = first_child(fc, idx)
+        let mut then_br = next_sibling(ns, cond)
+        let mut else_br = next_sibling(ns, then_br)
+        write(concat(concat(ind, "if ("), concat(emit_expr(nk, nt, fc, ns, prog, cond), ") {\n")))
+        let mut s = first_child(fc, then_br)
+        while s >= 0 {
+            emit_stmt(nk, nt, fc, ns, prog, s, depth + 1)
+            s = next_sibling(ns, s)
+        }
+        if else_br >= 0 {
+            write(concat(ind, "} else {\n"))
+            let mut s2 = first_child(fc, else_br)
+            while s2 >= 0 {
+                emit_stmt(nk, nt, fc, ns, prog, s2, depth + 1)
+                s2 = next_sibling(ns, s2)
+            }
+        }
+        write(concat(ind, "}\n"))
+        return
+    }
+    // WHILE
+    if k == 9 {
+        let mut cond = first_child(fc, idx)
+        let body = next_sibling(ns, cond)
+        write(concat(concat(ind, "while ("), concat(emit_expr(nk, nt, fc, ns, prog, cond), ") {\n")))
+        let mut s = first_child(fc, body)
+        while s >= 0 {
+            emit_stmt(nk, nt, fc, ns, prog, s, depth + 1)
+            s = next_sibling(ns, s)
+        }
+        write(concat(ind, "}\n"))
+        return
+    }
+    // EXPR_STMT
+    if k == 10 {
+        let mut e = first_child(fc, idx)
+        // check for print call
+        if node_kind(nk, e) == 4 {
+            let mut callee = first_child(fc, e)
+            if node_kind(nk, callee) == 2 {
+                let mut cname2 = node_text(nt, callee)
+                if str_eq(cname2, "print") == 1 {
+                    let mut arg = next_sibling(ns, callee)
+                    if arg >= 0 {
+                        if expr_is_str(nk, nt, fc, ns, prog, arg) == 1 {
+                            write(concat(concat(ind, "printf(\"%s\\n\", "), concat(emit_expr(nk, nt, fc, ns, prog, arg), ");\n")))
+                        } else {
+                            if expr_is_float(nk, nt, fc, ns, prog, arg) == 1 {
+                                write(concat(concat(ind, "printf(\"%g\\n\", "), concat(emit_expr(nk, nt, fc, ns, prog, arg), ");\n")))
+                            } else {
+                                if expr_is_bool(nk, nt, fc, ns, prog, arg) == 1 {
+                                    write(concat(concat(ind, "printf(\"%s\\n\", ("), concat(emit_expr(nk, nt, fc, ns, prog, arg), ") ? \"true\" : \"false\");\n")))
+                                } else {
+                                    write(concat(concat(ind, "printf(\"%lld\\n\", (long long)("), concat(emit_expr(nk, nt, fc, ns, prog, arg), "));\n")))
+                                }
+                            }
+                        }
+                    } else {
+                        write(concat(ind, "printf(\"\\n\");\n"))
+                    }
+                    return
+                }
+            }
+        }
+        write(concat(concat(ind, emit_expr(nk, nt, fc, ns, prog, e)), ";\n"))
+        return
+    }
+    // BREAK
+    if k == 14 {
+        write(concat(ind, "break;\n"))
+        return
+    }
+    // CONTINUE
+    if k == 15 {
+        write(concat(ind, "continue;\n"))
+        return
+    }
+    // ASSIGN
+    if k == 17 {
+        let mut val = first_child(fc, idx)
+        write(concat(concat(concat(ind, mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, prog, val), ";\n")))
+        return
+    }
+    // FOR
+    if k == 18 {
+        let mut lo = first_child(fc, idx)
+        let mut hi = next_sibling(ns, lo)
+        let mut body = next_sibling(ns, hi)
+        let mut v = mangle(node_text(nt, idx))
+        write(concat(concat(concat(concat(ind, "for (int64_t "), v), " = "), concat(emit_expr(nk, nt, fc, ns, prog, lo), "; ")))
+        write(concat(concat(concat(v, " < "), emit_expr(nk, nt, fc, ns, prog, hi)), concat("; ", concat(v, "++) {\n"))))
+        let mut s = first_child(fc, body)
+        while s >= 0 {
+            emit_stmt(nk, nt, fc, ns, prog, s, depth + 1)
+            s = next_sibling(ns, s)
+        }
+        write(concat(ind, "}\n"))
+        return
+    }
+}
+
+fn c_type(t: str) -> str {
+    if str_eq(t, "i64") == 1 { return "int64_t" }
+    if str_eq(t, "str") == 1 { return "const char *" }
+    if str_eq(t, "bytes") == 1 { return "baga_bytes" }
+    if str_eq(t, "Vec") == 1 { return "baga_Vec *" }
+    if str_eq(t, "f64") == 1 { return "double" }
+    if str_eq(t, "bool") == 1 { return "int" }
+    if str_eq(t, "void") == 1 { return "void" }
+    if str_eq(t, "") == 1 { return "int64_t" }
+    mangle(t)
+}
+
+fn emit_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
+    let mut name = node_text(nt, idx)
+    let mut child = first_child(fc, idx)
+
+    let mut params = ""
+    let mut rettype = "void"
+    while child >= 0 {
+        let mut ck = node_kind(nk, child)
+        if ck == 12 {
+            let mut ptext = node_text(nt, child)
+            let mut ci: i64 = 0
+            let mut pn = len(ptext)
+            while ci < pn {
+                if char_at(ptext, ci) == 58 { break }
+                ci = ci + 1
+            }
+            let mut pname = substr(ptext, 0, ci)
+            let mut ptype = "i64"
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
+            if str_eq(params, "") == 0 { params = concat(params, ", ") }
+            params = concat(params, concat(c_type(ptype), concat(" ", mangle(pname))))
+        }
+        if ck == 16 { rettype = c_type(node_text(nt, child)) }
+        child = next_sibling(ns, child)
+    }
+
+    if str_eq(params, "") == 1 { params = "void" }
+    let mut spc = find_spec(nk, nt, fc, ns, prog, name)
+    if spc >= 0 {
+        let mut d1 = concat(rettype, " ")
+        let mut d2 = concat(mangle(name), "_impl")
+        let mut d3 = concat("(", concat(params, ");\n"))
+        write(concat(concat(d1, d2), d3))
+    }
+    write(concat(concat(concat(concat(rettype, " "), mangle(name)), concat("(", params)), ");\n"))
+}
+
+// extern fn (FFI): прототип с директното C име и C ABI типове, без mangle
+fn emit_extern_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
+    let mut name = node_text(nt, idx)
+    let mut child = first_child(fc, idx)
+    let mut params = ""
+    let mut rettype = "int64_t"
+    while child >= 0 {
+        let mut ck = node_kind(nk, child)
+        if ck == 12 {
+            let mut ptext = node_text(nt, child)
+            let mut ci: i64 = 0
+            let mut pn = len(ptext)
+            while ci < pn {
+                if char_at(ptext, ci) == 58 { break }
+                ci = ci + 1
+            }
+            let mut ptype = "i64"
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
+            if str_eq(params, "") == 0 { params = concat(params, ", ") }
+            params = concat(params, c_type(ptype))
+        }
+        if ck == 16 { rettype = c_type(node_text(nt, child)) }
+        child = next_sibling(ns, child)
+    }
+    if str_eq(params, "") == 1 { params = "void" }
+    write(concat(concat(concat(concat(rettype, " "), name), concat("(", params)), ");\n"))
+}
+
+fn emit_fn_def(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
+    let mut name = node_text(nt, idx)
+    let mut child = first_child(fc, idx)
+
+    let mut params = ""
+    let mut argnames = ""
+    let mut rettype = "void"
+    let mut body: i64 = 0 - 1
+    while child >= 0 {
+        let mut ck = node_kind(nk, child)
+        if ck == 12 {
+            let mut ptext = node_text(nt, child)
+            let mut ci: i64 = 0
+            let mut pn = len(ptext)
+            while ci < pn {
+                if char_at(ptext, ci) == 58 { break }
+                ci = ci + 1
+            }
+            let mut pname = substr(ptext, 0, ci)
+            let mut ptype = "i64"
+            if ci + 1 < pn { ptype = substr(ptext, ci + 1, pn) }
+            if str_eq(params, "") == 0 { params = concat(params, ", ") }
+            params = concat(params, concat(c_type(ptype), concat(" ", mangle(pname))))
+            if str_eq(argnames, "") == 0 { argnames = concat(argnames, ", ") }
+            argnames = concat(argnames, mangle(pname))
+        }
+        if ck == 16 { rettype = c_type(node_text(nt, child)) }
+        if ck == 5 { body = child }
+        child = next_sibling(ns, child)
+    }
+
+    let mut spc = find_spec(nk, nt, fc, ns, prog, name)
+    let mut fn_m = mangle(name)
+    let mut impl_m = fn_m
+    if spc >= 0 { impl_m = concat(fn_m, "_impl") }
+
+    if str_eq(params, "") == 1 { params = "void" }
+    write(concat(concat(concat(concat(rettype, " "), impl_m), concat("(", params)), ") {\n"))
+
+    // emit body statements
+    if body >= 0 {
+        let mut s = first_child(fc, body)
+        while s >= 0 {
+            let mut next_s = next_sibling(ns, s)
+            // implicit return: last expr stmt in non-void fn
+            if next_s < 0 {
+                if str_eq(rettype, "void") == 0 {
+                    if node_kind(nk, s) == 10 {
+                        let mut e = first_child(fc, s)
+                        write(concat("    return ", concat(emit_expr(nk, nt, fc, ns, prog, e), ";\n")))
+                        s = next_s
+                        continue
+                    }
+                }
+            }
+            emit_stmt(nk, nt, fc, ns, prog, s, 1)
+            s = next_s
+        }
+    }
+
+    write("}\n\n")
+
+    // wrapper с requires/ensures проверки (ако fn има spec)
+    if spc >= 0 {
+        let mut spec_name = node_text(nt, spc)
+        let mut wh1 = concat(rettype, " ")
+        let mut wh2 = concat("(", concat(params, ") {\n"))
+        write(concat(concat(wh1, fn_m), wh2))
+        let mut ri: i64 = 0
+        let mut c = first_child(fc, spc)
+        while c >= 0 {
+            if node_kind(nk, c) == 31 {
+                let expr = first_child(fc, c)
+                ri = ri + 1
+                let s1 = concat("    if (!(", emit_expr(nk, nt, fc, ns, prog, expr))
+                let s2 = concat(s1, ")) baga_spec_fail(\"")
+                let s3 = concat(s2, c_escape(spec_name))
+                let s4 = concat(s3, "\", \"requires\", ")
+                let s5 = concat(s4, int_to_str(ri))
+                let s6 = concat(s5, ", \"")
+                let s7 = concat(s6, c_escape(node_text(nt, c)))
+                write(concat(s7, "\");\n"))
+            }
+            c = next_sibling(ns, c)
+        }
+        let mut ic1 = concat("    ", concat(rettype, " b_output = "))
+        let mut ic2 = concat("(", concat(argnames, ");\n"))
+        write(concat(concat(ic1, impl_m), ic2))
+        let mut ei: i64 = 0
+        c = first_child(fc, spc)
+        while c >= 0 {
+            if node_kind(nk, c) == 32 {
+                let mut expr = first_child(fc, c)
+                ei = ei + 1
+                let mut s1 = concat("    if (!(", emit_expr(nk, nt, fc, ns, prog, expr))
+                let mut s2 = concat(s1, ")) baga_spec_fail(\"")
+                let mut s3 = concat(s2, c_escape(spec_name))
+                let mut s4 = concat(s3, "\", \"ensures\", ")
+                let mut s5 = concat(s4, int_to_str(ei))
+                let mut s6 = concat(s5, ", \"")
+                let mut s7 = concat(s6, c_escape(node_text(nt, c)))
+                write(concat(s7, "\");\n"))
+            }
+            c = next_sibling(ns, c)
+        }
+        write("    return b_output;\n")
+        write("}\n\n")
+    }
+}
+

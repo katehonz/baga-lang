@@ -1,0 +1,241 @@
+// json_strict.baga — strict JSON валидатор (позиционен, без алокации):
+// ws, hex4, string, number, object, array, value, top-level valid.
+// Парсерът е в json.baga.
+
+import "../str/str.baga"
+
+fn json_strict_ws(s: str, i: i64) -> i64 {
+    let mut p = i
+    while p < len(s) {
+        let c = char_at(s, p)
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            p = p + 1
+        } else {
+            break
+        }
+    }
+    return p
+}
+
+fn json_strict_hex4(s: str, i: i64) -> i64 {
+    if i + 4 > len(s) {
+        return 0
+    }
+    let mut p = i
+    while p < i + 4 {
+        let c = char_at(s, p)
+        let hex = (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+        if !hex {
+            return 0
+        }
+        p = p + 1
+    }
+    return 1
+}
+
+// s[i] must be '"'. Returns pos past the closing quote; -1 on error.
+fn json_strict_string(s: str, i: i64) -> i64 {
+    let mut p = i + 1
+    while p < len(s) {
+        let c = char_at(s, p)
+        if c == 34 {   // "
+            return p + 1
+        }
+        if c == 92 {   // backslash escape
+            p = p + 1
+            if p >= len(s) {
+                return -1
+            }
+            let e = char_at(s, p)
+            if e == 34 || e == 92 || e == 47 || e == 98 || e == 102 || e == 110 || e == 114 || e == 116 {
+                p = p + 1
+            } else {
+                if e == 117 {   // uXXXX
+                    if json_strict_hex4(s, p + 1) == 0 {
+                        return -1
+                    }
+                    p = p + 5
+                } else {
+                    return -1
+                }
+            }
+        } else {
+            if c < 32 {   // raw control characters must be escaped
+                return -1
+            }
+            p = p + 1
+        }
+    }
+    return -1   // unterminated
+}
+
+// s[i] starts a number. Returns pos past it; -1 on error.
+fn json_strict_number(s: str, i: i64) -> i64 {
+    let mut p = i
+    if p < len(s) && char_at(s, p) == 45 {   // -
+        p = p + 1
+    }
+    if p >= len(s) {
+        return -1
+    }
+    let c = char_at(s, p)
+    if c == 48 {   // leading 0 must stand alone (no 012)
+        p = p + 1
+    } else {
+        if c < 49 || c > 57 {
+            return -1
+        }
+        while p < len(s) && char_at(s, p) >= 48 && char_at(s, p) <= 57 {
+            p = p + 1
+        }
+    }
+    if p < len(s) && char_at(s, p) == 46 {   // fraction
+        p = p + 1
+        if p >= len(s) || char_at(s, p) < 48 || char_at(s, p) > 57 {
+            return -1
+        }
+        while p < len(s) && char_at(s, p) >= 48 && char_at(s, p) <= 57 {
+            p = p + 1
+        }
+    }
+    if p < len(s) && (char_at(s, p) == 101 || char_at(s, p) == 69) {   // exponent
+        p = p + 1
+        if p < len(s) && (char_at(s, p) == 43 || char_at(s, p) == 45) {
+            p = p + 1
+        }
+        if p >= len(s) || char_at(s, p) < 48 || char_at(s, p) > 57 {
+            return -1
+        }
+        while p < len(s) && char_at(s, p) >= 48 && char_at(s, p) <= 57 {
+            p = p + 1
+        }
+    }
+    return p
+}
+
+// s[i] is '{'. Returns pos past '}'; -1 on error.
+fn json_strict_object(s: str, i: i64) -> i64 {
+    let mut p = json_strict_ws(s, i + 1)
+    if p >= len(s) {
+        return -1
+    }
+    if char_at(s, p) == 125 {   // }
+        return p + 1
+    }
+    let mut running: i64 = 1
+    while running == 1 {
+        p = json_strict_ws(s, p)
+        if p >= len(s) || char_at(s, p) != 34 {   // key must be a string
+            return -1
+        }
+        let k = json_strict_string(s, p)
+        if k < 0 {
+            return -1
+        }
+        p = json_strict_ws(s, k)
+        if p >= len(s) || char_at(s, p) != 58 {   // :
+            return -1
+        }
+        p = json_strict_ws(s, p + 1)
+        let v = json_strict_value(s, p)
+        if v < 0 {
+            return -1
+        }
+        p = json_strict_ws(s, v)
+        if p >= len(s) {
+            return -1
+        }
+        let c = char_at(s, p)
+        if c == 44 {   // ,
+            p = p + 1
+        } else {
+            if c == 125 {   // }
+                return p + 1
+            }
+            return -1
+        }
+    }
+    return -1
+}
+
+// s[i] is '['. Returns pos past ']'; -1 on error.
+fn json_strict_array(s: str, i: i64) -> i64 {
+    let mut p = json_strict_ws(s, i + 1)
+    if p >= len(s) {
+        return -1
+    }
+    if char_at(s, p) == 93 {   // ]
+        return p + 1
+    }
+    let mut running: i64 = 1
+    while running == 1 {
+        let e = json_strict_value(s, p)
+        if e < 0 {
+            return -1
+        }
+        p = json_strict_ws(s, e)
+        if p >= len(s) {
+            return -1
+        }
+        let c = char_at(s, p)
+        if c == 44 {   // ,
+            p = json_strict_ws(s, p + 1)
+        } else {
+            if c == 93 {   // ]
+                return p + 1
+            }
+            return -1
+        }
+    }
+    return -1
+}
+
+fn json_strict_value(s: str, i: i64) -> i64 {
+    if i >= len(s) {
+        return -1
+    }
+    let c = char_at(s, i)
+    if c == 123 {   // {
+        return json_strict_object(s, i)
+    }
+    if c == 91 {    // [
+        return json_strict_array(s, i)
+    }
+    if c == 34 {    // "
+        return json_strict_string(s, i)
+    }
+    if c == 116 {   // true
+        if i + 4 <= len(s) && substr(s, i, i + 4) == "true" {
+            return i + 4
+        }
+        return -1
+    }
+    if c == 102 {   // false
+        if i + 5 <= len(s) && substr(s, i, i + 5) == "false" {
+            return i + 5
+        }
+        return -1
+    }
+    if c == 110 {   // null
+        if i + 4 <= len(s) && substr(s, i, i + 4) == "null" {
+            return i + 4
+        }
+        return -1
+    }
+    return json_strict_number(s, i)
+}
+
+// 1 when s is exactly one well-formed RFC 8259 document; 0 otherwise.
+fn json_strict_valid(s: str) -> i64 {
+    if len(s) == 0 {
+        return 0
+    }
+    let e = json_strict_value(s, json_strict_ws(s, 0))
+    if e < 0 {
+        return 0
+    }
+    if json_strict_ws(s, e) != len(s) {
+        return 0
+    }
+    return 1
+}

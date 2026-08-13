@@ -1,0 +1,98 @@
+// server_entry.baga — serve entry на rocksbaga: serve_to (избор на
+// режим по env/флагове: serial poll / parallel / MT / CF) и lsm_serve
+// (go_bg обвивка за тестове). Режимите са в server_*.baga.
+
+import "server.baga"
+import "server_cluster.baga"
+import "server_poll.baga"
+import "server_par.baga"
+import "server_mt.baga"
+import "server_mt_conn.baga"
+import "server_cf.baga"
+import "../db/shard.baga"
+import "../db/shard_read.baga"
+import "../db/multidb.baga"
+import "../db/cf.baga"
+import "../db/cf_io.baga"
+import "kvbaga/resp.baga"
+import "std/net/tcp.baga"
+import "std/net/poll.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+import "std/bytes/bytes.baga"
+
+fn lsm_serve_to(port: i64, timeout_s: i64) -> i64 !Net !IO !Time !Par {
+    let cfm = env("LSM_CF")?
+    if cfm == "1" {
+        return lsm_serve_cf_to(port, timeout_s)?
+    }
+    let mt = env("LSM_SERVE_MT")?
+    if mt == "1" {
+        return lsm_serve_mt_to(port, timeout_s)?
+    }
+    let par = env("LSM_PARALLEL")?
+    if par == "1" {
+        return lsm_serve_parallel_to(port, timeout_s)?
+    }
+    let ser = env("LSM_SERIAL")?
+    if ser == "1" {
+        return lsm_serve_serial_to(port, timeout_s)?
+    }
+    let mut multi = lsm_open_for_serve()?
+    if multi.ok == 0 {
+        return -1
+    }
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        lsm_multi_close(multi)?
+        return -1
+    }
+    let mut st = LsmSrv {
+        multi: multi, listener: listener, fds: vec_new(), bufs: map_new(),
+        fd_db: map_new(),
+        scratch: str_repeat(" ", 65536)  // R30: pipeline-sized reads
+    }
+    while true {
+        let pollfds: Vec<i64> = vec_new()
+        vec_push(pollfds, st.listener)
+        let mut i: i64 = 0
+        while i < vec_len(st.fds) {
+            vec_push(pollfds, vec_get(st.fds, i))
+            i = i + 1
+        }
+        let pr = poll_wait(pollfds, 200)?
+        if pr.ok == 1 {
+            if poll_has(pr.ready, st.listener) == 1 {
+                let fd = tcp_accept(st.listener)?
+                if fd >= 0 {
+                    if timeout_s > 0 {
+                        // optional idle soft-timeout; poll still drives readiness
+                        tcp_set_timeouts(fd, timeout_s)?
+                    }
+                    st = lsm_srv_add(st, fd)?
+                }
+            }
+            // Snapshot: handlers may drop fds.
+            let snapshot: Vec<i64> = vec_new()
+            let mut j: i64 = 0
+            while j < vec_len(st.fds) {
+                vec_push(snapshot, vec_get(st.fds, j))
+                j = j + 1
+            }
+            let mut k: i64 = 0
+            while k < vec_len(snapshot) {
+                let fd = vec_get(snapshot, k)
+                if poll_has(pr.ready, fd) == 1 {
+                    st = lsm_srv_on_readable(st, fd)?
+                }
+                k = k + 1
+            }
+        }
+    }
+    return 0
+}
+
+fn lsm_serve(port: i64) -> i64 !Net !IO !Time !Par {
+    return lsm_serve_to(port, 60)?
+}

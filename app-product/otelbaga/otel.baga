@@ -7,6 +7,8 @@ import "std/random/random.baga"
 import "std/os/os.baga"
 import "std/net/http_client.baga"
 import "std/json/json.baga"
+import "std/json/json_write.baga"
+import "std/json/json_strict.baga"
 import "std/time/time.baga"
 
 // version-traceid-spanid-flags  (hex, lowercase preferred)

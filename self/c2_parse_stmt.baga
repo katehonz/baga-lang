@@ -1,0 +1,349 @@
+// c2_parse_stmt.baga — парсер: statements + декларации (fn/struct/enum/
+// spec/type name). Изразите са в c2_parse.baga.
+
+import "c2_ast.baga"
+import "c2_parse.baga"
+
+fn parse_expr(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    parse_or(tk, tt, pos, nk, nt, fc, ns)
+}
+
+fn parse_block(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    let mut block = ast_kind(nk, nt, fc, ns, 5, "")
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    while vec_get(pos, 0) < vec_len(tk) {
+        if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1); break }
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        let mut s = parse_stmt(tk, tt, pos, nk, nt, fc, ns)
+        ast_child(fc, ns, block, s)
+    }
+    block
+}
+
+fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    let mut k = vec_get(tk, vec_get(pos, 0))
+    if k == 2 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if vec_get(tk, vec_get(pos, 0)) == 3 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let mut name = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), ":") == 1 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            let mut ltype = parse_type_name(tk, tt, pos)
+        }
+        if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let mut init = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+        // skip catch !E => handler (compile-time only), възможно верижно
+        while vec_get(tk, vec_get(pos, 0)) == 16 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+            if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+            let handler = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+        }
+        let node = ast_kind(nk, nt, fc, ns, 6, name)
+        ast_child(fc, ns, node, init)
+        return node
+    }
+    if k == 9 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let node = ast_kind(nk, nt, fc, ns, 7, "")
+        if is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+            if vec_get(tk, vec_get(pos, 0)) != 999 {
+                let val = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+                ast_child(fc, ns, node, val)
+            }
+        }
+        return node
+    }
+    if k == 4 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let cond = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+        let mut then_br = parse_block(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 8, "")
+        ast_child(fc, ns, node, cond)
+        ast_child(fc, ns, node, then_br)
+        if vec_get(tk, vec_get(pos, 0)) == 5 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            let mut else_br = parse_block(tk, tt, pos, nk, nt, fc, ns)
+            ast_child(fc, ns, node, else_br)
+        }
+        return node
+    }
+    if k == 6 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let mut cond = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+        let body = parse_block(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 9, "")
+        ast_child(fc, ns, node, cond)
+        ast_child(fc, ns, node, body)
+        return node
+    }
+    // break
+    if k == 17 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        return ast_kind(nk, nt, fc, ns, 14, "")
+    }
+    // continue
+    if k == 18 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        return ast_kind(nk, nt, fc, ns, 15, "")
+    }
+    // for i in lo..hi { body }
+    if k == 7 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let mut var = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        // skip in
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let mut lo = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+        // skip ..
+        if vec_get(tk, vec_get(pos, 0)) == 210 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let mut hi = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+        let mut body = parse_block(tk, tt, pos, nk, nt, fc, ns)
+        let node = ast_kind(nk, nt, fc, ns, 18, var)
+        ast_child(fc, ns, node, lo)
+        ast_child(fc, ns, node, hi)
+        ast_child(fc, ns, node, body)
+        return node
+    }
+    let mut e = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+    // assignment: IDENT = expr
+    if node_kind(nk, e) == 2 {
+        if is_single(tk, tt, vec_get(pos, 0), "=") == 1 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            let val = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+            let anode = ast_kind(nk, nt, fc, ns, 17, node_text(nt, e))
+            ast_child(fc, ns, anode, val)
+            return anode
+        }
+        // compound assignment: IDENT += / -= / *= / /= expr  →  IDENT = IDENT op expr
+        let mut ct = vec_get(tk, vec_get(pos, 0))
+        let mut cop = ""
+        if ct == 211 { cop = "+" }
+        if ct == 212 { cop = "-" }
+        if ct == 213 { cop = "*" }
+        if ct == 214 { cop = "/" }
+        if str_eq(cop, "") == 0 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            let mut val = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+            let mut anode = ast_kind(nk, nt, fc, ns, 17, node_text(nt, e))
+            let mut binop = ast_kind(nk, nt, fc, ns, 3, cop)
+            let mut lhs = ast_kind(nk, nt, fc, ns, 2, node_text(nt, e))
+            ast_child(fc, ns, binop, lhs)
+            ast_child(fc, ns, binop, val)
+            ast_child(fc, ns, anode, binop)
+            return anode
+        }
+    }
+    // skip catch !E => handler (compile-time only), възможно верижно
+    while vec_get(tk, vec_get(pos, 0)) == 16 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let mut handler = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+    }
+    let mut node = ast_kind(nk, nt, fc, ns, 10, "")
+    ast_child(fc, ns, node, e)
+    node
+}
+
+fn parse_struct(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut name = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut node = ast_kind(nk, nt, fc, ns, 21, name)
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        let mut fname = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), ":") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let mut ftype = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let mut fld = ast_kind(nk, nt, fc, ns, 25, concat(fname, concat(":", ftype)))
+        ast_child(fc, ns, node, fld)
+        if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    }
+    if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    node
+}
+
+// LP7: честен отказ на language ниво вместо счупен C на изхода.
+fn self_unsupported(what: str) {
+    eprintln(concat(concat("неподдържан конструкт в self компилатора: ", what), " — използвай C bootstrap './baga'"))
+    exit(1)
+}
+
+fn parse_enum(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut name = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut node = ast_kind(nk, nt, fc, ns, 28, name)
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        let mut vname = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), "(") == 1 {
+            self_unsupported(concat(concat("сум enum с payload-и (вариант '", vname), "')"))
+        }
+        let mut vn = ast_kind(nk, nt, fc, ns, 29, vname)
+        ast_child(fc, ns, node, vn)
+        if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    }
+    if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    node
+}
+
+fn is_section_keyword(s: str) -> i64 {
+    if str_eq(s, "input") == 1 { return 1 }
+    if str_eq(s, "output") == 1 { return 1 }
+    if str_eq(s, "requires") == 1 { return 1 }
+    if str_eq(s, "ensures") == 1 { return 1 }
+    if str_eq(s, "guarantees") == 1 { return 1 }
+    0
+}
+
+fn tokens_text(tt: Vec, start: i64, end: i64) -> str {
+    let mut r = ""
+    let mut i = start
+    while i < end {
+        if str_eq(r, "") == 0 { r = concat(r, " ") }
+        r = concat(r, vec_get_str(tt, i))
+        i = i + 1
+    }
+    r
+}
+
+fn at_section(tk: Vec, tt: Vec, pos: Vec) -> i64 {
+    let mut p = vec_get(pos, 0)
+    if vec_get(tk, p) == 0 {
+        if p + 1 < vec_len(tk) {
+            if is_section_keyword(vec_get_str(tt, p)) == 1 {
+                if is_single(tk, tt, p + 1, ":") == 1 { return 1 }
+            }
+        }
+    }
+    0
+}
+
+fn parse_spec(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut name = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut node = ast_kind(nk, nt, fc, ns, 30, name)
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        let mut sec = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), ":") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        if str_eq(sec, "output") == 1 {
+            let mut otype = parse_type_name(tk, tt, pos)
+            let mut onode = ast_kind(nk, nt, fc, ns, 16, otype)
+            ast_child(fc, ns, node, onode)
+        } else {
+            if str_eq(sec, "requires") == 1 {
+                while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+                    if at_section(tk, tt, pos) == 1 { break }
+                    let st = vec_get(pos, 0)
+                    let expr = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+                    let enode = ast_kind(nk, nt, fc, ns, 31, tokens_text(tt, st, vec_get(pos, 0)))
+                    ast_child(fc, ns, enode, expr)
+                    ast_child(fc, ns, node, enode)
+                    if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) } else { break }
+                }
+            } else {
+                if str_eq(sec, "ensures") == 1 {
+                    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+                        if at_section(tk, tt, pos) == 1 { break }
+                        let mut st = vec_get(pos, 0)
+                        let mut expr = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+                        let mut enode = ast_kind(nk, nt, fc, ns, 32, tokens_text(tt, st, vec_get(pos, 0)))
+                        ast_child(fc, ns, enode, expr)
+                        ast_child(fc, ns, node, enode)
+                        if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) } else { break }
+                    }
+                } else {
+                    if str_eq(sec, "input") == 1 {
+                        while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+                            if at_section(tk, tt, pos) == 1 { break }
+                            if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+                            let mut pname = vec_get_str(tt, vec_get(pos, 0))
+                            vec_set(pos, 0, vec_get(pos, 0) + 1)
+                            if is_single(tk, tt, vec_get(pos, 0), ":") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+                            let mut ptype = parse_type_name(tk, tt, pos)
+                            let mut pnode = ast_kind(nk, nt, fc, ns, 12, concat(pname, concat(":", ptype)))
+                            ast_child(fc, ns, node, pnode)
+                            if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+                        }
+                    } else {
+                        while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+                            if at_section(tk, tt, pos) == 1 { break }
+                            if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+                            vec_set(pos, 0, vec_get(pos, 0) + 1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    node
+}
+
+fn parse_type_name(tk: Vec, tt: Vec, pos: Vec) -> str {
+    let mut name = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    if is_single(tk, tt, vec_get(pos, 0), "<") == 1 {
+        let mut depth: i64 = 0
+        while vec_get(tk, vec_get(pos, 0)) != 999 {
+            if is_single(tk, tt, vec_get(pos, 0), "<") == 1 { depth = depth + 1 }
+            if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { depth = depth - 1 }
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            if depth == 0 { break }
+        }
+    }
+    name
+}
+
+fn parse_fn(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut name = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut node = ast_kind(nk, nt, fc, ns, 11, name)
+    if is_single(tk, tt, vec_get(pos, 0), "(") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    while is_single(tk, tt, vec_get(pos, 0), ")") == 0 {
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        let mut pname = vec_get_str(tt, vec_get(pos, 0))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        if is_single(tk, tt, vec_get(pos, 0), ":") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let mut ptype = parse_type_name(tk, tt, pos)
+        let mut param = ast_kind(nk, nt, fc, ns, 12, concat(pname, concat(":", ptype)))
+        ast_child(fc, ns, node, param)
+        if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    }
+    if is_single(tk, tt, vec_get(pos, 0), ")") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    if vec_get(tk, vec_get(pos, 0)) == 200 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let mut rettype = parse_type_name(tk, tt, pos)
+        let mut tnode = ast_kind(nk, nt, fc, ns, 16, rettype)
+        ast_child(fc, ns, node, tnode)
+        while is_single(tk, tt, vec_get(pos, 0), "!") == 1 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+        }
+    }
+    // forward declaration: no body if next token is not {
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 0 {
+        return node
+    }
+    let mut body = parse_block(tk, tt, pos, nk, nt, fc, ns)
+    ast_child(fc, ns, node, body)
+    node
+}
+

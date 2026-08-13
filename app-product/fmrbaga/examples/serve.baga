@@ -5,6 +5,7 @@
 //   ./scripts/fmr-run   # apps/api product
 
 import "../core/app.baga"
+import "../core/serve.baga"
 import "../handlers/handlers.baga"
 
 fn main() -> i64 !Net !IO !Par !Random !Time {

@@ -174,6 +174,11 @@ bash "$ROOT/app-product/boilaDB/scripts/filesize.sh" \
 	&& echo "OK: boilaDB filesize" \
 	|| { echo "FAIL: boilaDB filesize"; exit 1; }
 
+echo "=== global file-size gate (600-line hard limit, без boilaDB) ==="
+bash "$ROOT/scripts/filesize-global.sh" \
+	&& echo "OK: filesize-global" \
+	|| { echo "FAIL: filesize-global"; exit 1; }
+
 echo "=== boilaDB layer gate (one-way dependencies, ARCHITECTURE.md §3) ==="
 bash "$ROOT/app-product/boilaDB/scripts/deps.sh" \
 	&& echo "OK: boilaDB deps" \

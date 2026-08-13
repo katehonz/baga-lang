@@ -3,6 +3,10 @@
 import "../cache/page.baga"
 import "../table/bloom.baga"
 import "../table/sstable.baga"
+import "../table/sstable_parse.baga"
+import "../table/sstable_lookup.baga"
+import "../table/sstable_meta.baga"
+import "../table/sstable_scan.baga"
 
 struct LsmDB {
     dir: str,

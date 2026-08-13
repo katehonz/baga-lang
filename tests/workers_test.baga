@@ -1,6 +1,12 @@
 // workers_test.baga — R33 per-shard parallel workers.
 import "rocksbaga/db/workers.baga"
+import "rocksbaga/db/workers_par.baga"
+import "rocksbaga/db/workers_api.baga"
 import "rocksbaga/db/shard.baga"
+import "rocksbaga/db/shard_read.baga"
+import "rocksbaga/db/engine_keys.baga"
+import "rocksbaga/db/engine_scan.baga"
+import "rocksbaga/db/shard_ttl.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"

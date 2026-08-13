@@ -1,0 +1,344 @@
+// openapi_schema.baga — OpenAPI 3 schema builders: типове, свойства,
+// content, responses, security, path id, components, op builders.
+// Извличането от Router (paths + doc) е в openapi.baga.
+
+import "../json/jsonx.baga"
+import "../core/route.baga"
+
+// openapi.baga — OpenAPI 3 document for fmrbaga (schemas + security).
+// B2.4: paths are emitted from the live Router (route table), not a second
+// hand-maintained list. Components/schemas stay curated; per-op detail uses
+// path heuristics + path params from `{name}` segments.
+
+import "../json/jsonx.baga"
+import "../core/route.baga"
+import "std/str/str.baga"
+
+// ---------- schema primitives ----------
+
+fn oas_type(t: str) -> JObj {
+    let mut o = jobj_new()
+    o = jobj_str(o, "type", t)
+    return o
+}
+
+fn oas_str_schema() -> JObj {
+    return oas_type("string")
+}
+
+fn oas_int_schema() -> JObj {
+    let mut o = oas_type("integer")
+    o = jobj_str(o, "format", "int64")
+    return o
+}
+
+fn oas_obj_schema(props: JObj, required: JArr) -> JObj {
+    let mut o = oas_type("object")
+    o = jobj_obj(o, "properties", props)
+    if vec_len(required.items) > 0 {
+        o = jobj_raw(o, "required", jarr_encode(required))
+    }
+    return o
+}
+
+fn oas_arr_schema(items: JObj) -> JObj {
+    let mut o = oas_type("array")
+    o = jobj_obj(o, "items", items)
+    return o
+}
+
+fn oas_ref(name: str) -> JObj {
+    let mut o = jobj_new()
+    o = jobj_str(o, "$ref", concat("#/components/schemas/", name))
+    return o
+}
+
+fn oas_prop_str(props: JObj, name: str, desc: str) -> JObj {
+    let mut s = oas_str_schema()
+    if desc != "" {
+        s = jobj_str(s, "description", desc)
+    }
+    return jobj_obj(props, name, s)
+}
+
+fn oas_prop_int(props: JObj, name: str, desc: str) -> JObj {
+    let mut s = oas_int_schema()
+    if desc != "" {
+        s = jobj_str(s, "description", desc)
+    }
+    return jobj_obj(props, name, s)
+}
+
+// application/json content wrapper around a schema object
+fn oas_json_content(schema: JObj) -> JObj {
+    let mut app = jobj_new()
+    app = jobj_obj(app, "schema", schema)
+    let mut content = jobj_new()
+    content = jobj_obj(content, "application/json", app)
+    return content
+}
+
+fn oas_response(desc: str, schema: JObj) -> JObj {
+    let mut r = jobj_new()
+    r = jobj_str(r, "description", desc)
+    r = jobj_obj(r, "content", oas_json_content(schema))
+    return r
+}
+
+fn oas_response_ref(desc: str, schema_name: str) -> JObj {
+    return oas_response(desc, oas_ref(schema_name))
+}
+
+fn oas_response_empty(desc: str) -> JObj {
+    let mut r = jobj_new()
+    r = jobj_str(r, "description", desc)
+    return r
+}
+
+// security requirement: [{ "bearerAuth": [] }]
+fn oas_bearer_security() -> str {
+    let mut empty = jarr_new()
+    let mut one = jobj_new()
+    one = jobj_raw(one, "bearerAuth", jarr_encode(empty))
+    let mut arr = jarr_new()
+    arr = jarr_obj(arr, one)
+    return jarr_encode(arr)
+}
+
+fn oas_path_id_param() -> JObj {
+    let mut p = jobj_new()
+    p = jobj_str(p, "name", "id")
+    p = jobj_str(p, "in", "path")
+    p = jobj_bool(p, "required", 1)
+    p = jobj_str(p, "description", "User id")
+    p = jobj_obj(p, "schema", oas_int_schema())
+    return p
+}
+
+// ---------- components ----------
+
+fn oas_components() -> JObj {
+    // schemas
+    let mut user_props = jobj_new()
+    user_props = oas_prop_int(user_props, "id", "Primary key")
+    user_props = oas_prop_str(user_props, "email", "Unique email")
+    user_props = oas_prop_str(user_props, "name", "Display name")
+    user_props = oas_prop_str(user_props, "created_at", "ISO-ish timestamp from Postgres")
+    let mut user_req = jarr_new()
+    user_req = jarr_str(user_req, "id")
+    user_req = jarr_str(user_req, "email")
+    user_req = jarr_str(user_req, "name")
+    let user = oas_obj_schema(user_props, user_req)
+
+    let mut user_in_props = jobj_new()
+    user_in_props = oas_prop_str(user_in_props, "email", "")
+    user_in_props = oas_prop_str(user_in_props, "name", "")
+    let mut user_in_req = jarr_new()
+    user_in_req = jarr_str(user_in_req, "email")
+    user_in_req = jarr_str(user_in_req, "name")
+    let user_create = oas_obj_schema(user_in_props, user_in_req)
+
+    let mut user_patch_props = jobj_new()
+    user_patch_props = oas_prop_str(user_patch_props, "name", "")
+    let mut user_patch_req = jarr_new()
+    user_patch_req = jarr_str(user_patch_req, "name")
+    let user_patch = oas_obj_schema(user_patch_props, user_patch_req)
+
+    let mut user_list_props = jobj_new()
+    user_list_props = jobj_obj(user_list_props, "items", oas_arr_schema(oas_ref("User")))
+    user_list_props = oas_prop_int(user_list_props, "count", "")
+    let user_list = oas_obj_schema(user_list_props, jarr_new())
+
+    let mut token_in_props = jobj_new()
+    token_in_props = oas_prop_str(token_in_props, "sub", "Subject claim for JWT")
+    let mut token_in_req = jarr_new()
+    token_in_req = jarr_str(token_in_req, "sub")
+    let token_in = oas_obj_schema(token_in_props, token_in_req)
+
+    let mut token_out_props = jobj_new()
+    token_out_props = oas_prop_str(token_out_props, "access_token", "HS256 JWT")
+    token_out_props = oas_prop_str(token_out_props, "token_type", "Always bearer")
+    token_out_props = oas_prop_str(token_out_props, "sub", "")
+    let token_out = oas_obj_schema(token_out_props, jarr_new())
+
+    let mut me_props = jobj_new()
+    me_props = oas_prop_str(me_props, "sub", "Authenticated subject")
+    let me = oas_obj_schema(me_props, jarr_new())
+
+    let mut status_props = jobj_new()
+    status_props = oas_prop_str(status_props, "status", "")
+    let status_ok = oas_obj_schema(status_props, jarr_new())
+
+    let mut ready_props = jobj_new()
+    ready_props = oas_prop_str(ready_props, "status", "")
+    ready_props = oas_prop_str(ready_props, "database", "up when DB ping succeeds")
+    let ready = oas_obj_schema(ready_props, jarr_new())
+
+    let mut detail_props = jobj_new()
+    detail_props = oas_prop_str(detail_props, "detail", "Error message or validation list")
+    let error = oas_obj_schema(detail_props, jarr_new())
+
+    let mut validation_item_props = jobj_new()
+    let mut loc_schema = oas_arr_schema(oas_str_schema())
+    validation_item_props = jobj_obj(validation_item_props, "loc", loc_schema)
+    validation_item_props = oas_prop_str(validation_item_props, "msg", "")
+    validation_item_props = oas_prop_str(validation_item_props, "type", "")
+    let validation_item = oas_obj_schema(validation_item_props, jarr_new())
+    let mut validation_props = jobj_new()
+    validation_props = jobj_obj(validation_props, "detail", oas_arr_schema(validation_item))
+    let validation_error = oas_obj_schema(validation_props, jarr_new())
+
+    let mut schemas = jobj_new()
+    schemas = jobj_obj(schemas, "User", user)
+    schemas = jobj_obj(schemas, "UserCreate", user_create)
+    schemas = jobj_obj(schemas, "UserPatch", user_patch)
+    schemas = jobj_obj(schemas, "UserList", user_list)
+    schemas = jobj_obj(schemas, "TokenRequest", token_in)
+    schemas = jobj_obj(schemas, "TokenResponse", token_out)
+    schemas = jobj_obj(schemas, "Me", me)
+    schemas = jobj_obj(schemas, "Status", status_ok)
+    schemas = jobj_obj(schemas, "Ready", ready)
+    schemas = jobj_obj(schemas, "Error", error)
+    schemas = jobj_obj(schemas, "HTTPValidationError", validation_error)
+
+    let mut post_props = jobj_new()
+    post_props = oas_prop_int(post_props, "id", "")
+    post_props = oas_prop_int(post_props, "user_id", "Author")
+    post_props = oas_prop_str(post_props, "title", "")
+    post_props = oas_prop_str(post_props, "body", "")
+    post_props = oas_prop_str(post_props, "created_at", "")
+    let post = oas_obj_schema(post_props, jarr_new())
+    let mut post_in_props = jobj_new()
+    post_in_props = oas_prop_int(post_in_props, "user_id", "")
+    post_in_props = oas_prop_str(post_in_props, "title", "")
+    post_in_props = oas_prop_str(post_in_props, "body", "")
+    let mut post_in_req = jarr_new()
+    post_in_req = jarr_str(post_in_req, "user_id")
+    post_in_req = jarr_str(post_in_req, "title")
+    let post_create = oas_obj_schema(post_in_props, post_in_req)
+    let mut post_list_props = jobj_new()
+    post_list_props = jobj_obj(post_list_props, "items", oas_arr_schema(oas_ref("Post")))
+    post_list_props = oas_prop_int(post_list_props, "count", "")
+    post_list_props = oas_prop_int(post_list_props, "limit", "")
+    post_list_props = oas_prop_int(post_list_props, "offset", "")
+    let post_list = oas_obj_schema(post_list_props, jarr_new())
+    schemas = jobj_obj(schemas, "Post", post)
+    schemas = jobj_obj(schemas, "PostCreate", post_create)
+    schemas = jobj_obj(schemas, "PostList", post_list)
+
+    // securitySchemes
+    let mut bearer = jobj_new()
+    bearer = jobj_str(bearer, "type", "http")
+    bearer = jobj_str(bearer, "scheme", "bearer")
+    bearer = jobj_str(bearer, "bearerFormat", "JWT")
+    bearer = jobj_str(bearer, "description", "HS256 access token from POST /v1/auth/token")
+    let mut schemes = jobj_new()
+    schemes = jobj_obj(schemes, "bearerAuth", bearer)
+
+    let mut c = jobj_new()
+    c = jobj_obj(c, "schemas", schemas)
+    c = jobj_obj(c, "securitySchemes", schemes)
+    return c
+}
+
+// ---------- operations ----------
+
+fn oas_op(op_id: str, summary: str, tag: str) -> JObj {
+    let mut op = jobj_new()
+    op = jobj_str(op, "operationId", op_id)
+    op = jobj_str(op, "summary", summary)
+    let mut tags = jarr_new()
+    tags = jarr_str(tags, tag)
+    op = jobj_raw(op, "tags", jarr_encode(tags))
+    return op
+}
+
+fn oas_add_bearer(op: JObj) -> JObj {
+    return jobj_raw(op, "security", oas_bearer_security())
+}
+
+fn oas_add_json_body(op: JObj, schema_name: str, required: i64) -> JObj {
+    let mut body = jobj_new()
+    body = jobj_bool(body, "required", required)
+    body = jobj_obj(body, "content", oas_json_content(oas_ref(schema_name)))
+    return jobj_obj(op, "requestBody", body)
+}
+
+fn oas_add_resp(op: JObj, code: str, desc: str, schema_name: str) -> JObj {
+    // merge into responses if present
+    // we rebuild responses each time — callers chain carefully
+    return op
+}
+
+// Build full responses map for common patterns.
+fn oas_responses_ok(schema_name: str) -> JObj {
+    let mut r = jobj_new()
+    r = jobj_obj(r, "200", oas_response_ref("OK", schema_name))
+    r = jobj_obj(r, "401", oas_response_ref("Unauthorized", "Error"))
+    r = jobj_obj(r, "422", oas_response_ref("Validation Error", "HTTPValidationError"))
+    r = jobj_obj(r, "500", oas_response_ref("Server Error", "Error"))
+    return r
+}
+
+fn oas_responses_public(schema_name: str) -> JObj {
+    let mut r = jobj_new()
+    r = jobj_obj(r, "200", oas_response_ref("OK", schema_name))
+    r = jobj_obj(r, "503", oas_response_ref("Unavailable", "Error"))
+    return r
+}
+
+// ---------- B2.4: emit paths from Router ----------
+
+fn oas_lower_method(m: str) -> str {
+    let mut out = ""
+    for i in 0..len(m) {
+        let mut c = char_at(m, i)
+        if c >= 65 && c <= 90 {
+            c = c + 32
+        }
+        out = concat(out, chr(c))
+    }
+    return out
+}
+
+// Public routes (no Bearer).
+fn oas_is_public(pattern: str, method: str) -> i64 {
+    if pattern == "/health" {
+        return 1
+    }
+    if pattern == "/ready" {
+        return 1
+    }
+    if pattern == "/v1/meta" {
+        return 1
+    }
+    if pattern == "/openapi.json" {
+        return 1
+    }
+    if pattern == "/v1/auth/token" {
+        return 1
+    }
+    return 0
+}
+
+// Tag from first path segment under /v1/… — works for any product resource.
+fn oas_tag_for(pattern: str) -> str {
+    if pattern == "/v1/me" {
+        return "auth"
+    }
+    let segs = route_segments(pattern)
+    if vec_len(segs) >= 2 {
+        if vec_get(segs, 0) == "v1" {
+            let s1 = vec_get(segs, 1)
+            if route_is_param(s1) == 0 && s1 != "" {
+                if s1 == "me" {
+                    return "auth"
+                }
+                return s1
+            }
+        }
+    }
+    return "system"
+}
+
+// operationId: get_v1_users_id style from method + pattern.

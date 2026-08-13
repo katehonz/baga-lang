@@ -1,6 +1,10 @@
 // manifest_test.baga — R26 MANIFEST parse/write + KEYS via block scan.
 import "rocksbaga/db/manifest.baga"
 import "rocksbaga/db/engine.baga"
+import "rocksbaga/db/engine_wal.baga"
+import "rocksbaga/db/engine_ttl.baga"
+import "rocksbaga/db/engine_keys.baga"
+import "rocksbaga/db/engine_scan.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"

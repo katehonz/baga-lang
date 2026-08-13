@@ -1,0 +1,73 @@
+// c2_import.baga — import resolution за само-компилатора (текстуален
+// include): pre-pass, който чете `import "път"` директивите и сплайсва
+// включените файлове в токен потока (с include guard). Резолва се
+// релативно на импортиращия файл.
+
+import "c2_lex.baga"
+
+// Последно срещане на '/' в s (или -1).
+fn rfind_slash(s: str) -> i64 {
+    let mut n = len(s)
+    while n > 0 {
+        n = n - 1
+        if char_at(s, n) == 47 { return n }
+    }
+    return 0 - 1
+}
+
+// Директорията на файлов път, с trailing '/'; "" ако няма.
+fn dirname(p: str) -> str {
+    let mut i = rfind_slash(p)
+    if i < 0 { return "" }
+    return substr(p, 0, i + 1)
+}
+
+// dir (с trailing '/' или "") + sub.
+fn path_join(dir: str, sub: str) -> str {
+    if dir == "" { return sub }
+    return concat(dir, sub)
+}
+
+// 1 ако vec-ът от низове съдържа s.
+fn str_in(v: Vec<str>, s: str) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        if str_eq(vec_get_str(v, i), s) == 1 { return 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// Чете path (ако още не е импортиран), рекурсивно резолва import-ите
+// му и добавя токените (без 999) в tk/tt. Сентинелът 999 се слага от
+// извикващия (компилатор main-а) след края на резолването.
+fn resolve_file(tk: Vec, tt: Vec, path: str, imported: Vec<str>) {
+    let src = read_file(path) catch !IO => ""
+    let mut tmp_tk = vec_new()
+    let mut tmp_tt = vec_new()
+    tokenize(src, tmp_tk, tmp_tt)
+    let mut n = vec_len(tmp_tk) - 1   // без sentinel-а
+    let mut i: i64 = 0
+    while i < n {
+        let k = vec_get(tmp_tk, i)
+        if k == 0 {
+            if str_eq(vec_get_str(tmp_tt, i), "import") == 1 {
+                if i + 1 < n {
+                    if vec_get(tmp_tk, i + 1) == 101 {
+                        let sub = vec_get_str(tmp_tt, i + 1)
+                        let full = path_join(dirname(path), sub)
+                        if str_in(imported, full) == 0 {
+                            vec_push_str(imported, full)
+                            resolve_file(tk, tt, full, imported)
+                        }
+                        i = i + 2
+                        continue
+                    }
+                }
+            }
+        }
+        vec_push(tk, k)
+        vec_push_str(tt, vec_get_str(tmp_tt, i))
+        i = i + 1
+    }
+}
