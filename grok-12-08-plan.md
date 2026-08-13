@@ -21,8 +21,8 @@
 
 1. `make` — чист build.
 2. RC батерия: `rc_test move_test borrow_test cmove_test temp_test
-   struct_rc_test http_test pg_test std/sumtype_test mem_rewind_test` —
-   всички с `--rc` PASS:
+   struct_rc_test enum_rc_test calltemp_rc_test http_test pg_test
+   std/sumtype_test mem_rewind_test` — всички с `--rc` PASS:
    `./baga --rc -I . -I app-product tests/<t>.baga`
 3. ASan+UBSan върху същите: `--emit-c` → `gcc -g -O1
    -fsanitize=address,undefined -std=c11 -Iinclude -o /tmp/x out.c
@@ -38,7 +38,7 @@
    Базова линия: **152/157**; 5-те FAIL са pre-existing external peers
    (oauth_pg, orm_boila, registry, https, tls_handshake).
    Никой нов FAIL не е приемлив. (`struct_rc_test` и `enum_rc_test` са в
-   пакета след RC5/v0.6.)
+   пакета след RC5/v0.6, `calltemp_rc_test` — след v0.7.)
 7. Bench (само ако пипаш retain/release пътеките): boilaDB 100k insert —
    `BOILA_PHASE=write BOILA_CHUNKS=1 BOILA_ROWS=100000
    BOILA_BENCH_ROOT=/tmp/boila_x ./baga --rc -I . -I app-product
@@ -86,10 +86,15 @@ field overwrite). v0.5: вложени struct-и — транзитивен `has
 полета (RSS 38.5 MB → 10.8 MB на 500k вложени литерала). v0.6: enum
 payload-и — tag 6 + `retain_E`/`release_E` по runtime tag, ctor с
 owned/borrowed/move payload (`docs/memory-rc-enum-bg.md`,
-`tests/enum_rc_test.baga`; RSS 39.6 MB → 10.9 MB). Батерията вече е 157
+`tests/enum_rc_test.baga`; RSS 39.6 MB → 10.9 MB). v0.7: call temp-ове в
+box push — temp аргумент (str/bytes/Vec) на push/set/map_set е move в
+контейнера без retain/release двойка (`tests/calltemp_rc_test.baga`;
+struct/enum box temp-ове остават с retain — резултатът може да е borrowed,
+leak-safe). Батерията вече е 157
 файла, база **152/157**. Останало:
-call аргумент temp-ове в box push, `s.inner = x` (struct-типизирана цел),
-`Vec<S>` във `Vec`, enum в контейнер/struct поле, match scrutinee temp.
+`s.inner = x` (struct-типизирана цел), struct/enum box temp от call
+(borrowed резултат — неразличим), `Vec<S>` във `Vec`,
+enum в контейнер/struct поле, match scrutinee temp.
 
 ## Забранено / внимание
 

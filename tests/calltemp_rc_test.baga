@@ -1,0 +1,132 @@
+// calltemp_rc_test — RC5 v0.7: call аргумент temp-ове в box push
+// (docs/memory-rc-struct-bg.md §v0.7). Минава с и без --rc.
+//
+// Temp резултат от call, директен аргумент на vec_push/vec_set/map_set
+// (str/bytes/Vec стойност), се ПРЕХВЪРЛЯ в контейнера: _move helper без
+// retain и без release в края на statement-а (като RC3 за last-use ident) —
+// fn резултатът е owned по конвенция. Тестът доказва коректност: стойностите
+// са верни, няма underflow/dangling, включително през identity/borrowed-result
+// функции. struct/enum box temp-ове НЕ се move-ват (резултатът може да е
+// borrowed — `return vec_get(...)` на struct не retain-ва; leak-safe граница).
+
+import "std/str/str.baga"
+
+struct Wrap {
+    n: i64,
+    s: str
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn mk(i: i64) -> str {
+    return concat("el", int_to_str(i))
+}
+
+// identity: return на параметър се retain-ва → резултатът е owned
+fn idstr(s: str) -> str {
+    return s
+}
+
+// borrowed-result: return на vec_get се retain-ва при връзване → owned
+fn first_of(v: Vec<str>) -> str {
+    return vec_get(v, 0)
+}
+
+fn shout(s: str) -> str {
+    return concat(s, "!")
+}
+
+fn mk_wrap(i: i64) -> Wrap {
+    return Wrap { n: i, s: concat("w", int_to_str(i)) }
+}
+
+fn main() -> i64 !IO {
+    // 1. temp като аргумент на vec_push — move в контейнера
+    let v: Vec<str> = vec_new()
+    let mut i: i64 = 0
+    while i < 100 {
+        vec_push(v, mk(i))
+        i = i + 1
+    }
+    check("push_temp_move", vec_len(v) == 100 && vec_get(v, 0) == "el0" && vec_get(v, 99) == "el99")
+
+    // 2. temp през identity fn (return на параметър) — източникът остава
+    // собственик на своя дял, box-ът взема дяла на резултата
+    let x = concat("ke", "pt")
+    vec_push(v, idstr(x))
+    check("push_identity", vec_get(v, 100) == "kept" && x == "kept")
+
+    // 3. temp от borrowed-result fn — box-ът оцелява след drop на източника
+    let src: Vec<str> = vec_new()
+    vec_push(src, concat("sur", "vive"))
+    let dst: Vec<str> = vec_new()
+    vec_push(dst, first_of(src))
+    drop(src)
+    let mut k: i64 = 0
+    let mut acc = ""
+    while k < 50 {
+        acc = concat(acc, "churn-churn-churn-churn")
+        k = k + 1
+    }
+    check("push_borrowed_result", vec_get(dst, 0) == "survive")
+
+    // 4. вложени temp-ове: push(v, g(f())) — външният temp е move,
+    // вътрешният се release-ва след statement-а (g го е само чел)
+    vec_push(v, shout(mk(7)))
+    check("push_nested", vec_get(v, 101) == "el7!")
+
+    // 5. temp стойност в map_set — move; temp ключ остава retain+release
+    let m: Map<str, str> = map_new()
+    let mut j: i64 = 0
+    while j < 100 {
+        map_set(m, concat("k", int_to_str(j)), mk(j))
+        j = j + 1
+    }
+    check("map_set_temp", map_len(m) == 100 && map_get(m, "k0") == "el0" && map_get(m, "k99") == "el99")
+
+    // 6. overwrite с temp стойност — старата се release-ва, новата е move
+    map_set(m, "k0", concat("ne", "w"))
+    check("map_set_temp_ovw", map_get(m, "k0") == "new" && map_len(m) == 100)
+
+    // 7. vec_set с temp — старият елемент се release-ва, temp-ът е move
+    vec_set(v, 0, concat("ze", "ro"))
+    check("vec_set_temp", vec_get(v, 0) == "zero" && vec_get(v, 1) == "el1")
+
+    // 8. temp НЕ е move, когато е ползван два пъти през локал: първият push
+    // retain-ва, вторият е RC3 last-use move — и двата елемента са валидни
+    let two = concat("tw", "o")
+    vec_push(v, two)
+    vec_push(v, two)
+    check("used_twice_not_move", vec_get(v, 102) == "two" && vec_get(v, 103) == "two")
+
+    // 9. borrowed call аргумент (vec_get) НЕ е temp — retain-ва се както досега
+    vec_push(v, vec_get(v, 1))
+    check("borrowed_arg_kept", vec_get(v, 104) == "el1" && vec_get(v, 1) == "el1")
+
+    // 10. Vec temp (vec_slice) като аргумент — move на Vec стойността
+    let vv: Vec<Vec> = vec_new()
+    vec_push(vv, vec_slice(v, 0, 2))
+    let inner: Vec<str> = vec_get(vv, 0)
+    check("vec_temp_move", vec_len(vv) == 1 && vec_get(inner, 1) == "el1")
+
+    // 11. struct box temp от call — НЕ се move-ва (borrowed граница, leak-safe),
+    // но остава коректен: box-ът retain-ва, стойностите са верни
+    let ws: Vec<Wrap> = vec_new()
+    vec_push(ws, mk_wrap(5))
+    check("struct_box_temp_kept", vec_get(ws, 0).n == 5 && vec_get(ws, 0).s == "w5")
+
+    // 12. map_set със struct box temp стойност — същата граница
+    let mw: Map<str, Wrap> = map_new()
+    map_set(mw, "k", mk_wrap(6))
+    check("map_struct_temp_kept", map_get(mw, "k").n == 6 && map_get(mw, "k").s == "w6")
+
+    print("calltemp_rc_test: all passed")
+    return 0
+}

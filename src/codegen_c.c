@@ -1132,6 +1132,22 @@ static int rc_tmp_emit_sub(Codegen *cg, Node *n) {
     return 0;
 }
 
+/* RC5 v0.7: индекс на регистриран temp за този AST възел (-1 = не е temp).
+ * Ползва се от box push/set сайтовете за move на temp аргумент. */
+static int rc_tmp_find(Codegen *cg, Node *n) {
+    if (!cg->rc || !cg->rc_tmps_on || !n) return -1;
+    for (int i = 0; i < cg->rc_tmps.len; i++)
+        if (cg->rc_tmps.data[i].site == n) return i;
+    return -1;
+}
+
+/* RC5 v0.7: temp-ът е прехвърлен (move) в контейнер — краят на statement-а
+ * не го release-ва. Маркира се СЛЕД emission на аргумента (иначе
+ * rc_tmp_emit_sub губи сайта и би преизчислил извикването inline). */
+static void rc_tmp_consume(Codegen *cg, int i) {
+    if (i >= 0) cg->rc_tmps.data[i].site = NULL;
+}
+
 /* начало на statement с temp tracking. root_bound=1: root-ът е bound
  * (let init / assign дясно / return стойност) — не е temp. За assign
  * statement се вика с целия NODE_ASSIGN — дясното е bound, целта се чете.
@@ -1179,6 +1195,8 @@ static void rc_tmp_release_all(Codegen *cg) {
     if (!cg->rc || !cg->rc_tmps_on) return;
     for (int i = 0; i < cg->rc_tmps.len; i++) {
         RcTmp *t = &cg->rc_tmps.data[i];
+        /* RC5 v0.7: прехвърлен в контейнер (move) — собствеността е на box-а */
+        if (!t->site) continue;
         RcLocal e = {0};
         e.name = (char *)t->name;
         e.tag = t->tag;
@@ -1920,6 +1938,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                      * retain; референцията преминава в контейнера, binding-ът
                      * умира тук (scope exit го пропуска). i64/f64 — без rc. */
                     int mv = 0;
+                    int tmp_mv = -1;  /* RC5 v0.7 */
                     if (cg->rc && strcmp(bn, "vec_get") != 0 &&
                         (strcmp(suf, "str") == 0 ||
                          strcmp(suf, "bytes") == 0 ||
@@ -1934,6 +1953,18 @@ static void emit_expr(Codegen *cg, Node *n) {
                                 cg->rc_cmoves++;
                                 mv = 1;
                             }
+                        } else if ((tmp_mv = rc_tmp_find(cg, va)) >= 0) {
+                            /* RC5 v0.7: директен temp аргумент (call/to_str
+                             * резултат, вече изчислен в __rc_tmpN) — owned по
+                             * конвенцията „fn резултат = owned". Move в
+                             * контейнера: _move вариант без retain, а temp-ът
+                             * се консумира (без release в края на statement-а)
+                             * — същият трансфер като RC3 за last-use ident.
+                             * struct/enum box temp-ове НЕ се move-ват:
+                             * резултатът може да е borrowed (return vec_get()
+                             * на struct не retain-ва) — посоката е leak-safe. */
+                            cg->rc_cmoves++;
+                            mv = 1;
                         }
                     }
                     fprintf(f, "baga_%s_%s%s(", bn, suf, mv ? "_move" : "");
@@ -1942,6 +1973,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                         emit_expr(cg, n->args.data[i]);
                     }
                     fprintf(f, ")");
+                    if (tmp_mv >= 0) rc_tmp_consume(cg, tmp_mv);  /* RC5 v0.7 */
                     goto call_done;
                 }
                 if (strcmp(bn, "vec_slice") == 0 || strcmp(bn, "vec_concat") == 0) {
@@ -2069,6 +2101,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                     /* RC3: map_set с last-use стойност → move вариант без
                      * retain (ключът остава retain-нат — отделен живот) */
                     int mv = 0;
+                    int tmp_mv = -1;  /* RC5 v0.7 */
                     if (cg->rc && strcmp(bn, "map_set") == 0 &&
                         (strcmp(vsuf, "str") == 0 ||
                          strcmp(vsuf, "bytes") == 0) &&
@@ -2083,6 +2116,16 @@ static void emit_expr(Codegen *cg, Node *n) {
                             mv = 1;
                         }
                     }
+                    /* RC5 v0.7: temp стойност → move вариант + консумация на
+                     * temp-а (виж vec_push сайта; ключът пак се retain-ва) */
+                    if (cg->rc && !mv && strcmp(bn, "map_set") == 0 &&
+                        (strcmp(vsuf, "str") == 0 ||
+                         strcmp(vsuf, "bytes") == 0) &&
+                        n->args.len >= 3 &&
+                        (tmp_mv = rc_tmp_find(cg, n->args.data[2])) >= 0) {
+                        cg->rc_cmoves++;
+                        mv = 1;
+                    }
                     fprintf(f, "baga_%s_%s_%s%s(", bn, ksuf, vsuf,
                             mv ? "_move" : "");
                     for (int i = 0; i < n->args.len; i++) {
@@ -2090,6 +2133,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                         emit_expr(cg, n->args.data[i]);
                     }
                     fprintf(f, ")");
+                    if (tmp_mv >= 0) rc_tmp_consume(cg, tmp_mv);  /* RC5 v0.7 */
                     goto call_done;
                 }
                 if (strcmp(bn, "map_has") == 0 || strcmp(bn, "map_del") == 0 ||

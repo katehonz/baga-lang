@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.7 call temp-ове в box push (зад `--rc`)
+- Temp резултат от call (`f()`/`to_str`), директен аргумент на
+  `vec_push`/`vec_set`/`map_set` (str/bytes/Vec стойност), се прехвърля в
+  контейнера: `_move` helper без retain и без release в края на
+  statement-а (като RC3 за last-use ident; fn резултатът е owned по
+  конвенция). Вложени temp-ове (`push(v, g(f()))`): външният е move,
+  вътрешният се release-ва както досега. Механизъм: `rc_tmp_find` +
+  консумация на temp записа (site=NULL) след emission.
+- struct/enum box temp-ове НЕ се move-ват: резултатът може да е borrowed
+  (`return vec_get(...)` на struct не retain-ва — boilaDB `boila_ps_tok`
+  връща `Token` от vec_get), move би споделил чуждата референция →
+  UAF/underflow при drop на източника. Остава retain + temp-ът тече
+  (leak-safe, 48.5 MB vs 25.0 MB на 500k push+drop спрямо литералния
+  move — документирана граница).
+- `tests/calltemp_rc_test.baga` (12 случая, вкл. identity/borrowed-result
+  fn, temp ползван два пъти → не е move). Typed temp-овете бяха
+  балансирани и преди (retain+release двойка) — RSS flat (33 MB на 500k
+  push(f())), печалбата е елиминираната двойка. Без флаг: бит-идентичен
+  emit-c.
+
 ### runtime — RC5 v0.6 enum payload-и като собственици (зад `--rc`)
 - Enum с heap payload (str/bytes/Vec/Map/struct с heap) получава
   `baga_rc_retain_<E>`/`baga_rc_release_<E>` със switch по runtime tag.

@@ -49,9 +49,40 @@ depth guard 32). `retain_S`/`release_S` рекурсират във вложен
 Измерено: 500k итерации `Outer { inner: Inner { s: concat(...) } }` — RSS
 38.5 MB → 10.8 MB. Тестове: случаи 18-21 в `tests/struct_rc_test.baga`.
 
-Останало (leak-safe): enum payload-и; call-аргумент temp-ове в box push;
+Останало (leak-safe): enum payload-и — **РЕШЕНО в v0.6**
+(`docs/memory-rc-enum-bg.md`); call-аргумент temp-ове в box push
+— **ЧАСТИЧНО РЕШЕНО в v0.7 (виж по-долу)**;
 `s.inner = x` (struct-типизирано поле като цел — v0.4 покрива само
 str/bytes/Vec/Map полета); `Vec<S>` в `Vec`.
+
+## v0.7: call temp-ове в box push
+
+Temp резултат от call, директен аргумент на `vec_push`/`vec_set`/`map_set`
+със str/bytes/Vec стойност, се прехвърля в контейнера: `_move` helper без
+retain (RC3 вариантите) + temp записът се консумира (`rc_tmp_find` +
+site=NULL след emission; `rc_tmp_release_all` го пропуска) — без release в
+края на statement-а. Същият трансфер като RC3 за last-use ident; валиден,
+защото str/bytes/Vec fn резултатът е owned по конвенция (return на
+параметър/borrowed се retain-ва — RC1), а RC4 вече разчита на същата
+конвенция при release на тези temp-ове. Вложени случаи (`push(v, g(f()))`):
+само директният аргумент е move; вътрешните temp-ове се release-ват както
+досега. Temp ползван два пъти не съществува синтактично (всеки temp възел
+се оценява веднъж) — локал ползван два пъти пада в RC3 last-use правилата.
+
+**struct/enum box temp-ове НЕ се move-ват** (остават с retain, temp-ът
+тече — leak-safe): struct fn резултатът може да е borrowed —
+`return vec_get(...)` на struct НЕ retain-ва (`rc_type_tag` е 0 за struct в
+`emit_return_val`), а реален такъв код съществува (boilaDB `boila_ps_tok`/
+`boila_dual_ptok` връщат `Token` от vec_get). Move би оставил box-а да
+споделя единствената референция → UAF/underflow при drop на източника.
+Точен move изисква owned-конвенция за struct резултати навсякъде (return/
+match/if-израз/lambda пътеки) — отделна, по-голяма стъпка.
+
+Измерено (500k итерации, --rc): typed temp-овете бяха балансирани и преди
+(retain+release двойка) — RSS flat (33 MB push(f()) str; 128 MB map_set),
+печалбата е елиминираната двойка на всяка итерация. Struct box temp:
+48.5 MB vs 25.0 MB за литералния move (push+drop цикъл) — оставащият
+leak, документиран по-горе. Тест: `tests/calltemp_rc_test.baga` (12 случая).
 
 ## v0.2: drop на Vec<S> / Map<K,S> полета
 
