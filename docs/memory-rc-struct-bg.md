@@ -16,7 +16,7 @@ s: concat("a","b") }` → concat rc=1 в полето → scope exit тече.
 
 ## Не-цели (v0.1)
 
-- Вложени struct полета (не рекурсираме).
+- ~~Вложени struct полета~~ — **РЕШЕНО в v0.5 (виж по-долу).**
 - Enum payload-и.
 - ~~Полета вътре в `Vec<S>` / `Map<K,S>` при drop на контейнера~~ —
   **РЕШЕНО в v0.2 (виж по-долу).**
@@ -35,6 +35,23 @@ release-ва старото поле. Само плоско `ident.field` — п
 (`a.b.c = x`) биха оценили целта два пъти (странични ефекти).
 
 Измерено: 500k итерации `w.s = concat(...)` — RSS 39 MB → 10.9 MB.
+
+## v0.5: вложени struct полета
+
+`rc_struct_has_heap` е транзитивен (поле от struct тип с heap полета брои;
+depth guard 32). `retain_S`/`release_S` рекурсират във вложените struct
+полета; forward декларации на и четирите helper-а (`retain`/`release`/`relf`/
+`retp`) — рекурсията ходи напред-назад по декларационния ред. Литерал,
+вграждащ borrowed вложен struct (`Pair { w: p.w }`), retain-ва през
+`__rc_sl.<field>` с `baga_rc_retain_<T>` (RC1.1 пътеката вече ползва
+`rc_heap_tag`, не само `rc_type_tag`).
+
+Измерено: 500k итерации `Outer { inner: Inner { s: concat(...) } }` — RSS
+38.5 MB → 10.8 MB. Тестове: случаи 18-21 в `tests/struct_rc_test.baga`.
+
+Останало (leak-safe): enum payload-и; call-аргумент temp-ове в box push;
+`s.inner = x` (struct-типизирано поле като цел — v0.4 покрива само
+str/bytes/Vec/Map полета); `Vec<S>` в `Vec`.
 
 ## v0.2: drop на Vec<S> / Map<K,S> полета
 

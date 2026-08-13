@@ -119,15 +119,41 @@ static int rc_type_node_tag(Node *ty) {
 
 static Node *find_struct_decl(Codegen *cg, const char *name);
 
-/* RC5: struct с поне едно пряко str/bytes/Vec/Map поле. */
-static int rc_struct_has_heap(Codegen *cg, const char *name) {
+/* RC5: struct с поне едно пряко str/bytes/Vec/Map поле.
+ * v0.5: транзитивно — поле от struct тип с heap полета също брои (release_S
+ * рекурсира). depth guard срещу лудост при циклични декларации (value-цикъл
+ * е невалиден в C, но не разчитаме на checker-а). */
+static int rc_struct_has_heap_d(Codegen *cg, const char *name, int depth) {
+    if (depth > 32) return 0;
     Node *d = find_struct_decl(cg, name);
     if (!d) return 0;
     for (int i = 0; i < d->fields.len; i++) {
         Node *ft = d->fields.data[i]->fld_type;
         if (rc_type_node_tag(ft)) return 1;
+        Node *t = ft;
+        while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+            t = t->inner_type;
+        if (t && t->kind == NODE_TYPE && t->type_name &&
+            rc_struct_has_heap_d(cg, t->type_name, depth + 1))
+            return 1;
     }
     return 0;
+}
+
+static int rc_struct_has_heap(Codegen *cg, const char *name) {
+    return rc_struct_has_heap_d(cg, name, 0);
+}
+
+/* RC5 v0.5: име на struct типа на поле-възел, ако е вложен struct с heap
+ * полета (иначе NULL). */
+static const char *rc_nested_struct_field(Codegen *cg, Node *fld_type) {
+    Node *t = fld_type;
+    while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+        t = t->inner_type;
+    if (t && t->kind == NODE_TYPE && t->type_name &&
+        rc_struct_has_heap(cg, t->type_name))
+        return t->type_name;
+    return NULL;
 }
 
 static int rc_heap_tag(Codegen *cg, Type *t) {
@@ -2415,9 +2441,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                     /* RC1.1: borrowed стойност (vec_get/map_get/поле/h_*),
                      * вградена директно — полето алиасира чужда собственост →
                      * retain през __rc_sl.<field> (иначе release на източника
-                     * обесва полето — латентен пропуск, излязъл с RC4) */
+                     * обесва полето — латентен пропуск, излязъл с RC4)
+                     * v0.5: и borrowed struct (rc_heap_tag хваща tag 5) */
                     if (rc_borrowed_init(val) &&
-                        rc_type_tag(val->type) != 0) {
+                        rc_heap_tag(cg, val->type) != 0) {
                         nemb++;
                         continue;
                     }
@@ -2444,10 +2471,21 @@ static void emit_expr(Codegen *cg, Node *n) {
                 for (int i = 0; i < n->n_lit_fields; i++) {
                     Node *val = n->lit_values.data[i];
                     /* RC1.1: retain на borrowed поле през построената стойност */
-                    if (rc_borrowed_init(val) &&
-                        rc_type_tag(val->type) != 0) {
+                    int vltag = rc_heap_tag(cg, val->type);
+                    if (rc_borrowed_init(val) && vltag != 0) {
                         char *fm2 = mangle_name(n->lit_fields[i]);
-                        if (rc_type_tag(val->type) == 2)
+                        if (vltag == 5) {
+                            /* RC5 v0.5: borrowed вложен struct — retain_<T> */
+                            const char *vn = val->type && val->type->name ?
+                                val->type->name : NULL;
+                            if (vn) {
+                                char *vm = mangle_name(vn);
+                                fprintf(f, "baga_rc_retain_%s(__rc_sl.%s); ",
+                                        vm, fm2);
+                                free(vm);
+                            }
+                        }
+                        else if (vltag == 2)
                             fprintf(f, "baga_rc_retain((void *)__rc_sl.%s.data); ",
                                     fm2);
                         else
@@ -3560,8 +3598,18 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
     for (int i = 0; i < s->fields.len; i++) {
         Node *fld = s->fields.data[i];
         int tag = rc_type_node_tag(fld->fld_type);
-        if (!tag) continue;
         char *fm = mangle_name(fld->fld_name);
+        if (!tag) {
+            /* RC5 v0.5: вложено struct поле — рекурсивен retain */
+            const char *nn = rc_nested_struct_field(cg, fld->fld_type);
+            if (nn) {
+                char *nm = mangle_name(nn);
+                fprintf(f, "    baga_rc_retain_%s(s.%s);\n", nm, fm);
+                free(nm);
+            }
+            free(fm);
+            continue;
+        }
         if (tag == 2)
             fprintf(f, "    baga_rc_retain((void *)s.%s.data);\n", fm);
         else
@@ -3573,8 +3621,18 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
     for (int i = 0; i < s->fields.len; i++) {
         Node *fld = s->fields.data[i];
         int tag = rc_type_node_tag(fld->fld_type);
-        if (!tag) continue;
         char *fm = mangle_name(fld->fld_name);
+        if (!tag) {
+            /* RC5 v0.5: вложено struct поле — рекурсивен release */
+            const char *nn = rc_nested_struct_field(cg, fld->fld_type);
+            if (nn) {
+                char *nm = mangle_name(nn);
+                fprintf(f, "    baga_rc_release_%s(s.%s);\n", nm, fm);
+                free(nm);
+            }
+            free(fm);
+            continue;
+        }
         if (tag == 1)
             fprintf(f, "    baga_rc_release_str(s.%s);\n", fm);
         else if (tag == 2)
@@ -3739,13 +3797,18 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
     }
     if (cg->rc) {
         /* RC5 v0.2: forward decls на box shims — release_S на по-ранен
-         * struct реферира relf на по-късен (Vec<S>/Map<K,S> поле). */
+         * struct реферира relf на по-късен (Vec<S>/Map<K,S> поле).
+         * v0.5: и retain/release — вложеното struct поле рекурсира
+         * напред-назад по декларационния ред. */
         for (int i = 0; i < on; i++) {
             Node *it = nodes[order[i]];
             if (it->kind == NODE_STRUCT &&
                 rc_struct_has_heap(cg, it->struct_name)) {
                 char *m = mangle_name(it->struct_name);
+                fprintf(cg->out, "static inline void baga_rc_retain_%s(%s s);\n", m, m);
+                fprintf(cg->out, "static inline void baga_rc_release_%s(%s s);\n", m, m);
                 fprintf(cg->out, "static void baga_rc_relf_%s(void *p);\n", m);
+                fprintf(cg->out, "static void baga_rc_retp_%s(void *p);\n", m);
                 free(m);
             }
         }

@@ -80,8 +80,11 @@ struct литерал е move (RSS 64 MB → 10.9 MB на 500k push+drop). v0.3:
 (`*_box_rc`/`baga_map_del_*_rc` с destructor fn pointer; RSS 72 MB →
 10.9 MB на 300k overwrite+del). v0.4: release на старото heap поле при
 `s.f = x` (alias-safe: retain преди release; RSS 39 MB → 10.9 MB на 500k
-field overwrite). Останало:
-вложени struct-и, enum payload, call аргумент temp-ове в box push.
+field overwrite). v0.5: вложени struct-и — транзитивен `has_heap`,
+`retain_S`/`release_S` рекурсират, литералът retain-ва borrowed вложени
+полета (RSS 38.5 MB → 10.8 MB на 500k вложени литерала). Останало:
+enum payload, call аргумент temp-ове в box push, `s.inner = x`
+(struct-типизирана цел), `Vec<S>` във `Vec`.
 
 ## Забранено / внимание
 

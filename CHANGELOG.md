@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.5 вложени struct полета (зад `--rc`)
+- `rc_struct_has_heap` е транзитивен; `retain_S`/`release_S` рекурсират в
+  struct-типизирани полета. Forward декларации на всички RC helper-и.
+- Литерал с borrowed вложен struct (`Pair { w: p.w }`) retain-ва през
+  `baga_rc_retain_<T>(__rc_sl.<field>)`. Случаи 18-21 в struct_rc_test.
+- Leak repro 500k вложени литерала: RSS 38.5 MB → 10.8 MB.
+
 ### runtime — RC5 v0.4 release на старото поле при `s.f = x` (зад `--rc`)
 - Heap поле (str/bytes/Vec/Map) на track-нат struct локал се release-ва
   преди overwrite. Alias-safe ред (retain преди release): `w.s = v.s` и

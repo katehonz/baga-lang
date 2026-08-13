@@ -12,6 +12,11 @@ struct Bucket {
     items: Vec<str>
 }
 
+struct Pair {
+    w: Wrap,
+    tag: str
+}
+
 fn check(name: str, ok: bool) {
     if ok {
         print(concat("  ok  ", name))
@@ -136,6 +141,24 @@ fn main() -> i64 !IO {
     bk.items = vec_new()
     vec_push(bk.items, "б")
     check("field_vec_ovw", vec_len(bk.items) == 1 && vec_get(bk.items, 0) == "б")
+
+    // 18. вложен struct — scope exit release-ва рекурсивно (RC5 v0.5)
+    let p = Pair { w: Wrap { n: 1, s: concat("ne", "st") }, tag: "t1" }
+    check("nest_lit", p.w.s == "nest" && p.tag == "t1")
+
+    // 19. alias на вложен — retain рекурсира; двете четат
+    let p2 = p
+    check("nest_alias", p.w.s == "nest" && p2.w.s == "nest")
+
+    // 20. borrowed embed на вложен struct — retain през построената стойност
+    let p3 = Pair { w: p.w, tag: "t3" }
+    check("nest_borrowed", p3.w.s == "nest" && p.w.s == "nest")
+
+    // 21. Vec<Pair> push + drop — container drop рекурсира в полетата
+    let vp: Vec<Pair> = vec_new()
+    vec_push(vp, Pair { w: Wrap { n: 2, s: concat("vp", "-x") }, tag: "t" })
+    drop(vp)
+    check("nest_vec_drop", true)
 
     print("struct_rc_test: all passed")
     return 0
