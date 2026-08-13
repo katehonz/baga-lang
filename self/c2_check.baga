@@ -345,5 +345,49 @@ fn check_specs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
 fn check_program(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
     check_specs(nk, nt, fc, ns, prog)
     check_node(nk, nt, fc, ns, prog, prog)
+    check_fn_returns(nk, nt, fc, ns, prog)
+}
+
+// M19: не-void функция (с ret type, kind 16) трябва да завършва с
+// return (7) или изразен statement (10 — implicit return).
+fn check_fn_returns(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            let mut has_ret: i64 = 0
+            let mut body: i64 = 0 - 1
+            let mut c = first_child(fc, f)
+            while c >= 0 {
+                if node_kind(nk, c) == 16 { has_ret = 1 }
+                if node_kind(nk, c) == 5 { body = c }
+                c = next_sibling(ns, c)
+            }
+            if has_ret == 1 {
+                if body < 0 {
+                    // forward декларация (без тяло) — легална
+                    f = next_sibling(ns, f)
+                    continue
+                }
+                let mut last = first_child(fc, body)
+                let mut prev = 0 - 1
+                while last >= 0 {
+                    prev = last
+                    last = next_sibling(ns, last)
+                }
+                if prev < 0 {
+                    eprintln(concat("функцията '", concat(node_text(nt, f), "' може да падне от края без return")))
+                    exit(1)
+                }
+                let mut pk = node_kind(nk, prev)
+                if pk != 7 {
+                    if pk != 10 {
+                        eprintln(concat("функцията '", concat(node_text(nt, f), "' може да падне от края без return")))
+                        exit(1)
+                    }
+                }
+            }
+        }
+        f = next_sibling(ns, f)
+    }
 }
 

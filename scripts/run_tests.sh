@@ -67,6 +67,15 @@ echo "=== arg_type_bad (очакваме compile грешка) ==="
 run examples/arg_type_bad.baga 2>&1 | grep -q "аргумент #1 е от тип str, но параметърът е i64" \
 	&& echo "OK: проверката на аргументите хвана грешния тип" \
 	|| { echo "FAIL: проверката на аргументите не хвана грешния тип"; exit 1; }
+echo "=== noreturn_bad (очакваме compile грешка) ==="
+run examples/noreturn_bad.baga 2>&1 | grep -q "може да падне от края без return" \
+	&& echo "OK: M19 missing-return хвана падането от края" \
+	|| { echo "FAIL: M19 не хвана падането от края"; exit 1; }
+echo "=== tail_return (implicit return на последния израз) ==="
+run examples/tail_return.baga > /tmp/baga_tail_out.txt \
+	&& grep -q "^42$" /tmp/baga_tail_out.txt \
+	&& echo "OK: implicit return на последния израз" \
+	|| { echo "FAIL: implicit return"; exit 1; }
 echo "=== emit-c cleanup (регресия: double-free при += desugar) ==="
 run --emit-c examples/vec_ann.baga > /dev/null \
 	&& echo "OK: --emit-c не гърми върху += desugar" \

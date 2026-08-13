@@ -2455,6 +2455,92 @@ static Type *infer(CheckCtx *ctx, Node *n) {
  *  Function checking
  * ============================================================ */
 
+/* M19: fallthrough анализ — може ли изпълнението да падне от края на
+ * този statement? Консервативен: ако не може да се докаже обратното,
+ * отговорът е "да". return/break/continue не падат; block пада, ако
+ * последният stmt пада; if без else пада; while пада, освен literal
+ * `while true` без break на това ниво; match винаги пада (arm-ският
+ * `return e` е СТОЙНОСТ на match-а, не изход от функцията). */
+static int tree_has_break_depth(Node *n, int depth) {
+    if (!n) return 0;
+    if (n->kind == NODE_BREAK) return depth == 0;
+    switch (n->kind) {
+        case NODE_BINARY:
+            return tree_has_break_depth(n->left, depth) ||
+                   tree_has_break_depth(n->right, depth);
+        case NODE_UNARY:
+            return tree_has_break_depth(n->operand, depth);
+        case NODE_CALL:
+            for (int i = 0; i < n->args.len; i++)
+                if (tree_has_break_depth(n->args.data[i], depth)) return 1;
+            return 0;
+        case NODE_IF:
+            return tree_has_break_depth(n->then_br, depth) ||
+                   tree_has_break_depth(n->else_br, depth);
+        case NODE_BLOCK:
+            for (int i = 0; i < n->stmts.len; i++)
+                if (tree_has_break_depth(n->stmts.data[i], depth)) return 1;
+            return 0;
+        case NODE_WHILE:
+            if (tree_has_break_depth(n->while_cond, depth)) return 1;
+            return tree_has_break_depth(n->while_body, depth + 1);
+        case NODE_FOR:
+            return tree_has_break_depth(n->for_body, depth + 1);
+        case NODE_MATCH:
+            for (int i = 0; i < n->match_arms.len; i++) {
+                Node *arm = n->match_arms.data[i];
+                if (tree_has_break_depth(arm->arm_body, depth)) return 1;
+            }
+            return 0;
+        case NODE_ASSIGN:
+            return tree_has_break_depth(n->assign_target, depth) ||
+                   tree_has_break_depth(n->assign_val, depth);
+        case NODE_TRY:
+            return tree_has_break_depth(n->try_expr, depth);
+        case NODE_CATCH:
+            return tree_has_break_depth(n->catch_expr, depth) ||
+                   tree_has_break_depth(n->catch_handler, depth);
+        default:
+            return 0;
+    }
+}
+
+static int stmt_falls_through(Node *n) {
+    if (!n) return 1;
+    switch (n->kind) {
+        case NODE_RETURN:
+        case NODE_BREAK:
+        case NODE_CONTINUE:
+            return 0;
+        case NODE_BLOCK: {
+            if (n->stmts.len == 0) return 1;
+            return stmt_falls_through(n->stmts.data[n->stmts.len - 1]);
+        }
+        case NODE_IF:
+            if (!n->else_br) return 1;
+            if (stmt_falls_through(n->then_br)) return 1;
+            return stmt_falls_through(n->else_br);
+        case NODE_WHILE:
+            /* literal `while true` без break на това ниво не излиза */
+            if (n->while_cond && n->while_cond->kind == NODE_BOOL_LIT &&
+                n->while_cond->bool_val == 1 &&
+                !tree_has_break_depth(n->while_body, 0))
+                return 0;
+            return 1;
+        default:
+            return 1;
+    }
+}
+
+/* Тялото на функция: последният изразен statement е implicit return
+ * (codegen го превръща в `return expr;` за не-void функции). */
+static int fn_body_falls_through(Node *body) {
+    if (!body || body->stmts.len == 0) return 1;
+    Node *last = body->stmts.data[body->stmts.len - 1];
+    if (last->kind == NODE_EXPR_STMT) return 0;
+    return stmt_falls_through(last);
+}
+
 static void check_fn(CheckCtx *ctx, Node *fn) {
     ctx->cur_fn = fn->fn_name;
     ctx->cur_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type) : type_new(TYPE_VOID);
@@ -2485,6 +2571,27 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
     if (fn->fn_body) {
         for (int i = 0; i < fn->fn_body->stmts.len; i++)
             infer(ctx, fn->fn_body->stmts.data[i]);
+    }
+
+    /* M19: не-void функция не бива да пада от края — връща боклук в C */
+    if (fn->fn_body && ctx->cur_ret && ctx->cur_ret->kind != TYPE_VOID &&
+        fn_body_falls_through(fn->fn_body)) {
+        check_error(ctx, fn->pos,
+            "функцията '%s' може да падне от края без return — не-void функциите трябва да връщат стойност на всеки път",
+            fn->fn_name);
+    }
+
+    /* M19b: типът на implicit return (последният изразен statement)
+     * трябва да съвпада с връщания тип — иначе кодгенът връща боклук */
+    if (fn->fn_body && fn->fn_body->stmts.len > 0 &&
+        ctx->cur_ret && ctx->cur_ret->kind != TYPE_VOID) {
+        Node *last = fn->fn_body->stmts.data[fn->fn_body->stmts.len - 1];
+        if (last->kind == NODE_EXPR_STMT && last->expr && last->expr->type &&
+            !type_eq(last->expr->type, ctx->cur_ret)) {
+            check_error(ctx, last->expr->pos,
+                "implicit return връща %s, но функцията '%s' очаква %s",
+                type_str(last->expr->type), fn->fn_name, type_str(ctx->cur_ret));
+        }
     }
 
     /* effect checking: unhandled effects in body vs declared effects */

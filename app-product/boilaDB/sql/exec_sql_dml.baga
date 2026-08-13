@@ -115,4 +115,5 @@ fn boila_exec_sql_dml(s: BoilaStore, txn: BoilaTxn, db: str, pc: BoilaPlanCache,
         }
         return BoilaSqlOut { s: s, txn: txn, pc: pc, ok: 1, err: "", state: "", kind: 8, res: ex.res, id: ex.affected }
     }
+    return boila_sql_fail(s, txn, pc, "очаквах INSERT / UPDATE / DELETE", "0A000")
 }

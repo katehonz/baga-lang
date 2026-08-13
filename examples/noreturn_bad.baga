@@ -1,0 +1,14 @@
+// noreturn_bad.baga — M19: не-void функция, която може да падне от
+// края без return. Очакваме compile грешка (run_tests.sh gate).
+fn f(x: i64) -> i64 {
+    let mut i: i64 = 0
+    while i < x {
+        if i == 5 { return 42 }
+        i = i + 1
+    }
+}
+
+fn main() {
+    let v = f(2)
+    print(v)
+}

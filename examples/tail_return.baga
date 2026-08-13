@@ -1,0 +1,29 @@
+// tail_return.baga — M19: стойността на последния изразен statement в
+// тялото на не-void функция е implicit return (codegen го прави
+// `return expr;`). Валидни са и match/извикване/аритметика като
+// последен израз; `if` като последен statement НЕ е (той е statement).
+fn f() -> i64 {
+    let mut x = 40
+    x = x + 2
+    x
+}
+
+fn g(x: i64) -> i64 {
+    if x > 0 {
+        return 1
+    }
+    return 2
+}
+
+fn h(x: i64) -> i64 {
+    match x {
+        1 => 10,
+        _ => 20,
+    }
+}
+
+fn main() {
+    print(f())
+    print(g(5))
+    print(h(1))
+}
