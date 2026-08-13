@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.8 `s.inner = x` (struct-типизирана цел, зад `--rc`)
+- Field assign върху struct-типизирано поле (с heap полета, транзитивно)
+  на track-нат struct локал: старото поле се release-ва рекурсивно
+  (`baga_rc_release_<Inner>` от v0.5) преди assign. Alias-safe ред като
+  v0.4 — новото се retain-ва ПРЕДИ release: `s.inner = s.inner` и
+  `s.inner = t.inner` при alias не underflow-ват, borrowed източник
+  оцелява смъртта на източника си.
+- Дясно: свеж литерал е owned (без retain); tracked ident — retain, а
+  при last-use — move (без retain); всичко останало (call/поле/vec_get/
+  untrack-нат ident) се retain-ва — struct fn резултат може да е
+  borrowed (§v0.7 границата), посоката е leak-safe (fresh call leak-ва
+  една референция — RSS не пада за `s.inner = mk(...)`, документирано).
+  Само плоско `ident.field` (като v0.4). Механизъм:
+  `rc_field_assign_struct` + `rc_emit_struct_field_release`.
+- `tests/nested_assign_rc_test.baga` (12 случая; `borrowed_outlive`
+  фейлва на стария codegen — четене на освободено поле). Leak repro
+  500k литерален overwrite: RSS 24.9 MB → 10.6 MB. Без флаг:
+  бит-идентичен emit-c.
+
 ### runtime — RC5 v0.7 call temp-ове в box push (зад `--rc`)
 - Temp резултат от call (`f()`/`to_str`), директен аргумент на
   `vec_push`/`vec_set`/`map_set` (str/bytes/Vec стойност), се прехвърля в

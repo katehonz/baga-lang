@@ -53,7 +53,38 @@ depth guard 32). `retain_S`/`release_S` рекурсират във вложен
 (`docs/memory-rc-enum-bg.md`); call-аргумент temp-ове в box push
 — **ЧАСТИЧНО РЕШЕНО в v0.7 (виж по-долу)**;
 `s.inner = x` (struct-типизирано поле като цел — v0.4 покрива само
-str/bytes/Vec/Map полета); `Vec<S>` в `Vec`.
+str/bytes/Vec/Map полета) — **РЕШЕНО в v0.8 (виж по-долу)**; `Vec<S>` в
+`Vec`.
+
+## v0.8: `s.inner = x` (struct-типизирана цел на field assign)
+
+v0.4 покриваше само директни heap полета; struct-типизирано поле
+(`Outer { inner: Inner }`, `Inner` с heap полета) падаше в generic assign:
+старата стойност leak-ваше при overwrite, а borrowed дясно
+(`o.inner = t.inner`) се споделяше без retain — четене на освободено поле
+след смърт на източника (`borrowed_outlive` в теста фейлва на стария
+codegen). Сега `rc_field_assign_struct` познава цел `ident.field` с
+track-нат struct ident (tag 5, не param/dead) и struct-типизирано поле с
+heap полета (транзитивно, `rc_nested_struct_field` от v0.5), и assign
+пътеките emit-ват:
+
+- **свеж литерал** — owned, без retain (полетата му са балансирани от
+  литералния път); release_<Inner> на старото поле преди assign.
+- **tracked ident** — retain_<T> преди release на старото (alias-safe
+  ред като v0.4); при last-use — move (без retain, release на старото).
+- **всичко останало** (call резултат, поле, vec_get, untrack-нат ident) —
+  retain_<T> преди release. Struct fn резултат може да е borrowed
+  (§v0.7 границата: `return vec_get(...)` не retain-ва) и не се различава
+  от fresh — посоката е leak-safe: fresh call (`s.inner = mk(...)`)
+  leak-ва една референция на итерация, както v0.7 struct box temp-овете.
+
+Release е рекурсивният `baga_rc_release_<Inner>` от v0.5 (по-дълбока
+вложеност се покрива транзитивно). Само плоско `ident.field` — същата
+граница като v0.4 (`a.b.c = x` би оценил целта два пъти). Enum-типизирано
+поле не се покрива (както enum като struct поле изобщо — v0.6 не-цел).
+
+Измерено: 500k итерации `o.inner = Inner { s: concat(...) }` — RSS
+24.9 MB → 10.6 MB. Тест: `tests/nested_assign_rc_test.baga` (12 случая).
 
 ## v0.7: call temp-ове в box push
 

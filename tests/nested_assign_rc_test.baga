@@ -1,0 +1,114 @@
+// nested_assign_rc_test — RC5 v0.8: `s.inner = x` (struct-типизирана цел на
+// field assign). Старото поле се release-ва рекурсивно (release_Inner),
+// новото е owned при свеж литерал / retain-ва се при borrowed или неразличим
+// източник (call резултат — §v0.7 границата, leak-safe). Alias-safe ред:
+// retain преди release. Минава с и без --rc.
+
+import "std/str/str.baga"
+
+struct Inner {
+    s: str
+}
+
+struct Outer {
+    inner: Inner,
+    n: i64
+}
+
+struct Mid {
+    w: Inner,
+    tag: str
+}
+
+struct Deep {
+    m: Mid
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn mk(t: str) -> Inner {
+    return Inner { s: concat("mk", t) }
+}
+
+fn main() -> i64 !IO {
+    // 1. overwrite със свеж литерал — owned, старото поле се release-ва
+    let mut o = Outer { inner: Inner { s: concat("fi", "-old") }, n: 1 }
+    o.inner = Inner { s: concat("fi", "-new") }
+    check("lit_ovw", o.inner.s == "fi-new" && o.n == 1)
+
+    // 2. overwrite в цикъл — без underflow, без натрупване
+    for i in 0..100 {
+        o.inner = Inner { s: concat("lp", "-x") }
+    }
+    check("lit_loop", o.inner.s == "lp-x")
+
+    // 3. call резултат — retain (може да е borrowed); старото се release-ва
+    o.inner = mk("-call")
+    check("call_ovw", o.inner.s == "mk-call")
+
+    // 4. borrowed поле — retain; двамата четат
+    let t = Outer { inner: Inner { s: concat("bo", "rr") }, n: 2 }
+    o.inner = t.inner
+    check("borrowed", o.inner.s == "borr" && t.inner.s == "borr")
+
+    // 5. borrowed източникът умира — полето оцелява (retain при assign)
+    let mut o2 = Outer { inner: Inner { s: "x" }, n: 0 }
+    if true {
+        let tmp = Outer { inner: Inner { s: concat("su", "rv") }, n: 3 }
+        o2.inner = tmp.inner
+    }
+    check("borrowed_outlive", o2.inner.s == "surv")
+
+    // 6. self-assign не underflow-ва
+    o.inner = o.inner
+    check("self_assign", o.inner.s == "borr")
+
+    // 7. alias през цял struct — retain преди release пази споделеното поле
+    let a = o
+    o.inner = a.inner
+    check("alias_whole", o.inner.s == "borr" && a.inner.s == "borr")
+
+    // 8. borrowed от vec — полето оцелява drop на вектора
+    let vs: Vec<Inner> = vec_new()
+    vec_push(vs, Inner { s: concat("ve", "c") })
+    o2.inner = vec_get(vs, 0)
+    check("vec_borrowed", o2.inner.s == "vec" && vec_get(vs, 0).s == "vec")
+    drop(vs)
+    check("vec_borrowed_outlive", o2.inner.s == "vec")
+
+    // 9. tracked ident (не last-use) — retain; двамата четат
+    let k = Inner { s: concat("ke", "ep") }
+    o.inner = k
+    check("ident_retain", o.inner.s == "keep" && k.s == "keep")
+
+    // 10. last-use ident — move (без retain), източникът умира тук
+    let mut o3 = Outer { inner: Inner { s: "y" }, n: 0 }
+    if true {
+        let mv = Inner { s: concat("mo", "ve") }
+        o3.inner = mv
+    }
+    check("ident_move", o3.inner.s == "move")
+
+    // 11. по-дълбока вложеност — release рекурсира през Mid до Wrap полето
+    let mut d = Deep { m: Mid { w: Inner { s: concat("dp", "-old") }, tag: "t1" } }
+    d.m = Mid { w: Inner { s: concat("dp", "-new") }, tag: "t2" }
+    check("deep_ovw", d.m.w.s == "dp-new" && d.m.tag == "t2")
+
+    // 12. scope exit след overwrite — финалната стойност се release-ва чисто
+    if true {
+        let mut sc = Outer { inner: Inner { s: concat("sc", "-1") }, n: 0 }
+        sc.inner = Inner { s: concat("sc", "-2") }
+        sc.inner = mk("-3")
+    }
+    check("scope_exit", true)
+
+    print("nested_assign_rc_test: all passed")
+    return 0
+}

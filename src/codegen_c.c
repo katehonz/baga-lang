@@ -1030,6 +1030,44 @@ static void rc_emit_field_release(Codegen *cg, int tag, Node *target, int kind,
     fprintf(f, "); ");
 }
 
+/* RC5 v0.8: цел `ident.field`, където ident е track-нат struct локал (tag 5,
+ * не param/dead), а field е struct-типизирано поле с heap полета (транзитивно,
+ * v0.5). Връща името на struct типа на полето или NULL. Същата плоска граница
+ * като v0.4 — по-дълбоки пътеки (`a.b.c = x`) биха оценили целта два пъти. */
+static const char *rc_field_assign_struct(Codegen *cg, Node *target) {
+    if (!cg->rc || !target || target->kind != NODE_FIELD) return NULL;
+    Node *obj = target->field_obj;
+    if (!obj || obj->kind != NODE_IDENT || !target->field_name) return NULL;
+    int idx = rc_find(cg, obj->name);
+    if (idx < 0) return NULL;
+    RcLocal *e = &cg->rc_locals.data[idx];
+    if (e->tag != 5 || e->is_param || e->dead) return NULL;
+    const char *sn = (e->type && e->type->name) ? e->type->name :
+        (e->type_node && e->type_node->type_name) ? e->type_node->type_name : NULL;
+    if (!sn) return NULL;
+    Node *d = find_struct_decl(cg, sn);
+    if (!d) return NULL;
+    for (int i = 0; i < d->fields.len; i++) {
+        Node *fld = d->fields.data[i];
+        if (!fld->fld_name ||
+            strcmp(fld->fld_name, target->field_name) != 0)
+            continue;
+        return rc_nested_struct_field(cg, fld->fld_type);
+    }
+    return NULL;
+}
+
+/* release на старото struct-типизирано поле (в alias-safe ред: след retain
+ * на новото) — рекурсивен release_<T> от v0.5 */
+static void rc_emit_struct_field_release(Codegen *cg, const char *stname,
+                                         Node *target) {
+    char *sm = mangle_name(stname);
+    fprintf(cg->out, "baga_rc_release_%s(", sm);
+    emit_expr(cg, target);
+    fprintf(cg->out, "); ");
+    free(sm);
+}
+
 /* fresh heap temp ли е този възел? (owned rc=1 резултат по конвенция) */
 static int rc_tmp_fresh(Node *n) {
     if (!n) return 0;
@@ -2478,6 +2516,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     int fkind = 0;
                     int ftag = rc_field_assign_tag(cg, n->assign_target, &fkind,
                                                    sz, sizeof sz, rel, sizeof rel);
+                    /* RC5 v0.8: struct-типизирана цел (`s.inner = x`) */
+                    const char *fst = rc_field_assign_struct(cg, n->assign_target);
                     /* RC2: последна употреба → move (обикновено присвояване,
                      * без retain; източникът умира тук) */
                     if (rc_is_move(cg, n->assign_val, si)) {
@@ -2489,6 +2529,16 @@ static void emit_expr(Codegen *cg, Node *n) {
                             fprintf(f, "; ");
                             rc_emit_field_release(cg, ftag, n->assign_target,
                                                   fkind, sz, rel);
+                            emit_expr(cg, n->assign_target);
+                            fprintf(f, " = __rc_fa; __rc_fa; })");
+                        } else if (fst) {
+                            /* RC5 v0.8: move в struct поле — без retain;
+                             * старото поле се release-ва рекурсивно */
+                            fprintf(f, "({ __auto_type __rc_fa = ");
+                            emit_expr(cg, n->assign_val);
+                            fprintf(f, "; ");
+                            rc_emit_struct_field_release(cg, fst,
+                                                         n->assign_target);
                             emit_expr(cg, n->assign_target);
                             fprintf(f, " = __rc_fa; __rc_fa; })");
                         } else {
@@ -2508,10 +2558,15 @@ static void emit_expr(Codegen *cg, Node *n) {
                         rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
                         rc_emit_field_release(cg, ftag, n->assign_target,
                                               fkind, sz, rel);
+                    } else if (fst) {
+                        /* RC5 v0.8: същият alias-safe ред за struct поле —
+                         * retain_<T> на новото, после release_<T> на старото */
+                        rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
+                        rc_emit_struct_field_release(cg, fst, n->assign_target);
                     }
                     emit_expr(cg, n->assign_target);
                     fprintf(f, " = __rc_fa; ");
-                    if (!ftag)
+                    if (!ftag && !fst)
                         rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
                     fprintf(f, "__rc_fa; })");
                     break;
@@ -2534,6 +2589,28 @@ static void emit_expr(Codegen *cg, Node *n) {
                                            "__rc_fa");
                     rc_emit_field_release(cg, ftag, n->assign_target,
                                           fkind, sz, rel);
+                    emit_expr(cg, n->assign_target);
+                    fprintf(f, " = __rc_fa; __rc_fa; })");
+                    break;
+                }
+                /* RC5 v0.8: не-ident дясно в struct-типизирано поле. Свеж
+                 * литерал е owned (без retain — полетата му вече са балансирани
+                 * от литералния път); всичко останало (call/поле/vec_get/
+                 * untrack-нат ident) се retain-ва — call резултатът може да е
+                 * borrowed (§v0.7 границата), посоката е leak-safe. Старото
+                 * поле се release-ва рекурсивно след retain-а (alias-safe:
+                 * `s.inner = s.inner`, `s.inner = t.inner` при alias). */
+                const char *fst = rc_field_assign_struct(cg, n->assign_target);
+                if (fst) {
+                    fprintf(f, "({ __auto_type __rc_fa = ");
+                    emit_expr(cg, n->assign_val);
+                    fprintf(f, "; ");
+                    if (n->assign_val->kind != NODE_STRUCT_LIT) {
+                        char *fm = mangle_name(fst);
+                        fprintf(f, "baga_rc_retain_%s(__rc_fa); ", fm);
+                        free(fm);
+                    }
+                    rc_emit_struct_field_release(cg, fst, n->assign_target);
                     emit_expr(cg, n->assign_target);
                     fprintf(f, " = __rc_fa; __rc_fa; })");
                     break;

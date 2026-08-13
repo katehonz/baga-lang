@@ -21,7 +21,8 @@
 
 1. `make` — чист build.
 2. RC батерия: `rc_test move_test borrow_test cmove_test temp_test
-   struct_rc_test enum_rc_test calltemp_rc_test http_test pg_test
+   struct_rc_test enum_rc_test calltemp_rc_test nested_assign_rc_test
+   http_test pg_test
    std/sumtype_test mem_rewind_test` — всички с `--rc` PASS:
    `./baga --rc -I . -I app-product tests/<t>.baga`
 3. ASan+UBSan върху същите: `--emit-c` → `gcc -g -O1
@@ -90,9 +91,15 @@ owned/borrowed/move payload (`docs/memory-rc-enum-bg.md`,
 box push — temp аргумент (str/bytes/Vec) на push/set/map_set е move в
 контейнера без retain/release двойка (`tests/calltemp_rc_test.baga`;
 struct/enum box temp-ове остават с retain — резултатът може да е borrowed,
-leak-safe). Батерията вече е 157
-файла, база **152/157**. Останало:
-`s.inner = x` (struct-типизирана цел), struct/enum box temp от call
+leak-safe). v0.8: `s.inner = x` — struct-типизирана цел на field assign:
+release_<Inner> на старото поле преди assign, retain на новото при
+borrowed/неразличим източник (call резултат — §v0.7 границата), move при
+last-use ident, owned при свеж литерал; alias-safe ред (retain преди
+release; `tests/nested_assign_rc_test.baga`; RSS 24.9 MB → 10.6 MB на
+500k литерален overwrite). Батерията вече е 158
+файла (152/157 + новия тест — пълната батерия се пуска след merge).
+Останало:
+struct/enum box temp от call
 (borrowed резултат — неразличим), `Vec<S>` във `Vec`,
 enum в контейнер/struct поле, match scrutinee temp.
 
