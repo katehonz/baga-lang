@@ -4609,6 +4609,11 @@ void codegen_llvm(Node *program, const char *output_path) {
                     it->fn_name, it->inst_count);
             return;
         }
+        if (it->kind == NODE_IMPL) {
+            fprintf(stderr, "baga: traits/impl не се поддържат в LLVM backend-а (v1) — "
+                            "ползвай C backend-а\n");
+            return;
+        }
     }
     lg.ctx = LLVMContextCreate();
     lg.mod = LLVMModuleCreateWithNameInContext("baga_module", lg.ctx);

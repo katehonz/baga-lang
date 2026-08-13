@@ -1348,10 +1348,18 @@ static Node *parse_fn(Parser *p) {
 
     /* M21: типови параметри — fn f<T, U>(...) */
     VEC(char *) type_params = {0};
+    VEC(char *) param_bounds = {0};
     if (match(p, TOK_LT)) {
         do {
             Token *tp = expect(p, TOK_IDENT);
             vec_push(type_params, tp->text ? strdup(tp->text) : strdup("T"));
+            /* M23: опционален trait bound — fn f<T: Show>(...) */
+            char *bnd = NULL;
+            if (match(p, TOK_COLON)) {
+                Token *bt = expect(p, TOK_IDENT);
+                bnd = bt->text ? strdup(bt->text) : strdup("");
+            }
+            vec_push(param_bounds, bnd);
         } while (match(p, TOK_COMMA));
         expect_gt_split(p);
     }
@@ -1362,8 +1370,15 @@ static Node *parse_fn(Parser *p) {
         do {
             SrcPos ppos = cur(p)->pos;
             char *pname = expect_ident(p);
-            expect(p, TOK_COLON);
-            Node *ptype = parse_type(p);
+            Node *ptype = NULL;
+            /* M23: `self` без тип в trait декларацията; имплицитният тип
+             * е на имплементиращия тип */
+            if (strcmp(pname, "self") == 0 && !check(p, TOK_COLON)) {
+                ptype = NULL;
+            } else {
+                expect(p, TOK_COLON);
+                ptype = parse_type(p);
+            }
             Node *param = node_alloc(NODE_PARAM, ppos);
             param->param_name = pname;
             param->param_type = ptype;
@@ -1387,6 +1402,7 @@ static Node *parse_fn(Parser *p) {
         fn->fn_body = NULL;
         fn->type_params = type_params.data;
         fn->n_type_params = type_params.len;
+        fn->param_bounds = param_bounds.data;
         return fn;
     }
 
@@ -1399,6 +1415,7 @@ static Node *parse_fn(Parser *p) {
     fn->fn_body = body;
     fn->type_params = type_params.data;
     fn->n_type_params = type_params.len;
+    fn->param_bounds = param_bounds.data;
     return fn;
 }
 
@@ -1407,7 +1424,6 @@ static Node *parse_struct(Parser *p) {
     expect(p, TOK_STRUCT);
     char *name = expect_ident(p);
     expect(p, TOK_LBRACE);
-
     NodeVec fields = {0};
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
         SrcPos fpos = cur(p)->pos;
@@ -1428,8 +1444,48 @@ static Node *parse_struct(Parser *p) {
     return s;
 }
 
-static Node *parse_spec(Parser *p) {
+/* M23: trait Name { fn m(params) -> Ret [!E]; ... } — декларация на
+ * методи (без тела); impl-ът ги реализира per тип. */
+static Node *parse_trait(Parser *p) {
     SrcPos pos = cur(p)->pos;
+    expect(p, TOK_TRAIT);
+    char *name = expect_ident(p);
+    expect(p, TOK_LBRACE);
+    NodeVec methods = {0};
+    while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+        vec_push(methods, parse_fn(p));
+    }
+    expect(p, TOK_RBRACE);
+    Node *tr = node_alloc(NODE_TRAIT, pos);
+    tr->trait_name = name;
+    tr->trait_methods = methods;
+    return tr;
+}
+
+/* M23: impl Trait for Type { fn m(...) -> R { body } ... } — методите са
+ * обикновени fn-и с вътрешно име "Trait.Type.m" (статичен dispatch). */
+static Node *parse_impl(Parser *p) {
+    SrcPos pos = cur(p)->pos;
+    expect(p, TOK_IMPL);
+    char *trait_name = expect_ident(p);
+    expect(p, TOK_FOR);
+    Node *ty = parse_type(p);
+    expect(p, TOK_LBRACE);
+    NodeVec methods = {0};
+    while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
+        Node *m = parse_fn(p);
+        m->fn_trait = trait_name;
+        vec_push(methods, m);
+    }
+    expect(p, TOK_RBRACE);
+    Node *im = node_alloc(NODE_IMPL, pos);
+    im->impl_trait = trait_name;
+    im->impl_type = ty;
+    im->impl_methods = methods;
+    return im;
+}
+
+static Node *parse_spec(Parser *p) {    SrcPos pos = cur(p)->pos;
     expect(p, TOK_SPEC);
 
     /* spec name = function name (identifier) */
@@ -1647,6 +1703,10 @@ Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename)
             vec_push(prog->items, fn);
         } else if (check(p, TOK_STRUCT)) {
             vec_push(prog->items, parse_struct(p));
+        } else if (check(p, TOK_TRAIT)) {
+            vec_push(prog->items, parse_trait(p));
+        } else if (check(p, TOK_IMPL)) {
+            vec_push(prog->items, parse_impl(p));
         } else if (check(p, TOK_SPEC)) {
             vec_push(prog->items, parse_spec(p));
         } else if (check(p, TOK_ENUM)) {

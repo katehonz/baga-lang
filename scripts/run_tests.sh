@@ -50,6 +50,12 @@ grep -q "^здравей$" /tmp/baga_gen_out.txt \
 	&& grep -q "^14$" /tmp/baga_gen_out.txt \
 	&& echo "OK: generics (извод + явни типови аргументи + транзитивни инстанции)" \
 	|| { echo "FAIL: generics"; exit 1; }
+echo "=== traits (M23: trait/impl + статичен dispatch) ==="
+run examples/traits.baga > /tmp/baga_tr_out.txt
+grep -q "^1200$" /tmp/baga_tr_out.txt \
+	&& grep -q "^21$" /tmp/baga_tr_out.txt \
+	&& echo "OK: traits (методи, вериги, trait bounds на generic fn)" \
+	|| { echo "FAIL: traits"; exit 1; }
 echo "=== effects_payload (M20: raise/catch с payload) ==="
 run examples/effects_payload.baga > /tmp/baga_effp_out.txt
 grep -q "празно име" /tmp/baga_effp_out.txt \

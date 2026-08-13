@@ -329,6 +329,43 @@ fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U> { … }
 - v1 ограничения: generic fn не може да е стойност (`let g = f`), да
   съдържа ламбда или spec; LLVM backend-ът не ги поддържа (C-only).
 
+### 6.0.1 Traits и методи (M23)
+
+`trait` декларира договор; `impl Trait for Type` го реализира per тип.
+Методите се викат със синтаксиса `obj.m(args)` и се свързват **статично**
+(мономорфизация — същият механизъм като M21):
+
+```baga
+trait Area {
+    fn area(self) -> i64
+}
+
+impl Area for Rect {
+    fn area(self: Rect) -> i64 {
+        return self.w * self.h
+    }
+}
+
+fn total<T: Area>(x: T) -> i64 {
+    return x.area()
+}
+
+fn main() {
+    let r = Rect { w: 3, h: 4 }
+    print(r.area())          // 12
+    print(r.scale(10).area())// вериги
+    print(total(r))          // trait bound на generic fn
+}
+```
+
+- `self` е първият параметър на метода (имплицитно предаван от `obj.m(…)`).
+- Trait bounds: `fn f<T: Show>(…)` — при инстанциране конкретният тип
+  трябва да имплементира bound-а, иначе compile грешка.
+- Нееднозначен метод (два impl-а на различни traits дават `m` за същия
+  тип) е compile грешка.
+- v1: статичен dispatch (без trait objects); LLVM backend-ът не ги
+  поддържа (C-only).
+
 ### 6.1 Връщане на стойности
 
 Използвайте `return expr` за ранно връщане. Стойността на последния израз в блок

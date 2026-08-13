@@ -4924,6 +4924,36 @@ static void emit_forward_decls(Codegen *cg, Node *program) {
         }
         fprintf(f, ");\n");
     }
+    /* M23: impl методите — декларации (вътрешните имена са вече върху
+     * fn-ите; статичен dispatch) */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *item = program->items.data[i];
+        if (item->kind != NODE_IMPL) continue;
+        for (int m = 0; m < item->impl_methods.len; m++) {
+            Node *mf = item->impl_methods.data[m];
+            if (mf->ret_type) emit_type(cg, mf->ret_type);
+            else fprintf(f, "void");
+            fprintf(f, " ");
+            char *mm = mangle_name(mf->fn_name);
+            fprintf(f, "%s", mm);
+            free(mm);
+            fprintf(f, "(");
+            if (mf->params.len == 0) {
+                fprintf(f, "void");
+            } else {
+                for (int j = 0; j < mf->params.len; j++) {
+                    if (j > 0) fprintf(f, ", ");
+                    Node *pm = mf->params.data[j];
+                    emit_type(cg, pm->param_type);
+                    fprintf(f, " ");
+                    char *pmn = mangle_name(pm->param_name);
+                    fprintf(f, "%s", pmn);
+                    free(pmn);
+                }
+            }
+            fprintf(f, ");\n");
+        }
+    }
     fprintf(f, "\n");
 }
 
@@ -6551,6 +6581,15 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
                 continue;
             }
             emit_fn(cg, item);
+        }
+        /* M23: impl методите — тела (без clo wrapper; статичен dispatch) */
+        if (item->kind == NODE_IMPL) {
+            for (int m = 0; m < item->impl_methods.len; m++) {
+                Node *mf = item->impl_methods.data[m];
+                cg->gen_emit_name = mf->fn_name;
+                emit_fn(cg, mf);
+                cg->gen_emit_name = NULL;
+            }
         }
     }
     fclose(fa);

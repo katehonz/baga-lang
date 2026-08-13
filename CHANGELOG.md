@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### traits — M23 trait/impl + статичен dispatch
+- `trait Area { fn area(self) -> i64 }`; `impl Area for Rect { fn area(self: Rect) -> i64 { … } }`.
+  Методите се викат `obj.m(args)` и се свързват статично (вътрешни имена
+  `Trait.Type.method`, мономорфизация). Trait bounds на generic fn:
+  `fn total<T: Area>(x: T) -> i64` — при инстанциране типът трябва да
+  имплементира bound-а. Вериги (`r.scale(10).area()`), impl за builtin
+  типове, нееднозначност е compile грешка.
+- Fix по пътя: recheck-ът на generic инстанции чисти мемоизираните типове
+  (infer кешира през n->type) — методният rewrite е деструктивен и се
+  възстановява преди всяка инстанция.
+- v1: статичен dispatch; LLVM backend-ът не ги поддържа (C-only).
+  Пример: `examples/traits.baga`.
+
 ### verify — M22 статично проверяеми guarantee редове
 - `spec guarantees:` ред, който се парсира като булев израз (върху input и
   `output`), се верифицира от `--verify` със същата дисциплина като

@@ -85,6 +85,7 @@ typedef enum {
     TOK_AS,
     TOK_EXTERN,
     TOK_RAISE,      /* raise !E(payload) — M20: effect payload нагоре */
+    TOK_TRAIT,      /* M23: trait декларация */
 
     /* punctuation */
     TOK_LPAREN,     /* ( */
@@ -192,6 +193,8 @@ typedef enum {
     NODE_SPEC,
     NODE_ENUM,
     NODE_ENSURE,      /* ensures елемент: текст + булев израз */
+    NODE_TRAIT,       /* M23: trait Name { fn m(...) -> R; ... } */
+    NODE_IMPL,        /* M23: impl Trait for Type { fn m(...) -> R { ... } } */
 
     /* type expressions */
     NODE_TYPE,        /* simple named type: i32, f64, str, bool */
@@ -335,6 +338,10 @@ struct Node {
              * консумират се от codegen — мономорфизация) */
             char **type_params;
             int n_type_params;
+            /* M23: trait bound per type param (NULL = без bound); fn_trait =
+             * trait-ът на impl метод (NULL = обикновена fn) */
+            char **param_bounds;
+            const char *fn_trait;
             Type **inst_types;  /* inst_count × n_type_params конкретни типове */
             int inst_count;
             int inst_cap;
@@ -371,6 +378,12 @@ struct Node {
 
         /* NODE_ENSURE */
         struct { char *ensure_text; Node *ensure_expr; };
+
+        /* NODE_TRAIT (M23) */
+        struct { char *trait_name; NodeVec trait_methods; /* NODE_FN без тяло */ };
+
+        /* NODE_IMPL (M23) */
+        struct { char *impl_trait; Node *impl_type; NodeVec impl_methods; /* NODE_FN с тяло */ };
 
         /* NODE_TYPE, NODE_TYPE_REF, NODE_TYPE_ARRAY, NODE_TYPE_EFFECT */
         struct {

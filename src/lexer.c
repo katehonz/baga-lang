@@ -59,6 +59,7 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_AS]       = "as",
     [TOK_EXTERN]   = "extern",
     [TOK_RAISE]    = "raise",
+    [TOK_TRAIT]    = "trait",
     [TOK_LPAREN]    = "(",
     [TOK_RPAREN]    = ")",
     [TOK_LBRACE]    = "{",
@@ -248,6 +249,7 @@ static TokenKind keyword_kind(const char *s) {
         {"as",     TOK_AS},
         {"extern", TOK_EXTERN},
         {"raise",  TOK_RAISE},
+        {"trait",  TOK_TRAIT},
     };
     for (int i = 0; i < (int)(sizeof(kw) / sizeof(kw[0])); i++) {
         if (strcmp(s, kw[i].word) == 0)
