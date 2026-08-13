@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.11 match scrutinee temp (зад `--rc`)
+- Scrutinee на `match`, който е fresh heap temp, вече се track-ва от RC4
+  регистъра: `rc_tmp_collect` слиза в `match_expr` (не в рамената — условни
+  statement-и). Scrutinee-то се оценява безусловно веднъж преди рамената, а
+  release-ът идва в края на statement-а — СЛЕД телата им, така че borrowed
+  binding-ите (v0.6 конвенция) остават валидни. Покрива str/bytes/Vec/Map
+  call temp-ове (`match concat(...)`), вкл. вложени temp-ове в тях, във
+  всички позиции (void statement, let init, return, if/while cond wrap).
+- Enum ctor scrutinee (`match Some(concat(...))`) се регистрира като temp
+  с tag 6 и се release-ва с `release_E` след рамената — enum-ът притежава
+  payload референциите от ctor сайта (v0.6 пр. 4) и досега никой не ги
+  release-ваше (леак per-match).
+- Свързан фикс (задължителен за v0.11): enum ctor с untrack-нат ident
+  payload (match binding — borrowed копие; enum/struct fn резултат —
+  неразличим) вече retain-ва payload-а (v0.6 пр. 4 документира това, но
+  `rc_find` не виждаше binding-ите). Без това rebox от temp scrutinee
+  (`let o2 = match Some(concat(...)) { Some(s) => Some(s), ... }`) обесваше
+  новия enum след release-а на scrutinee-то (UAF). dead (drop()нати)
+  локали — както досега, без retain.
+- Граници (leak-safe): enum/struct fn резултат scrutinee (`match mk()`)
+  НЕ се release-ва — payload-ът може да е borrowed (`return vec_get(...)`
+  на enum не retain-ва, §v0.7 границата); temp-ове в рамената и в
+  pattern-ите остават непокрити (условна оценка); вложени temp-ове в ctor
+  payload аргумент — както досега (RC4 не слиза в ctor аргументи).
+- `tests/match_temp_rc_test.baga` (11 случая, минава с и без `--rc`).
+  Leak repro 500k итерации (ctor + str + fn-result scrutinee): RSS
+  143.0 MB → 72.1 MB (остатъкът е `match mk()` границата); само покритите
+  форми: 95.7 MB → 24.9 MB (остатъкът е вложеният temp в ctor payload).
+  Без флаг: бит-идентичен emit-c (6 файла `cmp` срещу base build).
+
 ### runtime — RC5 v0.10 enum в контейнер/struct поле (зад `--rc`)
 - Drop/scope exit/reassign/`drop()` на `Vec<E>`/`Map<K,E>` (E = sum enum с
   heap payload, v0.6) release-ват payload-ите на box елементите: `rc_box_rel`

@@ -22,7 +22,7 @@
 1. `make` — чист build.
 2. RC батерия: `rc_test move_test borrow_test cmove_test temp_test
    struct_rc_test enum_rc_test calltemp_rc_test nested_assign_rc_test
-   vecvec_rc_test enum_box_rc_test http_test pg_test
+   vecvec_rc_test enum_box_rc_test match_temp_rc_test http_test pg_test
    std/sumtype_test mem_rewind_test` — всички с `--rc` PASS:
    `./baga --rc -I . -I app-product tests/<t>.baga`
 3. ASan+UBSan върху същите: `--emit-c` → `gcc -g -O1
@@ -36,10 +36,11 @@
 6. Пълна tests/ батерия с --rc (~40 мин):
    `printf '#!/bin/sh\nexec '$PWD'/baga --rc "$@"\n' > /tmp/baga_rc &&
     chmod +x /tmp/baga_rc && BAGA=/tmp/baga_rc bash scripts/baga-test tests`
-   Базова линия: **152/157**; 5-те FAIL са pre-existing external peers
+   Базова линия: **157/162**; 5-те FAIL са pre-existing external peers
    (oauth_pg, orm_boila, registry, https, tls_handshake).
    Никой нов FAIL не е приемлив. (`struct_rc_test` и `enum_rc_test` са в
-   пакета след RC5/v0.6, `calltemp_rc_test` — след v0.7.)
+   пакета след RC5/v0.6, `calltemp_rc_test` — след v0.7, по един нов тест
+   на версия до `match_temp_rc_test` — след v0.11.)
 7. Bench (само ако пипаш retain/release пътеките): boilaDB 100k insert —
    `BOILA_PHASE=write BOILA_CHUNKS=1 BOILA_ROWS=100000
    BOILA_BENCH_ROOT=/tmp/boila_x ./baga --rc -I . -I app-product
@@ -109,12 +110,17 @@ release-ва стария payload (alias-safe), `has_heap`/`retain_S`/`release_S
 са транзитивни през enum полета; бонус: borrowed enum в struct литерал
 (compile error под --rc) вече е `retain_E` (`tests/enum_box_rc_test.baga`;
 RSS 93.5 MB → 10.2 MB на 500k push+drop/overwrite/field цикли).
-Батерията вече е 158
-файла (152/157 + новия тест — пълната батерия се пуска след merge).
-Останало:
+v0.11: match scrutinee temp — `rc_tmp_collect` слиза в scrutinee-то
+(release СЛЕД рамената, binding-ите остават borrowed), enum ctor scrutinee
+се release-ва с tag 6, а ctor с untrack-нат ident payload (match binding)
+вече retain-ва (иначе rebox от temp scrutinee обесва новия enum);
+enum/struct fn резултат scrutinee остава leak-safe граница
+(`tests/match_temp_rc_test.baga`; RSS 143.0 MB → 72.1 MB на 500k
+ctor+str+fn-result scrutinee, само покритите форми 95.7 MB → 24.9 MB).
+Батерията вече е 162
+файла, база **157/162**. Останало:
 struct/enum box temp от call
-(borrowed резултат — неразличим),
-match scrutinee temp.
+(borrowed резултат — неразличим).
 
 ## Забранено / внимание
 

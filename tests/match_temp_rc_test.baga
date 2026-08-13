@@ -1,0 +1,106 @@
+// match_temp_rc_test — RC5 v0.11: match scrutinee temp
+// (docs/memory-rc-enum-bg.md §v0.11). Минава с и без --rc.
+// Scrutinee, който е fresh heap temp (str/bytes/Vec call резултат или enum
+// ctor с heap payload), се release-ва в края на statement-а — СЛЕД телата на
+// рамената, така че borrowed binding-ите (v0.6 конвенция) са валидни в тях.
+// Fn резултат scrutinee (`match mk()`) НЕ се release-ва — payload-ът може да
+// е borrowed (§v0.7 границата); посоката е leak-safe.
+
+import "std/str/str.baga"
+
+enum Opt { Some(str), None }
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// fn резултат scrutinee — НЕ се release-ва (leak-safe граница); стойностите
+// са верни и няма underflow
+fn mk(i: i64) -> Opt {
+    return Some(concat("v", int_to_str(i)))
+}
+
+fn main() -> i64 !IO {
+    // 1. enum ctor scrutinee — payload-ът се release-ва след рамената;
+    // binding-ът е borrowed и е валиден в рамото
+    check("ctor_scrutinee",
+          match Some(concat("he", "y")) { Some(s) => s, None => "" } == "hey")
+
+    // 2. str scrutinee temp + вложен temp в аргумента — и двата се release-ват
+    check("str_scrutinee",
+          match concat("x", int_to_str(7)) { "zzz" => 0, _ => 1 } == 1)
+
+    // 3. void match statement с ctor scrutinee в цикъл — per-итерация release
+    let mut acc = 0
+    for i in 0..10 {
+        match Some(concat("w", int_to_str(i))) {
+            Some(s) => acc = acc + len(s),
+            None => acc = acc
+        }
+    }
+    check("ctor_loop", acc == 20)
+
+    // 4. arm резултат, който алиасира payload на temp scrutinee — RC1.2 retain
+    // прави резултата owned; release-ът на scrutinee-то след statement-а не го
+    // обесва (четене СЛЕД match-а)
+    let r = match Some(concat("esc", "ape")) { Some(s) => s, None => "" }
+    check("arm_val_outlives", r == "escape")
+
+    // 5. rebox: arm резултатът е НОВ enum от borrowed binding — ctor-ът
+    // retain-ва; release на scrutinee temp-а не обесва новия payload
+    let o2 = match Some(concat("re", "box")) {
+        Some(s) => Some(s),
+        None => None
+    }
+    check("rebox_outlives", match o2 { Some(s) => s, None => "" } == "rebox")
+
+    // 6. ident payload (ползван след) — ctor retain-ва; scrutinee release +
+    // scope release на идент-а са балансирани
+    let t = concat("ke", "pt")
+    check("ident_payload", match Some(t) { Some(s) => s, None => "" } == "kept" &&
+          t == "kept")
+
+    // 7. move payload — last-use ident без retain; scrutinee release консумира
+    let m = concat("mo", "ve")
+    check("move_payload",
+          match Some(m) { Some(s) => s, None => "" } == "move")
+
+    // 8. borrowed scrutinee (vec_get) — НЕ е temp, не се release-ва;
+    // източникът остава валиден след match-а
+    let v: Vec<str> = vec_new()
+    vec_push(v, concat("el", "0"))
+    vec_push(v, concat("el", "1"))
+    check("borrowed_scrutinee",
+          match vec_get(v, 1) { "zzz" => "", _ => vec_get(v, 1) } == "el1" &&
+          vec_get(v, 0) == "el0")
+
+    // 9. match резултат в if условие — scrutinee temp в cond wrap-а
+    if match Some(concat("c", "d")) { Some(s) => len(s), None => 0 } == 2 {
+        check("cond_match", true)
+    } else {
+        check("cond_match", false)
+    }
+
+    // 10. match като let init — scrutinee temp се release-ва след statement-а
+    let n = match Some(concat("le", "t")) { Some(s) => len(s), None => 0 }
+    check("let_init_match", n == 3)
+
+    // 11. fn резултат scrutinee (leak-safe граница) — верни стойности,
+    // без underflow; payload-ът НЕ се release-ва
+    let mut facc = 0
+    for i in 0..10 {
+        match mk(i) {
+            Some(s) => facc = facc + len(s),
+            None => facc = facc
+        }
+    }
+    check("fn_result_scrutinee", facc == 20)
+
+    print("match_temp_rc_test: all passed")
+    return 0
+}

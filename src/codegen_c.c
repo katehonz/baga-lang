@@ -1290,7 +1290,33 @@ static void rc_tmp_collect(Codegen *cg, Node *n, int is_root) {
         case NODE_TO_STR:
             rc_tmp_collect(cg, n->to_str_expr, 0);
             break;
-        /* STRUCT_LIT, LAMBDA, TRY, CATCH, MATCH, IF и останалите — не се
+        case NODE_MATCH: {
+            /* RC5 v0.11: scrutinee temp (`match f() { ... }`). Scrutinee-то
+             * се оценява безусловно и точно веднъж, ПРЕДИ рамената, а temp
+             * release-ът идва в края на statement-а — СЛЕД телата на
+             * рамената, така че borrowed binding-ите (v0.6 конвенция)
+             * остават валидни. В рамената не се слиза (условни statement-и).
+             * Enum ctor scrutinee (`match Ok(concat(...))`) притежава
+             * payload референциите си от ctor сайта (v0.6 пр. 4) и никой не
+             * ги release-ва след match-а — регистрира се като temp с tag 6.
+             * Fn резултат (`match mk()`) НЕ се регистрира — payload-ът може
+             * да е borrowed (`return vec_get(...)` на enum не retain-ва,
+             * §v0.7 границата) — leak-safe посока. */
+            Node *sc = n->match_expr;
+            if (sc && sc->kind == NODE_CALL && rc_is_enum_ctor(cg, sc) &&
+                rc_heap_tag(cg, sc->type) == 6) {
+                RcTmp t;
+                t.site = sc;
+                t.type = sc->type;
+                t.tag = 6;
+                snprintf(t.name, sizeof t.name, "__rc_tmp%d", cg->tmp_counter++);
+                vec_push(cg->rc_tmps, t);
+            } else {
+                rc_tmp_collect(cg, sc, 0);
+            }
+            break;
+        }
+        /* STRUCT_LIT, LAMBDA, TRY, CATCH, IF и останалите — не се
          * слиза (escape/отделна fn/условна оценка — вж. коментара по-горе) */
         default:
             break;
@@ -1857,6 +1883,19 @@ static void emit_expr(Codegen *cg, Node *n) {
                                         else
                                             rc_emit_retain_val(cg, ptag, pa->type,
                                                                NULL, "__rc_ep");
+                                    } else if (si < 0) {
+                                        /* RC5 v0.11: untrack-нат ident payload
+                                         * (match binding — borrowed копие по
+                                         * v0.6 конвенция, или enum/struct fn
+                                         * резултат — borrowed/owned неразличим)
+                                         * → retain (leak-safe; v0.6 пр. 4).
+                                         * Задължително след v0.11: scrutinee
+                                         * temp се release-ва след match-а и
+                                         * rebox без retain би обесил новия
+                                         * enum. dead локали (drop()нати) — както
+                                         * досега, без retain. */
+                                        rc_emit_retain_val(cg, ptag, pa->type,
+                                                           NULL, "__rc_ep");
                                     }
                                 } else if (rc_borrowed_init(pa)) {
                                     rc_emit_retain_val(cg, ptag, pa->type,

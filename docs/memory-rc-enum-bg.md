@@ -39,8 +39,9 @@ Sum enum е `{ int64_t tag; union { T v_Variant; ... } u; }` — payload-ът с
 - ~~Enum като struct поле — `rc_nested_struct_field` е struct-only → такова
   поле не брои struct-а за heap (leak-safe).~~ — **РЕШЕНО в v0.10.**
 - Enum payload в enum payload.
-- Match scrutinee temp (`match Err(concat(...))`) — enumът не се release-ва
-  след match-а (леак per-match, leak-safe).
+- ~~Match scrutinee temp (`match Err(concat(...))`) — enumът не се release-ва
+  след match-а (леак per-match, leak-safe).~~ — **РЕШЕНО в v0.11 (виж
+  по-долу)** за enum ctor scrutinee; fn резултат scrutinee остава граница.
 - `drop()` builtin върху enum.
 
 ## v0.10: enum в контейнер/struct поле
@@ -94,6 +95,37 @@ fn резултат leak-ва една референция (borrowed/fresh не
 Измерено: 500k итерации Vec<E> push+drop + map_set overwrite + `s.e = x`
 overwrite + struct-с-enum-поле scope exit — RSS 93.5 MB → 10.2 MB (като
 leak-free базата). Тест: `tests/enum_box_rc_test.baga` (22 случая).
+
+## v0.11: match scrutinee temp
+
+RC4 не слиза в NODE_MATCH изобщо (консервативно — условни рамена), затова
+scrutinee temp-ове (`match f()`, `match Some(concat(...))`) течаха
+per-match. Scrutinee-то обаче се оценява безусловно и точно веднъж, ПРЕДИ
+рамената — безопасно е да се track-ва:
+
+- `rc_tmp_collect` слиза само в `match_expr` (не в рамената/pattern-ите).
+  Release-ът е в края на statement-а — СЛЕД телата на рамената, така че
+  borrowed binding-ите (v0.6 пр. 6) са валидни. Покрива str/bytes/Vec/Map
+  call temp-ове и вложените в тях temp-ове, във всички позиции (void
+  statement, let init, return, if/while cond wrap от RC4 v0.3).
+- Enum ctor scrutinee се регистрира като temp с tag 6 (release_E след
+  рамената) — enum-ът от ctor сайт притежава payload референциите си
+  (v0.6 пр. 4). Enum/struct FN резултат scrutinee (`match mk()`) НЕ се
+  регистрира — payload-ът може да е borrowed (`return vec_get(...)` на
+  enum не retain-ва, §v0.7 границата) — leak-safe.
+- Свързан фикс: ctor с untrack-нат ident payload (match binding или
+  enum/struct fn резултат локал) вече retain-ва — v0.6 пр. 4 го
+  документира, но `rc_find` не вижда binding-ите (не се регистрират).
+  Досега това беше маскирано от leak-а на scrutinee-то; с release-а му
+  rebox (`let o2 = match Some(concat(...)) { Some(s) => Some(s), ... }`)
+  би обесил новия enum (UAF, хванат от `rebox_outlives` в теста).
+  Неразличим owned случай → една излишна референция (leak-safe посока).
+
+Измерено: 500k итерации (ctor + str + fn-result scrutinee) — RSS
+143.0 MB → 72.1 MB (остатъкът е `match mk()` границата); само покритите
+форми — 95.7 MB → 24.9 MB (остатъкът е вложеният temp в ctor payload
+аргумент — RC4 не слиза в ctor аргументи). Тест:
+`tests/match_temp_rc_test.baga` (11 случая).
 
 ## Критерий
 
