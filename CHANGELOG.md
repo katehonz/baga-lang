@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### checker — M19 missing-return (не-void fn не може да падне от края)
+- Fallthrough анализ: return/break/continue не падат; block → последен
+  stmt; `if` без `else` пада; `while` пада, освен literal `while true` без
+  break; `match` пада (arm-ският `return e` е стойност, не изход).
+  Последният изразен statement е implicit return. M19b: типът на implicit
+  return се сверява с връщания тип. Същият check в self компилатора
+  (c2_check). Примери: `examples/noreturn_bad.baga`, `tail_return.baga`.
+
+### effects — M20 payload-и (`!E(T)`, `raise`, `catch !E(name)`)
+- Ефектът може да носи стойност: `fn f() -> i64 !NotFound(str)`.
+  `raise !E(v)` предизвиква ефекта; `catch !E(name) => …` свързва payload-а
+  с `name`; `?` го разпространява. Runtime модел: thread-local `baga_eff`
+  слот (tag + i/f/s/b) — payload-less ефектите остават compile-time фикция
+  без цена. Строга проверка на payload сигнатурата (raise/catch/?).
+  Payload тип v1: i64/f64/bool/str/bytes. LLVM backend: compile-time
+  фикция (C-only runtime). Пример: `examples/effects_payload.baga`.
+
 ### runtime — RC5 v1.0 owned-конвенция за struct/enum fn резултати (зад `--rc`)
 - **v1.0a.** `return` на borrowed struct/enum (vec_get, поле, параметър,
   untrack-нат ident / match binding, if-клон) вече retain-ва през

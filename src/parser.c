@@ -262,7 +262,7 @@ static void expect_gt_split(Parser *p) {
     expect(p, TOK_GT);
 }
 
-/* Parse effect list: !IO !NotFound */
+/* Parse effect list: !IO !NotFound !E(str) — M20: опционален payload тип */
 static Node *parse_type_with_effects(Parser *p, Node *base) {
     if (!check(p, TOK_BANG)) return base;
 
@@ -270,14 +270,25 @@ static Node *parse_type_with_effects(Parser *p, Node *base) {
     eff->type_name = NULL;
     eff->inner_type = base;
     eff->effect_names = NULL;
+    eff->effect_payloads = NULL;
     eff->n_effects = 0;
 
     VEC(char *) names = {0};
+    VEC(Node *) payloads = {0};
     while (match(p, TOK_BANG)) {
         Token *t = expect(p, TOK_IDENT);
         if (t->text) vec_push(names, strdup(t->text));
+        /* M20: !E(T) — payload тип */
+        Node *pl = NULL;
+        if (check(p, TOK_LPAREN)) {
+            advance(p);
+            pl = parse_type(p);
+            expect(p, TOK_RPAREN);
+        }
+        vec_push(payloads, pl);
     }
     eff->effect_names = names.data;
+    eff->effect_payloads = payloads.data;
     eff->n_effects = names.len;
     return eff;
 }
@@ -827,14 +838,22 @@ static Node *parse_postfix(Parser *p) {
             continue;
         }
 
-        /* catch !Effect => handler. Веригите се свързват ляво-асоциативно
-         * на postfix ниво (docs §13.3); вътре в handler postfix `catch`
-         * спира — изрично групиране става с скоби (LP4). */
+        /* catch !Effect [(name)] => handler. Веригите се свързват ляво-
+         * асоциативно на postfix ниво (docs §13.3); вътре в handler
+         * postfix `catch` спира — изрично групиране става с скоби (LP4).
+         * M20: `catch !E(binding) => ...` — binding-ът получава payload-а. */
         if (check(p, TOK_CATCH)) {
             if (p->in_catch_handler) break;
             advance(p);
             expect(p, TOK_BANG);
             Token *eff = expect(p, TOK_IDENT);
+            char *binding = NULL;
+            if (check(p, TOK_LPAREN)) {
+                advance(p);
+                Token *bn = expect(p, TOK_IDENT);
+                binding = bn->text ? strdup(bn->text) : strdup("");
+                expect(p, TOK_RPAREN);
+            }
             expect(p, TOK_FAT_ARROW);
             p->in_catch_handler = 1;
             Node *handler = parse_unary(p);
@@ -842,6 +861,7 @@ static Node *parse_postfix(Parser *p) {
             Node *cat = node_alloc(NODE_CATCH, pos);
             cat->catch_expr = e;
             cat->catch_effect = eff->text ? strdup(eff->text) : strdup("");
+            cat->catch_binding = binding;
             cat->catch_handler = handler;
             e = cat;
             continue;
@@ -881,6 +901,22 @@ static Node *parse_unary(Parser *p) {
         Node *n = node_alloc(NODE_UNARY, pos);
         n->un_op = UOP_DEREF;
         n->operand = parse_unary(p);
+        return n;
+    }
+    /* M20: raise !E(payload) — предизвиква ефект (дивергира на
+     * нормалния път; типът е на обграждащия контекст) */
+    if (check(p, TOK_RAISE)) {
+        advance(p);
+        expect(p, TOK_BANG);
+        Token *eff = expect(p, TOK_IDENT);
+        Node *n = node_alloc(NODE_RAISE, pos);
+        n->raise_effect = eff->text ? strdup(eff->text) : strdup("");
+        n->raise_payload = NULL;
+        if (check(p, TOK_LPAREN)) {
+            advance(p);
+            n->raise_payload = parse_expr(p);
+            expect(p, TOK_RPAREN);
+        }
         return n;
     }
 

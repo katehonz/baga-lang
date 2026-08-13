@@ -141,6 +141,21 @@ void type_add_effect(Type *t, const char *effect) {
     t->effects = realloc(t->effects, sizeof(char *) * (size_t)(t->n_effects + 1));
     if (!t->effects) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
     t->effects[t->n_effects++] = strdup(effect);
+    /* M20: payload масивът върви успоредно */
+    t->effect_payloads = realloc(t->effect_payloads, sizeof(Type *) * (size_t)t->n_effects);
+    if (!t->effect_payloads) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    t->effect_payloads[t->n_effects - 1] = NULL;
+}
+
+/* M20: payload на ефект (NULL = без payload; TYPE_ERROR = непознат) */
+Type *type_effect_payload(Type *t, const char *effect) {
+    if (!t || !effect) return NULL;
+    for (int i = 0; i < t->n_effects; i++) {
+        if (strcmp(t->effects[i], effect) == 0) {
+            return t->effect_payloads ? t->effect_payloads[i] : NULL;
+        }
+    }
+    return NULL;
 }
 
 int type_has_effect(Type *t, const char *effect) {
@@ -158,6 +173,10 @@ void type_remove_effect(Type *t, const char *effect) {
             free(t->effects[i]);
             for (int j = i; j < t->n_effects - 1; j++)
                 t->effects[j] = t->effects[j + 1];
+            if (t->effect_payloads) {
+                for (int j = i; j < t->n_effects - 1; j++)
+                    t->effect_payloads[j] = t->effect_payloads[j + 1];
+            }
             t->n_effects--;
             return;
         }
@@ -166,8 +185,21 @@ void type_remove_effect(Type *t, const char *effect) {
 
 void type_merge_effects(Type *dst, Type *src) {
     if (!dst || !src) return;
-    for (int i = 0; i < src->n_effects; i++)
-        type_add_effect(dst, src->effects[i]);
+    for (int i = 0; i < src->n_effects; i++) {
+        Type *pl = src->effect_payloads ? src->effect_payloads[i] : NULL;
+        if (type_has_effect(dst, src->effects[i])) {
+            /* M20: същият ефект с payload от две места — слей */
+            Type *cur = type_effect_payload(dst, src->effects[i]);
+            if (!cur && pl) {
+                for (int j = 0; j < dst->n_effects; j++)
+                    if (strcmp(dst->effects[j], src->effects[i]) == 0)
+                        dst->effect_payloads[j] = pl;
+            }
+        } else {
+            type_add_effect(dst, src->effects[i]);
+            dst->effect_payloads[dst->n_effects - 1] = pl;
+        }
+    }
 }
 
 /* ============================================================
@@ -401,8 +433,16 @@ static Type *resolve_type_node(CheckCtx *ctx, Node *ty) {
         }
         case NODE_TYPE_EFFECT: {
             Type *base = resolve_type_node(ctx, ty->inner_type);
-            for (int i = 0; i < ty->n_effects; i++)
+            for (int i = 0; i < ty->n_effects; i++) {
                 type_add_effect(base, ty->effect_names[i]);
+                /* M20: payload тип */
+                if (ty->effect_payloads && ty->effect_payloads[i]) {
+                    Type *pl = resolve_type_node(ctx, ty->effect_payloads[i]);
+                    for (int j = 0; j < base->n_effects; j++)
+                        if (strcmp(base->effects[j], ty->effect_names[i]) == 0)
+                            base->effect_payloads[j] = pl;
+                }
+            }
             return base;
         }
         case NODE_TYPE_FN: {
@@ -2066,17 +2106,59 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             break;
         }
 
+        case NODE_RAISE: {
+            /* M20: raise !E(payload) — ефектът трябва да е деклариран от
+             * обграждащата функция; payload-ът се сверява с декларацията */
+            Type *pl = NULL;
+            if (n->raise_payload) {
+                pl = infer(ctx, n->raise_payload);
+                if (pl->kind != TYPE_I64 && pl->kind != TYPE_STR &&
+                    pl->kind != TYPE_BYTES && pl->kind != TYPE_BOOL &&
+                    pl->kind != TYPE_F64) {
+                    check_error(ctx, n->raise_payload->pos,
+                        "payload на !%s може да е i64/str/bytes/bool/f64 (v1), получих %s",
+                        n->raise_effect, type_str(pl));
+                }
+            }
+            Type *decl = type_effect_payload(ctx->cur_ret, n->raise_effect);
+            if (ctx->cur_ret && !type_has_effect(ctx->cur_ret, n->raise_effect)) {
+                check_error(ctx, n->pos,
+                    "raise !%s — ефектът не е деклариран в return типа на функцията",
+                    n->raise_effect);
+            }
+            if (decl && !pl) {
+                check_error(ctx, n->pos,
+                    "ефектът !%s носи payload — нужен е raise !%s(payload)",
+                    n->raise_effect, n->raise_effect);
+            }
+            if (!decl && pl) {
+                check_error(ctx, n->pos,
+                    "ефектът !%s е без payload — raise !%s не приема стойност",
+                    n->raise_effect, n->raise_effect);
+            }
+            if (decl && pl && !type_eq(decl, pl)) {
+                check_error(ctx, n->raise_payload->pos,
+                    "payload на !%s е %s, но функцията декларира %s",
+                    n->raise_effect, type_str(pl), type_str(decl));
+            }
+            if (ctx->cur_effects) {
+                type_add_effect(ctx->cur_effects, n->raise_effect);
+                for (int j = 0; j < ctx->cur_effects->n_effects; j++)
+                    if (strcmp(ctx->cur_effects->effects[j], n->raise_effect) == 0)
+                        ctx->cur_effects->effect_payloads[j] = decl;
+            }
+            /* raise дивергира — типът не участва в по-нататъшни проверки */
+            t = type_new(TYPE_ERROR);
+            break;
+        }
+
         case NODE_CATCH: {
-            /* e catch !E => handler — remove effect E from e's type */
+            /* e catch !E [(binding)] => handler — remove effect E from e's type */
             /* MEM-2: две алтернативи — try изразът (нормален път) и handler-ът
              * (прихванат ефект); definitely dropped = drop-нато и в двете */
             int log_base = ctx->n_drop_log;
             Type *et = infer(ctx, n->catch_expr);
             int try_end = ctx->n_drop_log;
-            /* handler-ът не трябва да вижда drop-овете от try израза */
-            drop_lift_from(ctx, log_base);
-            infer(ctx, n->catch_handler);
-            drop_join2(ctx, log_base, try_end);
             /* LP4: catch на ефект, който изразът не носи, минаваше тихо —
              * мъртъв код и прикритие за правописни грешки в името. */
             if (et->kind != TYPE_ERROR) {
@@ -2088,14 +2170,41 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                         "catch !%s — изразът няма такъв ефект (мъртъв catch; правописна грешка?)",
                         n->catch_effect);
             }
+            /* M20: payload handling — binding-ът получава payload-а */
+            Type *pl = type_effect_payload(et, n->catch_effect);
+            if (pl && !n->catch_binding) {
+                check_error(ctx, n->pos,
+                    "ефектът !%s носи payload — нужен е catch !%s(name)",
+                    n->catch_effect, n->catch_effect);
+            }
+            if (!pl && n->catch_binding) {
+                check_error(ctx, n->pos,
+                    "ефектът !%s няма payload — излишен binding '%s'",
+                    n->catch_effect, n->catch_binding);
+            }
+            /* handler-ът не трябва да вижда drop-овете от try израза */
+            drop_lift_from(ctx, log_base);
+            push_scope(ctx);
+            if (pl && n->catch_binding) {
+                /* M20: payload-ът е с живота на handler-а */
+                env_define(ctx, n->catch_binding, pl, n->pos);
+            }
+            infer(ctx, n->catch_handler);
+            pop_scope(ctx);
+            drop_join2(ctx, log_base, try_end);
             t = type_new(et->kind);
             /* keep Vec elem / struct name, like a plain call result does */
             t->elem = et->elem;
             t->name = et->name;
-            /* copy all effects except the caught one */
+            /* copy all effects except the caught one (M20: и payload-ите) */
             for (int i = 0; i < et->n_effects; i++) {
-                if (strcmp(et->effects[i], n->catch_effect) != 0)
+                if (strcmp(et->effects[i], n->catch_effect) != 0) {
                     type_add_effect(t, et->effects[i]);
+                    for (int j = 0; j < t->n_effects; j++)
+                        if (strcmp(t->effects[j], et->effects[i]) == 0)
+                            t->effect_payloads[j] =
+                                et->effect_payloads ? et->effect_payloads[i] : NULL;
+                }
             }
             /* remove caught effect from function-level accumulator */
             if (ctx->cur_effects)
@@ -2602,6 +2711,20 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
                 check_error(ctx, fn->pos,
                     "необработен ефект !%s във '%s' — декларирай го в return типа или го хвани с catch",
                     eff, fn->fn_name);
+            } else {
+                /* M20: payload сигнатурата трябва да съвпада с декларацията */
+                Type *bp = ctx->cur_effects->effect_payloads
+                    ? ctx->cur_effects->effect_payloads[i] : NULL;
+                Type *dp = type_effect_payload(ctx->cur_ret, eff);
+                if (bp && !dp) {
+                    check_error(ctx, fn->pos,
+                        "ефектът !%s в тялото на '%s' носи payload %s — декларирай !%s(%s)",
+                        eff, fn->fn_name, type_str(bp), eff, type_str(bp));
+                } else if (bp && dp && !type_eq(bp, dp)) {
+                    check_error(ctx, fn->pos,
+                        "payload на !%s в тялото на '%s' е %s, но декларацията е %s",
+                        eff, fn->fn_name, type_str(bp), type_str(dp));
+                }
             }
         }
     }

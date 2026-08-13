@@ -1,0 +1,32 @@
+// effects_payload.baga — M20: ефекти с payload. `raise !E(v)` предизвиква
+// ефекта със стойност; `catch !E(name) => ...` я лови; `?` я разпространява.
+fn open_db(name: str) -> i64 !NotFound(str) {
+    if name == "" {
+        raise !NotFound("празно име")
+    }
+    return 42
+}
+
+fn wrapper(name: str) -> i64 !NotFound(str) {
+    return open_db(name)?
+}
+
+fn parse_n(s: str) -> i64 !ParseErr(i64) !NumErr(f64) {
+    if s == "a" {
+        raise !ParseErr(7)
+    }
+    if s == "b" {
+        raise !NumErr(3.5)
+    }
+    return 99
+}
+
+fn main() {
+    print(wrapper("ok")?)
+    let w = wrapper("") catch !NotFound(e) => { print(e); 1 }
+    print(w)
+    let p2 = parse_n("a") catch !ParseErr(code) => { print(code); 2 } catch !NumErr(x) => { print(x); 3 }
+    print(p2)
+    let p3 = parse_n("b") catch !ParseErr(code) => { print(code); 2 } catch !NumErr(x) => { print(x); 3 }
+    print(p3)
+}

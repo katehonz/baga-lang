@@ -84,6 +84,7 @@ typedef enum {
     TOK_IMPORT,
     TOK_AS,
     TOK_EXTERN,
+    TOK_RAISE,      /* raise !E(payload) — M20: effect payload нагоре */
 
     /* punctuation */
     TOK_LPAREN,     /* ( */
@@ -167,6 +168,7 @@ typedef enum {
     NODE_STRUCT_LIT,  /* Point { x: 1, y: 2 } */
     NODE_TRY,         /* e? — effect propagation */
     NODE_CATCH,       /* e catch !E => handler */
+    NODE_RAISE,       /* raise !E(payload) — M20: предизвикване на ефект */
     NODE_TO_STR,      /* interpolation: convert inner expr to str (type-directed) */
     NODE_LAMBDA,      /* fn [caps] (params) -> ret { body } — L5 (fn union member) */
 
@@ -289,7 +291,10 @@ struct Node {
         struct { Node *try_expr; };
 
         /* NODE_CATCH */
-        struct { Node *catch_expr; char *catch_effect; Node *catch_handler; };
+        struct { Node *catch_expr; char *catch_effect; Node *catch_handler; char *catch_binding; /* M20: payload променлива, NULL = без */ };
+
+        /* NODE_RAISE — M20: raise !E(payload) */
+        struct { char *raise_effect; Node *raise_payload; };
 
         /* NODE_TO_STR */
         struct { Node *to_str_expr; };
@@ -366,6 +371,7 @@ struct Node {
             Node *inner_type;         /* for REF / ARRAY / Vec<T> / Map<K,..> */
             Node *inner_type2;        /* for Map<..,V> */
             char **effect_names;      /* for NODE_TYPE_EFFECT */
+            Node **effect_payloads;   /* M20: per-effect payload type node, NULL = без payload */
             int n_effects;
         };
 
@@ -415,11 +421,14 @@ struct Type {
     /* effects (on any type) */
     char **effects;
     int n_effects;
+    /* M20: payload тип per effect (паралелен на effects[]; NULL = без payload) */
+    Type **effect_payloads;
 };
 
 /* Type helpers */
 Type *type_new(TypeKind kind);
 Type *type_fn(Type *ret, Type **params, int nparams);
+Type *type_effect_payload(Type *t, const char *effect);
 const char *type_str(Type *t);
 int type_eq(Type *a, Type *b);
 
@@ -564,6 +573,11 @@ typedef struct {
     Node *rc_cur_fn;    /* тялото на текущата fn/ламбда (за глобалния
                          * alias scan на източника) */
     int   rc_elided_pairs;
+    VEC(char *) eff_tags;  /* M20: effect tag регистър (име → индекс+1) */
+    int   eff_depth;       /* M20: >0 = вътре в catch верига (TRY е no-op) */
+    Node *eff_cur_ret;     /* M20: ret type node на текущата fn (за ZERO на propagate) */
+    const char *eff_binding;   /* M20: catch binding име (baga) в handler */
+    const char *eff_binding_c; /* M20: C име на payload temp-а */
 } Codegen;
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);

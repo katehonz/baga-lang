@@ -44,6 +44,13 @@ echo "=== match ==="
 run examples/match.baga
 echo "=== effects ==="
 run examples/effects.baga
+echo "=== effects_payload (M20: raise/catch с payload) ==="
+run examples/effects_payload.baga > /tmp/baga_effp_out.txt
+grep -q "празно име" /tmp/baga_effp_out.txt \
+	&& grep -q "^7$" /tmp/baga_effp_out.txt \
+	&& grep -q "^3.5$" /tmp/baga_effp_out.txt \
+	&& echo "OK: effect payloads (raise/catch/? + вериги)" \
+	|| { echo "FAIL: effect payloads"; exit 1; }
 echo "=== spec ==="
 run examples/spec.baga
 run examples/spec_ensures.baga > /dev/null

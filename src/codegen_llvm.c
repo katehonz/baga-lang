@@ -4111,6 +4111,10 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         }
         case NODE_TRY:      return emit_expr_llvm(n->try_expr);
         case NODE_CATCH:    return emit_expr_llvm(n->catch_expr);
+        case NODE_RAISE:    /* M20: LLVM backend — payload пътят е C-only (v1);
+                             * raise е compile-time фикция тук */
+            return n->raise_payload ? emit_expr_llvm(n->raise_payload)
+                                    : LLVMConstInt(lg.i64_ty, 0, 1);
         case NODE_TO_STR: {
             /* interpolation: convert inner expr to a string by its type */
             Type *et = n->to_str_expr ? n->to_str_expr->type : NULL;

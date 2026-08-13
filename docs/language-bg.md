@@ -121,7 +121,7 @@ let код = 'A'   // 65
 
 ```
 fn  let  mut  if  else  while  for  in  return  match
-struct  impl  spec  enum  true  false  catch  break  continue
+struct  impl  spec  enum  true  false  catch  break  continue  raise
 ```
 
 ---
@@ -138,7 +138,8 @@ top_level      = fn_decl | struct_decl | enum_decl | spec_decl ;
 
 (* Декларации *)
 fn_decl        = "fn", ident, "(", [ param, { ",", param } ], ")",
-                 [ "->", type, { "!", ident } ], ( block | /* празно: forward decl */ ) ;
+                 [ "->", type, { "!", ident, [ "(", type, ")" ] } ],
+                 ( block | /* празно: forward decl */ ) ;
 param          = ident, ":", type ;
 struct_decl    = "struct", ident, "{", [ field_decl, { ",", field_decl } ], "}" ;
 field_decl     = ident, ":", type ;
@@ -177,14 +178,15 @@ equality       = comparison, { ( "==" | "!=" ), comparison } ;
 comparison     = additive, { ( "<" | ">" | "<=" | ">=" ), additive } ;
 additive       = multiplicative, { ( "+" | "-" ), multiplicative } ;
 multiplicative = unary, { ( "*" | "/" | "%" ), unary } ;
-unary          = ( "-" | "!" | "&" | "*" ), unary | postfix ;
+unary          = ( "-" | "!" | "&" | "*" | raise_expr ), unary | postfix ;
 postfix        = primary, { call | index | range | field | try | catch } ;
 call           = "(", [ expression, { ",", expression } ], ")" ;
 index          = "[", expression, "]" ;
 range          = "..", unary ;
 field          = ".", ident ;
 try            = "?" ;
-catch          = "catch", "!", ident, "=>", unary ;
+catch          = "catch", "!", ident, [ "(", ident, ")" ], "=>", unary ;
+raise_expr     = "raise", "!", ident, [ "(", expression, ")" ] ;
 
 primary        = int_lit | float_lit | str_lit | char_lit
                | "true" | "false"
@@ -1016,7 +1018,38 @@ fn main() {
 ефекти, затова `main` (която връща `void`, без ефекти) минава проверка на
 типовете.
 
-### 13.4 Грешката за необработен ефект
+### 13.4 Ефекти с payload (M20)
+
+Ефектът може да носи стойност: `!E(T)` декларира ефект с payload от тип `T`
+(в v1: `i64`, `f64`, `bool`, `str`, `bytes`). `raise !E(стойност)` предизвиква
+ефекта — функцията приключва по грешния път с payload-а; `catch !E(name) => …`
+го лови и дава `name` на хендлъра; `?` го разпространява нагоре (payload-ът
+пътува заедно с него):
+
+```baga
+fn open_db(name: str) -> i64 !NotFound(str) {
+    if name == "" {
+        raise !NotFound("празно име")
+    }
+    return 42
+}
+
+fn main() {
+    let v = open_db("x") catch !NotFound(err) => { print(err); 0 }
+    print(v)
+}
+```
+
+- Payload-less ефектите (`!IO`) остават compile-time фикция — без runtime цена.
+- Payload сигнатурата се сверява строго: `raise !E(str)` във функция, която
+  декларира `!E(i64)`, е compile грешка; `catch` на ефект с payload изисква
+  binding, а на ефект без payload — забранява го.
+- Вериги от `catch` обработват няколко payload ефекта подред.
+- `raise` без payload е валиден за payload-less ефект (`raise !IO`).
+- LLVM backend-ът (v1) третира payload пътя като compile-time фикция —
+  ползвайте C backend-а за код, който разчита на runtime payload-и.
+
+### 13.5 Грешката за необработен ефект
 
 Ако ефект стигне до функция, която нито го декларира, нито го хваща,
 компилаторът съобщава:
@@ -1027,7 +1060,7 @@ file.baga: 4:1: необработен ефект !IO във 'main' — декл
 
 Това е сърцевината на системата: ефектите не могат да бъдат премълчани.
 
-### 13.5 `!Overflow` — ефект, който верификаторът извежда
+### 13.6 `!Overflow` — ефект, който верификаторът извежда
 
 `!Overflow` е специално измерение на ефекта: за разлика от `!IO` (което се
 *генерира* от вградени функции като `read_file`), `!Overflow` не се генерира от

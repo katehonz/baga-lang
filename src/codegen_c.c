@@ -1631,6 +1631,91 @@ static void emit_stmt(Codegen *cg, Node *n);
 static void emit_return_val(Codegen *cg, Node *val);
 static void emit_zero_struct(Codegen *cg, const char *name);
 
+/* M20 (effect payloads) — помощници */
+
+/* Връща 1 ако типът (с ефекти) носи поне един payload ефект. */
+static int type_has_payload_effects(Type *t) {
+    if (!t || !t->effect_payloads) return 0;
+    for (int i = 0; i < t->n_effects; i++)
+        if (t->effect_payloads[i]) return 1;
+    return 0;
+}
+
+/* Node-вариант: ret_type веригата (NODE_TYPE_EFFECT обвивки). */
+static int node_has_payload_effects(Node *t) {
+    while (t && t->kind == NODE_TYPE_EFFECT) {
+        if (t->effect_payloads) {
+            for (int i = 0; i < t->n_effects; i++)
+                if (t->effect_payloads[i]) return 1;
+        }
+        t = t->inner_type;
+    }
+    return 0;
+}
+
+/* Tag на ефект по име — детерминистичен (първа поява = 1, 2, …). */
+static int eff_tag(Codegen *cg, const char *name) {
+    for (int i = 0; i < cg->eff_tags.len; i++)
+        if (strcmp(cg->eff_tags.data[i], name) == 0) return i + 1;
+    vec_push(cg->eff_tags, strdup(name));
+    return cg->eff_tags.len;
+}
+
+/* Нулева стойност за propagate/raise на връщащ тип. */
+static void emit_zero_val(Codegen *cg, Type *t) {
+    FILE *f = cg->out;
+    TypeKind k = t ? t->kind : TYPE_I64;
+    switch (k) {
+        case TYPE_F64: fprintf(f, "0.0"); break;
+        case TYPE_STR: fprintf(f, "NULL"); break;
+        case TYPE_BYTES: fprintf(f, "(baga_bytes){0}"); break;
+        case TYPE_BOOL: case TYPE_I32: case TYPE_I64: case TYPE_ENUM:
+            fprintf(f, "0"); break;
+        case TYPE_VEC: case TYPE_MAP: case TYPE_FN:
+            fprintf(f, "NULL"); break;
+        case TYPE_STRUCT:
+            if (t->name) emit_zero_struct(cg, t->name);
+            else fprintf(f, "(int64_t)0");
+            break;
+        default: fprintf(f, "0"); break;
+    }
+}
+
+/* Връща полето на baga_eff за payload тип (i/s/f/b). */
+static const char *eff_slot_field(TypeKind k) {
+    switch (k) {
+        case TYPE_F64: return "f";
+        case TYPE_STR: return "s";
+        case TYPE_BYTES: return "b";
+        default: return "i";
+    }
+}
+
+/* return <нулата на връщания тип> — propagate пътят на payload ефект */
+static void emit_eff_return_zero(Codegen *cg) {
+    FILE *f = cg->out;
+    Node *rr = cg->eff_cur_ret;
+    if (!rr) { fprintf(f, "return"); return; }   /* void fn */
+    fprintf(f, "return ");
+    while (rr && rr->kind == NODE_TYPE_EFFECT) rr = rr->inner_type;
+    if (!rr) { fprintf(f, "0"); return; }
+    if (rr->kind == NODE_TYPE) {
+        const char *tn = rr->type_name;
+        if (!strcmp(tn, "f64")) fprintf(f, "0.0");
+        else if (!strcmp(tn, "str")) fprintf(f, "NULL");
+        else if (!strcmp(tn, "bytes")) fprintf(f, "(baga_bytes){0}");
+        else if (!strcmp(tn, "Vec") || !strcmp(tn, "Map") ||
+                 !strcmp(tn, "fn")) fprintf(f, "NULL");
+        else if (!strcmp(tn, "bool") || !strcmp(tn, "i64") ||
+                 !strcmp(tn, "i32")) fprintf(f, "0");
+        else emit_zero_struct(cg, tn);
+        return;
+    }
+    if (rr->kind == NODE_TYPE_REF || rr->kind == NODE_TYPE_ARRAY ||
+        rr->kind == NODE_TYPE_FN) { fprintf(f, "NULL"); return; }
+    fprintf(f, "0");
+}
+
 static const char *binop_c(BinOp op) {
     switch (op) {
         case OP_ADD: return "+";   case OP_SUB: return "-";
@@ -1748,6 +1833,12 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_IDENT: {
+            /* M20: catch binding → C temp-ът с payload-а */
+            if (cg->eff_binding && cg->eff_binding_c &&
+                strcmp(n->name, cg->eff_binding) == 0) {
+                fprintf(f, "%s", cg->eff_binding_c);
+                break;
+            }
             /* L5: глобална fn като стойност → handle към wrapper-а. Локална
              * fn-typed променлива има type->name == NULL или различно име. */
             if (n->type && n->type->kind == TYPE_FN && n->type->name &&
@@ -3049,15 +3140,183 @@ static void emit_expr(Codegen *cg, Node *n) {
         }
 
         case NODE_CATCH: {
-            /* Phase 1: effects are compile-time only; emit the expression */
-            emit_expr(cg, n->catch_expr);
+            /* M20: flatten веригата от payload catches; payload-less
+             * catches са compile-time фикция — базовият израз се emit-ва
+             * направо. Схема:
+             *   ({ T __v; baga_eff __e; __v = <base>; __e = baga_eff_tl;
+             *      baga_eff_tl = (baga_eff){0};
+             *      if (__e.tag == TAG1) { __v = <h1 с binding>; }
+             *      else if (__e.tag == TAG2) { … }
+             *      else if (__e.tag != 0) { baga_eff_tl = __e; return ZERO; }
+             *      __v; }) */
+            int any_payload = 0;
+            {
+                Node *scan = n;
+                while (scan && scan->kind == NODE_CATCH) {
+                    Type *et = scan->catch_expr ? scan->catch_expr->type : NULL;
+                    Type *pl = type_effect_payload(et, scan->catch_effect);
+                    if (pl) any_payload = 1;
+                    scan = scan->catch_expr;
+                }
+            }
+            if (!any_payload) {
+                /* без payload ефекти — старото поведение (compile-time) */
+                Node *base = n;
+                while (base && base->kind == NODE_CATCH) base = base->catch_expr;
+                emit_expr(cg, base);
+                break;
+            }
+            {
+                FILE *f = cg->out;
+                int tid = cg->tmp_counter++;
+                /* базовият израз: най-вътрешният (TRY вътре не прави
+                 * собствен return — веригата решава) */
+                Node *base = n;
+                while (base && base->kind == NODE_CATCH) base = base->catch_expr;
+                fprintf(f, "({ ");
+                if (n->type) emit_ctype(cg, n->type); else fprintf(f, "int64_t");
+                fprintf(f, " __e%d; baga_eff __ee%d; ", tid, tid);
+                cg->eff_depth++;
+                fprintf(f, "__e%d = ", tid);
+                emit_expr(cg, base);
+                fprintf(f, "; __ee%d = baga_eff_tl; baga_eff_tl = (baga_eff){0}; ",
+                        tid);
+                cg->eff_depth--;
+                /* веригата от catch-ове, от външен към вътрешен ред */
+                int first = 1;
+                Node *scan = n;
+                while (scan && scan->kind == NODE_CATCH) {
+                    Type *et = scan->catch_expr ? scan->catch_expr->type : NULL;
+                    Type *pl = type_effect_payload(et, scan->catch_effect);
+                    if (!pl) { scan = scan->catch_expr; continue; }
+                    int tag = eff_tag(cg, scan->catch_effect);
+                    fprintf(f, "%sif (__ee%d.tag == %d) { ",
+                            first ? "" : "else ", tid, tag);
+                    if (scan->catch_binding) {
+                        char *bm = mangle_name(scan->catch_binding);
+                        fprintf(f, "{ ");
+                        if (pl) emit_ctype(cg, pl); else fprintf(f, "int64_t");
+                        fprintf(f, " %s = __ee%d.%s; ", bm, tid, eff_slot_field(pl->kind));
+                        const char *saved_b = cg->eff_binding;
+                        const char *saved_c = cg->eff_binding_c;
+                        cg->eff_binding = scan->catch_binding;
+                        cg->eff_binding_c = bm;
+                        fprintf(f, "__e%d = ", tid);
+                        if (scan->catch_handler->kind == NODE_BLOCK) {
+                            /* блок-хендлър: statement-и + стойността на
+                             * последния (като implicit return) */
+                            Node *hb = scan->catch_handler;
+                            fprintf(f, "({ ");
+                            for (int si = 0; si < hb->stmts.len; si++) {
+                                if (si == hb->stmts.len - 1) {
+                                    /* последният stmt е СТОЙНОСТТА на handler-а
+                                     * (implicit return семантика) */
+                                    Node *ls = hb->stmts.data[si];
+                                    if (ls->kind == NODE_EXPR_STMT) {
+                                        emit_expr(cg, ls->expr);
+                                        fprintf(f, "; ");
+                                    } else if (ls->kind == NODE_RETURN && ls->ret_val) {
+                                        emit_expr(cg, ls->ret_val);
+                                        fprintf(f, "; ");
+                                    } else {
+                                        emit_stmt(cg, ls);
+                                    }
+                                } else {
+                                    emit_stmt(cg, hb->stmts.data[si]);
+                                }
+                            }
+                            fprintf(f, " })");
+                        } else {
+                            emit_expr(cg, scan->catch_handler);
+                        }
+                        fprintf(f, "; } ");
+                        cg->eff_binding = saved_b;
+                        cg->eff_binding_c = saved_c;
+                        free(bm);
+                    } else {
+                        fprintf(f, "__e%d = ", tid);
+                        if (scan->catch_handler->kind == NODE_BLOCK) {
+                            Node *hb = scan->catch_handler;
+                            fprintf(f, "({ ");
+                            for (int si = 0; si < hb->stmts.len; si++) {
+                                if (si == hb->stmts.len - 1) {
+                                    /* последният stmt е СТОЙНОСТТА на handler-а
+                                     * (implicit return семантика) */
+                                    Node *ls = hb->stmts.data[si];
+                                    if (ls->kind == NODE_EXPR_STMT) {
+                                        emit_expr(cg, ls->expr);
+                                        fprintf(f, "; ");
+                                    } else if (ls->kind == NODE_RETURN && ls->ret_val) {
+                                        emit_expr(cg, ls->ret_val);
+                                        fprintf(f, "; ");
+                                    } else {
+                                        emit_stmt(cg, ls);
+                                    }
+                                } else {
+                                    emit_stmt(cg, hb->stmts.data[si]);
+                                }
+                            }
+                            fprintf(f, " })");
+                        } else {
+                            emit_expr(cg, scan->catch_handler);
+                        }
+                        fprintf(f, "; ");
+                    }
+                    fprintf(f, "} ");
+                    first = 0;
+                    scan = scan->catch_expr;
+                }
+                if (first) {
+                    /* всички catches са payload-less — невъзможно тук */
+                } else {
+                    fprintf(f, "else if (__ee%d.tag != 0) { baga_eff_tl = __ee%d; ",
+                            tid, tid);
+                    emit_eff_return_zero(cg);
+                    fprintf(f, "; } ");
+                }
+                fprintf(f, "__e%d; })", tid);
+            }
             break;
         }
 
         case NODE_TRY:
-            /* e? — effects checked at compile time, emit e */
-            emit_expr(cg, n->try_expr);
+            /* M20: e? — ако изразът носи payload ефекти, проверка на слота;
+             * иначе (и в catch верига) — чист passthrough */
+            if (type_has_payload_effects(n->try_expr ? n->try_expr->type : NULL) &&
+                cg->eff_depth == 0) {
+                FILE *f = cg->out;
+                Type *et = n->try_expr->type;
+                Type *base = et ? type_new(et->kind) : NULL;
+                if (base) { base->elem = et->elem; base->name = et->name; }
+                fprintf(f, "({ ");
+                if (base) emit_ctype(cg, base); else fprintf(f, "int64_t");
+                fprintf(f, " __t%d = ", cg->tmp_counter);
+                emit_expr(cg, n->try_expr);
+                fprintf(f, "; if (baga_eff_tl.tag) { ");
+                emit_eff_return_zero(cg);
+                fprintf(f, "; } __t%d; })", cg->tmp_counter++);
+            } else {
+                emit_expr(cg, n->try_expr);
+            }
             break;
+
+        case NODE_RAISE: {
+            /* M20: raise !E(payload) — задава слота и дивергира */
+            FILE *f = cg->out;
+            int tag = eff_tag(cg, n->raise_effect);
+            fprintf(f, "(baga_eff_tl.tag = %d", tag);
+            if (n->raise_payload && n->raise_payload->type) {
+                fprintf(f, ", baga_eff_tl.%s = (",
+                        eff_slot_field(n->raise_payload->type->kind));
+                emit_expr(cg, n->raise_payload);
+                fprintf(f, ")");
+            }
+            /* нулева стойност за обграждащия израз (мъртва — върнали сме) */
+            fprintf(f, ", ");
+            emit_zero_val(cg, n->type);
+            fprintf(f, ")");
+            break;
+        }
 
         case NODE_TO_STR: {
             /* interpolation: convert inner expr to a C string by its type */
@@ -3932,6 +4191,9 @@ static void emit_fn(Codegen *cg, Node *fn) {
         int has_ret = fn->ret_type != NULL;
         fprintf(f, "{\n");
         cg->indent++;
+        /* M20: ret type node на текущата fn — за ZERO на propagate */
+        Node *saved_eff_ret = cg->eff_cur_ret;
+        cg->eff_cur_ret = fn->ret_type;
         /* RC2: last-use pre-pass за move elision (преди emission на тялото) */
         if (cg->rc) {
             cg->rc_lus.len = 0;
@@ -3983,6 +4245,7 @@ static void emit_fn(Codegen *cg, Node *fn) {
         cg->indent--;
         emit_indent(cg);
         fprintf(f, "}");
+        cg->eff_cur_ret = saved_eff_ret;
     } else {
         fprintf(f, "{}");
     }
@@ -4721,6 +4984,27 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     cg->rc_cur_blk = NULL; cg->rc_cur_idx = -1;
     cg->rc_cur_fn = NULL;
     cg->rc_elided_pairs = 0;
+    /* M20: effect tag регистър (детерминистичен pre-pass по-долу) */
+    cg->eff_tags.data = NULL; cg->eff_tags.len = 0; cg->eff_tags.cap = 0;
+    cg->eff_depth = 0;
+    cg->eff_cur_ret = NULL;
+    cg->eff_binding = NULL;
+    cg->eff_binding_c = NULL;
+    /* M20 pre-pass: assign tags на всички payload ефекти в сигнатурите —
+     * преди какъвто и да е emit (таг-овете трябва да са стабилни) */
+    for (int i = 0; i < program->items.len; i++) {
+        Node *item = program->items.data[i];
+        if (item->kind != NODE_FN || !item->ret_type) continue;
+        Node *t = item->ret_type;
+        while (t && t->kind == NODE_TYPE_EFFECT) {
+            if (t->effect_payloads) {
+                for (int j = 0; j < t->n_effects; j++)
+                    if (t->effect_payloads[j])
+                        eff_tag(cg, t->effect_names[j]);
+            }
+            t = t->inner_type;
+        }
+    }
     /* RC1: размер на per-alloc header-а — 24 B с rc поле, 16 B без */
     int hs = cg->rc ? 32 : 16;
 
@@ -5046,6 +5330,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "\n");
     fprintf(out, "/* binary-safe byte buffer */\n");
     fprintf(out, "typedef struct { unsigned char *data; int64_t len; } baga_bytes;\n");
+    /* M20: effect payloads — tagged error slot (thread-local). tag = 0 на
+     * нормалния път; raise задава tag + payload; ?/catch четат/нулират. */
+    fprintf(out, "typedef struct { int64_t tag; int64_t i; double f; const char *s; baga_bytes b; } baga_eff;\n");
+    fprintf(out, "static __thread baga_eff baga_eff_tl;\n");
     /* RC1: release на bytes — rc живее върху data алокацията */
     if (cg->rc) {
         fprintf(out, "static inline __attribute__((always_inline)) void baga_rc_release_bytes(baga_bytes b) {\n");
