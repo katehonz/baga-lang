@@ -4,16 +4,17 @@
 
 Репо: `/home/ziko/z-git/baga`, branch `main`, синхронизиран с origin.
 Компилатор: `./baga` (C backend). RC (refcount) паметов моделът е opt-in зад
-флага `--rc`. Довършени етапи (последните два commit-а):
-
-- `07a51dc` — RC3: container move (push/set без retain при last-use аргумент)
-- `ae04302` — RC4: per-statement temporaries tracking + RC1.1/1.2/1.3 фиксове
+флага `--rc`. Довършени етапи: RC1–RC4, после RC5 v0.1–v0.11 (последен
+commit `ee8973e` — v0.11 match scrutinee temp; пълната история е в
+`CHANGELOG.md` и т.4 по-долу).
 
 Дизайн и честни граници: `docs/memory-rc-bg.md` (RC1, RC2.1, RC4) и
-`docs/move-semantics-bg.md` (RC2, RC3). Чети ги преди всяка задача.
+`docs/move-semantics-bg.md` (RC2, RC3), `docs/memory-rc-struct-bg.md`
+(RC5 v0.1–v0.5, v0.7–v0.9), `docs/memory-rc-enum-bg.md` (v0.6, v0.10,
+v0.11). Чети ги преди всяка задача.
 
 Ключови файлове: `src/codegen_c.c` (всичко е там), `include/baga.h` (Codegen
-структурата). RC маркерите в кода са тагнати с коментари `RC1`…`RC4`.
+структурата). RC маркерите в кода са тагнати с коментари `RC1`…`RC5 vX.Y`.
 
 ## Контролни точки (задължителни след ВСЯКА промяна)
 
@@ -118,9 +119,49 @@ enum/struct fn резултат scrutinee остава leak-safe граница
 (`tests/match_temp_rc_test.baga`; RSS 143.0 MB → 72.1 MB на 500k
 ctor+str+fn-result scrutinee, само покритите форми 95.7 MB → 24.9 MB).
 Батерията вече е 162
-файла, база **157/162**. Останало:
-struct/enum box temp от call
-(borrowed резултат — неразличим).
+файла, база **157/162**. Останало само задача 5 (по-долу).
+
+### 5. v1.0: owned-конвенция за struct/enum fn резултати — ЕДИНСТВЕНО ОСТАНАЛО
+Днес struct/enum fn резултатът е неразличим owned/borrowed:
+`emit_return_val` не retain-ва struct/enum-типизиран borrowed резултат
+(`rc_type_tag` е 0 за struct; провери как е за enum/tag 6). Реален
+borrowed случай: boilaDB `boila_ps_tok`/`boila_dual_ptok` връщат `Token`
+чрез `return vec_get(lx.toks, i)`. Затова v0.7/v0.8/v0.10/v0.11 оставиха
+leak-safe граници — fresh fn резултат се retain-ва и една референция
+тече на: `push(v, mk())` (§v0.7, 48.5 MB vs 10.8 при истински move),
+`s.inner = mk()` (§v0.8), `s.e = f()` (§v0.10), `match mk()` scrutinee
+(§v0.11, остатъкът в 143.0 → 72.1 MB). Прочети тези секции в
+`docs/memory-rc-struct-bg.md` и `docs/memory-rc-enum-bg.md` първо.
+
+Стъпки (препоръчително в ДВА commit-а — a/b — за лесно бисектиране):
+
+1. **v1.0a — резултатът става винаги owned.** Инвентаризирай всички
+   пътища, по които struct/enum стойност напуска fn: `return`
+   (`emit_return_val`), if-израз/match-израз като return стойност,
+   lambda/closure return, евентуално други. На всяка от тях retain-вай
+   borrowed резултата (vec_get резултат, параметър, match binding, поле
+   на чужд struct) — същата конвенция, която RC1 вече прилага за
+   str/bytes/Vec (`rc_type_tag` > 0) и RC4 разчита на нея. При съмнение
+   retain (leak-safe). Рискът е underflow при пропуснат път — фатален е,
+   затова тази стъпка изисква ASan върху цялата RC батерия + пълната
+   162-файлова батерия ПРЕДИ commit.
+2. **v1.0b — call site move.** След като резултатът е owned по конвенция:
+   struct/enum call temp в `vec_push`/`vec_set`/`map_set` става `_move`
+   (затваря §v0.7); `s.inner = f()`/`s.e = f()` — owned дясно без retain
+   (затваря §v0.8/§v0.10); `match f()` scrutinee се регистрира и
+   release-ва (затваря §v0.11). Махни съответните retain-ове и обнови
+   границите в docs и CHANGELOG.
+3. Тестове: разширяване на `calltemp_rc_test`, `nested_assign_rc_test`,
+   `enum_box_rc_test`, `match_temp_rc_test` с fn-резултат случаите + нови
+   случаи „return на borrowed" през всяка пътека от т.1 (вкл. реалния
+   boilaDB `boila_ps_tok` сценарий с drop на източника след употреба).
+   RSS очаквания (500k): struct box temp 48.5 → ~10.8 MB;
+   `s.inner = mk()` ~48.5 → ~10.6 MB; match fn scrutinee — остатъкът от
+   72.1 MB пада към ~25 MB.
+4. Пълен чеклист (точки 1–7 по-горе) за ВСЕКИ от двата commit-а. Bench
+   (т.7) е задължителен тук — boilaDB ползва точно такива borrowed
+   резултати в hot path (`boila_ps_tok`), следи за retain overhead:
+   база ~430 µs/ред, RSS ~1.73 GB.
 
 ## Забранено / внимание
 
