@@ -1,13 +1,10 @@
-// calltemp_rc_test — RC5 v0.7: call аргумент temp-ове в box push
-// (docs/memory-rc-struct-bg.md §v0.7). Минава с и без --rc.
+// calltemp_rc_test — RC5 v0.7 + v1.0b: call аргумент temp-ове в box push
+// (docs/memory-rc-struct-bg.md §v0.7/§v1.0b). Минава с и без --rc.
 //
 // Temp резултат от call, директен аргумент на vec_push/vec_set/map_set
-// (str/bytes/Vec стойност), се ПРЕХВЪРЛЯ в контейнера: _move helper без
-// retain и без release в края на statement-а (като RC3 за last-use ident) —
-// fn резултатът е owned по конвенция. Тестът доказва коректност: стойностите
-// са верни, няма underflow/dangling, включително през identity/borrowed-result
-// функции. struct/enum box temp-ове НЕ се move-ват (резултатът може да е
-// borrowed — `return vec_get(...)` на struct не retain-ва; leak-safe граница).
+// (str/bytes/Vec и след v1.0b — struct/enum), се ПРЕХВЪРЛЯ в контейнера:
+// _move helper без retain и без release в края на statement-а. fn резултатът
+// е owned по конвенция (v1.0a retain-ва borrowed return).
 
 import "std/str/str.baga"
 
@@ -45,6 +42,10 @@ fn shout(s: str) -> str {
 
 fn mk_wrap(i: i64) -> Wrap {
     return Wrap { n: i, s: concat("w", int_to_str(i)) }
+}
+
+fn first_wrap(v: Vec<Wrap>) -> Wrap {
+    return vec_get(v, 0)
 }
 
 fn main() -> i64 !IO {
@@ -116,16 +117,23 @@ fn main() -> i64 !IO {
     let inner: Vec<str> = vec_get(vv, 0)
     check("vec_temp_move", vec_len(vv) == 1 && vec_get(inner, 1) == "el1")
 
-    // 11. struct box temp от call — НЕ се move-ва (borrowed граница, leak-safe),
-    // но остава коректен: box-ът retain-ва, стойностите са верни
+    // 11. struct box temp от call — v1.0b move (резултатът е owned)
     let ws: Vec<Wrap> = vec_new()
     vec_push(ws, mk_wrap(5))
-    check("struct_box_temp_kept", vec_get(ws, 0).n == 5 && vec_get(ws, 0).s == "w5")
+    check("struct_box_temp_move", vec_get(ws, 0).n == 5 && vec_get(ws, 0).s == "w5")
 
-    // 12. map_set със struct box temp стойност — същата граница
+    // 12. map_set със struct box temp стойност — същият move
     let mw: Map<str, Wrap> = map_new()
     map_set(mw, "k", mk_wrap(6))
-    check("map_struct_temp_kept", map_get(mw, "k").n == 6 && map_get(mw, "k").s == "w6")
+    check("map_struct_temp_move", map_get(mw, "k").n == 6 && map_get(mw, "k").s == "w6")
+
+    // 13. borrowed-result fn → push: box-ът оцелява drop на източника
+    let wsrc: Vec<Wrap> = vec_new()
+    vec_push(wsrc, Wrap { n: 8, s: concat("br", "w") })
+    let wdst: Vec<Wrap> = vec_new()
+    vec_push(wdst, first_wrap(wsrc))
+    drop(wsrc)
+    check("push_borrowed_struct", vec_get(wdst, 0).n == 8 && vec_get(wdst, 0).s == "brw")
 
     print("calltemp_rc_test: all passed")
     return 0

@@ -88,9 +88,8 @@ v0.6 покри enum локали; box елементите (`Vec<E>`/`Map<K,E>`
 
 Граници (leak-safe, не корупция): enum payload в enum payload не се брои
 (както v0.6); `Vec<Vec<E>>` — nested vec shim-ът (v0.9) е struct-only,
-enum като най-вътрешен елемент тече както досега; `s.e = f()` с fresh enum
-fn резултат leak-ва една референция (borrowed/fresh неразличимост);
-`drop()` builtin върху enum локал остава не-цел.
+enum като най-вътрешен елемент тече както досега; `drop()` builtin върху
+enum локал остава не-цел. **v1.0b:** `s.e = f()` е owned без retain.
 
 Измерено: 500k итерации Vec<E> push+drop + map_set overwrite + `s.e = x`
 overwrite + struct-с-enum-поле scope exit — RSS 93.5 MB → 10.2 MB (като
@@ -110,9 +109,8 @@ per-match. Scrutinee-то обаче се оценява безусловно и
   statement, let init, return, if/while cond wrap от RC4 v0.3).
 - Enum ctor scrutinee се регистрира като temp с tag 6 (release_E след
   рамената) — enum-ът от ctor сайт притежава payload референциите си
-  (v0.6 пр. 4). Enum/struct FN резултат scrutinee (`match mk()`) НЕ се
-  регистрира — payload-ът може да е borrowed (`return vec_get(...)` на
-  enum не retain-ва, §v0.7 границата) — leak-safe.
+  (v0.6 пр. 4). **v1.0b:** enum/struct fn резултат scrutinee (`match mk()`)
+  се регистрира през `rc_tmp_fresh` — резултатът е owned (v1.0a).
 - Свързан фикс: ctor с untrack-нат ident payload (match binding или
   enum/struct fn резултат локал) вече retain-ва — v0.6 пр. 4 го
   документира, но `rc_find` не вижда binding-ите (не се регистрират).
@@ -121,11 +119,10 @@ per-match. Scrutinee-то обаче се оценява безусловно и
   би обесил новия enum (UAF, хванат от `rebox_outlives` в теста).
   Неразличим owned случай → една излишна референция (leak-safe посока).
 
-Измерено: 500k итерации (ctor + str + fn-result scrutinee) — RSS
-143.0 MB → 72.1 MB (остатъкът е `match mk()` границата); само покритите
-форми — 95.7 MB → 24.9 MB (остатъкът е вложеният temp в ctor payload
-аргумент — RC4 не слиза в ctor аргументи). Тест:
-`tests/match_temp_rc_test.baga` (11 случая).
+Измерено (v0.11): 500k итерации (ctor + str + fn-result scrutinee) — RSS
+143.0 MB → 72.1 MB (остатъкът беше `match mk()`); само покритите форми —
+95.7 MB → 24.9 MB. **v1.0b затваря `match mk()`.** Тест:
+`tests/match_temp_rc_test.baga` (13 случая).
 
 ## Критерий
 

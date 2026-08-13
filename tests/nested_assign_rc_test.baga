@@ -1,8 +1,7 @@
-// nested_assign_rc_test — RC5 v0.8: `s.inner = x` (struct-типизирана цел на
-// field assign). Старото поле се release-ва рекурсивно (release_Inner),
-// новото е owned при свеж литерал / retain-ва се при borrowed или неразличим
-// източник (call резултат — §v0.7 границата, leak-safe). Alias-safe ред:
-// retain преди release. Минава с и без --rc.
+// nested_assign_rc_test — RC5 v0.8 + v1.0b: `s.inner = x` (struct-типизирана
+// цел на field assign). Старото поле се release-ва рекурсивно (release_Inner),
+// новото е owned при свеж литерал и при fn резултат (v1.0a/v1.0b); borrowed
+// се retain-ва. Alias-safe ред: retain преди release. Минава с и без --rc.
 
 import "std/str/str.baga"
 
@@ -37,6 +36,10 @@ fn mk(t: str) -> Inner {
     return Inner { s: concat("mk", t) }
 }
 
+fn first_inner(v: Vec<Inner>) -> Inner {
+    return vec_get(v, 0)
+}
+
 fn main() -> i64 !IO {
     // 1. overwrite със свеж литерал — owned, старото поле се release-ва
     let mut o = Outer { inner: Inner { s: concat("fi", "-old") }, n: 1 }
@@ -49,7 +52,7 @@ fn main() -> i64 !IO {
     }
     check("lit_loop", o.inner.s == "lp-x")
 
-    // 3. call резултат — retain (може да е borrowed); старото се release-ва
+    // 3. call резултат — owned (v1.0b); старото се release-ва
     o.inner = mk("-call")
     check("call_ovw", o.inner.s == "mk-call")
 
@@ -108,6 +111,13 @@ fn main() -> i64 !IO {
         sc.inner = mk("-3")
     }
     check("scope_exit", true)
+
+    // 13. borrowed-result fn в поле — полето оцелява drop на източника
+    let vs2: Vec<Inner> = vec_new()
+    vec_push(vs2, Inner { s: concat("fn", "-br") })
+    o2.inner = first_inner(vs2)
+    drop(vs2)
+    check("call_borrowed_outlive", o2.inner.s == "fn-br")
 
     print("nested_assign_rc_test: all passed")
     return 0

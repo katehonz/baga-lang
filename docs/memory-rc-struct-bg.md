@@ -72,11 +72,9 @@ heap полета (транзитивно, `rc_nested_struct_field` от v0.5), 
   литералния път); release_<Inner> на старото поле преди assign.
 - **tracked ident** — retain_<T> преди release на старото (alias-safe
   ред като v0.4); при last-use — move (без retain, release на старото).
-- **всичко останало** (call резултат, поле, vec_get, untrack-нат ident) —
-  retain_<T> преди release. Struct fn резултат може да е borrowed
-  (§v0.7 границата: `return vec_get(...)` не retain-ва) и не се различава
-  от fresh — посоката е leak-safe: fresh call (`s.inner = mk(...)`)
-  leak-ва една референция на итерация, както v0.7 struct box temp-овете.
+- **всичко останало** (поле, vec_get, untrack-нат ident) — retain_<T>
+  преди release. **v1.0b:** call резултат е owned (v1.0a) — без retain
+  (`s.inner = mk()` е move в полето).
 
 Release е рекурсивният `baga_rc_release_<Inner>` от v0.5 (по-дълбока
 вложеност се покрива транзитивно). Само плоско `ident.field` — същата
@@ -102,14 +100,10 @@ site=NULL след emission; `rc_tmp_release_all` го пропуска) — б�
 досега. Temp ползван два пъти не съществува синтактично (всеки temp възел
 се оценява веднъж) — локал ползван два пъти пада в RC3 last-use правилата.
 
-**struct/enum box temp-ове НЕ се move-ват** (остават с retain, temp-ът
-тече — leak-safe): struct fn резултатът може да е borrowed —
-`return vec_get(...)` на struct НЕ retain-ва (`rc_type_tag` е 0 за struct в
-`emit_return_val`), а реален такъв код съществува (boilaDB `boila_ps_tok`/
-`boila_dual_ptok` връщат `Token` от vec_get). Move би оставил box-а да
-споделя единствената референция → UAF/underflow при drop на източника.
-Точен move изисква owned-конвенция за struct резултати навсякъде (return/
-match/if-израз/lambda пътеки) — отделна, по-голяма стъпка.
+**struct/enum box temp-ове се move-ват от v1.0b** (резултатът е owned по
+v1.0a: `return vec_get(...)` на struct/enum retain-ва). Преди v1.0a
+резултатът беше неразличим borrowed/owned — move би оставил box-а да
+споделя единствената референция (boilaDB `boila_ps_tok`/`boila_dual_ptok`).
 
 Измерено (500k итерации, --rc): typed temp-овете бяха балансирани и преди
 (retain+release двойка) — RSS flat (33 MB push(f()) str; 128 MB map_set),

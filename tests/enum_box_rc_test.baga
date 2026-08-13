@@ -26,6 +26,14 @@ struct OnlyE {
     e: Opt
 }
 
+fn mk_opt(t: str) -> Opt {
+    return Some(concat("mk", t))
+}
+
+fn first_opt(v: Vec<Opt>) -> Opt {
+    return vec_get(v, 0)
+}
+
 fn check(name: str, ok: bool) {
     if ok {
         print(concat("  ok  ", name))
@@ -193,6 +201,22 @@ fn main() -> i64 !IO {
         h22.e = o22
     }
     check("field_move", match h22.e { Some(s) => s, None => "" } == "mv-new")
+
+    // 23. s.e = fn резултат — owned (v1.0b), без extra retain
+    h22.e = mk_opt("-fn")
+    check("field_fn", match h22.e { Some(s) => s, None => "" } == "mk-fn")
+
+    // 24. s.e = borrowed-result fn — полето оцелява drop на източника
+    let ev: Vec<Opt> = vec_new()
+    vec_push(ev, Some(concat("ef", "-br")))
+    h22.e = first_opt(ev)
+    drop(ev)
+    check("field_fn_borrowed", match h22.e { Some(s) => s, None => "" } == "ef-br")
+
+    // 25. vec_push на enum fn резултат — move в box-а
+    let ev2: Vec<Opt> = vec_new()
+    vec_push(ev2, mk_opt("-box"))
+    check("push_fn", match vec_get(ev2, 0) { Some(s) => s, None => "" } == "mk-box")
 
     print("enum_box_rc_test: all passed")
     return 0

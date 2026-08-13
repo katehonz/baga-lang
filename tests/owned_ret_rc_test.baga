@@ -1,0 +1,163 @@
+// owned_ret_rc_test — RC5 v1.0a: struct/enum fn резултатът е owned.
+// Borrowed return (vec_get / поле / параметър / match binding / if-израз /
+// ламбда) се retain-ва; източникът може да умре след връщането.
+// Минава с и без --rc. (docs/memory-rc-struct-bg.md §v1.0a)
+
+import "std/str/str.baga"
+
+struct Wrap {
+    n: i64,
+    s: str
+}
+
+struct Token {
+    kind: i64,
+    txt: str
+}
+
+enum Opt { Some(str), None }
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn first_wrap(v: Vec<Wrap>) -> Wrap {
+    return vec_get(v, 0)
+}
+
+fn first_tok(v: Vec<Token>) -> Token {
+    if vec_len(v) > 0 {
+        return vec_get(v, 0)
+    }
+    return Token { kind: 0, txt: "" }
+}
+
+fn field_of(w: Wrap) -> Wrap {
+    return Wrap { n: w.n, s: w.s }
+}
+
+fn id_wrap(w: Wrap) -> Wrap {
+    return w
+}
+
+fn via_let(v: Vec<Wrap>) -> Wrap {
+    let t = vec_get(v, 0)
+    return t
+}
+
+fn if_borrowed(c: bool, v: Vec<Wrap>) -> Wrap {
+    if c {
+        return vec_get(v, 0)
+    } else {
+        return Wrap { n: -1, s: concat("el", "se") }
+    }
+}
+
+fn match_binding(o: Opt) -> str {
+    return match o {
+        Some(s) => s,
+        None => ""
+    }
+}
+
+fn match_struct(o: Opt) -> Wrap {
+    return match o {
+        Some(s) => Wrap { n: 1, s: s },
+        None => Wrap { n: 0, s: "" }
+    }
+}
+
+fn first_opt(v: Vec<Opt>) -> Opt {
+    return vec_get(v, 0)
+}
+
+fn none_of() -> Opt {
+    return None
+}
+
+fn main() -> i64 !IO {
+    // 1. return vec_get — резултатът оцелява drop на източника
+    let src: Vec<Wrap> = vec_new()
+    vec_push(src, Wrap { n: 7, s: concat("su", "rv") })
+    let w = first_wrap(src)
+    drop(src)
+    check("ret_vec_get", w.n == 7 && w.s == "surv")
+
+    // 2. boila_ps_tok сценарий: Token от vec_get, drop на lexer-а
+    let toks: Vec<Token> = vec_new()
+    vec_push(toks, Token { kind: 1, txt: concat("SE", "L") })
+    vec_push(toks, Token { kind: 2, txt: concat("id", "x") })
+    let t0 = first_tok(toks)
+    drop(toks)
+    check("ret_ps_tok", t0.kind == 1 && t0.txt == "SEL")
+
+    // 3. return на параметър — caller-ът си пуска своя, резултатът живее
+    let p = Wrap { n: 3, s: concat("pa", "rm") }
+    let r = id_wrap(p)
+    check("ret_param", r.n == 3 && r.s == "parm" && p.s == "parm")
+
+    // 4. return през let = vec_get (untracked ident)
+    let src2: Vec<Wrap> = vec_new()
+    vec_push(src2, Wrap { n: 4, s: concat("le", "t") })
+    let w2 = via_let(src2)
+    drop(src2)
+    check("ret_let_get", w2.n == 4 && w2.s == "let")
+
+    // 5. return if-израз — borrowed клон; източникът умира
+    let src3: Vec<Wrap> = vec_new()
+    vec_push(src3, Wrap { n: 5, s: concat("if", "-b") })
+    let w3 = if_borrowed(true, src3)
+    drop(src3)
+    check("ret_if_borrowed", w3.n == 5 && w3.s == "if-b")
+
+    // 6. return if-израз — owned клон (свеж литерал)
+    let empty: Vec<Wrap> = vec_new()
+    let w6 = if_borrowed(false, empty)
+    check("ret_if_owned", w6.n == -1 && w6.s == "else")
+
+    // 7. return match binding — payload-ът оцелява след scope на източника
+    let s7 = match_binding(Some(concat("bi", "nd")))
+    check("ret_match_bind", s7 == "bind")
+
+    // 8. return match → struct с borrowed payload; източникът умира
+    let w8 = match_struct(Some(concat("ms", "tr")))
+    check("ret_match_struct", w8.n == 1 && w8.s == "mstr")
+
+    // 9. return enum от vec_get — payload оцелява drop на вектора
+    let ev: Vec<Opt> = vec_new()
+    vec_push(ev, Some(concat("en", "um")))
+    let eo = first_opt(ev)
+    drop(ev)
+    check("ret_enum_get", match eo { Some(s) => s, None => "" } == "enum")
+
+    // 10. ламбда: return на borrowed struct (параметър)
+    let lam = fn (w: Wrap) -> Wrap { return w }
+    let lp = Wrap { n: 10, s: concat("la", "mb") }
+    let lr = lam(lp)
+    check("ret_lambda_param", lr.n == 10 && lr.s == "lamb" && lp.s == "lamb")
+
+    // 11. ламбда: return vec_get, drop на източника
+    let lam2 = fn (v: Vec<Wrap>) -> Wrap { return vec_get(v, 0) }
+    let lsrc: Vec<Wrap> = vec_new()
+    vec_push(lsrc, Wrap { n: 11, s: concat("l2", "-g") })
+    let lw = lam2(lsrc)
+    drop(lsrc)
+    check("ret_lambda_get", lw.n == 11 && lw.s == "l2-g")
+
+    // 12. field_of — return на литерал с borrowed поле (параметър)
+    let base = Wrap { n: 12, s: concat("fi", "ld") }
+    let fw = field_of(base)
+    check("ret_field_lit", fw.n == 12 && fw.s == "fild" && base.s == "fild")
+
+    // 13. return на bare payload-less variant (GBad/StreamEnd/None) —
+    // няма C локал; emit_expr слага (E){ .tag = N }, retain е no-op
+    check("ret_bare_none", match none_of() { Some(s) => 1, None => 0 } == 0)
+
+    print("owned_ret_rc_test: all passed")
+    return 0
+}

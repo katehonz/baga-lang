@@ -1,10 +1,10 @@
-// match_temp_rc_test — RC5 v0.11: match scrutinee temp
+// match_temp_rc_test — RC5 v0.11 + v1.0b: match scrutinee temp
 // (docs/memory-rc-enum-bg.md §v0.11). Минава с и без --rc.
-// Scrutinee, който е fresh heap temp (str/bytes/Vec call резултат или enum
-// ctor с heap payload), се release-ва в края на statement-а — СЛЕД телата на
-// рамената, така че borrowed binding-ите (v0.6 конвенция) са валидни в тях.
-// Fn резултат scrutinee (`match mk()`) НЕ се release-ва — payload-ът може да
-// е borrowed (§v0.7 границата); посоката е leak-safe.
+// Scrutinee, който е fresh heap temp (str/bytes/Vec/struct/enum call резултат
+// или enum ctor с heap payload), се release-ва в края на statement-а — СЛЕД
+// телата на рамената, така че borrowed binding-ите (v0.6 конвенция) са
+// валидни в тях. v1.0b: fn резултат scrutinee (`match mk()`) вече е owned
+// (v1.0a) и се release-ва.
 
 import "std/str/str.baga"
 
@@ -19,10 +19,13 @@ fn check(name: str, ok: bool) {
     }
 }
 
-// fn резултат scrutinee — НЕ се release-ва (leak-safe граница); стойностите
-// са верни и няма underflow
+// fn резултат scrutinee — v1.0b се release-ва (owned по v1.0a)
 fn mk(i: i64) -> Opt {
     return Some(concat("v", int_to_str(i)))
+}
+
+fn first_opt(v: Vec<Opt>) -> Opt {
+    return vec_get(v, 0)
 }
 
 fn main() -> i64 !IO {
@@ -90,8 +93,7 @@ fn main() -> i64 !IO {
     let n = match Some(concat("le", "t")) { Some(s) => len(s), None => 0 }
     check("let_init_match", n == 3)
 
-    // 11. fn резултат scrutinee (leak-safe граница) — верни стойности,
-    // без underflow; payload-ът НЕ се release-ва
+    // 11. fn резултат scrutinee — v1.0b release след рамената; binding валиден
     let mut facc = 0
     for i in 0..10 {
         match mk(i) {
@@ -100,6 +102,18 @@ fn main() -> i64 !IO {
         }
     }
     check("fn_result_scrutinee", facc == 20)
+
+    // 12. arm стойност от fn scrutinee оцелява след match-а (RC1.2 retain)
+    let r12 = match mk(3) { Some(s) => s, None => "" }
+    check("fn_scrutinee_arm_outlives", r12 == "v3")
+
+    // 13. borrowed-result fn като scrutinee — НЕ е temp; източникът живее
+    let v13: Vec<Opt> = vec_new()
+    vec_push(v13, Some(concat("sc", "br")))
+    check("fn_borrowed_scrutinee",
+          match first_opt(v13) { Some(s) => s, None => "" } == "scbr")
+    drop(v13)
+    check("fn_borrowed_src_drop", true)
 
     print("match_temp_rc_test: all passed")
     return 0

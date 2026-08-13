@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v1.0 owned-конвенция за struct/enum fn резултати (зад `--rc`)
+- **v1.0a.** `return` на borrowed struct/enum (vec_get, поле, параметър,
+  untrack-нат ident / match binding, if-клон) вече retain-ва през
+  `rc_heap_tag` + `retain_S`/`retain_E` — същата конвенция „fn резултат =
+  owned", която RC1 прилага за str/bytes/Vec. Match рамена ползват същия
+  helper (без `void *` cast върху стойност). Ламбда параметри/capture-и
+  се регистрират с heap tag. Struct литерал с untrack-нат ident поле
+  (match binding) retain-ва през `__rc_sl`. Тест:
+  `tests/owned_ret_rc_test.baga` (вкл. boila_ps_tok сценарий: Token от
+  vec_get, drop на източника). Bare payload-less variant (`return None` /
+  `return GBad`) минава през `__rc_ret` — няма C локал с името на варианта.
+- **v1.0b.** Call site-ът вече знае, че резултатът е owned: struct/enum
+  call temp в `vec_push`/`vec_set`/`map_set` е move (без retain, temp-ът
+  се консумира); `s.inner = f()` / `s.e = f()` — owned дясно без retain;
+  `match f()` scrutinee се регистрира през `rc_tmp_fresh`/`rc_heap_tag` и
+  се release-ва след рамената. Enum ctor не е temp (иначе push(Some(x))
+  би го пуснал). Разширени `calltemp_rc_test`, `nested_assign_rc_test`,
+  `enum_box_rc_test`, `match_temp_rc_test`.
+- Без флаг: бит-идентичен emit-c.
+
 ### runtime — RC5 v0.11 match scrutinee temp (зад `--rc`)
 - Scrutinee на `match`, който е fresh heap temp, вече се track-ва от RC4
   регистъра: `rc_tmp_collect` слиза в `match_expr` (не в рамената — условни

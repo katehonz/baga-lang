@@ -4,9 +4,9 @@
 
 Репо: `/home/ziko/z-git/baga`, branch `main`, синхронизиран с origin.
 Компилатор: `./baga` (C backend). RC (refcount) паметов моделът е opt-in зад
-флага `--rc`. Довършени етапи: RC1–RC4, после RC5 v0.1–v0.11 (последен
-commit `ee8973e` — v0.11 match scrutinee temp; пълната история е в
-`CHANGELOG.md` и т.4 по-долу).
+флага `--rc`. Довършени етапи: RC1–RC4, RC5 v0.1–v0.11, **v1.0a+v1.0b**
+(owned-конвенция за struct/enum fn резултати + call-site move). Пълната
+история е в `CHANGELOG.md` и т.4–5 по-долу.
 
 Дизайн и честни граници: `docs/memory-rc-bg.md` (RC1, RC2.1, RC4) и
 `docs/move-semantics-bg.md` (RC2, RC3), `docs/memory-rc-struct-bg.md`
@@ -37,11 +37,9 @@ v0.11). Чети ги преди всяка задача.
 6. Пълна tests/ батерия с --rc (~40 мин):
    `printf '#!/bin/sh\nexec '$PWD'/baga --rc "$@"\n' > /tmp/baga_rc &&
     chmod +x /tmp/baga_rc && BAGA=/tmp/baga_rc bash scripts/baga-test tests`
-   Базова линия: **157/162**; 5-те FAIL са pre-existing external peers
+   Базова линия: **158/163**; 5-те FAIL са pre-existing external peers
    (oauth_pg, orm_boila, registry, https, tls_handshake).
-   Никой нов FAIL не е приемлив. (`struct_rc_test` и `enum_rc_test` са в
-   пакета след RC5/v0.6, `calltemp_rc_test` — след v0.7, по един нов тест
-   на версия до `match_temp_rc_test` — след v0.11.)
+   Никой нов FAIL не е приемлив. (`owned_ret_rc_test` е новият +1 след v1.0a.)
 7. Bench (само ако пипаш retain/release пътеките): boilaDB 100k insert —
    `BOILA_PHASE=write BOILA_CHUNKS=1 BOILA_ROWS=100000
    BOILA_BENCH_ROOT=/tmp/boila_x ./baga --rc -I . -I app-product
@@ -118,50 +116,25 @@ v0.11: match scrutinee temp — `rc_tmp_collect` слиза в scrutinee-то
 enum/struct fn резултат scrutinee остава leak-safe граница
 (`tests/match_temp_rc_test.baga`; RSS 143.0 MB → 72.1 MB на 500k
 ctor+str+fn-result scrutinee, само покритите форми 95.7 MB → 24.9 MB).
-Батерията вече е 162
-файла, база **157/162**. Останало само задача 5 (по-долу).
+Батерията вече е 163 файла, база **158/163**. Задача 5 е готова (по-долу).
 
-### 5. v1.0: owned-конвенция за struct/enum fn резултати — ЕДИНСТВЕНО ОСТАНАЛО
+### 5. v1.0: owned-конвенция за struct/enum fn резултати — ГОТОВО
 Днес struct/enum fn резултатът е неразличим owned/borrowed:
 `emit_return_val` не retain-ва struct/enum-типизиран borrowed резултат
-(`rc_type_tag` е 0 за struct; провери как е за enum/tag 6). Реален
-borrowed случай: boilaDB `boila_ps_tok`/`boila_dual_ptok` връщат `Token`
-чрез `return vec_get(lx.toks, i)`. Затова v0.7/v0.8/v0.10/v0.11 оставиха
-leak-safe граници — fresh fn резултат се retain-ва и една референция
-тече на: `push(v, mk())` (§v0.7, 48.5 MB vs 10.8 при истински move),
-`s.inner = mk()` (§v0.8), `s.e = f()` (§v0.10), `match mk()` scrutinee
-(§v0.11, остатъкът в 143.0 → 72.1 MB). Прочети тези секции в
-`docs/memory-rc-struct-bg.md` и `docs/memory-rc-enum-bg.md` първо.
+Реален borrowed случай: boilaDB `boila_ps_tok`/`boila_dual_ptok` връщат
+`Token` чрез `return vec_get(lx.toks, i)`.
 
-Стъпки (препоръчително в ДВА commit-а — a/b — за лесно бисектиране):
+**v1.0a:** `emit_return_val` / `rc_emit_match_arm_val` / ламбда params
+ползват `rc_heap_tag` + `retain_S`/`retain_E`. Untrack-нат ident в
+struct литерал (match binding) също. Тест: `owned_ret_rc_test.baga`.
 
-1. **v1.0a — резултатът става винаги owned.** Инвентаризирай всички
-   пътища, по които struct/enum стойност напуска fn: `return`
-   (`emit_return_val`), if-израз/match-израз като return стойност,
-   lambda/closure return, евентуално други. На всяка от тях retain-вай
-   borrowed резултата (vec_get резултат, параметър, match binding, поле
-   на чужд struct) — същата конвенция, която RC1 вече прилага за
-   str/bytes/Vec (`rc_type_tag` > 0) и RC4 разчита на нея. При съмнение
-   retain (leak-safe). Рискът е underflow при пропуснат път — фатален е,
-   затова тази стъпка изисква ASan върху цялата RC батерия + пълната
-   162-файлова батерия ПРЕДИ commit.
-2. **v1.0b — call site move.** След като резултатът е owned по конвенция:
-   struct/enum call temp в `vec_push`/`vec_set`/`map_set` става `_move`
-   (затваря §v0.7); `s.inner = f()`/`s.e = f()` — owned дясно без retain
-   (затваря §v0.8/§v0.10); `match f()` scrutinee се регистрира и
-   release-ва (затваря §v0.11). Махни съответните retain-ове и обнови
-   границите в docs и CHANGELOG.
-3. Тестове: разширяване на `calltemp_rc_test`, `nested_assign_rc_test`,
-   `enum_box_rc_test`, `match_temp_rc_test` с fn-резултат случаите + нови
-   случаи „return на borrowed" през всяка пътека от т.1 (вкл. реалния
-   boilaDB `boila_ps_tok` сценарий с drop на източника след употреба).
-   RSS очаквания (500k): struct box temp 48.5 → ~10.8 MB;
-   `s.inner = mk()` ~48.5 → ~10.6 MB; match fn scrutinee — остатъкът от
-   72.1 MB пада към ~25 MB.
-4. Пълен чеклист (точки 1–7 по-горе) за ВСЕКИ от двата commit-а. Bench
-   (т.7) е задължителен тук — boilaDB ползва точно такива borrowed
-   резултати в hot path (`boila_ps_tok`), следи за retain overhead:
-   база ~430 µs/ред, RSS ~1.73 GB.
+**v1.0b:** call temp в box push/set е move; `s.inner = f()` / `s.e = f()`
+без retain; `match f()` scrutinee се регистрира (`rc_tmp_fresh` +
+`rc_heap_tag`). Enum ctor не е temp. Разширени calltemp / nested_assign /
+enum_box / match_temp тестове.
+
+Docs: `docs/memory-rc-struct-bg.md`, `docs/memory-rc-enum-bg.md`,
+`CHANGELOG.md`.
 
 ## Забранено / внимание
 

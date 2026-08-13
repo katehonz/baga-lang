@@ -1207,13 +1207,19 @@ static void rc_emit_enum_field_release(Codegen *cg, const char *enname,
     free(em);
 }
 
-/* fresh heap temp ли е този възел? (owned rc=1 резултат по конвенция) */
-static int rc_tmp_fresh(Node *n) {
+static int rc_is_enum_ctor(Codegen *cg, Node *n);
+
+/* fresh heap temp ли е този възел? (owned rc=1 резултат по конвенция)
+ * RC5 v1.0b: rc_heap_tag — struct/enum fn резултатът е owned (v1.0a). */
+static int rc_tmp_fresh(Codegen *cg, Node *n) {
     if (!n) return 0;
     if (n->kind == NODE_TO_STR) return 1;
     if (n->kind != NODE_CALL) return 0;
     if (rc_borrowed_init(n)) return 0;
-    return rc_type_tag(n->type) != 0;
+    /* enum ctor е като литерал — payload-ът е owned от ctor сайта;
+     * не се регистрира като temp (иначе push(Some(x)) би го пуснал) */
+    if (rc_is_enum_ctor(cg, n)) return 0;
+    return rc_heap_tag(cg, n->type) != 0;
 }
 
 /* конструктор на sum enum с payload ли е това повикване? (огледално на
@@ -1240,13 +1246,22 @@ static int rc_is_enum_ctor(Codegen *cg, Node *n) {
     return 0;
 }
 
+/* RC5 v1.0b: не-borrowed call с heap резултат — owned по v1.0a конвенция
+ * (не struct lit / не enum ctor; тези се познават отделно). */
+static int rc_is_owned_call(Codegen *cg, Node *n) {
+    if (!n || n->kind != NODE_CALL) return 0;
+    if (rc_borrowed_init(n)) return 0;
+    if (rc_is_enum_ctor(cg, n)) return 0;
+    return rc_heap_tag(cg, n->type) != 0;
+}
+
 static void rc_tmp_collect(Codegen *cg, Node *n, int is_root) {
     if (!n) return;
-    if (rc_tmp_fresh(n) && !is_root) {
+    if (rc_tmp_fresh(cg, n) && !is_root) {
         RcTmp t;
         t.site = n;
         t.type = n->type;
-        t.tag = n->kind == NODE_TO_STR ? 1 : rc_type_tag(n->type);
+        t.tag = n->kind == NODE_TO_STR ? 1 : rc_heap_tag(cg, n->type);
         snprintf(t.name, sizeof t.name, "__rc_tmp%d", cg->tmp_counter++);
         vec_push(cg->rc_tmps, t);
         /* продължаваме надолу — аргументите може да съдържат temp-ове */
@@ -1299,9 +1314,9 @@ static void rc_tmp_collect(Codegen *cg, Node *n, int is_root) {
              * Enum ctor scrutinee (`match Ok(concat(...))`) притежава
              * payload референциите си от ctor сайта (v0.6 пр. 4) и никой не
              * ги release-ва след match-а — регистрира се като temp с tag 6.
-             * Fn резултат (`match mk()`) НЕ се регистрира — payload-ът може
-             * да е borrowed (`return vec_get(...)` на enum не retain-ва,
-             * §v0.7 границата) — leak-safe посока. */
+             * RC5 v1.0b: fn резултат (`match mk()`) вече е owned (v1.0a) и
+             * се регистрира през rc_tmp_fresh / rc_heap_tag — release след
+             * рамената. */
             Node *sc = n->match_expr;
             if (sc && sc->kind == NODE_CALL && rc_is_enum_ctor(cg, sc) &&
                 rc_heap_tag(cg, sc->type) == 6) {
@@ -1482,32 +1497,44 @@ static void emit_rc_stmt_expr(Codegen *cg, Node *n) {
     cg->rc_tmps_on = saved_on;
 }
 
+/* RC5 v1.0a: трябва ли return/arm стойност да се retain-не, за да е
+ * резултатът owned? Свеж литерал/ctor и не-borrowed call (callee вече
+ * връща owned по същата конвенция) — не. Match се обработва в рамената.
+ * Всичко друго с heap tag (vec_get/поле, ident, if-израз) — да
+ * (при съмнение leak-safe). */
+static int rc_need_owned_retain(Codegen *cg, Node *val) {
+    if (!cg->rc || !val) return 0;
+    if (!rc_heap_tag(cg, val->type)) return 0;
+    if (val->kind == NODE_STRUCT_LIT) return 0;
+    if (val->kind == NODE_CALL && rc_is_enum_ctor(cg, val)) return 0;
+    if (val->kind == NODE_CALL && !rc_borrowed_init(val)) return 0;
+    if (val->kind == NODE_MATCH) return 0;
+    return 1;
+}
+
 /* RC1.2: стойност на match arm (когато match-ът произвежда heap стойност) —
  * borrowed израз (vec_get/map_get/поле/h_*) или ident (match binding е
  * копие-алиас на payload; track-нат локал е втори собственик) се retain-ва,
  * за да е резултатът owned по конвенцията „fn резултат = owned". Иначе
  * scope release на източника обесва/underflow-ва консуматора (латентен
- * пропуск, маскиран от temp течовете преди RC4 — pg_err/sqlstate). */
+ * пропуск, маскиран от temp течовете преди RC4 — pg_err/sqlstate).
+ * RC5 v1.0a: rc_heap_tag вместо rc_type_tag — struct/enum рамена също
+ * (tag 5/6 през retain_S/retain_E; void* cast върху стойност е невалиден). */
 static void rc_emit_match_arm_val(Codegen *cg, Node *rv, int tmp,
                                   int is_void) {
     FILE *f = cg->out;
     if (is_void) { emit_expr(cg, rv); return; }
-    int rtag = (cg->rc && rv) ? rc_type_tag(rv->type) : 0;
-    int alias = rtag != 0 &&
-                (rc_borrowed_init(rv) || rv->kind == NODE_IDENT);
-    if (!alias) {
+    int rtag = (cg->rc && rv) ? rc_heap_tag(cg, rv->type) : 0;
+    if (!rtag || !rc_need_owned_retain(cg, rv)) {
         fprintf(f, "_mr%d = ", tmp);
         emit_expr(cg, rv);
         return;
     }
     fprintf(f, "({ __auto_type __rc_m = ");
     emit_expr(cg, rv);
-    if (rtag == 2)
-        fprintf(f, "; baga_rc_retain((void *)__rc_m.data); _mr%d = __rc_m; })",
-                tmp);
-    else
-        fprintf(f, "; baga_rc_retain((void *)__rc_m); _mr%d = __rc_m; })",
-                tmp);
+    fprintf(f, "; ");
+    rc_emit_retain_val(cg, rtag, rv->type, NULL, "__rc_m");
+    fprintf(f, "_mr%d = __rc_m; })", tmp);
 }
 
 
@@ -2083,6 +2110,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                             if (rc_box_tracked(cg, vt->elem)) {
                                 Node *va = n->args.data[1];
                                 int mv = 0;
+                                int tmp_mv = -1;
                                 if (va->kind == NODE_IDENT) {
                                     int si = rc_find(cg, va->name);
                                     if (si >= 0 && !cg->rc_locals.data[si].dead &&
@@ -2099,9 +2127,15 @@ static void emit_expr(Codegen *cg, Node *n) {
                                      * v0.10: същото за свеж enum ctor — payload-ът е
                                      * owned от ctor сайта (v0.6) */
                                     mv = 1;
+                                } else if ((tmp_mv = rc_tmp_find(cg, va)) >= 0) {
+                                    /* RC5 v1.0b: struct/enum call temp е owned
+                                     * (v1.0a) — move в box-а, консумирай temp-а */
+                                    cg->rc_cmoves++;
+                                    mv = 1;
                                 }
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
+                                if (tmp_mv >= 0) rc_tmp_consume(cg, tmp_mv);
                             }
                             fprintf(f, "baga_vec_push_box(");
                             emit_expr(cg, n->args.data[0]);
@@ -2114,6 +2148,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                             if (rc_box_tracked(cg, vt->elem)) {
                                 Node *va = n->args.data[2];
                                 int mv = 0;
+                                int tmp_mv = -1;
                                 if (va->kind == NODE_IDENT) {
                                     int si = rc_find(cg, va->name);
                                     if (si >= 0 && !cg->rc_locals.data[si].dead &&
@@ -2127,9 +2162,14 @@ static void emit_expr(Codegen *cg, Node *n) {
                                     /* RC5 v0.2: свеж литерал — move в box-а (виж vec_push)
                                      * v0.10: и свеж enum ctor */
                                     mv = 1;
+                                } else if ((tmp_mv = rc_tmp_find(cg, va)) >= 0) {
+                                    /* RC5 v1.0b: owned call temp — move */
+                                    cg->rc_cmoves++;
+                                    mv = 1;
                                 }
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
+                                if (tmp_mv >= 0) rc_tmp_consume(cg, tmp_mv);
                             }
                             if (rc_box_tracked(cg, vt->elem)) {
                                 /* RC5 v0.3: release на стария box при overwrite
@@ -2184,9 +2224,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                              * контейнера: _move вариант без retain, а temp-ът
                              * се консумира (без release в края на statement-а)
                              * — същият трансфер като RC3 за last-use ident.
-                             * struct/enum box temp-ове НЕ се move-ват:
-                             * резултатът може да е borrowed (return vec_get()
-                             * на struct не retain-ва) — посоката е leak-safe. */
+                             * v1.0b: struct/enum box temp-овете са в box
+                             * пътеката по-горе (също move). */
                             cg->rc_cmoves++;
                             mv = 1;
                         }
@@ -2283,6 +2322,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                             if (rc_box_tracked(cg, mt->elem)) {
                                 Node *va = n->args.data[2];
                                 int mv = 0;
+                                int tmp_mv = -1;
                                 if (va->kind == NODE_IDENT) {
                                     int si = rc_find(cg, va->name);
                                     if (si >= 0 && !cg->rc_locals.data[si].dead &&
@@ -2296,9 +2336,14 @@ static void emit_expr(Codegen *cg, Node *n) {
                                     /* RC5 v0.2: свеж литерал — move в box-а (виж vec_push)
                                      * v0.10: и свеж enum ctor */
                                     mv = 1;
+                                } else if ((tmp_mv = rc_tmp_find(cg, va)) >= 0) {
+                                    /* RC5 v1.0b: owned call temp — move */
+                                    cg->rc_cmoves++;
+                                    mv = 1;
                                 }
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
+                                if (tmp_mv >= 0) rc_tmp_consume(cg, tmp_mv);
                             }
                             if (rc_box_tracked(cg, mt->elem)) {
                                 /* RC5 v0.3: release на стария box при overwrite
@@ -2821,18 +2866,18 @@ static void emit_expr(Codegen *cg, Node *n) {
                     break;
                 }
                 /* RC5 v0.8: не-ident дясно в struct-типизирано поле. Свеж
-                 * литерал е owned (без retain — полетата му вече са балансирани
-                 * от литералния път); всичко останало (call/поле/vec_get/
-                 * untrack-нат ident) се retain-ва — call резултатът може да е
-                 * borrowed (§v0.7 границата), посоката е leak-safe. Старото
-                 * поле се release-ва рекурсивно след retain-а (alias-safe:
-                 * `s.inner = s.inner`, `s.inner = t.inner` при alias). */
+                 * литерал е owned (без retain). v1.0b: owned call (`mk()`)
+                 * също без retain. Поле/vec_get/untrack-нат ident се
+                 * retain-ват. Старото поле се release-ва рекурсивно след
+                 * retain-а (alias-safe). */
                 const char *fst = rc_field_assign_struct(cg, n->assign_target);
                 if (fst) {
                     fprintf(f, "({ __auto_type __rc_fa = ");
                     emit_expr(cg, n->assign_val);
                     fprintf(f, "; ");
-                    if (n->assign_val->kind != NODE_STRUCT_LIT) {
+                    if (n->assign_val->kind != NODE_STRUCT_LIT &&
+                        !rc_is_owned_call(cg, n->assign_val)) {
+                        /* RC5 v1.0b: owned call (`s.inner = mk()`) — без retain */
                         char *fm = mangle_name(fst);
                         fprintf(f, "baga_rc_retain_%s(__rc_fa); ", fm);
                         free(fm);
@@ -2843,17 +2888,17 @@ static void emit_expr(Codegen *cg, Node *n) {
                     break;
                 }
                 /* RC5 v0.10: не-ident дясно в enum-типизирано поле. Свеж ctor
-                 * е owned (без retain — payload-ът е балансиран от ctor сайта,
-                 * v0.6); всичко останало (call/поле/vec_get/untrack-нат ident)
-                 * се retain-ва — enum fn резултатът може да е borrowed (същата
-                 * §v0.7 граница като struct), посоката е leak-safe. Старото
-                 * поле се release-ва по runtime tag след retain-а (alias-safe). */
+                 * е owned (без retain). v1.0b: owned call (`f()`) също без
+                 * retain. Поле/vec_get/untrack-нат ident се retain-ват.
+                 * Старото поле се release-ва по runtime tag (alias-safe). */
                 const char *fen = rc_field_assign_enum(cg, n->assign_target);
                 if (fen) {
                     fprintf(f, "({ __auto_type __rc_fa = ");
                     emit_expr(cg, n->assign_val);
                     fprintf(f, "; ");
-                    if (!rc_is_enum_ctor(cg, n->assign_val)) {
+                    if (!rc_is_enum_ctor(cg, n->assign_val) &&
+                        !rc_is_owned_call(cg, n->assign_val)) {
+                        /* RC5 v1.0b: owned call (`s.e = f()`) — без retain */
                         char *fm = mangle_name(fen);
                         fprintf(f, "baga_rc_retain_%s(__rc_fa); ", fm);
                         free(fm);
@@ -2901,6 +2946,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                     /* RC2: move сайтовете не се retain-ват (виж втория проход) */
                     if (si >= 0 && !cg->rc_locals.data[si].dead &&
                         !rc_is_move(cg, val, si))
+                        nemb++;
+                    else if (si < 0 && rc_heap_tag(cg, val->type) != 0)
+                        /* RC5 v1.0a: untrack-нат ident (match binding) —
+                         * borrowed, полето трябва да задържи референция */
                         nemb++;
                 }
             }
@@ -2957,13 +3006,23 @@ static void emit_expr(Codegen *cg, Node *n) {
                     }
                     if (val->kind != NODE_IDENT) continue;
                     int si = rc_find(cg, val->name);
-                    if (si < 0 || cg->rc_locals.data[si].dead ||
-                        rc_is_move(cg, val, si))
+                    if (si >= 0 && !cg->rc_locals.data[si].dead &&
+                        !rc_is_move(cg, val, si)) {
+                        rc_emit_retain_val(cg, cg->rc_locals.data[si].tag,
+                                           cg->rc_locals.data[si].type,
+                                           cg->rc_locals.data[si].type_node,
+                                           cg->rc_locals.data[si].name);
                         continue;
-                    rc_emit_retain_val(cg, cg->rc_locals.data[si].tag,
-                                       cg->rc_locals.data[si].type,
-                                       cg->rc_locals.data[si].type_node,
-                                       cg->rc_locals.data[si].name);
+                    }
+                    /* RC5 v1.0a: untrack-нат ident — retain през полето
+                     * (като borrowed_init; match binding няма rc_find запис) */
+                    if (si < 0 && vltag != 0) {
+                        char *fm2 = mangle_name(n->lit_fields[i]);
+                        char cbuf[160];
+                        snprintf(cbuf, sizeof cbuf, "__rc_sl.%s", fm2);
+                        rc_emit_retain_val(cg, vltag, val->type, NULL, cbuf);
+                        free(fm2);
+                    }
                 }
                 fprintf(f, "__rc_sl; })");
             }
@@ -3094,13 +3153,15 @@ static void emit_expr(Codegen *cg, Node *n) {
                 int saved_fn_base = cg->rc_fn_base;
                 if (cg->rc) cg->rc_fn_base = cg->rc_scopes.len - 1;
                 if (cg->rc) {
+                    /* RC5 v1.0a: struct/enum параметри и capture-и — heap tag,
+                     * за да `return p` retain-ва (същата конвенция като fn) */
                     for (int i = 0; i < n->params.len; i++)
-                        rc_register(cg, n->params.data[i]->param_name,
-                                    rc_type_node_tag(n->params.data[i]->param_type),
-                                    NULL, 1);
+                        rc_register_node(cg, n->params.data[i]->param_name,
+                                    rc_heap_tag_node(cg, n->params.data[i]->param_type),
+                                    NULL, n->params.data[i]->param_type, 1);
                     for (int i = 0; i < n->captures.len; i++)
                         rc_register(cg, n->captures.data[i]->param_name,
-                                    rc_type_tag(n->captures.data[i]->type),
+                                    rc_heap_tag(cg, n->captures.data[i]->type),
                                     n->captures.data[i]->type, 1);
                 }
                 for (int i = 0; i < stmts->len; i++) {
@@ -3315,27 +3376,39 @@ static void emit_return_val(Codegen *cg, Node *val) {
             fprintf(f, "return ");
             emit_expr(cg, val);
             fprintf(f, ";\n");
-        } else {
-            if (idx >= 0 && cg->rc_locals.data[idx].is_param &&
-                !cg->rc_locals.data[idx].dead) {
-                /* заеманият параметър става собственост на caller-а */
-                char *mm = mangle_name(val->name);
-                rc_emit_retain_val(cg, cg->rc_locals.data[idx].tag,
-                                   cg->rc_locals.data[idx].type,
-                                   cg->rc_locals.data[idx].type_node, mm);
-                fprintf(f, "\n");
-                free(mm);
-                emit_indent(cg);
-            }
-            /* не-track-нат ident (enum вариант, глобал и пр.): emit_expr
-             * пази специалния lowering (sum enum без payload и т.н.) */
+            return;
+        }
+        if (idx >= 0 && cg->rc_locals.data[idx].is_param &&
+            !cg->rc_locals.data[idx].dead) {
+            /* заеманият параметър става собственост на caller-а */
+            char *mm = mangle_name(val->name);
+            rc_emit_retain_val(cg, cg->rc_locals.data[idx].tag,
+                               cg->rc_locals.data[idx].type,
+                               cg->rc_locals.data[idx].type_node, mm);
+            fprintf(f, "\n");
+            free(mm);
+            emit_indent(cg);
             rc_release_all(cg, -1);
             emit_indent(cg);
             fprintf(f, "return ");
             emit_expr(cg, val);
             fprintf(f, ";\n");
+            return;
         }
-        return;
+        if (idx >= 0 || !rc_need_owned_retain(cg, val)) {
+            /* dead локал / ident без heap: emit_expr пази lowering-а
+             * (sum enum без payload и т.н.) */
+            rc_release_all(cg, -1);
+            emit_indent(cg);
+            fprintf(f, "return ");
+            emit_expr(cg, val);
+            fprintf(f, ";\n");
+            return;
+        }
+        /* untrack-нат ident с heap (match binding / let = vec_get, или
+         * bare variant като `return GBad`) — през __rc_ret, защото
+         * emit_expr може да свали варианта до `(E){ .tag = N }` и
+         * няма C локал с това име */
     }
     fprintf(f, "{\n");
     cg->indent++;
@@ -3343,18 +3416,15 @@ static void emit_return_val(Codegen *cg, Node *val) {
     fprintf(f, "__auto_type __rc_ret = ");
     emit_expr(cg, val);
     fprintf(f, ";\n");
-    /* borrowed резултат (vec_get/map_get/поле/h_*): caller-ът го получава
-     * като собственост (конвенцията „fn резултат = owned") → retain;
-     * само heap типове (i64/struct по стойност нямат какво да се retain-ва) */
-    if (rc_borrowed_init(val)) {
-        int rtag = rc_type_tag(val->type);
-        if (rtag != 0) {
-            emit_indent(cg);
-            if (rtag == 2)
-                fprintf(f, "baga_rc_retain((void *)__rc_ret.data);\n");
-            else
-                fprintf(f, "baga_rc_retain((void *)__rc_ret);\n");
-        }
+    /* borrowed / if-израз / untracked: caller-ът получава owned
+     * (конвенцията „fn резултат = owned") → retain. RC5 v1.0a:
+     * rc_heap_tag покрива и struct/enum (tag 5/6), не само str/bytes/Vec.
+     * Свеж литерал/ctor и не-borrowed call не се пипат — вече owned. */
+    if (rc_need_owned_retain(cg, val)) {
+        int rtag = rc_heap_tag(cg, val->type);
+        emit_indent(cg);
+        rc_emit_retain_val(cg, rtag, val->type, NULL, "__rc_ret");
+        fprintf(f, "\n");
     }
     /* RC4: release на temp-овете от return израза — тук, преди самия return
      * (statement-ът приключва с return; rc_tmp_end след това е no-op) */
