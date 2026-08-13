@@ -319,6 +319,12 @@ for f in sorted_param sorted_push; do \
 		&& echo "OK: $f — sorted + element axiom (relational M3+)" \
 		|| { echo "FAIL: $f — очаквах ensures ДОКАЗАНО"; cat /tmp/baga_verify_out.txt; exit 1; }; \
 done
+"$BIN" $BAGAIFLAGS --verify examples/verify/spec_guarantees.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "guarantee #1.*проза" /tmp/baga_verify_out.txt \
+	&& grep -q "guarantee #3 (output >= arr): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "guarantee #4 (output < arr + 10): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& echo "OK: spec_guarantees — M22: проверяеми guarantee-та + честна проза" \
+	|| { echo "FAIL: spec_guarantees — M22"; cat /tmp/baga_verify_out.txt; exit 1; }
 rc=0; "$BIN" $BAGAIFLAGS --verify examples/verify/sorted_not_le.baga > /tmp/baga_verify_out.txt || rc=$?; \
 grep -qE "ensures #1.*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt && ! grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: sorted_not_le — sorted ≠ v[*]<=0 (soundness)" \

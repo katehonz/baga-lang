@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### verify — M22 статично проверяеми guarantee редове
+- `spec guarantees:` ред, който се парсира като булев израз (върху input и
+  `output`), се верифицира от `--verify` със същата дисциплина като
+  `ensures` (PROVEN/REFUTED+контрапример/UNKNOWN); оброчено guarantee е
+  червен резултат (exit 1). Прозата излиза като „проза — извън фрагмента".
+  JSON: масив "guarantees" (result: "prose" за прозата).
+  Пример: `examples/verify/spec_guarantees.baga`; gate в run_verify.sh.
+
 ### generics — M21 типови параметри (мономорфизация)
 - `fn identity<T>(x: T) -> T`, `fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U>`.
   Извод от аргументите + явни типови аргументи `map<i64, i64>(…)`.

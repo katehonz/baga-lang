@@ -485,6 +485,9 @@ typedef struct {
 } Parser;
 
 Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename);
+/* M22: парсира един израз от текст (guarantee редове за верификатора);
+ * NULL при неуспех. */
+Node *parse_expr_string(const char *text);
 
 /* ============================================================
  *  Checker
@@ -625,6 +628,9 @@ typedef struct {
 typedef struct {
     EnsVerifyRes *ens;   /* per-ensures results */
     int n_ens;
+    /* M22: машинно-проверими guarantee редове (res = -1 за проза) */
+    EnsVerifyRes *guar;
+    int n_guar;
     int skipped;         /* 1 if the whole function was skipped */
     const char *skip_reason;
     /* facts established during symexec (for --proofs) */

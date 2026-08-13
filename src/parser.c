@@ -1595,8 +1595,34 @@ static Node *parse_enum(Parser *p) {
     return e;
 }
 
-Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename) {
-    p->tokens = tokens;
+/* M22: парсира един израз от текст (guarantee редове за верификатора).
+ * Връща NULL при неуспех (проза / непокрит синтаксис). */
+Node *parse_expr_string(const char *text) {
+    Lexer l;
+    lexer_init(&l, text, (int)strlen(text), "<guarantee>");
+    VEC(Token) toks = {0};
+    for (;;) {
+        Token t = lexer_next(&l);
+        vec_push(toks, t);
+        if (t.kind == TOK_EOF) break;
+        if (t.kind == TOK_ERROR) { free(toks.data); return NULL; }
+    }
+    Parser p;
+    memset(&p, 0, sizeof(p));
+    p.tokens = toks.data;
+    p.len = toks.len;
+    p.pos = 0;
+    p.filename = "<guarantee>";
+    Node *e = parse_expr(&p);
+    if (p.n_errors > 0 || !check(&p, TOK_EOF)) {
+        free(toks.data);
+        return NULL;
+    }
+    free(toks.data);
+    return e;
+}
+
+Node *parse_program(Parser *p, Token *tokens, int ntokens, const char *filename) {    p->tokens = tokens;
     p->len = ntokens;
     p->pos = 0;
     p->filename = filename;

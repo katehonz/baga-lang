@@ -1,0 +1,21 @@
+// spec_guarantees.baga — M22: guarantee редовете, които се парсират като
+// израз, се верифицират (PROVEN/REFUTED/UNKNOWN); прозата остава проза.
+spec сортирай {
+    input:
+        arr: i64
+    output: i64
+    guarantees:
+        - output is sorted
+        - output has same elements as input
+        - output >= arr
+        - output < arr + 10
+    ensures:
+        output >= arr
+}
+fn сортирай(arr: i64) -> i64 {
+    return arr + 5
+}
+fn main() {
+    let x = сортирай(42)
+    print(x)
+}

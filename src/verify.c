@@ -3988,6 +3988,40 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
             free(wit);
         }
     }
+
+    /* M22: guarantee редове — ако текстът се парсира като израз, се
+     * верифицира със същата дисциплина (PROVEN/REFUTED/UNKNOWN);
+     * иначе остава проза (res = -1). */
+    {
+        int ng = spec->n_guarantees;
+        out->guar = calloc(ng > 0 ? ng : 1, sizeof(EnsVerifyRes));
+        out->n_guar = ng;
+        for (int j = 0; j < ng; j++) {
+            EnsVerifyRes *g = &out->guar[j];
+            g->ens_text = spec->spec_guarantees[j];
+            g->res = -1;   /* проза по подразбиране */
+            if (skip) {
+                g->res = 3;
+                g->skip_reason = skip;
+                continue;
+            }
+            Node *gex = parse_expr_string(spec->spec_guarantees[j]);
+            if (!gex) continue;
+            IBind *wit = NULL; int wn = 0;
+            VRes r = verify_ensures(spec, gex, &ob, &wit, &wn);
+            g->res = (int)r;
+            g->wn = wn;
+            if (wn > 0 && wit) {
+                g->wit_names = malloc(wn * sizeof(char *));
+                g->wit_vals = malloc(wn * sizeof(long long));
+                for (int k = 0; k < wn; k++) {
+                    g->wit_names[k] = wit[k].name;
+                    g->wit_vals[k] = (long long)wit[k].val;
+                }
+                free(wit);
+            }
+        }
+    }
     /* bounds obligations (M2) — check but don't store in EnsVerifyRes */
     for (int i = 0; i < ob.n; i++) {
         if (ob.o[i].kind != 1) continue;
@@ -4051,6 +4085,19 @@ void fn_verify_res_free(FnVerifyRes *r) {
         r->ens = NULL;
         r->n_ens = 0;
     }
+    /* M22: guarantees */
+    if (r->guar) {
+        for (int j = 0; j < r->n_guar; j++) {
+            if (r->guar[j].wit_names) {
+                for (int k = 0; k < r->guar[j].wn; k++) free(r->guar[j].wit_names[k]);
+                free(r->guar[j].wit_names);
+            }
+            free(r->guar[j].wit_vals);
+        }
+        free(r->guar);
+        r->guar = NULL;
+        r->n_guar = 0;
+    }
     for (int j = 0; j < r->n_inv; j++) free(r->inv_texts[j]);
     free(r->inv_texts); free(r->inv_proven);
     r->inv_texts = NULL; r->inv_proven = NULL; r->n_inv = 0;
@@ -4087,6 +4134,21 @@ static int verify_fn(Node *prog, Node *fn) {
             if (e->res == 1) any_refuted = 1;
         }
         printf("]");
+        /* M22: guarantees (res = -1 → проза) */
+        printf(", \"guarantees\": [");
+        for (int j = 0; j < res.n_guar; j++) {
+            EnsVerifyRes *g = &res.guar[j];
+            if (j) printf(", ");
+            printf("{\"index\": %d, \"text\": ", j + 1);
+            json_str(g->ens_text);
+            printf(", \"result\": \"%s\"", g->res == -1 ? "prose" : res_word_json(g->res));
+            if (g->res == 3) { printf(", \"skip_reason\": "); json_str(g->skip_reason); }
+            printf(", \"counterexample\": ");
+            json_witness(g->wit_names, g->wit_vals, g->res == 1 ? g->wn : 0);
+            printf("}");
+            if (g->res == 1) any_refuted = 1;
+        }
+        printf("]");
         if (g_partial && !res.skipped) {
             if (g_term && !g_term_failed) printf(", \"termination\": \"proven\"");
             else printf(", \"partial_correctness\": true");
@@ -4104,6 +4166,25 @@ static int verify_fn(Node *prog, Node *fn) {
                     printf("    контрапример:");
                     for (int k = 0; k < e->wn; k++) printf(" %s = %lld", e->wit_names[k], e->wit_vals[k]);
                     if (e->wn == 0) printf(" (без свидетел)");
+                    printf("\n");
+                }
+            }
+        }
+        /* M22: guarantee редове */
+        for (int j = 0; j < res.n_guar; j++) {
+            EnsVerifyRes *g = &res.guar[j];
+            if (g->res == -1) {
+                printf("  guarantee #%d (%s): проза — извън верификационния фрагмент\n",
+                       j + 1, g->ens_text);
+            } else if (g->res == 3) {
+                printf("  guarantee #%d (%s): ПРОПУСНАТО (%s)\n", j + 1, g->ens_text, g->skip_reason);
+            } else {
+                printf("  guarantee #%d (%s): %s\n", j + 1, g->ens_text, res_word((VRes)g->res));
+                if (g->res == 1) {
+                    any_refuted = 1;
+                    printf("    контрапример:");
+                    for (int k = 0; k < g->wn; k++) printf(" %s = %lld", g->wit_names[k], g->wit_vals[k]);
+                    if (g->wn == 0) printf(" (без свидетел)");
                     printf("\n");
                 }
             }
