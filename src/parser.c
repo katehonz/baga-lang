@@ -377,6 +377,13 @@ static Node *parse_type_rec(Parser *p) {
         ty->inner_type2 = parse_type(p);
         expect_gt_split(p);
     }
+    /* M24: generic struct — Pair<i64, str> */
+    if (match(p, TOK_LT)) {
+        do {
+            vec_push(ty->gen_type_args, parse_type(p));
+        } while (match(p, TOK_COMMA));
+        expect_gt_split(p);
+    }
     return ty;
 }
 
@@ -555,6 +562,39 @@ static Node *parse_primary(Parser *p) {
             name = qn;
         }
 
+        /* M24: явни типови аргументи на struct литерал — Pair<i64, str> { … }.
+         * Lookahead: консумирай <types> само ако след `>` стои `{` (иначе
+         * е сравнение). */
+        NodeVec lit_type_args = {0};
+        if (check(p, TOK_LT)) {
+            int save = p->pos;
+            int depth = 0, k = p->pos, ok = 0;
+            while (k < p->len) {
+                TokenKind tk = p->tokens[k].kind;
+                if (tk == TOK_LT) depth++;
+                else if (tk == TOK_GT) {
+                    depth--;
+                    if (depth == 0) {
+                        if (k + 1 < p->len && p->tokens[k + 1].kind == TOK_LBRACE)
+                            ok = 1;
+                        break;
+                    }
+                } else if (tk == TOK_EOF || tk == TOK_LPAREN ||
+                           (tk != TOK_IDENT && tk != TOK_COMMA && tk != TOK_GT))
+                    break;
+                k++;
+            }
+            if (ok) {
+                advance(p);
+                do {
+                    vec_push(lit_type_args, parse_type(p));
+                } while (match(p, TOK_COMMA));
+                expect_gt_split(p);
+            } else {
+                p->pos = save;
+            }
+        }
+
         /* lookahead: { IDENT : → struct literal */
         if (check(p, TOK_LBRACE) &&
             p->pos + 2 < p->len &&
@@ -567,6 +607,7 @@ static Node *parse_primary(Parser *p) {
             lit->lit_fields = NULL;
             lit->n_lit_fields = 0;
             lit->lit_values.len = 0; lit->lit_values.cap = 0; lit->lit_values.data = NULL;
+            lit->lit_type_args = lit_type_args;
 
             VEC(char *) fields = {0};
             while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
@@ -1423,6 +1464,17 @@ static Node *parse_struct(Parser *p) {
     SrcPos pos = cur(p)->pos;
     expect(p, TOK_STRUCT);
     char *name = expect_ident(p);
+
+    /* M24: generic struct — struct Pair<A, B> { ... } */
+    VEC(char *) type_params = {0};
+    if (match(p, TOK_LT)) {
+        do {
+            Token *tp = expect(p, TOK_IDENT);
+            vec_push(type_params, tp->text ? strdup(tp->text) : strdup("T"));
+        } while (match(p, TOK_COMMA));
+        expect_gt_split(p);
+    }
+
     expect(p, TOK_LBRACE);
     NodeVec fields = {0};
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
@@ -1441,6 +1493,8 @@ static Node *parse_struct(Parser *p) {
     Node *s = node_alloc(NODE_STRUCT, pos);
     s->struct_name = name;
     s->fields = fields;
+    s->struct_params = type_params.data;
+    s->n_struct_params = type_params.len;
     return s;
 }
 

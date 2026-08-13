@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### generics — M24 generic structs (мономорфизация)
+- `struct Pair<A, B> { first: A, second: B }` — извод от литералите,
+  изрични аргументи `Pair<i64, str> { … }` (lookahead, без сблъсък със
+  сравненията), полета под substitution, swap-фабрики, impl за конкретни
+  инстанции, Vec от инстанции. C имена `b_Pair_i64_str` per инстанция.
+- Fix по пътя: вложена substitution (literal/field) се копира настрани —
+  презаписването на активния fn-контекст даваше грешни свързвания.
+- v1: LLVM backend-ът не ги поддържа (C-only); --rc helper-и за heap
+  полета на generic struct не се генерират.
+  Пример: `examples/generic_structs.baga`.
+
 ### traits — M23 trait/impl + статичен dispatch
 - `trait Area { fn area(self) -> i64 }`; `impl Area for Rect { fn area(self: Rect) -> i64 { … } }`.
   Методите се викат `obj.m(args)` и се свързват статично (вътрешни имена

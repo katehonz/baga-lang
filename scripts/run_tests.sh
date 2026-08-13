@@ -56,6 +56,12 @@ grep -q "^1200$" /tmp/baga_tr_out.txt \
 	&& grep -q "^21$" /tmp/baga_tr_out.txt \
 	&& echo "OK: traits (методи, вериги, trait bounds на generic fn)" \
 	|| { echo "FAIL: traits"; exit 1; }
+echo "=== generic_structs (M24: мономорфизация на struct) ==="
+run examples/generic_structs.baga > /tmp/baga_gs_out.txt
+grep -q "^x$" /tmp/baga_gs_out.txt \
+	&& grep -q "^a$" /tmp/baga_gs_out.txt \
+	&& echo "OK: generic_structs (извод, swap, методи, Vec от инстанции)" \
+	|| { echo "FAIL: generic_structs"; exit 1; }
 echo "=== effects_payload (M20: raise/catch с payload) ==="
 run examples/effects_payload.baga > /tmp/baga_effp_out.txt
 grep -q "празно име" /tmp/baga_effp_out.txt \

@@ -287,6 +287,7 @@ struct Node {
             char *lit_name;
             char **lit_fields;
             NodeVec lit_values;
+            NodeVec lit_type_args;  /* M24: явни типови аргументи Pair<i64, str> { … } */
             int n_lit_fields;
         };
 
@@ -351,7 +352,17 @@ struct Node {
         struct { char *param_name; Node *param_type; };
 
         /* NODE_STRUCT */
-        struct { char *struct_name; NodeVec fields; /* NODE_FIELD_DECL */ };
+        struct {
+            char *struct_name;
+            NodeVec fields; /* NODE_FIELD_DECL */
+            /* M24: generic struct — типови параметри + инстанции
+             * (struct_inst_targs: struct_inst_count × n_struct_params) */
+            char **struct_params;
+            int n_struct_params;
+            Type **struct_inst_targs;
+            int struct_inst_count;
+            int struct_inst_cap;
+        };
 
         /* NODE_FIELD_DECL */
         struct { char *fld_name; Node *fld_type; };
@@ -388,8 +399,9 @@ struct Node {
         /* NODE_TYPE, NODE_TYPE_REF, NODE_TYPE_ARRAY, NODE_TYPE_EFFECT */
         struct {
             char *type_name;          /* for NODE_TYPE */
-            Node *inner_type;         /* for REF / ARRAY / Vec<T> / Map<K,..> */
+            Node *inner_type;         /* Vec<T> elem / Map<K,V> key / ref pointee */
             Node *inner_type2;        /* for Map<..,V> */
+            NodeVec gen_type_args;    /* M24: типови аргументи на generic struct Pair<i64, str> */
             char **effect_names;      /* for NODE_TYPE_EFFECT */
             Node **effect_payloads;   /* M20: per-effect payload type node, NULL = без payload */
             int n_effects;
@@ -444,6 +456,9 @@ struct Type {
     int n_effects;
     /* M20: payload тип per effect (паралелен на effects[]; NULL = без payload) */
     Type **effect_payloads;
+    /* M24: типови аргументи на instantiated generic struct (TYPE_STRUCT) */
+    Type **targs;
+    int n_targs;
 };
 
 /* Type helpers */
@@ -611,6 +626,9 @@ typedef struct {
     Node *gen_fn;          /* текущата generic fn при emit на вариант */
     int   gen_inst;        /* текущият индекс на инстанцията */
     const char *gen_emit_name; /* синтетичното C-преди-mangle име */
+    /* M24: текущата generic struct инстанция при emit на typedef */
+    Node *gen_struct;
+    int   gen_struct_inst;
 } Codegen;
 
 void codegen_c(Codegen *cg, Node *program, FILE *out);

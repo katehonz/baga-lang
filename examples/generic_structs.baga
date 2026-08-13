@@ -1,0 +1,39 @@
+// generic_structs.baga — M24: generic structs (мономорфизация per
+// инстанция). Извод от литералите; изрични аргументи Pair<i64, str> { … };
+// generic fns и методи върху тях.
+struct Pair<A, B> {
+    first: A,
+    second: B
+}
+
+fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
+    return Pair { first: p.second, second: p.first }
+}
+
+fn first<A, B>(p: Pair<A, B>) -> A {
+    return p.first
+}
+
+trait Describe {
+    fn describe(self) -> str
+}
+
+impl Describe for Pair<i64, str> {
+    fn describe(self: Pair<i64, str>) -> str {
+        return self.second
+    }
+}
+
+fn main() {
+    let p = Pair { first: 1, second: "x" }
+    print(first(p))
+    let s = swap(p)
+    print(s.first)
+    print(s.second)
+    let q = Pair<str, i64> { first: "a", second: 9 }
+    print(first(q))
+    print(p.describe())
+    let v: Vec<Pair<i64, str>> = vec_new()
+    vec_push(v, p)
+    print(vec_len(v))
+}

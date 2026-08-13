@@ -366,6 +366,37 @@ fn main() {
 - v1: статичен dispatch (без trait objects); LLVM backend-ът не ги
   поддържа (C-only).
 
+### 6.0.2 Generic structs (M24)
+
+Структурите също могат да са генерични — мономорфизират се per конкретна
+комбинация от типове (като M21):
+
+```baga
+struct Pair<A, B> {
+    first: A,
+    second: B
+}
+
+fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
+    return Pair { first: p.second, second: p.first }
+}
+
+fn main() {
+    let p = Pair { first: 1, second: "x" }   // извод
+    let q = Pair<str, i64> { first: "a", second: 9 }  // изрично
+    print(p.first)
+    let s = swap(p)
+    print(s.first)   // "x"
+}
+```
+
+- Изводът работи от полетата на литерала; изричните аргументи — с
+  `Pair<i64, str> { … }` (lookahead, не се бърка със сравненията).
+- Полетата се резолват под substitution — `p.first: A → i64`.
+- Impl за конкретна инстанция: `impl Describe for Pair<i64, str>`.
+- v1: LLVM backend-ът не ги поддържа (C-only); --rc helper-ите за heap
+  полета на generic struct не се генерират.
+
 ### 6.1 Връщане на стойности
 
 Използвайте `return expr` за ранно връщане. Стойността на последния израз в блок

@@ -1544,6 +1544,25 @@ static void emit_ctype(Codegen *cg, Type *t);
 static void emit_type(Codegen *cg, Node *ty) {
     FILE *f = cg->out;
     if (!ty) { fprintf(f, "void"); return; }
+
+    /* M24: instantiated generic struct — checked типът (с targs) печели */
+    if (ty->type && ty->type->kind == TYPE_STRUCT && ty->type->n_targs > 0 &&
+        ty->kind == NODE_TYPE) {
+        emit_ctype(cg, ty->type);
+        return;
+    }
+
+    /* M24: типова променлива на текущата generic struct инстанция */
+    if (cg->gen_struct && ty->type && ty->kind == NODE_TYPE) {
+        for (int i = 0; i < cg->gen_struct->n_struct_params; i++)
+            if (strcmp(cg->gen_struct->struct_params[i], ty->type_name) == 0) {
+                Type *at = cg->gen_struct->struct_inst_targs[
+                    cg->gen_struct_inst * cg->gen_struct->n_struct_params + i];
+                emit_ctype(cg, at);
+                return;
+            }
+    }
+
     /* M21: типова променлива на текущата generic инстанция — checked типът
      * (конкретен след checker_recheck_inst) печели */
     if (cg->gen_fn && ty->type && ty->kind == NODE_TYPE) {
@@ -1589,6 +1608,35 @@ static void emit_type(Codegen *cg, Node *ty) {
 }
 
 /* C spelling от проверен (checker) Type — за fn-стойностните сигнатури (L5) */
+/* M24: C име на instantiated generic struct ("b_Pair_i64_str") */
+static char *struct_cname_str(Type *t) {
+    char *m = mangle_name(t->name ? t->name : "anon");
+    size_t cap = strlen(m) + 1 + (size_t)(t->n_targs > 0 ? t->n_targs : 0) * 48;
+    char *out = malloc(cap);
+    if (!out) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    strcpy(out, m);
+    free(m);
+    for (int a = 0; a < t->n_targs; a++) {
+        Type *at = t->targs[a];
+        if (at->kind == TYPE_STRUCT && at->name) {
+            char *am = mangle_name(at->name);
+            strcat(out, "_"); strcat(out, am + 2);
+            free(am);
+        } else if (at->kind == TYPE_ENUM && at->name) {
+            char *am = mangle_name(at->name);
+            strcat(out, "_"); strcat(out, am + 2);
+            free(am);
+        } else if (at->kind == TYPE_STR) strcat(out, "_str");
+        else if (at->kind == TYPE_BYTES) strcat(out, "_bytes");
+        else if (at->kind == TYPE_F64) strcat(out, "_f64");
+        else if (at->kind == TYPE_BOOL) strcat(out, "_bool");
+        else if (at->kind == TYPE_VEC) strcat(out, "_v");
+        else if (at->kind == TYPE_MAP) strcat(out, "_m");
+        else strcat(out, "_i64");
+    }
+    return out;
+}
+
 static void emit_ctype(Codegen *cg, Type *t) {
     FILE *f = cg->out;
     if (!t) { fprintf(f, "void"); return; }
@@ -1602,7 +1650,16 @@ static void emit_ctype(Codegen *cg, Type *t) {
         case TYPE_VOID:  fprintf(f, "void"); break;
         case TYPE_VEC:   fprintf(f, "baga_Vec *"); break;
         case TYPE_MAP:   fprintf(f, "baga_Map *"); break;
-        case TYPE_STRUCT: emit_mangled(f, t->name ? t->name : "anon"); break;
+        case TYPE_STRUCT:
+            /* M24: instantiated generic struct — конкретно C име */
+            if (t->n_targs > 0) {
+                char *cn = struct_cname_str(t);
+                fprintf(f, "%s", cn);
+                free(cn);
+            } else {
+                emit_mangled(f, t->name ? t->name : "anon");
+            }
+            break;
         case TYPE_ENUM:  emit_mangled(f, t->name ? t->name : "anon"); break;
         default:         fprintf(f, "int64_t"); break;   /* TYPE_FN → handle */
     }
@@ -2194,7 +2251,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (vt && vt->kind == TYPE_VEC && vt->elem && vt->elem->name &&
                         (vt->elem->kind == TYPE_STRUCT ||
                          vt->elem->kind == TYPE_ENUM)) {
-                        char *mn = mangle_name(vt->elem->name);
+                        /* M24: instantiated generic struct елемент */
+                        char *mn = (vt->elem->kind == TYPE_STRUCT &&
+                                    vt->elem->n_targs > 0)
+                            ? struct_cname_str(vt->elem)
+                            : mangle_name(vt->elem->name);
                         if (strcmp(bn, "vec_get") == 0) {
                             fprintf(f, "(*(%s *)baga_vec_get_box(", mn);
                             for (int i = 0; i < n->args.len; i++) {
@@ -2365,7 +2426,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (vt && vt->kind == TYPE_VEC && vt->elem && vt->elem->name &&
                         (vt->elem->kind == TYPE_STRUCT ||
                          vt->elem->kind == TYPE_ENUM)) {
-                        char *mn = mangle_name(vt->elem->name);
+                        /* M24: instantiated generic struct елемент */
+                        char *mn = (vt->elem->kind == TYPE_STRUCT &&
+                                    vt->elem->n_targs > 0)
+                            ? struct_cname_str(vt->elem)
+                            : mangle_name(vt->elem->name);
                         if (rc_box_tracked(cg, vt->elem)) {
                             /* RC5 v0.2: box копието споделя полетата — retain
                              * (иначе drop на двата вектора пуска два пъти)
@@ -3027,6 +3092,21 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_STRUCT_LIT: {
+            /* M24: instantiated generic struct — конкретното C име */
+            if (n->type && n->type->kind == TYPE_STRUCT && n->type->n_targs > 0) {
+                char *cn = struct_cname_str(n->type);
+                fprintf(f, "(%s){ ", cn);
+                free(cn);
+                for (int i = 0; i < n->n_lit_fields; i++) {
+                    if (i > 0) fprintf(f, ", ");
+                    char *fm = mangle_name(n->lit_fields[i]);
+                    fprintf(f, ".%s = ", fm);
+                    free(fm);
+                    emit_expr(cg, n->lit_values.data[i]);
+                }
+                fprintf(f, " }");
+                break;
+            }
             char *sm = mangle_name(n->lit_name);
             /* RC1: struct литералът споделя heap полета по указател — bare
              * track-нат локал/параметър, вграден в литерала, се retain-ва
@@ -3761,7 +3841,18 @@ static void emit_stmt(Codegen *cg, Node *n) {
                     case TYPE_BOOL: fprintf(f, "int"); break;
                     case TYPE_I32:  fprintf(f, "int32_t"); break;
                     case TYPE_STRUCT:
-                        if (it->name) { char *sm = mangle_name(it->name); fprintf(f, "%s", sm); free(sm); }
+                        if (it->name) {
+                            /* M24: instantiated generic struct */
+                            if (it->n_targs > 0) {
+                                char *cn = struct_cname_str(it);
+                                fprintf(f, "%s", cn);
+                                free(cn);
+                            } else {
+                                char *sm = mangle_name(it->name);
+                                fprintf(f, "%s", sm);
+                                free(sm);
+                            }
+                        }
                         else fprintf(f, "int64_t");
                         break;
                     case TYPE_ENUM:
@@ -4401,6 +4492,49 @@ static const char *user_type_name(Node *ty) {
 
 static void emit_struct(Codegen *cg, Node *s) {
     FILE *f = cg->out;
+    /* M24: generic struct — typedef per инстанция (мономорфизация) */
+    if (s->n_struct_params > 0) {
+        for (int k = 0; k < s->struct_inst_count; k++) {
+            cg->gen_struct = s;
+            cg->gen_struct_inst = k;
+            char *m = mangle_name(s->struct_name);
+            fprintf(f, "typedef struct {\n");
+            for (int i = 0; i < s->fields.len; i++) {
+                Node *fld = s->fields.data[i];
+                fprintf(f, "    ");
+                emit_type(cg, fld->fld_type);
+                fprintf(f, " ");
+                char *fm = mangle_name(fld->fld_name);
+                fprintf(f, "%s", fm);
+                free(fm);
+                fprintf(f, ";\n");
+            }
+            fprintf(f, "} %s", m);
+            for (int a = 0; a < s->n_struct_params; a++) {
+                Type *at = s->struct_inst_targs[k * s->n_struct_params + a];
+                if (at->kind == TYPE_STRUCT && at->name) {
+                    char *am = mangle_name(at->name);
+                    fprintf(f, "_%s", am + 2);
+                    free(am);
+                } else if (at->kind == TYPE_STR) fprintf(f, "_str");
+                else if (at->kind == TYPE_BYTES) fprintf(f, "_bytes");
+                else if (at->kind == TYPE_F64) fprintf(f, "_f64");
+                else if (at->kind == TYPE_BOOL) fprintf(f, "_bool");
+                else if (at->kind == TYPE_VEC) fprintf(f, "_v");
+                else if (at->kind == TYPE_MAP) fprintf(f, "_m");
+                else if (at->kind == TYPE_ENUM && at->name) {
+                    char *am = mangle_name(at->name);
+                    fprintf(f, "_%s", am + 2);
+                    free(am);
+                } else fprintf(f, "_i64");
+            }
+            fprintf(f, ";\n\n");
+            free(m);
+            cg->gen_struct = NULL;
+            cg->gen_struct_inst = -1;
+        }
+        return;
+    }
     char *m = mangle_name(s->struct_name);
     fprintf(f, "typedef struct {\n");
     for (int i = 0; i < s->fields.len; i++) {

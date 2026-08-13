@@ -99,7 +99,13 @@ int type_eq(Type *a, Type *b) {
     }
     if (a->kind != b->kind) return 0;
     if (a->kind == TYPE_STRUCT) {
-        return a->name && b->name && strcmp(a->name, b->name) == 0;
+        if (!(a->name && b->name && strcmp(a->name, b->name) == 0)) return 0;
+        /* M24: instantiated generic struct — аргументите също трябва да
+         * съвпадат (по вид/име) */
+        if (a->n_targs != b->n_targs) return 0;
+        for (int i = 0; i < a->n_targs; i++)
+            if (!type_eq(a->targs[i], b->targs[i])) return 0;
+        return 1;
     }
     if (a->kind == TYPE_ENUM)
         return a->name && b->name && strcmp(a->name, b->name) == 0;
@@ -316,10 +322,35 @@ static Node *find_struct_scoped(CheckCtx *ctx, const char *name,
 static void struct_amb_hint(CheckCtx *ctx, const char *name,
                             char *m1, char *m2, size_t cap);
 
+/* M24: спаси/възстанови substitution — вложените (literal/field) я
+ * презаписват, затова се копира настрани */
+static void subst_save(CheckCtx *ctx, char ***sn, Type ***st, int *n) {
+    *n = ctx->g_names.len;
+    *sn = malloc(sizeof(char *) * (size_t)(*n ? *n : 1));
+    *st = malloc(sizeof(Type *) * (size_t)(*n ? *n : 1));
+    if (*n) {
+        memcpy(*sn, ctx->g_names.data, sizeof(char *) * (size_t)*n);
+        memcpy(*st, ctx->g_types.data, sizeof(Type *) * (size_t)*n);
+    }
+}
+static void subst_restore(CheckCtx *ctx, char **sn, Type **st, int n) {
+    ctx->g_names.len = 0;
+    ctx->g_types.len = 0;
+    for (int i = 0; i < n; i++) {
+        vec_push(ctx->g_names, sn[i]);
+        vec_push(ctx->g_types, st[i]);
+    }
+    free(sn);
+    free(st);
+}
+
 /* M21: forward — дефиницията е преди check_fn */
 static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call);
 static void check_fn(CheckCtx *ctx, Node *fn);
 static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
+static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
+                             char **tps, int np, Type **bind,
+                             SrcPos pos, const char *fnname);
 
 /* M23: регистрира fn (топ-левел или impl метод) в fn регистъра */
 static void register_fn(CheckCtx *ctx, Node *item) {
@@ -489,6 +520,51 @@ static Type *resolve_type_node_inner(CheckCtx *ctx, Node *ty) {
                      * "модул.Type" име, за да е консистентен mangling-ът */
                     free(ty->type_name);
                     ty->type_name = strdup(sd->struct_name);
+                }
+                /* M24: generic struct — Pair<i64, str> */
+                if (ty->gen_type_args.len > 0) {
+                    if (!sd || sd->n_struct_params == 0) {
+                        check_error(ctx, ty->pos,
+                            "struct '%s' не е generic — типови аргументи са излишни",
+                            ty->type_name);
+                    } else if (ty->gen_type_args.len != sd->n_struct_params) {
+                        check_error(ctx, ty->pos,
+                            "struct '%s' очаква %d типови аргумента, получих %d",
+                            ty->type_name, sd->n_struct_params, ty->gen_type_args.len);
+                    } else {
+                        Type *gt = type_new(TYPE_STRUCT);
+                        gt->name = strdup(sd->struct_name);
+                        gt->targs = calloc((size_t)ty->gen_type_args.len, sizeof(Type *));
+                        gt->n_targs = ty->gen_type_args.len;
+                        int concrete = 1;
+                        for (int a = 0; a < ty->gen_type_args.len; a++) {
+                            gt->targs[a] = resolve_type_node(ctx, ty->gen_type_args.data[a]);
+                            if (gt->targs[a]->kind == TYPE_VAR ||
+                                gt->targs[a]->kind == TYPE_ERROR)
+                                concrete = 0;
+                        }
+                        /* регистрирай инстанцията (dedup) — codegen емитва
+                         * typedef per инстанция; TYPE_VAR аргументите (в
+                         * сигнатури на generic fn) не са реални инстанции */
+                        if (!concrete) return gt;
+                        int found = -1;
+                        for (int k = 0; k < sd->struct_inst_count; k++) {
+                            int same = 1;
+                            for (int a = 0; a < sd->n_struct_params; a++)
+                                if (!type_eq(sd->struct_inst_targs[k * sd->n_struct_params + a],
+                                             gt->targs[a])) { same = 0; break; }
+                            if (same) { found = k; break; }
+                        }
+                        if (found < 0) {
+                            int idx = sd->struct_inst_count;
+                            sd->struct_inst_targs = realloc(sd->struct_inst_targs,
+                                sizeof(Type *) * (size_t)((idx + 1) * sd->n_struct_params));
+                            for (int a = 0; a < sd->n_struct_params; a++)
+                                sd->struct_inst_targs[idx * sd->n_struct_params + a] = gt->targs[a];
+                            sd->struct_inst_count = idx + 1;
+                        }
+                        return gt;
+                    }
                 }
                 Type *t = type_new(TYPE_STRUCT);
                 t->name = strdup(sd ? sd->struct_name : ty->type_name);
@@ -1235,6 +1311,13 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                     result->ret = gret->ret;
                     result->params = gret->params;
                     result->nparams = gret->nparams;
+                    /* M24: instantiated generic struct резултат */
+                    if (gret->n_targs > 0) {
+                        result->targs = malloc(sizeof(Type *) * (size_t)gret->n_targs);
+                        result->n_targs = gret->n_targs;
+                        for (int a = 0; a < gret->n_targs; a++)
+                            result->targs[a] = gret->targs[a];
+                    }
                     type_merge_effects(result, gret);
                     if (ctx->cur_effects)
                         type_merge_effects(ctx->cur_effects, gret);
@@ -2190,7 +2273,22 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                         for (int fi = 0; fi < sdecl->fields.len; fi++) {
                             Node *fld = sdecl->fields.data[fi];
                             if (strcmp(fld->fld_name, n->field_name) == 0) {
+                                /* M24: полетата на generic struct се резолват
+                                 * под substitution (параметри → targs) */
+                                char **sgn = NULL; Type **sgt = NULL; int sgnc = 0;
+                                subst_save(ctx, &sgn, &sgt, &sgnc);
+                                ctx->g_names.len = 0;
+                                ctx->g_types.len = 0;
+                                if (ot->n_targs > 0 && sdecl->n_struct_params > 0) {
+                                    int nn = ot->n_targs < sdecl->n_struct_params
+                                        ? ot->n_targs : sdecl->n_struct_params;
+                                    for (int a = 0; a < nn; a++) {
+                                        vec_push(ctx->g_names, sdecl->struct_params[a]);
+                                        vec_push(ctx->g_types, ot->targs[a]);
+                                    }
+                                }
                                 t = resolve_type_node(ctx, fld->fld_type);
+                                subst_restore(ctx, sgn, sgt, sgnc);
                                 break;
                             }
                         }
@@ -2252,9 +2350,45 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             else if (!sdecl) {
                 check_error(ctx, n->pos, "непознат struct '%s'", n->lit_name);
             }
+            /* M24: generic struct — bind параметрите (явни или от полета) */
+            int np = sdecl ? sdecl->n_struct_params : 0;
+            Type **sbind = calloc((size_t)(np ? np : 1), sizeof(Type *));
+            for (int a = 0; a < n->lit_type_args.len && a < np; a++)
+                sbind[a] = resolve_type_node(ctx, n->lit_type_args.data[a]);
+            if (np > 0 && n->lit_type_args.len == 0) {
+                /* извод от полетата */
+                for (int i = 0; i < n->n_lit_fields; i++) {
+                    Type *vt = infer(ctx, n->lit_values.data[i]);
+                    for (int fi = 0; fi < sdecl->fields.len; fi++) {
+                        Node *fld = sdecl->fields.data[fi];
+                        if (strcmp(fld->fld_name, n->lit_fields[i]) != 0) continue;
+                        bind_type_params(ctx, fld->fld_type, vt,
+                                         sdecl->struct_params, np, sbind,
+                                         n->pos, n->lit_name);
+                        break;
+                    }
+                }
+            }
+            char **sgn = NULL; Type **sgt = NULL; int sgnc = 0;
+            subst_save(ctx, &sgn, &sgt, &sgnc);
+            ctx->g_names.len = 0;
+            ctx->g_types.len = 0;
+            if (np > 0) {
+                for (int a = 0; a < np; a++) {
+                    if (!sbind[a]) {
+                        check_error(ctx, n->pos,
+                            "struct '%s': не мога да изведа '%s' — дай изрично: %s<%s>(…)",
+                            n->lit_name, sdecl->struct_params[a],
+                            n->lit_name, sdecl->struct_params[a]);
+                        sbind[a] = type_new(TYPE_ERROR);
+                    }
+                    vec_push(ctx->g_names, sdecl->struct_params[a]);
+                    vec_push(ctx->g_types, sbind[a]);
+                }
+            }
             /* check each literal field: name exists + type matches */
             for (int i = 0; i < n->n_lit_fields; i++) {
-                Type *vt = infer(ctx, n->lit_values.data[i]);
+                Type *vt = n->lit_values.data[i]->type;
                 if (!sdecl) continue;
                 int fld_found = 0;
                 for (int fi = 0; fi < sdecl->fields.len; fi++) {
@@ -2297,8 +2431,31 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                 free(n->lit_name);
                 n->lit_name = strdup(sdecl->struct_name);
             }
+            subst_restore(ctx, sgn, sgt, sgnc);
             Type *st = type_new(TYPE_STRUCT);
             st->name = strdup(sdecl ? sdecl->struct_name : n->lit_name);
+            if (np > 0) {
+                st->targs = malloc(sizeof(Type *) * (size_t)np);
+                st->n_targs = np;
+                for (int a = 0; a < np; a++) st->targs[a] = sbind[a];
+                /* регистрирай инстанцията */
+                int found = -1;
+                for (int k = 0; k < sdecl->struct_inst_count; k++) {
+                    int same = 1;
+                    for (int a = 0; a < np; a++)
+                        if (!type_eq(sdecl->struct_inst_targs[k * np + a], st->targs[a])) { same = 0; break; }
+                    if (same) { found = k; break; }
+                }
+                if (found < 0) {
+                    int idx = sdecl->struct_inst_count;
+                    sdecl->struct_inst_targs = realloc(sdecl->struct_inst_targs,
+                        sizeof(Type *) * (size_t)((idx + 1) * np));
+                    for (int a = 0; a < np; a++)
+                        sdecl->struct_inst_targs[idx * np + a] = st->targs[a];
+                    sdecl->struct_inst_count = idx + 1;
+                }
+            }
+            free(sbind);
             t = st;
             break;
         }
@@ -2999,6 +3156,13 @@ static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
     if (strcmp(tn->type_name, "Map") == 0 && at->kind == TYPE_MAP) {
         bind_type_params(ctx, tn->inner_type, at->key, tps, np, bind, pos, fnname);
         bind_type_params(ctx, tn->inner_type2, at->elem, tps, np, bind, pos, fnname);
+    }
+    /* M24: generic struct параметър — Pair<A, B> срещу instantiated тип */
+    if (tn->gen_type_args.len > 0 && at->kind == TYPE_STRUCT && at->n_targs > 0) {
+        int nn = tn->gen_type_args.len < at->n_targs ? tn->gen_type_args.len : at->n_targs;
+        for (int a = 0; a < nn; a++)
+            bind_type_params(ctx, tn->gen_type_args.data[a], at->targs[a],
+                             tps, np, bind, pos, fnname);
     }
 }
 
