@@ -1,0 +1,199 @@
+// enum_box_rc_test — RC5 v0.10: enum в контейнер/struct поле. Drop/scope
+// exit/reassign/overwrite/del на Vec<E>/Map<K,E> release-ват payload-ите на
+// box елементите чрез destructor shim `baga_rc_relf_<E>` (release_E по
+// runtime tag); push/set retain-ват не-fresh аргументи; `s.e = x` release-ва
+// стария payload и retain-ва borrowed дясно; struct с enum поле е
+// транзитивно heap (retain_S/release_S викат retain_E/release_E).
+// (docs/memory-rc-enum-bg.md). Минава с и без --rc.
+
+import "std/str/str.baga"
+
+enum Opt { Some(str), None }
+
+struct Wrap {
+    n: i64,
+    s: str
+}
+
+enum Boxed { BWrap(Wrap), BNone }
+
+struct HasE {
+    s: str,
+    e: Opt
+}
+
+struct OnlyE {
+    e: Opt
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !IO {
+    // 1. drop на Vec<E> — payload-ите на box елементите се release-ват
+    let v1: Vec<Opt> = vec_new()
+    vec_push(v1, Some(concat("dr", "-op")))
+    drop(v1)
+    check("drop_vec", true)
+
+    // 2. scope exit на Vec<E> — същото през release на локала
+    if true {
+        let sc: Vec<Opt> = vec_new()
+        vec_push(sc, Some(concat("sc", "-pe")))
+    }
+    check("scope_vec", true)
+
+    // 3. push на tracked ident (ползван след) — retain; drop е балансиран
+    let o3 = Some(concat("sh", "-rd"))
+    let v3: Vec<Opt> = vec_new()
+    vec_push(v3, o3)
+    check("push_ident", match o3 { Some(s) => s, None => "" } == "sh-rd")
+    drop(v3)
+    check("push_ident_alive", match o3 { Some(s) => s, None => "" } == "sh-rd")
+
+    // 4. move push на last-use ident + drop на вектора
+    let v4: Vec<Opt> = vec_new()
+    if true {
+        let o4 = Some(concat("mo", "-ve"))
+        vec_push(v4, o4)
+    }
+    check("move_push", match vec_get(v4, 0) { Some(s) => s, None => "" } == "mo-ve")
+    drop(v4)
+    check("move_drop", true)
+
+    // 5. vec_set overwrite — старият payload се release-ва
+    let v5: Vec<Opt> = vec_new()
+    vec_push(v5, Some(concat("ov", "-old")))
+    vec_set(v5, 0, Some(concat("ov", "-new")))
+    check("set_ovw", match vec_get(v5, 0) { Some(s) => s, None => "" } == "ov-new")
+
+    // 6. alias-safe: overwrite със собствен елемент — няма underflow
+    vec_set(v5, 0, vec_get(v5, 0))
+    check("set_self", match vec_get(v5, 0) { Some(s) => s, None => "" } == "ov-new")
+
+    // 7. Map<str, E> — set + scope exit
+    if true {
+        let m7: Map<str, Opt> = map_new()
+        map_set(m7, "k", Some(concat("ma", "-p")))
+        check("map_set", match map_get(m7, "k") { Some(s) => s, None => "" } == "ma-p")
+    }
+    check("map_scope", true)
+
+    // 8. map_set overwrite — старият box се release-ва
+    let m8: Map<str, Opt> = map_new()
+    map_set(m8, "k", Some(concat("mo", "-ld")))
+    map_set(m8, "k", Some(concat("mn", "-ew")))
+    check("map_ovw", match map_get(m8, "k") { Some(s) => s, None => "" } == "mn-ew")
+
+    // 9. map_del — release на payload + free на entry
+    map_set(m8, "d", Some(concat("de", "-l")))
+    map_del(m8, "d")
+    check("map_del", !map_has(m8, "d"))
+
+    // 10. alias-safe: map_set със собствената си стойност — няма underflow
+    map_set(m8, "k", map_get(m8, "k"))
+    check("map_self", match map_get(m8, "k") { Some(s) => s, None => "" } == "mn-ew")
+
+    // 11. struct с enum поле — scope exit release-ва payload-а транзитивно
+    if true {
+        let h11 = HasE { s: concat("h", "11"), e: Some(concat("hf", "-ld")) }
+        check("struct_field", match h11.e { Some(s) => s, None => "" } == "hf-ld")
+    }
+    check("struct_scope", true)
+
+    // 12. struct САМО с enum поле — has_heap вече брои enum полета
+    if true {
+        let oe = OnlyE { e: Some(concat("on", "-ly")) }
+        check("only_enum", match oe.e { Some(s) => s, None => "" } == "on-ly")
+    }
+    check("only_enum_scope", true)
+
+    // 13. s.e = свеж ctor — owned; старият payload се release-ва
+    let mut h13 = HasE { s: "h13", e: Some(concat("fo", "-ld")) }
+    h13.e = Some(concat("fn", "-ew"))
+    check("field_ovw", match h13.e { Some(s) => s, None => "" } == "fn-ew")
+
+    // 14. s.e = tracked ident (ползван след) — retain; двамата четат
+    let o14 = Some(concat("fi", "-id"))
+    h13.e = o14
+    check("field_ident", match h13.e { Some(s) => s, None => "" } == "fi-id" &&
+           match o14 { Some(s) => s, None => "" } == "fi-id")
+
+    // 15. s.e = borrowed (vec_get) — retain; полето оцелява drop на източника
+    let mut h15 = HasE { s: "h15", e: None }
+    if true {
+        let src: Vec<Opt> = vec_new()
+        vec_push(src, Some(concat("bo", "-rr")))
+        h15.e = vec_get(src, 0)
+        drop(src)
+    }
+    check("field_borrowed", match h15.e { Some(s) => s, None => "" } == "bo-rr")
+
+    // 16. borrowed enum в struct литерал (vec_get) — retain_E през __rc_sl
+    // (досега: compile error под --rc — cast на enum стойност към void *)
+    let mut h16 = HasE { s: "h16", e: Some(concat("li", "-t")) }
+    if true {
+        let v16: Vec<Opt> = vec_new()
+        vec_push(v16, Some(concat("le", "-mb")))
+        h16 = HasE { s: "h16b", e: vec_get(v16, 0) }
+        drop(v16)
+    }
+    check("lit_borrowed", match h16.e { Some(s) => s, None => "" } == "le-mb")
+
+    // 17. alias на struct с enum поле (източникът ползван след) — retain_S
+    // retain-ва и enum полето; двамата собственици четат
+    let h17 = HasE { s: concat("a", "l"), e: Some(concat("al", "-s")) }
+    let h17b = h17
+    check("struct_alias", match h17.e { Some(s) => s, None => "" } == "al-s" &&
+           match h17b.e { Some(s) => s, None => "" } == "al-s")
+
+    // 18. Vec<E> на enum със struct payload — drop release-ва рекурсивно
+    let v18: Vec<Boxed> = vec_new()
+    vec_push(v18, BWrap(Wrap { n: 7, s: concat("bw", "-x") }))
+    check("struct_payload_box", match vec_get(v18, 0) {
+        BWrap(w) => w.s, BNone => "" } == "bw-x")
+    drop(v18)
+    check("struct_payload_drop", true)
+
+    // 19. vec_slice на Vec<E> — shallow box копие с retain shim; двата
+    // вектора умират на scope exit без underflow (без explicit drop: без
+    // --rc slice-ът споделя box-овете — същото поведение като при struct)
+    if true {
+        let v19: Vec<Opt> = vec_new()
+        vec_push(v19, Some(concat("sl", "-ce")))
+        let sl = vec_slice(v19, 0, 1)
+        check("slice", match vec_get(sl, 0) { Some(s) => s, None => "" } == "sl-ce" &&
+               match vec_get(v19, 0) { Some(s) => s, None => "" } == "sl-ce")
+    }
+    check("slice_scope", true)
+
+    // 20. reassign на Vec<E> локал — старата стойност се release-ва
+    let mut v20: Vec<Opt> = vec_new()
+    vec_push(v20, Some(concat("ra", "-old")))
+    v20 = vec_new()
+    vec_push(v20, Some(concat("ra", "-new")))
+    check("reassign", match vec_get(v20, 0) { Some(s) => s, None => "" } == "ra-new")
+
+    // 21. s.e = None след Some — старият payload се release-ва (payload-less
+    // variant няма какво да се retain-ва)
+    let mut h21 = HasE { s: "h21", e: Some(concat("nn", "-old")) }
+    h21.e = None
+    check("field_none", match h21.e { Some(s) => 1, None => 0 } == 0)
+
+    // 22. move в enum поле — last-use ident без retain; старото release-нато
+    let mut h22 = HasE { s: "h22", e: Some(concat("mo", "-ld")) }
+    if true {
+        let o22 = Some(concat("mv", "-new"))
+        h22.e = o22
+    }
+    check("field_move", match h22.e { Some(s) => s, None => "" } == "mv-new")
+
+    print("enum_box_rc_test: all passed")
+    return 0
+}

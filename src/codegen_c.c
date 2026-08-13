@@ -120,10 +120,15 @@ static int rc_type_node_tag(Node *ty) {
 static Node *find_struct_decl(Codegen *cg, const char *name);
 static Node *find_sum_enum_decl(Codegen *cg, const char *name);
 
+/* RC5 v0.10: взаимна рекурсия struct↔enum (enum поле с heap payload брои) */
+static int rc_enum_has_heap_d(Codegen *cg, Node *item, int depth);
+
 /* RC5: struct с поне едно пряко str/bytes/Vec/Map поле.
  * v0.5: транзитивно — поле от struct тип с heap полета също брои (release_S
  * рекурсира). depth guard срещу лудост при циклични декларации (value-цикъл
- * е невалиден в C, но не разчитаме на checker-а). */
+ * е невалиден в C, но не разчитаме на checker-а).
+ * v0.10: и поле от sum enum тип с heap payload брои (release_S вика
+ * release_E за него). */
 static int rc_struct_has_heap_d(Codegen *cg, const char *name, int depth) {
     if (depth > 32) return 0;
     Node *d = find_struct_decl(cg, name);
@@ -134,9 +139,14 @@ static int rc_struct_has_heap_d(Codegen *cg, const char *name, int depth) {
         Node *t = ft;
         while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
             t = t->inner_type;
-        if (t && t->kind == NODE_TYPE && t->type_name &&
-            rc_struct_has_heap_d(cg, t->type_name, depth + 1))
-            return 1;
+        if (t && t->kind == NODE_TYPE && t->type_name) {
+            if (rc_struct_has_heap_d(cg, t->type_name, depth + 1))
+                return 1;
+            /* RC5 v0.10: enum поле с heap payload */
+            Node *ed = find_sum_enum_decl(cg, t->type_name);
+            if (ed && rc_enum_has_heap_d(cg, ed, depth + 1))
+                return 1;
+        }
     }
     return 0;
 }
@@ -158,16 +168,41 @@ static const char *rc_nested_struct_field(Codegen *cg, Node *fld_type) {
 }
 
 /* RC5 v0.6: enum с поне един variant с heap payload (str/bytes/Vec/Map или
- * struct с heap полета). Enum payload в enum не се брои (leak-safe). */
-static int rc_enum_has_heap(Codegen *cg, Node *item) {
+ * struct с heap полета). Enum payload в enum не се брои (leak-safe).
+ * v0.10: depth-aware — взаимна рекурсия с rc_struct_has_heap_d. */
+static int rc_enum_has_heap_d(Codegen *cg, Node *item, int depth) {
+    if (depth > 32) return 0;
     if (!item || item->kind != NODE_ENUM) return 0;
     for (int j = 0; j < item->n_variants; j++) {
         Node *pt = item->enum_payloads ? item->enum_payloads[j] : NULL;
         if (!pt) continue;
         if (rc_type_node_tag(pt)) return 1;
-        if (rc_nested_struct_field(cg, pt)) return 1;
+        Node *t = pt;
+        while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+            t = t->inner_type;
+        if (t && t->kind == NODE_TYPE && t->type_name &&
+            rc_struct_has_heap_d(cg, t->type_name, depth + 1))
+            return 1;
     }
     return 0;
+}
+
+static int rc_enum_has_heap(Codegen *cg, Node *item) {
+    return rc_enum_has_heap_d(cg, item, 0);
+}
+
+/* RC5 v0.10: име на enum типа на поле-възел, ако е sum enum с heap payload
+ * (иначе NULL). Огледало на rc_nested_struct_field. */
+static const char *rc_nested_enum_field(Codegen *cg, Node *fld_type) {
+    Node *t = fld_type;
+    while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+        t = t->inner_type;
+    if (t && t->kind == NODE_TYPE && t->type_name) {
+        Node *ed = find_sum_enum_decl(cg, t->type_name);
+        if (ed && rc_enum_has_heap(cg, ed))
+            return t->type_name;
+    }
+    return NULL;
 }
 
 static int rc_heap_tag(Codegen *cg, Type *t) {
@@ -369,14 +404,36 @@ static int rc_map_val_tag_node(Node *ty, char *sz, size_t szn) {
 
 /* RC5 v0.2: box destructor за struct елементи/стойности с heap полета —
  * "baga_rc_relf_<S>" или "0" (няма heap полета / не е struct → само free).
- * Container release не знае типа статично, затова получава fn pointer. */
+ * Container release не знае типа статично, затова получава fn pointer.
+ * v0.10: и enum елемент/стойност с heap payload — "baga_rc_relf_<E>"
+ * (release_E по runtime tag; container-ът free-ва box-а след destructor-а). */
 static void rc_box_rel(Codegen *cg, const char *type_name, char *rel, size_t reln) {
     snprintf(rel, reln, "0");
     if (!cg->rc || !type_name) return;
-    if (!rc_struct_has_heap(cg, type_name)) return;
+    int heap = rc_struct_has_heap(cg, type_name);
+    if (!heap) {
+        /* RC5 v0.10 */
+        Node *ed = find_sum_enum_decl(cg, type_name);
+        heap = ed && rc_enum_has_heap(cg, ed);
+    }
+    if (!heap) return;
     char *m = mangle_name(type_name);
     snprintf(rel, reln, "baga_rc_relf_%s", m);
     free(m);
+}
+
+/* RC5 v0.10: елементен/стойностен тип (struct или enum), чийто box изисква
+ * destructor + retain при споделяне — общ предикат за push/set/del/slice
+ * сайтовете (досега бяха struct-only). */
+static int rc_box_tracked(Codegen *cg, Type *et) {
+    if (!cg->rc || !et || !et->name) return 0;
+    if (et->kind == TYPE_STRUCT)
+        return rc_struct_has_heap(cg, et->name);
+    if (et->kind == TYPE_ENUM) {
+        Node *ed = find_sum_enum_decl(cg, et->name);
+        return ed && rc_enum_has_heap(cg, ed);
+    }
+    return 0;
 }
 
 /* RC5 v0.9: destructor за kind 3 (вложен Vec) елементи — "baga_rc_relv_<S>",
@@ -1111,6 +1168,43 @@ static void rc_emit_struct_field_release(Codegen *cg, const char *stname,
     emit_expr(cg, target);
     fprintf(cg->out, "); ");
     free(sm);
+}
+
+/* RC5 v0.10: цел `ident.field`, където ident е track-нат struct локал (tag 5,
+ * не param/dead), а field е enum-типизирано поле с heap payload. Връща името
+ * на enum типа или NULL. Същата плоска граница като v0.4/v0.8. */
+static const char *rc_field_assign_enum(Codegen *cg, Node *target) {
+    if (!cg->rc || !target || target->kind != NODE_FIELD) return NULL;
+    Node *obj = target->field_obj;
+    if (!obj || obj->kind != NODE_IDENT || !target->field_name) return NULL;
+    int idx = rc_find(cg, obj->name);
+    if (idx < 0) return NULL;
+    RcLocal *e = &cg->rc_locals.data[idx];
+    if (e->tag != 5 || e->is_param || e->dead) return NULL;
+    const char *sn = (e->type && e->type->name) ? e->type->name :
+        (e->type_node && e->type_node->type_name) ? e->type_node->type_name : NULL;
+    if (!sn) return NULL;
+    Node *d = find_struct_decl(cg, sn);
+    if (!d) return NULL;
+    for (int i = 0; i < d->fields.len; i++) {
+        Node *fld = d->fields.data[i];
+        if (!fld->fld_name ||
+            strcmp(fld->fld_name, target->field_name) != 0)
+            continue;
+        return rc_nested_enum_field(cg, fld->fld_type);
+    }
+    return NULL;
+}
+
+/* RC5 v0.10: release на старото enum-типизирано поле (в alias-safe ред:
+ * след retain на новото) — release_E по runtime tag от v0.6 */
+static void rc_emit_enum_field_release(Codegen *cg, const char *enname,
+                                       Node *target) {
+    char *em = mangle_name(enname);
+    fprintf(cg->out, "baga_rc_release_%s(", em);
+    emit_expr(cg, target);
+    fprintf(cg->out, "); ");
+    free(em);
 }
 
 /* fresh heap temp ли е този възел? (owned rc=1 резултат по конвенция) */
@@ -1945,8 +2039,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                             fprintf(f, "({ %s _bx = (", mn);
                             emit_expr(cg, n->args.data[1]);
                             fprintf(f, "); ");
-                            if (cg->rc && vt->elem->kind == TYPE_STRUCT &&
-                                rc_struct_has_heap(cg, vt->elem->name)) {
+                            /* RC5 v0.10: rc_box_tracked = struct с heap полета
+                             * или enum с heap payload */
+                            if (rc_box_tracked(cg, vt->elem)) {
                                 Node *va = n->args.data[1];
                                 int mv = 0;
                                 if (va->kind == NODE_IDENT) {
@@ -1957,10 +2052,13 @@ static void emit_expr(Codegen *cg, Node *n) {
                                         cg->rc_cmoves++;
                                         mv = 1;
                                     }
-                                } else if (va->kind == NODE_STRUCT_LIT) {
+                                } else if (va->kind == NODE_STRUCT_LIT ||
+                                           rc_is_enum_ctor(cg, va)) {
                                     /* RC5 v0.2: свеж литерал притежава полетата си
                                      * (fresh или вече retain-нати borrowed) — move в
-                                     * box-а, без втори retain (иначе temp-ът тече) */
+                                     * box-а, без втори retain (иначе temp-ът тече)
+                                     * v0.10: същото за свеж enum ctor — payload-ът е
+                                     * owned от ctor сайта (v0.6) */
                                     mv = 1;
                                 }
                                 if (!mv)
@@ -1973,8 +2071,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                             fprintf(f, "({ %s _bx = (", mn);
                             emit_expr(cg, n->args.data[2]);
                             fprintf(f, "); ");
-                            if (cg->rc && vt->elem->kind == TYPE_STRUCT &&
-                                rc_struct_has_heap(cg, vt->elem->name)) {
+                            /* RC5 v0.10: rc_box_tracked = struct или enum */
+                            if (rc_box_tracked(cg, vt->elem)) {
                                 Node *va = n->args.data[2];
                                 int mv = 0;
                                 if (va->kind == NODE_IDENT) {
@@ -1985,16 +2083,18 @@ static void emit_expr(Codegen *cg, Node *n) {
                                         cg->rc_cmoves++;
                                         mv = 1;
                                     }
-                                } else if (va->kind == NODE_STRUCT_LIT) {
-                                    /* RC5 v0.2: свеж литерал — move в box-а (виж vec_push) */
+                                } else if (va->kind == NODE_STRUCT_LIT ||
+                                           rc_is_enum_ctor(cg, va)) {
+                                    /* RC5 v0.2: свеж литерал — move в box-а (виж vec_push)
+                                     * v0.10: и свеж enum ctor */
                                     mv = 1;
                                 }
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
                             }
-                            if (cg->rc && vt->elem->kind == TYPE_STRUCT &&
-                                rc_struct_has_heap(cg, vt->elem->name)) {
-                                /* RC5 v0.3: release на стария box при overwrite */
+                            if (rc_box_tracked(cg, vt->elem)) {
+                                /* RC5 v0.3: release на стария box при overwrite
+                                 * v0.10: и за enum елементи (relf_<E> по runtime tag) */
                                 fprintf(f, "baga_vec_set_box_rc(");
                                 emit_expr(cg, n->args.data[0]);
                                 fprintf(f, ", ");
@@ -2087,10 +2187,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                         (vt->elem->kind == TYPE_STRUCT ||
                          vt->elem->kind == TYPE_ENUM)) {
                         char *mn = mangle_name(vt->elem->name);
-                        if (cg->rc && vt->elem->kind == TYPE_STRUCT &&
-                            rc_struct_has_heap(cg, vt->elem->name)) {
+                        if (rc_box_tracked(cg, vt->elem)) {
                             /* RC5 v0.2: box копието споделя полетата — retain
-                             * (иначе drop на двата вектора пуска два пъти) */
+                             * (иначе drop на двата вектора пуска два пъти)
+                             * v0.10: и за enum елементи (retp_<E> по runtime tag) */
                             fprintf(f, "baga_%s_box_rc(", bn);
                             for (int i = 0; i < n->args.len; i++) {
                                 if (i > 0) fprintf(f, ", ");
@@ -2140,8 +2240,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                             fprintf(f, "({ %s _bx = (", mn);
                             emit_expr(cg, n->args.data[2]);
                             fprintf(f, "); ");
-                            if (cg->rc && mt->elem->kind == TYPE_STRUCT &&
-                                rc_struct_has_heap(cg, mt->elem->name)) {
+                            /* RC5 v0.10: rc_box_tracked = struct или enum */
+                            if (rc_box_tracked(cg, mt->elem)) {
                                 Node *va = n->args.data[2];
                                 int mv = 0;
                                 if (va->kind == NODE_IDENT) {
@@ -2152,16 +2252,18 @@ static void emit_expr(Codegen *cg, Node *n) {
                                         cg->rc_cmoves++;
                                         mv = 1;
                                     }
-                                } else if (va->kind == NODE_STRUCT_LIT) {
-                                    /* RC5 v0.2: свеж литерал — move в box-а (виж vec_push) */
+                                } else if (va->kind == NODE_STRUCT_LIT ||
+                                           rc_is_enum_ctor(cg, va)) {
+                                    /* RC5 v0.2: свеж литерал — move в box-а (виж vec_push)
+                                     * v0.10: и свеж enum ctor */
                                     mv = 1;
                                 }
                                 if (!mv)
                                     fprintf(f, "baga_rc_retain_%s(_bx); ", mn);
                             }
-                            if (cg->rc && mt->elem->kind == TYPE_STRUCT &&
-                                rc_struct_has_heap(cg, mt->elem->name)) {
-                                /* RC5 v0.3: release на стария box при overwrite */
+                            if (rc_box_tracked(cg, mt->elem)) {
+                                /* RC5 v0.3: release на стария box при overwrite
+                                 * v0.10: и за enum стойности (relf_<E> по runtime tag) */
                                 fprintf(f, "baga_map_set_%s_box_rc(", ksuf);
                                 emit_expr(cg, n->args.data[0]);
                                 fprintf(f, ", ");
@@ -2249,11 +2351,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                         else if (mt->key->kind == TYPE_BYTES) ksuf = "bytes";
                     }
                     /* RC5 v0.3: del на Map<K, S с heap полета> — release на
-                     * полетата + free на pv (иначе откаченото entry тече) */
-                    if (cg->rc && strcmp(bn, "map_del") == 0 && mt &&
-                        mt->kind == TYPE_MAP && mt->elem && mt->elem->name &&
-                        mt->elem->kind == TYPE_STRUCT &&
-                        rc_struct_has_heap(cg, mt->elem->name)) {
+                     * полетата + free на pv (иначе откаченото entry тече)
+                     * v0.10: и Map<K, E с heap payload> (rc_box_tracked) */
+                    if (cg->rc && strcmp(bn, "map_del") == 0 &&
+                        rc_box_tracked(cg, mt && mt->kind == TYPE_MAP ?
+                                       mt->elem : NULL)) {
                         char *mn = mangle_name(mt->elem->name);
                         fprintf(f, "baga_map_del_%s_rc(", ksuf);
                         emit_expr(cg, n->args.data[0]);
@@ -2586,6 +2688,9 @@ static void emit_expr(Codegen *cg, Node *n) {
                                                    sz, sizeof sz, rel, sizeof rel);
                     /* RC5 v0.8: struct-типизирана цел (`s.inner = x`) */
                     const char *fst = rc_field_assign_struct(cg, n->assign_target);
+                    /* RC5 v0.10: enum-типизирана цел (`s.e = x`) */
+                    const char *fen = fst ? NULL :
+                        rc_field_assign_enum(cg, n->assign_target);
                     /* RC2: последна употреба → move (обикновено присвояване,
                      * без retain; източникът умира тук) */
                     if (rc_is_move(cg, n->assign_val, si)) {
@@ -2607,6 +2712,16 @@ static void emit_expr(Codegen *cg, Node *n) {
                             fprintf(f, "; ");
                             rc_emit_struct_field_release(cg, fst,
                                                          n->assign_target);
+                            emit_expr(cg, n->assign_target);
+                            fprintf(f, " = __rc_fa; __rc_fa; })");
+                        } else if (fen) {
+                            /* RC5 v0.10: move в enum поле — без retain;
+                             * старото поле се release-ва по runtime tag */
+                            fprintf(f, "({ __auto_type __rc_fa = ");
+                            emit_expr(cg, n->assign_val);
+                            fprintf(f, "; ");
+                            rc_emit_enum_field_release(cg, fen,
+                                                       n->assign_target);
                             emit_expr(cg, n->assign_target);
                             fprintf(f, " = __rc_fa; __rc_fa; })");
                         } else {
@@ -2631,10 +2746,15 @@ static void emit_expr(Codegen *cg, Node *n) {
                          * retain_<T> на новото, после release_<T> на старото */
                         rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
                         rc_emit_struct_field_release(cg, fst, n->assign_target);
+                    } else if (fen) {
+                        /* RC5 v0.10: същият alias-safe ред за enum поле —
+                         * retain_E на новото (tag 6), после release_E на старото */
+                        rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
+                        rc_emit_enum_field_release(cg, fen, n->assign_target);
                     }
                     emit_expr(cg, n->assign_target);
                     fprintf(f, " = __rc_fa; ");
-                    if (!ftag && !fst)
+                    if (!ftag && !fst && !fen)
                         rc_emit_retain_val(cg, src.tag, src.type, src.type_node, "__rc_fa");
                     fprintf(f, "__rc_fa; })");
                     break;
@@ -2679,6 +2799,27 @@ static void emit_expr(Codegen *cg, Node *n) {
                         free(fm);
                     }
                     rc_emit_struct_field_release(cg, fst, n->assign_target);
+                    emit_expr(cg, n->assign_target);
+                    fprintf(f, " = __rc_fa; __rc_fa; })");
+                    break;
+                }
+                /* RC5 v0.10: не-ident дясно в enum-типизирано поле. Свеж ctor
+                 * е owned (без retain — payload-ът е балансиран от ctor сайта,
+                 * v0.6); всичко останало (call/поле/vec_get/untrack-нат ident)
+                 * се retain-ва — enum fn резултатът може да е borrowed (същата
+                 * §v0.7 граница като struct), посоката е leak-safe. Старото
+                 * поле се release-ва по runtime tag след retain-а (alias-safe). */
+                const char *fen = rc_field_assign_enum(cg, n->assign_target);
+                if (fen) {
+                    fprintf(f, "({ __auto_type __rc_fa = ");
+                    emit_expr(cg, n->assign_val);
+                    fprintf(f, "; ");
+                    if (!rc_is_enum_ctor(cg, n->assign_val)) {
+                        char *fm = mangle_name(fen);
+                        fprintf(f, "baga_rc_retain_%s(__rc_fa); ", fm);
+                        free(fm);
+                    }
+                    rc_emit_enum_field_release(cg, fen, n->assign_target);
                     emit_expr(cg, n->assign_target);
                     fprintf(f, " = __rc_fa; __rc_fa; })");
                     break;
@@ -2744,6 +2885,19 @@ static void emit_expr(Codegen *cg, Node *n) {
                         char *fm2 = mangle_name(n->lit_fields[i]);
                         if (vltag == 5) {
                             /* RC5 v0.5: borrowed вложен struct — retain_<T> */
+                            const char *vn = val->type && val->type->name ?
+                                val->type->name : NULL;
+                            if (vn) {
+                                char *vm = mangle_name(vn);
+                                fprintf(f, "baga_rc_retain_%s(__rc_sl.%s); ",
+                                        vm, fm2);
+                                free(vm);
+                            }
+                        }
+                        else if (vltag == 6) {
+                            /* RC5 v0.10: borrowed enum — retain_E по runtime
+                             * tag (досега падаше в generic cast към void * —
+                             * compile error под --rc) */
                             const char *vn = val->type && val->type->name ?
                                 val->type->name : NULL;
                             if (vn) {
@@ -3886,6 +4040,14 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
                 char *nm = mangle_name(nn);
                 fprintf(f, "    baga_rc_retain_%s(s.%s);\n", nm, fm);
                 free(nm);
+            } else {
+                /* RC5 v0.10: enum поле — retain_E по runtime tag */
+                const char *en = rc_nested_enum_field(cg, fld->fld_type);
+                if (en) {
+                    char *nm = mangle_name(en);
+                    fprintf(f, "    baga_rc_retain_%s(s.%s);\n", nm, fm);
+                    free(nm);
+                }
             }
             free(fm);
             continue;
@@ -3909,6 +4071,14 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
                 char *nm = mangle_name(nn);
                 fprintf(f, "    baga_rc_release_%s(s.%s);\n", nm, fm);
                 free(nm);
+            } else {
+                /* RC5 v0.10: enum поле — release_E по runtime tag */
+                const char *en = rc_nested_enum_field(cg, fld->fld_type);
+                if (en) {
+                    char *nm = mangle_name(en);
+                    fprintf(f, "    baga_rc_release_%s(s.%s);\n", nm, fm);
+                    free(nm);
+                }
             }
             free(fm);
             continue;
@@ -4015,6 +4185,13 @@ static void emit_rc_enum_helpers(Codegen *cg, Node *item) {
         }
         fprintf(f, "    }\n}\n");
     }
+    /* RC5 v0.10: shim-ове за box елементи/стойности във Vec/Map — release/
+     * retain на payload-а през указател (container drop/set/del/slice не
+     * знаят типа статично). Огледало на struct relf/retp от v0.2. */
+    fprintf(f, "static void baga_rc_relf_%s(void *p) { baga_rc_release_%s(*(%s *)p); }\n",
+            em, em, em);
+    fprintf(f, "static void baga_rc_retp_%s(void *p) { baga_rc_retain_%s(*(%s *)p); }\n",
+            em, em, em);
     fprintf(f, "\n");
     free(em);
 }
@@ -4172,6 +4349,10 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
                 char *m = mangle_name(it->enum_name);
                 fprintf(cg->out, "static inline void baga_rc_retain_%s(%s e);\n", m, m);
                 fprintf(cg->out, "static inline void baga_rc_release_%s(%s e);\n", m, m);
+                /* RC5 v0.10: и box shim-овете (struct с Vec<E>/Map<K,E> поле
+                 * реферира relf/retp на по-късен enum) */
+                fprintf(cg->out, "static void baga_rc_relf_%s(void *p);\n", m);
+                fprintf(cg->out, "static void baga_rc_retp_%s(void *p);\n", m);
                 free(m);
             }
         }

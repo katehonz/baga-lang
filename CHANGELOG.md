@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.10 enum в контейнер/struct поле (зад `--rc`)
+- Drop/scope exit/reassign/`drop()` на `Vec<E>`/`Map<K,E>` (E = sum enum с
+  heap payload, v0.6) release-ват payload-ите на box елементите: `rc_box_rel`
+  вече резолвира и enum типове — codegen генерира shim-ове
+  `baga_rc_relf_<E>`/`baga_rc_retp_<E>` (release_E/retain_E по runtime tag
+  през указател) до struct-овите от v0.2. Същият shim покрива `vec_set`/
+  `map_set` overwrite (`*_box_rc` вариантите от v0.3) и `map_del`
+  (`baga_map_del_*_rc`).
+- Push/set сайтовете (`vec_push`/`vec_set`/`map_set`) за enum елемент/
+  стойност: свеж ctor е move (payload-ът е owned от ctor сайта, v0.6);
+  last-use ident е move (RC2); всичко останало (ident, borrowed, call
+  резултат) се retain-ва — задължително, щом drop вече release-ва
+  payload-ите. `vec_slice`/`vec_concat` на `Vec<E>` вървят през
+  `*_box_rc` с `retp_<E>` shim (shallow box копия). Общ предикат:
+  `rc_box_tracked` (struct с heap полета или enum с heap payload).
+- `s.e = x` (enum-типизирано поле на track-нат struct локал): release_E на
+  стария payload преди assign, retain_E на borrowed/неразличимо дясно
+  (alias-safe ред като v0.4/v0.8), move при last-use ident, owned при свеж
+  ctor. Механизъм: `rc_field_assign_enum` + `rc_emit_enum_field_release`.
+- Struct с enum поле: `rc_struct_has_heap` е транзитивен и през enum полета
+  (depth-aware взаимна рекурсия `rc_struct_has_heap_d`↔`rc_enum_has_heap_d`),
+  `retain_S`/`release_S` викат `retain_E`/`release_E` за тях
+  (`rc_nested_enum_field`). Покрива и struct САМО с enum поле.
+- Бонус фикс: borrowed enum (`vec_get(...)`/поле), вграден директно в struct
+  литерал, emit-ваше `baga_rc_retain((void *)__rc_sl.<field>)` върху enum
+  стойност — compile error под `--rc`. Сега tag 6 отива в `retain_E`.
+- Граници (leak-safe): enum payload в enum payload не се брои (както v0.6);
+  `Vec<Vec<E>>` — shim-ът за вложен Vec е struct-only (v0.9), enum най-
+  вътрешен елемент тече както досега; `s.e = f()` с fresh enum fn резултат
+  leak-ва една референция (§v0.7 неразличимост borrowed/fresh); само плоско
+  `ident.field`.
+- `tests/enum_box_rc_test.baga` (22 случая, минава с и без `--rc`). Leak
+  repro 500k итерации (Vec<E> push+drop, map_set overwrite, `s.e = x`
+  overwrite, struct с enum поле scope exit): RSS 93.5 MB → 10.2 MB. Без
+  флаг: бит-идентичен emit-c (6 файла `cmp` срещу base build).
+
 ### runtime — RC5 v0.9 `Vec<S>` във `Vec` (вложен контейнер, зад `--rc`)
 - Drop/scope exit/reassign/field overwrite на `Vec<Vec<S>>` (S = struct с
   heap полета) release-ват полетата на S-овете във вътрешния vec: kind 3 на

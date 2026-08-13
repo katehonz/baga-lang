@@ -81,7 +81,9 @@ heap полета (транзитивно, `rc_nested_struct_field` от v0.5), 
 Release е рекурсивният `baga_rc_release_<Inner>` от v0.5 (по-дълбока
 вложеност се покрива транзитивно). Само плоско `ident.field` — същата
 граница като v0.4 (`a.b.c = x` би оценил целта два пъти). Enum-типизирано
-поле не се покрива (както enum като struct поле изобщо — v0.6 не-цел).
+поле не се покрива от v0.8 — **РЕШЕНО в v0.10**
+(`docs/memory-rc-enum-bg.md`: `s.e = x` + транзитивен `has_heap` през
+enum полета).
 
 Измерено: 500k итерации `o.inner = Inner { s: concat(...) }` — RSS
 24.9 MB → 10.6 MB. Тест: `tests/nested_assign_rc_test.baga` (12 случая).

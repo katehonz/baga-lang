@@ -22,7 +22,7 @@
 1. `make` — чист build.
 2. RC батерия: `rc_test move_test borrow_test cmove_test temp_test
    struct_rc_test enum_rc_test calltemp_rc_test nested_assign_rc_test
-   vecvec_rc_test http_test pg_test
+   vecvec_rc_test enum_box_rc_test http_test pg_test
    std/sumtype_test mem_rewind_test` — всички с `--rc` PASS:
    `./baga --rc -I . -I app-product tests/<t>.baga`
 3. ASan+UBSan върху същите: `--emit-c` → `gcc -g -O1
@@ -102,12 +102,19 @@ release; `tests/nested_assign_rc_test.baga`; RSS 24.9 MB → 10.6 MB на
 `vec_set` overwrite на външния (`*_rc` варианти); `Map<K, Vec<S>>` не
 съществува в езика (checker я отхвърля); дълбочина >2 и `Vec<Vec<str>>`
 остават leak-safe граница (`tests/vecvec_rc_test.baga`; RSS 48.5 MB →
-10.8 MB на 500k push+drop и vec_set overwrite). Батерията вече е 158
+10.8 MB на 500k push+drop и vec_set overwrite). v0.10: enum в
+контейнер/struct поле — `Vec<E>`/`Map<K,E>` drop/overwrite/del през shim
+`baga_rc_relf_<E>`, push/set retain-ват не-fresh аргументи, `s.e = x`
+release-ва стария payload (alias-safe), `has_heap`/`retain_S`/`release_S`
+са транзитивни през enum полета; бонус: borrowed enum в struct литерал
+(compile error под --rc) вече е `retain_E` (`tests/enum_box_rc_test.baga`;
+RSS 93.5 MB → 10.2 MB на 500k push+drop/overwrite/field цикли).
+Батерията вече е 158
 файла (152/157 + новия тест — пълната батерия се пуска след merge).
 Останало:
 struct/enum box temp от call
 (borrowed резултат — неразличим),
-enum в контейнер/struct поле, match scrutinee temp.
+match scrutinee temp.
 
 ## Забранено / внимание
 
