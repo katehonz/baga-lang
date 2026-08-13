@@ -1,0 +1,140 @@
+// vecvec_rc_test — RC5 v0.9: Vec<S> във Vec (вложен контейнер със struct
+// елементи). Drop/scope exit/reassign/vec_set overwrite на външния Vec
+// release-ват полетата на S-овете във вътрешния чрез destructor shim
+// `baga_rc_relv_<S>` (docs/memory-rc-struct-bg.md). Минава с и без --rc.
+
+import "std/str/str.baga"
+
+struct Wrap {
+    n: i64,
+    s: str
+}
+
+struct Holder {
+    rows: Vec<Vec<Wrap>>,
+    tag: str
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn mkrow(t: str) -> Vec<Wrap> {
+    let r: Vec<Wrap> = vec_new()
+    vec_push(r, Wrap { n: 1, s: concat("mk", t) })
+    return r
+}
+
+fn main() -> i64 !IO {
+    // 1. drop на Vec<Vec<S>> — полетата на S-овете във вътрешния се release-ват
+    let outer: Vec<Vec<Wrap>> = vec_new()
+    let r1: Vec<Wrap> = vec_new()
+    vec_push(r1, Wrap { n: 1, s: concat("dr", "-op") })
+    vec_push(outer, r1)
+    drop(outer)
+    check("drop_vvs", true)
+
+    // 2. scope exit на Vec<Vec<S>> — същото през release на локала
+    if true {
+        let sc: Vec<Vec<Wrap>> = vec_new()
+        let r2: Vec<Wrap> = vec_new()
+        vec_push(r2, Wrap { n: 2, s: concat("sc", "-pe") })
+        vec_push(sc, r2)
+    }
+    check("scope_vvs", true)
+
+    // 3. move push на last-use вътрешен vec + drop на външния
+    let mv: Vec<Vec<Wrap>> = vec_new()
+    if true {
+        let r3: Vec<Wrap> = vec_new()
+        vec_push(r3, Wrap { n: 3, s: concat("mo", "-ve") })
+        vec_push(mv, r3)
+    }
+    check("move_push", vec_get(vec_get(mv, 0), 0).s == "mo-ve")
+    drop(mv)
+    check("move_drop", true)
+
+    // 4. не-last-use inner — retain; shared оцелява смъртта на външния
+    // (scope exit, не drop — без --rc drop(outer) free-ва споделения inner)
+    let shared: Vec<Wrap> = vec_new()
+    vec_push(shared, Wrap { n: 4, s: concat("sh", "-rd") })
+    if true {
+        let keep: Vec<Vec<Wrap>> = vec_new()
+        vec_push(keep, shared)
+        check("shared_inner", vec_get(shared, 0).s == "sh-rd" &&
+              vec_get(vec_get(keep, 0), 0).s == "sh-rd")
+    }
+    check("shared_after_scope", vec_get(shared, 0).s == "sh-rd")
+
+    // 5. vec_set overwrite на външния — старият inner се release-ва рекурсивно
+    let ov: Vec<Vec<Wrap>> = vec_new()
+    let o1: Vec<Wrap> = vec_new()
+    vec_push(o1, Wrap { n: 5, s: concat("ov", "-old") })
+    vec_push(ov, o1)
+    vec_set(ov, 0, mkrow("-new"))
+    check("set_ovw", vec_get(vec_get(ov, 0), 0).s == "mk-new")
+
+    // 6. alias-safe: overwrite със собствен елемент — няма underflow
+    vec_set(ov, 0, vec_get(ov, 0))
+    check("set_self", vec_get(vec_get(ov, 0), 0).s == "mk-new")
+
+    // 7. reassign на Vec<Vec<S>> локал — старата стойност се release-ва
+    let mut ra: Vec<Vec<Wrap>> = vec_new()
+    let r7: Vec<Wrap> = vec_new()
+    vec_push(r7, Wrap { n: 7, s: concat("ra", "-old") })
+    vec_push(ra, r7)
+    ra = vec_new()
+    let r7b: Vec<Wrap> = vec_new()
+    vec_push(r7b, Wrap { n: 8, s: concat("ra", "-new") })
+    vec_push(ra, r7b)
+    check("reassign", vec_get(vec_get(ra, 0), 0).s == "ra-new")
+
+    // 8. struct поле Vec<Vec<S>> — drop на struct-а release-ва транзитивно
+    let h = Holder { rows: vec_new(), tag: "h" }
+    let r8: Vec<Wrap> = vec_new()
+    vec_push(r8, Wrap { n: 9, s: concat("ho", "-ld") })
+    vec_push(h.rows, r8)
+    check("struct_field", vec_get(vec_get(h.rows, 0), 0).s == "ho-ld" && h.tag == "h")
+
+    // 9. field overwrite на Vec<Vec<S>> поле — старото поле се release-ва
+    let mut h2 = Holder { rows: vec_new(), tag: "h2" }
+    let r9: Vec<Wrap> = vec_new()
+    vec_push(r9, Wrap { n: 10, s: concat("fo", "-ld") })
+    vec_push(h2.rows, r9)
+    h2.rows = vec_new()
+    let r9b: Vec<Wrap> = vec_new()
+    vec_push(r9b, Wrap { n: 11, s: concat("fn", "-ew") })
+    vec_push(h2.rows, r9b)
+    check("field_ovw", vec_get(vec_get(h2.rows, 0), 0).s == "fn-ew")
+
+    // 10. vec_get borrowed binding — retain при връзване, балансиран release
+    let bg: Vec<Vec<Wrap>> = vec_new()
+    let r10: Vec<Wrap> = vec_new()
+    vec_push(r10, Wrap { n: 12, s: concat("bo", "-rr") })
+    vec_push(bg, r10)
+    if true {
+        let b = vec_get(bg, 0)
+        check("borrowed_get", vec_get(b, 0).s == "bo-rr")
+    }
+    check("borrowed_alive", vec_get(vec_get(bg, 0), 0).s == "bo-rr")
+
+    // 11. дълбочина 3 (Vec<Vec<Vec<S>>>) — документирана граница: leak-safe,
+    // без корупция (най-вътрешните S полета още текат)
+    let deep: Vec<Vec<Vec<Wrap>>> = vec_new()
+    let d1: Vec<Vec<Wrap>> = vec_new()
+    let r11: Vec<Wrap> = vec_new()
+    vec_push(r11, Wrap { n: 13, s: concat("de", "-ep") })
+    vec_push(d1, r11)
+    vec_push(deep, d1)
+    check("deep_read", vec_get(vec_get(vec_get(deep, 0), 0), 0).s == "de-ep")
+    drop(deep)
+    check("deep_drop_safe", true)
+
+    print("vecvec_rc_test: all passed")
+    return 0
+}

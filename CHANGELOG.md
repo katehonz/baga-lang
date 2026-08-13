@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.9 `Vec<S>` във `Vec` (вложен контейнер, зад `--rc`)
+- Drop/scope exit/reassign/field overwrite на `Vec<Vec<S>>` (S = struct с
+  heap полета) release-ват полетата на S-овете във вътрешния vec: kind 3 на
+  `baga_rc_release_vec` вече приема destructor (`elem_rel`); codegen
+  генерира shim `baga_rc_relv_<S>` (до `relf`/`retp` от v0.2) и го подава
+  от всички release сайтове (scope exit, temp release, `drop()`, reassign,
+  `s.f = x`, `release_S`/`release_E` за Vec поле/payload). Покрива и
+  транзитивни случаи (struct с `Vec<Vec<S>>` поле в контейнер).
+- `vec_set` overwrite на външния върви през нови
+  `baga_vec_set_vec_rc`/`baga_vec_set_vec_move_rc` (destructor fn pointer;
+  retain на новия преди release на стария — alias-safe).
+  `Map<K, Vec<S>>` не се покрива от checker-а изобщо (Vec не е валидна Map
+  стойност) — няма какво да се пипа там.
+- Граница (leak-safe, не корупция): дълбочина >2 (`Vec<Vec<Vec<S>>>`) и
+  `Vec<Vec<str>>` остават на старото поведение — shim-ът е едно ниво, а
+  str/bytes вътрешни елементи нямат shim. Enum като най-вътрешен елемент
+  също (както v0.2 не покрива enum box-ове).
+- `tests/vecvec_rc_test.baga` (15 случая, минава с и без `--rc`). Leak
+  repro 500k push+drop и 500k vec_set overwrite: RSS 48.5 MB → 10.8 MB
+  (като leak-free базата от v0.2). Без флаг: бит-идентичен emit-c.
+
 ### runtime — RC5 v0.8 `s.inner = x` (struct-типизирана цел, зад `--rc`)
 - Field assign върху struct-типизирано поле (с heap полета, транзитивно)
   на track-нат struct локал: старото поле се release-ва рекурсивно

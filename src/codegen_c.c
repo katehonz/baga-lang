@@ -379,6 +379,39 @@ static void rc_box_rel(Codegen *cg, const char *type_name, char *rel, size_t rel
     free(m);
 }
 
+/* RC5 v0.9: destructor за kind 3 (вложен Vec) елементи — "baga_rc_relv_<S>",
+ * когато елементът е Vec<S> и S е struct с heap полета; иначе "0" (старото
+ * поведение: вътрешният vec се release-ва като kind 0 и S полетата текат —
+ * leak-safe). Shim-ът е едно ниво: Vec<Vec<Vec<S>>> остава на старото
+ * поведение (документирана граница). */
+static void rc_nested_vec_rel_type(Codegen *cg, Type *vty, char *rel, size_t reln) {
+    snprintf(rel, reln, "0");
+    if (!cg->rc || !vty || !vty->elem) return;
+    Type *inner = vty->elem;
+    if (inner->kind != TYPE_VEC || !inner->elem) return;
+    Type *es = inner->elem;
+    if (es->kind != TYPE_STRUCT || !es->name ||
+        !rc_struct_has_heap(cg, es->name)) return;
+    char *m = mangle_name(es->name);
+    snprintf(rel, reln, "baga_rc_relv_%s", m);
+    free(m);
+}
+
+/* същият resolver, но от анотационен type AST възел (`let v: Vec<Vec<S>>`) */
+static void rc_nested_vec_rel_node(Codegen *cg, Node *ty, char *rel, size_t reln) {
+    snprintf(rel, reln, "0");
+    if (!cg->rc || !ty) return;
+    Node *inner = ty->inner_type;
+    if (!inner || inner->kind != NODE_TYPE || !inner->type_name ||
+        strcmp(inner->type_name, "Vec") != 0) return;
+    Node *es = inner->inner_type;
+    if (!es || es->kind != NODE_TYPE || !es->type_name ||
+        !rc_struct_has_heap(cg, es->type_name)) return;
+    char *m = mangle_name(es->type_name);
+    snprintf(rel, reln, "baga_rc_relv_%s", m);
+    free(m);
+}
+
 /* елементен/стойностен тип на Vec/Map локал (inferred Type, после анотация) */
 static const char *rc_vec_elem_name(RcLocal *e) {
     if (e->type && e->type->elem && e->type->elem->name)
@@ -411,6 +444,13 @@ static int rc_map_tag_of(RcLocal *e, char *sz, size_t szn) {
     return t;
 }
 
+/* RC5 v0.9: комбиниран nested resolver — inferred Type първо, анотация после */
+static void rc_vec_nested_rel_of(Codegen *cg, RcLocal *e, char *rel, size_t reln) {
+    rc_nested_vec_rel_type(cg, e->type, rel, reln);
+    if (strcmp(rel, "0") == 0 && e->type_node)
+        rc_nested_vec_rel_node(cg, e->type_node, rel, reln);
+}
+
 /* emit-ва един release ред (отстъпка + newline) за локал от стека */
 static void rc_emit_release(Codegen *cg, RcLocal *e) {
     FILE *f = cg->out;
@@ -421,9 +461,12 @@ static void rc_emit_release(Codegen *cg, RcLocal *e) {
         case 2: fprintf(f, "baga_rc_release_bytes(%s);\n", e->name); break;
         case 3: {
             char rel[160];
+            int k = rc_vec_kind_of(e, sz, sizeof sz);
             rc_box_rel(cg, rc_vec_elem_name(e), rel, sizeof rel);
+            /* RC5 v0.9: вложен Vec<S> — destructor за S полетата на вътрешния */
+            if (k == 3) rc_vec_nested_rel_of(cg, e, rel, sizeof rel);
             fprintf(f, "baga_rc_release_vec(%s, %d, %s, %s);\n", e->name,
-                    rc_vec_kind_of(e, sz, sizeof sz), sz, rel);
+                    k, sz, rel);
             break;
         }
         case 4: {
@@ -1002,6 +1045,8 @@ static int rc_field_assign_tag(Codegen *cg, Node *target, int *kind,
             Node *et = fld->fld_type->inner_type;
             rc_box_rel(cg, (et && et->kind == NODE_TYPE) ? et->type_name : NULL,
                        rel, reln);
+            /* RC5 v0.9: вложен Vec<S> — destructor за S полетата */
+            if (*kind == 3) rc_nested_vec_rel_node(cg, fld->fld_type, rel, reln);
         } else if (tag == 4) {
             *kind = rc_map_val_tag_node(fld->fld_type, sz, szn);
             Node *vt = fld->fld_type->inner_type2;
@@ -1798,6 +1843,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                             int vk = rc_vec_elem_kind(at, sz, sizeof sz);
                             rc_box_rel(cg, (at->elem && at->elem->name) ?
                                        at->elem->name : NULL, rel, sizeof rel);
+                            /* RC5 v0.9: вложен Vec<S> — destructor за S полетата */
+                            if (vk == 3) rc_nested_vec_rel_type(cg, at, rel, sizeof rel);
                             fprintf(f, "baga_rc_release_vec(");
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ", %d, %s, %s)", vk, sz, rel);
@@ -2003,6 +2050,25 @@ static void emit_expr(Codegen *cg, Node *n) {
                              * на struct не retain-ва) — посоката е leak-safe. */
                             cg->rc_cmoves++;
                             mv = 1;
+                        }
+                    }
+                    /* RC5 v0.9: vec_set overwrite на Vec<Vec<S>> — старият
+                     * вътрешен vec се release-ва с destructor за S полетата
+                     * (generic helper-ът го пуска като kind 0 — тече). */
+                    if (cg->rc && strcmp(bn, "vec_set") == 0 &&
+                        strcmp(suf, "vec") == 0) {
+                        char nrel[160];
+                        rc_nested_vec_rel_type(cg, vt, nrel, sizeof nrel);
+                        if (strcmp(nrel, "0") != 0) {
+                            fprintf(f, "baga_vec_set_vec%s_rc(",
+                                    mv ? "_move" : "");
+                            for (int i = 0; i < n->args.len; i++) {
+                                if (i > 0) fprintf(f, ", ");
+                                emit_expr(cg, n->args.data[i]);
+                            }
+                            fprintf(f, ", %s)", nrel);
+                            if (tmp_mv >= 0) rc_tmp_consume(cg, tmp_mv);
+                            goto call_done;
                         }
                     }
                     fprintf(f, "baga_%s_%s%s(", bn, suf, mv ? "_move" : "");
@@ -2468,6 +2534,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                         case 3: {
                             char rel[160];
                             rc_box_rel(cg, rc_vec_elem_name(&e), rel, sizeof rel);
+                            /* RC5 v0.9: вложен Vec<S> — destructor за S полетата */
+                            if (vkind == 3) rc_vec_nested_rel_of(cg, &e, rel, sizeof rel);
                             fprintf(f, "baga_rc_release_vec(%s, %d, %s, %s); ",
                                     e.name, vkind, sz, rel);
                             break;
@@ -3855,6 +3923,8 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
             Node *et = fld->fld_type->inner_type;
             rc_box_rel(cg, (et && et->kind == NODE_TYPE) ? et->type_name : NULL,
                        rel, sizeof rel);
+            /* RC5 v0.9: вложен Vec<S> — destructor за S полетата */
+            if (k == 3) rc_nested_vec_rel_node(cg, fld->fld_type, rel, sizeof rel);
             fprintf(f, "    baga_rc_release_vec(s.%s, %d, %s, %s);\n", fm, k, sz, rel);
         } else if (tag == 4) {
             char sz[160], rel[160];
@@ -3873,6 +3943,11 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
     fprintf(f, "static void baga_rc_relf_%s(void *p) { baga_rc_release_%s(*(%s *)p); }\n",
             m, m, m);
     fprintf(f, "static void baga_rc_retp_%s(void *p) { baga_rc_retain_%s(*(%s *)p); }\n\n",
+            m, m, m);
+    /* RC5 v0.9: shim за Vec<S> като елемент на външен Vec — release на box
+     * елементите на вътрешния vec през relf (kind 3 на външния не знае
+     * елементния тип на вложения). */
+    fprintf(f, "static void baga_rc_relv_%s(void *p) { baga_rc_release_vec((baga_Vec *)p, 2, (int64_t)sizeof(%s), baga_rc_relf_%s); }\n",
             m, m, m);
     free(m);
 }
@@ -3922,6 +3997,8 @@ static void emit_rc_enum_helpers(Codegen *cg, Node *item) {
                     Node *et = pt->inner_type;
                     rc_box_rel(cg, (et && et->kind == NODE_TYPE) ?
                                et->type_name : NULL, rel, sizeof rel);
+                    /* RC5 v0.9: вложен Vec<S> — destructor за S полетата */
+                    if (k == 3) rc_nested_vec_rel_node(cg, pt, rel, sizeof rel);
                     fprintf(f, "        case %d: baga_rc_release_vec(e.u.v_%s, %d, %s, %s); break;\n",
                             j, vm, k, sz, rel);
                 } else if (tag == 4) {
@@ -4087,6 +4164,9 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
                 fprintf(cg->out, "static inline void baga_rc_release_%s(%s s);\n", m, m);
                 fprintf(cg->out, "static void baga_rc_relf_%s(void *p);\n", m);
                 fprintf(cg->out, "static void baga_rc_retp_%s(void *p);\n", m);
+                /* RC5 v0.9: и nested vec shim-ът (Vec<Vec<S>> поле на
+                 * по-ранен struct реферира relv на по-късен) */
+                fprintf(cg->out, "static void baga_rc_relv_%s(void *p);\n", m);
                 free(m);
             } else if (it->kind == NODE_ENUM && rc_enum_has_heap(cg, it)) {
                 char *m = mangle_name(it->enum_name);
@@ -4748,7 +4828,9 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * elem_kind (0 inline, 1 str, 2 struct box, 3 nested vec, 4 bytes box),
      * после free на data + struct. Nested (3) release-ва вътрешните като
      * kind 0 — елементният им тип не е известен по време на изпълнение.
-     * RC5 v0.2: elem_rel е destructor на box полетата (NULL → само free). */
+     * RC5 v0.2: elem_rel е destructor на box полетата (NULL → само free).
+     * RC5 v0.9: при kind 3 elem_rel е destructor на вложения Vec<S>
+     * (baga_rc_relv_<S>; NULL → старото поведение, S полетата текат). */
     if (cg->rc) {
         fprintf(out, "static void baga_rc_release_vec(baga_Vec *v, int elem_kind, int64_t elem_size, void (*elem_rel)(void *)) {\n");
         fprintf(out, "    if (!v) return;\n");
@@ -4761,7 +4843,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    else if (elem_kind == 2)\n");
         fprintf(out, "        for (int64_t i = 0; i < v->len; i++) { if (elem_rel) elem_rel(v->data[i]); baga_free(v->data[i], elem_size); }\n");
         fprintf(out, "    else if (elem_kind == 3)\n");
-        fprintf(out, "        for (int64_t i = 0; i < v->len; i++) baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0, NULL);\n");
+        fprintf(out, "        for (int64_t i = 0; i < v->len; i++) { if (elem_rel) elem_rel(v->data[i]); else baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0, NULL); }\n");
         fprintf(out, "    else if (elem_kind == 4)\n");
         fprintf(out, "        for (int64_t i = 0; i < v->len; i++) { baga_bytes *bb = (baga_bytes *)v->data[i]; baga_rc_release_bytes(*bb); baga_free(bb, elem_size); }\n");
         fprintf(out, "    baga_free(v->data, v->cap * 8);\n");
@@ -4969,6 +5051,17 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "static void baga_vec_set_vec_move(baga_Vec *v, int64_t i, baga_Vec *x) {\n");
         fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
         fprintf(out, "    baga_rc_release_vec((baga_Vec *)v->data[i], 0, 0, NULL); v->data[i] = (void *)x; }\n");
+    }
+    /* RC5 v0.9: overwrite на Vec<Vec<S>> — release на стария вътрешен vec с
+     * destructor за S полетата (elem_rel = baga_rc_relv_<S>). Retain на новия
+     * преди release на стария (alias-safe ред, както set_vec по-горе). */
+    if (cg->rc) {
+        fprintf(out, "static void baga_vec_set_vec_rc(baga_Vec *v, int64_t i, baga_Vec *x, void (*elem_rel)(void *)) {\n");
+        fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+        fprintf(out, "    baga_rc_retain((void *)x); elem_rel(v->data[i]); v->data[i] = (void *)x; }\n");
+        fprintf(out, "static void baga_vec_set_vec_move_rc(baga_Vec *v, int64_t i, baga_Vec *x, void (*elem_rel)(void *)) {\n");
+        fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"vec_set\", i, v->len);\n");
+        fprintf(out, "    elem_rel(v->data[i]); v->data[i] = (void *)x; }\n");
     }
     fprintf(out, "static baga_Vec *baga_vec_slice_vec(baga_Vec *v, int64_t a, int64_t b) {\n");
     fprintf(out, "    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n");

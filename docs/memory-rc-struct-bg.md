@@ -54,7 +54,7 @@ depth guard 32). `retain_S`/`release_S` рекурсират във вложен
 — **ЧАСТИЧНО РЕШЕНО в v0.7 (виж по-долу)**;
 `s.inner = x` (struct-типизирано поле като цел — v0.4 покрива само
 str/bytes/Vec/Map полета) — **РЕШЕНО в v0.8 (виж по-долу)**; `Vec<S>` в
-`Vec`.
+`Vec` — **РЕШЕНО в v0.9 (виж по-долу)**.
 
 ## v0.8: `s.inner = x` (struct-типизирана цел на field assign)
 
@@ -143,7 +143,8 @@ RSS 64 MB → 10.9 MB (като leak-free базата).
 
 Останало (leak-safe, не корупция): ~~overwrite пътеки~~ — **РЕШЕНО в v0.3
 (виж по-долу)**; call-аргумент temp-ове в box push, enum payload-и, вложени
-struct-и, `Vec<S>` вътре в `Vec` (kind 3 няма тип по време на изпълнение).
+struct-и, ~~`Vec<S>` вътре в `Vec` (kind 3 няма тип по време на
+изпълнение)~~ — **РЕШЕНО в v0.9 (виж по-долу)**.
 
 ## v0.3: overwrite/del на box елементи
 
@@ -159,6 +160,50 @@ retain-ва новото преди set, така че `vec_set(v, 0, vec_get(v,
 
 Измерено: 300k итерации map_set/vec_set overwrite + map_del — RSS
 72 MB → 10.9 MB.
+
+## v0.9: `Vec<S>` във `Vec` (вложен контейнер със struct елементи)
+
+v0.2 направи drop на `Vec<S>` да release-ва полетата на box елементите, но
+само на едно ниво: когато `Vec<S>` е елемент на външен `Vec`
+(`Vec<Vec<S>>`), kind 3 на `baga_rc_release_vec` пускаше вътрешния vec като
+kind 0 (типът на неговите елементи не е известен по време на изпълнение) —
+S box-овете и полетата им течаха, когато последната референция към
+вътрешния vec е от външния (move push, или retain-нат push чийто локал вече
+е release-нат). Repro: 500k итерации push+drop — RSS 48.5 MB (leak-free
+база: 10.9 MB). `Map<K, Vec<S>>` не съществува в езика — checker-ът
+отхвърля Vec като Map стойност („неподдържан стойностен тип"), така че
+вложена Map страна няма.
+
+**Механизъм:** kind 3 на `baga_rc_release_vec` вече приема `elem_rel`
+destructor (NULL → старото поведение). За всеки struct S с heap полета се
+генерира трети shim до `relf`/`retp` (с forward декларация):
+`baga_rc_relv_<S>(void *p)` → `baga_rc_release_vec(p, 2, sizeof(S),
+baga_rc_relf_<S>)`. Resolver-ите `rc_nested_vec_rel_type` /
+`rc_nested_vec_rel_node` / `rc_vec_nested_rel_of` познават елемент
+`Vec<S>` (S struct с heap полета) и всички release сайтове го подават при
+kind 3: scope exit/temp release (`rc_emit_release`), `drop()`, reassign на
+track-нат локал, `s.f = x` (`rc_field_assign_tag`), Vec поле в `release_S`,
+Vec payload в `release_E`. Транзитивността идва безплатно: struct с
+`Vec<Vec<S>>` поле в контейнер се покрива през `release_S` → shim-а.
+
+**Overwrite:** `vec_set` на външния върви през нови
+`baga_vec_set_vec_rc` / `baga_vec_set_vec_move_rc` (destructor fn pointer;
+retain на новия преди release на стария — alias-safe ред като v0.3;
+`vec_set(ov, 0, vec_get(ov, 0))` не underflow-ва — тествано). `map_del`/
+`map_set` overwrite на външен контейнер с Vec стойности не съществуват
+(Map страната я няма в езика). `vec_push_vec` само retain-ва — балансирано
+от release страната.
+
+**Граници (leak-safe, не корупция):** дълбочина >2 (`Vec<Vec<Vec<S>>>`) —
+shim-ът е едно ниво, средният vec се пуска правилно, но най-вътрешните S
+полета текат както досега (тест `deep_drop_safe` — без корупция).
+`Vec<Vec<str>>`/`Vec<Vec<bytes>>` — няма shim за примитивни вътрешни
+елементи (pre-existing теч, не е влошен). Enum като най-вътрешен елемент
+(`Vec<Vec<E>>`) — както v0.2 не покрива enum box-ове.
+
+Измерено: 500k итерации push+drop и 500k vec_set overwrite — RSS
+48.5 MB → 10.8 MB (като leak-free базата). Тест:
+`tests/vecvec_rc_test.baga` (15 случая).
 
 ## Правила
 
