@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### runtime — RC5 v0.6 enum payload-и като собственици (зад `--rc`)
+- Enum с heap payload (str/bytes/Vec/Map/struct с heap) получава
+  `baga_rc_retain_<E>`/`baga_rc_release_<E>` със switch по runtime tag.
+  Локал се регистрира (tag 6) само при свеж ctor или alias на track-нат.
+- Ctor call site: fresh payload owned, borrowed се retain-ва, last-use
+  ident е move. Reassign release-ва стария payload. Match binding-ите
+  остават borrowed. Design: `docs/memory-rc-enum-bg.md`.
+- `tests/enum_rc_test.baga` (8 случая). Leak repro 500k ctor: RSS
+  39.6 MB → 10.9 MB. Без флаг: бит-идентичен emit-c.
+
 ### runtime — RC5 v0.5 вложени struct полета (зад `--rc`)
 - `rc_struct_has_heap` е транзитивен; `retain_S`/`release_S` рекурсират в
   struct-типизирани полета. Forward декларации на всички RC helper-и.

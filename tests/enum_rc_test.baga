@@ -1,0 +1,67 @@
+// enum_rc_test — RC5 v0.6: enum payload-и като собственици
+// (docs/memory-rc-struct-bg.md). Минава с и без --rc.
+
+import "std/str/str.baga"
+
+enum Opt { Some(str), None }
+
+struct Wrap {
+    n: i64,
+    s: str
+}
+
+enum Boxed { BWrap(Wrap), BNone }
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !IO {
+    // 1. ctor + scope exit — fresh payload е owned
+    let o = Some(concat("he", "y"))
+    check("ctor_scope", match o { Some(s) => s, None => "" } == "hey")
+
+    // 2. alias — retain на payload-а; двете четат
+    let a = o
+    check("alias", match a { Some(s) => s, None => "" } == "hey" &&
+           match o { Some(s) => s, None => "" } == "hey")
+
+    // 3. reassign release-ва стария payload
+    let mut r = Some(concat("ol", "d"))
+    r = Some(concat("ne", "w"))
+    check("reassign", match r { Some(s) => s, None => "" } == "new")
+
+    // 4. ident payload (ползван след) — retain; двамата собственици четат
+    let t = concat("ke", "pt")
+    let oi = Some(t)
+    check("ident_payload", t == "kept" &&
+           match oi { Some(s) => s, None => "" } == "kept")
+
+    // 5. move payload — last-use ident без retain
+    let m = concat("mo", "ve")
+    let om = Some(m)
+    check("move_payload", match om { Some(s) => s, None => "" } == "move")
+
+    // 6. struct payload — рекурсивен retain/release (v0.5 + v0.6)
+    let bw = BWrap(Wrap { n: 7, s: concat("bw", "x") })
+    check("struct_payload", match bw { BWrap(w) => w.s, BNone => "" } == "bwx" &&
+           match bw { BWrap(w) => w.n, BNone => 0 } == 7)
+
+    // 7. payload-less variant — няма какво да се release-ва
+    let nn = None
+    check("none_ok", match nn { Some(s) => 1, None => 0 } == 0)
+
+    // 8. borrowed payload (match binding) — retain при вграждане в НОВ enum
+    let src = Some(concat("bo", "r"))
+    let cp = match src { Some(s) => Some(s), None => None }
+    check("borrowed_rebox", match cp { Some(s) => s, None => "" } == "bor" &&
+           match src { Some(s) => s, None => "" } == "bor")
+
+    print("enum_rc_test: all passed")
+    return 0
+}

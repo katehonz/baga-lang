@@ -35,9 +35,10 @@
 6. Пълна tests/ батерия с --rc (~40 мин):
    `printf '#!/bin/sh\nexec '$PWD'/baga --rc "$@"\n' > /tmp/baga_rc &&
     chmod +x /tmp/baga_rc && BAGA=/tmp/baga_rc bash scripts/baga-test tests`
-   Базова линия: **151/156**; 5-те FAIL са pre-existing external peers
+   Базова линия: **152/157**; 5-те FAIL са pre-existing external peers
    (oauth_pg, orm_boila, registry, https, tls_handshake).
-   Никой нов FAIL не е приемлив. (`struct_rc_test` е в пакета след RC5.)
+   Никой нов FAIL не е приемлив. (`struct_rc_test` и `enum_rc_test` са в
+   пакета след RC5/v0.6.)
 7. Bench (само ако пипаш retain/release пътеките): boilaDB 100k insert —
    `BOILA_PHASE=write BOILA_CHUNKS=1 BOILA_ROWS=100000
    BOILA_BENCH_ROOT=/tmp/boila_x ./baga --rc -I . -I app-product
@@ -82,9 +83,13 @@ struct литерал е move (RSS 64 MB → 10.9 MB на 500k push+drop). v0.3:
 `s.f = x` (alias-safe: retain преди release; RSS 39 MB → 10.9 MB на 500k
 field overwrite). v0.5: вложени struct-и — транзитивен `has_heap`,
 `retain_S`/`release_S` рекурсират, литералът retain-ва borrowed вложени
-полета (RSS 38.5 MB → 10.8 MB на 500k вложени литерала). Останало:
-enum payload, call аргумент temp-ове в box push, `s.inner = x`
-(struct-типизирана цел), `Vec<S>` във `Vec`.
+полета (RSS 38.5 MB → 10.8 MB на 500k вложени литерала). v0.6: enum
+payload-и — tag 6 + `retain_E`/`release_E` по runtime tag, ctor с
+owned/borrowed/move payload (`docs/memory-rc-enum-bg.md`,
+`tests/enum_rc_test.baga`; RSS 39.6 MB → 10.9 MB). Батерията вече е 157
+файла, база **152/157**. Останало:
+call аргумент temp-ове в box push, `s.inner = x` (struct-типизирана цел),
+`Vec<S>` във `Vec`, enum в контейнер/struct поле, match scrutinee temp.
 
 ## Забранено / внимание
 

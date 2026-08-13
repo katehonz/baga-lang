@@ -118,6 +118,7 @@ static int rc_type_node_tag(Node *ty) {
 }
 
 static Node *find_struct_decl(Codegen *cg, const char *name);
+static Node *find_sum_enum_decl(Codegen *cg, const char *name);
 
 /* RC5: struct с поне едно пряко str/bytes/Vec/Map поле.
  * v0.5: транзитивно — поле от struct тип с heap полета също брои (release_S
@@ -156,11 +157,29 @@ static const char *rc_nested_struct_field(Codegen *cg, Node *fld_type) {
     return NULL;
 }
 
+/* RC5 v0.6: enum с поне един variant с heap payload (str/bytes/Vec/Map или
+ * struct с heap полета). Enum payload в enum не се брои (leak-safe). */
+static int rc_enum_has_heap(Codegen *cg, Node *item) {
+    if (!item || item->kind != NODE_ENUM) return 0;
+    for (int j = 0; j < item->n_variants; j++) {
+        Node *pt = item->enum_payloads ? item->enum_payloads[j] : NULL;
+        if (!pt) continue;
+        if (rc_type_node_tag(pt)) return 1;
+        if (rc_nested_struct_field(cg, pt)) return 1;
+    }
+    return 0;
+}
+
 static int rc_heap_tag(Codegen *cg, Type *t) {
     int tag = rc_type_tag(t);
     if (tag) return tag;
     if (t && t->kind == TYPE_STRUCT && t->name && rc_struct_has_heap(cg, t->name))
         return 5;
+    /* RC5 v0.6: enum с heap payload */
+    if (t && t->kind == TYPE_ENUM && t->name) {
+        Node *ed = find_sum_enum_decl(cg, t->name);
+        if (ed && rc_enum_has_heap(cg, ed)) return 6;
+    }
     return 0;
 }
 
@@ -169,9 +188,13 @@ static int rc_heap_tag_node(Codegen *cg, Node *ty) {
     if (tag) return tag;
     while (ty && (ty->kind == NODE_TYPE_EFFECT || ty->kind == NODE_TYPE_REF))
         ty = ty->inner_type;
-    if (ty && ty->kind == NODE_TYPE && ty->type_name &&
-        rc_struct_has_heap(cg, ty->type_name))
-        return 5;
+    if (ty && ty->kind == NODE_TYPE && ty->type_name) {
+        if (rc_struct_has_heap(cg, ty->type_name))
+            return 5;
+        /* RC5 v0.6 */
+        Node *ed = find_sum_enum_decl(cg, ty->type_name);
+        if (ed && rc_enum_has_heap(cg, ed)) return 6;
+    }
     return 0;
 }
 
@@ -217,7 +240,8 @@ static int rc_expr_copies_ident(Node *n, const char *name) {
 static void rc_emit_retain_val(Codegen *cg, int tag, Type *ty, Node *tnode,
                                const char *cname) {
     FILE *f = cg->out;
-    if (tag == 5) {
+    if (tag == 5 || tag == 6) {
+        /* struct (5) или enum с heap payload (6) — retain_<име> по tag */
         const char *sn = (ty && ty->name) ? ty->name : NULL;
         if (!sn && tnode) {
             Node *t = tnode;
@@ -263,6 +287,9 @@ static int rc_borrowed_init(Node *init) {
     }
     return 0;
 }
+
+/* RC5 v0.6: конструкторът на sum enum се познава с rc_is_enum_ctor
+ * (дефиниран при RC4 temp машината по-долу). */
 
 /* RC1: elem_kind за release на Vec. Като baga_drop_vec (0 inline, 1 str,
  * 2 struct box, 3 nested vec) + 4 = bytes box — bytes box-ът държи
@@ -413,6 +440,17 @@ static void rc_emit_release(Codegen *cg, RcLocal *e) {
                 char *sm = mangle_name(sn);
                 fprintf(f, "baga_rc_release_%s(%s);\n", sm, e->name);
                 free(sm);
+            }
+            break;
+        }
+        /* RC5 v0.6: enum с heap payload — release по runtime tag */
+        case 6: {
+            const char *en = (e->type && e->type->name) ? e->type->name :
+                (e->type_node && e->type_node->type_name) ? e->type_node->type_name : NULL;
+            if (en) {
+                char *em = mangle_name(en);
+                fprintf(f, "baga_rc_release_%s(%s);\n", em, e->name);
+                free(em);
             }
             break;
         }
@@ -1603,9 +1641,39 @@ static void emit_expr(Codegen *cg, Node *n) {
                             strcmp(item->enum_variants[j], vn) == 0) {
                             char *em = mangle_name(item->enum_name);
                             char *vm = mangle_name(item->enum_variants[j]);
-                            fprintf(f, "%s__%s(", em, vm);
-                            if (n->args.len > 0) emit_expr(cg, n->args.data[0]);
-                            fprintf(f, ")");
+                            Node *pa = n->args.len > 0 ? n->args.data[0] : NULL;
+                            int ptag = 0;
+                            if (cg->rc && pa) {
+                                ptag = rc_heap_tag_node(cg, item->enum_payloads[j]);
+                                if (!ptag) ptag = rc_heap_tag(cg, pa->type);
+                            }
+                            if (ptag) {
+                                /* RC5 v0.6: payload собственост — fresh е owned
+                                 * (без retain); borrowed/ident се retain-ва,
+                                 * last-use ident е move */
+                                fprintf(f, "({ __auto_type __rc_ep = ");
+                                emit_expr(cg, pa);
+                                fprintf(f, "; ");
+                                if (pa->kind == NODE_IDENT) {
+                                    int si = rc_find(cg, pa->name);
+                                    if (si >= 0 && !cg->rc_locals.data[si].dead) {
+                                        if (rc_is_move(cg, pa, si))
+                                            rc_do_move(cg, si);
+                                        else
+                                            rc_emit_retain_val(cg, ptag, pa->type,
+                                                               NULL, "__rc_ep");
+                                    }
+                                } else if (rc_borrowed_init(pa)) {
+                                    rc_emit_retain_val(cg, ptag, pa->type,
+                                                       NULL, "__rc_ep");
+                                }
+                                fprintf(f, "%s__%s(__rc_ep); })", em, vm);
+                            } else {
+                                fprintf(f, "%s__%s(", em, vm);
+                                if (n->args.len > 0)
+                                    emit_expr(cg, n->args.data[0]);
+                                fprintf(f, ")");
+                            }
                             free(em); free(vm);
                             emitted = 1;
                             break;
@@ -2339,6 +2407,17 @@ static void emit_expr(Codegen *cg, Node *n) {
                             }
                             break;
                         }
+                        /* RC5 v0.6: enum с heap payload */
+                        case 6: {
+                            const char *en = (e.type && e.type->name) ? e.type->name :
+                                (e.type_node && e.type_node->type_name) ? e.type_node->type_name : NULL;
+                            if (en) {
+                                char *em = mangle_name(en);
+                                fprintf(f, "baga_rc_release_%s(%s); ", em, e.name);
+                                free(em);
+                            }
+                            break;
+                        }
                     }
                     fprintf(f, "%s = __rc_asn; })", e.name);
                     break;
@@ -3004,6 +3083,17 @@ static void emit_stmt(Codegen *cg, Node *n) {
                             from_tr = 1;
                     }
                     if (!fresh && !from_tr) tag = 0;
+                } else if (tag == 6) {
+                    /* RC5 v0.6: само свеж ctor (`Ok(x)`) или alias на track-нат
+                     * — fn резултат/бare variant не се регистрират (leak-safe) */
+                    int fresh = rc_is_enum_ctor(cg, n->let_init);
+                    int from_tr = 0;
+                    if (n->let_init && n->let_init->kind == NODE_IDENT) {
+                        int si = rc_find(cg, n->let_init->name);
+                        if (si >= 0 && !cg->rc_locals.data[si].dead)
+                            from_tr = 1;
+                    }
+                    if (!fresh && !from_tr) tag = 0;
                 }
                 if (tag) {
                     int elide = 0;
@@ -3027,8 +3117,9 @@ static void emit_stmt(Codegen *cg, Node *n) {
                     } else if (rc_borrowed_init(n->let_init)) {
                         /* RC5: borrowed struct (vec_get/поле) споделя полета —
                          * трябва retain_S, иначе scope release обесва
-                         * контейнера (boila_txn_commit underflow). */
-                        if (tag == 5) {
+                         * контейнера (boila_txn_commit underflow).
+                         * v0.6: същото за enum payload (tag 6). */
+                        if (tag == 5 || tag == 6) {
                             emit_indent(cg);
                             rc_emit_retain_val(cg, tag, lt, n->let_type, mself);
                             fprintf(f, "\n");
@@ -3665,6 +3756,71 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
     free(m);
 }
 
+/* RC5 v0.6: retain/release по runtime tag за enum с heap payload. */
+static void emit_rc_enum_helpers(Codegen *cg, Node *item) {
+    if (!cg->rc || !rc_enum_has_heap(cg, item)) return;
+    FILE *f = cg->out;
+    char *em = mangle_name(item->enum_name);
+    for (int pass = 0; pass < 2; pass++) {
+        fprintf(f, "static inline void baga_rc_%s_%s(%s e) {\n    switch (e.tag) {\n",
+                pass ? "release" : "retain", em, em);
+        for (int j = 0; j < item->n_variants; j++) {
+            if (!item->enum_payloads || !item->enum_payloads[j]) continue;
+            Node *pt = item->enum_payloads[j];
+            int tag = rc_type_node_tag(pt);
+            const char *nn = tag ? NULL : rc_nested_struct_field(cg, pt);
+            if (!tag && !nn) continue;
+            char *vm = mangle_name(item->enum_variants[j]);
+            if (!pass) {
+                if (nn) {
+                    char *nm = mangle_name(nn);
+                    fprintf(f, "        case %d: baga_rc_retain_%s(e.u.v_%s); break;\n",
+                            j, nm, vm);
+                    free(nm);
+                } else if (tag == 2)
+                    fprintf(f, "        case %d: baga_rc_retain((void *)e.u.v_%s.data); break;\n",
+                            j, vm);
+                else
+                    fprintf(f, "        case %d: baga_rc_retain((void *)e.u.v_%s); break;\n",
+                            j, vm);
+            } else {
+                if (nn) {
+                    char *nm = mangle_name(nn);
+                    fprintf(f, "        case %d: baga_rc_release_%s(e.u.v_%s); break;\n",
+                            j, nm, vm);
+                    free(nm);
+                } else if (tag == 1)
+                    fprintf(f, "        case %d: baga_rc_release_str(e.u.v_%s); break;\n",
+                            j, vm);
+                else if (tag == 2)
+                    fprintf(f, "        case %d: baga_rc_release_bytes(e.u.v_%s); break;\n",
+                            j, vm);
+                else if (tag == 3) {
+                    char sz[160], rel[160];
+                    int k = rc_vec_elem_kind_node(pt, sz, sizeof sz);
+                    Node *et = pt->inner_type;
+                    rc_box_rel(cg, (et && et->kind == NODE_TYPE) ?
+                               et->type_name : NULL, rel, sizeof rel);
+                    fprintf(f, "        case %d: baga_rc_release_vec(e.u.v_%s, %d, %s, %s); break;\n",
+                            j, vm, k, sz, rel);
+                } else if (tag == 4) {
+                    char sz[160], rel[160];
+                    int k = rc_map_val_tag_node(pt, sz, sizeof sz);
+                    Node *vt = pt->inner_type2;
+                    rc_box_rel(cg, (vt && vt->kind == NODE_TYPE) ?
+                               vt->type_name : NULL, rel, sizeof rel);
+                    fprintf(f, "        case %d: baga_rc_release_map(e.u.v_%s, %d, %s, %s); break;\n",
+                            j, vm, k, sz, rel);
+                }
+            }
+            free(vm);
+        }
+        fprintf(f, "    }\n}\n");
+    }
+    fprintf(f, "\n");
+    free(em);
+}
+
 /* L3 sum enum → tagged C struct + union + static inline constructors.
  * Tag is int64_t to mirror the LLVM lowering ({ i64 tag, [N x i64] u });
  * constructors zero-init so the union never carries stack garbage
@@ -3799,7 +3955,8 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
         /* RC5 v0.2: forward decls на box shims — release_S на по-ранен
          * struct реферира relf на по-късен (Vec<S>/Map<K,S> поле).
          * v0.5: и retain/release — вложеното struct поле рекурсира
-         * напред-назад по декларационния ред. */
+         * напред-назад по декларационния ред.
+         * v0.6: enum helper-и (struct payload в enum реферира retain_S). */
         for (int i = 0; i < on; i++) {
             Node *it = nodes[order[i]];
             if (it->kind == NODE_STRUCT &&
@@ -3810,12 +3967,19 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
                 fprintf(cg->out, "static void baga_rc_relf_%s(void *p);\n", m);
                 fprintf(cg->out, "static void baga_rc_retp_%s(void *p);\n", m);
                 free(m);
+            } else if (it->kind == NODE_ENUM && rc_enum_has_heap(cg, it)) {
+                char *m = mangle_name(it->enum_name);
+                fprintf(cg->out, "static inline void baga_rc_retain_%s(%s e);\n", m, m);
+                fprintf(cg->out, "static inline void baga_rc_release_%s(%s e);\n", m, m);
+                free(m);
             }
         }
         for (int i = 0; i < on; i++) {
             Node *it = nodes[order[i]];
             if (it->kind == NODE_STRUCT)
                 emit_rc_struct_helpers(cg, it);
+            else if (it->kind == NODE_ENUM)
+                emit_rc_enum_helpers(cg, it);
         }
     }
 
