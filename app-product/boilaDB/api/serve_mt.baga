@@ -105,6 +105,18 @@ fn boila_mt_srv_snap_off(srv: BoilaServer) -> BoilaServer {
     return s2
 }
 
+// Write-back на singleton сървъра. Зад --rc map_set overwrite пуска
+// release_S на стария box (споделени names/stores/pc) → rc underflow.
+// In-place vec_push/vec_set вече са видими в картата; snap_off пак
+// чисти scan_keys на store vec-а. Leak-safe.
+fn boila_mt_srv_write(m: Map<i64, BoilaServer>, srv: BoilaServer) {
+    let s2 = boila_mt_srv_snap_off(srv)
+    if rc_on() {
+        return
+    }
+    map_set(m, 0, s2)
+}
+
 fn boila_mt_stat_inc(pack: i64, key: i64) -> i64 !Par {    let gmu = boila_mt_gmu(pack)
     mutex_lock(gmu)
     let st: Map<i64, i64> = h_map(boila_mt_stats_h(pack))
@@ -248,7 +260,7 @@ fn boila_mt_db_ok(pack: i64, db: str) -> i64 !IO !Time !Par {
     mutex_lock(gmu)
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let r = boila_srv_db(map_get(m, 0), db)?
-    map_set(m, 0, boila_mt_srv_snap_off(r.srv))
+    boila_mt_srv_write(m, r.srv)
     let ok = r.ok
     mutex_unlock(gmu)
     return ok
@@ -260,7 +272,7 @@ fn boila_mt_http_auth(pack: i64, guc: Map<str, str>, req: Request) -> BoilaHttpA
     mutex_lock(gmu)
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let au = boila_http_auth(map_get(m, 0), guc, req)?
-    map_set(m, 0, boila_mt_srv_snap_off(au.srv))
+    boila_mt_srv_write(m, au.srv)
     mutex_unlock(gmu)
     return au
 }
@@ -271,7 +283,7 @@ fn boila_mt_exec_reg(pack: i64, txn: BoilaTxn, db: str, sql: str) -> BoilaSrvOut
     mutex_lock(gmu)
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let out = boila_server_exec_tx(map_get(m, 0), txn, db, sql)?
-    map_set(m, 0, boila_mt_srv_snap_off(out.srv))
+    boila_mt_srv_write(m, out.srv)
     mutex_unlock(gmu)
     boila_mt_note_sql(pack, out.ok)?
     return out
@@ -283,7 +295,7 @@ fn boila_mt_checkout(pack: i64, db: str) -> BoilaSrvDb !IO !Time !Par {
     mutex_lock(gmu)
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let g = boila_srv_db(map_get(m, 0), db)?
-    map_set(m, 0, boila_mt_srv_snap_off(g.srv))
+    boila_mt_srv_write(m, g.srv)
     mutex_unlock(gmu)
     return g
 }
@@ -294,7 +306,7 @@ fn boila_mt_checkin(pack: i64, db: str, store: BoilaStore) -> i64 !Par {
     let m: Map<i64, BoilaServer> = h_map(boila_mt_srv_h(pack))
     let mut srv = map_get(m, 0)
     srv = boila_srv_store_putback(srv, db, store)
-    map_set(m, 0, boila_mt_srv_snap_off(srv))
+    boila_mt_srv_write(m, srv)
     mutex_unlock(gmu)
     return 0
 }
@@ -325,7 +337,9 @@ fn boila_mt_pc_putback(pack: i64, db: str, pc: BoilaPlanCache) -> i64 !Par {
     let pcs: Map<str, BoilaPlanCache> = h_map(boila_mt_pcs_h(pack))
     if map_has(pcs, db) == 1 {
         let cur = map_get(pcs, db)
-        if pc.gen >= cur.gen {
+        // == gen: същият pc (in-place map_set на pc.m). overwrite
+        // зад --rc пуска стария box и убива споделения pc.m.
+        if pc.gen > cur.gen {
             map_set(pcs, db, pc)
         }
     } else {

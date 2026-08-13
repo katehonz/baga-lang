@@ -80,6 +80,24 @@ fn none_of() -> Opt {
     return None
 }
 
+struct Sess {
+    items: Vec<str>
+}
+
+struct Out {
+    sess: Sess
+}
+
+fn mk_sess() -> Sess {
+    let v: Vec<str> = vec_new()
+    vec_push(v, concat("se", "ss"))
+    return Sess { items: v }
+}
+
+fn wrap_sess(s: Sess) -> Out {
+    return Out { sess: s }
+}
+
 fn main() -> i64 !IO {
     // 1. return vec_get — резултатът оцелява drop на източника
     let src: Vec<Wrap> = vec_new()
@@ -157,6 +175,24 @@ fn main() -> i64 !IO {
     // 13. return на bare payload-less variant (GBad/StreamEnd/None) —
     // няма C локал; emit_expr слага (E){ .tag = N }, retain е no-op
     check("ret_bare_none", match none_of() { Some(s) => 1, None => 0 } == 0)
+
+    // 14. let sp = mk(); ro = wrap(sp); sp = ro.sess — fn резултатът
+    // не се регистрира (leak-safe); copy-out остава валиден след блока
+    let mut sp = mk_sess()
+    let ro = wrap_sess(sp)
+    sp = ro.sess
+    check("let_fn_rebind", vec_len(sp.items) == 1 && vec_get(sp.items, 0) == "sess")
+
+    // 15. същият шаблон в цикъл (serve_pg Simple Query / Execute през
+    // helper — не dummy `let mut ro = Out { sess: sp }`, който се
+    // регистрира и pop-release-ва споделен srv)
+    let mut i: i64 = 0
+    while i < 3 {
+        let ro2 = wrap_sess(sp)
+        sp = ro2.sess
+        i = i + 1
+    }
+    check("let_fn_rebind_loop", vec_len(sp.items) == 1 && vec_get(sp.items, 0) == "sess")
 
     print("owned_ret_rc_test: all passed")
     return 0

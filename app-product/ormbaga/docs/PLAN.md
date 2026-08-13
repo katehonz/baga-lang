@@ -1,7 +1,7 @@
 # ormbaga — table ORM + versioned migrations
 
-Date: 2026-08-03 · Updated: 2026-08-08
-Status: layered package
+Date: 2026-08-03 · Updated: 2026-08-13
+Status: layered package — live boilaDB PG wire verified
 Depends on: `pgbaga` (PostgreSQL wire client)
 
 ## Identity
@@ -67,10 +67,15 @@ Rows stay as pgbaga cells (`orm_cell_by`) — no codegen struct mapping.
 - **P2.2 (2026-08-11):** boilabaga adapter — `orm_from_conn` /
   `orm_connect_boila_env`, dual-safe `sql_ident` + history DDL,
   `ormbaga_boila_migrations`, `tests/orm_boila_test.baga` ✅
+- **P2.3 (2026-08-13):** live `serve_pg` — `orm_boila_test` **36/36**
+  (клиент и сървър с и без `--rc`); `demo_boila` migrate+CRUD;
+  `orm_test` (Postgres) all passed. Резултат:
+  `bench/boila/results/orm-boila-2026-08-13.md`.
 
 ## Success criteria
 
-1. `migrate_up` then `migrate_down` is reversible on empty DB.  
-2. Insert/find/update/delete users works through ORM helpers.  
-3. `tests/orm_test.baga` prints `orm_test: all passed`.  
-4. With `serve_pg` up, `tests/orm_boila_test.baga` prints `orm_boila_test: all passed`. 
+1. `migrate_up` then `migrate_down` is reversible on empty DB. ✅
+2. Insert/find/update/delete users works through ORM helpers. ✅
+3. `tests/orm_test.baga` prints `orm_test: all passed`. ✅ (2026-08-13)
+4. With `serve_pg` up, `tests/orm_boila_test.baga` prints
+   `orm_boila_test: all passed`. ✅ 36/36 (2026-08-13, вкл. `--rc` клиент) 

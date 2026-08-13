@@ -2469,6 +2469,12 @@ static void emit_expr(Codegen *cg, Node *n) {
                     fprintf(f, ")");
                     goto call_done;
                 }
+                if (strcmp(bn, "rc_on") == 0 && n->args.len == 0) {
+                    /* RC5: 1 зад --rc, 0 без — ръчният drop (MEM-4) се
+                     * пропуска, когато RC сам release-ва. */
+                    fprintf(f, "%d", cg->rc ? 1 : 0);
+                    goto call_done;
+                }
                 if (strcmp(bn, "pool_map") == 0 && n->args.len == 3 &&
                     n->args.data[0]->kind == NODE_IDENT) {
                     char *wm = mangle_name(n->args.data[0]->name);
@@ -3534,10 +3540,12 @@ static void emit_stmt(Codegen *cg, Node *n) {
                         if (si >= 0 && !cg->rc_locals.data[si].dead)
                             from_tr = 1;
                     }
+                    /* fn резултат не се регистрира: pgwire MEM-4 споделя
+                     * AST vec/bytes между sess/portal/stmt — release на
+                     * owned let би бил двоен free. Leak-safe. */
                     if (!fresh && !from_tr) tag = 0;
                 } else if (tag == 6) {
-                    /* RC5 v0.6: само свеж ctor (`Ok(x)`) или alias на track-нат
-                     * — fn резултат/бare variant не се регистрират (leak-safe) */
+                    /* RC5 v0.6: само свеж ctor (`Ok(x)`) или alias на track-нат */
                     int fresh = rc_is_enum_ctor(cg, n->let_init);
                     int from_tr = 0;
                     if (n->let_init && n->let_init->kind == NODE_IDENT) {

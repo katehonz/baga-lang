@@ -5,6 +5,18 @@ V = value/codec/vector, K = key/scan, S = storage, M = metrics/monitoring,
 H = HTTP/API, Q = SQL (от P1), C = cache/planner, A = агрегати,
 T = транзакции, W = wire protocol, F = FTS.
 
+## Открити 2026-08-13 (ormbaga live + `--rc` serve_pg)
+
+- **RC-SRV — затворен.** `--rc` на `tools/serve_pg.baga` минава
+  `orm_boila_test` 36/36 (клиент с и без `--rc`). Причини за стария
+  underflow: (1) dummy `let mut ro = BoilaPgOut { srv, sess }` се
+  регистрира и pop-release-ва споделен srv; (2) `srv2 = ro.srv` след
+  `mem_rewind` пуска throwaway seed, алокиран след mark; (3) `map_set`
+  overwrite на singleton `BoilaServer` / same-gen plan cache. Фикс в
+  `pgwire.baga` + `serve_mt.baga`. Residual: `map_set` на portal при
+  Sync/Bind overwrite още пуска stmt-споделени AST полета — leak-safe
+  (portal_free е no-op зад `rc_on()`; persist drip както MEM-4).
+
 ## Открити при P11
 
 - **P11-FS — filesize gate-ът е червен и блокира run_tests.sh.** 8 файла
@@ -478,8 +490,10 @@ T = транзакции, W = wire protocol, F = FTS.
   20k extended заявки в една сесия — persist растеж от ~10 KB на ~0.4 KB
   на заявка. **Тестове след MEM-4д: 145/150 със scripts/baga-test**
   (5-те „fail" са external-peer: tls/https/registry/oauth_pg/orm_boila —
-  orm_boila минава с live serve_pg; run_tests.sh спира по-рано на
-  filesize gate-а — 8 файла > 400 реда от streaming комитите,
+  **orm_boila 36/36 с live serve_pg, 2026-08-13**, клиент и сървър
+  с и без `--rc` (`bench/boila/results/orm-boila-2026-08-13.md`);
+  run_tests.sh спира по-рано на filesize gate-а — 8 файла > 400 реда
+  от streaming комитите,
   pre-existing дълг, вж. долу). **Residual след MEM-4д (измерено
   2026-08-12):** ~9.5 KB/ред при 200k, суперлинеен (∝ брой SST-та).
   Attribution (owner = `lsm_get_kb`/`sst_get` wrap-ове): SstMeta cache

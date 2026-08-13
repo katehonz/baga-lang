@@ -195,6 +195,9 @@ fn boila_pg_del_free_bound(del: BoilaDel) {
 // вече reclaim-нат (Sync kill) — no-op против double free. Vec<Vec<…>> drop
 // е рекурсивен (mode 3): box-овете на вътрешните остават (документиран drip).
 fn boila_pg_portal_free(p: BoilaPgPortal) {
+    if rc_on() {
+        return
+    }
     if p.kind == 0 - 1 {
         return
     }
@@ -216,7 +219,7 @@ fn boila_pg_portal_free(p: BoilaPgPortal) {
     }
 }
 
-fn boila_pg_parse_stmt(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes) -> Map<str, BoilaPgStmt> {
+fn boila_pg_parse_stmt(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes) -> i64 {
     let nm = pgw_cstr_read(body, 0)
     let q = pgw_cstr_read(body, nm.pos)
     if map_has(stmts, nm.s) == 1 {
@@ -225,7 +228,7 @@ fn boila_pg_parse_stmt(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPo
         // parse-ваме наново (0 алокации на Parse — драйверите с extended
         // протокол пращат един и същ unnamed stmt в цикъл).
         if old.sql == q.s {
-            return stmts
+            return 0
         }
         // Подмяна с нов SQL: reclaim на старото AST, но САМО ако никой жив
         // portal не е bound от него (portal-ите споделят нerebuild-натите
@@ -235,7 +238,7 @@ fn boila_pg_parse_stmt(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPo
         }
     }
     map_set(stmts, nm.s, boila_pg_try_sel(q.s))
-    return stmts
+    return 0
 }
 
 // 1 ако никой portal не е bound от stmt `name` (безопасно за stmt_free).
@@ -260,13 +263,16 @@ fn boila_pg_stmt_orphaned(portals: Map<str, BoilaPgPortal>, name: str) -> i64 {
 // през orphaned гарда. Drip: str payload-и и вложени Vec<Token> box-ове не
 // се free-ват (drop е по дълбочина 1; str е immortal в рантайма).
 fn boila_pg_stmt_free(st: BoilaPgStmt) {
+    if rc_on() {
+        return
+    }
     boila_pg_sel_free_all(st.sel)
     boila_pg_ins_free_all(st.ins)
     boila_pg_upd_free_all(st.upd)
     boila_pg_del_free_all(st.del)
 }
 
-fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes, e_sel: BoilaSel, e_ins: BoilaIns, e_upd: BoilaUpd, e_del: BoilaDel) -> Map<str, BoilaPgPortal> {
+fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgPortal>, body: bytes, e_sel: BoilaSel, e_ins: BoilaIns, e_upd: BoilaUpd, e_del: BoilaDel) -> i64 {
     let pn = pgw_cstr_read(body, 0)
     let sn = pgw_cstr_read(body, pn.pos)
     let mut p = sn.pos
@@ -290,11 +296,18 @@ fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgP
         }
         i = i + 1
     }
-    // MEM-4: неизползваните kind-ове ползват споделените session празни
-    // AST-та (0 алокации); portal_free ги пропуска.
+    // MEM-4: без --rc неизползваните kind-ове споделят session празни
+    // AST-та; portal_free ги пропуска. Зад --rc споделянето е двоен
+    // release (RC пуска и portal-а, и e_*) — уникални празни AST-та.
     let mut portal = BoilaPgPortal {
         sql: "", src: "", vals: vals, nulls: nulls, kind: 0,
         sel: e_sel, ins: e_ins, upd: e_upd, del: e_del
+    }
+    if rc_on() {
+        portal.sel = boila_sel_empty()
+        portal.ins = boila_ins_empty()
+        portal.upd = boila_upd_empty()
+        portal.del = boila_del_empty()
     }
     if map_has(stmts, sn.s) == 1 {
         let st = map_get(stmts, sn.s)
@@ -315,7 +328,7 @@ fn boila_pg_bind_portal(stmts: Map<str, BoilaPgStmt>, portals: Map<str, BoilaPgP
         boila_pg_portal_free(map_get(portals, pn.s))
     }
     map_set(portals, pn.s, portal)
-    return portals
+    return 0
 }
 
 // Parse-time: SELECT/INSERT/UPDATE/DELETE AST; else text-only.

@@ -1426,6 +1426,7 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             {"arena_free",  TYPE_VOID, "i", 0, 0},
             {"mem_mark",    TYPE_I64, "", 0, 0},
             {"mem_rewind",  TYPE_VOID, "i", 0, 0},
+            {"rc_on",       TYPE_BOOL, "", 0, 0},
             {"mem_persist_begin", TYPE_VOID, "", 0, 0},
             {"mem_persist_end",   TYPE_VOID, "", 0, 0},
             {"bytes_len",   TYPE_I64, "b", 0, 0},

@@ -22,6 +22,10 @@ DDL is serial per db and there is no true 10k-client pool yet
 156k ops/s, insert 524 ops/s, mix 2.6k ops/s
 (`bench/boila/results/harness-2026-08-09.md`).
 
+**ormbaga live (2026-08-13):** `tests/orm_boila_test.baga` **36/36**
+срещу `serve_pg` (клиент и сървър с и без `--rc`). Вж.
+`bench/boila/results/orm-boila-2026-08-13.md`.
+
 ## Running
 
 ```bash

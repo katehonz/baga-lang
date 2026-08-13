@@ -85,3 +85,10 @@ through Simple Query unchanged. `\n` escapes remain available.
 Apps that need FK/SERIAL stay on real Postgres.
 
 **Verdict.** Expected; boilabaga documents the subset.
+
+## Live check (2026-08-13)
+
+`tests/orm_boila_test.baga` срещу `serve_pg` — **36/36** (клиент и
+сървър с и без `--rc`). `demo_boila` migrate+CRUD OK. Без peer в
+`baga-test` остава FAIL (очакван external-peer). Вж.
+`bench/boila/results/orm-boila-2026-08-13.md`.

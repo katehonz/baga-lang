@@ -163,13 +163,41 @@ fn pgw_run_del(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, del: Boi
     return pgw_write_out(fd, srv, sess, boila_mt_exec_del(pack, sess.txn, sess.db, del)?, send_ready)?
 }
 
+// Execute dispatch. Не връщай през `let mut ro = BoilaPgOut { srv, sess }`
+// в caller-а: свежият литерал се регистрира зад --rc и pop release-ва
+// споделения srv от mt_exec (pack != 0) → rc underflow на PlanCache.
+// fn резултатът не се регистрира (leak-safe), като Simple Query.
+fn pgw_exec_portal(fd: i64, pack: i64, srv: BoilaServer, sess: BoilaPgSess, name: str) -> BoilaPgOut !IO !Net !Time !Par {
+    if map_has(sess.portals, name) == 0 {
+        return pgw_run_sql(fd, pack, srv, sess, "", 0)?
+    }
+    let portal = map_get(sess.portals, name)
+    if portal.kind == 0 - 1 {
+        return pgw_run_sql(fd, pack, srv, sess, "", 0)?
+    }
+    if portal.kind == 1 {
+        return pgw_run_sel(fd, pack, srv, sess, portal.sel, 0)?
+    }
+    if portal.kind == 2 {
+        return pgw_run_ins(fd, pack, srv, sess, portal.ins, 0)?
+    }
+    if portal.kind == 3 {
+        return pgw_run_upd(fd, pack, srv, sess, portal.upd, 0)?
+    }
+    if portal.kind == 4 {
+        return pgw_run_del(fd, pack, srv, sess, portal.del, 0)?
+    }
+    let full = pgw_subst_params(portal.sql, portal.vals, portal.nulls)
+    return pgw_run_sql(fd, pack, srv, sess, full, 0)?
+}
+
 fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let mut s2 = sess
     // MEM-4: prepared stmt AST + име живеят в сесията след rewind-а на
-    // заявката → persist регион. Подмяната reclaim-ва стария, когато никой
-    // portal не го реферира (boila_pg_stmt_orphaned гард).
+    // заявката → persist регион. map_set мутира на място; assign на
+    // същата карта зад --rc release-ва живия stmts map.
     mem_persist_begin()
-    s2.stmts = boila_pg_parse_stmt(s2.stmts, s2.portals, body)
+    boila_pg_parse_stmt(s2.stmts, s2.portals, body)
     mem_persist_end()
     return s2
 }
@@ -177,9 +205,9 @@ fn pgw_do_parse(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
 fn pgw_do_bind(body: bytes, sess: BoilaPgSess) -> BoilaPgSess {
     let mut s2 = sess
     // MEM-4: portal-ът може да се Execute-не в по-късен batch → persist.
-    // Подмяната/Close/Sync-kill reclaim-ват стария (boila_pg_portal_free).
+    // map_set мутира на място — не присвоявай същата карта (RC release).
     mem_persist_begin()
-    s2.portals = boila_pg_bind_portal(s2.stmts, s2.portals, body, s2.e_sel, s2.e_ins, s2.e_upd, s2.e_del)
+    boila_pg_bind_portal(s2.stmts, s2.portals, body, s2.e_sel, s2.e_ins, s2.e_upd, s2.e_del)
     mem_persist_end()
     return s2
 }
@@ -304,7 +332,12 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
             if m.typ == 81 {                                  // 'Q' simple
                 let sql = pgw_cstr_read(m.body, 0)
                 let ro = pgw_run_sql(fd, pack, srv2, sp, sql.s, 1)?
-                srv2 = ro.srv
+                // pack!=0: ro.srv е throwaway seed (алокиран след mem_mark).
+                // srv2 е track-нат; assign release-ва стария след rewind →
+                // rc underflow. Реалният сървър е в pack.
+                if pack == 0 {
+                    srv2 = ro.srv
+                }
                 sp = ro.sess
                 if ro.ok == 0 {
                     running = false
@@ -326,42 +359,18 @@ fn boila_pg_serve_p(fd: i64, pack: i64, srv: BoilaServer) -> BoilaPgOut !IO !Net
                     } else {
                         if m.typ == 68 {                      // 'D' Describe (W5)
                             let dbuf = boila_pg_describe_buf(pack, srv2, sp.db, sp.stmts, sp.portals, m.body)?
-                            srv2 = dbuf.srv
+                            if pack == 0 {
+                                srv2 = dbuf.srv
+                            }
                             let w = pgw_write(fd, dbuf.buf)?
                             if w != 0 { running = false }
                         } else {
                             if m.typ == 69 {                  // 'E' Execute
                                 let pn = pgw_cstr_read(m.body, 0)
-                                let mut ro = BoilaPgOut { srv: srv2, sess: sp, ok: 1, sql_err: 0, err: "" }
-                                if map_has(sp.portals, pn.s) == 1 {
-                                    let portal = map_get(sp.portals, pn.s)
-                                    if portal.kind == 0 - 1 {
-                                        // MEM-4: reclaim-нат (Sync kill) — като липсващ
-                                        ro = pgw_run_sql(fd, pack, srv2, sp, "", 0)?
-                                    } else {
-                                    if portal.kind == 1 {
-                                        ro = pgw_run_sel(fd, pack, srv2, sp, portal.sel, 0)?
-                                    } else {
-                                        if portal.kind == 2 {
-                                            ro = pgw_run_ins(fd, pack, srv2, sp, portal.ins, 0)?
-                                        } else {
-                                            if portal.kind == 3 {
-                                                ro = pgw_run_upd(fd, pack, srv2, sp, portal.upd, 0)?
-                                            } else {
-                                                if portal.kind == 4 {
-                                                    ro = pgw_run_del(fd, pack, srv2, sp, portal.del, 0)?
-                                                } else {
-                                                    let full = pgw_subst_params(portal.sql, portal.vals, portal.nulls)
-                                                    ro = pgw_run_sql(fd, pack, srv2, sp, full, 0)?
-                                                }
-                                            }
-                                        }
-                                    }
-                                    }
-                                } else {
-                                    ro = pgw_run_sql(fd, pack, srv2, sp, "", 0)?
+                                let ro = pgw_exec_portal(fd, pack, srv2, sp, pn.s)?
+                                if pack == 0 {
+                                    srv2 = ro.srv
                                 }
-                                srv2 = ro.srv
                                 sp = ro.sess
                                 if ro.ok == 0 {
                                     running = false
