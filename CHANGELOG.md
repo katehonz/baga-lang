@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### llvm — M23/M24 паритет (traits + generic structs)
+- LLVM backend-ът вече емитва impl методите (M23) и мономорфизираните
+  struct типове `b_Pair_i64_str` per инстанция (M24): named типове + тела
+  под substitution, литерали/полета по конкретния cname. Оракулът минава.
+  Generic fn-ове (M21) остават C-only (ясна грешка).
+
 ### generics — M24 generic structs (мономорфизация)
 - `struct Pair<A, B> { first: A, second: B }` — извод от литералите,
   изрични аргументи `Pair<i64, str> { … }` (lookahead, без сблъсък със

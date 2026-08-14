@@ -48,6 +48,9 @@ typedef struct {
     LLVMTypeRef cur_ret_ty;   /* върнатият тип на текущата функция */
     Node *program;            /* за enum варианти и spec-ове */
     int tmp_counter;
+    /* M24: текущата generic struct инстанция при emit на типа */
+    Node *gen_struct;
+    int   gen_struct_inst;
 } LLVMCodegen;
 
 static LLVMCodegen lg;
@@ -68,6 +71,85 @@ static void llvm_unsupported_node(Node *n) {
 /* ---- Type mapping ---- */
 
 static LLVMTypeRef llvm_type(Node *ty);
+static char *llvm_mangle(const char *name);
+static LLVMTypeRef user_struct_ty(const char *name);
+static LLVMTypeRef baga_bytes_ty(void);
+
+/* M24: име на инстанция k на generic struct decl */
+static char *llvm_inst_cname(Node *s, int k) {
+    char *m = llvm_mangle(s->struct_name);
+    size_t cap = strlen(m) + 1 + (size_t)s->n_struct_params * 48;
+    char *out = malloc(cap);
+    if (!out) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    strcpy(out, m);
+    free(m);
+    for (int a = 0; a < s->n_struct_params; a++) {
+        Type *at = s->struct_inst_targs[k * s->n_struct_params + a];
+        if (at->kind == TYPE_STRUCT && at->name) {
+            char *am = llvm_mangle(at->name);
+            strcat(out, "_"); strcat(out, am + 2);
+            free(am);
+        } else if (at->kind == TYPE_ENUM && at->name) {
+            char *am = llvm_mangle(at->name);
+            strcat(out, "_"); strcat(out, am + 2);
+            free(am);
+        } else if (at->kind == TYPE_STR) strcat(out, "_str");
+        else if (at->kind == TYPE_BYTES) strcat(out, "_bytes");
+        else if (at->kind == TYPE_F64) strcat(out, "_f64");
+        else if (at->kind == TYPE_BOOL) strcat(out, "_bool");
+        else if (at->kind == TYPE_VEC) strcat(out, "_v");
+        else if (at->kind == TYPE_MAP) strcat(out, "_m");
+        else strcat(out, "_i64");
+    }
+    return out;
+}
+
+/* M24: C/LLVM име на instantiated generic struct ("b_Pair_i64_str") */
+static char *llvm_struct_cname(Type *t) {
+    const char *base = t->name ? t->name : "anon";
+    size_t cap = strlen(base) + 1 + (size_t)(t->n_targs > 0 ? t->n_targs : 0) * 48;
+    char *out = malloc(cap);
+    if (!out) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    strcpy(out, base);
+    for (int a = 0; a < t->n_targs; a++) {
+        Type *at = t->targs[a];
+        if (at->kind == TYPE_STRUCT && at->name) {
+            strcat(out, "_"); strcat(out, at->name);
+        } else if (at->kind == TYPE_ENUM && at->name) {
+            strcat(out, "_"); strcat(out, at->name);
+        } else if (at->kind == TYPE_STR) strcat(out, "_str");
+        else if (at->kind == TYPE_BYTES) strcat(out, "_bytes");
+        else if (at->kind == TYPE_F64) strcat(out, "_f64");
+        else if (at->kind == TYPE_BOOL) strcat(out, "_bool");
+        else if (at->kind == TYPE_VEC) strcat(out, "_v");
+        else if (at->kind == TYPE_MAP) strcat(out, "_m");
+        else strcat(out, "_i64");
+    }
+    return out;
+}
+
+/* LLVM тип от проверен Type (за targs substitution) */
+static LLVMTypeRef llvm_type_of(Type *t) {
+    if (!t) return lg.i64_ty;
+    switch (t->kind) {
+        case TYPE_I64: case TYPE_I32: case TYPE_ENUM: return lg.i64_ty;
+        case TYPE_F64: return lg.double_ty;
+        case TYPE_BOOL: return lg.i1_ty;
+        case TYPE_STR: case TYPE_VEC: case TYPE_MAP: case TYPE_FN:
+            return lg.ptr_ty;
+        case TYPE_BYTES: return baga_bytes_ty();
+        case TYPE_STRUCT: {
+            if (t->n_targs > 0) {
+                char *cn = llvm_struct_cname(t);
+                LLVMTypeRef r = user_struct_ty(cn);
+                free(cn);
+                return r;
+            }
+            return user_struct_ty(t->name ? t->name : "anon");
+        }
+        default: return lg.i64_ty;
+    }
+}
 static LLVMTypeRef baga_vec_ptr_ty(void);
 static LLVMTypeRef baga_bytes_ty(void);
 static LLVMTypeRef baga_map_ptr_ty(void);
@@ -112,6 +194,13 @@ static LLVMTypeRef llvm_type_resolved(Type *ty) {
         case TYPE_VOID: return lg.void_ty;
         case TYPE_STRUCT:
             if (!ty->name) llvm_unsupported("анонимна структура");
+            /* M24: instantiated generic struct */
+            if (ty->n_targs > 0) {
+                char *cn = llvm_struct_cname(ty);
+                LLVMTypeRef r = user_struct_ty(cn);
+                free(cn);
+                return r;
+            }
             return user_struct_ty(ty->name);
         case TYPE_VEC:    return baga_vec_ptr_ty();
         case TYPE_MAP:    return baga_map_ptr_ty(); break;
@@ -131,6 +220,22 @@ static LLVMTypeRef llvm_type_resolved(Type *ty) {
 static LLVMTypeRef llvm_type(Node *ty) {
     if (!ty) return lg.void_ty;
     if (ty->kind == NODE_TYPE) {
+        /* M24: типова променлива на текущата generic struct инстанция */
+        if (lg.gen_struct && ty->type) {
+            for (int i = 0; i < lg.gen_struct->n_struct_params; i++)
+                if (strcmp(lg.gen_struct->struct_params[i], ty->type_name) == 0) {
+                    Type *at = lg.gen_struct->struct_inst_targs[
+                        lg.gen_struct_inst * lg.gen_struct->n_struct_params + i];
+                    return llvm_type_of(at);
+                }
+        }
+        /* M24: instantiated generic struct — конкретният тип по cname */
+        if (ty->type && ty->type->kind == TYPE_STRUCT && ty->type->n_targs > 0) {
+            char *cn = llvm_struct_cname(ty->type);
+            LLVMTypeRef t = user_struct_ty(cn);
+            free(cn);
+            return t;
+        }
         if (strcmp(ty->type_name, "i64") == 0) return lg.i64_ty;
         if (strcmp(ty->type_name, "i32") == 0) return lg.i32_ty;
         if (strcmp(ty->type_name, "f64") == 0) return lg.double_ty;
@@ -4035,7 +4140,25 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                          n->field_name, sname);
                 llvm_unsupported(buf);
             }
-            LLVMTypeRef sty = user_struct_ty(sname);
+            /* M24: instantiated generic struct — типът по cname */
+            LLVMTypeRef sty;
+            Node *saved_gs = lg.gen_struct;
+            int saved_gi = lg.gen_struct_inst;
+            if (obj->type->n_targs > 0) {
+                char *cn = llvm_struct_cname(obj->type);
+                sty = user_struct_ty(cn);
+                free(cn);
+                lg.gen_struct = decl;
+                for (int k = 0; k < decl->struct_inst_count; k++) {
+                    int same = 1;
+                    for (int a = 0; a < decl->n_struct_params; a++)
+                        if (decl->struct_inst_targs[k * decl->n_struct_params + a] !=
+                            obj->type->targs[a]) { same = 0; break; }
+                    if (same) { lg.gen_struct_inst = k; break; }
+                }
+            } else {
+                sty = user_struct_ty(sname);
+            }
             LLVMValueRef base = NULL;
             if (obj->kind == NODE_IDENT)
                 base = st_lookup(obj->name);
@@ -4051,6 +4174,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             char *name = tmp_name();
             LLVMValueRef r = LLVMBuildLoad2(lg.builder, fty, gep, name);
             free(name);
+            lg.gen_struct = saved_gs;
+            lg.gen_struct_inst = saved_gi;
             return r;
         }
         case NODE_STRUCT_LIT: {
@@ -4062,9 +4187,31 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 snprintf(buf, sizeof buf, "неизвестна структура '%s'", n->lit_name);
                 llvm_unsupported(buf);
             }
-            LLVMTypeRef sty = user_struct_ty(n->lit_name);
+            /* M24: instantiated generic struct — типът по cname */
+            LLVMTypeRef sty;
+            if (n->type && n->type->kind == TYPE_STRUCT && n->type->n_targs > 0) {
+                char *cn = llvm_struct_cname(n->type);
+                sty = user_struct_ty(cn);
+                free(cn);
+            } else {
+                sty = user_struct_ty(n->lit_name);
+            }
             LLVMValueRef tmp = entry_alloca(sty, "slit");
             LLVMBuildStore(lg.builder, LLVMConstNull(sty), tmp);
+            /* M24: полетата на generic struct literal се резолват под
+             * substitution (параметри → targs на литерала) */
+            Node *saved_gs = lg.gen_struct;
+            int saved_gi = lg.gen_struct_inst;
+            if (n->type && n->type->n_targs > 0) {
+                lg.gen_struct = decl;
+                for (int k = 0; k < decl->struct_inst_count; k++) {
+                    int same = 1;
+                    for (int a = 0; a < decl->n_struct_params; a++)
+                        if (decl->struct_inst_targs[k * decl->n_struct_params + a] !=
+                            n->type->targs[a]) { same = 0; break; }
+                    if (same) { lg.gen_struct_inst = k; break; }
+                }
+            }
             for (int i = 0; i < n->n_lit_fields; i++) {
                 int idx = struct_field_index(decl, n->lit_fields[i]);
                 if (idx < 0) {
@@ -4083,6 +4230,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             char *name = tmp_name();
             LLVMValueRef r = LLVMBuildLoad2(lg.builder, sty, tmp, name);
             free(name);
+            lg.gen_struct = saved_gs;
+            lg.gen_struct_inst = saved_gi;
             return r;
         }
         case NODE_PATH: {
@@ -4600,18 +4749,14 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
 /* ---- Public API ---- */
 
 void codegen_llvm(Node *program, const char *output_path) {
-    /* M21: generics са C-only (v1) — мономорфизацията не е пренесена */
+    /* M21: generic fns са C-only (v1) — мономорфизацията не е пренесена.
+     * M23 (traits) и M24 (generic structs) се поддържат. */
     for (int i = 0; i < program->items.len; i++) {
         Node *it = program->items.data[i];
         if (it->kind == NODE_FN && it->n_type_params > 0 && it->inst_count > 0) {
-            fprintf(stderr, "baga: generics не се поддържат в LLVM backend-а (v1) — "
+            fprintf(stderr, "baga: generic fn-ове не се поддържат в LLVM backend-а (v1) — "
                             "fn '%s' има %d инстанции; ползвай C backend-а\n",
                     it->fn_name, it->inst_count);
-            return;
-        }
-        if (it->kind == NODE_IMPL) {
-            fprintf(stderr, "baga: traits/impl не се поддържат в LLVM backend-а (v1) — "
-                            "ползвай C backend-а\n");
             return;
         }
     }
@@ -4657,6 +4802,16 @@ void codegen_llvm(Node *program, const char *output_path) {
     /* нулев проход: named struct типове + sum enum типове (имена, после тела) */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
+        if (item->kind == NODE_STRUCT && item->n_struct_params > 0) {
+            /* M24: generic struct — named тип per инстанция */
+            for (int k = 0; k < item->struct_inst_count; k++) {
+                char *cn = llvm_inst_cname(item, k);
+                if (!LLVMGetTypeByName(lg.mod, cn))
+                    LLVMStructCreateNamed(lg.ctx, cn);
+                free(cn);
+            }
+            continue;
+        }
         if (item->kind != NODE_STRUCT && !is_sum_enum_item(item)) continue;
         const char *tn = item->kind == NODE_STRUCT
             ? item->struct_name : item->enum_name;
@@ -4667,6 +4822,25 @@ void codegen_llvm(Node *program, const char *output_path) {
     }
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
+        if (item->kind == NODE_STRUCT && item->n_struct_params > 0) {
+            /* M24: тела на инстанциите (полета под substitution) */
+            for (int k = 0; k < item->struct_inst_count; k++) {
+                lg.gen_struct = item;
+                lg.gen_struct_inst = k;
+                char *cn = llvm_inst_cname(item, k);
+                LLVMTypeRef st = LLVMGetTypeByName(lg.mod, cn);
+                free(cn);
+                int nf = item->fields.len;
+                LLVMTypeRef *elems = malloc(sizeof(LLVMTypeRef) * (size_t)(nf > 0 ? nf : 1));
+                for (int j = 0; j < nf; j++)
+                    elems[j] = llvm_type(item->fields.data[j]->fld_type);
+                LLVMStructSetBody(st, elems, (unsigned)nf, 0);
+                free(elems);
+                lg.gen_struct = NULL;
+                lg.gen_struct_inst = -1;
+            }
+            continue;
+        }
         if (item->kind != NODE_STRUCT) continue;
         char *m = llvm_mangle(item->struct_name);
         LLVMTypeRef st = LLVMGetTypeByName(lg.mod, m);
@@ -4709,15 +4883,26 @@ void codegen_llvm(Node *program, const char *output_path) {
         Node *item = program->items.data[i];
         if (item->kind == NODE_FN)
             predeclare_fn_llvm(item);
+        if (item->kind == NODE_IMPL)
+            for (int m = 0; m < item->impl_methods.len; m++)
+                predeclare_fn_llvm(item->impl_methods.data[m]);
     }
 
     /* втори проход: тела + wrapper-и */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
-        if (item->kind != NODE_FN || !item->fn_body) continue;
-        Node *spec = find_ensures_spec_llvm(item->fn_name);
-        emit_fn_llvm(item, spec);
-        if (spec) emit_wrapper_llvm(item, spec);
+        if (item->kind == NODE_FN && item->fn_body) {
+            Node *spec = find_ensures_spec_llvm(item->fn_name);
+            emit_fn_llvm(item, spec);
+            if (spec) emit_wrapper_llvm(item, spec);
+        }
+        if (item->kind == NODE_IMPL) {
+            for (int m = 0; m < item->impl_methods.len; m++) {
+                Node *mf = item->impl_methods.data[m];
+                if (!mf->fn_body) continue;
+                emit_fn_llvm(mf, NULL);
+            }
+        }
     }
 
     /* emit C main wrapper */
