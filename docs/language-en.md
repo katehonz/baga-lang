@@ -120,7 +120,8 @@ let code = 'A'   // 65
 
 ```
 fn  let  mut  if  else  while  for  in  return  match
-struct  impl  spec  enum  true  false  catch  break  continue
+struct  impl  trait  spec  enum  true  false  catch  break  continue
+raise  import  as  extern
 ```
 
 ---
@@ -137,7 +138,8 @@ top_level      = fn_decl | struct_decl | enum_decl | spec_decl ;
 
 (* Declarations *)
 fn_decl        = "fn", ident, "(", [ param, { ",", param } ], ")",
-                 [ "->", type, { "!", ident } ], ( block | /* empty: forward decl */ ) ;
+                 [ "->", type, { "!", ident, [ "(", type, ")" ] } ],
+                 ( block | /* empty: forward decl */ ) ;
 param          = ident, ":", type ;
 struct_decl    = "struct", ident, "{", [ field_decl, { ",", field_decl } ], "}" ;
 field_decl     = ident, ":", type ;
@@ -176,14 +178,15 @@ equality       = comparison, { ( "==" | "!=" ), comparison } ;
 comparison     = additive, { ( "<" | ">" | "<=" | ">=" ), additive } ;
 additive       = multiplicative, { ( "+" | "-" ), multiplicative } ;
 multiplicative = unary, { ( "*" | "/" | "%" ), unary } ;
-unary          = ( "-" | "!" | "&" | "*" ), unary | postfix ;
+unary          = ( "-" | "!" | "&" | "*" | raise_expr ), unary | postfix ;
 postfix        = primary, { call | index | range | field | try | catch } ;
 call           = "(", [ expression, { ",", expression } ], ")" ;
 index          = "[", expression, "]" ;
 range          = "..", unary ;
 field          = ".", ident ;
 try            = "?" ;
-catch          = "catch", "!", ident, "=>", unary ;
+catch          = "catch", "!", ident, [ "(", ident, ")" ], "=>", unary ;
+raise_expr     = "raise", "!", ident, [ "(", expression, ")" ] ;
 
 primary        = int_lit | float_lit | str_lit | char_lit
                | "true" | "false"
@@ -298,11 +301,106 @@ fn add(a: i64, b: i64) -> i64 {
 - Effects, if any, follow the return type: `-> str !IO !NotFound`.
 - A function with no body (`fn f(x: i64) -> i64`) is a forward declaration.
 
+### 6.0 Type parameters (M21)
+
+Functions can be generic — type parameters are declared in `<…>` after the
+name and monomorphized per concrete combination of argument types:
+
+```baga
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+fn first<T>(v: Vec<T>) -> T {
+    return vec_get(v, 0)
+}
+
+fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U> { … }
+```
+
+- **Inference** works from the value arguments (`identity(42)`, `first(v)`);
+  conflicting inferences are a compile error.
+- **Explicit type arguments**: `map<i64, i64>(v, twice)` — required when a
+  parameter does not appear in the value arguments (`f<T>()` with no `T` in
+  the params).
+- The body is checked **once per instance** with the concrete types — `p.x`
+  is valid when `T` is a struct with a field `x`, and body errors point at
+  the exact instance.
+- v1 limits: a generic fn cannot be a value (`let g = f`), and cannot contain
+  lambdas or a spec.
+
+### 6.0.1 Traits and methods (M23)
+
+`trait` declares a contract; `impl Trait for Type` implements it per type.
+Methods are called with the `obj.m(args)` syntax and dispatched **statically**
+(monomorphization — the same mechanism as M21):
+
+```baga
+trait Area {
+    fn area(self) -> i64
+}
+
+impl Area for Rect {
+    fn area(self: Rect) -> i64 {
+        return self.w * self.h
+    }
+}
+
+fn total<T: Area>(x: T) -> i64 {
+    return x.area()
+}
+
+fn main() {
+    let r = Rect { w: 3, h: 4 }
+    print(r.area())          // 12
+    print(r.scale(10).area())// chains
+    print(total(r))          // trait bound on a generic fn
+}
+```
+
+- `self` is the first parameter of a method (passed implicitly by `obj.m(…)`).
+- Trait bounds: `fn f<T: Show>(…)` — at instantiation the concrete type must
+  implement the bound, otherwise it is a compile error.
+- An ambiguous method (two impls of different traits providing `m` for the
+  same type) is a compile error.
+- v1: static dispatch (no trait objects).
+
+### 6.0.2 Generic structs (M24)
+
+Structs can be generic too — monomorphized per concrete combination of types
+(like M21):
+
+```baga
+struct Pair<A, B> {
+    first: A,
+    second: B
+}
+
+fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
+    return Pair { first: p.second, second: p.first }
+}
+
+fn main() {
+    let p = Pair { first: 1, second: "x" }   // inference
+    let q = Pair<str, i64> { first: "a", second: 9 }  // explicit
+    print(p.first)
+    let s = swap(p)
+    print(s.first)   // "x"
+}
+```
+
+- Inference works from the literal's fields; explicit arguments — with
+  `Pair<i64, str> { … }` (lookahead, not confused with comparisons).
+- Fields resolve under the substitution — `p.first: A → i64`.
+- Impl for a concrete instance: `impl Describe for Pair<i64, str>`.
+- v1: `--rc` helpers for heap fields of a generic struct are not generated.
+
 ### 6.1 Return values
 
 Use `return expr` to return early. The value of the last expression in a block
 is also used as an implicit return in expression positions (for example, in
-`match` arms and `if` branches).
+`match` arms and `if` branches). The last **expression statement** in the body
+of a non-void function is also an implicit return:
 
 ```baga
 fn max(a: i64, b: i64) -> i64 {
@@ -311,7 +409,19 @@ fn max(a: i64, b: i64) -> i64 {
     }
     return b
 }
+
+fn answer() -> i64 {
+    let mut x = 40
+    x = x + 2
+    x          // implicit return
+}
 ```
+
+If a non-void function can fall off the end without a value (for example, a
+loop that never returns), that is a compile error: "функцията … може да падне
+от края без return" ("the function … may fall off the end without a return",
+M19). A `while true` without `break` does not fall off — no return is required
+after it.
 
 ### 6.2 Recursion
 
@@ -601,8 +711,8 @@ IR constructor functions; both backends agree byte-for-byte (oracle:
 
 Honest v1 limits:
 
-- No generics — write a concrete enum per use site; use `Enum::Ok` when
-  several Result enums coexist (A1).
+- No generic enums (generic *structs* exist — §6.0.2) — write a concrete enum
+  per use site; use `Enum::Ok` when several Result enums coexist (A1).
 - Exactly one payload type per variant; wrap several fields in a struct.
 - Nested sum/struct cycles fall back to declaration order; acyclic graphs
   (the common case: `struct Hold { r: Res }`, `enum Box { BoxHas(Wrap) }`)
@@ -1024,7 +1134,38 @@ fn main() {
 After both effects are caught, the expression is a plain `str` with no
 remaining effects, so `main` (which returns `void`, no effects) type-checks.
 
-### 13.4 The unhandled-effect error
+### 13.4 Effects with payloads (M20)
+
+An effect can carry a value: `!E(T)` declares an effect with a payload of
+type `T` (in v1: `i64`, `f64`, `bool`, `str`, `bytes`). `raise !E(value)`
+triggers the effect — the function exits on the error path with the payload;
+`catch !E(name) => …` catches it and binds `name` in the handler; `?`
+propagates it upwards (the payload travels with it):
+
+```baga
+fn open_db(name: str) -> i64 !NotFound(str) {
+    if name == "" {
+        raise !NotFound("празно име")
+    }
+    return 42
+}
+
+fn main() {
+    let v = open_db("x") catch !NotFound(err) => { print(err); 0 }
+    print(v)
+}
+```
+
+- Payload-less effects (`!IO`) remain a compile-time fiction — no runtime cost.
+- The payload signature is checked strictly: `raise !E(str)` in a function
+  declaring `!E(i64)` is a compile error; `catch` on a payload effect requires
+  a binding, and on a payload-less effect forbids one.
+- Chains of `catch` handle several payload effects in sequence.
+- `raise` without a payload is valid for a payload-less effect (`raise !IO`).
+- The LLVM backend has full payload runtime parity (raise/catch/? match the
+  C backend byte-for-byte; oracle: `examples/effects_payload.baga`).
+
+### 13.5 The unhandled-effect error
 
 If an effect reaches a function that neither declares it nor catches it, the
 compiler reports:
@@ -1037,7 +1178,7 @@ file.baga: 4:1: необработен ефект !IO във 'main' — декл
 
 This is the heart of the system: effects cannot be silently dropped.
 
-### 13.5 `!Overflow` — an effect the verifier infers
+### 13.6 `!Overflow` — an effect the verifier infers
 
 `!Overflow` is a special effect dimension: unlike `!IO` (which is *generated*
 by builtins such as `read_file`), no builtin generates `!Overflow` — it is
@@ -1107,8 +1248,10 @@ spec <name> {
 - The spec's `<name>` must match an existing function name.
 - `input` lists parameters; their count and types must match the function.
 - `output` is the return type; it must match the function's return type.
-- `guarantees` are free-text lines, each beginning with `-`. They document the
-  contract and are surfaced by `--proofs` and `--specs`.
+- `guarantees` are lines, each beginning with `-`. Lines that parse as a
+  boolean Baga expression (over the input parameters and `output`) are
+  **verified statically** by `--verify` (M22); the rest are prose and are
+  surfaced by `--proofs`/`--specs` as documentation.
 
 ### 14.2 What the compiler checks
 
@@ -1121,8 +1264,9 @@ The compiler rejects a program when a spec disagrees with its function:
 | Input type differs | `spec '<name>': параметър '<p>' е A в spec-а, но B във функцията` |
 | Output type differs | `spec '<name>': output е A, но функцията връща B` |
 
-Guarantees themselves are not yet formally proven; `--proofs` reports them with
-the status `UNVERIFIED — requires formal proof or testing`.
+Prose guarantees are not formally proven; `--proofs` reports them with the
+status `UNVERIFIED — requires formal proof or testing`. Guarantee lines that
+parse as boolean expressions are verified statically — see §14.3.1 (M22).
 
 ### 14.3 Executable guarantees (`ensures:`)
 
@@ -1147,10 +1291,31 @@ spec факториел {
 }
 ```
 
-`guarantees:` remains free-text documentation (status UNVERIFIED in
+`guarantees:` prose lines remain documentation (status UNVERIFIED in
 `--proofs`); `ensures:` is executed (status RUNTIME-CHECKED). `ensures` on a
 function without a return type is a compile-time error. The LLVM backend also
 executes `ensures` (and `requires`) — the same wrapper pattern as the C backend.
+
+### 14.3.1 Statically verified guarantees (M22)
+
+`--verify` also reads the `guarantees:` lines: if a line parses as a boolean
+expression (for example `- output >= arr` or `- output < arr + 10`), it is
+proven/refuted with the same discipline as `ensures` — PROVEN / REFUTED (with
+a counterexample) / UNKNOWN. Lines like `- output is sorted` are prose and
+come out as "prose — outside the verification fragment":
+
+```
+verify сортирай:
+  ensures #1 (output >= arr): ДОКАЗАНО
+  guarantee #1 (output is sorted): проза — извън верификационния фрагмент
+  guarantee #3 (output >= arr): ДОКАЗАНО
+  guarantee #4 (output < arr + 10): ДОКАЗАНО
+```
+
+A refuted guarantee is the same red result as a refuted ensures (exit code 1).
+Thus `guarantees:` stops being prose-only — it becomes *gradually* verifiable:
+the more of the verifier's vocabulary a line uses, the more of the
+specification is judged by the compiler.
 
 ### 14.4 Preconditions (`requires:`)
 

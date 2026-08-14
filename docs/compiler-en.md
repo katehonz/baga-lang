@@ -408,13 +408,16 @@ Baga (Phase 1) lacks:
 The linked-list-in-vectors approach works within these constraints while
 remaining efficient (O(1) node creation, O(children) traversal).
 
-### Why Effects Are Compile-Time Only
+### Why Effects Are (Mostly) Compile-Time Only
 
-Effects (`!IO`, `!Error`) serve as documentation and static guarantees.
-They are erased during codegen because:
-- No runtime effect handlers (yet)
+Payload-less effects (`!IO`, `!Error`) serve as documentation and static
+guarantees. They are erased during codegen because:
 - C has no concept of effects
 - The type system enforces effect discipline at compile time
+
+Since M20, effects with payloads (`!E(T)`) have a runtime model: a
+thread-local `baga_eff` slot and raise/try/catch lowering in both backends.
+Only payload-less effects remain a pure compile-time fiction with no cost.
 
 ### Why Decimal Encoding in Self-Hosted Mangling
 
@@ -553,7 +556,10 @@ SRCS    := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src
 
 - Incremental compilation (skip unchanged modules)
 - A native JIT backend (own project) for a REPL; the LLVM backend already covers native codegen
-- Runtime effect handlers (algebraic effects)
+- Full algebraic effects (first-class handlers, continuations) — payload
+  effects (M20) already have runtime raise/catch
 - Formal proof verification (integrate with Lean/Coq)
-- Generic types and trait system
 - Standard library beyond the 17 builtins
+
+Generic types and the trait system are implemented in M21–M24
+(monomorphization, static dispatch).

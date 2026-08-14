@@ -121,7 +121,8 @@ let код = 'A'   // 65
 
 ```
 fn  let  mut  if  else  while  for  in  return  match
-struct  impl  spec  enum  true  false  catch  break  continue  raise
+struct  impl  trait  spec  enum  true  false  catch  break  continue
+raise  import  as  extern
 ```
 
 ---
@@ -688,7 +689,8 @@ C бекендът свежда сборния enum до тагната стру
 
 Честни ограничения на v1:
 
-- Няма дженерици — конкретен enum на място; при няколко Result — `Enum::Ok`.
+- Няма дженерик enum-и (дженерик *struct*-ове има — §6.0.2) — конкретен enum
+  на място; при няколко Result — `Enum::Ok`.
 - Точно един payload тип на вариант; за няколко полета ползвайте struct.
 - **A2:** `Vec<Res>` и `Map<K, Res>` работят (box path като при struct).
 - Ациклични графове struct↔sum enum се емитират в топологичен ред, така че
@@ -1139,8 +1141,8 @@ fn main() {
   binding, а на ефект без payload — забранява го.
 - Вериги от `catch` обработват няколко payload ефекта подред.
 - `raise` без payload е валиден за payload-less ефект (`raise !IO`).
-- LLVM backend-ът третира payload пътя като compile-time фикция (без
-  runtime payload-и) — ползвайте C backend-а за runtime поведение.
+- LLVM backend-ът има пълен payload runtime паритет (raise/catch/? съвпадат
+  байт-по-байт с C backend-а; оракул: `examples/effects_payload.baga`).
 
 ### 13.5 Грешката за необработен ефект
 
