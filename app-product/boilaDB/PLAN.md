@@ -78,11 +78,13 @@
   на shard на заявление). Shard-owner нишките остават за wire фазите
   (P6), където concurrency-то реално се ползва; дотогава sync loop-ът
   притежава store-а (gaps H2).
-- **Гейтове (измерени, bench/boila/results/insert-write-2026-08-08.md):**
-  (а) group commit ≥ 3× спрямо sync-per-write — **1722%**;
+- **Гейтове (измерени, bench/boila/results/insert-write-*.md):**
+  (а) group commit ≥ 3× спрямо sync-per-write — **1722%** (2026-08-08),
+  **2596%** (2026-08-14);
   (б) durability без close (kill -9 семантика): **100k реда, 0 загубени,
-  индексът валиден без rebuild**. Пълният 1M е блокиран от arena-та на
-  езика (gaps Q2) и се връща с per-request arena управление в P6.
+  индексът валиден без rebuild**. Пълният **1M е приземен (2026-08-14,
+  Q2 persist reclaim в rocksbaga): single process, peak 10.4 GB RSS,
+  3281 s, DURABLE OK** — insert-write-2026-08-14.md.
 
 ## P4 — MVCC транзакции (едно-сесийен buffered модел)
 - `BEGIN [READ ONLY] / COMMIT / ROLLBACK`; писанията се буферират и се

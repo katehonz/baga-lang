@@ -19,13 +19,11 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P11
 
-- **P11-FS — filesize gate-ът е червен и блокира run_tests.sh.** 8 файла
-  > 400 реда (streaming комитите P9–P11: exec_join 827, exec_agg_stream
-  810, exec_scan 666, pgwire_prep 546, pgwire 467, exec_sql 439,
-  serve_mt 415, exec_dml 402). run_tests.sh спира на gate-а (ред 173)
-  ПРЕДИ baga-test discovery-то — „пълен пакет" през run_tests.sh в
-  момента не върви; `scripts/baga-test` директно дава 145/150 (5 =
-  external peers). Деленето е дълг по ARCHITECTURE §9.
+- **P11-FS — (FIXED) filesize gate-ът е зелен.** 8-те файла > 400 реда
+  от streaming комитите (exec_join 827, exec_agg_stream 810, exec_scan
+  666, pgwire_prep 546, pgwire 467, exec_sql 439, serve_mt 415,
+  exec_dml 402) са разделени — към 2026-08-14 всички са ≤ 400
+  (scripts/filesize.sh минава; run_tests.sh е пълен зелен, 159/159).
 
 - **P11-1 — (PARTIAL) concurrent ladder, not 10k.** `bench/boila/mt_ladder`
   : 1/4/8/16/32 HTTP clients × 200 point SELECT against MT serve
@@ -455,7 +453,7 @@ T = транзакции, W = wire protocol, F = FTS.
   Урок: в rocksbaga никога не се скенва по време на фаза, която пише.
 - **Q2 — baga bump arena-та не reclaims; дългоживеещите тежки процеси
   OOM-ват. (MEM-4 partial — 2026-08-11; MEM-4b/c — 2026-08-12;
-  MEM-4д — 2026-08-12)**
+  MEM-4д — 2026-08-12; **1M гейтът приземен — 2026-08-14, commit 2b9d7de**)**
   Измерено при P3 bench: 1M INSERT-а (10×100k) OOM-ваше на chunk 2.
   **MEM-4:** C runtime `mem_mark`/`mem_rewind` + `mem_persist_begin/end`
   (отделна persist arena + отделни free lists). Serve loops (HTTP/PG MT) +
@@ -505,6 +503,22 @@ T = транзакции, W = wire protocol, F = FTS.
   зареждат uncached); (в) live-byte профил — cumulative bump числата
   надценяват чрез freelist reuse. Дребен drip и при пълен reclaim:
   immortal str-ове + vec-growth intermediate-и (~0.4 KB/заявка).
+  **2026-08-14 (commit 2b9d7de) — 1M гейтът е приземен.** (а) е направено:
+  `sst_meta_free_contents` преди `map_del` при compaction + free на scan
+  meta-та при изход от `sst_fold(_prefix)_into`; bonus: drop на изчерпаните
+  read buffer-и в `sst_meta_load`/`sst_rec_at_fd` (drip-ът в persist
+  прозореца на sst_get), deep free на орфания стар memtable при flush
+  (key/val buffer-и) и на старите gens/levels вектори. (б) не е нужно
+  като leak fix — scan пътят е ephemeral (rewind на заявление); free-ването
+  при изход намалява in-statement пика. (в) не е нужно — измерването е
+  директно: **200k RSS 1990→746 MB (−62%), 1M — 3281 s, peak 10.4 GB,
+  DURABLE OK (0 загубени, индекс без rebuild)**; преди: OOM ~250k/29 GB.
+  Пълни числа: `bench/boila/results/insert-write-2026-08-14.md`.
+  **Остатък:** ~10 KB/ред средно, суперлинеен с дълбочината на нивата
+  (L2/L3 compaction re-reads + по-дълъг GET path); при нужда — cost-based
+  level sizing или по-евтини re-reads. Bonus находка: paging-ът през
+  `boila_scan` събира всички ключове на страница (O(N²/count)) — bench
+  verify-то вече ползва one-shot `boila_scan_pref_all` (3.5 s за 1M).
 
 ## Открити при P2
 
