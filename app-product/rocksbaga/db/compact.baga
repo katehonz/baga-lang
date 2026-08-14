@@ -294,6 +294,12 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
         let g = vec_get(db.gens, ix)
         vec_push(dels, g)
         sst_fd_drop(db.cache, db.sst_fds, db.sst_sizes, g)?
+        // Q2(а): free на кешираната meta съдържание ПРЕДИ del — иначе
+        // rkeys/idx/last_key/bcrcs остават сираци в persist региона.
+        if map_has(db.sst_meta, g) == 1 {
+            let dmeta = map_get(db.sst_meta, g)
+            sst_meta_free_contents(dmeta)
+        }
         map_del(db.sst_meta, g)
         unlink(sst_path(db.dir, g))?
         unlink(bloom_path(db.dir, g))?
@@ -302,6 +308,8 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
     }
     // Rebuild oldest-first: L3 … L0; append new file at end of its level.
     // MEM-4: ng/nl стават cross-request state на store-а — persist регион
+    let old_gens = db.gens
+    let old_levels = db.levels
     mem_persist_begin()
     let ng: Vec<i64> = vec_new()
     let nl: Vec<i64> = vec_new()
@@ -324,6 +332,9 @@ fn lsm_merge_indices(db: LsmDB, idxs: Vec<i64>, out_level: i64) -> LsmDB !IO !Ti
     db.gens = ng
     db.levels = nl
     mem_persist_end()
+    // Q2: старите gens/levels вектори са сираци — free към persist freelist.
+    drop(old_gens)
+    drop(old_levels)
     let mut add_g: i64 = 0
     if vec_len(rows) > 0 {
         add_g = new_gen

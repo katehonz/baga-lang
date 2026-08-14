@@ -262,6 +262,7 @@ fn sst_fold_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, sizes: M
     // v4/v5: meta.ok=1 even if first block CRC fails (open=0).
     if sc.meta.ok == 1 {
         if sc.open == 0 {
+            sst_meta_free_contents(sc.meta)
             return sc.pc
         }
         let mut go: i64 = 1
@@ -283,6 +284,8 @@ fn sst_fold_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, sizes: M
                 }
             }
         }
+        // Q2: scan-ът приключи — meta съдържанието е собствено за scan-а.
+        sst_meta_free_contents(sc.meta)
         return sc.pc
     }
     // Legacy formats only: full-file parse (same as pre-R20).
@@ -329,9 +332,11 @@ fn sst_fold_prefix_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, s
                 }
                 sc.open = 0
             }
+            sst_meta_free_contents(sc.meta)
             return sc.pc
         }
         if sc.open == 0 {
+            sst_meta_free_contents(sc.meta)
             return sc.pc
         }
         let mut go: i64 = 1
@@ -384,6 +389,8 @@ fn sst_fold_prefix_into(pc: PageCache, dir: str, gen: i64, fds: Map<i64, i64>, s
             }
             sc.open = 0
         }
+        // Q2: scan-ът приключи — meta съдържанието е собствено за scan-а.
+        sst_meta_free_contents(sc.meta)
         return sc.pc
     }
     // Legacy formats: full parse + prefix filter.

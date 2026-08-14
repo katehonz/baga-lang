@@ -31,6 +31,10 @@ fn sst_rec_at_fd(pc: PageCache, fd: i64, gen: i64, body_off: i64) -> SstKeyAt !I
     }
     let op = bytes_at(h.data, 0)
     let klen = get_u32_le(h.data, 1)
+    // Q2: header buffer-ът е изчерпан — free (иначе drip в persist региона
+    // при sst_get meta cache loads).
+    let hd = h.data
+    drop(hd)
     if klen < 0 || klen > 1048576 {
         return SstKeyAt { pc: h.pc, ok: 0, key: bytes_new(0), op: 0, val: bytes_new(0), next: body_off }
     }
@@ -41,6 +45,9 @@ fn sst_rec_at_fd(pc: PageCache, fd: i64, gen: i64, body_off: i64) -> SstKeyAt !I
     // R67: keep the key as raw bytes (no str_of_bytes — lossy on NUL keys).
     let key = bytes_slice(kr.data, 0, klen)
     let vlen = get_u32_le(kr.data, klen)
+    // Q2: key/vlen са извлечени — record buffer-ът е изчерпан.
+    let krd = kr.data
+    drop(krd)
     if vlen < 0 || vlen > 67108864 {
         return SstKeyAt { pc: kr.pc, ok: 0, key: bytes_new(0), op: 0, val: bytes_new(0), next: body_off }
     }
@@ -89,6 +96,28 @@ fn sst_meta_empty() -> SstMeta {
     }
 }
 
+// Q2(а): free на heap съдържанието на кеширана SstMeta преди map_del —
+// без него rkeys/idx/last_key/bcrcs buffer-ите остават сираци в persist
+// региона при всеки compaction. first_key дели buffer с rkeys[0] —
+// drop-ването на rkeys елементите го покрива; first_key НЕ се drop-ва.
+fn sst_meta_free_contents(m: SstMeta) {
+    let rks = m.rkeys
+    let n = vec_len(rks)
+    let mut i: i64 = 0
+    while i < n {
+        let e = vec_get(rks, i)
+        drop(e)
+        i = i + 1
+    }
+    drop(rks)
+    let lk = m.last_key
+    drop(lk)
+    let ix = m.idx
+    drop(ix)
+    let bc = m.bcrcs
+    drop(bc)
+}
+
 struct SstMetaLoad {
     pc: PageCache,
     meta: SstMeta
@@ -123,6 +152,10 @@ fn sst_meta_load(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstMetaLoad !I
     if core_len + bloom_nbytes + fl != body_len {
         return SstMetaLoad { pc: cur, meta: bad }
     }
+    // Q2: footer-ът е изчерпан — free на read buffer-а (иначе drip в
+    // persist региона при sst_get meta cache loads).
+    let frd = fr.data
+    drop(frd)
     let mut idx_base = core_len - 4 - n_restarts * 4
     if tag == 5 {
         idx_base = core_len - 4 - n_restarts * 4 - n_restarts * 4
@@ -151,6 +184,9 @@ fn sst_meta_load(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstMetaLoad !I
             return SstMetaLoad { pc: cur, meta: bad }
         }
         vec_push(rkeys, rk.key)
+        // Q2: за метата трябва само ключът — value buffer-ът е drip.
+        let rv = rk.val
+        drop(rv)
         ri = ri + 1
     }
     let last_off = get_u32_le(ir.data, (n_restarts - 1) * 4)
@@ -161,10 +197,16 @@ fn sst_meta_load(pc: PageCache, fd: i64, gen: i64, fsize: i64) -> SstMetaLoad !I
     let lr = pc_read_at(cur, fd, gen, 8 + last_off, span)?
     cur = lr.pc
     let last_key = sst_last_key(lr.data, 0, bytes_len(lr.data))
+    // Q2: last_key е извлечен — free на span buffer-а.
+    let lrd = lr.data
+    drop(lrd)
     if bytes_len(last_key) == 0 {
         return SstMetaLoad { pc: cur, meta: bad }
     }
     let idx = bytes_slice(ir.data, 0, n_restarts * 4)
+    // Q2: idx е копиран — free на index buffer-а.
+    let ird = ir.data
+    drop(ird)
     let first_key = vec_get(rkeys, 0)
     // R27: load per-block CRCs for BAGASST5 (after u32 N in core).
     let mut bcrcs = bytes_new(0)

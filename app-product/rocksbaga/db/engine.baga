@@ -489,10 +489,37 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
     db.wal_off = 0
     db.wal_buf_len = 0  // R18: keep the allocated buffer
     // MEM-4: свежите memtable maps живеят в shared store след rewind
+    let old_mem = db.mem
+    let old_tomb = db.tomb
     mem_persist_begin()
     db.mem = map_new()
     db.tomb = map_new()
     mem_persist_end()
+    // Q2: старият memtable остава сирак в persist — deep free на key/val
+    // buffer-ите (entry-тата падат с drop(old_mem)).
+    let omks = map_keys(old_mem)
+    let omn = vec_len(omks)
+    let mut oi: i64 = 0
+    while oi < omn {
+        let ok = vec_get(omks, oi)
+        let ov = map_get(old_mem, ok)
+        drop(ov)
+        drop(ok)
+        oi = oi + 1
+    }
+    drop(omks)
+    drop(old_mem)
+    // tomb: Map<bytes,i64> — само ключовете имат buffer-и
+    let otks = map_keys(old_tomb)
+    let otn = vec_len(otks)
+    let mut ti2: i64 = 0
+    while ti2 < otn {
+        let tk = vec_get(otks, ti2)
+        drop(tk)
+        ti2 = ti2 + 1
+    }
+    drop(otks)
+    drop(old_tomb)
     db.mem_n = 0
     db.since_sync = 0
     // L0..L3 compaction (chain while any level is over file or byte threshold)

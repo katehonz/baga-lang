@@ -83,22 +83,14 @@ fn main() -> i64 !IO !Time !Par {
             return 1
         }
         srv = boila_srv_store_putback(srv, "boila", ct.s)
-        // брой редове в data CF за таблица d: scan по страници
-        let mut count: i64 = 0
-        let mut cursor: i64 = 0
-        let mut rounds: i64 = 0
-        let mut done = false
+        // брой редове в data CF за таблица d: one-shot prefix collect.
+        // (paging-ът през boila_scan събира всички ключове на страница —
+        // O(N^2/count); при 1M редове verify-то става десетки минути)
         let st2 = boila_srv_db(srv, "boila")?
         srv = st2.srv
-        while done == false && rounds < 100000 {
-            let sc = boila_scan(st2.store, boila_cf_data(), ct.id, cursor, 1000)?
-            count = count + vec_len(sc.keys)
-            cursor = sc.next
-            rounds = rounds + 1
-            if cursor == 0 {
-                done = true
-            }
-        }
+        let scall = boila_scan_pref_all(st2.store, boila_key_prefix(boila_cf_data(), ct.id))?
+        srv = boila_srv_store_putback(srv, "boila", scall.s)
+        let count = vec_len(scall.keys)
         print(concat("verify: row count = ", int_to_str(count)))
         // индексна проверка без rebuild
         let q = boila_server_exec(srv, "boila", concat("SELECT id FROM d WHERE v = 'v_", concat(int_to_str(rows / 2), "'")))?
