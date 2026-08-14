@@ -3,7 +3,7 @@
 // over real HTTP with std/net/http_client — the first end-to-end product test
 // that exercises the HTTP client (apps-roadmap №2).
 //
-// Run with: PORT=8090 PGDATABASE=baga_registry (scripts/run_tests.sh sets both).
+// Run with: PORT=8000 PGDATABASE=baga_registry (scripts/run_tests.sh sets both).
 
 import "../apps/registry/routes.baga"
 import "../apps/registry/schema.baga"
@@ -88,7 +88,7 @@ fn main() -> i64 !Net !IO !Par !Random !Time {
     go_bg(reg_serve, 0)
     sleep_ms(400)
 
-    let base = concat(concat("http://localhost:", cfg("PORT", "8090")?), "")
+    let base = concat(concat("http://localhost:", cfg("PORT", "8000")?), "")
 
     // --- health ---
     let h = http_get(concat(base, "/health"), 5)?

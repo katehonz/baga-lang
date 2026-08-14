@@ -207,7 +207,7 @@ static void usage(void) {
         "  fetch      Резолвирай и изтегли зависимостите, запиши sandak.lock\n"
         "  build      fetch + компилирай (bin → target/<name>, lib → проверка)\n"
         "  run        build + стартирай бинарника (args след --)\n"
-        "  search     Търси пакети в registry (SANDAK_REGISTRY; по подразбиране :8090)\n"
+        "  search     Търси пакети в registry (SANDAK_REGISTRY; по подразбиране :8000)\n"
         "  publish    Публикувай sandak.toml от cwd: --git URL [--rev R] [--subdir S] | --path P\n");
 }
 

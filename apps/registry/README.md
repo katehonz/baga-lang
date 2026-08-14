@@ -34,7 +34,7 @@ PB fields (hand-encoded, no protoc): Package `{name, description, latest_version
 
 ```baga
 let frame = grpc_encode(reg_pb_get_req_encode("lsmbaga"))
-let r = grpc_call_unary("localhost", 8090, "/regbaga.Registry/GetPackage", frame, 5, mdt_new(), 0)?
+let r = grpc_call_unary("localhost", 8000, "/regbaga.Registry/GetPackage", frame, 5, mdt_new(), 0)?
 ```
 
 Test: `tests/registry_grpc_test.baga`.
@@ -43,11 +43,11 @@ Test: `tests/registry_grpc_test.baga`.
 
 ```bash
 # миграции + сървър (по подразбиране :8080, DB baga_orm)
-PORT=8090 PGDATABASE=baga_registry ./baga apps/registry/start.baga
+PORT=8000 PGDATABASE=baga_registry ./baga apps/registry/start.baga
 
 # или билднат бинарник
 (cd apps/registry && sandak build)
-PORT=8090 PGDATABASE=baga_registry apps/registry/target/registry
+PORT=8000 PGDATABASE=baga_registry apps/registry/target/registry
 ```
 
 Тестът `tests/registry_test.baga` сам създава `baga_registry` DB, пуска
@@ -57,7 +57,7 @@ end-to-end продуктов тест на `http_client` (в `make test`).
 ## Клиентът (sandak)
 
 ```bash
-sandak search [term]                                   # SANDAK_REGISTRY, default :8090
+sandak search [term]                                   # SANDAK_REGISTRY, default :8000
 sandak publish --git URL [--rev R] [--subdir S]        # чете sandak.toml в cwd
 sandak publish --path P
 ```
@@ -71,4 +71,5 @@ sandak publish --path P
   пакетът (git url/rev/subdir или path), не огледало на съдържание.
 - `sandak` още не резолвира `registry = …` зависимости от манифест —
   следващата стъпка преди истинско `sandak add name@version`.
-- Портовете в тестовете са фиксирани (8090/8091).
+- Тестовият порт е 8000 — извън заетите framework диапазони 8080/8090;
+  override: `REGISTRY_PORT` env (виж scripts/run_tests.sh).

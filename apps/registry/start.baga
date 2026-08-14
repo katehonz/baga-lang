@@ -1,6 +1,6 @@
 // start.baga — registry entrypoint: migrate → fmr_run.
 // Env: PORT (default 8080), PG* (default bagatest@baga_orm) — run with
-// PGDATABASE=baga_registry PORT=8090.
+// PGDATABASE=baga_registry PORT=8000.
 
 import "routes.baga"
 import "schema.baga"

@@ -283,11 +283,12 @@ else
 fi
 
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
-# Force 8090 — ambient PORT=8080 (fmr-run default) would race apps/api and
-# make health checks flaky.
-PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
+# 8000 keeps clear of the crowded framework defaults (8080/8090) and of
+# ambient dev servers; override with REGISTRY_PORT when 8000 is taken.
+REGISTRY_PORT="${REGISTRY_PORT:-8000}"
+PORT="$REGISTRY_PORT" PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_test.baga
 echo "=== registry gRPC dual (B3, live Postgres) ==="
-PORT=8090 PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_grpc_test.baga
+PORT="$REGISTRY_PORT" PGDATABASE=baga_registry "$ROOT/scripts/baga-test" tests/registry_grpc_test.baga
 
 echo "=== oauth PG (live Postgres) ==="
 OAUTH_PG=1 PGDATABASE=baga_oauth "$ROOT/scripts/baga-test" tests/oauth_pg_test.baga

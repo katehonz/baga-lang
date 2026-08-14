@@ -6,7 +6,7 @@
 //   sandak publish --git URL [--rev R] [--subdir S]
 //                  [--path P]                  → publish cwd's sandak.toml
 //
-// Env: SANDAK_REGISTRY (default http://127.0.0.1:8090).
+// Env: SANDAK_REGISTRY (default http://127.0.0.1:8000).
 
 import "std/net/http_client.baga"
 import "std/json/json.baga"
@@ -18,7 +18,7 @@ import "std/str/str.baga"
 fn reg_base() -> str !IO {
     let v = env("SANDAK_REGISTRY")?
     if v == "" {
-        return "http://127.0.0.1:8090"
+        return "http://127.0.0.1:8000"
     }
     return v
 }

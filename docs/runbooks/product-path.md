@@ -40,7 +40,7 @@ kill -TERM $(pgrep -f 'apps/api/start.baga' | head -1)
 ## 2. Registry dual protocol (HTTP JSON + gRPC)
 
 ```bash
-export PORT=8090 PGDATABASE=baga_registry
+export PORT=8000 PGDATABASE=baga_registry
 # same PGUSER/PASSWORD/HOST as above
 ./baga -I . -I app-product apps/registry/start.baga
 ```
@@ -48,13 +48,13 @@ export PORT=8090 PGDATABASE=baga_registry
 HTTP:
 
 ```bash
-curl -s localhost:8090/health
-curl -s localhost:8090/ready
-curl -s localhost:8090/metrics | head
-curl -s -X POST localhost:8090/v1/packages \
+curl -s localhost:8000/health
+curl -s localhost:8000/ready
+curl -s localhost:8000/metrics | head
+curl -s -X POST localhost:8000/v1/packages \
   -H 'Content-Type: application/json' \
   -d '{"name":"demo","version":"0.1.0","description":"runbook"}'
-curl -s localhost:8090/v1/packages/demo
+curl -s localhost:8000/v1/packages/demo
 ```
 
 gRPC (Baga client; same port):
