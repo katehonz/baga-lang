@@ -51,6 +51,10 @@ typedef struct {
     /* M24: текущата generic struct инстанция при emit на типа */
     Node *gen_struct;
     int   gen_struct_inst;
+    /* M21: текущата generic fn инстанция + Checker за recheck */
+    Node *gen_fn;
+    int   gen_inst;
+    Checker *chk;
 } LLVMCodegen;
 
 static LLVMCodegen lg;
@@ -71,9 +75,19 @@ static void llvm_unsupported_node(Node *n) {
 /* ---- Type mapping ---- */
 
 static LLVMTypeRef llvm_type(Node *ty);
+int type_eq(Type *a, Type *b);
 static char *llvm_mangle(const char *name);
 static LLVMTypeRef user_struct_ty(const char *name);
 static LLVMTypeRef baga_bytes_ty(void);
+
+static char *llvm_struct_cname(Type *t);
+/* M24: named struct тип на instantiated generic struct (по cname) */
+static LLVMTypeRef user_struct_ty_inst(Type *t) {
+    char *cn = llvm_struct_cname(t);
+    LLVMTypeRef r = user_struct_ty(cn);
+    free(cn);
+    return r;
+}
 
 /* M24: име на инстанция k на generic struct decl */
 static char *llvm_inst_cname(Node *s, int k) {
@@ -226,6 +240,14 @@ static LLVMTypeRef llvm_type(Node *ty) {
                 if (strcmp(lg.gen_struct->struct_params[i], ty->type_name) == 0) {
                     Type *at = lg.gen_struct->struct_inst_targs[
                         lg.gen_struct_inst * lg.gen_struct->n_struct_params + i];
+                    return llvm_type_of(at);
+                }
+        }
+        /* M21: типова променлива на текущата generic fn инстанция */
+        if (lg.gen_fn && ty->type) {
+            for (int i = 0; i < lg.gen_fn->n_type_params; i++)
+                if (strcmp(lg.gen_fn->type_params[i], ty->type_name) == 0) {
+                    Type *at = lg.gen_fn->inst_types[lg.gen_inst * lg.gen_fn->n_type_params + i];
                     return llvm_type_of(at);
                 }
         }
@@ -3911,7 +3933,10 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                      (vt->elem->kind == TYPE_ENUM && vt->elem->name) ||
                      vt->elem->kind == TYPE_BYTES)) {
                     LLVMTypeRef sty = vt->elem->kind == TYPE_BYTES
-                        ? baga_bytes_ty() : user_struct_ty(vt->elem->name);
+                        ? baga_bytes_ty()
+                        : (vt->elem->kind == TYPE_STRUCT && vt->elem->n_targs > 0)
+                            ? user_struct_ty_inst(vt->elem)
+                            : user_struct_ty(vt->elem->name);
                     LLVMValueRef sz = LLVMSizeOf(sty);
                     const char *cn = n->callee->name;
                     LLVMValueRef v = emit_expr_llvm(n->args.data[0]);
@@ -4152,8 +4177,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 for (int k = 0; k < decl->struct_inst_count; k++) {
                     int same = 1;
                     for (int a = 0; a < decl->n_struct_params; a++)
-                        if (decl->struct_inst_targs[k * decl->n_struct_params + a] !=
-                            obj->type->targs[a]) { same = 0; break; }
+                        if (!type_eq(decl->struct_inst_targs[k * decl->n_struct_params + a],
+                                     obj->type->targs[a])) { same = 0; break; }
                     if (same) { lg.gen_struct_inst = k; break; }
                 }
             } else {
@@ -4207,8 +4232,8 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 for (int k = 0; k < decl->struct_inst_count; k++) {
                     int same = 1;
                     for (int a = 0; a < decl->n_struct_params; a++)
-                        if (decl->struct_inst_targs[k * decl->n_struct_params + a] !=
-                            n->type->targs[a]) { same = 0; break; }
+                        if (!type_eq(decl->struct_inst_targs[k * decl->n_struct_params + a],
+                                     n->type->targs[a])) { same = 0; break; }
                     if (same) { lg.gen_struct_inst = k; break; }
                 }
             }
@@ -4600,6 +4625,16 @@ static char *impl_name_of(const char *fn_name) {
     return llvm_mangle(buf);
 }
 
+/* M21: име за emit (synthetic при инстанция) */
+static const char *emit_name_of(Node *fn) {
+    if (lg.gen_fn == fn) {
+        static __thread char buf[512];
+        snprintf(buf, sizeof buf, "%s__i%d", fn->fn_name, lg.gen_inst);
+        return buf;
+    }
+    return fn->fn_name;
+}
+
 /* Първи проход: предекларации на всички функции (като в codegen_c).
  * Функция със spec получава impl (тялото) + wrapper (публичното име). */
 static void predeclare_fn_llvm(Node *fn) {
@@ -4615,7 +4650,7 @@ static void predeclare_fn_llvm(Node *fn) {
         LLVMAddFunction(lg.mod, im, fn_ty);
         free(im);
     }
-    char *m = llvm_mangle(fn->fn_name);
+    char *m = llvm_mangle(emit_name_of(fn));
     LLVMAddFunction(lg.mod, m, fn_ty);
     free(m);
 }
@@ -4624,7 +4659,7 @@ static void predeclare_fn_llvm(Node *fn) {
 static void emit_fn_llvm(Node *fn, Node *spec) {
     if (!fn->fn_body) return; /* само декларация */
 
-    char *m = spec ? impl_name_of(fn->fn_name) : llvm_mangle(fn->fn_name);
+    char *m = spec ? impl_name_of(fn->fn_name) : llvm_mangle(emit_name_of(fn));
     LLVMValueRef fn_val = LLVMGetNamedFunction(lg.mod, m);
     free(m);
 
@@ -4748,23 +4783,15 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
 
 /* ---- Public API ---- */
 
-void codegen_llvm(Node *program, const char *output_path) {
-    /* M21: generic fns са C-only (v1) — мономорфизацията не е пренесена.
-     * M23 (traits) и M24 (generic structs) се поддържат. */
-    for (int i = 0; i < program->items.len; i++) {
-        Node *it = program->items.data[i];
-        if (it->kind == NODE_FN && it->n_type_params > 0 && it->inst_count > 0) {
-            fprintf(stderr, "baga: generic fn-ове не се поддържат в LLVM backend-а (v1) — "
-                            "fn '%s' има %d инстанции; ползвай C backend-а\n",
-                    it->fn_name, it->inst_count);
-            return;
-        }
-    }
+void codegen_llvm(Node *program, const char *output_path, Checker *chk) {
     lg.ctx = LLVMContextCreate();
     lg.mod = LLVMModuleCreateWithNameInContext("baga_module", lg.ctx);
     lg.builder = LLVMCreateBuilderInContext(lg.ctx);
     lg.tmp_counter = 0;
     lg.program = program;
+    lg.chk = chk;
+    lg.gen_fn = NULL; lg.gen_inst = -1;
+    lg.gen_struct = NULL; lg.gen_struct_inst = -1;
 
     lg.i64_ty = LLVMInt64TypeInContext(lg.ctx);
     lg.i32_ty = LLVMInt32TypeInContext(lg.ctx);
@@ -4881,8 +4908,18 @@ void codegen_llvm(Node *program, const char *output_path) {
     /* първи проход: предекларации */
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
-        if (item->kind == NODE_FN)
-            predeclare_fn_llvm(item);
+        if (item->kind == NODE_FN) {
+            if (item->n_type_params > 0) {
+                for (int k = 0; k < item->inst_count; k++) {
+                    if (chk) checker_recheck_inst(chk, item, k);
+                    lg.gen_fn = item; lg.gen_inst = k;
+                    predeclare_fn_llvm(item);
+                }
+                lg.gen_fn = NULL; lg.gen_inst = -1;
+            } else {
+                predeclare_fn_llvm(item);
+            }
+        }
         if (item->kind == NODE_IMPL)
             for (int m = 0; m < item->impl_methods.len; m++)
                 predeclare_fn_llvm(item->impl_methods.data[m]);
@@ -4892,9 +4929,18 @@ void codegen_llvm(Node *program, const char *output_path) {
     for (int i = 0; i < program->items.len; i++) {
         Node *item = program->items.data[i];
         if (item->kind == NODE_FN && item->fn_body) {
-            Node *spec = find_ensures_spec_llvm(item->fn_name);
-            emit_fn_llvm(item, spec);
-            if (spec) emit_wrapper_llvm(item, spec);
+            if (item->n_type_params > 0) {
+                for (int k = 0; k < item->inst_count; k++) {
+                    if (chk) checker_recheck_inst(chk, item, k);
+                    lg.gen_fn = item; lg.gen_inst = k;
+                    emit_fn_llvm(item, NULL);
+                }
+                lg.gen_fn = NULL; lg.gen_inst = -1;
+            } else {
+                Node *spec = find_ensures_spec_llvm(item->fn_name);
+                emit_fn_llvm(item, spec);
+                if (spec) emit_wrapper_llvm(item, spec);
+            }
         }
         if (item->kind == NODE_IMPL) {
             for (int m = 0; m < item->impl_methods.len; m++) {

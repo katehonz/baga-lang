@@ -354,7 +354,7 @@ int main(int argc, char **argv) {
 
 #ifdef BAGA_LLVM
     if (emit_llvm) {
-        codegen_llvm(program, NULL);
+        codegen_llvm(program, NULL, &checker);
         return 0;
     }
 #else

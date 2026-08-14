@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### llvm — M21 generic fns (пълна мономорфизация)
+- LLVM backend-ът вече емитва generic fn-ове per инстанция (recheck +
+  synthetic имена + типова substitution) — M21, M23, M24 са с паритет:
+  traits.baga, generics.baga, generic_structs.baga дават идентичен
+  изход под C и LLVM (lli). Fix по пътя: литералните полета се инферират
+  преди типовата проверка (M24) и instance lookup по type_eq вместо
+  указателно равенство.
+
 ### llvm — M23/M24 паритет (traits + generic structs)
 - LLVM backend-ът вече емитва impl методите (M23) и мономорфизираните
   struct типове `b_Pair_i64_str` per инстанция (M24): named типове + тела

@@ -327,7 +327,7 @@ fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U> { … }
   типове — `p.x` е валидно, когато `T` е struct с поле `x`, а грешките в
   тялото сочат точната инстанция.
 - v1 ограничения: generic fn не може да е стойност (`let g = f`), да
-  съдържа ламбда или spec; LLVM backend-ът не ги поддържа (C-only).
+  съдържа ламбда или spec.
 
 ### 6.0.1 Traits и методи (M23)
 
@@ -363,8 +363,7 @@ fn main() {
   трябва да имплементира bound-а, иначе compile грешка.
 - Нееднозначен метод (два impl-а на различни traits дават `m` за същия
   тип) е compile грешка.
-- v1: статичен dispatch (без trait objects); LLVM backend-ът не ги
-  поддържа (C-only).
+- v1: статичен dispatch (без trait objects).
 
 ### 6.0.2 Generic structs (M24)
 
@@ -394,8 +393,7 @@ fn main() {
   `Pair<i64, str> { … }` (lookahead, не се бърка със сравненията).
 - Полетата се резолват под substitution — `p.first: A → i64`.
 - Impl за конкретна инстанция: `impl Describe for Pair<i64, str>`.
-- v1: LLVM backend-ът не ги поддържа (C-only); --rc helper-ите за heap
-  полета на generic struct не се генерират.
+- v1: --rc helper-ите за heap полета на generic struct не се генерират.
 
 ### 6.1 Връщане на стойности
 
@@ -1141,8 +1139,8 @@ fn main() {
   binding, а на ефект без payload — забранява го.
 - Вериги от `catch` обработват няколко payload ефекта подред.
 - `raise` без payload е валиден за payload-less ефект (`raise !IO`).
-- LLVM backend-ът (v1) третира payload пътя като compile-time фикция —
-  ползвайте C backend-а за код, който разчита на runtime payload-и.
+- LLVM backend-ът третира payload пътя като compile-time фикция (без
+  runtime payload-и) — ползвайте C backend-а за runtime поведение.
 
 ### 13.5 Грешката за необработен ефект
 

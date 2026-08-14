@@ -2387,6 +2387,8 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                 }
             }
             /* check each literal field: name exists + type matches */
+            for (int i = 0; i < n->n_lit_fields; i++)
+                infer(ctx, n->lit_values.data[i]);
             for (int i = 0; i < n->n_lit_fields; i++) {
                 Type *vt = n->lit_values.data[i]->type;
                 if (!sdecl) continue;
