@@ -1,19 +1,79 @@
 // api_test.baga — product-level checks for apps/api (no full server link).
 // Avoid importing app.baga (needs fmr_dispatch at link time).
+//
+// The DB smoke section provisions its own baga_api database (CREATE
+// DATABASE + api_migrations + row reset), mirroring tests/registry_test.baga
+// — checks are fail-fast, so the test can no longer report "all passed"
+// over failed assertions.
 
 import "../apps/api/models/user.baga"
 import "../apps/api/models/post.baga"
+import "../apps/api/schema.baga"
 import "fmrbaga/jsonx.baga"
 import "fmrbaga/openapi.baga"
 import "ormbaga/orm.baga"
+import "ormbaga/migrate.baga"
+import "pgbaga/pg.baga"
+import "std/os/os.baga"
 import "std/str/str.baga"
 
-fn check(name: str, cond: bool) {
-    if cond {
+fn check(name: str, ok: bool) {
+    if ok {
         print(concat("  ok  ", name))
     } else {
-        print(concat("  FAIL ", name))
+        eprintln(concat("  FAIL ", name))
+        exit(1)
     }
+}
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)?
+    if v == "" {
+        return def
+    }
+    return v
+}
+
+// Create baga_api if missing; then migrate + reset users/posts.
+fn prepare_api_db() -> i64 !Net !IO !Random {
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(cfg("PGPORT", "5432")?)
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+
+    // CREATE DATABASE cannot run in the app db — connect to "postgres".
+    let admin = pg_connect_to(host, port, user, password, "postgres", 5)?
+    if admin.ok == 0 {
+        print(concat("prepare: admin connect failed: ", admin.err))
+        return 1
+    }
+    let cd = pg_query(admin, "CREATE DATABASE baga_api")?
+    // ok, or "already exists" are both fine
+    pg_close(pg_conn_of(cd))?
+
+    let db = orm_connect(host, port, user, password, "baga_api")?
+    if orm_ok_db(db) == 0 {
+        print(concat("prepare: api db connect failed: ", orm_err_db(db)))
+        return 1
+    }
+    let up = migrate_up(db, api_migrations())?
+    if migrate_is_ok(up) == 0 {
+        print(concat("prepare: migrate failed: ", migrate_err_str(up)))
+        return 1
+    }
+    // deterministic: reset rows between runs (posts reference users)
+    let cp = orm_exec(migrate_db(up), "DELETE FROM posts")?
+    if orm_ok(cp) == 0 {
+        print(concat("prepare: clean posts failed: ", orm_err_exec(cp)))
+        return 1
+    }
+    let cu = orm_exec(orm_db_exec(cp), "DELETE FROM users")?
+    if orm_ok(cu) == 0 {
+        print(concat("prepare: clean users failed: ", orm_err_exec(cu)))
+        return 1
+    }
+    orm_close(orm_db_exec(cu))?
+    return 0
 }
 
 fn main() -> i64 !Net !IO !Random {
@@ -26,37 +86,40 @@ fn main() -> i64 !Net !IO !Random {
     check("oas_post_tag", str_find(doc, "\"posts\"") >= 0)
     check("oas_bearer", str_find(doc, "bearerAuth") >= 0)
 
-    // live DB model smoke
-    let db = orm_connect_env()?
-    if orm_ok_db(db) == 0 {
-        print(concat("  skip db: ", orm_err_db(db)))
-        print("api_test: all passed (no db)")
-        return 0
-    }
+    // live DB model smoke — self-provisioned baga_api
+    let rc = prepare_api_db()?
+    check("prepare_db", rc == 0)
+
+    let host = cfg("PGHOST", "127.0.0.1")?
+    let port = parse_int(cfg("PGPORT", "5432")?)
+    let user = cfg("PGUSER", "bagatest")?
+    let password = cfg("PGPASSWORD", "pas+123")?
+    let db = orm_connect(host, port, user, password, "baga_api")?
+    check("db_connect", orm_ok_db(db) == 1)
+
     let uq = user_all(db)?
     check("user_all", orm_ok_q(uq) == 1)
     let pq = post_all(orm_db_q(uq), 5, 0)?
     check("post_all", orm_ok_q(pq) == 1)
-    // create user + post if empty enough
+
     let email = "api_test@baga.dev"
     let found = user_find_by_email(orm_db_q(pq), email)?
+    check("user_absent_after_clean", orm_ok_q(found) == 1 && orm_nrows(found) == 0)
+
     let mut db2 = orm_db_q(found)
-    let mut uid: i64 = 0
-    if orm_ok_q(found) == 1 && orm_nrows(found) >= 1 {
-        uid = orm_cell_by_i64(found, 0, "id")
-        check("user_exists", uid > 0)
-    } else {
-        let cr = user_create(db2, email, "ApiTest")?
-        db2 = orm_db_exec(cr)
-        check("user_create", orm_ok(cr) == 1)
-        let f2 = user_find_by_email(db2, email)?
-        db2 = orm_db_q(f2)
-        check("user_created", orm_ok_q(f2) == 1 && orm_nrows(f2) == 1)
-        uid = orm_cell_by_i64(f2, 0, "id")
-    }
+    let cr = user_create(db2, email, "ApiTest")?
+    db2 = orm_db_exec(cr)
+    check("user_create", orm_ok(cr) == 1)
+    let f2 = user_find_by_email(db2, email)?
+    db2 = orm_db_q(f2)
+    check("user_created", orm_ok_q(f2) == 1 && orm_nrows(f2) == 1)
+    let uid = orm_cell_by_i64(f2, 0, "id")
+    check("user_id", uid > 0)
+
     let pc = post_create(db2, uid, "hello post", "body text")?
+    db2 = orm_db_exec(pc)
     check("post_create", orm_ok(pc) == 1)
-    let pl = post_by_user(orm_db_exec(pc), uid, 5, 0)?
+    let pl = post_by_user(db2, uid, 5, 0)?
     check("post_by_user", orm_ok_q(pl) == 1 && orm_nrows(pl) >= 1)
     let title = orm_cell_by(pl, 0, "title")
     check("post_title", title == "hello post")
@@ -64,6 +127,7 @@ fn main() -> i64 !Net !IO !Random {
     let del = post_delete(orm_db_q(pl), pid)?
     check("post_delete", orm_ok(del) == 1)
     orm_close(orm_db_exec(del))?
+
     print("api_test: all passed")
     return 0
 }
