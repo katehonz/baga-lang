@@ -4,7 +4,7 @@
 
 | | |
 |--|--|
-| **sandak** | `csvbaga` **0.1.0** |
+| **sandak** | `csvbaga` **0.2.0** |
 | **Deps** | `std`, `bufbaga` |
 | **Tests** | `tests/csv_test.baga` |
 
@@ -17,4 +17,5 @@ csv_nrows(t)       // 2
 let s = csv_stringify(t)
 ```
 
-Also: `csv_from_tsv` / `csv_to_row_lines` for Excel path; `csv_read_path` / `csv_write_path`.
+Also: `csv_parse_delim` / `csv_stringify_delim` (e.g. `;`); `csv_from_tsv` /
+`csv_to_row_lines` for Excel path; `csv_read_path` / `csv_write_path`.

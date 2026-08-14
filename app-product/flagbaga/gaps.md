@@ -1,13 +1,15 @@
 # flagbaga — gaps
 
-## F1 — no short flags (`-p`)
+## F1 — ~~no short flags (`-p`)~~ — closed
 
-Only `--long` form. Short opts are a small extension.
+`-p`, `-p=value`, `-p value` (and `--long`). With `FlagDef`, short names
+canonicalize to the long name.
 
-## F2 — no `--` end-of-flags
+## F2 — ~~no `--` end-of-flags~~ — closed
 
-Everything after a bare `--` should be positional; not implemented.
+Bare `--` stops flag parse; everything after is positional.
 
-## F3 — no auto `--help` text
+## F3 — ~~no auto `--help` text~~ — closed
 
-Callers print usage; a `flags_usage(defs)` helper is P1.
+`flags_usage(prog, defs)` + `flags_parse_defs` (bool defs do not eat the
+next token).

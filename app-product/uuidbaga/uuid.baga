@@ -67,3 +67,53 @@ fn uuid_ok(s: str) -> i64 {
     }
     return 1
 }
+
+spec uuid_ok {
+    input:
+        s: str
+    output: i64
+    guarantees:
+        - output == 0 || output == 1
+}
+
+// Version nibble (0–15) or -1 if the string is not a UUID.
+fn uuid_version(s: str) -> i64 {
+    if uuid_ok(s) == 0 {
+        return 0 - 1
+    }
+    let c = char_at(s, 14)
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    return 0 - 1
+}
+
+fn uuid_lower_hex(c: i64) -> i64 {
+    if c >= 65 && c <= 70 {
+        return c + 32
+    }
+    return c
+}
+
+// Normalize to lowercase 8-4-4-4-12; raise !BadUuid(s) if invalid (M20).
+fn uuid_parse(s: str) -> str !BadUuid(str) {
+    if uuid_ok(s) == 0 {
+        raise !BadUuid(s)
+    }
+    let mut out = ""
+    for i in 0..36 {
+        let c = char_at(s, i)
+        if i == 8 || i == 13 || i == 18 || i == 23 {
+            out = concat(out, "-")
+        } else {
+            out = concat(out, chr(uuid_lower_hex(c)))
+        }
+    }
+    return out
+}

@@ -2936,7 +2936,7 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
 /* M19: fallthrough анализ — може ли изпълнението да падне от края на
  * този statement? Консервативен: ако не може да се докаже обратното,
- * отговорът е "да". return/break/continue не падат; block пада, ако
+ * отговорът е "да". return/break/continue/raise не падат; block пада, ако
  * последният stmt пада; if без else пада; while пада, освен literal
  * `while true` без break на това ниво; match винаги пада (arm-ският
  * `return e` е СТОЙНОСТ на match-а, не изход от функцията). */
@@ -2990,7 +2990,10 @@ static int stmt_falls_through(Node *n) {
         case NODE_RETURN:
         case NODE_BREAK:
         case NODE_CONTINUE:
+        case NODE_RAISE:
             return 0;
+        case NODE_EXPR_STMT:
+            return stmt_falls_through(n->expr);
         case NODE_BLOCK: {
             if (n->stmts.len == 0) return 1;
             return stmt_falls_through(n->stmts.data[n->stmts.len - 1]);
@@ -3321,7 +3324,9 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
     if (fn->fn_body && fn->fn_body->stmts.len > 0 &&
         ctx->cur_ret && ctx->cur_ret->kind != TYPE_VOID) {
         Node *last = fn->fn_body->stmts.data[fn->fn_body->stmts.len - 1];
-        if (last->kind == NODE_EXPR_STMT && last->expr && last->expr->type &&
+        if (last->kind == NODE_EXPR_STMT && last->expr &&
+            last->expr->kind != NODE_RAISE &&
+            last->expr->type &&
             !type_eq(last->expr->type, ctx->cur_ret)) {
             check_error(ctx, last->expr->pos,
                 "implicit return връща %s, но функцията '%s' очаква %s",

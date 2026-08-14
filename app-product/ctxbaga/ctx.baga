@@ -119,6 +119,14 @@ fn ctx_has_value(c: Ctx, k: str) -> i64 {
     return 0
 }
 
+// Missing key is !NotFound(k) (M20) — not the empty-string sentinel.
+fn ctx_require(c: Ctx, k: str) -> str !NotFound(str) {
+    if ctx_has_value(c, k) == 0 {
+        raise !NotFound(k)
+    }
+    return ctx_value(c, k)
+}
+
 // 1 if canceled or past deadline.
 fn ctx_done(c: Ctx) -> i64 !Time {
     if c.canceled == 1 {

@@ -54,5 +54,10 @@ fn main() {
     check("from_bad", grpc_timeout_decode_ms("x") < 0)
     check("from_empty", grpc_timeout_decode_ms("") < 0)
 
+    let chk_ok = status_check(status_ok()) catch !Rpc(_m) => 1
+    check("check_ok", chk_ok == 0)
+    let chk_msg = status_check(status_error(5, "gone")) catch !Rpc(m) => { print(m); 42 }
+    check("check_err", chk_msg == 42)
+
     print("status_test: all passed")
 }

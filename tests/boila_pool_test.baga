@@ -1,6 +1,5 @@
-// mt_ladder.baga — concurrent HTTP ladder vs MT serve (raw TCP client).
-// Ladder clients=1/4/8/16/32 × 200 point SELECTs. Server: BOILA_WORKERS
-// pool (default 4). Honest: not 10k OS threads.
+// boila_pool_test.baga — P11-1: bounded HTTP worker pool.
+// 2 workers, 8 concurrent clients × 5 point SELECTs; default BOILA_WORKERS=4.
 
 import "boilaDB/server/databases.baga"
 import "boilaDB/server/exec_server.baga"
@@ -14,14 +13,22 @@ import "std/net/poll.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
-import "std/time/time.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
 
 fn wipe_one(prefix: str) -> i64 !IO !Par {
     unlink(concat(prefix, ".wal"))?
     unlink(concat(prefix, ".manifest"))?
     unlink(concat(prefix, ".manifest.log"))?
     let mut g: i64 = 1
-    while g <= 40 {
+    while g <= 20 {
         unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
         unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
         g = g + 1
@@ -29,39 +36,13 @@ fn wipe_one(prefix: str) -> i64 !IO !Par {
     return 0
 }
 
-fn wipe_root(root: str) -> i64 !IO !Par {
+fn wipe(root: str) -> i64 !IO !Par {
     wipe_one(concat(root, "/.meta"))?
-    let mut i: i64 = 0
-    while i < 4 {
-        wipe_one(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
-        i = i + 1
-    }
+    wipe_one(concat(root, "/boila.db"))?
     return 0
 }
 
-fn seed_db(root: str, nrows: i64) -> i64 !IO !Time !Par {
-    let mut srv = boila_server_open(root, 4, 256, 4, 16)?
-    if srv.ok == 0 {
-        return 0
-    }
-    let c = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
-    srv = c.srv
-    if c.ok == 0 {
-        boila_server_close(srv)?
-        return 0
-    }
-    let mut i: i64 = 0
-    while i < nrows {
-        let sql = concat(concat("INSERT INTO t (id, v) VALUES (", int_to_str(i)), ", 'x')")
-        let o = boila_server_exec(srv, "boila", sql)?
-        srv = o.srv
-        i = i + 1
-    }
-    boila_server_close(srv)?
-    return 1
-}
-
-fn mt_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
+fn pool_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
     let fd = cell2_0(ctx)
     let pack = cell2_1(ctx)
     tcp_set_nodelay(fd)?
@@ -89,7 +70,11 @@ fn mt_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
                 http_respond_keepalive(fd, enc.resp, ka)?
             } else {
                 if method == "GET" && path == "/health" {
-                    http_respond_keepalive(fd, http_json_response(200, "{\"ok\":1}"), ka)?
+                    let wn = boila_mt_workers(pack)?
+                    let mut body = "{\"ok\":1,\"workers\":"
+                    body = concat(body, int_to_str(wn))
+                    body = concat(body, "}")
+                    http_respond_keepalive(fd, http_json_response(200, body), ka)?
                 } else {
                     http_respond_keepalive(fd, http_json_response(404, "{}"), 0)?
                     keep = false
@@ -109,22 +94,14 @@ fn mt_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
 }
 
 fn boila_pool_handle(fd: i64, pack: i64) -> i64 !IO !Net !Time !Par {
-    return mt_http_conn(cell2(fd, pack))?
+    return pool_http_conn(cell2(fd, pack))?
 }
 
-fn mt_serve(port: i64) -> i64 !Net !IO !Time !Par {
-    let root = "/tmp/baga_boila_mt_ladder"
-    let srv0 = boila_server_open_mt(root, 4, 256, 4, 16)?
-    if srv0.ok == 0 {
-        return 1
-    }
-    let pack = boila_mt_new(srv0, 128)?
-    let workers = boila_workers_n()?
-    let mut ch: i64 = 0
-    if workers > 0 {
-        ch = boila_pool_start(pack, workers)?
-        boila_mt_set_pool(pack, workers, 2)?
-    }
+fn pool_serve(ctx: i64) -> i64 !Net !IO !Time !Par {
+    let port = cell2_0(ctx)
+    let pack = cell2_1(ctx)
+    let ch = boila_pool_start(pack, 2)?
+    boila_mt_set_pool(pack, 2, 2)?
     let listener = tcp_listen(port)?
     let pollfds: Vec<i64> = vec_new()
     vec_push(pollfds, listener)
@@ -139,11 +116,7 @@ fn mt_serve(port: i64) -> i64 !Net !IO !Time !Par {
                 if boila_mt_try_conn(pack)? == 0 {
                     tcp_close(fd)?
                 } else {
-                    if workers > 0 {
-                        chan_send(ch, fd)
-                    } else {
-                        go_bg(mt_http_conn, cell2(fd, pack))
-                    }
+                    chan_send(ch, fd)
                 }
             }
         }
@@ -151,7 +124,6 @@ fn mt_serve(port: i64) -> i64 !Net !IO !Time !Par {
     return 0
 }
 
-// Minimal HTTP/1.1 POST /sql — one req, read to close. Returns 1 if "ok":true.
 fn sql_post(port: i64, sql: str) -> i64 !Net !IO !Par {
     let fd = tcp_connect("127.0.0.1", port)?
     if fd < 0 {
@@ -168,10 +140,10 @@ fn sql_post(port: i64, sql: str) -> i64 !Net !IO !Par {
     }
     let mut body = ""
     let mut rounds: i64 = 0
-    while rounds < 200 {
-        let chunk = tcp_read(fd, 4096)?
+    while rounds < 80 {
+        let chunk = tcp_read(fd, 2048)?
         if chunk == "" {
-            rounds = 200
+            rounds = 80
         } else {
             body = concat(body, chunk)
             rounds = rounds + 1
@@ -184,57 +156,88 @@ fn sql_post(port: i64, sql: str) -> i64 !Net !IO !Par {
     return 0
 }
 
-fn health_ok(port: i64) -> i64 !Net !IO !Par {
+fn health_body(port: i64) -> str !Net !IO !Par {
     let fd = tcp_connect("127.0.0.1", port)?
     if fd < 0 {
-        return 0
+        return ""
     }
     let w = tcp_write(fd, "GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")?
     if w != 0 {
         tcp_close(fd)?
-        return 0
+        return ""
     }
     let mut body = ""
     let mut r: i64 = 0
-    while r < 50 {
+    while r < 40 {
         let c = tcp_read(fd, 1024)?
         if c == "" {
-            r = 50
+            r = 40
         } else {
             body = concat(body, c)
             r = r + 1
         }
     }
     tcp_close(fd)?
-    if str_find(body, "200") >= 0 {
-        return 1
-    }
-    return 0
+    return body
 }
 
-// ctx = cell2(port, cell2(nops, seed))
-fn mt_worker(ctx: i64) -> i64 !Net !IO !Time !Par {
+// ctx = cell2(port, nops)
+fn client_w(ctx: i64) -> i64 !Net !IO !Time !Par {
     let port = cell2_0(ctx)
-    let pack = cell2_1(ctx)
-    let nops = cell2_0(pack)
-    let seed = cell2_1(pack)
+    let nops = cell2_1(ctx)
     let mut okc: i64 = 0
     let mut i: i64 = 0
     while i < nops {
-        let id = (seed + i) % 1000
-        let sql = concat("SELECT id FROM t WHERE id = ", int_to_str(id))
-        okc = okc + sql_post(port, sql)?
+        okc = okc + sql_post(port, concat("SELECT id FROM t WHERE id = ", int_to_str(i + 1)))?
         i = i + 1
     }
     return okc
 }
 
-fn run_level(port: i64, clients: i64, ops_each: i64) -> i64 !Net !IO !Time !Par {
+fn main() -> i64 !Net !IO !Time !Par {
+    print("boila_pool_test:")
+    let fails: Vec<i64> = vec_new()
+    let defn = boila_workers_n()?
+    check(fails, "default_workers", defn == 4)
+
+    let root = "/tmp/baga_boila_pool"
+    let port: i64 = 16611
+    wipe(root)?
+    let mut srv = boila_server_open(root, 1, 256, 4, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, v) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')")?
+    srv = i1.srv
+    check(fails, "seed", i1.ok == 1)
+    boila_server_close(srv)?
+
+    let srv0 = boila_server_open_mt(root, 1, 256, 4, 4)?
+    check(fails, "open_mt", srv0.ok == 1)
+    let pack = boila_mt_new(srv0, 32)?
+    go_bg(pool_serve, cell2(port, pack))
+    sleep_ms(300)
+
+    let mut ready: i64 = 0
+    let mut w: i64 = 0
+    let mut hb = ""
+    while w < 40 && ready == 0 {
+        hb = health_body(port)?
+        if str_find(hb, "200") >= 0 {
+            ready = 1
+        } else {
+            sleep_ms(50)
+        }
+        w = w + 1
+    }
+    check(fails, "ready", ready == 1)
+    check(fails, "health_workers", str_find(hb, "\"workers\":2") >= 0)
+
     let handles: Vec<i64> = vec_new()
     let mut c: i64 = 0
-    let t0 = monotonic_us()?
-    while c < clients {
-        vec_push(handles, go(mt_worker, cell2(port, cell2(ops_each, c * 17))))
+    while c < 8 {
+        vec_push(handles, go(client_w, cell2(port, 5)))
         c = c + 1
     }
     let mut okc: i64 = 0
@@ -243,64 +246,14 @@ fn run_level(port: i64, clients: i64, ops_each: i64) -> i64 !Net !IO !Time !Par 
         okc = okc + join(vec_get(handles, i))
         i = i + 1
     }
-    let t1 = monotonic_us()?
-    let total = clients * ops_each
-    let us = t1 - t0
-    let mut ops: i64 = 0
-    if us > 0 {
-        ops = (total * 1000000) / us
-    }
-    print(concat(concat(concat(concat(concat(concat("  c=", int_to_str(clients)), " n="), int_to_str(total)), " ok="), int_to_str(okc)), concat(" ops/s≈", int_to_str(ops))))
-    return okc
-}
+    check(fails, "fanout_40", okc == 40)
+    check(fails, "drop", sql_post(port, "DROP TABLE t")? == 1)
+    check(fails, "after_drop", sql_post(port, "SELECT id FROM t WHERE id = 1")? == 0)
 
-fn main() -> i64 !Net !IO !Time !Par {
-    print("boila mt_ladder (concurrent HTTP point SELECT):")
-    print(concat("  workers=", int_to_str(boila_workers_n()?)))
-    let root = "/tmp/baga_boila_mt_ladder"
-    let port: i64 = 16590
-    wipe_root(root)?
-    if seed_db(root, 1000)? == 0 {
-        print("  seed FAIL")
-        return 1
-    }
-    go_bg(mt_serve, port)
-    sleep_ms(400)
-    let mut ready: i64 = 0
-    let mut w: i64 = 0
-    while w < 50 && ready == 0 {
-        if health_ok(port)? == 1 {
-            ready = 1
-        } else {
-            sleep_ms(100)
-        }
-        w = w + 1
-    }
-    if ready == 0 {
-        print("  serve not ready")
-        return 1
-    }
-    let ops_each: i64 = 200
-    let mut all_ok: i64 = 1
-    let mut li: i64 = 0
-    let levels: Vec<i64> = vec_new()
-    vec_push(levels, 1)
-    vec_push(levels, 4)
-    vec_push(levels, 8)
-    vec_push(levels, 16)
-    vec_push(levels, 32)
-    while li < vec_len(levels) {
-        let n = vec_get(levels, li)
-        let ok = run_level(port, n, ops_each)?
-        if ok < n * ops_each {
-            all_ok = 0
-        }
-        li = li + 1
-    }
-    if all_ok == 1 {
-        print("mt_ladder: ALL levels ok")
+    if vec_len(fails) == 0 {
+        print("boila_pool_test: ALL PASS")
         return 0
     }
-    print("mt_ladder: partial fails")
+    print(concat("boila_pool_test: FAILS=", int_to_str(vec_len(fails))))
     return 1
 }

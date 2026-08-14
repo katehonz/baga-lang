@@ -1,0 +1,42 @@
+// fmr_route_fn_test.baga — G1: L5 handler table on FmrApp.
+// Imports the scaffold so fmr_dispatch / fmr_before / fmr_build_app resolve.
+
+import "fmrbaga/handlers.baga"
+import "fmrbaga/core/app.baga"
+import "fmrbaga/core/route.baga"
+import "fmrbaga/core/respond.baga"
+import "fmrbaga/json/jsonx.baga"
+import "ormbaga/orm.baga"
+import "httpdbaga/http.baga"
+import "std/str/str.baga"
+
+fn check(name: str, cond: bool) {
+    if cond {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn h_ping(ctx: FmrCtx, db: OrmDb) -> FmrOut {
+    return fmr_out(fmr_ok_obj(jobj_str(jobj_new(), "pong", "1")), db)
+}
+
+fn main() {
+    let mut app = fmr_app_new("probe", "0")
+    app = fmr_route_fn(app, "GET", "/ping", 99, h_ping)
+    app = fmr_route(app, "GET", "/old", 7)
+
+    let m = router_match(app.router, "GET", "/ping")
+    check("match", m.ok == 1 && m.id == 99)
+    check("find_fn", fmr_handlers_find(app.handlers, 99) >= 0)
+    check("no_fn_old", fmr_handlers_find(app.handlers, 7) < 0)
+
+    // scaffold registers handlers by name
+    let sc = fmr_build_app() catch !IO => fmr_app_new("x", "0")
+    check("sc_health", fmr_handlers_find(sc.handlers, RID_HEALTH()) >= 0)
+    check("sc_me", fmr_handlers_find(sc.handlers, RID_ME()) >= 0)
+
+    print("fmr_route_fn_test: all passed")
+}

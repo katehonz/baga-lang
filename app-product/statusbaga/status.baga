@@ -66,6 +66,13 @@ fn status_http(code: i64) -> i64 {
     return 500
 }
 
+spec status_code_ok {
+    input:
+        code: i64
+    output: i64
+    guarantees:
+        - output == 0 || output == 1
+}
 fn status_code_ok(code: i64) -> i64 {
     if code >= 0 && code <= 16 {
         return 1
@@ -91,6 +98,14 @@ fn status_error(code: i64, message: str) -> Status {
 fn status_is_ok(s: Status) -> i64 {
     if s.code == 0 {
         return 1
+    }
+    return 0
+}
+
+// M20: raise the status text when not OK; returns 0 on success.
+fn status_check(s: Status) -> i64 !Rpc(str) {
+    if s.code != 0 {
+        raise !Rpc(status_string(s))
     }
     return 0
 }

@@ -12,9 +12,9 @@ canonical closure use case — handlers as values, registered per render.
 
 **Severity.** High for a template *framework*; fine for a fixed probe.
 
-**Verdict.** **Unblocked 2026-08-05** — L5 shipped; a registered filter
-table (`Map<str, fn(str)->str>`) is expressible today. The name switch
-stays (working, tested); migration is optional cleanup.
+**Verdict.** **Shipped 2026-08-14.** `tpl_filter(reg, name, f)` +
+`tpl_render_reg`. Built-ins remain for `tpl_render`. Registered
+`fn(str) -> str` overrides/extends; `default:arg` stays built-in.
 
 ## P2 — no Result / sum types (L3)
 

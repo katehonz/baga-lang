@@ -123,6 +123,79 @@ fn main() -> i64 !IO !Time {
     check(fails, "post_stress_reopen", g7.found == 1 && str_of_bytes(g7.val) == "v10")
     lsm_close(g7.db)?
 
+    // --- 5. torn WAL tail (kill -9 mid-pwrite): last BATCH skipped whole ---
+    wipe(prefix)?
+    let mut dbc = lsm_open(prefix, 64, 8)?
+    dbc.sync_every = 1000000
+    dbc = lsm_put(dbc, "keep", "yes")?
+    dbc = lsm_wal_flush_buf(dbc)?
+    fdatasync(dbc.wal_fd)?
+    dbc = lsm_put(dbc, "lost_a", "no")?
+    dbc = lsm_put(dbc, "lost_b", "no")?
+    dbc = lsm_wal_flush_buf(dbc)?
+    fdatasync(dbc.wal_fd)?
+    lsm_close(dbc)?
+    let wpath = concat(prefix, ".wal")
+    let raw = read_file_bytes(wpath)?
+    let wn = bytes_len(raw)
+    check(fails, "chaos_wal_len", wn > 24)
+    write_file_bytes(wpath, bytes_slice(raw, 0, wn - 12))?
+    let mut dbx = lsm_open(prefix, 64, 8)?
+    let gk = lsm_get(dbx, "keep")?
+    check(fails, "chaos_keep", gk.found == 1 && str_of_bytes(gk.val) == "yes")
+    let ga = lsm_get(gk.db, "lost_a")?
+    check(fails, "chaos_drop_a", ga.found == 0)
+    let gb = lsm_get(ga.db, "lost_b")?
+    check(fails, "chaos_drop_b", gb.found == 0)
+    lsm_close(gb.db)?
+
+    // --- 6. K5b: statement group grows past wal_buf_max as one BATCH ---
+    wipe(prefix)?
+    let mut dbg = lsm_open(prefix, 64, 8)?
+    dbg.sync_every = 1000000
+    dbg.wal_buf_max = 180
+    dbg = lsm_put(dbg, "keep2", "yes")?
+    dbg = lsm_wal_flush_buf(dbg)?
+    fdatasync(dbg.wal_fd)?
+    dbg = lsm_wal_group_begin(dbg)
+    let mut gi: i64 = 0
+    while gi < 16 {
+        dbg = lsm_put(dbg, concat("g", int_to_str(gi)), "xxxxxxxxxxxxxxxxxxxx")?
+        gi = gi + 1
+    }
+    dbg = lsm_wal_group_end(dbg)?
+    fdatasync(dbg.wal_fd)?
+    lsm_close(dbg)?
+    let mut dbs = lsm_open(prefix, 64, 8)?
+    let gk2 = lsm_get(dbs, "keep2")?
+    check(fails, "grp_keep_live", gk2.found == 1)
+    let gg0 = lsm_get(gk2.db, "g0")?
+    check(fails, "grp_g0_live", gg0.found == 1)
+    let gg15 = lsm_get(gg0.db, "g15")?
+    check(fails, "grp_g15_live", gg15.found == 1)
+    lsm_close(gg15.db)?
+    let wpath2 = concat(prefix, ".wal")
+    let raw2 = read_file_bytes(wpath2)?
+    let wn2 = bytes_len(raw2)
+    check(fails, "grp_wal_len", wn2 > 80)
+    write_file_bytes(wpath2, bytes_slice(raw2, 0, wn2 - 16))?
+    let mut dbt = lsm_open(prefix, 64, 8)?
+    let gkk = lsm_get(dbt, "keep2")?
+    check(fails, "grp_chaos_keep", gkk.found == 1 && str_of_bytes(gkk.val) == "yes")
+    let mut drop_all: i64 = 1
+    gi = 0
+    dbt = gkk.db
+    while gi < 16 {
+        let gx = lsm_get(dbt, concat("g", int_to_str(gi)))?
+        dbt = gx.db
+        if gx.found == 1 {
+            drop_all = 0
+        }
+        gi = gi + 1
+    }
+    check(fails, "grp_chaos_drop_all", drop_all == 1)
+    lsm_close(dbt)?
+
     wipe(prefix)?
     if vec_len(fails) == 0 {
         print("lsm_recover_test: all passed")

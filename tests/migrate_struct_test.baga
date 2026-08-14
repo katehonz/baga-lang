@@ -1,0 +1,33 @@
+// migrate_struct_test.baga — G1: MigrationSet is Vec<Migration>, no DB.
+
+import "ormbaga/migrate.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    let mut set = migrate_set_new()
+    check("empty", migrate_len(set) == 0)
+    set = migrate_add(set, 20, "b", "UPB", "DOWNB")
+    set = migrate_add(set, 10, "a", "UPA", "DOWNA")
+    check("len", migrate_len(set) == 2)
+    check("at0_ver", migrate_at(set, 0).version == 20)
+    check("at1_name", migrate_at(set, 1).name == "a")
+    check("at1_up", migrate_at(set, 1).up == "UPA")
+    check("no_dup", migrate_dup_version(set) == 0)
+    check("idx_10", migrate_index(set, 10) == 1)
+    check("idx_miss", migrate_index(set, 99) < 0)
+    let ord = migrate_sorted_indices(set)
+    check("sort0", migrate_at(set, vec_get(ord, 0)).version == 10)
+    check("sort1", migrate_at(set, vec_get(ord, 1)).version == 20)
+    set = migrate_add(set, 10, "dup", "X", "Y")
+    check("dup", migrate_dup_version(set) == 10)
+    print("migrate_struct_test: all passed")
+}

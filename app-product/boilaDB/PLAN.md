@@ -75,16 +75,18 @@
   колона. Индексните дефиниции живеят в schema row-а (O(1) point GET —
   не scan; урокът K7).
 - Group commit: statement-ниво — `boila_stmt_begin/commit` (един fsync
-  на shard на заявление). Shard-owner нишките остават за wire фазите
+  на shard на заявление; K5b: един WAL BATCH до 16 MiB). Shard-owner
+  нишките остават за wire фазите
   (P6), където concurrency-то реално се ползва; дотогава sync loop-ът
   притежава store-а (gaps H2).
 - **Гейтове (измерени, bench/boila/results/insert-write-*.md):**
   (а) group commit ≥ 3× спрямо sync-per-write — **1722%** (2026-08-08),
-  **2596%** (2026-08-14);
+  **2596%** (2026-08-14), **3120%** (cost-based levels);
   (б) durability без close (kill -9 семантика): **100k реда, 0 загубени,
   индексът валиден без rebuild**. Пълният **1M е приземен (2026-08-14,
-  Q2 persist reclaim в rocksbaga): single process, peak 10.4 GB RSS,
-  3281 s, DURABLE OK** — insert-write-2026-08-14.md.
+  Q2 persist reclaim) и смален същия ден (pair-collapse off + 1MiB
+  targets): 169 s, 1.35 GB RSS, DURABLE OK** — insert-write-2026-08-14.md
+  + insert-write-2026-08-14-levels.md.
 
 ## P4 — MVCC транзакции (едно-сесийен buffered модел)
 - `BEGIN [READ ONLY] / COMMIT / ROLLBACK`; писанията се буферират и се
@@ -215,13 +217,14 @@
   `tests/boila_p11_test` (drop, budget constants, restart durability).
 - **Измерено (harness-2026-08-09.md):** point 10k → **156k ops/s**
   (6.4 µs); insert 10k → **524 ops/s**; mix 10k → **2.6k ops/s**.
-- **Сървър harden:** HTTP + PG → `go_bg` + **per-shard hop-less** +
-  multi-DB + **shared per-db plan cache** (`boila_pc_*_mu`) + live
-  counter. Data SQL parallel; schema DDL serial per-db.
+- **Сървър harden:** HTTP + PG → **`BOILA_WORKERS` pool** (P11-1) +
+  **per-shard hop-less** + multi-DB + **shared per-db plan cache** +
+  live counter. Data SQL parallel; schema DDL serial per-db.
 - **Честно residual:** per-shard lanes inside one DB; external DB compare;
-  kill -9 chaos automation.
-- Ревизии: ladder е single-thread SQL path, не client fan-out; budget
-  е key-count cap, не wall-clock deadline (няма concurrent enforcer).
+  kill -9 chaos — `boila_chaos_test`; data SQL is shared lock
+  (P11-1b), not a hop-per-GET owner thread.
+- Ревизии: `mt_ladder` е HTTP fan-out върху pool (не 10k OS threads);
+  budget е cooperative tick + wall deadline.
 
 ## Решения спрямо v1 плана
 - BoilaQL отпада → PostgreSQL подмножество + PG wire (по-голям ecosystem).

@@ -1117,7 +1117,8 @@ fn main() {
 
 Ефектът може да носи стойност: `!E(T)` декларира ефект с payload от тип `T`
 (в v1: `i64`, `f64`, `bool`, `str`, `bytes`). `raise !E(стойност)` предизвиква
-ефекта — функцията приключва по грешния път с payload-а; `catch !E(name) => …`
+ефекта — функцията **връща веднага** по грешния път с payload-а (кодът след
+`raise` не се изпълнява); `catch !E(name) => …`
 го лови и дава `name` на хендлъра; `?` го разпространява нагоре (payload-ът
 пътува заедно с него):
 
@@ -1141,6 +1142,8 @@ fn main() {
   binding, а на ефект без payload — забранява го.
 - Вериги от `catch` обработват няколко payload ефекта подред.
 - `raise` без payload е валиден за payload-less ефект (`raise !IO`).
+- `raise` дивергира: за M19 е като return, а codegen-ът (C и LLVM) наистина
+  излиза от функцията. `examples/effects_raise_diverge.baga`.
 - LLVM backend-ът има пълен payload runtime паритет (raise/catch/? съвпадат
   байт-по-байт с C backend-а; оракул: `examples/effects_payload.baga`).
 

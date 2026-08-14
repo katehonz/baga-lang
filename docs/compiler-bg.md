@@ -421,8 +421,9 @@ Self-hosted компилаторът извежда C типове еврист�
 - Типовата система налага дисциплина на ефектите по време на компилация
 
 От M20 насетне ефектите с payload (`!E(T)`) имат runtime модел: thread-local
-`baga_eff` слот и raise/try/catch lowering и в двата backend-а. Само
-payload-less ефектите остават чиста compile-time фикция без цена.
+`baga_eff` слот и raise/try/catch lowering и в двата backend-а. `raise`
+записва слота и излиза от функцията (същият път като `?`); кодът след него
+е мъртъв. Само payload-less ефектите остават чиста compile-time фикция без цена.
 
 ### Защо десетично кодиране в Self-Hosted mangling-а?
 

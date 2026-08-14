@@ -28,6 +28,7 @@ fn q_enqueue(q, payload) -> i64 !IO !Par     // job id
 fn q_status(q, id) -> str !IO                // pending|running|done|failed
 fn q_result(q, id) -> str !IO
 fn q_wait(q, id, timeout_ms) -> str !IO !Par !Time
+fn q_process_fn(prefix, id, max, handler) -> i64 !IO  // L5 in-process
 fn q_close(q) -> i64 !Par                    // close work chan
 ```
 

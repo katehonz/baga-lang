@@ -5,6 +5,10 @@ import "tplbaga/tpl.baga"
 import "testbaga/assert.baga"
 import "std/str/str.baga"
 
+fn tpl_wrap_br(s: str) -> str {
+    return concat(concat("[", s), "]")
+}
+
 fn has(s: str, n: str) -> bool {
     return str_find(s, n) >= 0
 }
@@ -72,6 +76,18 @@ fn main() {
     let fe = tpl_render("{{ name | nope }}", c)
     assert_eq_i64("unknown_filter_err", fe.ok, 0)
     assert_true("unknown_filter_msg", has(fe.err, "непознат филтър"))
+
+    // L5 registered filter
+    let mut reg = tpl_filters_new()
+    reg = tpl_filter(reg, "wrap", tpl_wrap_br)
+    let fr = tpl_render_reg("{{ name | wrap }}", c, reg)
+    assert_eq_str("reg_wrap", fr.html, "[baga]")
+    // unknown still errors when not registered
+    let fu = tpl_render_reg("{{ name | nope }}", c, reg)
+    assert_eq_i64("reg_unknown", fu.ok, 0)
+    // built-ins still work with a registry
+    let fb = tpl_render_reg("{{ name | upper }}", c, reg)
+    assert_eq_str("reg_builtin", fb.html, "BAGA")
 
     // --- if / else / endif ---
     let i1 = tpl_render("{% if name %}yes{% endif %}", c)

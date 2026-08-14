@@ -29,6 +29,10 @@ fn main() -> i64 !Time {
     // overwrite
     c = ctx_with_value(c, "user", "7")
     check("ow", ctx_value(c, "user") == "7")
+    let req = ctx_require(c, "user") catch !NotFound(_k) => ""
+    check("require", req == "7")
+    let miss = ctx_require(c, "nope") catch !NotFound(k) => k
+    check("require_miss", miss == "nope")
 
     // cancel
     let mut cc = ctx_with_cancel(c)

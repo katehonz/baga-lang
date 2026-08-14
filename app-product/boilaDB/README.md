@@ -15,9 +15,9 @@ out of scope.
 protocol v3 (real `psql`/libpq compatible, port 6575), FTS (BM25 +
 phrase), vector (HNSW kNN), time-series (TTL + `time_bucket`), graph
 (`WITH RECURSIVE` BFS/DFS/Dijkstra), hardening (query budget, full DDL,
-users/ACL, `EXPLAIN [ANALYZE]`). Concurrent HTTP + PG server: `go_bg`
-per connection, per-shard hop-less stores, shared per-db plan cache;
-DDL is serial per db and there is no true 10k-client pool yet
+users/ACL, `EXPLAIN [ANALYZE]`). Concurrent HTTP + PG server: bounded
+`BOILA_WORKERS` pool (default 4; `=0` → `go_bg` per conn), per-shard
+hop-less stores, shared per-db plan cache; DDL is serial per db
 (gaps W1/P11-1). No SCRAM/TLS (gaps W6). Measured @10k ladder: point
 156k ops/s, insert 524 ops/s, mix 2.6k ops/s
 (`bench/boila/results/harness-2026-08-09.md`).
@@ -29,11 +29,12 @@ DDL is serial per db and there is no true 10k-client pool yet
 ## Running
 
 ```bash
-# HTTP: go_bg + per-shard hop-less + multi-DB (BOILA_MAX_CONN default 64)
+# HTTP: worker pool + per-shard hop-less + multi-DB
+#   BOILA_MAX_CONN=64  BOILA_WORKERS=4 (0 = go_bg per conn)
 ./baga -I . -I app-product app-product/boilaDB/tools/serve.baga
 # PG wire protocol v3 (BOILA_PGPORT default 6575)
 ./baga -I . -I app-product app-product/boilaDB/tools/serve_pg.baga
-curl localhost:6570/health   # mode=mt-shard, live_conn; /ready, /metrics
+curl localhost:6570/health   # mode=mt-pool, workers, live_conn; /ready, /metrics
 ```
 
 ## Tests

@@ -94,10 +94,12 @@ FMR_SYNC=1 ./scripts/fmr-run
 ## Route model
 
 Baga has no function values → routes are **integer ids**; the app implements
-`fmr_dispatch(ctx, db)`.
+`fmr_dispatch(ctx, db)`, or register `fmr_route_fn(..., handler)` and skip
+the switch.
 
 ```baga
-fmr_route(app, "GET", "/users/{id}", RID_USER_GET)
+fmr_route_fn(app, "GET", "/users/{id}", RID_USER_GET, h_user_get)
+// or fmr_route(...) + branch in fmr_dispatch (product apps today)
 // …
 match rid {
     RID_USER_GET => act_user_get(ctx, db),
@@ -161,8 +163,9 @@ curl -s -X POST localhost:8080/v1/auth/token -H 'Content-Type: application/json'
 ## Add a route
 
 1. New `RID_*` constant in your dispatch file  
-2. `fmr_route(app, "METHOD", "/path/{id}", RID)` in `fmr_build_app`  
-3. Branch in `fmr_dispatch` → handler using `fmr_param` / `jreq_*` / `orm_*`
+2. `fmr_route_fn(app, "METHOD", "/path/{id}", RID, handler)` in `fmr_build_app`  
+   (or `fmr_route` + branch in `fmr_dispatch`)  
+3. Handler uses `fmr_param` / `jreq_*` / `orm_*`
 
 ## JSON
 

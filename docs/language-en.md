@@ -1138,7 +1138,8 @@ remaining effects, so `main` (which returns `void`, no effects) type-checks.
 
 An effect can carry a value: `!E(T)` declares an effect with a payload of
 type `T` (in v1: `i64`, `f64`, `bool`, `str`, `bytes`). `raise !E(value)`
-triggers the effect — the function exits on the error path with the payload;
+triggers the effect — the function **returns immediately** on the error path
+with the payload (code after `raise` does not run);
 `catch !E(name) => …` catches it and binds `name` in the handler; `?`
 propagates it upwards (the payload travels with it):
 
@@ -1162,6 +1163,8 @@ fn main() {
   a binding, and on a payload-less effect forbids one.
 - Chains of `catch` handle several payload effects in sequence.
 - `raise` without a payload is valid for a payload-less effect (`raise !IO`).
+- `raise` diverges: it is a return for fall-through analysis (M19) and for
+  codegen (C and LLVM). `examples/effects_raise_diverge.baga`.
 - The LLVM backend has full payload runtime parity (raise/catch/? match the
   C backend byte-for-byte; oracle: `examples/effects_payload.baga`).
 

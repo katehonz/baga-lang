@@ -17,17 +17,80 @@ fn lsm_wal_path(dir: str) -> str {
 
 
 
+// Grow ceiling while a statement group is open. Replay rejects plen>64MiB;
+// stay well under that. Bigger statements still split (honest residual).
+fn lsm_wal_grp_cap() -> i64 {
+    return 16777216
+}
+
+fn lsm_wal_group_begin(db: LsmDB) -> LsmDB {
+    if db.wal_grp == 0 {
+        db.wal_grp = 1
+    }
+    return db
+}
+
+fn lsm_wal_group_end(db: LsmDB) -> LsmDB !IO {
+    db = lsm_wal_flush_buf(db)?
+    db.wal_grp = 0
+    if db.wal_buf_max > 0 && bytes_len(db.wal_buf) > db.wal_buf_max {
+        mem_persist_begin()
+        db.wal_buf = bytes_new(db.wal_buf_max)
+        mem_persist_end()
+    }
+    return db
+}
+
+fn lsm_wal_buf_ensure(db: LsmDB, need: i64) -> LsmDB {
+    if bytes_len(db.wal_buf) >= need {
+        return db
+    }
+    let mut ncap = bytes_len(db.wal_buf)
+    if ncap < 1 {
+        ncap = db.wal_buf_max
+        if ncap < 1 {
+            ncap = 65536
+        }
+    }
+    while ncap < need {
+        ncap = ncap * 2
+    }
+    let cap = lsm_wal_grp_cap()
+    if ncap > cap {
+        ncap = cap
+    }
+    if ncap < need {
+        ncap = need
+    }
+    mem_persist_begin()
+    let nb = bytes_new(ncap)
+    mem_persist_end()
+    let mut i: i64 = 0
+    while i < db.wal_buf_len {
+        bytes_set(nb, i, bytes_at(db.wal_buf, i))
+        i = i + 1
+    }
+    let old = db.wal_buf
+    db.wal_buf = nb
+    drop(old)
+    return db
+}
+
 fn lsm_wal_flush_buf(db: LsmDB) -> LsmDB !IO {
     if db.wal_buf_len <= 0 {
         return db
     }
     let view = bytes_slice(db.wal_buf, 0, db.wal_buf_len)
-    if fd_pwrite_bytes(db.wal_fd, view, db.wal_off) != 0 {
+    let rec = wal_wrap_batch(view)
+    drop(view)
+    let rl = bytes_len(rec)
+    if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
+        drop(rec)
         db.ok = 0
         return db
     }
-    drop(view)
-    db.wal_off = db.wal_off + db.wal_buf_len
+    drop(rec)
+    db.wal_off = db.wal_off + rl
     db.wal_buf_len = 0  // buffer stays allocated, reused next window
     return db
 }
@@ -115,7 +178,7 @@ fn lsm_wal_append(db: LsmDB, op: i64, key: bytes, val: bytes) -> LsmDB !IO {
         drop(rec)
         return db
     }
-    if rl >= db.wal_buf_max {
+    if rl >= db.wal_buf_max && db.wal_grp == 0 {
         // oversized record: drain pending, then write directly
         db = lsm_wal_flush_buf(db)?
         if db.ok == 0 {
@@ -132,18 +195,24 @@ fn lsm_wal_append(db: LsmDB, op: i64, key: bytes, val: bytes) -> LsmDB !IO {
         return db
     }
     if db.wal_buf_len + rl > db.wal_buf_max {
-        db = lsm_wal_flush_buf(db)?
-        if db.ok == 0 {
-            drop(rec)
-            return db
+        if db.wal_grp == 0 || db.wal_buf_len + rl > lsm_wal_grp_cap() {
+            db = lsm_wal_flush_buf(db)?
+            if db.ok == 0 {
+                drop(rec)
+                return db
+            }
         }
     }
-    if bytes_len(db.wal_buf) < db.wal_buf_max {
+    if bytes_len(db.wal_buf) < db.wal_buf_len + rl {
         // MEM-4: WAL буферът е дълготрайно състояние на store-а — persist
-        mem_persist_begin()
-        db.wal_buf = bytes_new(db.wal_buf_max)
-        mem_persist_end()
-        db.wal_buf_len = 0
+        if db.wal_grp == 0 && db.wal_buf_max > 0 {
+            mem_persist_begin()
+            db.wal_buf = bytes_new(db.wal_buf_max)
+            mem_persist_end()
+            db.wal_buf_len = 0
+        } else {
+            db = lsm_wal_buf_ensure(db, db.wal_buf_len + rl)
+        }
     }
     let mut i: i64 = 0
     while i < rl {

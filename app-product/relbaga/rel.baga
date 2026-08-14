@@ -41,6 +41,14 @@ fn rel_backoff_ms(attempt: i64, base_ms: i64, max_ms: i64, mult: i64) -> i64 {
     return d
 }
 
+spec rel_should_retry {
+    input:
+        attempt: i64
+        max_attempts: i64
+    output: i64
+    guarantees:
+        - output == 0 || output == 1
+}
 fn rel_should_retry(attempt: i64, max_attempts: i64) -> i64 {
     if attempt + 1 < max_attempts {
         return 1
@@ -48,10 +56,37 @@ fn rel_should_retry(attempt: i64, max_attempts: i64) -> i64 {
     return 0
 }
 
+// Delay with deterministic jitter in [d - d/2, d] (R1).
+// seed is mixed with attempt so the sequence is stable for tests.
+fn rel_backoff_jitter_ms(attempt: i64, base_ms: i64, max_ms: i64, mult: i64, seed: i64) -> i64 {
+    let d = rel_backoff_ms(attempt, base_ms, max_ms, mult)
+    let span = d / 2
+    if span < 1 {
+        return d
+    }
+    let mut s = seed
+    if s < 0 {
+        s = 0 - s
+    }
+    let mut mix = s + attempt * 1103515245
+    if mix < 0 {
+        mix = 0 - mix
+    }
+    let j = mix % (span + 1)
+    let out = d - span + j
+    if out < 1 {
+        return 1
+    }
+    if out > max_ms && max_ms > 0 {
+        return max_ms
+    }
+    return out
+}
+
 // Call op(arg) up to max_attempts times until it returns 0 (success).
-// op: fn(i64) -> i64  (0 = ok, non-zero = retryable failure).
+// Generic in the argument (M21) — any T the callback accepts.
 // Sleeps between attempts with exponential backoff.
-fn rel_retry(op: fn(i64) -> i64, arg: i64, max_attempts: i64,
+fn rel_retry<T>(op: fn(T) -> i64, arg: T, max_attempts: i64,
              base_ms: i64, max_ms: i64, mult: i64) -> i64 !Par {
     let mut a: i64 = 0
     let mut last: i64 = -1
@@ -68,6 +103,29 @@ fn rel_retry(op: fn(i64) -> i64, arg: i64, max_attempts: i64,
             return last
         }
         sleep_ms(rel_backoff_ms(a, base_ms, max_ms, mult))
+        a = a + 1
+    }
+    return last
+}
+
+// Same as rel_retry, but the sleep uses jittered backoff (R1).
+fn rel_retry_jitter<T>(op: fn(T) -> i64, arg: T, max_attempts: i64,
+                       base_ms: i64, max_ms: i64, mult: i64, seed: i64) -> i64 !Par {
+    let mut a: i64 = 0
+    let mut last: i64 = -1
+    let mut ma = max_attempts
+    if ma < 1 {
+        ma = 1
+    }
+    while a < ma {
+        last = op(arg)
+        if last == 0 {
+            return 0
+        }
+        if rel_should_retry(a, ma) == 0 {
+            return last
+        }
+        sleep_ms(rel_backoff_jitter_ms(a, base_ms, max_ms, mult, seed))
         a = a + 1
     }
     return last

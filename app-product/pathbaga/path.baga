@@ -2,6 +2,13 @@
 
 import "std/str/str.baga"
 
+spec path_is_abs {
+    input:
+        p: str
+    output: i64
+    guarantees:
+        - output == 0 || output == 1
+}
 fn path_is_abs(p: str) -> i64 {
     if len(p) > 0 && char_at(p, 0) == 47 {
         return 1
@@ -28,6 +35,20 @@ fn path_join(a: str, b: str) -> str {
         return concat(left, b)
     }
     return concat(concat(left, "/"), b)
+}
+
+// Join many segments left-to-right with path_join.
+fn path_join_all(parts: Vec<str>) -> str {
+    if vec_len(parts) == 0 {
+        return ""
+    }
+    let mut out = vec_get(parts, 0)
+    let mut i: i64 = 1
+    while i < vec_len(parts) {
+        out = path_join(out, vec_get(parts, i))
+        i = i + 1
+    }
+    return out
 }
 
 // Last component after '/'; whole string if no slash.

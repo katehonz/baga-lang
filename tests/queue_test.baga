@@ -4,6 +4,10 @@ import "queuebaga/queue.baga"
 import "testbaga/assert.baga"
 import "std/str/str.baga"
 
+fn tag_job(s: str) -> str {
+    return concat("H:", s)
+}
+
 fn main() -> i64 !IO !Par !Time {
     let prefix = "/tmp/baga_queue_test"
     let mut q = q_open(prefix, 3)?
@@ -44,6 +48,18 @@ fn main() -> i64 !IO !Par !Time {
 
     q_close(q)?
     sleep_ms(30)
+
+    // L5 in-process handler (no workers)
+    let p2 = "/tmp/baga_queue_fn"
+    let q2 = q_open(p2, 1)?
+    let hid = q_enqueue(q2, "hi")?
+    assert_true("fn_id", hid > 0)
+    let prc = q_process_fn(p2, hid, 1, tag_job)?
+    assert_eq_i64("fn_rc", prc, 0)
+    assert_eq_str("fn_status", q_status(q2, hid)?, "done")
+    assert_eq_str("fn_result", q_result(q2, hid)?, "H:hi")
+    q_close(q2)?
+
     print("queue_test: all passed")
     return 0
 }

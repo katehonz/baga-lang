@@ -69,6 +69,15 @@ grep -q "празно име" /tmp/baga_effp_out.txt \
 	&& grep -q "^3.5$" /tmp/baga_effp_out.txt \
 	&& echo "OK: effect payloads (raise/catch/? + вериги)" \
 	|| { echo "FAIL: effect payloads"; exit 1; }
+echo "=== effects_raise_diverge (M20: raise излиза от fn) ==="
+run examples/effects_raise_diverge.baga > /tmp/baga_effr_out.txt
+grep -q "^hi$" /tmp/baga_effr_out.txt \
+	&& grep -q "^7$" /tmp/baga_effr_out.txt \
+	&& grep -q "^zero$" /tmp/baga_effr_out.txt \
+	&& grep -q "^gone$" /tmp/baga_effr_out.txt \
+	&& ! grep -q "NO" /tmp/baga_effr_out.txt \
+	&& echo "OK: raise дивергира (няма fall-through, няма страничен ефект след него)" \
+	|| { echo "FAIL: raise diverge"; cat /tmp/baga_effr_out.txt; exit 1; }
 echo "=== spec ==="
 run examples/spec.baga
 run examples/spec_ensures.baga > /dev/null

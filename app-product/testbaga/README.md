@@ -14,9 +14,10 @@ import "testbaga/assert.baga"
 
 fn main() {
     assert_true("flag", 1 < 2)
-    assert_eq_i64("sum", 2 + 2, 4)
-    assert_eq_str("hi", concat("h", "i"), "hi")
+    assert_eq("sum", 2 + 2, 4)          // generic (M21 + Show)
+    assert_eq("hi", concat("h", "i"), "hi")
     assert_ne_str("diff", "a", "b")
+    test("named", my_case)              // L5: fn() -> i64, 0 = pass
 }
 ```
 
@@ -51,5 +52,5 @@ BAGA=../../baga sandak build
 
 ## Honest limits
 
-See [`gaps.md`](gaps.md): no function-value test registration (L5), no
-in-language readdir/process spawn — discovery is shell-side for P0.
+See [`gaps.md`](gaps.md): `test("name", fn)` and generic `assert_eq<T>`
+are in; no in-language readdir/process spawn — discovery is shell-side.

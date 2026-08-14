@@ -5,10 +5,37 @@
 //   1) fail-fast: assert_* → print ok / FAIL + exit(1)  (today's idiom)
 //   2) suite:     Suite accumulates; suite_finish → summary + exit code
 //
-// No function values (L5): tests stay as plain statements in main.
+// M23 Show + M21 assert_eq<T>; L5 test("name", fn).
 // No process spawn / readdir: multi-file discovery is scripts/baga-test.
 
 import "std/str/str.baga"
+
+// ---------- Show (M23) — printable values for generic eq ----------
+
+trait Show {
+    fn show(self) -> str
+}
+
+impl Show for i64 {
+    fn show(self: i64) -> str {
+        return int_to_str(self)
+    }
+}
+
+impl Show for str {
+    fn show(self: str) -> str {
+        return self
+    }
+}
+
+impl Show for bool {
+    fn show(self: bool) -> str {
+        if self {
+            return "true"
+        }
+        return "false"
+    }
+}
 
 // ---------- fail-fast (drop-in for check) ----------
 
@@ -21,24 +48,27 @@ fn assert_true(name: str, cond: bool) {
     }
 }
 
-fn assert_eq_i64(name: str, got: i64, want: i64) {
-    if got == want {
-        print(concat("ok ", name))
-    } else {
-        eprintln(concat(concat(concat(concat(concat("FAIL ", name), ": got "), int_to_str(got)), ", want "), int_to_str(want)))
-        exit(1)
-    }
-}
-
-fn assert_eq_str(name: str, got: str, want: str) {
+fn assert_eq<T: Show>(name: str, got: T, want: T) {
     if got == want {
         print(concat("ok ", name))
     } else {
         eprintln(concat("FAIL ", name))
-        eprintln(concat("  got:  ", got))
-        eprintln(concat("  want: ", want))
+        eprintln(concat("  got:  ", got.show()))
+        eprintln(concat("  want: ", want.show()))
         exit(1)
     }
+}
+
+fn assert_eq_i64(name: str, got: i64, want: i64) {
+    assert_eq(name, got, want)
+}
+
+fn assert_eq_str(name: str, got: str, want: str) {
+    assert_eq(name, got, want)
+}
+
+fn assert_eq_bool(name: str, got: bool, want: bool) {
+    assert_eq(name, got, want)
 }
 
 fn assert_ne_str(name: str, got: str, not_want: str) {
@@ -47,6 +77,17 @@ fn assert_ne_str(name: str, got: str, not_want: str) {
     } else {
         eprintln(concat(concat("FAIL ", name), ": values are equal"))
         eprintln(concat("  value: ", got))
+        exit(1)
+    }
+}
+
+// Named test via L5 function value. f returns 0 on success.
+fn test(name: str, f: fn() -> i64) {
+    let rc = f()
+    if rc == 0 {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat(concat(concat("FAIL ", name), ": rc="), int_to_str(rc)))
         exit(1)
     }
 }
@@ -83,20 +124,28 @@ fn suite_true(s: Suite, case_name: str, cond: bool) -> Suite {
     return suite_fail(s, case_name, "")
 }
 
-fn suite_eq_i64(s: Suite, case_name: str, got: i64, want: i64) -> Suite {
+fn suite_eq<T: Show>(s: Suite, case_name: str, got: T, want: T) -> Suite {
     if got == want {
         return suite_ok(s, case_name)
     }
-    let d = concat(concat(concat(concat("got ", int_to_str(got)), ", want "), int_to_str(want)), "")
+    let d = concat(concat(concat("got  ", got.show()), "\n  want "), want.show())
     return suite_fail(s, case_name, d)
 }
 
+fn suite_eq_i64(s: Suite, case_name: str, got: i64, want: i64) -> Suite {
+    return suite_eq(s, case_name, got, want)
+}
+
 fn suite_eq_str(s: Suite, case_name: str, got: str, want: str) -> Suite {
-    if got == want {
-        return suite_ok(s, case_name)
+    return suite_eq(s, case_name, got, want)
+}
+
+fn suite_test(s: Suite, name: str, f: fn() -> i64) -> Suite {
+    let rc = f()
+    if rc == 0 {
+        return suite_ok(s, name)
     }
-    let d = concat(concat(concat(concat("got  ", got), "\n  want "), want), "")
-    return suite_fail(s, case_name, d)
+    return suite_fail(s, name, concat("rc=", int_to_str(rc)))
 }
 
 // Print summary. Returns process exit code (0 = all passed).

@@ -1,0 +1,101 @@
+// boila_lock_test.baga — P11-1b: shared data lock vs exclusive schema lock.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/api/serve_mt.baga"
+import "boilaDB/api/serve_mt_lock.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_one(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 20 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+// ctx = cell2(pack, cell2(flags_h, id))
+fn hold_data(ctx: i64) -> i64 !Time !Par {
+    let pack = cell2_0(ctx)
+    let rest = cell2_1(ctx)
+    let flags: Map<i64, i64> = h_map(cell2_0(rest))
+    let id = cell2_1(rest)
+    boila_mt_data_lock(pack, "boila")?
+    map_set(flags, id, 1)
+    let other = 1 - id
+    let mut t: i64 = 0
+    while t < 40 {
+        if map_get(flags, other) == 1 {
+            map_set(flags, 9, 1)
+            t = 40
+        } else {
+            sleep_ms(5)
+            t = t + 1
+        }
+    }
+    boila_mt_data_unlock(pack, "boila")?
+    return 0
+}
+
+// ctx = cell2(pack, flags_h)
+fn take_schema(ctx: i64) -> i64 !Time !Par {
+    let pack = cell2_0(ctx)
+    let flags: Map<i64, i64> = h_map(cell2_1(ctx))
+    boila_mt_schema_lock(pack, "boila")?
+    map_set(flags, 3, 1)
+    boila_mt_schema_unlock(pack, "boila")?
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_lock_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_lock"
+    wipe_one(concat(root, "/.meta"))?
+    wipe_one(concat(root, "/boila.db"))?
+    let srv0 = boila_server_open_mt(root, 1, 256, 4, 4)?
+    check(fails, "open_mt", srv0.ok == 1)
+    let pack = boila_mt_new(srv0, 8)?
+
+    let flags: Map<i64, i64> = map_new()
+    map_set(flags, 0, 0)
+    map_set(flags, 1, 0)
+    map_set(flags, 9, 0)
+    let fh = map_h(flags)
+    let h0 = go(hold_data, cell2(pack, cell2(fh, 0)))
+    let h1 = go(hold_data, cell2(pack, cell2(fh, 1)))
+    join(h0)
+    join(h1)
+    check(fails, "data_overlap", map_get(flags, 9) == 1)
+    check(fails, "readers_idle", boila_mt_data_readers(pack, "boila")? == 0)
+
+    map_set(flags, 3, 0)
+    boila_mt_data_lock(pack, "boila")?
+    let hs = go(take_schema, cell2(pack, fh))
+    sleep_ms(30)
+    check(fails, "schema_waits", map_get(flags, 3) == 0)
+    boila_mt_data_unlock(pack, "boila")?
+    join(hs)
+    check(fails, "schema_after", map_get(flags, 3) == 1)
+
+    if vec_len(fails) == 0 {
+        print("boila_lock_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_lock_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

@@ -1,5 +1,6 @@
-// serve.baga — HTTP go_bg + per-db parallel + live conn (api/serve_mt.baga).
-// Env: BOILA_PATH, BOILA_PORT, BOILA_SHARDS, BOILA_MAX_CONN, BOILA_MAX_DB
+// serve.baga — HTTP pool + per-db parallel + live conn (api/serve_mt.baga).
+// Env: BOILA_PATH, BOILA_PORT, BOILA_SHARDS, BOILA_MAX_CONN, BOILA_MAX_DB,
+//      BOILA_WORKERS (default 4; 0 = go_bg per conn)
 
 import "httpdbaga/http.baga"
 import "metbaga/met.baga"
@@ -7,6 +8,7 @@ import "../api/http_sql.baga"
 import "../api/http_auth.baga"
 import "../api/http_guc.baga"
 import "../api/serve_mt.baga"
+import "../api/serve_mt_pool.baga"
 import "../api/serve_stats.baga"
 import "../server/databases.baga"
 import "../server/exec_server.baga"
@@ -51,7 +53,16 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, guc: Map<str, str>, re
         body = concat(body, int_to_str(md))
         body = concat(body, ",\"live_conn\":")
         body = concat(body, int_to_str(lv))
-        body = concat(body, ",\"mode\":\"mt-shard\",\"version\":\"")
+        let wn = boila_mt_workers(pack)?
+        let mut mode = "mt-shard"
+        if wn > 0 {
+            mode = "mt-pool"
+        }
+        body = concat(body, ",\"mode\":\"")
+        body = concat(body, mode)
+        body = concat(body, "\",\"workers\":")
+        body = concat(body, int_to_str(wn))
+        body = concat(body, ",\"version\":\"")
         body = concat(body, boila_version())
         body = concat(body, "\"}")
         return boila_http_pack(boila_seed(), txn, http_json_response(200, body), sess_db, guc)
@@ -88,8 +99,10 @@ fn boila_route_mt(pack: i64, txn: BoilaTxn, sess_db: str, guc: Map<str, str>, re
         met_set(m, bi, 1)
         let od = met_gauge(m, "boila_databases_open", "open dbs")
         met_set(m, od, boila_mt_open_count(pack)?)
-        let lc = met_gauge(m, "boila_conn_live", "live go_bg conns")
+        let lc = met_gauge(m, "boila_conn_live", "live conns")
         met_set(m, lc, boila_mt_live(pack)?)
+        let wk = met_gauge(m, "boila_workers", "pool workers (0=go_bg)")
+        met_set(m, wk, boila_mt_workers(pack)?)
         let st = met_counter(m, "boila_sql_total", "SQL statements executed")
         met_set(m, st, boila_mt_stat_get(pack, boila_st_sql())?)
         let so = met_counter(m, "boila_sql_ok", "SQL statements ok")
@@ -201,6 +214,10 @@ fn boila_http_conn(ctx: i64) -> i64 !IO !Net !Time !Par {
     return 0
 }
 
+fn boila_pool_handle(fd: i64, pack: i64) -> i64 !IO !Net !Time !Par {
+    return boila_http_conn(cell2(fd, pack))?
+}
+
 fn main() -> i64 !Net !IO !Time !Par {
     let root = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
     let port = parse_int(boila_env_or("BOILA_PORT", "6570"))
@@ -217,12 +234,23 @@ fn main() -> i64 !Net !IO !Time !Par {
     }
     let pack = boila_mt_new(srv0, max_conn)?
     let sw = boila_mt_start_sweeper(pack)?
+    let workers = boila_workers_n()?
+    let mut ch: i64 = 0
+    if workers > 0 {
+        ch = boila_pool_start(pack, workers)?
+        boila_mt_set_pool(pack, workers, 2)?
+    }
 
     let mut line = "boiladb listening on :"
     line = concat(line, int_to_str(port))
     line = concat(line, " (max_conn=")
     line = concat(line, int_to_str(max_conn))
-    line = concat(line, ", go_bg+per-shard+multi-db")
+    if workers > 0 {
+        line = concat(line, concat(", workers=", int_to_str(workers)))
+        line = concat(line, "+per-shard+multi-db")
+    } else {
+        line = concat(line, ", go_bg+per-shard+multi-db")
+    }
     if sw == 1 {
         line = concat(line, "+ttl-sweep")
     }
@@ -244,7 +272,11 @@ fn main() -> i64 !Net !IO !Time !Par {
                     http_respond_keepalive(fd, http_json_response(503, "{\"error\":\"too many connections\",\"sqlstate\":\"53300\"}"), 0)?
                     tcp_close(fd)?
                 } else {
-                    go_bg(boila_http_conn, cell2(fd, pack))
+                    if workers > 0 {
+                        chan_send(ch, fd)
+                    } else {
+                        go_bg(boila_http_conn, cell2(fd, pack))
+                    }
                 }
             }
         }

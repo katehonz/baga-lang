@@ -8,8 +8,8 @@ import "std/str/str.baga"
 fn main() -> i64 {
     // fail-fast style
     assert_true("truth", true)
-    assert_eq_i64("one_plus_one", 1 + 1, 2)
-    assert_eq_str("hello", concat("hel", "lo"), "hello")
+    assert_eq("one_plus_one", 1 + 1, 2)
+    assert_eq("hello", concat("hel", "lo"), "hello")
     assert_ne_str("not_empty", "x", "")
 
     // suite style (would continue after failures if we injected any)

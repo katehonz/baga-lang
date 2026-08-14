@@ -1,0 +1,67 @@
+// effects_raise_test.baga — raise дивергира: няма fall-through, няма
+// странични ефекти след него, if/else само с raise+return е пълен (M19).
+
+import "std/str/str.baga"
+
+fn parse_fixed(s: str) -> str !BadUuid(str) {
+    if len(s) != 36 {
+        raise !BadUuid(s)
+    }
+    // ако raise не излиза, char_at(s, 14) пада върху къс низ
+    let _c = char_at(s, 14)
+    return s
+}
+
+fn after_raise() -> i64 !Boom(i64) {
+    raise !Boom(9)
+    print("SHOULD_NOT_PRINT")
+    return 1
+}
+
+fn if_else_raise(c: i64) -> i64 !Nope(str) {
+    if c < 0 {
+        raise !Nope("neg")
+    } else {
+        return c
+    }
+}
+
+fn main() -> i64 {
+    let bad = parse_fixed("nope") catch !BadUuid(s) => s
+    if bad != "nope" {
+        eprintln("FAIL parse_short")
+        exit(1)
+    }
+    print("ok parse_short")
+
+    let good = parse_fixed("550e8400-e29b-41d4-a716-446655440000") catch !BadUuid(_s) => ""
+    if len(good) != 36 {
+        eprintln("FAIL parse_ok")
+        exit(1)
+    }
+    print("ok parse_ok")
+
+    let hit = after_raise() catch !Boom(n) => n
+    if hit != 9 {
+        eprintln("FAIL after")
+        exit(1)
+    }
+    print("ok after")
+
+    let n = if_else_raise(0 - 3) catch !Nope(m) => { print(m); 0 }
+    if n != 0 {
+        eprintln("FAIL if_neg")
+        exit(1)
+    }
+    print("ok if_neg")
+
+    let p = if_else_raise(4) catch !Nope(_m) => 0
+    if p != 4 {
+        eprintln("FAIL if_pos")
+        exit(1)
+    }
+    print("ok if_pos")
+
+    print("effects_raise_test: all passed")
+    return 0
+}

@@ -23,6 +23,7 @@ struct LsmDB {
     wal_buf: bytes,   // R14: pending WAL bytes (flushed on sync / full)
     wal_buf_max: i64, // flush buffer when len >= this (0 = unbuffered)
     wal_buf_len: i64, // R18: used prefix of wal_buf (offset append, no concat)
+    wal_grp: i64,     // K5b: 1 = grow past wal_buf_max until group_end
     gens: Vec<i64>,
     levels: Vec<i64>,   // parallel: 0=L0 … 3=L3
     next_gen: i64,

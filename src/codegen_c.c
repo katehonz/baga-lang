@@ -3391,20 +3391,23 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_RAISE: {
-            /* M20: raise !E(payload) — задава слота и дивергира */
+            /* M20: raise !E(payload) — задава слота и ИЗЛИЗА от функцията
+             * (като `?`). Преди това беше само comma-израз: кодът след
+             * raise продължаваше и можеше да падне преди caller-ът да
+             * види слота. return вътре в ({…}) напуска enclosing fn. */
             FILE *f = cg->out;
             int tag = eff_tag(cg, n->raise_effect);
-            fprintf(f, "(baga_eff_tl.tag = %d", tag);
+            fprintf(f, "({ baga_eff_tl.tag = %d; ", tag);
             if (n->raise_payload && n->raise_payload->type) {
-                fprintf(f, ", baga_eff_tl.%s = (",
+                fprintf(f, "baga_eff_tl.%s = (",
                         eff_slot_field(n->raise_payload->type->kind));
                 emit_expr(cg, n->raise_payload);
-                fprintf(f, ")");
+                fprintf(f, "); ");
             }
-            /* нулева стойност за обграждащия израз (мъртва — върнали сме) */
-            fprintf(f, ", ");
-            emit_zero_val(cg, n->type);
-            fprintf(f, ")");
+            emit_eff_return_zero(cg);
+            fprintf(f, "; ");
+            emit_zero_val(cg, NULL);
+            fprintf(f, "; })");
             break;
         }
 

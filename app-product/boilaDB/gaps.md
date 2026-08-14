@@ -25,10 +25,25 @@ T = транзакции, W = wire protocol, F = FTS.
   exec_dml 402) са разделени — към 2026-08-14 всички са ≤ 400
   (scripts/filesize.sh минава; run_tests.sh е пълен зелен, 159/159).
 
-- **P11-1 — (PARTIAL) concurrent ladder, not 10k.** `bench/boila/mt_ladder`
-  : 1/4/8/16/32 HTTP clients × 200 point SELECT against MT serve
-  (~3–8k ops/s). Not 10k OS-thread clients; residual true pool /
-  shard-owner workers.
+- **P11-1 — (FIXED + MEASURED) bounded worker pool.** HTTP + PG accept
+  подават fd на `BOILA_WORKERS` нишки (default 4, cap 64; 0 = стар
+  `go_bg` per-conn). `api/serve_mt_pool.baga`: `chan_send` блокира
+  при пълна опашка (backpressure). Keep-alive държи worker-а.
+  `/health` `mode=mt-pool` + `workers`; `/metrics` `boila_workers`.
+  Тест: `boila_pool_test` (2 workers, 8×5 fan-out).
+  **Измерено 2026-08-14** (`mt_ladder`, същ бинарник): default 4
+  workers c=32 **7070 ops/s** срещу go_bg **4769 (+48%)**; c=16
+  **7620** срещу **5196 (+47%)**. 8/12 worker-а са по-бавни на 16–32
+  (dmu). `bench/boila/results/mt-ladder-2026-08-14.md`.
+  **P11-1b (2026-08-14):** data SQL вече е *shared* lock; schema DDL
+  (CREATE/DROP/ALTER/TRUNCATE/GRANT/REVOKE) е exclusive. Hop-less
+  per-shard mutex остава собственикът на `LsmDB`. Тест:
+  `boila_lock_test` (два data lock-а се припокриват; schema чака).
+  **P11-1c (2026-08-14):** топъл checkout без `srv_write`; data
+  checkin е no-op (hop-less maps). Schema DDL още putback-ва.
+  mt_ladder: 4w c=32 **7090**; 8w **5299** — 4 още печели (OS
+  нишки + per-shard mutex). Residual: dedicated owner-нишка би
+  таксувала Q1; keep-alive = 1 conn на worker.
 - **P11-2 — (FIXED) wall deadline + max_scan/max_rows.** `BoilaBudget`
   begin at fetch; cooperative `boila_budget_tick` every 64 keys →
   57014 on timeout. Env `BOILA_BUDGET_MS` (default 5000; 0 = immediate).
@@ -331,12 +346,14 @@ T = транзакции, W = wire protocol, F = FTS.
 
 ## Открити при P6
 
-- **W1 — (FIXED go_bg + multi-DB + per-shard + shared pc).** HTTP/PG:
-  `go_bg` per-conn; live conn; `boila_open_mt` hop-less shards (per-shard
-  scan, no all_lock). Shared per-db plan cache (pc_mu off — baga mutex
-  owner-flag races under fan-out; puts rare after warmup). Schema DDL
-  serial per-db. W1b: dmu held for all store SQL (SELECT/DML/DDL) so
-  no SELECT vs DROP race. Residual: per-db full serialize (no shared lock).
+- **W1 — (FIXED go_bg + multi-DB + per-shard + shared pc + pool).**
+  HTTP/PG: `BOILA_WORKERS` pool (P11-1; `=0` → go_bg per-conn); live
+  conn; `boila_open_mt` hop-less shards (per-shard scan, no all_lock).
+  Shared per-db plan cache (pc_mu off — baga mutex owner-flag races
+  under fan-out; puts rare after warmup). Schema DDL serial per-db.
+  W1b/P11-1b/c: schema exclusive; data shared + hop-less shard
+  mutex; топъл checkout без srv_write, data checkin no-op.
+  Residual: no hop-per-GET owner thread (Q1).
 - **W2 — (FIXED) prepared SELECT/INSERT/UPDATE/DELETE AST.** kind 1–4;
   `$N` = tag 100 placeholder; Bind fills; Execute без re-parse.
   FTS/kNN `$N` lit / parse fail → text subst fallback.
@@ -435,11 +452,14 @@ T = транзакции, W = wire protocol, F = FTS.
   midway в multi-row INSERT/UPDATE/DELETE персистираше редовете дотам.
   От P4 писанията минават през txn buffer-а и грешка → rollback на целия
   буфер (за имплицитните auto-commit txn-и и за явните).
-- **K5 — row + index entries са отделни WAL записи.** Една заявка се
-  fsync-ва като група (statement batch), но rocksbaga няма multi-record
-  атомен WAL запис: torn pwrite в рамките на един statement би оставил
-  частични записи при replay (тесен прозорец). Пълна оправия = WAL group
-  record в rocksbaga (бъдеща промяна, вж. ARCHITECTURE §1 принцип 1).
+- **K5 — ~~отделни WAL записи без group CRC~~ — FIXED (BATCH + group).**
+  `lsm_wal_flush_buf` обвива прозореца като `WAL_OP_BATCH` (op 19) с
+  един CRC. Torn pwrite → replay спира преди целия batch (row+index
+  заедно). Стари WAL файлове (без 19) още се четат. **K5b:**
+  `boila_stmt_begin` → `lsm_wal_group_begin` — буферът расте над
+  64 KiB (таван 16 MiB) и се пише като един BATCH на commit.
+  Residual: заявление > 16 MiB WAL още се цепи; CF WAL без group.
+  Тестове: `lsm_recover_test` chaos_* / grp_* + `boila_chaos_test`.
 - **K6 — (FIXED) NULL се индексира + IS [NOT] NULL.** Index build/DML
   пишат null entries; `IS NULL` → index lookup; `IS NOT NULL` → scan
   filter; `col = NULL` → празен (SQL 3VL).
@@ -474,9 +494,10 @@ T = транзакции, W = wire protocol, F = FTS.
   entry (pin/unpin churn в page cache = 112 B/цикъл → 1.86 GB при 200k;
   box pv остава — del не знае val_size); (4) `pc_evict_one` drop-ва
   стария keys vec (~16 KB/eviction → 8.7 GB при 200k — 70% от растежа).
-  **Резултат: 200k реда в един процес с 1.9 GB RSS + verify DURABLE OK
-  (преди: OOM при ~250k с 29 GB); group commit гейт 3133%. 1M стигна
-  ~900k при 28 GB — гейтът пак не е приземен, таванът +3.6×.**
+  **Резултат към MEM-4д (2026-08-12):** 200k реда / 1.9 GB RSS + verify
+  DURABLE OK (преди: OOM ~250k / 29 GB); group commit 3133%. 1M още
+  не беше приземен (~900k / 28 GB). **1M гейтът влезе на 2026-08-14 —
+  виж края на този запис.**
   **W7 — TCP_NODELAY на serve_pg:** extended протоколът отговаряше с
   няколко малки съобщения; server Nagle × client delayed ACK = ~44 ms на
   Parse+Bind+Describe+Execute+Sync. С `tcp_set_nodelay` при accept:
@@ -514,11 +535,13 @@ T = транзакции, W = wire protocol, F = FTS.
   директно: **200k RSS 1990→746 MB (−62%), 1M — 3281 s, peak 10.4 GB,
   DURABLE OK (0 загубени, индекс без rebuild)**; преди: OOM ~250k/29 GB.
   Пълни числа: `bench/boila/results/insert-write-2026-08-14.md`.
-  **Остатък:** ~10 KB/ред средно, суперлинеен с дълбочината на нивата
-  (L2/L3 compaction re-reads + по-дълъг GET path); при нужда — cost-based
-  level sizing или по-евтини re-reads. Bonus находка: paging-ът през
-  `boila_scan` събира всички ключове на страница (O(N²/count)) — bench
-  verify-то вече ползва one-shot `boila_scan_pref_all` (3.5 s за 1M).
+  **Остатък след 1M (2026-08-14 сутринта):** ~10 KB/ред, суперлинеен.
+  Причина: pair-collapse. **Същия ден — cost-based levels:** pair-collapse
+  махнат; boilaDB `BOILA_TARGET_BYTES=1MiB`. Измерено (precompiled,
+  CHUNKS=1): **200k — 22 s / 276 MB** (преди 137 s / 746 MB); **1M —
+  169 s / 1.35 GB** (преди 3281 s / 10.4 GB), DURABLE OK, group commit
+  3120%. RSS почти линеен (5× реда → 4.9× RSS).
+  `bench/boila/results/insert-write-2026-08-14-levels.md`.
 
 ## Открити при P2
 
@@ -551,8 +574,9 @@ T = транзакции, W = wire protocol, F = FTS.
   fixed-width (i64/ts/bool) — pk is key tail. K3g: exclusive `>`/`<` on
   secondary range (SELECT). K3h: sorted prefix + seek/early-stop.
   Residual: str PK + str index still seq.
-- **H2 — (FIXED) HTTP go_bg + per-shard hop-less + multi-DB + live conn.**
-  `BOILA_MAX_CONN` → 503/53300. mode=`mt-shard`.
+- **H2 — (FIXED) HTTP pool + per-shard hop-less + multi-DB + live conn.**
+  `BOILA_MAX_CONN` → 503/53300. mode=`mt-pool` (or `mt-shard` if
+  `BOILA_WORKERS=0`).
 
 ## Открити при P0
 
@@ -579,6 +603,6 @@ T = транзакции, W = wire protocol, F = FTS.
 - **M1 — (FIXED) request counters + build info + /ready.** `boila_mt_stat_*`
   + `/health` version, `/ready` (503 at max_conn), `/metrics`
   `boila_build_info`, PG `server_version` boilaDB 0.1.0.
-- **H1 — (FIXED) go_bg + BOILA_MAX_CONN admission.** HTTP/PG:
-  `boila_mt_try_conn` → 503/53300 when over cap (default 64). Residual:
-  still OS-thread-per-conn (not fiber pool); P11-1 ladder not 10k clients.
+- **H1 — (FIXED) pool + BOILA_MAX_CONN admission.** HTTP/PG:
+  `boila_mt_try_conn` → 503/53300 when over cap (default 64). Default
+  path is `BOILA_WORKERS` pool (P11-1); `=0` keeps go_bg per-conn.

@@ -1,0 +1,130 @@
+// boila_chaos_test.baga — kill-9 / torn WAL: last statement is atomic
+// (K5 BATCH). Truncate the WAL tail, reopen, earlier COMMIT stays,
+// torn statement is gone (row+index together).
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe(root: str) -> i64 !IO {
+    wipe_shard(concat(root, "/.meta"))?
+    wipe_shard(concat(root, "/boila.db"))?
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_chaos_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_chaos"
+    wipe(root)?
+
+    let mut srv = boila_server_open(root, 1, 256, 4, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let x0 = boila_server_exec(srv, "boila", "CREATE INDEX t_v ON t (v)")?
+    srv = x0.srv
+    check(fails, "index", x0.ok == 1 || x0.state == "42710")
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, v) VALUES (1, 'keep')")?
+    srv = i1.srv
+    check(fails, "ins1", i1.ok == 1)
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, v) VALUES (2, 'gone')")?
+    srv = i2.srv
+    check(fails, "ins2", i2.ok == 1)
+    boila_server_close(srv)?
+
+    let wpath = concat(root, "/boila.db.wal")
+    let raw = read_file_bytes(wpath)?
+    let wn = bytes_len(raw)
+    check(fails, "wal_len", wn > 32)
+    write_file_bytes(wpath, bytes_slice(raw, 0, wn - 16))?
+
+    let mut srv2 = boila_server_open(root, 1, 256, 4, 4)?
+    check(fails, "reopen", srv2.ok == 1)
+    let q1 = boila_server_exec(srv2, "boila", "SELECT id FROM t WHERE id = 1")?
+    srv2 = q1.srv
+    check(fails, "keep_row", q1.ok == 1 && vec_len(q1.res.rows) == 1)
+    let q2 = boila_server_exec(srv2, "boila", "SELECT id FROM t WHERE id = 2")?
+    srv2 = q2.srv
+    // torn last statement: row 2 must not appear (BATCH skipped whole)
+    check(fails, "drop_row", q2.ok == 1 && vec_len(q2.res.rows) == 0)
+    let qx = boila_server_exec(srv2, "boila", "SELECT id FROM t WHERE v = 'gone'")?
+    srv2 = qx.srv
+    check(fails, "drop_ix", qx.ok == 1 && vec_len(qx.res.rows) == 0)
+    boila_server_close(srv2)?
+
+    // K5b: one INSERT larger than 64 KiB WAL window (row+index) is one group.
+    wipe(root)?
+    let mut srv3 = boila_server_open(root, 1, 256, 4, 4)?
+    check(fails, "open_fat", srv3.ok == 1)
+    let c1 = boila_server_exec(srv3, "boila", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv3 = c1.srv
+    check(fails, "create_fat", c1.ok == 1)
+    let x1 = boila_server_exec(srv3, "boila", "CREATE INDEX t_v ON t (v)")?
+    srv3 = x1.srv
+    check(fails, "index_fat", x1.ok == 1 || x1.state == "42710")
+    let k1 = boila_server_exec(srv3, "boila", "INSERT INTO t (id, v) VALUES (1, 'keep')")?
+    srv3 = k1.srv
+    check(fails, "ins_keep_fat", k1.ok == 1)
+    let mut blob = "zzzz"
+    let mut bi: i64 = 0
+    while bi < 13 {
+        blob = concat(blob, blob)
+        bi = bi + 1
+    }
+    // 4 * 2^13 = 32 KiB; two rows + two index entries > 64 KiB WAL
+    let sqlf = concat(concat("INSERT INTO t (id, v) VALUES (2, '", blob), concat("'), (3, '", concat(blob, "')")))
+    let i3 = boila_server_exec(srv3, "boila", sqlf)?
+    srv3 = i3.srv
+    check(fails, "ins_fat", i3.ok == 1)
+    boila_server_close(srv3)?
+    let wpath2 = concat(root, "/boila.db.wal")
+    let raw2 = read_file_bytes(wpath2)?
+    let wn2 = bytes_len(raw2)
+    check(fails, "wal_fat_len", wn2 > 65536)
+    write_file_bytes(wpath2, bytes_slice(raw2, 0, wn2 - 16))?
+    let mut srv4 = boila_server_open(root, 1, 256, 4, 4)?
+    check(fails, "reopen_fat", srv4.ok == 1)
+    let qk = boila_server_exec(srv4, "boila", "SELECT id FROM t WHERE id = 1")?
+    srv4 = qk.srv
+    check(fails, "fat_keep", qk.ok == 1 && vec_len(qk.res.rows) == 1)
+    let qf2 = boila_server_exec(srv4, "boila", "SELECT id FROM t WHERE id = 2")?
+    srv4 = qf2.srv
+    check(fails, "fat_drop2", qf2.ok == 1 && vec_len(qf2.res.rows) == 0)
+    let qf3 = boila_server_exec(srv4, "boila", "SELECT id FROM t WHERE id = 3")?
+    srv4 = qf3.srv
+    check(fails, "fat_drop3", qf3.ok == 1 && vec_len(qf3.res.rows) == 0)
+    boila_server_close(srv4)?
+
+    if vec_len(fails) == 0 {
+        print("boila_chaos_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_chaos_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}

@@ -1,38 +1,43 @@
 // migrate.baga — versioned schema migrations for ormbaga.
 // History table baga_schema_migrations stores every applied version (not only
-// "current"). Registry is in-process parallel Vecs (no Vec<struct> in Baga).
+// "current"). Registry is Vec<Migration> (G1).
 
 import "../sql/sql.baga"
 import "../session/orm.baga"
 import "std/str/str.baga"
 
 // Registry of migrations (sorted by version ascending when applying).
+struct Migration {
+    version: i64,
+    name: str,
+    up: str,
+    down: str
+}
+
 struct MigrationSet {
-    versions: Vec<i64>,
-    names: Vec<str>,
-    ups: Vec<str>,
-    downs: Vec<str>
+    items: Vec<Migration>
 }
 
 fn migrate_set_new() -> MigrationSet {
-    return MigrationSet {
-        versions: vec_new(),
-        names: vec_new(),
-        ups: vec_new(),
-        downs: vec_new()
-    }
+    return MigrationSet { items: vec_new() }
 }
 
 fn migrate_add(set: MigrationSet, version: i64, name: str, up_sql: str, down_sql: str) -> MigrationSet {
-    vec_push(set.versions, version)
-    vec_push(set.names, name)
-    vec_push(set.ups, up_sql)
-    vec_push(set.downs, down_sql)
+    vec_push(set.items, Migration {
+        version: version,
+        name: name,
+        up: up_sql,
+        down: down_sql
+    })
     return set
 }
 
 fn migrate_len(set: MigrationSet) -> i64 {
-    return vec_len(set.versions)
+    return vec_len(set.items)
+}
+
+fn migrate_at(set: MigrationSet, i: i64) -> Migration {
+    return vec_get(set.items, i)
 }
 
 // Ensure history table exists (idempotent).
@@ -96,13 +101,13 @@ fn migrate_vec_has(v: Vec<i64>, ver: i64) -> i64 {
 
 // First duplicate version in the set; 0 if none (versions are positive).
 fn migrate_dup_version(set: MigrationSet) -> i64 {
-    let n = vec_len(set.versions)
+    let n = vec_len(set.items)
     let mut a: i64 = 0
     while a < n {
         let mut b = a + 1
         while b < n {
-            if vec_get(set.versions, b) == vec_get(set.versions, a) {
-                return vec_get(set.versions, a)
+            if migrate_at(set, b).version == migrate_at(set, a).version {
+                return migrate_at(set, a).version
             }
             b = b + 1
         }
@@ -113,8 +118,8 @@ fn migrate_dup_version(set: MigrationSet) -> i64 {
 
 // Find index of version in set; -1 if missing.
 fn migrate_index(set: MigrationSet, version: i64) -> i64 {
-    for i in 0..vec_len(set.versions) {
-        if vec_get(set.versions, i) == version {
+    for i in 0..vec_len(set.items) {
+        if migrate_at(set, i).version == version {
             return i
         }
     }
@@ -123,7 +128,7 @@ fn migrate_index(set: MigrationSet, version: i64) -> i64 {
 
 // Sort indices by version ascending (O(n²) swaps; migration sets are small).
 fn migrate_sorted_indices(set: MigrationSet) -> Vec<i64> {
-    let n = vec_len(set.versions)
+    let n = vec_len(set.items)
     let mut idx = vec_new()
     for i in 0..n {
         vec_push(idx, i)
@@ -134,7 +139,7 @@ fn migrate_sorted_indices(set: MigrationSet) -> Vec<i64> {
         while b < n {
             let ia = vec_get(idx, a)
             let ib = vec_get(idx, b)
-            if vec_get(set.versions, ib) < vec_get(set.versions, ia) {
+            if migrate_at(set, ib).version < migrate_at(set, ia).version {
                 let mut next = vec_new()
                 let mut k: i64 = 0
                 while k < n {
@@ -235,10 +240,11 @@ fn migrate_up(db: OrmDb, set: MigrationSet) -> MigrateResult !IO !Net {
     let mut i: i64 = 0
     while i < vec_len(order) {
         let mi = vec_get(order, i)
-        let ver = vec_get(set.versions, mi)
+        let mig = migrate_at(set, mi)
+        let ver = mig.version
         if migrate_vec_has(applied, ver) == 0 {
-            let name = vec_get(set.names, mi)
-            let up = vec_get(set.ups, mi)
+            let name = mig.name
+            let up = mig.up
             let b = orm_begin(d)?
             d = orm_db_exec(b)
             if orm_ok(b) == 0 {
@@ -294,8 +300,9 @@ fn migrate_down(db: OrmDb, set: MigrationSet, steps: i64) -> MigrateResult !IO !
         if mi < 0 {
             return migrate_err(d, concat("no down SQL in set for version ", sql_i64(ver)))
         }
-        let name = vec_get(set.names, mi)
-        let down = vec_get(set.downs, mi)
+        let mig = migrate_at(set, mi)
+        let name = mig.name
+        let down = mig.down
         let b = orm_begin(d)?
         d = orm_db_exec(b)
         if orm_ok(b) == 0 {
@@ -356,8 +363,9 @@ fn migrate_status_text(db: OrmDb, set: MigrationSet) -> MigStatusData !IO !Net {
     let mut i: i64 = 0
     while i < vec_len(order) {
         let mi = vec_get(order, i)
-        let ver = vec_get(set.versions, mi)
-        let name = vec_get(set.names, mi)
+        let mig = migrate_at(set, mi)
+        let ver = mig.version
+        let name = mig.name
         let mut st = "pending"
         if migrate_vec_has(applied, ver) == 1 {
             st = "applied"

@@ -386,33 +386,21 @@ fn lsm_compact(db: LsmDB) -> LsmDB !IO !Time {
     if lsm_level_over(db, 1, vec_len(l1), b1) == 1 {
         let p1 = lsm_pick_merge(db, l1, 1)?
         db = lsm_merge_indices(db, p1, 2)?
-    } else {
-        // Legacy R5: collapse a pair of L1 files when under compact_at (file path only).
-        if vec_len(l1) >= 2 && vec_len(l1) < db.compact_at && db.target_bytes <= 0 {
-            let p1b = lsm_take_oldest(l1, 2)
-            db = lsm_merge_indices(db, p1b, 1)?
-        }
     }
-    // L2 → L3 (or collapse L2 when no L3 promotion needed)
+    // L2 → L3 only when over (file-count or byte target). Same-level
+    // pair-collapse re-read the whole level on every new file — Q2 residual.
     let l2 = lsm_indices_at(db, 2)
     let b2 = lsm_level_bytes(db, 2)?
     if lsm_level_over(db, 2, vec_len(l2), b2) == 1 {
         let p2 = lsm_pick_merge(db, l2, 2)?
         db = lsm_merge_indices(db, p2, 3)?
-    } else {
-        if vec_len(l2) >= 2 && db.target_bytes <= 0 {
-            let p2b = lsm_take_oldest(l2, 2)
-            db = lsm_merge_indices(db, p2b, 2)?
-        }
     }
-    // Collapse L3 when multi-file
+    // L3: merge only when over. Never "≥2 files ⇒ rewrite all of L3".
     let l3 = lsm_indices_at(db, 3)
     let b3 = lsm_level_bytes(db, 3)?
-    if vec_len(l3) >= 2 {
-        if lsm_level_over(db, 3, vec_len(l3), b3) == 1 || db.target_bytes <= 0 {
-            let p3 = lsm_pick_merge(db, l3, 3)?
-            db = lsm_merge_indices(db, p3, 3)?
-        }
+    if lsm_level_over(db, 3, vec_len(l3), b3) == 1 {
+        let p3 = lsm_pick_merge(db, l3, 3)?
+        db = lsm_merge_indices(db, p3, 3)?
     }
     return db
 }

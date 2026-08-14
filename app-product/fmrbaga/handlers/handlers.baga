@@ -24,15 +24,22 @@ fn RID_OPENAPI() -> i64 { return 4 }
 fn RID_TOKEN() -> i64 { return 10 }
 fn RID_ME() -> i64 { return 11 }
 
+fn h_health(ctx: FmrCtx, db: OrmDb) -> FmrOut
+fn h_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net
+fn h_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO
+fn h_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO
+fn h_token(ctx: FmrCtx, db: OrmDb) -> FmrOut
+fn h_me(ctx: FmrCtx, db: OrmDb) -> FmrOut
+
 fn fmr_build_app() -> FmrApp !IO {
     let mut app = fmr_app_from_env("fmrbaga", "0.1.0")?
-    app = fmr_route(app, "GET", "/health", RID_HEALTH())
-    app = fmr_route(app, "GET", "/ready", RID_READY())
-    app = fmr_route(app, "GET", "/readyz", RID_READY())
-    app = fmr_route(app, "GET", "/v1/meta", RID_META())
-    app = fmr_route(app, "GET", "/openapi.json", RID_OPENAPI())
-    app = fmr_route(app, "POST", "/v1/auth/token", RID_TOKEN())
-    app = fmr_route(app, "GET", "/v1/me", RID_ME())
+    app = fmr_route_fn(app, "GET", "/health", RID_HEALTH(), h_health)
+    app = fmr_route_fn(app, "GET", "/ready", RID_READY(), h_ready)
+    app = fmr_route_fn(app, "GET", "/readyz", RID_READY(), h_ready)
+    app = fmr_route_fn(app, "GET", "/v1/meta", RID_META(), h_meta)
+    app = fmr_route_fn(app, "GET", "/openapi.json", RID_OPENAPI(), h_openapi)
+    app = fmr_route_fn(app, "POST", "/v1/auth/token", RID_TOKEN(), h_token)
+    app = fmr_route_fn(app, "GET", "/v1/me", RID_ME(), h_me)
     return app
 }
 

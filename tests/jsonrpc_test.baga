@@ -9,6 +9,13 @@ fn has(s: str, n: str) -> bool {
     return str_find(s, n) >= 0
 }
 
+fn only_pong(method: str, _d: JsonDoc, _params: i64, id_json: str) -> RpcResult {
+    if method == "ping" {
+        return rpc_ok(id_json, "\"pong\"")
+    }
+    return rpc_err(id_json, 0 - 32601, "Method not found")
+}
+
 fn main() -> i64 !Net !IO !Par {
     // --- pure body handler ---
     let pong = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":1}")
@@ -40,6 +47,12 @@ fn main() -> i64 !Net !IO !Par {
     // notification → empty response
     let note = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}")
     assert_eq_str("notification", note, "")
+
+    // L5 custom dispatch
+    let custom = rpc_handle_body_fn("{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":1}", only_pong)
+    assert_true("custom_pong", has(custom, "\"result\":\"pong\""))
+    let custom_nf = rpc_handle_body_fn("{\"jsonrpc\":\"2.0\",\"method\":\"add\",\"params\":[1,1],\"id\":2}", only_pong)
+    assert_true("custom_nf", has(custom_nf, "-32601"))
 
     // batch
     let batch = rpc_handle_body("[{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"id\":1},{\"jsonrpc\":\"2.0\",\"method\":\"add\",\"params\":[1,1],\"id\":2}]")

@@ -53,16 +53,11 @@ lsmbaga MVP. queuebaga can migrate off flat prefixes when desired.
 
 **Verdict.** `mkdir` extern in std/os (trivial).
 
-## Q5 — no function-value job handlers (L5)
+## Q5 — ~~no function-value job handlers (L5)~~ — closed (in-process)
 
-**Symptom.** Job “type” is fixed (reverse / fail:). Cannot register
-`fn(payload) -> result` per queue.
-
-**Workaround.** Convention on payload prefix; hard-coded process_one.
-
-**Severity.** High for a general worker product.
-
-**Verdict.** L5 closures — №7 also needs them.
+**Shipped 2026-08-14.** `q_process_fn(prefix, id, max, handler)` takes
+`fn(str) -> str`. Same `fail:` retry convention. `go_bg` workers still
+use the built-in reverse/`fail:` `q_process_one` (chan is i64-only — Q1).
 
 ## Closed / fine
 

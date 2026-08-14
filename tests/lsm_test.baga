@@ -49,6 +49,31 @@ fn main() -> i64 !Net !IO !Par !Time {
     check(fails, "r7_get_b6", gb6.found == 1)
     lsm_close(db5)?
 
+    // --- no same-level pair-collapse: 2 L1 files stay 2 (compact_at=4) ---
+    wipe("/tmp/baga_lsm_nopair")?
+    let mut dbnp = lsm_open("/tmp/baga_lsm_nopair", 1, 4)?
+    check(fails, "np_open", dbnp.ok == 1)
+    // 2 L0 flushes → not over compact_at=4 → stay L0
+    dbnp = lsm_put(dbnp, "n1", "1")?
+    dbnp = lsm_put(dbnp, "n2", "2")?
+    check(fails, "np_l0_two", lsm_count_level(dbnp.levels, 0) == 2)
+    // 2 more → L0=4 → promote to L1 (one file), no L1 pair rewrite
+    dbnp = lsm_put(dbnp, "n3", "3")?
+    dbnp = lsm_put(dbnp, "n4", "4")?
+    check(fails, "np_after4_l0", lsm_count_level(dbnp.levels, 0) == 0)
+    check(fails, "np_after4_l1", lsm_count_level(dbnp.levels, 1) == 1)
+    // another 4 L0 → second L1; must NOT collapse the two L1s
+    dbnp = lsm_put(dbnp, "n5", "5")?
+    dbnp = lsm_put(dbnp, "n6", "6")?
+    dbnp = lsm_put(dbnp, "n7", "7")?
+    dbnp = lsm_put(dbnp, "n8", "8")?
+    check(fails, "np_two_l1", lsm_count_level(dbnp.levels, 1) == 2)
+    check(fails, "np_no_l2", lsm_count_level(dbnp.levels, 2) == 0)
+    let gn8 = lsm_get(dbnp, "n8")?
+    dbnp = gn8.db
+    check(fails, "np_get", gn8.found == 1 && str_of_bytes(gn8.val) == "8")
+    lsm_close(dbnp)?
+
     // --- R8: oldest-N pick leaves L0 remainder (compact_at=4, merge_pick=2) ---
     wipe("/tmp/baga_lsm_pick")?
     let mut db6 = lsm_open("/tmp/baga_lsm_pick", 1, 4)?

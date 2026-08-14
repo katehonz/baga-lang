@@ -73,13 +73,16 @@ fn lsm_cf_wal_flush_buf(db: LsmCFDB) -> LsmCFDB !IO {
         return db
     }
     let view = bytes_slice(db.wal_buf, 0, db.wal_buf_len)
-    if fd_pwrite_bytes(db.wal_fd, view, db.wal_off) != 0 {
-        drop(view)
+    let rec = wal_wrap_batch(view)
+    drop(view)
+    let rl = bytes_len(rec)
+    if fd_pwrite_bytes(db.wal_fd, rec, db.wal_off) != 0 {
+        drop(rec)
         db.ok = 0
         return db
     }
-    drop(view)
-    db.wal_off = db.wal_off + db.wal_buf_len
+    drop(rec)
+    db.wal_off = db.wal_off + rl
     db.wal_buf_len = 0
     return db
 }
@@ -189,13 +192,7 @@ fn lsm_cf_compact_loop(fam: LsmDB) -> LsmDB !IO !Time {
         let over1 = lsm_level_over(db, 1, n1, b1)
         let over2 = lsm_level_over(db, 2, n2, b2)
         let over3 = lsm_level_over(db, 3, n3, b3)
-        let mut pair: i64 = 0
-        if db.target_bytes <= 0 {
-            if n1 >= 2 || n2 >= 2 || n3 >= 2 {
-                pair = 1
-            }
-        }
-        if over0 == 1 || over1 == 1 || over2 == 1 || over3 == 1 || pair == 1 {
+        if over0 == 1 || over1 == 1 || over2 == 1 || over3 == 1 {
             db = lsm_compact(db)?
             guard = guard + 1
         } else {

@@ -17,7 +17,8 @@ Goal: apps-roadmap **№5** — channels, time, persistence, retry.
 
 - Idempotency key file map.
 - `mkdir` / real directories; TCP enqueue API.
-- Pluggable job functions (needs L5 function values).
+- Pluggable job functions (needs L5 function values). **Shipped** as
+  in-process `q_process_fn`; workers still use `q_process_one`.
 
 ### P2
 

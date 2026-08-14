@@ -77,6 +77,29 @@ fn boila_mt_max_conn(pack: i64) -> i64 !Par {
     return n
 }
 
+// live[2]=workers (0=go_bg), live[3]=mode (0=go_bg, 2=pool)
+fn boila_mt_set_pool(pack: i64, workers: i64, mode: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let live: Map<i64, i64> = h_map(boila_mt_live_h(pack))
+    map_set(live, 2, workers)
+    map_set(live, 3, mode)
+    mutex_unlock(gmu)
+    return 0
+}
+
+fn boila_mt_workers(pack: i64) -> i64 !Par {
+    let gmu = boila_mt_gmu(pack)
+    mutex_lock(gmu)
+    let live: Map<i64, i64> = h_map(boila_mt_live_h(pack))
+    let mut n: i64 = 0
+    if map_has(live, 2) == 1 {
+        n = map_get(live, 2)
+    }
+    mutex_unlock(gmu)
+    return n
+}
+
 fn boila_mt_open_count(pack: i64) -> i64 !Par {
     let gmu = boila_mt_gmu(pack)
     mutex_lock(gmu)

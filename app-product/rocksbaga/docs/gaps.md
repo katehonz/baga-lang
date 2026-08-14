@@ -42,8 +42,11 @@ L2 files. File-count size-tier lite. v1–v4 readable.
 
 **Shipped (R7):** **byte-size level targets** via `LsmDB.target_bytes` (L0 = T,
 L1 = 4T, L2 = 16T, L3 = 64T) + **L3** promote from L2. File-count `compact_at`
-still works; `target_bytes=0` (default) keeps R5/R6 pair-collapse behaviour.
-Env `LSM_TARGET_BYTES` on serve. Test: `r7_*` in `tests/lsm_test.baga`.
+still works. **2026-08-14:** same-level pair-collapse (L1/L2/L3 rewrite on
+every 2nd file when `target_bytes=0`) is gone — that was O(N²) re-read of
+the whole level. Compact only when `nfiles ≥ compact_at` or bytes ≥ target.
+boilaDB default `BOILA_TARGET_BYTES=1MiB`. Env `LSM_TARGET_BYTES` on serve.
+Test: `r7_*` in `tests/lsm_test.baga`.
 
 **Shipped (B4.1):** recovery story + test (`tests/lsm_recover_test.baga`):
 WAL+SST reopen (tomb/wal/sst), multi-reopen after compact, page-cache stress
@@ -89,7 +92,10 @@ GET_SEQ ~200k ops/s (~37% RocksDB), GET_RND ~250k (~48%).
 - Preallocated `wal_record` / bloom sidecar / SST file buffer.
 - `sst_build` returns bloom once (sidecar reuses it).
 - **WAL write buffer** (`wal_buf`, default 64 KiB) flushed on sync / full /
-  memtable flush / close.
+  memtable flush / close. **2026-08-14:** flush window is one `WAL_OP_BATCH`
+  (op 19) with a single CRC — torn pwrite skips the whole group (K5).
+  **K5b:** `lsm_wal_group_begin/end` grows the buffer past 64 KiB (cap
+  16 MiB) so one statement is still one BATCH. Residual: >16 MiB splits.
 - Bench n=1000 durable PUT ~695 ops/s (~82% RocksDB). Batch PUT still ≪
   RocksDB (interpreter + flush tax).
 

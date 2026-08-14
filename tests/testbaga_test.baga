@@ -4,12 +4,20 @@
 import "testbaga/assert.baga"
 import "std/str/str.baga"
 
+fn zero() -> i64 {
+    return 0
+}
+
 fn main() -> i64 {
     // --- fail-fast helpers (smoke) ---
     assert_true("ff_true", true)
     assert_eq_i64("ff_i64", 10 - 3, 7)
     assert_eq_str("ff_str", "ab", concat("a", "b"))
     assert_ne_str("ff_ne", "a", "b")
+    assert_eq("ff_gen_i64", 4 + 4, 8)
+    assert_eq("ff_gen_str", "xy", concat("x", "y"))
+    assert_eq_bool("ff_bool", 1 < 2, true)
+    test("ff_named", zero)
 
     // --- suite: deliberate mix of pass + track ---
     let mut s = suite_new("testbaga")
@@ -30,9 +38,10 @@ fn main() -> i64 {
 
     // clean suite finishes 0
     let mut clean = suite_new("clean")
-    clean = suite_eq_i64(clean, "clean_one", 0, 0)
+    clean = suite_eq(clean, "clean_one", 0, 0)
+    clean = suite_test(clean, "clean_named", zero)
     let rc = suite_finish(clean)
-    assert_eq_i64("clean_exit", rc, 0)
+    assert_eq("clean_exit", rc, 0)
 
     print("testbaga_test: all passed")
     return 0

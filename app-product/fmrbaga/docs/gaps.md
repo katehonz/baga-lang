@@ -1,12 +1,12 @@
 # fmrbaga — gaps
 
-## G1 — No function values → route ids + single dispatch
+## G1 — ~~No function values → route ids + single dispatch~~ — closed
 
-**Symptom.** Cannot pass handler closures into `router_add`.
-
-**Workaround.** Integer route ids + `fmr_dispatch` match (same as `h2_route`).
-
-**Verdict.** Language limit. Acceptable for production with codegen later.
+**Shipped 2026-08-14.** `fmr_route_fn(app, method, pattern, id, handler)`
+stores `fn(FmrCtx, OrmDb) -> FmrOut !IO !Net` on `FmrApp.handlers`.
+`fmr_handle` calls the handler when the matched id is in the table;
+otherwise `fmr_dispatch` (product apps keep the switch). Scaffold
+`handlers.baga` uses `fmr_route_fn`. Router stays id-based (OpenAPI).
 
 ## G2 — FNS_MAX was 256 (FIXED in language)
 

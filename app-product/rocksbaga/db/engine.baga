@@ -31,7 +31,7 @@ fn lsm_empty_db(dir: str) -> LsmDB {
         dir: dir, mem: map_new(), tomb: map_new(), mem_n: 0,
         flush_at: 32, compact_at: 3, target_bytes: 0, merge_pick: 0,
         wal_fd: -1, wal_off: 0,
-        wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
+        wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0, wal_grp: 0,
         gens: gens, levels: levels, next_gen: 1, cache: pc_new(4096, 2048),
         blooms: bloom_cache_new(),
         sst_fds: map_new(), sst_sizes: map_new(), sst_meta: map_new(),
@@ -62,7 +62,7 @@ fn lsm_read_manifest(dir: str) -> LsmDB !IO {
         dir: dir, mem: map_new(), tomb: map_new(), mem_n: 0,
         flush_at: 32, compact_at: 3, target_bytes: 0, merge_pick: 0,
         wal_fd: -1, wal_off: 0,
-        wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0,
+        wal_buf: bytes_new(0), wal_buf_max: 65536, wal_buf_len: 0, wal_grp: 0,
         gens: m.gens, levels: m.levels, next_gen: m.next_gen,
         cache: pc_new(4096, 2048),
         blooms: bloom_cache_new(),
@@ -129,7 +129,7 @@ fn lsm_close(db: LsmDB) -> i64 !IO {
         }
     }
     if d.wal_fd >= 0 {
-        d = lsm_wal_flush_buf(d)?
+        d = lsm_wal_group_end(d)?
         fdatasync(d.wal_fd)?
         close(d.wal_fd)
     }
@@ -538,14 +538,7 @@ fn lsm_flush(db: LsmDB) -> LsmDB !IO !Time {
         let over1 = lsm_level_over(db, 1, n1, b1)
         let over2 = lsm_level_over(db, 2, n2, b2)
         let over3 = lsm_level_over(db, 3, n3, b3)
-        // File-count legacy: pair collapse L1/L2/L3 when byte targets off
-        let mut pair: i64 = 0
-        if db.target_bytes <= 0 {
-            if n1 >= 2 || n2 >= 2 || n3 >= 2 {
-                pair = 1
-            }
-        }
-        if over0 == 1 || over1 == 1 || over2 == 1 || over3 == 1 || pair == 1 {
+        if over0 == 1 || over1 == 1 || over2 == 1 || over3 == 1 {
             db = lsm_compact(db)?
             guard = guard + 1
         } else {

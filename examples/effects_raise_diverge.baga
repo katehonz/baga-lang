@@ -1,0 +1,39 @@
+// effects_raise_diverge.baga — M20: raise излиза от функцията.
+// Кодът след raise не се изпълнява (дори да би паднал).
+fn boom(s: str) -> i64 !Bad(str) {
+    if len(s) < 5 {
+        raise !Bad(s)
+    }
+    return char_at(s, 4)
+}
+
+fn side() -> i64 !E(i64) {
+    raise !E(7)
+    print("NO")
+    return 0
+}
+
+fn both(c: i64) -> i64 !E(str) {
+    if c == 0 {
+        raise !E("zero")
+    } else {
+        return 1
+    }
+}
+
+fn only_raise() -> i64 !Gone(str) {
+    raise !Gone("gone")
+}
+
+fn main() {
+    let a = boom("hi") catch !Bad(e) => { print(e); 0 }
+    print(a)
+    let b = side() catch !E(x) => { print(x); 1 }
+    print(b)
+    let c = both(0) catch !E(m) => { print(m); 2 }
+    print(c)
+    print(both(1) catch !E(_m) => 0)
+    let d = only_raise() catch !Gone(g) => { print(g); 3 }
+    print(d)
+    print(boom("hello") catch !Bad(_e) => 0)
+}

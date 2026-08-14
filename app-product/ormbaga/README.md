@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS baga_schema_migrations (
 ```baga
 let mut set = migrate_set_new()
 set = migrate_add(set, 20260803001, "create_users", up_sql, down_sql)
+// Migration { version, name, up, down } — one Vec, not four
 // …
 let r = migrate_up(db, set)?        // pending only, each in a transaction
 db = migrate_db(r)                  // always rebind (by-value structs)

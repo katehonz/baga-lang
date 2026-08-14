@@ -5,7 +5,8 @@
 | Tool | API |
 |------|-----|
 | Exponential backoff | `rel_backoff_ms(attempt, base, max, mult)` |
-| Retry loop | `rel_retry(op, arg, max_attempts, base, max, mult)` — `op` returns 0 on success |
+| Retry loop | `rel_retry<T>(op, arg, max_attempts, base, max, mult)` — `op` returns 0 on success |
+| Jittered backoff | `rel_backoff_jitter_ms` / `rel_retry_jitter` — deterministic `[d/2, d]` |
 | Circuit breaker | `brk_new` / `brk_tick` / `brk_allow` / `brk_on_start` / `brk_success` / `brk_failure` |
 | Bulkhead | `bh_new(cap)` / `bh_acquire` / `bh_try_acquire` / `bh_release` (chan tokens) |
 
@@ -30,5 +31,5 @@ bh_acquire(bh)?
 bh_release(bh)?
 ```
 
-Honest: no jitter; breaker is single-threaded state (caller serializes);
-bulkhead is process-local.
+Honest: jitter is opt-in and deterministic (seeded); breaker is
+single-threaded state (caller serializes); bulkhead is process-local.

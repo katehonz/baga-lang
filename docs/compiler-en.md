@@ -417,7 +417,9 @@ guarantees. They are erased during codegen because:
 
 Since M20, effects with payloads (`!E(T)`) have a runtime model: a
 thread-local `baga_eff` slot and raise/try/catch lowering in both backends.
-Only payload-less effects remain a pure compile-time fiction with no cost.
+`raise` writes the slot and returns from the function (same path as `?`);
+code after it is dead. Only payload-less effects remain a pure compile-time
+fiction with no cost.
 
 ### Why Decimal Encoding in Self-Hosted Mangling
 

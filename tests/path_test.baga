@@ -24,6 +24,13 @@ fn main() {
     check("join_empty_b", path_join("/a", "") == "/a")
     check("join_nested", path_join("/var", "log/app") == "/var/log/app")
 
+    let parts = vec_new()
+    vec_push(parts, "/var")
+    vec_push(parts, "log")
+    vec_push(parts, "app.log")
+    check("join_all", path_join_all(parts) == "/var/log/app.log")
+    check("join_all_empty", path_join_all(vec_new()) == "")
+
     check("base", path_basename("/a/b.c") == "b.c")
     check("base_trail", path_basename("/a/b/") == "b")
     check("base_root", path_basename("/") == "")

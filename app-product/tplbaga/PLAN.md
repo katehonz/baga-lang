@@ -27,7 +27,7 @@ Goal: apps-roadmap **№7** — interpolation on steroids; the L5 probe.
 
 - Migrate `TplOut` → language `Result`/`enum` when L3 lands.
 - Registered filters/helpers once L5 lands: `tpl_filter("upper", fn)` —
-  the roadmap's point of №7.
+  the roadmap's point of №7. **Shipped 2026-08-14.**
 
 ## Success criteria (P0) — met
 

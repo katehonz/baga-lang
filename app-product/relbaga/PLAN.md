@@ -8,4 +8,5 @@ Retry/backoff, circuit breaker, bulkhead, tests.
 
 ## P1
 
-Jitter, shared breaker via mutex helper, metrics hooks.
+Jitter ✅ (`rel_backoff_jitter_ms` / `rel_retry_jitter`). Shared breaker
+via mutex helper, metrics hooks — still open.

@@ -122,6 +122,34 @@ fn q_process_one(prefix: str, id: i64, max_attempts: i64) -> i64 !IO {
     return 0
 }
 
+// In-process job with an L5 handler (Q5). Same fail:/retry convention
+// as q_process_one; the handler runs only on the success path.
+fn q_process_fn(prefix: str, id: i64, max_attempts: i64, handler: fn(str) -> str) -> i64 !IO {
+    q_write(prefix, id, "status", "running")?
+    let payload = q_read(prefix, id, "job")?
+    let att_s = q_read(prefix, id, "attempts")?
+    let mut att: i64 = 0
+    if att_s != "" {
+        att = parse_int(att_s)
+    }
+    att = att + 1
+    q_write(prefix, id, "attempts", int_to_str(att))?
+
+    if str_starts_with(payload, "fail:") {
+        if att < max_attempts {
+            q_write(prefix, id, "status", "pending")?
+            return 2
+        }
+        q_write(prefix, id, "status", "failed")?
+        q_write(prefix, id, "result", concat("failed after ", int_to_str(att)))?
+        return 1
+    }
+
+    q_write(prefix, id, "result", handler(payload))?
+    q_write(prefix, id, "status", "done")?
+    return 0
+}
+
 // Worker: arg = work chan. Active prefix in /tmp/baga_queue_active (no setenv).
 fn q_worker(work: i64) -> i64 !IO !Par {
     let prefix = read_file("/tmp/baga_queue_active")?

@@ -23,7 +23,7 @@ Goal: apps-roadmap **№8** — language eats its own food.
 
 - `list_dir` / readdir in std/os.
 - `process_run` / exec to isolate tests (or embed compile API).
-- Function values (L5) for `test("name", fn)`.
+- Function values (L5) for `test("name", fn)`. **Shipped 2026-08-14.**
 
 ## Success criteria (P0) — met
 

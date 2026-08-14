@@ -19,6 +19,7 @@ import "rocksbaga/util/codec.baga"
 import "../core/codec.baga"
 import "../core/value.baga"
 import "std/bytes/bytes.baga"
+import "std/os/os.baga"
 
 extern fn fdatasync(fd: i64) -> i64 !IO
 
@@ -42,14 +43,38 @@ struct BoilaScan {
     keys: Vec<bytes>
 }
 
+// L0 byte target. 0 = file-count only (no pair-collapse). Default 1 MiB
+// → L1=4M L2=16M L3=64M. Override with BOILA_TARGET_BYTES (0 disables).
+fn boila_target_bytes() -> i64 !IO {
+    let e = env("BOILA_TARGET_BYTES")
+    if e == "" {
+        return 1048576
+    }
+    return parse_int(e)
+}
+
+fn boila_apply_level_policy(c: LsmCluster) -> LsmCluster !IO {
+    let tb = boila_target_bytes()?
+    if tb > 0 {
+        c = lsm_cluster_apply_target_bytes(c, tb)
+    }
+    let mp = env("BOILA_MERGE_PICK")
+    if mp != "" {
+        c = lsm_cluster_apply_merge_pick(c, parse_int(mp))
+    }
+    return c
+}
+
 fn boila_open(dir: str, nshards: i64, flush_at: i64, compact_at: i64) -> BoilaStore !IO !Par {
-    let c = lsm_cluster_open(dir, nshards, flush_at, compact_at)?
+    let mut c = lsm_cluster_open(dir, nshards, flush_at, compact_at)?
+    c = boila_apply_level_policy(c)?
     return BoilaStore { c: c, dbs_h: 0, mus_h: 0, n: c.n, ok: c.ok }
 }
 
 // Serve path: shards in shared Map + one mutex each (pre-insert all keys).
 fn boila_open_mt(dir: str, nshards: i64, flush_at: i64, compact_at: i64) -> BoilaStore !IO !Par {
-    let c = lsm_cluster_open(dir, nshards, flush_at, compact_at)?
+    let mut c = lsm_cluster_open(dir, nshards, flush_at, compact_at)?
+    c = boila_apply_level_policy(c)?
     let dbs: Map<i64, LsmDB> = map_new()
     let mus: Map<i64, i64> = map_new()
     let mut i: i64 = 0
@@ -309,7 +334,14 @@ fn boila_flush(s: BoilaStore) -> BoilaStore !IO !Time !Par {
 
 fn boila_stmt_begin(s: BoilaStore) -> BoilaStore !Par {
     if s.dbs_h == 0 {
-        let c = lsm_cluster_apply_sync(s.c, 1000000000)
+        let mut c = lsm_cluster_apply_sync(s.c, 1000000000)
+        let mut i: i64 = 0
+        while i < c.n {
+            let mut db = vec_get(c.shards, i)
+            db = lsm_wal_group_begin(db)
+            vec_set(c.shards, i, db)
+            i = i + 1
+        }
         return BoilaStore { c: c, dbs_h: 0, mus_h: 0, n: c.n, ok: s.ok }
     }
     boila_all_lock(s)?
@@ -318,6 +350,7 @@ fn boila_stmt_begin(s: BoilaStore) -> BoilaStore !Par {
     while i < s.n {
         let mut db = map_get(dbs, i)
         db.sync_every = 1000000000
+        db = lsm_wal_group_begin(db)
         map_set(dbs, i, db)
         i = i + 1
     }
@@ -331,7 +364,7 @@ fn boila_stmt_commit(s: BoilaStore) -> BoilaStore !IO !Par {
         let mut i: i64 = 0
         while i < c.n {
             let mut db = vec_get(c.shards, i)
-            db = lsm_wal_flush_buf(db)?
+            db = lsm_wal_group_end(db)?
             if db.wal_fd >= 0 {
                 fdatasync(db.wal_fd)?
             }
@@ -346,7 +379,7 @@ fn boila_stmt_commit(s: BoilaStore) -> BoilaStore !IO !Par {
     let mut i: i64 = 0
     while i < s.n {
         let mut db = map_get(dbs, i)
-        db = lsm_wal_flush_buf(db)?
+        db = lsm_wal_group_end(db)?
         if db.wal_fd >= 0 {
             fdatasync(db.wal_fd)?
         }

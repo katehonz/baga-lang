@@ -192,9 +192,20 @@ fn rpc_dispatch(method: str, d: JsonDoc, params: i64, id_json: str) -> RpcResult
     return rpc_err(id_json, 0 - 32601, "Method not found")
 }
 
+// User-supplied dispatch (L5). Same shape as rpc_dispatch.
+fn rpc_call(dispatch: fn(str, JsonDoc, i64, str) -> RpcResult,
+            method: str, d: JsonDoc, params: i64, id_json: str) -> RpcResult {
+    return dispatch(method, d, params, id_json)
+}
+
 // ---------- single request object ----------
 
 fn rpc_handle_object(d: JsonDoc, root: i64) -> RpcResult {
+    return rpc_handle_object_fn(d, root, rpc_dispatch)
+}
+
+fn rpc_handle_object_fn(d: JsonDoc, root: i64,
+                        dispatch: fn(str, JsonDoc, i64, str) -> RpcResult) -> RpcResult {
     if json_tag(d, root) != 6 {
         return rpc_err("null", 0 - 32600, "Invalid Request")
     }
@@ -212,7 +223,7 @@ fn rpc_handle_object(d: JsonDoc, root: i64) -> RpcResult {
     let method = json_str(d, mn)
     let id_json = rpc_extract_id(d, root)
     let params = json_get(d, root, "params")
-    let r = rpc_dispatch(method, d, params, id_json)
+    let r = dispatch(method, d, params, id_json)
     // notifications: no id → no response body (errors also suppressed per 2.0)
     if id_json == "" {
         return rpc_skip()
@@ -223,6 +234,10 @@ fn rpc_handle_object(d: JsonDoc, root: i64) -> RpcResult {
 // ---------- body (single or batch) ----------
 
 fn rpc_handle_body(body: str) -> str {
+    return rpc_handle_body_fn(body, rpc_dispatch)
+}
+
+fn rpc_handle_body_fn(body: str, dispatch: fn(str, JsonDoc, i64, str) -> RpcResult) -> str {
     if json_strict_valid(body) == 0 {
         return rpc_encode(rpc_err("null", 0 - 32700, "Parse error"))
     }
@@ -233,7 +248,7 @@ fn rpc_handle_body(body: str) -> str {
     }
     let tag = json_tag(d, root)
     if tag == 6 {
-        return rpc_encode(rpc_handle_object(d, root))
+        return rpc_encode(rpc_handle_object_fn(d, root, dispatch))
     }
     if tag == 5 {
         let n = json_count(d, root)
@@ -245,7 +260,7 @@ fn rpc_handle_body(body: str) -> str {
         let mut i: i64 = 0
         while i < n {
             let elem = json_at(d, root, i)
-            let r = rpc_handle_object(d, elem)
+            let r = rpc_handle_object_fn(d, elem, dispatch)
             let enc = rpc_encode(r)
             if enc != "" {
                 if first == 0 {

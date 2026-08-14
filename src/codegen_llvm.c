@@ -3325,8 +3325,10 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
             break;
         if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
             LLVMValueRef v = emit_expr_llvm(s->expr);
-            if (!v) llvm_unsupported("лямбда: неявен return");
-            LLVMBuildRet(lg.builder, coerce(v, ret));
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
+                if (!v) llvm_unsupported("лямбда: неявен return");
+                LLVMBuildRet(lg.builder, coerce(v, ret));
+            }
         } else {
             emit_stmt_llvm(s, NULL, NULL);
         }
@@ -3480,6 +3482,8 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
     if (!body || body->kind != NODE_BLOCK)
         llvm_unsupported("match клон, който не е блок");
     for (int j = 0; j < body->stmts.len; j++) {
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
+            return;
         Node *s = body->stmts.data[j];
         if (s->kind == NODE_RETURN) {
             if (s->ret_val) {
@@ -4474,7 +4478,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             return phi;
         }
         case NODE_RAISE: {
-            /* M20: задай слота; стойността е мъртва (извикващият чете тага) */
+            /* M20: задай слота и излез (като `?` / h_ret_zero).
+             * raise_dead е недостижим блок, за да могат извикващите
+             * emit_expr да продължат без инструкция след terminator. */
             int tagv = llvm_eff_tag(n->raise_effect);
             LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, (unsigned long long)tagv, 0),
                            eff_gep(0, "tagp"));
@@ -4482,6 +4488,12 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 LLVMValueRef pv = emit_expr_llvm(n->raise_payload);
                 LLVMBuildStore(lg.builder, coerce(pv, llvm_type_resolved(n->raise_payload->type)),
                                eff_gep(eff_field_of(n->raise_payload->type), "pv"));
+            }
+            h_ret_zero();
+            {
+                LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+                LLVMBasicBlockRef dead = LLVMAppendBasicBlockInContext(lg.ctx, fn, "raise_dead");
+                LLVMPositionBuilderAtEnd(lg.builder, dead);
             }
             return LLVMConstInt(lg.i64_ty, 0, 0);
         }
@@ -4909,8 +4921,11 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
             break;
         if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
             LLVMValueRef v = emit_expr_llvm(s->expr);
-            if (!v) llvm_unsupported("print като неявен return");
-            LLVMBuildRet(lg.builder, coerce(v, ret_ty));
+            /* raise вече емитира ret — без втори terminator */
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
+                if (!v) llvm_unsupported("print като неявен return");
+                LLVMBuildRet(lg.builder, coerce(v, ret_ty));
+            }
         } else {
             emit_stmt_llvm(s, NULL, NULL);
         }

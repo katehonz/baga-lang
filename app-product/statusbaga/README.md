@@ -8,6 +8,7 @@ status_code_name(s.code)          // "InvalidArgument"
 status_http(s.code)               // 400
 status_string(s)                  // "rpc error: code = InvalidArgument desc = …"
 status_trailer_code(s)            // "3"  → grpc-status trailer
+status_check(s) catch !Rpc(msg) => 1     // M20: raise if not OK
 grpc_timeout_encode_ms(5000)      // "5S"
 grpc_timeout_decode_ms("100m")    // 100
 ```

@@ -14,6 +14,9 @@
 
 Whole file in memory. Fine for reports; big imports later.
 
-### C2 — single delimiter `,`
+### C2 — ~~single delimiter `,`~~ — closed
+
+`csv_parse_delim` / `csv_stringify_delim` take a delimiter byte
+(e.g. `59` for `;`). `csv_parse` / `csv_stringify` stay comma.
 
 Semicolon / tab CSV as format option later (`csv_from_tsv` exists for tabs).

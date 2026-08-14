@@ -1,5 +1,56 @@
 # Changelog
 
+## [Unreleased]
+
+### boilaDB — топъл checkout без gmu write (P11-1c)
+- Вече отворена база: checkout само `vec_get` (без `srv_write` на
+  целия сървър). Data SQL не прави checkin — шардовете се пишат
+  in-place. Schema DDL още putback-ва. 4 workers c=32 ≈7090;
+  8w още не бие 4-те.
+
+### boilaDB — shared data lock (P11-1b)
+- Data SQL вече не държи exclusive `dmu`. Shared lock + hop-less
+  per-shard mutex; schema DDL (CREATE/DROP/ALTER/TRUNCATE…) е
+  exclusive (SELECT||DROP чака). `api/serve_mt_lock.baga`.
+  Тест: `tests/boila_lock_test.baga`. Не е hop-per-GET owner
+  нишка — 8 worker-а още не бият 4 на `mt_ladder`.
+
+### boilaDB — mt_ladder върху pool (P11-1 измерен)
+- Същ бинарник, 12 cores: `BOILA_WORKERS=4` c=32 **7070 ops/s**
+  срещу `=0` (go_bg) **4769 (+48%)**. 8/12 worker-а са по-бавни
+  (dmu). `bench/boila/results/mt-ladder-2026-08-14.md`.
+
+### rocksbaga / boilaDB — WAL group над 64 KiB (K5b)
+- `lsm_wal_group_begin/end`: докато групата е отворена, WAL буферът
+  расте (таван 16 MiB) вместо да се цепи на няколко `WAL_OP_BATCH`.
+  `boila_stmt_begin/commit` отварят/затварят групата. Torn tail на
+  голямо INSERT+index маха цялото заявление. Residual: >16 MiB.
+
+### boilaDB — P11-1 bounded worker pool
+- HTTP и PG accept вече подават fd на фиксирани `BOILA_WORKERS` нишки
+  (default 4, cap 64; `0` = стар `go_bg` per-conn). Пълната опашка
+  блокира accept (backpressure). `/health` `mode=mt-pool` + `workers`;
+  `/metrics` `boila_workers`. Тест: `tests/boila_pool_test.baga`.
+
+### rocksbaga / boilaDB — WAL BATCH (K5) + torn-tail chaos
+- Flush прозорецът е един `WAL_OP_BATCH` (op 19) с CRC. Replay пропуска
+  скъсания batch цял — row+index заедно. `lsm_recover_test` chaos_* и
+  `boila_chaos_test` (truncate на WAL опашката, reopen, DURABLE).
+
+### rocksbaga / boilaDB — cost-based levels (Q2 остатък)
+- Same-level pair-collapse на L1/L2/L3 (препрочит на целия слой при
+  всеки втори файл) е махнат. Compact само при `nfiles ≥ compact_at` или
+  byte target. boilaDB default `BOILA_TARGET_BYTES=1MiB`.
+  1M insert: **10.4 GB / 3281 s → 1.35 GB / 169 s**; group commit 3120%.
+
+### effects — M20 raise наистина дивергира
+- `raise !E(v)` вече излиза от функцията (C: `return` след записа на слота;
+  LLVM: `h_ret_zero` + недостижим `raise_dead`). Преди това само задаваше
+  tag-а и продължаваше — код след `raise` (напр. `char_at` върху къс низ)
+  можеше да падне преди caller-ът да види ефекта. M19 брои `raise` като
+  изход (`if { raise } else { return }` е пълен). Оракул:
+  `examples/effects_raise_diverge.baga`.
+
 ## [0.9.0] — 2026-08-14
 
 ### llvm — M21 generic fns (пълна мономорфизация)

@@ -2,8 +2,8 @@
 
 **HTML template engine** for Baga — apps-roadmap **№7**. Mustache-ish
 subset: escaped interpolation, raw interpolation, nestable `{% if %}`
-blocks, comments, and filter chains. Filters dispatch by name (no L5
-function values yet — this package is the designated closures probe).
+blocks, comments, and filter chains. Built-in filters by name; extra
+filters via `tpl_filter` / `tpl_render_reg` (L5).
 
 ## Syntax
 
@@ -25,7 +25,8 @@ Filters: `upper`, `lower` (ASCII), `trim`, `len`, `default:fallback`
 ```baga
 struct TplOut { ok: i64, html: str, err: str }   // L3 Result stand-in
 
-fn tpl_render(src: str, ctx: Map<str, str>) -> TplOut   // pure
+fn tpl_render(src: str, ctx: Map<str, str>) -> TplOut   // pure, built-in filters
+fn tpl_render_reg(src, ctx, reg) -> TplOut              // + tpl_filter(reg, name, fn)
 fn tpl_escape(s: str) -> str                            // & < > "
 ```
 
@@ -50,6 +51,6 @@ Exit codes (demo): 0 rendered, 1 render/read error, 2 usage.
 
 ## Honest limits
 
-See [`gaps.md`](gaps.md): filters are a name switch (L5); `TplOut` is the
+See [`gaps.md`](gaps.md): registered filters shipped; `TplOut` is the
 L3 Result stand-in; tokens are prefix-encoded strings (no `Vec<struct>`,
 L4); demo cannot tell a missing template file from an empty one (M2).

@@ -178,7 +178,7 @@ fn boila_pg_describe_buf(pack: i64, srv: BoilaServer, db: str, stmts: Map<str, B
             let g = boila_mt_checkout(pack, db)?
             if g.ok == 1 {
                 let m = boila_pg_describe_on(g.store, req)?
-                boila_mt_checkin(pack, db, m.s)?
+                boila_mt_checkin_data(pack, db, m.s)
                 buf = boila_pg_desc_buf(m, req.is_stmt)
             }
         }

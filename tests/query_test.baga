@@ -64,5 +64,12 @@ fn main() {
     let qp3 = query_from_path("/noquery")
     check("path_none", query_has(qp3, "x") == 0)
 
+    check("i64", query_i64(q, "a", 0) == 1)
+    check("i64_def", query_i64(q, "missing", 9) == 9)
+    let req = query_require(q, "a") catch !NotFound(_k) => ""
+    check("require", req == "1")
+    let miss = query_require(q, "nope") catch !NotFound(k) => k
+    check("require_miss", miss == "nope")
+
     print("query_test: all passed")
 }

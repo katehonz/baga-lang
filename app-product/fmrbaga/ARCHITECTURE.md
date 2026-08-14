@@ -102,7 +102,8 @@ Published under `/tmp/fmrbaga.rt.<pid>` for `fmr_rt_*` (used by `/metrics`).
 
 ## What fmrbaga *is*
 
-- **Route ids + one dispatch** — Baga has no function values; this is the design.
+- **Route ids + optional L5 handlers** — `fmr_route_fn` stores the fn;
+  `fmr_dispatch` remains the fallback for product apps.
 - **JSON-first API** — builders, 422 field errors, Bearer deps.
 - **Env config + OS-thread workers** — default pool of 4; one DB per worker.
 - **Universal** — no product tables. Scaffold is ops + JWT only.

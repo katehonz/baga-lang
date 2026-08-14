@@ -1,12 +1,10 @@
 # ormbaga — gaps
 
-## G1 — No `Vec<struct>` for migration registry
+## G1 — ~~No `Vec<struct>` for migration registry~~ — closed
 
-**Symptom.** `MigrationSet` is four parallel vectors (`versions`, `names`, `ups`, `downs`).
-
-**Workaround.** `migrate_add` pushes to all four.
-
-**Verdict.** Language limit; same pattern as httpdbaga headers.
+**Shipped 2026-08-14.** `Migration { version, name, up, down }` in
+`MigrationSet.items`. `migrate_add` / `migrate_len` unchanged;
+`migrate_at` returns one row.
 
 ## G2 — By-value `OrmDb` threading
 

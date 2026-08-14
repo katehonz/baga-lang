@@ -257,15 +257,16 @@ for `server_version`/encodings/DateStyle/TimeZone. Без conversion tables
 baga дава `go/chan` само за `i64` — цялата комуникация е през канали +
 cell2 пакети (доказаният модел на rocksbaga MT и queuebaga).
 
-- **Accept:** poll loop (моделът rocksbaga R15) приема връзки, чете
-  заявки; bounded **worker pool** (2× ядрата) изпълнява parse/plan/exec.
-  При пълен pool → backpressure: връзката чака в bounded accept опашка,
-  при преливане → `53300` и затваряне. Не thread-per-conn без таван.
-- **Shard нишки:** всеки shard има собствена нишка, която **единствена**
-  държи и мутира неговия `LsmDB` struct (собственост при struct-по-
-  стойност). Worker-ите пращат пакетирани операции (cell2 handle) през
-  канал и получават резултата през cell2 slot — точно `lsm_mt_*` моделът.
-  Четенията се скалират с N, писанията — с N lanes.
+- **Accept:** poll loop приема връзки; bounded **worker pool**
+  (`BOILA_WORKERS`, default 4, cap 64; `0` = go_bg per-conn) изпълнява
+  parse/plan/exec. При пълна опашка `chan_send` блокира accept
+  (backpressure); над `BOILA_MAX_CONN` → `53300` и затваряне.
+  Keep-alive държи worker-а. Data SQL е shared lock; schema DDL —
+  exclusive (`api/serve_mt_lock.baga`).
+- **Shard собственост:** hop-less per-shard mutex — worker-ът заключва
+  само шарда на ключа и мутира `LsmDB` под ключалката. Топъл checkout
+  не пише сървъра; data checkin е no-op. Няма hop през канал на всеки
+  GET (Q1). SQL е multi-shard — няма една owner-нишка на заявление.
 - **Group commit:** във всяка write lane заявките се събират в batch;
   един `fdatasync` на прозорец (`commit_window_ms` или размер на batch-а).
   При високо натоварване това е водещият лост — fsync-ът, не CPU-то.

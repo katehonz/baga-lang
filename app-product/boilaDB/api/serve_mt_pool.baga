@@ -1,0 +1,67 @@
+// serve_mt_pool.baga — bounded worker pool (P11-1).
+// Accept loop submits fds; N long-lived workers pull and handle.
+//
+// Embedding program must define:
+//   fn boila_pool_handle(fd: i64, pack: i64) -> i64 !IO !Net !Time !Par
+//
+// Env: BOILA_WORKERS (default 4, cap 64). 0 = go_bg per conn (old path).
+
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn boila_pool_handle(fd: i64, pack: i64) -> i64 !IO !Net !Time !Par
+
+fn boila_workers_n() -> i64 !IO {
+    let raw = env("BOILA_WORKERS")
+    if raw == "" {
+        return 4
+    }
+    let n = parse_int(raw)
+    if n < 0 {
+        return 0
+    }
+    if n > 64 {
+        return 64
+    }
+    return n
+}
+
+fn boila_pool_chan(n: i64) -> i64 !Par {
+    let mut cap = n * 8
+    if cap < 8 {
+        cap = 8
+    }
+    return chan_new(cap)
+}
+
+// ctx = cell2(ch, pack). Recv fd; <0 or closed → exit.
+fn boila_pool_worker(ctx: i64) -> i64 !IO !Net !Time !Par {
+    let ch = cell2_0(ctx)
+    let pack = cell2_1(ctx)
+    let mut running: i64 = 1
+    while running == 1 {
+        let p = chan_recv2(ch)
+        if cell2_0(p) == 0 {
+            running = 0
+        } else {
+            let fd = cell2_1(p)
+            if fd < 0 {
+                running = 0
+            } else {
+                // Swallow conn IO so one bad peer does not kill the worker.
+                let _c = boila_pool_handle(fd, pack) catch !IO => 0 catch !Net => 0 catch !Time => 0
+            }
+        }
+    }
+    return 0
+}
+
+fn boila_pool_start(pack: i64, n: i64) -> i64 !IO !Net !Time !Par {
+    let ch = boila_pool_chan(n)?
+    let mut i: i64 = 0
+    while i < n {
+        go_bg(boila_pool_worker, cell2(ch, pack))
+        i = i + 1
+    }
+    return ch
+}

@@ -16,9 +16,10 @@ still `rpc_handle_body` → string; encode matches on the sum.
 
 **Severity.** High for a framework; fine for a fixed probe surface.
 
-**Verdict.** **Unblocked 2026-08-05** — L5 shipped: `Map<str, fn(...)>`
-works (see `tests/std/fnval_test.baga`'s method table). Migrating
-`rpc_dispatch` to a registered table is optional cleanup.
+**Verdict.** **Shipped 2026-08-14.** `rpc_handle_body_fn(body, dispatch)`
+and `rpc_handle_object_fn` take `fn(str, JsonDoc, i64, str) -> RpcResult`.
+Built-in `rpc_handle_body` still uses `rpc_dispatch`. A `Map<str, fn>`
+table is optional further cleanup.
 
 ## R3 — nested concat for JSON encode
 

@@ -17,6 +17,8 @@ fn WAL_OP_PUT() -> i64 { return 1 }
 fn WAL_OP_DEL() -> i64 { return 2 }
 fn WAL_OP_CF_PUT() -> i64 { return 17 }
 fn WAL_OP_CF_DEL() -> i64 { return 18 }
+// K5: one CRC over a flush window (row+index+… as one record).
+fn WAL_OP_BATCH() -> i64 { return 19 }
 
 fn wal_payload_b(op: i64, key: bytes, val: bytes) -> bytes {
     let klen = bytes_len(key)
@@ -120,6 +122,26 @@ fn wal_record_cf(op: i64, cf_id: i64, key: str, val: bytes) -> bytes {
     return wal_record_cf_b(op, cf_id, bytes_of_str(key), val)
 }
 
+// Wrap already-framed inner records (len|payload|crc)* as one BATCH.
+// Torn pwrite fails the outer CRC → replay skips the whole window (K5).
+fn wal_wrap_batch(inner: bytes) -> bytes {
+    let ilen = bytes_len(inner)
+    let plen = 1 + ilen
+    let rec = bytes_new(4 + plen + 4)
+    put_u32_le(rec, 0, plen)
+    bytes_set(rec, 4, WAL_OP_BATCH())
+    let mut i: i64 = 0
+    while i < ilen {
+        bytes_set(rec, 5 + i, bytes_at(inner, i))
+        i = i + 1
+    }
+    let payload_view = bytes_slice(rec, 4, 4 + plen)
+    let crc = crc32c_b(payload_view)
+    put_u32_le(rec, 4 + plen, crc)
+    drop(payload_view)
+    return rec
+}
+
 // Append one record; returns new file offset after the write, or -1.
 fn wal_append(fd: i64, off: i64, op: i64, key: str, val: bytes) -> i64 !IO {
     let rec = wal_record(op, key, val)
@@ -142,6 +164,73 @@ struct WalReplay {
     end_off: i64
 }
 
+// Decode one CRC-checked payload into the replay vectors. BATCH (19)
+// expands to its inner framed records. Returns 1 if at least the
+// payload was well-formed (batch may contribute 0..N ops).
+fn wal_push_payload(payload: bytes, ops: Vec<i64>, keys: Vec<bytes>, vals: Vec<bytes>, cfs: Vec<i64>) -> i64 {
+    if bytes_len(payload) < 1 {
+        return 0
+    }
+    let op = bytes_at(payload, 0) & 255
+    if op == 19 {
+        let inner = bytes_slice(payload, 1, bytes_len(payload))
+        let inn = bytes_len(inner)
+        let mut ioff: i64 = 0
+        while ioff + 8 <= inn {
+            let iplen = get_u32_le(inner, ioff)
+            if iplen <= 0 || ioff + 4 + iplen + 4 > inn {
+                return 1
+            }
+            let ipay = bytes_slice(inner, ioff + 4, ioff + 4 + iplen)
+            let icrc = get_u32_le(inner, ioff + 4 + iplen)
+            if crc32c_b(ipay) != icrc {
+                return 1
+            }
+            if wal_push_payload(ipay, ops, keys, vals, cfs) == 0 {
+                return 1
+            }
+            ioff = ioff + 4 + iplen + 4
+        }
+        return 1
+    }
+    if bytes_len(payload) < 1 + 4 {
+        return 0
+    }
+    let mut cf_id: i64 = 0
+    let mut koff: i64 = 1
+    if op == 17 || op == 18 {
+        if bytes_len(payload) < 1 + 4 + 4 {
+            return 0
+        }
+        cf_id = get_u32_le(payload, 1)
+        koff = 5
+    }
+    let klen = get_u32_le(payload, koff)
+    let kstart = koff + 4
+    if bytes_len(payload) < kstart + klen + 4 {
+        return 0
+    }
+    let key = bytes_slice(payload, kstart, kstart + klen)
+    let vlen = get_u32_le(payload, kstart + klen)
+    let vstart = kstart + klen + 4
+    if bytes_len(payload) < vstart + vlen {
+        return 0
+    }
+    let val = bytes_slice(payload, vstart, vstart + vlen)
+    let mut nop = op
+    if op == 17 {
+        nop = 1
+    }
+    if op == 18 {
+        nop = 2
+    }
+    vec_push(ops, nop)
+    vec_push(keys, key)
+    vec_push(vals, val)
+    vec_push(cfs, cf_id)
+    return 1
+}
+
 fn wal_replay(fd: i64) -> WalReplay !IO {
     let ops: Vec<i64> = vec_new()
     let keys: Vec<bytes> = vec_new()
@@ -156,7 +245,6 @@ fn wal_replay(fd: i64) -> WalReplay !IO {
         } else {
             let plen = get_u32_le(hdr, 0)
             if plen <= 0 || plen > 67108864 {
-                // corrupt or empty pad — stop
                 running = 0
             } else {
                 let body = fd_pread_bytes(fd, plen + 4, off + 4)?
@@ -165,55 +253,13 @@ fn wal_replay(fd: i64) -> WalReplay !IO {
                 } else {
                     let payload = bytes_slice(body, 0, plen)
                     let got_crc = get_u32_le(body, plen)
-                    let want = crc32c_b(payload)
-                    if got_crc != want {
-                        // stop before corrupt tail (crash mid-write)
+                    if crc32c_b(payload) != got_crc {
                         running = 0
                     } else {
-                        if bytes_len(payload) < 1 + 4 {
+                        if wal_push_payload(payload, ops, keys, vals, cfs) == 0 {
                             running = 0
                         } else {
-                            let op = bytes_at(payload, 0) & 255
-                            let mut cf_id: i64 = 0
-                            let mut koff: i64 = 1
-                            // R44: CF ops carry cf_id before klen
-                            if op == 17 || op == 18 {
-                                if bytes_len(payload) < 1 + 4 + 4 {
-                                    running = 0
-                                } else {
-                                    cf_id = get_u32_le(payload, 1)
-                                    koff = 5
-                                }
-                            }
-                            if running == 1 {
-                                let klen = get_u32_le(payload, koff)
-                                let kstart = koff + 4
-                                if bytes_len(payload) < kstart + klen + 4 {
-                                    running = 0
-                                } else {
-                                    let key = bytes_slice(payload, kstart, kstart + klen)
-                                    let vlen = get_u32_le(payload, kstart + klen)
-                                    let vstart = kstart + klen + 4
-                                    if bytes_len(payload) < vstart + vlen {
-                                        running = 0
-                                    } else {
-                                        let val = bytes_slice(payload, vstart, vstart + vlen)
-                                        // Normalize CF ops to 1/2 for engine apply
-                                        let mut nop = op
-                                        if op == 17 {
-                                            nop = 1
-                                        }
-                                        if op == 18 {
-                                            nop = 2
-                                        }
-                                        vec_push(ops, nop)
-                                        vec_push(keys, key)
-                                        vec_push(vals, val)
-                                        vec_push(cfs, cf_id)
-                                        off = off + 4 + plen + 4
-                                    }
-                                }
-                            }
+                            off = off + 4 + plen + 4
                         }
                     }
                 }

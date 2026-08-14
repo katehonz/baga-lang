@@ -21,6 +21,10 @@ fn always_ok(_x: i64) -> i64 {
     return 0
 }
 
+fn str_ok(_s: str) -> i64 {
+    return 0
+}
+
 // Stateful flaky: arg is "failure budget" stored by re-encoding —
 // rel_retry always passes the same arg, so we use a Map captured? No top-level let.
 // Test retry success path with always_ok; exhaustion with always_fail;
@@ -36,6 +40,16 @@ fn main() -> i64 !Par !Time {
 
     check("retry_ok", rel_retry(always_ok, 0, 3, 1, 5, 2)? == 0)
     check("retry_exhaust", rel_retry(always_fail, 0, 3, 1, 5, 2)? == 7)
+
+    // M21: retry with a str argument
+    check("retry_str", rel_retry(str_ok, "x", 2, 1, 5, 2)? == 0)
+
+    // R1 jitter stays inside [d/2, d] and respects max
+    let j0 = rel_backoff_jitter_ms(0, 10, 1000, 2, 7)
+    check("jitter_lo", j0 >= 5 && j0 <= 10)
+    let j2 = rel_backoff_jitter_ms(2, 10, 1000, 2, 7)
+    check("jitter_cap", j2 >= 20 && j2 <= 40)
+    check("retry_jitter", rel_retry_jitter(always_ok, 0, 3, 1, 5, 2, 1)? == 0)
 
     // manual retry idiom (same as rel_retry) succeeds on 3rd
     let mut a: i64 = 0

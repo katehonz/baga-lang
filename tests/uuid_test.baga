@@ -34,6 +34,13 @@ fn main() -> i64 !Random {
     check("bad_dash", uuid_ok("550e8400e29b-41d4-a716-446655440000") == 0)
     check("bad_hex", uuid_ok("550e8400-e29b-41d4-a716-44665544000g") == 0)
     check("good_upper", uuid_ok("550E8400-E29B-41D4-A716-446655440000") == 1)
+    check("ver_fn", uuid_version(id) == 4)
+    check("ver_bad", uuid_version("nope") < 0)
+
+    let norm = uuid_parse("550E8400-E29B-41D4-A716-446655440000") catch !BadUuid(_s) => ""
+    check("parse_lower", norm == "550e8400-e29b-41d4-a716-446655440000")
+    let badp = uuid_parse("nope") catch !BadUuid(s) => s
+    check("parse_bad", badp == "nope")
 
     print("uuid_test: all passed")
     return 0

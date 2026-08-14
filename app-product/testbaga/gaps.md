@@ -26,18 +26,11 @@ need an outer driver.
 **Verdict.** `list_dir(path) -> Vec<str>` in std/os (Linux getdents or
 opendir). Natural follow-up to this probe.
 
-## T3 — no function values (L5) → no `test("name", fn)`
+## T3 — ~~no function values (L5) → no `test("name", fn)`~~ — closed
 
-**Symptom.** Cannot register tests as values; every case is a statement in
-`main`. No filtering by name without codegen.
-
-**Workaround.** Named `assert_*` calls; suite accumulates by hand.
-
-**Severity.** Medium for large suites; fine for current repo scale.
-
-**Verdict.** **Unblocked 2026-08-05** — L5 shipped (lambdas with
-by-value captures + fn values in `Vec`/`Map`), so `test("name", fn)`
-is expressible. Statement-style tests remain the repo idiom for now.
+**Shipped 2026-08-14.** `test(name, f)` and `suite_test(s, name, f)` take
+`fn() -> i64` (0 = pass). Generic `assert_eq<T: Show>` / `suite_eq<T: Show>`
+use M21+M23 (`Show` for i64/str/bool). Typed `assert_eq_i64` / `_str` remain.
 
 ## T4 — Suite is by-value field rebuild
 

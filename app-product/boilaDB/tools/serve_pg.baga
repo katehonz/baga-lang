@@ -1,8 +1,10 @@
-// serve_pg.baga — PG wire go_bg + per-db parallel + live conn.
+// serve_pg.baga — PG wire pool + per-db parallel + live conn.
+// Env: BOILA_WORKERS (default 4; 0 = go_bg per conn)
 
 import "../api/pgwire.baga"
 import "../api/pgwire_serve.baga"
 import "../api/serve_mt.baga"
+import "../api/serve_mt_pool.baga"
 import "../api/serve_stats.baga"
 import "../server/databases.baga"
 import "../sql/plan_cache.baga"
@@ -35,6 +37,10 @@ fn boila_pg_conn_mt(ctx: i64) -> i64 !IO !Net !Time !Par {
     return 0
 }
 
+fn boila_pool_handle(fd: i64, pack: i64) -> i64 !IO !Net !Time !Par {
+    return boila_pg_conn_mt(cell2(fd, pack))?
+}
+
 fn main() -> i64 !Net !IO !Time !Par {
     let root = boila_env_or("BOILA_PATH", "/tmp/baga_boila")
     let port = parse_int(boila_env_or("BOILA_PGPORT", "6575"))
@@ -51,12 +57,23 @@ fn main() -> i64 !Net !IO !Time !Par {
     }
     let pack = boila_mt_new(srv0, max_conn)?
     let sw = boila_mt_start_sweeper(pack)?
+    let workers = boila_workers_n()?
+    let mut ch: i64 = 0
+    if workers > 0 {
+        ch = boila_pool_start(pack, workers)?
+        boila_mt_set_pool(pack, workers, 2)?
+    }
 
     let mut line = "boiladb-pg wire listening on :"
     line = concat(line, int_to_str(port))
     line = concat(line, " (max_conn=")
     line = concat(line, int_to_str(max_conn))
-    line = concat(line, ", go_bg+per-shard+multi-db")
+    if workers > 0 {
+        line = concat(line, concat(", workers=", int_to_str(workers)))
+        line = concat(line, "+per-shard+multi-db")
+    } else {
+        line = concat(line, ", go_bg+per-shard+multi-db")
+    }
     if sw == 1 {
         line = concat(line, "+ttl-sweep")
     }
@@ -81,7 +98,11 @@ fn main() -> i64 !Net !IO !Time !Par {
                 if boila_mt_try_conn(pack)? == 0 {
                     tcp_close(fd)?
                 } else {
-                    go_bg(boila_pg_conn_mt, cell2(fd, pack))
+                    if workers > 0 {
+                        chan_send(ch, fd)
+                    } else {
+                        go_bg(boila_pg_conn_mt, cell2(fd, pack))
+                    }
                 }
             }
         }
