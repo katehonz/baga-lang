@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.9.0] — 2026-08-14
 
 ### llvm — M21 generic fns (пълна мономорфизация)
 - LLVM backend-ът вече емитва generic fn-ове per инстанция (recheck +
@@ -15,6 +15,14 @@
   struct типове `b_Pair_i64_str` per инстанция (M24): named типове + тела
   под substitution, литерали/полета по конкретния cname. Оракулът минава.
   Generic fn-ове (M21) остават C-only (ясна грешка).
+
+### llvm — M20 effect payload runtime (raise/try/catch)
+- LLVM backend-ът вече изпълнява payload ефектите runtime: thread-local
+  `baga_eff` слот (tag + i/f/s/b), raise/try/catch lowering и phi фикс —
+  incoming стойности само от хендлъри, които реално достигат merge
+  (return вътре в catch). `examples/effects_payload.baga` дава идентичен
+  изход под C и LLVM (lli).
+- Оракулът пропуска `noreturn_bad` (очаквана checker грешка, M19).
 
 ### generics — M24 generic structs (мономорфизация)
 - `struct Pair<A, B> { first: A, second: B }` — извод от литералите,

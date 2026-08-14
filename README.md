@@ -1,6 +1,6 @@
 # Baga ⚔️
 
-**Version [0.8.4](VERSION)** · [Changelog](CHANGELOG.md)
+**Version [0.9.0](VERSION)** · [Changelog](CHANGELOG.md)
 
 > *"The question is not 'what is new'. The question is 'what has not been glued together yet'."*
 
@@ -380,6 +380,9 @@ baga/
 | 13 | Channel content invariants + cross-thread discharge (M16) | ✅ |
 | 14 | Pair abstraction: cell2 + channel pair APIs in `--verify` (M17) | ✅ |
 | 15 | **`!Overflow` as an effect — the effect system ≡ the verifier (M18)** | ✅ |
+| 16 | Language arc M19–M24: missing-return checker, effect payloads (`!E(T)`, `raise`/`catch`), generics (fn + struct monomorphization), traits/impl, statically verified `guarantees` | ✅ |
+| 17 | LLVM parity for M20–M24 (payload runtime, generic fns, traits, generic structs) | ✅ |
+| 18 | RC memory model v1.0 (`--rc`, opt-in): RC1–RC5 — ownership, containers, struct/enum fields, owned fn results | ✅ |
 
 ### Static verification (`--verify`)
 

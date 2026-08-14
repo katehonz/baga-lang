@@ -10,10 +10,10 @@
 #include <stdarg.h>
 
 /* Semantic version of the language/compiler (keep in sync with VERSION). */
-#define BAGA_VERSION "0.8.4"
+#define BAGA_VERSION "0.9.0"
 #define BAGA_VERSION_MAJOR 0
-#define BAGA_VERSION_MINOR 8
-#define BAGA_VERSION_PATCH 4
+#define BAGA_VERSION_MINOR 9
+#define BAGA_VERSION_PATCH 0
 
 /* ============================================================
  *  Util
