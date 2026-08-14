@@ -4460,8 +4460,17 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             LLVMTypeRef rty = n->type ? llvm_type_resolved(n->type) : lg.i64_ty;
             LLVMValueRef phi = LLVMBuildPhi(lg.builder, rty, "effv");
             LLVMAddIncoming(phi, &v, &cur_bb, 1);
-            for (int i = 0; i < nhandlers; i++)
+            /* входящи само от блокове, които действително достигат merge
+             * (хендлър с terminator — напр. return вътре — не стига) */
+            for (int i = 0; i < nhandlers; i++) {
+                /* входящо само ако хендлърът реално завършва с br към merge
+                 * (br-ът е terminator; ret/друго значи „не достига merge“) */
+                LLVMValueRef t = LLVMGetBasicBlockTerminator(hbs[i]);
+                if (!t || !LLVMIsABranchInst(t) ||
+                    LLVMGetOperand(t, 0) != (LLVMValueRef)merge_bb) continue;
+                if (!hvs[i]) hvs[i] = LLVMConstNull(rty);
                 LLVMAddIncoming(phi, &hvs[i], &hbs[i], 1);
+            }
             return phi;
         }
         case NODE_RAISE: {
