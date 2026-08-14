@@ -55,6 +55,11 @@ typedef struct {
     Node *gen_fn;
     int   gen_inst;
     Checker *chk;
+    /* M20: effect payload runtime */
+    VEC(char *) eff_tags;   /* tag регистър (име → индекс+1) */
+    int   eff_depth;        /* >0 = вътре в catch верига (TRY е no-op) */
+    LLVMValueRef eff_global;/* global baga_eff_tl */
+    LLVMTypeRef eff_ty;     /* { i64, i64, double, i8*, baga_bytes } */
 } LLVMCodegen;
 
 static LLVMCodegen lg;
@@ -440,6 +445,64 @@ static LLVMValueRef h_call(LLVMValueRef fn, LLVMValueRef *args, int nargs,
 static void h_begin(LLVMValueRef fn) {
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(lg.ctx, fn, "entry");
     LLVMPositionBuilderAtEnd(lg.builder, entry);
+}
+
+/* ============================ M20 payload runtime ============================ */
+
+static int llvm_has_payload_effects(Type *t) {
+    if (!t || !t->effect_payloads) return 0;
+    for (int i = 0; i < t->n_effects; i++)
+        if (t->effect_payloads[i]) return 1;
+    return 0;
+}
+
+/* Tag на ефект по име — детерминистичен (първа поява = 1, 2, …). */
+static int llvm_eff_tag(const char *name) {
+    for (int i = 0; i < lg.eff_tags.len; i++)
+        if (strcmp(lg.eff_tags.data[i], name) == 0) return i + 1;
+    vec_push(lg.eff_tags, strdup(name));
+    return lg.eff_tags.len;
+}
+
+/* { i64 tag, i64 i, double f, i8* s, baga_bytes b } */
+static LLVMTypeRef baga_eff_ty(void) {
+    if (lg.eff_ty) return lg.eff_ty;
+    LLVMTypeRef t = LLVMStructCreateNamed(lg.ctx, "baga_eff");
+    LLVMTypeRef elems[] = { lg.i64_ty, lg.i64_ty, lg.double_ty,
+                            lg.ptr_ty, baga_bytes_ty() };
+    LLVMStructSetBody(t, elems, 5, 0);
+    lg.eff_ty = t;
+    return t;
+}
+
+static LLVMValueRef eff_global(void) {
+    if (lg.eff_global) return lg.eff_global;
+    lg.eff_global = LLVMAddGlobal(lg.mod, baga_eff_ty(), "baga_eff_tl");
+    LLVMSetInitializer(lg.eff_global, LLVMConstNull(baga_eff_ty()));
+    LLVMSetThreadLocal(lg.eff_global, 1);
+    return lg.eff_global;
+}
+
+/* GEP до поле idx на глобалния слот (в текущия block) */
+static LLVMValueRef eff_gep(unsigned idx, const char *name) {
+    LLVMValueRef g = eff_global();
+    LLVMValueRef gp = LLVMBuildStructGEP2(lg.builder, baga_eff_ty(), g,
+                                          idx, name);
+    return gp;
+}
+
+/* Полето на payload-а по тип (0=tag, 1=i, 2=f, 3=s, 4=b) */
+static unsigned eff_field_of(Type *pt) {
+    if (pt->kind == TYPE_F64) return 2;
+    if (pt->kind == TYPE_STR) return 3;
+    if (pt->kind == TYPE_BYTES) return 4;
+    return 1;
+}
+
+/* return <нулата на cur_ret_ty> — propagate пътят */
+static void h_ret_zero(void) {
+    if (lg.cur_ret_ty == lg.void_ty) LLVMBuildRetVoid(lg.builder);
+    else LLVMBuildRet(lg.builder, LLVMConstNull(lg.cur_ret_ty));
 }
 
 /* alloca винаги в entry block-а на текущата функция: alloca на текущата
@@ -3103,6 +3166,7 @@ static LLVMValueRef baga_rt(const char *name) {
 
 static LLVMValueRef emit_expr_llvm(Node *n);
 static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRef cont_bb);
+static LLVMValueRef emit_block_value_llvm(Node *block);
 
 /* ---- L5: fn стойности (closures) ----
  * Огледало на C бекенда: handle = i64 cell2(code, env); cell2 живее в par
@@ -4283,12 +4347,135 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             }
             return LLVMConstInt(lg.i64_ty, (unsigned long long)vidx, 0);
         }
-        case NODE_TRY:      return emit_expr_llvm(n->try_expr);
-        case NODE_CATCH:    return emit_expr_llvm(n->catch_expr);
-        case NODE_RAISE:    /* M20: LLVM backend — payload пътят е C-only (v1);
-                             * raise е compile-time фикция тук */
-            return n->raise_payload ? emit_expr_llvm(n->raise_payload)
-                                    : LLVMConstInt(lg.i64_ty, 0, 1);
+        case NODE_TRY: {
+            /* M20: e? — при payload ефекти: изчисли, провери слота, при
+             * грешка return-ни нулата; иначе passthrough (и в catch верига) */
+            if (!llvm_has_payload_effects(n->try_expr ? n->try_expr->type : NULL) ||
+                lg.eff_depth > 0)
+                return emit_expr_llvm(n->try_expr);
+            LLVMValueRef v = emit_expr_llvm(n->try_expr);
+            LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+            LLVMBasicBlockRef err_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "eff_err");
+            LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "eff_cont");
+            LLVMValueRef tag = LLVMBuildLoad2(lg.builder, lg.i64_ty,
+                                              eff_gep(0, "tagp"), "tag");
+            LLVMValueRef bad = LLVMBuildICmp(lg.builder, LLVMIntNE, tag,
+                                             LLVMConstInt(lg.i64_ty, 0, 0), "bad");
+            LLVMBuildCondBr(lg.builder, bad, err_bb, cont_bb);
+            LLVMPositionBuilderAtEnd(lg.builder, err_bb);
+            h_ret_zero();
+            LLVMPositionBuilderAtEnd(lg.builder, cont_bb);
+            return v;
+        }
+        case NODE_CATCH: {
+            /* M20: flatten веригата — base стойност → tag → по веригата
+             * handler блокове → phi; последният клон propagate-ва */
+            int any_payload = 0;
+            {
+                Node *scan = n;
+                while (scan && scan->kind == NODE_CATCH) {
+                    Type *et = scan->catch_expr ? scan->catch_expr->type : NULL;
+                    Type *pl = type_effect_payload(et, scan->catch_effect);
+                    if (pl) any_payload = 1;
+                    scan = scan->catch_expr;
+                }
+            }
+            if (!any_payload) {
+                Node *base = n;
+                while (base && base->kind == NODE_CATCH) base = base->catch_expr;
+                return emit_expr_llvm(base);
+            }
+            Node *base = n;
+            while (base && base->kind == NODE_CATCH) base = base->catch_expr;
+            lg.eff_depth++;
+            LLVMValueRef v = emit_expr_llvm(base);
+            lg.eff_depth--;
+            LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
+            LLVMValueRef tag = LLVMBuildLoad2(lg.builder, lg.i64_ty,
+                                              eff_gep(0, "tagp"), "tag");
+            LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0),
+                           eff_gep(0, "tagp"));
+            /* събери payload catch-овете */
+            int nhandlers = 0;
+            Node *scans[64];
+            {
+                Node *scan = n;
+                while (scan && scan->kind == NODE_CATCH && nhandlers < 64) {
+                    Type *et = scan->catch_expr ? scan->catch_expr->type : NULL;
+                    Type *pl = type_effect_payload(et, scan->catch_effect);
+                    if (pl) scans[nhandlers++] = scan;
+                    scan = scan->catch_expr;
+                }
+            }
+            /* блокове: decision[0..n-1] + handler[0..n-1] + prop + merge */
+            LLVMBasicBlockRef dec[65] = {0}, hbs[65] = {0};
+            LLVMValueRef hvs[65] = {0};
+            LLVMBasicBlockRef prop_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "eff_prop");
+            LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "eff_merge");
+            for (int i = 0; i < nhandlers; i++) {
+                dec[i] = LLVMAppendBasicBlockInContext(lg.ctx, fn, "eff_dec");
+                hbs[i] = LLVMAppendBasicBlockInContext(lg.ctx, fn, "eff_h");
+            }
+            LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(lg.builder);
+            LLVMBuildCondBr(lg.builder,
+                LLVMBuildICmp(lg.builder, LLVMIntEQ, tag,
+                              LLVMConstInt(lg.i64_ty, 0, 0), "ok"),
+                merge_bb, dec[0]);
+            for (int i = 0; i < nhandlers; i++) {
+                Node *scan = scans[i];
+                Type *et = scan->catch_expr ? scan->catch_expr->type : NULL;
+                Type *pl = type_effect_payload(et, scan->catch_effect);
+                int tagv = llvm_eff_tag(scan->catch_effect);
+                LLVMPositionBuilderAtEnd(lg.builder, dec[i]);
+                LLVMBuildCondBr(lg.builder,
+                    LLVMBuildICmp(lg.builder, LLVMIntEQ, tag,
+                                  LLVMConstInt(lg.i64_ty, (unsigned long long)tagv, 0), "eq"),
+                    hbs[i], i + 1 < nhandlers ? dec[i + 1] : prop_bb);
+                LLVMPositionBuilderAtEnd(lg.builder, hbs[i]);
+                int saved_vars = lg_st.count;
+                if (scan->catch_binding) {
+                    unsigned fidx = eff_field_of(pl);
+                    LLVMValueRef pv = LLVMBuildLoad2(lg.builder,
+                        llvm_type_resolved(pl), eff_gep(fidx, "pl"), "pl");
+                    LLVMValueRef pa = entry_alloca(llvm_type_resolved(pl), "pld");
+                    LLVMBuildStore(lg.builder, pv, pa);
+                    st_define(scan->catch_binding, pa);
+                }
+                hvs[i] = scan->catch_handler->kind == NODE_BLOCK
+                    ? emit_block_value_llvm(scan->catch_handler)
+                    : emit_expr_llvm(scan->catch_handler);
+                if (scan->catch_binding) lg_st.count = saved_vars;
+                if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
+                    LLVMBuildBr(lg.builder, merge_bb);
+            }
+            LLVMPositionBuilderAtEnd(lg.builder, prop_bb);
+            /* възстанови тага за външния контекст (като C бекенда) */
+            LLVMBuildStore(lg.builder, tag, eff_gep(0, "tagp"));
+            h_ret_zero();
+            LLVMPositionBuilderAtEnd(lg.builder, merge_bb);
+            if (n->type && llvm_type_resolved(n->type) == lg.void_ty) {
+                LLVMBuildRetVoid(lg.builder);
+                return NULL;
+            }
+            LLVMTypeRef rty = n->type ? llvm_type_resolved(n->type) : lg.i64_ty;
+            LLVMValueRef phi = LLVMBuildPhi(lg.builder, rty, "effv");
+            LLVMAddIncoming(phi, &v, &cur_bb, 1);
+            for (int i = 0; i < nhandlers; i++)
+                LLVMAddIncoming(phi, &hvs[i], &hbs[i], 1);
+            return phi;
+        }
+        case NODE_RAISE: {
+            /* M20: задай слота; стойността е мъртва (извикващият чете тага) */
+            int tagv = llvm_eff_tag(n->raise_effect);
+            LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, (unsigned long long)tagv, 0),
+                           eff_gep(0, "tagp"));
+            if (n->raise_payload && n->raise_payload->type) {
+                LLVMValueRef pv = emit_expr_llvm(n->raise_payload);
+                LLVMBuildStore(lg.builder, coerce(pv, llvm_type_resolved(n->raise_payload->type)),
+                               eff_gep(eff_field_of(n->raise_payload->type), "pv"));
+            }
+            return LLVMConstInt(lg.i64_ty, 0, 0);
+        }
         case NODE_TO_STR: {
             /* interpolation: convert inner expr to a string by its type */
             Type *et = n->to_str_expr ? n->to_str_expr->type : NULL;
@@ -4344,9 +4531,29 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
     return NULL; /* unreachable */
 }
 
+/* Стойност на блок-хендлър на catch: statement-и + последният е стойността
+ * (implicit return семантика, като C бекенда) */
+static LLVMValueRef emit_block_value_llvm(Node *block) {
+    if (!block || block->kind != NODE_BLOCK) llvm_unsupported("catch хендлър без тяло");
+    st_push();
+    LLVMValueRef val = NULL;
+    for (int i = 0; i < block->stmts.len; i++) {
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) break;
+        Node *s = block->stmts.data[i];
+        if (i == block->stmts.len - 1) {
+            if (s->kind == NODE_EXPR_STMT) val = emit_expr_llvm(s->expr);
+            else if (s->kind == NODE_RETURN && s->ret_val) val = emit_expr_llvm(s->ret_val);
+            else emit_stmt_llvm(s, NULL, NULL);
+        } else emit_stmt_llvm(s, NULL, NULL);
+    }
+    st_pop();
+    return val;
+}
+
 /* ---- Statement emission ---- */
 
 static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRef cont_bb);
+static LLVMValueRef emit_block_value_llvm(Node *block);
 
 static void emit_block_llvm(Node *block, LLVMBasicBlockRef break_bb, LLVMBasicBlockRef cont_bb) {
     if (!block) return;
