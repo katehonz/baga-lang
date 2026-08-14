@@ -58,6 +58,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **oauthbaga** | OAuth proxy (integration exam) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) |
 | **mdbaga**, **tplbaga**, **queuebaga**, **jsonrpcbaga**, **grebaga**, **testbaga** | Markdown, templates, jobs, RPC, grep CLI, asserts |
+| **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) |
 | **apps/api**, **apps/registry** | Sample product + sandak package registry |
 
 Canonical stack: `apps/*` → **fmrbaga** → httpdbaga / jwtbaga / ormbaga → **pgbaga** → Postgres  
@@ -317,7 +318,7 @@ baga/
 ├── src/                    # C bootstrap compiler + sandak
 ├── self/                   # Self-hosted compiler (Baga)
 ├── std/                    # Standard library (crypto, net/tls, json, …)
-├── app-product/            # Ecosystem packages (http, jwt, pg, oauth, decimal, …)
+├── app-product/            # Ecosystem packages (http, jwt, pg, img, decimal, …)
 ├── apps/                   # Sample products (api, registry)
 ├── examples/               # Language examples
 ├── tests/                  # Regression suite

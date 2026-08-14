@@ -1,0 +1,897 @@
+// webp_vp8_dec.baga — VP8 keyframe residual + reconstruct + entry.
+
+import "types.baga"
+import "webp_vp8_tab.baga"
+import "webp_vp8.baga"
+
+fn vp8i_zeros(n: i64) -> Vec<i64> {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, 0)
+        i = i + 1
+    }
+    return v
+}
+
+fn vp8_resid4(br0: Vp8Br, probs: bytes, plane: i64, ctx: i64, qdc: i64, qac: i64, skip0: i64, coeff: Vec<i64>, base: i64) -> Vp8Br {
+    let mut br = br0
+    let mut n: i64 = 0
+    if skip0 == 1 {
+        n = 1
+    }
+    let mut cctx = ctx
+    br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n), cctx, 0))
+    if br.v == 0 {
+        br.v = 0
+        return br
+    }
+    while n != 16 {
+        n = n + 1
+        br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 1))
+        if br.v == 0 {
+            cctx = 0
+        } else {
+            let mut v: i64 = 0
+            br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 2))
+            if br.v == 0 {
+                v = 1
+                cctx = 1
+            } else {
+                br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 3))
+                if br.v == 0 {
+                    br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 4))
+                    if br.v == 0 {
+                        v = 2
+                    } else {
+                        br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 5))
+                        v = 3 + br.v
+                    }
+                } else {
+                    br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 6))
+                    if br.v == 0 {
+                        br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 7))
+                        if br.v == 0 {
+                            br = vp8br_bit(br, 159)
+                            v = 5 + br.v
+                        } else {
+                            br = vp8br_bit(br, 165)
+                            let hi = br.v
+                            br = vp8br_bit(br, 145)
+                            v = 7 + 2 * hi + br.v
+                        }
+                    } else {
+                        br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 8))
+                        let b1 = br.v
+                        br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n - 1), cctx, 9 + b1))
+                        let cat = 2 * b1 + br.v
+                        v = 0
+                        let mut i: i64 = 0
+                        let mut pr = vp8_cat_prob(cat, 0)
+                        while pr != 0 {
+                            v = v * 2
+                            br = vp8br_bit(br, pr)
+                            v = v + br.v
+                            i = i + 1
+                            pr = vp8_cat_prob(cat, i)
+                        }
+                        v = v + 3 + (8 << cat)
+                    }
+                }
+                cctx = 2
+            }
+            let z = vp8_zig(n - 1)
+            let mut q = qdc
+            if z > 0 {
+                q = qac
+            }
+            let mut c = v * q
+            br = vp8br_bit(br, 128)
+            if br.v == 1 {
+                c = 0 - c
+            }
+            vec_set(coeff, base + z, c)
+            if n == 16 {
+                br.v = 1
+                return br
+            }
+            br = vp8br_bit(br, vp8_prob_at(probs, plane, vp8_band(n), cctx, 0))
+            if br.v == 0 {
+                br.v = 1
+                return br
+            }
+        }
+    }
+    br.v = 1
+    return br
+}
+
+fn vp8_wht(coeff: Vec<i64>) {
+    let m = vp8i_zeros(16)
+    let mut i: i64 = 0
+    while i < 4 {
+        let a0 = vec_get(coeff, 384 + i) + vec_get(coeff, 384 + 12 + i)
+        let a1 = vec_get(coeff, 384 + 4 + i) + vec_get(coeff, 384 + 8 + i)
+        let a2 = vec_get(coeff, 384 + 4 + i) - vec_get(coeff, 384 + 8 + i)
+        let a3 = vec_get(coeff, 384 + i) - vec_get(coeff, 384 + 12 + i)
+        vec_set(m, i, a0 + a1)
+        vec_set(m, 8 + i, a0 - a1)
+        vec_set(m, 4 + i, a3 + a2)
+        vec_set(m, 12 + i, a3 - a2)
+        i = i + 1
+    }
+    let mut out: i64 = 0
+    i = 0
+    while i < 4 {
+        let dc = vec_get(m, i * 4) + 3
+        let a0 = dc + vec_get(m, i * 4 + 3)
+        let a1 = vec_get(m, i * 4 + 1) + vec_get(m, i * 4 + 2)
+        let a2 = vec_get(m, i * 4 + 1) - vec_get(m, i * 4 + 2)
+        let a3 = dc - vec_get(m, i * 4 + 3)
+        vec_set(coeff, out, (a0 + a1) >> 3)
+        vec_set(coeff, out + 16, (a3 + a2) >> 3)
+        vec_set(coeff, out + 32, (a0 - a1) >> 3)
+        vec_set(coeff, out + 48, (a3 - a2) >> 3)
+        out = out + 64
+        i = i + 1
+    }
+}
+
+fn vp8_check_dc(p: i64, mbx: i64, mby: i64) -> i64 {
+    if p != 0 {
+        return p
+    }
+    if mbx == 0 {
+        if mby == 0 {
+            return 12
+        }
+        return 11
+    }
+    if mby == 0 {
+        return 10
+    }
+    return 0
+}
+
+fn vp8_mulhi(v: i64, coeff: i64) -> i64 {
+    return (v * coeff) >> 8
+}
+
+fn vp8_clip_yuv(v: i64) -> i64 {
+    // libwebp VP8Clip8: result is v>>6 when 0 <= v <= 16383
+    if v < 0 {
+        return 0
+    }
+    if v > 16383 {
+        return 255
+    }
+    return v >> 6
+}
+
+fn vp8_yuv2rgb(y: i64, cb: i64, cr: i64) -> Pixel {
+    // libwebp VP8YuvToRgb (BT.601 studio, bit-exact with IM/dwebp)
+    let r = vp8_clip_yuv(vp8_mulhi(y, 19077) + vp8_mulhi(cr, 26149) - 14234)
+    let g = vp8_clip_yuv(vp8_mulhi(y, 19077) - vp8_mulhi(cb, 6419) - vp8_mulhi(cr, 13320) + 8708)
+    let b = vp8_clip_yuv(vp8_mulhi(y, 19077) + vp8_mulhi(cb, 33050) - 17685)
+    return Pixel { r: r, g: g, b: b, a: 255 }
+}
+
+fn vp8_decode(src: bytes) -> Image {
+    if bytes_len(src) < 10 {
+        return img_fail("vp8: truncated")
+    }
+    let tag0 = bytes_at(src, 0) & 255
+    if (tag0 & 1) != 0 {
+        return img_fail("vp8: not a keyframe")
+    }
+    let part0 = (tag0 >> 5) | ((bytes_at(src, 1) & 255) << 3) | ((bytes_at(src, 2) & 255) << 11)
+    if (bytes_at(src, 3) & 255) != 157 || (bytes_at(src, 4) & 255) != 1 || (bytes_at(src, 5) & 255) != 42 {
+        return img_fail("vp8: bad sync")
+    }
+    let w = (bytes_at(src, 6) & 255) | (((bytes_at(src, 7) & 255) & 63) << 8)
+    let h = (bytes_at(src, 8) & 255) | (((bytes_at(src, 9) & 255) & 63) << 8)
+    if w <= 0 || h <= 0 || w > 4096 || h > 4096 {
+        return img_fail("vp8: bad size")
+    }
+    let mbw = (w + 15) / 16
+    let mbh = (h + 15) / 16
+    let hdr = 10
+    if hdr + part0 > bytes_len(src) {
+        return img_fail("vp8: short first partition")
+    }
+    let mut fp = vp8br_init(bytes_slice(src, hdr, hdr + part0))
+    fp = vp8br_bit(fp, 128)
+    fp = vp8br_bit(fp, 128)
+    // segment
+    fp = vp8br_bit(fp, 128)
+    let use_seg = fp.v
+    let mut upd_map: i64 = 0
+    let mut rel_delta: i64 = 1
+    let seg_q = vp8i_zeros(4)
+    let seg_f = vp8i_zeros(4)
+    let seg_p = vp8i_zeros(3)
+    vec_set(seg_p, 0, 255)
+    vec_set(seg_p, 1, 255)
+    vec_set(seg_p, 2, 255)
+    if use_seg == 1 {
+        fp = vp8br_bit(fp, 128)
+        upd_map = fp.v
+        fp = vp8br_bit(fp, 128)
+        if fp.v == 1 {
+            fp = vp8br_bit(fp, 128)
+            rel_delta = 1 - fp.v
+            let mut i: i64 = 0
+            while i < 4 {
+                fp = vp8br_optint(fp, 7)
+                vec_set(seg_q, i, fp.v)
+                i = i + 1
+            }
+            i = 0
+            while i < 4 {
+                fp = vp8br_optint(fp, 6)
+                vec_set(seg_f, i, fp.v)
+                i = i + 1
+            }
+        }
+        if upd_map == 1 {
+            let mut i: i64 = 0
+            while i < 3 {
+                fp = vp8br_bit(fp, 128)
+                if fp.v == 1 {
+                    fp = vp8br_uint(fp, 8)
+                    vec_set(seg_p, i, fp.v)
+                } else {
+                    vec_set(seg_p, i, 255)
+                }
+                i = i + 1
+            }
+        }
+    }
+    // filter header (RFC 6386 §9.4 / §15)
+    fp = vp8br_bit(fp, 128)
+    let fsimple = fp.v
+    fp = vp8br_uint(fp, 6)
+    let flevel = fp.v
+    fp = vp8br_uint(fp, 3)
+    let fsharp = fp.v
+    fp = vp8br_bit(fp, 128)
+    let use_lfd = fp.v
+    let ref_d = vp8i_zeros(4)
+    let mode_d = vp8i_zeros(4)
+    if use_lfd == 1 {
+        fp = vp8br_bit(fp, 128)
+        if fp.v == 1 {
+            let mut i: i64 = 0
+            while i < 4 {
+                fp = vp8br_optint(fp, 6)
+                vec_set(ref_d, i, fp.v)
+                i = i + 1
+            }
+            i = 0
+            while i < 4 {
+                fp = vp8br_optint(fp, 6)
+                vec_set(mode_d, i, fp.v)
+                i = i + 1
+            }
+        }
+    }
+    fp = vp8br_uint(fp, 2)
+    let nop = 1 << fp.v
+    let rest = bytes_slice(src, hdr + part0, bytes_len(src))
+    let mut off: i64 = 0
+    let plens = vp8i_zeros(8)
+    let n3 = 3 * (nop - 1)
+    if bytes_len(rest) < n3 {
+        return img_fail("vp8: short partitions")
+    }
+    let mut rem = bytes_len(rest) - n3
+    let mut i: i64 = 0
+    while i < nop - 1 {
+        let pl = (bytes_at(rest, 3 * i) & 255) | ((bytes_at(rest, 3 * i + 1) & 255) << 8) | ((bytes_at(rest, 3 * i + 2) & 255) << 16)
+        vec_set(plens, i, pl)
+        rem = rem - pl
+        i = i + 1
+    }
+    vec_set(plens, nop - 1, rem)
+    off = n3
+    let ops = vec_new()
+    i = 0
+    while i < nop {
+        let pl = vec_get(plens, i)
+        if off + pl > bytes_len(rest) {
+            return img_fail("vp8: part overrun")
+        }
+        vec_push(ops, bytes_slice(rest, off, off + pl))
+        off = off + pl
+        i = i + 1
+    }
+    // quant
+    fp = vp8br_uint(fp, 7)
+    let baseq = fp.v
+    fp = vp8br_optint(fp, 4)
+    let dqy1dc = fp.v
+    fp = vp8br_optint(fp, 4)
+    let dqy2dc = fp.v
+    fp = vp8br_optint(fp, 4)
+    let dqy2ac = fp.v
+    fp = vp8br_optint(fp, 4)
+    let dquvdc = fp.v
+    fp = vp8br_optint(fp, 4)
+    let dquvac = fp.v
+    let dqdc = vp8_tab_dqdc()
+    let dqac = vp8_tab_dqac()
+    let qy1dc = vp8i_zeros(4)
+    let qy1ac = vp8i_zeros(4)
+    let qy2dc = vp8i_zeros(4)
+    let qy2ac = vp8i_zeros(4)
+    let quvdc = vp8i_zeros(4)
+    let quvac = vp8i_zeros(4)
+    i = 0
+    while i < 4 {
+        let mut q = baseq
+        if use_seg == 1 {
+            if rel_delta == 1 {
+                q = q + vec_get(seg_q, i)
+            } else {
+                q = vec_get(seg_q, i)
+            }
+        }
+        vec_set(qy1dc, i, vp8_dq16(dqdc, vp8_clip(q + dqy1dc, 0, 127)))
+        vec_set(qy1ac, i, vp8_dq16(dqac, vp8_clip(q, 0, 127)))
+        vec_set(qy2dc, i, vp8_dq16(dqdc, vp8_clip(q + dqy2dc, 0, 127)) * 2)
+        let mut a2 = vp8_dq16(dqac, vp8_clip(q + dqy2ac, 0, 127)) * 155 / 100
+        if a2 < 8 { a2 = 8 }
+        vec_set(qy2ac, i, a2)
+        vec_set(quvdc, i, vp8_dq16(dqdc, vp8_clip(q + dquvdc, 0, 117)))
+        vec_set(quvac, i, vp8_dq16(dqac, vp8_clip(q + dquvac, 0, 127)))
+        i = i + 1
+    }
+    fp = vp8br_bit(fp, 128)
+    // token prob updates
+    let probs = vp8_tab_dft()
+    // copy to mutable
+    let prb = bytes_new(1056)
+    i = 0
+    while i < 1056 {
+        bytes_set(prb, i, bytes_at(probs, i))
+        i = i + 1
+    }
+    let upd = vp8_tab_upd()
+    let mut pl: i64 = 0
+    while pl < 4 {
+        let mut bd: i64 = 0
+        while bd < 8 {
+            let mut cx: i64 = 0
+            while cx < 3 {
+                let mut pi: i64 = 0
+                while pi < 11 {
+                    fp = vp8br_bit(fp, vp8_prob_at(upd, pl, bd, cx, pi))
+                    if fp.v == 1 {
+                        fp = vp8br_uint(fp, 8)
+                        bytes_set(prb, pl * 264 + bd * 33 + cx * 11 + pi, fp.v)
+                    }
+                    pi = pi + 1
+                }
+                cx = cx + 1
+            }
+            bd = bd + 1
+        }
+        pl = pl + 1
+    }
+    fp = vp8br_bit(fp, 128)
+    let use_skip = fp.v
+    let mut skip_p: i64 = 0
+    if use_skip == 1 {
+        fp = vp8br_uint(fp, 8)
+        skip_p = fp.v
+    }
+    // filterParams[seg][0=Y16, 1=Y4]: packed level | ilevel<<8 | hlevel<<16
+    let fp_pack = vp8i_zeros(8)
+    i = 0
+    while i < 4 {
+        let mut base_lv = flevel
+        if use_seg == 1 {
+            base_lv = vec_get(seg_f, i)
+            if rel_delta == 1 {
+                base_lv = vec_get(seg_f, i) + flevel
+            }
+        }
+        let mut j: i64 = 0
+        while j < 2 {
+            let mut level = base_lv
+            if use_lfd == 1 {
+                level = level + vec_get(ref_d, 0)
+                if j != 0 {
+                    level = level + vec_get(mode_d, 0)
+                }
+            }
+            let mut packed: i64 = 0
+            if level > 0 {
+                if level > 63 {
+                    level = 63
+                }
+                let mut ilevel = level
+                if fsharp > 0 {
+                    if fsharp > 4 {
+                        ilevel = ilevel >> 2
+                    } else {
+                        ilevel = ilevel >> 1
+                    }
+                    let xmax = 9 - fsharp
+                    if ilevel > xmax {
+                        ilevel = xmax
+                    }
+                }
+                if ilevel < 1 {
+                    ilevel = 1
+                }
+                let mut hlevel: i64 = 0
+                if level < 15 {
+                    hlevel = 0
+                } else {
+                    if level < 40 {
+                        hlevel = 1
+                    } else {
+                        hlevel = 2
+                    }
+                }
+                packed = (2 * level + ilevel) | (ilevel << 8) | (hlevel << 16)
+            }
+            vec_set(fp_pack, i * 2 + j, packed)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    let mb_fl = vp8i_zeros(mbw * mbh)
+    let mb_fi = vp8i_zeros(mbw * mbh)
+    let mb_fh = vp8i_zeros(mbw * mbh)
+    let mb_in = vp8i_zeros(mbw * mbh)
+    let predp = vp8_tab_pred()
+    let ypl = bytes_new(mbw * 16 * mbh * 16)
+    let upl = bytes_new(mbw * 8 * mbh * 8)
+    let vpl = bytes_new(mbw * 8 * mbh * 8)
+    let ybr = bytes_new(26 * 32)
+    let coeff = vp8i_zeros(400)
+    let up_nz = vp8i_zeros(mbw)
+    let up_nzy = vp8i_zeros(mbw)
+    let up_pred = vp8i_zeros(mbw * 4)
+    let obrs = vec_new()
+    i = 0
+    while i < nop {
+        vec_push(obrs, vp8br_init(vec_get(ops, i)))
+        i = i + 1
+    }
+    let mut mby: i64 = 0
+    while mby < mbh {
+        let mut left_nz: i64 = 0
+        let mut left_nzy: i64 = 0
+        let left_pred = vp8i_zeros(4)
+        let mut mbx: i64 = 0
+        while mbx < mbw {
+            let mut seg: i64 = 0
+            if upd_map == 1 {
+                fp = vp8br_bit(fp, vec_get(seg_p, 0))
+                if fp.v == 0 {
+                    fp = vp8br_bit(fp, vec_get(seg_p, 1))
+                    seg = fp.v
+                } else {
+                    fp = vp8br_bit(fp, vec_get(seg_p, 2))
+                    seg = fp.v + 2
+                }
+            }
+            let mut skip: i64 = 0
+            if use_skip == 1 {
+                fp = vp8br_bit(fp, skip_p)
+                skip = fp.v
+            }
+            let mut k: i64 = 0
+            while k < 400 {
+                vec_set(coeff, k, 0)
+                k = k + 1
+            }
+            // prepare ybr borders
+            if mbx == 0 {
+                let mut y: i64 = 0
+                while y < 26 {
+                    vp8_ybr_set(ybr, y, 7, 129)
+                    if y >= 17 {
+                        vp8_ybr_set(ybr, y, 23, 129)
+                    }
+                    y = y + 1
+                }
+            } else {
+                let mut y: i64 = 0
+                while y < 17 {
+                    vp8_ybr_set(ybr, y, 7, vp8_ybr_get(ybr, y, 23))
+                    y = y + 1
+                }
+                y = 17
+                while y < 26 {
+                    vp8_ybr_set(ybr, y, 7, vp8_ybr_get(ybr, y, 15))
+                    vp8_ybr_set(ybr, y, 23, vp8_ybr_get(ybr, y, 31))
+                    y = y + 1
+                }
+            }
+            if mby == 0 {
+                let mut x: i64 = 7
+                while x < 28 {
+                    vp8_ybr_set(ybr, 0, x, 127)
+                    x = x + 1
+                }
+                x = 7
+                while x < 16 {
+                    vp8_ybr_set(ybr, 17, x, 127)
+                    x = x + 1
+                }
+                x = 23
+                while x < 32 {
+                    vp8_ybr_set(ybr, 17, x, 127)
+                    x = x + 1
+                }
+            } else {
+                let mut x: i64 = 0
+                while x < 16 {
+                    vp8_ybr_set(ybr, 0, 8 + x, bytes_at(ypl, ((mby * 16 - 1) * mbw * 16) + mbx * 16 + x))
+                    x = x + 1
+                }
+                x = 0
+                while x < 8 {
+                    vp8_ybr_set(ybr, 17, 8 + x, bytes_at(upl, ((mby * 8 - 1) * mbw * 8) + mbx * 8 + x))
+                    vp8_ybr_set(ybr, 17, 24 + x, bytes_at(vpl, ((mby * 8 - 1) * mbw * 8) + mbx * 8 + x))
+                    x = x + 1
+                }
+                x = 16
+                while x < 20 {
+                    let mut sx: i64 = 15
+                    if mbx < mbw - 1 {
+                        sx = x
+                    }
+                    vp8_ybr_set(ybr, 0, 8 + x, bytes_at(ypl, ((mby * 16 - 1) * mbw * 16) + mbx * 16 + sx))
+                    x = x + 1
+                }
+            }
+            let mut yy: i64 = 4
+            while yy < 16 {
+                vp8_ybr_set(ybr, yy, 24, vp8_ybr_get(ybr, 0, 24))
+                vp8_ybr_set(ybr, yy, 25, vp8_ybr_get(ybr, 0, 25))
+                vp8_ybr_set(ybr, yy, 26, vp8_ybr_get(ybr, 0, 26))
+                vp8_ybr_set(ybr, yy, 27, vp8_ybr_get(ybr, 0, 27))
+                yy = yy + 4
+            }
+            fp = vp8br_bit(fp, 145)
+            let y16 = fp.v
+            let mut p16: i64 = 0
+            let p4 = vp8i_zeros(16)
+            if y16 == 1 {
+                fp = vp8br_bit(fp, 156)
+                if fp.v == 0 {
+                    fp = vp8br_bit(fp, 163)
+                    if fp.v == 0 { p16 = 0 } else { p16 = 2 }
+                } else {
+                    fp = vp8br_bit(fp, 128)
+                    if fp.v == 0 { p16 = 3 } else { p16 = 1 }
+                }
+                let mut t: i64 = 0
+                while t < 4 {
+                    vec_set(up_pred, mbx * 4 + t, p16)
+                    vec_set(left_pred, t, p16)
+                    t = t + 1
+                }
+            } else {
+                let mut j: i64 = 0
+                while j < 4 {
+                    let mut p = vec_get(left_pred, j)
+                    let mut ii: i64 = 0
+                    while ii < 4 {
+                        let ab = vec_get(up_pred, mbx * 4 + ii)
+                        fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 0))
+                        if fp.v == 0 {
+                            p = 0
+                        } else {
+                            fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 1))
+                            if fp.v == 0 {
+                                p = 1
+                            } else {
+                                fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 2))
+                                if fp.v == 0 {
+                                    p = 2
+                                } else {
+                                    fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 3))
+                                    if fp.v == 0 {
+                                        fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 4))
+                                        if fp.v == 0 { p = 3 } else {
+                                            fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 5))
+                                            if fp.v == 0 { p = 4 } else { p = 5 }
+                                        }
+                                    } else {
+                                        fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 6))
+                                        if fp.v == 0 { p = 6 } else {
+                                            fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 7))
+                                            if fp.v == 0 { p = 7 } else {
+                                                fp = vp8br_bit(fp, vp8_pred_prob(predp, ab, p, 8))
+                                                if fp.v == 0 { p = 8 } else { p = 9 }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        vec_set(p4, j * 4 + ii, p)
+                        vec_set(up_pred, mbx * 4 + ii, p)
+                        ii = ii + 1
+                    }
+                    vec_set(left_pred, j, p)
+                    j = j + 1
+                }
+            }
+            fp = vp8br_bit(fp, 142)
+            let mut pc8: i64 = 0
+            if fp.v == 0 {
+                pc8 = 0
+            } else {
+                fp = vp8br_bit(fp, 114)
+                if fp.v == 0 { pc8 = 2 } else {
+                    fp = vp8br_bit(fp, 183)
+                    if fp.v == 0 { pc8 = 3 } else { pc8 = 1 }
+                }
+            }
+            let mut nzdc: i64 = 0
+            let mut nzac: i64 = 0
+            if skip == 0 {
+                let oi = mby & (nop - 1)
+                let mut obr = vec_get(obrs, oi)
+                let mut plane: i64 = 3
+                if y16 == 1 {
+                    let ctx = left_nzy + vec_get(up_nzy, mbx)
+                    obr = vp8_resid4(obr, prb, 1, ctx, vec_get(qy2dc, seg), vec_get(qy2ac, seg), 0, coeff, 384)
+                    left_nzy = obr.v
+                    vec_set(up_nzy, mbx, obr.v)
+                    vp8_wht(coeff)
+                    plane = 0
+                }
+                let mut lnz = left_nz & 15
+                let mut unz = vec_get(up_nz, mbx) & 15
+                let mut yb: i64 = 0
+                let mut base: i64 = 0
+                while yb < 4 {
+                    let mut nz = (lnz >> yb) & 1
+                    let mut xb: i64 = 0
+                    while xb < 4 {
+                        let uc = (unz >> xb) & 1
+                        obr = vp8_resid4(obr, prb, plane, nz + uc, vec_get(qy1dc, seg), vec_get(qy1ac, seg), y16, coeff, base)
+                        nz = obr.v
+                        unz = (unz & (15 - (1 << xb))) | (nz << xb)
+                        if nz == 1 { nzac = nzac | (1 << (yb * 4 + xb)) }
+                        if vec_get(coeff, base) != 0 { nzdc = nzdc | (1 << (yb * 4 + xb)) }
+                        base = base + 16
+                        xb = xb + 1
+                    }
+                    lnz = (lnz & (15 - (1 << yb))) | (nz << yb)
+                    yb = yb + 1
+                }
+                let mut cl = (left_nz >> 4) & 15
+                let mut cu = (vec_get(up_nz, mbx) >> 4) & 15
+                let mut ch: i64 = 0
+                while ch < 4 {
+                    let mut yb2: i64 = 0
+                    while yb2 < 2 {
+                        let mut nz = (cl >> (yb2 + ch)) & 1
+                        let mut xb: i64 = 0
+                        while xb < 2 {
+                            let uc = (cu >> (xb + ch)) & 1
+                            obr = vp8_resid4(obr, prb, 2, nz + uc, vec_get(quvdc, seg), vec_get(quvac, seg), 0, coeff, base)
+                            nz = obr.v
+                            cu = (cu & (15 - (1 << (xb + ch)))) | (nz << (xb + ch))
+                            let bit = 16 + ch * 2 + yb2 * 2 + xb
+                            if nz == 1 { nzac = nzac | (1 << bit) }
+                            if vec_get(coeff, base) != 0 { nzdc = nzdc | (1 << bit) }
+                            base = base + 16
+                            xb = xb + 1
+                        }
+                        cl = (cl & (15 - (1 << (yb2 + ch)))) | (nz << (yb2 + ch))
+                        yb2 = yb2 + 1
+                    }
+                    ch = ch + 2
+                }
+                left_nz = (lnz & 15) | ((cl & 15) << 4)
+                vec_set(up_nz, mbx, (unz & 15) | ((cu & 15) << 4))
+                vec_set(obrs, oi, obr)
+            } else {
+                if y16 == 1 {
+                    left_nzy = 0
+                    vec_set(up_nzy, mbx, 0)
+                }
+                left_nz = 0
+                vec_set(up_nz, mbx, 0)
+            }
+            // reconstruct
+            if y16 == 1 {
+                vp8_pred16(ybr, vp8_check_dc(p16, mbx, mby), mbx, mby)
+                let mut j: i64 = 0
+                while j < 4 {
+                    let mut ii: i64 = 0
+                    while ii < 4 {
+                        let n = 4 * j + ii
+                        let mask = 1 << n
+                        if (nzac & mask) != 0 {
+                            vp8_idct4(ybr, coeff, 4 * j + 1, 4 * ii + 8, 16 * n)
+                        } else {
+                            if (nzdc & mask) != 0 {
+                                vp8_idct4dc(ybr, coeff, 4 * j + 1, 4 * ii + 8, 16 * n)
+                            }
+                        }
+                        ii = ii + 1
+                    }
+                    j = j + 1
+                }
+            } else {
+                let mut j: i64 = 0
+                while j < 4 {
+                    let mut ii: i64 = 0
+                    while ii < 4 {
+                        let n = 4 * j + ii
+                        vp8_pred4(ybr, vec_get(p4, j * 4 + ii), 4 * j + 1, 4 * ii + 8)
+                        let mask = 1 << n
+                        if (nzac & mask) != 0 {
+                            vp8_idct4(ybr, coeff, 4 * j + 1, 4 * ii + 8, 16 * n)
+                        } else {
+                            if (nzdc & mask) != 0 {
+                                vp8_idct4dc(ybr, coeff, 4 * j + 1, 4 * ii + 8, 16 * n)
+                            }
+                        }
+                        ii = ii + 1
+                    }
+                    j = j + 1
+                }
+            }
+            let pcm = vp8_check_dc(pc8, mbx, mby)
+            vp8_pred8(ybr, pcm, 18, 8, mbx, mby)
+            if (nzac & 983040) != 0 {
+                vp8_idct4(ybr, coeff, 18, 8, 256)
+                vp8_idct4(ybr, coeff, 18, 12, 272)
+                vp8_idct4(ybr, coeff, 22, 8, 288)
+                vp8_idct4(ybr, coeff, 22, 12, 304)
+            } else {
+                if (nzdc & 983040) != 0 {
+                    vp8_idct4dc(ybr, coeff, 18, 8, 256)
+                    vp8_idct4dc(ybr, coeff, 18, 12, 272)
+                    vp8_idct4dc(ybr, coeff, 22, 8, 288)
+                    vp8_idct4dc(ybr, coeff, 22, 12, 304)
+                }
+            }
+            vp8_pred8(ybr, pcm, 18, 24, mbx, mby)
+            if (nzac & 15728640) != 0 {
+                vp8_idct4(ybr, coeff, 18, 24, 320)
+                vp8_idct4(ybr, coeff, 18, 28, 336)
+                vp8_idct4(ybr, coeff, 22, 24, 352)
+                vp8_idct4(ybr, coeff, 22, 28, 368)
+            } else {
+                if (nzdc & 15728640) != 0 {
+                    vp8_idct4dc(ybr, coeff, 18, 24, 320)
+                    vp8_idct4dc(ybr, coeff, 18, 28, 336)
+                    vp8_idct4dc(ybr, coeff, 22, 24, 352)
+                    vp8_idct4dc(ybr, coeff, 22, 28, 368)
+                }
+            }
+            // copy to planes
+            let mut y: i64 = 0
+            while y < 16 {
+                let mut x: i64 = 0
+                while x < 16 {
+                    bytes_set(ypl, (mby * 16 + y) * mbw * 16 + mbx * 16 + x, vp8_ybr_get(ybr, 1 + y, 8 + x))
+                    x = x + 1
+                }
+                y = y + 1
+            }
+            y = 0
+            while y < 8 {
+                let mut x: i64 = 0
+                while x < 8 {
+                    bytes_set(upl, (mby * 8 + y) * mbw * 8 + mbx * 8 + x, vp8_ybr_get(ybr, 18 + y, 8 + x))
+                    bytes_set(vpl, (mby * 8 + y) * mbw * 8 + mbx * 8 + x, vp8_ybr_get(ybr, 18 + y, 24 + x))
+                    x = x + 1
+                }
+                y = y + 1
+            }
+            let mut jsel: i64 = 0
+            if y16 == 0 {
+                jsel = 1
+            }
+            let packed = vec_get(fp_pack, seg * 2 + jsel)
+            let mut inner = jsel
+            if skip == 0 {
+                if nzac != 0 || nzdc != 0 {
+                    inner = 1
+                }
+            }
+            vec_set(mb_fl, mby * mbw + mbx, packed & 255)
+            vec_set(mb_fi, mby * mbw + mbx, (packed >> 8) & 255)
+            vec_set(mb_fh, mby * mbw + mbx, (packed >> 16) & 255)
+            vec_set(mb_in, mby * mbw + mbx, inner)
+            mbx = mbx + 1
+        }
+        mby = mby + 1
+    }
+    if flevel != 0 {
+        let ystr = mbw * 16
+        let cstr = mbw * 8
+        mby = 0
+        while mby < mbh {
+            let mut mbx: i64 = 0
+            while mbx < mbw {
+                let l = vec_get(mb_fl, mby * mbw + mbx)
+                if l != 0 {
+                    let il = vec_get(mb_fi, mby * mbw + mbx)
+                    let hl = vec_get(mb_fh, mby * mbw + mbx)
+                    let inn = vec_get(mb_in, mby * mbw + mbx)
+                    let yi = (mby * ystr + mbx) * 16
+                    let ci = (mby * cstr + mbx) * 8
+                    if fsimple == 1 {
+                        if mbx > 0 {
+                            vp8_filter2(ypl, l + 4, yi, ystr, 1, 16)
+                        }
+                        if inn == 1 {
+                            vp8_filter2(ypl, l, yi + 4, ystr, 1, 16)
+                            vp8_filter2(ypl, l, yi + 8, ystr, 1, 16)
+                            vp8_filter2(ypl, l, yi + 12, ystr, 1, 16)
+                        }
+                        if mby > 0 {
+                            vp8_filter2(ypl, l + 4, yi, 1, ystr, 16)
+                        }
+                        if inn == 1 {
+                            vp8_filter2(ypl, l, yi + ystr * 4, 1, ystr, 16)
+                            vp8_filter2(ypl, l, yi + ystr * 8, 1, ystr, 16)
+                            vp8_filter2(ypl, l, yi + ystr * 12, 1, ystr, 16)
+                        }
+                    } else {
+                        if mbx > 0 {
+                            vp8_filter246(ypl, 16, l + 4, il, hl, yi, ystr, 1, 0)
+                            vp8_filter246(upl, 8, l + 4, il, hl, ci, cstr, 1, 0)
+                            vp8_filter246(vpl, 8, l + 4, il, hl, ci, cstr, 1, 0)
+                        }
+                        if inn == 1 {
+                            vp8_filter246(ypl, 16, l, il, hl, yi + 4, ystr, 1, 1)
+                            vp8_filter246(ypl, 16, l, il, hl, yi + 8, ystr, 1, 1)
+                            vp8_filter246(ypl, 16, l, il, hl, yi + 12, ystr, 1, 1)
+                            vp8_filter246(upl, 8, l, il, hl, ci + 4, cstr, 1, 1)
+                            vp8_filter246(vpl, 8, l, il, hl, ci + 4, cstr, 1, 1)
+                        }
+                        if mby > 0 {
+                            vp8_filter246(ypl, 16, l + 4, il, hl, yi, 1, ystr, 0)
+                            vp8_filter246(upl, 8, l + 4, il, hl, ci, 1, cstr, 0)
+                            vp8_filter246(vpl, 8, l + 4, il, hl, ci, 1, cstr, 0)
+                        }
+                        if inn == 1 {
+                            vp8_filter246(ypl, 16, l, il, hl, yi + ystr * 4, 1, ystr, 1)
+                            vp8_filter246(ypl, 16, l, il, hl, yi + ystr * 8, 1, ystr, 1)
+                            vp8_filter246(ypl, 16, l, il, hl, yi + ystr * 12, 1, ystr, 1)
+                            vp8_filter246(upl, 8, l, il, hl, ci + cstr * 4, 1, cstr, 1)
+                            vp8_filter246(vpl, 8, l, il, hl, ci + cstr * 4, 1, cstr, 1)
+                        }
+                    }
+                }
+                mbx = mbx + 1
+            }
+            mby = mby + 1
+        }
+    }
+    let px = bytes_new(w * h * 4)
+    let mut y: i64 = 0
+    while y < h {
+        let mut x: i64 = 0
+        while x < w {
+            let yy = bytes_at(ypl, y * mbw * 16 + x) & 255
+            let cb = bytes_at(upl, (y / 2) * mbw * 8 + x / 2) & 255
+            let cr = bytes_at(vpl, (y / 2) * mbw * 8 + x / 2) & 255
+            let p = vp8_yuv2rgb(yy, cb, cr)
+            let o = (y * w + x) * 4
+            bytes_set(px, o, p.r)
+            bytes_set(px, o + 1, p.g)
+            bytes_set(px, o + 2, p.b)
+            bytes_set(px, o + 3, 255)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return img_ok(w, h, px)
+}

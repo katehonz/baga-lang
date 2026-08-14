@@ -1,0 +1,194 @@
+// ico.baga — Windows ICO (image-rs ico). PNG or BMP-DIB payload; encode as PNG.
+
+import "types.baga"
+import "png.baga"
+
+fn ico_info(b: bytes) -> ImgInfo {
+    if bytes_len(b) < 6 {
+        return img_info_fail("ico: truncated")
+    }
+    if img_le16(b, 0) != 0 || img_le16(b, 2) != 1 {
+        return img_info_fail("ico: not ICO")
+    }
+    let n = img_le16(b, 4)
+    if n <= 0 || bytes_len(b) < 6 + n * 16 {
+        return img_info_fail("ico: bad count")
+    }
+    let mut best_w: i64 = 0
+    let mut best_h: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let o = 6 + i * 16
+        let mut w = bytes_at(b, o) & 255
+        let mut h = bytes_at(b, o + 1) & 255
+        if w == 0 { w = 256 }
+        if h == 0 { h = 256 }
+        if w * h >= best_w * best_h {
+            best_w = w
+            best_h = h
+        }
+        i = i + 1
+    }
+    return img_info_ok(img_fmt_ico(), best_w, best_h)
+}
+
+fn ico_best(b: bytes) -> i64 {
+    let n = img_le16(b, 4)
+    let mut best: i64 = 0
+    let mut best_a: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let o = 6 + i * 16
+        let mut w = bytes_at(b, o) & 255
+        let mut h = bytes_at(b, o + 1) & 255
+        if w == 0 { w = 256 }
+        if h == 0 { h = 256 }
+        let a = w * h
+        if a >= best_a {
+            best_a = a
+            best = i
+        }
+        i = i + 1
+    }
+    return best
+}
+
+fn ico_decode(src: bytes) -> Image {
+    if bytes_len(src) < 22 {
+        return img_fail("ico: truncated")
+    }
+    if img_le16(src, 0) != 0 || img_le16(src, 2) != 1 {
+        return img_fail("ico: not ICO")
+    }
+    let n = img_le16(src, 4)
+    if n <= 0 || bytes_len(src) < 6 + n * 16 {
+        return img_fail("ico: bad count")
+    }
+    let i = ico_best(src)
+    let o = 6 + i * 16
+    let sz = img_le32(src, o + 8)
+    let off = img_le32(src, o + 12)
+    if off < 0 || sz < 4 || off + sz > bytes_len(src) {
+        return img_fail("ico: bad image offset")
+    }
+    let payload = bytes_slice(src, off, off + sz)
+    if bytes_len(payload) >= 8 && (bytes_at(payload, 0) & 255) == 137 && (bytes_at(payload, 1) & 255) == 80 {
+        return png_decode(payload)
+    }
+    return ico_decode_bmp(payload)
+}
+
+fn ico_decode_bmp(b: bytes) -> Image {
+    if bytes_len(b) < 40 {
+        return img_fail("ico: short DIB")
+    }
+    let dib = img_le32(b, 0)
+    if dib < 40 {
+        return img_fail("ico: need BITMAPINFOHEADER")
+    }
+    let w = img_le32(b, 4)
+    let h2 = img_le32(b, 8)
+    let mut h = h2
+    if h2 < 0 {
+        h = 0 - h2
+    }
+    if h >= 2 && (h % 2) == 0 {
+        h = h / 2
+    }
+    let planes = img_le16(b, 12)
+    let bpp = img_le16(b, 14)
+    let comp = img_le32(b, 16)
+    if planes != 1 || comp != 0 {
+        return img_fail("ico: only BI_RGB")
+    }
+    if bpp != 24 && bpp != 32 {
+        return img_fail("ico: only 24/32 bpp")
+    }
+    if w <= 0 || h <= 0 || w > 4096 || h > 4096 {
+        return img_fail("ico: bad size")
+    }
+    let spp = bpp / 8
+    let stride = (w * spp + 3) / 4 * 4
+    let off = dib
+    if off + stride * h > bytes_len(b) {
+        return img_fail("ico: truncated XOR")
+    }
+    let px = bytes_new(w * h * 4)
+    let mut y: i64 = 0
+    while y < h {
+        let src_y = h - 1 - y
+        let row = off + src_y * stride
+        let mut x: i64 = 0
+        while x < w {
+            let s = row + x * spp
+            let bb = bytes_at(b, s) & 255
+            let gg = bytes_at(b, s + 1) & 255
+            let rr = bytes_at(b, s + 2) & 255
+            let mut aa: i64 = 255
+            if bpp == 32 {
+                aa = bytes_at(b, s + 3) & 255
+            }
+            let o = (y * w + x) * 4
+            bytes_set(px, o, rr)
+            bytes_set(px, o + 1, gg)
+            bytes_set(px, o + 2, bb)
+            bytes_set(px, o + 3, aa)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    if bpp == 24 {
+        let mask_off = off + stride * h
+        let mstride = ((w + 31) / 32) * 4
+        if mask_off + mstride * h <= bytes_len(b) {
+            let mut my: i64 = 0
+            while my < h {
+                let src_y = h - 1 - my
+                let row = mask_off + src_y * mstride
+                let mut x: i64 = 0
+                while x < w {
+                    let byte = bytes_at(b, row + x / 8) & 255
+                    let bit = (byte >> (7 - (x % 8))) & 1
+                    if bit == 1 {
+                        bytes_set(px, (my * w + x) * 4 + 3, 0)
+                    }
+                    x = x + 1
+                }
+                my = my + 1
+            }
+        }
+    }
+    return img_ok(w, h, px)
+}
+
+fn ico_encode(im: Image) -> bytes {
+    if im.ok == 0 {
+        return bytes_new(0)
+    }
+    let png = png_encode(im)
+    if bytes_len(png) == 0 {
+        return bytes_new(0)
+    }
+    let out = bytes_new(22 + bytes_len(png))
+    img_put_le16(out, 0, 0)
+    img_put_le16(out, 2, 1)
+    img_put_le16(out, 4, 1)
+    let mut iw = im.w
+    let mut ih = im.h
+    if iw >= 256 { iw = 0 }
+    if ih >= 256 { ih = 0 }
+    bytes_set(out, 6, iw)
+    bytes_set(out, 7, ih)
+    bytes_set(out, 8, 0)
+    bytes_set(out, 9, 0)
+    img_put_le16(out, 10, 1)
+    img_put_le16(out, 12, 32)
+    img_put_le32(out, 14, bytes_len(png))
+    img_put_le32(out, 18, 22)
+    let mut i: i64 = 0
+    while i < bytes_len(png) {
+        bytes_set(out, 22 + i, bytes_at(png, i))
+        i = i + 1
+    }
+    return out
+}

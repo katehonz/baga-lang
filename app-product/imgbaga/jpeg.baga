@@ -1,0 +1,938 @@
+// jpeg.baga — baseline DCT JPEG decode (SOF0), image-rs jpeg subset.
+// Integer IDCT after nanojpeg (Loeffler / Arai / Nakajima). Encode: jpeg_enc.baga.
+
+import "types.baga"
+
+fn jpg_zz() -> Vec<i64> {
+    let z = vec_new()
+    vec_push(z, 0)
+    vec_push(z, 1)
+    vec_push(z, 8)
+    vec_push(z, 16)
+    vec_push(z, 9)
+    vec_push(z, 2)
+    vec_push(z, 3)
+    vec_push(z, 10)
+    vec_push(z, 17)
+    vec_push(z, 24)
+    vec_push(z, 32)
+    vec_push(z, 25)
+    vec_push(z, 18)
+    vec_push(z, 11)
+    vec_push(z, 4)
+    vec_push(z, 5)
+    vec_push(z, 12)
+    vec_push(z, 19)
+    vec_push(z, 26)
+    vec_push(z, 33)
+    vec_push(z, 40)
+    vec_push(z, 48)
+    vec_push(z, 41)
+    vec_push(z, 34)
+    vec_push(z, 27)
+    vec_push(z, 20)
+    vec_push(z, 13)
+    vec_push(z, 6)
+    vec_push(z, 7)
+    vec_push(z, 14)
+    vec_push(z, 21)
+    vec_push(z, 28)
+    vec_push(z, 35)
+    vec_push(z, 42)
+    vec_push(z, 49)
+    vec_push(z, 56)
+    vec_push(z, 57)
+    vec_push(z, 50)
+    vec_push(z, 43)
+    vec_push(z, 36)
+    vec_push(z, 29)
+    vec_push(z, 22)
+    vec_push(z, 15)
+    vec_push(z, 23)
+    vec_push(z, 30)
+    vec_push(z, 37)
+    vec_push(z, 44)
+    vec_push(z, 51)
+    vec_push(z, 58)
+    vec_push(z, 59)
+    vec_push(z, 52)
+    vec_push(z, 45)
+    vec_push(z, 38)
+    vec_push(z, 31)
+    vec_push(z, 39)
+    vec_push(z, 46)
+    vec_push(z, 53)
+    vec_push(z, 60)
+    vec_push(z, 61)
+    vec_push(z, 54)
+    vec_push(z, 47)
+    vec_push(z, 55)
+    vec_push(z, 62)
+    vec_push(z, 63)
+    return z
+}
+
+fn vec_zeros(n: i64) -> Vec<i64> {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, 0)
+        i = i + 1
+    }
+    return v
+}
+
+struct Huff {
+    mincode: Vec<i64>,
+    maxcode: Vec<i64>,
+    valptr: Vec<i64>,
+    vals: Vec<i64>,
+    ok: i64
+}
+
+fn huff_empty() -> Huff {
+    return Huff {
+        mincode: vec_zeros(17),
+        maxcode: vec_zeros(17),
+        valptr: vec_zeros(17),
+        vals: vec_new(),
+        ok: 0
+    }
+}
+
+fn huff_build(bits: Vec<i64>, vals: Vec<i64>) -> Huff {
+    let minc = vec_zeros(17)
+    let maxc = vec_zeros(17)
+    let vp = vec_zeros(17)
+    let mut code: i64 = 0
+    let mut p: i64 = 0
+    let mut l: i64 = 1
+    while l <= 16 {
+        let nb = vec_get(bits, l)
+        if nb != 0 {
+            vec_set(vp, l, p)
+            vec_set(minc, l, code)
+            p = p + nb
+            code = code + nb
+            vec_set(maxc, l, code - 1)
+        } else {
+            vec_set(maxc, l, 0 - 1)
+        }
+        code = code * 2
+        l = l + 1
+    }
+    return Huff { mincode: minc, maxcode: maxc, valptr: vp, vals: vals, ok: 1 }
+}
+
+struct Jpg {
+    data: bytes,
+    pos: i64,
+    bitbuf: i64,
+    nbits: i64,
+    ok: i64,
+    err: str,
+    w: i64,
+    h: i64,
+    ncomp: i64,
+    cid: Vec<i64>,
+    ch: Vec<i64>,
+    cv: Vec<i64>,
+    ctq: Vec<i64>,
+    ctd: Vec<i64>,
+    cta: Vec<i64>,
+    dcpred: Vec<i64>,
+    qt: Vec<i64>,
+    hdc0: Huff,
+    hdc1: Huff,
+    hdc2: Huff,
+    hdc3: Huff,
+    hac0: Huff,
+    hac1: Huff,
+    hac2: Huff,
+    hac3: Huff,
+    ri: i64,
+    stash: i64,
+    outblk: Vec<i64>
+}
+
+fn jpg_new(data: bytes) -> Jpg {
+    return Jpg {
+        data: data, pos: 0, bitbuf: 0, nbits: 0, ok: 1, err: "",
+        w: 0, h: 0, ncomp: 0,
+        cid: vec_zeros(4), ch: vec_zeros(4), cv: vec_zeros(4),
+        ctq: vec_zeros(4), ctd: vec_zeros(4), cta: vec_zeros(4),
+        dcpred: vec_zeros(4), qt: vec_zeros(256),
+        hdc0: huff_empty(), hdc1: huff_empty(), hdc2: huff_empty(), hdc3: huff_empty(),
+        hac0: huff_empty(), hac1: huff_empty(), hac2: huff_empty(), hac3: huff_empty(),
+        ri: 0, stash: 0, outblk: vec_zeros(64)
+    }
+}
+
+fn jpg_fail(j: Jpg, msg: str) -> Jpg {
+    j.ok = 0
+    j.err = msg
+    return j
+}
+
+fn jpg_get_hdc(j: Jpg, i: i64) -> Huff {
+    if i == 1 { return j.hdc1 }
+    if i == 2 { return j.hdc2 }
+    if i == 3 { return j.hdc3 }
+    return j.hdc0
+}
+
+fn jpg_get_hac(j: Jpg, i: i64) -> Huff {
+    if i == 1 { return j.hac1 }
+    if i == 2 { return j.hac2 }
+    if i == 3 { return j.hac3 }
+    return j.hac0
+}
+
+fn jpg_set_hdc(j: Jpg, i: i64, h: Huff) -> Jpg {
+    if i == 1 { j.hdc1 = h }
+    if i == 2 { j.hdc2 = h }
+    if i == 3 { j.hdc3 = h }
+    if i == 0 { j.hdc0 = h }
+    return j
+}
+
+fn jpg_set_hac(j: Jpg, i: i64, h: Huff) -> Jpg {
+    if i == 1 { j.hac1 = h }
+    if i == 2 { j.hac2 = h }
+    if i == 3 { j.hac3 = h }
+    if i == 0 { j.hac0 = h }
+    return j
+}
+
+fn jpeg_info(b: bytes) -> ImgInfo {
+    if bytes_len(b) < 4 {
+        return img_info_fail("jpeg: truncated")
+    }
+    if (bytes_at(b, 0) & 255) != 255 || (bytes_at(b, 1) & 255) != 216 {
+        return img_info_fail("jpeg: no SOI")
+    }
+    let n = bytes_len(b)
+    let mut i: i64 = 2
+    while i + 4 <= n {
+        if (bytes_at(b, i) & 255) != 255 {
+            i = i + 1
+        } else {
+            let mut mk = bytes_at(b, i + 1) & 255
+            while mk == 255 && i + 2 < n {
+                i = i + 1
+                mk = bytes_at(b, i + 1) & 255
+            }
+            if mk == 216 {
+                i = i + 2
+            } else {
+                if mk == 217 {
+                    return img_info_fail("jpeg: no SOF")
+                }
+                if mk >= 192 && mk <= 195 {
+                    if i + 9 >= n {
+                        return img_info_fail("jpeg: truncated SOF")
+                    }
+                    let h = img_be16(b, i + 5)
+                    let w = img_be16(b, i + 7)
+                    return img_info_ok(img_fmt_jpeg(), w, h)
+                }
+                if mk == 1 || (mk >= 208 && mk <= 215) {
+                    i = i + 2
+                } else {
+                    if i + 3 >= n {
+                        return img_info_fail("jpeg: truncated marker")
+                    }
+                    let len = img_be16(b, i + 2)
+                    if len < 2 {
+                        return img_info_fail("jpeg: bad marker len")
+                    }
+                    i = i + 2 + len
+                }
+            }
+        }
+    }
+    return img_info_fail("jpeg: no SOF")
+}
+
+fn jpg_next_byte(j: Jpg) -> Jpg {
+    if j.pos >= bytes_len(j.data) {
+        return jpg_fail(j, "jpeg: truncated stream")
+    }
+    let b = bytes_at(j.data, j.pos) & 255
+    j.pos = j.pos + 1
+    if b != 255 {
+        j.bitbuf = b
+        return j
+    }
+    let mut running = 1
+    while running == 1 {
+        if j.pos >= bytes_len(j.data) {
+            return jpg_fail(j, "jpeg: truncated after FF")
+        }
+        let m = bytes_at(j.data, j.pos) & 255
+        j.pos = j.pos + 1
+        if m == 255 {
+            running = 1
+        } else {
+            if m == 0 {
+                j.bitbuf = 255
+                return j
+            }
+            if m >= 208 && m <= 215 {
+                j.bitbuf = 0
+                j.nbits = 0
+                vec_set(j.dcpred, 0, 0)
+                vec_set(j.dcpred, 1, 0)
+                vec_set(j.dcpred, 2, 0)
+                vec_set(j.dcpred, 3, 0)
+                return jpg_next_byte(j)
+            }
+            return jpg_fail(j, "jpeg: unexpected marker in scan")
+        }
+    }
+    return j
+}
+
+fn jpg_getbit(j: Jpg) -> Jpg {
+    if j.ok == 0 {
+        return j
+    }
+    if j.nbits == 0 {
+        let j2 = jpg_next_byte(j)
+        if j2.ok == 0 {
+            return j2
+        }
+        j2.nbits = 8
+        return jpg_take_bit(j2)
+    }
+    return jpg_take_bit(j)
+}
+
+fn jpg_take_bit(j: Jpg) -> Jpg {
+    j.nbits = j.nbits - 1
+    let v = (j.bitbuf >> j.nbits) & 1
+    j.ok = v + 2
+    return j
+}
+
+fn jpg_bit(j: Jpg) -> i64 {
+    return j.ok - 2
+}
+
+fn jpg_receive(j0: Jpg, t: i64) -> Jpg {
+    let mut j = j0
+    let mut v: i64 = 0
+    let mut k: i64 = 0
+    while k < t {
+        j = jpg_getbit(j)
+        if j.ok < 2 {
+            return j
+        }
+        v = (v << 1) | jpg_bit(j)
+        k = k + 1
+    }
+    return jpg_stash(j, v)
+}
+
+fn jpg_stash(j: Jpg, v: i64) -> Jpg {
+    j.stash = v
+    j.ok = 1
+    return j
+}
+
+fn jpg_stashed(j: Jpg) -> i64 {
+    return j.stash
+}
+
+fn jpg_extend(v: i64, t: i64) -> i64 {
+    if t == 0 {
+        return 0
+    }
+    let vt = 1 << (t - 1)
+    if v < vt {
+        return v - (1 << t) + 1
+    }
+    return v
+}
+
+fn jpg_huff_dec(j0: Jpg, h: Huff) -> Jpg {
+    if h.ok == 0 {
+        return jpg_fail(j0, "jpeg: empty huffman table")
+    }
+    let mut j = jpg_getbit(j0)
+    if j.ok < 2 {
+        return j
+    }
+    let mut code = jpg_bit(j)
+    let mut l: i64 = 1
+    while l <= 16 {
+        if vec_get(h.maxcode, l) >= 0 && code <= vec_get(h.maxcode, l) {
+            let idx = vec_get(h.valptr, l) + code - vec_get(h.mincode, l)
+            if idx < 0 || idx >= vec_len(h.vals) {
+                return jpg_fail(j, "jpeg: huff index")
+            }
+            return jpg_stash(j, vec_get(h.vals, idx))
+        }
+        j = jpg_getbit(j)
+        if j.ok < 2 {
+            return j
+        }
+        code = (code << 1) | jpg_bit(j)
+        l = l + 1
+    }
+    return jpg_fail(j, "jpeg: bad huffman code")
+}
+
+fn jpg_idct_row(blk: Vec<i64>, off: i64) {
+    let w1 = 2841
+    let w2 = 2676
+    let w3 = 2408
+    let w5 = 1609
+    let w6 = 1108
+    let w7 = 565
+    let x1 = vec_get(blk, off + 4) << 11
+    let x2 = vec_get(blk, off + 6)
+    let x3 = vec_get(blk, off + 2)
+    let x4 = vec_get(blk, off + 1)
+    let x5 = vec_get(blk, off + 7)
+    let x6 = vec_get(blk, off + 5)
+    let x7 = vec_get(blk, off + 3)
+    if (x1 | x2 | x3 | x4 | x5 | x6 | x7) == 0 {
+        let v = vec_get(blk, off) << 3
+        vec_set(blk, off, v)
+        vec_set(blk, off + 1, v)
+        vec_set(blk, off + 2, v)
+        vec_set(blk, off + 3, v)
+        vec_set(blk, off + 4, v)
+        vec_set(blk, off + 5, v)
+        vec_set(blk, off + 6, v)
+        vec_set(blk, off + 7, v)
+        return
+    }
+    let mut x0 = (vec_get(blk, off) << 11) + 128
+    let mut x8 = w7 * (x4 + x5)
+    let nx4 = x8 + (w1 - w7) * x4
+    let nx5 = x8 - (w1 + w7) * x5
+    x8 = w3 * (x6 + x7)
+    let nx6 = x8 - (w3 - w5) * x6
+    let nx7 = x8 - (w3 + w5) * x7
+    x8 = x0 + x1
+    x0 = x0 - x1
+    let mut x1b = w6 * (x3 + x2)
+    let nx2 = x1b - (w2 + w6) * x2
+    let nx3 = x1b + (w2 - w6) * x3
+    let y1 = nx4 + nx6
+    let y4 = nx4 - nx6
+    let y6 = nx5 + nx7
+    let y5 = nx5 - nx7
+    let y7 = x8 + nx3
+    let y8 = x8 - nx3
+    let y3 = x0 + nx2
+    let y0 = x0 - nx2
+    let y2 = (181 * (y4 + y5) + 128) >> 8
+    let y4b = (181 * (y4 - y5) + 128) >> 8
+    vec_set(blk, off, (y7 + y1) >> 8)
+    vec_set(blk, off + 1, (y3 + y2) >> 8)
+    vec_set(blk, off + 2, (y0 + y4b) >> 8)
+    vec_set(blk, off + 3, (y8 + y6) >> 8)
+    vec_set(blk, off + 4, (y8 - y6) >> 8)
+    vec_set(blk, off + 5, (y0 - y4b) >> 8)
+    vec_set(blk, off + 6, (y3 - y2) >> 8)
+    vec_set(blk, off + 7, (y7 - y1) >> 8)
+}
+
+fn jpg_idct_col(blk: Vec<i64>, col: i64) {
+    let w1 = 2841
+    let w2 = 2676
+    let w3 = 2408
+    let w5 = 1609
+    let w6 = 1108
+    let w7 = 565
+    let x1 = vec_get(blk, col + 32) << 8
+    let x2 = vec_get(blk, col + 48)
+    let x3 = vec_get(blk, col + 16)
+    let x4 = vec_get(blk, col + 8)
+    let x5 = vec_get(blk, col + 56)
+    let x6 = vec_get(blk, col + 40)
+    let x7 = vec_get(blk, col + 24)
+    if (x1 | x2 | x3 | x4 | x5 | x6 | x7) == 0 {
+        let v = img_clamp8(((vec_get(blk, col) + 32) >> 6) + 128)
+        vec_set(blk, col, v)
+        vec_set(blk, col + 8, v)
+        vec_set(blk, col + 16, v)
+        vec_set(blk, col + 24, v)
+        vec_set(blk, col + 32, v)
+        vec_set(blk, col + 40, v)
+        vec_set(blk, col + 48, v)
+        vec_set(blk, col + 56, v)
+        return
+    }
+    let mut x0 = (vec_get(blk, col) << 8) + 8192
+    let mut x8 = w7 * (x4 + x5) + 4
+    let nx4 = (x8 + (w1 - w7) * x4) >> 3
+    let nx5 = (x8 - (w1 + w7) * x5) >> 3
+    x8 = w3 * (x6 + x7) + 4
+    let nx6 = (x8 - (w3 - w5) * x6) >> 3
+    let nx7 = (x8 - (w3 + w5) * x7) >> 3
+    x8 = x0 + x1
+    x0 = x0 - x1
+    let x1b = w6 * (x3 + x2) + 4
+    let nx2 = (x1b - (w2 + w6) * x2) >> 3
+    let nx3 = (x1b + (w2 - w6) * x3) >> 3
+    let y1 = nx4 + nx6
+    let y4 = nx4 - nx6
+    let y6 = nx5 + nx7
+    let y5 = nx5 - nx7
+    let y7 = x8 + nx3
+    let y8 = x8 - nx3
+    let y3 = x0 + nx2
+    let y0 = x0 - nx2
+    let y2 = (181 * (y4 + y5) + 128) >> 8
+    let y4b = (181 * (y4 - y5) + 128) >> 8
+    vec_set(blk, col, img_clamp8(((y7 + y1) >> 14) + 128))
+    vec_set(blk, col + 8, img_clamp8(((y3 + y2) >> 14) + 128))
+    vec_set(blk, col + 16, img_clamp8(((y0 + y4b) >> 14) + 128))
+    vec_set(blk, col + 24, img_clamp8(((y8 + y6) >> 14) + 128))
+    vec_set(blk, col + 32, img_clamp8(((y8 - y6) >> 14) + 128))
+    vec_set(blk, col + 40, img_clamp8(((y0 - y4b) >> 14) + 128))
+    vec_set(blk, col + 48, img_clamp8(((y3 - y2) >> 14) + 128))
+    vec_set(blk, col + 56, img_clamp8(((y7 - y1) >> 14) + 128))
+}
+
+fn jpg_idct(blk: Vec<i64>) {
+    let mut r: i64 = 0
+    while r < 8 {
+        jpg_idct_row(blk, r * 8)
+        r = r + 1
+    }
+    let mut c: i64 = 0
+    while c < 8 {
+        jpg_idct_col(blk, c)
+        c = c + 1
+    }
+}
+
+fn jpg_decode_block(j0: Jpg, ci: i64) -> Jpg {
+    let zz = jpg_zz()
+    let td = vec_get(j0.ctd, ci)
+    let ta = vec_get(j0.cta, ci)
+    let tq = vec_get(j0.ctq, ci)
+    let hdc = jpg_get_hdc(j0, td)
+    let mut j = jpg_huff_dec(j0, hdc)
+    if j.ok == 0 {
+        return j
+    }
+    let s = jpg_stashed(j)
+    let mut diff: i64 = 0
+    if s != 0 {
+        j = jpg_receive(j, s)
+        if j.ok == 0 {
+            return j
+        }
+        diff = jpg_extend(jpg_stashed(j), s)
+    }
+    let dc = vec_get(j.dcpred, ci) + diff
+    vec_set(j.dcpred, ci, dc)
+    let blk = vec_zeros(64)
+    let q0 = tq * 64
+    vec_set(blk, 0, dc * vec_get(j.qt, q0))
+    let hac = jpg_get_hac(j, ta)
+    let mut k: i64 = 1
+    while k < 64 {
+        j = jpg_huff_dec(j, hac)
+        if j.ok == 0 {
+            return j
+        }
+        let rs = jpg_stashed(j)
+        let rr = rs >> 4
+        let sz = rs & 15
+        if sz == 0 {
+            if rr != 15 {
+                k = 64
+            } else {
+                k = k + 16
+            }
+        } else {
+            k = k + rr
+            if k >= 64 {
+                return jpg_fail(j, "jpeg: ac overflow")
+            }
+            j = jpg_receive(j, sz)
+            if j.ok == 0 {
+                return j
+            }
+            let ac = jpg_extend(jpg_stashed(j), sz)
+            let nat = vec_get(zz, k)
+            vec_set(blk, nat, ac * vec_get(j.qt, q0 + nat))
+            k = k + 1
+        }
+    }
+    jpg_idct(blk)
+    let mut i: i64 = 0
+    while i < 64 {
+        vec_set(j.outblk, i, vec_get(blk, i))
+        i = i + 1
+    }
+    j.ok = 1
+    return j
+}
+
+fn jpg_copy_block(dst: Vec<i64>, blk_off: i64, j: Jpg) {
+    let mut i: i64 = 0
+    while i < 64 {
+        vec_set(dst, blk_off + i, vec_get(j.outblk, i))
+        i = i + 1
+    }
+}
+
+fn jpg_find_comp(j: Jpg, id: i64) -> i64 {
+    let mut i: i64 = 0
+    while i < j.ncomp {
+        if vec_get(j.cid, i) == id {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+fn jpg_parse_dqt(j: Jpg, start: i64, end: i64) -> Jpg {
+    let mut p = start
+    while p < end {
+        if p >= bytes_len(j.data) {
+            return jpg_fail(j, "jpeg: DQT truncated")
+        }
+        let pqtq = bytes_at(j.data, p) & 255
+        p = p + 1
+        let pq = pqtq >> 4
+        let tq = pqtq & 15
+        if tq > 3 {
+            return jpg_fail(j, "jpeg: bad qt id")
+        }
+        let zz = jpg_zz()
+        let mut k: i64 = 0
+        while k < 64 {
+            let mut v: i64 = 0
+            if pq == 0 {
+                if p >= end {
+                    return jpg_fail(j, "jpeg: DQT short")
+                }
+                v = bytes_at(j.data, p) & 255
+                p = p + 1
+            } else {
+                if p + 1 >= end {
+                    return jpg_fail(j, "jpeg: DQT short16")
+                }
+                v = img_be16(j.data, p)
+                p = p + 2
+            }
+            vec_set(j.qt, tq * 64 + vec_get(zz, k), v)
+            k = k + 1
+        }
+    }
+    return j
+}
+
+fn jpg_parse_dht(j0: Jpg, start: i64, end: i64) -> Jpg {
+    let mut j = j0
+    let mut p = start
+    while p < end {
+        if p >= bytes_len(j.data) {
+            return jpg_fail(j, "jpeg: DHT truncated")
+        }
+        let tcth = bytes_at(j.data, p) & 255
+        p = p + 1
+        let tc = tcth >> 4
+        let th = tcth & 15
+        if th > 3 || tc > 1 {
+            return jpg_fail(j, "jpeg: bad DHT id")
+        }
+        if p + 16 > end {
+            return jpg_fail(j, "jpeg: DHT bits")
+        }
+        let bits = vec_zeros(17)
+        let mut nsym: i64 = 0
+        let mut i: i64 = 1
+        while i <= 16 {
+            let nb = bytes_at(j.data, p) & 255
+            vec_set(bits, i, nb)
+            nsym = nsym + nb
+            p = p + 1
+            i = i + 1
+        }
+        if p + nsym > end {
+            return jpg_fail(j, "jpeg: DHT vals")
+        }
+        let vals = vec_new()
+        let mut k: i64 = 0
+        while k < nsym {
+            vec_push(vals, bytes_at(j.data, p) & 255)
+            p = p + 1
+            k = k + 1
+        }
+        let h = huff_build(bits, vals)
+        if tc == 0 {
+            j = jpg_set_hdc(j, th, h)
+        } else {
+            j = jpg_set_hac(j, th, h)
+        }
+    }
+    return j
+}
+
+fn jpg_ycbcr(y: i64, cb: i64, cr: i64) -> Pixel {
+    let cbb = cb - 128
+    let crr = cr - 128
+    let r = img_clamp8(y + (359 * crr + 128) / 256)
+    let g = img_clamp8(y - (88 * cbb + 183 * crr + 128) / 256)
+    let b = img_clamp8(y + (454 * cbb + 128) / 256)
+    return Pixel { r: r, g: g, b: b, a: 255 }
+}
+
+fn jpeg_decode(src: bytes) -> Image {
+    if bytes_len(src) < 4 {
+        return img_fail("jpeg: truncated")
+    }
+    if (bytes_at(src, 0) & 255) != 255 || (bytes_at(src, 1) & 255) != 216 {
+        return img_fail("jpeg: no SOI")
+    }
+    let mut j = jpg_new(src)
+    j.pos = 2
+    let n = bytes_len(src)
+    let mut seen_sos: i64 = 0
+    while j.ok == 1 && seen_sos == 0 && j.pos + 2 <= n {
+        if (bytes_at(j.data, j.pos) & 255) != 255 {
+            return img_fail("jpeg: lost marker sync")
+        }
+        let mut mk = bytes_at(j.data, j.pos + 1) & 255
+        j.pos = j.pos + 2
+        while mk == 255 && j.pos < n {
+            mk = bytes_at(j.data, j.pos) & 255
+            j.pos = j.pos + 1
+        }
+        if mk == 216 {
+            // extra SOI
+        } else {
+            if mk == 217 {
+                return img_fail("jpeg: EOI before SOS")
+            }
+            if mk == 1 || (mk >= 208 && mk <= 215) {
+                // TEM / RST standalone
+            } else {
+                if j.pos + 2 > n {
+                    return img_fail("jpeg: truncated marker")
+                }
+                let len = img_be16(j.data, j.pos)
+                if len < 2 {
+                    return img_fail("jpeg: bad marker len")
+                }
+                let start = j.pos + 2
+                let end = j.pos + len
+                if end > n {
+                    return img_fail("jpeg: marker past end")
+                }
+                j.pos = end
+                if mk == 192 {
+                    j = jpg_parse_sof(j, start, end)
+                } else {
+                    if mk == 193 || mk == 194 || mk == 195 {
+                        return img_fail("jpeg: only baseline SOF0")
+                    }
+                    if mk == 196 {
+                        j = jpg_parse_dht(j, start, end)
+                    } else {
+                        if mk == 219 {
+                            j = jpg_parse_dqt(j, start, end)
+                        } else {
+                            if mk == 221 {
+                                if end - start >= 2 {
+                                    j.ri = img_be16(j.data, start)
+                                }
+                            } else {
+                                if mk == 218 {
+                                    j = jpg_parse_sos(j, start, end)
+                                    seen_sos = 1
+                                    j.pos = end
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if j.ok == 0 {
+        return img_fail(j.err)
+    }
+    if seen_sos == 0 {
+        return img_fail("jpeg: no SOS")
+    }
+    return jpg_scan(j)
+}
+
+fn jpg_parse_sof(j: Jpg, start: i64, end: i64) -> Jpg {
+    if end - start < 6 {
+        return jpg_fail(j, "jpeg: short SOF")
+    }
+    let prec = bytes_at(j.data, start) & 255
+    if prec != 8 {
+        return jpg_fail(j, "jpeg: only 8-bit")
+    }
+    j.h = img_be16(j.data, start + 1)
+    j.w = img_be16(j.data, start + 3)
+    j.ncomp = bytes_at(j.data, start + 5) & 255
+    if j.w <= 0 || j.h <= 0 || j.w > 4096 || j.h > 4096 {
+        return jpg_fail(j, "jpeg: bad size")
+    }
+    if j.ncomp != 1 && j.ncomp != 3 {
+        return jpg_fail(j, "jpeg: only 1 or 3 components")
+    }
+    if start + 6 + j.ncomp * 3 > end {
+        return jpg_fail(j, "jpeg: SOF comps")
+    }
+    let mut i: i64 = 0
+    while i < j.ncomp {
+        let o = start + 6 + i * 3
+        vec_set(j.cid, i, bytes_at(j.data, o) & 255)
+        let hv = bytes_at(j.data, o + 1) & 255
+        vec_set(j.ch, i, hv >> 4)
+        vec_set(j.cv, i, hv & 15)
+        vec_set(j.ctq, i, bytes_at(j.data, o + 2) & 255)
+        i = i + 1
+    }
+    return j
+}
+
+fn jpg_parse_sos(j: Jpg, start: i64, end: i64) -> Jpg {
+    if end - start < 1 {
+        return jpg_fail(j, "jpeg: short SOS")
+    }
+    let ns = bytes_at(j.data, start) & 255
+    if start + 1 + ns * 2 + 3 > end {
+        return jpg_fail(j, "jpeg: SOS comps")
+    }
+    let mut i: i64 = 0
+    while i < ns {
+        let id = bytes_at(j.data, start + 1 + i * 2) & 255
+        let tdta = bytes_at(j.data, start + 2 + i * 2) & 255
+        let ci = jpg_find_comp(j, id)
+        if ci < 0 {
+            return jpg_fail(j, "jpeg: SOS unknown id")
+        }
+        vec_set(j.ctd, ci, tdta >> 4)
+        vec_set(j.cta, ci, tdta & 15)
+        i = i + 1
+    }
+    return j
+}
+
+fn jpg_scan(j0: Jpg) -> Image {
+    let mut j = j0
+    j.nbits = 0
+    vec_set(j.dcpred, 0, 0)
+    vec_set(j.dcpred, 1, 0)
+    vec_set(j.dcpred, 2, 0)
+    vec_set(j.dcpred, 3, 0)
+    let mut hmax: i64 = 1
+    let mut vmax: i64 = 1
+    let mut i: i64 = 0
+    while i < j.ncomp {
+        if vec_get(j.ch, i) > hmax { hmax = vec_get(j.ch, i) }
+        if vec_get(j.cv, i) > vmax { vmax = vec_get(j.cv, i) }
+        i = i + 1
+    }
+    let mcu_w = 8 * hmax
+    let mcu_h = 8 * vmax
+    let nx = (j.w + mcu_w - 1) / mcu_w
+    let ny = (j.h + mcu_h - 1) / mcu_h
+    let px = bytes_new(j.w * j.h * 4)
+    // max blocks per MCU: 4+1+1 typical; allow 10 * 64
+    let plane = vec_zeros(10 * 64)
+    let mut my: i64 = 0
+    let mut mcu_i: i64 = 0
+    while my < ny {
+        let mut mx: i64 = 0
+        while mx < nx {
+            if j.ri > 0 && mcu_i > 0 && (mcu_i % j.ri) == 0 {
+                j.nbits = 0
+                vec_set(j.dcpred, 0, 0)
+                vec_set(j.dcpred, 1, 0)
+                vec_set(j.dcpred, 2, 0)
+                vec_set(j.dcpred, 3, 0)
+            }
+            let mut boff: i64 = 0
+            let starts = vec_zeros(4)
+            let mut c: i64 = 0
+            while c < j.ncomp {
+                vec_set(starts, c, boff)
+                let hb = vec_get(j.ch, c)
+                let vb = vec_get(j.cv, c)
+                let mut by: i64 = 0
+                while by < vb {
+                    let mut bx: i64 = 0
+                    while bx < hb {
+                        j = jpg_decode_block(j, c)
+                        if j.ok == 0 {
+                            return img_fail(j.err)
+                        }
+                        jpg_copy_block(plane, boff, j)
+                        boff = boff + 64
+                        bx = bx + 1
+                    }
+                    by = by + 1
+                }
+                c = c + 1
+            }
+            let mut yy: i64 = 0
+            while yy < mcu_h {
+                let py = my * mcu_h + yy
+                if py < j.h {
+                    let mut xx: i64 = 0
+                    while xx < mcu_w {
+                        let px_ = mx * mcu_w + xx
+                        if px_ < j.w {
+                            let yv = jpg_sample(plane, vec_get(starts, 0), vec_get(j.ch, 0), vec_get(j.cv, 0), hmax, vmax, xx, yy)
+                            let mut cb = 128
+                            let mut cr = 128
+                            if j.ncomp == 3 {
+                                cb = jpg_sample(plane, vec_get(starts, 1), vec_get(j.ch, 1), vec_get(j.cv, 1), hmax, vmax, xx, yy)
+                                cr = jpg_sample(plane, vec_get(starts, 2), vec_get(j.ch, 2), vec_get(j.cv, 2), hmax, vmax, xx, yy)
+                            }
+                            let p = jpg_ycbcr(yv, cb, cr)
+                            if j.ncomp == 1 {
+                                let o = (py * j.w + px_) * 4
+                                bytes_set(px, o, yv)
+                                bytes_set(px, o + 1, yv)
+                                bytes_set(px, o + 2, yv)
+                                bytes_set(px, o + 3, 255)
+                            } else {
+                                let o = (py * j.w + px_) * 4
+                                bytes_set(px, o, p.r)
+                                bytes_set(px, o + 1, p.g)
+                                bytes_set(px, o + 2, p.b)
+                                bytes_set(px, o + 3, 255)
+                            }
+                        }
+                        xx = xx + 1
+                    }
+                }
+                yy = yy + 1
+            }
+            mcu_i = mcu_i + 1
+            mx = mx + 1
+        }
+        my = my + 1
+    }
+    return img_ok(j.w, j.h, px)
+}
+
+fn jpg_sample(plane: Vec<i64>, start: i64, hs: i64, vs: i64, hmax: i64, vmax: i64, x: i64, y: i64) -> i64 {
+    let sx = x * hs / hmax
+    let sy = y * vs / vmax
+    let bx = sx / 8
+    let by = sy / 8
+    let ix = sx % 8
+    let iy = sy % 8
+    let bi = by * hs + bx
+    return vec_get(plane, start + bi * 64 + iy * 8 + ix)
+}

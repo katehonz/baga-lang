@@ -1,0 +1,261 @@
+// pnm.baga — Netpbm P2/P3 (ASCII) and P5/P6 (binary). image-rs pnm subset.
+
+import "types.baga"
+import "std/str/str.baga"
+
+fn pnm_is_ws(c: i64) -> i64 {
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+        return 1
+    }
+    return 0
+}
+
+fn pnm_skip(b: bytes, i0: i64) -> i64 {
+    let n = bytes_len(b)
+    let mut i = i0
+    let mut running = 1
+    while running == 1 {
+        if i >= n {
+            running = 0
+        } else {
+            let c = bytes_at(b, i) & 255
+            if c == 35 {
+                while i < n && (bytes_at(b, i) & 255) != 10 {
+                    i = i + 1
+                }
+            } else {
+                if pnm_is_ws(c) == 1 {
+                    i = i + 1
+                } else {
+                    running = 0
+                }
+            }
+        }
+    }
+    return i
+}
+
+struct PnmCur {
+    data: bytes,
+    pos: i64,
+    ok: i64,
+    err: str
+}
+
+fn pnm_cur_skip(c: PnmCur) -> PnmCur {
+    let i = pnm_skip(c.data, c.pos)
+    return PnmCur { data: c.data, pos: i, ok: c.ok, err: c.err }
+}
+
+fn pnm_cur_int(c0: PnmCur) -> PnmCur {
+    let c = pnm_cur_skip(c0)
+    let n = bytes_len(c.data)
+    if c.pos >= n {
+        return PnmCur { data: c.data, pos: c.pos, ok: 0, err: "pnm: eof" }
+    }
+    let mut i = c.pos
+    let mut v: i64 = 0
+    let mut any: i64 = 0
+    let mut running = 1
+    while running == 1 {
+        if i >= n {
+            running = 0
+        } else {
+            let ch = bytes_at(c.data, i) & 255
+            if ch >= 48 && ch <= 57 {
+                v = v * 10 + (ch - 48)
+                any = 1
+                i = i + 1
+            } else {
+                running = 0
+            }
+        }
+    }
+    if any == 0 {
+        return PnmCur { data: c.data, pos: i, ok: 0, err: "pnm: not a number" }
+    }
+    return PnmCur { data: c.data, pos: i, ok: v + 1, err: "" }
+}
+
+// ok field of int result is value+1 so 0 stays "fail". Helper:
+fn pnm_ival(c: PnmCur) -> i64 {
+    return c.ok - 1
+}
+
+fn pnm_scale(v: i64, maxv: i64) -> i64 {
+    if maxv <= 0 {
+        return 0
+    }
+    if maxv == 255 {
+        return img_clamp8(v)
+    }
+    return img_clamp8(v * 255 / maxv)
+}
+
+fn pnm_info(b: bytes) -> ImgInfo {
+    if bytes_len(b) < 3 {
+        return img_info_fail("pnm: truncated")
+    }
+    if (bytes_at(b, 0) & 255) != 80 {
+        return img_info_fail("pnm: not Px")
+    }
+    let kind = bytes_at(b, 1) & 255
+    if kind < 49 || kind > 54 {
+        return img_info_fail("pnm: unsupported")
+    }
+    let c0 = PnmCur { data: b, pos: 2, ok: 1, err: "" }
+    let cw = pnm_cur_int(pnm_cur_skip(c0))
+    if cw.ok == 0 {
+        return img_info_fail(cw.err)
+    }
+    let ch = pnm_cur_int(pnm_cur_skip(cw))
+    if ch.ok == 0 {
+        return img_info_fail(ch.err)
+    }
+    return img_info_ok(img_fmt_pnm(), pnm_ival(cw), pnm_ival(ch))
+}
+
+fn pnm_decode(b: bytes) -> Image {
+    if bytes_len(b) < 3 || (bytes_at(b, 0) & 255) != 80 {
+        return img_fail("pnm: not Px")
+    }
+    let kind = bytes_at(b, 1) & 255
+    if kind < 50 || kind > 54 {
+        return img_fail("pnm: only P2/P3/P5/P6")
+    }
+    let c0 = PnmCur { data: b, pos: 2, ok: 1, err: "" }
+    let cw = pnm_cur_int(pnm_cur_skip(c0))
+    if cw.ok == 0 {
+        return img_fail(cw.err)
+    }
+    let ch = pnm_cur_int(pnm_cur_skip(cw))
+    if ch.ok == 0 {
+        return img_fail(ch.err)
+    }
+    let cm = pnm_cur_int(pnm_cur_skip(ch))
+    if cm.ok == 0 {
+        return img_fail(cm.err)
+    }
+    let w = pnm_ival(cw)
+    let h = pnm_ival(ch)
+    let maxv = pnm_ival(cm)
+    if w <= 0 || h <= 0 || w > 4096 || h > 4096 {
+        return img_fail("pnm: bad size")
+    }
+    if maxv <= 0 {
+        return img_fail("pnm: bad maxval")
+    }
+    return pnm_body(b, cm.pos, w, h, maxv, kind)
+}
+
+fn pnm_body(b: bytes, pos0: i64, w: i64, h: i64, maxv: i64, kind: i64) -> Image {
+    let px = bytes_new(w * h * 4)
+    if kind == 53 || kind == 54 {
+        let mut i = pos0
+        if i < bytes_len(b) && pnm_is_ws(bytes_at(b, i) & 255) == 1 {
+            i = i + 1
+        }
+        if kind == 54 {
+            return pnm_bin_rgb(b, i, w, h, maxv, px)
+        }
+        return pnm_bin_gray(b, i, w, h, maxv, px)
+    }
+    return pnm_asc(b, pos0, w, h, maxv, kind, px)
+}
+
+fn pnm_bin_gray(b: bytes, i0: i64, w: i64, h: i64, maxv: i64, px: bytes) -> Image {
+    let n = w * h
+    if i0 + n > bytes_len(b) {
+        return img_fail("pnm: truncated P5")
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let y = pnm_scale(bytes_at(b, i0 + i) & 255, maxv)
+        let o = i * 4
+        bytes_set(px, o, y)
+        bytes_set(px, o + 1, y)
+        bytes_set(px, o + 2, y)
+        bytes_set(px, o + 3, 255)
+        i = i + 1
+    }
+    return img_ok(w, h, px)
+}
+
+fn pnm_bin_rgb(b: bytes, i0: i64, w: i64, h: i64, maxv: i64, px: bytes) -> Image {
+    let n = w * h
+    if i0 + n * 3 > bytes_len(b) {
+        return img_fail("pnm: truncated P6")
+    }
+    let mut i: i64 = 0
+    while i < n {
+        let s = i0 + i * 3
+        let o = i * 4
+        bytes_set(px, o, pnm_scale(bytes_at(b, s) & 255, maxv))
+        bytes_set(px, o + 1, pnm_scale(bytes_at(b, s + 1) & 255, maxv))
+        bytes_set(px, o + 2, pnm_scale(bytes_at(b, s + 2) & 255, maxv))
+        bytes_set(px, o + 3, 255)
+        i = i + 1
+    }
+    return img_ok(w, h, px)
+}
+
+fn pnm_asc(b: bytes, pos0: i64, w: i64, h: i64, maxv: i64, kind: i64, px: bytes) -> Image {
+    let n = w * h
+    let mut c = PnmCur { data: b, pos: pos0, ok: 1, err: "" }
+    let mut i: i64 = 0
+    while i < n {
+        let o = i * 4
+        if kind == 50 {
+            c = pnm_cur_int(pnm_cur_skip(c))
+            if c.ok == 0 {
+                return img_fail(c.err)
+            }
+            let y = pnm_scale(pnm_ival(c), maxv)
+            bytes_set(px, o, y)
+            bytes_set(px, o + 1, y)
+            bytes_set(px, o + 2, y)
+            bytes_set(px, o + 3, 255)
+        } else {
+            let cr = pnm_cur_int(pnm_cur_skip(c))
+            if cr.ok == 0 {
+                return img_fail(cr.err)
+            }
+            let cg = pnm_cur_int(pnm_cur_skip(cr))
+            if cg.ok == 0 {
+                return img_fail(cg.err)
+            }
+            let cb = pnm_cur_int(pnm_cur_skip(cg))
+            if cb.ok == 0 {
+                return img_fail(cb.err)
+            }
+            bytes_set(px, o, pnm_scale(pnm_ival(cr), maxv))
+            bytes_set(px, o + 1, pnm_scale(pnm_ival(cg), maxv))
+            bytes_set(px, o + 2, pnm_scale(pnm_ival(cb), maxv))
+            bytes_set(px, o + 3, 255)
+            c = cb
+        }
+        i = i + 1
+    }
+    return img_ok(w, h, px)
+}
+
+fn pnm_encode(im: Image) -> bytes {
+    if im.ok == 0 {
+        return bytes_new(0)
+    }
+    // P6 binary RGB
+    let hdr = concat(concat(concat("P6\n", int_to_str(im.w)), " "), concat(int_to_str(im.h), "\n255\n"))
+    let hb = bytes_of_str(hdr)
+    let body = bytes_new(im.w * im.h * 3)
+    let n = im.w * im.h
+    let mut i: i64 = 0
+    while i < n {
+        let o = i * 4
+        let s = i * 3
+        bytes_set(body, s, bytes_at(im.px, o))
+        bytes_set(body, s + 1, bytes_at(im.px, o + 1))
+        bytes_set(body, s + 2, bytes_at(im.px, o + 2))
+        i = i + 1
+    }
+    return bytes_concat(hb, body)
+}

@@ -1,0 +1,144 @@
+// bmp.baga — Windows BMP BITMAPINFOHEADER, BI_RGB 24/32-bit (image-rs bmp).
+
+import "types.baga"
+
+fn bmp_info(b: bytes) -> ImgInfo {
+    if bytes_len(b) < 26 {
+        return img_info_fail("bmp: truncated")
+    }
+    if img_starts_bm(b) == 0 {
+        return img_info_fail("bmp: not BM")
+    }
+    let dib = img_le32(b, 14)
+    if dib < 12 {
+        return img_info_fail("bmp: bad DIB")
+    }
+    let w = img_le32(b, 18)
+    let h0 = img_le32(b, 22)
+    let mut h = h0
+    if h < 0 {
+        h = 0 - h
+    }
+    return img_info_ok(img_fmt_bmp(), w, h)
+}
+
+fn img_starts_bm(b: bytes) -> i64 {
+    if bytes_len(b) < 2 {
+        return 0
+    }
+    if (bytes_at(b, 0) & 255) == 66 && (bytes_at(b, 1) & 255) == 77 {
+        return 1
+    }
+    return 0
+}
+
+fn bmp_decode(b: bytes) -> Image {
+    if bytes_len(b) < 54 {
+        return img_fail("bmp: truncated header")
+    }
+    if img_starts_bm(b) == 0 {
+        return img_fail("bmp: not BM")
+    }
+    let off = img_le32(b, 10)
+    let dib = img_le32(b, 14)
+    if dib < 40 {
+        return img_fail("bmp: need BITMAPINFOHEADER")
+    }
+    let w = img_le32(b, 18)
+    let h0 = img_le32(b, 22)
+    let mut topdown: i64 = 0
+    let mut h = h0
+    if h0 < 0 {
+        h = 0 - h0
+        topdown = 1
+    }
+    let planes = img_le16(b, 26)
+    let bpp = img_le16(b, 28)
+    let comp = img_le32(b, 30)
+    if planes != 1 || comp != 0 {
+        return img_fail("bmp: only BI_RGB")
+    }
+    if bpp != 24 && bpp != 32 {
+        return img_fail("bmp: only 24/32 bpp")
+    }
+    if w <= 0 || h <= 0 || w > 4096 || h > 4096 {
+        return img_fail("bmp: bad size")
+    }
+    let spp = bpp / 8
+    let row_raw = w * spp
+    let stride = (row_raw + 3) / 4 * 4
+    if off + stride * h > bytes_len(b) {
+        return img_fail("bmp: truncated pixels")
+    }
+    let px = bytes_new(w * h * 4)
+    let mut y: i64 = 0
+    while y < h {
+        let mut src_y = h - 1 - y
+        if topdown == 1 {
+            src_y = y
+        }
+        let row = off + src_y * stride
+        let mut x: i64 = 0
+        while x < w {
+            let s = row + x * spp
+            let bb = bytes_at(b, s) & 255
+            let gg = bytes_at(b, s + 1) & 255
+            let rr = bytes_at(b, s + 2) & 255
+            let mut aa: i64 = 255
+            if bpp == 32 {
+                aa = bytes_at(b, s + 3) & 255
+            }
+            let o = (y * w + x) * 4
+            bytes_set(px, o, rr)
+            bytes_set(px, o + 1, gg)
+            bytes_set(px, o + 2, bb)
+            bytes_set(px, o + 3, aa)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return img_ok(w, h, px)
+}
+
+fn bmp_encode(im: Image) -> bytes {
+    if im.ok == 0 {
+        return bytes_new(0)
+    }
+    let stride = (im.w * 3 + 3) / 4 * 4
+    let pixsz = stride * im.h
+    let off = 54
+    let total = off + pixsz
+    let out = bytes_new(total)
+    bytes_set(out, 0, 66)
+    bytes_set(out, 1, 77)
+    img_put_le32(out, 2, total)
+    img_put_le32(out, 6, 0)
+    img_put_le32(out, 10, off)
+    img_put_le32(out, 14, 40)
+    img_put_le32(out, 18, im.w)
+    img_put_le32(out, 22, im.h)
+    img_put_le16(out, 26, 1)
+    img_put_le16(out, 28, 24)
+    img_put_le32(out, 30, 0)
+    img_put_le32(out, 34, pixsz)
+    img_put_le32(out, 38, 2835)
+    img_put_le32(out, 42, 2835)
+    img_put_le32(out, 46, 0)
+    img_put_le32(out, 50, 0)
+    let mut y: i64 = 0
+    while y < im.h {
+        let src_y = im.h - 1 - y
+        let row = off + y * stride
+        let mut x: i64 = 0
+        while x < im.w {
+            let o = (src_y * im.w + x) * 4
+            let s = row + x * 3
+            bytes_set(out, s, bytes_at(im.px, o + 2))
+            bytes_set(out, s + 1, bytes_at(im.px, o + 1))
+            bytes_set(out, s + 2, bytes_at(im.px, o))
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return out
+}

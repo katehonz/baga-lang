@@ -1,0 +1,9 @@
+[package]
+name = "imgbaga"
+version = "0.6.0"
+entry = "img.baga"
+
+[dependencies]
+std = { path = "../../std" }
+zipbaga = { path = "../zipbaga" }
+pathbaga = { path = "../pathbaga" }

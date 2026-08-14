@@ -1,0 +1,537 @@
+// png.baga — PNG decode/encode (image-rs png subset).
+// Color types 0/2/3/4/6; bit depth 1/2/4/8; Adam7; tRNS. No 16-bit.
+
+import "types.baga"
+import "zlib.baga"
+import "zipbaga/crc32.baga"
+
+fn png_abs(x: i64) -> i64 {
+    if x < 0 {
+        return 0 - x
+    }
+    return x
+}
+
+fn png_paeth(a: i64, b: i64, c: i64) -> i64 {
+    let p = a + b - c
+    let pa = png_abs(p - a)
+    let pb = png_abs(p - b)
+    let pc = png_abs(p - c)
+    if pa <= pb && pa <= pc {
+        return a
+    }
+    if pb <= pc {
+        return b
+    }
+    return c
+}
+
+fn png_type_at(b: bytes, i: i64) -> str {
+    return str_of_bytes(bytes_slice(b, i, i + 4))
+}
+
+fn png_info(b: bytes) -> ImgInfo {
+    if bytes_len(b) < 33 {
+        return img_info_fail("png: truncated")
+    }
+    if img_be32(b, 12) != 1229472850 {
+        // 'IHDR'
+        return img_info_fail("png: no IHDR")
+    }
+    let w = img_be32(b, 16)
+    let h = img_be32(b, 20)
+    return img_info_ok(img_fmt_png(), w, h)
+}
+
+fn png_decode(src: bytes) -> Image {
+    if bytes_len(src) < 33 {
+        return img_fail("png: truncated")
+    }
+    if (bytes_at(src, 0) & 255) != 137 || (bytes_at(src, 1) & 255) != 80 {
+        return img_fail("png: bad signature")
+    }
+    let n = bytes_len(src)
+    let mut pos: i64 = 8
+    let mut w: i64 = 0
+    let mut h: i64 = 0
+    let mut depth: i64 = 0
+    let mut ctype: i64 = 0
+    let mut inter: i64 = 0
+    let mut have_ihdr: i64 = 0
+    let mut idat = bytes_new(0)
+    let pal = bytes_new(768)
+    let mut pal_n: i64 = 0
+    let trns = bytes_new(256)
+    let mut trns_n: i64 = 0
+    while pos + 12 <= n {
+        let clen = img_be32(src, pos)
+        if clen < 0 || pos + 12 + clen > n {
+            return img_fail("png: bad chunk len")
+        }
+        let typ = png_type_at(src, pos + 4)
+        let data_off = pos + 8
+        if typ == "IHDR" {
+            if clen != 13 {
+                return img_fail("png: bad IHDR")
+            }
+            w = img_be32(src, data_off)
+            h = img_be32(src, data_off + 4)
+            depth = bytes_at(src, data_off + 8) & 255
+            ctype = bytes_at(src, data_off + 9) & 255
+            let comp = bytes_at(src, data_off + 10) & 255
+            let filt = bytes_at(src, data_off + 11) & 255
+            inter = bytes_at(src, data_off + 12) & 255
+            if comp != 0 || filt != 0 {
+                return img_fail("png: bad compression/filter method")
+            }
+            if depth != 1 && depth != 2 && depth != 4 && depth != 8 && depth != 16 {
+                return img_fail("png: bit depth")
+            }
+            if depth == 16 && ctype == 3 {
+                return img_fail("png: 16-bit palette")
+            }
+            if depth != 8 && depth != 16 && ctype != 0 && ctype != 3 {
+                return img_fail("png: packed bits only gray/palette")
+            }
+            if w <= 0 || h <= 0 || w > 4096 || h > 4096 {
+                return img_fail("png: bad size")
+            }
+            have_ihdr = 1
+        } else {
+            if typ == "PLTE" {
+                if clen % 3 != 0 || clen > 768 {
+                    return img_fail("png: bad PLTE")
+                }
+                pal_n = clen / 3
+                let mut k: i64 = 0
+                while k < clen {
+                    bytes_set(pal, k, bytes_at(src, data_off + k))
+                    k = k + 1
+                }
+            } else {
+                if typ == "tRNS" {
+                    if clen > 256 {
+                        return img_fail("png: bad tRNS")
+                    }
+                    trns_n = clen
+                    let mut k: i64 = 0
+                    while k < clen {
+                        bytes_set(trns, k, bytes_at(src, data_off + k))
+                        k = k + 1
+                    }
+                } else {
+                    if typ == "IDAT" {
+                        idat = bytes_concat(idat, bytes_slice(src, data_off, data_off + clen))
+                    } else {
+                        if typ == "IEND" {
+                            pos = n
+                        }
+                    }
+                }
+            }
+        }
+        pos = pos + 12 + clen
+    }
+    if have_ihdr == 0 {
+        return img_fail("png: no IHDR")
+    }
+    if bytes_len(idat) == 0 {
+        return img_fail("png: no IDAT")
+    }
+    let raw = zlib_unwrap(idat)
+    if raw.ok == 0 {
+        return img_fail(raw.err)
+    }
+    return png_from_raw(raw.data, w, h, ctype, depth, inter, pal, pal_n, trns, trns_n)
+}
+
+fn png_spp(ctype: i64) -> i64 {
+    if ctype == 0 { return 1 }
+    if ctype == 2 { return 3 }
+    if ctype == 3 { return 1 }
+    if ctype == 4 { return 2 }
+    if ctype == 6 { return 4 }
+    return 0
+}
+
+fn png_row_bytes(w: i64, ctype: i64, depth: i64) -> i64 {
+    let bits = w * png_spp(ctype) * depth
+    return (bits + 7) / 8
+}
+
+fn png_filter_bpp(ctype: i64, depth: i64) -> i64 {
+    let bits = png_spp(ctype) * depth
+    let b = (bits + 7) / 8
+    if b < 1 {
+        return 1
+    }
+    return b
+}
+
+fn png_pass_start_x(p: i64) -> i64 {
+    if p == 1 { return 4 }
+    if p == 3 { return 2 }
+    if p == 5 { return 1 }
+    return 0
+}
+
+fn png_pass_start_y(p: i64) -> i64 {
+    if p == 2 { return 4 }
+    if p == 4 { return 2 }
+    if p == 6 { return 1 }
+    return 0
+}
+
+fn png_pass_step_x(p: i64) -> i64 {
+    if p == 0 || p == 1 { return 8 }
+    if p == 2 || p == 3 { return 4 }
+    if p == 4 || p == 5 { return 2 }
+    return 1
+}
+
+fn png_pass_step_y(p: i64) -> i64 {
+    if p <= 2 { return 8 }
+    if p <= 4 { return 4 }
+    return 2
+}
+
+fn png_pass_n(dim: i64, start: i64, step: i64) -> i64 {
+    if dim <= start {
+        return 0
+    }
+    return (dim - start + step - 1) / step
+}
+
+fn png_unfilter_plane(raw: bytes, off: i64, w: i64, h: i64, ctype: i64, depth: i64) -> bytes {
+    let bpp = png_filter_bpp(ctype, depth)
+    let rb = png_row_bytes(w, ctype, depth)
+    let recon = bytes_new(h * rb)
+    let mut y: i64 = 0
+    while y < h {
+        let row = off + y * (1 + rb)
+        let ft = bytes_at(raw, row) & 255
+        let mut x: i64 = 0
+        while x < rb {
+            let filt = bytes_at(raw, row + 1 + x) & 255
+            let mut a: i64 = 0
+            let mut b: i64 = 0
+            let mut c: i64 = 0
+            if x >= bpp {
+                a = bytes_at(recon, y * rb + (x - bpp)) & 255
+            }
+            if y > 0 {
+                b = bytes_at(recon, (y - 1) * rb + x) & 255
+            }
+            if y > 0 && x >= bpp {
+                c = bytes_at(recon, (y - 1) * rb + (x - bpp)) & 255
+            }
+            let mut v = filt
+            if ft == 1 {
+                v = (filt + a) & 255
+            }
+            if ft == 2 {
+                v = (filt + b) & 255
+            }
+            if ft == 3 {
+                v = (filt + (a + b) / 2) & 255
+            }
+            if ft == 4 {
+                v = (filt + png_paeth(a, b, c)) & 255
+            }
+            bytes_set(recon, y * rb + x, v)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return recon
+}
+
+fn png_get_bits(row: bytes, bitpos: i64, depth: i64) -> i64 {
+    let i = bitpos / 8
+    let s = 8 - depth - (bitpos % 8)
+    let mask = (1 << depth) - 1
+    return (bytes_at(row, i) >> s) & mask
+}
+
+fn png_sb(depth: i64) -> i64 {
+    if depth == 16 {
+        return 2
+    }
+    return 1
+}
+
+fn png_unpack(packed: bytes, w: i64, h: i64, ctype: i64, depth: i64) -> bytes {
+    let spp = png_spp(ctype)
+    if depth == 8 || depth == 16 {
+        let n = w * h * spp * png_sb(depth)
+        let out = bytes_new(n)
+        let mut i: i64 = 0
+        while i < n {
+            bytes_set(out, i, bytes_at(packed, i))
+            i = i + 1
+        }
+        return out
+    }
+    let out = bytes_new(w * h * spp)
+    let rb = png_row_bytes(w, ctype, depth)
+    let mut y: i64 = 0
+    while y < h {
+        let mut x: i64 = 0
+        while x < w {
+            let bitpos = x * spp * depth
+            let mut s: i64 = 0
+            while s < spp {
+                let v = png_get_bits(bytes_slice(packed, y * rb, y * rb + rb), bitpos + s * depth, depth)
+                bytes_set(out, (y * w + x) * spp + s, v)
+                s = s + 1
+            }
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return out
+}
+
+fn png_from_raw(raw: bytes, w: i64, h: i64, ctype: i64, depth: i64, inter: i64, pal: bytes, pal_n: i64, trns: bytes, trns_n: i64) -> Image {
+    if png_spp(ctype) == 0 {
+        return img_fail("png: unsupported color type")
+    }
+    if ctype == 3 && pal_n <= 0 {
+        return img_fail("png: palette missing")
+    }
+    if inter == 0 {
+        let rb = png_row_bytes(w, ctype, depth)
+        if bytes_len(raw) < (1 + rb) * h {
+            return img_fail("png: short scanlines")
+        }
+        let packed = png_unfilter_plane(raw, 0, w, h, ctype, depth)
+        let samp = png_unpack(packed, w, h, ctype, depth)
+        return png_to_rgba(samp, w, h, ctype, depth, pal, pal_n, trns, trns_n)
+    }
+    if inter != 1 {
+        return img_fail("png: bad interlace")
+    }
+    let spp = png_spp(ctype)
+    let sb = png_sb(depth)
+    let full = bytes_new(w * h * spp * sb)
+    let mut off: i64 = 0
+    let mut p: i64 = 0
+    while p < 7 {
+        let sx = png_pass_start_x(p)
+        let sy = png_pass_start_y(p)
+        let ix = png_pass_step_x(p)
+        let iy = png_pass_step_y(p)
+        let pw = png_pass_n(w, sx, ix)
+        let ph = png_pass_n(h, sy, iy)
+        if pw > 0 && ph > 0 {
+            let rb = png_row_bytes(pw, ctype, depth)
+            if off + (1 + rb) * ph > bytes_len(raw) {
+                return img_fail("png: short Adam7")
+            }
+            let packed = png_unfilter_plane(raw, off, pw, ph, ctype, depth)
+            let samp = png_unpack(packed, pw, ph, ctype, depth)
+            let mut yy: i64 = 0
+            while yy < ph {
+                let mut xx: i64 = 0
+                while xx < pw {
+                    let dx = sx + xx * ix
+                    let dy = sy + yy * iy
+                    let mut s: i64 = 0
+                    while s < spp * sb {
+                        bytes_set(full, (dy * w + dx) * spp * sb + s, bytes_at(samp, (yy * pw + xx) * spp * sb + s))
+                        s = s + 1
+                    }
+                    xx = xx + 1
+                }
+                yy = yy + 1
+            }
+            off = off + (1 + rb) * ph
+        }
+        p = p + 1
+    }
+    return png_to_rgba(full, w, h, ctype, depth, pal, pal_n, trns, trns_n)
+}
+
+fn png_scale16(v: i64) -> i64 {
+    return v / 257
+}
+
+fn png_scale_sample(v: i64, depth: i64) -> i64 {
+    if depth == 16 {
+        return png_scale16(v)
+    }
+    if depth >= 8 {
+        return v & 255
+    }
+    let maxv = (1 << depth) - 1
+    if maxv <= 0 {
+        return 0
+    }
+    return (v * 255) / maxv
+}
+
+fn png_to_rgba(recon: bytes, w: i64, h: i64, ctype: i64, depth: i64, pal: bytes, pal_n: i64, trns: bytes, trns_n: i64) -> Image {
+    let px = bytes_new(w * h * 4)
+    let n = w * h
+    let mut i: i64 = 0
+    while i < n {
+        let o = i * 4
+        if ctype == 0 {
+            let mut rawg = bytes_at(recon, i) & 255
+            if depth == 16 {
+                rawg = img_be16(recon, i * 2)
+            }
+            let y = png_scale_sample(rawg, depth)
+            let mut a: i64 = 255
+            if trns_n >= 2 && img_be16(trns, 0) == rawg {
+                a = 0
+            }
+            bytes_set(px, o, y)
+            bytes_set(px, o + 1, y)
+            bytes_set(px, o + 2, y)
+            bytes_set(px, o + 3, a)
+        }
+        if ctype == 2 {
+            let mut r = 0
+            let mut g = 0
+            let mut b = 0
+            if depth == 16 {
+                let s = i * 6
+                r = img_be16(recon, s)
+                g = img_be16(recon, s + 2)
+                b = img_be16(recon, s + 4)
+            } else {
+                let s = i * 3
+                r = bytes_at(recon, s) & 255
+                g = bytes_at(recon, s + 1) & 255
+                b = bytes_at(recon, s + 2) & 255
+            }
+            let mut a: i64 = 255
+            if depth == 16 {
+                if trns_n >= 6 {
+                    if img_be16(trns, 0) == r && img_be16(trns, 2) == g && img_be16(trns, 4) == b {
+                        a = 0
+                    }
+                }
+                r = png_scale16(r)
+                g = png_scale16(g)
+                b = png_scale16(b)
+            } else {
+                if trns_n >= 6 {
+                    if img_be16(trns, 0) == r && img_be16(trns, 2) == g && img_be16(trns, 4) == b {
+                        a = 0
+                    }
+                }
+            }
+            bytes_set(px, o, r)
+            bytes_set(px, o + 1, g)
+            bytes_set(px, o + 2, b)
+            bytes_set(px, o + 3, a)
+        }
+        if ctype == 3 {
+            let idx = bytes_at(recon, i) & 255
+            if idx >= pal_n {
+                return img_fail("png: palette index")
+            }
+            let mut a: i64 = 255
+            if idx < trns_n {
+                a = bytes_at(trns, idx) & 255
+            }
+            bytes_set(px, o, bytes_at(pal, idx * 3))
+            bytes_set(px, o + 1, bytes_at(pal, idx * 3 + 1))
+            bytes_set(px, o + 2, bytes_at(pal, idx * 3 + 2))
+            bytes_set(px, o + 3, a)
+        }
+        if ctype == 4 {
+            if depth == 16 {
+                let s = i * 4
+                let y = png_scale16(img_be16(recon, s))
+                let a = png_scale16(img_be16(recon, s + 2))
+                bytes_set(px, o, y)
+                bytes_set(px, o + 1, y)
+                bytes_set(px, o + 2, y)
+                bytes_set(px, o + 3, a)
+            } else {
+                let s = i * 2
+                let y = bytes_at(recon, s) & 255
+                bytes_set(px, o, y)
+                bytes_set(px, o + 1, y)
+                bytes_set(px, o + 2, y)
+                bytes_set(px, o + 3, bytes_at(recon, s + 1))
+            }
+        }
+        if ctype == 6 {
+            if depth == 16 {
+                let s = i * 8
+                bytes_set(px, o, png_scale16(img_be16(recon, s)))
+                bytes_set(px, o + 1, png_scale16(img_be16(recon, s + 2)))
+                bytes_set(px, o + 2, png_scale16(img_be16(recon, s + 4)))
+                bytes_set(px, o + 3, png_scale16(img_be16(recon, s + 6)))
+            } else {
+                let s = i * 4
+                bytes_set(px, o, bytes_at(recon, s))
+                bytes_set(px, o + 1, bytes_at(recon, s + 1))
+                bytes_set(px, o + 2, bytes_at(recon, s + 2))
+                bytes_set(px, o + 3, bytes_at(recon, s + 3))
+            }
+        }
+        i = i + 1
+    }
+    return img_ok(w, h, px)
+}
+
+fn png_chunk(tag: str, data: bytes) -> bytes {
+    let tb = bytes_of_str(tag)
+    let clen = bytes_len(data)
+    let crc_src = bytes_concat(tb, data)
+    let crc = crc32_b(crc_src)
+    let out = bytes_new(12 + clen)
+    img_put_be32(out, 0, clen)
+    bytes_set(out, 4, bytes_at(tb, 0))
+    bytes_set(out, 5, bytes_at(tb, 1))
+    bytes_set(out, 6, bytes_at(tb, 2))
+    bytes_set(out, 7, bytes_at(tb, 3))
+    let mut i: i64 = 0
+    while i < clen {
+        bytes_set(out, 8 + i, bytes_at(data, i))
+        i = i + 1
+    }
+    img_put_be32(out, 8 + clen, crc)
+    return out
+}
+
+fn png_encode(im: Image) -> bytes {
+    if im.ok == 0 {
+        return bytes_new(0)
+    }
+    let raw = bytes_new(im.h * (1 + im.w * 4))
+    let mut y: i64 = 0
+    while y < im.h {
+        let row = y * (1 + im.w * 4)
+        bytes_set(raw, row, 0)
+        let mut x: i64 = 0
+        while x < im.w {
+            let s = (y * im.w + x) * 4
+            let d = row + 1 + x * 4
+            bytes_set(raw, d, bytes_at(im.px, s))
+            bytes_set(raw, d + 1, bytes_at(im.px, s + 1))
+            bytes_set(raw, d + 2, bytes_at(im.px, s + 2))
+            bytes_set(raw, d + 3, bytes_at(im.px, s + 3))
+            x = x + 1
+        }
+        y = y + 1
+    }
+    let z = zlib_wrap(raw)
+    let ihdr = bytes_new(13)
+    img_put_be32(ihdr, 0, im.w)
+    img_put_be32(ihdr, 4, im.h)
+    bytes_set(ihdr, 8, 8)
+    bytes_set(ihdr, 9, 6)
+    bytes_set(ihdr, 10, 0)
+    bytes_set(ihdr, 11, 0)
+    bytes_set(ihdr, 12, 0)
+    let sig = hex_decode("89504e470d0a1a0a")
+    let out = bytes_concat(sig, png_chunk("IHDR", ihdr))
+    let out2 = bytes_concat(out, png_chunk("IDAT", z))
+    return bytes_concat(out2, png_chunk("IEND", bytes_new(0)))
+}

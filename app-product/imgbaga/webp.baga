@@ -1,0 +1,96 @@
+// webp.baga — WebP RIFF: info + decode for VP8 (lossy) and VP8L (lossless).
+
+import "types.baga"
+import "webp_l.baga"
+import "webp_vp8_dec.baga"
+
+fn webp_chunk_size(b: bytes, i: i64) -> i64 {
+    return img_le32(b, i)
+}
+
+fn webp_info(b: bytes) -> ImgInfo {
+    if bytes_len(b) < 16 {
+        return img_info_fail("webp: truncated")
+    }
+    if (bytes_at(b, 0) & 255) != 82 || (bytes_at(b, 8) & 255) != 87 {
+        return img_info_fail("webp: not RIFF/WEBP")
+    }
+    let n = bytes_len(b)
+    let mut i: i64 = 12
+    while i + 8 <= n {
+        let t0 = bytes_at(b, i) & 255
+        let t1 = bytes_at(b, i + 1) & 255
+        let t2 = bytes_at(b, i + 2) & 255
+        let t3 = bytes_at(b, i + 3) & 255
+        let sz = img_le32(b, i + 4)
+        let d = i + 8
+        if t0 == 86 && t1 == 80 && t2 == 56 && t3 == 32 {
+            // VP8 
+            if d + 10 <= n {
+                // skip 3-byte frame tag, then 9d 01 2a, then 14-bit w/h
+                if d + 6 <= n && (bytes_at(b, d + 3) & 255) == 157 {
+                    let w = img_le16(b, d + 6) & 16383
+                    let h = img_le16(b, d + 8) & 16383
+                    return img_info_ok(img_fmt_webp(), w, h)
+                }
+            }
+        }
+        if t0 == 86 && t1 == 80 && t2 == 56 && t3 == 76 {
+            // VP8L
+            if d + 5 <= n && (bytes_at(b, d) & 255) == 47 {
+                let bits = (bytes_at(b, d + 1) & 255)
+                    | ((bytes_at(b, d + 2) & 255) << 8)
+                    | ((bytes_at(b, d + 3) & 255) << 16)
+                    | ((bytes_at(b, d + 4) & 255) << 24)
+                let w = (bits & 16383) + 1
+                let h = ((bits >> 14) & 16383) + 1
+                return img_info_ok(img_fmt_webp(), w, h)
+            }
+        }
+        if t0 == 86 && t1 == 80 && t2 == 56 && t3 == 88 {
+            // VP8X: 10 bytes, width-1 and height-1 24-bit LE at +4 and +7
+            if d + 10 <= n {
+                let w = 1 + (bytes_at(b, d + 4) & 255) + ((bytes_at(b, d + 5) & 255) << 8) + ((bytes_at(b, d + 6) & 255) << 16)
+                let h = 1 + (bytes_at(b, d + 7) & 255) + ((bytes_at(b, d + 8) & 255) << 8) + ((bytes_at(b, d + 9) & 255) << 16)
+                return img_info_ok(img_fmt_webp(), w, h)
+            }
+        }
+        let mut step = 8 + sz
+        if (sz & 1) == 1 {
+            step = step + 1
+        }
+        i = i + step
+    }
+    return img_info_fail("webp: no VP8 chunk")
+}
+
+fn webp_decode(src: bytes) -> Image {
+    let inf = webp_info(src)
+    if inf.ok == 0 {
+        return img_fail(inf.err)
+    }
+    let n = bytes_len(src)
+    let mut i: i64 = 12
+    while i + 8 <= n {
+        let t0 = bytes_at(src, i) & 255
+        let t3 = bytes_at(src, i + 3) & 255
+        let sz = img_le32(src, i + 4)
+        let d = i + 8
+        if (bytes_at(src, i) & 255) == 86 && (bytes_at(src, i + 1) & 255) == 80 && (bytes_at(src, i + 2) & 255) == 56 && t3 == 76 {
+            if d + sz <= n {
+                return vp8l_decode(bytes_slice(src, d, d + sz), inf.w, inf.h)
+            }
+        }
+        if (bytes_at(src, i) & 255) == 86 && (bytes_at(src, i + 1) & 255) == 80 && (bytes_at(src, i + 2) & 255) == 56 && t3 == 32 {
+            if d + sz <= n {
+                return vp8_decode(bytes_slice(src, d, d + sz))
+            }
+        }
+        let mut step = 8 + sz
+        if (sz & 1) == 1 {
+            step = step + 1
+        }
+        i = i + step
+    }
+    return img_fail("webp: no VP8/VP8L payload")
+}

@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### imgbaga 0.6.0 — lossy VP8 WebP
+- VP8 keyframe decode (RFC 6386 / `golang.org/x/image/vp8`): bool
+  decoder, tokens, iDCT/WHT, intra pred, loop filter, BT.601 YUV→RGB
+  (libwebp-exact).
+- `webp_decode` вече чете и `VP8 ` chunk, не само VP8L.
+- ImageMagick lossy goldens: 8×8 red, 2×2 gray, 8×8 RGB quadrants.
+
+### imgbaga 0.5.0 — VP8L lossless WebP
+- Пълен VP8L decode: Huffman + LZ77 + color cache и четирите
+  transform-а (predictor, color, subtract-green, indexing).
+- ImageMagick lossless 2×2 / 4×4 / 8×8 goldens в `img_test`.
+- Lossy VP8 остава info-only.
+
+### imgbaga 0.4.0 — 16-bit PNG, GIF anim, TIFF, WebP info
+- PNG 16-bit gray/RGB/grayA/RGBA + tRNS → RGBA8 (`sample/257`).
+- GIF анимация: `gif_anim_decode`, кадри, delay (cs), disposal 2/3.
+- TIFF: uncompressed + PackBits, 8-bit gray/RGB/RGBA, II/MM endian.
+- WebP: info за VP8 / VP8L / VP8X; lossless decode само без transforms.
+
+### imgbaga 0.3.0 — QOI, ICO, bilinear
+- QOI encode/decode (Quite OK Image, lossless RGBA).
+- ICO: decode PNG или 24/32-bit DIB (+ AND mask); encode като PNG-in-ICO.
+- `img_resize_bilinear` (фиксирана точка); `img_resize` остава nearest.
+
+### imgbaga — растерни изображения (PNG/JPEG/GIF/BMP/PNM)
+- Нов пакет `app-product/imgbaga` по модела на Rust
+  [`image`](https://github.com/image-rs/image): RGBA8 `Image`
+  (`DynamicImage`), `img_guess` по magic bytes, `img_load` /
+  `img_encode` / `img_open` / `img_save`, `imageops` (crop, flip,
+  rotate90, nearest resize, grayscale, invert).
+- PNG: 8-bit + packed 1/2/4, Adam7, tRNS; encode RGBA8 през
+  `zipbaga` DEFLATE + zlib/Adler-32.
+- JPEG: baseline SOF0 decode (Huffman, integer IDCT) и encode
+  4:2:0 Annex K (`jpeg_encode` / `jpeg_encode_q`).
+- GIF: първи кадър (LZW, GCE прозрачност, interlace).
+- BMP 24/32 BI_RGB; PNM P2/P3/P5/P6. Sniff още за WebP/ICO/TIFF/QOI/HDR.
+- Тест: `tests/img_test.baga`. Demo: `app-product/imgbaga/demo.baga`.
+
 ### boilaDB — топъл checkout без gmu write (P11-1c)
 - Вече отворена база: checkout само `vec_get` (без `srv_write` на
   целия сървър). Data SQL не прави checkin — шардовете се пишат

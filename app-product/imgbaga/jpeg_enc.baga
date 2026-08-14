@@ -1,0 +1,807 @@
+// jpeg_enc.baga — baseline SOF0 encode, 4:2:0, Annex K Huffman (image-rs jpeg).
+// Integer separable FDCT (scaled cosines). Default quality 85.
+
+import "types.baga"
+
+fn je_zeros(n: i64) -> Vec<i64> {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, 0)
+        i = i + 1
+    }
+    return v
+}
+
+fn je_zz() -> Vec<i64> {
+    let z = vec_new()
+    vec_push(z, 0)
+    vec_push(z, 1)
+    vec_push(z, 8)
+    vec_push(z, 16)
+    vec_push(z, 9)
+    vec_push(z, 2)
+    vec_push(z, 3)
+    vec_push(z, 10)
+    vec_push(z, 17)
+    vec_push(z, 24)
+    vec_push(z, 32)
+    vec_push(z, 25)
+    vec_push(z, 18)
+    vec_push(z, 11)
+    vec_push(z, 4)
+    vec_push(z, 5)
+    vec_push(z, 12)
+    vec_push(z, 19)
+    vec_push(z, 26)
+    vec_push(z, 33)
+    vec_push(z, 40)
+    vec_push(z, 48)
+    vec_push(z, 41)
+    vec_push(z, 34)
+    vec_push(z, 27)
+    vec_push(z, 20)
+    vec_push(z, 13)
+    vec_push(z, 6)
+    vec_push(z, 7)
+    vec_push(z, 14)
+    vec_push(z, 21)
+    vec_push(z, 28)
+    vec_push(z, 35)
+    vec_push(z, 42)
+    vec_push(z, 49)
+    vec_push(z, 56)
+    vec_push(z, 57)
+    vec_push(z, 50)
+    vec_push(z, 43)
+    vec_push(z, 36)
+    vec_push(z, 29)
+    vec_push(z, 22)
+    vec_push(z, 15)
+    vec_push(z, 23)
+    vec_push(z, 30)
+    vec_push(z, 37)
+    vec_push(z, 44)
+    vec_push(z, 51)
+    vec_push(z, 58)
+    vec_push(z, 59)
+    vec_push(z, 52)
+    vec_push(z, 45)
+    vec_push(z, 38)
+    vec_push(z, 31)
+    vec_push(z, 39)
+    vec_push(z, 46)
+    vec_push(z, 53)
+    vec_push(z, 60)
+    vec_push(z, 61)
+    vec_push(z, 54)
+    vec_push(z, 47)
+    vec_push(z, 55)
+    vec_push(z, 62)
+    vec_push(z, 63)
+    return z
+}
+
+fn je_cos_table() -> Vec<i64> {
+    let t = vec_new()
+    vec_push(t, 4096)
+    vec_push(t, 4017)
+    vec_push(t, 3784)
+    vec_push(t, 3406)
+    vec_push(t, 2896)
+    vec_push(t, 2276)
+    vec_push(t, 1567)
+    vec_push(t, 799)
+    vec_push(t, 4096)
+    vec_push(t, 3406)
+    vec_push(t, 1567)
+    vec_push(t, 0 - 799)
+    vec_push(t, 0 - 2896)
+    vec_push(t, 0 - 4017)
+    vec_push(t, 0 - 3784)
+    vec_push(t, 0 - 2276)
+    vec_push(t, 4096)
+    vec_push(t, 2276)
+    vec_push(t, 0 - 1567)
+    vec_push(t, 0 - 4017)
+    vec_push(t, 0 - 2896)
+    vec_push(t, 799)
+    vec_push(t, 3784)
+    vec_push(t, 3406)
+    vec_push(t, 4096)
+    vec_push(t, 799)
+    vec_push(t, 0 - 3784)
+    vec_push(t, 0 - 2276)
+    vec_push(t, 2896)
+    vec_push(t, 3406)
+    vec_push(t, 0 - 1567)
+    vec_push(t, 0 - 4017)
+    vec_push(t, 4096)
+    vec_push(t, 0 - 799)
+    vec_push(t, 0 - 3784)
+    vec_push(t, 2276)
+    vec_push(t, 2896)
+    vec_push(t, 0 - 3406)
+    vec_push(t, 0 - 1567)
+    vec_push(t, 4017)
+    vec_push(t, 4096)
+    vec_push(t, 0 - 2276)
+    vec_push(t, 0 - 1567)
+    vec_push(t, 4017)
+    vec_push(t, 0 - 2896)
+    vec_push(t, 0 - 799)
+    vec_push(t, 3784)
+    vec_push(t, 0 - 3406)
+    vec_push(t, 4096)
+    vec_push(t, 0 - 3406)
+    vec_push(t, 1567)
+    vec_push(t, 799)
+    vec_push(t, 0 - 2896)
+    vec_push(t, 4017)
+    vec_push(t, 0 - 3784)
+    vec_push(t, 2276)
+    vec_push(t, 4096)
+    vec_push(t, 0 - 4017)
+    vec_push(t, 3784)
+    vec_push(t, 0 - 3406)
+    vec_push(t, 2896)
+    vec_push(t, 0 - 2276)
+    vec_push(t, 1567)
+    vec_push(t, 0 - 799)
+    return t
+}
+
+fn je_std_lum() -> Vec<i64> {
+    let t = vec_new()
+    vec_push(t, 16)
+    vec_push(t, 11)
+    vec_push(t, 10)
+    vec_push(t, 16)
+    vec_push(t, 24)
+    vec_push(t, 40)
+    vec_push(t, 51)
+    vec_push(t, 61)
+    vec_push(t, 12)
+    vec_push(t, 12)
+    vec_push(t, 14)
+    vec_push(t, 19)
+    vec_push(t, 26)
+    vec_push(t, 58)
+    vec_push(t, 60)
+    vec_push(t, 55)
+    vec_push(t, 14)
+    vec_push(t, 13)
+    vec_push(t, 16)
+    vec_push(t, 24)
+    vec_push(t, 40)
+    vec_push(t, 57)
+    vec_push(t, 69)
+    vec_push(t, 56)
+    vec_push(t, 14)
+    vec_push(t, 17)
+    vec_push(t, 22)
+    vec_push(t, 29)
+    vec_push(t, 51)
+    vec_push(t, 87)
+    vec_push(t, 80)
+    vec_push(t, 62)
+    vec_push(t, 18)
+    vec_push(t, 22)
+    vec_push(t, 37)
+    vec_push(t, 56)
+    vec_push(t, 68)
+    vec_push(t, 109)
+    vec_push(t, 103)
+    vec_push(t, 77)
+    vec_push(t, 24)
+    vec_push(t, 35)
+    vec_push(t, 55)
+    vec_push(t, 64)
+    vec_push(t, 81)
+    vec_push(t, 104)
+    vec_push(t, 113)
+    vec_push(t, 92)
+    vec_push(t, 49)
+    vec_push(t, 64)
+    vec_push(t, 78)
+    vec_push(t, 87)
+    vec_push(t, 103)
+    vec_push(t, 121)
+    vec_push(t, 120)
+    vec_push(t, 101)
+    vec_push(t, 72)
+    vec_push(t, 92)
+    vec_push(t, 95)
+    vec_push(t, 98)
+    vec_push(t, 112)
+    vec_push(t, 100)
+    vec_push(t, 103)
+    vec_push(t, 99)
+    return t
+}
+
+fn je_std_chr() -> Vec<i64> {
+    let t = vec_new()
+    let mut i: i64 = 0
+    while i < 64 {
+        let mut v = 99
+        if i == 0 { v = 17 }
+        if i == 1 { v = 18 }
+        if i == 2 { v = 24 }
+        if i == 3 { v = 47 }
+        if i == 8 { v = 18 }
+        if i == 9 { v = 21 }
+        if i == 10 { v = 26 }
+        if i == 11 { v = 66 }
+        if i == 16 { v = 24 }
+        if i == 17 { v = 26 }
+        if i == 18 { v = 56 }
+        if i == 24 { v = 47 }
+        if i == 25 { v = 66 }
+        vec_push(t, v)
+        i = i + 1
+    }
+    return t
+}
+
+fn je_qscale(stdv: i64, q: i64) -> i64 {
+    let mut qq = q
+    if qq < 1 { qq = 1 }
+    if qq > 100 { qq = 100 }
+    let mut scale: i64 = 200 - 2 * qq
+    if qq < 50 {
+        scale = 5000 / qq
+    }
+    let v = (stdv * scale + 50) / 100
+    if v < 1 { return 1 }
+    if v > 255 { return 255 }
+    return v
+}
+
+fn je_qt(std: Vec<i64>, q: i64) -> Vec<i64> {
+    let t = vec_new()
+    let mut i: i64 = 0
+    while i < 64 {
+        vec_push(t, je_qscale(vec_get(std, i), q))
+        i = i + 1
+    }
+    return t
+}
+
+fn je_bytes_to_vec(b: bytes) -> Vec<i64> {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < bytes_len(b) {
+        vec_push(v, bytes_at(b, i) & 255)
+        i = i + 1
+    }
+    return v
+}
+
+fn je_bits_dc_lum() -> Vec<i64> {
+    let b = je_zeros(17)
+    vec_set(b, 2, 1)
+    vec_set(b, 3, 5)
+    vec_set(b, 4, 1)
+    vec_set(b, 5, 1)
+    vec_set(b, 6, 1)
+    vec_set(b, 7, 1)
+    vec_set(b, 8, 1)
+    vec_set(b, 9, 1)
+    return b
+}
+
+fn je_bits_dc_chr() -> Vec<i64> {
+    let b = je_zeros(17)
+    vec_set(b, 2, 3)
+    vec_set(b, 3, 1)
+    vec_set(b, 4, 1)
+    vec_set(b, 5, 1)
+    vec_set(b, 6, 1)
+    vec_set(b, 7, 1)
+    vec_set(b, 8, 1)
+    vec_set(b, 9, 1)
+    vec_set(b, 10, 1)
+    vec_set(b, 11, 1)
+    return b
+}
+
+fn je_bits_ac_lum() -> Vec<i64> {
+    let b = je_zeros(17)
+    vec_set(b, 2, 2)
+    vec_set(b, 3, 1)
+    vec_set(b, 4, 3)
+    vec_set(b, 5, 3)
+    vec_set(b, 6, 2)
+    vec_set(b, 7, 4)
+    vec_set(b, 8, 3)
+    vec_set(b, 9, 5)
+    vec_set(b, 10, 5)
+    vec_set(b, 11, 4)
+    vec_set(b, 12, 4)
+    vec_set(b, 15, 1)
+    vec_set(b, 16, 125)
+    return b
+}
+
+fn je_bits_ac_chr() -> Vec<i64> {
+    let b = je_zeros(17)
+    vec_set(b, 2, 2)
+    vec_set(b, 3, 1)
+    vec_set(b, 4, 2)
+    vec_set(b, 5, 4)
+    vec_set(b, 6, 4)
+    vec_set(b, 7, 3)
+    vec_set(b, 8, 4)
+    vec_set(b, 9, 7)
+    vec_set(b, 10, 5)
+    vec_set(b, 11, 4)
+    vec_set(b, 12, 4)
+    vec_set(b, 14, 1)
+    vec_set(b, 15, 2)
+    vec_set(b, 16, 119)
+    return b
+}
+
+fn je_vals_dc() -> Vec<i64> {
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < 12 {
+        vec_push(v, i)
+        i = i + 1
+    }
+    return v
+}
+
+fn je_vals_ac_lum() -> Vec<i64> {
+    return je_bytes_to_vec(hex_decode("01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9fa"))
+}
+
+fn je_vals_ac_chr() -> Vec<i64> {
+    return je_bytes_to_vec(hex_decode("000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9fa"))
+}
+
+struct HuffEnc {
+    code: Vec<i64>,
+    nbits: Vec<i64>
+}
+
+fn je_huff_enc(bits: Vec<i64>, vals: Vec<i64>) -> HuffEnc {
+    let code = je_zeros(256)
+    let nbits = je_zeros(256)
+    let mut c: i64 = 0
+    let mut p: i64 = 0
+    let mut l: i64 = 1
+    while l <= 16 {
+        let nb = vec_get(bits, l)
+        let mut k: i64 = 0
+        while k < nb {
+            let s = vec_get(vals, p)
+            vec_set(code, s, c)
+            vec_set(nbits, s, l)
+            c = c + 1
+            p = p + 1
+            k = k + 1
+        }
+        c = c * 2
+        l = l + 1
+    }
+    return HuffEnc { code: code, nbits: nbits }
+}
+
+struct JpgW {
+    data: bytes,
+    len: i64,
+    bitbuf: i64,
+    nbits: i64
+}
+
+fn jw_new(cap: i64) -> JpgW {
+    return JpgW { data: bytes_new(cap), len: 0, bitbuf: 0, nbits: 0 }
+}
+
+fn jw_put(w: JpgW, b: i64) -> JpgW {
+    let mut d = w.data
+    let mut n = w.len
+    if n >= bytes_len(d) {
+        let nd = bytes_new(bytes_len(d) * 2 + 64)
+        let mut i: i64 = 0
+        while i < n {
+            bytes_set(nd, i, bytes_at(d, i))
+            i = i + 1
+        }
+        d = nd
+    }
+    bytes_set(d, n, b)
+    return JpgW { data: d, len: n + 1, bitbuf: w.bitbuf, nbits: w.nbits }
+}
+
+fn jw_byte(w: JpgW, b: i64) -> JpgW {
+    let w2 = jw_put(w, b)
+    if (b & 255) == 255 {
+        return jw_put(w2, 0)
+    }
+    return w2
+}
+
+fn jw_bits(w0: JpgW, val: i64, n: i64) -> JpgW {
+    if n <= 0 {
+        return w0
+    }
+    let mut w = w0
+    let mask = (1 << n) - 1
+    w.bitbuf = (w.bitbuf << n) | (val & mask)
+    w.nbits = w.nbits + n
+    while w.nbits >= 8 {
+        let b = (w.bitbuf >> (w.nbits - 8)) & 255
+        w.nbits = w.nbits - 8
+        w = jw_byte(w, b)
+    }
+    return w
+}
+
+fn jw_flush(w0: JpgW) -> JpgW {
+    let mut w = w0
+    if w.nbits > 0 {
+        let pad = 8 - w.nbits
+        w = jw_bits(w, (1 << pad) - 1, pad)
+    }
+    return w
+}
+
+fn jw_raw(w: JpgW, b: i64) -> JpgW {
+    return jw_put(w, b)
+}
+
+fn jw_marker(w0: JpgW, mk: i64) -> JpgW {
+    let w = jw_raw(w0, 255)
+    return jw_raw(w, mk)
+}
+
+fn jw_be16(w0: JpgW, v: i64) -> JpgW {
+    let w = jw_raw(w0, (v >> 8) & 255)
+    return jw_raw(w, v & 255)
+}
+
+fn je_cat(v0: i64) -> i64 {
+    let mut v = v0
+    if v < 0 {
+        v = 0 - v
+    }
+    let mut c: i64 = 0
+    while v > 0 {
+        v = v >> 1
+        c = c + 1
+    }
+    return c
+}
+
+fn je_divq(c: i64, q: i64) -> i64 {
+    let mut qq = q
+    if qq < 1 {
+        qq = 1
+    }
+    if c >= 0 {
+        return (c + qq / 2) / qq
+    }
+    return (c - qq / 2) / qq
+}
+
+fn je_fdct(samp: Vec<i64>, cost: Vec<i64>) -> Vec<i64> {
+    let tmp = je_zeros(64)
+    let out = je_zeros(64)
+    let mut y: i64 = 0
+    while y < 8 {
+        let mut u: i64 = 0
+        while u < 8 {
+            let mut cu: i64 = 4096
+            if u == 0 {
+                cu = 2896
+            }
+            let mut s: i64 = 0
+            let mut x: i64 = 0
+            while x < 8 {
+                let f = vec_get(samp, y * 8 + x) - 128
+                s = s + f * cu * vec_get(cost, x * 8 + u)
+                x = x + 1
+            }
+            if s >= 0 {
+                vec_set(tmp, y * 8 + u, (s + 16777216) >> 25)
+            } else {
+                vec_set(tmp, y * 8 + u, 0 - (((0 - s) + 16777216) >> 25))
+            }
+            u = u + 1
+        }
+        y = y + 1
+    }
+    let mut u2: i64 = 0
+    while u2 < 8 {
+        let mut v: i64 = 0
+        while v < 8 {
+            let mut cv: i64 = 4096
+            if v == 0 {
+                cv = 2896
+            }
+            let mut s: i64 = 0
+            let mut y2: i64 = 0
+            while y2 < 8 {
+                s = s + vec_get(tmp, y2 * 8 + u2) * cv * vec_get(cost, y2 * 8 + v)
+                y2 = y2 + 1
+            }
+            if s >= 0 {
+                vec_set(out, v * 8 + u2, (s + 16777216) >> 25)
+            } else {
+                vec_set(out, v * 8 + u2, 0 - (((0 - s) + 16777216) >> 25))
+            }
+            v = v + 1
+        }
+        u2 = u2 + 1
+    }
+    return out
+}
+
+fn je_huff_sym(w: JpgW, h: HuffEnc, sym: i64) -> JpgW {
+    return jw_bits(w, vec_get(h.code, sym), vec_get(h.nbits, sym))
+}
+
+fn je_amp(w: JpgW, val: i64, cat: i64) -> JpgW {
+    if cat <= 0 {
+        return w
+    }
+    let mut v = val
+    if v < 0 {
+        v = v - 1
+    }
+    return jw_bits(w, v, cat)
+}
+
+fn je_block(w0: JpgW, samp: Vec<i64>, qt: Vec<i64>, hdc: HuffEnc, hac: HuffEnc, last_dc: i64, cost: Vec<i64>, zz: Vec<i64>) -> JpgW {
+    let freq = je_fdct(samp, cost)
+    let c = je_zeros(64)
+    let mut i: i64 = 0
+    while i < 64 {
+        vec_set(c, i, je_divq(vec_get(freq, i), vec_get(qt, i)))
+        i = i + 1
+    }
+    let dc = vec_get(c, 0)
+    let diff = dc - last_dc
+    let cat = je_cat(diff)
+    let mut w = je_huff_sym(w0, hdc, cat)
+    w = je_amp(w, diff, cat)
+    w.bitbuf = w.bitbuf
+    // stash new dc in nbits? no — return via w.nbits high? use bitbuf unused.
+    // Convention: caller reads last sample from samp? We'll return dc via a side:
+    // encode dc into w by putting it in a dummy — JpegW has no extra field.
+    // Put new DC in samp[0] for the caller.
+    vec_set(samp, 0, dc)
+    let mut zeros: i64 = 0
+    let mut k: i64 = 1
+    while k < 64 {
+        let val = vec_get(c, vec_get(zz, k))
+        if val == 0 {
+            zeros = zeros + 1
+        } else {
+            while zeros >= 16 {
+                w = je_huff_sym(w, hac, 240)
+                zeros = zeros - 16
+            }
+            let ac = je_cat(val)
+            w = je_huff_sym(w, hac, (zeros << 4) | ac)
+            w = je_amp(w, val, ac)
+            zeros = 0
+        }
+        k = k + 1
+    }
+    if zeros > 0 {
+        w = je_huff_sym(w, hac, 0)
+    }
+    return w
+}
+
+fn je_clamp_xy(v: i64, maxv: i64) -> i64 {
+    if v < 0 { return 0 }
+    if v >= maxv { return maxv - 1 }
+    return v
+}
+
+fn je_px(im: Image, x: i64, y: i64) -> Pixel {
+    return img_pixel(im, je_clamp_xy(x, im.w), je_clamp_xy(y, im.h))
+}
+
+fn je_y(p: Pixel) -> i64 {
+    return (77 * p.r + 150 * p.g + 29 * p.b + 128) >> 8
+}
+
+fn je_cb(p: Pixel) -> i64 {
+    let t = (0 - 43) * p.r - 85 * p.g + 128 * p.b + 128
+    return img_clamp8(128 + (t >> 8))
+}
+
+fn je_cr(p: Pixel) -> i64 {
+    let t = 128 * p.r - 107 * p.g - 21 * p.b + 128
+    return img_clamp8(128 + (t >> 8))
+}
+
+fn je_samp_y(im: Image, bx: i64, by: i64) -> Vec<i64> {
+    let s = je_zeros(64)
+    let mut y: i64 = 0
+    while y < 8 {
+        let mut x: i64 = 0
+        while x < 8 {
+            vec_set(s, y * 8 + x, je_y(je_px(im, bx + x, by + y)))
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return s
+}
+
+fn je_samp_c(im: Image, mx: i64, my: i64, which: i64) -> Vec<i64> {
+    let s = je_zeros(64)
+    let mut y: i64 = 0
+    while y < 8 {
+        let mut x: i64 = 0
+        while x < 8 {
+            let x0 = mx + x * 2
+            let y0 = my + y * 2
+            let p0 = je_px(im, x0, y0)
+            let p1 = je_px(im, x0 + 1, y0)
+            let p2 = je_px(im, x0, y0 + 1)
+            let p3 = je_px(im, x0 + 1, y0 + 1)
+            let mut v: i64 = 0
+            if which == 0 {
+                v = (je_cb(p0) + je_cb(p1) + je_cb(p2) + je_cb(p3) + 2) / 4
+            } else {
+                v = (je_cr(p0) + je_cr(p1) + je_cr(p2) + je_cr(p3) + 2) / 4
+            }
+            vec_set(s, y * 8 + x, v)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    return s
+}
+
+fn je_dht(w0: JpgW, tcth: i64, bits: Vec<i64>, vals: Vec<i64>) -> JpgW {
+    let nsym = vec_len(vals)
+    let mut w = jw_marker(w0, 196)
+    w = jw_be16(w, 19 + nsym)
+    w = jw_raw(w, tcth)
+    let mut i: i64 = 1
+    while i <= 16 {
+        w = jw_raw(w, vec_get(bits, i))
+        i = i + 1
+    }
+    let mut k: i64 = 0
+    while k < nsym {
+        w = jw_raw(w, vec_get(vals, k))
+        k = k + 1
+    }
+    return w
+}
+
+fn je_dqt(w0: JpgW, id: i64, qt: Vec<i64>, zz: Vec<i64>) -> JpgW {
+    let mut w = jw_marker(w0, 219)
+    w = jw_be16(w, 67)
+    w = jw_raw(w, id)
+    let mut k: i64 = 0
+    while k < 64 {
+        w = jw_raw(w, vec_get(qt, vec_get(zz, k)))
+        k = k + 1
+    }
+    return w
+}
+
+fn jpeg_encode_q(im: Image, quality: i64) -> bytes {
+    if im.ok == 0 || im.w <= 0 || im.h <= 0 {
+        return bytes_new(0)
+    }
+    if im.w > 4096 || im.h > 4096 {
+        return bytes_new(0)
+    }
+    let zz = je_zz()
+    let cost = je_cos_table()
+    let qy = je_qt(je_std_lum(), quality)
+    let qc = je_qt(je_std_chr(), quality)
+    let bdc_y = je_bits_dc_lum()
+    let bac_y = je_bits_ac_lum()
+    let bdc_c = je_bits_dc_chr()
+    let bac_c = je_bits_ac_chr()
+    let vdc = je_vals_dc()
+    let vac_y = je_vals_ac_lum()
+    let vac_c = je_vals_ac_chr()
+    let hdc_y = je_huff_enc(bdc_y, vdc)
+    let hac_y = je_huff_enc(bac_y, vac_y)
+    let hdc_c = je_huff_enc(bdc_c, vdc)
+    let hac_c = je_huff_enc(bac_c, vac_c)
+    let cap = 2048 + im.w * im.h
+    let mut w = jw_new(cap)
+    w = jw_marker(w, 216)
+    w = jw_marker(w, 224)
+    w = jw_be16(w, 16)
+    w = jw_raw(w, 74)
+    w = jw_raw(w, 70)
+    w = jw_raw(w, 73)
+    w = jw_raw(w, 70)
+    w = jw_raw(w, 0)
+    w = jw_raw(w, 1)
+    w = jw_raw(w, 1)
+    w = jw_raw(w, 0)
+    w = jw_be16(w, 1)
+    w = jw_be16(w, 1)
+    w = jw_raw(w, 0)
+    w = jw_raw(w, 0)
+    w = je_dqt(w, 0, qy, zz)
+    w = je_dqt(w, 1, qc, zz)
+    w = jw_marker(w, 192)
+    w = jw_be16(w, 17)
+    w = jw_raw(w, 8)
+    w = jw_be16(w, im.h)
+    w = jw_be16(w, im.w)
+    w = jw_raw(w, 3)
+    w = jw_raw(w, 1)
+    w = jw_raw(w, 34)
+    w = jw_raw(w, 0)
+    w = jw_raw(w, 2)
+    w = jw_raw(w, 17)
+    w = jw_raw(w, 1)
+    w = jw_raw(w, 3)
+    w = jw_raw(w, 17)
+    w = jw_raw(w, 1)
+    w = je_dht(w, 0, bdc_y, vdc)
+    w = je_dht(w, 16, bac_y, vac_y)
+    w = je_dht(w, 1, bdc_c, vdc)
+    w = je_dht(w, 17, bac_c, vac_c)
+    w = jw_marker(w, 218)
+    w = jw_be16(w, 12)
+    w = jw_raw(w, 3)
+    w = jw_raw(w, 1)
+    w = jw_raw(w, 0)
+    w = jw_raw(w, 2)
+    w = jw_raw(w, 17)
+    w = jw_raw(w, 3)
+    w = jw_raw(w, 17)
+    w = jw_raw(w, 0)
+    w = jw_raw(w, 63)
+    w = jw_raw(w, 0)
+    let nx = (im.w + 15) / 16
+    let ny = (im.h + 15) / 16
+    let mut last_y: i64 = 0
+    let mut last_cb: i64 = 0
+    let mut last_cr: i64 = 0
+    let mut my: i64 = 0
+    while my < ny {
+        let mut mx: i64 = 0
+        while mx < nx {
+            let ox = mx * 16
+            let oy = my * 16
+            let sy0 = je_samp_y(im, ox, oy)
+            w = je_block(w, sy0, qy, hdc_y, hac_y, last_y, cost, zz)
+            last_y = vec_get(sy0, 0)
+            let sy1 = je_samp_y(im, ox + 8, oy)
+            w = je_block(w, sy1, qy, hdc_y, hac_y, last_y, cost, zz)
+            last_y = vec_get(sy1, 0)
+            let sy2 = je_samp_y(im, ox, oy + 8)
+            w = je_block(w, sy2, qy, hdc_y, hac_y, last_y, cost, zz)
+            last_y = vec_get(sy2, 0)
+            let sy3 = je_samp_y(im, ox + 8, oy + 8)
+            w = je_block(w, sy3, qy, hdc_y, hac_y, last_y, cost, zz)
+            last_y = vec_get(sy3, 0)
+            let scb = je_samp_c(im, ox, oy, 0)
+            w = je_block(w, scb, qc, hdc_c, hac_c, last_cb, cost, zz)
+            last_cb = vec_get(scb, 0)
+            let scr = je_samp_c(im, ox, oy, 1)
+            w = je_block(w, scr, qc, hdc_c, hac_c, last_cr, cost, zz)
+            last_cr = vec_get(scr, 0)
+            mx = mx + 1
+        }
+        my = my + 1
+    }
+    w = jw_flush(w)
+    w = jw_marker(w, 217)
+    return bytes_slice(w.data, 0, w.len)
+}
+
+fn jpeg_encode(im: Image) -> bytes {
+    return jpeg_encode_q(im, 85)
+}

@@ -1,0 +1,80 @@
+// zlib.baga — RFC 1950 wrapper around zipbaga raw DEFLATE (PNG IDAT).
+
+import "zipbaga/inflate.baga"
+import "zipbaga/deflate.baga"
+
+struct ZlibRes {
+    ok: i64,
+    err: str,
+    data: bytes
+}
+
+fn adler32(data: bytes) -> i64 {
+    let mut a: i64 = 1
+    let mut b: i64 = 0
+    let n = bytes_len(data)
+    let mut i: i64 = 0
+    while i < n {
+        a = a + (bytes_at(data, i) & 255)
+        if a >= 65521 {
+            a = a - 65521
+        }
+        b = b + a
+        if b >= 65521 {
+            b = b - 65521
+        }
+        i = i + 1
+    }
+    return (b << 16) | a
+}
+
+fn zlib_unwrap(src: bytes) -> ZlibRes {
+    let n = bytes_len(src)
+    if n < 6 {
+        return ZlibRes { ok: 0, err: "zlib: truncated", data: bytes_new(0) }
+    }
+    let cmf = bytes_at(src, 0) & 255
+    let flg = bytes_at(src, 1) & 255
+    if (cmf & 15) != 8 {
+        return ZlibRes { ok: 0, err: "zlib: not deflate", data: bytes_new(0) }
+    }
+    if ((cmf * 256 + flg) % 31) != 0 {
+        return ZlibRes { ok: 0, err: "zlib: bad fcheck", data: bytes_new(0) }
+    }
+    if (flg & 32) != 0 {
+        return ZlibRes { ok: 0, err: "zlib: preset dict", data: bytes_new(0) }
+    }
+    let raw = bytes_slice(src, 2, n - 4)
+    let inf = inflate_raw(raw)
+    if inf.ok == 0 {
+        return ZlibRes { ok: 0, err: inf.err, data: bytes_new(0) }
+    }
+    let got = adler32(inf.data)
+    let want = ((bytes_at(src, n - 4) & 255) << 24)
+        | ((bytes_at(src, n - 3) & 255) << 16)
+        | ((bytes_at(src, n - 2) & 255) << 8)
+        | (bytes_at(src, n - 1) & 255)
+    if got != want {
+        return ZlibRes { ok: 0, err: "zlib: bad adler32", data: bytes_new(0) }
+    }
+    return ZlibRes { ok: 1, err: "", data: inf.data }
+}
+
+fn zlib_wrap(raw: bytes) -> bytes {
+    let comp = deflate_raw(raw)
+    let ad = adler32(raw)
+    let n = bytes_len(comp)
+    let out = bytes_new(2 + n + 4)
+    bytes_set(out, 0, 120)
+    bytes_set(out, 1, 156)
+    let mut i: i64 = 0
+    while i < n {
+        bytes_set(out, 2 + i, bytes_at(comp, i))
+        i = i + 1
+    }
+    bytes_set(out, 2 + n, (ad >> 24) & 255)
+    bytes_set(out, 3 + n, (ad >> 16) & 255)
+    bytes_set(out, 4 + n, (ad >> 8) & 255)
+    bytes_set(out, 5 + n, ad & 255)
+    return out
+}

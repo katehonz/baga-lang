@@ -1,0 +1,361 @@
+// img_test.baga — imgbaga 0.6.0: sniff, codecs, ops, WebP VP8L + lossy VP8.
+
+import "imgbaga/img.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn near(a: i64, b: i64, d: i64) -> bool {
+    let mut x = a - b
+    if x < 0 {
+        x = 0 - x
+    }
+    return x <= d
+}
+
+fn main() {
+    check("version", img_version() == "0.6.0")
+
+    // --- sniff (image-rs MAGIC_BYTES) ---
+    check("guess_png", img_guess(hex_decode("89504e470d0a1a0a")) == img_fmt_png())
+    check("guess_jpeg", img_guess(hex_decode("ffd8ffe00010")) == img_fmt_jpeg())
+    check("guess_gif", img_guess(bytes_of_str("GIF89a....")) == img_fmt_gif())
+    check("guess_bmp", img_guess(bytes_of_str("BM....")) == img_fmt_bmp())
+    check("guess_pnm", img_guess(bytes_of_str("P6\n")) == img_fmt_pnm())
+    check("guess_webp", img_guess(bytes_of_str("RIFF....WEBP")) == img_fmt_webp())
+    check("guess_qoi", img_guess(bytes_of_str("qoif")) == img_fmt_qoi())
+    check("guess_ico", img_guess(hex_decode("00000100")) == img_fmt_ico())
+    check("name_png", img_fmt_name(img_fmt_png()) == "png")
+
+    // --- create + ops ---
+    let im = img_new(2, 2, 0, 0, 0, 255)
+    img_put(im, 0, 0, 255, 0, 0, 255)
+    img_put(im, 1, 0, 0, 255, 0, 255)
+    img_put(im, 0, 1, 0, 0, 255, 255)
+    img_put(im, 1, 1, 255, 255, 255, 255)
+    let p00 = img_pixel(im, 0, 0)
+    check("put_red", p00.r == 255 && p00.g == 0 && p00.b == 0 && p00.a == 255)
+    let fl = img_flip_h(im)
+    let pf = img_pixel(fl, 0, 0)
+    check("flip_h", pf.r == 0 && pf.g == 255 && pf.b == 0)
+    let cr = img_crop(im, 1, 1, 1, 1)
+    let pc = img_pixel(cr, 0, 0)
+    check("crop", cr.w == 1 && cr.h == 1 && pc.r == 255 && pc.g == 255 && pc.b == 255)
+    let rs = img_resize(im, 4, 4)
+    check("resize", rs.w == 4 && rs.h == 4)
+    let r00 = img_pixel(rs, 0, 0)
+    check("resize_nn", r00.r == 255 && r00.g == 0)
+    let gray = img_grayscale(im)
+    let gg = img_pixel(gray, 1, 1)
+    check("gray_white", gg.r == gg.g && gg.g == gg.b && gg.r > 250)
+    let inv = img_invert(im)
+    let iv = img_pixel(inv, 0, 0)
+    check("invert_red", iv.r == 0 && iv.g == 255 && iv.b == 255)
+    let r90 = img_rotate90(im)
+    check("rot90_size", r90.w == 2 && r90.h == 2)
+    let rp = img_pixel(r90, 1, 0)
+    check("rot90_px", rp.r == 255 && rp.g == 0 && rp.b == 0)
+
+    // --- PNM P6 ---
+    let ppm = img_encode(im, img_fmt_pnm())
+    check("guess_ppm", img_guess(ppm) == img_fmt_pnm())
+    let infp = img_info(ppm)
+    check("info_ppm", infp.ok == 1 && infp.w == 2 && infp.h == 2)
+    let p6 = img_load(ppm)
+    check("load_ppm", p6.ok == 1)
+    let q = img_pixel(p6, 0, 1)
+    check("ppm_blue", q.r == 0 && q.g == 0 && q.b == 255)
+
+    let p3 = img_load(bytes_of_str("P3\n2 1\n255\n10 20 30 40 50 60\n"))
+    check("p3_ok", p3.ok == 1 && p3.w == 2 && p3.h == 1)
+    let a = img_pixel(p3, 0, 0)
+    let b = img_pixel(p3, 1, 0)
+    check("p3_px", a.r == 10 && a.g == 20 && a.b == 30 && b.r == 40)
+
+    // --- BMP round-trip ---
+    let bm = img_encode(im, img_fmt_bmp())
+    check("guess_bmp2", img_guess(bm) == img_fmt_bmp())
+    let ib = img_info(bm)
+    check("info_bmp", ib.ok == 1 && ib.w == 2 && ib.h == 2)
+    let b2 = img_load(bm)
+    check("load_bmp", b2.ok == 1)
+    let br = img_pixel(b2, 0, 0)
+    let bb = img_pixel(b2, 0, 1)
+    check("bmp_red", br.r == 255 && br.g == 0 && br.b == 0)
+    check("bmp_blue", bb.r == 0 && bb.g == 0 && bb.b == 255)
+
+    // --- PNG 2x2 RGB (Python zlib, filter 0) ---
+    let png = hex_decode("89504e470d0a1a0a0000000d4948445200000002000000020802000000fdd49a73000000124944415478da63f8cfc0c000c20cff8100001fee05fbf1abba770000000049454e44ae426082")
+    check("guess_png2", img_guess(png) == img_fmt_png())
+    let ip = img_info(png)
+    check("info_png", ip.ok == 1 && ip.w == 2 && ip.h == 2 && ip.format == img_fmt_png())
+    let pn = img_load(png)
+    if pn.ok == 0 {
+        eprintln(concat("png err: ", pn.err))
+    }
+    check("load_png", pn.ok == 1 && pn.w == 2 && pn.h == 2)
+    let pr = img_pixel(pn, 0, 0)
+    let pg = img_pixel(pn, 1, 0)
+    let pbl = img_pixel(pn, 0, 1)
+    let pw = img_pixel(pn, 1, 1)
+    check("png_red", pr.r == 255 && pr.g == 0 && pr.b == 0 && pr.a == 255)
+    check("png_green", pg.r == 0 && pg.g == 255 && pg.b == 0)
+    check("png_blue", pbl.r == 0 && pbl.g == 0 && pbl.b == 255)
+    check("png_white", pw.r == 255 && pw.g == 255 && pw.b == 255)
+
+    // PNG encode → decode
+    let pe = img_encode(im, img_fmt_png())
+    check("enc_png_sig", img_guess(pe) == img_fmt_png())
+    let pd = img_load(pe)
+    check("enc_png_ok", pd.ok == 1)
+    let pde = img_pixel(pd, 0, 0)
+    check("enc_png_red", pde.r == 255 && pde.g == 0 && pde.b == 0 && pde.a == 255)
+    let pdw = img_pixel(pd, 1, 1)
+    check("enc_png_white", pdw.r == 255 && pdw.g == 255 && pdw.b == 255)
+
+    let p11 = hex_decode("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63e01291d3000000cd0065b5c796520000000049454e44ae426082")
+    let r11 = img_load(p11)
+    check("png_rgba1", r11.ok == 1 && r11.w == 1)
+    let px1 = img_pixel(r11, 0, 0)
+    check("png_rgba1_px", px1.r == 10 && px1.g == 20 && px1.b == 30 && px1.a == 40)
+
+    // --- JPEG 8x8 solid red (ImageMagick) ---
+    let jred = hex_decode("ffd8ffe000104a46494600010100000100010000ffdb0043000201010101010201010102020202020403020202020504040304060506060605060606070908060709070606080b08090a0a0a0a0a06080b0c0b0a0c090a0a0affdb004301020202020202050303050a0706070a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0affc00011080008000803011100021101031101ffc40014000100000000000000000000000000000008ffc40014100100000000000000000000000000000000ffc4001501010100000000000000000000000000000809ffc40014110100000000000000000000000000000000ffda000c03010002110311003f00178a6bf8ffd9")
+    let ji = img_info(jred)
+    check("jpeg_info", ji.ok == 1 && ji.w == 8 && ji.h == 8 && ji.format == img_fmt_jpeg())
+    let jr = img_load(jred)
+    if jr.ok == 0 {
+        eprintln(concat("jpeg err: ", jr.err))
+    }
+    check("jpeg_load", jr.ok == 1 && jr.w == 8 && jr.h == 8)
+    let jp = img_pixel(jr, 3, 3)
+    check("jpeg_red", near(jp.r, 255, 20) && near(jp.g, 0, 20) && near(jp.b, 0, 20))
+
+    // JPEG 2x2 checker (lossy — just dimensions + not black)
+    let j22 = hex_decode("ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb00430103040405040509050509140d0b0d1414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414ffc00011080002000203011100021101031101ffc40014000100000000000000000000000000000008ffc4001e10000202020203000000000000000000000102030405060811000731ffc4001501010100000000000000000000000000000406ffc4001d110101000202030100000000000000000001020304051100062112ffda000c03010002110311003f0075f1bb43d6725c78f56dcb9aee26d5bb1ab62a59a79e8c4f248ed5222cccc57b24924927ef7e2fda3d7b86c5cf6fe3c7a7889336500c70005d74075f0f27f270bc5efdbb9b9ab8f265c8feaaaa26aaaabed55522b4aaaaaabdbe7fffd9")
+    let j2 = img_load(j22)
+    if j2.ok == 0 {
+        eprintln(concat("jpeg2 err: ", j2.err))
+    }
+    check("jpeg_2x2", j2.ok == 1 && j2.w == 2 && j2.h == 2)
+    let j2p = img_pixel(j2, 0, 0)
+    check("jpeg_2x2_live", j2p.r + j2p.g + j2p.b > 10)
+
+    // --- JPEG encode → decode (4:2:0, quality 85) ---
+    let red = img_new(16, 16, 220, 30, 30, 255)
+    let je = img_encode(red, img_fmt_jpeg())
+    check("jpeg_enc_sig", img_guess(je) == img_fmt_jpeg() && bytes_len(je) > 100)
+    let jd = img_load(je)
+    if jd.ok == 0 {
+        eprintln(concat("jpeg enc/dec err: ", jd.err))
+    }
+    check("jpeg_enc_ok", jd.ok == 1 && jd.w == 16 && jd.h == 16)
+    let jdp = img_pixel(jd, 8, 8)
+    check("jpeg_enc_red", near(jdp.r, 220, 30) && near(jdp.g, 30, 30) && near(jdp.b, 30, 30))
+
+    // --- PNG Adam7 4x4 RGB ---
+    let adam = hex_decode("89504e470d0a1a0a0000000d4948445200000004000000040802000001519439bf0000002b4944415478da0dc7310100000cc23084210c61155159db912349cc5ee6661af975f24b6d5da51f2c0ec103332517c10d9c3dbf0000000049454e44ae426082")
+    let ad = img_load(adam)
+    if ad.ok == 0 {
+        eprintln(concat("adam7 err: ", ad.err))
+    }
+    check("adam7_ok", ad.ok == 1 && ad.w == 4 && ad.h == 4)
+    let a00 = img_pixel(ad, 0, 0)
+    let a10 = img_pixel(ad, 1, 0)
+    let a01 = img_pixel(ad, 0, 1)
+    check("adam7_px", a00.r == 0 && a00.g == 0 && a00.b == 200)
+    check("adam7_x", a10.r == 60 && a10.g == 0 && a10.b == 200)
+    check("adam7_y", a01.r == 0 && a01.g == 60 && a01.b == 200)
+
+    // --- PNG tRNS gray (10 is transparent) ---
+    let tg = hex_decode("89504e470d0a1a0a0000000d4948445200000003000000020800000000b81f39c60000000274524e53000a96462426000000104944415478da63e0129163d0e0320200021a00a16290d4ef0000000049454e44ae426082")
+    let tgi = img_load(tg)
+    if tgi.ok == 0 {
+        eprintln(concat("trns gray err: ", tgi.err))
+    }
+    check("trns_gray_ok", tgi.ok == 1 && tgi.w == 3 && tgi.h == 2)
+    check("trns_gray_a0", img_pixel(tgi, 0, 0).a == 0 && img_pixel(tgi, 0, 0).r == 10)
+    check("trns_gray_a1", img_pixel(tgi, 1, 0).a == 255 && img_pixel(tgi, 1, 0).r == 20)
+    check("trns_gray_a2", img_pixel(tgi, 1, 1).a == 0)
+
+    // --- PNG tRNS palette (index 0 alpha 0) ---
+    let tp = hex_decode("89504e470d0a1a0a0000000d49484452000000020000000208030000004568fd160000000c504c5445ff000000ff000000fffffffffb0060f60000000174524e530040e6d8660000000e4944415478da63606064606206000011000783ca64640000000049454e44ae426082")
+    let tpi = img_load(tp)
+    if tpi.ok == 0 {
+        eprintln(concat("trns pal err: ", tpi.err))
+    }
+    check("trns_pal_ok", tpi.ok == 1)
+    check("trns_pal_red", img_pixel(tpi, 0, 0).r == 255 && img_pixel(tpi, 0, 0).a == 0)
+    check("trns_pal_grn", img_pixel(tpi, 1, 0).g == 255 && img_pixel(tpi, 1, 0).a == 255)
+
+    // --- GIF first frame ---
+    let gf = hex_decode("47494638396102000200f10300ff000000ff000000ffffffff21f90400000000002c0000000002000200000203443405003b")
+    check("guess_gif2", img_guess(gf) == img_fmt_gif())
+    let gi = img_info(gf)
+    check("gif_info", gi.ok == 1 && gi.w == 2 && gi.h == 2)
+    let gd = img_load(gf)
+    if gd.ok == 0 {
+        eprintln(concat("gif err: ", gd.err))
+    }
+    check("gif_ok", gd.ok == 1 && gd.w == 2 && gd.h == 2)
+    check("gif_red", img_pixel(gd, 0, 0).r == 255 && img_pixel(gd, 0, 0).g == 0)
+    check("gif_grn", img_pixel(gd, 1, 0).g == 255)
+    check("gif_blu", img_pixel(gd, 0, 1).b == 255)
+    check("gif_wht", img_pixel(gd, 1, 1).r == 255 && img_pixel(gd, 1, 1).g == 255)
+
+    // --- QOI encode → decode (lossless) + independent golden ---
+    let qe = img_encode(im, img_fmt_qoi())
+    check("qoi_enc_sig", img_guess(qe) == img_fmt_qoi() && bytes_len(qe) > 20)
+    let qi = img_info(qe)
+    check("qoi_info", qi.ok == 1 && qi.w == 2 && qi.h == 2)
+    let qd = img_load(qe)
+    check("qoi_rt_ok", qd.ok == 1)
+    check("qoi_rt_red", img_pixel(qd, 0, 0).r == 255 && img_pixel(qd, 0, 0).g == 0 && img_pixel(qd, 0, 0).a == 255)
+    check("qoi_rt_wht", img_pixel(qd, 1, 1).r == 255 && img_pixel(qd, 1, 1).b == 255)
+    let qg = hex_decode("716f6966000000020000000204005a766dffffffff280000000000000001")
+    let qgd = img_load(qg)
+    if qgd.ok == 0 {
+        eprintln(concat("qoi golden err: ", qgd.err))
+    }
+    check("qoi_gold_ok", qgd.ok == 1 && qgd.w == 2)
+    check("qoi_gold_red", img_pixel(qgd, 0, 0).r == 255 && img_pixel(qgd, 0, 0).a == 255)
+    check("qoi_gold_a", img_pixel(qgd, 1, 1).a == 40 && img_pixel(qgd, 1, 1).r == 255)
+
+    // --- ICO: PNG payload + BMP-DIB payload ---
+    let ico_png = hex_decode("00000100010002020000010020004b0000001600000089504e470d0a1a0a0000000d4948445200000002000000020802000000fdd49a73000000124944415478da63f8cfc0c000c20cff8100001fee05fbf1abba770000000049454e44ae426082")
+    check("guess_ico", img_guess(ico_png) == img_fmt_ico())
+    let ii = img_info(ico_png)
+    check("ico_info", ii.ok == 1 && ii.w == 2 && ii.h == 2)
+    let idp = img_load(ico_png)
+    if idp.ok == 0 {
+        eprintln(concat("ico png err: ", idp.err))
+    }
+    check("ico_png_ok", idp.ok == 1 && img_pixel(idp, 0, 0).r == 255 && img_pixel(idp, 1, 1).g == 255)
+    let ico_bmp = hex_decode("0000010001000202000001002000400000001600000028000000020000000400000001002000000000001000000000000000000000000000000000000000ff0000ffffffffff0000ffff00ff00ff0000000000000000")
+    let idb = img_load(ico_bmp)
+    if idb.ok == 0 {
+        eprintln(concat("ico bmp err: ", idb.err))
+    }
+    check("ico_bmp_ok", idb.ok == 1 && idb.w == 2 && idb.h == 2)
+    check("ico_bmp_red", img_pixel(idb, 0, 0).r == 255 && img_pixel(idb, 0, 0).g == 0)
+    check("ico_bmp_wht", img_pixel(idb, 1, 1).r == 255 && img_pixel(idb, 1, 1).b == 255)
+    let ie = img_encode(im, img_fmt_ico())
+    check("ico_enc_sig", img_guess(ie) == img_fmt_ico())
+    let ied = img_load(ie)
+    check("ico_enc_rt", ied.ok == 1 && img_pixel(ied, 0, 1).b == 255)
+
+    // --- bilinear resize ---
+    let bl = img_resize_bilinear(im, 2, 2)
+    check("bilin_same", bl.ok == 1 && img_pixel(bl, 0, 0).r == 255 && img_pixel(bl, 1, 0).g == 255)
+    let line = img_new(2, 1, 255, 0, 0, 255)
+    img_put(line, 1, 0, 0, 0, 255, 255)
+    let mid = img_resize_bilinear(line, 3, 1)
+    check("bilin_ok", mid.ok == 1 && mid.w == 3)
+    let m0 = img_pixel(mid, 0, 0)
+    let m1 = img_pixel(mid, 1, 0)
+    let m2 = img_pixel(mid, 2, 0)
+    check("bilin_ends", m0.r > 240 && m0.b < 20 && m2.b > 240 && m2.r < 20)
+    check("bilin_mid", m1.r > 80 && m1.r < 180 && m1.b > 80 && m1.b < 180)
+
+    // --- PNG 16-bit ---
+    let p16 = hex_decode("89504e470d0a1a0a0000000d494844520000000200000001100000000081d9fc150000000d4944415478da631032f9cf000002e70146a0a59e520000000049454e44ae426082")
+    let g16 = img_load(p16)
+    if g16.ok == 0 { eprintln(concat("png16 err: ", g16.err)) }
+    check("png16_ok", g16.ok == 1 && g16.w == 2 && g16.h == 1)
+    check("png16_y", img_pixel(g16, 0, 0).r == 18 && img_pixel(g16, 1, 0).r == 254)
+    let p16r = hex_decode("89504e470d0a1a0a0000000d4948445200000001000000011002000000c0e78f9d0000000f4944415478da631060506030600000014700617251a5a90000000049454e44ae426082")
+    let r16 = img_load(p16r)
+    check("png16_rgb", r16.ok == 1 && img_pixel(r16, 0, 0).r == 15 && img_pixel(r16, 0, 0).g == 31 && img_pixel(r16, 0, 0).b == 47)
+    let p16t = hex_decode("89504e470d0a1a0a0000000d494844520000000200000001100000000081d9fc150000000274524e530a008c7c25b20000000d4944415478da637060e06200000119004ba22bd7b40000000049454e44ae426082")
+    let t16 = img_load(p16t)
+    check("png16_trns", t16.ok == 1 && img_pixel(t16, 0, 0).a == 255 && img_pixel(t16, 1, 0).a == 0)
+
+    // --- GIF animation ---
+    let ag = hex_decode("47494638396102000200f00000ff000000000021f904001400000021ff0b4e45545343415045322e3003010000002c000000000200020000020284510021f90400140000002c0000000002000200800000ff00000002028451003b")
+    let anim = gif_anim_decode(ag)
+    if anim.ok == 0 { eprintln(concat("anim err: ", anim.err)) }
+    check("anim_ok", anim.ok == 1 && anim.n == 2 && anim.w == 2)
+    check("anim_delay", gif_anim_delay(anim, 0) == 20 && gif_anim_delay(anim, 1) == 20)
+    let f0 = gif_anim_frame(anim, 0)
+    let f1 = gif_anim_frame(anim, 1)
+    check("anim_f0", f0.ok == 1 && img_pixel(f0, 0, 0).r == 255 && img_pixel(f0, 0, 0).b == 0)
+    check("anim_f1", f1.ok == 1 && img_pixel(f1, 0, 0).b == 255 && img_pixel(f1, 0, 0).r == 0)
+    let first = img_load(ag)
+    check("anim_load_first", first.ok == 1 && img_pixel(first, 0, 0).r == 255)
+
+    // --- TIFF uncompressed + PackBits ---
+    let tu = hex_decode("49492a00080000000a0000010400010000000200000001010400010000000200000002010300030000008600000003010300010000000100000006010300010000000200000011010400010000008c00000015010300010000000300000016010400010000000200000017010400010000000c0000001c010300010000000100000000000000080008000800ff000000ff000000ffffffff")
+    check("guess_tiff", img_guess(tu) == img_fmt_tiff())
+    let ti = img_info(tu)
+    check("tiff_info", ti.ok == 1 && ti.w == 2 && ti.h == 2)
+    let td = img_load(tu)
+    if td.ok == 0 { eprintln(concat("tiff err: ", td.err)) }
+    check("tiff_ok", td.ok == 1 && img_pixel(td, 0, 0).r == 255 && img_pixel(td, 1, 0).g == 255)
+    check("tiff_blu", img_pixel(td, 0, 1).b == 255 && img_pixel(td, 1, 1).r == 255)
+    let tpack = hex_decode("49492a00080000000a0000010400010000000200000001010400010000000200000002010300030000008600000003010300010000000580000006010300010000000200000011010400010000008c00000015010300010000000300000016010400010000000200000017010400010000000d0000001c0103000100000001000000000000000800080008000bff000000ff000000ffffffff")
+    let tpd = img_load(tpack)
+    if tpd.ok == 0 { eprintln(concat("tiff pb err: ", tpd.err)) }
+    check("tiff_pack", tpd.ok == 1 && img_pixel(tpd, 0, 0).r == 255 && img_pixel(tpd, 1, 1).b == 255)
+
+    // --- WebP info (VP8L + VP8) ---
+    let wl = hex_decode("524946462c000000574542505650384c1f0000002f014000001f201048de1f3a8df9171014fc1fddfc47640fe0060c11fd0f0100")
+    check("guess_webp2", img_guess(wl) == img_fmt_webp())
+    let wi = img_info(wl)
+    check("webp_info_l", wi.ok == 1 && wi.w == 2 && wi.h == 2)
+    let wd = img_load(wl)
+    if wd.ok == 0 { eprintln(concat("webp 2x2 err: ", wd.err)) }
+    check("webp_l_ok", wd.ok == 1 && wd.w == 2 && wd.h == 2)
+    check("webp_l_red", img_pixel(wd, 0, 0).r == 255 && img_pixel(wd, 0, 0).g == 0)
+    check("webp_l_grn", img_pixel(wd, 1, 0).g == 255)
+    check("webp_l_blu", img_pixel(wd, 0, 1).b == 255)
+    check("webp_l_wht", img_pixel(wd, 1, 1).r == 255 && img_pixel(wd, 1, 1).b == 255)
+    let wr = hex_decode("524946461c000000574542505650384c0f0000002f03c000000710fd8ffe0722a2ff0100")
+    let wrd = img_load(wr)
+    check("webp_red4", wrd.ok == 1 && wrd.w == 4 && img_pixel(wrd, 2, 2).r == 255 && img_pixel(wrd, 2, 2).g == 0)
+    let wg = hex_decode("524946462e000000574542505650384c220000002f07c00100993244f43f3611d1ff0061b65151ce9f73af231890018c09a07aa0ff00")
+    let wgd = img_load(wg)
+    check("webp_grid", wgd.ok == 1 && wgd.w == 8 && img_pixel(wgd, 0, 0).b == 128 && img_pixel(wgd, 1, 0).r == 32)
+    let wloss = hex_decode("524946463a00000057454250565038202e000000")
+    let wli = img_info(wloss)
+    check("webp_info_short", wli.ok == 0 || wli.w >= 0)
+
+    // --- WebP lossy VP8 (ImageMagick goldens) ---
+    let red8 = hex_decode("52494646400000005745425056503820340000003002009d012a0800080000c01225a00274ba01f801f80004680000fefa2197ff779ab0d377f5adfff5a39fae89feb473ff595800")
+    let r8i = img_info(red8)
+    check("webp_vp8_info", r8i.ok == 1 && r8i.w == 8 && r8i.h == 8)
+    let r8 = img_load(red8)
+    if r8.ok == 0 { eprintln(concat("vp8 red8 err: ", r8.err)) }
+    check("webp_vp8_red", r8.ok == 1 && r8.w == 8 && r8.h == 8)
+    let r8p = img_pixel(r8, 0, 0)
+    let r8q = img_pixel(r8, 7, 7)
+    check("webp_vp8_red_px", r8p.r == 255 && r8p.g == 1 && r8p.b == 0 && r8q.r == 255)
+    let chk2 = hex_decode("524946464800000057454250565038203c000000f001009d012a0200020000800825a4000ea393a701fcc4d000feff2a5ffd8f1ff3ffaafc9b7fe567fff5a7da783546186792caff87e04e030c000000")
+    let c2 = img_load(chk2)
+    if c2.ok == 0 { eprintln(concat("vp8 chk err: ", c2.err)) }
+    check("webp_vp8_chk", c2.ok == 1 && c2.w == 2 && c2.h == 2)
+    check("webp_vp8_chk00", img_pixel(c2, 0, 0).r == 76 && img_pixel(c2, 0, 0).g == 76)
+    check("webp_vp8_chk10", img_pixel(c2, 1, 0).r == 153)
+    check("webp_vp8_chk01", img_pixel(c2, 0, 1).r == 30)
+    check("webp_vp8_chk11", img_pixel(c2, 1, 1).r == 253)
+    let quad = hex_decode("5249464672000000574542505650382066000000b001009d012a0800080002003425b00003612093bc5800fef2b4bfb9dcb7f7147effff7fff1dbdd5fee697ff8d767b680fe951ffff7851dcc4cad57fff5b323fdc39ffc8e301fffacfeffc0fcffee97ff8ecff8d25bfe8dbffc29ec7fe05f3f9042f66000000")
+    let qv = img_load(quad)
+    if qv.ok == 0 { eprintln(concat("vp8 quad err: ", qv.err)) }
+    check("webp_vp8_quad", qv.ok == 1 && qv.w == 8)
+    let q00 = img_pixel(qv, 0, 0)
+    let q70 = img_pixel(qv, 7, 0)
+    let q07 = img_pixel(qv, 0, 7)
+    let q77 = img_pixel(qv, 7, 7)
+    check("webp_vp8_quad_red", q00.r == 248 && q00.g == 6 && q00.b == 0)
+    check("webp_vp8_quad_grn", q70.r == 8 && q70.g == 253 && q70.b == 0)
+    check("webp_vp8_quad_blu", q07.r == 4 && q07.g == 0 && q07.b == 252)
+    check("webp_vp8_quad_ylw", q77.r == 241 && q77.g == 255 && q77.b == 11)
+
+    print("img_test: all passed")
+}
