@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### logbaga — отделно репо
+- `app-product/logbaga` е git submodule към
+  [bagalang/logbaga](https://github.com/bagalang/logbaga).
+- `std` остава тук; `fmrbaga` / `cloudbaga` продължават да сочат
+  `../logbaga`; `tests/log_test` също.
+
 ### kvbaga — отделно репо
 - `app-product/kvbaga` е git submodule към
   [bagalang/kvbaga](https://github.com/bagalang/kvbaga).
