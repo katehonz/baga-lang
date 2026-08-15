@@ -10,3 +10,6 @@
 [submodule "app-product/boilabaga"]
 	path = app-product/boilabaga
 	url = git@github.com:bagalang/boilabaga.git
+[submodule "app-product/bufbaga"]
+	path = app-product/bufbaga
+	url = git@github.com:bagalang/bufbaga.git

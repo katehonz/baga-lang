@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### bufbaga — отделно репо
+- `app-product/bufbaga` е git submodule към
+  [bagalang/bufbaga](https://github.com/bagalang/bufbaga).
+- `std` остава тук; `csvbaga` / `officebaga` / `pdfbaga` /
+  `reportbaga` продължават да сочат `../bufbaga`; `tests/buf_test`
+  също остава тук.
+
 ### boilabaga — отделно репо
 - `app-product/boilabaga` е git submodule към
   [bagalang/boilabaga](https://github.com/bagalang/boilabaga).
