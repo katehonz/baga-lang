@@ -105,7 +105,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 |---------|------|
 | **bufbaga** | String builder (push chunks, join once); **git submodule** → [bagalang/bufbaga](https://github.com/bagalang/bufbaga) |
 | **csvbaga** | CSV parse/stringify (RFC 4180-ish); **git submodule** → [bagalang/csvbaga](https://github.com/bagalang/csvbaga) |
-| **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) |
+| **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate); **git submodule** → [bagalang/imgbaga](https://github.com/bagalang/imgbaga) |
 | **mdbaga** | Markdown parser / renderer |
 | **mdtbaga** | Markdown table helpers |
 | **officebaga** | Office docs — DOCX/XLSX/ODT/ODS (+ legacy DOC/XLS probe) |

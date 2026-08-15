@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### imgbaga — отделно репо
+- `app-product/imgbaga` е git submodule към
+  [bagalang/imgbaga](https://github.com/bagalang/imgbaga).
+- `std`, `zipbaga`, `pathbaga` остават тук; `tests/img_test` също.
+
 ### httpdbaga — отделно репо
 - `app-product/httpdbaga` е git submodule към
   [bagalang/httpdbaga](https://github.com/bagalang/httpdbaga).

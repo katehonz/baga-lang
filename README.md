@@ -59,7 +59,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **oauthbaga** | OAuth proxy (integration exam) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) · [repo](https://github.com/bagalang/bagadecimal) (submodule) |
 | **mdbaga**, **tplbaga**, **queuebaga**, **jsonrpcbaga**, **[grebaga](https://github.com/bagalang/grebaga)**, **testbaga** | Markdown, templates, jobs, RPC, grep CLI, asserts |
-| **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) |
+| **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) · [repo](https://github.com/bagalang/imgbaga) (submodule) |
 | **apps/api**, **apps/registry** | Sample product + sandak package registry |
 
 Canonical stack: `apps/*` → **fmrbaga** → httpdbaga / jwtbaga / ormbaga → **pgbaga** → Postgres  

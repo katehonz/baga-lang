@@ -40,3 +40,6 @@
 [submodule "app-product/httpdbaga"]
 	path = app-product/httpdbaga
 	url = git@github.com:bagalang/httpdbaga.git
+[submodule "app-product/imgbaga"]
+	path = app-product/imgbaga
+	url = git@github.com:bagalang/imgbaga.git
