@@ -33,3 +33,7 @@ bh_release(bh)?
 
 Honest: jitter is opt-in and deterministic (seeded); breaker is
 single-threaded state (caller serializes); bulkhead is process-local.
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 Dim Gigov.

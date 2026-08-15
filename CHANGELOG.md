@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### License
+- Пакетите в `app-product/` без собствен файл получават MIT
+  (`LICENSE`, Copyright (c) 2026 Dim Gigov), като baga и boilaDB.
+- `relbaga` още е in-tree; LICENSE е сложен и там.
+
 ### zipbaga — отделно репо
 - `app-product/zipbaga` е git submodule към
   [bagalang/zipbaga](https://github.com/bagalang/zipbaga).
