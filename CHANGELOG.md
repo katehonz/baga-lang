@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### boilaDB P15 — SCRAM-SHA-256
+- CREATE USER пише `s1:` verifier. PG auto-SASL за такива users;
+  pgbaga connect + грешна парола покрити в `tests/boila_scram_test`.
+
 ### boilaDB P14 — COPY
 - `COPY t FROM STDIN` / `TO STDOUT` (text + csv). 1k IN/OUT гейт;
   лош ред → `22P04` + rollback.

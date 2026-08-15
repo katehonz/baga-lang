@@ -1,0 +1,135 @@
+// boila_scram_test.baga — P15 SCRAM-SHA-256 verifier + handshake + live pgbaga.
+
+import "boilaDB/catalog/acl.baga"
+import "boilaDB/catalog/acl_scram.baga"
+import "boilaDB/api/pgwire_scram.baga"
+import "boilaDB/api/pgwire_msg.baga"
+import "boilaDB/api/pgwire_serve.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "pgbaga/pg.baga"
+import "pgbaga/pg_scram.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/net/tcp.baga"
+import "std/time/time.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn scram_serve(ctx: i64) -> i64 !IO !Net !Time !Par {
+    let lfd = cell2_0(ctx)
+    let n = cell2_1(ctx)
+    let mut i: i64 = 0
+    while i < n {
+        let fd = tcp_accept(lfd)?
+        if fd >= 0 {
+            let srv = boila_server_open("/tmp/baga_boila_scram_test", 2, 8, 3, 4)?
+            let _o = boila_pg_serve(fd, srv)?
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Net !Time !Par !Random {
+    print("boila_scram_test:")
+    let fails: Vec<i64> = vec_new()
+
+    let salt: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < 16 {
+        vec_push(salt, (i * 17 + 3) & 255)
+        i = i + 1
+    }
+    let ver = boila_scram_encode(boila_scram_keys("secret", salt, 256))
+    check(fails, "s1_prefix", boila_scram_is(ver) == 1)
+    check(fails, "pw_ok", boila_scram_pw_ok(ver, "secret") == 1)
+    check(fails, "pw_bad", boila_scram_pw_ok(ver, "wrong") == 0)
+    check(fails, "parse", boila_scram_parse(ver).ok == 1 && boila_scram_parse(ver).iter == 256)
+
+    let cnonce = "rOprNGfwEbeRWgbNEkqO"
+    let bare = scram_client_first_bare(cnonce)
+    let sfirst = boila_scram_server_first(ver, cnonce, "serverNONCE")
+    check(fails, "sfirst", sfirst != "")
+    let fin = scram_build_final("secret", bare, sfirst)
+    check(fails, "cfinal", fin.message != "")
+    let chk = boila_scram_verify(ver, bare, sfirst, fin.message)
+    check(fails, "verify", chk.ok == 1 && chk.sig == fin.server_sig)
+    let fin2 = scram_build_final("wrong", bare, sfirst)
+    let chk2 = boila_scram_verify(ver, bare, sfirst, fin2.message)
+    check(fails, "verify_bad", chk2.ok == 0)
+
+    check(fails, "mode_auto", boila_auth_mode()? == "auto" || boila_auth_mode()? == "scram" || boila_auth_mode()? == "cleartext" || boila_auth_mode()? == "trust")
+    check(fails, "sasl_is", pgw_p_is_sasl(bytes_concat(pgw_cstr("SCRAM-SHA-256"), bytes_concat(pgw_be32(4), bytes_of_str("n,,x")))) == 1)
+    check(fails, "sasl_not", pgw_p_is_sasl(bytes_concat(bytes_of_str("secret"), pgw_one(0))) == 0)
+
+    // live: catalog s1 user → auto picks SASL; pgbaga speaks SCRAM
+    let root = "/tmp/baga_boila_scram_test"
+    wipe_root(root)?
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    srv.meta = boila_acl_user_put(srv.meta, "ana", 1, ver)?
+    let ug = boila_acl_user_get(srv.meta, "ana")?
+    srv.meta = ug.s
+    check(fails, "put_user", ug.ok == 1 && boila_scram_is(ug.hash) == 1)
+    let _c = boila_server_close(srv)?
+
+    let port: i64 = 16577
+    let lst = tcp_listen(port)?
+    check(fails, "listen", lst >= 0)
+    go_bg(scram_serve, cell2(lst, 2))
+    sleep_ms(200)
+
+    let conn = pg_connect_to("127.0.0.1", port, "ana", "secret", "boila", 5)?
+    check(fails, "pg_ok", conn.ok == 1)
+    if conn.ok == 1 {
+        let r = pg_query(conn, "SELECT 1")?
+        check(fails, "select1", pg_ok(r) == 1)
+        pg_close(conn)?
+    } else {
+        print(concat("  (pg err ", concat(conn.err, ")")))
+        check(fails, "select1", false)
+    }
+
+    let bad = pg_connect_to("127.0.0.1", port, "ana", "nope", "boila", 5)?
+    check(fails, "pg_bad", bad.ok == 0)
+    if bad.ok == 1 { pg_close(bad)? }
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_scram_test: all passed")
+        return 0
+    }
+    print(concat("boila_scram_test: FAILED ", int_to_str(n)))
+    return 1
+}
