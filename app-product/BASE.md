@@ -120,7 +120,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | Package | Role |
 |---------|------|
 | **bagadecimal** | Fixed-precision decimal (money, VAT, rates; Postgres NUMERIC bridge); **git submodule** → [bagalang/bagadecimal](https://github.com/bagalang/bagadecimal) |
-| **globbaga** | Simple glob matching (`*`, `?`) |
+| **globbaga** | Simple glob matching (`*`, `?`); **git submodule** → [bagalang/globbaga](https://github.com/bagalang/globbaga) |
 | **grebaga** | Grep-like line scanner (literal + mini patterns) |
 | **pathbaga** | Path helpers (join, basename, dirname, ext, stem) |
 | **testbaga** | Minimal test assertions (`assert_true`, `assert_eq_*`) |

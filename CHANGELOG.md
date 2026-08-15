@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### globbaga — отделно репо
+- `app-product/globbaga` е git submodule към
+  [bagalang/globbaga](https://github.com/bagalang/globbaga).
+- `std` остава тук; `tests/glob_test` също.
+
 ### fmrbaga — отделно репо
 - `app-product/fmrbaga` е git submodule към
   [bagalang/fmrbaga](https://github.com/bagalang/fmrbaga).
