@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### otelbaga — отделно репо
+- `app-product/otelbaga` е git submodule към
+  [bagalang/otelbaga](https://github.com/bagalang/otelbaga).
+- `std` остава тук; `fmrbaga` / `cloudbaga` продължават да сочат
+  `../otelbaga`; `tests/otel_test` / `otel_http_test` също.
+
 ### ormbaga — отделно репо
 - `app-product/ormbaga` е git submodule към
   [bagalang/ormbaga](https://github.com/bagalang/ormbaga).

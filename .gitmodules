@@ -76,3 +76,6 @@
 [submodule "app-product/ormbaga"]
 	path = app-product/ormbaga
 	url = git@github.com:bagalang/ormbaga.git
+[submodule "app-product/otelbaga"]
+	path = app-product/otelbaga
+	url = git@github.com:bagalang/otelbaga.git

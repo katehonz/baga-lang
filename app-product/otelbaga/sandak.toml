@@ -1,7 +1,0 @@
-[package]
-name = "otelbaga"
-version = "0.1.0"
-entry = "otel.baga"
-
-[dependencies]
-std = { path = "../../std" }

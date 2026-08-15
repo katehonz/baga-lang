@@ -96,7 +96,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **flagbaga** | Typed CLI flags over `arg()`; **git submodule** → [bagalang/flagbaga](https://github.com/bagalang/flagbaga) |
 | **logbaga** | Structured JSON lines on stderr; **git submodule** → [bagalang/logbaga](https://github.com/bagalang/logbaga) |
 | **metbaga** | Prometheus text metrics; **git submodule** → [bagalang/metbaga](https://github.com/bagalang/metbaga) |
-| **otelbaga** | W3C Trace Context + OTLP/JSON export lite |
+| **otelbaga** | W3C Trace Context + OTLP/JSON export lite; **git submodule** → [bagalang/otelbaga](https://github.com/bagalang/otelbaga) |
 | **relbaga** | Resilience — backoff, retry, circuit breaker, bulkhead |
 
 ### Text / documents / images / reports
