@@ -34,3 +34,6 @@
 [submodule "app-product/globbaga"]
 	path = app-product/globbaga
 	url = git@github.com:bagalang/globbaga.git
+[submodule "app-product/grebaga"]
+	path = app-product/grebaga
+	url = git@github.com:bagalang/grebaga.git

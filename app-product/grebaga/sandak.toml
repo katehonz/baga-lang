@@ -1,7 +1,0 @@
-[package]
-name = "grebaga"
-version = "0.1.0"
-entry = "scan.baga"
-
-[dependencies]
-std = { path = "../../std" }

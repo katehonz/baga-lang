@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### grebaga — отделно репо
+- `app-product/grebaga` е git submodule към
+  [bagalang/grebaga](https://github.com/bagalang/grebaga).
+- `std` остава тук; `tests/grep_test` също.
+
 ### globbaga — отделно репо
 - `app-product/globbaga` е git submodule към
   [bagalang/globbaga](https://github.com/bagalang/globbaga).
