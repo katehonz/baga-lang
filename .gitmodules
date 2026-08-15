@@ -7,3 +7,6 @@
 [submodule "app-product/bagadecimal"]
 	path = app-product/bagadecimal
 	url = git@github.com:bagalang/bagadecimal.git
+[submodule "app-product/boilabaga"]
+	path = app-product/boilabaga
+	url = git@github.com:bagalang/boilabaga.git

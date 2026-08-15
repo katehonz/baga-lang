@@ -1,8 +1,0 @@
-[package]
-name = "boilabaga"
-version = "0.1.0"
-entry = "adapter.baga"
-
-[dependencies]
-pgbaga = { path = "../pgbaga" }
-std = { path = "../../std" }
