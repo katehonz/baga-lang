@@ -66,7 +66,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **boilabaga** | Client adapter to boilaDB over PG wire (defaults :6575 + BoilaSQL dialect); **git submodule** → [bagalang/boilabaga](https://github.com/bagalang/boilabaga) |
 | **querybaga** | URL query / form parse and encode |
 | **wsbaga** | WebSocket RFC 6455 — handshake, frames, echo server/client |
-| **chatbaga** | Multi-room WebSocket chat product (on wsbaga + poll) |
+| **chatbaga** | Multi-room WebSocket chat product (on wsbaga + poll); **git submodule** → [bagalang/chatbaga](https://github.com/bagalang/chatbaga) |
 
 ### RPC / protocols
 

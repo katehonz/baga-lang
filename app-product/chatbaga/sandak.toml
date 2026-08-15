@@ -1,8 +1,0 @@
-[package]
-name = "chatbaga"
-version = "0.1.0"
-entry = "chat.baga"
-
-[dependencies]
-wsbaga = { path = "../wsbaga" }
-std = { path = "../../std" }

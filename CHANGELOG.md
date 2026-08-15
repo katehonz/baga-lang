@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### chatbaga — отделно репо
+- `app-product/chatbaga` е git submodule към
+  [bagalang/chatbaga](https://github.com/bagalang/chatbaga).
+- `std` и `wsbaga` остават тук; `tests/chat_test` също.
+
 ### bufbaga — отделно репо
 - `app-product/bufbaga` е git submodule към
   [bagalang/bufbaga](https://github.com/bagalang/bufbaga).

@@ -13,3 +13,6 @@
 [submodule "app-product/bufbaga"]
 	path = app-product/bufbaga
 	url = git@github.com:bagalang/bufbaga.git
+[submodule "app-product/chatbaga"]
+	path = app-product/chatbaga
+	url = git@github.com:bagalang/chatbaga.git
