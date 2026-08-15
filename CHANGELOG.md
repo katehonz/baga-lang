@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### boilaDB deps — restore §3 layering (kimi-deps gate back to 0)
+- `repl/` gets a layer rank (above server) in scripts/deps.sh.
+- Cross-db SELECT execution (boila_exec_xdb) moved sql/ → server/
+  (it drives the multi-db registry); pure FDW pk helpers + needs-xdb
+  predicate stay in sql/exec_xdb.baga. Eliminates the sql→server upward
+  edge. deps.sh back to 0 grandfathered exceptions.
+
 ### boilaDB P21-4 — CHECK constraints
 - Table-level `CHECK (expr)` + column-level `col TYPE CHECK (expr)`;
   enforced on INSERT/upsert/UPDATE (TRUE/NULL pass, FALSE → 23514);
