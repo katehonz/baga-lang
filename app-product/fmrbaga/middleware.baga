@@ -1,3 +1,0 @@
-// Public re-export — prefer fmrbaga/core/middleware.baga for new code.
-// Stable path: import "fmrbaga/middleware.baga"
-import "core/middleware.baga"

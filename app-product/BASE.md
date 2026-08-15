@@ -56,7 +56,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 | Package | Role |
 |---------|------|
-| **fmrbaga** | Baga web framework — router, JSON (`jsonx`), middleware, OpenAPI, config, serve, workers |
+| **fmrbaga** | Baga web framework — router, JSON (`jsonx`), middleware, OpenAPI, config, serve, workers; **git submodule** → [bagalang/fmrbaga](https://github.com/bagalang/fmrbaga) |
 | **httpdbaga** | HTTP/1.1 + HTTP/2 (h2c, HPACK) server library |
 | **jwtbaga** | JWT/JWS — HS256 sign/verify; RS256/ES256 verify |
 | **oauthbaga** | OAuth2 / OIDC-style flows, proxy, session cookie demo |

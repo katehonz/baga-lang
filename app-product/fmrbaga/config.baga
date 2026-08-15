@@ -1,3 +1,0 @@
-// Public re-export — prefer fmrbaga/core/config.baga for new code.
-// Stable path: import "fmrbaga/config.baga"
-import "core/config.baga"

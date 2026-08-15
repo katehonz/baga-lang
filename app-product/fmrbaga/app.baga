@@ -1,4 +1,0 @@
-// Public re-export — prefer fmrbaga/core/app.baga for new code.
-// Stable path: import "fmrbaga/app.baga"
-import "core/app.baga"
-import "core/serve.baga"

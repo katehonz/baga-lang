@@ -1,3 +1,0 @@
-// Public re-export — prefer fmrbaga/core/route.baga for new code.
-// Stable path: import "fmrbaga/route.baga"
-import "core/route.baga"

@@ -28,3 +28,6 @@
 [submodule "app-product/flagbaga"]
 	path = app-product/flagbaga
 	url = git@github.com:bagalang/flagbaga.git
+[submodule "app-product/fmrbaga"]
+	path = app-product/fmrbaga
+	url = git@github.com:bagalang/fmrbaga.git

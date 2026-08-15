@@ -1,3 +1,0 @@
-// Public re-export — prefer fmrbaga/json/jsonx.baga for new code.
-// Stable path: import "fmrbaga/jsonx.baga"
-import "json/jsonx.baga"

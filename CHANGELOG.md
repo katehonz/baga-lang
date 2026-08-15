@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### fmrbaga — отделно репо
+- `app-product/fmrbaga` е git submodule към
+  [bagalang/fmrbaga](https://github.com/bagalang/fmrbaga).
+- `std`, `httpdbaga`, `jwtbaga`, `ormbaga`, `otelbaga`, `logbaga`,
+  `metbaga` остават тук; `apps/api` / `apps/registry` продължават да
+  сочат `../../app-product/fmrbaga`; тестовете `fmr_*` също.
+
 ### flagbaga — отделно репо
 - `app-product/flagbaga` е git submodule към
   [bagalang/flagbaga](https://github.com/bagalang/flagbaga).

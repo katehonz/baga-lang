@@ -1,3 +1,0 @@
-// Public re-export — prefer fmrbaga/handlers/handlers.baga for new code.
-// Stable path: import "fmrbaga/handlers.baga"
-import "handlers/handlers.baga"

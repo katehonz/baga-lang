@@ -1,3 +1,0 @@
-// Public re-export — prefer fmrbaga/core/ctx.baga for new code.
-// Stable path: import "fmrbaga/ctx.baga"
-import "core/ctx.baga"
