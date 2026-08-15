@@ -109,6 +109,31 @@ fn main() -> i64 !IO !Time !Par {
     srv = q5.srv
     check(fails, "sum_i64", q5.ok == 1 && vec_len(q5.res.rows) == 1 && cell(q5, 0, 0).tag == boila_v_i64() && cell(q5, 0, 0).i == 15)
 
+    // P21-2: HAVING over NUMERIC with a decimal literal
+    let h1 = boila_server_exec(srv, "boila", "SELECT grp, sum(amt) FROM led GROUP BY grp HAVING sum(amt) > '10' ORDER BY grp")?
+    srv = h1.srv
+    check(fails, "having_num_gt", h1.ok == 1 && vec_len(h1.res.rows) == 1 && str_of_bytes(cell(h1, 0, 0).b) == "a" && nums(cell(h1, 0, 1)) == "30.75")
+
+    let h2 = boila_server_exec(srv, "boila", "SELECT grp, sum(amt) FROM led GROUP BY grp HAVING sum(amt) >= '30.75' ORDER BY grp")?
+    srv = h2.srv
+    check(fails, "having_num_gte", h2.ok == 1 && vec_len(h2.res.rows) == 1 && str_of_bytes(cell(h2, 0, 0).b) == "a")
+
+    // integer literal compared decimally against a numeric aggregate
+    // (sums are 30.75 / 0.3, so > 0 keeps both groups)
+    let h3 = boila_server_exec(srv, "boila", "SELECT grp FROM led GROUP BY grp HAVING sum(amt) > 0 ORDER BY grp")?
+    srv = h3.srv
+    check(fails, "having_int_lit", h3.ok == 1 && vec_len(h3.res.rows) == 2)
+
+    // avg HAVING decimal
+    let h4 = boila_server_exec(srv, "boila", "SELECT grp FROM led GROUP BY grp HAVING avg(amt) > '7'")?
+    srv = h4.srv
+    check(fails, "having_avg_num", h4.ok == 1 && vec_len(h4.res.rows) == 1 && str_of_bytes(cell(h4, 0, 0).b) == "a")
+
+    // decimal literal against an i64 aggregate → 0A000
+    let h5 = boila_server_exec(srv, "boila", "SELECT grp FROM led GROUP BY grp HAVING sum(id) > '1.5'")?
+    srv = h5.srv
+    check(fails, "having_num_on_i64_0A000", h5.ok == 0 && h5.state == "0A000")
+
     // restart then re-aggregate
     let _c = boila_server_close(srv)?
     srv = boila_server_open(root, 2, 8, 3, 4)?
