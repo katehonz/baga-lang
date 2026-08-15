@@ -1,3 +1,0 @@
-// Public re-export — prefer ormbaga/sql/sql.baga for new code.
-// Stable path: import "ormbaga/sql.baga"
-import "sql/sql.baga"

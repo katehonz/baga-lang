@@ -43,7 +43,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **pgbaga** | PostgreSQL wire client (SCRAM, `$1` params) |
 | **boilaDB** | Multimodal SQL database (BoilaSQL + PG wire `:6575` + HTTP) — [docs](app-product/boilaDB/docs/README.md) · [repo](https://github.com/bagalang/boilaDB) (submodule) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (`:6575`) · [repo](https://github.com/bagalang/boilabaga) (submodule) |
-| **ormbaga** | ActiveRecord-style ORM + goose migrations (Postgres or boila) |
+| **ormbaga** | ActiveRecord-style ORM + goose migrations (Postgres or boila) · [repo](https://github.com/bagalang/ormbaga) (submodule) |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired · [repo](https://github.com/bagalang/fmrbaga) (submodule) |
 | **kvbaga** | RESP KV server (`Map` probe) · [repo](https://github.com/bagalang/kvbaga) (submodule) |
 | **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) · [repo](https://github.com/bagalang/rocksbaga) (submodule) |

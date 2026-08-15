@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### ormbaga — отделно репо
+- `app-product/ormbaga` е git submodule към
+  [bagalang/ormbaga](https://github.com/bagalang/ormbaga).
+- `std`, `pgbaga`, `boilabaga` остават тук; `fmrbaga` / `oauthbaga` /
+  `apps/api` / `apps/registry` продължават да сочат path към `ormbaga`;
+  `tests/orm_test` / `orm_boila_test` също.
+
 ### officebaga — отделно репо
 - `app-product/officebaga` е git submodule към
   [bagalang/officebaga](https://github.com/bagalang/officebaga).

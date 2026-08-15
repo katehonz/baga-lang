@@ -60,7 +60,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **httpdbaga** | HTTP/1.1 + HTTP/2 (h2c, HPACK) server library; **git submodule** → [bagalang/httpdbaga](https://github.com/bagalang/httpdbaga) |
 | **jwtbaga** | JWT/JWS — HS256 sign/verify; RS256/ES256 verify; **git submodule** → [bagalang/jwtbaga](https://github.com/bagalang/jwtbaga) |
 | **oauthbaga** | OAuth2 / OIDC-style flows, proxy, session cookie demo; **git submodule** → [bagalang/oauthbaga](https://github.com/bagalang/oauthbaga) |
-| **ormbaga** | Universal table ORM + versioned migrations + pool (no app domain) |
+| **ormbaga** | Universal table ORM + versioned migrations + pool (no app domain); **git submodule** → [bagalang/ormbaga](https://github.com/bagalang/ormbaga) |
 | **pgbaga** | Native PostgreSQL wire client (SCRAM-SHA-256, Simple + Extended Query) |
 | **boilaDB** | Multimodal SQL server — BoilaSQL, PG wire `:6575`, HTTP `:6570` ([docs](boilaDB/docs/README.md)); **git submodule** → [bagalang/boilaDB](https://github.com/bagalang/boilaDB) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (defaults :6575 + BoilaSQL dialect); **git submodule** → [bagalang/boilabaga](https://github.com/bagalang/boilabaga) |

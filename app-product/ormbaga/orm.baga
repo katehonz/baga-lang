@@ -1,3 +1,0 @@
-// Public re-export — prefer ormbaga/session/orm.baga for new code.
-// Stable path: import "ormbaga/orm.baga"
-import "session/orm.baga"

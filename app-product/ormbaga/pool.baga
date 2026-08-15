@@ -1,3 +1,0 @@
-// Public re-export — prefer ormbaga/pool/pool.baga for new code.
-// Stable path: import "ormbaga/pool.baga"
-import "pool/pool.baga"

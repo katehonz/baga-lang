@@ -73,3 +73,6 @@
 [submodule "app-product/officebaga"]
 	path = app-product/officebaga
 	url = git@github.com:bagalang/officebaga.git
+[submodule "app-product/ormbaga"]
+	path = app-product/ormbaga
+	url = git@github.com:bagalang/ormbaga.git

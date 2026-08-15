@@ -1,9 +1,0 @@
-[package]
-name = "ormbaga"
-version = "0.1.0"
-entry = "orm.baga"
-
-[dependencies]
-pgbaga = { path = "../pgbaga" }
-boilabaga = { path = "../boilabaga" }
-std = { path = "../../std" }

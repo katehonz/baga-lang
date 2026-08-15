@@ -1,2 +1,0 @@
-// Public re-export — prefer ormbaga/examples/demo.baga for new code.
-import "examples/demo.baga"
