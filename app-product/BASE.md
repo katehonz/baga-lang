@@ -122,7 +122,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **bagadecimal** | Fixed-precision decimal (money, VAT, rates; Postgres NUMERIC bridge); **git submodule** → [bagalang/bagadecimal](https://github.com/bagalang/bagadecimal) |
 | **globbaga** | Simple glob matching (`*`, `?`); **git submodule** → [bagalang/globbaga](https://github.com/bagalang/globbaga) |
 | **grebaga** | Grep-like line scanner (literal + mini patterns); **git submodule** → [bagalang/grebaga](https://github.com/bagalang/grebaga) |
-| **pathbaga** | Path helpers (join, basename, dirname, ext, stem) |
+| **pathbaga** | Path helpers (join, basename, dirname, ext, stem); **git submodule** → [bagalang/pathbaga](https://github.com/bagalang/pathbaga) |
 | **testbaga** | Minimal test assertions (`assert_true`, `assert_eq_*`) |
 | **uuidbaga** | UUID v4 (RFC 4122) |
 

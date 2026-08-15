@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### pathbaga — отделно репо
+- `app-product/pathbaga` е git submodule към
+  [bagalang/pathbaga](https://github.com/bagalang/pathbaga).
+- `std` остава тук; `imgbaga` продължава да сочи `../pathbaga`;
+  `tests/path_test` също.
+
 ### otelbaga — отделно репо
 - `app-product/otelbaga` е git submodule към
   [bagalang/otelbaga](https://github.com/bagalang/otelbaga).
