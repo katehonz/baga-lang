@@ -329,7 +329,9 @@ cell2 пакети (доказаният модел на rocksbaga MT и queueba
 
 ```
 app-product/boilaDB/
-├── sandak.toml  README.md  PLAN.md  ARCHITECTURE.md  gaps.md  kimi-deps.md
+├── sandak.toml  README.md  LICENSE
+├── ARCHITECTURE.md  PLAN.md  gaps.md  kimi-deps.md
+├── docs/      user guides (getting started, SQL, HTTP, PG wire, …)
 ├── core/      value.baga codec.baga row.baga budget.baga
 ├── storage/   shards.baga          # BoilaStore only (no session)
 ├── txn/       mvcc.baga            # buffer + LSN; write.ttl_sec from caller

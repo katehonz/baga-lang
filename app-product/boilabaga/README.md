@@ -1,7 +1,8 @@
 # boilabaga
 
 **Client adapter** for [boilaDB](../boilaDB/README.md) over the **PostgreSQL
-wire protocol** (via [`pgbaga`](../pgbaga/README.md)).
+wire protocol** (via [`pgbaga`](../pgbaga/README.md)). User guides:
+[boilaDB/docs](../boilaDB/docs/README.md).
 
 boilaDB listens with PG frontend/backend v3 (`tools/serve_pg.baga`, default
 port **6575**). This package is the thin client side: connect helpers + a

@@ -41,6 +41,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **httpdbaga** | HTTP/1.1 + HTTP/2 + HPACK |
 | **jwtbaga** | JWT HS256 / RS256 / ES256 |
 | **pgbaga** | PostgreSQL wire client (SCRAM, `$1` params) |
+| **boilaDB** | Multimodal SQL database (BoilaSQL + PG wire `:6575` + HTTP) — [docs](app-product/boilaDB/docs/README.md) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (`:6575`) |
 | **ormbaga** | ActiveRecord-style ORM + goose migrations (Postgres or boila) |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired |
@@ -361,6 +362,7 @@ baga/
 - [Езикова Справка (BG)](docs/language-bg.md) — Синтаксис, типове, семантика
 - [Compiler Architecture (EN)](docs/compiler-en.md) — Pipeline, AST, codegen
 - [Архитектура на Компилатора (BG)](docs/compiler-bg.md) — Конвейер, AST, кодогенерация
+- [boilaDB](app-product/boilaDB/docs/README.md) — multimodal SQL database (BoilaSQL, PG wire, HTTP)
 
 ## Roadmap
 
