@@ -50,7 +50,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam · [repo](https://github.com/bagalang/raftbaga) (submodule) |
 | **[metbaga](https://github.com/bagalang/metbaga)** / **[logbaga](https://github.com/bagalang/logbaga)** / **[cloudbaga](https://github.com/bagalang/cloudbaga)** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
 | **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) · [repo](https://github.com/bagalang/pbbaga) (submodule) |
-| **relbaga** / **[flagbaga](https://github.com/bagalang/flagbaga)** | Retry/breaker/bulkhead + typed CLI flags (Track C6–C7) |
+| **[relbaga](https://github.com/bagalang/relbaga)** / **[flagbaga](https://github.com/bagalang/flagbaga)** | Retry/breaker/bulkhead + typed CLI flags (Track C6–C7) |
 | **txnbaga** | 2PC coordinator + MVCC store (Track S8) · [repo](https://github.com/bagalang/txnbaga) (submodule) |
 | **otelbaga** | W3C traceparent lite (Track C8 subset) · [repo](https://github.com/bagalang/otelbaga) (submodule) |
 | **[pathbaga](https://github.com/bagalang/pathbaga)** / **[globbaga](https://github.com/bagalang/globbaga)** / **[uuidbaga](https://github.com/bagalang/uuidbaga)** / **[bufbaga](https://github.com/bagalang/bufbaga)** / **[querybaga](https://github.com/bagalang/querybaga)** | Universal path, glob, UUID v4, string builder, URL query |

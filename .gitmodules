@@ -130,3 +130,6 @@
 [submodule "app-product/zipbaga"]
 	path = app-product/zipbaga
 	url = git@github.com:bagalang/zipbaga.git
+[submodule "app-product/relbaga"]
+	path = app-product/relbaga
+	url = git@github.com:bagalang/relbaga.git

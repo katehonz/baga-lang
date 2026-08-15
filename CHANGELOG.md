@@ -2,10 +2,14 @@
 
 ## [Unreleased]
 
+### relbaga — отделно репо
+- `app-product/relbaga` е git submodule към
+  [bagalang/relbaga](https://github.com/bagalang/relbaga).
+- `std` остава тук; `tests/rel_test` също.
+
 ### License
 - Пакетите в `app-product/` без собствен файл получават MIT
   (`LICENSE`, Copyright (c) 2026 Dim Gigov), като baga и boilaDB.
-- `relbaga` още е in-tree; LICENSE е сложен и там.
 
 ### zipbaga — отделно репо
 - `app-product/zipbaga` е git submodule към
