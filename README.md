@@ -49,7 +49,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) · [repo](https://github.com/bagalang/rocksbaga) (submodule) |
 | **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam |
 | **[metbaga](https://github.com/bagalang/metbaga)** / **[logbaga](https://github.com/bagalang/logbaga)** / **[cloudbaga](https://github.com/bagalang/cloudbaga)** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
-| **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) |
+| **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) · [repo](https://github.com/bagalang/pbbaga) (submodule) |
 | **relbaga** / **[flagbaga](https://github.com/bagalang/flagbaga)** | Retry/breaker/bulkhead + typed CLI flags (Track C6–C7) |
 | **txnbaga** | 2PC coordinator + MVCC store (Track S8) |
 | **otelbaga** | W3C traceparent lite (Track C8 subset) · [repo](https://github.com/bagalang/otelbaga) (submodule) |

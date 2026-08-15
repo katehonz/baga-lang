@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### pbbaga — отделно репо
+- `app-product/pbbaga` е git submodule към
+  [bagalang/pbbaga](https://github.com/bagalang/pbbaga).
+- `std`, `statusbaga`, `mdtbaga` остават тук; `cloudbaga` продължава
+  да сочи `../pbbaga`; тестовете `pb_test` / `grpc_*` също.
+
 ### pathbaga — отделно репо
 - `app-product/pathbaga` е git submodule към
   [bagalang/pathbaga](https://github.com/bagalang/pathbaga).

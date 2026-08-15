@@ -82,3 +82,6 @@
 [submodule "app-product/pathbaga"]
 	path = app-product/pathbaga
 	url = git@github.com:bagalang/pathbaga.git
+[submodule "app-product/pbbaga"]
+	path = app-product/pbbaga
+	url = git@github.com:bagalang/pbbaga.git
