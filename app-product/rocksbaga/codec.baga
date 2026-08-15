@@ -1,3 +1,0 @@
-// Public re-export — prefer rocksbaga/util/codec.baga for new code.
-// Stable path: import "rocksbaga/codec.baga"
-import "util/codec.baga"

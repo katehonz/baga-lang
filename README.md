@@ -46,7 +46,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **ormbaga** | ActiveRecord-style ORM + goose migrations (Postgres or boila) |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired |
 | **kvbaga** | RESP KV server (`Map` probe) |
-| **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) |
+| **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) · [repo](https://github.com/bagalang/rocksbaga) (submodule) |
 | **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam |
 | **metbaga** / **logbaga** / **cloudbaga** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
 | **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) |
@@ -68,7 +68,7 @@ Canonical stack: `apps/*` → **fmrbaga** → httpdbaga / jwtbaga / ormbaga → 
 ## Quick Start
 
 ```bash
-git submodule update --init app-product/boilaDB
+git submodule update --init --recursive
 make
 ./baga examples/zdravei.baga
 # Здравей, багатуре. Боят започва.

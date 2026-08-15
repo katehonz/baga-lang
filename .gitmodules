@@ -1,3 +1,6 @@
 [submodule "app-product/boilaDB"]
 	path = app-product/boilaDB
 	url = git@github.com:bagalang/boilaDB.git
+[submodule "app-product/rocksbaga"]
+	path = app-product/rocksbaga
+	url = git@github.com:bagalang/rocksbaga.git

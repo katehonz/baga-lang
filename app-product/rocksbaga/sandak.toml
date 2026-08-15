@@ -1,8 +1,0 @@
-[package]
-name = "rocksbaga"
-version = "0.1.0"
-entry = "examples/demo.baga"
-
-[dependencies]
-kvbaga = { path = "../kvbaga" }
-std = { path = "../../std" }

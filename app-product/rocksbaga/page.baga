@@ -1,3 +1,0 @@
-// Public re-export — prefer rocksbaga/cache/page.baga for new code.
-// Stable path: import "rocksbaga/page.baga"
-import "cache/page.baga"

@@ -1,3 +1,0 @@
-// Public re-export — prefer rocksbaga/wal/wal.baga for new code.
-// Stable path: import "rocksbaga/wal.baga"
-import "wal/wal.baga"

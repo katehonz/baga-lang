@@ -1,2 +1,0 @@
-// Public re-export → table/bloom.baga
-import "table/bloom.baga"

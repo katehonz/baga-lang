@@ -81,7 +81,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 | Package | Role |
 |---------|------|
-| **rocksbaga** | Durable LSM-style KV (RocksDB-class path); flagship storage |
+| **rocksbaga** | Durable LSM-style KV (RocksDB-class path); flagship storage; **git submodule** → [bagalang/rocksbaga](https://github.com/bagalang/rocksbaga) |
 | **lsmbaga** | **Deprecated** → re-exports / points at `rocksbaga` |
 | **kvbaga** | Redis-compatible RESP2 KV server (`Map` store, TTL) |
 | **queuebaga** | Background job queue — disk payloads, worker pool over `chan` |

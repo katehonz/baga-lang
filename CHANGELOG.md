@@ -2,12 +2,21 @@
 
 ## [Unreleased]
 
+### rocksbaga — отделно репо
+- `app-product/rocksbaga` е git submodule към
+  [bagalang/rocksbaga](https://github.com/bagalang/rocksbaga).
+- `std` и `kvbaga` остават тук; тестовете `tests/lsm_*` /
+  `page_cache` / `sst_scan` / `shard` и `bench/rocks/` също.
+- `lsmbaga` (deprecated alias) и `boilaDB` продължават да сочат
+  `../rocksbaga`.
+
 ### boilaDB — отделно репо
 - `app-product/boilaDB` е git submodule към
   [bagalang/boilaDB](https://github.com/bagalang/boilaDB).
-- Общите пакети (`std`, `rocksbaga`, `httpdbaga`, `metbaga`) остават
-  тук; тестовете `tests/boila_*` и `bench/boila/` също.
-- Clone: `git submodule update --init app-product/boilaDB`.
+- Общите пакети (`std`, `httpdbaga`, `metbaga`) остават тук;
+  `rocksbaga` е отделен submodule; тестовете `tests/boila_*` и
+  `bench/boila/` също остават тук.
+- Clone: `git submodule update --init --recursive`.
 
 ### imgbaga 0.6.0 — lossy VP8 WebP
 - VP8 keyframe decode (RFC 6386 / `golang.org/x/image/vp8`): bool

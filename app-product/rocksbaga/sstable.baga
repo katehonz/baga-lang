@@ -1,7 +1,0 @@
-// Public re-export — prefer rocksbaga/table/sstable.baga for new code.
-// Stable path: import "rocksbaga/sstable.baga"
-import "table/sstable.baga"
-import "table/sstable_parse.baga"
-import "table/sstable_lookup.baga"
-import "table/sstable_meta.baga"
-import "table/sstable_scan.baga"
