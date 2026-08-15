@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB P16 — compaction filter GC
+- rocksbaga per-CF `filter_kind` + `lsm_compact_full`.
+- boilaDB data CF versioned keys; `VACUUM`; 10k UPDATE → 1 version.
+  `tests/boila_gc_test`, `tests/lsm_filter_test`.
+
 ### boilaDB P15 — SCRAM-SHA-256
 - CREATE USER пише `s1:` verifier. PG auto-SASL за такива users;
   pgbaga connect + грешна парола покрити в `tests/boila_scram_test`.

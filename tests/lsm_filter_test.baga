@@ -1,0 +1,125 @@
+// lsm_filter_test.baga — rocksbaga per-CF mvcc compaction filter (P16).
+
+import "lsm_helpers.baga"
+import "rocksbaga/db/engine.baga"
+import "rocksbaga/db/engine_scan.baga"
+import "rocksbaga/db/compact_filter.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn enc_u64_be(x: i64) -> bytes {
+    let b = bytes_new(8)
+    let mut i: i64 = 0
+    while i < 8 {
+        bytes_set(b, i, (x >> (56 - 8 * i)) & 255)
+        i = i + 1
+    }
+    return b
+}
+
+fn enc_inv(x: i64) -> bytes {
+    let b = bytes_new(8)
+    let mut i: i64 = 0
+    while i < 8 {
+        bytes_set(b, i, ((x >> (56 - 8 * i)) & 255) ^ 255)
+        i = i + 1
+    }
+    return b
+}
+
+fn ver_key(cf: i64, lsn: i64) -> bytes {
+    let k = bytes_new(7)
+    bytes_set(k, 0, cf)
+    bytes_set(k, 1, 0)
+    bytes_set(k, 2, 0)
+    bytes_set(k, 3, 0)
+    bytes_set(k, 4, 1)
+    bytes_set(k, 5, 65)
+    bytes_set(k, 6, 65)
+    return bytes_concat(k, enc_inv(lsn))
+}
+
+fn ver_val(lsn: i64, tag: str) -> bytes {
+    return bytes_concat(enc_u64_be(lsn), bytes_of_str(tag))
+}
+
+fn count_pref(db: LsmDB, pref: bytes) -> LsmScanB !IO !Time {
+    return lsm_scan_prefix_all_kb(db, pref)?
+}
+
+fn main() -> i64 !IO !Time {
+    print("lsm_filter_test:")
+    let fails = vec_new()
+    let prefix = "/tmp/baga_lsm_filter_test"
+    wipe(prefix)?
+
+    let mut db = lsm_open(prefix, 20000, 999)?
+    check(fails, "open", db.ok == 1)
+    db = lsm_set_filter(db, 1, 0, 2)
+
+    let mut i: i64 = 1
+    while i <= 100 {
+        db = lsm_put_kb(db, ver_key(2, i), ver_val(i, int_to_str(i)))?
+        i = i + 1
+    }
+    let pref = bytes_slice(ver_key(2, 1), 0, 7)
+    let acc: Map<bytes, bytes> = map_new()
+    i = 1
+    while i <= 100 {
+        map_set(acc, ver_key(2, i), ver_val(i, int_to_str(i)))
+        i = i + 1
+    }
+    let acc2 = lsm_apply_mvcc_filter(acc, 0, 2)
+    check(fails, "filter_mem_100", map_len(acc2) == 1)
+    let sc0 = count_pref(db, pref)?
+    db = sc0.db
+    check(fails, "before_100", vec_len(sc0.keys) == 100)
+
+    db = lsm_compact_full(db)?
+    let sc1 = count_pref(db, pref)?
+    db = sc1.db
+    check(fails, "after_1", vec_len(sc1.keys) == 1)
+    let g = lsm_get_kb(db, ver_key(2, 100))?
+    db = g.db
+    check(fails, "kept_newest", g.found == 1)
+
+    lsm_close(db)?
+    wipe(prefix)?
+
+    let mut db2 = lsm_open(prefix, 20000, 999)?
+    db2 = lsm_set_filter(db2, 1, 3, 2)
+    i = 1
+    while i <= 5 {
+        db2 = lsm_put_kb(db2, ver_key(2, i), ver_val(i, int_to_str(i)))?
+        i = i + 1
+    }
+    db2 = lsm_compact_full(db2)?
+    let sc2 = count_pref(db2, pref)?
+    db2 = sc2.db
+    check(fails, "cutoff_2", vec_len(sc2.keys) == 2)
+    let gold = lsm_get_kb(db2, ver_key(2, 3))?
+    db2 = gold.db
+    let gnew = lsm_get_kb(db2, ver_key(2, 5))?
+    db2 = gnew.db
+    check(fails, "kept_snap_and_new", gold.found == 1 && gnew.found == 1)
+    let gdrop = lsm_get_kb(db2, ver_key(2, 1))?
+    db2 = gdrop.db
+    check(fails, "dropped_old", gdrop.found == 0)
+
+    let sysk = bytes_of_str("syskeep")
+    db2 = lsm_put_kb(db2, sysk, bytes_of_str("alive"))?
+    db2 = lsm_compact_full(db2)?
+    let gs = lsm_get_kb(db2, sysk)?
+    db2 = gs.db
+    check(fails, "other_cf_kept", gs.found == 1)
+    lsm_close(db2)?
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("lsm_filter_test: all passed")
+        return 0
+    }
+    print(concat("lsm_filter_test: FAILED ", int_to_str(n)))
+    return 1
+}

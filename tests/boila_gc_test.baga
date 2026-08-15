@@ -1,0 +1,185 @@
+// boila_gc_test.baga — P16 compaction filter for MVCC GC.
+// Gate: 10k UPDATE of one pk → after compact, versions ≤ 1 + #open snaps.
+
+import "boilaDB/storage/shards.baga"
+import "boilaDB/storage/shards_wal.baga"
+import "boilaDB/txn/mvcc.baga"
+import "boilaDB/txn/gc_filter.baga"
+import "boilaDB/core/codec.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/core/row.baga"
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/catalog/schema.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 80 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    wipe_shard_path(concat(root, "/boila.db"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn row_of(v: str) -> bytes {
+    let cols: Vec<BoilaVal> = vec_new()
+    vec_push(cols, boila_val_i64(1))
+    vec_push(cols, boila_val_str(v))
+    return boila_row_enc(cols)
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_gc_test:")
+    let fails: Vec<i64> = vec_new()
+
+    let dir = "/tmp/baga_boila_gc_kv"
+    wipe_shard_path(dir)?
+    let mut s = boila_open(dir, 1, 20000, 999)?
+    check(fails, "open_kv", s.ok == 1)
+    check(fails, "filter_on", vec_get(s.c.shards, 0).filter_kind == 1)
+
+    let pk = boila_val_enc(boila_val_i64(1))
+    s = boila_stmt_begin(s)
+    let mut i: i64 = 1
+    while i <= 10000 {
+        s = boila_put(s, boila_cf_data(), 10, pk, boila_wrap_val(i, row_of(int_to_str(i))))?
+        i = i + 1
+    }
+    s = boila_stmt_commit(s)?
+    check(fails, "put_10k", s.ok == 1)
+
+    let vc0 = boila_count_versions(s, 10, pk)?
+    s = vc0.s
+    check(fails, "before_compact_10k", vc0.n >= 10000)
+
+    s = boila_compact_full(s)?
+    let vc1 = boila_count_versions(s, 10, pk)?
+    s = vc1.s
+    check(fails, "after_compact_1", vc1.n <= 1 && vc1.n >= 1)
+
+    let g = boila_get(s, boila_cf_data(), 10, pk)?
+    s = g.s
+    check(fails, "latest_lsn", g.found == 1 && boila_unwrap_lsn(g.val) == 10000)
+    check(fails, "latest_row", g.found == 1 && bytes_eq_b(boila_unwrap_row(g.val), row_of("10000")))
+
+    boila_close(s)?
+    let mut s2 = boila_open(dir, 1, 20000, 999)?
+    s2 = boila_compact_full(s2)?
+    let vc2 = boila_count_versions(s2, 10, pk)?
+    s2 = vc2.s
+    check(fails, "reopen_still_1", vc2.n <= 1 && vc2.n >= 1)
+    let g2 = boila_get(s2, boila_cf_data(), 10, pk)?
+    s2 = g2.s
+    check(fails, "reopen_latest", g2.found == 1 && boila_unwrap_lsn(g2.val) == 10000)
+    boila_close(s2)?
+
+    let dir2 = "/tmp/baga_boila_gc_snap"
+    wipe_shard_path(dir2)?
+    let mut s3 = boila_open(dir2, 1, 20000, 999)?
+    s3 = boila_stmt_begin(s3)
+    i = 1
+    while i <= 5 {
+        s3 = boila_put(s3, boila_cf_data(), 10, pk, boila_wrap_val(i, row_of(int_to_str(i))))?
+        i = i + 1
+    }
+    s3 = boila_stmt_commit(s3)?
+    s3 = boila_gc_set(s3, 3)?
+    s3 = boila_compact_full(s3)?
+    let vc3 = boila_count_versions(s3, 10, pk)?
+    s3 = vc3.s
+    check(fails, "cutoff_keeps_2", vc3.n == 2)
+    let g3 = boila_get(s3, boila_cf_data(), 10, pk)?
+    s3 = g3.s
+    check(fails, "cutoff_latest", g3.found == 1 && boila_unwrap_lsn(g3.val) == 5)
+    boila_close(s3)?
+
+    let sys_pk = bytes_of_str("m|keep")
+    let dir3 = "/tmp/baga_boila_gc_sys"
+    wipe_shard_path(dir3)?
+    let mut s4 = boila_open(dir3, 1, 32, 3)?
+    let sysrow: Vec<BoilaVal> = vec_new()
+    vec_push(sysrow, boila_val_i64(42))
+    s4 = boila_put(s4, boila_cf_sys(), 1, sys_pk, boila_row_enc(sysrow))?
+    s4 = boila_compact_full(s4)?
+    let gs = boila_get(s4, boila_cf_sys(), 1, sys_pk)?
+    s4 = gs.s
+    check(fails, "sys_untouched", gs.found == 1)
+    boila_close(s4)?
+
+    let root = "/tmp/baga_boila_gc_sql"
+    wipe_root(root)?
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "sql_open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE tt (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "sql_create", c0.ok == 1)
+    let a1 = boila_server_exec(srv, "boila", "INSERT INTO tt (id, v) VALUES (1, 'a')")?
+    srv = a1.srv
+    check(fails, "sql_insert", a1.ok == 1)
+    let u1 = boila_server_exec(srv, "boila", "UPDATE tt SET v = 'b' WHERE id = 1")?
+    srv = u1.srv
+    let u2 = boila_server_exec(srv, "boila", "UPDATE tt SET v = 'c' WHERE id = 1")?
+    srv = u2.srv
+    check(fails, "sql_update", u2.ok == 1)
+
+    let d = boila_srv_db(srv, "boila")?
+    srv = d.srv
+    let ct = boila_cat_by_name(d.store, "tt")?
+    check(fails, "sql_tid", ct.ok == 1)
+    let vc4 = boila_count_versions(ct.s, ct.table.id, pk)?
+    check(fails, "sql_versions_before", vc4.n >= 2)
+
+    let vac = boila_server_exec(srv, "boila", "VACUUM")?
+    srv = vac.srv
+    check(fails, "sql_vacuum", vac.ok == 1 && vac.kind == 22)
+
+    let d2 = boila_srv_db(srv, "boila")?
+    srv = d2.srv
+    let vc5 = boila_count_versions(d2.store, ct.table.id, pk)?
+    check(fails, "sql_versions_after", vc5.n <= 1 && vc5.n >= 1)
+
+    let q = boila_server_exec(srv, "boila", "SELECT v FROM tt WHERE id = 1")?
+    srv = q.srv
+    check(fails, "sql_select", q.ok == 1 && vec_len(q.res.rows) == 1)
+    if vec_len(q.res.rows) == 1 {
+        let row = vec_get(q.res.rows, 0)
+        check(fails, "sql_latest", vec_len(row) == 1 && str_of_bytes(vec_get(row, 0).b) == "c")
+    }
+
+    boila_server_close(srv)?
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_gc_test: all passed")
+        return 0
+    }
+    print(concat("boila_gc_test: FAILED ", int_to_str(n)))
+    return 1
+}
