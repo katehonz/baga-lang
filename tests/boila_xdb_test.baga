@@ -1,0 +1,122 @@
+// boila_xdb_test.baga — P18 local cross-database JOIN + FDW alias.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let names: Vec<str> = vec_new()
+    vec_push(names, "boila")
+    vec_push(names, "sales")
+    vec_push(names, "warehouse")
+    let mut n: i64 = 0
+    while n < vec_len(names) {
+        let base = concat(concat(root, "/"), concat(vec_get(names, n), ".db"))
+        let mut i: i64 = 0
+        while i < 2 {
+            wipe_shard_path(concat(concat(base, ".s"), int_to_str(i)))?
+            i = i + 1
+        }
+        n = n + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == 2 {
+        return int_to_str(v.i)
+    }
+    if v.tag == 5 {
+        return str_of_bytes(v.b)
+    }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_xdb_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_xdb_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c1 = boila_server_exec(srv, "boila", "CREATE DATABASE sales")?
+    srv = c1.srv
+    let c2 = boila_server_exec(srv, "boila", "CREATE DATABASE warehouse")?
+    srv = c2.srv
+    check(fails, "create_dbs", c1.ok == 1 && c2.ok == 1)
+
+    let t1 = boila_server_exec(srv, "sales", "CREATE TABLE inv (id BIGINT, sku BIGINT, PRIMARY KEY (id))")?
+    srv = t1.srv
+    let t2 = boila_server_exec(srv, "warehouse", "CREATE TABLE sku (id BIGINT, name TEXT, PRIMARY KEY (id))")?
+    srv = t2.srv
+    check(fails, "create_tables", t1.ok == 1 && t2.ok == 1)
+
+    let i1 = boila_server_exec(srv, "sales", "INSERT INTO inv (id, sku) VALUES (10, 1), (11, 2)")?
+    srv = i1.srv
+    let i2 = boila_server_exec(srv, "warehouse", "INSERT INTO sku (id, name) VALUES (1, 'bolt'), (2, 'nut')")?
+    srv = i2.srv
+    check(fails, "seed", i1.ok == 1 && i2.ok == 1)
+
+    let q = boila_server_exec(srv, "boila", "SELECT a.id FROM sales.inv a JOIN warehouse.sku b ON a.sku = b.id")?
+    srv = q.srv
+    check(fails, "xdb_join", q.ok == 1 && vec_len(q.res.rows) == 2)
+    if vec_len(q.res.rows) == 2 {
+        check(fails, "xdb_id0", cell(vec_get(q.res.rows, 0), 0) == "10" || cell(vec_get(q.res.rows, 0), 0) == "11")
+    }
+
+    let q2 = boila_server_exec(srv, "boila", "SELECT * FROM warehouse.sku")?
+    srv = q2.srv
+    check(fails, "xdb_scan", q2.ok == 1 && vec_len(q2.res.rows) == 2)
+
+    let bad = boila_server_exec(srv, "boila", "UPDATE sales.inv SET sku = 9 WHERE id = 10")?
+    srv = bad.srv
+    check(fails, "dml_0A000", bad.ok == 0 && bad.state == "0A000")
+
+    let cs = boila_server_exec(srv, "boila", "CREATE SERVER wh OPTIONS (database 'warehouse')")?
+    srv = cs.srv
+    check(fails, "create_server", cs.ok == 1)
+    let cf = boila_server_exec(srv, "boila", "CREATE FOREIGN TABLE sku SERVER wh")?
+    srv = cf.srv
+    check(fails, "create_ft", cf.ok == 1)
+    let q3 = boila_server_exec(srv, "boila", "SELECT name FROM sku")?
+    srv = q3.srv
+    check(fails, "ft_alias", q3.ok == 1 && vec_len(q3.res.rows) == 2)
+
+    boila_server_close(srv)?
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_xdb_test: all passed")
+        return 0
+    }
+    print(concat("boila_xdb_test: FAILED ", int_to_str(n)))
+    return 1
+}

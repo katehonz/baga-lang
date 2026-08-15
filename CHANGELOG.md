@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### boilaDB P18 — cross-database / local FDW
+- `db.table` JOIN без USE; `CREATE SERVER` + `FOREIGN TABLE` алиас.
+  DML в чужда база → `0A000`. `tests/boila_xdb_test`.
+
 ### boilaDB P17 — SERIALIZABLE
 - `BEGIN ISOLATION LEVEL SERIALIZABLE` / `REPEATABLE READ`.
   Commit ww/rw → `40001`. `tests/boila_serial_test`.
