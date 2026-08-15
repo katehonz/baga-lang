@@ -64,7 +64,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **pgbaga** | Native PostgreSQL wire client (SCRAM-SHA-256, Simple + Extended Query); **git submodule** → [bagalang/pgbaga](https://github.com/bagalang/pgbaga) |
 | **boilaDB** | Multimodal SQL server — BoilaSQL, PG wire `:6575`, HTTP `:6570` ([docs](boilaDB/docs/README.md)); **git submodule** → [bagalang/boilaDB](https://github.com/bagalang/boilaDB) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (defaults :6575 + BoilaSQL dialect); **git submodule** → [bagalang/boilabaga](https://github.com/bagalang/boilabaga) |
-| **querybaga** | URL query / form parse and encode |
+| **querybaga** | URL query / form parse and encode; **git submodule** → [bagalang/querybaga](https://github.com/bagalang/querybaga) |
 | **wsbaga** | WebSocket RFC 6455 — handshake, frames, echo server/client |
 | **chatbaga** | Multi-room WebSocket chat product (on wsbaga + poll); **git submodule** → [bagalang/chatbaga](https://github.com/bagalang/chatbaga) |
 

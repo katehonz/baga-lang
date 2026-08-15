@@ -1,7 +1,0 @@
-[package]
-name = "querybaga"
-version = "0.1.0"
-entry = "query.baga"
-
-[dependencies]
-std = { path = "../../std" }
