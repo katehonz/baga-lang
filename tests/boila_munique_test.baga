@@ -1,0 +1,140 @@
+// boila_munique_test.baga — P21-1 multi-column UNIQUE index.
+// CREATE UNIQUE INDEX name ON t (a, b): duplicate on the full tuple →
+// 23505; a NULL in any indexed column means no collision (PG); var-width
+// prefix false positives are filtered by full value verification.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_munique_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_munique_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, a TEXT, b BIGINT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+
+    let i0 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (1, 'x', 10), (2, 'x', 20), (3, 'y', 10), (4, 'ab', 1), (5, 'abc', 1)")?
+    srv = i0.srv
+    check(fails, "seed", i0.ok == 1)
+
+    let mk = boila_server_exec(srv, "boila", "CREATE UNIQUE INDEX uq_ab ON t (a, b)")?
+    srv = mk.srv
+    check(fails, "create_multi_unique", mk.ok == 1)
+
+    // distinct tuples OK
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (6, 'x', 30)")?
+    srv = i1.srv
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (7, 'z', 10)")?
+    srv = i2.srv
+    check(fails, "distinct_ok", i1.ok == 1 && i2.ok == 1)
+
+    // duplicate full tuple → 23505
+    let d1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (8, 'x', 10)")?
+    srv = d1.srv
+    check(fails, "dup_tuple_23505", d1.ok == 0 && d1.state == "23505")
+
+    // var-width false positive must NOT collide: ('ab',1) exists; ('abc',1)
+    // exists; inserting ('ab',1) again collides, but ('ab',2) does not.
+    let d2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (9, 'ab', 1)")?
+    srv = d2.srv
+    check(fails, "dup_ab_23505", d2.ok == 0 && d2.state == "23505")
+    let d3 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (10, 'ab', 2)")?
+    srv = d3.srv
+    check(fails, "ab2_ok", d3.ok == 1)
+
+    // NULL in an indexed column → no collision
+    let n1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (11, NULL, 10)")?
+    srv = n1.srv
+    let n2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (12, NULL, 10)")?
+    srv = n2.srv
+    check(fails, "null_no_collide", n1.ok == 1 && n2.ok == 1)
+
+    // UPDATE creating a duplicate tuple → 23505 (id=3 is ('y',10);
+    // setting a='x' makes ('x',10), colliding with id=1)
+    let u1 = boila_server_exec(srv, "boila", "UPDATE t SET a = 'x' WHERE id = 3")?
+    srv = u1.srv
+    check(fails, "upd_dup_23505", u1.ok == 0 && u1.state == "23505")
+    let u2 = boila_server_exec(srv, "boila", "UPDATE t SET a = 'zz' WHERE id = 3")?
+    srv = u2.srv
+    check(fails, "upd_ok", u2.ok == 1)
+
+    // same-txn buffer collision on the tuple
+    let b1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = b1.srv
+    let b2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (20, 'w', 5)")?
+    srv = b2.srv
+    let b3 = boila_server_exec(srv, "boila", "INSERT INTO t (id, a, b) VALUES (21, 'w', 5)")?
+    srv = b3.srv
+    check(fails, "buffer_dup_23505", b2.ok == 1 && b3.ok == 0 && b3.state == "23505")
+    let b4 = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = b4.srv
+
+    // build-time duplicate refusal
+    let c2 = boila_server_exec(srv, "boila", "CREATE TABLE d (id BIGINT, p TEXT, q BIGINT, PRIMARY KEY (id))")?
+    srv = c2.srv
+    let i3 = boila_server_exec(srv, "boila", "INSERT INTO d (id, p, q) VALUES (1, 's', 7), (2, 's', 7)")?
+    srv = i3.srv
+    let mkd = boila_server_exec(srv, "boila", "CREATE UNIQUE INDEX uq_d ON d (p, q)")?
+    srv = mkd.srv
+    check(fails, "build_dup_23505", mkd.ok == 0 && mkd.state == "23505")
+
+    boila_server_close(srv)?
+
+    // restart: multi-col uniq persists
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "reopen", srv2.ok == 1)
+    let r1 = boila_server_exec(srv2, "boila", "INSERT INTO t (id, a, b) VALUES (30, 'x', 10)")?
+    srv2 = r1.srv
+    check(fails, "restart_dup_23505", r1.ok == 0 && r1.state == "23505")
+    let r2 = boila_server_exec(srv2, "boila", "INSERT INTO t (id, a, b) VALUES (31, 'fresh', 1)")?
+    srv2 = r2.srv
+    check(fails, "restart_fresh_ok", r2.ok == 1)
+    boila_server_close(srv2)?
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_munique_test: all passed")
+        return 0
+    }
+    print(concat("boila_munique_test: FAILED ", int_to_str(n)))
+    return 1
+}

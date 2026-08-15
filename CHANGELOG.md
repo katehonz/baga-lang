@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### boilaDB P21-1 — multi-column UNIQUE index
+- `CREATE UNIQUE INDEX name ON t (a, b, …)`; tuple-wide 23505; NULL in
+  any indexed column → no collide (PG); var-width false positives
+  filtered by re-reading candidates (also fixed a latent committed-row
+  read bug). `tests/boila_munique_test` 16/16 + regression battery.
+
 ### boilaDB P21-3 — REFERENCES / foreign keys
 - Column/table-level `REFERENCES parent (pcol)` with
   `ON DELETE {NO ACTION|RESTRICT|CASCADE|SET NULL}`. Child
