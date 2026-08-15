@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB P20-4 — sum/avg over NUMERIC (P12b)
+- Decimal-exact aggregates: SUM/AVG/MIN/MAX over NUMERIC stay NUMERIC
+  (OID 1700), AVG scale ≥ 6, NULLs skipped. `tests/boila_numagg_test`
+  15/15 (sum 31.05, avg 7.7625, GROUP BY, restart, i64 no-regression).
+
 ### boilaDB P20-3 — SERIAL / BIGSERIAL auto-number PK
 - Omitted PK in INSERT gets the next per-table counter (txn-buffered;
   ROLLBACK returns the number); RETURNING gives it back; SERIAL must
