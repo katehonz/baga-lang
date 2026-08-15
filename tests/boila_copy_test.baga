@@ -1,0 +1,132 @@
+// boila_copy_test.baga — P14 COPY FROM STDIN / TO STDOUT.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/sql/exec_sql.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn iv(out: BoilaSrvOut, r: i64, c: i64) -> i64 {
+    return vec_get(vec_get(out.res.rows, r), c).i
+}
+
+fn sv(out: BoilaSrvOut, r: i64, c: i64) -> str {
+    return str_of_bytes(vec_get(vec_get(out.res.rows, r), c).b)
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_copy_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_copy_test"
+    wipe_root(root)?
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, name TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+
+    let e0 = boila_server_exec(srv, "boila", "COPY t FROM STDIN")?
+    srv = e0.srv
+    check(fails, "from_need_data", e0.ok == 0 && e0.state == "42601")
+
+    let e1 = boila_server_exec(srv, "boila", "COPY t FROM '/tmp/x'")?
+    srv = e1.srv
+    check(fails, "from_file", e1.ok == 0 && e1.state == "0A000")
+
+    let i1 = boila_server_copy_from(srv, "boila", "COPY t (id, name) FROM STDIN", "1\tana\n2\tboris\n\\.\n")?
+    srv = i1.srv
+    check(fails, "in_text", i1.ok == 1 && i1.id == 2)
+
+    let q1 = boila_server_exec(srv, "boila", "SELECT name FROM t WHERE id = 1")?
+    srv = q1.srv
+    check(fails, "sel1", q1.ok == 1 && vec_len(q1.res.rows) == 1 && sv(q1, 0, 0) == "ana")
+
+    let o1 = boila_server_exec(srv, "boila", "COPY t (id, name) TO STDOUT")?
+    srv = o1.srv
+    check(fails, "out_ok", o1.ok == 1 && o1.kind == 31 && vec_len(o1.res.rows) == 2)
+    if vec_len(o1.res.rows) == 2 {
+        check(fails, "out_line", sv(o1, 0, 0) == "1\tana" || sv(o1, 1, 0) == "1\tana")
+    }
+
+    let i2 = boila_server_copy_from(srv, "boila", "COPY t (id, name) FROM STDIN WITH (FORMAT csv)", "3,cveti\n4,deni\n")?
+    srv = i2.srv
+    check(fails, "in_csv", i2.ok == 1 && i2.id == 2)
+
+    let q2 = boila_server_exec(srv, "boila", "SELECT COUNT(*) FROM t")?
+    srv = q2.srv
+    check(fails, "count4", q2.ok == 1 && vec_len(q2.res.rows) == 1 && iv(q2, 0, 0) == 4)
+
+    let o2 = boila_server_exec(srv, "boila", "COPY t (id, name) TO STDOUT WITH (FORMAT csv)")?
+    srv = o2.srv
+    check(fails, "out_csv", o2.ok == 1 && vec_len(o2.res.rows) == 4)
+
+    let bad = boila_server_copy_from(srv, "boila", "COPY t (id, name) FROM STDIN", "notabs\n")?
+    srv = bad.srv
+    check(fails, "bad_fmt", bad.ok == 0 && bad.state == "22P04")
+
+    let q3 = boila_server_exec(srv, "boila", "SELECT COUNT(*) FROM t")?
+    srv = q3.srv
+    check(fails, "rollback", q3.ok == 1 && iv(q3, 0, 0) == 4)
+
+    // 1k rows
+    let mut blob = ""
+    let mut k: i64 = 0
+    while k < 1000 {
+        blob = concat(blob, concat(int_to_str(1000 + k), concat("\tr", concat(int_to_str(k), "\n"))))
+        k = k + 1
+    }
+    let c1 = boila_server_exec(srv, "boila", "CREATE TABLE big (id BIGINT, name TEXT, PRIMARY KEY (id))")?
+    srv = c1.srv
+    let i3 = boila_server_copy_from(srv, "boila", "COPY big (id, name) FROM STDIN", blob)?
+    srv = i3.srv
+    check(fails, "in_1k", i3.ok == 1 && i3.id == 1000)
+    let q4 = boila_server_exec(srv, "boila", "SELECT COUNT(*) FROM big")?
+    srv = q4.srv
+    check(fails, "count_1k", q4.ok == 1 && iv(q4, 0, 0) == 1000)
+    let o3 = boila_server_exec(srv, "boila", "COPY big TO STDOUT")?
+    srv = o3.srv
+    check(fails, "out_1k", o3.ok == 1 && vec_len(o3.res.rows) == 1000)
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_copy_test: all passed")
+        return 0
+    }
+    print(concat("boila_copy_test: FAILED ", int_to_str(n)))
+    return 1
+}

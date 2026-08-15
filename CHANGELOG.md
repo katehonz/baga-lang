@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### boilaDB P14 — COPY
+- `COPY t FROM STDIN` / `TO STDOUT` (text + csv). 1k IN/OUT гейт;
+  лош ред → `22P04` + rollback.
+
 ### boilaDB P13 — window функции
 - `ROW_NUMBER`/`RANK`/`DENSE_RANK`/`SUM`/`AVG`/`COUNT`/`MIN`/`MAX`
   `OVER (PARTITION BY … ORDER BY …)`; default RANGE UNBOUNDED
