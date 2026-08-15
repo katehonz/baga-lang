@@ -92,7 +92,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 | Package | Role |
 |---------|------|
-| **cloudbaga** | 12-factor cloud demo — healthz/readyz/metrics, graceful shutdown |
+| **cloudbaga** | 12-factor cloud demo — healthz/readyz/metrics, graceful shutdown; **git submodule** → [bagalang/cloudbaga](https://github.com/bagalang/cloudbaga) |
 | **flagbaga** | Typed CLI flags over `arg()` |
 | **logbaga** | Structured JSON lines on stderr |
 | **metbaga** | Prometheus text metrics |

@@ -16,3 +16,6 @@
 [submodule "app-product/chatbaga"]
 	path = app-product/chatbaga
 	url = git@github.com:bagalang/chatbaga.git
+[submodule "app-product/cloudbaga"]
+	path = app-product/cloudbaga
+	url = git@github.com:bagalang/cloudbaga.git

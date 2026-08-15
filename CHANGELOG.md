@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### cloudbaga — отделно репо
+- `app-product/cloudbaga` е git submodule към
+  [bagalang/cloudbaga](https://github.com/bagalang/cloudbaga).
+- `std`, `httpdbaga`, `metbaga`, `logbaga`, `otelbaga`, `pbbaga`
+  остават тук; `tests/cloud_test` също.
+
 ### chatbaga — отделно репо
 - `app-product/chatbaga` е git submodule към
   [bagalang/chatbaga](https://github.com/bagalang/chatbaga).
