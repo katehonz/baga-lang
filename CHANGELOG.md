@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### ctxbaga — отделно репо
+- `app-product/ctxbaga` е git submodule към
+  [bagalang/ctxbaga](https://github.com/bagalang/ctxbaga).
+- `std` и `statusbaga` остават тук; `tests/ctx_test` също.
+
 ### csvbaga — отделно репо
 - `app-product/csvbaga` е git submodule към
   [bagalang/csvbaga](https://github.com/bagalang/csvbaga).

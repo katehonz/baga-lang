@@ -75,7 +75,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **jsonrpcbaga** | JSON-RPC 2.0 over HTTP (single + batch, name dispatch) |
 | **pbbaga** | Protocol Buffers wire codec + gRPC message framing |
 | **statusbaga** | gRPC status codes + Status (Go `codes`/`status` style) |
-| **ctxbaga** | Context lite — deadlines, cancel, string values (Go `context`) |
+| **ctxbaga** | Context lite — deadlines, cancel, string values (Go `context`); **git submodule** → [bagalang/ctxbaga](https://github.com/bagalang/ctxbaga) |
 
 ### Storage / data plane
 

@@ -1,8 +1,0 @@
-[package]
-name = "ctxbaga"
-version = "0.1.0"
-entry = "ctx.baga"
-
-[dependencies]
-std = { path = "../../std" }
-statusbaga = { path = "../statusbaga" }

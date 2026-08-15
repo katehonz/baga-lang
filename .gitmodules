@@ -22,3 +22,6 @@
 [submodule "app-product/csvbaga"]
 	path = app-product/csvbaga
 	url = git@github.com:bagalang/csvbaga.git
+[submodule "app-product/ctxbaga"]
+	path = app-product/ctxbaga
+	url = git@github.com:bagalang/ctxbaga.git
