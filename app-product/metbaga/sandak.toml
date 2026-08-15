@@ -1,7 +1,0 @@
-[package]
-name = "metbaga"
-version = "0.1.0"
-entry = "met.baga"
-
-[dependencies]
-std = { path = "../../std" }

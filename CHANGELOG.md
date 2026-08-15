@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### metbaga — отделно репо
+- `app-product/metbaga` е git submodule към
+  [bagalang/metbaga](https://github.com/bagalang/metbaga).
+- `std` остава тук; `fmrbaga` / `cloudbaga` / `boilaDB` продължават
+  да сочат `../metbaga`; `tests/met_test` също.
+
 ### mdtbaga — отделно репо
 - `app-product/mdtbaga` е git submodule към
   [bagalang/mdtbaga](https://github.com/bagalang/mdtbaga).
