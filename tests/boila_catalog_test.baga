@@ -2,6 +2,7 @@
 
 import "boilaDB/storage/shards.baga"
 import "boilaDB/catalog/schema.baga"
+import "boilaDB/catalog/create.baga"
 import "boilaDB/catalog/ddl_types.baga"
 import "boilaDB/sql/ast.baga"
 import "boilaDB/core/value.baga"
