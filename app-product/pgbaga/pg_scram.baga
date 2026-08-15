@@ -1,3 +1,0 @@
-// Public re-export — prefer pgbaga/auth/scram.baga for new code.
-// Stable path: import "pgbaga/pg_scram.baga"
-import "auth/scram.baga"

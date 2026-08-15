@@ -1,2 +1,0 @@
-// Public re-export — prefer pgbaga/examples/demo.baga for new code.
-import "examples/demo.baga"

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### pgbaga — отделно репо
+- `app-product/pgbaga` е git submodule към
+  [bagalang/pgbaga](https://github.com/bagalang/pgbaga).
+- `std` остава тук; `ormbaga` / `boilabaga` / `oauthbaga` /
+  `bagadecimal` продължават да сочат `../pgbaga`; `tests/pg_test` също.
+
 ### pdfbaga — отделно репо
 - `app-product/pdfbaga` е git submodule към
   [bagalang/pdfbaga](https://github.com/bagalang/pdfbaga).

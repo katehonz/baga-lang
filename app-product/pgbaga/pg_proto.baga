@@ -1,3 +1,0 @@
-// Public re-export — prefer pgbaga/wire/proto.baga for new code.
-// Stable path: import "pgbaga/pg_proto.baga"
-import "wire/proto.baga"
