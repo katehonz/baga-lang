@@ -58,3 +58,6 @@
 [submodule "app-product/lsmbaga"]
 	path = app-product/lsmbaga
 	url = git@github.com:bagalang/lsmbaga.git
+[submodule "app-product/mdbaga"]
+	path = app-product/mdbaga
+	url = git@github.com:bagalang/mdbaga.git
