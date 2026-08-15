@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### oauthbaga — отделно репо
+- `app-product/oauthbaga` е git submodule към
+  [bagalang/oauthbaga](https://github.com/bagalang/oauthbaga).
+- `std`, `httpdbaga`, `jwtbaga`, `tplbaga`, `ormbaga`, `pgbaga`
+  остават тук; `tests/oauth_test` / `oauth_pg_test` също.
+
 ### metbaga — отделно репо
 - `app-product/metbaga` е git submodule към
   [bagalang/metbaga](https://github.com/bagalang/metbaga).

@@ -56,7 +56,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **pathbaga** / **[globbaga](https://github.com/bagalang/globbaga)** / **uuidbaga** / **[bufbaga](https://github.com/bagalang/bufbaga)** / **querybaga** | Universal path, glob, UUID v4, string builder, URL query |
 | **statusbaga** / **[mdtbaga](https://github.com/bagalang/mdtbaga)** / **[ctxbaga](https://github.com/bagalang/ctxbaga)** | gRPC codes/Status, metadata MD, context deadline/cancel (Go-shaped) |
 | **wsbaga** / **[chatbaga](https://github.com/bagalang/chatbaga)** | WebSocket + multi-room chat (`poll`) |
-| **oauthbaga** | OAuth proxy (integration exam) |
+| **oauthbaga** | OAuth proxy (integration exam) · [repo](https://github.com/bagalang/oauthbaga) (submodule) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) · [repo](https://github.com/bagalang/bagadecimal) (submodule) |
 | **[mdbaga](https://github.com/bagalang/mdbaga)**, **tplbaga**, **queuebaga**, **[jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga)**, **[grebaga](https://github.com/bagalang/grebaga)**, **testbaga** | Markdown, templates, jobs, RPC, grep CLI, asserts |
 | **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) · [repo](https://github.com/bagalang/imgbaga) (submodule) |

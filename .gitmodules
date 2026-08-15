@@ -67,3 +67,6 @@
 [submodule "app-product/metbaga"]
 	path = app-product/metbaga
 	url = git@github.com:bagalang/metbaga.git
+[submodule "app-product/oauthbaga"]
+	path = app-product/oauthbaga
+	url = git@github.com:bagalang/oauthbaga.git
