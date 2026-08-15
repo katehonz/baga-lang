@@ -70,3 +70,6 @@
 [submodule "app-product/oauthbaga"]
 	path = app-product/oauthbaga
 	url = git@github.com:bagalang/oauthbaga.git
+[submodule "app-product/officebaga"]
+	path = app-product/officebaga
+	url = git@github.com:bagalang/officebaga.git

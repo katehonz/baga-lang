@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### officebaga — отделно репо
+- `app-product/officebaga` е git submodule към
+  [bagalang/officebaga](https://github.com/bagalang/officebaga).
+- `std`, `zipbaga`, `xmlbaga`, `bufbaga`, `mdbaga` остават тук;
+  `reportbaga` продължава да сочи `../officebaga`; `tests/office_test`
+  също.
+
 ### oauthbaga — отделно репо
 - `app-product/oauthbaga` е git submodule към
   [bagalang/oauthbaga](https://github.com/bagalang/oauthbaga).
