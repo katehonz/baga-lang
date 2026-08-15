@@ -62,7 +62,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **oauthbaga** | OAuth2 / OIDC-style flows, proxy, session cookie demo |
 | **ormbaga** | Universal table ORM + versioned migrations + pool (no app domain) |
 | **pgbaga** | Native PostgreSQL wire client (SCRAM-SHA-256, Simple + Extended Query) |
-| **boilaDB** | Multimodal SQL server — BoilaSQL, PG wire `:6575`, HTTP `:6570` ([docs](boilaDB/docs/README.md)) |
+| **boilaDB** | Multimodal SQL server — BoilaSQL, PG wire `:6575`, HTTP `:6570` ([docs](boilaDB/docs/README.md)); **git submodule** → [bagalang/boilaDB](https://github.com/bagalang/boilaDB) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (defaults :6575 + BoilaSQL dialect) |
 | **querybaga** | URL query / form parse and encode |
 | **wsbaga** | WebSocket RFC 6455 — handshake, frames, echo server/client |

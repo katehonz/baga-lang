@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### boilaDB — отделно репо
+- `app-product/boilaDB` е git submodule към
+  [bagalang/boilaDB](https://github.com/bagalang/boilaDB).
+- Общите пакети (`std`, `rocksbaga`, `httpdbaga`, `metbaga`) остават
+  тук; тестовете `tests/boila_*` и `bench/boila/` също.
+- Clone: `git submodule update --init app-product/boilaDB`.
+
 ### imgbaga 0.6.0 — lossy VP8 WebP
 - VP8 keyframe decode (RFC 6386 / `golang.org/x/image/vp8`): bool
   decoder, tokens, iDCT/WHT, intra pred, loop filter, BT.601 YUV→RGB

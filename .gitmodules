@@ -1,0 +1,3 @@
+[submodule "app-product/boilaDB"]
+	path = app-product/boilaDB
+	url = git@github.com:bagalang/boilaDB.git
