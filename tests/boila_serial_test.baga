@@ -1,0 +1,154 @@
+// boila_serial_test.baga — P17 SERIALIZABLE: ww/rw → 40001; no conflict OK.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/sql/exec_sql.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/sql/plan_cache.baga"
+import "boilaDB/txn/mvcc.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_serial_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_serial_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    let i0 = boila_server_exec(srv, "boila", "INSERT INTO t (id, v) VALUES (1, 'a'), (2, 'b')")?
+    srv = i0.srv
+    check(fails, "seed", i0.ok == 1)
+
+    let bad = boila_server_exec(srv, "boila", "BEGIN DEFERRABLE")?
+    srv = bad.srv
+    check(fails, "deferrable_0A000", bad.ok == 0 && bad.state == "0A000")
+
+    let d = boila_srv_db(srv, "boila")?
+    srv = d.srv
+    let mut s = d.store
+    let pc = srv.pc
+
+    // --- parse + begin serializable ---
+    let txnA = boila_txn_new()
+    let a0 = boila_exec_sql(s, txnA, "boila", "BEGIN ISOLATION LEVEL SERIALIZABLE", pc)?
+    s = a0.s
+    check(fails, "begin_ser", a0.ok == 1 && a0.txn.active == 1 && a0.txn.isol == 2)
+
+    let a1 = boila_exec_sql(s, a0.txn, "boila", "SELECT v FROM t WHERE id = 1", pc)?
+    s = a1.s
+    check(fails, "a_read", a1.ok == 1 && vec_len(a1.res.rows) == 1)
+
+    // Client B: implicit RC update+commit of the same row
+    let b1 = boila_exec_sql(s, boila_txn_new(), "boila", "UPDATE t SET v = 'b1' WHERE id = 1", pc)?
+    s = b1.s
+    check(fails, "b_update", b1.ok == 1)
+
+    let a2 = boila_exec_sql(s, a1.txn, "boila", "UPDATE t SET v = 'a2' WHERE id = 1", pc)?
+    s = a2.s
+    check(fails, "a_update_buf", a2.ok == 1)
+    let a3 = boila_exec_sql(s, a2.txn, "boila", "COMMIT", pc)?
+    s = a3.s
+    check(fails, "a_commit_40001", a3.ok == 0 && a3.state == "40001")
+
+    // After abort, B's value remains
+    let q1 = boila_exec_sql(s, boila_txn_new(), "boila", "SELECT v FROM t WHERE id = 1", pc)?
+    s = q1.s
+    check(fails, "b_won", q1.ok == 1 && vec_len(q1.res.rows) == 1 && str_of_bytes(vec_get(vec_get(q1.res.rows, 0), 0).b) == "b1")
+
+    // --- write-write: A buffers update, B commits first ---
+    let a4 = boila_exec_sql(s, boila_txn_new(), "boila", "BEGIN ISOLATION LEVEL SERIALIZABLE", pc)?
+    s = a4.s
+    let a5 = boila_exec_sql(s, a4.txn, "boila", "UPDATE t SET v = 'aa' WHERE id = 2", pc)?
+    s = a5.s
+    let b2 = boila_exec_sql(s, boila_txn_new(), "boila", "UPDATE t SET v = 'bb' WHERE id = 2", pc)?
+    s = b2.s
+    let a6 = boila_exec_sql(s, a5.txn, "boila", "COMMIT", pc)?
+    s = a6.s
+    check(fails, "ww_40001", a6.ok == 0 && a6.state == "40001")
+
+    // --- no overlap: A updates 1, B updates 2 ---
+    let a7 = boila_exec_sql(s, boila_txn_new(), "boila", "BEGIN ISOLATION LEVEL SERIALIZABLE", pc)?
+    s = a7.s
+    let a8 = boila_exec_sql(s, a7.txn, "boila", "UPDATE t SET v = 'x1' WHERE id = 1", pc)?
+    s = a8.s
+    let b3 = boila_exec_sql(s, boila_txn_new(), "boila", "UPDATE t SET v = 'x2' WHERE id = 2", pc)?
+    s = b3.s
+    check(fails, "b_other_ok", b3.ok == 1)
+    let a9 = boila_exec_sql(s, a8.txn, "boila", "COMMIT", pc)?
+    s = a9.s
+    check(fails, "no_conflict", a9.ok == 1)
+
+    // --- default BEGIN is not serializable ---
+    let a10 = boila_exec_sql(s, boila_txn_new(), "boila", "BEGIN", pc)?
+    s = a10.s
+    check(fails, "begin_rc", a10.ok == 1 && a10.txn.isol == 0)
+    let a11 = boila_exec_sql(s, a10.txn, "boila", "SELECT v FROM t WHERE id = 1", pc)?
+    s = a11.s
+    let b4 = boila_exec_sql(s, boila_txn_new(), "boila", "UPDATE t SET v = 'rc' WHERE id = 1", pc)?
+    s = b4.s
+    let a12 = boila_exec_sql(s, a11.txn, "boila", "UPDATE t SET v = 'rcA' WHERE id = 1", pc)?
+    s = a12.s
+    let a13 = boila_exec_sql(s, a12.txn, "boila", "COMMIT", pc)?
+    s = a13.s
+    check(fails, "rc_no_abort", a13.ok == 1)
+
+    // --- REPEATABLE READ begins ---
+    let rr = boila_exec_sql(s, boila_txn_new(), "boila", "BEGIN ISOLATION LEVEL REPEATABLE READ", pc)?
+    s = rr.s
+    check(fails, "begin_rr", rr.ok == 1 && rr.txn.isol == 1)
+    let rr2 = boila_exec_sql(s, rr.txn, "boila", "COMMIT", pc)?
+    s = rr2.s
+    check(fails, "rr_commit", rr2.ok == 1)
+
+    let ro = boila_exec_sql(s, boila_txn_new(), "boila", "BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY", pc)?
+    s = ro.s
+    check(fails, "ser_ro", ro.ok == 1 && ro.txn.isol == 2 && ro.txn.read_only == 1)
+    let ro2 = boila_exec_sql(s, ro.txn, "boila", "ROLLBACK", pc)?
+    s = ro2.s
+    check(fails, "ser_ro_rb", ro2.ok == 1)
+
+    boila_server_close(srv)?
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_serial_test: all passed")
+        return 0
+    }
+    print(concat("boila_serial_test: FAILED ", int_to_str(n)))
+    return 1
+}

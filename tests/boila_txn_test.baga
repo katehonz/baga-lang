@@ -285,7 +285,8 @@ fn main() -> i64 !IO !Time !Par {
 
     // --- T6: txn buffer limit ---
     let wempty: Vec<BoilaTxnWrite> = vec_new()
-    let mut lim = BoilaTxn { active: 1, read_only: 0, snapshot_lsn: 0, db: "boila", writes: wempty, max_writes: 2 }
+    let rempty: Vec<BoilaTxnRead> = vec_new()
+    let mut lim = BoilaTxn { active: 1, read_only: 0, snapshot_lsn: 0, db: "boila", writes: wempty, max_writes: 2, isol: 0, reads: rempty }
     let p1 = boila_txn_put(boila_store_empty(), lim, 1, 1, bytes_of_str("a"), bytes_of_str("1"))
     lim = p1.txn
     check(fails, "t6_put1", p1.ok == 1)

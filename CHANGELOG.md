@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### boilaDB P17 — SERIALIZABLE
+- `BEGIN ISOLATION LEVEL SERIALIZABLE` / `REPEATABLE READ`.
+  Commit ww/rw → `40001`. `tests/boila_serial_test`.
+
 ### boilaDB P16 — compaction filter GC
 - rocksbaga per-CF `filter_kind` + `lsm_compact_full`.
 - boilaDB data CF versioned keys; `VACUUM`; 10k UPDATE → 1 version.
