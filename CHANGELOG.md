@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### mdtbaga — отделно репо
+- `app-product/mdtbaga` е git submodule към
+  [bagalang/mdtbaga](https://github.com/bagalang/mdtbaga).
+- `std` остава тук; `pbbaga` продължава да сочи `../mdtbaga`;
+  `tests/mdt_test` също.
+
 ### mdbaga — отделно репо
 - `app-product/mdbaga` е git submodule към
   [bagalang/mdbaga](https://github.com/bagalang/mdbaga).

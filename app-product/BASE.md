@@ -107,7 +107,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **csvbaga** | CSV parse/stringify (RFC 4180-ish); **git submodule** → [bagalang/csvbaga](https://github.com/bagalang/csvbaga) |
 | **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate); **git submodule** → [bagalang/imgbaga](https://github.com/bagalang/imgbaga) |
 | **mdbaga** | Markdown parser / renderer; **git submodule** → [bagalang/mdbaga](https://github.com/bagalang/mdbaga) |
-| **mdtbaga** | Markdown table helpers |
+| **mdtbaga** | gRPC metadata (`metadata.MD` multimap); **git submodule** → [bagalang/mdtbaga](https://github.com/bagalang/mdtbaga) |
 | **officebaga** | Office docs — DOCX/XLSX/ODT/ODS (+ legacy DOC/XLS probe) |
 | **pdfbaga** | PDF writer with UTF-8/Cyrillic via embedded TTF |
 | **reportbaga** | Accounting reports — data/HTML → Excel · CSV · PDF · HTML |

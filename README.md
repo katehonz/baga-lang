@@ -54,7 +54,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **txnbaga** | 2PC coordinator + MVCC store (Track S8) |
 | **otelbaga** | W3C traceparent lite (Track C8 subset) |
 | **pathbaga** / **[globbaga](https://github.com/bagalang/globbaga)** / **uuidbaga** / **[bufbaga](https://github.com/bagalang/bufbaga)** / **querybaga** | Universal path, glob, UUID v4, string builder, URL query |
-| **statusbaga** / **mdtbaga** / **[ctxbaga](https://github.com/bagalang/ctxbaga)** | gRPC codes/Status, metadata MD, context deadline/cancel (Go-shaped) |
+| **statusbaga** / **[mdtbaga](https://github.com/bagalang/mdtbaga)** / **[ctxbaga](https://github.com/bagalang/ctxbaga)** | gRPC codes/Status, metadata MD, context deadline/cancel (Go-shaped) |
 | **wsbaga** / **[chatbaga](https://github.com/bagalang/chatbaga)** | WebSocket + multi-room chat (`poll`) |
 | **oauthbaga** | OAuth proxy (integration exam) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) · [repo](https://github.com/bagalang/bagadecimal) (submodule) |
