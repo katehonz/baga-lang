@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### boilaDB P20-1 — UNIQUE indexes (app-ready phase opens)
+- `CREATE UNIQUE INDEX`: 23505 on INSERT/UPDATE/upsert duplicates,
+  NULLs distinct (PG), build-time dup refusal, txn-buffer-aware check.
+  `tests/boila_unique_test` 20/20 incl. restart. P20 gate: an invoicing
+  program (`apps/invoices`, pending).
+
 ### boilaDB P19 — raftbaga replica
 - In-process N=3; leader SQL + LSN ticket; follower replay;
   `pg_is_in_recovery()` / write `25006`. `tests/boila_repl_test`.

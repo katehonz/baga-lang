@@ -1,0 +1,161 @@
+// boila_unique_test.baga — P20-1 CREATE UNIQUE INDEX: 23505 on
+// duplicate non-NULL values; NULLs distinct; buffer-aware checks;
+// build-time duplicate refusal; uniq flag survives restart.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_unique_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_unique_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, code TEXT, n BIGINT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    let i0 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (1, 'a', 10), (2, 'b', 20), (3, NULL, 30)")?
+    srv = i0.srv
+    check(fails, "seed", i0.ok == 1)
+
+    let mk = boila_server_exec(srv, "boila", "CREATE UNIQUE INDEX uq_code ON t (code)")?
+    srv = mk.srv
+    check(fails, "create_unique", mk.ok == 1)
+
+    let dup = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (4, 'a', 40)")?
+    srv = dup.srv
+    check(fails, "dup_insert_23505", dup.ok == 0 && dup.state == "23505")
+
+    let n1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (5, NULL, 50)")?
+    srv = n1.srv
+    let n2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (6, NULL, 60)")?
+    srv = n2.srv
+    check(fails, "nulls_distinct", n1.ok == 1 && n2.ok == 1)
+
+    let okc = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (7, 'c', 70)")?
+    srv = okc.srv
+    check(fails, "fresh_ok", okc.ok == 1)
+
+    let ubad = boila_server_exec(srv, "boila", "UPDATE t SET code = 'b' WHERE id = 7")?
+    srv = ubad.srv
+    check(fails, "update_dup_23505", ubad.ok == 0 && ubad.state == "23505")
+
+    let uok = boila_server_exec(srv, "boila", "UPDATE t SET code = 'z' WHERE id = 7")?
+    srv = uok.srv
+    check(fails, "update_fresh_ok", uok.ok == 1)
+
+    let unon = boila_server_exec(srv, "boila", "UPDATE t SET n = 99 WHERE id = 7")?
+    srv = unon.srv
+    check(fails, "update_nonuniq_ok", unon.ok == 1)
+
+    // same-txn buffer collision: second insert must see the first's entry
+    let b1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = b1.srv
+    let b2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (8, 'w', 80)")?
+    srv = b2.srv
+    let b3 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (9, 'w', 90)")?
+    srv = b3.srv
+    check(fails, "buffer_dup_23505", b2.ok == 1 && b3.ok == 0 && b3.state == "23505")
+    let b4 = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = b4.srv
+
+    let q1 = boila_server_exec(srv, "boila", "SELECT count(*) FROM t")?
+    srv = q1.srv
+    check(fails, "rollback_clean", q1.ok == 1 && vec_len(q1.res.rows) == 1 && vec_get(vec_get(q1.res.rows, 0), 0).i == 6)
+
+    // delete the holder then insert its value in ONE txn
+    let d1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = d1.srv
+    let d2 = boila_server_exec(srv, "boila", "DELETE FROM t WHERE id = 2")?
+    srv = d2.srv
+    let d3 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (10, 'b', 100)")?
+    srv = d3.srv
+    let d4 = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = d4.srv
+    check(fails, "del_then_ins_ok", d2.ok == 1 && d3.ok == 1 && d4.ok == 1)
+
+    let dup2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (11, 'b', 110)")?
+    srv = dup2.srv
+    check(fails, "dup_after_move_23505", dup2.ok == 0 && dup2.state == "23505")
+
+    // build-time duplicate refusal
+    let cd = boila_server_exec(srv, "boila", "CREATE TABLE d (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = cd.srv
+    let idata = boila_server_exec(srv, "boila", "INSERT INTO d (id, v) VALUES (1, 'x'), (2, 'x')")?
+    srv = idata.srv
+    let mkd = boila_server_exec(srv, "boila", "CREATE UNIQUE INDEX uq_d ON d (v)")?
+    srv = mkd.srv
+    check(fails, "build_dup_23505", mkd.ok == 0 && mkd.state == "23505")
+    let qd = boila_server_exec(srv, "boila", "SELECT count(*) FROM d")?
+    srv = qd.srv
+    check(fails, "d_intact", qd.ok == 1 && vec_get(vec_get(qd.res.rows, 0), 0).i == 2)
+
+    // plain (non-unique) index still allows duplicates
+    let p1 = boila_server_exec(srv, "boila", "CREATE INDEX n_ix ON t (n)")?
+    srv = p1.srv
+    let p2 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (12, 'q', 120)")?
+    srv = p2.srv
+    let p3 = boila_server_exec(srv, "boila", "INSERT INTO t (id, code, n) VALUES (13, 'r', 120)")?
+    srv = p3.srv
+    check(fails, "plain_ix_dups_ok", p1.ok == 1 && p2.ok == 1 && p3.ok == 1)
+
+    boila_server_close(srv)?
+
+    // restart: uniq flag persists in the schema row tail
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "reopen", srv2.ok == 1)
+    let r1 = boila_server_exec(srv2, "boila", "INSERT INTO t (id, code, n) VALUES (14, 'z', 140)")?
+    srv2 = r1.srv
+    check(fails, "restart_dup_23505", r1.ok == 0 && r1.state == "23505")
+    let r2 = boila_server_exec(srv2, "boila", "INSERT INTO t (id, code, n) VALUES (15, 'fresh', 150)")?
+    srv2 = r2.srv
+    check(fails, "restart_fresh_ok", r2.ok == 1)
+    let r3 = boila_server_exec(srv2, "boila", "SELECT count(*) FROM t")?
+    srv2 = r3.srv
+    // rows: 1,3,5,6,7,10,12,13,15
+    check(fails, "final_count", r3.ok == 1 && vec_get(vec_get(r3.res.rows, 0), 0).i == 9)
+    boila_server_close(srv2)?
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_unique_test: all passed")
+        return 0
+    }
+    print(concat("boila_unique_test: FAILED ", int_to_str(n)))
+    return 1
+}
