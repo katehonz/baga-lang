@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### boilaDB P21-4 — CHECK constraints
+- Table-level `CHECK (expr)` + column-level `col TYPE CHECK (expr)`;
+  enforced on INSERT/upsert/UPDATE (TRUE/NULL pass, FALSE → 23514);
+  rendered by SHOW CREATE TABLE. `tests/boila_check_test` 15/15 incl.
+  restart.
+
 ### boilaDB P21-5 — window SUM/AVG over NUMERIC
 - `SUM(col) OVER (…) / AVG(col) OVER (…)` on a NUMERIC column are
   decimal-exact and return NUMERIC (OID 1700); closes the P13 frame

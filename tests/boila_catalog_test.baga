@@ -2,6 +2,7 @@
 
 import "boilaDB/storage/shards.baga"
 import "boilaDB/catalog/schema.baga"
+import "boilaDB/catalog/ddl_types.baga"
 import "boilaDB/sql/ast.baga"
 import "boilaDB/core/value.baga"
 import "std/os/os.baga"
@@ -41,14 +42,16 @@ fn cr_users() -> BoilaCreate {
     let cols: Vec<BoilaColDef> = vec_new()
     vec_push(cols, boila_coldef("id", boila_v_i64()))
     vec_push(cols, boila_coldef("name", boila_v_str()))
-    return BoilaCreate { table: "users", cols: cols, pk_idx: 0, ttl_sec: 0 }
+    let checks: Vec<Vec<BoilaTokP>> = vec_new()
+    return BoilaCreate { table: "users", cols: cols, pk_idx: 0, ttl_sec: 0, checks: checks }
 }
 
 fn cr_orders() -> BoilaCreate {
     let cols: Vec<BoilaColDef> = vec_new()
     vec_push(cols, boila_coldef("oid", boila_v_str()))
     vec_push(cols, boila_coldef("amount", boila_v_i64()))
-    return BoilaCreate { table: "orders", cols: cols, pk_idx: 0, ttl_sec: 0 }
+    let checks: Vec<Vec<BoilaTokP>> = vec_new()
+    return BoilaCreate { table: "orders", cols: cols, pk_idx: 0, ttl_sec: 0, checks: checks }
 }
 
 fn main() -> i64 !IO !Time !Par {
@@ -96,7 +99,7 @@ fn main() -> i64 !IO !Time !Par {
     s2 = r7.s
     check(fails, "restart_orders", r7.ok == 1 && r7.table.id == 2)
     // следващото id продължава от 3
-    let r8 = boila_cat_create(s2, BoilaCreate { table: "t3", cols: cr_orders().cols, pk_idx: 0, ttl_sec: 0 })?
+    let r8 = boila_cat_create(s2, BoilaCreate { table: "t3", cols: cr_orders().cols, pk_idx: 0, ttl_sec: 0, checks: cr_orders().checks })?
     s2 = r8.s
     check(fails, "restart_next_id", r8.ok == 1 && r8.id == 3)
     boila_close(s2)?
