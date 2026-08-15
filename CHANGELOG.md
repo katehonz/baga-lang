@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### httpdbaga — отделно репо
+- `app-product/httpdbaga` е git submodule към
+  [bagalang/httpdbaga](https://github.com/bagalang/httpdbaga).
+- `std` остава тук; потребителите (`fmrbaga`, `boilaDB`, `cloudbaga`,
+  `wsbaga`, `jwtbaga`, `oauthbaga`, `jsonrpcbaga`) продължават да сочат
+  `../httpdbaga`; тестовете `http_test` / `h2_test` / `hpack_test` също.
+
 ### grebaga — отделно репо
 - `app-product/grebaga` е git submodule към
   [bagalang/grebaga](https://github.com/bagalang/grebaga).
