@@ -1,0 +1,126 @@
+// boila_numeric_test.baga — P12 NUMERIC (bagadecimal) end-to-end.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/sql/exec_sql.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/sql/plan_cache.baga"
+import "boilaDB/txn/mvcc.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/core/numeric.baga"
+import "boilaDB/core/row.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(out: BoilaSrvOut, r: i64, c: i64) -> BoilaVal {
+    return vec_get(vec_get(out.res.rows, r), c)
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_numeric_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_numeric_test"
+    wipe_root(root)?
+
+    // codec: 1.0 == 1.00 after normalize
+    let a = boila_num_parse("1.0")
+    let b = boila_num_parse("1.00")
+    check(fails, "parse_ok", a.ok == 1 && b.ok == 1)
+    let pa = boila_num_pack(a.value)
+    let pb = boila_num_pack(b.value)
+    check(fails, "eq_1_00", boila_num_payload_cmp(pa, pb) == 0)
+    check(fails, "disp_12_5", boila_num_to_string(boila_num_pack(boila_num_parse("12.50").value)) == "12.5")
+    let enc = boila_val_enc(boila_val_num_bytes(pa))
+    let back = boila_val_dec(enc)
+    check(fails, "val_rt", back.tag == boila_v_num() && boila_num_payload_cmp(back.b, pa) == 0)
+    check(fails, "cmp_lt", boila_num_payload_cmp(boila_num_pack(boila_num_parse("1").value), boila_num_pack(boila_num_parse("2").value)) < 0)
+    check(fails, "cmp_neg", boila_num_payload_cmp(boila_num_pack(boila_num_parse("-3").value), boila_num_pack(boila_num_parse("1").value)) < 0)
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE inv (id BIGINT, amount NUMERIC, note TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create_numeric", c0.ok == 1)
+
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO inv (id, amount, note) VALUES (1, '12.50', 'цена'), (2, 20, 'цяло')")?
+    srv = i1.srv
+    check(fails, "insert", i1.ok == 1)
+
+    let q1 = boila_server_exec(srv, "boila", "SELECT amount, note FROM inv WHERE id = 1")?
+    srv = q1.srv
+    check(fails, "sel_ok", q1.ok == 1 && vec_len(q1.res.rows) == 1)
+    if vec_len(q1.res.rows) == 1 {
+        let amt = cell(q1, 0, 0)
+        let note = cell(q1, 0, 1)
+        check(fails, "sel_tag", amt.tag == boila_v_num())
+        check(fails, "sel_amt", boila_num_to_string(amt.b) == "12.5")
+        check(fails, "sel_utf8", note.tag == boila_v_str() && str_of_bytes(note.b) == "цена")
+    }
+
+    let q2 = boila_server_exec(srv, "boila", "SELECT CAST('1.00' AS numeric), '2.5'::numeric")?
+    srv = q2.srv
+    check(fails, "cast_ok", q2.ok == 1 && vec_len(q2.res.rows) == 1)
+    if vec_len(q2.res.rows) == 1 {
+        check(fails, "cast_eq", boila_val_cmp(cell(q2, 0, 0), boila_val_num_bytes(boila_num_pack(boila_num_parse("1").value))) == 0)
+        check(fails, "cast_25", boila_num_to_string(cell(q2, 0, 1).b) == "2.5")
+    }
+
+    let q3 = boila_server_exec(srv, "boila", "SELECT pg_typeof(CAST('1' AS numeric))")?
+    srv = q3.srv
+    check(fails, "typeof", q3.ok == 1 && vec_len(q3.res.rows) == 1 && str_of_bytes(cell(q3, 0, 0).b) == "numeric")
+
+    let sh = boila_server_exec(srv, "boila", "SHOW COLUMNS FROM inv")?
+    srv = sh.srv
+    check(fails, "show_cols", sh.ok == 1)
+
+    // restart
+    let _c = boila_server_close(srv)?
+    srv = boila_server_open(root, 2, 8, 3, 4)?
+    let q4 = boila_server_exec(srv, "boila", "SELECT amount FROM inv WHERE id = 1")?
+    srv = q4.srv
+    check(fails, "restart", q4.ok == 1 && vec_len(q4.res.rows) == 1)
+    if vec_len(q4.res.rows) == 1 {
+        check(fails, "restart_amt", boila_num_to_string(cell(q4, 0, 0).b) == "12.5")
+    }
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_numeric_test: all passed")
+        return 0
+    }
+    print(concat("boila_numeric_test: FAILED ", int_to_str(n)))
+    return 1
+}

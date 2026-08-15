@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB P12 — NUMERIC
+- `NUMERIC`/`DECIMAL` през bagadecimal (tag 9, PG OID 1700).
+- Следващите фази са в плана: window, COPY, SCRAM, compaction-filter
+  GC, serializable, FDW, raftbaga репликация.
+
 ### relbaga — отделно репо
 - `app-product/relbaga` е git submodule към
   [bagalang/relbaga](https://github.com/bagalang/relbaga).
