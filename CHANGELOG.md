@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB P20-5 — to_char(timestamptz, fmt)
+- Date formatting for invoices: YYYY/MM/DD/HH24/HH12/HH/MI/SS tokens,
+  Hinnant civil-date (pre-1970-safe). `tests/boila_tochar_test` 8/8
+  incl. leap day.
+
 ### boilaDB P20-4 — sum/avg over NUMERIC (P12b)
 - Decimal-exact aggregates: SUM/AVG/MIN/MAX over NUMERIC stay NUMERIC
   (OID 1700), AVG scale ≥ 6, NULLs skipped. `tests/boila_numagg_test`

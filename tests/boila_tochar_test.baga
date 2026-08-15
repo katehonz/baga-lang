@@ -1,0 +1,103 @@
+// boila_tochar_test.baga — P20-5 to_char(timestamptz, fmt).
+// Deterministic, epoch-anchored: ts values are inserted as integer
+// microseconds; to_char formats YYYY/MM/DD/HH24/MI/SS zero-padded.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn s(out: BoilaSrvOut, r: i64, c: i64) -> str {
+    return str_of_bytes(vec_get(vec_get(out.res.rows, r), c).b)
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_tochar_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_tochar_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE doc (id BIGINT, ts TIMESTAMPTZ, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+
+    // day 0 = 1970-01-01; day 1 = 1970-01-02. ts stored as i64 microseconds.
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO doc (id, ts) VALUES (1, 0), (2, 86400000000)")?
+    srv = i1.srv
+    check(fails, "insert", i1.ok == 1)
+
+    let q1 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'YYYY-MM-DD') FROM doc WHERE id = 1")?
+    srv = q1.srv
+    check(fails, "epoch_date", q1.ok == 1 && vec_len(q1.res.rows) == 1 && s(q1, 0, 0) == "1970-01-01")
+
+    let q2 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'YYYY-MM-DD') FROM doc WHERE id = 2")?
+    srv = q2.srv
+    check(fails, "next_day", q2.ok == 1 && vec_len(q2.res.rows) == 1 && s(q2, 0, 0) == "1970-01-02")
+
+    // time-of-day with offset: 12:34:56 = 45296 seconds
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO doc (id, ts) VALUES (3, 45296000000)")?
+    srv = i2.srv
+    let q3 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'YYYY-MM-DD HH24:MI:SS') FROM doc WHERE id = 3")?
+    srv = q3.srv
+    check(fails, "full_ts", q3.ok == 1 && vec_len(q3.res.rows) == 1 && s(q3, 0, 0) == "1970-01-01 12:34:56")
+
+    // DD/MM ordering + leap day 1972-02-29 (day 789 since epoch = 68169600 s)
+    let i3 = boila_server_exec(srv, "boila", "INSERT INTO doc (id, ts) VALUES (4, 68169600000000)")?
+    srv = i3.srv
+    let q4 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'DD/MM/YYYY') FROM doc WHERE id = 4")?
+    srv = q4.srv
+    check(fails, "leap_ddmmyyyy", q4.ok == 1 && vec_len(q4.res.rows) == 1 && s(q4, 0, 0) == "29/02/1972")
+
+    // dual (no FROM) usage with now(): shape check YYYY-..-..
+    let q5 = boila_server_exec(srv, "boila", "SELECT to_char(now(), 'YYYY')")?
+    srv = q5.srv
+    let mut yr_ok = false
+    if q5.ok == 1 && vec_len(q5.res.rows) == 1 {
+        let y = s(q5, 0, 0)
+        yr_ok = len(y) == 4
+    }
+    check(fails, "dual_now_year", yr_ok)
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_tochar_test: all passed")
+        return 0
+    }
+    print(concat("boila_tochar_test: FAILED ", int_to_str(n)))
+    return 1
+}
