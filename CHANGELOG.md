@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB P21-5 — window SUM/AVG over NUMERIC
+- `SUM(col) OVER (…) / AVG(col) OVER (…)` on a NUMERIC column are
+  decimal-exact and return NUMERIC (OID 1700); closes the P13 frame
+  residual. `tests/boila_winnum_test` + `boila_window_test` green.
+
 ### boilaDB P21-2 — numeric HAVING
 - `HAVING sum(col) > '12.5'` compares decimally against NUMERIC
   aggregates (SUM/AVG/MIN/MAX); int literal vs numeric agg also
