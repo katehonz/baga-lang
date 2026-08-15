@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### lsmbaga — отделно репо
+- `app-product/lsmbaga` е git submodule към
+  [bagalang/lsmbaga](https://github.com/bagalang/lsmbaga).
+- Deprecated shim: `std` и `rocksbaga` остават тук; shims-ът
+  продължава да сочи `../rocksbaga`.
+
 ### logbaga — отделно репо
 - `app-product/logbaga` е git submodule към
   [bagalang/logbaga](https://github.com/bagalang/logbaga).

@@ -82,7 +82,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | Package | Role |
 |---------|------|
 | **rocksbaga** | Durable LSM-style KV (RocksDB-class path); flagship storage; **git submodule** → [bagalang/rocksbaga](https://github.com/bagalang/rocksbaga) |
-| **lsmbaga** | **Deprecated** → re-exports / points at `rocksbaga` |
+| **lsmbaga** | **Deprecated** → re-exports / points at `rocksbaga`; **git submodule** → [bagalang/lsmbaga](https://github.com/bagalang/lsmbaga) |
 | **kvbaga** | Redis-compatible RESP2 KV server (`Map` store, TTL); **git submodule** → [bagalang/kvbaga](https://github.com/bagalang/kvbaga) |
 | **queuebaga** | Background job queue — disk payloads, worker pool over `chan` |
 | **raftbaga** | Raft fragment — election + single-entry log (3 in-process nodes) |

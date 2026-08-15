@@ -1,9 +1,0 @@
-[package]
-name = "lsmbaga"
-version = "0.1.1"
-entry = "shim_server.baga"
-# Deprecated alias — use rocksbaga
-
-[dependencies]
-rocksbaga = { path = "../rocksbaga" }
-std = { path = "../../std" }

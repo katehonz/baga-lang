@@ -1,2 +1,0 @@
-// Deprecated: use rocksbaga/sstable.baga
-import "../rocksbaga/sstable.baga"
