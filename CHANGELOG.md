@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### boilaDB P19 — raftbaga replica
+- In-process N=3; leader SQL + LSN ticket; follower replay;
+  `pg_is_in_recovery()` / write `25006`. `tests/boila_repl_test`.
+
 ### boilaDB P18 — cross-database / local FDW
 - `db.table` JOIN без USE; `CREATE SERVER` + `FOREIGN TABLE` алиас.
   DML в чужда база → `0A000`. `tests/boila_xdb_test`.

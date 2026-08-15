@@ -1,0 +1,115 @@
+// boila_repl_test.baga — P19 in-process raft replica (N=3).
+
+import "boilaDB/repl/cluster.baga"
+import "boilaDB/repl/exec.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/time/time.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_node(root: str, id: i64) -> i64 !IO !Par {
+    let p = concat(concat(root, "/n"), int_to_str(id))
+    wipe_shard_path(concat(p, "/.meta"))?
+    wipe_shard_path(concat(p, "/boila.db"))?
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == 2 { return int_to_str(v.i) }
+    if v.tag == 5 { return str_of_bytes(v.b) }
+    if v.tag == 1 { return int_to_str(v.i) }
+    return "?"
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_repl_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_repl_test"
+    wipe_node(root, 0)?
+    wipe_node(root, 1)?
+    wipe_node(root, 2)?
+
+    let mut r = boila_repl_start(root)?
+    check(fails, "start", r.ok == 1)
+    let lid = boila_repl_leader(r)?
+    check(fails, "has_leader", lid >= 0 && lid < 3)
+    print(concat("  leader=", int_to_str(lid)))
+
+    let c0 = boila_repl_exec(r, root, lid, "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    check(fails, "create", c0.ok == 1)
+    let i0 = boila_repl_exec(r, root, lid, "INSERT INTO t (id, v) VALUES (1, 'ok')")?
+    check(fails, "insert", i0.ok == 1)
+
+    let mut fid: i64 = 0
+    if lid == 0 { fid = 1 }
+    let qf = boila_repl_exec(r, root, fid, "SELECT v FROM t WHERE id = 1")?
+    check(fails, "follower_read", qf.ok == 1 && vec_len(qf.res.rows) == 1)
+    if vec_len(qf.res.rows) == 1 {
+        check(fails, "follower_val", cell(vec_get(qf.res.rows, 0), 0) == "ok")
+    }
+
+    let rec = boila_repl_exec(r, root, fid, "SELECT pg_is_in_recovery()")?
+    check(fails, "follower_recovery", rec.ok == 1 && vec_len(rec.res.rows) == 1)
+    if vec_len(rec.res.rows) == 1 {
+        check(fails, "recovery_on", vec_get(vec_get(rec.res.rows, 0), 0).i == 1)
+    }
+    let recL = boila_repl_exec(r, root, lid, "SELECT pg_is_in_recovery()")?
+    check(fails, "leader_not_recovery", recL.ok == 1 && vec_len(recL.res.rows) == 1 && vec_get(vec_get(recL.res.rows, 0), 0).i == 0)
+
+    let w = boila_repl_exec(r, root, fid, "INSERT INTO t (id, v) VALUES (9, 'no')")?
+    check(fails, "follower_write_25006", w.ok == 0 && w.state == "25006")
+
+    let mut uns = boila_repl_open_node(root, lid)?
+    let b1 = boila_server_exec(uns, "boila", "BEGIN")?
+    uns = b1.srv
+    let b2 = boila_server_exec(uns, "boila", "INSERT INTO t (id, v) VALUES (2, 'buf')")?
+    uns = b2.srv
+    check(fails, "uncommitted_buf", b1.ok == 1 && b2.ok == 1)
+    boila_server_close(uns)?
+
+    r = boila_repl_kill(r, lid)
+    sleep_ms(800)
+    let lid2 = boila_repl_leader(r)?
+    check(fails, "reelect", lid2 >= 0 && lid2 != lid)
+    print(concat("  new_leader=", int_to_str(lid2)))
+
+    let q2 = boila_repl_exec(r, root, lid2, "SELECT v FROM t WHERE id = 1")?
+    check(fails, "new_leader_committed", q2.ok == 1 && vec_len(q2.res.rows) == 1 && cell(vec_get(q2.res.rows, 0), 0) == "ok")
+    let q3 = boila_repl_exec(r, root, lid2, "SELECT v FROM t WHERE id = 2")?
+    check(fails, "uncommitted_gone", q3.ok == 1 && vec_len(q3.res.rows) == 0)
+
+    boila_repl_stop(r)?
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_repl_test: all passed")
+        return 0
+    }
+    print(concat("boila_repl_test: FAILED ", int_to_str(n)))
+    return 1
+}
