@@ -58,7 +58,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 |---------|------|
 | **fmrbaga** | Baga web framework — router, JSON (`jsonx`), middleware, OpenAPI, config, serve, workers; **git submodule** → [bagalang/fmrbaga](https://github.com/bagalang/fmrbaga) |
 | **httpdbaga** | HTTP/1.1 + HTTP/2 (h2c, HPACK) server library; **git submodule** → [bagalang/httpdbaga](https://github.com/bagalang/httpdbaga) |
-| **jwtbaga** | JWT/JWS — HS256 sign/verify; RS256/ES256 verify |
+| **jwtbaga** | JWT/JWS — HS256 sign/verify; RS256/ES256 verify; **git submodule** → [bagalang/jwtbaga](https://github.com/bagalang/jwtbaga) |
 | **oauthbaga** | OAuth2 / OIDC-style flows, proxy, session cookie demo |
 | **ormbaga** | Universal table ORM + versioned migrations + pool (no app domain) |
 | **pgbaga** | Native PostgreSQL wire client (SCRAM-SHA-256, Simple + Extended Query) |

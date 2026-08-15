@@ -46,3 +46,6 @@
 [submodule "app-product/jsonrpcbaga"]
 	path = app-product/jsonrpcbaga
 	url = git@github.com:bagalang/jsonrpcbaga.git
+[submodule "app-product/jwtbaga"]
+	path = app-product/jwtbaga
+	url = git@github.com:bagalang/jwtbaga.git

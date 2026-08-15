@@ -39,7 +39,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | Package | Role |
 |---------|------|
 | **httpdbaga** | HTTP/1.1 + HTTP/2 + HPACK · [repo](https://github.com/bagalang/httpdbaga) (submodule) |
-| **jwtbaga** | JWT HS256 / RS256 / ES256 |
+| **jwtbaga** | JWT HS256 / RS256 / ES256 · [repo](https://github.com/bagalang/jwtbaga) (submodule) |
 | **pgbaga** | PostgreSQL wire client (SCRAM, `$1` params) |
 | **boilaDB** | Multimodal SQL database (BoilaSQL + PG wire `:6575` + HTTP) — [docs](app-product/boilaDB/docs/README.md) · [repo](https://github.com/bagalang/boilaDB) (submodule) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (`:6575`) · [repo](https://github.com/bagalang/boilabaga) (submodule) |

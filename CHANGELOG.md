@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### jwtbaga — отделно репо
+- `app-product/jwtbaga` е git submodule към
+  [bagalang/jwtbaga](https://github.com/bagalang/jwtbaga).
+- `std` и `httpdbaga` остават тук; `fmrbaga` / `oauthbaga`
+  продължават да сочат `../jwtbaga`; `tests/jwt_test` също.
+
 ### jsonrpcbaga — отделно репо
 - `app-product/jsonrpcbaga` е git submodule към
   [bagalang/jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga).
