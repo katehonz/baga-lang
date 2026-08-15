@@ -50,7 +50,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam |
 | **metbaga** / **logbaga** / **[cloudbaga](https://github.com/bagalang/cloudbaga)** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
 | **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) |
-| **relbaga** / **flagbaga** | Retry/breaker/bulkhead + typed CLI flags (Track C6–C7) |
+| **relbaga** / **[flagbaga](https://github.com/bagalang/flagbaga)** | Retry/breaker/bulkhead + typed CLI flags (Track C6–C7) |
 | **txnbaga** | 2PC coordinator + MVCC store (Track S8) |
 | **otelbaga** | W3C traceparent lite (Track C8 subset) |
 | **pathbaga** / **globbaga** / **uuidbaga** / **[bufbaga](https://github.com/bagalang/bufbaga)** / **querybaga** | Universal path, glob, UUID v4, string builder, URL query |

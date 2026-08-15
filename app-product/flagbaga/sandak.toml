@@ -1,7 +1,0 @@
-[package]
-name = "flagbaga"
-version = "0.1.0"
-entry = "flag.baga"
-
-[dependencies]
-std = { path = "../../std" }

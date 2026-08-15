@@ -25,3 +25,6 @@
 [submodule "app-product/ctxbaga"]
 	path = app-product/ctxbaga
 	url = git@github.com:bagalang/ctxbaga.git
+[submodule "app-product/flagbaga"]
+	path = app-product/flagbaga
+	url = git@github.com:bagalang/flagbaga.git

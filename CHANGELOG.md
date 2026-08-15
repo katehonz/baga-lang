@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### flagbaga — отделно репо
+- `app-product/flagbaga` е git submodule към
+  [bagalang/flagbaga](https://github.com/bagalang/flagbaga).
+- `std` остава тук; `tests/flag_test` също.
+
 ### ctxbaga — отделно репо
 - `app-product/ctxbaga` е git submodule към
   [bagalang/ctxbaga](https://github.com/bagalang/ctxbaga).
