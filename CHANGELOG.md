@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### csvbaga — отделно репо
+- `app-product/csvbaga` е git submodule към
+  [bagalang/csvbaga](https://github.com/bagalang/csvbaga).
+- `std` и `bufbaga` остават тук; `reportbaga` / `apps/report`
+  продължават да сочат path към `csvbaga`; `tests/csv_test` също
+  остава тук.
+
 ### cloudbaga — отделно репо
 - `app-product/cloudbaga` е git submodule към
   [bagalang/cloudbaga](https://github.com/bagalang/cloudbaga).

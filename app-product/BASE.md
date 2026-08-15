@@ -104,7 +104,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | Package | Role |
 |---------|------|
 | **bufbaga** | String builder (push chunks, join once); **git submodule** → [bagalang/bufbaga](https://github.com/bagalang/bufbaga) |
-| **csvbaga** | CSV parse/stringify (RFC 4180-ish) |
+| **csvbaga** | CSV parse/stringify (RFC 4180-ish); **git submodule** → [bagalang/csvbaga](https://github.com/bagalang/csvbaga) |
 | **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) |
 | **mdbaga** | Markdown parser / renderer |
 | **mdtbaga** | Markdown table helpers |

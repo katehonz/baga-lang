@@ -19,3 +19,6 @@
 [submodule "app-product/cloudbaga"]
 	path = app-product/cloudbaga
 	url = git@github.com:bagalang/cloudbaga.git
+[submodule "app-product/csvbaga"]
+	path = app-product/csvbaga
+	url = git@github.com:bagalang/csvbaga.git
