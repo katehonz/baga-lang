@@ -2,8 +2,14 @@
 
 ## [Unreleased]
 
+### boilaDB P21-2 — numeric HAVING
+- `HAVING sum(col) > '12.5'` compares decimally against NUMERIC
+  aggregates (SUM/AVG/MIN/MAX); int literal vs numeric agg also
+  decimal; decimal literal vs integer agg → 0A000.
+  `tests/boila_numagg_test` (5 HAVING checks).
+
 ### boilaDB P20-5 — to_char(timestamptz, fmt)
-- Date formatting for invoices: YYYY/MM/DD/HH24/HH12/HH/MI/SS tokens,
+- Date/time formatting: YYYY/MM/DD/HH24/HH12/HH/MI/SS tokens,
   Hinnant civil-date (pre-1970-safe). `tests/boila_tochar_test` 8/8
   incl. leap day.
 
@@ -26,8 +32,7 @@
 ### boilaDB P20-1 — UNIQUE indexes (app-ready phase opens)
 - `CREATE UNIQUE INDEX`: 23505 on INSERT/UPDATE/upsert duplicates,
   NULLs distinct (PG), build-time dup refusal, txn-buffer-aware check.
-  `tests/boila_unique_test` 20/20 incl. restart. P20 gate: an invoicing
-  program (`apps/invoices`, pending).
+  `tests/boila_unique_test` 20/20 incl. restart.
 
 ### boilaDB P19 — raftbaga replica
 - In-process N=3; leader SQL + LSN ticket; follower replay;
