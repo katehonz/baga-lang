@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### boilaDB P21-3 — REFERENCES / foreign keys
+- Column/table-level `REFERENCES parent (pcol)` with
+  `ON DELETE {NO ACTION|RESTRICT|CASCADE|SET NULL}`. Child
+  INSERT/upsert/UPDATE require the parent row (23503); parent DELETE
+  applies the child FK action. `tests/boila_fk_test` 16/16 incl.
+  restart.
+
 ### boilaDB deps — restore §3 layering (kimi-deps gate back to 0)
 - `repl/` gets a layer rank (above server) in scripts/deps.sh.
 - Cross-db SELECT execution (boila_exec_xdb) moved sql/ → server/
