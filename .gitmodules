@@ -49,3 +49,6 @@
 [submodule "app-product/jwtbaga"]
 	path = app-product/jwtbaga
 	url = git@github.com:bagalang/jwtbaga.git
+[submodule "app-product/kvbaga"]
+	path = app-product/kvbaga
+	url = git@github.com:bagalang/kvbaga.git

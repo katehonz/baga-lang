@@ -1,7 +1,0 @@
-[package]
-name = "kvbaga"
-version = "0.1.0"
-entry = "server.baga"
-
-[dependencies]
-std = { path = "../../std" }

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### kvbaga — отделно репо
+- `app-product/kvbaga` е git submodule към
+  [bagalang/kvbaga](https://github.com/bagalang/kvbaga).
+- `std` остава тук; `rocksbaga` продължава да сочи `../kvbaga`;
+  `tests/kv_test` и RESP клиентите в rocks/lsm тестовете също.
+
 ### jwtbaga — отделно репо
 - `app-product/jwtbaga` е git submodule към
   [bagalang/jwtbaga](https://github.com/bagalang/jwtbaga).

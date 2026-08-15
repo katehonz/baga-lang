@@ -45,7 +45,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **boilabaga** | Client adapter to boilaDB over PG wire (`:6575`) · [repo](https://github.com/bagalang/boilabaga) (submodule) |
 | **ormbaga** | ActiveRecord-style ORM + goose migrations (Postgres or boila) |
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired · [repo](https://github.com/bagalang/fmrbaga) (submodule) |
-| **kvbaga** | RESP KV server (`Map` probe) |
+| **kvbaga** | RESP KV server (`Map` probe) · [repo](https://github.com/bagalang/kvbaga) (submodule) |
 | **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) · [repo](https://github.com/bagalang/rocksbaga) (submodule) |
 | **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam |
 | **metbaga** / **logbaga** / **[cloudbaga](https://github.com/bagalang/cloudbaga)** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
