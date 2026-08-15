@@ -1,0 +1,149 @@
+// boila_constraints_test.baga — P20-2 NOT NULL + DEFAULT column
+// constraints: parse (any order), INSERT defaults, 23502 on violations,
+// UPDATE/upsert enforcement, SHOW COLUMNS / SHOW CREATE TABLE,
+// restart persistence of the colflags schema-row tail.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_constraints_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_constraints_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE c (id BIGINT, name TEXT NOT NULL, kind TEXT DEFAULT 'std' NOT NULL, qty BIGINT DEFAULT 7, ok BOOL DEFAULT true, born TIMESTAMPTZ DEFAULT now(), PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+
+    // defaults applied for omitted columns
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO c (id, name) VALUES (1, 'a')")?
+    srv = i1.srv
+    check(fails, "ins_defaults", i1.ok == 1)
+    let q1 = boila_server_exec(srv, "boila", "SELECT kind, qty, ok, born FROM c WHERE id = 1")?
+    srv = q1.srv
+    let mut okq1 = false
+    if q1.ok == 1 && vec_len(q1.res.rows) == 1 {
+        let r = vec_get(q1.res.rows, 0)
+        let born = vec_get(r, 3)
+        okq1 = str_of_bytes(vec_get(r, 0).b) == "std" && vec_get(r, 1).i == 7 && vec_get(r, 2).i == 1 && born.tag == 3 && born.i > 0
+    }
+    check(fails, "defaults_values", okq1)
+
+    // explicit value beats default
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO c (id, name, kind, qty) VALUES (2, 'b', 'vip', 99)")?
+    srv = i2.srv
+    let q2 = boila_server_exec(srv, "boila", "SELECT kind, qty FROM c WHERE id = 2")?
+    srv = q2.srv
+    check(fails, "explicit_beats", i2.ok == 1 && q2.ok == 1 && str_of_bytes(vec_get(vec_get(q2.res.rows, 0), 0).b) == "vip" && vec_get(vec_get(q2.res.rows, 0), 1).i == 99)
+
+    // explicit NULL into NOT NULL → 23502
+    let b1 = boila_server_exec(srv, "boila", "INSERT INTO c (id, name) VALUES (3, NULL)")?
+    srv = b1.srv
+    check(fails, "null_notnull_23502", b1.ok == 0 && b1.state == "23502")
+
+    // omitted NOT NULL column without default → 23502
+    let b2 = boila_server_exec(srv, "boila", "INSERT INTO c (id, qty) VALUES (4, 5)")?
+    srv = b2.srv
+    check(fails, "missing_notnull_23502", b2.ok == 0 && b2.state == "23502")
+
+    // UPDATE setting NOT NULL to NULL → 23502
+    let b3 = boila_server_exec(srv, "boila", "UPDATE c SET name = NULL WHERE id = 1")?
+    srv = b3.srv
+    check(fails, "update_null_23502", b3.ok == 0 && b3.state == "23502")
+
+    // upsert setting NOT NULL to NULL → 23502
+    let b4 = boila_server_exec(srv, "boila", "INSERT INTO c (id, name) VALUES (2, 'x') ON CONFLICT DO UPDATE SET name = NULL")?
+    srv = b4.srv
+    check(fails, "upsert_null_23502", b4.ok == 0 && b4.state == "23502")
+
+    // DEFAULT type mismatch refused at CREATE
+    let b5 = boila_server_exec(srv, "boila", "CREATE TABLE bad1 (id BIGINT, n BIGINT DEFAULT 'x', PRIMARY KEY (id))")?
+    srv = b5.srv
+    check(fails, "bad_default_42804", b5.ok == 0 && b5.state == "42804")
+    let b6 = boila_server_exec(srv, "boila", "CREATE TABLE bad2 (id BIGINT, t TEXT DEFAULT now(), PRIMARY KEY (id))")?
+    srv = b6.srv
+    check(fails, "bad_now_42804", b6.ok == 0 && b6.state == "42804")
+
+    // SHOW COLUMNS reflects NOT NULL
+    let sc = boila_server_exec(srv, "boila", "SHOW COLUMNS FROM c")?
+    srv = sc.srv
+    let mut name_null = ""
+    let mut qty_null = ""
+    let mut si: i64 = 0
+    while si < vec_len(sc.res.rows) {
+        let r = vec_get(sc.res.rows, si)
+        if str_of_bytes(vec_get(r, 0).b) == "name" { name_null = str_of_bytes(vec_get(r, 2).b) }
+        if str_of_bytes(vec_get(r, 0).b) == "qty" { qty_null = str_of_bytes(vec_get(r, 2).b) }
+        si = si + 1
+    }
+    check(fails, "show_columns", sc.ok == 1 && name_null == "NO" && qty_null == "YES")
+
+    // SHOW CREATE TABLE renders constraints
+    let ct = boila_server_exec(srv, "boila", "SHOW CREATE TABLE c")?
+    srv = ct.srv
+    let mut stmt = ""
+    if ct.ok == 1 && vec_len(ct.res.rows) == 1 {
+        stmt = str_of_bytes(vec_get(vec_get(ct.res.rows, 0), 1).b)
+    }
+    check(fails, "show_create", ct.ok == 1 && str_find(stmt, "NOT NULL") >= 0 && str_find(stmt, "DEFAULT 'std'") >= 0 && str_find(stmt, "DEFAULT now()") >= 0)
+
+    boila_server_close(srv)?
+
+    // restart: colflags survive in the schema-row tail
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "reopen", srv2.ok == 1)
+    let r1 = boila_server_exec(srv2, "boila", "INSERT INTO c (id, qty) VALUES (5, 5)")?
+    srv2 = r1.srv
+    check(fails, "restart_notnull_23502", r1.ok == 0 && r1.state == "23502")
+    let r2 = boila_server_exec(srv2, "boila", "INSERT INTO c (id, name) VALUES (6, 'f')")?
+    srv2 = r2.srv
+    let r3 = boila_server_exec(srv2, "boila", "SELECT kind FROM c WHERE id = 6")?
+    srv2 = r3.srv
+    check(fails, "restart_default", r2.ok == 1 && r3.ok == 1 && str_of_bytes(vec_get(vec_get(r3.res.rows, 0), 0).b) == "std")
+    boila_server_close(srv2)?
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_constraints_test: all passed")
+        return 0
+    }
+    print(concat("boila_constraints_test: FAILED ", int_to_str(n)))
+    return 1
+}

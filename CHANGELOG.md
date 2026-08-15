@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### boilaDB P20-2 — NOT NULL + DEFAULT column constraints
+- CREATE TABLE constraints (any order after the type); INSERT fills
+  omitted columns with defaults (`DEFAULT <literal>` / `DEFAULT now()`);
+  23502 on NOT NULL violations (INSERT/UPDATE/upsert); SHOW renders
+  them. `tests/boila_constraints_test` 16/16 incl. restart.
+
 ### boilaDB P20-1 — UNIQUE indexes (app-ready phase opens)
 - `CREATE UNIQUE INDEX`: 23505 on INSERT/UPDATE/upsert duplicates,
   NULLs distinct (PG), build-time dup refusal, txn-buffer-aware check.
