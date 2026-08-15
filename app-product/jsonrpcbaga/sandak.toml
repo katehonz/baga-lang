@@ -1,8 +1,0 @@
-[package]
-name = "jsonrpcbaga"
-version = "0.1.0"
-entry = "rpc.baga"
-
-[dependencies]
-httpdbaga = { path = "../httpdbaga" }
-std = { path = "../../std" }

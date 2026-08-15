@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### jsonrpcbaga — отделно репо
+- `app-product/jsonrpcbaga` е git submodule към
+  [bagalang/jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga).
+- `std` и `httpdbaga` остават тук; `tests/jsonrpc_test` също.
+
 ### imgbaga — отделно репо
 - `app-product/imgbaga` е git submodule към
   [bagalang/imgbaga](https://github.com/bagalang/imgbaga).
