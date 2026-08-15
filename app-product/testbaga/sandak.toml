@@ -1,7 +1,0 @@
-[package]
-name = "testbaga"
-version = "0.1.0"
-entry = "assert.baga"
-
-[dependencies]
-std = { path = "../../std" }

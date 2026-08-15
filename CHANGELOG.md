@@ -2,6 +2,71 @@
 
 ## [Unreleased]
 
+### zipbaga — отделно репо
+- `app-product/zipbaga` е git submodule към
+  [bagalang/zipbaga](https://github.com/bagalang/zipbaga).
+- `std` остава тук; `imgbaga` / `officebaga` / `reportbaga`
+  продължават да сочат `../zipbaga`; `tests/zip_test` /
+  `office_test` / `report_test` също.
+
+### xmlbaga — отделно репо
+- `app-product/xmlbaga` е git submodule към
+  [bagalang/xmlbaga](https://github.com/bagalang/xmlbaga).
+- `std` остава тук; `officebaga` / `reportbaga` продължават да
+  сочат `../xmlbaga`; `tests/xml_test` също.
+
+### wsbaga — отделно репо
+- `app-product/wsbaga` е git submodule към
+  [bagalang/wsbaga](https://github.com/bagalang/wsbaga).
+- `std` остава тук; `chatbaga` продължава да сочи `../wsbaga`;
+  `tests/ws_test` / `chat_test` също.
+
+### wasmtimebaga — отделно репо
+- `app-product/wasmtimebaga` е git submodule към
+  [bagalang/wasmtimebaga](https://github.com/bagalang/wasmtimebaga).
+- `std` остава тук; smoke/demo остават в самото репо.
+
+### uuidbaga — отделно репо
+- `app-product/uuidbaga` е git submodule към
+  [bagalang/uuidbaga](https://github.com/bagalang/uuidbaga).
+- `std` остава тук; `tests/uuid_test` също.
+
+### txnbaga — отделно репо
+- `app-product/txnbaga` е git submodule към
+  [bagalang/txnbaga](https://github.com/bagalang/txnbaga).
+- `std` остава тук; `tests/txn_test` / `txn_stress_test` също.
+
+### tplbaga — отделно репо
+- `app-product/tplbaga` е git submodule към
+  [bagalang/tplbaga](https://github.com/bagalang/tplbaga).
+- `std` остава тук; `oauthbaga` / `reportbaga` продължават да
+  сочат `../tplbaga`; `tests/tpl_test` също.
+
+### testbaga — отделно репо
+- `app-product/testbaga` е git submodule към
+  [bagalang/testbaga](https://github.com/bagalang/testbaga).
+- `std` остава тук; тестовете, които импортират
+  `testbaga/assert.baga`, също.
+
+### statusbaga — отделно репо
+- `app-product/statusbaga` е git submodule към
+  [bagalang/statusbaga](https://github.com/bagalang/statusbaga).
+- `std` остава тук; `pbbaga` / `ctxbaga` продължават да сочат
+  `../statusbaga`; `tests/status_test` / `ctx_test` / `grpc_*`
+  също.
+
+### reportbaga — отделно репо
+- `app-product/reportbaga` е git submodule към
+  [bagalang/reportbaga](https://github.com/bagalang/reportbaga).
+- `std`, `csvbaga`, `officebaga`, `pdfbaga`, `xmlbaga`,
+  `bufbaga`, `tplbaga` остават тук; `apps/report` продължава да
+  сочи path към `reportbaga`; `tests/report_test` също.
+
+### raftbaga — отделно репо
+- `app-product/raftbaga` е git submodule към
+  [bagalang/raftbaga](https://github.com/bagalang/raftbaga).
+- `std` остава тук; `tests/raft_test` / `raft_persist_test` също.
+
 ### queuebaga — отделно репо
 - `app-product/queuebaga` е git submodule към
   [bagalang/queuebaga](https://github.com/bagalang/queuebaga).

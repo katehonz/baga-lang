@@ -1,7 +1,0 @@
-[package]
-name = "raftbaga"
-version = "0.1.0"
-entry = "cluster.baga"
-
-[dependencies]
-std = { path = "../../std" }

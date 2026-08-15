@@ -65,7 +65,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **boilaDB** | Multimodal SQL server — BoilaSQL, PG wire `:6575`, HTTP `:6570` ([docs](boilaDB/docs/README.md)); **git submodule** → [bagalang/boilaDB](https://github.com/bagalang/boilaDB) |
 | **boilabaga** | Client adapter to boilaDB over PG wire (defaults :6575 + BoilaSQL dialect); **git submodule** → [bagalang/boilabaga](https://github.com/bagalang/boilabaga) |
 | **querybaga** | URL query / form parse and encode; **git submodule** → [bagalang/querybaga](https://github.com/bagalang/querybaga) |
-| **wsbaga** | WebSocket RFC 6455 — handshake, frames, echo server/client |
+| **wsbaga** | WebSocket RFC 6455 — handshake, frames, echo server/client; **git submodule** → [bagalang/wsbaga](https://github.com/bagalang/wsbaga) |
 | **chatbaga** | Multi-room WebSocket chat product (on wsbaga + poll); **git submodule** → [bagalang/chatbaga](https://github.com/bagalang/chatbaga) |
 
 ### RPC / protocols
@@ -74,7 +74,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 |---------|------|
 | **jsonrpcbaga** | JSON-RPC 2.0 over HTTP (single + batch, name dispatch); **git submodule** → [bagalang/jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga) |
 | **pbbaga** | Protocol Buffers wire codec + gRPC message framing; **git submodule** → [bagalang/pbbaga](https://github.com/bagalang/pbbaga) |
-| **statusbaga** | gRPC status codes + Status (Go `codes`/`status` style) |
+| **statusbaga** | gRPC status codes + Status (Go `codes`/`status` style); **git submodule** → [bagalang/statusbaga](https://github.com/bagalang/statusbaga) |
 | **ctxbaga** | Context lite — deadlines, cancel, string values (Go `context`); **git submodule** → [bagalang/ctxbaga](https://github.com/bagalang/ctxbaga) |
 
 ### Storage / data plane
@@ -85,8 +85,8 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **lsmbaga** | **Deprecated** → re-exports / points at `rocksbaga`; **git submodule** → [bagalang/lsmbaga](https://github.com/bagalang/lsmbaga) |
 | **kvbaga** | Redis-compatible RESP2 KV server (`Map` store, TTL); **git submodule** → [bagalang/kvbaga](https://github.com/bagalang/kvbaga) |
 | **queuebaga** | Background job queue — disk payloads, worker pool over `chan`; **git submodule** → [bagalang/queuebaga](https://github.com/bagalang/queuebaga) |
-| **raftbaga** | Raft fragment — election + single-entry log (3 in-process nodes) |
-| **txnbaga** | 2PC coordinator + MVCC store (distributed transactions probe) |
+| **raftbaga** | Raft fragment — election + single-entry log (3 in-process nodes); **git submodule** → [bagalang/raftbaga](https://github.com/bagalang/raftbaga) |
+| **txnbaga** | 2PC coordinator + MVCC store (distributed transactions probe); **git submodule** → [bagalang/txnbaga](https://github.com/bagalang/txnbaga) |
 
 ### Cloud / ops
 
@@ -110,10 +110,10 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **mdtbaga** | gRPC metadata (`metadata.MD` multimap); **git submodule** → [bagalang/mdtbaga](https://github.com/bagalang/mdtbaga) |
 | **officebaga** | Office docs — DOCX/XLSX/ODT/ODS (+ legacy DOC/XLS probe); **git submodule** → [bagalang/officebaga](https://github.com/bagalang/officebaga) |
 | **pdfbaga** | PDF writer with UTF-8/Cyrillic via embedded TTF; **git submodule** → [bagalang/pdfbaga](https://github.com/bagalang/pdfbaga) |
-| **reportbaga** | Accounting reports — data/HTML → Excel · CSV · PDF · HTML |
-| **tplbaga** | HTML template engine (Mustache-ish: if, filters, escape) |
-| **xmlbaga** | XML pull parser + writer (no DOM) |
-| **zipbaga** | ZIP + DEFLATE/inflate + CRC-32 (used by officebaga) |
+| **reportbaga** | Accounting reports — data/HTML → Excel · CSV · PDF · HTML; **git submodule** → [bagalang/reportbaga](https://github.com/bagalang/reportbaga) |
+| **tplbaga** | HTML template engine (Mustache-ish: if, filters, escape); **git submodule** → [bagalang/tplbaga](https://github.com/bagalang/tplbaga) |
+| **xmlbaga** | XML pull parser + writer (no DOM); **git submodule** → [bagalang/xmlbaga](https://github.com/bagalang/xmlbaga) |
+| **zipbaga** | ZIP + DEFLATE/inflate + CRC-32 (used by officebaga); **git submodule** → [bagalang/zipbaga](https://github.com/bagalang/zipbaga) |
 
 ### Language / tooling utilities
 
@@ -123,14 +123,14 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **globbaga** | Simple glob matching (`*`, `?`); **git submodule** → [bagalang/globbaga](https://github.com/bagalang/globbaga) |
 | **grebaga** | Grep-like line scanner (literal + mini patterns); **git submodule** → [bagalang/grebaga](https://github.com/bagalang/grebaga) |
 | **pathbaga** | Path helpers (join, basename, dirname, ext, stem); **git submodule** → [bagalang/pathbaga](https://github.com/bagalang/pathbaga) |
-| **testbaga** | Minimal test assertions (`assert_true`, `assert_eq_*`) |
-| **uuidbaga** | UUID v4 (RFC 4122) |
+| **testbaga** | Minimal test assertions (`assert_true`, `assert_eq_*`); **git submodule** → [bagalang/testbaga](https://github.com/bagalang/testbaga) |
+| **uuidbaga** | UUID v4 (RFC 4122); **git submodule** → [bagalang/uuidbaga](https://github.com/bagalang/uuidbaga) |
 
 ### Runtime / plugins
 
 | Package | Role |
 |---------|------|
-| **wasmtimebaga** | Wasmtime host embedding (C API + shim; wasmtime-go model) — run wasm in-process |
+| **wasmtimebaga** | Wasmtime host embedding (C API + shim; wasmtime-go model) — run wasm in-process; **git submodule** → [bagalang/wasmtimebaga](https://github.com/bagalang/wasmtimebaga) |
 
 ### Flat inventory (names only)
 

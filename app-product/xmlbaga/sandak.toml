@@ -1,7 +1,0 @@
-[package]
-name = "xmlbaga"
-version = "0.1.0"
-entry = "xml.baga"
-
-[dependencies]
-std = { path = "../../std" }

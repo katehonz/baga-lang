@@ -97,3 +97,36 @@
 [submodule "app-product/queuebaga"]
 	path = app-product/queuebaga
 	url = git@github.com:bagalang/queuebaga.git
+[submodule "app-product/raftbaga"]
+	path = app-product/raftbaga
+	url = git@github.com:bagalang/raftbaga.git
+[submodule "app-product/reportbaga"]
+	path = app-product/reportbaga
+	url = git@github.com:bagalang/reportbaga.git
+[submodule "app-product/statusbaga"]
+	path = app-product/statusbaga
+	url = git@github.com:bagalang/statusbaga.git
+[submodule "app-product/testbaga"]
+	path = app-product/testbaga
+	url = git@github.com:bagalang/testbaga.git
+[submodule "app-product/tplbaga"]
+	path = app-product/tplbaga
+	url = git@github.com:bagalang/tplbaga.git
+[submodule "app-product/txnbaga"]
+	path = app-product/txnbaga
+	url = git@github.com:bagalang/txnbaga.git
+[submodule "app-product/uuidbaga"]
+	path = app-product/uuidbaga
+	url = git@github.com:bagalang/uuidbaga.git
+[submodule "app-product/wasmtimebaga"]
+	path = app-product/wasmtimebaga
+	url = git@github.com:bagalang/wasmtimebaga.git
+[submodule "app-product/wsbaga"]
+	path = app-product/wsbaga
+	url = git@github.com:bagalang/wsbaga.git
+[submodule "app-product/xmlbaga"]
+	path = app-product/xmlbaga
+	url = git@github.com:bagalang/xmlbaga.git
+[submodule "app-product/zipbaga"]
+	path = app-product/zipbaga
+	url = git@github.com:bagalang/zipbaga.git

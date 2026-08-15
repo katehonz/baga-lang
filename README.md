@@ -47,18 +47,18 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **fmrbaga** | Web framework (router, JSON, workers) — Lucky-inspired · [repo](https://github.com/bagalang/fmrbaga) (submodule) |
 | **kvbaga** | RESP KV server (`Map` probe) · [repo](https://github.com/bagalang/kvbaga) (submodule) |
 | **rocksbaga** | Durable LSM KV (WAL → memtable → SST + page cache + bloom sidecar) on RESP — **storage flagship** (was `lsmbaga`) · [repo](https://github.com/bagalang/rocksbaga) (submodule) |
-| **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam |
+| **raftbaga** | 3-node Raft (election + log replication) over channels — Track S consensus exam · [repo](https://github.com/bagalang/raftbaga) (submodule) |
 | **[metbaga](https://github.com/bagalang/metbaga)** / **[logbaga](https://github.com/bagalang/logbaga)** / **[cloudbaga](https://github.com/bagalang/cloudbaga)** | Prometheus metrics, JSON logs, 12-factor demo (Track C1–C4) |
 | **pbbaga** | Protobuf wire codec + gRPC message framing (Track C5) · [repo](https://github.com/bagalang/pbbaga) (submodule) |
 | **relbaga** / **[flagbaga](https://github.com/bagalang/flagbaga)** | Retry/breaker/bulkhead + typed CLI flags (Track C6–C7) |
-| **txnbaga** | 2PC coordinator + MVCC store (Track S8) |
+| **txnbaga** | 2PC coordinator + MVCC store (Track S8) · [repo](https://github.com/bagalang/txnbaga) (submodule) |
 | **otelbaga** | W3C traceparent lite (Track C8 subset) · [repo](https://github.com/bagalang/otelbaga) (submodule) |
-| **[pathbaga](https://github.com/bagalang/pathbaga)** / **[globbaga](https://github.com/bagalang/globbaga)** / **uuidbaga** / **[bufbaga](https://github.com/bagalang/bufbaga)** / **[querybaga](https://github.com/bagalang/querybaga)** | Universal path, glob, UUID v4, string builder, URL query |
-| **statusbaga** / **[mdtbaga](https://github.com/bagalang/mdtbaga)** / **[ctxbaga](https://github.com/bagalang/ctxbaga)** | gRPC codes/Status, metadata MD, context deadline/cancel (Go-shaped) |
-| **wsbaga** / **[chatbaga](https://github.com/bagalang/chatbaga)** | WebSocket + multi-room chat (`poll`) |
+| **[pathbaga](https://github.com/bagalang/pathbaga)** / **[globbaga](https://github.com/bagalang/globbaga)** / **[uuidbaga](https://github.com/bagalang/uuidbaga)** / **[bufbaga](https://github.com/bagalang/bufbaga)** / **[querybaga](https://github.com/bagalang/querybaga)** | Universal path, glob, UUID v4, string builder, URL query |
+| **[statusbaga](https://github.com/bagalang/statusbaga)** / **[mdtbaga](https://github.com/bagalang/mdtbaga)** / **[ctxbaga](https://github.com/bagalang/ctxbaga)** | gRPC codes/Status, metadata MD, context deadline/cancel (Go-shaped) |
+| **[wsbaga](https://github.com/bagalang/wsbaga)** / **[chatbaga](https://github.com/bagalang/chatbaga)** | WebSocket + multi-room chat (`poll`) |
 | **oauthbaga** | OAuth proxy (integration exam) · [repo](https://github.com/bagalang/oauthbaga) (submodule) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) · [repo](https://github.com/bagalang/bagadecimal) (submodule) |
-| **[mdbaga](https://github.com/bagalang/mdbaga)**, **tplbaga**, **[queuebaga](https://github.com/bagalang/queuebaga)**, **[jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga)**, **[grebaga](https://github.com/bagalang/grebaga)**, **testbaga** | Markdown, templates, jobs, RPC, grep CLI, asserts |
+| **[mdbaga](https://github.com/bagalang/mdbaga)**, **[tplbaga](https://github.com/bagalang/tplbaga)**, **[queuebaga](https://github.com/bagalang/queuebaga)**, **[jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga)**, **[grebaga](https://github.com/bagalang/grebaga)**, **[testbaga](https://github.com/bagalang/testbaga)** | Markdown, templates, jobs, RPC, grep CLI, asserts |
 | **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) · [repo](https://github.com/bagalang/imgbaga) (submodule) |
 | **apps/api**, **apps/registry** | Sample product + sandak package registry |
 

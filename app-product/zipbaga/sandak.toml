@@ -1,7 +1,0 @@
-[package]
-name = "zipbaga"
-version = "0.2.2"
-entry = "zip.baga"
-
-[dependencies]
-std = { path = "../../std" }
