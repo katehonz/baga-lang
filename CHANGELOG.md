@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### queuebaga — отделно репо
+- `app-product/queuebaga` е git submodule към
+  [bagalang/queuebaga](https://github.com/bagalang/queuebaga).
+- `std` остава тук; `tests/queue_test` също.
+
 ### querybaga — отделно репо
 - `app-product/querybaga` е git submodule към
   [bagalang/querybaga](https://github.com/bagalang/querybaga).
