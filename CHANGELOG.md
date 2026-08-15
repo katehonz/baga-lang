@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### boilaDB P20-3 — SERIAL / BIGSERIAL auto-number PK
+- Omitted PK in INSERT gets the next per-table counter (txn-buffered;
+  ROLLBACK returns the number); RETURNING gives it back; SERIAL must
+  be the PK. `tests/boila_bigserial_test` 15/15 incl. restart.
+
 ### boilaDB P20-2 — NOT NULL + DEFAULT column constraints
 - CREATE TABLE constraints (any order after the type); INSERT fills
   omitted columns with defaults (`DEFAULT <literal>` / `DEFAULT now()`);

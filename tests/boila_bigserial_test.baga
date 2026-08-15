@@ -1,0 +1,136 @@
+// boila_bigserial_test.baga — P20-3 SERIAL / BIGSERIAL auto-number PK:
+// omitted PK gets the next counter value (per-table, txn-buffered),
+// RETURNING gives it back, explicit ids coexist, rollback returns the
+// number, counters survive restart.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_bigserial_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_bigserial_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE inv (id BIGSERIAL, txt TEXT NOT NULL, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create_bigserial", c0.ok == 1)
+    let c1 = boila_server_exec(srv, "boila", "CREATE TABLE s2 (id SERIAL, v TEXT, PRIMARY KEY (id))")?
+    srv = c1.srv
+    check(fails, "create_serial", c1.ok == 1)
+
+    // omitted PK → 1, via RETURNING
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO inv (txt) VALUES ('a') RETURNING id")?
+    srv = i1.srv
+    check(fails, "first_id", i1.ok == 1 && vec_len(i1.res.rows) == 1 && vec_get(vec_get(i1.res.rows, 0), 0).i == 1)
+
+    // multi-row: consecutive ids
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO inv (txt) VALUES ('b'), ('c') RETURNING id")?
+    srv = i2.srv
+    check(fails, "multi_ids", i2.ok == 1 && vec_len(i2.res.rows) == 2 && vec_get(vec_get(i2.res.rows, 0), 0).i == 2 && vec_get(vec_get(i2.res.rows, 1), 0).i == 3)
+
+    // explicit id does not move the counter
+    let i3 = boila_server_exec(srv, "boila", "INSERT INTO inv (id, txt) VALUES (10, 'x')")?
+    srv = i3.srv
+    let i4 = boila_server_exec(srv, "boila", "INSERT INTO inv (txt) VALUES ('d') RETURNING id")?
+    srv = i4.srv
+    check(fails, "explicit_then_auto", i3.ok == 1 && i4.ok == 1 && vec_get(vec_get(i4.res.rows, 0), 0).i == 4)
+
+    // SERIAL alias works the same
+    let i5 = boila_server_exec(srv, "boila", "INSERT INTO s2 (v) VALUES ('s') RETURNING id")?
+    srv = i5.srv
+    check(fails, "serial_alias", i5.ok == 1 && vec_get(vec_get(i5.res.rows, 0), 0).i == 1)
+
+    // counters are per-table
+    let i6 = boila_server_exec(srv, "boila", "INSERT INTO inv (txt) VALUES ('e') RETURNING id")?
+    srv = i6.srv
+    check(fails, "per_table", i6.ok == 1 && vec_get(vec_get(i6.res.rows, 0), 0).i == 5)
+
+    // rollback returns the number
+    let b1 = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = b1.srv
+    let b2 = boila_server_exec(srv, "boila", "INSERT INTO inv (txt) VALUES ('rb')")?
+    srv = b2.srv
+    let b3 = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = b3.srv
+    let b4 = boila_server_exec(srv, "boila", "INSERT INTO inv (txt) VALUES ('f') RETURNING id")?
+    srv = b4.srv
+    check(fails, "rollback_reuse", b2.ok == 1 && b3.ok == 1 && b4.ok == 1 && vec_get(vec_get(b4.res.rows, 0), 0).i == 6)
+
+    // SERIAL column must be the PRIMARY KEY
+    let bad1 = boila_server_exec(srv, "boila", "CREATE TABLE bad1 (id BIGINT, s SERIAL, PRIMARY KEY (id))")?
+    srv = bad1.srv
+    check(fails, "serial_not_pk_0A000", bad1.ok == 0 && bad1.state == "0A000")
+
+    // SERIAL rejects DEFAULT
+    let bad2 = boila_server_exec(srv, "boila", "CREATE TABLE bad2 (id SERIAL DEFAULT 5, PRIMARY KEY (id))")?
+    srv = bad2.srv
+    check(fails, "serial_default_42601", bad2.ok == 0 && bad2.state == "42601")
+
+    // SHOW CREATE TABLE renders bigserial
+    let sc = boila_server_exec(srv, "boila", "SHOW CREATE TABLE inv")?
+    srv = sc.srv
+    let mut stmt = ""
+    if sc.ok == 1 && vec_len(sc.res.rows) == 1 {
+        stmt = str_of_bytes(vec_get(vec_get(sc.res.rows, 0), 1).b)
+    }
+    check(fails, "show_create", str_find(stmt, "bigserial") >= 0)
+
+    boila_server_close(srv)?
+
+    // restart: counter persists
+    let mut srv2 = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "reopen", srv2.ok == 1)
+    let r1 = boila_server_exec(srv2, "boila", "INSERT INTO inv (txt) VALUES ('g') RETURNING id")?
+    srv2 = r1.srv
+    check(fails, "restart_next", r1.ok == 1 && vec_get(vec_get(r1.res.rows, 0), 0).i == 7)
+    let r2 = boila_server_exec(srv2, "boila", "SELECT count(*) FROM inv")?
+    srv2 = r2.srv
+    // ids: 1,2,3,4,5,6,7,10
+    check(fails, "count", r2.ok == 1 && vec_get(vec_get(r2.res.rows, 0), 0).i == 8)
+    boila_server_close(srv2)?
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_bigserial_test: all passed")
+        return 0
+    }
+    print(concat("boila_bigserial_test: FAILED ", int_to_str(n)))
+    return 1
+}
