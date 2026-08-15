@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### pdfbaga — отделно репо
+- `app-product/pdfbaga` е git submodule към
+  [bagalang/pdfbaga](https://github.com/bagalang/pdfbaga).
+- `std` и `bufbaga` остават тук; `reportbaga` продължава да сочи
+  `../pdfbaga`; `tests/pdf_test` също.
+
 ### pbbaga — отделно репо
 - `app-product/pbbaga` е git submodule към
   [bagalang/pbbaga](https://github.com/bagalang/pbbaga).
