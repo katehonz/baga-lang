@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### boilaDB P13 — window функции
+- `ROW_NUMBER`/`RANK`/`DENSE_RANK`/`SUM`/`AVG`/`COUNT`/`MIN`/`MAX`
+  `OVER (PARTITION BY … ORDER BY …)`; default RANGE UNBOUNDED
+  PRECEDING. `tests/boila_window_test`.
+
 ### boilaDB P12 — NUMERIC
 - `NUMERIC`/`DECIMAL` през bagadecimal (tag 9, PG OID 1700).
-- Следващите фази са в плана: window, COPY, SCRAM, compaction-filter
+- Следващите фази са в плана: COPY, SCRAM, compaction-filter
   GC, serializable, FDW, raftbaga репликация.
 
 ### relbaga — отделно репо
