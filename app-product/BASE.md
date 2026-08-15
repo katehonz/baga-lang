@@ -119,7 +119,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 | Package | Role |
 |---------|------|
-| **bagadecimal** | Fixed-precision decimal (money, VAT, rates; Postgres NUMERIC bridge) |
+| **bagadecimal** | Fixed-precision decimal (money, VAT, rates; Postgres NUMERIC bridge); **git submodule** → [bagalang/bagadecimal](https://github.com/bagalang/bagadecimal) |
 | **globbaga** | Simple glob matching (`*`, `?`) |
 | **grebaga** | Grep-like line scanner (literal + mini patterns) |
 | **pathbaga** | Path helpers (join, basename, dirname, ext, stem) |

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### bagadecimal — отделно репо
+- `app-product/bagadecimal` е git submodule към
+  [bagalang/bagadecimal](https://github.com/bagalang/bagadecimal).
+- `std` и `pgbaga` остават тук; тестовете `tests/decimal_test` /
+  `decimal_pg_test` също.
+
 ### rocksbaga — отделно репо
 - `app-product/rocksbaga` е git submodule към
   [bagalang/rocksbaga](https://github.com/bagalang/rocksbaga).

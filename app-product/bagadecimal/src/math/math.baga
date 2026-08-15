@@ -1,5 +1,0 @@
-// math.baga — P2 placeholder (powi/sqrt later).
-
-fn dec_math_ready() -> i64 {
-    return 0
-}

@@ -4,3 +4,6 @@
 [submodule "app-product/rocksbaga"]
 	path = app-product/rocksbaga
 	url = git@github.com:bagalang/rocksbaga.git
+[submodule "app-product/bagadecimal"]
+	path = app-product/bagadecimal
+	url = git@github.com:bagalang/bagadecimal.git
