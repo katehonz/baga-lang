@@ -134,6 +134,30 @@ fn main() -> i64 !IO !Time !Par {
     srv = h5.srv
     check(fails, "having_num_on_i64_0A000", h5.ok == 0 && h5.state == "0A000")
 
+    // N2: non-projected numeric aggregate without GROUP BY (synthetic slot)
+    let h6 = boila_server_exec(srv, "boila", "SELECT sum(id) FROM led HAVING sum(amt) > '30'")?
+    srv = h6.srv
+    check(fails, "having_nonproj_sum", h6.ok == 1 && vec_len(h6.res.rows) == 1 && cell(h6, 0, 0).i == 15)
+
+    let h7 = boila_server_exec(srv, "boila", "SELECT sum(id) FROM led HAVING max(amt) > '20'")?
+    srv = h7.srv
+    check(fails, "having_nonproj_max", h7.ok == 1 && vec_len(h7.res.rows) == 1)
+
+    // integer literal compared decimally against a non-projected numeric agg
+    let h8 = boila_server_exec(srv, "boila", "SELECT sum(id) FROM led HAVING sum(amt) > 30")?
+    srv = h8.srv
+    check(fails, "having_nonproj_int", h8.ok == 1 && vec_len(h8.res.rows) == 1)
+
+    // decimal literal against a non-projected i64 aggregate → 0A000
+    let h9 = boila_server_exec(srv, "boila", "SELECT sum(amt) FROM led HAVING sum(id) > '1.5'")?
+    srv = h9.srv
+    check(fails, "having_nonproj_i64_0A000", h9.ok == 0 && h9.state == "0A000")
+
+    // N2: non-projected numeric aggregate WITH GROUP BY (synthetic slot)
+    let h10 = boila_server_exec(srv, "boila", "SELECT grp FROM led GROUP BY grp HAVING min(amt) > '0.05' ORDER BY grp")?
+    srv = h10.srv
+    check(fails, "having_nonproj_min_gb", h10.ok == 1 && vec_len(h10.res.rows) == 2)
+
     // restart then re-aggregate
     let _c = boila_server_close(srv)?
     srv = boila_server_open(root, 2, 8, 3, 4)?
