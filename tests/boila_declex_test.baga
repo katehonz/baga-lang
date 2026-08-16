@@ -1,0 +1,157 @@
+// boila_declex_test.baga — N1a: unquoted NUMERIC literals in the SQL lexer.
+// 12.50 / -0.5 в INSERT/UPDATE/DEFAULT/WHERE/HAVING са NUMERIC (tag 9);
+// dual/projection изрази ги отказват честно (0A000).
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/core/value.baga"
+import "boilaDB/core/numeric.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard_path(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 60 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO !Par {
+    wipe_shard_path(concat(root, "/.meta"))?
+    let mut i: i64 = 0
+    while i < 2 {
+        wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
+        i = i + 1
+    }
+    return 0
+}
+
+fn cell(out: BoilaSrvOut, r: i64, c: i64) -> BoilaVal {
+    return vec_get(vec_get(out.res.rows, r), c)
+}
+
+fn nums(v: BoilaVal) -> str {
+    if v.tag != boila_v_num() {
+        return "?"
+    }
+    return boila_num_to_string(v.b)
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_declex_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_declex_test"
+    wipe_root(root)?
+
+    let mut srv = boila_server_open(root, 2, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE d (id BIGINT, amt NUMERIC, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+
+    // INSERT с unquoted decimals (положителни/отрицателни/дробни)
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO d (id, amt) VALUES (1, 12.50), (2, 0.10), (3, -1.25), (4, 20.25)")?
+    srv = i1.srv
+    check(fails, "insert_dec", i1.ok == 1)
+    let q1 = boila_server_exec(srv, "boila", "SELECT amt FROM d WHERE id = 1")?
+    srv = q1.srv
+    check(fails, "sel_1250", q1.ok == 1 && vec_len(q1.res.rows) == 1 && nums(cell(q1, 0, 0)) == "12.5")
+    let q2 = boila_server_exec(srv, "boila", "SELECT amt FROM d WHERE id = 3")?
+    srv = q2.srv
+    check(fails, "sel_neg", q2.ok == 1 && vec_len(q2.res.rows) == 1 && nums(cell(q2, 0, 0)) == "-1.25")
+
+    // WHERE eq с unquoted decimal
+    let q3 = boila_server_exec(srv, "boila", "SELECT id FROM d WHERE amt = 12.5")?
+    srv = q3.srv
+    check(fails, "where_eq", q3.ok == 1 && vec_len(q3.res.rows) == 1 && cell(q3, 0, 0).i == 1)
+
+    // WHERE range с unquoted decimals (seq + филтър — правилен dec_cmp)
+    // 12.5 и 20.25 минават; 0.10 > 0.10 е false, -1.25 не минава
+    let q4 = boila_server_exec(srv, "boila", "SELECT id FROM d WHERE amt > 0.10 AND amt <= 20.25 ORDER BY id")?
+    srv = q4.srv
+    check(fails, "where_range", q4.ok == 1 && vec_len(q4.res.rows) == 2 && cell(q4, 0, 0).i == 1 && cell(q4, 1, 0).i == 4)
+
+    // UPDATE SET с unquoted decimal
+    let u1 = boila_server_exec(srv, "boila", "UPDATE d SET amt = 7.75 WHERE id = 2")?
+    srv = u1.srv
+    check(fails, "update_dec", u1.ok == 1)
+    let q5 = boila_server_exec(srv, "boila", "SELECT amt FROM d WHERE id = 2")?
+    srv = q5.srv
+    check(fails, "sel_775", q5.ok == 1 && vec_len(q5.res.rows) == 1 && nums(cell(q5, 0, 0)) == "7.75")
+
+    // ON CONFLICT DO UPDATE SET с unquoted decimal
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO d (id, amt) VALUES (2, 0.10) ON CONFLICT DO UPDATE SET amt = 9.95")?
+    srv = i2.srv
+    check(fails, "oc_dec", i2.ok == 1)
+    let q6 = boila_server_exec(srv, "boila", "SELECT amt FROM d WHERE id = 2")?
+    srv = q6.srv
+    check(fails, "sel_995", q6.ok == 1 && vec_len(q6.res.rows) == 1 && nums(cell(q6, 0, 0)) == "9.95")
+
+    // DEFAULT unquoted decimal
+    let c1 = boila_server_exec(srv, "boila", "CREATE TABLE e (id BIGINT, fee NUMERIC DEFAULT 0.01, PRIMARY KEY (id))")?
+    srv = c1.srv
+    check(fails, "create_def", c1.ok == 1)
+    let i3 = boila_server_exec(srv, "boila", "INSERT INTO e (id) VALUES (1)")?
+    srv = i3.srv
+    check(fails, "insert_def", i3.ok == 1)
+    let q7 = boila_server_exec(srv, "boila", "SELECT fee FROM e WHERE id = 1")?
+    srv = q7.srv
+    check(fails, "sel_def", q7.ok == 1 && vec_len(q7.res.rows) == 1 && nums(cell(q7, 0, 0)) == "0.01")
+
+    // HAVING с unquoted decimal → decimal сравнение
+    let h1 = boila_server_exec(srv, "boila", "SELECT sum(id) FROM d HAVING sum(amt) > 30")?
+    srv = h1.srv
+    check(fails, "having_dec", h1.ok == 1 && vec_len(h1.res.rows) == 1)
+
+    // dual SELECT 12.50 → честно 0A000 (не тихо грешна семантика)
+    let q8 = boila_server_exec(srv, "boila", "SELECT 12.50")?
+    srv = q8.srv
+    check(fails, "dual_dec_0A000", q8.ok == 0)
+
+    // INSERT decimal в BIGINT колона → 42804
+    let i4 = boila_server_exec(srv, "boila", "INSERT INTO d (id, amt) VALUES (5, '0.5')")?
+    srv = i4.srv
+    let i5 = boila_server_exec(srv, "boila", "INSERT INTO d (id, amt) VALUES (6, 0.5)")?
+    srv = i5.srv
+    check(fails, "insert_dec_ok", i5.ok == 1)
+    let i6 = boila_server_exec(srv, "boila", "INSERT INTO d (id, amt) VALUES (0.5, '1.0')")?
+    srv = i6.srv
+    check(fails, "dec_into_i64_42804", i6.ok == 0)
+
+    // NUMERIC PK: eq point get работи; range е честно 0A000
+    let c2 = boila_server_exec(srv, "boila", "CREATE TABLE np (k NUMERIC, v TEXT, PRIMARY KEY (k))")?
+    srv = c2.srv
+    check(fails, "create_npk", c2.ok == 1)
+    let i7 = boila_server_exec(srv, "boila", "INSERT INTO np (k, v) VALUES (1.5, 'a'), (2.5, 'b')")?
+    srv = i7.srv
+    check(fails, "insert_npk", i7.ok == 1)
+    let q9 = boila_server_exec(srv, "boila", "SELECT v FROM np WHERE k = 1.5")?
+    srv = q9.srv
+    check(fails, "npk_eq", q9.ok == 1 && vec_len(q9.res.rows) == 1 && str_of_bytes(cell(q9, 0, 0).b) == "a")
+    let q10 = boila_server_exec(srv, "boila", "SELECT v FROM np WHERE k > 1.5")?
+    srv = q10.srv
+    check(fails, "npk_range_0A000", q10.ok == 0 && q10.state == "0A000")
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_declex_test: all passed")
+        return 0
+    }
+    print(concat("boila_declex_test: FAILED ", int_to_str(n)))
+    return 1
+}
