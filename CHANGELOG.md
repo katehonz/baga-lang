@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-08-16
+
+### boilaDB — version 0.7
+- `server_version` / `version()` / `/health` report **boilaDB 0.7**
+  (README, docs sync).
+
+### boilaDB N1a — unquoted NUMERIC literals
+- `12.50` / `-0.5` са NUMERIC (tag 9) още в lexer-а (`tok_dec`): работят
+  в INSERT VALUES / UPDATE SET / ON CONFLICT SET / DEFAULT / WHERE /
+  HAVING. Dual/projection изрази ги отказват честно (0A000); range по
+  NUMERIC PRIMARY KEY → 0A000 (преди тихо грешно — byte-enc не е
+  sort-order). `tests/boila_declex_test` 22/22. Filesize split:
+  `sql/parse_lit.baga`.
+
+### boilaDB U5b — to_char month/day names + meridiem
+- `Month Mon MON mon Day DY Dy dy D AM PM am pm` (English имена,
+  PG 9-знаково padding на `Month`/`Day`). Gate: `boila_tochar_test`.
+
+### boilaDB N2b — премахнат мъртъв HAVING fallback
+- Непроектираните HAVING агрегати вървят през синтетичните слотове на
+  `boila_hav_setup` (Q-havx) и сравняват decimal-но; старият
+  `boila_agg_extra` път беше мъртъв код (brows винаги празен) — махнат,
+  липсващ слот → шумна грешка. Gate: `boila_numagg_test` non-projected
+  checks.
+
+### boilaDB W2b — window MIN/MAX over NUMERIC
+- Kind 7/8 ползват decimal слота като SUM/AVG (`dec_cmp`, NULL skip,
+  OID 1700). Gate: `boila_winnum_test` min/max + nullskip.
+
 ### boilaDB P21-1 — multi-column UNIQUE index
 - `CREATE UNIQUE INDEX name ON t (a, b, …)`; tuple-wide 23505; NULL in
   any indexed column → no collide (PG); var-width false positives
