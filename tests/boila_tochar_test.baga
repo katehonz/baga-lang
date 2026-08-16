@@ -93,6 +93,49 @@ fn main() -> i64 !IO !Time !Par {
     }
     check(fails, "dual_now_year", yr_ok)
 
+    // U5: month/day names + meridiem. 1970-01-01 = Thursday.
+    let q6 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'Mon') FROM doc WHERE id = 1")?
+    srv = q6.srv
+    check(fails, "mon_abbr", q6.ok == 1 && vec_len(q6.res.rows) == 1 && s(q6, 0, 0) == "Jan")
+
+    let q7 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'Month') FROM doc WHERE id = 1")?
+    srv = q7.srv
+    check(fails, "month_full", q7.ok == 1 && vec_len(q7.res.rows) == 1 && s(q7, 0, 0) == "January  ")
+
+    let q8 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'MON mon') FROM doc WHERE id = 1")?
+    srv = q8.srv
+    check(fails, "mon_upper_low", q8.ok == 1 && vec_len(q8.res.rows) == 1 && s(q8, 0, 0) == "JAN jan")
+
+    let q9 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'Day') FROM doc WHERE id = 1")?
+    srv = q9.srv
+    check(fails, "day_full", q9.ok == 1 && vec_len(q9.res.rows) == 1 && s(q9, 0, 0) == "Thursday ")
+
+    let q10 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'DY Dy dy') FROM doc WHERE id = 1")?
+    srv = q10.srv
+    check(fails, "day_cases", q10.ok == 1 && vec_len(q10.res.rows) == 1 && s(q10, 0, 0) == "THU Thu thu")
+
+    let q11 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'D') FROM doc WHERE id = 1")?
+    srv = q11.srv
+    check(fails, "dow_epoch", q11.ok == 1 && vec_len(q11.res.rows) == 1 && s(q11, 0, 0) == "5")
+
+    // 1972-02-29 was a Tuesday: month + day + D + mixed format
+    let q12 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'DD Mon YYYY Day') FROM doc WHERE id = 4")?
+    srv = q12.srv
+    check(fails, "leap_names", q12.ok == 1 && vec_len(q12.res.rows) == 1 && s(q12, 0, 0) == "29 Feb 1972 Tuesday  ")
+
+    let q13 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'D') FROM doc WHERE id = 4")?
+    srv = q13.srv
+    check(fails, "dow_leap", q13.ok == 1 && vec_len(q13.res.rows) == 1 && s(q13, 0, 0) == "3")
+
+    // meridiem: 12:34:56 → PM; midnight → AM
+    let q14 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'HH12 AM') FROM doc WHERE id = 3")?
+    srv = q14.srv
+    check(fails, "meridiem_pm", q14.ok == 1 && vec_len(q14.res.rows) == 1 && s(q14, 0, 0) == "12 PM")
+
+    let q15 = boila_server_exec(srv, "boila", "SELECT to_char(ts, 'HH12 am') FROM doc WHERE id = 1")?
+    srv = q15.srv
+    check(fails, "meridiem_am", q15.ok == 1 && vec_len(q15.res.rows) == 1 && s(q15, 0, 0) == "12 am")
+
     let n = vec_len(fails)
     if n == 0 {
         print("boila_tochar_test: all passed")
