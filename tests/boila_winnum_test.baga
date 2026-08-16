@@ -1,4 +1,4 @@
-// boila_winnum_test.baga — P21-5 window SUM/AVG over NUMERIC.
+// boila_winnum_test.baga — P21-5 window SUM/AVG/MIN/MAX over NUMERIC.
 // Running/partition aggregates over a NUMERIC column stay decimal-exact.
 
 import "boilaDB/server/databases.baga"
@@ -86,10 +86,47 @@ fn main() -> i64 !IO !Time !Par {
         check(fails, "avg_b", nums(cell(q2, 2, 1)) == "0.15")
     }
 
+    // partition MIN over NUMERIC (W2 residual closed)
+    let q4 = boila_server_exec(srv, "boila", "SELECT id, MIN(amt) OVER (PARTITION BY grp) AS mn FROM w ORDER BY id")?
+    srv = q4.srv
+    check(fails, "min_rows", q4.ok == 1 && vec_len(q4.res.rows) == 4)
+    if vec_len(q4.res.rows) == 4 {
+        check(fails, "min_tag", cell(q4, 0, 1).tag == boila_v_num())
+        check(fails, "min_a", nums(cell(q4, 0, 1)) == "10.5" && nums(cell(q4, 1, 1)) == "10.5")
+        check(fails, "min_b", nums(cell(q4, 2, 1)) == "0.1" && nums(cell(q4, 3, 1)) == "0.1")
+    }
+
+    // partition MAX over NUMERIC
+    let q5 = boila_server_exec(srv, "boila", "SELECT id, MAX(amt) OVER (PARTITION BY grp) AS mx FROM w ORDER BY id")?
+    srv = q5.srv
+    check(fails, "max_rows", q5.ok == 1 && vec_len(q5.res.rows) == 4)
+    if vec_len(q5.res.rows) == 4 {
+        check(fails, "max_tag", cell(q5, 0, 1).tag == boila_v_num())
+        check(fails, "max_a", nums(cell(q5, 0, 1)) == "20.25" && nums(cell(q5, 1, 1)) == "20.25")
+        check(fails, "max_b", nums(cell(q5, 2, 1)) == "0.2" && nums(cell(q5, 3, 1)) == "0.2")
+    }
+
+    // NULL rows are skipped by numeric MIN/MAX windows (PG semantics)
+    let i5 = boila_server_exec(srv, "boila", "INSERT INTO w (id, grp, amt) VALUES (5, 'a', NULL)")?
+    srv = i5.srv
+    check(fails, "insert_null", i5.ok == 1)
+    let q6 = boila_server_exec(srv, "boila", "SELECT id, MIN(amt) OVER (PARTITION BY grp) AS mn, MAX(amt) OVER (PARTITION BY grp) AS mx FROM w ORDER BY id")?
+    srv = q6.srv
+    check(fails, "nullskip_rows", q6.ok == 1 && vec_len(q6.res.rows) == 5)
+    if vec_len(q6.res.rows) == 5 {
+        check(fails, "nullskip_min_a", nums(cell(q6, 0, 1)) == "10.5" && nums(cell(q6, 1, 1)) == "10.5" && nums(cell(q6, 4, 1)) == "10.5")
+        check(fails, "nullskip_max_a", nums(cell(q6, 0, 2)) == "20.25" && nums(cell(q6, 4, 2)) == "20.25")
+    }
+
+    // i64 window MIN/MAX still i64 (no regression)
+    let q7 = boila_server_exec(srv, "boila", "SELECT MIN(id) OVER (), MAX(id) OVER () FROM w")?
+    srv = q7.srv
+    check(fails, "minmax_i64", q7.ok == 1 && vec_len(q7.res.rows) == 5 && cell(q7, 0, 0).tag == boila_v_i64() && cell(q7, 0, 0).i == 1 && cell(q7, 0, 1).tag == boila_v_i64() && cell(q7, 0, 1).i == 5)
+
     // i64 window SUM still i64 (no regression)
     let q3 = boila_server_exec(srv, "boila", "SELECT SUM(id) OVER () FROM w")?
     srv = q3.srv
-    check(fails, "sum_i64", q3.ok == 1 && vec_len(q3.res.rows) == 4 && cell(q3, 0, 0).tag == boila_v_i64() && cell(q3, 0, 0).i == 10)
+    check(fails, "sum_i64", q3.ok == 1 && vec_len(q3.res.rows) == 5 && cell(q3, 0, 0).tag == boila_v_i64() && cell(q3, 0, 0).i == 15)
 
     let n = vec_len(fails)
     if n == 0 {
