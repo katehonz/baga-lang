@@ -1,0 +1,564 @@
+// c2_clo.baga — LP8 вълна C: fn стойности / ламбди / closures (L5).
+// Моделът е src/codegen_c.c: closure = cell2(code, env) handle (int64_t);
+// всяка потребителска fn получава __clo wrapper (void *_env първи
+// аргумент); ламбда = env struct + static wrapper `b___lam_N` +
+// statement expression, който строи handle-а. Сигнатурите на fn
+// стойности се извличат хевристично от AST (типови анотации, LET init,
+// map_set/vec_push история) — каноничен текст "fn(T1,T2)->R".
+
+import "c2_ast.baga"
+import "c2_lex.baga"
+
+// forward декларации (дефинирани в другите модули)
+fn mangle(name: str) -> str
+fn int_to_str(n: i64) -> str
+fn c_type(t: str) -> str
+fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64)
+fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
+fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
+fn is_user_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
+fn sum_enum_type_of_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str
+
+// ============================================================
+//  Каноничен fn тип "fn(T1,T2)->R": помощници
+// ============================================================
+
+fn fn_type_is(t: str) -> i64 {
+    if len(t) >= 3 {
+        if str_eq(substr(t, 0, 3), "fn(") == 1 { return 1 }
+    }
+    0
+}
+
+// индекс на затварящата ")" за "fn(" (с броене на вложени скоби)
+fn fn_type_close(t: str) -> i64 {
+    let mut depth: i64 = 0
+    let mut i: i64 = 2
+    let mut n = len(t)
+    while i < n {
+        let mut c = char_at(t, i)
+        if c == 40 { depth = depth + 1 }
+        if c == 41 { depth = depth - 1 }
+        if depth == 0 { return i }
+        i = i + 1
+    }
+    0 - 1
+}
+
+fn fn_type_nparams(t: str) -> i64 {
+    let mut close = fn_type_close(t)
+    if close <= 3 { return 0 }
+    let mut cnt: i64 = 1
+    let mut depth: i64 = 0
+    let mut i: i64 = 3
+    while i < close {
+        let mut c = char_at(t, i)
+        if c == 40 { depth = depth + 1 }
+        if c == 41 { depth = depth - 1 }
+        if c == 44 {
+            if depth == 0 { cnt = cnt + 1 }
+        }
+        i = i + 1
+    }
+    cnt
+}
+
+fn fn_type_param(t: str, want: i64) -> str {
+    let mut close = fn_type_close(t)
+    if close < 0 { return "" }
+    let mut depth: i64 = 0
+    let mut idx: i64 = 0
+    let mut start: i64 = 3
+    let mut i: i64 = 3
+    while i <= close {
+        let mut c: i64 = 41
+        if i < close { c = char_at(t, i) }
+        if depth == 0 {
+            if c == 44 {
+                if idx == want { return substr(t, start, i) }
+                idx = idx + 1
+                start = i + 1
+            }
+        }
+        if i == close {
+            if idx == want { return substr(t, start, i) }
+        }
+        if c == 40 { depth = depth + 1 }
+        if c == 41 { depth = depth - 1 }
+        i = i + 1
+    }
+    ""
+}
+
+fn fn_type_ret(t: str) -> str {
+    let mut close = fn_type_close(t)
+    if close < 0 { return "" }
+    let mut r = close + 3
+    if r > len(t) { return "" }
+    substr(t, r, len(t))
+}
+
+// ============================================================
+//  expr_fn_type: fn сигнатура на израз ("" ако не е fn стойност).
+//  Name-based разрешаване (като останалите класификатори) + fuel
+//  срещу цикли в let-verigi.
+// ============================================================
+
+// fn тип на параметър с име name (скен по kind-12 възли "име:тип")
+fn param_fn_type_of(nk: Vec, nt: Vec, name: str) -> str {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 12 {
+            let mut pt = node_text(nt, i)
+            let mut ci = bfind(pt, 58, 0)
+            if ci > 0 {
+                if str_eq(substr(pt, 0, ci), name) == 1 {
+                    let mut pty = substr(pt, ci + 1, len(pt))
+                    if fn_type_is(pty) == 1 { return pty }
+                }
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// init изразът на първия LET с име name, или -1
+fn let_init_of(nk: Vec, nt: Vec, fc: Vec, ns: Vec, name: str) -> i64 {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 6 {
+            if str_eq(node_text(nt, i), name) == 1 { return first_child(fc, i) }
+        }
+        i = i + 1
+    }
+    0 - 1
+}
+
+// тип на резултата (kind 16 текст) на потребителска fn; "" при липса
+fn fn_ret_type_text(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 16 { return node_text(nt, c) }
+                    c = next_sibling(ns, c)
+                }
+                return ""
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    ""
+}
+
+// каноничен fn тип на потребителска fn (по декларацията ѝ)
+fn fn_decl_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 {
+                let mut sig = "fn("
+                let mut np: i64 = 0
+                let mut ret = ""
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 12 {
+                        let mut pt = node_text(nt, c)
+                        let mut ci = bfind(pt, 58, 0)
+                        if np > 0 { sig = concat(sig, ",") }
+                        if ci >= 0 { sig = concat(sig, substr(pt, ci + 1, len(pt))) }
+                        np = np + 1
+                    }
+                    if node_kind(nk, c) == 16 { ret = node_text(nt, c) }
+                    c = next_sibling(ns, c)
+                }
+                return concat(concat(sig, ")->"), ret)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    ""
+}
+
+// каноничен fn тип на ламбда възел (kind 42)
+fn lambda_fn_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, lam: i64) -> str {
+    let mut sig = "fn("
+    let mut np: i64 = 0
+    let mut ret = ""
+    let mut c = first_child(fc, lam)
+    while c >= 0 {
+        if node_kind(nk, c) == 12 {
+            let mut pt = node_text(nt, c)
+            let mut ci = bfind(pt, 58, 0)
+            if np > 0 { sig = concat(sig, ",") }
+            if ci >= 0 { sig = concat(sig, substr(pt, ci + 1, len(pt))) }
+            np = np + 1
+        }
+        if node_kind(nk, c) == 16 { ret = node_text(nt, c) }
+        c = next_sibling(ns, c)
+    }
+    concat(concat(sig, ")->"), ret)
+}
+
+fn expr_fn_type_f(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64, fuel: i64) -> str
+
+// fn сигнатура на стойностите в map променлива (по map_set история)
+fn map_fn_val_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, mexpr: i64, fuel: i64) -> str {
+    if node_kind(nk, mexpr) != 2 { return "" }
+    let mut mname = node_text(nt, mexpr)
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 4 {
+            let mut cal = first_child(fc, i)
+            if node_kind(nk, cal) == 2 {
+                if str_eq(node_text(nt, cal), "map_set") == 1 {
+                    let mut a1 = next_sibling(ns, cal)
+                    if a1 >= 0 {
+                        if node_kind(nk, a1) == 2 {
+                            if str_eq(node_text(nt, a1), mname) == 1 {
+                                let mut mk = next_sibling(ns, a1)
+                                let mut mv = next_sibling(ns, mk)
+                                if mv >= 0 {
+                                    let mut ft = expr_fn_type_f(nk, nt, fc, ns, prog, mv, fuel)
+                                    if str_eq(ft, "") == 0 { return ft }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// fn сигнатура на елементите на vec променлива (по vec_push/vec_set история)
+fn vec_fn_val_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vexpr: i64, fuel: i64) -> str {
+    if node_kind(nk, vexpr) != 2 { return "" }
+    let mut vname = node_text(nt, vexpr)
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 4 {
+            let mut cal = first_child(fc, i)
+            if node_kind(nk, cal) == 2 {
+                let mut bn = node_text(nt, cal)
+                let mut is_ps: i64 = 0
+                if str_eq(bn, "vec_push") == 1 { is_ps = 1 }
+                if str_eq(bn, "vec_set") == 1 { is_ps = 1 }
+                if is_ps == 1 {
+                    let mut a1 = next_sibling(ns, cal)
+                    if a1 >= 0 {
+                        if node_kind(nk, a1) == 2 {
+                            if str_eq(node_text(nt, a1), vname) == 1 {
+                                let mut elem = next_sibling(ns, a1)
+                                if str_eq(bn, "vec_set") == 1 { elem = next_sibling(ns, elem) }
+                                if elem >= 0 {
+                                    let mut ft = expr_fn_type_f(nk, nt, fc, ns, prog, elem, fuel)
+                                    if str_eq(ft, "") == 0 { return ft }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+fn expr_fn_type_f(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64, fuel: i64) -> str {
+    if fuel <= 0 { return "" }
+    let mut k = node_kind(nk, e)
+    // CATCH/TRY обвивки се разголват
+    if k == 37 { return expr_fn_type_f(nk, nt, fc, ns, prog, first_child(fc, e), fuel - 1) }
+    if k == 40 { return expr_fn_type_f(nk, nt, fc, ns, prog, first_child(fc, e), fuel - 1) }
+    if k == 42 { return lambda_fn_type(nk, nt, fc, ns, e) }
+    if k == 2 {
+        let mut name = node_text(nt, e)
+        // глобална fn като стойност
+        if is_user_fn(nk, nt, fc, ns, prog, name) == 1 {
+            return fn_decl_type(nk, nt, fc, ns, prog, name)
+        }
+        // параметър с fn тип
+        let mut pt = param_fn_type_of(nk, nt, name)
+        if str_eq(pt, "") == 0 { return pt }
+        // let-обвързана fn стойност
+        let mut init = let_init_of(nk, nt, fc, ns, name)
+        if init >= 0 { return expr_fn_type_f(nk, nt, fc, ns, prog, init, fuel - 1) }
+        return ""
+    }
+    if k == 4 {
+        let mut cal = first_child(fc, e)
+        if node_kind(nk, cal) == 2 {
+            let mut bn = node_text(nt, cal)
+            // потребителска fn с fn тип на резултата (closure factory)
+            if is_user_fn(nk, nt, fc, ns, prog, bn) == 1 {
+                let mut rt = fn_ret_type_text(nk, nt, fc, ns, prog, bn)
+                if fn_type_is(rt) == 1 { return rt }
+                return ""
+            }
+            let mut a1 = next_sibling(ns, cal)
+            if a1 >= 0 {
+                if str_eq(bn, "map_get") == 1 { return map_fn_val_type(nk, nt, fc, ns, prog, a1, fuel - 1) }
+                if str_eq(bn, "vec_get") == 1 { return vec_fn_val_type(nk, nt, fc, ns, prog, a1, fuel - 1) }
+            }
+        }
+        return ""
+    }
+    ""
+}
+
+fn expr_fn_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str {
+    expr_fn_type_f(nk, nt, fc, ns, prog, e, 8)
+}
+
+// ============================================================
+//  Емисия
+// ============================================================
+
+// C тип на capture-ната променлива name: по fn/ламбда параметър, после
+// по LET init (опростен sniff — str/bytes/struct/enum/f64, иначе i64).
+fn capture_c_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 12 {
+            let mut pt = node_text(nt, i)
+            let mut ci = bfind(pt, 58, 0)
+            if ci > 0 {
+                if str_eq(substr(pt, 0, ci), name) == 1 {
+                    return c_type(substr(pt, ci + 1, len(pt)))
+                }
+            }
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < n {
+        if node_kind(nk, i) == 6 {
+            if str_eq(node_text(nt, i), name) == 1 {
+                let mut init = first_child(fc, i)
+                let mut ik = node_kind(nk, init)
+                while ik == 37 || ik == 40 {
+                    init = first_child(fc, init)
+                    ik = node_kind(nk, init)
+                }
+                if ik == 1 { return "const char *" }
+                if ik == 34 { return "baga_bytes" }
+                if ik == 22 { return mangle(node_text(nt, init)) }
+                let mut es = sum_enum_type_of_expr(nk, nt, fc, ns, prog, init)
+                if str_eq(es, "") == 0 { return mangle(es) }
+                if expr_is_str(nk, nt, fc, ns, prog, init) == 1 { return "const char *" }
+                if expr_is_float(nk, nt, fc, ns, prog, init) == 1 { return "double" }
+                return "int64_t"
+            }
+        }
+        i = i + 1
+    }
+    "int64_t"
+}
+
+// Стойността на ламбда възел: statement expression, който строи
+// cell2(wrapper, env) handle-а (env struct се пълни по стойност).
+fn emit_lambda_handle(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, lam: i64) -> str {
+    let mut suf = int_to_str(lam)
+    let mut env = concat("b_env___lam_", suf)
+    let mut r = concat(concat(concat(concat("({ ", env), " *_e = malloc(sizeof("), env), ")); ")
+    let mut c = first_child(fc, lam)
+    while c >= 0 {
+        if node_kind(nk, c) == 2 {
+            let mut cm = mangle(node_text(nt, c))
+            r = concat(concat(concat(concat(concat(r, "_e->"), cm), " = "), cm), "; ")
+        }
+        c = next_sibling(ns, c)
+    }
+    r = concat(r, "(int64_t)baga_cell2((int64_t)(void *)b___lam_")
+    r = concat(r, suf)
+    concat(r, ", (int64_t)(void *)_e); })")
+}
+
+// Извикване през fn стойност: разопаковане на cell2 handle-а и cast към
+// fn pointer типа (модел: codegen_c.c L5 пътят).
+fn emit_fn_value_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, callnode: i64, callee: i64, ft: str) -> str {
+    let mut r = "({ int64_t _h = (int64_t)("
+    r = concat(r, emit_expr(nk, nt, fc, ns, prog, callee))
+    r = concat(r, "); ((")
+    r = concat(r, c_type(fn_type_ret(ft)))
+    r = concat(r, " (*)(void *")
+    let mut pi: i64 = 0
+    let mut np = fn_type_nparams(ft)
+    while pi < np {
+        r = concat(r, ", ")
+        r = concat(r, c_type(fn_type_param(ft, pi)))
+        pi = pi + 1
+    }
+    r = concat(r, "))(intptr_t)baga_cell2_0(_h))((void *)(intptr_t)baga_cell2_1(_h)")
+    let mut arg = next_sibling(ns, first_child(fc, callnode))
+    while arg >= 0 {
+        r = concat(r, ", ")
+        r = concat(r, emit_expr(nk, nt, fc, ns, prog, arg))
+        arg = next_sibling(ns, arg)
+    }
+    r = concat(r, "); })")
+    r
+}
+
+// env struct typedef + static wrapper за ламбда (тялото се емитува с
+// нормалния stmt/expr емитер; последен изразен statement → return,
+// както implicit return при fn). Пише се ПРЕДИ телата на функциите.
+fn emit_lambda_wrapper(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, lam: i64) {
+    let mut suf = int_to_str(lam)
+    let mut lm = concat("b___lam_", suf)
+    let mut env = concat("b_env___lam_", suf)
+    let mut ret = ""
+    let mut body: i64 = 0 - 1
+    let mut c = first_child(fc, lam)
+    while c >= 0 {
+        if node_kind(nk, c) == 16 { ret = node_text(nt, c) }
+        if node_kind(nk, c) == 5 { body = c }
+        c = next_sibling(ns, c)
+    }
+    let mut rct = "void"
+    if str_eq(ret, "") == 0 { rct = c_type(ret) }
+    // env struct
+    write("typedef struct {\n")
+    c = first_child(fc, lam)
+    while c >= 0 {
+        if node_kind(nk, c) == 2 {
+            let mut cn = node_text(nt, c)
+            write(concat(concat(concat(concat("    ", capture_c_type(nk, nt, fc, ns, prog, cn)), " "), mangle(cn)), ";\n"))
+        }
+        c = next_sibling(ns, c)
+    }
+    write(concat(concat("} ", env), ";\n\n"))
+    // wrapper глава
+    let mut head = concat(concat(concat("static ", rct), " "), lm)
+    head = concat(head, "(void *_env")
+    c = first_child(fc, lam)
+    while c >= 0 {
+        if node_kind(nk, c) == 12 {
+            let mut pt = node_text(nt, c)
+            let mut ci = bfind(pt, 58, 0)
+            let mut pn = pt
+            let mut pty = "i64"
+            if ci >= 0 { pn = substr(pt, 0, ci) }
+            if ci >= 0 { pty = substr(pt, ci + 1, len(pt)) }
+            head = concat(concat(concat(concat(head, ", "), c_type(pty)), " "), mangle(pn))
+        }
+        c = next_sibling(ns, c)
+    }
+    write(concat(head, ") {\n"))
+    // env разопаковане в локални
+    let mut ncap: i64 = 0
+    c = first_child(fc, lam)
+    while c >= 0 {
+        if node_kind(nk, c) == 2 { ncap = ncap + 1 }
+        c = next_sibling(ns, c)
+    }
+    if ncap > 0 {
+        write(concat(concat(concat(concat(concat("    ", env), " *_e = ("), env), " *)_env;\n"), ""))
+        c = first_child(fc, lam)
+        while c >= 0 {
+            if node_kind(nk, c) == 2 {
+                let mut cn = node_text(nt, c)
+                write(concat(concat(concat(concat(concat(concat("    ", capture_c_type(nk, nt, fc, ns, prog, cn)), " "), mangle(cn)), " = _e->"), mangle(cn)), ";\n"))
+            }
+            c = next_sibling(ns, c)
+        }
+    }
+    // тяло
+    if body >= 0 {
+        let mut s = first_child(fc, body)
+        while s >= 0 {
+            let mut next_s = next_sibling(ns, s)
+            if next_s < 0 {
+                if str_eq(rct, "void") == 0 {
+                    if node_kind(nk, s) == 10 {
+                        let mut e = first_child(fc, s)
+                        write(concat("    return ", concat(emit_expr(nk, nt, fc, ns, prog, e), ";\n")))
+                        s = next_s
+                        continue
+                    }
+                }
+            }
+            emit_stmt(nk, nt, fc, ns, prog, s, 1)
+            s = next_s
+        }
+    }
+    write("}\n\n")
+}
+
+// Post-order обход: вложените ламбди се емитуват преди външните
+// (wrapper-ът на външната реферира env типа/името на вътрешната).
+fn emit_lambdas_under(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) {
+    let mut c = first_child(fc, idx)
+    while c >= 0 {
+        emit_lambdas_under(nk, nt, fc, ns, prog, c)
+        c = next_sibling(ns, c)
+    }
+    if node_kind(nk, idx) == 42 {
+        emit_lambda_wrapper(nk, nt, fc, ns, prog, idx)
+    }
+}
+
+fn emit_lambda_decls(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    emit_lambdas_under(nk, nt, fc, ns, prog, prog)
+}
+
+// __clo wrapper за всяка потребителска fn с тяло — fn стойностите
+// вземат адреса му (модел: emit_clo_wrapper в src/codegen_c.c).
+fn emit_clo_wrappers(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            let mut has_body: i64 = 0
+            let mut is_generic: i64 = 0
+            let mut c = first_child(fc, f)
+            while c >= 0 {
+                if node_kind(nk, c) == 5 { has_body = 1 }
+                // LP8-D: generic fn няма wrapper (няма конкретна сигнатура)
+                if node_kind(nk, c) == 43 { is_generic = 1 }
+                c = next_sibling(ns, c)
+            }
+            if is_generic == 1 { has_body = 0 }
+            if has_body == 1 {
+                let mut name = node_text(nt, f)
+                let mut ret = "void"
+                let mut params = ""
+                let mut argnames = ""
+                c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 12 {
+                        let mut pt = node_text(nt, c)
+                        let mut ci = bfind(pt, 58, 0)
+                        let mut pn = pt
+                        let mut pty = "i64"
+                        if ci >= 0 { pn = substr(pt, 0, ci) }
+                        if ci >= 0 { pty = substr(pt, ci + 1, len(pt)) }
+                        params = concat(params, concat(concat(concat(", ", c_type(pty)), " "), mangle(pn)))
+                        if str_eq(argnames, "") == 0 { argnames = concat(argnames, ", ") }
+                        argnames = concat(argnames, mangle(pn))
+                    }
+                    if node_kind(nk, c) == 16 { ret = c_type(node_text(nt, c)) }
+                    c = next_sibling(ns, c)
+                }
+                let mut head = "static __attribute__((unused)) "
+                head = concat(head, concat(concat(concat(ret, " "), mangle(name)), "__clo(void *_env"))
+                write(concat(concat(head, params), ") {\n    (void)_env;\n    "))
+                if str_eq(ret, "void") == 0 { write("return ") }
+                write(concat(concat(mangle(name), "("), concat(argnames, ");\n}\n\n")))
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+}

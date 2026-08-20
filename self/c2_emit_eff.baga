@@ -1,0 +1,249 @@
+// c2_emit_eff.baga — LP8: ефекти с payload (М20) — runtime модел
+// като C bootstrap-а: baga_eff { tag; i; f; s; b } + thread-local слот.
+// Таговете се раздават 1..N в реда на първа поява в AST
+// (raise/catch/!анотация). Емисията на TRY/CATCH възлите е тук;
+// RAISE statement-ът е в c2_emit_stmt.baga.
+
+import "c2_ast.baga"
+import "c2_emit_type.baga"
+import "c2_classify.baga"
+// ============================================================
+//  LP8: ефекти с payload (М20) — runtime модел като C bootstrap-а:
+//  baga_eff { tag; i; f; s; b } + thread-local слот. Таговете се
+//  раздават 1..N в реда на първа поява в AST (raise/catch/!анотация).
+// ============================================================
+
+// Име на ефект на възел i (36 raise / 37 catch / 39 !анотация), "" иначе.
+fn effect_name_at(nk: Vec, nt: Vec, i: i64) -> str {
+    let mut k = node_kind(nk, i)
+    if k == 36 { return node_text(nt, i) }
+    if k == 37 { return node_text(nt, i) }
+    if k == 39 {
+        let mut t = node_text(nt, i)
+        let mut c = bfind(t, 58, 0)
+        if c < 0 { return t }
+        return substr(t, 0, c)
+    }
+    ""
+}
+
+fn effect_tag(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut tag: i64 = 0
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        let mut ename = effect_name_at(nk, nt, i)
+        if str_eq(ename, "") == 0 {
+            // първа поява? (няма по-ранен възел със същото име)
+            let mut dup: i64 = 0
+            let mut j: i64 = 0
+            while j < i {
+                if str_eq(effect_name_at(nk, nt, j), ename) == 1 { dup = 1; break }
+                j = j + 1
+            }
+            if dup == 0 {
+                tag = tag + 1
+                if str_eq(ename, name) == 1 { return tag }
+            }
+        }
+        i = i + 1
+    }
+    0
+}
+
+// Поле в baga_eff за payload-а на ефекта по декларацията му (!E(тип)):
+// "s"/"f"/"b"/"i"; "" ако ефектът няма !анотация с тип в програмата.
+fn effect_payload_field(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 39 {
+            if str_eq(effect_name_at(nk, nt, i), name) == 1 {
+                let mut t = node_text(nt, i)
+                let mut c = bfind(t, 58, 0)
+                let mut pt = ""
+                if c >= 0 { pt = substr(t, c + 1, len(t)) }
+                if str_eq(pt, "str") == 1 { return "s" }
+                if str_eq(pt, "f64") == 1 { return "f" }
+                if str_eq(pt, "bytes") == 1 { return "b" }
+                if str_eq(pt, "") == 1 { return "" }
+                return "i"
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// Поле в baga_eff за payload-а на ефекта по декларацията му в КОНКРЕТНА
+// функция (!E(тип) при fn fname): "s"/"f"/"b"/"i"; "" при липса. Едно
+// име ефект може да носи различен payload тип в различни функции.
+fn effect_field_of_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, fname: str, name: str) -> str {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        let mut fk = node_kind(nk, f)
+        if fk == 11 || fk == 35 {
+            if str_eq(node_text(nt, f), fname) == 1 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 39 {
+                        if str_eq(effect_name_at(nk, nt, c), name) == 1 {
+                            let mut t = node_text(nt, c)
+                            let mut ci = bfind(t, 58, 0)
+                            let mut pt = ""
+                            if ci >= 0 { pt = substr(t, ci + 1, len(t)) }
+                            if str_eq(pt, "str") == 1 { return "s" }
+                            if str_eq(pt, "f64") == 1 { return "f" }
+                            if str_eq(pt, "bytes") == 1 { return "b" }
+                            if str_eq(pt, "") == 1 { return "" }
+                            return "i"
+                        }
+                    }
+                    c = next_sibling(ns, c)
+                }
+                return ""
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    ""
+}
+
+fn effect_payload_ctype(field: str) -> str {
+    if str_eq(field, "s") == 1 { return "const char *" }
+    if str_eq(field, "f") == 1 { return "double" }
+    if str_eq(field, "b") == 1 { return "baga_bytes" }
+    "int64_t"
+}
+
+// C тип на израз по евристиките (str/f64/bool, иначе i64).
+fn expr_c_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
+    if expr_is_str(nk, nt, fc, ns, prog, idx) == 1 { return "const char *" }
+    if expr_is_float(nk, nt, fc, ns, prog, idx) == 1 { return "double" }
+    if expr_is_bool(nk, nt, fc, ns, prog, idx) == 1 { return "int" }
+    "int64_t"
+}
+
+// print(...) като низ (за handler блокове в catch — същата диспечерация
+// по тип като EXPR_STMT в emit_stmt).
+fn emit_print_c(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, arg: i64) -> str {
+    if arg < 0 { return "printf(\"\\n\"); " }
+    if expr_is_str(nk, nt, fc, ns, prog, arg) == 1 {
+        return concat(concat("printf(\"%s\\n\", ", emit_expr(nk, nt, fc, ns, prog, arg)), "); ")
+    }
+    // bool преди float: f64 сравнение е bool, не double
+    if expr_is_bool(nk, nt, fc, ns, prog, arg) == 1 {
+        return concat(concat("printf(\"%s\\n\", (", emit_expr(nk, nt, fc, ns, prog, arg)), ") ? \"true\" : \"false\"); ")
+    }
+    if expr_is_float(nk, nt, fc, ns, prog, arg) == 1 {
+        return concat(concat("printf(\"%g\\n\", ", emit_expr(nk, nt, fc, ns, prog, arg)), "); ")
+    }
+    concat(concat("printf(\"%lld\\n\", (long long)(", emit_expr(nk, nt, fc, ns, prog, arg)), ")); ")
+}
+
+// catch handler: блок → GCC statement expression; израз → emit_expr.
+// (Ограничение: в блока се поддържат само изразни statement-и.)
+fn emit_catch_handler(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, handler: i64) -> str {
+    if node_kind(nk, handler) == 5 {
+        let mut r = "({ "
+        let mut s = first_child(fc, handler)
+        while s >= 0 {
+            if node_kind(nk, s) == 10 {
+                let mut e = first_child(fc, s)
+                let mut is_print: i64 = 0
+                if node_kind(nk, e) == 4 {
+                    let mut cal = first_child(fc, e)
+                    if node_kind(nk, cal) == 2 {
+                        if str_eq(node_text(nt, cal), "print") == 1 { is_print = 1 }
+                    }
+                }
+                if is_print == 1 {
+                    let mut cal2 = first_child(fc, e)
+                    r = concat(r, emit_print_c(nk, nt, fc, ns, prog, next_sibling(ns, cal2)))
+                } else {
+                    r = concat(concat(r, emit_expr(nk, nt, fc, ns, prog, e)), "; ")
+                }
+            }
+            s = next_sibling(ns, s)
+        }
+        return concat(r, "})")
+    }
+    emit_expr(nk, nt, fc, ns, prog, handler)
+}
+
+
+// TRY (?): propagate на ефект нагоре — ({ T __tN = e; if (tag) return 0; __tN; })
+fn emit_try(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
+        let mut inner = first_child(fc, idx)
+        let mut suf = int_to_str(idx)
+        let mut r = concat("({ ", expr_c_type(nk, nt, fc, ns, prog, inner))
+        r = concat(concat(r, " __t"), suf)
+        r = concat(r, " = ")
+        r = concat(r, emit_expr(nk, nt, fc, ns, prog, inner))
+        r = concat(r, "; if (baga_eff_tl.tag) { return 0; } __t")
+        return concat(concat(r, suf), "; })")
+    }
+
+// CATCH: верига `e catch !A => hA catch !B => hB` се изплосква като
+// при C bootstrap-а — един слот, if/else-if по тагове; нехванат ефект
+// се propagate-ва нататък. Payload променливата се връзва от слота.
+fn emit_catch(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
+        let mut arm_eff = vec_new()
+        let mut arm_var = vec_new()
+        let mut arm_h = vec_new()
+        let mut inner = idx
+        while node_kind(nk, inner) == 37 {
+            let mut in0 = first_child(fc, inner)
+            let mut vn = next_sibling(ns, in0)
+            vec_push_str(arm_eff, node_text(nt, inner))
+            vec_push(arm_var, vn)
+            vec_push(arm_h, next_sibling(ns, vn))
+            inner = in0
+        }
+        let mut suf = int_to_str(idx)
+        let mut r = concat("({ ", expr_c_type(nk, nt, fc, ns, prog, inner))
+        r = concat(concat(r, " __e"), suf)
+        r = concat(r, "; baga_eff __ee")
+        r = concat(concat(r, suf), "; __e")
+        r = concat(concat(r, suf), " = ")
+        r = concat(r, emit_expr(nk, nt, fc, ns, prog, inner))
+        r = concat(r, "; __ee")
+        r = concat(concat(r, suf), " = baga_eff_tl; baga_eff_tl = (baga_eff){0}; ")
+        // arms излизат отвън-навътре; емитуваме в обратен ред (лява асоц.)
+        let mut ai = vec_len(arm_eff) - 1
+        while ai >= 0 {
+            if ai < vec_len(arm_eff) - 1 { r = concat(r, "else ") }
+            r = concat(r, "if (__ee")
+            r = concat(concat(r, suf), ".tag == ")
+            r = concat(r, int_to_str(effect_tag(nk, nt, fc, ns, prog, vec_get_str(arm_eff, ai))))
+            r = concat(r, ") { ")
+            let mut vnode = vec_get(arm_var, ai)
+            let mut vname = node_text(nt, vnode)
+            if str_eq(vname, "") == 0 {
+                // payload типът се взима от callee-то на catch-натия израз
+                // (едно име ефект може да носи различен тип в различни fn)
+                let mut fld = ""
+                if node_kind(nk, inner) == 4 {
+                    let mut cal = first_child(fc, inner)
+                    if node_kind(nk, cal) == 2 {
+                        fld = effect_field_of_fn(nk, nt, fc, ns, prog, node_text(nt, cal), vec_get_str(arm_eff, ai))
+                    }
+                }
+                if str_eq(fld, "") == 1 { fld = effect_payload_field(nk, nt, fc, ns, prog, vec_get_str(arm_eff, ai)) }
+                if str_eq(fld, "") == 1 { fld = "i" }
+                r = concat(r, effect_payload_ctype(fld))
+                r = concat(concat(r, " "), mangle(vname))
+                r = concat(concat(r, " = __ee"), suf)
+                r = concat(concat(r, "."), concat(fld, "; "))
+            }
+            r = concat(concat(r, "__e"), suf)
+            r = concat(r, " = ")
+            r = concat(r, emit_catch_handler(nk, nt, fc, ns, prog, vec_get(arm_h, ai)))
+            r = concat(r, "; } ")
+            ai = ai - 1
+        }
+        r = concat(r, "else if (__ee")
+        r = concat(concat(r, suf), ".tag != 0) { baga_eff_tl = __ee")
+        r = concat(concat(r, suf), "; return 0; } __e")
+        return concat(concat(r, suf), "; })")
+    }

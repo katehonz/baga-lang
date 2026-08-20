@@ -17,7 +17,7 @@ cd "$ROOT"
 BIN="${BAGA:-./baga}"
 BAGAIFLAGS="${BAGAIFLAGS:--I . -I app-product}"
 
-PARITY_LIST="arena.baga argv.baga bitwise.baga bytes.baga cvet.baga effects.baga extern_write.baga faktorial.baga fib.baga interp.baga match.baga spec.baga spec_ensures.baga spec_ensures_fail.baga spec_requires_fail.baga strings.baga tochka.baga types.baga vec_ann.baga vec.baga vec_f64.baga zdravei.baga"
+PARITY_LIST="arena.baga argv.baga bitwise.baga bytes.baga bytes_edges.baga bytes_handle.baga clo_capture.baga closures.baga cvet.baga effects.baga effects_payload.baga effects_probe.baga effects_raise_diverge.baga extern_write.baga f64_surface.baga faktorial.baga fib.baga generic_structs.baga generics.baga interp.baga map.baga map_enum.baga match.baga nested_enum.baga par.baga par_chan.baga par_pool.baga par_select.baga runtime_edges.baga spec.baga spec_ensures.baga spec_ensures_fail.baga spec_requires_fail.baga strings.baga sum_enum.baga tail_return.baga tochka.baga traits.baga types.baga vec_ann.baga vec.baga vec_f64.baga vec_nested.baga vec_struct.baga zdravei.baga"
 
 # baga2 (self компилаторът като еймитър на C) — построй го, ако липсва.
 if [ ! -x /tmp/baga2 ]; then
@@ -62,19 +62,12 @@ for name in $PARITY_LIST; do
 	fi
 done
 
-# LP7: чисто language-ниво отказване на неподдържания синтаксис
-# (сум enum-и с payload-и, fn стойности/ламбди, !Par concurrency)
-for name in sum_enum.baga closures.baga par.baga; do
-	if /tmp/baga2 "examples/$name" 2>&1 >/dev/null | grep -q "неподдържан конструкт в self компилатора"; then
-		echo "OK: self отказва чисто $name (не счупен C)"
-	else
-		echo "FAIL: $name — очаквах чисто language-ниво отказване"
-		FAIL=1
-	fi
-done
+# LP8-E: par* (go/join/chan/select/pool) вече са в PARITY_LIST; чисти
+# language-ниво откази остават само за конструкти извън всяко покритие
+# (виж idea/lang-probes.md LP8). Секцията за очаквани откази е празна.
 
 if [ $FAIL -eq 0 ]; then
-	echo "OK: self-hosting паритет — 22 PARITY, без поведенческа дивергенция (LP7)"
+	echo "OK: self-hosting паритет — 45 PARITY, без поведенческа дивергенция (LP7+LP8)"
 else
 	exit 1
 fi

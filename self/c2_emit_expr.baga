@@ -4,6 +4,15 @@
 
 import "c2_ast.baga"
 import "c2_emit_type.baga"
+import "c2_enum.baga"
+
+// forward декларации (c2_gen*.baga) — LP8-D
+fn type_c_name(t: str) -> str
+fn gen_call_cname(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn emit_method_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn expr_struct_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str
+fn struct_lit_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, lit: i64) -> str
+fn fn_is_generic_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
 
 fn int_to_str(n: i64) -> str {
     if n == 0 { return "0" }
@@ -61,22 +70,8 @@ fn c_escape(s: str) -> str {
     result
 }
 
-fn enum_variant_cname(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
-    let mut e = first_child(fc, prog)
-    while e >= 0 {
-        if node_kind(nk, e) == 28 {
-            let mut v = first_child(fc, e)
-            while v >= 0 {
-                if str_eq(node_text(nt, v), name) == 1 {
-                    return concat(concat(mangle(node_text(nt, e)), "_"), mangle(name))
-                }
-                v = next_sibling(ns, v)
-            }
-        }
-        e = next_sibling(ns, e)
-    }
-    ""
-}
+// enum_variant_cname е преместена в c2_enum.baga (file-size gate) — LP8-D
+fn enum_variant_cname(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str
 
 fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
     let mut k = node_kind(nk, idx)
@@ -89,8 +84,10 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
     // BOOL (1/0 като C int)
     if k == 20 { return t }
     // STRUCT LIT: (b_Име){ .b_поле = стойност, ... }
+    // (generic инстанция "Pair<i64,str>" → b_Pair_i64_str; при bare
+    // generic литерал аргументите се извеждат от полетата — LP8-D)
     if k == 22 {
-        let mut r = concat(concat("(", mangle(t)), "){ ")
+        let mut r = concat(concat("(", type_c_name(struct_lit_type_name(nk, nt, fc, ns, prog, idx))), "){ ")
         let mut fi = first_child(fc, idx)
         let mut first_f: i64 = 1
         while fi >= 0 {
@@ -109,6 +106,9 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
     }
     // MATCH: GCC statement expression ({ T _mrN=0; int64_t _mvN=e; if..else..; _mrN; })
     if k == 26 {
+        // sum enum match → емисия по .tag с binding-и (c2_enum.baga)
+        let mut sed = match_sum_enum(nk, nt, fc, ns, prog, idx)
+        if sed >= 0 { return emit_sum_match(nk, nt, fc, ns, prog, idx, sed) }
         let mut mexpr = first_child(fc, idx)
         let mut arm1 = next_sibling(ns, mexpr)
         let mut ctype = "int64_t"
@@ -152,59 +152,123 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
         if expr_is_bool(nk, nt, fc, ns, prog, e) == 1 {
             return concat(concat(concat("((", emit_expr(nk, nt, fc, ns, prog, e)), ") ? \"true\" : \"false\")"), "")
         }
+        if expr_is_float(nk, nt, fc, ns, prog, e) == 1 {
+            return concat("baga_f64_to_str(", concat(emit_expr(nk, nt, fc, ns, prog, e), ")"))
+        }
         return concat("baga_i64_to_str(", concat(emit_expr(nk, nt, fc, ns, prog, e), ")"))
     }
     // STR
     if k == 1 { return concat(concat("\"", c_escape(t)), "\"") }
     // BYTES LIT (x"deadbeef")
     if k == 34 { return concat("baga_bytes_from_hex(", concat(concat("\"", c_escape(t)), "\")")) }
-    // IDENT (enum вариант → константа, иначе mangle)
+    // IDENT (enum вариант → константа/tag литерал, иначе mangle)
     if k == 2 {
-        let mut ev = enum_variant_cname(nk, nt, fc, ns, prog, t)
-        if str_eq(ev, "") == 0 { return ev }
+        let mut eo = enum_of_variant(nk, nt, fc, ns, prog, t)
+        if eo >= 0 {
+            if enum_is_sum(nk, nt, fc, ns, eo) == 1 {
+                // payload-less вариант на sum enum като стойност (като bootstrap-а)
+                return concat(concat(concat("(", mangle(node_text(nt, eo))), "){ .tag = "), concat(int_to_str(enum_variant_index(nk, nt, fc, ns, eo, t)), " }"))
+            }
+            return concat(concat(mangle(node_text(nt, eo)), "_"), mangle(t))
+        }
+        // L5: глобална fn като стойност → handle към __clo wrapper-а
+        // (call позицията се прихваща в CALL преди да стигне тук)
+        if is_user_fn(nk, nt, fc, ns, prog, t) == 1 {
+            // LP8-D: generic fn няма конкретен wrapper (като bootstrap-а)
+            if fn_is_generic_name(nk, nt, fc, ns, prog, t) == 1 {
+                self_unsupported(concat(t, " — generic fn като стойност; обвий я в конкретна функция"))
+            }
+            return concat(concat("(int64_t)baga_cell2((int64_t)(void *)", mangle(t)), "__clo, 0)")
+        }
         return mangle(t)
+    }
+    // LAMBDA (kind 42): cell2(wrapper, env) handle — c2_clo.baga
+    if k == 42 { return emit_lambda_handle(nk, nt, fc, ns, prog, idx) }
+    // LP8-D: методно извикване (kind 46) — impl dispatch в c2_gen_emit
+    if k == 46 { return emit_method_call(nk, nt, fc, ns, prog, idx) }
+    // LP8-D: извикване на fn-типиран параметър в generic инстанция
+    // (kind 49; сигнатурата е subst-ната в текста на възела)
+    if k == 49 { return emit_fn_value_call(nk, nt, fc, ns, prog, idx, first_child(fc, idx), node_text(nt, idx)) }
+    // Enum::Variant път (kind 41): sum → tag литерал, plain → константа
+    if k == 41 {
+        let mut pen = path_enum_name(t)
+        let mut peo = enum_by_name(nk, nt, fc, ns, prog, pen)
+        if peo >= 0 {
+            if enum_is_sum(nk, nt, fc, ns, peo) == 1 {
+                return concat(concat(concat("(", mangle(pen)), "){ .tag = "), concat(int_to_str(enum_variant_index(nk, nt, fc, ns, peo, path_variant_name(t))), " }"))
+            }
+            return concat(concat(mangle(pen), "_"), mangle(path_variant_name(t)))
+        }
+        return "0"
     }
     // BINARY
     if k == 3 {
         let mut left = first_child(fc, idx)
         let mut right = next_sibling(ns, left)
+        // f64 `%` → fmod (C няма % за double; модел: LP2-G2 в src/codegen_c.c)
+        if str_eq(t, "%") == 1 {
+            let mut ff: i64 = 0
+            if expr_is_float(nk, nt, fc, ns, prog, left) == 1 { ff = 1 }
+            if expr_is_float(nk, nt, fc, ns, prog, right) == 1 { ff = 1 }
+            if ff == 1 {
+                return concat(concat("fmod(", emit_expr(nk, nt, fc, ns, prog, left)), concat(", ", concat(emit_expr(nk, nt, fc, ns, prog, right), ")")))
+            }
+        }
+        // str == / != → стойностно сравнение (baga_str_eq ≡ strcmp() == 0)
+        if str_eq(t, "==") == 1 {
+            if expr_is_str(nk, nt, fc, ns, prog, left) == 1 {
+                return concat(concat("baga_str_eq(", emit_expr(nk, nt, fc, ns, prog, left)), concat(", ", concat(emit_expr(nk, nt, fc, ns, prog, right), ")")))
+            }
+            if expr_is_str(nk, nt, fc, ns, prog, right) == 1 {
+                return concat(concat("baga_str_eq(", emit_expr(nk, nt, fc, ns, prog, left)), concat(", ", concat(emit_expr(nk, nt, fc, ns, prog, right), ")")))
+            }
+        }
+        if str_eq(t, "!=") == 1 {
+            if expr_is_str(nk, nt, fc, ns, prog, left) == 1 {
+                return concat(concat("(baga_str_eq(", emit_expr(nk, nt, fc, ns, prog, left)), concat(", ", concat(emit_expr(nk, nt, fc, ns, prog, right), ") == 0)")))
+            }
+            if expr_is_str(nk, nt, fc, ns, prog, right) == 1 {
+                return concat(concat("(baga_str_eq(", emit_expr(nk, nt, fc, ns, prog, left)), concat(", ", concat(emit_expr(nk, nt, fc, ns, prog, right), ") == 0)")))
+            }
+        }
         return concat(concat(concat("(", emit_expr(nk, nt, fc, ns, prog, left)), concat(" ", t)), concat(" ", concat(emit_expr(nk, nt, fc, ns, prog, right), ")")))
     }
+    // TRY/CATCH — емисията е в c2_emit_eff.baga
+    if k == 40 { return emit_try(nk, nt, fc, ns, prog, idx) }
+    if k == 37 { return emit_catch(nk, nt, fc, ns, prog, idx) }
     // CALL
     if k == 4 {
         let mut callee = first_child(fc, idx)
+        // L3/A1: конструктор на sum enum → Em__Vm(arg) (bare или Enum::Variant)
+        let mut sct = sum_enum_type_of_expr(nk, nt, fc, ns, prog, idx)
+        if str_eq(sct, "") == 0 {
+            let mut vn = ""
+            if node_kind(nk, callee) == 2 { vn = node_text(nt, callee) }
+            if node_kind(nk, callee) == 41 { vn = path_variant_name(node_text(nt, callee)) }
+            let mut a0 = next_sibling(ns, callee)
+            let mut arge = ""
+            if a0 >= 0 { arge = emit_expr(nk, nt, fc, ns, prog, a0) }
+            return concat(concat(concat(concat(mangle(sct), "__"), mangle(vn)), "("), concat(arge, ")"))
+        }
         // check for builtin
         let mut cname = ""
         if node_kind(nk, callee) == 2 {
             let mut bn = node_text(nt, callee)
             // LP7: builtin-и извън подмножеството на self компилатора
             if str_eq(bn, "drop") == 1 { self_unsupported("drop (MEM-1)") }
-            if str_eq(bn, "go") == 1 { self_unsupported("go/!Par конкурентност") }
-            if str_eq(bn, "join") == 1 { self_unsupported("join/!Par конкурентност") }
-            if str_eq(bn, "detach") == 1 { self_unsupported("detach/!Par конкурентност") }
-            if str_eq(bn, "chan_new") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_send") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_recv") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_recv2") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_try_recv") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_recv_timeout") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_select2") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_select2_wait") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_select2_timeout") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_close") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "chan_len") == 1 { self_unsupported("канали (!Par)") }
-            if str_eq(bn, "mutex_new") == 1 { self_unsupported("mutex-и (!Par)") }
-            if str_eq(bn, "mutex_lock") == 1 { self_unsupported("mutex-и (!Par)") }
-            if str_eq(bn, "mutex_unlock") == 1 { self_unsupported("mutex-и (!Par)") }
-            if str_eq(bn, "sleep_ms") == 1 { self_unsupported("sleep_ms (!Par)") }
+            // LP8-E: go/go_bg/pool_map (първият аргумент е fn идентификатор)
+            // и join/detach/chan_*/mutex_*/sleep_ms — c2_par.baga
+            let mut pce = emit_par_call(nk, nt, fc, ns, prog, callee, bn)
+            if str_eq(pce, "") == 0 { return pce }
+            if str_eq(cname, "") == 1 { cname = par_builtin_cname(bn) }
             if str_eq(bn, "signal_watch") == 1 { self_unsupported("C1 сигнали") }
             if str_eq(bn, "signal_check") == 1 { self_unsupported("C1 сигнали") }
             if str_eq(bn, "signal_clear") == 1 { self_unsupported("C1 сигнали") }
             if str_eq(bn, "signal_wait") == 1 { self_unsupported("C1 сигнали") }
             if str_eq(bn, "signal_raise") == 1 { self_unsupported("C1 сигнали") }
-            if str_eq(bn, "cell2") == 1 { self_unsupported("cell2 heap двойки") }
-            if str_eq(bn, "cell2_0") == 1 { self_unsupported("cell2 heap двойки") }
-            if str_eq(bn, "cell2_1") == 1 { self_unsupported("cell2 heap двойки") }
+            if str_eq(bn, "cell2") == 1 { cname = "baga_cell2" }
+            if str_eq(bn, "cell2_0") == 1 { cname = "baga_cell2_0" }
+            if str_eq(bn, "cell2_1") == 1 { cname = "baga_cell2_1" }
             let mut a1 = next_sibling(ns, callee)
             if str_eq(bn, "len") == 1 { cname = "baga_len" }
             if str_eq(bn, "char_at") == 1 { cname = "baga_char_at" }
@@ -225,12 +289,44 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "hex_decode") == 1 { cname = "baga_hex_decode" }
             if str_eq(bn, "read_file") == 1 { cname = "baga_read_file" }
             if str_eq(bn, "write") == 1 { cname = "baga_write" }
+            if str_eq(bn, "i64_to_str") == 1 { cname = "baga_i64_to_str" }
+            if str_eq(bn, "f64_to_str") == 1 { cname = "baga_f64_to_str" }
+            if str_eq(bn, "bytes_new") == 1 { cname = "baga_bytes_new" }
+            if str_eq(bn, "bytes_push") == 1 { cname = "baga_bytes_push" }
+            if str_eq(bn, "bytes_h") == 1 { cname = "baga_bytes_h" }
+            if str_eq(bn, "h_bytes") == 1 { cname = "baga_h_bytes" }
             if str_eq(bn, "vec_new") == 1 { cname = "baga_vec_new" }
             if str_eq(bn, "vec_push") == 1 {
                 cname = "baga_vec_push_i64"
                 if a1 >= 0 {
                     let elem = next_sibling(ns, a1)
                     if elem >= 0 {
+                        // Vec<struct>/Vec<enum>: стойност → box по указател (като bootstrap-а)
+                        let mut bxname = ""
+                        if node_kind(nk, elem) == 22 { bxname = struct_lit_type_name(nk, nt, fc, ns, prog, elem) }
+                        if str_eq(bxname, "") == 1 { bxname = sum_enum_type_of_expr(nk, nt, fc, ns, prog, elem) }
+                        // LP8-D: struct стойност през променлива (vec_push(v, p))
+                        if str_eq(bxname, "") == 1 {
+                            if node_kind(nk, elem) == 2 { bxname = expr_struct_name(nk, nt, fc, ns, prog, elem) }
+                        }
+                        if str_eq(bxname, "") == 0 {
+                            let mut mn = type_c_name(bxname)
+                            let mut r = concat("({ ", mn)
+                            r = concat(r, " _bx = ")
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, elem))
+                            r = concat(r, "; baga_vec_push_box(")
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                            r = concat(r, ", &_bx, (int64_t)sizeof(")
+                            return concat(concat(r, mn), ")); })")
+                        }
+                        // Vec<Vec<...>>: vec елемент → pointer като i64 с cast
+                        if expr_vec_depth(nk, nt, fc, ns, prog, elem) >= 1 {
+                            let mut r = "baga_vec_push_i64("
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                            r = concat(r, ", (int64_t)(intptr_t)(")
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, elem))
+                            return concat(r, "))")
+                        }
                         if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_push_str" }
                         if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_push_f64" }
                     }
@@ -240,6 +336,25 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "vec_get") == 1 {
                 cname = "baga_vec_get_i64"
                 if a1 >= 0 {
+                    let mut bt = vec_box_type(nk, nt, fc, ns, prog, a1)
+                    if str_eq(bt, "") == 0 {
+                        let mut ai2 = next_sibling(ns, a1)
+                        let mut r = concat("(*(", type_c_name(bt))
+                        r = concat(r, " *)baga_vec_get_box(")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                        r = concat(r, ", ")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, ai2))
+                        return concat(r, "))")
+                    }
+                    // Vec<Vec<...>>: елементът е vec pointer (кастнат като i64)
+                    if expr_vec_depth(nk, nt, fc, ns, prog, a1) >= 2 {
+                        let mut ai2 = next_sibling(ns, a1)
+                        let mut r = "((baga_Vec *)(intptr_t)baga_vec_get_i64("
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                        r = concat(r, ", ")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, ai2))
+                        return concat(r, "))")
+                    }
                     if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_get_str" }
                     if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_get_f64" }
                 }
@@ -251,6 +366,34 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
                     let mut ai = next_sibling(ns, a1)
                     let mut elem = next_sibling(ns, ai)
                     if elem >= 0 {
+                        let mut bxname = ""
+                        if node_kind(nk, elem) == 22 { bxname = struct_lit_type_name(nk, nt, fc, ns, prog, elem) }
+                        if str_eq(bxname, "") == 1 { bxname = sum_enum_type_of_expr(nk, nt, fc, ns, prog, elem) }
+                        if str_eq(bxname, "") == 1 {
+                            if node_kind(nk, elem) == 2 { bxname = expr_struct_name(nk, nt, fc, ns, prog, elem) }
+                        }
+                        if str_eq(bxname, "") == 0 {
+                            let mut mn = type_c_name(bxname)
+                            let mut r = concat("({ ", mn)
+                            r = concat(r, " _bx = ")
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, elem))
+                            r = concat(r, "; baga_vec_set_box(")
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                            r = concat(r, ", ")
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, ai))
+                            r = concat(r, ", &_bx, (int64_t)sizeof(")
+                            return concat(concat(r, mn), ")); })")
+                        }
+                        // Vec<Vec<...>>: vec стойност → pointer като i64 с cast
+                        if expr_vec_depth(nk, nt, fc, ns, prog, elem) >= 1 {
+                            let mut r = "baga_vec_set_i64("
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                            r = concat(r, ", ")
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, ai))
+                            r = concat(r, ", (int64_t)(intptr_t)(")
+                            r = concat(r, emit_expr(nk, nt, fc, ns, prog, elem))
+                            return concat(r, "))")
+                        }
                         if expr_is_str(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_set_str" }
                         if expr_is_float(nk, nt, fc, ns, prog, elem) == 1 { cname = "baga_vec_set_f64" }
                     }
@@ -261,6 +404,19 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "vec_slice") == 1 {
                 cname = "baga_vec_slice_i64"
                 if a1 >= 0 {
+                    let mut bt = vec_box_type(nk, nt, fc, ns, prog, a1)
+                    if str_eq(bt, "") == 0 {
+                        let mut sa = next_sibling(ns, a1)
+                        let mut sb = next_sibling(ns, sa)
+                        let mut r = "baga_vec_slice_box("
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                        r = concat(r, ", ")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, sa))
+                        r = concat(r, ", ")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, sb))
+                        r = concat(r, ", (int64_t)sizeof(")
+                        return concat(concat(r, type_c_name(bt)), "))")
+                    }
                     if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_slice_str" }
                     if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_slice_f64" }
                 }
@@ -268,9 +424,91 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "vec_concat") == 1 {
                 cname = "baga_vec_concat_i64"
                 if a1 >= 0 {
+                    let mut bt = vec_box_type(nk, nt, fc, ns, prog, a1)
+                    if str_eq(bt, "") == 0 {
+                        let mut w = next_sibling(ns, a1)
+                        let mut r = "baga_vec_concat_box("
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                        r = concat(r, ", ")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, w))
+                        r = concat(r, ", (int64_t)sizeof(")
+                        return concat(concat(r, type_c_name(bt)), "))")
+                    }
                     if vec_is_str(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_concat_str" }
                     if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { cname = "baga_vec_concat_f64" }
                 }
+            }
+            // map: диспеч по ключ (история на map_set) и стойност (тип/box)
+            if str_eq(bn, "map_new") == 1 { cname = "baga_map_new" }
+            if str_eq(bn, "map_len") == 1 { cname = "baga_map_len" }
+            if str_eq(bn, "map_set") == 1 {
+                let mut mk: i64 = 0 - 1
+                let mut mv: i64 = 0 - 1
+                if a1 >= 0 {
+                    mk = next_sibling(ns, a1)
+                    if mk >= 0 { mv = next_sibling(ns, mk) }
+                }
+                let mut ksuf = map_key_suffix(nk, nt, fc, ns, prog, a1, mk)
+                if mv >= 0 {
+                    let mut bxname = ""
+                    if node_kind(nk, mv) == 22 { bxname = struct_lit_type_name(nk, nt, fc, ns, prog, mv) }
+                    if str_eq(bxname, "") == 1 { bxname = sum_enum_type_of_expr(nk, nt, fc, ns, prog, mv) }
+                    if str_eq(bxname, "") == 0 {
+                        let mut mn = type_c_name(bxname)
+                        let mut r = concat("({ ", mn)
+                        r = concat(r, " _bx = ")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, mv))
+                        r = concat(r, "; baga_map_set_")
+                        r = concat(r, ksuf)
+                        r = concat(r, "_box(")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                        r = concat(r, ", ")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, mk))
+                        r = concat(r, ", &_bx, (int64_t)sizeof(")
+                        return concat(concat(r, mn), ")); })")
+                    }
+                    cname = concat(concat(concat(concat("baga_map_set_", ksuf), "_"), map_val_suffix_of_expr(nk, nt, fc, ns, prog, mv)), "")
+                }
+            }
+            if str_eq(bn, "map_get") == 1 {
+                let mut mk: i64 = 0 - 1
+                if a1 >= 0 { mk = next_sibling(ns, a1) }
+                let mut ksuf = map_key_suffix(nk, nt, fc, ns, prog, a1, mk)
+                let mut vk = map_val_kind(nk, nt, fc, ns, prog, a1)
+                if str_eq(vk, "") == 1 { vk = "i64" }
+                if len(vk) > 4 {
+                    if str_eq(substr(vk, 0, 4), "box:") == 1 {
+                        // липсващ ключ → нулев struct (като emit_zero_struct)
+                        let mut mn = type_c_name(substr(vk, 4, len(vk)))
+                        let mut r = "({ void *_bp = baga_map_get_"
+                        r = concat(r, ksuf)
+                        r = concat(r, "_box(")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, a1))
+                        r = concat(r, ", ")
+                        r = concat(r, emit_expr(nk, nt, fc, ns, prog, mk))
+                        r = concat(r, "); _bp ? *(")
+                        r = concat(r, mn)
+                        r = concat(r, " *)_bp : (")
+                        r = concat(r, mn)
+                        return concat(r, "){0}; })")
+                    }
+                }
+                cname = concat(concat(concat(concat("baga_map_get_", ksuf), "_"), vk), "")
+            }
+            if str_eq(bn, "map_has") == 1 {
+                let mut mk: i64 = 0 - 1
+                if a1 >= 0 { mk = next_sibling(ns, a1) }
+                cname = concat("baga_map_has_", map_key_suffix(nk, nt, fc, ns, prog, a1, mk))
+            }
+            if str_eq(bn, "map_del") == 1 {
+                let mut mk: i64 = 0 - 1
+                if a1 >= 0 { mk = next_sibling(ns, a1) }
+                cname = concat("baga_map_del_", map_key_suffix(nk, nt, fc, ns, prog, a1, mk))
+            }
+            if str_eq(bn, "map_keys") == 1 {
+                let mut ks = map_key_kind(nk, nt, fc, ns, prog, a1)
+                if str_eq(ks, "") == 1 { ks = "i64" }
+                cname = concat("baga_map_keys_", ks)
             }
             if str_eq(bn, "arg_count") == 1 { cname = "baga_arg_count" }
             if str_eq(bn, "arg") == 1 { cname = "baga_arg" }
@@ -287,6 +525,23 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "mem_persist_end") == 1 { self_unsupported("mem_persist_end") }
             // extern fn (FFI) — директно име, без builtin диспеч (последен печели)
             if is_extern_fn(nk, nt, fc, ns, prog, bn) == 1 { cname = bn }
+            // LP8-D: generic fn повикване → инстанция b_име__iN
+            if str_eq(cname, "") == 1 {
+                let mut gc = gen_call_cname(nk, nt, fc, ns, prog, idx)
+                if str_eq(gc, "") == 0 { cname = gc }
+            }
+            // L5: директно повикване на потребителска fn — по име, без
+            // emit_expr върху callee-то (там fn име става __clo handle)
+            if is_user_fn(nk, nt, fc, ns, prog, bn) == 1 {
+                if str_eq(cname, "") == 1 { cname = mangle(bn) }
+            }
+        }
+        // L5: извикване през fn стойност (handle = cell2 код+env)
+        if str_eq(cname, "") == 1 {
+            let mut ft = expr_fn_type(nk, nt, fc, ns, prog, callee)
+            if str_eq(ft, "") == 0 {
+                return emit_fn_value_call(nk, nt, fc, ns, prog, idx, callee, ft)
+            }
         }
         let mut result = ""
         if str_eq(cname, "") == 0 {

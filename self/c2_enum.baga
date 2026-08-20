@@ -1,0 +1,392 @@
+// c2_enum.baga — LP8 вълна B: sum enum-и с payload-и (tagged union).
+// Моделът е src/codegen_c.c (emit_sum_enum): `int64_t tag` + union от
+// payload типове, static inline конструктори `Em__Vm`, match по .tag с
+// binding от .u.v_Vm. Enum декларация (kind 28) → вариант (kind 29) с
+// текст "Име" или "Име:payloadТип". Път Enum::Variant е kind 41 с текст
+// "Enum::Variant".
+
+import "c2_ast.baga"
+import "c2_lex.baga"
+
+// forward декларации (дефинирани в c2_emit_expr/c2_emit_stmt/c2_emit_type)
+fn mangle(name: str) -> str
+fn int_to_str(n: i64) -> str
+fn c_type(t: str) -> str
+fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
+fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
+fn expr_is_bool(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
+// forward декларация (c2_gen_emit.baga) — LP8-D
+fn emit_gen_struct_typedefs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64)
+
+// Име на вариант (частта преди ':'); payload типът е след ':'.
+fn variant_name(nt: Vec, vnode: i64) -> str {
+    let mut t = node_text(nt, vnode)
+    let mut c = bfind(t, 58, 0)
+    if c < 0 { return t }
+    substr(t, 0, c)
+}
+
+fn variant_payload(nt: Vec, vnode: i64) -> str {
+    let mut t = node_text(nt, vnode)
+    let mut c = bfind(t, 58, 0)
+    if c < 0 { return "" }
+    substr(t, c + 1, len(t))
+}
+
+// "Enum::Variant" → "Enum" / "Variant"
+fn path_enum_name(t: str) -> str {
+    let mut c = bfind(t, 58, 0)
+    if c < 0 { return t }
+    substr(t, 0, c)
+}
+
+fn path_variant_name(t: str) -> str {
+    let mut c = bfind(t, 58, 0)
+    if c < 0 { return "" }
+    substr(t, c + 2, len(t))
+}
+
+fn enum_by_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut e = first_child(fc, prog)
+    while e >= 0 {
+        if node_kind(nk, e) == 28 {
+            if str_eq(node_text(nt, e), name) == 1 { return e }
+        }
+        e = next_sibling(ns, e)
+    }
+    0 - 1
+}
+
+// Enum декларацията (node idx), в която участва вариантът vname, или -1.
+fn enum_of_variant(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vname: str) -> i64 {
+    let mut e = first_child(fc, prog)
+    while e >= 0 {
+        if node_kind(nk, e) == 28 {
+            let mut v = first_child(fc, e)
+            while v >= 0 {
+                if str_eq(variant_name(nt, v), vname) == 1 { return e }
+                v = next_sibling(ns, v)
+            }
+        }
+        e = next_sibling(ns, e)
+    }
+    0 - 1
+}
+
+// Sum enum = поне един вариант с payload.
+fn enum_is_sum(nk: Vec, nt: Vec, fc: Vec, ns: Vec, enode: i64) -> i64 {
+    let mut v = first_child(fc, enode)
+    while v >= 0 {
+        if str_eq(variant_payload(nt, v), "") == 0 { return 1 }
+        v = next_sibling(ns, v)
+    }
+    0
+}
+
+// C име на enum вариант ("b_Enum_Variant") — преместена от c2_emit_expr
+// (file-size gate, LP8-D)
+fn enum_variant_cname(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
+    let mut e = first_child(fc, prog)
+    while e >= 0 {
+        if node_kind(nk, e) == 28 {
+            let mut v = first_child(fc, e)
+            while v >= 0 {
+                if str_eq(node_text(nt, v), name) == 1 {
+                    return concat(concat(mangle(node_text(nt, e)), "_"), mangle(name))
+                }
+                v = next_sibling(ns, v)
+            }
+        }
+        e = next_sibling(ns, e)
+    }
+    ""
+}
+
+fn enum_variant_index(nk: Vec, nt: Vec, fc: Vec, ns: Vec, enode: i64, vname: str) -> i64 {
+    let mut vi: i64 = 0
+    let mut v = first_child(fc, enode)
+    while v >= 0 {
+        if str_eq(variant_name(nt, v), vname) == 1 { return vi }
+        vi = vi + 1
+        v = next_sibling(ns, v)
+    }
+    0 - 1
+}
+
+fn enum_payload_of(nk: Vec, nt: Vec, fc: Vec, ns: Vec, enode: i64, vname: str) -> str {
+    let mut v = first_child(fc, enode)
+    while v >= 0 {
+        if str_eq(variant_name(nt, v), vname) == 1 { return variant_payload(nt, v) }
+        v = next_sibling(ns, v)
+    }
+    ""
+}
+
+// Ако изразът е sum enum стойност (конструкторно повикване, bare вариант
+// или Enum::Variant път) — името на enum-а; иначе "". За box пътищата
+// (Vec<enum>/Map<_, enum>) и LET типовете.
+fn sum_enum_type_of_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str {
+    let mut k = node_kind(nk, e)
+    if k == 4 {
+        let mut cal = first_child(fc, e)
+        let mut ck = node_kind(nk, cal)
+        if ck == 2 {
+            let mut eo = enum_of_variant(nk, nt, fc, ns, prog, node_text(nt, cal))
+            if eo >= 0 {
+                if enum_is_sum(nk, nt, fc, ns, eo) == 1 {
+                    if str_eq(enum_payload_of(nk, nt, fc, ns, eo, node_text(nt, cal)), "") == 0 {
+                        return node_text(nt, eo)
+                    }
+                }
+            }
+        }
+        if ck == 41 {
+            let mut en = path_enum_name(node_text(nt, cal))
+            let mut eo = enum_by_name(nk, nt, fc, ns, prog, en)
+            if eo >= 0 {
+                if enum_is_sum(nk, nt, fc, ns, eo) == 1 {
+                    if str_eq(enum_payload_of(nk, nt, fc, ns, eo, path_variant_name(node_text(nt, cal))), "") == 0 {
+                        return en
+                    }
+                }
+            }
+        }
+        return ""
+    }
+    if k == 2 {
+        let mut eo = enum_of_variant(nk, nt, fc, ns, prog, node_text(nt, e))
+        if eo >= 0 {
+            if enum_is_sum(nk, nt, fc, ns, eo) == 1 { return node_text(nt, eo) }
+        }
+    }
+    if k == 41 {
+        let mut en = path_enum_name(node_text(nt, e))
+        let mut eo = enum_by_name(nk, nt, fc, ns, prog, en)
+        if eo >= 0 {
+            if enum_is_sum(nk, nt, fc, ns, eo) == 1 { return en }
+        }
+    }
+    ""
+}
+
+// Payload тип на match binding (Variant(x) => ...) за променлива vname;
+// "" ако не е match binding. Линеен скен по всички arm възли (kind 27) —
+// хваща и вложени match-ове.
+fn match_binding_payload_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vname: str) -> str {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 27 {
+            let mut pat = first_child(fc, i)
+            if node_kind(nk, pat) == 4 {
+                let mut cal = first_child(fc, pat)
+                let mut eo: i64 = 0 - 1
+                let mut vn = ""
+                if node_kind(nk, cal) == 2 {
+                    vn = node_text(nt, cal)
+                    eo = enum_of_variant(nk, nt, fc, ns, prog, vn)
+                }
+                if node_kind(nk, cal) == 41 {
+                    vn = path_variant_name(node_text(nt, cal))
+                    eo = enum_by_name(nk, nt, fc, ns, prog, path_enum_name(node_text(nt, cal)))
+                }
+                if eo >= 0 {
+                    let mut barg = next_sibling(ns, cal)
+                    if barg >= 0 {
+                        if node_kind(nk, barg) == 2 {
+                            if str_eq(node_text(nt, barg), vname) == 1 {
+                                return enum_payload_of(nk, nt, fc, ns, eo, vn)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// Enum декларацията на sum match (по първия pattern, който е sum вариант),
+// или -1 при match по скалари/plain enum (старата емисия).
+fn match_sum_enum(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, mnode: i64) -> i64 {
+    let mut arm = next_sibling(ns, first_child(fc, mnode))
+    while arm >= 0 {
+        if str_eq(node_text(nt, arm), "_") == 0 {
+            let mut pat = first_child(fc, arm)
+            let mut pk = node_kind(nk, pat)
+            let mut eo: i64 = 0 - 1
+            if pk == 2 { eo = enum_of_variant(nk, nt, fc, ns, prog, node_text(nt, pat)) }
+            if pk == 41 { eo = enum_by_name(nk, nt, fc, ns, prog, path_enum_name(node_text(nt, pat))) }
+            if pk == 4 {
+                let mut cal = first_child(fc, pat)
+                if node_kind(nk, cal) == 2 { eo = enum_of_variant(nk, nt, fc, ns, prog, node_text(nt, cal)) }
+                if node_kind(nk, cal) == 41 { eo = enum_by_name(nk, nt, fc, ns, prog, path_enum_name(node_text(nt, cal))) }
+            }
+            if eo >= 0 {
+                if enum_is_sum(nk, nt, fc, ns, eo) == 1 { return eo }
+            }
+        }
+        arm = next_sibling(ns, arm)
+    }
+    0 - 1
+}
+
+// L3 sum enum → tagged C struct + union + static inline конструктори
+// (модел: emit_sum_enum в src/codegen_c.c; int64_t tag, нулиран union).
+fn emit_sum_enum_decl(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, en: i64) {
+    let mut em = mangle(node_text(nt, en))
+    write("typedef struct {\n    int64_t tag;\n    union {\n")
+    let mut v = first_child(fc, en)
+    while v >= 0 {
+        let mut pt = variant_payload(nt, v)
+        if str_eq(pt, "") == 0 {
+            write(concat(concat(concat(concat("        ", c_type(pt)), " v_"), mangle(variant_name(nt, v))), ";\n"))
+        }
+        v = next_sibling(ns, v)
+    }
+    write(concat(concat("    } u;\n} ", em), ";\n\n"))
+    let mut vi: i64 = 0
+    v = first_child(fc, en)
+    while v >= 0 {
+        let mut vm = mangle(variant_name(nt, v))
+        let mut pt = variant_payload(nt, v)
+        if str_eq(pt, "") == 0 {
+            let mut h1 = concat(concat(concat(concat("static inline ", em), " "), concat(em, "__")), concat(vm, "("))
+            let mut h2 = concat(concat(concat(h1, c_type(pt)), " a0) {\n    "), concat(em, " r = {0}; r.tag = "))
+            write(concat(concat(concat(h2, int_to_str(vi)), "; r.u.v_"), concat(vm, " = a0; return r;\n}\n\n")))
+        } else {
+            let mut h1 = concat(concat(concat(concat("static inline ", em), " "), concat(em, "__")), concat(vm, "(void) {\n    "))
+            write(concat(concat(concat(h1, em), " r = {0}; r.tag = "), concat(int_to_str(vi), "; return r;\n}\n\n")))
+        }
+        vi = vi + 1
+        v = next_sibling(ns, v)
+    }
+}
+
+// Декларации на типовете: plain enum-и (typedef enum), после struct-ове,
+// после sum enum-и (payload-ите им може да са struct/enum — редът на
+// деклариране в изходника трябва да е dependency-нарастващ, като при
+// emit_structs_and_sum_enums на bootstrap-а).
+fn emit_type_decls(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut en = first_child(fc, prog)
+    while en >= 0 {
+        if node_kind(nk, en) == 28 {
+            if enum_is_sum(nk, nt, fc, ns, en) == 0 {
+                write("typedef enum {\n")
+                let mut v = first_child(fc, en)
+                let mut vi: i64 = 0
+                while v >= 0 {
+                    write(concat(concat(concat(concat("    ", mangle(node_text(nt, en))), "_"), concat(mangle(node_text(nt, v)), " = ")), concat(int_to_str(vi), ",\n")))
+                    vi = vi + 1
+                    v = next_sibling(ns, v)
+                }
+                write(concat(concat("} ", mangle(node_text(nt, en))), ";\n\n"))
+            }
+        }
+        en = next_sibling(ns, en)
+    }
+    let mut st = first_child(fc, prog)
+    while st >= 0 {
+        if node_kind(nk, st) == 21 {
+            // LP8-D: generic struct няма собствен typedef — само инстанции
+            // (emit_gen_struct_typedefs по-долу)
+            let mut is_gen: i64 = 0
+            let mut gc = first_child(fc, st)
+            while gc >= 0 {
+                if node_kind(nk, gc) == 43 { is_gen = 1 }
+                gc = next_sibling(ns, gc)
+            }
+            if is_gen == 0 {
+                write("typedef struct {\n")
+                let mut fld = first_child(fc, st)
+                while fld >= 0 {
+                    let mut ftext = node_text(nt, fld)
+                    let mut ci: i64 = 0
+                    let mut fnl = len(ftext)
+                    while ci < fnl {
+                        if char_at(ftext, ci) == 58 { break }
+                        ci = ci + 1
+                    }
+                    let mut fname = substr(ftext, 0, ci)
+                    let mut ftype = "i64"
+                    if ci + 1 < fnl { ftype = substr(ftext, ci + 1, fnl) }
+                    write(concat(concat(concat("    ", c_type(ftype)), concat(" ", mangle(fname))), ";\n"))
+                    fld = next_sibling(ns, fld)
+                }
+                write(concat(concat("} ", mangle(node_text(nt, st))), ";\n\n"))
+            }
+        }
+        st = next_sibling(ns, st)
+    }
+    // LP8-D: typedef-и на generic struct инстанциите
+    emit_gen_struct_typedefs(nk, nt, fc, ns, prog)
+    let mut se = first_child(fc, prog)
+    while se >= 0 {
+        if node_kind(nk, se) == 28 {
+            if enum_is_sum(nk, nt, fc, ns, se) == 1 {
+                emit_sum_enum_decl(nk, nt, fc, ns, prog, se)
+            }
+        }
+        se = next_sibling(ns, se)
+    }
+}
+
+// L3 match върху sum enum — сравнение по .tag, binding от .u.v_Vm
+// (модел: NODE_MATCH в src/codegen_c.c; GCC statement expression).
+fn emit_sum_match(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, ed: i64) -> str {
+    let mut mexpr = first_child(fc, idx)
+    let mut arm1 = next_sibling(ns, mexpr)
+    let mut ctype = "int64_t"
+    if arm1 >= 0 {
+        let mut b1 = first_child(fc, arm1)
+        if str_eq(node_text(nt, arm1), "_") == 0 { b1 = next_sibling(ns, b1) }
+        if b1 >= 0 {
+            if expr_is_str(nk, nt, fc, ns, prog, b1) == 1 { ctype = "const char *" }
+            else {
+                if expr_is_float(nk, nt, fc, ns, prog, b1) == 1 { ctype = "double" }
+                else { if expr_is_bool(nk, nt, fc, ns, prog, b1) == 1 { ctype = "int" } }
+            }
+        }
+    }
+    let mut suf = int_to_str(idx)
+    let mut r = concat(concat(concat(concat("({ ", ctype), concat(" _mr", suf)), " = 0; "), concat(concat(mangle(node_text(nt, ed)), concat(" _mv", suf)), " = "))
+    r = concat(r, concat(emit_expr(nk, nt, fc, ns, prog, mexpr), "; "))
+    let mut arm = arm1
+    let mut first_arm: i64 = 1
+    while arm >= 0 {
+        let mut abody = first_child(fc, arm)
+        if str_eq(node_text(nt, arm), "_") == 1 {
+            r = concat(r, "else { ")
+        } else {
+            let mut pat = abody
+            abody = next_sibling(ns, pat)
+            let mut pk = node_kind(nk, pat)
+            let mut vname = ""
+            let mut bind = ""
+            if pk == 2 { vname = node_text(nt, pat) }
+            if pk == 41 { vname = path_variant_name(node_text(nt, pat)) }
+            if pk == 4 {
+                let mut cal = first_child(fc, pat)
+                if node_kind(nk, cal) == 2 { vname = node_text(nt, cal) }
+                if node_kind(nk, cal) == 41 { vname = path_variant_name(node_text(nt, cal)) }
+                let mut barg = next_sibling(ns, cal)
+                if barg >= 0 {
+                    if node_kind(nk, barg) == 2 { bind = node_text(nt, barg) }
+                }
+            }
+            if first_arm == 0 { r = concat(r, "else ") }
+            r = concat(concat(concat(concat(concat(r, "if (_mv"), suf), ".tag == "), int_to_str(enum_variant_index(nk, nt, fc, ns, ed, vname))), ") { ")
+            if str_eq(bind, "") == 0 {
+                let mut ptc = c_type(enum_payload_of(nk, nt, fc, ns, ed, vname))
+                let mut bnd = concat(concat(concat(concat(ptc, " "), mangle(bind)), " = _mv"), suf)
+                r = concat(concat(concat(concat(r, bnd), ".u.v_"), mangle(vname)), "; ")
+            }
+        }
+        r = concat(concat(concat(concat(r, "_mr"), suf), " = "), concat(emit_expr(nk, nt, fc, ns, prog, abody), "; } "))
+        first_arm = 0
+        arm = next_sibling(ns, arm)
+    }
+    concat(concat(concat(r, "_mr"), suf), "; })")
+}

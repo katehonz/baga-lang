@@ -2,7 +2,7 @@
 // Фаза 2: lexer + parser + codegen → C код
 // Използване: ./baga self/compiler.baga
 // Генерира /tmp/baga_out.c от examples/zdravei.baga
-// Модули: c2_ast / c2_lex / c2_parse* / c2_emit_* / c2_check / c2_spec.
+// Модули: c2_ast / c2_lex / c2_parse* / c2_emit_* / c2_classify / c2_check / c2_spec / c2_gen*.
 
 import "c2_ast.baga"
 import "c2_lex.baga"
@@ -10,9 +10,17 @@ import "c2_parse.baga"
 import "c2_parse_stmt.baga"
 import "c2_emit_expr.baga"
 import "c2_emit_stmt.baga"
+import "c2_classify.baga"
+import "c2_emit_eff.baga"
+import "c2_enum.baga"
+import "c2_clo.baga"
 import "c2_check.baga"
 import "c2_spec.baga"
 import "c2_import.baga"
+import "c2_gen.baga"
+import "c2_gen_subst.baga"
+import "c2_gen_emit.baga"
+import "c2_par.baga"
 
 // ============================================================
 //  Main
@@ -74,7 +82,17 @@ fn main() {
                                 let mut sp = parse_spec(tk, tt, pos, nk, nt, fc, ns)
                                 ast_child(fc, ns, prog, sp)
                             } else {
-                                vec_set(pos, 0, vec_get(pos, 0) + 1)
+                                if str_eq(vec_get_str(tt, vec_get(pos, 0)), "trait") == 1 {
+                                    let mut tr = parse_trait(tk, tt, pos, nk, nt, fc, ns)
+                                    ast_child(fc, ns, prog, tr)
+                                } else {
+                                    if str_eq(vec_get_str(tt, vec_get(pos, 0)), "impl") == 1 {
+                                        let mut im = parse_impl(tk, tt, pos, nk, nt, fc, ns)
+                                        ast_child(fc, ns, prog, im)
+                                    } else {
+                                        vec_set(pos, 0, vec_get(pos, 0) + 1)
+                                    }
+                                }
                             }
                         }
                     }
@@ -93,7 +111,11 @@ fn main() {
     write("#include <stdio.h>\n")
     write("#include <stdlib.h>\n")
     write("#include <stdint.h>\n")
-    write("#include <string.h>\n\n")
+    write("#include <string.h>\n")
+    write("#include <errno.h>\n")
+    write("#include <time.h>\n")
+    write("#include <pthread.h>\n")
+    write("#include <math.h>\n\n")
     // runtime helpers
     write("static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n")
     write("static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n")
@@ -120,7 +142,11 @@ fn main() {
     write("    if ((c&0xF0)==0xE0) return ((int64_t)(c&0x0F)<<12)|(((int64_t)(unsigned char)s[1]&0x3F)<<6)|((int64_t)(unsigned char)s[2]&0x3F);\n")
     write("    return ((int64_t)(c&0x07)<<18)|(((int64_t)(unsigned char)s[1]&0x3F)<<12)|(((int64_t)(unsigned char)s[2]&0x3F)<<6)|((int64_t)(unsigned char)s[3]&0x3F); }\n")
     write("static const char *baga_i64_to_str(int64_t x) { char *r = malloc(24); snprintf(r, 24, \"%lld\", (long long)x); return r; }\n")
+    write("static const char *baga_f64_to_str(double x) { char *r = malloc(32); snprintf(r, 32, \"%g\", x); return r; }\n")
     write("typedef struct { unsigned char *data; int64_t len; } baga_bytes;\n")
+    write("/* M20 ефекти с payload: таг + по един слот за i64/f64/str/bytes (като C bootstrap-а) */\n")
+    write("typedef struct { int64_t tag; int64_t i; double f; const char *s; baga_bytes b; } baga_eff;\n")
+    write("static baga_eff baga_eff_tl;\n")
     write("static int64_t baga_bytes_len(baga_bytes b) { return b.len; }\n")
     write("static int64_t baga_bytes_at(baga_bytes b, int64_t i) { return (int64_t)b.data[i]; }\n")
     write("static baga_bytes baga_bytes_slice(baga_bytes b, int64_t a, int64_t c) {\n")
@@ -153,6 +179,22 @@ fn main() {
     write("        buf[len++] = (unsigned char)(hi * 16 + lo); i += 2; }\n")
     write("    baga_bytes r; r.data = buf; r.len = len; return r; }\n")
     write("static baga_bytes baga_bytes_from_hex(const char *s) { return baga_hex_decode(s); }\n")
+    write("static baga_bytes baga_bytes_new(int64_t n) {\n")
+    write("    if (n < 0) n = 0;\n")
+    write("    baga_bytes b; b.len = n; b.data = malloc((size_t)(n > 0 ? n : 1));\n")
+    write("    memset(b.data, 0, (size_t)(n > 0 ? n : 1));\n")
+    write("    return b; }\n")
+    write("static baga_bytes baga_bytes_push(baga_bytes b, int64_t v) {\n")
+    write("    baga_bytes r; r.len = b.len + 1; r.data = malloc((size_t)r.len);\n")
+    write("    memcpy(r.data, b.data, (size_t)b.len);\n")
+    write("    r.data[b.len] = (unsigned char)(v & 0xff);\n")
+    write("    return r; }\n")
+    write("static int64_t baga_bytes_h(baga_bytes b) {\n")
+    write("    baga_bytes *p = malloc(sizeof(baga_bytes));\n")
+    write("    p->data = b.data; p->len = b.len; return (int64_t)(intptr_t)p; }\n")
+    write("static baga_bytes baga_h_bytes(int64_t h) {\n")
+    write("    baga_bytes z; z.data = (unsigned char *)\"\"; z.len = 0;\n")
+    write("    if (!h) return z; return *(baga_bytes *)(intptr_t)h; }\n")
     write("static const char *baga_read_file(const char *path) {\n")
     write("    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n")
     write("    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n")
@@ -204,6 +246,238 @@ fn main() {
     write("    for (int64_t i = 0; i < v->len; i++) { union { double d; void *p; } u; u.p = v->data[i]; baga_vec_push_f64(r, u.d); }\n")
     write("    for (int64_t i = 0; i < w->len; i++) { union { double d; void *p; } u; u.p = w->data[i]; baga_vec_push_f64(r, u.d); }\n")
     write("    return r; }\n")
+    write("/* Vec<struct>: елементите са box-нати по указател (като C bootstrap-а) */\n")
+    write("static void baga_vec_push_box(baga_Vec *v, const void *src, int64_t size) {\n")
+    write("    baga_vec_grow(v);\n")
+    write("    void *p = malloc((size_t)size); memcpy(p, src, (size_t)size);\n")
+    write("    v->data[v->len++] = p; }\n")
+    write("static void *baga_vec_get_box(baga_Vec *v, int64_t i) { return v->data[i]; }\n")
+    write("static void baga_vec_set_box(baga_Vec *v, int64_t i, const void *src, int64_t size) {\n")
+    write("    memcpy(v->data[i], src, (size_t)size); }\n")
+    write("static baga_Vec *baga_vec_slice_box(baga_Vec *v, int64_t a, int64_t b, int64_t size) {\n")
+    write("    if (a < 0) a = 0; if (b > v->len) b = v->len; if (b < a) b = a;\n")
+    write("    baga_Vec *r = baga_vec_new();\n")
+    write("    for (int64_t i = a; i < b; i++) baga_vec_push_box(r, v->data[i], size);\n")
+    write("    return r; }\n")
+    write("static baga_Vec *baga_vec_concat_box(baga_Vec *v, baga_Vec *w, int64_t size) {\n")
+    write("    baga_Vec *r = baga_vec_new();\n")
+    write("    for (int64_t i = 0; i < v->len; i++) baga_vec_push_box(r, v->data[i], size);\n")
+    write("    for (int64_t i = 0; i < w->len; i++) baga_vec_push_box(r, w->data[i], size);\n")
+    write("    return r; }\n")
+    write("static void baga_vec_push_bytes(baga_Vec *v, baga_bytes b) {\n")
+    write("    baga_vec_grow(v);\n")
+    write("    baga_bytes *p = malloc(sizeof(baga_bytes)); *p = b;\n")
+    write("    v->data[v->len++] = p; }\n")
+    write("/* hash map: chaining, ключ i64/str/bytes, стойност i64/str/f64/bytes/box (като C bootstrap-а) */\n")
+    write("typedef struct baga_MapEntry {\n")
+    write("    int64_t ik; const char *sk; baga_bytes bk; int64_t ktag;\n")
+    write("    int64_t iv; double fv; const char *sv; baga_bytes bv; void *pv;\n")
+    write("    struct baga_MapEntry *next;\n")
+    write("} baga_MapEntry;\n")
+    write("typedef struct { baga_MapEntry **b; int64_t nb; int64_t len; } baga_Map;\n")
+    write("static uint64_t baga_map_hash_str(const char *s) {\n")
+    write("    uint64_t h = 1469598103934665603ULL;\n")
+    write("    while (*s) { h ^= (unsigned char)*s++; h *= 1099511628211ULL; }\n")
+    write("    return h; }\n")
+    write("static uint64_t baga_map_hash_bytes(baga_bytes k) {\n")
+    write("    uint64_t h = 1469598103934665603ULL;\n")
+    write("    for (int64_t i = 0; i < k.len; i++) { h ^= k.data[i]; h *= 1099511628211ULL; }\n")
+    write("    return h; }\n")
+    write("static uint64_t baga_map_hash_i64(int64_t k) {\n")
+    write("    uint64_t x = (uint64_t)k;\n")
+    write("    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;\n")
+    write("    x *= 0xc4ceb9fe1a85ec53ULL; x ^= x >> 33; return x; }\n")
+    write("static baga_Map *baga_map_new(void) {\n")
+    write("    baga_Map *m = malloc(sizeof(baga_Map));\n")
+    write("    m->nb = 16; m->len = 0;\n")
+    write("    m->b = malloc(sizeof(baga_MapEntry *) * (size_t)m->nb);\n")
+    write("    for (int64_t i = 0; i < m->nb; i++) m->b[i] = NULL;\n")
+    write("    return m; }\n")
+    write("static baga_MapEntry **baga_map_slot(baga_Map *m, int64_t ik, const char *sk, uint64_t h) {\n")
+    write("    baga_MapEntry **e = &m->b[h % (uint64_t)m->nb];\n")
+    write("    while (*e) {\n")
+    write("        if (sk ? ((*e)->sk && strcmp((*e)->sk, sk) == 0)\n")
+    write("               : (!(*e)->sk && (*e)->ik == ik)) return e;\n")
+    write("        e = &(*e)->next; }\n")
+    write("    return e; }\n")
+    write("static void baga_map_rehash(baga_Map *m) {\n")
+    write("    int64_t onb = m->nb; baga_MapEntry **ob = m->b;\n")
+    write("    m->nb *= 2;\n")
+    write("    m->b = malloc(sizeof(baga_MapEntry *) * (size_t)m->nb);\n")
+    write("    for (int64_t i = 0; i < m->nb; i++) m->b[i] = NULL;\n")
+    write("    for (int64_t i = 0; i < onb; i++) {\n")
+    write("        baga_MapEntry *e = ob[i];\n")
+    write("        while (e) {\n")
+    write("            baga_MapEntry *nx = e->next;\n")
+    write("            uint64_t h = e->ktag == 2 ? baga_map_hash_bytes(e->bk)\n")
+    write("                       : e->sk ? baga_map_hash_str(e->sk) : baga_map_hash_i64(e->ik);\n")
+    write("            e->next = m->b[h % (uint64_t)m->nb];\n")
+    write("            m->b[h % (uint64_t)m->nb] = e;\n")
+    write("            e = nx; } }\n")
+    write("    free(ob); }\n")
+    write("static baga_MapEntry *baga_map_put(baga_Map *m, int64_t ik, const char *sk, uint64_t h) {\n")
+    write("    baga_MapEntry **slot = baga_map_slot(m, ik, sk, h);\n")
+    write("    if (*slot) return *slot;\n")
+    write("    baga_MapEntry *e = malloc(sizeof(baga_MapEntry));\n")
+    write("    e->ik = ik; e->sk = sk; e->iv = 0; e->fv = 0; e->sv = NULL;\n")
+    write("    e->bv.data = NULL; e->bv.len = 0; e->pv = NULL; e->next = NULL;\n")
+    write("    e->ktag = sk ? 1 : 0; e->bk.data = NULL; e->bk.len = 0;\n")
+    write("    *slot = e; m->len++;\n")
+    write("    if (m->len * 4 > m->nb * 3) baga_map_rehash(m);\n")
+    write("    return e; }\n")
+    write("static int64_t baga_map_len(baga_Map *m) { return m ? m->len : 0; }\n")
+    write("static void baga_map_set_str_i64(baga_Map *m, const char *k, int64_t v) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, 0, k, baga_map_hash_str(k));\n")
+    write("    e->iv = v; }\n")
+    write("static int64_t baga_map_get_str_i64(baga_Map *m, const char *k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, 0, k, baga_map_hash_str(k));\n")
+    write("    return e ? e->iv : 0; }\n")
+    write("static void baga_map_set_str_str(baga_Map *m, const char *k, const char *v) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, 0, k, baga_map_hash_str(k));\n")
+    write("    e->sv = v; }\n")
+    write("static const char *baga_map_get_str_str(baga_Map *m, const char *k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, 0, k, baga_map_hash_str(k));\n")
+    write("    return (e && e->sv) ? e->sv : \"\"; }\n")
+    write("static void baga_map_set_str_f64(baga_Map *m, const char *k, double v) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, 0, k, baga_map_hash_str(k));\n")
+    write("    e->fv = v; }\n")
+    write("static double baga_map_get_str_f64(baga_Map *m, const char *k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, 0, k, baga_map_hash_str(k));\n")
+    write("    return e ? e->fv : 0; }\n")
+    write("static void baga_map_set_str_bytes(baga_Map *m, const char *k, baga_bytes v) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, 0, k, baga_map_hash_str(k));\n")
+    write("    e->bv = v; }\n")
+    write("static baga_bytes baga_map_get_str_bytes(baga_Map *m, const char *k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, 0, k, baga_map_hash_str(k));\n")
+    write("    if (!e) { baga_bytes z; z.data = NULL; z.len = 0; return z; }\n")
+    write("    return e->bv; }\n")
+    write("static void baga_map_set_str_box(baga_Map *m, const char *k, const void *src, int64_t size) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, 0, k, baga_map_hash_str(k));\n")
+    write("    if (!e->pv) e->pv = malloc((size_t)size);\n")
+    write("    memcpy(e->pv, src, (size_t)size); }\n")
+    write("static void *baga_map_get_str_box(baga_Map *m, const char *k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, 0, k, baga_map_hash_str(k));\n")
+    write("    return e ? e->pv : NULL; }\n")
+    write("static int64_t baga_map_has_str(baga_Map *m, const char *k) {\n")
+    write("    return *baga_map_slot(m, 0, k, baga_map_hash_str(k)) ? 1 : 0; }\n")
+    write("static void baga_map_del_str(baga_Map *m, const char *k) {\n")
+    write("    baga_MapEntry **slot = baga_map_slot(m, 0, k, baga_map_hash_str(k));\n")
+    write("    if (!*slot) return;\n")
+    write("    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n")
+    write("    free(e); }\n")
+    write("static baga_Vec *baga_map_keys_str(baga_Map *m) {\n")
+    write("    baga_Vec *v = baga_vec_new();\n")
+    write("    for (int64_t i = 0; i < m->nb; i++)\n")
+    write("        for (baga_MapEntry *e = m->b[i]; e; e = e->next)\n")
+    write("            baga_vec_push_str(v, e->sk ? e->sk : \"\");\n")
+    write("    return v; }\n")
+    write("static void baga_map_set_i64_i64(baga_Map *m, int64_t k, int64_t v) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    e->iv = v; }\n")
+    write("static int64_t baga_map_get_i64_i64(baga_Map *m, int64_t k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    return e ? e->iv : 0; }\n")
+    write("static void baga_map_set_i64_str(baga_Map *m, int64_t k, const char *v) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    e->sv = v; }\n")
+    write("static const char *baga_map_get_i64_str(baga_Map *m, int64_t k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    return (e && e->sv) ? e->sv : \"\"; }\n")
+    write("static void baga_map_set_i64_f64(baga_Map *m, int64_t k, double v) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    e->fv = v; }\n")
+    write("static double baga_map_get_i64_f64(baga_Map *m, int64_t k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    return e ? e->fv : 0; }\n")
+    write("static void baga_map_set_i64_bytes(baga_Map *m, int64_t k, baga_bytes v) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    e->bv = v; }\n")
+    write("static baga_bytes baga_map_get_i64_bytes(baga_Map *m, int64_t k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    if (!e) { baga_bytes z; z.data = NULL; z.len = 0; return z; }\n")
+    write("    return e->bv; }\n")
+    write("static void baga_map_set_i64_box(baga_Map *m, int64_t k, const void *src, int64_t size) {\n")
+    write("    baga_MapEntry *e = baga_map_put(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    if (!e->pv) e->pv = malloc((size_t)size);\n")
+    write("    memcpy(e->pv, src, (size_t)size); }\n")
+    write("static void *baga_map_get_i64_box(baga_Map *m, int64_t k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    return e ? e->pv : NULL; }\n")
+    write("static int64_t baga_map_has_i64(baga_Map *m, int64_t k) {\n")
+    write("    return *baga_map_slot(m, k, NULL, baga_map_hash_i64(k)) ? 1 : 0; }\n")
+    write("static void baga_map_del_i64(baga_Map *m, int64_t k) {\n")
+    write("    baga_MapEntry **slot = baga_map_slot(m, k, NULL, baga_map_hash_i64(k));\n")
+    write("    if (!*slot) return;\n")
+    write("    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n")
+    write("    free(e); }\n")
+    write("static baga_Vec *baga_map_keys_i64(baga_Map *m) {\n")
+    write("    baga_Vec *v = baga_vec_new();\n")
+    write("    for (int64_t i = 0; i < m->nb; i++)\n")
+    write("        for (baga_MapEntry *e = m->b[i]; e; e = e->next)\n")
+    write("            baga_vec_push_i64(v, e->ik);\n")
+    write("    return v; }\n")
+    write("static baga_MapEntry **baga_map_slot_b(baga_Map *m, baga_bytes k, uint64_t h) {\n")
+    write("    baga_MapEntry **e = &m->b[h % (uint64_t)m->nb];\n")
+    write("    while (*e) {\n")
+    write("        if ((*e)->ktag == 2 && (*e)->bk.len == k.len &&\n")
+    write("            (k.len == 0 || memcmp((*e)->bk.data, k.data, (size_t)k.len) == 0)) return e;\n")
+    write("        e = &(*e)->next; }\n")
+    write("    return e; }\n")
+    write("static baga_MapEntry *baga_map_put_b(baga_Map *m, baga_bytes k, uint64_t h) {\n")
+    write("    baga_MapEntry **slot = baga_map_slot_b(m, k, h);\n")
+    write("    if (*slot) return *slot;\n")
+    write("    baga_MapEntry *e = malloc(sizeof(baga_MapEntry));\n")
+    write("    e->ik = 0; e->sk = NULL; e->bk = k; e->ktag = 2;\n")
+    write("    e->iv = 0; e->fv = 0; e->sv = NULL;\n")
+    write("    e->bv.data = NULL; e->bv.len = 0; e->pv = NULL; e->next = NULL;\n")
+    write("    *slot = e; m->len++;\n")
+    write("    if (m->len * 4 > m->nb * 3) baga_map_rehash(m);\n")
+    write("    return e; }\n")
+    write("static void baga_map_set_bytes_i64(baga_Map *m, baga_bytes k, int64_t v) {\n")
+    write("    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    e->iv = v; }\n")
+    write("static int64_t baga_map_get_bytes_i64(baga_Map *m, baga_bytes k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    return e ? e->iv : 0; }\n")
+    write("static void baga_map_set_bytes_str(baga_Map *m, baga_bytes k, const char *v) {\n")
+    write("    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    e->sv = v; }\n")
+    write("static const char *baga_map_get_bytes_str(baga_Map *m, baga_bytes k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    return (e && e->sv) ? e->sv : \"\"; }\n")
+    write("static void baga_map_set_bytes_f64(baga_Map *m, baga_bytes k, double v) {\n")
+    write("    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    e->fv = v; }\n")
+    write("static double baga_map_get_bytes_f64(baga_Map *m, baga_bytes k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    return e ? e->fv : 0; }\n")
+    write("static void baga_map_set_bytes_bytes(baga_Map *m, baga_bytes k, baga_bytes v) {\n")
+    write("    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    e->bv = v; }\n")
+    write("static baga_bytes baga_map_get_bytes_bytes(baga_Map *m, baga_bytes k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    if (!e) { baga_bytes z; z.data = NULL; z.len = 0; return z; }\n")
+    write("    return e->bv; }\n")
+    write("static void baga_map_set_bytes_box(baga_Map *m, baga_bytes k, const void *src, int64_t size) {\n")
+    write("    baga_MapEntry *e = baga_map_put_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    if (!e->pv) e->pv = malloc((size_t)size);\n")
+    write("    memcpy(e->pv, src, (size_t)size); }\n")
+    write("static void *baga_map_get_bytes_box(baga_Map *m, baga_bytes k) {\n")
+    write("    baga_MapEntry *e = *baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    return e ? e->pv : NULL; }\n")
+    write("static int64_t baga_map_has_bytes(baga_Map *m, baga_bytes k) {\n")
+    write("    return *baga_map_slot_b(m, k, baga_map_hash_bytes(k)) ? 1 : 0; }\n")
+    write("static void baga_map_del_bytes(baga_Map *m, baga_bytes k) {\n")
+    write("    baga_MapEntry **slot = baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n")
+    write("    if (!*slot) return;\n")
+    write("    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n")
+    write("    free(e); }\n")
+    write("static baga_Vec *baga_map_keys_bytes(baga_Map *m) {\n")
+    write("    baga_Vec *v = baga_vec_new();\n")
+    write("    for (int64_t i = 0; i < m->nb; i++)\n")
+    write("        for (baga_MapEntry *e = m->b[i]; e; e = e->next)\n")
+    write("            baga_vec_push_bytes(v, e->bk);\n")
+    write("    return v; }\n")
     write("static int baga_argc = 0;\n")
     write("static char **baga_argv = 0;\n")
     write("static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n")
@@ -249,83 +523,68 @@ fn main() {
     write("static void baga_arena_reset(int64_t h) {\n")
     write("    baga_Arena *a = (baga_Arena *)(intptr_t)h; a->used = 0;\n")
     write("}\n")
+    write("static int64_t baga_cell2(int64_t a, int64_t b) {\n")
+    write("    int64_t *p = (int64_t *)malloc(2 * sizeof(int64_t));\n")
+    write("    if (!p) { fprintf(stderr, \"baga: cell2: oom\\n\"); exit(1); }\n")
+    write("    p[0] = a; p[1] = b; return (int64_t)(intptr_t)p; }\n")
+    write("static int64_t baga_cell2_0(int64_t h) { return ((int64_t *)(intptr_t)h)[0]; }\n")
+    write("static int64_t baga_cell2_1(int64_t h) { return ((int64_t *)(intptr_t)h)[1]; }\n")
     write("static void baga_arena_free(int64_t h) {\n")
     write("    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n")
     write("    free(a->base); free(a);\n")
     write("}\n\n")
 
-    // enum declarations
-    let mut en = first_child(fc, prog)
-    while en >= 0 {
-        if node_kind(nk, en) == 28 {
-            write("typedef enum {\n")
-            let mut v = first_child(fc, en)
-            let mut vi: i64 = 0
-            while v >= 0 {
-                write(concat(concat(concat(concat("    ", mangle(node_text(nt, en))), "_"), concat(mangle(node_text(nt, v)), " = ")), concat(int_to_str(vi), ",\n")))
-                vi = vi + 1
-                v = next_sibling(ns, v)
-            }
-            write(concat(concat("} ", mangle(node_text(nt, en))), ";\n\n"))
-        }
-        en = next_sibling(ns, en)
-    }
+    // LP8-E: !Par runtime (go/join/chan/select/pool) — c2_par.baga
+    emit_par_runtime()
 
-    // struct declarations
-    let mut st = first_child(fc, prog)
-    while st >= 0 {
-        if node_kind(nk, st) == 21 {
-            write("typedef struct {\n")
-            let mut fld = first_child(fc, st)
-            while fld >= 0 {
-                let mut ftext = node_text(nt, fld)
-                let mut ci: i64 = 0
-                let mut fnl = len(ftext)
-                while ci < fnl {
-                    if char_at(ftext, ci) == 58 { break }
-                    ci = ci + 1
-                }
-                let mut fname = substr(ftext, 0, ci)
-                let mut ftype = "i64"
-                if ci + 1 < fnl { ftype = substr(ftext, ci + 1, fnl) }
-                write(concat(concat(concat("    ", c_type(ftype)), concat(" ", mangle(fname))), ";\n"))
-                fld = next_sibling(ns, fld)
-            }
-            write(concat(concat("} ", mangle(node_text(nt, st))), ";\n\n"))
-        }
-        st = next_sibling(ns, st)
-    }
+    // декларации на типовете (plain enum-и, struct-ове, sum enum-и) — c2_enum.baga
+    emit_type_decls(nk, nt, fc, ns, prog)
 
     // forward declarations
     let mut f = first_child(fc, prog)
     while f >= 0 {
         if node_kind(nk, f) == 11 {
-            emit_fn(nk, nt, fc, ns, prog, f)
+            // generic fn няма собствена дефиниция — само инстанции (LP8-D)
+            if decl_is_generic(nk, nt, fc, ns, f) == 0 {
+                emit_fn(nk, nt, fc, ns, prog, f)
+            }
         }
         if node_kind(nk, f) == 35 {
             emit_extern_fn(nk, nt, fc, ns, prog, f)
         }
         f = next_sibling(ns, f)
     }
+    // LP8-D: прототипи на impl методи и generic инстанции
+    emit_gen_prototypes(nk, nt, fc, ns, prog)
     write("\n")
+
+    // L5: __clo wrapper-и на потребителските fn + lambda env/wrapper
+    // декларации — преди телата на функциите (c2_clo.baga)
+    emit_clo_wrappers(nk, nt, fc, ns, prog)
+    emit_lambda_decls(nk, nt, fc, ns, prog)
 
     // function definitions (skip forward declarations)
     let mut f2 = first_child(fc, prog)
     while f2 >= 0 {
         if node_kind(nk, f2) == 11 {
-            // check if has body (BLOCK child)
-            let mut c2 = first_child(fc, f2)
-            let mut has_body: i64 = 0
-            while c2 >= 0 {
-                if node_kind(nk, c2) == 5 { has_body = 1 }
-                c2 = next_sibling(ns, c2)
-            }
-            if has_body == 1 {
-                emit_fn_def(nk, nt, fc, ns, prog, f2)
+            if decl_is_generic(nk, nt, fc, ns, f2) == 0 {
+                // check if has body (BLOCK child)
+                let mut c2 = first_child(fc, f2)
+                let mut has_body: i64 = 0
+                while c2 >= 0 {
+                    if node_kind(nk, c2) == 5 { has_body = 1 }
+                    c2 = next_sibling(ns, c2)
+                }
+                if has_body == 1 {
+                    emit_fn_def(nk, nt, fc, ns, prog, f2)
+                }
             }
         }
         f2 = next_sibling(ns, f2)
     }
+
+    // LP8-D: тела на impl методи и generic инстанции (клониране)
+    emit_gen_defs(nk, nt, fc, ns, prog)
 
     // C main (или test driver при --test-specs)
     if test_specs == 1 {

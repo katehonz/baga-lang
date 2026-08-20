@@ -1,0 +1,514 @@
+// c2_gen_emit.baga — LP8 вълна D: емисия на generics/traits. Моделът е
+// src/checker.c + src/codegen_c.c: мономорфизация — generic fn се
+// инстанцира per типови аргументи (b_име__iN, като bootstrap-а), generic
+// struct — typedef per инстанция (b_Pair_i64_str), impl методите са
+// обикновени fn с вътрешно име "Trait.Type.method". Инстанцията се
+// извежда чрез КЛОНИРАНЕ на тялото със substitution — клонирането
+// разрешава и методните извиквания (kind 46) до директни impl повиквания
+// и fn-типираните параметри до kind 49 (сигнатурата е в текста).
+
+import "c2_ast.baga"
+import "c2_lex.baga"
+import "c2_gen.baga"
+import "c2_gen_subst.baga"
+import "c2_emit_stmt.baga"
+
+// forward декларации (дефинирани в други модули)
+fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64)
+fn c_type(t: str) -> str
+
+// ============================================================
+//  impl регистър (kind 45, текст "Trait|Type"; методи kind 11)
+// ============================================================
+
+// Метод (kind 11 възел) на impl за точно recvType с име mname, или -1.
+fn gen_resolve_impl_node(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, recvType: str, mname: str) -> i64 {
+    if str_eq(recvType, "") == 1 { return 0 - 1 }
+    let mut i = first_child(fc, prog)
+    while i >= 0 {
+        if node_kind(nk, i) == 45 {
+            let mut txt = node_text(nt, i)
+            let mut bar = bfind(txt, 124, 0)
+            if bar > 0 {
+                if str_eq(substr(txt, bar + 1, len(txt)), recvType) == 1 {
+                    let mut m = first_child(fc, i)
+                    while m >= 0 {
+                        if node_kind(nk, m) == 11 {
+                            if str_eq(node_text(nt, m), mname) == 1 { return m }
+                        }
+                        m = next_sibling(ns, m)
+                    }
+                }
+            }
+        }
+        i = next_sibling(ns, i)
+    }
+    0 - 1
+}
+
+// Вътрешно име "Trait.Type.method" на impl метод възел (като bootstrap-а;
+// C името е mangle върху него).
+fn gen_impl_internal(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, m: i64) -> str {
+    let mut i = first_child(fc, prog)
+    while i >= 0 {
+        if node_kind(nk, i) == 45 {
+            let mut c = first_child(fc, i)
+            while c >= 0 {
+                if c == m {
+                    let mut txt = node_text(nt, i)
+                    let mut bar = bfind(txt, 124, 0)
+                    let mut tr = substr(txt, 0, bar)
+                    let mut ty = substr(txt, bar + 1, len(txt))
+                    return concat(concat(concat(tr, "."), concat(ty, ".")), node_text(nt, m))
+                }
+                c = next_sibling(ns, c)
+            }
+        }
+        i = next_sibling(ns, i)
+    }
+    ""
+}
+
+// ============================================================
+//  Тип на резултата на generic повикване / методно извикване
+// ============================================================
+
+// Subst-нат ret тип на повикване на generic fn (kind 4) или на impl
+// метод (kind 46); "" във всички останали случаи.
+fn gen_call_ret_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
+    let mut k = node_kind(nk, idx)
+    if k == 4 {
+        let mut cal = first_child(fc, idx)
+        if node_kind(nk, cal) != 2 { return "" }
+        let mut decl = gen_fn_decl(nk, nt, fc, ns, prog, node_text(nt, cal))
+        if decl < 0 { return "" }
+        if decl_is_generic(nk, nt, fc, ns, decl) == 0 { return "" }
+        let mut names = gen_decl_type_params(nk, nt, fc, ns, decl)
+        let mut targs = gen_bind_targs(nk, nt, fc, ns, prog, decl, idx)
+        if str_eq(targs, "") == 1 { return "" }
+        let mut c = first_child(fc, decl)
+        while c >= 0 {
+            if node_kind(nk, c) == 16 {
+                return subst_type(node_text(nt, c), names, targs)
+            }
+            c = next_sibling(ns, c)
+        }
+        return ""
+    }
+    if k == 46 {
+        let mut recv = first_child(fc, idx)
+        let mut rt = expr_type_name(nk, nt, fc, ns, prog, recv)
+        let mut m = gen_resolve_impl_node(nk, nt, fc, ns, prog, rt, node_text(nt, idx))
+        if m < 0 { return "" }
+        let mut c = first_child(fc, m)
+        while c >= 0 {
+            if node_kind(nk, c) == 16 { return node_text(nt, c) }
+            c = next_sibling(ns, c)
+        }
+        return ""
+    }
+    ""
+}
+
+// ============================================================
+//  Инстанции: име, substitution-типове в тяло, клониране
+// ============================================================
+
+// Уникалните типови аргументи на извикванията на generic fn (ред на
+// първа поява в AST — същият ред дава и индексите __iN).
+fn gen_collect_targs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, decl: i64, name: str) -> Vec {
+    let mut uniq = vec_new()
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 4 {
+            let mut cal = first_child(fc, i)
+            if node_kind(nk, cal) == 2 {
+                if str_eq(node_text(nt, cal), name) == 1 {
+                    let mut bt = gen_bind_targs(nk, nt, fc, ns, prog, decl, i)
+                    if str_eq(bt, "") == 0 {
+                        if str_vec_index(uniq, bt) < 0 { vec_push_str(uniq, bt) }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    uniq
+}
+
+// C име на инстанцията, която това повикване вика ("b_identity__i0");
+// "" ако callee не е generic fn или типовете не се извеждат.
+fn gen_call_cname(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
+    let mut cal = first_child(fc, idx)
+    if node_kind(nk, cal) != 2 { return "" }
+    let mut bn = node_text(nt, cal)
+    let mut decl = gen_fn_decl(nk, nt, fc, ns, prog, bn)
+    if decl < 0 { return "" }
+    if decl_is_generic(nk, nt, fc, ns, decl) == 0 { return "" }
+    let mut targs = gen_bind_targs(nk, nt, fc, ns, prog, decl, idx)
+    if str_eq(targs, "") == 1 { return "" }
+    let mut uniq = gen_collect_targs(nk, nt, fc, ns, prog, decl, bn)
+    let mut ix = str_vec_index(uniq, targs)
+    if ix < 0 { return "" }
+    concat(concat(mangle(bn), "__i"), int_to_str(ix))
+}
+
+// Клониране на поддърво със substitution (тяло/сигнатура на инстанция).
+// Трансформации: kind 46 → директно impl повикване; kind 22 → извод на
+// типовите аргументи; повикване на fn-типиран параметър → kind 49 със
+// subst-ната сигнатура; типови текстове в 12/16 → subst-нати.
+fn gen_clone_tree(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, fnode: i64, names: Vec, targs: str) -> i64 {
+    let mut k = node_kind(nk, idx)
+    let mut t = node_text(nt, idx)
+    if k == 46 {
+        let mut recv = first_child(fc, idx)
+        let mut rt = gen_expr_type_subst(nk, nt, fc, ns, prog, recv, fnode, names, targs, 8)
+        let mut m = gen_resolve_impl_node(nk, nt, fc, ns, prog, rt, t)
+        if m >= 0 {
+            let mut call = ast_kind(nk, nt, fc, ns, 4, "")
+            ast_child(fc, ns, call, ast_kind(nk, nt, fc, ns, 2, gen_impl_internal(nk, nt, fc, ns, prog, m)))
+            ast_child(fc, ns, call, gen_clone_tree(nk, nt, fc, ns, prog, recv, fnode, names, targs))
+            let mut arg = next_sibling(ns, recv)
+            while arg >= 0 {
+                ast_child(fc, ns, call, gen_clone_tree(nk, nt, fc, ns, prog, arg, fnode, names, targs))
+                arg = next_sibling(ns, arg)
+            }
+            return call
+        }
+    }
+    if k == 22 {
+        let mut node = ast_kind(nk, nt, fc, ns, 22, struct_lit_type_name_subst(nk, nt, fc, ns, prog, idx, fnode, names, targs))
+        let mut c = first_child(fc, idx)
+        while c >= 0 {
+            ast_child(fc, ns, node, gen_clone_tree(nk, nt, fc, ns, prog, c, fnode, names, targs))
+            c = next_sibling(ns, c)
+        }
+        return node
+    }
+    if k == 4 {
+        let mut cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            let mut cname = node_text(nt, cal)
+            let mut c = first_child(fc, fnode)
+            while c >= 0 {
+                if node_kind(nk, c) == 12 {
+                    let mut pt = node_text(nt, c)
+                    let mut ci = bfind(pt, 58, 0)
+                    if ci > 0 {
+                        if str_eq(substr(pt, 0, ci), cname) == 1 {
+                            let mut st = subst_type(substr(pt, ci + 1, len(pt)), names, targs)
+                            if fn_type_is(st) == 1 {
+                                let mut node = ast_kind(nk, nt, fc, ns, 49, st)
+                                let mut a = cal
+                                while a >= 0 {
+                                    ast_child(fc, ns, node, gen_clone_tree(nk, nt, fc, ns, prog, a, fnode, names, targs))
+                                    a = next_sibling(ns, a)
+                                }
+                                return node
+                            }
+                        }
+                    }
+                }
+                c = next_sibling(ns, c)
+            }
+        }
+    }
+    let mut nt2 = t
+    if k == 12 {
+        let mut ci = bfind(t, 58, 0)
+        if ci >= 0 {
+            nt2 = concat(concat(substr(t, 0, ci), ":"), subst_type(substr(t, ci + 1, len(t)), names, targs))
+        }
+    }
+    if k == 16 { nt2 = subst_type(t, names, targs) }
+    let mut node = ast_kind(nk, nt, fc, ns, k, nt2)
+    let mut c = first_child(fc, idx)
+    while c >= 0 {
+        if node_kind(nk, c) != 43 {
+            ast_child(fc, ns, node, gen_clone_tree(nk, nt, fc, ns, prog, c, fnode, names, targs))
+        }
+        c = next_sibling(ns, c)
+    }
+    node
+}
+
+// ============================================================
+//  Емисия: сигнатури, typedef-и на struct инстанции, тела
+// ============================================================
+
+// "RET cname(CT p, ...)" на generic инстанция
+fn gen_instance_sig(nk: Vec, nt: Vec, fc: Vec, ns: Vec, decl: i64, names: Vec, targs: str, cname: str) -> str {
+    let mut params = ""
+    let mut ret = "void"
+    let mut c = first_child(fc, decl)
+    while c >= 0 {
+        let mut ck = node_kind(nk, c)
+        if ck == 12 {
+            let mut ptext = node_text(nt, c)
+            let mut ci = bfind(ptext, 58, 0)
+            let mut pname = ptext
+            let mut ptype = "i64"
+            if ci >= 0 { pname = substr(ptext, 0, ci) }
+            if ci >= 0 { ptype = substr(ptext, ci + 1, len(ptext)) }
+            if str_eq(params, "") == 0 { params = concat(params, ", ") }
+            params = concat(params, concat(c_type(subst_type(ptype, names, targs)), concat(" ", mangle(pname))))
+        }
+        if ck == 16 { ret = c_type(subst_type(node_text(nt, c), names, targs)) }
+        c = next_sibling(ns, c)
+    }
+    if str_eq(params, "") == 1 { params = "void" }
+    concat(concat(concat(ret, " "), cname), concat("(", concat(params, ")")))
+}
+
+// "RET cname(CT p, ...)" на impl метод (вътрешно име "Trait.Type.m")
+fn gen_impl_sig(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, m: i64) -> str {
+    let mut params = ""
+    let mut ret = "void"
+    let mut c = first_child(fc, m)
+    while c >= 0 {
+        let mut ck = node_kind(nk, c)
+        if ck == 12 {
+            let mut ptext = node_text(nt, c)
+            let mut ci = bfind(ptext, 58, 0)
+            let mut pname = ptext
+            let mut ptype = "i64"
+            if ci >= 0 { pname = substr(ptext, 0, ci) }
+            if ci >= 0 { ptype = substr(ptext, ci + 1, len(ptext)) }
+            if str_eq(params, "") == 0 { params = concat(params, ", ") }
+            params = concat(params, concat(c_type(ptype), concat(" ", mangle(pname))))
+        }
+        if ck == 16 { ret = c_type(node_text(nt, c)) }
+        c = next_sibling(ns, c)
+    }
+    if str_eq(params, "") == 1 { params = "void" }
+    concat(concat(concat(ret, " "), mangle(gen_impl_internal(nk, nt, fc, ns, prog, m))), concat("(", concat(params, ")")))
+}
+
+// Тяло с implicit return на последен изразен statement (като emit_fn_def)
+fn gen_emit_body(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, body: i64, rettype: str) {
+    let mut s = first_child(fc, body)
+    while s >= 0 {
+        let mut nx = next_sibling(ns, s)
+        if nx < 0 {
+            if str_eq(rettype, "void") == 0 {
+                if node_kind(nk, s) == 10 {
+                    write(concat("    return ", concat(emit_expr(nk, nt, fc, ns, prog, first_child(fc, s)), ";\n")))
+                    s = nx
+                    continue
+                }
+            }
+        }
+        emit_stmt(nk, nt, fc, ns, prog, s, 1)
+        s = nx
+    }
+}
+
+// Събери struct инстанция (и вложените в generic аргументите ѝ) в uniq
+fn gen_collect_struct_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, ty: str, uniq: Vec) {
+    if type_has_args(ty) == 0 { return }
+    let mut d = struct_decl_of(nk, nt, fc, ns, prog, type_base(ty))
+    if d >= 0 {
+        if decl_is_generic(nk, nt, fc, ns, d) == 1 {
+            if type_is_concrete(nk, nt, fc, ns, prog, ty) == 1 {
+                if str_vec_index(uniq, ty) < 0 { vec_push_str(uniq, ty) }
+            }
+        }
+    }
+    let mut inner = type_args_inner(ty)
+    let mut na = tl_count(inner)
+    let mut i: i64 = 0
+    while i < na {
+        gen_collect_struct_type(nk, nt, fc, ns, prog, tl_split(inner, i), uniq)
+        i = i + 1
+    }
+}
+
+// typedef per инстанция на generic struct (мономорфизация; модел:
+// emit_structs_and_sum_enums M24 пътят в src/codegen_c.c). Инстанциите
+// се събират от struct литералите, impl типовете и сигнатурите.
+fn emit_gen_struct_typedefs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut uniq = vec_new()
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 22 {
+            gen_collect_struct_type(nk, nt, fc, ns, prog, struct_lit_type_name(nk, nt, fc, ns, prog, i), uniq)
+        }
+        i = i + 1
+    }
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 45 {
+            let mut txt = node_text(nt, f)
+            let mut bar = bfind(txt, 124, 0)
+            if bar > 0 {
+                gen_collect_struct_type(nk, nt, fc, ns, prog, substr(txt, bar + 1, len(txt)), uniq)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    i = 0
+    while i < n {
+        let mut k = node_kind(nk, i)
+        if k == 12 || k == 16 {
+            let mut txt = node_text(nt, i)
+            if k == 12 {
+                let mut ci = bfind(txt, 58, 0)
+                if ci >= 0 { txt = substr(txt, ci + 1, len(txt)) }
+            }
+            gen_collect_struct_type(nk, nt, fc, ns, prog, txt, uniq)
+        }
+        i = i + 1
+    }
+    let mut ui: i64 = 0
+    while ui < vec_len(uniq) {
+        let mut ty = vec_get_str(uniq, ui)
+        let mut base = type_base(ty)
+        let mut args = type_args_inner(ty)
+        let mut params = gen_struct_param_names(nk, nt, fc, ns, prog, base)
+        let mut decl = struct_decl_of(nk, nt, fc, ns, prog, base)
+        write("typedef struct {\n")
+        let mut fld = first_child(fc, decl)
+        while fld >= 0 {
+            if node_kind(nk, fld) == 25 {
+                let mut ft = node_text(nt, fld)
+                let mut ci = bfind(ft, 58, 0)
+                if ci > 0 {
+                    write(concat(concat(concat("    ", c_type(subst_type(substr(ft, ci + 1, len(ft)), params, args))), concat(" ", mangle(substr(ft, 0, ci)))), ";\n"))
+                }
+            }
+            fld = next_sibling(ns, fld)
+        }
+        write(concat(concat("} ", type_c_name(ty)), ";\n\n"))
+        ui = ui + 1
+    }
+}
+
+// Методно извикване (kind 46): impl метод по типа на receiver-а;
+// несразрешимо → field-call текст (старото поведение, loud при gcc).
+fn emit_method_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
+    let mut recv = first_child(fc, idx)
+    let mut rt = expr_type_name(nk, nt, fc, ns, prog, recv)
+    let mut m = gen_resolve_impl_node(nk, nt, fc, ns, prog, rt, node_text(nt, idx))
+    if m < 0 {
+        let mut r = concat(concat(emit_expr(nk, nt, fc, ns, prog, recv), "."), concat(mangle(node_text(nt, idx)), "("))
+        let mut arg = next_sibling(ns, recv)
+        let mut first_a: i64 = 1
+        while arg >= 0 {
+            if first_a == 0 { r = concat(r, ", ") }
+            r = concat(r, emit_expr(nk, nt, fc, ns, prog, arg))
+            first_a = 0
+            arg = next_sibling(ns, arg)
+        }
+        return concat(r, ")")
+    }
+    let mut r = concat(concat(mangle(gen_impl_internal(nk, nt, fc, ns, prog, m)), "("), emit_expr(nk, nt, fc, ns, prog, recv))
+    let mut arg = next_sibling(ns, recv)
+    while arg >= 0 {
+        r = concat(r, concat(", ", emit_expr(nk, nt, fc, ns, prog, arg)))
+        arg = next_sibling(ns, arg)
+    }
+    concat(r, ")")
+}
+
+// Прототипи: impl методи + generic инстанции (преди телата на fn-ите)
+fn emit_gen_prototypes(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 45 {
+            let mut m = first_child(fc, f)
+            while m >= 0 {
+                if node_kind(nk, m) == 11 {
+                    write(concat(gen_impl_sig(nk, nt, fc, ns, prog, m), ";\n"))
+                }
+                m = next_sibling(ns, m)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if decl_is_generic(nk, nt, fc, ns, f) == 1 {
+                let mut name = node_text(nt, f)
+                let mut uniq = gen_collect_targs(nk, nt, fc, ns, prog, f, name)
+                let mut names = gen_decl_type_params(nk, nt, fc, ns, f)
+                let mut ui: i64 = 0
+                while ui < vec_len(uniq) {
+                    let mut cname = concat(concat(mangle(name), "__i"), int_to_str(ui))
+                    write(concat(gen_instance_sig(nk, nt, fc, ns, f, names, vec_get_str(uniq, ui), cname), ";\n"))
+                    ui = ui + 1
+                }
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+}
+
+// Тела: impl методи + generic инстанции (клониране със substitution)
+fn emit_gen_defs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 45 {
+            let mut m = first_child(fc, f)
+            while m >= 0 {
+                if node_kind(nk, m) == 11 {
+                    let mut sig = gen_impl_sig(nk, nt, fc, ns, prog, m)
+                    let mut ret = "void"
+                    let mut body: i64 = 0 - 1
+                    let mut c = first_child(fc, m)
+                    while c >= 0 {
+                        if node_kind(nk, c) == 16 { ret = c_type(node_text(nt, c)) }
+                        if node_kind(nk, c) == 5 { body = c }
+                        c = next_sibling(ns, c)
+                    }
+                    if body >= 0 {
+                        write(concat(sig, " {\n"))
+                        gen_emit_body(nk, nt, fc, ns, prog, body, ret)
+                        write("}\n\n")
+                    }
+                }
+                m = next_sibling(ns, m)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if decl_is_generic(nk, nt, fc, ns, f) == 1 {
+                let mut name = node_text(nt, f)
+                let mut uniq = gen_collect_targs(nk, nt, fc, ns, prog, f, name)
+                let mut names = gen_decl_type_params(nk, nt, fc, ns, f)
+                let mut ui: i64 = 0
+                while ui < vec_len(uniq) {
+                    let mut targs = vec_get_str(uniq, ui)
+                    let mut cname = concat(concat(mangle(name), "__i"), int_to_str(ui))
+                    let mut sig = gen_instance_sig(nk, nt, fc, ns, f, names, targs, cname)
+                    let mut ret = "void"
+                    let mut c = first_child(fc, f)
+                    while c >= 0 {
+                        if node_kind(nk, c) == 16 { ret = c_type(subst_type(node_text(nt, c), names, targs)) }
+                        c = next_sibling(ns, c)
+                    }
+                    let mut clone = gen_clone_tree(nk, nt, fc, ns, prog, f, f, names, targs)
+                    let mut body: i64 = 0 - 1
+                    c = first_child(fc, clone)
+                    while c >= 0 {
+                        if node_kind(nk, c) == 5 { body = c }
+                        c = next_sibling(ns, c)
+                    }
+                    if body >= 0 {
+                        write(concat(sig, " {\n"))
+                        gen_emit_body(nk, nt, fc, ns, prog, body, ret)
+                        write("}\n\n")
+                    }
+                    ui = ui + 1
+                }
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+}

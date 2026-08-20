@@ -3,6 +3,12 @@
 
 import "c2_ast.baga"
 import "c2_emit_expr.baga"
+import "c2_enum.baga"
+
+// forward декларации (c2_gen*.baga / c2_clo.baga) — LP8-D
+fn type_c_name(t: str) -> str
+fn gen_call_ret_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn fn_type_ret(t: str) -> str
 
 fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64) {
     let mut k = node_kind(nk, idx)
@@ -22,13 +28,21 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
     // LET
     if k == 6 {
         let mut init = first_child(fc, idx)
-        // detect type from init expression
+        // detect type from init expression (CATCH/TRY обвивки се разголват)
+        let mut sniff = init
+        let mut sk = node_kind(nk, sniff)
+        while sk == 37 || sk == 40 {
+            sniff = first_child(fc, sniff)
+            sk = node_kind(nk, sniff)
+        }
         let mut ctype = "int64_t"
-        if node_kind(nk, init) == 1 { ctype = "const char *" }
-        if node_kind(nk, init) == 34 { ctype = "baga_bytes" }
-        if node_kind(nk, init) == 22 { ctype = mangle(node_text(nt, init)) }
-        if node_kind(nk, init) == 4 {
-            let mut cal = first_child(fc, init)
+        if node_kind(nk, sniff) == 1 { ctype = "const char *" }
+        if node_kind(nk, sniff) == 34 { ctype = "baga_bytes" }
+        if node_kind(nk, sniff) == 22 { ctype = type_c_name(struct_lit_type_name(nk, nt, fc, ns, prog, sniff)) }
+        // LP8-D: извикване на fn-типиран параметър в инстанция (kind 49)
+        if node_kind(nk, sniff) == 49 { ctype = c_type(fn_type_ret(node_text(nt, sniff))) }
+        if node_kind(nk, sniff) == 4 {
+            let mut cal = first_child(fc, sniff)
             if node_kind(nk, cal) == 2 {
                 let mut bn = node_text(nt, cal)
                 if str_eq(bn, "concat") == 1 { ctype = "const char *" }
@@ -37,11 +51,43 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
                 if str_eq(bn, "read_file") == 1 { ctype = "const char *" }
                 if str_eq(bn, "arg") == 1 { ctype = "const char *" }
                 if str_eq(bn, "vec_get_str") == 1 { ctype = "const char *" }
+                if str_eq(bn, "str_of_bytes") == 1 { ctype = "const char *" }
+                if str_eq(bn, "hex_encode") == 1 { ctype = "const char *" }
+                if str_eq(bn, "i64_to_str") == 1 { ctype = "const char *" }
+                if str_eq(bn, "f64_to_str") == 1 { ctype = "const char *" }
                 if str_eq(bn, "vec_new") == 1 { ctype = "baga_Vec *" }
+                if str_eq(bn, "vec_slice") == 1 { ctype = "baga_Vec *" }
+                if str_eq(bn, "vec_concat") == 1 { ctype = "baga_Vec *" }
+                if str_eq(bn, "map_keys") == 1 { ctype = "baga_Vec *" }
+                if str_eq(bn, "pool_map") == 1 { ctype = "baga_Vec *" }
                 if str_eq(bn, "bytes_of_str") == 1 { ctype = "baga_bytes" }
                 if str_eq(bn, "bytes_slice") == 1 { ctype = "baga_bytes" }
                 if str_eq(bn, "bytes_concat") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "bytes_new") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "bytes_push") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "h_bytes") == 1 { ctype = "baga_bytes" }
                 if str_eq(bn, "hex_decode") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "map_new") == 1 { ctype = "baga_Map *" }
+                let mut la1 = next_sibling(ns, cal)
+                if str_eq(bn, "vec_get") == 1 {
+                    if la1 >= 0 {
+                        let mut bt = vec_box_type(nk, nt, fc, ns, prog, la1)
+                        if str_eq(bt, "") == 0 { ctype = mangle(bt) }
+                        // Vec<Vec<...>>: vec_get връща vec pointer
+                        if expr_vec_depth(nk, nt, fc, ns, prog, la1) >= 2 { ctype = "baga_Vec *" }
+                    }
+                }
+                if str_eq(bn, "map_get") == 1 {
+                    if la1 >= 0 {
+                        let mut vk = map_val_kind(nk, nt, fc, ns, prog, la1)
+                        if str_eq(vk, "str") == 1 { ctype = "const char *" }
+                        if str_eq(vk, "f64") == 1 { ctype = "double" }
+                        if str_eq(vk, "bytes") == 1 { ctype = "baga_bytes" }
+                        if len(vk) > 4 {
+                            if str_eq(substr(vk, 0, 4), "box:") == 1 { ctype = mangle(substr(vk, 4, len(vk))) }
+                        }
+                    }
+                }
                 // user function: look up return type
                 let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
                 if str_eq(rt, "const char *") == 1 { ctype = "const char *" }
@@ -50,7 +96,33 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
             }
         }
         if expr_is_float(nk, nt, fc, ns, prog, init) == 1 { ctype = "double" }
+        // LP8-D: generic fn / методно извикване — subst-нат ret тип
+        let mut grt = gen_call_ret_type(nk, nt, fc, ns, prog, sniff)
+        if str_eq(grt, "") == 0 { ctype = c_type(grt) }
+        // sum enum стойност (конструктор, bare вариант, Enum::Variant път)
+        let mut esum = sum_enum_type_of_expr(nk, nt, fc, ns, prog, sniff)
+        if str_eq(esum, "") == 0 { ctype = mangle(esum) }
         write(concat(concat(concat(concat(ind, concat(ctype, " ")), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, prog, init), ";\n")))
+        return
+    }
+    // RAISE !E[(payload)] — таг + payload в baga_eff_tl и изход от функцията
+    if k == 36 {
+        let mut ename = node_text(nt, idx)
+        let mut line = concat(concat(ind, "({ baga_eff_tl.tag = "), concat(int_to_str(effect_tag(nk, nt, fc, ns, prog, ename)), "; "))
+        let mut payload = first_child(fc, idx)
+        if payload >= 0 {
+            // полето идва от payload израза; декларацията е fallback
+            let mut fld = ""
+            if node_kind(nk, payload) == 34 { fld = "b" }
+            if expr_is_str(nk, nt, fc, ns, prog, payload) == 1 { fld = "s" }
+            if expr_is_float(nk, nt, fc, ns, prog, payload) == 1 { fld = "f" }
+            if str_eq(fld, "") == 1 {
+                fld = effect_payload_field(nk, nt, fc, ns, prog, ename)
+                if str_eq(fld, "") == 1 { fld = "i" }
+            }
+            line = concat(concat(concat(concat(line, "baga_eff_tl."), fld), " = ("), concat(emit_expr(nk, nt, fc, ns, prog, payload), "); "))
+        }
+        write(concat(line, "return 0; 0; });\n"))
         return
     }
     // RETURN
@@ -112,11 +184,12 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
                         if expr_is_str(nk, nt, fc, ns, prog, arg) == 1 {
                             write(concat(concat(ind, "printf(\"%s\\n\", "), concat(emit_expr(nk, nt, fc, ns, prog, arg), ");\n")))
                         } else {
-                            if expr_is_float(nk, nt, fc, ns, prog, arg) == 1 {
-                                write(concat(concat(ind, "printf(\"%g\\n\", "), concat(emit_expr(nk, nt, fc, ns, prog, arg), ");\n")))
+                            // bool преди float: f64 сравнение е bool, не double
+                            if expr_is_bool(nk, nt, fc, ns, prog, arg) == 1 {
+                                write(concat(concat(ind, "printf(\"%s\\n\", ("), concat(emit_expr(nk, nt, fc, ns, prog, arg), ") ? \"true\" : \"false\");\n")))
                             } else {
-                                if expr_is_bool(nk, nt, fc, ns, prog, arg) == 1 {
-                                    write(concat(concat(ind, "printf(\"%s\\n\", ("), concat(emit_expr(nk, nt, fc, ns, prog, arg), ") ? \"true\" : \"false\");\n")))
+                                if expr_is_float(nk, nt, fc, ns, prog, arg) == 1 {
+                                    write(concat(concat(ind, "printf(\"%g\\n\", "), concat(emit_expr(nk, nt, fc, ns, prog, arg), ");\n")))
                                 } else {
                                     write(concat(concat(ind, "printf(\"%lld\\n\", (long long)("), concat(emit_expr(nk, nt, fc, ns, prog, arg), "));\n")))
                                 }
@@ -175,6 +248,19 @@ fn c_type(t: str) -> str {
     if str_eq(t, "bool") == 1 { return "int" }
     if str_eq(t, "void") == 1 { return "void" }
     if str_eq(t, "") == 1 { return "int64_t" }
+    // fn тип "fn(T,...)->R" — handle (cell2 код+env), като bootstrap-а
+    if len(t) > 3 {
+        if str_eq(substr(t, 0, 3), "fn(") == 1 { return "int64_t" }
+    }
+    // LP8-D: generic типове — "Vec<...>"/"Map<...>" са runtime контейнери;
+    // struct инстанция "Pair<i64,str>" → b_Pair_i64_str
+    let mut lt = bfind(t, 60, 0)
+    if lt > 0 {
+        let mut base = substr(t, 0, lt)
+        if str_eq(base, "Vec") == 1 { return "baga_Vec *" }
+        if str_eq(base, "Map") == 1 { return "baga_Map *" }
+        return type_c_name(t)
+    }
     mangle(t)
 }
 

@@ -1,0 +1,131 @@
+// c2_gen_subst.baga — LP8 вълна D: substitution-помощници за generics —
+// конкретност на типов текст и типизиране на изрази в контекста на
+// generic инстанция (при клониране на тялото ѝ). Изводът на типове е в
+// c2_gen.baga, емисията на инстанциите — в c2_gen_emit.baga.
+
+import "c2_ast.baga"
+import "c2_lex.baga"
+import "c2_gen.baga"
+
+// Конкретен ли е типовият текст (без несвързани типови параметри)?
+// Конкретен е builtin или деклариран struct/enum; generic аргументите
+// рекурсивно също трябва да са конкретни.
+fn type_is_concrete(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, t: str) -> i64 {
+    if str_eq(t, "") == 1 { return 0 }
+    let mut b = type_base(t)
+    let mut known: i64 = 0
+    if str_eq(b, "i64") == 1 { known = 1 }
+    if str_eq(b, "i32") == 1 { known = 1 }
+    if str_eq(b, "str") == 1 { known = 1 }
+    if str_eq(b, "f64") == 1 { known = 1 }
+    if str_eq(b, "bool") == 1 { known = 1 }
+    if str_eq(b, "bytes") == 1 { known = 1 }
+    if str_eq(b, "Vec") == 1 { known = 1 }
+    if str_eq(b, "Map") == 1 { known = 1 }
+    if fn_type_is(b) == 1 { known = 1 }
+    if known == 0 {
+        if struct_decl_of(nk, nt, fc, ns, prog, b) >= 0 { known = 1 }
+    }
+    if known == 0 {
+        if enum_by_name(nk, nt, fc, ns, prog, b) >= 0 { known = 1 }
+    }
+    if known == 0 { return 0 }
+    if type_has_args(t) == 1 {
+        let mut inner = type_args_inner(t)
+        let mut na = tl_count(inner)
+        let mut i: i64 = 0
+        while i < na {
+            if type_is_concrete(nk, nt, fc, ns, prog, tl_split(inner, i)) == 0 { return 0 }
+            i = i + 1
+        }
+    }
+    1
+}
+
+// Тип на израз в контекста на generic инстанция (параметрите на fnode се
+// разрешават през substitution; останалото делегира на expr_type_name).
+fn gen_expr_type_subst(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64, fnode: i64, names: Vec, targs: str, fuel: i64) -> str {
+    if fuel <= 0 { return "" }
+    let mut k = node_kind(nk, e)
+    if k == 2 {
+        let mut name = node_text(nt, e)
+        let mut c = first_child(fc, fnode)
+        while c >= 0 {
+            if node_kind(nk, c) == 12 {
+                let mut pt = node_text(nt, c)
+                let mut ci = bfind(pt, 58, 0)
+                if ci > 0 {
+                    if str_eq(substr(pt, 0, ci), name) == 1 {
+                        return subst_type(substr(pt, ci + 1, len(pt)), names, targs)
+                    }
+                }
+            }
+            c = next_sibling(ns, c)
+        }
+        let mut i: i64 = 0
+        let mut n = vec_len(nk)
+        while i < n {
+            if node_kind(nk, i) == 6 {
+                if str_eq(node_text(nt, i), name) == 1 {
+                    return gen_expr_type_subst(nk, nt, fc, ns, prog, first_child(fc, i), fnode, names, targs, fuel - 1)
+                }
+            }
+            i = i + 1
+        }
+        return expr_type_name(nk, nt, fc, ns, prog, e)
+    }
+    if k == 23 {
+        let mut sn = gen_expr_type_subst(nk, nt, fc, ns, prog, first_child(fc, e), fnode, names, targs, fuel - 1)
+        if str_eq(sn, "") == 1 { return "" }
+        return struct_field_type(nk, nt, fc, ns, prog, sn, node_text(nt, e))
+    }
+    if k == 22 { return struct_lit_type_name_subst(nk, nt, fc, ns, prog, e, fnode, names, targs) }
+    expr_type_name(nk, nt, fc, ns, prog, e)
+}
+
+// Като struct_lit_type_name, но стойностите на полетата се типизират в
+// контекста на generic инстанция (за литерали в тела на generic fn).
+fn struct_lit_type_name_subst(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, lit: i64, fnode: i64, names: Vec, targs: str) -> str {
+    let mut t = node_text(nt, lit)
+    if type_has_args(t) == 1 { return t }
+    let mut decl = struct_decl_of(nk, nt, fc, ns, prog, t)
+    if decl < 0 { return t }
+    let mut params = gen_decl_type_params(nk, nt, fc, ns, decl)
+    if vec_len(params) == 0 { return t }
+    let mut r = concat(t, "<")
+    let mut pi: i64 = 0
+    let mut np = vec_len(params)
+    while pi < np {
+        let mut pname = vec_get_str(params, pi)
+        let mut ffname = ""
+        let mut fld = first_child(fc, decl)
+        while fld >= 0 {
+            if node_kind(nk, fld) == 25 {
+                let mut ft = node_text(nt, fld)
+                let mut ci = bfind(ft, 58, 0)
+                if ci > 0 {
+                    if str_eq(substr(ft, ci + 1, len(ft)), pname) == 1 {
+                        ffname = substr(ft, 0, ci)
+                    }
+                }
+            }
+            fld = next_sibling(ns, fld)
+        }
+        let mut at = ""
+        let mut lf = first_child(fc, lit)
+        while lf >= 0 {
+            if node_kind(nk, lf) == 24 {
+                if str_eq(node_text(nt, lf), ffname) == 1 {
+                    at = gen_expr_type_subst(nk, nt, fc, ns, prog, first_child(fc, lf), fnode, names, targs, 8)
+                }
+            }
+            lf = next_sibling(ns, lf)
+        }
+        if str_eq(at, "") == 1 { return t }
+        if pi > 0 { r = concat(r, ",") }
+        r = concat(r, at)
+        pi = pi + 1
+    }
+    concat(r, ">")
+}
+

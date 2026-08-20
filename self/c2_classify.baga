@@ -1,0 +1,385 @@
+// c2_classify.baga — LP8: класификация по история на записите в
+// програмата (map ключ/стойност, Vec<struct> box, catch payload var,
+// struct полета). Линейни скенове по всички AST възли (node индекси) —
+// хващат и повиквания вложени в if/while/for тела.
+
+import "c2_ast.baga"
+import "c2_emit_type.baga"
+import "c2_enum.baga"
+
+// forward декларации (c2_gen.baga) — LP8-D
+fn type_base(t: str) -> str
+fn type_has_args(t: str) -> i64
+fn type_args_inner(t: str) -> str
+fn subst_type(t: str, names: Vec, targs: str) -> str
+fn gen_struct_param_names(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, sname: str) -> Vec
+fn expr_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str
+fn struct_lit_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, lit: i64) -> str
+fn struct_decl_of(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
+// ============================================================
+//  LP8: map/vec класификация по история на записите в програмата.
+//  Линейни скенове по всички възли (node индекси) — хващат и
+//  map_set/vec_push вложени в if/while/for тела.
+// ============================================================
+
+// Тип на ключовете на map променлива ("str"/"i64"/"bytes"; "" ако не е
+// идентификатор или няма map_set по нея).
+fn map_key_kind(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, mexpr: i64) -> str {
+    if node_kind(nk, mexpr) != 2 { return "" }
+    let mut mname = node_text(nt, mexpr)
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 4 {
+            let mut cal = first_child(fc, i)
+            if node_kind(nk, cal) == 2 {
+                if str_eq(node_text(nt, cal), "map_set") == 1 {
+                    let mut a1 = next_sibling(ns, cal)
+                    if a1 >= 0 {
+                        if node_kind(nk, a1) == 2 {
+                            if str_eq(node_text(nt, a1), mname) == 1 {
+                                let mut k = next_sibling(ns, a1)
+                                if k >= 0 {
+                                    if node_kind(nk, k) == 34 { return "bytes" }
+                                    if node_kind(nk, k) == 1 { return "str" }
+                                    if expr_is_str(nk, nt, fc, ns, prog, k) == 1 { return "str" }
+                                    return "i64"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// Тип на стойностите на map променлива: "i64"/"str"/"f64"/"bytes"/
+// "box:Име" (struct) или "" при липса на map_set история.
+fn map_val_kind(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, mexpr: i64) -> str {
+    if node_kind(nk, mexpr) != 2 { return "" }
+    let mut mname = node_text(nt, mexpr)
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 4 {
+            let mut cal = first_child(fc, i)
+            if node_kind(nk, cal) == 2 {
+                if str_eq(node_text(nt, cal), "map_set") == 1 {
+                    let mut a1 = next_sibling(ns, cal)
+                    if a1 >= 0 {
+                        if node_kind(nk, a1) == 2 {
+                            if str_eq(node_text(nt, a1), mname) == 1 {
+                                let mut k = next_sibling(ns, a1)
+                                let mut v = next_sibling(ns, k)
+                                if v >= 0 {
+                                    if node_kind(nk, v) == 22 { return concat("box:", struct_lit_type_name(nk, nt, fc, ns, prog, v)) }
+                                    // сум enum стойност (конструктор/bare вариант) → box
+                                    let mut esv = sum_enum_type_of_expr(nk, nt, fc, ns, prog, v)
+                                    if str_eq(esv, "") == 0 { return concat("box:", esv) }
+                                    if node_kind(nk, v) == 34 { return "bytes" }
+                                    if expr_is_str(nk, nt, fc, ns, prog, v) == 1 { return "str" }
+                                    if expr_is_float(nk, nt, fc, ns, prog, v) == 1 { return "f64" }
+                                    return "i64"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// ---- Vec<Vec<...>>: дълбочина на vec израз (0 = не е vec; 1 = Vec<T>;
+// 2 = Vec<Vec<T>>; ...). Модел: pointer-element пътят на bootstrap-а.
+// По LET init (vec_new/slice/concat/map_keys/vec_get/alias) + история на
+// vec_push/vec_set върху същия идентификатор (линеен скен по възлите).
+// Fuel ограничава рекурсията: name-based сканирането може да направи
+// цикъл (`let k = vec_get(tk, ..)` + `vec_push(tk, k)`) — при изчерпване
+// консервативно 0 (без cast, старото поведение).
+fn expr_vec_depth(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> i64 {
+    expr_vec_depth_f(nk, nt, fc, ns, prog, e, 8)
+}
+
+fn expr_vec_depth_f(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64, fuel: i64) -> i64 {
+    if fuel <= 0 { return 0 }
+    let mut k = node_kind(nk, e)
+    if k == 2 {
+        let mut vname = node_text(nt, e)
+        let mut i: i64 = 0
+        let mut n = vec_len(nk)
+        while i < n {
+            if node_kind(nk, i) == 6 {
+                if str_eq(node_text(nt, i), vname) == 1 {
+                    let mut init = first_child(fc, i)
+                    let mut ik = node_kind(nk, init)
+                    if ik == 2 { return expr_vec_depth_f(nk, nt, fc, ns, prog, init, fuel - 1) }
+                    if ik == 4 {
+                        let mut cal = first_child(fc, init)
+                        if node_kind(nk, cal) == 2 {
+                            let mut bn = node_text(nt, cal)
+                            let mut a1 = next_sibling(ns, cal)
+                            if str_eq(bn, "vec_new") == 1 { return 1 + vec_max_push_depth(nk, nt, fc, ns, prog, vname, fuel - 1) }
+                            if str_eq(bn, "map_keys") == 1 { return 1 + vec_max_push_depth(nk, nt, fc, ns, prog, vname, fuel - 1) }
+                            if str_eq(bn, "vec_slice") == 1 { return expr_vec_depth_f(nk, nt, fc, ns, prog, a1, fuel - 1) }
+                            if str_eq(bn, "vec_concat") == 1 { return expr_vec_depth_f(nk, nt, fc, ns, prog, a1, fuel - 1) }
+                            if str_eq(bn, "vec_get") == 1 {
+                                let mut d = expr_vec_depth_f(nk, nt, fc, ns, prog, a1, fuel - 1) - 1
+                                if d < 0 { d = 0 }
+                                return d
+                            }
+                        }
+                    }
+                    return 0
+                }
+            }
+            i = i + 1
+        }
+        return 0
+    }
+    if k == 4 {
+        let mut cal = first_child(fc, e)
+        if node_kind(nk, cal) == 2 {
+            let mut bn = node_text(nt, cal)
+            let mut a1 = next_sibling(ns, cal)
+            if str_eq(bn, "vec_new") == 1 { return 1 }
+            if str_eq(bn, "map_keys") == 1 { return 1 }
+            if str_eq(bn, "vec_slice") == 1 { return expr_vec_depth_f(nk, nt, fc, ns, prog, a1, fuel - 1) }
+            if str_eq(bn, "vec_concat") == 1 { return expr_vec_depth_f(nk, nt, fc, ns, prog, a1, fuel - 1) }
+            if str_eq(bn, "vec_get") == 1 {
+                let mut d = expr_vec_depth_f(nk, nt, fc, ns, prog, a1, fuel - 1) - 1
+                if d < 0 { d = 0 }
+                return d
+            }
+        }
+    }
+    0
+}
+
+// Максималната vec дълбочина на бутащите се елементи във vec с име vname.
+fn vec_max_push_depth(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vname: str, fuel: i64) -> i64 {
+    let mut best: i64 = 0
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 4 {
+            let mut cal = first_child(fc, i)
+            if node_kind(nk, cal) == 2 {
+                let mut bn = node_text(nt, cal)
+                let mut is_ps: i64 = 0
+                if str_eq(bn, "vec_push") == 1 { is_ps = 1 }
+                if str_eq(bn, "vec_set") == 1 { is_ps = 1 }
+                if is_ps == 1 {
+                    let mut a1 = next_sibling(ns, cal)
+                    if a1 >= 0 {
+                        if node_kind(nk, a1) == 2 {
+                            if str_eq(node_text(nt, a1), vname) == 1 {
+                                let mut elem = next_sibling(ns, a1)
+                                if str_eq(bn, "vec_set") == 1 { elem = next_sibling(ns, elem) }
+                                if elem >= 0 {
+                                    let mut d = expr_vec_depth_f(nk, nt, fc, ns, prog, elem, fuel - 1)
+                                    if d > best { best = d }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    best
+}
+
+// Struct име на елементите на Vec<struct> ("Pt") или "" — по vec_push/
+// vec_set със struct литерал към същия vec (идентификатор или поле obj.f).
+fn vec_box_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vexpr: i64) -> str {
+    let mut vk = node_kind(nk, vexpr)
+    if vk != 2 { if vk != 23 { return "" } }
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 4 {
+            let mut cal = first_child(fc, i)
+            if node_kind(nk, cal) == 2 {
+                let mut bn = node_text(nt, cal)
+                let mut is_ps: i64 = 0
+                if str_eq(bn, "vec_push") == 1 { is_ps = 1 }
+                if str_eq(bn, "vec_set") == 1 { is_ps = 1 }
+                if is_ps == 1 {
+                    let mut a1 = next_sibling(ns, cal)
+                    let mut same: i64 = 0
+                    if a1 >= 0 {
+                        if vk == 2 {
+                            if node_kind(nk, a1) == 2 {
+                                if str_eq(node_text(nt, a1), node_text(nt, vexpr)) == 1 { same = 1 }
+                            }
+                        } else {
+                            if node_kind(nk, a1) == 23 {
+                                if str_eq(node_text(nt, a1), node_text(nt, vexpr)) == 1 {
+                                    let mut b1 = first_child(fc, a1)
+                                    let mut b2 = first_child(fc, vexpr)
+                                    if node_kind(nk, b1) == 2 {
+                                        if node_kind(nk, b2) == 2 {
+                                            if str_eq(node_text(nt, b1), node_text(nt, b2)) == 1 { same = 1 }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if same == 1 {
+                        let mut elem = next_sibling(ns, a1)
+                        if str_eq(bn, "vec_set") == 1 { elem = next_sibling(ns, elem) }
+                        if elem >= 0 {
+                            // LP8-D: извод на generic аргументите на литерала
+                            if node_kind(nk, elem) == 22 { return struct_lit_type_name(nk, nt, fc, ns, prog, elem) }
+                            // Vec<enum>: конструктор/bare вариант като елемент
+                            let mut se = sum_enum_type_of_expr(nk, nt, fc, ns, prog, elem)
+                            if str_eq(se, "") == 0 { return se }
+                            // LP8-D: struct стойност през променлива
+                            if node_kind(nk, elem) == 2 {
+                                return expr_struct_name(nk, nt, fc, ns, prog, elem)
+                            }
+                            return ""
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// Vec инициализиран от map_keys() на str-ключова map → елементите са str.
+fn vec_init_is_str_keys(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vname: str) -> i64 {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 6 {
+            if str_eq(node_text(nt, i), vname) == 1 {
+                let mut init = first_child(fc, i)
+                if node_kind(nk, init) == 4 {
+                    let mut cal = first_child(fc, init)
+                    if node_kind(nk, cal) == 2 {
+                        if str_eq(node_text(nt, cal), "map_keys") == 1 {
+                            let mut ma = next_sibling(ns, cal)
+                            if ma >= 0 {
+                                if str_eq(map_key_kind(nk, nt, fc, ns, prog, ma), "str") == 1 { return 1 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    0
+}
+
+// Ключов suffix за map builtin при конкретно повикване: историята на
+// map_set е авторитетна; иначе класификация на ключовия израз.
+fn map_key_suffix(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, mexpr: i64, kexpr: i64) -> str {
+    let mut ks = map_key_kind(nk, nt, fc, ns, prog, mexpr)
+    if str_eq(ks, "") == 0 { return ks }
+    if kexpr >= 0 {
+        if node_kind(nk, kexpr) == 34 { return "bytes" }
+        if expr_is_str(nk, nt, fc, ns, prog, kexpr) == 1 { return "str" }
+    }
+    "i64"
+}
+
+// Стойностен suffix за map_set от израза на стойността.
+fn map_val_suffix_of_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, v: i64) -> str {
+    if node_kind(nk, v) == 34 { return "bytes" }
+    if node_kind(nk, v) == 22 { return "box" }
+    if str_eq(sum_enum_type_of_expr(nk, nt, fc, ns, prog, v), "") == 0 { return "box" }
+    if expr_is_str(nk, nt, fc, ns, prog, v) == 1 { return "str" }
+    if expr_is_float(nk, nt, fc, ns, prog, v) == 1 { return "f64" }
+    "i64"
+}
+
+// Поле (s/f/b/i) на catch payload binding `catch !E(v)` за променлива v;
+// "" ако v не е payload променлива. Типът идва от !E(тип) декларацията
+// на callee-то на catch-натия израз (fallback: глобалната !E декларация).
+fn catch_var_field(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vname: str) -> str {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 37 {
+            let mut in0 = first_child(fc, i)
+            let mut vn = next_sibling(ns, in0)
+            if node_kind(nk, vn) == 2 {
+                if str_eq(node_text(nt, vn), vname) == 1 {
+                    let mut effname = node_text(nt, i)
+                    // разгъни веригата до най-вътрешния израз (callee-то)
+                    while node_kind(nk, in0) == 37 { in0 = first_child(fc, in0) }
+                    let mut fld = ""
+                    if node_kind(nk, in0) == 4 {
+                        let mut cal = first_child(fc, in0)
+                        if node_kind(nk, cal) == 2 {
+                            fld = effect_field_of_fn(nk, nt, fc, ns, prog, node_text(nt, cal), effname)
+                        }
+                    }
+                    if str_eq(fld, "") == 1 { fld = effect_payload_field(nk, nt, fc, ns, prog, effname) }
+                    if str_eq(fld, "") == 1 { fld = "i" }
+                    return fld
+                }
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// Тип на struct поле: struct Име { ф: тип } → "str"/"f64"/"i64"/"Vec"/...
+// LP8-D: generic struct — sname може да е инстанция "Pair<i64,str>";
+// суровият тип на полето се substitution-ва с аргументите ѝ.
+fn struct_field_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, sname: str, fname: str) -> str {
+    let mut sbase = type_base(sname)
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 21 {
+            if str_eq(node_text(nt, i), sbase) == 1 {
+                let mut fld = first_child(fc, i)
+                while fld >= 0 {
+                    if node_kind(nk, fld) == 25 {
+                        let mut ft = node_text(nt, fld)
+                        let mut ci = bfind(ft, 58, 0)
+                        if ci > 0 {
+                            if str_eq(substr(ft, 0, ci), fname) == 1 {
+                                let mut raw = substr(ft, ci + 1, len(ft))
+                                if type_has_args(sname) == 1 {
+                                    return subst_type(raw, gen_struct_param_names(nk, nt, fc, ns, prog, sbase), type_args_inner(sname))
+                                }
+                                return raw
+                            }
+                        }
+                    }
+                    fld = next_sibling(ns, fld)
+                }
+                return ""
+            }
+        }
+        i = i + 1
+    }
+    ""
+}
+
+// Struct името на израз-идентификатор (от let init: struct литерал,
+// map_get/vec_get на box стойности, generic fn резултат); "" ако не е
+// struct. LP8-D: делегира на expr_type_name (пълен каноничен текст —
+// за generic struct инстанция "Pair<i64,str>").
+fn expr_struct_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str {
+    let mut tn = expr_type_name(nk, nt, fc, ns, prog, e)
+    if str_eq(tn, "") == 1 { return "" }
+    if struct_decl_of(nk, nt, fc, ns, prog, type_base(tn)) < 0 { return "" }
+    tn
+}

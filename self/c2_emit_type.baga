@@ -3,9 +3,32 @@
 // Кодогенерацията им е в c2_emit_expr.baga.
 
 import "c2_ast.baga"
+import "c2_enum.baga"
+
+// forward декларации (c2_gen_emit.baga / c2_clo.baga) — LP8-D
+fn gen_call_ret_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn fn_type_ret(t: str) -> str
 
 fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
     let mut k = node_kind(nk, idx)
+    // CATCH (37) / TRY (40) — типът е типът на вътрешния израз
+    if k == 37 { return expr_is_str(nk, nt, fc, ns, prog, first_child(fc, idx)) }
+    if k == 40 { return expr_is_str(nk, nt, fc, ns, prog, first_child(fc, idx)) }
+    // LP8-D: методно извикване / fn-параметърно извикване в инстанция
+    if k == 46 {
+        if str_eq(gen_call_ret_type(nk, nt, fc, ns, prog, idx), "str") == 1 { return 1 }
+        return 0
+    }
+    if k == 49 {
+        if str_eq(fn_type_ret(node_text(nt, idx)), "str") == 1 { return 1 }
+        return 0
+    }
+    // FIELD ACCESS: struct поле с тип str
+    if k == 23 {
+        let mut obj = first_child(fc, idx)
+        if str_eq(struct_field_type(nk, nt, fc, ns, prog, expr_struct_name(nk, nt, fc, ns, prog, obj), node_text(nt, idx)), "str") == 1 { return 1 }
+        return 0
+    }
     if k == 1 { return 1 }
     if k == 4 {
         let mut cal = first_child(fc, idx)
@@ -19,18 +42,34 @@ fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
             if str_eq(bn, "vec_get_str") == 1 { return 1 }
             if str_eq(bn, "hex_encode") == 1 { return 1 }
             if str_eq(bn, "str_of_bytes") == 1 { return 1 }
+            if str_eq(bn, "i64_to_str") == 1 { return 1 }
+            if str_eq(bn, "f64_to_str") == 1 { return 1 }
+            if str_eq(bn, "map_get") == 1 {
+                let mut ma = next_sibling(ns, cal)
+                if ma >= 0 {
+                    if str_eq(map_val_kind(nk, nt, fc, ns, prog, ma), "str") == 1 { return 1 }
+                }
+            }
             if str_eq(bn, "vec_get") == 1 {
                 let mut va1 = next_sibling(ns, cal)
                 if va1 >= 0 {
                     if vec_is_str(nk, nt, fc, ns, prog, va1) == 1 { return 1 }
                 }
             }
+            // L5: повикване през fn стойност — ret тип от fn сигнатурата
+            if str_eq(fn_type_ret(expr_fn_type(nk, nt, fc, ns, prog, cal)), "str") == 1 { return 1 }
+            // LP8-D: generic fn повикване — subst-нат ret тип
+            if str_eq(gen_call_ret_type(nk, nt, fc, ns, prog, idx), "str") == 1 { return 1 }
             let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
             if str_eq(rt, "const char *") == 1 { return 1 }
         }
     }
     if k == 2 {
         let mut vname = node_text(nt, idx)
+        // catch payload binding `catch !E(v)` със str payload
+        if str_eq(catch_var_field(nk, nt, fc, ns, prog, vname), "s") == 1 { return 1 }
+        // match binding `Variant(v)` със str payload (sum enum)
+        if str_eq(match_binding_payload_type(nk, nt, fc, ns, prog, vname), "str") == 1 { return 1 }
         let mut f = first_child(fc, prog)
         while f >= 0 {
             if node_kind(nk, f) == 11 {
@@ -59,6 +98,23 @@ fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
 
 fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
     let mut k = node_kind(nk, idx)
+    if k == 37 { return expr_is_float(nk, nt, fc, ns, prog, first_child(fc, idx)) }
+    if k == 40 { return expr_is_float(nk, nt, fc, ns, prog, first_child(fc, idx)) }
+    // LP8-D: методно извикване / fn-параметърно извикване в инстанция
+    if k == 46 {
+        if str_eq(gen_call_ret_type(nk, nt, fc, ns, prog, idx), "f64") == 1 { return 1 }
+        return 0
+    }
+    if k == 49 {
+        if str_eq(fn_type_ret(node_text(nt, idx)), "f64") == 1 { return 1 }
+        return 0
+    }
+    // FIELD ACCESS: struct поле с тип f64
+    if k == 23 {
+        let mut obj = first_child(fc, idx)
+        if str_eq(struct_field_type(nk, nt, fc, ns, prog, expr_struct_name(nk, nt, fc, ns, prog, obj), node_text(nt, idx)), "f64") == 1 { return 1 }
+        return 0
+    }
     if k == 19 { return 1 }
     if k == 3 {
         let mut left = first_child(fc, idx)
@@ -71,12 +127,20 @@ fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
         let mut cal = first_child(fc, idx)
         if node_kind(nk, cal) == 2 {
             let mut bn = node_text(nt, cal)
+            if str_eq(bn, "map_get") == 1 {
+                let mut ma = next_sibling(ns, cal)
+                if ma >= 0 {
+                    if str_eq(map_val_kind(nk, nt, fc, ns, prog, ma), "f64") == 1 { return 1 }
+                }
+            }
             if str_eq(bn, "vec_get") == 1 {
                 let mut a1 = next_sibling(ns, cal)
                 if a1 >= 0 {
                     if vec_is_f64(nk, nt, fc, ns, prog, a1) == 1 { return 1 }
                 }
             }
+            // LP8-D: generic fn повикване — subst-нат ret тип
+            if str_eq(gen_call_ret_type(nk, nt, fc, ns, prog, idx), "f64") == 1 { return 1 }
             let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
             if str_eq(rt, "double") == 1 { return 1 }
         }
@@ -84,6 +148,10 @@ fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
     }
     if k == 2 {
         let mut vname = node_text(nt, idx)
+        // catch payload binding `catch !E(v)` с f64 payload
+        if str_eq(catch_var_field(nk, nt, fc, ns, prog, vname), "f") == 1 { return 1 }
+        // match binding `Variant(v)` с f64 payload (sum enum)
+        if str_eq(match_binding_payload_type(nk, nt, fc, ns, prog, vname), "f64") == 1 { return 1 }
         let mut f = first_child(fc, prog)
         while f >= 0 {
             if node_kind(nk, f) == 11 {
@@ -115,6 +183,8 @@ fn expr_is_float(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64
 // взаимна рекурсия expr_is_float ↔ vec_is_f64 при vec_push(v, ... vec_get(v) ...).
 fn expr_is_float_shallow(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
     let mut k = node_kind(nk, idx)
+    if k == 37 { return expr_is_float_shallow(nk, nt, fc, ns, prog, first_child(fc, idx)) }
+    if k == 40 { return expr_is_float_shallow(nk, nt, fc, ns, prog, first_child(fc, idx)) }
     if k == 19 { return 1 }
     if k == 3 {
         let mut left = first_child(fc, idx)
@@ -162,6 +232,8 @@ fn expr_is_float_shallow(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64
 
 fn expr_is_bool(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
     let mut k = node_kind(nk, idx)
+    if k == 37 { return expr_is_bool(nk, nt, fc, ns, prog, first_child(fc, idx)) }
+    if k == 40 { return expr_is_bool(nk, nt, fc, ns, prog, first_child(fc, idx)) }
     if k == 20 { return 1 }
     if k == 3 {
         let mut op = node_text(nt, idx)
@@ -216,6 +288,8 @@ fn expr_is_bool(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 
 fn vec_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vnode: i64) -> i64 {
     if node_kind(nk, vnode) != 2 { return 0 }
     let mut vname = node_text(nt, vnode)
+    // vec от map_keys() на str-ключова map
+    if vec_init_is_str_keys(nk, nt, fc, ns, prog, vname) == 1 { return 1 }
     let mut f = first_child(fc, prog)
     while f >= 0 {
         if node_kind(nk, f) == 11 {
@@ -316,4 +390,5 @@ fn vec_is_f64(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vnode: i64) -> i64 
     }
     0
 }
+
 

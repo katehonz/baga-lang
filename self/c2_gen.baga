@@ -1,0 +1,590 @@
+// c2_gen.baga — LP8 вълна D: generics + traits (M21/M23/M24) в self
+// компилатора. Канонични типови текстове ("Pair<i64,str>", "Vec<T>",
+// "fn(T)->U"), substitution по типови параметри, извод на типа на израз
+// (expr_type_name) по модела на останалите класификатори (LET init +
+// история + първо съвпадение по име, fuel срещу цикли). Емисията на
+// инстанциите е в c2_gen_emit.baga.
+
+import "c2_ast.baga"
+import "c2_lex.baga"
+import "c2_enum.baga"
+import "c2_emit_type.baga"
+import "c2_classify.baga"
+import "c2_clo.baga"
+
+// forward декларации (дефинирани в други модули)
+fn mangle(name: str) -> str
+fn int_to_str(n: i64) -> str
+fn is_user_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
+fn fn_ret_type_text(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str
+fn struct_field_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, sname: str, fname: str) -> str
+fn gen_call_ret_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+
+// ============================================================
+//  Каноничен типов текст: помощници
+// ============================================================
+
+fn type_has_args(t: str) -> i64 {
+    if bfind(t, 60, 0) >= 0 { return 1 }
+    0
+}
+
+// "Pair<i64,str>" → "Pair"; без '<' → самият текст
+fn type_base(t: str) -> str {
+    let mut c = bfind(t, 60, 0)
+    if c < 0 { return t }
+    substr(t, 0, c)
+}
+
+// "Pair<i64,str>" → "i64,str" (вътрешността на външните <>)
+fn type_args_inner(t: str) -> str {
+    let mut a = bfind(t, 60, 0)
+    if a < 0 { return "" }
+    // последният символ е '>' по конструкция
+    substr(t, a + 1, len(t) - 1)
+}
+
+// Брой аргументи на списък със запетаи на топ ниво ("i64,str" → 2);
+// за праймерния текст "" → 0. Броят се само запетаи извън <> и ().
+fn tl_count(t: str) -> i64 {
+    if str_eq(t, "") == 1 { return 0 }
+    let mut cnt: i64 = 1
+    let mut depth: i64 = 0
+    let mut i: i64 = 0
+    let mut n = len(t)
+    while i < n {
+        let mut c = char_at(t, i)
+        if c == 60 { depth = depth + 1 }
+        if c == 62 { depth = depth - 1 }
+        if c == 40 { depth = depth + 1 }
+        if c == 41 { depth = depth - 1 }
+        if c == 44 {
+            if depth == 0 { cnt = cnt + 1 }
+        }
+        i = i + 1
+    }
+    cnt
+}
+
+// i-тият елемент на списък със запетаи на топ ниво
+fn tl_split(t: str, want: i64) -> str {
+    let mut depth: i64 = 0
+    let mut idx: i64 = 0
+    let mut start: i64 = 0
+    let mut i: i64 = 0
+    let mut n = len(t)
+    while i <= n {
+        let mut c: i64 = 44
+        if i < n { c = char_at(t, i) }
+        if i == n {
+            if idx == want { return substr(t, start, n) }
+            return ""
+        }
+        if c == 44 {
+            if depth == 0 {
+                if idx == want { return substr(t, start, i) }
+                idx = idx + 1
+                start = i + 1
+            }
+        }
+        if c == 60 { depth = depth + 1 }
+        if c == 62 { depth = depth - 1 }
+        if c == 40 { depth = depth + 1 }
+        if c == 41 { depth = depth - 1 }
+        i = i + 1
+    }
+    ""
+}
+
+// i-тият типов аргумент на "Pair<i64,str>" ("" при липса)
+fn type_arg(t: str, want: i64) -> str {
+    tl_split(type_args_inner(t), want)
+}
+
+// C име на тип: struct инстанция "Pair<i64,str>" → b_Pair_i64_str
+// (сплескване на < , >; без '<' → обичайния mangle)
+fn type_c_name(t: str) -> str {
+    if type_has_args(t) == 0 { return mangle(t) }
+    let mut flat = ""
+    let mut i: i64 = 0
+    let mut n = len(t)
+    while i < n {
+        let mut c = char_at(t, i)
+        if c == 60 { flat = concat(flat, "_") }
+        else {
+            if c == 44 { flat = concat(flat, "_") }
+            else {
+                if c == 62 { flat = flat }
+                else { flat = concat(flat, byte_chr(c)) }
+            }
+        }
+        i = i + 1
+    }
+    mangle(flat)
+}
+
+// ============================================================
+//  Декларации: struct/fn справки, типови параметри, substitution
+// ============================================================
+
+fn struct_decl_of(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut s = first_child(fc, prog)
+    while s >= 0 {
+        if node_kind(nk, s) == 21 {
+            if str_eq(node_text(nt, s), name) == 1 { return s }
+        }
+        s = next_sibling(ns, s)
+    }
+    0 - 1
+}
+
+// fn декларация (kind 11 дете на prog) с име name, или -1
+fn gen_fn_decl(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 { return f }
+        }
+        f = next_sibling(ns, f)
+    }
+    0 - 1
+}
+
+// Има ли възелът типови параметри (kind 43 деца)?
+fn decl_is_generic(nk: Vec, nt: Vec, fc: Vec, ns: Vec, d: i64) -> i64 {
+    let mut c = first_child(fc, d)
+    while c >= 0 {
+        if node_kind(nk, c) == 43 { return 1 }
+        c = next_sibling(ns, c)
+    }
+    0
+}
+
+fn fn_is_generic_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut d = gen_fn_decl(nk, nt, fc, ns, prog, name)
+    if d < 0 { return 0 }
+    decl_is_generic(nk, nt, fc, ns, d)
+}
+
+// Имената на типовите параметри на декларация (kind 43 текстове "T[:Bound]",
+// без bound частта) — Vec<str>
+fn gen_decl_type_params(nk: Vec, nt: Vec, fc: Vec, ns: Vec, d: i64) -> Vec {
+    let mut v = vec_new()
+    let mut c = first_child(fc, d)
+    while c >= 0 {
+        if node_kind(nk, c) == 43 {
+            let mut t = node_text(nt, c)
+            let mut ci = bfind(t, 58, 0)
+            if ci > 0 { t = substr(t, 0, ci) }
+            vec_push_str(v, t)
+        }
+        c = next_sibling(ns, c)
+    }
+    v
+}
+
+fn gen_struct_param_names(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, sname: str) -> Vec {
+    let mut d = struct_decl_of(nk, nt, fc, ns, prog, sname)
+    if d < 0 { return vec_new() }
+    gen_decl_type_params(nk, nt, fc, ns, d)
+}
+
+// Индекс на име в Vec<str> списък, или -1
+fn str_vec_index(v: Vec, s: str) -> i64 {
+    let mut i: i64 = 0
+    let mut n = vec_len(v)
+    while i < n {
+        if str_eq(vec_get_str(v, i), s) == 1 { return i }
+        i = i + 1
+    }
+    0 - 1
+}
+
+// Substitution: t с параметрите names заместени от аргументите на targs
+// текст ("i64,str"). "T" → args[i]; "Vec<T>"/"Pair<A,B>" → рекурсивно;
+// "fn(T)->U" → по параметри и резултат.
+fn subst_type(t: str, names: Vec, targs: str) -> str {
+    let mut ti = str_vec_index(names, t)
+    if ti >= 0 {
+        let mut a = tl_split(targs, ti)
+        if str_eq(a, "") == 0 { return a }
+        return t
+    }
+    if fn_type_is(t) == 1 {
+        let mut sig = "fn("
+        let mut np = fn_type_nparams(t)
+        let mut i: i64 = 0
+        while i < np {
+            if i > 0 { sig = concat(sig, ",") }
+            sig = concat(sig, subst_type(fn_type_param(t, i), names, targs))
+            i = i + 1
+        }
+        return concat(concat(sig, ")->"), subst_type(fn_type_ret(t), names, targs))
+    }
+    if type_has_args(t) == 1 {
+        let mut inner = type_args_inner(t)
+        let mut na = tl_count(inner)
+        let mut r = concat(type_base(t), "<")
+        let mut i: i64 = 0
+        while i < na {
+            if i > 0 { r = concat(r, ",") }
+            r = concat(r, subst_type(tl_split(inner, i), names, targs))
+            i = i + 1
+        }
+        return concat(r, ">")
+    }
+    t
+}
+
+// Свързване на типови параметри по шаблон (тип на параметър) и фактически
+// тип: "T" срещу "i64", "Vec<T>" срещу "Vec<i64>", "Pair<A,B>" срещу
+// "Pair<i64,str>", "fn(T)->U" срещу "fn(i64)->i64". vals е Vec<str>
+// паралелен на names ("" = несвързан).
+fn bind_pattern(pat: str, act: str, names: Vec, vals: Vec) {
+    if str_eq(act, "") == 1 { return }
+    let mut ti = str_vec_index(names, pat)
+    if ti >= 0 {
+        if str_eq(vec_get_str(vals, ti), "") == 1 { vec_set_str(vals, ti, act) }
+        return
+    }
+    if fn_type_is(pat) == 1 {
+        if fn_type_is(act) == 1 {
+            let mut np = fn_type_nparams(pat)
+            if fn_type_nparams(act) == np {
+                let mut i: i64 = 0
+                while i < np {
+                    bind_pattern(fn_type_param(pat, i), fn_type_param(act, i), names, vals)
+                    i = i + 1
+                }
+                bind_pattern(fn_type_ret(pat), fn_type_ret(act), names, vals)
+            }
+        }
+        return
+    }
+    if type_has_args(pat) == 1 {
+        if type_has_args(act) == 1 {
+            if str_eq(type_base(pat), type_base(act)) == 1 {
+                let mut pi = type_args_inner(pat)
+                let mut ai = type_args_inner(act)
+                let mut np = tl_count(pi)
+                if tl_count(ai) == np {
+                    let mut i: i64 = 0
+                    while i < np {
+                        bind_pattern(tl_split(pi, i), tl_split(ai, i), names, vals)
+                        i = i + 1
+                    }
+                }
+            }
+        }
+        return
+    }
+}
+
+// Типови аргументи на извикване на generic fn: явни (текст на CALL
+// възела) или изведени от аргументите. "" ако някой параметър остана
+// несвързан.
+fn gen_bind_targs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, decl: i64, callnode: i64) -> str {
+    let mut names = gen_decl_type_params(nk, nt, fc, ns, decl)
+    let mut vals = vec_new()
+    let mut i: i64 = 0
+    let mut nn = vec_len(names)
+    while i < nn {
+        vec_push_str(vals, "")
+        i = i + 1
+    }
+    let mut expl = node_text(nt, callnode)
+    if str_eq(expl, "") == 0 {
+        i = 0
+        while i < nn {
+            vec_set_str(vals, i, tl_split(expl, i))
+            i = i + 1
+        }
+    } else {
+        let mut callee = first_child(fc, callnode)
+        let mut arg = next_sibling(ns, callee)
+        let mut p = first_child(fc, decl)
+        while p >= 0 {
+            if node_kind(nk, p) == 12 {
+                if arg >= 0 {
+                    let mut ptext = node_text(nt, p)
+                    let mut ci = bfind(ptext, 58, 0)
+                    if ci >= 0 {
+                        let mut pat = substr(ptext, ci + 1, len(ptext))
+                        let mut act = expr_type_name_f(nk, nt, fc, ns, prog, arg, 8)
+                        bind_pattern(pat, act, names, vals)
+                    }
+                    arg = next_sibling(ns, arg)
+                }
+            }
+            p = next_sibling(ns, p)
+        }
+    }
+    let mut r = ""
+    i = 0
+    while i < nn {
+        let mut v = vec_get_str(vals, i)
+        if str_eq(v, "") == 1 { return "" }
+        if i > 0 { r = concat(r, ",") }
+        r = concat(r, v)
+        i = i + 1
+    }
+    r
+}
+
+// ============================================================
+//  expr_type_name: каноничен типов текст на израз ("" = неизвестен)
+// ============================================================
+
+// Тип на елементите на vec израз (идентификатор): box (struct/enum),
+// str/f64 история, vec_push елементи; fallback "i64".
+fn vec_elem_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vexpr: i64, fuel: i64) -> str {
+    let mut bt = vec_box_type(nk, nt, fc, ns, prog, vexpr)
+    if str_eq(bt, "") == 0 { return bt }
+    if vec_is_str(nk, nt, fc, ns, prog, vexpr) == 1 { return "str" }
+    if vec_is_f64(nk, nt, fc, ns, prog, vexpr) == 1 { return "f64" }
+    if node_kind(nk, vexpr) == 2 {
+        let mut vname = node_text(nt, vexpr)
+        let mut i: i64 = 0
+        let mut n = vec_len(nk)
+        while i < n {
+            if node_kind(nk, i) == 4 {
+                let mut cal = first_child(fc, i)
+                if node_kind(nk, cal) == 2 {
+                    let mut bn = node_text(nt, cal)
+                    let mut is_ps: i64 = 0
+                    if str_eq(bn, "vec_push") == 1 { is_ps = 1 }
+                    if str_eq(bn, "vec_set") == 1 { is_ps = 1 }
+                    if is_ps == 1 {
+                        let mut a1 = next_sibling(ns, cal)
+                        if a1 >= 0 {
+                            if node_kind(nk, a1) == 2 {
+                                if str_eq(node_text(nt, a1), vname) == 1 {
+                                    let mut elem = next_sibling(ns, a1)
+                                    if str_eq(bn, "vec_set") == 1 { elem = next_sibling(ns, elem) }
+                                    if elem >= 0 {
+                                        let mut et = expr_type_name_f(nk, nt, fc, ns, prog, elem, fuel - 1)
+                                        if str_eq(et, "") == 0 { return et }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            i = i + 1
+        }
+    }
+    "i64"
+}
+
+// Пълен тип на struct литерал: "Pair<str,i64>" (явни), "Pt" (обикновен)
+// или извод на аргументите от стойностите на полетата ("Pair { first: 1,
+// second: \"x\" }" → "Pair<i64,str>").
+fn struct_lit_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, lit: i64) -> str {
+    let mut t = node_text(nt, lit)
+    if type_has_args(t) == 1 { return t }
+    let mut decl = struct_decl_of(nk, nt, fc, ns, prog, t)
+    if decl < 0 { return t }
+    let mut params = gen_decl_type_params(nk, nt, fc, ns, decl)
+    if vec_len(params) == 0 { return t }
+    let mut r = concat(t, "<")
+    let mut pi: i64 = 0
+    let mut np = vec_len(params)
+    while pi < np {
+        let mut pname = vec_get_str(params, pi)
+        // decl поле с тип точно този параметър
+        let mut ffname = ""
+        let mut fld = first_child(fc, decl)
+        while fld >= 0 {
+            if node_kind(nk, fld) == 25 {
+                let mut ft = node_text(nt, fld)
+                let mut ci = bfind(ft, 58, 0)
+                if ci > 0 {
+                    if str_eq(substr(ft, ci + 1, len(ft)), pname) == 1 {
+                        ffname = substr(ft, 0, ci)
+                    }
+                }
+            }
+            fld = next_sibling(ns, fld)
+        }
+        // стойността на това поле в литерала
+        let mut at = ""
+        let mut lf = first_child(fc, lit)
+        while lf >= 0 {
+            if node_kind(nk, lf) == 24 {
+                if str_eq(node_text(nt, lf), ffname) == 1 {
+                    at = expr_type_name_f(nk, nt, fc, ns, prog, first_child(fc, lf), 8)
+                }
+            }
+            lf = next_sibling(ns, lf)
+        }
+        if str_eq(at, "") == 1 { return t }
+        if pi > 0 { r = concat(r, ",") }
+        r = concat(r, at)
+        pi = pi + 1
+    }
+    concat(r, ">")
+}
+
+fn expr_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str {
+    expr_type_name_f(nk, nt, fc, ns, prog, e, 8)
+}
+
+fn expr_type_name_f(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64, fuel: i64) -> str {
+    if fuel <= 0 { return "" }
+    if e < 0 { return "" }
+    let mut k = node_kind(nk, e)
+    if k == 0 { return "i64" }
+    if k == 1 { return "str" }
+    if k == 19 { return "f64" }
+    if k == 20 { return "bool" }
+    if k == 34 { return "bytes" }
+    if k == 33 { return "str" }
+    if k == 37 { return expr_type_name_f(nk, nt, fc, ns, prog, first_child(fc, e), fuel - 1) }
+    if k == 40 { return expr_type_name_f(nk, nt, fc, ns, prog, first_child(fc, e), fuel - 1) }
+    if k == 22 { return struct_lit_type_name(nk, nt, fc, ns, prog, e) }
+    if k == 49 { return fn_type_ret(node_text(nt, e)) }
+    if k == 46 { return gen_call_ret_type(nk, nt, fc, ns, prog, e) }
+    if k == 23 {
+        let mut obj = first_child(fc, e)
+        let mut sn = expr_type_name_f(nk, nt, fc, ns, prog, obj, fuel - 1)
+        if str_eq(sn, "") == 1 { return "" }
+        if struct_decl_of(nk, nt, fc, ns, prog, type_base(sn)) < 0 { return "" }
+        return struct_field_type(nk, nt, fc, ns, prog, sn, node_text(nt, e))
+    }
+    if k == 2 {
+        let mut name = node_text(nt, e)
+        if is_user_fn(nk, nt, fc, ns, prog, name) == 1 {
+            return fn_decl_type(nk, nt, fc, ns, prog, name)
+        }
+        // LET init (първо съвпадение по име — конвенцията на класификаторите)
+        let mut i: i64 = 0
+        let mut n = vec_len(nk)
+        while i < n {
+            if node_kind(nk, i) == 6 {
+                if str_eq(node_text(nt, i), name) == 1 {
+                    let mut init = first_child(fc, i)
+                    let mut ik = node_kind(nk, init)
+                    while ik == 37 || ik == 40 {
+                        init = first_child(fc, init)
+                        ik = node_kind(nk, init)
+                    }
+                    if ik == 4 {
+                        let mut cal = first_child(fc, init)
+                        if node_kind(nk, cal) == 2 {
+                            let mut bn = node_text(nt, cal)
+                            if str_eq(bn, "vec_new") == 1 {
+                                return concat(concat("Vec<", vec_elem_type_name(nk, nt, fc, ns, prog, e, fuel - 1)), ">")
+                            }
+                            if str_eq(bn, "map_keys") == 1 { return "Vec<str>" }
+                        }
+                    }
+                    return expr_type_name_f(nk, nt, fc, ns, prog, init, fuel - 1)
+                }
+            }
+            i = i + 1
+        }
+        // параметър с типова анотация
+        i = 0
+        while i < n {
+            if node_kind(nk, i) == 12 {
+                let mut pt = node_text(nt, i)
+                let mut ci = bfind(pt, 58, 0)
+                if ci > 0 {
+                    if str_eq(substr(pt, 0, ci), name) == 1 {
+                        return substr(pt, ci + 1, len(pt))
+                    }
+                }
+            }
+            i = i + 1
+        }
+        return ""
+    }
+    if k == 4 {
+        let mut gr = gen_call_ret_type(nk, nt, fc, ns, prog, e)
+        if str_eq(gr, "") == 0 { return gr }
+        let mut cal = first_child(fc, e)
+        if node_kind(nk, cal) == 2 {
+            let mut bn = node_text(nt, cal)
+            if is_user_fn(nk, nt, fc, ns, prog, bn) == 1 {
+                return fn_ret_type_text(nk, nt, fc, ns, prog, bn)
+            }
+            if str_eq(bn, "concat") == 1 { return "str" }
+            if str_eq(bn, "substr") == 1 { return "str" }
+            if str_eq(bn, "chr") == 1 { return "str" }
+            if str_eq(bn, "read_file") == 1 { return "str" }
+            if str_eq(bn, "arg") == 1 { return "str" }
+            if str_eq(bn, "vec_get_str") == 1 { return "str" }
+            if str_eq(bn, "hex_encode") == 1 { return "str" }
+            if str_eq(bn, "str_of_bytes") == 1 { return "str" }
+            if str_eq(bn, "i64_to_str") == 1 { return "str" }
+            if str_eq(bn, "f64_to_str") == 1 { return "str" }
+            if str_eq(bn, "str_eq") == 1 { return "bool" }
+            if str_eq(bn, "map_has") == 1 { return "bool" }
+            if str_eq(bn, "bytes_of_str") == 1 { return "bytes" }
+            if str_eq(bn, "bytes_slice") == 1 { return "bytes" }
+            if str_eq(bn, "bytes_concat") == 1 { return "bytes" }
+            if str_eq(bn, "bytes_new") == 1 { return "bytes" }
+            if str_eq(bn, "bytes_push") == 1 { return "bytes" }
+            if str_eq(bn, "h_bytes") == 1 { return "bytes" }
+            if str_eq(bn, "hex_decode") == 1 { return "bytes" }
+            let mut a1 = next_sibling(ns, cal)
+            if str_eq(bn, "vec_get") == 1 {
+                if a1 >= 0 { return vec_elem_type_name(nk, nt, fc, ns, prog, a1, fuel - 1) }
+                return "i64"
+            }
+            if str_eq(bn, "vec_slice") == 1 {
+                if a1 >= 0 { return expr_type_name_f(nk, nt, fc, ns, prog, a1, fuel - 1) }
+                return ""
+            }
+            if str_eq(bn, "vec_concat") == 1 {
+                if a1 >= 0 { return expr_type_name_f(nk, nt, fc, ns, prog, a1, fuel - 1) }
+                return ""
+            }
+            if str_eq(bn, "map_get") == 1 {
+                if a1 >= 0 {
+                    let mut vk = map_val_kind(nk, nt, fc, ns, prog, a1)
+                    if len(vk) > 4 {
+                        if str_eq(substr(vk, 0, 4), "box:") == 1 { return substr(vk, 4, len(vk)) }
+                    }
+                    if str_eq(vk, "") == 1 { return "i64" }
+                    return vk
+                }
+                return "i64"
+            }
+            if str_eq(bn, "map_keys") == 1 { return "Vec<str>" }
+            return "i64"
+        }
+        // извикване през fn стойност — ret от сигнатурата
+        let mut ft = expr_fn_type(nk, nt, fc, ns, prog, cal)
+        if str_eq(ft, "") == 0 { return fn_type_ret(ft) }
+        return ""
+    }
+    if k == 26 {
+        // match: типът на тялото на първия arm
+        let mut arm = next_sibling(ns, first_child(fc, e))
+        if arm >= 0 {
+            let mut b = first_child(fc, arm)
+            if str_eq(node_text(nt, arm), "_") == 0 { b = next_sibling(ns, b) }
+            if b >= 0 { return expr_type_name_f(nk, nt, fc, ns, prog, b, fuel - 1) }
+        }
+        return ""
+    }
+    if k == 3 {
+        let mut op = node_text(nt, e)
+        if str_eq(op, "==") == 1 { return "bool" }
+        if str_eq(op, "!=") == 1 { return "bool" }
+        if str_eq(op, "<") == 1 { return "bool" }
+        if str_eq(op, ">") == 1 { return "bool" }
+        if str_eq(op, "<=") == 1 { return "bool" }
+        if str_eq(op, ">=") == 1 { return "bool" }
+        if str_eq(op, "&&") == 1 { return "bool" }
+        if str_eq(op, "||") == 1 { return "bool" }
+        let mut l = first_child(fc, e)
+        let mut r = next_sibling(ns, l)
+        if str_eq(expr_type_name_f(nk, nt, fc, ns, prog, l, fuel - 1), "f64") == 1 { return "f64" }
+        if str_eq(expr_type_name_f(nk, nt, fc, ns, prog, r, fuel - 1), "f64") == 1 { return "f64" }
+        return "i64"
+    }
+    ""
+}

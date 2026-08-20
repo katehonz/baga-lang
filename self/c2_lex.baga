@@ -35,6 +35,13 @@ fn is_alnum(c: i64) -> i64 {
     is_digit(c)
 }
 
+fn is_hexdigit(c: i64) -> i64 {
+    if is_digit(c) == 1 { return 1 }
+    if c >= 97 { if c <= 102 { return 1 } }
+    if c >= 65 { if c <= 70 { return 1 } }
+    0
+}
+
 fn kw_kind(s: str) -> i64 {
     if str_eq(s, "fn") { return 1 }
     if str_eq(s, "let") { return 2 }
@@ -96,6 +103,23 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
         }
         if is_digit(c) == 1 {
             let mut start = pos
+            // hex int литерал 0x.. — текстът остава суров (валиден C литерал)
+            if c == 48 {
+                if pos + 2 < n {
+                    let mut c1 = char_at(src, pos + 1)
+                    if c1 == 120 {
+                        if is_hexdigit(char_at(src, pos + 2)) == 1 {
+                            pos = pos + 2
+                            while pos < n {
+                                if is_hexdigit(char_at(src, pos)) == 1 { pos = pos + 1 } else { break }
+                            }
+                            vec_push(tk, 100)
+                            vec_push_str(tt, substr(src, start, pos))
+                            continue
+                        }
+                    }
+                }
+            }
             while pos < n {
                 if is_digit(char_at(src, pos)) == 1 { pos = pos + 1 } else { break }
             }

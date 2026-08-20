@@ -2,18 +2,23 @@
 // проверки на call/vec_push, spec асоциации, check_program.
 
 import "c2_ast.baga"
+import "c2_lex.baga"
 
 // ============================================================
 //  Checker (минимален: типове на аргументи + vec смесване)
 // ============================================================
 
 fn typekind_of_typename(name: str) -> i64 {
-    if str_eq(name, "i64") == 1 { return 0 }
-    if str_eq(name, "i32") == 1 { return 0 }
-    if str_eq(name, "str") == 1 { return 1 }
-    if str_eq(name, "f64") == 1 { return 2 }
-    if str_eq(name, "bool") == 1 { return 3 }
-    if str_eq(name, "Vec") == 1 { return 4 }
+    // generic аргументите се игнорират: "Vec<i64>" → Vec (LP8-D)
+    let mut base = name
+    let mut lt = bfind(name, 60, 0)
+    if lt > 0 { base = substr(name, 0, lt) }
+    if str_eq(base, "i64") == 1 { return 0 }
+    if str_eq(base, "i32") == 1 { return 0 }
+    if str_eq(base, "str") == 1 { return 1 }
+    if str_eq(base, "f64") == 1 { return 2 }
+    if str_eq(base, "bool") == 1 { return 3 }
+    if str_eq(base, "Vec") == 1 { return 4 }
     0 - 1
 }
 
@@ -348,6 +353,36 @@ fn check_program(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
     check_fn_returns(nk, nt, fc, ns, prog)
 }
 
+// statement, който гарантирано не пада през края си: return (7),
+// изразен statement (10 — implicit return), raise (36), или if/else (8)
+// при което и двете разклонения завършват така.
+fn stmt_can_return(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) -> i64 {
+    let mut k = node_kind(nk, idx)
+    if k == 7 { return 1 }
+    if k == 10 { return 1 }
+    if k == 36 { return 1 }
+    if k == 8 {
+        let mut cond = first_child(fc, idx)
+        let mut then_br = next_sibling(ns, cond)
+        let mut else_br = next_sibling(ns, then_br)
+        if else_br < 0 { return 0 }
+        if block_can_return(nk, nt, fc, ns, then_br) == 0 { return 0 }
+        return block_can_return(nk, nt, fc, ns, else_br)
+    }
+    0
+}
+
+fn block_can_return(nk: Vec, nt: Vec, fc: Vec, ns: Vec, blk: i64) -> i64 {
+    let mut last = first_child(fc, blk)
+    let mut prev: i64 = 0 - 1
+    while last >= 0 {
+        prev = last
+        last = next_sibling(ns, last)
+    }
+    if prev < 0 { return 0 }
+    stmt_can_return(nk, nt, fc, ns, prev)
+}
+
 // M19: не-void функция (с ret type, kind 16) трябва да завършва с
 // return (7) или изразен statement (10 — implicit return).
 fn check_fn_returns(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
@@ -368,22 +403,9 @@ fn check_fn_returns(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
                     f = next_sibling(ns, f)
                     continue
                 }
-                let mut last = first_child(fc, body)
-                let mut prev = 0 - 1
-                while last >= 0 {
-                    prev = last
-                    last = next_sibling(ns, last)
-                }
-                if prev < 0 {
+                if block_can_return(nk, nt, fc, ns, body) == 0 {
                     eprintln(concat("функцията '", concat(node_text(nt, f), "' може да падне от края без return")))
                     exit(1)
-                }
-                let mut pk = node_kind(nk, prev)
-                if pk != 7 {
-                    if pk != 10 {
-                        eprintln(concat("функцията '", concat(node_text(nt, f), "' може да падне от края без return")))
-                        exit(1)
-                    }
                 }
             }
         }

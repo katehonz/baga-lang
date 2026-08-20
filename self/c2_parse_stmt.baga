@@ -33,18 +33,27 @@ fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         }
         if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
         let mut init = parse_expr(tk, tt, pos, nk, nt, fc, ns)
-        // skip catch !E => handler (compile-time only), възможно верижно
-        while vec_get(tk, vec_get(pos, 0)) == 16 {
-            vec_set(pos, 0, vec_get(pos, 0) + 1)
-            vec_set(pos, 0, vec_get(pos, 0) + 1)
-            vec_set(pos, 0, vec_get(pos, 0) + 1)
-            if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
-            if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
-            let handler = parse_expr(tk, tt, pos, nk, nt, fc, ns)
-        }
         let node = ast_kind(nk, nt, fc, ns, 6, name)
         ast_child(fc, ns, node, init)
         return node
+    }
+    // raise !E[(payload)] — runtime предизвикване на ефект (kind 36)
+    if k == 0 {
+        if str_eq(vec_get_str(tt, vec_get(pos, 0)), "raise") == 1 {
+            if is_single(tk, tt, vec_get(pos, 0) + 1, "!") == 1 {
+                vec_set(pos, 0, vec_get(pos, 0) + 2)
+                let mut effname = vec_get_str(tt, vec_get(pos, 0))
+                vec_set(pos, 0, vec_get(pos, 0) + 1)
+                let node = ast_kind(nk, nt, fc, ns, 36, effname)
+                if is_single(tk, tt, vec_get(pos, 0), "(") == 1 {
+                    vec_set(pos, 0, vec_get(pos, 0) + 1)
+                    let mut payload = parse_expr(tk, tt, pos, nk, nt, fc, ns)
+                    ast_child(fc, ns, node, payload)
+                    if is_single(tk, tt, vec_get(pos, 0), ")") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+                }
+                return node
+            }
+        }
     }
     if k == 9 {
         vec_set(pos, 0, vec_get(pos, 0) + 1)
@@ -137,15 +146,7 @@ fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
             return anode
         }
     }
-    // skip catch !E => handler (compile-time only), възможно верижно
-    while vec_get(tk, vec_get(pos, 0)) == 16 {
-        vec_set(pos, 0, vec_get(pos, 0) + 1)
-        vec_set(pos, 0, vec_get(pos, 0) + 1)
-        vec_set(pos, 0, vec_get(pos, 0) + 1)
-        if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
-        if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
-        let mut handler = parse_expr(tk, tt, pos, nk, nt, fc, ns)
-    }
+    // catch веригите се парсват като postfix в parse_primary (kind 37)
     let mut node = ast_kind(nk, nt, fc, ns, 10, "")
     ast_child(fc, ns, node, e)
     node
@@ -156,14 +157,25 @@ fn parse_struct(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) 
     let mut name = vec_get_str(tt, vec_get(pos, 0))
     vec_set(pos, 0, vec_get(pos, 0) + 1)
     let mut node = ast_kind(nk, nt, fc, ns, 21, name)
+    // типови параметри <A, B> — kind 43 (LP8-D)
+    if is_single(tk, tt, vec_get(pos, 0), "<") == 1 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        while is_single(tk, tt, vec_get(pos, 0), ">") == 0 {
+            if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+            let mut tp = vec_get_str(tt, vec_get(pos, 0))
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            ast_child(fc, ns, node, ast_kind(nk, nt, fc, ns, 43, tp))
+            if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        }
+        if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    }
     if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
     while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
         if vec_get(tk, vec_get(pos, 0)) == 999 { break }
         let mut fname = vec_get_str(tt, vec_get(pos, 0))
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         if is_single(tk, tt, vec_get(pos, 0), ":") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
-        let mut ftype = vec_get_str(tt, vec_get(pos, 0))
-        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let mut ftype = parse_type_name(tk, tt, pos)
         let mut fld = ast_kind(nk, nt, fc, ns, 25, concat(fname, concat(":", ftype)))
         ast_child(fc, ns, node, fld)
         if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
@@ -188,8 +200,12 @@ fn parse_enum(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         if vec_get(tk, vec_get(pos, 0)) == 999 { break }
         let mut vname = vec_get_str(tt, vec_get(pos, 0))
         vec_set(pos, 0, vec_get(pos, 0) + 1)
+        // сум enum: вариант с payload тип — текст "Име:Тип" (LP8 вълна B)
         if is_single(tk, tt, vec_get(pos, 0), "(") == 1 {
-            self_unsupported(concat(concat("сум enum с payload-и (вариант '", vname), "')"))
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            let mut ptype = parse_type_name(tk, tt, pos)
+            if is_single(tk, tt, vec_get(pos, 0), ")") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+            vname = concat(vname, concat(":", ptype))
         }
         let mut vn = ast_kind(nk, nt, fc, ns, 29, vname)
         ast_child(fc, ns, node, vn)
@@ -197,6 +213,70 @@ fn parse_enum(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
     }
     if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
     node
+}
+
+// LP8-D: trait декларация (kind 44). Методните сигнатури в тялото не са
+// нужни на self компилатора (разрешаването на методни извиквания е по
+// impl регистъра) — пропускат се балансирано.
+fn parse_trait(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut name = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut node = ast_kind(nk, nt, fc, ns, 44, name)
+    let mut depth: i64 = 0
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 {
+        depth = 1
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+    }
+    while depth > 0 {
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { depth = depth + 1 }
+        if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { depth = depth - 1 }
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+    }
+    node
+}
+
+// LP8-D: impl Trait for Type { fn m(...) ... } — kind 45, текст
+// "Trait|Type" (Type е каноничен, може "Pair<i64,str>"); методите са
+// kind 11 деца с тела.
+fn parse_impl(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i64 {
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut tname = vec_get_str(tt, vec_get(pos, 0))
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    // skip "for"
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    let mut ty = parse_type_name(tk, tt, pos)
+    let mut node = ast_kind(nk, nt, fc, ns, 45, concat(concat(tname, "|"), ty))
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    while is_single(tk, tt, vec_get(pos, 0), "}") == 0 {
+        if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+        if vec_get(tk, vec_get(pos, 0)) == 1 {
+            let mut m = parse_fn(tk, tt, pos, nk, nt, fc, ns)
+            ast_child(fc, ns, node, m)
+        } else {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+        }
+    }
+    if is_single(tk, tt, vec_get(pos, 0), "}") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    node
+}
+
+// !E[(T)] анотации след тип/ламбда — консумират се без да се пазят
+// (runtime моделът на ефектите е безусловен; виж c2_emit_eff.baga).
+fn skip_effect_annotations(tk: Vec, tt: Vec, pos: Vec) {
+    while is_single(tk, tt, vec_get(pos, 0), "!") == 1 {
+        vec_set(pos, 0, vec_get(pos, 0) + 2)
+        if is_single(tk, tt, vec_get(pos, 0), "(") == 1 {
+            let mut dd: i64 = 0
+            while vec_get(tk, vec_get(pos, 0)) != 999 {
+                if is_single(tk, tt, vec_get(pos, 0), "(") == 1 { dd = dd + 1 }
+                if is_single(tk, tt, vec_get(pos, 0), ")") == 1 { dd = dd - 1 }
+                vec_set(pos, 0, vec_get(pos, 0) + 1)
+                if dd <= 0 { break }
+            }
+        }
+    }
 }
 
 fn is_section_keyword(s: str) -> i64 {
@@ -296,17 +376,75 @@ fn parse_spec(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
     node
 }
 
+// Типови аргументи <A, B<T>, ...> — каноничен текст без интервали
+// ("i64,str"; `>>` се цепи на два затварящи, C++11-style). Текущият
+// токен трябва да е "<"; след връщане pos е след съответстващия ">".
+// (LP8 вълна D)
+fn parse_targs_text(tk: Vec, tt: Vec, pos: Vec) -> str {
+    let mut r = ""
+    let mut depth: i64 = 1
+    vec_set(pos, 0, vec_get(pos, 0) + 1)
+    while vec_get(pos, 0) < vec_len(tk) {
+        let mut k = vec_get(tk, vec_get(pos, 0))
+        if k == 999 { break }
+        if is_single(tk, tt, vec_get(pos, 0), "<") == 1 {
+            depth = depth + 1
+            r = concat(r, "<")
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            continue
+        }
+        if is_single(tk, tt, vec_get(pos, 0), ">") == 1 {
+            depth = depth - 1
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            if depth <= 0 { break }
+            r = concat(r, ">")
+            continue
+        }
+        if k == 207 {
+            // `>>`: два затварящи наведнъж
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            depth = depth - 1
+            if depth >= 1 { r = concat(r, ">") }
+            depth = depth - 1
+            if depth <= 0 { break }
+            r = concat(r, ">")
+            continue
+        }
+        r = concat(r, vec_get_str(tt, vec_get(pos, 0)))
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+    }
+    r
+}
+
 fn parse_type_name(tk: Vec, tt: Vec, pos: Vec) -> str {
+    // fn тип: fn(T1, T2) -> R [!E[(T)]] — каноничен текст "fn(T1,T2)->R"
+    // (LP8 вълна C; !анотациите се консумират, не се пазят)
+    if vec_get(tk, vec_get(pos, 0)) == 1 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let mut sig = "fn("
+        if is_single(tk, tt, vec_get(pos, 0), "(") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        let mut np: i64 = 0
+        while is_single(tk, tt, vec_get(pos, 0), ")") == 0 {
+            if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+            if np > 0 { sig = concat(sig, ",") }
+            sig = concat(sig, parse_type_name(tk, tt, pos))
+            np = np + 1
+            if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) } else { break }
+        }
+        if is_single(tk, tt, vec_get(pos, 0), ")") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        sig = concat(sig, ")->")
+        if vec_get(tk, vec_get(pos, 0)) == 200 {
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            sig = concat(sig, parse_type_name(tk, tt, pos))
+        }
+        skip_effect_annotations(tk, tt, pos)
+        return sig
+    }
     let mut name = vec_get_str(tt, vec_get(pos, 0))
     vec_set(pos, 0, vec_get(pos, 0) + 1)
+    // generic аргументи се ПАЗЯТ в текста: "Vec<i64>", "Pair<A,B>" (LP8-D)
     if is_single(tk, tt, vec_get(pos, 0), "<") == 1 {
-        let mut depth: i64 = 0
-        while vec_get(tk, vec_get(pos, 0)) != 999 {
-            if is_single(tk, tt, vec_get(pos, 0), "<") == 1 { depth = depth + 1 }
-            if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { depth = depth - 1 }
-            vec_set(pos, 0, vec_get(pos, 0) + 1)
-            if depth == 0 { break }
-        }
+        name = concat(concat(concat(name, "<"), parse_targs_text(tk, tt, pos)), ">")
     }
     name
 }
@@ -316,6 +454,23 @@ fn parse_fn(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i
     let mut name = vec_get_str(tt, vec_get(pos, 0))
     vec_set(pos, 0, vec_get(pos, 0) + 1)
     let mut node = ast_kind(nk, nt, fc, ns, 11, name)
+    // типови параметри <T, U: Bound> — kind 43, текст "T" или "T:Bound" (LP8-D)
+    if is_single(tk, tt, vec_get(pos, 0), "<") == 1 {
+        vec_set(pos, 0, vec_get(pos, 0) + 1)
+        while is_single(tk, tt, vec_get(pos, 0), ">") == 0 {
+            if vec_get(tk, vec_get(pos, 0)) == 999 { break }
+            let mut tp = vec_get_str(tt, vec_get(pos, 0))
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            if is_single(tk, tt, vec_get(pos, 0), ":") == 1 {
+                vec_set(pos, 0, vec_get(pos, 0) + 1)
+                tp = concat(concat(tp, ":"), vec_get_str(tt, vec_get(pos, 0)))
+                vec_set(pos, 0, vec_get(pos, 0) + 1)
+            }
+            ast_child(fc, ns, node, ast_kind(nk, nt, fc, ns, 43, tp))
+            if is_single(tk, tt, vec_get(pos, 0), ",") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+        }
+        if is_single(tk, tt, vec_get(pos, 0), ">") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+    }
     if is_single(tk, tt, vec_get(pos, 0), "(") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
     while is_single(tk, tt, vec_get(pos, 0), ")") == 0 {
         if vec_get(tk, vec_get(pos, 0)) == 999 { break }
@@ -333,9 +488,19 @@ fn parse_fn(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -> i
         let mut rettype = parse_type_name(tk, tt, pos)
         let mut tnode = ast_kind(nk, nt, fc, ns, 16, rettype)
         ast_child(fc, ns, node, tnode)
+        // !E[(payload тип)] анотации — kind 39, текст "Име:тип" (runtime ефекти)
         while is_single(tk, tt, vec_get(pos, 0), "!") == 1 {
             vec_set(pos, 0, vec_get(pos, 0) + 1)
+            let mut effname = vec_get_str(tt, vec_get(pos, 0))
             vec_set(pos, 0, vec_get(pos, 0) + 1)
+            let mut ptype = ""
+            if is_single(tk, tt, vec_get(pos, 0), "(") == 1 {
+                vec_set(pos, 0, vec_get(pos, 0) + 1)
+                ptype = parse_type_name(tk, tt, pos)
+                if is_single(tk, tt, vec_get(pos, 0), ")") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
+            }
+            let mut en = ast_kind(nk, nt, fc, ns, 39, concat(effname, concat(":", ptype)))
+            ast_child(fc, ns, node, en)
         }
     }
     // forward declaration: no body if next token is not {
