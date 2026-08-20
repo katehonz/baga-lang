@@ -67,6 +67,20 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "val_rt", back.tag == boila_v_num() && boila_num_payload_cmp(back.b, pa) == 0)
     check(fails, "cmp_lt", boila_num_payload_cmp(boila_num_pack(boila_num_parse("1").value), boila_num_pack(boila_num_parse("2").value)) < 0)
     check(fails, "cmp_neg", boila_num_payload_cmp(boila_num_pack(boila_num_parse("-3").value), boila_num_pack(boila_num_parse("1").value)) < 0)
+    let e12 = boila_val_enc(boila_val_num_bytes(boila_num_pack(boila_num_parse("12.5").value)))
+    let e13 = boila_val_enc(boila_val_num_bytes(boila_num_pack(boila_num_parse("13").value)))
+    let e10 = boila_val_enc(boila_val_num_bytes(boila_num_pack(boila_num_parse("10").value)))
+    let en9 = boila_val_enc(boila_val_num_bytes(boila_num_pack(boila_num_parse("-9").value)))
+    let en100 = boila_val_enc(boila_val_num_bytes(boila_num_pack(boila_num_parse("-100").value)))
+    let ez = boila_val_enc(boila_val_num_bytes(boila_num_pack(boila_num_parse("0").value)))
+    let e1 = boila_val_enc(boila_val_num_bytes(boila_num_pack(boila_num_parse("1").value)))
+    check(fails, "ord_12_13", boila_bytes_cmp(e12, e13) < 0)
+    check(fails, "ord_10_12", boila_bytes_cmp(e10, e12) < 0)
+    check(fails, "ord_neg", boila_bytes_cmp(en100, en9) < 0)
+    check(fails, "ord_neg_zero", boila_bytes_cmp(en9, ez) < 0)
+    check(fails, "ord_zero_pos", boila_bytes_cmp(ez, e1) < 0)
+    let rt2 = boila_val_dec(e12)
+    check(fails, "ord_rt", rt2.tag == boila_v_num() && boila_num_to_string(rt2.b) == "12.5")
 
     let mut srv = boila_server_open(root, 2, 8, 3, 4)?
     check(fails, "open", srv.ok == 1)
@@ -105,6 +119,32 @@ fn main() -> i64 !IO !Time !Par {
     let sh = boila_server_exec(srv, "boila", "SHOW COLUMNS FROM inv")?
     srv = sh.srv
     check(fails, "show_cols", sh.ok == 1)
+
+    let cps = boila_server_exec(srv, "boila", "CREATE TABLE money (id BIGINT, amt NUMERIC(5,2), PRIMARY KEY (id))")?
+    srv = cps.srv
+    check(fails, "create_ps", cps.ok == 1)
+    let i2 = boila_server_exec(srv, "boila", "INSERT INTO money (id, amt) VALUES (1, 12.345)")?
+    srv = i2.srv
+    check(fails, "round_in", i2.ok == 1)
+    let qps = boila_server_exec(srv, "boila", "SELECT amt FROM money WHERE id = 1")?
+    srv = qps.srv
+    check(fails, "round_val", qps.ok == 1 && vec_len(qps.res.rows) == 1 && boila_num_to_string(cell(qps, 0, 0).b) == "12.35")
+    let i3 = boila_server_exec(srv, "boila", "INSERT INTO money (id, amt) VALUES (2, 1234.5)")?
+    srv = i3.srv
+    check(fails, "overflow", i3.ok == 0 && i3.state == "22003")
+    let shc = boila_server_exec(srv, "boila", "SHOW CREATE TABLE money")?
+    srv = shc.srv
+    check(fails, "show_ps", shc.ok == 1 && vec_len(shc.res.rows) == 1 && str_find(str_of_bytes(cell(shc, 0, 1).b), "numeric(5,2)") >= 0)
+
+    let ix = boila_server_exec(srv, "boila", "CREATE INDEX money_amt ON money (amt)")?
+    srv = ix.srv
+    check(fails, "ix_amt", ix.ok == 1)
+    let i4 = boila_server_exec(srv, "boila", "INSERT INTO money (id, amt) VALUES (3, 1.00), (4, 20.5)")?
+    srv = i4.srv
+    check(fails, "ix_seed", i4.ok == 1)
+    let qr = boila_server_exec(srv, "boila", "SELECT id FROM money WHERE amt > 10 ORDER BY id")?
+    srv = qr.srv
+    check(fails, "ix_range", qr.ok == 1 && vec_len(qr.res.rows) == 2)
 
     // restart
     let _c = boila_server_close(srv)?

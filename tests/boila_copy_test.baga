@@ -2,9 +2,11 @@
 
 import "boilaDB/server/databases.baga"
 import "boilaDB/server/exec_server.baga"
+import "boilaDB/api/serve_mt.baga"
 import "boilaDB/sql/exec_sql.baga"
 import "boilaDB/sql/exec_scan.baga"
 import "boilaDB/core/value.baga"
+import "boilaDB/txn/mvcc.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
 
@@ -121,6 +123,26 @@ fn main() -> i64 !IO !Time !Par {
     let o3 = boila_server_exec(srv, "boila", "COPY big TO STDOUT")?
     srv = o3.srv
     check(fails, "out_1k", o3.ok == 1 && vec_len(o3.res.rows) == 1000)
+
+    boila_server_close(srv)?
+    let srv_mt = boila_server_open_mt(root, 2, 8, 3, 4)?
+    check(fails, "open_mt", srv_mt.ok == 1)
+    let pack = boila_mt_new(srv_mt, 8)?
+    let txn0 = boila_txn_new()
+    let cp = boila_mt_exec(pack, txn0, "boila", "CREATE TABLE p (id BIGINT, name TEXT, PRIMARY KEY (id))")?
+    check(fails, "mt_create", cp.ok == 1)
+    let inf = boila_mt_copy_from(pack, cp.txn, "boila", "COPY p (id, name) FROM STDIN", "10\tpool\n11\twire\n\\.\n")?
+    check(fails, "mt_in", inf.ok == 1 && inf.id == 2)
+    let q5 = boila_mt_exec(pack, inf.txn, "boila", "SELECT COUNT(*) FROM p")?
+    check(fails, "mt_count", q5.ok == 1 && vec_len(q5.res.rows) == 1 && iv(q5, 0, 0) == 2)
+    let q6 = boila_mt_exec(pack, q5.txn, "boila", "SELECT name FROM p WHERE id = 10")?
+    check(fails, "mt_sel", q6.ok == 1 && vec_len(q6.res.rows) == 1 && sv(q6, 0, 0) == "pool")
+    let o4 = boila_mt_exec(pack, q6.txn, "boila", "COPY p (id, name) TO STDOUT")?
+    check(fails, "mt_out", o4.ok == 1 && o4.kind == 31 && vec_len(o4.res.rows) == 2)
+    let bad2 = boila_mt_copy_from(pack, o4.txn, "boila", "COPY p (id, name) FROM STDIN", "notabs\n")?
+    check(fails, "mt_bad", bad2.ok == 0 && bad2.state == "22P04")
+    let q7 = boila_mt_exec(pack, bad2.txn, "boila", "SELECT COUNT(*) FROM p")?
+    check(fails, "mt_rollback", q7.ok == 1 && iv(q7, 0, 0) == 2)
 
     let n = vec_len(fails)
     if n == 0 {

@@ -145,7 +145,7 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "npk_eq", q9.ok == 1 && vec_len(q9.res.rows) == 1 && str_of_bytes(cell(q9, 0, 0).b) == "a")
     let q10 = boila_server_exec(srv, "boila", "SELECT v FROM np WHERE k > 1.5")?
     srv = q10.srv
-    check(fails, "npk_range_0A000", q10.ok == 0 && q10.state == "0A000")
+    check(fails, "npk_range", q10.ok == 1 && vec_len(q10.res.rows) == 1 && str_of_bytes(cell(q10, 0, 0).b) == "b")
 
     let n = vec_len(fails)
     if n == 0 {

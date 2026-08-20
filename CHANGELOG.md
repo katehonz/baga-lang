@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### boilaDB P22-1 — COPY FROM in the MT worker pool
+- `COPY … FROM STDIN` under `BOILA_WORKERS>0` no longer returns
+  `0A000`. Wire CopyData is applied through `boila_mt_copy_from`
+  (shared data lock + hop-less checkout). Gate: `tests/boila_copy_test`
+  mt_in / mt_out / mt_rollback. TLS still answers `'N'` on SSLRequest
+  (`std/net` has a TLS 1.3 client only).
+
+### boilaDB P22-2 — NUMERIC(p,s) + sort-order keys
+- DDL `NUMERIC(p[,s])` (p 1..28, s 0..p); INSERT/UPDATE round
+  half-away-from-zero to s, overflow → `22003`. Keys are 31-byte
+  sort-order so PK and secondary range scans work. Gate:
+  `tests/boila_numeric_test` + `boila_declex_test` npk_range.
+
 ## [0.9.2] — 2026-08-16
 
 ### boilaDB — version 0.7
