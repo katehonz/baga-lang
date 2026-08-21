@@ -31,7 +31,8 @@
 /* RC-LLVM: scope tracking — огледало на RcLocal/RcScope (baga.h:546-555).
  * Активно само при lg.rc. Статични масиви, както LLVMSymtab. */
 typedef struct { const char *name; int tag; Type *type; Node *type_node;
-                 int is_param; int dead; } LLRcLocal;
+                 int is_param; int dead;
+                 int dead_linear; } LLRcLocal;
 typedef struct { int top; int is_loop; } LLRcScope;
 
 typedef struct {
@@ -68,6 +69,7 @@ typedef struct {
     LLRcScope lrc_scopes[64];
     int   lrc_depth;
     int   lrc_fn_base;    /* индекс на scope-а на текущата функция */
+    int   lrc_branch_depth; /* >0 = emit-ваме тяло на условен/цикълен клон */
     /* M20: effect payload runtime */
     VEC(char *) eff_tags;   /* tag регистър (име → индекс+1) */
     int   eff_depth;        /* >0 = вътре в catch верига (TRY е no-op) */
@@ -667,7 +669,7 @@ static void lrc_track_tag(const char *name, int tag, Type *t, Node *tnode,
     if (!lg.rc || !tag) return;
     if (lg.lrc_count >= 256)
         llvm_unsupported("прекалено много RC локали в една функция");
-    lg.lrc_locals[lg.lrc_count++] = (LLRcLocal){ name, tag, t, tnode, is_param, 0 };
+    lg.lrc_locals[lg.lrc_count++] = (LLRcLocal){ name, tag, t, tnode, is_param, 0, 0 };
 }
 
 static int lrc_heap_tag(Type *t);
@@ -821,6 +823,22 @@ static int lrc_borrowed_init(Node *init) {
             return 1;
     }
     return 0;
+}
+
+/* порт на rc_need_owned_retain (codegen_c.c:1504): трябва ли стойността на
+ * match рамо да се retain-не, за да е резултатът owned по конвенцията
+ * „fn резултат = owned"? Свеж литерал/ctor и не-borrowed call — не;
+ * вложен match — не (рамената му вече retain-ват). Ident (match binding е
+ * borrowed алиас на payload-а; track-нат локал е втори собственик),
+ * vec_get/поле и пр. — да. */
+static int lrc_need_owned_retain(Node *val) {
+    if (!lg.rc || !val) return 0;
+    if (!lrc_heap_tag(val->type)) return 0;
+    if (val->kind == NODE_STRUCT_LIT) return 0;
+    if (val->kind == NODE_CALL && lrc_is_enum_ctor(val)) return 0;
+    if (val->kind == NODE_CALL && !lrc_borrowed_init(val)) return 0;
+    if (val->kind == NODE_MATCH) return 0;
+    return 1;
 }
 
 static void lrc_emit_retain_val(int tag, Type *ty, Node *tnode,
@@ -4945,9 +4963,11 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
         lrc_track_tag(p->param_name, lrc_heap_tag_node(p->param_type), p->type,
                       p->param_type, 1);
     }
-    /* тяло — огледало на emit_fn_llvm опашката */
+    /* тяло — огледало на emit_fn_llvm опашката. Изпълнява се при извикване
+     * на затварянето — условен поток спрямо външната функция. */
     int has_ret = n->ret_type != NULL;
     NodeVec *stmts = n->fn_body ? &n->fn_body->stmts : NULL;
+    lg.lrc_branch_depth++;
     for (int i = 0; stmts && i < stmts->len; i++) {
         Node *s = stmts->data[i];
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
@@ -4965,6 +4985,7 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
             emit_stmt_llvm(s, NULL, NULL);
         }
     }
+    lg.lrc_branch_depth--;
     /* RC: край на lambda scope-а + възстановяване на външния RC стек */
     lrc_pop_scope();
     lg.lrc_count = saved_lrc_count;
@@ -5118,9 +5139,12 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
     Node *body = arm->arm_body;
     if (!body || body->kind != NODE_BLOCK)
         llvm_unsupported("match клон, който не е блок");
+    lg.lrc_branch_depth++;   /* телата на рамената са условен поток */
     for (int j = 0; j < body->stmts.len; j++) {
-        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
+            lg.lrc_branch_depth--;
             return;
+        }
         Node *s = body->stmts.data[j];
         if (s->kind == NODE_RETURN) {
             if (s->ret_val) {
@@ -5130,10 +5154,18 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
                 if (res_alloca) {
                     if (!v) llvm_unsupported("print в match клон");
                     v = coerce(v, LLVMGetAllocatedType(res_alloca));
+                    /* RC: рамото произвежда owned резултат (порт на
+                     * rc_emit_match_arm_val) — borrowed/ident стойност се
+                     * retain-ва, иначе release на източника обесва
+                     * консуматора на match резултата. */
+                    if (lrc_need_owned_retain(s->ret_val))
+                        lrc_emit_retain_val(lrc_heap_tag(s->ret_val->type),
+                                            s->ret_val->type, NULL, v);
                     LLVMBuildStore(lg.builder, v, res_alloca);
                 }
             }
             LLVMBuildBr(lg.builder, merge_bb);
+            lg.lrc_branch_depth--;
             return;
         }
         if (s->kind == NODE_EXPR_STMT) {
@@ -5142,6 +5174,7 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
         }
         llvm_unsupported("оператор в match клон (само изрази)");
     }
+    lg.lrc_branch_depth--;
 }
 
 /* L3: match върху sum enum — верига от tag сравнения (като codegen_c);
@@ -5280,10 +5313,14 @@ static LLVMValueRef emit_match_llvm(Node *n) {
 
 /* MEM-1/Task 4: drop(x) — огледало на codegen_c.c:2141-2243.
  * Под --rc: drop ≡ release + bindingът умира (scope exit вече не го
- * release-ва — иначе underflow). Втори drop върху dead binding е
- * compile-time грешка — по-строго от runtime underflow (checker-ът я
- * хваща пръв; това е втори пояс). Без --rc: baga_drop_* (plain free —
- * алокациите са malloc БЕЗ header, никакъв baga_rc_hdr). */
+ * release-ва — иначе underflow). Като C: dead флагът е compile-time и
+ * path-insensitive — `if c { drop(v) } drop(v)` се компилира, а вторият
+ * release се emit-ва пак и runtime guard-ът решава (underflow = чиста
+ * грешка). Изключение от C: доказуем двоен drop в ЛИНЕЙНИЯ поток (и двата
+ * drop-а извън условен/цикълен клон — lrc_branch_depth) е compile-time
+ * грешка, защото в LLVM след реален free glibc може да затрие magic-а и
+ * вторият release да е тих no-op (вж. docs/memory-rc-bg.md). Без --rc:
+ * baga_drop_* (plain free — алокациите са malloc БЕЗ header). */
 static void lrc_emit_drop(Node *n) {
     if (n->args.len != 1 || n->args.data[0]->kind != NODE_IDENT)
         llvm_unsupported("drop приема единствено име на локална");
@@ -5296,10 +5333,11 @@ static void lrc_emit_drop(Node *n) {
         LLRcLocal *l = &lg.lrc_locals[di];
         if (l->is_param)
             llvm_unsupported("drop на параметър — споделен буфер на извикващия");
-        if (l->dead)
+        if (l->dead && l->dead_linear && lg.lrc_branch_depth == 0)
             llvm_unsupported("drop на вече drop-нат binding");
         lrc_emit_release(l);
         l->dead = 1;
+        if (lg.lrc_branch_depth == 0) l->dead_linear = 1;
         return;
     }
     if (!at) llvm_unsupported("drop с неизвестен тип");
@@ -5996,11 +6034,14 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             if (!v) llvm_unsupported("print в присвояване");
             v = coerce(v, LLVMGetAllocatedType(alloca));
             /* RC: overwrite на track-нат локал — retain на новото (при alias
-             * от IDENT) ПРЕДИ release на старото: alias-safe редът на
-             * codegen_c (`x = x` не обесва стойността). Params/dead — не. */
+             * от IDENT или borrowed дясно — vec_get/map_get/поле/h_*;
+             * codegen_c.c:2866 `keep`) ПРЕДИ release на старото:
+             * alias-safe редът на codegen_c (`x = x` не обесва стойността).
+             * Params/dead — не. */
             int ai = lg.rc ? lrc_find(n->assign_target->name) : -1;
             if (ai >= 0 && !lg.lrc_locals[ai].is_param && !lg.lrc_locals[ai].dead) {
-                if (n->assign_val->kind == NODE_IDENT)
+                if (n->assign_val->kind == NODE_IDENT ||
+                    lrc_borrowed_init(n->assign_val))
                     lrc_emit_retain_val(lg.lrc_locals[ai].tag,
                                         lg.lrc_locals[ai].type,
                                         lg.lrc_locals[ai].type_node, v);
@@ -6367,6 +6408,7 @@ static LLVMValueRef emit_block_value_llvm(Node *block) {
     lrc_push_scope(0);
     int lrc_top = lg.rc ? lg.lrc_scopes[lg.lrc_depth - 1].top : 0;
     LLVMValueRef val = NULL;
+    lg.lrc_branch_depth++;   /* handler-ът се изпълнява само при raise */
     for (int i = 0; i < block->stmts.len; i++) {
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) break;
         Node *s = block->stmts.data[i];
@@ -6392,6 +6434,7 @@ static LLVMValueRef emit_block_value_llvm(Node *block) {
             }
         } else emit_stmt_llvm(s, NULL, NULL);
     }
+    lg.lrc_branch_depth--;
     /* ако блокът има terminator (реален return вътре мина през
      * lrc_release_all), pop-ът само прибира записите — без дублиране */
     lrc_pop_scope();
@@ -6438,10 +6481,26 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
                 if (!val) llvm_unsupported("print като стойност на let");
                 val = coerce(val, ty);
                 /* RC: alias (let x = y) → retain преди store; свежата
-                 * конструкция идва с rc=1 от alloc — без retain */
-                if (lg.rc && n->let_init->kind == NODE_IDENT)
-                    lrc_emit_retain_val(lrc_heap_tag(n->let_init->type),
-                                        n->let_init->type, NULL, val);
+                 * конструкция идва с rc=1 от alloc — без retain. Borrowed
+                 * init (vec_get/map_get/поле/h_*) също се retain-ва —
+                 * референцията става собствена (порт на rc_borrowed_init
+                 * сайта codegen_c.c:3940; без borrow elision-а на C —
+                 * двойката retain+release е балансирана). tag 5/6 borrowed
+                 * не се track-ва (gating-ът по-долу, като C) → и не се
+                 * retain-ва (leak-safe). */
+                if (lg.rc) {
+                    if (n->let_init->kind == NODE_IDENT)
+                        lrc_emit_retain_val(lrc_heap_tag(n->let_init->type),
+                                            n->let_init->type, NULL, val);
+                    else if (lrc_borrowed_init(n->let_init)) {
+                        int btag = lrc_heap_tag(n->let_init->type);
+                        if (!btag && n->let_type)
+                            btag = lrc_heap_tag_node(n->let_type);
+                        if (btag && btag < 5)
+                            lrc_emit_retain_val(btag, n->let_init->type,
+                                                NULL, val);
+                    }
+                }
                 LLVMBuildStore(lg.builder, val, alloca);
             }
             st_define(n->let_name, alloca);
@@ -6499,6 +6558,7 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
 
             LLVMBuildCondBr(lg.builder, cond, then_bb, else_bb);
 
+            lg.lrc_branch_depth++;   /* then/else са условен поток */
             LLVMPositionBuilderAtEnd(lg.builder, then_bb);
             emit_block_llvm(n->then_br, break_bb, cont_bb);
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
@@ -6508,6 +6568,7 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             if (n->else_br) emit_block_llvm(n->else_br, break_bb, cont_bb);
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
                 LLVMBuildBr(lg.builder, merge_bb);
+            lg.lrc_branch_depth--;
 
             LLVMPositionBuilderAtEnd(lg.builder, merge_bb);
             break;
@@ -6527,7 +6588,9 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
 
             LLVMPositionBuilderAtEnd(lg.builder, body_bb);
             lrc_loop_next = 1;   /* тялото на while е loop scope (break/continue) */
+            lg.lrc_branch_depth++;   /* тялото се изпълнява условно/повторно */
             emit_block_llvm(n->while_body, end_bb, cond_bb);
+            lg.lrc_branch_depth--;
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
                 LLVMBuildBr(lg.builder, cond_bb);
 
@@ -6576,7 +6639,9 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
 
             LLVMPositionBuilderAtEnd(lg.builder, body_bb);
             lrc_loop_next = 1;   /* тялото на for е loop scope (break/continue) */
+            lg.lrc_branch_depth++;   /* тялото се изпълнява условно/повторно */
             emit_block_llvm(n->for_body, end_bb, incr_bb);
+            lg.lrc_branch_depth--;
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
                 LLVMBuildBr(lg.builder, incr_bb);
 
