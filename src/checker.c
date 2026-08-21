@@ -769,6 +769,47 @@ static EnvEntry *env_find(CheckCtx *ctx, const char *name) {
     return NULL;
 }
 
+/* MEM-3: от коя арена идва изразът (payload указател)? Само очевидни
+ * форми — ident с region, arena_alloc(a, n), p±n, if с еднакъв region
+ * в двата клона. Несигурно → NULL (leak-safe, не измислена грешка). */
+static EnvEntry *region_of_expr(CheckCtx *ctx, Node *n) {
+    if (!n) return NULL;
+    switch (n->kind) {
+        case NODE_IDENT: {
+            EnvEntry *e = env_find(ctx, n->name);
+            return e ? e->region : NULL;
+        }
+        case NODE_CALL:
+            if (n->callee && n->callee->kind == NODE_IDENT &&
+                strcmp(n->callee->name, "arena_alloc") == 0 &&
+                n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT)
+                return env_find(ctx, n->args.data[0]->name);
+            return NULL;
+        case NODE_BINARY: {
+            if (n->bin_op != OP_ADD && n->bin_op != OP_SUB) return NULL;
+            EnvEntry *l = region_of_expr(ctx, n->left);
+            EnvEntry *r = region_of_expr(ctx, n->right);
+            /* два указателя (p - q / p + q) — резултатът не е в региона */
+            if (l && r) return NULL;
+            if (n->bin_op == OP_SUB) return l;   /* само p - n */
+            return l ? l : r;                    /* n + p или p + n */
+        }
+        case NODE_EXPR_STMT:
+            return region_of_expr(ctx, n->expr);
+        case NODE_BLOCK:
+            if (n->stmts.len == 0) return NULL;
+            return region_of_expr(ctx, n->stmts.data[n->stmts.len - 1]);
+        case NODE_IF: {
+            if (!n->else_br) return NULL;
+            EnvEntry *th = region_of_expr(ctx, n->then_br);
+            EnvEntry *el = region_of_expr(ctx, n->else_br);
+            return (th && th == el) ? th : NULL;
+        }
+        default:
+            return NULL;
+    }
+}
+
 /* MEM-2: drop-join машинерия — споделена от if/else, match и catch.
  * Логът е append-only; всеки алтернативен клон записва drop-овете си в
  * непрекъснат диапазон. Преди всеки нов клон предишните се "вдигат"
@@ -1930,8 +1971,8 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
          * arena handle (i64 local). Reuses EnvEntry.dropped + drop_log join
          * machinery — after arena_free(a), a is dead; double free and
          * alloc/reset on a freed handle are compile errors. Full region
-         * tagging of arena-allocated payloads is not claimed (values stay
-         * untracked pointers). */
+         * tagging follows ident alias and p±n (region_of_expr); deeper
+         * graphs stay untracked. */
         if ((strcmp(name, "arena_free") == 0 || strcmp(name, "arena_alloc") == 0 ||
              strcmp(name, "arena_reset") == 0) &&
             !env_lookup(ctx, name) && !find_fn(ctx, name)) {
@@ -2359,20 +2400,11 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     "променливата '%s' е декларирана с 'let' без 'mut' — присвояването е забранено",
                     n->assign_target->name);
             }
-            /* MEM-3: mut p = arena_alloc(a, n) rebinds region; other assigns clear it */
+            /* MEM-3: преприсвояване — region от дясното (arena_alloc / alias /
+             * p±n); несигурно дясно нулира тага */
             if (n->assign_target->kind == NODE_IDENT) {
                 EnvEntry *pe = env_find(ctx, n->assign_target->name);
-                if (pe) {
-                    pe->region = NULL;
-                    if (n->assign_val && n->assign_val->kind == NODE_CALL &&
-                        n->assign_val->callee && n->assign_val->callee->kind == NODE_IDENT &&
-                        strcmp(n->assign_val->callee->name, "arena_alloc") == 0 &&
-                        n->assign_val->args.len >= 1 &&
-                        n->assign_val->args.data[0]->kind == NODE_IDENT) {
-                        EnvEntry *ae = env_find(ctx, n->assign_val->args.data[0]->name);
-                        if (ae) pe->region = ae;
-                    }
-                }
+                if (pe) pe->region = region_of_expr(ctx, n->assign_val);
             }
             break;
         }
@@ -2674,22 +2706,18 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     n->let_name);
             }
             env_define_mut(ctx, n->let_name, decl_t, n->is_mut, n->pos);
-            /* MEM-3: let p = arena_alloc(a, n) → p.region = a */
-            if (n->let_init && n->let_init->kind == NODE_CALL &&
-                n->let_init->callee && n->let_init->callee->kind == NODE_IDENT &&
-                strcmp(n->let_init->callee->name, "arena_alloc") == 0 &&
-                n->let_init->args.len >= 1 &&
-                n->let_init->args.data[0]->kind == NODE_IDENT) {
+            {
                 EnvEntry *pe = env_find(ctx, n->let_name);
-                EnvEntry *ae = env_find(ctx, n->let_init->args.data[0]->name);
-                if (pe && ae) pe->region = ae;
-            }
-            /* MEM-3: let a = arena_new() — handle за leak scan */
-            if (n->let_init && n->let_init->kind == NODE_CALL &&
-                n->let_init->callee && n->let_init->callee->kind == NODE_IDENT &&
-                strcmp(n->let_init->callee->name, "arena_new") == 0) {
-                EnvEntry *pe = env_find(ctx, n->let_name);
-                if (pe) pe->is_arena = 1;
+                if (pe && n->let_init) {
+                    /* MEM-3: arena_alloc / alias / p±n → същият region */
+                    EnvEntry *reg = region_of_expr(ctx, n->let_init);
+                    if (reg) pe->region = reg;
+                    if (n->let_init->kind == NODE_CALL &&
+                        n->let_init->callee &&
+                        n->let_init->callee->kind == NODE_IDENT &&
+                        strcmp(n->let_init->callee->name, "arena_new") == 0)
+                        pe->is_arena = 1;
+                }
             }
             t = type_new(TYPE_VOID);
             break;

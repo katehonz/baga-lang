@@ -1088,8 +1088,11 @@ honestly — same gating as M14.
 
 **Region tags (MEM-3):** `let p = arena_alloc(a, n)` associates `p` with
 arena handle `a`. After `arena_free(a)`, any use of `p` is
-`използване на 'p' след free`. Only direct `arena_alloc` bindings are
-tagged (not pointer arithmetic descendants). Runtime: null-handle
+`използване на 'p' след free`. The same tag is inherited by obvious
+forms: `let q = p`, `p + n` / `n + p` / `p - n`, and `if` with the same
+region on both branches. `p - q` (two pointers) and uncertain expressions
+are not tagged — leak-safe, never a fabricated error. Aliasing the handle
+itself (`let b = a`) stays untracked (MEM-1 contract). Runtime: null-handle
 guards on `arena_alloc` / `arena_reset`.
 
 **`--warn-leaks`:** leaving scope with a live `Vec`/`Map`/`bytes`/`fn` and

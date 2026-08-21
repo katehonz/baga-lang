@@ -637,6 +637,42 @@ printf 'fn main() {\n    let a = arena_new()\n    let mut p = arena_alloc(a, 8)\
 run /tmp/baga_arena_reg3.baga 2>&1 | grep -q "използване на 'p' след free" \
 	&& echo "OK: mut rebind same arena — free still kills p" \
 	|| { echo "FAIL: rebind same arena + free"; exit 1; }
+# MEM-3 alias / pointer arithmetic inherit region
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    let q = p\n    arena_free(a)\n    print(q)\n}\n' > /tmp/baga_arena_alias.baga
+run /tmp/baga_arena_alias.baga 2>&1 | grep -q "използване на 'q' след free" \
+	&& echo "OK: region — alias q = p умира с арената" \
+	|| { echo "FAIL: let q = p трябва да наследи region"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    let q = p + 8\n    arena_free(a)\n    print(q)\n}\n' > /tmp/baga_arena_arith.baga
+run /tmp/baga_arena_arith.baga 2>&1 | grep -q "използване на 'q' след free" \
+	&& echo "OK: region — p + 8 наследява region" \
+	|| { echo "FAIL: p + 8 трябва да наследи region"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let mut p = arena_alloc(a, 16)\n    p = p + 8\n    arena_free(a)\n    print(p)\n}\n' > /tmp/baga_arena_readd.baga
+run /tmp/baga_arena_readd.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: region — p = p + 8 пази region" \
+	|| { echo "FAIL: p = p + 8 трябва да пази region"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    let q = 8 + p\n    arena_free(a)\n    print(q)\n}\n' > /tmp/baga_arena_addn.baga
+run /tmp/baga_arena_addn.baga 2>&1 | grep -q "използване на 'q' след free" \
+	&& echo "OK: region — 8 + p наследява region" \
+	|| { echo "FAIL: 8 + p трябва да наследи region"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    let q = p - 8\n    arena_free(a)\n    print(q)\n}\n' > /tmp/baga_arena_sub.baga
+run /tmp/baga_arena_sub.baga 2>&1 | grep -q "използване на 'q' след free" \
+	&& echo "OK: region — p - 8 наследява region" \
+	|| { echo "FAIL: p - 8 трябва да наследи region"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    let q = if true { p } else { p + 8 }\n    arena_free(a)\n    print(q)\n}\n' > /tmp/baga_arena_if.baga
+run /tmp/baga_arena_if.baga 2>&1 | grep -q "използване на 'q' след free" \
+	&& echo "OK: region — if с еднакъв region в двата клона" \
+	|| { echo "FAIL: if p / p+8 трябва да наследи region"; exit 1; }
+# p - q е offset, не указател — не се тагва
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    let q = arena_alloc(a, 8)\n    let d = p - q\n    arena_free(a)\n    print(d)\n}\n' > /tmp/baga_arena_diff.baga
+run /tmp/baga_arena_diff.baga >/tmp/baga_arena_diff.out 2>/tmp/baga_arena_diff.err
+grep -q "използване на 'd' след free" /tmp/baga_arena_diff.err \
+	&& { echo "FAIL: p - q не трябва да се тагва като указател"; exit 1; } \
+	|| echo "OK: region — p - q е offset, не указател"
+# happy: употреба преди free
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    let q = p + 8\n    print(q - p)\n    arena_free(a)\n}\n' > /tmp/baga_arena_okarith.baga
+test "$(run /tmp/baga_arena_okarith.baga)" = "8" \
+	&& echo "OK: region — p+8 е валиден преди arena_free" \
+	|| { echo "FAIL: p+8 преди free трябва да върви"; exit 1; }
 
 echo "=== statement-level { } блок ==="
 printf 'fn main() {\n    print("before")\n    {\n        print("inside")\n    }\n    print("after")\n}\n' > /tmp/baga_blk.baga

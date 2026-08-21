@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### checker — MEM-3 region tags върху alias и p±n
+- `let q = p`, `p + n` / `n + p` / `p - n` и `if` с еднакъв region в
+  двата клона наследяват тага на `arena_alloc`. `p - q` (два указателя)
+  не се тагва. `p = p + 8` пази региона. Gate: `scripts/run_tests.sh`
+  MEM-3 alias / arith probes.
+
 ### parser — гол `{ }` блок на statement ниво
 - `{ print("x") }` вече е statement блок, не EXPR_STMT около израз.
   Преди C гълташе print-овете (`0 /* unhandled expr 11 */`), LLVM отказваше
