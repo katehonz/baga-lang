@@ -38,7 +38,7 @@ static void usage(void) {
         "  --check     Само parse + typecheck (без main, без codegen) — за библиотеки\n"
         "  --emit-c    Генерирай C код на stdout, не компилирай\n"
         "  --test-specs  Property-based тестване на ensures/requires договорите\n"
-        "  --rc        Refcount паметов модел v0.1 (opt-in, само C backend)\n"
+        "  --rc        Refcount паметов модел v0.1 (opt-in; C и LLVM backend)\n"
         "  --verify    Статична верификация на requires/ensures (M0–M13 fragment)\n"
         "  --json      Машинно-четим JSON изход (с --verify)\n"
         "  -I <dir>    Директория за търсене на import (повтаряем)\n"

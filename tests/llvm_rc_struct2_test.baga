@@ -1,0 +1,81 @@
+// llvm_rc_struct2_test — Task 7 adversarial probe (deferred от Task 6):
+// struct с Vec<str> и Map<str,i64> полета (scope exit + drop), enum с
+// Vec<str> payload (match + scope exit). Оракул: идентичен изход при
+// ./baga --rc (C) и ./baga-llvm --emit-llvm --rc + lli. Детерминистичен;
+// минава с и без --rc.
+
+struct Kolekcia { ime: str, dumi: Vec<str>, broiki: Map<str, i64> }
+
+enum Spisak { Dumi(Vec<str>), Chislo(i64), Prazno }
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn opisai(s: Spisak) -> str {
+    return match s {
+        Dumi(d) => concat("dumi:", i64_to_str(vec_len(d))),
+        Chislo(n) => concat("chislo:", i64_to_str(n)),
+        Prazno => "prazno",
+    }
+}
+
+fn main() -> i64 {
+    // 1. struct с Vec<str>/Map<str,i64> полета — директно пълнене на
+    // полетата; транзитивен release при scope exit
+    let k = Kolekcia { ime: concat("колек", "ция"), dumi: vec_new(), broiki: map_new() }
+    vec_push(k.dumi, concat("ал", "фа"))
+    vec_push(k.dumi, "бета")
+    map_set(k.broiki, "едно", 1)
+    map_set(k.broiki, "две", 2)
+    check("fields", k.ime == "колекция" && vec_len(k.dumi) == 2 &&
+                    map_get(k.broiki, "две") == 2)
+
+    // 2. alias на struct-а — retain; четене през двата собственика
+    let k2 = k
+    check("alias", vec_get(k2.dumi, 0) == "алфа" && map_len(k2.broiki) == 2)
+
+    // 3. enum с Vec<str> payload от fresh контейнер (move) и от ident
+    // (retain при ctor-а); match чете payload-а, scope exit release-ва
+    let s1 = Dumi(vec_new())
+    check("enum_empty", opisai(s1) == "dumi:0")
+    let dv = vec_new()
+    vec_push(dv, concat("ел", "емент"))
+    let s2 = Dumi(dv)
+    check("enum_ident", opisai(s2) == "dumi:1")
+    check("enum_src_alive", vec_len(dv) == 1)
+    check("enum_plain", opisai(Chislo(7)) == "chislo:7" &&
+                      opisai(Prazno) == "prazno")
+
+    // 4. drop на Vec<str> и Map<str,i64> локали под --rc ≡ release
+    let dd = vec_new()
+    vec_push(dd, "за")
+    vec_push(dd, "drop")
+    drop(dd)
+    let dm = map_new()
+    map_set(dm, "к", 9)
+    drop(dm)
+    check("drop_ok", true)
+
+    // 5. struct/enum във вложен scope — release при изход от блока
+    let mut total: i64 = 0
+    for i in 0..3 {
+        let tmp = Kolekcia { ime: concat("ит", i64_to_str(i)),
+                             dumi: vec_new(), broiki: map_new() }
+        vec_push(tmp.dumi, tmp.ime)
+        map_set(tmp.broiki, "i", i)
+        let sp = Dumi(tmp.dumi)
+        // len("dumi:1") = 6
+        total = total + map_get(tmp.broiki, "i") + len(opisai(sp))
+    }
+    // sum(i) = 3; 3 * 6 = 18 → 21
+    check("loop_scope", total == 21)
+
+    print("DONE")
+    return 0
+}

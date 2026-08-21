@@ -49,7 +49,13 @@ codegen) или move-семантика за struct threading (етап 2).
 - Няма borrow checker, lifetimes, linear types.
 - Няма GC; цикли (Map сочещ сам себе си) текат — документирано.
 - Struct полета и closure capture — v0.2+ (виж §Ограничения).
-- LLVM backend — не поддържа persist изобщо; RC е C backend само.
+- LLVM backend — persist не се поддържа; RC има паритет с C бекенда под
+  `--emit-llvm --rc` (scope release, retain при alias, move при return,
+  транзитивен release за Vec/Map/struct/enum, `drop`), с изключения:
+  temp-ове на statement ниво и match scrutinee temp-ове не се
+  release-ват, closure captures не се retain-ват, borrowed init
+  (`let s = vec_get(...)`) не се retain-ва; циклите текат и в двата
+  бекенда (няма weak). Оракул: `make test-llvm-rc`.
 
 ## v2.1: elision на borrowed-retain двойки
 

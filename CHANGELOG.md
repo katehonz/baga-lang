@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### LLVM backend — `drop` + `--rc` refcounting паритет с C бекенда
+- `--emit-llvm --rc` вече дава същия RC модел като C бекенда: scope
+  release, retain при alias, move при return, транзитивен release за
+  Vec/Map/struct/enum; `drop` работи и в LLVM (free без `--rc`, RC
+  release с `--rc`). Изключения: statement-ниво и match scrutinee
+  temp-ове не се release-ват, closure captures и borrowed init не се
+  retain-ват, цикли текат (няма weak). Gate: `make test-llvm-rc`
+  (C↔LLVM diff оракул, `tests/llvm_rc.sh`).
+
 ### boilaDB P22-1 — COPY FROM in the MT worker pool
 - `COPY … FROM STDIN` under `BOILA_WORKERS>0` no longer returns
   `0A000`. Wire CopyData is applied through `boila_mt_copy_from`

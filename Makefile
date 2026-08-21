@@ -14,7 +14,7 @@ SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/pr
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
-.PHONY: all clean test test-llvm llvm self par-rt sandak docker
+.PHONY: all clean test test-llvm test-llvm-rc llvm self par-rt sandak docker
 
 all: $(BIN)
 
@@ -58,6 +58,9 @@ clean:
 
 test-llvm: $(BIN) $(LLVM_BIN) $(PAR_SO)
 	@./tests/llvm_oracle.sh
+
+test-llvm-rc: $(BIN) $(LLVM_BIN) $(PAR_SO)
+	@./tests/llvm_rc.sh
 
 # Self-hosting bootstrap: fixed point — the self compiler reproduces itself
 # (baga2 == baga3 as compilers). baga (C bootstrap) and baga2 (self) are

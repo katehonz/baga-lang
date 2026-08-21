@@ -1019,7 +1019,16 @@ print(vec_len(v))             // OK — maybe-dropped не е definitely-dropped
 - **Течове при изход от scope НЕ се диагностицират** — компилаторът няма
   severity „предупреждение", затова стойност, излязла от scope без `drop`,
   мълчаливо тече в арената. Ловът на течове е територия на MEM-3 (региони).
-- **LLVM бекенд**: честен `unsupported` за `drop` (само C бекенд).
+- **LLVM бекенд**: `drop` работи и в LLVM (free без `--rc`, RC release с
+  `--rc`). Под `--emit-llvm --rc` RC моделът е същият като в C бекенда
+  (scope release, retain при alias, move при return, транзитивен release
+  за Vec/Map/struct/enum), с изключения: (1) temp-ове на statement ниво
+  не се release-ват (RC4 е C-only засега), (2) match scrutinee temp-ове
+  не се release-ват (C ги прави от v0.11), (3) closure captures не се
+  retain-ват, (4) цикли текат (няма weak), (5) borrowed init
+  (`let s = vec_get(...)`) не се retain-ва. Тънкост: `baga_rc_hdr` в LLVM
+  няма arena range guard — `p − 32` се чете само при page offset ≥ 32,
+  за да не се пипа чужда страница (page guard вместо range check).
 
 #### Runtime: free list
 

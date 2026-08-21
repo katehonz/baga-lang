@@ -1040,7 +1040,17 @@ print(vec_len(v))             // OK — maybe-dropped is not definitely-dropped
 - **Scope-exit leaks are NOT diagnosed** — the compiler has no warning
   severity, so a value that goes out of scope without `drop` is silently
   arena-leaked. Leak hunting is MEM-3 (regions) territory.
-- **LLVM backend**: honest `unsupported` for `drop` (C backend only).
+- **LLVM backend**: `drop` works in LLVM too (plain free without `--rc`,
+  RC release with `--rc`). Under `--emit-llvm --rc` the RC model matches
+  the C backend (scope release, retain on alias, move on return,
+  transitive release for Vec/Map/struct/enum), with these exceptions:
+  (1) statement-level temps are not released (RC4 is C-only for now),
+  (2) match scrutinee temps are not released (C does this since v0.11),
+  (3) closure captures are not retained, (4) cycles leak (no weak
+  pointers), (5) borrowed init (`let s = vec_get(...)`) is not retained.
+  Subtlety: LLVM's `baga_rc_hdr` has no arena range guard — `p − 32` is
+  read only when the page offset is ≥ 32, so a foreign page is never
+  touched (page guard instead of a range check).
 
 #### Runtime: the free list
 
