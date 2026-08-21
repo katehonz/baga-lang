@@ -1,0 +1,49 @@
+// generic_fn_param_test — генерик функция с fn-тип параметър + многоинстанционни
+// генерици. Регресия от MEM-3 checked/checking флагчетата: блокираха
+// преинферирането в checker_recheck_inst (и новите инстанции в
+// generic_instantiate) — тялото оставаше без типове след
+// restore_method_calls, L5 маркерът „TYPE_FN без име" се губеше и
+// f(...) се емитираше като директно извикване вместо през cell2;
+// параметрите на втора инстанция оставаха с типовете на първата.
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U> {
+    let out: Vec<U> = vec_new()
+    let mut i: i64 = 0
+    while i < vec_len(v) {
+        vec_push(out, f(vec_get(v, i)))
+        i = i + 1
+    }
+    return out
+}
+
+fn twice(x: i64) -> i64 { return x * 2 }
+fn rep2(s: str) -> str { return concat(s, s) }
+
+fn main() -> i64 {
+    // две инстанции на една генерик функция — първо i64, после str;
+    // всяка инстанция трябва да има собствен подпис
+    print(identity(42))
+    print(identity("здравей"))
+
+    // извикване през fn-тип параметър в генерик тяло (L5 cell2 dispatch)
+    let v: Vec<i64> = vec_new()
+    vec_push(v, 7)
+    vec_push(v, 21)
+    let w = map<i64, i64>(v, twice)
+    print(vec_get(w, 0))
+    print(vec_get(w, 1))
+
+    // втори чифт инстанции (T = str, U = str) — fn анотацията се
+    // резолва под друга substitution
+    let sv: Vec<str> = vec_new()
+    vec_push(sv, "ба")
+    let s2 = map<str, str>(sv, rep2)
+    print(vec_get(s2, 0))
+
+    print("generic_fn_param_test: all passed")
+    return 0
+}

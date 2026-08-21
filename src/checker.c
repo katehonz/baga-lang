@@ -3496,6 +3496,11 @@ static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call) {
             vec_push(ctx->g_types, bind[i]);
         }
         restore_method_calls(fn->fn_body);
+        /* M21: всяка нова инстанция проверява тялото под СВОЯТА
+         * substitution — checked флагът (MEM-3) не трябва да го блокира,
+         * иначе втората инстанция остава с типовете на първата. */
+        FnRec *irec = fn_rec_of(ctx, fn);
+        if (irec) { irec->checked = 0; irec->checking = 0; }
         check_fn(ctx, fn);
         ctx->cur_fn = saved_fn;
         ctx->cur_ret = saved_ret;
@@ -4208,6 +4213,12 @@ void checker_recheck_inst(Checker *chk, Node *fn, int k) {
         vec_push(ctx.g_names, fn->type_params[i]);
         vec_push(ctx.g_types, fn->inst_types[k * np + i]);
     }
+    /* MEM-3: checked/checking флагът е за основния пас — тук тялото е
+     * нулирано от restore_method_calls и ТРЯБВА да се преинферира под
+     * инстанцията (иначе кодгенът получава празни типове). Нулираме
+     * локалното копие на FnRec — глобалният статус не се пипа. */
+    FnRec *rrec = fn_rec_of(&ctx, fn);
+    if (rrec) { rrec->checked = 0; rrec->checking = 0; }
     restore_method_calls(fn->fn_body);
     check_fn(&ctx, fn);
 }
