@@ -125,6 +125,48 @@ fn main() -> i64 {
     }
     check("loop_scope", total == 30)
 
+    // 10. Vec<bytes> — elem_kind 4 цикълът в release_vec: retain при push,
+    // retain+release при set override, release на всяка data при drop
+    let bv: Vec<bytes> = vec_new()
+    vec_push(bv, x"deadbeef")
+    vec_push(bv, bytes_of_str("hi"))
+    vec_push(bv, bytes_concat(x"cafe", x"00ff"))
+    check("vb_len", vec_len(bv) == 3)
+    check("vb_get", hex_encode(vec_get(bv, 0)) == "deadbeef")
+    vec_set(bv, 1, x"aa")
+    check("vb_set", hex_encode(vec_get(bv, 1)) == "aa")
+    check("vb_cat", hex_encode(vec_get(bv, 2)) == "cafe00ff")
+    drop(bv)
+
+    // 11. Map<bytes, i64> — ktag == 2 клоновете: retain на ключа в put_b,
+    // пускане на retain-а при overwrite, release на ключа при del/drop
+    let bm: Map<bytes, i64> = map_new()
+    map_set(bm, x"6162", 1)
+    map_set(bm, bytes_of_str("cd"), 2)
+    map_set(bm, x"0065", 3)
+    map_set(bm, x"6162", 11)                  // overwrite — пуснат retain
+    check("bm_get", map_get(bm, x"6162") == 11)
+    check("bm_nul", map_get(bm, x"0065") == 3)
+    check("bm_len", map_len(bm) == 3)
+    map_del(bm, bytes_of_str("cd"))           // ktag==2 release на ключа
+    check("bm_del", map_has(bm, bytes_of_str("cd")) == 0)
+    check("bm_del_len", map_len(bm) == 2)
+    drop(bm)
+
+    // 12. Map<bytes, str> с rehash (>12 записа) — bytes ключ + str стойност:
+    // release и на двете при del/scope exit
+    let bs: Map<bytes, str> = map_new()
+    for i in 0..15 {
+        map_set(bs, bytes_of_str(concat("k", i64_to_str(i))),
+                    concat("v", i64_to_str(i)))
+    }
+    check("bs_len", map_len(bs) == 15)
+    check("bs_get", map_get(bs, bytes_of_str("k7")) == "v7")
+    map_set(bs, bytes_of_str("k7"), "заместено")
+    check("bs_over", map_get(bs, bytes_of_str("k7")) == "заместено")
+    map_del(bs, bytes_of_str("k7"))
+    check("bs_del", map_get(bs, bytes_of_str("k7")) == "")
+
     print("DONE")
     return 0
 }
