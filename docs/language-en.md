@@ -1047,7 +1047,8 @@ print(vec_len(v))             // OK — maybe-dropped is not definitely-dropped
   (1) statement-level temps are not released (RC4 is C-only for now),
   (2) match scrutinee temps are not released (C does this since v0.11),
   (3) closure captures are not retained, (4) cycles leak (no weak
-  pointers), (5) borrowed init (`let s = vec_get(...)`) is not retained.
+  pointers), (5) the raise path does not release locals (leak on exit
+  through an effect — `h_ret_zero` returns without a scope release).
   Subtlety: LLVM's `baga_rc_hdr` has no arena range guard — `p − 32` is
   read only when the page offset is ≥ 32, so a foreign page is never
   touched (page guard instead of a range check).

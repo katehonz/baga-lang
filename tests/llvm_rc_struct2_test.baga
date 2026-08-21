@@ -1,4 +1,5 @@
-// llvm_rc_struct2_test — Task 7 adversarial probe (deferred от Task 6):
+// llvm_rc_struct2_test — Task 7 adversarial probe (deferred от Task 6) +
+// borrowed init регресия (секция 6-7, финално ревю F1/F6).
 // struct с Vec<str> и Map<str,i64> полета (scope exit + drop), enum с
 // Vec<str> payload (match + scope exit). Оракул: идентичен изход при
 // ./baga --rc (C) и ./baga-llvm --emit-llvm --rc + lli. Детерминистичен;
@@ -75,6 +76,40 @@ fn main() -> i64 {
     }
     // sum(i) = 3; 3 * 6 = 18 → 21
     check("loop_scope", total == 21)
+
+    // 6. borrowed init регресия (F1 от финалното ревю): let от struct
+    // поле / vec_get / map_get се retain-ва — иначе scope exit release-ва
+    // чужда собственост и източникът увисва (UAF). Жертвите и churn-ът са
+    // в един malloc size class (0x40), така че при липса на retain
+    // презаписването на освободения буфер променя съдържанието им.
+    let hk = Kolekcia { ime: concat("жи", "вот"), dumi: vec_new(), broiki: map_new() }
+    vec_push(hk.dumi, concat("елемен", "т"))
+    let hm: Map<str, str> = map_new()
+    map_set(hm, "ключ", concat("сто", "йно"))
+    if true {
+        let bi = hk.ime
+        let bv = vec_get(hk.dumi, 0)
+        let bm = map_get(hm, "ключ")
+        check("borrow_in", bi == "живот" && bv == "елемент" && bm == "стойно")
+    }
+    let mut ci: i64 = 0
+    while ci < 30 {
+        let cj = concat(i64_to_str(ci), "xxxxxxxx")
+        ci = ci + 1
+    }
+    check("borrow_alive", hk.ime == "живот" &&
+                        vec_get(hk.dumi, 0) == "елемент" &&
+                        map_get(hm, "ключ") == "стойно")
+
+    // 7. match рамо, връщащо borrowed binding — резултатът е owned
+    // (retain в рамото), иначе release на scrutinee-то го обесва
+    let ms = Dumi(hk.dumi)
+    let got = match ms {
+        Dumi(d) => d,
+        Chislo(n) => vec_new(),
+        Prazno => vec_new(),
+    }
+    check("match_borrow", vec_len(got) == 1 && vec_get(hk.dumi, 0) == "елемент")
 
     print("DONE")
     return 0

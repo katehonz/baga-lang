@@ -53,9 +53,10 @@ codegen) или move-семантика за struct threading (етап 2).
   `--emit-llvm --rc` (scope release, retain при alias, move при return,
   транзитивен release за Vec/Map/struct/enum, `drop`), с изключения:
   temp-ове на statement ниво и match scrutinee temp-ове не се
-  release-ват, closure captures не се retain-ват, borrowed init
-  (`let s = vec_get(...)`) не се retain-ва; циклите текат и в двата
-  бекенда (няма weak). Оракул: `make test-llvm-rc`.
+  release-ват, closure captures не се retain-ват, raise пътят не
+  release-ва локали (leak при изход през ефект — `h_ret_zero` излиза без
+  scope release); циклите текат и в двата бекенда (няма weak).
+  Оракул: `make test-llvm-rc`.
 
 ## v2.1: elision на borrowed-retain двойки
 
@@ -148,7 +149,13 @@ release на ephemeral стойност от преди rewind е no-op (пам�
    - `map_keys_*` връща Vec от ключове → retain-нати (те са собственици).
 8. **`drop(x)`** ≡ release + binding-ът става мъртъв; повторна употреба —
    поведението е същото като днес (няма use-after-free проверка в v0.1;
-   rc underflow при двоен drop → чиста грешка и exit).
+   rc underflow при двоен drop → чиста грешка и exit). LLVM уговорка:
+   там free-ът е реален (няма arena, която да държи паметта mapped), така
+   че след освобождаване glibc може да затрие magic-а на header-а и
+   вторият release да е тих no-op вместо чиста underflow грешка;
+   линейният двоен drop (практическият случай) се хваща compile-time —
+   от checker-а, а в LLVM codegen-а и от dead check-а в `lrc_emit_drop`
+   (за dead binding, маркиран извън условен/цикълен клон).
 
 ### Какво release-ва codegen
 
