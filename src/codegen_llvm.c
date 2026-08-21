@@ -774,6 +774,18 @@ static void lrc_release_to_loop(void) {
     }
 }
 
+/* move семантика за return (explicit или implicit от последен EXPR_STMT):
+ * ако изразът е track-нат IDENT — подава се като skip_idx на release_all
+ * (собствеността отива при caller-а); върнат ПАРАМЕТЪР се retain-ва
+ * (borrowed → owned, codegen_c.c:3739-3755). Израз (не-IDENT) — без skip. */
+static void lrc_return_move(Node *expr, LLVMValueRef v) {
+    if (!lg.rc) return;
+    int ri = expr && expr->kind == NODE_IDENT ? lrc_find(expr->name) : -1;
+    if (ri >= 0 && lg.lrc_locals[ri].is_param)
+        lrc_emit_retain_val(lg.lrc_locals[ri].tag, v);
+    lrc_release_all(ri);
+}
+
 /* NODE_WHILE/NODE_FOR вдигат този флаг преди emit_block_llvm на тялото —
  * следващият lrc_push_scope е loop scope (прочита се в emit_block_llvm). */
 static int lrc_loop_next;
@@ -3669,7 +3681,10 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
             LLVMValueRef v = emit_expr_llvm(s->expr);
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
                 if (!v) llvm_unsupported("лямбда: неявен return");
-                LLVMBuildRet(lg.builder, coerce(v, ret));
+                v = coerce(v, ret);
+                /* RC: move семантика като explicit return (като emit_fn_llvm) */
+                lrc_return_move(s->expr, v);
+                LLVMBuildRet(lg.builder, v);
             }
         } else {
             emit_stmt_llvm(s, NULL, NULL);
@@ -4913,16 +4928,41 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
 static LLVMValueRef emit_block_value_llvm(Node *block) {
     if (!block || block->kind != NODE_BLOCK) llvm_unsupported("catch хендлър без тяло");
     st_push();
+    /* RC: handler-ът е свой scope — heap let-овете в него се release-ват при
+     * изхода му, ДОКАТО st_lookup още resolve-ва (lrc_pop_scope преди st_pop).
+     * Без това те се track-ваха във външния scope и при release-а му
+     * st_lookup връщаше NULL — тих leak. */
+    lrc_push_scope(0);
+    int lrc_top = lg.rc ? lg.lrc_scopes[lg.lrc_depth - 1].top : 0;
     LLVMValueRef val = NULL;
     for (int i = 0; i < block->stmts.len; i++) {
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) break;
         Node *s = block->stmts.data[i];
         if (i == block->stmts.len - 1) {
-            if (s->kind == NODE_EXPR_STMT) val = emit_expr_llvm(s->expr);
-            else if (s->kind == NODE_RETURN && s->ret_val) val = emit_expr_llvm(s->ret_val);
-            else emit_stmt_llvm(s, NULL, NULL);
+            /* последният stmt е СТОЙНОСТТА на handler-а (EXPR_STMT или
+             * return <израз> — и двата са стойност, не реален ret) */
+            Node *ve = NULL;
+            if (s->kind == NODE_EXPR_STMT) ve = s->expr;
+            else if (s->kind == NODE_RETURN && s->ret_val) ve = s->ret_val;
+            if (ve) {
+                val = emit_expr_llvm(ve);
+                /* RC: move семантика — стойността escape-ва към phi-то на
+                 * catch израза; handler-локал IDENT се маркира dead, за да не
+                 * бъде release-нат от pop-а. Външен IDENT/параметър е
+                 * borrowed копие — не се пипа (C parity). */
+                if (lg.rc && ve->kind == NODE_IDENT) {
+                    int vi = lrc_find(ve->name);
+                    if (vi >= lrc_top && !lg.lrc_locals[vi].is_param)
+                        lg.lrc_locals[vi].dead = 1;
+                }
+            } else {
+                emit_stmt_llvm(s, NULL, NULL);
+            }
         } else emit_stmt_llvm(s, NULL, NULL);
     }
+    /* ако блокът има terminator (реален return вътре мина през
+     * lrc_release_all), pop-ът само прибира записите — без дублиране */
+    lrc_pop_scope();
     st_pop();
     return val;
 }
@@ -4989,17 +5029,8 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
                 LLVMValueRef val = emit_expr_llvm(n->ret_val);
                 if (!val) llvm_unsupported("print като return стойност");
                 val = coerce(val, lg.cur_ret_ty);
-                if (lg.rc) {
-                    /* return на heap локал е MOVE: подаваме индекса му на
-                     * release_all — той се пропуска, останалите се release-ват.
-                     * Return на ПАРАМЕТЪР: borrowed референцията става owned
-                     * при caller-а → retain (codegen_c.c:3739-3755). */
-                    int ri = n->ret_val->kind == NODE_IDENT
-                        ? lrc_find(n->ret_val->name) : -1;
-                    if (ri >= 0 && lg.lrc_locals[ri].is_param)
-                        lrc_emit_retain_val(lg.lrc_locals[ri].tag, val);
-                    lrc_release_all(ri);
-                }
+                /* RC: move на върнатия локал + release на останалите */
+                lrc_return_move(n->ret_val, val);
                 LLVMBuildRet(lg.builder, val);
             } else {
                 if (lg.cur_ret_ty != lg.void_ty)
@@ -5325,7 +5356,11 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
             /* raise вече емитира ret — без втори terminator */
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
                 if (!v) llvm_unsupported("print като неявен return");
-                LLVMBuildRet(lg.builder, coerce(v, ret_ty));
+                v = coerce(v, ret_ty);
+                /* RC: същата move семантика като explicit return —
+                 * release на локалите ПРЕДИ ret (codegen_c: emit_return_val) */
+                lrc_return_move(s->expr, v);
+                LLVMBuildRet(lg.builder, v);
             }
         } else {
             emit_stmt_llvm(s, NULL, NULL);
