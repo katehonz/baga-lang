@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### runtime — `--rc` release на генерик контейнери + чист UBSan guard
+- `let v: Vec<U> = …` в генерик тяло вече не чупи `--rc` емисията:
+  node fallback-ите на RC resolver-ите (`rc_vec_elem_kind_node`,
+  `rc_map_val_tag_node`) четат проверения от checker-а тип на възела
+  (конкретен за инстанцията след `checker_recheck_inst`) вместо суровото
+  име — преди типовата променлива `U` се емитираше като `sizeof(b_U)`
+  и gcc гърмеше. Налична граница: `Vec<Vec<T>>` с типова променлива
+  остава leak-safe (като досега).
+- `baga_rc_lo` вече е `NULL` вместо `(char *)-1` sentinel и guard-ът в
+  `baga_rc_hdr` го проверява — преди проверките преди първата арена
+  даваха UBSan „pointer index expression overflow" (безвредно на хардуер,
+  но шумно под `-fsanitize=undefined`).
+- Gate: `tests/generic_fn_param_test.baga` под `--rc` (новият тест в
+  батерията); 16-файловата `--rc` батерия и бит-идентичен `--emit-c`
+  без флага.
+
 ### checker — M21 re-infer отново работи (регресия от MEM-3 флаговете)
 - `check_fn` ранният изход по `FnRec.checked` (MEM-3) блокираше двата
   пътя, които по дизайн преинферират тялото: новата инстанция в

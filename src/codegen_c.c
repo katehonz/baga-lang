@@ -330,8 +330,9 @@ static int rc_borrowed_init(Node *init) {
  * 2 struct box, 3 nested vec) + 4 = bytes box — bytes box-ът държи
  * retain-нати data, които трябва да се release-нат (drop схемата ги
  * различава само по elem_size, което не стига). */
-static int rc_vec_elem_kind(Type *vty, char *sz, size_t szn) {
-    Type *e = vty ? vty->elem : NULL;
+/* kind/size по самия елементен Type (общо за inferred път и за анотация
+ * с проверен тип — виж _node вариантите). */
+static int rc_vec_elem_kind_type(Type *e, char *sz, size_t szn) {
     snprintf(sz, szn, "0");
     if (!e) return 0;
     if (e->kind == TYPE_STR) return 1;
@@ -349,10 +350,13 @@ static int rc_vec_elem_kind(Type *vty, char *sz, size_t szn) {
     return 0;
 }
 
+static int rc_vec_elem_kind(Type *vty, char *sz, size_t szn) {
+    return rc_vec_elem_kind_type(vty ? vty->elem : NULL, sz, szn);
+}
+
 /* RC1: val_tag за release на Map: 0 inline (i64/f64), 1 str, 2 bytes,
  * 3 struct box (free на pv по val_size; полетата вътре не се track-ват). */
-static int rc_map_val_tag(Type *mty, char *sz, size_t szn) {
-    Type *v = mty ? mty->elem : NULL;
+static int rc_map_val_tag_type(Type *v, char *sz, size_t szn) {
     snprintf(sz, szn, "0");
     if (!v) return 0;
     if (v->kind == TYPE_STR) return 1;
@@ -366,12 +370,20 @@ static int rc_map_val_tag(Type *mty, char *sz, size_t szn) {
     return 0;
 }
 
+static int rc_map_val_tag(Type *mty, char *sz, size_t szn) {
+    return rc_map_val_tag_type(mty ? mty->elem : NULL, sz, szn);
+}
+
 /* същите два resolver-а, но от анотационен type AST възел (`let v: Vec<str>`)
  * — inferred Type на vec_new()/map_new() няма elem/key информация */
 static int rc_vec_elem_kind_node(Node *ty, char *sz, size_t szn) {
     Node *e = ty ? ty->inner_type : NULL;
     snprintf(sz, szn, "0");
     if (!e || e->kind != NODE_TYPE || !e->type_name) return 0;
+    /* M21: checked типът на възела (конкретен за инстанцията след
+     * checker_recheck_inst) печели — иначе типова променлива (U/T)
+     * изглежда като име на struct и се емитира sizeof(b_U). */
+    if (e->type) return rc_vec_elem_kind_type(e->type, sz, szn);
     if (strcmp(e->type_name, "str") == 0) return 1;
     if (strcmp(e->type_name, "bytes") == 0) {
         snprintf(sz, szn, "(int64_t)sizeof(baga_bytes)");
@@ -391,6 +403,8 @@ static int rc_map_val_tag_node(Node *ty, char *sz, size_t szn) {
     Node *v = ty ? ty->inner_type2 : NULL;
     snprintf(sz, szn, "0");
     if (!v || v->kind != NODE_TYPE || !v->type_name) return 0;
+    /* M21: checked типът печели (виж бележката при vec варианта) */
+    if (v->type) return rc_map_val_tag_type(v->type, sz, szn);
     if (strcmp(v->type_name, "str") == 0) return 1;
     if (strcmp(v->type_name, "bytes") == 0) return 2;
     if (strcmp(v->type_name, "i64") == 0 || strcmp(v->type_name, "i32") == 0 ||
@@ -5305,7 +5319,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
          * (epoch е достатъчна защита), а malloc/free обажданията на заявка
          * изчезват (бел. RC1-perf: dead-zone логът отпадна — is_dead беше
          * O(ndead) на всеки retain/release и беше доминиращият overhead). */
-        fprintf(out, "static __thread char *baga_rc_lo = (char *)(intptr_t)-1;\n");
+        /* NULL = още няма арена — инициализацията с (intptr_t)-1 даваше
+         * UBSan „pointer index overflow" в range guard-а при проверка
+         * преди първата rc алокация. */
+        fprintf(out, "static __thread char *baga_rc_lo = NULL;\n");
         fprintf(out, "static __thread char *baga_rc_hi = NULL;\n");
         fprintf(out, "static __thread uint64_t baga_rc_epoch = 0;\n");
         fprintf(out, "static __thread baga_ABlk *baga_rc_spare = NULL;\n");
@@ -5378,7 +5395,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "        } else {\n");
         fprintf(out, "            b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
         fprintf(out, "            b->next = *hp; b->used = 0; b->cap = cap;\n");
-        fprintf(out, "            if ((char *)b->data < baga_rc_lo) baga_rc_lo = (char *)b->data;\n");
+        fprintf(out, "            if (!baga_rc_lo || (char *)b->data < baga_rc_lo) baga_rc_lo = (char *)b->data;\n");
         fprintf(out, "            if ((char *)b->data + cap > baga_rc_hi) baga_rc_hi = (char *)b->data + cap;\n");
         fprintf(out, "        }\n");
         fprintf(out, "        *hp = b;\n");
@@ -5404,7 +5421,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * на p-24 пред чужд литерал може да е неподравнена страница). */
     if (cg->rc) {
         fprintf(out, "static inline __attribute__((always_inline)) baga_Hdr *baga_rc_hdr(void *p) {\n");
-        fprintf(out, "    if (!p || (char *)p < baga_rc_lo + %d || (char *)p >= baga_rc_hi) return NULL;\n", hs);
+        fprintf(out, "    if (!p || !baga_rc_lo || (char *)p < baga_rc_lo + %d || (char *)p >= baga_rc_hi) return NULL;\n", hs);
         fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)p - %d);\n", hs);
         fprintf(out, "    if (h->magic != BAGA_HDR_MAGIC) return NULL;\n");
         fprintf(out, "    if (!(h->pe & 1) && (h->pe >> 1) != baga_rc_epoch) return NULL;\n");
