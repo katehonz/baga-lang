@@ -55,6 +55,7 @@ typedef struct {
     Node *gen_fn;
     int   gen_inst;
     Checker *chk;
+    int   rc;             /* --rc: RC паметов модел (паритет с C бекенда) */
     /* M20: effect payload runtime */
     VEC(char *) eff_tags;   /* tag регистър (име → индекс+1) */
     int   eff_depth;        /* >0 = вътре в catch верига (TRY е no-op) */
@@ -5014,13 +5015,14 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
 
 /* ---- Public API ---- */
 
-void codegen_llvm(Node *program, const char *output_path, Checker *chk) {
+void codegen_llvm(Node *program, const char *output_path, Checker *chk, int rc) {
     lg.ctx = LLVMContextCreate();
     lg.mod = LLVMModuleCreateWithNameInContext("baga_module", lg.ctx);
     lg.builder = LLVMCreateBuilderInContext(lg.ctx);
     lg.tmp_counter = 0;
     lg.program = program;
     lg.chk = chk;
+    lg.rc = rc;
     lg.gen_fn = NULL; lg.gen_inst = -1;
     lg.gen_struct = NULL; lg.gen_struct_inst = -1;
 

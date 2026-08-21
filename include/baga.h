@@ -685,7 +685,7 @@ void fn_verify_res_free(FnVerifyRes *r);
 
 /* LLVM codegen (optional, requires -DBAGA_LLVM) */
 #ifdef BAGA_LLVM
-void codegen_llvm(Node *program, const char *output_path, Checker *chk);
+void codegen_llvm(Node *program, const char *output_path, Checker *chk, int rc);
 #endif
 
 /* ============================================================
