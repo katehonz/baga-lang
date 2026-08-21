@@ -1037,12 +1037,11 @@ print(vec_len(v))             // OK — maybe-dropped is not definitely-dropped
 - **Blocks > 1024 B are not reclaimed** by the free list (below).
 - **Historical garbage stays**: old buffers abandoned by `vec_grow` /
   `map_rehash` are not tracked; `drop` frees the *current* blocks only.
-- **Scope-exit leaks** — `--warn-leaks` emits a warning (compilation still
-  succeeds) when a `Vec`/`Map`/`bytes`/`fn` leaves scope without `drop`, or
-  an `arena_new` handle without `arena_free`. An ident returned by the
-  function (`return v` / implicit `v`) is not a leak. Without the flag the
-  old behaviour stands — a silent arena leak. Aliases through a second
-  variable or a container remain untracked (same MEM-1 contract).
+- **Scope-exit leaks** — a forgotten arena (`arena_new` with no
+  `arena_free` in the function and no `return`) is an error. `Vec`/`Map`/
+  `bytes`/`fn` without `drop` warn only under `--warn-leaks`. A returned
+  ident is not a leak. Aliases through a container remain untracked
+  (MEM-1 contract).
 - **LLVM backend**: `drop` works in LLVM too (plain free without `--rc`,
   RC release with `--rc`). Under `--emit-llvm --rc` the RC model matches
   the C backend (scope release, retain on alias, move on return,
@@ -1089,15 +1088,25 @@ honestly — same gating as M14.
 **Region tags (MEM-3):** `let p = arena_alloc(a, n)` associates `p` with
 arena handle `a`. After `arena_free(a)`, any use of `p` is
 `използване на 'p' след free`. The same tag is inherited by obvious
-forms: `let q = p`, `p + n` / `n + p` / `p - n`, and `if` with the same
-region on both branches. `p - q` (two pointers) and uncertain expressions
-are not tagged — leak-safe, never a fabricated error. Aliasing the handle
-itself (`let b = a`) stays untracked (MEM-1 contract). Runtime: null-handle
-guards on `arena_alloc` / `arena_reset`.
+forms: `let q = p`, `p + n` / `n + p` / `p - n`, `if` with the same
+region on both branches, a struct literal with a field from the region
+(the whole struct dies with the arena), and a call to a function that
+returns `arena_alloc` (or an alias) of an i64 parameter. `p - q` (two
+pointers) and uncertain expressions are not tagged — leak-safe, never a
+fabricated error. Handle aliases (`let b = a`, or `wrap(a)` where wrap returns `a`) share
+identity: `arena_free` of either name invalidates payloads and all aliases.
+`s.p = arena_alloc(a, n)` tags the whole struct. Pointers stuffed in
+`Vec`/`Map` stay untracked (MEM-1 contract). Runtime: null-handle guards
+on `arena_alloc` / `arena_reset`.
+
+**Forgotten arena:** `arena_new` with no `arena_free` anywhere in the
+function and no `return` of the handle is a **compile error**. If
+`arena_free` exists on some paths (`?` / a branch), that is a maybe-leak —
+`--warn-leaks` only.
 
 **`--warn-leaks`:** leaving scope with a live `Vec`/`Map`/`bytes`/`fn` and
-no `drop`, or an `arena_new` handle without `arena_free`, emits a warning
-(compilation continues). A returned ident is not a leak. Off unless flagged.
+no `drop` emits a warning (compilation continues). A returned ident is not
+a leak. Off unless flagged.
 
 ---
 

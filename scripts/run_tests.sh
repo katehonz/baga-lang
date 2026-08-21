@@ -673,6 +673,57 @@ printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n  
 test "$(run /tmp/baga_arena_okarith.baga)" = "8" \
 	&& echo "OK: region — p+8 е валиден преди arena_free" \
 	|| { echo "FAIL: p+8 преди free трябва да върви"; exit 1; }
+# MEM-3 handle alias identity
+printf 'fn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 16)\n    let b = a\n    arena_free(b)\n    print(p)\n}\n' > /tmp/baga_arena_halias.baga
+run /tmp/baga_arena_halias.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: handle alias — free(b) убива p от a" \
+	|| { echo "FAIL: arena_free(b) трябва да убие payload от a"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let b = a\n    arena_free(a)\n    arena_free(b)\n}\n' > /tmp/baga_arena_hdfree.baga
+run /tmp/baga_arena_hdfree.baga 2>&1 | grep -q "повторен arena_free на 'b'" \
+	&& echo "OK: handle alias — двоен free през b" \
+	|| { echo "FAIL: arena_free(a)+arena_free(b) трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let b = a\n    arena_free(a)\n    print(b)\n}\n' > /tmp/baga_arena_huse.baga
+run /tmp/baga_arena_huse.baga 2>&1 | grep -q "използване на 'b' след free" \
+	&& echo "OK: handle alias — use на b след free(a)" \
+	|| { echo "FAIL: print(b) след arena_free(a) трябва да гърми"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let b = a\n    let p = arena_alloc(b, 16)\n    arena_free(a)\n    print(p)\n}\n' > /tmp/baga_arena_halloc.baga
+run /tmp/baga_arena_halloc.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: handle alias — alloc през b, free(a) убива p" \
+	|| { echo "FAIL: alloc през алиас трябва да се тагва към a"; exit 1; }
+printf 'fn main() {\n    let mut b = 0\n    let a = arena_new()\n    b = a\n    let p = arena_alloc(a, 8)\n    arena_free(b)\n    print(p)\n}\n' > /tmp/baga_arena_hasgn.baga
+run /tmp/baga_arena_hasgn.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: handle alias — b = a, free(b) убива p" \
+	|| { echo "FAIL: assign алиас трябва да споделя identity"; exit 1; }
+# MEM-3 fn summary: return arena_alloc(param) + struct lit field
+printf 'fn mk(a: i64) -> i64 {\n    return arena_alloc(a, 16)\n}\nfn main() {\n    let a = arena_new()\n    let p = mk(a)\n    arena_free(a)\n    print(p)\n}\n' > /tmp/baga_arena_fn.baga
+run /tmp/baga_arena_fn.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: fn summary — mk(a) наследява region на a" \
+	|| { echo "FAIL: return arena_alloc(param) трябва да тагва call site"; exit 1; }
+printf 'fn mk(a: i64) -> i64 {\n    let p = arena_alloc(a, 16)\n    return p\n}\nfn main() {\n    let a = arena_new()\n    let q = mk(a)\n    arena_free(a)\n    print(q)\n}\n' > /tmp/baga_arena_fn2.baga
+run /tmp/baga_arena_fn2.baga 2>&1 | grep -q "използване на 'q' след free" \
+	&& echo "OK: fn summary — return p след alloc(param)" \
+	|| { echo "FAIL: return p трябва да обобщи region на param"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    let p = mk(a)\n    arena_free(a)\n    print(p)\n}\nfn mk(a: i64) -> i64 {\n    return arena_alloc(a, 8)\n}\n' > /tmp/baga_arena_fnord.baga
+run /tmp/baga_arena_fnord.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: fn summary — callee след caller в файла" \
+	|| { echo "FAIL: редът на fn не трябва да крие резюмето"; exit 1; }
+printf 'struct Buf { p: i64 n: i64 }\nfn main() {\n    let a = arena_new()\n    let s = Buf { p: arena_alloc(a, 8), n: 8 }\n    arena_free(a)\n    print(s.p)\n}\n' > /tmp/baga_arena_struct.baga
+run /tmp/baga_arena_struct.baga 2>&1 | grep -q "използване на 's' след free" \
+	&& echo "OK: struct lit — поле от arena_alloc тагва s" \
+	|| { echo "FAIL: struct поле трябва да наследи region"; exit 1; }
+printf 'fn add(x: i64, y: i64) -> i64 { return x + y }\nfn main() {\n    let a = arena_new()\n    let n = add(a, 1)\n    arena_free(a)\n    print(n)\n}\n' > /tmp/baga_arena_add.baga
+run /tmp/baga_arena_add.baga >/tmp/baga_arena_add.out 2>/tmp/baga_arena_add.err
+grep -q "използване на 'n' след free" /tmp/baga_arena_add.err \
+	&& { echo "FAIL: add(a,1) не трябва да се тагва като указател"; exit 1; } \
+	|| echo "OK: fn summary — add не е region"
+printf 'fn wrap(a: i64) -> i64 { return a }\nfn main() {\n    let a = arena_new()\n    let p = arena_alloc(a, 8)\n    let b = wrap(a)\n    arena_free(b)\n    print(p)\n}\n' > /tmp/baga_arena_hfn.baga
+run /tmp/baga_arena_hfn.baga 2>&1 | grep -q "използване на 'p' след free" \
+	&& echo "OK: handle fn — wrap(a) споделя identity" \
+	|| { echo "FAIL: return a трябва да пренесе handle identity"; exit 1; }
+printf 'struct Buf { p: i64 n: i64 }\nfn main() {\n    let a = arena_new()\n    let mut s = Buf { p: 0, n: 0 }\n    s.p = arena_alloc(a, 8)\n    arena_free(a)\n    print(s.p)\n}\n' > /tmp/baga_arena_fasgn.baga
+run /tmp/baga_arena_fasgn.baga 2>&1 | grep -q "използване на 's' след free" \
+	&& echo "OK: field assign — s.p = arena_alloc тагва s" \
+	|| { echo "FAIL: field assign трябва да тагне struct-а"; exit 1; }
 
 echo "=== statement-level { } блок ==="
 printf 'fn main() {\n    print("before")\n    {\n        print("inside")\n    }\n    print("after")\n}\n' > /tmp/baga_blk.baga
@@ -698,12 +749,12 @@ run --warn-leaks --check /tmp/baga_leak_ret.baga 2>&1 | grep -q "изтичан�
 	&& { echo "FAIL: върнат Vec не трябва да предупреждава"; exit 1; } \
 	|| echo "OK: return v не е теч"
 printf 'fn main() {\n    let a = arena_new()\n}\n' > /tmp/baga_leak_ar.baga
-run --warn-leaks --check /tmp/baga_leak_ar.baga 2>&1 | grep -q "изтичане: арена 'a' излиза от scope без arena_free" \
-	&& echo "OK: --warn-leaks хваща арена без free" \
-	|| { echo "FAIL: арена leak трябва да предупреди"; exit 1; }
+run --check /tmp/baga_leak_ar.baga 2>&1 | grep -q "арена 'a' излиза от scope без arena_free" \
+	&& echo "OK: забравена арена е грешка (без --warn-leaks)" \
+	|| { echo "FAIL: arena_new без free трябва да е грешка"; exit 1; }
 printf 'fn main() {\n    let a = arena_new()\n    arena_free(a)\n}\n' > /tmp/baga_leak_arf.baga
-run --warn-leaks --check /tmp/baga_leak_arf.baga 2>&1 | grep -q "изтичане" \
-	&& { echo "FAIL: arena_free не трябва да предупреждава"; exit 1; } \
+run --check /tmp/baga_leak_arf.baga 2>&1 | grep -q "арена" \
+	&& { echo "FAIL: arena_free не трябва да гърми"; exit 1; } \
 	|| echo "OK: arena_free е тих"
 # без флага — мълчаливо (регресия: не ръси stderr в обичайния път)
 run --check /tmp/baga_leak_v.baga 2>&1 | grep -q "изтичане" \

@@ -234,12 +234,10 @@ struct EnvEntry {
     int is_param;     /* параметър — буферът е на извикващия, drop забранен */
     int captured;     /* заснет от ламбда — drop би оставил висящ указател */
     int scope_depth;  /* ctx->depth при дефиницията (за loop-правилото) */
-    int is_arena;     /* let a = arena_new() — MEM-3 handle */
+    int is_arena;     /* arena handle (arena_new или алиас на такъв) */
+    int arena_id;     /* >0: identity на handle-а (споделена от let b = a) */
+    int region_id;    /* >0: payload от arena_alloc с този arena_id */
     SrcPos pos;       /* позиция на let (за leak предупреждения) */
-    /* MEM-3: region — EnvEntry of arena handle that produced this local
-     * via arena_alloc (NULL = not arena-allocated / unknown). Freeing the
-     * arena marks all locals with region==that entry as dropped. */
-    EnvEntry *region;
 };
 
 typedef struct {
@@ -253,6 +251,12 @@ typedef struct {
     const char *origin;  /* модул: basename на файла без .baga ("" = неизвестен) */
     Type *fn_type;   /* TYPE_FN */
     Node *decl;      /* NODE_FN */
+    /* MEM-3: -1 = не връща region/handle; иначе индекс на param.
+     * ret_arena_param — payload (arena_alloc); ret_handle_param — самия handle. */
+    int ret_arena_param;
+    int ret_handle_param;
+    int checked;
+    int checking;
 } FnRec;
 typedef struct { char *name; Node *decl; } StructRec;
 typedef struct { char *name; Node *decl; } EnumRec;
@@ -308,6 +312,9 @@ typedef struct {
     int n_drop_log;
     int drop_log_overflowed; /* логът се е препълнил — join деградира консервативно */
     int loop_depth;   /* 0 = извън цикъл; иначе depth-а на обграждащия цикъл */
+    int next_arena_id; /* MEM-3: монотонен id за arena_new (handle алиаси) */
+    int arena_freed_ids[128]; /* MEM-3: arena_id-та, върху които имаше arena_free */
+    int n_arena_freed;
     /* M21 generics: активна substitution (имена → конкретни типове) и
      * типовите параметри на текущо-декларираната fn (за TYPE_VAR) */
     VEC(char *) g_names;
@@ -349,6 +356,9 @@ static void subst_restore(CheckCtx *ctx, char **sn, Type **st, int n) {
 /* M21: forward — дефиницията е преди check_fn */
 static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call);
 static void check_fn(CheckCtx *ctx, Node *fn);
+static void mem3_ensure_fn(CheckCtx *ctx, Node *fn);
+static FnRec *fn_rec_of(CheckCtx *ctx, Node *fn);
+static FnRec *find_fn_rec(CheckCtx *ctx, const char *name);
 static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
 static void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
 static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
@@ -378,6 +388,10 @@ static void register_fn(CheckCtx *ctx, Node *item) {
         ctx->fns[ctx->n_fns].origin = mod_base(item->pos.file);
         ctx->fns[ctx->n_fns].fn_type = ft;
         ctx->fns[ctx->n_fns].decl = item;
+        ctx->fns[ctx->n_fns].ret_arena_param = -1;
+        ctx->fns[ctx->n_fns].ret_handle_param = -1;
+        ctx->fns[ctx->n_fns].checked = 0;
+        ctx->fns[ctx->n_fns].checking = 0;
         ctx->n_fns++;
     } else {
         check_error(ctx, item->pos,
@@ -433,19 +447,72 @@ static int type_is_drop_owned(Type *t) {
                  t->kind == TYPE_BYTES || t->kind == TYPE_FN);
 }
 
-/* Scope-exit leak scan. skip_name — ident, върнат от функцията (move, не leak). */
+static int arena_was_freed(CheckCtx *ctx, int id) {
+    if (id <= 0) return 0;
+    for (int i = 0; i < ctx->n_arena_freed; i++)
+        if (ctx->arena_freed_ids[i] == id) return 1;
+    return 0;
+}
+
+static void arena_note_freed(CheckCtx *ctx, int id) {
+    if (id <= 0 || arena_was_freed(ctx, id)) return;
+    if (ctx->n_arena_freed < 128)
+        ctx->arena_freed_ids[ctx->n_arena_freed++] = id;
+}
+
+/* Има ли още жив алиас на този handle в обграждащ scope? */
+static int arena_live_outer(CheckCtx *ctx, int id) {
+    if (id <= 0 || ctx->depth < 2) return 0;
+    for (int d = 0; d < ctx->depth - 1; d++) {
+        EnvScope *s = &ctx->scopes[d];
+        for (int i = 0; i < s->count; i++) {
+            EnvEntry *e = &s->entries[i];
+            if (e->is_arena && e->arena_id == id && !e->dropped) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Scope-exit leak scan. skip_name — ident, върнат от функцията (move, не leak).
+ * Забравена арена (няма arena_free никъде във fn, последният алиас си отива)
+ * е грешка винаги. Vec/Map/bytes/fn — само под --warn-leaks. */
 static void leak_scan_scope(CheckCtx *ctx, const char *skip_name) {
-    if (!ctx->chk || !ctx->chk->warn_leaks || ctx->depth <= 0) return;
+    if (!ctx->chk || ctx->depth <= 0) return;
     EnvScope *s = &ctx->scopes[ctx->depth - 1];
+    int skip_aid = 0;
+    if (skip_name) {
+        for (int j = 0; j < s->count; j++)
+            if (s->entries[j].name &&
+                strcmp(s->entries[j].name, skip_name) == 0 &&
+                s->entries[j].is_arena)
+                skip_aid = s->entries[j].arena_id;
+    }
+    int seen_aid[64];
+    int nseen = 0;
     for (int i = 0; i < s->count; i++) {
         EnvEntry *e = &s->entries[i];
         if (e->is_param || e->dropped) continue;
         if (skip_name && e->name && strcmp(e->name, skip_name) == 0) continue;
-        if (type_is_drop_owned(e->type))
+        /* return b където b = a (същият arena_id) — не тече handle-ът */
+        if (skip_aid && e->is_arena && e->arena_id == skip_aid) continue;
+        if (ctx->chk->warn_leaks && type_is_drop_owned(e->type))
             check_warn(ctx, e->pos, "изтичане: '%s' излиза от scope без drop", e->name);
-        else if (e->is_arena)
-            check_warn(ctx, e->pos,
-                "изтичане: арена '%s' излиза от scope без arena_free", e->name);
+        if (!e->is_arena) continue;
+        int dup = 0;
+        for (int k = 0; k < nseen; k++)
+            if (seen_aid[k] == e->arena_id) { dup = 1; break; }
+        if (dup) continue;
+        if (nseen < 64) seen_aid[nseen++] = e->arena_id;
+        if (arena_live_outer(ctx, e->arena_id)) continue;
+        if (arena_was_freed(ctx, e->arena_id)) {
+            /* free има във fn, но не на този път — maybe-leak, само --warn-leaks */
+            if (ctx->chk->warn_leaks)
+                check_warn(ctx, e->pos,
+                    "изтичане: арена '%s' излиза от scope без arena_free", e->name);
+            continue;
+        }
+        check_error(ctx, e->pos,
+            "арена '%s' излиза от scope без arena_free", e->name);
     }
 }
 
@@ -709,8 +776,9 @@ static void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) 
         s->entries[s->count].captured = 0;
         s->entries[s->count].scope_depth = ctx->depth;
         s->entries[s->count].is_arena = 0;
+        s->entries[s->count].arena_id = 0;
+        s->entries[s->count].region_id = 0;
         s->entries[s->count].pos = pos;
-        s->entries[s->count].region = NULL;
         s->count++;
     }
 }
@@ -733,25 +801,50 @@ static void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_m
         s->entries[s->count].captured = 0;
         s->entries[s->count].scope_depth = ctx->depth;
         s->entries[s->count].is_arena = 0;
+        s->entries[s->count].arena_id = 0;
+        s->entries[s->count].region_id = 0;
         s->entries[s->count].pos = pos;
-        s->entries[s->count].region = NULL;
         s->count++;
     }
 }
 
-/* MEM-3: mark every local that came from arena `ae` as dropped (region free). */
-static void mem3_invalidate_region(CheckCtx *ctx, EnvEntry *ae) {
-    if (!ae) return;
+/* MEM-3: маркирай локал като dropped + лог за if/match join */
+static void mem3_note_dropped(CheckCtx *ctx, EnvEntry *e) {
+    if (!e || e->dropped) return;
+    e->dropped = 1;
+    if (ctx->n_drop_log < 256)
+        ctx->drop_log[ctx->n_drop_log++] = e;
+    else
+        ctx->drop_log_overflowed = 1;
+}
+
+/* MEM-3: payload-и с region_id == arena_id умират с handle-а */
+static void mem3_invalidate_region(CheckCtx *ctx, int arena_id) {
+    if (arena_id <= 0) return;
     for (int d = 0; d < ctx->depth; d++) {
         EnvScope *s = &ctx->scopes[d];
         for (int i = 0; i < s->count; i++) {
             EnvEntry *e = &s->entries[i];
-            if (e->region != ae || e->dropped) continue;
-            e->dropped = 1;
-            if (ctx->n_drop_log < 256)
-                ctx->drop_log[ctx->n_drop_log++] = e;
-            else
-                ctx->drop_log_overflowed = 1;
+            if (e->region_id == arena_id) mem3_note_dropped(ctx, e);
+        }
+    }
+}
+
+/* MEM-3: free на handle — payload-и + всички алиаси на същия arena_id */
+static void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h) {
+    if (!h) return;
+    int id = h->arena_id;
+    arena_note_freed(ctx, id);
+    mem3_invalidate_region(ctx, id);
+    if (id <= 0) {
+        mem3_note_dropped(ctx, h);
+        return;
+    }
+    for (int d = 0; d < ctx->depth; d++) {
+        EnvScope *s = &ctx->scopes[d];
+        for (int i = 0; i < s->count; i++) {
+            EnvEntry *e = &s->entries[i];
+            if (e->is_arena && e->arena_id == id) mem3_note_dropped(ctx, e);
         }
     }
 }
@@ -769,44 +862,111 @@ static EnvEntry *env_find(CheckCtx *ctx, const char *name) {
     return NULL;
 }
 
-/* MEM-3: от коя арена идва изразът (payload указател)? Само очевидни
- * форми — ident с region, arena_alloc(a, n), p±n, if с еднакъв region
- * в двата клона. Несигурно → NULL (leak-safe, не измислена грешка). */
-static EnvEntry *region_of_expr(CheckCtx *ctx, Node *n) {
-    if (!n) return NULL;
+/* MEM-3: от коя арена идва изразът (payload указател)? 0 = неизвестно.
+ * Очевидни форми — ident с region_id, arena_alloc(a, n), p±n, if с
+ * еднакъв id в двата клона. Несигурно → 0 (leak-safe). */
+static int region_of_expr(CheckCtx *ctx, Node *n) {
+    if (!n) return 0;
     switch (n->kind) {
         case NODE_IDENT: {
             EnvEntry *e = env_find(ctx, n->name);
-            return e ? e->region : NULL;
+            return e ? e->region_id : 0;
         }
         case NODE_CALL:
             if (n->callee && n->callee->kind == NODE_IDENT &&
                 strcmp(n->callee->name, "arena_alloc") == 0 &&
-                n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT)
-                return env_find(ctx, n->args.data[0]->name);
-            return NULL;
+                n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT) {
+                EnvEntry *h = env_find(ctx, n->args.data[0]->name);
+                return (h && h->arena_id > 0) ? h->arena_id : 0;
+            }
+            /* потребителска fn, която връща region на param k */
+            if (n->callee && n->callee->kind == NODE_IDENT) {
+                FnRec *fr = find_fn_rec(ctx, n->callee->name);
+                if (fr && fr->checked && fr->ret_arena_param >= 0 &&
+                    fr->ret_arena_param < n->args.len &&
+                    n->args.data[fr->ret_arena_param]->kind == NODE_IDENT) {
+                    EnvEntry *h = env_find(ctx,
+                        n->args.data[fr->ret_arena_param]->name);
+                    return (h && h->arena_id > 0) ? h->arena_id : 0;
+                }
+            }
+            return 0;
+        case NODE_STRUCT_LIT: {
+            int rid = 0;
+            for (int i = 0; i < n->n_lit_fields; i++) {
+                int r = region_of_expr(ctx, n->lit_values.data[i]);
+                if (!r) continue;
+                if (!rid) rid = r;
+                else if (rid != r) return 0;
+            }
+            return rid;
+        }
         case NODE_BINARY: {
-            if (n->bin_op != OP_ADD && n->bin_op != OP_SUB) return NULL;
-            EnvEntry *l = region_of_expr(ctx, n->left);
-            EnvEntry *r = region_of_expr(ctx, n->right);
+            if (n->bin_op != OP_ADD && n->bin_op != OP_SUB) return 0;
+            int l = region_of_expr(ctx, n->left);
+            int r = region_of_expr(ctx, n->right);
             /* два указателя (p - q / p + q) — резултатът не е в региона */
-            if (l && r) return NULL;
+            if (l && r) return 0;
             if (n->bin_op == OP_SUB) return l;   /* само p - n */
             return l ? l : r;                    /* n + p или p + n */
         }
         case NODE_EXPR_STMT:
             return region_of_expr(ctx, n->expr);
         case NODE_BLOCK:
-            if (n->stmts.len == 0) return NULL;
+            if (n->stmts.len == 0) return 0;
             return region_of_expr(ctx, n->stmts.data[n->stmts.len - 1]);
         case NODE_IF: {
-            if (!n->else_br) return NULL;
-            EnvEntry *th = region_of_expr(ctx, n->then_br);
-            EnvEntry *el = region_of_expr(ctx, n->else_br);
-            return (th && th == el) ? th : NULL;
+            if (!n->else_br) return 0;
+            int th = region_of_expr(ctx, n->then_br);
+            int el = region_of_expr(ctx, n->else_br);
+            return (th && th == el) ? th : 0;
         }
         default:
-            return NULL;
+            return 0;
+    }
+}
+
+/* MEM-3: handle identity без страничен ефект (без нов arena_new id). */
+static int lookup_arena_id(CheckCtx *ctx, Node *n) {
+    if (!n) return 0;
+    if (n->kind == NODE_IDENT) {
+        EnvEntry *e = env_find(ctx, n->name);
+        if (e && e->is_arena) return e->arena_id;
+        return 0;
+    }
+    if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT) {
+        FnRec *fr = find_fn_rec(ctx, n->callee->name);
+        if (fr && fr->checked && fr->ret_handle_param >= 0 &&
+            fr->ret_handle_param < n->args.len &&
+            n->args.data[fr->ret_handle_param]->kind == NODE_IDENT) {
+            EnvEntry *h = env_find(ctx, n->args.data[fr->ret_handle_param]->name);
+            return (h && h->is_arena) ? h->arena_id : 0;
+        }
+    }
+    return 0;
+}
+
+/* MEM-3: handle identity на израз — нов id при arena_new, копие при алиас. */
+static int expr_arena_id(CheckCtx *ctx, Node *n) {
+    if (!n) return 0;
+    if (n->kind == NODE_CALL && n->callee && n->callee->kind == NODE_IDENT &&
+        strcmp(n->callee->name, "arena_new") == 0)
+        return ++ctx->next_arena_id;
+    return lookup_arena_id(ctx, n);
+}
+
+static void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
+    if (!pe || !init) return;
+    int rid = region_of_expr(ctx, init);
+    int aid = expr_arena_id(ctx, init);
+    if (aid > 0) {
+        pe->is_arena = 1;
+        pe->arena_id = aid;
+        pe->region_id = 0;
+    } else {
+        pe->is_arena = 0;
+        pe->arena_id = 0;
+        pe->region_id = rid;
     }
 }
 
@@ -929,6 +1089,27 @@ static Type *find_fn(CheckCtx *ctx, const char *name) {
         if (strcmp(ctx->fns[i].name, name) == 0)
             return ctx->fns[i].fn_type;
     }
+    return NULL;
+}
+
+static FnRec *find_fn_rec(CheckCtx *ctx, const char *name) {
+    if (!name) return NULL;
+    for (int i = 0; i < ctx->n_fns; i++) {
+        if (ctx->fns[i].decl->fn_name &&
+            strcmp(ctx->fns[i].decl->fn_name, name) == 0)
+            return &ctx->fns[i];
+    }
+    for (int i = 0; i < ctx->n_fns; i++) {
+        if (strcmp(ctx->fns[i].name, name) == 0)
+            return &ctx->fns[i];
+    }
+    return NULL;
+}
+
+static FnRec *fn_rec_of(CheckCtx *ctx, Node *fn) {
+    if (!fn) return NULL;
+    for (int i = 0; i < ctx->n_fns; i++)
+        if (ctx->fns[i].decl == fn) return &ctx->fns[i];
     return NULL;
 }
 
@@ -1456,6 +1637,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             type_merge_effects(result, ret);
             if (ctx->cur_effects)
                 type_merge_effects(ctx->cur_effects, ret);
+            {
+                FnRec *fr = find_fn_rec(ctx, n->callee->name);
+                if (fr) mem3_ensure_fn(ctx, fr->decl);
+            }
             return result;
         }
 
@@ -2009,14 +2194,7 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
                             check_error(ctx, n->pos,
                                 "arena_free на външна за цикъла арена '%s'", ah->name);
                         else {
-                            /* invalidate all arena_alloc results from this handle first */
-                            mem3_invalidate_region(ctx, e);
-                            if (ctx->n_drop_log < 256) {
-                                e->dropped = 1;
-                                ctx->drop_log[ctx->n_drop_log++] = e;
-                            } else {
-                                ctx->drop_log_overflowed = 1;
-                            }
+                            mem3_drop_handle(ctx, e);
                         }
                     }
                 }
@@ -2400,11 +2578,18 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                     "променливата '%s' е декларирана с 'let' без 'mut' — присвояването е забранено",
                     n->assign_target->name);
             }
-            /* MEM-3: преприсвояване — region от дясното (arena_alloc / alias /
-             * p±n); несигурно дясно нулира тага */
+            /* MEM-3: преприсвояване — payload region или handle алиас */
             if (n->assign_target->kind == NODE_IDENT) {
                 EnvEntry *pe = env_find(ctx, n->assign_target->name);
-                if (pe) pe->region = region_of_expr(ctx, n->assign_val);
+                if (pe) mem3_bind(ctx, pe, n->assign_val);
+            } else if (n->assign_target->kind == NODE_FIELD) {
+                Node *base = n->assign_target;
+                while (base && base->kind == NODE_FIELD) base = base->field_obj;
+                if (base && base->kind == NODE_IDENT) {
+                    EnvEntry *pe = env_find(ctx, base->name);
+                    int rid = region_of_expr(ctx, n->assign_val);
+                    if (pe && rid > 0) pe->region_id = rid;
+                }
             }
             break;
         }
@@ -2708,16 +2893,7 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             env_define_mut(ctx, n->let_name, decl_t, n->is_mut, n->pos);
             {
                 EnvEntry *pe = env_find(ctx, n->let_name);
-                if (pe && n->let_init) {
-                    /* MEM-3: arena_alloc / alias / p±n → същият region */
-                    EnvEntry *reg = region_of_expr(ctx, n->let_init);
-                    if (reg) pe->region = reg;
-                    if (n->let_init->kind == NODE_CALL &&
-                        n->let_init->callee &&
-                        n->let_init->callee->kind == NODE_IDENT &&
-                        strcmp(n->let_init->callee->name, "arena_new") == 0)
-                        pe->is_arena = 1;
-                }
+                if (pe) mem3_bind(ctx, pe, n->let_init);
             }
             t = type_new(TYPE_VOID);
             break;
@@ -3361,7 +3537,105 @@ static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call) {
                         : type_new(TYPE_VOID);
 }
 
+static void mem3_collect_rets(CheckCtx *ctx, Node *n,
+                              int *rids, int *nr, int *hids, int *nh, int cap) {
+    if (!n || (*nr >= cap && *nh >= cap)) return;
+    switch (n->kind) {
+        case NODE_RETURN:
+            if (n->ret_val) {
+                int r = region_of_expr(ctx, n->ret_val);
+                if (r > 0 && *nr < cap) rids[(*nr)++] = r;
+                int h = lookup_arena_id(ctx, n->ret_val);
+                if (h > 0 && *nh < cap) hids[(*nh)++] = h;
+            }
+            return;
+        case NODE_BLOCK:
+            for (int i = 0; i < n->stmts.len; i++)
+                mem3_collect_rets(ctx, n->stmts.data[i], rids, nr, hids, nh, cap);
+            return;
+        case NODE_IF:
+            mem3_collect_rets(ctx, n->then_br, rids, nr, hids, nh, cap);
+            mem3_collect_rets(ctx, n->else_br, rids, nr, hids, nh, cap);
+            return;
+        case NODE_WHILE:
+            mem3_collect_rets(ctx, n->while_body, rids, nr, hids, nh, cap);
+            return;
+        case NODE_FOR:
+            mem3_collect_rets(ctx, n->for_body, rids, nr, hids, nh, cap);
+            return;
+        case NODE_MATCH:
+            for (int i = 0; i < n->match_arms.len; i++)
+                mem3_collect_rets(ctx, n->match_arms.data[i]->arm_body, rids, nr, hids, nh, cap);
+            return;
+        case NODE_CATCH:
+            mem3_collect_rets(ctx, n->catch_expr, rids, nr, hids, nh, cap);
+            mem3_collect_rets(ctx, n->catch_handler, rids, nr, hids, nh, cap);
+            return;
+        case NODE_EXPR_STMT:
+            mem3_collect_rets(ctx, n->expr, rids, nr, hids, nh, cap);
+            return;
+        case NODE_LET:
+            mem3_collect_rets(ctx, n->let_init, rids, nr, hids, nh, cap);
+            return;
+        default:
+            return;
+    }
+}
+
+static int mem3_ids_to_param(CheckCtx *ctx, Node *fn, int *ids, int nids) {
+    int param_idx = -1;
+    for (int k = 0; k < nids; k++) {
+        int pi = -1;
+        for (int i = 0; i < fn->params.len; i++) {
+            EnvEntry *pe = env_find(ctx, fn->params.data[i]->param_name);
+            if (pe && pe->is_arena && pe->arena_id == ids[k]) { pi = i; break; }
+        }
+        if (pi < 0) continue;
+        if (param_idx < 0) param_idx = pi;
+        else if (param_idx != pi) return -1;
+    }
+    return param_idx;
+}
+
+static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
+    if (!rec || !fn || !fn->fn_body) return;
+    int rids[32], hids[32];
+    int nr = 0, nh = 0;
+    mem3_collect_rets(ctx, fn->fn_body, rids, &nr, hids, &nh, 32);
+    if (fn->fn_body->stmts.len > 0) {
+        Node *last = fn->fn_body->stmts.data[fn->fn_body->stmts.len - 1];
+        if (last->kind == NODE_EXPR_STMT && last->expr) {
+            int r = region_of_expr(ctx, last->expr);
+            if (r > 0 && nr < 32) rids[nr++] = r;
+            int h = lookup_arena_id(ctx, last->expr);
+            if (h > 0 && nh < 32) hids[nh++] = h;
+        }
+    }
+    rec->ret_arena_param = mem3_ids_to_param(ctx, fn, rids, nr);
+    rec->ret_handle_param = mem3_ids_to_param(ctx, fn, hids, nh);
+}
+
+static void mem3_ensure_fn(CheckCtx *ctx, Node *fn) {
+    if (!fn || fn->is_extern || fn->n_type_params > 0) return;
+    FnRec *r = fn_rec_of(ctx, fn);
+    if (!r || r->checked || r->checking) return;
+    check_fn(ctx, fn);
+}
+
 static void check_fn(CheckCtx *ctx, Node *fn) {
+    FnRec *rec = fn_rec_of(ctx, fn);
+    if (rec && rec->checked) return;
+    if (rec && rec->checking) return;
+    if (rec) rec->checking = 1;
+
+    const char *saved_fn = ctx->cur_fn;
+    Type *saved_ret = ctx->cur_ret;
+    Type *saved_eff = ctx->cur_effects;
+    int saved_loop = ctx->loop_depth;
+    int saved_dlog = ctx->n_drop_log;
+    int saved_ovf = ctx->drop_log_overflowed;
+    int saved_nfreed = ctx->n_arena_freed;
+
     ctx->cur_fn = fn->fn_name;
     ctx->cur_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type) : type_new(TYPE_VOID);
     ctx->cur_effects = type_new(TYPE_VOID); /* accumulator for body effects */
@@ -3381,13 +3655,22 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
         env_define(ctx, p->param_name, pt, p->pos);
         /* MEM-2: параметрите споделят буфера на извикващия — drop забранен */
         EnvEntry *pe = env_find(ctx, p->param_name);
-        if (pe) pe->is_param = 1;
+        if (pe) {
+            pe->is_param = 1;
+            /* MEM-3: i64 param може да е arena handle — alloc от него
+             * тагва payload към този id (free на param остава забранен) */
+            if (pt && pt->kind == TYPE_I64) {
+                pe->is_arena = 1;
+                pe->arena_id = ++ctx->next_arena_id;
+            }
+        }
     }
 
     /* check body — MEM-2: drop-логът е per-функция (drop-ове не пресичат
      * fn граница); без reset block-local drop-ове пълнят лога за целия модул */
     ctx->n_drop_log = 0;
     ctx->drop_log_overflowed = 0;
+    ctx->n_arena_freed = 0;
     if (fn->fn_body) {
         for (int i = 0; i < fn->fn_body->stmts.len; i++)
             infer(ctx, fn->fn_body->stmts.data[i]);
@@ -3442,6 +3725,10 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
         }
     }
 
+    /* MEM-3: резюме „връща region на param k“ — преди pop, докато
+     * param EnvEntry-тата още са в scope. */
+    mem3_summarize_fn(ctx, fn, rec);
+
     /* MEM-3: ident, върнат от последния return/implicit return, не тече
      * (собствеността излиза към caller-а). */
     {
@@ -3455,9 +3742,17 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
         }
         pop_scope_skip(ctx, skip);
     }
-    ctx->cur_fn = NULL;
-    ctx->cur_ret = NULL;
-    ctx->cur_effects = NULL;
+    if (rec) {
+        rec->checking = 0;
+        rec->checked = 1;
+    }
+    ctx->cur_fn = saved_fn;
+    ctx->cur_ret = saved_ret;
+    ctx->cur_effects = saved_eff;
+    ctx->loop_depth = saved_loop;
+    ctx->n_drop_log = saved_dlog;
+    ctx->drop_log_overflowed = saved_ovf;
+    ctx->n_arena_freed = saved_nfreed;
 }
 
 /* ============================================================

@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### checker — забравена арена е грешка
+- `let a = arena_new()` без `arena_free` никъде във fn и без `return a`
+  е compile error. Vec/Map остават само под `--warn-leaks`. Maybe-leak
+  (`?` пътека при наличен free в другото рамо) не гърми по подразбиране.
+  Gate: `scripts/run_tests.sh` forgotten-arena probe; tcp/poll/examples/arena
+  остават зелени.
+
+### checker — MEM-3 handle през `return a` + field assign
+- `fn wrap(a: i64) -> i64 { return a }` пренася handle identity на call
+  site (`let b = wrap(a)`). `s.p = arena_alloc(a, n)` тагва struct-а.
+  Vec от указатели остава честна граница. Gate: `scripts/run_tests.sh`
+  wrap/field-assign probes.
+
+### checker — MEM-3 region през fn резултат и struct литерал
+- Функция, която връща `arena_alloc(param)` (или alias на такъв payload),
+  тагва call site-а с region-а на подадения handle — редът в файла не
+  пречи (check_fn при нужда се влага). Struct литерал с поле от региона
+  тагва целия binding. `add(x,y)` не се бърка. Gate: `scripts/run_tests.sh`
+  MEM-3 fn/struct probes.
+
+### checker — MEM-3 handle алиаси споделят identity
+- `let b = a` (и `b = a`) където `a` е `arena_new` споделя `arena_id`.
+  `arena_free` на което и да е име убива payload-ите и всички алиаси;
+  двоен free през второто име е грешка. Gate: `scripts/run_tests.sh`
+  MEM-3 handle-alias probes.
+
 ### checker — MEM-3 region tags върху alias и p±n
 - `let q = p`, `p + n` / `n + p` / `p - n` и `if` с еднакъв region в
   двата клона наследяват тага на `arena_alloc`. `p - q` (два указателя)
