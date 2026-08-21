@@ -448,6 +448,189 @@ static void h_begin(LLVMValueRef fn) {
     LLVMPositionBuilderAtEnd(lg.builder, entry);
 }
 
+/* ============================ RC runtime (--rc) ============================
+ *
+ * 32 B header пред payload-а: { i64 magic, i64 pe, i64 rc, i64 an } —
+ * същият layout като baga_Hdr в codegen_c (magic = 0xBA6A4D454D344848).
+ * rc = 1 при конструкция; rc = 0 → free на базата (payload − 32).
+ * pe = 0 винаги в LLVM v1 (няма persist epoch). Header-ът е ПРЕД върнатия
+ * указател, така че payload offset-ите в helper-ите не се променят при
+ * превключване rt_malloc → baga_rc_alloc. */
+
+#define BAGA_RC_MAGIC 0xBA6A4D454D344848ULL
+#define BAGA_RC_HSIZE 32
+
+/* GEP до i64 поле idx на header базата (base е i8* към magic) */
+static LLVMValueRef rc_hdr_field(LLVMValueRef base, int idx, const char *nm) {
+    LLVMValueRef h = LLVMBuildBitCast(lg.builder, base,
+        LLVMPointerType(lg.i64_ty, 0), "hc");
+    LLVMValueRef i = LLVMConstInt(lg.i64_ty, (uint64_t)idx, 0);
+    return LLVMBuildGEP2(lg.builder, lg.i64_ty, h, &i, 1, nm);
+}
+
+/* baga_rc_hdr: page guard + magic check (LLVM няма arena range guard).
+ * Четем p-32 само при page offset >= 32; иначе NULL (immortal). */
+static LLVMValueRef build_baga_rc_hdr(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_rc_hdr",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef ptr = LLVMGetParam(fn, 0);
+    LLVMValueRef pi = LLVMBuildPtrToInt(lg.builder, ptr, lg.i64_ty, "pi");
+    LLVMValueRef off = LLVMBuildAnd(lg.builder, pi,
+        LLVMConstInt(lg.i64_ty, 4095, 0), "off");
+    LLVMValueRef low = LLVMBuildICmp(lg.builder, LLVMIntULT, off,
+        LLVMConstInt(lg.i64_ty, BAGA_RC_HSIZE, 0), "low");
+    LLVMBasicBlockRef null_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "null");
+    LLVMBasicBlockRef chk_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "chk");
+    LLVMBasicBlockRef hit_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "hit");
+    LLVMBuildCondBr(lg.builder, low, null_bb, chk_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, chk_bb);
+    LLVMValueRef back = LLVMConstInt(lg.i64_ty, (uint64_t)-BAGA_RC_HSIZE, 1);
+    LLVMValueRef base = LLVMBuildGEP2(lg.builder, lg.i8_ty, ptr, &back, 1, "base");
+    LLVMValueRef magic = LLVMBuildLoad2(lg.builder, lg.i64_ty,
+        rc_hdr_field(base, 0, "mp"), "magic");
+    LLVMValueRef ok = LLVMBuildICmp(lg.builder, LLVMIntEQ, magic,
+        LLVMConstInt(lg.i64_ty, BAGA_RC_MAGIC, 0), "ok");
+    LLVMBuildCondBr(lg.builder, ok, hit_bb, null_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, hit_bb);
+    LLVMBuildRet(lg.builder, base);
+
+    LLVMPositionBuilderAtEnd(lg.builder, null_bb);
+    LLVMBuildRet(lg.builder, LLVMConstNull(lg.ptr_ty));
+    return fn;
+}
+
+/* static i8 *baga_rc_alloc(i64 n)
+ * { base = malloc(n + 32); пише header; return base + 32; } */
+static LLVMValueRef build_baga_rc_alloc(void) {
+    LLVMTypeRef p[] = { lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_rc_alloc",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef n = LLVMGetParam(fn, 0);
+    LLVMValueRef nn = LLVMBuildAdd(lg.builder, n,
+        LLVMConstInt(lg.i64_ty, BAGA_RC_HSIZE, 0), "nn");
+    LLVMValueRef base = h_call(rt_malloc(), &nn, 1, "base");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, BAGA_RC_MAGIC, 0),
+        rc_hdr_field(base, 0, "mp"));
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0),
+        rc_hdr_field(base, 1, "pep"));
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 1, 0),
+        rc_hdr_field(base, 2, "rcp"));
+    LLVMBuildStore(lg.builder, n, rc_hdr_field(base, 3, "anp"));
+    LLVMValueRef fwd = LLVMConstInt(lg.i64_ty, BAGA_RC_HSIZE, 0);
+    LLVMBuildRet(lg.builder,
+        LLVMBuildGEP2(lg.builder, lg.i8_ty, base, &fwd, 1, "pay"));
+    return fn;
+}
+
+/* baga_rc_retain: rc++ ако header-ът е валиден; връща p. C литералите и
+ * външните буфери са „immortal" (hdr = NULL → no-op). */
+static LLVMValueRef build_baga_rc_retain(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_rc_retain",
+        LLVMFunctionType(lg.ptr_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef ptr = LLVMGetParam(fn, 0);
+    LLVMValueRef h = h_call(baga_rt("baga_rc_hdr"), &ptr, 1, "h");
+    LLVMValueRef isn = LLVMBuildIsNull(lg.builder, h, "isn");
+    LLVMBasicBlockRef inc_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "inc");
+    LLVMBasicBlockRef ret_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ret");
+    LLVMBuildCondBr(lg.builder, isn, ret_bb, inc_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, inc_bb);
+    LLVMValueRef rcp = rc_hdr_field(h, 2, "rcp");
+    LLVMValueRef rc = LLVMBuildLoad2(lg.builder, lg.i64_ty, rcp, "rc");
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, rc,
+        LLVMConstInt(lg.i64_ty, 1, 0), "rc1"), rcp);
+    LLVMBuildBr(lg.builder, ret_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, ret_bb);
+    LLVMBuildRet(lg.builder, ptr);
+    return fn;
+}
+
+/* baga_rc_release_{str,bytes}: rc--; при 0 → free(base). Underflow
+ * (rc вече 0) → съобщение на stderr + exit(1), не UB — същото
+ * съобщение като codegen_c. */
+static LLVMValueRef build_baga_rc_release(const char *name, const char *msg) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, name,
+        LLVMFunctionType(lg.void_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef ptr = LLVMGetParam(fn, 0);
+    LLVMValueRef h = h_call(baga_rt("baga_rc_hdr"), &ptr, 1, "h");
+    LLVMValueRef isn = LLVMBuildIsNull(lg.builder, h, "isn");
+    LLVMBasicBlockRef dec_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "dec");
+    LLVMBasicBlockRef ret_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ret");
+    LLVMBuildCondBr(lg.builder, isn, ret_bb, dec_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, dec_bb);
+    LLVMValueRef rcp = rc_hdr_field(h, 2, "rcp");
+    LLVMValueRef rc = LLVMBuildLoad2(lg.builder, lg.i64_ty, rcp, "rc");
+    LLVMValueRef isz = LLVMBuildICmp(lg.builder, LLVMIntEQ, rc,
+        LLVMConstInt(lg.i64_ty, 0, 0), "isz");
+    LLVMBasicBlockRef uf_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "uf");
+    LLVMBasicBlockRef ok_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ok");
+    LLVMBuildCondBr(lg.builder, isz, uf_bb, ok_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, uf_bb);
+    LLVMValueRef err = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        lg.stderr_global, "err");
+    LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, msg, "uffmt");
+    LLVMValueRef fa[] = { err, fmt };
+    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.fprintf_fn)),
+                   lg.fprintf_fn, fa, 2, "");
+    LLVMTypeRef ep[] = { lg.i32_ty };
+    LLVMValueRef ea[] = { LLVMConstInt(lg.i32_ty, 1, 0) };
+    h_call(rt_libc("exit", lg.void_ty, ep, 1), ea, 1, "");
+    LLVMBuildUnreachable(lg.builder);
+
+    LLVMPositionBuilderAtEnd(lg.builder, ok_bb);
+    LLVMValueRef rc1 = LLVMBuildSub(lg.builder, rc,
+        LLVMConstInt(lg.i64_ty, 1, 0), "rc1");
+    LLVMBuildStore(lg.builder, rc1, rcp);
+    LLVMValueRef isd = LLVMBuildICmp(lg.builder, LLVMIntEQ, rc1,
+        LLVMConstInt(lg.i64_ty, 0, 0), "isd");
+    LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "free");
+    LLVMBuildCondBr(lg.builder, isd, free_bb, ret_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, free_bb);
+    LLVMValueRef fr[] = { h };
+    h_call(rt_free(), fr, 1, "");
+    LLVMBuildBr(lg.builder, ret_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, ret_bb);
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+/* malloc сайт → baga_rc_alloc при --rc, иначе чист malloc (без --rc IR е
+ * побайтово същият). Всички str/bytes сайтове и следващите RC задачи
+ * минават през тази обвивка. */
+static LLVMValueRef rc_alloc_call(LLVMValueRef nbytes, const char *name) {
+    if (lg.rc) return h_call(baga_rt("baga_rc_alloc"),
+                             (LLVMValueRef[]){ coerce(nbytes, lg.i64_ty) }, 1, name);
+    return h_call(rt_malloc(), (LLVMValueRef[]){ nbytes }, 1, name);
+}
+
+/* порт на rc_type_tag (codegen_c.c:97): 1=str, 2=bytes, 3=Vec, 4=Map,
+ * 0=не-heap. Task 2 още не го ползва — за Task 3+ (retain/release сайтове). */
+__attribute__((unused))
+static int lrc_type_tag(Type *t) {
+    if (!t) return 0;
+    switch (t->kind) {
+        case TYPE_STR:   return 1;
+        case TYPE_BYTES: return 2;
+        case TYPE_VEC:   return 3;
+        case TYPE_MAP:   return 4;
+        default:         return 0;
+    }
+}
+
 /* ============================ M20 payload runtime ============================ */
 
 static int llvm_has_payload_effects(Type *t) {
@@ -565,8 +748,7 @@ static LLVMValueRef build_baga_substr(void) {
         LLVMConstInt(lg.i64_ty, 0, 0), n0, "n");
     LLVMValueRef n1 = LLVMBuildAdd(lg.builder, n,
         LLVMConstInt(lg.i64_ty, 1, 0), "n1");
-    LLVMValueRef ma[] = { n1 };
-    LLVMValueRef r = h_call(rt_malloc(), ma, 1, "r");
+    LLVMValueRef r = rc_alloc_call(n1, "r");
     LLVMValueRef sa = LLVMBuildGEP2(lg.builder, lg.i8_ty, s, &a, 1, "sa");
     LLVMValueRef mc[] = { r, sa, n };
     h_call(rt_memcpy(), mc, 3, "mc");
@@ -594,8 +776,7 @@ static LLVMValueRef build_baga_concat(void) {
     LLVMValueRef n1 = LLVMBuildAdd(lg.builder,
         LLVMBuildAdd(lg.builder, la, lb, "n"),
         LLVMConstInt(lg.i64_ty, 1, 0), "n1");
-    LLVMValueRef ma[] = { n1 };
-    LLVMValueRef r = h_call(rt_malloc(), ma, 1, "r");
+    LLVMValueRef r = rc_alloc_call(n1, "r");
     LLVMValueRef mc1[] = { r, a, la };
     h_call(rt_memcpy(), mc1, 3, "mc1");
     LLVMValueRef rla = LLVMBuildGEP2(lg.builder, lg.i8_ty, r, &la, 1, "rla");
@@ -632,8 +813,7 @@ static LLVMValueRef build_baga_chr(void) {
     h_begin(fn);
     LLVMValueRef c = LLVMGetParam(fn, 0);
     LLVMValueRef five = LLVMConstInt(lg.i64_ty, 5, 0);
-    LLVMValueRef ma[] = { five };
-    LLVMValueRef r = h_call(rt_malloc(), ma, 1, "r");
+    LLVMValueRef r = rc_alloc_call(five, "r");
 
     LLVMBasicBlockRef b1 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "u1");
     LLVMBasicBlockRef k2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "k2");
@@ -863,7 +1043,7 @@ static LLVMValueRef build_baga_i64_to_str(void) {
         LLVMConstInt(lg.i64_ty, 0, 0), "isng");
     LLVMValueRef tlen = LLVMBuildAdd(lg.builder, c, isng64, "tlen");   /* +1 if negative */
     LLVMValueRef rlen = LLVMBuildAdd(lg.builder, tlen, i1, "rlen");
-    LLVMValueRef res = h_call(rt_malloc(), (LLVMValueRef[]){ rlen }, 1, "res");
+    LLVMValueRef res = rc_alloc_call(rlen, "res");
     LLVMValueRef rp = entry_alloca(lg.i64_ty, "rp");
     LLVMBuildStore(lg.builder, i0, rp);
     LLVMBasicBlockRef mb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "minus");
@@ -907,7 +1087,7 @@ static LLVMValueRef build_baga_f64_to_str(void) {
     h_begin(fn);
     LLVMValueRef x = LLVMGetParam(fn, 0);
     LLVMValueRef i32 = LLVMConstInt(lg.i64_ty, 32, 0);
-    LLVMValueRef r = h_call(rt_malloc(), (LLVMValueRef[]){ i32 }, 1, "r");
+    LLVMValueRef r = rc_alloc_call(i32, "r");
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, "%g", "f64fmt");
     LLVMValueRef args[] = { r, i32, fmt, x };
     LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.snprintf_fn)),
@@ -1402,8 +1582,7 @@ static LLVMValueRef bytes_malloc_n(LLVMValueRef n) {
     LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
     LLVMValueRef cmp = LLVMBuildICmp(lg.builder, LLVMIntSGT, n, one, "nn");
     LLVMValueRef sz = LLVMBuildSelect(lg.builder, cmp, n, one, "sz");
-    LLVMValueRef ma[] = { sz };
-    return h_call(rt_malloc(), ma, 1, "bdata");
+    return rc_alloc_call(sz, "bdata");
 }
 
 static LLVMValueRef build_baga_bytes_len(void) {
@@ -1688,8 +1867,7 @@ static LLVMValueRef build_baga_bytes_to_str(void) {
     LLVMValueRef n = bytes_load_len(a);
     LLVMValueRef one = LLVMConstInt(lg.i64_ty, 1, 0);
     LLVMValueRef sz = LLVMBuildAdd(lg.builder, n, one, "sz");
-    LLVMValueRef ma[] = { sz };
-    LLVMValueRef r = h_call(rt_malloc(), ma, 1, "r");
+    LLVMValueRef r = rc_alloc_call(sz, "r");
     LLVMValueRef data = bytes_load_data(a);
     LLVMValueRef mc[] = { r, data, n };
     h_call(rt_memcpy(), mc, 3, "");
@@ -1768,8 +1946,7 @@ static LLVMValueRef build_baga_hex_encode(void) {
     LLVMValueRef four = LLVMConstInt(lg.i64_ty, 4, 0);
     LLVMValueRef fifteen = LLVMConstInt(lg.i64_ty, 15, 0);
     LLVMValueRef sz = LLVMBuildAdd(lg.builder, LLVMBuildMul(lg.builder, n, two, "s0"), one, "sz");
-    LLVMValueRef ma[] = { sz };
-    LLVMValueRef r = h_call(rt_malloc(), ma, 1, "r");
+    LLVMValueRef r = rc_alloc_call(sz, "r");
     LLVMValueRef hxg = bytes_hex_global();
     LLVMValueRef zidx = LLVMConstInt(lg.i64_ty, 0, 0);
     LLVMValueRef hxarr = LLVMBuildGEP2(lg.builder, LLVMArrayType(lg.i8_ty, 16), hxg,
@@ -1820,8 +1997,7 @@ static LLVMValueRef build_baga_hex_decode(void) {
     LLVMValueRef sla[] = { s };
     LLVMValueRef n = h_call(rt_strlen(), sla, 1, "n");
     LLVMValueRef cap = LLVMBuildAdd(lg.builder, LLVMBuildUDiv(lg.builder, n, two, "c0"), one, "cap");
-    LLVMValueRef ma[] = { cap };
-    LLVMValueRef buf = h_call(rt_malloc(), ma, 1, "buf");
+    LLVMValueRef buf = rc_alloc_call(cap, "buf");
     LLVMValueRef len = entry_alloca(lg.i64_ty, "len");
     LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
     LLVMBuildStore(lg.builder, zero, len);
@@ -1922,8 +2098,7 @@ static LLVMValueRef build_baga_read_file(void) {
     h_call(fseek_fn, se_set, 3, "");
     LLVMValueRef sz1 = LLVMBuildAdd(lg.builder, sz,
         LLVMConstInt(lg.i64_ty, 1, 0), "sz1");
-    LLVMValueRef ma[] = { sz1 };
-    LLVMValueRef buf = h_call(rt_malloc(), ma, 1, "buf");
+    LLVMValueRef buf = rc_alloc_call(sz1, "buf");
     LLVMValueRef ra[] = { buf, LLVMConstInt(lg.i64_ty, 1, 0), sz, f };
     h_call(fread_fn, ra, 4, "rd");
     LLVMValueRef end = LLVMBuildGEP2(lg.builder, lg.i8_ty, buf, &sz, 1, "end");
@@ -3107,6 +3282,15 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_eprintln") == 0)    fn = build_baga_eprintln();
     else if (strcmp(name, "baga_i64_to_str") == 0)  fn = build_baga_i64_to_str();
     else if (strcmp(name, "baga_f64_to_str") == 0)  fn = build_baga_f64_to_str();
+    else if (strcmp(name, "baga_rc_hdr") == 0)      fn = build_baga_rc_hdr();
+    else if (strcmp(name, "baga_rc_alloc") == 0)    fn = build_baga_rc_alloc();
+    else if (strcmp(name, "baga_rc_retain") == 0)   fn = build_baga_rc_retain();
+    else if (strcmp(name, "baga_rc_release_str") == 0)
+        fn = build_baga_rc_release("baga_rc_release_str",
+            "baga: rc underflow (str — двоен release)\n");
+    else if (strcmp(name, "baga_rc_release_bytes") == 0)
+        fn = build_baga_rc_release("baga_rc_release_bytes",
+            "baga: rc underflow (bytes — двоен release)\n");
     else if (strcmp(name, "baga_map_hash_str") == 0) fn = build_baga_map_hash_str();
     else if (strcmp(name, "baga_map_hash_i64") == 0) fn = build_baga_map_hash_i64();
     else if (strcmp(name, "baga_map_hash_bytes") == 0) fn = build_baga_map_hash_bytes();
