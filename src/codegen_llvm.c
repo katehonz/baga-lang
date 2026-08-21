@@ -3376,6 +3376,207 @@ static LLVMValueRef build_baga_vec_concat_box(void) {
     return fn;
 }
 
+/* ---- MEM-1: drop helpers (само не-RC пътя; под --rc drop ≡ release) ----
+ * Порт на baga_drop_* от codegen_c.c:6188-6214. Внимание: без --rc
+ * алокациите са plain malloc БЕЗ header — free(p) директно, никакъв
+ * baga_rc_hdr. elem_size/val_size се пазят само за сигнатурен паритет с C
+ * (libc free не иска размер). */
+
+/* static void baga_drop_str(i8 *p) { free(p); }
+ * checker-ът (checker.c:1835) засега отказва drop върху str — този helper
+ * е defensive, за пълнота на dispatch-а. */
+static LLVMValueRef build_baga_drop_str(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_drop_str",
+        LLVMFunctionType(lg.void_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef ptr = LLVMGetParam(fn, 0);
+    h_call(rt_free(), &ptr, 1, "");
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+/* static void baga_drop_bytes(baga_bytes b) { free(b.data); } */
+static LLVMValueRef build_baga_drop_bytes(void) {
+    LLVMTypeRef p[] = { baga_bytes_ty() };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_drop_bytes",
+        LLVMFunctionType(lg.void_ty, p, 1, 0));
+    h_begin(fn);
+    LLVMValueRef a = bytes_param_alloca(LLVMGetParam(fn, 0));
+    LLVMValueRef d = bytes_load_data(a);
+    h_call(rt_free(), &d, 1, "");
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+/* static void baga_drop_vec(baga_Vec *v, i64 elem_kind, i64 elem_size)
+ * { if (!v) return;
+ *   if (elem_kind == 2) for (i < len) free(v->data[i]);
+ *   if (elem_kind == 3) for (i < len) baga_drop_vec(v->data[i], 0, 0);
+ *   free(v->data); free(v); }
+ * elem_kind: 0 = inline (i64/f64), 1 = str (споделени — не се пипат),
+ * 2 = box (bytes/struct), 3 = вложен Vec. */
+static LLVMValueRef build_baga_drop_vec(void) {
+    LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.i64_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_drop_vec",
+        LLVMFunctionType(lg.void_ty, p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef v = LLVMGetParam(fn, 0);
+    LLVMValueRef ek = LLVMGetParam(fn, 1);
+    LLVMValueRef zero = LLVMConstInt(lg.i64_ty, 0, 0);
+    LLVMBasicBlockRef go_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "go");
+    LLVMBasicBlockRef ret_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ret");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, v, "isn"),
+                    ret_bb, go_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, go_bb);
+    LLVMValueRef data = vec_load_data(v);
+    LLVMValueRef len = vec_load_len(v);
+    LLVMValueRef bi = entry_alloca(lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, zero, bi);
+    LLVMValueRef ni = entry_alloca(lg.i64_ty, "j");
+    LLVMBuildStore(lg.builder, zero, ni);
+    LLVMBasicBlockRef boxc_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "boxc");
+    LLVMBasicBlockRef boxb_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "boxb");
+    LLVMBasicBlockRef nchk_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "nchk");
+    LLVMBasicBlockRef nestc_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "nestc");
+    LLVMBasicBlockRef nestb_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "nestb");
+    LLVMBasicBlockRef fin_bb   = LLVMAppendBasicBlockInContext(lg.ctx, fn, "fin");
+    LLVMValueRef is_box = LLVMBuildICmp(lg.builder, LLVMIntEQ, ek,
+        LLVMConstInt(lg.i64_ty, 2, 0), "isbox");
+    LLVMBuildCondBr(lg.builder, is_box, boxc_bb, nchk_bb);
+
+    /* ek == 2: free на всяко box-нато data[i] */
+    LLVMPositionBuilderAtEnd(lg.builder, boxc_bb);
+    LLVMValueRef i1 = LLVMBuildLoad2(lg.builder, lg.i64_ty, bi, "i");
+    LLVMBuildCondBr(lg.builder, LLVMBuildICmp(lg.builder, LLVMIntSLT, i1, len, "cc"),
+                    boxb_bb, fin_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, boxb_bb);
+    LLVMValueRef e1 = vec_load_at(v, i1);
+    h_call(rt_free(), &e1, 1, "");
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i1,
+        LLVMConstInt(lg.i64_ty, 1, 0), "in"), bi);
+    LLVMBuildBr(lg.builder, boxc_bb);
+
+    /* ek == 3: рекурсивен drop на вложените vec-ове */
+    LLVMPositionBuilderAtEnd(lg.builder, nchk_bb);
+    LLVMValueRef is_nest = LLVMBuildICmp(lg.builder, LLVMIntEQ, ek,
+        LLVMConstInt(lg.i64_ty, 3, 0), "isnest");
+    LLVMBuildCondBr(lg.builder, is_nest, nestc_bb, fin_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, nestc_bb);
+    LLVMValueRef i2 = LLVMBuildLoad2(lg.builder, lg.i64_ty, ni, "j");
+    LLVMBuildCondBr(lg.builder, LLVMBuildICmp(lg.builder, LLVMIntSLT, i2, len, "cc"),
+                    nestb_bb, fin_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, nestb_bb);
+    LLVMValueRef e2 = LLVMBuildBitCast(lg.builder, vec_load_at(v, i2),
+        baga_vec_ptr_ty(), "nv");
+    LLVMValueRef ra[] = { e2, zero, zero };
+    h_call(fn, ra, 3, "");
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i2,
+        LLVMConstInt(lg.i64_ty, 1, 0), "jn"), ni);
+    LLVMBuildBr(lg.builder, nestc_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, fin_bb);
+    LLVMValueRef dr = LLVMBuildBitCast(lg.builder, data, lg.ptr_ty, "dr");
+    h_call(rt_free(), &dr, 1, "");
+    LLVMValueRef vr = LLVMBuildBitCast(lg.builder, v, lg.ptr_ty, "vr");
+    h_call(rt_free(), &vr, 1, "");
+    LLVMBuildBr(lg.builder, ret_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, ret_bb);
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
+/* static void baga_drop_map(baga_Map *m, i64 val_is_box, i64 val_size)
+ * { if (!m) return;
+ *   for (i < nb) { e = b[i]; while (e) { nx = e->next;
+ *     if (val_is_box && e->pv) free(e->pv); free(e); e = nx; } }
+ *   free(b); free(m); }
+ * next се пази ПРЕДИ free — като в C (libc free не презаписва, но редът е
+ * същият за паритет). */
+static LLVMValueRef build_baga_drop_map(void) {
+    LLVMTypeRef p[] = { baga_map_ptr_ty(), lg.i64_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_drop_map",
+        LLVMFunctionType(lg.void_ty, p, 3, 0));
+    h_begin(fn);
+    LLVMValueRef m = LLVMGetParam(fn, 0);
+    LLVMValueRef vib = LLVMGetParam(fn, 1);
+    LLVMBasicBlockRef go_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "go");
+    LLVMBasicBlockRef ret_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ret");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, m, "isn"),
+                    ret_bb, go_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, go_bb);
+    LLVMValueRef b = map_load_b(m);
+    LLVMValueRef nb = map_load_nb(m);
+    LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
+    LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, 0, 0), iv);
+    LLVMValueRef ev = entry_alloca(baga_map_entry_ptr_ty(), "e");
+    LLVMBasicBlockRef oc_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "oc");
+    LLVMBasicBlockRef ob_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "ob");
+    LLVMBasicBlockRef wc_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "wc");
+    LLVMBasicBlockRef wb_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "wb");
+    LLVMBasicBlockRef vchk_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "vchk");
+    LLVMBasicBlockRef pvf_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "pvf");
+    LLVMBasicBlockRef fe_bb  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "fe");
+    LLVMBasicBlockRef inx_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "inx");
+    LLVMBasicBlockRef fin_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "fin");
+    LLVMBuildBr(lg.builder, oc_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, oc_bb);
+    LLVMValueRef i = LLVMBuildLoad2(lg.builder, lg.i64_ty, iv, "i");
+    LLVMBuildCondBr(lg.builder, LLVMBuildICmp(lg.builder, LLVMIntSLT, i, nb, "cc"),
+                    ob_bb, fin_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, ob_bb);
+    LLVMValueRef e0 = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+        LLVMBuildGEP2(lg.builder, baga_map_entry_ptr_ty(), b, &i, 1, "slot"), "e0");
+    LLVMBuildStore(lg.builder, e0, ev);
+    LLVMBuildBr(lg.builder, wc_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, wc_bb);
+    LLVMValueRef e = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(), ev, "e");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, e, "isn"),
+                    inx_bb, wb_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, wb_bb);
+    LLVMValueRef nx = LLVMBuildLoad2(lg.builder, baga_map_entry_ptr_ty(),
+        ent_fld(e, 9, "nxp"), "nx");
+    /* if (val_is_box && e->pv) free(e->pv); */
+    LLVMValueRef has_v = LLVMBuildICmp(lg.builder, LLVMIntNE, vib,
+        LLVMConstInt(lg.i64_ty, 0, 0), "hasv");
+    LLVMBuildCondBr(lg.builder, has_v, vchk_bb, fe_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, vchk_bb);
+    LLVMValueRef pv = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+        ent_fld(e, 8, "pvp"), "pv");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, pv, "pvn"),
+                    fe_bb, pvf_bb);
+    LLVMPositionBuilderAtEnd(lg.builder, pvf_bb);
+    h_call(rt_free(), &pv, 1, "");
+    LLVMBuildBr(lg.builder, fe_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, fe_bb);
+    LLVMValueRef er = LLVMBuildBitCast(lg.builder, e, lg.ptr_ty, "er");
+    h_call(rt_free(), &er, 1, "");
+    LLVMBuildStore(lg.builder, nx, ev);
+    LLVMBuildBr(lg.builder, wc_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, inx_bb);
+    LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i,
+        LLVMConstInt(lg.i64_ty, 1, 0), "in"), iv);
+    LLVMBuildBr(lg.builder, oc_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, fin_bb);
+    LLVMValueRef br_ = LLVMBuildBitCast(lg.builder, b, lg.ptr_ty, "br");
+    h_call(rt_free(), &br_, 1, "");
+    LLVMValueRef mr = LLVMBuildBitCast(lg.builder, m, lg.ptr_ty, "mr");
+    h_call(rt_free(), &mr, 1, "");
+    LLVMBuildBr(lg.builder, ret_bb);
+
+    LLVMPositionBuilderAtEnd(lg.builder, ret_bb);
+    LLVMBuildRetVoid(lg.builder);
+    return fn;
+}
+
 /* lazy dispatcher: връща helper-а, генерирайки тялото му при първа употреба */
 static LLVMValueRef baga_rt(const char *name) {
     LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, name);
@@ -3450,6 +3651,10 @@ static LLVMValueRef baga_rt(const char *name) {
     else if (strcmp(name, "baga_rc_release_bytes") == 0)
         fn = build_baga_rc_release("baga_rc_release_bytes",
             "baga: rc underflow (bytes — двоен release)\n");
+    else if (strcmp(name, "baga_drop_str") == 0)   fn = build_baga_drop_str();
+    else if (strcmp(name, "baga_drop_bytes") == 0) fn = build_baga_drop_bytes();
+    else if (strcmp(name, "baga_drop_vec") == 0)   fn = build_baga_drop_vec();
+    else if (strcmp(name, "baga_drop_map") == 0)   fn = build_baga_drop_map();
     else if (strcmp(name, "baga_map_hash_str") == 0) fn = build_baga_map_hash_str();
     else if (strcmp(name, "baga_map_hash_i64") == 0) fn = build_baga_map_hash_i64();
     else if (strcmp(name, "baga_map_hash_bytes") == 0) fn = build_baga_map_hash_bytes();
@@ -4003,6 +4208,71 @@ static LLVMValueRef emit_match_llvm(Node *n) {
     return r;
 }
 
+/* MEM-1/Task 4: drop(x) — огледало на codegen_c.c:2141-2243.
+ * Под --rc: drop ≡ release + bindingът умира (scope exit вече не го
+ * release-ва — иначе underflow). Втори drop върху dead binding е
+ * compile-time грешка — по-строго от runtime underflow (checker-ът я
+ * хваща пръв; това е втори пояс). Без --rc: baga_drop_* (plain free —
+ * алокациите са malloc БЕЗ header, никакъв baga_rc_hdr). */
+static void lrc_emit_drop(Node *n) {
+    if (n->args.len != 1 || n->args.data[0]->kind != NODE_IDENT)
+        llvm_unsupported("drop приема единствено име на локална");
+    Node *id = n->args.data[0];
+    Type *at = id->type;
+    if (lg.rc) {
+        int di = lrc_find(id->name);
+        if (di < 0)
+            llvm_unsupported("drop на не-track-нато име (не-heap тип?)");
+        LLRcLocal *l = &lg.lrc_locals[di];
+        if (l->is_param)
+            llvm_unsupported("drop на параметър — споделен буфер на извикващия");
+        if (l->dead)
+            llvm_unsupported("drop на вече drop-нат binding");
+        lrc_emit_release(l);
+        l->dead = 1;
+        return;
+    }
+    if (!at) llvm_unsupported("drop с неизвестен тип");
+    LLVMValueRef v = emit_expr_llvm(id);
+    if (!v) llvm_unsupported("drop аргумент");
+    if (at->kind == TYPE_STR) {
+        h_call(baga_rt("baga_drop_str"), &v, 1, "");
+    } else if (at->kind == TYPE_BYTES) {
+        h_call(baga_rt("baga_drop_bytes"), &v, 1, "");
+    } else if (at->kind == TYPE_VEC) {
+        /* elem_kind като в codegen_c: struct/enum/bytes → box (2),
+         * вложен Vec → 3, str → 1 (споделени — не се пипат), иначе 0 */
+        int ek = 0;
+        LLVMValueRef esz = LLVMConstInt(lg.i64_ty, 0, 0);
+        if (at->elem && at->elem->name &&
+            (at->elem->kind == TYPE_STRUCT || at->elem->kind == TYPE_ENUM)) {
+            ek = 2;
+            esz = LLVMSizeOf(user_struct_ty(at->elem->name));
+        } else if (at->elem && at->elem->kind == TYPE_BYTES) {
+            ek = 2;
+            esz = LLVMSizeOf(baga_bytes_ty());
+        } else if (at->elem && at->elem->kind == TYPE_VEC) {
+            ek = 3;
+        } else if (at->elem && at->elem->kind == TYPE_STR) {
+            ek = 1;
+        }
+        LLVMValueRef pa[] = { v, LLVMConstInt(lg.i64_ty, (uint64_t)ek, 0), esz };
+        h_call(baga_rt("baga_drop_vec"), pa, 3, "");
+    } else if (at->kind == TYPE_MAP) {
+        int vb = 0;
+        LLVMValueRef vsz = LLVMConstInt(lg.i64_ty, 0, 0);
+        if (at->elem && at->elem->name &&
+            (at->elem->kind == TYPE_STRUCT || at->elem->kind == TYPE_ENUM)) {
+            vb = 1;
+            vsz = LLVMSizeOf(user_struct_ty(at->elem->name));
+        }
+        LLVMValueRef pa[] = { v, LLVMConstInt(lg.i64_ty, (uint64_t)vb, 0), vsz };
+        h_call(baga_rt("baga_drop_map"), pa, 3, "");
+    } else {
+        llvm_unsupported("drop върху не-heap тип (не str/bytes/Vec/Map)");
+    }
+}
+
 static LLVMValueRef emit_expr_llvm(Node *n) {
     if (!n) llvm_unsupported("празен израз");
 
@@ -4515,9 +4785,13 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 fn = LLVMGetNamedFunction(lg.mod, m);
                 free(m);
             }
-            /* MEM-1: drop е само за C бекенда; user fn 'drop' е намерена по-горе */
-            if (!fn && strcmp(n->callee->name, "drop") == 0)
-                llvm_unsupported("drop — само C бекенда; вж. docs/language-en.md");
+            /* MEM-1: drop(x) builtin. user fn 'drop' е resolve-ната по-горе
+             * (fn != NULL), затова тук drop е винаги builtin-ът — огледало на
+             * checker guard-а (checker.c:1822). */
+            if (!fn && strcmp(n->callee->name, "drop") == 0) {
+                lrc_emit_drop(n);
+                return NULL;  /* drop е statement-израз без стойност */
+            }
             /* MEM-4: mark/rewind/persist работят върху bump arena-та, която
              * съществува само в C бекенда (LLVM runtime-ът е plain malloc) */
             if (!fn && (strcmp(n->callee->name, "mem_mark") == 0 ||

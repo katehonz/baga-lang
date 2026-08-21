@@ -1,0 +1,12 @@
+// drop_llvm_test — Task 4: drop() в LLVM бекенда (RC паритет).
+// drop върху bytes (под --rc: tag 2 release; без --rc: free на data) и
+// върху Vec (под --rc: tag 3 release — no-op до Task 5; без --rc: deep free).
+// Заб.: checker-ът допуска drop само за Vec/Map/bytes/fn — не и за str.
+fn main() {
+    let b = bytes_of_str("жив")
+    let v: Vec<i64> = vec_new()
+    vec_push(v, 1)
+    drop(b)
+    drop(v)
+    print("ok drop")
+}
