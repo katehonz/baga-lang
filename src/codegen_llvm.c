@@ -28,6 +28,11 @@
  *  е compile-time грешка (llvm_unsupported), не константа 0.
  * ============================================================ */
 
+/* RC-LLVM: scope tracking — огледало на RcLocal/RcScope (baga.h:546-555).
+ * Активно само при lg.rc. Статични масиви, както LLVMSymtab. */
+typedef struct { const char *name; int tag; Type *type; int is_param; int dead; } LLRcLocal;
+typedef struct { int top; int is_loop; } LLRcScope;
+
 typedef struct {
     LLVMContextRef ctx;
     LLVMModuleRef mod;
@@ -56,6 +61,12 @@ typedef struct {
     int   gen_inst;
     Checker *chk;
     int   rc;             /* --rc: RC паметов модел (паритет с C бекенда) */
+    /* RC-LLVM scope стек: локали + scope граници на текущата функция */
+    LLRcLocal lrc_locals[256];
+    int   lrc_count;
+    LLRcScope lrc_scopes[64];
+    int   lrc_depth;
+    int   lrc_fn_base;    /* индекс на scope-а на текущата функция */
     /* M20: effect payload runtime */
     VEC(char *) eff_tags;   /* tag регистър (име → индекс+1) */
     int   eff_depth;        /* >0 = вътре в catch верига (TRY е no-op) */
@@ -618,8 +629,7 @@ static LLVMValueRef rc_alloc_call(LLVMValueRef nbytes, const char *name) {
 }
 
 /* порт на rc_type_tag (codegen_c.c:97): 1=str, 2=bytes, 3=Vec, 4=Map,
- * 0=не-heap. Task 2 още не го ползва — за Task 3+ (retain/release сайтове). */
-__attribute__((unused))
+ * 0=не-heap. Task 3 го ползва за track/retain/release сайтовете. */
 static int lrc_type_tag(Type *t) {
     if (!t) return 0;
     switch (t->kind) {
@@ -630,6 +640,143 @@ static int lrc_type_tag(Type *t) {
         default:         return 0;
     }
 }
+
+/* --------------------- RC-LLVM: scope tracking ---------------------
+ * Огледало на rc_push_scope/rc_pop_scope/rc_release_all/
+ * rc_release_to_loop (codegen_c.c:560-603), но върху статичните
+ * масиви в lg: alloca-та се намират с st_lookup по име, release/retain
+ * са IR повиквания към helper-ите от Task 2. Активно само при lg.rc —
+ * без --rc нито една от тези функции не emit-ва IR. */
+
+/* индекс на track-нат локал по име (-1 = няма); търси от върха надолу —
+ * вътрешното засенчване печели (като rc_find в codegen_c) */
+static int lrc_find(const char *name) {
+    if (!lg.rc) return -1;
+    for (int i = lg.lrc_count - 1; i >= 0; i--)
+        if (strcmp(lg.lrc_locals[i].name, name) == 0) return i;
+    return -1;
+}
+
+/* регистрира локал с вече изчислен tag (0 → не се track-ва) */
+static void lrc_track_tag(const char *name, int tag, Type *t, int is_param) {
+    if (!lg.rc || !tag) return;
+    if (lg.lrc_count >= 256)
+        llvm_unsupported("прекалено много RC локали в една функция");
+    lg.lrc_locals[lg.lrc_count++] = (LLRcLocal){ name, tag, t, is_param, 0 };
+}
+
+/* track-ва само heap локали (tag ∈ {1..4}); type NULL → не се track-ва */
+static void lrc_track(const char *name, Type *t, int is_param) {
+    if (!t) return;
+    lrc_track_tag(name, lrc_type_tag(t), t, is_param);
+}
+
+/* tag от анотационен type възел — за fn параметрите (като rc_heap_tag_node,
+ * но само str/bytes/Vec/Map; struct/enum идват с Task 6) */
+static int lrc_tag_node(Node *tn) {
+    while (tn && (tn->kind == NODE_TYPE_EFFECT || tn->kind == NODE_TYPE_REF))
+        tn = tn->inner_type;
+    if (!tn || tn->kind != NODE_TYPE || !tn->type_name) return 0;
+    if (strcmp(tn->type_name, "str") == 0)   return 1;
+    if (strcmp(tn->type_name, "bytes") == 0) return 2;
+    if (strcmp(tn->type_name, "Vec") == 0)   return 3;
+    if (strcmp(tn->type_name, "Map") == 0)   return 4;
+    return 0;
+}
+
+/* едно release повикване: зарежда стойността от alloca-та и вика
+ * baga_rc_release_str/bytes. Vec/Map (tag 3/4) — тих no-op до Task 5:
+ * стойността просто няма да се free-ва (leak в безопасна посока). */
+static void lrc_emit_release(LLRcLocal *l) {
+    LLVMValueRef alloca = st_lookup(l->name);
+    if (!alloca) return;
+    LLVMValueRef p;
+    const char *rt;
+    if (l->tag == 1) {
+        p = LLVMBuildLoad2(lg.builder, lg.ptr_ty, alloca, "rcr");
+        rt = "baga_rc_release_str";
+    } else if (l->tag == 2) {
+        /* bytes е { i8* data, i64 len } by value — release-ва се data */
+        p = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
+            LLVMBuildStructGEP2(lg.builder, baga_bytes_ty(), alloca, 0, "rcbp"),
+            "rcbd");
+        rt = "baga_rc_release_bytes";
+    } else {
+        return;   /* tag 3/4 (Vec/Map) — Task 5 */
+    }
+    h_call(baga_rt(rt), &p, 1, "");
+}
+
+/* retain върху вече изчислена стойност (alias копие: let x = y / x = y).
+ * tag 3/4 — no-op до Task 5. */
+static void lrc_emit_retain_val(int tag, LLVMValueRef val) {
+    LLVMValueRef p;
+    if (tag == 1)      p = val;
+    else if (tag == 2) p = LLVMBuildExtractValue(lg.builder, val, 0, "rcbd");
+    else               return;   /* tag 3/4 (Vec/Map) — Task 5 */
+    h_call(baga_rt("baga_rc_retain"), &p, 1, "rcr");
+}
+
+static void lrc_push_scope(int is_loop) {
+    if (!lg.rc) return;
+    if (lg.lrc_depth >= 64)
+        llvm_unsupported("прекалено дълбока RC scope вложеност");
+    lg.lrc_scopes[lg.lrc_depth++] = (LLRcScope){ lg.lrc_count, is_loop };
+}
+
+/* край на блок: release на локалите над top в обратен ред (без params/dead),
+ * после pop. Ако блокът вече има terminator (return/break/continue са
+ * release-нали по пътя) — само pop, без дублиране. */
+static void lrc_pop_scope(void) {
+    if (!lg.rc) return;
+    LLRcScope sc = lg.lrc_scopes[--lg.lrc_depth];
+    if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
+        for (int i = lg.lrc_count - 1; i >= sc.top; i--) {
+            LLRcLocal *l = &lg.lrc_locals[i];
+            if (!l->is_param && !l->dead) lrc_emit_release(l);
+        }
+    }
+    lg.lrc_count = sc.top;
+}
+
+/* return: release на всички локали над fn scope-а (без params/dead);
+ * skip_idx = returned стойността (move — собствеността отива при caller-а).
+ * Пропускът е по ИНДЕКС, не чрез dead флага: dead е compile-time състояние,
+ * споделено между пътищата, и би „изтрило" локала и на другите пътища
+ * (първият emit-нат return печели) — rc_release_all в codegen_c работи
+ * по същия начин (skip_idx). Scope-овете НЕ се попват — функцията
+ * приключва; следващата fn emission reset-ва. */
+static void lrc_release_all(int skip_idx) {
+    if (!lg.rc) return;
+    int base = lg.lrc_fn_base >= 0 && lg.lrc_fn_base < lg.lrc_depth
+        ? lg.lrc_scopes[lg.lrc_fn_base].top : 0;
+    for (int i = lg.lrc_count - 1; i >= base; i--) {
+        LLRcLocal *l = &lg.lrc_locals[i];
+        if (l->is_param || l->dead || i == skip_idx) continue;
+        lrc_emit_release(l);
+    }
+}
+
+/* break/continue: release на локалите до най-близкия loop scope (вкл. него —
+ * нормалният му release в края на тялото се прескача от скока). Само
+ * emission: lrc_depth/lrc_count не се пипат, защото LLVM продължава линейно;
+ * блокът получава terminator (br) и lrc_pop_scope няма да дублира. */
+static void lrc_release_to_loop(void) {
+    if (!lg.rc) return;
+    for (int i = lg.lrc_depth - 1; i >= 0; i--) {
+        if (!lg.lrc_scopes[i].is_loop) continue;
+        int top = lg.lrc_scopes[i].top;
+        for (int j = lg.lrc_count - 1; j >= top; j--) {
+            LLRcLocal *l = &lg.lrc_locals[j];
+            if (!l->is_param && !l->dead) lrc_emit_release(l);
+        }
+        return;
+    }
+}
+
+/* NODE_WHILE/NODE_FOR вдигат този флаг преди emit_block_llvm на тялото —
+ * следващият lrc_push_scope е loop scope (прочита се в emit_block_llvm). */
+static int lrc_loop_next;
 
 /* ============================ M20 payload runtime ============================ */
 
@@ -3476,6 +3623,13 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(lg.ctx, fn, "entry");
     LLVMPositionBuilderAtEnd(lg.builder, entry);
     st_push();
+    /* RC: wrapper-ът на ламбдата е отделна функция — собствен fn scope
+     * (като codegen_c); външният RC стек се пази и възстановява след тялото */
+    int saved_lrc_count = lg.lrc_count;
+    int saved_lrc_depth = lg.lrc_depth;
+    int saved_lrc_fn_base = lg.lrc_fn_base;
+    lrc_push_scope(0);
+    lg.lrc_fn_base = lg.lrc_depth - 1;
 
     /* captures → локални копия от env */
     if (n->captures.len > 0) {
@@ -3490,6 +3644,8 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
             LLVMValueRef alloca = LLVMBuildAlloca(lg.builder, ct, cap->param_name);
             LLVMBuildStore(lg.builder, v, alloca);
             st_define(cap->param_name, alloca);
+            /* RC: capture-ите са borrowed (като в codegen_c) */
+            lrc_track(cap->param_name, cap->type, 1);
         }
     }
     /* параметри → alloca (като emit_fn_llvm) */
@@ -3500,6 +3656,7 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
             p->param_name);
         LLVMBuildStore(lg.builder, param, alloca);
         st_define(p->param_name, alloca);
+        lrc_track_tag(p->param_name, lrc_tag_node(p->param_type), p->type, 1);
     }
     /* тяло — огледало на emit_fn_llvm опашката */
     int has_ret = n->ret_type != NULL;
@@ -3518,6 +3675,11 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
             emit_stmt_llvm(s, NULL, NULL);
         }
     }
+    /* RC: край на lambda scope-а + възстановяване на външния RC стек */
+    lrc_pop_scope();
+    lg.lrc_count = saved_lrc_count;
+    lg.lrc_depth = saved_lrc_depth;
+    lg.lrc_fn_base = saved_lrc_fn_base;
     st_pop();
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
         if (ret == lg.void_ty) LLVMBuildRetVoid(lg.builder);
@@ -4392,6 +4554,15 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             LLVMValueRef v = emit_expr_llvm(n->assign_val);
             if (!v) llvm_unsupported("print в присвояване");
             v = coerce(v, LLVMGetAllocatedType(alloca));
+            /* RC: overwrite на track-нат локал — retain на новото (при alias
+             * от IDENT) ПРЕДИ release на старото: alias-safe редът на
+             * codegen_c (`x = x` не обесва стойността). Params/dead — не. */
+            int ai = lg.rc ? lrc_find(n->assign_target->name) : -1;
+            if (ai >= 0 && !lg.lrc_locals[ai].is_param && !lg.lrc_locals[ai].dead) {
+                if (n->assign_val->kind == NODE_IDENT)
+                    lrc_emit_retain_val(lg.lrc_locals[ai].tag, v);
+                lrc_emit_release(&lg.lrc_locals[ai]);
+            }
             LLVMBuildStore(lg.builder, v, alloca);
             return v;
         }
@@ -4766,12 +4937,15 @@ static void emit_block_llvm(Node *block, LLVMBasicBlockRef break_bb, LLVMBasicBl
     if (block->kind != NODE_BLOCK)
         llvm_unsupported("тяло, което не е блок");
     st_push();
+    lrc_push_scope(lrc_loop_next);
+    lrc_loop_next = 0;
     for (int i = 0; i < block->stmts.len; i++) {
         /* мъртъв код след terminator — както gcc след return */
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
             break;
         emit_stmt_llvm(block->stmts.data[i], break_bb, cont_bb);
     }
+    lrc_pop_scope();
     st_pop();
 }
 
@@ -4790,9 +4964,23 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             if (n->let_init) {
                 LLVMValueRef val = emit_expr_llvm(n->let_init);
                 if (!val) llvm_unsupported("print като стойност на let");
-                LLVMBuildStore(lg.builder, coerce(val, ty), alloca);
+                val = coerce(val, ty);
+                /* RC: alias (let x = y) → retain преди store; свежата
+                 * конструкция идва с rc=1 от alloc — без retain */
+                if (lg.rc && n->let_init->kind == NODE_IDENT)
+                    lrc_emit_retain_val(lrc_type_tag(n->let_init->type), val);
+                LLVMBuildStore(lg.builder, val, alloca);
             }
             st_define(n->let_name, alloca);
+            /* RC: tag от init типа; fallback към анотацията (`let v: Vec<str>
+             * = vec_new()` — inferred типът няма elem информация, но kind
+             * стига за tag-а). Като rc_heap_tag + rc_heap_tag_node в C. */
+            if (lg.rc) {
+                int ltag = n->let_init ? lrc_type_tag(n->let_init->type) : 0;
+                if (!ltag && n->let_type) ltag = lrc_tag_node(n->let_type);
+                lrc_track_tag(n->let_name, ltag,
+                              n->let_init ? n->let_init->type : NULL, 0);
+            }
             break;
         }
 
@@ -4800,10 +4988,23 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             if (n->ret_val) {
                 LLVMValueRef val = emit_expr_llvm(n->ret_val);
                 if (!val) llvm_unsupported("print като return стойност");
-                LLVMBuildRet(lg.builder, coerce(val, lg.cur_ret_ty));
+                val = coerce(val, lg.cur_ret_ty);
+                if (lg.rc) {
+                    /* return на heap локал е MOVE: подаваме индекса му на
+                     * release_all — той се пропуска, останалите се release-ват.
+                     * Return на ПАРАМЕТЪР: borrowed референцията става owned
+                     * при caller-а → retain (codegen_c.c:3739-3755). */
+                    int ri = n->ret_val->kind == NODE_IDENT
+                        ? lrc_find(n->ret_val->name) : -1;
+                    if (ri >= 0 && lg.lrc_locals[ri].is_param)
+                        lrc_emit_retain_val(lg.lrc_locals[ri].tag, val);
+                    lrc_release_all(ri);
+                }
+                LLVMBuildRet(lg.builder, val);
             } else {
                 if (lg.cur_ret_ty != lg.void_ty)
                     llvm_unsupported("return без стойност в не-void функция");
+                lrc_release_all(-1);
                 LLVMBuildRetVoid(lg.builder);
             }
             break;
@@ -4845,6 +5046,7 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             LLVMBuildCondBr(lg.builder, cond, body_bb, end_bb);
 
             LLVMPositionBuilderAtEnd(lg.builder, body_bb);
+            lrc_loop_next = 1;   /* тялото на while е loop scope (break/continue) */
             emit_block_llvm(n->while_body, end_bb, cond_bb);
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
                 LLVMBuildBr(lg.builder, cond_bb);
@@ -4893,6 +5095,7 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             LLVMBuildCondBr(lg.builder, cond, body_bb, end_bb);
 
             LLVMPositionBuilderAtEnd(lg.builder, body_bb);
+            lrc_loop_next = 1;   /* тялото на for е loop scope (break/continue) */
             emit_block_llvm(n->for_body, end_bb, incr_bb);
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
                 LLVMBuildBr(lg.builder, incr_bb);
@@ -4923,11 +5126,14 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
 
         case NODE_BREAK:
             if (!break_bb) llvm_unsupported("break извън цикъл");
+            /* RC: release на напуснатите scope-ове до loop тялото преди скока */
+            lrc_release_to_loop();
             LLVMBuildBr(lg.builder, break_bb);
             break;
 
         case NODE_CONTINUE:
             if (!cont_bb) llvm_unsupported("continue извън цикъл");
+            lrc_release_to_loop();
             LLVMBuildBr(lg.builder, cont_bb);
             break;
 
@@ -5084,6 +5290,11 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
 
     st_reset();
     st_push();
+    /* RC: нова функция — чист RC стек; scope 0 е scope-ът на функцията */
+    lg.lrc_count = 0;
+    lg.lrc_depth = 0;
+    lrc_push_scope(0);
+    lg.lrc_fn_base = 0;
 
     /* alloca за параметрите (за променливост) */
     for (int i = 0; i < fn->params.len; i++) {
@@ -5094,6 +5305,11 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
         LLVMBuildStore(lg.builder, param, alloca);
         free(pm);
         st_define(fn->params.data[i]->param_name, alloca);
+        /* RC: параметрите са borrowed (is_param=1) — track-ват се (за retain
+         * при alias/move проверки), но не се release-ват */
+        lrc_track_tag(fn->params.data[i]->param_name,
+                      lrc_tag_node(fn->params.data[i]->param_type),
+                      fn->params.data[i]->type, 1);
     }
 
     /* тялото; последният EXPR_STMT в не-void функция е неявен return
@@ -5116,6 +5332,9 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
         }
     }
 
+    /* RC: край на fn scope-а — release на останалите локали при fall-through
+     * (при explicit return блокът има terminator и това е само pop) */
+    lrc_pop_scope();
     st_pop();
 
     /* implicit return ако няма terminator */
@@ -5144,6 +5363,12 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
 
     st_reset();
     st_push();
+    /* RC: wrapper-ът е отделна функция — чист RC стек (тялото му не
+     * дефинира heap локали; push/pop само за консистентност) */
+    lg.lrc_count = 0;
+    lg.lrc_depth = 0;
+    lrc_push_scope(0);
+    lg.lrc_fn_base = 0;
 
     /* параметрите на wrapper-а са spec input-ите (като в codegen_c) */
     int np = spec->spec_inputs.len;
@@ -5194,6 +5419,7 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
         LLVMBuildRetVoid(lg.builder);
     }
     free(args);
+    lrc_pop_scope();
     st_pop();
 }
 
