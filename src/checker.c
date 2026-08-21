@@ -234,6 +234,8 @@ struct EnvEntry {
     int is_param;     /* параметър — буферът е на извикващия, drop забранен */
     int captured;     /* заснет от ламбда — drop би оставил висящ указател */
     int scope_depth;  /* ctx->depth при дефиницията (за loop-правилото) */
+    int is_arena;     /* let a = arena_new() — MEM-3 handle */
+    SrcPos pos;       /* позиция на let (за leak предупреждения) */
     /* MEM-3: region — EnvEntry of arena handle that produced this local
      * via arena_alloc (NULL = not arena-allocated / unknown). Freeing the
      * arena marks all locals with region==that entry as dropped. */
@@ -348,6 +350,7 @@ static void subst_restore(CheckCtx *ctx, char **sn, Type **st, int n) {
 static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call);
 static void check_fn(CheckCtx *ctx, Node *fn);
 static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
+static void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
 static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
                              char **tps, int np, Type **bind,
                              SrcPos pos, const char *fnname);
@@ -409,6 +412,41 @@ static void check_error(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
     if (ctx->chk->n_errors >= 2 &&
         strcmp(ctx->chk->errors[ctx->chk->n_errors - 2], e) == 0)
         ctx->chk->n_errors--;
+}
+
+/* MEM-3: предупреждение — не спира компилацията (за разлика от check_error). */
+static void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...) {
+    if (ctx->chk->n_warnings >= BAGA_MAX_ERRORS) return;
+    char *e = ctx->chk->warnings[ctx->chk->n_warnings++];
+    int off = snprintf(e, 256, "%d:%d: предупреждение: ", pos.line, pos.col);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(e + off, 256 - (size_t)off, fmt, ap);
+    va_end(ap);
+    if (ctx->chk->n_warnings >= 2 &&
+        strcmp(ctx->chk->warnings[ctx->chk->n_warnings - 2], e) == 0)
+        ctx->chk->n_warnings--;
+}
+
+static int type_is_drop_owned(Type *t) {
+    return t && (t->kind == TYPE_VEC || t->kind == TYPE_MAP ||
+                 t->kind == TYPE_BYTES || t->kind == TYPE_FN);
+}
+
+/* Scope-exit leak scan. skip_name — ident, върнат от функцията (move, не leak). */
+static void leak_scan_scope(CheckCtx *ctx, const char *skip_name) {
+    if (!ctx->chk || !ctx->chk->warn_leaks || ctx->depth <= 0) return;
+    EnvScope *s = &ctx->scopes[ctx->depth - 1];
+    for (int i = 0; i < s->count; i++) {
+        EnvEntry *e = &s->entries[i];
+        if (e->is_param || e->dropped) continue;
+        if (skip_name && e->name && strcmp(e->name, skip_name) == 0) continue;
+        if (type_is_drop_owned(e->type))
+            check_warn(ctx, e->pos, "изтичане: '%s' излиза от scope без drop", e->name);
+        else if (e->is_arena)
+            check_warn(ctx, e->pos,
+                "изтичане: арена '%s' излиза от scope без arena_free", e->name);
+    }
 }
 
 /* Map a type AST node to a Type */
@@ -644,8 +682,13 @@ static void push_scope(CheckCtx *ctx) {
     }
 }
 
-static void pop_scope(CheckCtx *ctx) {
+static void pop_scope_skip(CheckCtx *ctx, const char *skip_name) {
+    leak_scan_scope(ctx, skip_name);
     if (ctx->depth > 0) ctx->depth--;
+}
+
+static void pop_scope(CheckCtx *ctx) {
+    pop_scope_skip(ctx, NULL);
 }
 
 static void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) {
@@ -665,6 +708,8 @@ static void env_define(CheckCtx *ctx, const char *name, Type *type, SrcPos pos) 
         s->entries[s->count].is_param = 0;
         s->entries[s->count].captured = 0;
         s->entries[s->count].scope_depth = ctx->depth;
+        s->entries[s->count].is_arena = 0;
+        s->entries[s->count].pos = pos;
         s->entries[s->count].region = NULL;
         s->count++;
     }
@@ -687,6 +732,8 @@ static void env_define_mut(CheckCtx *ctx, const char *name, Type *type, int is_m
         s->entries[s->count].is_param = 0;
         s->entries[s->count].captured = 0;
         s->entries[s->count].scope_depth = ctx->depth;
+        s->entries[s->count].is_arena = 0;
+        s->entries[s->count].pos = pos;
         s->entries[s->count].region = NULL;
         s->count++;
     }
@@ -2637,6 +2684,13 @@ static Type *infer(CheckCtx *ctx, Node *n) {
                 EnvEntry *ae = env_find(ctx, n->let_init->args.data[0]->name);
                 if (pe && ae) pe->region = ae;
             }
+            /* MEM-3: let a = arena_new() — handle за leak scan */
+            if (n->let_init && n->let_init->kind == NODE_CALL &&
+                n->let_init->callee && n->let_init->callee->kind == NODE_IDENT &&
+                strcmp(n->let_init->callee->name, "arena_new") == 0) {
+                EnvEntry *pe = env_find(ctx, n->let_name);
+                if (pe) pe->is_arena = 1;
+            }
             t = type_new(TYPE_VOID);
             break;
         }
@@ -3360,7 +3414,19 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
         }
     }
 
-    pop_scope(ctx);
+    /* MEM-3: ident, върнат от последния return/implicit return, не тече
+     * (собствеността излиза към caller-а). */
+    {
+        const char *skip = NULL;
+        if (fn->fn_body && fn->fn_body->stmts.len > 0) {
+            Node *last = fn->fn_body->stmts.data[fn->fn_body->stmts.len - 1];
+            Node *ve = NULL;
+            if (last->kind == NODE_RETURN && last->ret_val) ve = last->ret_val;
+            else if (last->kind == NODE_EXPR_STMT) ve = last->expr;
+            if (ve && ve->kind == NODE_IDENT) skip = ve->name;
+        }
+        pop_scope_skip(ctx, skip);
+    }
     ctx->cur_fn = NULL;
     ctx->cur_ret = NULL;
     ctx->cur_effects = NULL;

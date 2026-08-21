@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### parser — гол `{ }` блок на statement ниво
+- `{ print("x") }` вече е statement блок, не EXPR_STMT около израз.
+  Преди C гълташе print-овете (`0 /* unhandled expr 11 */`), LLVM отказваше
+  с AST възел #11. Блок като стойност (`let n = { 1 }`) работи и в двата
+  бекенда. Gate: `tests/block_stmt_test.baga`.
+
+### checker — MEM-3 leak предупреждения (`--warn-leaks`)
+- Нов severity „предупреждение" (не спира компилацията). Под `--warn-leaks`
+  `Vec`/`Map`/`bytes`/`fn` без `drop` и `arena_new` без `arena_free` при
+  изход от scope се диагностицират; върнат ident не е теч. Без флага
+  поведението е непроменено. Gate: `scripts/run_tests.sh` MEM-3 leak probes.
+
+### runtime — C `--rc`: heap let в block catch handler
+- `let h = …` вътре в `{ … }` catch handler вече има собствен RC scope
+  в GNU stmt-expr-а (`emit_catch_handler_block`). Преди release-ът се
+  емитваше в enclosing fn → gcc `'b_h2' undeclared`. Последният IDENT
+  от handler-локалите е move към catch резултата (като LLVM). Без `--rc`
+  emit-c е непроменен. Gate: `tests/catch_rc_test.baga`.
+
 ### LLVM backend — `drop` + `--rc` refcounting паритет с C бекенда
 - `--emit-llvm --rc` вече дава същия RC модел като C бекенда: scope
   release, retain при alias, move при return, транзитивен release за

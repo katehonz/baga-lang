@@ -1859,6 +1859,53 @@ static void emit_print(Codegen *cg, Node *n) {
     }
 }
 
+/* Блок като стойност (GNU stmt-expr): catch handler, `let x = { … }`.
+ * RC: собствен scope — heap let-овете се release-ват ВЪТРЕ в ({ }),
+ * не в enclosing fn (иначе gcc: 'b_h2' undeclared). Последният IDENT
+ * от handler-локалите е move към резултата — като LLVM
+ * emit_block_value_llvm. Без --rc изходът е бит-идентичен. */
+static void emit_catch_handler_block(Codegen *cg, Node *hb, Type *ty) {
+    FILE *f = cg->out;
+    fprintf(f, "({ ");
+    rc_push_scope(cg, 0);
+    int scope_top = (cg->rc && cg->rc_scopes.len > 0)
+        ? cg->rc_scopes.data[cg->rc_scopes.len - 1].top : 0;
+    Node *ve = NULL;
+    for (int si = 0; si < hb->stmts.len; si++) {
+        Node *s = hb->stmts.data[si];
+        if (si == hb->stmts.len - 1) {
+            /* последният stmt е СТОЙНОСТТА на handler-а
+             * (implicit return семантика) */
+            if (s->kind == NODE_EXPR_STMT) ve = s->expr;
+            else if (s->kind == NODE_RETURN && s->ret_val) ve = s->ret_val;
+            else emit_stmt(cg, s);
+        } else {
+            emit_stmt(cg, s);
+        }
+    }
+    if (ve) {
+        if (cg->rc) {
+            /* GNU stmt-expr стойността трябва да остане след scope
+             * release-ите — качваме я в __hv, после pop, после __hv. */
+            if (ty) emit_ctype(cg, ty); else fprintf(f, "int64_t");
+            fprintf(f, " __hv = ");
+            emit_expr(cg, ve);
+            fprintf(f, "; ");
+            if (ve->kind == NODE_IDENT) {
+                int vi = rc_find(cg, ve->name);
+                if (vi >= scope_top && !cg->rc_locals.data[vi].is_param)
+                    cg->rc_locals.data[vi].dead = 1;
+            }
+        } else {
+            emit_expr(cg, ve);
+            fprintf(f, "; ");
+        }
+    }
+    rc_pop_scope(cg);
+    if (ve && cg->rc) fprintf(f, "__hv; ");
+    fprintf(f, " })");
+}
+
 static void emit_expr(Codegen *cg, Node *n) {
     FILE *f = cg->out;
     if (!n) return;
@@ -3292,64 +3339,20 @@ static void emit_expr(Codegen *cg, Node *n) {
                         cg->eff_binding = scan->catch_binding;
                         cg->eff_binding_c = bm;
                         fprintf(f, "__e%d = ", tid);
-                        if (scan->catch_handler->kind == NODE_BLOCK) {
-                            /* блок-хендлър: statement-и + стойността на
-                             * последния (като implicit return) */
-                            Node *hb = scan->catch_handler;
-                            fprintf(f, "({ ");
-                            for (int si = 0; si < hb->stmts.len; si++) {
-                                if (si == hb->stmts.len - 1) {
-                                    /* последният stmt е СТОЙНОСТТА на handler-а
-                                     * (implicit return семантика) */
-                                    Node *ls = hb->stmts.data[si];
-                                    if (ls->kind == NODE_EXPR_STMT) {
-                                        emit_expr(cg, ls->expr);
-                                        fprintf(f, "; ");
-                                    } else if (ls->kind == NODE_RETURN && ls->ret_val) {
-                                        emit_expr(cg, ls->ret_val);
-                                        fprintf(f, "; ");
-                                    } else {
-                                        emit_stmt(cg, ls);
-                                    }
-                                } else {
-                                    emit_stmt(cg, hb->stmts.data[si]);
-                                }
-                            }
-                            fprintf(f, " })");
-                        } else {
+                        if (scan->catch_handler->kind == NODE_BLOCK)
+                            emit_catch_handler_block(cg, scan->catch_handler, n->type);
+                        else
                             emit_expr(cg, scan->catch_handler);
-                        }
                         fprintf(f, "; } ");
                         cg->eff_binding = saved_b;
                         cg->eff_binding_c = saved_c;
                         free(bm);
                     } else {
                         fprintf(f, "__e%d = ", tid);
-                        if (scan->catch_handler->kind == NODE_BLOCK) {
-                            Node *hb = scan->catch_handler;
-                            fprintf(f, "({ ");
-                            for (int si = 0; si < hb->stmts.len; si++) {
-                                if (si == hb->stmts.len - 1) {
-                                    /* последният stmt е СТОЙНОСТТА на handler-а
-                                     * (implicit return семантика) */
-                                    Node *ls = hb->stmts.data[si];
-                                    if (ls->kind == NODE_EXPR_STMT) {
-                                        emit_expr(cg, ls->expr);
-                                        fprintf(f, "; ");
-                                    } else if (ls->kind == NODE_RETURN && ls->ret_val) {
-                                        emit_expr(cg, ls->ret_val);
-                                        fprintf(f, "; ");
-                                    } else {
-                                        emit_stmt(cg, ls);
-                                    }
-                                } else {
-                                    emit_stmt(cg, hb->stmts.data[si]);
-                                }
-                            }
-                            fprintf(f, " })");
-                        } else {
+                        if (scan->catch_handler->kind == NODE_BLOCK)
+                            emit_catch_handler_block(cg, scan->catch_handler, n->type);
+                        else
                             emit_expr(cg, scan->catch_handler);
-                        }
                         fprintf(f, "; ");
                     }
                     fprintf(f, "} ");
@@ -3700,6 +3703,10 @@ static void emit_expr(Codegen *cg, Node *n) {
             free(rm);
             break;
         }
+
+        case NODE_BLOCK:
+            emit_catch_handler_block(cg, n, n->type);
+            break;
 
         default:
             fprintf(f, "0 /* unhandled expr %d */", n->kind);

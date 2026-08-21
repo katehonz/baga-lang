@@ -1370,6 +1370,13 @@ static Node *parse_stmt(Parser *p) {
         return parse_expr(p);
     }
 
+    /* nested block as statement — иначе `{ }` минава през parse_expr и
+     * се увива в EXPR_STMT, а emit_expr няма NODE_BLOCK (C мълчаливо
+     * гълташе тялото; LLVM отказваше с AST възел #11). */
+    if (check(p, TOK_LBRACE)) {
+        return parse_block(p);
+    }
+
     /* expression statement */
     Node *e = parse_expr(p);
     match(p, TOK_SEMICOLON);

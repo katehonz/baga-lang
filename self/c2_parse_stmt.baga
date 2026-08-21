@@ -117,6 +117,10 @@ fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         ast_child(fc, ns, node, body)
         return node
     }
+    // nested block as statement
+    if is_single(tk, tt, vec_get(pos, 0), "{") == 1 {
+        return parse_block(tk, tt, pos, nk, nt, fc, ns)
+    }
     let mut e = parse_expr(tk, tt, pos, nk, nt, fc, ns)
     // assignment: IDENT = expr
     if node_kind(nk, e) == 2 {

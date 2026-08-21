@@ -6391,6 +6391,10 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             }
             return closure_handle(wrap, envp);
         }
+        case NODE_BLOCK:
+            /* блок като стойност (`let x = { … }`) — същата implicit-return
+             * семантика като catch handler */
+            return emit_block_value_llvm(n);
         default:            llvm_unsupported_node(n); break;
     }
     return NULL; /* unreachable */

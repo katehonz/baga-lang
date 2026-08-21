@@ -524,6 +524,9 @@ Node *parse_expr_string(const char *text);
 typedef struct {
     char errors[BAGA_MAX_ERRORS][256];
     int  n_errors;
+    char warnings[BAGA_MAX_ERRORS][256];
+    int  n_warnings;
+    int  warn_leaks;    /* --warn-leaks: MEM-3 scope-exit leak предупреждения */
     int  allow_no_main; /* 1 = library / --check mode: do not require main */
     void *gen_snap;     /* M21: opaque — snapshot на регистрите (checker.c) */
 } Checker;

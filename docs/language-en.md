@@ -1037,9 +1037,12 @@ print(vec_len(v))             // OK — maybe-dropped is not definitely-dropped
 - **Blocks > 1024 B are not reclaimed** by the free list (below).
 - **Historical garbage stays**: old buffers abandoned by `vec_grow` /
   `map_rehash` are not tracked; `drop` frees the *current* blocks only.
-- **Scope-exit leaks are NOT diagnosed** — the compiler has no warning
-  severity, so a value that goes out of scope without `drop` is silently
-  arena-leaked. Leak hunting is MEM-3 (regions) territory.
+- **Scope-exit leaks** — `--warn-leaks` emits a warning (compilation still
+  succeeds) when a `Vec`/`Map`/`bytes`/`fn` leaves scope without `drop`, or
+  an `arena_new` handle without `arena_free`. An ident returned by the
+  function (`return v` / implicit `v`) is not a leak. Without the flag the
+  old behaviour stands — a silent arena leak. Aliases through a second
+  variable or a container remain untracked (same MEM-1 contract).
 - **LLVM backend**: `drop` works in LLVM too (plain free without `--rc`,
   RC release with `--rc`). Under `--emit-llvm --rc` the RC model matches
   the C backend (scope release, retain on alias, move on return,
@@ -1088,6 +1091,10 @@ arena handle `a`. After `arena_free(a)`, any use of `p` is
 `използване на 'p' след free`. Only direct `arena_alloc` bindings are
 tagged (not pointer arithmetic descendants). Runtime: null-handle
 guards on `arena_alloc` / `arena_reset`.
+
+**`--warn-leaks`:** leaving scope with a live `Vec`/`Map`/`bytes`/`fn` and
+no `drop`, or an `arena_new` handle without `arena_free`, emits a warning
+(compilation continues). A returned ident is not a leak. Off unless flagged.
 
 ---
 

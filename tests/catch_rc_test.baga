@@ -1,0 +1,81 @@
+// catch_rc_test — heap let в block catch handler под --rc
+// (codegen_c.c: emit_catch_handler_block). Преди: gcc 'b_h2' undeclared,
+// защото release-ът се емитваше в enclosing fn, а декларацията беше в
+// GNU stmt-expr-а на handler-а. Минава с и без --rc.
+//
+//   ./baga --rc -I . tests/catch_rc_test.baga
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn boom_i() -> i64 !E(str) {
+    raise !E("err")
+}
+
+fn boom_s() -> str !E(i64) {
+    raise !E(1)
+    return ""
+}
+
+fn ok_i() -> i64 !E(str) {
+    return 42
+}
+
+fn main() -> i64 !IO {
+    // 1. heap let се използва и се пуска; стойността на handler-а е i64
+    let a = boom_i() catch !E(e) => {
+        let h2 = concat("hel", "lo")
+        print(h2)
+        1
+    }
+    check("discard_let", a == 1)
+
+    // 2. heap let е стойността на handler-а — move, не double-free
+    let b = boom_s() catch !E(n) => {
+        let h2 = concat("hel", "lo")
+        h2
+    }
+    check("move_let", b == "hello")
+
+    // 3. Vec let в handler, стойността е i64
+    let c = boom_i() catch !E(e) => {
+        let v: Vec<i64> = vec_new()
+        vec_push(v, 7)
+        vec_len(v)
+    }
+    check("vec_let", c == 1)
+
+    // 4. два heap let-а: единият се връща (move), другият се release-ва
+    let d = boom_s() catch !E(n) => {
+        let keep = concat("k", "ept")
+        let drop_me = concat("d", "rop")
+        print(drop_me)
+        keep
+    }
+    check("two_lets_move", d == "kept")
+
+    // 5. нормалният път (без raise) не пипа handler-а
+    let e = ok_i() catch !E(_s) => {
+        let h2 = concat("no", "pe")
+        0
+    }
+    check("no_raise", e == 42)
+
+    // 6. payload binding + heap let заедно
+    let f = boom_i() catch !E(e) => {
+        let h2 = concat("x", e)
+        len(h2)
+    }
+    check("payload_and_let", f == 4)
+
+    print("catch_rc_test: all passed")
+    return 0
+}

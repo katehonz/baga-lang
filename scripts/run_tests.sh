@@ -638,6 +638,42 @@ run /tmp/baga_arena_reg3.baga 2>&1 | grep -q "използване на 'p' сл
 	&& echo "OK: mut rebind same arena — free still kills p" \
 	|| { echo "FAIL: rebind same arena + free"; exit 1; }
 
+echo "=== statement-level { } блок ==="
+printf 'fn main() {\n    print("before")\n    {\n        print("inside")\n    }\n    print("after")\n}\n' > /tmp/baga_blk.baga
+test "$(run /tmp/baga_blk.baga)" = "$(printf 'before\ninside\nafter')" \
+	&& echo "OK: гол блок на statement ниво изпълнява тялото" \
+	|| { echo "FAIL: statement блок гълта print"; exit 1; }
+printf 'fn main() {\n    let n = { 3 }\n    print(n)\n}\n' > /tmp/baga_blkval.baga
+test "$(run /tmp/baga_blkval.baga)" = "3" \
+	&& echo "OK: блок като стойност (let n = { 3 })" \
+	|| { echo "FAIL: блок като стойност"; exit 1; }
+
+echo "=== MEM-3 --warn-leaks ==="
+printf 'fn main() {\n    let v = vec_new()\n    print(vec_len(v))\n}\n' > /tmp/baga_leak_v.baga
+run --warn-leaks --check /tmp/baga_leak_v.baga 2>&1 | grep -q "изтичане: 'v' излиза от scope без drop" \
+	&& echo "OK: --warn-leaks хваща Vec без drop" \
+	|| { echo "FAIL: Vec leak трябва да предупреди"; exit 1; }
+printf 'fn main() {\n    let v = vec_new()\n    drop(v)\n}\n' > /tmp/baga_leak_ok.baga
+run --warn-leaks --check /tmp/baga_leak_ok.baga 2>&1 | grep -q "изтичане" \
+	&& { echo "FAIL: drop-нат Vec не трябва да предупреждава"; exit 1; } \
+	|| echo "OK: drop-нат Vec е тих"
+printf 'fn mk() -> Vec<i64> {\n    let v = vec_new()\n    return v\n}\nfn main() { let _x = mk() drop(_x) }\n' > /tmp/baga_leak_ret.baga
+run --warn-leaks --check /tmp/baga_leak_ret.baga 2>&1 | grep -q "изтичане: 'v'" \
+	&& { echo "FAIL: върнат Vec не трябва да предупреждава"; exit 1; } \
+	|| echo "OK: return v не е теч"
+printf 'fn main() {\n    let a = arena_new()\n}\n' > /tmp/baga_leak_ar.baga
+run --warn-leaks --check /tmp/baga_leak_ar.baga 2>&1 | grep -q "изтичане: арена 'a' излиза от scope без arena_free" \
+	&& echo "OK: --warn-leaks хваща арена без free" \
+	|| { echo "FAIL: арена leak трябва да предупреди"; exit 1; }
+printf 'fn main() {\n    let a = arena_new()\n    arena_free(a)\n}\n' > /tmp/baga_leak_arf.baga
+run --warn-leaks --check /tmp/baga_leak_arf.baga 2>&1 | grep -q "изтичане" \
+	&& { echo "FAIL: arena_free не трябва да предупреждава"; exit 1; } \
+	|| echo "OK: arena_free е тих"
+# без флага — мълчаливо (регресия: не ръси stderr в обичайния път)
+run --check /tmp/baga_leak_v.baga 2>&1 | grep -q "изтичане" \
+	&& { echo "FAIL: без --warn-leaks не трябва да има предупреждение"; exit 1; } \
+	|| echo "OK: без --warn-leaks е мълчаливо"
+
 # ── 6. Static verifier oracle ────────────────────────────────────────────
 bash "$ROOT/scripts/run_verify.sh"
 

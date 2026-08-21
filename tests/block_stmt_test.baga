@@ -1,0 +1,28 @@
+// block_stmt_test — гол { } блок на statement ниво + блок като стойност.
+// Преди: C емитваше `0 /* unhandled expr 11 */` и гълташе print-овете;
+// LLVM отказваше с AST възел #11.
+
+fn main() -> i64 {
+    print("before")
+    {
+        print("inside")
+        let x = 7
+        print(x)
+    }
+    print("after")
+
+    let n = {
+        print("blkval")
+        3
+    }
+    print(n)
+
+    {
+        {
+            print("nested")
+        }
+    }
+
+    print("block_stmt_test: all passed")
+    return 0
+}
