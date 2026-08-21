@@ -97,6 +97,7 @@ int type_eq(Type *a, Type *b);
 static char *llvm_mangle(const char *name);
 static LLVMTypeRef user_struct_ty(const char *name);
 static LLVMTypeRef baga_bytes_ty(void);
+static Node *find_struct_decl(const char *name);
 
 static char *llvm_struct_cname(Type *t);
 /* M24: named struct тип на instantiated generic struct (по cname) */
@@ -669,14 +670,17 @@ static void lrc_track_tag(const char *name, int tag, Type *t, Node *tnode,
     lg.lrc_locals[lg.lrc_count++] = (LLRcLocal){ name, tag, t, tnode, is_param, 0 };
 }
 
-/* track-ва само heap локали (tag ∈ {1..4}); type NULL → не се track-ва */
+static int lrc_heap_tag(Type *t);
+
+/* track-ва само heap локали (tag ∈ {1..6}); type NULL → не се track-ва */
 static void lrc_track(const char *name, Type *t, int is_param) {
     if (!t) return;
-    lrc_track_tag(name, lrc_type_tag(t), t, NULL, is_param);
+    lrc_track_tag(name, lrc_heap_tag(t), t, NULL, is_param);
 }
 
-/* tag от анотационен type възел — за fn параметрите (като rc_heap_tag_node,
- * но само str/bytes/Vec/Map; struct/enum идват с Task 6) */
+/* tag от анотационен type възел — за fn параметрите (като rc_type_node_tag
+ * в codegen_c; само str/bytes/Vec/Map — struct/enum идват през
+ * lrc_heap_tag_node по-долу) */
 static int lrc_tag_node(Node *tn) {
     while (tn && (tn->kind == NODE_TYPE_EFFECT || tn->kind == NODE_TYPE_REF))
         tn = tn->inner_type;
@@ -686,6 +690,162 @@ static int lrc_tag_node(Node *tn) {
     if (strcmp(tn->type_name, "Vec") == 0)   return 3;
     if (strcmp(tn->type_name, "Map") == 0)   return 4;
     return 0;
+}
+
+/* ---- Task 6: heap tag 5/6 (порт на RC5, codegen_c.c:123-234) ----
+ * Struct/enum стойностите в LLVM са by-value в alloca (named struct тип,
+ * БЕЗ rc header — за разлика от heap буферите). Затова tag 5/6 не описват
+ * собствен rc на стойността, а „има heap полета/payload-и": release_<S>
+ * освобождава heap ПОЛЕТАТА (транзитивно), без да free-ва самия struct
+ * (той живее в стека). Lookup-ът е през lg.program (find_struct_decl/
+ * find_sum_enum) — същият източник, който C ползва в rc_heap_tag
+ * (find_struct_decl там също обхожда cg->program, не Codegen.chk). */
+
+/* взаимна рекурсия struct↔enum (като codegen_c); depth guard 32 срещу
+ * циклични декларации */
+static int lrc_enum_has_heap_d(Node *item, int depth);
+
+static int lrc_struct_has_heap_d(const char *name, int depth) {
+    if (depth > 32) return 0;
+    Node *d = find_struct_decl(name);
+    if (!d) return 0;
+    for (int i = 0; i < d->fields.len; i++) {
+        Node *ft = d->fields.data[i]->fld_type;
+        if (lrc_tag_node(ft)) return 1;
+        Node *t = ft;
+        while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+            t = t->inner_type;
+        if (t && t->kind == NODE_TYPE && t->type_name) {
+            if (lrc_struct_has_heap_d(t->type_name, depth + 1))
+                return 1;
+            /* enum поле с heap payload също брои (release_S вика release_E) */
+            Node *ed = find_sum_enum(t->type_name);
+            if (ed && lrc_enum_has_heap_d(ed, depth + 1))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static int lrc_struct_has_heap(const char *name) {
+    return name ? lrc_struct_has_heap_d(name, 0) : 0;
+}
+
+/* enum с поне един variant с heap payload (str/bytes/Vec/Map или struct с
+ * heap полета). Enum payload в enum не се брои (leak-safe — като C). */
+static int lrc_enum_has_heap_d(Node *item, int depth) {
+    if (depth > 32) return 0;
+    if (!item || item->kind != NODE_ENUM) return 0;
+    for (int j = 0; j < item->n_variants; j++) {
+        Node *pt = item->enum_payloads ? item->enum_payloads[j] : NULL;
+        if (!pt) continue;
+        if (lrc_tag_node(pt)) return 1;
+        Node *t = pt;
+        while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+            t = t->inner_type;
+        if (t && t->kind == NODE_TYPE && t->type_name &&
+            lrc_struct_has_heap_d(t->type_name, depth + 1))
+            return 1;
+    }
+    return 0;
+}
+
+static int lrc_enum_has_heap(Node *item) {
+    return lrc_enum_has_heap_d(item, 0);
+}
+
+/* порт на rc_heap_tag (codegen_c.c:208): 5 = struct с heap полета,
+ * 6 = sum enum с heap payload */
+static int lrc_heap_tag(Type *t) {
+    int tag = lrc_type_tag(t);
+    if (tag) return tag;
+    if (t && t->kind == TYPE_STRUCT && t->name && lrc_struct_has_heap(t->name))
+        return 5;
+    if (t && t->kind == TYPE_ENUM && t->name) {
+        Node *ed = find_sum_enum(t->name);
+        if (ed && lrc_enum_has_heap(ed)) return 6;
+    }
+    return 0;
+}
+
+/* порт на rc_heap_tag_node (codegen_c.c:221) — същият tag от type AST възел */
+static int lrc_heap_tag_node(Node *ty) {
+    int tag = lrc_tag_node(ty);
+    if (tag) return tag;
+    while (ty && (ty->kind == NODE_TYPE_EFFECT || ty->kind == NODE_TYPE_REF))
+        ty = ty->inner_type;
+    if (ty && ty->kind == NODE_TYPE && ty->type_name) {
+        if (lrc_struct_has_heap(ty->type_name))
+            return 5;
+        Node *ed = find_sum_enum(ty->type_name);
+        if (ed && lrc_enum_has_heap(ed)) return 6;
+    }
+    return 0;
+}
+
+/* порт на rc_is_enum_ctor (codegen_c.c:1228): повикване-конструктор на sum
+ * enum с payload (bare Ok(x) или Res::Ok(x)) */
+static int lrc_is_enum_ctor(Node *n) {
+    if (!lg.program || !n || n->kind != NODE_CALL || !n->callee) return 0;
+    if (n->callee->kind != NODE_IDENT && n->callee->kind != NODE_PATH)
+        return 0;
+    for (int i = 0; i < lg.program->items.len; i++) {
+        Node *item = lg.program->items.data[i];
+        if (item->kind != NODE_ENUM) continue;
+        if (n->callee->kind == NODE_PATH &&
+            strcmp(item->enum_name, n->callee->path_enum) != 0)
+            continue;
+        for (int j = 0; j < item->n_variants; j++) {
+            const char *vn = n->callee->kind == NODE_PATH
+                ? n->callee->path_variant : n->callee->name;
+            if (item->enum_payloads && item->enum_payloads[j] &&
+                strcmp(item->enum_variants[j], vn) == 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* порт на rc_borrowed_init (codegen_c.c:312): vec_get/map_get/struct поле/
+ * h_* връщат референция към чужда собственост → при вграждане/връзване се
+ * retain-ва, не се пропуска */
+static int lrc_borrowed_init(Node *init) {
+    if (!init) return 0;
+    if (init->kind == NODE_FIELD) return 1;
+    if (init->kind == NODE_CALL && init->callee &&
+        init->callee->kind == NODE_IDENT) {
+        const char *bn = init->callee->name;
+        if (strncmp(bn, "vec_get", 7) == 0 || strncmp(bn, "map_get", 7) == 0 ||
+            strcmp(bn, "h_str") == 0 || strcmp(bn, "h_bytes") == 0 ||
+            strcmp(bn, "h_map") == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void lrc_emit_retain_val(int tag, Type *ty, Node *tnode,
+                                LLVMValueRef val);
+
+/* retain на стойност, вграждана в контейнер/struct поле/enum payload
+ * (опростен порт на embed сайтовете в codegen_c): fresh израз (struct
+ * литерал, enum ctor, owned call) идва с rc=1 от конструкцията — move,
+ * без retain; ident/borrowed се retain-ват (+1 за новата референция).
+ * Без move elision (RC2 prepass няма LLVM еквивалент) — retain + нормален
+ * release на източника е наблюдаемо еквивалентен на C move-а (и двата
+ * пъта rc-то е балансирано; разлика само във времето на декрементите). */
+static void lrc_embed_retain(Node *val, LLVMValueRef v) {
+    if (!lg.rc || !val) return;
+    int tag = lrc_heap_tag(val->type);
+    if (!tag) return;
+    if (val->kind == NODE_IDENT) {
+        int si = lrc_find(val->name);
+        if (si >= 0 && lg.lrc_locals[si].dead) return;   /* drop()нат — като C */
+    } else if (val->kind == NODE_STRUCT_LIT || lrc_is_enum_ctor(val)) {
+        return;   /* свеж литерал/ctor — move в новата собственост */
+    } else if (!lrc_borrowed_init(val)) {
+        return;   /* owned call резултат — move (като rc_tmp consume в C) */
+    }
+    lrc_emit_retain_val(tag, val->type, NULL, v);
 }
 
 /* Task 5: elem_kind за release на Vec — порт на rc_vec_elem_kind +
@@ -738,7 +898,45 @@ static int lrc_map_val_tag(Type *mty, Node *tn) {
 
 /* едно release повикване: зарежда стойността от alloca-та и вика
  * baga_rc_release_{str,bytes,vec,map}. Vec/Map (tag 3/4) — Task 5:
- * рекурсивен release на елементите според elem_kind/val_tag. */
+ * рекурсивен release на елементите според elem_kind/val_tag; 4-тият
+ * аргумент е destructor на box полетата (Task 6: baga_rc_relf_<S>,
+ * NULL → само free — като elem_rel/val_rel в codegen_c).
+ * Tag 5/6 (Task 6): struct/enum стойността е by-value в alloca —
+ * release_<име> освобождава heap полетата/payload-а, без free на
+ * самия struct (той е стеков). */
+static LLVMValueRef lrc_rc_fn(const char *type_name, int is_release);
+static LLVMValueRef lrc_box_rel(const char *type_name);
+static LLVMValueRef lrc_nested_vec_rel(Type *vty, Node *tn);
+
+/* име на struct/enum типа на локал — inferred Type първо, анотация после
+ * (като case 5/6 в rc_emit_release, codegen_c.c:536-556) */
+static const char *lrc_local_type_name(LLRcLocal *l) {
+    if (l->type && l->type->name) return l->type->name;
+    Node *t = l->type_node;
+    while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+        t = t->inner_type;
+    if (t && t->kind == NODE_TYPE) return t->type_name;
+    return NULL;
+}
+
+/* елементен/стойностен тип на Vec/Map локал (inferred Type, после анотация)
+ * — порт на rc_vec_elem_name/rc_map_val_name (codegen_c.c:473-487) */
+static const char *lrc_vec_elem_name(LLRcLocal *l) {
+    if (l->type && l->type->elem && l->type->elem->name)
+        return l->type->elem->name;
+    Node *it = l->type_node ? l->type_node->inner_type : NULL;
+    if (it && it->kind == NODE_TYPE) return it->type_name;
+    return NULL;
+}
+
+static const char *lrc_map_val_name(LLRcLocal *l) {
+    if (l->type && l->type->elem && l->type->elem->name)
+        return l->type->elem->name;
+    Node *it = l->type_node ? l->type_node->inner_type2 : NULL;
+    if (it && it->kind == NODE_TYPE) return it->type_name;
+    return NULL;
+}
+
 static void lrc_emit_release(LLRcLocal *l) {
     LLVMValueRef alloca = st_lookup(l->name);
     if (!alloca) return;
@@ -755,13 +953,19 @@ static void lrc_emit_release(LLRcLocal *l) {
         rt = "baga_rc_release_bytes";
     } else if (l->tag == 3) {
         LLVMValueRef vp = LLVMBuildLoad2(lg.builder, baga_vec_ptr_ty(), alloca, "rcv");
+        int ek = lrc_vec_elem_kind(l->type, l->type_node);
+        /* destructor: ek 2 → relf на елементния тип; ek 3 → relv на
+         * вложения Vec<S> (NULL → старото поведение, leak-safe граница) */
+        LLVMValueRef rel = ek == 3
+            ? lrc_nested_vec_rel(l->type, l->type_node)
+            : lrc_box_rel(lrc_vec_elem_name(l));
         LLVMValueRef a[] = {
             LLVMBuildBitCast(lg.builder, vp, lg.ptr_ty, "rcvp"),
-            LLVMConstInt(lg.i64_ty,
-                (uint64_t)lrc_vec_elem_kind(l->type, l->type_node), 0),
+            LLVMConstInt(lg.i64_ty, (uint64_t)ek, 0),
             LLVMConstInt(lg.i64_ty, 0, 0),   /* elem_size — не се ползва */
+            rel,
         };
-        h_call(baga_rt("baga_rc_release_vec"), a, 3, "");
+        h_call(baga_rt("baga_rc_release_vec"), a, 4, "");
         return;
     } else if (l->tag == 4) {
         LLVMValueRef mp = LLVMBuildLoad2(lg.builder, baga_map_ptr_ty(), alloca, "rcm");
@@ -770,8 +974,16 @@ static void lrc_emit_release(LLRcLocal *l) {
             LLVMConstInt(lg.i64_ty,
                 (uint64_t)lrc_map_val_tag(l->type, l->type_node), 0),
             LLVMConstInt(lg.i64_ty, 0, 0),   /* val_size — не се ползва */
+            lrc_box_rel(lrc_map_val_name(l)),
         };
-        h_call(baga_rt("baga_rc_release_map"), a, 3, "");
+        h_call(baga_rt("baga_rc_release_map"), a, 4, "");
+        return;
+    } else if (l->tag == 5 || l->tag == 6) {
+        const char *sn = lrc_local_type_name(l);
+        if (!sn) return;
+        LLVMTypeRef sty = user_struct_ty(sn);
+        LLVMValueRef v = LLVMBuildLoad2(lg.builder, sty, alloca, "rcs");
+        h_call(lrc_rc_fn(sn, 1), &v, 1, "");
         return;
     } else {
         return;
@@ -780,13 +992,28 @@ static void lrc_emit_release(LLRcLocal *l) {
 }
 
 /* retain върху вече изчислена стойност (alias копие: let x = y / x = y).
- * tag 3/4 — retain на struct указателя (rc живее върху него, като в C). */
-static void lrc_emit_retain_val(int tag, LLVMValueRef val) {
+ * tag 3/4 — retain на struct указателя (rc живее върху него, като в C).
+ * tag 5/6 — retain_<име> на heap полетата/payload-а (стойността е
+ * by-value; ty/tnode дават името на типа, като rc_emit_retain_val в C). */
+static void lrc_emit_retain_val(int tag, Type *ty, Node *tnode,
+                                LLVMValueRef val) {
     LLVMValueRef p;
     if (tag == 1)      p = val;
     else if (tag == 2) p = LLVMBuildExtractValue(lg.builder, val, 0, "rcbd");
     else if (tag == 3 || tag == 4)
         p = LLVMBuildBitCast(lg.builder, val, lg.ptr_ty, "rccp");
+    else if (tag == 5 || tag == 6) {
+        const char *sn = (ty && ty->name) ? ty->name : NULL;
+        if (!sn && tnode) {
+            Node *t = tnode;
+            while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+                t = t->inner_type;
+            if (t && t->kind == NODE_TYPE) sn = t->type_name;
+        }
+        if (!sn) return;
+        h_call(lrc_rc_fn(sn, 0), &val, 1, "");
+        return;
+    }
     else               return;
     h_call(baga_rt("baga_rc_retain"), &p, 1, "rcr");
 }
@@ -856,7 +1083,8 @@ static void lrc_return_move(Node *expr, LLVMValueRef v) {
     if (!lg.rc) return;
     int ri = expr && expr->kind == NODE_IDENT ? lrc_find(expr->name) : -1;
     if (ri >= 0 && lg.lrc_locals[ri].is_param)
-        lrc_emit_retain_val(lg.lrc_locals[ri].tag, v);
+        lrc_emit_retain_val(lg.lrc_locals[ri].tag, lg.lrc_locals[ri].type,
+                            lg.lrc_locals[ri].type_node, v);
     lrc_release_all(ri);
 }
 
@@ -3233,7 +3461,8 @@ static LLVMValueRef build_baga_map_set(const char *name, int key, int val) {
     /* Под --rc: str/bytes стойността се retain-ва; при overwrite — release
      * на старата ПРЕДИ store (codegen_c.c:5961-5962/5982-5983). Старите
      * слотове на нов запис са NULL → release-ът е no-op по magic guard-а.
-     * box (struct/enum) полета — Task 6. */
+     * box (struct/enum) стойностите се retain-ват/release-ват от call
+     * site-а (той знае типа — baga_map_set_<k>_box е generic). */
     if (lg.rc && val == 1) {
         LLVMValueRef sv = LLVMGetParam(fn, 2);
         h_call(baga_rt("baga_rc_retain"), &sv, 1, "rcr");
@@ -3255,7 +3484,9 @@ static LLVMValueRef build_baga_map_set(const char *name, int key, int val) {
         LLVMBuildRetVoid(lg.builder);
         return fn;
     }
-    /* box: if (!e->pv) e->pv = malloc(size); memcpy(e->pv, src, size) */
+    /* box: if (!e->pv) e->pv = malloc(size); memcpy(e->pv, src, size)
+     * Под --rc box-ът носи header (rc_alloc_call) — release_map го free-ва
+     * през базата след destructor-а на полетата. */
     LLVMValueRef size = LLVMGetParam(fn, 3);
     LLVMValueRef pvp = ent_fld(e, 8, "pvp");
     LLVMValueRef pv = LLVMBuildLoad2(lg.builder, lg.ptr_ty, pvp, "pv");
@@ -3263,8 +3494,7 @@ static LLVMValueRef build_baga_map_set(const char *name, int key, int val) {
     LLVMBasicBlockRef cpb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "cpb");
     LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, pv, "isn"), alb, cpb);
     LLVMPositionBuilderAtEnd(lg.builder, alb);
-    LLVMValueRef ma[] = { size };
-    LLVMBuildStore(lg.builder, h_call(rt_malloc(), ma, 1, "box"), pvp);
+    LLVMBuildStore(lg.builder, rc_alloc_call(size, "box"), pvp);
     LLVMBuildBr(lg.builder, cpb);
     LLVMPositionBuilderAtEnd(lg.builder, cpb);
     LLVMValueRef pv2 = LLVMBuildLoad2(lg.builder, lg.ptr_ty, pvp, "pv2");
@@ -3464,7 +3694,8 @@ static LLVMValueRef build_baga_map_keys(const char *name, int key) {
 /* L4: struct елементи — generic box helper-и; размерът идва от call site-а
  * (sizeof на mangled struct типа). Елементите са box-нати копия (memcpy при
  * push/set/slice/concat) — огледало на C preamble-а. Без bounds check,
- * както останалите LLVM vec helper-и. */
+ * както останалите LLVM vec helper-и. Под --rc box-ът е rc_alloc (header) —
+ * release_vec го free-ва през базата след destructor-а на полетата. */
 static LLVMValueRef build_baga_vec_push_box(void) {
     LLVMTypeRef p[] = { baga_vec_ptr_ty(), lg.ptr_ty, lg.i64_ty };
     LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_vec_push_box",
@@ -3473,8 +3704,7 @@ static LLVMValueRef build_baga_vec_push_box(void) {
     LLVMValueRef v = LLVMGetParam(fn, 0);
     LLVMValueRef gv[] = { v };
     h_call(baga_rt("baga_vec_grow"), gv, 1, "");
-    LLVMValueRef ma[] = { LLVMGetParam(fn, 2) };
-    LLVMValueRef box = h_call(rt_malloc(), ma, 1, "box");
+    LLVMValueRef box = rc_alloc_call(LLVMGetParam(fn, 2), "box");
     LLVMValueRef mc[] = { box, LLVMGetParam(fn, 1), LLVMGetParam(fn, 2) };
     h_call(rt_memcpy(), mc, 3, "");
     LLVMValueRef len = vec_load_len(v);
@@ -3763,9 +3993,10 @@ static LLVMValueRef build_baga_drop_map(void) {
 /* ---- Task 5: RC release за Vec/Map (--rc) ----
  * Порт на baga_rc_release_vec (codegen_c.c:5635) и baga_rc_release_map
  * (codegen_c.c:6161). rc живее върху STRUCT алокацията; data/bucket/entry
- * блоковете са притежавани 1:1 и умират с контейнера. Разлики от C:
- *  - elem_rel/val_rel destructor-ите липсват (struct/enum полета — Task 6);
- *    box елементите са plain malloc → само free;
+ * блоковете са притежавани 1:1 и умират с контейнера. Task 6: 4-тият
+ * параметър е elem_rel/val_rel destructor (baga_rc_relf_<S> / relv_<S>;
+ * NULL → само free); box-овете под --rc носят header (rc_alloc_call при
+ * push/set) и се free-ват през базата. Разлика от C:
  *  - elem_size/val_size са сигнатурен паритет — libc free не иска размер. */
 
 /* споделен пролог: hdr (NULL → ret), underflow (stderr + exit(1)), rc--;
@@ -3814,15 +4045,22 @@ static LLVMValueRef rc_container_prologue(LLVMValueRef fn, LLVMValueRef ptr,
     return h;
 }
 
-/* static void baga_rc_release_vec(i8 *v, i64 elem_kind, i64 elem_size)
+/* static void baga_rc_release_vec(i8 *v, i64 elem_kind, i64 elem_size,
+ *                                 i8 *elem_rel)
  * { h = hdr(v); if (!h) ret; if (rc == 0) underflow; if (--rc > 0) ret;
- *   switch (elem_kind): 1 → release_str(data[i]); 2 → free(data[i]);
- *     3 → release_vec(data[i], 0, 0); 4 → release_bytes(data[i]->data) + free;
- *   free(hdr(data)); free(h); } */
+ *   switch (elem_kind): 1 → release_str(data[i]);
+ *     2 → if (elem_rel) elem_rel(data[i]); free(hdr(data[i]));
+ *     3 → if (elem_rel) elem_rel(data[i]); else release_vec(data[i],0,0,NULL);
+ *     4 → release_bytes(data[i]->data) + free(hdr(data[i]));
+ *   free(hdr(data)); free(h); }
+ * elem_rel е destructor на box полетата (baga_rc_relf_<S> за struct/enum
+ * елемент с heap полета, baga_rc_relv_<S> за вложен Vec<S>; NULL → само
+ * free — като elem_rel в codegen_c.c:5635). Box-овете под --rc носят
+ * header (rc_alloc_call при push) → free през header базата. */
 static LLVMValueRef build_baga_rc_release_vec(void) {
-    LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty, lg.i64_ty };
+    LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty, lg.i64_ty, lg.ptr_ty };
     LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_rc_release_vec",
-        LLVMFunctionType(lg.void_ty, p, 3, 0));
+        LLVMFunctionType(lg.void_ty, p, 4, 0));
     h_begin(fn);
     LLVMBasicBlockRef ret_bb;
     LLVMValueRef h = rc_container_prologue(fn, LLVMGetParam(fn, 0),
@@ -3830,6 +4068,8 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
     LLVMValueRef v = LLVMBuildBitCast(lg.builder, LLVMGetParam(fn, 0),
         baga_vec_ptr_ty(), "v");
     LLVMValueRef ek = LLVMGetParam(fn, 1);
+    LLVMValueRef rel = LLVMGetParam(fn, 3);
+    LLVMTypeRef relfty = LLVMFunctionType(lg.void_ty, &lg.ptr_ty, 1, 0);
     LLVMValueRef data = vec_load_data(v);
     LLVMValueRef len = vec_load_len(v);
     LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
@@ -3841,9 +4081,13 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
     LLVMBasicBlockRef c2  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "c2");
     LLVMBasicBlockRef l2c = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l2c");
     LLVMBasicBlockRef l2b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l2b");
+    LLVMBasicBlockRef l2r = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l2r");
+    LLVMBasicBlockRef l2f = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l2f");
     LLVMBasicBlockRef c3  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "c3");
     LLVMBasicBlockRef l3c = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l3c");
     LLVMBasicBlockRef l3b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l3b");
+    LLVMBasicBlockRef l3r = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l3r");
+    LLVMBasicBlockRef l3n = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l3n");
     LLVMBasicBlockRef c4  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "c4");
     LLVMBasicBlockRef l4c = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l4c");
     LLVMBasicBlockRef l4b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l4b");
@@ -3865,7 +4109,8 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
     LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i1, one, "in"), iv);
     LLVMBuildBr(lg.builder, l1c);
 
-    /* ek == 2: struct/enum box — само free (destructor на полетата: Task 6) */
+    /* ek == 2: struct/enum box — destructor на полетата (ако е подаден),
+     * после free на box-а през header базата */
     LLVMPositionBuilderAtEnd(lg.builder, c2);
     LLVMBuildStore(lg.builder, zero, iv);
     LLVMBuildCondBr(lg.builder, LLVMBuildICmp(lg.builder, LLVMIntEQ, ek,
@@ -3876,12 +4121,21 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
                     l2b, fin);
     LLVMPositionBuilderAtEnd(lg.builder, l2b);
     LLVMValueRef e2 = vec_load_at(v, i2);
-    h_call(rt_free(), &e2, 1, "");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, rel, "rn"), l2f, l2r);
+    LLVMPositionBuilderAtEnd(lg.builder, l2r);
+    LLVMValueRef relf2 = LLVMBuildBitCast(lg.builder, rel,
+        LLVMPointerType(relfty, 0), "relf");
+    LLVMBuildCall2(lg.builder, relfty, relf2, &e2, 1, "");
+    LLVMBuildBr(lg.builder, l2f);
+    LLVMPositionBuilderAtEnd(lg.builder, l2f);
+    LLVMValueRef h2 = h_call(baga_rt("baga_rc_hdr"), &e2, 1, "hb");
+    h_call(rt_free(), &h2, 1, "");
     LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i2, one, "in"), iv);
     LLVMBuildBr(lg.builder, l2c);
 
-    /* ek == 3: nested Vec — release с kind 0 (елементният тип на вътрешния
-     * не е известен по време на изпълнение — като codegen_c) */
+    /* ek == 3: nested Vec — с destructor (relv: Vec<S> с heap полета) или
+     * release с kind 0 (елементният тип на вътрешния не е известен по време
+     * на изпълнение — като codegen_c) */
     LLVMPositionBuilderAtEnd(lg.builder, c3);
     LLVMBuildStore(lg.builder, zero, iv);
     LLVMBuildCondBr(lg.builder, LLVMBuildICmp(lg.builder, LLVMIntEQ, ek,
@@ -3892,12 +4146,19 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
                     l3b, fin);
     LLVMPositionBuilderAtEnd(lg.builder, l3b);
     LLVMValueRef e3 = vec_load_at(v, i3);
-    LLVMValueRef ra[] = { e3, zero, zero };
-    h_call(fn, ra, 3, "");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, rel, "rn"), l3n, l3r);
+    LLVMPositionBuilderAtEnd(lg.builder, l3r);
+    LLVMValueRef relf3 = LLVMBuildBitCast(lg.builder, rel,
+        LLVMPointerType(relfty, 0), "relf");
+    LLVMBuildCall2(lg.builder, relfty, relf3, &e3, 1, "");
+    LLVMBuildBr(lg.builder, l3n);
+    LLVMPositionBuilderAtEnd(lg.builder, l3n);
+    LLVMValueRef ra[] = { e3, zero, zero, LLVMConstNull(lg.ptr_ty) };
+    h_call(fn, ra, 4, "");
     LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i3, one, "in"), iv);
     LLVMBuildBr(lg.builder, l3c);
 
-    /* ek == 4: bytes box — release на data + free на box-а */
+    /* ek == 4: bytes box — release на data + free на box-а през header-а */
     LLVMPositionBuilderAtEnd(lg.builder, c4);
     LLVMBuildStore(lg.builder, zero, iv);
     LLVMBuildCondBr(lg.builder, LLVMBuildICmp(lg.builder, LLVMIntEQ, ek,
@@ -3913,7 +4174,8 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
     LLVMValueRef bd = LLVMBuildLoad2(lg.builder, lg.ptr_ty,
         LLVMBuildStructGEP2(lg.builder, baga_bytes_ty(), bp, 0, "bdp"), "bd");
     h_call(baga_rt("baga_rc_release_bytes"), &bd, 1, "");
-    h_call(rt_free(), &e4, 1, "");
+    LLVMValueRef h4 = h_call(baga_rt("baga_rc_hdr"), &e4, 1, "hb");
+    h_call(rt_free(), &h4, 1, "");
     LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i4, one, "in"), iv);
     LLVMBuildBr(lg.builder, l4c);
 
@@ -3938,9 +4200,9 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
  *   free(entry); free(buckets); free(h); }
  * entries/buckets са plain malloc → plain free (умират с контейнера). */
 static LLVMValueRef build_baga_rc_release_map(void) {
-    LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty, lg.i64_ty };
+    LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty, lg.i64_ty, lg.ptr_ty };
     LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_rc_release_map",
-        LLVMFunctionType(lg.void_ty, p, 3, 0));
+        LLVMFunctionType(lg.void_ty, p, 4, 0));
     h_begin(fn);
     LLVMBasicBlockRef ret_bb;
     LLVMValueRef h = rc_container_prologue(fn, LLVMGetParam(fn, 0),
@@ -3948,6 +4210,10 @@ static LLVMValueRef build_baga_rc_release_map(void) {
     LLVMValueRef m = LLVMBuildBitCast(lg.builder, LLVMGetParam(fn, 0),
         baga_map_ptr_ty(), "m");
     LLVMValueRef vt = LLVMGetParam(fn, 1);
+    /* 4-тият параметър е destructor на box стойностите (baga_rc_relf_<S>;
+     * NULL → само free — като val_rel в codegen_c.c:6161) */
+    LLVMValueRef rel = LLVMGetParam(fn, 3);
+    LLVMTypeRef relfty = LLVMFunctionType(lg.void_ty, &lg.ptr_ty, 1, 0);
     LLVMValueRef b = map_load_b(m);
     LLVMValueRef nb = map_load_nb(m);
     LLVMValueRef iv = entry_alloca(lg.i64_ty, "i");
@@ -4033,8 +4299,21 @@ static LLVMValueRef build_baga_rc_release_map(void) {
         ent_fld(e, 8, "pvp"), "pv");
     LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, pv, "pvn"),
                     fe, vpf);
+    /* box стойност: destructor на полетата (ако е подаден), после free на
+     * box-а през header базата (box-овете под --rc са rc_alloc-нати) */
+    LLVMBasicBlockRef vpr = LLVMAppendBasicBlockInContext(lg.ctx, fn, "vpr");
+    LLVMBasicBlockRef vpf2 = LLVMAppendBasicBlockInContext(lg.ctx, fn, "vpf2");
     LLVMPositionBuilderAtEnd(lg.builder, vpf);
-    h_call(rt_free(), &pv, 1, "");
+    LLVMBuildCondBr(lg.builder, LLVMBuildIsNull(lg.builder, rel, "rn"),
+                    vpf2, vpr);
+    LLVMPositionBuilderAtEnd(lg.builder, vpr);
+    LLVMValueRef relfv = LLVMBuildBitCast(lg.builder, rel,
+        LLVMPointerType(relfty, 0), "relf");
+    LLVMBuildCall2(lg.builder, relfty, relfv, &pv, 1, "");
+    LLVMBuildBr(lg.builder, vpf2);
+    LLVMPositionBuilderAtEnd(lg.builder, vpf2);
+    LLVMValueRef hpv = h_call(baga_rt("baga_rc_hdr"), &pv, 1, "hb");
+    h_call(rt_free(), &hpv, 1, "");
     LLVMBuildBr(lg.builder, fe);
 
     LLVMPositionBuilderAtEnd(lg.builder, fe);
@@ -4057,6 +4336,310 @@ static LLVMValueRef build_baga_rc_release_map(void) {
     LLVMPositionBuilderAtEnd(lg.builder, ret_bb);
     LLVMBuildRetVoid(lg.builder);
     return fn;
+}
+
+/* ---- Task 6: RC helper-и за struct/enum (порт на RC5) ----
+ * Порт на emit_rc_struct_helpers (codegen_c.c:4558) и emit_rc_enum_helpers
+ * (codegen_c.c:4657), но като lazy IR (като останалите baga_rt): тялото се
+ * генерира при първа нужда и се кешира по име в модула.
+ *
+ * Представяне: struct/enum стойностите са by-value (named struct тип в
+ * alloca), БЕЗ собствен rc header — затова baga_rc_retain_<S> /
+ * baga_rc_release_<S> вземат стойността по стойност и retain-ват/release-ват
+ * само heap ПОЛЕТАТА (транзитивно: вложен struct/enum поле → рекурсивно
+ * повикване). Няма free на самия struct — той е стеков. Това е същата
+ * семантика като C, където helper-ите също вземат struct-а по стойност.
+ * Enum helper-ът е switch по tag полето ({ i64 tag, [N x i64] u }) —
+ * release/retain само на heap payload-а на активния variant.
+ *
+ * Shim-ове за container сайтове, които не знаят типа статично:
+ *   baga_rc_relf_<S>(i8 *p) — release на полетата през указател към box
+ *   baga_rc_relv_<S>(i8 *p) — release на Vec<S> елемент (вложен Vec)
+ * (огледало на relf/relv в codegen_c; retp не е нужен — retain сайтовете
+ * знаят типа статично и викат retain_<S> директно). */
+
+/* heap ли е този type AST възел (поле/payload): пряк str/bytes/Vec/Map или
+ * вложен struct/enum с heap съдържание — общ предикат за field/variant
+ * обходите по-долу */
+static int lrc_pt_heap(Node *pt) {
+    if (lrc_tag_node(pt)) return 1;
+    Node *t = pt;
+    while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+        t = t->inner_type;
+    if (!t || t->kind != NODE_TYPE || !t->type_name) return 0;
+    if (lrc_struct_has_heap(t->type_name)) return 1;
+    Node *ed = find_sum_enum(t->type_name);
+    return ed && lrc_enum_has_heap(ed);
+}
+
+/* heap ли е enum payload: пряк tag или struct с heap полета. Enum payload
+ * в enum НЕ се брои (leak-safe граница — като rc_enum_has_heap_d /
+ * emit_rc_enum_helpers в codegen_c) */
+static int lrc_enum_payload_heap(Node *pt) {
+    if (lrc_tag_node(pt)) return 1;
+    Node *t = pt;
+    while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+        t = t->inner_type;
+    return t && t->kind == NODE_TYPE && t->type_name &&
+        lrc_struct_has_heap(t->type_name);
+}
+
+/* едно поле / variant payload: release или retain според вида му.
+ * ft е type AST възелът на полето, v — стойността (extractvalue/load). */
+static void lrc_field_rc(Node *ft, LLVMValueRef v, int is_release) {
+    int tag = lrc_tag_node(ft);
+    if (tag == 1) {
+        if (is_release) h_call(baga_rt("baga_rc_release_str"), &v, 1, "");
+        else            h_call(baga_rt("baga_rc_retain"), &v, 1, "rcr");
+        return;
+    }
+    if (tag == 2) {
+        /* bytes поле е { i8*, i64 } by value — rc живее върху data */
+        LLVMValueRef d = LLVMBuildExtractValue(lg.builder, v, 0, "fd");
+        if (is_release) h_call(baga_rt("baga_rc_release_bytes"), &d, 1, "");
+        else            h_call(baga_rt("baga_rc_retain"), &d, 1, "rcr");
+        return;
+    }
+    if (tag == 3 || tag == 4) {
+        if (!is_release) {
+            LLVMValueRef p = LLVMBuildBitCast(lg.builder, v, lg.ptr_ty, "fcp");
+            h_call(baga_rt("baga_rc_retain"), &p, 1, "rcr");
+            return;
+        }
+        Node *inner = ft;
+        while (inner && (inner->kind == NODE_TYPE_EFFECT ||
+                         inner->kind == NODE_TYPE_REF))
+            inner = inner->inner_type;
+        /* Vec: elem от inner_type; Map: val от inner_type2 */
+        Node *en = inner ? (tag == 3 ? inner->inner_type : inner->inner_type2)
+                         : NULL;
+        const char *enm = (en && en->kind == NODE_TYPE) ? en->type_name : NULL;
+        int k = tag == 3 ? lrc_vec_elem_kind(NULL, ft)
+                         : lrc_map_val_tag(NULL, ft);
+        LLVMValueRef rel = (tag == 3 && k == 3)
+            ? lrc_nested_vec_rel(NULL, ft)
+            : lrc_box_rel(enm);
+        LLVMValueRef a[] = {
+            LLVMBuildBitCast(lg.builder, v, lg.ptr_ty, "fcp"),
+            LLVMConstInt(lg.i64_ty, (uint64_t)k, 0),
+            LLVMConstInt(lg.i64_ty, 0, 0),
+            rel,
+        };
+        h_call(baga_rt(tag == 3 ? "baga_rc_release_vec"
+                                : "baga_rc_release_map"), a, 4, "");
+        return;
+    }
+    /* tag 0: вложен struct с heap полета или enum с heap payload —
+     * рекурсивен retain/release (като rc_nested_struct_field /
+     * rc_nested_enum_field в codegen_c) */
+    Node *t = ft;
+    while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+        t = t->inner_type;
+    if (!t || t->kind != NODE_TYPE || !t->type_name) return;
+    if (lrc_pt_heap(ft))
+        h_call(lrc_rc_fn(t->type_name, is_release), &v, 1, "");
+}
+
+/* име на helper-а: baga_rc_{retain,release}_<mangle> */
+static char *lrc_rc_fn_name(const char *type_name, int is_release) {
+    char *m = llvm_mangle(type_name);
+    size_t cap = strlen(m) + 24;
+    char *out = malloc(cap);
+    if (!out) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    snprintf(out, cap, "baga_rc_%s_%s", is_release ? "release" : "retain", m);
+    free(m);
+    return out;
+}
+
+static LLVMValueRef lrc_struct_rc_fn(const char *name, int is_release);
+static LLVMValueRef lrc_enum_rc_fn(Node *ed, int is_release);
+
+/* struct или sum enum helper по име на типа (единствено име за двата —
+ * struct и enum с едно име не могат да съществуват в една програма) */
+static LLVMValueRef lrc_rc_fn(const char *type_name, int is_release) {
+    Node *ed = find_sum_enum(type_name);
+    if (ed) return lrc_enum_rc_fn(ed, is_release);
+    return lrc_struct_rc_fn(type_name, is_release);
+}
+
+/* static void baga_rc_{retain,release}_<S>(b_<S> s)
+ * { за всяко heap поле: retain/release (транзитивно) } */
+static LLVMValueRef lrc_struct_rc_fn(const char *name, int is_release) {
+    char *full = lrc_rc_fn_name(name, is_release);
+    LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, full);
+    if (fn) { free(full); return fn; }
+    Node *decl = find_struct_decl(name);
+    if (!decl) {
+        char buf[256];
+        snprintf(buf, sizeof buf, "RC helper за неизвестна структура '%s'", name);
+        free(full);
+        llvm_unsupported(buf);
+    }
+    LLVMTypeRef sty = user_struct_ty(name);
+    /* регистрацията е ПРЕДИ тялото — рекурсивни struct/enum препратки
+     * (S → Vec<E>, E → V(S)) намират вече декларираната функция */
+    fn = LLVMAddFunction(lg.mod, full,
+        LLVMFunctionType(lg.void_ty, &sty, 1, 0));
+    free(full);
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    h_begin(fn);
+    LLVMValueRef s = LLVMGetParam(fn, 0);
+    for (int i = 0; i < decl->fields.len; i++) {
+        Node *ft = decl->fields.data[i]->fld_type;
+        LLVMValueRef v = LLVMBuildExtractValue(lg.builder, s, (unsigned)i, "f");
+        lrc_field_rc(ft, v, is_release);
+    }
+    LLVMBuildRetVoid(lg.builder);
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
+
+/* static void baga_rc_{retain,release}_<E>(b_<E> e)
+ * { switch (e.tag) { case j: retain/release на heap payload-а; } } */
+static LLVMValueRef lrc_enum_rc_fn(Node *ed, int is_release) {
+    char *full = lrc_rc_fn_name(ed->enum_name, is_release);
+    LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, full);
+    if (fn) { free(full); return fn; }
+    LLVMTypeRef ety = user_struct_ty(ed->enum_name);
+    fn = LLVMAddFunction(lg.mod, full,
+        LLVMFunctionType(lg.void_ty, &ety, 1, 0));
+    free(full);
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    h_begin(fn);
+    LLVMValueRef e = LLVMGetParam(fn, 0);
+    /* payload GEP иска адрес — spill на параметъра (като sum_ctor_fn) */
+    LLVMValueRef ea = LLVMBuildAlloca(lg.builder, ety, "ea");
+    LLVMBuildStore(lg.builder, e, ea);
+    LLVMValueRef tag = LLVMBuildExtractValue(lg.builder, e, 0, "tag");
+    LLVMBasicBlockRef ret_bb =
+        LLVMAppendBasicBlockInContext(lg.ctx, fn, "ret");
+    int ncases = 0;
+    for (int j = 0; j < ed->n_variants; j++) {
+        Node *pt = ed->enum_payloads ? ed->enum_payloads[j] : NULL;
+        if (pt && lrc_enum_payload_heap(pt)) ncases++;
+    }
+    LLVMValueRef sw = LLVMBuildSwitch(lg.builder, tag, ret_bb,
+                                      (unsigned)ncases);
+    for (int j = 0; j < ed->n_variants; j++) {
+        Node *pt = ed->enum_payloads ? ed->enum_payloads[j] : NULL;
+        if (!pt || !lrc_enum_payload_heap(pt)) continue;
+        char cnm[32];
+        snprintf(cnm, sizeof cnm, "v%d", j);
+        LLVMBasicBlockRef cbb =
+            LLVMAppendBasicBlockInContext(lg.ctx, fn, cnm);
+        LLVMAddCase(sw, LLVMConstInt(lg.i64_ty, (unsigned long long)j, 0),
+                    cbb);
+        LLVMPositionBuilderAtEnd(lg.builder, cbb);
+        LLVMTypeRef pty = llvm_type(pt);
+        LLVMValueRef pv = LLVMBuildLoad2(lg.builder, pty,
+            sum_payload_ptr(ety, ea, pty), "pv");
+        lrc_field_rc(pt, pv, is_release);
+        LLVMBuildBr(lg.builder, ret_bb);
+    }
+    LLVMPositionBuilderAtEnd(lg.builder, ret_bb);
+    LLVMBuildRetVoid(lg.builder);
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
+
+/* static void baga_rc_relf_<S>(i8 *p) { release_<S>(load (b_<S> *)p); }
+ * Destructor за box елементи/стойности във Vec/Map (контейнерът не знае
+ * типа статично) — огледало на baga_rc_relf_<S> в codegen_c. */
+static LLVMValueRef lrc_relf_fn(const char *type_name) {
+    char *m = llvm_mangle(type_name);
+    size_t cap = strlen(m) + 20;
+    char *full = malloc(cap);
+    if (!full) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    snprintf(full, cap, "baga_rc_relf_%s", m);
+    free(m);
+    LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, full);
+    if (fn) { free(full); return fn; }
+    LLVMTypeRef sty = user_struct_ty(type_name);
+    fn = LLVMAddFunction(lg.mod, full,
+        LLVMFunctionType(lg.void_ty, &lg.ptr_ty, 1, 0));
+    free(full);
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    h_begin(fn);
+    LLVMValueRef sp = LLVMBuildBitCast(lg.builder, LLVMGetParam(fn, 0),
+        LLVMPointerType(sty, 0), "sp");
+    LLVMValueRef v = LLVMBuildLoad2(lg.builder, sty, sp, "v");
+    h_call(lrc_rc_fn(type_name, 1), &v, 1, "");
+    LLVMBuildRetVoid(lg.builder);
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
+
+/* static void baga_rc_relv_<S>(i8 *p)
+ * { baga_rc_release_vec(p, 2, 0, baga_rc_relf_<S>); }
+ * Shim за Vec<S> като елемент на външен Vec (kind 3 на външния не знае
+ * елементния тип на вложения) — огледало на codegen_c.c:4651. */
+static LLVMValueRef lrc_relv_fn(const char *type_name) {
+    char *m = llvm_mangle(type_name);
+    size_t cap = strlen(m) + 20;
+    char *full = malloc(cap);
+    if (!full) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    snprintf(full, cap, "baga_rc_relv_%s", m);
+    free(m);
+    LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, full);
+    if (fn) { free(full); return fn; }
+    fn = LLVMAddFunction(lg.mod, full,
+        LLVMFunctionType(lg.void_ty, &lg.ptr_ty, 1, 0));
+    free(full);
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    h_begin(fn);
+    LLVMValueRef relf = LLVMBuildBitCast(lg.builder,
+        lrc_relf_fn(type_name), lg.ptr_ty, "relf");
+    LLVMValueRef a[] = {
+        LLVMGetParam(fn, 0),
+        LLVMConstInt(lg.i64_ty, 2, 0),
+        LLVMConstInt(lg.i64_ty, 0, 0),
+        relf,
+    };
+    h_call(baga_rt("baga_rc_release_vec"), a, 4, "");
+    LLVMBuildRetVoid(lg.builder);
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
+
+/* box destructor за struct/enum елементен/стойностен тип с heap полета —
+ * relf shim-ът като функция (NULL → няма heap полета). Порт на rc_box_rel
+ * (codegen_c.c:410); lrc_box_rel е i8* обвивката за container аргументите. */
+static LLVMValueRef lrc_box_rel_fn(const char *type_name) {
+    if (!type_name) return NULL;
+    int heap = lrc_struct_has_heap(type_name);
+    if (!heap) {
+        Node *ed = find_sum_enum(type_name);
+        heap = ed && lrc_enum_has_heap(ed);
+    }
+    if (!heap) return NULL;
+    return lrc_relf_fn(type_name);
+}
+
+static LLVMValueRef lrc_box_rel(const char *type_name) {
+    LLVMValueRef fn = lrc_box_rel_fn(type_name);
+    if (!fn) return LLVMConstNull(lg.ptr_ty);
+    return LLVMBuildBitCast(lg.builder, fn, lg.ptr_ty, "relf");
+}
+
+/* destructor за kind 3 (вложен Vec) елементи — relv shim, когато елементът
+ * е Vec<S> и S е struct с heap полета; иначе NULL (старата граница:
+ * вътрешният vec се release-ва като kind 0 — leak-safe, като codegen_c).
+ * Порт на rc_nested_vec_rel_type + _node (inferred Type първо). */
+static LLVMValueRef lrc_nested_vec_rel(Type *vty, Node *tn) {
+    const char *sn = NULL;
+    if (vty && vty->elem && vty->elem->kind == TYPE_VEC &&
+        vty->elem->elem && vty->elem->elem->kind == TYPE_STRUCT)
+        sn = vty->elem->elem->name;
+    if (!sn && tn) {
+        Node *inner = tn->inner_type;
+        if (inner && inner->kind == NODE_TYPE && inner->type_name &&
+            strcmp(inner->type_name, "Vec") == 0) {
+            Node *es = inner->inner_type;
+            if (es && es->kind == NODE_TYPE) sn = es->type_name;
+        }
+    }
+    if (!sn || !lrc_struct_has_heap(sn)) return LLVMConstNull(lg.ptr_ty);
+    return LLVMBuildBitCast(lg.builder, lrc_relv_fn(sn), lg.ptr_ty, "relv");
 }
 
 /* lazy dispatcher: връща helper-а, генерирайки тялото му при първа употреба */
@@ -4359,7 +4942,7 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
             p->param_name);
         LLVMBuildStore(lg.builder, param, alloca);
         st_define(p->param_name, alloca);
-        lrc_track_tag(p->param_name, lrc_tag_node(p->param_type), p->type,
+        lrc_track_tag(p->param_name, lrc_heap_tag_node(p->param_type), p->type,
                       p->param_type, 1);
     }
     /* тяло — огледало на emit_fn_llvm опашката */
@@ -4914,6 +5497,11 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                         if (!a) llvm_unsupported("print като payload");
                         LLVMTypeRef pty = llvm_type(ed->enum_payloads[vidx]);
                         a = coerce(a, pty);
+                        /* RC (Task 6): payload-ът се споделя по указател —
+                         * ident/borrowed се retain-ва (+1 за payload
+                         * референцията); fresh е owned — move (codegen_c
+                         * RC5 v0.6, codegen_c.c:2056-2088) */
+                        lrc_embed_retain(n->args.data[0], a);
                         LLVMValueRef cf = sum_ctor_fn(ed, vidx);
                         char *cn = tmp_name();
                         LLVMValueRef r = h_call(cf, &a, 1, cn);
@@ -5133,11 +5721,15 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                         if (!e) llvm_unsupported("vec_push аргумент");
                         /* RC: bytes елемент — retain на data (контейнерът
                          * става собственик; codegen_c: baga_vec_push_bytes).
-                         * struct/enum полета — Task 6. */
+                         * struct/enum (Task 6): box копието споделя heap
+                         * полетата — retain_<S> (освен при fresh литерал/
+                         * ctor — move; като codegen_c.c:2266-2301). */
                         if (lg.rc && vt->elem->kind == TYPE_BYTES) {
                             LLVMValueRef bd = LLVMBuildExtractValue(lg.builder,
                                 e, 0, "bd");
                             h_call(baga_rt("baga_rc_retain"), &bd, 1, "rcr");
+                        } else if (lg.rc) {
+                            lrc_embed_retain(n->args.data[1], e);
                         }
                         LLVMValueRef tmp = entry_alloca(sty, "bx");
                         LLVMBuildStore(lg.builder, e, tmp);
@@ -5159,7 +5751,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                         if (!e) llvm_unsupported("vec_set аргумент");
                         /* RC: bytes елемент — retain на новата data, release
                          * на старата (в този ред — alias-safe; codegen_c:
-                         * baga_vec_set_bytes). struct/enum полета — Task 6. */
+                         * baga_vec_set_bytes). struct/enum (Task 6): retain
+                         * на новото, после relf на стария box (codegen_c:
+                         * baga_vec_set_box_rc). */
                         if (lg.rc && vt->elem->kind == TYPE_BYTES) {
                             LLVMValueRef bd = LLVMBuildExtractValue(lg.builder,
                                 e, 0, "bd");
@@ -5173,6 +5767,17 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                                 LLVMBuildStructGEP2(lg.builder, baga_bytes_ty(),
                                     obp, 0, "odp"), "od");
                             h_call(baga_rt("baga_rc_release_bytes"), &od, 1, "");
+                        } else if (lg.rc) {
+                            lrc_embed_retain(n->args.data[2], e);
+                            LLVMValueRef rel = lrc_box_rel_fn(vt->elem->name);
+                            if (rel) {
+                                LLVMValueRef ga[] = { v, i };
+                                LLVMValueRef ob = h_call(
+                                    baga_rt("baga_vec_get_box"), ga, 2, "ob");
+                                LLVMTypeRef rfty = LLVMFunctionType(lg.void_ty,
+                                    &lg.ptr_ty, 1, 0);
+                                LLVMBuildCall2(lg.builder, rfty, rel, &ob, 1, "");
+                            }
                         }
                         LLVMValueRef tmp = entry_alloca(sty, "bx");
                         LLVMBuildStore(lg.builder, e, tmp);
@@ -5230,6 +5835,41 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     if (is_set) {
                         LLVMValueRef v = emit_expr_llvm(n->args.data[2]);
                         if (!v) llvm_unsupported("map_set стойност");
+                        /* RC (Task 6): box стойността споделя heap полетата —
+                         * retain на новото, после relf на стария box при
+                         * overwrite (alias-safe ред; codegen_c:
+                         * baga_map_set_<k>_box_rc, codegen_c.c:2514-2522) */
+                        if (lg.rc) {
+                            lrc_embed_retain(n->args.data[2], v);
+                            LLVMValueRef rel = lrc_box_rel_fn(mt->elem->name);
+                            if (rel) {
+                                char get_name[64];
+                                snprintf(get_name, sizeof get_name,
+                                         "baga_map_get_%s_box", ksuf);
+                                LLVMValueRef ga[] = { mv, k };
+                                LLVMValueRef ob = h_call(baga_rt(get_name),
+                                    ga, 2, "ob");
+                                LLVMValueRef cfn =
+                                    LLVMGetBasicBlockParent(
+                                        LLVMGetInsertBlock(lg.builder));
+                                LLVMBasicBlockRef rel_bb =
+                                    LLVMAppendBasicBlockInContext(lg.ctx,
+                                        cfn, "orel");
+                                LLVMBasicBlockRef done_bb =
+                                    LLVMAppendBasicBlockInContext(lg.ctx,
+                                        cfn, "odone");
+                                LLVMBuildCondBr(lg.builder,
+                                    LLVMBuildIsNull(lg.builder, ob, "isn"),
+                                    done_bb, rel_bb);
+                                LLVMPositionBuilderAtEnd(lg.builder, rel_bb);
+                                LLVMTypeRef rfty = LLVMFunctionType(lg.void_ty,
+                                    &lg.ptr_ty, 1, 0);
+                                LLVMBuildCall2(lg.builder, rfty, rel, &ob,
+                                               1, "");
+                                LLVMBuildBr(lg.builder, done_bb);
+                                LLVMPositionBuilderAtEnd(lg.builder, done_bb);
+                            }
+                        }
                         LLVMValueRef tmp = entry_alloca(sty, "bx");
                         LLVMBuildStore(lg.builder, coerce(v, sty), tmp);
                         LLVMValueRef bp = LLVMBuildBitCast(lg.builder, tmp,
@@ -5361,7 +6001,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             int ai = lg.rc ? lrc_find(n->assign_target->name) : -1;
             if (ai >= 0 && !lg.lrc_locals[ai].is_param && !lg.lrc_locals[ai].dead) {
                 if (n->assign_val->kind == NODE_IDENT)
-                    lrc_emit_retain_val(lg.lrc_locals[ai].tag, v);
+                    lrc_emit_retain_val(lg.lrc_locals[ai].tag,
+                                        lg.lrc_locals[ai].type,
+                                        lg.lrc_locals[ai].type_node, v);
                 lrc_emit_release(&lg.lrc_locals[ai]);
             }
             LLVMBuildStore(lg.builder, v, alloca);
@@ -5473,6 +6115,10 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 LLVMValueRef v = emit_expr_llvm(n->lit_values.data[i]);
                 if (!v) llvm_unsupported("print като стойност на поле");
                 LLVMTypeRef fty = llvm_type(decl->fields.data[idx]->fld_type);
+                /* RC (Task 6): литералът споделя heap полета по указател —
+                 * ident/borrowed стойност се retain-ва (+1 за полето);
+                 * fresh израз е owned — move (codegen_c.c:3111-3141) */
+                lrc_embed_retain(n->lit_values.data[i], v);
                 LLVMValueRef gep = LLVMBuildStructGEP2(lg.builder, sty, tmp,
                                                        (unsigned)idx, "fld");
                 LLVMBuildStore(lg.builder, coerce(v, fty), gep);
@@ -5794,16 +6440,32 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
                 /* RC: alias (let x = y) → retain преди store; свежата
                  * конструкция идва с rc=1 от alloc — без retain */
                 if (lg.rc && n->let_init->kind == NODE_IDENT)
-                    lrc_emit_retain_val(lrc_type_tag(n->let_init->type), val);
+                    lrc_emit_retain_val(lrc_heap_tag(n->let_init->type),
+                                        n->let_init->type, NULL, val);
                 LLVMBuildStore(lg.builder, val, alloca);
             }
             st_define(n->let_name, alloca);
             /* RC: tag от init типа; fallback към анотацията (`let v: Vec<str>
              * = vec_new()` — inferred типът няма elem информация, но kind
-             * стига за tag-а). Като rc_heap_tag + rc_heap_tag_node в C. */
+             * стига за tag-а). Като rc_heap_tag + rc_heap_tag_node в C.
+             * Task 6: tag 5/6 се регистрират САМО при свеж литерал/ctor или
+             * alias на track-нат ident (codegen_c.c:3898-3920) — fn
+             * резултат/vec_get/поле споделят собствеността и се остават
+             * untrack-нати (leak-safe, като C). */
             if (lg.rc) {
-                int ltag = n->let_init ? lrc_type_tag(n->let_init->type) : 0;
-                if (!ltag && n->let_type) ltag = lrc_tag_node(n->let_type);
+                int ltag = n->let_init ? lrc_heap_tag(n->let_init->type) : 0;
+                if (!ltag && n->let_type) ltag = lrc_heap_tag_node(n->let_type);
+                if (ltag == 5 || ltag == 6) {
+                    int fresh = n->let_init &&
+                        (n->let_init->kind == NODE_STRUCT_LIT ||
+                         lrc_is_enum_ctor(n->let_init));
+                    int from_tr = 0;
+                    if (n->let_init && n->let_init->kind == NODE_IDENT) {
+                        int si = lrc_find(n->let_init->name);
+                        if (si >= 0 && !lg.lrc_locals[si].dead) from_tr = 1;
+                    }
+                    if (!fresh && !from_tr) ltag = 0;
+                }
                 lrc_track_tag(n->let_name, ltag,
                               n->let_init ? n->let_init->type : NULL,
                               n->let_type, 0);
@@ -6126,7 +6788,7 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
         /* RC: параметрите са borrowed (is_param=1) — track-ват се (за retain
          * при alias/move проверки), но не се release-ват */
         lrc_track_tag(fn->params.data[i]->param_name,
-                      lrc_tag_node(fn->params.data[i]->param_type),
+                      lrc_heap_tag_node(fn->params.data[i]->param_type),
                       fn->params.data[i]->type,
                       fn->params.data[i]->param_type, 1);
     }

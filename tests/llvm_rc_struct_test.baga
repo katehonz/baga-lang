@@ -1,0 +1,133 @@
+// llvm_rc_struct_test — Task 6: RC parity за struct/enum между C и LLVM
+// бекенда (порт на RC5). Упражнява struct с heap полета (str/bytes/Vec),
+// вложен struct (транзитивен release), sum enum с heap payload (switch
+// release), Vec<struct>/Map<str,struct> box елементи (relf destructor),
+// alias retain, drop, move на return и enum като стойност в Map.
+// Само конструкти, които LLVM вече поддържа (като examples/vec_struct,
+// sum_enum, nested_enum, map_enum). Детерминистичен изход; минава с и без
+// --rc, идентично в двата бекенда.
+
+struct Red { ime: str, broj: i64 }
+struct Kutia { nadpis: str, red: Red, danni: bytes }
+
+enum Paket { Tekst(str), Chislo(i64), Kutija(Kutia), Prazno }
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn opisai(p: Paket) -> str {
+    return match p {
+        Tekst(t) => concat("tekst:", t),
+        Chislo(n) => concat("chislo:", i64_to_str(n)),
+        Kutija(k) => concat("kutia:", k.nadpis),
+        Prazno => "prazno",
+    }
+}
+
+// move на return — собствеността върви към caller-а
+fn napravi_red(n: str) -> Red {
+    let r = Red { ime: concat("red-", n), broj: 42 }
+    return r
+}
+
+fn main() -> i64 {
+    // 1. struct със str/bytes полета — release на полетата при scope exit
+    let s1 = Red { ime: concat("здра", "вей"), broj: 1 }
+    check("struct_field", s1.ime == "здравей" && s1.broj == 1)
+
+    // 2. alias (let s2 = s1) — retain_R преди store; двата собственика се
+    // release-ват балансирано при scope exit
+    let s2 = s1
+    check("alias", s2.ime == "здравей")
+
+    // 3. вложен struct — транзитивен release (release_Kutia → release_Red)
+    let k1 = Kutia { nadpis: concat("ку", "тия"),
+                     red: Red { ime: concat("влож", "ен"), broj: 7 },
+                     danni: x"beef" }
+    check("nested", k1.red.ime == "вложен" && hex_encode(k1.danni) == "beef")
+
+    // 4. enum с heap payload — switch(tag) release; ident payload → retain
+    let t1 = concat("пayeт", "-едно")
+    let p1 = Tekst(t1)
+    check("enum_str", opisai(p1) == "tekst:пayeт-едно")
+    check("enum_src_alive", t1 == "пayeт-едно")
+    let p2 = Kutija(k1)
+    check("enum_struct", opisai(p2) == "kutia:кутия")
+    check("enum_plain", opisai(Prazno) == "prazno")
+
+    // 5. Vec<struct> — box елементи с relf destructor при release на века;
+    // push на fresh литерал (move) и на ident (retain); grow > 8
+    let v: Vec<Red> = vec_new()
+    vec_push(v, Red { ime: concat("нул", "ев"), broj: 0 })
+    vec_push(v, s1)
+    for i in 0..10 {
+        vec_push(v, Red { ime: concat("р", i64_to_str(i)), broj: i })
+    }
+    check("vec_len", vec_len(v) == 12)
+    let g1 = vec_get(v, 1)
+    check("vec_get", g1.ime == "здравей")
+    vec_set(v, 0, Red { ime: concat("заме", "нен"), broj: 99 })
+    let g0 = vec_get(v, 0)
+    check("vec_set", g0.ime == "заменен" && g0.broj == 99)
+
+    // 6. Vec<enum> — box елементи с heap payload (relf_E по runtime tag)
+    let ev: Vec<Paket> = vec_new()
+    vec_push(ev, Tekst(concat("а", "б")))
+    vec_push(ev, Kutija(Kutia { nadpis: "в",
+                                red: Red { ime: "г", broj: 1 },
+                                danni: x"00" }))
+    vec_push(ev, Prazno)
+    check("vec_enum", opisai(vec_get(ev, 0)) == "tekst:аб" &&
+                      opisai(vec_get(ev, 1)) == "kutia:в" &&
+                      opisai(vec_get(ev, 2)) == "prazno")
+
+    // 7. Map<str, struct> — box стойности: relf при release/overwrite
+    let m = map_new()
+    map_set(m, "първи", Red { ime: concat("ед", "но"), broj: 1 })
+    map_set(m, "втори", s2)
+    check("map_get", map_get(m, "втори").ime == "здравей")
+    map_set(m, "първи", Red { ime: concat("нов", "о"), broj: 11 })
+    check("map_over", map_get(m, "първи").broj == 11)
+    check("map_len", map_len(m) == 2)
+
+    // 8. Map<i64, enum> — enum стойности с heap payload (overwrite пуска
+    // стария payload през relf)
+    let em = map_new()
+    map_set(em, 1, Tekst(concat("пър", "ви")))
+    map_set(em, 2, Chislo(22))
+    check("map_enum", opisai(map_get(em, 1)) == "tekst:първи")
+    map_set(em, 1, Tekst(concat("сме", "нен")))
+    check("map_enum_over", opisai(map_get(em, 1)) == "tekst:сменен")
+
+    // 9. drop на Vec<struct> под --rc ≡ release (relf destructor на всеки
+    // box елемент + free на box-овете през header-ите)
+    let dv: Vec<Red> = vec_new()
+    vec_push(dv, Red { ime: concat("за", " drop"), broj: 5 })
+    vec_push(dv, s1)
+    drop(dv)
+    check("drop_ok", true)
+
+    // 10. move на return + fn резултат (untrack-нат — leak-safe, като C)
+    let r1 = napravi_red("тест")
+    check("ret_move", r1.ime == "red-тест" && r1.broj == 42)
+
+    // 11. struct/enum във вложен scope — release при изход от блока;
+    // borrowed payload (tmp.ime) се retain-ва при ctor-а
+    let mut total: i64 = 0
+    for i in 0..5 {
+        let tmp = Red { ime: concat("it", i64_to_str(i)), broj: i }
+        let tp = Tekst(tmp.ime)
+        total = total + tmp.broj + len(opisai(tp))
+    }
+    // sum(tmp.broj) = 10; len("tekst:it<i>") = 9 → 10 + 5*9 = 55
+    check("loop_scope", total == 55)
+
+    print("DONE")
+    return 0
+}
