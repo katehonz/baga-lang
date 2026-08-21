@@ -960,13 +960,20 @@ static void mem3_bind(CheckCtx *ctx, EnvEntry *pe, Node *init) {
     int rid = region_of_expr(ctx, init);
     int aid = expr_arena_id(ctx, init);
     if (aid > 0) {
+        /* реален handle: arena_new или алиас на is_arena */
         pe->is_arena = 1;
         pe->arena_id = aid;
         pe->region_id = 0;
-    } else {
-        pe->is_arena = 0;
-        pe->arena_id = 0;
-        pe->region_id = rid;
+        return;
+    }
+    pe->is_arena = 0;
+    pe->region_id = rid;
+    pe->arena_id = 0;
+    /* копие на i64 param — пази potential-handle id без is_arena,
+     * за `let b = a; return b` в wrap */
+    if (init->kind == NODE_IDENT) {
+        EnvEntry *src = env_find(ctx, init->name);
+        if (src && src->arena_id > 0) pe->arena_id = src->arena_id;
     }
 }
 
@@ -3546,6 +3553,10 @@ static void mem3_collect_rets(CheckCtx *ctx, Node *n,
                 int r = region_of_expr(ctx, n->ret_val);
                 if (r > 0 && *nr < cap) rids[(*nr)++] = r;
                 int h = lookup_arena_id(ctx, n->ret_val);
+                if (h <= 0 && n->ret_val->kind == NODE_IDENT) {
+                    EnvEntry *e = env_find(ctx, n->ret_val->name);
+                    if (e && e->arena_id > 0) h = e->arena_id;
+                }
                 if (h > 0 && *nh < cap) hids[(*nh)++] = h;
             }
             return;
@@ -3588,7 +3599,8 @@ static int mem3_ids_to_param(CheckCtx *ctx, Node *fn, int *ids, int nids) {
         int pi = -1;
         for (int i = 0; i < fn->params.len; i++) {
             EnvEntry *pe = env_find(ctx, fn->params.data[i]->param_name);
-            if (pe && pe->is_arena && pe->arena_id == ids[k]) { pi = i; break; }
+            if (pe && pe->arena_id == ids[k] && pe->arena_id > 0)
+                { pi = i; break; }
         }
         if (pi < 0) continue;
         if (param_idx < 0) param_idx = pi;
@@ -3608,6 +3620,10 @@ static void mem3_summarize_fn(CheckCtx *ctx, Node *fn, FnRec *rec) {
             int r = region_of_expr(ctx, last->expr);
             if (r > 0 && nr < 32) rids[nr++] = r;
             int h = lookup_arena_id(ctx, last->expr);
+            if (h <= 0 && last->expr->kind == NODE_IDENT) {
+                EnvEntry *e = env_find(ctx, last->expr->name);
+                if (e && e->arena_id > 0) h = e->arena_id;
+            }
             if (h > 0 && nh < 32) hids[nh++] = h;
         }
     }
@@ -3657,12 +3673,11 @@ static void check_fn(CheckCtx *ctx, Node *fn) {
         EnvEntry *pe = env_find(ctx, p->param_name);
         if (pe) {
             pe->is_param = 1;
-            /* MEM-3: i64 param може да е arena handle — alloc от него
-             * тагва payload към този id (free на param остава забранен) */
-            if (pt && pt->kind == TYPE_I64) {
-                pe->is_arena = 1;
+            /* MEM-3: i64 param може да е arena handle за alloc/return
+             * резюмета — но НЕ е is_arena (иначе `let x = n` гърми като
+             * забравена арена, liveness_struct.baga). */
+            if (pt && pt->kind == TYPE_I64)
                 pe->arena_id = ++ctx->next_arena_id;
-            }
         }
     }
 

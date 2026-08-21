@@ -9,7 +9,8 @@ BIN="${BAGA:-./baga}"
 BAGAIFLAGS="${BAGAIFLAGS:--I . -I app-product}"
 
 echo "=== verify (статична верификация, M0–M18) ==="
-for f in abs_val max2 clamp sum liveness_struct; do \
+# C2: raft_term / tpc_decide са чисти продуктови фрагменти (не пълен Raft).
+for f in abs_val max2 clamp sum liveness_struct raft_term tpc_decide; do \
 	"$BIN" $BAGAIFLAGS --verify examples/verify/$f.baga > /tmp/baga_verify_out.txt || true; \
 	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: $f доказано (completeness)" \

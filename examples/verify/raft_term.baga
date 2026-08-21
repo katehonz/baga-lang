@@ -1,5 +1,7 @@
-// raft_term.baga — S7 verify fragments: term adopt + vote + majority + prev_log.
-// Full concurrent Raft stays UNKNOWN; these pure rules are ДОКАЗАНО.
+// raft_term.baga — S7/C2 verify fragments: term adopt + vote + majority +
+// prev_log. Full concurrent Raft stays UNKNOWN (thesis-open-problems);
+// these pure rules' ensures are ДОКАЗАНО. majority's n/2+1 overflow is
+// честно НЕ МОГА ДА РЕША (n неограничен).
 
 import "raftbaga/rules.baga"
 

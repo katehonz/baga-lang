@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### checker — i64 param не е арена; C2 verify на raft/tpc фрагменти
+- `let x = n` за i64 параметър вече не гърми като забравена арена
+  (`is_arena` само за `arena_new` и реални handle алиаси). Gate:
+  `examples/verify/liveness_struct.baga`.
+- `can_grant_vote` / `prev_log_ok` nested-if → ensures ДОКАЗАНО.
+  `run_verify.sh` включва `raft_term` и `tpc_decide` (не се твърди пълен
+  Raft).
+
 ### checker — забравена арена е грешка
 - `let a = arena_new()` без `arena_free` никъде във fn и без `return a`
   е compile error. Vec/Map остават само под `--warn-leaks`. Maybe-leak
