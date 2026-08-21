@@ -1,0 +1,130 @@
+// llvm_rc_vecmap_test — Task 5: RC parity за Vec/Map между C и LLVM бекенда.
+// Упражнява push/get/set/del, grow (realloc→rc_alloc пътя), retain при
+// insert/alias, release при overwrite/del/scope exit, drop и move на return.
+// Детерминистичен изход; минава с и без --rc, идентично в двата бекенда.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// borrowed Vec<i64> параметър — не се release-ва от callee-я
+fn сумма(v: Vec<i64>) -> i64 {
+    let mut s: i64 = 0
+    for i in 0..vec_len(v) {
+        s += vec_get(v, i)
+    }
+    return s
+}
+
+// move на return — собствеността отива при caller-а
+fn направи(n: i64) -> Vec<i64> {
+    let v: Vec<i64> = vec_new()
+    for i in 0..n {
+        vec_push(v, i * i)
+    }
+    return v
+}
+
+// borrowed Map<str,i64> параметър
+fn брой(m: Map<str, i64>) -> i64 {
+    return map_len(m)
+}
+
+fn main() -> i64 {
+    // 1. Vec<i64> с grow (20 > 8 → doubling под rc: alloc+memcpy+free)
+    let v: Vec<i64> = vec_new()
+    for i in 0..20 {
+        vec_push(v, i)
+    }
+    check("vi_len", vec_len(v) == 20)
+    check("vi_get", vec_get(v, 7) == 7)
+    vec_set(v, 7, 77)
+    check("vi_set", vec_get(v, 7) == 77)
+    check("vi_sum", сумма(v) == 190 - 7 + 77)
+
+    // 2. move на return + alias (let v2 = w → retain)
+    let w: Vec<i64> = направи(10)
+    check("mv_sum", сумма(w) == 285)
+    let w2: Vec<i64> = w
+    check("alias", vec_len(w2) == 10)
+
+    // 3. Vec<str> — retain при push, release при set overwrite
+    let sv: Vec<str> = vec_new()
+    vec_push(sv, concat("здра", "вей"))
+    vec_push(sv, "свят")
+    for i in 0..10 {
+        vec_push(sv, concat("низ", i64_to_str(i)))
+    }
+    check("vs_len", vec_len(sv) == 12)
+    check("vs_get", vec_get(sv, 0) == "здравей")
+    vec_set(sv, 1, concat("нов", " свят"))
+    check("vs_set", vec_get(sv, 1) == "нов свят")
+
+    // 4. Map<str,i64> — set/overwrite/has/del/len + rehash (>12 записа)
+    let m: Map<str, i64> = map_new()
+    map_set(m, "едно", 1)
+    map_set(m, "две", 2)
+    map_set(m, "две", 22)
+    check("mi_over", map_get(m, "две") == 22)
+    check("mi_miss", map_get(m, "липсва") == 0)
+    check("mi_has", map_has(m, "едно") == 1)
+    for i in 0..20 {
+        map_set(m, concat("к", i64_to_str(i)), i)
+    }
+    check("mi_len", map_len(m) == 22)
+    check("mi_rehash", map_get(m, "к17") == 17)
+    map_del(m, "едно")
+    check("mi_del", map_has(m, "едно") == 0 && map_len(m) == 21)
+    check("mi_param", брой(m) == 21)
+
+    // 5. Map<i64,str> — str стойности: retain при set, release при del
+    let t: Map<i64, str> = map_new()
+    for i in 0..15 {
+        map_set(t, i, concat("н", i64_to_str(i)))
+    }
+    check("ts_len", map_len(t) == 15)
+    check("ts_get", map_get(t, 3) == "н3")
+    map_set(t, 3, concat("замест", "ено"))
+    check("ts_over", map_get(t, 3) == "заместено")
+    map_del(t, 3)
+    check("ts_del", map_get(t, 3) == "")
+
+    // 6. Map<str,str>
+    let ss: Map<str, str> = map_new()
+    map_set(ss, "ключ", concat("стой", "ност"))
+    check("ss_get", map_get(ss, "ключ") == "стойност")
+    map_set(ss, "ключ", "друга")
+    check("ss_over", map_get(ss, "ключ") == "друга")
+
+    // 7. map_keys → Vec<str> (push_str retain път през keys)
+    let ks: Vec<str> = map_keys(ss)
+    check("keys_len", vec_len(ks) == 1)
+    check("keys_get", vec_get(ks, 0) == "ключ")
+
+    // 8. drop под --rc ≡ release (контейнер + елементи)
+    let dv: Vec<str> = vec_new()
+    vec_push(dv, concat("за", " drop"))
+    drop(dv)
+    let dm: Map<str, i64> = map_new()
+    map_set(dm, "x", 1)
+    drop(dm)
+    check("drop_ok", true)
+
+    // 9. Vec във вложен scope — release при изход от блока
+    let mut total: i64 = 0
+    for i in 0..5 {
+        let tmp: Vec<i64> = vec_new()
+        vec_push(tmp, i)
+        vec_push(tmp, i * 2)
+        total += vec_get(tmp, 0) + vec_get(tmp, 1)
+    }
+    check("loop_scope", total == 30)
+
+    print("DONE")
+    return 0
+}
