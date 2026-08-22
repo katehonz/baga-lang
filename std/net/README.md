@@ -40,9 +40,20 @@ TLS 1.3 client (`tls.baga`): record layer, handshake, X.509 + RSA-PSS/ECDSA
 verify, application data. `tls_connect(host, port, timeout, trust_anchor)`;
 empty trust anchor accepts self-signed (dev/mock).
 
+TLS 1.3 server (`tls_server.baga`): `tls_accept(fd, cert_der, key)` —
+ClientHello parse, ServerHello (x25519), encrypted flight
+(EncryptedExtensions/Certificate/CertificateVerify/Finished), client
+Finished verify, role-swapped `TlsConn` for application data. Shares the
+client's wire/crypto (`tls.baga` / `tls_crypto.baga` / `tls_flight.baga` /
+`tls_conn.baga`); cert keys come from `std/crypto/pkey.baga` (PEM
+PKCS#8/PKCS#1/SEC1 → RSA-PSS or ECDSA-P256 signing). Honest limits:
+x25519 only; suites 4865/4866; single leaf cert; no tickets/HRR/client
+auth; alerts only before the encrypted flight. Consumed by boilaDB SSL
+(SSLRequest → 'S').
+
 Notes:
 
-- IPv4 only, blocking sockets. TLS 1.3 client only (no server, no 1.2).
+- IPv4 only, blocking sockets. TLS 1.3 client + server (no 1.2).
   Linux-only staging (memfd).
 - `sockaddr_in` (16 bytes) is staged in a short-lived arena per call.
   The bytes are first `pwrite`n one at a time into an anonymous memfd
