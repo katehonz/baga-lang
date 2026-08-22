@@ -346,6 +346,9 @@ struct Node {
             Type **inst_types;  /* inst_count × n_type_params конкретни типове */
             int inst_count;
             int inst_cap;
+            /* M25: parallel на inst_types — инстанция k е взета като fn
+             * стойност (annotated binding) → codegen emit-ва __clo wrapper */
+            int *inst_as_value;
         };
 
         /* NODE_PARAM */

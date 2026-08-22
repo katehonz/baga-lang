@@ -364,6 +364,9 @@ static void check_warn(CheckCtx *ctx, SrcPos pos, const char *fmt, ...);
 static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
                              char **tps, int np, Type **bind,
                              SrcPos pos, const char *fnname);
+/* M25: generic fn като стойност чрез явна fn анотация (деф. след
+ * generic_instantiate) */
+static int generic_fn_value_bind(CheckCtx *ctx, Node *id, Type *annot);
 
 /* M23: регистрира fn (топ-левел или impl метод) в fn регистъра */
 static void register_fn(CheckCtx *ctx, Node *item) {
@@ -1309,6 +1312,10 @@ static Type *call_fn_value(CheckCtx *ctx, Node *n, Type *ft) {
     Type *result = type_new(ret->kind);
     result->elem = ret->elem;
     result->name = ret->name;
+    /* M24/M25: instantiated generic struct ret — targs-ите трябва да
+     * оцелеят (иначе codegen emit-ва голото generic име — `b_Box`) */
+    result->targs = ret->targs;
+    result->n_targs = ret->n_targs;
     /* fn (L5): пази сигнатурата — върнатата closure е извикваема */
     result->ret = ret->ret;
     result->params = ret->params;
@@ -1637,6 +1644,10 @@ static Type *infer_call(CheckCtx *ctx, Node *n) {
             /* struct: keep the name so a returned struct matches the declared
              * return type / struct parameters (type_eq compares by name) */
             result->name = ret->name;
+            /* M24: instantiated generic struct резултат — targs-ите също
+             * (като generic пътя по-горе; иначе codegen вижда голото име) */
+            result->targs = ret->targs;
+            result->n_targs = ret->n_targs;
             /* fn (L5): keep the signature so the returned closure is callable */
             result->ret = ret->ret;
             result->params = ret->params;
@@ -2582,7 +2593,17 @@ static Type *infer(CheckCtx *ctx, Node *n) {
 
         case NODE_ASSIGN: {
             infer(ctx, n->assign_target);
-            t = infer(ctx, n->assign_val);
+            t = NULL;
+            /* M25: generic fn като стойност при assign — анотацията е типът
+             * на целта (`let mut f: fn(i64)->i64 = …; f = id`) */
+            if (n->assign_target->kind == NODE_IDENT &&
+                n->assign_val && n->assign_val->kind == NODE_IDENT) {
+                Type *tt = env_lookup(ctx, n->assign_target->name);
+                if (tt && tt->kind == TYPE_FN &&
+                    generic_fn_value_bind(ctx, n->assign_val, tt))
+                    t = n->assign_val->type;
+            }
+            if (!t) t = infer(ctx, n->assign_val);
             if (n->assign_target->kind == NODE_IDENT &&
                 !env_is_mut(ctx, n->assign_target->name)) {
                 check_error(ctx, n->pos,
@@ -2872,12 +2893,24 @@ static Type *infer(CheckCtx *ctx, Node *n) {
         }
 
         case NODE_LET: {
-            Type *init_t = n->let_init ? infer(ctx, n->let_init) : type_new(TYPE_I64);
+            /* M25: generic fn като стойност с явна fn анотация —
+             * `let f: fn(i64) -> i64 = id` инстанцира и връзва към
+             * инстанцията (преди нормалния infer, който иначе греши) */
+            Type *annot_t = n->let_type ? resolve_type_node(ctx, n->let_type)
+                                        : NULL;
+            Type *init_t;
+            if (annot_t && annot_t->kind == TYPE_FN && n->let_init &&
+                n->let_init->kind == NODE_IDENT &&
+                generic_fn_value_bind(ctx, n->let_init, annot_t)) {
+                init_t = n->let_init->type;
+            } else {
+                init_t = n->let_init ? infer(ctx, n->let_init) : type_new(TYPE_I64);
+            }
             if (n->let_init && init_t->kind == TYPE_VOID) {
                 check_error(ctx, n->pos,
                     "не може да се присвои void стойност на '%s'", n->let_name);
             }
-            Type *decl_t = n->let_type ? resolve_type_node(ctx, n->let_type) : init_t;
+            Type *decl_t = annot_t ? annot_t : init_t;
             if (n->let_type && n->let_init &&
                 decl_t->kind != TYPE_ERROR && init_t->kind != TYPE_ERROR &&
                 !type_eq(decl_t, init_t)) {
@@ -3420,7 +3453,13 @@ static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
                     "'%s': типовият параметър '%s' е изведен и като %s, и като %s — нееднозначно",
                     fnname, tps[i], type_str(bind[i]), type_str(at));
             } else {
-                bind[i] = at;
+                /* M25: плитко копие — substitution връща bind обекта през
+                 * resolve_type_node (g_types), а type_add_effect върху него
+                 * (`-> T !IO` при check на инстанцията) не трябва да мутира
+                 * типа на аргумента/анотацията (споделени обекти) */
+                Type *cp = type_new(at->kind);
+                *cp = *at;
+                bind[i] = cp;
             }
             return;
         }
@@ -3438,6 +3477,78 @@ static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
             bind_type_params(ctx, tn->gen_type_args.data[a], at->targs[a],
                              tps, np, bind, pos, fnname);
     }
+}
+
+/* M25: ядрото на generic_instantiate — намира/добавя инстанция по bind[]
+ * и проверява тялото под substitution (веднъж per инстанция). Поддържа
+ * inst_as_value (parallel маркер). Връща индекса на инстанцията. */
+static int generic_inst_add(CheckCtx *ctx, Node *fn, Type **bind, SrcPos pos) {
+    int np = fn->n_type_params;
+    /* потърси/добави инстанция */
+    int idx = -1;
+    for (int k = 0; k < fn->inst_count; k++) {
+        int same = 1;
+        for (int i = 0; i < np; i++)
+            if (!type_eq(fn->inst_types[k * np + i], bind[i])) { same = 0; break; }
+        if (same) { idx = k; break; }
+    }
+    if (idx >= 0) { free(bind); return idx; }   /* дубликат — bind не се пази */
+    idx = fn->inst_count;
+    fn->inst_types = realloc(fn->inst_types,
+        sizeof(Type *) * (size_t)((idx + 1) * (np ? np : 1)));
+    fn->inst_as_value = realloc(fn->inst_as_value, sizeof(int) * (size_t)(idx + 1));
+    if (!fn->inst_types || !fn->inst_as_value) {
+        fprintf(stderr, "baga: out of memory\n"); exit(1);
+    }
+    for (int i = 0; i < np; i++)
+        fn->inst_types[idx * np + i] = bind[i];
+    fn->inst_as_value[idx] = 0;
+    fn->inst_count = idx + 1;
+    /* проверка на тялото под substitution (веднъж per инстанция) —
+     * M21: пази/възстанови състоянието на обграждащия infer */
+    const char *saved_fn = ctx->cur_fn;
+    Type *saved_ret = ctx->cur_ret;
+    Type *saved_eff = ctx->cur_effects;
+    int saved_loop = ctx->loop_depth;
+    int saved_dlog = ctx->n_drop_log;
+    int saved_ovf = ctx->drop_log_overflowed;
+    ctx->g_names.len = 0; ctx->g_types.len = 0;
+    for (int i = 0; i < np; i++) {
+        vec_push(ctx->g_names, fn->type_params[i]);
+        vec_push(ctx->g_types, bind[i]);
+    }
+    restore_method_calls(fn->fn_body);
+    /* M21: всяка нова инстанция проверява тялото под СВОЯТА
+     * substitution — checked флагът (MEM-3) не трябва да го блокира,
+     * иначе втората инстанция остава с типовете на първата. */
+    FnRec *irec = fn_rec_of(ctx, fn);
+    if (irec) { irec->checked = 0; irec->checking = 0; }
+    check_fn(ctx, fn);
+    ctx->cur_fn = saved_fn;
+    ctx->cur_ret = saved_ret;
+    ctx->cur_effects = saved_eff;
+    ctx->loop_depth = saved_loop;
+    ctx->n_drop_log = saved_dlog;
+    ctx->drop_log_overflowed = saved_ovf;
+
+    /* M23: trait bounds — конкретният тип трябва да имплементира bound-а */
+    for (int i = 0; i < np; i++) {
+        if (!fn->param_bounds || !fn->param_bounds[i]) continue;
+        const char *bound = fn->param_bounds[i];
+        Type *bt = fn->inst_types[idx * np + i];
+        const char *tname = type_impl_name(bt);
+        const char *st = tname;
+        if (st && strchr(st, '.')) st = strrchr(st, '.') + 1;
+        int ok = 0;
+        for (int ii = 0; ii < ctx->n_impls; ii++)
+            if (strcmp(ctx->impls[ii].trait, bound) == 0 &&
+                st && strcmp(ctx->impls[ii].type_name, st) == 0) { ok = 1; break; }
+        if (!ok)
+            check_error(ctx, pos,
+                "типът %s не имплементира %s (bound на '%s')",
+                type_str(bt), bound, fn->type_params[i]);
+    }
+    return idx;
 }
 
 /* M21: инстанциране на generic fn при извикване. Връща substituted ret
@@ -3471,50 +3582,9 @@ static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call) {
         }
     }
 
-    /* потърси/добави инстанция */
-    int idx = -1;
-    for (int k = 0; k < fn->inst_count; k++) {
-        int same = 1;
-        for (int i = 0; i < np; i++)
-            if (!type_eq(fn->inst_types[k * np + i], bind[i])) { same = 0; break; }
-        if (same) { idx = k; break; }
-    }
-    if (idx < 0) {
-        idx = fn->inst_count;
-        fn->inst_types = realloc(fn->inst_types,
-            sizeof(Type *) * (size_t)((idx + 1) * (np ? np : 1)));
-        for (int i = 0; i < np; i++)
-            fn->inst_types[idx * np + i] = bind[i];
-        fn->inst_count = idx + 1;
-        /* проверка на тялото под substitution (веднъж per инстанция) —
-         * M21: пази/възстанови състоянието на обграждащия infer */
-        const char *saved_fn = ctx->cur_fn;
-        Type *saved_ret = ctx->cur_ret;
-        Type *saved_eff = ctx->cur_effects;
-        int saved_loop = ctx->loop_depth;
-        int saved_dlog = ctx->n_drop_log;
-        int saved_ovf = ctx->drop_log_overflowed;
-        ctx->g_names.len = 0; ctx->g_types.len = 0;
-        for (int i = 0; i < np; i++) {
-            vec_push(ctx->g_names, fn->type_params[i]);
-            vec_push(ctx->g_types, bind[i]);
-        }
-        restore_method_calls(fn->fn_body);
-        /* M21: всяка нова инстанция проверява тялото под СВОЯТА
-         * substitution — checked флагът (MEM-3) не трябва да го блокира,
-         * иначе втората инстанция остава с типовете на първата. */
-        FnRec *irec = fn_rec_of(ctx, fn);
-        if (irec) { irec->checked = 0; irec->checking = 0; }
-        check_fn(ctx, fn);
-        ctx->cur_fn = saved_fn;
-        ctx->cur_ret = saved_ret;
-        ctx->cur_effects = saved_eff;
-        ctx->loop_depth = saved_loop;
-        ctx->n_drop_log = saved_dlog;
-        ctx->drop_log_overflowed = saved_ovf;
-    } else {
-        free(bind);
-    }
+    int idx = generic_inst_add(ctx, fn, bind, call->pos);
+    /* bind[] е консумиран от ядрото (при нова инстанция указателите отиват
+     * в inst_types; при съществуваща се освобождава) */
 
     /* синтетичното име — codegen емитва варианта с него */
     size_t need = strlen(fn->fn_name) + 16;
@@ -3525,24 +3595,6 @@ static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call) {
      * за съобщения за грешка (leak-safe: node_free пипа само новото) */
     call->callee->name = nn;
 
-    /* M23: trait bounds — конкретният тип трябва да имплементира bound-а */
-    for (int i = 0; i < np; i++) {
-        if (!fn->param_bounds || !fn->param_bounds[i]) continue;
-        const char *bound = fn->param_bounds[i];
-        Type *bt = fn->inst_types[idx * np + i];
-        const char *tname = type_impl_name(bt);
-        const char *st = tname;
-        if (st && strchr(st, '.')) st = strrchr(st, '.') + 1;
-        int ok = 0;
-        for (int ii = 0; ii < ctx->n_impls; ii++)
-            if (strcmp(ctx->impls[ii].trait, bound) == 0 &&
-                st && strcmp(ctx->impls[ii].type_name, st) == 0) { ok = 1; break; }
-        if (!ok)
-            check_error(ctx, call->pos,
-                "типът %s не имплементира %s (bound на '%s')",
-                type_str(bt), bound, fn->type_params[i]);
-    }
-
     /* substitution активна за извикващия (params/ret резолване) */
     ctx->g_names.len = 0; ctx->g_types.len = 0;
     for (int i = 0; i < np; i++) {
@@ -3551,6 +3603,78 @@ static Type *generic_instantiate(CheckCtx *ctx, Node *fn, Node *call) {
     }
     return fn->ret_type ? resolve_type_node(ctx, fn->ret_type)
                         : type_new(TYPE_VOID);
+}
+
+/* M25: `let f: fn(i64) -> i64 = id` — generic fn като стойност с явна fn
+ * анотация. Унифицира анотацията със сигнатурата на generic-а по позиции
+ * (params + ret — същият bind_type_params като при извикване), инстанцира
+ * през M21 ядрото (generic_inst_add), маркира инстанцията като fn стойност
+ * (codegen emit-ва __clo wrapper за нея) и пренасочва IDENT-а към нея
+ * (име + TYPE_FN маркер със synth име — codegen познава wrapper-а по него).
+ * Връща 1, когато id е generic fn (обработен или диагностициран); 0 — не е,
+ * и нормалният infer път продължава. Без анотация остава сегашната грешка
+ * (NODE_IDENT value пътят). */
+static int generic_fn_value_bind(CheckCtx *ctx, Node *id, Type *annot) {
+    /* намери decl-а като при L5 резолюцията в NODE_IDENT (собственият
+     * модул печели при дубликати от няколко модула) */
+    int first = -1, ownidx = -1;
+    const char *own = mod_base(id->pos.file);
+    for (int i = 0; i < ctx->n_fns; i++) {
+        if (strcmp(ctx->fns[i].name, id->name) != 0) continue;
+        if (first < 0) first = i;
+        if (strcmp(ctx->fns[i].origin, own) == 0) ownidx = i;
+    }
+    if (first < 0) return 0;
+    FnRec *rec = &ctx->fns[ownidx >= 0 ? ownidx : first];
+    Node *fn = rec->decl;
+    if (!fn || fn->n_type_params == 0) return 0;   /* обикновена fn — нормален път */
+    int np = fn->n_type_params;
+    if (annot->nparams != fn->params.len) {
+        check_error(ctx, id->pos,
+            "generic fn '%s' не съвпада с анотацията %s по брой параметри (%d != %d)",
+            id->name, type_str(annot), annot->nparams, fn->params.len);
+        return 1;
+    }
+    Type **bind = calloc((size_t)(np ? np : 1), sizeof(Type *));
+    if (!bind) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    for (int i = 0; i < fn->params.len; i++)
+        bind_type_params(ctx, fn->params.data[i]->param_type, annot->params[i],
+                         fn->type_params, np, bind, id->pos, fn->fn_name);
+    if (fn->ret_type && annot->ret)
+        bind_type_params(ctx, fn->ret_type, annot->ret,
+                         fn->type_params, np, bind, id->pos, fn->fn_name);
+    for (int i = 0; i < np; i++) {
+        if (!bind[i]) {
+            check_error(ctx, id->pos,
+                "'%s': не мога да изведа типовия параметър '%s' от анотацията %s",
+                fn->fn_name, fn->type_params[i], type_str(annot));
+            bind[i] = type_new(TYPE_ERROR);
+        }
+    }
+    int idx = generic_inst_add(ctx, fn, bind, id->pos);
+    fn->inst_as_value[idx] = 1;
+
+    /* пренасочване към инстанцията: synth име + TYPE_FN маркер */
+    size_t need = strlen(fn->fn_name) + 16;
+    char *nn = malloc(need);
+    if (!nn) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    snprintf(nn, need, "%s__i%d", fn->fn_name, idx);
+    id->name = nn;   /* leak-safe: старото име е AST/грешки (като в generic_instantiate) */
+    Type *vt2 = type_fn(annot->ret, annot->params, annot->nparams);
+    /* ефектите идват от декларацията на generic-а — анотацията е договорът,
+     * срещу който се проверява fn_effects_subset при binding-а */
+    Type *gt = rec->fn_type;
+    if (gt && gt->ret && gt->ret->n_effects > 0 && vt2->ret) {
+        Type *vr = type_new(vt2->ret->kind);
+        vr->elem = vt2->ret->elem;
+        vr->name = vt2->ret->name;
+        vr->effects = gt->ret->effects;
+        vr->n_effects = gt->ret->n_effects;
+        vt2->ret = vr;
+    }
+    vt2->name = nn;
+    id->type = vt2;
+    return 1;
 }
 
 static void mem3_collect_rets(CheckCtx *ctx, Node *n,

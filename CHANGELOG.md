@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### checker+codegen — M25: generic fn като стойност чрез явна fn-тип анотация
+- `let f: fn(i64) -> i64 = id` вече работи: анотацията дава targs-ите.
+  Checker-ът унифицира анотацията със сигнатурата на generic-а по позиции
+  (params + ret) през същия `bind_type_params` като при извикване,
+  инстанцира през M21 ядрото (извадено като `generic_inst_add` от
+  `generic_instantiate` — споделя търсенето/добавянето на инстанция,
+  recheck-а на тялото и M23 trait bounds) и пренасочва IDENT-а към
+  инстанцията (`id__i0` + TYPE_FN маркер със synth име). Същото при assign
+  към fn-типизирана mut цел (`f = id` — анотацията е типът на целта).
+- Конфликтна унификация (`(T,T)->T` срещу `fn(i64, str)->i64`), непълна
+  (типов параметър, който не се извежда от анотацията) и несъвпадение по
+  брой параметри са честни диагностики; без анотация (`let f = id`) остава
+  сегашната грешка „generic fn … не може да се ползва като стойност".
+- Инстанциите, взети като стойности, получават `__clo` wrapper-и: checker-ът
+  ги маркира в новия `inst_as_value` паралелен масив (baga.h); C бекендът
+  emit-ва wrapper със synth име в `lambda_out` (вика инстанцията,
+  `emit_type` resolve-ва под gen контекст); LLVM — `closure_wrapper_named`
+  разпознава `база__iN`, сетва gen контекст и вика предекларираната
+  инстанция. Под `--rc` fn стойностите са cell2 handle-и — RC пътищата не
+  ги track-ват (както досега), нищо не гърми.
+- Два съседни checker фикса, извадени наяве от probes: (1) `bind_type_params`
+  пазеше СПОДЕЛЕНИЯ Type обект на аргумента/анотацията, а substitution го
+  връща през `resolve_type_node` — `type_add_effect` от `-> T !IO` при
+  recheck на инстанцията мутираше анотацията/типа на аргумента (ефектният
+  договор на fn стойност с generic ефектна fn мълчеше); сега bind пази
+  плитко копие. (2) Резултатът от извикване (обикновена fn в `infer_call` и
+  fn стойност в `call_fn_value`) не копираше `targs` — `mk(5).v` с
+  `-> Box<i64>` губеше инстанцията и LLVM/C виждаха голото `b_Box`;
+  копират се както при generic пътя.
+- Gate: новият `tests/generic_fn_value_test.baga` (binding+повикване, две
+  инстанции, fn като аргумент на `apply`, два type параметъра, assign
+  rebind, споделена инстанция с директно извикване, generic struct резултат
+  през fn стойност, ефектен договор с `!IO`) в `tests/llvm_rc.sh`;
+  негативният `tests/generic_fn_value_bad.baga` е grep probe в
+  `scripts/run_tests.sh`; `make test-llvm-rc` и `make test-llvm` зелени.
+
 ### runtime — `--rc`: per-instance helper-и за generic struct-ове с heap полета (двата бекенда)
 - C бекенд: `emit_rc_struct_helpers` върти инстанциите на generic decl и
   emit-ва helper-ите с per-instance имена (`baga_rc_release_b_Box_i64`),

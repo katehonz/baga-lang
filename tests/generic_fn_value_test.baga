@@ -1,0 +1,84 @@
+// generic_fn_value_test — M25: generic fn като стойност чрез явна fn-тип
+// анотация (`let f: fn(i64) -> i64 = id`).
+//
+// Анотацията дава targs-ите: checker-ът унифицира `fn(i64) -> i64` със
+// сигнатурата на generic-а по позиции (params + ret), инстанцира през M21
+// машината и връзва стойността към ИНСТАНЦИЯТА (wrapper `b_id__i0__clo` в C,
+// ленив IR wrapper в LLVM). Assign към fn-типизирана mut цел работи също
+// (`f = id` — анотацията е типът на целта).
+//
+// НЕанотираният binding остава честна грешка (покрит от
+// scripts/run_tests.sh probe-а с tests/generic_fn_value_bad.baga):
+//   „generic fn 'id' не може да се ползва като стойност (v1) …"
+// Конфликтна/непълна анотация също е диагностика (bind_type_params /
+// „не мога да изведа типовия параметър … от анотацията").
+//
+// Минава и в двата бекенда, с и без --rc (fn стойностите са cell2 handle-и —
+// RC пътищата не ги track-ват, както досега); gate: tests/llvm_rc.sh.
+
+import "std/str/str.baga"
+
+struct GBox<T> { v: T, s: str }
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn id<T>(x: T) -> T { return x }
+fn first2<A, B>(a: A, b: B) -> A { return a }
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 { return f(x) }
+fn apply2(f: fn(i64, i64) -> i64, x: i64) -> i64 { return f(x, x + 1) }
+fn mkb<T>(x: T) -> GBox<T> { return GBox<T> { v: x, s: "кутия" } }
+// ефектният договор важи и за generic fn стойности: анотацията трябва да
+// включва ефектите на декларацията (без !IO в анотацията binding-ът е
+// грешка „fn стойността … има ефекти извън анотацията")
+fn pw<T>(x: T) -> T !IO { print(x) return x }
+
+fn main() -> i64 !IO {
+    // 1. binding + повикване
+    let f: fn(i64) -> i64 = id
+    check("bind_call", f(41) + 1 == 42)
+
+    // 2. две инстанции на един generic като стойности в една програма
+    let g: fn(str) -> str = id
+    check("two_instances", g("кот") == "кот" && f(1) == 1)
+
+    // 3. fn стойност като аргумент
+    check("as_arg", apply(f, 10) == 10)
+
+    // 4. повече type параметри, частично използвани в сигнатурата
+    // (B не участва в ret, но се извежда от втория параметър)
+    let p: fn(i64, str) -> i64 = first2
+    check("two_targs", p(7, "седем") == 7)
+
+    // 5. две типови променливи → една и съща инстанция (A=B=i64)
+    let p2: fn(i64, i64) -> i64 = first2
+    check("two_targs_same", apply2(p2, 5) == 5)
+
+    // 6. assign към fn-типизирана mut цел — анотацията е типът на целта
+    let mut h: fn(i64) -> i64 = f
+    h = id
+    check("assign_rebind", h(2) == 2 && apply(h, 3) == 3)
+
+    // 7. инстанцията е същата като при директно извикване — споделена
+    // мономорфизация (id(9) и f(9) викат едно тяло)
+    check("shared_inst", id(9) == 9 && f(9) == 9 && g("x") == "x")
+
+    // 8. fn стойност, връщаща instantiated generic struct — targs-ите на
+    // резултата оцеляват (M24 fix в call_fn_value/infer_call)
+    let mb: fn(i64) -> GBox<i64> = mkb
+    let bx = mb(5)
+    check("generic_struct_ret", bx.s == "кутия" && bx.v == 5)
+
+    // 9. ефектен договор: анотацията включва !IO — binding е валиден
+    let w: fn(i64) -> i64 !IO = pw
+    check("effects_ok", w(11) == 11)
+
+    print("generic_fn_value_test: all passed")
+    return 0
+}

@@ -4394,7 +4394,11 @@ static int is_verifier_only_annotation(Node *e) {
 static void emit_clo_wrapper(Codegen *cg, Node *fn) {
     if (fn->is_extern) return;
     FILE *lf = cg->lambda_out ? cg->lambda_out : cg->out;
-    char *wm = mangle_name(fn->fn_name);
+    /* M25: за generic инстанция (ползвана като fn стойност) името е
+     * synth-овото (id__i0) — wrapper-ът вика инстанцията; emit_type
+     * resolve-ва типовите променливи под активния gen контекст */
+    const char *wn = cg->gen_emit_name ? cg->gen_emit_name : fn->fn_name;
+    char *wm = mangle_name(wn);
     FILE *saved = cg->out;
     cg->out = lf;
     fprintf(lf, "static __attribute__((unused)) ");
@@ -4534,8 +4538,15 @@ static void emit_fn(Codegen *cg, Node *fn) {
 
     if (!ensures_spec && !cg->gen_emit_name) {
         /* L5: closure wrapper — fn стойностите вземат адреса му; в
-         * lambda_out (преди телата на функциите в изхода).
-         * M21: generic инстанции нямат wrapper (не са fn стойности) */
+         * lambda_out (преди телата на функциите в изхода) */
+        emit_clo_wrapper(cg, fn);
+        return;
+    }
+    /* M25: generic инстанция, ползвана като fn стойност (annotated binding),
+     * получава __clo wrapper със synth име; останалите инстанции — без */
+    if (!ensures_spec && cg->gen_emit_name && fn->inst_as_value &&
+        cg->gen_inst >= 0 && cg->gen_inst < fn->inst_count &&
+        fn->inst_as_value[cg->gen_inst]) {
         emit_clo_wrapper(cg, fn);
         return;
     }

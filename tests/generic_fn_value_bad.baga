@@ -1,0 +1,4 @@
+// Негативен probe за M25: generic fn като стойност БЕЗ анотация остава
+// честна грешка (виж tests/generic_fn_value_test.baga за работещия път).
+fn id<T>(x: T) -> T { return x }
+fn main() { let f = id }

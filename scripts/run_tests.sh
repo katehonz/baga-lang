@@ -127,6 +127,9 @@ printf "49\n21\n" | diff - /tmp/baga_import_out.txt > /dev/null \
 run tests/import_cycle_a.baga 2>&1 | grep -q "цикличен import" \
 	&& echo "OK: import цикълът е хванат" \
 	|| { echo "FAIL: import цикълът не е хванат"; exit 1; }
+run tests/generic_fn_value_bad.baga 2>&1 | grep -q "не може да се ползва като стойност" \
+	&& echo "OK: generic fn като стойност без анотация е честна грешка (M25)" \
+	|| { echo "FAIL: generic fn като стойност без анотация не е хванат"; exit 1; }
 echo "=== -I include path ==="
 cp tests/i_flag/main.baga /tmp/baga_i_flag_main.baga
 run -I tests/i_flag /tmp/baga_i_flag_main.baga > /tmp/baga_i_flag_out.txt \

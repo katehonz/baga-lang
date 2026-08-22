@@ -326,8 +326,12 @@ fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U> { … }
 - The body is checked **once per instance** with the concrete types — `p.x`
   is valid when `T` is a struct with a field `x`, and body errors point at
   the exact instance.
-- v1 limits: a generic fn cannot be a value (`let g = f`), and cannot contain
-  lambdas or a spec.
+- A generic fn as a value: with an explicit fn-type annotation —
+  `let f: fn(i64) -> i64 = id` (and assignment to a fn-typed `mut` target) —
+  the annotation supplies the type arguments and the value points at the
+  instance (M25). Without an annotation (`let f = id`) it stays an honest
+  error.
+- v1 limits: a generic fn cannot contain lambdas or a spec.
 
 ### 6.0.1 Traits and methods (M23)
 

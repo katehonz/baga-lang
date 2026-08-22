@@ -5349,7 +5349,9 @@ static LLVMTypeRef closure_fn_ty(Type *ft, LLVMTypeRef **params_out) {
 }
 
 /* wrapper за именувана fn като стойност: вика публичното име (spec-обвивката,
- * ако има такава) — като __clo в codegen_c. Ленив, по веднъж на функция. */
+ * ако има такава) — като __clo в codegen_c. Ленив, по веднъж на функция.
+ * M25: и инстанция на generic fn (`id__i0`) — базовият decl + gen контекст
+ * (llvm_type resolve-ва типовите променливи към targs на инстанцията). */
 static LLVMValueRef closure_wrapper_named(const char *fn_name) {
     char *m = llvm_mangle(fn_name);
     char wn[600];
@@ -5357,13 +5359,32 @@ static LLVMValueRef closure_wrapper_named(const char *fn_name) {
     LLVMValueRef ex = LLVMGetNamedFunction(lg.mod, wn);
     if (ex) { free(m); return ex; }
     Node *fn = find_user_fn(fn_name);
+    Node *saved_gf = lg.gen_fn;
+    int saved_gi = lg.gen_inst;
     if (!fn) {
-        char buf[256];
-        snprintf(buf, sizeof buf, "fn стойност на непозната функция '%s'", fn_name);
-        llvm_unsupported(buf);
+        /* M25: synth име на инстанция — `база__iN` */
+        const char *sep = strstr(fn_name, "__i");
+        int idx = -1;
+        char base[256];
+        if (sep && sscanf(sep + 3, "%d", &idx) == 1 && idx >= 0 &&
+            (size_t)(sep - fn_name) < sizeof base) {
+            memcpy(base, fn_name, (size_t)(sep - fn_name));
+            base[sep - fn_name] = '\0';
+            fn = find_user_fn(base);
+        }
+        if (!fn || idx < 0 || fn->n_type_params == 0 || idx >= fn->inst_count) {
+            char buf[256];
+            snprintf(buf, sizeof buf, "fn стойност на непозната функция '%s'", fn_name);
+            free(m);
+            llvm_unsupported(buf);
+        }
+        /* gen контекст: llvm_type resolve-ва типовите променливи */
+        lg.gen_fn = fn;
+        lg.gen_inst = idx;
     }
     LLVMValueRef target = LLVMGetNamedFunction(lg.mod, m);
     if (!target) {
+        lg.gen_fn = saved_gf; lg.gen_inst = saved_gi;
         free(m);
         llvm_unsupported("fn стойност преди декларация на функцията");
     }
@@ -5390,6 +5411,7 @@ static LLVMValueRef closure_wrapper_named(const char *fn_name) {
     else                   LLVMBuildRet(lg.builder, r);
     free(m);
     if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    lg.gen_fn = saved_gf; lg.gen_inst = saved_gi;
     return wrap;
 }
 
