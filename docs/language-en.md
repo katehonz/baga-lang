@@ -1046,14 +1046,13 @@ print(vec_len(v))             // OK — maybe-dropped is not definitely-dropped
   RC release with `--rc`). Under `--emit-llvm --rc` the RC model matches
   the C backend (scope release, retain on alias, move on return,
   transitive release for Vec/Map/struct/enum, release of statement-level
-  temps — RC4 — and of match scrutinee temps — v0.11), with these
-  exceptions:
-  (1) closure captures are not
-  retained (deferred to post-1.0), (2) cycles leak (no weak pointers) —
-  a final limit shared with the C backend, (3) the raise path does not
-  release locals (leak on exit through an effect — `h_ret_zero` returns
-  without a scope release; deferred to post-1.0). The deferred items are
-  tracked in the roadmap in `docs/v1.0-readiness-bg.md`.
+  temps — RC4 — and of match scrutinee temps — v0.11). The remaining
+  limits are **shared with the C backend**, not LLVM-specific (verified
+  in code): closure captures are borrowed and not retained (C registers
+  them with `is_param=1` in the wrapper — codegen_c.c:3542), the
+  raise/`?` path does not release locals (`emit_eff_return_zero` has no
+  scope release — codegen_c.c:1781; same leak in C), cycles leak (no
+  weak pointers).
   Subtlety: LLVM's `baga_rc_hdr` has no arena range guard — `p − 32` is
   read only when the page offset is ≥ 32, so a foreign page is never
   touched (page guard instead of a range check).

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### docs — LLVM `--rc` паритетът е пълен; последните „изключения" са споделени граници
+- Проверка в кода: closure capture-ите са borrowed и не се retain-ват и в C
+  бекенда (`is_param=1` в wrapper-а, codegen_c.c:3542), а `raise`/`?` пътят
+  не release-ва локали и в C (`emit_eff_return_zero` без scope release,
+  codegen_c.c:1781). Двете са прекласифицирани от „LLVM изключения" на
+  споделени граници в `docs/language-bg.md` / `docs/language-en.md`;
+  release при изход през ефект е записан като отделна post-1.0 идея за двата
+  бекенда в `docs/v1.0-readiness-bg.md` (точка 7). Без промяна в поведението.
+
 ### runtime — `--rc`: интерполация със str стойност вече не е underflow
 - `rc_tmp_fresh` регистрираше всеки `NODE_TO_STR` като fresh heap temp
   (rc=1 owned), но `to_str` върху str е identity (borrowed — емитира се
