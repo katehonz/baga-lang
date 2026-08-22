@@ -342,6 +342,21 @@ run_tls_sclient() {
 run_tls_sclient "RSA" /tmp/baga_tls_rsa_key.pem /tmp/baga_tls_rsa_cert.pem
 run_tls_sclient "ECDSA-P256" /tmp/baga_tls_ec_key.pem /tmp/baga_tls_ec_cert.pem
 
+echo "=== boilaDB SSL (SSLRequest → 'S' → TLS 1.3 → PG wire) ==="
+# Сървърът отговаря 'S' само при зададени BOILA_TLS_CERT/BOILA_TLS_KEY
+# (иначе 'N' — виж другите тестове); клиентът пита само при PGSSLMODE
+# (require/prefer) — без него pgbaga остава на историческия plaintext път.
+RC=0
+PGSSLMODE=require BOILA_TLS_CERT=/tmp/baga_tls_rsa_cert.pem BOILA_TLS_KEY=/tmp/baga_tls_rsa_key.pem \
+	run tests/boila_ssl_test.baga > /tmp/baga_boila_ssl_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "boila_ssl_test: all passed" /tmp/baga_boila_ssl_out.txt; then
+	echo "OK: boilaDB SSL — TLS 1.3 transport, simple + extended protocol"
+else
+	echo "FAIL: boila_ssl_test"
+	cat /tmp/baga_boila_ssl_out.txt
+	exit 1
+fi
+
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 # 8000 keeps clear of the crowded framework defaults (8080/8090) and of
 # ambient dev servers; override with REGISTRY_PORT when 8000 is taken.
@@ -360,7 +375,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

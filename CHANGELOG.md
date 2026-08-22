@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### boilaDB SSL + pgbaga TLS клиент (фронт 4 от v1.0-readiness — затворен)
+- **Сървър (boilaDB, P22-3):** SSLRequest вече отговаря `'S'`, когато са
+  зададени `BOILA_TLS_CERT`/`BOILA_TLS_KEY` (PEM пътища), и връзката се
+  ъпгрейдва до TLS 1.3 през новия `tls_accept`; иначе `'N'` (без
+  промяна). Транспортът е разделен: писането минава през
+  `BoilaPgSess.tls/tconn` (`pgw_write`/`pgw_write_a`), четенето — през
+  `PgWReader.tls/tconn` (`pgw_fill`); query loop-ът, COPY, SCRAM и MT
+  pool-ът отдолу са транспорт-независими. Фиксирана ок-конвенция:
+  0 = успех и в двата клона (иначе TLS успехът се четеше като грешка).
+- **Клиент (pgbaga):** `pg_connect_to` праща SSLRequest само при
+  `PGSSLMODE=require|prefer` (`require` отказва `'N'`); без env —
+  историческият plaintext път, т.е. реалният PostgreSQL остава на
+  доказания път (минималният клиент валидира само самоподписани
+  листове). `pg_write` ниши conn (TLS write seq напредва), `PgReader`
+  декриптира записите в `pg_fill`.
+- **Gate:** `tests/boila_ssl_test` — енд-то-енд: ръкостискане +
+  CREATE/INSERT/SELECT (simple) и $-параметри (extended) през
+  криптирания транспорт; плус регресиите `boila_scram_test` ('N')
+  и `api_test` (реален Postgres, plaintext). Wiring в `run_tests.sh`
+  (openssl-генериран сертификат).
+- Документи: `PLAN.md` (P22-3), `gaps.md` (W6-TLS → FIXED),
+  `docs/pgwire.md`, `docs/security.md`, pgbaga README/gaps/PLAN,
+  `docs/v1.0-readiness-bg.md` точка 4 → ✅.
+
 ### std/net — TLS 1.3 сървър ръкостискане (фронт 4 от v1.0-readiness)
 - `tls_server.baga` (нов): огледало на клиентския стек — парсване на
   ClientHello (supported_versions/key_share/signature_algorithms/cipher

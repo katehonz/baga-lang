@@ -46,7 +46,7 @@ fn wipe_root(root: str) -> i64 !IO !Par {
     return 0
 }
 
-fn scram_serve(ctx: i64) -> i64 !IO !Net !Time !Par {
+fn scram_serve(ctx: i64) -> i64 !IO !Net !Time !Par !Random {
     let lfd = cell2_0(ctx)
     let n = cell2_1(ctx)
     let mut i: i64 = 0
