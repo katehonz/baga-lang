@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### runtime — `--rc`: per-instance helper-и за generic struct-ове с heap полета (двата бекенда)
+- C бекенд: `emit_rc_struct_helpers` върти инстанциите на generic decl и
+  emit-ва helper-ите с per-instance имена (`baga_rc_release_b_Box_i64`),
+  resolve-вайки типовите променливи към `struct_inst_targs` — преди gcc
+  гърмеше с „unknown type name 'b_Box'". Helper се генерира само за
+  инстанция, която реално има heap полета след resolve (`Id<i64>` — не;
+  `Id<str>` — да). Forward decl-ите на shim-овете (relf/retp/relv) също са
+  per инстанция.
+- Resolve-ът на type-var полета: `rc_fld_inst_type` — типова променлива
+  (`v: T`) → targ на инстанцията; вложено instantiated generic поле
+  (`inner: Pair<i64>`) → checked типът на type възела (той носи targs).
+  `rc_heap_tag` вече е instance-aware (`rc_gen_inst_has_heap_d`), така че
+  tracking gating-ът, temp-овете и box предикатите (`rc_box_tracked`)
+  работят с конкретната инстанция.
+- Един споделен resolver за helper имена — `rc_rc_type_name` (instantiated
+  generic → `struct_cname_str`, иначе `mangle_name`) — приложен в
+  retain/release на локали, temp-ове, drop, struct литерал и field-assign
+  пътищата; `rc_box_rel_ty` е Type-aware вариант на `rc_box_rel` за
+  Vec/Map елементи/стойности; `rc_vec_elem_kind_type`/`rc_map_val_tag_type`
+  emit-ват per-instance `sizeof` (преди: `sizeof(b_Box)` — compile break).
+  Map box пътеките (set/del) ползват per-instance имена като Vec.
+- LLVM бекенд: същият модел като lazy IR — `lrc_struct_inst_rc_fn`
+  (per-instance retain/release тяло с resolved полета през
+  `lrc_fld_inst_type`/`lrc_field_rc_ty`), `lrc_rc_fn_ty` dispatcher,
+  `lrc_relf_fn_ty`/`lrc_box_rel_fn_ty` за container сайтовете;
+  `lrc_heap_tag` е instance-aware (огледало на C). Преди: track-нат generic
+  struct литерал падаше с честен отказ („неизвестна структура 'Box'"), а
+  fn-резултат локал течеше тихо. Сега IR съдържа реални
+  `baga_rc_release_b_Box_i64` повиквания.
+- Граница (непроменена): fn-резултат локали от tag 5/6 остават untrack-нати
+  по дизайн (MEM-4, leak-safe, споделено с C); `Vec<T>`/`Map` поле с
+  типова променлива като елемент остава kind 0 (leak-safe), но не чупи
+  компилацията.
+- Gate: новият `tests/generic_struct_rc_test.baga` (probe с generic fn, две
+  инстанции без колизия, heap-less инстанция, type-var → heap поле, вложено
+  Vec<i64> поле, borrowed поле оцелява release, alias retain баланс) в
+  `tests/llvm_rc.sh`; `make test-llvm-rc` зелен; без `--rc` emit-c и LLVM
+  IR са бит-идентични с предишните.
+
 ## [1.0.1] — 2026-08-22
 
 ### runtime — `--rc`: release на локали при изход през ефект (двата бекенда)

@@ -128,9 +128,13 @@ static int rc_type_node_tag(Node *ty) {
 
 static Node *find_struct_decl(Codegen *cg, const char *name);
 static Node *find_sum_enum_decl(Codegen *cg, const char *name);
+static char *struct_cname_str(Type *t);   /* M24: per-instance C име */
 
 /* RC5 v0.10: взаимна рекурсия struct↔enum (enum поле с heap payload брои) */
 static int rc_enum_has_heap_d(Codegen *cg, Node *item, int depth);
+/* M24-RC: instance-aware heap tag (depth-guarded) — дефиницията е след
+ * rc_nested_enum_field (взаимна рекурсия с rc_struct_has_heap_d) */
+static int rc_heap_tag_d(Codegen *cg, Type *t, int depth);
 
 /* RC5: struct с поне едно пряко str/bytes/Vec/Map поле.
  * v0.5: транзитивно — поле от struct тип с heap полета също брои (release_S
@@ -149,6 +153,14 @@ static int rc_struct_has_heap_d(Codegen *cg, const char *name, int depth) {
         while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
             t = t->inner_type;
         if (t && t->kind == NODE_TYPE && t->type_name) {
+            /* M24-RC: checked типът печели за struct/enum полета —
+             * instantiated generic поле (`inner: Pair<i64>`) се проверява
+             * per инстанция (decl-ът на Pair вижда само типови променливи) */
+            if (t->type && (t->type->kind == TYPE_STRUCT ||
+                            t->type->kind == TYPE_ENUM)) {
+                if (rc_heap_tag_d(cg, t->type, depth + 1)) return 1;
+                continue;
+            }
             if (rc_struct_has_heap_d(cg, t->type_name, depth + 1))
                 return 1;
             /* RC5 v0.10: enum поле с heap payload */
@@ -214,17 +226,104 @@ static const char *rc_nested_enum_field(Codegen *cg, Node *fld_type) {
     return NULL;
 }
 
-static int rc_heap_tag(Codegen *cg, Type *t) {
+/* M24-RC: инстанция на generic struct decl (d) с конкретни targs (vt) —
+ * има ли heap полета след resolve на типовите променливи? Decl-нивото
+ * вижда `v: T` като не-heap дори при T=str, затова проверката е per
+ * инстанция. */
+static int rc_gen_inst_has_heap_d(Codegen *cg, Node *d, Type *vt, int depth) {
+    if (depth > 32) return 0;
+    for (int i = 0; i < d->fields.len; i++) {
+        Node *ft = d->fields.data[i]->fld_type;
+        Node *t = ft;
+        while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+            t = t->inner_type;
+        if (!t || t->kind != NODE_TYPE || !t->type_name) continue;
+        /* типова променлива → targ на инстанцията */
+        int is_var = 0;
+        for (int a = 0; a < d->n_struct_params && a < vt->n_targs; a++) {
+            if (strcmp(t->type_name, d->struct_params[a]) == 0) {
+                if (rc_heap_tag_d(cg, vt->targs[a], depth + 1)) return 1;
+                is_var = 1;
+                break;
+            }
+        }
+        if (is_var) continue;
+        if (rc_type_node_tag(ft)) return 1;
+        /* вложено поле: checked типът печели (може instantiated generic) */
+        if (t->type && (t->type->kind == TYPE_STRUCT ||
+                        t->type->kind == TYPE_ENUM)) {
+            if (rc_heap_tag_d(cg, t->type, depth + 1)) return 1;
+            continue;
+        }
+        if (rc_struct_has_heap_d(cg, t->type_name, depth + 1)) return 1;
+        Node *ed = find_sum_enum_decl(cg, t->type_name);
+        if (ed && rc_enum_has_heap_d(cg, ed, depth + 1)) return 1;
+    }
+    return 0;
+}
+
+static int rc_heap_tag_d(Codegen *cg, Type *t, int depth) {
+    if (depth > 32) return 0;
     int tag = rc_type_tag(t);
     if (tag) return tag;
-    if (t && t->kind == TYPE_STRUCT && t->name && rc_struct_has_heap(cg, t->name))
-        return 5;
+    if (t && t->kind == TYPE_STRUCT && t->name) {
+        /* M24-RC: generic decl — per инстанция; голо име без targs пада
+         * обратно на decl-нивото (старото поведение) */
+        Node *d = find_struct_decl(cg, t->name);
+        if (d && d->n_struct_params > 0 && t->n_targs > 0)
+            return rc_gen_inst_has_heap_d(cg, d, t, depth + 1) ? 5 : 0;
+        if (rc_struct_has_heap(cg, t->name)) return 5;
+    }
     /* RC5 v0.6: enum с heap payload */
     if (t && t->kind == TYPE_ENUM && t->name) {
         Node *ed = find_sum_enum_decl(cg, t->name);
         if (ed && rc_enum_has_heap(cg, ed)) return 6;
     }
     return 0;
+}
+
+static int rc_heap_tag(Codegen *cg, Type *t) {
+    return rc_heap_tag_d(cg, t, 0);
+}
+
+/* M24-RC: C име на RC helper-ите (retain/release/relf/...) за struct/enum
+ * тип — instantiated generic struct (n_targs>0) получава per-instance
+ * името (b_Box_i64 чрез struct_cname_str); иначе обикновеният mangle на
+ * името (inferred Type първо, анотационен възел после). Върнатият низ е
+ * malloc-нат — caller-ът го free-ва. */
+static char *rc_rc_type_name(Type *ty, Node *tnode) {
+    if (ty && ty->kind == TYPE_STRUCT && ty->n_targs > 0)
+        return struct_cname_str(ty);
+    const char *sn = (ty && ty->name) ? ty->name : NULL;
+    if (!sn && tnode) {
+        Node *t = tnode;
+        while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+            t = t->inner_type;
+        if (t && t->kind == NODE_TYPE) sn = t->type_name;
+    }
+    return mangle_name(sn ? sn : "anon");
+}
+
+/* M24-RC: resolved тип на поле в контекста на инстанция k на generic decl
+ * s (s=NULL → не-generic контекст). Типова променлива (`v: T`) → targ-ът
+ * на инстанцията; вложено instantiated generic поле (`inner: Pair<i64>`)
+ * → checked типът на възела (той носи targs). Иначе NULL — ползва се
+ * досегашната node логика. */
+static Type *rc_fld_inst_type(Codegen *cg, Node *s, int k, Node *fld_type) {
+    (void)cg;
+    Node *t = fld_type;
+    while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+        t = t->inner_type;
+    if (!t || t->kind != NODE_TYPE || !t->type_name) return NULL;
+    if (s && k >= 0) {
+        for (int a = 0; a < s->n_struct_params; a++)
+            if (strcmp(t->type_name, s->struct_params[a]) == 0)
+                return s->struct_inst_targs[k * s->n_struct_params + a];
+    }
+    if (t->type && (t->type->kind == TYPE_STRUCT ||
+                    t->type->kind == TYPE_ENUM) && t->type->n_targs > 0)
+        return t->type;
+    return NULL;
 }
 
 static int rc_heap_tag_node(Codegen *cg, Node *ty) {
@@ -285,16 +384,11 @@ static void rc_emit_retain_val(Codegen *cg, int tag, Type *ty, Node *tnode,
                                const char *cname) {
     FILE *f = cg->out;
     if (tag == 5 || tag == 6) {
-        /* struct (5) или enum с heap payload (6) — retain_<име> по tag */
-        const char *sn = (ty && ty->name) ? ty->name : NULL;
-        if (!sn && tnode) {
-            Node *t = tnode;
-            while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
-                t = t->inner_type;
-            if (t && t->kind == NODE_TYPE) sn = t->type_name;
-        }
-        if (!sn) return;
-        char *sm = mangle_name(sn);
+        /* struct (5) или enum с heap payload (6) — retain_<име> по tag.
+         * M24-RC: instantiated generic struct — per-instance име. */
+        if (!((ty && ty->name) || tnode)) return;
+        char *sm = rc_rc_type_name(ty, tnode);
+        if (strcmp(sm, "b_anon") == 0) { free(sm); return; }
         fprintf(f, "baga_rc_retain_%s(%s); ", sm, cname);
         free(sm);
     } else if (tag == 2)
@@ -351,7 +445,9 @@ static int rc_vec_elem_kind_type(Type *e, char *sz, size_t szn) {
     }
     if (e->kind == TYPE_VEC) return 3;
     if (e->name && (e->kind == TYPE_STRUCT || e->kind == TYPE_ENUM)) {
-        char *m = mangle_name(e->name);
+        /* M24-RC: instantiated generic елемент — per-instance sizeof */
+        char *m = e->kind == TYPE_STRUCT && e->n_targs > 0
+            ? struct_cname_str(e) : mangle_name(e->name);
         snprintf(sz, szn, "(int64_t)sizeof(%s)", m);
         free(m);
         return 2;
@@ -371,7 +467,9 @@ static int rc_map_val_tag_type(Type *v, char *sz, size_t szn) {
     if (v->kind == TYPE_STR) return 1;
     if (v->kind == TYPE_BYTES) return 2;
     if (v->name && (v->kind == TYPE_STRUCT || v->kind == TYPE_ENUM)) {
-        char *m = mangle_name(v->name);
+        /* M24-RC: instantiated generic стойност — per-instance sizeof */
+        char *m = v->kind == TYPE_STRUCT && v->n_targs > 0
+            ? struct_cname_str(v) : mangle_name(v->name);
         snprintf(sz, szn, "(int64_t)sizeof(%s)", m);
         free(m);
         return 3;
@@ -445,13 +543,31 @@ static void rc_box_rel(Codegen *cg, const char *type_name, char *rel, size_t rel
     free(m);
 }
 
+/* M24-RC: Type-aware вариант на rc_box_rel — instantiated generic struct
+ * елемент/стойност получава per-instance relf (baga_rc_relf_b_Box_i64),
+ * само ако инстанцията реално има heap полета (иначе "0" — само free). */
+static void rc_box_rel_ty(Codegen *cg, Type *et, char *rel, size_t reln) {
+    if (et && et->kind == TYPE_STRUCT && et->n_targs > 0) {
+        snprintf(rel, reln, "0");
+        if (!cg->rc) return;
+        if (rc_heap_tag(cg, et) == 5) {
+            char *m = struct_cname_str(et);
+            snprintf(rel, reln, "baga_rc_relf_%s", m);
+            free(m);
+        }
+        return;
+    }
+    rc_box_rel(cg, (et && et->name) ? et->name : NULL, rel, reln);
+}
+
 /* RC5 v0.10: елементен/стойностен тип (struct или enum), чийто box изисква
  * destructor + retain при споделяне — общ предикат за push/set/del/slice
  * сайтовете (досега бяха struct-only). */
 static int rc_box_tracked(Codegen *cg, Type *et) {
     if (!cg->rc || !et || !et->name) return 0;
     if (et->kind == TYPE_STRUCT)
-        return rc_struct_has_heap(cg, et->name);
+        /* M24-RC: instance-aware (generic struct с targs) */
+        return rc_heap_tag(cg, et) == 5;
     if (et->kind == TYPE_ENUM) {
         Node *ed = find_sum_enum_decl(cg, et->name);
         return ed && rc_enum_has_heap(cg, ed);
@@ -560,7 +676,8 @@ static void rc_emit_release(Codegen *cg, RcLocal *e) {
             const char *sn = (e->type && e->type->name) ? e->type->name :
                 (e->type_node && e->type_node->type_name) ? e->type_node->type_name : NULL;
             if (sn) {
-                char *sm = mangle_name(sn);
+                /* M24-RC: instantiated generic struct — per-instance име */
+                char *sm = rc_rc_type_name(e->type, e->type_node);
                 fprintf(f, "baga_rc_release_%s(%s);\n", sm, e->name);
                 free(sm);
             }
@@ -571,7 +688,7 @@ static void rc_emit_release(Codegen *cg, RcLocal *e) {
             const char *en = (e->type && e->type->name) ? e->type->name :
                 (e->type_node && e->type_node->type_name) ? e->type_node->type_name : NULL;
             if (en) {
-                char *em = mangle_name(en);
+                char *em = rc_rc_type_name(e->type, e->type_node);
                 fprintf(f, "baga_rc_release_%s(%s);\n", em, e->name);
                 free(em);
             }
@@ -2241,8 +2358,10 @@ static void emit_expr(Codegen *cg, Node *n) {
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ", %d, %s, %s)", vt, sz, rel);
                         } else if (cg->rc && at && at->kind == TYPE_STRUCT &&
-                                   at->name && rc_struct_has_heap(cg, at->name)) {
-                            char *sm = mangle_name(at->name);
+                                   at->name && rc_heap_tag(cg, at) == 5) {
+                            /* M24-RC: instantiated generic — per-instance
+                             * име и проверка */
+                            char *sm = rc_rc_type_name(at, NULL);
                             fprintf(f, "baga_rc_release_%s(", sm);
                             emit_expr(cg, n->args.data[0]);
                             fprintf(f, ")");
@@ -2545,7 +2664,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                         const char *ksuf = "str";
                         if (mt->key && mt->key->kind == TYPE_I64) ksuf = "i64";
                         else if (mt->key && mt->key->kind == TYPE_BYTES) ksuf = "bytes";
-                        char *mn = mangle_name(mt->elem->name);
+                        /* M24-RC: instantiated generic стойност — per-instance име */
+                        char *mn = (mt->elem->kind == TYPE_STRUCT &&
+                                    mt->elem->n_targs > 0)
+                            ? struct_cname_str(mt->elem)
+                            : mangle_name(mt->elem->name);
                         if (strcmp(bn, "map_set") == 0) {
                             fprintf(f, "({ %s _bx = (", mn);
                             emit_expr(cg, n->args.data[2]);
@@ -2672,7 +2795,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (cg->rc && strcmp(bn, "map_del") == 0 &&
                         rc_box_tracked(cg, mt && mt->kind == TYPE_MAP ?
                                        mt->elem : NULL)) {
-                        char *mn = mangle_name(mt->elem->name);
+                        /* M24-RC: instantiated generic — per-instance име */
+                        char *mn = (mt->elem->kind == TYPE_STRUCT &&
+                                    mt->elem->n_targs > 0)
+                            ? struct_cname_str(mt->elem)
+                            : mangle_name(mt->elem->name);
                         fprintf(f, "baga_map_del_%s_rc(", ksuf);
                         emit_expr(cg, n->args.data[0]);
                         fprintf(f, ", ");
@@ -2975,7 +3102,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                             const char *sn = (e.type && e.type->name) ? e.type->name :
                                 (e.type_node && e.type_node->type_name) ? e.type_node->type_name : NULL;
                             if (sn) {
-                                char *sm = mangle_name(sn);
+                                /* M24-RC: instantiated generic — per-instance име */
+                                char *sm = rc_rc_type_name(e.type, e.type_node);
                                 fprintf(f, "baga_rc_release_%s(%s); ", sm, e.name);
                                 free(sm);
                             }
@@ -2986,7 +3114,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                             const char *en = (e.type && e.type->name) ? e.type->name :
                                 (e.type_node && e.type_node->type_name) ? e.type_node->type_name : NULL;
                             if (en) {
-                                char *em = mangle_name(en);
+                                char *em = rc_rc_type_name(e.type, e.type_node);
                                 fprintf(f, "baga_rc_release_%s(%s); ", em, e.name);
                                 free(em);
                             }
@@ -3225,11 +3353,12 @@ static void emit_expr(Codegen *cg, Node *n) {
                     if (rc_borrowed_init(val) && vltag != 0) {
                         char *fm2 = mangle_name(n->lit_fields[i]);
                         if (vltag == 5) {
-                            /* RC5 v0.5: borrowed вложен struct — retain_<T> */
+                            /* RC5 v0.5: borrowed вложен struct — retain_<T>.
+                             * M24-RC: per-instance име при targs */
                             const char *vn = val->type && val->type->name ?
                                 val->type->name : NULL;
                             if (vn) {
-                                char *vm = mangle_name(vn);
+                                char *vm = rc_rc_type_name(val->type, NULL);
                                 fprintf(f, "baga_rc_retain_%s(__rc_sl.%s); ",
                                         vm, fm2);
                                 free(vm);
@@ -4600,17 +4729,26 @@ static void emit_struct(Codegen *cg, Node *s) {
     free(m);
 }
 
-/* RC5: retain/release на преките heap полета. След typedef-а. */
-static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
-    if (!cg->rc || !rc_struct_has_heap(cg, s->struct_name)) return;
+/* RC5: retain/release на преките heap полета за един struct „вид" —
+ * k >= 0 → инстанция k на generic decl s (типовите променливи се resolve-ват
+ * към struct_inst_targs, M24-RC); k < 0 → не-generic decl. m е C името
+ * (per-instance за generic: b_Box_i64). След typedef-а. */
+static void emit_rc_struct_helpers_one(Codegen *cg, Node *s, int k,
+                                       const char *m) {
     FILE *f = cg->out;
-    char *m = mangle_name(s->struct_name);
     fprintf(f, "static inline void baga_rc_retain_%s(%s s) {\n", m, m);
     for (int i = 0; i < s->fields.len; i++) {
         Node *fld = s->fields.data[i];
-        int tag = rc_type_node_tag(fld->fld_type);
+        Type *rt = rc_fld_inst_type(cg, k >= 0 ? s : NULL, k, fld->fld_type);
+        int tag = rt ? rc_heap_tag(cg, rt) : rc_type_node_tag(fld->fld_type);
         char *fm = mangle_name(fld->fld_name);
-        if (!tag) {
+        if (tag == 5 || tag == 6) {
+            /* M24-RC: вложен struct/enum (вкл. instantiated generic) —
+             * рекурсивен retain с per-instance име */
+            char *nm = rc_rc_type_name(rt, NULL);
+            fprintf(f, "    baga_rc_retain_%s(s.%s);\n", nm, fm);
+            free(nm);
+        } else if (!tag) {
             /* RC5 v0.5: вложено struct поле — рекурсивен retain */
             const char *nn = rc_nested_struct_field(cg, fld->fld_type);
             if (nn) {
@@ -4631,7 +4769,7 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
         }
         if (tag == 2)
             fprintf(f, "    baga_rc_retain((void *)s.%s.data);\n", fm);
-        else
+        else if (tag)
             fprintf(f, "    baga_rc_retain((void *)s.%s);\n", fm);
         free(fm);
     }
@@ -4639,9 +4777,15 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
     fprintf(f, "static inline void baga_rc_release_%s(%s s) {\n", m, m);
     for (int i = 0; i < s->fields.len; i++) {
         Node *fld = s->fields.data[i];
-        int tag = rc_type_node_tag(fld->fld_type);
+        Type *rt = rc_fld_inst_type(cg, k >= 0 ? s : NULL, k, fld->fld_type);
+        int tag = rt ? rc_heap_tag(cg, rt) : rc_type_node_tag(fld->fld_type);
         char *fm = mangle_name(fld->fld_name);
-        if (!tag) {
+        if (tag == 5 || tag == 6) {
+            /* M24-RC: рекурсивен release с per-instance име */
+            char *nm = rc_rc_type_name(rt, NULL);
+            fprintf(f, "    baga_rc_release_%s(s.%s);\n", nm, fm);
+            free(nm);
+        } else if (!tag) {
             /* RC5 v0.5: вложено struct поле — рекурсивен release */
             const char *nn = rc_nested_struct_field(cg, fld->fld_type);
             if (nn) {
@@ -4666,20 +4810,29 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
             fprintf(f, "    baga_rc_release_bytes(s.%s);\n", fm);
         else if (tag == 3) {
             char sz[160], rel[160];
-            int k = rc_vec_elem_kind_node(fld->fld_type, sz, sizeof sz);
-            Node *et = fld->fld_type->inner_type;
-            rc_box_rel(cg, (et && et->kind == NODE_TYPE) ? et->type_name : NULL,
-                       rel, sizeof rel);
+            /* M24-RC: resolved тип → Type resolver-и; иначе node */
+            int kk = rt ? rc_vec_elem_kind(rt, sz, sizeof sz)
+                        : rc_vec_elem_kind_node(fld->fld_type, sz, sizeof sz);
+            if (rt) rc_box_rel_ty(cg, rt->elem, rel, sizeof rel);
+            else {
+                Node *et = fld->fld_type->inner_type;
+                rc_box_rel(cg, (et && et->kind == NODE_TYPE) ? et->type_name : NULL,
+                           rel, sizeof rel);
+            }
             /* RC5 v0.9: вложен Vec<S> — destructor за S полетата */
-            if (k == 3) rc_nested_vec_rel_node(cg, fld->fld_type, rel, sizeof rel);
-            fprintf(f, "    baga_rc_release_vec(s.%s, %d, %s, %s);\n", fm, k, sz, rel);
+            if (kk == 3) rc_nested_vec_rel_node(cg, fld->fld_type, rel, sizeof rel);
+            fprintf(f, "    baga_rc_release_vec(s.%s, %d, %s, %s);\n", fm, kk, sz, rel);
         } else if (tag == 4) {
             char sz[160], rel[160];
-            int k = rc_map_val_tag_node(fld->fld_type, sz, sizeof sz);
-            Node *vt = fld->fld_type->inner_type2;
-            rc_box_rel(cg, (vt && vt->kind == NODE_TYPE) ? vt->type_name : NULL,
-                       rel, sizeof rel);
-            fprintf(f, "    baga_rc_release_map(s.%s, %d, %s, %s);\n", fm, k, sz, rel);
+            int kk = rt ? rc_map_val_tag(rt, sz, sizeof sz)
+                        : rc_map_val_tag_node(fld->fld_type, sz, sizeof sz);
+            if (rt) rc_box_rel_ty(cg, rt->elem, rel, sizeof rel);
+            else {
+                Node *vt = fld->fld_type->inner_type2;
+                rc_box_rel(cg, (vt && vt->kind == NODE_TYPE) ? vt->type_name : NULL,
+                           rel, sizeof rel);
+            }
+            fprintf(f, "    baga_rc_release_map(s.%s, %d, %s, %s);\n", fm, kk, sz, rel);
         }
         free(fm);
     }
@@ -4696,6 +4849,30 @@ static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
      * елементния тип на вложения). */
     fprintf(f, "static void baga_rc_relv_%s(void *p) { baga_rc_release_vec((baga_Vec *)p, 2, (int64_t)sizeof(%s), baga_rc_relf_%s); }\n",
             m, m, m);
+}
+
+/* RC5: retain/release на преките heap полета. След typedef-а.
+ * M24-RC: generic struct — по един набор helper-и на инстанция (само ако
+ * инстанцията реално има heap полета след resolve). */
+static void emit_rc_struct_helpers(Codegen *cg, Node *s) {
+    if (!cg->rc) return;
+    if (s->n_struct_params > 0) {
+        for (int k = 0; k < s->struct_inst_count; k++) {
+            Type it = {0};
+            it.kind = TYPE_STRUCT;
+            it.name = s->struct_name;
+            it.n_targs = s->n_struct_params;
+            it.targs = &s->struct_inst_targs[k * s->n_struct_params];
+            if (rc_heap_tag(cg, &it) != 5) continue;
+            char *m = struct_cname_str(&it);
+            emit_rc_struct_helpers_one(cg, s, k, m);
+            free(m);
+        }
+        return;
+    }
+    if (!rc_struct_has_heap(cg, s->struct_name)) return;
+    char *m = mangle_name(s->struct_name);
+    emit_rc_struct_helpers_one(cg, s, -1, m);
     free(m);
 }
 
@@ -4911,7 +5088,25 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
          * v0.6: enum helper-и (struct payload в enum реферира retain_S). */
         for (int i = 0; i < on; i++) {
             Node *it = nodes[order[i]];
-            if (it->kind == NODE_STRUCT &&
+            if (it->kind == NODE_STRUCT && it->n_struct_params > 0) {
+                /* M24-RC: generic struct — fwd decls per инстанция с heap
+                 * полета (името е per-instance: b_Box_i64) */
+                for (int k = 0; k < it->struct_inst_count; k++) {
+                    Type ity = {0};
+                    ity.kind = TYPE_STRUCT;
+                    ity.name = it->struct_name;
+                    ity.n_targs = it->n_struct_params;
+                    ity.targs = &it->struct_inst_targs[k * it->n_struct_params];
+                    if (rc_heap_tag(cg, &ity) != 5) continue;
+                    char *m = struct_cname_str(&ity);
+                    fprintf(cg->out, "static inline void baga_rc_retain_%s(%s s);\n", m, m);
+                    fprintf(cg->out, "static inline void baga_rc_release_%s(%s s);\n", m, m);
+                    fprintf(cg->out, "static void baga_rc_relf_%s(void *p);\n", m);
+                    fprintf(cg->out, "static void baga_rc_retp_%s(void *p);\n", m);
+                    fprintf(cg->out, "static void baga_rc_relv_%s(void *p);\n", m);
+                    free(m);
+                }
+            } else if (it->kind == NODE_STRUCT &&
                 rc_struct_has_heap(cg, it->struct_name)) {
                 char *m = mangle_name(it->struct_name);
                 fprintf(cg->out, "static inline void baga_rc_retain_%s(%s s);\n", m, m);

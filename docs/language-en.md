@@ -393,7 +393,10 @@ fn main() {
   `Pair<i64, str> { … }` (lookahead, not confused with comparisons).
 - Fields resolve under the substitution — `p.first: A → i64`.
 - Impl for a concrete instance: `impl Describe for Pair<i64, str>`.
-- v1: `--rc` helpers for heap fields of a generic struct are not generated.
+- `--rc` helpers for heap fields of a generic struct are generated per
+  instance (baga_rc_release_b_Box_i64 etc.) — type variables resolve to the
+  instance's type arguments. A Vec/Map field with a type-variable element
+  (`Vec<T>`) stays leak-safe (kind 0).
 
 ### 6.1 Return values
 

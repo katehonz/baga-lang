@@ -394,7 +394,10 @@ fn main() {
   `Pair<i64, str> { … }` (lookahead, не се бърка със сравненията).
 - Полетата се резолват под substitution — `p.first: A → i64`.
 - Impl за конкретна инстанция: `impl Describe for Pair<i64, str>`.
-- v1: --rc helper-ите за heap полета на generic struct не се генерират.
+- `--rc` helper-ите за heap полета на generic struct са per инстанция
+  (baga_rc_release_b_Box_i64 и пр.) — типовите променливи се resolve-ват към
+  targs. Vec/Map поле с типова променлива като елемент (`Vec<T>`) остава
+  leak-safe (kind 0).
 
 ### 6.1 Връщане на стойности
 

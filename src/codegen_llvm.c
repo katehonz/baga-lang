@@ -720,6 +720,7 @@ static int lrc_tag_node(Node *tn) {
 /* взаимна рекурсия struct↔enum (като codegen_c); depth guard 32 срещу
  * циклични декларации */
 static int lrc_enum_has_heap_d(Node *item, int depth);
+static int lrc_heap_tag_d(Type *t, int depth);
 
 static int lrc_struct_has_heap_d(const char *name, int depth) {
     if (depth > 32) return 0;
@@ -732,6 +733,14 @@ static int lrc_struct_has_heap_d(const char *name, int depth) {
         while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
             t = t->inner_type;
         if (t && t->kind == NODE_TYPE && t->type_name) {
+            /* M24-RC: checked типът печели за struct/enum полета —
+             * instantiated generic поле (`inner: Pair<i64>`) се проверява
+             * per инстанция */
+            if (t->type && (t->type->kind == TYPE_STRUCT ||
+                            t->type->kind == TYPE_ENUM)) {
+                if (lrc_heap_tag_d(t->type, depth + 1)) return 1;
+                continue;
+            }
             if (lrc_struct_has_heap_d(t->type_name, depth + 1))
                 return 1;
             /* enum поле с heap payload също брои (release_S вика release_E) */
@@ -770,18 +779,63 @@ static int lrc_enum_has_heap(Node *item) {
     return lrc_enum_has_heap_d(item, 0);
 }
 
+/* M24-RC: инстанция на generic struct decl (d) с конкретни targs (vt) —
+ * има ли heap полета след resolve на типовите променливи? Огледало на
+ * rc_gen_inst_has_heap_d (codegen_c): decl-нивото вижда `v: T` като
+ * не-heap дори при T=str, затова проверката е per инстанция. */
+static int lrc_gen_inst_has_heap_d(Node *d, Type *vt, int depth) {
+    if (depth > 32) return 0;
+    for (int i = 0; i < d->fields.len; i++) {
+        Node *ft = d->fields.data[i]->fld_type;
+        Node *t = ft;
+        while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+            t = t->inner_type;
+        if (!t || t->kind != NODE_TYPE || !t->type_name) continue;
+        /* типова променлива → targ на инстанцията */
+        int is_var = 0;
+        for (int a = 0; a < d->n_struct_params && a < vt->n_targs; a++) {
+            if (strcmp(t->type_name, d->struct_params[a]) == 0) {
+                if (lrc_heap_tag_d(vt->targs[a], depth + 1)) return 1;
+                is_var = 1;
+                break;
+            }
+        }
+        if (is_var) continue;
+        if (lrc_tag_node(ft)) return 1;
+        /* вложено поле: checked типът печели (може instantiated generic) */
+        if (t->type && (t->type->kind == TYPE_STRUCT ||
+                        t->type->kind == TYPE_ENUM)) {
+            if (lrc_heap_tag_d(t->type, depth + 1)) return 1;
+            continue;
+        }
+        if (lrc_struct_has_heap_d(t->type_name, depth + 1)) return 1;
+        Node *ed = find_sum_enum(t->type_name);
+        if (ed && lrc_enum_has_heap_d(ed, depth + 1)) return 1;
+    }
+    return 0;
+}
+
 /* порт на rc_heap_tag (codegen_c.c:208): 5 = struct с heap полета,
- * 6 = sum enum с heap payload */
-static int lrc_heap_tag(Type *t) {
+ * 6 = sum enum с heap payload. M24-RC: generic struct — per инстанция. */
+static int lrc_heap_tag_d(Type *t, int depth) {
+    if (depth > 32) return 0;
     int tag = lrc_type_tag(t);
     if (tag) return tag;
-    if (t && t->kind == TYPE_STRUCT && t->name && lrc_struct_has_heap(t->name))
-        return 5;
+    if (t && t->kind == TYPE_STRUCT && t->name) {
+        Node *d = find_struct_decl(t->name);
+        if (d && d->n_struct_params > 0 && t->n_targs > 0)
+            return lrc_gen_inst_has_heap_d(d, t, depth + 1) ? 5 : 0;
+        if (lrc_struct_has_heap(t->name)) return 5;
+    }
     if (t && t->kind == TYPE_ENUM && t->name) {
         Node *ed = find_sum_enum(t->name);
         if (ed && lrc_enum_has_heap(ed)) return 6;
     }
     return 0;
+}
+
+static int lrc_heap_tag(Type *t) {
+    return lrc_heap_tag_d(t, 0);
 }
 
 /* порт на rc_heap_tag_node (codegen_c.c:221) — същият tag от type AST възел */
@@ -937,8 +991,25 @@ static int lrc_map_val_tag(Type *mty, Node *tn) {
  * release_<име> освобождава heap полетата/payload-а, без free на
  * самия struct (той е стеков). */
 static LLVMValueRef lrc_rc_fn(const char *type_name, int is_release);
+static LLVMValueRef lrc_rc_fn_ty(Type *t, int is_release);  /* M24-RC: Type-aware */
 static LLVMValueRef lrc_box_rel(const char *type_name);
+static LLVMValueRef lrc_box_rel_ty(Type *et);               /* M24-RC: Type-aware */
 static LLVMValueRef lrc_nested_vec_rel(Type *vty, Node *tn);
+
+/* M24-RC: LLVM тип на struct/enum стойност — instantiated generic struct
+ * (n_targs>0) → per-instance named тип (b_Box_i64), иначе по име */
+static LLVMTypeRef lrc_struct_ty_of(Type *ty, Node *tnode) {
+    if (ty && ty->kind == TYPE_STRUCT && ty->n_targs > 0)
+        return user_struct_ty_inst(ty);
+    const char *sn = (ty && ty->name) ? ty->name : NULL;
+    if (!sn && tnode) {
+        Node *t = tnode;
+        while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+            t = t->inner_type;
+        if (t && t->kind == NODE_TYPE) sn = t->type_name;
+    }
+    return sn ? user_struct_ty(sn) : NULL;
+}
 
 /* име на struct/enum типа на локал — inferred Type първо, анотация после
  * (като case 5/6 в rc_emit_release, codegen_c.c:536-556) */
@@ -988,9 +1059,13 @@ static void lrc_emit_release(LLRcLocal *l) {
         int ek = lrc_vec_elem_kind(l->type, l->type_node);
         /* destructor: ek 2 → relf на елементния тип; ek 3 → relv на
          * вложения Vec<S> (NULL → старото поведение, leak-safe граница) */
+        /* M24-RC: instantiated generic елемент → per-instance relf;
+         * иначе досегашният name-based път (с node fallback) */
         LLVMValueRef rel = ek == 3
             ? lrc_nested_vec_rel(l->type, l->type_node)
-            : lrc_box_rel(lrc_vec_elem_name(l));
+            : (l->type && l->type->elem && l->type->elem->n_targs > 0
+               ? lrc_box_rel_ty(l->type->elem)
+               : lrc_box_rel(lrc_vec_elem_name(l)));
         LLVMValueRef a[] = {
             LLVMBuildBitCast(lg.builder, vp, lg.ptr_ty, "rcvp"),
             LLVMConstInt(lg.i64_ty, (uint64_t)ek, 0),
@@ -1006,16 +1081,22 @@ static void lrc_emit_release(LLRcLocal *l) {
             LLVMConstInt(lg.i64_ty,
                 (uint64_t)lrc_map_val_tag(l->type, l->type_node), 0),
             LLVMConstInt(lg.i64_ty, 0, 0),   /* val_size — не се ползва */
-            lrc_box_rel(lrc_map_val_name(l)),
+            /* M24-RC: instantiated generic стойност → per-instance relf */
+            (l->type && l->type->elem && l->type->elem->n_targs > 0
+             ? lrc_box_rel_ty(l->type->elem)
+             : lrc_box_rel(lrc_map_val_name(l))),
         };
         h_call(baga_rt("baga_rc_release_map"), a, 4, "");
         return;
     } else if (l->tag == 5 || l->tag == 6) {
         const char *sn = lrc_local_type_name(l);
         if (!sn) return;
-        LLVMTypeRef sty = user_struct_ty(sn);
+        /* M24-RC: instantiated generic struct — per-instance тип и helper */
+        LLVMTypeRef sty = lrc_struct_ty_of(l->type, l->type_node);
+        if (!sty) return;
         LLVMValueRef v = LLVMBuildLoad2(lg.builder, sty, alloca, "rcs");
-        h_call(lrc_rc_fn(sn, 1), &v, 1, "");
+        if (l->type) h_call(lrc_rc_fn_ty(l->type, 1), &v, 1, "");
+        else         h_call(lrc_rc_fn(sn, 1), &v, 1, "");
         return;
     } else {
         return;
@@ -1035,6 +1116,11 @@ static void lrc_emit_retain_val(int tag, Type *ty, Node *tnode,
     else if (tag == 3 || tag == 4)
         p = LLVMBuildBitCast(lg.builder, val, lg.ptr_ty, "rccp");
     else if (tag == 5 || tag == 6) {
+        /* M24-RC: instantiated generic struct — per-instance helper */
+        if (ty && ty->kind == TYPE_STRUCT && ty->n_targs > 0) {
+            h_call(lrc_rc_fn_ty(ty, 0), &val, 1, "");
+            return;
+        }
         const char *sn = (ty && ty->name) ? ty->name : NULL;
         if (!sn && tnode) {
             Node *t = tnode;
@@ -1182,7 +1268,9 @@ static void lrc_emit_release_val(int tag, Type *ty, LLVMValueRef val) {
         int ek = lrc_vec_elem_kind(ty, NULL);
         LLVMValueRef rel = ek == 3
             ? lrc_nested_vec_rel(ty, NULL)
-            : lrc_box_rel(ty && ty->elem ? ty->elem->name : NULL);
+            : (ty && ty->elem && ty->elem->n_targs > 0
+               ? lrc_box_rel_ty(ty->elem)
+               : lrc_box_rel(ty && ty->elem ? ty->elem->name : NULL));
         LLVMValueRef a[] = {
             LLVMBuildBitCast(lg.builder, val, lg.ptr_ty, "rtv"),
             LLVMConstInt(lg.i64_ty, (uint64_t)ek, 0),
@@ -1195,10 +1283,17 @@ static void lrc_emit_release_val(int tag, Type *ty, LLVMValueRef val) {
             LLVMBuildBitCast(lg.builder, val, lg.ptr_ty, "rtm"),
             LLVMConstInt(lg.i64_ty, (uint64_t)lrc_map_val_tag(ty, NULL), 0),
             LLVMConstInt(lg.i64_ty, 0, 0),   /* val_size — не се ползва */
-            lrc_box_rel(ty && ty->elem ? ty->elem->name : NULL),
+            (ty && ty->elem && ty->elem->n_targs > 0
+             ? lrc_box_rel_ty(ty->elem)
+             : lrc_box_rel(ty && ty->elem ? ty->elem->name : NULL)),
         };
         h_call(baga_rt("baga_rc_release_map"), a, 4, "");
     } else if (tag == 5 || tag == 6) {
+        /* M24-RC: instantiated generic struct — per-instance helper */
+        if (ty && ty->kind == TYPE_STRUCT && ty->n_targs > 0) {
+            h_call(lrc_rc_fn_ty(ty, 1), &val, 1, "");
+            return;
+        }
         const char *sn = (ty && ty->name) ? ty->name : NULL;
         if (!sn) return;
         h_call(lrc_rc_fn(sn, 1), &val, 1, "");
@@ -4721,6 +4816,118 @@ static LLVMValueRef lrc_rc_fn(const char *type_name, int is_release) {
     return lrc_struct_rc_fn(type_name, is_release);
 }
 
+/* M24-RC: resolved тип на поле в контекста на instantiated generic struct
+ * стойност st: типова променлива (`v: T`) → targ на инстанцията; вложено
+ * instantiated generic поле (`inner: Pair<i64>`) → checked типът на възела
+ * (носи targs). Иначе NULL — node логиката (lrc_field_rc). Огледало на
+ * rc_fld_inst_type (codegen_c). */
+static Type *lrc_fld_inst_type(Type *st, Node *fld_type) {
+    Node *t = fld_type;
+    while (t && (t->kind == NODE_TYPE_EFFECT || t->kind == NODE_TYPE_REF))
+        t = t->inner_type;
+    if (!t || t->kind != NODE_TYPE || !t->type_name) return NULL;
+    Node *d = find_struct_decl(st->name);
+    if (d && d->n_struct_params > 0) {
+        for (int a = 0; a < d->n_struct_params && a < st->n_targs; a++)
+            if (strcmp(t->type_name, d->struct_params[a]) == 0)
+                return st->targs[a];
+    }
+    if (t->type && (t->type->kind == TYPE_STRUCT ||
+                    t->type->kind == TYPE_ENUM) && t->type->n_targs > 0)
+        return t->type;
+    return NULL;
+}
+
+/* M24-RC: едно поле по неговия RESOLVED Type (инстанция на generic struct)
+ * — огледало на lrc_field_rc, но tag/elem идват от Type, а вложените
+ * struct/enum полета рекурсират през lrc_rc_fn_ty (per-instance имена). */
+static void lrc_field_rc_ty(Type *ft, LLVMValueRef v, int is_release) {
+    int tag = lrc_heap_tag(ft);
+    if (tag == 1) {
+        if (is_release) h_call(baga_rt("baga_rc_release_str"), &v, 1, "");
+        else            h_call(baga_rt("baga_rc_retain"), &v, 1, "rcr");
+        return;
+    }
+    if (tag == 2) {
+        LLVMValueRef d = LLVMBuildExtractValue(lg.builder, v, 0, "fd");
+        if (is_release) h_call(baga_rt("baga_rc_release_bytes"), &d, 1, "");
+        else            h_call(baga_rt("baga_rc_retain"), &d, 1, "rcr");
+        return;
+    }
+    if (tag == 3 || tag == 4) {
+        if (!is_release) {
+            LLVMValueRef p = LLVMBuildBitCast(lg.builder, v, lg.ptr_ty, "fcp");
+            h_call(baga_rt("baga_rc_retain"), &p, 1, "rcr");
+            return;
+        }
+        int k = tag == 3 ? lrc_vec_elem_kind(ft, NULL)
+                         : lrc_map_val_tag(ft, NULL);
+        LLVMValueRef rel = (tag == 3 && k == 3)
+            ? lrc_nested_vec_rel(ft, NULL)
+            : lrc_box_rel_ty(ft->elem);
+        LLVMValueRef a[] = {
+            LLVMBuildBitCast(lg.builder, v, lg.ptr_ty, "fcp"),
+            LLVMConstInt(lg.i64_ty, (uint64_t)k, 0),
+            LLVMConstInt(lg.i64_ty, 0, 0),
+            rel,
+        };
+        h_call(baga_rt(tag == 3 ? "baga_rc_release_vec"
+                                : "baga_rc_release_map"), a, 4, "");
+        return;
+    }
+    if (tag == 5 || tag == 6)
+        h_call(lrc_rc_fn_ty(ft, is_release), &v, 1, "");
+    /* tag 0: не-heap поле (i64/f64/bool и пр.) — нищо */
+}
+
+/* static void baga_rc_{retain,release}_b_Box_i64(b_Box_i64 s)
+ * { за всяко heap поле след resolve на типовите променливи: retain/release }
+ * M24-RC: per-instance helper за instantiated generic struct. Тялото се
+ * генерира при първа нужда и се кешира по име (като lrc_struct_rc_fn). */
+static LLVMValueRef lrc_struct_inst_rc_fn(Type *t, int is_release) {
+    char *cn = llvm_struct_cname(t);            /* "Box_i64" */
+    char *full = lrc_rc_fn_name(cn, is_release);
+    free(cn);
+    LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, full);
+    if (fn) { free(full); return fn; }
+    Node *decl = find_struct_decl(t->name);
+    if (!decl) {
+        char buf[256];
+        snprintf(buf, sizeof buf, "RC helper за неизвестна структура '%s'",
+                 t->name);
+        free(full);
+        llvm_unsupported(buf);
+    }
+    LLVMTypeRef sty = user_struct_ty_inst(t);
+    /* регистрация ПРЕДИ тялото — рекурсивни препратки намират декларацията */
+    fn = LLVMAddFunction(lg.mod, full,
+        LLVMFunctionType(lg.void_ty, &sty, 1, 0));
+    free(full);
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    h_begin(fn);
+    LLVMValueRef s = LLVMGetParam(fn, 0);
+    for (int i = 0; i < decl->fields.len; i++) {
+        Node *ft = decl->fields.data[i]->fld_type;
+        Type *rt = lrc_fld_inst_type(t, ft);
+        LLVMValueRef v = LLVMBuildExtractValue(lg.builder, s, (unsigned)i, "f");
+        if (rt) lrc_field_rc_ty(rt, v, is_release);
+        else    lrc_field_rc(ft, v, is_release);
+    }
+    LLVMBuildRetVoid(lg.builder);
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
+
+/* M24-RC: Type-aware dispatcher — instantiated generic struct (n_targs>0)
+ * отива на per-instance helper; иначе по име (enum или обикновен struct) */
+static LLVMValueRef lrc_rc_fn_ty(Type *t, int is_release) {
+    if (t && t->kind == TYPE_STRUCT && t->n_targs > 0)
+        return lrc_struct_inst_rc_fn(t, is_release);
+    if (!t || !t->name)
+        llvm_unsupported("RC helper за тип без име");
+    return lrc_rc_fn(t->name, is_release);
+}
+
 /* static void baga_rc_{retain,release}_<S>(b_<S> s)
  * { за всяко heap поле: retain/release (транзитивно) } */
 static LLVMValueRef lrc_struct_rc_fn(const char *name, int is_release) {
@@ -4876,6 +5083,49 @@ static LLVMValueRef lrc_box_rel_fn(const char *type_name) {
 
 static LLVMValueRef lrc_box_rel(const char *type_name) {
     LLVMValueRef fn = lrc_box_rel_fn(type_name);
+    if (!fn) return LLVMConstNull(lg.ptr_ty);
+    return LLVMBuildBitCast(lg.builder, fn, lg.ptr_ty, "relf");
+}
+
+/* M24-RC: relf shim за instantiated generic struct — baga_rc_relf_b_Box_i64
+ * (i8 *p), вика per-instance release helper-а. Огледало на lrc_relf_fn. */
+static LLVMValueRef lrc_relf_fn_ty(Type *t) {
+    char *cn = llvm_struct_cname(t);
+    char *m = llvm_mangle(cn);
+    size_t cap = strlen(m) + 20;
+    char *full = malloc(cap);
+    if (!full) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    snprintf(full, cap, "baga_rc_relf_%s", m);
+    free(m);
+    LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, full);
+    if (fn) { free(full); free(cn); return fn; }
+    LLVMTypeRef sty = user_struct_ty(cn);
+    free(cn);
+    fn = LLVMAddFunction(lg.mod, full,
+        LLVMFunctionType(lg.void_ty, &lg.ptr_ty, 1, 0));
+    free(full);
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    h_begin(fn);
+    LLVMValueRef sp = LLVMBuildBitCast(lg.builder, LLVMGetParam(fn, 0),
+        LLVMPointerType(sty, 0), "sp");
+    LLVMValueRef v = LLVMBuildLoad2(lg.builder, sty, sp, "v");
+    h_call(lrc_struct_inst_rc_fn(t, 1), &v, 1, "");
+    LLVMBuildRetVoid(lg.builder);
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
+
+/* M24-RC: Type-aware box destructor — instantiated generic struct елемент/
+ * стойност (n_targs>0) получава per-instance relf, само ако инстанцията
+ * реално има heap полета (иначе NULL → само free, leak-safe като C) */
+static LLVMValueRef lrc_box_rel_fn_ty(Type *et) {
+    if (et && et->kind == TYPE_STRUCT && et->n_targs > 0)
+        return lrc_heap_tag(et) == 5 ? lrc_relf_fn_ty(et) : NULL;
+    return lrc_box_rel_fn(et && et->name ? et->name : NULL);
+}
+
+static LLVMValueRef lrc_box_rel_ty(Type *et) {
+    LLVMValueRef fn = lrc_box_rel_fn_ty(et);
     if (!fn) return LLVMConstNull(lg.ptr_ty);
     return LLVMBuildBitCast(lg.builder, fn, lg.ptr_ty, "relf");
 }
@@ -6087,7 +6337,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                             h_call(baga_rt("baga_rc_release_bytes"), &od, 1, "");
                         } else if (lg.rc) {
                             lrc_embed_retain(n->args.data[2], e);
-                            LLVMValueRef rel = lrc_box_rel_fn(vt->elem->name);
+                            LLVMValueRef rel = lrc_box_rel_fn_ty(vt->elem);
                             if (rel) {
                                 LLVMValueRef ga[] = { v, i };
                                 LLVMValueRef ob = h_call(
@@ -6177,7 +6427,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                          * baga_map_set_<k>_box_rc, codegen_c.c:2514-2522) */
                         if (lg.rc) {
                             lrc_embed_retain(n->args.data[2], v);
-                            LLVMValueRef rel = lrc_box_rel_fn(mt->elem->name);
+                            LLVMValueRef rel = lrc_box_rel_fn_ty(mt->elem);
                             if (rel) {
                                 char get_name[64];
                                 snprintf(get_name, sizeof get_name,
@@ -7479,6 +7729,27 @@ void codegen_llvm(Node *program, const char *output_path, Checker *chk, int rc) 
         if (remaining == 0) break;
         if (!progress)
             llvm_unsupported("циклични sum enum типове (по стойност)");
+    }
+
+    /* M24-RC: per-instance RC helper-и за generic struct инстанции с heap
+     * полета — eager, като C бекенда (emit_rc_struct_helpers след
+     * typedef-овете). Lazy пътят (lrc_rc_fn_ty) остава за вложени случаи. */
+    if (lg.rc) {
+        for (int i = 0; i < program->items.len; i++) {
+            Node *item = program->items.data[i];
+            if (item->kind != NODE_STRUCT || item->n_struct_params == 0)
+                continue;
+            for (int k = 0; k < item->struct_inst_count; k++) {
+                Type it = {0};
+                it.kind = TYPE_STRUCT;
+                it.name = item->struct_name;
+                it.n_targs = item->n_struct_params;
+                it.targs = &item->struct_inst_targs[k * item->n_struct_params];
+                if (lrc_heap_tag(&it) != 5) continue;
+                lrc_struct_inst_rc_fn(&it, 0);
+                lrc_struct_inst_rc_fn(&it, 1);
+            }
+        }
     }
 
     /* първи проход: предекларации */

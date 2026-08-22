@@ -1,0 +1,89 @@
+// generic_struct_rc_test — M24-RC: per-instance RC helper-и за generic
+// struct-ове с heap полета под --rc (и в двата бекенда).
+//
+// Преди фикса: C бекендът emit-ваше helper-ите със суровото generic име
+// (b_Box) и gcc гърмеше с „unknown type name"; LLVM бекендът track-ваше
+// такива локали с tag 5, но release пътят търсеше непримерения тип b_Box
+// (честен отказ) или — при fn резултат — тихо не release-ваше нищо.
+// Сега helper-ите са per инстанция (baga_rc_release_b_Box_i64 и пр.) и
+// полетата се resolve-ват към targs на инстанцията (v: T при T=str е heap).
+// Минава с и без --rc; реалният gate е tests/llvm_rc.sh (C --rc ↔ LLVM --rc).
+
+import "std/str/str.baga"
+
+struct Box<T> { v: T, s: str }
+struct Id<T> { v: T }
+struct Bag<T> { items: Vec<i64>, label: T }
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// probe от задачата: generic fn, връщаща generic struct — C --rc днес
+// гърмеше с compile error; стойностите трябва да са верни
+fn mk<T>(x: T) -> Box<T> {
+    let b = Box<T> { v: x, s: "таг" }
+    return b
+}
+
+// track-нат локал (свеж литерал): heap поле се release-ва на scope exit;
+// borrowed поле, върнато от fn, оцелява release-а на източника
+fn field_outlives() -> str {
+    let b = Box<i64> { v: 1, s: concat("жи", "в") }
+    return b.s
+}
+
+// alias на track-нат generic локал: retain при копието, два балансирана
+// release-а; и двата алиаса са валидни
+fn alias_ok() -> str {
+    let b = Box<str> { v: concat("пър", "ви"), s: " ет" }
+    let c = b
+    return concat(c.v, b.s)
+}
+
+fn main() {
+    // 1. probe: mk(7) — компилира и печата под двата бекенда
+    let a = mk(7)
+    check("probe_mk", a.s == "таг" && a.v == 7)
+
+    // 2. две инстанции в една програма — без колизия на helper имена
+    let b = Box<str> { v: "стр", s: "етикет" }
+    check("two_instances", b.s == "етикет" && b.v == "стр" && a.v == 7)
+
+    // 3. инстанция без heap полета — без helper-и, просто работи
+    let d = Id<i64> { v: 42 }
+    check("no_heap_instance", d.v == 42)
+
+    // 4. типова променлива, resolve-ната към heap тип: Id<str> ИМА heap
+    // поле след resolve (decl-ът вижда само `v: T`)
+    let e = Id<str> { v: concat("хе", "п") }
+    check("tvar_heap", e.v == "хеп" && len(e.v) == 6)
+
+    // 5. вложено Vec<i64> поле + типова променлива към str
+    let g = Bag<str> { items: vec_new(), label: "чанта" }
+    vec_push(g.items, 10)
+    vec_push(g.items, 20)
+    check("vec_field", vec_len(g.items) == 2 && vec_get(g.items, 1) == 20 &&
+          g.label == "чанта")
+
+    // 6. release на track-нат локал не обесва върнатото borrowed поле
+    // (retain при return + churn след изхода на scope-а)
+    let s6 = field_outlives()
+    let mut k: i64 = 0
+    let mut acc = ""
+    while k < 50 {
+        acc = concat(acc, "churn-churn-churn-churn")
+        k = k + 1
+    }
+    check("field_outlives", s6 == "жив" && len(acc) == 1150)
+
+    // 7. alias retain/release баланс
+    check("alias", alias_ok() == "първи ет")
+
+    print("generic_struct_rc_test: all passed")
+}
