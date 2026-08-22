@@ -28,7 +28,10 @@ for f in $TESTS; do
     # счупен C run („не е LLVM проблем") не е в юрисдикцията на този скрипт.
     # Пазим точния exit code, за да го сравним с LLVM страната (crash след
     # пълен изход или тест без изход не трябва да мине като OK).
-    ./baga --rc -I . -I app-product "$f" > /tmp/rc_c.txt 2>&1; rc_c=$?
+    # BAGA_CFLAGS=-w: gcc warning-ите от генерирания C (напр. указателното
+    # сравнение при match върху str, `_mv == "lit"`) не са част от семантиката
+    # на програмата, но 2>&1 ги слива в изхода и diff-ът би ги видял.
+    BAGA_CFLAGS="-w" ./baga --rc -I . -I app-product "$f" > /tmp/rc_c.txt 2>&1; rc_c=$?
     if [ $rc_c -ne 0 ]; then
         echo "SKIP  $f (C --rc не минава — не е LLVM проблем)"; continue
     fi

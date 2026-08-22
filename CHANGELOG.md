@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+### codegen LLVM — RC4/RC5 v0.11 паритет: release на temp-ове под `--rc`
+- `src/codegen_llvm.c`: per-statement temp регистър под `--emit-llvm --rc`,
+  огледало на RC4 в C бекенда (`rc_tmp_*`, codegen_c.c:1078-1521). Fresh
+  heap temp-овете (owned call с heap тип — не borrowed, не enum ctor — плюс
+  `NODE_TO_STR`) се събират pre-order от root израза на statement-а със
+  същите правила за не-слизане (struct литерал, ламбда, try/catch, if-израз,
+  десен операнд на `&&`/`||`, `drop(...)` и enum ctor аргументи). SSA
+  вариант на hoist-инга: temp изразите се emit-ват веднъж преди root-а в
+  текущия block (вътрешните първи), `LLVMValueRef` се кешира по AST възел и
+  `emit_expr_llvm` връща кеша при удар — без двойна оценка. Release-ът е в
+  края на statement-а през новия release-by-value път
+  (`lrc_emit_release_val`) към същите `baga_rc_release_*` helper-и.
+- Hook сайтове: let init, expr statement (вкл. bare call и assign), return
+  (temp release преди release на локалите, като `emit_return_val`),
+  implicit return във fn и ламбда, if/while условия и for-range lo/hi
+  (условията се emit-ват в cond block-а — per-iteration release без GNU
+  ({…}) wrap-а на C).
+- RC5 v0.7/v1.0b consume: temp аргумент на `vec_push`/`vec_set`/`map_set`
+  се прехвърля в контейнера без release в края на statement-а. Box
+  пътеките (struct/enum/bytes) пропускат retain-а при temp (move);
+  str/Vec helper-ите retain-ват вътрешно, затова след повикването temp-ът
+  се консумира и се release-ва веднага — нетен move, наблюдаемо
+  еквивалентен на `_move` вариантите в C.
+- RC5 v0.11: match scrutinee temp-ове — enum ctor scrutinee с heap payload
+  (tag 6) и owned fn резултат като scrutinee се release-ват СЛЕД рамената
+  (в края на statement-а), така че borrowed binding-ите са валидни в
+  рамената.
+- Бонус затворена дупка: `match` върху `str` scrutinee в LLVM (преди:
+  честен отказ „неподдържан конструкт") — огледало на C lowering-а
+  (`int64_t _mv == "литерал"`, указателно равенство) чрез `ptrtoint` от
+  двете страни. Без това `tests/match_temp_rc_test.baga` не се компилираше.
+- `tests/llvm_rc.sh`: C страната на оракула върви с `BAGA_CFLAGS=-w` —
+  gcc warning-ите от генерирания C (указателното сравнение при str match)
+  не са семантика, но `2>&1` ги слива в изхода и diff-ът ги виждаше.
+- Без `--rc` генерираното IR е бит-идентично с предишното за всички
+  програми, които се компилираха и преди (всичко ново е зад `lg.rc`
+  guard-ове; единствената не-RC промяна е str match-ът, който преди беше
+  compile-time грешка).
+- Gate: `make test-llvm-rc` (match_temp_rc_test вече е OK, не SKIP) +
+  `./baga-llvm --emit-llvm --rc -I . tests/{temp_test,match_temp_rc_test,
+  calltemp_rc_test}.baga` + `lli-14 -load lib/libbaga_par.so` — и трите
+  зелени; `scripts/run_tests.sh` без промяна (C страната не е пипана).
+
 ## [1.0.0] — 2026-08-22
 
 ### чистка — двата стари TODO-та преди v1.0 са затворени

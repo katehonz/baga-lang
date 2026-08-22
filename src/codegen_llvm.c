@@ -35,6 +35,14 @@ typedef struct { const char *name; int tag; Type *type; Node *type_node;
                  int dead_linear; } LLRcLocal;
 typedef struct { int top; int is_loop; } LLRcScope;
 
+/* RC4-LLVM: per-statement temp регистър (порт на RcTmp/rc_tmps,
+ * baga.h:560-569). За разлика от C (текстови __rc_tmpN декларации преди
+ * statement-а) тук temp изразите се emit-ват веднъж преди root-а в текущия
+ * block, а LLVMValueRef се кешира по AST възел — при удар emit_expr_llvm
+ * връща кеша (SSA аналог на rc_tmp_emit_sub). */
+typedef struct { Node *site; int tag; Type *type; LLVMValueRef val;
+                 int consumed; } LLRcTmp;
+
 typedef struct {
     LLVMContextRef ctx;
     LLVMModuleRef mod;
@@ -70,6 +78,12 @@ typedef struct {
     int   lrc_depth;
     int   lrc_fn_base;    /* индекс на scope-а на текущата функция */
     int   lrc_branch_depth; /* >0 = emit-ваме тяло на условен/цикълен клон */
+    /* RC4-LLVM: активните temp-ове на текущия statement (само при lg.rc) */
+    LLRcTmp lrc_tmps[64];
+    int   lrc_tmp_count;
+    int   lrc_tmps_on;
+    Node *lrc_tmp_decl;   /* temp възелът, чиято стойност се emit-ва в момента
+                           * (без самозаместване — като rc_tmp_decl в C) */
     /* M20: effect payload runtime */
     VEC(char *) eff_tags;   /* tag регистър (име → индекс+1) */
     int   eff_depth;        /* >0 = вътре в catch верига (TRY е no-op) */
@@ -1034,6 +1048,228 @@ static void lrc_emit_retain_val(int tag, Type *ty, Node *tnode,
     }
     else               return;
     h_call(baga_rt("baga_rc_retain"), &p, 1, "rcr");
+}
+
+/* ---------------- RC4-LLVM: per-statement temp регистър ----------------
+ * Порт на rc_tmp_* (codegen_c.c:1078-1521): fresh heap резултат (owned call
+ * с heap тип — не borrowed, не enum ctor — плюс NODE_TO_STR), който не се
+ * връзва в локал, е temp и се release-ва в края на statement-а. C hoist-ва
+ * temp-овете в __rc_tmpN декларации преди statement-а; тук (SSA) temp
+ * изразите се emit-ват първи в текущия block и стойността се кешира по
+ * Node* — emit_expr_llvm връща кеша при удар (без двойна оценка). */
+
+static LLVMValueRef emit_expr_llvm(Node *n); /* fwd — пълната дефиниция е по-долу */
+
+/* fresh heap temp ли е този възел? (порт на rc_tmp_fresh, codegen_c.c:1237) */
+static int lrc_tmp_fresh(Node *n) {
+    if (!n) return 0;
+    if (n->kind == NODE_TO_STR) return 1;
+    if (n->kind != NODE_CALL) return 0;
+    if (lrc_borrowed_init(n)) return 0;
+    /* enum ctor е като литерал — payload-ът е owned от ctor сайта */
+    if (lrc_is_enum_ctor(n)) return 0;
+    return lrc_heap_tag(n->type) != 0;
+}
+
+/* pre-order събиране (порт на rc_tmp_collect, codegen_c.c:1281). Не се слиза
+ * в: STRUCT_LIT (полетата escape-ват), LAMBDA, TRY/CATCH, IF-израз, десен
+ * операнд на &&/||, drop(…) аргументи, enum ctor аргументи, match рамена. */
+static void lrc_tmp_collect(Node *n, int is_root) {
+    if (!n) return;
+    if (lrc_tmp_fresh(n) && !is_root) {
+        if (lg.lrc_tmp_count >= 64)
+            llvm_unsupported("прекалено много temp-ове в един statement");
+        lg.lrc_tmps[lg.lrc_tmp_count++] = (LLRcTmp){
+            n, n->kind == NODE_TO_STR ? 1 : lrc_heap_tag(n->type),
+            n->type, NULL, 0 };
+        /* продължаваме надолу — аргументите може да съдържат temp-ове */
+    }
+    switch (n->kind) {
+        case NODE_BINARY:
+            lrc_tmp_collect(n->left, 0);
+            /* &&/||: десният операнд се оценява условно — не се пипа */
+            if (n->bin_op != OP_AND && n->bin_op != OP_OR)
+                lrc_tmp_collect(n->right, 0);
+            break;
+        case NODE_UNARY:
+            lrc_tmp_collect(n->operand, 0);
+            break;
+        case NODE_CALL:
+            /* drop(x) е release пътят на x; enum ctor копира payload без
+             * retain — temp в него би обесил payload-а (като C) */
+            if (n->callee && n->callee->kind == NODE_IDENT &&
+                strcmp(n->callee->name, "drop") == 0)
+                break;
+            if (lrc_is_enum_ctor(n)) break;
+            lrc_tmp_collect(n->callee, 0);
+            for (int i = 0; i < n->args.len; i++)
+                lrc_tmp_collect(n->args.data[i], 0);
+            break;
+        case NODE_INDEX:
+            lrc_tmp_collect(n->obj, 0);
+            lrc_tmp_collect(n->index, 0);
+            break;
+        case NODE_ELEM_REF:
+            lrc_tmp_collect(n->elem_obj, 0);
+            break;
+        case NODE_FIELD:
+            lrc_tmp_collect(n->field_obj, 0);
+            break;
+        case NODE_RANGE:
+            lrc_tmp_collect(n->range_lo, 0);
+            lrc_tmp_collect(n->range_hi, 0);
+            break;
+        case NODE_TO_STR:
+            lrc_tmp_collect(n->to_str_expr, 0);
+            break;
+        case NODE_MATCH: {
+            /* RC5 v0.11: scrutinee temp (`match f() { ... }`). Scrutinee-то
+             * се оценява безусловно веднъж ПРЕДИ рамената, а release-ът идва
+             * в края на statement-а — СЛЕД рамената, така че borrowed
+             * binding-ите (v0.6 конвенция) остават валидни. В рамената не се
+             * слиза. Enum ctor scrutinee с heap payload се регистрира с
+             * tag 6 (payload референциите са owned от ctor сайта и никой не
+             * ги release-ва след match-а); owned fn резултат — през
+             * lrc_tmp_fresh/lrc_heap_tag (v1.0a/b). */
+            Node *sc = n->match_expr;
+            if (sc && sc->kind == NODE_CALL && lrc_is_enum_ctor(sc) &&
+                lrc_heap_tag(sc->type) == 6) {
+                if (lg.lrc_tmp_count >= 64)
+                    llvm_unsupported("прекалено много temp-ове в един statement");
+                lg.lrc_tmps[lg.lrc_tmp_count++] =
+                    (LLRcTmp){ sc, 6, sc->type, NULL, 0 };
+            } else {
+                lrc_tmp_collect(sc, 0);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+/* индекс на регистриран (и неконсумиран) temp за този AST възел (-1 = не е)
+ * — порт на rc_tmp_find (codegen_c.c:1378); за move в контейнер сайтовете */
+static int lrc_tmp_find(Node *n) {
+    if (!lg.rc || !lg.lrc_tmps_on || !n) return -1;
+    for (int i = 0; i < lg.lrc_tmp_count; i++)
+        if (!lg.lrc_tmps[i].consumed && lg.lrc_tmps[i].site == n) return i;
+    return -1;
+}
+
+/* temp-ът е прехвърлен (move) в контейнер — краят на statement-а не го
+ * release-ва (порт на rc_tmp_consume, codegen_c.c:1388) */
+static void lrc_tmp_consume(int i) {
+    if (i >= 0) lg.lrc_tmps[i].consumed = 1;
+}
+
+/* release на temp по СТОЙНОСТ (temp-овете нямат alloca — за разлика от
+ * lrc_emit_release, която зарежда от alloca по име). Същите helper-и и
+ * elem/val kind логика като при локалите. */
+static void lrc_emit_release_val(int tag, Type *ty, LLVMValueRef val) {
+    if (!val) return;
+    if (tag == 1) {
+        h_call(baga_rt("baga_rc_release_str"), &val, 1, "");
+    } else if (tag == 2) {
+        LLVMValueRef d = LLVMBuildExtractValue(lg.builder, val, 0, "rtd");
+        h_call(baga_rt("baga_rc_release_bytes"), &d, 1, "");
+    } else if (tag == 3) {
+        int ek = lrc_vec_elem_kind(ty, NULL);
+        LLVMValueRef rel = ek == 3
+            ? lrc_nested_vec_rel(ty, NULL)
+            : lrc_box_rel(ty && ty->elem ? ty->elem->name : NULL);
+        LLVMValueRef a[] = {
+            LLVMBuildBitCast(lg.builder, val, lg.ptr_ty, "rtv"),
+            LLVMConstInt(lg.i64_ty, (uint64_t)ek, 0),
+            LLVMConstInt(lg.i64_ty, 0, 0),   /* elem_size — не се ползва */
+            rel,
+        };
+        h_call(baga_rt("baga_rc_release_vec"), a, 4, "");
+    } else if (tag == 4) {
+        LLVMValueRef a[] = {
+            LLVMBuildBitCast(lg.builder, val, lg.ptr_ty, "rtm"),
+            LLVMConstInt(lg.i64_ty, (uint64_t)lrc_map_val_tag(ty, NULL), 0),
+            LLVMConstInt(lg.i64_ty, 0, 0),   /* val_size — не се ползва */
+            lrc_box_rel(ty && ty->elem ? ty->elem->name : NULL),
+        };
+        h_call(baga_rt("baga_rc_release_map"), a, 4, "");
+    } else if (tag == 5 || tag == 6) {
+        const char *sn = (ty && ty->name) ? ty->name : NULL;
+        if (!sn) return;
+        h_call(lrc_rc_fn(sn, 1), &val, 1, "");
+    }
+}
+
+/* release на активните неконсумирани temp-ове (в реда на събирането, като
+ * rc_tmp_release_all в C) и изчистване на регистъра */
+static void lrc_tmp_release_all(void) {
+    if (!lg.rc || !lg.lrc_tmps_on) return;
+    for (int i = 0; i < lg.lrc_tmp_count; i++) {
+        LLRcTmp *t = &lg.lrc_tmps[i];
+        if (t->consumed) continue;   /* move в контейнер — box-ът е собственик */
+        lrc_emit_release_val(t->tag, t->type, t->val);
+    }
+    lg.lrc_tmp_count = 0;
+    lg.lrc_tmps_on = 0;
+}
+
+/* save/restore за вложени statement-и (блок-стойности, ламбди — порт на
+ * saved_tmps/saved_on двойката в rc_tmp_begin/rc_tmp_end) */
+typedef struct { int count; int on; Node *decl; LLRcTmp e[64]; } LLRcTmpSave;
+
+static void lrc_tmp_save(LLRcTmpSave *sv) {
+    sv->count = lg.lrc_tmp_count;
+    sv->on = lg.lrc_tmps_on;
+    sv->decl = lg.lrc_tmp_decl;
+    memcpy(sv->e, lg.lrc_tmps, sizeof sv->e);
+}
+
+static void lrc_tmp_restore(LLRcTmpSave *sv) {
+    memcpy(lg.lrc_tmps, sv->e, sizeof sv->e);
+    lg.lrc_tmp_count = sv->count;
+    lg.lrc_tmps_on = sv->on;
+    lg.lrc_tmp_decl = sv->decl;
+}
+
+/* начало на statement с temp tracking (порт на rc_tmp_begin,
+ * codegen_c.c:1396). root_bound=1: root-ът е bound (let init / assign дясно /
+ * return стойност) — не е temp. Temp-овете се emit-ват веднага (вътрешните
+ * първи — обратен ред на събирането, като декларациите в C) и се кешират. */
+static void lrc_tmp_begin(Node *root, int root_bound, LLRcTmpSave *sv) {
+    lrc_tmp_save(sv);
+    lg.lrc_tmp_count = 0;
+    lg.lrc_tmps_on = 0;
+    lg.lrc_tmp_decl = NULL;
+    if (!lg.rc || !root) return;
+    if (root->kind == NODE_ASSIGN) {
+        /* дясното е bound; сложните цели четат обекта/индекса */
+        lrc_tmp_collect(root->assign_val, 1);
+        Node *t = root->assign_target;
+        if (t) {
+            if (t->kind == NODE_FIELD) lrc_tmp_collect(t->field_obj, 0);
+            else if (t->kind == NODE_INDEX) {
+                lrc_tmp_collect(t->obj, 0);
+                lrc_tmp_collect(t->index, 0);
+            }
+        }
+    } else {
+        lrc_tmp_collect(root, root_bound);
+    }
+    if (lg.lrc_tmp_count == 0) return;
+    lg.lrc_tmps_on = 1;
+    for (int i = lg.lrc_tmp_count - 1; i >= 0; i--) {
+        lg.lrc_tmp_decl = lg.lrc_tmps[i].site;
+        lg.lrc_tmps[i].val = emit_expr_llvm(lg.lrc_tmps[i].site);
+        lg.lrc_tmp_decl = NULL;
+        if (!lg.lrc_tmps[i].val)
+            llvm_unsupported("print/drop като temp израз");
+    }
+}
+
+/* край на statement-а: release (ако не е направен) + възстановяване */
+static void lrc_tmp_end(LLRcTmpSave *sv) {
+    lrc_tmp_release_all();
+    lrc_tmp_restore(sv);
 }
 
 static void lrc_push_scope(int is_loop) {
@@ -4973,14 +5209,19 @@ static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
             break;
         if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
+            /* RC4: temp-ове в implicit return (като при explicit return) */
+            LLRcTmpSave tsv;
+            if (lg.rc) lrc_tmp_begin(s->expr, 1, &tsv);
             LLVMValueRef v = emit_expr_llvm(s->expr);
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
                 if (!v) llvm_unsupported("лямбда: неявен return");
                 v = coerce(v, ret);
+                if (lg.rc) lrc_tmp_release_all();
                 /* RC: move семантика като explicit return (като emit_fn_llvm) */
                 lrc_return_move(s->expr, v);
                 LLVMBuildRet(lg.builder, v);
             }
+            if (lg.rc) lrc_tmp_end(&tsv);
         } else {
             emit_stmt_llvm(s, NULL, NULL);
         }
@@ -5259,7 +5500,13 @@ static LLVMValueRef emit_match_llvm(Node *n) {
         if (ed) return emit_match_sum_llvm(n, ed);
     }
     LLVMValueRef mv = emit_expr_llvm(n->match_expr);
-    if (!mv || LLVMGetTypeKind(LLVMTypeOf(mv)) != LLVMIntegerTypeKind)
+    if (!mv) llvm_unsupported("match върху не-целочислена стойност");
+    /* str scrutinee: C бекендът сравнява `int64_t _mv == "литерал"` —
+     * указателно равенство (warning в gcc, валиден код); огледало чрез
+     * ptrtoint от двете страни */
+    if (LLVMGetTypeKind(LLVMTypeOf(mv)) == LLVMPointerTypeKind)
+        mv = LLVMBuildPtrToInt(lg.builder, mv, lg.i64_ty, "mvp");
+    if (LLVMGetTypeKind(LLVMTypeOf(mv)) != LLVMIntegerTypeKind)
         llvm_unsupported("match върху не-целочислена стойност");
     mv = coerce(mv, lg.i64_ty);
 
@@ -5279,6 +5526,8 @@ static LLVMValueRef emit_match_llvm(Node *n) {
         if (arm->arm_pattern) {
             LLVMValueRef pat = emit_expr_llvm(arm->arm_pattern);
             if (!pat) llvm_unsupported("print в match pattern");
+            if (LLVMGetTypeKind(LLVMTypeOf(pat)) == LLVMPointerTypeKind)
+                pat = LLVMBuildPtrToInt(lg.builder, pat, lg.i64_ty, "mpp");
             pat = coerce(pat, lg.i64_ty);
             char *name = tmp_name();
             LLVMValueRef cond = LLVMBuildICmp(lg.builder, LLVMIntEQ, mv, pat, name);
@@ -5383,6 +5632,14 @@ static void lrc_emit_drop(Node *n) {
 
 static LLVMValueRef emit_expr_llvm(Node *n) {
     if (!n) llvm_unsupported("празен израз");
+
+    /* RC4-LLVM: регистриран temp — стойността вече е изчислена в
+     * lrc_tmp_begin; върни кеша (аналог на rc_tmp_emit_sub). lrc_tmp_decl
+     * предпазва от самозаместване при emission на самия temp. */
+    if (lg.rc && lg.lrc_tmps_on && n != lg.lrc_tmp_decl) {
+        for (int i = 0; i < lg.lrc_tmp_count; i++)
+            if (lg.lrc_tmps[i].site == n) return lg.lrc_tmps[i].val;
+    }
 
     switch (n->kind) {
         case NODE_INT_LIT:
@@ -5518,6 +5775,11 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         }
 
         case NODE_CALL: {
+            /* RC5 v0.7: индекс на temp аргумент за move-консумация при
+             * vec_push/vec_set/map_set (helper-ите retain-ват вътрешно —
+             * след повикването temp-ът се консумира и се release-ва веднага;
+             * нетен move, като _move helper вариантите в codegen_c) */
+            int rc_consume_arg = -1;
             /* L3: конструктор на sum enum — bare Ok(x) или Res::Ok(x).
              * Познава се по върнатия тип (TYPE_ENUM) + име на вариант;
              * обикновена fn, връщаща enum, минава нататък. */
@@ -5757,15 +6019,21 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     if (strcmp(cn, "vec_push") == 0) {
                         LLVMValueRef e = emit_expr_llvm(n->args.data[1]);
                         if (!e) llvm_unsupported("vec_push аргумент");
+                        /* RC5 v0.7/v1.0b: temp аргумент (owned call/to_str
+                         * резултат) — move в box-а, консумирай temp-а
+                         * (codegen_c.c:2362-2370) */
+                        int tci = lrc_tmp_find(n->args.data[1]);
                         /* RC: bytes елемент — retain на data (контейнерът
                          * става собственик; codegen_c: baga_vec_push_bytes).
                          * struct/enum (Task 6): box копието споделя heap
                          * полетата — retain_<S> (освен при fresh литерал/
                          * ctor — move; като codegen_c.c:2266-2301). */
                         if (lg.rc && vt->elem->kind == TYPE_BYTES) {
-                            LLVMValueRef bd = LLVMBuildExtractValue(lg.builder,
-                                e, 0, "bd");
-                            h_call(baga_rt("baga_rc_retain"), &bd, 1, "rcr");
+                            if (tci < 0) {   /* temp: move — без retain */
+                                LLVMValueRef bd = LLVMBuildExtractValue(lg.builder,
+                                    e, 0, "bd");
+                                h_call(baga_rt("baga_rc_retain"), &bd, 1, "rcr");
+                            }
                         } else if (lg.rc) {
                             lrc_embed_retain(n->args.data[1], e);
                         }
@@ -5773,7 +6041,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                         LLVMBuildStore(lg.builder, e, tmp);
                         LLVMValueRef bp = LLVMBuildBitCast(lg.builder, tmp, lg.ptr_ty, "bp");
                         LLVMValueRef pa[] = { v, bp, sz };
-                        return h_call(baga_rt("baga_vec_push_box"), pa, 3, "");
+                        LLVMValueRef r = h_call(baga_rt("baga_vec_push_box"), pa, 3, "");
+                        lrc_tmp_consume(tci);
+                        return r;
                     }
                     if (strcmp(cn, "vec_get") == 0) {
                         LLVMValueRef i = coerce(emit_expr_llvm(n->args.data[1]), lg.i64_ty);
@@ -5787,15 +6057,20 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                         LLVMValueRef i = coerce(emit_expr_llvm(n->args.data[1]), lg.i64_ty);
                         LLVMValueRef e = emit_expr_llvm(n->args.data[2]);
                         if (!e) llvm_unsupported("vec_set аргумент");
+                        /* RC5 v0.7/v1.0b: temp аргумент — move (без retain
+                         * на новото; старото пак се release-ва), консумирай */
+                        int tci = lrc_tmp_find(n->args.data[2]);
                         /* RC: bytes елемент — retain на новата data, release
                          * на старата (в този ред — alias-safe; codegen_c:
                          * baga_vec_set_bytes). struct/enum (Task 6): retain
                          * на новото, после relf на стария box (codegen_c:
                          * baga_vec_set_box_rc). */
                         if (lg.rc && vt->elem->kind == TYPE_BYTES) {
-                            LLVMValueRef bd = LLVMBuildExtractValue(lg.builder,
-                                e, 0, "bd");
-                            h_call(baga_rt("baga_rc_retain"), &bd, 1, "rcr");
+                            if (tci < 0) {   /* temp: move — без retain */
+                                LLVMValueRef bd = LLVMBuildExtractValue(lg.builder,
+                                    e, 0, "bd");
+                                h_call(baga_rt("baga_rc_retain"), &bd, 1, "rcr");
+                            }
                             LLVMValueRef ga[] = { v, i };
                             LLVMValueRef ob = h_call(baga_rt("baga_vec_get_box"),
                                 ga, 2, "ob");
@@ -5821,7 +6096,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                         LLVMBuildStore(lg.builder, e, tmp);
                         LLVMValueRef bp = LLVMBuildBitCast(lg.builder, tmp, lg.ptr_ty, "bp");
                         LLVMValueRef pa[] = { v, i, bp, sz };
-                        return h_call(baga_rt("baga_vec_set_box"), pa, 4, "");
+                        LLVMValueRef r = h_call(baga_rt("baga_vec_set_box"), pa, 4, "");
+                        lrc_tmp_consume(tci);
+                        return r;
                     }
                     if (strcmp(cn, "vec_slice") == 0) {
                         LLVMValueRef a = coerce(emit_expr_llvm(n->args.data[1]), lg.i64_ty);
@@ -5842,6 +6119,18 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     else if (vt->elem->kind == TYPE_VEC) suf = "str";
                     else if (vt->elem->kind == TYPE_STRUCT)
                         llvm_unsupported("Vec<struct> (анонимен — само C бекенда; вж. docs/language-en.md)");
+                }
+                /* RC5 v0.7: temp стойност (str, и Vec елементи през str
+                 * helper-а) — helper-ът retain-ва; маркирай за consume +
+                 * release след повикването (нетен move, codegen_c.c:2484) */
+                if (lg.rc && strcmp(suf, "str") == 0 &&
+                    strcmp(n->callee->name, "vec_get") != 0 &&
+                    strcmp(n->callee->name, "vec_slice") != 0 &&
+                    strcmp(n->callee->name, "vec_concat") != 0) {
+                    int vi = strcmp(n->callee->name, "vec_push") == 0 ? 1 : 2;
+                    if (n->args.len > vi &&
+                        lrc_tmp_find(n->args.data[vi]) >= 0)
+                        rc_consume_arg = vi;
                 }
                 char rt_name[64];
                 snprintf(rt_name, sizeof rt_name, "baga_%s_%s",
@@ -5873,6 +6162,10 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     if (is_set) {
                         LLVMValueRef v = emit_expr_llvm(n->args.data[2]);
                         if (!v) llvm_unsupported("map_set стойност");
+                        /* RC5 v1.0b: temp стойност (owned call) — move в
+                         * box-а (embed_retain вече не retain-ва owned call),
+                         * консумирай temp-а (codegen_c.c:2575-2582) */
+                        int tci = lrc_tmp_find(n->args.data[2]);
                         /* RC (Task 6): box стойността споделя heap полетата —
                          * retain на новото, после relf на стария box при
                          * overwrite (alias-safe ред; codegen_c:
@@ -5913,7 +6206,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                         LLVMValueRef bp = LLVMBuildBitCast(lg.builder, tmp,
                             lg.ptr_ty, "bp");
                         LLVMValueRef pa[] = { mv, k, bp, LLVMSizeOf(sty) };
-                        return h_call(baga_rt(rt_name), pa, 4, "");
+                        LLVMValueRef r = h_call(baga_rt(rt_name), pa, 4, "");
+                        lrc_tmp_consume(tci);
+                        return r;
                     }
                     LLVMValueRef pa[] = { mv, k };
                     LLVMValueRef box = h_call(baga_rt(rt_name), pa, 2, "box");
@@ -5944,6 +6239,13 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     else if (mt->elem->kind == TYPE_F64) vsuf = "f64";
                     else if (mt->elem->kind == TYPE_BYTES) vsuf = "bytes";
                 }
+                /* RC5 v0.7: temp стойност в map_set (str/bytes) — helper-ът
+                 * retain-ва; маркирай за consume + release след повикването
+                 * (codegen_c.c:2647-2662). Ключът пак е retain+release. */
+                if (lg.rc && is_set && n->args.len >= 3 &&
+                    (strcmp(vsuf, "str") == 0 || strcmp(vsuf, "bytes") == 0) &&
+                    lrc_tmp_find(n->args.data[2]) >= 0)
+                    rc_consume_arg = 2;
                 char rt_name[64];
                 snprintf(rt_name, sizeof rt_name, "baga_%s_%s_%s",
                          n->callee->name, ksuf, vsuf);
@@ -6006,6 +6308,17 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             char *name = is_void ? NULL : tmp_name();
             LLVMValueRef result = LLVMBuildCall2(lg.builder, fn_ty, fn, args,
                                                  (unsigned)nargs, is_void ? "" : name);
+            if (rc_consume_arg >= 0) {
+                /* RC5 v0.7: helper-ът retain-на своята референция към temp-а;
+                 * консумирай го и release-ни temp-овата — нетен move в
+                 * контейнера (като _move helper вариантите в codegen_c) */
+                int ti = lrc_tmp_find(n->args.data[rc_consume_arg]);
+                if (ti >= 0) {
+                    LLRcTmp t = lg.lrc_tmps[ti];
+                    lrc_tmp_consume(ti);
+                    lrc_emit_release_val(t.tag, t.type, t.val);
+                }
+            }
             if (ef && extern_ret_is_str_llvm(ef)) {
                 /* str return: NULL → "" (като codegen_c — getenv е тотална) */
                 LLVMValueRef empty = LLVMBuildGlobalStringPtr(lg.builder, "", "empty");
@@ -6480,6 +6793,9 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             char *m = llvm_mangle(n->let_name);
             LLVMValueRef alloca = entry_alloca(ty, m);
             free(m);
+            /* RC4: temp-ове в init (root-ът е bound — не е temp) */
+            LLRcTmpSave tsv;
+            if (lg.rc) lrc_tmp_begin(n->let_init, 1, &tsv);
             if (n->let_init) {
                 LLVMValueRef val = emit_expr_llvm(n->let_init);
                 if (!val) llvm_unsupported("print като стойност на let");
@@ -6533,17 +6849,25 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
                               n->let_init ? n->let_init->type : NULL,
                               n->let_type, 0);
             }
+            if (lg.rc) lrc_tmp_end(&tsv);
             break;
         }
 
         case NODE_RETURN: {
             if (n->ret_val) {
+                /* RC4: temp-ове в return израза (root-ът отива на caller-а) */
+                LLRcTmpSave tsv;
+                if (lg.rc) lrc_tmp_begin(n->ret_val, 1, &tsv);
                 LLVMValueRef val = emit_expr_llvm(n->ret_val);
                 if (!val) llvm_unsupported("print като return стойност");
                 val = coerce(val, lg.cur_ret_ty);
+                /* RC4: release на temp-овете преди release на локалите
+                 * (като rc_tmp_release_all в emit_return_val, codegen_c) */
+                if (lg.rc) lrc_tmp_release_all();
                 /* RC: move на върнатия локал + release на останалите */
                 lrc_return_move(n->ret_val, val);
                 LLVMBuildRet(lg.builder, val);
+                if (lg.rc) lrc_tmp_restore(&tsv);
             } else {
                 if (lg.cur_ret_ty != lg.void_ty)
                     llvm_unsupported("return без стойност в не-void функция");
@@ -6554,7 +6878,13 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
         }
 
         case NODE_IF: {
+            /* RC4 v0.3: temp-ове в условието се release-ват веднага след
+             * оценката — преди клоновете. В LLVM не трябва GNU ({…}) wrap:
+             * temp-овете се emit-ват и release-ват в текущия block. */
+            LLRcTmpSave tsv;
+            if (lg.rc) lrc_tmp_begin(n->cond, 0, &tsv);
             LLVMValueRef cond = to_bool(emit_expr_llvm(n->cond));
+            if (lg.rc) lrc_tmp_end(&tsv);
             LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
             LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "then");
             LLVMBasicBlockRef else_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "else");
@@ -6587,7 +6917,13 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             LLVMBuildBr(lg.builder, cond_bb);
 
             LLVMPositionBuilderAtEnd(lg.builder, cond_bb);
+            /* RC4 v0.3: cond_bb се изпълнява на всяка итерация — temp
+             * emission + release тук са естественият per-iteration път
+             * (без GNU wrap трика на C) */
+            LLRcTmpSave tsv;
+            if (lg.rc) lrc_tmp_begin(n->while_cond, 0, &tsv);
             LLVMValueRef cond = to_bool(emit_expr_llvm(n->while_cond));
+            if (lg.rc) lrc_tmp_end(&tsv);
             LLVMBuildCondBr(lg.builder, cond, body_bb, end_bb);
 
             LLVMPositionBuilderAtEnd(lg.builder, body_bb);
@@ -6607,10 +6943,15 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
              * hi се преизчислява на всяка итерация, както в codegen_c */
             if (!n->for_iter || n->for_iter->kind != NODE_RANGE)
                 llvm_unsupported("for без диапазон (a..b)");
+            /* RC4 v0.3: lo temp-ове се оценяват веднъж (init) и се
+             * release-ват веднага след изчислената граница */
+            LLRcTmpSave tsv_lo;
+            if (lg.rc) lrc_tmp_begin(n->for_iter->range_lo, 0, &tsv_lo);
             LLVMValueRef lo = emit_expr_llvm(n->for_iter->range_lo);
             if (!lo || LLVMGetTypeKind(LLVMTypeOf(lo)) != LLVMIntegerTypeKind)
                 llvm_unsupported("for с не-целочислен диапазон");
             lo = coerce(lo, lg.i64_ty);
+            if (lg.rc) lrc_tmp_end(&tsv_lo);
 
             LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
             char *m = llvm_mangle(n->for_var);
@@ -6629,10 +6970,15 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             LLVMBuildBr(lg.builder, cond_bb);
 
             LLVMPositionBuilderAtEnd(lg.builder, cond_bb);
+            /* RC4 v0.3: hi се преоценява на всяка итерация (като в C) —
+             * temp emission + release в cond_bb са per-iteration */
+            LLRcTmpSave tsv_hi;
+            if (lg.rc) lrc_tmp_begin(n->for_iter->range_hi, 0, &tsv_hi);
             LLVMValueRef hi = emit_expr_llvm(n->for_iter->range_hi);
             if (!hi || LLVMGetTypeKind(LLVMTypeOf(hi)) != LLVMIntegerTypeKind)
                 llvm_unsupported("for с не-целочислен диапазон");
             hi = coerce(hi, lg.i64_ty);
+            if (lg.rc) lrc_tmp_end(&tsv_hi);
             char *nm = tmp_name();
             LLVMValueRef cur = LLVMBuildLoad2(lg.builder, lg.i64_ty, var, nm);
             free(nm);
@@ -6665,9 +7011,15 @@ static void emit_stmt_llvm(Node *n, LLVMBasicBlockRef break_bb, LLVMBasicBlockRe
             break;
         }
 
-        case NODE_EXPR_STMT:
+        case NODE_EXPR_STMT: {
+            /* RC4: temp-ове в израза (root на bare call с heap резултат е
+             * дискарднат — пак е temp; assign дясното е bound) */
+            LLRcTmpSave tsv;
+            if (lg.rc) lrc_tmp_begin(n->expr, 0, &tsv);
             emit_expr_llvm(n->expr);
+            if (lg.rc) lrc_tmp_end(&tsv);
             break;
+        }
 
         case NODE_BLOCK:
             emit_block_llvm(n, break_bb, cont_bb);
@@ -6842,6 +7194,9 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
     /* RC: нова функция — чист RC стек; scope 0 е scope-ът на функцията */
     lg.lrc_count = 0;
     lg.lrc_depth = 0;
+    lg.lrc_tmp_count = 0;   /* RC4: и чист temp регистър (defensive) */
+    lg.lrc_tmps_on = 0;
+    lg.lrc_tmp_decl = NULL;
     lrc_push_scope(0);
     lg.lrc_fn_base = 0;
 
@@ -6871,16 +7226,22 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder)))
             break;
         if (has_ret && i == stmts->len - 1 && s->kind == NODE_EXPR_STMT) {
+            /* RC4: temp-ове в implicit return израза — същият път като
+             * explicit return (release преди return-а) */
+            LLRcTmpSave tsv;
+            if (lg.rc) lrc_tmp_begin(s->expr, 1, &tsv);
             LLVMValueRef v = emit_expr_llvm(s->expr);
             /* raise вече емитира ret — без втори terminator */
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(lg.builder))) {
                 if (!v) llvm_unsupported("print като неявен return");
                 v = coerce(v, ret_ty);
+                if (lg.rc) lrc_tmp_release_all();
                 /* RC: същата move семантика като explicit return —
                  * release на локалите ПРЕДИ ret (codegen_c: emit_return_val) */
                 lrc_return_move(s->expr, v);
                 LLVMBuildRet(lg.builder, v);
             }
+            if (lg.rc) lrc_tmp_end(&tsv);
         } else {
             emit_stmt_llvm(s, NULL, NULL);
         }
