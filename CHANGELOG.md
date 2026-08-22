@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### runtime — `--rc`: интерполация със str стойност вече не е underflow
+- `rc_tmp_fresh` регистрираше всеки `NODE_TO_STR` като fresh heap temp
+  (rc=1 owned), но `to_str` върху str е identity (borrowed — емитира се
+  пряко, без копие). Две проявления под `--rc`: (1) `"x${s}y"` с owned str
+  локал `s` — release под краката на `s` (`rc underflow` + четене на
+  освободена памет); (2) `"${concat(...)}"` — двойна регистрация
+  (to_str + fresh call-ът вътре) и двоен release. Сега `NODE_TO_STR` е fresh
+  само при не-str вътрешност (`baga_i64_to_str`/`baga_f64_to_str` дават нов
+  rc=1 низ; bool литералът е guarded no-op). Порт и в LLVM бекенда
+  (`lrc_tmp_fresh`). Бонус чистка: мъртвият `node_has_payload_effects`
+  (codegen_c) е изтрит (беше `-Wunused-function`). Gate: новият
+  `tests/interp_rc_test.baga` в `tests/llvm_rc.sh` (C `--rc` ↔ LLVM
+  `--emit-llvm --rc` оракул) + батерията.
+
 ### codegen LLVM — RC4/RC5 v0.11 паритет: release на temp-ове под `--rc`
 - `src/codegen_llvm.c`: per-statement temp регистър под `--emit-llvm --rc`,
   огледало на RC4 в C бекенда (`rc_tmp_*`, codegen_c.c:1078-1521). Fresh

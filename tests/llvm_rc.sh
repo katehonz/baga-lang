@@ -21,7 +21,7 @@ tests/cmove_test.baga tests/struct_rc_test.baga tests/enum_rc_test.baga tests/en
 tests/nested_assign_rc_test.baga tests/calltemp_rc_test.baga tests/owned_ret_rc_test.baga \
 tests/match_temp_rc_test.baga tests/vecvec_rc_test.baga tests/drop_llvm_test.baga \
 tests/llvm_rc_vecmap_test.baga tests/llvm_rc_struct_test.baga tests/llvm_rc_struct2_test.baga \
-tests/catch_rc_test.baga"
+tests/catch_rc_test.baga tests/interp_rc_test.baga"
 for f in $TESTS; do
     [ -f "$f" ] || { echo "SKIP  $f (липсва)"; continue; }
     # SKIP при C грешка е съзнателен дизайн: оракулът е C страната, затова

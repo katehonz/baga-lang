@@ -1,0 +1,56 @@
+// interp_rc_test — регресия: to_str върху str е identity, НЕ fresh temp.
+//
+// Преди фикса rc_tmp_fresh регистрираше всеки NODE_TO_STR като fresh heap
+// temp (rc=1 owned). При интерполация със str стойност това е identity
+// (borrowed), и release-ът в края на statement-а даваше
+// „rc underflow (str — двоен release)" + четене на освободена памет под
+// --rc. Два проявления:
+//   (1) "x${s}y" с owned str локал s — release под краката на s;
+//   (2) "${concat(...)}" — двойна регистрация (to_str + fresh call вътре).
+// Минава и без --rc (тогава няма release изобщо) — реалният gate е
+// tests/llvm_rc.sh, който го пуска под C --rc и LLVM --emit-llvm --rc.
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn wrap(x: str) -> str {
+    return "<${x}>"
+}
+
+fn main() {
+    // (1) owned str локал в интерполация — s трябва да остане жива след нея
+    let s = concat("а", "б")
+    print("x${s}y")
+    check("interp_str_value", s == "аб")
+
+    // (2) fresh call в интерполация — точно един release (няма underflow)
+    print("${concat("а", "б")}")
+    check("interp_fresh_call", true)
+
+    // не-str конверсии остават fresh temp-ове (и се release-ват веднъж)
+    let n = 42
+    let b = true
+    let f = 1.5
+    print("n=${n} b=${b} f=${f}")
+    check("interp_scalars", true)
+
+    // вложено: интерполация като аргумент на fresh call
+    let t = concat("x", "${n}")
+    check("interp_nested", t == "x42")
+
+    // интерполация в return стойност (root bound, вътрешният x е identity)
+    check("interp_return", wrap(s) == "<аб>")
+
+    // повторна употреба на s след всички интерполации (няма dangling)
+    check("str_still_alive", s == concat("а", "б") && len(s) == 4)
+
+    print("interp_rc_test: all passed")
+}

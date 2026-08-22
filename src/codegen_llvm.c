@@ -1063,7 +1063,12 @@ static LLVMValueRef emit_expr_llvm(Node *n); /* fwd — пълната дефи�
 /* fresh heap temp ли е този възел? (порт на rc_tmp_fresh, codegen_c.c:1237) */
 static int lrc_tmp_fresh(Node *n) {
     if (!n) return 0;
-    if (n->kind == NODE_TO_STR) return 1;
+    if (n->kind == NODE_TO_STR) {
+        /* to_str върху str е identity (borrowed) — fresh е само конверсията
+         * от не-str тип; паритет с rc_tmp_fresh (codegen_c.c). */
+        Type *et = n->to_str_expr ? n->to_str_expr->type : NULL;
+        return !(et && et->kind == TYPE_STR);
+    }
     if (n->kind != NODE_CALL) return 0;
     if (lrc_borrowed_init(n)) return 0;
     /* enum ctor е като литерал — payload-ът е owned от ctor сайта */

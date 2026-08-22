@@ -1236,7 +1236,15 @@ static int rc_is_enum_ctor(Codegen *cg, Node *n);
  * RC5 v1.0b: rc_heap_tag — struct/enum fn резултатът е owned (v1.0a). */
 static int rc_tmp_fresh(Codegen *cg, Node *n) {
     if (!n) return 0;
-    if (n->kind == NODE_TO_STR) return 1;
+    if (n->kind == NODE_TO_STR) {
+        /* to_str върху str е identity (borrowed, емитира се пряко) — fresh
+         * е само конверсията от не-str тип (baga_i64_to_str /
+         * baga_f64_to_str дават нов rc=1 низ; bool дава литерал, чийто
+         * release е guarded no-op). str вътрешност, която е fresh call,
+         * се регистрира сама при слизане в to_str_expr. */
+        Type *et = n->to_str_expr ? n->to_str_expr->type : NULL;
+        return !(et && et->kind == TYPE_STR);
+    }
     if (n->kind != NODE_CALL) return 0;
     if (rc_borrowed_init(n)) return 0;
     /* enum ctor е като литерал — payload-ът е owned от ctor сайта;
@@ -1728,18 +1736,6 @@ static int type_has_payload_effects(Type *t) {
     if (!t || !t->effect_payloads) return 0;
     for (int i = 0; i < t->n_effects; i++)
         if (t->effect_payloads[i]) return 1;
-    return 0;
-}
-
-/* Node-вариант: ret_type веригата (NODE_TYPE_EFFECT обвивки). */
-static int node_has_payload_effects(Node *t) {
-    while (t && t->kind == NODE_TYPE_EFFECT) {
-        if (t->effect_payloads) {
-            for (int i = 0; i < t->n_effects; i++)
-                if (t->effect_payloads[i]) return 1;
-        }
-        t = t->inner_type;
-    }
     return 0;
 }
 
