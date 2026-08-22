@@ -285,6 +285,63 @@ else
 	exit 1
 fi
 
+echo "=== tls server (baga TLS 1.3 server: loopback + openssl s_client) ==="
+# Loopback: a go_bg worker runs tls_accept (std/net/tls_server.baga) while
+# main drives the pure-Baga client flight and asserts every step — cert,
+# CertificateVerify (RSA-PSS / ECDSA-P256), both Finished HMACs, app echo.
+run_tls_server_loopback() {
+	local kind=$1 key=$2 cert=$3 suites=${4:-}
+	local RC=0
+	if [[ -n "$suites" ]]; then
+		TLS_CIPHER="$suites" TLSCIPHER="$suites" TLSKEYPATH="$key" TLSCERTPATH="$cert" \
+			run tests/tls_server_test.baga > /tmp/baga_tlssrv_lb.txt 2>&1 || RC=$?
+	else
+		TLSKEYPATH="$key" TLSCERTPATH="$cert" \
+			run tests/tls_server_test.baga > /tmp/baga_tlssrv_lb.txt 2>&1 || RC=$?
+	fi
+	if [[ $RC -eq 0 ]] && grep -q "tls_server_test: all passed" /tmp/baga_tlssrv_lb.txt; then
+		echo "OK: TLS 1.3 server handshake ($kind) — baga client verifies baga server"
+	else
+		echo "FAIL: tls_server_test loopback ($kind)"
+		cat /tmp/baga_tlssrv_lb.txt
+		exit 1
+	fi
+}
+run_tls_server_loopback "RSA-PSS" /tmp/baga_tls_rsa_key.pem /tmp/baga_tls_rsa_cert.pem
+run_tls_server_loopback "ECDSA-P256" /tmp/baga_tls_ec_key.pem /tmp/baga_tls_ec_cert.pem
+run_tls_server_loopback "AES_256_GCM_SHA384" /tmp/baga_tls_rsa_key.pem /tmp/baga_tls_rsa_cert.pem 4866
+# Third-party wire proof: openssl s_client against the baga server
+# (TLSSERVER=1 listener on :18446). Self-signed — s_client reports the
+# trust error but must complete the TLSv1.3 handshake and negotiate a suite.
+run_tls_sclient() {
+	local kind=$1 key=$2 cert=$3
+	TLSSERVER=1 TLSKEYPATH="$key" TLSCERTPATH="$cert" \
+		run tests/tls_server_test.baga > /tmp/baga_tlssrv_live.txt 2>&1 & echo $! > /tmp/baga_tlssrv.pid
+	local up=0
+	for _ in $(seq 1 30); do
+		if (exec 3<>/dev/tcp/127.0.0.1/18446) 2>/dev/null; then up=1; break; fi
+		sleep 1
+	done
+	if [[ $up -eq 1 ]]; then
+		printf 'hello\n' | timeout 60 openssl s_client -connect 127.0.0.1:18446 \
+			-tls1_3 > /tmp/baga_sclient.txt 2>&1 || true
+		kill "$(cat /tmp/baga_tlssrv.pid)" > /dev/null 2>&1 || true
+		wait "$(cat /tmp/baga_tlssrv.pid)" 2>/dev/null || true
+		if grep -q "Cipher is TLS_AES" /tmp/baga_sclient.txt; then
+			echo "OK: openssl s_client negotiated TLSv1.3 with the baga server ($kind)"
+			return 0
+		fi
+	else
+		kill "$(cat /tmp/baga_tlssrv.pid)" > /dev/null 2>&1 || true
+		wait "$(cat /tmp/baga_tlssrv.pid)" 2>/dev/null || true
+	fi
+	echo "FAIL: openssl s_client vs baga TLS server ($kind)"
+	cat /tmp/baga_tlssrv_live.txt /tmp/baga_sclient.txt 2>/dev/null
+	exit 1
+}
+run_tls_sclient "RSA" /tmp/baga_tls_rsa_key.pem /tmp/baga_tls_rsa_cert.pem
+run_tls_sclient "ECDSA-P256" /tmp/baga_tls_ec_key.pem /tmp/baga_tls_ec_cert.pem
+
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 # 8000 keeps clear of the crowded framework defaults (8080/8090) and of
 # ambient dev servers; override with REGISTRY_PORT when 8000 is taken.
@@ -303,7 +360,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|https_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

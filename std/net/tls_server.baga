@@ -1,0 +1,453 @@
+// tls_server.baga — TLS 1.3 server handshake (mirror of the client stack):
+// ClientHello parse → ServerHello (x25519) → key schedule → encrypted
+// EncryptedExtensions / Certificate / CertificateVerify / Finished → client
+// Finished verify → TlsConn for application data.
+//
+// Shares the client's wire primitives: tls.baga encoders, tls_crypto key
+// schedule, tls_flight's CV content builder, tls_conn record seal/read.
+//
+// Honest limits (documented, v1): x25519 only; suites 4865/4866; cert keys
+// RSA (rsa_pss_rsae_sha256) or EC P-256 (ecdsa_secp256r1_sha256); single
+// leaf certificate (no chain); no session tickets, no HelloRetryRequest,
+// no client authentication; alerts only before the encrypted flight.
+//
+// TlsConn role note: tls_conn_seal writes with c_* and tls_conn_read reads
+// with s_* — the client's convention. tls_accept returns a conn with the
+// keys swapped (c_* = the SERVER's own write keys, s_* = the client's), so
+// tls_conn_write/tls_conn_read work unchanged for the server role.
+
+import "tls.baga"
+import "tls_crypto.baga"
+import "tls_flight.baga"
+import "tls_conn.baga"
+import "tcp.baga"
+import "../bytes/bytes.baga"
+import "../str/str.baga"
+import "../os/os.baga"
+import "../crypto/x25519.baga"
+import "../crypto/rsa.baga"
+import "../crypto/p256.baga"
+import "../crypto/pkey.baga"
+import "../crypto/aes.baga"
+import "../crypto/gcm.baga"
+import "../random/random.baga"
+
+// ---------- ClientHello ----------
+
+struct TlsClientHello {
+    ok: i64,
+    err: str,
+    sid: bytes,             // legacy_session_id (echoed in ServerHello)
+    tls13: i64,             // supported_versions offers 0x0304
+    x25519_pub: bytes,      // key_share entry for group 29; empty = absent
+    offer_4865: i64,
+    offer_4866: i64,
+    sig_rsa_pss: i64,       // signature_algorithms offers 0x0804
+    sig_ecdsa: i64          // signature_algorithms offers 0x0403
+}
+
+fn tls_chello_bad(err: str) -> TlsClientHello {
+    return TlsClientHello { ok: 0, err: err,
+        sid: bytes_from_vec(vec_new()), tls13: 0,
+        x25519_pub: bytes_from_vec(vec_new()),
+        offer_4865: 0, offer_4866: 0, sig_rsa_pss: 0, sig_ecdsa: 0 }
+}
+
+fn tls_parse_client_hello(payload: bytes) -> TlsClientHello {
+    let n = bytes_len(payload)
+    if n < 4 || bytes_at(payload, 0) != 1 {
+        return tls_chello_bad("not a ClientHello")
+    }
+    let hslen = (bytes_at(payload, 1) << 16) | (bytes_at(payload, 2) << 8) | bytes_at(payload, 3)
+    if 4 + hslen > n {
+        return tls_chello_bad("truncated handshake")
+    }
+    let mut p: i64 = 4
+    if tls_u16_at(payload, p) != 771 {
+        return tls_chello_bad("bad legacy version")
+    }
+    p = p + 2
+    p = p + 32                       // client random (unused by TLS 1.3)
+    if p >= n {
+        return tls_chello_bad("truncated body")
+    }
+    let sidl = bytes_at(payload, p)
+    p = p + 1
+    if p + sidl > n {
+        return tls_chello_bad("truncated session id")
+    }
+    let sid = bytes_slice(payload, p, p + sidl)
+    p = p + sidl
+    if p + 2 > n {
+        return tls_chello_bad("truncated body")
+    }
+    let cslen = tls_u16_at(payload, p)
+    p = p + 2
+    if p + cslen > n {
+        return tls_chello_bad("truncated cipher list")
+    }
+    let mut offer_4865: i64 = 0
+    let mut offer_4866: i64 = 0
+    let mut c: i64 = 0
+    while c + 2 <= cslen {
+        let suite = tls_u16_at(payload, p + c)
+        if suite == 4865 {
+            offer_4865 = 1
+        }
+        if suite == 4866 {
+            offer_4866 = 1
+        }
+        c = c + 2
+    }
+    p = p + cslen
+    if p >= n {
+        return tls_chello_bad("truncated body")
+    }
+    let cmplen = bytes_at(payload, p)
+    p = p + 1 + cmplen
+    let mut tls13: i64 = 0
+    let mut xpub = bytes_from_vec(vec_new())
+    let mut sig_rsa_pss: i64 = 0
+    let mut sig_ecdsa: i64 = 0
+    if p + 2 <= n {
+        let extlen = tls_u16_at(payload, p)
+        p = p + 2
+        let mut vend = p + extlen
+        if vend > n {
+            vend = n
+        }
+        while p + 4 <= vend {
+            let eid = tls_u16_at(payload, p)
+            let elen = tls_u16_at(payload, p + 2)
+            p = p + 4
+            if p + elen > vend {
+                return tls_chello_bad("truncated extension")
+            }
+            if eid == 43 {
+                // supported_versions: u8 list len, then u16 versions
+                let mut q = p
+                if q < p + elen {
+                    let vl = bytes_at(payload, q)
+                    q = q + 1
+                    let mut vi: i64 = 0
+                    while vi + 2 <= vl && q + 2 <= p + elen {
+                        if tls_u16_at(payload, q) == 772 {
+                            tls13 = 1
+                        }
+                        q = q + 2
+                        vi = vi + 2
+                    }
+                }
+            }
+            if eid == 51 && elen >= 2 {
+                // key_share: u16 list len, then group(2) len(2) data
+                let list_len = tls_u16_at(payload, p)
+                let mut q = p + 2
+                let kend = p + 2 + list_len
+                while q + 4 <= kend && q + 4 <= p + elen {
+                    let g = tls_u16_at(payload, q)
+                    let kl = tls_u16_at(payload, q + 2)
+                    q = q + 4
+                    if q + kl > kend {
+                        return tls_chello_bad("truncated key_share")
+                    }
+                    if g == 29 && kl == 32 {
+                        xpub = bytes_slice(payload, q, q + 32)
+                    }
+                    q = q + kl
+                }
+            }
+            if eid == 13 && elen >= 2 {
+                // signature_algorithms: u16 list len, then u16 schemes
+                let list_len = tls_u16_at(payload, p)
+                let mut q = p + 2
+                let mut si: i64 = 0
+                while si + 2 <= list_len && q + 2 <= p + elen {
+                    let scheme = tls_u16_at(payload, q)
+                    if scheme == 2052 {
+                        sig_rsa_pss = 1
+                    }
+                    if scheme == 1027 {
+                        sig_ecdsa = 1
+                    }
+                    q = q + 2
+                    si = si + 2
+                }
+            }
+            p = p + elen
+        }
+    }
+    return TlsClientHello { ok: 1, err: "", sid: sid, tls13: tls13,
+        x25519_pub: xpub, offer_4865: offer_4865, offer_4866: offer_4866,
+        sig_rsa_pss: sig_rsa_pss, sig_ecdsa: sig_ecdsa }
+}
+
+// ---------- ServerHello ----------
+
+fn tls_hs_msg(typ: i64, body: bytes) -> bytes {
+    let v = vec_new()
+    tls_push_u8(v, typ)
+    tls_push_u24(v, bytes_len(body))
+    tls_push_bytes(v, body)
+    return bytes_from_vec(v)
+}
+
+// The full TLS record carrying the ServerHello.
+fn tls_server_hello(random32: bytes, sid: bytes, cipher: i64, pub32: bytes) -> bytes {
+    let exts = vec_new()
+    // supported_versions: the ServerHello form is a bare u16
+    // selected_version (no list-length byte — that exists only in the
+    // ClientHello)
+    let sv = vec_new()
+    tls_push_u16(sv, 772)
+    tls_ext(exts, 43, sv)
+    // key_share: single KeyShareEntry (no list-length wrapper server-side)
+    let ks = vec_new()
+    tls_push_u16(ks, 29)
+    tls_push_u16(ks, 32)
+    tls_push_bytes(ks, pub32)
+    tls_ext(exts, 51, ks)
+    // ---- handshake body ----
+    let body = vec_new()
+    tls_push_u16(body, 771)          // legacy_version 0x0303
+    tls_push_bytes(body, random32)
+    tls_push_u8(body, bytes_len(sid))
+    tls_push_bytes(body, sid)
+    tls_push_u16(body, cipher)
+    tls_push_u8(body, 0)             // compression
+    tls_push_u16(body, vec_len(exts))
+    let mut e: i64 = 0
+    while e < vec_len(exts) {
+        vec_push(body, vec_get(exts, e))
+        e = e + 1
+    }
+    let hs = tls_hs_msg(2, bytes_from_vec(body))
+    let rec = vec_new()
+    tls_push_u8(rec, 22)             // handshake
+    tls_push_u16(rec, 771)
+    tls_push_u16(rec, bytes_len(hs))
+    tls_push_bytes(rec, hs)
+    return bytes_from_vec(rec)
+}
+
+// ---------- encrypted flight ----------
+
+// Seal one handshake message into its own application-data record
+// (inner content type 22). One record per message — the baga client
+// collects four flight records, and the RFC allows any split.
+fn tls_seal_hs_record(key: bytes, iv: bytes, seq: i64, hs_msg: bytes) -> bytes {
+    let aead = aes_expand(key)
+    let typed = bytes_concat(hs_msg, hex_decode("16"))
+    let aad = tls_hdr_bytes(23, bytes_len(typed) + 16)
+    let sealed = gcm_seal(aead, tls_nonce(iv, seq), aad, typed)
+    return bytes_concat(tls_hdr_bytes(23, bytes_len(sealed)), sealed)
+}
+
+// Plaintext alert record (level 2 = fatal). Only used before the
+// encrypted flight — encrypted alerts are not implemented (v1).
+fn tls_alert_record(code: i64) -> bytes {
+    let v = vec_new()
+    tls_push_u8(v, 21)
+    tls_push_u16(v, 771)
+    tls_push_u16(v, 2)
+    tls_push_u8(v, 2)                // fatal
+    tls_push_u8(v, code)
+    return bytes_from_vec(v)
+}
+
+// ---------- tls_accept ----------
+
+// Full server-side handshake on an accepted fd. cert_der is the leaf
+// certificate (sent as-is, single-cert chain); key is the matching
+// private key (PKey kind selects the CertificateVerify algorithm).
+// Env TLS_CIPHER optionally forces the suite when the client offers it
+// (test hook, mirrors the client-side TLSCIPHER expectation).
+fn tls_accept(fd: i64, cert_der: bytes, key: PKey) -> TlsConn !Net !IO !Random {
+    if key.ok == 0 || bytes_len(cert_der) == 0 {
+        return tls_conn_bad("tls_accept: bad cert/key")
+    }
+    let ch_rec = tls_read_record(fd)?
+    if ch_rec.ok == 0 || ch_rec.typ != 22 {
+        return tls_conn_bad("expected ClientHello")
+    }
+    let ch_msg = ch_rec.payload
+    let ch = tls_parse_client_hello(ch_msg)
+    if ch.ok == 0 {
+        tcp_write_bytes(fd, tls_alert_record(47))?            // decode_error
+        return tls_conn_bad(ch.err)
+    }
+    if ch.tls13 == 0 {
+        tcp_write_bytes(fd, tls_alert_record(70))?            // protocol_version
+        return tls_conn_bad("client does not offer TLS 1.3")
+    }
+    if bytes_len(ch.x25519_pub) != 32 {
+        tcp_write_bytes(fd, tls_alert_record(71))?            // insufficient_security
+        return tls_conn_bad("no x25519 key_share")
+    }
+    // suite selection (preference order), with optional env override
+    let mut cipher: i64 = 0
+    if ch.offer_4865 == 1 {
+        cipher = 4865
+    }
+    if ch.offer_4866 == 1 && cipher == 0 {
+        cipher = 4866
+    }
+    let forced = env("TLS_CIPHER")?
+    if forced != "" {
+        let want = parse_int(forced)
+        if (want == 4865 && ch.offer_4865 == 1) || (want == 4866 && ch.offer_4866 == 1) {
+            cipher = want
+        } else {
+            tcp_write_bytes(fd, tls_alert_record(71))?
+            return tls_conn_bad("forced suite not offered by client")
+        }
+    }
+    if cipher == 0 {
+        tcp_write_bytes(fd, tls_alert_record(71))?
+        return tls_conn_bad("no common cipher suite")
+    }
+    // CertificateVerify algorithm: key kind ∩ client signature_algorithms
+    let mut cv_algo: i64 = 0
+    if key.kind == 1 && ch.sig_rsa_pss == 1 {
+        cv_algo = 2052               // rsa_pss_rsae_sha256
+    }
+    if key.kind == 2 && ch.sig_ecdsa == 1 {
+        cv_algo = 1027               // ecdsa_secp256r1_sha256
+    }
+    if cv_algo == 0 {
+        tcp_write_bytes(fd, tls_alert_record(40))?            // handshake_failure
+        return tls_conn_bad("no common CertificateVerify algorithm")
+    }
+
+    // --- ServerHello + key schedule ---
+    let scalar = bytes_from_vec(random_bytes(32))
+    let rnd = bytes_from_vec(random_bytes(32))
+    let pub = x25519_public(scalar)
+    let sh_rec_bytes = tls_server_hello(rnd, ch.sid, cipher, pub)
+    let w = tcp_write_bytes(fd, sh_rec_bytes)?
+    if w != 0 {
+        return tls_conn_bad("ServerHello write failed")
+    }
+    let sh_msg = bytes_slice(sh_rec_bytes, 5, bytes_len(sh_rec_bytes))
+    let shared = x25519(scalar, ch.x25519_pub)
+    let sched = tls_schedule(cipher, ch_msg, sh_msg, shared)
+    if sched.ok == 0 {
+        return tls_conn_bad(sched.err)
+    }
+    let hs_key = tls_hkdf_label(cipher, sched.server_hs, "key", bytes_from_vec(vec_new()), tls_key_len(cipher))
+    let hs_iv = tls_hkdf_label(cipher, sched.server_hs, "iv", bytes_from_vec(vec_new()), 12)
+
+    // --- flight: EncryptedExtensions, Certificate, CertificateVerify, Finished ---
+    let ee_msg = tls_hs_msg(8, hex_decode("0000"))      // empty extension list
+    // Certificate: ctx(1)=0, list_len(3), cert_len(3), cert, ext_len(2)=0
+    let cert_body = vec_new()
+    tls_push_u8(cert_body, 0)
+    tls_push_u24(cert_body, bytes_len(cert_der) + 5)
+    tls_push_u24(cert_body, bytes_len(cert_der))
+    tls_push_bytes(cert_body, cert_der)
+    tls_push_u16(cert_body, 0)
+    let cert_msg = tls_hs_msg(11, bytes_from_vec(cert_body))
+    // transcript up to (not including) CertificateVerify
+    let mut acc = bytes_concat(bytes_concat(bytes_concat(ch_msg, sh_msg), ee_msg), cert_msg)
+    let cv_hash = tls_hash_b(cipher, acc)
+    let content = tls_cv_signed_content(cv_hash)
+    let mut cv_sig = bytes_from_vec(vec_new())
+    let mut attempts: i64 = 0
+    while bytes_len(cv_sig) == 0 && attempts < 4 {
+        if cv_algo == 2052 {
+            let salt = bytes_from_vec(random_bytes(32))
+            cv_sig = rsa_pss_sha256_sign(key.rsa_n, key.rsa_d, content, salt)
+        } else {
+            let k32 = bytes_from_vec(random_bytes(32))
+            cv_sig = ecdsa_p256_sign_sha256(key.ec_d, content, k32)
+        }
+        attempts = attempts + 1
+    }
+    if bytes_len(cv_sig) == 0 {
+        return tls_conn_bad("CertificateVerify signing failed")
+    }
+    let cv_body = vec_new()
+    tls_push_u16(cv_body, cv_algo)
+    tls_push_u16(cv_body, bytes_len(cv_sig))
+    tls_push_bytes(cv_body, cv_sig)
+    let cv_msg = tls_hs_msg(15, bytes_from_vec(cv_body))
+    acc = bytes_concat(acc, cv_msg)
+    // server Finished: HMAC over the transcript BEFORE this message
+    let fin_key = tls_hkdf_label(cipher, sched.server_hs, "finished", bytes_from_vec(vec_new()), tls_hash_len(cipher))
+    let fin_body = tls_hmac_b(cipher, fin_key, tls_hash_b(cipher, acc))
+    let fin_msg = tls_hs_msg(20, fin_body)
+    // transcript through server Finished (client Finished + app secrets)
+    let flight_hash = tls_hash_b(cipher, bytes_concat(acc, fin_msg))
+
+    let r0 = tcp_write_bytes(fd, tls_seal_hs_record(hs_key, hs_iv, 0, ee_msg))?
+    let r1 = tcp_write_bytes(fd, tls_seal_hs_record(hs_key, hs_iv, 1, cert_msg))?
+    let r2 = tcp_write_bytes(fd, tls_seal_hs_record(hs_key, hs_iv, 2, cv_msg))?
+    let r3 = tcp_write_bytes(fd, tls_seal_hs_record(hs_key, hs_iv, 3, fin_msg))?
+    if r0 != 0 || r1 != 0 || r2 != 0 || r3 != 0 {
+        return tls_conn_bad("flight write failed")
+    }
+
+    // --- client Finished (handshake keys, read seq 0) ---
+    let cf_key = tls_hkdf_label(cipher, sched.client_hs, "key", bytes_from_vec(vec_new()), tls_key_len(cipher))
+    let cf_iv = tls_hkdf_label(cipher, sched.client_hs, "iv", bytes_from_vec(vec_new()), 12)
+    let cf_aead = aes_expand(cf_key)
+    let cf_fin_key = tls_hkdf_label(cipher, sched.client_hs, "finished", bytes_from_vec(vec_new()), tls_hash_len(cipher))
+    let expect = tls_hmac_b(cipher, cf_fin_key, flight_hash)
+    let mut got_finished: i64 = 0
+    let mut reads: i64 = 0
+    while got_finished == 0 && reads < 8 {
+        let r = tls_read_record(fd)?
+        reads = reads + 1
+        if r.ok == 0 {
+            return tls_conn_bad(concat("client Finished read: ", r.err))
+        }
+        // middlebox CCS (type 20) is ignored; the Finished arrives as a
+        // type-23 record under the client handshake keys
+        if r.typ != 20 {
+            if r.typ != 23 {
+                return tls_conn_bad("expected encrypted client Finished")
+            }
+            let aad = tls_hdr_bytes(23, bytes_len(r.payload))
+            let open = gcm_open(cf_aead, tls_nonce(cf_iv, 0), aad, r.payload)
+            if open.ok == 0 {
+                return tls_conn_bad("client Finished decrypt failed")
+            }
+            let inner = tls_inner_open(open.pt)
+            if inner.ok == 0 || inner.typ != 22 {
+                return tls_conn_bad("client Finished: bad inner type")
+            }
+            // first (and for this flight only) handshake message: Finished
+            let d = inner.data
+            if bytes_len(d) >= 4 && bytes_at(d, 0) == 20 {
+                let ml = (bytes_at(d, 1) << 16) | (bytes_at(d, 2) << 8) | bytes_at(d, 3)
+                if 4 + ml <= bytes_len(d) && ml == tls_hash_len(cipher) {
+                    let body = bytes_slice(d, 4, 4 + ml)
+                    if ct_eq_b(body, expect) {
+                        got_finished = 1
+                    }
+                }
+            }
+            if got_finished == 0 {
+                return tls_conn_bad("client Finished verify_data mismatch")
+            }
+        }
+    }
+    if got_finished == 0 {
+        return tls_conn_bad("no client Finished received")
+    }
+
+    // --- application traffic keys (role-swapped, see header note) ---
+    let d1 = tls_derive(cipher, sched.hs_secret)
+    let master = tls_hkdf_extract(cipher, d1, tls_zeros(tls_hash_len(cipher)))
+    let c_app = tls_hkdf_label(cipher, master, "c ap traffic", flight_hash, tls_hash_len(cipher))
+    let s_app = tls_hkdf_label(cipher, master, "s ap traffic", flight_hash, tls_hash_len(cipher))
+    return TlsConn {
+        ok: 1, err: "", fd: fd,
+        // c_* = server's own write keys, s_* = client's (read) keys
+        c_key: tls_hkdf_label(cipher, s_app, "key", bytes_from_vec(vec_new()), tls_key_len(cipher)),
+        c_iv: tls_hkdf_label(cipher, s_app, "iv", bytes_from_vec(vec_new()), 12),
+        s_key: tls_hkdf_label(cipher, c_app, "key", bytes_from_vec(vec_new()), tls_key_len(cipher)),
+        s_iv: tls_hkdf_label(cipher, c_app, "iv", bytes_from_vec(vec_new()), 12),
+        c_seq: 0, s_seq: 0
+    }
+}

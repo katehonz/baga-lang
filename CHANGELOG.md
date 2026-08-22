@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### std/net — TLS 1.3 сървър ръкостискане (фронт 4 от v1.0-readiness)
+- `tls_server.baga` (нов): огледало на клиентския стек — парсване на
+  ClientHello (supported_versions/key_share/signature_algorithms/cipher
+  suites), ServerHello с ехо на legacy session id, ключов график през
+  общия `tls_schedule`, криптиран flight от 4 записа (EncryptedExtensions,
+  Certificate, CertificateVerify, Finished), проверка на клиентския
+  Finished и връщане на `TlsConn` за приложни данни (разменени роли —
+  `c_*` са сървърните ключове за писане). Споделя кодерите/крипото на
+  клиента без дубликати.
+- Честни граници (документирани, вградени в готовността на сървъра): само
+  x25519; suites 4865/4866; единичен лист сертификат; без сесийни
+  тикети/HelloRetryRequest/клиентска автентикация; alert-и само преди
+  криптирания flight. `TLS_CIPHER` env форсира suite (тестова кука).
+- Крипто на сертификата: ключът идва от `pkey.baga` — RSA →
+  rsa_pss_rsae_sha256, EC P-256 → ecdsa_secp256r1_sha256, спрямо
+  `signature_algorithms` на клиента.
+- Тестове: `tests/tls_server_test.baga` — loopback (go_bg сървър +
+  чист baga клиент проверява всяка стъпка: suite, сертификат,
+  CertificateVerify, двата Finished HMAC, echo на приложни данни) за
+  RSA/EC/4866; плюс `TLSSERVER=1` listener за външна проверка с
+  `openssl s_client -tls1_3` (и за двата вида сертификат — ръкостискането
+  завършва с договорен TLS_AES suite). Wiring в `run_tests.sh` (5 нови
+  проверки, тестът е извън discovery — нуждае се от openssl-генерирани
+  PEM-и).
+- Отключва SSL за boilaDB (SSLRequest → 'S'); виж следващата фаза.
+
 ### std/crypto — RSA-PSS/ECDSA-P256 подписване + парсване на частни ключове
 - `pkey.baga` (нов): PEM парсер за частни ключове — PKCS#8 (`PRIVATE KEY`),
   PKCS#1 (`RSA PRIVATE KEY`) и SEC1 (`EC PRIVATE KEY`); RSA дава (n, e, d),

@@ -1,0 +1,249 @@
+// tls_server_test.baga — TLS 1.3 SERVER handshake (std/net/tls_server.baga).
+//
+// Two modes:
+//   default    — in-process loopback: a go_bg worker runs tls_accept on
+//                127.0.0.1:18445, main drives the pure-Baga client flight
+//                and asserts every step (suite, cert, CertificateVerify,
+//                Finished HMACs both directions, app-data echo).
+//   TLSSERVER=1 — standalone listener on 127.0.0.1:18446 so run_tests.sh
+//                can point `openssl s_client -tls1_3` at the baga server
+//                (third-party wire proof).
+//
+// Env: TLSKEYPATH / TLSCERTPATH — PEM private key + certificate
+// (openssl-provisioned by run_tests.sh); TLS_CIPHER forces the suite
+// server-side; TLSCIPHER is the client-side expectation.
+
+import "std/net/tls.baga"
+import "std/net/tls_crypto.baga"
+import "std/net/tls_flight.baga"
+import "std/net/tls_conn.baga"
+import "std/net/tls_server.baga"
+import "std/net/tcp.baga"
+import "std/crypto/x25519.baga"
+import "std/crypto/x509.baga"
+import "std/crypto/pkey.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+import "std/os/os.baga"
+import "std/random/random.baga"
+import "std/time/time.baga"
+import "testbaga/assert.baga"
+
+fn chunk_add(acc: bytes, payload: bytes) -> bytes {
+    let ln = bytes_len(payload)
+    let hd = vec_new()
+    vec_push(hd, (ln >> 16) & 255)
+    vec_push(hd, (ln >> 8) & 255)
+    vec_push(hd, ln & 255)
+    return bytes_concat(bytes_concat(acc, bytes_from_vec(hd)), payload)
+}
+
+struct TlsServeSetup {
+    ok: i64,
+    key: PKey,
+    cert_der: bytes
+}
+
+fn tls_serve_setup() -> TlsServeSetup !IO {
+    let keypath = env("TLSKEYPATH")?
+    let certpath = env("TLSCERTPATH")?
+    if keypath == "" || certpath == "" {
+        return TlsServeSetup { ok: 0, key: pkey_bad("TLSKEYPATH/TLSCERTPATH not set"),
+            cert_der: bytes_from_vec(vec_new()) }
+    }
+    let key = pkey_parse_pem(read_file(keypath)?)
+    let cert_der = pem_der_block(read_file(certpath)?, "CERTIFICATE")
+    if key.ok == 0 || bytes_len(cert_der) == 0 {
+        return TlsServeSetup { ok: 0, key: key, cert_der: cert_der }
+    }
+    return TlsServeSetup { ok: 1, key: key, cert_der: cert_der }
+}
+
+fn tls_serve_echo(conn: TlsConn) -> i64 !Net !IO {
+    let r = tls_conn_read(conn)?
+    if r.conn.ok == 0 || r.typ != 23 {
+        return 1
+    }
+    let out = bytes_concat(bytes_of_str("echo:"), r.data)
+    let c2 = tls_conn_write(r.conn, out)?
+    if c2.ok == 0 {
+        return 1
+    }
+    tcp_close(c2.fd)?
+    return 0
+}
+
+// Loopback worker: one tls_accept + one echo on the port.
+fn tls_serve_one(port: i64) -> i64 !Net !IO !Random {
+    let setup = tls_serve_setup()?
+    if setup.ok == 0 {
+        return 1
+    }
+    let l = tcp_listen(port)?
+    if l < 0 {
+        return 1
+    }
+    let fd = tcp_accept(l)?
+    if fd < 0 {
+        return 1
+    }
+    tcp_set_timeouts(fd, 120)?
+    let conn = tls_accept(fd, setup.cert_der, setup.key)
+    if conn.ok == 0 {
+        eprintln(concat("tls_server_test worker: ", conn.err))
+        return 1
+    }
+    return tls_serve_echo(conn)?
+}
+
+// Standalone listener for `openssl s_client` (TLSSERVER=1).
+fn tls_serve_loop(port: i64) -> i64 !Net !IO !Random {
+    let setup = tls_serve_setup()?
+    if setup.ok == 0 {
+        eprintln(concat("tls_server_test: ", setup.key.err))
+        return 1
+    }
+    let l = tcp_listen(port)?
+    if l < 0 {
+        return 1
+    }
+    print(concat("tls_server_test: listening on ", int_to_str(port)))
+    let mut running: i64 = 1
+    while running == 1 {
+        let fd = tcp_accept(l)?
+        if fd >= 0 {
+            tcp_set_timeouts(fd, 120)?
+            let conn = tls_accept(fd, setup.cert_der, setup.key)
+            if conn.ok == 1 {
+                let e = tls_serve_echo(conn)?
+                if e != 0 {
+                    tcp_close(conn.fd)?
+                }
+            } else {
+                eprintln(concat("tls_server_test: handshake: ", conn.err))
+                tcp_close(fd)?
+            }
+        }
+    }
+    return 0
+}
+
+fn main() -> i64 !Net !IO !Par !Random !Time {
+    let mode = env("TLSSERVER")?
+    if mode == "1" {
+        return tls_serve_loop(18446)?
+    }
+
+    // --- loopback: baga client vs baga server ---
+    let setup = tls_serve_setup()?
+    if setup.ok == 0 {
+        eprintln(concat("tls_server_test: ", setup.key.err))
+        return 1
+    }
+    let port: i64 = 18445
+    go_bg(tls_serve_one, port)
+    // retry until the worker's tcp_listen is up (no listen-ready signal)
+    let mut fd: i64 = -1
+    let mut tries: i64 = 0
+    while fd < 0 && tries < 20 {
+        sleep_ms(250)
+        fd = tcp_connect_to("127.0.0.1", port, 5)?
+        tries = tries + 1
+    }
+    assert_true("connect", fd >= 0)
+    if fd < 0 {
+        return 1
+    }
+    tcp_set_timeouts(fd, 120)?
+
+    // --- ClientHello ---
+    let scalar = bytes_from_vec(random_bytes(32))
+    let sid = bytes_from_vec(random_bytes(32))
+    let rnd = bytes_from_vec(random_bytes(32))
+    let pub = x25519_public(scalar)
+    let rec0 = tls_client_hello(pub, rnd, sid, "")
+    let w = tcp_write_bytes(fd, rec0)?
+    assert_eq_i64("hello_written", w, 0)
+    let ch_msg = bytes_slice(rec0, 5, bytes_len(rec0))
+
+    // --- ServerHello (built by tls_accept) ---
+    let sh_rec = tls_read_record(fd)?
+    assert_eq_i64("sh_record", sh_rec.ok, 1)
+    let shello = tls_parse_server_hello(sh_rec.payload)
+    assert_eq_i64("sh_parsed", shello.ok, 1)
+    assert_eq_i64("sh_version_tls13", shello.version, 772)
+    let mut want_cipher: i64 = 4865
+    let envc = env("TLSCIPHER")?
+    if envc != "" {
+        want_cipher = parse_int(envc)
+    }
+    assert_eq_i64("sh_cipher", shello.cipher, want_cipher)
+    assert_eq_i64("sh_keyshare_len", bytes_len(shello.server_pub), 32)
+    assert_eq_i64("sh_sid_echo", bytes_len(shello.server_random), 32)
+
+    // --- key schedule + flight decrypt ---
+    let shared = x25519(scalar, shello.server_pub)
+    let sched = tls_schedule(shello.cipher, ch_msg, sh_rec.payload, shared)
+    assert_eq_i64("schedule", sched.ok, 1)
+    let mut chunked = bytes_from_vec(vec_new())
+    let mut recs: i64 = 0
+    while recs < 4 {
+        let r = tls_read_record(fd)?
+        assert_eq_i64("flight_record", r.ok, 1)
+        if r.typ == 23 {
+            chunked = chunk_add(chunked, r.payload)
+            recs = recs + 1
+        }
+    }
+    let flight = tls_open_handshake(sched, ch_msg, sh_rec.payload, chunked)
+    if flight.ok == 0 {
+        eprintln(concat("tls_server_test: flight: ", flight.err))
+        return 1
+    }
+    assert_eq_i64("msg_count", vec_len(flight.types), 4)
+    assert_eq_i64("msg_ee", vec_get(flight.types, 0), 8)
+    assert_eq_i64("msg_cert", vec_get(flight.types, 1), 11)
+    assert_eq_i64("msg_certverify", vec_get(flight.types, 2), 15)
+    assert_eq_i64("msg_finished", vec_get(flight.types, 3), 20)
+    assert_true("cert_der_present", bytes_len(flight.cert_der) > 100)
+    assert_eq_i64("server_finished_verified", flight.finished_ok, 1)
+
+    // --- cert + CertificateVerify (client-side verify of our server) ---
+    let leaf = x509_parse(flight.cert_der)
+    assert_eq_i64("x509_parse", leaf.ok, 1)
+    assert_eq_i64("x509_self_signed", x509_verify_self_signed(leaf), 1)
+    let mut want_algo: i64 = 2052
+    if setup.key.kind == 2 {
+        want_algo = 1027
+    }
+    assert_eq_i64("cv_algo", flight.cv_algo, want_algo)
+    let ver = tls_verify_server(flight, bytes_from_vec(vec_new()))
+    if ver.ok == 0 {
+        eprintln(concat("tls_server_test: verify: ", ver.err))
+        return 1
+    }
+    assert_eq_i64("cert_ok", ver.cert_ok, 1)
+    assert_eq_i64("cv_ok", ver.cv_ok, 1)
+
+    // --- client Finished, then application echo ---
+    let fin = tls_finished_record(sched, flight.flight_hash)
+    let w2 = tcp_write_bytes(fd, fin)?
+    assert_eq_i64("finished_written", w2, 0)
+    let mut conn = tls_app_secrets(sched, flight.app_hash)
+    conn = TlsConn {
+        ok: 1, err: "", fd: fd,
+        c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
+        c_seq: 0, s_seq: 0
+    }
+    let payload = bytes_of_str("ping over tls 1.3")
+    let wc = tls_conn_write(conn, payload)?
+    assert_eq_i64("app_write", wc.ok, 1)
+    let rd = tls_conn_read(wc)?
+    assert_eq_i64("app_read_ok", rd.conn.ok, 1)
+    assert_eq_i64("app_read_typ", rd.typ, 23)
+    assert_true("app_echo", bytes_eq_b(rd.data, bytes_concat(bytes_of_str("echo:"), payload)))
+    tcp_close(rd.conn.fd)?
+
+    print("tls_server_test: all passed")
+    return 0
+}
