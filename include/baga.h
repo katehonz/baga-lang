@@ -622,6 +622,9 @@ typedef struct {
     Node *rc_cur_fn;    /* тялото на текущата fn/ламбда (за глобалния
                          * alias scan на източника) */
     int   rc_elided_pairs;
+    /* M26: emit-нати relv shim-ове за вложени Vec-ове със скаларни heap
+     * елементи (dedup по име: relv_str/relv_bytes/relv_v_str/...) */
+    VEC(char *) rc_relv_shims;
     VEC(char *) eff_tags;  /* M20: effect tag регистър (име → индекс+1) */
     int   eff_depth;       /* M20: >0 = вътре в catch верига (TRY е no-op) */
     Node *eff_cur_ret;     /* M20: ret type node на текущата fn (за ZERO на propagate) */

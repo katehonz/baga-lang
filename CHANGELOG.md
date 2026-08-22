@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### runtime — `--rc`: дълбок release на Vec<Vec<T>> с типова променлива (двата бекенда)
+- Досега release-ът на `Vec<Vec<T>>` беше `baga_rc_release_vec(v, 3, 0, NULL)`
+  — elem_kind 3 с NULL destructor и runtime-ът рекурсираше с kind 0 →
+  str/bytes елементите на вътрешния vec течаха (struct елементи работеха от
+  RC5 v0.9 през `baga_rc_relv_<S>`). Сега shim-овете покриват и скаларни
+  heap елементи и по-дълбока вложеност: `baga_rc_relv_str` /
+  `baga_rc_relv_bytes` / `baga_rc_relv_v_str` (рекурсивно,
+  `v_<enc>` encoding), генерирани веднъж на програма. Имената съвпадат
+  между двата бекенда.
+- C: `rc_nested_vec_rel_type`/`_node` произвеждат shim името за
+  str/bytes/Vec/struct/instantiated struct елементи; checked типът на
+  анотационния възел печели (конкретен след recheck на инстанцията — M21).
+  Скаларните/deep shim-ове се emit-ват lazy с dedup (`rc_relv_shims` в
+  baga.h): в `lambda_out` на body стадий (печата се преди телата), а на
+  decl стадий — в top level на out чрез pre-scan в началото на
+  `emit_rc_struct_helpers_one`/`emit_rc_enum_helpers` (mid-function emission
+  е невалидна в C; dedup прави mid-body извикванията no-op).
+- `rc_fld_inst_type` (M24) resolve-ва и `Vec<T>`/`Map<…,T>` полета на
+  generic struct (синтезира resolved Type с конкретния elem) — полето
+  `items: Vec<T>` при T=Vec<str> вече се release-ва дълбоко в per-instance
+  helper-а. Документираната граница „Vec<T> поле е leak-safe" отпада.
+- Съседен фикс, изваден от probe: M24 клонът на NODE_STRUCT_LIT в codegen_c
+  заобикаляше цялата RC embed логика — borrowed ident поле в generic
+  литерал (`Box<T> { items: x, … }` с параметър x) не се retain-ваше и
+  scope release-ът на инстанцията обесваше източника (rc underflow). Клонът
+  е слят с общия път (само името е per-инстанция) — retain/relf/move
+  сайтовете важат и за generic литерали.
+- LLVM: `lrc_relv_fn_ty` (lazy, кеширан по име) за str/bytes/Vec/instance
+  struct елементи + `lrc_nested_vec_rel` чете checked типа на възела, когато
+  inferred типът няма elem (vec_new); `lrc_fld_inst_type` — същото Vec/Map
+  разширение като C.
+- Граници: `drop()` на вложени Vec-ове остава shallow (както досега);
+  Vec<Vec<S>> със struct S в LLVM е предсъществуващ пропуск (vec_get box
+  път — tests/vecvec_rc_test.baga е SKIP в tests/llvm_rc.sh); enum елемент
+  на вложен Vec остава leak-safe (както преди).
+- Gate: новият `tests/vecvec_generic_rc_test.baga` (probe с T=str/i64/bytes,
+  3 нива вложеност, оцеляване след release + churn) в `tests/llvm_rc.sh`;
+  `make test-llvm-rc` и `make test-llvm` зелени; без `--rc` emit-c и LLVM
+  IR бит-идентични с предишните.
+
 ### checker+codegen — M25: generic fn като стойност чрез явна fn-тип анотация
 - `let f: fn(i64) -> i64 = id` вече работи: анотацията дава targs-ите.
   Checker-ът унифицира анотацията със сигнатурата на generic-а по позиции

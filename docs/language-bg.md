@@ -399,8 +399,10 @@ fn main() {
 - Impl за конкретна инстанция: `impl Describe for Pair<i64, str>`.
 - `--rc` helper-ите за heap полета на generic struct са per инстанция
   (baga_rc_release_b_Box_i64 и пр.) — типовите променливи се resolve-ват към
-  targs. Vec/Map поле с типова променлива като елемент (`Vec<T>`) остава
-  leak-safe (kind 0).
+  targs. Vec/Map поле с типова променлива като елемент (`Vec<T>`) също се
+  resolve-ва и се release-ва дълбоко (M26; relv shim-ове за str/bytes/
+  вложени Vec-ове). Оставащо: Vec<Vec<S>> със struct S в LLVM (vec_get box
+  път — виж tests/vecvec_rc_test.baga, SKIP в tests/llvm_rc.sh).
 
 ### 6.1 Връщане на стойности
 

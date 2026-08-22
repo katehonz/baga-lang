@@ -319,6 +319,26 @@ static Type *rc_fld_inst_type(Codegen *cg, Node *s, int k, Node *fld_type) {
         for (int a = 0; a < s->n_struct_params; a++)
             if (strcmp(t->type_name, s->struct_params[a]) == 0)
                 return s->struct_inst_targs[k * s->n_struct_params + a];
+        /* M26: Vec<T> / Map<…, T> поле с типова променлива вътре —
+         * синтезирай resolved тип с конкретния elem (дълбок release на
+         * вложени Vec-ове; видът на ключа не е нужен за release) */
+        if (strcmp(t->type_name, "Vec") == 0 || strcmp(t->type_name, "Map") == 0) {
+            Node *en = t->inner_type2 && strcmp(t->type_name, "Map") == 0
+                     ? t->inner_type2 : t->inner_type;   /* Map: val; Vec: elem */
+            while (en && (en->kind == NODE_TYPE_EFFECT || en->kind == NODE_TYPE_REF))
+                en = en->inner_type;
+            if (en && en->kind == NODE_TYPE && en->type_name) {
+                for (int a = 0; a < s->n_struct_params; a++)
+                    if (strcmp(en->type_name, s->struct_params[a]) == 0) {
+                        Type *vt = calloc(1, sizeof(Type));
+                        if (!vt) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+                        vt->kind = strcmp(t->type_name, "Vec") == 0
+                                 ? TYPE_VEC : TYPE_MAP;
+                        vt->elem = s->struct_inst_targs[k * s->n_struct_params + a];
+                        return vt;
+                    }
+            }
+        }
     }
     if (t->type && (t->type->kind == TYPE_STRUCT ||
                     t->type->kind == TYPE_ENUM) && t->type->n_targs > 0)
@@ -575,28 +595,111 @@ static int rc_box_tracked(Codegen *cg, Type *et) {
     return 0;
 }
 
-/* RC5 v0.9: destructor за kind 3 (вложен Vec) елементи — "baga_rc_relv_<S>",
- * когато елементът е Vec<S> и S е struct с heap полета; иначе "0" (старото
- * поведение: вътрешният vec се release-ва като kind 0 и S полетата текат —
- * leak-safe). Shim-ът е едно ниво: Vec<Vec<Vec<S>>> остава на старото
- * поведение (документирана граница). */
+/* M26: трябва ли shim за Vec<E> като елемент на външен Vec — E носи heap
+ * някъде в дълбочина (str/bytes/struct с heap полета/Vec рекурсивно).
+ * Enum елементи остават на старото поведение (leak-safe, както досега). */
+static int rc_vec_elem_deep_heap(Codegen *cg, Type *e) {
+    if (!e) return 0;
+    switch (e->kind) {
+        case TYPE_STR: case TYPE_BYTES: return 1;
+        case TYPE_VEC: return rc_vec_elem_deep_heap(cg, e->elem);
+        case TYPE_STRUCT: return rc_heap_tag(cg, e) == 5;   /* instance-aware */
+        default: return 0;
+    }
+}
+
+/* M26: enc на елементния тип за relv shim име: str / bytes /
+ * mangled struct име (b_Wrap; per-instance b_Box_i64) / v_<enc> за Vec. */
+static char *rc_relv_enc(Codegen *cg, Type *e) {
+    (void)cg;
+    if (!e) return NULL;
+    if (e->kind == TYPE_STR)   return strdup("str");
+    if (e->kind == TYPE_BYTES) return strdup("bytes");
+    if (e->kind == TYPE_STRUCT && e->name)
+        return e->n_targs > 0 ? struct_cname_str(e) : mangle_name(e->name);
+    if (e->kind == TYPE_VEC) {
+        char *sub = rc_relv_enc(cg, e->elem);
+        if (!sub) return NULL;
+        size_t cap = strlen(sub) + 3;
+        char *out = malloc(cap);
+        if (!out) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+        snprintf(out, cap, "v_%s", sub);
+        free(sub);
+        return out;
+    }
+    return NULL;
+}
+
+/* M26: shim за Vec<E> (E = str/bytes/Vec<…>) като елемент на външен Vec —
+ * baga_rc_relv_<enc(E)>(void *p) { baga_rc_release_vec(p, kind, sz, rel); },
+ * веднъж на програма. Struct/enum елементи НЕ се emit-ват тук — техните
+ * relv_<S> shim-ове идват от emit_rc_struct_helpers (като досега).
+ * Изходът е lambda_out, когато е отворен (body стадий — печата се преди
+ * телата на функциите); иначе текущия out — валидно САМО на top level на
+ * decl стадия: helper-ите викат резолверите в pre-scan ПРЕДИ тялото си
+ * (emit_rc_struct_helpers_one / emit_rc_enum_helpers), така че дефиницията
+ * е преди употребата, а mid-body извикванията са no-op по dedup. */
+static void rc_emit_relv_shim(Codegen *cg, Type *e) {
+    if (!e || e->kind == TYPE_STRUCT || e->kind == TYPE_ENUM) return;
+    char *enc = rc_relv_enc(cg, e);
+    if (!enc) return;
+    for (int i = 0; i < cg->rc_relv_shims.len; i++)
+        if (strcmp(cg->rc_relv_shims.data[i], enc) == 0) { free(enc); return; }
+    vec_push(cg->rc_relv_shims, enc);
+    FILE *f = cg->lambda_out ? cg->lambda_out : cg->out;
+    const char *rel = "NULL";
+    char relbuf[160];
+    int kind;
+    char sz[48];
+    snprintf(sz, sizeof sz, "0");
+    if (e->kind == TYPE_STR) kind = 1;
+    else if (e->kind == TYPE_BYTES) {
+        kind = 4;
+        snprintf(sz, sizeof sz, "(int64_t)sizeof(baga_bytes)");
+    } else {   /* TYPE_VEC — рекурсия: shim-ът на елемента първи */
+        kind = 3;
+        rc_emit_relv_shim(cg, e->elem);
+        char *sub = rc_relv_enc(cg, e->elem);
+        snprintf(relbuf, sizeof relbuf, "baga_rc_relv_%s", sub ? sub : "0");
+        free(sub);
+        rel = relbuf;
+    }
+    fprintf(f, "static __attribute__((unused)) void baga_rc_relv_%s(void *p) { "
+               "baga_rc_release_vec((baga_Vec *)p, %d, %s, %s); }\n",
+            enc, kind, sz, rel);
+}
+
+/* RC5 v0.9 + M26: destructor за kind 3 (вложен Vec) елементи —
+ * "baga_rc_relv_<enc>", когато елементът е Vec<E> и E носи heap (struct с
+ * heap полета — v0.9; str/bytes/по-дълбока вложеност — M26). Иначе "0"
+ * (runtime-ът release-ва вътрешния vec с kind 0 — скаларните му елементи
+ * биха текли). Shim-овете за скаларни/вложени елементи се emit-ват lazy. */
 static void rc_nested_vec_rel_type(Codegen *cg, Type *vty, char *rel, size_t reln) {
     snprintf(rel, reln, "0");
     if (!cg->rc || !vty || !vty->elem) return;
     Type *inner = vty->elem;
     if (inner->kind != TYPE_VEC || !inner->elem) return;
     Type *es = inner->elem;
-    if (es->kind != TYPE_STRUCT || !es->name ||
-        !rc_struct_has_heap(cg, es->name)) return;
-    char *m = mangle_name(es->name);
-    snprintf(rel, reln, "baga_rc_relv_%s", m);
-    free(m);
+    if (!rc_vec_elem_deep_heap(cg, es)) return;
+    /* struct/enum: relv_<S> shim-ът се emit-ва от emit_rc_struct_helpers;
+     * str/bytes/Vec: lazy shim тук (M26) */
+    rc_emit_relv_shim(cg, es);
+    char *enc = rc_relv_enc(cg, es);
+    if (!enc) { snprintf(rel, reln, "0"); return; }
+    snprintf(rel, reln, "baga_rc_relv_%s", enc);
+    free(enc);
 }
 
-/* същият resolver, но от анотационен type AST възел (`let v: Vec<Vec<S>>`) */
+/* същият resolver, но от анотационен type AST възел (`let v: Vec<Vec<S>>`).
+ * M26: checked типът печели, когато е Vec (конкретен след recheck на
+ * инстанция — M21) — така Vec<Vec<T>> с T=str/bytes/… стигна до shim-а. */
 static void rc_nested_vec_rel_node(Codegen *cg, Node *ty, char *rel, size_t reln) {
     snprintf(rel, reln, "0");
     if (!cg->rc || !ty) return;
+    if (ty->type && ty->type->kind == TYPE_VEC) {
+        rc_nested_vec_rel_type(cg, ty->type, rel, reln);
+        return;
+    }
     Node *inner = ty->inner_type;
     if (!inner || inner->kind != NODE_TYPE || !inner->type_name ||
         strcmp(inner->type_name, "Vec") != 0) return;
@@ -3286,22 +3389,13 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_STRUCT_LIT: {
-            /* M24: instantiated generic struct — конкретното C име */
-            if (n->type && n->type->kind == TYPE_STRUCT && n->type->n_targs > 0) {
-                char *cn = struct_cname_str(n->type);
-                fprintf(f, "(%s){ ", cn);
-                free(cn);
-                for (int i = 0; i < n->n_lit_fields; i++) {
-                    if (i > 0) fprintf(f, ", ");
-                    char *fm = mangle_name(n->lit_fields[i]);
-                    fprintf(f, ".%s = ", fm);
-                    free(fm);
-                    emit_expr(cg, n->lit_values.data[i]);
-                }
-                fprintf(f, " }");
-                break;
-            }
-            char *sm = mangle_name(n->lit_name);
+            /* M24: instantiated generic struct — конкретното C име (per
+             * инстанция); иначе mangled име. RC embed логиката по-долу е
+             * обща (M26: преди M24 клонът я заобикаляше — borrowed ident
+             * поле в generic литерал не се retain-ваше и scope release-ът
+             * на инстанцията обесваше източника). */
+            char *sm = (n->type && n->type->kind == TYPE_STRUCT && n->type->n_targs > 0)
+                ? struct_cname_str(n->type) : mangle_name(n->lit_name);
             /* RC1: struct литералът споделя heap полета по указател — bare
              * track-нат локал/параметър, вграден в литерала, се retain-ва
              * (+1 за struct референцията; struct-овете не се release-ват →
@@ -4747,6 +4841,16 @@ static void emit_struct(Codegen *cg, Node *s) {
 static void emit_rc_struct_helpers_one(Codegen *cg, Node *s, int k,
                                        const char *m) {
     FILE *f = cg->out;
+    /* M26: shim дефинициите за вложени Vec полета (relv_str/relv_v_str/…)
+     * ПРЕДИ телата — mid-function emission в out е невалидна; резолверите
+     * по-долу намират имената вече регистрирани (no-op по dedup) */
+    for (int i = 0; i < s->fields.len; i++) {
+        char dummy[160];
+        Node *fld = s->fields.data[i];
+        Type *rt = rc_fld_inst_type(cg, k >= 0 ? s : NULL, k, fld->fld_type);
+        if (rt) rc_nested_vec_rel_type(cg, rt, dummy, sizeof dummy);
+        else rc_nested_vec_rel_node(cg, fld->fld_type, dummy, sizeof dummy);
+    }
     fprintf(f, "static inline void baga_rc_retain_%s(%s s) {\n", m, m);
     for (int i = 0; i < s->fields.len; i++) {
         Node *fld = s->fields.data[i];
@@ -4830,8 +4934,12 @@ static void emit_rc_struct_helpers_one(Codegen *cg, Node *s, int k,
                 rc_box_rel(cg, (et && et->kind == NODE_TYPE) ? et->type_name : NULL,
                            rel, sizeof rel);
             }
-            /* RC5 v0.9: вложен Vec<S> — destructor за S полетата */
-            if (kk == 3) rc_nested_vec_rel_node(cg, fld->fld_type, rel, sizeof rel);
+            /* RC5 v0.9/M26: вложен Vec — destructor за елементите;
+             * resolved типът (rt) е конкретен за инстанцията */
+            if (kk == 3) {
+                if (rt) rc_nested_vec_rel_type(cg, rt, rel, sizeof rel);
+                else rc_nested_vec_rel_node(cg, fld->fld_type, rel, sizeof rel);
+            }
             fprintf(f, "    baga_rc_release_vec(s.%s, %d, %s, %s);\n", fm, kk, sz, rel);
         } else if (tag == 4) {
             char sz[160], rel[160];
@@ -4892,6 +5000,13 @@ static void emit_rc_enum_helpers(Codegen *cg, Node *item) {
     if (!cg->rc || !rc_enum_has_heap(cg, item)) return;
     FILE *f = cg->out;
     char *em = mangle_name(item->enum_name);
+    /* M26: shim дефиниции за вложени Vec payload-и ПРЕДИ телата (като при
+     * struct helper-ите — mid-function emission в out е невалидна) */
+    for (int j = 0; j < item->n_variants; j++) {
+        if (!item->enum_payloads || !item->enum_payloads[j]) continue;
+        char dummy[160];
+        rc_nested_vec_rel_node(cg, item->enum_payloads[j], dummy, sizeof dummy);
+    }
     for (int pass = 0; pass < 2; pass++) {
         fprintf(f, "static inline void baga_rc_%s_%s(%s e) {\n    switch (e.tag) {\n",
                 pass ? "release" : "retain", em, em);

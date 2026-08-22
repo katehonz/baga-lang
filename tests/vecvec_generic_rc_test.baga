@@ -1,0 +1,94 @@
+// vecvec_generic_rc_test — M26: Vec<Vec<T>> с типова променлива release-ва
+// ДЪЛБОКО под --rc (и в двата бекенда).
+//
+// Преди фикса: release-ът на външния Vec беше `release_vec(v, 3, 0, NULL)` —
+// elem_kind 3 (вложен Vec) с NULL destructor, и runtime-ът рекурсираше с
+// kind 0 → str/bytes елементите на вътрешния vec течаха. Vec<Vec<S>> със
+// struct S вече работеше (RC5 v0.9, relv_<S> shim). Сега има shim-ове и за
+// скаларни heap елементи (`baga_rc_relv_str`, `baga_rc_relv_bytes`) и за
+// по-дълбока вложеност (`baga_rc_relv_v_str` — рекурсивно), генерирани
+// веднъж на програма (C: lazy в lambda_out/out с dedup; LLVM: lazy IR по
+// име — същите имена в двата бекенда).
+//
+// Оптимизацията е семантично невидима — тестът доказва коректност: стойности
+// верни, няма underflow/dangling след release + churn. Минава с и без --rc;
+// реалният gate е tests/llvm_rc.sh (C --rc ↔ LLVM --rc).
+// Граница (предсъществуваща): Vec<Vec<S>> със struct S в LLVM е SKIP
+// (vec_get box път — виж tests/vecvec_rc_test.baga, който покрива C).
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// probe от задачата: Vec<Vec<T>> в generic fn — T=str
+fn nest<T>(x: T) -> i64 {
+    let v: Vec<Vec<T>> = vec_new()
+    let inner: Vec<T> = vec_new()
+    vec_push(inner, x)
+    vec_push(v, inner)
+    return vec_len(v)
+}
+
+// T=i64 — няма heap елементи, не трябва shim (и не трябва да гърми)
+fn nest_i<T>(x: T, y: T) -> i64 {
+    let v: Vec<Vec<T>> = vec_new()
+    let inner: Vec<T> = vec_new()
+    vec_push(inner, x)
+    vec_push(inner, y)
+    vec_push(v, inner)
+    return vec_len(vec_get(v, 0))
+}
+
+fn churn() {
+    let mut k: i64 = 0
+    let mut acc = ""
+    while k < 50 {
+        acc = concat(acc, "churn-churn-churn-churn")
+        k = k + 1
+    }
+    print(len(acc))
+}
+
+fn main() {
+    // 1. probe: T=str
+    check("probe_str", nest("аб") == 1)
+
+    // 2. T=i64 — без heap, без shim
+    check("probe_i64", nest_i(40, 2) == 2)
+
+    // 3. T=bytes
+    check("probe_bytes", nest(bytes_new(3)) == 1)
+
+    // 4. стойностите вътре оцеляват след release на паралелен Vec + churn
+    let keep: Vec<Vec<str>> = vec_new()
+    let ki: Vec<str> = vec_new()
+    vec_push(ki, concat("зап", "ази"))
+    vec_push(keep, ki)
+    let tmp: Vec<Vec<str>> = vec_new()
+    let ti: Vec<str> = vec_new()
+    vec_push(ti, concat("вре", "менен"))
+    vec_push(tmp, ti)
+    // tmp излиза от scope тук (краят на main) — но преди това четем keep
+    check("survive", vec_get(vec_get(keep, 0), 0) == "запази")
+    churn()
+    check("survive_churn", vec_get(vec_get(keep, 0), 0) == "запази" &&
+          vec_get(vec_get(tmp, 0), 0) == "временен")
+
+    // 5. три нива: Vec<Vec<Vec<str>>> — relv_v_str рекурсия
+    let d: Vec<Vec<Vec<str>>> = vec_new()
+    let dm: Vec<Vec<str>> = vec_new()
+    let di: Vec<str> = vec_new()
+    vec_push(di, concat("дъл", "боко"))
+    vec_push(dm, di)
+    vec_push(d, dm)
+    check("deep3", vec_get(vec_get(vec_get(d, 0), 0), 0) == "дълбоко")
+
+    print("vecvec_generic_rc_test: all passed")
+}

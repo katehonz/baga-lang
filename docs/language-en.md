@@ -400,7 +400,10 @@ fn main() {
 - `--rc` helpers for heap fields of a generic struct are generated per
   instance (baga_rc_release_b_Box_i64 etc.) — type variables resolve to the
   instance's type arguments. A Vec/Map field with a type-variable element
-  (`Vec<T>`) stays leak-safe (kind 0).
+  (`Vec<T>`) also resolves and is released deeply (M26; relv shims for
+  str/bytes/nested Vecs). Remaining: Vec<Vec<S>> with struct S in LLVM
+  (vec_get box path — see tests/vecvec_rc_test.baga, SKIP in
+  tests/llvm_rc.sh).
 
 ### 6.1 Return values
 

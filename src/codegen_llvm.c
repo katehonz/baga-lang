@@ -4831,6 +4831,26 @@ static Type *lrc_fld_inst_type(Type *st, Node *fld_type) {
         for (int a = 0; a < d->n_struct_params && a < st->n_targs; a++)
             if (strcmp(t->type_name, d->struct_params[a]) == 0)
                 return st->targs[a];
+        /* M26: Vec<T> / Map<…, T> поле с типова променлива вътре —
+         * синтезирай resolved тип с конкретния elem (дълбок release на
+         * вложени Vec-ове; като rc_fld_inst_type в codegen_c) */
+        if (strcmp(t->type_name, "Vec") == 0 || strcmp(t->type_name, "Map") == 0) {
+            Node *en = t->inner_type2 && strcmp(t->type_name, "Map") == 0
+                     ? t->inner_type2 : t->inner_type;
+            while (en && (en->kind == NODE_TYPE_EFFECT || en->kind == NODE_TYPE_REF))
+                en = en->inner_type;
+            if (en && en->kind == NODE_TYPE && en->type_name) {
+                for (int a = 0; a < d->n_struct_params && a < st->n_targs; a++)
+                    if (strcmp(en->type_name, d->struct_params[a]) == 0) {
+                        Type *vt = calloc(1, sizeof(Type));
+                        if (!vt) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+                        vt->kind = strcmp(t->type_name, "Vec") == 0
+                                 ? TYPE_VEC : TYPE_MAP;
+                        vt->elem = st->targs[a];
+                        return vt;
+                    }
+            }
+        }
     }
     if (t->type && (t->type->kind == TYPE_STRUCT ||
                     t->type->kind == TYPE_ENUM) && t->type->n_targs > 0)
@@ -5134,7 +5154,109 @@ static LLVMValueRef lrc_box_rel_ty(Type *et) {
  * е Vec<S> и S е struct с heap полета; иначе NULL (старата граница:
  * вътрешният vec се release-ва като kind 0 — leak-safe, като codegen_c).
  * Порт на rc_nested_vec_rel_type + _node (inferred Type първо). */
+/* M26: enc на елементния тип за relv shim име: str / bytes / mangled struct
+ * име (b_Wrap; per-instance b_Box_i64) / v_<enc> за Vec — като
+ * rc_relv_enc в codegen_c (имената съвпадат между бекендите). */
+static char *lrc_relv_enc(Type *e) {
+    if (!e) return NULL;
+    if (e->kind == TYPE_STR)   return strdup("str");
+    if (e->kind == TYPE_BYTES) return strdup("bytes");
+    if ((e->kind == TYPE_STRUCT || e->kind == TYPE_ENUM) && e->name) {
+        if (e->kind == TYPE_STRUCT && e->n_targs > 0) {
+            char *cn = llvm_struct_cname(e);
+            char *m = llvm_mangle(cn);
+            free(cn);
+            return m;
+        }
+        return llvm_mangle(e->name);
+    }
+    if (e->kind == TYPE_VEC) {
+        char *sub = lrc_relv_enc(e->elem);
+        if (!sub) return NULL;
+        size_t cap = strlen(sub) + 3;
+        char *out = malloc(cap);
+        if (!out) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+        snprintf(out, cap, "v_%s", sub);
+        free(sub);
+        return out;
+    }
+    return NULL;
+}
+
+/* M26: трябва ли shim за Vec<E> като елемент на външен Vec — E носи heap
+ * някъде в дълбочина. Enum — старото поведение (leak-safe, като C). */
+static int lrc_vec_elem_deep_heap(Type *e) {
+    if (!e) return 0;
+    switch (e->kind) {
+        case TYPE_STR: case TYPE_BYTES: return 1;
+        case TYPE_VEC: return lrc_vec_elem_deep_heap(e->elem);
+        case TYPE_STRUCT: return lrc_heap_tag(e) == 5;   /* instance-aware */
+        default: return 0;
+    }
+}
+
+static LLVMValueRef lrc_relf_fn_ty(Type *t);
+
+/* M26: baga_rc_relv_<enc(E)>(i8 *p) { baga_rc_release_vec(p, kind, 0, rel); }
+ * за E = str/bytes/Vec<…>/instantiated generic struct — lazy, кеширан по
+ * име (като останалите helper-и). Обикновен struct/enum → lrc_relv_fn. */
+static LLVMValueRef lrc_relv_fn_ty(Type *es) {
+    if (es && (es->kind == TYPE_STRUCT || es->kind == TYPE_ENUM) &&
+        !(es->kind == TYPE_STRUCT && es->n_targs > 0))
+        return lrc_relv_fn(es->name);
+    char *enc = lrc_relv_enc(es);
+    if (!enc) llvm_unsupported("relv shim за неизвестен елементен тип");
+    size_t cap = strlen(enc) + 20;
+    char *full = malloc(cap);
+    if (!full) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    snprintf(full, cap, "baga_rc_relv_%s", enc);
+    free(enc);
+    LLVMValueRef fn = LLVMGetNamedFunction(lg.mod, full);
+    if (fn) { free(full); return fn; }
+    fn = LLVMAddFunction(lg.mod, full,
+        LLVMFunctionType(lg.void_ty, &lg.ptr_ty, 1, 0));
+    free(full);
+    int kind;
+    /* под-shim-ът се генерира ПРЕДИ тялото (възстановява позицията сам);
+     * bitcast-ът към него е инструкция ВЪТРЕ в тялото на този shim */
+    LLVMValueRef sub = NULL;
+    if (es->kind == TYPE_STR)        kind = 1;
+    else if (es->kind == TYPE_BYTES) kind = 4;
+    else if (es->kind == TYPE_VEC) { kind = 3; sub = lrc_relv_fn_ty(es->elem); }
+    else { kind = 2; sub = lrc_relf_fn_ty(es); }   /* instantiated generic struct */
+    LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
+    h_begin(fn);
+    LLVMValueRef rel = sub ? LLVMBuildBitCast(lg.builder, sub, lg.ptr_ty, "relf")
+                           : LLVMConstNull(lg.ptr_ty);
+    LLVMValueRef a[] = {
+        LLVMGetParam(fn, 0),
+        LLVMConstInt(lg.i64_ty, (uint64_t)kind, 0),
+        LLVMConstInt(lg.i64_ty, 0, 0),
+        rel,
+    };
+    h_call(baga_rt("baga_rc_release_vec"), a, 4, "");
+    LLVMBuildRetVoid(lg.builder);
+    if (saved) LLVMPositionBuilderAtEnd(lg.builder, saved);
+    return fn;
+}
+
+/* destructor за kind 3 (вложен Vec) елементи — relv shim, когато елементът
+ * е Vec<E> и E носи heap в дълбочина (struct с heap полета — v0.9;
+ * str/bytes/по-дълбока вложеност — M26, огледало на codegen_c); иначе NULL
+ * (runtime-ът release-ва вътрешния с kind 0 — leak-safe граница). */
 static LLVMValueRef lrc_nested_vec_rel(Type *vty, Node *tn) {
+    /* M26: checked типът на възела печели, когато inferred няма elem
+     * (vec_new) — конкретен след recheck на инстанция (M21) */
+    if (tn && tn->type && tn->type->kind == TYPE_VEC &&
+        (!vty || vty->kind != TYPE_VEC || !vty->elem))
+        vty = tn->type;
+    if (vty && vty->elem && vty->elem->kind == TYPE_VEC && vty->elem->elem) {
+        Type *es = vty->elem->elem;
+        if (lrc_vec_elem_deep_heap(es))
+            return LLVMBuildBitCast(lg.builder, lrc_relv_fn_ty(es),
+                                    lg.ptr_ty, "relv");
+        return LLVMConstNull(lg.ptr_ty);
+    }
     const char *sn = NULL;
     if (vty && vty->elem && vty->elem->kind == TYPE_VEC &&
         vty->elem->elem && vty->elem->elem->kind == TYPE_STRUCT)
