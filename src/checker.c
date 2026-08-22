@@ -2510,7 +2510,11 @@ static Type *infer(CheckCtx *ctx, Node *n) {
         case NODE_INDEX:
             infer(ctx, n->obj);
             infer(ctx, n->index);
-            t = type_new(TYPE_I64); /* TODO: array elem type */
+            /* `x[i]` е нисконивов примитив — емитира суров C subscript
+             * (codegen_c). Елементният тип не се следи: масивните типове
+             * се map-ват към Vec, а Vec/bytes/str се индексират през
+             * vec_get/bytes_get/str_char_at. */
+            t = type_new(TYPE_I64);
             break;
 
         case NODE_ELEM_REF:

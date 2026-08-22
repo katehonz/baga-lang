@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### чистка — двата стари TODO-та преди v1.0 са затворени
+- `src/proofs.c`: мъртвата евристика `is_recursive` (винаги 0, без извикващ)
+  е изтрита — рекурсията се доказва от `--verify` с decreases мярка, а
+  `--proofs` termination теоремата се захранва от `has_base_case` /
+  `count_returns`.
+- `src/checker.c` NODE_INDEX: TODO-то „array elem type" е заменено с честен
+  коментар — `x[i]` е нисконивов примитив (суров C subscript), елементен тип
+  не се следи; Vec/bytes/str се индексират през `vec_get`/`bytes_get`/
+  `str_char_at`. Без промяна в поведението.
+
 ### docs — v1.0 readiness: границите са маркирани финални или post-1.0
 - Нов `docs/v1.0-readiness-bg.md`: инвентар на честните граници, разделени на
   финални по дизайн (кандидати за замразяване в v1.0) и временни (roadmap

@@ -31,15 +31,6 @@ static void print_effects(Node *ty) {
     }
 }
 
-/* Check if function has recursive calls */
-static int is_recursive(Node *fn) {
-    if (!fn->fn_body) return 0;
-    /* simple heuristic: check if function name appears in a CALL */
-    /* walk the body looking for calls to the same function */
-    /* for now, just check if there's a while loop or recursive call pattern */
-    return 0; /* TODO: implement */
-}
-
 /* Check if function has a base case (if with return) */
 static int has_base_case(Node *fn) {
     if (!fn->fn_body) return 0;
