@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### std/crypto — RSA-PSS/ECDSA-P256 подписване + парсване на частни ключове
+- `pkey.baga` (нов): PEM парсер за частни ключове — PKCS#8 (`PRIVATE KEY`),
+  PKCS#1 (`RSA PRIVATE KEY`) и SEC1 (`EC PRIVATE KEY`); RSA дава (n, e, d),
+  EC — 32-байтовия P-256 скалар. Плюс общ `pem_der_block(pem, label)` —
+  PEM→DER за произволен етикет (сертификати).
+- `rsa_pss_sha256_sign(n, d, msg, salt)` — EMSA-PSS-ENCODE (RFC 8017 §9.1.1,
+  SHA-256, MGF1-SHA256, sLen=32) + модулна експоненция с частния експонент;
+  точно огледало на `rsa_pss_sha256_verify` (солта се подава от извикващия —
+  файлът остава без ефекти).
+- `ecdsa_p256_sign_sha256(d32, msg, k32)` — ECDSA подпис (SEC1 §4.1.3) с
+  подаден от извикващия nonce; DER `SEQUENCE { r, s }`.
+- Стъпка към TLS 1.3 сървъра (фронт 4 от `docs/v1.0-readiness-bg.md`):
+  CertificateVerify на сървъра подписва с тези примитиви.
+- Оркъли: подпис↔верификация рундтрип в самия тест (три вградени тестови
+  ключа — по един на формат) + външна проверка с `openssl dgst`
+  („Verified OK“ за RSA-PSS salt=32 и за ECDSA).
+- Gate: `tests/pkey_sign_test.baga` (discovery, без външни зависимости).
+
 ### codegen LLVM — паритет: присвояване на поле, byte_at, truthy `!`
 - `s.field = x` в LLVM бекенда (`emit_field_assign_llvm`): GEP през alloca-та
   на struct локала (плоско `ident.field` — границата на C; по-дълбоки пътеки

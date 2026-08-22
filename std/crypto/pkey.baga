@@ -1,0 +1,253 @@
+// pkey.baga — private-key parse for TLS server signing (CertificateVerify).
+//
+//   pkey_parse_pem(pem) -> PKey
+//
+// PEM labels: PRIVATE KEY (PKCS#8), RSA PRIVATE KEY (PKCS#1),
+// EC PRIVATE KEY (SEC1). RSA exposes (n, e, d) for rsa_pss_sha256_sign;
+// EC exposes the 32-byte P-256 scalar for ecdsa_p256_sign_sha256.
+// Pure; no effects. Honest limits: RSA + P-256 only, no encrypted keys.
+
+import "der.baga"
+import "../str/str.baga"
+import "../bytes/bytes.baga"
+
+struct PKey {
+    ok: i64,
+    err: str,
+    kind: i64,          // 1 = RSA, 2 = EC P-256
+    rsa_n: bytes,
+    rsa_e: bytes,
+    rsa_d: bytes,
+    ec_d: bytes         // 32-byte big-endian scalar
+}
+
+fn pkey_bad(err: str) -> PKey {
+    return PKey { ok: 0, err: err, kind: 0,
+        rsa_n: bytes_from_vec(vec_new()), rsa_e: bytes_from_vec(vec_new()),
+        rsa_d: bytes_from_vec(vec_new()), ec_d: bytes_from_vec(vec_new()) }
+}
+
+// ---- OIDs (content bytes, tag stripped) ----
+
+fn pkey_oid_rsa() -> bytes {
+    return hex_decode("2a864886f70d010101")             // rsaEncryption
+}
+
+fn pkey_oid_ec() -> bytes {
+    return hex_decode("2a8648ce3d0201")                  // id-ecPublicKey
+}
+
+fn pkey_oid_p256() -> bytes {
+    return hex_decode("2a8648ce3d030107")                // prime256v1
+}
+
+fn pkey_oid_eq(a: bytes, b: bytes) -> i64 {
+    if bytes_len(a) != bytes_len(b) {
+        return 0
+    }
+    let mut i: i64 = 0
+    while i < bytes_len(a) {
+        if bytes_at(a, i) != bytes_at(b, i) {
+            return 0
+        }
+        i = i + 1
+    }
+    return 1
+}
+
+// ---- PKCS#1 RSAPrivateKey: SEQ { version, n, e, d, p, q, dp, dq, qinv } ----
+
+fn pkey_parse_pkcs1(der: bytes) -> PKey {
+    let s = der_enter_seq(der_of(der))
+    if s.ok == 0 {
+        return pkey_bad(s.err)
+    }
+    let ver = der_take(s, 2)
+    if ver.ok == 0 {
+        return pkey_bad(ver.err)
+    }
+    let nt = der_take(ver.rest, 2)
+    if nt.ok == 0 {
+        return pkey_bad(nt.err)
+    }
+    let et = der_take(nt.rest, 2)
+    if et.ok == 0 {
+        return pkey_bad(et.err)
+    }
+    let dt = der_take(et.rest, 2)
+    if dt.ok == 0 {
+        return pkey_bad(dt.err)
+    }
+    return PKey { ok: 1, err: "", kind: 1,
+        rsa_n: der_integer_bytes(nt.content),
+        rsa_e: der_integer_bytes(et.content),
+        rsa_d: der_integer_bytes(dt.content),
+        ec_d: bytes_from_vec(vec_new()) }
+}
+
+// ---- SEC1 ECPrivateKey: SEQ { version=1, OCTET STRING priv, [0] curve?, [1] pub? } ----
+
+fn pkey_parse_sec1(der: bytes) -> PKey {
+    let s = der_enter_seq(der_of(der))
+    if s.ok == 0 {
+        return pkey_bad(s.err)
+    }
+    let ver = der_take(s, 2)
+    if ver.ok == 0 {
+        return pkey_bad(ver.err)
+    }
+    let priv = der_take(ver.rest, 4)
+    if priv.ok == 0 {
+        return pkey_bad(priv.err)
+    }
+    if bytes_len(priv.content) != 32 {
+        return pkey_bad(concat("SEC1 private key is not P-256 (", concat(int_to_str(bytes_len(priv.content)), " bytes)")))
+    }
+    return PKey { ok: 1, err: "", kind: 2,
+        rsa_n: bytes_from_vec(vec_new()), rsa_e: bytes_from_vec(vec_new()),
+        rsa_d: bytes_from_vec(vec_new()), ec_d: priv.content }
+}
+
+// ---- PKCS#8: SEQ { version, SEQ { OID, params? }, OCTET STRING inner } ----
+
+fn pkey_parse_pkcs8(der: bytes) -> PKey {
+    let s = der_enter_seq(der_of(der))
+    if s.ok == 0 {
+        return pkey_bad(s.err)
+    }
+    let ver = der_take(s, 2)
+    if ver.ok == 0 {
+        return pkey_bad(ver.err)
+    }
+    let algid = der_take(ver.rest, 48)
+    if algid.ok == 0 {
+        return pkey_bad(algid.err)
+    }
+    let alg = der_of(algid.content)
+    let oid = der_take(alg, 6)
+    if oid.ok == 0 {
+        return pkey_bad(oid.err)
+    }
+    let inner = der_take(algid.rest, 4)
+    if inner.ok == 0 {
+        return pkey_bad(inner.err)
+    }
+    if pkey_oid_eq(oid.content, pkey_oid_rsa()) == 1 {
+        return pkey_parse_pkcs1(inner.content)
+    }
+    if pkey_oid_eq(oid.content, pkey_oid_ec()) == 1 {
+        // namedCurve parameter, when present, must be prime256v1
+        if der_peek_tag(oid.rest) == 6 {
+            let curve = der_take(oid.rest, 6)
+            if curve.ok == 0 {
+                return pkey_bad(curve.err)
+            }
+            if pkey_oid_eq(curve.content, pkey_oid_p256()) == 0 {
+                return pkey_bad("unsupported curve (want prime256v1)")
+            }
+        }
+        return pkey_parse_sec1(inner.content)
+    }
+    return pkey_bad("unsupported PKCS#8 algorithm")
+}
+
+// ---- PEM wrapper ----
+
+struct PKeyPem {
+    ok: i64,
+    err: str,
+    label: i64,        // 1 = PKCS#8, 2 = PKCS#1, 3 = SEC1
+    b64: str
+}
+
+fn pkey_pem_bad(err: str) -> PKeyPem {
+    return PKeyPem { ok: 0, err: err, label: 0, b64: "" }
+}
+
+fn pkey_extract_pem(pem: str) -> PKeyPem {
+    let norm = str_replace(pem, "\r\n", "\n")
+    let lines = str_split(norm, "\n")
+    let mut label: i64 = 0
+    let mut acc = ""
+    let mut in_block: i64 = 0
+    let mut i: i64 = 0
+    while i < vec_len(lines) {
+        let line = vec_get(lines, i)
+        if line == "-----BEGIN PRIVATE KEY-----" {
+            label = 1
+            in_block = 1
+        } else {
+            if line == "-----BEGIN RSA PRIVATE KEY-----" {
+                label = 2
+                in_block = 1
+            } else {
+                if line == "-----BEGIN EC PRIVATE KEY-----" {
+                    label = 3
+                    in_block = 1
+                } else {
+                    if str_starts_with(line, "-----END") {
+                        in_block = 0
+                    } else {
+                        if in_block == 1 {
+                            acc = concat(acc, line)
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    if label == 0 {
+        return pkey_pem_bad("no supported PEM block (PRIVATE KEY / RSA PRIVATE KEY / EC PRIVATE KEY)")
+    }
+    if acc == "" {
+        return pkey_pem_bad("empty PEM body")
+    }
+    return PKeyPem { ok: 1, err: "", label: label, b64: acc }
+}
+
+fn pkey_parse_pem(pem: str) -> PKey {
+    let ext = pkey_extract_pem(pem)
+    if ext.ok == 0 {
+        return pkey_bad(ext.err)
+    }
+    let der = bytes_from_vec(base64_decode(ext.b64))
+    if ext.label == 1 {
+        return pkey_parse_pkcs8(der)
+    }
+    if ext.label == 2 {
+        return pkey_parse_pkcs1(der)
+    }
+    return pkey_parse_sec1(der)
+}
+
+// Generic PEM body → DER for a given label ("CERTIFICATE", ...).
+// Empty bytes when the block is absent.
+fn pem_der_block(pem: str, label: str) -> bytes {
+    let norm = str_replace(pem, "\r\n", "\n")
+    let lines = str_split(norm, "\n")
+    let begin = concat(concat("-----BEGIN ", label), "-----")
+    let ending = concat(concat("-----END ", label), "-----")
+    let mut acc = ""
+    let mut in_block: i64 = 0
+    let mut i: i64 = 0
+    while i < vec_len(lines) {
+        let line = vec_get(lines, i)
+        if line == begin {
+            in_block = 1
+        } else {
+            if line == ending {
+                in_block = 0
+            } else {
+                if in_block == 1 {
+                    acc = concat(acc, line)
+                }
+            }
+        }
+        i = i + 1
+    }
+    if acc == "" {
+        return bytes_from_vec(vec_new())
+    }
+    return bytes_from_vec(base64_decode(acc))
+}

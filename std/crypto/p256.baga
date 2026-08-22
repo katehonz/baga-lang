@@ -1,12 +1,14 @@
-// p256.baga — NIST P-256 (secp256r1) + ECDSA-SHA256 verify (TLS T7).
+// p256.baga — NIST P-256 (secp256r1) + ECDSA-SHA256 verify and sign (TLS T7).
 //
 //   p256_on_curve(qx, qy) -> i64
 //   ecdsa_p256_verify_sha256(qx, qy, msg, sig_der) -> i64
+//   ecdsa_p256_sign_sha256(d32, msg, k32) -> bytes    // DER, server side
 //
 // Affine Weierstrass arithmetic over bn.baga (10×26-bit limbs). ECDSA
-// follows SEC1 §4.1.4; signatures are DER SEQUENCE { r, s } as in X.509
-// and TLS 1.3 CertificateVerify (ecdsa_secp256r1_sha256).
-// Pure; no effects. Timing is secret-dependent — verification only.
+// verify follows SEC1 §4.1.4, sign §4.1.3; signatures are DER
+// SEQUENCE { r, s } as in X.509 and TLS 1.3 CertificateVerify
+// (ecdsa_secp256r1_sha256). Pure; no effects — the sign nonce k is
+// caller-supplied (a fresh 32-byte random per signature).
 
 import "bn.baga"
 import "sha256.baga"
@@ -290,4 +292,95 @@ fn ecdsa_p256_verify_sha256_raw(qx: bytes, qy: bytes, msg: bytes, sig64: bytes) 
     let r = bn_from_bytes_be(bytes_slice(sig64, 0, 32), 10)
     let s = bn_from_bytes_be(bytes_slice(sig64, 32, 64), 10)
     return ecdsa_p256_verify_rs(qx, qy, msg, r, s)
+}
+
+// ---------- ECDSA sign (SEC1 §4.1.3) ----------
+
+// DER INTEGER for a scalar in [1, n-1]: minimal bytes, 0x00 prefix when
+// the top bit is set.
+fn p256_int_der(v: Vec<i64>) -> bytes {
+    let b = bn_to_bytes_be(v, 32)
+    let mut i: i64 = 0
+    while i < 31 && bytes_at(b, i) == 0 {
+        i = i + 1
+    }
+    let body = vec_new()
+    if bytes_at(b, i) >= 128 {
+        vec_push(body, 0)
+    }
+    let mut j = i
+    while j < 32 {
+        vec_push(body, bytes_at(b, j))
+        j = j + 1
+    }
+    let out = vec_new()
+    vec_push(out, 2)
+    vec_push(out, vec_len(body))
+    let mut q: i64 = 0
+    while q < vec_len(body) {
+        vec_push(out, vec_get(body, q))
+        q = q + 1
+    }
+    return bytes_from_vec(out)
+}
+
+fn p256_sig_der(r: Vec<i64>, s: Vec<i64>) -> bytes {
+    let ri = p256_int_der(r)
+    let si = p256_int_der(s)
+    let out = vec_new()
+    vec_push(out, 48)
+    vec_push(out, bytes_len(ri) + bytes_len(si))
+    let v = vec_new()
+    let mut i: i64 = 0
+    while i < bytes_len(ri) {
+        vec_push(v, bytes_at(ri, i))
+        i = i + 1
+    }
+    let mut j: i64 = 0
+    while j < bytes_len(si) {
+        vec_push(v, bytes_at(si, j))
+        j = j + 1
+    }
+    let mut q: i64 = 0
+    while q < vec_len(v) {
+        vec_push(out, vec_get(v, q))
+        q = q + 1
+    }
+    return bytes_from_vec(out)
+}
+
+// Core ECDSA sign with an explicit nonce k (must be in [1, n-1]).
+// Returns DER SEQUENCE { r, s }; empty when r or s falls out of range
+// (astronomically rare — retry with a fresh k).
+fn ecdsa_p256_sign_rs(d: Vec<i64>, msg: bytes, k: Vec<i64>) -> bytes {
+    if p256_in_range(d) == 0 || p256_in_range(k) == 0 {
+        return bytes_from_vec(vec_new())
+    }
+    let e = p256_nmod(bn_from_bytes_be(sha256_b(msg), 10))
+    let R = p256_mul(k, p256_base())
+    if R.inf == 1 {
+        return bytes_from_vec(vec_new())
+    }
+    let r = p256_nmod(R.x)
+    if p256_in_range(r) == 0 {
+        return bytes_from_vec(vec_new())
+    }
+    let sum = p256_nmod(bn_add(e, p256_nmod(bn_mul(r, d))))
+    let s = p256_nmod(bn_mul(p256_ninv(k), sum))
+    if p256_in_range(s) == 0 {
+        return bytes_from_vec(vec_new())
+    }
+    return p256_sig_der(r, s)
+}
+
+// d32: 32-byte big-endian private scalar. k32: fresh random nonce (the
+// caller draws a new one per signature; an out-of-range reduction just
+// yields an empty result and the caller retries).
+fn ecdsa_p256_sign_sha256(d32: bytes, msg: bytes, k32: bytes) -> bytes {
+    if bytes_len(d32) != 32 || bytes_len(k32) != 32 {
+        return bytes_from_vec(vec_new())
+    }
+    let d = p256_nmod(bn_from_bytes_be(d32, 10))
+    let k = p256_nmod(bn_from_bytes_be(k32, 10))
+    return ecdsa_p256_sign_rs(d, msg, k)
 }

@@ -1,0 +1,157 @@
+// pkey_sign_test.baga — private-key parse (PEM/PKCS#8/PKCS#1/SEC1) and the
+// two TLS-server signing primitives, fully self-contained: the three test
+// keys are embedded literals (throwaway keys, generated for this test),
+// so the test needs no openssl at runtime. RSA signs are checked against
+// rsa_pss_sha256_verify; ECDSA signs against ecdsa_p256_verify_sha256.
+
+import "std/crypto/pkey.baga"
+import "std/crypto/rsa.baga"
+import "std/crypto/p256.baga"
+import "std/crypto/bn.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+import "std/random/random.baga"
+import "testbaga/assert.baga"
+
+// openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 (PKCS#8)
+fn pem_pkcs8() -> str {
+    let mut s = "-----BEGIN PRIVATE KEY-----\n"
+    s = concat(s, "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQD4HrvC5NLQGsJl\n")
+    s = concat(s, "ZdspInwgzxg6aI6kcoRT8sstfzNBB++O8YMza+sB8fFBplQmFIbrj8W6q7aRSwta\n")
+    s = concat(s, "lLyK28dwX7cQQRrt7GVCHWZjTUtDk+UBo3DnwffEOKeGx7ceM5fHH7uYZXBR/v1L\n")
+    s = concat(s, "+xHvYtr34dza4rNPuOdKOYa3rV4XF/52ntoCDloXICCdIpq/nRuCiBjHzE8PN2/t\n")
+    s = concat(s, "+ekcQjrtJJMIlFCyDEdl2r1XHtHevqif9ZGCXoQHDI7WqoXjpBrKidp5baleJaOc\n")
+    s = concat(s, "YTwVTXj+UdV8O8194k1LK31TrNAeVqUAx7rNcaazgvb1u//4ptHkyx8XaWGZ8uXf\n")
+    s = concat(s, "DV6hMSOzAgMBAAECggEAAJHWM1ktRCVJs1OLt/o5WctYZscbJiW+kxfx2ZiJ/izR\n")
+    s = concat(s, "qnVLQv/JQYWm68y5nIAQvdNc6mMKToD5uRwbQU1r4Nzgztb7MTM93XOzl+Qvikm1\n")
+    s = concat(s, "syFDaEayUlio1gs1OfQsIs26UZhQndJm/vMxckozOgiXE3VYJMGoCv7/DT8G4+yP\n")
+    s = concat(s, "ujuovzrbpHowHUoDwtkVcZ5Op/dWYMQXw6G0CFTJ+MHEJbfOe0O3P5+WtrshfGDC\n")
+    s = concat(s, "6DnbIm9QDB+wGSssjcfJa25YQT6XK1o7rgQ2bqQHO738ipfcdEbk9yuglXyvNdp5\n")
+    s = concat(s, "C295FUxd9nc4ETGBb4X87HOsFxKkKE0PSzz3B059YQKBgQD/lF763G1LecuBlOFm\n")
+    s = concat(s, "OHP79CMK6WKs22eBOU+SMKpiInJT8QYTJUnKKpLuV4I3k/Hdpcm/iwDZRKWecFnH\n")
+    s = concat(s, "jv/7ZObfsTLV45XCdXZMpBxKdP5T3Er3p11pDz4EFkCIivZ+hjy2A+oZPM9vaScx\n")
+    s = concat(s, "lswry/hyc/UuPQO1OlApUhUvyQKBgQD4hziZlMmbDeghbFA7REWmRI9rrWKkoOWl\n")
+    s = concat(s, "6tAj0mB9F5oXIz49IPCnMAxjkjC/9Omhd18lvMKGsHArMIKnfX5z/igEfO8QOSBw\n")
+    s = concat(s, "ChQBNI/eqhP5iHAnd41i0qM7so7ryiguCmAafjSLPwx+PaVZiqpzgn4WQSI+xSWF\n")
+    s = concat(s, "Z0BB23ANmwKBgFrbYhCIQApu19vPE3oFY6YUGkkMwtl0fg1AVHtB9bBBUqdoraIs\n")
+    s = concat(s, "xVirXeSBE3eyjm8fOuNvBPQ4JTB3/FKnEXVLX4/yLIJBD8I7g7ynMq99e9RQIg58\n")
+    s = concat(s, "Xwa0NnW5e2OPEyXTjs2eAqDKL2wJ07cbRqXjMwVtF6JCaokIm+q0lXeRAoGAJZKr\n")
+    s = concat(s, "5+wqnpp3obXyW0NzFDQBStInu6PnlDHvzbqcg8zxqtXVLwCv4VbOSK9tV1f7ikG1\n")
+    s = concat(s, "zMrAzgQWsTDgT9oVKAwgmK0ap2U7ljSv2Y7MwWkNJAiQjCby5SHbM8dG/DbP5EYF\n")
+    s = concat(s, "SXwTDYo2pU9ElEj2hAgSb+Lg/oRnq8d0W4CFbEkCgYAXHwtPxoFjaFIH4fvval+s\n")
+    s = concat(s, "fXjUUtCC1mhSYmHbABwSwDca+O3lx7Tjg8t0CnFdr8Ed0loEvtleTBkHAlOi7Kr2\n")
+    s = concat(s, "KgwDZv1ckdAtOHtOgsSWPCg71h3ck3XVLh4G8pe4lSUzgO4/AE98lQyywU+QXi88\n")
+    s = concat(s, "F+ienCv1xqgt2+1M3tspdw==\n")
+    return concat(s, "-----END PRIVATE KEY-----\n")
+}
+
+// openssl genrsa -traditional 2048 (PKCS#1)
+fn pem_pkcs1() -> str {
+    let mut s = "-----BEGIN RSA PRIVATE KEY-----\n"
+    s = concat(s, "MIIEowIBAAKCAQEAtAgwLHClxpRLhMngC3zTLVYgClqsLyIlq54L+shbWLmwg3IX\n")
+    s = concat(s, "oQQuex45U8CjJ+F0B2NgjjRg2ynhQuc08T5BPDGqV/stKfLoXOuweEybpf/qBFnO\n")
+    s = concat(s, "OQ9lvuyv9+1Iw6tY6UHsW1s2Tjm1+vDTTe1glo0Qv9puCZLvX9jV8DPKqFK+Hbf9\n")
+    s = concat(s, "c1jsgAyxHNFx6BswTu+KDYp2UQn0PBasfDtku8Y3k2GozIcXbJ4taSd7Dn53wmgk\n")
+    s = concat(s, "p6Bv/+8hmyPcdUvNLlL/swLnuBPI5X5n7vs9cdQixaeo1DD0FK9q8UIj7YMSdmOc\n")
+    s = concat(s, "hNW7b9cS+ueYkTRohkWGEv06i5mEIfwu8lxsWQIDAQABAoIBAAFNgt27dfOlLJO6\n")
+    s = concat(s, "K0EiBtwv4Jz6kX7o0hl3FBKdQw32EAkveOzNHTH+Yr9QqE2YU9De3vrAdcf4Ol1T\n")
+    s = concat(s, "034Aa5PuLxOiaW4BiD1t5jHEqiauHqkn5jZi/mM+jrpuUOW7lnHfrIBvvUmdIMw/\n")
+    s = concat(s, "VGQeuOF2BV5CDCRNGCbbKJcrpMaJiZsvadrcWxN0KpfkeHY1M76eozvAAtCmbX6X\n")
+    s = concat(s, "E+DCUpwpjFAkF3/rjXdVx9lP9bAd3dXZzzQu4AIREoBPJYYli9wpVyFDelm5YsyS\n")
+    s = concat(s, "AAvJ2Yy3J3RDOCXOsCocXq+7VQ9J25gnQ2Okkqz2yX6WW0L398LYz7onrr0daTac\n")
+    s = concat(s, "+7TiqeECgYEA+JPut4hj5GoljDMj+VR0yk3ymcehm4i+ncgpJLYy+mo4GBKL2EBN\n")
+    s = concat(s, "QTU28QK9XfuX387y4dIyoBTVqIndsa0Z73Fk+U3ZP/1e1P2/4Oc95ldJvfgZx9y4\n")
+    s = concat(s, "/svWOWFo5Qa4ztAvr0a+a7DU8mJbwGx6MEpjZts9MPqAuRzxJydxDCkCgYEAuWhO\n")
+    s = concat(s, "2hRocqnydF3Vw8hTsygNWMjy8NPE2XrFd6rvQBZcnBhM5kSsmwi2Wix9RrtsfWIs\n")
+    s = concat(s, "flnFskLGCYcj+tn4X7exi4jdwHN16yg5ROJHncg/AApSryfeiQc+g/Yha+jb3vh2\n")
+    s = concat(s, "1sGwCa/p/mLqqSPtyA47Jh5LF9iKG9d1d987ZLECgYBndrtvrNdXJU9Hkamxh5Os\n")
+    s = concat(s, "+NC3bT44zKv6ZGurmiKR1FBQxLdsZSdCsvGRU0Cas7O9NhgmIiVsN//OTMP3xkL7\n")
+    s = concat(s, "RMlwcxSv67fjE1MgO1+qVj6dUXz5kUd21kTuUTslyKx3eHPAksODc3DPCl2CNCSP\n")
+    s = concat(s, "oQbKswo/LqURZ5iAYYxOMQKBgBIb1v/D2IPCh5TICXXq3gn0koEmd1wAQwy+ygSr\n")
+    s = concat(s, "JF0NEhSI5xHiiT1HN5BNIhtDeRAyA4h/uih0DyWlFmWM3o5ywZuQTaBbZpwGPLm2\n")
+    s = concat(s, "pCoMAeM+Ht9OtJSLqZZ39sG0Z606dVj6Z/g6P0+CV8sXYEUW5r4NXWZB1xNrEuUX\n")
+    s = concat(s, "X5SxAoGBAMgvqopxcAa5G6cInkcsHz0Pwh0woYZvQ1o1VMl1+o5YO+TC3+Lbj6Z9\n")
+    s = concat(s, "wtanMrtC0PExQ367XPCxLfoUzoUEyKJVLhJuXQ21pxTXfA/O114EcOecnnca00l+\n")
+    s = concat(s, "sBRe1xVa+tiBnvdffcIIMU4ND/h2gnDolG084wokiv5Ro9vUEA24\n")
+    return concat(s, "-----END RSA PRIVATE KEY-----\n")
+}
+
+// openssl ecparam -name prime256v1 -genkey -noout (SEC1)
+fn pem_sec1() -> str {
+    let mut s = "-----BEGIN EC PRIVATE KEY-----\n"
+    s = concat(s, "MHcCAQEEIPrZOwbLkgbABrc93Oi9XScHvGXUUZ4/pbvN19SHxjgJoAoGCCqGSM49\n")
+    s = concat(s, "AwEHoUQDQgAEPt3iQMZbsYENHhxlWYXqC02AfloIof4wGBgO0lVa7fGhPteFfiTm\n")
+    s = concat(s, "yUQ1KL+w3U+Eu5zDwWg9TPxS+8iAH5DvYQ==\n")
+    return concat(s, "-----END EC PRIVATE KEY-----\n")
+}
+
+fn rsa_roundtrip(key: PKey, tag: str, salt: bytes) -> i64 {
+    let msg = bytes_of_str(concat(concat("certificate verify transcript for ", tag), " signing"))
+    let sig = rsa_pss_sha256_sign(key.rsa_n, key.rsa_d, msg, salt)
+    assert_true(concat(tag, "_sig_len"), bytes_len(sig) == bytes_len(key.rsa_n))
+    assert_eq_i64(concat(tag, "_verify"), rsa_pss_sha256_verify(key.rsa_n, key.rsa_e, msg, sig), 1)
+    let tampered = bytes_concat(msg, hex_decode("00"))
+    assert_eq_i64(concat(tag, "_tamper_rejected"), rsa_pss_sha256_verify(key.rsa_n, key.rsa_e, tampered, sig), 0)
+    return 0
+}
+
+fn main() -> i64 !Random {
+    // --- PKCS#8 RSA parse + PSS sign/verify roundtrip ---
+    let k8 = pkey_parse_pem(pem_pkcs8())
+    assert_eq_i64("pkcs8_parse", k8.ok, 1)
+    assert_eq_i64("pkcs8_kind_rsa", k8.kind, 1)
+    assert_eq_i64("pkcs8_n_len", bytes_len(k8.rsa_n), 256)
+    assert_true("pkcs8_e", bytes_eq_b(k8.rsa_e, hex_decode("010001")))
+    let salt = hex_decode("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+    rsa_roundtrip(k8, "pkcs8", salt)
+
+    // --- PKCS#1 RSA parse + roundtrip ---
+    let k1 = pkey_parse_pem(pem_pkcs1())
+    assert_eq_i64("pkcs1_parse", k1.ok, 1)
+    assert_eq_i64("pkcs1_kind_rsa", k1.kind, 1)
+    assert_eq_i64("pkcs1_n_len", bytes_len(k1.rsa_n), 256)
+    rsa_roundtrip(k1, "pkcs1", salt)
+
+    // --- SEC1 EC parse; Q = d*G; ECDSA sign/verify roundtrip ---
+    let ke = pkey_parse_pem(pem_sec1())
+    assert_eq_i64("sec1_parse", ke.ok, 1)
+    assert_eq_i64("sec1_kind_ec", ke.kind, 2)
+    assert_eq_i64("sec1_d_len", bytes_len(ke.ec_d), 32)
+    let d_vec = p256_nmod(bn_from_bytes_be(ke.ec_d, 10))
+    let Q = p256_mul(d_vec, p256_base())
+    let qx = bn_to_bytes_be(Q.x, 32)
+    let qy = bn_to_bytes_be(Q.y, 32)
+    assert_eq_i64("sec1_pub_on_curve", p256_on_curve(qx, qy), 1)
+    let msg = bytes_of_str("ecdsa transcript for sec1 key")
+    let k32 = bytes_from_vec(random_bytes(32))
+    let sig = ecdsa_p256_sign_sha256(ke.ec_d, msg, k32)
+    assert_true("sec1_sig_der", bytes_len(sig) > 60 && bytes_at(sig, 0) == 48)
+    assert_eq_i64("sec1_verify", ecdsa_p256_verify_sha256(qx, qy, msg, sig), 1)
+    let bad_msg = bytes_of_str("ecdsa transcript for sec1 keyX")
+    assert_eq_i64("sec1_tamper_rejected", ecdsa_p256_verify_sha256(qx, qy, bad_msg, sig), 0)
+
+    // --- random EC key (the TLS-server path): sign with fresh nonces ---
+    let rd = bytes_from_vec(random_bytes(32))
+    let rdv = p256_nmod(bn_from_bytes_be(rd, 10))
+    if p256_in_range(rdv) == 1 {
+        let RQ = p256_mul(rdv, p256_base())
+        let rqx = bn_to_bytes_be(RQ.x, 32)
+        let rqy = bn_to_bytes_be(RQ.y, 32)
+        let m2 = bytes_of_str("random key roundtrip")
+        let mut sig2 = ecdsa_p256_sign_sha256(rd, m2, bytes_from_vec(random_bytes(32)))
+        let mut tries: i64 = 0
+        while bytes_len(sig2) == 0 && tries < 4 {
+            sig2 = ecdsa_p256_sign_sha256(rd, m2, bytes_from_vec(random_bytes(32)))
+            tries = tries + 1
+        }
+        assert_true("random_sig_nonempty", bytes_len(sig2) > 0)
+        assert_eq_i64("random_verify", ecdsa_p256_verify_sha256(rqx, rqy, m2, sig2), 1)
+    }
+
+    // --- negative: garbage PEM ---
+    let bad = pkey_parse_pem("not a pem at all")
+    assert_eq_i64("garbage_rejected", bad.ok, 0)
+
+    print("pkey_sign_test: all passed")
+    return 0
+}
