@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### codegen LLVM — паритет: присвояване на поле, byte_at, truthy `!`
+- `s.field = x` в LLVM бекенда (`emit_field_assign_llvm`): GEP през alloca-та
+  на struct локала (плоско `ident.field` — границата на C; по-дълбоки пътеки
+  биха оценили целта два пъти). Под `--rc` — alias-safe редът на codegen_c:
+  дясното се оценява, новото се retain-ва (track-нат ident или borrowed —
+  vec_get/map_get/поле/h_*; fresh литерал/ctor/owned call е move без retain;
+  untrack-нат ident и не-call изрази — само в struct/enum полета, като C
+  v0.8/v0.10), СЛЕД ТОВА старото поле се release-ва по tag (1-6, през
+  release-by-value пътя и per-instance helper-ите от M24), накрая store.
+  Без move elision (LLVM няма RC2 prepass) — retain + нормален release на
+  източника е наблюдаемо еквивалентен на C move-а. Оживяват 5 теста в
+  `tests/llvm_rc.sh`: move_test, borrow_test, struct_rc_test,
+  nested_assign_rc_test, vecvec_rc_test.
+- `byte_at` — lazy IR helper (същото тяло като char_at, отделно име за
+  паритет с preamble-а). Това беше първият блокер на rc_test; той остава
+  SKIP, защото ползва `mem_mark/rewind/persist` — bump arena съществува
+  само в C бекенда (документирано изключение, честен отказ).
+- `!x` за не-булеви — C truthiness: i1 → Not, цяло число → `x == 0`,
+  указател → `x == null` (преди: честен отказ). Оживява enum_box_rc_test.
+- Два съседни фикса, извадени от vecvec_rc_test: (1) box helper-ите
+  (`baga_vec_get_box` и пр.) искат `%baga_Vec*`, но вложен `vec_get` връща
+  `i8*` — добавен bitcast на входа на vec/map box пътеката (преди:
+  „Call parameter type does not match function signature"); (2)
+  `baga_rc_release_vec` kind-3 пътят с destructor падаше от shim повикването
+  И в kind-0 fallback рекурсията — двоен декремент на вътрешния vec
+  (преди M26 пътят никога не се изпълняваше — rel беше винаги NULL; C
+  прави if/else). Сега shim пътят пропуска fallback-а.
+- Gate: `make test-llvm-rc` — 22/23 OK (само rc_test SKIP — mem_*); `make
+  test-llvm` зелен; без `--rc` IR-ът е бит-идентичен за преди съществуващите
+  програми (променените файлове са точно новоподдържаните конструкти).
+
 ### parser — `Box<Vec<str>> { … }` се парсва (вложен targ в struct литерал)
 - Lookahead-ът за `<types> {` не познаваше `>>` (TOK_RSHIFT) като два
   затварящи `>` — литерал с вложен generic targ се объркваше със сравнение;

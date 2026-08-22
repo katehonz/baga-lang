@@ -1545,6 +1545,22 @@ static LLVMValueRef build_baga_char_at(void) {
     return fn;
 }
 
+/* static int64_t baga_byte_at(const char *s, int64_t i)
+ * { return (int64_t)(unsigned char)s[i]; } — същото тяло като char_at
+ * (огледало на codegen_c.c:5857), отделно име за паритет */
+static LLVMValueRef build_baga_byte_at(void) {
+    LLVMTypeRef p[] = { lg.ptr_ty, lg.i64_ty };
+    LLVMValueRef fn = LLVMAddFunction(lg.mod, "baga_byte_at",
+        LLVMFunctionType(lg.i64_ty, p, 2, 0));
+    h_begin(fn);
+    LLVMValueRef s = LLVMGetParam(fn, 0);
+    LLVMValueRef i = LLVMGetParam(fn, 1);
+    LLVMValueRef p8 = LLVMBuildGEP2(lg.builder, lg.i8_ty, s, &i, 1, "p");
+    LLVMValueRef ch = LLVMBuildLoad2(lg.builder, lg.i8_ty, p8, "c");
+    LLVMBuildRet(lg.builder, LLVMBuildZExt(lg.builder, ch, lg.i64_ty, "r"));
+    return fn;
+}
+
 /* static const char *baga_substr(const char *s, int64_t a, int64_t b) {
  *     int64_t n = b - a; if (n < 0) n = 0;
  *     char *r = malloc(n + 1); memcpy(r, s + a, n); r[n] = 0; return r; } */
@@ -4442,6 +4458,7 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
     LLVMBasicBlockRef l3b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l3b");
     LLVMBasicBlockRef l3r = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l3r");
     LLVMBasicBlockRef l3n = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l3n");
+    LLVMBasicBlockRef l3i = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l3i");
     LLVMBasicBlockRef c4  = LLVMAppendBasicBlockInContext(lg.ctx, fn, "c4");
     LLVMBasicBlockRef l4c = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l4c");
     LLVMBasicBlockRef l4b = LLVMAppendBasicBlockInContext(lg.ctx, fn, "l4b");
@@ -4505,10 +4522,15 @@ static LLVMValueRef build_baga_rc_release_vec(void) {
     LLVMValueRef relf3 = LLVMBuildBitCast(lg.builder, rel,
         LLVMPointerType(relfty, 0), "relf");
     LLVMBuildCall2(lg.builder, relfty, relf3, &e3, 1, "");
-    LLVMBuildBr(lg.builder, l3n);
+    /* shim пътят НЕ пада във fallback-а — иначе двоен release на вътрешния
+     * vec (декремент от shim-а + още един от kind-0 рекурсията). Преди
+     * M26 този път никога не се изпълняваше (rel винаги беше NULL). */
+    LLVMBuildBr(lg.builder, l3i);
     LLVMPositionBuilderAtEnd(lg.builder, l3n);
     LLVMValueRef ra[] = { e3, zero, zero, LLVMConstNull(lg.ptr_ty) };
     h_call(fn, ra, 4, "");
+    LLVMBuildBr(lg.builder, l3i);
+    LLVMPositionBuilderAtEnd(lg.builder, l3i);
     LLVMBuildStore(lg.builder, LLVMBuildAdd(lg.builder, i3, one, "in"), iv);
     LLVMBuildBr(lg.builder, l3c);
 
@@ -5280,6 +5302,7 @@ static LLVMValueRef baga_rt(const char *name) {
     LLVMBasicBlockRef saved = LLVMGetInsertBlock(lg.builder);
     if      (strcmp(name, "baga_len") == 0)         fn = build_baga_len();
     else if (strcmp(name, "baga_char_at") == 0)     fn = build_baga_char_at();
+    else if (strcmp(name, "baga_byte_at") == 0)     fn = build_baga_byte_at();
     else if (strcmp(name, "baga_substr") == 0)      fn = build_baga_substr();
     else if (strcmp(name, "baga_concat") == 0)      fn = build_baga_concat();
     else if (strcmp(name, "baga_str_eq") == 0)      fn = build_baga_str_eq();
@@ -6029,6 +6052,101 @@ static void lrc_emit_drop(Node *n) {
     }
 }
 
+/* NODE_ASSIGN с NODE_FIELD цел (`s.field = x`) — плоско ident.field през
+ * alloca-та на локала (като C границата — по-дълбоки пътеки биха оценили
+ * целта два пъти). RC: alias-safe редът на codegen_c (NODE_ASSIGN при
+ * FIELD цел): оцени дясното, retain на новото (track-нат ident или
+ * borrowed — vec_get/map_get/поле/h_*; fresh литерал/ctor/owned call е
+ * move — без retain), после release на старото поле по tag (вкл.
+ * struct/enum полета — v0.8/v0.10, per-instance helper-и от M24), store.
+ * Без move elision (RC2 prepass няма LLVM еквивалент) — retain + нормален
+ * release на източника е наблюдаемо еквивалентен на C move-а. */
+static LLVMValueRef emit_field_assign_llvm(Node *n) {
+    Node *tgt = n->assign_target;
+    Node *obj = tgt->field_obj;
+    if (!obj || obj->kind != NODE_IDENT)
+        llvm_unsupported("присвояване на поле на не-локален обект");
+    LLVMValueRef base = st_lookup(obj->name);
+    if (!base)
+        llvm_unsupported("присвояване на поле на недефинирано име");
+    const char *sname = (obj->type && obj->type->kind == TYPE_STRUCT)
+        ? obj->type->name : NULL;
+    if (!sname) llvm_unsupported("присвояване на поле на не-структура");
+    Node *decl = find_struct_decl(sname);
+    int idx = decl ? struct_field_index(decl, tgt->field_name) : -1;
+    if (idx < 0) {
+        char buf[256];
+        snprintf(buf, sizeof buf, "непознато поле '%s' на структура '%s'",
+                 tgt->field_name, sname);
+        llvm_unsupported(buf);
+    }
+    Node *fld = decl->fields.data[idx];
+
+    /* M24: instantiated generic struct — типът по cname + gen контекст за
+     * resolve на полето (като NODE_FIELD четенето по-горе) */
+    LLVMTypeRef sty;
+    Node *saved_gs = lg.gen_struct;
+    int saved_gi = lg.gen_struct_inst;
+    if (obj->type->n_targs > 0) {
+        char *cn = llvm_struct_cname(obj->type);
+        sty = user_struct_ty(cn);
+        free(cn);
+        lg.gen_struct = decl;
+        for (int k = 0; k < decl->struct_inst_count; k++) {
+            int same = 1;
+            for (int a = 0; a < decl->n_struct_params; a++)
+                if (!type_eq(decl->struct_inst_targs[k * decl->n_struct_params + a],
+                             obj->type->targs[a])) { same = 0; break; }
+            if (same) { lg.gen_struct_inst = k; break; }
+        }
+    } else {
+        sty = user_struct_ty(sname);
+    }
+    LLVMValueRef gep = LLVMBuildStructGEP2(lg.builder, sty, base,
+                                           (unsigned)idx, "fap");
+    LLVMTypeRef fty = llvm_type(fld->fld_type);
+
+    /* RC: resolved тип на полето (per инстанция за generic) + heap tag */
+    Type *ft = NULL;
+    if (lg.rc) {
+        if (obj->type->n_targs > 0)
+            ft = lrc_fld_inst_type(obj->type, fld->fld_type);
+        if (!ft) ft = fld->fld_type->type;
+    }
+    int ftag = ft ? lrc_heap_tag(ft) : lrc_heap_tag_node(fld->fld_type);
+
+    LLVMValueRef v = emit_expr_llvm(n->assign_val);
+    if (!v) llvm_unsupported("print в присвояване на поле");
+    v = coerce(v, fty);
+    if (lg.rc && ftag) {
+        Node *val = n->assign_val;
+        int keep;
+        if (val->kind == NODE_IDENT) {
+            int si = lrc_find(val->name);
+            /* track-нат (не dead) — retain; untrack-нат ident (match
+             * binding) — само в struct/enum поле (C: fst/fen пътищата) */
+            keep = (si >= 0 && !lg.lrc_locals[si].dead) || ftag >= 5;
+        } else if (ftag >= 5) {
+            /* v0.8/v0.10: свеж литерал/ctor и owned call — move; останалите
+             * (поле/vec_get/untrack-нати изрази) се retain-ват */
+            keep = val->kind != NODE_STRUCT_LIT && !lrc_is_enum_ctor(val) &&
+                   !(val->kind == NODE_CALL && !lrc_borrowed_init(val));
+        } else {
+            keep = lrc_borrowed_init(val);
+        }
+        if (keep)
+            lrc_emit_retain_val(ftag, ft, fld->fld_type, v);
+        /* release на старото поле — СЛЕД retain на новото (alias-safe:
+         * `fw.s = fw.s` не обесва стойността) */
+        LLVMValueRef old = LLVMBuildLoad2(lg.builder, fty, gep, "faold");
+        lrc_emit_release_val(ftag, ft, old);
+    }
+    LLVMBuildStore(lg.builder, v, gep);
+    lg.gen_struct = saved_gs;
+    lg.gen_struct_inst = saved_gi;
+    return v;
+}
+
 static LLVMValueRef emit_expr_llvm(Node *n) {
     if (!n) llvm_unsupported("празен израз");
 
@@ -6162,9 +6280,17 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                       : LLVMBuildNeg(lg.builder, v, name);
                     break;
                 case UOP_NOT:
-                    if (LLVMTypeOf(v) != lg.i1_ty)
+                    /* C truthiness: (!x) — i1 → Not; цяло число → x == 0;
+                     * указател → x == null (като codegen_c `(!x)`) */
+                    if (LLVMTypeOf(v) == lg.i1_ty)
+                        r = LLVMBuildNot(lg.builder, v, name);
+                    else if (LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMIntegerTypeKind)
+                        r = LLVMBuildICmp(lg.builder, LLVMIntEQ, v,
+                            LLVMConstInt(LLVMTypeOf(v), 0, 0), name);
+                    else if (LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMPointerTypeKind)
+                        r = LLVMBuildIsNull(lg.builder, v, name);
+                    else
                         llvm_unsupported("! върху не-булев израз");
-                    r = LLVMBuildNot(lg.builder, v, name);
                     break;
                 case UOP_REF:   llvm_unsupported("референция (&x)"); break;
                 case UOP_DEREF: llvm_unsupported("дереференциране (*x)"); break;
@@ -6348,6 +6474,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             static const struct { const char *baga; const char *rt; } bmap[] = {
                 {"len",         "baga_len"},
                 {"char_at",     "baga_char_at"},
+                {"byte_at",     "baga_byte_at"},
                 {"substr",      "baga_substr"},
                 {"concat",      "baga_concat"},
                 {"read_file",   "baga_read_file"},
@@ -6415,6 +6542,10 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     const char *cn = n->callee->name;
                     LLVMValueRef v = emit_expr_llvm(n->args.data[0]);
                     if (!v) llvm_unsupported("vec аргумент");
+                    /* вложен vec_get връща i8* (елементът на външния Vec е
+                     * Vec → str helper) — box helper-ите искат %baga_Vec* */
+                    if (LLVMTypeOf(v) != baga_vec_ptr_ty())
+                        v = LLVMBuildBitCast(lg.builder, v, baga_vec_ptr_ty(), "vc");
                     if (strcmp(cn, "vec_push") == 0) {
                         LLVMValueRef e = emit_expr_llvm(n->args.data[1]);
                         if (!e) llvm_unsupported("vec_push аргумент");
@@ -6556,6 +6687,9 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                     snprintf(rt_name, sizeof rt_name, "baga_%s_%s_box",
                              n->callee->name, ksuf);
                     LLVMValueRef mv = emit_expr_llvm(n->args.data[0]);
+                    /* същият cast като при vec box — вложен достъп е i8* */
+                    if (mv && LLVMTypeOf(mv) != baga_map_ptr_ty())
+                        mv = LLVMBuildBitCast(lg.builder, mv, baga_map_ptr_ty(), "mc");
                     LLVMValueRef k = emit_expr_llvm(n->args.data[1]);
                     if (!mv || !k) llvm_unsupported("map аргумент");
                     if (is_set) {
@@ -6733,8 +6867,10 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             return emit_match_llvm(n);
 
         case NODE_ASSIGN: {
+            if (n->assign_target->kind == NODE_FIELD)
+                return emit_field_assign_llvm(n);
             if (n->assign_target->kind != NODE_IDENT)
-                llvm_unsupported("присвояване на поле/индекс");
+                llvm_unsupported("присвояване на индекс");
             LLVMValueRef alloca = st_lookup(n->assign_target->name);
             if (!alloca) {
                 char buf[256];
