@@ -3383,6 +3383,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                 } else {
                     fprintf(f, "else if (__ee%d.tag != 0) { baga_eff_tl = __ee%d; ",
                             tid, tid);
+                    if (cg->rc) rc_release_all(cg, -1);
                     emit_eff_return_zero(cg);
                     fprintf(f, "; } ");
                 }
@@ -3405,6 +3406,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, " __t%d = ", cg->tmp_counter);
                 emit_expr(cg, n->try_expr);
                 fprintf(f, "; if (baga_eff_tl.tag) { ");
+                if (cg->rc) rc_release_all(cg, -1);
                 emit_eff_return_zero(cg);
                 fprintf(f, "; } __t%d; })", cg->tmp_counter++);
             } else {
@@ -3416,16 +3418,35 @@ static void emit_expr(Codegen *cg, Node *n) {
             /* M20: raise !E(payload) — задава слота и ИЗЛИЗА от функцията
              * (като `?`). Преди това беше само comma-израз: кодът след
              * raise продължаваше и можеше да падне преди caller-ът да
-             * види слота. return вътре в ({…}) напуска enclosing fn. */
+             * види слота. return вътре в ({…}) напуска enclosing fn.
+             * RC: преди изхода се release-ват локалите на fn-а (като при
+             * return). Heap payload, който НЕ е fresh (ident/поле/borrowed),
+             * споделя референция с източника си — retain-ваме го в слота
+             * преди release-ите. Fresh payload (owned call/enum ctor/struct
+             * литерал) се move-ва в слота: return-ът прескачa statement-end
+             * temp release-а. */
             FILE *f = cg->out;
             int tag = eff_tag(cg, n->raise_effect);
             fprintf(f, "({ baga_eff_tl.tag = %d; ", tag);
             if (n->raise_payload && n->raise_payload->type) {
+                Node *p = n->raise_payload;
                 fprintf(f, "baga_eff_tl.%s = (",
-                        eff_slot_field(n->raise_payload->type->kind));
-                emit_expr(cg, n->raise_payload);
+                        eff_slot_field(p->type->kind));
+                emit_expr(cg, p);
                 fprintf(f, "); ");
+                if (cg->rc) {
+                    int ptag = rc_heap_tag(cg, p->type);
+                    if (ptag && !rc_tmp_fresh(cg, p) &&
+                        !rc_is_enum_ctor(cg, p) &&
+                        p->kind != NODE_STRUCT_LIT) {
+                        char pbuf[64];
+                        snprintf(pbuf, sizeof pbuf, "baga_eff_tl.%s",
+                                 eff_slot_field(p->type->kind));
+                        rc_emit_retain_val(cg, ptag, p->type, NULL, pbuf);
+                    }
+                }
             }
+            if (cg->rc) rc_release_all(cg, -1);
             emit_eff_return_zero(cg);
             fprintf(f, "; ");
             emit_zero_val(cg, NULL);

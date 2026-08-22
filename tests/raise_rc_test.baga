@@ -1,0 +1,65 @@
+// raise_rc_test — release на RC локали при изход през ефект (raise / `?`).
+//
+// И в двата бекенда (C и LLVM) raise/`?` пътят вече release-ва локалите на
+// функцията преди изхода (като при return). Heap payload, който не е fresh
+// (ident/поле/borrowed), се retain-ва в слота преди release-ите, за да
+// оцелее; fresh payload (owned call) се move-ва в слота без retain.
+// Преди фикса локалите течаха на този път (и в C — споделена граница).
+// Минава с и без --rc; реалният gate е tests/llvm_rc.sh (C --rc ↔ LLVM --rc).
+
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+// payload = owned локал: retain в слота преди release на s
+fn boom_local() -> i64 !E(str) {
+    let s = concat("гр", "ешка")
+    let v: Vec<i64> = vec_new()
+    vec_push(v, 1)
+    raise !E(s)
+}
+
+// payload = fresh call: move в слота (без retain); локалът t се release-ва
+fn boom_fresh() -> i64 !E(str) {
+    let t = concat("вът", "ре")
+    print(t)
+    raise !E(concat("све", "жо"))
+}
+
+// `?` propagate: локалите на mid се release-ват при изхода
+fn mid() -> i64 !E(str) {
+    let tmp = concat("меж", "дин")
+    print(tmp)
+    let r = boom_local()?
+    return r
+}
+
+fn main() {
+    // payload-ът оцелява след release на локалите на boom_local
+    let a = boom_local() catch !E(e) => {
+        check("payload_alive", e == "грешка")
+        1
+    }
+    check("raise_local", a == 1)
+
+    let b = boom_fresh() catch !E(e) => {
+        check("payload_fresh", e == "свежо")
+        2
+    }
+    check("raise_fresh", b == 2)
+
+    let c = mid() catch !E(e) => {
+        check("payload_propagated", e == "грешка")
+        3
+    }
+    check("try_propagate", c == 3)
+
+    print("raise_rc_test: all passed")
+}

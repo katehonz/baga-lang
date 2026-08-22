@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### runtime — `--rc`: release на локали при изход през ефект (двата бекенда)
+- `raise !E(p)` и `?` propagate пътят (и catch-веригата без handler) вече
+  release-ват RC локалите на функцията преди изхода — преди течаха и в C, и
+  в LLVM (`emit_eff_return_zero`/`h_ret_zero` без scope release). Heap
+  payload, който не е fresh (ident/поле/borrowed), се retain-ва в слота
+  преди release-ите и оцелява; fresh payload (owned call) се move-ва в
+  слота без retain. Затваря readiness точка 7. Gate: новият
+  `tests/raise_rc_test.baga` в `tests/llvm_rc.sh` (C `--rc` ↔ LLVM
+  `--emit-llvm --rc` оракул); без `--rc` emit-c е бит-идентичен.
+
 ### docs — LLVM `--rc` паритетът е пълен; последните „изключения" са споделени граници
 - Проверка в кода: closure capture-ите са borrowed и не се retain-ват и в C
   бекенда (`is_param=1` в wrapper-а, codegen_c.c:3542), а `raise`/`?` пътят

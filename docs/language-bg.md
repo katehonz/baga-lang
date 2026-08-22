@@ -1028,9 +1028,10 @@ print(vec_len(v))             // OK — maybe-dropped не е definitely-dropped
   и на match scrutinee temp-ове — v0.11). Оставащите граници са
   **споделени с C бекенда**, не са LLVM-специфични (проверено в кода):
   closure capture-ите са borrowed и не се retain-ват (C ги регистрира с
-  `is_param=1` в wrapper-а — codegen_c.c:3542), raise/`?` пътят не
-  release-ва локали (`emit_eff_return_zero` няма scope release —
-  codegen_c.c:1781; същият leak и в C), цикли текат (няма weak).
+  `is_param=1` в wrapper-а — codegen_c.c:3542), цикли текат (няма weak).
+  Raise/`?` пътят release-ва RC локалите на функцията преди изхода
+  (не-fresh heap payload се retain-ва в слота преди release-ите, fresh
+  payload се move-ва) — еднакво в двата бекенда.
   Тънкост: `baga_rc_hdr` в LLVM
   няма arena range guard — `p − 32` се чете само при page offset ≥ 32,
   за да не се пипа чужда страница (page guard вместо range check).

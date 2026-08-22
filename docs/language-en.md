@@ -1049,10 +1049,10 @@ print(vec_len(v))             // OK — maybe-dropped is not definitely-dropped
   temps — RC4 — and of match scrutinee temps — v0.11). The remaining
   limits are **shared with the C backend**, not LLVM-specific (verified
   in code): closure captures are borrowed and not retained (C registers
-  them with `is_param=1` in the wrapper — codegen_c.c:3542), the
-  raise/`?` path does not release locals (`emit_eff_return_zero` has no
-  scope release — codegen_c.c:1781; same leak in C), cycles leak (no
-  weak pointers).
+  them with `is_param=1` in the wrapper — codegen_c.c:3542), cycles leak
+  (no weak pointers). The raise/`?` path releases the function's RC
+  locals before exiting (a non-fresh heap payload is retained into the
+  slot first; a fresh payload is moved), same as the C backend.
   Subtlety: LLVM's `baga_rc_hdr` has no arena range guard — `p − 32` is
   read only when the page offset is ≥ 32, so a foreign page is never
   touched (page guard instead of a range check).

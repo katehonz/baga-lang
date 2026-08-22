@@ -6529,6 +6529,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                                              LLVMConstInt(lg.i64_ty, 0, 0), "bad");
             LLVMBuildCondBr(lg.builder, bad, err_bb, cont_bb);
             LLVMPositionBuilderAtEnd(lg.builder, err_bb);
+            if (lg.rc) lrc_release_all(-1);
             h_ret_zero();
             LLVMPositionBuilderAtEnd(lg.builder, cont_bb);
             return v;
@@ -6617,6 +6618,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
             LLVMPositionBuilderAtEnd(lg.builder, prop_bb);
             /* възстанови тага за външния контекст (като C бекенда) */
             LLVMBuildStore(lg.builder, tag, eff_gep(0, "tagp"));
+            if (lg.rc) lrc_release_all(-1);
             h_ret_zero();
             LLVMPositionBuilderAtEnd(lg.builder, merge_bb);
             if (n->type && llvm_type_resolved(n->type) == lg.void_ty) {
@@ -6642,15 +6644,26 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
         case NODE_RAISE: {
             /* M20: задай слота и излез (като `?` / h_ret_zero).
              * raise_dead е недостижим блок, за да могат извикващите
-             * emit_expr да продължат без инструкция след terminator. */
+             * emit_expr да продължат без инструкция след terminator.
+             * RC: release на локалите преди изхода (паритет с C); heap
+             * payload, който не е fresh, се retain-ва преди release-ите —
+             * fresh payload се move-ва в слота (като в codegen_c). */
             int tagv = llvm_eff_tag(n->raise_effect);
             LLVMBuildStore(lg.builder, LLVMConstInt(lg.i64_ty, (unsigned long long)tagv, 0),
                            eff_gep(0, "tagp"));
             if (n->raise_payload && n->raise_payload->type) {
-                LLVMValueRef pv = emit_expr_llvm(n->raise_payload);
-                LLVMBuildStore(lg.builder, coerce(pv, llvm_type_resolved(n->raise_payload->type)),
-                               eff_gep(eff_field_of(n->raise_payload->type), "pv"));
+                Node *p = n->raise_payload;
+                LLVMValueRef pv = emit_expr_llvm(p);
+                LLVMBuildStore(lg.builder, coerce(pv, llvm_type_resolved(p->type)),
+                               eff_gep(eff_field_of(p->type), "pv"));
+                if (lg.rc) {
+                    int ptag = lrc_heap_tag(p->type);
+                    if (ptag && !lrc_tmp_fresh(p) && !lrc_is_enum_ctor(p) &&
+                        p->kind != NODE_STRUCT_LIT)
+                        lrc_emit_retain_val(ptag, p->type, NULL, pv);
+                }
             }
+            if (lg.rc) lrc_release_all(-1);
             h_ret_zero();
             {
                 LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(lg.builder));
