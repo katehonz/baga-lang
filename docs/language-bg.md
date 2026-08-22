@@ -1025,11 +1025,14 @@ print(vec_len(v))             // OK — maybe-dropped не е definitely-dropped
   `--rc`). Под `--emit-llvm --rc` RC моделът е същият като в C бекенда
   (scope release, retain при alias, move при return, транзитивен release
   за Vec/Map/struct/enum), с изключения: (1) temp-ове на statement ниво
-  не се release-ват (RC4 е C-only засега), (2) match scrutinee temp-ове
-  не се release-ват (C ги прави от v0.11), (3) closure captures не се
-  retain-ват, (4) цикли текат (няма weak), (5) raise пътят не release-ва
-  локали (leak при изход през ефект — `h_ret_zero` излиза без scope
-  release). Тънкост: `baga_rc_hdr` в LLVM
+  не се release-ват (RC4 е C-only; отложено за post-1.0),
+  (2) match scrutinee temp-ове не се release-ват (C ги прави от v0.11;
+  отложено за post-1.0), (3) closure captures не се retain-ват (отложено
+  за post-1.0), (4) цикли текат (няма weak) — финална граница, споделена
+  с C бекенда, (5) raise пътят не release-ва локали (leak при изход през
+  ефект — `h_ret_zero` излиза без scope release; отложено за post-1.0).
+  Отложените елементи са в roadmap-а на `docs/v1.0-readiness-bg.md`.
+  Тънкост: `baga_rc_hdr` в LLVM
   няма arena range guard — `p − 32` се чете само при page offset ≥ 32,
   за да не се пипа чужда страница (page guard вместо range check).
 

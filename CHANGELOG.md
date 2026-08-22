@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### docs — v1.0 readiness: границите са маркирани финални или post-1.0
+- Нов `docs/v1.0-readiness-bg.md`: инвентар на честните граници, разделени на
+  финални по дизайн (кандидати за замразяване в v1.0) и временни (roadmap
+  след 1.0). LLVM `--rc` изключенията в `docs/language-bg.md` /
+  `docs/language-en.md` вече не са „засега" — (1) RC4 statement temp-ове,
+  (2) match scrutinee temp-ове, (3) closure capture retain и (5) release по
+  raise пътя са официално отложени за post-1.0; (4) циклите без weak са
+  финална граница, споделена с C бекенда. Без промяна в поведението.
+
 ### codegen C — неподдържан AST възел е грешка, не тиха константа
 - `emit_expr`/`emit_stmt` default клоновете вече викат `c_unsupported_node`
   (`baga: C backend: неподдържан израз/statement (AST възел #N)`, exit 1)
