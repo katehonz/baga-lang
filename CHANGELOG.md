@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### codegen C — неподдържан AST възел е грешка, не тиха константа
+- `emit_expr`/`emit_stmt` default клоновете вече викат `c_unsupported_node`
+  (`baga: C backend: неподдържан израз/statement (AST възел #N)`, exit 1)
+  вместо да емитват `0 /* unhandled expr %d */` — същата политика на шумен
+  отказ като `llvm_unsupported` в LLVM бекенда. Цялата батерия
+  (`run_tests.sh`, включително emit-c probes) остава зелена — fallback-ите не
+  бяха достижими от валидни програми.
+
 ### runtime — `--rc` release на генерик контейнери + чист UBSan guard
 - `let v: Vec<U> = …` в генерик тяло вече не чупи `--rc` емисията:
   node fallback-ите на RC resolver-ите (`rc_vec_elem_kind_node`,

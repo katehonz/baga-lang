@@ -6,6 +6,15 @@
  *  baga → C → gcc → binary
  * ============================================================ */
 
+/* ---- честен отказ ----
+ * Неподдържан AST възел е compile-time грешка, не тиха константа 0 —
+ * същата политика като llvm_unsupported в LLVM бекенда. */
+static void c_unsupported_node(const char *what, Node *n) {
+    fprintf(stderr, "baga: C backend: неподдържан %s (AST възел #%d)\n",
+            what, n ? (int)n->kind : -1);
+    exit(1);
+}
+
 /* ---- name mangling ----
  * Cyrillic (and other non-ASCII) identifiers become valid C
  * by encoding each non-ASCII byte as _XX hex.
@@ -3723,7 +3732,7 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         default:
-            fprintf(f, "0 /* unhandled expr %d */", n->kind);
+            c_unsupported_node("израз", n);
             break;
     }
 }
@@ -4153,8 +4162,7 @@ static void emit_stmt(Codegen *cg, Node *n) {
             break;
 
         default:
-            emit_indent(cg);
-            fprintf(f, "/* unhandled stmt %d */;\n", n->kind);
+            c_unsupported_node("statement", n);
             break;
     }
 }
