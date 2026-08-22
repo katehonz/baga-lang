@@ -579,6 +579,17 @@ static Node *parse_primary(Parser *p) {
                             ok = 1;
                         break;
                     }
+                } else if (tk == TOK_RSHIFT) {
+                    /* `>>` в типовите аргументи е два затварящи `>`
+                     * (Box<Vec<str>> { … }) — лексерът го дава като един
+                     * токен; expect_gt_split го дели при консумацията */
+                    depth -= 2;
+                    if (depth == 0) {
+                        if (k + 1 < p->len && p->tokens[k + 1].kind == TOK_LBRACE)
+                            ok = 1;
+                        break;
+                    }
+                    if (depth < 0) break;   /* сравнение/shift, не типови args */
                 } else if (tk == TOK_EOF || tk == TOK_LPAREN ||
                            (tk != TOK_IDENT && tk != TOK_COMMA && tk != TOK_GT))
                     break;
@@ -586,10 +597,16 @@ static Node *parse_primary(Parser *p) {
             }
             if (ok) {
                 advance(p);
+                /* type_depth докато парсваме аргументите: parse_type
+                 * изчиства gt_pending на ниво 0, а затварящият `>` (или
+                 * pending половината от `>>`) е на литерала, не на
+                 * аргумента — Box<Vec<str>> { … } */
+                p->type_depth++;
                 do {
                     vec_push(lit_type_args, parse_type(p));
                 } while (match(p, TOK_COMMA));
                 expect_gt_split(p);
+                p->type_depth--;
             } else {
                 p->pos = save;
             }

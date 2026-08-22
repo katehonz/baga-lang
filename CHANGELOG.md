@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### parser — `Box<Vec<str>> { … }` се парсва (вложен targ в struct литерал)
+- Lookahead-ът за `<types> {` не познаваше `>>` (TOK_RSHIFT) като два
+  затварящи `>` — литерал с вложен generic targ се объркваше със сравнение;
+  и `parse_type` wrapper-ът изчистваше `gt_pending` на ниво 0, ядейки
+  pending `>` на литерала. И двете поправени (depth-брояч по време на
+  аргументите на литерала). Shift (`a >> b`) и сравнения остават изрази.
+  Gate: новият `tests/struct_lit_nested_test.baga` (вкл. отрицателните
+  страни) + батерията.
+
 ### runtime — `--rc`: дълбок release на Vec<Vec<T>> с типова променлива (двата бекенда)
 - Досега release-ът на `Vec<Vec<T>>` беше `baga_rc_release_vec(v, 3, 0, NULL)`
   — elem_kind 3 с NULL destructor и runtime-ът рекурсираше с kind 0 →

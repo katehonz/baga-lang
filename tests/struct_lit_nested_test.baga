@@ -1,0 +1,42 @@
+// struct_lit_nested_test — `Box<Vec<str>> { … }`: вложен generic targ в
+// struct литерал. Регресия за две parser дупки:
+//   (1) lookahead-ът за `<types> {` не познаваше `>>` (TOK_RSHIFT) като два
+//       затварящи `>` — литералът се объркваше със сравнение;
+//   (2) parse_type wrapper-ът изчистваше gt_pending на ниво 0 и ядеше
+//       pending `>` на литерала.
+// Плюс отрицателна страна: `a >> b` shift и `x < y` продължават да са
+// изрази (не се гълтат като типови аргументи).
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+struct Box<T> { items: Vec<T>, n: i64 }
+
+fn main() {
+    let inner: Vec<str> = vec_new()
+    vec_push(inner, "аб")
+    let b = Box<Vec<str>> { items: vec_new(), n: 1 }
+    vec_push(b.items, inner)
+    let got: Vec<str> = vec_get(b.items, 0)
+    check("nested_targ_lit", vec_get(got, 0) == "аб")
+    check("nested_targ_field", b.n == 1)
+
+    // две нива + скалар: Pair<Vec<i64>, str>
+    let p = Pair2<Vec<i64>, str> { left: vec_new(), right: "д" }
+    check("pair_nested", p.right == "д")
+
+    // shift и сравнения остават изрази
+    let a = 256
+    check("shr_still_expr", (a >> 2) == 64)
+    check("lt_still_expr", (3 < 4) == true)
+
+    print("struct_lit_nested_test: all passed")
+}
+
+struct Pair2<A, B> { left: A, right: B }
