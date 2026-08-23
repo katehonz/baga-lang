@@ -313,6 +313,16 @@ grep -q "протокол (wait-for: join на worker без изход): ОБР
 	&& ! grep -A3 "join_cond:" /tmp/baga_verify_out.txt | grep -q "без изход" \
 	&& echo "OK: worker_term — join на доказуемо безкраен worker е оброчен (виси и на runtime); изход в цикъла/клон — честно мълчание; go_bg и терминация — зелени (M28)" \
 	|| { echo "FAIL: worker_term"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/nested_go.baga > /tmp/baga_verify_out.txt || true; \
+test "$(grep -c 'протокол (wait-for: recv след producer): ДОКАЗАНО' /tmp/baga_verify_out.txt)" -eq 3 \
+	&& test "$(grep -c 'протокол (wait-for: worker send се побира в буфера): ДОКАЗАНО' /tmp/baga_verify_out.txt)" -eq 2 \
+	&& test "$(grep -c 'протокол (wait-for: send — свободен слот): ДОКАЗАНО' /tmp/baga_verify_out.txt)" -eq 5 \
+	&& grep -q "протокол (wait-for: join след send): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for цикъл: join преди send): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& test "$(grep -c 'протокол (wait-for: join на worker без изход): ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -eq 2 \
+	&& ! grep -A6 "bg_credit:" /tmp/baga_verify_out.txt | grep -q "join след send\|побира" \
+	&& echo "OK: nested_go — вложен go със структуриран join: join-натите деца се сгъват (бройки/първи op/noreturn), неjoin-натите дават кредит; цикъл и безкрайност през два слоя оброчени (M29)" \
+	|| { echo "FAIL: nested_go"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/pair_recv2.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: pair_recv2 — ok-flag + content инвариант през cell2 проекции (M17)" \
@@ -483,3 +493,9 @@ grep -A3 "lp6_if_over_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (w
 grep -A4 "lp6_join_inf_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for: join на worker без изход): ОБРОЧЕНО" \
 	&& echo "OK: LP6 lp6_join_inf_bad — join на worker без изход е оброчен, не ДОКАЗАНО (M28)" \
 	|| { echo "FAIL: LP6 lp6_join_inf_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A6 "lp6_nested_cycle_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: join преди send): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_nested_cycle_bad — wait-for веригата през два слоя join е оброчена, не ДОКАЗАНО (M29)" \
+	|| { echo "FAIL: LP6 lp6_nested_cycle_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A5 "lp6_nested_inf_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for: join на worker без изход): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_nested_inf_bad — безкрайността се наследява през join: външният join е оброчен (M29)" \
+	|| { echo "FAIL: LP6 lp6_nested_inf_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }

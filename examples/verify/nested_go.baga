@@ -1,0 +1,289 @@
+// nested_go.baga — M29: nested go with a structured join.
+//
+// A worker that spawns workers is classified recursively (depth <= 4).
+// join(h) folds the child: guaranteed counts, the imprecise flag,
+// noreturn (joining a child that never completes never completes), and —
+// if the parent has not blocked yet — the child's first blocking op.
+// detach(h) and never-joined children fold credit-only: their guaranteed
+// consumption counts, the parent's completion does not wait for them.
+// docs/thesis-open-problems.md §1.4:
+//
+//   joined inner producer + parent recv      → covered, fits
+//   join chain on a recv-first grandchild    → REFUTED before the send
+//   joined infinite grandchild               → REFUTED (no exit)
+//   go_bg consumer child + two sends (cap 1) → credit frees both
+//   joined consumer child + two sends        → credit + join after send
+//   joined loop producer (2 sends)           → M25 x M29
+//
+//   ./baga --verify examples/verify/nested_go.baga
+//   ./baga examples/verify/nested_go.baga     # runs only the live paths
+
+spec inner_prod {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn inner_prod(c: i64) -> i64 !Par {
+    chan_send(c, 1)
+    return 0
+}
+
+spec inner_cons {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn inner_cons(c: i64) -> i64 !Par {
+    let v = chan_recv(c)
+    return v
+}
+
+spec inner2 {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn inner2(c: i64) -> i64 !Par {
+    for i in 0..2 { chan_send(c, i + 1) }
+    return 0
+}
+
+spec inf_child {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn inf_child(c: i64) -> i64 !Par {
+    while true {
+        chan_recv(c)
+    }
+}
+
+spec outer_prod {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn outer_prod(c: i64) -> i64 !Par {
+    let h = go(inner_prod, c)
+    join(h)
+    return 0
+}
+
+spec outer_wait {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn outer_wait(c: i64) -> i64 !Par {
+    let h = go(inner_cons, c)
+    join(h)
+    return 0
+}
+
+spec outer_inf {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn outer_inf(c: i64) -> i64 !Par {
+    let h = go(inf_child, c)
+    join(h)
+    return 0
+}
+
+spec outer_bg {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn outer_bg(c: i64) -> i64 !Par {
+    go_bg(inner_cons, c)
+    return 0
+}
+
+// --- the joined grandchild produces; the parent recv is covered ---
+spec nested_prod {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn nested_prod(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(outer_prod, c)
+    let v = chan_recv(c)
+    join(h)
+    return v
+}
+
+// --- parent joins before sending; the wait chain reaches the grandchild ---
+spec nested_cycle {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn nested_cycle(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(outer_wait, c)
+    let r = join(h)
+    chan_send(c, n)
+    return r
+}
+
+// --- the grandchild never completes, so the child never completes ---
+spec nested_inf {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn nested_inf(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(outer_inf, c)
+    join(h)
+    return 0
+}
+
+// --- a detached consumer grandchild still credits the sends ---
+spec bg_credit {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn bg_credit(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(outer_bg, c)
+    chan_send(c, n)
+    chan_send(c, n)
+    join(h)
+    return 0
+}
+
+// --- a joined consumer grandchild credits the sends too ---
+spec joined_credit {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn joined_credit(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(outer_wait, c)
+    chan_send(c, n)
+    chan_send(c, n)
+    join(h)
+    return 0
+}
+
+spec outer2 {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn outer2(c: i64) -> i64 !Par {
+    let h = go(inner2, c)
+    join(h)
+    return 0
+}
+
+// --- counted loop inside, joined in the middle: M25 x M29 ---
+spec nested_loop {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn nested_loop(n: i64) -> i64 !Par {
+    let c = chan_new(2)
+    invariant c[*] >= 1
+    let h = go(outer2, c)
+    let a = chan_recv(c)
+    let b = chan_recv(c)
+    join(h)
+    return a
+}
+
+fn main() -> i64 !Par {
+    print(nested_prod(7))
+    print(bg_credit(7))
+    print(joined_credit(7))
+    print(nested_loop(7))
+    return 0
+}

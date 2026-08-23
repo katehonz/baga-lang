@@ -1396,9 +1396,10 @@ specification is judged by the compiler.
 This is not temporal liveness (no fairness); a blocking send on a full buffer
 is §14.3.7 (M24), counted loops in workers — §14.3.8 (M25), recv2/select —
 §14.3.9 (M26), if/else in workers — §14.3.10 (M27), joining an infinite
-worker — §14.3.11 (M28). `while` bodies (the counts), nested `go`, packed
-arguments, non-constant loop bounds, and blocking ops on untracked channels
-are an honest no-claim — never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
+worker — §14.3.11 (M28), nested go — §14.3.12 (M29). `while` bodies (the
+counts), nested `go` inside a branch/loop, packed arguments, non-constant
+loop bounds, and blocking ops on untracked channels are an honest no-claim —
+never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
 lemmas (fixed N) stay in `liveness_struct.baga`.
 
 ### 14.3.3 Even powers and the BV envelope (M20)
@@ -1598,6 +1599,30 @@ When the loop sits on a worker's straight-line path:
 
 Oracle: `examples/verify/worker_term.baga`; adversarial case
 `lp6_join_inf_bad` in `examples/verify/lp6_hunt.baga`.
+
+### 14.3.12 Nested go with a structured join (M29)
+
+A worker that spawns workers itself is classified recursively (depth
+≤ 4). The folding rules:
+
+- **`join(h)`** waits for the child — its guaranteed counts, the
+  `imprecise` flag, `noreturn`, and (if the parent has not blocked yet)
+  its first blocking op become the parent's. `noreturn` inherits
+  through any number of layers: a two-layer cycle is **REFUTED** ("join
+  before send"), two-layer non-termination is **REFUTED** ("join of a
+  worker with no exit"); both hang at runtime.
+- **`detach(h)` and never-joined children** fold credit-only
+  (`wf_child_cons`): their guaranteed consumption counts toward free
+  slots, but the parent's completion does not wait for them — no
+  send fold, noreturn, or first op. `go_bg` consumption is the full
+  guaranteed count (`n_recv + child_cons`).
+- **Honest no-claim**: a child inside an `if` branch or a loop body
+  (may run zero or k times), an untracked channel, packed arguments,
+  an unknown function, a double join, depth > 4.
+
+Oracle: `examples/verify/nested_go.baga`; adversarial cases
+`lp6_nested_cycle_bad`/`lp6_nested_inf_bad` in
+`examples/verify/lp6_hunt.baga`.
 
 ### 14.4 Preconditions (`requires:`)
 

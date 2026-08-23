@@ -190,6 +190,22 @@ of an infinite worker is fine (nothing joins it). Oracle:
 `lp6_join_inf_bad`. Remaining darkness: fairness/starvation, while-body
 counting (induction), nested go, select inside workers.
 
+**M29 (2026-08-24):** nested go enters the fragment with a structured
+join. go(child, tracked-channel) is classified recursively (depth ≤ 4);
+join(h) folds the child — guaranteed counts, the imprecise flag,
+noreturn (inherited through any number of layers), and, if the parent
+has not blocked yet, the child's first blocking op. detach and
+never-joined children fold credit-only (wf_child_cons): guaranteed
+consumption counts, completion does not wait for them. A child in an if
+branch or loop body may run zero or k times — complex. Two-layer cycles
+and two-layer non-termination are now REFUTED (both hang at runtime).
+Also fixes an M24 undercount (go_bg consumption is now the full
+guaranteed count) and an M27 gap (imprecise consumers mark unknown in
+the over-send arithmetic). Oracle: `examples/verify/nested_go.baga`;
+adversarial cases `lp6_nested_cycle_bad`/`lp6_nested_inf_bad`.
+Remaining darkness: fairness/starvation, while-body counting
+(induction), select inside workers.
+
 ---
 
 ## 2. Full bitvector theory

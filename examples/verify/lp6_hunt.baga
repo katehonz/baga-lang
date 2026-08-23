@@ -371,6 +371,60 @@ fn lp6_join_inf_bad(n: i64) -> i64 !Par {
     return 0
 }
 
+// ── M29: nested go keeps the wait-for chain intact ─────────────────────
+// Joining a worker whose joined grandchild waits on recv, before any
+// send, is a cycle through two layers and must be REFUTED — treating the
+// outer worker as completable on its own would be a false PROVEN.
+spec lp6_nested_cycle_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_nest_cons(c: i64) -> i64 !Par {
+    let v = chan_recv(c)
+    return v
+}
+fn lp6_nest_wait(c: i64) -> i64 !Par {
+    let h = go(lp6_nest_cons, c)
+    join(h)
+    return 0
+}
+fn lp6_nested_cycle_bad(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(lp6_nest_wait, c)
+    let r = join(h)
+    chan_send(c, n)
+    return r
+}
+
+// A joined grandchild that never completes means the child never
+// completes either; the outer join must inherit the REFUTED.
+spec lp6_nested_inf_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_nest_inf(c: i64) -> i64 !Par {
+    while true {
+        chan_recv(c)
+    }
+}
+fn lp6_nest_outer(c: i64) -> i64 !Par {
+    let h = go(lp6_nest_inf, c)
+    join(h)
+    return 0
+}
+fn lp6_nested_inf_bad(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(lp6_nest_outer, c)
+    join(h)
+    return 0
+}
+
 fn main() {
     print(lp6_div_neg_bad(7, -2))
     print(lp6_mod_neg_bad(7, -2))

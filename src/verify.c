@@ -1463,6 +1463,7 @@ typedef struct {
     int wf_complex;   /* HK_JOIN: scan inconclusive (if/loop/nested) */
     int wf_n_send;    /* HK_JOIN: worker sends on the channel arg (!wf_complex) */
     int wf_n_recv;    /* HK_JOIN: worker recvs on the channel arg (<=1 in fragment) */
+    int wf_child_cons; /* HK_JOIN: M29 guaranteed recvs of unjoined children */
     int wf_imprecise; /* HK_JOIN: counts are guaranteed minimums (M27 branches) */
     int wf_noreturn;  /* HK_JOIN: worker provably never completes (M28) */
     int n_send;       /* HK_CHAN: sends on this thread */
@@ -1500,6 +1501,7 @@ static void handles_set(HandleList *l, const char *var, int kind, int state, Lin
         e->worker = NULL; e->chan_arg = NULL;
         e->wf_recv = e->wf_send = e->wf_complex = 0;
         e->wf_n_send = e->wf_n_recv = 0;
+        e->wf_child_cons = 0;
         e->wf_imprecise = 0;
         e->wf_noreturn = 0;
         e->n_send = e->n_recv = e->n_bg_prod = e->n_bg_cons = e->wf_unknown = 0;
@@ -1525,6 +1527,7 @@ static void handles_clone_into(HandleList *dst, HandleList *src) {
         d->wf_recv = src->h[i].wf_recv; d->wf_send = src->h[i].wf_send;
         d->wf_complex = src->h[i].wf_complex;
         d->wf_n_send = src->h[i].wf_n_send; d->wf_n_recv = src->h[i].wf_n_recv;
+        d->wf_child_cons = src->h[i].wf_child_cons;
         d->wf_imprecise = src->h[i].wf_imprecise;
         d->wf_noreturn = src->h[i].wf_noreturn;
         d->worker = src->h[i].worker ? strdup(src->h[i].worker) : NULL;
@@ -2992,13 +2995,60 @@ static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
  * diverges — no return required after it). Joining it waits forever:
  * kind-3 REFUTED "join на worker без изход". Inside a branch the loop may
  * never run — no claim; go_bg of such a worker is fine (nothing joins
- * it). */
+ * it).
+ *
+ * M29: nested go with a structured join. go(child, tracked-channel) inside
+ * a worker is classified recursively (depth <= 4). join(h) folds the
+ * child: guaranteed counts, imprecise flag, noreturn (the parent blocks
+ * forever on a child that never completes), and — if the parent has not
+ * blocked yet — the child's first blocking op. detach(h) and never-joined
+ * children fold credit-only (child_cons): their guaranteed consumption
+ * counts, but the parent's completion does not wait for them, so no send
+ * fold, noreturn, or first-op. A child in an if branch or a loop body may
+ * run zero or k times — complex; untracked channels, packed args, unknown
+ * fns, and double joins stay complex. go_bg consumption is now the full
+ * guaranteed count (n_recv + child_cons), fixing the old 1-per-worker
+ * undercount. */
 
-typedef struct {
+typedef struct WfScan {
     int recv_first, send_first, n_recv, n_send, complex, saw_op;
     int imprecise;   /* M27: counts are guaranteed minimums (branchy body) */
     int noreturn;    /* M28: a while-true without exit on the straight path */
+    int child_cons;  /* M29: guaranteed recvs of unjoined/detached children */
+    int depth;       /* M29: nested-go recursion depth (bounded) */
+    struct WfChild *kids; int nkids, kidcap;   /* M29: spawned children */
 } WfScan;
+
+/* M29: a child worker spawned inside a scanned body. hvar is the handle
+ * variable it was bound to (empty for a bare go); folded marks that its
+ * counts were merged into the parent (at a join, or by the leftover pass). */
+typedef struct WfChild {
+    char hvar[64];
+    WfScan sc;
+    int folded;
+    int detached;
+} WfChild;
+
+static void wf_scan_free(WfScan *s) {
+    for (int i = 0; i < s->nkids; i++) wf_scan_free(&s->kids[i].sc);
+    free(s->kids);
+    s->kids = NULL; s->nkids = s->kidcap = 0;
+}
+
+/* M29: children never joined (or detached) still run — their guaranteed
+ * consumption is credit, but the parent's completion does not wait for
+ * them: no send fold, no noreturn, no first-op inheritance. An unjoined
+ * complex child makes the channel behaviour unknown. */
+static void wf_fold_leftover(WfScan *s) {
+    for (int i = 0; i < s->nkids; i++) {
+        WfChild *k = &s->kids[i];
+        if (k->folded) continue;
+        k->folded = 1;
+        if (k->sc.complex) { s->complex = 1; continue; }
+        s->child_cons += k->sc.n_recv;
+        if (k->sc.imprecise) s->imprecise = 1;
+    }
+}
 
 static int wf_name_is(const char **names, int nn, const char *s) {
     for (int i = 0; i < nn; i++) if (strcmp(names[i], s) == 0) return 1;
@@ -3036,9 +3086,53 @@ static void wf_scan_call(Node *call, const char **names, int nn, WfScan *s) {
     if (!call || call->kind != NODE_CALL) return;
     if (!is_par_builtin_call(call)) { s->complex = 1; return; }  /* hidden send/recv */
     const char *nm = call->callee->name;
-    if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0 ||
-        strcmp(nm, "join") == 0 || strcmp(nm, "detach") == 0) {
-        s->complex = 1;
+    if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0) {
+        /* M29: classify the child worker on the tracked channel (bounded
+         * recursion). Untracked channel, packed args, unknown fn, or depth
+         * exhausted — honest complex. */
+        if (call->args.len < 2 || call->args.data[0]->kind != NODE_IDENT ||
+            call->args.data[1]->kind != NODE_IDENT ||
+            !wf_name_is(names, nn, call->args.data[1]->name) ||
+            s->depth >= 4) { s->complex = 1; return; }
+        Node *cfn = find_fn(g_prog, call->args.data[0]->name);
+        if (!cfn || !cfn->fn_body || cfn->params.len < 1) { s->complex = 1; return; }
+        WfScan cs; memset(&cs, 0, sizeof cs);
+        cs.depth = s->depth + 1;
+        const char *cnms[16]; int cnn = 0;
+        cnms[cnn++] = cfn->params.data[0]->param_name;
+        wf_scan_node(cfn->fn_body, cnms, &cnn, 16, &cs);
+        wf_fold_leftover(&cs);
+        if (s->nkids == s->kidcap) {
+            s->kidcap = s->kidcap ? s->kidcap * 2 : 4;
+            s->kids = realloc(s->kids, (size_t)s->kidcap * sizeof(WfChild));
+        }
+        WfChild *k = &s->kids[s->nkids++];
+        k->hvar[0] = 0; k->folded = 0; k->detached = 0;
+        k->sc = cs;   /* moved: the parent owns cs.kids */
+        return;
+    }
+    if (strcmp(nm, "join") == 0 || strcmp(nm, "detach") == 0) {
+        /* M29: fold a classified child. join waits for the child, so its
+         * guaranteed counts, termination, and first blocking op become the
+         * parent's; detach only marks it leftover (credit-only fold). */
+        if (call->args.len < 1 || call->args.data[0]->kind != NODE_IDENT) { s->complex = 1; return; }
+        WfChild *k = NULL;
+        for (int i = 0; i < s->nkids; i++)
+            if (s->kids[i].hvar[0] && strcmp(s->kids[i].hvar, call->args.data[0]->name) == 0) { k = &s->kids[i]; break; }
+        if (!k || k->folded) { s->complex = 1; return; }
+        if (nm[0] == 'd') { k->detached = 1; return; }
+        k->folded = 1;
+        WfScan *c = &k->sc;
+        if (c->noreturn) { s->noreturn = 1; s->complex = 1; return; }
+        if (c->complex) { s->complex = 1; return; }
+        s->n_send += c->n_send;
+        s->n_recv += c->n_recv;
+        if (c->imprecise) s->imprecise = 1;
+        if (!s->saw_op && c->saw_op) {
+            s->saw_op = 1;
+            s->recv_first = c->recv_first;
+            s->send_first = c->send_first;
+        }
         return;
     }
     int on_p = call->args.len >= 1 && call->args.data[0]->kind == NODE_IDENT &&
@@ -3071,14 +3165,18 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
     case NODE_BLOCK:
         for (int i = 0; i < n->stmts.len; i++) wf_scan_node(n->stmts.data[i], names, nn, nmax, s);
         return;
-    case NODE_LET:
+    case NODE_LET: {
+        int before = s->nkids;   /* M29: name a child by its handle var */
         wf_scan_node(n->let_init, names, nn, nmax, s);
+        if (s->nkids > before)
+            snprintf(s->kids[s->nkids - 1].hvar, sizeof s->kids[0].hvar, "%s", n->let_name);
         if (n->let_init && n->let_init->kind == NODE_IDENT &&
             wf_name_is(names, *nn, n->let_init->name)) {
             if (*nn < nmax) names[(*nn)++] = n->let_name;
             else s->complex = 1;
         }
         return;
+    }
     case NODE_EXPR_STMT: wf_scan_node(n->expr, names, nn, nmax, s); return;
     case NODE_RETURN:    wf_scan_node(n->ret_val, names, nn, nmax, s); return;
     case NODE_ASSIGN:    wf_scan_node(n->assign_val, names, nn, nmax, s); return;
@@ -3103,6 +3201,11 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
         *nn = saved_nn;
         wf_scan_node(n->else_br, names, nn, nmax, &bb);   /* NULL = empty else */
         *nn = saved_nn;
+        if (ba.nkids || bb.nkids) {   /* M29: a child in a branch may not run */
+            wf_scan_free(&ba); wf_scan_free(&bb);
+            s->complex = 1;
+            return;
+        }
         if (ba.complex || bb.complex) { s->complex = 1; return; }
         s->n_send += ba.n_send < bb.n_send ? ba.n_send : bb.n_send;
         s->n_recv += ba.n_recv < bb.n_recv ? ba.n_recv : bb.n_recv;
@@ -3151,6 +3254,11 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
         int saved_nn = *nn;
         wf_scan_node(n->for_body, names, nn, nmax, &bs);
         *nn = saved_nn;
+        if (bs.nkids) {   /* M29: a child spawned k times — no single fold */
+            wf_scan_free(&bs);
+            s->complex = 1;
+            return;
+        }
         if (bs.complex) { s->complex = 1; return; }
         if (k > 1000000 ||
             (long long)(bs.n_send + bs.n_recv) * k > 1000000000LL) { s->complex = 1; return; }
@@ -3224,6 +3332,7 @@ static void wf_check_send(State *st, Obligations *ob, HandleEntry *ch) {
         else {
             if (h->wf_imprecise) unknown = 1;   /* M27: it may consume more */
             if (h->wf_recv) credits += h->wf_n_recv;
+            credits += h->wf_child_cons;   /* M29: unjoined children consume too */
         }
     }
     if (ch->n_send - ch->n_recv - credits >= ch->wf_cap) {
@@ -3264,11 +3373,16 @@ static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
         int credits = ch->n_bg_cons, unknown = ch->wf_unknown, rivals = 0;
         for (int i = 0; i < st->handles.n; i++) {
             HandleEntry *h = &st->handles.h[i];
-            if (h == jh || h->kind != HK_JOIN || !h->chan_arg) continue;
+            if (h->kind != HK_JOIN || !h->chan_arg) continue;
             if (strcmp(h->chan_arg, ch->var) != 0) continue;
+            if (h == jh) { credits += h->wf_child_cons; continue; }   /* M29: its own
+                unjoined consumer frees slots for its sends */
             if (h->wf_complex) unknown = 1;
-            else if (h->wf_recv) credits += h->wf_n_recv;
-            else if (h->wf_send) rivals = 1;
+            else {
+                if (h->wf_imprecise) unknown = 1;   /* M27: it may consume more */
+                if (h->wf_recv) credits += h->wf_n_recv;
+                else if (h->wf_send) rivals = 1;
+            }
         }
         if (rivals) return;
         int room = ch->wf_cap + ch->n_recv + credits;
@@ -3309,6 +3423,7 @@ static int wf_chan_eventual(State *st, HandleEntry *ch, int *unknown) {
         else {
             if (h->wf_imprecise) unk = 1;   /* M27: it may consume more */
             if (h->wf_recv) credits += h->wf_n_recv;
+            credits += h->wf_child_cons;   /* M29: unjoined children consume too */
         }
     }
     if (unk) *unknown = 1;
@@ -3451,15 +3566,19 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             const char *nms[16]; int nn = 0;
             nms[nn++] = wfn->params.data[0]->param_name;
             wf_scan_node(wfn->fn_body, nms, &nn, 16, &sc);
+            wf_fold_leftover(&sc);   /* M29: unjoined/detached children */
         } else if (wfn) {
             sc.complex = 1;
         }
         if (strcmp(nm, "go_bg") == 0) {   /* detached at birth: no handle */
             if (ch) {
                 if (sc.complex || sc.imprecise) ch->wf_unknown = 1;
-                else if (sc.send_first) ch->n_bg_prod += sc.n_send;   /* M25: summed sends */
-                else if (sc.recv_first) ch->n_bg_cons++;   /* M24 credit */
+                else {
+                    if (sc.send_first) ch->n_bg_prod += sc.n_send;   /* M25: summed sends */
+                    ch->n_bg_cons += sc.n_recv + sc.child_cons;   /* M29: all guaranteed consumption */
+                }
             }
+            wf_scan_free(&sc);
             lin_free(&res.lin);
             return sym_lin(lin_const(rat_int(0)));
         }
@@ -3476,11 +3595,13 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
                 jh->wf_complex = sc.complex;
                 jh->wf_n_send = sc.complex ? 0 : sc.n_send;
                 jh->wf_n_recv = sc.complex ? 0 : sc.n_recv;
+                jh->wf_child_cons = sc.complex ? 0 : sc.child_cons;
                 jh->wf_imprecise = sc.complex ? 0 : sc.imprecise;
                 jh->wf_noreturn = sc.noreturn;
             }
             if (ch && sc.complex) ch->wf_unknown = 1;
         }
+        wf_scan_free(&sc);
         return sym_lin(lin_var(hv));
     }
 
