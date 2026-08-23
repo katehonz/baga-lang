@@ -147,6 +147,13 @@ static Lin lin_clone(Lin *a) {
     for (int i = 0; i < a->n; i++) lin_push_raw(&r, a->terms[i].var, a->terms[i].coeff);
     return r;
 }
+/* A handle ghost is a unit-coefficient single-term form with zero constant
+ * (e.g. `__h0`, `__ch1`). Anything else is not a tracked handle. */
+static const char *lin_handle_var(Lin *l) {
+    if (!l || l->n != 1 || l->c.num != 0) return NULL;
+    if (l->terms[0].coeff.num != l->terms[0].coeff.den) return NULL;
+    return l->terms[0].var;
+}
 
 /* ============================ symbolic env ============================ */
 
@@ -208,22 +215,31 @@ static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
  * M9: integer division by a non-zero constant (is_div): dividend in fa,
  * divisor constant in fb; inject sign of quotient; witness derives trunc div.
  * M9b: n % k for nonzero const k (is_mod): bounds 0..|k|-1 when n has a sign.
- * M13: n & 1 (is_bitand1): residue in {0,1} over two's complement — NOT C % 2
- * for negative n (where % truncates toward zero).
+ * M13: n & 1 (is_bitand1): residue in {0, mask} over two's complement — NOT C % 2
+ * for negative n (where % truncates toward zero). M20 generalizes mask from 1
+ * to any 2^k-1 (fb holds the mask).
+ * M20: is_bitand / is_bitor — variable bitwise envelope (nonneg bounds).
+ * M20: mon_deg — pure power degree of a recorded product (n^4 = deg 4).
+ * M21: consecutive factors (diff ±1) inject p>=0; n^-1 rewrites to -n-1.
  * M17: cell2/pair-returning calls (is_pair): fa/fb are the two components;
  * cell2_0/cell2_1 resolve through the pair table (exact rewrite, no theory). */
 typedef struct {
     Node *call; char *var; Lin fa, fb;
     int is_prod; int is_div; int is_mod; int is_bitand1; int is_pair;
+    int is_bitand; int is_bitor; int mon_deg; Lin mon_base;
 } ReadEntry;
 typedef struct { ReadEntry *r; int n, cap; } ReadsList;
-typedef struct { char *var; Lin fa, fb; int is_div; int is_mod; int is_bitand1; } ProdEntry;
+typedef struct {
+    char *var; Lin fa, fb; int is_div; int is_mod; int is_bitand1;
+    int is_bitand; int is_bitor;
+} ProdEntry;
 typedef struct { ProdEntry *p; int n, cap; } ProdList;
 static const char *reads_find(ReadsList *l, Node *call);
 static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb);
-static void reads_push_bitand1(ReadsList *l, const char *var, Lin fa);
+static void reads_push_bitmask(ReadsList *l, const char *var, Lin fa, int64_t mask);
+static void reads_push_bitop(ReadsList *l, const char *var, Lin fa, Lin fb, int is_or);
 static void reads_push_pair(ReadsList *l, const char *var, Lin fa, Lin fb);   /* M17 */
 static ReadEntry *reads_find_pair(ReadsList *l, const char *var);             /* M17 */
 static void prods_clone_into(ProdList *dst, ReadsList *src);
@@ -336,14 +352,33 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
             }
             return sym_nonlin();
         }
-        /* M13: bitwise / shifts with sound special cases (no full BV theory) */
+        /* M13/M20: bitwise / shifts — identity envelope, no full BV theory.
+         * M20 adds idempotence, n|-1=-1, const-fold, 2^k-1 masks, and a
+         * nonnegative variable and/or bound envelope. */
         if (e->bin_op == OP_BIT_OR || e->bin_op == OP_BIT_AND || e->bin_op == OP_BIT_XOR) {
             if (l.nonlinear || r.nonlinear) return sym_nonlin();
-            /* n | 0 = n; n & 0 = 0; n ^ 0 = n; n ^ n = 0; n & -1 = n */
+            /* both const: exact (two's complement matches C on i64) */
+            if (lin_is_const(&l.lin) && lin_is_const(&r.lin) &&
+                l.lin.c.den == 1 && r.lin.c.den == 1) {
+                int64_t a = l.lin.c.num, b = r.lin.c.num, c = 0;
+                if (e->bin_op == OP_BIT_AND) c = a & b;
+                else if (e->bin_op == OP_BIT_OR) c = a | b;
+                else c = a ^ b;
+                lin_free(&l.lin); lin_free(&r.lin);
+                return sym_lin(lin_const(rat_int(c)));
+            }
+            /* n | 0 = n; n & 0 = 0; n ^ 0 = n; n ^ n = 0; n & -1 = n
+             * M20: n | n = n; n & n = n; n | -1 = -1 */
             if (e->bin_op == OP_BIT_OR && lin_is_const(&r.lin) && r.lin.c.num == 0 && r.lin.c.den == 1)
                 { lin_free(&r.lin); return sym_lin(l.lin); }
             if (e->bin_op == OP_BIT_OR && lin_is_const(&l.lin) && l.lin.c.num == 0 && l.lin.c.den == 1)
                 { lin_free(&l.lin); return sym_lin(r.lin); }
+            if (e->bin_op == OP_BIT_OR && lin_is_const(&r.lin) && r.lin.c.num == -1 && r.lin.c.den == 1)
+                { lin_free(&l.lin); lin_free(&r.lin); return sym_lin(lin_const(rat_int(-1))); }
+            if (e->bin_op == OP_BIT_OR && lin_is_const(&l.lin) && l.lin.c.num == -1 && l.lin.c.den == 1)
+                { lin_free(&l.lin); lin_free(&r.lin); return sym_lin(lin_const(rat_int(-1))); }
+            if (e->bin_op == OP_BIT_OR && lin_eq(&l.lin, &r.lin))
+                { lin_free(&r.lin); return sym_lin(l.lin); }
             if (e->bin_op == OP_BIT_AND && lin_is_const(&r.lin) && r.lin.c.num == 0 && r.lin.c.den == 1)
                 { lin_free(&l.lin); lin_free(&r.lin); return sym_lin(lin_const(rat_int(0))); }
             if (e->bin_op == OP_BIT_AND && lin_is_const(&l.lin) && l.lin.c.num == 0 && l.lin.c.den == 1)
@@ -352,21 +387,53 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
                 { lin_free(&r.lin); return sym_lin(l.lin); }
             if (e->bin_op == OP_BIT_AND && lin_is_const(&l.lin) && l.lin.c.num == -1 && l.lin.c.den == 1)
                 { lin_free(&l.lin); return sym_lin(r.lin); }
+            if (e->bin_op == OP_BIT_AND && lin_eq(&l.lin, &r.lin))
+                { lin_free(&r.lin); return sym_lin(l.lin); }
             if (e->bin_op == OP_BIT_XOR && lin_is_const(&r.lin) && r.lin.c.num == 0 && r.lin.c.den == 1)
                 { lin_free(&r.lin); return sym_lin(l.lin); }
             if (e->bin_op == OP_BIT_XOR && lin_is_const(&l.lin) && l.lin.c.num == 0 && l.lin.c.den == 1)
                 { lin_free(&l.lin); return sym_lin(r.lin); }
             if (e->bin_op == OP_BIT_XOR && lin_eq(&l.lin, &r.lin))
                 { lin_free(&l.lin); lin_free(&r.lin); return sym_lin(lin_const(rat_int(0))); }
-            /* n & 1 → bit residue in {0,1} (two's complement). Not C % 2. */
-            if (e->bin_op == OP_BIT_AND && reads &&
-                ((lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num == 1) ||
-                 (lin_is_const(&l.lin) && l.lin.c.den == 1 && l.lin.c.num == 1))) {
-                Lin nlin = (lin_is_const(&r.lin) && r.lin.c.num == 1) ? l.lin : r.lin;
+            /* M21: n ^ -1 = ~n = -n-1 on i64 two's complement (exact, even at
+             * INT64_MIN: ~MIN = MAX). Linear after rewrite — no BV theory. */
+            if (e->bin_op == OP_BIT_XOR && lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num == -1) {
+                Lin t = lin_neg(&l.lin);
+                lin_free(&l.lin); lin_free(&r.lin);
+                if (t.overflow) return sym_nonlin();
+                t.c = rat_sub(t.c, rat_int(1));
+                if (t.c.overflow) { lin_free(&t); return sym_nonlin(); }
+                return sym_lin(t);
+            }
+            if (e->bin_op == OP_BIT_XOR && lin_is_const(&l.lin) && l.lin.c.den == 1 && l.lin.c.num == -1) {
+                Lin t = lin_neg(&r.lin);
+                lin_free(&l.lin); lin_free(&r.lin);
+                if (t.overflow) return sym_nonlin();
+                t.c = rat_sub(t.c, rat_int(1));
+                if (t.c.overflow) { lin_free(&t); return sym_nonlin(); }
+                return sym_lin(t);
+            }
+            /* n & (2^k-1) → residue in {0 .. 2^k-1} (two's complement). */
+            if (e->bin_op == OP_BIT_AND && reads) {
+                int64_t mask = 0; int have = 0; Lin nlin;
+                if (lin_is_const(&r.lin) && r.lin.c.den == 1 &&
+                    r.lin.c.num > 0 && (((uint64_t)r.lin.c.num + 1) & (uint64_t)r.lin.c.num) == 0) {
+                    mask = r.lin.c.num; nlin = l.lin; have = 1; lin_free(&r.lin);
+                } else if (lin_is_const(&l.lin) && l.lin.c.den == 1 &&
+                    l.lin.c.num > 0 && (((uint64_t)l.lin.c.num + 1) & (uint64_t)l.lin.c.num) == 0) {
+                    mask = l.lin.c.num; nlin = r.lin; have = 1; lin_free(&l.lin);
+                }
+                if (have) {
+                    char mv[64]; snprintf(mv, sizeof mv, "__b%d", g_prod_ctr++);
+                    reads_push_bitmask(reads, mv, nlin, mask);
+                    return sym_lin(lin_var(mv));
+                }
+            }
+            /* M20: variable and/or — record and bound later if both >= 0 */
+            if (reads && (e->bin_op == OP_BIT_AND || e->bin_op == OP_BIT_OR) &&
+                !l.lin.overflow && !r.lin.overflow) {
                 char mv[64]; snprintf(mv, sizeof mv, "__b%d", g_prod_ctr++);
-                if (lin_is_const(&r.lin) && r.lin.c.num == 1) lin_free(&r.lin);
-                else lin_free(&l.lin);
-                reads_push_bitand1(reads, mv, nlin);
+                reads_push_bitop(reads, mv, l.lin, r.lin, e->bin_op == OP_BIT_OR);
                 return sym_lin(lin_var(mv));
             }
             lin_free(&l.lin); lin_free(&r.lin);
@@ -759,6 +826,21 @@ static void collect_vars_cl(ConsList *cl, char ***vars, int *nv, int *cap) {
     }
 }
 
+/* Concrete value of a recorded product/div/mod/bit entry (M8–M20). */
+static int prod_concrete(ProdEntry *p, int64_t a, int64_t b, int64_t *out) {
+    if (p->is_bitand1) {
+        int64_t m = (lin_is_const(&p->fb) && p->fb.c.den == 1) ? p->fb.c.num : 1;
+        *out = a & m;
+        return 1;
+    }
+    if (p->is_bitand) { *out = a & b; return 1; }
+    if (p->is_bitor) { *out = a | b; return 1; }
+    if (p->is_div) { if (b == 0) return 0; *out = a / b; return 1; }
+    if (p->is_mod) { if (b == 0) return 0; *out = a % b; return 1; }
+    if (__builtin_mul_overflow(a, b, out)) return 0;
+    return 1;
+}
+
 /* M8/M9/M13: pin every non-abstract var (__c/__p/__d/__m/__b and M15's
  * __hv/__hvl havoc vars excluded) to its candidate value in sys; then derive
  * every product/div/mod/bit var whose factors are fully pinned and pin it
@@ -801,19 +883,9 @@ static void push_pins_and_derived(ConsList *sys, char **vars, IBind *assign, int
                 if (ok && (rv.overflow || rv.den != 1)) ok = 0;
                 if (ok) fv[q] = rv.num;
             }
-            int64_t pvv;
             if (!ok) continue;
-            if (prods->p[pi].is_bitand1) {
-                pvv = fv[0] & 1;   /* two's-complement LSB */
-            } else if (prods->p[pi].is_div) {
-                if (fv[1] == 0) continue;
-                pvv = fv[0] / fv[1];   /* C trunc toward zero */
-            } else if (prods->p[pi].is_mod) {
-                if (fv[1] == 0) continue;
-                pvv = fv[0] % fv[1];
-            } else {
-                if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) continue;
-            }
+            int64_t pvv;
+            if (!prod_concrete(&prods->p[pi], fv[0], fv[1], &pvv)) continue;
             pins[np].name = prods->p[pi].var; pins[np].val = pvv; np++;
             Lin l = lin_var(prods->p[pi].var);
             l.c = rat_sub(l.c, rat_int(pvv));
@@ -1174,55 +1246,91 @@ static int lin_equal(Lin *a, Lin *b) {
  * can carry instantiated element-axiom constraints. Keyed by the call node. */
 static void reads_init(ReadsList *l) { l->r = NULL; l->n = 0; l->cap = 0; }
 static void reads_free(ReadsList *l) {
-    for (int i = 0; i < l->n; i++) { free(l->r[i].var); lin_free(&l->r[i].fa); lin_free(&l->r[i].fb); }
+    for (int i = 0; i < l->n; i++) {
+        free(l->r[i].var); lin_free(&l->r[i].fa); lin_free(&l->r[i].fb); lin_free(&l->r[i].mon_base);
+    }
     free(l->r); l->r = NULL; l->n = l->cap = 0;
 }
-static void reads_push(ReadsList *l, Node *call, const char *var) {
+static ReadEntry *reads_slot(ReadsList *l, const char *var) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
-    l->r[l->n].call = call; l->r[l->n].var = strdup(var);
-    lin_init(&l->r[l->n].fa); lin_init(&l->r[l->n].fb);
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 0;
-    l->n++;
+    ReadEntry *e = &l->r[l->n++];
+    memset(e, 0, sizeof(*e));
+    e->var = strdup(var);
+    lin_init(&e->fa); lin_init(&e->fb); lin_init(&e->mon_base);
+    return e;
+}
+static void reads_push(ReadsList *l, Node *call, const char *var) {
+    ReadEntry *e = reads_slot(l, var);
+    e->call = call;
+}
+static ReadEntry *reads_find_prod_lin(ReadsList *l, Lin *form, ReadEntry *self) {
+    const char *v = lin_handle_var(form);
+    if (!v) return NULL;
+    for (int i = 0; i < l->n; i++) {
+        if (&l->r[i] == self) continue;
+        if (l->r[i].is_prod && strcmp(l->r[i].var, v) == 0) return &l->r[i];
+    }
+    return NULL;
+}
+/* M20: classify a recorded product as a pure power n^k when the factors
+ * share one base (square, cube, quartic, …). Mixed products stay deg 0. */
+static void classify_monomial(ReadsList *l, ReadEntry *e) {
+    if (lin_eq(&e->fa, &e->fb)) {
+        e->mon_deg = 2;
+        e->mon_base = lin_clone(&e->fa);
+        return;
+    }
+    ReadEntry *pa = reads_find_prod_lin(l, &e->fa, e);
+    ReadEntry *pb = reads_find_prod_lin(l, &e->fb, e);
+    if (pa && pa->mon_deg >= 2 && lin_eq(&e->fb, &pa->mon_base)) {
+        e->mon_deg = pa->mon_deg + 1;
+        e->mon_base = lin_clone(&e->fb);
+    } else if (pb && pb->mon_deg >= 2 && lin_eq(&e->fa, &pb->mon_base)) {
+        e->mon_deg = pb->mon_deg + 1;
+        e->mon_base = lin_clone(&e->fa);
+    } else if (pa && pb && pa->mon_deg >= 2 && pb->mon_deg >= 2 &&
+               lin_eq(&pa->mon_base, &pb->mon_base)) {
+        e->mon_deg = pa->mon_deg + pb->mon_deg;
+        e->mon_base = lin_clone(&pa->mon_base);
+    }
 }
 /* M8b: register a product var with its factor linear forms (moves fa/fb). */
 static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb) {
-    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
-    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
-    l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 1; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 0;
-    l->n++;
+    ReadEntry *e = reads_slot(l, var);
+    lin_free(&e->fa); lin_free(&e->fb);
+    e->fa = fa; e->fb = fb; e->is_prod = 1;
+    classify_monomial(l, e);
 }
 /* M9: register integer division by a constant (moves fa; fb is the const divisor). */
 static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb) {
-    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
-    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
-    l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 1; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 0;
-    l->n++;
+    ReadEntry *e = reads_slot(l, var);
+    lin_free(&e->fa); lin_free(&e->fb);
+    e->fa = fa; e->fb = fb; e->is_div = 1;
 }
 /* M9b: register integer mod by a constant. */
 static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb) {
-    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
-    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
-    l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 1; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 0;
-    l->n++;
+    ReadEntry *e = reads_slot(l, var);
+    lin_free(&e->fa); lin_free(&e->fb);
+    e->fa = fa; e->fb = fb; e->is_mod = 1;
 }
-/* M13: n & 1 → fresh bit residue (moves fa). Always 0..1; not C % 2. */
-static void reads_push_bitand1(ReadsList *l, const char *var, Lin fa) {
-    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
-    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
-    l->r[l->n].fa = fa; lin_init(&l->r[l->n].fb); l->r[l->n].fb = lin_const(rat_int(2));
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 1; l->r[l->n].is_pair = 0;
-    l->n++;
+/* M13/M20: n & mask → residue in {0..mask} when mask = 2^k-1 (moves fa). */
+static void reads_push_bitmask(ReadsList *l, const char *var, Lin fa, int64_t mask) {
+    ReadEntry *e = reads_slot(l, var);
+    lin_free(&e->fa); lin_free(&e->fb);
+    e->fa = fa; e->fb = lin_const(rat_int(mask)); e->is_bitand1 = 1;
+}
+/* M20: variable n&m / n|m — bounds injected when both sides nonnegative. */
+static void reads_push_bitop(ReadsList *l, const char *var, Lin fa, Lin fb, int is_or) {
+    ReadEntry *e = reads_slot(l, var);
+    lin_free(&e->fa); lin_free(&e->fb);
+    e->fa = fa; e->fb = fb;
+    if (is_or) e->is_bitor = 1; else e->is_bitand = 1;
 }
 /* M17: register a pair var with its two components (moves fa/fb). */
 static void reads_push_pair(ReadsList *l, const char *var, Lin fa, Lin fb) {
-    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->r = realloc(l->r, (size_t)l->cap * sizeof(ReadEntry)); }
-    l->r[l->n].call = NULL; l->r[l->n].var = strdup(var);
-    l->r[l->n].fa = fa; l->r[l->n].fb = fb;
-    l->r[l->n].is_prod = 0; l->r[l->n].is_div = 0; l->r[l->n].is_mod = 0; l->r[l->n].is_bitand1 = 0; l->r[l->n].is_pair = 1;
-    l->n++;
+    ReadEntry *e = reads_slot(l, var);
+    lin_free(&e->fa); lin_free(&e->fb);
+    e->fa = fa; e->fb = fb; e->is_pair = 1;
 }
 /* M17: find the pair entry anchored on a bare symbolic var, or NULL. */
 static ReadEntry *reads_find_pair(ReadsList *l, const char *var) {
@@ -1245,8 +1353,12 @@ static void reads_clone_into(ReadsList *dst, ReadsList *src) {
             reads_push_div(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else if (src->r[i].is_mod)
             reads_push_mod(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
-        else if (src->r[i].is_bitand1)
-            reads_push_bitand1(dst, src->r[i].var, lin_clone(&src->r[i].fa));
+        else if (src->r[i].is_bitand1) {
+            int64_t mask = (lin_is_const(&src->r[i].fb) && src->r[i].fb.c.den == 1)
+                           ? src->r[i].fb.c.num : 1;
+            reads_push_bitmask(dst, src->r[i].var, lin_clone(&src->r[i].fa), mask);
+        } else if (src->r[i].is_bitand || src->r[i].is_bitor)
+            reads_push_bitop(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb), src->r[i].is_bitor);
         else if (src->r[i].is_pair)
             reads_push_pair(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else
@@ -1258,7 +1370,8 @@ static void reads_clone_into(ReadsList *dst, ReadsList *src) {
 static void prods_clone_into(ProdList *dst, ReadsList *src) {
     dst->p = NULL; dst->n = 0; dst->cap = 0;
     for (int i = 0; i < src->n; i++) {
-        if (!src->r[i].is_prod && !src->r[i].is_div && !src->r[i].is_mod && !src->r[i].is_bitand1) continue;
+        if (!src->r[i].is_prod && !src->r[i].is_div && !src->r[i].is_mod &&
+            !src->r[i].is_bitand1 && !src->r[i].is_bitand && !src->r[i].is_bitor) continue;
         if (dst->n == dst->cap) { dst->cap = dst->cap ? dst->cap * 2 : 4; dst->p = realloc(dst->p, (size_t)dst->cap * sizeof(ProdEntry)); }
         dst->p[dst->n].var = strdup(src->r[i].var);
         dst->p[dst->n].fa = lin_clone(&src->r[i].fa);
@@ -1266,6 +1379,8 @@ static void prods_clone_into(ProdList *dst, ReadsList *src) {
         dst->p[dst->n].is_div = src->r[i].is_div;
         dst->p[dst->n].is_mod = src->r[i].is_mod;
         dst->p[dst->n].is_bitand1 = src->r[i].is_bitand1;
+        dst->p[dst->n].is_bitand = src->r[i].is_bitand;
+        dst->p[dst->n].is_bitor = src->r[i].is_bitor;
         dst->n++;
     }
 }
@@ -1283,12 +1398,29 @@ static void prods_free(ProdList *l) {
 #define HK_DROP 3   /* MEM-2: alloc→drop; states: 0=live, 1=dropped.
                        * Keyed by the SOURCE variable name (Vec/Map/bytes are
                        * opaque, not symbolic Lin values), unlike M14 handles. */
-typedef struct { char *var; int kind; int state; Lin result; } HandleEntry;
+typedef struct {
+    char *var; int kind; int state; Lin result;
+    /* M19 wait-for: join handle records the worker's first blocking op on
+     * the channel argument (if any). Channel handles count this thread's
+     * send/recv and anonymous (go_bg) producers. */
+    char *worker;     /* HK_JOIN: worker fn name (owned) */
+    char *chan_arg;   /* HK_JOIN: channel ghost var, or NULL */
+    int wf_recv;      /* HK_JOIN: worker recvs param before send/return */
+    int wf_send;      /* HK_JOIN: worker sends param before recv */
+    int wf_complex;   /* HK_JOIN: scan inconclusive (if/loop/nested) */
+    int n_send;       /* HK_CHAN: sends on this thread */
+    int n_recv;       /* HK_CHAN: recvs on this thread */
+    int n_bg_prod;    /* HK_CHAN: go_bg workers that send-first */
+    int wf_unknown;   /* HK_CHAN: a spawned worker was too complex to classify */
+} HandleEntry;
 typedef struct { HandleEntry *h; int n, cap; } HandleList;
 
 static void handles_init(HandleList *l) { l->h = NULL; l->n = 0; l->cap = 0; }
 static void handles_free(HandleList *l) {
-    for (int i = 0; i < l->n; i++) { free(l->h[i].var); lin_free(&l->h[i].result); }
+    for (int i = 0; i < l->n; i++) {
+        free(l->h[i].var); lin_free(&l->h[i].result);
+        free(l->h[i].worker); free(l->h[i].chan_arg);
+    }
     free(l->h);
     handles_init(l);
 }
@@ -1305,6 +1437,9 @@ static void handles_set(HandleList *l, const char *var, int kind, int state, Lin
         e->var = strdup(var);
         Lin empty; lin_init(&empty);
         e->result = empty;
+        e->worker = NULL; e->chan_arg = NULL;
+        e->wf_recv = e->wf_send = e->wf_complex = 0;
+        e->n_send = e->n_recv = e->n_bg_prod = e->wf_unknown = 0;
     } else {
         lin_free(&e->result);
     }
@@ -1317,6 +1452,13 @@ static void handles_clone_into(HandleList *dst, HandleList *src) {
     for (int i = 0; i < src->n; i++) {
         Lin r = lin_clone(&src->h[i].result);
         handles_set(dst, src->h[i].var, src->h[i].kind, src->h[i].state, &r);
+        HandleEntry *d = handles_find(dst, src->h[i].var);
+        d->n_send = src->h[i].n_send; d->n_recv = src->h[i].n_recv;
+        d->n_bg_prod = src->h[i].n_bg_prod; d->wf_unknown = src->h[i].wf_unknown;
+        d->wf_recv = src->h[i].wf_recv; d->wf_send = src->h[i].wf_send;
+        d->wf_complex = src->h[i].wf_complex;
+        d->worker = src->h[i].worker ? strdup(src->h[i].worker) : NULL;
+        d->chan_arg = src->h[i].chan_arg ? strdup(src->h[i].chan_arg) : NULL;
     }
 }
 
@@ -2177,10 +2319,28 @@ static void path_push_eq_zero(ConsList *path, Lin *expr) {
 static void inject_prod_axioms(State *st) {
     for (int i = 0; i < st->reads.n; i++) {
         ReadEntry *e = &st->reads.r[i];
-        /* M13: n & 1 ∈ {0,1} over two's complement for every n (not C % 2). */
+        /* M13/M20: n & (2^k-1) ∈ {0 .. mask} over two's complement. */
         if (e->is_bitand1) {
+            int64_t hi = (lin_is_const(&e->fb) && e->fb.c.den == 1 && e->fb.c.num > 0)
+                         ? e->fb.c.num : 1;
             path_push_ge(&st->path, e->var, 0);
-            path_push_le(&st->path, e->var, 1);
+            path_push_le(&st->path, e->var, hi);
+            continue;
+        }
+        /* M20: variable n&m / n|m on nonnegative operands. */
+        if (e->is_bitand || e->is_bitor) {
+            int fa0 = path_proves_ge(st, &e->fa, 0);
+            int fb0 = path_proves_ge(st, &e->fb, 0);
+            if (fa0 && fb0) {
+                path_push_ge(&st->path, e->var, 0);
+                if (e->is_bitand) {
+                    path_push_le_lin(&st->path, e->var, &e->fa);
+                    path_push_le_lin(&st->path, e->var, &e->fb);
+                } else {
+                    path_push_ge_lin(&st->path, e->var, &e->fa);
+                    path_push_ge_lin(&st->path, e->var, &e->fb);
+                }
+            }
             continue;
         }
         if (e->is_div) {
@@ -2342,6 +2502,21 @@ static void inject_prod_axioms(State *st) {
             }
             continue;
         }
+        /* M21: consecutive integers n(n±1) ≥ 0 over ℤ (the product of two
+         * linear forms that differ by 1). Also p ≥ the lesser factor:
+         * n(n+1) ≥ n. n(n+2) is NOT always ≥ 0 — left UNKNOWN. */
+        {
+            Lin d = lin_sub(&e->fa, &e->fb);
+            if (!d.overflow && lin_is_const(&d) && d.c.den == 1 && !d.c.overflow &&
+                (d.c.num == 1 || d.c.num == -1)) {
+                path_push_ge(&st->path, e->var, 0);
+                if (d.c.num == -1)
+                    path_push_ge_lin(&st->path, e->var, &e->fa);  /* fb = fa+1 */
+                else
+                    path_push_ge_lin(&st->path, e->var, &e->fb);  /* fa = fb+1 */
+            }
+            lin_free(&d);
+        }
         int fa_ge1 = path_proves_ge(st, &e->fa, 1);
         int fb_ge1 = path_proves_ge(st, &e->fb, 1);
         int fa_le_m1 = path_proves_le(st, &e->fa, -1);
@@ -2365,6 +2540,22 @@ static void inject_prod_axioms(State *st) {
          * fa>=1, fb>=0 ⇒ p >= fb */
         if (fa_ge0 && fb_ge1) path_push_ge_lin(&st->path, e->var, &e->fa);
         if (fa_ge1 && fb_ge0) path_push_ge_lin(&st->path, e->var, &e->fb);
+
+        /* M20: even power of a single base (n^{2k} = (n^k)^2 ≥ 0 over ℤ).
+         * Left-associated n*n*n*n is deg 4, not a recorded square of n*n. */
+        if (e->mon_deg >= 2 && (e->mon_deg % 2 == 0)) {
+            path_push_ge(&st->path, e->var, 0);
+            int half = e->mon_deg / 2;
+            for (int j = 0; j < st->reads.n; j++) {
+                ReadEntry *s = &st->reads.r[j];
+                if (s == e || !s->is_prod || s->mon_deg != half) continue;
+                if (s->mon_deg < 2 || !lin_eq(&s->mon_base, &e->mon_base)) continue;
+                Lin root = lin_var(s->var);
+                path_push_ge_lin(&st->path, e->var, &root);
+                { Lin neg = lin_neg(&root); path_push_ge_lin(&st->path, e->var, &neg); lin_free(&neg); }
+                lin_free(&root);
+            }
+        }
     }
 
     /* M10/M12: n = k*q + r (const k) or n = q*m + r (variable m via product). */
@@ -2597,6 +2788,141 @@ static void push_protocol_violation(State *st, Obligations *ob, const char *labe
     obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &st->vlen, &st->reads, 0, 3, label);
 }
 
+/* M19: tautological kind-3 obligation (0 <= 0). Discharges as PROVEN on a
+ * live path — used for structured wait-for acyclicity, never for a guess. */
+static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
+    ConsList opath; cl_init(&opath);
+    for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    ConsList pos; cl_init(&pos);
+    cl_push(&pos, mk_cons(lin_const(rat_int(0)), C_LE, rat_zero()));
+    obl_push(ob, opath, pos, (ConsList){NULL, 0, 0}, sym_lin(lin_const(rat_int(0))), &st->vlen, &st->reads, 0, 3, label);
+}
+
+/* ======================= M19: wait-for acyclicity =======================
+ * Structural liveness fragment (docs/thesis-open-problems.md §1.4).
+ * A cycle is REFUTED when a thread waits on a recv/join that can only be
+ * satisfied by an action the waiter itself is blocking. Matched sequential
+ * send/recv, join-after-send, and recv-after-a-send-first worker are PROVEN.
+ * if/while/nested go, recv2/select, packed args, and >1 recv in a worker
+ * are no-claim (honest incompleteness) — never a false PROVEN. */
+
+typedef struct {
+    int recv_first, send_first, n_recv, n_send, complex, saw_op;
+} WfScan;
+
+static int wf_name_is(const char **names, int nn, const char *s) {
+    for (int i = 0; i < nn; i++) if (strcmp(names[i], s) == 0) return 1;
+    return 0;
+}
+
+static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan *s);
+
+static void wf_scan_call(Node *call, const char **names, int nn, WfScan *s) {
+    if (!call || call->kind != NODE_CALL) return;
+    if (!is_par_builtin_call(call)) { s->complex = 1; return; }  /* hidden send/recv */
+    const char *nm = call->callee->name;
+    if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0 ||
+        strcmp(nm, "join") == 0 || strcmp(nm, "detach") == 0) {
+        s->complex = 1;
+        return;
+    }
+    int on_p = call->args.len >= 1 && call->args.data[0]->kind == NODE_IDENT &&
+               wf_name_is(names, nn, call->args.data[0]->name);
+    if (!on_p) {
+        if (strcmp(nm, "chan_recv") == 0 || strcmp(nm, "chan_send") == 0) s->complex = 1;
+        return;
+    }
+    if (strcmp(nm, "chan_recv") == 0) {
+        s->n_recv++;
+        if (!s->saw_op) { s->saw_op = 1; s->recv_first = 1; }
+    } else if (strcmp(nm, "chan_send") == 0) {
+        s->n_send++;
+        if (!s->saw_op) { s->saw_op = 1; s->send_first = 1; }
+    } else if (strcmp(nm, "chan_close") == 0 || strcmp(nm, "chan_new") == 0) {
+        /* non-blocking */
+    } else {
+        s->complex = 1;   /* recv2 / try_recv / select* — not in this fragment */
+    }
+}
+
+static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan *s) {
+    if (!n || s->complex) return;
+    switch (n->kind) {
+    case NODE_BLOCK:
+        for (int i = 0; i < n->stmts.len; i++) wf_scan_node(n->stmts.data[i], names, nn, nmax, s);
+        return;
+    case NODE_LET:
+        wf_scan_node(n->let_init, names, nn, nmax, s);
+        if (n->let_init && n->let_init->kind == NODE_IDENT &&
+            wf_name_is(names, *nn, n->let_init->name)) {
+            if (*nn < nmax) names[(*nn)++] = n->let_name;
+            else s->complex = 1;
+        }
+        return;
+    case NODE_EXPR_STMT: wf_scan_node(n->expr, names, nn, nmax, s); return;
+    case NODE_RETURN:    wf_scan_node(n->ret_val, names, nn, nmax, s); return;
+    case NODE_ASSIGN:    wf_scan_node(n->assign_val, names, nn, nmax, s); return;
+    case NODE_CALL:      wf_scan_call(n, names, *nn, s); return;
+    case NODE_BINARY:
+        wf_scan_node(n->left, names, nn, nmax, s);
+        wf_scan_node(n->right, names, nn, nmax, s);
+        return;
+    case NODE_UNARY:     wf_scan_node(n->operand, names, nn, nmax, s); return;
+    case NODE_IF: case NODE_WHILE: case NODE_FOR: case NODE_MATCH:
+        s->complex = 1;
+        return;
+    default: return;
+    }
+}
+
+/* A send-first worker on `ch` can unblock a recv. Complex workers make the
+ * producer set unknown rather than empty — never a false REFUTED. */
+static int wf_has_producer(State *st, HandleEntry *ch, int *unknown) {
+    if (!ch) return 0;
+    if (ch->wf_unknown) *unknown = 1;
+    int found = ch->n_bg_prod > 0;
+    for (int i = 0; i < st->handles.n; i++) {
+        HandleEntry *h = &st->handles.h[i];
+        if (h->kind != HK_JOIN || !h->chan_arg) continue;
+        if (strcmp(h->chan_arg, ch->var) != 0) continue;
+        if (h->wf_complex) *unknown = 1;
+        else if (h->wf_send) found = 1;
+    }
+    return found;
+}
+
+static void wf_check_recv(State *st, Obligations *ob, HandleEntry *ch) {
+    if (!ch) return;
+    ch->n_recv++;
+    int unk = 0;
+    int prod = wf_has_producer(st, ch, &unk);
+    int unmatched = ch->n_recv - ch->n_send;
+    if (unmatched <= 0) {
+        push_protocol_ok(st, ob, "wait-for: последователни send/recv");
+    } else if (prod && unmatched <= 1) {
+        push_protocol_ok(st, ob, "wait-for: recv след producer");
+    } else if (prod && unmatched > 1) {
+        /* one send-first worker covers one unmatched recv; more is unknown */
+    } else if (!unk) {
+        push_protocol_violation(st, ob, "wait-for цикъл: recv без send");
+    }
+}
+
+static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
+    if (!jh || !jh->chan_arg || !jh->wf_recv || jh->wf_complex) return;
+    HandleEntry *ch = handles_find(&st->handles, jh->chan_arg);
+    if (!ch || ch->kind != HK_CHAN) return;
+    int unk = 0;
+    int prod = wf_has_producer(st, ch, &unk);
+    if (ch->n_send > 0) {
+        push_protocol_ok(st, ob, "wait-for: join след send");
+    } else if (prod) {
+        push_protocol_ok(st, ob, "wait-for: join, друг producer");
+    } else if (!unk) {
+        push_protocol_violation(st, ob, "wait-for цикъл: join преди send");
+    }
+}
+
 /* M14: symbolic semantics of the !Par builtins (statement level only).
  *
  * go(f, x): f must be a pure verifiable (i64)->i64 user fn (gated earlier).
@@ -2609,7 +2935,9 @@ static void push_protocol_violation(State *st, Obligations *ob, const char *labe
  * Channels: open/closed ghost state; send returns 0 (ok) or -1 (closed) —
  * the interval -1 <= s <= 0 is exact; on a known-closed channel s == -1.
  * recv payload is unconstrained (any payload, or 0 on closed+empty).
- * Returns the symbolic value of the call (owned). */
+ * M19 wait-for: join-before-send with a recv-first worker, and recv with no
+ * matching send/producer, are kind-3 REFUTED; matched sequential send/recv
+ * and join-after-send are PROVEN. Returns the symbolic value of the call. */
 /* M17: a (status, value) pair result for the pair-returning channel APIs.
  * status: fresh __c var with [0, hi] range on the path. value: fresh __c var
  * with M16 content axioms instantiated — from the single channel, or for
@@ -2680,14 +3008,48 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
             res = sym_lin(lin_var(rv));
         }
-        (void)wfn;
+        /* M19: classify the worker's first blocking op on the channel arg */
+        HandleEntry *ch = NULL;
+        {
+            Sym carg = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
+            const char *cv = !carg.nonlinear ? lin_handle_var(&carg.lin) : NULL;
+            if (cv) {
+                ch = handles_find(&st->handles, cv);
+                if (ch && ch->kind != HK_CHAN) ch = NULL;
+            }
+            lin_free(&carg.lin);
+        }
+        WfScan sc; memset(&sc, 0, sizeof sc);
+        if (wfn && wfn->fn_body && wfn->params.len >= 1) {
+            const char *nms[16]; int nn = 0;
+            nms[nn++] = wfn->params.data[0]->param_name;
+            wf_scan_node(wfn->fn_body, nms, &nn, 16, &sc);
+            if (sc.n_recv > 1) sc.complex = 1;
+        } else if (wfn) {
+            sc.complex = 1;
+        }
         if (strcmp(nm, "go_bg") == 0) {   /* detached at birth: no handle */
+            if (ch) {
+                if (sc.complex) ch->wf_unknown = 1;
+                else if (sc.send_first) ch->n_bg_prod++;
+            }
             lin_free(&res.lin);
             return sym_lin(lin_const(rat_int(0)));
         }
         char hv[64]; snprintf(hv, sizeof hv, "__h%d", g_handle_ctr++);
         if (res.nonlinear) { Lin empty; lin_init(&empty); handles_set(&st->handles, hv, HK_JOIN, 0, &empty); }
         else handles_set(&st->handles, hv, HK_JOIN, 0, &res.lin);   /* moves res.lin */
+        {
+            HandleEntry *jh = handles_find(&st->handles, hv);
+            if (jh) {
+                jh->worker = strdup(wname);
+                if (ch) jh->chan_arg = strdup(ch->var);
+                jh->wf_recv = sc.recv_first && !sc.complex;
+                jh->wf_send = sc.send_first && !sc.complex;
+                jh->wf_complex = sc.complex;
+            }
+            if (ch && sc.complex) ch->wf_unknown = 1;
+        }
         return sym_lin(lin_var(hv));
     }
 
@@ -2714,6 +3076,7 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             push_protocol_violation(st, ob, label);
         } else {
             e->state = is_join ? 1 : 2;
+            if (is_join) wf_check_join(st, ob, e);
         }
         if (!is_join) { lin_free(&hv.lin); return sym_lin(lin_const(rat_int(0))); }
         lin_free(&hv.lin);
@@ -2752,9 +3115,11 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
                 if (st->ax.a[i].is_sorted || strcmp(st->ax.a[i].vec, key) != 0) continue;
                 cl_push(&st->path, axiom_instantiate(&st->ax.a[i], rv));
             }
+        wf_check_recv(st, ob, e);   /* M19: wait-for */
         return sym_lin(lin_var(rv));   /* otherwise unconstrained payload */
     }
     /* chan_send */
+    if (e) e->n_send++;
     Sym v = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
     /* M16: the payload must provably satisfy every content axiom anchored on
      * this channel; an axiom that cannot be discharged is dropped (M3 rule —
@@ -3551,10 +3916,7 @@ static IBind *build_eff_env(char **vars, IBind *assign, int nv, ProdList *prods,
             }
             if (!ok) continue;
             int64_t pvv;
-            if (prods->p[pi].is_bitand1) pvv = fv[0] & 1;
-            else if (prods->p[pi].is_div) { if (fv[1] == 0) continue; pvv = fv[0] / fv[1]; }
-            else if (prods->p[pi].is_mod) { if (fv[1] == 0) continue; pvv = fv[0] % fv[1]; }
-            else if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) continue;
+            if (!prod_concrete(&prods->p[pi], fv[0], fv[1], &pvv)) continue;
             e[ne].name = prods->p[pi].var; e[ne].val = pvv; ne++;
         }
     }

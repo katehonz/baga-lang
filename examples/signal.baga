@@ -1,0 +1,12 @@
+// signal.baga — LP8-F: C1 signal_watch/check/clear/raise/wait.
+fn main() {
+    print(signal_watch(15))
+    print(signal_watch(2))
+    signal_clear()
+    print(signal_check())
+    print(signal_raise(15))
+    print(signal_check())
+    print(signal_clear())
+    print(signal_check())
+    print(signal_wait(0))
+}

@@ -1,0 +1,16 @@
+// Runtime probe за M27: spec върху generic, ensures се чупи.
+spec bump {
+    input:
+        x: T
+    output: T
+    ensures:
+        output == x
+}
+
+fn bump<T>(x: T) -> T {
+    return x + 1
+}
+
+fn main() {
+    print(bump(5))
+}

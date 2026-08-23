@@ -13,6 +13,9 @@ fn emit_method_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> 
 fn expr_struct_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str
 fn struct_lit_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, lit: i64) -> str
 fn fn_is_generic_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
+fn emit_drop_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, callee: i64) -> str
+fn emit_par_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, callee: i64, bn: str) -> str
+fn is_user_fn(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
 
 fn int_to_str(n: i64) -> str {
     if n == 0 { return "0" }
@@ -255,17 +258,21 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
         if node_kind(nk, callee) == 2 {
             let mut bn = node_text(nt, callee)
             // LP7: builtin-и извън подмножеството на self компилатора
-            if str_eq(bn, "drop") == 1 { self_unsupported("drop (MEM-1)") }
+            if str_eq(bn, "drop") == 1 {
+                if is_user_fn(nk, nt, fc, ns, prog, bn) == 0 {
+                    return emit_drop_call(nk, nt, fc, ns, prog, callee)
+                }
+            }
             // LP8-E: go/go_bg/pool_map (първият аргумент е fn идентификатор)
             // и join/detach/chan_*/mutex_*/sleep_ms — c2_par.baga
             let mut pce = emit_par_call(nk, nt, fc, ns, prog, callee, bn)
             if str_eq(pce, "") == 0 { return pce }
             if str_eq(cname, "") == 1 { cname = par_builtin_cname(bn) }
-            if str_eq(bn, "signal_watch") == 1 { self_unsupported("C1 сигнали") }
-            if str_eq(bn, "signal_check") == 1 { self_unsupported("C1 сигнали") }
-            if str_eq(bn, "signal_clear") == 1 { self_unsupported("C1 сигнали") }
-            if str_eq(bn, "signal_wait") == 1 { self_unsupported("C1 сигнали") }
-            if str_eq(bn, "signal_raise") == 1 { self_unsupported("C1 сигнали") }
+            if str_eq(bn, "signal_watch") == 1 { cname = "baga_signal_watch" }
+            if str_eq(bn, "signal_check") == 1 { cname = "baga_signal_check" }
+            if str_eq(bn, "signal_clear") == 1 { cname = "baga_signal_clear" }
+            if str_eq(bn, "signal_wait") == 1 { cname = "baga_signal_wait" }
+            if str_eq(bn, "signal_raise") == 1 { cname = "baga_signal_raise" }
             if str_eq(bn, "cell2") == 1 { cname = "baga_cell2" }
             if str_eq(bn, "cell2_0") == 1 { cname = "baga_cell2_0" }
             if str_eq(bn, "cell2_1") == 1 { cname = "baga_cell2_1" }
@@ -295,6 +302,10 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "bytes_push") == 1 { cname = "baga_bytes_push" }
             if str_eq(bn, "bytes_h") == 1 { cname = "baga_bytes_h" }
             if str_eq(bn, "h_bytes") == 1 { cname = "baga_h_bytes" }
+            if str_eq(bn, "str_h") == 1 { cname = "baga_str_h" }
+            if str_eq(bn, "h_str") == 1 { cname = "baga_h_str" }
+            if str_eq(bn, "map_h") == 1 { cname = "baga_map_h" }
+            if str_eq(bn, "h_map") == 1 { cname = "baga_h_map" }
             if str_eq(bn, "vec_new") == 1 { cname = "baga_vec_new" }
             if str_eq(bn, "vec_push") == 1 {
                 cname = "baga_vec_push_i64"
@@ -518,11 +529,10 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             if str_eq(bn, "arena_alloc") == 1 { cname = "baga_arena_alloc" }
             if str_eq(bn, "arena_reset") == 1 { cname = "baga_arena_reset" }
             if str_eq(bn, "arena_free") == 1 { cname = "baga_arena_free" }
-            // MEM-4: bump arena има само C bootstrap-ът; тук runtime-ът е malloc
-            if str_eq(bn, "mem_mark") == 1 { self_unsupported("mem_mark") }
-            if str_eq(bn, "mem_rewind") == 1 { self_unsupported("mem_rewind") }
-            if str_eq(bn, "mem_persist_begin") == 1 { self_unsupported("mem_persist_begin") }
-            if str_eq(bn, "mem_persist_end") == 1 { self_unsupported("mem_persist_end") }
+            if str_eq(bn, "mem_mark") == 1 { cname = "baga_mem_mark" }
+            if str_eq(bn, "mem_rewind") == 1 { cname = "baga_mem_rewind" }
+            if str_eq(bn, "mem_persist_begin") == 1 { cname = "baga_mem_persist_begin" }
+            if str_eq(bn, "mem_persist_end") == 1 { cname = "baga_mem_persist_end" }
             // extern fn (FFI) — директно име, без builtin диспеч (последен печели)
             if is_extern_fn(nk, nt, fc, ns, prog, bn) == 1 { cname = bn }
             // LP8-D: generic fn повикване → инстанция b_име__iN

@@ -66,6 +66,8 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
                 if str_eq(bn, "bytes_new") == 1 { ctype = "baga_bytes" }
                 if str_eq(bn, "bytes_push") == 1 { ctype = "baga_bytes" }
                 if str_eq(bn, "h_bytes") == 1 { ctype = "baga_bytes" }
+                if str_eq(bn, "h_str") == 1 { ctype = "const char *" }
+                if str_eq(bn, "h_map") == 1 { ctype = "baga_Map *" }
                 if str_eq(bn, "hex_decode") == 1 { ctype = "baga_bytes" }
                 if str_eq(bn, "map_new") == 1 { ctype = "baga_Map *" }
                 let mut la1 = next_sibling(ns, cal)

@@ -1184,7 +1184,8 @@ core suffices. Two sound mechanisms:
 
 Honest frontier (M15+): pair-returning builtins (`chan_recv2`/`try_recv`/
 `select2*`), cross-thread channel *content* invariants (rely–guarantee),
-mutexes (liveness), `pool_map`, effectful workers.
+`pool_map`, effectful workers. Structured-channel wait-for acyclicity is
+M19; mutex/fairness stay outside the fragment.
 
 ### 8.6 Arithmetic safety — the ℤ-vs-i64 bridge (M15)
 
@@ -1260,8 +1261,47 @@ certificate, the verifier checks it, and `--proofs` emits it as
 `!Overflow`, so all prior exit codes are unchanged. The effect system
 (pillar 2) and the verifier (pillar 1) become the same judgement. Note:
 `docs/thesis-m18-overflow-effect.md`; a map of the remaining frontiers
-(liveness, full BV, rich polynomials) — `docs/thesis-open-problems.md`; the
-binding research monograph — `docs/thesis.md`.
+(temporal liveness / fairness, full BV bit-blast, mixed polynomials / SOS)
+— `docs/thesis-open-problems.md`; the binding research monograph —
+`docs/thesis.md`.
+
+### 8.10 Wait-for acyclicity (M19)
+
+M14–M17 prove *partial* correctness of `!Par` (if join returns, the result
+is the worker). M19 adds structured **liveness** on the same kind-3 protocol
+machinery, with no SMT and no interleaving exploration:
+
+- count `send`/`recv` on the thread that performs them;
+- syntactic scan of the worker body: the first blocking op on the channel
+  parameter is recv-first or send-first (`if`/`while`/nested go → no-claim);
+- wait-for edge: `join` waits for the worker; `recv` waits for a producer.
+
+A cycle (join before send to a recv-first worker; recv with no matching send
+and no send-first worker) is REFUTED. An acyclic structured pattern
+(sequential send/recv; join after send; recv after a producer) is PROVEN.
+Honest limit: no fairness/starvation, no blocking send on a full buffer, no
+arbitrary dynamic scheduling. Oracle: `examples/verify/waitfor.baga`.
+
+### 8.11 Even powers and the BV envelope (M20)
+
+The two cheap options from the open-problems map, with no new solver:
+
+- **Even power.** A recorded product of `mon_deg = 2k` (left-associated
+  `n*n*n*n`) gets `n^{2k} >= 0`; when the inner `n^k` is recorded, also
+  `n^{2k} >= n^k`. Cubes were already M8. Oracle: `poly_even.baga`.
+- **BV envelope.** Idempotence, `n|-1=-1`, const-fold, `2^k-1` masks on
+  any sign, and nonneg `n&m` / `n|m` bounds. Not bit-blast and not
+  wrap-as-value. Oracle: `bitwise_mask.baga`.
+
+### 8.12 Consecutive products and `n^-1` (M21)
+
+Two more reflected identities in the FM core:
+
+- **n(n±1) ≥ 0** over ℤ (product of linear forms that differ by ±1), plus
+  `p ≥` the lesser factor. `n(n+2)` is refuted at `-1`. Oracle:
+  `poly_consec.baga`.
+- **`n ^ -1 = -n-1`** (two's-complement `~n`, exact at INT64_MIN).
+  Variable XOR stays UNKNOWN. Oracle: `bitwise_xor_not.baga`.
 
 ---
 

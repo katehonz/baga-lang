@@ -1814,12 +1814,14 @@ static void emit_type(Codegen *cg, Node *ty) {
             }
     }
 
-    /* M21: типова променлива на текущата generic инстанция — checked типът
-     * (конкретен след checker_recheck_inst) печели */
-    if (cg->gen_fn && ty->type && ty->kind == NODE_TYPE) {
+    /* M21: типова променлива на текущата generic инстанция — inst_types
+     * (като LLVM), не checked TYPE_VAR върху възела */
+    if (cg->gen_fn && ty->kind == NODE_TYPE && ty->type_name) {
         for (int i = 0; i < cg->gen_fn->n_type_params; i++)
             if (strcmp(cg->gen_fn->type_params[i], ty->type_name) == 0) {
-                emit_ctype(cg, ty->type);
+                Type *at = cg->gen_fn->inst_types[
+                    cg->gen_inst * cg->gen_fn->n_type_params + i];
+                emit_ctype(cg, at ? at : ty->type);
                 return;
             }
     }
@@ -1948,6 +1950,7 @@ static void emit_expr(Codegen *cg, Node *n);
 static void emit_stmt(Codegen *cg, Node *n);
 static void emit_return_val(Codegen *cg, Node *val);
 static void emit_zero_struct(Codegen *cg, const char *name);
+static const char *lambda_emit_name(Codegen *cg, Node *n, char *buf, size_t nbuf);
 
 /* M20 (effect payloads) — помощници */
 
@@ -3705,7 +3708,8 @@ static void emit_expr(Codegen *cg, Node *n) {
              * memstream, за да не се преплитат вложени ламбди. Тук остава
              * само statement expression-ът, който строи handle-а. */
             Type *ft = n->type;
-            char *lm = mangle_name(n->fn_name ? n->fn_name : "__lam_x");
+            char lnm[256];
+            char *lm = mangle_name(lambda_emit_name(cg, n, lnm, sizeof lnm));
             char env_name[128];
             snprintf(env_name, sizeof env_name, "b_env%s", lm + 1);  /* lm е "b_..." → b_env_lam... */
             FILE *lf = cg->lambda_out ? cg->lambda_out : f;
@@ -4482,6 +4486,17 @@ static int is_verifier_only_annotation(Node *e) {
     return 0;
 }
 
+/* M27: ламбда в generic fn — уникално име per инстанция (споделен AST,
+ * едно fn_name; без суфикса две инстанции емитуват един b___lam_N). */
+static const char *lambda_emit_name(Codegen *cg, Node *n, char *buf, size_t nbuf) {
+    const char *base = n->fn_name ? n->fn_name : "__lam_x";
+    if (cg->gen_fn && cg->gen_inst >= 0) {
+        snprintf(buf, nbuf, "%s__i%d", base, cg->gen_inst);
+        return buf;
+    }
+    return base;
+}
+
 /* L5: closure wrapper за потребителска функция — адресът му се взима от fn
  * стойности; вика публичното име (с евент. spec проверки). Емитва се в
  * lambda_out, който в изхода е преди телата на функциите. */
@@ -4526,10 +4541,15 @@ static void emit_fn(Codegen *cg, Node *fn) {
 
     Node *ensures_spec = (fn->fn_body)
                        ? find_ensures_spec(cg, fn->fn_name) : NULL;
+    /* M27: spec върху generic — wrapper/impl носят synth името на
+     * инстанцията (иначе всички инстанции се блъскат в __impl_f / f) */
+    const char *emit_nm = cg->gen_emit_name ? cg->gen_emit_name : fn->fn_name;
+    if (ensures_spec && cg->chk && cg->gen_fn && cg->gen_inst >= 0)
+        checker_recheck_spec(cg->chk, ensures_spec, fn, cg->gen_inst);
     char impl_name_buf[512];
     if (ensures_spec) {
         /* оригиналното тяло става static impl функция */
-        snprintf(impl_name_buf, sizeof impl_name_buf, "__impl_%s", fn->fn_name);
+        snprintf(impl_name_buf, sizeof impl_name_buf, "__impl_%s", emit_nm);
         fprintf(f, "static ");
     }
 
@@ -4653,7 +4673,7 @@ static void emit_fn(Codegen *cg, Node *fn) {
         fprintf(f, "void");
     }
     fprintf(f, " ");
-    char *wm = mangle_name(fn->fn_name);
+    char *wm = mangle_name(emit_nm);
     fprintf(f, "%s", wm);
     free(wm);
     fprintf(f, "(");

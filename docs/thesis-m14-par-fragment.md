@@ -125,6 +125,8 @@ interval is exact.
    and is deliberately out of slice 1.
 2. **No liveness.** Deadlock freedom, lock ordering, and termination of
    blocking `recv` are untouched (partial-correctness reading throughout).
+   Structured wait-for acyclicity later lands as M19
+   (`docs/thesis-open-problems.md` §1.4, `examples/verify/waitfor.baga`).
 3. **No pair protocols.** The `cell2`-returning channel APIs need a pair
    abstraction in the symbolic domain before their status ranges become
    provable.

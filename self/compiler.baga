@@ -19,8 +19,10 @@ import "c2_spec.baga"
 import "c2_import.baga"
 import "c2_gen.baga"
 import "c2_gen_subst.baga"
+import "c2_gen_collect.baga"
 import "c2_gen_emit.baga"
 import "c2_par.baga"
+import "c2_mem.baga"
 
 // ============================================================
 //  Main
@@ -114,35 +116,8 @@ fn main() {
     write("#include <string.h>\n")
     write("#include <errno.h>\n")
     write("#include <time.h>\n")
-    write("#include <pthread.h>\n")
-    write("#include <math.h>\n\n")
-    // runtime helpers
-    write("static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n")
-    write("static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n")
-    write("static int64_t baga_byte_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n")
-    write("static const char *baga_byte_chr(int64_t c) { char *r = malloc(2); r[0] = (char)c; r[1] = 0; return r; }\n")
-    write("static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n")
-    write("    int64_t n = b - a; if (n < 0) n = 0;\n")
-    write("    char *r = malloc((size_t)n + 1); memcpy(r, s + a, (size_t)n); r[n] = 0; return r; }\n")
-    write("static const char *baga_concat(const char *a, const char *b) {\n")
-    write("    size_t la = strlen(a), lb = strlen(b);\n")
-    write("    char *r = malloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r; }\n")
-    write("static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n")
-    write("static const char *baga_chr(int64_t c) {\n")
-    write("    char *r = malloc(5);\n")
-    write("    if (c < 0x80) { r[0] = (char)c; r[1] = 0; }\n")
-    write("    else if (c < 0x800) { r[0] = (char)(0xC0|(c>>6)); r[1] = (char)(0x80|(c&0x3F)); r[2] = 0; }\n")
-    write("    else if (c < 0x10000) { r[0] = (char)(0xE0|(c>>12)); r[1] = (char)(0x80|((c>>6)&0x3F)); r[2] = (char)(0x80|(c&0x3F)); r[3] = 0; }\n")
-    write("    else { r[0] = (char)(0xF0|(c>>18)); r[1] = (char)(0x80|((c>>12)&0x3F)); r[2] = (char)(0x80|((c>>6)&0x3F)); r[3] = (char)(0x80|(c&0x3F)); r[4] = 0; }\n")
-    write("    return r; }\n")
-    write("static int64_t baga_ord(const char *s) {\n")
-    write("    unsigned char c = (unsigned char)s[0]; if (!c) return 0;\n")
-    write("    if (c < 0x80) return c;\n")
-    write("    if ((c&0xE0)==0xC0) return ((int64_t)(c&0x1F)<<6)|((int64_t)(unsigned char)s[1]&0x3F);\n")
-    write("    if ((c&0xF0)==0xE0) return ((int64_t)(c&0x0F)<<12)|(((int64_t)(unsigned char)s[1]&0x3F)<<6)|((int64_t)(unsigned char)s[2]&0x3F);\n")
-    write("    return ((int64_t)(c&0x07)<<18)|(((int64_t)(unsigned char)s[1]&0x3F)<<12)|(((int64_t)(unsigned char)s[2]&0x3F)<<6)|((int64_t)(unsigned char)s[3]&0x3F); }\n")
-    write("static const char *baga_i64_to_str(int64_t x) { char *r = malloc(24); snprintf(r, 24, \"%lld\", (long long)x); return r; }\n")
-    write("static const char *baga_f64_to_str(double x) { char *r = malloc(32); snprintf(r, 32, \"%g\", x); return r; }\n")
+    write("#include <pthread.h>\n#include <math.h>\n#include <signal.h>\n\n")
+    emit_mem_runtime()
     write("typedef struct { unsigned char *data; int64_t len; } baga_bytes;\n")
     write("/* M20 ефекти с payload: таг + по един слот за i64/f64/str/bytes (като C bootstrap-а) */\n")
     write("typedef struct { int64_t tag; int64_t i; double f; const char *s; baga_bytes b; } baga_eff;\n")

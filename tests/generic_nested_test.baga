@@ -1,0 +1,29 @@
+// generic_nested_test — LP8-F / M21: generic fn от generic fn.
+// wrap<T> вика id(x); две инстанции; верига от три (twice→wrap→id).
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn id<T>(x: T) -> T { return x }
+
+fn wrap<T>(x: T) -> T { return id(x) }
+
+fn twice<T>(x: T) -> T { return wrap(x) }
+
+fn pair<A, B>(a: A, b: B) -> A { return id(a) }
+
+fn main() -> i64 {
+    check("wrap_i64", wrap(41) + 1 == 42)
+    check("wrap_str", wrap("кот") == "кот")
+    check("chain_i64", twice(7) == 7)
+    check("chain_str", twice("ok") == "ok")
+    check("pair", pair(3, "x") == 3)
+    print("generic_nested_test: all passed")
+    return 0
+}

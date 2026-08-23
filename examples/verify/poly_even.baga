@@ -1,0 +1,65 @@
+// poly_even.baga — M20: even powers of a recorded monomial.
+//
+// Cubes already follow from iterated M8 products + the sign table
+// (n>=0 ⇒ n³>=0). Left-associated n*n*n*n is *not* a recorded square of
+// n*n — the verifier now tracks the pure-power degree and injects
+// n^{2k} >= 0 (and n^4 >= n^2 when the inner square is recorded).
+//
+// Not full NIA: mixed polynomials and n^k for symbolic k stay UNKNOWN.
+//
+//   ./baga --verify examples/verify/poly_even.baga
+
+spec quartic {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn quartic(n: i64) -> i64 {
+    return n * n * n * n
+}
+
+spec quartic_ge_sq {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn quartic_ge_sq(n: i64) -> i64 {
+    let s = n * n
+    return s * s - s
+}
+
+spec sixth {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn sixth(n: i64) -> i64 {
+    return n * n * n * n * n * n
+}
+
+// Written as a square of a square — already M8, kept as a control.
+spec sq_of_sq {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn sq_of_sq(n: i64) -> i64 {
+    let s = n * n
+    return s * s
+}
+
+// Soundness: n^4 >= 1 is false at 0.
+spec quartic_bad {
+    input: n: i64
+    output: i64
+    ensures: output >= 1
+}
+fn quartic_bad(n: i64) -> i64 {
+    return n * n * n * n
+}
+
+fn main() {
+    print(quartic(2))
+    print(sixth(0 - 1))
+    print(sq_of_sq(3))
+}

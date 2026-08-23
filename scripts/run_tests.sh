@@ -130,6 +130,12 @@ run tests/import_cycle_a.baga 2>&1 | grep -q "цикличен import" \
 run tests/generic_fn_value_bad.baga 2>&1 | grep -q "не може да се ползва като стойност" \
 	&& echo "OK: generic fn като стойност без анотация е честна грешка (M25)" \
 	|| { echo "FAIL: generic fn като стойност без анотация не е хванат"; exit 1; }
+run tests/generic_spec_bad.baga 2>&1 | grep -q "параметър 'x' е i64 в spec-а, но T" \
+	&& echo "OK: spec с i64 срещу generic T е честна грешка (M27)" \
+	|| { echo "FAIL: spec с i64 срещу generic T не е хванат"; exit 1; }
+run tests/generic_spec_fail.baga 2>&1 | grep -q "ensures #1 нарушена" \
+	&& echo "OK: spec върху generic хваща runtime нарушение (M27)" \
+	|| { echo "FAIL: spec върху generic не хвана runtime нарушение"; exit 1; }
 echo "=== -I include path ==="
 cp tests/i_flag/main.baga /tmp/baga_i_flag_main.baga
 run -I tests/i_flag /tmp/baga_i_flag_main.baga > /tmp/baga_i_flag_out.txt \

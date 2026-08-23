@@ -538,6 +538,9 @@ void check_program(Checker *c, Node *program);
 /* M21: преди emit на инстанция k на generic fn — re-infer на тялото под
  * substitution (node->type полетата стават конкретни за тази инстанция). */
 void checker_recheck_inst(Checker *c, Node *fn, int k);
+/* M27: преди emit на spec wrapper за инстанция k — re-infer на
+ * ensures/requires (str `==` трябва strcmp, не C равенство). */
+void checker_recheck_spec(Checker *c, Node *spec, Node *fn, int k);
 
 /* L6: import alias — регистрира се от main.c при `import "p" as a`.
  * Връща NULL при успех, или съществуващия alias при конфликт. */

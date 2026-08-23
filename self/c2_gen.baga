@@ -440,6 +440,7 @@ fn expr_type_name_f(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64, fuel:
     if k == 20 { return "bool" }
     if k == 34 { return "bytes" }
     if k == 33 { return "str" }
+    if k == 42 { return "fn" }
     if k == 37 { return expr_type_name_f(nk, nt, fc, ns, prog, first_child(fc, e), fuel - 1) }
     if k == 40 { return expr_type_name_f(nk, nt, fc, ns, prog, first_child(fc, e), fuel - 1) }
     if k == 22 { return struct_lit_type_name(nk, nt, fc, ns, prog, e) }
@@ -476,6 +477,7 @@ fn expr_type_name_f(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64, fuel:
                             if str_eq(bn, "vec_new") == 1 {
                                 return concat(concat("Vec<", vec_elem_type_name(nk, nt, fc, ns, prog, e, fuel - 1)), ">")
                             }
+                            if str_eq(bn, "map_new") == 1 { return "Map" }
                             if str_eq(bn, "map_keys") == 1 { return "Vec<str>" }
                         }
                     }
@@ -527,6 +529,10 @@ fn expr_type_name_f(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64, fuel:
             if str_eq(bn, "bytes_new") == 1 { return "bytes" }
             if str_eq(bn, "bytes_push") == 1 { return "bytes" }
             if str_eq(bn, "h_bytes") == 1 { return "bytes" }
+            if str_eq(bn, "h_str") == 1 { return "str" }
+            if str_eq(bn, "str_h") == 1 { return "i64" }
+            if str_eq(bn, "h_map") == 1 { return "Map" }
+            if str_eq(bn, "map_h") == 1 { return "i64" }
             if str_eq(bn, "hex_decode") == 1 { return "bytes" }
             let mut a1 = next_sibling(ns, cal)
             if str_eq(bn, "vec_get") == 1 {

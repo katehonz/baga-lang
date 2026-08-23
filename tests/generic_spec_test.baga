@@ -1,0 +1,52 @@
+// generic_spec_test — M27: spec върху generic fn.
+//
+// spec ползва типовите параметри на функцията (T); runtime ensures се
+// емитуват per инстанция (identity__i0 / identity__i1) — str `==` е
+// strcmp, не указателно равенство. Двата бекенда, с и без --rc.
+// Gate: tests/llvm_rc.sh + baga-test discovery.
+//
+// Негатив: tests/generic_spec_bad.baga (i64 срещу T — compile грешка)
+// и tests/generic_spec_fail.baga (ensures се чупи runtime).
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+spec identity {
+    input:
+        x: T
+    output: T
+    ensures:
+        output == x
+}
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+spec twice {
+    input:
+        x: T
+    output: T
+    requires:
+        x >= 0
+    ensures:
+        output == x + x
+}
+
+fn twice<T>(x: T) -> T {
+    return x + x
+}
+
+fn main() -> i64 {
+    check("id_i64", identity(42) == 42)
+    check("id_str", identity("кот") == "кот")
+    check("twice_i64", twice(7) == 14)
+    print("generic_spec_test: all passed")
+    return 0
+}

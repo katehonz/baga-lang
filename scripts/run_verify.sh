@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_verify.sh — static verifier oracle (M0–M18 + proofs + --json).
+# run_verify.sh — static verifier oracle (M0–M21 + proofs + --json).
 # Called from scripts/run_tests.sh. Requires ./baga at repo root.
 set -eu
 
@@ -8,7 +8,7 @@ cd "$ROOT"
 BIN="${BAGA:-./baga}"
 BAGAIFLAGS="${BAGAIFLAGS:--I . -I app-product}"
 
-echo "=== verify (статична верификация, M0–M18) ==="
+echo "=== verify (статична верификация, M0–M21) ==="
 # C2: raft_term / tpc_decide са чисти продуктови фрагменти (не пълен Raft).
 for f in abs_val max2 clamp sum liveness_struct raft_term tpc_decide; do \
 	"$BIN" $BAGAIFLAGS --verify examples/verify/$f.baga > /tmp/baga_verify_out.txt || true; \
@@ -118,6 +118,20 @@ grep -c "ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -qE '^[4-9]$|^[1-9][0
 	&& ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 	&& echo "OK: poly_depth — square dominance + product mono (M10)" \
 	|| { echo "FAIL: poly_depth"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/poly_even.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "quartic:" /tmp/baga_verify_out.txt && grep -q "sixth:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^4$' \
+	&& grep -q "quartic_bad:" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
+	&& echo "OK: poly_even — n^4/n^6 >= 0 доказани; n^4 >= 1 оброчено при 0 (M20)" \
+	|| { echo "FAIL: poly_even"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/poly_consec.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "consec:" /tmp/baga_verify_out.txt \
+	&& grep -c "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt | grep -q '^4$' \
+	&& grep -q "consec_bad:" /tmp/baga_verify_out.txt && grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
+	&& grep -q "gap2:" /tmp/baga_verify_out.txt && grep -q "контрапример: n = -1" /tmp/baga_verify_out.txt \
+	&& echo "OK: poly_consec — n(n±1)>=0 доказано; n(n+1)>=1 и n(n+2)>=0 оброчени (M21)" \
+	|| { echo "FAIL: poly_consec"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/div_mod_id.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "rebuild:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& grep -q "rebuild_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
@@ -155,6 +169,20 @@ grep -q "or_zero" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/ba
 	&& grep -q "bit_lsb_bad" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: bitwise_laws — BV identities + n&1 (M13)" \
 	|| { echo "FAIL: bitwise_laws"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/bitwise_mask.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "and3:" /tmp/baga_verify_out.txt && grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "and_self:" /tmp/baga_verify_out.txt && grep -q "or_allones:" /tmp/baga_verify_out.txt \
+	&& grep -q "and_nonneg:" /tmp/baga_verify_out.txt && grep -q "or_nonneg:" /tmp/baga_verify_out.txt \
+	&& grep -q "and3_bad:" /tmp/baga_verify_out.txt && grep -q "ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
+	&& echo "OK: bitwise_mask — 2^k-1 маски, идемпотентност, nonneg and/or; n&3>=1 оброчено (M20)" \
+	|| { echo "FAIL: bitwise_mask"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/bitwise_xor_not.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "xor_not:" /tmp/baga_verify_out.txt && grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "xor_not_plus:" /tmp/baga_verify_out.txt && grep -q "ensures #2.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "xor_not_bad:" /tmp/baga_verify_out.txt && grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
+	&& echo "OK: bitwise_xor_not — n^-1 = -n-1 доказано; ~n>=0 оброчено при 0 (M21)" \
+	|| { echo "FAIL: bitwise_xor_not"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/par_join.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "par_double:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
@@ -225,6 +253,15 @@ grep -q "boss2:" /tmp/baga_verify_out.txt && grep -q "НЕ МОГА ДА РЕШ�
 	&& ! grep -q "boss2:" -A1 /tmp/baga_verify_out.txt | grep -q "ДОКАЗАНО" \
 	&& echo "OK: chan_inv_escape — worker без requires изпуска аксиомата при spawn (M16 drop rule)" \
 	|| { echo "FAIL: chan_inv_escape"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/waitfor.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "протокол (wait-for: последователни send/recv): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for: join след send): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for: recv след producer): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for цикъл: recv без send): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for цикъл: join преди send): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& ! grep -q "протокол (wait-for.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& echo "OK: waitfor — wait-for ацикличност: send/recv и join-след-send доказани; join-преди-send и recv-без-send оброчени (M19)" \
+	|| { echo "FAIL: waitfor"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/pair_recv2.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: pair_recv2 — ok-flag + content инвариант през cell2 проекции (M17)" \

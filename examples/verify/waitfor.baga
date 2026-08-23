@@ -1,0 +1,167 @@
+// waitfor.baga — M19: wait-for acyclicity (structured liveness fragment).
+//
+// Counting progress lemmas live in liveness_struct.baga. This file closes
+// the wait-for graph from docs/thesis-open-problems.md §1.4:
+//   sequential send then recv          → deadlock-free
+//   join after send (recv-first worker) → deadlock-free
+//   recv after a send-first worker      → deadlock-free
+//   recv before send (same thread)      → cycle, REFUTED
+//   join before send (recv-first worker) → cycle, REFUTED
+//   parent recv + recv-first worker     → cycle, REFUTED
+//
+// Not temporal liveness (no "eventually under all fair schedules") and not
+// send-blocking on a full buffer. Honest no-claim on if/while/nested go.
+//
+//   ./baga --verify examples/verify/waitfor.baga
+//   ./baga examples/verify/waitfor.baga     # runs only the live paths
+
+spec consumer {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 1
+}
+
+fn consumer(c: i64) -> i64 !Par {
+    let v = chan_recv(c)
+    return v
+}
+
+spec producer {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn producer(c: i64) -> i64 !Par {
+    chan_send(c, 1)
+    return 0
+}
+
+// --- sequential send then recv: no wait-for edge ---
+spec seq_ok {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn seq_ok(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    let v = chan_recv(c)
+    return v
+}
+
+// --- sequential recv then send: the thread waits on itself ---
+spec seq_dead {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn seq_dead(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    let v = chan_recv(c)
+    chan_send(c, n)
+    return v
+}
+
+// --- parent sends, then joins a recv-first worker ---
+spec join_ok {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn join_ok(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(consumer, c)
+    chan_send(c, n)
+    return join(h)
+}
+
+// --- parent joins before sending: worker waits on recv, parent on join ---
+spec join_dead {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn join_dead(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    let h = go(consumer, c)
+    let r = join(h)
+    chan_send(c, n)
+    return r
+}
+
+// --- send-first worker unblocks the parent's recv ---
+spec recv_prod {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn recv_prod(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(producer, c)
+    let v = chan_recv(c)
+    join(h)
+    return v
+}
+
+// --- parent recv + recv-first worker: nobody sends ---
+spec recv_dead {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn recv_dead(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    let h = go(consumer, c)
+    let v = chan_recv(c)
+    join(h)
+    return v
+}
+
+fn main() -> i64 !Par {
+    print(seq_ok(7))
+    print(join_ok(7))
+    print(recv_prod(7))
+    return 0
+}

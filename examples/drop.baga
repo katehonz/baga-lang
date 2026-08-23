@@ -1,0 +1,26 @@
+// drop.baga — LP8-G: MEM-1 drop(x) в self (malloc/free, не arena).
+// Стойностите се четат преди drop; oracle-ът сравнява изхода, не RSS.
+fn main() {
+    let v: Vec<i64> = vec_new()
+    vec_push(v, 10)
+    vec_push(v, 20)
+    print(vec_get(v, 0) + vec_get(v, 1))
+    drop(v)
+
+    let b = bytes_of_str("ab")
+    print(bytes_len(b))
+    drop(b)
+
+    let m = map_new()
+    map_set(m, "k", 3)
+    print(map_get(m, "k"))
+    drop(m)
+
+    let p = Pt { x: 1, y: 2 }
+    let vp: Vec<Pt> = vec_new()
+    vec_push(vp, p)
+    print(vec_get(vp, 0).x)
+    drop(vp)
+}
+
+struct Pt { x: i64, y: i64 }

@@ -2,6 +2,97 @@
 
 ## [Unreleased]
 
+### verify — M21: consecutive products + n^-1
+- **Смесени полиноми (фрагмент).** Произведение на две линейни форми,
+  които се различават с константа ±1, е `>= 0` над ℤ (`n(n+1)`,
+  `n(n-1)`, `(n+3)(n+4)`), плюс `p >=` по-малкия фактор (`n(n+1) >= n`).
+  `n(n+2)` не е consecutive — оброчва се при `n = -1`, никога фалшиво
+  ДОКАЗАНО.
+- **BV.** `n ^ -1` се пренаписва до `-n-1` (two's complement `~n`, точно
+  и при INT64_MIN). Променлив XOR остава UNKNOWN.
+- Оракули: `examples/verify/poly_consec.baga`, `bitwise_xor_not.baga`.
+
+### verify — M20: четни степени + BV обвивка
+- **Полиноми.** Записан продукт, който е чиста степен на една база
+  (`n*n*n*n` = deg 4), носи `mon_deg`. Четна степен ⇒ `n^{2k} >= 0` в FM
+  ядрото (без SOS). Ляво-асоциативният квартик вече не е UNKNOWN.
+  Кубът си остава от итерираната знакова таблица на M8. Смесени полиноми
+  и `n^k` със символично k — честен skip.
+- **Bitvector обвивка (без SAT).** `n&n=n`, `n|n=n`, `n|-1=-1`;
+  const-fold на `&|^`; `n & (2^k-1) ∈ {0..2^k-1}` за всеки знак;
+  `n>=0, m>=0 ⇒ 0 ≤ n&m ≤ n,m` и `n|m ≥ n,m`. Променлив XOR и
+  two's-complement wrap като *стойност* остават UNKNOWN.
+- Оракули: `examples/verify/poly_even.baga`, `bitwise_mask.baga`.
+
+### verify — M19: wait-for ацикличност (структурирана liveness)
+- Kind-3 протокол върху канали и join handle-и: броене на `send`/`recv`
+  на нишката + синтактичен scan на worker тялото (recv-first /
+  send-first). Цикъл е ОБРОЧЕНО: `join` преди send към recv-first
+  worker; `recv` без matching send/producer. Ацикличен шаблон е
+  ДОКАЗАНО: последователни send/recv, join след send, recv след
+  send-first worker. `go_bg` producer се брои; сложен worker
+  (if/while/вложен go, >1 recv, recv2/select) е честен no-claim —
+  никога фалшиво ДОКАЗАНО. Не е темпорална liveness и не моделира
+  блокиращ send върху пълен буфер.
+- Оракъл: `examples/verify/waitfor.baga` в `scripts/run_verify.sh`.
+- Докс: `docs/thesis-open-problems.md` §1.4, `docs/theory-bg.md` §8.10,
+  `docs/language-bg.md` §14.3.2.
+
+### self — LP8-H: mem_mark / rewind / persist (bump арена)
+- Self runtime-ът има bump арена (`baga_ABlk` верига, ephemeral + persist)
+  и `mem_mark`/`mem_rewind`/`mem_persist_begin`/`end`. `concat`/`substr`/
+  `chr`/`to_str` минават през `baga_alloc` — иначе rewind не връща памет.
+  Без per-alloc header и free-list (опростено спрямо C bootstrap-а; drop
+  на str си остава no-op — данните живеят в арената). Rewind `free()`-ва
+  ephemeral блоковете над mark-а; persist веригата не се пипа. LIFO/
+  двоен rewind е чиста грешка. LLVM отказва честно (C-only).
+- Модул: `self/c2_mem.baga`. Пример: `examples/mem.baga`.
+- Gate: `scripts/self_parity.sh` 50 → **51 PARITY**.
+
+### self — LP8-G: drop (MEM-1) + struct със sum-enum поле
+- **drop(x):** self емитва `baga_drop_vec/map/bytes/fn` през malloc/free
+  (няма arena `baga_free`). Типът идва от `expr_type_name` — Vec<struct>
+  е kind 2 + sizeof, Vec<str> kind 1, вложен Vec kind 3. `drop` върху
+  потребителска fn с това име не се прехваща. Пример: `examples/drop.baga`.
+- **struct със sum-enum поле:** `emit_type_decls` емитва първо struct-ове
+  без такова поле, после sum enum-и, после останалите struct-ове (Pt преди
+  Slot преди Box). Пример: `examples/struct_enum_field.baga`.
+- `mem_*` остава честен отказ (bump арена е само C bootstrap).
+- Gate: `scripts/self_parity.sh` 48 → **50 PARITY**.
+
+### self — LP8-F: generic fn от generic fn, C1 сигнали, str_h/map_h
+- **Bootstrap:** `restore_method_calls` връща `име__iN` → базовото име
+  преди recheck на следващата инстанция на обграждащия generic
+  (`wrap<i64>` после `wrap<str>` и двете викат `id(x)` — преди втората
+  виждаше `id__i0` и казваше „непозната функция").
+- **Self:** инстанциите се събират и от тела на други generic (seed от
+  не-generic + 1 ниво subst); клонираното повикване носи явните targs
+  (`id(x)` в wrap<i64> → текст `"i64"`). Нов модул `self/c2_gen_collect.baga`.
+- **C1 сигнали** и **str_h/h_str / map_h/h_map** — runtime в `c2_par.baga`,
+  builtin диспеч в `c2_emit_expr.baga`. `mem_*` остава честен отказ
+  (self runtime е malloc, bump арена е само C bootstrap). `drop` и
+  struct със sum-enum поле — следваща вълна.
+- Gate: `examples/generic_nested.baga`, `handles.baga`, `signal.baga` в
+  `scripts/self_parity.sh` (45 → 48 PARITY); `tests/generic_nested_test.baga`.
+
+### checker+codegen — M27: ламбди и spec в generic fn
+- **Ламбда в тяло на generic fn.** Checker-ът вече приемаше ламбдите;
+  codegen емитуваше едно `__lam_N` за всички инстанции → конфликт на
+  типове в C (`b___lam_1` веднъж `i64`, веднъж `str`) и мълчалив reuse
+  в LLVM. Сега wrapper-ът е `__lam_N__iK` per инстанция (C и LLVM).
+  Capture на `T`, ламбда като върнат fn стойност и `f<T>()` без
+  стойностни аргументи работят.
+- **spec върху generic fn.** Вход/изход ползват типовите параметри
+  (`x: T`); pass 2 ги резолва като `TYPE_VAR` (преди `T` беше непознат
+  struct и `T` ≠ `T`). Runtime `ensures`/`requires` се емитуват per
+  инстанция (`identity__i0` / `__impl_identity__i0`) — `output == x`
+  върху str е strcmp, не указателно равенство. Spec с конкретен тип
+  срещу параметър (`x: i64` при `fn f<T>`) остава грешка. `--verify`
+  пропуска generic fn честно (резултатът е `T`, не i64).
+- Gate: `tests/generic_lambda_test.baga` и `tests/generic_spec_test.baga`
+  в `tests/llvm_rc.sh`; негативи `generic_spec_bad` / `generic_spec_fail`
+  в `scripts/run_tests.sh`.
+
 ### boilaDB SSL + pgbaga TLS клиент (фронт 4 от v1.0-readiness — затворен)
 - **Сървър (boilaDB, P22-3):** SSLRequest вече отговаря `'S'`, когато са
   зададени `BOILA_TLS_CERT`/`BOILA_TLS_KEY` (PEM пътища), и връзката се

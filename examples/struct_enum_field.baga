@@ -1,0 +1,18 @@
+// struct_enum_field.baga — LP8-G: struct с поле от sum-enum тип.
+// Self емитваше struct-овете преди sum enum-ите → unknown type name.
+enum Slot { Num(i64), Name(str) }
+struct Box { slot: Slot, n: i64 }
+
+fn main() {
+    let b = Box { slot: Num(9), n: 3 }
+    print(b.n)
+    print(match b.slot {
+        Num(x) => x,
+        Name(s) => len(s),
+    })
+    let c = Box { slot: Name("hi"), n: 1 }
+    print(match c.slot {
+        Num(x) => x,
+        Name(s) => len(s),
+    })
+}

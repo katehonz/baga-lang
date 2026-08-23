@@ -1,0 +1,15 @@
+// Негативен probe за M27: spec с конкретен i64 срещу generic T остава
+// честна грешка (виж tests/generic_spec_test.baga за работещия път).
+spec identity {
+    input:
+        x: i64
+    output: i64
+    ensures:
+        output == x
+}
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+fn main() { print(identity(1)) }

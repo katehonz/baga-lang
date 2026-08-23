@@ -331,7 +331,11 @@ fn map<T, U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U> { … }
   the annotation supplies the type arguments and the value points at the
   instance (M25). Without an annotation (`let f = id`) it stays an honest
   error.
-- v1 limits: a generic fn cannot contain lambdas or a spec.
+- A lambda in a generic fn body: each instance gets its own wrapper
+  (`__lam_N__iK`) — two instances do not share a C/LLVM symbol (M27).
+- `spec` on a generic fn: inputs/output use the type parameters (`x: T`);
+  runtime `ensures`/`requires` are emitted per instance. A spec with a
+  concrete type against a parameter (`x: i64` on `fn f<T>`) stays an error.
 
 ### 6.0.1 Traits and methods (M23)
 
@@ -1361,6 +1365,43 @@ A refuted guarantee is the same red result as a refuted ensures (exit code 1).
 Thus `guarantees:` stops being prose-only — it becomes *gradually* verifiable:
 the more of the verifier's vocabulary a line uses, the more of the
 specification is judged by the compiler.
+
+### 14.3.2 Wait-for acyclicity (M19)
+
+`--verify` tracks a structured wait-for graph on channels and join handles
+(kind-3 protocol, the same machinery as join-after-detach). On a live path:
+
+- sequential `chan_send` then `chan_recv` on the same channel is **ДОКАЗАНО**;
+- `join` after a send to a recv-first worker is **ДОКАЗАНО**;
+- `chan_recv` after spawning a send-first worker is **ДОКАЗАНО**;
+- `join` before send to a recv-first worker, and `recv` with no matching
+  send/producer, are **ОБРОЧЕНО** (a cycle).
+
+This is not temporal liveness (no fairness) and does not model a blocking
+send on a full buffer. `if`/`while`/nested `go`, `recv2`/`select*`, packed
+arguments, and more than one `recv` in a worker are an honest no-claim —
+never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
+lemmas (fixed N) stay in `liveness_struct.baga`.
+
+### 14.3.3 Even powers and the BV envelope (M20)
+
+`--verify` widens the envelope with no new solver:
+
+- `n*n*n*n` (and `n^{2k}`) is **ДОКАЗАНО** `>= 0`; `n^4 >= 1` is **ОБРОЧЕНО**
+  at 0. Mixed polynomials stay UNKNOWN.
+- `n & 3` ∈ `{0..3}` for any sign; `n&n=n`, `n|n=n`, `n|-1=-1`;
+  with `n>=0, m>=0` — `0 ≤ n&m ≤ n,m` and `n|m ≥ n,m`. No full bit-blast
+  and no wrap-as-value.
+
+Oracles: `examples/verify/poly_even.baga`, `bitwise_mask.baga`.
+
+### 14.3.4 Consecutive products and `n^-1` (M21)
+
+- `n*(n+1)` and `n*(n-1)` are **ДОКАЗАНО** `>= 0` (and `n(n+1) >= n`);
+  `n*(n+2) >= 0` is **ОБРОЧЕНО** at `-1`.
+- `n ^ -1` is `-n-1` (`~n` in two's complement). Variable XOR stays UNKNOWN.
+
+Oracles: `examples/verify/poly_consec.baga`, `bitwise_xor_not.baga`.
 
 ### 14.4 Preconditions (`requires:`)
 

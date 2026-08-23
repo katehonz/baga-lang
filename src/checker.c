@@ -1236,12 +1236,21 @@ static char *mod_base(const char *path) {
 static Type *infer(CheckCtx *ctx, Node *n);
 
 static int is_numeric(Type *t) {
-    return t && (t->kind == TYPE_I32 || t->kind == TYPE_I64 || t->kind == TYPE_F64);
+    /* TYPE_VAR: spec върху generic (M27) — аритметиката се проверява
+     * отново per инстанция с конкретния тип; тук е оптимистично. */
+    return t && (t->kind == TYPE_I32 || t->kind == TYPE_I64 ||
+                 t->kind == TYPE_F64 || t->kind == TYPE_VAR);
 }
 
 static Type *numeric_promote(Type *a, Type *b) {
+    if (a->kind == TYPE_VAR && b->kind == TYPE_VAR) {
+        Type *v = type_new(TYPE_VAR);
+        v->name = a->name ? strdup(a->name) : NULL;
+        return v;
+    }
     if (a->kind == TYPE_F64 || b->kind == TYPE_F64) return type_new(TYPE_F64);
     if (a->kind == TYPE_I64 || b->kind == TYPE_I64) return type_new(TYPE_I64);
+    if (a->kind == TYPE_VAR || b->kind == TYPE_VAR) return type_new(TYPE_I64);
     return type_new(TYPE_I32);
 }
 
@@ -3325,6 +3334,29 @@ static int fn_body_falls_through(Node *body) {
     return stmt_falls_through(last);
 }
 
+/* M21/M27: generic_instantiate пренаписва callee->name на `име__iN` върху
+ * споделения AST. Преди recheck на следващата инстанция на ОБГРАЖДАЩИЯ
+ * generic (wrap<i64> после wrap<str> — и двете викат id(x)) името трябва
+ * да се върне, иначе find_fn вижда 'id__i0' и казва „непозната функция". */
+static void restore_synth_inst_name(Node *n) {
+    if (!n || n->kind != NODE_IDENT || !n->name) return;
+    const char *nm = n->name;
+    const char *p = strstr(nm, "__i");
+    if (!p || p == nm) return;
+    const char *d = p + 3;
+    if (*d < '0' || *d > '9') return;
+    while (*d) {
+        if (*d < '0' || *d > '9') return;
+        d++;
+    }
+    size_t blen = (size_t)(p - nm);
+    char *base = malloc(blen + 1);
+    if (!base) { fprintf(stderr, "baga: out of memory\n"); exit(1); }
+    memcpy(base, nm, blen);
+    base[blen] = '\0';
+    n->name = base;   /* leak-safe: старото synth име не се free-ва */
+}
+
 /* M23: връща method call-овете към FIELD форма (rewrite-ът е деструктивен
  * и всяка инстанция започва от чистата форма) И чисти мемоизираните типове
  * (infer кешира през n->type — recheck-ът на инстанция трябва да преинферира
@@ -3334,8 +3366,13 @@ static void restore_method_calls(Node *n) {
     if (!n) return;
     n->type = NULL;   /* M21/M23: преинферирай под новата substitution */
     switch (n->kind) {
+        case NODE_IDENT:
+            restore_synth_inst_name(n);
+            return;
         case NODE_CALL: {
             if (n->callee) n->callee->type = NULL;   /* M23: callee-то също */
+            if (n->callee->kind == NODE_IDENT)
+                restore_synth_inst_name(n->callee);
             if (n->callee->kind == NODE_IDENT && n->callee->name) {
                 const char *nm = n->callee->name;
                 const char *d1 = strchr(nm, '.');
@@ -3479,6 +3516,80 @@ static void bind_type_params(CheckCtx *ctx, Node *tn, Type *at,
     }
 }
 
+/* M27: spec върху generic — типовите параметри на fn се виждат като
+ * TYPE_VAR в spec-а; ensures/requires се инферират в този обхват. */
+static Node *find_spec_item(CheckCtx *ctx, const char *name) {
+    if (!ctx->program || !name) return NULL;
+    for (int i = 0; i < ctx->program->items.len; i++) {
+        Node *it = ctx->program->items.data[i];
+        if (it->kind == NODE_SPEC && strcmp(it->spec_name, name) == 0)
+            return it;
+    }
+    return NULL;
+}
+
+static void infer_spec_contracts(CheckCtx *ctx, Node *item, Type *fn_ret) {
+    if (item->spec_ensures.len > 0) {
+        if (fn_ret->kind == TYPE_VOID) {
+            check_error(ctx, item->pos,
+                "spec '%s': ensures изисква функция с върнат тип",
+                item->spec_name);
+        } else {
+            push_scope(ctx);
+            for (int j = 0; j < item->spec_inputs.len; j++) {
+                Node *sp = item->spec_inputs.data[j];
+                env_define(ctx, sp->param_name,
+                           resolve_type_node(ctx, sp->param_type), sp->pos);
+            }
+            env_define(ctx, "output", fn_ret, item->pos);
+            for (int j = 0; j < item->spec_ensures.len; j++) {
+                Node *en = item->spec_ensures.data[j];
+                Type *et = infer(ctx, en->ensure_expr);
+                if (et->kind != TYPE_BOOL && et->kind != TYPE_ERROR) {
+                    check_error(ctx, en->pos,
+                        "spec '%s': ensures #%d е %s, очаквах bool",
+                        item->spec_name, j + 1, type_str(et));
+                }
+            }
+            pop_scope(ctx);
+        }
+    }
+    if (item->spec_requires.len > 0) {
+        push_scope(ctx);
+        for (int j = 0; j < item->spec_inputs.len; j++) {
+            Node *sp = item->spec_inputs.data[j];
+            env_define(ctx, sp->param_name,
+                       resolve_type_node(ctx, sp->param_type), sp->pos);
+        }
+        for (int j = 0; j < item->spec_requires.len; j++) {
+            Node *rq = item->spec_requires.data[j];
+            Type *rt = infer(ctx, rq->ensure_expr);
+            if (rt->kind != TYPE_BOOL && rt->kind != TYPE_ERROR) {
+                check_error(ctx, rq->pos,
+                    "spec '%s': requires #%d е %s, очаквах bool",
+                    item->spec_name, j + 1, type_str(rt));
+            }
+        }
+        pop_scope(ctx);
+    }
+    if (item->spec_decreases) {
+        push_scope(ctx);
+        for (int j = 0; j < item->spec_inputs.len; j++) {
+            Node *sp = item->spec_inputs.data[j];
+            env_define(ctx, sp->param_name,
+                       resolve_type_node(ctx, sp->param_type), sp->pos);
+        }
+        Type *dt = infer(ctx, item->spec_decreases);
+        if (dt->kind != TYPE_I64 && dt->kind != TYPE_ERROR &&
+            dt->kind != TYPE_VAR) {
+            check_error(ctx, item->spec_decreases->pos,
+                "spec '%s': decreases е %s, очаквах i64",
+                item->spec_name, type_str(dt));
+        }
+        pop_scope(ctx);
+    }
+}
+
 /* M25: ядрото на generic_instantiate — намира/добавя инстанция по bind[]
  * и проверява тялото под substitution (веднъж per инстанция). Поддържа
  * inst_as_value (parallel маркер). Връща индекса на инстанцията. */
@@ -3524,6 +3635,16 @@ static int generic_inst_add(CheckCtx *ctx, Node *fn, Type **bind, SrcPos pos) {
     FnRec *irec = fn_rec_of(ctx, fn);
     if (irec) { irec->checked = 0; irec->checking = 0; }
     check_fn(ctx, fn);
+    /* M27: spec върху generic — ensures/requires под същата substitution
+     * (T=str в `x + 1` е compile грешка на инстанцията, не на декларацията) */
+    {
+        Node *spec = find_spec_item(ctx, fn->fn_name);
+        if (spec) {
+            Type *fn_ret = fn->ret_type ? resolve_type_node(ctx, fn->ret_type)
+                                        : type_new(TYPE_VOID);
+            infer_spec_contracts(ctx, spec, fn_ret);
+        }
+    }
     ctx->cur_fn = saved_fn;
     ctx->cur_ret = saved_ret;
     ctx->cur_effects = saved_eff;
@@ -4164,11 +4285,21 @@ void check_program(Checker *c, Node *program) {
         if (item->kind != NODE_SPEC) continue;
 
         /* find the function this spec describes */
-        Type *ft = find_fn(&ctx, item->spec_name);
+        FnRec *srec = find_fn_rec(&ctx, item->spec_name);
+        Type *ft = srec ? srec->fn_type : NULL;
         if (!ft) {
             check_error(&ctx, item->pos,
                 "spec '%s' описва функция, която не съществува", item->spec_name);
             continue;
+        }
+
+        /* M27: spec върху generic — T в spec-а е типовият параметър на fn */
+        Node *sfn = srec->decl;
+        const char **saved_tps = ctx.cur_type_params;
+        int saved_ntp = ctx.cur_n_type_params;
+        if (sfn && sfn->n_type_params > 0) {
+            ctx.cur_type_params = (const char **)sfn->type_params;
+            ctx.cur_n_type_params = sfn->n_type_params;
         }
 
         /* check input count */
@@ -4191,9 +4322,9 @@ void check_program(Checker *c, Node *program) {
         }
 
         /* check output type */
+        Type *fn_ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
         if (item->spec_output) {
             Type *spec_ret = resolve_type_node(&ctx, item->spec_output);
-            Type *fn_ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
             if (!type_eq(spec_ret, fn_ret)) {
                 check_error(&ctx, item->pos,
                     "spec '%s': output е %s, но функцията връща %s",
@@ -4201,70 +4332,9 @@ void check_program(Checker *c, Node *program) {
             }
         }
 
-        /* check ensures expressions (type-check in scope: inputs + output) */
-        if (item->spec_ensures.len > 0) {
-            Type *fn_ret = ft->ret ? ft->ret : type_new(TYPE_VOID);
-            if (fn_ret->kind == TYPE_VOID) {
-                check_error(&ctx, item->pos,
-                    "spec '%s': ensures изисква функция с върнат тип",
-                    item->spec_name);
-            } else {
-                push_scope(&ctx);
-                for (int j = 0; j < item->spec_inputs.len; j++) {
-                    Node *sp = item->spec_inputs.data[j];
-                    env_define(&ctx, sp->param_name,
-                               resolve_type_node(&ctx, sp->param_type), sp->pos);
-                }
-                env_define(&ctx, "output", fn_ret, item->pos);
-                for (int j = 0; j < item->spec_ensures.len; j++) {
-                    Node *en = item->spec_ensures.data[j];
-                    Type *et = infer(&ctx, en->ensure_expr);
-                    if (et->kind != TYPE_BOOL && et->kind != TYPE_ERROR) {
-                        check_error(&ctx, en->pos,
-                            "spec '%s': ensures #%d е %s, очаквах bool",
-                            item->spec_name, j + 1, type_str(et));
-                    }
-                }
-                pop_scope(&ctx);
-            }
-        }
-
-        /* check requires expressions (scope: inputs only, no output) */
-        if (item->spec_requires.len > 0) {
-            push_scope(&ctx);
-            for (int j = 0; j < item->spec_inputs.len; j++) {
-                Node *sp = item->spec_inputs.data[j];
-                env_define(&ctx, sp->param_name,
-                           resolve_type_node(&ctx, sp->param_type), sp->pos);
-            }
-            for (int j = 0; j < item->spec_requires.len; j++) {
-                Node *rq = item->spec_requires.data[j];
-                Type *rt = infer(&ctx, rq->ensure_expr);
-                if (rt->kind != TYPE_BOOL && rt->kind != TYPE_ERROR) {
-                    check_error(&ctx, rq->pos,
-                        "spec '%s': requires #%d е %s, очаквах bool",
-                        item->spec_name, j + 1, type_str(rt));
-                }
-            }
-            pop_scope(&ctx);
-        }
-
-        /* check decreases expression (M6; scope: inputs only, must be i64) */
-        if (item->spec_decreases) {
-            push_scope(&ctx);
-            for (int j = 0; j < item->spec_inputs.len; j++) {
-                Node *sp = item->spec_inputs.data[j];
-                env_define(&ctx, sp->param_name,
-                           resolve_type_node(&ctx, sp->param_type), sp->pos);
-            }
-            Type *dt = infer(&ctx, item->spec_decreases);
-            if (dt->kind != TYPE_I64 && dt->kind != TYPE_ERROR) {
-                check_error(&ctx, item->spec_decreases->pos,
-                    "spec '%s': decreases е %s, очаквах i64",
-                    item->spec_name, type_str(dt));
-            }
-            pop_scope(&ctx);
-        }
+        infer_spec_contracts(&ctx, item, fn_ret);
+        ctx.cur_type_params = saved_tps;
+        ctx.cur_n_type_params = saved_ntp;
     }
 
     /* pass 3: check function bodies — M21: generic fns се проверяват
@@ -4349,4 +4419,39 @@ void checker_recheck_inst(Checker *chk, Node *fn, int k) {
     if (rrec) { rrec->checked = 0; rrec->checking = 0; }
     restore_method_calls(fn->fn_body);
     check_fn(&ctx, fn);
+}
+
+/* M27: re-infer spec ensures/requires под инстанция k (преди emit на
+ * spec wrapper — `output == x` върху str трябва strcmp, не C `==`). */
+void checker_recheck_spec(Checker *chk, Node *spec, Node *fn, int k) {
+    CheckCtxSnap *s = chk->gen_snap;
+    if (!s || !spec || !fn) return;
+    CheckCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.chk = chk;
+    ctx.program = s->program;
+    ctx.main_base = s->main_base;
+    ctx.n_fns = s->n_fns;
+    memcpy(ctx.fns, s->fns, sizeof(ctx.fns));
+    ctx.n_structs = s->n_structs;
+    memcpy(ctx.structs, s->structs, sizeof(ctx.structs));
+    ctx.n_enums = s->n_enums;
+    memcpy(ctx.enums, s->enums, sizeof(ctx.enums));
+    ctx.n_variants = s->n_variants;
+    memcpy(ctx.variants, s->variants, sizeof(ctx.variants));
+    ctx.n_traits = s->n_traits;
+    memcpy(ctx.traits, s->traits, sizeof(ctx.traits));
+    ctx.n_impls = s->n_impls;
+    memcpy(ctx.impls, s->impls, sizeof(ctx.impls));
+    ctx.n_lambdas = s->n_lambdas;
+    int np = fn->n_type_params;
+    for (int i = 0; i < np; i++) {
+        vec_push(ctx.g_names, fn->type_params[i]);
+        vec_push(ctx.g_types, fn->inst_types[k * np + i]);
+    }
+    Type *fn_ret = fn->ret_type ? resolve_type_node(&ctx, fn->ret_type)
+                                : type_new(TYPE_VOID);
+    infer_spec_contracts(&ctx, spec, fn_ret);
+    vec_free(ctx.g_names);
+    vec_free(ctx.g_types);
 }

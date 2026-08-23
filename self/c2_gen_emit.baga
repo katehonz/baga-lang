@@ -11,6 +11,7 @@ import "c2_ast.baga"
 import "c2_lex.baga"
 import "c2_gen.baga"
 import "c2_gen_subst.baga"
+import "c2_gen_collect.baga"
 import "c2_emit_stmt.baga"
 
 // forward декларации (дефинирани в други модули)
@@ -115,29 +116,6 @@ fn gen_call_ret_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) ->
 //  Инстанции: име, substitution-типове в тяло, клониране
 // ============================================================
 
-// Уникалните типови аргументи на извикванията на generic fn (ред на
-// първа поява в AST — същият ред дава и индексите __iN).
-fn gen_collect_targs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, decl: i64, name: str) -> Vec {
-    let mut uniq = vec_new()
-    let mut i: i64 = 0
-    let mut n = vec_len(nk)
-    while i < n {
-        if node_kind(nk, i) == 4 {
-            let mut cal = first_child(fc, i)
-            if node_kind(nk, cal) == 2 {
-                if str_eq(node_text(nt, cal), name) == 1 {
-                    let mut bt = gen_bind_targs(nk, nt, fc, ns, prog, decl, i)
-                    if str_eq(bt, "") == 0 {
-                        if str_vec_index(uniq, bt) < 0 { vec_push_str(uniq, bt) }
-                    }
-                }
-            }
-        }
-        i = i + 1
-    }
-    uniq
-}
-
 // C име на инстанцията, която това повикване вика ("b_identity__i0");
 // "" ако callee не е generic fn или типовете не се извеждат.
 fn gen_call_cname(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
@@ -212,6 +190,22 @@ fn gen_clone_tree(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, fnode
                     }
                 }
                 c = next_sibling(ns, c)
+            }
+            // LP8-F: generic fn от generic fn — явните targs на клонираното
+            // повикване са subst-натите (id(x) в wrap<i64> → текст "i64"),
+            // за да gen_call_cname не вижда оригиналния параметър `x: T`.
+            let mut gdecl = gen_fn_decl(nk, nt, fc, ns, prog, cname)
+            if gdecl >= 0 {
+                if decl_is_generic(nk, nt, fc, ns, gdecl) == 1 {
+                    let mut bt = gen_bind_targs_subst(nk, nt, fc, ns, prog, gdecl, idx, names, targs)
+                    let mut node = ast_kind(nk, nt, fc, ns, 4, bt)
+                    let mut a = cal
+                    while a >= 0 {
+                        ast_child(fc, ns, node, gen_clone_tree(nk, nt, fc, ns, prog, a, fnode, names, targs))
+                        a = next_sibling(ns, a)
+                    }
+                    return node
+                }
             }
         }
     }

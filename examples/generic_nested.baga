@@ -1,0 +1,21 @@
+// generic_nested.baga — LP8-F: generic fn викана от тяло на друг generic.
+// wrap<T> вика id<T>(x); две инстанции (i64 + str). Bootstrap-ът трябва
+// да възстанови `id__iN` → `id` преди recheck на втората инстанция на wrap.
+fn id<T>(x: T) -> T {
+    return x
+}
+
+fn wrap<T>(x: T) -> T {
+    return id(x)
+}
+
+fn twice<T>(x: T) -> T {
+    return wrap(x)
+}
+
+fn main() {
+    print(wrap(42))
+    print(wrap("hi"))
+    print(twice(7))
+    print(twice("ok"))
+}

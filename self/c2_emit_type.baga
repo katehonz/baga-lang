@@ -44,6 +44,7 @@ fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
             if str_eq(bn, "str_of_bytes") == 1 { return 1 }
             if str_eq(bn, "i64_to_str") == 1 { return 1 }
             if str_eq(bn, "f64_to_str") == 1 { return 1 }
+            if str_eq(bn, "h_str") == 1 { return 1 }
             if str_eq(bn, "map_get") == 1 {
                 let mut ma = next_sibling(ns, cal)
                 if ma >= 0 {

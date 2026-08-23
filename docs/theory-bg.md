@@ -1238,7 +1238,8 @@ Spec : C^op → Set
 
 Честна граница (M15+): pair-връщащите builtins (`chan_recv2`/`try_recv`/
 `select2*`), cross-thread *съдържателни* инварианти на канали
-(rely–guarantee), mutex-и (liveness), `pool_map`, ефектни workers.
+(rely–guarantee), `pool_map`, ефектни workers. Wait-for ацикличността на
+структурирани канали е M19; mutex/fairness остават извън фрагмента.
 
 ### 8.6 Аритметична безопасност — мостът ℤ-vs-i64 (M15)
 
@@ -1313,9 +1314,47 @@ M15 направи преливането *видимо* (по едно задъ
 никой съществуващ пример не декларира `!Overflow`, тъй че всички стари exit
 кодове са непроменени. Ефектовата система (стълб 2) и верификаторът (стълб 1)
 стават едно и също съждение. Бележка: `docs/thesis-m18-overflow-effect.md`;
-карта на оставащите граници (liveness, пълен BV, богати полиноми) —
-`docs/thesis-open-problems.md`; свързващият монографски документ —
-`docs/thesis.md`.
+карта на оставащите граници (темпорална liveness / fairness, пълен BV
+bit-blast, смесени полиноми / SOS) — `docs/thesis-open-problems.md`;
+свързващият монографски документ — `docs/thesis.md`.
+
+### 8.10 Wait-for ацикличност (M19)
+
+M14–M17 доказват *частична* коректност на `!Par` (ако join върне, резултатът
+е worker-ът). M19 добавя структурирана **liveness** върху същата kind-3
+протоколна машинерия, без SMT и без exploration на interleaving:
+
+- броене на `send`/`recv` на нишката, която ги прави;
+- синтактичен scan на worker тялото: първата блокираща операция върху
+  параметъра-канал е recv-first или send-first (if/while/вложен go → no-claim);
+- wait-for ребро: `join` чака worker-а; `recv` чака producer.
+
+Цикъл (join преди send към recv-first worker; recv без matching send и без
+send-first worker) е ОБРОЧЕНО. Ацикличен структуриран шаблон (последователни
+send/recv; join след send; recv след producer) е ДОКАЗАНО. Честна граница:
+няма fairness/starvation, няма блокиращ send върху пълен буфер, няма
+произволно динамично разписание. Оракъл: `examples/verify/waitfor.baga`.
+
+### 8.11 Четни степени и BV обвивка (M20)
+
+Двете евтини опции от картата на отворените проблеми, без нов солвър:
+
+- **Четна степен.** Записан продукт с `mon_deg = 2k` (ляво-асоциативен
+  `n*n*n*n`) получава `n^{2k} >= 0`; при записан вътрешен `n^k` — и
+  `n^{2k} >= n^k`. Кубът си беше M8. Оракъл: `poly_even.baga`.
+- **BV обвивка.** Идемпотентност, `n|-1=-1`, const-fold, маски `2^k-1`
+  върху всеки знак, и nonneg `n&m` / `n|m` граници. Не е bit-blast и не е
+  wrap като стойност. Оракъл: `bitwise_mask.baga`.
+
+### 8.12 Consecutive продукти и `n^-1` (M21)
+
+Още две reflected identities в FM ядрото:
+
+- **n(n±1) ≥ 0** над ℤ (произведение на линейни форми с разлика ±1), плюс
+  `p ≥` по-малкия фактор. `n(n+2)` се оборва при `-1`. Оракъл:
+  `poly_consec.baga`.
+- **`n ^ -1 = -n-1`** (two's complement `~n`, точно и при INT64_MIN).
+  Променлив XOR остава UNKNOWN. Оракъл: `bitwise_xor_not.baga`.
 
 ---
 

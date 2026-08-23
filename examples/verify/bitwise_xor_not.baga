@@ -1,0 +1,39 @@
+// bitwise_xor_not.baga — M21: n ^ -1 = ~n = -n-1 on i64 two's complement.
+//
+// Exact even at INT64_MIN (~MIN = MAX). Linear after rewrite, no BV theory
+// and no wrap-as-value. Variable XOR (n ^ m) stays honestly UNKNOWN.
+//
+//   ./baga --verify examples/verify/bitwise_xor_not.baga
+
+spec xor_not {
+    input: n: i64
+    output: i64
+    ensures: output >= 0 - n - 1, output <= 0 - n - 1
+}
+fn xor_not(n: i64) -> i64 {
+    return n ^ (0 - 1)
+}
+
+spec xor_not_plus {
+    input: n: i64
+    output: i64
+    ensures: output >= 0 - n, output <= 0 - n
+}
+fn xor_not_plus(n: i64) -> i64 {
+    return (n ^ (0 - 1)) + 1
+}
+
+// Soundness: ~n >= 0 is false (n = 0 ⇒ -1).
+spec xor_not_bad {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn xor_not_bad(n: i64) -> i64 {
+    return n ^ (0 - 1)
+}
+
+fn main() {
+    print(xor_not(0))
+    print(xor_not_plus(5))
+}

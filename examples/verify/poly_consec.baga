@@ -1,0 +1,71 @@
+// poly_consec.baga — M21: consecutive-integer products over ℤ.
+//
+// n(n+1) and n(n-1) are always ≥ 0 (two consecutive integers; one is
+// even, and they cannot have opposite non-zero signs). The same holds
+// for any two linear forms that differ by 1, e.g. (n+3)(n+4).
+// n(n+1) ≥ n is the lesser-factor bound. n(n+2) is NOT always ≥ 0
+// (n = -1) — REFUTED, never a false PROVEN.
+//
+//   ./baga --verify examples/verify/poly_consec.baga
+
+spec consec {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn consec(n: i64) -> i64 {
+    return n * (n + 1)
+}
+
+spec consec_m1 {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn consec_m1(n: i64) -> i64 {
+    return n * (n - 1)
+}
+
+spec consec_shift {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn consec_shift(n: i64) -> i64 {
+    return (n + 3) * (n + 4)
+}
+
+spec consec_ge_n {
+    input: n: i64
+    output: i64
+    ensures: output >= n
+}
+fn consec_ge_n(n: i64) -> i64 {
+    return n * (n + 1)
+}
+
+// Soundness: n(n+1) >= 1 is false at 0 and -1.
+spec consec_bad {
+    input: n: i64
+    output: i64
+    ensures: output >= 1
+}
+fn consec_bad(n: i64) -> i64 {
+    return n * (n + 1)
+}
+
+// Gap-2 is not consecutive — refuted at n = -1.
+spec gap2 {
+    input: n: i64
+    output: i64
+    ensures: output >= 0
+}
+fn gap2(n: i64) -> i64 {
+    return n * (n + 2)
+}
+
+fn main() {
+    print(consec(3))
+    print(consec_m1(0 - 2))
+    print(consec_shift(0))
+}

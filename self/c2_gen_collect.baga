@@ -1,0 +1,138 @@
+// c2_gen_collect.baga — LP8-F: инстанции на generic fn, включително
+// повикване от тяло на друг generic (wrap<i64> вика id(x) → id<i64>).
+// Seed-ът е само от не-generic fn / impl; nested минава през substitution
+// на обграждащия generic. Редът на uniq = индексите __iN.
+
+import "c2_ast.baga"
+import "c2_gen.baga"
+
+fn gen_bind_targs_subst(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, decl: i64, callnode: i64, onames: Vec, otargs: str) -> str {
+    if vec_len(onames) == 0 {
+        return gen_bind_targs(nk, nt, fc, ns, prog, decl, callnode)
+    }
+    let mut names = gen_decl_type_params(nk, nt, fc, ns, decl)
+    let mut vals = vec_new()
+    let mut i: i64 = 0
+    let mut nn = vec_len(names)
+    while i < nn {
+        vec_push_str(vals, "")
+        i = i + 1
+    }
+    let mut expl = node_text(nt, callnode)
+    if str_eq(expl, "") == 0 {
+        expl = subst_type(expl, onames, otargs)
+        i = 0
+        while i < nn {
+            vec_set_str(vals, i, tl_split(expl, i))
+            i = i + 1
+        }
+    } else {
+        let mut callee = first_child(fc, callnode)
+        let mut arg = next_sibling(ns, callee)
+        let mut p = first_child(fc, decl)
+        while p >= 0 {
+            if node_kind(nk, p) == 12 {
+                if arg >= 0 {
+                    let mut ptext = node_text(nt, p)
+                    let mut ci = bfind(ptext, 58, 0)
+                    if ci >= 0 {
+                        let mut pat = substr(ptext, ci + 1, len(ptext))
+                        let mut act = expr_type_name_f(nk, nt, fc, ns, prog, arg, 8)
+                        act = subst_type(act, onames, otargs)
+                        bind_pattern(pat, act, names, vals)
+                    }
+                    arg = next_sibling(ns, arg)
+                }
+            }
+            p = next_sibling(ns, p)
+        }
+    }
+    let mut r = ""
+    i = 0
+    while i < nn {
+        let mut v = vec_get_str(vals, i)
+        if str_eq(v, "") == 1 { return "" }
+        if i > 0 { r = concat(r, ",") }
+        r = concat(r, v)
+        i = i + 1
+    }
+    r
+}
+
+fn gen_add_targs(uniq: Vec, bt: str) {
+    if str_eq(bt, "") == 1 { return }
+    if str_vec_index(uniq, bt) < 0 { vec_push_str(uniq, bt) }
+}
+
+fn gen_walk_calls(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, decl: i64, name: str, uniq: Vec, onames: Vec, otargs: str) {
+    if idx < 0 { return }
+    if node_kind(nk, idx) == 4 {
+        let mut cal = first_child(fc, idx)
+        if node_kind(nk, cal) == 2 {
+            if str_eq(node_text(nt, cal), name) == 1 {
+                gen_add_targs(uniq, gen_bind_targs_subst(nk, nt, fc, ns, prog, decl, idx, onames, otargs))
+            }
+        }
+    }
+    let mut c = first_child(fc, idx)
+    while c >= 0 {
+        gen_walk_calls(nk, nt, fc, ns, prog, c, decl, name, uniq, onames, otargs)
+        c = next_sibling(ns, c)
+    }
+}
+
+fn gen_fn_body(nk: Vec, nt: Vec, fc: Vec, ns: Vec, f: i64) -> i64 {
+    let mut c = first_child(fc, f)
+    while c >= 0 {
+        if node_kind(nk, c) == 5 { return c }
+        c = next_sibling(ns, c)
+    }
+    0 - 1
+}
+
+fn gen_seed_targs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, decl: i64, name: str) -> Vec {
+    let mut uniq = vec_new()
+    let mut empty = vec_new()
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        let mut k = node_kind(nk, f)
+        if k == 11 {
+            if decl_is_generic(nk, nt, fc, ns, f) == 0 {
+                gen_walk_calls(nk, nt, fc, ns, prog, gen_fn_body(nk, nt, fc, ns, f), decl, name, uniq, empty, "")
+            }
+        }
+        if k == 45 {
+            let mut m = first_child(fc, f)
+            while m >= 0 {
+                if node_kind(nk, m) == 11 {
+                    gen_walk_calls(nk, nt, fc, ns, prog, gen_fn_body(nk, nt, fc, ns, m), decl, name, uniq, empty, "")
+                }
+                m = next_sibling(ns, m)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    uniq
+}
+
+fn gen_collect_targs(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, decl: i64, name: str) -> Vec {
+    let mut uniq = gen_seed_targs(nk, nt, fc, ns, prog, decl, name)
+    let mut h = first_child(fc, prog)
+    while h >= 0 {
+        if node_kind(nk, h) == 11 {
+            if decl_is_generic(nk, nt, fc, ns, h) == 1 {
+                let mut hname = node_text(nt, h)
+                let mut huniq = gen_seed_targs(nk, nt, fc, ns, prog, h, hname)
+                let mut hnames = gen_decl_type_params(nk, nt, fc, ns, h)
+                let mut body = gen_fn_body(nk, nt, fc, ns, h)
+                let mut ui: i64 = 0
+                while ui < vec_len(huniq) {
+                    gen_walk_calls(nk, nt, fc, ns, prog, body, decl, name, uniq, hnames, vec_get_str(huniq, ui))
+                    ui = ui + 1
+                }
+            }
+        }
+        h = next_sibling(ns, h)
+    }
+    uniq
+}

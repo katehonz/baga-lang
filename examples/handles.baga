@@ -1,0 +1,11 @@
+// handles.baga — LP8-F: str_h/h_str и map_h/h_map (i64 handle cast-ове).
+// Същата форма като bytes_handle.baga; нулево копие за go_bg hop.
+fn main() {
+    let s = "бага"
+    let sh = str_h(s)
+    print(h_str(sh))
+    let m = map_new()
+    map_set(m, "k", 7)
+    let mh = map_h(m)
+    print(map_get(h_map(mh), "k"))
+}

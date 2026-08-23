@@ -5,7 +5,9 @@
 which corner of the sound / zero-dependency / complete triangle each one costs*
 
 **Artifact:** the Baga compiler, after milestones M0–M18
-**Status:** positioning and feasibility sketches; not implemented
+**Status:** liveness wait-for acyclicity is M19 (structured fragment);
+even powers and the BV identity envelope are M20; full bit-blasting and
+rich mixed polynomials remain sketches
 
 ---
 
@@ -87,7 +89,22 @@ most likely to yield a clean next chapter.
 **Phase 5 sketch (2026-08-05):** `examples/verify/liveness_struct.baga`
 proves two *counting* progress lemmas under `--verify` (not temporal
 liveness): fixed-N unanimous 2PC ⇒ commit (`tpc_all_yes`); matched fan-in
-counts ⇒ balanced (`fanin_matched`). Wait-for acyclicity remains open.
+counts ⇒ balanced (`fanin_matched`).
+
+**M19 / Phase 6 (2026-08-23):** wait-for acyclicity is closed for the
+*structured* fragment. `--verify` scans each `go` worker for a recv-first
+or send-first first blocking op on the channel argument, counts parent
+`send`/`recv`, and emits kind-3 protocol obligations:
+
+- sequential send then recv, join after send, recv after a send-first
+  worker → **PROVEN** (acyclic);
+- join before send to a recv-first worker, recv with no matching
+  send/producer → **REFUTED** (cycle).
+
+Oracle: `examples/verify/waitfor.baga`. Still not temporal liveness (no
+fairness/starvation) and not send-blocking on a full buffer; `if`/`while`/
+nested `go` stay honest no-claim. The remaining liveness darkness is
+fairness and unstructured dynamic scheduling.
 
 ---
 
@@ -142,6 +159,15 @@ The honest verdict: option 2 is free and likely permanent; option 1 buys real
 power at the cost of a small in-house solver — a defensible but real
 concession.
 
+**M20 (2026-08-23):** option 2 lands. Idempotence (`n&n=n`, `n|n=n`),
+`n|-1=-1`, const-fold of `&|^`, low-bit masks `n&(2^k-1) ∈ {0..2^k-1}`
+for any sign, and a nonnegative variable envelope (`0 ≤ n&m ≤ n,m`,
+`n|m ≥ n,m`). Oracle: `examples/verify/bitwise_mask.baga`.
+
+**M21 (2026-08-23):** `n ^ -1` rewrites to `-n-1` (`~n` on i64 two's
+complement, exact at INT64_MIN). Oracle: `examples/verify/bitwise_xor_not.baga`.
+Still no bit-blast, no wrap-as-value, no variable XOR / unsign-less mask.
+
 ---
 
 ## 3. Rich polynomials
@@ -192,6 +218,17 @@ The honest verdict: option 1 is the natural next step and preserves every
 property the monograph claims; option 2's checker-only variant is
 intriguing (finding is hard, checking is cheap — the same asymmetry that makes
 `--verify` possible at all) but speculative.
+
+**M20 (2026-08-23):** option 1 lands for *pure even powers*. A recorded
+product that is n^k (left-associated `n*n*n*n` is deg 4) injects
+`n^{2k} >= 0` into the FM core; when the inner n^{k} is also recorded,
+`n^{2k} >= n^k` (square dominance). Cubes were already the M8 sign table.
+Oracle: `examples/verify/poly_even.baga`.
+
+**M21 (2026-08-23):** mixed *consecutive* products. Two linear factors
+that differ by ±1 satisfy `n(n±1) ≥ 0` and `p ≥` the lesser factor.
+`n(n+2)` is refuted at `n = -1`. Oracle: `examples/verify/poly_consec.baga`.
+Symbolic exponents, general mixed polynomials, and SOS stay open.
 
 ---
 

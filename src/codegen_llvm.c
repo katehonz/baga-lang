@@ -5560,10 +5560,21 @@ static LLVMValueRef closure_wrapper_named(const char *fn_name) {
     return wrap;
 }
 
+/* M27: ламбда в generic fn — уникално име per инстанция (споделен AST). */
+static const char *lambda_emit_name_llvm(Node *n, char *buf, size_t nbuf) {
+    const char *base = n->fn_name ? n->fn_name : "__lam_x";
+    if (lg.gen_fn && lg.gen_inst >= 0) {
+        snprintf(buf, nbuf, "%s__i%d", base, lg.gen_inst);
+        return buf;
+    }
+    return base;
+}
+
 /* wrapper за ламбда: <mangled>__clo(i8* env, params...); captures се
  * разопаковат като локални копия от env struct-а. Ленив, по веднъж на възел. */
 static LLVMValueRef emit_lambda_wrapper(Node *n, LLVMTypeRef env_ty) {
-    char *m = llvm_mangle(n->fn_name ? n->fn_name : "__lam_x");
+    char lnm[256];
+    char *m = llvm_mangle(lambda_emit_name_llvm(n, lnm, sizeof lnm));
     char wn[600];
     snprintf(wn, sizeof wn, "%s__clo", m);
     free(m);
@@ -7714,7 +7725,8 @@ static void predeclare_fn_llvm(Node *fn) {
     }
     Node *spec = fn->fn_body ? find_ensures_spec_llvm(fn->fn_name) : NULL;
     if (spec) {
-        char *im = impl_name_of(fn->fn_name);
+        /* M27: generic инстанция — impl носи synth името */
+        char *im = impl_name_of(emit_name_of(fn));
         LLVMAddFunction(lg.mod, im, fn_ty);
         free(im);
     }
@@ -7727,7 +7739,7 @@ static void predeclare_fn_llvm(Node *fn) {
 static void emit_fn_llvm(Node *fn, Node *spec) {
     if (!fn->fn_body) return; /* само декларация */
 
-    char *m = spec ? impl_name_of(fn->fn_name) : llvm_mangle(emit_name_of(fn));
+    char *m = spec ? impl_name_of(emit_name_of(fn)) : llvm_mangle(emit_name_of(fn));
     LLVMValueRef fn_val = LLVMGetNamedFunction(lg.mod, m);
     free(m);
 
@@ -7811,10 +7823,10 @@ static void emit_fn_llvm(Node *fn, Node *spec) {
 
 /* Wrapper с публичното име: requires преди повикването, ensures след него. */
 static void emit_wrapper_llvm(Node *fn, Node *spec) {
-    char *m = llvm_mangle(fn->fn_name);
+    char *m = llvm_mangle(emit_name_of(fn));
     LLVMValueRef wrapper = LLVMGetNamedFunction(lg.mod, m);
     free(m);
-    char *im = impl_name_of(fn->fn_name);
+    char *im = impl_name_of(emit_name_of(fn));
     LLVMValueRef impl = LLVMGetNamedFunction(lg.mod, im);
     free(im);
 
@@ -8060,7 +8072,10 @@ void codegen_llvm(Node *program, const char *output_path, Checker *chk, int rc) 
                 for (int k = 0; k < item->inst_count; k++) {
                     if (chk) checker_recheck_inst(chk, item, k);
                     lg.gen_fn = item; lg.gen_inst = k;
-                    emit_fn_llvm(item, NULL);
+                    Node *spec = find_ensures_spec_llvm(item->fn_name);
+                    if (spec && chk) checker_recheck_spec(chk, spec, item, k);
+                    emit_fn_llvm(item, spec);
+                    if (spec) emit_wrapper_llvm(item, spec);
                 }
                 lg.gen_fn = NULL; lg.gen_inst = -1;
             } else {

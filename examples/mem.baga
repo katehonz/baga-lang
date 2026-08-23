@@ -1,0 +1,22 @@
+// mem.baga — LP8-H: mem_mark/rewind + persist в self (bump арена).
+// concat минава през baga_alloc; rewind връща ephemeral блоковете.
+// Persist веригата не се пипа. LLVM отказва честно (C-only, като docs).
+fn main() {
+    let keep = concat("keep", "-me")
+    let m = mem_mark()
+    let junk = concat("junk", "-tmp")
+    mem_rewind(m)
+    print(keep)
+
+    mem_persist_begin()
+    let p = concat("ok", "-p")
+    mem_persist_end()
+    let m2 = mem_mark()
+    let j2 = concat("x", "y")
+    mem_rewind(m2)
+    print(p)
+
+    let m3 = mem_mark()
+    mem_rewind(m3)
+    print(keep)
+}

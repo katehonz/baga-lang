@@ -1,0 +1,61 @@
+// generic_lambda_test — M27: ламбда в тяло на generic fn.
+//
+// Checker-ът вече приемаше ламбдите; codegen емитуваше едно __lam_N за
+// всички инстанции (конфликт на типове в C, мълчалив reuse в LLVM).
+// Сега wrapper-ът е __lam_N__iK per инстанция. Двата бекенда, с и без --rc.
+// Gate: tests/llvm_rc.sh + baga-test discovery.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn apply_id<T>(x: T) -> T {
+    let f = fn [] (y: T) -> T { return y }
+    return f(x)
+}
+
+fn make_id<T>() -> fn(T) -> T {
+    return fn [] (y: T) -> T { return y }
+}
+
+fn add_cap(k: i64) -> fn(i64) -> i64 {
+    return fn [k] (x: i64) -> i64 { return x + k }
+}
+
+fn add_cap_g<T>(k: T) -> fn(T) -> T {
+    return fn [k] (x: T) -> T { return x + k }
+}
+
+fn apply<T, U>(x: T, f: fn(T) -> U) -> U {
+    return f(x)
+}
+
+fn main() -> i64 {
+    // 1. identity ламбда, две инстанции (i64 + str) — конфликтът на
+    //    wrapper имената беше тук
+    check("id_i64", apply_id(41) + 1 == 42)
+    check("id_str", apply_id("кот") == "кот")
+
+    // 2. ламбда като върнат fn стойност, явна инстанция (T не е в args)
+    let fi: fn(i64) -> i64 = make_id<i64>()
+    let fs: fn(str) -> str = make_id<str>()
+    check("ret_i64", fi(7) == 7)
+    check("ret_str", fs("ба") == "ба")
+
+    // 3. capture на i64 (не-generic, регресия) + generic capture T=i64
+    let a = add_cap(10)
+    check("cap", a(3) == 13)
+    let g = add_cap_g(4)
+    check("cap_g", g(5) == 9)
+
+    // 4. ламбда, създадена в generic тяло, подадена като fn стойност
+    check("apply_lam", apply<i64, i64>(6, fi) == 6)
+
+    print("generic_lambda_test: all passed")
+    return 0
+}

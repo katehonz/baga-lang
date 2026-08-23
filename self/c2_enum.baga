@@ -265,10 +265,62 @@ fn emit_sum_enum_decl(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, en: i64) {
     }
 }
 
-// Декларации на типовете: plain enum-и (typedef enum), после struct-ове,
-// после sum enum-и (payload-ите им може да са struct/enum — редът на
-// деклариране в изходника трябва да е dependency-нарастващ, като при
-// emit_structs_and_sum_enums на bootstrap-а).
+fn struct_is_generic(nk: Vec, nt: Vec, fc: Vec, ns: Vec, st: i64) -> i64 {
+    let mut gc = first_child(fc, st)
+    while gc >= 0 {
+        if node_kind(nk, gc) == 43 { return 1 }
+        gc = next_sibling(ns, gc)
+    }
+    0
+}
+
+// Има ли struct-ът пряко поле от sum-enum тип (не Vec/Map — те са указатели).
+fn struct_has_sum_field(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, st: i64) -> i64 {
+    let mut fld = first_child(fc, st)
+    while fld >= 0 {
+        if node_kind(nk, fld) == 25 {
+            let mut ftext = node_text(nt, fld)
+            let mut ci = bfind(ftext, 58, 0)
+            if ci >= 0 {
+                let mut ftype = substr(ftext, ci + 1, len(ftext))
+                if bfind(ftype, 60, 0) < 0 {
+                    let mut ed = enum_by_name(nk, nt, fc, ns, prog, ftype)
+                    if ed >= 0 {
+                        if enum_is_sum(nk, nt, fc, ns, ed) == 1 { return 1 }
+                    }
+                }
+            }
+        }
+        fld = next_sibling(ns, fld)
+    }
+    0
+}
+
+fn emit_one_struct(nk: Vec, nt: Vec, fc: Vec, ns: Vec, st: i64) {
+    write("typedef struct {\n")
+    let mut fld = first_child(fc, st)
+    while fld >= 0 {
+        if node_kind(nk, fld) == 25 {
+            let mut ftext = node_text(nt, fld)
+            let mut ci: i64 = 0
+            let mut fnl = len(ftext)
+            while ci < fnl {
+                if char_at(ftext, ci) == 58 { break }
+                ci = ci + 1
+            }
+            let mut fname = substr(ftext, 0, ci)
+            let mut ftype = "i64"
+            if ci + 1 < fnl { ftype = substr(ftext, ci + 1, fnl) }
+            write(concat(concat(concat("    ", c_type(ftype)), concat(" ", mangle(fname))), ";\n"))
+        }
+        fld = next_sibling(ns, fld)
+    }
+    write(concat(concat("} ", mangle(node_text(nt, st))), ";\n\n"))
+}
+
+// Декларации: plain enum-и, struct-ове без sum-enum полета, sum enum-и,
+// после struct-ове със sum-enum полета (LP8-G). Payload на enum може да
+// е struct — затова обикновените struct-ове са преди sum enum-ите.
 fn emit_type_decls(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
     let mut en = first_child(fc, prog)
     while en >= 0 {
@@ -290,37 +342,14 @@ fn emit_type_decls(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
     let mut st = first_child(fc, prog)
     while st >= 0 {
         if node_kind(nk, st) == 21 {
-            // LP8-D: generic struct няма собствен typedef — само инстанции
-            // (emit_gen_struct_typedefs по-долу)
-            let mut is_gen: i64 = 0
-            let mut gc = first_child(fc, st)
-            while gc >= 0 {
-                if node_kind(nk, gc) == 43 { is_gen = 1 }
-                gc = next_sibling(ns, gc)
-            }
-            if is_gen == 0 {
-                write("typedef struct {\n")
-                let mut fld = first_child(fc, st)
-                while fld >= 0 {
-                    let mut ftext = node_text(nt, fld)
-                    let mut ci: i64 = 0
-                    let mut fnl = len(ftext)
-                    while ci < fnl {
-                        if char_at(ftext, ci) == 58 { break }
-                        ci = ci + 1
-                    }
-                    let mut fname = substr(ftext, 0, ci)
-                    let mut ftype = "i64"
-                    if ci + 1 < fnl { ftype = substr(ftext, ci + 1, fnl) }
-                    write(concat(concat(concat("    ", c_type(ftype)), concat(" ", mangle(fname))), ";\n"))
-                    fld = next_sibling(ns, fld)
+            if struct_is_generic(nk, nt, fc, ns, st) == 0 {
+                if struct_has_sum_field(nk, nt, fc, ns, prog, st) == 0 {
+                    emit_one_struct(nk, nt, fc, ns, st)
                 }
-                write(concat(concat("} ", mangle(node_text(nt, st))), ";\n\n"))
             }
         }
         st = next_sibling(ns, st)
     }
-    // LP8-D: typedef-и на generic struct инстанциите
     emit_gen_struct_typedefs(nk, nt, fc, ns, prog)
     let mut se = first_child(fc, prog)
     while se >= 0 {
@@ -330,6 +359,17 @@ fn emit_type_decls(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
             }
         }
         se = next_sibling(ns, se)
+    }
+    st = first_child(fc, prog)
+    while st >= 0 {
+        if node_kind(nk, st) == 21 {
+            if struct_is_generic(nk, nt, fc, ns, st) == 0 {
+                if struct_has_sum_field(nk, nt, fc, ns, prog, st) == 1 {
+                    emit_one_struct(nk, nt, fc, ns, st)
+                }
+            }
+        }
+        st = next_sibling(ns, st)
     }
 }
 

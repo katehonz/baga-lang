@@ -7,9 +7,19 @@
 // bounded worker pool (pool_map). Емитва се безусловно в preamble-а,
 // както при bootstrap-а — -pthread вече е в link флаговете.
 //
-// Извън покритието (остават language-ниво отказ): C1 сигналите
-// (signal_watch/check/clear/wait/raise) — не се ползват от par*
-// примерите и runtime-ът им е отделна машинерия (sigaction).
+// LP8-F: C1 сигнали + str_h/map_h (handle cast-ове) се емитуват тук
+// заедно с par runtime-а — отделна машинерия, но същият preamble.
+
+fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn expr_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str
+fn type_base(t: str) -> str
+fn type_args_inner(t: str) -> str
+fn type_c_name(t: str) -> str
+fn vec_elem_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, vexpr: i64, fuel: i64) -> str
+fn struct_decl_of(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
+fn enum_by_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
+fn enum_is_sum(nk: Vec, nt: Vec, fc: Vec, ns: Vec, enode: i64) -> i64
+fn map_val_kind(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, mexpr: i64) -> str
 
 // par builtin → C runtime име ("" = не е par builtin)
 fn par_builtin_cname(bn: str) -> str {
@@ -386,5 +396,131 @@ fn emit_par_runtime() {    write("/* ---- concurrency (!Par): OS threads + i64 c
     write("    free(hs); free(ctx);\n")
     write("    return out;\n")
     write("}\n")
+    write("static int64_t baga_str_h(const char *s) { return (int64_t)(intptr_t)s; }\n")
+    write("static const char *baga_h_str(int64_t h) { return (const char *)(intptr_t)h; }\n")
+    write("static int64_t baga_map_h(baga_Map *m) { return (int64_t)(intptr_t)m; }\n")
+    write("static baga_Map *baga_h_map(int64_t h) { return (baga_Map *)(intptr_t)h; }\n")
+    write("static volatile sig_atomic_t baga_sig_seen = 0;\n")
+    write("static void baga_sig_handler(int s) { baga_sig_seen = s; }\n")
+    write("static int64_t baga_signal_watch(int64_t sig) {\n")
+    write("    if (sig <= 0 || sig >= 64) return -1;\n")
+    write("    struct sigaction sa; memset(&sa, 0, sizeof sa);\n")
+    write("    sa.sa_handler = baga_sig_handler;\n")
+    write("    sigemptyset(&sa.sa_mask);\n")
+    write("    if (sigaction((int)sig, &sa, NULL) != 0) return -1;\n")
+    write("    return 0;\n")
+    write("}\n")
+    write("static int64_t baga_signal_check(void) { return (int64_t)baga_sig_seen; }\n")
+    write("static int64_t baga_signal_clear(void) {\n")
+    write("    int64_t v = (int64_t)baga_sig_seen; baga_sig_seen = 0; return v;\n")
+    write("}\n")
+    write("static int64_t baga_signal_wait(int64_t ms) {\n")
+    write("    if (baga_sig_seen) return (int64_t)baga_sig_seen;\n")
+    write("    if (ms == 0) return 0;\n")
+    write("    if (ms < 0) {\n")
+    write("        while (!baga_sig_seen) {\n")
+    write("            struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 50000000L;\n")
+    write("            nanosleep(&ts, NULL);\n")
+    write("        }\n")
+    write("        return (int64_t)baga_sig_seen;\n")
+    write("    }\n")
+    write("    int64_t left = ms;\n")
+    write("    while (left > 0) {\n")
+    write("        if (baga_sig_seen) return (int64_t)baga_sig_seen;\n")
+    write("        int64_t step = left > 50 ? 50 : left;\n")
+    write("        struct timespec ts; ts.tv_sec = step / 1000;\n")
+    write("        ts.tv_nsec = (step % 1000) * 1000000L;\n")
+    write("        nanosleep(&ts, NULL);\n")
+    write("        left -= step;\n")
+    write("    }\n")
+    write("    return baga_sig_seen ? (int64_t)baga_sig_seen : 0;\n")
+    write("}\n")
+    write("static int64_t baga_signal_raise(int64_t sig) {\n")
+    write("    return raise((int)sig) == 0 ? 0 : -1;\n")
+    write("}\n")
+    write("static void baga_cell2_free(int64_t h) { if (h) free((void *)(intptr_t)h); }\n")
+    write("static void baga_drop_bytes(baga_bytes b) { if (b.data) free(b.data); }\n")
+    write("static void baga_drop_vec(baga_Vec *v, int elem_kind, int64_t elem_size) {\n")
+    write("    if (!v) return;\n")
+    write("    if (elem_kind == 2)\n")
+    write("        for (int64_t i = 0; i < v->len; i++) free(v->data[i]);\n")
+    write("    if (elem_kind == 3)\n")
+    write("        for (int64_t i = 0; i < v->len; i++) baga_drop_vec((baga_Vec *)v->data[i], 0, 0);\n")
+    write("    free(v->data); free(v);\n")
+    write("}\n")
+    write("static void baga_drop_map(baga_Map *m, int val_is_box, int64_t val_size) {\n")
+    write("    if (!m) return;\n")
+    write("    for (int64_t i = 0; i < m->nb; i++) {\n")
+    write("        baga_MapEntry *e = m->b[i];\n")
+    write("        while (e) {\n")
+    write("            baga_MapEntry *nx = e->next;\n")
+    write("            if (val_is_box && e->pv) free(e->pv);\n")
+    write("            free(e); e = nx;\n")
+    write("        }\n")
+    write("    }\n")
+    write("    free(m->b); free(m);\n")
+    write("}\n")
+    write("static void baga_drop_fn(int64_t h) { baga_cell2_free(h); }\n")
     write("\n")
+}
+
+// LP8-G: drop(x) — тип от expr_type_name; malloc/free, не arena baga_free.
+fn emit_drop_call(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, callee: i64) -> str {
+    let mut arg = next_sibling(ns, callee)
+    if arg < 0 { return "0" }
+    let mut ae = emit_expr(nk, nt, fc, ns, prog, arg)
+    let mut ty = expr_type_name(nk, nt, fc, ns, prog, arg)
+    if str_eq(ty, "bytes") == 1 {
+        return concat(concat("baga_drop_bytes(", ae), ")")
+    }
+    if str_eq(ty, "fn") == 1 {
+        return concat(concat("baga_drop_fn(", ae), ")")
+    }
+    if len(ty) > 3 {
+        if str_eq(substr(ty, 0, 3), "fn(") == 1 {
+            return concat(concat("baga_drop_fn(", ae), ")")
+        }
+    }
+    let mut base = type_base(ty)
+    if str_eq(base, "Vec") == 1 {
+        let mut elem = type_args_inner(ty)
+        if str_eq(elem, "") == 1 { elem = vec_elem_type_name(nk, nt, fc, ns, prog, arg, 8) }
+        let mut ebase = type_base(elem)
+        if str_eq(ebase, "Vec") == 1 {
+            return concat(concat("baga_drop_vec(", ae), ", 3, 0)")
+        }
+        if str_eq(elem, "str") == 1 {
+            return concat(concat("baga_drop_vec(", ae), ", 1, 0)")
+        }
+        if str_eq(elem, "bytes") == 1 {
+            return concat(concat("baga_drop_vec(", ae), ", 2, (int64_t)sizeof(baga_bytes))")
+        }
+        let mut sd = struct_decl_of(nk, nt, fc, ns, prog, ebase)
+        let mut ed = enum_by_name(nk, nt, fc, ns, prog, ebase)
+        if sd >= 0 {
+            return concat(concat(concat("baga_drop_vec(", ae), ", 2, (int64_t)sizeof("), concat(type_c_name(elem), "))"))
+        }
+        if ed >= 0 {
+            if enum_is_sum(nk, nt, fc, ns, ed) == 1 {
+                return concat(concat(concat("baga_drop_vec(", ae), ", 2, (int64_t)sizeof("), concat(type_c_name(elem), "))"))
+            }
+        }
+        return concat(concat("baga_drop_vec(", ae), ", 0, 0)")
+    }
+    if str_eq(base, "Map") == 1 {
+        let mut vk = map_val_kind(nk, nt, fc, ns, prog, arg)
+        if len(vk) > 4 {
+            if str_eq(substr(vk, 0, 4), "box:") == 1 {
+                let mut vt = substr(vk, 4, len(vk))
+                return concat(concat(concat("baga_drop_map(", ae), ", 1, (int64_t)sizeof("), concat(type_c_name(vt), "))"))
+            }
+        }
+        let mut vb = type_base(vk)
+        let mut sd2 = struct_decl_of(nk, nt, fc, ns, prog, vb)
+        if sd2 >= 0 {
+            return concat(concat(concat("baga_drop_map(", ae), ", 1, (int64_t)sizeof("), concat(type_c_name(vk), "))"))
+        }
+        return concat(concat("baga_drop_map(", ae), ", 0, 0)")
+    }
+    "0"
 }

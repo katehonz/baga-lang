@@ -1,0 +1,92 @@
+// bitwise_mask.baga — M20: reflected BV identities on the M13 envelope.
+//
+// No SAT / no bit-blasting. Each rule is a ℤ identity:
+//   n & n = n, n | n = n, n | -1 = -1
+//   n & (2^k-1) ∈ {0 .. 2^k-1}   (two's complement, any sign)
+//   n>=0, m>=0 ⇒  0 ≤ n&m ≤ n,m  and  n|m ≥ n,m
+// Variable XOR, signed wrap as a *value*, and n&m with a symbolic mask
+// without a sign stay honestly UNKNOWN.
+//
+//   ./baga --verify examples/verify/bitwise_mask.baga
+
+spec and3 {
+    input: n: i64
+    output: i64
+    ensures: output >= 0, output <= 3
+}
+fn and3(n: i64) -> i64 {
+    return n & 3
+}
+
+spec and7 {
+    input: n: i64
+    output: i64
+    ensures: output >= 0, output <= 7
+}
+fn and7(n: i64) -> i64 {
+    return n & 7
+}
+
+spec and_self {
+    input: n: i64
+    output: i64
+    ensures: output >= n, output <= n
+}
+fn and_self(n: i64) -> i64 {
+    return n & n
+}
+
+spec or_self {
+    input: n: i64
+    output: i64
+    ensures: output >= n, output <= n
+}
+fn or_self(n: i64) -> i64 {
+    return n | n
+}
+
+spec or_allones {
+    input: n: i64
+    output: i64
+    ensures: output >= 0 - 1, output <= 0 - 1
+}
+fn or_allones(n: i64) -> i64 {
+    return n | (0 - 1)
+}
+
+spec and_nonneg {
+    input: n: i64, m: i64
+    output: i64
+    requires: n >= 0, m >= 0
+    ensures: output >= 0, output <= n, output <= m
+}
+fn and_nonneg(n: i64, m: i64) -> i64 {
+    return n & m
+}
+
+spec or_nonneg {
+    input: n: i64, m: i64
+    output: i64
+    requires: n >= 0, m >= 0
+    ensures: output >= n, output >= m, output >= 0
+}
+fn or_nonneg(n: i64, m: i64) -> i64 {
+    return n | m
+}
+
+// Soundness: n&3 >= 1 is false (n even).
+spec and3_bad {
+    input: n: i64
+    output: i64
+    ensures: output >= 1
+}
+fn and3_bad(n: i64) -> i64 {
+    return n & 3
+}
+
+fn main() {
+    print(and3(5))
+    print(and_self(9))
+    print(or_allones(4))
+    print(and_nonneg(6, 3))
+}
