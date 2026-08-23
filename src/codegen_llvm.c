@@ -5713,10 +5713,24 @@ static LLVMValueRef emit_binop_llvm(BinOp op, LLVMValueRef left, LLVMValueRef ri
             result = LLVMBuildXor(lg.builder, left, right, name); break;
         case OP_LSHIFT:
             if (isdbl) llvm_unsupported("<< върху f64");
-            result = LLVMBuildShl(lg.builder, left, right, name); break;
+            /* M22: маскиран брояч (b & 63) — детерминирано; паритет с
+               baga_shl_i64 в C бекенда. */
+            {
+                LLVMValueRef m = LLVMBuildAnd(lg.builder, right,
+                    LLVMConstInt(LLVMTypeOf(right), 63, 0), tmp_name());
+                result = LLVMBuildShl(lg.builder, left, m, name);
+            }
+            break;
         case OP_RSHIFT:
             if (isdbl) llvm_unsupported(">> върху f64");
-            result = LLVMBuildAShr(lg.builder, left, right, name); break;
+            /* M22: аритметично отместване (floor) с маскиран брояч — паритет
+               с baga_ashr_i64 в C бекенда. */
+            {
+                LLVMValueRef m = LLVMBuildAnd(lg.builder, right,
+                    LLVMConstInt(LLVMTypeOf(right), 63, 0), tmp_name());
+                result = LLVMBuildAShr(lg.builder, left, m, name);
+            }
+            break;
         default:     llvm_unsupported("непознат бинарен оператор"); break;
     }
     free(name);

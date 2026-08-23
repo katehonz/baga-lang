@@ -2300,6 +2300,27 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, ", ");
                 emit_expr(cg, n->right);
                 fprintf(f, ")");
+            } else if (n->bin_op == OP_RSHIFT &&
+                       (!n->left->type || n->left->type->kind != TYPE_F64) &&
+                       (!n->right->type || n->right->type->kind != TYPE_F64)) {
+                /* M22: `>>` е аритметично отместване (floor) — преносимо
+                   чрез baga_ashr_i64 (паритет с LLVM AShr; C `>>` върху
+                   отрицателни е имплементационно дефиниран). */
+                fprintf(f, "(baga_ashr_i64((int64_t)(");
+                emit_expr(cg, n->left);
+                fprintf(f, "), (int64_t)(");
+                emit_expr(cg, n->right);
+                fprintf(f, ")))");
+            } else if (n->bin_op == OP_LSHIFT &&
+                       (!n->left->type || n->left->type->kind != TYPE_F64) &&
+                       (!n->right->type || n->right->type->kind != TYPE_F64)) {
+                /* M22: `<<` с маскиран брояч (b & 63) — детерминирано,
+                   паритет с LLVM shl след маската. */
+                fprintf(f, "(baga_shl_i64((int64_t)(");
+                emit_expr(cg, n->left);
+                fprintf(f, "), (int64_t)(");
+                emit_expr(cg, n->right);
+                fprintf(f, ")))");
             } else {
                 fprintf(f, "(");
                 emit_expr(cg, n->left);
@@ -5910,6 +5931,19 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = baga_alloc(24); snprintf(r, 24, \"%%lld\", (long long)x); return r; }\n");
     fprintf(out, "static const char *baga_f64_to_str(double x) { char *r = baga_alloc(32); snprintf(r, 32, \"%%g\", x); return r; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
+    /* M22: отмествания с маскиран брояч (b & 63) — детерминирано, паритет
+     * с LLVM (shl/ashr след and 63). C `>>` върху отрицателни е
+     * имплементационно дефиниран; baga_ashr_i64 е аритметично (floor). */
+    fprintf(out, "static int64_t baga_ashr_i64(int64_t a, int64_t b) {\n");
+    fprintf(out, "    uint64_t m = (uint64_t)b & 63;\n");
+    fprintf(out, "    if (m == 0) return a;\n");
+    fprintf(out, "    uint64_t u = (uint64_t)a;\n");
+    fprintf(out, "    uint64_t s = (a < 0) ? ~UINT64_C(0) : 0;\n");
+    fprintf(out, "    return (int64_t)((u >> (unsigned)m) | (s << (unsigned)(64 - m)));\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_shl_i64(int64_t a, int64_t b) {\n");
+    fprintf(out, "    return (int64_t)((uint64_t)a << ((uint64_t)b & 63));\n");
+    fprintf(out, "}\n");
     fprintf(out, "static int baga_argc = 0;\n");
     fprintf(out, "static char **baga_argv = 0;\n");
     fprintf(out, "static int64_t baga_arg_count(void) { return baga_argc > 0 ? baga_argc - 1 : 0; }\n");

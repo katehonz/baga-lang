@@ -42,6 +42,17 @@ spec lp6_shr_neg_bad {
 }
 fn lp6_shr_neg_bad(n: i64) -> i64 { return n >> 1 }
 
+// M22: `>>` е аритметично отместване (floor), не C trunc. При n = -5:
+// -5 >> 1 = -3 и 2*(-3) - (-5) = -1 < 0 — твърдението е лъжа. Ако
+// верификаторът вярва на trunc аксиомата d*q >= n, ще каже ДОКАЗАНО.
+spec lp6_shr_floor_bad {
+    input: n: i64
+    requires: n <= -1
+    output: i64
+    ensures: 2 * output - n >= 0
+}
+fn lp6_shr_floor_bad(n: i64) -> i64 { return n >> 1 }
+
 // ── products without sign premises ───────────────────────────────────────
 
 // x*y <= 0 with no sign information: false at x=y=1.

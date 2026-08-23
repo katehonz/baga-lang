@@ -1,0 +1,43 @@
+// ashr_test.baga — M22: отместванията са дефинирани с маскиран брояч
+// (b & 63) и `>>` е аритметично (floor; two's complement).
+//
+// Пинава семантиката, която верификаторът моделира (docs/thesis-open-problems.md
+// §2 — signed right shift on negatives):
+//   -5 >> 1 = -3 (floor, НЕ C trunc = -2)
+//   -1 >> k = -1; INT64_MIN >> 63 = -1 (sign-fill)
+//   извън-граничен/отрицателен брояч → маскиран (b & 63): (-5) >> 64 = -5,
+//   (-5) >> -1 = -1; 5 << -1 = 5 << 63
+// C бекендът ползва baga_ashr_i64/baga_shl_i64; LLVM — and 63 + ashr/shl.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("neg_odd", (-5) >> 1 == -3)
+    check("neg_even", (-4) >> 1 == -2)
+    check("neg_deep", (-7) >> 2 == -2)
+    check("pos", 5 >> 1 == 2)
+    check("zero", 0 >> 3 == 0)
+    check("neg_one", (-1) >> 5 == -1)
+    check("int64_min", (1 << 63) >> 63 == -1)
+    check("int64_min_1", (1 << 63) >> 1 == -(1 << 62))
+    check("max", 9223372036854775807 >> 62 == 1)
+    check("big_count_neg", (-5) >> 64 == -5)
+    check("big_count_pos", 5 >> 64 == 5)
+    check("neg_count_neg", (-5) >> (-1) == -1)
+    check("neg_count_pos", 5 >> (-1) == 0)
+    check("odd_mask", (-5) >> 65 == -3)
+    check("odd_mask_pos", 5 >> 65 == 2)
+    check("id_zero_count", (-9) >> 0 == -9)
+    check("shl_1", 1 << 3 == 8)
+    check("shl_neg", (-1) << 1 == -2)
+    check("shl_big", 5 << 64 == 5)
+    check("shl_neg_count", 5 << (-1) == 1 << 63)
+    check("shl_sign", 1 << 63 == -(1 << 62) - (1 << 62))
+}

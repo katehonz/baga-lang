@@ -45,6 +45,23 @@ typedef struct {
 
 #define vec_free(v) do { free((v).data); (v).data = NULL; (v).len = (v).cap = 0; } while (0)
 
+/* M22: отместванията в Бага са дефинирани като маскиран брояч (b & 63) —
+ * детерминирано, платформо-независимо и съвпада с поведението на
+ * x86-64/arm64 (gcc/clang), което C бекендът е имал де факто. `>>` е
+ * аритметично (floor; two's complement) — паритет с LLVM AShr; C-овият
+ * `>>` върху отрицателни е имплементационно дефиниран, затова помощници. */
+static inline int64_t baga_ashr_i64(int64_t a, int64_t b) {
+    uint64_t m = (uint64_t)b & 63;
+    if (m == 0) return a;
+    uint64_t u = (uint64_t)a;
+    uint64_t s = (a < 0) ? ~UINT64_C(0) : 0;
+    return (int64_t)((u >> (unsigned)m) | (s << (unsigned)(64 - m)));
+}
+
+static inline int64_t baga_shl_i64(int64_t a, int64_t b) {
+    return (int64_t)((uint64_t)a << ((uint64_t)b & 63));
+}
+
 /* ============================================================
  *  Tokens
  * ============================================================ */

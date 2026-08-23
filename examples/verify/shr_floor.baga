@@ -1,0 +1,44 @@
+// shr_floor.baga — M22: signed right shift (аритметично отместване).
+//
+// `n >> k` = floor(n / 2^k) върху i64 two's complement (същата семантика
+// като LLVM ashr; C-овият `>>` върху отрицателни е impl-defined, затова
+// двата бекенда емитуват baga_ashr_i64). Затваря частта „signed right
+// shift on negatives" от docs/thesis-open-problems.md §2.2:
+//
+//   n >= 0  ⇒  0 <= q,  0 <= n - d·q <= d-1     (floor == trunc)
+//   n <= 0  ⇒  q <= 0,  q >= n, 0 <= n - d·q <= d-1
+//
+// Все още няма: пълен bit-blast, wrap като стойност, променлив XOR.
+//
+//   ./baga --verify examples/verify/shr_floor.baga
+
+// ── n >= 0: floor == trunc (като деление на 2^k) ─────────────────────────
+
+spec shr_nonneg {
+    input: n: i64
+    requires: n >= 0
+    output: i64
+    ensures: output >= 0, 4 * output - n <= 0, n - 4 * output <= 3
+}
+fn shr_nonneg(n: i64) -> i64 { return n >> 2 }
+
+// ── n <= -1: floor семантика ─────────────────────────────────────────────
+
+spec shr_neg {
+    input: n: i64
+    requires: n <= -1
+    output: i64
+    ensures: output <= 0, output >= n, 2 * output - n <= 0, n - 2 * output <= 1
+}
+fn shr_neg(n: i64) -> i64 { return n >> 1 }
+
+// ── const n се пресмята точно (ashr, не C trunc) ─────────────────────────
+
+spec shr_const {
+    input: n: i64
+    output: i64
+    ensures: output == -3
+}
+fn shr_const(n: i64) -> i64 { return (-5) >> 1 }
+
+fn main() {}

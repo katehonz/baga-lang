@@ -1,7 +1,8 @@
 // M13: sound special cases for bitwise ops — no full bitvector theory.
 // Identities: n|0=n, n&0=0, n^0=n, n^n=0, n&-1=n.
 // n&1 ∈ {0,1} over two's complement (NOT C % 2 for negative n).
-// n<<k = n * 2^k for small const k; n>>k as trunc / 2^k when n>=0.
+// n<<k = n * 2^k for small const k; n>>k as trunc / 2^k when n>=0,
+// floor (аритметично отместване) when n<=0 — M22 (shr_floor.baga).
 
 spec or_zero {
     input: n: i64

@@ -592,6 +592,16 @@ Two-character operators recognized by the lexer:
 Arithmetic requires numeric operands; applying `+` to a string and an integer,
 for example, is a compile-time error.
 
+Shifts (`<<`, `>>`) are defined deterministically (M22):
+
+- **Masked count**: the count is reduced to `b & 63` (as x86-64/arm64 hardware
+  does). An out-of-range count is not UB — `5 >> 64 == 5`, `5 >> (-1) == 0`,
+  `5 << (-1) == 1 << 63`.
+- **`>>` is arithmetic** (floor; two's complement sign-fill): `-5 >> 1 == -3`
+  (NOT C trunc `-2`), `-1 >> k == -1`. Parity with LLVM `ashr`; the C backend
+  emits `baga_ashr_i64` because C `>>` on negatives is implementation-defined.
+- A shift's result type is `i64`; `>>` on f64 is a backend error.
+
 ---
 
 ## 10. Structs
@@ -1402,6 +1412,25 @@ Oracles: `examples/verify/poly_even.baga`, `bitwise_mask.baga`.
 - `n ^ -1` is `-n-1` (`~n` in two's complement). Variable XOR stays UNKNOWN.
 
 Oracles: `examples/verify/poly_consec.baga`, `bitwise_xor_not.baga`.
+
+### 14.3.5 Signed right shift — floor semantics (M22)
+
+`n >> k` is arithmetic shift: `q = floor(n / 2^k)` over two's complement.
+`--verify` records the shift as its own entry (the count `k` instead of a
+divisor) and injects honest axioms:
+
+- `n >= 0` ⇒ `q >= 0`, `0 <= n - 2^k·q <= 2^k-1` (floor == trunc);
+- `n <= 0` ⇒ `q <= 0`, `q >= n`, `0 <= n - 2^k·q <= 2^k-1` (floor);
+- unknown sign — honestly weak (no axioms);
+- constant `n` is computed exactly (`(-5) >> 1 == -3`, not C trunc).
+
+This closes the "signed right shift on negatives" item of
+`docs/thesis-open-problems.md` §2 — including a soundness fix: before M22
+the verifier injected the trunc axiom `2^k·q >= n` for negative `n` (true
+for C trunc, false for ashr) — a potential false ДОКАЗАНО. Oracle:
+`examples/verify/shr_floor.baga`; adversarial case `lp6_shr_floor_bad` in
+`examples/verify/lp6_hunt.baga`. Still open: full bit-blasting, wrap as a
+value, variable XOR.
 
 ### 14.4 Preconditions (`requires:`)
 

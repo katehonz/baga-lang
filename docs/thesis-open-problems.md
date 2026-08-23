@@ -4,10 +4,11 @@
 *Three frontiers — liveness, full bitvectors, rich polynomials — and exactly
 which corner of the sound / zero-dependency / complete triangle each one costs*
 
-**Artifact:** the Baga compiler, after milestones M0–M18
+**Artifact:** the Baga compiler, after milestones M0–M22
 **Status:** liveness wait-for acyclicity is M19 (structured fragment);
-even powers and the BV identity envelope are M20; full bit-blasting and
-rich mixed polynomials remain sketches
+even powers and the BV identity envelope are M20; consecutive products and
+`~n` are M21; signed right shift (floor semantics) is M22; full bit-blasting
+and rich mixed polynomials remain sketches
 
 ---
 
@@ -126,7 +127,9 @@ Exact reasoning about:
 
 - masking with a **variable** mask (`n & m` for symbolic `m`) — today opaque;
 - two's-complement wrap as a *value* (not just an effect to be declared);
-- signed vs. logical right shift on negatives;
+- ~~signed vs. logical right shift on negatives~~ — **signed is closed (M22)**
+  with exact floor semantics (`n>>k = floor(n/2^k)`, masked count); *logical*
+  shift and arithmetic shift on i32 stay open;
 - CRC / hash / checksum code, where the bit pattern *is* the meaning.
 
 ### 2.3 Why it is hard — the zero-dependency corner
@@ -167,6 +170,20 @@ for any sign, and a nonnegative variable envelope (`0 ≤ n&m ≤ n,m`,
 **M21 (2026-08-23):** `n ^ -1` rewrites to `-n-1` (`~n` on i64 two's
 complement, exact at INT64_MIN). Oracle: `examples/verify/bitwise_xor_not.baga`.
 Still no bit-blast, no wrap-as-value, no variable XOR / unsign-less mask.
+
+**M22 (2026-08-23):** signed right shift on negatives. The language pins
+`>>` as arithmetic shift (floor) with a masked count (`b & 63`) in both
+backends — C `>>` on negatives is implementation-defined, so the C backend
+emits `baga_ashr_i64` and the LLVM backend masks before `ashr`. The
+verifier records `n >> k` with the *count* (not a divisor) and injects
+honest floor axioms: for `n ≥ 0` the trunc==floor envelope; for `n ≤ 0`
+`q ≤ 0`, `q ≥ n`, `0 ≤ n - 2^k·q ≤ 2^k-1`; unknown sign stays weak;
+constant `n` folds exactly. This also fixed a soundness bug: the shift was
+previously recorded as C-trunc division, whose `2^k·q ≥ n` axiom for
+negative `n` is false under ashr — a potential false PROVEN (now
+adversarially covered by `lp6_shr_floor_bad`). Oracle:
+`examples/verify/shr_floor.baga`. What remains of this frontier: full
+bit-blasting, wrap as a *value*, variable XOR, symbolic masks without sign.
 
 ---
 

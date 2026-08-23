@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_verify.sh — static verifier oracle (M0–M21 + proofs + --json).
+# run_verify.sh — static verifier oracle (M0–M22 + proofs + --json).
 # Called from scripts/run_tests.sh. Requires ./baga at repo root.
 set -eu
 
@@ -8,9 +8,9 @@ cd "$ROOT"
 BIN="${BAGA:-./baga}"
 BAGAIFLAGS="${BAGAIFLAGS:--I . -I app-product}"
 
-echo "=== verify (статична верификация, M0–M21) ==="
+echo "=== verify (статична верификация, M0–M22) ==="
 # C2: raft_term / tpc_decide са чисти продуктови фрагменти (не пълен Raft).
-for f in abs_val max2 clamp sum liveness_struct raft_term tpc_decide; do \
+for f in abs_val max2 clamp sum liveness_struct raft_term tpc_decide shr_floor; do \
 	"$BIN" $BAGAIFLAGS --verify examples/verify/$f.baga > /tmp/baga_verify_out.txt || true; \
 	grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt && ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \
 		&& echo "OK: $f доказано (completeness)" \
@@ -383,7 +383,7 @@ rc=0; "$BIN" $BAGAIFLAGS --verify --json examples/verify/bad_abs.baga > /tmp/bag
 	|| { echo "FAIL: --verify --json refuted"; cat /tmp/baga_verify_json_bad.txt; exit 1; }
 echo "=== LP6 soundness лов (адверсариална батерия) ==="
 "$BIN" $BAGAIFLAGS --verify examples/verify/lp6_hunt.baga > /tmp/baga_lp6_out.txt || true; \
-for s in lp6_div_neg_bad lp6_mod_neg_bad lp6_lsb_mod2_bad lp6_shr_neg_bad lp6_prod_bad lp6_sq_neg_bad; do \
+for s in lp6_div_neg_bad lp6_mod_neg_bad lp6_lsb_mod2_bad lp6_shr_neg_bad lp6_shr_floor_bad lp6_prod_bad lp6_sq_neg_bad; do \
 	grep -A2 "$s:" /tmp/baga_lp6_out.txt | grep -q "ensures #1.*ОБРОЧЕНО" \
 		&& echo "OK: LP6 $s — фалшивото твърдение е оброчено (не ДОКАЗАНО)" \
 		|| { echo "FAIL: LP6 $s — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }; \
