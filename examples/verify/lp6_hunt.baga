@@ -425,6 +425,32 @@ fn lp6_nested_inf_bad(n: i64) -> i64 !Par {
     return 0
 }
 
+// ── M30: a server loop does not break the cycle REFUTED ────────────────
+// Joining a recv-loop worker before any send is still a cycle — the
+// guaranteed first recv blocks, the parent waits on the join, nobody
+// sends. Treating the loop as "may complete eventually" and silencing
+// the REFUTED would hide a real deadlock.
+spec lp6_server_join_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output == 0
+}
+fn lp6_cons_loop(c: i64) -> i64 !Par {
+    while true {
+        let v = chan_recv(c)
+        if v == 0 { return 0 }
+    }
+}
+fn lp6_server_join_bad(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(lp6_cons_loop, c)
+    join(h)
+    chan_send(c, n)
+    return 0
+}
+
 fn main() {
     print(lp6_div_neg_bad(7, -2))
     print(lp6_mod_neg_bad(7, -2))

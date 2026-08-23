@@ -1396,10 +1396,11 @@ specification is judged by the compiler.
 This is not temporal liveness (no fairness); a blocking send on a full buffer
 is §14.3.7 (M24), counted loops in workers — §14.3.8 (M25), recv2/select —
 §14.3.9 (M26), if/else in workers — §14.3.10 (M27), joining an infinite
-worker — §14.3.11 (M28), nested go — §14.3.12 (M29). `while` bodies (the
-counts), nested `go` inside a branch/loop, packed arguments, non-constant
-loop bounds, and blocking ops on untracked channels are an honest no-claim —
-never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
+worker — §14.3.11 (M28), nested go — §14.3.12 (M29), server loops —
+§14.3.13 (M30). `while` bodies with a non-`true` condition, nested `go`
+inside a branch/loop, packed arguments, non-constant loop bounds, and
+blocking ops on untracked channels are an honest no-claim — never a false
+PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
 lemmas (fixed N) stay in `liveness_struct.baga`.
 
 ### 14.3.3 Even powers and the BV envelope (M20)
@@ -1623,6 +1624,32 @@ A worker that spawns workers itself is classified recursively (depth
 Oracle: `examples/verify/nested_go.baga`; adversarial cases
 `lp6_nested_cycle_bad`/`lp6_nested_inf_bad` in
 `examples/verify/lp6_hunt.baga`.
+
+### 14.3.13 Server loops — while true with an exit (M30)
+
+A `while true` with an exit (`return`/`break`) runs its body at least
+once:
+
+- **Guaranteed prefix.** The statements up to the first one that may
+  exit are counted and classify the first blocking op. Ops after the
+  exit do not count — a `send` after a conditional `return` is not
+  capacity.
+- **`wf_maybe_loop`.** The loop may spin forever: join-completion
+  PROVENs ("join after send" / "another producer") and the over-send
+  check are gated off. The cycle REFUTED stays sound: the guaranteed
+  first recv blocks, the parent waits on the join, nobody sends —
+  **REFUTED** "join before send" (it hangs at runtime).
+- **Directional unknown.** A loop producer marks unknown only the
+  REFUTED directions it could foil (recv/select — it may produce
+  unbounded); a loop consumer — only the send-blocking and over-send
+  REFUTEDs (it may drain unbounded). The converse directions stay
+  sound: consumption helps blocking, never prevents it.
+- **Boundaries.** Statements after the loop, after an `if` with a
+  spinning branch, and inside a `for` body with a server loop are not
+  guaranteed; a `while` with a non-`true` condition stays complex.
+
+Oracle: `examples/verify/while_loop.baga`; adversarial case
+`lp6_server_join_bad` in `examples/verify/lp6_hunt.baga`.
 
 ### 14.4 Preconditions (`requires:`)
 

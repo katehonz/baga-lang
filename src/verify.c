@@ -1464,6 +1464,7 @@ typedef struct {
     int wf_n_send;    /* HK_JOIN: worker sends on the channel arg (!wf_complex) */
     int wf_n_recv;    /* HK_JOIN: worker recvs on the channel arg (<=1 in fragment) */
     int wf_child_cons; /* HK_JOIN: M29 guaranteed recvs of unjoined children */
+    int wf_maybe_loop; /* HK_JOIN: M30 a server loop — completion not guaranteed */
     int wf_imprecise; /* HK_JOIN: counts are guaranteed minimums (M27 branches) */
     int wf_noreturn;  /* HK_JOIN: worker provably never completes (M28) */
     int n_send;       /* HK_CHAN: sends on this thread */
@@ -1504,6 +1505,7 @@ static void handles_set(HandleList *l, const char *var, int kind, int state, Lin
         e->wf_child_cons = 0;
         e->wf_imprecise = 0;
         e->wf_noreturn = 0;
+        e->wf_maybe_loop = 0;
         e->n_send = e->n_recv = e->n_bg_prod = e->n_bg_cons = e->wf_unknown = 0;
         e->wf_cap = -1;
         e->wf_sel_unknown = 0;
@@ -1530,6 +1532,7 @@ static void handles_clone_into(HandleList *dst, HandleList *src) {
         d->wf_child_cons = src->h[i].wf_child_cons;
         d->wf_imprecise = src->h[i].wf_imprecise;
         d->wf_noreturn = src->h[i].wf_noreturn;
+        d->wf_maybe_loop = src->h[i].wf_maybe_loop;
         d->worker = src->h[i].worker ? strdup(src->h[i].worker) : NULL;
         d->chan_arg = src->h[i].chan_arg ? strdup(src->h[i].chan_arg) : NULL;
     }
@@ -3008,12 +3011,25 @@ static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
  * run zero or k times — complex; untracked channels, packed args, unknown
  * fns, and double joins stay complex. go_bg consumption is now the full
  * guaranteed count (n_recv + child_cons), fixing the old 1-per-worker
- * undercount. */
+ * undercount.
+ *
+ * M30: server loops. A while-true WITH an exit runs its body at least
+ * once; the guaranteed prefix (statements up to the first may-exit) is
+ * counted and classifies the first blocking op. The loop may spin
+ * forever: wf_maybe_loop — join-completion PROVENs and the over-send
+ * check are gated off, the cycle REFUTED stays sound (the guaranteed
+ * first recv blocks, the parent waits, nobody sends), and every
+ * REFUTED direction on the channel sees unknown (consumption/production
+ * is unbounded). Statements after the loop, after an if with a spinning
+ * branch, and inside a for body with such a loop are not guaranteed —
+ * the walk stops or goes complex. */
 
 typedef struct WfScan {
     int recv_first, send_first, n_recv, n_send, complex, saw_op;
     int imprecise;   /* M27: counts are guaranteed minimums (branchy body) */
     int noreturn;    /* M28: a while-true without exit on the straight path */
+    int maybe_loop;  /* M30: passed a while-true with exit — later stmts and
+                        completion are not guaranteed */
     int child_cons;  /* M29: guaranteed recvs of unjoined/detached children */
     int depth;       /* M29: nested-go recursion depth (bounded) */
     struct WfChild *kids; int nkids, kidcap;   /* M29: spawned children */
@@ -3082,6 +3098,23 @@ static int wf_has_exit(Node *n) {
     }
 }
 
+/* M30: scan the guaranteed prefix of a loop body — the statements up to
+ * (and including) the first one that may exit; whatever follows is not
+ * guaranteed on the first iteration. */
+static void wf_scan_prefix(Node *body, const char **names, int *nn, int nmax, WfScan *s) {
+    if (!body) return;
+    if (body->kind == NODE_BLOCK) {
+        for (int i = 0; i < body->stmts.len; i++) {
+            Node *st = body->stmts.data[i];
+            wf_scan_node(st, names, nn, nmax, s);
+            if (s->complex || s->maybe_loop) return;
+            if (wf_has_exit(st)) return;
+        }
+        return;
+    }
+    wf_scan_node(body, names, nn, nmax, s);
+}
+
 static void wf_scan_call(Node *call, const char **names, int nn, WfScan *s) {
     if (!call || call->kind != NODE_CALL) return;
     if (!is_par_builtin_call(call)) { s->complex = 1; return; }  /* hidden send/recv */
@@ -3128,6 +3161,7 @@ static void wf_scan_call(Node *call, const char **names, int nn, WfScan *s) {
         s->n_send += c->n_send;
         s->n_recv += c->n_recv;
         if (c->imprecise) s->imprecise = 1;
+        if (c->maybe_loop) s->maybe_loop = 1;   /* M30: the join may block forever */
         if (!s->saw_op && c->saw_op) {
             s->saw_op = 1;
             s->recv_first = c->recv_first;
@@ -3163,7 +3197,11 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
     if (!n || s->complex) return;
     switch (n->kind) {
     case NODE_BLOCK:
-        for (int i = 0; i < n->stmts.len; i++) wf_scan_node(n->stmts.data[i], names, nn, nmax, s);
+        for (int i = 0; i < n->stmts.len; i++) {
+            wf_scan_node(n->stmts.data[i], names, nn, nmax, s);
+            if (s->complex) return;
+            if (s->maybe_loop) return;   /* M30: the rest is not guaranteed */
+        }
         return;
     case NODE_LET: {
         int before = s->nkids;   /* M29: name a child by its handle var */
@@ -3207,6 +3245,9 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
             return;
         }
         if (ba.complex || bb.complex) { s->complex = 1; return; }
+        if (ba.maybe_loop || bb.maybe_loop) s->maybe_loop = 1;   /* M30: a
+            branch may spin forever — statements after the if are not
+            guaranteed */
         s->n_send += ba.n_send < bb.n_send ? ba.n_send : bb.n_send;
         s->n_recv += ba.n_recv < bb.n_recv ? ba.n_recv : bb.n_recv;
         if (ba.n_send != bb.n_send || ba.n_recv != bb.n_recv) s->imprecise = 1;
@@ -3229,8 +3270,34 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
          * straight-line path that means the worker never completes; the
          * prefix counts stand, everything after is unreachable. */
         if (n->while_cond && n->while_cond->kind == NODE_BOOL_LIT &&
-            n->while_cond->bool_val && !wf_has_exit(n->while_body)) {
-            s->noreturn = 1;
+            n->while_cond->bool_val) {
+            if (!wf_has_exit(n->while_body)) {
+                s->noreturn = 1;
+                s->complex = 1;
+                return;
+            }
+            /* M30: a server loop — while true WITH an exit. The body runs
+             * at least once; its guaranteed prefix (up to the first
+             * statement that may exit) runs on the first iteration. Those
+             * ops are counted and classify the first blocking op; the loop
+             * may spin forever, so completion and everything after the
+             * loop are not guaranteed (maybe_loop). */
+            WfScan bs; memset(&bs, 0, sizeof bs);
+            bs.depth = s->depth;
+            wf_scan_prefix(n->while_body, names, nn, nmax, &bs);
+            if (bs.complex || bs.nkids) { wf_scan_free(&bs); s->complex = 1; return; }
+            if (!bs.saw_op) { wf_scan_free(&bs); s->complex = 1; return; }
+            s->n_send += bs.n_send;
+            s->n_recv += bs.n_recv;
+            if (bs.imprecise) s->imprecise = 1;
+            if (!s->saw_op) {
+                s->saw_op = 1;
+                s->recv_first = bs.recv_first;
+                s->send_first = bs.send_first;
+            }
+            s->maybe_loop = 1;
+            wf_scan_free(&bs);
+            return;
         }
         s->complex = 1;
         return;
@@ -3259,7 +3326,12 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
             s->complex = 1;
             return;
         }
-        if (bs.complex) { s->complex = 1; return; }
+        if (bs.complex || bs.maybe_loop) {   /* M30: a body that may spin
+            forever breaks the fixed-k completion argument */
+            wf_scan_free(&bs);
+            s->complex = 1;
+            return;
+        }
         if (k > 1000000 ||
             (long long)(bs.n_send + bs.n_recv) * k > 1000000000LL) { s->complex = 1; return; }
         s->n_send += (int)(bs.n_send * k);
@@ -3292,6 +3364,9 @@ static int wf_producer_capacity(State *st, HandleEntry *ch, int *unknown) {
         else {
             if (h->wf_imprecise) *unknown = 1;   /* M27: minimums only — the
                 REFUTED directions need exactness; mins still prove */
+            if (h->wf_maybe_loop && h->wf_send) *unknown = 1;   /* M30: it may
+                produce unbounded — a recv might still be satisfied. A loop
+                CONSUMER only helps a recv REFUTED, so it stays sound. */
             if (h->wf_send) cap += h->wf_n_send;
         }
     }
@@ -3331,6 +3406,9 @@ static void wf_check_send(State *st, Obligations *ob, HandleEntry *ch) {
         if (h->wf_complex) unknown = 1;
         else {
             if (h->wf_imprecise) unknown = 1;   /* M27: it may consume more */
+            if (h->wf_maybe_loop && h->wf_recv) unknown = 1;   /* M30: it may
+                drain unbounded — blocked-forever is not certain. A loop
+                producer cannot free a slot, so it stays sound. */
             if (h->wf_recv) credits += h->wf_n_recv;
             credits += h->wf_child_cons;   /* M29: unjoined children consume too */
         }
@@ -3357,10 +3435,14 @@ static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
         int unk = 0;
         int capw = wf_producer_capacity(st, ch, &unk);
         if (ch->n_send > 0) {
-            push_protocol_ok(st, ob, "wait-for: join след send");
+            if (!jh->wf_maybe_loop)   /* M30: completion not guaranteed */
+                push_protocol_ok(st, ob, "wait-for: join след send");
         } else if (capw > 0) {
-            push_protocol_ok(st, ob, "wait-for: join, друг producer");
+            if (!jh->wf_maybe_loop)
+                push_protocol_ok(st, ob, "wait-for: join, друг producer");
         } else if (!unk) {
+            /* sound even for a server loop: its guaranteed first recv
+             * blocks, the parent waits on the join, nobody sends */
             push_protocol_violation(st, ob, "wait-for цикъл: join преди send");
         }
     }
@@ -3368,7 +3450,8 @@ static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
      * wf_n_send <= cap + parent recvs so far + other consumer credits.
      * Competing producers on the channel make room accounting dishonest:
      * no-claim. */
-    if (jh->wf_send && jh->wf_n_recv == 0 && ch->wf_cap >= 0 &&
+    if (jh->wf_send && jh->wf_n_recv == 0 && !jh->wf_maybe_loop &&
+        ch->wf_cap >= 0 &&
         ch->state == 0 && ch->n_send == 0 && ch->n_bg_prod == 0) {
         int credits = ch->n_bg_cons, unknown = ch->wf_unknown, rivals = 0;
         for (int i = 0; i < st->handles.n; i++) {
@@ -3380,6 +3463,8 @@ static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
             if (h->wf_complex) unknown = 1;
             else {
                 if (h->wf_imprecise) unknown = 1;   /* M27: it may consume more */
+                if (h->wf_maybe_loop && h->wf_recv) unknown = 1;   /* M30: it
+                    may free slots unbounded — over-send is not certain */
                 if (h->wf_recv) credits += h->wf_n_recv;
                 else if (h->wf_send) rivals = 1;
             }
@@ -3422,6 +3507,9 @@ static int wf_chan_eventual(State *st, HandleEntry *ch, int *unknown) {
         if (h->wf_complex) unk = 1;
         else {
             if (h->wf_imprecise) unk = 1;   /* M27: it may consume more */
+            if (h->wf_maybe_loop && h->wf_send) unk = 1;   /* M30: it may feed
+                the channel unbounded — starvation is not certain. A loop
+                consumer only helps starvation, so it stays sound. */
             if (h->wf_recv) credits += h->wf_n_recv;
             credits += h->wf_child_cons;   /* M29: unjoined children consume too */
         }
@@ -3576,6 +3664,7 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
                 else {
                     if (sc.send_first) ch->n_bg_prod += sc.n_send;   /* M25: summed sends */
                     ch->n_bg_cons += sc.n_recv + sc.child_cons;   /* M29: all guaranteed consumption */
+                    if (sc.maybe_loop) ch->wf_unknown = 1;   /* M30: unbounded behavior */
                 }
             }
             wf_scan_free(&sc);
@@ -3598,6 +3687,7 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
                 jh->wf_child_cons = sc.complex ? 0 : sc.child_cons;
                 jh->wf_imprecise = sc.complex ? 0 : sc.imprecise;
                 jh->wf_noreturn = sc.noreturn;
+                jh->wf_maybe_loop = sc.complex ? 0 : sc.maybe_loop;
             }
             if (ch && sc.complex) ch->wf_unknown = 1;
         }

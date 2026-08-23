@@ -206,6 +206,27 @@ adversarial cases `lp6_nested_cycle_bad`/`lp6_nested_inf_bad`.
 Remaining darkness: fairness/starvation, while-body counting
 (induction), select inside workers.
 
+**M30 (2026-08-24):** server loops close the structural fragment. A
+`while true` WITH an exit runs its body at least once; the guaranteed
+prefix (statements up to the first may-exit) is counted and classifies
+the first blocking op — ops after the exit do not count (a send after a
+conditional return is not capacity). The loop may spin forever
+(wf_maybe_loop): join-completion PROVENs and the over-send check are
+gated off, but the cycle REFUTED stays sound — the guaranteed first
+recv blocks, the parent waits on the join, nobody sends. Unknown is
+directional: a loop producer foils only the REFUTEDs it could foil
+(recv/select — it may produce unbounded), a loop consumer only the
+send-blocking/over-send REFUTEDs (it may drain unbounded); the converse
+directions stay sound because consumption helps blocking, never
+prevents it. Statements after the loop, after an if with a spinning
+branch, and inside a for body with such a loop are not guaranteed.
+Oracle: `examples/verify/while_loop.baga`; adversarial case
+`lp6_server_join_bad`.
+
+The structural liveness fragment is now complete: what remains of §1 is
+fairness/starvation — temporal properties that need scheduling
+assumptions, outside the zero-SMT counting approach by design.
+
 ---
 
 ## 2. Full bitvector theory

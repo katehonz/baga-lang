@@ -1,0 +1,262 @@
+// while_loop.baga — M30: server loops (while true with an exit).
+//
+// The body runs at least once; its guaranteed prefix (statements up to
+// the first may-exit) is counted and classifies the first blocking op.
+// The loop may spin forever — wf_maybe_loop: join-completion PROVENs and
+// the over-send check are gated off, the cycle REFUTED stays sound (the
+// guaranteed first recv blocks, the parent waits, nobody sends), and a
+// loop producer/consumer marks only the REFUTED direction it can foil
+// unknown. docs/thesis-open-problems.md §1.4:
+//
+//   go_bg consumer loop + two sends (cap 1)  → both fit (credit 1)
+//   go_bg consumer loop + three sends        → third is honest silence
+//   join of a recv-loop before any send      → REFUTED (cycle)
+//   parent recv, consumer loop, no send      → REFUTED (recv без send)
+//   send after the exit is NOT capacity      → REFUTED (recv без send)
+//   send then join of a recv-loop            → silent join (may spin)
+//   send-loop producer + parent recv         → covered; more is silence
+//   while i < 3 (not while true)             → complex, silence
+//
+//   ./baga --verify examples/verify/while_loop.baga
+//   ./baga examples/verify/while_loop.baga     # runs only the live paths
+
+spec server {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn server(c: i64) -> i64 !Par {
+    while true {
+        let v = chan_recv(c)
+        if v == 0 { return 0 }
+        chan_send(c, 1)
+    }
+}
+
+spec cons_loop {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn cons_loop(c: i64) -> i64 !Par {
+    while true {
+        let v = chan_recv(c)
+        if v == 0 { return 0 }
+    }
+}
+
+spec sendloop {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn sendloop(c: i64) -> i64 !Par {
+    while true {
+        chan_send(c, 1)
+        if c > 0 { break }
+    }
+    return 0
+}
+
+spec wcond {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn wcond(c: i64) -> i64 !Par {
+    let mut i = 0
+    while i < 3 {
+        chan_send(c, 1)
+        i = i + 1
+    }
+    return 0
+}
+
+// --- a detached consumer loop credits the first consumption ---
+spec server_bg_credit {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn server_bg_credit(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    go_bg(cons_loop, c)
+    chan_send(c, n)
+    chan_send(c, n)
+    return 0
+}
+
+// --- the third send: the loop may drain it — honest silence, no REFUTED ---
+spec server_bg_third {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn server_bg_third(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    go_bg(cons_loop, c)
+    chan_send(c, n)
+    chan_send(c, n)
+    chan_send(c, n)
+    return 0
+}
+
+// --- joining a recv-loop before any send: the cycle is intact ---
+spec server_cycle {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn server_cycle(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(cons_loop, c)
+    join(h)
+    chan_send(c, n)
+    return 0
+}
+
+// --- the parent recv has no producer either ---
+spec recv_noprod {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn recv_noprod(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(cons_loop, c)
+    let v = chan_recv(c)
+    join(h)
+    return v
+}
+
+// --- the send after the conditional exit is not guaranteed capacity ---
+spec server_nocap {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn server_nocap(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(server, c)
+    let v = chan_recv(c)
+    join(h)
+    return v
+}
+
+// --- send then join: the join may spin forever — no PROVEN ---
+spec server_join_silent {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn server_join_silent(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(cons_loop, c)
+    chan_send(c, n)
+    join(h)
+    return 0
+}
+
+// --- a send-loop producer covers one recv; more is unknown ---
+spec sendloop_recv {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn sendloop_recv(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(sendloop, c)
+    let v = chan_recv(c)
+    join(h)
+    return v
+}
+
+// --- a non-true while is not a server loop: complex, silence ---
+spec while_cond {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn while_cond(n: i64) -> i64 !Par {
+    let c = chan_new(2)
+    invariant c[*] >= 1
+    let h = go(wcond, c)
+    let a = chan_recv(c)
+    let b = chan_recv(c)
+    join(h)
+    return a
+}
+
+fn main() -> i64 !Par {
+    print(server_bg_credit(7))
+    print(server_bg_third(7))
+    print(sendloop_recv(7))
+    return 0
+}
