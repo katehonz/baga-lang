@@ -1468,6 +1468,7 @@ typedef struct {
     int n_bg_prod;    /* HK_CHAN: summed sends of go_bg send-first workers (M25) */
     int n_bg_cons;    /* HK_CHAN: go_bg workers that recv-first (M24 credits) */
     int wf_cap;       /* HK_CHAN: constant buffer capacity, -1 = unknown (M24) */
+    int wf_sel_unknown; /* HK_CHAN: a select2_wait consumed from an unknown side (M26) */
     int wf_unknown;   /* HK_CHAN: a spawned worker was too complex to classify */
 } HandleEntry;
 typedef struct { HandleEntry *h; int n, cap; } HandleList;
@@ -1499,6 +1500,7 @@ static void handles_set(HandleList *l, const char *var, int kind, int state, Lin
         e->wf_n_send = e->wf_n_recv = 0;
         e->n_send = e->n_recv = e->n_bg_prod = e->n_bg_cons = e->wf_unknown = 0;
         e->wf_cap = -1;
+        e->wf_sel_unknown = 0;
     } else {
         lin_free(&e->result);
     }
@@ -1515,6 +1517,7 @@ static void handles_clone_into(HandleList *dst, HandleList *src) {
         d->n_send = src->h[i].n_send; d->n_recv = src->h[i].n_recv;
         d->n_bg_prod = src->h[i].n_bg_prod; d->n_bg_cons = src->h[i].n_bg_cons;
         d->wf_unknown = src->h[i].wf_unknown; d->wf_cap = src->h[i].wf_cap;
+        d->wf_sel_unknown = src->h[i].wf_sel_unknown;
         d->wf_recv = src->h[i].wf_recv; d->wf_send = src->h[i].wf_send;
         d->wf_complex = src->h[i].wf_complex;
         d->wf_n_send = src->h[i].wf_n_send; d->wf_n_recv = src->h[i].wf_n_recv;
@@ -2952,7 +2955,19 @@ static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
  * workers — so a parent recv past parent sends + producer capacity is
  * REFUTED (previously no-claim past one), and multi-recv workers are honest
  * credits instead of complex. while/if bodies, non-constant ranges, and
- * nested go stay no-claim. */
+ * nested go stay no-claim.
+ *
+ * M26: the other blocking forms. recv2 blocks exactly like recv and gets
+ * the same check (it had none — a silent deadlock). select2_wait is
+ * satisfied when either channel will eventually hold an item
+ * (wf_chan_eventual: buffered + producer capacity - recv credits; a closed
+ * channel keeps only its buffered items), REFUTED when neither will; the
+ * winning side is unknown, so both channels are taxed (n_recv++) and marked
+ * wf_unknown/wf_sel_unknown — later claims that need the exact drain stay
+ * silent, REFUTED directions stay sound. recv on a closed channel never
+ * blocks (returns 0) — no claims. select2, try_recv and the timeout forms
+ * never block — no claims; in workers they stay complex (optional
+ * consumption). */
 
 typedef struct {
     int recv_first, send_first, n_recv, n_send, complex, saw_op;
@@ -2977,11 +2992,15 @@ static void wf_scan_call(Node *call, const char **names, int nn, WfScan *s) {
     int on_p = call->args.len >= 1 && call->args.data[0]->kind == NODE_IDENT &&
                wf_name_is(names, nn, call->args.data[0]->name);
     if (!on_p) {
-        if (strcmp(nm, "chan_recv") == 0 || strcmp(nm, "chan_send") == 0) s->complex = 1;
+        /* M26: a blocking op on a channel we do not track hides a wait-for
+         * edge — complex. Non-blocking forms (try_recv/select2/timeouts)
+         * stay irrelevant. */
+        if (strcmp(nm, "chan_recv") == 0 || strcmp(nm, "chan_send") == 0 ||
+            strcmp(nm, "chan_recv2") == 0 || strcmp(nm, "chan_select2_wait") == 0) s->complex = 1;
         return;
     }
-    if (strcmp(nm, "chan_recv") == 0) {
-        s->n_recv++;
+    if (strcmp(nm, "chan_recv") == 0 || strcmp(nm, "chan_recv2") == 0) {
+        s->n_recv++;   /* M26: recv2 blocks (and consumes) exactly like recv */
         if (!s->saw_op) { s->saw_op = 1; s->recv_first = 1; }
     } else if (strcmp(nm, "chan_send") == 0) {
         s->n_send++;
@@ -2989,7 +3008,8 @@ static void wf_scan_call(Node *call, const char **names, int nn, WfScan *s) {
     } else if (strcmp(nm, "chan_close") == 0 || strcmp(nm, "chan_new") == 0) {
         /* non-blocking */
     } else {
-        s->complex = 1;   /* recv2 / try_recv / select* — not in this fragment */
+        s->complex = 1;   /* try_recv / select* / recv_timeout: optional
+                           * consumption breaks credit/join accounting */
     }
 }
 
@@ -3071,6 +3091,8 @@ static int wf_producer_capacity(State *st, HandleEntry *ch, int *unknown) {
 
 static void wf_check_recv(State *st, Obligations *ob, HandleEntry *ch) {
     if (!ch) return;
+    if (ch->state != 0) { ch->n_recv++; return; }   /* M26: closed — never
+        blocks (returns 0 or a buffered item), but the consumption counts */
     ch->n_recv++;
     int unk = 0;
     int capw = wf_producer_capacity(st, ch, &unk);
@@ -3103,7 +3125,7 @@ static void wf_check_send(State *st, Obligations *ob, HandleEntry *ch) {
     if (ch->n_send - ch->n_recv - credits >= ch->wf_cap) {
         if (!unknown)
             push_protocol_violation(st, ob, "wait-for цикъл: send върху пълен буфер без consumer");
-    } else {
+    } else if (!ch->wf_sel_unknown) {
         push_protocol_ok(st, ob, "wait-for: send — свободен слот");
     }
 }
@@ -3143,9 +3165,60 @@ static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
         if (jh->wf_n_send > room) {
             if (!unknown)
                 push_protocol_violation(st, ob, "wait-for цикъл: worker send върху пълен буфер");
-        } else {
+        } else if (!ch->wf_sel_unknown) {
             push_protocol_ok(st, ob, "wait-for: worker send се побира в буфера");
         }
+    }
+}
+
+/* M26: resolve a call argument to its channel handle (NULL = not a known
+ * channel ghost var — no claims). */
+static HandleEntry *wf_resolve_chan(State *st, Node *arg) {
+    Sym cv = se_from_ast(arg, &st->env, &st->vlen, &st->reads);
+    HandleEntry *e = NULL;
+    if (!cv.nonlinear && cv.lin.n == 1 && cv.lin.c.num == 0 &&
+        cv.lin.terms[0].coeff.num == cv.lin.terms[0].coeff.den)
+        e = handles_find(&st->handles, cv.lin.terms[0].var);
+    if (e && e->kind != HK_CHAN) e = NULL;
+    lin_free(&cv.lin);
+    return e;
+}
+
+/* M26: items that will eventually be available on `ch` for a fresh taker:
+ * buffered (parent sends - parent recvs) plus worker producer capacity
+ * (zero once closed — sends on a closed channel return -1), minus recv
+ * credits. Never overclaims: unknown workers propagate via `unknown`. */
+static int wf_chan_eventual(State *st, HandleEntry *ch, int *unknown) {
+    if (!ch) return 0;
+    int credits = ch->n_bg_cons, unk = 0;
+    for (int i = 0; i < st->handles.n; i++) {
+        HandleEntry *h = &st->handles.h[i];
+        if (h->kind != HK_JOIN || !h->chan_arg) continue;
+        if (strcmp(h->chan_arg, ch->var) != 0) continue;
+        if (h->wf_complex) unk = 1;
+        else if (h->wf_recv) credits += h->wf_n_recv;
+    }
+    if (unk) *unknown = 1;
+    int buffered = ch->n_send - ch->n_recv;
+    int capw = ch->state == 1 ? 0 : wf_producer_capacity(st, ch, unknown);
+    return buffered + capw - credits;
+}
+
+/* M26: select2_wait blocks until either channel yields an item (or both are
+ * closed — it returns (3,0) at once). Satisfied when either side will
+ * eventually hold an item; REFUTED when neither will and nothing is
+ * unknown. The consumed side is unknown, so the caller taxes both channels
+ * (n_recv++) and marks them wf_unknown / wf_sel_unknown afterwards. */
+static void wf_check_select(State *st, Obligations *ob, HandleEntry *a, HandleEntry *b) {
+    int unk = 0;
+    int ea = wf_chan_eventual(st, a, &unk);
+    int eb = wf_chan_eventual(st, b, &unk);
+    if (!a || !b) unk = 1;   /* unknown channel expression: never refute */
+    int both_closed = a && b && a->state == 1 && b->state == 1;
+    if (ea > 0 || eb > 0 || both_closed) {
+        push_protocol_ok(st, ob, "wait-for: select — има producer");
+    } else if (!unk) {
+        push_protocol_violation(st, ob, "wait-for цикъл: select без producer");
     }
 }
 
@@ -3202,6 +3275,21 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     /* M17: pair-returning channel APIs */
     if (strncmp(nm, "chan_select2", 12) == 0 || strcmp(nm, "chan_recv2") == 0 ||
         strcmp(nm, "chan_try_recv") == 0 || strcmp(nm, "chan_recv_timeout") == 0) {
+        /* M26: wait-for on the blocking variants. recv2 blocks exactly like
+         * recv; select2_wait blocks until either channel yields. The plain
+         * select2 / try_recv / *_timeout forms never block — no claims. */
+        if (strcmp(nm, "chan_recv2") == 0) {
+            wf_check_recv(st, ob, wf_resolve_chan(st, call->args.data[0]));
+        } else if (strcmp(nm, "chan_select2_wait") == 0) {
+            HandleEntry *ea = wf_resolve_chan(st, call->args.data[0]);
+            HandleEntry *eb = wf_resolve_chan(st, call->args.data[1]);
+            wf_check_select(st, ob, ea, eb);
+            /* the winning side is unknown: tax both (conservative for the
+             * PROVEN arithmetic) and silence later refutations/claims that
+             * depend on which side was drained */
+            if (ea) { ea->n_recv++; ea->wf_unknown = 1; ea->wf_sel_unknown = 1; }
+            if (eb) { eb->n_recv++; eb->wf_unknown = 1; eb->wf_sel_unknown = 1; }
+        }
         int hi = 1;
         if (strcmp(nm, "chan_recv2") != 0)
             hi = (strncmp(nm, "chan_select2", 12) == 0) ? 3 : 2;

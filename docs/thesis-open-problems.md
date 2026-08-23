@@ -143,6 +143,26 @@ credits. Symbolic bounds (including a bound received from the channel),
 `lp6_fanin_short_bad`/`lp6_fanin_over_bad`. Remaining darkness:
 fairness/starvation, unstructured control flow, recv2/select.
 
+**M26 (2026-08-23):** recv2/select enter the fragment — and recv2 was a
+silent hole: it blocks exactly like recv but had no wait-for claim at
+all. Now it gets the same check. `select2_wait` blocks until either
+channel yields; `wf_chan_eventual` counts buffered + producer capacity
+(zero once closed — send on a closed channel returns -1) minus recv
+credits per side, so a producer-less two-channel select is REFUTED and
+a satisfied one PROVEN. The winning side is unknown: both channels are
+taxed (`n_recv++`) and marked unknown, so later drain-sensitive claims
+stay silent while every REFUTED direction stays sound. recv on a closed
+channel never blocks (it returns 0 or a buffered item) — it used to be
+a false REFUTED; now it is silent but its consumption counts (without
+that, a drained closed channel looked satisfiable to a later select —
+`lp6_select_drained_bad` guards it). The non-blocking forms
+(select2/try_recv/*_timeout) carry no claims; in workers they stay
+complex (optional consumption), while worker recv2 is a counted recv.
+Oracle: `examples/verify/select_wait.baga`; adversarial cases
+`lp6_recv2_dead_bad`/`lp6_select_dead_bad`/`lp6_select_drained_bad`.
+Remaining darkness: fairness/starvation, unstructured control flow
+(if/while bodies, nested go), select inside workers.
+
 ---
 
 ## 2. Full bitvector theory

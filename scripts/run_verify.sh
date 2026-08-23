@@ -282,6 +282,16 @@ test "$(grep -c 'протокол (wait-for: recv след producer): ДОКАЗ
 	&& ! grep -A4 "fanin_while:" /tmp/baga_verify_out.txt | grep -q "пълен буфер" \
 	&& echo "OK: fanin_loops — known-N fan-in: броени цикли покриват точно N recv-а; recv отвъд капацитета и loop over-send оброчени; символен диапазон/while — честно мълчание (M25)" \
 	|| { echo "FAIL: fanin_loops"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/select_wait.baga > /tmp/baga_verify_out.txt || true; \
+test "$(grep -c 'протокол (wait-for: select — има producer): ДОКАЗАНО' /tmp/baga_verify_out.txt)" -eq 4 \
+	&& test "$(grep -c 'протокол (wait-for цикъл: select без producer): ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -eq 2 \
+	&& test "$(grep -c 'протокол (wait-for: send — свободен слот): ДОКАЗАНО' /tmp/baga_verify_out.txt)" -eq 6 \
+	&& grep -q "протокол (wait-for цикъл: recv без send): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for: последователни send/recv): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for: join след send): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& ! grep -A8 "select_silence:" /tmp/baga_verify_out.txt | grep -q "последователни\|recv без send" \
+	&& echo "OK: select_wait — recv2/select2_wait като блокиращи: producer или буфериран елемент доказани; празен select, recv2 без producer и изцеден затворен канал оброчени; recv след select — честно мълчание (M26)" \
+	|| { echo "FAIL: select_wait"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/pair_recv2.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: pair_recv2 — ok-flag + content инвариант през cell2 проекции (M17)" \
@@ -434,3 +444,12 @@ grep -A5 "lp6_fanin_short_bad:" /tmp/baga_lp6_out.txt | grep -q "протоко�
 grep -A3 "lp6_fanin_over_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: worker send върху пълен буфер): ОБРОЧЕНО" \
 	&& echo "OK: LP6 lp6_fanin_over_bad — join на loop worker с over-send е оброчен, не ДОКАЗАНО (M25)" \
 	|| { echo "FAIL: LP6 lp6_fanin_over_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A4 "lp6_recv2_dead_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: recv без send): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_recv2_dead_bad — recv2 без producer е оброчен (тихата дупка на M26 е затворена)" \
+	|| { echo "FAIL: LP6 lp6_recv2_dead_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A6 "lp6_select_dead_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: select без producer): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_select_dead_bad — select2_wait без producer е оброчен, не ДОКАЗАНО (M26)" \
+	|| { echo "FAIL: LP6 lp6_select_dead_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A8 "lp6_select_drained_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: select без producer): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_select_drained_bad — recv върху затворен канал се брои: изцеденият select е оброчен (M26)" \
+	|| { echo "FAIL: LP6 lp6_select_drained_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }

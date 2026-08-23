@@ -1394,9 +1394,10 @@ specification is judged by the compiler.
   send/producer, are **ОБРОЧЕНО** (a cycle).
 
 This is not temporal liveness (no fairness); a blocking send on a full buffer
-is §14.3.7 (M24), counted loops in workers — §14.3.8 (M25). `if`/`while`
-bodies, nested `go`, `recv2`/`select*`, packed arguments, and non-constant
-loop bounds are an honest no-claim — never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
+is §14.3.7 (M24), counted loops in workers — §14.3.8 (M25), recv2/select —
+§14.3.9 (M26). `if`/`while` bodies, nested `go`, packed arguments,
+non-constant loop bounds, and blocking ops on untracked channels are an
+honest no-claim — never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
 lemmas (fixed N) stay in `liveness_struct.baga`.
 
 ### 14.3.3 Even powers and the BV envelope (M20)
@@ -1519,6 +1520,36 @@ guesswork:
 Oracle: `examples/verify/fanin_loops.baga` (the 4th recv past the loop
 producer's capacity hangs at runtime too); adversarial cases
 `lp6_fanin_short_bad`/`lp6_fanin_over_bad` in `examples/verify/lp6_hunt.baga`.
+
+### 14.3.9 recv2 and select2_wait as blocking ops (M26)
+
+`chan_recv2` blocks exactly like `chan_recv` — it gets the same check
+(before it had none: a producer-less recv2 passed silently while it
+hangs). `chan_select2_wait` blocks until either channel yields an item
+(or until both are closed — then it returns `(3,0)` at once):
+
+- **`wf_chan_eventual`** counts the items available on a channel:
+  buffered (parent sends − parent recvs) + producer capacity (zero after
+  `chan_close` — send on a closed channel returns -1) − recv credits.
+- **select**: an item on either side — **PROVEN** ("select — has a
+  producer"); none and nothing unknown — **REFUTED** ("select with no
+  producer").
+- **The unknown side.** Which channel was consumed is unknown: both are
+  taxed (`n_recv++`) and marked unknown — later claims that depend on
+  the exact drain (e.g. a recv after the select) stay silent; the
+  REFUTED directions remain sound.
+- **Closed channel.** `chan_recv` on a closed channel never blocks — it
+  stays silent, but the consumption counts (otherwise a drained closed
+  channel looked satisfiable to a later select).
+- **The non-blocking forms** — `chan_select2`, `chan_try_recv`,
+  `chan_recv_timeout`, `chan_select2_timeout` — carry no claims; in
+  workers they stay complex (optional consumption breaks the credits),
+  while worker `recv2` is a counted recv.
+
+Oracle: `examples/verify/select_wait.baga` (the empty select and the
+producer-less recv2 hang at runtime too); adversarial cases
+`lp6_recv2_dead_bad`, `lp6_select_dead_bad`, `lp6_select_drained_bad` in
+`examples/verify/lp6_hunt.baga`.
 
 ### 14.4 Preconditions (`requires:`)
 

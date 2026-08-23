@@ -244,6 +244,60 @@ fn lp6_fanin_over_bad(n: i64) -> i64 !Par {
     return join(h)
 }
 
+// ── M26: recv2/select2_wait are blocking ops ───────────────────────────
+// recv2 blocks exactly like recv; a producer-less recv2 must be REFUTED
+// (it had no wait-for claim at all before M26 — a silent deadlock).
+spec lp6_recv2_dead_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_recv2_dead_bad(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let r = chan_recv2(c)
+    return cell2_0(r)
+}
+
+// select2_wait with two empty open channels and no producers spins
+// forever; treating select as non-blocking would be a false PROVEN.
+spec lp6_select_dead_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_select_dead_bad(n: i64) -> i64 !Par {
+    let c1 = chan_new(1)
+    invariant c1[*] >= 1
+    let c2 = chan_new(1)
+    invariant c2[*] >= 1
+    let r = chan_select2_wait(c1, c2)
+    return cell2_0(r)
+}
+
+// The closed channel's only item was already drained by a recv; recv on a
+// closed channel never blocks but its consumption must count, otherwise
+// the select below looks satisfiable and would be a false PROVEN.
+spec lp6_select_drained_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_select_drained_bad(n: i64) -> i64 !Par {
+    let c1 = chan_new(1)
+    invariant c1[*] >= 1
+    let c2 = chan_new(1)
+    invariant c2[*] >= 1
+    chan_send(c1, n)
+    chan_close(c1)
+    let v = chan_recv(c1)
+    let r = chan_select2_wait(c1, c2)
+    return v
+}
+
 fn main() {
     print(lp6_div_neg_bad(7, -2))
     print(lp6_mod_neg_bad(7, -2))
