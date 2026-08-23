@@ -1463,6 +1463,7 @@ typedef struct {
     int wf_complex;   /* HK_JOIN: scan inconclusive (if/loop/nested) */
     int wf_n_send;    /* HK_JOIN: worker sends on the channel arg (!wf_complex) */
     int wf_n_recv;    /* HK_JOIN: worker recvs on the channel arg (<=1 in fragment) */
+    int wf_imprecise; /* HK_JOIN: counts are guaranteed minimums (M27 branches) */
     int n_send;       /* HK_CHAN: sends on this thread */
     int n_recv;       /* HK_CHAN: recvs on this thread */
     int n_bg_prod;    /* HK_CHAN: summed sends of go_bg send-first workers (M25) */
@@ -1498,6 +1499,7 @@ static void handles_set(HandleList *l, const char *var, int kind, int state, Lin
         e->worker = NULL; e->chan_arg = NULL;
         e->wf_recv = e->wf_send = e->wf_complex = 0;
         e->wf_n_send = e->wf_n_recv = 0;
+        e->wf_imprecise = 0;
         e->n_send = e->n_recv = e->n_bg_prod = e->n_bg_cons = e->wf_unknown = 0;
         e->wf_cap = -1;
         e->wf_sel_unknown = 0;
@@ -1521,6 +1523,7 @@ static void handles_clone_into(HandleList *dst, HandleList *src) {
         d->wf_recv = src->h[i].wf_recv; d->wf_send = src->h[i].wf_send;
         d->wf_complex = src->h[i].wf_complex;
         d->wf_n_send = src->h[i].wf_n_send; d->wf_n_recv = src->h[i].wf_n_recv;
+        d->wf_imprecise = src->h[i].wf_imprecise;
         d->worker = src->h[i].worker ? strdup(src->h[i].worker) : NULL;
         d->chan_arg = src->h[i].chan_arg ? strdup(src->h[i].chan_arg) : NULL;
     }
@@ -2967,10 +2970,23 @@ static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
  * silent, REFUTED directions stay sound. recv on a closed channel never
  * blocks (returns 0) — no claims. select2, try_recv and the timeout forms
  * never block — no claims; in workers they stay complex (optional
- * consumption). */
+ * consumption).
+ *
+ * M27: if/else merge in the worker scan. Both branches are scanned
+ * separately; the merged counts are guaranteed minimums (the worker
+ * performs at least the min of each side), which is exactly what credits,
+ * producer capacity, and the over-send check need for their PROVEN
+ * directions. A body whose branch counts differ becomes wf_imprecise: the
+ * minimums still prove, but every REFUTED direction on the channel sees
+ * unknown (they need exactness). The first blocking op is classified only
+ * when both branches agree; a branch that may not block (or blocks
+ * differently) before any op was seen makes the scan complex. while/match
+ * stay complex — they need induction. Also closes an M26 gap: the select
+ * PROVEN now requires !unk — an unknown consumer could eat the item. */
 
 typedef struct {
     int recv_first, send_first, n_recv, n_send, complex, saw_op;
+    int imprecise;   /* M27: counts are guaranteed minimums (branchy body) */
 } WfScan;
 
 static int wf_name_is(const char **names, int nn, const char *s) {
@@ -3036,7 +3052,39 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
         wf_scan_node(n->right, names, nn, nmax, s);
         return;
     case NODE_UNARY:     wf_scan_node(n->operand, names, nn, nmax, s); return;
-    case NODE_IF: case NODE_WHILE: case NODE_MATCH:
+    case NODE_IF: {
+        /* M27: an if whose branches stay in the fragment merges with
+         * guaranteed-min counts — the worker performs at least the min of
+         * each side. The first blocking op is classified only when BOTH
+         * branches agree on it; if one side may not block (or they block
+         * differently) before any op was seen, the first op is a guess —
+         * complex. Aliases born in a branch stay in the branch. */
+        WfScan ba, bb; memset(&ba, 0, sizeof ba); memset(&bb, 0, sizeof bb);
+        int saved_nn = *nn;
+        wf_scan_node(n->cond, names, nn, nmax, s);   /* runs before either branch */
+        if (s->complex) return;
+        wf_scan_node(n->then_br, names, nn, nmax, &ba);
+        *nn = saved_nn;
+        wf_scan_node(n->else_br, names, nn, nmax, &bb);   /* NULL = empty else */
+        *nn = saved_nn;
+        if (ba.complex || bb.complex) { s->complex = 1; return; }
+        s->n_send += ba.n_send < bb.n_send ? ba.n_send : bb.n_send;
+        s->n_recv += ba.n_recv < bb.n_recv ? ba.n_recv : bb.n_recv;
+        if (ba.n_send != bb.n_send || ba.n_recv != bb.n_recv) s->imprecise = 1;
+        if (ba.imprecise || bb.imprecise) s->imprecise = 1;
+        if (!s->saw_op) {
+            if (ba.saw_op && bb.saw_op &&
+                ba.recv_first == bb.recv_first && ba.send_first == bb.send_first) {
+                s->saw_op = 1;
+                s->recv_first = ba.recv_first;
+                s->send_first = ba.send_first;
+            } else if (ba.saw_op || bb.saw_op) {
+                s->complex = 1;
+            }
+        }
+        return;
+    }
+    case NODE_WHILE: case NODE_MATCH:
         s->complex = 1;
         return;
     case NODE_FOR: {
@@ -3060,6 +3108,7 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
             (long long)(bs.n_send + bs.n_recv) * k > 1000000000LL) { s->complex = 1; return; }
         s->n_send += (int)(bs.n_send * k);
         s->n_recv += (int)(bs.n_recv * k);
+        if (bs.imprecise) s->imprecise = 1;
         if (!s->saw_op && bs.saw_op) {
             s->saw_op = 1;
             s->recv_first = bs.recv_first;
@@ -3084,7 +3133,11 @@ static int wf_producer_capacity(State *st, HandleEntry *ch, int *unknown) {
         if (h->kind != HK_JOIN || !h->chan_arg) continue;
         if (strcmp(h->chan_arg, ch->var) != 0) continue;
         if (h->wf_complex) *unknown = 1;
-        else if (h->wf_send) cap += h->wf_n_send;
+        else {
+            if (h->wf_imprecise) *unknown = 1;   /* M27: minimums only — the
+                REFUTED directions need exactness; mins still prove */
+            if (h->wf_send) cap += h->wf_n_send;
+        }
     }
     return cap;
 }
@@ -3120,7 +3173,10 @@ static void wf_check_send(State *st, Obligations *ob, HandleEntry *ch) {
         if (h->kind != HK_JOIN || !h->chan_arg) continue;
         if (strcmp(h->chan_arg, ch->var) != 0) continue;
         if (h->wf_complex) unknown = 1;
-        else if (h->wf_recv) credits += h->wf_n_recv;
+        else {
+            if (h->wf_imprecise) unknown = 1;   /* M27: it may consume more */
+            if (h->wf_recv) credits += h->wf_n_recv;
+        }
     }
     if (ch->n_send - ch->n_recv - credits >= ch->wf_cap) {
         if (!unknown)
@@ -3165,7 +3221,7 @@ static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
         if (jh->wf_n_send > room) {
             if (!unknown)
                 push_protocol_violation(st, ob, "wait-for цикъл: worker send върху пълен буфер");
-        } else if (!ch->wf_sel_unknown) {
+        } else if (!ch->wf_sel_unknown && !jh->wf_imprecise) {
             push_protocol_ok(st, ob, "wait-for: worker send се побира в буфера");
         }
     }
@@ -3196,7 +3252,10 @@ static int wf_chan_eventual(State *st, HandleEntry *ch, int *unknown) {
         if (h->kind != HK_JOIN || !h->chan_arg) continue;
         if (strcmp(h->chan_arg, ch->var) != 0) continue;
         if (h->wf_complex) unk = 1;
-        else if (h->wf_recv) credits += h->wf_n_recv;
+        else {
+            if (h->wf_imprecise) unk = 1;   /* M27: it may consume more */
+            if (h->wf_recv) credits += h->wf_n_recv;
+        }
     }
     if (unk) *unknown = 1;
     int buffered = ch->n_send - ch->n_recv;
@@ -3215,7 +3274,7 @@ static void wf_check_select(State *st, Obligations *ob, HandleEntry *a, HandleEn
     int eb = wf_chan_eventual(st, b, &unk);
     if (!a || !b) unk = 1;   /* unknown channel expression: never refute */
     int both_closed = a && b && a->state == 1 && b->state == 1;
-    if (ea > 0 || eb > 0 || both_closed) {
+    if (both_closed || (!unk && (ea > 0 || eb > 0))) {
         push_protocol_ok(st, ob, "wait-for: select — има producer");
     } else if (!unk) {
         push_protocol_violation(st, ob, "wait-for цикъл: select без producer");
@@ -3343,7 +3402,7 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
         }
         if (strcmp(nm, "go_bg") == 0) {   /* detached at birth: no handle */
             if (ch) {
-                if (sc.complex) ch->wf_unknown = 1;
+                if (sc.complex || sc.imprecise) ch->wf_unknown = 1;
                 else if (sc.send_first) ch->n_bg_prod += sc.n_send;   /* M25: summed sends */
                 else if (sc.recv_first) ch->n_bg_cons++;   /* M24 credit */
             }
@@ -3363,6 +3422,7 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
                 jh->wf_complex = sc.complex;
                 jh->wf_n_send = sc.complex ? 0 : sc.n_send;
                 jh->wf_n_recv = sc.complex ? 0 : sc.n_recv;
+                jh->wf_imprecise = sc.complex ? 0 : sc.imprecise;
             }
             if (ch && sc.complex) ch->wf_unknown = 1;
         }

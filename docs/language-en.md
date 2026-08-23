@@ -1395,9 +1395,9 @@ specification is judged by the compiler.
 
 This is not temporal liveness (no fairness); a blocking send on a full buffer
 is §14.3.7 (M24), counted loops in workers — §14.3.8 (M25), recv2/select —
-§14.3.9 (M26). `if`/`while` bodies, nested `go`, packed arguments,
-non-constant loop bounds, and blocking ops on untracked channels are an
-honest no-claim — never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
+§14.3.9 (M26), if/else in workers — §14.3.10 (M27). `while` bodies, nested
+`go`, packed arguments, non-constant loop bounds, and blocking ops on
+untracked channels are an honest no-claim — never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
 lemmas (fixed N) stay in `liveness_struct.baga`.
 
 ### 14.3.3 Even powers and the BV envelope (M20)
@@ -1550,6 +1550,31 @@ Oracle: `examples/verify/select_wait.baga` (the empty select and the
 producer-less recv2 hang at runtime too); adversarial cases
 `lp6_recv2_dead_bad`, `lp6_select_dead_bad`, `lp6_select_drained_bad` in
 `examples/verify/lp6_hunt.baga`.
+
+### 14.3.10 if/else in workers — guaranteed minimums (M27)
+
+The two branches of an `if` inside a worker body are scanned separately
+and merged:
+
+- **Counts are guaranteed minimums** — the worker performs at least the
+  min of each branch. That is exactly the quantity credits (§14.3.7),
+  producer capacity (§14.3.8), and the over-send check (§14.3.7) use
+  for their PROVEN directions. Equal branch counts = an exact worker
+  (no loss).
+- **The first blocking op** is classified only when both branches
+  agree; a branch that may not block (or blocks differently) makes the
+  scan complex — honest silence.
+- **`wf_imprecise`**: differing branch counts — minimums still prove,
+  but the REFUTED directions (which need exactness) see unknown.
+  Counted loops with an imprecise body inherit the flag (M25×M27).
+- `while`/`match` stay complex — they need induction; so does nested
+  `go`.
+- Soundness fix to §14.3.9: the select PROVEN requires `!unk` — an
+  unknown consumer could eat the item.
+
+Oracle: `examples/verify/branch_if.baga` (2 guaranteed sends into cap 1
+hang at runtime too); adversarial cases `lp6_if_short_bad`/
+`lp6_if_over_bad` in `examples/verify/lp6_hunt.baga`.
 
 ### 14.4 Preconditions (`requires:`)
 

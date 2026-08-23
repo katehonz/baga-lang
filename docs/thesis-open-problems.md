@@ -163,6 +163,21 @@ Oracle: `examples/verify/select_wait.baga`; adversarial cases
 Remaining darkness: fairness/starvation, unstructured control flow
 (if/while bodies, nested go), select inside workers.
 
+**M27 (2026-08-23):** if/else enters the worker scan. Both branches are
+scanned separately and merged as guaranteed minimums — exactly what
+credits, producer capacity, and the over-send check need for their
+PROVEN directions. The first blocking op is classified only when both
+branches agree; a branch that may not block first makes the scan
+complex. A body whose branch counts differ is `wf_imprecise`: minimums
+still prove, every REFUTED direction sees unknown (it needs exactness).
+Counted loops compose (M25×M27). `while`/`match` stay complex — they
+need induction. Also closes an M26 soundness gap: the select PROVEN now
+requires !unk (an unknown consumer could eat the item). Oracle:
+`examples/verify/branch_if.baga`; adversarial cases
+`lp6_if_short_bad`/`lp6_if_over_bad`. Remaining darkness:
+fairness/starvation, while bodies (induction), nested go, select inside
+workers.
+
 ---
 
 ## 2. Full bitvector theory
