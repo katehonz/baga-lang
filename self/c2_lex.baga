@@ -173,7 +173,10 @@ fn tokenize(src: str, tk: Vec, tt: Vec) {
             if c == 60 { if c2 == 61 { vec_push(tk, 204); vec_push_str(tt, "<="); pos = pos + 2; h = 1 } }
             if c == 60 { if c2 == 60 { vec_push(tk, 205); vec_push_str(tt, "<<"); pos = pos + 2; h = 1 } }
             if c == 62 { if c2 == 61 { vec_push(tk, 206); vec_push_str(tt, ">="); pos = pos + 2; h = 1 } }
-            if c == 62 { if c2 == 62 { vec_push(tk, 207); vec_push_str(tt, ">>"); pos = pos + 2; h = 1 } }
+            if c == 62 { if c2 == 62 {
+                if pos + 2 < n { if char_at(src, pos + 2) == 62 { vec_push(tk, 215); vec_push_str(tt, ">>>"); pos = pos + 3; h = 1 } }
+                if h == 0 { vec_push(tk, 207); vec_push_str(tt, ">>"); pos = pos + 2; h = 1 }
+            } }
             if c == 38 { if c2 == 38 { vec_push(tk, 208); vec_push_str(tt, "&&"); pos = pos + 2; h = 1 } }
             if c == 124 { if c2 == 124 { vec_push(tk, 209); vec_push_str(tt, "||"); pos = pos + 2; h = 1 } }
             if c == 46 { if c2 == 46 { vec_push(tk, 210); vec_push_str(tt, ".."); pos = pos + 2; h = 1 } }

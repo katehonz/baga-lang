@@ -2037,6 +2037,7 @@ static const char *binop_c(BinOp op) {
         case OP_BIT_AND: return "&"; case OP_BIT_OR: return "|";
         case OP_BIT_XOR: return "^";
         case OP_LSHIFT: return "<<"; case OP_RSHIFT: return ">>";
+        case OP_URSHIFT: return ">>>";
     }
     return "+";
 }
@@ -2317,6 +2318,16 @@ static void emit_expr(Codegen *cg, Node *n) {
                 /* M22: `<<` с маскиран брояч (b & 63) — детерминирано,
                    паритет с LLVM shl след маската. */
                 fprintf(f, "(baga_shl_i64((int64_t)(");
+                emit_expr(cg, n->left);
+                fprintf(f, "), (int64_t)(");
+                emit_expr(cg, n->right);
+                fprintf(f, ")))");
+            } else if (n->bin_op == OP_URSHIFT &&
+                       (!n->left->type || n->left->type->kind != TYPE_F64) &&
+                       (!n->right->type || n->right->type->kind != TYPE_F64)) {
+                /* M23: `>>>` е логическо отместване (zero-fill) — паритет с
+                   LLVM LShr; резултатът е неотрицателен. */
+                fprintf(f, "(baga_lshr_i64((int64_t)(");
                 emit_expr(cg, n->left);
                 fprintf(f, "), (int64_t)(");
                 emit_expr(cg, n->right);
@@ -5943,6 +5954,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_shl_i64(int64_t a, int64_t b) {\n");
     fprintf(out, "    return (int64_t)((uint64_t)a << ((uint64_t)b & 63));\n");
+    fprintf(out, "}\n");
+    /* M23: логическо отместване (zero-fill) — паритет с LLVM LShr. */
+    fprintf(out, "static int64_t baga_lshr_i64(int64_t a, int64_t b) {\n");
+    fprintf(out, "    return (int64_t)((uint64_t)a >> ((uint64_t)b & 63));\n");
     fprintf(out, "}\n");
     fprintf(out, "static int baga_argc = 0;\n");
     fprintf(out, "static char **baga_argv = 0;\n");

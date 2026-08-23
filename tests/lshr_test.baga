@@ -1,0 +1,41 @@
+// lshr_test.baga — M23: `>>>` е логическо отместване надясно (zero-fill)
+// с маскиран брояч (b & 63); резултатът е неотрицателен (знаковият бит е
+// изчистен). Пинава семантиката, която верификаторът моделира
+// (docs/thesis-open-problems.md §2 — logical shift):
+//   -5 >>> 1 = 9223372036854775805 (zero-fill, НЕ sign-fill = -3)
+//   -1 >>> k = 2^(64-k) - 1; INT64_MIN >>> 63 = 1
+//   извън-граничен/отрицателен брояч → маскиран (b & 63): (-5) >>> 64 = -5,
+//   (-5) >>> -1 = 1 (брояч 63); 5 >>> -1 = 0
+//   за n >= 0 съвпада с `>>`; за n < 0 се различава.
+// C бекендът ползва baga_lshr_i64; LLVM — and 63 + lshr.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    check("neg_odd", (-5) >>> 1 == 9223372036854775805)
+    check("neg_even", (-4) >>> 1 == 9223372036854775806)
+    check("neg_deep", (-7) >>> 2 == 4611686018427387902)
+    check("pos", 5 >>> 1 == 2)
+    check("zero", 0 >>> 3 == 0)
+    check("neg_one", (-1) >>> 5 == 576460752303423487)
+    check("neg_one_max", (-1) >>> 1 == 9223372036854775807)
+    check("int64_min", (1 << 63) >>> 63 == 1)
+    check("int64_min_1", (1 << 63) >>> 1 == 4611686018427387904)
+    check("max", 9223372036854775807 >>> 62 == 1)
+    check("big_count_neg", (-5) >>> 64 == -5)
+    check("big_count_pos", 5 >>> 64 == 5)
+    check("neg_count_neg", (-5) >>> (-1) == 1)
+    check("neg_count_pos", 5 >>> (-1) == 0)
+    check("odd_mask", (-5) >>> 65 == 9223372036854775805)
+    check("id_zero_count", (-9) >>> 0 == -9)
+    check("eq_shr_nonneg", 7 >>> 1 == 7 >> 1)
+    check("ne_shr_neg", (-5) >>> 1 != (-5) >> 1)
+    check("nonneg_result", (-123456789) >>> 7 >= 0)
+}

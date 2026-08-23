@@ -42,6 +42,12 @@ fn targs_lookahead(tk: Vec, tt: Vec, pos: i64) -> i64 {
             if depth <= 0 { break }
             continue
         }
+        if k == 215 {
+            depth = depth - 3
+            p = p + 1
+            if depth <= 0 { break }
+            continue
+        }
         if k == 300 {
             let mut c = vec_get_str(tt, p)
             if str_eq(c, "<") == 1 { depth = depth + 1; p = p + 1; continue }
@@ -416,6 +422,7 @@ fn parse_shift(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) -
         let mut k = vec_get(tk, vec_get(pos, 0))
         if k == 205 { op = "<<" }
         if k == 207 { op = ">>" }
+        if k == 215 { op = ">>>" }
         if str_eq(op, "") == 1 { break }
         vec_set(pos, 0, vec_get(pos, 0) + 1)
         let mut right = parse_add(tk, tt, pos, nk, nt, fc, ns)

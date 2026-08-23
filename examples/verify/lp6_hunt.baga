@@ -53,6 +53,31 @@ spec lp6_shr_floor_bad {
 }
 fn lp6_shr_floor_bad(n: i64) -> i64 { return n >> 1 }
 
+// M23: `>>>` е логическо отместване (zero-fill) — за n <= -1 резултатът е
+// ГОЛЯМО положително число (знаковият бит е изчистен), не <= 0. Ако
+// верификаторът преизползва аксиомата q <= 0 на аритметичното `>>` за
+// n <= 0, ще каже ДОКАЗАНО.
+spec lp6_lshr_neg_bad {
+    input: n: i64
+    requires: n <= -1
+    output: i64
+    ensures: output <= 0
+}
+fn lp6_lshr_neg_bad(n: i64) -> i64 { return n >>> 1 }
+
+// M23: отрицателният клон на `>>` (q <= 0) е лъжа за `>>>` — резултатът е
+// голямо положително число и output + n > 0 поне за n = -1 ((-1) >>> 2 =
+// 4611686018427387903). Ако верификаторът преизползва аксиомите на
+// отрицателния клон на `>>` (q <= 0 ∧ n <= -1 ⇒ q + n <= 0), ще каже
+// ДОКАЗАНО.
+spec lp6_lshr_floor_bad {
+    input: n: i64
+    requires: n <= -1
+    output: i64
+    ensures: output + n <= 0
+}
+fn lp6_lshr_floor_bad(n: i64) -> i64 { return n >>> 2 }
+
 // ── products without sign premises ───────────────────────────────────────
 
 // x*y <= 0 with no sign information: false at x=y=1.

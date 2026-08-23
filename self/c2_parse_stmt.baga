@@ -414,6 +414,18 @@ fn parse_targs_text(tk: Vec, tt: Vec, pos: Vec) -> str {
             r = concat(r, ">")
             continue
         }
+        if k == 215 {
+            // `>>>` (M23): три затварящи наведнъж
+            vec_set(pos, 0, vec_get(pos, 0) + 1)
+            depth = depth - 1
+            if depth >= 1 { r = concat(r, ">") }
+            depth = depth - 1
+            if depth >= 1 { r = concat(r, ">") }
+            depth = depth - 1
+            if depth <= 0 { break }
+            r = concat(r, ">")
+            continue
+        }
         r = concat(r, vec_get_str(tt, vec_get(pos, 0)))
         vec_set(pos, 0, vec_get(pos, 0) + 1)
     }

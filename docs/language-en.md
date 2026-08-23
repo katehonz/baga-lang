@@ -583,16 +583,16 @@ From loosest to tightest binding:
 | Range       | `..`                                             |
 | Effect      | `?` (propagate) `catch !E => handler`            |
 
-Two-character operators recognized by the lexer:
+Multi-character operators recognized by the lexer:
 
 ```
-->  =>  ..  ==  !=  <=  >=  &&  ||  <<  >>  +=  -=  *=  /=
+->  =>  ..  ==  !=  <=  >=  &&  ||  <<  >>  >>>  +=  -=  *=  /=
 ```
 
 Arithmetic requires numeric operands; applying `+` to a string and an integer,
 for example, is a compile-time error.
 
-Shifts (`<<`, `>>`) are defined deterministically (M22):
+Shifts (`<<`, `>>`, `>>>`) are defined deterministically (M22/M23):
 
 - **Masked count**: the count is reduced to `b & 63` (as x86-64/arm64 hardware
   does). An out-of-range count is not UB — `5 >> 64 == 5`, `5 >> (-1) == 0`,
@@ -600,7 +600,13 @@ Shifts (`<<`, `>>`) are defined deterministically (M22):
 - **`>>` is arithmetic** (floor; two's complement sign-fill): `-5 >> 1 == -3`
   (NOT C trunc `-2`), `-1 >> k == -1`. Parity with LLVM `ashr`; the C backend
   emits `baga_ashr_i64` because C `>>` on negatives is implementation-defined.
-- A shift's result type is `i64`; `>>` on f64 is a backend error.
+- **`>>>` is logical** (zero-fill; M23): the sign bit is filled with 0, so the
+  result is nonnegative — `-5 >>> 1 == 9223372036854775805`,
+  `(-1) >>> 1 == 9223372036854775807`, `INT64_MIN >>> 63 == 1`. For `n >= 0`
+  it agrees with `>>`. Parity with LLVM `lshr`; the C backend emits
+  `baga_lshr_i64`. In type position `>>>` splits into three closing `>`
+  (C++11 style) — `Vec<Vec<Vec<i64>>>` parses correctly.
+- A shift's result type is `i64`; a shift on f64 is a backend error.
 
 ---
 
@@ -1430,6 +1436,32 @@ the verifier injected the trunc axiom `2^k·q >= n` for negative `n` (true
 for C trunc, false for ashr) — a potential false ДОКАЗАНО. Oracle:
 `examples/verify/shr_floor.baga`; adversarial case `lp6_shr_floor_bad` in
 `examples/verify/lp6_hunt.baga`. Still open: full bit-blasting, wrap as a
+value, variable XOR.
+
+### 14.3.6 Logical right shift — zero-fill semantics (M23)
+
+`n >>> k` is logical shift: the 64-bit two's complement representation of `n`
+is shifted right by a masked count (`k & 63`) and zero-filled on the left.
+The result is nonnegative — the sign bit is cleared. `--verify` records the
+shift as its own entry (the count `k`) and injects honest axioms:
+
+- unconditionally ⇒ `q >= 0`, `q <= 2^(64-k) - 1` (for `k >= 1`);
+- `n >= 0` ⇒ `q = floor(n/2^k)` — the same envelope as `>>`
+  (`0 <= n - 2^k·q <= 2^k-1`, `2^k·q <= n`);
+- `n <= -1` ⇒ `q >= 2^(63-k)`;
+- constant `n` is computed exactly (`(-1) >>> 1 == 9223372036854775807`).
+
+Honest boundaries: the exact relation `q = floor((n + 2^64)/2^k)` for `n < 0`
+is not linear in the ℤ variables (`2^64` does not fit an i64) — only the lower
+bound is kept. An upper bound of exactly `INT64_MAX` (at `k = 1`) is not
+provable — a general verifier boundary: its negation needs `INT64_MAX + 1`,
+which overflows and FM elimination honestly answers "cannot decide".
+
+This closes the "logical shift" item of `docs/thesis-open-problems.md` §2.
+Oracle: `examples/verify/lshr_bounds.baga`; adversarial cases
+`lp6_lshr_neg_bad`/`lp6_lshr_floor_bad` in `examples/verify/lp6_hunt.baga`
+(if the verifier reused `>>`'s axioms for `>>>`, the false claims would prove —
+the battery keeps them refuted). Still open: full bit-blasting, wrap as a
 value, variable XOR.
 
 ### 14.4 Preconditions (`requires:`)

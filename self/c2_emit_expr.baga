@@ -234,12 +234,12 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
                 return concat(concat("(baga_str_eq(", emit_expr(nk, nt, fc, ns, prog, left)), concat(", ", concat(emit_expr(nk, nt, fc, ns, prog, right), ") == 0)")))
             }
         }
-        // M22: `>>` е аритметично отместване (floor), `<<` с маскиран брояч
-        // (b & 63) — паритет с LLVM (ashr/shl след and 63; C `>>` върху
-        // отрицателни е имплементационно дефиниран). Емисията е в c2_mem.baga.
+        // M22/M23: `>>` аритметично (floor), `>>>` логическо (zero-fill),
+        // `<<` — маскиран брояч (b & 63). Емисията е в c2_mem.baga.
         let mut se = ""
         if str_eq(t, ">>") == 1 { se = emit_shift_expr(nk, nt, fc, ns, prog, left, right, t) }
         if str_eq(t, "<<") == 1 { se = emit_shift_expr(nk, nt, fc, ns, prog, left, right, t) }
+        if str_eq(t, ">>>") == 1 { se = emit_shift_expr(nk, nt, fc, ns, prog, left, right, t) }
         if str_eq(se, "") == 0 { return se }
         return concat(concat(concat("(", emit_expr(nk, nt, fc, ns, prog, left)), concat(" ", t)), concat(" ", concat(emit_expr(nk, nt, fc, ns, prog, right), ")")))
     }

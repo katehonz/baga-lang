@@ -255,9 +255,12 @@ static Node *parse_type(Parser *p) {
 }
 
 /* Затваряща `>` на генеричен тип. C++11 стил: `>>` затваря ДВА вложени
- * типа — първият консумира токена и оставя втория `>` като pending. */
+ * типа — първият консумира токена и оставя втория `>` като pending.
+ * M23: `>>>` (токен за логическо отместване) затваря ТРИ — gt_pending е
+ * брояч на оставащите `>`-та. */
 static void expect_gt_split(Parser *p) {
-    if (p->gt_pending) { p->gt_pending = 0; return; }
+    if (p->gt_pending > 0) { p->gt_pending--; return; }
+    if (cur(p)->kind == TOK_URSHIFT) { advance(p); p->gt_pending = 2; return; }
     if (cur(p)->kind == TOK_RSHIFT) { advance(p); p->gt_pending = 1; return; }
     expect(p, TOK_GT);
 }
@@ -579,11 +582,11 @@ static Node *parse_primary(Parser *p) {
                             ok = 1;
                         break;
                     }
-                } else if (tk == TOK_RSHIFT) {
-                    /* `>>` в типовите аргументи е два затварящи `>`
-                     * (Box<Vec<str>> { … }) — лексерът го дава като един
-                     * токен; expect_gt_split го дели при консумацията */
-                    depth -= 2;
+                } else if (tk == TOK_RSHIFT || tk == TOK_URSHIFT) {
+                    /* `>>`/`>>>` в типовите аргументи са два/три затварящи
+                     * `>` (Box<Vec<str>> { … }) — лексерът ги дава като един
+                     * токен; expect_gt_split ги дели при консумацията */
+                    depth -= (tk == TOK_URSHIFT) ? 3 : 2;
                     if (depth == 0) {
                         if (k + 1 < p->len && p->tokens[k + 1].kind == TOK_LBRACE)
                             ok = 1;
@@ -1034,7 +1037,7 @@ static int binop_precedence(TokenKind k) {
         case TOK_AMP:     return 5;    /* &  */
         case TOK_EQ: case TOK_NEQ: return 6;
         case TOK_LT: case TOK_GT: case TOK_LE: case TOK_GE: return 7;
-        case TOK_LSHIFT: case TOK_RSHIFT: return 8;
+        case TOK_LSHIFT: case TOK_RSHIFT: case TOK_URSHIFT: return 8;
         case TOK_PLUS: case TOK_MINUS: return 9;
         case TOK_STAR: case TOK_SLASH: case TOK_PERCENT: return 10;
         default: return -1;
@@ -1061,6 +1064,7 @@ static BinOp token_to_binop(TokenKind k) {
         case TOK_CARET:   return OP_BIT_XOR;
         case TOK_LSHIFT:  return OP_LSHIFT;
         case TOK_RSHIFT:  return OP_RSHIFT;
+        case TOK_URSHIFT: return OP_URSHIFT;
         default:          return OP_ADD;
     }
 }
@@ -1818,7 +1822,7 @@ static const char *binop_str(BinOp op) {
         case OP_AND: return "&&"; case OP_OR: return "||";
         case OP_BIT_AND: return "&"; case OP_BIT_OR: return "|";
         case OP_BIT_XOR: return "^"; case OP_LSHIFT: return "<<";
-        case OP_RSHIFT: return ">>";
+        case OP_RSHIFT: return ">>"; case OP_URSHIFT: return ">>>";
         default: return "?";
     }
 }

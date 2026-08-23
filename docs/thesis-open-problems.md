@@ -4,11 +4,12 @@
 *Three frontiers — liveness, full bitvectors, rich polynomials — and exactly
 which corner of the sound / zero-dependency / complete triangle each one costs*
 
-**Artifact:** the Baga compiler, after milestones M0–M22
+**Artifact:** the Baga compiler, after milestones M0–M23
 **Status:** liveness wait-for acyclicity is M19 (structured fragment);
 even powers and the BV identity envelope are M20; consecutive products and
-`~n` are M21; signed right shift (floor semantics) is M22; full bit-blasting
-and rich mixed polynomials remain sketches
+`~n` are M21; signed right shift (floor semantics) is M22; logical right
+shift (zero-fill) is M23; full bit-blasting and rich mixed polynomials
+remain sketches
 
 ---
 
@@ -127,9 +128,11 @@ Exact reasoning about:
 
 - masking with a **variable** mask (`n & m` for symbolic `m`) — today opaque;
 - two's-complement wrap as a *value* (not just an effect to be declared);
-- ~~signed vs. logical right shift on negatives~~ — **signed is closed (M22)**
-  with exact floor semantics (`n>>k = floor(n/2^k)`, masked count); *logical*
-  shift and arithmetic shift on i32 stay open;
+- ~~signed vs. logical right shift on negatives~~ — **both closed**: signed is
+  M22 with exact floor semantics (`n>>k = floor(n/2^k)`, masked count); logical
+  (`>>>`, zero-fill) is M23 with the nonneg envelope `0 ≤ q ≤ 2^(64-k)-1`,
+  `q ≥ 2^(63-k)` for `n ≤ -1`, and the same floor envelope as `>>` for
+  `n ≥ 0`; arithmetic shift on i32 stays open;
 - CRC / hash / checksum code, where the bit pattern *is* the meaning.
 
 ### 2.3 Why it is hard — the zero-dependency corner
@@ -184,6 +187,23 @@ negative `n` is false under ashr — a potential false PROVEN (now
 adversarially covered by `lp6_shr_floor_bad`). Oracle:
 `examples/verify/shr_floor.baga`. What remains of this frontier: full
 bit-blasting, wrap as a *value*, variable XOR, symbolic masks without sign.
+
+**M23 (2026-08-23):** logical right shift. The language gains `>>>`
+(zero-fill) with the same masked count (`b & 63`) in both backends — the C
+backend emits `baga_lshr_i64`, the LLVM backend masks before `lshr`; the
+self compiler emits the same helper. The verifier records `n >>> k` with the
+count and injects honest axioms: unconditionally `0 ≤ q ≤ 2^(64-k)-1` (the
+sign bit is cleared); for `n ≥ 0` the same floor envelope as `>>`; for
+`n ≤ -1` the lower bound `q ≥ 2^(63-k)`. Honest boundary: the exact relation
+`q = floor((n + 2^64)/2^k)` for negative `n` is not linear in the ℤ
+variables (`2^64` does not fit an i64), so only the lower bound is kept; and
+an upper bound of exactly INT64_MAX (the `k = 1` case) is not provable,
+because its negation needs INT64_MAX+1, which overflows the FM core into an
+honest "cannot decide". Adversarial coverage: `lp6_lshr_neg_bad` and
+`lp6_lshr_floor_bad` keep `>>`'s axioms from being silently reused for `>>>`.
+Oracle: `examples/verify/lshr_bounds.baga`. What remains of this frontier:
+full bit-blasting, wrap as a *value*, variable XOR, symbolic masks without
+sign, arithmetic shift on i32.
 
 ---
 

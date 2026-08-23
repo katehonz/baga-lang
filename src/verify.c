@@ -225,18 +225,22 @@ static void vlen_clone_into(VLenMap *dst, VLenMap *src) {
  * аритметично отместване = floor(n/2^k) — n ≥ 0 като trunc, n ≤ 0 с
  * floor-аксиоми, неизвестен знак — честно слабо. Witness-ите извличат
  * стойността чрез baga_ashr_i64 (не C `>>`, който е impl-defined).
+ * M23: n >>> k за k ∈ [0,62] (is_lshr): логическо отместване (zero-fill).
+ * Безусловно 0 ≤ q ≤ 2^(64-k)-1 (знаковият бит е изчистен); n ≥ 0 —
+ * floor-обвивката като при >>; n ≤ -1 — q ≥ 2^(63-k). Witness-ите ползват
+ * baga_lshr_i64.
  * M17: cell2/pair-returning calls (is_pair): fa/fb are the two components;
  * cell2_0/cell2_1 resolve through the pair table (exact rewrite, no theory). */
 typedef struct {
     Node *call; char *var; Lin fa, fb;
     int is_prod; int is_div; int is_mod; int is_bitand1; int is_pair;
     int is_bitand; int is_bitor; int mon_deg; Lin mon_base;
-    int is_shr;
+    int is_shr; int is_lshr;
 } ReadEntry;
 typedef struct { ReadEntry *r; int n, cap; } ReadsList;
 typedef struct {
     char *var; Lin fa, fb; int is_div; int is_mod; int is_bitand1;
-    int is_bitand; int is_bitor; int is_shr;
+    int is_bitand; int is_bitor; int is_shr; int is_lshr;
 } ProdEntry;
 typedef struct { ProdEntry *p; int n, cap; } ProdList;
 static const char *reads_find(ReadsList *l, Node *call);
@@ -244,6 +248,7 @@ static void reads_push_prod(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_div(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_mod(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_shr(ReadsList *l, const char *var, Lin fa, Lin fb);
+static void reads_push_lshr(ReadsList *l, const char *var, Lin fa, Lin fb);
 static void reads_push_bitmask(ReadsList *l, const char *var, Lin fa, int64_t mask);
 static void reads_push_bitop(ReadsList *l, const char *var, Lin fa, Lin fb, int is_or);
 static void reads_push_pair(ReadsList *l, const char *var, Lin fa, Lin fb);   /* M17 */
@@ -445,11 +450,13 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
             lin_free(&l.lin); lin_free(&r.lin);
             return sym_nonlin();
         }
-        if (e->bin_op == OP_LSHIFT || e->bin_op == OP_RSHIFT) {
+        if (e->bin_op == OP_LSHIFT || e->bin_op == OP_RSHIFT || e->bin_op == OP_URSHIFT) {
             if (l.nonlinear || r.nonlinear) return sym_nonlin();
             /* n << k: exact scale by 2^k for k∈[0,62] (overflow treated as wrap-free ℤ).
              * n >> k (M22): аритметично отместване = floor(n/2^k). n ≥ 0 като
-             * trunc div; n < 0 с floor-аксиоми; const n — точно (ashr). */
+             * trunc div; n < 0 с floor-аксиоми; const n — точно (ashr).
+             * n >>> k (M23): логическо отместване (zero-fill); const n — точно,
+             * иначе запис с безусловни граници (виж inject_prod_axioms). */
             if (lin_is_const(&r.lin) && r.lin.c.den == 1 && r.lin.c.num >= 0 && r.lin.c.num <= 62) {
                 int64_t k = r.lin.c.num;
                 int64_t pow2 = 1LL << k;
@@ -458,14 +465,19 @@ static Sym se_from_ast(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads) {
                     return sym_lin(lin_scale(&l.lin, rat_int(pow2)));
                 }
                 if (lin_is_const(&l.lin) && l.lin.c.den == 1) {
-                    int64_t v = baga_ashr_i64(l.lin.c.num, k);
+                    int64_t v = (e->bin_op == OP_URSHIFT)
+                        ? baga_lshr_i64(l.lin.c.num, k)
+                        : baga_ashr_i64(l.lin.c.num, k);
                     lin_free(&l.lin);
                     return sym_lin(lin_const(rat_int(v)));
                 }
                 if (k == 0) return sym_lin(l.lin);   /* n >> 0 = n — точна идентичност */
                 if (reads) {
                     char dv[64]; snprintf(dv, sizeof dv, "__d%d", g_prod_ctr++);
-                    reads_push_shr(reads, dv, l.lin, lin_const(rat_int(k)));
+                    if (e->bin_op == OP_URSHIFT)
+                        reads_push_lshr(reads, dv, l.lin, lin_const(rat_int(k)));
+                    else
+                        reads_push_shr(reads, dv, l.lin, lin_const(rat_int(k)));
                     return sym_lin(lin_var(dv));
                 }
                 lin_free(&l.lin);
@@ -850,6 +862,8 @@ static int prod_concrete(ProdEntry *p, int64_t a, int64_t b, int64_t *out) {
     if (p->is_mod) { if (b == 0) return 0; *out = a % b; return 1; }
     /* M22: аритметично отместване — b е броячът k (не делител). */
     if (p->is_shr) { *out = baga_ashr_i64(a, b); return 1; }
+    /* M23: логическо отместване — b е броячът k. */
+    if (p->is_lshr) { *out = baga_lshr_i64(a, b); return 1; }
     if (__builtin_mul_overflow(a, b, out)) return 0;
     return 1;
 }
@@ -987,6 +1001,9 @@ static int find_counterexample(ConsList *ante, Formula *nef, Formula *ef, Node *
             } else if (prods->p[pi].is_shr) {
                 /* M22: аритметично отместване — fv[1] е броячът k */
                 pvv = baga_ashr_i64(fv[0], fv[1]);
+            } else if (prods->p[pi].is_lshr) {
+                /* M23: логическо отместване — fv[1] е броячът k */
+                pvv = baga_lshr_i64(fv[0], fv[1]);
             } else {
                 if (__builtin_mul_overflow(fv[0], fv[1], &pvv)) { prod_ok = 0; break; }
             }
@@ -1336,6 +1353,12 @@ static void reads_push_shr(ReadsList *l, const char *var, Lin fa, Lin fb) {
     lin_free(&e->fa); lin_free(&e->fb);
     e->fa = fa; e->fb = fb; e->is_shr = 1;
 }
+/* M23: register n >>> k (логическо отместване, zero-fill); fb държи k. */
+static void reads_push_lshr(ReadsList *l, const char *var, Lin fa, Lin fb) {
+    ReadEntry *e = reads_slot(l, var);
+    lin_free(&e->fa); lin_free(&e->fb);
+    e->fa = fa; e->fb = fb; e->is_lshr = 1;
+}
 /* M13/M20: n & mask → residue in {0..mask} when mask = 2^k-1 (moves fa). */
 static void reads_push_bitmask(ReadsList *l, const char *var, Lin fa, int64_t mask) {
     ReadEntry *e = reads_slot(l, var);
@@ -1378,6 +1401,8 @@ static void reads_clone_into(ReadsList *dst, ReadsList *src) {
             reads_push_mod(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else if (src->r[i].is_shr)
             reads_push_shr(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
+        else if (src->r[i].is_lshr)
+            reads_push_lshr(dst, src->r[i].var, lin_clone(&src->r[i].fa), lin_clone(&src->r[i].fb));
         else if (src->r[i].is_bitand1) {
             int64_t mask = (lin_is_const(&src->r[i].fb) && src->r[i].fb.c.den == 1)
                            ? src->r[i].fb.c.num : 1;
@@ -1396,7 +1421,7 @@ static void prods_clone_into(ProdList *dst, ReadsList *src) {
     dst->p = NULL; dst->n = 0; dst->cap = 0;
     for (int i = 0; i < src->n; i++) {
         if (!src->r[i].is_prod && !src->r[i].is_div && !src->r[i].is_mod &&
-            !src->r[i].is_shr &&
+            !src->r[i].is_shr && !src->r[i].is_lshr &&
             !src->r[i].is_bitand1 && !src->r[i].is_bitand && !src->r[i].is_bitor) continue;
         if (dst->n == dst->cap) { dst->cap = dst->cap ? dst->cap * 2 : 4; dst->p = realloc(dst->p, (size_t)dst->cap * sizeof(ProdEntry)); }
         dst->p[dst->n].var = strdup(src->r[i].var);
@@ -1405,6 +1430,7 @@ static void prods_clone_into(ProdList *dst, ReadsList *src) {
         dst->p[dst->n].is_div = src->r[i].is_div;
         dst->p[dst->n].is_mod = src->r[i].is_mod;
         dst->p[dst->n].is_shr = src->r[i].is_shr;
+        dst->p[dst->n].is_lshr = src->r[i].is_lshr;
         dst->p[dst->n].is_bitand1 = src->r[i].is_bitand1;
         dst->p[dst->n].is_bitand = src->r[i].is_bitand;
         dst->p[dst->n].is_bitor = src->r[i].is_bitor;
@@ -2403,6 +2429,37 @@ static void inject_prod_axioms(State *st) {
                 rem.c = rat_sub(rem.c, rat_int(d - 1));
                 cl_push(&st->path, mk_cons(rem, C_LE, rat_zero()));    /* n - d·q <= d-1 */
                 lin_free(&dq);
+            }
+            continue;
+        }
+        /* M23: n >>> k — логическо отместване (zero-fill), константно
+         * k ∈ [1,62] (k=0 е точна идентичност в se_from_ast). Знаковият бит
+         * е изчистен ⇒ безусловно 0 ≤ q ≤ 2^(64-k)-1. n ≥ 0: floor == trunc
+         * (същата обвивка като >>). n ≤ -1: q = floor((n+2^64)/d) ≥ 2^(63-k);
+         * точната връзка с 2^64 не е линейна по ℤ-променливите — честно
+         * остава само долната граница. */
+        if (e->is_lshr) {
+            int64_t k = (lin_is_const(&e->fb) && e->fb.c.den == 1 &&
+                         e->fb.c.num >= 1 && e->fb.c.num <= 62) ? e->fb.c.num : 1;
+            int64_t d = 1LL << k;
+            /* 2^(64-k)-1; при k=1 това е INT64_MAX (1LL<<63 би преляло) */
+            int64_t hi = (k == 1) ? INT64_MAX : ((1LL << (64 - k)) - 1);
+            path_push_ge(&st->path, e->var, 0);
+            path_push_le(&st->path, e->var, hi);
+            int n_ge0 = path_proves_ge(st, &e->fa, 0);
+            int n_le_m1 = path_proves_le(st, &e->fa, -1);
+            if (n_ge0) {
+                Lin qv = lin_var(e->var);
+                Lin dq = lin_scale(&qv, rat_int(d));
+                lin_free(&qv);
+                Lin t = lin_sub(&dq, &e->fa);
+                cl_push(&st->path, mk_cons(t, C_LE, rat_zero()));      /* d·q <= n */
+                Lin rem = lin_sub(&e->fa, &dq);
+                rem.c = rat_sub(rem.c, rat_int(d - 1));
+                cl_push(&st->path, mk_cons(rem, C_LE, rat_zero()));    /* n - d·q <= d-1 */
+                lin_free(&dq);
+            } else if (n_le_m1) {
+                path_push_ge(&st->path, e->var, 1LL << (63 - k));
             }
             continue;
         }

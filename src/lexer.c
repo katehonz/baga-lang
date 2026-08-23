@@ -100,6 +100,7 @@ static const char *kind_names[TOK_COUNT] = {
     [TOK_NOT]       = "!",
     [TOK_LSHIFT]    = "<<",
     [TOK_RSHIFT]    = ">>",
+    [TOK_URSHIFT]   = ">>>",
     [TOK_CARET]     = "^",
 };
 
@@ -514,7 +515,14 @@ Token lexer_next(Lexer *l) {
     if (c == '&' && c2 == '&') { lex_advance(l); lex_advance(l); return make_token(l, TOK_AND, start, strdup("&&")); }
     if (c == '|' && c2 == '|') { lex_advance(l); lex_advance(l); return make_token(l, TOK_OR, start, strdup("||")); }
     if (c == '<' && c2 == '<') { lex_advance(l); lex_advance(l); return make_token(l, TOK_LSHIFT, start, strdup("<<")); }
-    if (c == '>' && c2 == '>') { lex_advance(l); lex_advance(l); return make_token(l, TOK_RSHIFT, start, strdup(">>")); }
+    if (c == '>' && c2 == '>') {
+        /* M23: `>>>` (логическо отместване) преди `>>` — най-дългият лексем */
+        if (l->pos + 2 < l->len && l->src[l->pos + 2] == '>') {
+            lex_advance(l); lex_advance(l); lex_advance(l);
+            return make_token(l, TOK_URSHIFT, start, strdup(">>>"));
+        }
+        lex_advance(l); lex_advance(l); return make_token(l, TOK_RSHIFT, start, strdup(">>"));
+    }
     if (c == '+' && c2 == '=') { lex_advance(l); lex_advance(l); return make_token(l, TOK_PLUS_ASSIGN, start, strdup("+=")); }
     if (c == '-' && c2 == '=') { lex_advance(l); lex_advance(l); return make_token(l, TOK_MINUS_ASSIGN, start, strdup("-=")); }
     if (c == '*' && c2 == '=') { lex_advance(l); lex_advance(l); return make_token(l, TOK_STAR_ASSIGN, start, strdup("*=")); }

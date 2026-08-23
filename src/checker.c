@@ -1274,7 +1274,7 @@ static Type *infer_binary(CheckCtx *ctx, Node *n) {
             return type_new(TYPE_BOOL);
 
         case OP_BIT_AND: case OP_BIT_OR: case OP_BIT_XOR:
-        case OP_LSHIFT: case OP_RSHIFT:
+        case OP_LSHIFT: case OP_RSHIFT: case OP_URSHIFT:
             return type_new(TYPE_I64);
     }
     return type_new(TYPE_ERROR);

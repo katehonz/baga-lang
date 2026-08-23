@@ -1,0 +1,57 @@
+// lshr_bounds.baga — M23: логическо отместване надясно (zero-fill).
+//
+// `n >>> k` отмества 64-битовото two's complement представяне на n с
+// маскиран брояч (k & 63) и запълва с нули отляво (същата семантика като
+// LLVM lshr; резултатът е неотрицателен — знаковият бит е изчистен).
+// Затваря частта „logical shift" от docs/thesis-open-problems.md §2.2:
+//
+//   без условия      ⇒  0 <= q <= 2^(64-k) - 1   (за k >= 1)
+//   n >= 0           ⇒  q = floor(n/2^k) — същата обвивка като `>>`
+//   n <= -1          ⇒  q >= 2^(63-k)
+//
+// Честна граница: точната връзка q = floor((n + 2^64)/2^k) за n < 0 не е
+// линейна по ℤ-променливите (2^64 не събира в i64) — остава само долната
+// граница. Горна граница точно INT64_MAX (k=1) не се доказва — обща
+// граница на верификатора (отрицанието ѝ изисква INT64_MAX+1).
+//
+//   ./baga --verify examples/verify/lshr_bounds.baga
+
+// ── n >= 0: floor == trunc (като `>>`) ───────────────────────────────────
+
+spec lshr_nonneg {
+    input: n: i64
+    requires: n >= 0
+    output: i64
+    ensures: output >= 0, 4 * output - n <= 0, n - 4 * output <= 3
+}
+fn lshr_nonneg(n: i64) -> i64 { return n >>> 2 }
+
+// ── n <= -1: голямо положително число (долна граница 2^(63-k)) ──────────
+
+spec lshr_neg {
+    input: n: i64
+    requires: n <= -1
+    output: i64
+    ensures: output >= 2305843009213693952, output <= 4611686018427387903
+}
+fn lshr_neg(n: i64) -> i64 { return n >>> 2 }
+
+// ── без условия: знаковият бит е изчистен ────────────────────────────────
+
+spec lshr_any {
+    input: n: i64
+    output: i64
+    ensures: output >= 0, output <= 4611686018427387903
+}
+fn lshr_any(n: i64) -> i64 { return n >>> 2 }
+
+// ── константно n се пресмята точно (lshr, не ashr) ──────────────────────
+
+spec lshr_const {
+    input: n: i64
+    output: i64
+    ensures: output == 9223372036854775807
+}
+fn lshr_const(n: i64) -> i64 { return (-1) >>> 1 }
+
+fn main() {}

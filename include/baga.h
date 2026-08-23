@@ -62,6 +62,12 @@ static inline int64_t baga_shl_i64(int64_t a, int64_t b) {
     return (int64_t)((uint64_t)a << ((uint64_t)b & 63));
 }
 
+/* M23: логическо отместване надясно (zero-fill) — паритет с LLVM LShr;
+ * резултатът е неотрицателен (знаковият бит е изчистен). */
+static inline int64_t baga_lshr_i64(int64_t a, int64_t b) {
+    return (int64_t)((uint64_t)a >> ((uint64_t)b & 63));
+}
+
 /* ============================================================
  *  Tokens
  * ============================================================ */
@@ -147,6 +153,7 @@ typedef enum {
     TOK_NOT,        /* !  (same as BANG, context disambiguates) */
     TOK_LSHIFT,     /* << */
     TOK_RSHIFT,     /* >> */
+    TOK_URSHIFT,    /* >>> */
     TOK_CARET,      /* ^ */
 
     TOK_COUNT
@@ -229,7 +236,7 @@ typedef enum {
     OP_EQ, OP_NEQ, OP_LT, OP_GT, OP_LE, OP_GE,
     OP_AND, OP_OR,
     OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR,
-    OP_LSHIFT, OP_RSHIFT,
+    OP_LSHIFT, OP_RSHIFT, OP_URSHIFT,
 } BinOp;
 
 typedef enum {

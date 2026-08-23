@@ -5,7 +5,7 @@
 #   Makefile          → C toolchain only (baga, sandak, llvm, par-rt)
 #   sandak            → build every package that has sandak.toml
 #   scripts/baga-test → discover and run tests/**/*_test.baga
-#   scripts/run_verify.sh → --verify oracle (M0–M18)
+#   scripts/run_verify.sh → --verify oracle (M0–M23)
 #   scripts/self_parity.sh → self-hosting паритет (LP7)
 #
 # `make test` only builds the toolchain and delegates here.

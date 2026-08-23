@@ -75,6 +75,9 @@ fn emit_mem_runtime() {
     write("static int64_t baga_shl_i64(int64_t a, int64_t b) {\n")
     write("    return (int64_t)((uint64_t)a << ((uint64_t)b & 63));\n")
     write("}\n")
+    write("static int64_t baga_lshr_i64(int64_t a, int64_t b) {\n")
+    write("    return (int64_t)((uint64_t)a >> ((uint64_t)b & 63));\n")
+    write("}\n")
     write("static const char *baga_chr(int64_t c) {\n")
     write("    char *r = baga_alloc(5);\n")
     write("    if (c < 0x80) { r[0] = (char)c; r[1] = 0; }\n")
@@ -92,9 +95,10 @@ fn emit_mem_runtime() {
     write("static const char *baga_f64_to_str(double x) { char *r = baga_alloc(32); snprintf(r, 32, \"%g\", x); return r; }\n")
 }
 
-// M22: `>>`/`<<` — baga_ashr_i64 / baga_shl_i64 (маскиран брояч b & 63;
-// `>>` е аритметично). Връща "" за f64 операнди (loud C грешка, както
-// преди M22). Извиква се от c2_emit_expr.baga.
+// M22/M23: `>>`/`<<`/`>>>` — baga_ashr_i64 / baga_shl_i64 / baga_lshr_i64
+// (маскиран брояч b & 63; `>>` е аритметично, `>>>` е логическо). Връща ""
+// за f64 операнди (loud C грешка, както преди M22). Извиква се от
+// c2_emit_expr.baga.
 fn emit_shift_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, left: i64, right: i64, op: str) -> str {
     let mut ff: i64 = 0
     if expr_is_float(nk, nt, fc, ns, prog, left) == 1 { ff = 1 }
@@ -102,5 +106,6 @@ fn emit_shift_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, left: i64, rig
     if ff == 1 { return "" }
     let mut h = "baga_ashr_i64"
     if str_eq(op, "<<") == 1 { h = "baga_shl_i64" }
+    if str_eq(op, ">>>") == 1 { h = "baga_lshr_i64" }
     return concat(concat(h, concat("((int64_t)(", emit_expr(nk, nt, fc, ns, prog, left))), concat("), (int64_t)(", concat(emit_expr(nk, nt, fc, ns, prog, right), "))")))
 }
