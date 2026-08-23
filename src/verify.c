@@ -1465,7 +1465,7 @@ typedef struct {
     int wf_n_recv;    /* HK_JOIN: worker recvs on the channel arg (<=1 in fragment) */
     int n_send;       /* HK_CHAN: sends on this thread */
     int n_recv;       /* HK_CHAN: recvs on this thread */
-    int n_bg_prod;    /* HK_CHAN: go_bg workers that send-first */
+    int n_bg_prod;    /* HK_CHAN: summed sends of go_bg send-first workers (M25) */
     int n_bg_cons;    /* HK_CHAN: go_bg workers that recv-first (M24 credits) */
     int wf_cap;       /* HK_CHAN: constant buffer capacity, -1 = unknown (M24) */
     int wf_unknown;   /* HK_CHAN: a spawned worker was too complex to classify */
@@ -2931,8 +2931,8 @@ static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
  * A cycle is REFUTED when a thread waits on a recv/join that can only be
  * satisfied by an action the waiter itself is blocking. Matched sequential
  * send/recv, join-after-send, and recv-after-a-send-first worker are PROVEN.
- * if/while/nested go, recv2/select, packed args, and >1 recv in a worker
- * are no-claim (honest incompleteness) — never a false PROVEN.
+ * if/while bodies, nested go, recv2/select, packed args, and non-constant
+ * loop bounds are no-claim (honest incompleteness) — never a false PROVEN.
  *
  * M24: send-blocking on a full bounded buffer (baga_chan_send waits on
  * not_full, src/baga_par_rt.c). With a constant capacity (chan_new literal)
@@ -2943,7 +2943,16 @@ static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
  * of a send-only worker is REFUTED when wf_n_send > cap + parent recvs +
  * other consumer credits — the worker can never finish. Competing producers
  * (parent sends before the join on that channel, go_bg send-first) keep the
- * join check honest no-claim; symbolic capacity keeps both checks silent. */
+ * join check honest no-claim; symbolic capacity keeps both checks silent.
+ *
+ * M25: counted loops in workers (known-N fan-in). A `for i in lo..hi` with
+ * constant bounds is scanned once and its counts scaled by k = hi - lo
+ * (hi exclusive); loop-body aliases do not leak. Producer coverage is now
+ * exact — wf_producer_capacity sums wf_n_send over classified send-first
+ * workers — so a parent recv past parent sends + producer capacity is
+ * REFUTED (previously no-claim past one), and multi-recv workers are honest
+ * credits instead of complex. while/if bodies, non-constant ranges, and
+ * nested go stay no-claim. */
 
 typedef struct {
     int recv_first, send_first, n_recv, n_send, complex, saw_op;
@@ -3007,41 +3016,69 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
         wf_scan_node(n->right, names, nn, nmax, s);
         return;
     case NODE_UNARY:     wf_scan_node(n->operand, names, nn, nmax, s); return;
-    case NODE_IF: case NODE_WHILE: case NODE_FOR: case NODE_MATCH:
+    case NODE_IF: case NODE_WHILE: case NODE_MATCH:
         s->complex = 1;
         return;
+    case NODE_FOR: {
+        /* M25: counted loop over a constant range (hi exclusive, codegen
+         * emits x < hi). Scan the body once, scale its counts by k — the
+         * known-N discipline of §1.4. Aliases born in the body stay in the
+         * body (loop scope); an empty range executes nothing. */
+        if (!n->for_iter || n->for_iter->kind != NODE_RANGE ||
+            !n->for_iter->range_lo || !n->for_iter->range_hi ||
+            n->for_iter->range_lo->kind != NODE_INT_LIT ||
+            n->for_iter->range_hi->kind != NODE_INT_LIT) { s->complex = 1; return; }
+        long long k = (long long)n->for_iter->range_hi->int_val -
+                      (long long)n->for_iter->range_lo->int_val;
+        if (k <= 0) return;
+        WfScan bs; memset(&bs, 0, sizeof bs);
+        int saved_nn = *nn;
+        wf_scan_node(n->for_body, names, nn, nmax, &bs);
+        *nn = saved_nn;
+        if (bs.complex) { s->complex = 1; return; }
+        if (k > 1000000 ||
+            (long long)(bs.n_send + bs.n_recv) * k > 1000000000LL) { s->complex = 1; return; }
+        s->n_send += (int)(bs.n_send * k);
+        s->n_recv += (int)(bs.n_recv * k);
+        if (!s->saw_op && bs.saw_op) {
+            s->saw_op = 1;
+            s->recv_first = bs.recv_first;
+            s->send_first = bs.send_first;
+        }
+        return;
+    }
     default: return;
     }
 }
 
-/* A send-first worker on `ch` can unblock a recv. Complex workers make the
- * producer set unknown rather than empty — never a false REFUTED. */
-static int wf_has_producer(State *st, HandleEntry *ch, int *unknown) {
+/* M25: exact producer capacity — the total sends of classified send-first
+ * workers on `ch` (join handles carry wf_n_send; n_bg_prod is the summed
+ * send count of go_bg send-first workers). Complex workers keep the set
+ * unknown — never a false REFUTED. */
+static int wf_producer_capacity(State *st, HandleEntry *ch, int *unknown) {
     if (!ch) return 0;
     if (ch->wf_unknown) *unknown = 1;
-    int found = ch->n_bg_prod > 0;
+    int cap = ch->n_bg_prod;
     for (int i = 0; i < st->handles.n; i++) {
         HandleEntry *h = &st->handles.h[i];
         if (h->kind != HK_JOIN || !h->chan_arg) continue;
         if (strcmp(h->chan_arg, ch->var) != 0) continue;
         if (h->wf_complex) *unknown = 1;
-        else if (h->wf_send) found = 1;
+        else if (h->wf_send) cap += h->wf_n_send;
     }
-    return found;
+    return cap;
 }
 
 static void wf_check_recv(State *st, Obligations *ob, HandleEntry *ch) {
     if (!ch) return;
     ch->n_recv++;
     int unk = 0;
-    int prod = wf_has_producer(st, ch, &unk);
+    int capw = wf_producer_capacity(st, ch, &unk);
     int unmatched = ch->n_recv - ch->n_send;
     if (unmatched <= 0) {
         push_protocol_ok(st, ob, "wait-for: последователни send/recv");
-    } else if (prod && unmatched <= 1) {
+    } else if (unmatched <= capw) {
         push_protocol_ok(st, ob, "wait-for: recv след producer");
-    } else if (prod && unmatched > 1) {
-        /* one send-first worker covers one unmatched recv; more is unknown */
     } else if (!unk) {
         push_protocol_violation(st, ob, "wait-for цикъл: recv без send");
     }
@@ -3077,10 +3114,10 @@ static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
     if (!ch || ch->kind != HK_CHAN) return;
     if (jh->wf_recv) {
         int unk = 0;
-        int prod = wf_has_producer(st, ch, &unk);
+        int capw = wf_producer_capacity(st, ch, &unk);
         if (ch->n_send > 0) {
             push_protocol_ok(st, ob, "wait-for: join след send");
-        } else if (prod) {
+        } else if (capw > 0) {
             push_protocol_ok(st, ob, "wait-for: join, друг producer");
         } else if (!unk) {
             push_protocol_violation(st, ob, "wait-for цикъл: join преди send");
@@ -3213,14 +3250,13 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             const char *nms[16]; int nn = 0;
             nms[nn++] = wfn->params.data[0]->param_name;
             wf_scan_node(wfn->fn_body, nms, &nn, 16, &sc);
-            if (sc.n_recv > 1) sc.complex = 1;
         } else if (wfn) {
             sc.complex = 1;
         }
         if (strcmp(nm, "go_bg") == 0) {   /* detached at birth: no handle */
             if (ch) {
                 if (sc.complex) ch->wf_unknown = 1;
-                else if (sc.send_first) ch->n_bg_prod++;
+                else if (sc.send_first) ch->n_bg_prod += sc.n_send;   /* M25: summed sends */
                 else if (sc.recv_first) ch->n_bg_cons++;   /* M24 credit */
             }
             lin_free(&res.lin);

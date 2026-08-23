@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### verify — M25: броени цикли в worker-и (known-N fan-in)
+- **Цикли с константен диапазон.** `for i in lo..hi` (hi изключващ) с
+  литерални граници се сканира веднъж и бройките се мащабират по
+  `k = hi - lo` — known-N дисциплината на M16 (точно N send-а, N recv-а)
+  вече се брои символно. Алиасите родени в тялото не излизат от цикъла;
+  празен диапазон не изпълнява нищо; не-литерални граници, `while`/`if`
+  тела и вложен `go` остават честен no-claim.
+- **Точен producer капацитет.** `wf_producer_capacity` сумира `wf_n_send`
+  на класифицираните send-first worker-и (join handle-и; `n_bg_prod` вече
+  е сумата от send-овете на `go_bg` producer-и, не брой worker-и). Parent
+  recv отвъд `parent send-ове + капацитет` вече е **ОБРОЧЕНО** („recv без
+  send") — преди M25 втори несъвпадащ recv беше мълчалив no-claim.
+- **Multi-recv worker-и.** Правилото „>1 recv в worker = complex" отпада —
+  броеният цикъл дава точен `wf_n_recv`, който е честен кредит в
+  send-blocking сметката на M24 (cons с 3 recv-а покрива 3 send-а в cap-1).
+- Граници: само константни диапазони (символна граница — включително
+  recv-ната от канала — е complex); калъпи с крехък баланс (producer-и
+  състезаващи се за слотове) остават no-claim по M24; fairness/starvation
+  е извън фрагмента.
+- Оракъл: `examples/verify/fanin_loops.baga` (6 ДОКАЗАНО „recv след
+  producer", 5 „свободен слот", 2 ОБРОЧЕНО — 4-тият recv виси и на
+  runtime; `fanin_symbolic`/`fanin_while` — честно мълчание); адверсариални
+  калъфи `lp6_fanin_short_bad`/`lp6_fanin_over_bad` в
+  `examples/verify/lp6_hunt.baga`.
+- Докс: `docs/thesis-open-problems.md` §1.4 (M25), `docs/language-bg.md`
+  §14.3.8, `docs/language-en.md` §14.3.8.
+
 ### verify — M24: send-blocking върху пълен буфер (soundness фикс)
 - **Фалшиво ДОКАЗАНО затворено.** `baga_chan_send` блокира, докато буферът
   е пълен (`not_full` cond, `src/baga_par_rt.c`) — send е блокираща операция

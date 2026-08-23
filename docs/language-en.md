@@ -1394,9 +1394,9 @@ specification is judged by the compiler.
   send/producer, are **ОБРОЧЕНО** (a cycle).
 
 This is not temporal liveness (no fairness); a blocking send on a full buffer
-is §14.3.7 (M24). `if`/`while`/nested `go`, `recv2`/`select*`, packed
-arguments, and more than one `recv` in a worker are an honest no-claim —
-never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
+is §14.3.7 (M24), counted loops in workers — §14.3.8 (M25). `if`/`while`
+bodies, nested `go`, `recv2`/`select*`, packed arguments, and non-constant
+loop bounds are an honest no-claim — never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
 lemmas (fixed N) stay in `liveness_struct.baga`.
 
 ### 14.3.3 Even powers and the BV envelope (M20)
@@ -1489,12 +1489,36 @@ counts:
 - **closed channel**: `chan_send` after `chan_close` never blocks (it
   returns -1; close broadcasts `not_full`) — both checks stay silent.
 
-Boundaries: constant capacity only; a credit is ≤1 recv per worker (more is
-complex per M19); competing producers → no-claim; fairness/starvation stays
-outside the fragment. Oracle: `examples/verify/send_block.baga`; adversarial
-cases `lp6_sendblk_full_bad`/`lp6_sendblk_worker_bad` in
+Boundaries: constant capacity only; credits are exact per-worker recv
+counts (before M25 — ≤1); competing producers → no-claim;
+fairness/starvation stays outside the fragment. Oracle:
+`examples/verify/send_block.baga`; adversarial cases
+`lp6_sendblk_full_bad`/`lp6_sendblk_worker_bad` in
 `examples/verify/lp6_hunt.baga` (they guard exactly the false PROVEN that
 M24 closes).
+
+### 14.3.8 Counted loops in workers — known-N fan-in (M25)
+
+A `for i in lo..hi` with literal bounds (hi exclusive) inside a worker body
+is scanned once and its counts are scaled by `k = hi - lo` — the M16
+discipline (exactly N sends, N recvs, then close) becomes arithmetic, not
+guesswork:
+
+- **Exact producer capacity.** `wf_producer_capacity` sums `wf_n_send` of
+  the classified send-first workers on the channel (join handles and
+  `go_bg`). A parent `recv` with `unmatched > parent sends + capacity` is
+  **REFUTED** ("recv with no send") — before M25 a second unmatched recv
+  was silent no-claim.
+- **Loop consumers.** Counted recvs are exact credits in the §14.3.7
+  arithmetic: a `cons` with 3 looped recvs covers 3 parent sends into a
+  cap-1 channel — all three **PROVEN** "free slot".
+- **Honest silence.** Symbolic bounds (including a bound received from the
+  channel), `while`/`if` bodies, nested `go` → complex → no-claim;
+  competing-producer cases stay no-claim per §14.3.7.
+
+Oracle: `examples/verify/fanin_loops.baga` (the 4th recv past the loop
+producer's capacity hangs at runtime too); adversarial cases
+`lp6_fanin_short_bad`/`lp6_fanin_over_bad` in `examples/verify/lp6_hunt.baga`.
 
 ### 14.4 Preconditions (`requires:`)
 

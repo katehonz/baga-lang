@@ -128,6 +128,21 @@ Oracle: `examples/verify/send_block.baga`; adversarial cases
 PROVEN. Remaining darkness: fairness/starvation, `if`/`while` bodies,
 recv2/select, >1 recv per worker.
 
+**M25 (2026-08-23):** known-N fan-in counting — step 1 of §1.4 is now
+symbolic for counted loops. A `for i in lo..hi` worker body with constant
+bounds is scanned once and its send/recv counts scaled by `k = hi - lo`
+(hi exclusive), so the M16 discipline (exactly N sends, N recvs) is a
+counting argument: producer coverage is exact (`wf_producer_capacity`
+sums `wf_n_send` of classified send-first workers), a parent recv past
+parent sends + coverage is REFUTED (before M25 that was no-claim past
+one), and loop consumers credit N sends in M24's buffer arithmetic. The
+">1 recv in a worker is complex" rule is gone — counted recvs are exact
+credits. Symbolic bounds (including a bound received from the channel),
+`while`/`if` bodies, and nested `go` stay honest no-claim. Oracle:
+`examples/verify/fanin_loops.baga`; adversarial cases
+`lp6_fanin_short_bad`/`lp6_fanin_over_bad`. Remaining darkness:
+fairness/starvation, unstructured control flow, recv2/select.
+
 ---
 
 ## 2. Full bitvector theory

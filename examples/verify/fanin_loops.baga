@@ -1,0 +1,216 @@
+// fanin_loops.baga — M25: counted loops in workers (known-N fan-in).
+//
+// The M16 discipline — exactly N sends, N recvs, then close — gets its
+// counting argument from docs/thesis-open-problems.md §1.4: a `for i in
+// lo..hi` body with constant bounds is scanned once and scaled by k, so a
+// loop producer covers N parent recvs exactly, and a loop consumer credits
+// N sends. Producer coverage is exact now (wf_producer_capacity), so a
+// parent recv past parent sends + producer capacity is REFUTED — before
+// M25 that was no-claim past one.
+//
+//   prod3 loop + 3 parent recvs (cap 3)     → all covered, worker fits
+//   cons3 loop credit + 3 sends (cap 1)     → all free slots
+//   prod3 loop + 4 parent recvs             → 4th recv REFUTED
+//   prod3 loop into cap 2, join without recv → join REFUTED (over-send)
+//   symbolic range 0..n / while body        → honest no-claim
+//
+//   ./baga --verify examples/verify/fanin_loops.baga
+//   ./baga examples/verify/fanin_loops.baga     # runs only the live paths
+
+spec prod3 {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn prod3(c: i64) -> i64 !Par {
+    for i in 0..3 { chan_send(c, i + 1) }
+    return 0
+}
+
+spec cons3 {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 3
+}
+
+fn cons3(c: i64) -> i64 !Par {
+    let mut s = 0
+    for i in 0..3 { s = s + chan_recv(c) }
+    return s
+}
+
+// --- known-N fan-in: 3 loop sends cover 3 parent recvs exactly ---
+spec fanin_ok {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn fanin_ok(n: i64) -> i64 !Par {
+    let c = chan_new(3)
+    invariant c[*] >= 1
+    let h = go(prod3, c)
+    let a = chan_recv(c)
+    let b = chan_recv(c)
+    let d = chan_recv(c)
+    join(h)
+    return a
+}
+
+// --- loop consumer credit: three sends into cap 1 all fit ---
+spec fanin_credit {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn fanin_credit(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(cons3, c)
+    chan_send(c, n)
+    chan_send(c, n)
+    chan_send(c, n)
+    return join(h)
+}
+
+// --- one recv past the producer capacity: the 4th blocks forever ---
+spec fanin_short {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn fanin_short(n: i64) -> i64 !Par {
+    let c = chan_new(3)
+    invariant c[*] >= 1
+    let h = go(prod3, c)
+    let a = chan_recv(c)
+    let b = chan_recv(c)
+    let d = chan_recv(c)
+    let e = chan_recv(c)
+    join(h)
+    return a
+}
+
+// --- loop over-send: 3 sends into cap 2 with no consumer, join hangs ---
+spec worker_over {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn worker_over(n: i64) -> i64 !Par {
+    let c = chan_new(2)
+    invariant c[*] >= 1
+    let h = go(prod3, c)
+    return join(h)
+}
+
+// --- symbolic loop bound: the count arrives at runtime, honest silence ---
+spec prod_k {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn prod_k(c: i64) -> i64 !Par {
+    let k = chan_recv(c)
+    for i in 0..k { chan_send(c, i + 1) }
+    return 0
+}
+
+spec fanin_symbolic {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn fanin_symbolic(n: i64) -> i64 !Par {
+    let c = chan_new(3)
+    invariant c[*] >= 1
+    let h = go(prod_k, c)
+    chan_send(c, n)
+    let a = chan_recv(c)
+    let b = chan_recv(c)
+    let d = chan_recv(c)
+    let e = chan_recv(c)
+    join(h)
+    return a
+}
+
+// --- while body: not a counted loop, honest silence ---
+spec cons_while {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn cons_while(c: i64) -> i64 !Par {
+    let mut s = 0
+    let mut i = 0
+    while i < 3 { s = s + chan_recv(c) i = i + 1 }
+    return s
+}
+
+spec fanin_while {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn fanin_while(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(cons_while, c)
+    chan_send(c, n)
+    chan_send(c, n)
+    return join(h)
+}
+
+fn main() -> i64 !Par {
+    print(fanin_ok(1))
+    print(fanin_credit(1))
+    return 0
+}

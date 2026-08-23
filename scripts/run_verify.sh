@@ -272,6 +272,16 @@ test "$(grep -c 'протокол (wait-for: send — свободен слот)
 	&& ! grep -A5 "close_unblocks:" /tmp/baga_verify_out.txt | grep -q "пълен буфер" \
 	&& echo "OK: send_block — send-blocking върху пълен буфер: cap/credit сметка доказана; двоен send без consumer и worker over-send оброчени; символен cap — честно мълчание (M24)" \
 	|| { echo "FAIL: send_block"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/fanin_loops.baga > /tmp/baga_verify_out.txt || true; \
+test "$(grep -c 'протокол (wait-for: recv след producer): ДОКАЗАНО' /tmp/baga_verify_out.txt)" -eq 6 \
+	&& test "$(grep -c 'протокол (wait-for: send — свободен слот): ДОКАЗАНО' /tmp/baga_verify_out.txt)" -eq 5 \
+	&& grep -q "протокол (wait-for цикъл: recv без send): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for цикъл: worker send върху пълен буфер): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& grep -q "протокол (wait-for: worker send се побира в буфера): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& ! grep -A6 "fanin_symbolic:" /tmp/baga_verify_out.txt | grep -q "recv без send\|recv след producer" \
+	&& ! grep -A4 "fanin_while:" /tmp/baga_verify_out.txt | grep -q "пълен буфер" \
+	&& echo "OK: fanin_loops — known-N fan-in: броени цикли покриват точно N recv-а; recv отвъд капацитета и loop over-send оброчени; символен диапазон/while — честно мълчание (M25)" \
+	|| { echo "FAIL: fanin_loops"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/pair_recv2.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: pair_recv2 — ok-flag + content инвариант през cell2 проекции (M17)" \
@@ -418,3 +428,9 @@ grep -A4 "lp6_sendblk_full_bad:" /tmp/baga_lp6_out.txt | grep -q "протоко
 grep -A3 "lp6_sendblk_worker_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: worker send върху пълен буфер): ОБРОЧЕНО" \
 	&& echo "OK: LP6 lp6_sendblk_worker_bad — join на worker с over-send е оброчен, не ДОКАЗАНО (M24)" \
 	|| { echo "FAIL: LP6 lp6_sendblk_worker_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A5 "lp6_fanin_short_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: recv без send): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_fanin_short_bad — recv отвъд loop капацитета на producer е оброчен, не ДОКАЗАНО (M25)" \
+	|| { echo "FAIL: LP6 lp6_fanin_short_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A3 "lp6_fanin_over_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: worker send върху пълен буфер): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_fanin_over_bad — join на loop worker с over-send е оброчен, не ДОКАЗАНО (M25)" \
+	|| { echo "FAIL: LP6 lp6_fanin_over_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }

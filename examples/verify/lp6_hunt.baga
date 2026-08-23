@@ -200,6 +200,50 @@ fn lp6_sendblk_worker_bad(n: i64) -> i64 !Par {
     return join(h)
 }
 
+// ── M25: known-N fan-in counting must not overclaim ────────────────────
+// A loop producer with 2 sends covers exactly 2 parent recvs; a third recv
+// is a deadlock and must be REFUTED — an "N covers anything" shortcut here
+// would be a false PROVEN. Both fns stay out of main() — they hang.
+spec lp6_fanin_short_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_fanin_prod2(c: i64) -> i64 !Par {
+    for i in 0..2 { chan_send(c, i + 1) }
+    return 0
+}
+fn lp6_fanin_short_bad(n: i64) -> i64 !Par {
+    let c = chan_new(3)
+    invariant c[*] >= 1
+    let h = go(lp6_fanin_prod2, c)
+    let a = chan_recv(c)
+    let b = chan_recv(c)
+    let d = chan_recv(c)
+    join(h)
+    return a
+}
+
+// A loop producer with 3 sends into cap 2 cannot finish when nobody recvs;
+// the join must be REFUTED, never "fits the buffer".
+spec lp6_fanin_over_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_fanin_prod3(c: i64) -> i64 !Par {
+    for i in 0..3 { chan_send(c, i + 1) }
+    return 0
+}
+fn lp6_fanin_over_bad(n: i64) -> i64 !Par {
+    let c = chan_new(2)
+    invariant c[*] >= 1
+    let h = go(lp6_fanin_prod3, c)
+    return join(h)
+}
+
 fn main() {
     print(lp6_div_neg_bad(7, -2))
     print(lp6_mod_neg_bad(7, -2))

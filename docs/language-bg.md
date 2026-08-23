@@ -1367,9 +1367,9 @@ verify сортирай:
   са **ОБРОЧЕНО** (цикъл).
 
 Не е темпорална liveness (няма fairness); блокиращият send върху пълен буфер
-е §14.3.7 (M24). `if`/`while`/вложен `go`, `recv2`/`select*`, packed
-аргументи и повече от един `recv` в worker-а са честен no-claim — никога
-фалшиво ДОКАЗАНО.
+е §14.3.7 (M24), броените цикли в worker-и — §14.3.8 (M25). `if`/`while`
+тела, вложен `go`, `recv2`/`select*`, packed аргументи и не-константни
+циклични граници са честен no-claim — никога фалшиво ДОКАЗАНО.
 Оракъл: `examples/verify/waitfor.baga`. Броенето (фиксирано N) остава в
 `liveness_struct.baga`.
 
@@ -1462,12 +1462,36 @@ consumer се „доказваше" като безопасен, а върви 
 - **затворен канал**: `chan_send` след `chan_close` не блокира (връща -1;
   close broadcast-ва `not_full`) — и двете проверки мълчат.
 
-Граници: само константен капацитет; кредитът е ≤1 recv на worker (повече е
-complex по M19); competing producers → no-claim; fairness/starvation остава
-извън фрагмента. Оракъл: `examples/verify/send_block.baga`; адверсариални
-калъфи `lp6_sendblk_full_bad`/`lp6_sendblk_worker_bad` в
+Граници: само константен капацитет; кредитите са точни бройки recv-ове
+на worker (преди M25 — ≤1); competing producers → no-claim;
+fairness/starvation остава извън фрагмента. Оракъл:
+`examples/verify/send_block.baga`; адверсариални калъфи
+`lp6_sendblk_full_bad`/`lp6_sendblk_worker_bad` в
 `examples/verify/lp6_hunt.baga` (пазят точно фалшивото ДОКАЗАНО, което M24
 затваря).
+
+### 14.3.8 Броени цикли в worker-и — known-N fan-in (M25)
+
+`for i in lo..hi` с литерални граници (hi изключващ) в тялото на worker се
+сканира веднъж и бройките му се мащабират по `k = hi - lo` — known-N
+дисциплината на M16 (точно N send-а, N recv-а, после close) става сметка,
+не предположение:
+
+- **Точен капацитет на producer-ите.** `wf_producer_capacity` сумира
+  `wf_n_send` на класифицираните send-first worker-и по канала (join
+  handle-и и `go_bg`). Parent `recv` след `unmatched > parent send-ове +
+  капацитет` е **ОБРОЧЕНО** („recv без send") — преди M25 втори
+  несъвпадащ recv беше мълчалив no-claim.
+- **Loop consumer-и.** Броените recv-ове са точни кредити в сметката на
+  §14.3.7: `cons` с 3 recv-а в цикъл покрива 3 parent send-а в cap-1
+  канал — и трите са **ДОКАЗАНО** „свободен слот".
+- **Честно мълчание.** Символни граници (включително граница, recv-ната от
+  канала), `while`/`if` тела, вложен `go` → complex → no-claim; калъпи със
+  състезаващи се producer-и остават no-claim по §14.3.7.
+
+Оракъл: `examples/verify/fanin_loops.baga` (4-тият recv отвъд капацитета
+на loop producer-а виси и на runtime); адверсариални калъфи
+`lp6_fanin_short_bad`/`lp6_fanin_over_bad` в `examples/verify/lp6_hunt.baga`.
 
 ### 14.4 Предусловия (`requires:`)
 
