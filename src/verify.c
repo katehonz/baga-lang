@@ -1461,9 +1461,13 @@ typedef struct {
     int wf_recv;      /* HK_JOIN: worker recvs param before send/return */
     int wf_send;      /* HK_JOIN: worker sends param before recv */
     int wf_complex;   /* HK_JOIN: scan inconclusive (if/loop/nested) */
+    int wf_n_send;    /* HK_JOIN: worker sends on the channel arg (!wf_complex) */
+    int wf_n_recv;    /* HK_JOIN: worker recvs on the channel arg (<=1 in fragment) */
     int n_send;       /* HK_CHAN: sends on this thread */
     int n_recv;       /* HK_CHAN: recvs on this thread */
     int n_bg_prod;    /* HK_CHAN: go_bg workers that send-first */
+    int n_bg_cons;    /* HK_CHAN: go_bg workers that recv-first (M24 credits) */
+    int wf_cap;       /* HK_CHAN: constant buffer capacity, -1 = unknown (M24) */
     int wf_unknown;   /* HK_CHAN: a spawned worker was too complex to classify */
 } HandleEntry;
 typedef struct { HandleEntry *h; int n, cap; } HandleList;
@@ -1492,7 +1496,9 @@ static void handles_set(HandleList *l, const char *var, int kind, int state, Lin
         e->result = empty;
         e->worker = NULL; e->chan_arg = NULL;
         e->wf_recv = e->wf_send = e->wf_complex = 0;
-        e->n_send = e->n_recv = e->n_bg_prod = e->wf_unknown = 0;
+        e->wf_n_send = e->wf_n_recv = 0;
+        e->n_send = e->n_recv = e->n_bg_prod = e->n_bg_cons = e->wf_unknown = 0;
+        e->wf_cap = -1;
     } else {
         lin_free(&e->result);
     }
@@ -1507,9 +1513,11 @@ static void handles_clone_into(HandleList *dst, HandleList *src) {
         handles_set(dst, src->h[i].var, src->h[i].kind, src->h[i].state, &r);
         HandleEntry *d = handles_find(dst, src->h[i].var);
         d->n_send = src->h[i].n_send; d->n_recv = src->h[i].n_recv;
-        d->n_bg_prod = src->h[i].n_bg_prod; d->wf_unknown = src->h[i].wf_unknown;
+        d->n_bg_prod = src->h[i].n_bg_prod; d->n_bg_cons = src->h[i].n_bg_cons;
+        d->wf_unknown = src->h[i].wf_unknown; d->wf_cap = src->h[i].wf_cap;
         d->wf_recv = src->h[i].wf_recv; d->wf_send = src->h[i].wf_send;
         d->wf_complex = src->h[i].wf_complex;
+        d->wf_n_send = src->h[i].wf_n_send; d->wf_n_recv = src->h[i].wf_n_recv;
         d->worker = src->h[i].worker ? strdup(src->h[i].worker) : NULL;
         d->chan_arg = src->h[i].chan_arg ? strdup(src->h[i].chan_arg) : NULL;
     }
@@ -2924,7 +2932,18 @@ static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
  * satisfied by an action the waiter itself is blocking. Matched sequential
  * send/recv, join-after-send, and recv-after-a-send-first worker are PROVEN.
  * if/while/nested go, recv2/select, packed args, and >1 recv in a worker
- * are no-claim (honest incompleteness) — never a false PROVEN. */
+ * are no-claim (honest incompleteness) — never a false PROVEN.
+ *
+ * M24: send-blocking on a full bounded buffer (baga_chan_send waits on
+ * not_full, src/baga_par_rt.c). With a constant capacity (chan_new literal)
+ * a parent send is checked against outstanding = n_send - n_recv so far
+ * minus recv credits (recv-first workers already spawned, go_bg consumers
+ * included): outstanding - credits >= cap with no complex worker on the
+ * channel is a kind-3 REFUTED; otherwise "свободен слот" is PROVEN. A join
+ * of a send-only worker is REFUTED when wf_n_send > cap + parent recvs +
+ * other consumer credits — the worker can never finish. Competing producers
+ * (parent sends before the join on that channel, go_bg send-first) keep the
+ * join check honest no-claim; symbolic capacity keeps both checks silent. */
 
 typedef struct {
     int recv_first, send_first, n_recv, n_send, complex, saw_op;
@@ -3028,18 +3047,68 @@ static void wf_check_recv(State *st, Obligations *ob, HandleEntry *ch) {
     }
 }
 
+/* M24: parent send on a constant-capacity channel. A recv credit is a
+ * recv-first worker already spawned (join handle or go_bg) — it is blocked
+ * on recv, so it will consume one item. Blocked forever iff the items in
+ * flight before this send, minus every credit, still fill the buffer and no
+ * complex worker could be a hidden consumer. */
+static void wf_check_send(State *st, Obligations *ob, HandleEntry *ch) {
+    if (!ch || ch->wf_cap < 0) return;
+    if (ch->state != 0) return;   /* closed: send never blocks (returns -1) */
+    int credits = ch->n_bg_cons, unknown = ch->wf_unknown;
+    for (int i = 0; i < st->handles.n; i++) {
+        HandleEntry *h = &st->handles.h[i];
+        if (h->kind != HK_JOIN || !h->chan_arg) continue;
+        if (strcmp(h->chan_arg, ch->var) != 0) continue;
+        if (h->wf_complex) unknown = 1;
+        else if (h->wf_recv) credits += h->wf_n_recv;
+    }
+    if (ch->n_send - ch->n_recv - credits >= ch->wf_cap) {
+        if (!unknown)
+            push_protocol_violation(st, ob, "wait-for цикъл: send върху пълен буфер без consumer");
+    } else {
+        push_protocol_ok(st, ob, "wait-for: send — свободен слот");
+    }
+}
+
 static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
-    if (!jh || !jh->chan_arg || !jh->wf_recv || jh->wf_complex) return;
+    if (!jh || !jh->chan_arg || jh->wf_complex) return;
     HandleEntry *ch = handles_find(&st->handles, jh->chan_arg);
     if (!ch || ch->kind != HK_CHAN) return;
-    int unk = 0;
-    int prod = wf_has_producer(st, ch, &unk);
-    if (ch->n_send > 0) {
-        push_protocol_ok(st, ob, "wait-for: join след send");
-    } else if (prod) {
-        push_protocol_ok(st, ob, "wait-for: join, друг producer");
-    } else if (!unk) {
-        push_protocol_violation(st, ob, "wait-for цикъл: join преди send");
+    if (jh->wf_recv) {
+        int unk = 0;
+        int prod = wf_has_producer(st, ch, &unk);
+        if (ch->n_send > 0) {
+            push_protocol_ok(st, ob, "wait-for: join след send");
+        } else if (prod) {
+            push_protocol_ok(st, ob, "wait-for: join, друг producer");
+        } else if (!unk) {
+            push_protocol_violation(st, ob, "wait-for цикъл: join преди send");
+        }
+    }
+    /* M24: a send-only worker must fit — its sends complete iff
+     * wf_n_send <= cap + parent recvs so far + other consumer credits.
+     * Competing producers on the channel make room accounting dishonest:
+     * no-claim. */
+    if (jh->wf_send && jh->wf_n_recv == 0 && ch->wf_cap >= 0 &&
+        ch->state == 0 && ch->n_send == 0 && ch->n_bg_prod == 0) {
+        int credits = ch->n_bg_cons, unknown = ch->wf_unknown, rivals = 0;
+        for (int i = 0; i < st->handles.n; i++) {
+            HandleEntry *h = &st->handles.h[i];
+            if (h == jh || h->kind != HK_JOIN || !h->chan_arg) continue;
+            if (strcmp(h->chan_arg, ch->var) != 0) continue;
+            if (h->wf_complex) unknown = 1;
+            else if (h->wf_recv) credits += h->wf_n_recv;
+            else if (h->wf_send) rivals = 1;
+        }
+        if (rivals) return;
+        int room = ch->wf_cap + ch->n_recv + credits;
+        if (jh->wf_n_send > room) {
+            if (!unknown)
+                push_protocol_violation(st, ob, "wait-for цикъл: worker send върху пълен буфер");
+        } else {
+            push_protocol_ok(st, ob, "wait-for: worker send се побира в буфера");
+        }
     }
 }
 
@@ -3152,6 +3221,7 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             if (ch) {
                 if (sc.complex) ch->wf_unknown = 1;
                 else if (sc.send_first) ch->n_bg_prod++;
+                else if (sc.recv_first) ch->n_bg_cons++;   /* M24 credit */
             }
             lin_free(&res.lin);
             return sym_lin(lin_const(rat_int(0)));
@@ -3167,6 +3237,8 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
                 jh->wf_recv = sc.recv_first && !sc.complex;
                 jh->wf_send = sc.send_first && !sc.complex;
                 jh->wf_complex = sc.complex;
+                jh->wf_n_send = sc.complex ? 0 : sc.n_send;
+                jh->wf_n_recv = sc.complex ? 0 : sc.n_recv;
             }
             if (ch && sc.complex) ch->wf_unknown = 1;
         }
@@ -3205,9 +3277,16 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
 
     if (strcmp(nm, "chan_new") == 0) {
         Sym cap = se_from_ast(call->args.data[0], &st->env, &st->vlen, &st->reads);
+        int ccap = -1;   /* M24: constant capacity only; symbolic = unknown */
+        if (!cap.nonlinear && cap.lin.n == 0 && cap.lin.c.den == 1) {
+            ccap = (int)cap.lin.c.num;
+            if (ccap < 1) ccap = 1;   /* runtime clamps: baga_chan_new M1 */
+        }
         lin_free(&cap.lin);
         char hv[64]; snprintf(hv, sizeof hv, "__ch%d", g_handle_ctr++);
         handles_set(&st->handles, hv, HK_CHAN, 0, NULL);
+        HandleEntry *e = handles_find(&st->handles, hv);
+        if (e) e->wf_cap = ccap;
         return sym_lin(lin_var(hv));
     }
 
@@ -3239,7 +3318,7 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
         return sym_lin(lin_var(rv));   /* otherwise unconstrained payload */
     }
     /* chan_send */
-    if (e) e->n_send++;
+    if (e) { wf_check_send(st, ob, e); e->n_send++; }   /* M24: full-buffer */
     Sym v = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
     /* M16: the payload must provably satisfy every content axiom anchored on
      * this channel; an axiom that cannot be discharged is dropped (M3 rule —

@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### verify — M24: send-blocking върху пълен буфер (soundness фикс)
+- **Фалшиво ДОКАЗАНО затворено.** `baga_chan_send` блокира, докато буферът
+  е пълен (`not_full` cond, `src/baga_par_rt.c`) — send е блокираща операция
+  като recv, но M19 wait-for фрагментът гледаше само recv/join: двоен `send`
+  в cap-1 канал без consumer се маркираше „wait-for: последователни
+  send/recv — ДОКАЗАНО", а върви в deadlock (потвърдено с `timeout` —
+  виси; LP6 батерията пази точно този калъф).
+- **Ghost капацитет + кредити.** Константен `chan_new(литерал)` пази cap
+  (символният е честен no-claim; runtime clamp `cap < 1 → 1` е огледален).
+  Parent send: `outstanding = n_send - n_recv` минус recv кредитите
+  (recv-first worker-и — join handle или `go_bg` — spawn-нати преди този
+  send; 1 кредит = 1 бъдещ recv). `outstanding - кредити >= cap` без complex
+  worker по канала ⇒ **ОБРОЧЕНО** („send върху пълен буфер без consumer"),
+  иначе **ДОКАЗАНО** („свободен слот").
+- **Join на send-only worker.** Без competing producers (parent не е пращал,
+  няма `go_bg`/друг send-first handle): `wf_n_send > cap + parent recv-ове +
+  чужди кредити` ⇒ **ОБРОЧЕНО** („worker send върху пълен буфер"), иначе
+  **ДОКАЗАНО** („побира се в буфера"). Също runtime-потвърдено (join виси).
+- **Затворен канал.** `chan_send` след `chan_close` не блокира (връща -1,
+  close broadcast-ва `not_full`) — и двете проверки мълчат; без тази клауза
+  честна програма със send след close получаваше фалшиво ОБРОЧЕНО.
+- Граници: константен капацитет; ≤1 recv кредит на worker (>1 е complex по
+  M19); competing producers → no-claim; fairness/starvation и `if`/`while`
+  тела остават извън фрагмента.
+- Оракъл: `examples/verify/send_block.baga` (10 ДОКАЗАНО „свободен слот",
+  3 ОБРОЧЕНО, `cap_unknown`/`close_unblocks` — честно мълчание);
+  адверсариални калъфи `lp6_sendblk_full_bad`/`lp6_sendblk_worker_bad` в
+  `examples/verify/lp6_hunt.baga`.
+- Докс: `docs/thesis-open-problems.md` §1.4 (M24), `docs/language-bg.md`
+  §14.3.7 (M19 §14.3.2 препраща), `docs/language-en.md` §14.3.7.
+
 ### език + verify — M23: logical right shift (`>>>`, zero-fill)
 - **Нов оператор `>>>`.** Логическо отместване надясно: знаковият бит се
   запълва с 0 и резултатът е неотрицателен. Броячът се маскира (`b & 63`)

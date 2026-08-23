@@ -1393,8 +1393,8 @@ specification is judged by the compiler.
 - `join` before send to a recv-first worker, and `recv` with no matching
   send/producer, are **ОБРОЧЕНО** (a cycle).
 
-This is not temporal liveness (no fairness) and does not model a blocking
-send on a full buffer. `if`/`while`/nested `go`, `recv2`/`select*`, packed
+This is not temporal liveness (no fairness); a blocking send on a full buffer
+is §14.3.7 (M24). `if`/`while`/nested `go`, `recv2`/`select*`, packed
 arguments, and more than one `recv` in a worker are an honest no-claim —
 never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
 lemmas (fixed N) stay in `liveness_struct.baga`.
@@ -1463,6 +1463,38 @@ Oracle: `examples/verify/lshr_bounds.baga`; adversarial cases
 (if the verifier reused `>>`'s axioms for `>>>`, the false claims would prove —
 the battery keeps them refuted). Still open: full bit-blasting, wrap as a
 value, variable XOR.
+
+### 14.3.7 Send-blocking on a full buffer (M24)
+
+`baga_chan_send` blocks while the buffer is full (the `not_full` cond in
+`src/baga_par_rt.c`), so a send is a blocking operation just like recv — and
+the M19 fragment only watched recv/join, so a double `send` into a cap-1
+channel with no consumer was "proven" safe while it deadlocks at runtime (a
+false PROVEN — a soundness fix). `--verify` keeps a ghost capacity for a
+constant `chan_new(literal)` (a symbolic capacity is an honest no-claim) and
+counts:
+
+- **parent send**: `outstanding = n_send - n_recv` so far, minus recv
+  credits (recv-first workers spawned before this send — join handle or
+  `go_bg`; each credit = 1 future recv). If
+  `outstanding - credits >= cap` and no complex worker exists on the
+  channel — **REFUTED** ("send on a full buffer with no consumer");
+  otherwise **PROVEN** ("free slot").
+- **join of a send-only worker** (`wf_n_recv == 0`, no competing producers:
+  the parent has not sent on the channel, no `go_bg` send-first, no other
+  send-first handle): the worker finishes iff
+  `wf_n_send <= cap + parent recvs + other credits` — **PROVEN** ("fits the
+  buffer"); with more and no complex unknowns — **REFUTED** ("worker send on
+  a full buffer").
+- **closed channel**: `chan_send` after `chan_close` never blocks (it
+  returns -1; close broadcasts `not_full`) — both checks stay silent.
+
+Boundaries: constant capacity only; a credit is ≤1 recv per worker (more is
+complex per M19); competing producers → no-claim; fairness/starvation stays
+outside the fragment. Oracle: `examples/verify/send_block.baga`; adversarial
+cases `lp6_sendblk_full_bad`/`lp6_sendblk_worker_bad` in
+`examples/verify/lp6_hunt.baga` (they guard exactly the false PROVEN that
+M24 closes).
 
 ### 14.4 Preconditions (`requires:`)
 

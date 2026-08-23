@@ -262,6 +262,16 @@ grep -q "протокол (wait-for: последователни send/recv): Д
 	&& ! grep -q "протокол (wait-for.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
 	&& echo "OK: waitfor — wait-for ацикличност: send/recv и join-след-send доказани; join-преди-send и recv-без-send оброчени (M19)" \
 	|| { echo "FAIL: waitfor"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/send_block.baga > /tmp/baga_verify_out.txt || true; \
+test "$(grep -c 'протокол (wait-for: send — свободен слот): ДОКАЗАНО' /tmp/baga_verify_out.txt)" -eq 10 \
+	&& grep -q "протокол (wait-for: worker send се побира в буфера): ДОКАЗАНО" /tmp/baga_verify_out.txt \
+	&& test "$(grep -c 'протокол (wait-for цикъл: send върху пълен буфер без consumer): ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -eq 2 \
+	&& grep -q "протокол (wait-for цикъл: worker send върху пълен буфер): ОБРОЧЕНО" /tmp/baga_verify_out.txt \
+	&& ! grep -q "протокол (wait-for.*НЕ МОГА ДА РЕША" /tmp/baga_verify_out.txt \
+	&& ! grep -A6 "cap_unknown:" /tmp/baga_verify_out.txt | grep -q "свободен слот\|пълен буфер" \
+	&& ! grep -A5 "close_unblocks:" /tmp/baga_verify_out.txt | grep -q "пълен буфер" \
+	&& echo "OK: send_block — send-blocking върху пълен буфер: cap/credit сметка доказана; двоен send без consumer и worker over-send оброчени; символен cap — честно мълчание (M24)" \
+	|| { echo "FAIL: send_block"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/pair_recv2.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "ensures #1.*ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& echo "OK: pair_recv2 — ok-flag + content инвариант през cell2 проекции (M17)" \
@@ -402,3 +412,9 @@ grep -A2 "lp6_elem_drop:" /tmp/baga_lp6_out.txt | grep -q "ensures #1.*ОБРО�
 	&& grep -A3 "lp6_elem_drop:" /tmp/baga_lp6_out.txt | grep -q "без свидетел" \
 	&& echo "OK: LP6 lp6_elem_drop — нарушен елементен инвариант е оброчен; празен контрапример вече е честен (без свидетел)" \
 	|| { echo "FAIL: LP6 lp6_elem_drop"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A4 "lp6_sendblk_full_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: send върху пълен буфер без consumer): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_sendblk_full_bad — send върху пълен cap-1 буфер без consumer е оброчен, не ДОКАЗАНО (M24)" \
+	|| { echo "FAIL: LP6 lp6_sendblk_full_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }
+grep -A3 "lp6_sendblk_worker_bad:" /tmp/baga_lp6_out.txt | grep -q "протокол (wait-for цикъл: worker send върху пълен буфер): ОБРОЧЕНО" \
+	&& echo "OK: LP6 lp6_sendblk_worker_bad — join на worker с over-send е оброчен, не ДОКАЗАНО (M24)" \
+	|| { echo "FAIL: LP6 lp6_sendblk_worker_bad — очаквах ОБРОЧЕНО"; cat /tmp/baga_lp6_out.txt; exit 1; }

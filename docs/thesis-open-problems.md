@@ -108,6 +108,26 @@ fairness/starvation) and not send-blocking on a full buffer; `if`/`while`/
 nested `go` stay honest no-claim. The remaining liveness darkness is
 fairness and unstructured dynamic scheduling.
 
+**M24 (2026-08-23):** send-blocking on a full bounded buffer is now in the
+fragment — and it was a soundness fix, not just coverage: `baga_chan_send`
+waits on `not_full`, so a second `send` into a cap-1 channel with no
+consumer deadlocks at runtime while M19 called it PROVEN. With a constant
+`chan_new(literal)` capacity the verifier keeps a ghost cap and counts:
+
+- parent send: `outstanding - recv_credits >= cap` with no complex worker
+  on the channel → **REFUTED**; else "free slot" → **PROVEN** (a credit is
+  a recv-first worker already spawned, join handle or `go_bg`);
+- join of a send-only worker without competing producers:
+  `wf_n_send > cap + parent recvs + other credits` → **REFUTED**, else
+  **PROVEN**;
+- a closed channel never blocks a send (returns -1) — both checks silent;
+  symbolic capacity — honest no-claim.
+
+Oracle: `examples/verify/send_block.baga`; adversarial cases
+`lp6_sendblk_full_bad`/`lp6_sendblk_worker_bad` guard the exact false
+PROVEN. Remaining darkness: fairness/starvation, `if`/`while` bodies,
+recv2/select, >1 recv per worker.
+
 ---
 
 ## 2. Full bitvector theory

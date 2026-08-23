@@ -161,6 +161,45 @@ fn lp6_elem_drop(v: [i64]) -> i64 {
     return vec_get(v, 0)
 }
 
+// ── M24: send-blocking on a full bounded buffer ────────────────────────
+// A second send into a full cap-1 buffer with no consumer blocks forever;
+// a deadlock-free verdict here was the false PROVEN this guards. Both fns
+// stay out of main — running them would hang (that is the point).
+spec lp6_sendblk_full_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_sendblk_full_bad(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    chan_send(c, n)
+    let v = chan_recv(c)
+    return v
+}
+
+// A worker with two sends into cap 1 never finishes when nobody recvs;
+// joining it must be REFUTED, never marked fitting.
+spec lp6_sendblk_worker_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output >= 0
+}
+fn lp6_sendblk_worker2(c: i64) -> i64 !Par {
+    chan_send(c, 1)
+    chan_send(c, 1)
+    return 0
+}
+fn lp6_sendblk_worker_bad(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(lp6_sendblk_worker2, c)
+    return join(h)
+}
+
 fn main() {
     print(lp6_div_neg_bad(7, -2))
     print(lp6_mod_neg_bad(7, -2))

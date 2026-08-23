@@ -1,0 +1,258 @@
+// send_block.baga — M24: send-blocking on a full bounded buffer.
+//
+// baga_chan_send blocks while the buffer is full (src/baga_par_rt.c
+// not_full cond), so a send is a blocking op just like recv — M19's
+// recv/join-only fragment was incomplete and the unmatched-send case was
+// a false PROVEN (deadlock marked deadlock-free). This file pins the
+// counting argument from docs/thesis-open-problems.md §1.4:
+//
+//   cap1: send, recv, send, recv            → both sends fit
+//   cap2: send, send, recv, recv            → second send fits
+//   recv-first worker + send + send (cap1)  → credit frees a slot
+//   send-first worker (1 send) + parent recv → worker fits
+//   cap1: send, send, recv                  → 2nd send REFUTED (no consumer)
+//   cap1: worker with 2 sends + join        → join REFUTED (worker stuck)
+//   cap1: worker + send + send + send       → 3rd send REFUTED (credit spent)
+//   cap1: send, close, send                 → silent (closed send returns -1)
+//   symbolic cap: chan_new(n), send, send   → honest no-claim (silent)
+//
+//   ./baga --verify examples/verify/send_block.baga
+//   ./baga examples/verify/send_block.baga     # runs only the live paths
+
+spec consumer {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 1
+}
+
+fn consumer(c: i64) -> i64 !Par {
+    let v = chan_recv(c)
+    return v
+}
+
+spec producer {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn producer(c: i64) -> i64 !Par {
+    chan_send(c, 1)
+    return 0
+}
+
+spec producer2 {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn producer2(c: i64) -> i64 !Par {
+    chan_send(c, 1)
+    chan_send(c, 1)
+    return 0
+}
+
+// --- cap 1 ping-pong: a slot is always free before each send ---
+spec cap_pingpong {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn cap_pingpong(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    let a = chan_recv(c)
+    chan_send(c, a)
+    let b = chan_recv(c)
+    return b
+}
+
+// --- cap 2 buffer: two sends fit back to back ---
+spec cap_buffered {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn cap_buffered(n: i64) -> i64 !Par {
+    let c = chan_new(2)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    chan_send(c, n)
+    let a = chan_recv(c)
+    let b = chan_recv(c)
+    return b
+}
+
+// --- recv-first worker credit: two sends into cap 1 fit ---
+spec consumer_credit {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn consumer_credit(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(consumer, c)
+    chan_send(c, n)
+    chan_send(c, n)
+    return join(h)
+}
+
+// --- send-first worker with one send fits; parent drains it ---
+spec worker_fits {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn worker_fits(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(producer, c)
+    let v = chan_recv(c)
+    join(h)
+    return v
+}
+
+// --- cap 1, two sends, no consumer: the second send blocks forever ---
+spec send_dead {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn send_dead(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    chan_send(c, n)
+    let v = chan_recv(c)
+    return v
+}
+
+// --- worker with two sends into cap 1, nobody recvs: join blocks forever ---
+spec worker_dead {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn worker_dead(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(producer2, c)
+    return join(h)
+}
+
+// --- the single credit is spent after the second send; the third blocks ---
+spec consumer_short {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 0
+}
+
+fn consumer_short(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(consumer, c)
+    chan_send(c, n)
+    chan_send(c, n)
+    chan_send(c, n)
+    return join(h)
+}
+
+// --- closed channel: send returns -1 immediately, never blocks ---
+spec close_unblocks {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0 - 1
+}
+
+fn close_unblocks(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    chan_send(c, n)
+    chan_close(c)
+    let r = chan_send(c, n)
+    return r
+}
+
+// --- symbolic capacity: honest silence about send-blocking ---
+spec cap_unknown {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn cap_unknown(n: i64) -> i64 !Par {
+    let c = chan_new(n)
+    invariant c[*] >= 1
+    chan_send(c, 1)
+    chan_send(c, 1)
+    let a = chan_recv(c)
+    let b = chan_recv(c)
+    return a + b
+}
+
+fn main() -> i64 !Par {
+    print(cap_pingpong(7))
+    print(cap_buffered(7))
+    print(consumer_credit(7))
+    print(worker_fits(7))
+    print(close_unblocks(7))
+    print(cap_unknown(2))
+    return 0
+}

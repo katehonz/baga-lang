@@ -1366,9 +1366,10 @@ verify сортирай:
 - `join` преди send към recv-first worker, и `recv` без matching send/producer,
   са **ОБРОЧЕНО** (цикъл).
 
-Не е темпорална liveness (няма fairness) и не моделира блокиращ send върху
-пълен буфер. `if`/`while`/вложен `go`, `recv2`/`select*`, packed аргументи и
-повече от един `recv` в worker-а са честен no-claim — никога фалшиво ДОКАЗАНО.
+Не е темпорална liveness (няма fairness); блокиращият send върху пълен буфер
+е §14.3.7 (M24). `if`/`while`/вложен `go`, `recv2`/`select*`, packed
+аргументи и повече от един `recv` в worker-а са честен no-claim — никога
+фалшиво ДОКАЗАНО.
 Оракъл: `examples/verify/waitfor.baga`. Броенето (фиксирано N) остава в
 `liveness_struct.baga`.
 
@@ -1436,6 +1437,37 @@ complement. `--verify` записва shift-а като собствен зап�
 (ако верификаторът преизползва аксиомите на `>>` за `>>>`, фалшивите
 твърдения биха се доказали — батерията ги държи обречени). Все още няма:
 пълен bit-blast, wrap като стойност, променлив XOR.
+
+### 14.3.7 Send-blocking върху пълен буфер (M24)
+
+`baga_chan_send` блокира, докато буферът е пълен (`not_full` cond в
+`src/baga_par_rt.c`), значи send е блокираща операция точно като recv — а
+M19 фрагментът гледаше само recv/join и двоен `send` в cap-1 канал без
+consumer се „доказваше" като безопасен, а върви в deadlock (фалшиво
+ДОКАЗАНО — soundness фикс). `--verify` пази ghost капацитет за константен
+`chan_new(литерал)` (символен капацитет е честен no-claim) и смята:
+
+- **parent send**: `outstanding = n_send - n_recv` досега, минус recv
+  кредитите (recv-first worker-и, spawn-нати преди този send — join handle
+  или `go_bg`; всеки кредит = 1 бъдещ recv). Ако
+  `outstanding - кредити >= cap` и няма complex worker по канала —
+  **ОБРОЧЕНО** („send върху пълен буфер без consumer"); иначе **ДОКАЗАНО**
+  („свободен слот").
+- **join на send-only worker** (`wf_n_recv == 0`, без competing producers:
+  parent не е пращал по канала, няма `go_bg` send-first, няма друг
+  send-first handle): worker-ът завършва ако
+  `wf_n_send <= cap + parent recv-ове + чужди кредити` — **ДОКАЗАНО**
+  („побира се в буфера"); при повече и без complex неизвестни —
+  **ОБРОЧЕНО** („worker send върху пълен буфер").
+- **затворен канал**: `chan_send` след `chan_close` не блокира (връща -1;
+  close broadcast-ва `not_full`) — и двете проверки мълчат.
+
+Граници: само константен капацитет; кредитът е ≤1 recv на worker (повече е
+complex по M19); competing producers → no-claim; fairness/starvation остава
+извън фрагмента. Оракъл: `examples/verify/send_block.baga`; адверсариални
+калъфи `lp6_sendblk_full_bad`/`lp6_sendblk_worker_bad` в
+`examples/verify/lp6_hunt.baga` (пазят точно фалшивото ДОКАЗАНО, което M24
+затваря).
 
 ### 14.4 Предусловия (`requires:`)
 
