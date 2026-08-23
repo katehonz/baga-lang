@@ -1464,6 +1464,7 @@ typedef struct {
     int wf_n_send;    /* HK_JOIN: worker sends on the channel arg (!wf_complex) */
     int wf_n_recv;    /* HK_JOIN: worker recvs on the channel arg (<=1 in fragment) */
     int wf_imprecise; /* HK_JOIN: counts are guaranteed minimums (M27 branches) */
+    int wf_noreturn;  /* HK_JOIN: worker provably never completes (M28) */
     int n_send;       /* HK_CHAN: sends on this thread */
     int n_recv;       /* HK_CHAN: recvs on this thread */
     int n_bg_prod;    /* HK_CHAN: summed sends of go_bg send-first workers (M25) */
@@ -1500,6 +1501,7 @@ static void handles_set(HandleList *l, const char *var, int kind, int state, Lin
         e->wf_recv = e->wf_send = e->wf_complex = 0;
         e->wf_n_send = e->wf_n_recv = 0;
         e->wf_imprecise = 0;
+        e->wf_noreturn = 0;
         e->n_send = e->n_recv = e->n_bg_prod = e->n_bg_cons = e->wf_unknown = 0;
         e->wf_cap = -1;
         e->wf_sel_unknown = 0;
@@ -1524,6 +1526,7 @@ static void handles_clone_into(HandleList *dst, HandleList *src) {
         d->wf_complex = src->h[i].wf_complex;
         d->wf_n_send = src->h[i].wf_n_send; d->wf_n_recv = src->h[i].wf_n_recv;
         d->wf_imprecise = src->h[i].wf_imprecise;
+        d->wf_noreturn = src->h[i].wf_noreturn;
         d->worker = src->h[i].worker ? strdup(src->h[i].worker) : NULL;
         d->chan_arg = src->h[i].chan_arg ? strdup(src->h[i].chan_arg) : NULL;
     }
@@ -2982,11 +2985,19 @@ static void push_protocol_ok(State *st, Obligations *ob, const char *label) {
  * when both branches agree; a branch that may not block (or blocks
  * differently) before any op was seen makes the scan complex. while/match
  * stay complex — they need induction. Also closes an M26 gap: the select
- * PROVEN now requires !unk — an unknown consumer could eat the item. */
+ * PROVEN now requires !unk — an unknown consumer could eat the item.
+ *
+ * M28: a worker with `while true` and no break/return in the loop body on
+ * its straight-line path never completes (the checker agrees such a body
+ * diverges — no return required after it). Joining it waits forever:
+ * kind-3 REFUTED "join на worker без изход". Inside a branch the loop may
+ * never run — no claim; go_bg of such a worker is fine (nothing joins
+ * it). */
 
 typedef struct {
     int recv_first, send_first, n_recv, n_send, complex, saw_op;
     int imprecise;   /* M27: counts are guaranteed minimums (branchy body) */
+    int noreturn;    /* M28: a while-true without exit on the straight path */
 } WfScan;
 
 static int wf_name_is(const char **names, int nn, const char *s) {
@@ -2995,6 +3006,31 @@ static int wf_name_is(const char **names, int nn, const char *s) {
 }
 
 static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan *s);
+
+/* M28: does a tree contain a return or a break anywhere? Conservative — a
+ * return inside a nested lambda counts too (missed detection, never a
+ * false noreturn claim). */
+static int wf_has_exit(Node *n) {
+    if (!n) return 0;
+    switch (n->kind) {
+    case NODE_RETURN: case NODE_BREAK: return 1;
+    case NODE_BLOCK:
+        for (int i = 0; i < n->stmts.len; i++) if (wf_has_exit(n->stmts.data[i])) return 1;
+        return 0;
+    case NODE_LET:     return wf_has_exit(n->let_init);
+    case NODE_EXPR_STMT: return wf_has_exit(n->expr);
+    case NODE_ASSIGN:  return wf_has_exit(n->assign_val);
+    case NODE_IF:      return wf_has_exit(n->then_br) || wf_has_exit(n->else_br);
+    case NODE_WHILE:   return wf_has_exit(n->while_body);
+    case NODE_FOR:     return wf_has_exit(n->for_body);
+    case NODE_BINARY:  return wf_has_exit(n->left) || wf_has_exit(n->right);
+    case NODE_UNARY:   return wf_has_exit(n->operand);
+    case NODE_CALL:
+        for (int i = 0; i < n->args.len; i++) if (wf_has_exit(n->args.data[i])) return 1;
+        return 0;
+    default: return 0;
+    }
+}
 
 static void wf_scan_call(Node *call, const char **names, int nn, WfScan *s) {
     if (!call || call->kind != NODE_CALL) return;
@@ -3084,7 +3120,19 @@ static void wf_scan_node(Node *n, const char **names, int *nn, int nmax, WfScan 
         }
         return;
     }
-    case NODE_WHILE: case NODE_MATCH:
+    case NODE_WHILE: {
+        /* M28: `while true` with no break/return in its body never exits
+         * (the checker agrees — no return is required after it). On the
+         * straight-line path that means the worker never completes; the
+         * prefix counts stand, everything after is unreachable. */
+        if (n->while_cond && n->while_cond->kind == NODE_BOOL_LIT &&
+            n->while_cond->bool_val && !wf_has_exit(n->while_body)) {
+            s->noreturn = 1;
+        }
+        s->complex = 1;
+        return;
+    }
+    case NODE_MATCH:
         s->complex = 1;
         return;
     case NODE_FOR: {
@@ -3187,7 +3235,13 @@ static void wf_check_send(State *st, Obligations *ob, HandleEntry *ch) {
 }
 
 static void wf_check_join(State *st, Obligations *ob, HandleEntry *jh) {
-    if (!jh || !jh->chan_arg || jh->wf_complex) return;
+    if (!jh) return;
+    if (jh->wf_noreturn) {
+        /* M28: the worker never completes — the join waits forever */
+        push_protocol_violation(st, ob, "wait-for: join на worker без изход");
+        return;
+    }
+    if (!jh->chan_arg || jh->wf_complex) return;
     HandleEntry *ch = handles_find(&st->handles, jh->chan_arg);
     if (!ch || ch->kind != HK_CHAN) return;
     if (jh->wf_recv) {
@@ -3423,6 +3477,7 @@ static Sym eval_par_call(Node *call, State *st, Obligations *ob) {
                 jh->wf_n_send = sc.complex ? 0 : sc.n_send;
                 jh->wf_n_recv = sc.complex ? 0 : sc.n_recv;
                 jh->wf_imprecise = sc.complex ? 0 : sc.imprecise;
+                jh->wf_noreturn = sc.noreturn;
             }
             if (ch && sc.complex) ch->wf_unknown = 1;
         }

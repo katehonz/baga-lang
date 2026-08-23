@@ -1,0 +1,190 @@
+// worker_term.baga — M28: join on a provably non-terminating worker.
+//
+// A `while true` with no break/return in its body never exits — the
+// checker agrees (no return is required after such a loop, M19). When the
+// loop sits on a worker's straight-line path the worker never completes,
+// and joining it waits forever: kind-3 REFUTED. Inside a branch the loop
+// may never run — no claim. A loop with an exit inside is data-dependent
+// — honest no-claim. go_bg of an infinite worker is fine: nothing joins
+// it. docs/thesis-open-problems.md §1.4.
+//
+//   while true { recv } + join              → REFUTED (join без изход)
+//   while true with an exit + join          → no claim (data-dependent)
+//   if { while true } + join                → no claim (may never run)
+//   go_bg of an infinite consumer           → fine, send fits
+//   counted-loop worker + join              → still PROVEN (regression)
+//
+//   ./baga --verify examples/verify/worker_term.baga
+//   ./baga examples/verify/worker_term.baga     # runs only the live paths
+
+spec inf_recv {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn inf_recv(c: i64) -> i64 !Par {
+    while true {
+        chan_recv(c)
+    }
+}
+
+spec maybe_exit {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn maybe_exit(c: i64) -> i64 !Par {
+    while true {
+        let v = chan_recv(c)
+        if v == 0 { return 0 }
+    }
+}
+
+spec cond_inf {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn cond_inf(c: i64) -> i64 !Par {
+    if c > 0 {
+        while true {
+            chan_recv(c)
+        }
+    }
+    return 0
+}
+
+spec prod_once {
+    input:
+        c: i64
+    output: i64
+    requires:
+        c[*] >= 1
+    ensures:
+        output >= 0
+}
+
+fn prod_once(c: i64) -> i64 !Par {
+    for i in 0..1 { chan_send(c, i + 1) }
+    return 0
+}
+
+// --- joining a worker that never completes waits forever ---
+spec join_inf {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn join_inf(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(inf_recv, c)
+    chan_send(c, n)
+    join(h)
+    return 0
+}
+
+// --- the loop has an exit; whether it is taken depends on the data ---
+spec join_maybe {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn join_maybe(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(maybe_exit, c)
+    chan_send(c, n)
+    join(h)
+    return 0
+}
+
+// --- the infinite loop is inside a branch: it may never run ---
+spec join_cond {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn join_cond(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(cond_inf, c)
+    chan_send(c, n)
+    join(h)
+    return 0
+}
+
+// --- detached at birth: nothing joins the infinite consumer ---
+spec bg_inf {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output == 0
+}
+
+fn bg_inf(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    go_bg(inf_recv, c)
+    chan_send(c, n)
+    return 0
+}
+
+// --- a terminating counted-loop worker still joins fine ---
+spec join_term {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 1
+    ensures:
+        output >= 1
+}
+
+fn join_term(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(prod_once, c)
+    let v = chan_recv(c)
+    join(h)
+    return v
+}
+
+fn main() -> i64 !Par {
+    print(bg_inf(7))
+    print(join_term(7))
+    return 0
+}

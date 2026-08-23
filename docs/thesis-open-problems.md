@@ -178,6 +178,18 @@ requires !unk (an unknown consumer could eat the item). Oracle:
 fairness/starvation, while bodies (induction), nested go, select inside
 workers.
 
+**M28 (2026-08-23):** termination enters the fragment by its decidable
+edge. A `while true` with no break/return in its body never exits (the
+checker agrees — such a loop diverges, no return required after it); on
+a worker's straight-line path that means the worker never completes, and
+joining it waits forever: REFUTED "join на worker без изход"
+(runtime-confirmed hang). Inside a branch the loop may never run — no
+claim; a loop with an exit inside is data-dependent — no claim; `go_bg`
+of an infinite worker is fine (nothing joins it). Oracle:
+`examples/verify/worker_term.baga`; adversarial case
+`lp6_join_inf_bad`. Remaining darkness: fairness/starvation, while-body
+counting (induction), nested go, select inside workers.
+
 ---
 
 ## 2. Full bitvector theory

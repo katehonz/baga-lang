@@ -347,6 +347,30 @@ fn lp6_if_over_bad(n: i64) -> i64 !Par {
     return join(h)
 }
 
+// ── M28: join on a provably non-terminating worker ─────────────────────
+// while true with no break/return never exits; joining such a worker
+// waits forever and must be REFUTED — treating join as always completable
+// would be a false PROVEN.
+spec lp6_join_inf_bad {
+    input: n: i64
+    output: i64
+    requires: n >= 1
+    ensures: output == 0
+}
+fn lp6_inf_worker(c: i64) -> i64 !Par {
+    while true {
+        chan_recv(c)
+    }
+}
+fn lp6_join_inf_bad(n: i64) -> i64 !Par {
+    let c = chan_new(1)
+    invariant c[*] >= 1
+    let h = go(lp6_inf_worker, c)
+    chan_send(c, n)
+    join(h)
+    return 0
+}
+
 fn main() {
     print(lp6_div_neg_bad(7, -2))
     print(lp6_mod_neg_bad(7, -2))

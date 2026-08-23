@@ -1395,9 +1395,10 @@ specification is judged by the compiler.
 
 This is not temporal liveness (no fairness); a blocking send on a full buffer
 is §14.3.7 (M24), counted loops in workers — §14.3.8 (M25), recv2/select —
-§14.3.9 (M26), if/else in workers — §14.3.10 (M27). `while` bodies, nested
-`go`, packed arguments, non-constant loop bounds, and blocking ops on
-untracked channels are an honest no-claim — never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
+§14.3.9 (M26), if/else in workers — §14.3.10 (M27), joining an infinite
+worker — §14.3.11 (M28). `while` bodies (the counts), nested `go`, packed
+arguments, non-constant loop bounds, and blocking ops on untracked channels
+are an honest no-claim — never a false PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
 lemmas (fixed N) stay in `liveness_struct.baga`.
 
 ### 14.3.3 Even powers and the BV envelope (M20)
@@ -1575,6 +1576,28 @@ and merged:
 Oracle: `examples/verify/branch_if.baga` (2 guaranteed sends into cap 1
 hang at runtime too); adversarial cases `lp6_if_short_bad`/
 `lp6_if_over_bad` in `examples/verify/lp6_hunt.baga`.
+
+### 14.3.11 Joining a provably infinite worker (M28)
+
+A `while true` with no `break`/`return` in its body never exits — the
+checker agrees (such a loop diverges; no return is required after it).
+When the loop sits on a worker's straight-line path:
+
+- the worker **never completes** and `join(h)` waits forever —
+  **REFUTED** "join of a worker with no exit" (a kind-3 protocol
+  obligation, the same machinery as the other wait-for claims). It hangs
+  at runtime too.
+- **Honest boundaries.** A loop inside an `if` branch may never run —
+  no claim. A loop with an exit inside (`if v == 0 { return }`) is
+  data-dependent — no claim (termination is outside the structural
+  fragment). `go_bg` of an infinite worker is fine — nothing joins it;
+  such a worker is an honest infinite consumer, but its credits stay
+  unknown.
+- The counts before the loop (the prefix) stand; everything after it is
+  unreachable.
+
+Oracle: `examples/verify/worker_term.baga`; adversarial case
+`lp6_join_inf_bad` in `examples/verify/lp6_hunt.baga`.
 
 ### 14.4 Preconditions (`requires:`)
 
