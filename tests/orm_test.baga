@@ -193,6 +193,54 @@ fn main() -> i64 !Net !IO !Random !Par {
     db = orm_db_q(pc2)
     check("cascade", orm_ok_q(pc2) == 1 && orm_nrows(pc2) == 0)
 
+    // NULL-capable typed paths (nullable probe table)
+    let mkdrop = orm_exec(db, "DROP TABLE IF EXISTS orm_null_probe")?
+    db = orm_db_exec(mkdrop)
+    let mk = orm_exec(db, "CREATE TABLE orm_null_probe (id BIGSERIAL PRIMARY KEY, note TEXT)")?
+    db = orm_db_exec(mk)
+    check("null_probe_table", orm_ok(mk) == 1)
+    let ncols = vec_new()
+    vec_push(ncols, "note")
+    let nvals = vec_new()
+    vec_push(nvals, "hello")
+    let nnulls = vec_new()
+    vec_push(nnulls, 0)
+    let nins = orm_insert_full(db, "orm_null_probe", ncols, nvals, nnulls)?
+    db = orm_db_exec(nins)
+    check("insert_full_value", orm_ok(nins) == 1)
+    let nvals2 = vec_new()
+    vec_push(nvals2, "")
+    let nnulls2 = vec_new()
+    vec_push(nnulls2, 1)
+    let nret = orm_insert_returning_full(db, "orm_null_probe", ncols, nvals2, nnulls2)?
+    db = orm_db_q(nret)
+    check("insert_returning_full", orm_ok_q(nret) == 1 && orm_nrows(nret) == 1)
+    let nid = orm_cell_by_i64(nret, 0, "id")
+    check("null_inserted", orm_isnull(nret, 0, orm_col_index(nret, "note")) == 1)
+    let nup_cols = vec_new()
+    vec_push(nup_cols, "note")
+    let nup_vals = vec_new()
+    vec_push(nup_vals, "x")
+    let nup_nulls = vec_new()
+    vec_push(nup_nulls, 1)
+    let nup = orm_update_by_id_full(db, "orm_null_probe", nid, nup_cols, nup_vals, nup_nulls)?
+    db = orm_db_exec(nup)
+    check("update_full_null", orm_ok(nup) == 1)
+    let nq = orm_find_i64(db, "orm_null_probe", "id", nid)?
+    db = orm_db_q(nq)
+    check("update_full_null_held", orm_ok_q(nq) == 1 && orm_isnull(nq, 0, orm_col_index(nq, "note")) == 1)
+    let badcols = vec_new()
+    vec_push(badcols, "note")
+    let badvals = vec_new()
+    let badnulls = vec_new()
+    vec_push(badnulls, 0)
+    let badins = orm_insert_full(db, "orm_null_probe", badcols, badvals, badnulls)?
+    db = orm_db_exec(badins)
+    check("insert_full_mismatch", orm_ok(badins) == 0)
+    let ndrop = orm_exec(db, "DROP TABLE orm_null_probe")?
+    db = orm_db_exec(ndrop)
+    check("null_probe_drop", orm_ok(ndrop) == 1)
+
     // rollback one migration
     let d1 = migrate_down(db, set, 1)?
     db = migrate_db(d1)
@@ -213,6 +261,41 @@ fn main() -> i64 !Net !IO !Random !Par {
     let d2 = migrate_down(db, set, 100)?
     db = migrate_db(d2)
     check("full_down", migrate_is_ok(d2) == 1)
+
+    // staged up: apply at most N pending, then the rest
+    let us = migrate_up_steps(db, set, 2)?
+    db = migrate_db(us)
+    check("up_steps_2", migrate_is_ok(us) == 1 && migrate_applied_n(us) == 2)
+    let pend = migrate_pending(db, set)?
+    db = pend.db
+    check("pending_1", pend.count == 1 && pend.next_version == 20260803003)
+    let us2 = migrate_up_steps(db, set, 0)?
+    db = migrate_db(us2)
+    check("up_steps_rest", migrate_is_ok(us2) == 1 && migrate_applied_n(us2) == 1)
+    let pend0 = migrate_pending(db, set)?
+    db = pend0.db
+    check("pending_0", pend0.count == 0 && pend0.next_version == 0)
+    let d3 = migrate_down(db, set, 100)?
+    db = migrate_db(d3)
+    check("down_after_steps", migrate_is_ok(d3) == 1)
+
+    // dirty guard: history [1,3] + set [1,2,3] → out-of-order must fail loud
+    let mut skipset = migrate_set_new()
+    skipset = migrate_add(skipset, 20260803001, "create_users", "SELECT 1", "SELECT 1")
+    skipset = migrate_add(skipset, 20260803003, "index_posts_user_id", "SELECT 1", "SELECT 1")
+    let sup = migrate_up(db, skipset)?
+    db = migrate_db(sup)
+    check("skip_up", migrate_is_ok(sup) == 1 && migrate_applied_n(sup) == 2)
+    let dirty = migrate_up(db, set)?
+    db = migrate_db(dirty)
+    check("dirty_rejected", migrate_is_ok(dirty) == 0)
+    check("dirty_err", str_find(migrate_err_str(dirty), "out-of-order migration version 20260803002") >= 0)
+    let dclean = migrate_down(db, skipset, 100)?
+    db = migrate_db(dclean)
+    check("dirty_cleanup", migrate_is_ok(dclean) == 1)
+    let up_final = migrate_up(db, set)?
+    db = migrate_db(up_final)
+    check("up_after_clean", migrate_is_ok(up_final) == 1 && migrate_applied_n(up_final) == 3)
 
     // prepared statements via ORM
     let pr = orm_prepare(db, "orm_echo", "SELECT $1::int AS n", 1)?
@@ -268,6 +351,32 @@ fn main() -> i64 !Net !IO !Random !Par {
     }
     orm_pool_release(l3b)?
     check("pool_idle_after_re", orm_pool_idle(pool) == 2)
+
+    // self-heal: force a broken session back into the pool; acquire reconnects
+    let lease4 = orm_pool_acquire(pool)?
+    orm_close(lease4.db)?
+    let dead = OrmLease {
+        db: orm_db_bad("dead"),
+        slot: lease4.slot,
+        free_ch: lease4.free_ch,
+        fds: lease4.fds, oks: lease4.oks, pids: lease4.pids, txs: lease4.txs,
+        errs: lease4.errs, versions: lease4.versions
+    }
+    orm_pool_release(dead)?
+    let lease5 = orm_pool_acquire(pool)?
+    check("pool_heal", orm_ok_db(lease5.db) == 1)
+    let q5 = orm_query(lease5.db, "SELECT 3 AS n")?
+    check("pool_heal_query", orm_ok_q(q5) == 1 && orm_cell_i64(q5, 0, 0) == 3)
+    let l5b = OrmLease {
+        db: orm_db_q(q5),
+        slot: lease5.slot,
+        free_ch: lease5.free_ch,
+        fds: lease5.fds, oks: lease5.oks, pids: lease5.pids, txs: lease5.txs,
+        errs: lease5.errs, versions: lease5.versions
+    }
+    orm_pool_release(l5b)?
+    check("pool_idle_healed", orm_pool_idle(pool) == 2)
+
     orm_pool_close(pool)?
     check("pool_closed", true)
 
