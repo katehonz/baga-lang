@@ -4,6 +4,7 @@
 // text/binary echo, 7/16/64-bit length boundaries, ping/pong, close.
 
 import "wsbaga/ws.baga"
+import "wsbaga/ws_client.baga"
 import "std/net/tcp.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
