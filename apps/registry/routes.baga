@@ -25,13 +25,13 @@ fn fmr_build_app() -> FmrApp !IO {
     let cfg = fmr_config_load()?
     let mut app = fmr_app_new(cfg.title, cfg.version)
     app = fmr_app_with_config(app, cfg)
-    app = fmr_route(app, "GET", "/health", RID_HEALTH())
-    app = fmr_route(app, "GET", "/ready", RID_READY())
-    app = fmr_route(app, "GET", "/readyz", RID_READY())
-    app = fmr_route(app, "GET", "/metrics", RID_METRICS())
-    app = fmr_route(app, "GET", "/v1/packages", RID_REG_INDEX())
-    app = fmr_route(app, "GET", "/v1/packages/{name}", RID_REG_SHOW())
-    app = fmr_route(app, "POST", "/v1/packages", RID_REG_CREATE())
+    app = fmr_route_meta(app, "GET", "/health", RID_HEALTH(), "", "system", 1, "", "Status", "200", "")
+    app = fmr_route_meta(app, "GET", "/ready", RID_READY(), "", "system", 1, "", "Ready", "200", "")
+    app = fmr_route_meta(app, "GET", "/readyz", RID_READY(), "", "system", 1, "", "Ready", "200", "")
+    app = fmr_route_meta(app, "GET", "/metrics", RID_METRICS(), "", "system", 1, "", "-", "200", "")
+    app = fmr_route_meta(app, "GET", "/v1/packages", RID_REG_INDEX(), "", "packages", 1, "", "Status", "200", "q,limit,offset")
+    app = fmr_route_meta(app, "GET", "/v1/packages/{name}", RID_REG_SHOW(), "", "packages", 1, "", "Status", "200", "")
+    app = fmr_route_meta(app, "POST", "/v1/packages", RID_REG_CREATE(), "", "packages", 1, "", "Status", "200", "")
     return app
 }
 

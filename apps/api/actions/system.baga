@@ -34,21 +34,19 @@ fn act_ready(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO !Net {
     return act_ok(orm_db_q(q), o)
 }
 
-fn act_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
-    let app = fmr_build_app()?
+fn act_meta(ctx: FmrCtx, db: OrmDb) -> FmrOut {
     let mut o = jobj_new()
-    o = jobj_str(o, "title", app.title)
-    o = jobj_str(o, "version", app.version)
+    o = jobj_str(o, "title", ctx.title)
+    o = jobj_str(o, "version", ctx.version)
     o = jobj_str(o, "framework", "fmrbaga")
     o = jobj_str(o, "openapi", "/openapi.json")
     o = jobj_str(o, "metrics", "/metrics")
     return act_ok(db, o)
 }
 
-fn act_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut !IO {
-    let app = fmr_build_app()?
+fn act_openapi(ctx: FmrCtx, db: OrmDb) -> FmrOut {
     // B2.4: paths from live route table (same as fmr_dispatch)
-    return act_ok(db, fmr_openapi_from_router(app.router, app.title, app.version))
+    return act_ok(db, fmr_openapi_from_router(ctx.router, ctx.title, ctx.version))
 }
 
 // Prometheus text (metbaga). Runtime gauges from fmr_rt_* (worker pool / inflight).

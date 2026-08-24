@@ -86,6 +86,18 @@ fn main() {
     let m5 = router_match(r, "GET", "/nope")
     check("no_match_path", m5.ok == 0)
 
+    // --- router fail-loud validation + metadata ---
+    check("validate_ok", router_validate(r) == "")
+    let mut rd = router_new()
+    rd = router_add(rd, "GET", "/dup", 1)
+    rd = router_add(rd, "GET", "/dup", 2)
+    check("validate_dup", str_find(router_validate(rd), "duplicate route") >= 0)
+    let mut rmeta = router_new()
+    rmeta = router_add_meta(rmeta, "GET", "/v1/things", 9,
+        "List things", "things", 0, "", "ThingList", "200", "limit")
+    let mm = router_match(rmeta, "GET", "/v1/things")
+    check("meta_match", mm.ok == 1 && mm.id == 9)
+
     // --- responses ---
     let resp = fmr_error(401, "Not authenticated")
     check("err_status", resp.status == 401)
@@ -127,6 +139,14 @@ fn main() {
     check("oas_emit_users", str_find(slim, "/v1/users") >= 0)
     check("oas_emit_no_posts", str_find(slim, "/v1/posts") < 0)
 
+    // --- per-route OpenAPI metadata drives the doc (no product hand tables) ---
+    let meta_doc = jobj_encode(fmr_openapi_from_router(rmeta, "meta", "0.2.0"))
+    check("oas_meta_summary", str_find(meta_doc, "List things") >= 0)
+    check("oas_meta_tag", str_find(meta_doc, "\"things\"") >= 0)
+    check("oas_meta_bearer", str_find(meta_doc, "\"security\"") >= 0)
+    check("oas_meta_query", str_find(meta_doc, "\"limit\"") >= 0)
+    check("oas_meta_no_body", str_find(meta_doc, "requestBody") < 0)
+
     // B2.1: ctx correlation fields (middleware pipeline fills these in serve path)
     let c0 = fmr_ctx_new(req, m1, "secret")
     check("ctx_req_id_empty", c0.req_id == "")
@@ -136,6 +156,14 @@ fn main() {
     check("ctx_trace", c2.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736" && len(c2.span_id) == 16)
     let c3 = fmr_set_user(c2, "ada")
     check("ctx_ids_survive_user", c3.req_id == "abc123" && c3.trace_id == c2.trace_id && c3.user_sub == "ada")
+
+    // B2.5: app state travels in ctx (no env reload in handlers)
+    let ca = fmr_ctx_new_app(req, m1, "secret", "AppTitle", "9.9.9", r)
+    check("ctx_app_title", fmr_title(ca) == "AppTitle")
+    check("ctx_app_version", fmr_version(ca) == "9.9.9")
+    check("ctx_app_router", router_match(fmr_router(ca), "GET", "/health").ok == 1)
+    let c_empty = fmr_ctx_new(req, m1, "secret")
+    check("ctx_plain_no_meta", fmr_title(c_empty) == "" && fmr_version(c_empty) == "")
 
     print("fmr_test: all passed")
 }
