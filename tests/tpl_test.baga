@@ -73,6 +73,13 @@ fn main() {
     let f8 = tpl_render("{{ missing | upper }}", c)
     assert_eq_str("filter_on_missing", f8.html, "")
 
+    let f9 = tpl_render("{{{ xss | escape }}}", c)
+    assert_eq_str("escape_filter", f9.html, "&lt;b&gt;&amp;&quot;q&quot;&lt;/b&gt;")
+    let f10 = tpl_render("{{ name | truncate:2 }}", c)
+    assert_eq_str("truncate", f10.html, "ba")
+    let f11 = tpl_render("{{ missing | default: n/a }}", c)
+    assert_eq_str("default_trim", f11.html, "n/a")
+
     let fe = tpl_render("{{ name | nope }}", c)
     assert_eq_i64("unknown_filter_err", fe.ok, 0)
     assert_true("unknown_filter_msg", has(fe.err, "непознат филтър"))

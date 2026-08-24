@@ -16,21 +16,30 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
     }
 }
 
+fn has_item(items: Vec<str>, want: str) -> bool {
+    for i in 0..vec_len(items) {
+        if vec_get(items, i) == want {
+            return true
+        }
+    }
+    return false
+}
+
 fn args1(a: str) -> Vec<str> {
-    let v = vec_new()
+    let v: Vec<str> = vec_new()
     vec_push(v, a)
     return v
 }
 
 fn args2(a: str, b: str) -> Vec<str> {
-    let v = vec_new()
+    let v: Vec<str> = vec_new()
     vec_push(v, a)
     vec_push(v, b)
     return v
 }
 
 fn args3(a: str, b: str, c: str) -> Vec<str> {
-    let v = vec_new()
+    let v: Vec<str> = vec_new()
     vec_push(v, a)
     vec_push(v, b)
     vec_push(v, c)
@@ -38,7 +47,7 @@ fn args3(a: str, b: str, c: str) -> Vec<str> {
 }
 
 fn args5(a: str, b: str, c: str, d: str, e: str) -> Vec<str> {
-    let v = vec_new()
+    let v: Vec<str> = vec_new()
     vec_push(v, a)
     vec_push(v, b)
     vec_push(v, c)
@@ -49,7 +58,7 @@ fn args5(a: str, b: str, c: str, d: str, e: str) -> Vec<str> {
 
 fn main() -> i64 !Net !IO !Par !Time {
     print("kv_test:")
-    let fails = vec_new()
+    let fails: Vec<i64> = vec_new()
     let port = 16481
 
     go_bg(kv_serve, port)
@@ -126,6 +135,24 @@ fn main() -> i64 !Net !IO !Par !Time {
     check(fails, "keys_array", ks.ok == 1 && ks.typ == 5 && vec_len(ks.items) >= 3)
     let db = resp_round_trip(fd, args1("DBSIZE"))?
     check(fails, "dbsize", db.ok == 1 && db.typ == 3 && db.num == vec_len(ks.items))
+
+    resp_round_trip(fd, args3("SET", "user:1", "a"))?
+    resp_round_trip(fd, args3("SET", "user:2", "b"))?
+    resp_round_trip(fd, args3("SET", "zed", "z"))?
+    let kg = resp_round_trip(fd, args2("KEYS", "user:*"))?
+    check(fails, "keys_glob", kg.ok == 1 && kg.typ == 5 && has_item(kg.items, "user:1") && has_item(kg.items, "user:2") && has_item(kg.items, "zed") == false)
+
+    // poll: a second client sees the same store
+    let fd2 = tcp_connect_to("localhost", port, 5)?
+    check(fails, "connect2", fd2 >= 0)
+    if fd2 >= 0 {
+        tcp_set_timeouts(fd2, 5)?
+        let s2 = resp_round_trip(fd2, args3("SET", "shared", "from-b"))?
+        check(fails, "peer_set", s2.ok == 1 && s2.typ == 1)
+        let g2 = resp_round_trip(fd, args2("GET", "shared"))?
+        check(fails, "peer_get", g2.ok == 1 && g2.text == "from-b")
+        tcp_close(fd2)?
+    }
 
     // errors
     let w1 = resp_round_trip(fd, args1("GET"))?

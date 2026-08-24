@@ -82,6 +82,13 @@ fn main() -> i64 !Net !IO !Par !Random {
     a = ra2.conn
     check("a_sees_b_join", ra2.ok == 1 && field(ra2.text, "type") == "join" && field(ra2.text, "name") == "bob")
 
+    ws_send_text(a.fd, "{\"type\":\"who\"}")?
+    let rwho = read_text(a)?
+    a = rwho.conn
+    check("who_type", rwho.ok == 1 && field(rwho.text, "type") == "who" && field(rwho.text, "room") == "bg")
+    check("who_alice", str_find(rwho.text, "\"alice\"") >= 0)
+    check("who_bob", str_find(rwho.text, "\"bob\"") >= 0)
+
     // --- a message reaches every room member (incl. the sender) ---
     ws_send_text(a.fd, "{\"type\":\"msg\",\"text\":\"Здравей, Боба!\"}")?
     let ra3 = read_text(a)?
@@ -99,6 +106,16 @@ fn main() -> i64 !Net !IO !Par !Random {
     a = ra4.conn
     check("a_gets_b_msg", rb3.ok == 1 && ra4.ok == 1 && field(ra4.text, "from") == "bob")
 
+    // --- fragmented text message (FIN=0 + continuation) ---
+    tcp_write_bytes(a.fd, ws_build_frame(0, WS_TEXT(), bytes_of_str("{\"type\":\"msg\",\"text\":\""), 21))?
+    tcp_write_bytes(a.fd, ws_build_frame(1, 0, bytes_of_str("frag\"}"), 23))?
+    let ra_f = read_text(a)?
+    a = ra_f.conn
+    check("frag_own", ra_f.ok == 1 && field(ra_f.text, "text") == "frag")
+    let rb_f = read_text(b)?
+    b = rb_f.conn
+    check("frag_peer", rb_f.ok == 1 && field(rb_f.text, "from") == "alice" && field(rb_f.text, "text") == "frag")
+
     // --- a third client: msg before join is an error; invalid JSON too ---
     let dc = ws_client_connect("localhost", port, 5)?
     check("connect_c", dc.ok == 1)
@@ -112,6 +129,10 @@ fn main() -> i64 !Net !IO !Par !Random {
     let rc2 = read_text(c)?
     c = rc2.conn
     check("invalid_json_err", rc2.ok == 1 && field(rc2.text, "type") == "error")
+    ws_send_text(c.fd, "{\"type\":\"join\",\"name\":\"alice\",\"room\":\"bg\"}")?
+    let rc3 = read_text(c)?
+    c = rc3.conn
+    check("name_taken", rc3.ok == 1 && field(rc3.text, "type") == "error" && str_find(rc3.text, "taken") >= 0)
 
     // --- a separate room stays silent ---
     let dd = ws_client_connect("localhost", port, 5)?

@@ -23,6 +23,11 @@ fn main() -> i64 !Net !IO !Random !Par {
     check("sql_ident", sql_ident("users") == "users")
     check("sql_ident_q", sql_ident_q("users") == "\"users\"")
     check("sql_i64_neg", sql_i64(0 - 42) == "-42")
+    check("sql_ident_empty", sql_ident("") == "")
+    let idents: Vec<str> = vec_new()
+    vec_push(idents, "id")
+    vec_push(idents, "name")
+    check("sql_ident_list", sql_ident_list(idents) == "id, name")
 
     let db0 = orm_connect_env()?
     check("connect", orm_ok_db(db0) == 1)

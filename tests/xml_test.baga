@@ -125,5 +125,8 @@ fn main() {
     check("roundtrip_kinds", kinds_of(doc) == "11322")
     check("roundtrip_err", err_of(doc) == "")
 
+    check("local_ns", xml_local_name("ns:Ntry") == "Ntry")
+    check("local_plain", xml_local_name("amt") == "amt")
+
     print("xml_test: all passed")
 }

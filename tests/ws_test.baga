@@ -17,6 +17,27 @@ fn check(name: str, ok: bool) {
     }
 }
 
+fn raw2(a: i64, b: i64) -> bytes {
+    let v: Vec<i64> = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    return bytes_from_vec(v)
+}
+
+fn raw3(a: i64, b: i64, c: i64) -> bytes {
+    let v: Vec<i64> = vec_new()
+    vec_push(v, a)
+    vec_push(v, b)
+    vec_push(v, c)
+    return bytes_from_vec(v)
+}
+
+fn hs_req(extra: str) -> bytes {
+    return bytes_of_str(concat(concat(
+        "GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
+        extra), "\r\n"))
+}
+
 struct RoundTrip {
     conn: WsConn,
     ok: i64
@@ -39,6 +60,43 @@ fn round_trip_text(conn: WsConn, s: str) -> RoundTrip !Net !IO !Random {
 }
 
 fn main() -> i64 !Net !IO !Par !Random {
+    // --- pure RFC 6455 checks (no socket) ---
+    check("accept_key", ws_accept_key("dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+
+    let h_ok = ws_parse_handshake_buf(hs_req("Sec-WebSocket-Version: 13\r\n"))
+    check("hs_ok", h_ok.ok == 1 && h_ok.bad == 0)
+    check("hs_accept", str_find(h_ok.response, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") >= 0)
+
+    let h_ver = ws_parse_handshake_buf(hs_req(""))
+    check("hs_need_version", h_ver.ok == 0 && h_ver.bad == 1)
+
+    let h_conn = ws_parse_handshake_buf(bytes_of_str(
+        "GET / HTTP/1.1\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"))
+    check("hs_need_connection", h_conn.ok == 0 && h_conn.bad == 1)
+
+    let rsv = ws_try_parse_frame(raw3(193, 1, 120))
+    check("rsv1_bad", rsv.ok == 0 && rsv.bad == 1)
+
+    let rop = ws_try_parse_frame(raw2(131, 0))
+    check("opcode3_bad", rop.ok == 0 && rop.bad == 1)
+
+    let pfrag = ws_try_parse_frame(raw2(9, 0))
+    check("ping_frag_bad", pfrag.ok == 0 && pfrag.bad == 1)
+
+    let nmv: Vec<i64> = vec_new()
+    vec_push(nmv, 129)
+    vec_push(nmv, 126)
+    vec_push(nmv, 0)
+    vec_push(nmv, 1)
+    vec_push(nmv, 120)
+    let nmin = ws_try_parse_frame(bytes_from_vec(nmv))
+    check("nonminimal_126", nmin.ok == 0 && nmin.bad == 1)
+
+    let cp = ws_close_payload(1000, "bye")
+    check("close_code", ws_close_code(cp) == 1000)
+    check("close_reason", ws_close_reason(cp) == "bye")
+    check("close_empty", ws_close_code(ws_empty()) == 0)
+
     let port = 18440
     go_bg(ws_serve, port)
     sleep_ms(300)
@@ -76,7 +134,7 @@ fn main() -> i64 !Net !IO !Par !Random {
     check("len_65536", t6.ok == 1)
 
     // --- binary frame with NUL / 0xFF (bytes are binary-safe) ---
-    let bv = vec_new()
+    let bv: Vec<i64> = vec_new()
     vec_push(bv, 0)
     vec_push(bv, 255)
     vec_push(bv, 66)
@@ -118,12 +176,14 @@ fn main() -> i64 !Net !IO !Par !Random {
     conn = rmid2.conn
     check("frag_mid_echo", rmid2.ok == 1 && rmid2.frame.opcode == WS_TEXT() && str_of_bytes(rmid2.frame.payload) == "почив")
 
-    // --- close: server echoes close, then the socket is done ---
-    let wc = ws_send_close(conn.fd)?
+    // --- close: server echoes close code+reason, then the socket is done ---
+    let wc = ws_send_close_code(conn.fd, 1000, "bye")?
     check("close_send", wc == 0)
     let rc = ws_read_frame(conn)?
     conn = rc.conn
     check("close_echo", rc.ok == 1 && rc.frame.opcode == WS_CLOSE())
+    check("close_echo_code", ws_close_code(rc.frame.payload) == 1000)
+    check("close_echo_reason", ws_close_reason(rc.frame.payload) == "bye")
     let re = ws_read_frame(conn)?
     check("eof_after_close", re.ok == 0)
 

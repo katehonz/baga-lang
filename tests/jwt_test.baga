@@ -59,6 +59,12 @@ fn main() {
     let far = jwt_encode(key, "{\"sub\":\"a\",\"exp\":9999999999}")
     check("accept_hs256", jwt_accept_hs256(key, far, 1000, "", "") == 1)
     check("accept_exp_fail", jwt_accept_hs256(key, exp_tok2, 1000, "", "") == 0)
+    check("accept_iss_missing", jwt_accept_hs256(key, far, 1000, "https://idp", "") == 0)
+    let with_iss = jwt_encode(key, "{\"sub\":\"a\",\"iss\":\"https://idp\",\"exp\":9999999999}")
+    check("accept_iss_ok", jwt_accept_hs256(key, with_iss, 1000, "https://idp", "") == 1)
+    check("none_mixed", jwt_alg_is_none("NoNe") == 1)
+    check("leeway_exp", jwt_time_ok_leeway(exp_tok2, 1, 0) == 0)
+    check("leeway_ok", jwt_time_ok_leeway(exp_tok2, 1, 10) == 1)
 
     // --- RS256 verify (python cryptography golden) ---
     let n = hex_decode("9e5e4f343323f81292c8a00ed885a5199aea6bb603a9c4da92ff718651594d1036e81cd79e2e3deafc5a1dc222a507e3aeb8d7e6f0c75b7bd42202ea7e3c3f94f15ef81212c6173acb0ce47e9cb84151c201ae376d9fcfff030fcccdf1782f6f1b0adadf5a64b16940a9d5fe034d8f1c74743195f32fff0643ef6acc3609f822ac64e89225a0a0e829e047798a9bfc6c1e74753203a6c482e348f18bc42bcc7a969e89d32e8e0b6b58c1dd2807f7c6bcb499c823d810d366135d7fc4ca7d2715c336469869fcd79c0f81791c2bd088cb8c9f70d3e91c8fdac7409bda69a1a148912e9407f031ce6549c76c08eaad33df508f0283c8c8b4c44a6d9901faf596cb")

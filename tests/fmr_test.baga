@@ -6,6 +6,7 @@ import "fmrbaga/respond.baga"
 import "fmrbaga/ctx.baga"
 import "fmrbaga/deps.baga"
 import "fmrbaga/openapi.baga"
+import "fmrbaga/config.baga"
 import "httpdbaga/http.baga"
 import "std/str/str.baga"
 
@@ -19,6 +20,11 @@ fn check(name: str, cond: bool) {
 
 fn main() {
     print("fmr_test:")
+
+    check("port_ok", fmr_port_parse("8080", 1) == 8080)
+    check("port_clamp", fmr_port_parse("0", 8080) == 8080)
+    check("port_hi", fmr_port_parse("70000", 8080) == 8080)
+    check("port_junk", fmr_port_parse("abc", 8080) == 8080)
 
     // --- jsonx builders ---
     let mut o = jobj_new()

@@ -3,7 +3,28 @@
 import "logbaga/log.baga"
 import "std/str/str.baga"
 
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
 fn main() -> i64 !Time {
+    let line = log_format_ts(0, "info", "hello", "", "", "")
+    check("fmt_level", str_find(line, "\"level\":\"info\"") >= 0)
+    check("fmt_msg", str_find(line, "\"msg\":\"hello\"") >= 0)
+    check("fmt_no_ts", str_find(line, "\"ts\"") < 0)
+    check("fmt_no_req", str_find(line, "req_id") < 0)
+
+    let q = log_format_ts(1, "error", "a\"b", "r1", "t1", "s1")
+    check("fmt_ts", str_find(q, "\"ts\":1") >= 0)
+    check("fmt_esc", str_find(q, "\\\"") >= 0)
+    check("fmt_req", str_find(q, "\"req_id\":\"r1\"") >= 0)
+    check("fmt_tr", str_find(q, "\"trace_id\":\"t1\"") >= 0)
+
     log_info("log_test info")?
     log_warn("log_test warn")?
     log_error("log_test error")?

@@ -20,6 +20,7 @@ fn main() -> i64 !IO {
     assert_true("dot", gre_match("cat", "c.t", 0))
     assert_true("star", gre_match("foobar", "f*r", 0))
     assert_true("star_empty", gre_match("ab", "a*b", 0))
+    assert_true("star_star", gre_match("ab", "a**b", 0))
     assert_true("meta_miss", !gre_match("cat", "c.x", 0))
     assert_true("escape_dot", gre_match("a.b", "a\\.b", 0))
     assert_true("escape_dot_miss", !gre_match("axb", "a\\.b", 0))
@@ -68,6 +69,9 @@ fn main() -> i64 !IO {
     // stream match count via pure count on same body
     assert_eq_i64("count_e", gre_count_in(body, "e", 0), 3)
     assert_eq_i64("count_two_ci", gre_count_in(body, "two", 1), 1)
+    assert_eq_i64("sel_hit", gre_select("hello", "ell", 0, 0), 1)
+    assert_eq_i64("sel_inv", gre_select("hello", "ell", 0, 1), 0)
+    assert_eq_i64("sel_inv_miss", gre_select("hello", "xyz", 0, 1), 1)
 
     print("grep_test: all passed")
     return 0

@@ -50,5 +50,38 @@ fn main() {
     check("many_len", buf_len(big) == 20)
     check("many_str0", char_at(buf_str(big), 0) == 120)
 
+    check("from", buf_str(buf_from("hi")) == "hi")
+    check("empty_is", buf_is_empty(buf_new()) == 1)
+    check("nonempty_is", buf_is_empty(buf_from("x")) == 0)
+
+    let more = vec_new()
+    vec_push(more, "p")
+    vec_push(more, "q")
+    let mut all = buf_from("o")
+    all = buf_push_all(all, more)
+    check("push_all", buf_str(all) == "opq")
+
+    // consecutive chr coalesce to one part; buf_str does not mutate
+    let mut ch = buf_new()
+    ch = buf_push_chr(ch, 97)
+    ch = buf_push_chr(ch, 98)
+    ch = buf_push_chr(ch, 99)
+    check("chr_parts", buf_len_parts(ch) == 1)
+    check("chr_str", buf_str(ch) == "abc")
+    check("chr_str_stable", buf_str(ch) == "abc")
+    check("chr_len", buf_len(ch) == 3)
+    ch = buf_push(ch, "d")
+    check("chr_then_str", buf_str(ch) == "abcd")
+    check("chr_then_parts", buf_len_parts(ch) == 2)
+
+    let mut mix = buf_from("a")
+    mix = buf_push_chr(mix, 98)
+    check("sep_tail", buf_str_sep(mix, ",") == "a,b")
+
+    let mut bg = buf_new()
+    bg = buf_push(bg, "Бага")
+    bg = buf_push_chr(bg, 33)
+    check("utf8", buf_str(bg) == "Бага!")
+
     print("buf_test: all passed")
 }

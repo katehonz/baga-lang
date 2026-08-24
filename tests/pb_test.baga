@@ -149,5 +149,48 @@ fn main() {
     let only = pb_field_string(bytes_new(0), 1, "testing")
     check("golden_testing", hex_encode(only) == "0a0774657374696e67")
 
+    // packed repeated int32 field 1 = [1,2,3] → 0a 03 01 02 03
+    let pv: Vec<i64> = vec_new()
+    vec_push(pv, 1)
+    vec_push(pv, 2)
+    vec_push(pv, 3)
+    let packed = pb_field_packed_varint(bytes_new(0), 1, pv)
+    check("packed_golden", hex_encode(packed) == "0a03010203")
+    let tp = pb_next(pb_reader(packed))
+    check("packed_tag", tp.ok == 1 && tp.field == 1 && tp.wire == PB_LEN())
+    let prd = pb_take_packed_varint(PbReader { data: packed, pos: tp.pos, ok: 1 })
+    check("packed_rd", prd.ok == 1 && vec_len(prd.vals) == 3 && vec_get(prd.vals, 0) == 1 && vec_get(prd.vals, 2) == 3)
+
+    let sv: Vec<i64> = vec_new()
+    vec_push(sv, 0 - 1)
+    vec_push(sv, 2)
+    let sp = pb_field_packed_sint64(bytes_new(0), 7, sv)
+    let ts7 = pb_next(pb_reader(sp))
+    let srd = pb_take_packed_sint64(PbReader { data: sp, pos: ts7.pos, ok: 1 })
+    check("packed_sint", srd.ok == 1 && vec_len(srd.vals) == 2 && vec_get(srd.vals, 0) == 0 - 1 && vec_get(srd.vals, 1) == 2)
+
+    let fv: Vec<i64> = vec_new()
+    vec_push(fv, 7)
+    vec_push(fv, 9)
+    let fp = pb_field_packed_fixed32(bytes_new(0), 3, fv)
+    let tf = pb_next(pb_reader(fp))
+    let frd = pb_take_packed_fixed32(PbReader { data: fp, pos: tf.pos, ok: 1 })
+    check("packed_f32", frd.ok == 1 && vec_len(frd.vals) == 2 && vec_get(frd.vals, 0) == 7 && vec_get(frd.vals, 1) == 9)
+
+    // compressed gRPC flag is rejected
+    let mut badc = grpc_encode(payload)
+    // flip first byte to 1 (compressed)
+    let cv: Vec<i64> = vec_new()
+    vec_push(cv, 1)
+    let mut ci: i64 = 1
+    while ci < bytes_len(badc) {
+        vec_push(cv, bytes_at(badc, ci))
+        ci = ci + 1
+    }
+    check("frame_compressed_bad", match grpc_decode(bytes_from_vec(cv)) {
+        GBad => true,
+        GFrame(fr) => false,
+    })
+
     print("pb_test: all passed")
 }

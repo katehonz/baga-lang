@@ -25,7 +25,10 @@ fn contains(hay: str, needle: str) -> bool {
 }
 
 fn main() -> i64 !IO {
-    check("version", office_version() == "0.2.0")
+    check("version", office_version() == "0.3.0")
+    check("pptx_hint", office_detect_path_hint("deck.pptx") == OFFICE_PPTX())
+    let miss = office_open("/no/such/office.docx")?
+    check("open_missing", miss.ok == 0)
 
     // --- DOCX create → open → text ---
     let docx_b = docx_create_bytes("Title", "Hello\nWorld & <tag>")
@@ -40,7 +43,7 @@ fn main() -> i64 !IO {
     check("docx_entities", contains(dtext, "&") && contains(dtext, "<tag>"))
 
     // --- XLSX create → open → text ---
-    let rows = vec_new()
+    let rows: Vec<str> = vec_new()
     vec_push(rows, "Name\tQty")
     vec_push(rows, "Apple\t3")
     vec_push(rows, "Pear\t10")

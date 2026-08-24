@@ -110,5 +110,15 @@ fn main() {
     check("usage_short", str_find(usage, "-p") >= 0)
     check("usage_help", str_find(usage, "listen port") >= 0)
 
+    let vf = vec_new()
+    vec_push(vf, "--debug=False")
+    let ff = flags_parse_vec(vf)
+    check("bool_False", flags_bool(ff, "debug") == 0)
+    let vu = vec_new()
+    vec_push(vu, "--debug=FALSE")
+    let fu = flags_parse_vec(vu)
+    check("bool_FALSE", flags_bool(fu, "debug") == 0)
+    check("n_flags", flags_n(fu) == 1)
+
     print("flag_test: all passed")
 }

@@ -41,6 +41,15 @@ fn main() -> i64 !Time {
     check("canceled", ctx_done(cc)? == 1)
     let ce = ctx_err(cc)?
     check("cancel_code", ce.code == GRPC_CANCELED())
+    check("cancel_rem", ctx_remaining_ms(cc)? == 0)
+    check("nvals", ctx_n_values(c) == 2)
+
+    let mut live2 = ctx_with_timeout(ctx_with_value(ctx_background(), "k", "v"), 60000)?
+    live2 = ctx_cancel(live2)
+    let wc = ctx_without_cancel(live2)
+    check("wo_done", ctx_done(wc)? == 0)
+    check("wo_val", ctx_value(wc, "k") == "v")
+    check("wo_rem", ctx_remaining_ms(wc)? < 0)
 
     // short timeout already expired: deadline in the past
     let past = ctx_with_deadline(ctx_background(), 0)

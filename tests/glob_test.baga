@@ -42,5 +42,46 @@ fn main() {
     let none = glob_filter("missing:*", keys)
     check("filter_none", vec_len(none) == 0)
 
+    check("esc_star", glob_match("a\\*b", "a*b") == 1)
+    check("esc_star_wild", glob_match("a\\*b", "axb") == 0)
+    check("esc_q", glob_match("a\\?", "a?") == 1)
+    check("esc_slash", glob_match("\\\\", "\\") == 1)
+    check("esc_meta", glob_has_meta("a\\*b") == 0)
+    check("has_meta", glob_has_meta("user:*") == 1)
+    check("no_meta", glob_has_meta("user:1") == 0)
+
+    check("class", glob_match("[abc]", "b") == 1)
+    check("class_no", glob_match("[abc]", "d") == 0)
+    check("range", glob_match("[a-c]", "b") == 1)
+    check("range_swap", glob_match("[c-a]", "b") == 1)
+    check("neg", glob_match("[!0-9]", "a") == 1)
+    check("neg_hit", glob_match("[^a]", "a") == 0)
+    check("class_rb", glob_match("[]]", "]") == 1)
+    check("unclosed", glob_match("[abc", "[abc") == 1)
+    check("keys_digit", glob_match("user:[0-9]*", "user:7x") == 1)
+    check("keys_digit_no", glob_match("user:[0-9]*", "user:ax") == 0)
+
+    check("star_star", glob_match("**", "xy") == 1)
+    check("star_star_mid", glob_match("a**b", "ab") == 1)
+    check("star_cross", glob_match("*.baga", "src/a.baga") == 1)
+
+    check("path_star", glob_match_path("*.baga", "src/a.baga") == 0)
+    check("path_seg", glob_match_path("*/*.baga", "src/a.baga") == 1)
+    check("path_q", glob_match_path("?", "/") == 0)
+    check("keys_q_slash", glob_match("?", "/") == 1)
+    check("path_class_slash", glob_match_path("[/]", "/") == 0)
+    check("path_mid", glob_match_path("a*b", "a/b") == 0)
+    check("path_ok", glob_match_path("a*b", "axb") == 1)
+
+    let files = vec_new()
+    vec_push(files, "a.baga")
+    vec_push(files, "src/a.baga")
+    let pf = glob_filter_path("*.baga", files)
+    check("filter_path_n", vec_len(pf) == 1)
+    check("filter_path0", vec_get(pf, 0) == "a.baga")
+
+    check("utf8_q", glob_match("?", "я") == 0)
+    check("utf8_qq", glob_match("??", "я") == 1)
+
     print("glob_test: all passed")
 }

@@ -17,7 +17,7 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
 
 fn main() -> i64 !Par !IO {
     print("raft_persist_test:")
-    let fails = vec_new()
+    let fails: Vec<i64> = vec_new()
 
     // --- pure encode/load round-trip ---
     let path = "/tmp/baga_raft_persist_unit.state"
@@ -51,6 +51,19 @@ fn main() -> i64 !Par !IO {
     raft_persist_apply(store, ld.log_cmds, ld.commit_idx)
     check(fails, "apply_10", map_get(store, 10) == 100)
     check(fails, "apply_20", map_get(store, 20) == 200)
+    check(fails, "raft2_magic", str_starts_with(read_file(path)?, "raft2"))
+
+    write_file(path, "raft2\nterm 1\ncrc 1\n")?
+    let badc = raft_persist_load(path)?
+    check(fails, "crc_reject", badc.ok == 0)
+
+    write_file(path, "raft1\nterm 4\nvoted_for -1\ncommit_idx 0\nlog_len 1\ne 0 0 0 0\n")?
+    let oldv = raft_persist_load(path)?
+    check(fails, "raft1_compat", oldv.ok == 1 && oldv.term == 4)
+
+    unlink(path)?
+    let miss = raft_persist_load(path)?
+    check(fails, "missing_file", miss.ok == 0)
 
     // --- live cluster writes durable files; stop then load leader-ish state ---
     raft_persist_wipe(3)?

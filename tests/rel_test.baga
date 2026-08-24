@@ -35,8 +35,10 @@ fn main() -> i64 !Par !Time {
     check("backoff_1", rel_backoff_ms(1, 10, 1000, 2) == 20)
     check("backoff_2", rel_backoff_ms(2, 10, 1000, 2) == 40)
     check("backoff_cap", rel_backoff_ms(10, 10, 100, 2) == 100)
+    check("backoff_bad_max", rel_backoff_ms(0, 10, 0, 2) == 1)
     check("should_retry", rel_should_retry(0, 3) == 1)
     check("should_stop", rel_should_retry(2, 3) == 0)
+    check("should_zero", rel_should_retry(0, 0) == 0)
 
     check("retry_ok", rel_retry(always_ok, 0, 3, 1, 5, 2)? == 0)
     check("retry_exhaust", rel_retry(always_fail, 0, 3, 1, 5, 2)? == 7)
@@ -91,6 +93,20 @@ fn main() -> i64 !Par !Time {
     b = brk_on_start(b, t3)
     b = brk_failure(b, t3)
     check("reopen", b.state == BRK_OPEN())
+    check("name_open", brk_state_name(b.state) == "open")
+
+    // expired OPEN still denies until tick; brk_start does both
+    let mut b3 = brk_new(1, 20)
+    b3 = brk_failure(b3, t3)
+    sleep_ms(30)
+    let t4 = monotonic_ms()?
+    check("allow_until_tick", brk_allow(b3, t4) == 0)
+    let g = brk_start(b3, t4)
+    check("start_ok", g.ok == 1 && g.brk.state == BRK_HALF() && g.brk.half_inflight == 1)
+    check("start_busy", brk_allow(g.brk, t4) == 0)
+    b3 = brk_success(g.brk, t4)
+    check("start_closed", b3.state == BRK_CLOSED())
+    check("name_closed", brk_state_name(b3.state) == "closed")
 
     // bulkhead
     let bh = bh_new(2)?

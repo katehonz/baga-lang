@@ -5,6 +5,7 @@ import "pdfbaga/ttf.baga"
 import "pdfbaga/utf8.baga"
 import "std/os/os.baga"
 import "std/str/str.baga"
+import "std/bytes/bytes.baga"
 
 fn check(name: str, ok: bool) {
     if ok {
@@ -16,10 +17,15 @@ fn check(name: str, ok: bool) {
 }
 
 fn main() -> i64 !IO {
-    check("version", pdf_version() == "0.1.0")
+    check("version", pdf_version() == "0.2.0")
 
     let u = utf8_next("Ж", 0)
     check("utf8_zh", u.ok == 1 && u.cp == 1046)
+    let ovb: Vec<i64> = vec_new()
+    vec_push(ovb, 192)
+    vec_push(ovb, 128)
+    let ov = utf8_next(str_of_bytes(bytes_from_vec(ovb)), 0)
+    check("utf8_overlong", ov.ok == 1 && ov.cp == 63)
 
     let fb = read_file_bytes(pdf_default_font_path())?
     check("font_load", bytes_len(fb) > 1000)
@@ -28,13 +34,21 @@ fn main() -> i64 !IO {
     check("gid_A", ttf_glyph(font, 65) > 0)
     check("gid_cyr", ttf_glyph(font, 1040) > 0)  // А
 
-    let rows = vec_new()
+    let empty: Vec<str> = vec_new()
+    let bad = pdf_from_table(font, "x", empty)
+    check("pdf_no_rows", bad.ok == 0)
+
+    let rows: Vec<str> = vec_new()
     vec_push(rows, "Код\tИме\tСума")
     vec_push(rows, "401\tДоставчици\t10.00")
     let r = pdf_from_table(font, "Отчет UTF-8", rows)
     check("pdf_ok", r.ok == 1)
     check("pdf_size", bytes_len(r.data) > 1000)
     check("pdf_hdr", bytes_at(r.data, 0) == 37 && bytes_at(r.data, 1) == 80 && bytes_at(r.data, 2) == 68)
+    check("pdf_eof", str_find(str_of_bytes(bytes_slice(r.data, bytes_len(r.data) - 8, bytes_len(r.data))), "EOF") >= 0)
+
+    let miss = pdf_from_table_file("/no/such/font.ttf", "t", rows)?
+    check("pdf_missing_font", miss.ok == 0)
 
     print("pdf_test: all passed")
     return 0

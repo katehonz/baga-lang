@@ -13,7 +13,7 @@ fn check(name: str, ok: bool) {
 }
 
 fn main() {
-    check("version", csv_version() == "0.2.0")
+    check("version", csv_version() == "0.3.0")
 
     let t0 = csv_parse("a,b,c\r\n1,2,3\r\n")
     check("simple_ok", t0.ok == 1)
@@ -46,6 +46,12 @@ fn main() {
     let semi_out = csv_stringify_delim(semi, 59)
     let semi2 = csv_parse_delim(semi_out, 59)
     check("delim_rt", semi2.ok == 1 && csv_get(semi2, 0, 1) == "b")
+
+    check("ncols", csv_ncols(t0) == 3)
+    let tset = csv_set(t0, 1, 2, "9")
+    check("set", csv_get(tset, 1, 2) == "9" && csv_get(tset, 1, 0) == "1")
+    let longq = csv_parse("\"abcdefghij\"\n")
+    check("long_quote", longq.ok == 1 && csv_get(longq, 0, 0) == "abcdefghij")
 
     print("csv_test: all passed")
 }

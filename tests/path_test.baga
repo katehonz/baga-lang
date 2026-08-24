@@ -50,5 +50,34 @@ fn main() {
     check("stem_path", path_stem("/a/b.c") == "b")
     check("stem_none", path_stem("README") == "README")
 
+    check("join_root", path_join("/", "a") == "/a")
+    check("join_dbl_slash", path_join("/var//", "log") == "/var/log")
+    check("join_many_slash", path_join("foo///", "bar") == "foo/bar")
+
+    check("ext_dot", path_ext(".") == "")
+    check("ext_ddot", path_ext("..") == "")
+    check("stem_ddot", path_stem("..") == "..")
+    check("ext_hidden_txt", path_ext(".hidden.txt") == ".txt")
+    check("stem_hidden_txt", path_stem(".hidden.txt") == ".hidden")
+    check("ext_trailing_dot", path_ext("foo.") == ".")
+
+    check("with_ext", path_with_ext("x.baga", ".md") == "x.md")
+    check("with_ext_bare", path_with_ext("/a/b.c", "png") == "/a/b.png")
+    check("with_ext_strip", path_with_ext("x.baga", "") == "x")
+    check("with_ext_dotfile", path_with_ext(".gitignore", ".bak") == ".gitignore.bak")
+
+    check("clean_empty", path_clean("") == ".")
+    check("clean_dot", path_clean(".") == ".")
+    check("clean_slash", path_clean("/") == "/")
+    check("clean_dbl", path_clean("a//b") == "a/b")
+    check("clean_cur", path_clean("a/./b") == "a/b")
+    check("clean_up", path_clean("a/b/../c") == "a/c")
+    check("clean_root_up", path_clean("/../a") == "/a")
+    check("clean_rel_up", path_clean("../a") == "../a")
+    check("clean_to_dot", path_clean("a/..") == ".")
+    check("clean_to_root", path_clean("/a/..") == "/")
+    check("clean_trail", path_clean("/a/b/") == "/a/b")
+    check("clean_nested_up", path_clean("a/../../b") == "../b")
+
     print("path_test: all passed")
 }

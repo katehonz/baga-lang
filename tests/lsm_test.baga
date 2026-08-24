@@ -16,7 +16,12 @@ import "std/time/time.baga"
 
 fn main() -> i64 !Net !IO !Par !Time {
     print("lsm_test:")
-    let fails = vec_new()
+    let fails: Vec<i64> = vec_new()
+    check(fails, "port_ok", lsm_port_parse("16579", 1) == 16579)
+    check(fails, "port_clamp", lsm_port_parse("0", 16579) == 16579)
+    check(fails, "port_hi", lsm_port_parse("70000", 16579) == 16579)
+    let empty_db = lsm_open("", 32, 3)?
+    check(fails, "open_empty_dir", empty_db.ok == 0)
     // --- R7: byte-size L0 target (file-count alone would not fire) ---
     wipe("/tmp/baga_lsm_bytes")?
     let mut db5 = lsm_open("/tmp/baga_lsm_bytes", 1, 100)?  // flush each put; compact_at huge

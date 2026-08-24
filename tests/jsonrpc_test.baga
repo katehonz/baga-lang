@@ -40,6 +40,8 @@ fn main() -> i64 !Net !IO !Par {
 
     let bad = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"id\":1}")
     assert_true("invalid_req", has(bad, "-32600"))
+    let nover = rpc_handle_body("{\"method\":\"ping\",\"id\":1}")
+    assert_true("missing_jsonrpc", has(nover, "-32600"))
 
     let fl = rpc_handle_body("{\"jsonrpc\":\"2.0\",\"method\":\"fail\",\"id\":9}")
     assert_true("app_error", has(fl, "-32000"))

@@ -42,6 +42,31 @@ fn main() -> i64 !Random {
     let badp = uuid_parse("nope") catch !BadUuid(s) => s
     check("parse_bad", badp == "nope")
 
+    let hex32 = "550e8400e29b41d4a716446655440000"
+    check("ok_hex32", uuid_ok(hex32) == 1)
+    let p32 = uuid_parse(hex32) catch !BadUuid(_s) => ""
+    check("parse_hex32", p32 == "550e8400-e29b-41d4-a716-446655440000")
+    let purn = uuid_parse("URN:UUID:550E8400-E29B-41D4-A716-446655440000") catch !BadUuid(_s) => ""
+    check("parse_urn", purn == "550e8400-e29b-41d4-a716-446655440000")
+    let pbr = uuid_parse("{550e8400-e29b-41d4-a716-446655440000}") catch !BadUuid(_s) => ""
+    check("parse_braces", pbr == "550e8400-e29b-41d4-a716-446655440000")
+
+    check("nil", uuid_nil() == "00000000-0000-0000-0000-000000000000")
+    check("eq_case", uuid_eq(norm, "550E8400-E29B-41D4-A716-446655440000") == 1)
+    check("eq_nil", uuid_eq(id, uuid_nil()) == 0)
+    check("eq_bad", uuid_eq("nope", uuid_nil()) == 0)
+    check("ver_hex32", uuid_version(hex32) == 4)
+    check("var_rfc", uuid_variant(p32) == 1)
+    check("ok_v4", uuid_ok_v4(id) == 1)
+    check("ok_v4_nil", uuid_ok_v4(uuid_nil()) == 0)
+
+    let raw = uuid_to_bytes(p32) catch !BadUuid(_s) => bytes_new(0)
+    check("to_bytes_len", bytes_len(raw) == 16)
+    let back = uuid_from_bytes(raw) catch !BadUuid(_s) => ""
+    check("from_bytes", back == p32)
+    let shortb = uuid_from_bytes(bytes_new(4)) catch !BadUuid(s) => s
+    check("from_bytes_bad", shortb == "bytes")
+
     print("uuid_test: all passed")
     return 0
 }

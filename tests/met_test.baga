@@ -32,5 +32,20 @@ fn main() {
     check("has_type", str_find(body, "# TYPE http_requests_total counter") >= 0)
     check("has_val", str_find(body, "http_requests_total 5") >= 0)
     check("has_gauge", str_find(body, "workers 4") >= 0)
+
+    met_add(m, c, 0 - 2)
+    check("counter_no_dec", met_get(m, c) == 5)
+    met_add(m, g, 0 - 1)
+    check("gauge_dec", met_get(m, g) == 3)
+    check("len", met_len(m) == 2)
+    check("find", met_find(m, "workers") == g)
+
+    let nl = met_new()
+    let h = met_counter(nl, "x", "line1\nline2")
+    met_inc(nl, h)
+    let rb = met_render(nl)
+    check("help_flat", str_find(rb, "line1 line2") >= 0)
+    check("help_no_nl", str_find(rb, "line1\nline2") < 0)
+
     print("met_test: all passed")
 }

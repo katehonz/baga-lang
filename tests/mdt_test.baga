@@ -56,6 +56,16 @@ fn main() {
     check("reserved_ct", mdt_is_reserved("Content-Type") == 1)
     check("reserved_pseudo", mdt_is_reserved(":path") == 1)
     check("not_res", mdt_is_reserved("x-trace") == 0)
+    check("res_conn", mdt_is_reserved("Connection") == 1)
+    check("bin", mdt_is_bin("trace-bin") == 1)
+    check("not_bin", mdt_is_bin("x-trace") == 0)
+
+    let emptyk = mdt_append(mdt_new(), "", "x")
+    check("skip_empty_key", mdt_len(emptyk) == 0)
+    let reqv = mdt_require(md, "x-request-id") catch !NotFound(_k) => ""
+    check("require", reqv == "only")
+    let miss = mdt_require(md, "nope") catch !NotFound(k) => k
+    check("require_miss", miss == "nope")
 
     print("mdt_test: all passed")
 }

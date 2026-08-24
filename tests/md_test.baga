@@ -78,5 +78,12 @@ fn main() {
     let xss = md_to_html("a <b> c\n")
     check("xss_lt", contains(xss, "&lt;b&gt;") && !contains(xss, "<b>"))
 
+    let img = md_to_html("pic ![x](https://e.com/a.png)\n")
+    check("img", contains(img, "<img src=\"https://e.com/a.png\"") && contains(img, "alt=\"x\""))
+    let imgx = md_to_html("![a\"b](u)\n")
+    check("img_esc", contains(imgx, "alt=\"a&quot;b\""))
+    let bang = md_to_html("not an image: !x\n")
+    check("bang", contains(bang, "!x"))
+
     print("md_test: all passed")
 }

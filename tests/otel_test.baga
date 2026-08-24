@@ -39,6 +39,10 @@ fn main() -> i64 !Random !Time !IO {
     let from = otel_from_header(sample)?
     check("from_header", from.ok == 1 && from.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736")
     check("header_name", otel_header_name() == "traceparent")
+    check("trim", otel_parse_traceparent(concat("  ", concat(sample, "  "))).ok == 1)
+    check("ver_ff", otel_parse_traceparent("ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01").ok == 0)
+    check("sampled", otel_sampled(t) == 1)
+    check("not_sampled", otel_sampled(otel_parse_traceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")) == 0)
 
     // OTLP/JSON export
     let sp = otel_span_now("GET /hello", root, 2)?
@@ -47,6 +51,11 @@ fn main() -> i64 !Random !Time !IO {
     check("otlp_has_resource", str_find(js, "resourceSpans") >= 0)
     check("otlp_service", str_find(js, "otel_test") >= 0 || str_find(js, "service.name") >= 0)
     check("otlp_b64", str_find(js, "traceId") >= 0)
+    check("otlp_no_parent", str_find(js, "parentSpanId") < 0)
+    let ch = otel_span_child("db.query", sp2, 3)?
+    let chj = otel_span_to_otlp_json(ch, "otel_test")
+    check("child_parent", str_find(chj, "parentSpanId") >= 0)
+    check("child_name", str_find(chj, "db.query") >= 0)
     // known hex → base64: "00" → "AA=="
     check("b64_00", otel_hex_to_b64_fixed("00") == "AA==")
     let path = "/tmp/baga_otel_export_test.ndjson"

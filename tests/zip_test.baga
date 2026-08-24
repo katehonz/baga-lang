@@ -69,11 +69,17 @@ fn main() {
     check("zip_defl_read_ok", pd.ok == 1)
     check("zip_defl_text", str_of_bytes(pd.data) == "hello world")
 
-    check("zip_version", zip_version() == "0.2.2")
+    check("zip_version", zip_version() == "0.3.0")
+
+    check("name_ok", zip_name_ok("dir/a.txt") == 1)
+    check("name_dots_file", zip_name_ok("file..txt") == 1)
+    check("name_dotdot", zip_name_ok("../x") == 0)
+    check("name_abs", zip_name_ok("/etc/passwd") == 0)
+    check("name_bslash", zip_name_ok("a\\b") == 0)
 
     // --- ZIP writer (store) round-trip ---
-    let wn = vec_new()
-    let wp = vec_new()
+    let wn: Vec<str> = vec_new()
+    let wp: Vec<bytes> = vec_new()
     vec_push(wn, "a.txt")
     vec_push(wp, bytes_of_str("alpha"))
     vec_push(wn, "b/c.txt")
@@ -101,9 +107,40 @@ fn main() {
     let brep = inflate_raw(crep)
     check("deflate_lz77_rt", brep.ok == 1 && bytes_len(brep.data) == bytes_len(rep))
 
+    // zip-slip names are dropped on write
+    let sn: Vec<str> = vec_new()
+    let sp: Vec<bytes> = vec_new()
+    vec_push(sn, "../secret")
+    vec_push(sp, bytes_of_str("x"))
+    vec_push(sn, "ok.txt")
+    vec_push(sp, bytes_of_str("y"))
+    let slipt = zip_write_store(sn, sp)
+    let zsl = zip_open_bytes(slipt)
+    check("zip_slip_count", zsl.ok == 1 && zip_count(zsl) == 1)
+    check("zip_slip_kept", zip_name(zsl, 0) == "ok.txt")
+
+    // ZIP64 marker in EOCD is fail-loud
+    let eocd = zip_find_eocd(built)
+    bytes_set(built, eocd + 10, 255)
+    bytes_set(built, eocd + 11, 255)
+    let z64 = zip_open_bytes(built)
+    check("zip64_reject", z64.ok == 0)
+
+    // encrypted local flag → read fails
+    let en: Vec<str> = vec_new()
+    let ep: Vec<bytes> = vec_new()
+    vec_push(en, "e.txt")
+    vec_push(ep, bytes_of_str("z"))
+    let ez = zip_write_store(en, ep)
+    bytes_set(ez, 6, 1)
+    let ze = zip_open_bytes(ez)
+    check("zip_enc_open", ze.ok == 1)
+    let pe = zip_read(ze, "e.txt")
+    check("zip_enc_read", pe.ok == 0)
+
     // --- ZIP writer with deflate ---
-    let dn = vec_new()
-    let dp = vec_new()
+    let dn: Vec<str> = vec_new()
+    let dp: Vec<bytes> = vec_new()
     vec_push(dn, "fox.txt")
     vec_push(dp, src)
     let dzip = zip_write_deflate(dn, dp)

@@ -1,0 +1,52 @@
+// boila_test.baga — boilabaga dialect + port parse (no live server).
+
+import "boilabaga/dialect.baga"
+import "boilabaga/adapter.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn main() -> i64 {
+    assert_eq_i64("ident_ok", boila_ident_ok("users"), 1)
+    assert_eq_i64("ident_dash", boila_ident_ok("a-b"), 0)
+    assert_eq_i64("ident_empty", boila_ident_ok(""), 0)
+    assert_eq_i64("ident_digit", boila_ident_ok("1x"), 0)
+    assert_eq_str("ident_safe", boila_ident("users"), "users")
+    assert_eq_str("ident_bad", boila_ident("a-b"), "")
+
+    let names: Vec<str> = vec_new()
+    vec_push(names, "id")
+    vec_push(names, "name")
+    assert_eq_str("ident_list", boila_ident_list(names), "id, name")
+    let badn: Vec<str> = vec_new()
+    vec_push(badn, "id")
+    vec_push(badn, "x-y")
+    assert_eq_str("ident_list_bad", boila_ident_list(badn), "")
+
+    let cols: Vec<str> = vec_new()
+    let types: Vec<str> = vec_new()
+    vec_push(cols, "id")
+    vec_push(types, "BIGINT")
+    vec_push(cols, "name")
+    vec_push(types, "TEXT")
+    let ddl = boila_ddl_create_table("users", cols, types, "id")
+    assert_true("ddl_create", str_find(ddl, "CREATE TABLE IF NOT EXISTS users") >= 0)
+    assert_true("ddl_pk", str_find(ddl, "PRIMARY KEY (id)") >= 0)
+    assert_eq_str("ddl_bad_table", boila_ddl_create_table("u-s", cols, types, "id"), "")
+    let short: Vec<str> = vec_new()
+    vec_push(short, "id")
+    assert_eq_str("ddl_arity", boila_ddl_create_table("users", cols, short, "id"), "")
+
+    assert_true("ddl_idx", str_find(boila_ddl_create_index("ix", "users", "name"), "ON users") >= 0)
+    assert_eq_str("ddl_idx_bad", boila_ddl_create_index("ix", "u s", "name"), "")
+    assert_eq_str("ddl_drop_bad", boila_ddl_drop_table("x;y"), "")
+    assert_true("ddl_mig", len(boila_ddl_migrations_table()) > 20)
+
+    assert_eq_i64("port_def", boila_port_parse("", 6575), 6575)
+    assert_eq_i64("port_ok", boila_port_parse("9000", 6575), 9000)
+    assert_eq_i64("port_zero", boila_port_parse("0", 6575), 6575)
+    assert_eq_i64("port_hi", boila_port_parse("70000", 6575), 6575)
+    assert_eq_i64("port_junk", boila_port_parse("abc", 6575), 6575)
+
+    print("boila_test: all passed")
+    return 0
+}

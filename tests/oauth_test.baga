@@ -73,6 +73,23 @@ fn main() -> i64 !Net !IO !Par !Time !Random {
     let badr = http_get(concat(pbase, "/oauth/authorize?client_id=baga-app&redirect_uri=http://evil/cb&state=s"), 5)?
     assert_eq_i64("authorize_bad_redirect", badr.status, 400)
 
+    let mut aurl2 = concat(pbase, "/oauth/authorize?client_id=baga-app")
+    aurl2 = concat(aurl2, concat("&redirect_uri=", redir))
+    aurl2 = concat(aurl2, "&state=enc&sub=alice%20x&scope=read")
+    let a2 = http_get(aurl2, 5)?
+    assert_eq_i64("authorize_enc_302", a2.status, 302)
+    let code_enc = query_param(http_resp_header(a2, "Location"), "code")
+    let mut form_enc = "grant_type=authorization_code"
+    form_enc = concat(form_enc, concat("&code=", code_enc))
+    form_enc = concat(form_enc, "&client_id=baga-app&client_secret=baga-secret")
+    let tk_enc = http_request("POST", concat(pbase, "/oauth/token"), map_new(), form_enc, 5)?
+    assert_eq_i64("token_enc_200", tk_enc.status, 200)
+    assert_eq_str("token_enc_sub", jstr(tk_enc.body, "sub"), "alice x")
+
+    let bad_redir = http_request("POST", concat(pbase, "/oauth/token"), map_new(),
+        "grant_type=authorization_code&code=z&client_id=baga-app&client_secret=baga-secret&redirect_uri=http://evil/cb", 5)?
+    assert_eq_i64("token_bad_redirect", bad_redir.status, 400)
+
     // --- token endpoint: authorization_code grant ---
     let mut form = "grant_type=authorization_code"
     form = concat(form, concat("&code=", code))
@@ -104,6 +121,11 @@ fn main() -> i64 !Net !IO !Par !Time !Random {
     assert_eq_i64("me_200", me.status, 200)
     assert_eq_str("me_sub", jstr(me.body, "sub"), "alice")
     assert_eq_str("me_scope", jstr(me.body, "scope"), "read")
+
+    let mut lhdr: Map<str, str> = map_new()
+    map_set(lhdr, "Authorization", concat("bearer ", access))
+    let mel = http_request("GET", concat(pbase, "/api/me"), lhdr, "", 5)?
+    assert_eq_i64("me_bearer_fold", mel.status, 200)
 
     let me0 = http_get(concat(pbase, "/api/me"), 5)?
     assert_eq_i64("me_no_token_401", me0.status, 401)

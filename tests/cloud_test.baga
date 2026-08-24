@@ -18,12 +18,20 @@ fn cloud_serve_port(port: i64) -> i64 !Net !IO !Par !Time !Random {
 }
 
 fn http_get(port: i64, path: str) -> str !Net !IO {
+    return http_get_hdr(port, path, "")?
+}
+
+fn http_get_hdr(port: i64, path: str, extra: str) -> str !Net !IO {
     let fd = tcp_connect_to("localhost", port, 3)?
     if fd < 0 {
         return ""
     }
     tcp_set_timeouts(fd, 3)?
-    let req = concat(concat(concat("GET ", path), " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"), "")
+    let mut req = concat(concat("GET ", path), " HTTP/1.1\r\nHost: localhost\r\n")
+    if extra != "" {
+        req = concat(req, extra)
+    }
+    req = concat(req, "Connection: close\r\n\r\n")
     tcp_write(fd, req)?
     let mut body = ""
     let mut n: i64 = 0
@@ -61,6 +69,18 @@ fn main() -> i64 !Net !IO !Par !Time !Random {
 
     let miss = http_get(port, "/nope")?
     check(fails, "404", str_find(miss, "404") >= 0)
+
+    let tp = "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n"
+    let traced = http_get_hdr(port, "/", tp)?
+    check(fails, "trace_id", str_find(traced, "4bf92f3577b34da6a3ce929d0e0e4736") >= 0)
+    check(fails, "trace_hdr", str_find(traced, "traceparent") >= 0)
+    let hz = http_get_hdr(port, "/healthz", tp)?
+    check(fails, "healthz_tr", str_find(hz, "traceparent") >= 0)
+
+    check(fails, "port_def", cloud_port("", 18080) == 18080)
+    check(fails, "port_ok", cloud_port("8080", 18080) == 8080)
+    check(fails, "port_bad", cloud_port("abc", 18080) == 18080)
+    check(fails, "port_hi", cloud_port("99999", 18080) == 18080)
 
     // unit: readiness flip on CloudState
     let st = cloud_new()

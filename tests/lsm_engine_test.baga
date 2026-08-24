@@ -15,7 +15,11 @@ import "std/time/time.baga"
 
 fn main() -> i64 !Net !IO !Par !Time {
     print("lsm_engine_test:")
-    let fails = vec_new()
+    let fails: Vec<i64> = vec_new()
+    check(fails, "port_ok", lsm_port_parse("16579", 1) == 16579)
+    check(fails, "port_clamp", lsm_port_parse("0", 16579) == 16579)
+    let empty_db = lsm_open("", 32, 3)?
+    check(fails, "open_empty_dir", empty_db.ok == 0)
     let prefix = "/tmp/baga_lsm_test"
     wipe(prefix)?
     wipe(prefix)?

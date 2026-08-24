@@ -71,5 +71,27 @@ fn main() {
     let miss = query_require(q, "nope") catch !NotFound(k) => k
     check("require_miss", miss == "nope")
 
+    let dup = query_parse("id=1&id=2")
+    check("dup_len", query_len(dup) == 2)
+    check("dup_first", query_get(dup, "id") == "1")
+    let all = query_get_all(dup, "id")
+    check("dup_all", vec_len(all) == 2 && vec_get(all, 1) == "2")
+    check("dup_enc", query_encode(dup) == "id=1&id=2")
+    let ds = query_set(dup, "id", "9")
+    check("set_one", query_len(ds) == 1 && query_get(ds, "id") == "9")
+    let dd = query_del(dup, "id")
+    check("del", query_len(dd) == 0)
+
+    let qh = query_from_path("/x?a=1#top")
+    check("hash", query_get(qh, "a") == "1")
+    let qh2 = query_parse("a=1&b=2#frag")
+    check("hash_parse", query_get(qh2, "b") == "2")
+
+    check("pct_plus", query_get(query_parse("q=a%2Bb"), "q") == "a+b")
+    let mut qf = query_new()
+    qf = query_set(qf, "q", "hello x")
+    check("form_plus", query_encode_form(qf) == "q=hello+x")
+    check("and", query_len(query_parse("a=1&&b=2")) == 2)
+
     print("query_test: all passed")
 }

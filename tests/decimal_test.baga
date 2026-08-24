@@ -42,14 +42,25 @@ fn main() {
 
     // --- i64 convert ---
     check("from_i64", dec_to_string(dec_from_i64(100)) == "100")
-    check("from_i64_scale", dec_to_string(dec_from_i64_scale(202, 2)) == "2.02")
+    let fis = dec_from_i64_scale(202, 2)
+    check("from_i64_scale", fis.ok == 1 && dec_to_string(fis.value) == "2.02")
+    check("from_i64_scale_bad", dec_from_i64_scale(1, 29).ok == 0)
+    check("from_i64_scale_neg", dec_from_i64_scale(1, 0 - 1).ok == 0)
     let ti = dec_to_i64(must_parse("-99"))
     check("to_i64", ti.ok == 1 && ti.value == 0 - 99)
+    let imin = dec_from_i64(0 - 9223372036854775807 - 1)
+    let timin = dec_to_i64(imin)
+    check("to_i64_min", timin.ok == 1 && timin.value == 0 - 9223372036854775807 - 1)
 
     // --- cmp ---
     check("cmp_lt", dec_lt(must_parse("1.0"), must_parse("1.1")) == 1)
+    check("cmp_le", dec_le(must_parse("1.00"), must_parse("1.0")) == 1)
+    check("cmp_gt", dec_gt(must_parse("2"), must_parse("1.9")) == 1)
+    check("cmp_ge", dec_ge(must_parse("-1"), must_parse("-1.00")) == 1)
     check("cmp_eq_diff_scale", dec_eq(must_parse("1.0"), must_parse("1.00")) == 1)
     check("cmp_neg", dec_cmp(must_parse("-2"), must_parse("1")) < 0)
+    check("min", dec_to_string(dec_min(must_parse("2.5"), must_parse("-0.1"))) == "-0.1")
+    check("max", dec_to_string(dec_max(must_parse("2.5"), must_parse("-0.1"))) == "2.5")
     check("abs", dec_to_string(dec_abs(must_parse("-4.2"))) == "4.2")
     check("neg", dec_to_string(dec_neg(must_parse("3"))) == "-3")
 
@@ -93,6 +104,19 @@ fn main() {
     check("div_scale", d1.ok == 1 && dec_to_string(d1.value) == "2.50")
     let d0 = dec_div(must_parse("1"), must_parse("0"))
     check("div_zero", d0.ok == 0)
+
+    // --- rem (sign of dividend, scale = max) ---
+    let rm1 = dec_rem(must_parse("10.50"), must_parse("3"))
+    check("rem", rm1.ok == 1 && dec_to_string(rm1.value) == "1.50")
+    let rm2 = dec_rem(must_parse("10.5"), must_parse("0.2"))
+    check("rem_frac", rm2.ok == 1 && dec_to_string(rm2.value) == "0.1")
+    let rm3 = dec_rem(must_parse("-10.5"), must_parse("3"))
+    check("rem_neg", rm3.ok == 1 && dec_to_string(rm3.value) == "-1.5")
+    let rm4 = dec_rem(must_parse("10.5"), must_parse("-3"))
+    check("rem_neg_div", rm4.ok == 1 && dec_to_string(rm4.value) == "1.5")
+    let rm5 = dec_rem(must_parse("5.00"), must_parse("5"))
+    check("rem_zero", rm5.ok == 1 && dec_is_zero(rm5.value) == 1)
+    check("rem_div0", dec_rem(must_parse("1"), must_parse("0")).ok == 0)
 
     // --- normalize string ---
     check("norm", dec_to_string_normalized(must_parse("1.50")) == "1.5")
@@ -201,6 +225,18 @@ fn main() {
     check("exp_sign_no_digits", dec_parse("1e+").ok == 0)
     check("exp_junk", dec_parse("1.2e3x").ok == 0)
     check("exp_double", dec_parse("1e2e3").ok == 0)
+
+    // --- JSON string codec (never a JSON number / f64) ---
+    check("json_to", dec_to_json(must_parse("25.12")) == "\"25.12\"")
+    check("json_to_neg", dec_to_json(must_parse("-0.50")) == "\"-0.50\"")
+    let j1 = dec_from_json("\"10.50\"")
+    check("json_from", j1.ok == 1 && dec_to_string(j1.value) == "10.50")
+    let j2 = dec_from_json("  \"1.5\"  ")
+    check("json_from_spaces", j2.ok == 1 && dec_to_string(j2.value) == "1.5")
+    check("json_reject_number", dec_from_json("25.12").ok == 0)
+    check("json_reject_empty", dec_from_json("\"\"").ok == 0)
+    check("json_reject_escape", dec_from_json("\"1\\u0030\"").ok == 0)
+    check("json_reject_unterminated", dec_from_json("\"1.2").ok == 0)
 
     print("decimal_test: all passed")
 }

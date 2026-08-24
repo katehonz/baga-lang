@@ -30,9 +30,8 @@ fn main() -> i64 !IO !Par !Time {
     let id3 = q_enqueue(q, "fail:x")?
     let st3 = q_wait(q, id3, 3000)?
     assert_eq_str("fail_status", st3, "failed")
-    let att = read_file(concat(concat(concat(prefix, "."), int_to_str(id3)), ".attempts"))?
     // max_attempts 3
-    assert_eq_str("fail_attempts", att, "3")
+    assert_eq_i64("fail_attempts", q_attempts(q, id3)?, 3)
     assert_true("fail_msg", str_find(q_result(q, id3)?, "failed") >= 0)
 
     // --- several jobs ---
@@ -59,6 +58,29 @@ fn main() -> i64 !IO !Par !Time {
     assert_eq_str("fn_status", q_status(q2, hid)?, "done")
     assert_eq_str("fn_result", q_result(q2, hid)?, "H:hi")
     q_close(q2)?
+
+    assert_eq_str("key_safe", q_key_safe("order-42"), "order-42")
+    assert_eq_str("key_strip", q_key_safe("a/b!c"), "abc")
+    assert_eq_str("key_empty", q_key_safe("!!!"), "")
+
+    let p3 = concat("/tmp/baga_queue_key_", int_to_str(monotonic_ms()?))
+    let mut q3 = q_open(p3, 3)?
+    q3 = q_start_workers(q3, 1)?
+    let ka = q_enqueue_keyed(q3, "order-1", "keyed")?
+    let kb = q_enqueue_keyed(q3, "order-1", "ignored")?
+    assert_true("keyed_id", ka > 0)
+    assert_eq_i64("keyed_same", ka, kb)
+    assert_eq_str("keyed_done", q_wait(q3, ka, 2000)?, "done")
+    assert_eq_str("keyed_rev", q_result(q3, ka)?, "deyek")
+    assert_eq_i64("keyed_att", q_attempts(q3, ka)?, 1)
+    let kc = q_enqueue_keyed(q3, "order-2", "abc")?
+    assert_true("keyed_other", kc != ka)
+    let u1 = q_enqueue_keyed(q3, "!!!", "aa")?
+    let u2 = q_enqueue_keyed(q3, "!!!", "bb")?
+    assert_true("unsafe_new", u1 != u2)
+    assert_eq_str("u1_done", q_wait(q3, u1, 2000)?, "done")
+    assert_eq_str("u2_done", q_wait(q3, u2, 2000)?, "done")
+    q_close(q3)?
 
     print("queue_test: all passed")
     return 0
