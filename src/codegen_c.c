@@ -595,21 +595,26 @@ static int rc_box_tracked(Codegen *cg, Type *et) {
     return 0;
 }
 
-/* M26: трябва ли shim за Vec<E> като елемент на външен Vec — E носи heap
- * някъде в дълбочина (str/bytes/struct с heap полета/Vec рекурсивно).
- * Enum елементи остават на старото поведение (leak-safe, както досега). */
+/* M26 + RC5 v1.1: трябва ли shim за Vec<E> като елемент на външен Vec —
+ * E носи heap някъде в дълбочина (str/bytes/struct с heap полета/enum с
+ * heap payload/Vec рекурсивно). */
 static int rc_vec_elem_deep_heap(Codegen *cg, Type *e) {
     if (!e) return 0;
     switch (e->kind) {
         case TYPE_STR: case TYPE_BYTES: return 1;
         case TYPE_VEC: return rc_vec_elem_deep_heap(cg, e->elem);
         case TYPE_STRUCT: return rc_heap_tag(cg, e) == 5;   /* instance-aware */
+        case TYPE_ENUM: {
+            if (!e->name) return 0;
+            Node *ed = find_sum_enum_decl(cg, e->name);
+            return ed && rc_enum_has_heap(cg, ed);
+        }
         default: return 0;
     }
 }
 
 /* M26: enc на елементния тип за relv shim име: str / bytes /
- * mangled struct име (b_Wrap; per-instance b_Box_i64) / v_<enc> за Vec. */
+ * mangled struct/enum име (b_Wrap; per-instance b_Box_i64) / v_<enc> за Vec. */
 static char *rc_relv_enc(Codegen *cg, Type *e) {
     (void)cg;
     if (!e) return NULL;
@@ -617,6 +622,8 @@ static char *rc_relv_enc(Codegen *cg, Type *e) {
     if (e->kind == TYPE_BYTES) return strdup("bytes");
     if (e->kind == TYPE_STRUCT && e->name)
         return e->n_targs > 0 ? struct_cname_str(e) : mangle_name(e->name);
+    if (e->kind == TYPE_ENUM && e->name)
+        return mangle_name(e->name);
     if (e->kind == TYPE_VEC) {
         char *sub = rc_relv_enc(cg, e->elem);
         if (!sub) return NULL;
@@ -704,8 +711,13 @@ static void rc_nested_vec_rel_node(Codegen *cg, Node *ty, char *rel, size_t reln
     if (!inner || inner->kind != NODE_TYPE || !inner->type_name ||
         strcmp(inner->type_name, "Vec") != 0) return;
     Node *es = inner->inner_type;
-    if (!es || es->kind != NODE_TYPE || !es->type_name ||
-        !rc_struct_has_heap(cg, es->type_name)) return;
+    if (!es || es->kind != NODE_TYPE || !es->type_name) return;
+    int heap = rc_struct_has_heap(cg, es->type_name);
+    if (!heap) {
+        Node *ed = find_sum_enum_decl(cg, es->type_name);
+        heap = ed && rc_enum_has_heap(cg, ed);
+    }
+    if (!heap) return;
     char *m = mangle_name(es->type_name);
     snprintf(rel, reln, "baga_rc_relv_%s", m);
     free(m);
@@ -1301,10 +1313,11 @@ static int rc_be_ok(Codegen *cg, const char *x, const char *src) {
  * Temp-овете се събират pre-order от root израза на statement-а, изчисляват
  * се в __rc_tmpN декларации преди него (вътрешните първи) и се release-ват
  * в края му. Не се слиза в: struct литерал (полетата escape-ват без retain),
- * ламбда (отделна fn), try/catch (ранен return), match, if-израз и десния
- * операнд на &&/|| (условна оценка), drop(…) аргументи (самият drop е
- * release пътят). Root-ът на let/assign/return е bound (собствеността се
- * предава) — само вложените му temp-ове се събират.
+ * ламбда (отделна fn), drop(…) аргументи (самият drop е release пътят).
+ * Collect не слиза в try/catch, match рамена, if-израз и десния операнд
+ * на &&/|| (условна оценка / ранен return) — emission-ът ги wrap-ва
+ * локално (v1.1, emit_rc_stmt_expr_root). Root-ът на let/assign/return е
+ * bound (собствеността се предава) — само вложените му temp-ове се събират.
  * v0.3: условия на if/while и for-range hi се wrap-ват в GNU ({…}) —
  * temp-овете се оценяват на всяка оценка на условието и се release-ват
  * веднага след нея (преди тялото / клоновете). continue/break не ги пипат. */
@@ -1312,6 +1325,7 @@ static int rc_be_ok(Codegen *cg, const char *x, const char *src) {
 static void rc_tmp_release_all(Codegen *cg);
 static void emit_expr(Codegen *cg, Node *n); /* fwd — пълната fwd декларация е по-долу */
 static void emit_rc_stmt_expr(Codegen *cg, Node *n);
+static void emit_rc_stmt_expr_root(Codegen *cg, Node *n, int root_bound);
 
 /* RC5 v0.4: цел `ident.field`, където ident е track-нат struct локал (tag 5,
  * не param/dead), а field е пряко heap поле. Връща tag-а на полето (1-4) или
@@ -1701,18 +1715,21 @@ static int rc_tmp_would_collect(Codegen *cg, Node *n) {
     return ntmp;
 }
 
-/* RC4 v0.3: израз в условие. Ако има temp-ове — GNU statement-expression
- * `({ decls; __auto_type __rc_cN = expr; releases; __rc_cN; })`, така че
- * оценката е на всяко влизане (while/for hi) и release-ът е преди тялото.
- * Без temp-ове — обикновен emit_expr. */
-static void emit_rc_stmt_expr(Codegen *cg, Node *n) {
+/* RC4 v0.3 / v1.1: израз с локални temp-ове. Ако има — GNU
+ * statement-expression `({ decls; __auto_type __rc_cN = expr; releases;
+ * __rc_cN; })`. root_bound=1: самият n е bound (if-израз клон / match arm
+ * стойност / catch handler) — не се регистрира като temp; вложените се
+ * пускат след оценката. root_bound=0: условието на if/while/for и десният
+ * операнд на &&/|| — temp-овете в него се пускат веднага след оценката,
+ * преди тялото / следващия операнд. Без temp-ове — обикновен emit_expr. */
+static void emit_rc_stmt_expr_root(Codegen *cg, Node *n, int root_bound) {
     if (!n) { fprintf(cg->out, "0"); return; }
     if (!cg->rc) { emit_expr(cg, n); return; }
     RcTmpVec saved = cg->rc_tmps;
     int saved_on = cg->rc_tmps_on;
     cg->rc_tmps.data = NULL; cg->rc_tmps.len = 0; cg->rc_tmps.cap = 0;
     cg->rc_tmps_on = 0;
-    rc_tmp_collect(cg, n, 0);
+    rc_tmp_collect(cg, n, root_bound);
     if (cg->rc_tmps.len == 0) {
         vec_free(cg->rc_tmps);
         cg->rc_tmps = saved;
@@ -1733,19 +1750,30 @@ static void emit_rc_stmt_expr(Codegen *cg, Node *n) {
         fprintf(f, ";\n");
     }
     emit_indent(cg);
-    int cnum = cg->tmp_counter++;
-    fprintf(f, "__auto_type __rc_c%d = ", cnum);
-    emit_expr(cg, n);
-    fprintf(f, ";\n");
-    rc_tmp_release_all(cg);
-    emit_indent(cg);
-    fprintf(f, "__rc_c%d;\n", cnum);
+    if (n->type && n->type->kind == TYPE_VOID) {
+        /* print/дискарднат expr — няма стойност за хващане */
+        emit_expr(cg, n);
+        fprintf(f, ";\n");
+        rc_tmp_release_all(cg);
+    } else {
+        int cnum = cg->tmp_counter++;
+        fprintf(f, "__auto_type __rc_c%d = ", cnum);
+        emit_expr(cg, n);
+        fprintf(f, ";\n");
+        rc_tmp_release_all(cg);
+        emit_indent(cg);
+        fprintf(f, "__rc_c%d;\n", cnum);
+    }
     cg->indent--;
     emit_indent(cg);
     fprintf(f, "})");
     vec_free(cg->rc_tmps);
     cg->rc_tmps = saved;
     cg->rc_tmps_on = saved_on;
+}
+
+static void emit_rc_stmt_expr(Codegen *cg, Node *n) {
+    emit_rc_stmt_expr_root(cg, n, 0);
 }
 
 /* RC5 v1.0a: трябва ли return/arm стойност да се retain-не, за да е
@@ -1774,15 +1802,15 @@ static int rc_need_owned_retain(Codegen *cg, Node *val) {
 static void rc_emit_match_arm_val(Codegen *cg, Node *rv, int tmp,
                                   int is_void) {
     FILE *f = cg->out;
-    if (is_void) { emit_expr(cg, rv); return; }
+    if (is_void) { emit_rc_stmt_expr_root(cg, rv, 1); return; }
     int rtag = (cg->rc && rv) ? rc_heap_tag(cg, rv->type) : 0;
     if (!rtag || !rc_need_owned_retain(cg, rv)) {
         fprintf(f, "_mr%d = ", tmp);
-        emit_expr(cg, rv);
+        emit_rc_stmt_expr_root(cg, rv, 1);
         return;
     }
     fprintf(f, "({ __auto_type __rc_m = ");
-    emit_expr(cg, rv);
+    emit_rc_stmt_expr_root(cg, rv, 1);
     fprintf(f, "; ");
     rc_emit_retain_val(cg, rtag, rv->type, NULL, "__rc_m");
     fprintf(f, "_mr%d = __rc_m; })", tmp);
@@ -2332,6 +2360,16 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, "), (int64_t)(");
                 emit_expr(cg, n->right);
                 fprintf(f, ")))");
+            } else if (n->bin_op == OP_AND || n->bin_op == OP_OR) {
+                /* RC4 v1.1: десният операнд се оценява условно — локален
+                 * wrap пуска temp-овете му веднага след оценката (не се
+                 * hoist-ват към statement-а: &&/|| биха ги направили
+                 * безусловни). */
+                fprintf(f, "(");
+                emit_expr(cg, n->left);
+                fprintf(f, " %s ", binop_c(n->bin_op));
+                emit_rc_stmt_expr(cg, n->right);
+                fprintf(f, ")");
             } else {
                 fprintf(f, "(");
                 emit_expr(cg, n->left);
@@ -3114,24 +3152,21 @@ static void emit_expr(Codegen *cg, Node *n) {
             break;
 
         case NODE_IF: {
-            /* if as expression → GCC statement expression */
+            /* if as expression → GCC statement expression.
+             * RC4 v1.1: клоновете имат собствени temp wrap-ове — last expr
+             * е bound (стойността на if-израза); предишните EXPR_STMT са
+             * дискарднати. Cond вече минава през emit_rc_stmt_expr (v0.3). */
             fprintf(f, "({");
             fprintf(f, "if (");
             emit_rc_stmt_expr(cg, n->cond);
             fprintf(f, ") { ");
-            /* emit then block inline */
             if (n->then_br && n->then_br->kind == NODE_BLOCK) {
                 for (int i = 0; i < n->then_br->stmts.len; i++) {
                     Node *s = n->then_br->stmts.data[i];
                     if (s->kind == NODE_EXPR_STMT) {
-                        /* last expr → result */
-                        if (i == n->then_br->stmts.len - 1) {
-                            emit_expr(cg, s->expr);
-                            fprintf(f, "; ");
-                        } else {
-                            emit_expr(cg, s->expr);
-                            fprintf(f, "; ");
-                        }
+                        int last = (i == n->then_br->stmts.len - 1);
+                        emit_rc_stmt_expr_root(cg, s->expr, last);
+                        fprintf(f, "; ");
                     }
                 }
             }
@@ -3142,7 +3177,8 @@ static void emit_expr(Codegen *cg, Node *n) {
                     for (int i = 0; i < n->else_br->stmts.len; i++) {
                         Node *s = n->else_br->stmts.data[i];
                         if (s->kind == NODE_EXPR_STMT) {
-                            emit_expr(cg, s->expr);
+                            int last = (i == n->else_br->stmts.len - 1);
+                            emit_rc_stmt_expr_root(cg, s->expr, last);
                             fprintf(f, "; ");
                         }
                     }
@@ -3592,7 +3628,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, " __e%d; baga_eff __ee%d; ", tid, tid);
                 cg->eff_depth++;
                 fprintf(f, "__e%d = ", tid);
-                emit_expr(cg, base);
+                emit_rc_stmt_expr_root(cg, base, 1);
                 fprintf(f, "; __ee%d = baga_eff_tl; baga_eff_tl = (baga_eff){0}; ",
                         tid);
                 cg->eff_depth--;
@@ -3619,7 +3655,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                         if (scan->catch_handler->kind == NODE_BLOCK)
                             emit_catch_handler_block(cg, scan->catch_handler, n->type);
                         else
-                            emit_expr(cg, scan->catch_handler);
+                            emit_rc_stmt_expr_root(cg, scan->catch_handler, 1);
                         fprintf(f, "; } ");
                         cg->eff_binding = saved_b;
                         cg->eff_binding_c = saved_c;
@@ -3629,7 +3665,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                         if (scan->catch_handler->kind == NODE_BLOCK)
                             emit_catch_handler_block(cg, scan->catch_handler, n->type);
                         else
-                            emit_expr(cg, scan->catch_handler);
+                            emit_rc_stmt_expr_root(cg, scan->catch_handler, 1);
                         fprintf(f, "; ");
                     }
                     fprintf(f, "} ");
@@ -3662,7 +3698,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                 fprintf(f, "({ ");
                 if (base) emit_ctype(cg, base); else fprintf(f, "int64_t");
                 fprintf(f, " __t%d = ", cg->tmp_counter);
-                emit_expr(cg, n->try_expr);
+                emit_rc_stmt_expr_root(cg, n->try_expr, 1);
                 fprintf(f, "; if (baga_eff_tl.tag) { ");
                 if (cg->rc) rc_release_all(cg, -1);
                 emit_eff_return_zero(cg);
@@ -3927,7 +3963,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                                                       is_void);
                                 fprintf(f, "; ");
                             } else if (s->kind == NODE_EXPR_STMT) {
-                                emit_expr(cg, s->expr);
+                                emit_rc_stmt_expr_root(cg, s->expr, 0);
                                 fprintf(f, "; ");
                             }
                         }
@@ -3990,7 +4026,7 @@ static void emit_expr(Codegen *cg, Node *n) {
                                                   is_void);
                             fprintf(f, "; ");
                         } else if (s->kind == NODE_EXPR_STMT) {
-                            emit_expr(cg, s->expr);
+                            emit_rc_stmt_expr_root(cg, s->expr, 0);
                             fprintf(f, "; ");
                         }
                     }
@@ -5124,6 +5160,10 @@ static void emit_rc_enum_helpers(Codegen *cg, Node *item) {
             em, em, em);
     fprintf(f, "static void baga_rc_retp_%s(void *p) { baga_rc_retain_%s(*(%s *)p); }\n",
             em, em, em);
+    /* RC5 v1.1: shim за Vec<E> като елемент на външен Vec — огледало на
+     * struct relv от v0.9 (kind 3 на външния не знае елементния тип). */
+    fprintf(f, "static void baga_rc_relv_%s(void *p) { baga_rc_release_vec((baga_Vec *)p, 2, (int64_t)sizeof(%s), baga_rc_relf_%s); }\n",
+            em, em, em);
     fprintf(f, "\n");
     free(em);
 }
@@ -5300,9 +5340,11 @@ static void emit_structs_and_sum_enums(Codegen *cg, Node *program) {
                 fprintf(cg->out, "static inline void baga_rc_retain_%s(%s e);\n", m, m);
                 fprintf(cg->out, "static inline void baga_rc_release_%s(%s e);\n", m, m);
                 /* RC5 v0.10: и box shim-овете (struct с Vec<E>/Map<K,E> поле
-                 * реферира relf/retp на по-късен enum) */
+                 * реферира relf/retp на по-късен enum).
+                 * RC5 v1.1: relv за Vec<Vec<E>> (като struct v0.9). */
                 fprintf(cg->out, "static void baga_rc_relf_%s(void *p);\n", m);
                 fprintf(cg->out, "static void baga_rc_retp_%s(void *p);\n", m);
+                fprintf(cg->out, "static void baga_rc_relv_%s(void *p);\n", m);
                 free(m);
             }
         }

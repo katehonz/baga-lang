@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+### boilaDB — P25: ROWS / RANGE frames
+- **`ROWS BETWEEN start AND end`** (и съкратено `ROWS start`).
+  Bounds: `UNBOUNDED PRECEDING|FOLLOWING`, `CURRENT ROW`,
+  `n PRECEDING|FOLLOWING`. Ties се цепят (за разлика от default RANGE).
+- **`RANGE … UNBOUNDED FOLLOWING`** = цялата партиция; `RANGE n
+  PRECEDING` и `GROUPS` остават `0A000`.
+- Gate: `tests/boila_window_test` rows_run_* / rows_1prec_* / range_all_*.
+
+### boilaDB — P24: NTILE + named WINDOW
+- **`NTILE(n) OVER (…)`.** Extra rows към по-ранните buckets (PG);
+  `n ≥ 1`. Gate: `tests/boila_window_test` ntile_*.
+- **`OVER w` + `WINDOW w AS (…)`.** Един named spec, преизползван от
+  няколко функции. Unknown name → `42703`.
+
+### boilaDB — P23: LAG / LEAD + TLS докс
+- **`LAG(col [, offset [, default]])` / `LEAD(…)` `OVER (…)`.** Offset
+  е неотрицателно цяло (default 1); извън партицията → default или
+  NULL. Същият OVER spec като останалите window fn. Gate:
+  `tests/boila_window_test`.
+- Докс: README / `docs/security.md` вече казват, че TLS 1.3 **има**
+  (P22-3); `docs/sql.md` — window MIN/MAX върху NUMERIC и LAG/LEAD.
+
+### runtime — RC5 v1.1: Vec<Vec<E>> + останали RC4 temp wrap-ове
+- **`Vec<Vec<E>>`.** `rc_vec_elem_deep_heap` познава enum с heap payload;
+  `emit_rc_enum_helpers` генерира `baga_rc_relv_<E>` (огледало на struct
+  v0.9). Drop/scope/overwrite на външния Vec пуска payload-ите на
+  вътрешния. И двата бекенда. Тест: `vecvec_*` в `tests/enum_box_rc_test.baga`.
+- **Дълбочина >2 за struct** (`Vec<Vec<Vec<S>>>`) вече се покриваше от M26
+  рекурсивните `relv_v_*` shim-ове — докс-ът лъжеше, че е граница. Тест
+  `deep_drop` / `deep3_survive` в `tests/vecvec_rc_test.baga`.
+- **RC4 temp-ове в условни позиции.** Collect пак не hoist-ва (би направил
+  оценката безусловна); emission wrap-ва локално:
+  десен операнд на `&&`/`||`, match рамена, try/catch изрази, if-израз
+  клонове. Void изрази (`print`) не се хващат в `__auto_type`. Тест:
+  `and_right_temp` / `or_right_temp` в `temp_test`; `arm_nested_temp` в
+  `match_temp_rc_test`. LLVM: същото за &&/|| и match рамена (if-израз
+  остава честен unsupported).
+- Остават (финални / отложени): closure capture, typed `chan_send` на heap,
+  цикли без weak, immortal `*_h` handle-и, `drop()` на enum, `Map<K, Vec<T>>`
+  (checker отказва Vec като Map стойност).
+- Докс: `docs/memory-rc-bg.md`, `docs/memory-rc-struct-bg.md`,
+  `docs/memory-rc-enum-bg.md`.
+
 ### verify — M30: сървърни цикли (while true с изход)
 - **Гарантиран префикс.** `while true` с изход изпълнява тялото поне
   веднъж; гарантираният префикс (изреченията до първото, което може да

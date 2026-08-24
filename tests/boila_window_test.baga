@@ -101,13 +101,135 @@ fn main() -> i64 !IO !Time !Par {
     srv = e1.srv
     check(fails, "need_over", e1.ok == 0)
 
-    let e2 = boila_server_exec(srv, "boila", "SELECT SUM(sal) OVER (PARTITION BY dept ORDER BY sal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM emp")?
+    let e2 = boila_server_exec(srv, "boila", "SELECT SUM(sal) OVER (PARTITION BY dept ORDER BY sal GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM emp")?
     srv = e2.srv
-    check(fails, "rows_0A000", e2.ok == 0 && e2.state == "0A000")
+    check(fails, "groups_0A000", e2.ok == 0 && e2.state == "0A000")
+
+    // P25: ROWS splits ties (RANGE default would share 40/40/70).
+    let qf = boila_server_exec(srv, "boila", "SELECT name, sal, SUM(sal) OVER (PARTITION BY dept ORDER BY sal, name ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS run FROM emp WHERE dept = 'eng' ORDER BY sal, name")?
+    srv = qf.srv
+    check(fails, "rows_run_ok", qf.ok == 1 && vec_len(qf.res.rows) == 3)
+    if vec_len(qf.res.rows) == 3 {
+        check(fails, "rows_run_20", iv(qf, 0, 2) == 20)
+        check(fails, "rows_run_40", iv(qf, 1, 2) == 40)
+        check(fails, "rows_run_70", iv(qf, 2, 2) == 70)
+    }
+
+    let qf2 = boila_server_exec(srv, "boila", "SELECT name, sal, SUM(sal) OVER (PARTITION BY dept ORDER BY sal, name ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS w FROM emp WHERE dept = 'eng' ORDER BY sal, name")?
+    srv = qf2.srv
+    check(fails, "rows_1prec_ok", qf2.ok == 1 && vec_len(qf2.res.rows) == 3)
+    if vec_len(qf2.res.rows) == 3 {
+        check(fails, "rows_1prec_20", iv(qf2, 0, 2) == 20)
+        check(fails, "rows_1prec_40", iv(qf2, 1, 2) == 40)
+        check(fails, "rows_1prec_50", iv(qf2, 2, 2) == 50)
+    }
+
+    let qf3 = boila_server_exec(srv, "boila", "SELECT name, SUM(sal) OVER (PARTITION BY dept RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS tot FROM emp WHERE dept = 'eng' ORDER BY name")?
+    srv = qf3.srv
+    check(fails, "range_all_ok", qf3.ok == 1 && vec_len(qf3.res.rows) == 3)
+    if vec_len(qf3.res.rows) == 3 {
+        check(fails, "range_all_70", iv(qf3, 0, 1) == 70 && iv(qf3, 2, 1) == 70)
+    }
+
+    let e8 = boila_server_exec(srv, "boila", "SELECT SUM(sal) OVER (ORDER BY sal RANGE 1 PRECEDING) FROM emp")?
+    srv = e8.srv
+    check(fails, "range_off_0A000", e8.ok == 0 && e8.state == "0A000")
 
     let e3 = boila_server_exec(srv, "boila", "SELECT name, ROW_NUMBER() OVER (ORDER BY sal), SUM(sal) OVER (PARTITION BY dept) FROM emp")?
     srv = e3.srv
     check(fails, "mixed_spec", e3.ok == 0 && e3.state == "0A000")
+
+    // P23: LAG / LEAD — offset rows inside the partition (PG: offset ≥ 0,
+    // out of partition → default or NULL).
+    let q6 = boila_server_exec(srv, "boila", "SELECT name, sal, LAG(sal) OVER (PARTITION BY dept ORDER BY sal, name) AS prev FROM emp WHERE dept = 'eng' ORDER BY sal, name")?
+    srv = q6.srv
+    check(fails, "lag_ok", q6.ok == 1 && vec_len(q6.res.rows) == 3)
+    if vec_len(q6.res.rows) == 3 {
+        // boris 20, cveti 20, ana 30
+        check(fails, "lag_first_null", sv(q6, 0, 0) == "boris" && vec_get(vec_get(q6.res.rows, 0), 2).tag == 0)
+        check(fails, "lag_second", sv(q6, 1, 0) == "cveti" && iv(q6, 1, 2) == 20)
+        check(fails, "lag_third", sv(q6, 2, 0) == "ana" && iv(q6, 2, 2) == 20)
+    }
+
+    let q7 = boila_server_exec(srv, "boila", "SELECT name, sal, LEAD(sal) OVER (PARTITION BY dept ORDER BY sal, name) AS nxt FROM emp WHERE dept = 'eng' ORDER BY sal, name")?
+    srv = q7.srv
+    check(fails, "lead_ok", q7.ok == 1 && vec_len(q7.res.rows) == 3)
+    if vec_len(q7.res.rows) == 3 {
+        check(fails, "lead_first", sv(q7, 0, 0) == "boris" && iv(q7, 0, 2) == 20)
+        check(fails, "lead_second", sv(q7, 1, 0) == "cveti" && iv(q7, 1, 2) == 30)
+        check(fails, "lead_last_null", sv(q7, 2, 0) == "ana" && vec_get(vec_get(q7.res.rows, 2), 2).tag == 0)
+    }
+
+    let q8 = boila_server_exec(srv, "boila", "SELECT name, sal, LAG(sal, 2, 0) OVER (PARTITION BY dept ORDER BY sal, name) AS p2 FROM emp WHERE dept = 'eng' ORDER BY sal, name")?
+    srv = q8.srv
+    check(fails, "lag_off_ok", q8.ok == 1 && vec_len(q8.res.rows) == 3)
+    if vec_len(q8.res.rows) == 3 {
+        check(fails, "lag_off_d0", iv(q8, 0, 2) == 0)
+        check(fails, "lag_off_d1", iv(q8, 1, 2) == 0)
+        check(fails, "lag_off_boris", sv(q8, 2, 0) == "ana" && iv(q8, 2, 2) == 20)
+    }
+
+    let q9 = boila_server_exec(srv, "boila", "SELECT id, name, LAG(name) OVER (ORDER BY id) AS prevn FROM emp ORDER BY id")?
+    srv = q9.srv
+    check(fails, "lag_text_ok", q9.ok == 1 && vec_len(q9.res.rows) == 5)
+    if vec_len(q9.res.rows) == 5 {
+        check(fails, "lag_text_null", vec_get(vec_get(q9.res.rows, 0), 2).tag == 0)
+        check(fails, "lag_text_ana", sv(q9, 1, 2) == "ana")
+    }
+
+    let q10 = boila_server_exec(srv, "boila", "SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) AS rn, LAG(sal) OVER (ORDER BY id) AS prev FROM emp ORDER BY id")?
+    srv = q10.srv
+    check(fails, "lag_with_rn", q10.ok == 1 && vec_len(q10.res.rows) == 5 && iv(q10, 0, 2) == 1)
+
+    let e4 = boila_server_exec(srv, "boila", "SELECT LAG(sal) FROM emp")?
+    srv = e4.srv
+    check(fails, "lag_need_over", e4.ok == 0)
+
+    let e5 = boila_server_exec(srv, "boila", "SELECT LAG(sal, -1) OVER (ORDER BY id) FROM emp")?
+    srv = e5.srv
+    check(fails, "lag_neg", e5.ok == 0)
+
+    // P24: NTILE — extra rows to earlier buckets (PG).
+    let q11 = boila_server_exec(srv, "boila", "SELECT name, NTILE(3) OVER (ORDER BY id) AS t FROM emp ORDER BY name")?
+    srv = q11.srv
+    check(fails, "ntile_ok", q11.ok == 1 && vec_len(q11.res.rows) == 5)
+    if vec_len(q11.res.rows) == 5 {
+        // id order: ana, boris, cveti, deni, eli → 1,1,2,2,3; ORDER BY name
+        check(fails, "ntile_ana", sv(q11, 0, 0) == "ana" && iv(q11, 0, 1) == 1)
+        check(fails, "ntile_boris", sv(q11, 1, 0) == "boris" && iv(q11, 1, 1) == 1)
+        check(fails, "ntile_cveti", sv(q11, 2, 0) == "cveti" && iv(q11, 2, 1) == 2)
+        check(fails, "ntile_eli", sv(q11, 4, 0) == "eli" && iv(q11, 4, 1) == 3)
+    }
+
+    let q12 = boila_server_exec(srv, "boila", "SELECT name, dept, NTILE(2) OVER (PARTITION BY dept ORDER BY sal DESC, name) AS t FROM emp ORDER BY dept, name")?
+    srv = q12.srv
+    check(fails, "ntile_part_ok", q12.ok == 1 && vec_len(q12.res.rows) == 5)
+    if vec_len(q12.res.rows) == 5 {
+        // eng sal DESC: ana 30, boris 20, cveti 20 → 1,1,2
+        check(fails, "ntile_eng_ana", sv(q12, 0, 0) == "ana" && iv(q12, 0, 2) == 1)
+        check(fails, "ntile_eng_cveti", sv(q12, 2, 0) == "cveti" && iv(q12, 2, 2) == 2)
+        // hr: eli 40, deni 10 → 1, 2
+        check(fails, "ntile_hr_deni", sv(q12, 3, 0) == "deni" && iv(q12, 3, 2) == 2)
+        check(fails, "ntile_hr_eli", sv(q12, 4, 0) == "eli" && iv(q12, 4, 2) == 1)
+    }
+
+    let e6 = boila_server_exec(srv, "boila", "SELECT NTILE(0) OVER (ORDER BY id) FROM emp")?
+    srv = e6.srv
+    check(fails, "ntile_zero", e6.ok == 0 && e6.state == "22023")
+
+    // P24: named WINDOW
+    let q13 = boila_server_exec(srv, "boila", "SELECT name, ROW_NUMBER() OVER w AS rn, LAG(sal) OVER w AS prev FROM emp WINDOW w AS (ORDER BY id) ORDER BY name")?
+    srv = q13.srv
+    check(fails, "named_ok", q13.ok == 1 && vec_len(q13.res.rows) == 5)
+    if vec_len(q13.res.rows) == 5 {
+        check(fails, "named_ana_rn", sv(q13, 0, 0) == "ana" && iv(q13, 0, 1) == 1)
+        check(fails, "named_ana_lag", vec_get(vec_get(q13.res.rows, 0), 2).tag == 0)
+        check(fails, "named_boris_lag", sv(q13, 1, 0) == "boris" && iv(q13, 1, 2) == 30)
+    }
+
+    let e7 = boila_server_exec(srv, "boila", "SELECT ROW_NUMBER() OVER missing FROM emp")?
+    srv = e7.srv
+    check(fails, "named_missing", e7.ok == 0 && e7.state == "42703")
 
     let _c = boila_server_close(srv)?
     srv = boila_server_open(root, 2, 8, 3, 4)?

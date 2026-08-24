@@ -123,8 +123,8 @@ fn main() -> i64 !IO {
     }
     check("borrowed_alive", vec_get(vec_get(bg, 0), 0).s == "bo-rr")
 
-    // 11. дълбочина 3 (Vec<Vec<Vec<S>>>) — документирана граница: leak-safe,
-    // без корупция (най-вътрешните S полета още текат)
+    // 11. дълбочина 3 (Vec<Vec<Vec<S>>>) — M26 рекурсивен relv_v_S shim
+    // (вече не е граница: drop пуска и най-вътрешните S полета)
     let deep: Vec<Vec<Vec<Wrap>>> = vec_new()
     let d1: Vec<Vec<Wrap>> = vec_new()
     let r11: Vec<Wrap> = vec_new()
@@ -133,7 +133,31 @@ fn main() -> i64 !IO {
     vec_push(deep, d1)
     check("deep_read", vec_get(vec_get(vec_get(deep, 0), 0), 0).s == "de-ep")
     drop(deep)
-    check("deep_drop_safe", true)
+    check("deep_drop", true)
+
+    // 12. дълбочина 3 + churn: стойности на паралелен Vec оцеляват след
+    // drop на deep (рекурсивният release не underflow-ва чужди референции)
+    let keep3: Vec<Vec<Vec<Wrap>>> = vec_new()
+    let k1: Vec<Vec<Wrap>> = vec_new()
+    let kr: Vec<Wrap> = vec_new()
+    vec_push(kr, Wrap { n: 14, s: concat("ke", "-ep") })
+    vec_push(k1, kr)
+    vec_push(keep3, k1)
+    let tmp3: Vec<Vec<Vec<Wrap>>> = vec_new()
+    let t1: Vec<Vec<Wrap>> = vec_new()
+    let tr: Vec<Wrap> = vec_new()
+    vec_push(tr, Wrap { n: 15, s: concat("tm", "-p3") })
+    vec_push(t1, tr)
+    vec_push(tmp3, t1)
+    drop(tmp3)
+    let mut k: i64 = 0
+    let mut acc = ""
+    while k < 40 {
+        acc = concat(acc, "churn-churn-churn-churn")
+        k = k + 1
+    }
+    check("deep3_survive", vec_get(vec_get(vec_get(keep3, 0), 0), 0).s == "ke-ep" &&
+          len(acc) > 0)
 
     print("vecvec_rc_test: all passed")
     return 0

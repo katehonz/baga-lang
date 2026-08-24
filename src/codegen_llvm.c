@@ -5205,14 +5205,15 @@ static char *lrc_relv_enc(Type *e) {
     return NULL;
 }
 
-/* M26: трябва ли shim за Vec<E> като елемент на външен Vec — E носи heap
- * някъде в дълбочина. Enum — старото поведение (leak-safe, като C). */
+/* M26 + RC5 v1.1: трябва ли shim за Vec<E> като елемент на външен Vec —
+ * E носи heap някъде в дълбочина (str/bytes/struct/enum/Vec рекурсивно). */
 static int lrc_vec_elem_deep_heap(Type *e) {
     if (!e) return 0;
     switch (e->kind) {
         case TYPE_STR: case TYPE_BYTES: return 1;
         case TYPE_VEC: return lrc_vec_elem_deep_heap(e->elem);
         case TYPE_STRUCT: return lrc_heap_tag(e) == 5;   /* instance-aware */
+        case TYPE_ENUM: return lrc_heap_tag(e) == 6;
         default: return 0;
     }
 }
@@ -5846,6 +5847,10 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
         Node *s = body->stmts.data[j];
         if (s->kind == NODE_RETURN) {
             if (s->ret_val) {
+                /* RC4 v1.1: вложени temp-ове в рамото (root bound — стойността
+                 * отива в match резултата). Порт на emit_rc_stmt_expr_root. */
+                LLRcTmpSave tsv;
+                if (lg.rc) lrc_tmp_begin(s->ret_val, 1, &tsv);
                 /* void match: стойността се оценява за страничния ефект
                  * (codegen_c emit-ва израза и без _mr присвояване) */
                 LLVMValueRef v = emit_expr_llvm(s->ret_val);
@@ -5861,13 +5866,17 @@ static void emit_match_arm_llvm(Node *arm, LLVMValueRef res_alloca,
                                             s->ret_val->type, NULL, v);
                     LLVMBuildStore(lg.builder, v, res_alloca);
                 }
+                if (lg.rc) lrc_tmp_end(&tsv);
             }
             LLVMBuildBr(lg.builder, merge_bb);
             lg.lrc_branch_depth--;
             return;
         }
         if (s->kind == NODE_EXPR_STMT) {
+            LLRcTmpSave tsv;
+            if (lg.rc) lrc_tmp_begin(s->expr, 0, &tsv);
             emit_expr_llvm(s->expr);
+            if (lg.rc) lrc_tmp_end(&tsv);
             continue;
         }
         llvm_unsupported("оператор в match клон (само изрази)");
@@ -6250,7 +6259,12 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
              * за чисти операнди резултатът е същият */
             if (n->bin_op == OP_AND || n->bin_op == OP_OR) {
                 LLVMValueRef l = to_bool(emit_expr_llvm(n->left));
+                /* RC4 v1.1: temp-ове в десния операнд — локален wrap
+                 * (LLVM оценява и двата операнда; wrap-ът пак е leak-free). */
+                LLRcTmpSave tsv;
+                if (lg.rc) lrc_tmp_begin(n->right, 0, &tsv);
                 LLVMValueRef r = to_bool(emit_expr_llvm(n->right));
+                if (lg.rc) lrc_tmp_end(&tsv);
                 char *name = tmp_name();
                 LLVMValueRef v = n->bin_op == OP_AND
                     ? LLVMBuildAnd(lg.builder, l, r, name)

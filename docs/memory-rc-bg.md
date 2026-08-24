@@ -172,10 +172,11 @@ Release на Vec/Map използва rc на STRUCT алокацията, не 
 
 - **Temporaries не се track-ват** ~~(остава главният leak в temp-тежки
   изрази)~~ — **РЕШЕНО в v0.2 (RC4), виж §v0.2 по-долу.** v0.3 покрива
-  и условията на if/while и for-range hi/lo. Остават непокрити temp-ове
-  в match рамена/pattern-и (scrutinee-то е покрито — RC5 v0.11, вж.
-  `docs/memory-rc-enum-bg.md`), try/catch, if-израз клонове и десен
-  операнд на &&/|| (условна оценка — консервативно изключени).
+  и условията на if/while и for-range hi/lo. **v1.1:** match рамена,
+  try/catch изрази, if-израз клонове и десният операнд на &&/|| се
+  wrap-ват локално (`emit_rc_stmt_expr_root`) — collect пак не слиза в
+  тях (условна оценка), но emission-ът ги пуска след оценката. Остават
+  match pattern-и и ламбда тела (отделна C функция).
 
 ## v0.2 (RC4): per-statement temp регистър
 
@@ -198,14 +199,19 @@ NODE_TO_STR). Преди statement-а се emit-ват `__auto_type __rc_tmpN = 
 предава на локала/caller-а) — не е temp; root на bare EXPR_STMT с heap
 резултат е дискарднат — temp е.
 
-**Консервативни изключвания (не се слиза в тях):**
+**Консервативни изключвания (не се слиза в тях при collect):**
 - struct литерал — полетата споделят указателя без retain (release би
   обесил полето);
-- ламбда (отделна C функция), try/catch (ранен return), match, if-израз;
-- десен операнд на `&&`/`||` (условна оценка — hoisting би я направил
-  безусловна);
+- ламбда (отделна C функция);
 - аргументи на `drop()` (самият drop е release пътят);
 - borrowed производни (vec_get/map_get/поле/h_*) — не са собствени.
+
+**v1.1 (локален wrap, не hoist към statement-а):** try/catch изрази,
+match рамена, if-израз клонове и десният операнд на `&&`/`||` се
+оценяват в собствен GNU `({…})` — temp-овете им се пускат веднага след
+оценката. Hoist към statement-а би направил условната оценка безусловна
+(или би пуснал temp преди ранен return в `?`/`raise`). Тест: `and_right_temp`
+/ `or_right_temp` в temp_test; `arm_nested_temp` в match_temp_rc_test.
 
 **v0.3:** условия на `if`/`while` и `for x in lo..hi` (hi се преоценява
 на итерация; lo — веднъж). Codegen wrap-ва условието в GNU

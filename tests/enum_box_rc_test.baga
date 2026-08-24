@@ -218,6 +218,36 @@ fn main() -> i64 !IO {
     vec_push(ev2, mk_opt("-box"))
     check("push_fn", match vec_get(ev2, 0) { Some(s) => s, None => "" } == "mk-box")
 
+    // 26. RC5 v1.1: Vec<Vec<E>> — drop/scope release-ват payload-ите на
+    // вътрешния през relv_E shim (като Vec<Vec<S>> от v0.9)
+    let vv: Vec<Vec<Opt>> = vec_new()
+    let vi: Vec<Opt> = vec_new()
+    vec_push(vi, Some(concat("vv", "-e")))
+    vec_push(vv, vi)
+    check("vecvec_read", match vec_get(vec_get(vv, 0), 0) { Some(s) => s, None => "" } == "vv-e")
+    drop(vv)
+    check("vecvec_drop", true)
+
+    if true {
+        let sc: Vec<Vec<Opt>> = vec_new()
+        let si: Vec<Opt> = vec_new()
+        vec_push(si, Some(concat("sc", "-e")))
+        vec_push(sc, si)
+    }
+    check("vecvec_scope", true)
+
+    // overwrite на външния — старият inner се release-ва рекурсивно
+    let ov: Vec<Vec<Opt>> = vec_new()
+    let o1: Vec<Opt> = vec_new()
+    vec_push(o1, Some(concat("ov", "-old")))
+    vec_push(ov, o1)
+    let o2: Vec<Opt> = vec_new()
+    vec_push(o2, Some(concat("ov", "-new")))
+    vec_set(ov, 0, o2)
+    check("vecvec_set", match vec_get(vec_get(ov, 0), 0) { Some(s) => s, None => "" } == "ov-new")
+    drop(ov)
+    check("vecvec_set_drop", true)
+
     print("enum_box_rc_test: all passed")
     return 0
 }

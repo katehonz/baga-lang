@@ -156,6 +156,17 @@ fn main() -> i64 !IO {
     }
     check("for_hi_temp_continue", seen == 3 && last == 3)
 
+    // 15. RC4 v1.1: temp в десния операнд на && — оценява се само ако
+    // лявото е true и се release-ва веднага след оценката
+    let and_ok = len("ab") == 2 && str_find(concat("xy", "z"), "z") >= 0
+    check("and_right_temp", and_ok)
+    let and_skip = len("ab") == 9 && str_find(concat("no", "pe"), "z") >= 0
+    check("and_right_shortcircuit", !and_skip)
+
+    // 16. RC4 v1.1: temp в десния операнд на ||
+    let or_ok = len("ab") == 9 || str_find(concat("ab", "c"), "c") >= 0
+    check("or_right_temp", or_ok)
+
     print("temp_test: all passed")
     return 0
 }

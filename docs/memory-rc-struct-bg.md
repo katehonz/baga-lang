@@ -190,12 +190,12 @@ retain на новия преди release на стария — alias-safe ре�
 (Map страната я няма в езика). `vec_push_vec` само retain-ва — балансирано
 от release страната.
 
-**Граници (leak-safe, не корупция):** дълбочина >2 (`Vec<Vec<Vec<S>>>`) —
-shim-ът е едно ниво, средният vec се пуска правилно, но най-вътрешните S
-полета текат както досега (тест `deep_drop_safe` — без корупция).
-`Vec<Vec<str>>`/`Vec<Vec<bytes>>` — няма shim за примитивни вътрешни
-елементи (pre-existing теч, не е влошен). Enum като най-вътрешен елемент
-(`Vec<Vec<E>>`) — както v0.2 не покрива enum box-ове.
+**Граници, затворени след v0.9:** дълбочина >2 (`Vec<Vec<Vec<S>>>`) и
+`Vec<Vec<str>>`/`Vec<Vec<bytes>>` — **M26** рекурсивни `relv_v_*` shim-ове
+(тест `deep_drop` / `deep3_survive` в vecvec_rc_test; `deep3` в
+vecvec_generic_rc_test). Enum като най-вътрешен елемент (`Vec<Vec<E>>`) —
+**RC5 v1.1** (`relv_<E>` в enum helper-ите; тест `vecvec_*` в
+enum_box_rc_test).
 
 Измерено: 500k итерации push+drop и 500k vec_set overwrite — RSS
 48.5 MB → 10.8 MB (като leak-free базата). Тест:

@@ -87,13 +87,31 @@ v0.6 покри enum локали; box елементите (`Vec<E>`/`Map<K,E>`
   (като tag 5 от v0.5).
 
 Граници (leak-safe, не корупция): enum payload в enum payload не се брои
-(както v0.6); `Vec<Vec<E>>` — nested vec shim-ът (v0.9) е struct-only,
-enum като най-вътрешен елемент тече както досега; `drop()` builtin върху
-enum локал остава не-цел. **v1.0b:** `s.e = f()` е owned без retain.
+(както v0.6); ~~`Vec<Vec<E>>` — nested vec shim-ът (v0.9) е struct-only~~
+— **РЕШЕНО в v1.1:** `emit_rc_enum_helpers` генерира `baga_rc_relv_<E>`
+(огледало на struct v0.9) и `rc_vec_elem_deep_heap` познава enum с heap
+payload; drop/scope/overwrite на `Vec<Vec<E>>` пуска payload-ите. `drop()`
+builtin върху enum локал остава не-цел. **v1.0b:** `s.e = f()` е owned без
+retain.
 
 Измерено: 500k итерации Vec<E> push+drop + map_set overwrite + `s.e = x`
 overwrite + struct-с-enum-поле scope exit — RSS 93.5 MB → 10.2 MB (като
-leak-free базата). Тест: `tests/enum_box_rc_test.baga` (22 случая).
+leak-free базата). Тест: `tests/enum_box_rc_test.baga` (вкл. Vec<Vec<E>>).
+
+## v1.1: `Vec<Vec<E>>` + temp-ове в match рамена
+
+v0.9 nested-vec shim-ът беше struct-only: `Vec<Vec<E>>` пускаше вътрешния
+vec като kind 0 и payload-ите течаха. Сега `rc_vec_elem_deep_heap` брои
+enum с heap payload, `rc_relv_enc` манглира enum името, а
+`emit_rc_enum_helpers` генерира `baga_rc_relv_<E>` — `release_vec(p, 2,
+sizeof(E), relf_E)`, точно като struct. LLVM: `lrc_vec_elem_deep_heap`
+познава tag 6; `lrc_relv_fn` вече работеше за всяко име.
+
+Същата стъпка wrap-ва вложени temp-ове в match рамена (`emit_rc_stmt_expr_root`
+с root bound за arm стойността) — collect пак не слиза в рамената
+(условна оценка), но emission-ът пуска вътрешните concat-и след оценката
+на рамото. Тест: `arm_nested_temp` в `tests/match_temp_rc_test.baga`;
+`vecvec_*` в `tests/enum_box_rc_test.baga`.
 
 ## v0.11: match scrutinee temp
 

@@ -115,6 +115,11 @@ fn main() -> i64 !IO {
     drop(v13)
     check("fn_borrowed_src_drop", true)
 
+    // 14. RC4 v1.1: вложен temp в arm стойност (root bound — резултатът
+    // отива в match; вътрешният concat се пуска след оценката)
+    check("arm_nested_temp",
+          match Some("x") { Some(s) => concat(s, concat("-", "y")), None => "" } == "x-y")
+
     print("match_temp_rc_test: all passed")
     return 0
 }
