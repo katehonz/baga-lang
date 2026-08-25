@@ -10,6 +10,8 @@ import "../crypto/hmac.baga"
 import "../crypto/hkdf.baga"
 import "../crypto/aes.baga"
 import "../crypto/gcm.baga"
+import "../crypto/p256.baga"
+import "../crypto/bn.baga"
 
 fn tls_hash_len(cipher: i64) -> i64 {
     if cipher == 4866 {
@@ -103,6 +105,67 @@ fn tls_schedule(cipher: i64, ch_msg: bytes, sh_msg: bytes, shared: bytes) -> Tls
     let client_hs = tls_hkdf_label(cipher, hs_secret, "c hs traffic", sh_hash, hl)
     return TlsSchedule { ok: 1, err: "", cipher: cipher, hs_secret: hs_secret,
         server_hs: server_hs, client_hs: client_hs, sh_hash: sh_hash }
+}
+
+// ---------- P-256 ECDHE (TLS group 23) ----------
+
+// Public key (0x04 || X || Y, 65 bytes) for private scalar d32; "" when the
+// scalar is out of range [1, n-1].
+fn tls_p256_public(d32: bytes) -> bytes {
+    if bytes_len(d32) != 32 {
+        return bytes_from_vec(vec_new())
+    }
+    let d = bn_from_bytes_be(d32, 10)
+    if bn_is_zero(d) == 1 {
+        return bytes_from_vec(vec_new())
+    }
+    if bn_cmp(d, p256_n()) >= 0 {
+        return bytes_from_vec(vec_new())
+    }
+    let q = p256_mul(d, p256_base())
+    if q.inf == 1 {
+        return bytes_from_vec(vec_new())
+    }
+    let out = vec_new()
+    vec_push(out, 4)
+    let xb = bn_to_bytes_be(q.x, 32)
+    let yb = bn_to_bytes_be(q.y, 32)
+    let mut i: i64 = 0
+    while i < 32 {
+        vec_push(out, bytes_at(xb, i))
+        i = i + 1
+    }
+    i = 0
+    while i < 32 {
+        vec_push(out, bytes_at(yb, i))
+        i = i + 1
+    }
+    return bytes_from_vec(out)
+}
+
+// ECDH shared secret (X coordinate, 32 bytes) with a peer's 65-byte point;
+// "" on malformed input or off-curve peer point.
+fn tls_p256_shared(d32: bytes, pub65: bytes) -> bytes {
+    if bytes_len(d32) != 32 || bytes_len(pub65) != 65 {
+        return bytes_from_vec(vec_new())
+    }
+    if bytes_at(pub65, 0) != 4 {
+        return bytes_from_vec(vec_new())
+    }
+    let qx = bytes_slice(pub65, 1, 33)
+    let qy = bytes_slice(pub65, 33, 65)
+    if p256_on_curve(qx, qy) == 0 {
+        return bytes_from_vec(vec_new())
+    }
+    let d = bn_from_bytes_be(d32, 10)
+    if bn_is_zero(d) == 1 || bn_cmp(d, p256_n()) >= 0 {
+        return bytes_from_vec(vec_new())
+    }
+    let r = p256_mul(d, p256_pt(p256_fe(qx), p256_fe(qy)))
+    if r.inf == 1 {
+        return bytes_from_vec(vec_new())
+    }
+    return bn_to_bytes_be(r.x, 32)
 }
 
 // nonce = iv XOR 64-bit sequence (in the last 8 bytes of the 12-byte iv).

@@ -49,6 +49,18 @@ fn tls_ext(v: Vec<i64>, id: i64, data: Vec<i64>) {
 // The full TLS record carrying the ClientHello.
 // sni: host name for the server_name extension (empty string = omit).
 fn tls_client_hello(pub32: bytes, random32: bytes, sid32: bytes, sni: str) -> bytes {
+    return tls_client_hello_dual(pub32, bytes_from_vec(vec_new()), random32, sid32, sni, bytes_from_vec(vec_new()))
+}
+
+// ClientHello with an echoed HRR cookie extension (RFC 8446 §4.2.2).
+// Everything else is byte-identical to the first ClientHello.
+fn tls_client_hello_cookie(pub32: bytes, random32: bytes, sid32: bytes, sni: str, cookie: bytes) -> bytes {
+    return tls_client_hello_dual(pub32, bytes_from_vec(vec_new()), random32, sid32, sni, cookie)
+}
+
+// ClientHello offering x25519 and (when pub65 is set) P-256 key shares;
+// cookie only in the second ClientHello after a HelloRetryRequest.
+fn tls_client_hello_dual(pub32: bytes, pub65: bytes, random32: bytes, sid32: bytes, sni: str, cookie: bytes) -> bytes {
     // ---- extensions ----
     let exts = vec_new()
     // server_name (type 0) — required by many real hosts
@@ -60,9 +72,10 @@ fn tls_client_hello(pub32: bytes, random32: bytes, sid32: bytes, sni: str) -> by
         tls_push_bytes(sn, tls_ascii(sni))
         tls_ext(exts, 0, sn)
     }
-    // supported_groups: x25519 (0x001d), secp256r1 (0x0017)
+    // supported_groups: GREASE, x25519 (0x001d), secp256r1 (0x0017)
     let groups = vec_new()
-    tls_push_u16(groups, 4)
+    tls_push_u16(groups, 6)
+    tls_push_u16(groups, 2570)         // GREASE 0x0a0a
     tls_push_u16(groups, 29)
     tls_push_u16(groups, 23)
     tls_ext(exts, 10, groups)
@@ -73,25 +86,63 @@ fn tls_client_hello(pub32: bytes, random32: bytes, sid32: bytes, sni: str) -> by
     tls_push_u16(sigs, 2052)
     tls_push_u16(sigs, 1027)
     tls_ext(exts, 13, sigs)
-    // supported_versions: TLS 1.3 (0x0304)
+    // supported_versions: GREASE + TLS 1.3 (0x0304)
     let sv = vec_new()
-    tls_push_u8(sv, 2)
+    tls_push_u8(sv, 4)
+    tls_push_u16(sv, 2570)             // GREASE 0x0a0a
     tls_push_u16(sv, 772)
     tls_ext(exts, 43, sv)
     // key_share: x25519 entry (group 0x001d, 32-byte key)
+    //            + P-256 entry (0x0017, 65-byte point) when provided
     let ks = vec_new()
-    tls_push_u16(ks, 36)      // key exchange list length: 2+2+32
-    tls_push_u16(ks, 29)
-    tls_push_u16(ks, 32)
-    tls_push_bytes(ks, pub32)
+    let ksl = vec_new()
+    tls_push_u16(ksl, 29)
+    tls_push_u16(ksl, 32)
+    tls_push_bytes(ksl, pub32)
+    if bytes_len(pub65) == 65 {
+        tls_push_u16(ksl, 23)
+        tls_push_u16(ksl, 65)
+        tls_push_bytes(ksl, pub65)
+    }
+    tls_push_u16(ks, vec_len(ksl))
+    let mut ksi: i64 = 0
+    while ksi < vec_len(ksl) {
+        vec_push(ks, vec_get(ksl, ksi))
+        ksi = ksi + 1
+    }
     tls_ext(exts, 51, ks)
+    // ALPN: http/1.1 — CDNs that fingerprint clients drop connections without it
+    let alpn = vec_new()
+    tls_push_u16(alpn, 9)
+    tls_push_u8(alpn, 8)
+    tls_push_bytes(alpn, tls_ascii("http/1.1"))
+    tls_ext(exts, 16, alpn)
+    // psk_key_exchange_modes: psk_dhe_ke (1) — expected by real-world servers
+    let km = vec_new()
+    tls_push_u8(km, 1)
+    tls_push_u8(km, 1)
+    tls_ext(exts, 45, km)
+    // session_ticket (empty) — middlebox-realism
+    tls_ext(exts, 35, vec_new())
+    // No signature_algorithms_cert: restricting cert sigs to RSA-PSS/ECDSA
+    // makes servers reject their own PKCS#1-signed chains (alert 40).
+    // GREASE extension (0x2a2a) with empty payload — client realism
+    tls_ext(exts, 10794, vec_new())
+    // HRR cookie echo (only in the second ClientHello)
+    if bytes_len(cookie) > 0 {
+        let ck = vec_new()
+        tls_push_u16(ck, bytes_len(cookie))
+        tls_push_bytes(ck, cookie)
+        tls_ext(exts, 44, ck)
+    }
     // ---- handshake body ----
     let body = vec_new()
     tls_push_u16(body, 771)          // legacy_version 0x0303
     tls_push_bytes(body, random32)
     tls_push_u8(body, bytes_len(sid32))
     tls_push_bytes(body, sid32)
-    tls_push_u16(body, 4)            // cipher suites length
+    tls_push_u16(body, 6)            // cipher suites length
+    tls_push_u16(body, 2570)         // GREASE 0x0a0a
     tls_push_u16(body, 4865)         // TLS_AES_128_GCM_SHA256
     tls_push_u16(body, 4866)         // TLS_AES_256_GCM_SHA384
     tls_push_u8(body, 1)             // compression methods length
@@ -162,12 +213,17 @@ struct TlsHello {
     version: i64,          // from supported_versions (772 = TLS 1.3)
     cipher: i64,
     server_random: bytes,
-    server_pub: bytes      // x25519 key_share; empty when absent
+    server_pub: bytes,     // server key_share bytes (x25519 32 / P-256 65)
+    ks_group: i64,         // group of the server key_share (29 x25519 / 23 P-256)
+    hrr: i64,              // 1 when the random is the HelloRetryRequest magic
+    hrr_group: i64,        // key_share group requested by the HRR (0 = none)
+    hrr_cookie: bytes      // cookie extension to echo in the second ClientHello
 }
 
 fn tls_hello_bad(err: str) -> TlsHello {
     return TlsHello { ok: 0, err: err, version: 0, cipher: 0,
-        server_random: bytes_from_vec(vec_new()), server_pub: bytes_from_vec(vec_new()) }
+        server_random: bytes_from_vec(vec_new()), server_pub: bytes_from_vec(vec_new()),
+        ks_group: 0, hrr: 0, hrr_group: 0, hrr_cookie: bytes_from_vec(vec_new()) }
 }
 
 fn tls_u16_at(b: bytes, off: i64) -> i64 {
@@ -207,6 +263,9 @@ fn tls_parse_server_hello(payload: bytes) -> TlsHello {
     }
     let mut version: i64 = 0
     let mut pub = bytes_from_vec(vec_new())
+    let mut ks_group: i64 = 0
+    let mut hrr_group: i64 = 0
+    let mut hrr_cookie = bytes_from_vec(vec_new())
     while p + 4 <= vend {
         let eid = tls_u16_at(payload, p)
         let elen = tls_u16_at(payload, p + 2)
@@ -224,12 +283,47 @@ fn tls_parse_server_hello(payload: bytes) -> TlsHello {
             let kl = tls_u16_at(payload, p + 2)
             if g == 29 && kl == 32 && p + 4 + 32 <= vend {
                 pub = bytes_slice(payload, p + 4, p + 4 + 32)
+                ks_group = 29
+            }
+            if g == 23 && kl == 65 && p + 4 + 65 <= vend {
+                pub = bytes_slice(payload, p + 4, p + 4 + 65)
+                ks_group = 23
+            }
+        }
+        if eid == 51 && elen == 2 {
+            // HelloRetryRequest: key_share carries just the wanted group id
+            hrr_group = tls_u16_at(payload, p)
+        }
+        if eid == 44 && elen >= 2 {
+            // cookie: u16 length + opaque bytes (echoed in ClientHello 2)
+            let cl = tls_u16_at(payload, p)
+            if cl + 2 <= elen {
+                hrr_cookie = bytes_slice(payload, p + 2, p + 2 + cl)
             }
         }
         p = p + elen
     }
+    // HelloRetryRequest magic random (RFC 8446 §4.1.3):
+    // CF21AD74 E59A6111 BE1D8C02 1E65B891 C2A21116 7ABB8C5E 079E09E2 C8A8339C
+    let mut hrr: i64 = 0
+    if bytes_len(rnd) == 32 {
+        let mv = vec_new()
+        vec_push(mv, 207); vec_push(mv, 33); vec_push(mv, 173); vec_push(mv, 116)
+        vec_push(mv, 229); vec_push(mv, 154); vec_push(mv, 97); vec_push(mv, 17)
+        vec_push(mv, 190); vec_push(mv, 29); vec_push(mv, 140); vec_push(mv, 2)
+        vec_push(mv, 30); vec_push(mv, 101); vec_push(mv, 184); vec_push(mv, 145)
+        vec_push(mv, 194); vec_push(mv, 162); vec_push(mv, 17); vec_push(mv, 22)
+        vec_push(mv, 122); vec_push(mv, 187); vec_push(mv, 140); vec_push(mv, 94)
+        vec_push(mv, 7); vec_push(mv, 158); vec_push(mv, 9); vec_push(mv, 226)
+        vec_push(mv, 200); vec_push(mv, 168); vec_push(mv, 51); vec_push(mv, 156)
+        let mb = bytes_from_vec(mv)
+        if ct_eq_b(rnd, mb) {
+            hrr = 1
+        }
+    }
     return TlsHello { ok: 1, err: "", version: version, cipher: cipher,
-        server_random: rnd, server_pub: pub }
+        server_random: rnd, server_pub: pub,
+        ks_group: ks_group, hrr: hrr, hrr_group: hrr_group, hrr_cookie: hrr_cookie }
 }
 
 // ---------- T5: key schedule ----------

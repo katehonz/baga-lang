@@ -199,42 +199,122 @@ fn tls_conn_read_app(conn: TlsConn) -> TlsRead !Net !IO {
 
 // Full client handshake on an already-connected fd.
 // trust_anchor: empty bytes → accept self-signed leaf (dev/mock).
+// True when a server Finished (handshake type 20) is among the parsed messages.
+fn tls_flight_saw_finished(types: Vec<i64>) -> i64 {
+    let mut i: i64 = 0
+    while i < vec_len(types) {
+        if vec_get(types, i) == 20 {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Middlebox-compat ChangeCipherSpec record: 14 03 03 00 01 01.
+fn tls_ccs_record() -> bytes {
+    let v = vec_new()
+    vec_push(v, 20)
+    vec_push(v, 3)
+    vec_push(v, 3)
+    vec_push(v, 0)
+    vec_push(v, 1)
+    vec_push(v, 1)
+    return bytes_from_vec(v)
+}
+
+// Read records until a non-CCS one (servers sprinkle type-20 records freely).
+fn tls_read_skip_ccs(fd: i64) -> TlsRecord !IO !Net {
+    let mut guard: i64 = 0
+    let mut r = tls_read_record(fd)?
+    while r.ok == 1 && r.typ == 20 && guard < 8 {
+        r = tls_read_record(fd)?
+        guard = guard + 1
+    }
+    return r
+}
+
 fn tls_handshake(fd: i64, sni: str, trust_anchor: bytes) -> TlsConn !Net !IO !Random {
     let scalar = bytes_from_vec(random_bytes(32))
+    let d256 = bytes_from_vec(random_bytes(32))
     let sid = bytes_from_vec(random_bytes(32))
     let rnd = bytes_from_vec(random_bytes(32))
     let pub = x25519_public(scalar)
-    let rec0 = tls_client_hello(pub, rnd, sid, sni)
+    let pub65 = tls_p256_public(d256)
+    let rec0 = tls_client_hello_dual(pub, pub65, rnd, sid, sni, bytes_from_vec(vec_new()))
     let w = tcp_write_bytes(fd, rec0)?
     if w != 0 {
         return tls_conn_bad("ClientHello write failed")
     }
     let ch_msg = bytes_slice(rec0, 5, bytes_len(rec0))
 
-    let sh_rec = tls_read_record(fd)?
+    let sh_rec = tls_read_skip_ccs(fd)?
     if sh_rec.ok == 0 {
         return tls_conn_bad("ServerHello read failed")
     }
-    let sh_msg = sh_rec.payload
-    let shello = tls_parse_server_hello(sh_msg)
+    let mut sh_msg = sh_rec.payload
+    let mut shello = tls_parse_server_hello(sh_msg)
     if shello.ok == 0 {
         return tls_conn_bad(shello.err)
+    }
+    let mut ch_eff = ch_msg
+    // HelloRetryRequest: echo the cookie in a second ClientHello (CDNs use it
+    // as an anti-bot reachability proof). The transcript then anchors on
+    // message_hash(CH1) instead of CH1 (RFC 8446 §4.4.1).
+    if shello.hrr == 1 {
+        if shello.hrr_group != 0 && shello.hrr_group != 29 && shello.hrr_group != 23 {
+            return tls_conn_bad("HRR requested an unsupported key_share group")
+        }
+        let cw = tcp_write_bytes(fd, tls_ccs_record())?
+        if cw != 0 {
+            return tls_conn_bad("compat CCS write failed")
+        }
+        let rec2 = tls_client_hello_dual(pub, pub65, rnd, sid, sni, shello.hrr_cookie)
+        let w2 = tcp_write_bytes(fd, rec2)?
+        if w2 != 0 {
+            return tls_conn_bad("second ClientHello write failed")
+        }
+        let hl = tls_hash_len(shello.cipher)
+        let mh = vec_new()
+        tls_push_u8(mh, 254)
+        tls_push_u24(mh, hl)
+        ch_eff = bytes_concat(bytes_from_vec(mh), tls_hash_b(shello.cipher, ch_msg))
+        let r2 = tls_read_skip_ccs(fd)?
+        if r2.ok == 0 {
+            return tls_conn_bad("second ServerHello read failed")
+        }
+        sh_msg = r2.payload
+        shello = tls_parse_server_hello(sh_msg)
+        if shello.ok == 0 {
+            return tls_conn_bad(shello.err)
+        }
+        if shello.hrr == 1 {
+            return tls_conn_bad("double HelloRetryRequest")
+        }
     }
     if shello.cipher != 4865 && shello.cipher != 4866 {
         return tls_conn_bad("unsupported cipher (want TLS_AES_128_GCM_SHA256 or TLS_AES_256_GCM_SHA384)")
     }
-    let shared = x25519(scalar, shello.server_pub)
-    let sched = tls_schedule(shello.cipher, ch_msg, sh_msg, shared)
+    let mut shared = bytes_from_vec(vec_new())
+    if shello.ks_group == 23 {
+        shared = tls_p256_shared(d256, shello.server_pub)
+    } else {
+        shared = x25519(scalar, shello.server_pub)
+    }
+    let sched = tls_schedule(shello.cipher, ch_eff, sh_msg, shared)
     if sched.ok == 0 {
         return tls_conn_bad(sched.err)
     }
 
-    // Collect encrypted handshake flight (skip CCS). openssl s_server
-    // typically splits EE | Cert | CV+Fin across 3–4 type-23 records and
-    // may send a middlebox CCS. Match the live probe: take 4 app records.
+    // Collect encrypted handshake flight (skip CCS). Servers split the flight
+    // arbitrarily: openssl s_server uses 3–4 records, CDNs often coalesce into
+    // 1–2. Read record-by-record and stop as soon as the Finished verifies;
+    // a Finished that arrived but did NOT verify is a hard failure.
     let mut chunked = bytes_from_vec(vec_new())
+    let mut flight = tls_flight_bad("no flight records")
     let mut recs: i64 = 0
-    while recs < 4 {
+    let mut done: i64 = 0
+    while done == 0 && recs < 64 {
         let r = tls_read_record(fd)?
         if r.ok == 0 {
             return tls_conn_bad("flight record failed")
@@ -247,11 +327,23 @@ fn tls_handshake(fd: i64, sni: str, trust_anchor: bytes) -> TlsConn !Net !IO !Ra
             vec_push(hd, ln & 255)
             chunked = bytes_concat(bytes_concat(chunked, bytes_from_vec(hd)), r.payload)
             recs = recs + 1
+            let f = tls_open_handshake(sched, ch_eff, sh_msg, chunked)
+            if f.ok == 1 && f.finished_ok == 1 {
+                flight = f
+                done = 1
+            } else {
+                if f.ok == 0 && str_find(f.err, "truncated") < 0 {
+                    return tls_conn_bad(concat("handshake flight: ", f.err))
+                }
+                if f.ok == 1 && tls_flight_saw_finished(f.types) == 1 && f.finished_ok == 0 {
+                    return tls_conn_bad("handshake flight: server Finished verify failed")
+                }
+                flight = f
+            }
         }
         // typ 20 CCS ignored (does not count)
     }
-    let flight = tls_open_handshake(sched, ch_msg, sh_msg, chunked)
-    if flight.ok == 0 || flight.finished_ok == 0 {
+    if done == 0 {
         return tls_conn_bad(concat("handshake flight: ", flight.err))
     }
     let ver = tls_verify_server(flight, trust_anchor)

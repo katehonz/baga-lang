@@ -276,6 +276,13 @@ fn http_build_request(method: str, path: str, host: str, headers: Map<str, str>,
 // and ClientHello random; plain http:// still declares it so the API is
 // one function (call sites that only use http:// pay a declaration cost).
 fn http_request(method: str, url: str, headers: Map<str, str>, body: str, timeout_s: i64) -> HttpResponse !Net !IO !Random {
+    return http_request_anchor(method, url, headers, body, timeout_s, bytes_from_vec(vec_new()))?
+}
+
+// http_request with a caller-supplied TLS trust anchor (DER of the issuing
+// CA cert — the client keeps a single leaf, so the anchor must be the direct
+// issuer). Empty anchor keeps the old behavior (self-signed only).
+fn http_request_anchor(method: str, url: str, headers: Map<str, str>, body: str, timeout_s: i64, anchor_der: bytes) -> HttpResponse !Net !IO !Random {
     let u = http_parse_url(url)
     if u.ok == 0 {
         return http_resp_bad()
@@ -284,7 +291,7 @@ fn http_request(method: str, url: str, headers: Map<str, str>, body: str, timeou
     if u.https == 0 {
         return http_request_plain(u.host, u.port, req, timeout_s)?
     }
-    return http_request_tls(u.host, u.port, req, timeout_s)?
+    return http_request_tls_anchor(u.host, u.port, req, timeout_s, anchor_der)?
 }
 
 fn http_request_plain(host: str, port: i64, req: str, timeout_s: i64) -> HttpResponse !Net !IO {
@@ -312,8 +319,12 @@ fn http_request_plain(host: str, port: i64, req: str, timeout_s: i64) -> HttpRes
 }
 
 fn http_request_tls(host: str, port: i64, req: str, timeout_s: i64) -> HttpResponse !Net !IO !Random {
+    return http_request_tls_anchor(host, port, req, timeout_s, bytes_from_vec(vec_new()))?
+}
+
+fn http_request_tls_anchor(host: str, port: i64, req: str, timeout_s: i64, anchor_der: bytes) -> HttpResponse !Net !IO !Random {
     // Empty trust anchor → accept self-signed (mock openssl peer, local dev).
-    let mut conn = tls_connect(host, port, timeout_s, bytes_from_vec(vec_new()))?
+    let mut conn = tls_connect(host, port, timeout_s, anchor_der)?
     if conn.ok == 0 {
         return http_resp_bad()
     }
