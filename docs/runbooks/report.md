@@ -1,7 +1,8 @@
 # Runbook — accounting reports (HTML → Excel / PDF)
 
 **Exit criteria:** from repo root, export a sample report to **xlsx** and **pdf**
-(and optional browser **html**) without LibreOffice.
+(and optional browser **html**, plus ODS/DOCX/ODT) without LibreOffice. HTML
+input must be well-formed XHTML with `<h1>`, `<p>` and a `<table>`.
 
 ## Prerequisites
 

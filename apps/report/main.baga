@@ -1,8 +1,8 @@
 // apps/report — product CLI for accounting reports (HTML5 → xlsx/csv/pdf/html).
 //
-//   baga -I . -I app-product apps/report/main.baga render <in.html> <xlsx|csv|pdf|html> <out>
-//   baga -I . -I app-product apps/report/main.baga sample <xlsx|csv|pdf|html> <out>
-//   baga -I . -I app-product apps/report/main.baga tpl <xlsx|csv|pdf|html> <out>
+//   baga -I . -I app-product apps/report/main.baga render <in.html> <xlsx|ods|csv|pdf|docx|odt|html> <out>
+//   baga -I . -I app-product apps/report/main.baga sample <xlsx|ods|csv|pdf|docx|odt|html> <out>
+//   baga -I . -I app-product apps/report/main.baga tpl <xlsx|ods|csv|pdf|docx|odt|html> <out>
 
 import "reportbaga/report.baga"
 import "csvbaga/csv.baga"
@@ -12,9 +12,9 @@ import "std/str/str.baga"
 fn usage() {
     eprintln("apps/report — accounting report export")
     eprintln("")
-    eprintln("  render <in.html> <xlsx|csv|pdf|html> <out>")
-    eprintln("  sample <xlsx|csv|pdf|html> <out>     # built-in обороти sample")
-    eprintln("  tpl    <xlsx|csv|pdf|html> <out>     # template + sample data")
+    eprintln("  render <in.html> <xlsx|ods|csv|pdf|docx|odt|html> <out>")
+    eprintln("  sample <xlsx|ods|csv|pdf|docx|odt|html> <out>")
+    eprintln("  tpl    <xlsx|ods|csv|pdf|docx|odt|html> <out>")
     eprintln("")
     eprintln("Examples:")
     eprintln("  … main.baga render app-product/reportbaga/fixtures/oborotna.html xlsx /tmp/o.xlsx")

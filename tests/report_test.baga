@@ -8,6 +8,7 @@ import "officebaga/office.baga"
 import "zipbaga/archive.baga"
 import "std/str/str.baga"
 import "std/os/os.baga"
+import "std/bytes/bytes.baga"
 
 fn check(name: str, ok: bool) {
     if ok {
@@ -23,11 +24,13 @@ fn contains(hay: str, needle: str) -> bool {
 }
 
 fn main() -> i64 !IO {
-    check("version", report_version() == "0.3.1")
+    check("version", report_version() == "0.3.4")
 
     let html = str_of_bytes(read_file_bytes("app-product/reportbaga/fixtures/oborotna.html")?)
     check("fixture_loaded", len(html) > 50)
     check("title", html_report_title(html) == "Оборотно-салдова ведомост")
+    let doc = html_doc_parse(html)
+    check("doc_ok", doc.ok == 1 && vec_len(doc.kinds) >= 3)
 
     let t = html_table_to_csv(html)
     check("table_ok", t.ok == 1)
@@ -49,8 +52,30 @@ fn main() -> i64 !IO {
     check("xlsx_zip", z.ok == 1)
     let sheet = zip_read(z, "xl/worksheets/sheet1.xml")
     check("xlsx_freeze", sheet.ok == 1 && contains(str_of_bytes(sheet.data), "ySplit"))
+    check("xlsx_cols", contains(str_of_bytes(sheet.data), "customWidth"))
     let wb = zip_read(z, "xl/workbook.xml")
     check("xlsx_sheet_name", wb.ok == 1 && contains(str_of_bytes(wb.data), "name="))
+
+    let ods = report_from_html(html, "ods")
+    check("ods_ok", ods.ok == 1 && bytes_len(ods.data) > 100)
+    let dx = report_from_html(html, "docx")
+    check("docx_ok", dx.ok == 1 && bytes_len(dx.data) > 100)
+    let odt = report_from_html(html, "odt")
+    check("odt_ok", odt.ok == 1 && bytes_len(odt.data) > 100)
+
+    let inv = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><html xmlns=\"http://www.w3.org/1999/xhtml\"><body><h1>ФАКТУРА</h1><p>№ 0000000001</p><table><tr><th>ПОЛУЧАТЕЛ</th><th>ДОСТАВЧИК</th></tr><tr><td>Клиент ООД</td><td>Фирма ООД</td></tr></table><table><tr><th>No</th><th>Стока / услуга</th><th>К-во</th><th>Мярка</th><th>Ед. цена</th><th>Общо</th></tr><tr><td>1</td><td>Услуга консултация</td><td>2</td><td>бр</td><td>50.00</td><td>100.00</td></tr></table></body></html>"
+    let inv_odt = report_from_html_io(inv, "odt")?
+    check("inv_odt_ok", inv_odt.ok == 1 && bytes_len(inv_odt.data) > 100)
+    let zinv = zip_open_bytes(inv_odt.data)
+    let invc = zip_read(zinv, "content.xml")
+    check("inv_odt_cols", invc.ok == 1 && contains(str_of_bytes(invc.data), "table:table-column"))
+    check("inv_odt_border", contains(str_of_bytes(invc.data), "fo:border-left"))
+    check("inv_odt_tables", contains(str_of_bytes(invc.data), "table:name=\"T1\"") && contains(str_of_bytes(invc.data), "table:name=\"T2\""))
+    let inv_pdf = report_from_html_io(inv, "pdf")?
+    check("inv_pdf_ok", inv_pdf.ok == 1 && bytes_len(inv_pdf.data) > 1000)
+    check("inv_pdf_magic", bytes_at(inv_pdf.data, 0) == 37 && bytes_at(inv_pdf.data, 1) == 80)
+    let inv_dx = report_from_html_io(inv, "docx")?
+    check("inv_docx_ok", inv_dx.ok == 1 && bytes_len(inv_dx.data) > 100)
 
     let c = report_html_to_csv(html)
     check("csv_ok", c.ok == 1)

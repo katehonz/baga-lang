@@ -17,7 +17,7 @@ fn check(name: str, ok: bool) {
 }
 
 fn main() -> i64 !IO {
-    check("version", pdf_version() == "0.2.0")
+    check("version", pdf_version() == "0.2.2")
 
     let u = utf8_next("Ж", 0)
     check("utf8_zh", u.ok == 1 && u.cp == 1046)
@@ -49,6 +49,24 @@ fn main() -> i64 !IO {
 
     let miss = pdf_from_table_file("/no/such/font.ttf", "t", rows)?
     check("pdf_missing_font", miss.ok == 0)
+
+    check("advance_A", ttf_advance_pdf(font, ttf_glyph(font, 65)) > 200)
+    let warr = pdf_w_array(font)
+    check("w_array", len(warr) > 20 && str_find(warr, "/W") >= 0)
+
+    let kinds: Vec<i64> = vec_new()
+    let texts: Vec<str> = vec_new()
+    vec_push(kinds, 1)
+    vec_push(texts, "ФАКТУРА")
+    vec_push(kinds, 2)
+    vec_push(texts, "№ 0000000001")
+    vec_push(kinds, 3)
+    vec_push(texts, "ПОЛУЧАТЕЛ\tДОСТАВЧИК\nКлиент ООД\tФирма ЕООД\n")
+    vec_push(kinds, 3)
+    vec_push(texts, "No\tСтока / услуга\tК-во\tМярка\tЕд. цена\tОбщо\n1\tУслуга консултация по проект\t2\tбр\t50.00\t100.00\n")
+    let blk = pdf_from_blocks(font, kinds, texts)
+    check("blocks_ok", blk.ok == 1 && bytes_len(blk.data) > 1000)
+    check("blocks_hdr", bytes_at(blk.data, 0) == 37 && bytes_at(blk.data, 1) == 80)
 
     print("pdf_test: all passed")
     return 0

@@ -4,6 +4,7 @@ import "officebaga/office.baga"
 import "officebaga/ir/ir.baga"
 import "officebaga/docx/write.baga"
 import "officebaga/xlsx/write.baga"
+import "officebaga/odf/write.baga"
 import "officebaga/opc/package.baga"
 import "officebaga/core/detect.baga"
 import "zipbaga/archive.baga"
@@ -164,6 +165,26 @@ fn main() -> i64 !IO {
     // --- ZIP writer round-trip (store) still works ---
     let z = zip_open_bytes(docx_b)
     check("zip_round_docx", z.ok == 1 && zip_find(z, "word/document.xml") >= 0)
+
+    let dk: Vec<i64> = vec_new()
+    let dt: Vec<str> = vec_new()
+    vec_push(dk, 1)
+    vec_push(dt, "ФАКТУРА")
+    vec_push(dk, 3)
+    vec_push(dt, "ПОЛУЧАТЕЛ\tДОСТАВЧИК\nКлиент\tФирма\n")
+    let odt_doc = odt_doc_bytes(dk, dt)
+    let zd = zip_open_bytes(odt_doc)
+    check("odt_doc_zip", zd.ok == 1)
+    let cx = zip_read(zd, "content.xml")
+    check("odt_doc_content", cx.ok == 1)
+    let cxs = str_of_bytes(cx.data)
+    check("odt_doc_cols", contains(cxs, "table:table-column"))
+    check("odt_doc_border", contains(cxs, "fo:border-left"))
+    check("odt_doc_width", contains(cxs, "column-width"))
+    let sty = zip_read(zd, "styles.xml")
+    check("odt_doc_styles", sty.ok == 1 && contains(str_of_bytes(sty.data), "page-width"))
+    let ro3 = office_open_bytes(odt_doc)
+    check("odt_doc_open", ro3.ok == 1 && contains(office_plain_text(ro3.doc), "ФАКТУРА"))
 
     print("office_test: all passed")
     return 0
