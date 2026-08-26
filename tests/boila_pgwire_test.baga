@@ -28,9 +28,9 @@ fn main() -> i64 !Par {
 
     let qbody = pgw_cstr("SELECT 1")
     let qmsg = pgw_msg(81, qbody)
-    let rfull = PgWReader { fd: 0 - 1, buf: qmsg, pos: 0, tls: 0, tconn: tls_conn_bad("") }
+    let rfull = PgWReader { fd: 0 - 1, buf: qmsg, pos: 0, tls: 0, tconn: tls_conn_bad(""), scratch: "" }
     check(fails, "have_msg_full", pgw_have_msg(rfull) == 1)
-    let rpart = PgWReader { fd: 0 - 1, buf: bytes_slice(qmsg, 0, 3), pos: 0, tls: 0, tconn: tls_conn_bad("") }
+    let rpart = PgWReader { fd: 0 - 1, buf: bytes_slice(qmsg, 0, 3), pos: 0, tls: 0, tconn: tls_conn_bad(""), scratch: "" }
     check(fails, "have_msg_partial", pgw_have_msg(rpart) == 0)
 
     // --- pgw_is_int ---

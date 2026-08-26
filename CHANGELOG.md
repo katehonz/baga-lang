@@ -2,12 +2,50 @@
 
 ## [Unreleased]
 
+### std/net — P33: poll_wait без syscall storm
+- `poll_wait`: pollfd масивът се сглобява като един bytes буфер + 1
+  pwrite (беше 8×pwrite64 на fd). ~11 syscall-а на poll независимо от
+  броя fds (беше 8·n+9; ~150 на итерация при pgbench c=16 mux).
+
+### boilaDB — P33b: mux per-turn rewind + persist store open
+- PG и HTTP mux worker-ите правят mem_mark/rewind на turn (MEM-4
+  идиома): преди това worker arena-та растеше ~60 KB/заявка → OOM
+  SIGKILL под sustained load (925 MB за 3 s при c=16).
+- Lazy store open (`boila_srv_db`/`boila_srv_db_create`) в persist
+  региона — преди: segfault/SIGFPE при заявка след rewind.
+- `serve_pg`/`serve`: fail-loud при tcp_listen грешка (беше zombie
+  poll с listener=-1).
+
+### boilaDB — P34: gmu колапс 7→4 на заявка
+- `boila_mt_checkout_pc` слива checkout+pc_take под едно gmu;
+  data_unlock по готово st; note_sql = едно gmu за двата брояча.
+
+### boilaDB — P35: in-memory catalog кеш + reader scratch
+- `BoilaPlanCache.tm`: table → декодирана BoilaTable (0 GET-ове при
+  hit; инвалидация с DDL gen). Преди: 3 point GET-а + пълен schema
+  decode на всяка заявка.
+- `PgWReader.scratch` (persist) + `tcp_read_into`: без 8 KB str+bytes
+  на всяко четене.
+
+### boilaDB — P36: lex sniffs + plan cache граница
+- `pgw_first_word` sniff: пълен lex само за copy/set/show/reset/
+  discard (беше 3 пълни lex-а на всяка 'Q'); `boila_mt_kw2` — span
+  scan вместо char-concat.
+- Plan cache не кешира заявки с литерали (pgbench aid=… → всеки ключ
+  уникален → persist теч); таван 4096 записа.
+
+### Измерено 2026-08-26 (pgbench -S, 4 workers, 10k реда)
+- c=1 **4.3k tps**, c=4 **11.7k**, c=8 **12.5k**, c=16 **12.9k**
+  (baseline същия ден/методика: 2.9k / 7.1k / 7.3k / 4.8k →
+  +49% / +71% / +77% / +167%; без регресия при c=16).
+- Residual: RSS slope ~2–10 KB/заявка (park persist + arena/glibc);
+  следващ горещ път: sst_get/meta + pc pin/unpin (rocksbaga).
+
 ### boilaDB — P32: HTTP connection mux
 - Idle HTTP keep-alive fds sit in `poll`; workers run one request
   then park the fd (same as P31 PG). Gate:
   `tests/boila_http_mux_test` (2 workers × 8 clients × 5 keep-alive
-  `POST /sql`). `/health` `mode=mt-mux`. Residual: no per-turn rewind
-  (thread-local arena).
+  `POST /sql`). `/health` `mode=mt-mux`. Per-turn rewind дойде с P33b.
 
 ### boilaDB — P31: PG wire connection mux
 - Idle keep-alive PG fds sit in `poll`; `BOILA_WORKERS` run one

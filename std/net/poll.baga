@@ -23,6 +23,12 @@ fn poll_empty() -> PollResult {
 
 // Wait until at least one fd is read-ready or timeout_ms elapses
 // (timeout_ms < 0 = block forever). fds must be non-duplicated.
+//
+// P33: целият pollfd масив се сглобява като ЕДИН bytes буфер и се пише с
+// един pwrite64 (bytes са с explicit length — NUL-безопасно, за разлика от
+// str concat). Преди: 8×pwrite64 НА FD (poke8), т.е. 8·n+9 syscall-а на
+// poll_wait; сега: константен брой (~11) независимо от n. На 18 idle fds
+// (pgbench c=16 mux) това е ~150 → ~11 syscall-а на итерация.
 fn poll_wait(fds: Vec<i64>, timeout_ms: i64) -> PollResult !Net !IO {
     let n = vec_len(fds)
     if n == 0 {
@@ -35,23 +41,25 @@ fn poll_wait(fds: Vec<i64>, timeout_ms: i64) -> PollResult !Net !IO {
         arena_free(a)
         return PollResult { ok: -1, ready: vec_new() }
     }
+    let b = bytes_new(n * 8)
     let mut i: i64 = 0
     while i < n {
         let off = i * 8
         let fd = vec_get(fds, i)
-        poke8(mfd, off, fd & 255)?
-        poke8(mfd, off + 1, (fd >> 8) & 255)?
-        poke8(mfd, off + 2, (fd >> 16) & 255)?
-        poke8(mfd, off + 3, (fd >> 24) & 255)?
-        poke8(mfd, off + 4, 1)?      // events = POLLIN (0x0001), little-endian
-        poke8(mfd, off + 5, 0)?
-        poke8(mfd, off + 6, 0)?      // revents = 0
-        poke8(mfd, off + 7, 0)?
+        bytes_set(b, off, fd & 255)
+        bytes_set(b, off + 1, (fd >> 8) & 255)
+        bytes_set(b, off + 2, (fd >> 16) & 255)
+        bytes_set(b, off + 3, (fd >> 24) & 255)
+        bytes_set(b, off + 4, 1)      // events = POLLIN (0x0001), little-endian
+        bytes_set(b, off + 5, 0)
+        bytes_set(b, off + 6, 0)      // revents = 0
+        bytes_set(b, off + 7, 0)
         i = i + 1
     }
+    let staged = pwrite64(mfd, str_of_bytes(b), n * 8, 0)?
     let written = pread64(mfd, fds_ptr, n * 8, 0)?
     syscall(3, mfd, 0, 0)?           // close mfd
-    if written != n * 8 {
+    if staged != n * 8 || written != n * 8 {
         arena_free(a)
         return PollResult { ok: -1, ready: vec_new() }
     }
