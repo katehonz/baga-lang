@@ -1,0 +1,111 @@
+// vs_pg.baga — same pgbaga client, same SQL, sequential ladder.
+// Compare Postgres (:5432) vs boilaDB serve_pg (:6575).
+//
+//   PGHOST=127.0.0.1 PGPORT=5432 PGUSER=bagatest PGPASSWORD=pas+123 \
+//     PGDATABASE=baga_orm ./baga -I . -I app-product bench/boila/vs_pg.baga
+//   BOILA_* / VS_PORT=6575 for serve_pg.
+
+import "pgbaga/pg.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/time/time.baga"
+
+fn cfg(name: str, def: str) -> str !IO {
+    let v = env(name)
+    if v == "" {
+        return def
+    }
+    return v
+}
+
+fn q(conn: PgConn, sql: str) -> PgResult !IO !Net {
+    return pg_query(conn, sql)?
+}
+
+fn run(label: str, n: i64, conn0: PgConn, mode: i64, id_base: i64) -> PgConn !IO !Net !Time {
+    let mut conn = conn0
+    let t0 = monotonic_us()?
+    let mut i: i64 = 0
+    let mut okc: i64 = 0
+    while i < n {
+        let mut sql = ""
+        if mode == 1 {
+            sql = concat("SELECT id FROM vs_t WHERE id = ", int_to_str(i % 1000))
+        } else {
+            if mode == 2 {
+                sql = concat(concat("INSERT INTO vs_w (id, v) VALUES (", int_to_str(id_base + i)), ", 'x')")
+            } else {
+                if (i % 5) == 0 {
+                    sql = concat(concat("INSERT INTO vs_w (id, v) VALUES (", int_to_str(id_base + i)), ", 'm')")
+                } else {
+                    sql = concat("SELECT id FROM vs_t WHERE id = ", int_to_str(i % 1000))
+                }
+            }
+        }
+        let r = q(conn, sql)?
+        conn = pg_conn_of(r)
+        if pg_ok(r) == 1 {
+            okc = okc + 1
+        }
+        i = i + 1
+    }
+    let us = monotonic_us()? - t0
+    let mut ns_op: i64 = 0
+    let mut ops: i64 = 0
+    if n > 0 {
+        ns_op = (us * 1000) / n
+    }
+    if us > 0 {
+        ops = (n * 1000000) / us
+    }
+    print(concat(concat(concat(concat(concat(concat(concat("  ", label), " n="), int_to_str(n)), " ok="), int_to_str(okc)), " ns/op="), int_to_str(ns_op)))
+    print(concat(concat("       ops/s≈", int_to_str(ops)), concat("  wall_us=", int_to_str(us))))
+    return conn
+}
+
+fn main() -> i64 !IO !Net !Time !Random !Par {
+    let host = cfg("VS_HOST", cfg("PGHOST", "127.0.0.1"))
+    let port = parse_int(cfg("VS_PORT", cfg("PGPORT", "5432")))
+    let user = cfg("VS_USER", cfg("PGUSER", "bagatest"))
+    let pass = cfg("VS_PASS", cfg("PGPASSWORD", "pas+123"))
+    let dbn = cfg("VS_DB", cfg("PGDATABASE", "baga_orm"))
+    print(concat(concat(concat(concat("vs_pg: ", host), ":"), int_to_str(port)), concat(" db=", dbn)))
+    let mut conn = pg_connect(host, port, user, pass, dbn)?
+    if conn.ok == 0 {
+        print(concat("connect FAIL: ", conn.err))
+        return 1
+    }
+    print(concat("  server=", conn.server_version))
+    let r0 = q(conn, "DROP TABLE IF EXISTS vs_w")?
+    conn = pg_conn_of(r0)
+    let r1 = q(conn, "DROP TABLE IF EXISTS vs_t")?
+    conn = pg_conn_of(r1)
+    let c1 = q(conn, "CREATE TABLE vs_t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    conn = pg_conn_of(c1)
+    let c2 = q(conn, "CREATE TABLE vs_w (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    conn = pg_conn_of(c2)
+    if pg_ok(c1) == 0 || pg_ok(c2) == 0 {
+        print("CREATE TABLE failed")
+        return 1
+    }
+    let mut i: i64 = 0
+    while i < 1000 {
+        let sql = concat(concat("INSERT INTO vs_t (id, v) VALUES (", int_to_str(i)), ", 's')")
+        let o = q(conn, sql)?
+        conn = pg_conn_of(o)
+        i = i + 1
+    }
+    print("  seed 1000 ok")
+    conn = run("point_read", 1000, conn, 1, 0)?
+    conn = run("point_read", 10000, conn, 1, 0)?
+    conn = run("insert", 1000, conn, 2, 100000)?
+    conn = run("insert", 10000, conn, 2, 200000)?
+    conn = run("mix80_20", 10000, conn, 3, 400000)?
+    let d1 = q(conn, "DROP TABLE vs_w")?
+    conn = pg_conn_of(d1)
+    let d2 = q(conn, "DROP TABLE vs_t")?
+    conn = pg_conn_of(d2)
+    pg_close(conn)?
+    print("vs_pg: done")
+    return 0
+}

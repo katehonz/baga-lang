@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### boilaDB — P32: HTTP connection mux
+- Idle HTTP keep-alive fds sit in `poll`; workers run one request
+  then park the fd (same as P31 PG). Gate:
+  `tests/boila_http_mux_test` (2 workers × 8 clients × 5 keep-alive
+  `POST /sql`). `/health` `mode=mt-mux`. Residual: no per-turn rewind
+  (thread-local arena).
+
+### boilaDB — P31: PG wire connection mux
+- Idle keep-alive PG fds sit in `poll`; `BOILA_WORKERS` run one
+  request-turn then park the fd. Handshake no longer hangs at
+  `clients > workers`. Gate: `tests/boila_pg_mux_test` (2 workers ×
+  8 clients × 5 `SELECT 1`).
+- pgbench point SELECT, 4 workers: c=1 **5118** tps, c=4 **12058**,
+  c=8 **11994**, c=16 **6932** (c=8/16 hung before). Residual: HTTP
+  keep-alive still 1 conn/worker; mux does not rewind per turn.
+
 ### boilaDB — P30: delayed fsync
 - `BOILA_SYNC_EVERY` (default **1**) — fsync на всеки N statement
   commit-а. `BOILA_COMMIT_WINDOW_MS` — най-много един fsync на ms

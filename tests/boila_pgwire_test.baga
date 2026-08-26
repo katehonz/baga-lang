@@ -11,6 +11,7 @@ import "boilaDB/server/databases.baga"
 import "boilaDB/core/value.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
+import "std/net/tls_conn.baga"
 
 fn check(fails: Vec<i64>, name: str, cond: bool) {
     if cond {
@@ -24,6 +25,13 @@ fn check(fails: Vec<i64>, name: str, cond: bool) {
 fn main() -> i64 !Par {
     print("boila_pgwire_test:")
     let fails: Vec<i64> = vec_new()
+
+    let qbody = pgw_cstr("SELECT 1")
+    let qmsg = pgw_msg(81, qbody)
+    let rfull = PgWReader { fd: 0 - 1, buf: qmsg, pos: 0, tls: 0, tconn: tls_conn_bad("") }
+    check(fails, "have_msg_full", pgw_have_msg(rfull) == 1)
+    let rpart = PgWReader { fd: 0 - 1, buf: bytes_slice(qmsg, 0, 3), pos: 0, tls: 0, tconn: tls_conn_bad("") }
+    check(fails, "have_msg_partial", pgw_have_msg(rpart) == 0)
 
     // --- pgw_is_int ---
     check(fails, "is_int", pgw_is_int("123") == 1 && pgw_is_int("-5") == 1 && pgw_is_int("12a") == 0 && pgw_is_int("") == 0 && pgw_is_int("-") == 0)

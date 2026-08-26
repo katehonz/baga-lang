@@ -1,0 +1,200 @@
+// boila_http_mux_test.baga — P32: 2 workers, 8 keep-alive HTTP clients.
+// Old pool pinned 1 conn/worker; mux parks idle fds like PG P31.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/api/serve_mt.baga"
+import "boilaDB/api/http_mux.baga"
+import "httpdbaga/http.baga"
+import "std/net/tcp.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_one(prefix: str) -> i64 !IO !Par {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    let mut g: i64 = 1
+    while g <= 20 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe(root: str) -> i64 !IO !Par {
+    wipe_one(concat(root, "/.meta"))?
+    wipe_one(concat(root, "/boila.db"))?
+    wipe_one(concat(root, "/boila.db.s0"))?
+    return 0
+}
+
+fn mux_serve(ctx: i64) -> i64 !IO !Net !Time !Par {
+    let port = cell2_0(ctx)
+    let pack = cell2_1(ctx)
+    let listener = tcp_listen(port)?
+    if listener < 0 {
+        return 1
+    }
+    return boila_http_mux_run(listener, pack, 2)?
+}
+
+fn hdr_clen(buf: str) -> i64 {
+    let key = "Content-Length: "
+    let k = str_find(buf, key)
+    if k < 0 {
+        return 0
+    }
+    let rest = substr(buf, k + len(key), len(buf))
+    let e = str_find(rest, "\r")
+    if e < 0 {
+        return parse_int(rest)
+    }
+    return parse_int(substr(rest, 0, e))
+}
+
+fn http_read_one(fd: i64) -> str !Net !IO {
+    let mut buf = ""
+    let mut n: i64 = 0
+    while n < 80 {
+        let c = tcp_read(fd, 2048)?
+        if c == "" {
+            return buf
+        }
+        buf = concat(buf, c)
+        let p = str_find(buf, "\r\n\r\n")
+        if p >= 0 {
+            let cl = hdr_clen(buf)
+            let have = len(buf) - p - 4
+            if have >= cl {
+                return buf
+            }
+        }
+        n = n + 1
+    }
+    return buf
+}
+
+fn ka_sql(fd: i64, sql: str) -> i64 !Net !IO {
+    let mut req = "POST /sql?db=boila HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\nContent-Length: "
+    req = concat(req, int_to_str(len(sql)))
+    req = concat(req, "\r\n\r\n")
+    req = concat(req, sql)
+    let w = tcp_write(fd, req)?
+    if w != 0 {
+        return 0
+    }
+    let body = http_read_one(fd)?
+    if str_find(body, "\"ok\":true") >= 0 {
+        return 1
+    }
+    return 0
+}
+
+fn client_w(ctx: i64) -> i64 !Net !IO !Time !Par {
+    let port = cell2_0(ctx)
+    let nops = cell2_1(ctx)
+    let fd = tcp_connect("127.0.0.1", port)?
+    if fd < 0 {
+        return 0
+    }
+    tcp_set_nodelay(fd)?
+    tcp_set_timeouts(fd, 8)?
+    let mut okc: i64 = 0
+    let mut i: i64 = 0
+    while i < nops {
+        okc = okc + ka_sql(fd, concat("SELECT id FROM t WHERE id = ", int_to_str(i + 1)))?
+        i = i + 1
+    }
+    tcp_close(fd)?
+    return okc
+}
+
+fn health_body(port: i64) -> str !Net !IO !Par {
+    let fd = tcp_connect("127.0.0.1", port)?
+    if fd < 0 {
+        return ""
+    }
+    let w = tcp_write(fd, "GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")?
+    if w != 0 {
+        tcp_close(fd)?
+        return ""
+    }
+    let body = http_read_one(fd)?
+    tcp_close(fd)?
+    return body
+}
+
+fn main() -> i64 !Net !IO !Time !Par {
+    print("boila_http_mux_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_http_mux"
+    let port: i64 = 16622
+    wipe(root)?
+    let mut srv = boila_server_open(root, 1, 256, 4, 4)?
+    check(fails, "open", srv.ok == 1)
+    let c0 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = c0.srv
+    check(fails, "create", c0.ok == 1)
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, v) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')")?
+    srv = i1.srv
+    check(fails, "seed", i1.ok == 1)
+    boila_server_close(srv)?
+    let srv0 = boila_server_open_mt(root, 1, 256, 4, 4)?
+    check(fails, "open_mt", srv0.ok == 1)
+    let pack = boila_mt_new(srv0, 32)?
+    boila_mt_set_pool(pack, 2, 2)?
+    go_bg(mux_serve, cell2(port, pack))
+    sleep_ms(400)
+    let mut ready: i64 = 0
+    let mut w: i64 = 0
+    let mut hb = ""
+    while w < 40 && ready == 0 {
+        hb = health_body(port)?
+        if str_find(hb, "200") >= 0 {
+            ready = 1
+        } else {
+            sleep_ms(50)
+        }
+        w = w + 1
+    }
+    check(fails, "ready", ready == 1)
+    check(fails, "health_mux", str_find(hb, "\"mode\":\"mt-mux\"") >= 0)
+    check(fails, "health_workers", str_find(hb, "\"workers\":2") >= 0)
+    let mut seq: i64 = 0
+    let mut s: i64 = 0
+    while s < 3 {
+        seq = seq + client_w(cell2(port, 3))?
+        s = s + 1
+    }
+    check(fails, "seq_9", seq == 9)
+    let handles: Vec<i64> = vec_new()
+    let mut c: i64 = 0
+    while c < 8 {
+        vec_push(handles, go(client_w, cell2(port, 5)))
+        c = c + 1
+    }
+    let mut okc: i64 = 0
+    let mut i: i64 = 0
+    while i < vec_len(handles) {
+        okc = okc + join(vec_get(handles, i))
+        i = i + 1
+    }
+    check(fails, "fanout_40", okc == 40)
+    if vec_len(fails) == 0 {
+        print("boila_http_mux_test: ALL PASS")
+        return 0
+    }
+    print(concat("boila_http_mux_test: FAILS=", int_to_str(vec_len(fails))))
+    return 1
+}
