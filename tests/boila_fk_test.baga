@@ -124,6 +124,44 @@ fn main() -> i64 !IO !Time !Par {
     srv = q4.srv
     check(fails, "setnull_nulls", d4.ok == 1 && q4.ok == 1 && vec_get(vec_get(q4.res.rows, 0), 0).tag == boila_v_null())
 
+    // P29: same-txn parent INSERT then child (PK seek through buffer)
+    let tx = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = tx.srv
+    let tp = boila_server_exec(srv, "boila", "INSERT INTO clients (id, name) VALUES (30, 'txn-co')")?
+    srv = tp.srv
+    let tc = boila_server_exec(srv, "boila", "INSERT INTO inv (id, client_id) VALUES (30, 30)")?
+    srv = tc.srv
+    let tcm = boila_server_exec(srv, "boila", "COMMIT")?
+    srv = tcm.srv
+    check(fails, "same_txn_pk", tx.ok == 1 && tp.ok == 1 && tc.ok == 1 && tcm.ok == 1)
+
+    // P29: REFERENCES a UNIQUE non-PK column
+    let k0 = boila_server_exec(srv, "boila", "CREATE TABLE pcode (id BIGINT, code TEXT, PRIMARY KEY (id))")?
+    srv = k0.srv
+    let k1 = boila_server_exec(srv, "boila", "CREATE UNIQUE INDEX pcode_code ON pcode (code)")?
+    srv = k1.srv
+    let k2 = boila_server_exec(srv, "boila", "CREATE TABLE ccode (id BIGINT, code TEXT REFERENCES pcode (code), PRIMARY KEY (id))")?
+    srv = k2.srv
+    let k3 = boila_server_exec(srv, "boila", "INSERT INTO pcode (id, code) VALUES (1, 'BG')")?
+    srv = k3.srv
+    let k4 = boila_server_exec(srv, "boila", "INSERT INTO ccode (id, code) VALUES (1, 'BG')")?
+    srv = k4.srv
+    let k5 = boila_server_exec(srv, "boila", "INSERT INTO ccode (id, code) VALUES (2, 'XX')")?
+    srv = k5.srv
+    check(fails, "uniq_parent_ok", k0.ok == 1 && k1.ok == 1 && k2.ok == 1 && k3.ok == 1 && k4.ok == 1)
+    check(fails, "uniq_parent_23503", k5.ok == 0 && k5.state == "23503")
+
+    // P29: child index on FK — CASCADE still finds children
+    let x0 = boila_server_exec(srv, "boila", "CREATE INDEX invc2_cid ON inv (client_id)")?
+    srv = x0.srv
+    let x1 = boila_server_exec(srv, "boila", "INSERT INTO clients (id, name) VALUES (40, 'ix-co')")?
+    srv = x1.srv
+    let x2 = boila_server_exec(srv, "boila", "INSERT INTO inv (id, client_id) VALUES (40, 40)")?
+    srv = x2.srv
+    let x3 = boila_server_exec(srv, "boila", "DELETE FROM clients WHERE id = 40")?
+    srv = x3.srv
+    check(fails, "child_ix_restrict", x0.ok == 1 && x1.ok == 1 && x2.ok == 1 && x3.ok == 0 && x3.state == "23503")
+
     boila_server_close(srv)?
 
     // restart: FK metadata persists

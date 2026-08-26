@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### boilaDB — P29: FK seek
+- Child INSERT/UPDATE: parent PK → point GET; иначе UNIQUE/secondary
+  индекс; иначе seq scan. Parent DELETE: индекс върху FK колоната на
+  детето, ако има. Same-txn parent INSERT се вижда.
+- Gate: `tests/boila_fk_test` same_txn_pk / uniq_parent_* / child_ix_restrict.
+
 ### boilaDB — P28: N JOIN + EXISTS / IN (SELECT)
 - Повече от един JOIN (до 8): INNER/LEFT, `ON` равенство; вторичният
   JOIN е hash върху wide реда. ON може да размени страните.
