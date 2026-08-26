@@ -221,8 +221,10 @@ void type_merge_effects(Type *dst, Type *src) {
 #define ENV_MAX 64
 #define ENV_VARS 256
 /* Per translation unit. http+jsonx+orm+pg already exceeds 256; frameworks
- * (fmrbaga) and multi-product apps need headroom. Silent drop when full. */
-#define FNS_MAX  2048
+ * (fmrbaga) and multi-product apps need headroom. Silent drop when full.
+ * 4096: boilaDB serve + pgbaga в един TU (boila_scram_test) прескочи 2048
+ * с P43 растежа (29 fn-а бяха отрязани). */
+#define FNS_MAX  4096
 
 typedef struct EnvEntry EnvEntry;
 struct EnvEntry {
