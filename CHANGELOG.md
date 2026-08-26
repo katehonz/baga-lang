@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### boilaDB — P30: delayed fsync
+- `BOILA_SYNC_EVERY` (default **1**) — fsync на всеки N statement
+  commit-а. `BOILA_COMMIT_WINDOW_MS` — най-много един fsync на ms
+  кофа. Close винаги fsync-ва. Default-ът остава счетоводно-здрав.
+- Harness EVERY=64: INSERT @10k **3134 ops/s** (беше ~700). Gate:
+  `tests/boila_sync_test` + chaos при default.
+
 ### boilaDB — P29: FK seek
 - Child INSERT/UPDATE: parent PK → point GET; иначе UNIQUE/secondary
   индекс; иначе seq scan. Parent DELETE: индекс върху FK колоната на
