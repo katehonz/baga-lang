@@ -26,18 +26,18 @@ fn wipe_shard_path(prefix: str) -> i64 !IO {
 fn wipe_root(root: str) -> i64 !IO {
     wipe_shard_path(concat(root, "/.meta"))?
     let mut i: i64 = 0
-    while i < 2 {
+    while i < 8 {
         wipe_shard_path(concat(concat(root, "/boila.db.s"), int_to_str(i)))?
         i = i + 1
     }
     return 0
 }
 
-fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time {
+fn exec1(srv: BoilaServer, sql: str) -> BoilaSrvOut !IO !Time !Par {
     return boila_server_exec(srv, "boila", sql)?
 }
 
-fn run_ladder(label: str, n: i64, srv0: BoilaServer, mode: i64, id_base: i64) -> BoilaServer !IO !Time {
+fn run_ladder(label: str, n: i64, srv0: BoilaServer, mode: i64, id_base: i64) -> BoilaServer !IO !Time !Par {
     let mut srv = srv0
     let t0 = monotonic_us()?
     let mut i: i64 = 0
@@ -85,7 +85,14 @@ fn main() -> i64 !IO !Time !Par {
     print("boila harness P11 (sequential ladder, sync path):")
     let root = "/tmp/baga_boila_harness"
     wipe_root(root)?
-    let mut srv = boila_server_open(root, 2, 256, 4, 8)?
+    let mut nsh: i64 = 2
+    if env("BOILA_SHARDS") != "" {
+        nsh = parse_int(env("BOILA_SHARDS"))
+        if nsh < 1 {
+            nsh = 2
+        }
+    }
+    let mut srv = boila_server_open(root, nsh, 256, 4, 8)?
 
     let c = exec1(srv, "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
     srv = c.srv

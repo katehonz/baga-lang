@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### boilaDB — P28: N JOIN + EXISTS / IN (SELECT)
+- Повече от един JOIN (до 8): INNER/LEFT, `ON` равенство; вторичният
+  JOIN е hash върху wide реда. ON може да размени страните.
+- `EXISTS` / `NOT EXISTS (SELECT … FROM t WHERE a = b)` — semi-join.
+- `IN` / `NOT IN (SELECT col FROM t)` — без WHERE в подзаявката.
+- Gate: `tests/boila_njoin_test`. Residual: RIGHT/FULL, correl. IN,
+  `ORDER BY table.col` след N-join.
+
+### boilaDB — P27: INSERT fsync tax
+- Statement commit fsync-ва само мръсните шардове (mask от DML ключове).
+- LSN броячът се пише per-shard (`boila_put_at`), не през hashed
+  `m|next_lsn` (втори WAL). Един ред INSERT → един `fdatasync`.
+- Harness @10k: **678 ops/s** (2 shards) / **724** (4 shards) срещу
+  480–524 преди на същата машина. Chaos WAL тестът остава зелен.
+- Residual: все още 1 fsync на auto-commit заявление (~1.4 ms).
+
+### boilaDB — P26: backup / restore / verify
+- Live snapshot of the whole `BOILA_PATH` (`.meta` + every database)
+  via rocksbaga checkpoint + `BOILABK1` catalog written last.
+- Verify: catalog + per-store size/CRC. Restore onto an empty root;
+  occupied dest and dest=`BOILA_PATH` are refused. Uncommitted txn
+  buffers are not in the snapshot.
+- CLI: `app-product/boilaDB/tools/backup.baga`
+  (`BACKUP_MODE=create|verify|restore`).
+- Gate: `tests/boila_backup_test`. Residual: no SQL/HTTP backup, no
+  `sst-dump` wrapper, dest is a directory.
+
 ### boilaDB — P25: ROWS / RANGE frames
 - **`ROWS BETWEEN start AND end`** (и съкратено `ROWS start`).
   Bounds: `UNBOUNDED PRECEDING|FOLLOWING`, `CURRENT ROW`,

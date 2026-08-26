@@ -1,0 +1,171 @@
+// boila_backup_test.baga — P26 live backup / verify / restore.
+//
+// Gate: two databases + index survive restore; missing BOILABK1 and a
+// corrupted SST fail verify; uncommitted buffer is not in the snapshot.
+
+import "boilaDB/server/databases.baga"
+import "boilaDB/server/exec_server.baga"
+import "boilaDB/server/backup.baga"
+import "boilaDB/sql/exec_scan.baga"
+import "boilaDB/core/value.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+fn check(fails: Vec<i64>, name: str, cond: bool) {
+    if cond {
+        print(concat("  ok  ", name))
+    } else {
+        print(concat("  FAIL ", name))
+        vec_push(fails, 1)
+    }
+}
+
+fn wipe_shard(prefix: str) -> i64 !IO {
+    unlink(concat(prefix, ".wal"))?
+    unlink(concat(prefix, ".manifest"))?
+    unlink(concat(prefix, ".manifest.log"))?
+    unlink(concat(prefix, ".backup"))?
+    let mut g: i64 = 1
+    while g <= 40 {
+        unlink(concat(concat(prefix, ".sst."), int_to_str(g)))?
+        unlink(concat(concat(prefix, ".bloom."), int_to_str(g)))?
+        g = g + 1
+    }
+    return 0
+}
+
+fn wipe_root(root: str) -> i64 !IO {
+    unlink(concat(root, "/BOILABK1"))?
+    wipe_shard(concat(root, "/.meta"))?
+    let names: Vec<str> = vec_new()
+    vec_push(names, "boila")
+    vec_push(names, "sales")
+    let mut n: i64 = 0
+    while n < vec_len(names) {
+        let base = concat(concat(root, "/"), concat(vec_get(names, n), ".db"))
+        wipe_shard(base)?
+        let mut i: i64 = 0
+        while i < 2 {
+            wipe_shard(concat(concat(base, ".s"), int_to_str(i)))?
+            i = i + 1
+        }
+        n = n + 1
+    }
+    return 0
+}
+
+fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
+    let v = vec_get(row, ix)
+    if v.tag == 2 {
+        return int_to_str(v.i)
+    }
+    if v.tag == 5 {
+        return str_of_bytes(v.b)
+    }
+    return "?"
+}
+
+fn corrupt_first_sst(prefix: str) -> i64 !IO {
+    let mut g: i64 = 1
+    while g <= 40 {
+        let p = concat(concat(prefix, ".sst."), int_to_str(g))
+        if file_exists(p) == 1 {
+            write_file(p, "CORRUPT")?
+            return 1
+        }
+        g = g + 1
+    }
+    return 0
+}
+
+fn main() -> i64 !IO !Time !Par {
+    print("boila_backup_test:")
+    let fails: Vec<i64> = vec_new()
+    let root = "/tmp/baga_boila_bk_src"
+    let dest = "/tmp/baga_boila_bk"
+    let rst = "/tmp/baga_boila_bk_rst"
+    wipe_root(root)?
+    wipe_root(dest)?
+    wipe_root(rst)?
+
+    let mut srv = boila_server_open(root, 1, 8, 3, 4)?
+    check(fails, "open", srv.ok == 1)
+    let cdb = boila_server_exec(srv, "boila", "CREATE DATABASE sales")?
+    srv = cdb.srv
+    check(fails, "create_db", cdb.ok == 1)
+    let t1 = boila_server_exec(srv, "boila", "CREATE TABLE t (id BIGINT, v TEXT, PRIMARY KEY (id))")?
+    srv = t1.srv
+    let x1 = boila_server_exec(srv, "boila", "CREATE INDEX t_v ON t (v)")?
+    srv = x1.srv
+    let i1 = boila_server_exec(srv, "boila", "INSERT INTO t (id, v) VALUES (1, 'keep'), (2, 'idx')")?
+    srv = i1.srv
+    check(fails, "seed_boila", t1.ok == 1 && x1.ok == 1 && i1.ok == 1)
+    let t2 = boila_server_exec(srv, "sales", "CREATE TABLE inv (id BIGINT, sku TEXT, PRIMARY KEY (id))")?
+    srv = t2.srv
+    let i2 = boila_server_exec(srv, "sales", "INSERT INTO inv (id, sku) VALUES (10, 'bolt')")?
+    srv = i2.srv
+    check(fails, "seed_sales", t2.ok == 1 && i2.ok == 1)
+
+    let bgn = boila_server_exec(srv, "boila", "BEGIN")?
+    srv = bgn.srv
+    let dirty = boila_server_exec(srv, "boila", "INSERT INTO t (id, v) VALUES (99, 'no')")?
+    srv = dirty.srv
+    check(fails, "uncommitted_begin", bgn.ok == 1 && dirty.ok == 1)
+
+    let same = boila_backup_create(srv, root)?
+    srv = same.srv
+    check(fails, "dest_eq_root", same.stat.ok == 0)
+
+    let cr = boila_backup_create(srv, dest)?
+    srv = cr.srv
+    check(fails, "create", cr.stat.ok == 1 && cr.ndb == 2 && cr.stat.nfiles >= 2)
+    let v1 = boila_backup_verify(dest)?
+    check(fails, "verify", v1.stat.ok == 1 && v1.ndb == 2)
+
+    let rb = boila_server_exec(srv, "boila", "ROLLBACK")?
+    srv = rb.srv
+    boila_server_close(srv)?
+
+    unlink(concat(dest, "/BOILABK1"))?
+    let miss = boila_backup_verify(dest)?
+    check(fails, "missing_cat", miss.stat.ok == 0)
+    let mut srv_r = boila_server_open(root, 1, 8, 3, 4)?
+    let rec = boila_backup_create(srv_r, dest)?
+    srv_r = rec.srv
+    check(fails, "recreate", rec.stat.ok == 1)
+    boila_server_close(srv_r)?
+
+    let rst1 = boila_backup_restore(dest, rst)?
+    check(fails, "restore", rst1.stat.ok == 1)
+    let mut srv2 = boila_server_open(rst, 1, 8, 3, 4)?
+    check(fails, "reopen", srv2.ok == 1)
+    let q1 = boila_server_exec(srv2, "boila", "SELECT id FROM t WHERE id = 1")?
+    srv2 = q1.srv
+    check(fails, "row_keep", q1.ok == 1 && vec_len(q1.res.rows) == 1)
+    let q99 = boila_server_exec(srv2, "boila", "SELECT id FROM t WHERE id = 99")?
+    srv2 = q99.srv
+    check(fails, "uncommitted_absent", q99.ok == 1 && vec_len(q99.res.rows) == 0)
+    let qx = boila_server_exec(srv2, "boila", "SELECT id FROM t WHERE v = 'idx'")?
+    srv2 = qx.srv
+    check(fails, "index_ok", qx.ok == 1 && vec_len(qx.res.rows) == 1)
+    let qs = boila_server_exec(srv2, "sales", "SELECT sku FROM inv WHERE id = 10")?
+    srv2 = qs.srv
+    check(fails, "sales_row", qs.ok == 1 && vec_len(qs.res.rows) == 1 && cell(vec_get(qs.res.rows, 0), 0) == "bolt")
+    boila_server_close(srv2)?
+
+    let again = boila_backup_restore(dest, rst)?
+    check(fails, "restore_occupied", again.stat.ok == 0)
+
+    check(fails, "corrupt_sst", corrupt_first_sst(concat(dest, "/boila.db"))? == 1)
+    let bad = boila_backup_verify(dest)?
+    check(fails, "corrupt_verify", bad.stat.ok == 0)
+
+    let n = vec_len(fails)
+    if n == 0 {
+        print("boila_backup_test: all passed")
+        return 0
+    }
+    print(concat("boila_backup_test: FAILED ", int_to_str(n)))
+    return 1
+}

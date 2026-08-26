@@ -330,7 +330,7 @@ fn main() -> i64 !IO !Time !Par {
     check(fails, "err_order_col", e2.ok == 0 && e2.state == "42703")
     let e3 = exec(srv, "SELECT name FROM emp JOIN dep ON dept = code JOIN dep ON dept = code")?
     srv = e3.srv
-    check(fails, "err_second_join", e3.ok == 0 && e3.state == "0A000")
+    check(fails, "njoin_twice", e3.ok == 1 && vec_len(e3.res.rows) == 5)
     let e4 = exec(srv, "SELECT sum(dept) FROM emp")?
     srv = e4.srv
     check(fails, "err_sum_text", e4.ok == 0 && e4.state == "0A000")
