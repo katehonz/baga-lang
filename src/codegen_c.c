@@ -5693,6 +5693,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <time.h>\n");
     fprintf(out, "#include <signal.h>\n");
     fprintf(out, "#include <pthread.h>\n");
+    fprintf(out, "#include <execinfo.h>\n");
     fprintf(out, "#include <math.h>\n\n");
 
     /* arena — всички низови/векторни алокации минават тук (без individual free).
@@ -7084,7 +7085,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return n;\n");
     fprintf(out, "}\n");
     /* mutex — opaque i64 handle с double-lock детекция */
-    fprintf(out, "typedef struct { pthread_mutex_t mu; pthread_t owner; int locked; } baga_Mutex;\n");
+    fprintf(out, "typedef struct { pthread_mutex_t mu; pthread_t owner; int locked; void *bt[16]; int btn; } baga_Mutex;\n");
     fprintf(out, "static int64_t baga_mutex_new(void) {\n");
     fprintf(out, "    baga_Mutex *m = (baga_Mutex *)calloc(1, sizeof(baga_Mutex));\n");
     fprintf(out, "    if (!m) { fprintf(stderr, \"baga: mutex_new: oom\\n\"); exit(1); }\n");
@@ -7095,10 +7096,20 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_Mutex *m = (baga_Mutex *)(intptr_t)h;\n");
     fprintf(out, "    if (!m) return -1;\n");
     fprintf(out, "    if (m->locked && pthread_equal(m->owner, pthread_self())) {\n");
-    fprintf(out, "        fprintf(stderr, \"baga: mutex_lock: double-lock от същата нишка\\n\"); exit(1);\n");
+    fprintf(out, "        /* Re-entrant same-thread lock: НЕ abort-ваме целия сървър.\n");
+    fprintf(out, "           Възниква при lock leak от effect-raise (`?`) в заключен регион —\n");
+    fprintf(out, "           нишката вече държи mutex-а, значи е вътре в критичния регион;\n");
+    fprintf(out, "           пропускаме pthread_lock (пази данните), а нормалният unlock\n");
+    fprintf(out, "           после освобождава mutex-а и излекува теча. Печатим предупреждение. */\n");
+    fprintf(out, "        void *bt[16]; int btn = backtrace(bt, 16);\n");
+    fprintf(out, "        fprintf(stderr, \"baga: mutex_lock: same-thread re-lock (lock leak) — продължаваме; първото заключване беше от %p\\n\", m->bt[0]);\n");
+    fprintf(out, "        backtrace_symbols_fd(bt, btn, 2);\n");
+    fprintf(out, "        return 0;\n");
     fprintf(out, "    }\n");
     fprintf(out, "    int rc = pthread_mutex_lock(&m->mu);\n");
     fprintf(out, "    m->owner = pthread_self(); m->locked = 1;\n");
+    fprintf(out, "    m->bt[0] = __builtin_return_address(0);\n");
+    fprintf(out, "    m->btn = 1;\n");
     fprintf(out, "    return (int64_t)rc;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_mutex_unlock(int64_t h) {\n");
