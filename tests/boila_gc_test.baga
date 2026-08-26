@@ -82,7 +82,7 @@ fn main() -> i64 !IO !Time !Par {
     s = boila_compact_full(s)?
     let vc1 = boila_count_versions(s, 10, pk)?
     s = vc1.s
-    check(fails, "after_compact_1", vc1.n <= 1 && vc1.n >= 1)
+    check(fails, "after_compact_1", vc1.n == 2)   // P43: base + най-нова версия
 
     let g = boila_get(s, boila_cf_data(), 10, pk)?
     s = g.s
@@ -94,7 +94,7 @@ fn main() -> i64 !IO !Time !Par {
     s2 = boila_compact_full(s2)?
     let vc2 = boila_count_versions(s2, 10, pk)?
     s2 = vc2.s
-    check(fails, "reopen_still_1", vc2.n <= 1 && vc2.n >= 1)
+    check(fails, "reopen_still_1", vc2.n == 2)   // P43: base + най-нова версия
     let g2 = boila_get(s2, boila_cf_data(), 10, pk)?
     s2 = g2.s
     check(fails, "reopen_latest", g2.found == 1 && boila_unwrap_lsn(g2.val) == 10000)
@@ -114,7 +114,7 @@ fn main() -> i64 !IO !Time !Par {
     s3 = boila_compact_full(s3)?
     let vc3 = boila_count_versions(s3, 10, pk)?
     s3 = vc3.s
-    check(fails, "cutoff_keeps_2", vc3.n == 2)
+    check(fails, "cutoff_keeps_2", vc3.n == 3)   // P43: base + 2 версии
     let g3 = boila_get(s3, boila_cf_data(), 10, pk)?
     s3 = g3.s
     check(fails, "cutoff_latest", g3.found == 1 && boila_unwrap_lsn(g3.val) == 5)
@@ -163,7 +163,7 @@ fn main() -> i64 !IO !Time !Par {
     let d2 = boila_srv_db(srv, "boila")?
     srv = d2.srv
     let vc5 = boila_count_versions(d2.store, ct.table.id, pk)?
-    check(fails, "sql_versions_after", vc5.n <= 1 && vc5.n >= 1)
+    check(fails, "sql_versions_after", vc5.n == 2)   // P43: base + най-нова версия
 
     let q = boila_server_exec(srv, "boila", "SELECT v FROM tt WHERE id = 1")?
     srv = q.srv

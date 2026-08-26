@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### boilaDB — P43: dual base key (O(1) versioned get)
+- `boila_kv_get_asof` резолвваше newest версия с full-shard scan на
+  заявка (~150 µs). Сега: dual-write base → newest + GC keep rule +
+  base probe + `p43|dual` маркер за нови бази (miss без scan).
+- **Измерено (pgbench -S, 4 workers): c=1 15.2k, c=4 51.6k, c=8 89.1k,
+  c=16 109.1k tps** — 5.3–22.6× над baseline от сутринта и 0.99–1.24×
+  спрямо postgres числата от записа (15k/49k/72k/93k).
+- Residual: 2× storage за data CF; RSS slope ~10 KB/заявка.
+
 ### std/net — P33: poll_wait без syscall storm
 - `poll_wait`: pollfd масивът се сглобява като един bytes буфер + 1
   pwrite (беше 8×pwrite64 на fd). ~11 syscall-а на poll независимо от

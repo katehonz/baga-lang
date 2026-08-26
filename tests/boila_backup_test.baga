@@ -66,15 +66,19 @@ fn cell(row: Vec<BoilaVal>, ix: i64) -> str {
     return "?"
 }
 
+// Corrupt НАЙ-НОВИЯ съществуващ sst gen — той е гарантирано live и в
+// BOILABK1 каталога. (Преди: най-стария; след P43 dual-write + маркер
+// по-старият gen може да е flush извън live манифеста → verify коректно
+// не го отчита и тестът не проверяваше нищо.)
 fn corrupt_first_sst(prefix: str) -> i64 !IO {
-    let mut g: i64 = 1
-    while g <= 40 {
+    let mut g: i64 = 40
+    while g >= 1 {
         let p = concat(concat(prefix, ".sst."), int_to_str(g))
         if file_exists(p) == 1 {
             write_file(p, "CORRUPT")?
             return 1
         }
-        g = g + 1
+        g = g - 1
     }
     return 0
 }
