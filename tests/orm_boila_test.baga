@@ -63,6 +63,19 @@ fn main() -> i64 !Net !IO !Random !Par {
     db = migrate_db(up2)
     check(fails, "up_idempotent", migrate_is_ok(up2) == 1 && migrate_applied_n(up2) == 0)
 
+    // History row missing, index still there (DDL committed, INSERT did not).
+    // Next up must record 20260811003 instead of dying on 42710.
+    let un = orm_exec(db, "DELETE FROM baga_schema_migrations WHERE version = 20260811003")?
+    db = orm_db_exec(un)
+    check(fails, "unrecord_index", orm_ok(un) == 1)
+    let up_fix = migrate_up(db, set)?
+    db = migrate_db(up_fix)
+    check(fails, "dup_index_repaired", migrate_is_ok(up_fix) == 1)
+    check(fails, "dup_index_applied_1", migrate_applied_n(up_fix) == 1)
+    if migrate_is_ok(up_fix) == 0 {
+        print(concat("  repair err: ", migrate_err_str(up_fix)))
+    }
+
     let cur = migrate_current(db)?
     db = orm_db_c(cur)
     check(fails, "current_max", orm_ok_c(cur) == 1 && orm_count_n(cur) == 20260811003)

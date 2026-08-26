@@ -29,5 +29,9 @@ fn main() {
     check("sort1", migrate_at(set, vec_get(ord, 1)).version == 20)
     set = migrate_add(set, 10, "dup", "X", "Y")
     check("dup", migrate_dup_version(set) == 10)
+    check("ddl_dup_ix", migrate_is_ddl_dup("42710") == 1)
+    check("ddl_dup_table", migrate_is_ddl_dup("42P07") == 1)
+    check("ddl_dup_col", migrate_is_ddl_dup("42701") == 1)
+    check("ddl_dup_unique_not", migrate_is_ddl_dup("23505") == 0)
     print("migrate_struct_test: all passed")
 }

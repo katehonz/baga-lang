@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### ormbaga — G11: history INSERT след DDL не се губеше на retry
+- `migrate_record` / `migrate_unrecord` са Simple Query (същият път като
+  BEGIN/DDL/COMMIT). Extended `$1` INSERT не винаги влизаше в simple-query
+  транзакцията на boila → индексът се записваше, редът в
+  `baga_schema_migrations` не; следващ `migrate_up` умираше на `42710`.
+- `42710` / `42P07` / `42701` след UP: ROLLBACK, запис на версията,
+  продължава набора. Gate: `orm_boila_test` `dup_index_repaired`.
+
 ### boilaDB — P43: dual base key (O(1) versioned get)
 - `boila_kv_get_asof` резолвваше newest версия с full-shard scan на
   заявка (~150 µs). Сега: dual-write base → newest + GC keep rule +
