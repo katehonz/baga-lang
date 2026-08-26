@@ -5705,6 +5705,12 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * нишка. */
     fprintf(out, "typedef struct baga_ABlk { struct baga_ABlk *next; size_t used, cap; char data[]; } baga_ABlk;\n");
     fprintf(out, "static __thread baga_ABlk *baga_arena_head = NULL;\n");
+    /* MEM-5 (boilaDB serve): spare верига за non-RC пътя — rewind връща
+     * блоковете тук вместо на malloc; baga_alloc ги reuse-ва. Същият модел
+     * като RC1 baga_rc_spare. Без него всеки per-turn rewind прави
+     * free()+malloc на 8 KB блокове → glibc фрагментация (измерен
+     * линеен RSS ръст ~10 KB/заявка) и чист CPU разход. */
+    fprintf(out, "static __thread baga_ABlk *baga_spare = NULL;\n");
     /* MEM-1: free list — 16-байтови класове ≤ 1024 B; R18: + pow2 класове
      * 2 KiB..32 MiB — drop рециклира блокове. Големите класове се bump-ват с
      * ПЪЛНИЯ класов размер, за да е консистентен всеки бъдещ free в класа. */
@@ -5841,8 +5847,14 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "        }\n");
         fprintf(out, "        *hp = b;\n");
     } else {
-        fprintf(out, "        b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
-        fprintf(out, "        b->next = *hp; b->used = 0; b->cap = cap;\n");
+        /* MEM-5: non-RC — първо spare веригата (блокове от rewind), после malloc */
+        fprintf(out, "        if (baga_spare && baga_spare->cap >= cap) {\n");
+        fprintf(out, "            b = baga_spare; baga_spare = b->next;\n");
+        fprintf(out, "            b->next = *hp; b->used = 0;\n");
+        fprintf(out, "        } else {\n");
+        fprintf(out, "            b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
+        fprintf(out, "            b->next = *hp; b->used = 0; b->cap = cap;\n");
+        fprintf(out, "        }\n");
         fprintf(out, "        *hp = b;\n");
     }
     fprintf(out, "    }\n");
@@ -5903,11 +5915,12 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    while (b && b != m->head) {\n");
     fprintf(out, "        baga_ABlk *nx = b->next;\n");
     /* RC1: в spare веригата вместо free() — паметта остава mapped (epoch
-     * я прави мъртва за rc_hdr) и се reuse-ва от следващите алокации. */
+     * я прави мъртва за rc_hdr) и се reuse-ва от следващите алокации.
+     * MEM-5: същото и за non-RC (baga_spare). */
     if (cg->rc)
         fprintf(out, "        b->next = baga_rc_spare; baga_rc_spare = b;\n");
     else
-        fprintf(out, "        free(b);\n");
+        fprintf(out, "        b->next = baga_spare; baga_spare = b;\n");
     fprintf(out, "        b = nx;\n");
     fprintf(out, "    }\n");
     fprintf(out, "    if (b != m->head) {\n");
