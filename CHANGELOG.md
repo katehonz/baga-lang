@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### std/json — json_escape вече не е O(n²)
+- Преди: `concat` на всеки символ. 800 KB PDF като base64 → OOM/kill на
+  процеса; следващите заявки в браузъра са `Failed to fetch`.
+- Сега: безопасните участъци се копират с един `substr` (base64 е един скок).
+
 ### std/net — TLS application data на парчета (≤16 KB)
 - `tls_conn_write` реже plaintext на записи по RFC 8446 (2^14 − 1).
   Един запис над лимита чупеше HTTPS POST към `api.mistral.ai` (OCR).
