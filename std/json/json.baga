@@ -107,21 +107,56 @@ fn utf8_encode(cp: i64) -> str {
 
 // String node. p.pos is at the opening quote. Unterminated strings still
 // produce a string node with what was scanned (lenient).
+// Local `pos` + run-length substr: per-char concat/jp_at on a 1 MB
+// base64 field OOMs the process (bagabuch OCR).
 fn jp_string_node(p: JsonParser) -> JsonParser {
-    p = jp_at(p, p.pos + 1)
+    let src = p.src
+    let n = len(src)
+    let mut pos = p.pos + 1
+    let mut i = pos
+    let mut esc: i64 = 0
+    while i < n {
+        let c = char_at(src, i)
+        if c == 34 {
+            break
+        }
+        if c == 92 {
+            esc = 1
+            break
+        }
+        i = i + 1
+    }
+    if esc == 0 {
+        let val = substr(src, pos, i)
+        let mut end = i
+        if i < n {
+            end = i + 1
+        }
+        return jp_leaf(jp_at(p, end), 4, 0.0, val)
+    }
     let mut out = ""
+    let mut run = pos
     let mut running = true
     while running {
-        if p.pos >= len(p.src) {
+        if pos >= n {
+            if pos > run {
+                out = concat(out, substr(src, run, pos))
+            }
             running = false
         } else {
-            let c = char_at(p.src, p.pos)
+            let c = char_at(src, pos)
             if c == 34 {
-                p = jp_at(p, p.pos + 1)
+                if pos > run {
+                    out = concat(out, substr(src, run, pos))
+                }
+                pos = pos + 1
                 running = false
             } else {
                 if c == 92 {
-                    let e = char_at(p.src, p.pos + 1)
+                    if pos > run {
+                        out = concat(out, substr(src, run, pos))
+                    }
+                    let e = char_at(src, pos + 1)
                     if e == 110 { out = concat(out, chr(10)) }
                     if e == 116 { out = concat(out, chr(9)) }
                     if e == 114 { out = concat(out, chr(13)) }
@@ -131,30 +166,28 @@ fn jp_string_node(p: JsonParser) -> JsonParser {
                     if e == 98 { out = concat(out, chr(8)) }
                     if e == 102 { out = concat(out, chr(12)) }
                     if e == 117 {
-                        let mut cp = hex4(substr(p.src, p.pos + 2, p.pos + 6))
-                        // surrogate pair: \uD800-DBFF следван от \uDC00-DFFF
-                        // → астрална кодова точка (emoji и др. > U+FFFF)
-                        if cp >= 55296 && cp <= 56319 && p.pos + 12 <= len(p.src) {
-                            if substr(p.src, p.pos + 6, p.pos + 8) == "\\u" {
-                                let lo = hex4(substr(p.src, p.pos + 8, p.pos + 12))
+                        let mut cp = hex4(substr(src, pos + 2, pos + 6))
+                        if cp >= 55296 && cp <= 56319 && pos + 12 <= n {
+                            if substr(src, pos + 6, pos + 8) == "\\u" {
+                                let lo = hex4(substr(src, pos + 8, pos + 12))
                                 if lo >= 56320 && lo <= 57343 {
                                     cp = 65536 + (cp - 55296) * 1024 + (lo - 56320)
-                                    p = jp_at(p, p.pos + 6)
+                                    pos = pos + 6
                                 }
                             }
                         }
                         out = concat(out, utf8_encode(cp))
-                        p = jp_at(p, p.pos + 4)
+                        pos = pos + 4
                     }
-                    p = jp_at(p, p.pos + 2)
+                    pos = pos + 2
+                    run = pos
                 } else {
-                    out = concat(out, substr(p.src, p.pos, p.pos + 1))
-                    p = jp_at(p, p.pos + 1)
+                    pos = pos + 1
                 }
             }
         }
     }
-    return jp_leaf(p, 4, 0.0, out)
+    return jp_leaf(jp_at(p, pos), 4, 0.0, out)
 }
 
 // Parse an f64: optional '-', integer part, optional fraction, optional

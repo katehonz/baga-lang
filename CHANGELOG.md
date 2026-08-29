@@ -2,10 +2,11 @@
 
 ## [Unreleased]
 
-### std/json — json_escape вече не е O(n²)
-- Преди: `concat` на всеки символ. 800 KB PDF като base64 → OOM/kill на
-  процеса; следващите заявки в браузъра са `Failed to fetch`.
-- Сега: безопасните участъци се копират с един `substr` (base64 е един скок).
+### std/json — json_escape и string parse вече не са O(n²)
+- Преди: `concat` на всеки символ и в `json_escape`, и в `jp_string_node`.
+  800 KB PDF като base64 в JSON тялото → OOM/kill на backend-а още при
+  четене; браузърът пише `Failed to fetch` и за следващите малки файлове.
+- Сега: низ без escape се взима с един `substr`; escape-ите са по участъци.
 
 ### std/net — TLS application data на парчета (≤16 KB)
 - `tls_conn_write` реже plaintext на записи по RFC 8446 (2^14 − 1).
