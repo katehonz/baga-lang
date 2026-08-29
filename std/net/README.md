@@ -39,6 +39,9 @@ HTTP client: see `http_client.baga` (`http_get` / `http_post` / `http_request`)
 TLS 1.3 client (`tls.baga`): record layer, handshake, X.509 + RSA-PSS/ECDSA
 verify, application data. `tls_connect(host, port, timeout, trust_anchor)`;
 empty trust anchor accepts self-signed (dev/mock).
+`tls_conn_write` splits plaintext into ≤16383-byte records (RFC 8446
+2^14); a single huge record (e.g. Mistral OCR PDF as base64) is rejected
+by the peer. HTTP client response cap is 8 MB.
 
 TLS 1.3 server (`tls_server.baga`): `tls_accept(fd, cert_der, key)` —
 ClientHello parse, ServerHello (x25519), encrypted flight

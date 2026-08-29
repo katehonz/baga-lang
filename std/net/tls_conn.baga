@@ -89,24 +89,44 @@ fn tls_conn_seal(conn: TlsConn, plain: bytes) -> bytes {
     return bytes_concat(tls_hdr_bytes(23, bytes_len(sealed)), sealed)
 }
 
+// RFC 8446: TLSPlaintext.length MUST NOT exceed 2^14. Inner content-type
+// takes one byte, so application payload per record is at most 16383.
+fn tls_max_plain() -> i64 {
+    return 16383
+}
+
 fn tls_conn_write(conn: TlsConn, plain: bytes) -> TlsConn !Net !IO {
     if conn.ok == 0 {
         return conn
     }
-    let rec = tls_conn_seal(conn, plain)
-    let w = tcp_write_bytes(conn.fd, rec)?
-    if w != 0 {
-        return TlsConn {
-            ok: 0, err: "tls write failed", fd: conn.fd,
-            c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
-            c_seq: conn.c_seq, s_seq: conn.s_seq
+    let n = bytes_len(plain)
+    if n == 0 {
+        return conn
+    }
+    let mut c = conn
+    let mut off: i64 = 0
+    while off < n {
+        let mut end = off + tls_max_plain()
+        if end > n {
+            end = n
         }
+        let rec = tls_conn_seal(c, bytes_slice(plain, off, end))
+        let w = tcp_write_bytes(c.fd, rec)?
+        if w != 0 {
+            return TlsConn {
+                ok: 0, err: "tls write failed", fd: c.fd,
+                c_key: c.c_key, c_iv: c.c_iv, s_key: c.s_key, s_iv: c.s_iv,
+                c_seq: c.c_seq, s_seq: c.s_seq
+            }
+        }
+        c = TlsConn {
+            ok: 1, err: "", fd: c.fd,
+            c_key: c.c_key, c_iv: c.c_iv, s_key: c.s_key, s_iv: c.s_iv,
+            c_seq: c.c_seq + 1, s_seq: c.s_seq
+        }
+        off = end
     }
-    return TlsConn {
-        ok: 1, err: "", fd: conn.fd,
-        c_key: conn.c_key, c_iv: conn.c_iv, s_key: conn.s_key, s_iv: conn.s_iv,
-        c_seq: conn.c_seq + 1, s_seq: conn.s_seq
-    }
+    return c
 }
 
 // Decrypt one inbound record. Skips CCS (type 20). Returns data + type

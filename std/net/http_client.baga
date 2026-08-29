@@ -367,7 +367,7 @@ fn http_request_tls_anchor(host: str, port: i64, req: str, timeout_s: i64, ancho
                 // typ 22 NewSessionTicket — ignore
             }
         }
-        if bytes_len(acc) > 2000000 {
+        if bytes_len(acc) > 8000000 {
             reading = 0
         }
     }

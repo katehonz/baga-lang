@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### std/net — TLS application data на парчета (≤16 KB)
+- `tls_conn_write` реже plaintext на записи по RFC 8446 (2^14 − 1).
+  Един запис над лимита чупеше HTTPS POST към `api.mistral.ai` (OCR).
+- HTTP клиент: таван на отговора 8 MB (беше 2 MB).
+
+### bagabuch — OCR сканиране към чернова фактура
+- `/scan`: покупки и продажби, PDF/JPG/PNG → чернова **с редове** (не
+  запис по сметки). Евтин Mistral: OCR 4.1 + Small. Мапинг на артикули
+  с модална търсачка. Пробвано с ключ по фирма.
+
 ### ormbaga — G11: history INSERT след DDL не се губеше на retry
 - `migrate_record` / `migrate_unrecord` са Simple Query (същият път като
   BEGIN/DDL/COMMIT). Extended `$1` INSERT не винаги влизаше в simple-query
