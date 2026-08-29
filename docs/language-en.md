@@ -1158,8 +1158,9 @@ fn прочети(път: str) -> str !IO !NotFound {
 }
 ```
 
-Effect names are ordinary identifiers (`IO`, `NotFound`, `Permission`, ...).
-You define the vocabulary; the compiler enforces the bookkeeping.
+Effect names are ordinary identifiers (`IO`, `NotFound`, `Permission`, `Par`,
+...). You define the vocabulary; the compiler enforces the bookkeeping.
+`!Par` (concurrency) comes from the `go` and `chan_*` builtins — see §14.
 
 ### 13.2 Propagating with `?`
 
@@ -1275,7 +1276,267 @@ The semantics (M18): the effect is a *permission*, not a claim.
 
 ---
 
-## 14. The Spec System
+## 14. Concurrency: `go` and Channels
+
+Baga ships CSP-style threads and channels. `go` spawns a **real operating
+system thread** (pthread), and channels carry `i64`. All of this is a
+*language builtin* — always visible, no `import` needed. Concurrency is an
+effect (`!Par`, §14.6), so it shows up in the type just like `!IO`.
+
+```baga
+fn square(x: i64) -> i64 { return x * x }
+
+fn main() -> i64 !Par {
+    let h1 = go(square, 7)
+    let h2 = go(square, 9)
+    print(join(h1) + join(h2))   // 130
+    return 0                     // main -> i64 is the exit code
+}
+```
+
+The design and the full API live in [`std/par/README.md`](../std/par/README.md)
+and `docs/superpowers/specs/2026-08-02-par-concurrency-design.md`. Oracles:
+`examples/par.baga`, `par_chan.baga`, `par_pool.baga`, `par_select.baga`.
+
+### 14.1 Threads: `go`, `join`, `detach`, `go_bg`
+
+| Builtin | Signature | Description |
+|---------|-----------|-------------|
+| `go` | `(fn, arg: i64) -> i64 !Par` | Spawns a thread; returns a **join handle**. |
+| `go_bg` | `(fn, arg: i64) -> i64 !Par` | Detached thread; returns `0`. For accept loops. |
+| `join` | `(h: i64) -> i64 !Par` | Waits for the thread, returns its result, frees the handle. |
+| `detach` | `(h: i64) -> i64 !Par` | Detaches an already `go`'d handle; race-safe with `join`. |
+| `pool_map` | `(fn, vec: Vec<i64>, nworkers: i64) -> Vec<i64> !Par` | Bounded parallel map; input order is preserved (§14.4). |
+
+**The worker must be `fn(i64) -> i64`** — exactly one `i64` parameter and an
+`i64` result. The first argument to `go` is a *bare function name*, not an
+expression and not a function value. The worker's effects **bubble up to the
+spawn site**, so a network handler can be `!IO !Net`:
+
+```baga
+fn handle_conn(fd: i64) -> i64 !IO !Net {
+    handle(fd)?
+    tcp_close(fd)?
+    return 0
+}
+
+fn main() -> i64 !IO !Net !Par {
+    go_bg(handle_conn, fd)     // !IO !Net !Par — the effects accumulate
+    ...
+}
+```
+
+`join(h)` blocks until the thread finishes and returns its value. A second
+`join` on the same handle returns `-1`. `detach(h)` makes the handle
+fire-and-forget; a repeated `detach` returns `0`. `go_bg` is detached from the
+start — for server accept loops that nothing waits on.
+
+#### Packing state: `cell2`
+
+A worker takes a single `i64`. For more data use a heap pair — `cell2` is
+**pure** (no `!Par`):
+
+| Builtin | Signature | Description |
+|---------|-----------|-------------|
+| `cell2` | `(a, b) -> i64` | A new heap pair; returns a handle. |
+| `cell2_0` | `(p: i64) -> i64` | The first element. |
+| `cell2_1` | `(p: i64) -> i64` | The second element. |
+
+```baga
+fn producer(ctx: i64) -> i64 !Par {
+    let c = cell2_0(ctx)
+    let x = cell2_1(ctx)
+    chan_send(c, x * x + x)
+    return 0
+}
+
+fn main() -> i64 !Par {
+    let c = chan_new(8)
+    let h = go(producer, cell2(c, 5))
+    print(chan_recv(c))   // 30
+    join(h)
+    return 0
+}
+```
+
+### 14.2 Channels
+
+A channel is a buffered ring of `i64` guarded by a mutex and two condition
+variables (`not_empty`, `not_full`). It is created with a capacity; `cap < 1`
+is clamped to `1` (there is no zero-buffer rendezvous channel).
+
+| Builtin | Signature | Description |
+|---------|-----------|-------------|
+| `chan_new` | `(cap: i64) -> i64 !Par` | New channel; `cap < 1` → `1`. |
+| `chan_send` | `(c: i64, v: i64) -> i64 !Par` | `0` on success, `-1` if the channel is closed. **Blocks** while the buffer is full. |
+| `chan_recv` | `(c: i64) -> i64 !Par` | Blocks until an item arrives. Closed and empty → `0`. |
+| `chan_recv2` | `(c: i64) -> i64 !Par` | `cell2(ok, value)` — `ok=1` value, `ok=0` closed and empty. |
+| `chan_try_recv` | `(c: i64) -> i64 !Par` | Non-blocking: status `1`=value, `0`=empty, `2`=closed. |
+| `chan_recv_timeout` | `(c: i64, ms: i64) -> i64 !Par` | Timed: `1`=value, `0`=timeout, `2`=closed. |
+| `chan_close` | `(c: i64) -> i64 !Par` | Closes the channel; wakes blocked senders. |
+| `chan_len` | `(c: i64) -> i64 !Par` | Current number of buffered items. |
+
+`chan_send` on a **closed** channel does not block — it returns `-1` at once.
+`chan_recv` on a closed channel does not block — it returns `0` once drained.
+
+> **Caution:** `chan_recv` returns `0` both for "closed and empty" and for a
+> genuinely sent value of `0`. When `0` is a valid payload, use `chan_recv2`
+> and check `cell2_0(p)`.
+
+A typical fan-in with exactly `N` results:
+
+```baga
+fn main() -> i64 !Par {
+    let c = chan_new(8)
+    let mut i: i64 = 1
+    let mut handles = vec_new()
+    while i <= 8 {
+        let h = go(producer, cell2(c, i))
+        vec_push(handles, h)
+        i = i + 1
+    }
+    let mut sum: i64 = 0
+    let mut n: i64 = 0
+    while n < 8 {
+        sum = sum + chan_recv(c)
+        n = n + 1
+    }
+    let mut j: i64 = 0
+    while j < vec_len(handles) {
+        join(vec_get(handles, j))
+        j = j + 1
+    }
+    chan_close(c)
+    print(sum)
+    return 0
+}
+```
+
+### 14.3 Selecting over channels
+
+| Builtin | Signature | Description |
+|---------|-----------|-------------|
+| `chan_select2` | `(c0, c1: i64) -> i64 !Par` | Non-blocking: `cell2(which, value)`. |
+| `chan_select2_wait` | `(c0, c1: i64) -> i64 !Par` | Blocks until either channel yields an item. |
+| `chan_select2_timeout` | `(c0, c1, ms: i64) -> i64 !Par` | Timed; `which=2` on timeout. |
+
+Read `which` with `cell2_0` and the value with `cell2_1`:
+
+| `which` | Meaning |
+|---------|---------|
+| `0` | a value from `c0` |
+| `1` | a value from `c1` |
+| `2` | nothing ready (with `_wait` and `_timeout`: timeout) |
+| `3` | both channels closed |
+
+The non-blocking `select2` takes from the **fuller** channel first (less
+starvation). `chan_select2_wait` does not wait on a condvar directly — it
+wakes and re-checks every ~5 ms, so its latency is milliseconds, not
+microseconds.
+
+```baga
+let r = chan_select2_wait(a, b)
+if cell2_0(r) == 0 { print(cell2_1(r)) }     // from a
+else if cell2_0(r) == 1 { print(cell2_1(r)) }// from b
+else { /* which == 3: both closed */ }
+```
+
+### 14.4 `pool_map` — a bounded pool
+
+`pool_map(fn, vec, nworkers)` splits a `Vec<i64>` across at most `nworkers`
+threads and returns a `Vec<i64>` **in input order** (results are reordered by
+index, not by completion time). The worker still has to be `fn(i64) -> i64`.
+
+```baga
+fn main() -> i64 !Par {
+    let xs = vec_new()
+    let mut i: i64 = 1
+    while i <= 10 { vec_push(xs, i); i = i + 1 }
+    let ys = pool_map(square, xs, 4)   // ≤4 threads for 10 jobs
+    print(vec_get(ys, 0))              // 1
+    return 0
+}
+```
+
+### 14.5 Mutex and sleeping
+
+| Builtin | Signature | Description |
+|---------|-----------|-------------|
+| `mutex_new` | `() -> i64 !Par` | A new mutex; an opaque `i64` handle. |
+| `mutex_lock` | `(m: i64) -> i64 !Par` | Locks. |
+| `mutex_unlock` | `(m: i64) -> i64 !Par` | Unlocks. |
+| `sleep_ms` | `(ms: i64) -> i64 !Par` | Blocks this thread; `ms <= 0` → `0`. |
+
+The mutex is available, but the channel is the preferred path: races on shared
+`mut` are undefined (§14.9).
+
+### 14.6 The `!Par` effect
+
+`!Par` is an ordinary effect dimension (§13) — the checker adds it to the
+current effects at every `go` / `go_bg` / `pool_map` site and to every
+`chan_*`, `join`, `detach`, `mutex_*` and `sleep_ms`. If you neither declare it
+in the return type nor catch it, compilation stops:
+
+```
+file.baga: 4:1: необработен ефект !Par във 'main' — декларирай го в return типа или го хвани с catch
+```
+
+The worker's effects are merged with `!Par` at the spawn site, so a server
+`main` that spawns `!IO !Net` handlers has to declare all of them.
+
+### 14.7 What the compiler checks
+
+All of these are compile-time errors (the messages are emitted in Bulgarian):
+
+| Condition | Message |
+|-----------|---------|
+| Worker is not `fn(i64) -> i64` | `'go': worker 'w' трябва да е fn(i64) -> i64` |
+| Worker does not return `i64` | `'go': worker 'w' трябва да връща i64` |
+| First argument is not a function name | `'go': първият аргумент трябва да е име на функция` |
+| First argument is not a function | `'go': 'w' не е функция` |
+| Second argument is not `i64` | `'go': arg е str, очаквах i64` |
+| Wrong argument count | `'go' очаква 2 аргумента (fn, arg), получих 3` |
+| `pool_map` without a `Vec<i64>` | `'pool_map': вторият аргумент трябва да е Vec` |
+| `pool_map` with non-`i64` elements | `'pool_map': Vec елементите трябва да са i64` |
+| Undeclared `!Par` | `необработен ефект !Par във 'main' — …` |
+
+The same messages are emitted for `go_bg` and `pool_map` (with their own name
+in front).
+
+### 14.8 Verification: wait-for acyclicity
+
+`--verify` builds a structured wait-for graph over channels and join handles
+and proves (or refutes with a counterexample) the absence of deadlock inside
+the supported fragment: sequential `send` then `recv`, `join` after a send to a
+recv-first worker, a blocking send on a full buffer (§15.3.7), counted loops in
+workers (§15.3.8), `recv2`/`select` (§15.3.9), `if/else` in workers
+(§15.3.10), joining an infinite worker (§15.3.11), nested `go` (§15.3.12),
+server loops (§15.3.13).
+
+This is not temporal liveness — there is no fairness. Oracle:
+`examples/verify/waitfor.baga`; the adversarial cases live in
+`examples/verify/lp6_hunt.baga`.
+
+### 14.9 Honest limits (v1)
+
+- **Not green threads** — every `go` is a real OS thread (pthread). A thousand
+  concurrent workers is a thousand threads.
+- **No closures as workers.** A worker is `fn(i64) -> i64`; state is packed
+  with `cell2` or passed as an index/id.
+- **No memory model.** Races on shared `mut` are undefined — prefer channels.
+  The arena allocator and its free lists are thread-local (R52), specifically
+  so that `go` does not turn into a GIL.
+- **Channels carry `i64` only.** Send a handle for strings and buffers and
+  convert with `str_h` / `h_str` / `bytes_h` / `h_bytes` (a zero-copy hop in
+  the C backend) — see §12.7 and `std/net`.
+- **`select2_wait` uses a 5 ms wake-up**, not a direct condvar wait.
+- **The LLVM backend** has full parity through the shared runtime
+  `lib/libbaga_par.so` (`src/baga_par_rt.c`); the oracle runs under
+  `lli-14 -load lib/libbaga_par.so`.
+
+---
+
+## 15. The Spec System
 
 A `spec` describes *what* a function must do; the function body describes
 *how*. The compiler verifies that a spec and its function agree on shape, and
@@ -1296,7 +1557,7 @@ fn сортирай(arr: i64) -> i64 {
 }
 ```
 
-### 14.1 Structure of a spec
+### 15.1 Structure of a spec
 
 ```
 spec <name> {
@@ -1318,7 +1579,7 @@ spec <name> {
   **verified statically** by `--verify` (M22); the rest are prose and are
   surfaced by `--proofs`/`--specs` as documentation.
 
-### 14.2 What the compiler checks
+### 15.2 What the compiler checks
 
 The compiler rejects a program when a spec disagrees with its function:
 
@@ -1331,9 +1592,9 @@ The compiler rejects a program when a spec disagrees with its function:
 
 Prose guarantees are not formally proven; `--proofs` reports them with the
 status `UNVERIFIED — requires formal proof or testing`. Guarantee lines that
-parse as boolean expressions are verified statically — see §14.3.1 (M22).
+parse as boolean expressions are verified statically — see §15.3.1 (M22).
 
-### 14.3 Executable guarantees (`ensures:`)
+### 15.3 Executable guarantees (`ensures:`)
 
 The `ensures:` section holds boolean Baga expressions, separated by commas.
 The names of the input parameters and `output` — the returned value — are
@@ -1361,7 +1622,7 @@ spec факториел {
 function without a return type is a compile-time error. The LLVM backend also
 executes `ensures` (and `requires`) — the same wrapper pattern as the C backend.
 
-### 14.3.1 Statically verified guarantees (M22)
+### 15.3.1 Statically verified guarantees (M22)
 
 `--verify` also reads the `guarantees:` lines: if a line parses as a boolean
 expression (for example `- output >= arr` or `- output < arr + 10`), it is
@@ -1382,7 +1643,7 @@ Thus `guarantees:` stops being prose-only — it becomes *gradually* verifiable:
 the more of the verifier's vocabulary a line uses, the more of the
 specification is judged by the compiler.
 
-### 14.3.2 Wait-for acyclicity (M19)
+### 15.3.2 Wait-for acyclicity (M19)
 
 `--verify` tracks a structured wait-for graph on channels and join handles
 (kind-3 protocol, the same machinery as join-after-detach). On a live path:
@@ -1394,16 +1655,16 @@ specification is judged by the compiler.
   send/producer, are **ОБРОЧЕНО** (a cycle).
 
 This is not temporal liveness (no fairness); a blocking send on a full buffer
-is §14.3.7 (M24), counted loops in workers — §14.3.8 (M25), recv2/select —
-§14.3.9 (M26), if/else in workers — §14.3.10 (M27), joining an infinite
-worker — §14.3.11 (M28), nested go — §14.3.12 (M29), server loops —
-§14.3.13 (M30). `while` bodies with a non-`true` condition, nested `go`
+is §15.3.7 (M24), counted loops in workers — §15.3.8 (M25), recv2/select —
+§15.3.9 (M26), if/else in workers — §15.3.10 (M27), joining an infinite
+worker — §15.3.11 (M28), nested go — §15.3.12 (M29), server loops —
+§15.3.13 (M30). `while` bodies with a non-`true` condition, nested `go`
 inside a branch/loop, packed arguments, non-constant loop bounds, and
 blocking ops on untracked channels are an honest no-claim — never a false
 PROVEN. Oracle: `examples/verify/waitfor.baga`. The counting
 lemmas (fixed N) stay in `liveness_struct.baga`.
 
-### 14.3.3 Even powers and the BV envelope (M20)
+### 15.3.3 Even powers and the BV envelope (M20)
 
 `--verify` widens the envelope with no new solver:
 
@@ -1415,7 +1676,7 @@ lemmas (fixed N) stay in `liveness_struct.baga`.
 
 Oracles: `examples/verify/poly_even.baga`, `bitwise_mask.baga`.
 
-### 14.3.4 Consecutive products and `n^-1` (M21)
+### 15.3.4 Consecutive products and `n^-1` (M21)
 
 - `n*(n+1)` and `n*(n-1)` are **ДОКАЗАНО** `>= 0` (and `n(n+1) >= n`);
   `n*(n+2) >= 0` is **ОБРОЧЕНО** at `-1`.
@@ -1423,7 +1684,7 @@ Oracles: `examples/verify/poly_even.baga`, `bitwise_mask.baga`.
 
 Oracles: `examples/verify/poly_consec.baga`, `bitwise_xor_not.baga`.
 
-### 14.3.5 Signed right shift — floor semantics (M22)
+### 15.3.5 Signed right shift — floor semantics (M22)
 
 `n >> k` is arithmetic shift: `q = floor(n / 2^k)` over two's complement.
 `--verify` records the shift as its own entry (the count `k` instead of a
@@ -1442,7 +1703,7 @@ for C trunc, false for ashr) — a potential false ДОКАЗАНО. Oracle:
 `examples/verify/lp6_hunt.baga`. Still open: full bit-blasting, wrap as a
 value, variable XOR.
 
-### 14.3.6 Logical right shift — zero-fill semantics (M23)
+### 15.3.6 Logical right shift — zero-fill semantics (M23)
 
 `n >>> k` is logical shift: the 64-bit two's complement representation of `n`
 is shifted right by a masked count (`k & 63`) and zero-filled on the left.
@@ -1468,7 +1729,7 @@ Oracle: `examples/verify/lshr_bounds.baga`; adversarial cases
 the battery keeps them refuted). Still open: full bit-blasting, wrap as a
 value, variable XOR.
 
-### 14.3.7 Send-blocking on a full buffer (M24)
+### 15.3.7 Send-blocking on a full buffer (M24)
 
 `baga_chan_send` blocks while the buffer is full (the `not_full` cond in
 `src/baga_par_rt.c`), so a send is a blocking operation just like recv — and
@@ -1501,7 +1762,7 @@ fairness/starvation stays outside the fragment. Oracle:
 `examples/verify/lp6_hunt.baga` (they guard exactly the false PROVEN that
 M24 closes).
 
-### 14.3.8 Counted loops in workers — known-N fan-in (M25)
+### 15.3.8 Counted loops in workers — known-N fan-in (M25)
 
 A `for i in lo..hi` with literal bounds (hi exclusive) inside a worker body
 is scanned once and its counts are scaled by `k = hi - lo` — the M16
@@ -1513,18 +1774,18 @@ guesswork:
   `go_bg`). A parent `recv` with `unmatched > parent sends + capacity` is
   **REFUTED** ("recv with no send") — before M25 a second unmatched recv
   was silent no-claim.
-- **Loop consumers.** Counted recvs are exact credits in the §14.3.7
+- **Loop consumers.** Counted recvs are exact credits in the §15.3.7
   arithmetic: a `cons` with 3 looped recvs covers 3 parent sends into a
   cap-1 channel — all three **PROVEN** "free slot".
 - **Honest silence.** Symbolic bounds (including a bound received from the
   channel), `while`/`if` bodies, nested `go` → complex → no-claim;
-  competing-producer cases stay no-claim per §14.3.7.
+  competing-producer cases stay no-claim per §15.3.7.
 
 Oracle: `examples/verify/fanin_loops.baga` (the 4th recv past the loop
 producer's capacity hangs at runtime too); adversarial cases
 `lp6_fanin_short_bad`/`lp6_fanin_over_bad` in `examples/verify/lp6_hunt.baga`.
 
-### 14.3.9 recv2 and select2_wait as blocking ops (M26)
+### 15.3.9 recv2 and select2_wait as blocking ops (M26)
 
 `chan_recv2` blocks exactly like `chan_recv` — it gets the same check
 (before it had none: a producer-less recv2 passed silently while it
@@ -1554,14 +1815,14 @@ producer-less recv2 hang at runtime too); adversarial cases
 `lp6_recv2_dead_bad`, `lp6_select_dead_bad`, `lp6_select_drained_bad` in
 `examples/verify/lp6_hunt.baga`.
 
-### 14.3.10 if/else in workers — guaranteed minimums (M27)
+### 15.3.10 if/else in workers — guaranteed minimums (M27)
 
 The two branches of an `if` inside a worker body are scanned separately
 and merged:
 
 - **Counts are guaranteed minimums** — the worker performs at least the
-  min of each branch. That is exactly the quantity credits (§14.3.7),
-  producer capacity (§14.3.8), and the over-send check (§14.3.7) use
+  min of each branch. That is exactly the quantity credits (§15.3.7),
+  producer capacity (§15.3.8), and the over-send check (§15.3.7) use
   for their PROVEN directions. Equal branch counts = an exact worker
   (no loss).
 - **The first blocking op** is classified only when both branches
@@ -1572,14 +1833,14 @@ and merged:
   Counted loops with an imprecise body inherit the flag (M25×M27).
 - `while`/`match` stay complex — they need induction; so does nested
   `go`.
-- Soundness fix to §14.3.9: the select PROVEN requires `!unk` — an
+- Soundness fix to §15.3.9: the select PROVEN requires `!unk` — an
   unknown consumer could eat the item.
 
 Oracle: `examples/verify/branch_if.baga` (2 guaranteed sends into cap 1
 hang at runtime too); adversarial cases `lp6_if_short_bad`/
 `lp6_if_over_bad` in `examples/verify/lp6_hunt.baga`.
 
-### 14.3.11 Joining a provably infinite worker (M28)
+### 15.3.11 Joining a provably infinite worker (M28)
 
 A `while true` with no `break`/`return` in its body never exits — the
 checker agrees (such a loop diverges; no return is required after it).
@@ -1601,7 +1862,7 @@ When the loop sits on a worker's straight-line path:
 Oracle: `examples/verify/worker_term.baga`; adversarial case
 `lp6_join_inf_bad` in `examples/verify/lp6_hunt.baga`.
 
-### 14.3.12 Nested go with a structured join (M29)
+### 15.3.12 Nested go with a structured join (M29)
 
 A worker that spawns workers itself is classified recursively (depth
 ≤ 4). The folding rules:
@@ -1625,7 +1886,7 @@ Oracle: `examples/verify/nested_go.baga`; adversarial cases
 `lp6_nested_cycle_bad`/`lp6_nested_inf_bad` in
 `examples/verify/lp6_hunt.baga`.
 
-### 14.3.13 Server loops — while true with an exit (M30)
+### 15.3.13 Server loops — while true with an exit (M30)
 
 A `while true` with an exit (`return`/`break`) runs its body at least
 once:
@@ -1651,7 +1912,7 @@ once:
 Oracle: `examples/verify/while_loop.baga`; adversarial case
 `lp6_server_join_bad` in `examples/verify/lp6_hunt.baga`.
 
-### 14.4 Preconditions (`requires:`)
+### 15.4 Preconditions (`requires:`)
 
 The `requires:` section holds boolean expressions over the input parameters,
 separated by commas. They are type-checked at compile time and executed
@@ -1677,7 +1938,7 @@ spec корен {
 `ensures`, which requires `output`). `output` is not visible inside requires
 expressions.
 
-### 14.5 Property-based testing (`--test-specs`)
+### 15.5 Property-based testing (`--test-specs`)
 
 `baga --test-specs file.baga` does not run `main`; it generates a test driver
 that calls every function with `ensures`/`requires` 100 times with
@@ -1698,7 +1959,7 @@ overflows beyond that.
 
 ---
 
-## 15. Proof Extraction
+## 16. Proof Extraction
 
 `baga --proofs <file>` prints readable proof sketches derived from the AST:
 
@@ -1721,9 +1982,9 @@ purity/effect theorem. If a spec exists, its guarantees are listed too.
 
 ---
 
-## 16. Example Programs
+## 17. Example Programs
 
-### 16.1 Hello, world
+### 17.1 Hello, world
 
 ```baga
 fn main() {
@@ -1731,7 +1992,7 @@ fn main() {
 }
 ```
 
-### 16.2 Factorial (recursion)
+### 17.2 Factorial (recursion)
 
 ```baga
 fn факториел(n: i64) -> i64 {
@@ -1746,7 +2007,7 @@ fn main() {
 }
 ```
 
-### 16.3 Fibonacci (while loop)
+### 17.3 Fibonacci (while loop)
 
 ```baga
 fn фибоначи(n: i64) -> i64 {
@@ -1769,7 +2030,7 @@ fn main() {
 }
 ```
 
-### 16.4 Summation with a for loop
+### 17.4 Summation with a for loop
 
 ```baga
 fn main() {
@@ -1781,7 +2042,7 @@ fn main() {
 }
 ```
 
-### 16.5 Type inference and promotion
+### 17.5 Type inference and promotion
 
 ```baga
 fn кръг_лице(r: f64) -> f64 {
@@ -1801,7 +2062,7 @@ fn main() {
 }
 ```
 
-### 16.6 Structs and field access
+### 17.6 Structs and field access
 
 ```baga
 struct Точка { x: f64, y: f64 }
@@ -1819,7 +2080,7 @@ fn main() {
 }
 ```
 
-### 16.7 Enums and match
+### 17.7 Enums and match
 
 ```baga
 enum Цвят { Червено, Зелено, Синьо }
@@ -1839,7 +2100,7 @@ fn main() {
 }
 ```
 
-### 16.8 Strings
+### 17.8 Strings
 
 ```baga
 fn main() {
@@ -1853,7 +2114,7 @@ fn main() {
 }
 ```
 
-### 16.9 Vectors
+### 17.9 Vectors
 
 ```baga
 fn main() {
@@ -1871,7 +2132,7 @@ fn main() {
 }
 ```
 
-### 16.10 Effects: propagate and handle
+### 17.10 Effects: propagate and handle
 
 ```baga
 fn прочети_файл(път: str) -> str !IO !NotFound {
@@ -1891,7 +2152,7 @@ fn main() {
 }
 ```
 
-### 16.11 Specs
+### 17.11 Specs
 
 ```baga
 spec сортирай {
@@ -1912,7 +2173,7 @@ fn main() {
 }
 ```
 
-### 16.12 GCD (Euclid, while + modulo)
+### 17.12 GCD (Euclid, while + modulo)
 
 ```baga
 fn gcd(a: i64, b: i64) -> i64 {
@@ -1931,14 +2192,55 @@ fn main() {
 }
 ```
 
+### 17.13 Concurrency: fan-in over a channel
+
+```baga
+// 8 worker threads send their results down one channel (§14).
+fn work(x: i64) -> i64 {
+    return x * x + x
+}
+
+fn producer(ctx: i64) -> i64 !Par {
+    let c = cell2_0(ctx)
+    let x = cell2_1(ctx)
+    chan_send(c, work(x))
+    return 0
+}
+
+fn main() -> i64 !Par {
+    let c = chan_new(8)
+    let mut i: i64 = 1
+    let mut handles = vec_new()
+    while i <= 8 {
+        let h = go(producer, cell2(c, i))
+        vec_push(handles, h)
+        i = i + 1
+    }
+    let mut sum: i64 = 0
+    let mut n: i64 = 0
+    while n < 8 {
+        sum = sum + chan_recv(c)
+        n = n + 1
+    }
+    let mut j: i64 = 0
+    while j < vec_len(handles) {
+        join(vec_get(handles, j))
+        j = j + 1
+    }
+    chan_close(c)
+    print(sum)   // 240 — Σ(i² + i) for i = 1..8
+    return 0
+}
+```
+
 ---
 
-## 17. Error Messages
+## 18. Error Messages
 
 Errors are printed as `file: line:col: message`. Messages are emitted in
 Bulgarian; English glosses follow.
 
-### 17.1 Lexical errors
+### 18.1 Lexical errors
 
 | Message | Meaning |
 |---------|---------|
@@ -1947,7 +2249,7 @@ Bulgarian; English glosses follow.
 | `непозната escape последователност` | Unknown escape sequence in a string/char. |
 | `непознат символ '<c>' (0xNN)` | A character the lexer does not recognize. |
 
-### 17.2 Parse errors
+### 18.2 Parse errors
 
 | Message | Meaning |
 |---------|---------|
@@ -1955,7 +2257,7 @@ Bulgarian; English glosses follow.
 | `очаквах израз, получих '<Y>'` | Expected an expression but found Y. |
 | `очаквах декларация (fn, struct, spec), получих '<Y>'` | Top level allows only declarations. |
 
-### 17.3 Type and semantic errors
+### 18.3 Type and semantic errors
 
 | Message | Meaning |
 |---------|---------|
@@ -1973,14 +2275,17 @@ Bulgarian; English glosses follow.
 | `vec_push: елемент от тип A, но векторът е Vec<B>` | Mixing element types in one `Vec` (also `vec_set`). |
 | `vec_push: неподдържан елементен тип A за Vec (поддържат се i64, str, f64, bytes и struct)` | Element type other than `i64`/`str`/`f64`/`bytes` (also `vec_set`). |
 | `Vec<T>: неподдържан елементен тип A (поддържат се i64, str, f64, bytes и struct)` | `Vec<A>` annotation with an element other than `i64`/`str`/`f64`/`bytes`. |
+| `'go': worker '<w>' трябва да е fn(i64) -> i64` | The worker of `go`/`go_bg`/`pool_map` is not `fn(i64) -> i64` (§14.7). |
+| `'go': първият аргумент трябва да е име на функция` | The first argument to `go` is an expression, not a bare function name. |
+| `'pool_map': вторият аргумент трябва да е Vec` | `pool_map` expects a `Vec<i64>` as input (§14.4). |
 
-### 17.4 Effect errors
+### 18.4 Effect errors
 
 | Message | Meaning |
 |---------|---------|
 | `необработен ефект !<E> във '<fn>' — декларирай го в return типа или го хвани с catch` | An effect reached a function that neither declares nor catches it. |
 
-### 17.5 Spec errors
+### 18.5 Spec errors
 
 | Message | Meaning |
 |---------|---------|
@@ -1992,7 +2297,7 @@ Bulgarian; English glosses follow.
 | `spec '<name>': ensures #N е A, очаквах bool` | The ensures expression is not boolean. |
 | `spec '<name>': requires #N е A, очаквах bool` | The requires expression is not boolean. |
 
-### 17.6 Program structure
+### 18.6 Program structure
 
 | Message | Meaning |
 |---------|---------|
@@ -2000,7 +2305,7 @@ Bulgarian; English glosses follow.
 
 ---
 
-## 18. Compiler Command Line
+## 19. Compiler Command Line
 
 ```
 baga [options] <file.baga>
@@ -2026,7 +2331,7 @@ resulting binary, and cleans up the temporary files.
 | `--version`, `-V` | Compiler version. |
 | `--help`, `-h` | Show usage. |
 
-### 18.1 Imports and Packages (sandak)
+### 19.1 Imports and Packages (sandak)
 
 `import "path/to/file.baga"` at the top of a file textually includes another
 file (with an include guard and cycle detection). Lookup order: (1) relative
@@ -2069,7 +2374,7 @@ are computed automatically by the **sandak** package manager from the
 
 ---
 
-## 19. Summary of Builtins
+## 20. Summary of Builtins
 
 | Builtin | Signature | Effect |
 |---------|-----------|--------|
@@ -2115,6 +2420,29 @@ are computed automatically by the **sandak** package manager from the
 | `h_bytes` | `(h: i64) -> bytes` | R66: inverse of `bytes_h` |
 | `map_h` | `(m: Map) -> i64` | R55: unsafe map handle (go_bg ctx packing); C backend |
 | `h_map` | `(h: i64) -> Map` | R55: inverse of `map_h`; C backend |
+| `go` | `(fn, arg: i64) -> i64` | `!Par` — spawn an OS thread (§14.1) |
+| `go_bg` | `(fn, arg: i64) -> i64` | `!Par` — detached thread (§14.1) |
+| `join` | `(h: i64) -> i64` | `!Par` — wait and return the result (§14.1) |
+| `detach` | `(h: i64) -> i64` | `!Par` — detach the handle (§14.1) |
+| `pool_map` | `(fn, vec: Vec<i64>, nworkers: i64) -> Vec<i64>` | `!Par` — bounded pool, input order preserved (§14.4) |
+| `chan_new` | `(cap: i64) -> i64` | `!Par` — `cap < 1` → `1` (§14.2) |
+| `chan_send` | `(c: i64, v: i64) -> i64` | `!Par` — blocks on a full buffer; `-1` if closed |
+| `chan_recv` | `(c: i64) -> i64` | `!Par` — blocks; closed and empty → `0` |
+| `chan_recv2` | `(c: i64) -> i64` | `!Par` — `cell2(ok, value)` |
+| `chan_try_recv` | `(c: i64) -> i64` | `!Par` — `1`=value, `0`=empty, `2`=closed |
+| `chan_recv_timeout` | `(c: i64, ms: i64) -> i64` | `!Par` — `0`=timeout, `2`=closed |
+| `chan_select2` | `(c0, c1: i64) -> i64` | `!Par` — `which` 0/1/2/3 (§14.3) |
+| `chan_select2_wait` | `(c0, c1: i64) -> i64` | `!Par` — blocking select |
+| `chan_select2_timeout` | `(c0, c1, ms: i64) -> i64` | `!Par` — `which=2` on timeout |
+| `chan_close` | `(c: i64) -> i64` | `!Par` — wakes blocked senders |
+| `chan_len` | `(c: i64) -> i64` | `!Par` — buffered items |
+| `mutex_new` | `() -> i64` | `!Par` — opaque handle (§14.5) |
+| `mutex_lock` | `(m: i64) -> i64` | `!Par` |
+| `mutex_unlock` | `(m: i64) -> i64` | `!Par` |
+| `sleep_ms` | `(ms: i64) -> i64` | `!Par` — `ms <= 0` → `0` |
+| `cell2` | `(a, b) -> i64` | — pure heap pair (§14.1) |
+| `cell2_0` | `(p: i64) -> i64` | — first element |
+| `cell2_1` | `(p: i64) -> i64` | — second element |
 
 ---
 
