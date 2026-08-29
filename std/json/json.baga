@@ -116,7 +116,7 @@ fn jp_string_node(p: JsonParser) -> JsonParser {
     let mut i = pos
     let mut esc: i64 = 0
     while i < n {
-        let c = char_at(src, i)
+        let c = byte_at(src, i)
         if c == 34 {
             break
         }
@@ -144,7 +144,7 @@ fn jp_string_node(p: JsonParser) -> JsonParser {
             }
             running = false
         } else {
-            let c = char_at(src, pos)
+            let c = byte_at(src, pos)
             if c == 34 {
                 if pos > run {
                     out = concat(out, substr(src, run, pos))
@@ -156,7 +156,7 @@ fn jp_string_node(p: JsonParser) -> JsonParser {
                     if pos > run {
                         out = concat(out, substr(src, run, pos))
                     }
-                    let e = char_at(src, pos + 1)
+                    let e = byte_at(src, pos + 1)
                     if e == 110 { out = concat(out, chr(10)) }
                     if e == 116 { out = concat(out, chr(9)) }
                     if e == 114 { out = concat(out, chr(13)) }

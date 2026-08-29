@@ -12,12 +12,18 @@ fn str_ends_with(s: str, suffix: str) -> bool {
 }
 
 // Index of the first occurrence of needle, or -1.
+// O(|s|): byte_at е O(1) (няма strlen на всяка проба); substr сравнява само
+// при съвпадение на първия байт, за да не стане O(n²) върху дълъг низ.
 fn str_find(s: str, needle: str) -> i64 {
     let n = len(needle)
     if n == 0 { return 0 }
+    let sn = len(s)
+    let first = byte_at(needle, 0)
     let mut i: i64 = 0
-    while i + n <= len(s) {
-        if substr(s, i, i + n) == needle { return i }
+    while i + n <= sn {
+        if byte_at(s, i) == first {
+            if substr(s, i, i + n) == needle { return i }
+        }
         i = i + 1
     }
     return -1
