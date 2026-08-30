@@ -1,12 +1,20 @@
 // c2_mem.baga — LP8-H: bump арена + mem_mark/rewind/persist за self.
-// Моделът е src/codegen_c.c без --rc, опростен: няма per-alloc header и
-// free-list (drop на str е no-op — данните живеят в арената). Rewind
-// free()-ва ephemeral блоковете над mark-а; persist веригата не се пипа.
+// Моделът е src/codegen_c.c без --rc, опростен: няма free-list (drop на
+// str е no-op — данните живеят в арената). Rewind free()-ва ephemeral
+// блоковете над mark-а; persist веригата не се пипа.
+// STR-1: per-alloc header (magic + meta) носи кешираната дължина на низ —
+// baga_len/concat четат O(1) вместо strlen. Header-ът е пред payload-а,
+// невидим за user кода; rewind/persist не го пипат.
 // concat/substr/chr/to_str минават през baga_alloc, иначе rewind не
 // връща памет (историческият malloc runtime).
 
 fn emit_mem_runtime() {
     write("typedef struct baga_ABlk { struct baga_ABlk *next; size_t used, cap; char data[]; } baga_ABlk;\n")
+    write("typedef struct { uint64_t magic; uint64_t meta; } baga_Hdr;\n")
+    write("#define BAGA_HDR_MAGIC 0xBA6A4D454D344848ULL\n")
+    write("#define BAGA_HS 16\n")
+    write("static __thread char *baga_lo = NULL;\n")
+    write("static __thread char *baga_hi = NULL;\n")
     write("static __thread baga_ABlk *baga_arena_head = NULL;\n")
     write("static __thread baga_ABlk *baga_persist_head = NULL;\n")
     write("static __thread int64_t baga_persist_depth = 0;\n")
@@ -20,13 +28,37 @@ fn emit_mem_runtime() {
     write("    int persist = baga_persist_depth > 0;\n")
     write("    baga_ABlk **hp = persist ? &baga_persist_head : &baga_arena_head;\n")
     write("    baga_ABlk *b = *hp;\n")
-    write("    if (!b || b->used + an > b->cap) {\n")
-    write("        size_t cap = an > 8192 ? an : 8192;\n")
+    write("    if (!b || b->used + BAGA_HS + an > b->cap) {\n")
+    write("        size_t cap = (BAGA_HS + an) > 8192 ? (BAGA_HS + an) : 8192;\n")
     write("        b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n")
     write("        if (!b) { fprintf(stderr, \"baga: oom\\n\"); exit(1); }\n")
     write("        b->next = *hp; b->used = 0; b->cap = cap; *hp = b;\n")
     write("    }\n")
-    write("    void *p = b->data + b->used; b->used += an; return p;\n")
+    write("    baga_Hdr *h = (baga_Hdr *)(b->data + b->used);\n")
+    write("    h->magic = BAGA_HDR_MAGIC; h->meta = 0;\n")
+    write("    b->used += BAGA_HS + an;\n")
+    write("    if (!baga_lo || (char *)h < baga_lo) baga_lo = (char *)h;\n")
+    write("    if ((char *)h + BAGA_HS + an > baga_hi) baga_hi = (char *)h + BAGA_HS + an;\n")
+    write("    return (char *)h + BAGA_HS;\n")
+    write("}\n")
+    // STR-1: кеширана дължина в meta (бит 1 STR, битове 2..63 len<<2).
+    // baga_str_hdr чете s-16 през range guard + magic (литерали/външни
+    // malloc са извън [baga_lo,baga_hi) → strlen). Producer забравил
+    // set_slen деградира безопасно на strlen (meta&2 == 0).
+    write("static inline baga_Hdr *baga_str_hdr(const char *s) {\n")
+    write("    if (!s || !baga_lo || (char *)s < baga_lo + BAGA_HS || (char *)s >= baga_hi) return NULL;\n")
+    write("    if (((uintptr_t)s & 4095) < BAGA_HS) return NULL;\n")
+    write("    baga_Hdr *h = (baga_Hdr *)((char *)s - BAGA_HS);\n")
+    write("    if (h->magic != BAGA_HDR_MAGIC || !(h->meta & 2)) return NULL;\n")
+    write("    return h;\n")
+    write("}\n")
+    write("static inline int64_t baga_str_len(const char *s) {\n")
+    write("    baga_Hdr *h = baga_str_hdr(s);\n")
+    write("    return h ? (int64_t)(h->meta >> 2) : (int64_t)strlen(s);\n")
+    write("}\n")
+    write("static inline void baga_set_slen(const char *s, int64_t n) {\n")
+    write("    baga_Hdr *h = (baga_Hdr *)((char *)s - BAGA_HS);\n")
+    write("    h->meta = (h->meta & 1) | 2 | ((uint64_t)n << 2);\n")
     write("}\n")
     write("typedef struct { baga_ABlk *head; size_t used; } baga_MMark;\n")
     write("static int64_t baga_mem_mark(void) {\n")
@@ -51,16 +83,16 @@ fn emit_mem_runtime() {
     write("    if (m->head) m->head->used = m->used;\n")
     write("    free(m);\n")
     write("}\n")
-    write("static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n")
+    write("static int64_t baga_len(const char *s) { return baga_str_len(s); }\n")
     write("static int64_t baga_char_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n")
     write("static int64_t baga_byte_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n")
-    write("static const char *baga_byte_chr(int64_t c) { char *r = baga_alloc(2); r[0] = (char)c; r[1] = 0; return r; }\n")
+    write("static const char *baga_byte_chr(int64_t c) { char *r = baga_alloc(2); r[0] = (char)c; r[1] = 0; baga_set_slen(r, c == 0 ? 0 : 1); return r; }\n")
     write("static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n")
     write("    int64_t n = b - a; if (n < 0) n = 0;\n")
-    write("    char *r = baga_alloc((size_t)n + 1); memcpy(r, s + a, (size_t)n); r[n] = 0; return r; }\n")
+    write("    char *r = baga_alloc((size_t)n + 1); memcpy(r, s + a, (size_t)n); r[n] = 0; baga_set_slen(r, n); return r; }\n")
     write("static const char *baga_concat(const char *a, const char *b) {\n")
-    write("    size_t la = strlen(a), lb = strlen(b);\n")
-    write("    char *r = baga_alloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r; }\n")
+    write("    size_t la = (size_t)baga_str_len(a), lb = (size_t)baga_str_len(b);\n")
+    write("    char *r = baga_alloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); baga_set_slen(r, (int64_t)(la + lb)); return r; }\n")
     write("static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n")
     // M22: отмествания с маскиран брояч (b & 63) — детерминирано, паритет
     // с LLVM (shl/ashr след and 63). C `>>` върху отрицателни е
@@ -80,10 +112,10 @@ fn emit_mem_runtime() {
     write("}\n")
     write("static const char *baga_chr(int64_t c) {\n")
     write("    char *r = baga_alloc(5);\n")
-    write("    if (c < 0x80) { r[0] = (char)c; r[1] = 0; }\n")
-    write("    else if (c < 0x800) { r[0] = (char)(0xC0|(c>>6)); r[1] = (char)(0x80|(c&0x3F)); r[2] = 0; }\n")
-    write("    else if (c < 0x10000) { r[0] = (char)(0xE0|(c>>12)); r[1] = (char)(0x80|((c>>6)&0x3F)); r[2] = (char)(0x80|(c&0x3F)); r[3] = 0; }\n")
-    write("    else { r[0] = (char)(0xF0|(c>>18)); r[1] = (char)(0x80|((c>>12)&0x3F)); r[2] = (char)(0x80|((c>>6)&0x3F)); r[3] = (char)(0x80|(c&0x3F)); r[4] = 0; }\n")
+    write("    if (c < 0x80) { r[0] = (char)c; r[1] = 0; baga_set_slen(r, c == 0 ? 0 : 1); }\n")
+    write("    else if (c < 0x800) { r[0] = (char)(0xC0|(c>>6)); r[1] = (char)(0x80|(c&0x3F)); r[2] = 0; baga_set_slen(r, 2); }\n")
+    write("    else if (c < 0x10000) { r[0] = (char)(0xE0|(c>>12)); r[1] = (char)(0x80|((c>>6)&0x3F)); r[2] = (char)(0x80|(c&0x3F)); r[3] = 0; baga_set_slen(r, 3); }\n")
+    write("    else { r[0] = (char)(0xF0|(c>>18)); r[1] = (char)(0x80|((c>>12)&0x3F)); r[2] = (char)(0x80|((c>>6)&0x3F)); r[3] = (char)(0x80|(c&0x3F)); r[4] = 0; baga_set_slen(r, 4); }\n")
     write("    return r; }\n")
     write("static int64_t baga_ord(const char *s) {\n")
     write("    unsigned char c = (unsigned char)s[0]; if (!c) return 0;\n")
@@ -91,8 +123,8 @@ fn emit_mem_runtime() {
     write("    if ((c&0xE0)==0xC0) return ((int64_t)(c&0x1F)<<6)|((int64_t)(unsigned char)s[1]&0x3F);\n")
     write("    if ((c&0xF0)==0xE0) return ((int64_t)(c&0x0F)<<12)|(((int64_t)(unsigned char)s[1]&0x3F)<<6)|((int64_t)(unsigned char)s[2]&0x3F);\n")
     write("    return ((int64_t)(c&0x07)<<18)|(((int64_t)(unsigned char)s[1]&0x3F)<<12)|(((int64_t)(unsigned char)s[2]&0x3F)<<6)|((int64_t)(unsigned char)s[3]&0x3F); }\n")
-    write("static const char *baga_i64_to_str(int64_t x) { char *r = baga_alloc(24); snprintf(r, 24, \"%lld\", (long long)x); return r; }\n")
-    write("static const char *baga_f64_to_str(double x) { char *r = baga_alloc(32); snprintf(r, 32, \"%g\", x); return r; }\n")
+    write("static const char *baga_i64_to_str(int64_t x) { char *r = baga_alloc(24); int64_t n = (int64_t)snprintf(r, 24, \"%lld\", (long long)x); baga_set_slen(r, n); return r; }\n")
+    write("static const char *baga_f64_to_str(double x) { char *r = baga_alloc(32); int64_t n = (int64_t)snprintf(r, 32, \"%g\", x); baga_set_slen(r, n); return r; }\n")
 }
 
 // M22/M23: `>>`/`<<`/`>>>` — baga_ashr_i64 / baga_shl_i64 / baga_lshr_i64
