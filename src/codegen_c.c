@@ -5774,15 +5774,23 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "static __thread uint64_t baga_rc_epoch = 0;\n");
         fprintf(out, "static __thread baga_ABlk *baga_rc_spare = NULL;\n");
     }
-    else
+    else {
+        /* STR-1: non-RC persist полето пакетира кешираната дължина — бит 0
+         * persist, бит 1 STR флаг, битове 2..63 дължина (len << 2). 16 B
+         * header-ът и 16-байтовото подравняване на payload-а остават.
+         * baga_lo/hi са range guard-ът за baga_str_len (четене на s - 16
+         * пред литерал/argv може да е неподравнена страница). */
         fprintf(out, "typedef struct { uint64_t magic; uint64_t persist; } baga_Hdr;\n");
+        fprintf(out, "static __thread char *baga_lo = NULL;\n");
+        fprintf(out, "static __thread char *baga_hi = NULL;\n");
+    }
     fprintf(out, "static void baga_free(void *p, int64_t n) {\n");
     fprintf(out, "    if (!p || n <= 0) return;\n");
     fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)p - %d);\n", hs);
     if (cg->rc)
         fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)(h->pe & 1) : 0;\n");
     else
-        fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)h->persist : 0;\n");
+        fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)(h->persist & 1) : 0;\n");
     fprintf(out, "    if (n <= 1024) {\n");
     fprintf(out, "        int c = (int)((n + 15) / 16) - 1;\n");
     fprintf(out, "        void **fl = persist ? &baga_fl_p[c] : &baga_fl[c];\n");
@@ -5808,7 +5816,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     if (cg->rc)
         fprintf(out, "        if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->pe = ((uint64_t)baga_rc_epoch << 1) | (_h->pe & 1); } return fb; }\n", hs);
     else
-        fprintf(out, "        if (fb) { *fl = *(void **)fb; return fb; }\n");
+        fprintf(out, "        if (fb) { *fl = *(void **)fb; ((baga_Hdr *)((char *)fb - %d))->persist &= 1; return fb; }\n", hs);
     fprintf(out, "        an = rn;\n");
     fprintf(out, "    } else {\n");
     fprintf(out, "        int bi = baga_fl_big_idx((int64_t)n);\n");
@@ -5818,7 +5826,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     if (cg->rc)
         fprintf(out, "            if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->pe = ((uint64_t)baga_rc_epoch << 1) | (_h->pe & 1); } return fb; }\n", hs);
     else
-        fprintf(out, "            if (fb) { *fl = *(void **)fb; return fb; }\n");
+        fprintf(out, "            if (fb) { *fl = *(void **)fb; ((baga_Hdr *)((char *)fb - %d))->persist &= 1; return fb; }\n", hs);
     fprintf(out, "            an = ((size_t)2048 << bi);\n");
     fprintf(out, "        } else {\n");
     fprintf(out, "            an = n;\n");
@@ -5854,6 +5862,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "        } else {\n");
         fprintf(out, "            b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
         fprintf(out, "            b->next = *hp; b->used = 0; b->cap = cap;\n");
+        fprintf(out, "            if (!baga_lo || (char *)b->data < baga_lo) baga_lo = (char *)b->data;\n");
+        fprintf(out, "            if ((char *)b->data + cap > baga_hi) baga_hi = (char *)b->data + cap;\n");
         fprintf(out, "        }\n");
         fprintf(out, "        *hp = b;\n");
     }
@@ -5865,6 +5875,31 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     else
         fprintf(out, "    baga_Hdr *hh = (baga_Hdr *)p; hh->magic = BAGA_HDR_MAGIC; hh->persist = (uint64_t)persist;\n");
     fprintf(out, "    return (char *)p + %d;\n", hs);
+    fprintf(out, "}\n");
+    /* STR-1: кеширана дължина на низ — non-RC чете през range guard + magic
+     * (литерали/argv са извън [baga_lo,baga_hi) → strlen); RC е no-op
+     * (strlen) засега. Producer-ите викат baga_set_slen еднакво и в двата
+     * режима, така че споделеният код се компилира и под --rc.
+     * ИНВАРИАНТ: slen == strlen(s) винаги — str е C низ и NUL го съкращава
+     * (str_of_bytes/read_file на двоичен вход); тези producers ползват
+     * strlen(r), не „естествената" дължина (иначе LLVM-оракулът лови). */
+    fprintf(out, "static inline __attribute__((always_inline)) int64_t baga_str_len(const char *s) {\n");
+    if (cg->rc) {
+        fprintf(out, "    return (int64_t)strlen(s);\n");
+    } else {
+        fprintf(out, "    if (!s || !baga_lo || (char *)s < baga_lo + %d || (char *)s >= baga_hi) return (int64_t)strlen(s);\n", hs);
+        fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)s - %d);\n", hs);
+        fprintf(out, "    if (h->magic != BAGA_HDR_MAGIC || !(h->persist & 2)) return (int64_t)strlen(s);\n");
+        fprintf(out, "    return (int64_t)(h->persist >> 2);\n");
+    }
+    fprintf(out, "}\n");
+    fprintf(out, "static inline __attribute__((always_inline)) void baga_set_slen(const char *s, int64_t n) {\n");
+    if (cg->rc) {
+        fprintf(out, "    (void)s; (void)n;\n");
+    } else {
+        fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)s - %d);\n", hs);
+        fprintf(out, "    h->persist = (h->persist & 1) | 2 | ((uint64_t)n << 2);\n");
+    }
     fprintf(out, "}\n");
     /* RC1: retain/release ядро. magic check прави C литералите и външните
      * буфери „immortal" (no-op); release на rc==0 е underflow → чиста
@@ -5948,7 +5983,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "static void baga_print_f64(double v)  { printf(\"%%g\\n\", v); }\n");
     fprintf(out, "static void baga_print_str(const char *s) { printf(\"%%s\\n\", s); }\n");
     fprintf(out, "static void baga_write(const char *s) { printf(\"%%s\", s); }\n");
-    fprintf(out, "static int64_t baga_len(const char *s) { return (int64_t)strlen(s); }\n");
+    fprintf(out, "static int64_t baga_len(const char *s) { return baga_str_len(s); }\n");
     fprintf(out, "static void baga_bounds_fail(const char *fn, int64_t i, int64_t len) {\n");
     fprintf(out, "    fprintf(stderr, \"baga: %%s: индекс %%lld извън границите [0, %%lld)\\n\", fn, (long long)i, (long long)len);\n");
     fprintf(out, "    exit(1);\n");
@@ -5958,34 +5993,34 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    exit(1);\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_char_at(const char *s, int64_t i) {\n");
-    fprintf(out, "    int64_t n = (int64_t)strlen(s);\n");
+    fprintf(out, "    int64_t n = baga_str_len(s);\n");
     fprintf(out, "    if (i < 0 || i >= n) baga_bounds_fail(\"char_at\", i, n);\n");
     fprintf(out, "    return (int64_t)(unsigned char)s[i];\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_byte_at(const char *s, int64_t i) { return (int64_t)(unsigned char)s[i]; }\n");
-    fprintf(out, "static const char *baga_byte_chr(int64_t c) { char *r = baga_alloc(2); r[0] = (char)c; r[1] = 0; return r; }\n");
+    fprintf(out, "static const char *baga_byte_chr(int64_t c) { char *r = baga_alloc(2); r[0] = (char)c; r[1] = 0; baga_set_slen(r, c == 0 ? 0 : 1); return r; }\n");
     fprintf(out, "static const char *baga_substr(const char *s, int64_t a, int64_t b) {\n");
-    fprintf(out, "    int64_t n = (int64_t)strlen(s);\n");
+    fprintf(out, "    int64_t n = baga_str_len(s);\n");
     fprintf(out, "    if (a < 0 || a > n) baga_bounds_fail(\"substr\", a, n);\n");
     fprintf(out, "    if (b < 0 || b > n) baga_bounds_fail(\"substr\", b, n);\n");
     fprintf(out, "    int64_t len = b - a; if (len < 0) len = 0;\n");
-    fprintf(out, "    char *r = baga_alloc((size_t)len + 1); memcpy(r, s + a, (size_t)len); r[len] = 0; return r;\n");
+    fprintf(out, "    char *r = baga_alloc((size_t)len + 1); memcpy(r, s + a, (size_t)len); r[len] = 0; baga_set_slen(r, len); return r;\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_concat(const char *a, const char *b) {\n");
-    fprintf(out, "    size_t la = strlen(a), lb = strlen(b);\n");
-    fprintf(out, "    char *r = baga_alloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r;\n");
+    fprintf(out, "    size_t la = (size_t)baga_str_len(a), lb = (size_t)baga_str_len(b);\n");
+    fprintf(out, "    char *r = baga_alloc(la + lb + 1); memcpy(r, a, la); memcpy(r + la, b, lb + 1); baga_set_slen(r, (int64_t)(la + lb)); return r;\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_read_file(const char *path) {\n");
     fprintf(out, "    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n");
     fprintf(out, "    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);\n");
-    fprintf(out, "    char *buf = baga_alloc((size_t)sz + 1); fread(buf, 1, (size_t)sz, f); buf[sz] = 0; fclose(f); return buf;\n");
+    fprintf(out, "    char *buf = baga_alloc((size_t)sz + 1); fread(buf, 1, (size_t)sz, f); buf[sz] = 0; baga_set_slen(buf, (int64_t)strlen(buf)); fclose(f); return buf;\n");
     fprintf(out, "}\n");
     fprintf(out, "static const char *baga_chr(int64_t c) {\n");
     fprintf(out, "    char *r = baga_alloc(5);\n");
-    fprintf(out, "    if (c < 0x80) { r[0] = (char)c; r[1] = 0; }\n");
-    fprintf(out, "    else if (c < 0x800) { r[0] = (char)(0xC0|(c>>6)); r[1] = (char)(0x80|(c&0x3F)); r[2] = 0; }\n");
-    fprintf(out, "    else if (c < 0x10000) { r[0] = (char)(0xE0|(c>>12)); r[1] = (char)(0x80|((c>>6)&0x3F)); r[2] = (char)(0x80|(c&0x3F)); r[3] = 0; }\n");
-    fprintf(out, "    else { r[0] = (char)(0xF0|(c>>18)); r[1] = (char)(0x80|((c>>12)&0x3F)); r[2] = (char)(0x80|((c>>6)&0x3F)); r[3] = (char)(0x80|(c&0x3F)); r[4] = 0; }\n");
+    fprintf(out, "    if (c < 0x80) { r[0] = (char)c; r[1] = 0; baga_set_slen(r, c == 0 ? 0 : 1); }\n");
+    fprintf(out, "    else if (c < 0x800) { r[0] = (char)(0xC0|(c>>6)); r[1] = (char)(0x80|(c&0x3F)); r[2] = 0; baga_set_slen(r, 2); }\n");
+    fprintf(out, "    else if (c < 0x10000) { r[0] = (char)(0xE0|(c>>12)); r[1] = (char)(0x80|((c>>6)&0x3F)); r[2] = (char)(0x80|(c&0x3F)); r[3] = 0; baga_set_slen(r, 3); }\n");
+    fprintf(out, "    else { r[0] = (char)(0xF0|(c>>18)); r[1] = (char)(0x80|((c>>12)&0x3F)); r[2] = (char)(0x80|((c>>6)&0x3F)); r[3] = (char)(0x80|(c&0x3F)); r[4] = 0; baga_set_slen(r, 4); }\n");
     fprintf(out, "    return r;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_ord(const char *s) {\n");
@@ -5995,8 +6030,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if ((c&0xF0)==0xE0) return ((int64_t)(c&0x0F)<<12)|(((int64_t)(unsigned char)s[1]&0x3F)<<6)|((int64_t)(unsigned char)s[2]&0x3F);\n");
     fprintf(out, "    return ((int64_t)(c&0x07)<<18)|(((int64_t)(unsigned char)s[1]&0x3F)<<12)|(((int64_t)(unsigned char)s[2]&0x3F)<<6)|((int64_t)(unsigned char)s[3]&0x3F);\n");
     fprintf(out, "}\n");
-    fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = baga_alloc(24); snprintf(r, 24, \"%%lld\", (long long)x); return r; }\n");
-    fprintf(out, "static const char *baga_f64_to_str(double x) { char *r = baga_alloc(32); snprintf(r, 32, \"%%g\", x); return r; }\n");
+    fprintf(out, "static const char *baga_i64_to_str(int64_t x) { char *r = baga_alloc(24); int64_t n = (int64_t)snprintf(r, 24, \"%%lld\", (long long)x); baga_set_slen(r, n); return r; }\n");
+    fprintf(out, "static const char *baga_f64_to_str(double x) { char *r = baga_alloc(32); int64_t n = (int64_t)snprintf(r, 32, \"%%g\", x); baga_set_slen(r, n); return r; }\n");
     fprintf(out, "static int64_t baga_str_eq(const char *a, const char *b) { return strcmp(a, b) == 0; }\n");
     /* M22: отмествания с маскиран брояч (b & 63) — детерминирано, паритет
      * с LLVM (shl/ashr след and 63). C `>>` върху отрицателни е
@@ -6086,13 +6121,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    return r;\n");
     fprintf(out, "}\n");
     fprintf(out, "static baga_bytes baga_bytes_from_str(const char *s) {\n");
-    fprintf(out, "    int64_t n = (int64_t)strlen(s); baga_bytes r; r.len = n; r.data = baga_alloc((size_t)(n ? n : 1));\n");
+    fprintf(out, "    int64_t n = baga_str_len(s); baga_bytes r; r.len = n; r.data = baga_alloc((size_t)(n ? n : 1));\n");
     fprintf(out, "    memcpy(r.data, s, (size_t)n); return r; }\n");
     fprintf(out, "static baga_bytes baga_bytes_lit(const unsigned char *d, int64_t n) {\n");
     fprintf(out, "    baga_bytes r; r.len = n; r.data = baga_alloc((size_t)(n ? n : 1));\n");
     fprintf(out, "    memcpy(r.data, d, (size_t)n); return r; }\n");
     fprintf(out, "static const char *baga_bytes_to_str(baga_bytes b) {\n");
-    fprintf(out, "    char *r = baga_alloc((size_t)b.len + 1); memcpy(r, b.data, (size_t)b.len); r[b.len] = 0; return r; }\n");
+    fprintf(out, "    char *r = baga_alloc((size_t)b.len + 1); memcpy(r, b.data, (size_t)b.len); r[b.len] = 0; baga_set_slen(r, (int64_t)strlen(r)); return r; }\n");
     fprintf(out, "static int baga_hex_val(int c) {\n");
     fprintf(out, "    if (c >= '0' && c <= '9') return c - '0';\n");
     fprintf(out, "    if (c >= 'a' && c <= 'f') return c - 'a' + 10;\n");
@@ -6102,9 +6137,9 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    static const char *hx = \"0123456789abcdef\";\n");
     fprintf(out, "    char *r = baga_alloc((size_t)b.len * 2 + 1);\n");
     fprintf(out, "    for (int64_t i = 0; i < b.len; i++) { r[i*2] = hx[b.data[i] >> 4]; r[i*2+1] = hx[b.data[i] & 15]; }\n");
-    fprintf(out, "    r[b.len * 2] = 0; return r; }\n");
+    fprintf(out, "    r[b.len * 2] = 0; baga_set_slen(r, b.len * 2); return r; }\n");
     fprintf(out, "static baga_bytes baga_hex_decode(const char *s) {\n");
-    fprintf(out, "    int64_t n = (int64_t)strlen(s); unsigned char *buf = baga_alloc((size_t)(n / 2 + 1)); int64_t len = 0;\n");
+    fprintf(out, "    int64_t n = baga_str_len(s); unsigned char *buf = baga_alloc((size_t)(n / 2 + 1)); int64_t len = 0;\n");
     fprintf(out, "    for (int64_t i = 0; i + 1 < n; ) {\n");
     fprintf(out, "        int hi = baga_hex_val(s[i]); int lo = baga_hex_val(s[i+1]);\n");
     fprintf(out, "        if (hi < 0 || lo < 0) { i++; continue; }\n");
