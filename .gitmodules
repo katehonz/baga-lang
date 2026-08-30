@@ -136,3 +136,6 @@
 [submodule "app-product/bagabuch"]
 	path = app-product/bagabuch
 	url = git@github.com:bagalang/bagabuch.git
+[submodule "app-product/chronobaga"]
+	path = app-product/chronobaga
+	url = git@github.com:bagalang/chronobaga.git

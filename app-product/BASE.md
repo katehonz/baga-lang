@@ -1,6 +1,6 @@
 # Canonical product stack (base)
 
-**Locked:** 2026-08-03 · **Updated package list:** 2026-08-15
+**Locked:** 2026-08-03 · **Updated package list:** 2026-08-30
 
 **Language role:** Baga is an **educational systems language**. Packages here
 are **ecosystem building blocks to prove the language** — not throwaway demos.
@@ -50,7 +50,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 ## Full package list (`app-product/`)
 
-**44+ packages** (directories with `sandak.toml`; plus **boilaDB** server). Alphabetical.
+**45+ packages** (directories with `sandak.toml`; plus **boilaDB** server). Alphabetical.
 
 ### Web / API stack
 
@@ -120,6 +120,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | Package | Role |
 |---------|------|
 | **bagadecimal** | Fixed-precision decimal (money, VAT, rates; Postgres NUMERIC bridge); **git submodule** → [bagalang/bagadecimal](https://github.com/bagalang/bagadecimal) |
+| **chronobaga** | Civil dates/times (chrono `NaiveDate`; ISO/financial storage, Bulgarian invoice/VAT print); **git submodule** → [bagalang/chronobaga](https://github.com/bagalang/chronobaga) |
 | **globbaga** | Simple glob matching (`*`, `?`); **git submodule** → [bagalang/globbaga](https://github.com/bagalang/globbaga) |
 | **grebaga** | Grep-like line scanner (literal + mini patterns); **git submodule** → [bagalang/grebaga](https://github.com/bagalang/grebaga) |
 | **pathbaga** | Path helpers (join, basename, dirname, ext, stem); **git submodule** → [bagalang/pathbaga](https://github.com/bagalang/pathbaga) |
@@ -135,14 +136,14 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 ### Flat inventory (names only)
 
 ```
-bagadecimal  boilabaga   bufbaga     chatbaga    cloudbaga   csvbaga
-ctxbaga      flagbaga    fmrbaga     globbaga    grebaga     httpdbaga
-imgbaga      jsonrpcbaga jwtbaga     kvbaga      logbaga     lsmbaga†
-mdbaga       mdtbaga     metbaga     oauthbaga   officebaga  ormbaga
-otelbaga     pathbaga    pbbaga      pdfbaga     pgbaga      querybaga
-queuebaga    raftbaga    relbaga     reportbaga  rocksbaga   statusbaga
-testbaga     tplbaga     txnbaga     uuidbaga    wasmtimebaga wsbaga
-xmlbaga      zipbaga
+bagadecimal  boilabaga   bufbaga     chatbaga    chronobaga  cloudbaga
+csvbaga      ctxbaga     flagbaga    fmrbaga     globbaga    grebaga
+httpdbaga    imgbaga     jsonrpcbaga jwtbaga     kvbaga      logbaga
+lsmbaga†     mdbaga      mdtbaga     metbaga     oauthbaga   officebaga
+ormbaga      otelbaga    pathbaga    pbbaga      pdfbaga     pgbaga
+querybaga    queuebaga   raftbaga    relbaga     reportbaga  rocksbaga
+statusbaga   testbaga    tplbaga     txnbaga     uuidbaga    wasmtimebaga
+wsbaga       xmlbaga     zipbaga
 ```
 
 † `lsmbaga` — deprecated alias for `rocksbaga`. Also: **boilaDB** (server).

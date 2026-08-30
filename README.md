@@ -58,6 +58,7 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **[wsbaga](https://github.com/bagalang/wsbaga)** / **[chatbaga](https://github.com/bagalang/chatbaga)** | WebSocket + multi-room chat (`poll`) |
 | **oauthbaga** | OAuth proxy (integration exam) · [repo](https://github.com/bagalang/oauthbaga) (submodule) |
 | **bagadecimal** | Fixed-precision decimal + Postgres `NUMERIC` (accounting) · [repo](https://github.com/bagalang/bagadecimal) (submodule) |
+| **chronobaga** | Civil dates (chrono `NaiveDate`; ISO/financial, Bulgarian invoice/VAT print) · [repo](https://github.com/bagalang/chronobaga) (submodule) |
 | **[mdbaga](https://github.com/bagalang/mdbaga)**, **[tplbaga](https://github.com/bagalang/tplbaga)**, **[queuebaga](https://github.com/bagalang/queuebaga)**, **[jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga)**, **[grebaga](https://github.com/bagalang/grebaga)**, **[testbaga](https://github.com/bagalang/testbaga)** | Markdown, templates, jobs, RPC, grep CLI, asserts |
 | **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) · [repo](https://github.com/bagalang/imgbaga) (submodule) |
 | **apps/api**, **apps/registry** | Sample product + sandak package registry |

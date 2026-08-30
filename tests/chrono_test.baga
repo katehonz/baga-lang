@@ -1,0 +1,130 @@
+// chrono_test.baga — chronobaga P0 suite (chrono NaiveDate-style civil dates).
+
+import "chronobaga/src/chrono.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn must(s: str) -> Date {
+    let r = dt_parse(s)
+    if r.ok == 0 {
+        eprintln(concat(concat("parse failed: ", s), concat(" — ", r.err)))
+        exit(1)
+    }
+    return r.value
+}
+
+fn main() -> i64 !Time {
+    // --- ymd / leap ---
+    let d = dt_ymd(2026, 8, 30)
+    check("ymd", d.ok == 1 && dt_to_iso(d.value) == "2026-08-30")
+    check("leap_2024", dt_is_leap(2024) == 1)
+    check("leap_2023", dt_is_leap(2023) == 0)
+    check("leap_1900", dt_is_leap(1900) == 0)
+    check("leap_2000", dt_is_leap(2000) == 1)
+    check("feb29_2024", dt_ymd(2024, 2, 29).ok == 1)
+    check("feb29_2023", dt_ymd(2023, 2, 29).ok == 0)
+    check("feb29_1900", dt_ymd(1900, 2, 29).ok == 0)
+    check("day32", dt_ymd(2026, 1, 32).ok == 0)
+    check("month13", dt_ymd(2026, 13, 1).ok == 0)
+    check("year0", dt_ymd(0, 1, 1).ok == 0)
+
+    // --- parse ISO / financial ---
+    check("parse_iso", dt_to_iso(must("2026-08-30")) == "2026-08-30")
+    check("parse_fin", dt_eq(must("2026-08-30"), must("20260830")) == 1)
+    check("parse_trim", dt_parse("  2026-08-30  ").ok == 1)
+    check("reject_slash", dt_parse("30/08/2026").ok == 0)
+    check("reject_us", dt_parse("08/30/2026").ok == 0)
+    check("reject_dmy_dash", dt_parse("30-08-2026").ok == 0)
+    check("reject_unpadded", dt_parse("2026-8-30").ok == 0)
+    check("reject_empty", dt_parse("").ok == 0)
+    check("canonical", dt_canonical_iso("20260830") == "2026-08-30")
+
+    // --- format ---
+    let x = must("2026-08-30")
+    check("iso", dt_to_iso(x) == "2026-08-30")
+    check("financial", dt_to_financial(x) == "20260830")
+    check("bg", dt_to_bg(x) == "30.08.2026")
+    check("bg_long", dt_to_bg_long(x) == "30 август 2026 г.")
+    check("pad_year", dt_to_iso(dt_ymd(999, 1, 2).value) == "0999-01-02")
+
+    // --- Bulgarian parse / invoice ---
+    let bg = dt_parse_bg("30.08.2026")
+    check("parse_bg", bg.ok == 1 && dt_eq(bg.value, x) == 1)
+    let bg2 = dt_parse_bg("1.8.2026")
+    check("parse_bg_short", bg2.ok == 1 && dt_to_iso(bg2.value) == "2026-08-01")
+    check("parse_invoice_iso", dt_parse_invoice("2026-08-30").ok == 1)
+    check("parse_invoice_bg", dt_eq(dt_parse_invoice("30.08.2026").value, x) == 1)
+    check("to_bg_or", dt_to_bg_or("20260830") == "30.08.2026")
+    check("to_bg_or_empty", dt_to_bg_or("") == "")
+
+    // --- weekday / ordinal / unix ---
+    let epoch = dt_unix_epoch()
+    check("weekday_epoch", dt_weekday(epoch) == 4)
+    check("weekday_sun", dt_weekday(x) == 7)
+    check("weekday_2000", dt_weekday(must("2000-01-01")) == 6)
+    check("ordinal", dt_ordinal(x) == 242)
+    check("unix_days", dt_unix_days(x) == 20695)
+    check("unix0", dt_unix_days(epoch) == 0)
+    check("from_unix", dt_eq(dt_from_unix_days(0).value, epoch) == 1)
+    check("from_unix_x", dt_eq(dt_from_unix_days(20695).value, x) == 1)
+    check("ce_730000", dt_to_iso(dt_from_num_days_from_ce(730000).value) == "1999-09-03")
+    check("ce_1", dt_to_iso(dt_from_num_days_from_ce(1).value) == "0001-01-01")
+    check("ce_roundtrip", dt_num_days_from_ce(must("1999-09-03")) == 730000)
+    check("weekday_name", dt_bg_weekday_name(7) == "неделя")
+
+    // --- cmp / add ---
+    check("lt", dt_lt(must("2026-08-29"), x) == 1)
+    check("eq", dt_eq(x, must("2026-08-30")) == 1)
+    check("add_day", dt_to_iso(dt_add_days(must("2024-02-29"), 1).value) == "2024-03-01")
+    check("due14", dt_to_iso(dt_add_days(x, 14).value) == "2026-09-13")
+    check("add_month_clamp", dt_to_iso(dt_add_months(must("2023-01-31"), 1).value) == "2023-02-28")
+    check("add_month_leap", dt_to_iso(dt_add_months(must("2024-01-31"), 1).value) == "2024-02-29")
+    check("add_year", dt_to_iso(dt_add_years(must("2024-02-29"), 1).value) == "2025-02-28")
+    check("diff", dt_diff_days(must("2026-09-13"), x) == 14)
+
+    // --- period / VAT ---
+    check("period", dt_to_period(x) == "2026-08")
+    let p = dt_period_parse("2026-08")
+    check("period_parse", p.ok == 1 && dt_period_to_iso(p.value) == "2026-08")
+    check("period_fin", dt_period_to_financial(dt_period_parse("202608").value) == "202608")
+    check("period_bg", dt_period_to_bg(p.value) == "08.2026")
+    check("period_start", dt_to_iso(dt_period_start(p.value).value) == "2026-08-01")
+    check("period_end", dt_to_iso(dt_period_end(p.value).value) == "2026-08-31")
+    check("in_period", dt_in_period(x, p.value) == 1)
+    check("out_period", dt_in_period(must("2026-09-01"), p.value) == 0)
+    check("period_next", dt_period_to_iso(dt_period_add(p.value, 1).value) == "2026-09")
+    check("quarter", dt_quarter(x) == 3)
+    check("q_start", dt_to_iso(dt_quarter_start(x)) == "2026-07-01")
+    check("q_end", dt_to_iso(dt_quarter_end(x).value) == "2026-09-30")
+
+    // --- time / datetime ---
+    let tm = tm_hms(9, 10, 11)
+    check("tm", tm.ok == 1 && tm_to_iso(tm.value) == "09:10:11")
+    check("tm_bad", tm_hms(24, 0, 0).ok == 0)
+    let ts = ts_parse_iso("2026-08-30T09:10:11Z")
+    check("ts", ts.ok == 1 && ts_to_iso(ts.value) == "2026-08-30T09:10:11")
+    let ts2 = ts_parse_iso("2026-08-30 09:10:11")
+    check("ts_space", ts2.ok == 1 && dt_eq(ts_date(ts2.value), x) == 1)
+    check("unix_ts", ts_to_iso(ts_from_unix(0).value) == "1970-01-01T00:00:00")
+    check("unix_round", ts_to_unix(ts_from_unix(1500000000).value) == 1500000000)
+
+    // --- json ---
+    check("json", dt_to_json(x) == "\"2026-08-30\"")
+    check("json_parse", dt_eq(dt_from_json("\"2026-08-30\"").value, x) == 1)
+    check("json_number", dt_from_json("20260830").ok == 0)
+
+    // --- today (UTC civil) ---
+    let today = dt_today()?
+    check("today", today.ok == 1 && today.value.year >= 2026)
+
+    print("chrono_test: all passed")
+    return 0
+}

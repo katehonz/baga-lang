@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### chronobaga — отделно репо
+- `app-product/chronobaga` е git submodule към
+  [bagalang/chronobaga](https://github.com/bagalang/chronobaga).
+- Civil dates (chrono `NaiveDate`): ISO/финансов запис, български
+  печат за фактури/ДДС. `std/time` остава unix clock.
+- `std` остава тук; `tests/chrono_test` също.
+
 ### std/json — json_escape и string parse вече не са O(n²)
 - Преди: `concat` на всеки символ и в `json_escape`, и в `jp_string_node`.
   800 KB PDF като base64 в JSON тялото → OOM/kill на backend-а още при
