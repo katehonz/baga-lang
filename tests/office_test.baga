@@ -7,6 +7,7 @@ import "officebaga/xlsx/write.baga"
 import "officebaga/odf/write.baga"
 import "officebaga/opc/package.baga"
 import "officebaga/core/detect.baga"
+import "officebaga/core/numcell.baga"
 import "zipbaga/archive.baga"
 import "std/str/str.baga"
 import "std/bytes/bytes.baga"
@@ -56,6 +57,10 @@ fn main() -> i64 !IO {
     check("xlsx_header", contains(xt, "Name") && contains(xt, "Qty"))
     check("xlsx_apple", contains(xt, "Apple") && contains(xt, "3"))
     check("xlsx_pear", contains(xt, "Pear") && contains(xt, "10"))
+    check("numcell_dot", office_cell_is_num("8588.9") == 1)
+    check("numcell_comma", office_cell_is_num("8588,9") == 1)
+    check("numcell_docno", office_cell_is_num("0000000001") == 0)
+    check("numcell_date", office_cell_is_num("2026-08-18") == 0)
 
     // --- ODT: hand-built package with content.xml ---
     let odt_names = vec_new()
