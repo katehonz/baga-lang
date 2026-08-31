@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-09-01
+
+### bagabuch — вход и банкови сметки върху BoilaSQL
+- Frontend-ът проксира `/v1` през Next към `127.0.0.1:8080` (LAN
+  `localhost` и IPv6 `::1` не стигаха backend-а, който слуша само IPv4).
+- Банкови сметки: SELECT без table alias и без `.` qualifier (BoilaSQL
+  `0A000`); кодовете на ГЛ/буфер идват от сметкоплана в UI.
+- Импорт на извлечения: `if` като стойност чупеше C codegen — обикновени
+  `if` блокове.
+
 ### chronobaga — отделно репо
 - `app-product/chronobaga` е git submodule към
   [bagalang/chronobaga](https://github.com/bagalang/chronobaga).
