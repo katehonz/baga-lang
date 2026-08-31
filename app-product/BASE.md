@@ -28,7 +28,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 | Layer | Path | Role |
 |-------|------|------|
-| **App** | `apps/*` | product code (actions, models, schema, routes) — **universal pattern** |
+| **App** | `apps/*` | product code (actions, models, schema, routes) — **universal pattern**; also `app-product/bagabuch` (separate repo) |
 | Framework | `app-product/fmrbaga` | universal router/jsonx/deps/workers (no domain) |
 | HTTP | `httpdbaga` | request/response |
 | Auth | `jwtbaga` | HS256 |
@@ -147,3 +147,13 @@ wsbaga       xmlbaga     zipbaga
 ```
 
 † `lsmbaga` — deprecated alias for `rocksbaga`. Also: **boilaDB** (server).
+
+### Products (separate repos, submodules in `app-product/`)
+
+| Product | Repo | Where | Notes |
+|---------|------|-------|-------|
+| **bagabuch** | [bagalang/bagabuch](https://github.com/bagalang/bagabuch) | `app-product/bagabuch` | Accounting app (invoices, journal, VAT, SAF-T, bank statements); `backend/` (Baga) + `frontend/` (Next.js). `secret/` is gitignored. |
+
+The `apps/` directory stays **in-tree** (not submodules) as sample products:
+`apps/api` (reference REST API), `apps/registry` (sandak package registry),
+`apps/report` (report CLI over `reportbaga`).

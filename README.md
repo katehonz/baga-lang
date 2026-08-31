@@ -61,10 +61,27 @@ systems work**; the long horizon is a **RocksDB-like engine** (`rocksbaga`).
 | **chronobaga** | Civil dates (chrono `NaiveDate`; ISO/financial, Bulgarian invoice/VAT print) · [repo](https://github.com/bagalang/chronobaga) (submodule) |
 | **[mdbaga](https://github.com/bagalang/mdbaga)**, **[tplbaga](https://github.com/bagalang/tplbaga)**, **[queuebaga](https://github.com/bagalang/queuebaga)**, **[jsonrpcbaga](https://github.com/bagalang/jsonrpcbaga)**, **[grebaga](https://github.com/bagalang/grebaga)**, **[testbaga](https://github.com/bagalang/testbaga)** | Markdown, templates, jobs, RPC, grep CLI, asserts |
 | **imgbaga** | Raster images — PNG/JPEG/GIF/QOI/ICO/TIFF/WebP (VP8+VP8L)/BMP/PNM (`image` crate) · [repo](https://github.com/bagalang/imgbaga) (submodule) |
-| **apps/api**, **apps/registry** | Sample product + sandak package registry |
+| **apps/api**, **apps/registry**, **apps/report** | In-tree sample products (API reference, sandak package registry, report CLI) |
+| **[bagabuch](https://github.com/bagalang/bagabuch)** | Bulgarian accounting app (invoices, chart of accounts, journal, VAT, SAF-T, bank statements) — **separate repo**, submodule under `app-product/bagabuch` |
 
 Canonical stack: `apps/*` → **fmrbaga** → httpdbaga / jwtbaga / ormbaga → **pgbaga** → Postgres  
 (or ormbaga → **boilabaga** → pgbaga → **boilaDB** PG wire). See [`app-product/BASE.md`](app-product/BASE.md).
+
+### Repositories (what lives where)
+
+The tree is a **monorepo for the language + toolchain** plus **one git
+repository per ecosystem package**, linked as submodules under `app-product/`.
+
+| Repo | What's inside | Where in this tree |
+|------|---------------|--------------------|
+| **baga-lang-ai/baga-lang-ai** (this repo) | compiler, `std/`, `examples/`, `tests/`, docs, `apps/{api,registry,report}` (in-tree products) | repo root |
+| `github.com/bagalang/<name>` (45 library packages + **boilaDB** server) | universal building blocks — one repo per package | `app-product/*` (submodules) |
+| [bagalang/bagabuch](https://github.com/bagalang/bagabuch) | the accounting product (full app, `backend/` + `frontend/`) | `app-product/bagabuch` (submodule) |
+
+The rule: **compiler + `std` + in-tree apps stay in this repo; every
+`app-product/*` package is its own repo** (registered as a submodule), and the
+product layer (`bagabuch`) is a separate repo too. `sandak` links packages by
+path inside the monorepo, or by `git` URL outside it — see [Packages — sandak](#packages--sandak).
 
 ## Quick Start
 
@@ -321,8 +338,8 @@ baga/
 ├── src/                    # C bootstrap compiler + sandak
 ├── self/                   # Self-hosted compiler (Baga)
 ├── std/                    # Standard library (crypto, net/tls, json, …)
-├── app-product/            # Ecosystem packages (http, jwt, pg, img, decimal, …)
-├── apps/                   # Sample products (api, registry)
+├── app-product/            # Ecosystem packages (http, jwt, pg, img, decimal, …) — each its own repo (submodule)
+├── apps/                   # In-tree sample products (api, registry, report)
 ├── examples/               # Language examples
 ├── tests/                  # Regression suite
 ├── scripts/run_tests.sh    # make test → here
