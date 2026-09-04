@@ -19,6 +19,16 @@ extern fn bind(fd: i64, addr: i64, addrlen: i64) -> i64 !Net
 extern fn listen(fd: i64, backlog: i64) -> i64 !Net
 extern fn accept(fd: i64, addr: i64, addrlen: i64) -> i64 !Net
 extern fn connect(fd: i64, addr: i64, addrlen: i64) -> i64 !Net
+// sendto, not write: MSG_NOSIGNAL so a reset peer does not SIGPIPE-kill the
+// process (Next.js abort / browser navigation). dest=NULL is valid on a
+// connected socket. Prototype is int64_t so we must not pull sys/socket.h
+// (same FFI clash as connect/bind).
+extern fn sendto(fd: i64, buf: str, count: i64, flags: i64, addr: i64, addrlen: i64) -> i64 !Net
+
+// Linux MSG_NOSIGNAL (0x4000). Write flags for sendto on a connected fd.
+fn tcp_nosignal() -> i64 {
+    return 16384
+}
 extern fn memfd_create(name: str, flags: i64) -> i64 !Net
 // pread64/pwrite64, не pread/pwrite: std/os декларира pread/pwrite (str буфер,
 // !IO). L6 не преименува extern декларациите (нямат тяло — "FFI името е
@@ -136,7 +146,14 @@ fn tcp_read(fd: i64, n: i64) -> str !Net !IO {
 }
 
 fn tcp_write(fd: i64, data: str) -> i64 !Net !IO {
-    return fd_write(fd, data)?
+    let total = len(data)
+    let mut off: i64 = 0
+    while off < total {
+        let w = sendto(fd, substr(data, off, total), total - off, tcp_nosignal(), 0, 0)?
+        if w <= 0 { return -1 }
+        off = off + w
+    }
+    return 0
 }
 
 fn tcp_close(fd: i64) -> i64 !IO {
@@ -203,7 +220,7 @@ fn tcp_read_exact(fd: i64, n: i64) -> bytes !Net !IO {
 fn tcp_write_bytes(fd: i64, b: bytes) -> i64 !Net !IO {
     let mut rest = b
     while bytes_len(rest) > 0 {
-        let w = write(fd, str_of_bytes(rest), bytes_len(rest))?
+        let w = sendto(fd, str_of_bytes(rest), bytes_len(rest), tcp_nosignal(), 0, 0)?
         if w <= 0 { return -1 }
         rest = bytes_slice(rest, w, bytes_len(rest))
     }
