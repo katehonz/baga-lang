@@ -1,0 +1,6 @@
+// LP11 — поле очаква i32, получава i64 литерал (bootstrap го отхвърля).
+struct S { a: i32 }
+fn main() {
+    let s = S { a: 7 }
+    print(s.a)
+}

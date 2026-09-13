@@ -1,0 +1,452 @@
+// c2_neg.baga — LP11 negative проверки на self компилатора (огледало на
+// bootstrap-а). Пазим инварианта: програма, която ./baga отхвърля, се
+// отхвърля и от self. Без това parity оракулът (сравнява само приети
+// програми) е едностранен и тихи разлики в отказите минават.
+
+import "c2_ast.baga"
+import "c2_lex.baga"
+import "c2_emit_type.baga"
+
+// phantom_width_name — име на „широчинен" тип, който Бага НЕ поддържа.
+// Bootstrap-ът ги отхвърля (не са типове), но преди копираше тихо в
+// номинален struct. Self трябва да съвпада: иначе `let x: u32 = 5` минава
+// само под self (тиха дивергенция). Поддържат се само i32/i64/f64/bool/str.
+fn phantom_width_name(name: str) -> i64 {
+    let mut base = name
+    let mut lt = bfind(name, 60, 0)
+    if lt > 0 { base = substr(name, 0, lt) }
+    if str_eq(base, "u8") == 1 { return 1 }
+    if str_eq(base, "u16") == 1 { return 1 }
+    if str_eq(base, "u32") == 1 { return 1 }
+    if str_eq(base, "u64") == 1 { return 1 }
+    if str_eq(base, "usize") == 1 { return 1 }
+    if str_eq(base, "isize") == 1 { return 1 }
+    if str_eq(base, "i8") == 1 { return 1 }
+    if str_eq(base, "i16") == 1 { return 1 }
+    if str_eq(base, "f32") == 1 { return 1 }
+    if str_eq(base, "u128") == 1 { return 1 }
+    if str_eq(base, "i128") == 1 { return 1 }
+    return 0
+}
+
+// is_declared_type — потребителски struct/enum с това име. Bootstrap-ът
+// позволява `struct u32 { ... }` (номиналният тип печели), затова phantom
+// проверката се прилага само когато името НЕ е декларирано.
+fn is_declared_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut base = name
+    let mut lt = bfind(name, 60, 0)
+    if lt > 0 { base = substr(name, 0, lt) }
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        let mut k = node_kind(nk, f)
+        if k == 21 || k == 28 {
+            if str_eq(node_text(nt, f), base) == 1 { return 1 }
+        }
+        f = next_sibling(ns, f)
+    }
+    return 0
+}
+
+// check_type_name — отхвърля фантомно широчинно име (u32/u64/...), освен
+// ако е потребителски деклариран тип. Огледало на src/checker.c.
+fn check_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) {
+    if phantom_width_name(name) == 0 { return }
+    if is_declared_type(nk, nt, fc, ns, prog, name) == 1 { return }
+    eprintln(concat(concat("непознат тип '", name), "' — поддържат се само i32 и i64 (цяло число) и f64 (дробно)"))
+    exit(1)
+}
+
+// ============================================================
+//  Negative проверки (огледало на bootstrap-а)
+//  Пазим инварианта: програма, която bootstrap-ът отхвърля, се отхвърля
+//  и от self. Без това parity оракулът (сравнява само приети програми) е
+//  едностранен и тихи разминавания минават.
+// ============================================================
+
+// type_after_colon — типовата част от "име:тип" (param/field), или "".
+fn type_after_colon(t: str) -> str {
+    let mut i: i64 = 0
+    let mut n = len(t)
+    while i < n {
+        if char_at(t, i) == 58 { return substr(t, i + 1, n) }
+        i = i + 1
+    }
+    return ""
+}
+
+// lit_i32_range_ok — int литерал в диапазона на i32? Не-десетични
+// литерали (hex/float) не се съдят (връща 1).
+fn lit_i32_range_ok(t: str) -> i64 {
+    let mut n = len(t)
+    if n == 0 { return 1 }
+    let mut i: i64 = 0
+    let mut neg: i64 = 0
+    if char_at(t, 0) == 45 { neg = 1; i = 1 }
+    // водещи нули не броят за range
+    while i < n {
+        if char_at(t, i) != 48 { break }
+        i = i + 1
+    }
+    let mut v: i64 = 0
+    let mut digits: i64 = 0
+    while i < n {
+        let mut c = char_at(t, i)
+        if c < 48 || c > 57 { return 1 }
+        if digits >= 18 { return 0 }
+        v = v * 10 + (c - 48)
+        digits = digits + 1
+        i = i + 1
+    }
+    if neg == 1 {
+        if v > 2147483648 { return 0 }
+        return 1
+    }
+    if v > 2147483647 { return 0 }
+    return 1
+}
+
+// fn_ret_type_name — името на върнатия тип на потребителска fn, или "".
+fn fn_ret_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> str {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            if str_eq(node_text(nt, f), name) == 1 {
+                let mut c = first_child(fc, f)
+                while c >= 0 {
+                    if node_kind(nk, c) == 16 { return node_text(nt, c) }
+                    c = next_sibling(ns, c)
+                }
+                return ""
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    return ""
+}
+
+// param_type_name — типът на параметър с дадено име в която и да е fn.
+fn param_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, pname: str) -> str {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            let mut c = first_child(fc, f)
+            while c >= 0 {
+                if node_kind(nk, c) == 12 {
+                    let mut pt = node_text(nt, c)
+                    let mut i: i64 = 0
+                    let mut n = len(pt)
+                    while i < n {
+                        if char_at(pt, i) == 58 {
+                            if str_eq(substr(pt, 0, i), pname) == 1 { return substr(pt, i + 1, n) }
+                            break
+                        }
+                        i = i + 1
+                    }
+                }
+                c = next_sibling(ns, c)
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+    return ""
+}
+
+// numeric_promote_name — numeric_promote от src/checker.c: f64 печели,
+// после i64, иначе i32. Празен низ = неизвестен тип.
+fn numeric_promote_name(a: str, b: str) -> str {
+    if str_eq(a, "") == 1 { return "" }
+    if str_eq(b, "") == 1 { return "" }
+    if str_eq(a, "f64") == 1 || str_eq(b, "f64") == 1 { return "f64" }
+    if str_eq(a, "i64") == 1 || str_eq(b, "i64") == 1 { return "i64" }
+    if str_eq(a, "i32") == 1 && str_eq(b, "i32") == 1 { return "i32" }
+    return ""
+}
+
+// infer_type_name — типът на израз като име, огледало на src/checker.c.
+// needed за i32: `0 - 5` е i64 (не i32), затова `let x: i32 = -5` гърми
+// точно като в bootstrap-а. Празен низ = неизвестен (не съдим).
+fn infer_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str {
+    if e < 0 { return "" }
+    let mut k = node_kind(nk, e)
+    if k == 0 { return "i64" }
+    if k == 1 { return "str" }
+    if k == 19 { return "f64" }
+    if k == 20 { return "bool" }
+    if k == 2 {
+        let mut nm = node_text(nt, e)
+        let mut lt = expr_type_name_of(nk, nt, fc, ns, nm, prog)
+        if str_eq(lt, "") == 0 { return lt }
+        return param_type_name(nk, nt, fc, ns, prog, nm)
+    }
+    // унарният минус се парсва като `0 - operand` (kind 3, две деца)
+    if k == 3 {
+        let mut lhs = first_child(fc, e)
+        let mut rhs = next_sibling(ns, lhs)
+        return numeric_promote_name(infer_type_name(nk, nt, fc, ns, prog, lhs),
+                                    infer_type_name(nk, nt, fc, ns, prog, rhs))
+    }
+    if k == 4 {
+        let mut cal = first_child(fc, e)
+        if node_kind(nk, cal) == 2 {
+            return fn_ret_type_name(nk, nt, fc, ns, prog, node_text(nt, cal))
+        }
+        return ""
+    }
+    return ""
+}
+
+// check_let_decls — i32 анотация: литерал извън диапазона е грешка, а
+// израз с известен не-i32 тип също (bootstrap: „несъвместими типове").
+fn check_let_decls(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 6 {
+            let mut ann = let_type_of(nk, nt, fc, ns, i)
+            if str_eq(ann, "i32") == 1 {
+                let mut init = first_child(fc, i)
+                if init >= 0 {
+                    // 1) чисто литерален случай → range проверка
+                    if node_kind(nk, init) == 0 {
+                        if lit_i32_range_ok(node_text(nt, init)) == 0 {
+                            eprintln(concat(concat("i32 литералът '", node_text(nt, init)), "' е извън диапазона (-2147483648..2147483647)"))
+                            exit(1)
+                        }
+                    } else {
+                        // 2) израз: ако типът е известен и не е i32 → грешка.
+                        // `-5` е `0 - 5` (i64), `a + 1` е i64 и т.н. — точно
+                        // както bootstrap-ът ги отхвърля.
+                        let mut it = infer_type_name(nk, nt, fc, ns, prog, init)
+                        if str_eq(it, "") == 0 {
+                            if str_eq(it, "i32") == 0 {
+                                eprintln(concat(concat(concat(concat("несъвместими типове: '",
+                                    node_text(nt, i)), "' е i32, но инициализаторът е "), it), ""))
+                                exit(1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+// check_types — всяко типово име (param/return/let анотация/поле/вариант)
+// минава през phantom проверката. Декларираните struct/enum имена печелят.
+fn check_types(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        let mut k = node_kind(nk, i)
+        let mut t = node_text(nt, i)
+        if k == 12 { check_type_name(nk, nt, fc, ns, prog, type_after_colon(t)) }
+        if k == 47 { check_type_name(nk, nt, fc, ns, prog, t) }
+        if k == 16 { check_type_name(nk, nt, fc, ns, prog, t) }
+        if k == 25 { check_type_name(nk, nt, fc, ns, prog, type_after_colon(t)) }
+        if k == 29 {
+            let mut vty = type_after_colon(t)
+            if str_eq(vty, "") == 0 { check_type_name(nk, nt, fc, ns, prog, vty) }
+        }
+        i = i + 1
+    }
+}
+
+// ============================================================
+//  Type-parity проверки (LP11): self трябва да отхвърля/приема точно
+//  като bootstrap-а за return и struct поле. Пази type_eq семантиката:
+//  i32/i64 не са съвместими за return/field (bootstrap е строг там),
+//  макар за аргументи да ги приема (виж typekind-а по-горе).
+// ============================================================
+
+// field_decl_type — типът на поле в struct декларация, или "" .
+fn field_decl_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, sd: i64, fname: str) -> str {
+    let mut c = first_child(fc, sd)
+    while c >= 0 {
+        if node_kind(nk, c) == 25 {
+            let mut t = node_text(nt, c)
+            let mut i: i64 = 0
+            let mut n = len(t)
+            while i < n {
+                if char_at(t, i) == 58 {
+                    let mut fn2 = substr(t, 0, i)
+                    if str_eq(fn2, fname) == 1 { return substr(t, i + 1, n) }
+                    break
+                }
+                i = i + 1
+            }
+        }
+        c = next_sibling(ns, c)
+    }
+    return ""
+}
+
+// find_struct_decl — struct декларацията с това име (kind 21), или -1.
+fn find_struct_decl(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64 {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 21 {
+            if str_eq(node_text(nt, f), name) == 1 { return f }
+        }
+        f = next_sibling(ns, f)
+    }
+    return 0 - 1
+}
+
+// expr_named_typekind — тип на израз като typekind, ползвайки let/env
+// веригата (expr_typekind е само за call/литерали). i32 се различава от
+// i64 (за разлика от аргументната съвместимост) — затова е отделна
+// функция с пълен тип-низ, не typekind.
+fn expr_type_name_of(nk: Vec, nt: Vec, fc: Vec, ns: Vec, name: str, scope: i64) -> str {
+    // търсим let с това име (опростено: първо съвпадение)
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 6 {
+            if str_eq(node_text(nt, i), name) == 1 { return let_effective_type(nk, nt, fc, ns, i) }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// let_effective_type — типът на let: явната анотация, иначе изведен от
+// литералния инициализатор (int → i64, str → str, float → f64). Нужно е,
+// за да хванем `let b: i32 = a`, където `a` е неизрично i64.
+fn let_effective_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) -> str {
+    let mut ann = let_type_of(nk, nt, fc, ns, idx)
+    if str_eq(ann, "") == 0 { return ann }
+    let mut init = first_child(fc, idx)
+    if init < 0 { return "" }
+    let mut k = node_kind(nk, init)
+    if k == 0 { return "i64" }
+    if k == 1 { return "str" }
+    if k == 19 { return "f64" }
+    return ""
+}
+
+// check_returns_and_fields — огледало на bootstrap-овите проверки за
+// return тип и struct поле, които ползват строг type_eq.
+fn check_returns_and_fields(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    // struct полета: literal поле с явен тип трябва да съвпада (строго),
+    // но i64 поле приема int литерал; i32 поле приема само i32 стойност.
+    let mut i: i64 = 0
+    let mut n = vec_len(nk)
+    while i < n {
+        if node_kind(nk, i) == 22 {
+            let mut sname = node_text(nt, i)
+            let mut lt = bfind(sname, 60, 0)
+            if lt > 0 { sname = substr(sname, 0, lt) }
+            let mut sd = find_struct_decl(nk, nt, fc, ns, prog, sname)
+            if sd >= 0 {
+                let mut fi = first_child(fc, i)
+                while fi >= 0 {
+                    if node_kind(nk, fi) == 24 {
+                        let mut fname = node_text(nt, fi)
+                        let mut fty = field_decl_type(nk, nt, fc, ns, sd, fname)
+                        let mut val = first_child(fc, fi)
+                        if str_eq(fty, "") == 0 {
+                            check_field_value(nk, nt, fc, ns, prog, fname, fty, val)
+                        }
+                    }
+                    fi = next_sibling(ns, fi)
+                }
+            }
+        }
+        i = i + 1
+    }
+    // return тип: връщаният израз трябва да съвпада строго с ret типа.
+    check_fn_return_types(nk, nt, fc, ns, prog)
+}
+
+// field_value_typekind — груб тип на стойност за поле: 0=i64(-lit/expr),
+// 1=str, 2=f64, 3=bool. i32 стойностите идват само от let с i32 анотация
+// или от поле/параметър с i32 — затова проверяваме отделно по име.
+fn check_field_value(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, fname: str, fty: str, val: i64) {
+    if val < 0 { return }
+    let mut vk = node_kind(nk, val)
+    // пряк литерал
+    if vk == 0 {
+        if str_eq(fty, "i32") == 1 {
+            eprintln(concat(concat(concat("поле '", fname), "' очаква i32, но получава i64"),
+                " (i32 поле приема само i32 стойност)"))
+            exit(1)
+        }
+        if str_eq(fty, "f64") == 1 {
+            eprintln(concat(concat("поле '", fname), "' очаква f64, но получава i64"))
+            exit(1)
+        }
+        return
+    }
+    // идентификатор: виж анотацията му
+    if vk == 2 {
+        let mut vt = expr_type_name_of(nk, nt, fc, ns, node_text(nt, val), prog)
+        if str_eq(vt, "") == 0 {
+            let mut want = phantom_width_name(fty)
+            if str_eq(fty, "i64") == 1 { want = 0 }
+            if str_eq(vt, fty) == 0 {
+                eprintln(concat(concat("поле '", fname), concat(concat("' очаква ", fty), concat(", но получава ", vt))))
+                exit(1)
+            }
+        }
+    }
+}
+
+// check_fn_return_types — всяка fn с ret тип: return изразите трябва да
+// съвпадат строго. i64 литерал при i32 ret е грешка (bootstrap го хваща).
+fn check_fn_return_types(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
+    let mut f = first_child(fc, prog)
+    while f >= 0 {
+        if node_kind(nk, f) == 11 {
+            let mut rt = ""
+            let mut body: i64 = 0 - 1
+            let mut c = first_child(fc, f)
+            while c >= 0 {
+                if node_kind(nk, c) == 16 { rt = node_text(nt, c) }
+                if node_kind(nk, c) == 5 { body = c }
+                c = next_sibling(ns, c)
+            }
+            if str_eq(rt, "") == 0 {
+                if body >= 0 {
+                    check_block_returns(nk, nt, fc, ns, prog, body, rt, node_text(nt, f))
+                }
+            }
+        }
+        f = next_sibling(ns, f)
+    }
+}
+
+// check_block_returns — обхожда statements и проверява return (kind 7).
+fn check_block_returns(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, blk: i64, rt: str, fname: str) {
+    let mut s = first_child(fc, blk)
+    while s >= 0 {
+        if node_kind(nk, s) == 7 {
+            let mut v = first_child(fc, s)
+            if v >= 0 {
+                if node_kind(nk, v) == 0 {
+                    if str_eq(rt, "i32") == 1 {
+                        eprintln("връщам i64, но функцията очаква i32")
+                        exit(1)
+                    }
+                }
+            }
+        }
+        // вложени блокове (if/while/for) — рекурсия
+        if node_kind(nk, s) == 8 {
+            let mut cond = first_child(fc, s)
+            let mut tb = next_sibling(ns, cond)
+            if tb >= 0 { check_block_returns(nk, nt, fc, ns, prog, tb, rt, fname) }
+            let mut eb = next_sibling(ns, tb)
+            if eb >= 0 { check_block_returns(nk, nt, fc, ns, prog, eb, rt, fname) }
+        }
+        if node_kind(nk, s) == 9 || node_kind(nk, s) == 8 {
+            let mut b = first_child(fc, s)
+            while b >= 0 {
+                if node_kind(nk, b) == 5 { check_block_returns(nk, nt, fc, ns, prog, b, rt, fname) }
+                b = next_sibling(ns, b)
+            }
+        }
+        s = next_sibling(ns, s)
+    }
+}
+

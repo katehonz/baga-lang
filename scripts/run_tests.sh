@@ -190,6 +190,17 @@ for tyname in u32 u64 u8 i16 f32; do
 done
 echo "OK: LP10 — u8/u32/u64/i16/f32 се отказват с ясна грешка"
 
+echo "=== LP11: i32 е реален 32-битов тип (wrap), като bootstrap-а ==="
+# i32 трябва да е int32_t: 100000*100000 се увива до 1410065408, не 1e10.
+printf 'fn main() {\n    let x: i32 = 100000\n    print(x * x)\n}\n' > /tmp/baga_lp11_wrap.baga
+test "$(run /tmp/baga_lp11_wrap.baga)" = "1410065408" \
+	&& echo "OK: LP11 — i32 се увива като int32_t" \
+	|| { echo "FAIL: LP11 i32 wrap трябва да е 1410065408"; exit 1; }
+run --emit-c /tmp/baga_lp11_wrap.baga > /tmp/baga_lp11_emit.c
+grep -q 'int32_t b_x' /tmp/baga_lp11_emit.c \
+	&& echo "OK: LP11 — emit-c ползва int32_t за i32" \
+	|| { echo "FAIL: LP11 emit-c не ползва int32_t"; exit 1; }
+
 run examples/bytes.baga > /tmp/baga_bytes_out.txt
 printf 'len=4\nat0=222\nhex=deadbeef\nroundtrip=hi\ndec_hex=cafe\ncat_hex=deadbeef00ff\nslice_hex=adbe\n' | diff - /tmp/baga_bytes_out.txt > /dev/null \
 	&& echo "OK: bytes тип (hex литерал, len/at/slice/concat, str/hex конверсии)" \
@@ -886,6 +897,9 @@ bash "$ROOT/scripts/run_verify.sh"
 
 # ── 6b. Self-hosting parity (LP7) ────────────────────────────────────────
 bash "$ROOT/scripts/self_parity.sh"
+
+# ── 6c. Negative-test oracle (LP11): отказите също трябва да парират ────
+bash "$ROOT/scripts/neg_oracle.sh"
 
 # ── 7. Optional LLVM oracle (separate make target; skip if not built) ────
 echo "=== LLVM оракул (C vs lli-14) ==="

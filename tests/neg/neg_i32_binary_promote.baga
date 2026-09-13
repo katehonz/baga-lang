@@ -1,0 +1,7 @@
+// LP11 — `a + 1` е i64 (numeric_promote), затова не може да
+// инициализира i32. Bootstrap го отхвърля.
+fn main() {
+    let a: i32 = 5
+    let c: i32 = a + 1
+    print(c)
+}

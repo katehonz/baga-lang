@@ -1,0 +1,5 @@
+// LP11 — u32 не е тип в Бага (bootstrap: „непознат тип").
+fn main() {
+    let x: u32 = 5
+    print(x)
+}

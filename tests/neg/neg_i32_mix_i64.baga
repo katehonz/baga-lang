@@ -1,0 +1,7 @@
+// LP11 — i64 нишка при i32 анотация, през i64 let.
+fn main() {
+    let a = 1
+    let b: i32 = 5
+    let c: i32 = a + b
+    print(c)
+}

@@ -1,0 +1,5 @@
+// LP11 — usize не е тип в Бага.
+fn main() {
+    let x: usize = 5
+    print(x)
+}

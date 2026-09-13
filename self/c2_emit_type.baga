@@ -9,6 +9,20 @@ import "c2_enum.baga"
 fn gen_call_ret_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
 fn fn_type_ret(t: str) -> str
 
+// let_type_of — явната типова анотация на `let` (kind 6), или "". Парсерът
+// я пази като второ дете kind 47, след init-а, за да не чупи first_child
+// (който всички класификатори ползват за init). Ползва се от emit_stmt,
+// за да предпочете анотацията пред sniff-натия тип — иначе `let x: i32 = 5`
+// се emit-ваше като int64_t и wrap-ваше различно от bootstrap-а (int32_t).
+fn let_type_of(nk: Vec, nt: Vec, fc: Vec, ns: Vec, idx: i64) -> str {
+    let mut c = first_child(fc, idx)
+    while c >= 0 {
+        if node_kind(nk, c) == 47 { return node_text(nt, c) }
+        c = next_sibling(ns, c)
+    }
+    return ""
+}
+
 // match_scrut_is_str — истинският scrutinee на match е низ. Двойна
 // детекция: типът на scrutinee-то ИЛИ низов литерал (kind 1) като патерн.
 // Литерал-патерн има смисъл само срещу низ, а expr_is_str не вижда

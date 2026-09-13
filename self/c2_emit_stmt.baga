@@ -104,6 +104,12 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
         // sum enum стойност (конструктор, bare вариант, Enum::Variant път)
         let mut esum = sum_enum_type_of_expr(nk, nt, fc, ns, prog, sniff)
         if str_eq(esum, "") == 0 { ctype = mangle(esum) }
+        // Явна анотация печели над sniff-натия тип: иначе `let x: i32 = 5`
+        // се emit-ваше като int64_t и wrap-ваше различно от bootstrap-а
+        // (int32_t) — тиха soundness дивергенция. Анотацията идва като
+        // второ дете kind 47 (виж parse_stmt в c2_parse_stmt.baga).
+        let mut ann = let_type_of(nk, nt, fc, ns, idx)
+        if str_eq(ann, "") == 0 { ctype = c_type(ann) }
         write(concat(concat(concat(concat(ind, concat(ctype, " ")), mangle(node_text(nt, idx))), " = "), concat(emit_expr(nk, nt, fc, ns, prog, init), ";\n")))
         return
     }
@@ -243,6 +249,10 @@ fn emit_stmt(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64, depth: i64
 
 fn c_type(t: str) -> str {
     if str_eq(t, "i64") == 1 { return "int64_t" }
+    // i32 е реален 32-битов тип (огледало на bootstrap-а, който emit-ва
+    // int32_t и оставя wrap-а на C). Без този ред c_type("i32") падаше до
+    // mangle("i32") = b_i32 — недефиниран typedef, който не се компилира.
+    if str_eq(t, "i32") == 1 { return "int32_t" }
     if str_eq(t, "str") == 1 { return "const char *" }
     if str_eq(t, "bytes") == 1 { return "baga_bytes" }
     if str_eq(t, "Vec") == 1 { return "baga_Vec *" }

@@ -3,10 +3,18 @@
 
 import "c2_ast.baga"
 import "c2_lex.baga"
+import "c2_emit_type.baga"
+import "c2_neg.baga"
+
+// Forward декларации на LP11 negative проверките (c2_neg.baga).
+fn check_types(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64)
+fn check_let_decls(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64)
+fn check_returns_and_fields(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64)
 
 // ============================================================
 //  Checker (минимален: типове на аргументи + vec смесване)
 // ============================================================
+
 
 fn typekind_of_typename(name: str) -> i64 {
     // generic аргументите се игнорират: "Vec<i64>" → Vec (LP8-D)
@@ -351,6 +359,9 @@ fn check_program(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
     check_specs(nk, nt, fc, ns, prog)
     check_node(nk, nt, fc, ns, prog, prog)
     check_fn_returns(nk, nt, fc, ns, prog)
+    check_types(nk, nt, fc, ns, prog)
+    check_let_decls(nk, nt, fc, ns, prog)
+    check_returns_and_fields(nk, nt, fc, ns, prog)
 }
 
 // statement, който гарантирано не пада през края си: return (7),
@@ -412,4 +423,3 @@ fn check_fn_returns(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64) {
         f = next_sibling(ns, f)
     }
 }
-

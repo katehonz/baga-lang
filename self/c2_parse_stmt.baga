@@ -27,14 +27,21 @@ fn parse_stmt(tk: Vec, tt: Vec, pos: Vec, nk: Vec, nt: Vec, fc: Vec, ns: Vec) ->
         if vec_get(tk, vec_get(pos, 0)) == 3 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
         let mut name = vec_get_str(tt, vec_get(pos, 0))
         vec_set(pos, 0, vec_get(pos, 0) + 1)
+        let mut ltype = ""
         if is_single(tk, tt, vec_get(pos, 0), ":") == 1 {
             vec_set(pos, 0, vec_get(pos, 0) + 1)
-            let mut ltype = parse_type_name(tk, tt, pos)
+            ltype = parse_type_name(tk, tt, pos)
         }
         if is_single(tk, tt, vec_get(pos, 0), "=") == 1 { vec_set(pos, 0, vec_get(pos, 0) + 1) }
         let mut init = parse_expr(tk, tt, pos, nk, nt, fc, ns)
         let node = ast_kind(nk, nt, fc, ns, 6, name)
+        // init е ПЪРВО дете (всички first_child(fc, let) го очакват); явната
+        // типова анотация се добавя ВТОРА като kind 47, за да може емитерът
+        // да emit-не int32_t вместо sniff-натия int64_t (i32 soundness).
         ast_child(fc, ns, node, init)
+        if str_eq(ltype, "") == 0 {
+            ast_child(fc, ns, node, ast_kind(nk, nt, fc, ns, 47, ltype))
+        }
         return node
     }
     // raise !E[(payload)] — runtime предизвикване на ефект (kind 36)
