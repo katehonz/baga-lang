@@ -678,6 +678,24 @@ static Type *resolve_type_node_inner(CheckCtx *ctx, Node *ty) {
                 }
                 Type *t = type_new(TYPE_STRUCT);
                 t->name = strdup(sd ? sd->struct_name : ty->type_name);
+                /* Честна грешка за „широчинни" имена, които не са типове в
+                 * Бага: иначе `u32`/`u64`/`u8` тихо става номинален struct и
+                 * `let x: u32 = 5` гърми с подвеждащо „несъвместими типове"
+                 * вместо да каже, че типът не съществува. Поддържат се само
+                 * i32/i64. */
+                if (!sd) {
+                    static const char *phantom[] = {
+                        "u8", "u16", "u32", "u64", "usize", "isize",
+                        "i8", "i16", "f32", "u128", "i128", NULL
+                    };
+                    for (int pi = 0; phantom[pi]; pi++) {
+                        if (strcmp(ty->type_name, phantom[pi]) != 0) continue;
+                        check_error(ctx, ty->pos,
+                            "непознат тип '%s' — поддържат се само i32 и i64 (цяло число) и f64 (дробно)",
+                            ty->type_name);
+                        return type_new(TYPE_ERROR);
+                    }
+                }
                 return t;
             }
         case NODE_TYPE_REF: {
@@ -2925,8 +2943,24 @@ static Type *infer(CheckCtx *ctx, Node *n) {
             if (n->let_type && n->let_init &&
                 decl_t->kind != TYPE_ERROR && init_t->kind != TYPE_ERROR &&
                 !type_eq(decl_t, init_t)) {
-                /* i64 → f64 е позволено (разширяване); f64 → i64 е грешка */
-                if (!(decl_t->kind == TYPE_F64 && init_t->kind == TYPE_I64)) {
+                /* i64 → f64 е позволено (разширяване); f64 → i64 е грешка.
+                 * i64 литерал → i32 анотация също е позволено (стесняване с
+                 * проверка на диапазона) — литералът няма собствен живот, а
+                 * `let x: i32 = 5` е единственият начин да се получи i32
+                 * стойност (иначе типът е неизползваем: `i32` не може да се
+                 * инициализира от нищо). */
+                int int_lit_ok = 0;
+                if (decl_t->kind == TYPE_I32 && init_t->kind == TYPE_I64 &&
+                    n->let_init && n->let_init->kind == NODE_INT_LIT) {
+                    long long v = n->let_init->int_val;
+                    int_lit_ok = 1;  /* литералът се стеснява до i32 */
+                    if (v < -2147483648LL || v > 2147483647LL)
+                        check_error(ctx, n->pos,
+                            "i32 литералът '%lld' е извън диапазона (-2147483648..2147483647)",
+                            v);
+                }
+                if (!(decl_t->kind == TYPE_F64 && init_t->kind == TYPE_I64) &&
+                    !int_lit_ok) {
                     check_error(ctx, n->pos,
                         "несъвместими типове: '%s' е %s, но инициализаторът е %s",
                         n->let_name, type_str(decl_t), type_str(init_t));

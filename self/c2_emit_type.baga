@@ -9,6 +9,40 @@ import "c2_enum.baga"
 fn gen_call_ret_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
 fn fn_type_ret(t: str) -> str
 
+// match_scrut_is_str — истинският scrutinee на match е низ. Двойна
+// детекция: типът на scrutinee-то ИЛИ низов литерал (kind 1) като патерн.
+// Литерал-патерн има смисъл само срещу низ, а expr_is_str не вижда
+// параметри и върнати стойности от импортирани функции. Ползва се от
+// emit_expr (c2_emit_expr.baga) за избор между strcmp и `==`.
+fn match_scrut_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, mexpr: i64, arm1: i64) -> i64 {
+    if expr_is_str(nk, nt, fc, ns, prog, mexpr) == 1 { return 1 }
+    let mut arm = arm1
+    while arm >= 0 {
+        if str_eq(node_text(nt, arm), "_") == 0 {
+            let mut pat = first_child(fc, arm)
+            if pat >= 0 {
+                if node_kind(nk, pat) == 1 { return 1 }
+            }
+        }
+        arm = next_sibling(ns, arm)
+    }
+    return 0
+}
+
+// match_mv_ctype — C типът на scrutinee temp-а при match (str срещу i64).
+fn match_mv_ctype(is_str: i64) -> str {
+    if is_str == 1 { return "const char *" }
+    return "int64_t"
+}
+
+// match_cmp_clause — пълният `if (...)` отварящ израз за arm-а. При низов
+// scrutinee сравнява СЪДЪРЖАНИЕ (strcmp), иначе `==`. pat е вече емитнатият
+// C текст на патерна.
+fn match_cmp_clause(is_str: i64, suf: str, patc: str) -> str {
+    if is_str == 1 { return concat(concat(concat(concat("if (strcmp(_mv", suf), ", "), patc), ") == 0) { ") }
+    return concat(concat(concat(concat("if (_mv", suf), " == "), patc), ") { ")
+}
+
 fn expr_is_str(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> i64 {
     let mut k = node_kind(nk, idx)
     // CATCH (37) / TRY (40) — типът е типът на вътрешния израз

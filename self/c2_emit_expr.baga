@@ -127,7 +127,8 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
             }
         }
         let mut suf = int_to_str(idx)
-        let mut r = concat(concat(concat(concat(concat("({ ", ctype), concat(" _mr", suf)), concat(" = 0; int64_t _mv", suf)), " = "), concat(emit_expr(nk, nt, fc, ns, prog, mexpr), "; "))
+        let mut is_str_match = match_scrut_is_str(nk, nt, fc, ns, prog, mexpr, arm1)
+        let mut r = concat(concat(concat(concat(concat("({ ", ctype), concat(" _mr", suf)), concat(" = 0; ", match_mv_ctype(is_str_match))), concat(concat(" _mv", suf), " = ")), concat(emit_expr(nk, nt, fc, ns, prog, mexpr), "; "))
         let mut arm = arm1
         let mut first_arm: i64 = 1
         while arm >= 0 {
@@ -138,7 +139,7 @@ fn emit_expr(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str {
                 let mut pat = abody
                 abody = next_sibling(ns, pat)
                 if first_arm == 0 { r = concat(r, "else ") }
-                r = concat(concat(concat(concat(concat(r, "if (_mv"), suf), " == "), emit_expr(nk, nt, fc, ns, prog, pat)), ") { ")
+                r = concat(r, match_cmp_clause(is_str_match, suf, emit_expr(nk, nt, fc, ns, prog, pat)))
             }
             r = concat(concat(concat(concat(r, "_mr"), suf), " = "), concat(emit_expr(nk, nt, fc, ns, prog, abody), "; } "))
             first_arm = 0

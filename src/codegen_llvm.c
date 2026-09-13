@@ -6085,16 +6085,32 @@ static LLVMValueRef emit_match_llvm(Node *n) {
         Node *ed = find_sum_enum(n->match_expr->type->name);
         if (ed) return emit_match_sum_llvm(n, ed);
     }
+    Node *sc = n->match_expr;
+    int str_scrut = sc && sc->type && sc->type->kind == TYPE_STR;
+    /* Подсилване: низов литерал като патерн ⇒ низов scrutinee (типът може
+     * да липсва). Огледало на codegen_c. */
+    if (!str_scrut) {
+        for (int i = 0; i < n->match_arms.len; i++) {
+            Node *a = n->match_arms.data[i];
+            if (a->arm_pattern && a->arm_pattern->kind == NODE_STR_LIT) {
+                str_scrut = 1;
+                break;
+            }
+        }
+    }
     LLVMValueRef mv = emit_expr_llvm(n->match_expr);
     if (!mv) llvm_unsupported("match върху не-целочислена стойност");
-    /* str scrutinee: C бекендът сравнява `int64_t _mv == "литерал"` —
-     * указателно равенство (warning в gcc, валиден код); огледало чрез
-     * ptrtoint от двете страни */
-    if (LLVMGetTypeKind(LLVMTypeOf(mv)) == LLVMPointerTypeKind)
-        mv = LLVMBuildPtrToInt(lg.builder, mv, lg.i64_ty, "mvp");
-    if (LLVMGetTypeKind(LLVMTypeOf(mv)) != LLVMIntegerTypeKind)
-        llvm_unsupported("match върху не-целочислена стойност");
-    mv = coerce(mv, lg.i64_ty);
+    /* str scrutinee: сравнявай СЪДЪРЖАНИЕ (baga_str_eq → strcmp), не
+     * указатели. Огледало на codegen_c. Преди тук имаше ptrtoint от двете
+     * страни (указателно равенство) — с изчислен низ `match` тихо падаше в
+     * `_`. */
+    if (!str_scrut) {
+        if (LLVMGetTypeKind(LLVMTypeOf(mv)) == LLVMPointerTypeKind)
+            mv = LLVMBuildPtrToInt(lg.builder, mv, lg.i64_ty, "mvp");
+        if (LLVMGetTypeKind(LLVMTypeOf(mv)) != LLVMIntegerTypeKind)
+            llvm_unsupported("match върху не-целочислена стойност");
+        mv = coerce(mv, lg.i64_ty);
+    }
 
     LLVMTypeRef res_ty = n->type ? llvm_type_resolved(n->type) : lg.i64_ty;
     LLVMValueRef res_alloca = NULL;
@@ -6112,12 +6128,20 @@ static LLVMValueRef emit_match_llvm(Node *n) {
         if (arm->arm_pattern) {
             LLVMValueRef pat = emit_expr_llvm(arm->arm_pattern);
             if (!pat) llvm_unsupported("print в match pattern");
-            if (LLVMGetTypeKind(LLVMTypeOf(pat)) == LLVMPointerTypeKind)
-                pat = LLVMBuildPtrToInt(lg.builder, pat, lg.i64_ty, "mpp");
-            pat = coerce(pat, lg.i64_ty);
-            char *name = tmp_name();
-            LLVMValueRef cond = LLVMBuildICmp(lg.builder, LLVMIntEQ, mv, pat, name);
-            free(name);
+            LLVMValueRef cond;
+            if (str_scrut) {
+                /* съдържание, не указател */
+                LLVMValueRef ab[] = { mv, pat };
+                LLVMValueRef e =
+                    h_call(baga_rt("baga_str_eq"), ab, 2, "seq");
+                cond = LLVMBuildICmp(lg.builder, LLVMIntNE, e,
+                    LLVMConstInt(lg.i64_ty, 0, 0), "eq");
+            } else {
+                if (LLVMGetTypeKind(LLVMTypeOf(pat)) == LLVMPointerTypeKind)
+                    pat = LLVMBuildPtrToInt(lg.builder, pat, lg.i64_ty, "mpp");
+                pat = coerce(pat, lg.i64_ty);
+                cond = LLVMBuildICmp(lg.builder, LLVMIntEQ, mv, pat, "meq");
+            }
             LLVMBasicBlockRef arm_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "match_arm");
             LLVMBasicBlockRef next_bb = LLVMAppendBasicBlockInContext(lg.ctx, fn, "match_next");
             LLVMBuildCondBr(lg.builder, cond, arm_bb, next_bb);

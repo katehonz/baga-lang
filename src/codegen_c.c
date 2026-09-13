@@ -3938,18 +3938,53 @@ static void emit_expr(Codegen *cg, Node *n) {
                 }
             }
             if (!is_enum) {
+                /* str scrutinee: сравнявай съдържание (strcmp), не указатели.
+                 * Преди това `match s { "a" => .. }` се компилираше до
+                 * `int64_t _mv = s; if (_mv == "a")` — указателно равенство.
+                 * С литерал минаваше по случайност (интернинг); с изчислен
+                 * низ винаги падаше в `_` → тихо грешен отговор. gcc warning-ът
+                 * се поглъща от system() в main.c, така че не се виждаше. */
+                int str_match = n->match_expr->type &&
+                                n->match_expr->type->kind == TYPE_STR;
+                /* Подсилване: низов литерал като патерн има смисъл само
+                 * срещу низ — покрива случаи, в които типът на scrutinee-то
+                 * не е наличен. */
+                if (!str_match) {
+                    for (int i = 0; i < n->match_arms.len; i++) {
+                        Node *a = n->match_arms.data[i];
+                        if (a->arm_pattern && a->arm_pattern->kind == NODE_STR_LIT) {
+                            str_match = 1;
+                            break;
+                        }
+                    }
+                }
                 /* GCC statement expression */
-                if (is_void) fprintf(f, "({ int64_t _mv%d = ", tmp);
-                else fprintf(f, "({ %s _mr%d = 0; int64_t _mv%d = ", ctype, tmp, tmp);
+                if (is_void) {
+                    if (str_match) fprintf(f, "({ const char *_mv%d = ", tmp);
+                    else           fprintf(f, "({ int64_t _mv%d = ", tmp);
+                } else {
+                    if (str_match)
+                        fprintf(f, "({ %s _mr%d = 0; const char *_mv%d = ",
+                                ctype, tmp, tmp);
+                    else
+                        fprintf(f, "({ %s _mr%d = 0; int64_t _mv%d = ",
+                                ctype, tmp, tmp);
+                }
                 emit_expr(cg, n->match_expr);
                 fprintf(f, "; ");
                 for (int i = 0; i < n->match_arms.len; i++) {
                     Node *arm = n->match_arms.data[i];
                     if (arm->arm_pattern) {
                         if (i > 0) fprintf(f, "else ");
-                        fprintf(f, "if (_mv%d == ", tmp);
-                        emit_expr(cg, arm->arm_pattern);
-                        fprintf(f, ") { ");
+                        if (str_match) {
+                            fprintf(f, "if (strcmp(_mv%d, ", tmp);
+                            emit_expr(cg, arm->arm_pattern);
+                            fprintf(f, ") == 0) { ");
+                        } else {
+                            fprintf(f, "if (_mv%d == ", tmp);
+                            emit_expr(cg, arm->arm_pattern);
+                            fprintf(f, ") { ");
+                        }
                     } else {
                         /* wildcard → else */
                         fprintf(f, "else { ");

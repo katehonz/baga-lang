@@ -226,7 +226,11 @@ explicitly or let the compiler infer them from initializers.
 
 ### 4.1 Inference and numeric promotion
 
-- An integer literal infers to `i64`.
+- An integer literal infers to `i64`. If the variable is annotated as `i32`,
+  the literal narrows to `i32` (with a range check
+  `-2147483648..2147483647` — outside it is a compile-time error). Other widths
+  such as `u8`, `u16`, `u32`, `u64`, `i16`, `f32` **do not exist** in Baga and
+  are rejected with a clear "unknown type" error.
 - A float literal infers to `f64`. Literals are emitted at full precision
   (`%.17g`, an IEEE 754 double round-trip) — no lost digits.
 - A string literal infers to `str`.

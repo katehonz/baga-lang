@@ -151,6 +151,45 @@ printf 'name=baga n=42 ok=true expr=84\ndollar=$ braces={ } neg=-7\n' | diff - /
 	&& echo 'OK: ${expr} интерполация (str/i64/bool/call)' \
 	|| { echo "FAIL: интерполация"; cat /tmp/baga_interp_out.txt; exit 1; }
 echo "=== bytes type ==="
+echo "=== LP9: match върху низ сравнява съдържание, не указатели ==="
+printf 'fn main() {\n    let t = concat("be", "ta")\n    print(match t { "alpha" => 1, "beta" => 2, "gamma" => 3, _ => 99 })\n}\n' > /tmp/baga_lp9_strmatch.baga
+test "$(run /tmp/baga_lp9_strmatch.baga)" = "2" \
+	&& echo "OK: LP9 — изчислен низ съвпада с arm-а си (не пада в _)" \
+	|| { echo "FAIL: LP9 str match трябва да върне 2"; exit 1; }
+# низов параметър: патернът е литерал, типът на scrutinee-то може да липсва
+printf 'fn f(s: str) -> i64 { return match s { "b" => 2, _ => 9 } }\nfn main() {\n    print(f(concat("b", "")))\n}\n' > /tmp/baga_lp9_strparam.baga
+test "$(run /tmp/baga_lp9_strparam.baga)" = "2" \
+	&& echo "OK: LP9 — низов параметър като scrutinee" \
+	|| { echo "FAIL: LP9 str параметър трябва да върне 2"; exit 1; }
+# emit-c трябва да съдържа strcmp на match мястото и да няма указателно сравнение
+run --emit-c /tmp/baga_lp9_strmatch.baga > /tmp/baga_lp9_emit.c
+grep -q 'strcmp(_mv[0-9]*, "alpha")' /tmp/baga_lp9_emit.c \
+	&& echo "OK: LP9 — emit-c ползва strcmp за match патерните" \
+	|| { echo "FAIL: LP9 emit-c не ползва strcmp"; exit 1; }
+grep -q '_mv[0-9]* == "alpha"' /tmp/baga_lp9_emit.c \
+	&& { echo "FAIL: LP9 — останало указателно сравнение _mv == \"...\""; exit 1; } \
+	|| echo "OK: LP9 — няма указателно сравнение за низов match"
+
+echo "=== LP10: i32 литерали и отказ за непознати широчинни типове ==="
+# i32 трябва да се инициализира от int литерал (иначе типът е неизползваем).
+printf 'fn main() {\n    let x: i32 = 5\n    print(x + 1)\n}\n' > /tmp/baga_lp10_i32.baga
+test "$(run /tmp/baga_lp10_i32.baga)" = "6" \
+	&& echo "OK: LP10 — i32 се инициализира от литерал" \
+	|| { echo "FAIL: LP10 i32 литерал трябва да върне 6"; exit 1; }
+# извъндиапазонен литерал е честна грешка, не тихо препълване
+printf 'fn main() {\n    let x: i32 = 3000000000\n}\n' > /tmp/baga_lp10_i32_big.baga
+run /tmp/baga_lp10_i32_big.baga 2>&1 | grep -q "извън диапазона" \
+	&& echo "OK: LP10 — i32 препълване се хваща" \
+	|| { echo "FAIL: LP10 i32 препълване не се хваща"; exit 1; }
+# непознати широчинни имена (u32/u64/u8/i16/f32) се отказват ясно,
+# вместо да станат тих номинален struct.
+for tyname in u32 u64 u8 i16 f32; do
+	printf 'fn main() {\n    let x: %s = 5\n}\n' "$tyname" > /tmp/baga_lp10_phantom.baga
+	run /tmp/baga_lp10_phantom.baga 2>&1 | grep -q "непознат тип '$tyname'" \
+		|| { echo "FAIL: LP10 '$tyname' трябва да е непознат тип"; exit 1; }
+done
+echo "OK: LP10 — u8/u32/u64/i16/f32 се отказват с ясна грешка"
+
 run examples/bytes.baga > /tmp/baga_bytes_out.txt
 printf 'len=4\nat0=222\nhex=deadbeef\nroundtrip=hi\ndec_hex=cafe\ncat_hex=deadbeef00ff\nslice_hex=adbe\n' | diff - /tmp/baga_bytes_out.txt > /dev/null \
 	&& echo "OK: bytes тип (hex литерал, len/at/slice/concat, str/hex конверсии)" \
