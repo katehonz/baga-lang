@@ -1,5 +1,6 @@
 // crc32c.baga — CRC-32C (Castagnoli, reflected poly 0x82F63B78).
 // WAL/page checksums. Masked-i64 u32 discipline (std/crypto README).
+// NB: `u32(x)` тук е ФУНКЦИЯ (маскиране до 32 бита), не тип.
 //
 // R22: small payloads use bit-reflected soft CRC (no per-call table build).
 // Large payloads use a 256-entry table (built once per call — amortized over

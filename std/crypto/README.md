@@ -8,6 +8,12 @@ modexp included), X25519 against RFC 7748, P-256/ECDSA against python
 against the same oracle, RSA-PSS / PKCS#1 likewise. The TLS 1.3 stack
 (T1–T7) lives here plus `std/net/tls.baga`.
 
+> **Бележка за `u32`:** `sha256.baga`/`sha512.baga`/`crc32c.baga` дефинират
+> локална функция `u32(x)`, която маскира i64 до 32 бита. Това **не е тип** —
+> Бага няма тип `u32` (отхвърля се с „непознат тип"). Функции и типове са в
+> различни пространства от имена, затова `fn u32(...)` е валидно, но
+> объркващо. Ако добавяте нов код, предпочитайте име като `mask32`.
+
 - `sha256_bytes(data: Vec<i64>) -> Vec<i64>` — SHA-256 (FIPS 180-4) over a byte buffer; returns the 32-byte digest.
 - `sha256(msg: str) -> Vec<i64>` — SHA-256 over the raw bytes of `msg`.
 - `sha256_hex(msg: str) -> str` — lowercase hex digest of `msg`.

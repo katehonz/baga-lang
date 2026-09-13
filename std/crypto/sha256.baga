@@ -1,6 +1,11 @@
 // sha256.baga — SHA-256 (FIPS 180-4). Pure Baga, no effects.
 // u32 arithmetic is emulated with i64 masked to 32 bits (u32()); bitwise
 // NOT is (-1) ^ x. All intermediate sums stay below 2^36 (fits i64).
+//
+// NB: `u32` тук е ФУНКЦИЯ (маскиране до 32 бита), не тип. Бага няма тип
+// `u32` — той се отхвърля с „непознат тип". Двете имена живеят в
+// различни пространства (типове срещу функции), затова това е валидно,
+// но объркващо; виж std/crypto/README.
 
 import "../bytes/bytes.baga"
 

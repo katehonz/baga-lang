@@ -5,6 +5,9 @@
 // never wraps — the same discipline as sha256.baga ("stays below 2^36"),
 // which does NOT scale to 64-bit words directly (5 addends × 2^64 > 2^63).
 //
+// NB: `u32(x)` по-долу е ФУНКЦИЯ (маскиране до 32 бита), не тип — Бага
+// няма тип `u32`. Виж std/crypto/README.
+//
 // Public API (mirrors sha256.baga):
 //   sha384_bytes(Vec<i64>) -> Vec<i64>   (48 bytes)
 //   sha512_bytes(Vec<i64>) -> Vec<i64>   (64 bytes)

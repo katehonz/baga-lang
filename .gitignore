@@ -24,3 +24,4 @@ app-product/wasmtimebaga/vendor/include/
 
 # local agent / IDE tool config
 .qwen/
+.codewhale/
