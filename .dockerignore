@@ -4,6 +4,14 @@
 .superpowers
 target
 *.o
+*.llvm.o
 baga
 baga-llvm
 sandak
+**/node_modules
+**/.next
+**/__pycache__
+**/.venv
+app-product/bagabuch/db
+app-product/bagabuch/secret
+app-product/bagabuch/frontend/.next
