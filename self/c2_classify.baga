@@ -16,6 +16,13 @@ fn gen_struct_param_names(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, sname: 
 fn expr_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> str
 fn struct_lit_type_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, lit: i64) -> str
 fn struct_decl_of(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, name: str) -> i64
+// forward декларации за sniff_c_type (c2_emit_stmt/c2_emit_expr/c2_clo)
+fn type_c_name(t: str) -> str
+fn c_type(t: str) -> str
+fn mangle(name: str) -> str
+fn fn_type_ret(t: str) -> str
+fn gen_call_ret_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, idx: i64) -> str
+fn fn_ret_c_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, fname: str) -> str
 // ============================================================
 //  LP8: map/vec класификация по история на записите в програмата.
 //  Линейни скенове по всички възли (node индекси) — хващат и
@@ -382,4 +389,107 @@ fn expr_struct_name(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, e: i64) -> st
     if str_eq(tn, "") == 1 { return "" }
     if struct_decl_of(nk, nt, fc, ns, prog, type_base(tn)) < 0 { return "" }
     tn
+}
+
+// C тип на let init израз по sniff евристиките (същата поредност като
+// преди в emit_stmt LET — последното познато печели), + ident случаят:
+// `let b = v` взима типа на v от нейния let (анотация или init).
+// Без това `let b = v` (v: Vec) излизаше int64_t — hard error при GCC 14
+// (-Wint-conversion). "" ако нищо не се разпозна — caller слага int64_t.
+fn sniff_c_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, init: i64, fuel: i64) -> str {
+    if fuel <= 0 { return "" }
+    // CATCH/TRY обвивки се разголват
+    let mut sniff = init
+    let mut sk = node_kind(nk, sniff)
+    while sk == 37 || sk == 40 {
+        sniff = first_child(fc, sniff)
+        sk = node_kind(nk, sniff)
+    }
+    let mut ctype = ""
+    if node_kind(nk, sniff) == 1 { ctype = "const char *" }
+    if node_kind(nk, sniff) == 34 { ctype = "baga_bytes" }
+    if node_kind(nk, sniff) == 22 { ctype = type_c_name(struct_lit_type_name(nk, nt, fc, ns, prog, sniff)) }
+    // LP8-D: извикване на fn-типиран параметър в инстанция (kind 49)
+    if node_kind(nk, sniff) == 49 { ctype = c_type(fn_type_ret(node_text(nt, sniff))) }
+    if node_kind(nk, sniff) == 2 {
+        // ident: типът идва от let-а на променливата (анотация или init)
+        let mut vname = node_text(nt, sniff)
+        let mut i: i64 = 0
+        let mut n = vec_len(nk)
+        while i < n {
+            if node_kind(nk, i) == 6 {
+                if str_eq(node_text(nt, i), vname) == 1 {
+                    let mut ann2 = let_type_of(nk, nt, fc, ns, i)
+                    if str_eq(ann2, "") == 0 { ctype = c_type(ann2) }
+                    if str_eq(ann2, "") == 1 { ctype = sniff_c_type(nk, nt, fc, ns, prog, first_child(fc, i), fuel - 1) }
+                    break
+                }
+            }
+            i = i + 1
+        }
+    }
+    if node_kind(nk, sniff) == 4 {
+        let mut cal = first_child(fc, sniff)
+        if node_kind(nk, cal) == 2 {
+            let mut bn = node_text(nt, cal)
+            if str_eq(bn, "concat") == 1 { ctype = "const char *" }
+            if str_eq(bn, "substr") == 1 { ctype = "const char *" }
+            if str_eq(bn, "chr") == 1 { ctype = "const char *" }
+            if str_eq(bn, "read_file") == 1 { ctype = "const char *" }
+            if str_eq(bn, "arg") == 1 { ctype = "const char *" }
+            if str_eq(bn, "vec_get_str") == 1 { ctype = "const char *" }
+            if str_eq(bn, "str_of_bytes") == 1 { ctype = "const char *" }
+            if str_eq(bn, "hex_encode") == 1 { ctype = "const char *" }
+            if str_eq(bn, "i64_to_str") == 1 { ctype = "const char *" }
+            if str_eq(bn, "f64_to_str") == 1 { ctype = "const char *" }
+            if str_eq(bn, "vec_new") == 1 { ctype = "baga_Vec *" }
+            if str_eq(bn, "vec_slice") == 1 { ctype = "baga_Vec *" }
+            if str_eq(bn, "vec_concat") == 1 { ctype = "baga_Vec *" }
+            if str_eq(bn, "map_keys") == 1 { ctype = "baga_Vec *" }
+            if str_eq(bn, "pool_map") == 1 { ctype = "baga_Vec *" }
+            if str_eq(bn, "bytes_of_str") == 1 { ctype = "baga_bytes" }
+            if str_eq(bn, "bytes_slice") == 1 { ctype = "baga_bytes" }
+            if str_eq(bn, "bytes_concat") == 1 { ctype = "baga_bytes" }
+            if str_eq(bn, "bytes_new") == 1 { ctype = "baga_bytes" }
+            if str_eq(bn, "bytes_push") == 1 { ctype = "baga_bytes" }
+            if str_eq(bn, "h_bytes") == 1 { ctype = "baga_bytes" }
+            if str_eq(bn, "h_str") == 1 { ctype = "const char *" }
+            if str_eq(bn, "h_map") == 1 { ctype = "baga_Map *" }
+            if str_eq(bn, "hex_decode") == 1 { ctype = "baga_bytes" }
+            if str_eq(bn, "map_new") == 1 { ctype = "baga_Map *" }
+            let mut la1 = next_sibling(ns, cal)
+            if str_eq(bn, "vec_get") == 1 {
+                if la1 >= 0 {
+                    let mut bt = vec_box_type(nk, nt, fc, ns, prog, la1)
+                    if str_eq(bt, "") == 0 { ctype = mangle(bt) }
+                    // Vec<Vec<...>>: vec_get връща vec pointer
+                    if expr_vec_depth(nk, nt, fc, ns, prog, la1) >= 2 { ctype = "baga_Vec *" }
+                }
+            }
+            if str_eq(bn, "map_get") == 1 {
+                if la1 >= 0 {
+                    let mut vk = map_val_kind(nk, nt, fc, ns, prog, la1)
+                    if str_eq(vk, "str") == 1 { ctype = "const char *" }
+                    if str_eq(vk, "f64") == 1 { ctype = "double" }
+                    if str_eq(vk, "bytes") == 1 { ctype = "baga_bytes" }
+                    if len(vk) > 4 {
+                        if str_eq(substr(vk, 0, 4), "box:") == 1 { ctype = mangle(substr(vk, 4, len(vk))) }
+                    }
+                }
+            }
+            // user function: look up return type
+            let mut rt = fn_ret_c_type(nk, nt, fc, ns, prog, bn)
+            if str_eq(rt, "const char *") == 1 { ctype = "const char *" }
+            if str_eq(rt, "baga_Vec *") == 1 { ctype = "baga_Vec *" }
+            if str_eq(rt, "baga_bytes") == 1 { ctype = "baga_bytes" }
+        }
+    }
+    if expr_is_float(nk, nt, fc, ns, prog, init) == 1 { ctype = "double" }
+    // LP8-D: generic fn / методно извикване — subst-нат ret тип
+    let mut grt = gen_call_ret_type(nk, nt, fc, ns, prog, sniff)
+    if str_eq(grt, "") == 0 { ctype = c_type(grt) }
+    // sum enum стойност (конструктор, bare вариант, Enum::Variant път)
+    let mut esum = sum_enum_type_of_expr(nk, nt, fc, ns, prog, sniff)
+    if str_eq(esum, "") == 0 { ctype = mangle(esum) }
+    ctype
 }

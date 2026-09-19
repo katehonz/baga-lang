@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### self — кодогенерацията вече издържа GCC 14 (self-hosting паритет 52/52)
+- `c2_emit_eff`: `emit_try`/`emit_catch` emit-ваха безусловно `return 0;` в
+  statement-изразите за propagate/catch — във `void` функция това е hard
+  error при GCC 14 (`-Wreturn-mismatch`; при GCC 12 беше warning). Сега
+  `enclosing_ret_void` намира обграждащата fn и се emit-ва голо `return;`.
+  Същото и за `raise` в `c2_emit_stmt`.
+- `c2_classify.sniff_c_type`: LET тип-sniffing-ът вече разрешава и ident
+  alias (`let b = v` взима типа на `v` от анотацията/init-а ѝ). Преди
+  излизаше `int64_t b_b = b_v;` за Vec — hard error при GCC 14
+  (`-Wint-conversion`). Познатите евристики са преместени 1:1 в помощника.
+
+### suite — orm_boila_test вече не пипа споделената boilaDB
+- `run_tests.sh` вдига изолиран `serve_pg` (временна `BOILA_PATH`, порт 16576)
+  когато `BOILA_PGPORT` не е зададен изрично, и го гаси на изход (вкл.
+  компилираното дете `/tmp/baga_<pid>`). Преди: тестът правеше migrate
+  down/up срещу споделената база на :6575 (bagabuch dev) и rollback-ваше
+  чужди миграции → backend 500 на `/v1/companies`.
+- Dr.Web SpIDer Gate на хоста MITM-ваше loopback трафика на пресните
+  `/tmp/baga_*` тестови бинарници → висящи `tcp_test`/`poll_test`/`tls_server`.
+  След деинсталацията на Dr.Web всички минават. Не е проблем на кода.
+
 ### toolchain — Debian 13 (trixie) / LLVM 19
 - Makefile сам намира LLVM: `llvm-config` / `llvm-config-19` / `llvm-config-14`
   и съответно `lli` (override с `LLVM_CONFIG=`/`LLI=`). `tests/llvm_oracle.sh`

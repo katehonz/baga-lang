@@ -426,6 +426,42 @@ OAUTH_PG=1 PGDATABASE=baga_oauth "$ROOT/scripts/baga-test" tests/oauth_pg_test.b
 echo "=== oauth PG pool (O7: OAUTH_WORKERS=2, 1 long-lived DB на worker) ==="
 OAUTH_PG=1 OAUTH_WORKERS=2 PGDATABASE=baga_oauth "$ROOT/scripts/baga-test" tests/oauth_pg_test.baga
 
+echo "=== boilaDB за suite-а (изолиран serve_pg, без пипане на :6575) ==="
+# orm_boila_test прави migrate down/up — без изолация удря споделената
+# boilaDB на :6575 (bagabuch dev базата) и rollback-ва чужди миграции.
+# Затова: ако BOILA_PGPORT не е зададен изрично, вдигаме собствен serve_pg
+# с временна BOILA_PATH и го гасим на изход. Зададен ли е — уважаваме го.
+BOILA_SUITE_PID=""
+if [[ -z "${BOILA_PGPORT:-}" ]]; then
+	BOILA_SUITE_PORT=16576
+	BOILA_SUITE_PATH=/tmp/baga_boila_suite
+	rm -rf "$BOILA_SUITE_PATH"
+	mkdir -p "$BOILA_SUITE_PATH"
+	BOILA_PATH="$BOILA_SUITE_PATH" BOILA_PGPORT="$BOILA_SUITE_PORT" \
+		"$BIN" $BAGAIFLAGS app-product/boilaDB/tools/serve_pg.baga \
+		> /tmp/baga_boila_suite.log 2>&1 &
+	BOILA_SUITE_PID=$!
+	export BOILA_PGPORT="$BOILA_SUITE_PORT"
+	# baga първо компилира serve_pg — чакаме порта да се отвори (до ~90s)
+	READY=0
+	for _ in $(seq 1 90); do
+		if ss -tln 2>/dev/null | grep -q ":$BOILA_SUITE_PORT "; then READY=1; break; fi
+		sleep 1
+	done
+	if [[ $READY -ne 1 ]]; then
+		echo "FAIL: suite serve_pg не слуша на :$BOILA_SUITE_PORT след 90s"
+		cat /tmp/baga_boila_suite.log
+		exit 1
+	fi
+fi
+boila_suite_cleanup() {
+	[[ -n "$BOILA_SUITE_PID" ]] || return 0
+	kill "$BOILA_SUITE_PID" 2>/dev/null || true
+	# компилираното дете (/tmp/baga_<pid>) оцелява след parent-а — гасим и него
+	pkill -f "/tmp/baga_${BOILA_SUITE_PID}" 2>/dev/null || true
+}
+trap boila_suite_cleanup EXIT
+
 echo "=== baga-test discovery (tests/**/*_test.baga, без specials по-горе) ==="
 mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
