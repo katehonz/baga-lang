@@ -7185,7 +7185,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "           пропускаме pthread_lock (пази данните), а нормалният unlock\n");
     fprintf(out, "           после освобождава mutex-а и излекува теча. Печатим предупреждение. */\n");
     fprintf(out, "        void *bt[16]; int btn = backtrace(bt, 16);\n");
-    fprintf(out, "        fprintf(stderr, \"baga: mutex_lock: same-thread re-lock (lock leak) — продължаваме; първото заключване беше от %p\\n\", m->bt[0]);\n");
+    fprintf(out, "        fprintf(stderr, \"baga: mutex_lock: same-thread re-lock (lock leak) — продължаваме; първото заключване беше от %%p\\n\", m->bt[0]);\n");
     fprintf(out, "        backtrace_symbols_fd(bt, btn, 2);\n");
     fprintf(out, "        return 0;\n");
     fprintf(out, "    }\n");

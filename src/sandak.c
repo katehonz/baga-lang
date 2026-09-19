@@ -170,12 +170,12 @@ void parse_manifest(const char *path, Manifest *m) {
             if (strcmp(key, "c_source") == 0) {
                 parse_string(val, sv, sizeof sv);
                 check_safe("native.c_source", sv);
-                snprintf(m->native_c_source, sizeof m->native_c_source, "%s", sv);
+                snprintf(m->native_c_source, sizeof m->native_c_source, "%.*s", (int)sizeof m->native_c_source - 1, sv);
             } else if (strcmp(key, "cflags") == 0) {
                 parse_string(val, sv, sizeof sv);
                 /* allow -I paths; ban shell metacharacters that break quoting */
                 check_safe("native.cflags", sv);
-                snprintf(m->native_cflags, sizeof m->native_cflags, "%s", sv);
+                snprintf(m->native_cflags, sizeof m->native_cflags, "%.*s", (int)sizeof m->native_cflags - 1, sv);
             } else if (strcmp(key, "ldflags") == 0) {
                 parse_string(val, sv, sizeof sv);
                 check_safe("native.ldflags", sv);

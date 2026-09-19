@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### toolchain — Debian 13 (trixie) / LLVM 19
+- Makefile сам намира LLVM: `llvm-config` / `llvm-config-19` / `llvm-config-14`
+  и съответно `lli` (override с `LLVM_CONFIG=`/`LLI=`). `tests/llvm_oracle.sh`
+  ползва същата детекция.
+- `codegen_llvm`: `LLVMGetElementType(LLVMTypeOf(fn))` →
+  `LLVMGlobalGetValueType(fn)` — с opaque pointers (LLVM 15+) старият ред
+  segfault-ваше; оракулът минава и на 14, и на 19.
+- Dockerfile: `debian:bookworm-slim` → `debian:trixie-slim` (двата стейджа).
+- C17 вместо C11; изчистени предупрежденията от GCC 14 (`-Wcomment`,
+  `%p` в codegen string, `-Wformat-truncation` в sandak/codegen_llvm).
+
 ## [1.1.2] — 2026-09-01
 
 ### bagabuch — вход и банкови сметки върху BoilaSQL

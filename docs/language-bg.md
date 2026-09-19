@@ -1510,7 +1510,7 @@ worker (§15.3.11), вложен `go` (§15.3.12), сървърни цикли (
 - **`select2_wait` ползва 5 ms събуждане**, а не директно condvar чакане.
 - **LLVM бекендът** има пълен паритет през споделения runtime
   `lib/libbaga_par.so` (`src/baga_par_rt.c`); оракулът се пуска с
-  `lli-14 -load lib/libbaga_par.so`.
+  `lli -load lib/libbaga_par.so` (LLVM 14–19).
 
 ---
 

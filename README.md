@@ -324,11 +324,13 @@ it by oracles in `make test`.
 | Backend | Build | Run | Needs | Oracle |
 |---|---|---|---|---|
 | C transpiler (default) | `make` | `./baga file.baga` | `gcc`, `make` | — (reference) |
-| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli-14 -load lib/libbaga_par.so` | LLVM 14 | oracle (incl. `!Par`) |
+| LLVM IR | `make llvm` | `./baga-llvm --emit-llvm file.baga` → `lli -load lib/libbaga_par.so` | LLVM 14–19 (auto-detect) | oracle (incl. `!Par`) |
 
 - **C transpiler** — emits C, compiles with `gcc`, runs. Full language coverage.
 - **LLVM** — emits LLVM IR directly from the AST (`src/codegen_llvm.c`). Full
-  coverage; `tests/llvm_oracle.sh` diffs it against the C backend via `lli-14`.
+  coverage; `tests/llvm_oracle.sh` diffs it against the C backend via `lli`.
+  Makefile-ът сам намира `llvm-config`/`lli` (безсуффиксни, 19 или 14);
+  override с `make llvm LLVM_CONFIG=llvm-config-14`.
 
 ## Project Structure
 

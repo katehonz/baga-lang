@@ -902,7 +902,7 @@ bash "$ROOT/scripts/self_parity.sh"
 bash "$ROOT/scripts/neg_oracle.sh"
 
 # ── 7. Optional LLVM oracle (separate make target; skip if not built) ────
-echo "=== LLVM оракул (C vs lli-14) ==="
+echo "=== LLVM оракул (C vs lli) ==="
 if [[ -x ./baga-llvm ]]; then
 	make -s test-llvm
 else

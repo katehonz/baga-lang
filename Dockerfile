@@ -4,7 +4,7 @@
 #   BAGA_REPO/BAGA_REF — откъде идва toolchain-ът (компилатор + sandak)
 #   APP_REPO/APP_REF   — приложението; APP_DIR — поддиректория в него (monorepo)
 
-FROM debian:bookworm-slim AS toolchain
+FROM debian:trixie-slim AS toolchain
 RUN apt-get update \
  && apt-get install -y --no-install-recommends gcc libc6-dev make git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -39,6 +39,6 @@ RUN git clone --depth 1 --branch "$APP_REF" "$APP_REPO" /tmp/src \
  && rm -f target/*.c \
  && cp target/* /out/app
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 COPY --from=build /out/app /usr/local/bin/app
 CMD ["app"]

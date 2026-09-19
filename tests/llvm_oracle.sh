@@ -1,9 +1,12 @@
 #!/bin/bash
-# Оракъл: сравнява C backend и LLVM backend (lli-14) за всички примери.
+# Оракъл: сравнява C backend и LLVM backend (lli) за всички примери.
 # !Par helpers live in lib/libbaga_par.so (src/baga_par_rt.c) and are loaded
 # into lli so go/join/chan match the C backend.
 cd "$(dirname "$0")/.."
 FAIL=0
+LLI=${LLI:-$(for c in lli lli-19 lli-14; do command -v "$c" 2>/dev/null && break; done)}
+[ -n "$LLI" ] || { echo "няма lli в PATH (apt install llvm-19)"; exit 1; }
+echo "(lli: $LLI)"
 PAR_SO=lib/libbaga_par.so
 if [ ! -f "$PAR_SO" ]; then
     mkdir -p lib
@@ -24,7 +27,7 @@ for f in examples/*.baga; do
         continue
     fi
     # Load par runtime for !Par symbols; harmless for pure programs.
-    lli-14 -load "$PAR_SO" /tmp/baga.ll > /tmp/baga_llvm_out.txt 2>&1; rc_l=$?
+    "$LLI" -load "$PAR_SO" /tmp/baga.ll > /tmp/baga_llvm_out.txt 2>&1; rc_l=$?
     if [ $rc_c -ne $rc_l ] || ! diff -q /tmp/baga_c_out.txt /tmp/baga_llvm_out.txt > /dev/null; then
         echo "MISMATCH $f (exit C=$rc_c LLVM=$rc_l)"; FAIL=1
         diff -u /tmp/baga_c_out.txt /tmp/baga_llvm_out.txt | head -20

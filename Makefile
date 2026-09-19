@@ -3,7 +3,7 @@
 # Regression suite: scripts/run_tests.sh (discovery via sandak + baga-test).
 
 CC      ?= gcc
-CFLAGS  := -O2 -Wall -Wextra -std=c11 -Iinclude
+CFLAGS  := -O2 -Wall -Wextra -std=c17 -Iinclude
 LDFLAGS := -lm -pthread
 
 # import search path for monorepo packages (sandak computes this for packages;
@@ -37,8 +37,10 @@ $(PAR_SO): src/baga_par_rt.c
 	@mkdir -p lib
 	$(CC) $(CFLAGS) -fPIC -shared -o $@ $< -pthread
 
-# LLVM build (optional)
-LLVM_CONFIG ?= llvm-config-14
+# LLVM build (optional). Авто-детекция: безсуффиксен бинарник, после най-новия
+# версиониран, накрая 14 (bookworm). Override: make llvm LLVM_CONFIG=llvm-config-19
+LLVM_CONFIG ?= $(shell for c in llvm-config llvm-config-19 llvm-config-14; do command -v $$c 2>/dev/null && break; done)
+LLI         ?= $(shell for c in lli lli-19 lli-14; do command -v $$c 2>/dev/null && break; done)
 LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null) -DBAGA_LLVM
 LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --libs core analysis target 2>/dev/null) $(LDFLAGS)
 LLVM_SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c src/verify.c src/codegen_llvm.c
@@ -57,7 +59,7 @@ clean:
 	rm -f $(OBJS) $(BIN) $(LLVM_OBJS) $(LLVM_BIN) $(PAR_SO)
 
 test-llvm: $(BIN) $(LLVM_BIN) $(PAR_SO)
-	@./tests/llvm_oracle.sh
+	@LLI="$(LLI)" ./tests/llvm_oracle.sh
 
 test-llvm-rc: $(BIN) $(LLVM_BIN) $(PAR_SO)
 	@./tests/llvm_rc.sh

@@ -271,7 +271,7 @@ typedef struct { void **data; int64_t len; int64_t cap; } baga_Vec;
 ### LLVM Backend (`src/codegen_llvm.c`)
 
 Алтернативен backend, който генерира LLVM IR директно от AST-то
-(`make llvm` → `baga-llvm --emit-llvm файл.baga`; изисква LLVM 14).
+(`make llvm` → `baga-llvm --emit-llvm файл.baga`; изисква LLVM 14–19; Makefile сам намира llvm-config).
 
 Поддържа целия езиков набор от примерите:
 - Типове: `i64`, `i32`, `f64`, `bool`, `str`, `void`, `Vec`, потребителски
@@ -302,7 +302,7 @@ baga: LLVM backend: неподдържан конструкт '<какво>'
 ```
 
 Оракълът `tests/llvm_oracle.sh` (викан от `make test`) сравнява изхода и
-exit кода на C backend-а и LLVM backend-а (през `lli-14`) за всички примери
+exit кода на C backend-а и LLVM backend-а (през `lli`) за всички примери
 — 14/14 OK.
 
 ---

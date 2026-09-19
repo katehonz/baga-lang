@@ -467,7 +467,7 @@ static LLVMValueRef rt_strcmp(void) {
 /* повикване на вече декларирана функция в helper тяло */
 static LLVMValueRef h_call(LLVMValueRef fn, LLVMValueRef *args, int nargs,
                            const char *name) {
-    return LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(fn)),
+    return LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(fn),
                           fn, args, (unsigned)nargs, name);
 }
 
@@ -680,7 +680,7 @@ static LLVMValueRef build_baga_rc_release(const char *name, const char *msg) {
         lg.stderr_global, "err");
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, msg, "uffmt");
     LLVMValueRef fa[] = { err, fmt };
-    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.fprintf_fn)),
+    LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.fprintf_fn),
                    lg.fprintf_fn, fa, 2, "");
     LLVMTypeRef ep[] = { lg.i32_ty };
     LLVMValueRef ea[] = { LLVMConstInt(lg.i32_ty, 1, 0) };
@@ -2025,7 +2025,7 @@ static LLVMValueRef build_baga_f64_to_str(void) {
     LLVMValueRef r = str_alloc_call(i32, "r");
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, "%g", "f64fmt");
     LLVMValueRef args[] = { r, i32, fmt, x };
-    LLVMValueRef n32 = LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.snprintf_fn)),
+    LLVMValueRef n32 = LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.snprintf_fn),
                    lg.snprintf_fn, args, 4, "sn");
     LLVMValueRef ss[] = { r, LLVMBuildSExt(lg.builder, n32, lg.i64_ty, "sn64") };
     h_call(baga_rt("baga_set_slen"), ss, 2, "");
@@ -2732,7 +2732,7 @@ static LLVMValueRef build_baga_bounds_fail(void) {
         "baga: %s: индекс %lld извън границите [0, %lld)\n", "bfmt");
     LLVMValueRef args[] = { err, fmt, LLVMGetParam(fn, 0),
                             LLVMGetParam(fn, 1), LLVMGetParam(fn, 2) };
-    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.fprintf_fn)),
+    LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.fprintf_fn),
                    lg.fprintf_fn, args, 5, "");
     LLVMTypeRef ep[] = { lg.i32_ty };
     LLVMValueRef ea[] = { LLVMConstInt(lg.i32_ty, 1, 0) };
@@ -3264,7 +3264,7 @@ static LLVMValueRef build_baga_exit(void) {
     h_begin(fn);
     LLVMValueRef c32 = LLVMBuildTrunc(lg.builder, LLVMGetParam(fn, 0), lg.i32_ty, "c");
     LLVMValueRef args[] = { c32 };
-    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.exit_fn)),
+    LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.exit_fn),
                    lg.exit_fn, args, 1, "");
     LLVMBuildUnreachable(lg.builder);
     return fn;
@@ -3279,7 +3279,7 @@ static LLVMValueRef build_baga_eprintln(void) {
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, "%s\n", "fmt");
     LLVMValueRef err = LLVMBuildLoad2(lg.builder, lg.ptr_ty, lg.stderr_global, "err");
     LLVMValueRef args[] = { err, fmt, LLVMGetParam(fn, 0) };
-    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.fprintf_fn)),
+    LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.fprintf_fn),
                    lg.fprintf_fn, args, 3, "");
     LLVMBuildRetVoid(lg.builder);
     return fn;
@@ -4513,7 +4513,7 @@ static LLVMValueRef rc_container_prologue(LLVMValueRef fn, LLVMValueRef ptr,
         lg.stderr_global, "err");
     LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, msg, "uffmt");
     LLVMValueRef fa[] = { err, fmt };
-    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.fprintf_fn)),
+    LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.fprintf_fn),
                    lg.fprintf_fn, fa, 2, "");
     LLVMTypeRef ep[] = { lg.i32_ty };
     LLVMValueRef ea[] = { LLVMConstInt(lg.i32_ty, 1, 0) };
@@ -5669,7 +5669,7 @@ static LLVMValueRef closure_wrapper_named(const char *fn_name) {
     LLVMValueRef *args = malloc(sizeof(LLVMValueRef) * (size_t)(np > 0 ? np : 1));
     for (int i = 0; i < np; i++)
         args[i] = LLVMGetParam(wrap, (unsigned)(i + 1));   /* env се пропуска */
-    LLVMTypeRef target_ty = LLVMGetElementType(LLVMTypeOf(target));
+    LLVMTypeRef target_ty = LLVMGlobalGetValueType(target);
     LLVMValueRef r = LLVMBuildCall2(lg.builder, target_ty, target, args,
                                     (unsigned)np, ret == lg.void_ty ? "" : "r");
     free(args);
@@ -5877,7 +5877,7 @@ static void emit_print_llvm(Node *n) {
     if (n->args.len == 0) {
         LLVMValueRef fmt = LLVMBuildGlobalStringPtr(lg.builder, "\n", "fmt");
         LLVMValueRef args[] = { fmt };
-        LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.printf_fn)),
+        LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.printf_fn),
                        lg.printf_fn, args, 1, "");
         return;
     }
@@ -5924,7 +5924,7 @@ static void emit_print_llvm(Node *n) {
         LLVMValueRef args[3];
         args[0] = fmt;
         for (int j = 0; j < nextra; j++) args[1 + j] = extra[j];
-        LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.printf_fn)),
+        LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.printf_fn),
                        lg.printf_fn, args, (unsigned)(1 + nextra), "");
     }
 }
@@ -7029,7 +7029,7 @@ static LLVMValueRef emit_expr_llvm(Node *n) {
                 if (!a) llvm_unsupported("print като аргумент");
                 args[i] = coerce(a, LLVMTypeOf(LLVMGetParam(fn, (unsigned)i)));
             }
-            LLVMTypeRef fn_ty = LLVMGetElementType(LLVMTypeOf(fn));
+            LLVMTypeRef fn_ty = LLVMGlobalGetValueType(fn);
             int is_void = LLVMGetReturnType(fn_ty) == lg.void_ty;
             char *name = is_void ? NULL : tmp_name();
             LLVMValueRef result = LLVMBuildCall2(lg.builder, fn_ty, fn, args,
@@ -7829,10 +7829,10 @@ static void emit_spec_fail_llvm(const char *spec_name, int is_requires,
     LLVMValueRef call_args[5];
     call_args[0] = err;
     for (int i = 0; i < 4; i++) call_args[1 + i] = fargs[i];
-    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.fprintf_fn)),
+    LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.fprintf_fn),
                    lg.fprintf_fn, call_args, 5, "");
     LLVMValueRef eargs[] = { LLVMConstInt(lg.i32_ty, 1, 0) };
-    LLVMBuildCall2(lg.builder, LLVMGetElementType(LLVMTypeOf(lg.exit_fn)),
+    LLVMBuildCall2(lg.builder, LLVMGlobalGetValueType(lg.exit_fn),
                    lg.exit_fn, eargs, 1, "");
     LLVMBuildUnreachable(lg.builder);
 }
@@ -7882,7 +7882,7 @@ static LLVMTypeRef fn_type_of(Node *fn, LLVMTypeRef **out_param_tys, int *out_np
 
 static char *impl_name_of(const char *fn_name) {
     char buf[512];
-    snprintf(buf, sizeof buf, "__impl_%s", fn_name);
+    snprintf(buf, sizeof buf, "__impl_%.*s", (int)sizeof buf - 8, fn_name);
     return llvm_mangle(buf);
 }
 
@@ -8052,7 +8052,7 @@ static void emit_wrapper_llvm(Node *fn, Node *spec) {
         args[i] = LLVMBuildLoad2(lg.builder, LLVMGetAllocatedType(alloca), alloca, nm);
         free(nm);
     }
-    LLVMTypeRef impl_ty = LLVMGetElementType(LLVMTypeOf(impl));
+    LLVMTypeRef impl_ty = LLVMGlobalGetValueType(impl);
 
     if (ret_ty != lg.void_ty) {
         char *nm = tmp_name();
@@ -8290,7 +8290,7 @@ void codegen_llvm(Node *program, const char *output_path, Checker *chk, int rc) 
             LLVMBuildStore(lg.builder, LLVMGetParam(c_main, 0), argv_argc_global());
             LLVMBuildStore(lg.builder, LLVMGetParam(c_main, 1), argv_argv_global());
             LLVMBuildCall2(lg.builder,
-                LLVMGetElementType(LLVMTypeOf(baga_main)),
+                LLVMGlobalGetValueType(baga_main),
                 baga_main, NULL, 0, "");
             LLVMBuildRet(lg.builder, LLVMConstInt(lg.i32_ty, 0, 0));
         }

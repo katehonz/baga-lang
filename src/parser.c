@@ -1094,7 +1094,7 @@ static Node *parse_binop_rhs(Parser *p, int min_prec, Node *left) {
     return left;
 }
 
-/* Дълбоко копие на дърво от изрази. Използва се при desugar на +=/-=/*=//=:
+/* Дълбоко копие на дърво от изрази. Използва се при desugar на +=, -=, *=, /=:
  * целта участва два пъти (x = x + val) и двата възела не трябва да делят
  * heap-памет — node_free освобождава всеки от тях. */
 static Node *clone_expr(Node *e) {
