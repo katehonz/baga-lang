@@ -34,10 +34,22 @@ jobs:
           test -f app-product/otpbaga/otp.baga
 
       - name: Build
-        run: make && make sandak
+        run: make && make sandak && ls -l baga sandak
 
-      - name: Smoke tests
-        run: bash scripts/ci-smoke.sh
+      - name: Example zdravei
+        run: ./baga examples/zdravei.baga
+
+      - name: --check httpdbaga
+        run: ./baga --check -I . -I app-product app-product/httpdbaga/http.baga
+
+      - name: hmac_test
+        run: ./baga -I . -I app-product tests/std/hmac_test.baga
+
+      - name: jwt_test
+        run: ./baga -I . -I app-product tests/jwt_test.baga
+
+      - name: otp_test
+        run: ./baga -I . -I app-product tests/otp_test.baga
 
       - name: Self-hosting fixed point (baga2 == baga3)
         run: make self
