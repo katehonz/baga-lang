@@ -6,10 +6,13 @@
 - Централното хранилище е [katehonz/baga-lang](https://github.com/katehonz/baga-lang)
   (`git@github.com:katehonz/baga-lang.git`). `git.bara-lang.org` вече не се ползва.
 
-### CI — checkout с submodules
-- `.github/workflows/ci.yml`: `actions/checkout@v4` с `submodules: recursive`.
-  Без това `make test` гърмеше на `--check httpdbaga/http.baga` (празни
-  `app-product/*`) — GNU make излиза с код 2. Същото чупеше jwt/otp тестовете.
+### CI — GitHub smoke (без failure mail от пълен `make test`)
+- `GITHUB_TOKEN` на `katehonz/baga-lang` не може да клонира `bagalang/*`
+  (authenticated 404 върху публични submodules). Checkout е без credentials;
+  submodules се дърпат през anonymous HTTPS. `bagabuch` се пропуска (продукт).
+- На Actions се пуска `scripts/ci-smoke.sh` (examples, http/jwt/otp, hmac,
+  filesize), не целият `make test` (иска Postgres/boila). LLVM oracle без
+  submodules. `concurrency` отменя стари run-ове.
 
 ### otpbaga — 2FA / TOTP пакет (totp-rs аналог)
 - Нов универсален пакет `app-product/otpbaga`: HOTP (RFC 4226), TOTP

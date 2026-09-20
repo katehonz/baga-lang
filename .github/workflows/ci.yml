@@ -5,31 +5,44 @@ on:
     branches: [main, master]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   core:
-    name: Core compiler (C backend, tests, self-hosting)
+    name: Core compiler (C backend, smoke, self-hosting)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          persist-credentials: false
+
+      # GITHUB_TOKEN of katehonz/baga-lang cannot clone bagalang/* even when
+      # those repos are public (authenticated 404). Fetch over anonymous HTTPS.
+      - name: Submodules (bagalang/*, skip bagabuch)
+        run: |
+          set -euo pipefail
+          git config --global url.https://github.com/.insteadOf git@github.com:
+          mapfile -t mods < <(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}' | grep -v '^app-product/bagabuch$')
+          GIT_TERMINAL_PROMPT=0 git submodule update --init --depth 1 --jobs 8 -- "${mods[@]}"
 
       - name: Build
-        run: make
+        run: make && make sandak
 
-      - name: Test suite (examples, specs, verify, --json, FFI, http, jwt)
-        run: make test
+      - name: Smoke tests
+        run: bash scripts/ci-smoke.sh
 
       - name: Self-hosting fixed point (baga2 == baga3)
         run: make self
 
   llvm:
     name: LLVM backend (oracle vs C backend)
-    runs-on: ubuntu-22.04   # llvm-14 packages live here
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          persist-credentials: false
 
       - name: Install LLVM 14
         run: sudo apt-get update && sudo apt-get install -y llvm-14
