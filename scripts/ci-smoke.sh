@@ -22,15 +22,15 @@ need() {
 	fi
 }
 
+need app-product/httpdbaga/http.baga
+need app-product/jwtbaga/jwt.baga
+need app-product/otpbaga/otp.baga
+
 echo "=== examples ==="
 run examples/zdravei.baga
 run examples/faktorial.baga >/dev/null
 run examples/bitwise.baga >/dev/null
 echo "OK: examples"
-
-need app-product/httpdbaga/http.baga
-need app-product/jwtbaga/jwt.baga
-need app-product/otpbaga/otp.baga
 
 echo "=== --check / --lib ==="
 run --check app-product/httpdbaga/http.baga | grep -q "ok:"

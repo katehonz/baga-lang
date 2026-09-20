@@ -7,11 +7,9 @@
   (`git@github.com:katehonz/baga-lang.git`). `git.bara-lang.org` вече не се ползва.
 
 ### CI — GitHub smoke (без failure mail от пълен `make test`)
-- `GITHUB_TOKEN` на `katehonz/baga-lang` не може да клонира `bagalang/*`
-  (authenticated 404 върху публични submodules). Checkout е без credentials;
-  submodules се дърпат през anonymous HTTPS. `bagabuch` се пропуска (продукт).
-- На Actions се пуска `scripts/ci-smoke.sh` (examples, http/jwt/otp, hmac,
-  filesize), не целият `make test` (иска Postgres/boila). LLVM oracle без
+- `GITHUB_TOKEN` на `katehonz/baga-lang` дава 404 за `bagalang/*`. Маха се
+  `http.extraheader`; SSH → anonymous HTTPS; само httpdbaga/jwtbaga/otpbaga.
+- `scripts/ci-smoke.sh` вместо пълен `make test` (Postgres/boila). LLVM без
   submodules. `concurrency` отменя стари run-ове.
 
 ### otpbaga — 2FA / TOTP пакет (totp-rs аналог)

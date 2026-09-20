@@ -18,14 +18,20 @@ jobs:
         with:
           persist-credentials: false
 
-      # GITHUB_TOKEN of katehonz/baga-lang cannot clone bagalang/* even when
-      # those repos are public (authenticated 404). Fetch over anonymous HTTPS.
-      - name: Submodules (bagalang/*, skip bagabuch)
+      # katehonz GITHUB_TOKEN → authenticated 404 on bagalang/*. Drop the
+      # extraheader, rewrite SSH to anonymous HTTPS, fetch only smoke deps.
+      - name: Submodules (httpdbaga jwtbaga otpbaga)
         run: |
           set -euo pipefail
+          git config --local --unset-all http.https://github.com/.extraheader || true
           git config --global url.https://github.com/.insteadOf git@github.com:
-          mapfile -t mods < <(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}' | grep -v '^app-product/bagabuch$')
-          GIT_TERMINAL_PROMPT=0 git submodule update --init --depth 1 --jobs 8 -- "${mods[@]}"
+          GIT_TERMINAL_PROMPT=0 git submodule update --init --depth 1 -- \
+            app-product/httpdbaga \
+            app-product/jwtbaga \
+            app-product/otpbaga
+          test -f app-product/httpdbaga/http.baga
+          test -f app-product/jwtbaga/jwt.baga
+          test -f app-product/otpbaga/otp.baga
 
       - name: Build
         run: make && make sandak
