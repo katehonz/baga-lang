@@ -6,6 +6,12 @@
 - Централното хранилище е [katehonz/baga-lang](https://github.com/katehonz/baga-lang)
   (`git@github.com:katehonz/baga-lang.git`). `git.bara-lang.org` вече не се ползва.
 
+### compiler — `realpath` буфер под FORTIFY (Ubuntu CI abort 134)
+- `collect_tokens` викаше `realpath(path, buf[1024])`. glibc с
+  `_FORTIFY_SOURCE` иска `PATH_MAX` (4096) и абортира при import
+  (`*** buffer overflow detected ***`). `zdravei` минаваше (няма import).
+  Сега `realpath(..., NULL)` както в sandak.c.
+
 ### CI — GitHub smoke (без failure mail от пълен `make test`)
 - `GITHUB_TOKEN` на `katehonz/baga-lang` дава 404 за `bagalang/*`. Маха се
   `http.extraheader`; SSH → anonymous HTTPS; само httpdbaga/jwtbaga/otpbaga.

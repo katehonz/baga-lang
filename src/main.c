@@ -4,8 +4,13 @@
 
 #include "baga.h"
 #include <errno.h>
+#include <limits.h>
 #include <unistd.h>
 #include <sys/wait.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 static char *read_file(const char *path, int *out_len) {
     FILE *f = fopen(path, "rb");
@@ -110,7 +115,7 @@ static void collect_tokens(const char *path, TokenVec *out,
     }
 
     /* directory of the importing file, for relative resolution */
-    char dir[512];
+    char dir[PATH_MAX];
     snprintf(dir, sizeof dir, "%s", path);
     char *slash = strrchr(dir, '/');
     if (slash) *slash = '\0';
@@ -130,15 +135,17 @@ static void collect_tokens(const char *path, TokenVec *out,
                 exit(1);
             }
             const char *rel = ftoks.data[i + 1].text;
-            char joined[1024];
-            char resolved[1024];
+            char joined[PATH_MAX];
             snprintf(joined, sizeof joined, "%s/%s", dir, rel);
-            int found = realpath(joined, resolved) != NULL;
-            for (int k = 0; !found && k < include_dirs.len; k++) {
+            /* realpath(path, buf) изисква PATH_MAX; 1024 абортира под
+             * _FORTIFY_SOURCE (Ubuntu CI: *** buffer overflow detected ***) */
+            char *resolved = realpath(joined, NULL);
+            for (int k = 0; !resolved && k < include_dirs.len; k++) {
                 snprintf(joined, sizeof joined, "%s/%s", include_dirs.data[k], rel);
-                found = realpath(joined, resolved) != NULL;
+                resolved = realpath(joined, NULL);
             }
-            if (!found && realpath(rel, resolved) == NULL) {
+            if (!resolved) resolved = realpath(rel, NULL);
+            if (!resolved) {
                 baga_error(path, t->pos, "не мога да намеря import '%s'", rel);
                 exit(1);
             }
@@ -162,6 +169,7 @@ static void collect_tokens(const char *path, TokenVec *out,
                 i += 2;
             }
             collect_tokens(resolved, out, included, stack);
+            free(resolved);
             i++;   /* consume the path string token */
             continue;
         }
