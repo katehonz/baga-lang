@@ -40,7 +40,14 @@ jobs:
         run: ./baga examples/zdravei.baga
 
       - name: --check httpdbaga
-        run: ./baga -I . -I app-product --check app-product/httpdbaga/http.baga
+        run: |
+          set +e
+          ls -la app-product/httpdbaga
+          out=$(./baga -I . --check app-product/httpdbaga/http.baga 2>&1)
+          ec=$?
+          echo "$out"
+          echo "::error::check_exit=${ec} ${out}"
+          exit "$ec"
 
       - name: hmac_test
         run: ./baga -I . -I app-product tests/std/hmac_test.baga
