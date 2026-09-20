@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Build
         run: make
@@ -26,6 +28,8 @@ jobs:
     runs-on: ubuntu-22.04   # llvm-14 packages live here
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install LLVM 14
         run: sudo apt-get update && sudo apt-get install -y llvm-14

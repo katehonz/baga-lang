@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### CI — checkout с submodules
+- `.github/workflows/ci.yml`: `actions/checkout@v4` с `submodules: recursive`.
+  Без това `make test` гърмеше на `--check httpdbaga/http.baga` (празни
+  `app-product/*`) — GNU make излиза с код 2. Същото чупеше jwt/otp тестовете.
+
 ### otpbaga — 2FA / TOTP пакет (totp-rs аналог)
 - Нов универсален пакет `app-product/otpbaga`: HOTP (RFC 4226), TOTP
   (RFC 6238 SHA1/SHA256/SHA512), Base32 секрети, `otpauth://` URI,
