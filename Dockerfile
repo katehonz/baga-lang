@@ -8,7 +8,7 @@ FROM debian:trixie-slim AS toolchain
 RUN apt-get update \
  && apt-get install -y --no-install-recommends gcc libc6-dev make git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
-ARG BAGA_REPO=https://git.bara-lang.org/baga-lang-ai/baga-lang-ai.git
+ARG BAGA_REPO=https://github.com/katehonz/baga-lang.git
 ARG BAGA_REF=main
 RUN git clone --depth 1 --branch "$BAGA_REF" "$BAGA_REPO" /baga \
  && make -C /baga all sandak \

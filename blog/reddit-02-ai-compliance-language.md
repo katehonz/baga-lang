@@ -1,6 +1,6 @@
 # Microsoft just validated the spec-first thesis for AI coding. Baga is what it looks like when the spec is a language construct and the compiler enforces compliance — statically, with counterexamples.
 
-A follow-up to [my earlier post about Baga](https://git.bara-lang.org/baga-lang-ai/baga-lang-ai) — the language where the compiler statically proves AI-written code against specs. This one is about why the timing stopped being a matter of opinion.
+A follow-up to [my earlier post about Baga](https://github.com/katehonz/baga-lang) — the language where the compiler statically proves AI-written code against specs. This one is about why the timing stopped being a matter of opinion.
 
 ## The industry converged on the diagnosis
 
@@ -111,7 +111,7 @@ make && ./baga --verify examples/verify/fact_full.baga
 
 ## Links
 
-- Source: [git.bara-lang.org](https://git.bara-lang.org/baga-lang-ai/baga-lang-ai)
+- Source: [github.com/katehonz/baga-lang](https://github.com/katehonz/baga-lang)
 - The SDD reference: [Spec-Driven Development: the foundation of AI-native engineering](https://developer.microsoft.com/blog/spec-driven-development-ai-native-engineering/) (Apoorv Gupta, Microsoft)
 - Docs: theory, language reference, compiler architecture — English and Bulgarian
 - License: MIT

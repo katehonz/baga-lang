@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### repo — GitHub е канонът
+- Централното хранилище е [katehonz/baga-lang](https://github.com/katehonz/baga-lang)
+  (`git@github.com:katehonz/baga-lang.git`). `git.bara-lang.org` вече не се ползва.
+
 ### CI — checkout с submodules
 - `.github/workflows/ci.yml`: `actions/checkout@v4` с `submodules: recursive`.
   Без това `make test` гърмеше на `--check httpdbaga/http.baga` (празни

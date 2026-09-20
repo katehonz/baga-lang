@@ -5,7 +5,7 @@ services:
     build:
       context: .
       args:
-        APP_REPO: https://git.bara-lang.org/you/your-baga-app.git
+        APP_REPO: https://github.com/you/your-baga-app.git
         APP_REF: main
         APP_DIR: .
     ports:

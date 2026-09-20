@@ -182,7 +182,7 @@ Trust is engineered in, not hoped for:
 - **Self-hosting fixed point** — the self-compiler reproduces itself byte-for-byte (`make self`).
 - **Backend oracle** — the LLVM backend's output is diffed against the C backend's on every example (`lli-14`, 21/21).
 - **Verifier oracle** — `--test-specs` property-tests every contract the static verifier calls PROVEN; they must agree.
-- All of the above is one command (`make test`, `make self`) and is wired into CI (`.github/workflows`, picked up by both GitHub Actions and Gitea Actions).
+- All of the above is one command (`make test`, `make self`) and is wired into CI (`.github/workflows`, GitHub Actions).
 
 ## Current state
 
@@ -190,7 +190,7 @@ This is a **working prototype**, not a production language — but the core clai
 
 ## Links
 
-- Source: [git.bara-lang.org](https://git.bara-lang.org/baga-lang-ai/baga-lang-ai)
+- Source: [github.com/katehonz/baga-lang](https://github.com/katehonz/baga-lang)
 - Docs: theory (type theory, effect systems, proof theory), language reference, and compiler architecture — in English and Bulgarian
 - License: MIT
 

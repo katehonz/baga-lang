@@ -16,6 +16,8 @@
 
 The **toolchain** is a small C bootstrap (`baga`, optional LLVM backend, package manager **sandak**). **Product code** is written in Baga itself under `std/`, `app-product/`, and `apps/`.
 
+Canonical repo: [github.com/katehonz/baga-lang](https://github.com/katehonz/baga-lang).
+
 ## Pure-Baga cryptography (no OpenSSL at runtime)
 
 Cryptography is **implemented in Baga**, not linked against OpenSSL/libcrypto for runtime. OpenSSL is only a **test peer** (e.g. TLS handshake / `https` mock).
@@ -74,7 +76,7 @@ repository per ecosystem package**, linked as submodules under `app-product/`.
 
 | Repo | What's inside | Where in this tree |
 |------|---------------|--------------------|
-| **baga-lang-ai/baga-lang-ai** (this repo) | compiler, `std/`, `examples/`, `tests/`, docs, `apps/{api,registry,report}` (in-tree products) | repo root |
+| [katehonz/baga-lang](https://github.com/katehonz/baga-lang) (this repo) | compiler, `std/`, `examples/`, `tests/`, docs, `apps/{api,registry,report}` (in-tree products) | repo root |
 | `github.com/bagalang/<name>` (45 library packages + **boilaDB** server) | universal building blocks — one repo per package | `app-product/*` (submodules) |
 | [bagalang/bagabuch](https://github.com/bagalang/bagabuch) | the accounting product (full app, `backend/` + `frontend/`) | `app-product/bagabuch` (submodule) |
 
@@ -86,7 +88,8 @@ path inside the monorepo, or by `git` URL outside it — see [Packages — sanda
 ## Quick Start
 
 ```bash
-git submodule update --init --recursive
+git clone --recurse-submodules git@github.com:katehonz/baga-lang.git
+cd baga-lang
 make
 ./baga examples/zdravei.baga
 # Здравей, багатуре. Боят започва.
