@@ -50,7 +50,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 
 ## Full package list (`app-product/`)
 
-**45+ packages** (directories with `sandak.toml`; plus **boilaDB** server). Alphabetical.
+**46+ packages** (directories with `sandak.toml`; plus **boilaDB** server). Alphabetical.
 
 ### Web / API stack
 
@@ -59,6 +59,7 @@ httpdbaga  jwtbaga  ormbaga (+ pool)
 | **fmrbaga** | Baga web framework — router, JSON (`jsonx`), middleware, OpenAPI, config, serve, workers; **git submodule** → [bagalang/fmrbaga](https://github.com/bagalang/fmrbaga) |
 | **httpdbaga** | HTTP/1.1 + HTTP/2 (h2c, HPACK) server library; **git submodule** → [bagalang/httpdbaga](https://github.com/bagalang/httpdbaga) |
 | **jwtbaga** | JWT/JWS — HS256 sign/verify; RS256/ES256 verify; **git submodule** → [bagalang/jwtbaga](https://github.com/bagalang/jwtbaga) |
+| **otpbaga** | 2FA — HOTP (RFC 4226) + TOTP (RFC 6238) + recovery codes + `otpauth://`; **git submodule** → [bagalang/otpbaga](https://github.com/bagalang/otpbaga) |
 | **oauthbaga** | OAuth2 / OIDC-style flows, proxy, session cookie demo; **git submodule** → [bagalang/oauthbaga](https://github.com/bagalang/oauthbaga) |
 | **ormbaga** | Universal table ORM + versioned migrations + pool (no app domain); **git submodule** → [bagalang/ormbaga](https://github.com/bagalang/ormbaga) |
 | **pgbaga** | Native PostgreSQL wire client (SCRAM-SHA-256, Simple + Extended Query); **git submodule** → [bagalang/pgbaga](https://github.com/bagalang/pgbaga) |
@@ -140,10 +141,10 @@ bagadecimal  boilabaga   bufbaga     chatbaga    chronobaga  cloudbaga
 csvbaga      ctxbaga     flagbaga    fmrbaga     globbaga    grebaga
 httpdbaga    imgbaga     jsonrpcbaga jwtbaga     kvbaga      logbaga
 lsmbaga†     mdbaga      mdtbaga     metbaga     oauthbaga   officebaga
-ormbaga      otelbaga    pathbaga    pbbaga      pdfbaga     pgbaga
-querybaga    queuebaga   raftbaga    relbaga     reportbaga  rocksbaga
-statusbaga   testbaga    tplbaga     txnbaga     uuidbaga    wasmtimebaga
-wsbaga       xmlbaga     zipbaga
+otpbaga      ormbaga     otelbaga    pathbaga    pbbaga      pdfbaga
+pgbaga       querybaga   queuebaga   raftbaga    relbaga     reportbaga
+rocksbaga    statusbaga  testbaga    tplbaga     txnbaga     uuidbaga
+wasmtimebaga wsbaga      xmlbaga     zipbaga
 ```
 
 † `lsmbaga` — deprecated alias for `rocksbaga`. Also: **boilaDB** (server).

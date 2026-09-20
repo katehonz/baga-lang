@@ -23,6 +23,11 @@ against the same oracle, RSA-PSS / PKCS#1 likewise. The TLS 1.3 stack
 - `hmac_sha256_hex(key: str, msg: str) -> str` — lowercase hex MAC.
 - `hmac_sha256_b(key: bytes, msg: bytes) -> bytes` — HMAC over native `bytes`.
 - `hmac_sha256_b_hex(key: bytes, msg: bytes) -> str` — hex MAC over native `bytes`.
+- `hmac_sha1` / `hmac_sha1_hex` / `hmac_sha1_b` / `hmac_sha1_b_hex` — HMAC-SHA1
+  (RFC 2104; 20-byte MAC). For HOTP/TOTP (RFC 4226/6238) only — not for new
+  signatures. Vectors: RFC 2202 in `tests/std/hmac_test.baga`.
+- `hmac_sha512_b` / `hmac_sha512_b_hex` — HMAC-SHA512 (block 128, 64-byte MAC);
+  TOTP SHA512 path. RFC 4231 case 1–2 in `hmac_test`.
 - `crc32c_update(crc: i64, data: bytes) -> i64`, `crc32c_final(crc: i64) -> i64`,
   `crc32c_b(data: bytes) -> i64` (`crc32c.baga`) — CRC-32C (Castagnoli,
   reflected poly 0x82F63B78) over native `bytes`, masked-i64 u32. Init the

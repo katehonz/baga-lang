@@ -35,5 +35,16 @@ fn main() {
     let m2 = hmac_sha256_b(knul, bytes_of_str("msg"))
     check("hmac_b_nul_key", ct_eq_b(m1, m2) && bytes_len(m1) == 32)
 
+    // RFC 2202 test case 1: key = 0x0b × 20, data = "Hi There"
+    check("rfc2202_1", hmac_sha1_hex(key1, "Hi There") == "b617318655057264e28bc0b6fb378c8ef146be00")
+    check("rfc2202_2", hmac_sha1_hex("Jefe", "what do ya want for nothing?") == "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79")
+    check("hmac_sha1_b", hmac_sha1_b_hex(bytes_of_str("Jefe"), bytes_of_str("what do ya want for nothing?")) == "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79")
+    check("hmac_sha1_len", bytes_len(hmac_sha1_b(bytes_of_str("Jefe"), bytes_of_str("x"))) == 20)
+
+    // RFC 4231 HMAC-SHA512 cases 1–2 (OpenSSL/python hashlib; 64-byte MAC)
+    check("rfc4231_sha512_1", hmac_sha512_b_hex(bytes_of_str(key1), bytes_of_str("Hi There")) == "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cdedaa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854")
+    check("rfc4231_sha512_2", hmac_sha512_b_hex(bytes_of_str("Jefe"), bytes_of_str("what do ya want for nothing?")) == "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737")
+    check("hmac_sha512_len", bytes_len(hmac_sha512_b(bytes_of_str("Jefe"), bytes_of_str("x"))) == 64)
+
     print("hmac_test: all passed")
 }

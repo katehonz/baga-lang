@@ -3,14 +3,15 @@
 // protocol mandates it (like RFC 6455); sha256 everywhere else.
 //
 // Same shape as sha256.baga: Vec<i64> core (values 0..255) + bytes wrappers.
-// Reuses u32/push_word from sha256.baga; rotl is local.
+// Reuses sha256.u32 / push_word from sha256.baga; rotl is local.
+// u32 is qualified: hmac.baga also imports sha512, which has its own u32.
 
 import "sha256.baga"
 import "../bytes/bytes.baga"
 import "../str/str.baga"
 
 fn sha1_rotl(x: i64, n: i64) -> i64 {
-    return u32((x << n) | (x >> (32 - n)))
+    return sha256.u32((x << n) | (x >> (32 - n)))
 }
 
 // SHA-1 over a byte vector (values 0..255). Returns the 20-byte digest.
@@ -45,7 +46,7 @@ fn sha1_bytes(data: Vec<i64>) -> Vec<i64> {
         for t in 0..16 {
             let o = block + t * 4
             let word = (vec_get(msg, o) << 24) | (vec_get(msg, o + 1) << 16) | (vec_get(msg, o + 2) << 8) | vec_get(msg, o + 3)
-            vec_push(w, u32(word))
+            vec_push(w, sha256.u32(word))
         }
         for t in 16..80 {
             let x = vec_get(w, t - 3) ^ vec_get(w, t - 8) ^ vec_get(w, t - 14) ^ vec_get(w, t - 16)
@@ -62,34 +63,34 @@ fn sha1_bytes(data: Vec<i64>) -> Vec<i64> {
             let mut f: i64 = 0
             let mut k: i64 = 0
             if t < 20 {
-                f = u32((b & c) ^ (u32((-1) ^ b) & dd))
+                f = sha256.u32((b & c) ^ (sha256.u32((-1) ^ b) & dd))
                 k = 1518500249              // 0x5A827999
             } else {
                 if t < 40 {
-                    f = u32(b ^ c ^ dd)
+                    f = sha256.u32(b ^ c ^ dd)
                     k = 1859775393          // 0x6ED9EBA1
                 } else {
                     if t < 60 {
-                        f = u32((b & c) ^ (b & dd) ^ (c & dd))
+                        f = sha256.u32((b & c) ^ (b & dd) ^ (c & dd))
                         k = 2400959708      // 0x8F1BBCDC
                     } else {
-                        f = u32(b ^ c ^ dd)
+                        f = sha256.u32(b ^ c ^ dd)
                         k = 3395469782      // 0xCA62C1D6
                     }
                 }
             }
-            let temp = u32(sha1_rotl(a, 5) + f + e + k + vec_get(w, t))
+            let temp = sha256.u32(sha1_rotl(a, 5) + f + e + k + vec_get(w, t))
             e = dd
             dd = c
             c = sha1_rotl(b, 30)
             b = a
             a = temp
         }
-        h0 = u32(h0 + a)
-        h1 = u32(h1 + b)
-        h2 = u32(h2 + c)
-        h3 = u32(h3 + dd)
-        h4 = u32(h4 + e)
+        h0 = sha256.u32(h0 + a)
+        h1 = sha256.u32(h1 + b)
+        h2 = sha256.u32(h2 + c)
+        h3 = sha256.u32(h3 + dd)
+        h4 = sha256.u32(h4 + e)
         block = block + 64
     }
 

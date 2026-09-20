@@ -1,5 +1,7 @@
-// hmac.baga — HMAC-SHA256 (RFC 2104) over sha256.baga. Pure Baga.
+// hmac.baga — HMAC (RFC 2104) over sha1 / sha256 / sha384 / sha512. Pure Baga.
+// HMAC-SHA1 is only for protocols that mandate it (RFC 4226 HOTP / RFC 6238 TOTP).
 
+import "sha1.baga"
 import "sha256.baga"
 import "sha512.baga"
 import "../bytes/bytes.baga"
@@ -93,4 +95,93 @@ fn hmac_sha384_b(key: bytes, msg: bytes) -> bytes {
 
 fn hmac_sha384_b_hex(key: bytes, msg: bytes) -> str {
     return bytes_to_hex(vec_from_bytes(hmac_sha384_b(key, msg)))
+}
+
+// HMAC-SHA1 (RFC 2104 over RFC 3174): block 64, MAC 20 bytes.
+fn hmac_sha1(key: str, msg: str) -> Vec<i64> {
+    let mut k = bytes_from_str(key)
+    if vec_len(k) > 64 {
+        k = sha1_bytes(k)
+    }
+    while vec_len(k) < 64 {
+        vec_push(k, 0)
+    }
+    let inner = vec_new()
+    let outer = vec_new()
+    for i in 0..64 {
+        vec_push(inner, vec_get(k, i) ^ 54)
+        vec_push(outer, vec_get(k, i) ^ 92)
+    }
+    let m = bytes_from_str(msg)
+    for i in 0..vec_len(m) {
+        vec_push(inner, vec_get(m, i))
+    }
+    let ihash = sha1_bytes(inner)
+    for i in 0..20 {
+        vec_push(outer, vec_get(ihash, i))
+    }
+    return sha1_bytes(outer)
+}
+
+fn hmac_sha1_hex(key: str, msg: str) -> str {
+    return bytes_to_hex(hmac_sha1(key, msg))
+}
+
+fn hmac_sha1_b(key: bytes, msg: bytes) -> bytes {
+    let mut k = vec_from_bytes(key)
+    if vec_len(k) > 64 {
+        k = sha1_bytes(k)
+    }
+    while vec_len(k) < 64 {
+        vec_push(k, 0)
+    }
+    let inner = vec_new()
+    let outer = vec_new()
+    for i in 0..64 {
+        vec_push(inner, vec_get(k, i) ^ 54)
+        vec_push(outer, vec_get(k, i) ^ 92)
+    }
+    let m = vec_from_bytes(msg)
+    for i in 0..vec_len(m) {
+        vec_push(inner, vec_get(m, i))
+    }
+    let ihash = sha1_bytes(inner)
+    for i in 0..20 {
+        vec_push(outer, vec_get(ihash, i))
+    }
+    return bytes_from_vec(sha1_bytes(outer))
+}
+
+fn hmac_sha1_b_hex(key: bytes, msg: bytes) -> str {
+    return hex_encode(hmac_sha1_b(key, msg))
+}
+
+// HMAC-SHA512 (RFC 2104 over FIPS 180-4 SHA-512): block 128, MAC 64 bytes.
+fn hmac_sha512_b(key: bytes, msg: bytes) -> bytes {
+    let mut k = vec_from_bytes(key)
+    if vec_len(k) > 128 {
+        k = sha512_bytes(k)
+    }
+    while vec_len(k) < 128 {
+        vec_push(k, 0)
+    }
+    let inner = vec_new()
+    let outer = vec_new()
+    for i in 0..128 {
+        vec_push(inner, vec_get(k, i) ^ 54)
+        vec_push(outer, vec_get(k, i) ^ 92)
+    }
+    let m = vec_from_bytes(msg)
+    for i in 0..vec_len(m) {
+        vec_push(inner, vec_get(m, i))
+    }
+    let ihash = sha512_bytes(inner)
+    for i in 0..64 {
+        vec_push(outer, vec_get(ihash, i))
+    }
+    return bytes_from_vec(sha512_bytes(outer))
+}
+
+fn hmac_sha512_b_hex(key: bytes, msg: bytes) -> str {
+    return hex_encode(hmac_sha512_b(key, msg))
 }

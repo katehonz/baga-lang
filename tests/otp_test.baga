@@ -1,0 +1,116 @@
+// otp_test.baga — RFC 4648 Base32, RFC 4226 HOTP, RFC 6238 TOTP, recovery.
+
+import "otpbaga/otp.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() -> i64 !Time !Random {
+    // --- Base32 RFC 4648 ---
+    check("b32_empty", b32_encode(vec_new()) == "")
+    check("b32_f", b32_encode(bytes_from_str("f")) == "MY======")
+    check("b32_fo", b32_encode(bytes_from_str("fo")) == "MZXQ====")
+    check("b32_foo", b32_encode(bytes_from_str("foo")) == "MZXW6===")
+    check("b32_foob", b32_encode(bytes_from_str("foob")) == "MZXW6YQ=")
+    check("b32_fooba", b32_encode(bytes_from_str("fooba")) == "MZXW6YTB")
+    check("b32_foobar", b32_encode(bytes_from_str("foobar")) == "MZXW6YTBOI======")
+    check("b32_nopad", b32_encode_nopad(bytes_from_str("f")) == "MY")
+    check("b32_dec_f", str_of_bytes(b32_decode("MY======")) == "f")
+    check("b32_dec_nopad", str_of_bytes(b32_decode("MZXW6YTBOI")) == "foobar")
+    check("b32_dec_lower", str_of_bytes(b32_decode("mzxw6ytboi")) == "foobar")
+    check("b32_bad", bytes_len(b32_decode("!!!!")) == 0)
+
+    let rfc_secret = bytes_of_str("12345678901234567890")
+    check("b32_rfc_secret", b32_encode_nopad_b(rfc_secret) == "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+    check("b32_rfc_roundtrip", ct_eq_b(b32_decode("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"), rfc_secret))
+
+    // --- HOTP RFC 4226 Appendix D (6 digits, SHA1) ---
+    let h6 = otp_new(otp_sha1(), 6, 30, 0)
+    check("hotp_0", hotp(rfc_secret, 0, h6) == "755224")
+    check("hotp_1", hotp(rfc_secret, 1, h6) == "287082")
+    check("hotp_2", hotp(rfc_secret, 2, h6) == "359152")
+    check("hotp_3", hotp(rfc_secret, 3, h6) == "969429")
+    check("hotp_4", hotp(rfc_secret, 4, h6) == "338314")
+    check("hotp_5", hotp(rfc_secret, 5, h6) == "254676")
+    check("hotp_6", hotp(rfc_secret, 6, h6) == "287922")
+    check("hotp_7", hotp(rfc_secret, 7, h6) == "162583")
+    check("hotp_8", hotp(rfc_secret, 8, h6) == "399871")
+    check("hotp_9", hotp(rfc_secret, 9, h6) == "520489")
+
+    // --- TOTP RFC 6238 Appendix B (8 digits) ---
+    let t8 = otp_new(otp_sha1(), 8, 30, 0)
+    let s256 = bytes_of_str("12345678901234567890123456789012")
+    let s512 = bytes_of_str("1234567890123456789012345678901234567890123456789012345678901234")
+    let t256 = otp_new(otp_sha256(), 8, 30, 0)
+    let t512 = otp_new(otp_sha512(), 8, 30, 0)
+
+    check("totp_sha1_59", totp_at(rfc_secret, 59, t8) == "94287082")
+    check("totp_sha256_59", totp_at(s256, 59, t256) == "46119246")
+    check("totp_sha512_59", totp_at(s512, 59, t512) == "90693936")
+
+    check("totp_sha1_1111111109", totp_at(rfc_secret, 1111111109, t8) == "07081804")
+    check("totp_sha256_1111111109", totp_at(s256, 1111111109, t256) == "68084774")
+    check("totp_sha512_1111111109", totp_at(s512, 1111111109, t512) == "25091201")
+
+    check("totp_sha1_1111111111", totp_at(rfc_secret, 1111111111, t8) == "14050471")
+    check("totp_sha256_1111111111", totp_at(s256, 1111111111, t256) == "67062674")
+    check("totp_sha512_1111111111", totp_at(s512, 1111111111, t512) == "99943326")
+
+    check("totp_sha1_1234567890", totp_at(rfc_secret, 1234567890, t8) == "89005924")
+    check("totp_sha256_1234567890", totp_at(s256, 1234567890, t256) == "91819424")
+    check("totp_sha512_1234567890", totp_at(s512, 1234567890, t512) == "93441116")
+
+    check("totp_sha1_2000000000", totp_at(rfc_secret, 2000000000, t8) == "69279037")
+    check("totp_sha256_2000000000", totp_at(s256, 2000000000, t256) == "90698825")
+    check("totp_sha512_2000000000", totp_at(s512, 2000000000, t512) == "38618901")
+
+    check("totp_sha1_20000000000", totp_at(rfc_secret, 20000000000, t8) == "65353130")
+    check("totp_sha256_20000000000", totp_at(s256, 20000000000, t256) == "77737706")
+    check("totp_sha512_20000000000", totp_at(s512, 20000000000, t512) == "47863826")
+
+    // verify + window
+    check("verify_exact", totp_verify_at(rfc_secret, "94287082", 59, t8) == 1)
+    check("verify_bad", totp_verify_at(rfc_secret, "00000000", 59, t8) == 0)
+    check("verify_empty_secret", totp_verify_at(bytes_from_vec(vec_new()), "94287082", 59, t8) == 0)
+    let win = otp_new(otp_sha1(), 8, 30, 1)
+    check("verify_skew_prev", totp_verify_at(rfc_secret, "94287082", 59 + 30, win) == 1)
+    check("verify_spaces", totp_verify_at(rfc_secret, "9428 7082", 59, t8) == 1)
+
+    // live clock: generate then verify
+    let live = totp_now(rfc_secret, otp_cfg_default())?
+    check("verify_now", totp_verify_now(rfc_secret, live, otp_cfg_default())? == 1)
+
+    // otpauth URI
+    let uri = otp_uri(rfc_secret, "bagabuch", "superadmin", otp_cfg_default())
+    check("uri_scheme", str_starts_with(uri, "otpauth://totp/bagabuch:superadmin?"))
+    check("uri_secret", str_find(uri, "secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ") >= 0)
+    check("uri_algo", str_find(uri, "algorithm=SHA1") >= 0)
+    let uri_space = otp_uri(rfc_secret, "Ba ga", "a b", otp_cfg_default())
+    check("uri_pct", str_find(uri_space, "Ba%20ga") >= 0)
+
+    // recovery
+    check("rec_norm", recovery_normalize("ABCD-EF00") == "abcdef00")
+    let h = recovery_hash("aaaaaaaa-bbbbbbbb")
+    check("rec_hash_len", len(h) == 64)
+    let hashes = vec_new()
+    vec_push(hashes, h)
+    vec_push(hashes, recovery_hash("11111111-22222222"))
+    check("rec_match", recovery_match("AAAAAAAA-BBBBBBBB", hashes) == 0)
+    check("rec_miss", recovery_match("00000000-00000000", hashes) == 0 - 1)
+    let rec = recovery_make(3)?
+    check("rec_n", vec_len(rec.codes) == 3 && vec_len(rec.hashes) == 3)
+    check("rec_self", recovery_match(vec_get(rec.codes, 1), rec.hashes) == 1)
+
+    let minted = otp_secret_new(20)?
+    check("mint_len", bytes_len(minted) == 20)
+    check("mint_b32", bytes_len(otp_secret_from_b32(otp_secret_b32(minted))) == 20)
+
+    print("otp_test: all passed")
+    return 0
+}

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### otpbaga — 2FA / TOTP пакет (totp-rs аналог)
+- Нов универсален пакет `app-product/otpbaga`: HOTP (RFC 4226), TOTP
+  (RFC 6238 SHA1/SHA256/SHA512), Base32 секрети, `otpauth://` URI,
+  recovery кодове, demo HTTP `/enroll` `/verify`. Архитектура в
+  `otpbaga/architecture/`. bagabuch още не е вързан — виж
+  `architecture/04-bagabuch.md`.
+- `std/crypto`: `hmac_sha1` / `hmac_sha1_b` (RFC 2202) и `hmac_sha512_b`
+  (RFC 4231) — TOTP по подразбиране е HMAC-SHA1. `sha1.baga` вика
+  `sha256.u32` уточнено, защото `hmac` вече внася и `sha512` (същото име).
+- Тестове: `tests/otp_test.baga`, разширен `tests/std/hmac_test.baga`.
+
 ### self — кодогенерацията вече издържа GCC 14 (self-hosting паритет 52/52)
 - `c2_emit_eff`: `emit_try`/`emit_catch` emit-ваха безусловно `return 0;` в
   statement-изразите за propagate/catch — във `void` функция това е hard
