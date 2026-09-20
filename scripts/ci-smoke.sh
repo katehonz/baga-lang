@@ -35,6 +35,7 @@ echo "OK: examples"
 echo "=== --check / --lib ==="
 run --check app-product/httpdbaga/http.baga | grep -q "ok:"
 run --lib app-product/jwtbaga/jwt.baga | grep -q "ok:"
+# -I flags must precede --check/--lib (otherwise the next token is the file).
 echo "OK: --check httpdbaga, --lib jwtbaga"
 
 echo "=== hmac / sha1 / jwt / otp ==="
