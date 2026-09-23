@@ -142,3 +142,6 @@
 [submodule "app-product/chronobaga"]
 	path = app-product/chronobaga
 	url = git@github.com:bagalang/chronobaga.git
+[submodule "app-product/7x7office"]
+	path = app-product/7x7office
+	url = git@github.com:bagalang/7x7office.git
