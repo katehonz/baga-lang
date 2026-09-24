@@ -426,6 +426,19 @@ else
 	exit 1
 fi
 
+# Ролите на workspaces (Фаза 2) — чистата логика кой какво може. Без база
+# и без мрежа, защото това е security-границата и трябва да се проверява
+# на всяко `make test`, а не само когато някой вдигне Postgres.
+RC=0
+run -I app-product/7x7office/secp tests/ws_roles_test.baga > /tmp/baga_ws_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "ws_roles_test: all passed" /tmp/baga_ws_out.txt; then
+	echo "OK: workspaces — роли, нива на достъп, slug"
+else
+	echo "FAIL: ws_roles_test"
+	cat /tmp/baga_ws_out.txt
+	exit 1
+fi
+
 echo "=== boilaDB SSL (SSLRequest → 'S' → TLS 1.3 → PG wire) ==="
 # Сървърът отговаря 'S' само при зададени BOILA_TLS_CERT/BOILA_TLS_KEY
 # (иначе 'N' — виж другите тестове); клиентът пита само при PGSSLMODE
@@ -495,7 +508,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

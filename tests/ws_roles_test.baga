@@ -1,0 +1,92 @@
+// ws_roles_test.baga — роли и имена на workspaces (Фаза 2). ЧИСТ тест.
+//
+// Защо не се казва ws_test.baga: това име вече е заето от WebSocket теста
+// на wsbaga (RFC 6455). Двата проверяват различни неща и трябва да си
+// останат отделни файлове, иначе единият тихо изяжда другия.
+//
+// Без база и без мрежа. Проверява се логиката, която решава кой какво
+// може: това е security-границата на Фаза 2, затова е изнесена в чист
+// модул (idm/ws_roles.baga) точно за да се тества тук.
+//
+// Защо точно тези проверки:
+//   - ако непозната роля минава за валидна, сгрешен ред в базата (или
+//     бъдеща роля, забравена в кода) отваря достъп вместо да заключи
+//   - ако нивата не са подредени, „editor" може да се окаже под „viewer"
+//     и четенето да отпадне мълчаливо
+//   - ако slug-ът приема произволни знаци, той влиза в URL-и и по-късно
+//     в WebDAV пътища
+
+import "7x7office/secp/idm/ws_roles.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn ws_test_levels() -> i64 !IO {
+    // Подредбата е смисълът на ролите.
+    assert_true("owner_above_editor", ws_role_level_owner() > ws_role_level_editor())
+    assert_true("editor_above_viewer", ws_role_level_editor() > ws_role_level_viewer())
+    assert_true("viewer_above_invalid", ws_role_level_viewer() > ws_role_level("boss"))
+    assert_true("admin_above_all", ws_role_level_admin() > ws_role_level_owner())
+
+    assert_eq_i64("level_owner", ws_role_level("owner"), 3)
+    assert_eq_i64("level_editor", ws_role_level("editor"), 2)
+    assert_eq_i64("level_viewer", ws_role_level("viewer"), 1)
+    // Непозната роля е 0, не „някакво ниво" — 0 не минава нито една проверка.
+    assert_eq_i64("level_unknown", ws_role_level("administrator"), 0)
+    assert_eq_i64("level_empty", ws_role_level(""), 0)
+    // Главни букви не са същата роля (по-добре да заключи, отколкото да пусне).
+    assert_eq_i64("level_case_sensitive", ws_role_level("Owner"), 0)
+    return 0
+}
+
+fn ws_test_valid() -> i64 !IO {
+    assert_eq_i64("valid_owner", ws_role_valid("owner"), 1)
+    assert_eq_i64("valid_editor", ws_role_valid("editor"), 1)
+    assert_eq_i64("valid_viewer", ws_role_valid("viewer"), 1)
+    assert_eq_i64("valid_admin_role", ws_role_valid("admin"), 0)
+    assert_eq_i64("valid_garbage", ws_role_valid("x; DROP TABLE"), 0)
+    return 0
+}
+
+fn ws_test_allows() -> i64 !IO {
+    // „поне колкото": точното ниво минава.
+    assert_eq_i64("allow_equal", ws_level_allows(2, 2), 1)
+    assert_eq_i64("allow_higher", ws_level_allows(3, 1), 1)
+    assert_eq_i64("allow_admin", ws_level_allows(ws_role_level_admin(), 3), 1)
+    // по-ниско не минава
+    assert_eq_i64("deny_lower", ws_level_allows(1, 2), 0)
+    assert_eq_i64("deny_zero", ws_level_allows(0, 1), 0)
+    // 0 не минава дори срещу 0 — иначе невалиден член щеше да чете
+    assert_eq_i64("deny_zero_zero", ws_level_allows(0, 0), 0)
+    return 0
+}
+
+fn ws_test_slug() -> i64 !IO {
+    assert_eq_str("slug_basic", ws_personal_slug(42), "personal-42")
+    assert_eq_str("slug_simple", ws_slugify("Ivan Files"), "ivan-files")
+    assert_eq_str("slug_trim", ws_slugify("  Hello  "), "hello")
+    // няколко разделителя подред → едно тире, без висящо тире
+    assert_eq_str("slug_collapse", ws_slugify("a___b"), "a-b")
+    assert_eq_str("slug_punct", ws_slugify("Счетоводство 2026!"), "2026")
+    assert_eq_str("slug_only_punct", ws_slugify("!!!"), "")
+    assert_eq_str("slug_empty", ws_slugify(""), "")
+    // не изтича нищо, което би счупило URL или път
+    let s = ws_slugify("a/b?c#d e%f")
+    assert_true("slug_no_slash", str_find(s, "/") < 0)
+    assert_true("slug_no_space", str_find(s, " ") < 0)
+    assert_true("slug_no_query", str_find(s, "?") < 0)
+    assert_true("slug_no_pct", str_find(s, "%") < 0)
+    // пълният slug носи id-то — два еднакви етикета не се сблъскват
+    assert_eq_str("slug_full", ws_slug_for("Ivan Files", 7), "ivan-files-7")
+    assert_eq_str("slug_full_fallback", ws_slug_for("Счетоводство", 7), "ws-7")
+    assert_ne_str("slug_full_unique", ws_slug_for("X", 1), ws_slug_for("X", 2))
+    return 0
+}
+
+fn main() -> i64 !IO {
+    ws_test_levels()?
+    ws_test_valid()?
+    ws_test_allows()?
+    ws_test_slug()?
+    print("ws_roles_test: all passed")
+    return 0
+}
