@@ -1,0 +1,53 @@
+// chat_room_test.baga — правилата на стаята (Фаза 3). Без мрежа и без база.
+import "chatbaga/chat_room.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn test_text() -> i64 !IO {
+    assert_eq_str("empty", chat_text_reject(""), "empty")
+    assert_eq_str("spaces", chat_text_reject("   "), "empty")
+    assert_eq_str("ok_blank", chat_text_reject("здравей"), "")
+    assert_eq_i64("ok_flag", chat_text_ok("здравей"), 1)
+    assert_eq_i64("bad_flag", chat_text_ok("  "), 0)
+    assert_eq_str("trim", chat_text_trim("  а  "), "а")
+    // Таванът е в байтове. Едно „я" е два байта — низът се реже по-рано,
+    // отколкото ако брояхме букви.
+    let mut big = ""
+    let mut i: i64 = 0
+    while i < chat_room_text_max() {
+        big = concat(big, "a")
+        i = i + 1
+    }
+    assert_eq_str("max_ok", chat_text_reject(big), "")
+    assert_eq_str("max_over", chat_text_reject(concat(big, "a")), "too_long")
+    return 0
+}
+
+fn test_room() -> i64 !IO {
+    assert_eq_str("zero", chat_room_key(0), "")
+    assert_eq_str("neg", chat_room_key(-3), "")
+    assert_eq_str("one", chat_room_key(1), "ws:1")
+    assert_eq_str("twelve", chat_room_key(12), "ws:12")
+    // "ws:1" не бива да е префикс, който хваща "ws:12" при равенство.
+    if chat_room_key(1) == chat_room_key(12) {
+        assert_eq_i64("keys_differ", 1, 0)
+    }
+    return 0
+}
+
+fn test_history() -> i64 !IO {
+    assert_eq_i64("zero", chat_history_clamp(0), chat_history_default())
+    assert_eq_i64("neg", chat_history_clamp(-4), chat_history_default())
+    assert_eq_i64("mid", chat_history_clamp(10), 10)
+    assert_eq_i64("huge", chat_history_clamp(99999), chat_history_max())
+    assert_true("default_sane", chat_history_default() >= 1)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    test_text()?
+    test_room()?
+    test_history()?
+    print("chat_room_test: all passed")
+    return 0
+}

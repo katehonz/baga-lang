@@ -50,7 +50,7 @@ fn ws_test_names() -> i64 !IO {
     // различаването на „качен" от „преименуван" на клиента.
     let all = ws_event_names()
     let n = vec_len(all)
-    assert_eq_i64("names_count", n, 11)
+    assert_eq_i64("names_count", n, 12)
     let mut i: i64 = 0
     while i < n {
         assert_eq_i64(concat("valid_", vec_get(all, i)), ws_event_valid(vec_get(all, i)), 1)
@@ -77,6 +77,7 @@ fn ws_test_classify() -> i64 !IO {
     assert_eq_i64("is_node_member", ws_event_is_node(ws_ev_member_added()), 0)
     assert_eq_i64("is_node_ws", ws_event_is_node(ws_ev_ws_created()), 0)
     assert_eq_i64("is_node_unknown", ws_event_is_node("hacked"), 0)
+    assert_eq_i64("is_node_chat", ws_event_is_node(ws_ev_chat()), 0)
 
     assert_eq_i64("is_member_added", ws_event_is_member(ws_ev_member_added()), 1)
     assert_eq_i64("is_member_updated", ws_event_is_member(ws_ev_member_updated()), 1)
@@ -89,6 +90,7 @@ fn ws_test_badge() -> i64 !IO {
     assert_eq_i64("badge_created", ws_event_is_badge(ws_ev_node_created()), 1)
     assert_eq_i64("badge_member", ws_event_is_badge(ws_ev_member_added()), 1)
     assert_eq_i64("badge_ws_created", ws_event_is_badge(ws_ev_ws_created()), 0)
+    assert_eq_i64("badge_chat", ws_event_is_badge(ws_ev_chat()), 0)
     // Непознато събитие не вдига брояч — иначе един сгрешен ред би пратил
     // потребителя да търси новост, която не съществува.
     assert_eq_i64("badge_unknown", ws_event_is_badge("hacked"), 0)

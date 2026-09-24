@@ -69,6 +69,9 @@ run -I app-product/7x7office/secp tests/activity_kinds_test.baga
 echo "=== WS събития (Фаза 3: verb→event, протокол, изходящи съобщения) ==="
 run -I app-product/7x7office/secp tests/ws_events_test.baga
 
+echo "=== чат стая (Фаза 3: празен текст, таван, ключ) ==="
+run tests/chat_room_test.baga
+
 # Интеграционният тест за файлове по пространство иска жив Postgres и
 # построен secp — в CI средата ги няма (виж scripts/run_tests.sh, където се
 # пуска при наличен target/secp). Тук само проверяваме, че не е изчезнал.
