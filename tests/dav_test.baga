@@ -36,7 +36,7 @@ fn test_date() -> i64 !IO {
 }
 
 fn test_xml() -> i64 !IO {
-    let one = dav_response("/dav/2/a b", "a & b", 0, 3, "text/plain", "abc", "")
+    let one = dav_response("/dav/2/a b", "a & b", 0, 3, "text/plain", "abc", "", "")
     assert_true("href", str_find(one, "/dav/2/a%20b") >= 0)
     assert_true("name", str_find(one, "a &amp; b") >= 0)
     assert_true("len", str_find(one, ">3<") >= 0)
@@ -47,12 +47,30 @@ fn test_xml() -> i64 !IO {
     return 0
 }
 
+fn test_lock() -> i64 !IO {
+    assert_eq_i64("self", dav_lock_covers("/a", 0, "/a"), 1)
+    assert_eq_i64("child_free", dav_lock_covers("/a", 0, "/a/b"), 0)
+    assert_eq_i64("inf_child", dav_lock_covers("/a", 0 - 1, "/a/b"), 1)
+    assert_eq_i64("parent_blocked", dav_lock_covers("/a/b", 0, "/a"), 1)
+    assert_eq_i64("root_inf", dav_lock_covers("/", 0 - 1, "/a"), 1)
+    assert_eq_i64("has", dav_if_has_token("(<opaquelocktoken:aa>)", "opaquelocktoken:aa"), 1)
+    assert_eq_i64("miss", dav_if_has_token("(<opaquelocktoken:bb>)", "opaquelocktoken:aa"), 0)
+    assert_eq_i64("timeout", dav_timeout_s("Second-120"), 120)
+    assert_eq_i64("cap", dav_timeout_s("Infinite"), 86400)
+    assert_eq_i64("shared", dav_wants_shared("<D:lockscope><D:shared/></D:lockscope>"), 1)
+    let stats = dav_proppatch_stats("<D:propertyupdate xmlns:D=\"DAV:\"><D:set><D:prop><D:displayname>x</D:displayname></D:prop></D:set></D:propertyupdate>")
+    assert_true("prop", str_find(stats, "displayname") >= 0)
+    assert_true("403", str_find(stats, "403") >= 0)
+    return 0
+}
+
 fn main() -> i64 !IO {
     test_depth()?
     test_dest()?
     test_match()?
     test_date()?
     test_xml()?
+    test_lock()?
     print("dav_test: all passed")
     return 0
 }
