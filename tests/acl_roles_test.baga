@@ -1,0 +1,229 @@
+// acl_roles_test.baga — права по възли (Фаза 2). ЧИСТ тест.
+//
+// Без база и без мрежа. Проверява се логиката, която решава „кой може да
+// чете/пише този път" — това е security границата на споделянето. Ако
+// наследяването сбърка посоката (по-специфичният ред не печели) или
+// собственикът може да се заключи сам, това трябва да се хване тук.
+//
+// Защо точно тези проверки:
+//   - "/a" НЕ бива да е предшественик на "/ab" — иначе права върху една
+//     папка изтичат към съседна с общ префикс (класическа дупка)
+//   - най-специфичният ред трябва да печели — и нагоре (разширяване), и
+//     надолу (стесняване), иначе моделът е само единият от двата
+//   - inherit=0 важи само за точния път: иначе „само този файл" тихо
+//     раздава права на цялата папка
+//   - owner/admin не бива да пада под базата си — иначе един ред заключва
+//     собственика от собствената му папка и никой не може да го върне
+//   - level извън 1..3 не бива да минава — „level=99" през API-то иначе
+//     дава admin права
+
+import "7x7office/secp/tree/acl_roles.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+// Помощни за съставяне на редовете в теста (всички с inherit=1, освен
+// изрично отбелязаните).
+fn acl_i(v: Vec<i64>, x: i64) -> Vec<i64> {
+    vec_push(v, x)
+    return v
+}
+
+fn acl_test_ancestor() -> i64 !IO {
+    assert_eq_i64("anc_root_all", acl_is_ancestor("/", "/a/b"), 1)
+    assert_eq_i64("anc_equal", acl_is_ancestor("/a/b", "/a/b"), 1)
+    assert_eq_i64("anc_parent", acl_is_ancestor("/a", "/a/b/c"), 1)
+    // границата на сегмента: /a не е родител на /ab
+    assert_eq_i64("anc_prefix_trap", acl_is_ancestor("/a", "/ab"), 0)
+    assert_eq_i64("anc_sibling", acl_is_ancestor("/a", "/b"), 0)
+    assert_eq_i64("anc_child", acl_is_ancestor("/a/b", "/a"), 0)
+    return 0
+}
+
+fn acl_test_depth() -> i64 !IO {
+    assert_eq_i64("depth_root", acl_depth("/"), 0)
+    assert_eq_i64("depth_one", acl_depth("/a"), 1)
+    assert_eq_i64("depth_two", acl_depth("/a/b"), 2)
+    assert_eq_i64("depth_three", acl_depth("/a/b/c"), 3)
+    assert_eq_i64("depth_empty", acl_depth(""), 0)
+    return 0
+}
+
+fn acl_test_applies() -> i64 !IO {
+    assert_eq_i64("app_inherit_child", acl_applies("/a", 1, "/a/b"), 1)
+    assert_eq_i64("app_inherit_self", acl_applies("/a", 1, "/a"), 1)
+    assert_eq_i64("app_inherit_sibling", acl_applies("/a", 1, "/b"), 0)
+    // inherit=0: само точният път, никакви деца
+    assert_eq_i64("app_exact_self", acl_applies("/a/b", 0, "/a/b"), 1)
+    assert_eq_i64("app_exact_child", acl_applies("/a/b", 0, "/a/b/c"), 0)
+    assert_eq_i64("app_exact_parent", acl_applies("/a", 0, "/a/b"), 0)
+    return 0
+}
+
+fn acl_test_effective() -> i64 !IO {
+    // 1) без редове → базата от ролята
+    let no_p: Vec<str> = vec_new()
+    let no_l: Vec<i64> = vec_new()
+    let no_i: Vec<i64> = vec_new()
+    assert_eq_i64("base_only", acl_effective(no_p, no_l, no_i, "/a", 1, 0), 1)
+
+    // 2) стесняване: editor(2) навсякъде, но /secrets само read
+    let p1: Vec<str> = vec_new()
+    let l1: Vec<i64> = vec_new()
+    let i1: Vec<i64> = vec_new()
+    vec_push(p1, "/secrets")
+    vec_push(l1, 1)
+    vec_push(i1, 1)
+    assert_eq_i64("narrow_inside", acl_effective(p1, l1, i1, "/secrets/x", 2, 0), 1)
+    assert_eq_i64("narrow_outside", acl_effective(p1, l1, i1, "/docs/x", 2, 0), 2)
+    // самият път също е „вътре" (равенство)
+    assert_eq_i64("narrow_equal", acl_effective(p1, l1, i1, "/secrets", 2, 0), 1)
+
+    // 3) разширяване: viewer(1), но /public получава write
+    let p2: Vec<str> = vec_new()
+    let l2: Vec<i64> = vec_new()
+    let i2: Vec<i64> = vec_new()
+    vec_push(p2, "/public")
+    vec_push(l2, 2)
+    vec_push(i2, 1)
+    assert_eq_i64("widen_inside", acl_effective(p2, l2, i2, "/public/a", 1, 0), 2)
+    assert_eq_i64("widen_outside", acl_effective(p2, l2, i2, "/private", 1, 0), 1)
+
+    // 4) най-специфичният печели: /a=2, /a/b=1 → /a/b/c е 1, /a/x е 2
+    let p3: Vec<str> = vec_new()
+    let l3: Vec<i64> = vec_new()
+    let i3: Vec<i64> = vec_new()
+    vec_push(p3, "/a")
+    vec_push(l3, 2)
+    vec_push(i3, 1)
+    vec_push(p3, "/a/b")
+    vec_push(l3, 1)
+    vec_push(i3, 1)
+    assert_eq_i64("spec_deepest", acl_effective(p3, l3, i3, "/a/b/c", 1, 0), 1)
+    assert_eq_i64("spec_parent", acl_effective(p3, l3, i3, "/a/x", 1, 0), 2)
+    assert_eq_i64("spec_exact", acl_effective(p3, l3, i3, "/a/b", 1, 0), 1)
+
+    // 5) ред отвън не важи: /other=3 не пипа /a
+    let p4: Vec<str> = vec_new()
+    let l4: Vec<i64> = vec_new()
+    let i4: Vec<i64> = vec_new()
+    vec_push(p4, "/other")
+    vec_push(l4, 3)
+    vec_push(i4, 1)
+    assert_eq_i64("unrelated", acl_effective(p4, l4, i4, "/a", 1, 0), 1)
+
+    // 6) изрична забрана: viewer(1), но /таен е 0 → нищо, дори четене
+    let p5: Vec<str> = vec_new()
+    let l5: Vec<i64> = vec_new()
+    let i5: Vec<i64> = vec_new()
+    vec_push(p5, "/таен")
+    vec_push(l5, 0)
+    vec_push(i5, 1)
+    assert_eq_i64("deny_inside", acl_effective(p5, l5, i5, "/таен/x", 1, 0), 0)
+    assert_eq_i64("deny_self", acl_effective(p5, l5, i5, "/таен", 2, 0), 0)
+    assert_eq_i64("deny_outside", acl_effective(p5, l5, i5, "/публичен", 2, 0), 2)
+    // дори owner не се заключва (protect): забраната не пада под базата му
+    assert_eq_i64("deny_owner_protected", acl_effective(p5, l5, i5, "/таен", 3, 1), 3)
+    return 0
+}
+
+fn acl_test_exact() -> i64 !IO {
+    // inherit=0 ред дава права САМО на точния път
+    let p: Vec<str> = vec_new()
+    let l: Vec<i64> = vec_new()
+    let inh: Vec<i64> = vec_new()
+    vec_push(p, "/заплати.csv")
+    vec_push(l, 2)
+    vec_push(inh, 0)
+    assert_eq_i64("exact_self", acl_effective(p, l, inh, "/заплати.csv", 1, 0), 2)
+    assert_eq_i64("exact_child", acl_effective(p, l, inh, "/заплати.csv/x", 1, 0), 1)
+    assert_eq_i64("exact_sibling", acl_effective(p, l, inh, "/фактури.csv", 1, 0), 1)
+
+    // точен ред бие наследен от по-горе (по-специфичен е)
+    let p2: Vec<str> = vec_new()
+    let l2: Vec<i64> = vec_new()
+    let i2: Vec<i64> = vec_new()
+    vec_push(p2, "/a")
+    vec_push(l2, 2)
+    vec_push(i2, 1)
+    vec_push(p2, "/a/b")
+    vec_push(l2, 1)
+    vec_push(i2, 0)
+    // /a/b/c: наследеният /a=2 важи (2); точният /a/b=1 не важи за /a/b/c
+    assert_eq_i64("exact_no_leak", acl_effective(p2, l2, i2, "/a/b/c", 1, 0), 2)
+    // /a/b: точният ред (inherit=0) е по-специфичен → 1
+    assert_eq_i64("exact_beats_inherit", acl_effective(p2, l2, i2, "/a/b", 1, 0), 1)
+    return 0
+}
+
+fn acl_test_protect() -> i64 !IO {
+    // owner(3): ред /x=1 НЕ го стеснява (protect=1) — иначе се самозаключва
+    let p: Vec<str> = vec_new()
+    let l: Vec<i64> = vec_new()
+    let i: Vec<i64> = vec_new()
+    vec_push(p, "/x")
+    vec_push(l, 1)
+    vec_push(i, 1)
+    assert_eq_i64("protect_owner_narrow", acl_effective(p, l, i, "/x/y", 3, 1), 3)
+    // но разширяване над базата минава и за owner (не пречи)
+    let p2: Vec<str> = vec_new()
+    let l2: Vec<i64> = vec_new()
+    let i2: Vec<i64> = vec_new()
+    vec_push(p2, "/pub")
+    vec_push(l2, 3)
+    vec_push(i2, 1)
+    assert_eq_i64("protect_owner_widen", acl_effective(p2, l2, i2, "/pub", 3, 1), 3)
+    // за обикновен потребител (protect=0) стесняването важи
+    assert_eq_i64("no_protect_narrow", acl_effective(p, l, i, "/x/y", 3, 0), 1)
+    return 0
+}
+
+fn acl_test_subject() -> i64 !IO {
+    // user ред важи само за точно този потребител
+    assert_eq_i64("subj_user_hit", acl_subject_matches("user", 7, "", 7, "viewer"), 1)
+    assert_eq_i64("subj_user_miss", acl_subject_matches("user", 7, "", 8, "viewer"), 0)
+    // role ред важи за ролята в пространството
+    assert_eq_i64("subj_role_hit", acl_subject_matches("role", 0, "editor", 9, "editor"), 1)
+    assert_eq_i64("subj_role_miss", acl_subject_matches("role", 0, "editor", 9, "viewer"), 0)
+    // празна роля не съвпада с празна роля (иначе не-член изведнъж получава)
+    assert_eq_i64("subj_role_empty", acl_subject_matches("role", 0, "", 9, ""), 0)
+    // непознат вид ред не важи
+    assert_eq_i64("subj_kind_garbage", acl_subject_matches("owner", 7, "", 7, "owner"), 0)
+    return 0
+}
+
+fn acl_test_valid() -> i64 !IO {
+    assert_eq_i64("valid_user", acl_kind_valid("user"), 1)
+    assert_eq_i64("valid_role", acl_kind_valid("role"), 1)
+    assert_eq_i64("valid_kind_garbage", acl_kind_valid("group"), 0)
+    assert_eq_i64("valid_kind_empty", acl_kind_valid(""), 0)
+
+    assert_eq_i64("valid_level_read", acl_level_valid(1), 1)
+    assert_eq_i64("valid_level_write", acl_level_valid(2), 1)
+    assert_eq_i64("valid_level_share", acl_level_valid(3), 1)
+    // 0 е изрична забрана — трябва да е позволена, за да може viewer да
+    // бъде изключен от конкретна папка
+    assert_eq_i64("valid_level_none", acl_level_valid(0), 1)
+    assert_eq_i64("valid_level_negative", acl_level_valid(0 - 1), 0)
+    // 99 не е валидно — иначе API-то дава admin права
+    assert_eq_i64("valid_level_admin_trap", acl_level_valid(99), 0)
+
+    assert_eq_i64("valid_role_owner", acl_role_valid("owner"), 1)
+    assert_eq_i64("valid_role_editor", acl_role_valid("editor"), 1)
+    assert_eq_i64("valid_role_viewer", acl_role_valid("viewer"), 1)
+    assert_eq_i64("valid_role_admin", acl_role_valid("admin"), 0)
+    assert_eq_i64("valid_role_garbage", acl_role_valid("x; DROP TABLE"), 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    acl_test_ancestor()?
+    acl_test_depth()?
+    acl_test_applies()?
+    acl_test_effective()?
+    acl_test_exact()?
+    acl_test_protect()?
+    acl_test_subject()?
+    acl_test_valid()?
+    print("acl_roles_test: all passed")
+    return 0
+}
