@@ -148,3 +148,6 @@
 [submodule "app-product/smtpbaga"]
 	path = app-product/smtpbaga
 	url = git@github.com:bagalang/smtpbaga.git
+[submodule "app-product/davbaga"]
+	path = app-product/davbaga
+	url = git@github.com:bagalang/davbaga.git
