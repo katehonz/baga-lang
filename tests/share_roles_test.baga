@@ -1,0 +1,103 @@
+// share_roles_test.baga — логика на публичните линкове (Фаза 3). ЧИСТ тест.
+//
+// Без база и без мрежа. Проверява се втората security граница: линкът дава
+// достъп БЕЗ вход. Грешките тук не се виждат на екрана — затова са тук:
+//   - линк към /a НЕ бива да дава достъп до /ab (общ префикс)
+//   - изтекъл линк (>= expires_at) не бива да работи
+//   - линк с таван на свалянията не бива да минава над тавана
+//   - ниво 2 върху ФАЙЛ пак е само четене (иначе линк „за запис" качва
+//     върху файла)
+//   - невалидно ниво в базата пада до най-ниското право, не до най-високото
+//   - токенът се приема само във формата 64 hex знака
+
+import "7x7office/secp/tree/share_roles.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn share_test_paths() -> i64 !IO {
+    assert_eq_i64("inside_self", share_path_inside("/a", "/a"), 1)
+    assert_eq_i64("inside_child", share_path_inside("/a", "/a/b/c"), 1)
+    assert_eq_i64("inside_root", share_path_inside("/", "/всичко/дълбоко"), 1)
+    // границата на сегмента: /a не съдържа /ab
+    assert_eq_i64("inside_prefix_trap", share_path_inside("/a", "/ab"), 0)
+    assert_eq_i64("inside_sibling", share_path_inside("/a", "/b"), 0)
+    assert_eq_i64("inside_parent", share_path_inside("/a/b", "/a"), 0)
+    return 0
+}
+
+fn share_test_ttl() -> i64 !IO {
+    // 0 часа = без срок → expires_at 0, никога не изтича
+    assert_eq_i64("ttl_zero", share_ttl_secs(0), 0)
+    assert_eq_i64("ttl_expires_none", share_expires_at(1000, 0), 0)
+    assert_eq_i64("ttl_never_expires", share_expired(0, 999999), 0)
+    // 1 час → 3600 сек
+    assert_eq_i64("ttl_one_hour", share_ttl_secs(1), 3600)
+    assert_eq_i64("ttl_expires_at", share_expires_at(1000, 3600), 4600)
+    assert_eq_i64("ttl_before", share_expired(4600, 4599), 0)
+    // точно на момента вече е изтекъл
+    assert_eq_i64("ttl_exact", share_expired(4600, 4600), 1)
+    assert_eq_i64("ttl_after", share_expired(4600, 4601), 1)
+    return 0
+}
+
+fn share_test_uses() -> i64 !IO {
+    assert_eq_i64("uses_unlimited", share_uses_exceeded(100, 0), 0)
+    assert_eq_i64("uses_below", share_uses_exceeded(9, 10), 0)
+    assert_eq_i64("uses_at_cap", share_uses_exceeded(10, 10), 1)
+    assert_eq_i64("uses_over", share_uses_exceeded(11, 10), 1)
+    return 0
+}
+
+fn share_test_token() -> i64 !IO {
+    // 64 hex знака са валиден токен (форматът на share_token_new)
+    let tok = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    assert_eq_i64("token_ok", share_token_ok(tok), 1)
+    assert_eq_i64("token_upper", share_token_ok("ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"), 1)
+    // къс, дълъг, с неhex знак
+    assert_eq_i64("token_short", share_token_ok("abc"), 0)
+    assert_eq_i64("token_long", share_token_ok(concat(tok, "0")), 0)
+    assert_eq_i64("token_bad_char", share_token_ok("z123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), 0)
+    assert_eq_i64("token_empty", share_token_ok(""), 0)
+    return 0
+}
+
+fn share_test_levels() -> i64 !IO {
+    assert_eq_i64("level_view", share_level_valid(1), 1)
+    assert_eq_i64("level_edit", share_level_valid(2), 1)
+    // 0 и 3 не са нива на линк
+    assert_eq_i64("level_zero", share_level_valid(0), 0)
+    assert_eq_i64("level_share", share_level_valid(3), 0)
+    assert_eq_i64("level_admin_trap", share_level_valid(99), 0)
+    return 0
+}
+
+fn share_test_grant() -> i64 !IO {
+    // папка с ниво 2 дава запис
+    assert_eq_i64("grant_dir_edit", share_grant_level(2, 1), 2)
+    assert_eq_i64("grant_dir_view", share_grant_level(1, 1), 1)
+    // ФАЙЛ винаги е само четене, дори нивото да е 2
+    assert_eq_i64("grant_file_edit_downgraded", share_grant_level(2, 0), 1)
+    assert_eq_i64("grant_file_view", share_grant_level(1, 0), 1)
+    // невалидно ниво в базата пада до най-ниското право, не до най-високото
+    assert_eq_i64("grant_bad_level_dir", share_grant_level(99, 1), 1)
+
+    // allows: папка ниво 2 → четене и запис; файл ниво 2 → само четене
+    assert_eq_i64("allows_dir_read", share_allows(2, 1, 1), 1)
+    assert_eq_i64("allows_dir_write", share_allows(2, 1, 2), 1)
+    assert_eq_i64("allows_file_read", share_allows(2, 0, 1), 1)
+    assert_eq_i64("allows_file_write_denied", share_allows(2, 0, 2), 0)
+    // папка ниво 1 → само четене
+    assert_eq_i64("allows_view_write_denied", share_allows(1, 1, 2), 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    share_test_paths()?
+    share_test_ttl()?
+    share_test_uses()?
+    share_test_token()?
+    share_test_levels()?
+    share_test_grant()?
+    print("share_roles_test: all passed")
+    return 0
+}

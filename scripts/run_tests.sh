@@ -452,6 +452,19 @@ else
 	exit 1
 fi
 
+# Публични линкове (Фаза 3) — втората security граница: линк дава достъп БЕЗ
+# вход. Грешка тук не се вижда на екрана (напр. /a пуска /ab), затова е в
+# `make test`, не само в живия smoke.
+RC=0
+run -I app-product/7x7office/secp tests/share_roles_test.baga > /tmp/baga_share_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "share_roles_test: all passed" /tmp/baga_share_out.txt; then
+	echo "OK: share — поддърво, срок, таван, парола, ниво върху файл"
+else
+	echo "FAIL: share_roles_test"
+	cat /tmp/baga_share_out.txt
+	exit 1
+fi
+
 # Файловият скоуп по workspace (Фаза 2) — интеграционно, на живо срещу
 # построения secp и Postgres. Покрива това, което `baga` не може: рутиране,
 # JWT, миграции, boot backfill и изчистване на дървото при триене. Пуска се
@@ -542,7 +555,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

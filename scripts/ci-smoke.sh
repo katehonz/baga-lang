@@ -29,6 +29,7 @@ need app-product/smtpbaga/smtp.baga
 need app-product/7x7office/secp/idm/mail_text.baga
 need app-product/7x7office/secp/idm/ws_roles.baga
 need app-product/7x7office/secp/tree/acl_roles.baga
+need app-product/7x7office/secp/tree/share_roles.baga
 
 echo "=== examples ==="
 run examples/zdravei.baga
@@ -57,6 +58,9 @@ run -I app-product/7x7office/secp tests/ws_roles_test.baga
 
 echo "=== ACL по възли (Фаза 2: наследяване, най-специфичен печели) ==="
 run -I app-product/7x7office/secp tests/acl_roles_test.baga
+
+echo "=== публични линкове (Фаза 3: поддърво, срок, таван, парола) ==="
+run -I app-product/7x7office/secp tests/share_roles_test.baga
 
 # Интеграционният тест за файлове по пространство иска жив Postgres и
 # построен secp — в CI средата ги няма (виж scripts/run_tests.sh, където се
