@@ -465,18 +465,32 @@ else
 	exit 1
 fi
 
-# Файловият скоуп по workspace (Фаза 2) — интеграционно, на живо срещу
-# построения secp и Postgres. Покрива това, което `baga` не може: рутиране,
-# JWT, миграции, boot backfill и изчистване на дървото при триене. Пуска се
-# само ако `target/secp` е бил построен (иначе `make test` би изисквал
-# `sandak build`, което не е нужно за чистите езикови тестове).
+# Activity feed (Фаза 3) — видовете действия и таваните. Feed-ът показва на
+# целия екип, затова непознат verb не бива да стига до UI-а; тук се пази и
+# „речникът", че всяко извикано от handler действие е познато.
+RC=0
+run -I app-product/7x7office/secp tests/activity_kinds_test.baga > /tmp/baga_activity_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "activity_kinds_test: all passed" /tmp/baga_activity_out.txt; then
+	echo "OK: activity — verb-ове, класификация, таван на meta, limit"
+else
+	echo "FAIL: activity_kinds_test"
+	cat /tmp/baga_activity_out.txt
+	exit 1
+fi
+
+# Файловият скоуп по workspace + Фаза 3 (ACL, линкове, activity) —
+# интеграционно, на живо срещу построения secp и Postgres. Покрива това,
+# което `baga` не може: рутиране, JWT, миграции, boot backfill и изчистване
+# на дървото при триене. Пуска се само ако `target/secp` е бил построен
+# (иначе `make test` би изисквал `sandak build`, което не е нужно за чистите
+# езикови тестове).
 SECP_BIN="$ROOT/app-product/7x7office/secp/target/secp"
 if [[ -x "$SECP_BIN" ]]; then
-	echo "=== workspaces × файлове (жива PG + secp: скоуп, роли, backfill, purge) ==="
+	echo "=== workspaces × файлове (жива PG + secp: скоуп, роли, ACL, линкове, activity, backfill, purge) ==="
 	RC=0
 	bash "$ROOT/app-product/7x7office/secp/tools/ws_files_smoke.sh" > /tmp/baga_ws_files_out.txt 2>&1 || RC=$?
 	if [[ $RC -eq 0 ]] && grep -q "ws_files_smoke: all passed" /tmp/baga_ws_files_out.txt; then
-		echo "OK: workspaces файлове — скоуп по пространство, роли, backfill, изчистване"
+		echo "OK: workspaces файлове — скоуп, роли, ACL, линкове, activity, backfill, изчистване"
 	else
 		echo "FAIL: ws_files_smoke"
 		cat /tmp/baga_ws_files_out.txt
@@ -555,7 +569,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

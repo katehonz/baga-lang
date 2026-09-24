@@ -1,0 +1,140 @@
+// activity_kinds_test.baga — видове действия в activity feed (Фаза 3). ЧИСТ тест.
+//
+// Без база и без мрежа. Feed-ът се показва на целия екип, затова редът с
+// непознат verb не бива да стига до UI-а (иначе се показва суров ключ, а
+// бъдещ филтър би го счел за невалиден). Тук се пази и „языкът" на feed-а:
+// verb-овете са машинни низове, а не преведени — преводът е на фронтенда.
+//
+// Проверява се още:
+//   - всеки познат verb минава валидацията (забравен verb = изчезнало действие)
+//   - класификацията „променя състоянието" не изпуска нищо
+//   - таванът на meta се спазва (иначе feed-ът става хранилище за съдържание)
+//   - limit се притиска в [1, max], а липсващ/невалиден дава подразбираното
+
+import "7x7office/secp/tree/activity_kinds.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn activity_test_verbs_known() -> i64 !IO {
+    // Всеки повикан verb трябва да е познат — това е списъкът, който
+    // добавяме в кода. Ако някой verb се появи в handler без да влезе в
+    // activity_verbs(), записът ще се откаже на runtайма; тук се хваща.
+    assert_eq_i64("created", activity_verb_valid(activity_verb_created()), 1)
+    assert_eq_i64("updated", activity_verb_valid(activity_verb_updated()), 1)
+    assert_eq_i64("deleted", activity_verb_valid(activity_verb_deleted()), 1)
+    assert_eq_i64("moved", activity_verb_valid(activity_verb_moved()), 1)
+    assert_eq_i64("restored", activity_verb_valid(activity_verb_restored()), 1)
+    assert_eq_i64("shared", activity_verb_valid(activity_verb_shared()), 1)
+    assert_eq_i64("unshared", activity_verb_valid(activity_verb_unshared()), 1)
+    assert_eq_i64("member_added", activity_verb_valid(activity_verb_member_added()), 1)
+    assert_eq_i64("member_removed", activity_verb_valid(activity_verb_member_removed()), 1)
+    assert_eq_i64("member_updated", activity_verb_valid(activity_verb_member_updated()), 1)
+    assert_eq_i64("workspace_created", activity_verb_valid(activity_verb_workspace_created()), 1)
+    return 0
+}
+
+fn activity_test_verbs_unknown() -> i64 !IO {
+    // Непознат/празен verb не минава — точно това пази UI-а от сурови ключове
+    // и предпазва бъдещ филтър от невалиден ред.
+    assert_eq_i64("unknown", activity_verb_valid("hacked"), 0)
+    assert_eq_i64("empty", activity_verb_valid(""), 0)
+    // Регистърът е чувствителен: "Created" не е "created".
+    assert_eq_i64("case_sensitive", activity_verb_valid("Created"), 0)
+    // Префикс не минава.
+    assert_eq_i64("prefix", activity_verb_valid("crea"), 0)
+    return 0
+}
+
+fn activity_test_verbs_list() -> i64 !IO {
+    // Списъкът не бива да има дубликати (иначе валидацията минава, но
+    // бъдещ брояч на видове би броил двойно).
+    let all = activity_verbs()
+    let n = vec_len(all)
+    assert_eq_i64("verbs_count", n, 11)
+    let mut i: i64 = 0
+    while i < n {
+        let mut j: i64 = i + 1
+        while j < n {
+            if vec_get(all, i) == vec_get(all, j) {
+                // дубликат — тестът пада с ясно съобщение
+                assert_eq_i64(concat(concat("dup@", int_to_str(i)), vec_get(all, i)), j, -1)
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn activity_test_is_write() -> i64 !IO {
+    // Всяко познато действие ПРОМЕНЯ състоянието (v1 няма „read" действия).
+    // Ако някой ден се добави такова, този тест ще го хване и ще го изключи
+    // съзнателно, вместо то да влиза във feed-а по подразбиране.
+    assert_eq_i64("is_write_created", activity_verb_is_write(activity_verb_created()), 1)
+    assert_eq_i64("is_write_deleted", activity_verb_is_write(activity_verb_deleted()), 1)
+    assert_eq_i64("is_write_shared", activity_verb_is_write(activity_verb_shared()), 1)
+    assert_eq_i64("is_write_member_added", activity_verb_is_write(activity_verb_member_added()), 1)
+    assert_eq_i64("is_write_ws_created", activity_verb_is_write(activity_verb_workspace_created()), 1)
+    // Непознат verb не е „запис" дори по случайност.
+    assert_eq_i64("is_write_unknown", activity_verb_is_write("hacked"), 0)
+    return 0
+}
+
+fn activity_test_meta_cap() -> i64 !IO {
+    // В границите текстът не се пипа.
+    assert_eq_str("meta_short", activity_meta_cap("abc"), "abc")
+    assert_eq_str("meta_empty", activity_meta_cap(""), "")
+    // На тавана — точно колкото е таванът, не се реже.
+    let exact = activity_meta_fill(activity_meta_max())
+    assert_eq_i64("meta_exact_len", len(activity_meta_cap(exact)), activity_meta_max())
+    // Над тавана — реже се до тавана.
+    let over = activity_meta_fill(activity_meta_max() + 200)
+    assert_eq_i64("meta_over_len", len(activity_meta_cap(over)), activity_meta_max())
+    return 0
+}
+
+// Помощен: низ от `n` знака (без да разчитаме на rangе/повторение).
+fn activity_meta_fill(n: i64) -> str {
+    let mut s = ""
+    let mut i: i64 = 0
+    while i < n {
+        s = concat(s, "x")
+        i = i + 1
+    }
+    return s
+}
+
+fn activity_test_limit() -> i64 !IO {
+    // Липсващо (0) и отрицателно → подразбираното, за да не върне клиент
+    // празен feed „защото забрави limit".
+    assert_eq_i64("limit_zero", activity_limit_clamp(0), activity_limit_default())
+    assert_eq_i64("limit_negative", activity_limit_clamp(-5), activity_limit_default())
+    // Валидно в средата се пази.
+    assert_eq_i64("limit_mid", activity_limit_clamp(10), 10)
+    // Над тавана се притиска до тавана.
+    assert_eq_i64("limit_over", activity_limit_clamp(activity_limit_max() + 1), activity_limit_max())
+    assert_eq_i64("limit_huge", activity_limit_clamp(100000), activity_limit_max())
+    // Редът на таваните: default < max, иначи клампирането е безсмислено.
+    assert_true("limits_ordered", activity_limit_default() < activity_limit_max())
+    return 0
+}
+
+fn activity_test_actor() -> i64 !IO {
+    // 0 = системата (фонова задача), не потребител.
+    assert_eq_i64("actor_system", activity_actor_is_system(activity_actor_system()), 1)
+    assert_eq_i64("actor_user", activity_actor_is_system(42), 0)
+    assert_eq_i64("actor_zero", activity_actor_system(), 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    activity_test_verbs_known()?
+    activity_test_verbs_unknown()?
+    activity_test_verbs_list()?
+    activity_test_is_write()?
+    activity_test_meta_cap()?
+    activity_test_limit()?
+    activity_test_actor()?
+    print("activity_kinds_test: all passed")
+    return 0
+}
