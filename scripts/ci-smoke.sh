@@ -26,6 +26,7 @@ need app-product/httpdbaga/http.baga
 need app-product/jwtbaga/jwt.baga
 need app-product/otpbaga/otp.baga
 need app-product/smtpbaga/smtp.baga
+need app-product/7x7office/secp/idm/mail_text.baga
 
 echo "=== examples ==="
 run examples/zdravei.baga
@@ -45,6 +46,9 @@ run tests/std/sha1_test.baga
 run tests/jwt_test.baga
 run tests/otp_test.baga
 run tests/smtp_test.baga
+
+echo "=== mail (Фаза 6.3: reset токени, payload, текстове) ==="
+run -I app-product/7x7office/secp tests/mail_test.baga
 
 echo "=== filesize-global ==="
 bash "$ROOT/scripts/filesize-global.sh"

@@ -1,0 +1,105 @@
+// mail_test.baga — чистите части на пощата и reset токените (Фаза 6.3).
+//
+// Без база и без мрежа: проверяват се точно местата, където един бъдещ
+// рефактор може да счупи нещо тихо — JSON payload-ът на фоновата задача,
+// хешът на токена, изборът на порт според TLS режима и това, че текстът
+// на писмото наистина съдържа линка.
+//
+// Защо точно тези: ако payload-ът се разминава с парсера, всички писма
+// стават failed задачи със счупена причина; ако хешът не е стабилен,
+// reset линковете спират да работят; ако портът е грешен, TLS режимът
+// мълчаливо говори plain.
+//
+// Внасят се само „чистите" модули (mail_text, mail_jobs, mail,
+// reset_model). НЕ се внася scheduler-ът: той тегли fmrbaga и целия
+// app, което прави теста тежък и чуплив. Затова текстът на писмата и
+// payload-ът са изнесени в отделни модули — виж idm/mail_text.baga.
+
+import "7x7office/secp/idm/mail_text.baga"
+import "7x7office/secp/idm/mail.baga"
+import "7x7office/secp/idm/reset_model.baga"
+import "7x7office/secp/system/mail_jobs.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn mail_test_payload() -> i64 !IO {
+    // Round-trip: това, което нареждаме, трябва да се разчете същото.
+    let p = mj_payload("ivan@example.com", "Тема с кирилица", "Ред 1\nРед 2 \"кавички\"")
+    let m = mj_msg_parse(p)
+    assert_eq_i64("payload_ok", m.ok, 1)
+    assert_eq_str("payload_to", m.to, "ivan@example.com")
+    assert_eq_str("payload_subject", m.subject, "Тема с кирилица")
+    assert_eq_str("payload_text", m.text, "Ред 1\nРед 2 \"кавички\"")
+
+    // Счупен payload се хваща, не се праща празно писмо.
+    let bad = mj_msg_parse("{\"to\":\"a@b.c\"}")
+    assert_eq_i64("payload_missing_subject", bad.ok, 0)
+    assert_true("payload_bad_json", mj_msg_parse("не е json").ok == 0)
+    assert_true("payload_not_object", mj_msg_parse("[1,2]").ok == 0)
+
+    // Празни стойности са валидни (празно тяло не е грешка в JSON смисъл).
+    let empty = mj_msg_parse(mj_payload("a@b.c", "", ""))
+    assert_eq_i64("payload_empty_ok", empty.ok, 1)
+    assert_eq_str("payload_empty_text", empty.text, "")
+    return 0
+}
+
+fn mail_test_token_hash() -> i64 !IO {
+    // Хешът е детерминиран — иначе издаденият токен никога не се намира.
+    let t = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    assert_eq_str("hash_stable", idm_reset_hash(t), idm_reset_hash(t))
+    assert_eq_i64("hash_len", len(idm_reset_hash(t)), 64)
+    // Различни токени → различни хешове.
+    let t2 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    assert_true("hash_differs", idm_reset_hash(t) != idm_reset_hash(t2))
+    // Хешът не е самият токен (не пазим тайната в базата).
+    assert_true("hash_not_token", idm_reset_hash(t) != t)
+    return 0
+}
+
+fn mail_test_ports() -> i64 !IO {
+    // Портът следва режима — класическа грешка е 465 за STARTTLS.
+    assert_eq_i64("port_plain", mail_default_port(SMTP_PLAIN()), 25)
+    assert_eq_i64("port_starttls", mail_default_port(SMTP_STARTTLS()), 587)
+    assert_eq_i64("port_tls", mail_default_port(SMTP_TLS()), 465)
+
+    // Без SMTP_HOST пощата е изключена — приложението работи и без нея.
+    assert_eq_i64("mail_disabled_by_default", mail_enabled(), 0)
+    return 0
+}
+
+fn mail_test_lower() -> i64 !IO {
+    // mail_lower не бива да пипа не-ASCII (кирилица, цифри, символи).
+    assert_eq_str("lower_mixed", mail_lower("StartTLS"), "starttls")
+    assert_eq_str("lower_upper", mail_lower("PLAIN"), "plain")
+    assert_eq_str("lower_cyr", mail_lower("ПЛЕЙН"), "ПЛЕЙН")
+    assert_eq_str("lower_already", mail_lower("tls"), "tls")
+    return 0
+}
+
+fn mail_test_texts() -> i64 !IO {
+    // Reset писмото трябва да съдържа линка и TTL-а — иначе е безполезно.
+    let link = "http://example.test/reset?token=abc123"
+    let reset = mt_reset_text(link, 60)
+    assert_true("reset_text_link", str_find(reset, link) >= 0)
+    assert_true("reset_text_ttl", str_find(reset, "60") >= 0)
+    assert_true("reset_text_once", str_find(reset, "веднъж") >= 0)
+
+    // Welcome писмото съдържа имейла и линка за вход.
+    let welcome = mt_welcome_text("new@example.test", "http://example.test/login")
+    assert_true("welcome_email", str_find(welcome, "new@example.test") >= 0)
+    assert_true("welcome_link", str_find(welcome, "/login") >= 0)
+    // Паролата НЕ бива да се споменава като изпратена — само като линк.
+    assert_true("welcome_no_password", str_find(welcome, "парола") < 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    mail_test_payload()?
+    mail_test_token_hash()?
+    mail_test_ports()?
+    mail_test_lower()?
+    mail_test_texts()?
+    print("mail_test: all passed")
+    return 0
+}

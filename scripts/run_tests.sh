@@ -413,6 +413,19 @@ else
 	exit 1
 fi
 
+echo "=== поща (Фаза 6.3: reset токени, mail payload, текстове) ==="
+# Чистите части на пощата — без база и без мрежа. Проверяват хеша на
+# reset токена, JSON payload-а на фоновата задача и порта по TLS режим.
+RC=0
+run -I app-product/7x7office/secp tests/mail_test.baga > /tmp/baga_mail_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "mail_test: all passed" /tmp/baga_mail_out.txt; then
+	echo "OK: поща — reset токени + mail payload + текстове"
+else
+	echo "FAIL: mail_test"
+	cat /tmp/baga_mail_out.txt
+	exit 1
+fi
+
 echo "=== boilaDB SSL (SSLRequest → 'S' → TLS 1.3 → PG wire) ==="
 # Сървърът отговаря 'S' само при зададени BOILA_TLS_CERT/BOILA_TLS_KEY
 # (иначе 'N' — виж другите тестове); клиентът пита само при PGSSLMODE
@@ -482,7 +495,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done
