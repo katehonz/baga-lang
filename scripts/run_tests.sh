@@ -439,6 +439,27 @@ else
 	exit 1
 fi
 
+# Файловият скоуп по workspace (Фаза 2) — интеграционно, на живо срещу
+# построения secp и Postgres. Покрива това, което `baga` не може: рутиране,
+# JWT, миграции, boot backfill и изчистване на дървото при триене. Пуска се
+# само ако `target/secp` е бил построен (иначе `make test` би изисквал
+# `sandak build`, което не е нужно за чистите езикови тестове).
+SECP_BIN="$ROOT/app-product/7x7office/secp/target/secp"
+if [[ -x "$SECP_BIN" ]]; then
+	echo "=== workspaces × файлове (жива PG + secp: скоуп, роли, backfill, purge) ==="
+	RC=0
+	bash "$ROOT/app-product/7x7office/secp/tools/ws_files_smoke.sh" > /tmp/baga_ws_files_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "ws_files_smoke: all passed" /tmp/baga_ws_files_out.txt; then
+		echo "OK: workspaces файлове — скоуп по пространство, роли, backfill, изчистване"
+	else
+		echo "FAIL: ws_files_smoke"
+		cat /tmp/baga_ws_files_out.txt
+		exit 1
+	fi
+else
+	echo "SKIP: ws_files_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+fi
+
 echo "=== boilaDB SSL (SSLRequest → 'S' → TLS 1.3 → PG wire) ==="
 # Сървърът отговаря 'S' само при зададени BOILA_TLS_CERT/BOILA_TLS_KEY
 # (иначе 'N' — виж другите тестове); клиентът пита само при PGSSLMODE

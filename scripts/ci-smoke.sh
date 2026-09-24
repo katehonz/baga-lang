@@ -54,6 +54,11 @@ run -I app-product/7x7office/secp tests/mail_test.baga
 echo "=== workspaces (Фаза 2: роли, нива, slug) ==="
 run -I app-product/7x7office/secp tests/ws_roles_test.baga
 
+# Интеграционният тест за файлове по пространство иска жив Postgres и
+# построен secp — в CI средата ги няма (виж scripts/run_tests.sh, където се
+# пуска при наличен target/secp). Тук само проверяваме, че не е изчезнал.
+need app-product/7x7office/secp/tools/ws_files_smoke.sh
+
 echo "=== filesize-global ==="
 bash "$ROOT/scripts/filesize-global.sh"
 
