@@ -25,6 +25,7 @@ need() {
 need app-product/httpdbaga/http.baga
 need app-product/jwtbaga/jwt.baga
 need app-product/otpbaga/otp.baga
+need app-product/smtpbaga/smtp.baga
 
 echo "=== examples ==="
 run examples/zdravei.baga
@@ -38,11 +39,12 @@ run --lib app-product/jwtbaga/jwt.baga | grep -q "ok:"
 # -I flags must precede --check/--lib (otherwise the next token is the file).
 echo "OK: --check httpdbaga, --lib jwtbaga"
 
-echo "=== hmac / sha1 / jwt / otp ==="
+echo "=== hmac / sha1 / jwt / otp / smtp ==="
 run tests/std/hmac_test.baga
 run tests/std/sha1_test.baga
 run tests/jwt_test.baga
 run tests/otp_test.baga
+run tests/smtp_test.baga
 
 echo "=== filesize-global ==="
 bash "$ROOT/scripts/filesize-global.sh"

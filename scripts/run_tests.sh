@@ -398,6 +398,21 @@ run_tls_sclient() {
 run_tls_sclient "RSA" /tmp/baga_tls_rsa_key.pem /tmp/baga_tls_rsa_cert.pem
 run_tls_sclient "ECDSA-P256" /tmp/baga_tls_ec_key.pem /tmp/baga_tls_ec_cert.pem
 
+echo "=== smtpbaga (mock SMTP: plain + STARTTLS/AUTH) ==="
+# Пакетът има собствен mock сървър в теста, така че не трябва реален
+# доставчик. Сертификатът е същият, който TLS тестовете вече правят —
+# така STARTTLS пътят се покрива на всяко `make test`.
+RC=0
+TLSKEYPATH=/tmp/baga_tls_rsa_key.pem TLSCERTPATH=/tmp/baga_tls_rsa_cert.pem \
+	run tests/smtp_test.baga > /tmp/baga_smtp_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "smtp_test: all passed" /tmp/baga_smtp_out.txt; then
+	echo "OK: smtpbaga — plain + STARTTLS + AUTH LOGIN срещу mock сървър"
+else
+	echo "FAIL: smtp_test"
+	cat /tmp/baga_smtp_out.txt
+	exit 1
+fi
+
 echo "=== boilaDB SSL (SSLRequest → 'S' → TLS 1.3 → PG wire) ==="
 # Сървърът отговаря 'S' само при зададени BOILA_TLS_CERT/BOILA_TLS_KEY
 # (иначе 'N' — виж другите тестове); клиентът пита само при PGSSLMODE
@@ -467,7 +482,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

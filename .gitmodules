@@ -145,3 +145,6 @@
 [submodule "app-product/7x7office"]
 	path = app-product/7x7office
 	url = git@github.com:bagalang/7x7office.git
+[submodule "app-product/smtpbaga"]
+	path = app-product/smtpbaga
+	url = git@github.com:bagalang/smtpbaga.git

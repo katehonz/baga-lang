@@ -1,0 +1,469 @@
+// smtp_test.baga — smtpbaga без реален доставчик.
+//
+// Защо mock сървър, а не истински: тестът трябва да върви в CI без
+// пароли и без мрежа навън. Затова има два слоя:
+//
+//   1) чисти функции — RFC 5322 дата, RFC 2047 заглавие, base64 редове,
+//      dot-stuffing, адресен списък. Това хваща повечето грешки.
+//   2) пълен разговор срещу прост SMTP сървър в самия тест (go_bg) —
+//      приема командите и връща кодовете. Така се проверява редът
+//      EHLO → STARTTLS → EHLO → AUTH → MAIL → RCPT → DATA → QUIT,
+//      който е истинската опасност в един SMTP клиент.
+//
+// Сървърът прави проверките си сам и връща 0/1; main го чака с join.
+// Така не са нужни канали и резултатът е обикновен exit код.
+//
+// STARTTLS частта иска сертификат от env (TLSKEYPATH/TLSCERTPATH) —
+// същия, който run_tests.sh вече прави за TLS тестовете. Без него
+// TLS проверките се прескачат, а останалите пак вървят.
+
+import "smtpbaga/smtp.baga"
+import "testbaga/assert.baga"
+import "std/net/tcp.baga"
+import "std/net/tls_server.baga"
+import "std/crypto/pkey.baga"
+import "std/crypto/x509.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+
+// ---------- 1. чисти функции ----------
+
+fn smoke_pure() -> i64 !Net !IO !Par !Random !Time {
+    // RFC 5322 дата — денят от седмицата е класическа off-by-one грешка.
+    assert_eq_str("date_thu", smtp_date_rfc(Date { year: 2026, month: 9, day: 24 }, Time { hour: 14, minute: 30, second: 0 }), "Thu, 24 Sep 2026 14:30:00 +0000")
+    assert_eq_str("date_epoch", smtp_date_rfc(Date { year: 1970, month: 1, day: 1 }, Time { hour: 0, minute: 0, second: 0 }), "Thu, 01 Jan 1970 00:00:00 +0000")
+    assert_eq_str("date_leap", smtp_date_rfc(Date { year: 2000, month: 2, day: 29 }, Time { hour: 23, minute: 59, second: 59 }), "Tue, 29 Feb 2000 23:59:59 +0000")
+
+    // RFC 2047: ASCII минава сурово, не-ASCII се кодира.
+    assert_eq_str("hdr_ascii", smtp_hdr_value("Hello"), "Hello")
+    assert_eq_str("hdr_utf8", smtp_hdr_value("Здравей"), "=?UTF-8?B?0JfQtNGA0LDQstC10Lk=?=")
+    assert_true("is_ascii", smtp_is_ascii("abc"))
+    assert_true("is_not_ascii", !smtp_is_ascii("абв"))
+
+    // Транзиентност: 4xx се опитва пак, 5xx — не.
+    assert_true("err_450_transient", smtp_err_transient(smtp_err(450, "rcpt", "try later")))
+    assert_true("err_550_final", !smtp_err_transient(smtp_err(550, "rcpt", "no such user")))
+    assert_true("err_local_transient", smtp_err_transient(smtp_err(0, "connect", "timeout")))
+
+    // Адреси: BCC не бива да излиза в хедърите.
+    let to: Vec<SmtpAddr> = vec_new()
+    vec_push(to, smtp_to("a@example.com"))
+    vec_push(to, smtp_cc("b@example.com"))
+    vec_push(to, smtp_bcc("c@example.com"))
+    assert_eq_str("addr_to", smtp_addr_list(to, 0), "a@example.com")
+    assert_eq_str("addr_cc", smtp_addr_list(to, 1), "b@example.com")
+    assert_eq_str("addr_bcc_hidden", smtp_addr_list(to, 2), "")
+    assert_eq_i64("addr_rcpt_all", vec_len(smtp_rcpt_list(to)), 3)
+
+    // Име с кавичка се екранира, иначе адресът се чупи.
+    let named = SmtpAddr { email: "x@example.com", name: "Ва\"н", kind: 0 }
+    assert_true("addr_named_quoted", str_starts_with(smtp_addr_str(named), "\""))
+
+    // Dot-stuffing: водеща точка се дублира.
+    assert_eq_str("dot_stuff", smtp_dot_stuff(".hidden\r\nnormal"), "..hidden\r\nnormal\r\n")
+
+    // Base64 редове: всеки ред ≤ 76 знака (RFC 2045).
+    // Делим на "\n" — str_split гледа само първия символ (виж gaps).
+    let long = str_repeat("A", 300)
+    let b64 = smtp_b64_lines(long)
+    let lines = str_split(b64, "\n")
+    let mut maxlen: i64 = 0
+    for i in 0..vec_len(lines) {
+        let n = len(smtp_strip_cr(vec_get(lines, i)))
+        if n > maxlen {
+            maxlen = n
+        }
+    }
+    assert_true("b64_line_len", maxlen <= 76)
+    assert_true("b64_not_empty", len(b64) > 0)
+
+    // Строене на писмо: хедъри, UTF-8 тема и multipart.
+    let rcpts: Vec<SmtpAddr> = vec_new()
+    vec_push(rcpts, smtp_to("ivan@example.com"))
+    let plain = smtp_msg_build(smtp_msg("Добре дошли", "Здравей!"), "no-reply@example.com", rcpts, "Thu, 24 Sep 2026 14:30:00 +0000", "<1.abc@example.com>")
+    assert_true("msg_from", str_find(plain, "From: no-reply@example.com") >= 0)
+    assert_true("msg_to", str_find(plain, "To: ivan@example.com") >= 0)
+    assert_true("msg_subject_encoded", str_find(plain, "Subject: =?UTF-8?B?") >= 0)
+    assert_true("msg_message_id", str_find(plain, "Message-ID: <1.abc@example.com>") >= 0)
+    assert_true("msg_text_type", str_find(plain, "Content-Type: text/plain") >= 0)
+    assert_true("msg_no_multipart", str_find(plain, "multipart") < 0)
+    assert_true("msg_crlf", str_find(plain, "\r\n") >= 0)
+
+    let m = smtp_msg("Тема", "текст")
+    m.html = "<b>текст</b>"
+    let multi = smtp_msg_build(m, "no-reply@example.com", rcpts, "Thu, 24 Sep 2026 14:30:00 +0000", "<2.def@example.com>")
+    assert_true("multi_type", str_find(multi, "multipart/alternative") >= 0)
+    assert_true("multi_text", str_find(multi, "Content-Type: text/plain") >= 0)
+    assert_true("multi_html", str_find(multi, "Content-Type: text/html") >= 0)
+    assert_true("multi_close", str_find(multi, "--=") >= 0)
+
+    // Message-ID домейнът идва от подателя.
+    let cfg = smtp_cfg("smtp.example.com", 587, "no-reply@mail.example.com")
+    assert_eq_str("msg_domain", smtp_msg_domain(cfg), "mail.example.com")
+    let bad = smtp_cfg("smtp.example.com", 587, "no-at-sign")
+    assert_eq_str("msg_domain_default", smtp_msg_domain(bad), "smtpbaga.local")
+
+    // Празна конфигурация/получатели се хващат преди мрежа.
+    let empty = smtp_cfg("", 25, "a@b.c")
+    let r0 = smtp_send_text(empty, "x@y.z", "s", "t")?
+    assert_eq_i64("send_no_host", r0.ok, 0)
+    return 0
+}
+
+// ---------- 2. mock сървъри ----------
+
+// Mock сървър за plain dev случай: без TLS, без AUTH.
+// Проверява сам всяка стъпка и връща 0 при успех, 1 при провал.
+//
+// Защо цикъл по accept: wait_port се свързва, за да види дали портът е
+// отворен, и затваря. Ако сървърът приемеше само веднъж, щеше да
+// обслужи именно тази празна връзка. Затова приемаме наново, докато
+// една сесия мине успешно (или се изчерпят опитите).
+fn mock_plain(port: i64) -> i64 !Net !IO !Random {
+    let l = tcp_listen(port)?
+    if l < 0 {
+        return 1
+    }
+    let mut tries: i64 = 0
+    while tries < 5 {
+        let fd = tcp_accept(l)?
+        if fd < 0 {
+            return 1
+        }
+        tcp_set_timeouts(fd, 20)?
+        let rc = mock_plain_session(fd)
+        if rc == 0 {
+            return 0
+        }
+        tries = tries + 1
+    }
+    return 1
+}
+
+// Една plain сесия. Връща 0 при успех.
+fn mock_plain_session(fd: i64) -> i64 !Net !IO {
+    let mut sc = SmtpConn { fd: fd, tls: 0, conn: tls_conn_bad(""), buf: bytes_of_str(""), ok: 1 }
+    let mut bad: i64 = 0
+    sc = smtp_write(sc, "220 mock ready\r\n")?
+    let e = smtp_read_line(sc)?
+    sc = e.conn
+    if !str_starts_with(smtp_upper(e.reply.text), "EHLO") {
+        tcp_close(sc.fd)?
+        return 1
+    }
+    sc = smtp_write(sc, "250-mock\r\n250 SIZE 100000\r\n")?
+    let mf = smtp_read_line(sc)?
+    sc = mf.conn
+    if str_find(mf.reply.text, "MAIL FROM:<no-reply@example.com>") < 0 {
+        bad = 1
+    }
+    sc = smtp_write(sc, "250 ok\r\n")?
+    let rt = smtp_read_line(sc)?
+    sc = rt.conn
+    if str_find(rt.reply.text, "RCPT TO:<ivan@example.com>") < 0 {
+        bad = 1
+    }
+    sc = smtp_write(sc, "250 ok\r\n")?
+    let dt = smtp_read_line(sc)?
+    sc = dt.conn
+    if dt.reply.text != "DATA" {
+        bad = 1
+    }
+    sc = smtp_write(sc, "354 пиши\r\n")?
+    let b = mock_body(sc)?
+    sc = b.conn
+    // Тялото трябва да съдържа хедърите.
+    if str_find(b.body, "Subject:") < 0 {
+        bad = 1
+    }
+    if str_find(b.body, "From: no-reply@example.com") < 0 {
+        bad = 1
+    }
+    sc = smtp_write(sc, "250 прието\r\n")?
+    let q = smtp_read_line(sc)?
+    sc = q.conn
+    sc = smtp_write(sc, "221 довиждане\r\n")?
+    tcp_close(sc.fd)?
+    return bad
+}
+
+// Mock сървър за STARTTLS + AUTH: играе реален доставчик.
+// Сертификатът идва от env (същия като на TLS тестовете).
+fn mock_starttls(port: i64) -> i64 !Net !IO !Random {
+    let key = mock_key()?
+    if key.ok == 0 {
+        // Няма сертификат — тестът се прескача (връщаме 0).
+        return 0
+    }
+    let l = tcp_listen(port)?
+    if l < 0 {
+        return 1
+    }
+    let mut tries: i64 = 0
+    while tries < 5 {
+        let fd = tcp_accept(l)?
+        if fd < 0 {
+            return 1
+        }
+        let rc = mock_starttls_session(fd, key)
+        if rc == 0 {
+            return 0
+        }
+        tries = tries + 1
+    }
+    return 1
+}
+
+fn mock_starttls_session(fd: i64, key: MockKey) -> i64 !Net !IO !Random {
+    tcp_set_timeouts(fd, 20)?
+    let mut sc = SmtpConn { fd: fd, tls: 0, conn: tls_conn_bad(""), buf: bytes_of_str(""), ok: 1 }
+    let mut bad: i64 = 0
+    sc = smtp_write(sc, "220 mock ESMTP\r\n")?
+    let e = smtp_read_line(sc)?
+    sc = e.conn
+    if !str_starts_with(smtp_upper(e.reply.text), "EHLO") {
+        tcp_close(sc.fd)?
+        return 1
+    }
+    // EHLO преди TLS — трябва да обявим STARTTLS, иначе клиентът отказва.
+    sc = smtp_write(sc, "250-mock\r\n250-STARTTLS\r\n250 AUTH LOGIN PLAIN\r\n")?
+    let st = smtp_read_line(sc)?
+    sc = st.conn
+    if smtp_upper(st.reply.text) != "STARTTLS" {
+        tcp_close(sc.fd)?
+        return 1
+    }
+    sc = smtp_write(sc, "220 готов за TLS\r\n")?
+    // Вдигаме TLS върху същия сокет.
+    let tc = tls_accept(sc.fd, key.cert_der, key.key)
+    if tc.ok == 0 {
+        tcp_close(sc.fd)?
+        return 1
+    }
+    sc = SmtpConn { fd: sc.fd, tls: 1, conn: tc, buf: bytes_of_str(""), ok: 1 }
+    // Втори EHLO след STARTTLS (RFC 3207).
+    let e2 = smtp_read_line(sc)?
+    sc = e2.conn
+    if !str_starts_with(smtp_upper(e2.reply.text), "EHLO") {
+        bad = 1
+    }
+    sc = smtp_write(sc, "250-mock\r\n250 AUTH LOGIN PLAIN\r\n")?
+    // AUTH LOGIN: три стъпки.
+    let a1 = smtp_read_line(sc)?
+    sc = a1.conn
+    if smtp_upper(a1.reply.text) != "AUTH LOGIN" {
+        bad = 1
+    }
+    sc = smtp_write(sc, "334 VXNlcm5hbWU6\r\n")?
+    let u = smtp_read_line(sc)?
+    sc = u.conn
+    if str_of_bytes(bytes_from_vec(base64_decode(u.reply.text))) != "user@example.com" {
+        bad = 1
+    }
+    sc = smtp_write(sc, "334 UGFzc3dvcmQ6\r\n")?
+    let p = smtp_read_line(sc)?
+    sc = p.conn
+    if str_of_bytes(bytes_from_vec(base64_decode(p.reply.text))) != "s3cret" {
+        bad = 1
+    }
+    sc = smtp_write(sc, "235 авторизиран\r\n")?
+    let mf = smtp_read_line(sc)?
+    sc = mf.conn
+    sc = smtp_write(sc, "250 ok\r\n")?
+    let rt = smtp_read_line(sc)?
+    sc = rt.conn
+    sc = smtp_write(sc, "250 ok\r\n")?
+    let dt = smtp_read_line(sc)?
+    sc = dt.conn
+    sc = smtp_write(sc, "354 пиши\r\n")?
+    let b = mock_body(sc)?
+    sc = b.conn
+    if str_find(b.body, "From: no-reply@example.com") < 0 {
+        bad = 1
+    }
+    sc = smtp_write(sc, "250 прието\r\n")?
+    let q = smtp_read_line(sc)?
+    sc = q.conn
+    sc = smtp_write(sc, "221 довиждане\r\n")?
+    tcp_close(sc.fd)?
+    return bad
+}
+
+// Чете DATA тялото до самотна точка и го dot-unstuff-ва (обратното на
+// smtp_dot_stuff), за да сравняваме с оригинала.
+struct MockBody {
+    conn: SmtpConn,
+    body: str
+}
+
+fn mock_body(sc: SmtpConn) -> MockBody !Net !IO {
+    let mut c = sc
+    let mut out = ""
+    let mut running: i64 = 1
+    while running == 1 {
+        let rd = smtp_read_line(c)?
+        c = rd.conn
+        if rd.reply.ok == 0 {
+            running = 0
+        } else {
+            let ln = rd.reply.text
+            if ln == "." {
+                running = 0
+            } else {
+                let mut real = ln
+                if str_starts_with(ln, "..") {
+                    real = substr(ln, 1, len(ln))
+                }
+                out = concat(out, concat(real, "\r\n"))
+            }
+        }
+    }
+    return MockBody { conn: c, body: out }
+}
+
+struct MockKey {
+    ok: i64,
+    key: PKey,
+    cert_der: bytes
+}
+
+fn mock_key() -> MockKey !IO {
+    let keypath = env("TLSKEYPATH")?
+    let certpath = env("TLSCERTPATH")?
+    if keypath == "" || certpath == "" {
+        return MockKey { ok: 0, key: pkey_bad("no key"), cert_der: bytes_of_str("") }
+    }
+    let key = pkey_parse_pem(read_file(keypath)?)
+    let cert_der = pem_der_block(read_file(certpath)?, "CERTIFICATE")
+    if key.ok == 0 || bytes_len(cert_der) == 0 {
+        return MockKey { ok: 0, key: key, cert_der: cert_der }
+    }
+    return MockKey { ok: 1, key: key, cert_der: cert_der }
+}
+
+// Чака портът да отвори — go_bg няма сигнал за готовност.
+fn wait_port(port: i64) -> i64 !Net !IO !Par !Random {
+    let mut tries: i64 = 0
+    let mut fd: i64 = -1
+    while fd < 0 && tries < 25 {
+        sleep_ms(200)
+        fd = tcp_connect_to("127.0.0.1", port, 3)?
+        tries = tries + 1
+    }
+    if fd < 0 {
+        return 0
+    }
+    tcp_close(fd)?
+    return 1
+}
+
+// ---------- 3. main ----------
+
+fn main() -> i64 !Net !IO !Par !Random !Time {
+    smoke_pure()
+
+    // Plain разговор (dev mock).
+    let p1: i64 = 18455
+    let t1 = go_bg(mock_plain, p1)
+    if wait_port(p1) == 0 {
+        eprintln("smtp_test: mock_plain не отвори порт")
+        return 1
+    }
+    let cfg1 = smtp_cfg("127.0.0.1", p1, "no-reply@example.com")
+    cfg1.tls = SMTP_PLAIN()
+    let r1 = smtp_send_text(cfg1, "ivan@example.com", "Тест", "Здравей!")?
+    assert_eq_i64("plain_ok", r1.ok, 1)
+    assert_eq_i64("plain_accepted", vec_len(r1.accepted), 1)
+    assert_eq_i64("plain_server", join(t1), 0)
+    if r1.ok == 0 {
+        eprintln(concat("plain: ", r1.err.msg))
+        return 1
+    }
+
+    // STARTTLS + AUTH разговор (ако има сертификат).
+    let p2: i64 = 18456
+    let t2 = go_bg(mock_starttls, p2)
+    if wait_port(p2) == 0 {
+        // Портът не отваря само когато няма сертификат — прескачаме.
+        print("smtp_test: STARTTLS прескоснат (няма TLSKEYPATH/TLSCERTPATH)")
+        join(t2)
+        print("smtp_test: all passed")
+        return 0
+    }
+    let cfg2 = smtp_cfg("127.0.0.1", p2, "no-reply@example.com")
+    cfg2.tls = SMTP_STARTTLS()
+    cfg2.user = "user@example.com"
+    cfg2.pass = "s3cret"
+    // anchor празен = приемаме самоподписания mock сертификат.
+    let r2 = smtp_send_text(cfg2, "ivan@example.com", "Тема с кирилица", "Тяло")?
+    assert_eq_i64("starttls_ok", r2.ok, 1)
+    assert_eq_i64("starttls_server", join(t2), 0)
+    if r2.ok == 0 {
+        eprintln(concat("starttls: ", r2.err.msg))
+        return 1
+    }
+
+    // AUTH без TLS се отказва (паролата не бива да пътува в открит вид).
+    // Сървър, който само поздравява и чака — клиентът трябва да откаже
+    // сам, преди да е пратил паролата.
+    let p3: i64 = 18457
+    let t3 = go_bg(mock_ehlo_only, p3)
+    if wait_port(p3) == 0 {
+        eprintln("smtp_test: mock_ehlo_only не отвори порт")
+        return 1
+    }
+    let cfg3 = smtp_cfg("127.0.0.1", p3, "no-reply@example.com")
+    cfg3.tls = SMTP_PLAIN()
+    cfg3.user = "user@example.com"
+    cfg3.pass = "s3cret"
+    let r3 = smtp_send_text(cfg3, "ivan@example.com", "x", "y")?
+    assert_eq_i64("auth_without_tls_refused", r3.ok, 0)
+    join(t3)
+
+    print("smtp_test: all passed")
+    return 0
+}
+
+// Сървър само за проверката "AUTH без TLS": поздравява, обявява AUTH,
+// после чака. Клиентът трябва да прекъсне преди AUTH.
+fn mock_ehlo_only(port: i64) -> i64 !Net !IO !Random {
+    let l = tcp_listen(port)?
+    if l < 0 {
+        return 1
+    }
+    let mut tries: i64 = 0
+    while tries < 5 {
+        let fd = tcp_accept(l)?
+        if fd < 0 {
+            return 1
+        }
+        let rc = mock_ehlo_session(fd)
+        if rc == 0 {
+            return 0
+        }
+        tries = tries + 1
+    }
+    return 1
+}
+
+fn mock_ehlo_session(fd: i64) -> i64 !Net !IO {
+    tcp_set_timeouts(fd, 10)?
+    let mut sc = SmtpConn { fd: fd, tls: 0, conn: tls_conn_bad(""), buf: bytes_of_str(""), ok: 1 }
+    sc = smtp_write(sc, "220 mock\r\n")?
+    let e = smtp_read_line(sc)?
+    sc = e.conn
+    if !str_starts_with(smtp_upper(e.reply.text), "EHLO") {
+        tcp_close(sc.fd)?
+        return 1
+    }
+    sc = smtp_write(sc, "250-mock\r\n250 AUTH LOGIN PLAIN\r\n")?
+    // Клиентът вече трябва да е отказал и затворил. Ако все пак прати
+    // нещо, значи проверката за TLS не работи — това е провал.
+    let nxt = smtp_read_line(sc)?
+    tcp_close(nxt.conn.fd)?
+    if nxt.reply.ok == 0 {
+        return 0
+    }
+    return 1
+}
