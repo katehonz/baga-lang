@@ -66,10 +66,16 @@ run -I app-product/7x7office/secp tests/share_roles_test.baga
 echo "=== activity feed (Фаза 3: verb-ове, таван на meta, limit) ==="
 run -I app-product/7x7office/secp tests/activity_kinds_test.baga
 
+echo "=== WS събития (Фаза 3: verb→event, протокол, изходящи съобщения) ==="
+run -I app-product/7x7office/secp tests/ws_events_test.baga
+
 # Интеграционният тест за файлове по пространство иска жив Postgres и
 # построен secp — в CI средата ги няма (виж scripts/run_tests.sh, където се
 # пуска при наличен target/secp). Тук само проверяваме, че не е изчезнал.
 need app-product/7x7office/secp/tools/ws_files_smoke.sh
+need app-product/7x7office/secp/tools/ws_events_smoke.sh
+need app-product/7x7office/secp/system/ws_events.baga
+need app-product/7x7office/secp/system/ws_gateway_pump.baga
 
 echo "=== filesize-global ==="
 bash "$ROOT/scripts/filesize-global.sh"

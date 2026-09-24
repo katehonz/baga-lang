@@ -1,0 +1,188 @@
+// ws_events_test.baga — събитията по WS канала (Фаза 3). ЧИСТ тест.
+//
+// Без база, без мрежа, без нишки. Проверява се „езикът" на канала:
+//   - всеки verb от activity_kinds.baga има точно едно име на събитие;
+//   - непознат verb НЕ ражда събитие (иначе UI-ът вижда ключ, който не знае);
+//   - изходящите съобщения са ВАЛИДЕН JSON (иначе клиентът хвърля и каналът
+//     изглежда мъртъв, без нищо да е счупено на сървъра);
+//   - таваните се притискат, а не се приемат „каквото дойде" от средата.
+//
+// Защо точно това: каналът е push — грешка тук не се вижда като 500, а като
+// „UI-ът не се обновява". Такива бъгове се хващат само ако формата е
+// проверена извън сървъра.
+import "7x7office/secp/system/ws_events.baga"
+import "7x7office/secp/tree/activity_kinds.baga"
+import "testbaga/assert.baga"
+import "std/json/json_strict.baga"
+import "std/json/json.baga"
+import "std/str/str.baga"
+
+fn ws_test_verbs_map() -> i64 !IO {
+    // Всеки познат verb има име на събитие. Ако някой verb се добави в
+    // activity_kinds без да влезе тук, действието ще се пише в одита, но
+    // никой няма да разбере по канала — точно това е тихият пропуск.
+    assert_eq_str("created", ws_event_of_verb("created"), ws_ev_node_created())
+    assert_eq_str("updated", ws_event_of_verb("updated"), ws_ev_node_updated())
+    assert_eq_str("deleted", ws_event_of_verb("deleted"), ws_ev_node_deleted())
+    assert_eq_str("moved", ws_event_of_verb("moved"), ws_ev_node_moved())
+    assert_eq_str("restored", ws_event_of_verb("restored"), ws_ev_node_restored())
+    assert_eq_str("shared", ws_event_of_verb("shared"), ws_ev_node_shared())
+    assert_eq_str("unshared", ws_event_of_verb("unshared"), ws_ev_node_unshared())
+    assert_eq_str("member_added", ws_event_of_verb("member_added"), ws_ev_member_added())
+    assert_eq_str("member_removed", ws_event_of_verb("member_removed"), ws_ev_member_removed())
+    assert_eq_str("member_updated", ws_event_of_verb("member_updated"), ws_ev_member_updated())
+    assert_eq_str("ws_created", ws_event_of_verb("workspace_created"), ws_ev_ws_created())
+    return 0
+}
+
+fn ws_test_verbs_unknown() -> i64 !IO {
+    // Непознат verb не ражда събитие: по-добре нищо, отколкото суров ключ,
+    // който UI-ът показва или — по-лошо — сменя вида на реда.
+    assert_eq_str("unknown_empty", ws_event_of_verb("hacked"), "")
+    assert_eq_str("unknown_blank", ws_event_of_verb(""), "")
+    // Регистърът е чувствителен: "Created" не е "created" (същото като одита).
+    assert_eq_str("unknown_case", ws_event_of_verb("Created"), "")
+    return 0
+}
+
+fn ws_test_names() -> i64 !IO {
+    // Без дубликати: два verb-а с едно име на събитие правят невъзможно
+    // различаването на „качен" от „преименуван" на клиента.
+    let all = ws_event_names()
+    let n = vec_len(all)
+    assert_eq_i64("names_count", n, 11)
+    let mut i: i64 = 0
+    while i < n {
+        assert_eq_i64(concat("valid_", vec_get(all, i)), ws_event_valid(vec_get(all, i)), 1)
+        let mut j: i64 = i + 1
+        while j < n {
+            if vec_get(all, i) == vec_get(all, j) {
+                assert_eq_i64(concat(concat("dup@", int_to_str(i)), vec_get(all, i)), j, -1)
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    assert_eq_i64("unknown_invalid", ws_event_valid("node.hacked"), 0)
+    assert_eq_i64("empty_invalid", ws_event_valid(""), 0)
+    return 0
+}
+
+fn ws_test_classify() -> i64 !IO {
+    // Файловите събития се разпознават като такива — UI-ът презарежда списъка
+    // само за тях. Ако класификацията сгреши, презареждането или липсва
+    // (файлът не се появява), или е на всеки одит ред (трептене).
+    assert_eq_i64("is_node_created", ws_event_is_node(ws_ev_node_created()), 1)
+    assert_eq_i64("is_node_deleted", ws_event_is_node(ws_ev_node_deleted()), 1)
+    assert_eq_i64("is_node_member", ws_event_is_node(ws_ev_member_added()), 0)
+    assert_eq_i64("is_node_ws", ws_event_is_node(ws_ev_ws_created()), 0)
+    assert_eq_i64("is_node_unknown", ws_event_is_node("hacked"), 0)
+
+    assert_eq_i64("is_member_added", ws_event_is_member(ws_ev_member_added()), 1)
+    assert_eq_i64("is_member_updated", ws_event_is_member(ws_ev_member_updated()), 1)
+    assert_eq_i64("is_member_node", ws_event_is_member(ws_ev_node_created()), 0)
+    return 0
+}
+
+fn ws_test_badge() -> i64 !IO {
+    // „Има ново" се вдига за действия, не за създаване на пространство.
+    assert_eq_i64("badge_created", ws_event_is_badge(ws_ev_node_created()), 1)
+    assert_eq_i64("badge_member", ws_event_is_badge(ws_ev_member_added()), 1)
+    assert_eq_i64("badge_ws_created", ws_event_is_badge(ws_ev_ws_created()), 0)
+    // Непознато събитие не вдига брояч — иначе един сгрешен ред би пратил
+    // потребителя да търси новост, която не съществува.
+    assert_eq_i64("badge_unknown", ws_event_is_badge("hacked"), 0)
+    assert_eq_i64("badge_empty", ws_event_is_badge(""), 0)
+    return 0
+}
+
+fn ws_test_clamps() -> i64 !IO {
+    // Интервалът на опашката.
+    assert_eq_i64("poll_zero", ws_poll_ms_clamp(0), ws_poll_ms_default())
+    assert_eq_i64("poll_negative", ws_poll_ms_clamp(-1), ws_poll_ms_default())
+    assert_eq_i64("poll_mid", ws_poll_ms_clamp(1000), 1000)
+    assert_eq_i64("poll_huge", ws_poll_ms_clamp(999999999), 60000)
+    // Таванът на клиентското съобщение — долната граница е важна: 1 байт
+    // „таван" би отказал и най-малкия subscribe.
+    assert_eq_i64("msg_small", ws_msg_max_clamp(0), ws_msg_max_default())
+    assert_eq_i64("msg_mid", ws_msg_max_clamp(8192), 8192)
+    assert_eq_i64("msg_huge", ws_msg_max_clamp(9999999), 65536)
+    assert_true("msg_default_sane", ws_msg_max_default() >= 1000)
+    // Абонаменти.
+    assert_eq_i64("subs_zero", ws_subs_max_clamp(0), ws_subs_max_default())
+    assert_eq_i64("subs_mid", ws_subs_max_clamp(5), 5)
+    assert_eq_i64("subs_huge", ws_subs_max_clamp(99999), 1000)
+    // Ping.
+    assert_eq_i64("ping_small", ws_ping_ms_clamp(1), ws_ping_ms_default())
+    assert_eq_i64("ping_mid", ws_ping_ms_clamp(60000), 60000)
+    assert_eq_i64("ping_huge", ws_ping_ms_clamp(9999999), 300000)
+    return 0
+}
+
+fn ws_test_proto() -> i64 !IO {
+    // Клиент от друг номер протокол се отказва ЯВНО, вместо да получава
+    // съобщения, които не разбира.
+    assert_eq_i64("proto_current", ws_proto_ok(ws_proto()), 1)
+    assert_eq_i64("proto_zero", ws_proto_ok(0), 0)
+    assert_eq_i64("proto_future", ws_proto_ok(ws_proto() + 1), 0)
+    assert_true("proto_positive", ws_proto() >= 1)
+    return 0
+}
+
+// Всяко изходящо съобщение трябва да е валиден JSON. Ако не е, клиентът
+// хвърля при parse и каналът изглежда мъртъв, а на сървъра няма нищо счупено.
+fn ws_test_json_valid() -> i64 !IO {
+    assert_eq_i64("hello_json", json_strict_valid(ws_msg_hello(7, 42, 1)), 1)
+    assert_eq_i64("subscribed_json", json_strict_valid(ws_msg_subscribed(7)), 1)
+    assert_eq_i64("error_json", json_strict_valid(ws_msg_error("expired", "твърде стар протокол")), 1)
+    assert_eq_i64("pong_json", json_strict_valid(ws_msg_pong()), 1)
+    // `item` е СУРОВ JSON (редът от одита) — ако се вгради като низ, клиентът
+    // получава escape-нат текст вместо обект и не може да го рендира.
+    let item = "{\"id\":1,\"verb\":\"created\",\"path\":\"/a.txt\"}"
+    let ev = ws_msg_event(7, ws_ev_node_created(), item)
+    assert_eq_i64("event_json", json_strict_valid(ev), 1)
+    let d = json_parse(ev)
+    let root = json_root(d)
+    // типът е низ, а item е обект (tag 6), не низ (tag 4)
+    let tn = json_get(d, root, "type")
+    assert_eq_i64("event_type_str", json_tag(d, tn), 4)
+    assert_eq_str("event_type_val", json_str(d, tn), ws_type_event())
+    let inode = json_get(d, root, "item")
+    assert_eq_i64("event_item_obj", json_tag(d, inode), 6)
+    return 0
+}
+
+// Стойностите в съобщенията: клиентът чете точно тези ключове.
+fn ws_test_json_fields() -> i64 !IO {
+    let d = json_parse(ws_msg_hello(7, 123, 1))
+    let root = json_root(d)
+    let wsn = json_get(d, root, "workspace_id")
+    assert_eq_i64("hello_ws", parse_int(json_serialize(d, wsn)), 7)
+    let cn = json_get(d, root, "cursor")
+    assert_eq_i64("hello_cursor", parse_int(json_serialize(d, cn)), 123)
+
+    let e = json_parse(ws_msg_error("expired", "msg"))
+    let eo = json_root(e)
+    let rn = json_get(e, eo, "reason")
+    assert_eq_str("error_reason", json_str(e, rn), "expired")
+
+    let v = json_parse(ws_msg_event(3, ws_ev_node_deleted(), "{}"))
+    let vo = json_root(v)
+    let en = json_get(v, vo, "event")
+    assert_eq_str("event_name", json_str(v, en), ws_ev_node_deleted())
+    return 0
+}
+
+fn main() -> i64 !IO {
+    ws_test_verbs_map()?
+    ws_test_verbs_unknown()?
+    ws_test_names()?
+    ws_test_classify()?
+    ws_test_badge()?
+    ws_test_clamps()?
+    ws_test_proto()?
+    ws_test_json_valid()?
+    ws_test_json_fields()?
+    print("ws_events_test: all passed")
+    return 0
+}

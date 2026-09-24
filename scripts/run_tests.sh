@@ -496,8 +496,23 @@ if [[ -x "$SECP_BIN" ]]; then
 		cat /tmp/baga_ws_files_out.txt
 		exit 1
 	fi
+	# WS gateway-ът (Фаза 3) е ОТДЕЛЕН сокет и отделен цикъл — интеграционен
+	# тест, който pure `baga` тестът (ws_events_test) не може да покрие:
+	# handshake, автентикация, абонамент, излъчване по мрежата, изолация
+	# между пространствата. Проверява се срещу СЪЩИЯ построен secp.
+	echo "=== WS gateway (жив: handshake/401, subscribe, push на събития, изолация, ping) ==="
+	RC=0
+	bash "$ROOT/app-product/7x7office/secp/tools/ws_events_smoke.sh" > /tmp/baga_ws_events_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "ws_events_smoke: all passed" /tmp/baga_ws_events_out.txt; then
+		echo "OK: WS gateway — upgrade 401/404, subscribe/hello, push, изолация, too_large"
+	else
+		echo "FAIL: ws_events_smoke"
+		cat /tmp/baga_ws_events_out.txt
+		exit 1
+	fi
 else
 	echo "SKIP: ws_files_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+	echo "SKIP: ws_events_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 fi
 
 echo "=== boilaDB SSL (SSLRequest → 'S' → TLS 1.3 → PG wire) ==="
