@@ -1,0 +1,8 @@
+[package]
+name = "davbaga"
+version = "0.1.0"
+entry = "dav.baga"
+
+[dependencies]
+std = { path = "../../std" }
+xmlbaga = { path = "../xmlbaga" }

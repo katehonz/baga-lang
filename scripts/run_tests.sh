@@ -513,6 +513,20 @@ if [[ -x "$SECP_BIN" ]]; then
 else
 	echo "SKIP: ws_files_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: ws_events_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+	echo "SKIP: dav_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+fi
+
+if [[ -x "$SECP_BIN" ]]; then
+	echo "=== WebDAV (жив: OPTIONS, MKCOL, PUT, GET, PROPFIND, MOVE, COPY, DELETE) ==="
+	RC=0
+	bash "$ROOT/app-product/7x7office/secp/tools/dav_smoke.sh" > /tmp/baga_dav_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "dav_smoke: all passed" /tmp/baga_dav_out.txt; then
+		echo "OK: WebDAV"
+	else
+		echo "FAIL: dav_smoke"
+		cat /tmp/baga_dav_out.txt
+		exit 1
+	fi
 fi
 
 echo "=== boilaDB SSL (SSLRequest → 'S' → TLS 1.3 → PG wire) ==="

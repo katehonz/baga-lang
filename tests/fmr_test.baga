@@ -85,6 +85,16 @@ fn main() {
     check("path_exists", router_path_exists(r, "/health") == 1)
     let m5 = router_match(r, "GET", "/nope")
     check("no_match_path", m5.ok == 0)
+    let mut rdav = router_new()
+    rdav = router_add(rdav, "PROPFIND", "/dav/{ws}", 8)
+    rdav = router_add(rdav, "PROPFIND", "/dav/{ws}/{*path}", 9)
+    let md0 = router_match(rdav, "PROPFIND", "/dav/2")
+    check("dav_root", md0.ok == 1 && md0.id == 8)
+    let md1 = router_match(rdav, "PROPFIND", "/dav/2/a/b")
+    check("dav_rest", md1.ok == 1 && md1.id == 9)
+    check("dav_ws", vec_get(md1.pvals, 0) == "2")
+    check("dav_path", vec_get(md1.pvals, 1) == "a/b")
+    check("dav_exists", router_path_exists(rdav, "/dav/2/a") == 1)
 
     // --- router fail-loud validation + metadata ---
     check("validate_ok", router_validate(r) == "")

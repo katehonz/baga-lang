@@ -1,0 +1,264 @@
+// dav.baga — WebDAV (RFC 4918) протокол без хранилище.
+//
+// Тук е езикът: Depth, Destination, If-Match, Basic и multistatus XML.
+// Кой файл съществува и кой има право решава приложението (secp).
+
+import "xmlbaga/xml.baga"
+import "std/bytes/bytes.baga"
+import "std/str/str.baga"
+
+fn dav_lower(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c = char_at(s, i)
+        if c >= 65 && c <= 90 {
+            out = concat(out, chr(c + 32))
+        } else {
+            out = concat(out, chr(c))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn dav_depth(h: str) -> i64 {
+    let s = dav_lower(str_trim(h))
+    if s == "" || s == "infinity" {
+        return 0 - 1
+    }
+    if s == "0" {
+        return 0
+    }
+    if s == "1" {
+        return 1
+    }
+    return 0 - 2
+}
+
+// Липсващ Overwrite е T (RFC 4918).
+fn dav_overwrite(h: str) -> i64 {
+    let s = dav_lower(str_trim(h))
+    if s == "f" {
+        return 0
+    }
+    return 1
+}
+
+fn dav_unquote(s: str) -> str {
+    let t = str_trim(s)
+    if len(t) >= 2 {
+        if char_at(t, 0) == 34 && char_at(t, len(t) - 1) == 34 {
+            return substr(t, 1, len(t) - 1)
+        }
+    }
+    return t
+}
+
+// 1 = условието минава (или го няма). * съвпада с всеки съществуващ etag.
+fn dav_if_match(header: str, etag: str) -> i64 {
+    let h = str_trim(header)
+    if h == "" || h == "*" {
+        return 1
+    }
+    if dav_unquote(h) == etag {
+        return 1
+    }
+    return 0
+}
+
+fn dav_hex(n: i64) -> str {
+    let digits = "0123456789ABCDEF"
+    let hi = n / 16
+    let lo = n % 16
+    return concat(substr(digits, hi, hi + 1), substr(digits, lo, lo + 1))
+}
+
+// Път за href: оставя / и незаетите знаци, останалото е %HH.
+fn dav_href_escape(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c = char_at(s, i)
+        let mut keep: i64 = 0
+        if c >= 48 && c <= 57 { keep = 1 }
+        if c >= 65 && c <= 90 { keep = 1 }
+        if c >= 97 && c <= 122 { keep = 1 }
+        if c == 45 || c == 46 || c == 95 || c == 126 || c == 47 { keep = 1 }
+        if keep == 1 {
+            out = concat(out, chr(c))
+        } else {
+            out = concat(out, concat("%", dav_hex(c)))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Destination е абсолютен URL или абсолютен път. Връща само пътя.
+fn dav_url_path(dest: str) -> str {
+    let s = str_trim(dest)
+    if str_starts_with(s, "/") == 1 {
+        let q = str_find(s, "?")
+        if q >= 0 {
+            return substr(s, 0, q)
+        }
+        return s
+    }
+    let sch = str_find(s, "://")
+    if sch < 0 {
+        return ""
+    }
+    let rest = substr(s, sch + 3, len(s))
+    let sl = str_find(rest, "/")
+    if sl < 0 {
+        return "/"
+    }
+    let path = substr(rest, sl, len(rest))
+    let q = str_find(path, "?")
+    if q >= 0 {
+        return substr(path, 0, q)
+    }
+    return path
+}
+
+struct DavBasic {
+    ok: i64,
+    user: str,
+    pass: str
+}
+
+fn dav_basic(header: str) -> DavBasic {
+    let h = str_trim(header)
+    let low = dav_lower(h)
+    if str_starts_with(low, "basic ") == 0 {
+        return DavBasic { ok: 0, user: "", pass: "" }
+    }
+    let b64 = str_trim(substr(h, 6, len(h)))
+    let raw = str_of_bytes(bytes_from_vec(base64_decode(b64)))
+    let colon = str_find(raw, ":")
+    if colon < 1 {
+        return DavBasic { ok: 0, user: "", pass: "" }
+    }
+    return DavBasic {
+        ok: 1,
+        user: substr(raw, 0, colon),
+        pass: substr(raw, colon + 1, len(raw))
+    }
+}
+
+fn dav_status(code: i64) -> str {
+    if code == 200 { return "HTTP/1.1 200 OK" }
+    if code == 201 { return "HTTP/1.1 201 Created" }
+    if code == 204 { return "HTTP/1.1 204 No Content" }
+    if code == 403 { return "HTTP/1.1 403 Forbidden" }
+    if code == 404 { return "HTTP/1.1 404 Not Found" }
+    if code == 409 { return "HTTP/1.1 409 Conflict" }
+    return concat("HTTP/1.1 ", int_to_str(code))
+}
+
+fn dav_pad2(n: i64) -> str {
+    if n < 10 {
+        return concat("0", int_to_str(n))
+    }
+    return int_to_str(n)
+}
+
+fn dav_wday(i: i64) -> str {
+    if i == 0 { return "Sun" }
+    if i == 1 { return "Mon" }
+    if i == 2 { return "Tue" }
+    if i == 3 { return "Wed" }
+    if i == 4 { return "Thu" }
+    if i == 5 { return "Fri" }
+    return "Sat"
+}
+
+fn dav_mon(m: i64) -> str {
+    if m == 1 { return "Jan" }
+    if m == 2 { return "Feb" }
+    if m == 3 { return "Mar" }
+    if m == 4 { return "Apr" }
+    if m == 5 { return "May" }
+    if m == 6 { return "Jun" }
+    if m == 7 { return "Jul" }
+    if m == 8 { return "Aug" }
+    if m == 9 { return "Sep" }
+    if m == 10 { return "Oct" }
+    if m == 11 { return "Nov" }
+    return "Dec"
+}
+
+// RFC 1123 от epoch секунди. Отрицателно се стяга към 1970.
+fn dav_http_date(epoch: i64) -> str {
+    let mut z = epoch
+    if z < 0 {
+        z = 0
+    }
+    let days = z / 86400
+    let sod = z % 86400
+    let hh = sod / 3600
+    let mm = (sod % 3600) / 60
+    let ss = sod % 60
+    let wd = (days + 4) % 7
+    // civil_from_days (Hinnant): дни от 1970-01-01.
+    let shift = days + 719468
+    let era = shift / 146097
+    let doe = shift - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let mut y = yoe + era * 400
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    let mut m = mp + 3
+    if mp >= 10 {
+        m = mp - 9
+    }
+    if m <= 2 {
+        y = y + 1
+    }
+    let mut s = dav_wday(wd)
+    s = concat(s, concat(", ", dav_pad2(d)))
+    s = concat(s, concat(" ", dav_mon(m)))
+    s = concat(s, concat(" ", int_to_str(y)))
+    s = concat(s, concat(" ", dav_pad2(hh)))
+    s = concat(s, concat(":", dav_pad2(mm)))
+    s = concat(s, concat(":", dav_pad2(ss)))
+    return concat(s, " GMT")
+}
+
+// Един ресурс в multistatus. collection=1 слага <D:collection/>.
+fn dav_response(href: str, name: str, collection: i64, size: i64, mime: str, etag: str, mtime: str) -> str {
+    let mut b = "<D:response><D:href>"
+    b = concat(b, xml_escape_text(dav_href_escape(href)))
+    b = concat(b, "</D:href><D:propstat><D:prop>")
+    b = concat(b, "<D:displayname>")
+    b = concat(b, xml_escape_text(name))
+    b = concat(b, "</D:displayname>")
+    if collection == 1 {
+        b = concat(b, "<D:resourcetype><D:collection/></D:resourcetype>")
+    } else {
+        b = concat(b, "<D:resourcetype/>")
+        b = concat(b, concat("<D:getcontentlength>", concat(int_to_str(size), "</D:getcontentlength>")))
+        if mime != "" {
+            b = concat(b, concat("<D:getcontenttype>", concat(xml_escape_text(mime), "</D:getcontenttype>")))
+        }
+    }
+    if etag != "" {
+        b = concat(b, concat("<D:getetag>&quot;", concat(xml_escape_text(etag), "&quot;</D:getetag>")))
+    }
+    if mtime != "" {
+        b = concat(b, concat("<D:getlastmodified>", concat(xml_escape_text(mtime), "</D:getlastmodified>")))
+    }
+    b = concat(b, "</D:prop><D:status>")
+    b = concat(b, dav_status(200))
+    b = concat(b, "</D:status></D:propstat></D:response>")
+    return b
+}
+
+fn dav_multistatus(inner: str) -> str {
+    let mut b = xml_decl()
+    b = concat(b, "<D:multistatus xmlns:D=\"DAV:\">")
+    b = concat(b, inner)
+    return concat(b, "</D:multistatus>")
+}

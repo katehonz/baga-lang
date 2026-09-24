@@ -72,11 +72,15 @@ run -I app-product/7x7office/secp tests/ws_events_test.baga
 echo "=== чат стая (Фаза 3: празен текст, таван, ключ) ==="
 run tests/chat_room_test.baga
 
+echo "=== WebDAV протокол (Фаза 4: Depth, Destination, XML) ==="
+run tests/dav_test.baga
+
 # Интеграционният тест за файлове по пространство иска жив Postgres и
 # построен secp — в CI средата ги няма (виж scripts/run_tests.sh, където се
 # пуска при наличен target/secp). Тук само проверяваме, че не е изчезнал.
 need app-product/7x7office/secp/tools/ws_files_smoke.sh
 need app-product/7x7office/secp/tools/ws_events_smoke.sh
+need app-product/7x7office/secp/tools/dav_smoke.sh
 need app-product/7x7office/secp/system/ws_events.baga
 need app-product/7x7office/secp/system/ws_gateway_pump.baga
 

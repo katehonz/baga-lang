@@ -1,0 +1,58 @@
+// dav_test.baga — протоколът на davbaga, без мрежа и без база.
+import "davbaga/dav.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn test_depth() -> i64 !IO {
+    assert_eq_i64("empty", dav_depth(""), 0 - 1)
+    assert_eq_i64("inf", dav_depth("infinity"), 0 - 1)
+    assert_eq_i64("zero", dav_depth("0"), 0)
+    assert_eq_i64("one", dav_depth("1"), 1)
+    assert_eq_i64("junk", dav_depth("2"), 0 - 2)
+    return 0
+}
+
+fn test_dest() -> i64 !IO {
+    assert_eq_str("abs", dav_url_path("http://127.0.0.1:8085/dav/2/a/b.txt"), "/dav/2/a/b.txt")
+    assert_eq_str("path", dav_url_path("/dav/2/a"), "/dav/2/a")
+    assert_eq_str("query", dav_url_path("/dav/2/a?x=1"), "/dav/2/a")
+    assert_eq_i64("over_default", dav_overwrite(""), 1)
+    assert_eq_i64("over_f", dav_overwrite("F"), 0)
+    return 0
+}
+
+fn test_match() -> i64 !IO {
+    assert_eq_i64("none", dav_if_match("", "abc"), 1)
+    assert_eq_i64("star", dav_if_match("*", "abc"), 1)
+    assert_eq_i64("quoted", dav_if_match("\"abc\"", "abc"), 1)
+    assert_eq_i64("other", dav_if_match("\"no\"", "abc"), 0)
+    return 0
+}
+
+fn test_date() -> i64 !IO {
+    assert_eq_str("epoch", dav_http_date(0), "Thu, 01 Jan 1970 00:00:00 GMT")
+    assert_eq_str("day", dav_http_date(86400), "Fri, 02 Jan 1970 00:00:00 GMT")
+    return 0
+}
+
+fn test_xml() -> i64 !IO {
+    let one = dav_response("/dav/2/a b", "a & b", 0, 3, "text/plain", "abc", "")
+    assert_true("href", str_find(one, "/dav/2/a%20b") >= 0)
+    assert_true("name", str_find(one, "a &amp; b") >= 0)
+    assert_true("len", str_find(one, ">3<") >= 0)
+    assert_true("etag", str_find(one, "abc") >= 0)
+    let ms = dav_multistatus(one)
+    assert_true("root", str_find(ms, "xmlns:D=\"DAV:\"") >= 0)
+    assert_true("status", str_find(ms, "HTTP/1.1 200 OK") >= 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    test_depth()?
+    test_dest()?
+    test_match()?
+    test_date()?
+    test_xml()?
+    print("dav_test: all passed")
+    return 0
+}
