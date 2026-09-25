@@ -20,6 +20,7 @@ typedef struct {
 typedef struct {
     char name[128]; char version[64]; char entry[512];
     int is_lib;
+    int rc;            /* [package] rc = true → baga --rc (refcount памет) */
     Dep deps[64]; int n_deps;
     char dir[512];
     char src_git[512];   /* git URL, ако пакетът идва от git dep; "" иначе */
@@ -157,6 +158,10 @@ void parse_manifest(const char *path, Manifest *m) {
                 if (strcmp(sv, "bin") == 0) m->is_lib = 0;
                 else if (strcmp(sv, "lib") != 0) die("%s:%d: kind трябва да е \"bin\" или \"lib\"", path, lineno);
             }
+            else if (strcmp(key, "rc") == 0) {
+                if (strcmp(val, "true") == 0) m->rc = 1;
+                else if (strcmp(val, "false") != 0) die("%s:%d: rc трябва да е true или false", path, lineno);
+            }
             else die("%s:%d: непознато поле в [package]: '%s'", path, lineno, key);
         } else if (section == 2) {
             if (m->n_deps >= 64) die("%s: твърде много зависимости (max 64)", path);
@@ -262,6 +267,7 @@ static void cmd_manifest(void) {
     printf("name=%s\nversion=%s\n", m.name, m.version);
     if (m.entry[0]) printf("entry=%s\n", m.entry);
     printf("kind=%s\n", m.is_lib ? "lib" : "bin");
+    if (m.rc) printf("rc=true\n");
     for (int i = 0; i < m.n_deps; i++) {
         Dep *d = &m.deps[i];
         printf("dep=%s %s=%s\n", d->name,
@@ -577,7 +583,8 @@ static void cmd_build(int run_after, int argc, char **argv) {
     char cfile[1024], bin[1024], shim_o[1024];
     snprintf(cfile, sizeof cfile, "target/%s.c", root->name);
     snprintf(bin, sizeof bin, "target/%s", root->name);
-    snprintf(cmd, sizeof cmd, "'%s'%s --emit-c '%s' > '%s'", baga, inc, entry, cfile);
+    snprintf(cmd, sizeof cmd, "'%s'%s%s --emit-c '%s' > '%s'", baga, inc,
+             root->rc ? " --rc" : "", entry, cfile);
     run(cmd);
 
     /* optional native C shim (e.g. Wasmtime C API bridge) */
