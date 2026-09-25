@@ -478,6 +478,18 @@ else
 	exit 1
 fi
 
+# Админ отчети (Фаза 6) — форматът и колоните са договорът между файла и UI-а.
+# Грешен verb-стълб би показал чужд брой под грешно име.
+RC=0
+run -I app-product/7x7office/secp tests/report_sheet_test.baga > /tmp/baga_report_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "report_sheet_test: all passed" /tmp/baga_report_out.txt; then
+	echo "OK: reports — формат, език, колони по verb, броене"
+else
+	echo "FAIL: report_sheet_test"
+	cat /tmp/baga_report_out.txt
+	exit 1
+fi
+
 # Файловият скоуп по workspace + Фаза 3 (ACL, линкове, activity) —
 # интеграционно, на живо срещу построения secp и Postgres. Покрива това,
 # което `baga` не може: рутиране, JWT, миграции, boot backfill и изчистване
@@ -514,6 +526,7 @@ else
 	echo "SKIP: ws_files_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: ws_events_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: dav_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+	echo "SKIP: report_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 fi
 
 if [[ -x "$SECP_BIN" ]]; then
@@ -525,6 +538,16 @@ if [[ -x "$SECP_BIN" ]]; then
 	else
 		echo "FAIL: dav_smoke"
 		cat /tmp/baga_dav_out.txt
+		exit 1
+	fi
+	echo "=== админ отчети (жив: 401/403, място, активност, csv/xlsx/html/pdf/ods) ==="
+	RC=0
+	bash "$ROOT/app-product/7x7office/secp/tools/report_smoke.sh" > /tmp/baga_report_smoke_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "report_smoke: all passed" /tmp/baga_report_smoke_out.txt; then
+		echo "OK: reports — място, активност, файлове"
+	else
+		echo "FAIL: report_smoke"
+		cat /tmp/baga_report_smoke_out.txt
 		exit 1
 	fi
 fi
@@ -598,7 +621,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

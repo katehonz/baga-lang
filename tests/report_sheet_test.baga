@@ -1,0 +1,95 @@
+// report_sheet_test.baga — админ отчети: формат, заглавия, броене на verb-ове.
+// Без база. Колоните на активността трябва да следват activity_verbs(),
+// иначе файлът и JSON-ът се разминават с лентата.
+
+import "7x7office/secp/reports/sheet.baga"
+import "7x7office/secp/tree/activity_kinds.baga"
+import "testbaga/assert.baga"
+
+fn report_test_format() -> i64 !IO {
+    assert_eq_str("norm_empty", report_format_norm(""), report_format_json())
+    assert_eq_str("norm_xlsx", report_format_norm("xlsx"), "xlsx")
+    assert_eq_i64("ok_json", report_format_ok(report_format_json()), 1)
+    assert_eq_i64("ok_csv", report_format_ok(report_format_csv()), 1)
+    assert_eq_i64("ok_xlsx", report_format_ok(report_format_xlsx()), 1)
+    assert_eq_i64("ok_ods", report_format_ok(report_format_ods()), 1)
+    assert_eq_i64("ok_html", report_format_ok(report_format_html()), 1)
+    assert_eq_i64("ok_pdf", report_format_ok(report_format_pdf()), 1)
+    assert_eq_i64("ok_bad", report_format_ok("exe"), 0)
+    assert_eq_i64("ok_upper", report_format_ok("XLSX"), 0)
+    assert_eq_i64("file_json", report_format_is_file(report_format_json()), 0)
+    assert_eq_i64("file_empty", report_format_is_file(""), 0)
+    assert_eq_i64("file_xlsx", report_format_is_file(report_format_xlsx()), 1)
+    assert_eq_i64("io_pdf", report_format_needs_io(report_format_pdf()), 1)
+    assert_eq_i64("io_csv", report_format_needs_io(report_format_csv()), 0)
+    assert_eq_str("mime_pdf", report_format_mime(report_format_pdf()), "application/pdf")
+    assert_eq_str("mime_json", report_format_mime(report_format_json()), "application/json")
+    assert_eq_str("name", report_filename(report_kind_storage(), report_format_xlsx()), "storage_report.xlsx")
+    return 0
+}
+
+fn report_test_lang() -> i64 !IO {
+    assert_eq_str("lang_bg", report_lang(""), "bg")
+    assert_eq_str("lang_en", report_lang("en"), "en")
+    assert_eq_str("lang_de", report_lang("de"), "de")
+    assert_eq_str("lang_ru", report_lang("ru"), "ru")
+    assert_eq_str("lang_junk", report_lang("EN"), "bg")
+    assert_eq_str("title_bg", report_storage_title("bg"), "Място по пространство")
+    assert_eq_str("title_en", report_storage_title("en"), "Storage by workspace")
+    assert_eq_str("hdr_name_bg", report_storage_header("bg", 1), "Име")
+    assert_eq_str("hdr_name_en", report_storage_header("en", 1), "Name")
+    assert_eq_str("hdr_slug_de", report_storage_header("de", 2), "Kürzel")
+    assert_ne_str("hdr_name_diff", report_storage_header("bg", 1), report_storage_header("en", 1))
+    assert_eq_str("act_total_bg", report_activity_header("bg", 2), "Общо")
+    assert_eq_str("act_total_en", report_activity_header("en", 2), "Total")
+    return 0
+}
+
+fn report_test_columns() -> i64 !IO {
+    assert_eq_i64("storage_cols", report_storage_cols(), 7)
+    assert_eq_str("storage_last", report_storage_header("en", 6), "Members")
+    assert_eq_str("storage_past", report_storage_header("en", 7), "")
+    let verbs = report_activity_verb_n()
+    assert_eq_i64("verb_n", verbs, vec_len(activity_verbs()))
+    assert_eq_i64("act_cols", report_activity_cols(), 3 + verbs)
+    assert_eq_str("verb0", report_activity_header("ru", 3), activity_verb_created())
+    assert_eq_str("verb_fn", report_activity_verb(0), activity_verb_created())
+    assert_eq_str("verb_past", report_activity_verb(verbs), "")
+    assert_eq_str("verb_neg", report_activity_verb(-1), "")
+    let mut i: i64 = 0
+    while i < verbs {
+        assert_eq_str(concat("col_", int_to_str(i)), report_activity_header("en", i + 3), vec_get(activity_verbs(), i))
+        i = i + 1
+    }
+    return 0
+}
+
+fn report_test_tally() -> i64 !IO {
+    let verbs = vec_new()
+    vec_push(verbs, activity_verb_created())
+    vec_push(verbs, activity_verb_created())
+    vec_push(verbs, activity_verb_updated())
+    vec_push(verbs, "nope")
+    let counts = report_tally(verbs)
+    assert_eq_i64("tally_len", vec_len(counts), report_activity_verb_n())
+    assert_eq_i64("tally_total", report_tally_total(counts), 3)
+    assert_eq_i64("tally_created", vec_get(counts, report_verb_slot(activity_verb_created())), 2)
+    assert_eq_i64("tally_updated", vec_get(counts, report_verb_slot(activity_verb_updated())), 1)
+    assert_eq_i64("tally_deleted", vec_get(counts, report_verb_slot(activity_verb_deleted())), 0)
+    assert_eq_i64("slot_bad", report_verb_slot("nope"), -1)
+    let set = report_count_set(report_counts_new(), activity_verb_shared(), 4)
+    assert_eq_i64("set_shared", vec_get(set, report_verb_slot(activity_verb_shared())), 4)
+    assert_eq_i64("set_total", report_tally_total(set), 4)
+    let ignored = report_count_set(set, "nope", 9)
+    assert_eq_i64("set_ignore", report_tally_total(ignored), 4)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    report_test_format()?
+    report_test_lang()?
+    report_test_columns()?
+    report_test_tally()?
+    print("report_sheet_test: all passed")
+    return 0
+}
