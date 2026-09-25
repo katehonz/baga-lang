@@ -151,3 +151,6 @@
 [submodule "app-product/davbaga"]
 	path = app-product/davbaga
 	url = git@github.com:bagalang/davbaga.git
+[submodule "app-product/s3baga"]
+	path = app-product/s3baga
+	url = git@github.com:bagalang/s3baga.git
