@@ -86,6 +86,9 @@ run -I app-product/7x7office/secp tests/secp_guard_test.baga
 echo "=== маршрути (Фаза 0: public, шаблони) ==="
 run -I app-product/7x7office/secp tests/secp_routes_test.baga
 
+echo "=== качване (Фаза 1: multipart, offset) ==="
+run tests/upload_test.baga
+
 echo "=== WS събития (Фаза 3: verb→event, протокол, изходящи съобщения) ==="
 run -I app-product/7x7office/secp tests/ws_events_test.baga
 

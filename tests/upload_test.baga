@@ -1,0 +1,126 @@
+// upload_test.baga — multipart и Upload-Offset (Фаза 1). Без база.
+// Дискът е само /tmp: черновата се пише на offset и се чете обратно.
+
+import "7x7office/secp/tree/upload.baga"
+import "7x7office/secp/tree/upload_disk.baga"
+import "testbaga/assert.baga"
+import "std/bytes/bytes.baga"
+
+fn crlf() -> str {
+    return "\r\n"
+}
+
+fn up_test_step() -> i64 !IO {
+    let ok = up_step(0, 5, 0, 2, 100)
+    assert_eq_i64("part_status", ok.status, 200)
+    assert_eq_i64("part_off", ok.offset, 2)
+    assert_eq_i64("part_done", ok.done, 0)
+    let fin = up_step(2, 5, 2, 3, 100)
+    assert_eq_i64("fin_status", fin.status, 201)
+    assert_eq_i64("fin_done", fin.done, 1)
+    assert_eq_i64("fin_off", fin.offset, 5)
+    let gap = up_step(2, 5, 4, 1, 100)
+    assert_eq_i64("gap", gap.status, 409)
+    assert_eq_i64("gap_have", gap.offset, 2)
+    let over = up_step(0, 5, 0, 6, 100)
+    assert_eq_i64("over", over.status, 400)
+    let empty = up_step(0, 0, 0, 0, 100)
+    assert_eq_i64("empty", empty.status, 400)
+    let big = up_step(0, 50, 0, 1, 10)
+    assert_eq_i64("big", big.status, 413)
+    let open = up_step(0, 5, 0, 0, 100)
+    assert_eq_i64("open", open.status, 200)
+    assert_eq_i64("open_off", open.offset, 0)
+    return 0
+}
+
+fn up_test_meta() -> i64 !IO {
+    let id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert_eq_i64("id_ok", up_id_ok(id), 1)
+    assert_eq_i64("id_short", up_id_ok("abcd"), 0)
+    assert_eq_i64("id_slash", up_id_ok("../aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 0)
+    assert_eq_i64("path_root", up_path_ok("/"), 0)
+    assert_eq_i64("path_nl", up_path_ok("/a\nb"), 0)
+    let text = up_meta_text(3, 9, 5, 2, "/docs/a.txt")
+    let m = up_meta_parse(text)
+    assert_eq_i64("meta_ok", m.ok, 1)
+    assert_eq_i64("meta_ws", m.ws, 3)
+    assert_eq_i64("meta_owner", m.owner, 9)
+    assert_eq_i64("meta_len", m.length, 5)
+    assert_eq_i64("meta_off", m.offset, 2)
+    assert_eq_str("meta_path", m.path, "/docs/a.txt")
+    assert_eq_i64("meta_bad", up_meta_parse("1\n2").ok, 0)
+    return 0
+}
+
+fn up_form(name: str, filename: str, body: str) -> str {
+    let head = concat("--bnd", crlf())
+    let disp = concat("Content-Disposition: form-data; name=\"", name)
+    let disp2 = concat(disp, "\"; filename=\"")
+    let disp3 = concat(concat(disp2, filename), "\"")
+    let top = concat(concat(concat(head, disp3), crlf()), crlf())
+    return concat(concat(top, body), concat(crlf(), "--bnd--"))
+}
+
+fn up_test_form() -> i64 !IO {
+    assert_eq_str("bnd", up_boundary("multipart/form-data; boundary=bnd"), "bnd")
+    assert_eq_str("bnd_q", up_boundary("Multipart/form-data; boundary=\"bnd\""), "bnd")
+    assert_eq_str("bnd_no", up_boundary("text/plain"), "")
+    let raw = up_form("file", "a.txt", "hello")
+    let part = up_part(bytes_of_str(raw), "bnd")
+    assert_eq_i64("part_ok", part.ok, 1)
+    assert_eq_str("part_name", part.filename, "a.txt")
+    assert_eq_str("part_body", str_of_bytes(part.body), "hello")
+    let note = concat(concat(concat("--bnd", crlf()), "Content-Disposition: form-data; name=\"note\""), crlf())
+    let note2 = concat(concat(note, crlf()), "hi")
+    let note3 = concat(note2, concat(crlf(), up_form("file", "b.bin", "Z")))
+    let second = up_part(bytes_of_str(note3), "bnd")
+    assert_eq_i64("skip_ok", second.ok, 1)
+    assert_eq_str("skip_name", second.filename, "b.bin")
+    assert_eq_str("skip_body", str_of_bytes(second.body), "Z")
+    let mut mid = bytes_new(3)
+    bytes_set(mid, 0, 0)
+    bytes_set(mid, 1, 65)
+    bytes_set(mid, 2, 255)
+    let wrapped = bytes_concat(bytes_of_str(concat(concat(concat("--bnd", crlf()), "Content-Disposition: form-data; filename=\"n.bin\""), concat(crlf(), crlf()))), mid)
+    let wrapped2 = bytes_concat(wrapped, bytes_of_str(concat(crlf(), "--bnd--")))
+    let bin = up_part(wrapped2, "bnd")
+    assert_eq_i64("nul_ok", bin.ok, 1)
+    assert_eq_i64("nul_len", bytes_len(bin.body), 3)
+    assert_eq_i64("nul0", bytes_at(bin.body, 0), 0)
+    assert_eq_i64("nul1", bytes_at(bin.body, 1), 65)
+    assert_eq_i64("nul2", bytes_at(bin.body, 2), 255)
+    assert_eq_i64("nofile", up_part(bytes_of_str(raw), "other").ok, 0)
+    return 0
+}
+
+fn up_test_disk() -> i64 !IO {
+    let root = "/tmp/secp_upload_test"
+    let id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    up_remove(root, id)?
+    let w1 = up_write_at(root, id, 0, bytes_of_str("hi"))?
+    assert_eq_i64("w1", w1, 0)
+    let w2 = up_write_at(root, id, 2, bytes_of_str("!"))?
+    assert_eq_i64("w2", w2, 0)
+    let got = up_read_part(root, id)?
+    assert_eq_str("disk_body", str_of_bytes(got), "hi!")
+    let mw = up_write_meta(root, id, 4, 8, 3, 3, "/x")?
+    assert_eq_i64("mw", mw, 0)
+    let m = up_read_meta(root, id)?
+    assert_eq_i64("disk_meta", m.ok, 1)
+    assert_eq_i64("disk_ws", m.ws, 4)
+    assert_eq_str("disk_path", m.path, "/x")
+    up_remove(root, id)?
+    let gone = up_read_meta(root, id)?
+    assert_eq_i64("gone", gone.ok, 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    up_test_step()?
+    up_test_meta()?
+    up_test_form()?
+    up_test_disk()?
+    print("upload_test: all passed")
+    return 0
+}

@@ -9,7 +9,7 @@ import "testbaga/assert.baga"
 
 fn secp_routes_test_table() -> i64 !IO {
     let r = secp_routes()
-    assert_eq_i64("count", vec_len(r.ids), 80)
+    assert_eq_i64("count", vec_len(r.ids), 86)
     assert_eq_str("no_dup", router_validate(r), "")
     assert_eq_i64("publics", secp_publics_set(r), 1)
     assert_eq_i64("ids", secp_ids_ok(r), 1)
@@ -24,6 +24,11 @@ fn secp_routes_test_private() -> i64 !IO {
     assert_eq_i64("users_post", secp_flag(r, "POST", "/v1/users"), 0)
     assert_eq_i64("ws", secp_flag(r, "GET", "/v1/workspaces"), 0)
     assert_eq_i64("put", secp_flag(r, "PUT", "/v1/fs/file"), 0)
+    assert_eq_i64("put_id", secp_hit(r, "PUT", "/v1/fs/file"), RID_FS_PUT())
+    assert_eq_i64("form", secp_flag(r, "POST", "/v1/fs/file"), 0)
+    assert_eq_i64("form_id", secp_hit(r, "POST", "/v1/fs/file"), RID_FS_FORM())
+    assert_eq_i64("up", secp_flag(r, "PATCH", "/v1/fs/upload"), 0)
+    assert_eq_i64("up_post", secp_hit(r, "POST", "/v1/fs/upload"), RID_UP_CREATE())
     assert_eq_i64("get", secp_flag(r, "GET", "/v1/fs/file"), 0)
     assert_eq_i64("preview", secp_flag(r, "GET", "/v1/fs/preview"), 0)
     assert_eq_i64("acl", secp_flag(r, "GET", "/v1/fs/acl"), 0)
