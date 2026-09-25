@@ -77,6 +77,9 @@ run -I app-product/7x7office/secp tests/data_seal_test.baga
 echo "=== WOPI (Фаза 7: заключване, CheckFileInfo) ==="
 run tests/wopi_test.baga
 
+echo "=== S3 подпис (Фаза 7: SigV4) ==="
+run tests/s3_sign_test.baga
+
 echo "=== WS събития (Фаза 3: verb→event, протокол, изходящи съобщения) ==="
 run -I app-product/7x7office/secp tests/ws_events_test.baga
 
@@ -95,7 +98,9 @@ need app-product/7x7office/secp/tools/dav_smoke.sh
 need app-product/7x7office/secp/tools/report_smoke.sh
 need app-product/7x7office/secp/tools/crypt_smoke.sh
 need app-product/7x7office/secp/tools/wopi_smoke.sh
+need app-product/7x7office/secp/tools/s3_smoke.sh
 need app-product/wopibaga/wopi.baga
+need app-product/s3baga/s3.baga
 need app-product/7x7office/secp/system/ws_events.baga
 need app-product/7x7office/secp/system/ws_gateway_pump.baga
 

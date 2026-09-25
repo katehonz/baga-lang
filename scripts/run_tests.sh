@@ -513,6 +513,17 @@ else
 	exit 1
 fi
 
+# S3 подпис (Фаза 7). Живият клиент е в s3_smoke; тук е само SigV4.
+RC=0
+run tests/s3_sign_test.baga > /tmp/baga_s3_sign_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "s3_sign_test: all passed" /tmp/baga_s3_sign_out.txt; then
+	echo "OK: s3 — SigV4 дата, ключ, подпис"
+else
+	echo "FAIL: s3_sign_test"
+	cat /tmp/baga_s3_sign_out.txt
+	exit 1
+fi
+
 # Файловият скоуп по workspace + Фаза 3 (ACL, линкове, activity) —
 # интеграционно, на живо срещу построения secp и Postgres. Покрива това,
 # което `baga` не може: рутиране, JWT, миграции, boot backfill и изчистване
@@ -552,6 +563,7 @@ else
 	echo "SKIP: report_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: crypt_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: wopi_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+	echo "SKIP: s3_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 fi
 
 if [[ -x "$SECP_BIN" ]]; then
@@ -593,6 +605,16 @@ if [[ -x "$SECP_BIN" ]]; then
 	else
 		echo "FAIL: wopi_smoke"
 		cat /tmp/baga_wopi_smoke_out.txt
+		exit 1
+	fi
+	echo "=== S3 (жив: SigV4, качване, нулев байт, празен локален диск) ==="
+	RC=0
+	bash "$ROOT/app-product/7x7office/secp/tools/s3_smoke.sh" > /tmp/baga_s3_smoke_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "s3_smoke: all passed" /tmp/baga_s3_smoke_out.txt; then
+		echo "OK: s3 — blob през S3, дискът е празен"
+	else
+		echo "FAIL: s3_smoke"
+		cat /tmp/baga_s3_smoke_out.txt
 		exit 1
 	fi
 fi
@@ -666,7 +688,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga|wopi_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga|wopi_test.baga|s3_sign_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

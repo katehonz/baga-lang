@@ -1,0 +1,240 @@
+// s3.baga — path-style S3 PUT/GET/DELETE/HEAD. Binary bodies stay bytes.
+
+import "sign.baga"
+import "std/net/tcp.baga"
+import "std/net/tls_conn.baga"
+import "std/net/http_client.baga"
+import "std/str/str.baga"
+import "std/bytes/bytes.baga"
+import "std/os/os.baga"
+import "std/time/time.baga"
+
+struct S3Out {
+    ok: i64,
+    status: i64,
+    body: bytes,
+    err: str
+}
+
+fn s3_fail(err: str) -> S3Out {
+    return S3Out { ok: 0, status: 0, body: bytes_new(0), err: err }
+}
+
+fn s3_timeout() -> i64 !IO {
+    let raw = env("S3_TIMEOUT_S")?
+    if raw == "" {
+        return 30
+    }
+    let n = parse_int(raw)
+    if n < 1 {
+        return 30
+    }
+    return n
+}
+
+fn s3_region() -> str !IO {
+    let r = str_trim(env("S3_REGION")?)
+    if r == "" {
+        return "us-east-1"
+    }
+    return r
+}
+
+fn s3_hdr_end(buf: bytes) -> i64 {
+    let n = bytes_len(buf)
+    let mut i: i64 = 0
+    while i + 3 < n {
+        if bytes_at(buf, i) == 13 && bytes_at(buf, i + 1) == 10 && bytes_at(buf, i + 2) == 13 && bytes_at(buf, i + 3) == 10 {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn s3_status_of(line: str) -> i64 {
+    let sp = str_find(line, " ")
+    if sp < 0 {
+        return 0
+    }
+    let rest = substr(line, sp + 1, len(line))
+    let sp2 = str_find(rest, " ")
+    if sp2 < 0 {
+        return parse_int(rest)
+    }
+    return parse_int(substr(rest, 0, sp2))
+}
+
+fn s3_lower(s: str) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let mut c = char_at(s, i)
+        if c >= 65 && c <= 90 {
+            c = c + 32
+        }
+        out = concat(out, chr(c))
+        i = i + 1
+    }
+    return out
+}
+
+fn s3_header_val(head: str, name: str) -> str {
+    let low = s3_lower(head)
+    let key = concat(s3_lower(name), ":")
+    let at = str_find(low, key)
+    if at < 0 {
+        return ""
+    }
+    let rest = substr(head, at + len(key), len(head))
+    let nl = str_find(rest, "\r")
+    if nl < 0 {
+        return str_trim(rest)
+    }
+    return str_trim(substr(rest, 0, nl))
+}
+
+fn s3_parse(buf: bytes) -> S3Out {
+    let end = s3_hdr_end(buf)
+    if end < 0 {
+        return s3_fail("s3: short response")
+    }
+    let head = str_of_bytes(bytes_slice(buf, 0, end))
+    let nl = str_find(head, "\r")
+    let mut line = head
+    if nl >= 0 {
+        line = substr(head, 0, nl)
+    }
+    let status = s3_status_of(line)
+    let mut body = bytes_slice(buf, end + 4, bytes_len(buf))
+    let cl = s3_header_val(head, "content-length")
+    if cl != "" {
+        let n = parse_int(cl)
+        if n >= 0 && n <= bytes_len(body) {
+            body = bytes_slice(body, 0, n)
+        }
+    }
+    return S3Out { ok: 1, status: status, body: body, err: "" }
+}
+
+fn s3_read_tcp(fd: i64) -> bytes !Net !IO {
+    let mut buf = bytes_new(0)
+    let mut reading: i64 = 1
+    while reading == 1 {
+        let chunk = tcp_read_bytes(fd, 8192)?
+        if bytes_len(chunk) == 0 {
+            reading = 0
+        } else {
+            buf = bytes_concat(buf, chunk)
+        }
+    }
+    return buf
+}
+
+fn s3_exchange(url_host: str, https: i64, port: i64, header: str, body: bytes, timeout: i64) -> S3Out !Net !IO !Random {
+    let wire = bytes_concat(bytes_of_str(header), body)
+    if https == 0 {
+        let fd = tcp_connect_to(url_host, port, timeout)?
+        if fd < 0 {
+            return s3_fail("s3: connect failed")
+        }
+        let w = tcp_write_bytes(fd, wire)?
+        if w != 0 {
+            tcp_close(fd)?
+            return s3_fail("s3: write failed")
+        }
+        let buf = s3_read_tcp(fd)?
+        tcp_close(fd)?
+        return s3_parse(buf)
+    }
+    let conn = tls_connect(url_host, port, timeout, bytes_new(0))?
+    if conn.ok == 0 {
+        return s3_fail("s3: tls failed")
+    }
+    let sent = tls_conn_write(conn, wire)?
+    if sent.ok == 0 {
+        tls_conn_close(sent)?
+        return s3_fail("s3: tls write failed")
+    }
+    let rd = tls_conn_read_app(sent)?
+    tls_conn_close(rd.conn)?
+    if rd.conn.ok == 0 && bytes_len(rd.data) == 0 {
+        return s3_fail("s3: tls read failed")
+    }
+    return s3_parse(rd.data)
+}
+
+fn s3_host_header(host: str, port: i64, https: i64) -> str {
+    if https == 1 && port == 443 {
+        return host
+    }
+    if https == 0 && port == 80 {
+        return host
+    }
+    return concat(concat(host, ":"), int_to_str(port))
+}
+
+fn s3_call(method: str, key: str, body: bytes) -> S3Out !Net !IO !Random !Time {
+    let endpoint = str_trim(env("S3_ENDPOINT")?)
+    let bucket = str_trim(env("S3_BUCKET")?)
+    let access = env("S3_ACCESS_KEY")?
+    let secret = env("S3_SECRET_KEY")?
+    if endpoint == "" || bucket == "" || access == "" || secret == "" {
+        return s3_fail("s3: missing S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY or S3_SECRET_KEY")
+    }
+    let u = http_parse_url(endpoint)
+    if u.ok == 0 {
+        return s3_fail("s3: bad S3_ENDPOINT")
+    }
+    let region = s3_region()?
+    let host = s3_host_header(u.host, u.port, u.https)
+    let uri = concat(concat(concat("/", bucket), "/"), key)
+    let amz = s3_amz_date(time_now_ms() / 1000)
+    let ph = s3_payload_hash(body)
+    let auth = s3_authorization(access, secret, region, method, uri, host, amz, ph)
+    let mut h = method
+    h = concat(h, " ")
+    h = concat(h, uri)
+    h = concat(h, " HTTP/1.1\r\nHost: ")
+    h = concat(h, host)
+    h = concat(h, "\r\nx-amz-date: ")
+    h = concat(h, amz)
+    h = concat(h, "\r\nx-amz-content-sha256: ")
+    h = concat(h, ph)
+    h = concat(h, "\r\nAuthorization: ")
+    h = concat(h, auth)
+    h = concat(h, "\r\nContent-Length: ")
+    h = concat(h, int_to_str(bytes_len(body)))
+    h = concat(h, "\r\nConnection: close\r\n\r\n")
+    return s3_exchange(u.host, u.https, u.port, h, body, s3_timeout()?)?
+}
+
+fn s3_put(key: str, body: bytes) -> S3Out !Net !IO !Random !Time {
+    let r = s3_call("PUT", key, body)?
+    if r.ok == 0 {
+        return r
+    }
+    if r.status == 200 || r.status == 204 {
+        return r
+    }
+    return S3Out { ok: 0, status: r.status, body: r.body, err: concat("s3: put ", int_to_str(r.status)) }
+}
+
+fn s3_get(key: str) -> S3Out !Net !IO !Random !Time {
+    return s3_call("GET", key, bytes_new(0))?
+}
+
+fn s3_delete(key: str) -> S3Out !Net !IO !Random !Time {
+    let r = s3_call("DELETE", key, bytes_new(0))?
+    if r.ok == 0 {
+        return r
+    }
+    if r.status == 200 || r.status == 204 || r.status == 404 {
+        return S3Out { ok: 1, status: r.status, body: bytes_new(0), err: "" }
+    }
+    return S3Out { ok: 0, status: r.status, body: r.body, err: concat("s3: delete ", int_to_str(r.status)) }
+}
+
+fn s3_head(key: str) -> S3Out !Net !IO !Random !Time {
+    return s3_call("HEAD", key, bytes_new(0))?
+}

@@ -1,0 +1,45 @@
+// s3_sign_test.baga — AWS SigV4 key and a fixed GET authorization.
+
+import "s3baga/sign.baga"
+import "testbaga/assert.baga"
+import "std/bytes/bytes.baga"
+
+fn s3_test_date() -> i64 !IO {
+    assert_eq_str("epoch0", s3_amz_date(0), "19700101T000000Z")
+    assert_eq_str("day", s3_amz_date(86400), "19700102T000000Z")
+    assert_eq_str("aws", s3_amz_date(1369353600), "20130524T000000Z")
+    assert_eq_str("stamp", s3_date_stamp("20130524T000000Z"), "20130524")
+    assert_eq_str("empty", s3_payload_hash(bytes_new(0)), s3_empty_hash())
+    return 0
+}
+
+fn s3_test_key() -> i64 !IO {
+    let k = s3_signing_key("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20120215", "us-east-1", "iam")
+    assert_eq_str("kSigning", bytes_to_hex(vec_from_bytes(k)), "f4780e2d9f65fa895f9c67b32ce1baf0b0d8a43505a000a1a9e090d414db404d")
+    return 0
+}
+
+fn s3_test_auth() -> i64 !IO {
+    let ph = s3_empty_hash()
+    let a = s3_authorization(
+        "AKIAIOSFODNN7EXAMPLE",
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "us-east-1",
+        "GET",
+        "/test.txt",
+        "examplebucket.s3.amazonaws.com",
+        "20130524T000000Z",
+        ph
+    )
+    assert_true("prefix", str_find(a, "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request") == 0)
+    assert_true("sig", str_find(a, "Signature=df548e2ce037944d03f3e68682813b093763996d597cf890ca3d9037fd231eb4") > 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    s3_test_date()?
+    s3_test_key()?
+    s3_test_auth()?
+    print("s3_sign_test: all passed")
+    return 0
+}
