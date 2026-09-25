@@ -1,0 +1,23 @@
+// secp_guard_test.baga — кой път взима слот от bulkhead-а.
+
+import "system/guard.baga"
+import "testbaga/assert.baga"
+
+fn secp_guard_test_paths() -> i64 !IO {
+    assert_eq_i64("health", secp_guard_exempt("/health"), 1)
+    assert_eq_i64("ready", secp_guard_exempt("/ready"), 1)
+    assert_eq_i64("readyz", secp_guard_exempt("/readyz"), 1)
+    assert_eq_i64("metrics", secp_guard_exempt("/metrics"), 1)
+    assert_eq_i64("meta", secp_guard_exempt("/v1/meta"), 0)
+    assert_eq_i64("probe", secp_guard_verdict("/health", 1, 0), 2)
+    assert_eq_i64("off", secp_guard_verdict("/v1/meta", 0, 0), 2)
+    assert_eq_i64("got", secp_guard_verdict("/v1/meta", 1, 1), 1)
+    assert_eq_i64("full", secp_guard_verdict("/v1/meta", 1, 0), 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    secp_guard_test_paths()?
+    print("secp_guard_test: all passed")
+    return 0
+}

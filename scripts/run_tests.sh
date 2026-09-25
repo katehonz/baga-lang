@@ -524,6 +524,17 @@ else
 	exit 1
 fi
 
+# Bulkhead (Фаза 7) — кой път взима слот. Живият 429 е в otel_smoke.
+RC=0
+run -I app-product/7x7office/secp tests/secp_guard_test.baga > /tmp/baga_guard_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "secp_guard_test: all passed" /tmp/baga_guard_out.txt; then
+	echo "OK: guard — health извън тавана, пълен таван е 0"
+else
+	echo "FAIL: secp_guard_test"
+	cat /tmp/baga_guard_out.txt
+	exit 1
+fi
+
 # Файловият скоуп по workspace + Фаза 3 (ACL, линкове, activity) —
 # интеграционно, на живо срещу построения secp и Postgres. Покрива това,
 # което `baga` не може: рутиране, JWT, миграции, boot backfill и изчистване
@@ -564,6 +575,7 @@ else
 	echo "SKIP: crypt_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: wopi_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: s3_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+	echo "SKIP: otel_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 fi
 
 if [[ -x "$SECP_BIN" ]]; then
@@ -615,6 +627,16 @@ if [[ -x "$SECP_BIN" ]]; then
 	else
 		echo "FAIL: s3_smoke"
 		cat /tmp/baga_s3_smoke_out.txt
+		exit 1
+	fi
+	echo "=== следа и таван (жив: traceparent, 404, OTLP, 429) ==="
+	RC=0
+	bash "$ROOT/app-product/7x7office/secp/tools/otel_smoke.sh" > /tmp/baga_otel_smoke_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "otel_smoke: all passed" /tmp/baga_otel_smoke_out.txt; then
+		echo "OK: otel — traceparent, колектор, bulkhead"
+	else
+		echo "FAIL: otel_smoke"
+		cat /tmp/baga_otel_smoke_out.txt
 		exit 1
 	fi
 fi
@@ -688,7 +710,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga|wopi_test.baga|s3_sign_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga|wopi_test.baga|s3_sign_test.baga|secp_guard_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done
