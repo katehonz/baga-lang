@@ -32,6 +32,7 @@ need app-product/7x7office/secp/tree/acl_roles.baga
 need app-product/7x7office/secp/tree/share_roles.baga
 need app-product/7x7office/secp/tree/activity_kinds.baga
 need app-product/7x7office/secp/reports/sheet.baga
+need app-product/7x7office/secp/data/seal.baga
 
 echo "=== examples ==="
 run examples/zdravei.baga
@@ -70,6 +71,9 @@ run -I app-product/7x7office/secp tests/activity_kinds_test.baga
 echo "=== админ отчети (Фаза 6: формат, колони, броене) ==="
 run -I app-product/7x7office/secp tests/report_sheet_test.baga
 
+echo "=== криптиране на blob (Фаза 7: AES-GCM плик) ==="
+run -I app-product/7x7office/secp tests/data_seal_test.baga
+
 echo "=== WS събития (Фаза 3: verb→event, протокол, изходящи съобщения) ==="
 run -I app-product/7x7office/secp tests/ws_events_test.baga
 
@@ -86,6 +90,7 @@ need app-product/7x7office/secp/tools/ws_files_smoke.sh
 need app-product/7x7office/secp/tools/ws_events_smoke.sh
 need app-product/7x7office/secp/tools/dav_smoke.sh
 need app-product/7x7office/secp/tools/report_smoke.sh
+need app-product/7x7office/secp/tools/crypt_smoke.sh
 need app-product/7x7office/secp/system/ws_events.baga
 need app-product/7x7office/secp/system/ws_gateway_pump.baga
 

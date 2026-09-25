@@ -1,0 +1,66 @@
+// data_seal_test.baga — AES-GCM плик за blob и ключ (Фаза 7).
+// Без база. Грешен ключ, nonce или пространство не връщат текста.
+
+import "7x7office/secp/data/seal.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn seal_fill(n: i64, base: i64) -> bytes {
+    let v: Vec<i64> = vec_new()
+    let mut i: i64 = 0
+    while i < n {
+        vec_push(v, (base + i) & 255)
+        i = i + 1
+    }
+    return bytes_from_vec(v)
+}
+
+fn seal_hex64() -> str {
+    let mut s = ""
+    let mut i: i64 = 0
+    while i < 64 {
+        s = concat(s, "a")
+        i = i + 1
+    }
+    return s
+}
+
+fn seal_test_master() -> i64 !IO {
+    assert_eq_i64("empty", data_master_hex_ok(""), 0)
+    assert_eq_i64("short", data_master_hex_ok("abcd"), 0)
+    assert_eq_i64("ok", data_master_hex_ok(seal_hex64()), 1)
+    assert_eq_i64("bad", data_master_hex_ok(concat(substr(seal_hex64(), 0, 63), "g")), 0)
+    return 0
+}
+
+fn seal_test_roundtrip() -> i64 !IO {
+    let key = seal_fill(32, 1)
+    let nonce = seal_fill(12, 9)
+    let pt = bytes_of_str("здравей")
+    let packed = data_seal_close(key, nonce, data_aad_blob(4), pt)
+    assert_true("packed", bytes_len(packed) >= 30)
+    let opened = data_seal_open(key, packed, data_aad_blob(4))
+    assert_eq_i64("open", opened.ok, 1)
+    assert_eq_str("text", str_of_bytes(opened.pt), "здравей")
+    let other = data_seal_open(key, packed, data_aad_blob(5))
+    assert_eq_i64("aad", other.ok, 0)
+    let wrong = data_seal_open(seal_fill(32, 2), packed, data_aad_blob(4))
+    assert_eq_i64("key", wrong.ok, 0)
+    let wrapped = data_seal_close(key, nonce, data_aad_key(4), seal_fill(32, 3))
+    let raw = data_seal_open(key, wrapped, data_aad_key(4))
+    assert_eq_i64("wrap", raw.ok, 1)
+    assert_eq_i64("wrap_len", bytes_len(raw.pt), 32)
+    let moved = data_seal_open(key, wrapped, data_aad_key(9))
+    assert_eq_i64("wrap_ws", moved.ok, 0)
+    assert_eq_i64("bad_nonce", bytes_len(data_seal_close(key, seal_fill(11, 1), data_aad_blob(1), pt)), 0)
+    let short = data_seal_open(key, bytes_new(0), data_aad_blob(1))
+    assert_eq_i64("short", short.ok, 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    seal_test_master()?
+    seal_test_roundtrip()?
+    print("data_seal_test: all passed")
+    return 0
+}

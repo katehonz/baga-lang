@@ -490,6 +490,18 @@ else
 	exit 1
 fi
 
+# Криптиране на blob (Фаза 7) — плика. Грешен nonce или пространство
+# не бива да връща текста.
+RC=0
+run -I app-product/7x7office/secp tests/data_seal_test.baga > /tmp/baga_seal_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "data_seal_test: all passed" /tmp/baga_seal_out.txt; then
+	echo "OK: seal — AES-GCM, пространство, ключ"
+else
+	echo "FAIL: data_seal_test"
+	cat /tmp/baga_seal_out.txt
+	exit 1
+fi
+
 # Файловият скоуп по workspace + Фаза 3 (ACL, линкове, activity) —
 # интеграционно, на живо срещу построения secp и Postgres. Покрива това,
 # което `baga` не може: рутиране, JWT, миграции, boot backfill и изчистване
@@ -527,6 +539,7 @@ else
 	echo "SKIP: ws_events_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: dav_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: report_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+	echo "SKIP: crypt_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 fi
 
 if [[ -x "$SECP_BIN" ]]; then
@@ -548,6 +561,16 @@ if [[ -x "$SECP_BIN" ]]; then
 	else
 		echo "FAIL: report_smoke"
 		cat /tmp/baga_report_smoke_out.txt
+		exit 1
+	fi
+	echo "=== криптиране (жив: AES-GCM на диска, четене на текста) ==="
+	RC=0
+	bash "$ROOT/app-product/7x7office/secp/tools/crypt_smoke.sh" > /tmp/baga_crypt_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "crypt_smoke: all passed" /tmp/baga_crypt_out.txt; then
+		echo "OK: crypt — шифрован blob, същият текст"
+	else
+		echo "FAIL: crypt_smoke"
+		cat /tmp/baga_crypt_out.txt
 		exit 1
 	fi
 fi
@@ -621,7 +644,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done
