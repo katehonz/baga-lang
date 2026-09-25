@@ -1,0 +1,81 @@
+// secp_routes_test.baga — таблицата на маршрутите (Фаза 0). Без база.
+//
+// Публичен флаг 1 маха Bearer. Шаблоните се мерят по ред: по-късият
+// корен трябва да печели преди {*path}, а /contents не бива да пада
+// във /wopi/files/{id}.
+
+import "system/route_table.baga"
+import "testbaga/assert.baga"
+
+fn secp_routes_test_table() -> i64 !IO {
+    let r = secp_routes()
+    assert_eq_i64("count", vec_len(r.ids), 80)
+    assert_eq_str("no_dup", router_validate(r), "")
+    assert_eq_i64("publics", secp_publics_set(r), 1)
+    assert_eq_i64("ids", secp_ids_ok(r), 1)
+    return 0
+}
+
+fn secp_routes_test_private() -> i64 !IO {
+    let r = secp_routes()
+    assert_eq_i64("metrics", secp_flag(r, "GET", "/metrics"), 0)
+    assert_eq_i64("me", secp_flag(r, "GET", "/v1/me"), 0)
+    assert_eq_i64("users", secp_flag(r, "GET", "/v1/users"), 0)
+    assert_eq_i64("users_post", secp_flag(r, "POST", "/v1/users"), 0)
+    assert_eq_i64("ws", secp_flag(r, "GET", "/v1/workspaces"), 0)
+    assert_eq_i64("put", secp_flag(r, "PUT", "/v1/fs/file"), 0)
+    assert_eq_i64("get", secp_flag(r, "GET", "/v1/fs/file"), 0)
+    assert_eq_i64("preview", secp_flag(r, "GET", "/v1/fs/preview"), 0)
+    assert_eq_i64("acl", secp_flag(r, "GET", "/v1/fs/acl"), 0)
+    assert_eq_i64("reindex", secp_flag(r, "POST", "/v1/search/reindex"), 0)
+    assert_eq_i64("storage", secp_flag(r, "GET", "/v1/reports/storage"), 0)
+    assert_eq_i64("activity_rep", secp_flag(r, "GET", "/v1/reports/activity"), 0)
+    assert_eq_i64("wopi_tok", secp_flag(r, "GET", "/v1/wopi/token"), 0)
+    assert_eq_i64("chat", secp_flag(r, "POST", "/v1/chat"), 0)
+    assert_eq_i64("me_id", secp_hit(r, "GET", "/v1/me"), RID_ME())
+    return 0
+}
+
+fn secp_routes_test_public() -> i64 !IO {
+    let r = secp_routes()
+    assert_eq_i64("health", secp_flag(r, "GET", "/health"), 1)
+    assert_eq_i64("health_id", secp_hit(r, "GET", "/health"), RID_HEALTH())
+    assert_eq_i64("readyz", secp_hit(r, "GET", "/readyz"), RID_READY())
+    assert_eq_i64("login", secp_flag(r, "POST", "/v1/auth/login"), 1)
+    assert_eq_i64("forgot", secp_flag(r, "POST", "/v1/auth/forgot"), 1)
+    assert_eq_i64("reset", secp_flag(r, "POST", "/v1/auth/reset"), 1)
+    assert_eq_i64("home", secp_hit(r, "GET", "/"), RID_UI_HOME())
+    assert_eq_i64("wopi_pub", secp_flag(r, "GET", "/wopi/files/{id}"), 1)
+    assert_eq_i64("share_up", secp_flag(r, "PUT", "/s/{token}/upload"), 1)
+    assert_eq_i64("dav_pub", secp_flag(r, "PROPFIND", "/dav/{ws}/{*path}"), 1)
+    return 0
+}
+
+fn secp_routes_test_shape() -> i64 !IO {
+    let r = secp_routes()
+    assert_eq_str("wopi_pat", secp_matched_pattern(r, "GET", "/wopi/files/abc"), "/wopi/files/{id}")
+    assert_eq_str("wopi_id", secp_param(r, "GET", "/wopi/files/abc", "id"), "abc")
+    assert_eq_i64("wopi_hit", secp_hit(r, "GET", "/wopi/files/abc"), RID_WOPI_FILE())
+    assert_eq_str("wopi_body_pat", secp_matched_pattern(r, "GET", "/wopi/files/abc/contents"), "/wopi/files/{id}/contents")
+    assert_eq_i64("wopi_body", secp_hit(r, "POST", "/wopi/files/abc/contents"), RID_WOPI_CONTENTS())
+    assert_eq_str("dav_root_pat", secp_matched_pattern(r, "GET", "/dav/0"), "/dav/{ws}")
+    assert_eq_str("dav_ws", secp_param(r, "GET", "/dav/0", "ws"), "0")
+    assert_eq_str("dav_root_rest", secp_param(r, "GET", "/dav/0", "path"), "")
+    assert_eq_str("dav_nest_pat", secp_matched_pattern(r, "PROPFIND", "/dav/3/docs/a"), "/dav/{ws}/{*path}")
+    assert_eq_str("dav_rest", secp_param(r, "PROPFIND", "/dav/3/docs/a", "path"), "docs/a")
+    assert_eq_str("share_meta_pat", secp_matched_pattern(r, "GET", "/s/abcd"), "/s/{token}")
+    assert_eq_i64("share_dl", secp_hit(r, "GET", "/s/abcd/download"), RID_SHARE_DOWNLOAD())
+    assert_eq_i64("no_put_health", secp_hit(r, "PUT", "/health"), 0)
+    assert_eq_i64("no_fs_rest", secp_hit(r, "GET", "/v1/fs/file/extra"), 0)
+    assert_eq_i64("missing_flag", secp_flag(r, "GET", "/no/such"), 0 - 2)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    secp_routes_test_table()?
+    secp_routes_test_private()?
+    secp_routes_test_public()?
+    secp_routes_test_shape()?
+    print("secp_routes_test: all passed")
+    return 0
+}
