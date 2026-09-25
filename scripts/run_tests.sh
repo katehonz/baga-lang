@@ -502,6 +502,17 @@ else
 	exit 1
 fi
 
+# WOPI (Фаза 7) — заключването. 409 при чужд lock е договорът с Collabora.
+RC=0
+run tests/wopi_test.baga > /tmp/baga_wopi_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "wopi_test: all passed" /tmp/baga_wopi_out.txt; then
+	echo "OK: wopi — lock, put, CheckFileInfo"
+else
+	echo "FAIL: wopi_test"
+	cat /tmp/baga_wopi_out.txt
+	exit 1
+fi
+
 # Файловият скоуп по workspace + Фаза 3 (ACL, линкове, activity) —
 # интеграционно, на живо срещу построения secp и Postgres. Покрива това,
 # което `baga` не може: рутиране, JWT, миграции, boot backfill и изчистване
@@ -540,6 +551,7 @@ else
 	echo "SKIP: dav_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: report_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 	echo "SKIP: crypt_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
+	echo "SKIP: wopi_smoke (липсва $SECP_BIN — пусни sandak build в secp/)"
 fi
 
 if [[ -x "$SECP_BIN" ]]; then
@@ -571,6 +583,16 @@ if [[ -x "$SECP_BIN" ]]; then
 	else
 		echo "FAIL: crypt_smoke"
 		cat /tmp/baga_crypt_out.txt
+		exit 1
+	fi
+	echo "=== WOPI (жив: CheckFileInfo, Get/Put, LOCK 409) ==="
+	RC=0
+	bash "$ROOT/app-product/7x7office/secp/tools/wopi_smoke.sh" > /tmp/baga_wopi_smoke_out.txt 2>&1 || RC=$?
+	if [[ $RC -eq 0 ]] && grep -q "wopi_smoke: all passed" /tmp/baga_wopi_smoke_out.txt; then
+		echo "OK: wopi — файл, lock, запис"
+	else
+		echo "FAIL: wopi_smoke"
+		cat /tmp/baga_wopi_smoke_out.txt
 		exit 1
 	fi
 fi
@@ -644,7 +666,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga|wopi_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

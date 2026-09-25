@@ -1,0 +1,149 @@
+// wopi.baga — WOPI host helpers (MS-WOPI) for Collabora / OnlyOffice.
+// Pure: no sockets and no database. The app stores locks and bytes.
+
+import "std/json/json_write.baga"
+import "std/str/str.baga"
+
+struct WopiAct {
+    status: i64,
+    lock: str,
+    store: i64,
+    clear: i64,
+    new_lock: str
+}
+
+fn wopi_act(status: i64, lock: str, store: i64, clear: i64, new_lock: str) -> WopiAct {
+    return WopiAct { status: status, lock: lock, store: store, clear: clear, new_lock: new_lock }
+}
+
+fn wopi_lock_ttl_s() -> i64 { return 1800 }
+
+fn wopi_lock_max() -> i64 { return 1024 }
+
+fn wopi_upper(s: str) -> str {
+    let mut o = ""
+    let mut i: i64 = 0
+    let n = len(s)
+    while i < n {
+        let c = char_at(s, i)
+        if c >= 97 && c <= 122 {
+            o = concat(o, chr(c - 32))
+        } else {
+            o = concat(o, chr(c))
+        }
+        i = i + 1
+    }
+    return o
+}
+
+fn wopi_alive(exp: i64, now: i64) -> i64 {
+    if exp > now {
+        return 1
+    }
+    return 0
+}
+
+fn wopi_on_lock(cur: str, requested: str) -> WopiAct {
+    if requested == "" {
+        return wopi_act(400, "", 0, 0, "")
+    }
+    if len(requested) > wopi_lock_max() {
+        return wopi_act(400, "", 0, 0, "")
+    }
+    if cur == "" {
+        return wopi_act(200, requested, 1, 0, requested)
+    }
+    if cur == requested {
+        return wopi_act(200, requested, 1, 0, requested)
+    }
+    return wopi_act(409, cur, 0, 0, "")
+}
+
+fn wopi_on_unlock(cur: str, requested: str) -> WopiAct {
+    if cur == "" {
+        return wopi_act(409, "", 0, 0, "")
+    }
+    if cur != requested {
+        return wopi_act(409, cur, 0, 0, "")
+    }
+    return wopi_act(200, "", 0, 1, "")
+}
+
+fn wopi_on_refresh(cur: str, requested: str) -> WopiAct {
+    if cur == "" {
+        return wopi_act(409, "", 0, 0, "")
+    }
+    if cur != requested {
+        return wopi_act(409, cur, 0, 0, "")
+    }
+    return wopi_act(200, requested, 1, 0, requested)
+}
+
+fn wopi_on_put(cur: str, requested: str) -> WopiAct {
+    if cur == "" {
+        return wopi_act(200, "", 0, 0, "")
+    }
+    if cur == requested {
+        return wopi_act(200, cur, 0, 0, "")
+    }
+    return wopi_act(409, cur, 0, 0, "")
+}
+
+// op is X-WOPI-Override. current/exp describe the stored lock.
+// requested is X-WOPI-Lock. Expired locks count as absent.
+fn wopi_apply(op: str, current: str, exp: i64, now: i64, requested: str) -> WopiAct {
+    let mut cur = current
+    if wopi_alive(exp, now) == 0 {
+        cur = ""
+    }
+    let o = wopi_upper(str_trim(op))
+    if o == "LOCK" {
+        return wopi_on_lock(cur, requested)
+    }
+    if o == "UNLOCK" {
+        return wopi_on_unlock(cur, requested)
+    }
+    if o == "REFRESH_LOCK" {
+        return wopi_on_refresh(cur, requested)
+    }
+    if o == "GET_LOCK" {
+        return wopi_act(200, cur, 0, 0, "")
+    }
+    if o == "PUT" {
+        return wopi_on_put(cur, requested)
+    }
+    return wopi_act(501, "", 0, 0, "")
+}
+
+fn wopi_bool(v: i64) -> str {
+    if v == 1 {
+        return "true"
+    }
+    return "false"
+}
+
+// CheckFileInfo body. can_write is 1 or 0.
+fn wopi_check_json(name: str, owner: str, size: i64, user: str, version: str, friendly: str, can_write: i64) -> str {
+    let mut s = "{\"BaseFileName\":"
+    s = concat(s, json_escape(name))
+    s = concat(s, ",\"OwnerId\":")
+    s = concat(s, json_escape(owner))
+    s = concat(s, ",\"Size\":")
+    s = concat(s, int_to_str(size))
+    s = concat(s, ",\"UserId\":")
+    s = concat(s, json_escape(user))
+    s = concat(s, ",\"Version\":")
+    s = concat(s, json_escape(version))
+    s = concat(s, ",\"UserFriendlyName\":")
+    s = concat(s, json_escape(friendly))
+    s = concat(s, ",\"UserCanWrite\":")
+    s = concat(s, wopi_bool(can_write))
+    s = concat(s, ",\"ReadOnly\":")
+    let mut ro: i64 = 1
+    if can_write == 1 {
+        ro = 0
+    }
+    s = concat(s, wopi_bool(ro))
+    s = concat(s, ",\"SupportsUpdate\":true,\"SupportsLocks\":true,\"SupportsGetLock\":true,\"UserCanNotWriteRelative\":true}")
+    return s
+}

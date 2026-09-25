@@ -1,0 +1,7 @@
+[package]
+name = "wopibaga"
+version = "0.1.0"
+entry = "wopi.baga"
+
+[dependencies]
+std = { path = "../../std" }

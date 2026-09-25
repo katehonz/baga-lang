@@ -1,0 +1,97 @@
+// wopi_test.baga — WOPI заключване и CheckFileInfo (Фаза 7). Без база.
+
+import "wopibaga/wopi.baga"
+import "testbaga/assert.baga"
+import "std/str/str.baga"
+
+fn wopi_test_lock() -> i64 !IO {
+    let a = wopi_apply("lock", "", 0, 100, "abc")
+    assert_eq_i64("lock_new", a.status, 200)
+    assert_eq_i64("lock_store", a.store, 1)
+    assert_eq_str("lock_id", a.new_lock, "abc")
+    let same = wopi_apply("LOCK", "abc", 200, 100, "abc")
+    assert_eq_i64("lock_refresh", same.status, 200)
+    assert_eq_i64("lock_refresh_store", same.store, 1)
+    let clash = wopi_apply("LOCK", "abc", 200, 100, "zzz")
+    assert_eq_i64("lock_clash", clash.status, 409)
+    assert_eq_str("lock_held", clash.lock, "abc")
+    let dead = wopi_apply("LOCK", "abc", 50, 100, "zzz")
+    assert_eq_i64("lock_expired", dead.status, 200)
+    assert_eq_str("lock_take", dead.new_lock, "zzz")
+    let empty = wopi_apply("LOCK", "", 0, 100, "")
+    assert_eq_i64("lock_empty", empty.status, 400)
+    let long = wopi_apply("LOCK", "", 0, 100, wopi_long())
+    assert_eq_i64("lock_long", long.status, 400)
+    return 0
+}
+
+fn wopi_long() -> str {
+    let mut s = ""
+    let mut i: i64 = 0
+    while i < 1025 {
+        s = concat(s, "x")
+        i = i + 1
+    }
+    return s
+}
+
+fn wopi_test_unlock() -> i64 !IO {
+    let bad = wopi_apply("UNLOCK", "abc", 200, 100, "no")
+    assert_eq_i64("unlock_bad", bad.status, 409)
+    assert_eq_str("unlock_cur", bad.lock, "abc")
+    let ok = wopi_apply("UNLOCK", "abc", 200, 100, "abc")
+    assert_eq_i64("unlock_ok", ok.status, 200)
+    assert_eq_i64("unlock_clear", ok.clear, 1)
+    let none = wopi_apply("UNLOCK", "abc", 50, 100, "abc")
+    assert_eq_i64("unlock_dead", none.status, 409)
+    let ref = wopi_apply("REFRESH_LOCK", "abc", 200, 100, "abc")
+    assert_eq_i64("refresh", ref.status, 200)
+    assert_eq_i64("refresh_store", ref.store, 1)
+    let refbad = wopi_apply("REFRESH_LOCK", "abc", 200, 100, "no")
+    assert_eq_i64("refresh_bad", refbad.status, 409)
+    let got = wopi_apply("GET_LOCK", "abc", 200, 100, "")
+    assert_eq_i64("get", got.status, 200)
+    assert_eq_str("get_lock", got.lock, "abc")
+    let got0 = wopi_apply("GET_LOCK", "abc", 10, 100, "")
+    assert_eq_str("get_empty", got0.lock, "")
+    assert_eq_i64("ttl", wopi_lock_ttl_s(), 1800)
+    assert_eq_i64("unknown", wopi_apply("PUT_RELATIVE", "", 0, 1, "").status, 501)
+    return 0
+}
+
+fn wopi_test_put() -> i64 !IO {
+    let open = wopi_apply("PUT", "", 0, 100, "")
+    assert_eq_i64("put_free", open.status, 200)
+    let ok = wopi_apply("PUT", "abc", 200, 100, "abc")
+    assert_eq_i64("put_match", ok.status, 200)
+    let bad = wopi_apply("PUT", "abc", 200, 100, "no")
+    assert_eq_i64("put_bad", bad.status, 409)
+    assert_eq_str("put_held", bad.lock, "abc")
+    let late = wopi_apply("PUT", "abc", 10, 100, "")
+    assert_eq_i64("put_expired", late.status, 200)
+    return 0
+}
+
+fn wopi_test_json() -> i64 !IO {
+    let j = wopi_check_json("a.docx", "7", 12, "3", "abc", "Ада", 1)
+    assert_true("name", str_find(j, "\"BaseFileName\":\"a.docx\"") >= 0)
+    assert_true("size", str_find(j, "\"Size\":12") >= 0)
+    assert_true("write", str_find(j, "\"UserCanWrite\":true") >= 0)
+    assert_true("ro", str_find(j, "\"ReadOnly\":false") >= 0)
+    assert_true("name_bg", str_find(j, "\"UserFriendlyName\":\"Ада\"") >= 0)
+    let ro = wopi_check_json("b.txt", "1", 0, "2", "0", "Bo", 0)
+    assert_true("nowrite", str_find(ro, "\"UserCanWrite\":false") >= 0)
+    assert_true("readonly", str_find(ro, "\"ReadOnly\":true") >= 0)
+    let q = wopi_check_json("a\"b", "1", 1, "2", "v", "n", 1)
+    assert_true("escape", str_find(q, "a\\\"b") >= 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    wopi_test_lock()?
+    wopi_test_unlock()?
+    wopi_test_put()?
+    wopi_test_json()?
+    print("wopi_test: all passed")
+    return 0
+}
