@@ -362,7 +362,7 @@ static int rc_heap_tag_node(Codegen *cg, Node *ty) {
 }
 
 /* копие ли е целият ident (не поле-четене s.x) някъде в израза? */
-static int rc_expr_copies_ident(Node *n, const char *name) {
+static __attribute__((unused)) int rc_expr_copies_ident(Node *n, const char *name) {
     if (!n || !name) return 0;
     if (n->kind == NODE_IDENT)
         return n->name && strcmp(n->name, name) == 0;
@@ -1596,7 +1596,29 @@ static void rc_tmp_collect(Codegen *cg, Node *n, int is_root) {
             }
             break;
         }
-        /* STRUCT_LIT, LAMBDA, TRY, CATCH, IF и останалите — не се
+        case NODE_TRY:
+            /* RC8: `g()?` на АРГУМЕНТНА позиция (`f(g()?)`,
+             * `vec_push(v, env("X")?)`): резултатът е owned (fresh call),
+             * а passthrough клонът на TRY не управлява темпове — целият
+             * TRY възел се регистрира като temp. Декларацията emit-ва
+             * пълния wrapper (с проверката на ефект слота), така че
+             * семантиката на `?` се пази; release е в края на statement-а.
+             * Вътрешността НЕ се слиза — wrapper-ът сам си управлява
+             * temp-овете (emit_rc_stmt_expr_root в двата клона). Като root
+             * (let/return/expr statement) стойността е bound — също без
+             * слизане; клоновете я wrap-ват локално. */
+            if (!is_root && rc_tmp_fresh(cg, n->try_expr)) {
+                RcTmp t;
+                t.site = n;
+                t.type = n->type;
+                t.tag = rc_heap_tag(cg, n->type);
+                if (t.tag != 0) {
+                    snprintf(t.name, sizeof t.name, "__rc_tmp%d", cg->tmp_counter++);
+                    vec_push(cg->rc_tmps, t);
+                }
+            }
+            break;
+        /* STRUCT_LIT, LAMBDA, CATCH, IF и останалите — не се
          * слиза (escape/отделна fn/условна оценка — вж. коментара по-горе) */
         default:
             break;
@@ -1788,6 +1810,24 @@ static int rc_need_owned_retain(Codegen *cg, Node *val) {
     if (val->kind == NODE_CALL && rc_is_enum_ctor(cg, val)) return 0;
     if (val->kind == NODE_CALL && !rc_borrowed_init(val)) return 0;
     if (val->kind == NODE_MATCH) return 0;
+    /* RC9b: `expr?` е ownership passthrough (при success стойността е
+     * точно резултатът на вътрешния израз) — иначе `return f()?` retain-ва
+     * свежия owned резултат втори път и тече по един struct на заявка
+     * (otel_from_header/act_ready/act_login). Същото и за catch верига
+     * без payload ефекти (compile-time фикция — стойността е базовият
+     * израз); с payload консервативно retain-ваме (може да е от handler). */
+    if (val->kind == NODE_TRY && val->try_expr)
+        return rc_need_owned_retain(cg, val->try_expr);
+    if (val->kind == NODE_CATCH) {
+        Node *scan = val;
+        int any_payload = 0;
+        while (scan && scan->kind == NODE_CATCH) {
+            Type *et = scan->catch_expr ? scan->catch_expr->type : NULL;
+            if (type_effect_payload(et, scan->catch_effect)) any_payload = 1;
+            scan = scan->catch_expr;
+        }
+        if (!any_payload && scan) return rc_need_owned_retain(cg, scan);
+    }
     return 1;
 }
 
@@ -3250,10 +3290,14 @@ static void emit_expr(Codegen *cg, Node *n) {
                     } else if (keep) {
                         rc_emit_retain_val(cg, e.tag, e.type, e.type_node, "__rc_asn");
                     }
-                    /* RC5: s = f(s) — резултатът алиасира полетата; не пускай */
-                    int thru = e.tag == 5 &&
-                        rc_expr_copies_ident(n->assign_val, n->assign_target->name);
-                    if (!thru) switch (e.tag) {
+                    /* RC9: `x = f(x)` при struct — старата стойност СЕ
+                     * release-ва. Под RC5 v1.0 („fn резултат = owned")
+                     * callee retain-ва каквото връща (литерал/return на
+                     * borrowed), така че референциите на стария struct са
+                     * излишни след извикването; да не ги пуснем е теч
+                     * (fmr_ctx_set_trace/http_set_header/jobj_str вериги).
+                     * Редът е безопасен: дясното е оценено ПРЕДИ release. */
+                    switch (e.tag) {
                         case 1: fprintf(f, "baga_rc_release_str(%s); ", e.name); break;
                         case 2: fprintf(f, "baga_rc_release_bytes(%s); ", e.name); break;
                         case 3: {
@@ -3610,10 +3654,12 @@ static void emit_expr(Codegen *cg, Node *n) {
                 }
             }
             if (!any_payload) {
-                /* без payload ефекти — старото поведение (compile-time) */
+                /* без payload ефекти — старото поведение (compile-time).
+                 * RC8: през temp машината — аргументите на базовия call са
+                 * fresh heap temp-ове и иначе текат (като при TRY). */
                 Node *base = n;
                 while (base && base->kind == NODE_CATCH) base = base->catch_expr;
-                emit_expr(cg, base);
+                emit_rc_stmt_expr_root(cg, base, 1);
                 break;
             }
             {
@@ -3704,7 +3750,11 @@ static void emit_expr(Codegen *cg, Node *n) {
                 emit_eff_return_zero(cg);
                 fprintf(f, "; } __t%d; })", cg->tmp_counter++);
             } else {
-                emit_expr(cg, n->try_expr);
+                /* RC8: passthrough и тук минава през temp машината —
+                 * `let co = f(http_reader(fd))?` с payload-less ефекти
+                 * (IO/Net/Time/Random) иначе изобщо не събира temp-ове и
+                 * свежият аргумент (rc=1) тече на всяка заявка. */
+                emit_rc_stmt_expr_root(cg, n->try_expr, 1);
             }
             break;
 
@@ -4280,12 +4330,17 @@ static void emit_stmt(Codegen *cg, Node *n) {
                         if (si >= 0 && !cg->rc_locals.data[si].dead)
                             from_tr = 1;
                     }
-                    /* fn резултат не се регистрира: pgwire MEM-4 споделя
-                     * AST vec/bytes между sess/portal/stmt — release на
-                     * owned let би бил двоен free. Leak-safe. */
-                    if (!fresh && !from_tr) tag = 0;
+                    /* RC7: fn резултатът се регистрира (балансът идва от
+                     * retain-овете при вграждане/извличане — RC1/RC5).
+                     * Предишното „leak-safe" правило (MEM-4) оставяше
+                     * ВСИЧКИ fn-върнати struct-ове да текат — в сървър това
+                     * е десетки kB на заявка. Код, който споделя една
+                     * собственост на две места БЕЗ retain (като pgwire
+                     * MEM-4 арената), не трябва да се билдва с --rc. */
+                    (void)fresh; (void)from_tr;
                 } else if (tag == 6) {
-                    /* RC5 v0.6: само свеж ctor (`Ok(x)`) или alias на track-нат */
+                    /* RC5 v0.6: само свеж ctor (`Ok(x)`) или alias на track-нат
+                     * RC7: като tag 5 — fn резултатът също се регистрира. */
                     int fresh = rc_is_enum_ctor(cg, n->let_init);
                     int from_tr = 0;
                     if (n->let_init && n->let_init->kind == NODE_IDENT) {
@@ -4293,7 +4348,7 @@ static void emit_stmt(Codegen *cg, Node *n) {
                         if (si >= 0 && !cg->rc_locals.data[si].dead)
                             from_tr = 1;
                     }
-                    if (!fresh && !from_tr) tag = 0;
+                    (void)fresh; (void)from_tr;
                 }
                 if (tag) {
                     int elide = 0;
@@ -5808,6 +5863,118 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "static __thread char *baga_rc_hi = NULL;\n");
         fprintf(out, "static __thread uint64_t baga_rc_epoch = 0;\n");
         fprintf(out, "static __thread baga_ABlk *baga_rc_spare = NULL;\n");
+        /* RC-dbg: BAGA_ALLOC_STATS=1 → watchdog нишка печати на stderr
+         * живите rc обекти по allocation stack (диагностика на течове). */
+        fprintf(out, "static _Atomic long baga_st_n = 0, baga_st_b = 0, baga_st_tot = 0;\n");
+        fprintf(out, "static _Atomic long baga_st_cls[71];\n");
+        fprintf(out, "static volatile int baga_st_on = 0;\n");
+        fprintf(out, "static int baga_st_ci(long an) { if (an <= 1024) return (int)((an + 15) / 16) - 1; for (int i = 0; i < 6; i++) if (an <= (2048L << i)) return 64 + i; return 70; }\n");
+        fprintf(out, "#define BAGA_ST_NSLOT 8192\n");
+        fprintf(out, "#define BAGA_ST_NPTR (1<<18)\n");
+        fprintf(out, "typedef struct { _Atomic long n, b; int d; void *bt[8]; } baga_StSite;\n");
+        fprintf(out, "static baga_StSite baga_st_sites[BAGA_ST_NSLOT];\n");
+        fprintf(out, "typedef struct { void *ptr; int slot; } baga_StPtr;\n");
+        fprintf(out, "static baga_StPtr baga_st_ptrs[BAGA_ST_NPTR];\n");
+        fprintf(out, "static long baga_st_tomb = 0;\n");
+        fprintf(out, "static void baga_st_rehash(void) {\n");
+        fprintf(out, "    static baga_StPtr fresh[BAGA_ST_NPTR];\n");
+        fprintf(out, "    memset(fresh, 0, sizeof fresh);\n");
+        fprintf(out, "    for (unsigned w = 0; w < BAGA_ST_NPTR; w++) {\n");
+        fprintf(out, "        void *p = baga_st_ptrs[w].ptr;\n");
+        fprintf(out, "        if (!p || p == (void *)1) continue;\n");
+        fprintf(out, "        unsigned long h = ((unsigned long)(uintptr_t)p >> 4) & (BAGA_ST_NPTR - 1);\n");
+        fprintf(out, "        for (int i = 0; i < 65536; i++) { unsigned q = (unsigned)((h + i) & (BAGA_ST_NPTR - 1)); if (!fresh[q].ptr) { fresh[q] = baga_st_ptrs[w]; break; } }\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    memcpy(baga_st_ptrs, fresh, sizeof fresh); baga_st_tomb = 0;\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static volatile int baga_st_lock = 0;\n");
+        fprintf(out, "static void baga_st_spin(void) { while (__sync_lock_test_and_set(&baga_st_lock, 1)) {} }\n");
+        fprintf(out, "static void baga_st_un(void) { __sync_lock_release(&baga_st_lock); }\n");
+        fprintf(out, "static int baga_st_site(void) {\n");
+        fprintf(out, "    void *bt[8]; int d = backtrace(bt, 8);\n");
+        fprintf(out, "    unsigned long h = 1469598103934665603ULL;\n");
+        fprintf(out, "    for (int i = 0; i < d; i++) h = (h ^ (unsigned long)(uintptr_t)bt[i]) * 1099511628211ULL;\n");
+        fprintf(out, "    unsigned k = (unsigned)(h & (BAGA_ST_NSLOT - 1));\n");
+        fprintf(out, "    for (int i = 0; i < 64; i++) {\n");
+        fprintf(out, "        unsigned q = (k + i) & (BAGA_ST_NSLOT - 1);\n");
+        fprintf(out, "        if (baga_st_sites[q].d == d && !memcmp(baga_st_sites[q].bt, bt, (size_t)d * sizeof(void *))) return (int)q;\n");
+        fprintf(out, "        if (baga_st_sites[q].d == 0) { baga_st_sites[q].d = d; memcpy(baga_st_sites[q].bt, bt, (size_t)d * sizeof(void *)); return (int)q; }\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    return -1;\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static void baga_st_alloc(void *p, long an) {\n");
+        fprintf(out, "    if (!an) return;\n");
+        fprintf(out, "    baga_st_spin();\n");
+        fprintf(out, "    int s = baga_st_site();\n");
+        fprintf(out, "    baga_st_n++; baga_st_b += an; baga_st_tot++; baga_st_cls[baga_st_ci(an)]++;\n");
+        fprintf(out, "    if (s >= 0) {\n");
+        fprintf(out, "        baga_st_sites[s].n++; baga_st_sites[s].b += an;\n");
+        fprintf(out, "        unsigned long h = ((unsigned long)(uintptr_t)p >> 4) & (BAGA_ST_NPTR - 1);\n");
+        fprintf(out, "        for (int i = 0; i < 65536; i++) {\n");
+        fprintf(out, "            unsigned q = (unsigned)((h + i) & (BAGA_ST_NPTR - 1));\n");
+        fprintf(out, "            if (baga_st_ptrs[q].ptr == NULL || baga_st_ptrs[q].ptr == (void *)1 || baga_st_ptrs[q].ptr == p) { baga_st_ptrs[q].ptr = p; baga_st_ptrs[q].slot = s; break; }\n");
+        fprintf(out, "        }\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    baga_st_un();\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static void baga_st_free(void *p, long an) {\n");
+        fprintf(out, "    if (!an) return;\n");
+        fprintf(out, "    baga_st_spin();\n");
+        fprintf(out, "    baga_st_n--; baga_st_b -= an; baga_st_cls[baga_st_ci(an)]--;\n");
+        fprintf(out, "    unsigned long h = ((unsigned long)(uintptr_t)p >> 4) & (BAGA_ST_NPTR - 1);\n");
+        fprintf(out, "    for (int i = 0; i < 65536; i++) {\n");
+        fprintf(out, "        unsigned q = (unsigned)((h + i) & (BAGA_ST_NPTR - 1));\n");
+        fprintf(out, "        if (baga_st_ptrs[q].ptr == NULL) break;\n");
+        fprintf(out, "        if (baga_st_ptrs[q].ptr == p) { int s = baga_st_ptrs[q].slot; if (s >= 0) { baga_st_sites[s].n--; baga_st_sites[s].b -= an; } baga_st_ptrs[q].ptr = (void *)1; if (++baga_st_tomb > BAGA_ST_NPTR / 4) baga_st_rehash(); break; }\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    baga_st_un();\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static void *baga_st_watch(void *arg) {\n");
+        fprintf(out, "    (void)arg; long pn = -1, pb = -1;\n");
+        fprintf(out, "    for (;;) {\n");
+        fprintf(out, "        struct timespec ts = {0, 500000000}; nanosleep(&ts, NULL);\n");
+        fprintf(out, "        long n = baga_st_n, b = baga_st_b;\n");
+        fprintf(out, "        if (n == pn && b == pb) continue;\n");
+        fprintf(out, "        pn = n; pb = b;\n");
+        fprintf(out, "        fprintf(stderr, \"baga-alloc: live=%%ld objs %%ld bytes tot=%%ld anchor=%%p\\n\", n, b, baga_st_tot, (void *)baga_st_watch);\n");
+        fprintf(out, "        baga_st_spin();\n");
+        fprintf(out, "        long sn[8192]; int si[8192]; int m = 0;\n");
+        fprintf(out, "        for (int q = 0; q < BAGA_ST_NSLOT; q++) if (baga_st_sites[q].d && baga_st_sites[q].n > 0) { sn[m] = baga_st_sites[q].n; si[m] = q; m++; }\n");
+        fprintf(out, "        for (int t = 0; t < 12 && t < m; t++) {\n");
+        fprintf(out, "            int bi = t;\n");
+        fprintf(out, "            for (int u = t + 1; u < m; u++) if (sn[u] > sn[bi]) bi = u;\n");
+        fprintf(out, "            { long tn = sn[t]; sn[t] = sn[bi]; sn[bi] = tn; int ti = si[t]; si[t] = si[bi]; si[bi] = ti; }\n");
+        fprintf(out, "            int q = si[t];\n");
+        fprintf(out, "            fprintf(stderr, \"  site#%%d live=%%ld %%ldb:\", q, baga_st_sites[q].n, baga_st_sites[q].b);\n");
+        fprintf(out, "            for (int i = 0; i < baga_st_sites[q].d; i++) fprintf(stderr, \" %%p\", baga_st_sites[q].bt[i]);\n");
+        fprintf(out, "            { int shown = 0;\n");
+        fprintf(out, "              for (unsigned w = 0; w < BAGA_ST_NPTR && shown < 2; w++)\n");
+        fprintf(out, "                if (baga_st_ptrs[w].ptr && baga_st_ptrs[w].ptr != (void *)1 && baga_st_ptrs[w].slot == q) {\n");
+        fprintf(out, "                    const unsigned char *cp = (const unsigned char *)baga_st_ptrs[w].ptr;\n");
+        fprintf(out, "                    fprintf(stderr, \" | %%p(rc=%%lu,an=%%lu)=\\\"\", baga_st_ptrs[w].ptr, ((baga_Hdr *)((char *)baga_st_ptrs[w].ptr - 32))->rc, ((baga_Hdr *)((char *)baga_st_ptrs[w].ptr - 32))->an);\n");
+        fprintf(out, "                    for (int z = 0; z < 24 && cp[z] >= 32 && cp[z] < 127; z++) fputc(cp[z], stderr);\n");
+        fprintf(out, "                    fprintf(stderr, \"\\\"\");\n");
+        fprintf(out, "                    shown++;\n");
+        fprintf(out, "                } }\n");
+        fprintf(out, "            fprintf(stderr, \"\\n\");\n");
+        fprintf(out, "        }\n");
+        fprintf(out, "        { static int done = 0;\n");
+        fprintf(out, "          for (int q = 0; q < BAGA_ST_NSLOT; q++) {\n");
+        fprintf(out, "            if (!baga_st_sites[q].d) continue;\n");
+        fprintf(out, "            long cnt = 0;\n");
+        fprintf(out, "            for (unsigned w = 0; w < BAGA_ST_NPTR; w++) if (baga_st_ptrs[w].ptr && baga_st_ptrs[w].ptr != (void *)1 && baga_st_ptrs[w].slot == q) cnt++;\n");
+        fprintf(out, "            if (cnt > 20) {\n");
+        fprintf(out, "                fprintf(stderr, \"  MAP site#%%d maplive=%%ld:\", q, cnt);\n");
+        fprintf(out, "                for (int i = 0; i < baga_st_sites[q].d; i++) fprintf(stderr, \" %%p\", baga_st_sites[q].bt[i]);\n");
+        fprintf(out, "                fprintf(stderr, \"\\n\");\n");
+        fprintf(out, "            }\n");
+        fprintf(out, "          }\n");
+        fprintf(out, "        }\n");
+        fprintf(out, "        baga_st_un();\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    return NULL;\n");
+        fprintf(out, "}\n");
+        fprintf(out, "__attribute__((constructor)) static void baga_st_init(void) { if (getenv(\"BAGA_ALLOC_STATS\")) { pthread_t t; baga_st_on = 1; if (pthread_create(&t, NULL, baga_st_watch, NULL) == 0) pthread_detach(t); } }\n");
     }
     else {
         /* STR-1: non-RC persist полето пакетира кешираната дължина — бит 0
@@ -5821,6 +5988,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     }
     fprintf(out, "static void baga_free(void *p, int64_t n) {\n");
     fprintf(out, "    if (!p || n <= 0) return;\n");
+    if (cg->rc)
+        fprintf(out, "    if (baga_st_on) baga_st_free(p, n);\n");
     fprintf(out, "    baga_Hdr *h = (baga_Hdr *)((char *)p - %d);\n", hs);
     if (cg->rc)
         fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)(h->pe & 1) : 0;\n");
@@ -5849,7 +6018,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "        void *fb = *fl;\n");
     /* RC1: freelist блок пази стара rc стойност (0 при release-нат) — reset */
     if (cg->rc)
-        fprintf(out, "        if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->pe = ((uint64_t)baga_rc_epoch << 1) | (_h->pe & 1); } return fb; }\n", hs);
+        fprintf(out, "        if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->pe = ((uint64_t)baga_rc_epoch << 1) | (_h->pe & 1); if (baga_st_on) baga_st_alloc(fb, (long)_h->an); } return fb; }\n", hs);
     else
         fprintf(out, "        if (fb) { *fl = *(void **)fb; ((baga_Hdr *)((char *)fb - %d))->persist &= 1; return fb; }\n", hs);
     fprintf(out, "        an = rn;\n");
@@ -5859,7 +6028,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "            void **fl = persist ? &baga_fl_big_p[bi] : &baga_fl_big[bi];\n");
     fprintf(out, "            void *fb = *fl;\n");
     if (cg->rc)
-        fprintf(out, "            if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->pe = ((uint64_t)baga_rc_epoch << 1) | (_h->pe & 1); } return fb; }\n", hs);
+        fprintf(out, "            if (fb) { *fl = *(void **)fb; { baga_Hdr *_h = (baga_Hdr *)((char *)fb - %d); _h->rc = 1; _h->pe = ((uint64_t)baga_rc_epoch << 1) | (_h->pe & 1); if (baga_st_on) baga_st_alloc(fb, (long)_h->an); } return fb; }\n", hs);
     else
         fprintf(out, "            if (fb) { *fl = *(void **)fb; ((baga_Hdr *)((char *)fb - %d))->persist &= 1; return fb; }\n", hs);
     fprintf(out, "            an = ((size_t)2048 << bi);\n");
@@ -5909,6 +6078,8 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    baga_Hdr *hh = (baga_Hdr *)p; hh->magic = BAGA_HDR_MAGIC; hh->pe = ((uint64_t)baga_rc_epoch << 1) | (uint64_t)persist; hh->rc = 1; hh->an = an;\n");
     else
         fprintf(out, "    baga_Hdr *hh = (baga_Hdr *)p; hh->magic = BAGA_HDR_MAGIC; hh->persist = (uint64_t)persist;\n");
+    if (cg->rc)
+        fprintf(out, "    if (baga_st_on) baga_st_alloc((char *)p + %d, (long)an);\n", hs);
     fprintf(out, "    return (char *)p + %d;\n", hs);
     fprintf(out, "}\n");
     /* STR-1: кеширана дължина на низ — non-RC чете през range guard + magic
