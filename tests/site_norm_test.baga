@@ -1,0 +1,17 @@
+// site_norm_test.baga — домейнът 127.0.0.1 не е грешка и става локален адрес.
+
+import "7x7office/secp/system/site.baga"
+import "testbaga/assert.baga"
+
+fn main() -> i64 !IO {
+    assert_eq_str("bare", site_norm("127.0.0.1"), "http://127.0.0.1:3010")
+    assert_eq_str("empty", site_norm("  "), "http://127.0.0.1:3010")
+    assert_eq_str("slash", site_norm("http://127.0.0.1:3010/"), "http://127.0.0.1:3010")
+    assert_eq_str("port", site_norm("127.0.0.1:3010"), "http://127.0.0.1:3010")
+    assert_eq_str("vps", site_norm("office.example.com"), "https://office.example.com")
+    assert_eq_str("https", site_norm("https://office.example.com/"), "https://office.example.com")
+    assert_eq_i64("ok_local", site_bad("127.0.0.1"), 0)
+    assert_eq_i64("space", site_bad("bad host"), 1)
+    print("site_norm_test: all passed")
+    return 0
+}
