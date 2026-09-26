@@ -82,8 +82,15 @@ fn tls_open_handshake(sched: TlsSchedule, ch_msg: bytes, sh_msg: bytes, chunked:
         if in_len == 0 {
             return tls_flight_bad("empty flight record")
         }
-        if bytes_at(open.pt, in_len - 1) == 22 {
-            pt = bytes_concat(pt, bytes_slice(open.pt, 0, in_len - 1))
+        // Нулите след типа са padding (RFC 8446 §5.2). Backblaze слага
+        // такива на големия Certificate запис — последният байт тогава е 0,
+        // не 22, и целият flight се губеше.
+        let mut end = in_len - 1
+        while end > 0 && bytes_at(open.pt, end) == 0 {
+            end = end - 1
+        }
+        if bytes_at(open.pt, end) == 22 {
+            pt = bytes_concat(pt, bytes_slice(open.pt, 0, end))
         }
         seq = seq + 1
     }

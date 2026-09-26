@@ -1,0 +1,36 @@
+// s3_hold_test.baga — кога автозаписването чака и кога тръгва към S3.
+
+import "data/hold.baga"
+import "testbaga/assert.baga"
+
+fn s3_hold_test_delay() -> i64 !IO {
+    assert_eq_i64("empty", s3_delay_norm(0), 180)
+    assert_eq_i64("short", s3_delay_norm(10), 180)
+    assert_eq_i64("floor", s3_delay_norm(30), 30)
+    assert_eq_i64("three", s3_delay_norm(180), 180)
+    assert_eq_i64("cap", s3_delay_norm(99999), 3600)
+    return 0
+}
+
+fn s3_hold_test_snap() -> i64 !IO {
+    assert_eq_i64("pending", s3_skip_snap(0), 1)
+    assert_eq_i64("stored", s3_skip_snap(1), 0)
+    assert_eq_i64("none", s3_skip_snap(0 - 1), 0)
+    return 0
+}
+
+fn s3_hold_test_kind() -> i64 !IO {
+    assert_eq_i64("drop", s3_flush_kind(0, 0), 0)
+    assert_eq_i64("wait", s3_flush_kind(1, 1), 1)
+    assert_eq_i64("put", s3_flush_kind(2, 0), 2)
+    assert_eq_i64("drop_wins", s3_flush_kind(0, 1), 0)
+    return 0
+}
+
+fn main() -> i64 !IO {
+    s3_hold_test_delay()?
+    s3_hold_test_snap()?
+    s3_hold_test_kind()?
+    print("s3_hold_test: all passed")
+    return 0
+}

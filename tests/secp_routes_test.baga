@@ -9,7 +9,7 @@ import "testbaga/assert.baga"
 
 fn secp_routes_test_table() -> i64 !IO {
     let r = secp_routes()
-    assert_eq_i64("count", vec_len(r.ids), 92)
+    assert_eq_i64("count", vec_len(r.ids), 102)
     assert_eq_str("no_dup", router_validate(r), "")
     assert_eq_i64("publics", secp_publics_set(r), 1)
     assert_eq_i64("ids", secp_ids_ok(r), 1)
@@ -42,6 +42,12 @@ fn secp_routes_test_private() -> i64 !IO {
     assert_eq_i64("wopi_tok", secp_flag(r, "GET", "/v1/wopi/token"), 0)
     assert_eq_i64("chat", secp_flag(r, "POST", "/v1/chat"), 0)
     assert_eq_i64("me_id", secp_hit(r, "GET", "/v1/me"), RID_ME())
+    assert_eq_i64("password", secp_flag(r, "POST", "/v1/me/password"), 0)
+    assert_eq_i64("totp", secp_hit(r, "POST", "/v1/me/totp/start"), RID_TOTP_START())
+    assert_eq_i64("storage", secp_flag(r, "GET", "/v1/me/storage"), 0)
+    assert_eq_i64("storage_put", secp_hit(r, "PUT", "/v1/me/storage"), RID_STORAGE_PUT())
+    assert_eq_i64("dav_key", secp_flag(r, "GET", "/v1/me/dav"), 0)
+    assert_eq_i64("dav_key_post", secp_hit(r, "POST", "/v1/me/dav"), RID_DAV_KEY_POST())
     return 0
 }
 
@@ -53,6 +59,8 @@ fn secp_routes_test_public() -> i64 !IO {
     assert_eq_i64("login", secp_flag(r, "POST", "/v1/auth/login"), 1)
     assert_eq_i64("forgot", secp_flag(r, "POST", "/v1/auth/forgot"), 1)
     assert_eq_i64("reset", secp_flag(r, "POST", "/v1/auth/reset"), 1)
+    assert_eq_i64("mfa", secp_flag(r, "POST", "/v1/auth/mfa"), 1)
+    assert_eq_i64("mfa_id", secp_hit(r, "POST", "/v1/auth/mfa"), RID_MFA())
     assert_eq_i64("home", secp_hit(r, "GET", "/"), RID_UI_HOME())
     assert_eq_i64("wopi_pub", secp_flag(r, "GET", "/wopi/files/{id}"), 1)
     assert_eq_i64("share_up", secp_flag(r, "PUT", "/s/{token}/upload"), 1)

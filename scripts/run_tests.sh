@@ -546,6 +546,16 @@ else
 	exit 1
 fi
 
+RC=0
+run -I app-product/7x7office/secp tests/s3_hold_test.baga > /tmp/baga_s3_hold_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "s3_hold_test: all passed" /tmp/baga_s3_hold_out.txt; then
+	echo "OK: s3 hold — изчакване след затваряне"
+else
+	echo "FAIL: s3_hold_test"
+	cat /tmp/baga_s3_hold_out.txt
+	exit 1
+fi
+
 # Качване (Фаза 1) — multipart и offset. Дискът е /tmp, без Postgres.
 RC=0
 run tests/upload_test.baga > /tmp/baga_upload_out.txt 2>&1 || RC=$?
@@ -732,7 +742,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga|wopi_test.baga|s3_sign_test.baga|secp_guard_test.baga|secp_routes_test.baga|upload_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|mail_test.baga|ws_roles_test.baga|acl_roles_test.baga|share_roles_test.baga|activity_kinds_test.baga|report_sheet_test.baga|data_seal_test.baga|wopi_test.baga|s3_sign_test.baga|s3_hold_test.baga|secp_guard_test.baga|secp_routes_test.baga|upload_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

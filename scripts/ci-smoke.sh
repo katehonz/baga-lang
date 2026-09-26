@@ -86,6 +86,9 @@ run -I app-product/7x7office/secp tests/secp_guard_test.baga
 echo "=== маршрути (Фаза 0: public, шаблони) ==="
 run -I app-product/7x7office/secp tests/secp_routes_test.baga
 
+echo "=== S3 изчакване (профил: след затваряне) ==="
+run -I app-product/7x7office/secp tests/s3_hold_test.baga
+
 echo "=== качване (Фаза 1: multipart, offset) ==="
 run tests/upload_test.baga
 
