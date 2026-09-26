@@ -9,7 +9,7 @@ import "testbaga/assert.baga"
 
 fn secp_routes_test_table() -> i64 !IO {
     let r = secp_routes()
-    assert_eq_i64("count", vec_len(r.ids), 88)
+    assert_eq_i64("count", vec_len(r.ids), 92)
     assert_eq_str("no_dup", router_validate(r), "")
     assert_eq_i64("publics", secp_publics_set(r), 1)
     assert_eq_i64("ids", secp_ids_ok(r), 1)
@@ -33,6 +33,8 @@ fn secp_routes_test_private() -> i64 !IO {
     assert_eq_i64("preview", secp_flag(r, "GET", "/v1/fs/preview"), 0)
     assert_eq_i64("acl", secp_flag(r, "GET", "/v1/fs/acl"), 0)
     assert_eq_i64("reindex", secp_flag(r, "POST", "/v1/search/reindex"), 0)
+    assert_eq_i64("flows", secp_flag(r, "GET", "/v1/flows"), 0)
+    assert_eq_i64("flows_run", secp_hit(r, "POST", "/v1/flows/run"), RID_FLOWS_RUN())
     assert_eq_i64("settings", secp_flag(r, "GET", "/v1/admin/settings"), 0)
     assert_eq_i64("settings_put", secp_hit(r, "PUT", "/v1/admin/settings"), RID_SETTINGS_PUT())
     assert_eq_i64("storage", secp_flag(r, "GET", "/v1/reports/storage"), 0)
