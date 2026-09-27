@@ -9,7 +9,7 @@ import "testbaga/assert.baga"
 
 fn secp_routes_test_table() -> i64 !IO {
     let r = secp_routes()
-    assert_eq_i64("count", vec_len(r.ids), 102)
+    assert_eq_i64("count", vec_len(r.ids), 103)
     assert_eq_str("no_dup", router_validate(r), "")
     assert_eq_i64("publics", secp_publics_set(r), 1)
     assert_eq_i64("ids", secp_ids_ok(r), 1)
@@ -50,6 +50,8 @@ fn secp_routes_test_private() -> i64 !IO {
     assert_eq_i64("bak_run", secp_hit(r, "POST", "/v1/admin/backup"), RID_BAK_RUN())
     assert_eq_i64("dav_key", secp_flag(r, "GET", "/v1/me/dav"), 0)
     assert_eq_i64("dav_key_post", secp_hit(r, "POST", "/v1/me/dav"), RID_DAV_KEY_POST())
+    assert_eq_i64("copy", secp_flag(r, "POST", "/v1/fs/copy"), 0)
+    assert_eq_i64("copy_id", secp_hit(r, "POST", "/v1/fs/copy"), RID_FS_COPY())
     return 0
 }
 
