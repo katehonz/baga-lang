@@ -44,8 +44,10 @@ fn secp_routes_test_private() -> i64 !IO {
     assert_eq_i64("me_id", secp_hit(r, "GET", "/v1/me"), RID_ME())
     assert_eq_i64("password", secp_flag(r, "POST", "/v1/me/password"), 0)
     assert_eq_i64("totp", secp_hit(r, "POST", "/v1/me/totp/start"), RID_TOTP_START())
-    assert_eq_i64("storage", secp_flag(r, "GET", "/v1/me/storage"), 0)
-    assert_eq_i64("storage_put", secp_hit(r, "PUT", "/v1/me/storage"), RID_STORAGE_PUT())
+    assert_eq_i64("s3_check", secp_flag(r, "POST", "/v1/admin/settings/check"), 0)
+    assert_eq_i64("s3_check_id", secp_hit(r, "POST", "/v1/admin/settings/check"), RID_S3_CHECK())
+    assert_eq_i64("bak_check", secp_hit(r, "POST", "/v1/admin/backup/check"), RID_BAK_CHECK())
+    assert_eq_i64("bak_run", secp_hit(r, "POST", "/v1/admin/backup"), RID_BAK_RUN())
     assert_eq_i64("dav_key", secp_flag(r, "GET", "/v1/me/dav"), 0)
     assert_eq_i64("dav_key_post", secp_hit(r, "POST", "/v1/me/dav"), RID_DAV_KEY_POST())
     return 0
