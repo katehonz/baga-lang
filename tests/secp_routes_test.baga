@@ -9,7 +9,7 @@ import "testbaga/assert.baga"
 
 fn secp_routes_test_table() -> i64 !IO {
     let r = secp_routes()
-    assert_eq_i64("count", vec_len(r.ids), 103)
+    assert_eq_i64("count", vec_len(r.ids), 104)
     assert_eq_str("no_dup", router_validate(r), "")
     assert_eq_i64("publics", secp_publics_set(r), 1)
     assert_eq_i64("ids", secp_ids_ok(r), 1)
@@ -46,6 +46,8 @@ fn secp_routes_test_private() -> i64 !IO {
     assert_eq_i64("totp", secp_hit(r, "POST", "/v1/me/totp/start"), RID_TOTP_START())
     assert_eq_i64("s3_check", secp_flag(r, "POST", "/v1/admin/settings/check"), 0)
     assert_eq_i64("s3_check_id", secp_hit(r, "POST", "/v1/admin/settings/check"), RID_S3_CHECK())
+    assert_eq_i64("smtp_check", secp_flag(r, "POST", "/v1/admin/smtp/check"), 0)
+    assert_eq_i64("smtp_check_id", secp_hit(r, "POST", "/v1/admin/smtp/check"), RID_SMTP_CHECK())
     assert_eq_i64("bak_check", secp_hit(r, "POST", "/v1/admin/backup/check"), RID_BAK_CHECK())
     assert_eq_i64("bak_run", secp_hit(r, "POST", "/v1/admin/backup"), RID_BAK_RUN())
     assert_eq_i64("dav_key", secp_flag(r, "GET", "/v1/me/dav"), 0)

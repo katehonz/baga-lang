@@ -381,6 +381,26 @@ fn main() -> i64 !Net !IO !Par !Random !Time {
         return 1
     }
 
+    // Изричен plain (порт 80, Alibaba Direct Mail) праща AUTH LOGIN.
+    // Отказът остава само ако е поискан STARTTLS/TLS, а каналът е открит.
+    let p3: i64 = 18457
+    let t3 = go_bg(mock_ehlo_only, p3)
+    if wait_port(p3) == 0 {
+        eprintln("smtp_test: mock_ehlo_only не отвори порт")
+        return 1
+    }
+    let cfg3 = smtp_cfg("127.0.0.1", p3, "no-reply@example.com")
+    cfg3.tls = SMTP_PLAIN()
+    cfg3.user = "user@example.com"
+    cfg3.pass = "s3cret"
+    let r3 = smtp_send_text(cfg3, "ivan@example.com", "x", "y")?
+    assert_eq_i64("plain_auth_ok", r3.ok, 1)
+    assert_eq_i64("plain_auth_server", join(t3), 0)
+    if r3.ok == 0 {
+        eprintln(concat("plain auth: ", r3.err.msg))
+        return 1
+    }
+
     // STARTTLS + AUTH разговор (ако има сертификат).
     let p2: i64 = 18456
     let t2 = go_bg(mock_starttls, p2)
@@ -404,29 +424,11 @@ fn main() -> i64 !Net !IO !Par !Random !Time {
         return 1
     }
 
-    // AUTH без TLS се отказва (паролата не бива да пътува в открит вид).
-    // Сървър, който само поздравява и чака — клиентът трябва да откаже
-    // сам, преди да е пратил паролата.
-    let p3: i64 = 18457
-    let t3 = go_bg(mock_ehlo_only, p3)
-    if wait_port(p3) == 0 {
-        eprintln("smtp_test: mock_ehlo_only не отвори порт")
-        return 1
-    }
-    let cfg3 = smtp_cfg("127.0.0.1", p3, "no-reply@example.com")
-    cfg3.tls = SMTP_PLAIN()
-    cfg3.user = "user@example.com"
-    cfg3.pass = "s3cret"
-    let r3 = smtp_send_text(cfg3, "ivan@example.com", "x", "y")?
-    assert_eq_i64("auth_without_tls_refused", r3.ok, 0)
-    join(t3)
-
     print("smtp_test: all passed")
     return 0
 }
 
-// Сървър само за проверката "AUTH без TLS": поздравява, обявява AUTH,
-// после чака. Клиентът трябва да прекъсне преди AUTH.
+// Сървър за изричен plain + AUTH LOGIN. Приема паролата и писмото.
 fn mock_ehlo_only(port: i64) -> i64 !Net !IO !Random {
     let l = tcp_listen(port)?
     if l < 0 {
@@ -458,12 +460,46 @@ fn mock_ehlo_session(fd: i64) -> i64 !Net !IO {
         return 1
     }
     sc = smtp_write(sc, "250-mock\r\n250 AUTH LOGIN PLAIN\r\n")?
-    // Клиентът вече трябва да е отказал и затворил. Ако все пак прати
-    // нещо, значи проверката за TLS не работи — това е провал.
-    let nxt = smtp_read_line(sc)?
-    tcp_close(nxt.conn.fd)?
-    if nxt.reply.ok == 0 {
-        return 0
+    let auth = smtp_read_line(sc)?
+    sc = auth.conn
+    if !str_starts_with(smtp_upper(auth.reply.text), "AUTH LOGIN") {
+        tcp_close(sc.fd)?
+        return 1
     }
-    return 1
+    sc = smtp_write(sc, "334 VXNlcm5hbWU6\r\n")?
+    let user = smtp_read_line(sc)?
+    sc = user.conn
+    if user.reply.ok == 0 {
+        tcp_close(sc.fd)?
+        return 1
+    }
+    sc = smtp_write(sc, "334 UGFzc3dvcmQ6\r\n")?
+    let pass = smtp_read_line(sc)?
+    sc = pass.conn
+    if pass.reply.ok == 0 {
+        tcp_close(sc.fd)?
+        return 1
+    }
+    sc = smtp_write(sc, "235 ok\r\n")?
+    let mf = smtp_read_line(sc)?
+    sc = mf.conn
+    if str_find(mf.reply.text, "MAIL FROM:") < 0 {
+        tcp_close(sc.fd)?
+        return 1
+    }
+    sc = smtp_write(sc, "250 ok\r\n")?
+    let rt = smtp_read_line(sc)?
+    sc = rt.conn
+    sc = smtp_write(sc, "250 ok\r\n")?
+    let dt = smtp_read_line(sc)?
+    sc = dt.conn
+    sc = smtp_write(sc, "354 go\r\n")?
+    let b = mock_body(sc)?
+    sc = b.conn
+    sc = smtp_write(sc, "250 ok\r\n")?
+    let q = smtp_read_line(sc)?
+    sc = q.conn
+    sc = smtp_write(sc, "221 bye\r\n")?
+    tcp_close(sc.fd)?
+    return 0
 }
