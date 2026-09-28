@@ -33,6 +33,8 @@ fn s3_test_auth() -> i64 !IO {
     )
     assert_true("prefix", str_find(a, "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request") == 0)
     assert_true("sig", str_find(a, "Signature=df548e2ce037944d03f3e68682813b093763996d597cf890ca3d9037fd231eb4") > 0)
+    assert_eq_str("slash", s3_query_escape("a/b"), "a%2Fb")
+    assert_eq_str("plain", s3_query_escape("beckupDB"), "beckupDB")
     return 0
 }
 
