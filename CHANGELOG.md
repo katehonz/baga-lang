@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.1.4] — 2026-09-28
+
+### 7x7office — файлове, поща и акаунт
+- Пълен преглед на PDF и картини, знак дали файлът е на диска или в S3.
+- Пробно писмо от настройките. Plain SMTP на порт 80 за Alibaba Direct Mail.
+- Профилът дели потребител и имейл. Входът приема и двете.
+
 ### repo — GitHub е канонът
 - Централното хранилище е [katehonz/baga-lang](https://github.com/katehonz/baga-lang)
   (`git@github.com:katehonz/baga-lang.git`). `git.bara-lang.org` вече не се ползва.
