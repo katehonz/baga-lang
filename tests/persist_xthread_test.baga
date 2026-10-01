@@ -1,0 +1,99 @@
+// persist_xthread_test — MEM-7: persist блок, пуснат от друга нишка,
+// се връща на libc. Преди това drop пълнеше чужд freelist, а slab-ът
+// оставаше в нишката, която го е заделила (линейен RSS при workers>1).
+
+import "std/bytes/bytes.baga"
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn vmrss_kb() -> i64 !IO {
+    let fd = open("/proc/self/status", 0, 0)?
+    if fd < 0 { return 0 - 1 }
+    let mut s = ""
+    let mut running = true
+    while running {
+        let chunk = fd_read(fd, 4096)?
+        if len(chunk) == 0 {
+            running = false
+        } else {
+            s = concat(s, chunk)
+        }
+    }
+    close(fd)
+    let i = str_find(s, "VmRSS:")
+    let mut j = i + 6
+    while char_at(s, j) == 32 || char_at(s, j) == 9 { j = j + 1 }
+    let mut e = j
+    while char_at(s, e) >= 48 && char_at(s, e) <= 57 { e = e + 1 }
+    return parse_int(substr(s, j, e))
+}
+
+fn consumer(ctx: i64) -> i64 !Par {
+    let mu = cell2_0(ctx)
+    let rest = cell2_1(ctx)
+    let bm: Map<i64, bytes> = h_map(cell2_0(rest))
+    let cm: Map<i64, i64> = h_map(cell2_1(rest))
+    let mut n: i64 = 0
+    while n < 20000 {
+        mutex_lock(mu)
+        if map_has(bm, 1) == 1 {
+            let b = map_get(bm, 1)
+            map_del(bm, 1)
+            drop(b)
+            n = n + 1
+            map_set(cm, 1, n)
+        }
+        mutex_unlock(mu)
+    }
+    return 0
+}
+
+fn main() -> i64 !Par !IO {
+    let mu = mutex_new()
+    let bm: Map<i64, bytes> = map_new()
+    let cm: Map<i64, i64> = map_new()
+    map_set(cm, 1, 0)
+    let ctx = cell2(mu, cell2(map_h(bm), map_h(cm)))
+    go_bg(consumer, ctx)
+    let base = vmrss_kb()?
+    let mut i: i64 = 0
+    while i < 20000 {
+        mem_persist_begin()
+        let b = bytes_new(8192)
+        mem_persist_end()
+        let mut placed = false
+        while placed == false {
+            mutex_lock(mu)
+            if map_has(bm, 1) == 0 {
+                map_set(bm, 1, b)
+                placed = true
+            }
+            mutex_unlock(mu)
+        }
+        i = i + 1
+    }
+    let mut done = false
+    while done == false {
+        mutex_lock(mu)
+        if map_get(cm, 1) >= 20000 {
+            done = true
+        }
+        mutex_unlock(mu)
+    }
+    let after = vmrss_kb()?
+    let grew = after - base
+    print(concat("rss_delta_kb ", int_to_str(grew)))
+    // 20000 × 8 KB = 160 MB, ако drop-ът от другата нишка не връща паметта.
+    check("xthread_persist_rss", grew < 32768)
+    print("persist_xthread_test: all passed")
+    return 0
+}

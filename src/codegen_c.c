@@ -5995,6 +5995,11 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)(h->pe & 1) : 0;\n");
     else
         fprintf(out, "    int persist = (h->magic == BAGA_HDR_MAGIC) ? (int)(h->persist & 1) : 0;\n");
+    /* MEM-7: persist блокът е отделен malloc. drop() от кой да е worker
+     * връща паметта на libc. Преди това free пълнеше thread-local freelist,
+     * а slab-ът оставаше в нишката, която е bump-нала — RSS растеше с
+     * всяка заявка при 8 worker-а (hot span, page, scan snapshot). */
+    fprintf(out, "    if (persist) { free(h); return; }\n");
     fprintf(out, "    if (n <= 1024) {\n");
     fprintf(out, "        int c = (int)((n + 15) / 16) - 1;\n");
     fprintf(out, "        void **fl = persist ? &baga_fl_p[c] : &baga_fl[c];\n");
@@ -6011,6 +6016,23 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    size_t rn = (n + 15) & ~(size_t)15;\n");
     fprintf(out, "    size_t an;\n");
     fprintf(out, "    int persist = baga_persist_depth > 0;\n");
+    /* MEM-7: persist не влиза в thread-local bump. Иначе drop от друг
+     * worker не връща slab-а и RSS расте линейно под BOILA_WORKERS>1. */
+    fprintf(out, "    if (persist) {\n");
+    fprintf(out, "        size_t pan;\n");
+    fprintf(out, "        if (n == 0) pan = 16;\n");
+    fprintf(out, "        else if (rn <= 1024) pan = rn;\n");
+    fprintf(out, "        else { int bi = baga_fl_big_idx((int64_t)n); pan = bi >= 0 ? ((size_t)2048 << bi) : n; }\n");
+    fprintf(out, "        char *blk = (char *)malloc(pan + %d);\n", hs);
+    fprintf(out, "        if (!blk) { fprintf(stderr, \"baga: persist malloc\\n\"); exit(1); }\n");
+    if (cg->rc)
+        fprintf(out, "        { baga_Hdr *hh = (baga_Hdr *)blk; hh->magic = BAGA_HDR_MAGIC; hh->pe = ((uint64_t)baga_rc_epoch << 1) | 1ULL; hh->rc = 1; hh->an = pan; }\n");
+    else
+        fprintf(out, "        { baga_Hdr *hh = (baga_Hdr *)blk; hh->magic = BAGA_HDR_MAGIC; hh->persist = 1; }\n");
+    if (cg->rc)
+        fprintf(out, "        if (baga_st_on) baga_st_alloc(blk + %d, (long)pan);\n", hs);
+    fprintf(out, "        return blk + %d;\n", hs);
+    fprintf(out, "    }\n");
     fprintf(out, "    if (n == 0) {\n");
     fprintf(out, "        an = 0;\n");
     fprintf(out, "    } else if (rn <= 1024) {\n");
