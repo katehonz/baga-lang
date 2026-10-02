@@ -3025,6 +3025,23 @@ static void emit_expr(Codegen *cg, Node *n) {
                         free(mn);
                         goto call_done;
                     }
+                    /* MEM-8: non-rc del на struct/enum пуска box-а (pv). */
+                    if (!cg->rc && strcmp(bn, "map_del") == 0 &&
+                        mt && mt->kind == TYPE_MAP && mt->elem &&
+                        (mt->elem->kind == TYPE_STRUCT ||
+                         mt->elem->kind == TYPE_ENUM)) {
+                        char *mn = (mt->elem->kind == TYPE_STRUCT &&
+                                    mt->elem->n_targs > 0)
+                            ? struct_cname_str(mt->elem)
+                            : mangle_name(mt->elem->name);
+                        fprintf(f, "baga_map_del_%s_box(", ksuf);
+                        emit_expr(cg, n->args.data[0]);
+                        fprintf(f, ", ");
+                        emit_expr(cg, n->args.data[1]);
+                        fprintf(f, ", (int64_t)sizeof(%s))", mn);
+                        free(mn);
+                        goto call_done;
+                    }
                     fprintf(f, "baga_%s_%s(", bn, ksuf);
                     for (int i = 0; i < n->args.len; i++) {
                         if (i > 0) fprintf(f, ", ");
@@ -6774,15 +6791,27 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "    if (!*slot) return;\n");
         /* MEM-4д: del без free беше вечен leak в persist региона (pin/unpin
          * churn = 112 B на цикъл — 2.4 KB/ред на boilaDB insert bench).
-         * Box стойността (pv) остава — del не знае val_size (drop_map я
-         * чисти); shell-ът на entry-то се рециклира през baga_free. */
+         * Shell-ът се пуска тук. struct/enum box (pv) се пуска от
+         * baga_map_del_*_box (MEM-8), не от този вариант. */
         fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n");
         /* RC1: del release-ва ключ + str/bytes стойност (entry shell-ът се
-         * free-ва от MEM-4д кодa по-долу, както досега) */
+         * free-ва от MEM-4д кодa по-долу, както досега).
+         * MEM-8: struct/enum минава през baga_map_del_*_box (пусна pv).
+         * Тук pv няма — скалар, str или bytes. */
         if (cg->rc) {
             fprintf(out, "    if (e->ktag == 2) baga_rc_release_bytes(e->bk); else baga_rc_release_str(e->sk);\n");
             fprintf(out, "    baga_rc_release_str(e->sv); baga_rc_release_bytes(e->bv);\n");
         }
+        fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
+        /* MEM-8: non-rc del на struct/enum. map_get копира стойността,
+         * после del трябва да върне box-а. Преди това pv оставаше
+         * (del не знаеше val_size) — PG mux take+park течеше по един
+         * BoilaPgLive на заявка. */
+        fprintf(out, "static void baga_map_del_%s_box(baga_Map *m, %s, int64_t val_size) {\n", kn, karg);
+        fprintf(out, "    baga_MapEntry **slot = baga_map_slot(m, %s, %s, %s);\n", ikv, skv, hk);
+        fprintf(out, "    if (!*slot) return;\n");
+        fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n");
+        fprintf(out, "    if (e->pv && val_size > 0) baga_free(e->pv, val_size);\n");
         fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
         /* RC5 v0.3: del с box стойност — release на полетата + free на pv
          * (откаченото entry не се вижда от release_map при drop). */
@@ -6888,11 +6917,18 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (!*slot) return;\n");
     /* MEM-4д: същото като str/i64 del — entry-то се free-ва (вж. горе). */
     fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n");
-    /* RC1: release на bytes ключ + str/bytes стойност преди free на shell-а */
+    /* RC1: release на bytes ключ + str/bytes стойност преди free на shell-а.
+     * MEM-8: struct/enum е baga_map_del_bytes_box (вж. str/i64 варианта). */
     if (cg->rc) {
         fprintf(out, "    baga_rc_release_bytes(e->bk);\n");
         fprintf(out, "    baga_rc_release_str(e->sv); baga_rc_release_bytes(e->bv);\n");
     }
+    fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
+    fprintf(out, "static void baga_map_del_bytes_box(baga_Map *m, baga_bytes k, int64_t val_size) {\n");
+    fprintf(out, "    baga_MapEntry **slot = baga_map_slot_b(m, k, baga_map_hash_bytes(k));\n");
+    fprintf(out, "    if (!*slot) return;\n");
+    fprintf(out, "    baga_MapEntry *e = *slot; *slot = e->next; m->len--;\n");
+    fprintf(out, "    if (e->pv && val_size > 0) baga_free(e->pv, val_size);\n");
     fprintf(out, "    baga_free(e, (int64_t)sizeof(baga_MapEntry)); }\n");
     /* RC5 v0.3: del с box стойност — release на полетата + free на pv */
     if (cg->rc) {

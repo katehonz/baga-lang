@@ -1,0 +1,122 @@
+// persist_mapdel_test — MEM-8: map_del на struct пуска box-а (pv).
+// Преди това del махаше само entry shell-а. PG mux take+park правеше
+// нов BoilaPgLive box на всеки ход и RSS растеше линейно.
+
+import "std/os/os.baga"
+import "std/str/str.baga"
+
+struct Fat8 {
+    a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64
+}
+
+struct Fat {
+    p0: Fat8, p1: Fat8, p2: Fat8, p3: Fat8
+}
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn vmrss_kb() -> i64 !IO {
+    let fd = open("/proc/self/status", 0, 0)?
+    if fd < 0 { return 0 - 1 }
+    let mut s = ""
+    let mut running = true
+    while running {
+        let chunk = fd_read(fd, 4096)?
+        if len(chunk) == 0 {
+            running = false
+        } else {
+            s = concat(s, chunk)
+        }
+    }
+    close(fd)
+    let i = str_find(s, "VmRSS:")
+    let mut j = i + 6
+    while char_at(s, j) == 32 || char_at(s, j) == 9 { j = j + 1 }
+    let mut e = j
+    while char_at(s, e) >= 48 && char_at(s, e) <= 57 { e = e + 1 }
+    return parse_int(substr(s, j, e))
+}
+
+fn fat8(n: i64) -> Fat8 {
+    return Fat8 { a: n, b: n, c: n, d: n, e: n, f: n, g: n, h: n }
+}
+
+fn fat(n: i64) -> Fat {
+    let z = fat8(n)
+    return Fat { p0: z, p1: z, p2: z, p3: z }
+}
+
+fn main() -> i64 !IO {
+    let m0: Map<i64, Fat> = map_new()
+    map_set(m0, 1, fat(7))
+    let g = map_get(m0, 1)
+    check("roundtrip", g.p0.a == 7 && g.p3.h == 7)
+    map_del(m0, 1)
+    check("deleted", map_has(m0, 1) == 0)
+    drop(m0)
+
+    let n: i64 = 20000
+    let b0 = vmrss_kb()?
+    let mut i: i64 = 0
+    while i < n {
+        mem_persist_begin()
+        let m: Map<i64, Fat> = map_new()
+        map_set(m, 1, fat(i))
+        map_del(m, 1)
+        drop(m)
+        mem_persist_end()
+        i = i + 1
+    }
+    let b1 = vmrss_kb()?
+    let del_grew = b1 - b0
+    print(concat("del_rss_kb ", int_to_str(del_grew)))
+
+    mem_persist_begin()
+    let keep: Map<i64, Fat> = map_new()
+    mem_persist_end()
+    let b2 = vmrss_kb()?
+    i = 0
+    while i < n {
+        mem_persist_begin()
+        map_set(keep, i, fat(i))
+        mem_persist_end()
+        i = i + 1
+    }
+    let b3 = vmrss_kb()?
+    let keep_grew = b3 - b2
+    print(concat("keep_rss_kb ", int_to_str(keep_grew)))
+    // 20000 × 256 B box ≈ 5 MB, ако del не пуска pv.
+    check("del_frees_box", del_grew < 4096)
+    check("keep_retains_box", keep_grew > del_grew + 2048)
+
+    mem_persist_begin()
+    let reuse: Map<i64, Fat> = map_new()
+    map_set(reuse, 1, fat(1))
+    mem_persist_end()
+    let b4 = vmrss_kb()?
+    i = 0
+    while i < n {
+        let cur = map_get(reuse, 1)
+        mem_persist_begin()
+        map_set(reuse, 1, cur)
+        mem_persist_end()
+        i = i + 1
+    }
+    let b5 = vmrss_kb()?
+    let reuse_grew = b5 - b4
+    print(concat("reuse_rss_kb ", int_to_str(reuse_grew)))
+    // map_set върху същия ключ презаписва box-а (mux park).
+    check("reuse_same_box", reuse_grew < 2048)
+    let again = map_get(reuse, 1)
+    check("reuse_value", again.p0.a == 1)
+
+    print("persist_mapdel_test: all passed")
+    return 0
+}
