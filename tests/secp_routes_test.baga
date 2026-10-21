@@ -9,7 +9,7 @@ import "testbaga/assert.baga"
 
 fn secp_routes_test_table() -> i64 !IO {
     let r = secp_routes()
-    assert_eq_i64("count", vec_len(r.ids), 105)
+    assert_eq_i64("count", vec_len(r.ids), 106)
     assert_eq_str("no_dup", router_validate(r), "")
     assert_eq_i64("publics", secp_publics_set(r), 1)
     assert_eq_i64("ids", secp_ids_ok(r), 1)
