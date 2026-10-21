@@ -10,7 +10,9 @@ LDFLAGS := -lm -pthread
 # manual ./baga invocations in tests: repo root for std/, app-product/ for *baga)
 BAGAIFLAGS := -I . -I app-product
 
-SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c src/verify.c
+SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c \
+        src/verify_core.c src/verify_obl.c src/verify_symexec.c src/verify_invariants.c \
+        src/verify_waitfor.c src/verify_top.c
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 
@@ -43,7 +45,7 @@ LLVM_CONFIG ?= $(shell for c in llvm-config llvm-config-19 llvm-config-14; do co
 LLI         ?= $(shell for c in lli lli-19 lli-14; do command -v $$c 2>/dev/null && break; done)
 LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null) -DBAGA_LLVM
 LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --libs core analysis target 2>/dev/null) $(LDFLAGS)
-LLVM_SRCS := src/main.c src/lexer.c src/parser.c src/checker.c src/codegen_c.c src/proofs.c src/verify.c src/codegen_llvm.c
+LLVM_SRCS := $(SRCS) src/codegen_llvm.c
 LLVM_OBJS := $(LLVM_SRCS:.c=.llvm.o)
 LLVM_BIN := baga-llvm
 
