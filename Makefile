@@ -10,7 +10,7 @@ LDFLAGS := -lm -pthread
 # manual ./baga invocations in tests: repo root for std/, app-product/ for *baga)
 BAGAIFLAGS := -I . -I app-product
 
-SRCS := src/main.c src/lexer.c src/parser_core.c src/parser_decl.c src/codegen_c.c src/proofs.c \
+SRCS := src/main.c src/lexer.c src/parser_core.c src/parser_decl.c src/codegen_util.c src/codegen_move.c src/codegen_expr.c src/codegen_stmt.c src/codegen_api.c src/proofs.c \
         src/checker_env.c src/checker_infer.c src/checker_expr.c src/checker_fn.c \
         src/verify_core.c src/verify_obl.c src/verify_symexec.c src/verify_invariants.c \
         src/verify_waitfor.c src/verify_top.c
@@ -30,7 +30,7 @@ docker: $(BIN) sandak
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-src/%.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/parser_impl.h
+src/%.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/parser_impl.h src/codegen_impl.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Shared !Par runtime for LLVM/lli (go/join/chan)
@@ -55,7 +55,7 @@ llvm: $(LLVM_BIN) $(PAR_SO)
 $(LLVM_BIN): $(LLVM_OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LLVM_LDFLAGS)
 
-src/%.llvm.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/parser_impl.h
+src/%.llvm.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/parser_impl.h src/codegen_impl.h
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c -o $@ $<
 
 clean:
