@@ -30,7 +30,7 @@ docker: $(BIN) sandak
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-src/%.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/parser_impl.h src/codegen_impl.h
+src/%.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/parser_impl.h src/codegen_impl.h src/codegen_llvm_impl.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Shared !Par runtime for LLVM/lli (go/join/chan)
@@ -46,7 +46,7 @@ LLVM_CONFIG ?= $(shell for c in llvm-config llvm-config-19 llvm-config-14; do co
 LLI         ?= $(shell for c in lli lli-19 lli-14; do command -v $$c 2>/dev/null && break; done)
 LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null) -DBAGA_LLVM
 LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --libs core analysis target 2>/dev/null) $(LDFLAGS)
-LLVM_SRCS := $(SRCS) src/codegen_llvm.c
+LLVM_SRCS := $(SRCS) src/codegen_llvm_util.c src/codegen_llvm_rc.c src/codegen_llvm_vec.c src/codegen_llvm_map.c src/codegen_llvm_drop.c src/codegen_llvm_expr.c src/codegen_llvm_decl.c
 LLVM_OBJS := $(LLVM_SRCS:.c=.llvm.o)
 LLVM_BIN := baga-llvm
 
@@ -55,7 +55,7 @@ llvm: $(LLVM_BIN) $(PAR_SO)
 $(LLVM_BIN): $(LLVM_OBJS)
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $^ $(LLVM_LDFLAGS)
 
-src/%.llvm.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/parser_impl.h src/codegen_impl.h
+src/%.llvm.o: src/%.c include/baga.h src/checker_impl.h src/verify_impl.h src/parser_impl.h src/codegen_impl.h src/codegen_llvm_impl.h
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c -o $@ $<
 
 clean:
@@ -65,7 +65,7 @@ test-llvm: $(BIN) $(LLVM_BIN) $(PAR_SO)
 	@LLI="$(LLI)" ./tests/llvm_oracle.sh
 
 test-llvm-rc: $(BIN) $(LLVM_BIN) $(PAR_SO)
-	@./tests/llvm_rc.sh
+	@LLI="$(LLI)" ./tests/llvm_rc.sh
 
 # Self-hosting bootstrap: fixed point — the self compiler reproduces itself
 # (baga2 == baga3 as compilers). baga (C bootstrap) and baga2 (self) are
