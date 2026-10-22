@@ -4,7 +4,7 @@
 
 import "boilaDB/server/databases.baga"
 import "boilaDB/api/serve_mt.baga"
-import "boilaDB/api/pgwire_mux.baga"
+import "boilaDB/api/pgwire_mux_run.baga"
 import "pgbaga/wire/proto.baga"
 import "std/net/tcp.baga"
 import "std/os/os.baga"
