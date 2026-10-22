@@ -435,6 +435,7 @@ fn sniff_c_type(nk: Vec, nt: Vec, fc: Vec, ns: Vec, prog: i64, init: i64, fuel: 
             if str_eq(bn, "concat") == 1 { ctype = "const char *" }
             if str_eq(bn, "substr") == 1 { ctype = "const char *" }
             if str_eq(bn, "chr") == 1 { ctype = "const char *" }
+            if str_eq(bn, "byte_chr") == 1 { ctype = "const char *" }
             if str_eq(bn, "read_file") == 1 { ctype = "const char *" }
             if str_eq(bn, "arg") == 1 { ctype = "const char *" }
             if str_eq(bn, "vec_get_str") == 1 { ctype = "const char *" }
