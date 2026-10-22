@@ -1,6 +1,7 @@
 #!/bin/bash
 # RC батерия под LLVM бекенда. Оракул: изходът на ./baga --rc (C) трябва
-# да съвпада с ./baga-llvm --emit-llvm --rc + lli-14.
+# да съвпада с ./baga-llvm --emit-llvm --rc + $LLI (същата детекция
+# като Makefile/llvm_oracle.sh — версията трябва да съвпада с baga-llvm).
 #
 # Тестовете, които LLVM още не компилира (предсъществуващи дупки като
 # byte_at, field-assign), се SKIP-ват само при честен отказ
@@ -13,7 +14,9 @@ FAIL=0
 # зелено (bash exit 127 при липсващ ./baga) — фатално, не SKIP.
 [ -x ./baga ] || { echo "FAIL: ./baga липсва/не е изпълним — пусни make (или make test-llvm-rc)"; exit 1; }
 [ -x ./baga-llvm ] || { echo "FAIL: ./baga-llvm липсва/не е изпълним — пусни make llvm"; exit 1; }
-command -v lli-14 > /dev/null || { echo "FAIL: lli-14 не е в PATH"; exit 1; }
+LLI=${LLI:-$(for c in lli lli-19 lli-14; do command -v "$c" 2>/dev/null && break; done)}
+[ -n "$LLI" ] || { echo "FAIL: няма lli в PATH"; exit 1; }
+echo "(lli: $LLI)"
 PAR_SO=lib/libbaga_par.so
 [ -f "$PAR_SO" ] || { mkdir -p lib; gcc -O2 -fPIC -shared -o "$PAR_SO" src/baga_par_rt.c -pthread || exit 1; }
 TESTS="tests/rc_test.baga tests/temp_test.baga tests/move_test.baga tests/borrow_test.baga \
@@ -45,7 +48,7 @@ for f in $TESTS; do
         fi
         continue
     fi
-    lli-14 -load "$PAR_SO" /tmp/rc.ll > /tmp/rc_l.txt 2>&1; rc_l=$?
+    "$LLI" -load "$PAR_SO" /tmp/rc.ll > /tmp/rc_l.txt 2>&1; rc_l=$?
     if [ $rc_c -ne $rc_l ] || ! diff -q /tmp/rc_c.txt /tmp/rc_l.txt > /dev/null; then
         echo "MISMATCH $f (exit C=$rc_c LLVM=$rc_l)"
         diff -u /tmp/rc_c.txt /tmp/rc_l.txt | head -20; FAIL=1
