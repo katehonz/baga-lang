@@ -630,6 +630,8 @@ static Sym make_status_pair(State *st, Node *c0, Node *c1, int hi) {
     return sym_lin(lin_var(pv));
 }
 
+static void world_move_scan(State *st, Obligations *ob, Node *arg);   /* W1.5 */
+
 Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     const char *nm = call->callee->name;
 
@@ -659,6 +661,11 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     }
 
     if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0) {
+        /* W1.5: go(worker, arg) — свят в аргумента (директно или в cell2
+         * пакет) = прехвърляне на собствеността (като chan_send). Локалният
+         * handle минава в moved; работникът получава i64 параметър, който
+         * НЕ е ghost-регистриран — sound silence от другата страна. */
+        world_move_scan(st, ob, call->args.data[1]);
         Node *w = call->args.data[0];
         const char *wname = w->name;
         Node *wfn = find_fn(g_prog, wname);
@@ -886,6 +893,38 @@ void eval_drop_call(Node *call, State *st, Obligations *ob) {
     } else {
         e->state = 1;
     }
+}
+
+/* W1.5: обхожда израз за HK_WORLD идентификатори и ги прехвърля в moved
+ * (state 3). Покрива cell2/арбитрарни вложени извиквания — рекурсията е
+ * по аргументите. Освободен свят в аргумент е use-after-free. */
+static void world_move_scan_rec(Node *e, State *st, Obligations *ob) {
+    if (!e) return;
+    switch (e->kind) {
+    case NODE_IDENT: {
+        HandleEntry *h = handles_find(&st->handles, e->name);
+        if (!h || h->kind != HK_WORLD) return;
+        if (h->state == 2) {
+            char label[300];
+            snprintf(label, sizeof label, "предаване на освободен свят '%s'", h->var);
+            push_protocol_violation(st, ob, label);
+        } else if (h->state != 3) {
+            h->state = 3;
+        }
+        return;
+    }
+    case NODE_CALL:
+        for (int i = 0; i < e->args.len; i++) world_move_scan_rec(e->args.data[i], st, ob);
+        return;
+    case NODE_BINARY:
+        world_move_scan_rec(e->left, st, ob);
+        world_move_scan_rec(e->right, st, ob);
+        return;
+    default: return;
+    }
+}
+static void world_move_scan(State *st, Obligations *ob, Node *arg) {
+    world_move_scan_rec(arg, st, ob);
 }
 
 /* W0: world_* преходи на HK_WORLD ghost състоянието (като eval_drop_call,

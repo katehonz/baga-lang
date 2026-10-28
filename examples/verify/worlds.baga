@@ -192,11 +192,78 @@ fn bad_push_after_move(n: i64) -> i64 !Par {
     return 0
 }
 
+fn w_worker(ctx: i64) -> i64 !Par {
+    return ctx
+}
+
+spec ok_frozen_read_str {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W1.5: низовете живеят в региона като ОФСЕТИ — frozen свят се чете,
+// dump/load носи текстовете position-independent.
+fn ok_frozen_read_str(n: i64) -> i64 {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push_str(w, v, "свят")
+    world_freeze(w)
+    let s = wvec_get_str(w, v, 0)
+    world_free(w)
+    return n - n
+}
+
+spec bad_push_str_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W1.5: низов push върху замразен свят — mutate-after-freeze.
+fn bad_push_str_frozen(n: i64) -> i64 {
+    let w = world_new()
+    let v = wvec_new(w)
+    world_freeze(w)
+    if n > 0 {
+        wvec_push_str(w, v, "x")
+    }
+    world_free(w)
+    return 0
+}
+
+spec bad_go_move {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// W1.5: go(worker, w) прехвърля собствеността точно като chan_send —
+// локалният push след това е use-after-move.
+fn bad_go_move(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    let h = go(w_worker, w)
+    if n > 0 {
+        wvec_push(w, v, 3)
+    }
+    let r = join(h)
+    return r - r
+}
+
 fn main() {
     print(ok_lifecycle(1))
     print(ok_frozen_read(1))
+    print(ok_frozen_read_str(1))
     print(bad_freeze_mutate(0))
     print(bad_double_free(0))
     print(bad_use_after_free(0))
     print(bad_push_frozen(0))
+    print(bad_push_str_frozen(0))
 }

@@ -56,5 +56,27 @@ fn main() {
     check("load_mutable", wvec_len(w2, v2) == 2 && wvec_get(w2, v2, 1) == 6)
     world_free(w2)
 
+    // W1.5: str елементи — низът се копира в региона, елементът е ОФСЕТ.
+    // Position-independent: dump/load носи текстовете (кирилица = UTF-8
+    // байтове, len() минава по strlen fallback-а за регион-низове).
+    let w3 = world_new()
+    let vs = wvec_new(w3)
+    wvec_push_str(w3, vs, "здравей")
+    wvec_push_str(w3, vs, "свят")
+    check("str_len", wvec_len(w3, vs) == 2)
+    check("str_get", wvec_get_str(w3, vs, 0) == "здравей")
+    check("str_get2", wvec_get_str(w3, vs, 1) == "свят")
+    check("str_bytes_len", len(wvec_get_str(w3, vs, 1)) == 8)
+    let used = world_used(w3)
+    check("used_positive", used > 0)
+    world_freeze(w3)
+    check("str_frozen_read", wvec_get_str(w3, vs, 0) == "здравей")
+    let d3 = world_dump(w3)
+    check("dump_covers_used", bytes_len(d3) == used)
+    world_free(w3)
+    let w4 = world_load(d3)
+    check("str_roundtrip", wvec_get_str(w4, vs, 0) == "здравей" && wvec_get_str(w4, vs, 1) == "свят")
+    world_free(w4)
+
     print("wvec_test: all passed")
 }

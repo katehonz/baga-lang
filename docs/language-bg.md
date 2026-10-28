@@ -1229,6 +1229,13 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   него (или изцяло от офсетни структури).
 - `world_load` връща mutable свят (симетрично на dump от mutable); freeze
   е изричен акт след зареждането.
+- W1.5: `wvec_push_str(w, v, s)` / `wvec_get_str(w, v, i)` — низът се копира
+  в региона, елементът е ОФСЕТ (dump/load носи текстовете; get връща
+  borrowed указател — стабилен за frozen, за mutable живее до следващия
+  растеж). `world_used(w)` — bump обемът (метрика за growth garbage).
+  `go`/`go_bg` с свят в аргумента (директно или в cell2) е move —
+  use-after-move се оборва. Вложени светове: офсетът на `wvec_new` е
+  елемент на външния wvec.
 - Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
   честни граници и пътна карта: `docs/worlds-bg.md`.
 

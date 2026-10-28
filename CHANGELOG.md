@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### W1.5 — светове: низове, move през go, world_used
+- `wvec_push_str(w, v, s)` / `wvec_get_str(w, v, i)` — низът се КОПИРА в
+  региона и елементът е неговият офсет: dump/load носи текстовете
+  position-independent (кирилица включително — регион-низовете нямат
+  baga_Hdr, `len()` минава по strlen fallback-а). Get е borrowed: стабилен
+  за frozen, за mutable живее до следващия растеж (документирано).
+- Вложени светове без нов API: офсетът на `wvec_new` е елемент на външния
+  wvec (`wvec_push(w, outer, inner)` + два `wvec_get`-а резолвират дървото).
+- **move през `go`/`go_bg`** (W0 покриваше само chan_send): свят в
+  аргумента — директно или в cell2 пакет — прехвърля собствеността;
+  локален мутатор след това е ОБРОЧЕНО (use-after-move), предаване на
+  освободен свят също. Отсрещната страна е sound silence (worker
+  параметърът не е ghost-регистриран).
+- `world_used(w) -> i64` — bump обемът на света: метрика за growth garbage
+  (dump 4.19 MB за 1.6 MB живи данни в bench-а); компактирането в W1.5 е
+  rebuild идеом (root-овете ги знае приложението), автоматична компакция
+  е W2.
+- Checker seatbelt за праволинеен freeze-mutate е **съзнателно отложен**
+  (W1.6): верификаторът вече покрива всичко с контрапримери, а прибързан
+  seatbelt без join-логика би давал фалшиви положителни след if-клон.
+- Оркълът расте на 12 доказани ensures + 8 оброчени протокола; wvec_test —
+  21 проверки (str roundtrip, world_used, dump==used); runtime проба за
+  frozen push_str. Docs: worlds-bg.md §W1.5 + пътна карта, language-bg/en.
+
 ### W1 — wvec: typed position-independent контейнер в свят
 - `wvec_new/wvec_push/wvec_get/wvec_len` — i64 вектор вътре в света с
   ОТСЕТНА адресация: заглавието `{len, cap, data_off}` и данните са офсети

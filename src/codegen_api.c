@@ -1527,6 +1527,35 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (b.len > 0) memcpy(a->base, b.data, (size_t)b.len);\n");
     fprintf(out, "    return (int64_t)(intptr_t)a;\n");
     fprintf(out, "}\n");
+    /* W1.5: текущият bump обем на света — метрика за growth garbage
+     * (used срещу живите данни). Компактирането е rebuild идеом: нов свят
+     * + wvec_* обхождане (документиран в docs/worlds-bg.md). */
+    fprintf(out, "static int64_t baga_world_used(int64_t wh) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"world_used\");\n");
+    fprintf(out, "    return w->used;\n");
+    fprintf(out, "}\n");
+    /* W1.5: str елемент — низът се КОПИРА в региона и елементът е неговият
+     * ОФСЕТ (position-independent: dump/load го носи). Get връща borrowed
+     * указател в региона: за frozen свят е стабилен (никога не расте); за
+     * mutable — валиден до следващия растежен realloc (документирано,
+     * MEM-1 дух). Няма baga_Hdr — len() минава по strlen fallback-а
+     * (range guard-ът не покрива светове). */
+    fprintf(out, "static void baga_wvec_push_str(int64_t wh, int64_t voff, const char *s) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_push_str\");\n");
+    fprintf(out, "    baga_world_mut_check(w, \"wvec_push_str\");\n");
+    fprintf(out, "    int64_t n = baga_str_len(s);\n");
+    fprintf(out, "    int64_t sp = baga_arena_alloc(wh, n + 1);\n");
+    fprintf(out, "    int64_t soff = (int64_t)((char *)(intptr_t)sp - w->base);\n");
+    fprintf(out, "    memcpy(w->base + soff, s, (size_t)n + 1);\n");
+    fprintf(out, "    baga_wvec_push(wh, voff, soff);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static const char *baga_wvec_get_str(int64_t wh, int64_t voff, int64_t i) {\n");
+    fprintf(out, "    baga_Arena *w = baga_world_a(wh, \"wvec_get_str\");\n");
+    fprintf(out, "    baga_WVec *v = (baga_WVec *)(w->base + voff);\n");
+    fprintf(out, "    if (i < 0 || i >= v->len) baga_bounds_fail(\"wvec_get_str\", i, v->len);\n");
+    fprintf(out, "    int64_t *d = (int64_t *)(w->base + v->data_off);\n");
+    fprintf(out, "    return w->base + d[i];\n");
+    fprintf(out, "}\n");
     fprintf(out, "\n");
     /* ---- concurrency (!Par): OS threads + i64 channels (CSP) ---- */
     /* heap pair first — used by chan_recv2 and as worker context packing */

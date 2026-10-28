@@ -1219,6 +1219,16 @@ invalidates nothing:
 - Raw `world_alloc` pointers are valid only until the next world growth —
   `wvec_*` is the safe typed layer; dump only regions built through it (or
   entirely from offset structures).
+- W1.5: `wvec_push_str(w, v, s)` / `wvec_get_str(w, v, i)` — the string is
+  copied INTO the region and the element is its OFFSET (dump/load carries
+  texts; get returns a borrowed pointer — stable for frozen worlds, for
+  mutable ones valid until the next growth realloc). `world_used(w)` — the
+  bump volume (growth-garbage metric). `go`/`go_bg` with a world in the
+  argument (directly or inside a cell2 pack) is a move — use-after-move is
+  refuted. Nested worlds: a `wvec_new` offset is an element of the outer
+  wvec.
+- Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
+  limits, roadmap: `docs/worlds-bg.md`.
 
 ---
 

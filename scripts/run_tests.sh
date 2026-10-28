@@ -507,6 +507,16 @@ else
 	cat /tmp/baga_wvec_frozen_out.txt
 	exit 1
 fi
+printf 'fn main() {\n    let w = world_new()\n    let v = wvec_new(w)\n    world_freeze(w)\n    wvec_push_str(w, v, "x")\n}\n' > /tmp/baga_wvec_str_frozen.baga
+RC=0
+run /tmp/baga_wvec_str_frozen.baga > /tmp/baga_wvec_str_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_wvec_str_frozen_out.txt; then
+	echo "OK: wvec_push_str върху замразен свят — чиста грешка, не UB"
+else
+	echo "FAIL: frozen wvec_push_str трябваше да е чиста грешка"
+	cat /tmp/baga_wvec_str_frozen_out.txt
+	exit 1
+fi
 
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 # 8000 keeps clear of the crowded framework defaults (8080/8090) and of
