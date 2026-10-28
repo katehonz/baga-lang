@@ -140,6 +140,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "#include <time.h>\n");
     fprintf(out, "#include <signal.h>\n");
     fprintf(out, "#include <pthread.h>\n");
+    fprintf(out, "#include <stdatomic.h>\n");
     fprintf(out, "#include <execinfo.h>\n");
     fprintf(out, "#include <math.h>\n\n");
 
@@ -158,6 +159,39 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
      * free()+malloc на 8 KB блокове → glibc фрагментация (измерен
      * линеен RSS ръст ~10 KB/заявка) и чист CPU разход. */
     fprintf(out, "static __thread baga_ABlk *baga_spare = NULL;\n");
+    /* MEM-6: leak детектор — process-wide телеметрия на арената. Броячите се
+     * пипат САМО на chunk-граници (нов ABlk, spare pop, rewind), не на всяка
+     * baga_alloc — горещият път не плаща нищо. live = cap на блоковете в
+     * активната верига (всички нишки); spare = reclaim-нати, още mapped;
+     * peak = high-water на live. Точно метриката, която лови VPS класа бъг:
+     * пропуснат mem_rewind ⇒ live расте неограничено. Persist регионът
+     * (отделни malloc-и) не се брои в v1 — той е long-lived по дизайн. */
+    fprintf(out, "static _Atomic long baga_mt_live = 0;\n");
+    fprintf(out, "static _Atomic long baga_mt_spare = 0;\n");
+    fprintf(out, "static _Atomic long baga_mt_peak = 0;\n");
+    fprintf(out, "static void baga_mt_bump(long d) {\n");
+    fprintf(out, "    long v = atomic_fetch_add(&baga_mt_live, d) + d;\n");
+    fprintf(out, "    long p = atomic_load_explicit(&baga_mt_peak, memory_order_relaxed);\n");
+    fprintf(out, "    while (v > p && !atomic_compare_exchange_weak(&baga_mt_peak, &p, v)) { }\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_mem_arena_bytes(void) { return (int64_t)atomic_load(&baga_mt_live); }\n");
+    fprintf(out, "static int64_t baga_mem_spare_bytes(void) { return (int64_t)atomic_load(&baga_mt_spare); }\n");
+    fprintf(out, "static int64_t baga_mem_peak_bytes(void)  { return (int64_t)atomic_load(&baga_mt_peak); }\n");
+    if (cg->leak_check) {
+        fprintf(out, "static void baga_mt_report(void) {\n");
+        fprintf(out, "    long live = atomic_load(&baga_mt_live), spare = atomic_load(&baga_mt_spare), peak = atomic_load(&baga_mt_peak);\n");
+        fprintf(out, "    fprintf(stderr, \"baga mem: live=%%ld spare=%%ld peak=%%ld\\n\", live, spare, peak);\n");
+        fprintf(out, "    const char *lim = getenv(\"BAGA_MEM_LIMIT\");\n");
+        fprintf(out, "    if (lim && *lim) {\n");
+        fprintf(out, "        long l = strtol(lim, NULL, 10);\n");
+        fprintf(out, "        if (l > 0 && peak > l) {\n");
+        fprintf(out, "            fprintf(stderr, \"baga mem: peak %%ld B надвишава BAGA_MEM_LIMIT %%ld B — вероятен теч\\n\", peak, l);\n");
+        fprintf(out, "            fflush(NULL); _Exit(1);\n");
+        fprintf(out, "        }\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "}\n");
+        fprintf(out, "__attribute__((constructor)) static void baga_mt_init(void) { atexit(baga_mt_report); }\n");
+    }
     /* MEM-1: free list — 16-байтови класове ≤ 1024 B; R18: + pow2 класове
      * 2 KiB..32 MiB — drop рециклира блокове. Големите класове се bump-ват с
      * ПЪЛНИЯ класов размер, за да е консистентен всеки бъдещ free в класа. */
@@ -430,11 +464,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "        if (baga_rc_spare && baga_rc_spare->cap >= cap) {\n");
         fprintf(out, "            b = baga_rc_spare; baga_rc_spare = b->next;\n");
         fprintf(out, "            b->next = *hp; b->used = 0;\n");
+        fprintf(out, "            baga_mt_bump((long)b->cap); atomic_fetch_sub(&baga_mt_spare, (long)b->cap);\n");
         fprintf(out, "        } else {\n");
         fprintf(out, "            b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
         fprintf(out, "            b->next = *hp; b->used = 0; b->cap = cap;\n");
         fprintf(out, "            if (!baga_rc_lo || (char *)b->data < baga_rc_lo) baga_rc_lo = (char *)b->data;\n");
         fprintf(out, "            if ((char *)b->data + cap > baga_rc_hi) baga_rc_hi = (char *)b->data + cap;\n");
+        fprintf(out, "            baga_mt_bump((long)cap);\n");
         fprintf(out, "        }\n");
         fprintf(out, "        *hp = b;\n");
     } else {
@@ -442,11 +478,13 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
         fprintf(out, "        if (baga_spare && baga_spare->cap >= cap) {\n");
         fprintf(out, "            b = baga_spare; baga_spare = b->next;\n");
         fprintf(out, "            b->next = *hp; b->used = 0;\n");
+        fprintf(out, "            baga_mt_bump((long)b->cap); atomic_fetch_sub(&baga_mt_spare, (long)b->cap);\n");
         fprintf(out, "        } else {\n");
         fprintf(out, "            b = (baga_ABlk *)malloc(sizeof(baga_ABlk) + cap);\n");
         fprintf(out, "            b->next = *hp; b->used = 0; b->cap = cap;\n");
         fprintf(out, "            if (!baga_lo || (char *)b->data < baga_lo) baga_lo = (char *)b->data;\n");
         fprintf(out, "            if ((char *)b->data + cap > baga_hi) baga_hi = (char *)b->data + cap;\n");
+        fprintf(out, "            baga_mt_bump((long)cap);\n");
         fprintf(out, "        }\n");
         fprintf(out, "        *hp = b;\n");
     }
@@ -534,6 +572,7 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    baga_ABlk *b = baga_arena_head;\n");
     fprintf(out, "    while (b && b != m->head) {\n");
     fprintf(out, "        baga_ABlk *nx = b->next;\n");
+    fprintf(out, "        baga_mt_bump(-(long)b->cap); atomic_fetch_add(&baga_mt_spare, (long)b->cap);\n");
     /* RC1: в spare веригата вместо free() — паметта остава mapped (epoch
      * я прави мъртва за rc_hdr) и се reuse-ва от следващите алокации.
      * MEM-5: същото и за non-RC (baga_spare). */

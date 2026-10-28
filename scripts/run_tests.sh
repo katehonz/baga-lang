@@ -450,6 +450,42 @@ else
 	exit 1
 fi
 
+echo "=== MEM-6 leak-check (арена телеметрия + BAGA_MEM_LIMIT gate) ==="
+# mem_stats_test доказва броячите и rewind дисциплината; тук проверяваме
+# CLI механиката: summary при изход и exit 1 при надвишен лимит.
+RC=0
+BAGA_MEM_LIMIT=1000000 run --leak-check tests/mem_stats_test.baga > /tmp/baga_leakchk_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "baga mem: live=" /tmp/baga_leakchk_out.txt; then
+	echo "OK: leak-check — summary при изход, peak под лимита"
+else
+	echo "FAIL: leak-check summary"
+	cat /tmp/baga_leakchk_out.txt
+	exit 1
+fi
+RC=0
+BAGA_MEM_LIMIT=1000 run --leak-check tests/mem_stats_test.baga > /tmp/baga_leakchk2_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "вероятен теч" /tmp/baga_leakchk2_out.txt; then
+	echo "OK: leak-check — BAGA_MEM_LIMIT → exit 1 при надвишен peak"
+else
+	echo "FAIL: BAGA_MEM_LIMIT gate трябваше да гръмне"
+	cat /tmp/baga_leakchk2_out.txt
+	exit 1
+fi
+
+echo "=== boilaDB mux под --leak-check (peak gate срещу VPS класа теч) ==="
+# Baseline (2026-10-28): live=peak≈7.1 MB за целия тест. Лимит 16 MB —
+# 2× headroom. Регресия на rewind-а (afcc10b: mark след startup) би надула
+# peak-а; mem_stats_test пази самата дисциплина, тук е интеграционният таван.
+RC=0
+BAGA_MEM_LIMIT=16777216 run --leak-check tests/boila_pg_mux_test.baga > /tmp/baga_mux_leak_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "ALL PASS" /tmp/baga_mux_leak_out.txt && grep -q "baga mem:" /tmp/baga_mux_leak_out.txt; then
+	echo "OK: mux — peak под 16 MB, телеметрия отчетена"
+else
+	echo "FAIL: mux leak-check"
+	cat /tmp/baga_mux_leak_out.txt
+	exit 1
+fi
+
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 # 8000 keeps clear of the crowded framework defaults (8080/8090) and of
 # ambient dev servers; override with REGISTRY_PORT when 8000 is taken.
@@ -504,7 +540,7 @@ mapfile -t DISCOVERED < <(
 	find "$ROOT/tests" -type f -name '*_test.baga' | sort | while read -r f; do
 		base=$(basename "$f")
 		case "$base" in
-			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|wopi_test.baga|s3_sign_test.baga) continue ;;
+			tls_handshake_test.baga|tls_server_test.baga|https_test.baga|boila_ssl_test.baga|boila_pg_mux_test.baga|registry_test.baga|registry_grpc_test.baga|oauth_pg_test.baga|smtp_test.baga|wopi_test.baga|s3_sign_test.baga) continue ;;
 			*) echo "$f" ;;
 		esac
 	done

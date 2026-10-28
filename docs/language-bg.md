@@ -1123,6 +1123,50 @@ handle (`let b = a`, `wrap(a)` където wrap връща `a`) споделя 
 `drop` дават предупреждение (компилацията продължава). Върнат ident не се
 счита за теч. Без флага — мълчаливо за тях.
 
+#### MEM-6: арена телеметрия (leak детектор)
+
+Течовете в bump арената са тихи по дизайн — `--warn-leaks` лови само
+compile-time видимите. MEM-6 добавя runtime метрики, които правят
+неограничения растеж *измерим и gate-ваем*:
+
+```baga
+let m = mem_mark()
+// ... ход на заявка: concat, vec_new, map_set ...
+mem_rewind(m)
+print(mem_peak_bytes())   // high-water — не расте между ходове при дисциплина
+```
+
+- `mem_arena_bytes() -> i64` — live: сумарен `cap` на блоковете в активната
+  arena верига (всички нишки).
+- `mem_spare_bytes() -> i64` — блокове, върнати от `mem_rewind` в spare
+  веригата: reclaim-нати, още mapped (кеш за следващи алокации).
+- `mem_peak_bytes() -> i64` — high-water на live. Това е метриката, която
+  лови класа теч от продукцията (пропуснат `mem_rewind` ⇒ peak расте на
+  всеки ход).
+
+Броячите са process-wide (атомик) и се обновяват **само на chunk-граници** —
+нов arena блок, spare pop, rewind — не на всяка алокация: горещият път не
+плаща нищо. Работят без флаг (вградените функции винаги връщат истински
+стойности).
+
+**`--leak-check`:** при изход на програмата печата на stderr
+`baga mem: live=N spare=S peak=P`. Ако `BAGA_MEM_LIMIT` (байтове) е зададен
+и peak го надвишава — `вероятен теч` и **exit 1** (CI gate; виж
+`tests/mem_stats_test.baga` и mux gate-а в `scripts/run_tests.sh`).
+
+Честни граници (v1):
+
+- **Persist регионът не се брои** — `mem_persist_begin/end` алоцира отделни
+  malloc-и извън arena веригата; те са long-lived по дизайн (plan cache,
+  session maps).
+- **Само C бекенда** — LLVM runtime-ът е plain malloc без bump арена
+  (`mem_*_bytes` там е явна грешка, като `mem_mark`/`mem_rewind`).
+- **Не замества RC** — метриката показва *обем*, не *обекти*; за live RC
+  обекти по allocation site виж `BAGA_ALLOC_STATS=1` под `--rc`
+  (watchdog нишка с backtrace сайтове).
+- Нишка, която излиза, не връща блоковете си — live ги брои до края на
+  процеса (те са наистина mapped).
+
 ---
 
 ## 13. Ефектова система

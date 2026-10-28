@@ -1148,6 +1148,36 @@ function and no `return` of the handle is a **compile error**. If
 no `drop` emits a warning (compilation continues). A returned ident is not
 a leak. Off unless flagged.
 
+#### MEM-6: arena telemetry (leak detector)
+
+Bump-arena leaks are silent by design — `--warn-leaks` only catches the
+compile-time-visible ones. MEM-6 adds runtime metrics that make unbounded
+growth *measurable and gate-able*:
+
+- `mem_arena_bytes() -> i64` — live: total `cap` of the blocks in the active
+  arena chain (all threads).
+- `mem_spare_bytes() -> i64` — blocks returned to the spare chain by
+  `mem_rewind`: reclaimed but still mapped (cache for future allocations).
+- `mem_peak_bytes() -> i64` — high-water of live. This is the metric that
+  catches the production leak class (a skipped `mem_rewind` ⇒ peak grows
+  every turn).
+
+Counters are process-wide (atomics) and updated **only at chunk boundaries**
+— new arena block, spare pop, rewind — never per allocation: the hot path
+pays nothing. They work without any flag.
+
+**`--leak-check`:** prints `baga mem: live=N spare=S peak=P` to stderr at
+program exit. If `BAGA_MEM_LIMIT` (bytes) is set and the peak exceeds it —
+`вероятен теч` (probable leak) and **exit 1** (CI gate; see
+`tests/mem_stats_test.baga` and the mux gate in `scripts/run_tests.sh`).
+
+Honest limits (v1): the persist region is not counted (separate mallocs,
+long-lived by design); C backend only (the LLVM runtime is plain malloc —
+`mem_*_bytes` is an explicit error there, like `mem_mark`/`mem_rewind`);
+this measures *volume*, not *objects* (for live RC objects by allocation
+site see `BAGA_ALLOC_STATS=1` under `--rc`); a thread that exits does not
+return its blocks — live counts them until process end (they are mapped).
+
 ---
 
 ## 13. The Effect System

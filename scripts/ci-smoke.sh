@@ -61,6 +61,9 @@ run tests/dav_test.baga
 need app-product/wopibaga/wopi.baga
 need app-product/s3baga/s3.baga
 
+echo "=== MEM-6 leak-check (арена телеметрия) ==="
+BAGA_MEM_LIMIT=1000000 run --leak-check tests/mem_stats_test.baga
+
 echo "=== filesize-global ==="
 bash "$ROOT/scripts/filesize-global.sh"
 

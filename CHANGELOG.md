@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### MEM-6 — арена телеметрия и leak детектор
+- Нови builtin-и (C бекенд): `mem_arena_bytes()` (live), `mem_spare_bytes()`
+  (reclaim-нат кеш), `mem_peak_bytes()` (high-water на live). Process-wide
+  атомици, обновявани само на chunk-граници (нов ABlk, spare pop, rewind) —
+  горещият път не плаща нищо; работят и без флаг.
+- `--leak-check`: summary `baga mem: live=… spare=… peak=…` на stderr при
+  изход; `BAGA_MEM_LIMIT` (байтове) надвишен ли е от peak-а → „вероятен теч"
+  и exit 1 (CI gate).
+- Gate-ове: `tests/mem_stats_test.baga` (растеж без rewind, ограничен peak
+  при mark/rewind дисциплина, spare кеш, drop/free-list неутралитет) и
+  boilaDB mux тестът под `--leak-check` с лимит 16 MB (измерен baseline
+  7.1 MB) — регресия на rewind-а от VPS инцидента вече гърми като червен
+  тест, не като OOM в продукция.
+- Документация: language-bg/en §MEM-6. Честни граници: persist регионът не
+  се брои (long-lived по дизайн), само C бекенд (LLVM е явна грешка),
+  метриката е обем не обекти (за RC обекти по site: `BAGA_ALLOC_STATS=1`).
+
 ### diagnostics — „имахте предвид …?“
 - C checker-ът (общ за двата backend-а) предлага най-близкото име при
   недефинирана променлива, непозната функция и непознато поле:

@@ -1,0 +1,66 @@
+// mem_stats_test — MEM-6: арена телеметрия (live/spare/peak) + rewind gate.
+//
+// Метриката, която лови VPS класа бъг (boilaDB, 2026-10): пропуснат
+// mem_rewind ⇒ арената расте неограничено при конкурентност. Броячите са
+// process-wide (всички нишки) и се обновяват само на chunk-граници — нов
+// ABlk, spare pop, rewind — затова горещият път не плаща нищо.
+//
+//   mem_arena_bytes() — live: cap на блоковете в активната верига
+//   mem_spare_bytes() — reclaim-нати от rewind, още mapped (кеш)
+//   mem_peak_bytes()  — high-water на live
+//
+// Persist регионът (отделни malloc-и) не се брои — long-lived по дизайн.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("  ok  ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // Инварианти
+    check("peak >= live", mem_peak_bytes() >= mem_arena_bytes())
+    check("live >= 0", mem_arena_bytes() >= 0)
+    check("spare >= 0", mem_spare_bytes() >= 0)
+
+    // Растеж без rewind — арената напредва (бъгът би изглеждал така)
+    let base = mem_arena_bytes()
+    let mut i: i64 = 0
+    while i < 200 {
+        let junk = concat("grow", i64_to_str(i))
+        let v = vec_new()
+        vec_push(v, i)
+        i = i + 1
+    }
+    check("live расте без rewind", mem_arena_bytes() > base)
+    let grown = mem_arena_bytes()
+
+    // mark/rewind дисциплина: всеки ход връща паметта си. peak не бива да
+    // напредва след първия ход — това е gate-ът срещу VPS инцидента.
+    let mut t: i64 = 0
+    while t < 300 {
+        let m = mem_mark()
+        let big = bytes_new(20000)
+        let junk = concat("turn", i64_to_str(t))
+        mem_rewind(m)
+        t = t + 1
+    }
+    check("rewind връща live на изходното", mem_arena_bytes() == grown)
+    check("peak е ограничен (първият ход + 1 блок)", mem_peak_bytes() <= grown + 65536)
+    check("spare пази върнатите блокове", mem_spare_bytes() >= 20000)
+    check("peak >= live след rewind", mem_peak_bytes() >= mem_arena_bytes())
+
+    // drop рециклира през free-list-а — не пипа chunk-броячите
+    let pre = mem_arena_bytes()
+    let mut k: i64 = 0
+    while k < 100 {
+        let v = vec_new()
+        vec_push(v, k)
+        drop(v)
+        k = k + 1
+    }
+    check("drop+reuse не расте арената", mem_arena_bytes() <= pre + 8192)
+}

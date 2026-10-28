@@ -1465,8 +1465,11 @@ LLVMValueRef llv_emit_expr_llvm(Node *n) {
             if (!fn && (strcmp(n->callee->name, "mem_mark") == 0 ||
                         strcmp(n->callee->name, "mem_rewind") == 0 ||
                         strcmp(n->callee->name, "mem_persist_begin") == 0 ||
+                        strcmp(n->callee->name, "mem_arena_bytes") == 0 ||
+                        strcmp(n->callee->name, "mem_spare_bytes") == 0 ||
+                        strcmp(n->callee->name, "mem_peak_bytes") == 0 ||
                         strcmp(n->callee->name, "mem_persist_end") == 0))
-                llv_llvm_unsupported("mem_mark/mem_rewind/mem_persist_* — само C бекенда; вж. docs/language-en.md");
+                llv_llvm_unsupported("mem_mark/mem_rewind/mem_persist_*/mem_*_bytes — само C бекенда; вж. docs/language-en.md");
             if (!fn) {
                 char buf[256];
                 snprintf(buf, sizeof buf, "вградена функция '%s'", n->callee->name);

@@ -45,6 +45,8 @@ static void usage(void) {
         "  --test-specs  Property-based тестване на ensures/requires договорите\n"
         "  --rc        Refcount паметов модел v0.1 (opt-in; C и LLVM backend)\n"
         "  --warn-leaks  MEM-3: предупреждение при scope-exit без drop/arena_free\n"
+        "  --leak-check  MEM-6: арена телеметрия — summary при изход; BAGA_MEM_LIMIT\n"
+        "                (байтове) надвишен ли е от peak-а → exit 1 (CI gate)\n"
         "  --verify    Статична верификация на requires/ensures (M0–M13 fragment)\n"
         "  --json      Машинно-четим JSON изход (с --verify)\n"
         "  -I <dir>    Директория за търсене на import (повтаряем)\n"
@@ -188,6 +190,7 @@ int main(int argc, char **argv) {
     int emit_c = 0;
     int rc = 0;
     int warn_leaks = 0;
+    int leak_check = 0;
     int dump_ast = 0;
     int dump_tokens = 0;
     int dump_specs = 0;
@@ -209,6 +212,7 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--emit-c") == 0) { emit_c = 1; }
         else if (strcmp(argv[i], "--rc") == 0) { rc = 1; }
         else if (strcmp(argv[i], "--warn-leaks") == 0) { warn_leaks = 1; }
+        else if (strcmp(argv[i], "--leak-check") == 0) { leak_check = 1; }
         else if (strcmp(argv[i], "--check") == 0 || strcmp(argv[i], "--lib") == 0) {
             check_only = 1;
         }
@@ -383,6 +387,7 @@ int main(int argc, char **argv) {
         Codegen cg;
         cg.test_specs = test_specs;
         cg.rc = rc;
+        cg.leak_check = leak_check;
         cg.chk = &checker;
         codegen_c(&cg, program, stdout);
     } else {
@@ -400,6 +405,7 @@ int main(int argc, char **argv) {
         Codegen cg;
         cg.test_specs = test_specs;
         cg.rc = rc;
+        cg.leak_check = leak_check;
         cg.chk = &checker;
         codegen_c(&cg, program, cf);
         fclose(cf);

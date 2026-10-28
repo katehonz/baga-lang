@@ -621,6 +621,8 @@ typedef struct {
     int   test_specs;   /* --test-specs: генерирай тестов драйвър вместо main */
     FILE *lambda_out;   /* L5: env struct-ове + ламбда wrapper-и (преди телата) */
     int   rc;           /* RC1: --rc refcount паметов модел (opt-in) */
+    int   leak_check;   /* MEM-6: --leak-check — арена телеметрия + summary при
+                         * изход + BAGA_MEM_LIMIT gate (peak > лимит → exit 1) */
     VEC(RcLocal) rc_locals;  /* RC1: стек от track-нати локали */
     VEC(RcScope) rc_scopes;  /* RC1: scope граници (индекс + loop флаг) */
     int   rc_fn_base;   /* RC1: scope индекс на текущата fn/ламбда (return
