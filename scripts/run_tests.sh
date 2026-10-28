@@ -538,6 +538,24 @@ printf "30\n2\n" | diff - /tmp/baga_par_sel_out.txt > /dev/null \
 	&& echo "OK: chan_select2_wait/timeout" \
 	|| { echo "FAIL: par_select"; cat /tmp/baga_par_sel_out.txt; exit 1; }
 
+echo "=== диагностика: „имахте предвид …?“ ==="
+printf 'fn main() {\n    let count = 1\n    print(cont)\n}\n' > /tmp/baga_sugg_var.baga
+run /tmp/baga_sugg_var.baga 2>&1 | grep -q "недефинирана променлива 'cont' — имахте предвид 'count'?" \
+	&& echo "OK: подсказка при недефинирана променлива" \
+	|| { echo "FAIL: подсказка променлива"; run /tmp/baga_sugg_var.baga; exit 1; }
+printf 'fn main() {\n    let v = vec_new()\n    vec_push(v, 1)\n    print(vec_lne(v))\n}\n' > /tmp/baga_sugg_fn.baga
+run /tmp/baga_sugg_fn.baga 2>&1 | grep -q "непозната функция 'vec_lne' — имахте предвид 'vec_len'?" \
+	&& echo "OK: подсказка при непозната функция (builtin)" \
+	|| { echo "FAIL: подсказка функция"; run /tmp/baga_sugg_fn.baga; exit 1; }
+printf 'struct P { x: i64, total: i64 }\nfn main() {\n    let p = P { x: 1, total: 2 }\n    print(p.totla)\n}\n' > /tmp/baga_sugg_field.baga
+run /tmp/baga_sugg_field.baga 2>&1 | grep -q "непознато поле '.totla' — имахте предвид '.total'?" \
+	&& echo "OK: подсказка при непознато поле (транспозиция)" \
+	|| { echo "FAIL: подсказка поле"; run /tmp/baga_sugg_field.baga; exit 1; }
+printf 'fn main() {\n    let count = 1\n    print(zzzzzz)\n}\n' > /tmp/baga_sugg_far.baga
+run /tmp/baga_sugg_far.baga 2>&1 | grep -q "недефинирана променлива 'zzzzzz'$" \
+	&& echo "OK: без подсказка при далечно име" \
+	|| { echo "FAIL: далечно име не трябва да подсказва"; run /tmp/baga_sugg_far.baga; exit 1; }
+
 echo "=== Map/Vec call-site inference + binary I/O probes ==="
 printf 'fn main() {\n    let m: Map<str, i64> = map_new()\n    map_set(m, "a", "текст")\n}\n' > /tmp/baga_map_bad.baga
 run /tmp/baga_map_bad.baga 2>&1 | grep -q "стойност от тип str, но картата е Map<str, i64>" \

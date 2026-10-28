@@ -1059,11 +1059,36 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
 
         /* L5: локална, която не е fn стойност — по-ясна диагностика */
         Type *lt_local = env_lookup(ctx, name);
-        if (lt_local)
+        if (lt_local) {
             check_error(ctx, n->pos, "извикване на не-функция '%s' (%s)",
                         name, type_str(lt_local));
-        else
-            check_error(ctx, n->pos, "непозната функция '%s'", name);
+        } else {
+            /* Подсказка „имахте предвид …?“. Специалните builtin-и по-горе
+             * (vec_*, map_*, go, …) не са в таблицата builtins[] — при нов
+             * такъв builtin го добави и тук, иначе просто няма подсказка. */
+            static const char *const special[] = {
+                "print", "println", "write", "sorted", "drop",
+                "vec_new", "vec_push", "vec_set", "vec_push_str", "vec_set_str",
+                "vec_get", "vec_get_str", "vec_len", "vec_slice", "vec_concat",
+                "vec_from_bytes", "bytes_from_vec",
+                "map_new", "map_set", "map_get", "map_has", "map_del",
+                "map_len", "map_keys", "map_h", "h_map", "bytes_h", "h_bytes",
+                "go", "go_bg", "pool_map",
+            };
+            int nb = (int)(sizeof builtins / sizeof builtins[0]);
+            int ns = (int)(sizeof special / sizeof special[0]);
+            const char *fcands[ctx->n_fns + nb + ns];
+            int nfc = 0;
+            for (int fi = 0; fi < ctx->n_fns; fi++) fcands[nfc++] = ctx->fns[fi].name;
+            for (int bi = 0; bi < nb; bi++) fcands[nfc++] = builtins[bi].name;
+            for (int si = 0; si < ns; si++) fcands[nfc++] = special[si];
+            const char *fsugg = ck_suggest(name, fcands, nfc);
+            if (fsugg)
+                check_error(ctx, n->pos, "непозната функция '%s' — имахте предвид '%s'?",
+                            name, fsugg);
+            else
+                check_error(ctx, n->pos, "непозната функция '%s'", name);
+        }
         return type_new(TYPE_ERROR);
     }
 

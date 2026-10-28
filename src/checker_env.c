@@ -765,6 +765,48 @@ void mem3_drop_handle(CheckCtx *ctx, EnvEntry *h) {
     }
 }
 
+/* „Имахте предвид …?“ — Damerau–Levenshtein разстояние (optimal string
+ * alignment: съседната транспозиция е 1 редакция, „totla“→„total“).
+ * Имена над 63 байта не се подсказват (връщаме 99) — матрицата е фиксирана. */
+static int ck_edit_dist(const char *a, const char *b) {
+    int la = (int)strlen(a), lb = (int)strlen(b);
+    if (la == 0 || lb == 0 || la > 63 || lb > 63) return 99;
+    int d[64][64];
+    for (int i = 0; i <= la; i++) d[i][0] = i;
+    for (int j = 0; j <= lb; j++) d[0][j] = j;
+    for (int i = 1; i <= la; i++) {
+        for (int j = 1; j <= lb; j++) {
+            int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+            int v = d[i - 1][j] + 1;
+            if (d[i][j - 1] + 1 < v) v = d[i][j - 1] + 1;
+            if (d[i - 1][j - 1] + cost < v) v = d[i - 1][j - 1] + cost;
+            if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] &&
+                d[i - 2][j - 2] + 1 < v)
+                v = d[i - 2][j - 2] + 1;
+            d[i][j] = v;
+        }
+    }
+    return d[la][lb];
+}
+
+/* Най-близкият кандидат в рамките на прага: 1 редакция за имена 3–5 байта,
+ * 2 за по-дълги. Под 3 байта не подсказваме — там всичко прилича на всичко.
+ * При равно разстояние печели по-ранният кандидат (при променливи това е
+ * най-вътрешният scope). */
+const char *ck_suggest(const char *name, const char *const *cands, int n) {
+    size_t len = strlen(name);
+    if (len < 3) return NULL;
+    int limit = len >= 6 ? 2 : 1;
+    int best = limit + 1;
+    const char *pick = NULL;
+    for (int i = 0; i < n; i++) {
+        if (!cands[i]) continue;
+        int dist = ck_edit_dist(name, cands[i]);
+        if (dist < best) { best = dist; pick = cands[i]; }
+    }
+    return best <= limit ? pick : NULL;
+}
+
 /* MEM-2: като env_lookup, но връща самата EnvEntry (за drop seatbelt-а).
  * env_lookup пази подписа си. */
 EnvEntry *ck_env_find(CheckCtx *ctx, const char *name) {

@@ -170,7 +170,20 @@ Type *infer(CheckCtx *ctx, Node *n) {
                 t = type_new(TYPE_VOID);
                 break;
             }
-            check_error(ctx, n->pos, "недефинирана променлива '%s'", n->name);
+            int ncand = 0;
+            for (int si = 0; si <= ctx->depth; si++)
+                ncand += ctx->scopes[si].count;
+            const char *vcands[ncand > 0 ? ncand : 1];
+            int nvc = 0;
+            for (int si = ctx->depth; si >= 0; si--)
+                for (int ei = 0; ei < ctx->scopes[si].count; ei++)
+                    vcands[nvc++] = ctx->scopes[si].entries[ei].name;
+            const char *vsugg = ck_suggest(n->name, vcands, nvc);
+            if (vsugg)
+                check_error(ctx, n->pos, "недефинирана променлива '%s' — имахте предвид '%s'?",
+                            n->name, vsugg);
+            else
+                check_error(ctx, n->pos, "недефинирана променлива '%s'", n->name);
             t = type_new(TYPE_ERROR);
             break;
         }
@@ -298,7 +311,24 @@ Type *infer(CheckCtx *ctx, Node *n) {
                 }
             }
             if (!t) {
-                check_error(ctx, n->pos, "непознато поле '.%s'", n->field_name);
+                const char *fsugg = NULL;
+                if (ot && ot->kind == TYPE_STRUCT && ot->name) {
+                    for (int si = 0; si < ctx->n_structs; si++) {
+                        if (strcmp(ctx->structs[si].name, ot->name) != 0) continue;
+                        Node *sd = ctx->structs[si].decl;
+                        int nf = sd->fields.len;
+                        const char *fcands[nf > 0 ? nf : 1];
+                        for (int fi = 0; fi < nf; fi++)
+                            fcands[fi] = sd->fields.data[fi]->fld_name;
+                        fsugg = ck_suggest(n->field_name, fcands, nf);
+                        break;
+                    }
+                }
+                if (fsugg)
+                    check_error(ctx, n->pos, "непознато поле '.%s' — имахте предвид '.%s'?",
+                                n->field_name, fsugg);
+                else
+                    check_error(ctx, n->pos, "непознато поле '.%s'", n->field_name);
                 t = type_new(TYPE_ERROR);
             }
             break;
