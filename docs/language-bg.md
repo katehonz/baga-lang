@@ -1167,6 +1167,35 @@ print(mem_peak_bytes())   // high-water — не расте между ходо�
 - Нишка, която излиза, не връща блоковете си — live ги брои до края на
   процеса (те са наистина mapped).
 
+#### W0: светове — региони с ownership/freeze дисциплина
+
+„Свят" е регион-арена (отделна malloc верига, не thread-local bump-а) с
+едно допълнително състояние: **frozen**. Идеята (Verona linear regions /
+Pony iso дух) е цял граф от данни — включително цикли, които RC не може —
+да е една прехвърляема, замразяема стойност:
+
+```baga
+let w = world_new()            // 0 = mutable
+let p = world_alloc(w, 64)     // bump вътре в света
+world_freeze(w)                // 1 = frozen — вече само за четене
+let ch = chan_new(1)
+chan_send(ch, w)               // move: собствеността пътува (zero-copy)
+world_free(w)                  // 2 = freed — целият свят наведнъж
+```
+
+- `world_new() -> i64`, `world_alloc(w, n) -> i64`, `world_freeze(w) -> i64`,
+  `world_state(w) -> i64` (0/1), `world_free(w)`.
+- **Верификаторът** (`--verify`) води HK_WORLD ghost протокол (като MEM-2
+  drop) и ОБОРВА с контрапример: mutate-after-freeze (`world_alloc` върху
+  замразен), use-after-free, use-after-move (локална употреба след
+  `chan_send`), повторен freeze/free. Оркъл: `examples/verify/worlds.baga`.
+- **Runtime seatbelt**: `world_alloc` върху замразен свят е чиста грешка
+  (exit 1), не UB.
+- Честни граници на W0: протоколът е по име на променливата (алиаси не се
+  проследяват — MEM-1 договор); move се моделира само през `chan_send`
+  (go-аргумент е следваща стъпка); payload-ите са сурови офсети — typed
+  относителни контейнери идват в W1; само C бекенда (като `mem_*`/`arena_*`).
+
 ---
 
 ## 13. Ефектова система

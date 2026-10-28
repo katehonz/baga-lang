@@ -1403,10 +1403,10 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     }
     fprintf(out, "static void baga_drop_fn(int64_t h) { baga_cell2_free(h); }\n");
     fprintf(out, "\n/* arena allocator: bump allocation, free-all-at-once */\n");
-    fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; } baga_Arena;\n");
+    fprintf(out, "typedef struct { char *base; int64_t used; int64_t cap; int64_t frozen; } baga_Arena;\n");
     fprintf(out, "static int64_t baga_arena_new(void) {\n");
     fprintf(out, "    baga_Arena *a = malloc(sizeof(baga_Arena));\n");
-    fprintf(out, "    a->cap = 65536; a->used = 0; a->base = malloc((size_t)a->cap);\n");
+    fprintf(out, "    a->cap = 65536; a->used = 0; a->frozen = 0; a->base = malloc((size_t)a->cap);\n");
     fprintf(out, "    return (int64_t)(intptr_t)a;\n");
     fprintf(out, "}\n");
     fprintf(out, "static int64_t baga_arena_alloc(int64_t h, int64_t size) {\n");
@@ -1430,6 +1430,29 @@ void codegen_c(Codegen *cg, Node *program, FILE *out) {
     fprintf(out, "    if (!a) return;\n");
     fprintf(out, "    free(a->base); free(a);\n");
     fprintf(out, "}\n");
+    /* W0: светове — регион с ownership/freeze дисциплина. Runtime-ът е
+     * арената + frozen бит (seatbelt: чиста грешка при alloc в замразен
+     * свят); протоколът use-after-free/use-after-move/mutate-after-freeze
+     * се ДОКАЗВА/ОБОРВА от верификатора (HK_WORLD ghost, като HK_DROP). */
+    fprintf(out, "static int64_t baga_world_new(void) { return baga_arena_new(); }\n");
+    fprintf(out, "static int64_t baga_world_alloc(int64_t h, int64_t size) {\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: world_alloc: null handle\\n\"); exit(1); }\n");
+    fprintf(out, "    if (a->frozen) { fprintf(stderr, \"baga: world_alloc върху замразен свят — mutate-after-freeze\\n\"); exit(1); }\n");
+    fprintf(out, "    return baga_arena_alloc(h, size);\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_world_freeze(int64_t h) {\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    if (!a) { fprintf(stderr, \"baga: world_freeze: null handle\\n\"); exit(1); }\n");
+    fprintf(out, "    a->frozen = 1;\n");
+    fprintf(out, "    return 1;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static int64_t baga_world_state(int64_t h) {\n");
+    fprintf(out, "    baga_Arena *a = (baga_Arena *)(intptr_t)h;\n");
+    fprintf(out, "    if (!a) return 0 - 1;\n");
+    fprintf(out, "    return a->frozen;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static void baga_world_free(int64_t h) { baga_arena_free(h); }\n");
     fprintf(out, "\n");
     /* ---- concurrency (!Par): OS threads + i64 channels (CSP) ---- */
     /* heap pair first — used by chan_recv2 and as worker context packing */

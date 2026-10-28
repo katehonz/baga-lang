@@ -814,6 +814,22 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
     }
     /* chan_send */
     if (e) { wf_check_send(st, ob, e); e->n_send++; }   /* M24: full-buffer */
+    /* W0: изпращане на свят през канал = прехвърляне на собствеността
+     * (move, Pony iso стил). Локалният handle минава в state 3 — всяка
+     * по-нататъшна локална употреба е use-after-move (ОБРОЧЕНО). Изпращане
+     * на вече освободен свят е use-after-free. */
+    if (call->args.len >= 2 && call->args.data[1] && call->args.data[1]->kind == NODE_IDENT) {
+        HandleEntry *we = handles_find(&st->handles, call->args.data[1]->name);
+        if (we && we->kind == HK_WORLD) {
+            if (we->state == 2) {
+                char wlabel[300];
+                snprintf(wlabel, sizeof wlabel, "chan_send на освободен свят '%s'", we->var);
+                push_protocol_violation(st, ob, wlabel);
+            } else if (we->state != 3) {
+                we->state = 3;
+            }
+        }
+    }
     Sym v = se_from_ast(call->args.data[1], &st->env, &st->vlen, &st->reads);
     /* M16: the payload must provably satisfy every content axiom anchored on
      * this channel; an axiom that cannot be discharged is dropped (M3 rule —
@@ -872,24 +888,80 @@ void eval_drop_call(Node *call, State *st, Obligations *ob) {
     }
 }
 
+/* W0: world_* преходи на HK_WORLD ghost състоянието (като eval_drop_call,
+ * но с четири състояния): 0 mutable → 1 frozen → 2 freed; 3 = moved
+ * (собствеността е прехвърлена през chan_send). Нарушение на жив път →
+ * ОБРОЧЕНО с контрапример; на мъртъв път — vacuously PROVEN. Непроследен
+ * handle (потребителски shadow, чужд ident) не прави твърдения. */
+void eval_world_call(Node *call, State *st, Obligations *ob) {
+    if (!is_world_op_call(call)) return;
+    const char *op = call->callee->name;
+    const char *wn = call->args.data[0]->name;
+    HandleEntry *e = handles_find(&st->handles, wn);
+    if (!e || e->kind != HK_WORLD) return;
+    char label[300];
+    const char *viol = NULL;
+    if (strcmp(op, "world_freeze") == 0) {
+        if (e->state == 0) {
+            e->state = 1;
+        } else if (e->state == 1) {
+            snprintf(label, sizeof label, "повторен freeze на '%s'", wn); viol = label;
+        } else if (e->state == 2) {
+            snprintf(label, sizeof label, "freeze след world_free на '%s'", wn); viol = label;
+        } else {
+            snprintf(label, sizeof label, "freeze след move на '%s'", wn); viol = label;
+        }
+    } else if (strcmp(op, "world_free") == 0) {
+        if (e->state == 0 || e->state == 1) {
+            e->state = 2;
+        } else if (e->state == 2) {
+            snprintf(label, sizeof label, "повторен world_free на '%s'", wn); viol = label;
+        } else {
+            snprintf(label, sizeof label, "world_free след move на '%s'", wn); viol = label;
+        }
+    } else if (strcmp(op, "world_alloc") == 0) {
+        if (e->state == 1) {
+            snprintf(label, sizeof label, "mutate-after-freeze: world_alloc върху замразен '%s'", wn); viol = label;
+        } else if (e->state == 2) {
+            snprintf(label, sizeof label, "world_alloc след world_free на '%s'", wn); viol = label;
+        } else if (e->state == 3) {
+            snprintf(label, sizeof label, "world_alloc след move на '%s'", wn); viol = label;
+        }
+    }
+    if (viol) push_protocol_violation(st, ob, viol);
+}
+
 /* MEM-2: flag ident USES of an already-dropped buffer anywhere in a
  * statement-level expression (call args, operands). `seen` dedups per
- * statement, so one statement yields at most one violation per variable. */
+ * statement, so one statement yields at most one violation per variable.
+ * W0: същият проход покрива и светове в state 2 (freed) / 3 (moved);
+ * world_* op-викове се пропускат — техните нарушения ги лови
+ * eval_world_call (иначе едно нещо дава два етикета). */
 static void check_drop_uses_rec(Node *e, State *st, Obligations *ob, const char **seen, int *nseen) {
     if (!e) return;
     switch (e->kind) {
     case NODE_IDENT: {
         HandleEntry *h = handles_find(&st->handles, e->name);
-        if (!h || h->kind != HK_DROP || h->state != 1) return;
+        if (!h) return;
+        const char *what = NULL;
+        if (h->kind == HK_DROP && h->state == 1) {
+            what = "използване след drop на '%s'";
+        } else if (h->kind == HK_WORLD && h->state == 2) {
+            what = "използване след world_free на '%s'";
+        } else if (h->kind == HK_WORLD && h->state == 3) {
+            what = "използване след move на '%s'";
+        }
+        if (!what) return;
         for (int k = 0; k < *nseen; k++) if (strcmp(seen[k], e->name) == 0) return;
         if (*nseen < 16) seen[(*nseen)++] = e->name;
         char label[300];
-        snprintf(label, sizeof label, "използване след drop на '%s'", e->name);
+        snprintf(label, sizeof label, what, e->name);
         push_protocol_violation(st, ob, label);
         return;
     }
     case NODE_CALL:
         if (is_drop_call(e)) return;   /* drop consumes the buffer; not a "use" */
+        if (is_world_op_call(e)) return;   /* W0: eval_world_call ги проверява */
         for (int i = 0; i < e->args.len; i++) check_drop_uses_rec(e->args.data[i], st, ob, seen, nseen);
         return;
     case NODE_BINARY:

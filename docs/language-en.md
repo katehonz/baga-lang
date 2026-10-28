@@ -1178,6 +1178,26 @@ this measures *volume*, not *objects* (for live RC objects by allocation
 site see `BAGA_ALLOC_STATS=1` under `--rc`); a thread that exits does not
 return its blocks — live counts them until process end (they are mapped).
 
+#### W0: worlds — regions with ownership/freeze discipline
+
+A "world" is a region arena (its own malloc chain, not the thread-local
+bump arena) with one extra state: **frozen**. The idea (Verona linear
+regions / Pony `iso` spirit): a whole data graph — including cycles that
+RC cannot handle — as a single transferable, freezable value:
+
+- `world_new() -> i64`, `world_alloc(w, n) -> i64`, `world_freeze(w) -> i64`,
+  `world_state(w) -> i64` (0/1), `world_free(w)`.
+- The **verifier** (`--verify`) tracks an HK_WORLD ghost protocol (like
+  MEM-2 drop) and REFUTES with a counterexample: mutate-after-freeze,
+  use-after-free, use-after-move (local use after `chan_send` transferred
+  ownership), double freeze/free. Oracle: `examples/verify/worlds.baga`.
+- **Runtime seatbelt**: `world_alloc` on a frozen world is a clean error
+  (exit 1), not UB.
+- Honest W0 limits: the protocol is keyed by variable name (aliases are
+  not tracked — the MEM-1 contract); move is modeled only through
+  `chan_send` (go-arguments are the next step); payloads are raw offsets —
+  typed relative containers land in W1; C backend only (like `mem_*`).
+
 ---
 
 ## 13. The Effect System

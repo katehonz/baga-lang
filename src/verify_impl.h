@@ -114,6 +114,12 @@ extern int g_json_first;
 #define HK_DROP 3   /* MEM-2: alloc→drop; states: 0=live, 1=dropped.
                        * Keyed by the SOURCE variable name (Vec/Map/bytes are
                        * opaque, not symbolic Lin values), unlike M14 handles. */
+#define HK_WORLD 4  /* W0: светове — mutable(0) → frozen(1) → freed(2);
+                       * 3 = moved (собствеността е прехвърлена през chan_send).
+                       * Нарушения: mutate-after-freeze (alloc върху 1),
+                       * use-after-free (2), use-after-move (3), повторен
+                       * freeze/free. Keyed by source variable name като
+                       * HK_DROP; светът е opaque i64 handle, не Lin. */
 #define AK_FIT  1   /* aux1 (linear result form) must fit i64 */
 #define AK_MUL  2   /* aux1 * aux2 (factor forms) must fit i64 */
 #define AK_DIVZ 3   /* aux2 (divisor) != 0; not (aux1 = INT64_MIN && aux2 = -1) */
@@ -206,6 +212,10 @@ int is_vec_builtin_call(Node *n);   /* 1668 */
 int is_par_builtin_call(Node *n);   /* 1688 */
 int is_drop_call(Node *n);   /* 1704 */
 int is_mem_alloc_call(Node *n);   /* 1715 */
+int is_world_new_call(Node *n);   /* W0: world_new() */
+int is_world_op_call(Node *n);    /* W0: world_alloc/world_freeze/world_free — пипат състоянието */
+int is_world_expr_call(Node *n);  /* W0: world_new/world_alloc/world_state — изразни */
+int is_world_stmt_call(Node *n);  /* W0: world_freeze/world_free — statement-level (като drop) */
 int has_unsupported(Node *n);   /* 1821 */
 int symexec_while(Node *st, States *states, Obligations *ob, int is_nonvoid, Node *spec);   /* 1928 */
 const char *resolve_key(Node *act, State *st, char *buf, size_t n);   /* 2064 */
@@ -223,6 +233,7 @@ void push_protocol_violation(State *st, Obligations *ob, const char *label);   /
 void push_protocol_ok(State *st, Obligations *ob, const char *label);   /* 2936 */
 Sym eval_par_call(Node *call, State *st, Obligations *ob);   /* 3588 */
 void eval_drop_call(Node *call, State *st, Obligations *ob);   /* 3817 */
+void eval_world_call(Node *call, State *st, Obligations *ob);  /* W0: HK_WORLD преходи */
 void check_drop_uses(Node *e, State *st, Obligations *ob);   /* 3860 */
 void scan_arith_expr(Node *e, State *st, Obligations *ob);   /* 3891 */
 void push_term_entry_obl(Node *fn, Node *spec, State *init, Obligations *ob);   /* 3970 */

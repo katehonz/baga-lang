@@ -472,6 +472,40 @@ int is_mem_alloc_call(Node *n) {
            strcmp(nm, "bytes_new") == 0;
 }
 
+/* W0: светове — регион с ownership/freeze протокол (HK_WORLD). Runtime-ът
+ * е арената + frozen бит; тук е само разпознаването за гейта и ghost
+ * машинерията. Потребителска fn със същото име shadow-ва builtin-а —
+ * същият guard като при drop (find_fn). */
+static int world_builtin_shadowed(const char *nm) {
+    return g_prog && find_fn(g_prog, nm);
+}
+int is_world_new_call(Node *n) {
+    if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    return strcmp(n->callee->name, "world_new") == 0 && n->args.len == 0 &&
+           !world_builtin_shadowed("world_new");
+}
+int is_world_op_call(Node *n) {
+    if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    const char *nm = n->callee->name;
+    int is_op = strcmp(nm, "world_alloc") == 0 || strcmp(nm, "world_freeze") == 0 ||
+                strcmp(nm, "world_free") == 0;
+    if (!is_op || world_builtin_shadowed(nm)) return 0;
+    return n->args.len >= 1 && n->args.data[0]->kind == NODE_IDENT;
+}
+int is_world_expr_call(Node *n) {
+    if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    const char *nm = n->callee->name;
+    int is_expr = strcmp(nm, "world_new") == 0 || strcmp(nm, "world_alloc") == 0 ||
+                  strcmp(nm, "world_state") == 0;
+    return is_expr && !world_builtin_shadowed(nm);
+}
+int is_world_stmt_call(Node *n) {
+    if (!n || n->kind != NODE_CALL || !n->callee || n->callee->kind != NODE_IDENT) return 0;
+    const char *nm = n->callee->name;
+    int is_stmt = strcmp(nm, "world_freeze") == 0 || strcmp(nm, "world_free") == 0;
+    return is_stmt && !world_builtin_shadowed(nm);
+}
+
 /* M14 shallow gate for a par builtin call: right arity; for go/go_bg the
  * worker must be a user fn (i64) -> i64 whose only allowed effect is Par
  * itself (channel-using workers are Par by construction); any other effect
@@ -533,6 +567,17 @@ static int has_unsupported_rec(Node *n, int flat, int in_expr) {
         /* MEM-2: map_new/bytes_new — owned opaque buffers; allowed like the
          * vec builtins (vec_new itself is covered by is_vec_builtin_call). */
         if (is_mem_alloc_call(n)) {
+            for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
+            return 0;
+        }
+        /* W0: world_freeze/world_free — statement-level дисциплина като drop
+         * (никога в цикъл или вложен в израз). */
+        if (is_world_stmt_call(n)) {
+            if (flat || in_expr) return 1;
+            return 0;
+        }
+        /* W0: world_new/world_alloc/world_state — изразни (като mem allocs). */
+        if (is_world_expr_call(n)) {
             for (int i = 0; i < n->args.len; i++) if (has_unsupported_rec(n->args.data[i], flat, 1)) return 1;
             return 0;
         }

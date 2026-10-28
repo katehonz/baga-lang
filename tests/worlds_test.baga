@@ -1,0 +1,51 @@
+// worlds_test — W0 runtime: жизнен цикъл на свят (регион-арена + frozen бит).
+//
+// Протоколните нарушения (mutate-after-freeze, use-after-free/move, двоен
+// freeze/free) се ДОКАЗВАТ/ОБОРВАТ от --verify върху
+// examples/verify/worlds.baga — тук е функционалната страна: handle-ите са
+// живи, alloc-ът връща различни ненулеви офсети, freeze сменя състоянието,
+// а MEM-6 телеметрията вижда освобождаването на света.
+
+fn check(name: str, ok: bool) {
+    if ok {
+        print(concat("ok ", name))
+    } else {
+        eprintln(concat("FAIL ", name))
+        exit(1)
+    }
+}
+
+fn main() {
+    // Светът е отделна malloc арена — не пипа thread-local bump арената.
+    // Измерването е около чисти world-операции (низ-операциите биха
+    // bump-нали между двете четения).
+    let before = mem_arena_bytes()
+    let w0 = world_new()
+    let a0 = world_alloc(w0, 64)
+    let after = mem_arena_bytes()
+    world_free(w0)
+    check("world_outside_bump", after == before)
+
+    let w = world_new()
+    check("new_mutable", world_state(w) == 0)
+
+    let p1 = world_alloc(w, 64)
+    let p2 = world_alloc(w, 64)
+    check("alloc_nonzero", p1 > 0 && p2 > 0)
+    check("alloc_distinct", p1 != p2)
+
+    world_freeze(w)
+    check("frozen", world_state(w) == 1)
+    world_free(w)
+
+    // Втори свят след free на първия — handle-ите са независими.
+    let w2 = world_new()
+    check("second_new_mutable", world_state(w2) == 0)
+    let q = world_alloc(w2, 4096)
+    check("second_alloc", q > 0)
+    world_freeze(w2)
+    check("second_frozen", world_state(w2) == 1)
+    world_free(w2)
+
+    print("worlds_test: all passed")
+}

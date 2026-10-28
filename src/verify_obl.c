@@ -643,6 +643,12 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
                  * alloc→drop protocol for this source variable */
                 if (is_mem_alloc_call(st->let_init))
                     handles_set(&states->s[i].handles, st->let_name, HK_DROP, 0, NULL);
+                /* W0: свеж свят — HK_WORLD стартира от mutable; world_alloc
+                 * в init проверява frozen/freed състоянието на източника */
+                if (is_world_new_call(st->let_init))
+                    handles_set(&states->s[i].handles, st->let_name, HK_WORLD, 0, NULL);
+                if (is_world_op_call(st->let_init))
+                    eval_world_call(st->let_init, &states->s[i], ob);
                 /* a fresh vec_new() has length 0 */
                 if (st->let_init && st->let_init->kind == NODE_CALL && st->let_init->callee->kind == NODE_IDENT &&
                     strcmp(st->let_init->callee->name, "vec_new") == 0)
@@ -687,6 +693,8 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
         } else if (st->kind == NODE_RETURN) {
             for (int i = 0; i < states->n; i++) scan_arith_expr(st->ret_val, &states->s[i], ob);   /* M15 */
             for (int i = 0; i < states->n; i++) check_drop_uses(st->ret_val, &states->s[i], ob);   /* MEM-2 */
+            for (int i = 0; i < states->n; i++)
+                if (is_world_op_call(st->ret_val)) eval_world_call(st->ret_val, &states->s[i], ob);   /* W0 */
             if (is_user_call(st->ret_val)) {   /* M5 */
                 for (int i = 0; i < states->n; i++) {
                     Sym r = eval_user_call(st->ret_val, &states->s[i], ob, g_caller_name);
@@ -711,6 +719,8 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
         } else if (st->kind == NODE_EXPR_STMT && last && is_nonvoid) {
             for (int i = 0; i < states->n; i++) scan_arith_expr(st->expr, &states->s[i], ob);   /* M15 */
             for (int i = 0; i < states->n; i++) check_drop_uses(st->expr, &states->s[i], ob);   /* MEM-2 */
+            for (int i = 0; i < states->n; i++)
+                if (is_world_op_call(st->expr)) eval_world_call(st->expr, &states->s[i], ob);   /* W0 */
             if (is_user_call(st->expr)) {   /* M5 */
                 for (int i = 0; i < states->n; i++) {
                     Sym r = eval_user_call(st->expr, &states->s[i], ob, g_caller_name);
@@ -748,6 +758,10 @@ void symexec_stmts(NodeVec *stmts, States *states, Obligations *ob, int is_nonvo
                 }
                 if (is_drop_call(st->expr)) {   /* MEM-2: consume the buffer */
                     eval_drop_call(st->expr, &states->s[i], ob);
+                    continue;
+                }
+                if (is_world_op_call(st->expr)) {   /* W0: freeze/free/alloc на свят */
+                    eval_world_call(st->expr, &states->s[i], ob);
                     continue;
                 }
                 check_drop_uses(st->expr, &states->s[i], ob);   /* MEM-2 */

@@ -1,0 +1,137 @@
+// worlds.baga — W0: светове (региони с ownership/freeze дисциплина).
+//
+// HK_WORLD ghost протокол (като MEM-2 drop, но с четири състояния):
+//   0 mutable → 1 frozen → 2 freed;  3 = moved (chan_send прехвърля
+//   собствеността — Pony iso стил, Verona linear-region дух).
+// Нарушение на жив път → ОБРОЧЕНО с контрапример; на мъртъв път →
+// vacuously PROVEN (M8/MEM-2 дисциплина). Runtime-ът е арената + frozen
+// бит (seatbelt: world_alloc върху замразен свят е чиста грешка);
+// доказателството е тук.
+//
+// Честни граници на W0: протоколът е по ИМЕ на променливата (алиаси не се
+// проследяват — MEM-1 договор); move се моделира само през chan_send
+// (go-аргумент е W0.5); cross-world capability връзки още ги няма.
+//
+//   ./baga --verify examples/verify/worlds.baga
+
+spec ok_lifecycle {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Чист жизнен цикъл: new → alloc → freeze → state → free.
+fn ok_lifecycle(n: i64) -> i64 {
+    let w = world_new()
+    let p = world_alloc(w, 64)
+    world_freeze(w)
+    let s = world_state(w)
+    world_free(w)
+    return n - n
+}
+
+spec ok_shared_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Легалното zero-copy споделяне: замразен свят минава през канал —
+// move-ът на FROZEN свят не е нарушение (собствеността пътува, писатели
+// няма). Приемникът би четнал offset-платформата в W1.
+fn ok_shared_frozen(n: i64) -> i64 !Par {
+    let w = world_new()
+    let p = world_alloc(w, 64)
+    world_freeze(w)
+    let ch = chan_new(1)
+    chan_send(ch, w)
+    chan_close(ch)
+    return n - n
+}
+
+spec bad_freeze_mutate {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Мутиране след freeze — скрито зад if-клон (прав път е само при n > 0).
+fn bad_freeze_mutate(n: i64) -> i64 {
+    let w = world_new()
+    if n > 0 {
+        world_freeze(w)
+        let p = world_alloc(w, 16)
+    }
+    world_free(w)
+    return 0
+}
+
+spec bad_double_free {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Двоен free — вторият е зад if, така че checker-ът не го хваща праволинейно.
+fn bad_double_free(n: i64) -> i64 {
+    let w = world_new()
+    world_free(w)
+    if n > 0 {
+        world_free(w)
+    }
+    return 0
+}
+
+spec bad_use_after_free {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Четене на състоянието след free — use-after-free.
+fn bad_use_after_free(n: i64) -> i64 {
+    let w = world_new()
+    world_free(w)
+    if n > 0 {
+        let s = world_state(w)
+    }
+    return 0
+}
+
+spec bad_use_after_move {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Собствеността е прехвърлена през chan_send — локалният freeze след това
+// е use-after-move (двама писатели върху един свят = race).
+fn bad_use_after_move(n: i64) -> i64 !Par {
+    let w = world_new()
+    let ch = chan_new(1)
+    chan_send(ch, w)
+    if n > 0 {
+        world_freeze(w)
+    }
+    chan_close(ch)
+    return 0
+}
+
+fn main() {
+    print(ok_lifecycle(1))
+    print(bad_freeze_mutate(0))
+    print(bad_double_free(0))
+    print(bad_use_after_free(0))
+}

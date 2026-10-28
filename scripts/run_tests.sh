@@ -486,6 +486,18 @@ else
 	exit 1
 fi
 
+echo "=== W0 светове: mutate-after-freeze е чиста runtime грешка ==="
+printf 'fn main() {\n    let w = world_new()\n    world_freeze(w)\n    let p = world_alloc(w, 8)\n    print(p)\n}\n' > /tmp/baga_world_frozen.baga
+RC=0
+run /tmp/baga_world_frozen.baga > /tmp/baga_world_frozen_out.txt 2>&1 || RC=$?
+if [[ $RC -ne 0 ]] && grep -q "mutate-after-freeze" /tmp/baga_world_frozen_out.txt; then
+	echo "OK: world_alloc върху замразен свят — чиста грешка, не UB"
+else
+	echo "FAIL: frozen world_alloc трябваше да е чиста грешка"
+	cat /tmp/baga_world_frozen_out.txt
+	exit 1
+fi
+
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 # 8000 keeps clear of the crowded framework defaults (8080/8090) and of
 # ambient dev servers; override with REGISTRY_PORT when 8000 is taken.

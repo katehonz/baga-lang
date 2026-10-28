@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### W0 — светове: региони с ownership/freeze дисциплина
+- Нови builtin-и (C бекенд): `world_new/world_alloc/world_freeze/
+  world_state/world_free`. Runtime-ът е арената + frozen бит (отделна
+  malloc верига, не thread-local bump-а); `world_alloc` върху замразен
+  свят е чиста грешка, не UB.
+- Верификаторът води **HK_WORLD ghost протокол** (mutable → frozen →
+  freed; moved при `chan_send`) по модела на HK_DROP и ОБОРВА с
+  контрапример: mutate-after-freeze, use-after-free, use-after-move,
+  повторен freeze/free — по пътища (зад if-клон), не само праволинейно.
+  Легалното zero-copy споделяне (freeze → send) е чисто и се композира с
+  M19/M24 wait-for проверките.
+- Оркъл: `examples/verify/worlds.baga` + gate в run_verify.sh (6 ensures
+  доказани, 4 протокола оброчени, без протоколен UNKNOWN); runtime тест
+  `tests/worlds_test.baga` + проба за frozen-alloc грешката.
+- Честни граници: протокол по име (алиаси — MEM-1 договор), move само
+  през chan_send, payload-ите са сурови офсети (typed относителни
+  контейнери = W1). Концепцията: Verona linear regions / Pony iso —
+  пълният дизайн-документ идва с W1.
+
 ## [1.2.0] — 2026-10-28
 
 ### M31 — пълен bitvector фрагмент: bit-blasting + in-house DPLL
