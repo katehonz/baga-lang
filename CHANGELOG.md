@@ -23,6 +23,10 @@
   променливи елементи (str/bytes/вложени светове) е W1.5; raw
   `world_alloc` указателите важат само до следващия растеж — `wvec_*` е
   безопасният слой. LLVM: `wvec_*` е явна грешка (като `world_*`).
+- Концептуален документ: `docs/worlds-bg.md` — моделът (4 ghost
+  състояния, един писател или само четци), сравнение с Verona/Pony/
+  Cyclone/Rust, bench (wvec push 0.78× от Vec, dump/load memcpy-скорости),
+  честни граници и пътна карта W1.5–W3.
 
 ### W0 — светове: региони с ownership/freeze дисциплина
 - Нови builtin-и (C бекенд): `world_new/world_alloc/world_freeze/

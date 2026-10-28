@@ -1229,6 +1229,8 @@ print(wvec_get(w2, v, 0))    // 42 — position-independent roundtrip
   него (или изцяло от офсетни структури).
 - `world_load` връща mutable свят (симетрично на dump от mutable); freeze
   е изричен акт след зареждането.
+- Пълният дизайн-документ — модел, сравнение с Verona/Pony/Cyclone, bench,
+  честни граници и пътна карта: `docs/worlds-bg.md`.
 
 ---
 
