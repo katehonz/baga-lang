@@ -662,10 +662,12 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
 
     if (strcmp(nm, "go") == 0 || strcmp(nm, "go_bg") == 0) {
         /* W1.5: go(worker, arg) — свят в аргумента (директно или в cell2
-         * пакет) = прехвърляне на собствеността (като chan_send). Локалният
-         * handle минава в moved; работникът получава i64 параметър, който
-         * НЕ е ghost-регистриран — sound silence от другата страна. */
-        world_move_scan(st, ob, call->args.data[1]);
+         * пакет) = прехвърляне на собствеността (като chan_send). W2.1:
+         * работник със spec вече НЕ е sound silence — `requires:
+         * world_frozen(ctx)` го регистрира като HK_WORLD(1) в неговото тяло
+         * (мутатор там е ОБРОЧЕНО), а тук discharge-ва изискването срещу
+         * състоянието на аргумента. Затова move-скенът е СЛЕД discharge-а:
+         * иначе преместването би променило състоянието преди проверката. */
         Node *w = call->args.data[0];
         const char *wname = w->name;
         Node *wfn = find_fn(g_prog, wname);
@@ -690,6 +692,7 @@ Sym eval_par_call(Node *call, State *st, Obligations *ob) {
             char rv[64]; snprintf(rv, sizeof rv, "__c%d", g_call_ctr++);
             res = sym_lin(lin_var(rv));
         }
+        world_move_scan(st, ob, call->args.data[1]);
         /* M19: classify the worker's first blocking op on the channel arg */
         HandleEntry *ch = NULL;
         {

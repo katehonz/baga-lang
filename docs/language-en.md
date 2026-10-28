@@ -1238,6 +1238,14 @@ invalidates nothing:
   recognized from `let w = world_new()`/`world_load(b)` and from i64
   parameters; a wrapper function returning a world is not tracked (nor are
   aliases — MEM-1).
+- W2.1: a two-sided protocol — the ghost predicate `world_frozen(w)` in
+  `requires` (verifier-only, like `sorted(v)`: no runtime check, no codegen).
+  Inside the receiver's body the parameter becomes HK_WORLD(frozen), so any
+  mutator on it is REFUTED there; at the call site (direct or via `go`) the
+  requires is discharged against the argument's ghost state — frozen is PROVEN
+  (and the receiver's ensures is assumed), a mutable/freed/already-moved world
+  is REFUTED with a witness, an untracked handle is an honest UNKNOWN. A worker
+  without a spec stays sound silence: there is no contract to discharge.
 - Full design doc — model, Verona/Pony/Cyclone comparison, bench, honest
   limits, roadmap: `docs/worlds-bg.md`.
 

@@ -463,6 +463,7 @@ int spec_inputs_testable(Node *spec) {
 }
 
 /* emit-ва requires предикат: static int b__req_<mangled>(params) { return (r1) && (r2); } */
+static int is_verifier_only_annotation(Node *e);   /* W2.1: дефиниран по-долу */
 void emit_requires_predicate(Codegen *cg, Node *spec) {
     FILE *f = cg->out;
     fprintf(f, "static int b__req_");
@@ -484,27 +485,31 @@ void emit_requires_predicate(Codegen *cg, Node *spec) {
         }
     }
     fprintf(f, ") {\n    return ");
-    if (spec->spec_requires.len == 0) {
-        fprintf(f, "1");
-    }
+    int nreq = 0;
     for (int j = 0; j < spec->spec_requires.len; j++) {
-        if (j > 0) fprintf(f, " && ");
+        /* W2.1: ghost предикатите (v[*], sorted(v), world_frozen(w)) нямат
+         * runtime проверка — иначе --test-specs емитира несъществуваща fn */
+        if (is_verifier_only_annotation(spec->spec_requires.data[j]->ensure_expr)) continue;
+        if (nreq > 0) fprintf(f, " && ");
         fprintf(f, "(");
         emit_expr(cg, spec->spec_requires.data[j]->ensure_expr);
         fprintf(f, ")");
+        nreq++;
     }
+    if (nreq == 0) fprintf(f, "1");
     fprintf(f, ";\n}\n\n");
 }
 
 /* ---- function emission ---- */
 
-/* v[*] element invariants and sorted(v) are verifier-only annotations — they
- * are not emitted as runtime contract checks. */
+/* v[*] element invariants, sorted(v) and world_frozen(w) are verifier-only
+ * annotations — they are not emitted as runtime contract checks. */
 static int is_verifier_only_annotation(Node *e) {
     if (!e) return 0;
     if (e->kind == NODE_ELEM_REF) return 1;
     if (e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
-        strcmp(e->callee->name, "sorted") == 0) return 1;
+        (strcmp(e->callee->name, "sorted") == 0 ||
+         strcmp(e->callee->name, "world_frozen") == 0)) return 1;
     if (e->kind == NODE_BINARY) return is_verifier_only_annotation(e->left) || is_verifier_only_annotation(e->right);
     if (e->kind == NODE_UNARY) return is_verifier_only_annotation(e->operand);
     return 0;

@@ -737,6 +737,73 @@ void inject_prod_axioms(State *st) {
     }
 }
 
+/* W2.1: ghost-конюнктите на requires. Обхождане САМО през AND — при OR/NOT
+ * `world_frozen(p)` не е гаранция на извикващия, значи не се разтоварва
+ * (callee-то също не го регистрира: extract_world_ghost). */
+static int world_req_has_ghost(Node *e) {
+    if (!e) return 0;
+    if (is_world_ghost_call(e)) return 1;
+    return e->kind == NODE_BINARY && e->bin_op == OP_AND &&
+           (world_req_has_ghost(e->left) || world_req_has_ghost(e->right));
+}
+
+static void collect_world_ghosts(Node *e, Node **out, int *n, int cap, int *trunc) {
+    if (!e) return;
+    if (is_world_ghost_call(e)) {
+        if (*n >= cap) { *trunc = 1; return; }
+        out[(*n)++] = e;
+        return;
+    }
+    if (e->kind == NODE_BINARY && e->bin_op == OP_AND) {
+        collect_world_ghosts(e->left, out, n, cap, trunc);
+        collect_world_ghosts(e->right, out, n, cap, trunc);
+    }
+}
+
+/* Разтоварва един `world_frozen(p)` конюнкт срещу HK_WORLD състоянието на
+ * актуалния аргумент при извикващия. Връща 1 ако е ДОКАЗАНО; иначе push-ва
+ * нарушение (kind-3, path-sensitive) или честен UNKNOWN (kind-2, bad) и връща 0. */
+static int world_ghost_discharge(Node *g, Node *call, Node *cfn, State *st,
+                                 Obligations *ob, const char *callee, const char *rv) {
+    const char *pn = g->args.data[0]->name;
+    HandleEntry *we = NULL;
+    const char *an = NULL;
+    for (int j = 0; j < cfn->params.len && j < call->args.len; j++) {
+        if (strcmp(cfn->params.data[j]->param_name, pn) != 0) continue;
+        Node *aa = call->args.data[j];
+        if (aa->kind == NODE_IDENT) {
+            an = aa->name;
+            we = handles_find(&st->handles, an);
+            if (we && we->kind != HK_WORLD) we = NULL;
+        }
+        break;
+    }
+    char wlabel[300];
+    if (we && we->state == 1) {
+        ConsList opath; cl_init(&opath);
+        for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+        ConsList empty; cl_init(&empty);
+        snprintf(wlabel, sizeof wlabel, "requires world_frozen на '%s' при извикване", callee);
+        obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 0, 2, wlabel);
+        return 1;
+    }
+    if (we) {
+        snprintf(wlabel, sizeof wlabel,
+            "requires world_frozen на '%s': предаден %s свят '%s'", callee,
+            we->state == 0 ? "мутабелен" : we->state == 2 ? "освободен" : "вече преместен",
+            an);
+        push_protocol_violation(st, ob, wlabel);
+        return 0;
+    }
+    ConsList opath; cl_init(&opath);
+    for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+    ConsList empty; cl_init(&empty);
+    snprintf(wlabel, sizeof wlabel,
+        "requires world_frozen на '%s' при извикване — състоянието на аргумента не се следи", callee);
+    obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 1, 2, wlabel);
+    return 0;
+}
+
 /* M5: assume-guarantee for a user call in statement position.
  *  - Discharges the callee's requires against the caller path (conjunctive
  *    clauses only); each becomes a kind-2 obligation reported by verify_fn.
@@ -758,6 +825,15 @@ Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *caller_na
     SEnv env2; env_init(&env2);
     int ok = cfn && call->args.len == cfn->params.len;
     for (int i = 0; ok && i < cfn->params.len; i++) {
+        /* W2.1: аргумент-свят е opaque handle (HK_WORLD е по ИМЕ, не Lin) —
+         * ghost-изискванията се разтоварят по име в цикъла по-долу, затова
+         * светът не се bind-ва в env2. Без това целият state ставаше bad
+         * (нелинеен аргумент) и протоколът мълчеше вместо да доказва. */
+        Node *aa = call->args.data[i];
+        if (aa && aa->kind == NODE_IDENT) {
+            HandleEntry *he = handles_find(&st->handles, aa->name);
+            if (he && he->kind == HK_WORLD) continue;
+        }
         Sym a = se_from_ast(call->args.data[i], &st->env, &st->vlen, &st->reads);
         if (a.nonlinear) { lin_free(&a.lin); ok = 0; break; }
         env_bind(&env2, cfn->params.data[i]->param_name, a.lin, 0);   /* moves a.lin */
@@ -769,6 +845,37 @@ Sym eval_user_call(Node *call, State *st, Obligations *ob, const char *caller_na
     inject_prod_axioms(st);   /* M8b: фактите за продукти влизат в opath */
     for (int r = 0; r < cspec->spec_requires.len; r++) {
         Node *req = cspec->spec_requires.data[r]->ensure_expr;
+        /* W2.1: ghost предикат world_frozen(p) — caller страната на двустранния
+         * протокол. Аргументът се разтоварва срещу HK_WORLD състоянието на
+         * извикващия: frozen(1) → ДОКАЗАНО (ensures-ът на callee се поема);
+         * mutable/freed/moved → ОБРОЧЕНО с witness по живия път (kind-3, като
+         * другите протоколни нарушения — мъртъв път остава vacuously PROVEN);
+         * неследен handle → честен UNKNOWN и нищо не се поема.
+         * Конюнктите се обхождат: callee-то регистрира ghost-а и в `a && b`
+         * (extract_world_ghost), значи и тук трябва да се разтовари — иначе
+         * assume-guarantee се разминава. Аритметичната част остава за общия
+         * път, защото bool_to_dnf третира ghost-а като TRUE. */
+        if (world_req_has_ghost(req)) {
+            Node *conj[8]; int nconj = 0, wtrunc = 0;
+            collect_world_ghosts(req, conj, &nconj, 8, &wtrunc);
+            for (int k = 0; k < nconj; k++)
+                if (!world_ghost_discharge(conj[k], call, cfn, st, ob, callee, rv))
+                    all_req_proven = 0;
+            if (wtrunc) {
+                /* повече ghost-конюнкта от капацитета: callee-то ги регистрира
+                 * ВСИЧКИ (extract_world_ghost няма кап), значи гаранцията не е
+                 * разтоварена — честно UNKNOWN, никога приет ensures */
+                ConsList opath; cl_init(&opath);
+                for (int x = 0; x < st->path.n; x++) { Constraint *c = &st->path.c[x]; cl_push(&opath, mk_cons(lin_clone(&c->lhs), c->op, c->rhs)); }
+                ConsList empty; cl_init(&empty);
+                char wlabel[300];
+                snprintf(wlabel, sizeof wlabel,
+                    "requires world_frozen на '%s' при извикване — твърде много ghost-конюнкта", callee);
+                obl_push(ob, opath, empty, (ConsList){NULL, 0, 0}, sym_lin(lin_var(rv)), &st->vlen, &st->reads, 1, 2, wlabel);
+                all_req_proven = 0;
+            }
+            if (is_world_ghost_call(req)) continue;   /* чист ghost — нищо аритметично */
+        }
         /* M16: element/content requires (v[*] ..., sorted(v)) are discharged
          * against the caller's axioms on the ACTUAL argument — not vacuously */
         if (has_elem_ref(req)) {

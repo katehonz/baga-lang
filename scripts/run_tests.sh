@@ -576,6 +576,30 @@ else
 	exit 1
 fi
 
+echo "=== W2.1 ghost предикат world_frozen в requires (verifier-only, без runtime) ==="
+# worker със spec: извикващият замразява и предава; reader чете и връща 0.
+printf 'spec reader {\n    input:\n        ctx: i64\n    output: i64\n    requires:\n        world_frozen(ctx)\n    ensures:\n        output >= 0\n}\n\nfn reader(ctx: i64) -> i64 {\n    return ctx - ctx\n}\n\nfn main() {\n    let w = world_new()\n    world_freeze(w)\n    print(reader(w))\n    world_free(w)\n}\n' > /tmp/baga_w21_ghost.baga
+RC=0
+run /tmp/baga_w21_ghost.baga > /tmp/baga_w21_ghost_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "^0$" /tmp/baga_w21_ghost_out.txt; then
+	echo "OK: world_frozen в requires не пречи на компилация/изпълнение"
+else
+	echo "FAIL: ghost предикатът трябваше да е без runtime ефект"
+	cat /tmp/baga_w21_ghost_out.txt
+	exit 1
+fi
+# --test-specs генерира runtime проверка на requires — ghost предикатът трябва
+# да се пропуска (иначе се емитира несъществуващата b_world_frozen).
+RC=0
+run --test-specs /tmp/baga_w21_ghost.baga > /tmp/baga_w21_specs_out.txt 2>&1 || RC=$?
+if [[ $RC -eq 0 ]] && grep -q "reader: 100/100" /tmp/baga_w21_specs_out.txt; then
+	echo "OK: --test-specs пропуска ghost предиката (без b_world_frozen)"
+else
+	echo "FAIL: --test-specs не трябва да емитира runtime проверка за world_frozen"
+	cat /tmp/baga_w21_specs_out.txt
+	exit 1
+fi
+
 echo "=== registry (live Postgres, PORT + PGDATABASE) ==="
 # 8000 keeps clear of the crowded framework defaults (8080/8090) and of
 # ambient dev servers; override with REGISTRY_PORT when 8000 is taken.

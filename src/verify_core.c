@@ -528,6 +528,17 @@ int is_sorted_call(Node *e) {
            strcmp(e->callee->name, "sorted") == 0;
 }
 
+/* W2.1: verifier-only ghost предикат world_frozen(w) в requires/ensures.
+ * Състоянието на свят не е аритметична величина (HK_WORLD е ghost, като
+ * sorted(v)): положителна употреба → vacuous TRUE за скаларния фрагмент
+ * (ghost-регистрацията е отделна — extract_world_ghost); отрицание → извън
+ * фрагмента, т.е. честен UNKNOWN. */
+int is_world_ghost_call(Node *e) {
+    return e && e->kind == NODE_CALL && e->callee && e->callee->kind == NODE_IDENT &&
+           strcmp(e->callee->name, "world_frozen") == 0 &&
+           e->args.len == 1 && e->args.data[0]->kind == NODE_IDENT;
+}
+
 int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated, Formula *out) {
     if (!e) return 0;
     if (e->kind == NODE_BOOL_LIT) {
@@ -541,6 +552,11 @@ int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated
     /* sorted(v) is stored as an ElemAxiom (is_sorted), not a path constraint */
     if (is_sorted_call(e)) {
         if (negated) return 0;   /* ¬sorted is outside the scalar fragment */
+        f_init(out); ConsList cl; cl_init(&cl); f_push_branch(out, cl); return 1;
+    }
+    /* W2.1: world_frozen(w) е ghost (HK_WORLD), не скаларно ограничение */
+    if (is_world_ghost_call(e)) {
+        if (negated) return 0;   /* ¬world_frozen is outside the fragment */
         f_init(out); ConsList cl; cl_init(&cl); f_push_branch(out, cl); return 1;
     }
     if (e->kind == NODE_UNARY && e->un_op == UOP_NOT)

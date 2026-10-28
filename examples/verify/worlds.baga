@@ -209,6 +209,136 @@ fn w_worker(ctx: i64) -> i64 !Par {
     return ctx
 }
 
+// ---------------------------------------------------------------------------
+// W2.1: двустранен протокол за споделен свят. Ghost предикатът
+// `requires: world_frozen(ctx)` е verifier-only (като sorted(v)):
+//   • в тялото на ПРИЕМАЩИЯ регистрира ctx като HK_WORLD(1) — мутатор върху
+//     получения свят е ОБРОЧЕНО там, а не мълчание (досега работникът беше
+//     sound silence: параметърът не беше ghost-регистриран);
+//   • при ИЗВИКВАНЕТО се разтоварва срещу състоянието на аргумента — frozen
+//     е ДОКАЗАНО, а мутабелен/освободен/преместен свят е ОБРОЧЕНО с witness.
+// Работник без spec (w_worker) остава честен silence: няма какво да се поеме.
+// ---------------------------------------------------------------------------
+
+spec ok_shared_reader {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Легалният читател: получил е замразен свят и само чете (world_state/
+// world_used). Собствената му верификация е чиста — ghost състоянието е
+// frozen, а четците са легални върху frozen.
+fn ok_shared_reader(ctx: i64) -> i64 {
+    let s = world_state(ctx)
+    let u = world_used(ctx)
+    return ctx - ctx
+}
+
+spec bad_shared_writer {
+    input:
+        ctx: i64
+    output: i64
+    requires:
+        world_frozen(ctx)
+    ensures:
+        output >= 0
+}
+
+// Същият договор, но тялото ПИШЕ в получения свят. Checker-ът мълчи (за него
+// параметърът е „неизвестно" състояние — W1.6 не измисля), верификаторът
+// оборва в самото тяло: втори писател върху споделен замразен свят = race.
+fn bad_shared_writer(ctx: i64) -> i64 {
+    let p = world_alloc(ctx, 16)
+    return ctx - ctx
+}
+
+spec ok_pass_frozen {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Извикващият замразява и предава: requires-ът на читателя се разтоварва
+// (ДОКАЗАНО), ensures-ът му се поема. Това е zero-copy споделянето, доказано
+// и от двете страни.
+fn ok_pass_frozen(n: i64) -> i64 !Par {
+    let w = world_new()
+    let v = wvec_new(w)
+    wvec_push(w, v, 5)
+    world_freeze(w)
+    let h = go(ok_shared_reader, w)
+    let r = join(h)
+    return r - r
+}
+
+spec bad_pass_mutable {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Freeze-ът е само в then-клона ⇒ по пътя n = 0 светът е мутабелен и
+// предаването нарушава requires-а на читателя — ОБРОЧЕНО с контрапример.
+fn bad_pass_mutable(n: i64) -> i64 {
+    let w = world_new()
+    if n > 0 {
+        world_freeze(w)
+    }
+    let r = ok_shared_reader(w)
+    world_free(w)
+    return r - r
+}
+
+spec bad_pass_freed {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Освободен свят не може да се предава: requires world_frozen е ОБРОЧЕНО
+// (заедно с use-after-free на самия аргумент) по пътя n = 1.
+fn bad_pass_freed(n: i64) -> i64 {
+    let w = world_new()
+    world_freeze(w)
+    if n > 0 {
+        world_free(w)
+    }
+    let r = ok_shared_reader(w)
+    return r - r
+}
+
+spec bad_pass_twice {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Един свят, двама получатели: първият go прехвърля собствеността, вторият
+// предава вече преместен свят — ОБРОЧЕНО (двама писатели/читатели без
+// координирана собственост).
+fn bad_pass_twice(n: i64) -> i64 !Par {
+    let w = world_new()
+    world_freeze(w)
+    let h1 = go(ok_shared_reader, w)
+    let h2 = go(ok_shared_reader, w)
+    let a = join(h1)
+    let b = join(h2)
+    return n - n
+}
+
 spec ok_frozen_read_str {
     input:
         n: i64
@@ -271,6 +401,63 @@ fn bad_go_move(n: i64) -> i64 !Par {
     return r - r
 }
 
+spec conj_reader {
+    input:
+        ctx: i64
+        n: i64
+    output: i64
+    requires:
+        world_frozen(ctx) && n >= 0
+    ensures:
+        output >= 0
+}
+
+// W2.1: ghost предикатът като КОНЮНКТ. extract_world_ghost минава през AND,
+// значи callee-то пак регистрира ctx като frozen — и discharge-ът от страна на
+// извикващия трябва да го направи също, иначе assume-guarantee се разминава
+// (callee допуска frozen, caller не е длъжен да го гарантира).
+fn conj_reader(ctx: i64, n: i64) -> i64 {
+    let s = world_state(ctx)
+    return n - n
+}
+
+spec ok_pass_conj {
+    input:
+        n: i64
+    output: i64
+    requires:
+        n >= 0
+    ensures:
+        output >= 0
+}
+
+// Замразен свят и n >= 0 от собственото requires — и двата конъюнкта се
+// разтоварват, ensures-ът на читателя се поема.
+fn ok_pass_conj(n: i64) -> i64 {
+    let w = world_new()
+    world_freeze(w)
+    let r = conj_reader(w, n)
+    world_free(w)
+    return r - r
+}
+
+spec bad_pass_conj {
+    input:
+        n: i64
+    output: i64
+    ensures:
+        output >= 0
+}
+
+// Мутабелен свят и n без предусловие: ОБРОЧЕНИ са и двата конъюнкта —
+// ghost-ът (при всеки вход) и аритметиката (контрапример n = -1).
+fn bad_pass_conj(n: i64) -> i64 {
+    let w = world_new()
+    let r = conj_reader(w, n)
+    world_free(w)
+    return r - r
+}
+
 fn main() {
     print(ok_lifecycle(1))
     print(ok_frozen_read(1))
@@ -280,4 +467,8 @@ fn main() {
     print(bad_use_after_free(0))
     print(bad_push_frozen(0))
     print(bad_push_str_frozen(0))
+    print(bad_pass_mutable(0))
+    print(bad_pass_freed(0))
+    print(ok_pass_conj(1))
+    print(bad_pass_conj(1))
 }

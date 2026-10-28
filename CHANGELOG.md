@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### W2.1 — светове: двустранен протокол (`world_frozen` в requires)
+- Ghost предикат `world_frozen(w)` за `requires`/`ensures` — verifier-only, по
+  модела на `sorted(v)`: без runtime проверка (C и LLVM contract-check
+  емисиите го пропускат) и без codegen. `--test-specs` вече не емитира
+  несъществуващата `b_world_frozen` (латентен дефект и за `sorted`).
+- **Приемащата страна вече не е sound silence**: `requires: world_frozen(ctx)`
+  регистрира параметъра като HK_WORLD(frozen) в началното състояние на
+  верификацията, така че мутатор върху получения свят е ОБРОЧЕНО в самото тяло
+  на работника — path-sensitive, с witness (`mutate-after-freeze: world_alloc
+  върху замразен 'ctx'`).
+- **Извикващата страна разтоварва договора**: при директно извикване и при
+  `go`/`go_bg` requires-ът се проверява срещу ghost състоянието на аргумента —
+  frozen → ДОКАЗАНО (ensures-ът на получателя се поема, M5); мутабелен /
+  освободен / вече преместен свят → ОБРОЧЕНО с контрапример по живия път;
+  неследен handle → честен UNKNOWN и нищо не се поема.
+- Светът като аргумент вече не обезсмисля цялото състояние: `eval_user_call`
+  пропускат HK_WORLD аргументите при аритметичното bind-ване (те са opaque
+  handle, ghost-ът е по име) — преди това всеки call със свят-аргумент
+  маркираше state-а bad и протоколът мълчеше вместо да доказва.
+- `world_move_scan` при `go` минава СЛЕД requires discharge-а, иначе
+  преместването сменяше състоянието преди проверката и легалното подаване на
+  замразен свят излизаше „предаден вече преместен".
+- Ghost-ът важи и като **конюнкт** (`requires: world_frozen(ctx) && n >= 0`):
+  обхождането минава през AND и от двете страни — callee-то регистрира
+  състоянието, caller-ът разтоварва ghost-а и аритметиката независимо, всеки със
+  собствен witness. Без това assume-guarantee се разминава (callee допуска
+  frozen, caller не е длъжен да го гарантира). При OR/NOT не се разтоварва —
+  честен UNKNOWN.
+- Оркълът `examples/verify/worlds.baga` расте на 21 доказани ensures + 16
+  оброчени протокола (ok_shared_reader, bad_shared_writer, ok_pass_frozen,
+  bad_pass_mutable, bad_pass_freed, bad_pass_twice, conj_reader, ok_pass_conj,
+  bad_pass_conj); gate-ът в run_verify.sh и runtime пробите в run_tests.sh
+  (ghost предикатът е неутрален за компилация/изпълнение и за `--test-specs`)
+  са обновени.
+- Docs: worlds-bg.md §3 (W2.1 subsection) + §5 граници + §6 пътна карта + §7
+  pitch, language-bg/en §W2.1.
+
 ### W1.6 — светове: compile-time seatbelt с join-логика
 - Праволинейните нарушения на световния протокол вече са COMPILE грешка (без
   `--verify`): `world_freeze(w)` после мутатор (`world_alloc`, `wvec_new`,

@@ -1114,6 +1114,20 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
             return type_new(TYPE_BOOL);
         }
 
+        /* W2.1: world_frozen(w) — ghost предикат за requires/ensures (като
+         * sorted): verifier-only, без runtime проверка и без codegen. */
+        if (strcmp(name, "world_frozen") == 0) {
+            n->callee->type = type_new(TYPE_VOID);
+            if (n->args.len != 1)
+                check_error(ctx, n->pos, "'world_frozen' очаква 1 аргумент, получих %d", n->args.len);
+            Type *wt = n->args.len > 0 ? n->args.data[0]->type : NULL;
+            if (!wt || (wt->kind != TYPE_I64 && wt->kind != TYPE_ERROR))
+                check_error(ctx, n->pos,
+                    "'world_frozen' очаква i64 handle на свят, получих %s",
+                    wt ? type_str(wt) : "?");
+            return type_new(TYPE_BOOL);
+        }
+
         /* L5: локална, която не е fn стойност — по-ясна диагностика */
         Type *lt_local = env_lookup(ctx, name);
         if (lt_local) {
@@ -1124,7 +1138,7 @@ Type *infer_call(CheckCtx *ctx, Node *n) {
              * (vec_*, map_*, go, …) не са в таблицата builtins[] — при нов
              * такъв builtin го добави и тук, иначе просто няма подсказка. */
             static const char *const special[] = {
-                "print", "println", "write", "sorted", "drop",
+                "print", "println", "write", "sorted", "drop", "world_frozen",
                 "vec_new", "vec_push", "vec_set", "vec_push_str", "vec_set_str",
                 "vec_get", "vec_get_str", "vec_len", "vec_slice", "vec_concat",
                 "vec_from_bytes", "bytes_from_vec",

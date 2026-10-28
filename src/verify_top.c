@@ -612,6 +612,27 @@ void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax) {
     ax_push(ax, eref->elem_obj->name, cmp, s.lin, 0);
 }
 
+/* W2.1: `requires: world_frozen(p)` — p влиза в тялото като HK_WORLD в
+ * състояние frozen(1). Това е callee страната на двустранния протокол:
+ * извикващият гарантира състоянието (discharge в eval_user_call), работникът
+ * ДОКАЗВА, че не пише — мутатор върху p е ОБРОЧЕНО с witness, path-sensitive
+ * в неговото собствено тяло. Рекурсия само през AND: при OR/NOT предикатът не
+ * е гарантиран, значи не се регистрира нищо (честно мълчание). */
+void extract_world_ghost(Node *e, State *st) {
+    if (!e) return;
+    if (is_world_ghost_call(e)) {
+        const char *nm = e->args.data[0]->name;
+        HandleEntry *h = handles_find(&st->handles, nm);
+        if (h) { if (h->kind == HK_WORLD) h->state = 1; return; }
+        handles_set(&st->handles, nm, HK_WORLD, 1, NULL);
+        return;
+    }
+    if (e->kind == NODE_BINARY && e->bin_op == OP_AND) {
+        extract_world_ghost(e->left, st);
+        extract_world_ghost(e->right, st);
+    }
+}
+
 /* Instantiate an axiom at a concrete read: produce the constraint
  * `read_var <cmp> rhs` (the element value satisfies the predicate).
  * Caller must not pass is_sorted axioms (they yield no scalar fact). */
@@ -716,6 +737,8 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
     }
     for (int r = 0; r < spec->spec_requires.len; r++)
         extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.ax);
+    for (int r = 0; r < spec->spec_requires.len; r++)
+        extract_world_ghost(spec->spec_requires.data[r]->ensure_expr, &init);   /* W2.1 */
     for (int r = 0; r < spec->spec_requires.len; r++) {
         Formula rf;
         if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init.env, &init.vlen, &init.reads, 0, &rf)) {
@@ -988,6 +1011,8 @@ static int verify_fn(Node *prog, Node *fn) {
         }
         for (int r = 0; r < spec->spec_requires.len; r++)
             extract_elem_axiom(spec->spec_requires.data[r]->ensure_expr, &init2.env, &init2.ax);
+        for (int r = 0; r < spec->spec_requires.len; r++)
+            extract_world_ghost(spec->spec_requires.data[r]->ensure_expr, &init2);   /* W2.1 */
         for (int r = 0; r < spec->spec_requires.len; r++) {
             Formula rf;
             if (bool_to_dnf(spec->spec_requires.data[r]->ensure_expr, &init2.env, &init2.vlen, &init2.reads, 0, &rf)) {

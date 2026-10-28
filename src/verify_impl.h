@@ -166,6 +166,7 @@ void f_free(Formula *f);   /* 514 */
 Constraint mk_cons(Lin lhs, COp op, Rat rhs);   /* 516 */
 int is_cmp(BinOp op);   /* 542 */
 int is_sorted_call(Node *e);   /* 568 */
+int is_world_ghost_call(Node *e);   /* W2.1: world_frozen(w) — ghost предикат */
 int bool_to_dnf(Node *e, SEnv *env, VLenMap *vlen, ReadsList *reads, int negated, Formula *out);   /* 573 */
 int fm_sat(ConsList *sys);   /* 698 */
 int64_t ienv_get(IEnv *e, const char *name, int *ok);   /* 781 */
@@ -246,6 +247,7 @@ int ret_has_effects(Node *t);   /* 4276 */
 int ret_has_unverifiable_effects(Node *t);   /* 4292 */
 int has_elem_ref(Node *e);   /* 4825 */
 void extract_elem_axiom(Node *e, SEnv *env, AxiomList *ax);   /* 4836 */
+void extract_world_ghost(Node *e, State *st);   /* W2.1: requires world_frozen(p) → HK_WORLD(1) */
 Constraint axiom_instantiate(ElemAxiom *a, const char *read_var);   /* 4870 */
 int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st);   /* 4890 */
 int verify_program(Node *prog);   /* 5432 */
