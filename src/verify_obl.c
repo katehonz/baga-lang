@@ -10,9 +10,7 @@ int64_t ienv_get(IEnv *e, const char *name, int *ok) {
     *ok = 0; return 0;
 }
 
-static int eval_bool(Node *e, IEnv *env);
-
-static int64_t eval_i64(Node *e, IEnv *env, int *ok) {
+int64_t eval_i64(Node *e, IEnv *env, int *ok) {
     *ok = 1;
     if (!e) { *ok = 0; return 0; }
     switch (e->kind) {
@@ -33,6 +31,16 @@ static int64_t eval_i64(Node *e, IEnv *env, int *ok) {
         case OP_MUL: return l * r;
         case OP_DIV: if (r == 0) { *ok = 0; return 0; } return l / r;
         case OP_MOD: if (r == 0) { *ok = 0; return 0; } return l % r;
+        /* M31: bitwise с маскиран брой (b & 63) — семантиката на езика в
+         * двата backend-а. Преди това recheck на witness/ensures с битови
+         * операции връщаше ok=0 (мълчалив UNKNOWN); BV oracle-ът разчита
+         * на тях за презареждането. */
+        case OP_BIT_AND: return l & r;
+        case OP_BIT_OR:  return l | r;
+        case OP_BIT_XOR: return l ^ r;
+        case OP_LSHIFT:  return (int64_t)((uint64_t)l << (r & 63));
+        case OP_RSHIFT:  return l >> (r & 63);
+        case OP_URSHIFT: return (int64_t)((uint64_t)l >> (r & 63));
         default: *ok = 0; return 0;
         }
     }
@@ -40,7 +48,7 @@ static int64_t eval_i64(Node *e, IEnv *env, int *ok) {
     }
 }
 
-static int eval_bool(Node *e, IEnv *env) {
+int eval_bool(Node *e, IEnv *env) {
     if (!e) return 0;
     if (e->kind == NODE_BOOL_LIT) return e->bool_val;
     if (e->kind == NODE_UNARY && e->un_op == UOP_NOT) return !eval_bool(e->operand, env);

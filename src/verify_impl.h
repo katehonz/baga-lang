@@ -239,4 +239,54 @@ Constraint axiom_instantiate(ElemAxiom *a, const char *read_var);   /* 4870 */
 int axiom_holds_for_value(ElemAxiom *a, Sym *val, State *st);   /* 4890 */
 int verify_program(Node *prog);   /* 5432 */
 
+/* ============================ M31: пълен BV фрагмент ============================
+ * Bit-blasting до 64-битов CNF + in-house DPLL (verify_bv_sat.c) за цели,
+ * които FM ядрото не може да линеаризира (променлив XOR, wrap като стойност,
+ * символни маски/shift-ове). Изолиран от ℤ ядрото: стартира САМО когато
+ * FM е казал НЕ МОГА, и само върху straight-line i64 функции без деление,
+ * извиквания и цикли. Бюджетите (гейтове/конфликти) пазят честността —
+ * надхвърлят ли се, остава UNKNOWN. */
+
+typedef struct { int *lits; int n; } BvClause;
+typedef enum { BV_SAT_SAT, BV_SAT_UNSAT, BV_SAT_UNDECIDED } BvSatResult;
+#define BV_SAT_DEFAULT_BUDGET 30000L
+typedef struct {
+    int n_vars, cap_vars;
+    signed char *assign;   /* 0 = неопределена, 1 = истина, -1 = лъжа */
+    int *level;            /* var → ниво на решение */
+    int *trail, n_trail, cap_trail;
+    int *trail_lim, n_lim, cap_lim;
+    int *flipped;          /* ниво → опитана ли е обратната фаза */
+    int q_head;            /* worklist указател в trail */
+    int phase_mode;        /* 0 = положителна, 1 = отрицателна, 2 = алтернативна */
+    BvClause *cl; int n_cl, cap_cl;
+    int **occ; int *occ_n; int occ_cap;   /* occurrence списъци по лит. */
+    long conflicts, budget;
+} BvSat;
+void bv_sat_init(BvSat *s, int n_vars_hint, long conflict_budget);
+void bv_sat_free(BvSat *s);
+int bv_sat_new_var(BvSat *s);
+void bv_sat_add_clause(BvSat *s, const int *lits, int n);
+BvSatResult bv_sat_solve(BvSat *s);
+int bv_sat_var_value(BvSat *s, int v);
+void bv_sat_reset(BvSat *s);
+
+/* 64-битова дума = 64 SAT литерала (lit[0] = LSB). 0/1 лит. са материални
+ * константи (var 1 = TRUE, var 2 = FALSE, assert-нати). */
+typedef struct { int lit[64]; } BvWord;
+
+#define BV_GATE_BUDGET 60000   /* таван на гейтовете в една цел */
+
+/* M31 oracle за едно ensures твърдение върху fn (spec, индекс).
+ * Връща: 1 = ДОКАЗАНО (UNSAT), 2 = ОБРОЧЕНО (SAT + презареден witness),
+ * 0 = извън фрагмента/бюджета — остава UNKNOWN. Witness-ът е за
+ * параметрите на fn-а (names/vals като в EnsVerifyRes). */
+int bv_verify_ensures(Node *fn, Node *spec, int ens_idx,
+                      char ***wit_names, long long **wit_vals, int *wn);
+
+/* Директен интерпретатор (verify_obl.c) — M8 презареждане на свидетели;
+ * ползва се и от BV recheck-а. */
+int64_t eval_i64(Node *e, IEnv *env, int *ok);
+int eval_bool(Node *e, IEnv *env);
+
 #endif /* BAGA_VERIFY_IMPL_H */

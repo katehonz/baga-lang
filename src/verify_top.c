@@ -746,6 +746,23 @@ int verify_fn_collect(Node *prog, Node *fn, FnVerifyRes *out) {
             }
             free(wit);
         }
+        /* M31: пълен BV фрагмент — когато FM каже НЕ МОГА (променлив
+         * XOR/маска, wrap като стойност, символен shift), bit-blasting до
+         * 64-битов CNF + in-house DPLL решават ТОЧНО или остават честни.
+         * PROVEN само при UNSAT; REFUTED само с witness, презареден през
+         * директна интерпретация (M8 дисциплина). */
+        if (out->ens[j].res == (int)R_UNKNOWN) {
+            char **bwn = NULL; long long *bwv = NULL; int bwn_n = 0;
+            int bvr = bv_verify_ensures(fn, spec, j, &bwn, &bwv, &bwn_n);
+            if (bvr == 1) {
+                out->ens[j].res = (int)R_PROVEN;
+            } else if (bvr == 2) {
+                out->ens[j].res = (int)R_REFUTED;
+                out->ens[j].wit_names = bwn;
+                out->ens[j].wit_vals = bwv;
+                out->ens[j].wn = bwn_n;
+            }
+        }
     }
 
     /* M22: guarantee редове — ако текстът се парсира като израз, се

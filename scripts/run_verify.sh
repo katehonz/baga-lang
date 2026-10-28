@@ -183,6 +183,15 @@ grep -q "xor_not:" /tmp/baga_verify_out.txt && grep -q "ensures #1.*ДОКАЗА
 	&& grep -q "xor_not_bad:" /tmp/baga_verify_out.txt && grep -q "контрапример: n = 0" /tmp/baga_verify_out.txt \
 	&& echo "OK: bitwise_xor_not — n^-1 = -n-1 доказано; ~n>=0 оброчено при 0 (M21)" \
 	|| { echo "FAIL: bitwise_xor_not"; cat /tmp/baga_verify_out.txt; exit 1; }
+"$BIN" $BAGAIFLAGS --verify examples/verify/bv_full.baga > /tmp/baga_verify_out.txt || true; \
+grep -q "xor_self_inv:" /tmp/baga_verify_out.txt && grep -q "absorb:" /tmp/baga_verify_out.txt \
+	&& grep -q "xor_nonneg_bad:" /tmp/baga_verify_out.txt && grep -q "var_mask_bad:" /tmp/baga_verify_out.txt \
+	&& [ "$(grep -c 'ДОКАЗАНО' /tmp/baga_verify_out.txt)" -ge 4 ] \
+	&& [ "$(grep -c 'ensures.*ОБРОЧЕНО' /tmp/baga_verify_out.txt)" -ge 4 ] \
+	&& tail -6 /tmp/baga_verify_out.txt | grep -q 'НЕ МОГА ДА РЕША' \
+	&& ! tail -6 /tmp/baga_verify_out.txt | grep -q 'ДОКАЗАНО' \
+	&& echo "OK: bv_full — M31 bit-blasting+DPLL: променлив XOR и абсорбция ДОКАЗАНО, символни маски/shift-ове ОБРОЧЕНО с презареден witness, дистрибутивността честен UNKNOWN" \
+	|| { echo "FAIL: bv_full"; cat /tmp/baga_verify_out.txt; exit 1; }
 "$BIN" $BAGAIFLAGS --verify examples/verify/par_join.baga > /tmp/baga_verify_out.txt || true; \
 grep -q "par_double:" /tmp/baga_verify_out.txt && grep -q "ДОКАЗАНО" /tmp/baga_verify_out.txt \
 	&& ! grep -qE "^  (ensures|извикване|граница|протокол).*(ОБРОЧЕНО|НЕ МОГА ДА РЕША)" /tmp/baga_verify_out.txt \

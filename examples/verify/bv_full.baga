@@ -1,0 +1,113 @@
+// bv_full.baga — M31: пълен bitvector фрагмент (bit-blasting + in-house DPLL).
+//
+// Оркъл за BV пътя на верификатора (thesis-open-problems §2, option 1).
+// Когато FM ядрото каже НЕ МОГА (променлив XOR/маска/shift, wrap като
+// стойност), целта се bit-blast-ва до 64-битов CNF и DPLL я решава ТОЧНО:
+//   - UNSAT ⇒ ДОКАЗАНО;
+//   - SAT  ⇒ ОБРОЧЕНО с контрапример, презареден през директна
+//     интерпретация (M8 дисциплина — фалшив witness не минава).
+//
+// Честни граници на v1 (виж docs/thesis-open-problems.md §2):
+//   - ДОКАЗАНО идва от колапсиращи идентичности (xor-вериги, абсорбция)
+//     или тривиална пропагация; ОБЩ UNSAT без структурен колапс
+//     (дистрибутивност, De Morgan) удря конфликтния бюджет и остава
+//     НЕ МОГА — следващият слой е clause learning (CDCL);
+//   - *, /, % са извън фрагмента (деление — semantics извън битовете);
+//   - hook-ът НЕ предефинира FM: M15/M18 (overflow) и M20-M23
+//     envelope-ите си вървят по стария път.
+//
+//   ./baga --verify examples/verify/bv_full.baga
+
+// ---- ДОКАЗАНО: променлив XOR (FM: непрозрачно нелинейно) ----
+
+spec xor_self_inv {
+    input: x: i64, y: i64
+    output: i64
+    ensures: output >= x, output <= x
+}
+fn xor_self_inv(x: i64, y: i64) -> i64 {
+    return (x ^ y) ^ y
+}
+
+// ---- ДОКАЗАНО: абсорбция x & (x | y) = x (символно y) ----
+
+spec absorb {
+    input: x: i64, y: i64
+    output: i64
+    ensures: output >= x, output <= x
+}
+fn absorb(x: i64, y: i64) -> i64 {
+    return x & (x | y)
+}
+
+// ---- ОБРОЧЕНО: x ^ y НЕ е неотрицателно (променлив XOR) ----
+
+spec xor_nonneg_bad {
+    input: x: i64, y: i64
+    output: i64
+    ensures: output >= 0
+}
+fn xor_nonneg_bad(x: i64, y: i64) -> i64 {
+    return x ^ y
+}
+
+// ---- ОБРОЧЕНО: (x<<1)>>1 губи бита при x с бит 62 (wrap на <<) ----
+
+spec shl_shr_bad {
+    input: x: i64
+    output: i64
+    ensures: output >= x
+}
+fn shl_shr_bad(x: i64) -> i64 {
+    return (x << 1) >> 1
+}
+
+// ---- ОБРОЧЕНО: x >>> k >= 0 е вярно само за k&63 > 0; при k&63 == 0
+// резултатът е самото x (маскиран брой — семантиката на езика) ----
+
+spec lshr_var_bad {
+    input: x: i64, k: i64
+    output: i64
+    ensures: output >= 0
+}
+fn lshr_var_bad(x: i64, k: i64) -> i64 {
+    return x >>> k
+}
+
+// ---- ОБРОЧЕНО: символна маска без знак (M20 envelope-ът важи само за
+// неотрицателни m или константни 2^k-1) — (x&m)&m&-1 == x&m, което е < 0
+// при x = m = -1 ----
+
+spec var_mask_bad {
+    input: x: i64, m: i64
+    output: i64
+    ensures: output >= 0
+}
+fn var_mask_bad(x: i64, m: i64) -> i64 {
+    return (x & m) & m & (0 - 1)
+}
+
+// ---- ЧЕСТНО НЕ МОГА: дистрибутивност (x&y)|(x&~y) == x е ИСТИНА, но
+// общият UNSAT без структурен колапс е извън DPLL-без-learning v1.
+// Този ред е soundness-гейт: ако някога излезе ДОКАЗАНО без CDCL слой,
+// нещо не е наред; ако излезе ОБРОЧЕНО — фалшив witness (невъзможен:
+// тъждеството е вярно и recheck-ът би го хванал). ----
+
+spec distrib_honest {
+    input: x: i64, y: i64
+    output: i64
+    ensures: output >= x, output <= x
+}
+fn distrib_honest(x: i64, y: i64) -> i64 {
+    return (x & y) | (x & (y ^ (0 - 1)))
+}
+
+fn main() {
+    print(xor_self_inv(5, 3))
+    print(absorb(12, 10))
+    print(xor_nonneg_bad(1, 0 - 2))
+    print(shl_shr_bad(7))
+    print(lshr_var_bad(0 - 8, 1))
+    print(var_mask_bad(0 - 1, 0 - 1))
+    print(distrib_honest(6, 3))
+}

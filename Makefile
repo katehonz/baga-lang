@@ -13,7 +13,8 @@ BAGAIFLAGS := -I . -I app-product
 SRCS := src/main.c src/lexer.c src/parser_core.c src/parser_decl.c src/codegen_util.c src/codegen_move.c src/codegen_expr.c src/codegen_stmt.c src/codegen_api.c src/proofs.c \
         src/checker_env.c src/checker_infer.c src/checker_expr.c src/checker_fn.c \
         src/verify_core.c src/verify_obl.c src/verify_symexec.c src/verify_invariants.c \
-        src/verify_waitfor.c src/verify_top.c
+        src/verify_waitfor.c src/verify_top.c \
+        src/verify_bv_sat.c src/verify_bv.c
 OBJS := $(SRCS:.c=.o)
 BIN  := baga
 

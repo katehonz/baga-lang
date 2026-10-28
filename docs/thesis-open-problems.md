@@ -324,6 +324,44 @@ Oracle: `examples/verify/lshr_bounds.baga`. What remains of this frontier:
 full bit-blasting, wrap as a *value*, variable XOR, symbolic masks without
 sign, arithmetic shift on i32.
 
+**M31 (2026-10-28):** option 1 lands — bounded BV on demand. When the FM
+core reports UNKNOWN for an ensures over a straight-line i64 function (no
+loops, calls, or division), `src/verify_bv.c` bit-blasts the whole
+obligation (requires ∧ body ∧ ¬ensures) to **exact 64-bit two's-complement
+CNF**: wrapping add/sub (ripple carry), `& | ^`, `<< >> >>>` with masked
+counts (constant shifts are free wire shuffles; variable counts are 6-layer
+barrel muxes), signed comparators (sign⊕overflow of the difference), and
+if-statements as env merges by ITE (definitely-return required). The CNF is
+decided by an in-house DPLL (`src/verify_bv_sat.c`, ~350 lines:
+occurrence-list unit propagation, chronological backtracking with per-level
+phase flip, three restart strategies pos/neg/alt, 30k-conflict budget per
+strategy). Build-time structural folding collapses the classic identities
+before search: Tseytin negation as a free negative literal (so `x − x`
+folds to zero), xor-cancellation `(a^b)^b = a`, and/or absorption
+`(a∨b)∧a = a`, and ITE constant arms (the barrel shifter shrinks
+dramatically). Verdict discipline: UNSAT ⇒ ДОКАЗАНО; SAT ⇒ ОБРОЧЕНО with
+the witness **re-checked by direct interpretation** (M8 — `eval_i64` now
+evaluates the bitwise ops with masked shifts); a blast/interpreter mismatch
+downgrades to UNKNOWN, so no false verdict escapes in either direction.
+Newly decided: variable-XOR identities (`(x^y)^y = x`), absorption
+(`x&(x|y) = x`), and exact refutations for symbolic masks without sign
+(`(x&m)&m&-1 ≥ 0` — false at x=m=−1), variable logical shifts (`x>>>k ≥ 0`
+— false at k&63=0), and `(x<<1)>>1 ≥ x` (false at 2^62). The hook never
+overrides an FM verdict — M15/M18 (idealized ℤ + the overflow effect)
+remain the wrap-safety channel, and the M13/M20–M23 envelopes keep doing
+their linear work. Honest boundary: general UNSAT *without* structural
+collapse (distributivity `(x&y)|(x&~y) = x`, De Morgan) exhausts the
+conflict budget → НЕ МОГА; the next layer is clause learning (CDCL) and/or
+GF(2) Gaussian elimination for parity-dense formulas. `*` is blastable but
+not yet wired; `/` and `%` stay outside. Zero external dependencies are
+preserved — the SAT core is auditable in-repo C. Oracle:
+`examples/verify/bv_full.baga`; the run_verify.sh gate includes a
+soundness tripwire: distributivity must STAY UNKNOWN — a future false
+ДОКАЗАНО there fails the suite. Of the §2.2 list this closes: variable
+masks without sign, variable XOR, wrap as a value (inside the fragment),
+variable-count shifts. Remaining: the CDCL/GF(2) layer for collapse-free
+identities, multiplication wiring, i32 arithmetic shift.
+
 ---
 
 ## 3. Rich polynomials
